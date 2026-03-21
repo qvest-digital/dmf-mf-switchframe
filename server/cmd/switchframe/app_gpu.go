@@ -44,7 +44,7 @@ func initGPU(sw *switcher.Switcher) *gpuState {
 	// + 1 stmap temp + 1 mask + 3 headroom = 24. Under-sizing causes pool
 	// exhaustion under load when all sources are active with ST maps.
 	pf := sw.PipelineFormat()
-	pool, err := gpu.NewFramePool(ctx, pf.Width, pf.Height, 24)
+	pool, err := gpu.NewFramePool(ctx, pf.Width, pf.Height, 32)
 	if err != nil {
 		slog.Warn("GPU frame pool failed, falling back to CPU", "error", err)
 		ctx.Close()
@@ -182,7 +182,7 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 	slog.Info("GPU pipeline active",
 		"backend", gs.ctx.Backend(),
 		"device", gs.ctx.DeviceName(),
-		"pool_frames", 24,
+		"pool_frames", 32,
 	)
 }
 

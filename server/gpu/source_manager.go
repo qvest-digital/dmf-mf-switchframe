@@ -207,24 +207,34 @@ func (m *GPUSourceManager) IngestYUV(sourceKey string, yuv []byte, w, h int, pts
 		old.Release()
 	}
 
-	// Queue for preview encoding (non-blocking, newest-wins).
+	// Queue a PRIVATE COPY for preview encoding. The preview goroutine
+	// must not share GPU memory with the cache or program pipeline —
+	// concurrent Metal operations on the same buffer cause corruption.
+	// Each workflow gets its own exclusive copy of the frame data.
 	if entry.prevCh != nil {
-		frame.Ref() // preview goroutine will Release
-		select {
-		case entry.prevCh <- frame:
-			// Queued successfully.
-		default:
-			// Channel full — drop the oldest, send newest.
+		previewFrame, acqErr := m.pool.Acquire()
+		if acqErr != nil {
+			slog.Debug("gpu: source manager: preview frame acquire failed",
+				"source", sourceKey, "error", acqErr)
+		} else {
+			CopyGPUFrame(previewFrame, frame)
+			previewFrame.PTS = frame.PTS
 			select {
-			case dropped := <-entry.prevCh:
-				dropped.Release()
+			case entry.prevCh <- previewFrame:
+				// Queued successfully. Preview goroutine owns this frame.
 			default:
-			}
-			select {
-			case entry.prevCh <- frame:
-			default:
-				// Still can't send (race). Release the ref.
-				frame.Release()
+				// Channel full — drop the oldest, send newest.
+				select {
+				case dropped := <-entry.prevCh:
+					dropped.Release()
+				default:
+				}
+				select {
+				case entry.prevCh <- previewFrame:
+				default:
+					// Still can't send (race). Release our copy.
+					previewFrame.Release()
+				}
 			}
 		}
 	}

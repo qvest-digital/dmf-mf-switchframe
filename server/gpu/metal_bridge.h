@@ -328,4 +328,10 @@ void metal_yuv420p_to_nv12_cpu(void* dst, int dstPitch,
                                 const void* y, const void* cb, const void* cr,
                                 int width, int height);
 
+// Direct CPU NV12 → YUV420p conversion for Apple Silicon unified memory.
+// Reads directly from the source NV12 buffer — no staging needed.
+void metal_nv12_to_yuv420p_cpu(const void* src, int srcPitch,
+                                void* y, void* cb, void* cr,
+                                int width, int height);
+
 #endif // SWITCHFRAME_METAL_BRIDGE_H
