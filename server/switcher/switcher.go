@@ -24,6 +24,7 @@ import (
 	"github.com/zsiec/switchframe/server/internal/atomicutil"
 	"github.com/zsiec/switchframe/server/layout"
 	"github.com/zsiec/switchframe/server/metrics"
+	"github.com/zsiec/switchframe/server/stmap"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -276,6 +277,9 @@ type Switcher struct {
 
 	// Layout compositor — applies PIP/split-screen/quad layouts in YUV420 domain.
 	layoutCompositor *layout.Compositor
+
+	// ST map registry — per-source lens correction applied in sourceDecoder.
+	stmapRegistry *stmap.Registry
 
 	// Per-source decoder factory — when set, RegisterSource creates a
 	// sourceDecoder for each source that decodes H.264 to YUV at ingest time.
@@ -798,6 +802,15 @@ func (s *Switcher) SetLayoutCompositor(lc *layout.Compositor) {
 	s.rebuildPipeline()
 }
 
+// SetSTMapRegistry sets the ST map registry for per-source correction.
+// When set, each source decoder applies the assigned ST map warp after
+// decode and resolution normalization, before fan-out to all consumers.
+func (s *Switcher) SetSTMapRegistry(r *stmap.Registry) {
+	s.mu.Lock()
+	s.stmapRegistry = r
+	s.mu.Unlock()
+}
+
 // SetSourceDecoderFactory enables always-decode mode. When set, RegisterSource
 // creates a per-source decoder that decodes H.264 to raw YUV at ingest time,
 // eliminating keyframe waits on cuts and transitions. Must be called before
@@ -833,12 +846,13 @@ func (s *Switcher) SetPipelineVideoInfoCallback(cb func(sps, pps []byte, width, 
 // buildNodeList constructs the ordered list of pipeline nodes.
 // Must be called with s.mu held (RLock or Lock) since it reads
 // s.keyBridge, s.compositorRef, s.pipeCodecs, and s.promMetrics.
-// Node order: upstream-key → layout-compositor → compositor → raw-sink-mxl → raw-sink-monitor → raw-sink-preview → h264-encode
+// Node order: upstream-key → layout-compositor → compositor → stmap-program → raw-sink-mxl → raw-sink-monitor → raw-sink-preview → h264-encode
 func (s *Switcher) buildNodeList() []PipelineNode {
 	return []PipelineNode{
 		&upstreamKeyNode{bridge: s.keyBridge},
 		&layoutCompositorNode{compositor: s.layoutCompositor},
 		&compositorNode{compositor: s.compositorRef},
+		&stmapProgramNode{registry: s.stmapRegistry},
 		&rawSinkNode{sink: &s.rawVideoSink, name: "raw-sink-mxl"},
 		&rawSinkNode{sink: &s.rawMonitorSink, name: "raw-sink-monitor"},
 		&rawSinkNode{sink: &s.rawPreviewSink, name: "raw-sink-preview"},
@@ -2125,7 +2139,7 @@ func (s *Switcher) RegisterSource(key string, relay *distribution.Relay) {
 	// at ingest time. Decoded frames route through frameSync/delayBuffer via callback.
 	if s.sourceDecoderFactory != nil {
 		cb := s.makeDecoderCallback(key)
-		sd := newSourceDecoder(key, s.sourceDecoderFactory, cb, s.framePool, &s.pipelineFormat)
+		sd := newSourceDecoder(key, s.sourceDecoderFactory, cb, s.framePool, &s.pipelineFormat, s.stmapRegistry)
 		if sd != nil {
 			viewer.srcDecoder.Store(sd)
 			useRaw = true

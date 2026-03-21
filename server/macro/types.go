@@ -97,6 +97,12 @@ const (
 	ActionClipStop  Action = "clip_stop"
 	ActionClipEject Action = "clip_eject"
 	ActionClipSeek  Action = "clip_seek"
+
+	// ST map actions.
+	ActionSTMapAssignSource  Action = "stmap_assign_source"
+	ActionSTMapRemoveSource  Action = "stmap_remove_source"
+	ActionSTMapAssignProgram Action = "stmap_assign_program"
+	ActionSTMapRemoveProgram Action = "stmap_remove_program"
 )
 
 // allActions is the set of all valid macro actions.
@@ -167,6 +173,10 @@ var allActions = map[Action]bool{
 	ActionClipStop:                true,
 	ActionClipEject:               true,
 	ActionClipSeek:                true,
+	ActionSTMapAssignSource:       true,
+	ActionSTMapRemoveSource:       true,
+	ActionSTMapAssignProgram:      true,
+	ActionSTMapRemoveProgram:      true,
 }
 
 // IsValidAction reports whether a is a recognized macro action.
@@ -360,6 +370,12 @@ var stepSummaryMap = map[Action]stepSummaryFunc{
 		}
 		return fmt.Sprintf("Clip Seek Player %s → %.0f%%", fmtPlayerID(s.Params), pos*100)
 	},
+
+	// ST map actions.
+	ActionSTMapAssignSource:  sourceSummary("ST Map Assign Source"),
+	ActionSTMapRemoveSource:  sourceSummary("ST Map Remove Source"),
+	ActionSTMapAssignProgram: staticSummary("ST Map Assign Program"),
+	ActionSTMapRemoveProgram: staticSummary("ST Map Remove Program"),
 }
 
 // paramStr extracts a string parameter from a step.

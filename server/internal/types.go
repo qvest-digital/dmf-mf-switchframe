@@ -268,6 +268,7 @@ type ControlRoomState struct {
 	ConnectionInfo       *ConnectionInfo         `json:"connectionInfo,omitempty"`
 	Captions             *CaptionState           `json:"captions,omitempty"`
 	Comms                *CommsState             `json:"comms,omitempty"`
+	STMap                *STMapState             `json:"stmap,omitempty"`
 	Macro                *MacroExecutionState    `json:"macro,omitempty"`
 	LastChangedBy        string                  `json:"lastChangedBy,omitempty"`
 	Seq                  uint64                  `json:"seq"`
@@ -312,6 +313,20 @@ type CommsParticipant struct {
 	Name       string `json:"name"`
 	Muted      bool   `json:"muted"`
 	Speaking   bool   `json:"speaking"`
+}
+
+// STMapState represents ST map assignments in the control room state broadcast.
+type STMapState struct {
+	Sources   map[string]string  `json:"sources"`           // source key → map name
+	Program   *STMapProgramState `json:"program,omitempty"` // nil if no program map
+	Available []string           `json:"available"`         // all stored map names
+}
+
+// STMapProgramState describes the current program ST map assignment.
+type STMapProgramState struct {
+	Map   string `json:"map"`
+	Type  string `json:"type"`  // "static" or "animated"
+	Frame int    `json:"frame"` // current frame index (animated only)
 }
 
 // SCTE35State represents the current SCTE-35 signaling state.
