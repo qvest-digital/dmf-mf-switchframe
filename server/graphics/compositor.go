@@ -128,6 +128,15 @@ type tickerState struct {
 	doneCh    chan struct{} // closed when non-loop ticker completes (signals goroutine to exit)
 }
 
+// snapshotCache holds the last-known overlay generation and a reusable buffer
+// for a single layer in SnapshotVisibleLayers. The buffer is recycled across
+// generation changes so that tickers (which bump gen every frame) don't
+// allocate a new 8.3MB slice per frame at 1080p.
+type snapshotCache struct {
+	gen     uint64
+	overlay []byte
+}
+
 // Compositor manages multiple downstream keyer (DSK) graphics overlay layers.
 // Each layer has independent position, fade, and animation state.
 // When active, program frames are composited with all active layers
@@ -158,11 +167,13 @@ type Compositor struct {
 	pipelineFPSNum int
 	pipelineFPSDen int
 
-	// Cache of overlay generation counters from the last SnapshotVisibleLayers
-	// call. When a layer's gen matches its cached value, the deep-copy is
-	// skipped (Overlay=nil in the snapshot). The GPU compositor node reuses
-	// its cached GPU overlay for unchanged layers.
-	lastSnapshotGens map[int]uint64
+	// Cache of overlay generation + reusable buffer from the last
+	// SnapshotVisibleLayers call. When a layer's gen matches its cached
+	// value, the deep-copy is skipped (Overlay=nil in the snapshot).
+	// The GPU compositor node reuses its cached GPU overlay for unchanged
+	// layers. The buffer is reused across gen changes to eliminate
+	// per-frame allocation for tickers (~8.3MB/frame at 1080p).
+	lastSnapshotCache map[int]*snapshotCache
 }
 
 // NewCompositor creates a new multi-layer graphics compositor.
@@ -225,6 +236,7 @@ func (c *Compositor) RemoveLayer(id int) error {
 	c.cancelLayerFadeLocked(layer)
 	c.cancelLayerAnimationLocked(layer)
 	delete(c.layers, id)
+	delete(c.lastSnapshotCache, id)
 	c.recomputeSortedIDsLocked()
 
 	state := c.buildStateLocked()
@@ -885,16 +897,26 @@ func (c *Compositor) SnapshotVisibleLayers() []VisibleLayerSnap {
 		// Only deep-copy overlay RGBA when generation changed since
 		// the GPU node's last upload. When Overlay is nil but Gen is set,
 		// the GPU node reuses its cached GPU overlay (same gen = same data).
-		// This eliminates 8.3MB allocation + memcpy per frame per layer
-		// for static overlays (~250MB/s savings at 1080p 30fps).
-		if knownGen, ok := c.lastSnapshotGens[layer.id]; !ok || knownGen != layer.overlayGen {
-			overlayCopy := make([]byte, len(layer.overlay))
-			copy(overlayCopy, layer.overlay)
-			snap.Overlay = overlayCopy
-			if c.lastSnapshotGens == nil {
-				c.lastSnapshotGens = make(map[int]uint64)
+		// The cached buffer is reused across gen changes so tickers
+		// (which bump gen every frame) avoid a fresh 8.3MB allocation.
+		cached := c.lastSnapshotCache[layer.id]
+		if cached == nil {
+			cached = &snapshotCache{}
+			if c.lastSnapshotCache == nil {
+				c.lastSnapshotCache = make(map[int]*snapshotCache)
 			}
-			c.lastSnapshotGens[layer.id] = layer.overlayGen
+			c.lastSnapshotCache[layer.id] = cached
+		}
+		if cached.gen != layer.overlayGen {
+			needed := len(layer.overlay)
+			if cap(cached.overlay) >= needed {
+				cached.overlay = cached.overlay[:needed]
+			} else {
+				cached.overlay = make([]byte, needed)
+			}
+			copy(cached.overlay, layer.overlay)
+			cached.gen = layer.overlayGen
+			snap.Overlay = cached.overlay
 		}
 		// else: Overlay is nil, Gen is set — GPU node uses cached overlay.
 
