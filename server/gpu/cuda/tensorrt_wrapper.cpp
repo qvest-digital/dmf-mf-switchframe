@@ -65,6 +65,13 @@ static int64_t volume(const nvinfer1::Dims& dims) {
 struct TRTEngineWrapper {
     std::unique_ptr<nvinfer1::IRuntime> runtime;
     std::unique_ptr<nvinfer1::ICudaEngine> engine;
+
+    // Scratch buffer for unused output tensors. u2netp has 7 outputs but we
+    // only need the first one. TensorRT requires all outputs to be bound, so
+    // we allocate a single scratch buffer large enough for the largest unused
+    // output and bind all extra outputs there.
+    void* scratchOutputDev = nullptr;
+    size_t scratchOutputBytes = 0;
 };
 
 extern "C" {
@@ -225,6 +232,7 @@ void* trt_create_context(void* engineHandle) {
 
 // trt_infer runs async inference.
 // inputDevPtr/outputDevPtr are CUDA device pointers.
+// engineHandle is the TRTEngineWrapper* (needed for scratch buffer caching).
 // stream is a cudaStream_t.
 int trt_infer(void* contextHandle, void* inputDevPtr, void* outputDevPtr,
               int batchSize, void* stream) {
@@ -237,7 +245,58 @@ int trt_infer(void* contextHandle, void* inputDevPtr, void* outputDevPtr,
 
     // Set input/output tensor addresses using the modern enqueueV3 API.
     // TensorRT 10 uses named tensors — iterate through I/O tensors.
+    //
+    // u2netp has 7 output tensors but we only need the first one. TensorRT
+    // requires ALL outputs to be bound. We bind the first output to the
+    // caller's buffer and all subsequent outputs to a shared scratch buffer.
     int numIO = engine->getNbIOTensors();
+
+    // First pass: find the largest unused output tensor so we can allocate
+    // a scratch buffer that's large enough for all of them (they share it).
+    int outputIdx = 0;
+    size_t maxExtraOutputBytes = 0;
+    for (int i = 0; i < numIO; i++) {
+        const char* name = engine->getIOTensorName(i);
+        auto mode = engine->getTensorIOMode(name);
+        if (mode == nvinfer1::TensorIOMode::kOUTPUT) {
+            if (outputIdx > 0) {
+                auto dims = engine->getTensorShape(name);
+                int64_t vol = volume(dims);
+                if (vol < 0) vol = -vol;
+                size_t bytes = static_cast<size_t>(vol) * sizeof(float);
+                if (bytes > maxExtraOutputBytes) {
+                    maxExtraOutputBytes = bytes;
+                }
+            }
+            outputIdx++;
+        }
+    }
+
+    // Lazily allocate scratch for extra outputs. We look up the wrapper
+    // through the engine pointer — the wrapper owns the scratch allocation
+    // and it persists for the lifetime of the engine.
+    // Note: trt_infer receives the context handle, not the engine wrapper.
+    // We use a static thread-local scratch pointer for simplicity. Each
+    // source has its own CUDA stream and calls from a single goroutine,
+    // so thread-local is sufficient.
+    static thread_local void* tl_scratch = nullptr;
+    static thread_local size_t tl_scratch_bytes = 0;
+    if (maxExtraOutputBytes > 0 && maxExtraOutputBytes > tl_scratch_bytes) {
+        if (tl_scratch != nullptr) {
+            cudaFree(tl_scratch);
+        }
+        cudaError_t err = cudaMalloc(&tl_scratch, maxExtraOutputBytes);
+        if (err != cudaSuccess) {
+            set_error("cudaMalloc for scratch output failed: %s", cudaGetErrorString(err));
+            tl_scratch = nullptr;
+            tl_scratch_bytes = 0;
+            return -1;
+        }
+        tl_scratch_bytes = maxExtraOutputBytes;
+    }
+
+    // Second pass: bind all tensors.
+    outputIdx = 0;
     for (int i = 0; i < numIO; i++) {
         const char* name = engine->getIOTensorName(i);
         auto mode = engine->getTensorIOMode(name);
@@ -254,10 +313,12 @@ int trt_infer(void* contextHandle, void* inputDevPtr, void* outputDevPtr,
                 return -1;
             }
         } else if (mode == nvinfer1::TensorIOMode::kOUTPUT) {
-            if (!ctx->setTensorAddress(name, outputDevPtr)) {
-                set_error("setTensorAddress failed for output: %s", name);
+            void* addr = (outputIdx == 0) ? outputDevPtr : tl_scratch;
+            if (!ctx->setTensorAddress(name, addr)) {
+                set_error("setTensorAddress failed for output: %s (idx %d)", name, outputIdx);
                 return -1;
             }
+            outputIdx++;
         }
     }
 

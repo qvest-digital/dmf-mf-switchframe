@@ -52,12 +52,18 @@ const (
 // Each enabled source gets a dedicated CUDA stream and pre-allocated device
 // buffers. Inference runs asynchronously on the per-source stream, so it
 // does not block the main pipeline stream.
+//
+// The engine supports deferred session creation: SetPendingConfig stores a
+// config before the source resolution is known. IngestYUV (via the source
+// manager) calls EnableSource with real dimensions when it detects a pending
+// config with no active session.
 type SegmentationEngine struct {
 	ctx    *Context
 	engine *TRTEngine
 
-	mu       sync.RWMutex
-	sessions map[string]*segSession
+	mu             sync.RWMutex
+	sessions       map[string]*segSession
+	pendingConfigs map[string]float32 // key → smoothing value (from EdgeSmooth)
 }
 
 // segSession holds per-source TensorRT inference state.
@@ -65,7 +71,7 @@ type segSession struct {
 	stream  C.cudaStream_t
 	rgbBuf  unsafe.Pointer // [1,3,320,320] float32 device buffer
 	maskBuf unsafe.Pointer // [1,1,320,320] float32 device buffer
-	maskU8  unsafe.Pointer // [srcW*srcH] uint8 device buffer (upscaled mask)
+	maskU8  unsafe.Pointer // [srcW*srcH*3/2] uint8 device buffer (NV12-sized: Y=mask, UV=128)
 	erodeTmp unsafe.Pointer // [srcW*srcH] uint8 device buffer (erosion scratch)
 	prevMask unsafe.Pointer // [srcW*srcH] uint8 device buffer (EMA temporal)
 	trtCtx  *TRTContext
@@ -148,9 +154,10 @@ func NewSegmentationEngine(ctx *Context, modelPath string) (*SegmentationEngine,
 		"output_size", engine.OutputSize())
 
 	return &SegmentationEngine{
-		ctx:      ctx,
-		engine:   engine,
-		sessions: make(map[string]*segSession),
+		ctx:            ctx,
+		engine:         engine,
+		sessions:       make(map[string]*segSession),
+		pendingConfigs: make(map[string]float32),
 	}, nil
 }
 
@@ -195,7 +202,11 @@ func (se *SegmentationEngine) EnableSource(key string, w, h int, smoothing float
 		return fmt.Errorf("gpu: segmentation: alloc mask buffer for %s: %w", key, err)
 	}
 
-	maskU8Size := w * h // uint8
+	// Allocate NV12-sized mask buffer: Y plane (w*h) for the actual mask +
+	// UV plane (w*h/2) for neutral chroma. BlendStinger reads the UV portion
+	// as scratch space for downsampled chroma alpha, so the allocation must
+	// be pitch*height*3/2 — not just w*h (single-plane would cause OOB reads).
+	maskU8Size := w * h * 3 / 2 // NV12 size
 	maskU8, err := AllocDeviceBytes(maskU8Size)
 	if err != nil {
 		FreeDeviceBytes(maskBuf)
@@ -205,7 +216,8 @@ func (se *SegmentationEngine) EnableSource(key string, w, h int, smoothing float
 		return fmt.Errorf("gpu: segmentation: alloc maskU8 buffer for %s: %w", key, err)
 	}
 
-	erodeTmp, err := AllocDeviceBytes(maskU8Size)
+	erodeTmpSize := w * h // erosion operates on Y-plane only
+	erodeTmp, err := AllocDeviceBytes(erodeTmpSize)
 	if err != nil {
 		FreeDeviceBytes(maskU8)
 		FreeDeviceBytes(maskBuf)
@@ -215,7 +227,8 @@ func (se *SegmentationEngine) EnableSource(key string, w, h int, smoothing float
 		return fmt.Errorf("gpu: segmentation: alloc erode tmp for %s: %w", key, err)
 	}
 
-	prevMask, err := AllocDeviceBytes(maskU8Size)
+	prevMaskSize := w * h // EMA operates on Y-plane only
+	prevMask, err := AllocDeviceBytes(prevMaskSize)
 	if err != nil {
 		FreeDeviceBytes(erodeTmp)
 		FreeDeviceBytes(maskU8)
@@ -226,13 +239,25 @@ func (se *SegmentationEngine) EnableSource(key string, w, h int, smoothing float
 		return fmt.Errorf("gpu: segmentation: alloc prevMask for %s: %w", key, err)
 	}
 
-	// Allocate a dedicated mask frame (not from the main pool — this is a
-	// single-plane uint8 mask, not an NV12 video frame).
+	// Initialize the UV portion of the mask buffer to 128 (neutral chroma).
+	// BlendStinger uses the UV area as scratch for downsampled chroma alpha.
+	// cudaMemset on the device is the most efficient way.
+	uvOffset := C.size_t(w * h)
+	uvSize := C.size_t(w * h / 2)
+	C.cudaMemsetAsync(
+		unsafe.Pointer(uintptr(maskU8)+uintptr(uvOffset)),
+		C.int(128),
+		uvSize,
+		stream,
+	)
+
+	// Allocate a dedicated mask frame with NV12-compatible layout so
+	// BlendStinger's Pitch*Height offset math reaches the UV scratch area.
 	maskFrame := &GPUFrame{
 		DevPtr: C.CUdeviceptr(uintptr(maskU8)),
 		Width:  w,
 		Height: h,
-		Pitch:  w, // uint8, no padding
+		Pitch:  w, // uint8, stride = width (no padding)
 	}
 	maskFrame.refs.Store(1)
 
@@ -276,6 +301,7 @@ func (se *SegmentationEngine) DisableSource(key string) {
 	if exists {
 		delete(se.sessions, key)
 	}
+	delete(se.pendingConfigs, key)
 	se.mu.Unlock()
 
 	if !exists {
@@ -284,6 +310,55 @@ func (se *SegmentationEngine) DisableSource(key string) {
 
 	se.destroySessionLocked(sess)
 	slog.Info("gpu: segmentation: disabled source", "source", key)
+}
+
+// SetPendingConfig stores a deferred segmentation config for a source.
+// Called by the REST API when the source resolution is not yet known.
+// The source manager will call EnableSource with real dimensions on first
+// IngestYUV when it detects a pending config with no active session.
+func (se *SegmentationEngine) SetPendingConfig(key string, smoothing float32) {
+	if se == nil {
+		return
+	}
+	se.mu.Lock()
+	se.pendingConfigs[key] = smoothing
+	se.mu.Unlock()
+}
+
+// HasPendingConfig returns true if a deferred config exists for the source
+// but no active session has been created yet.
+func (se *SegmentationEngine) HasPendingConfig(key string) bool {
+	if se == nil {
+		return false
+	}
+	se.mu.RLock()
+	_, hasPending := se.pendingConfigs[key]
+	_, hasSession := se.sessions[key]
+	se.mu.RUnlock()
+	return hasPending && !hasSession
+}
+
+// PendingSmoothing returns the smoothing value for a pending config.
+// Returns 0 if no pending config exists.
+func (se *SegmentationEngine) PendingSmoothing(key string) float32 {
+	if se == nil {
+		return 0
+	}
+	se.mu.RLock()
+	s := se.pendingConfigs[key]
+	se.mu.RUnlock()
+	return s
+}
+
+// ClearPendingConfig removes the deferred config for a source.
+// Called after EnableSource succeeds or when the source is disabled.
+func (se *SegmentationEngine) ClearPendingConfig(key string) {
+	if se == nil {
+		return
+	}
+	se.mu.Lock()
+	delete(se.pendingConfigs, key)
+	se.mu.Unlock()
 }
 
 // IsEnabled returns true if segmentation is active for the given source.

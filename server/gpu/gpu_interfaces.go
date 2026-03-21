@@ -113,6 +113,7 @@ type SegmentationState interface {
 type AISegmentConfig struct {
 	Background  string  // "transparent"|"blur:N"|"color:RRGGBB"
 	Sensitivity float32 // 0.0-1.0 (maps to segmentation threshold)
+	EdgeSmooth  float32 // 0.0-1.0 (maps to EMA temporal smoothing alpha)
 }
 
 // PreviewConfig configures per-source GPU preview encoding.

@@ -18,6 +18,18 @@ func (se *SegmentationEngine) EnableSource(key string, w, h int, smoothing float
 // DisableSource is a no-op on non-TensorRT builds.
 func (se *SegmentationEngine) DisableSource(key string) {}
 
+// SetPendingConfig is a no-op on non-TensorRT builds.
+func (se *SegmentationEngine) SetPendingConfig(key string, smoothing float32) {}
+
+// HasPendingConfig returns false on non-TensorRT builds.
+func (se *SegmentationEngine) HasPendingConfig(key string) bool { return false }
+
+// PendingSmoothing returns 0 on non-TensorRT builds.
+func (se *SegmentationEngine) PendingSmoothing(key string) float32 { return 0 }
+
+// ClearPendingConfig is a no-op on non-TensorRT builds.
+func (se *SegmentationEngine) ClearPendingConfig(key string) {}
+
 // IsEnabled returns false on non-TensorRT builds.
 func (se *SegmentationEngine) IsEnabled(key string) bool { return false }
 

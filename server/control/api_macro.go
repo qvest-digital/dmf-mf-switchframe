@@ -126,6 +126,7 @@ func (a *API) handleRunMacro(w http.ResponseWriter, r *http.Request) {
 		scte35:       a.scte35,
 		captionMgr:   a.captionMgr,
 		clipMgr:      a.clipMgr,
+		aiSegmentMgr: a.aiSegmentMgr,
 	}
 
 	onProgress := func(state macro.ExecutionState) {
@@ -218,6 +219,7 @@ type apiMacroTarget struct {
 	scte35       SCTE35API
 	captionMgr   CaptionManagerAPI
 	clipMgr      *clip.Manager
+	aiSegmentMgr AISegmentManager
 }
 
 func (t *apiMacroTarget) Cut(ctx context.Context, source string) error {
@@ -354,6 +356,12 @@ func (t *apiMacroTarget) Execute(ctx context.Context, action string, params map[
 		return t.execKeySet(params)
 	case macro.ActionKeyDelete:
 		return t.execKeyDelete(params)
+
+	// AI Segmentation
+	case macro.ActionAISegEnable:
+		return t.execAISegEnable(params)
+	case macro.ActionAISegDisable:
+		return t.execAISegDisable(params)
 
 	// Source
 	case macro.ActionSourceLabel:
@@ -959,6 +967,34 @@ func (t *apiMacroTarget) execClipSeek(params map[string]interface{}) error {
 	playerID := int(floatParam(params, "player", 1))
 	position := floatParam(params, "position", 0)
 	return t.clipMgr.Seek(playerID, position)
+}
+
+// --- AI Segmentation ---
+
+func (t *apiMacroTarget) execAISegEnable(params map[string]any) error {
+	if t.aiSegmentMgr == nil {
+		return fmt.Errorf("ai segmentation not available")
+	}
+	source, _ := params["source"].(string)
+	if source == "" {
+		return fmt.Errorf("ai_segment_enable requires 'source' param")
+	}
+	sensitivity := float32(floatParam(params, "sensitivity", 0.7))
+	edgeSmooth := float32(floatParam(params, "edgeSmooth", 0.5))
+	background, _ := params["background"].(string)
+	return t.aiSegmentMgr.EnableAISegment(source, sensitivity, edgeSmooth, background)
+}
+
+func (t *apiMacroTarget) execAISegDisable(params map[string]any) error {
+	if t.aiSegmentMgr == nil {
+		return fmt.Errorf("ai segmentation not available")
+	}
+	source, _ := params["source"].(string)
+	if source == "" {
+		return fmt.Errorf("ai_segment_disable requires 'source' param")
+	}
+	t.aiSegmentMgr.DisableAISegment(source)
+	return nil
 }
 
 // --- Param helpers ---

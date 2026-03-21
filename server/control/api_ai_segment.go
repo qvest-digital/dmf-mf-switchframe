@@ -74,6 +74,10 @@ func (a *API) handleEnableAISegment(w http.ResponseWriter, r *http.Request) {
 		EdgeSmooth:  req.EdgeSmooth,
 		Background:  req.Background,
 	}
+
+	// Trigger state broadcast so browsers see the updated AI segment config.
+	a.broadcast()
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(cfg)
 }
@@ -98,6 +102,10 @@ func (a *API) handleGetAISegment(w http.ResponseWriter, r *http.Request) {
 func (a *API) handleDisableAISegment(w http.ResponseWriter, r *http.Request) {
 	source := r.PathValue("source")
 	a.aiSegmentMgr.DisableAISegment(source)
+
+	// Trigger state broadcast so browsers see the updated AI segment config.
+	a.broadcast()
+
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -118,17 +126,20 @@ func (a *API) handleAISegmentStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // validateAIBackground validates the background field value.
-// Valid values: "" or "transparent", "blur:N" (N=1-50), "color:RRGGBB".
+// Valid values: "" or "transparent", "color:RRGGBB".
+// "blur:N" is recognized but not yet implemented (returns error).
 func validateAIBackground(bg string) error {
 	if bg == "" || bg == "transparent" {
 		return nil
 	}
 	if len(bg) > 5 && bg[:5] == "blur:" {
+		// Validate the format for forward compatibility, but reject until
+		// the GPU Gaussian blur kernel is implemented.
 		var n int
 		if _, err := fmt.Sscanf(bg[5:], "%d", &n); err != nil || n < 1 || n > 50 {
 			return fmt.Errorf("blur radius must be 1-50 (e.g. 'blur:10')")
 		}
-		return nil
+		return fmt.Errorf("blur mode not yet implemented; use 'transparent' or 'color:RRGGBB'")
 	}
 	if len(bg) == 12 && bg[:6] == "color:" {
 		hex := bg[6:]
@@ -137,5 +148,5 @@ func validateAIBackground(bg string) error {
 		}
 		return nil
 	}
-	return fmt.Errorf("background must be '', 'transparent', 'blur:N' (N=1-50), or 'color:RRGGBB'")
+	return fmt.Errorf("background must be '', 'transparent', or 'color:RRGGBB'")
 }

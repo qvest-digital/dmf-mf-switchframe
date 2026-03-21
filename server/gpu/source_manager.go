@@ -238,11 +238,27 @@ func (m *GPUSourceManager) IngestYUV(sourceKey string, yuv []byte, w, h int, pts
 	m.mu.RLock()
 	segEng := m.segEngine
 	m.mu.RUnlock()
-	if segEng != nil && segEng.IsEnabled(sourceKey) {
-		gpuFrame := entry.current.Load()
-		if gpuFrame != nil {
-			segEng.Segment(sourceKey, gpuFrame)
-			// Mask cached in session — pipeline node reads it via MaskForSource()
+	if segEng != nil {
+		// Deferred session creation: if a pending config exists but no active
+		// session, create the session now with real frame dimensions.
+		if segEng.HasPendingConfig(sourceKey) {
+			smoothing := segEng.PendingSmoothing(sourceKey)
+			if err := segEng.EnableSource(sourceKey, w, h, smoothing); err != nil {
+				slog.Warn("gpu: source manager: deferred segmentation enable failed",
+					"source", sourceKey, "error", err)
+			} else {
+				segEng.ClearPendingConfig(sourceKey)
+				slog.Info("gpu: source manager: deferred segmentation enabled",
+					"source", sourceKey, "size", [2]int{w, h})
+			}
+		}
+
+		if segEng.IsEnabled(sourceKey) {
+			gpuFrame := entry.current.Load()
+			if gpuFrame != nil {
+				segEng.Segment(sourceKey, gpuFrame)
+				// Mask cached in session — pipeline node reads it via MaskForSource()
+			}
 		}
 	}
 

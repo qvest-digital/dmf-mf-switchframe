@@ -135,19 +135,17 @@ func TestAISegmentAPI_Enable_BackgroundTransparent(t *testing.T) {
 	require.Equal(t, "transparent", stored.Background)
 }
 
-func TestAISegmentAPI_Enable_BackgroundBlur(t *testing.T) {
-	api, mgr := setupAISegmentAPI(t, true)
+func TestAISegmentAPI_Enable_BackgroundBlur_NotImplemented(t *testing.T) {
+	api, _ := setupAISegmentAPI(t, true)
 
+	// blur:N is recognized but not yet implemented — should return 400.
 	body := `{"sensitivity":0.6,"edgeSmooth":0.4,"background":"blur:15"}`
 	req := httptest.NewRequest("PUT", "/api/sources/camera1/ai-segment", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
-	require.Equal(t, http.StatusOK, rec.Code)
-
-	stored, ok := mgr.GetAISegmentConfig("camera1")
-	require.True(t, ok)
-	require.Equal(t, "blur:15", stored.Background)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Contains(t, rec.Body.String(), "blur mode not yet implemented")
 }
 
 func TestAISegmentAPI_Enable_BackgroundColor(t *testing.T) {
@@ -324,12 +322,13 @@ func TestValidateAIBackground(t *testing.T) {
 	}{
 		{"", false},
 		{"transparent", false},
-		{"blur:1", false},
-		{"blur:50", false},
-		{"blur:10", false},
 		{"color:000000", false},
 		{"color:FFFFFF", false},
 		{"color:aAbBcC", false},
+		// blur:N is recognized format but not yet implemented — returns error.
+		{"blur:1", true},
+		{"blur:50", true},
+		{"blur:10", true},
 		{"blur:0", true},
 		{"blur:51", true},
 		{"blur:", true},

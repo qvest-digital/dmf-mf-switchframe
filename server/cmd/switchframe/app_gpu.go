@@ -722,12 +722,8 @@ func (m *aiSegmentManagerAdapter) IsAISegmentAvailable() bool {
 // EnableAISegment enables AI segmentation for a source and stores its config.
 // The source resolution is not known at REST API call time — the segmentation
 // engine will receive the actual dimensions on first IngestYUV call from the
-// source manager. Until then, EnableSource is called with zero dimensions
-// and the engine will update them when it sees the first frame.
-//
-// For now, we store the config and enable the engine with placeholder
-// dimensions (0, 0). The source manager calls engine.EnableSource with
-// real dimensions on first frame via GPUSourceManager.IngestYUV.
+// source manager. We store the config and defer EnableSource() until the
+// source manager sees the first frame with real dimensions.
 // The smoothing value is derived from edgeSmooth (0→0 smoothing, 1→0.9 smoothing).
 func (m *aiSegmentManagerAdapter) EnableAISegment(source string, sensitivity, edgeSmooth float32, background string) error {
 	if m.engine == nil {
@@ -738,18 +734,16 @@ func (m *aiSegmentManagerAdapter) EnableAISegment(source string, sensitivity, ed
 	// Higher edgeSmooth = heavier temporal filtering = smoother but more laggy.
 	smoothing := edgeSmooth * 0.9
 
-	// Enable in the segmentation engine. The source manager will call this
-	// again with real dimensions on first frame, so placeholder size (1x1) is fine.
-	// EnableSource is idempotent — it replaces any existing session.
-	if err := m.engine.EnableSource(source, 1, 1, smoothing); err != nil {
-		return err
-	}
-
 	// Store the REST config for the pipeline node to read.
 	m.adapter.SetConfig(source, &gpu.AISegmentConfig{
 		Background:  background,
 		Sensitivity: sensitivity,
+		EdgeSmooth:  edgeSmooth,
 	})
+
+	// Store pending config on the engine so the source manager can call
+	// EnableSource with real frame dimensions on first IngestYUV.
+	m.engine.SetPendingConfig(source, smoothing)
 
 	return nil
 }
@@ -772,7 +766,7 @@ func (m *aiSegmentManagerAdapter) GetAISegmentConfig(source string) (internal.AI
 	return internal.AISegmentConfig{
 		Enabled:     enabled,
 		Sensitivity: gpuCfg.Sensitivity,
-		EdgeSmooth:  gpuCfg.Sensitivity * (1.0 / 0.9), // reverse map from smoothing
+		EdgeSmooth:  gpuCfg.EdgeSmooth,
 		Background:  gpuCfg.Background,
 	}, true
 }
@@ -794,7 +788,7 @@ func (m *aiSegmentManagerAdapter) AllConfigs() map[string]internal.AISegmentConf
 		out[key] = internal.AISegmentConfig{
 			Enabled:     enabled,
 			Sensitivity: gpuCfg.Sensitivity,
-			EdgeSmooth:  gpuCfg.Sensitivity * (1.0 / 0.9),
+			EdgeSmooth:  gpuCfg.EdgeSmooth,
 			Background:  gpuCfg.Background,
 		}
 	}
