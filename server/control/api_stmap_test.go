@@ -1,6 +1,7 @@
 package control
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -332,13 +333,119 @@ func TestSTMapAPI_Upload_PNG(t *testing.T) {
 }
 
 func TestSTMapAPI_Upload_EXR(t *testing.T) {
-	api, _ := setupSTMapTestAPI(t)
+	api, reg := setupSTMapTestAPI(t)
 
-	req := httptest.NewRequest("POST", "/api/stmap/upload/test-exr", strings.NewReader("dummy"))
+	// Build a minimal valid uncompressed EXR with 4x2 float32 R+G channels.
+	exrData := buildMinimalEXR(t, 4, 2)
+
+	req := httptest.NewRequest("POST", "/api/stmap/upload/test-exr.exr", strings.NewReader(string(exrData)))
 	req.Header.Set("Content-Type", "image/x-exr")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
-	require.Equal(t, http.StatusNotImplemented, rec.Code)
+	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
+
+	m, ok := reg.Get("test-exr.exr")
+	require.True(t, ok)
+	require.Equal(t, 4, m.Width)
+	require.Equal(t, 2, m.Height)
+}
+
+func TestSTMapAPI_Upload_EXR_InvalidData(t *testing.T) {
+	api, _ := setupSTMapTestAPI(t)
+
+	req := httptest.NewRequest("POST", "/api/stmap/upload/bad.exr", strings.NewReader("not valid exr data"))
+	req.Header.Set("Content-Type", "image/x-exr")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestSTMapAPI_Upload_EXR_MagicDetection(t *testing.T) {
+	api, reg := setupSTMapTestAPI(t)
+
+	// Upload without EXR extension or content-type — should auto-detect by magic bytes.
+	exrData := buildMinimalEXR(t, 4, 2)
+
+	req := httptest.NewRequest("POST", "/api/stmap/upload/autodetect", strings.NewReader(string(exrData)))
+	req.Header.Set("Content-Type", "application/octet-stream")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
+
+	m, ok := reg.Get("autodetect")
+	require.True(t, ok)
+	require.Equal(t, 4, m.Width)
+	require.Equal(t, 2, m.Height)
+}
+
+// buildMinimalEXR constructs a tiny valid uncompressed EXR file for API tests.
+func buildMinimalEXR(t *testing.T, width, height int) []byte {
+	t.Helper()
+
+	var buf []byte
+	appendLE32 := func(v uint32) { b := make([]byte, 4); binary.LittleEndian.PutUint32(b, v); buf = append(buf, b...) }
+	appendLE64 := func(v uint64) { b := make([]byte, 8); binary.LittleEndian.PutUint64(b, v); buf = append(buf, b...) }
+	appendStr := func(s string) { buf = append(buf, []byte(s)...); buf = append(buf, 0) }
+	appendAttr := func(name, typeName string, data []byte) {
+		appendStr(name)
+		appendStr(typeName)
+		b := make([]byte, 4)
+		binary.LittleEndian.PutUint32(b, uint32(len(data)))
+		buf = append(buf, b...)
+		buf = append(buf, data...)
+	}
+
+	// Magic + version
+	appendLE32(0x762F3101)
+	appendLE32(2)
+
+	// Channel list: G(float) + R(float) alphabetically
+	var chData []byte
+	chData = append(chData, []byte("G")...)
+	chData = append(chData, 0)
+	{ b := make([]byte, 4); binary.LittleEndian.PutUint32(b, 2); chData = append(chData, b...) } // FLOAT
+	chData = append(chData, 0, 0, 0, 0)                                                           // pLinear + reserved
+	{ b := make([]byte, 4); binary.LittleEndian.PutUint32(b, 1); chData = append(chData, b...) } // xSampling
+	{ b := make([]byte, 4); binary.LittleEndian.PutUint32(b, 1); chData = append(chData, b...) } // ySampling
+	chData = append(chData, []byte("R")...)
+	chData = append(chData, 0)
+	{ b := make([]byte, 4); binary.LittleEndian.PutUint32(b, 2); chData = append(chData, b...) }
+	chData = append(chData, 0, 0, 0, 0)
+	{ b := make([]byte, 4); binary.LittleEndian.PutUint32(b, 1); chData = append(chData, b...) }
+	{ b := make([]byte, 4); binary.LittleEndian.PutUint32(b, 1); chData = append(chData, b...) }
+	chData = append(chData, 0) // terminator
+	appendAttr("channels", "chlist", chData)
+
+	appendAttr("compression", "compression", []byte{0})
+
+	dwData := make([]byte, 16)
+	binary.LittleEndian.PutUint32(dwData[8:], uint32(width-1))
+	binary.LittleEndian.PutUint32(dwData[12:], uint32(height-1))
+	appendAttr("dataWindow", "box2i", dwData)
+	appendAttr("displayWindow", "box2i", dwData)
+	appendAttr("lineOrder", "lineOrder", []byte{0})
+	buf = append(buf, 0) // end of header
+
+	// Offset table (one per scanline)
+	offsetTableStart := len(buf)
+	for y := 0; y < height; y++ {
+		appendLE64(0)
+	}
+
+	// Scanline blocks
+	bytesPerRow := width * 4 * 2 // 2 channels, 4 bytes per float
+	for y := 0; y < height; y++ {
+		binary.LittleEndian.PutUint64(buf[offsetTableStart+y*8:], uint64(len(buf)))
+		b := make([]byte, 4)
+		binary.LittleEndian.PutUint32(b, uint32(y))
+		buf = append(buf, b...)
+		binary.LittleEndian.PutUint32(b, uint32(bytesPerRow))
+		buf = append(buf, b...)
+		// G channel then R channel (alphabetical), all zeros
+		buf = append(buf, make([]byte, bytesPerRow)...)
+	}
+
+	return buf
 }
 
 func TestSTMapAPI_Download(t *testing.T) {

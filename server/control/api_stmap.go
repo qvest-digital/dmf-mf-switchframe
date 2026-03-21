@@ -167,7 +167,7 @@ func (a *API) handleSTMapGenerate(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(respMap)
 }
 
-// handleSTMapUpload accepts an uploaded ST map file (PNG or raw binary).
+// handleSTMapUpload accepts an uploaded ST map file (PNG, EXR, or raw binary).
 func (a *API) handleSTMapUpload(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)
 
@@ -181,12 +181,6 @@ func (a *API) handleSTMapUpload(w http.ResponseWriter, r *http.Request) {
 	ct := r.Header.Get("Content-Type")
 	ext := strings.ToLower(filepath.Ext(name))
 
-	// Check for EXR early
-	if ct == "image/x-exr" || ext == ".exr" {
-		httperr.Write(w, http.StatusNotImplemented, "EXR format not yet supported")
-		return
-	}
-
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<20) // 64MB limit
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -197,15 +191,21 @@ func (a *API) handleSTMapUpload(w http.ResponseWriter, r *http.Request) {
 	var m *stmap.STMap
 
 	switch {
+	case ct == "image/x-exr" || ext == ".exr":
+		m, err = stmap.ReadEXR(data, name)
 	case ct == "image/png" || ext == ".png":
 		m, err = stmap.ReadPNG(data, name)
 	case ext == ".stmap":
 		m, err = stmap.ReadRaw(data, name)
 	default:
-		// Try PNG first, fall back to raw.
-		m, err = stmap.ReadPNG(data, name)
-		if err != nil {
-			m, err = stmap.ReadRaw(data, name)
+		// Auto-detect by magic bytes, then try PNG, then raw.
+		if stmap.IsEXR(data) {
+			m, err = stmap.ReadEXR(data, name)
+		} else {
+			m, err = stmap.ReadPNG(data, name)
+			if err != nil {
+				m, err = stmap.ReadRaw(data, name)
+			}
 		}
 	}
 
