@@ -378,6 +378,12 @@ type Switcher struct {
 	routeToPipeline   atomic.Int64 // frames routed to normal pipeline
 	routeFiltered     atomic.Int64 // frames filtered (non-program, FTB, etc.)
 
+	// GPU pipeline counters (atomic, lock-free).
+	gpuFramesProcessed  atomic.Int64 // frames processed via GPU pipeline
+	gpuCacheMisses      atomic.Int64 // RunFromCache failed (fallback to RunWithUpload)
+	gpuTransitionFrames atomic.Int64 // frames processed via GPU transition
+	gpuFallbackFrames   atomic.Int64 // frames that fell back to CPU pipeline
+
 	// Frame deadline monitor: tracks pipeline latency violations.
 	frameBudgetNs      atomic.Int64 // frame budget in nanoseconds (33ms for 30fps)
 	deadlineViolations atomic.Int64 // count of frames that exceeded budget
@@ -1529,16 +1535,24 @@ func (s *Switcher) videoProcessingLoop() {
 			if work.sourceKey != "" {
 				if err := h.runner.RunFromCache(work.sourceKey, work.yuvFrame.PTS); err == nil {
 					gpuUsed = true
+					s.gpuFramesProcessed.Add(1)
+				} else {
+					s.gpuCacheMisses.Add(1)
 				}
 			}
 			// Fall back to CPU→GPU upload if cache miss or no source key.
 			if !gpuUsed {
 				if err := h.runner.RunWithUpload(work.yuvFrame.YUV, work.yuvFrame.Width, work.yuvFrame.Height, work.yuvFrame.PTS); err == nil {
 					gpuUsed = true
+					s.gpuFramesProcessed.Add(1)
 				}
 			}
 		}
 		if !gpuUsed {
+			if h := s.gpuRunner.Load(); h != nil {
+				// GPU was available but failed — this is a fallback.
+				s.gpuFallbackFrames.Add(1)
+			}
 			if p := s.pipeline.Load(); p != nil {
 				work.yuvFrame = p.Run(work.yuvFrame)
 			}
@@ -2771,25 +2785,29 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 		"deadline_violations":   s.deadlineViolations.Load(),
 		"frame_budget_ms":       float64(s.frameBudgetNs.Load()) / 1e6,
 		"video_pipeline": map[string]any{
-			"frames_processed":     s.videoProcCount.Load(),
-			"frames_broadcast":     s.videoBroadcastCount.Load(),
-			"frames_dropped":       s.videoProcDropped.Load(),
-			"epoch_stale":          s.programEpochStale.Load(),
-			"encode_nil":           s.pipeEncodeNil.Load(),
-			"encode_drop":          s.pipeEncodeDrop.Load(),
-			"trans_output":         s.transOutputCount.Load(),
-			"last_proc_time_ms":    float64(s.videoProcLastNano.Load()) / 1e6,
-			"max_proc_time_ms":     float64(s.videoProcMaxNano.Load()) / 1e6,
-			"max_broadcast_gap_ms": float64(s.maxBroadcastIntervalNano.Load()) / 1e6,
-			"route_to_engine":      s.routeToEngine.Load(),
-			"route_to_idle_engine": s.routeToIdleEngine.Load(),
-			"route_to_pipeline":    s.routeToPipeline.Load(),
-			"route_filtered":       s.routeFiltered.Load(),
-			"queue_len":            len(s.videoProcCh),
-			"output_fps":           s.outputFPSLastSecond.Load(),
-			"trans_seam_last_ms":   float64(s.transSeamLastNano.Load()) / 1e6,
-			"trans_seam_max_ms":    float64(s.transSeamMaxNano.Load()) / 1e6,
-			"trans_seam_count":     s.transSeamCount.Load(),
+			"frames_processed":      s.videoProcCount.Load(),
+			"frames_broadcast":      s.videoBroadcastCount.Load(),
+			"frames_dropped":        s.videoProcDropped.Load(),
+			"epoch_stale":           s.programEpochStale.Load(),
+			"encode_nil":            s.pipeEncodeNil.Load(),
+			"encode_drop":           s.pipeEncodeDrop.Load(),
+			"trans_output":          s.transOutputCount.Load(),
+			"last_proc_time_ms":     float64(s.videoProcLastNano.Load()) / 1e6,
+			"max_proc_time_ms":      float64(s.videoProcMaxNano.Load()) / 1e6,
+			"max_broadcast_gap_ms":  float64(s.maxBroadcastIntervalNano.Load()) / 1e6,
+			"route_to_engine":       s.routeToEngine.Load(),
+			"route_to_idle_engine":  s.routeToIdleEngine.Load(),
+			"route_to_pipeline":     s.routeToPipeline.Load(),
+			"route_filtered":        s.routeFiltered.Load(),
+			"queue_len":             len(s.videoProcCh),
+			"output_fps":            s.outputFPSLastSecond.Load(),
+			"trans_seam_last_ms":    float64(s.transSeamLastNano.Load()) / 1e6,
+			"trans_seam_max_ms":     float64(s.transSeamMaxNano.Load()) / 1e6,
+			"trans_seam_count":      s.transSeamCount.Load(),
+			"gpu_frames_processed":  s.gpuFramesProcessed.Load(),
+			"gpu_cache_misses":      s.gpuCacheMisses.Load(),
+			"gpu_transition_frames": s.gpuTransitionFrames.Load(),
+			"gpu_fallback_frames":   s.gpuFallbackFrames.Load(),
 		},
 		"codec": map[string]any{
 			"encoder":  s.codecEncoder,
@@ -2810,6 +2828,11 @@ func (s *Switcher) DebugSnapshot() map[string]any {
 
 	if p := s.pipeline.Load(); p != nil {
 		result["pipeline"] = p.Snapshot()
+	}
+
+	// GPU pipeline stats (when active, provides GPU node timings and source manager state).
+	if h := s.gpuRunner.Load(); h != nil {
+		result["gpu_pipeline"] = h.runner.Snapshot()
 	}
 
 	// Include transition engine timing when active
@@ -3245,6 +3268,8 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 				if err := h.runner.RunTransition(fromKey, toKey, string(tt), wipeDir, blendPos, pts, stinger); err != nil {
 					s.log.Debug("GPU transition blend failed, no fallback",
 						"err", err, "from", fromKey, "to", toKey, "type", tt)
+				} else {
+					s.gpuTransitionFrames.Add(1)
 				}
 
 				// Complete transition AFTER the GPU blend frame is produced.

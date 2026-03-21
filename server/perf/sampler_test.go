@@ -865,3 +865,97 @@ func TestSamplerDoubleStopNoPanic(t *testing.T) {
 		s.Stop()
 	})
 }
+
+func TestSnapshotGPUPipeline(t *testing.T) {
+	sw := &mockSwitcherPerf{sample: SwitcherSample{
+		Sources:     map[string]SourceSample{},
+		NodeTimings: map[string]int64{},
+		GPUActive:   true,
+		GPUPipelineLastNs: 800_000,
+		GPUNodeTimings: map[string]int64{
+			"gpu_key":    100_000,
+			"gpu_encode": 500_000,
+		},
+		GPUBackend:    "metal",
+		GPUDevice:     "Apple M1 Pro",
+		FrameBudgetNs: 33_000_000,
+	}}
+	mx := &mockMixerPerf{}
+	out := &mockOutputPerf{}
+
+	s := NewSampler(sw, mx, out)
+	// Manually tick to populate ring buffers.
+	s.tick()
+
+	snap := s.Snapshot("")
+	require.NotNil(t, snap.Pipeline.GPU, "GPU snapshot should be populated when GPU is active")
+	require.True(t, snap.Pipeline.GPU.Active)
+	require.Equal(t, "metal", snap.Pipeline.GPU.Backend)
+	require.Equal(t, "Apple M1 Pro", snap.Pipeline.GPU.Device)
+	require.Equal(t, int64(800_000), snap.Pipeline.GPU.Current.LastNs)
+
+	// GPU node timings
+	require.Len(t, snap.Pipeline.GPU.Nodes, 2)
+	require.Equal(t, int64(100_000), snap.Pipeline.GPU.Nodes["gpu_key"].Current.LastNs)
+	require.Equal(t, int64(500_000), snap.Pipeline.GPU.Nodes["gpu_encode"].Current.LastNs)
+
+	// Verify GPU data is serializable to JSON.
+	data, err := json.Marshal(snap)
+	require.NoError(t, err)
+	require.Contains(t, string(data), `"gpu"`)
+	require.Contains(t, string(data), `"metal"`)
+	require.Contains(t, string(data), `"Apple M1 Pro"`)
+}
+
+func TestSnapshotNoGPU(t *testing.T) {
+	sw := &mockSwitcherPerf{sample: SwitcherSample{
+		Sources:     map[string]SourceSample{},
+		NodeTimings: map[string]int64{},
+		GPUActive:   false,
+	}}
+	mx := &mockMixerPerf{}
+	out := &mockOutputPerf{}
+
+	s := NewSampler(sw, mx, out)
+	s.tick()
+
+	snap := s.Snapshot("")
+	require.Nil(t, snap.Pipeline.GPU, "GPU snapshot should be nil when GPU is not active")
+}
+
+func TestSnapshotGPUPipelineViaHTTP(t *testing.T) {
+	sw := &mockSwitcherPerf{sample: SwitcherSample{
+		Sources:     map[string]SourceSample{},
+		NodeTimings: map[string]int64{},
+		GPUActive:   true,
+		GPUPipelineLastNs: 900_000,
+		GPUNodeTimings: map[string]int64{
+			"gpu_stmap": 400_000,
+		},
+		GPUBackend: "cuda",
+		GPUDevice:  "NVIDIA L4",
+	}}
+	mx := &mockMixerPerf{}
+	out := &mockOutputPerf{}
+
+	s := NewSampler(sw, mx, out)
+	s.tick()
+
+	req := httptest.NewRequest("GET", "/api/perf", nil)
+	rec := httptest.NewRecorder()
+	s.HandlePerf(rec, req)
+
+	require.Equal(t, 200, rec.Code)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &result))
+
+	pipeline, ok := result["pipeline"].(map[string]any)
+	require.True(t, ok, "pipeline key should exist")
+
+	gpu, ok := pipeline["gpu"].(map[string]any)
+	require.True(t, ok, "gpu key should exist under pipeline")
+	require.Equal(t, true, gpu["active"])
+	require.Equal(t, "cuda", gpu["backend"])
+	require.Equal(t, "NVIDIA L4", gpu["device"])
+}

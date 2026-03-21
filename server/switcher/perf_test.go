@@ -1,6 +1,7 @@
 package switcher
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -214,4 +215,124 @@ func TestFrameSynchronizer_SourceCount(t *testing.T) {
 
 	fs.RemoveSource("cam1")
 	require.Equal(t, 1, fs.SourceCount())
+}
+
+func TestPerfSample_GPUFields(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := newTestSwitcher(programRelay)
+	defer sw.Close()
+
+	// Without GPU: GPUActive should be false.
+	sample := sw.PerfSample()
+	require.False(t, sample.GPUActive, "GPU should not be active without GPU pipeline")
+	require.Empty(t, sample.GPUNodeTimings, "no GPU node timings without GPU pipeline")
+	require.Equal(t, int64(0), sample.GPUPipelineLastNs, "no GPU pipeline timing without GPU pipeline")
+
+	// Set a mock GPU pipeline.
+	mockGPU := &mockGPUPipelineRunnerWithTiming{
+		lastRunNs: 500_000,
+		nodes: []map[string]any{
+			{"name": "gpu_key", "last_ns": int64(100_000)},
+			{"name": "gpu_encode", "last_ns": int64(300_000)},
+		},
+	}
+	sw.SetGPUPipeline(mockGPU)
+
+	sample = sw.PerfSample()
+	require.True(t, sample.GPUActive, "GPU should be active with GPU pipeline set")
+	require.Equal(t, int64(500_000), sample.GPUPipelineLastNs)
+	require.Equal(t, "test-metal", sample.GPUBackend)
+	require.Equal(t, "Test GPU", sample.GPUDevice)
+	require.Len(t, sample.GPUNodeTimings, 2)
+	require.Equal(t, int64(100_000), sample.GPUNodeTimings["gpu_key"])
+	require.Equal(t, int64(300_000), sample.GPUNodeTimings["gpu_encode"])
+
+	// Clear GPU pipeline.
+	sw.SetGPUPipeline(nil)
+	sample = sw.PerfSample()
+	require.False(t, sample.GPUActive)
+}
+
+func TestDebugSnapshot_GPUPipeline(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := newTestSwitcher(programRelay)
+	defer sw.Close()
+
+	// Without GPU.
+	snap := sw.DebugSnapshot()
+	_, hasGPU := snap["gpu_pipeline"]
+	require.False(t, hasGPU, "no gpu_pipeline key without GPU")
+
+	// With GPU.
+	mockGPU := &mockGPUPipelineRunnerWithTiming{
+		lastRunNs: 1_000_000,
+		nodes:     []map[string]any{},
+	}
+	sw.SetGPUPipeline(mockGPU)
+
+	snap = sw.DebugSnapshot()
+	gpuPipeline, hasGPU := snap["gpu_pipeline"]
+	require.True(t, hasGPU, "gpu_pipeline key should exist with GPU active")
+	gpuMap := gpuPipeline.(map[string]any)
+	require.True(t, gpuMap["gpu"].(bool))
+	require.Equal(t, "test-metal", gpuMap["backend"])
+	require.Equal(t, "Test GPU", gpuMap["device"])
+
+	// Verify GPU counters appear in video_pipeline.
+	vpMap := snap["video_pipeline"].(map[string]any)
+	require.Contains(t, vpMap, "gpu_frames_processed")
+	require.Contains(t, vpMap, "gpu_cache_misses")
+	require.Contains(t, vpMap, "gpu_transition_frames")
+	require.Contains(t, vpMap, "gpu_fallback_frames")
+}
+
+func TestDebugSnapshot_GPUCounters(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := newTestSwitcher(programRelay)
+	defer sw.Close()
+
+	// Manually set GPU counters.
+	sw.gpuFramesProcessed.Store(100)
+	sw.gpuCacheMisses.Store(5)
+	sw.gpuTransitionFrames.Store(30)
+	sw.gpuFallbackFrames.Store(2)
+
+	snap := sw.DebugSnapshot()
+	vpMap := snap["video_pipeline"].(map[string]any)
+	require.Equal(t, int64(100), vpMap["gpu_frames_processed"])
+	require.Equal(t, int64(5), vpMap["gpu_cache_misses"])
+	require.Equal(t, int64(30), vpMap["gpu_transition_frames"])
+	require.Equal(t, int64(2), vpMap["gpu_fallback_frames"])
+}
+
+// mockGPUPipelineRunnerWithTiming returns realistic GPU snapshot data.
+type mockGPUPipelineRunnerWithTiming struct {
+	lastRunNs int64
+	nodes     []map[string]any
+}
+
+func (m *mockGPUPipelineRunnerWithTiming) RunWithUpload(yuv []byte, width, height int, pts int64) error {
+	return nil
+}
+
+func (m *mockGPUPipelineRunnerWithTiming) RunFromCache(sourceKey string, pts int64) error {
+	return fmt.Errorf("mock: no cached GPU frame")
+}
+
+func (m *mockGPUPipelineRunnerWithTiming) RunTransition(fromKey, toKey string, transType string, wipeDir int, position float64, pts int64, stinger *GPUStingerFrame) error {
+	return nil
+}
+
+func (m *mockGPUPipelineRunnerWithTiming) Snapshot() map[string]any {
+	return map[string]any{
+		"gpu":              true,
+		"backend":          "test-metal",
+		"device":           "Test GPU",
+		"run_count":        int64(42),
+		"last_run_ns":      m.lastRunNs,
+		"max_run_ns":       m.lastRunNs * 2,
+		"total_latency_us": int64(10),
+		"active_nodes":     m.nodes,
+		"total_nodes":      len(m.nodes),
+	}
 }

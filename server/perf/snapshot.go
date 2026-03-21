@@ -129,6 +129,21 @@ type PerfPipelineSnapshot struct {
 	DeadlineViolations int64                       `json:"deadline_violations"`
 	ProcDropped        int64                       `json:"proc_dropped"`
 	BudgetPct          float64                     `json:"budget_pct"`
+	GPU                *PerfGPUSnapshot            `json:"gpu,omitempty"`
+}
+
+// PerfGPUSnapshot holds GPU pipeline stats when the GPU is active.
+type PerfGPUSnapshot struct {
+	Active  bool                        `json:"active"`
+	Backend string                      `json:"backend"`
+	Device  string                      `json:"device"`
+	Current PerfGPUCurrent              `json:"current"`
+	Nodes   map[string]PerfNodeSnapshot `json:"nodes,omitempty"`
+}
+
+// PerfGPUCurrent holds the latest GPU pipeline timing.
+type PerfGPUCurrent struct {
+	LastNs int64 `json:"last_ns"`
 }
 
 // PerfPipelineCurrent holds current pipeline metrics.
@@ -399,6 +414,29 @@ func (s *Sampler) Snapshot(baselineName string) *PerfSnapshot {
 			SourceCount: sw.FrameSyncSourceCount,
 			ReleaseFPS:  sw.FrameSyncReleaseFPS,
 		},
+	}
+
+	// GPU pipeline stats
+	if sw.GPUActive {
+		gpuNodes := make(map[string]PerfNodeSnapshot, len(sw.GPUNodeTimings))
+		for name, ns := range sw.GPUNodeTimings {
+			ring := s.gpuNodeRings[name]
+			var windows PerfWindows
+			if ring != nil {
+				windows = ringToWindows(ring)
+			}
+			gpuNodes[name] = PerfNodeSnapshot{
+				Current: PerfNodeCurrent{LastNs: ns},
+				Windows: windows,
+			}
+		}
+		snap.Pipeline.GPU = &PerfGPUSnapshot{
+			Active:  true,
+			Backend: sw.GPUBackend,
+			Device:  sw.GPUDevice,
+			Current: PerfGPUCurrent{LastNs: sw.GPUPipelineLastNs},
+			Nodes:   gpuNodes,
+		}
 	}
 
 	// Preview encoder stats (point-in-time, not windowed)

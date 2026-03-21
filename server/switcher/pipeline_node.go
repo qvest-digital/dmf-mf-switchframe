@@ -37,6 +37,10 @@ type GPUPipelineRunner interface {
 	// position is 0.0 (all A) to 1.0 (all B). stinger carries the overlay
 	// YUV + alpha for stinger transitions (nil otherwise).
 	RunTransition(fromKey, toKey string, transType string, wipeDir int, position float64, pts int64, stinger *GPUStingerFrame) error
+
+	// Snapshot returns GPU pipeline stats: per-node timing, run counts,
+	// source manager state, and backend info. Used by debug and perf endpoints.
+	Snapshot() map[string]any
 }
 
 // GPUStingerFrame carries the stinger overlay and alpha for GPU transitions.

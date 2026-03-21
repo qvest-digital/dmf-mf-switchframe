@@ -364,6 +364,32 @@ func (m *GPUSourceManager) Close() {
 	}
 }
 
+// Snapshot returns a map of source manager stats for debug/perf endpoints.
+func (m *GPUSourceManager) Snapshot() map[string]any {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	sources := make(map[string]any, len(m.sources))
+	for key, entry := range m.sources {
+		s := map[string]any{
+			"width":       entry.width,
+			"height":      entry.height,
+			"has_frame":   entry.current.Load() != nil,
+			"has_preview": entry.prevEnc != nil,
+			"has_stmap":   entry.stmap != nil,
+		}
+		if entry.stmapName != "" {
+			s["stmap_name"] = entry.stmapName
+		}
+		sources[key] = s
+	}
+
+	return map[string]any{
+		"source_count": len(m.sources),
+		"sources":      sources,
+	}
+}
+
 // previewLoop and queuePreviewFrame are defined in platform-specific files:
 // - source_manager_preview_darwin.go (CPU scale + Upload)
 // - source_manager_preview_cuda.go (GPU frame copy + ScaleBilinear + NVENC)

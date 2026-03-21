@@ -786,6 +786,20 @@ func (m *mockGPUPipelineRunner) RunTransition(fromKey, toKey string, transType s
 	return nil
 }
 
+func (m *mockGPUPipelineRunner) Snapshot() map[string]any {
+	return map[string]any{
+		"gpu":              true,
+		"backend":          "mock",
+		"device":           "mock-device",
+		"run_count":        int64(0),
+		"last_run_ns":      int64(0),
+		"max_run_ns":       int64(0),
+		"total_latency_us": int64(0),
+		"active_nodes":     []map[string]any{},
+		"total_nodes":      0,
+	}
+}
+
 // mockPipelineNode is a simple passthrough PipelineNode for testing.
 type mockPipelineNode struct {
 	name string

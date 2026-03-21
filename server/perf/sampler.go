@@ -94,6 +94,13 @@ type SwitcherSample struct {
 	// Frame synchronizer stats
 	FrameSyncReleaseFPS  float64
 	FrameSyncSourceCount int
+
+	// GPU pipeline stats (populated when GPU pipeline is active)
+	GPUActive         bool
+	GPUPipelineLastNs int64
+	GPUNodeTimings    map[string]int64
+	GPUBackend        string
+	GPUDevice         string
 }
 
 // SourceSample holds per-source performance data.
@@ -179,6 +186,10 @@ type Sampler struct {
 	pipelineRing *RingStat
 	nodeRings    map[string]*RingStat
 
+	// GPU pipeline total + per-node rings
+	gpuPipelineRing *RingStat
+	gpuNodeRings    map[string]*RingStat
+
 	// E2E latency, audio mix cycle, broadcast gap
 	e2eRing          *RingStat
 	mixCycleRing     *RingStat
@@ -225,6 +236,8 @@ func NewSampler(sw SwitcherPerf, mx MixerPerf, out OutputPerf) *Sampler {
 		ingestFPSState:   make(map[string]*ingestFPSTracker),
 		pipelineRing:     &RingStat{},
 		nodeRings:        make(map[string]*RingStat),
+		gpuPipelineRing:  &RingStat{},
+		gpuNodeRings:     make(map[string]*RingStat),
 		e2eRing:          &RingStat{},
 		mixCycleRing:     &RingStat{},
 		broadcastGapRing: &RingStat{},
@@ -375,6 +388,26 @@ func (s *Sampler) tick() {
 	for name := range s.nodeRings {
 		if _, ok := sw.NodeTimings[name]; !ok {
 			delete(s.nodeRings, name)
+		}
+	}
+
+	// GPU pipeline timing
+	if sw.GPUActive {
+		s.gpuPipelineRing.Push(sw.GPUPipelineLastNs)
+
+		for name, ns := range sw.GPUNodeTimings {
+			ring, ok := s.gpuNodeRings[name]
+			if !ok {
+				ring = &RingStat{}
+				s.gpuNodeRings[name] = ring
+			}
+			ring.Push(ns)
+		}
+		// Remove stale GPU node entries.
+		for name := range s.gpuNodeRings {
+			if _, ok := sw.GPUNodeTimings[name]; !ok {
+				delete(s.gpuNodeRings, name)
+			}
 		}
 	}
 

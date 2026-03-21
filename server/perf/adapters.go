@@ -43,6 +43,11 @@ func (a *SwitcherAdapter) PerfSample() SwitcherSample {
 		ProcQueueNs:          raw.ProcQueueNs,
 		FrameSyncReleaseFPS:  raw.FrameSyncReleaseFPS,
 		FrameSyncSourceCount: raw.FrameSyncSourceCount,
+		GPUActive:            raw.GPUActive,
+		GPUPipelineLastNs:    raw.GPUPipelineLastNs,
+		GPUNodeTimings:       raw.GPUNodeTimings,
+		GPUBackend:           raw.GPUBackend,
+		GPUDevice:            raw.GPUDevice,
 	}
 }
 

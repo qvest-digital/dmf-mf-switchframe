@@ -36,3 +36,19 @@ func TestStubGPUFrameNilSafe(t *testing.T) {
 	f.Ref()
 	assert.Equal(t, 0, f.Width)
 }
+
+func TestStubGPUSourceManagerSnapshot(t *testing.T) {
+	mgr := NewGPUSourceManager(nil, nil, nil)
+	// Stub returns nil manager, but Snapshot should still work.
+	if mgr == nil {
+		return
+	}
+	snap := mgr.Snapshot()
+	require.Equal(t, 0, snap["source_count"])
+}
+
+func TestStubGPUPipelineSnapshot(t *testing.T) {
+	pipe := NewGPUPipeline(nil, nil)
+	snap := pipe.Snapshot()
+	require.False(t, snap["gpu"].(bool))
+}

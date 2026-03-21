@@ -23,6 +23,13 @@ type PerfSwitcherSample struct {
 	// Frame synchronizer stats
 	FrameSyncReleaseFPS  float64
 	FrameSyncSourceCount int
+
+	// GPU pipeline stats (populated when GPU pipeline is active)
+	GPUActive          bool
+	GPUPipelineLastNs  int64
+	GPUNodeTimings     map[string]int64
+	GPUBackend         string
+	GPUDevice          string
 }
 
 // PerfSourceSample mirrors perf.SourceSample.
@@ -84,7 +91,7 @@ func (s *Switcher) PerfSample() PerfSwitcherSample {
 		}
 	}
 
-	return PerfSwitcherSample{
+	sample := PerfSwitcherSample{
 		Sources:              sources,
 		PipelineLastNs:       s.videoProcLastNano.Load(),
 		NodeTimings:          nodeTimings,
@@ -103,4 +110,34 @@ func (s *Switcher) PerfSample() PerfSwitcherSample {
 		FrameSyncReleaseFPS:  frameSyncReleaseFPS,
 		FrameSyncSourceCount: frameSyncSourceCount,
 	}
+
+	// GPU pipeline stats: when GPU is active, read GPU node timings
+	// and use GPU pipeline timing instead of CPU.
+	if h := s.gpuRunner.Load(); h != nil {
+		gpuSnap := h.runner.Snapshot()
+		sample.GPUActive = true
+
+		if lastRunNs, ok := gpuSnap["last_run_ns"].(int64); ok {
+			sample.GPUPipelineLastNs = lastRunNs
+		}
+		if backend, ok := gpuSnap["backend"].(string); ok {
+			sample.GPUBackend = backend
+		}
+		if device, ok := gpuSnap["device"].(string); ok {
+			sample.GPUDevice = device
+		}
+
+		if nodes, ok := gpuSnap["active_nodes"].([]map[string]any); ok {
+			sample.GPUNodeTimings = make(map[string]int64, len(nodes))
+			for _, n := range nodes {
+				name, _ := n["name"].(string)
+				lastNs, _ := n["last_ns"].(int64)
+				if name != "" {
+					sample.GPUNodeTimings[name] = lastNs
+				}
+			}
+		}
+	}
+
+	return sample
 }

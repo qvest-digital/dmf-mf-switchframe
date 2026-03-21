@@ -291,6 +291,23 @@ func (r *gpuPipelineRunnerImpl) RunFromCache(sourceKey string, pts int64) error 
 	return nil
 }
 
+func (r *gpuPipelineRunnerImpl) Snapshot() map[string]any {
+	snap := r.pipeline.Snapshot()
+
+	// Add source manager stats.
+	if r.sourceManager != nil {
+		snap["source_manager"] = r.sourceManager.Snapshot()
+	}
+
+	// Add backend info.
+	if r.ctx != nil {
+		snap["backend"] = r.ctx.Backend()
+		snap["device"] = r.ctx.DeviceName()
+	}
+
+	return snap
+}
+
 func (r *gpuPipelineRunnerImpl) RunTransition(fromKey, toKey string, transType string, wipeDir int, position float64, pts int64, stinger *switcher.GPUStingerFrame) error {
 	if r.sourceManager == nil {
 		return fmt.Errorf("no GPU source manager")

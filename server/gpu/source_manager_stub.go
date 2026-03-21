@@ -25,6 +25,14 @@ func (m *GPUSourceManager) GetFrame(sourceKey string) *GPUFrame { return nil }
 // Close is a no-op on non-GPU builds.
 func (m *GPUSourceManager) Close() {}
 
+// Snapshot returns empty stats on non-GPU builds.
+func (m *GPUSourceManager) Snapshot() map[string]any {
+	return map[string]any{
+		"source_count": 0,
+		"sources":      map[string]any{},
+	}
+}
+
 // CopyGPUFrame is a no-op on non-GPU builds.
 func CopyGPUFrame(dst, src *GPUFrame) {}
 
