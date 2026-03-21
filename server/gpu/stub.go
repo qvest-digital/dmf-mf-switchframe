@@ -250,6 +250,32 @@ func (f *FRUC) Interpolate(prev, curr, output *GPUFrame, alpha float64) error {
 // Close is a no-op on non-CUDA builds.
 func (f *FRUC) Close() {}
 
+// Timer is a stub for non-CUDA builds.
+type Timer struct{}
+
+// NewTimer returns ErrGPUNotAvailable on non-CUDA builds.
+func NewTimer() (*Timer, error) { return nil, ErrGPUNotAvailable }
+
+// Start is a no-op on non-CUDA builds.
+func (t *Timer) Start(stream uintptr) {}
+
+// Stop returns 0 on non-CUDA builds.
+func (t *Timer) Stop(stream uintptr) float32 { return 0 }
+
+// Close is a no-op on non-CUDA builds.
+func (t *Timer) Close() {}
+
+// PipelineMetrics tracks GPU pipeline performance counters.
+type PipelineMetrics struct{}
+
+// Snapshot returns empty stats on non-CUDA builds.
+func (m *PipelineMetrics) Snapshot() map[string]any { return map[string]any{} }
+
+// MemoryStatsExtended returns unavailable status on non-CUDA builds.
+func MemoryStatsExtended(ctx *Context) map[string]any {
+	return map[string]any{"available": false}
+}
+
 // GPUPipelineNode is the interface for GPU pipeline processing nodes.
 type GPUPipelineNode interface {
 	Name() string
