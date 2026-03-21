@@ -1,5 +1,7 @@
 package stmap
 
+import "sync"
+
 // Processor applies an ST map warp to YUV420 frames using bilinear
 // interpolation. It precomputes 16.16 fixed-point lookup tables from the
 // float32 ST map coordinates so the per-pixel hot path is integer-only.
@@ -29,9 +31,15 @@ func (p *Processor) Active() bool {
 	return p.stmap != nil
 }
 
+// warpWorkers controls parallelism for the Y plane warp. The Y plane is
+// split into this many horizontal bands processed concurrently. Chroma planes
+// are 1/4 the pixel count and run single-threaded.
+const warpWorkers = 4
+
 // ProcessYUV applies the ST map warp to a YUV420 frame. src and dst must
 // both be w*h*3/2 bytes. The three planes (Y, Cb, Cr) are warped
 // independently using precomputed lookup tables.
+// The Y plane is processed in parallel across warpWorkers goroutines.
 func (p *Processor) ProcessYUV(dst, src []byte, w, h int) {
 	if p.stmap == nil {
 		return
@@ -42,14 +50,37 @@ func (p *Processor) ProcessYUV(dst, src []byte, w, h int) {
 	ch := h / 2
 	cSize := cw * ch
 
-	// Y plane
-	warpPlane(dst[:ySize], src[:ySize], w, h, p.lutSX, p.lutSY)
+	// Y plane — parallel row bands.
+	// Each goroutine processes a horizontal band of the output, but reads
+	// from the full source plane (since the LUT can reference any source pixel).
+	if h >= warpWorkers*2 {
+		var wg sync.WaitGroup
+		bandH := h / warpWorkers
+		for i := 0; i < warpWorkers; i++ {
+			startRow := i * bandH
+			endRow := startRow + bandH
+			if i == warpWorkers-1 {
+				endRow = h
+			}
+			wg.Add(1)
+			go func(sr, er int) {
+				defer wg.Done()
+				lutOff := sr * w
+				n := (er - sr) * w
+				warpPlaneBand(dst[lutOff:lutOff+n], src[:ySize], w, h,
+					p.lutSX[lutOff:lutOff+n], p.lutSY[lutOff:lutOff+n])
+			}(startRow, endRow)
+		}
+		wg.Wait()
+	} else {
+		warpPlane(dst[:ySize], src[:ySize], w, h, p.lutSX, p.lutSY)
+	}
 
-	// Cb plane
+	// Cb plane (single-threaded — 1/4 pixel count)
 	cbOff := ySize
 	warpPlane(dst[cbOff:cbOff+cSize], src[cbOff:cbOff+cSize], cw, ch, p.lutCSX, p.lutCSY)
 
-	// Cr plane
+	// Cr plane (single-threaded)
 	crOff := ySize + cSize
 	warpPlane(dst[crOff:crOff+cSize], src[crOff:crOff+cSize], cw, ch, p.lutCSX, p.lutCSY)
 }
@@ -114,15 +145,29 @@ func (p *Processor) buildLUT() {
 	}
 }
 
+// warpPlaneBand applies bilinear interpolation for a band of output pixels.
+// dst receives len(lutX) output pixels. src is the FULL source plane (w*h bytes).
+// The LUT values reference coordinates in the full source, so w and h are the
+// full source dimensions used for clamping. Used by the parallel Y plane path.
+func warpPlaneBand(dst, src []byte, w, h int, lutX, lutY []int64) {
+	warpPlaneN(dst, src, w, h, lutX, lutY, len(lutX))
+}
+
 // warpPlane applies bilinear interpolation for one plane using 16.16
 // fixed-point source coordinates from the precomputed LUT.
 func warpPlane(dst, src []byte, w, h int, lutX, lutY []int64) {
+	warpPlaneN(dst, src, w, h, lutX, lutY, w*h)
+}
+
+// warpPlaneN is the core bilinear interpolation loop. Processes n output pixels
+// using LUT coordinates that reference the full source plane (w*h bytes).
+func warpPlaneN(dst, src []byte, w, h int, lutX, lutY []int64, n int) {
 	maxX := int64(w-1) << 16
 	maxY := int64(h-1) << 16
 	lastCol := w - 1
 	lastRow := h - 1
 
-	for i := 0; i < w*h; i++ {
+	for i := 0; i < n; i++ {
 		sx := lutX[i]
 		sy := lutY[i]
 

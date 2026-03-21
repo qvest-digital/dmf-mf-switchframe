@@ -575,6 +575,7 @@ func (a *App) initSubsystems() error {
 				continue
 			}
 			anim.Name = name
+			anim.BuildProcessors() // pre-build LUTs at startup, not on first pipeline frame
 			_ = a.stmapRegistry.StoreAnimated(anim)
 		}
 		if n := len(staticNames) + len(animNames); n > 0 {
