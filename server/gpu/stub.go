@@ -292,6 +292,33 @@ func (p *GPUPipeline) Close() error { return nil }
 // RawSinkFunc is a callback for raw YUV420p frames.
 type RawSinkFunc func(yuv []byte, width, height int)
 
+// V210LineStride returns the byte stride for one line of V210 data.
+func V210LineStride(width int) int {
+	groups := (width + 5) / 6
+	rawBytes := groups * 16
+	return (rawBytes + 127) &^ 127
+}
+
+// V210ToNV12 returns ErrGPUNotAvailable on non-CUDA builds.
+func V210ToNV12(ctx *Context, dst *GPUFrame, v210DevPtr uintptr, v210Stride, width, height int) error {
+	return ErrGPUNotAvailable
+}
+
+// NV12ToV210 returns ErrGPUNotAvailable on non-CUDA builds.
+func NV12ToV210(ctx *Context, v210DevPtr uintptr, v210Stride int, src *GPUFrame, width, height int) error {
+	return ErrGPUNotAvailable
+}
+
+// UploadV210 returns ErrGPUNotAvailable on non-CUDA builds.
+func UploadV210(ctx *Context, dst *GPUFrame, v210 []byte, width, height int) error {
+	return ErrGPUNotAvailable
+}
+
+// DownloadV210 returns ErrGPUNotAvailable on non-CUDA builds.
+func DownloadV210(ctx *Context, v210 []byte, src *GPUFrame, width, height int) error {
+	return ErrGPUNotAvailable
+}
+
 // PreviewEncoder is a stub for non-CUDA builds.
 type PreviewEncoder struct{}
 
