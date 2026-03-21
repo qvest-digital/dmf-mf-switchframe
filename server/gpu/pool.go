@@ -139,6 +139,11 @@ func (p *FramePool) Acquire() (*GPUFrame, error) {
 // release returns a frame to the pool's free list.
 // Called by GPUFrame.Release() when refcount reaches 0.
 func (p *FramePool) release(frame *GPUFrame) {
+	// Reset dimensions to pool defaults — callers may have temporarily
+	// changed them (e.g., stinger overlay, IngestYUV resolution normalization).
+	frame.Width = p.width
+	frame.Height = p.height
+
 	p.mu.Lock()
 	if len(p.free) < p.cap {
 		p.free = append(p.free, frame)

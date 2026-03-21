@@ -226,15 +226,21 @@ func (e *Engine) ToSource() string {
 // the given transition position. Returns nil slices if no stinger is configured.
 // Used by the GPU transition path to upload stinger data to GPU.
 func (e *Engine) StingerFrameAt(pos float64) (yuv, alpha []byte, width, height int, cutPoint float64) {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
 
 	sd := e.config.Stinger
 	if sd == nil || len(sd.Frames) == 0 {
 		return nil, nil, 0, 0, 0.5
 	}
 
-	// Use scaled frames if available, otherwise original.
+	// Lazy-scale stinger frames to engine dimensions on first access.
+	// In SkipBlend mode (GPU transitions), blendStinger is never called,
+	// so the lazy scale in blendStinger never runs. We do it here instead.
+	if e.stingerScaled == nil && e.width > 0 && e.height > 0 {
+		e.stingerScaled = e.scaleStingerFrames(sd)
+	}
+
 	frames := sd.Frames
 	w, h := sd.Width, sd.Height
 	if e.stingerScaled != nil {

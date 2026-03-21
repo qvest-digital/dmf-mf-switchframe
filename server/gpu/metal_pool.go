@@ -108,7 +108,14 @@ func (p *FramePool) Acquire() (*GPUFrame, error) {
 }
 
 // release returns a frame to the pool's free list.
+// Resets Width/Height to pool defaults — callers may have temporarily
+// changed them (e.g., stinger overlay at non-pipeline resolution,
+// IngestYUV at source resolution). Without this reset, recycled frames
+// carry stale dimensions that corrupt subsequent operations.
 func (p *FramePool) release(frame *GPUFrame) {
+	frame.Width = p.width
+	frame.Height = p.height
+
 	p.mu.Lock()
 	if len(p.free) < p.cap {
 		p.free = append(p.free, frame)
