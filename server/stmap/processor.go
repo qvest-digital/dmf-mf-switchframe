@@ -76,6 +76,13 @@ func (p *Processor) buildLUT() {
 
 	// Chroma LUT: average the 4 luma values in each 2x2 block, then
 	// convert to half-resolution pixel coordinates.
+	//
+	// NOTE: This uses a simple 4-corner average. For H.264's default
+	// MPEG-2 chroma siting (left-center), the geometrically correct
+	// approach would weight the left column more heavily. The simple
+	// average introduces a theoretical 0.25-pixel horizontal chroma
+	// shift, which is visually negligible for moderate warps at 1080p
+	// but could produce subtle chroma fringing for extreme distortions.
 	cw := w / 2
 	ch := h / 2
 	cn := cw * ch

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 )
 
@@ -81,7 +82,8 @@ type AnimatedSTMap struct {
 	Frames     []*STMap
 	FPS        int
 	index      atomic.Int64
-	processors []*Processor // lazily built per-frame processors
+	processors []*Processor // pre-built per-frame processors
+	buildOnce  sync.Once    // guards processors initialization
 }
 
 // NewAnimatedSTMap creates a new animated ST map from a sequence of frames.
@@ -118,19 +120,24 @@ func (a *AnimatedSTMap) AdvanceIndex() int {
 	return int(idx) % len(a.Frames)
 }
 
-// ProcessorAt returns a precomputed Processor for the given frame index.
-// Processors are built lazily on first access and cached for the lifetime
-// of the AnimatedSTMap. This avoids rebuilding the LUT (~5ms at 1080p)
-// on every frame.
-func (a *AnimatedSTMap) ProcessorAt(idx int) *Processor {
-	idx = idx % len(a.Frames)
-	if a.processors == nil {
+// BuildProcessors pre-builds all per-frame Processors. Call this after
+// construction to avoid lazy-init races and eliminate the LUT build
+// latency spike (~5ms per frame) from the first animation cycle.
+// Safe to call from any goroutine; uses sync.Once internally.
+func (a *AnimatedSTMap) BuildProcessors() {
+	a.buildOnce.Do(func() {
 		a.processors = make([]*Processor, len(a.Frames))
-	}
-	if a.processors[idx] == nil {
-		a.processors[idx] = NewProcessor(a.Frames[idx])
-	}
-	return a.processors[idx]
+		for i, frame := range a.Frames {
+			a.processors[i] = NewProcessor(frame)
+		}
+	})
+}
+
+// ProcessorAt returns the precomputed Processor for the given frame index.
+// Calls BuildProcessors on first access if not already called.
+func (a *AnimatedSTMap) ProcessorAt(idx int) *Processor {
+	a.BuildProcessors()
+	return a.processors[idx%len(a.Frames)]
 }
 
 // ValidateName rejects names that could cause path traversal or are otherwise

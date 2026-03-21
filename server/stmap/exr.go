@@ -170,12 +170,16 @@ func ReadEXR(data []byte, name string) (*STMap, error) {
 		return nil, fmt.Errorf("exr: unsupported compression type %d (supported: none=0, ZIPS=2, ZIP=3)", compression)
 	}
 
-	// Compute dimensions.
+	// Compute dimensions with overflow-safe arithmetic.
 	width := int(dataWindow[2]-dataWindow[0]) + 1
 	height := int(dataWindow[3]-dataWindow[1]) + 1
 
 	if width <= 0 || height <= 0 || width%2 != 0 || height%2 != 0 {
 		return nil, ErrInvalidDimensions
+	}
+	// Reject unreasonably large dimensions to prevent OOM from adversarial files.
+	if width > 16384 || height > 16384 {
+		return nil, fmt.Errorf("exr: dimensions %dx%d exceed maximum 16384x16384", width, height)
 	}
 
 	// Find R and G channels, record their indices in the alphabetically-sorted channel order.
@@ -414,7 +418,12 @@ func halfToFloat(h uint16) float32 {
 	return math.Float32frombits((sign << 31) | ((exp + 112) << 23) | (mant << 13))
 }
 
-// zlibDecompress decompresses zlib-compressed data.
+// maxDecompressedSize is the upper bound for zlib decompression to prevent
+// zip bomb attacks. 100MB is generous for any valid ST map scanline block
+// (a 4K ZIP block is ~491KB uncompressed).
+const maxDecompressedSize = 100 << 20
+
+// zlibDecompress decompresses zlib-compressed data with a size limit.
 func zlibDecompress(data []byte) ([]byte, error) {
 	r, err := zlib.NewReader(bytes.NewReader(data))
 	if err != nil {
@@ -422,7 +431,7 @@ func zlibDecompress(data []byte) ([]byte, error) {
 	}
 	defer r.Close()
 
-	return io.ReadAll(r)
+	return io.ReadAll(io.LimitReader(r, maxDecompressedSize))
 }
 
 // channelNames returns a comma-separated list of channel names for error messages.

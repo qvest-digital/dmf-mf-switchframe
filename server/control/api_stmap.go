@@ -117,6 +117,10 @@ func (a *API) handleSTMapGenerate(w http.ResponseWriter, r *http.Request) {
 			httperr.WriteErr(w, errorStatus(err), err)
 			return
 		}
+		// Persist to disk.
+		if a.stmapStore != nil {
+			_ = a.stmapStore.SaveStatic(m)
+		}
 		respMap = map[string]interface{}{
 			"name":   m.Name,
 			"width":  m.Width,
@@ -129,6 +133,10 @@ func (a *API) handleSTMapGenerate(w http.ResponseWriter, r *http.Request) {
 		if frameCount <= 0 {
 			frameCount = 90
 		}
+		if frameCount > 300 {
+			httperr.Write(w, http.StatusBadRequest, "frame_count must be <= 300")
+			return
+		}
 		am, err := stmap.GenerateAnimated(req.Type, req.Params, req.Width, req.Height, frameCount)
 		if err != nil {
 			httperr.Write(w, http.StatusBadRequest, err.Error())
@@ -138,6 +146,10 @@ func (a *API) handleSTMapGenerate(w http.ResponseWriter, r *http.Request) {
 		if err := a.stmapRegistry.StoreAnimated(am); err != nil {
 			httperr.WriteErr(w, errorStatus(err), err)
 			return
+		}
+		// Persist animated metadata for regeneration on restart.
+		if a.stmapStore != nil {
+			_ = a.stmapStore.SaveAnimatedMeta(am, req.Type, req.Params)
 		}
 		respMap = map[string]interface{}{
 			"name":        am.Name,
@@ -218,6 +230,10 @@ func (a *API) handleSTMapUpload(w http.ResponseWriter, r *http.Request) {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}
+	// Persist uploaded map to disk.
+	if a.stmapStore != nil {
+		_ = a.stmapStore.SaveStatic(m)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -267,6 +283,10 @@ func (a *API) handleSTMapDelete(w http.ResponseWriter, r *http.Request) {
 	if err := a.stmapRegistry.Delete(name); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
+	}
+	// Remove from disk.
+	if a.stmapStore != nil {
+		_ = a.stmapStore.Delete(name)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

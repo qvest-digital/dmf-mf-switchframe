@@ -1094,6 +1094,7 @@ func (a *App) initAPI() error {
 		control.WithLayoutStore(a.layoutStore),
 		control.WithPerfSampler(a.perfSampler),
 		control.WithSTMapRegistry(a.stmapRegistry),
+		control.WithSTMapStore(a.stmapStore),
 	}
 	if a.replayMgr != nil {
 		apiOpts = append(apiOpts, control.WithReplayManager(a.replayMgr))

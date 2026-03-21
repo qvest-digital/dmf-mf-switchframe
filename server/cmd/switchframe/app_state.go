@@ -394,9 +394,14 @@ func (a *App) wireStateCallbacks() {
 		})
 	}
 
-	// ST map registry state changes.
+	// ST map registry state changes. Trigger pipeline rebuild so the
+	// stmap-program node picks up active state changes (e.g., program
+	// map assigned/removed affects node Active() and lip-sync hint).
 	if a.stmapRegistry != nil {
 		a.stmapRegistry.SetOnStateChange(func(_ stmap.STMapState) {
+			if a.sw != nil {
+				a.sw.RebuildPipeline()
+			}
 			a.clearLastOperator()
 			a.broadcastState(nil)
 		})

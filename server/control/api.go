@@ -262,6 +262,11 @@ func WithSTMapRegistry(r *stmap.Registry) APIOption {
 	return func(a *API) { a.stmapRegistry = r }
 }
 
+// WithSTMapStore attaches an ST map file store for persistence.
+func WithSTMapStore(s *stmap.Store) APIOption {
+	return func(a *API) { a.stmapStore = s }
+}
+
 // WithInviteTokens sets the invite token map (token -> role) for operator registration gating.
 func WithInviteTokens(tokens map[string]string) APIOption {
 	return func(a *API) { a.inviteTokens = tokens }
@@ -321,6 +326,7 @@ type API struct {
 	srtMgr             SRTManager
 	commsMgr           CommsManagerAPI
 	stmapRegistry      *stmap.Registry
+	stmapStore         *stmap.Store
 	inviteTokens       map[string]string // token -> role; nil = no invite gating
 	sessionAPIToken    string            // used to bypass invite token requirement for session owner
 	allowedOutputPorts map[int]bool      // nil = unconstrained
