@@ -148,6 +148,53 @@ func LumaKey(ctx *Context, frame *GPUFrame, maskBuf *GPUFrame, lut [256]byte) er
 // BuildLumaKeyLUT creates a 256-byte lookup table for luma keying.
 func BuildLumaKeyLUT(lowClip, highClip, softness float32) [256]byte { return [256]byte{} }
 
+// Rect defines a rectangle for compositing.
+type Rect struct{ X, Y, W, H int }
+
+// YUVColor defines a color in YCbCr space.
+type YUVColor struct{ Y, Cb, Cr uint8 }
+
+// ColorBlack is BT.709 limited-range black.
+var ColorBlack = YUVColor{16, 128, 128}
+
+// PIPComposite returns ErrGPUNotAvailable on non-CUDA builds.
+func PIPComposite(ctx *Context, dst, src *GPUFrame, rect Rect, alpha float64) error {
+	return ErrGPUNotAvailable
+}
+
+// DrawBorder returns ErrGPUNotAvailable on non-CUDA builds.
+func DrawBorder(ctx *Context, frame *GPUFrame, rect Rect, color YUVColor, thickness int) error {
+	return ErrGPUNotAvailable
+}
+
+// FillRect returns ErrGPUNotAvailable on non-CUDA builds.
+func FillRect(ctx *Context, frame *GPUFrame, rect Rect, color YUVColor) error {
+	return ErrGPUNotAvailable
+}
+
+// GPUOverlay is a stub for non-CUDA builds.
+type GPUOverlay struct {
+	Width, Height int
+}
+
+// UploadOverlay returns ErrGPUNotAvailable on non-CUDA builds.
+func UploadOverlay(ctx *Context, rgba []byte, width, height int) (*GPUOverlay, error) {
+	return nil, ErrGPUNotAvailable
+}
+
+// FreeOverlay is a no-op on non-CUDA builds.
+func FreeOverlay(overlay *GPUOverlay) {}
+
+// DSKCompositeFullFrame returns ErrGPUNotAvailable on non-CUDA builds.
+func DSKCompositeFullFrame(ctx *Context, frame *GPUFrame, overlay *GPUOverlay, alphaScale float64) error {
+	return ErrGPUNotAvailable
+}
+
+// DSKCompositeRect returns ErrGPUNotAvailable on non-CUDA builds.
+func DSKCompositeRect(ctx *Context, frame *GPUFrame, overlay *GPUOverlay, rect Rect, alphaScale float64) error {
+	return ErrGPUNotAvailable
+}
+
 // GPUEncoder is a stub for non-CUDA builds.
 type GPUEncoder struct{}
 
