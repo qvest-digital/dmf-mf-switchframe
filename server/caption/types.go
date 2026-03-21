@@ -10,6 +10,8 @@ const (
 	ModePassThrough
 	// ModeAuthor enables live caption authoring from keyboard input.
 	ModeAuthor
+	// ModeAuto enables AI-powered captioning (e.g., Whisper ASR).
+	ModeAuto
 )
 
 // String returns the human-readable name of the mode.
@@ -21,6 +23,8 @@ func (m Mode) String() string {
 		return "passthrough"
 	case ModeAuthor:
 		return "author"
+	case ModeAuto:
+		return "auto"
 	default:
 		return "unknown"
 	}
@@ -35,6 +39,8 @@ func ParseMode(s string) (Mode, bool) {
 		return ModePassThrough, true
 	case "author":
 		return ModeAuthor, true
+	case "auto":
+		return ModeAuto, true
 	default:
 		return ModeOff, false
 	}

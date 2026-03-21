@@ -277,6 +277,9 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 	// Caption state.
 	state = a.enrichCaptionState(state)
 
+	// ASR state.
+	state = a.enrichASRState(state)
+
 	// Operator comms state.
 	if a.commsMgr != nil {
 		state.Comms = a.commsMgr.State()

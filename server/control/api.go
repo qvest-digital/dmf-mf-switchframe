@@ -237,6 +237,16 @@ type AISegmentManager interface {
 	IsAISegmentAvailable() bool
 }
 
+// ASRManager is the interface for ASR engine control.
+type ASRManager interface {
+	IsASRAvailable() bool
+	IsASRActive() bool
+	SetASRActive(active bool) error
+	SetASRLanguage(lang string)
+	ASRLanguage() string
+	ASRModelName() string
+}
+
 // CommsManagerAPI is the interface for operator voice comms operations.
 type CommsManagerAPI interface {
 	Join(operatorID, name string) error
@@ -278,6 +288,11 @@ func WithCommsManager(cm CommsManagerAPI) APIOption {
 // WithAISegmentManager attaches an AI segmentation manager to the API.
 func WithAISegmentManager(m AISegmentManager) APIOption {
 	return func(a *API) { a.aiSegmentMgr = m }
+}
+
+// WithASRManager attaches an ASR manager to the API.
+func WithASRManager(m ASRManager) APIOption {
+	return func(a *API) { a.asrManager = m }
 }
 
 // WithSTMapRegistry attaches an ST map registry to the API.
@@ -348,6 +363,7 @@ type API struct {
 	srtMgr             SRTManager
 	commsMgr           CommsManagerAPI
 	aiSegmentMgr       AISegmentManager
+	asrManager         ASRManager
 	stmapRegistry      *stmap.Registry
 	stmapStore         *stmap.Store
 	inviteTokens       map[string]string // token -> role; nil = no invite gating
@@ -513,6 +529,7 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	a.registerCommsRoutes(mux)
 	a.registerSTMapRoutes(mux)
 	a.registerAISegmentRoutes(mux)
+	a.registerASRRoutes(mux)
 }
 
 func (a *API) registerRoutes() { a.RegisterOnMux(a.mux) }

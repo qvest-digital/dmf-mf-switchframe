@@ -23,6 +23,7 @@ import (
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/prism/moq"
+	"github.com/zsiec/switchframe/server/asr"
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/clip"
@@ -140,6 +141,9 @@ type App struct {
 	// AI segmentation engine (CUDA + TensorRT, nil on other platforms)
 	segEngine  *gpu.SegmentationEngine
 	segAdapter *segmentationStateAdapter // non-nil when segEngine is active
+
+	// ASR engine (Whisper speech-to-text, nil when unavailable)
+	asrEngine *asr.Engine
 
 	// SCTE-35 signaling
 	scte35Injector *scte35.Injector
@@ -1221,6 +1225,13 @@ func (a *App) initAPI() error {
 			adapter: a.segAdapter,
 		}))
 	}
+	if a.asrEngine != nil {
+		apiOpts = append(apiOpts, control.WithASRManager(&asrManagerAdapter{
+			engine:     a.asrEngine,
+			captionMgr: a.captionMgr,
+			modelPath:  a.cfg.ASRModelPath,
+		}))
+	}
 
 	// Create text rendering engines for ticker and text animation.
 	if a.compositor != nil {
@@ -1590,6 +1601,10 @@ func (a *App) closeSubsystems() {
 	}
 	if a.sw != nil {
 		a.sw.Close()
+	}
+	// ASR engine cleanup (before mixer — it reads from mixer's raw audio sink).
+	if a.asrEngine != nil {
+		a.asrEngine.Close()
 	}
 	// AI segmentation engine cleanup before GPU (holds GPU resources).
 	if a.segEngine != nil {

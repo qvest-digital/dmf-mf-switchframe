@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { ControlRoomState, CaptionMode } from '$lib/api/types';
-	import { setCaptionMode, sendCaptionText, sendCaptionNewline, clearCaptions, apiCall } from '$lib/api/switch-api';
+	import { setCaptionMode, sendCaptionText, sendCaptionNewline, clearCaptions, setASRConfig, apiCall } from '$lib/api/switch-api';
 
 	interface Props {
 		state: ControlRoomState;
@@ -14,11 +14,29 @@
 	let authorBuffer = $derived(captionState?.authorBuffer ?? '');
 	let sourceCaptions = $derived(captionState?.sourceCaptions ?? {});
 	let isAuthor = $derived(mode === 'author');
+	let isAuto = $derived(mode === 'auto');
+	let asrState = $derived(crState.asr);
+	let asrAvailable = $derived(asrState?.available ?? false);
 
 	const modes: { id: CaptionMode; label: string }[] = [
 		{ id: 'off', label: 'Off' },
 		{ id: 'passthrough', label: 'Pass-through' },
 		{ id: 'author', label: 'Author' },
+	];
+
+	const languages = [
+		{ code: 'en', label: 'English' },
+		{ code: 'es', label: 'Spanish' },
+		{ code: 'fr', label: 'French' },
+		{ code: 'de', label: 'German' },
+		{ code: 'zh', label: 'Chinese' },
+		{ code: 'ja', label: 'Japanese' },
+		{ code: 'ko', label: 'Korean' },
+		{ code: 'pt', label: 'Portuguese' },
+		{ code: 'ru', label: 'Russian' },
+		{ code: 'ar', label: 'Arabic' },
+		{ code: 'hi', label: 'Hindi' },
+		{ code: 'it', label: 'Italian' },
 	];
 
 	// -- Test Captions --
@@ -101,6 +119,14 @@
 
 	function handleModeChange(newMode: CaptionMode) {
 		apiCall(setCaptionMode(newMode), 'Set caption mode');
+		if (newMode === 'auto') {
+			apiCall(setASRConfig({ active: true }), 'Enable ASR');
+		}
+	}
+
+	function handleLanguageChange(e: Event) {
+		const lang = (e.target as HTMLSelectElement).value;
+		apiCall(setASRConfig({ language: lang }), 'Set ASR language');
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
@@ -132,6 +158,9 @@
 	<div class="zone">
 		<div class="zone-header">
 			<span class="zone-title">MODE</span>
+			{#if isAuto}
+				<span class="ai-badge">AI</span>
+			{/if}
 		</div>
 		<div class="mode-bar">
 			{#each modes as m}
@@ -143,7 +172,34 @@
 					{m.label}
 				</button>
 			{/each}
+			{#if asrAvailable}
+				<button
+					class="mode-btn auto-btn"
+					class:active={isAuto}
+					onclick={() => handleModeChange('auto')}
+				>
+					Auto
+				</button>
+			{/if}
 		</div>
+		{#if isAuto}
+			<div class="language-row">
+				<label class="language-label" for="asr-lang">Language</label>
+				<select
+					id="asr-lang"
+					class="language-select"
+					value={asrState?.language ?? 'en'}
+					onchange={handleLanguageChange}
+				>
+					{#each languages as lang}
+						<option value={lang.code}>{lang.label}</option>
+					{/each}
+				</select>
+				{#if asrState?.modelName}
+					<span class="model-name">{asrState.modelName}</span>
+				{/if}
+			</div>
+		{/if}
 	</div>
 
 	<!-- Author input -->
@@ -178,7 +234,12 @@
 			{/if}
 		{:else}
 			<div class="disabled-notice">
-				{#if mode === 'passthrough'}
+				{#if mode === 'auto'}
+					Captions generated automatically from program audio.
+					{#if asrState?.tentative}
+						<div class="tentative-text">{asrState.tentative}</div>
+					{/if}
+				{:else if mode === 'passthrough'}
 					Captions forwarded from program source.
 				{:else}
 					Enable Author mode to type live captions.
@@ -269,6 +330,76 @@
 		background: var(--accent-yellow);
 		color: var(--bg-base);
 		border-color: var(--accent-yellow);
+	}
+
+	.auto-btn.active {
+		background: #a855f7;
+		border-color: #a855f7;
+		color: white;
+	}
+
+	.auto-btn:not(.active):hover {
+		border-color: #a855f7;
+		color: #a855f7;
+	}
+
+	.ai-badge {
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		font-weight: 700;
+		background: #a855f7;
+		color: white;
+		padding: 1px 6px;
+		border-radius: 3px;
+		letter-spacing: 0.05em;
+	}
+
+	.language-row {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin-top: 2px;
+	}
+
+	.language-label {
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		color: var(--text-secondary);
+		white-space: nowrap;
+	}
+
+	.language-select {
+		flex: 1;
+		font-family: var(--font-ui);
+		font-size: var(--text-xs);
+		background: var(--bg-base);
+		color: var(--text-primary);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		padding: 3px 6px;
+		outline: none;
+		cursor: pointer;
+	}
+
+	.language-select:focus {
+		border-color: #a855f7;
+	}
+
+	.model-name {
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		color: var(--text-tertiary);
+		white-space: nowrap;
+	}
+
+	.tentative-text {
+		margin-top: 6px;
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		color: #a855f7;
+		opacity: 0.7;
+		font-style: italic;
 	}
 
 	.caption-input {

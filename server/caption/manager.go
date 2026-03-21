@@ -82,7 +82,7 @@ func (m *Manager) Mode() Mode {
 func (m *Manager) IngestText(text string) {
 	m.mu.Lock()
 
-	if m.mode != ModeAuthor {
+	if m.mode != ModeAuthor && m.mode != ModeAuto {
 		m.mu.Unlock()
 		return
 	}
@@ -114,7 +114,7 @@ func (m *Manager) IngestText(text string) {
 func (m *Manager) IngestNewline() {
 	m.mu.Lock()
 
-	if m.mode != ModeAuthor {
+	if m.mode != ModeAuthor && m.mode != ModeAuto {
 		m.mu.Unlock()
 		return
 	}
@@ -145,7 +145,7 @@ func (m *Manager) IngestNewline() {
 func (m *Manager) Clear() {
 	m.mu.Lock()
 
-	if m.mode != ModeAuthor {
+	if m.mode != ModeAuthor && m.mode != ModeAuto {
 		m.mu.Unlock()
 		return
 	}
@@ -244,7 +244,7 @@ func (m *Manager) consumeForFrameLocked() []CCPair {
 		}
 		return []CCPair{*pair}
 
-	case ModeAuthor:
+	case ModeAuthor, ModeAuto:
 		pair := m.encoder.NextPair()
 		if pair == nil {
 			// Emit null pair to maintain cc_data presence in stream.
@@ -267,7 +267,7 @@ func (m *Manager) State() State {
 		Mode: m.mode.String(),
 	}
 
-	if m.mode == ModeAuthor {
+	if m.mode == ModeAuthor || m.mode == ModeAuto {
 		s.AuthorBuffer = m.authorBuffer
 	}
 
