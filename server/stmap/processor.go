@@ -147,76 +147,21 @@ func (p *Processor) buildLUT() {
 
 // warpPlaneBand applies bilinear interpolation for a band of output pixels.
 // dst receives len(lutX) output pixels. src is the FULL source plane (w*h bytes).
-// The LUT values reference coordinates in the full source, so w and h are the
-// full source dimensions used for clamping. Used by the parallel Y plane path.
+// Uses the platform-specific warpBilinearRow kernel (assembly on amd64/arm64,
+// Go fallback on other platforms).
 func warpPlaneBand(dst, src []byte, w, h int, lutX, lutY []int64) {
-	warpPlaneN(dst, src, w, h, lutX, lutY, len(lutX))
-}
-
-// warpPlane applies bilinear interpolation for one plane using 16.16
-// fixed-point source coordinates from the precomputed LUT.
-func warpPlane(dst, src []byte, w, h int, lutX, lutY []int64) {
-	warpPlaneN(dst, src, w, h, lutX, lutY, w*h)
-}
-
-// warpPlaneN is the core bilinear interpolation loop. Processes n output pixels
-// using LUT coordinates that reference the full source plane (w*h bytes).
-func warpPlaneN(dst, src []byte, w, h int, lutX, lutY []int64, n int) {
-	maxX := int64(w-1) << 16
-	maxY := int64(h-1) << 16
-	lastCol := w - 1
-	lastRow := h - 1
-
-	for i := 0; i < n; i++ {
-		sx := lutX[i]
-		sy := lutY[i]
-
-		// Clamp to valid source range.
-		if sx < 0 {
-			sx = 0
-		} else if sx > maxX {
-			sx = maxX
-		}
-		if sy < 0 {
-			sy = 0
-		} else if sy > maxY {
-			sy = maxY
-		}
-
-		// Split into integer and fractional parts.
-		ix := int(sx >> 16)
-		iy := int(sy >> 16)
-		fx := int(sx & 0xFFFF)
-		fy := int(sy & 0xFFFF)
-
-		// Neighbor pixel coordinates, clamped.
-		ix1 := ix + 1
-		if ix1 > lastCol {
-			ix1 = lastCol
-		}
-		iy1 := iy + 1
-		if iy1 > lastRow {
-			iy1 = lastRow
-		}
-
-		// Sample 4 source pixels.
-		p00 := int(src[iy*w+ix])
-		p10 := int(src[iy*w+ix1])
-		p01 := int(src[iy1*w+ix])
-		p11 := int(src[iy1*w+ix1])
-
-		// Bilinear interpolation using 16.16 fixed-point.
-		invFx := 65536 - fx
-		invFy := 65536 - fy
-		val := ((p00*invFx+p10*fx)*invFy + (p01*invFx+p11*fx)*fy + (1 << 31)) >> 32
-
-		// Clamp to [0, 255].
-		if val < 0 {
-			val = 0
-		} else if val > 255 {
-			val = 255
-		}
-
-		dst[i] = byte(val)
+	n := len(lutX)
+	if n == 0 {
+		return
 	}
+	warpBilinearRow(&dst[0], &src[0], w, h, n, &lutX[0], &lutY[0])
+}
+
+// warpPlane applies bilinear interpolation for one complete plane.
+func warpPlane(dst, src []byte, w, h int, lutX, lutY []int64) {
+	n := w * h
+	if n == 0 {
+		return
+	}
+	warpBilinearRow(&dst[0], &src[0], w, h, n, &lutX[0], &lutY[0])
 }
