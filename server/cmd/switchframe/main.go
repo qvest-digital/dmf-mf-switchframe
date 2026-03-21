@@ -98,6 +98,9 @@ type AppConfig struct {
 
 	// AI segmentation.
 	AIModelPath string // Path to ONNX segmentation model (empty = disabled)
+
+	// ASR (Whisper speech-to-text).
+	ASRModelPath string // Path to Whisper ONNX model directory (empty = disabled)
 }
 
 func main() {
@@ -150,6 +153,9 @@ func run() error {
 		return err
 	}
 	if err := app.initCaptions(); err != nil {
+		return err
+	}
+	if err := app.initASR(); err != nil {
 		return err
 	}
 	if err := app.initClips(); err != nil {
@@ -237,6 +243,9 @@ func parseConfig() (AppConfig, error) {
 
 	// AI segmentation flags.
 	aiModelFlag := flag.String("ai-model", "", "Path to ONNX segmentation model for AI background replacement (requires CUDA + TensorRT)")
+
+	// ASR (Whisper speech-to-text) flags.
+	asrModelFlag := flag.String("asr-model", "", "Path to Whisper ONNX model directory for AI captioning (requires CUDA + TensorRT)")
 
 	flag.Parse()
 
@@ -368,6 +377,7 @@ func parseConfig() (AppConfig, error) {
 		MXLDiscover:          *mxlDiscover,
 		StateDir:             stateDir,
 		AIModelPath:          *aiModelFlag,
+		ASRModelPath:         *asrModelFlag,
 	}, nil
 }
 
