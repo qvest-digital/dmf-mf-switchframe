@@ -308,4 +308,17 @@ MetalResult metal_draw_border(MetalQueueRef queue, MetalPipelineRef pipeline,
 MetalResult metal_fill_rect(MetalQueueRef queue, MetalPipelineRef pipeline,
     MetalBufferRef dst, const MetalFillRectParams* params);
 
+// --- VideoToolbox direct encode from NV12 unified memory ---
+typedef void* VTEncoderRef;
+
+VTEncoderRef metal_vt_encoder_create(int width, int height, int fps_num, int fps_den, int bitrate, int gop_frames);
+void metal_vt_encoder_destroy(VTEncoderRef enc);
+
+// Encode an NV12 frame from unified memory. Returns Annex B H.264 data.
+// out_buf/out_len receive the encoded data (caller must free with free()).
+// out_is_idr is set to 1 for keyframes.
+int metal_vt_encode(VTEncoderRef enc, void* nv12_ptr, int pitch, int width, int height,
+                    int64_t pts, int force_idr,
+                    uint8_t** out_buf, int* out_len, int* out_is_idr);
+
 #endif // SWITCHFRAME_METAL_BRIDGE_H

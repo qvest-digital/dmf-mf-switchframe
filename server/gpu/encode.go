@@ -94,6 +94,11 @@ func (e *GPUEncoder) EncodeCPU(yuv []byte, pts int64, forceIDR bool) ([]byte, bo
 	return e.ffEnc.Encode(yuv, pts, forceIDR)
 }
 
+// IsNativeVT returns false on CUDA builds (no VideoToolbox).
+func (e *GPUEncoder) IsNativeVT() bool {
+	return false
+}
+
 // Close releases encoder resources.
 func (e *GPUEncoder) Close() {
 	if e.ffEnc != nil {

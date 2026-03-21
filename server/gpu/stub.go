@@ -396,6 +396,9 @@ func (e *GPUEncoder) EncodeCPU(yuv []byte, pts int64, forceIDR bool) ([]byte, bo
 	return nil, false, ErrGPUNotAvailable
 }
 
+// IsNativeVT returns false on non-GPU builds.
+func (e *GPUEncoder) IsNativeVT() bool { return false }
+
 // Close is a no-op on non-GPU builds.
 func (e *GPUEncoder) Close() {}
 
