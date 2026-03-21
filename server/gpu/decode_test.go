@@ -57,38 +57,61 @@ func TestNVDECDecode(t *testing.T) {
 	defer ctx.Close()
 
 	w, h := 640, 480
-	idrData := generateH264IDR(t, w, h)
+
+	// Generate a proper multi-frame H.264 stream (NVDEC buffers 2-3 frames)
+	enc, err := codec.NewFFmpegEncoder("h264_nvenc", w, h, 2_000_000, 30, 1, 2, nil)
+	if err != nil {
+		enc, err = codec.NewFFmpegEncoder("libx264", w, h, 2_000_000, 30, 1, 2, nil)
+		require.NoError(t, err)
+	}
+	defer enc.Close()
+
+	yuv := make([]byte, w*h*3/2)
+	for i := 0; i < w*h; i++ {
+		yuv[i] = byte(i%220) + 16
+	}
+	for i := w * h; i < len(yuv); i++ {
+		yuv[i] = 128
+	}
+
+	var frames [][]byte
+	for i := 0; i < 10; i++ {
+		data, _, err := enc.Encode(yuv, int64(i*3000), i == 0)
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		frames = append(frames, append([]byte(nil), data...))
+	}
+	require.NotEmpty(t, frames, "encoder should produce frames")
 
 	dec, err := NewGPUDecoder(ctx, 0)
 	require.NoError(t, err, "NVDEC decoder should create successfully on L4")
 	defer dec.Close()
 
-	// Feed the IDR frame — NVDEC may need a few frames before output
-	yuv, dw, dh, err := dec.Decode(idrData)
-	if err != nil {
-		t.Logf("First decode returned error (may need more frames): %v", err)
-		// Try feeding the same frame again (some decoders buffer)
-		yuv, dw, dh, err = dec.Decode(idrData)
+	// Feed frames until we get output
+	var decYUV []byte
+	var dw, dh int
+	for _, f := range frames {
+		decYUV, dw, dh, err = dec.Decode(f)
+		if err == nil && len(decYUV) > 0 {
+			break
+		}
 	}
-
-	if err != nil {
-		t.Skipf("NVDEC decode did not produce output after 2 frames (may need IDR+P): %v", err)
-	}
-
+	require.NoError(t, err, "NVDEC should decode after multiple frames")
 	assert.Equal(t, w, dw)
 	assert.Equal(t, h, dh)
-	assert.Equal(t, w*h*3/2, len(yuv))
+	assert.Equal(t, w*h*3/2, len(decYUV))
 
 	// Verify it's not all zeros (actual decoded content)
 	nonZero := 0
-	for _, b := range yuv[:1000] {
+	for _, b := range decYUV[:1000] {
 		if b != 0 {
 			nonZero++
 		}
 	}
 	assert.Greater(t, nonZero, 100, "decoded frame should contain non-zero data")
 
-	t.Logf("NVDEC decode success: %dx%d, %d bytes YUV", dw, dh, len(yuv))
+	t.Logf("NVDEC decode success: %dx%d, %d bytes YUV", dw, dh, len(decYUV))
 }
 
 func TestNVDECDecodeMultipleFrames(t *testing.T) {
