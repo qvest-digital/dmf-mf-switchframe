@@ -11,38 +11,31 @@ import (
 
 func TestFRUCAvailable(t *testing.T) {
 	avail := FRUCAvailable()
-	t.Logf("NvOFFRUC available: %v", avail)
-	// Don't fail — library may not be present on all GPU systems
+	assert.True(t, avail, "FRUC should always be available on CUDA builds (blend fallback)")
+	t.Logf("NVOFA hardware optical flow: %v", nvofaAvailable())
 }
 
 func TestFRUCCreate(t *testing.T) {
-	if !FRUCAvailable() {
-		t.Skip("NvOFFRUC library not available")
-	}
-
 	ctx, err := NewContext()
 	require.NoError(t, err)
 	defer ctx.Close()
 
 	fruc, err := NewFRUC(ctx, 1920, 1080)
-	require.NoError(t, err, "FRUC should create on L4 with NvOFFRUC")
+	require.NoError(t, err)
 	defer fruc.Close()
 
 	assert.Equal(t, 1920, fruc.width)
 	assert.Equal(t, 1080, fruc.height)
-	t.Logf("FRUC created: %dx%d, pitch=%d", fruc.width, fruc.height, fruc.pitch)
+	assert.Equal(t, 480, fruc.flowW) // 1920/4
+	assert.Equal(t, 270, fruc.flowH) // 1080/4
 }
 
 func TestFRUCInterpolate(t *testing.T) {
-	if !FRUCAvailable() {
-		t.Skip("NvOFFRUC library not available")
-	}
-
 	ctx, err := NewContext()
 	require.NoError(t, err)
 	defer ctx.Close()
 
-	w, h := 1920, 1080
+	w, h := 320, 240
 	fruc, err := NewFRUC(ctx, w, h)
 	require.NoError(t, err)
 	defer fruc.Close()
@@ -58,7 +51,7 @@ func TestFRUCInterpolate(t *testing.T) {
 	defer curr.Release()
 	defer output.Release()
 
-	// Create two distinct frames: prev=dark, curr=bright
+	// prev=dark (Y=64), curr=bright (Y=192)
 	yuvPrev := make([]byte, w*h*3/2)
 	yuvCurr := make([]byte, w*h*3/2)
 	for i := 0; i < w*h; i++ {
@@ -75,19 +68,64 @@ func TestFRUCInterpolate(t *testing.T) {
 	// Fill output with black to verify it gets written
 	require.NoError(t, FillBlack(ctx, output))
 
-	err = fruc.Interpolate(prev, curr, output)
+	// Interpolate at 50%
+	err = fruc.Interpolate(prev, curr, output, 0.5)
 	require.NoError(t, err)
 
-	// Download and verify the interpolated frame is between prev and curr
 	result := make([]byte, w*h*3/2)
 	require.NoError(t, Download(ctx, result, output, w, h))
 
-	// Sample center pixel — should be somewhere between 64 and 192
+	// At 50%, should be ~128 (midpoint of 64 and 192)
 	centerY := result[h/2*w+w/2]
-	t.Logf("FRUC interpolated center Y=%d (prev=64, curr=192)", centerY)
+	assert.InDelta(t, 128, int(centerY), 3, "50%% interpolation should be ~128")
+	t.Logf("FRUC interpolate 50%%: center Y=%d (prev=64, curr=192)", centerY)
+}
 
-	// The interpolated frame should differ from black (Y=16)
-	assert.Greater(t, centerY, byte(32), "interpolated frame should not be black")
+func TestFRUCInterpolateEndpoints(t *testing.T) {
+	ctx, err := NewContext()
+	require.NoError(t, err)
+	defer ctx.Close()
+
+	w, h := 320, 240
+	fruc, err := NewFRUC(ctx, w, h)
+	require.NoError(t, err)
+	defer fruc.Close()
+
+	pool, err := NewFramePool(ctx, w, h, 4)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	prev, _ := pool.Acquire()
+	curr, _ := pool.Acquire()
+	output, _ := pool.Acquire()
+	defer prev.Release()
+	defer curr.Release()
+	defer output.Release()
+
+	yuvPrev := make([]byte, w*h*3/2)
+	yuvCurr := make([]byte, w*h*3/2)
+	for i := 0; i < w*h; i++ {
+		yuvPrev[i] = 80
+		yuvCurr[i] = 200
+	}
+	for i := w * h; i < len(yuvPrev); i++ {
+		yuvPrev[i] = 128
+		yuvCurr[i] = 128
+	}
+	require.NoError(t, Upload(ctx, prev, yuvPrev, w, h))
+	require.NoError(t, Upload(ctx, curr, yuvCurr, w, h))
+
+	result := make([]byte, w*h*3/2)
+
+	// alpha=0.0 should produce prev
+	require.NoError(t, fruc.Interpolate(prev, curr, output, 0.0))
+	require.NoError(t, Download(ctx, result, output, w, h))
+	assert.InDelta(t, 80, int(result[h/2*w+w/2]), 2, "alpha=0 should be prev")
+
+	// alpha=1.0 should produce curr
+	require.NoError(t, fruc.Interpolate(prev, curr, output, 1.0))
+	require.NoError(t, Download(ctx, result, output, w, h))
+	assert.InDelta(t, 200, int(result[h/2*w+w/2]), 2, "alpha=1 should be curr")
 }
 
 func TestFRUCNilContext(t *testing.T) {
@@ -96,10 +134,6 @@ func TestFRUCNilContext(t *testing.T) {
 }
 
 func TestFRUCDoubleClose(t *testing.T) {
-	if !FRUCAvailable() {
-		t.Skip("NvOFFRUC library not available")
-	}
-
 	ctx, err := NewContext()
 	require.NoError(t, err)
 	defer ctx.Close()

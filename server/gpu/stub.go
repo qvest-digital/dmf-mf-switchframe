@@ -238,7 +238,9 @@ func FRUCAvailable() bool { return false }
 func NewFRUC(ctx *Context, width, height int) (*FRUC, error) { return nil, ErrGPUNotAvailable }
 
 // Interpolate returns ErrGPUNotAvailable on non-CUDA builds.
-func (f *FRUC) Interpolate(prev, curr, output *GPUFrame) error { return ErrGPUNotAvailable }
+func (f *FRUC) Interpolate(prev, curr, output *GPUFrame, alpha float64) error {
+	return ErrGPUNotAvailable
+}
 
 // Close is a no-op on non-CUDA builds.
 func (f *FRUC) Close() {}
