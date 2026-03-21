@@ -22,6 +22,12 @@ func (m *GPUSourceManager) RemoveSource(sourceKey string) {}
 // IngestYUV is a no-op on non-GPU builds.
 func (m *GPUSourceManager) IngestYUV(sourceKey string, yuv []byte, w, h int, pts int64) {}
 
+// IngestGPUFrame is a no-op on non-GPU builds.
+func (m *GPUSourceManager) IngestGPUFrame(sourceKey string, frame *GPUFrame, pts int64) {}
+
+// Pool returns nil on non-GPU builds.
+func (m *GPUSourceManager) Pool() *FramePool { return nil }
+
 // GetFrame returns nil on non-GPU builds.
 func (m *GPUSourceManager) GetFrame(sourceKey string) *GPUFrame { return nil }
 

@@ -431,5 +431,71 @@ func (m *GPUSourceManager) Snapshot() map[string]any {
 	}
 }
 
+// Pool returns the frame pool so callers can acquire frames for direct GPU
+// operations (e.g., CopyNV12FromDevice from NVDEC decode).
+func (m *GPUSourceManager) Pool() *FramePool { return m.pool }
+
+// IngestGPUFrame stores a GPUFrame that is already in VRAM (e.g., from NVDEC
+// zero-copy decode), applying per-source ST map correction and queuing preview.
+// Unlike IngestYUV, this skips CPU→GPU upload entirely — the frame is already
+// populated on the device.
+//
+// Ownership of frame transfers to the source manager (stored via atomic swap).
+// If the source doesn't exist and auto-register fails, the frame is released.
+func (m *GPUSourceManager) IngestGPUFrame(sourceKey string, frame *GPUFrame, pts int64) {
+	m.mu.RLock()
+	entry, exists := m.sources[sourceKey]
+	m.mu.RUnlock()
+	if !exists {
+		entry = m.autoRegister(sourceKey, frame.Width, frame.Height)
+		if entry == nil {
+			frame.Release()
+			return
+		}
+	}
+
+	frame.PTS = pts
+
+	// Apply per-source ST map correction if configured.
+	if m.stmaps != nil {
+		m.applySourceSTMap(sourceKey, entry, frame)
+	}
+
+	// Atomic swap: store new frame, release old.
+	old := entry.current.Swap(frame)
+	if old != nil {
+		old.Release()
+	}
+
+	// Per-source AI segmentation (if enabled for this source).
+	m.mu.RLock()
+	segEng := m.segEngine
+	m.mu.RUnlock()
+	if segEng != nil {
+		if segEng.HasPendingConfig(sourceKey) {
+			smoothing := segEng.PendingSmoothing(sourceKey)
+			if err := segEng.EnableSource(sourceKey, frame.Width, frame.Height, smoothing); err != nil {
+				slog.Warn("gpu: source manager: deferred segmentation enable failed",
+					"source", sourceKey, "error", err)
+			} else {
+				segEng.ClearPendingConfig(sourceKey)
+				slog.Info("gpu: source manager: deferred segmentation enabled",
+					"source", sourceKey, "size", [2]int{frame.Width, frame.Height})
+			}
+		}
+
+		if segEng.IsEnabled(sourceKey) {
+			gpuFrame := entry.current.Load()
+			if gpuFrame != nil {
+				segEng.Segment(sourceKey, gpuFrame)
+			}
+		}
+	}
+
+	// Queue frame for preview encoding.
+	// nil CPU buffer — CUDA preview path copies from GPU frame (device-to-device).
+	m.queuePreviewFrame(entry, nil, frame.Width, frame.Height, pts)
+}
+
 // previewLoop, queuePreviewFrame, and scaleYUV420pCPU are defined in
 // source_manager_preview.go (unified GPU frame copy + ScaleBilinearOn + encode).
