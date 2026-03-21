@@ -2,6 +2,11 @@
 
 package gpu
 
+import "time"
+
+// Ensure time is used (referenced by GPUPipelineNode interface).
+var _ = time.Duration(0)
+
 // Context is a stub for non-CUDA builds.
 type Context struct{}
 
@@ -244,6 +249,48 @@ func (f *FRUC) Interpolate(prev, curr, output *GPUFrame, alpha float64) error {
 
 // Close is a no-op on non-CUDA builds.
 func (f *FRUC) Close() {}
+
+// GPUPipelineNode is the interface for GPU pipeline processing nodes.
+type GPUPipelineNode interface {
+	Name() string
+	Configure(width, height, pitch int) error
+	Active() bool
+	ProcessGPU(frame *GPUFrame) error
+	Err() error
+	Latency() time.Duration
+	Close() error
+}
+
+// GPUPipeline is a stub for non-CUDA builds.
+type GPUPipeline struct{}
+
+// NewGPUPipeline returns a stub on non-CUDA builds.
+func NewGPUPipeline(ctx *Context, pool *FramePool) *GPUPipeline { return &GPUPipeline{} }
+
+// Build returns ErrGPUNotAvailable on non-CUDA builds.
+func (p *GPUPipeline) Build(width, height, pitch int, nodes []GPUPipelineNode) error {
+	return ErrGPUNotAvailable
+}
+
+// Run returns ErrGPUNotAvailable on non-CUDA builds.
+func (p *GPUPipeline) Run(frame *GPUFrame) error { return ErrGPUNotAvailable }
+
+// RunWithUpload returns ErrGPUNotAvailable on non-CUDA builds.
+func (p *GPUPipeline) RunWithUpload(yuv []byte, width, height int, pts int64) (*GPUFrame, error) {
+	return nil, ErrGPUNotAvailable
+}
+
+// Snapshot returns empty stats on non-CUDA builds.
+func (p *GPUPipeline) Snapshot() map[string]any { return map[string]any{"gpu": false} }
+
+// Wait is a no-op on non-CUDA builds.
+func (p *GPUPipeline) Wait() {}
+
+// Close is a no-op on non-CUDA builds.
+func (p *GPUPipeline) Close() error { return nil }
+
+// RawSinkFunc is a callback for raw YUV420p frames.
+type RawSinkFunc func(yuv []byte, width, height int)
 
 // PreviewEncoder is a stub for non-CUDA builds.
 type PreviewEncoder struct{}
