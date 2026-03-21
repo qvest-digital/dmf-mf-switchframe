@@ -178,6 +178,9 @@ typedef struct {
     int                 flowH;  // output grid: height/4
 } NvOF_Session;
 
+// Forward declaration (defined below nvof_create_session)
+static void nvof_destroy_session(NvOF_Session* s);
+
 static NV_OF_STATUS nvof_create_session(NvOF_Session* s, int width, int height) {
     NV_OF_STATUS rc;
     memset(s, 0, sizeof(NvOF_Session));
