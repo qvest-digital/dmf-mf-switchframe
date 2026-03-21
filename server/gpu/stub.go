@@ -216,6 +216,11 @@ func STMapWarp(ctx *Context, dst, src *GPUFrame, stmap *GPUSTMap) error {
 	return ErrGPUNotAvailable
 }
 
+// STMapWarpGlobalMem returns ErrGPUNotAvailable on non-CUDA builds.
+func STMapWarpGlobalMem(ctx *Context, dst, src *GPUFrame, stmap *GPUSTMap) error {
+	return ErrGPUNotAvailable
+}
+
 // GPUAnimatedSTMap is a stub for non-CUDA builds.
 type GPUAnimatedSTMap struct{ Width, Height, FPS int }
 

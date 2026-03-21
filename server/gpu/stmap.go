@@ -12,6 +12,11 @@ cudaError_t stmap_warp_nv12(
     const uint8_t* src, int srcPitch,
     const float* stS, const float* stT,
     int width, int height, cudaStream_t stream);
+cudaError_t stmap_warp_nv12_tex(
+    uint8_t* dst, int dstPitch,
+    const uint8_t* src, int srcPitch,
+    const float* stS, const float* stT,
+    int width, int height, cudaStream_t stream);
 cudaError_t stmap_upload(
     float** devS, float** devT, int width, int height,
     const float* hostS, const float* hostT);
@@ -75,10 +80,39 @@ func (m *GPUSTMap) Free() {
 }
 
 // STMapWarp applies an ST map warp to a GPU NV12 frame.
-// The source frame is warped according to the ST map coordinates and
-// written to the destination frame. Both frames must have matching
-// dimensions (same as the ST map).
+// Uses CUDA texture memory for hardware bilinear interpolation on the Y plane
+// (single tex2D fetch replaces 4 global reads + 3 multiply-adds per pixel).
+// Falls back to global memory automatically if texture creation fails.
+// Both frames must have matching dimensions (same as the ST map).
 func STMapWarp(ctx *Context, dst, src *GPUFrame, stmap *GPUSTMap) error {
+	if ctx == nil || dst == nil || src == nil || stmap == nil {
+		return ErrGPUNotAvailable
+	}
+	if src.Width != stmap.Width || src.Height != stmap.Height {
+		return fmt.Errorf("gpu: stmap: frame %dx%d doesn't match map %dx%d",
+			src.Width, src.Height, stmap.Width, stmap.Height)
+	}
+
+	// Use texture-based path (hardware bilinear for Y, global mem for UV).
+	// Falls back to full global memory internally if texture creation fails.
+	rc := C.stmap_warp_nv12_tex(
+		(*C.uint8_t)(unsafe.Pointer(uintptr(dst.DevPtr))),
+		C.int(dst.Pitch),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(src.DevPtr))),
+		C.int(src.Pitch),
+		stmap.DevS, stmap.DevT,
+		C.int(stmap.Width), C.int(stmap.Height),
+		ctx.stream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: stmap warp failed: %d", rc)
+	}
+	return ctx.Sync()
+}
+
+// STMapWarpGlobalMem applies an ST map warp using only global memory
+// (no texture objects). Provided for benchmarking comparison.
+func STMapWarpGlobalMem(ctx *Context, dst, src *GPUFrame, stmap *GPUSTMap) error {
 	if ctx == nil || dst == nil || src == nil || stmap == nil {
 		return ErrGPUNotAvailable
 	}
@@ -97,7 +131,7 @@ func STMapWarp(ctx *Context, dst, src *GPUFrame, stmap *GPUSTMap) error {
 		ctx.stream,
 	)
 	if rc != C.cudaSuccess {
-		return fmt.Errorf("gpu: stmap warp failed: %d", rc)
+		return fmt.Errorf("gpu: stmap warp (global mem) failed: %d", rc)
 	}
 	return ctx.Sync()
 }

@@ -203,15 +203,12 @@ func BenchmarkDSKComposite1080p(b *testing.B) {
 	}
 }
 
-func BenchmarkSTMapWarp1080p(b *testing.B) {
+func setupSTMapBench(b *testing.B) (*Context, *FramePool, *GPUFrame, *GPUFrame, *GPUSTMap) {
+	b.Helper()
 	ctx, pool := setupBenchCtx(b)
-	defer ctx.Close()
-	defer pool.Close()
 
 	src, _ := pool.Acquire()
 	dst, _ := pool.Acquire()
-	defer src.Release()
-	defer dst.Release()
 	FillBlack(ctx, src)
 
 	w, h := 1920, 1080
@@ -224,11 +221,36 @@ func BenchmarkSTMapWarp1080p(b *testing.B) {
 		}
 	}
 	stmap, _ := UploadSTMap(ctx, s, t, w, h)
+	return ctx, pool, src, dst, stmap
+}
+
+// BenchmarkSTMapWarp1080p uses the texture-based path (hardware bilinear for Y plane)
+func BenchmarkSTMapWarp1080p(b *testing.B) {
+	ctx, pool, src, dst, stmap := setupSTMapBench(b)
+	defer ctx.Close()
+	defer pool.Close()
+	defer src.Release()
+	defer dst.Release()
 	defer stmap.Free()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		STMapWarp(ctx, dst, src, stmap)
+	}
+}
+
+// BenchmarkSTMapWarpGlobalMem1080p uses the global memory path (manual bilinear)
+func BenchmarkSTMapWarpGlobalMem1080p(b *testing.B) {
+	ctx, pool, src, dst, stmap := setupSTMapBench(b)
+	defer ctx.Close()
+	defer pool.Close()
+	defer src.Release()
+	defer dst.Release()
+	defer stmap.Free()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		STMapWarpGlobalMem(ctx, dst, src, stmap)
 	}
 }
 
