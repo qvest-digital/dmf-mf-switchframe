@@ -382,4 +382,257 @@ const char* trt_get_last_error(void) {
     return trt_error_buf;
 }
 
+// trt_get_num_io returns the number of I/O tensors in the engine.
+int trt_get_num_io(void* engineHandle) {
+    if (!engineHandle) return 0;
+    auto* wrapper = static_cast<TRTEngineWrapper*>(engineHandle);
+    return wrapper->engine->getNbIOTensors();
+}
+
+// trt_get_tensor_info returns metadata about a tensor by index.
+// name_buf receives the tensor name, is_input is 1 for input / 0 for output,
+// dtype is the nvinfer1::DataType enum value, ndims/dims describe the shape.
+int trt_get_tensor_info(void* engineHandle, int index,
+                        char* name_buf, int name_buf_size,
+                        int* is_input, int* dtype, int* ndims, int* dims) {
+    if (!engineHandle) {
+        set_error("null engine handle");
+        return -1;
+    }
+    auto* wrapper = static_cast<TRTEngineWrapper*>(engineHandle);
+    auto* engine = wrapper->engine.get();
+
+    int numIO = engine->getNbIOTensors();
+    if (index < 0 || index >= numIO) {
+        set_error("tensor index %d out of range [0, %d)", index, numIO);
+        return -1;
+    }
+
+    const char* name = engine->getIOTensorName(index);
+    strncpy(name_buf, name, name_buf_size - 1);
+    name_buf[name_buf_size - 1] = '\0';
+
+    auto mode = engine->getTensorIOMode(name);
+    *is_input = (mode == nvinfer1::TensorIOMode::kINPUT) ? 1 : 0;
+
+    *dtype = static_cast<int>(engine->getTensorDataType(name));
+
+    auto shape = engine->getTensorShape(name);
+    *ndims = shape.nbDims;
+    for (int d = 0; d < shape.nbDims && d < 8; d++) {
+        dims[d] = shape.d[d];
+    }
+
+    return 0;
+}
+
+// trt_build_engine_v2 builds a TensorRT engine from ONNX with full dynamic
+// dimension support. Unlike trt_build_engine which only handles dynamic batch
+// (dim 0), this handles ALL dynamic dimensions. maxSeqLen sets the maximum
+// for non-batch dynamic dims (e.g. sequence length in Whisper decoder).
+int trt_build_engine_v2(const char* onnxPath, const char* planPath,
+                        int maxBatch, int maxSeqLen, int useFP16, int useINT8) {
+    auto builder = std::unique_ptr<nvinfer1::IBuilder>(
+        nvinfer1::createInferBuilder(getTRTLogger()));
+    if (!builder) {
+        set_error("createInferBuilder failed");
+        return -1;
+    }
+
+    auto network = std::unique_ptr<nvinfer1::INetworkDefinition>(
+        builder->createNetworkV2(0));
+    if (!network) {
+        set_error("createNetworkV2 failed");
+        return -1;
+    }
+
+    auto parser = std::unique_ptr<nvonnxparser::IParser>(
+        nvonnxparser::createParser(*network, getTRTLogger()));
+    if (!parser) {
+        set_error("createParser failed");
+        return -1;
+    }
+
+    if (!parser->parseFromFile(onnxPath,
+            static_cast<int>(nvinfer1::ILogger::Severity::kWARNING))) {
+        set_error("ONNX parse failed for: %s", onnxPath);
+        return -1;
+    }
+
+    auto config = std::unique_ptr<nvinfer1::IBuilderConfig>(
+        builder->createBuilderConfig());
+    if (!config) {
+        set_error("createBuilderConfig failed");
+        return -1;
+    }
+
+    // 512 MB workspace (larger than v1 to accommodate multi-input models).
+    config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, 512ULL << 20);
+
+    if (useFP16 && builder->platformHasFastFp16()) {
+        config->setFlag(nvinfer1::BuilderFlag::kFP16);
+    }
+    if (useINT8 && builder->platformHasFastInt8()) {
+        config->setFlag(nvinfer1::BuilderFlag::kINT8);
+    }
+
+    auto profile = builder->createOptimizationProfile();
+    if (!profile) {
+        set_error("createOptimizationProfile failed");
+        return -1;
+    }
+
+    // Set optimization profile for ALL dynamic dimensions, not just batch.
+    int numInputs = network->getNbInputs();
+    for (int i = 0; i < numInputs; i++) {
+        auto input = network->getInput(i);
+        auto dims = input->getDimensions();
+        const char* inputName = input->getName();
+
+        nvinfer1::Dims minDims = dims, optDims = dims, maxDims = dims;
+        bool hasDynamic = false;
+
+        for (int d = 0; d < dims.nbDims; d++) {
+            if (dims.d[d] == -1) {
+                hasDynamic = true;
+                if (d == 0) {
+                    // Batch dimension.
+                    minDims.d[d] = 1;
+                    optDims.d[d] = 1;
+                    maxDims.d[d] = maxBatch;
+                } else {
+                    // Non-batch dynamic dimension (e.g. sequence length).
+                    minDims.d[d] = 1;
+                    optDims.d[d] = maxSeqLen > 0 ? (maxSeqLen / 2) : 64;
+                    maxDims.d[d] = maxSeqLen > 0 ? maxSeqLen : 1500;
+                }
+            }
+        }
+
+        if (hasDynamic) {
+            profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kMIN, minDims);
+            profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kOPT, optDims);
+            profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kMAX, maxDims);
+        }
+    }
+    config->addOptimizationProfile(profile);
+
+    auto serialized = std::unique_ptr<nvinfer1::IHostMemory>(
+        builder->buildSerializedNetwork(*network, *config));
+    if (!serialized || serialized->size() == 0) {
+        set_error("buildSerializedNetwork failed");
+        return -1;
+    }
+
+    if (planPath && planPath[0] != '\0') {
+        std::ofstream out(planPath, std::ios::binary);
+        if (!out.is_open()) {
+            set_error("cannot open plan path for writing: %s", planPath);
+            return -1;
+        }
+        out.write(static_cast<const char*>(serialized->data()), serialized->size());
+        if (!out.good()) {
+            set_error("write to plan path failed: %s", planPath);
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+// TensorBinding describes a named tensor with its device pointer and shape.
+// Used by trt_infer_multi for per-tensor binding.
+typedef struct {
+    const char* name;
+    void* devPtr;
+    int dims[8];
+    int ndims;
+} TensorBinding;
+
+// trt_infer_multi runs inference with explicit per-tensor bindings.
+// Each binding specifies a tensor name, device pointer, and shape.
+// Input tensors have their shapes set via setInputShape().
+// Unbound output tensors are automatically bound to a scratch buffer.
+int trt_infer_multi(void* contextHandle,
+                    TensorBinding* bindings, int numBindings,
+                    void* stream) {
+    if (!contextHandle) {
+        set_error("null context handle");
+        return -1;
+    }
+    auto* ctx = static_cast<nvinfer1::IExecutionContext*>(contextHandle);
+    auto* engine = &ctx->getEngine();
+
+    // Bind all provided tensors.
+    for (int i = 0; i < numBindings; i++) {
+        const char* name = bindings[i].name;
+
+        auto mode = engine->getTensorIOMode(name);
+        if (mode == nvinfer1::TensorIOMode::kINPUT) {
+            nvinfer1::Dims shape;
+            shape.nbDims = bindings[i].ndims;
+            for (int d = 0; d < bindings[i].ndims && d < 8; d++) {
+                shape.d[d] = bindings[i].dims[d];
+            }
+            if (!ctx->setInputShape(name, shape)) {
+                set_error("setInputShape failed for: %s", name);
+                return -1;
+            }
+        }
+
+        if (!ctx->setTensorAddress(name, bindings[i].devPtr)) {
+            set_error("setTensorAddress failed for: %s", name);
+            return -1;
+        }
+    }
+
+    // Bind any unbound output tensors to a scratch buffer.
+    int numIO = engine->getNbIOTensors();
+    static thread_local void* tl_scratch2 = nullptr;
+    static thread_local size_t tl_scratch2_bytes = 0;
+
+    for (int i = 0; i < numIO; i++) {
+        const char* name = engine->getIOTensorName(i);
+        auto mode = engine->getTensorIOMode(name);
+        if (mode != nvinfer1::TensorIOMode::kOUTPUT) continue;
+
+        // Check if this output was already bound by the caller.
+        bool bound = false;
+        for (int b = 0; b < numBindings; b++) {
+            if (strcmp(bindings[b].name, name) == 0) {
+                bound = true;
+                break;
+            }
+        }
+        if (bound) continue;
+
+        auto dims = engine->getTensorShape(name);
+        int64_t vol = volume(dims);
+        if (vol < 0) vol = -vol;
+        size_t bytes = static_cast<size_t>(vol) * sizeof(float);
+        if (bytes > tl_scratch2_bytes) {
+            if (tl_scratch2) cudaFree(tl_scratch2);
+            if (cudaMalloc(&tl_scratch2, bytes) != cudaSuccess) {
+                set_error("cudaMalloc scratch failed");
+                tl_scratch2 = nullptr;
+                tl_scratch2_bytes = 0;
+                return -1;
+            }
+            tl_scratch2_bytes = bytes;
+        }
+        if (!ctx->setTensorAddress(name, tl_scratch2)) {
+            set_error("setTensorAddress scratch failed for: %s", name);
+            return -1;
+        }
+    }
+
+    cudaStream_t cudaStream = static_cast<cudaStream_t>(stream);
+    if (!ctx->enqueueV3(cudaStream)) {
+        set_error("enqueueV3 failed");
+        return -1;
+    }
+
+    return 0;
+}
+
 } // extern "C"
