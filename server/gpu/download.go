@@ -6,6 +6,11 @@ package gpu
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <stdint.h>
+
+// Forward declaration (cgo preambles are file-scoped)
+cudaError_t nv12_to_yuv420p(
+    uint8_t* y, uint8_t* cb, uint8_t* cr, const uint8_t* nv12,
+    int width, int height, int nv12_pitch, int dst_stride, cudaStream_t stream);
 */
 import "C"
 
