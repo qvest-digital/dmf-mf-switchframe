@@ -1,15 +1,8 @@
-//go:build darwin
+//go:build darwin || (cgo && cuda)
 
 package gpu
 
-/*
-#include "metal_bridge.h"
-#include <string.h>
-*/
-import "C"
-
 import (
-	"fmt"
 	"log/slog"
 	"sync/atomic"
 	"time"
@@ -160,8 +153,8 @@ func (n *gpuSTMapNode) ProcessGPU(frame *GPUFrame) error {
 		return nil
 	}
 
-	// Copy warped result back to the original frame via unified memory memcpy.
-	copyGPUFrameNV12(frame, tempFrame)
+	// Copy warped result back to the original frame.
+	CopyGPUFrame(frame, tempFrame)
 
 	tempFrame.Release()
 	if freeAfter {
@@ -169,19 +162,4 @@ func (n *gpuSTMapNode) ProcessGPU(frame *GPUFrame) error {
 	}
 
 	return nil
-}
-
-// copyGPUFrameNV12 copies NV12 data from src to dst using unified memory.
-// Both frames must have the same dimensions and pitch. On Apple Silicon,
-// contentsPtr() returns a CPU-accessible pointer to the Metal buffer's
-// unified memory.
-func copyGPUFrameNV12(dst, src *GPUFrame) {
-	if dst.Pitch != src.Pitch || dst.Height != src.Height {
-		slog.Error("copyGPUFrameNV12: dimension mismatch",
-			"dst", fmt.Sprintf("%dx%d p=%d", dst.Width, dst.Height, dst.Pitch),
-			"src", fmt.Sprintf("%dx%d p=%d", src.Width, src.Height, src.Pitch))
-		return
-	}
-	size := C.size_t(src.Pitch * src.Height * 3 / 2)
-	C.memcpy(dst.contentsPtr(), src.contentsPtr(), size)
 }

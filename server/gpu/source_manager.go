@@ -1,15 +1,8 @@
-//go:build darwin
+//go:build darwin || (cgo && cuda)
 
 package gpu
 
-/*
-#include "metal_bridge.h"
-#include <string.h>
-*/
-import "C"
-
 import (
-	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -305,7 +298,7 @@ func (m *GPUSourceManager) applySourceSTMap(sourceKey string, entry *gpuSourceEn
 	}
 
 	// Copy warped result back to the original frame.
-	copyGPUFrameNV12(frame, entry.stmapTmp)
+	CopyGPUFrame(frame, entry.stmapTmp)
 }
 
 // autoRegister creates a new source entry with no preview encoder. Called
@@ -386,19 +379,6 @@ func (m *GPUSourceManager) Close() {
 	for _, entry := range sources {
 		m.cleanupEntryLocked(entry)
 	}
-}
-
-// CopyGPUFrame copies NV12 data from src to dst using unified memory memcpy.
-// Both frames must have the same dimensions and pitch. No-ops with an error
-// log if dimensions mismatch.
-func CopyGPUFrame(dst, src *GPUFrame) {
-	if dst.Pitch != src.Pitch || dst.Height != src.Height {
-		slog.Error("CopyGPUFrame: dimension mismatch",
-			"dst", fmt.Sprintf("%dx%d p=%d", dst.Width, dst.Height, dst.Pitch),
-			"src", fmt.Sprintf("%dx%d p=%d", src.Width, src.Height, src.Pitch))
-		return
-	}
-	copyGPUFrameNV12(dst, src)
 }
 
 // previewYUVFrame carries CPU YUV420p data to the preview goroutine.

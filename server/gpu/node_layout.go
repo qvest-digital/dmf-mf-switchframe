@@ -1,18 +1,11 @@
-//go:build darwin
+//go:build darwin || (cgo && cuda)
 
 package gpu
-
-/*
-#include "metal_bridge.h"
-#include <string.h>
-*/
-import "C"
 
 import (
 	"log/slog"
 	"sync/atomic"
 	"time"
-	"unsafe"
 )
 
 // gpuLayoutNode applies PIP/multi-layout compositing on the GPU.
@@ -252,34 +245,18 @@ func (n *gpuLayoutNode) getOrUploadFill(slot *SlotSnapshot) (*GPUFrame, error) {
 	return fillFrame, nil
 }
 
-// allocFillFrame allocates a GPU frame with the given dimensions.
-// If the fill matches the pool's program dimensions, use the pool;
-// otherwise allocate a standalone Metal buffer.
+// allocFillFrame allocates a GPU frame for fill content.
+// Always uses the pool — pool frames have enough memory even when source
+// dimensions differ from program dimensions. Upload uses the actual width/height
+// and the pool's pitch, so the extra space is just unused padding. We set the
+// frame's Width/Height to the fill dimensions so that downstream operations
+// (e.g., PIPComposite) use the correct source dimensions.
 func (n *gpuLayoutNode) allocFillFrame(w, h int) (*GPUFrame, error) {
-	if w == n.width && h == n.height {
-		return n.pool.Acquire()
-	}
-
-	// Standalone allocation for mismatched dimensions.
-	pitch := (w + 255) &^ 255 // 256-byte alignment
-	totalSize := pitch * h * 3 / 2
-	buf, err := n.ctx.mtl.allocBufferAligned(totalSize, 256)
+	frame, err := n.pool.Acquire()
 	if err != nil {
 		return nil, err
 	}
-
-	contents := C.metal_buffer_contents(buf)
-	frame := &GPUFrame{
-		MetalBuf: buf,
-		DevPtr:   uintptr(contents),
-		Pitch:    pitch,
-		Width:    w,
-		Height:   h,
-	}
-	frame.refs.Store(1)
-
-	// Zero the buffer to start with black.
-	C.memset(unsafe.Pointer(contents), 0, C.size_t(totalSize))
-
+	frame.Width = w
+	frame.Height = h
 	return frame, nil
 }

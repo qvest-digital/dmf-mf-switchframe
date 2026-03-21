@@ -1,11 +1,6 @@
-//go:build darwin
+//go:build darwin || (cgo && cuda)
 
 package gpu
-
-/*
-#include "metal_bridge.h"
-*/
-import "C"
 
 import (
 	"log/slog"
@@ -244,29 +239,18 @@ func (n *gpuKeyNode) getOrUploadFill(key *EnabledKeySnapshot) (*GPUFrame, error)
 	return fillFrame, nil
 }
 
-// allocFillFrame allocates a GPU frame with the given dimensions.
-// If the fill matches the pool's program dimensions, use the pool;
-// otherwise allocate a standalone Metal buffer.
+// allocFillFrame allocates a GPU frame for fill content.
+// Always uses the pool — pool frames have enough memory even when source
+// dimensions differ from program dimensions. Upload uses the actual width/height
+// and the pool's pitch, so the extra space is just unused padding. We set the
+// frame's Width/Height to the fill dimensions so that downstream scaling checks
+// (e.g., needsScale in applyKey) work correctly.
 func (n *gpuKeyNode) allocFillFrame(w, h int) (*GPUFrame, error) {
-	if w == n.width && h == n.height {
-		return n.pool.Acquire()
-	}
-
-	// Standalone allocation for mismatched dimensions.
-	pitch := (w + 255) &^ 255 // 256-byte alignment
-	totalSize := pitch * h * 3 / 2
-	buf, err := n.ctx.mtl.allocBufferAligned(totalSize, 256)
+	frame, err := n.pool.Acquire()
 	if err != nil {
 		return nil, err
 	}
-
-	frame := &GPUFrame{
-		MetalBuf: buf,
-		DevPtr:   uintptr(C.metal_buffer_contents(buf)),
-		Pitch:    pitch,
-		Width:    w,
-		Height:   h,
-	}
-	frame.refs.Store(1)
+	frame.Width = w
+	frame.Height = h
 	return frame, nil
 }
