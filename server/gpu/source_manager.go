@@ -175,6 +175,13 @@ func (m *GPUSourceManager) cleanupEntryLocked(entry *gpuSourceEntry) {
 // (key/layout GPUFill reads) without requiring the app layer to register
 // every source at creation time.
 func (m *GPUSourceManager) IngestYUV(sourceKey string, yuv []byte, w, h int, pts int64) {
+	// Nil YUV is a no-op — this happens when the NVDEC zero-copy path
+	// already ingested the frame via IngestGPUFrame and the switcher's
+	// handleRawVideoFrame calls IngestYUV again for the same source.
+	if len(yuv) == 0 {
+		return
+	}
+
 	m.mu.RLock()
 	entry, exists := m.sources[sourceKey]
 	m.mu.RUnlock()

@@ -769,6 +769,17 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 			}
 
 			srcMgr.IngestGPUFrame(sourceKey, frame, pts)
+
+			// Notify the switcher so health monitoring and frame sync see this
+			// source as alive. The ProcessingFrame has nil YUV — IngestYUV
+			// returns early for nil buffers, and the GPU source manager already
+			// has the frame from IngestGPUFrame above.
+			a.sw.IngestRawVideo(sourceKey, &switcher.ProcessingFrame{
+				Width:  w,
+				Height: h,
+				PTS:    pts,
+				DTS:    pts,
+			})
 		}
 
 		slog.Info("SRT source: NVDEC zero-copy path enabled", "key", key)
