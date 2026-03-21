@@ -245,6 +245,22 @@ func (f *FRUC) Interpolate(prev, curr, output *GPUFrame, alpha float64) error {
 // Close is a no-op on non-CUDA builds.
 func (f *FRUC) Close() {}
 
+// PreviewEncoder is a stub for non-CUDA builds.
+type PreviewEncoder struct{}
+
+// NewPreviewEncoder returns ErrGPUNotAvailable on non-CUDA builds.
+func NewPreviewEncoder(ctx *Context, srcW, srcH, dstW, dstH, bitrate, fpsNum, fpsDen int) (*PreviewEncoder, error) {
+	return nil, ErrGPUNotAvailable
+}
+
+// Encode returns ErrGPUNotAvailable on non-CUDA builds.
+func (p *PreviewEncoder) Encode(src *GPUFrame, forceIDR bool) ([]byte, bool, error) {
+	return nil, false, ErrGPUNotAvailable
+}
+
+// Close is a no-op on non-CUDA builds.
+func (p *PreviewEncoder) Close() {}
+
 // GPUEncoder is a stub for non-CUDA builds.
 type GPUEncoder struct{}
 
