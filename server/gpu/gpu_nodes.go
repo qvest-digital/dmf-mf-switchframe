@@ -15,9 +15,6 @@ var (
 	_ switcher.PipelineNode = (*gpuUploadBridgeNode)(nil)
 	_ switcher.PipelineNode = (*gpuDownloadBridgeNode)(nil)
 	_ switcher.PipelineNode = (*gpuSTMapBridgeNode)(nil)
-	_ switcher.PipelineNode = (*gpuKeyBridgeNode)(nil)
-	_ switcher.PipelineNode = (*gpuLayoutBridgeNode)(nil)
-	_ switcher.PipelineNode = (*gpuCompositorBridgeNode)(nil)
 )
 
 // gpuUploadBridgeNode implements switcher.PipelineNode. It uploads a CPU
@@ -188,67 +185,3 @@ func (n *gpuSTMapBridgeNode) Process(dst, src *switcher.ProcessingFrame) *switch
 	return src
 }
 
-// gpuKeyBridgeNode is a placeholder for GPU upstream keying.
-// Currently passes through — the CPU fallback handles keying when GPU data
-// is nil (before upload) or this is a future expansion point.
-type gpuKeyBridgeNode struct {
-	active bool
-}
-
-// NewKeyNode creates a GPU upstream key bridge node (currently passthrough).
-func NewKeyNode() switcher.PipelineNode {
-	return &gpuKeyBridgeNode{active: false}
-}
-
-func (n *gpuKeyBridgeNode) Name() string                                  { return "gpu-key" }
-func (n *gpuKeyBridgeNode) Configure(format switcher.PipelineFormat) error { return nil }
-func (n *gpuKeyBridgeNode) Active() bool                                  { return n.active }
-func (n *gpuKeyBridgeNode) Err() error                                    { return nil }
-func (n *gpuKeyBridgeNode) Latency() time.Duration                        { return 0 }
-func (n *gpuKeyBridgeNode) Close() error                                  { return nil }
-
-func (n *gpuKeyBridgeNode) Process(dst, src *switcher.ProcessingFrame) *switcher.ProcessingFrame {
-	return src
-}
-
-// gpuLayoutBridgeNode is a placeholder for GPU PIP/layout compositing.
-type gpuLayoutBridgeNode struct {
-	active bool
-}
-
-// NewLayoutNode creates a GPU layout compositor bridge node (currently passthrough).
-func NewLayoutNode() switcher.PipelineNode {
-	return &gpuLayoutBridgeNode{active: false}
-}
-
-func (n *gpuLayoutBridgeNode) Name() string                                  { return "gpu-layout" }
-func (n *gpuLayoutBridgeNode) Configure(format switcher.PipelineFormat) error { return nil }
-func (n *gpuLayoutBridgeNode) Active() bool                                  { return n.active }
-func (n *gpuLayoutBridgeNode) Err() error                                    { return nil }
-func (n *gpuLayoutBridgeNode) Latency() time.Duration                        { return 0 }
-func (n *gpuLayoutBridgeNode) Close() error                                  { return nil }
-
-func (n *gpuLayoutBridgeNode) Process(dst, src *switcher.ProcessingFrame) *switcher.ProcessingFrame {
-	return src
-}
-
-// gpuCompositorBridgeNode is a placeholder for GPU DSK graphics compositing.
-type gpuCompositorBridgeNode struct {
-	active bool
-}
-
-// NewCompositorNode creates a GPU DSK compositor bridge node (currently passthrough).
-func NewCompositorNode() switcher.PipelineNode {
-	return &gpuCompositorBridgeNode{active: false}
-}
-
-func (n *gpuCompositorBridgeNode) Name() string                                  { return "gpu-compositor" }
-func (n *gpuCompositorBridgeNode) Configure(format switcher.PipelineFormat) error { return nil }
-func (n *gpuCompositorBridgeNode) Active() bool                                  { return n.active }
-func (n *gpuCompositorBridgeNode) Err() error                                    { return nil }
-func (n *gpuCompositorBridgeNode) Latency() time.Duration                        { return 0 }
-func (n *gpuCompositorBridgeNode) Close() error                                  { return nil }
-
-func (n *gpuCompositorBridgeNode) Process(dst, src *switcher.ProcessingFrame) *switcher.ProcessingFrame {
-	return src
-}

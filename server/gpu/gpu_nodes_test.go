@@ -101,19 +101,26 @@ func TestGPUDownloadNoGPUData(t *testing.T) {
 }
 
 func TestGPUBridgeNodeNames(t *testing.T) {
+	ctx, err := NewContext()
+	require.NoError(t, err)
+	defer ctx.Close()
+
+	pool, err := NewFramePool(ctx, 320, 240, 2)
+	require.NoError(t, err)
+	defer pool.Close()
+
 	tests := []struct {
 		node switcher.PipelineNode
 		name string
 	}{
-		{NewKeyNode(), "gpu-key"},
-		{NewLayoutNode(), "gpu-layout"},
-		{NewCompositorNode(), "gpu-compositor"},
+		{NewUploadNode(ctx, pool), "gpu-upload"},
+		{NewSTMapNode(ctx, pool, nil), "gpu-stmap"},
+		{NewDownloadNode(ctx), "gpu-download"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.name, tt.node.Name())
-			assert.False(t, tt.node.Active(), "placeholder nodes should be inactive")
 			assert.NoError(t, tt.node.Close())
 		})
 	}
@@ -131,12 +138,11 @@ func TestGPUFullPipelineBridge(t *testing.T) {
 
 	format := switcher.PipelineFormat{Width: w, Height: h, FPSNum: 30, FPSDen: 1}
 
-	// Build a full GPU bridge pipeline.
+	// Build a GPU pipeline with upload → stmap → download.
+	// (No stmap registry, so stmap node will be inactive and pass through.)
 	nodes := []switcher.PipelineNode{
 		NewUploadNode(ctx, pool),
-		NewKeyNode(),
-		NewLayoutNode(),
-		NewCompositorNode(),
+		NewSTMapNode(ctx, pool, nil),
 		NewDownloadNode(ctx),
 	}
 
