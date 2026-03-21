@@ -30,6 +30,24 @@ extern int trt_get_output_size(trt_engine_t engine);
 extern void trt_destroy_context(trt_context_t context);
 extern void trt_destroy_engine(trt_engine_t engine);
 extern const char* trt_get_last_error(void);
+
+extern int trt_build_engine_v2(const char* onnxPath, const char* planPath,
+                               int maxBatch, int maxSeqLen, int useFP16, int useINT8);
+extern int trt_get_num_io(void* engineHandle);
+extern int trt_get_tensor_info(void* engineHandle, int index,
+                               char* name_buf, int name_buf_size,
+                               int* is_input, int* dtype, int* ndims, int* dims);
+
+typedef struct {
+    const char* name;
+    void* devPtr;
+    int dims[8];
+    int ndims;
+} TensorBinding;
+
+extern int trt_infer_multi(void* contextHandle,
+                           TensorBinding* bindings, int numBindings,
+                           void* stream);
 */
 import "C"
 
@@ -215,4 +233,157 @@ func (c *TRTContext) Close() {
 	}
 	C.trt_destroy_context(c.handle)
 	c.handle = nil
+}
+
+// TensorInfo describes an I/O tensor in a TensorRT engine.
+type TensorInfo struct {
+	Name    string
+	IsInput bool
+	DType   int   // 0=float32, 1=half, 3=int32, 6=int64
+	Dims    []int // -1 = dynamic
+}
+
+// NumIOTensors returns the total number of I/O tensors in the engine.
+func (e *TRTEngine) NumIOTensors() int {
+	if e == nil || e.handle == nil {
+		return 0
+	}
+	return int(C.trt_get_num_io(e.handle))
+}
+
+// TensorInfoAt returns metadata for the i-th I/O tensor.
+func (e *TRTEngine) TensorInfoAt(index int) (TensorInfo, error) {
+	if e == nil || e.handle == nil {
+		return TensorInfo{}, fmt.Errorf("gpu: tensorrt: nil engine")
+	}
+
+	var nameBuf [256]C.char
+	var isInput, dtype, ndims C.int
+	var dims [8]C.int
+
+	rc := C.trt_get_tensor_info(e.handle, C.int(index),
+		&nameBuf[0], 256,
+		&isInput, &dtype, &ndims, &dims[0])
+	if rc != 0 {
+		errMsg := C.GoString(C.trt_get_last_error())
+		return TensorInfo{}, fmt.Errorf("gpu: tensorrt: get tensor info: %s", errMsg)
+	}
+
+	info := TensorInfo{
+		Name:    C.GoString(&nameBuf[0]),
+		IsInput: isInput != 0,
+		DType:   int(dtype),
+	}
+	for i := 0; i < int(ndims); i++ {
+		info.Dims = append(info.Dims, int(dims[i]))
+	}
+	return info, nil
+}
+
+// TRTEngineOptsV2 extends TRTEngineOpts with sequence length for decoder models.
+type TRTEngineOptsV2 struct {
+	MaxBatchSize  int
+	MaxSeqLen     int    // Max sequence length for dynamic dims (e.g., 448 for Whisper)
+	UseFP16       bool
+	UseINT8       bool
+	PlanCachePath string
+}
+
+// NewTRTEngineV2 builds a TensorRT engine with full dynamic dimension support.
+// Unlike NewTRTEngine, this handles dynamic dimensions on ANY axis (not just batch).
+func NewTRTEngineV2(onnxPath string, opts TRTEngineOptsV2) (*TRTEngine, error) {
+	if _, err := os.Stat(onnxPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("gpu: tensorrt: ONNX file not found: %s", onnxPath)
+	}
+
+	maxBatch := opts.MaxBatchSize
+	if maxBatch <= 0 {
+		maxBatch = 1
+	}
+	maxSeqLen := opts.MaxSeqLen
+	if maxSeqLen <= 0 {
+		maxSeqLen = 448
+	}
+
+	planPath := opts.PlanCachePath
+
+	// Try loading cached plan first.
+	if planPath != "" {
+		if _, err := os.Stat(planPath); err == nil {
+			return loadPlan(planPath)
+		}
+	}
+
+	cOnnx := C.CString(onnxPath)
+	defer C.free(unsafe.Pointer(cOnnx))
+
+	var cPlan *C.char
+	if planPath != "" {
+		cPlan = C.CString(planPath)
+		defer C.free(unsafe.Pointer(cPlan))
+	}
+
+	useFP16 := C.int(0)
+	if opts.UseFP16 {
+		useFP16 = 1
+	}
+	useINT8 := C.int(0)
+	if opts.UseINT8 {
+		useINT8 = 1
+	}
+
+	rc := C.trt_build_engine_v2(cOnnx, cPlan, C.int(maxBatch), C.int(maxSeqLen), useFP16, useINT8)
+	if rc != 0 {
+		errMsg := C.GoString(C.trt_get_last_error())
+		return nil, fmt.Errorf("gpu: tensorrt: build v2 failed: %s", errMsg)
+	}
+
+	if planPath != "" {
+		return loadPlan(planPath)
+	}
+	return nil, fmt.Errorf("gpu: tensorrt: PlanCachePath is required")
+}
+
+// TRTBinding describes a single named tensor binding for multi-input inference.
+type TRTBinding struct {
+	Name   string
+	DevPtr unsafe.Pointer
+	Dims   []int
+}
+
+// InferMulti runs inference with explicit per-tensor bindings.
+// Each binding specifies a tensor name, device pointer, and actual dimensions.
+func (c *TRTContext) InferMulti(bindings []TRTBinding, stream unsafe.Pointer) error {
+	if c == nil || c.handle == nil {
+		return fmt.Errorf("gpu: tensorrt: nil context")
+	}
+	if len(bindings) == 0 {
+		return fmt.Errorf("gpu: tensorrt: no bindings provided")
+	}
+
+	// Allocate C bindings array.
+	cBindings := make([]C.TensorBinding, len(bindings))
+	cNames := make([]*C.char, len(bindings)) // prevent GC
+
+	for i, b := range bindings {
+		cNames[i] = C.CString(b.Name)
+		cBindings[i].name = cNames[i]
+		cBindings[i].devPtr = b.DevPtr
+		cBindings[i].ndims = C.int(len(b.Dims))
+		for d := 0; d < len(b.Dims) && d < 8; d++ {
+			cBindings[i].dims[d] = C.int(b.Dims[d])
+		}
+	}
+	defer func() {
+		for _, cn := range cNames {
+			C.free(unsafe.Pointer(cn))
+		}
+	}()
+
+	rc := C.trt_infer_multi(c.handle, &cBindings[0], C.int(len(cBindings)), stream)
+	if rc != 0 {
+		errMsg := C.GoString(C.trt_get_last_error())
+		return fmt.Errorf("gpu: tensorrt: infer_multi failed: %s", errMsg)
+	}
+	return nil
 }
