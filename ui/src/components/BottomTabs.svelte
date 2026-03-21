@@ -5,16 +5,25 @@
 		children: import('svelte').Snippet<[string]>;
 		onTabChange?: (tab: string) => void;
 		replayActive?: boolean;
+		aiSegmentAvailable?: boolean;
 	}
-	let { children, onTabChange, replayActive = false }: Props = $props();
+	let { children, onTabChange, replayActive = false, aiSegmentAvailable = false }: Props = $props();
 
-	const tabs = ['Audio', 'Layout', 'Graphics', 'Replay', 'Keys', 'Captions', 'SCTE', 'Macros', 'Presets', 'Clips', 'Team', 'STMap'] as const;
-	type TabId = typeof tabs[number];
+	const staticTabs = ['Audio', 'Layout', 'Graphics', 'Replay', 'Keys', 'Captions', 'SCTE', 'Macros', 'Presets', 'Clips', 'Team', 'STMap'] as const;
+	type StaticTabId = typeof staticTabs[number];
+	type TabId = StaticTabId | 'AI BG';
+
+	let tabs = $derived(
+		aiSegmentAvailable
+			? ([...staticTabs, 'AI BG'] as TabId[])
+			: ([...staticTabs] as TabId[]),
+	);
 
 	function loadSavedTab(): TabId {
 		if (typeof localStorage === 'undefined') return 'Audio';
 		const saved = localStorage.getItem('sf-active-tab');
-		if (saved && (tabs as readonly string[]).includes(saved)) return saved as TabId;
+		// Accept any known tab name — 'AI BG' is valid if server reports available
+		if (saved) return saved as TabId;
 		return 'Audio';
 	}
 
@@ -52,17 +61,21 @@
 	<div class="tab-bar" role="tablist" aria-label="Bottom panel">
 		{#each tabs as tab, i}
 			<button
-				id="tab-{tab.toLowerCase()}"
+				id="tab-{tab.toLowerCase().replace(' ', '-')}"
 				class="tab"
 				class:active={activeTab === tab}
+				class:tab--ai={tab === 'AI BG'}
 				role="tab"
 				aria-selected={activeTab === tab}
-				aria-controls="tabpanel-{tab.toLowerCase()}"
+				aria-controls="tabpanel-{tab.toLowerCase().replace(' ', '-')}"
 				onclick={() => setTab(tab)}
 			>
 				{tab}
 				{#if tab === 'Replay' && replayActive}
 					<span class="replay-dot"></span>
+				{/if}
+				{#if tab === 'AI BG'}
+					<span class="ai-dot"></span>
 				{/if}
 				<span class="tab-shortcut">^{(i + 1) % 10}</span>
 			</button>
@@ -71,8 +84,8 @@
 	<div
 		class="tab-content"
 		role="tabpanel"
-		id="tabpanel-{activeTab.toLowerCase()}"
-		aria-labelledby="tab-{activeTab.toLowerCase()}"
+		id="tabpanel-{activeTab.toLowerCase().replace(' ', '-')}"
+		aria-labelledby="tab-{activeTab.toLowerCase().replace(' ', '-')}"
 	>
 		{@render children?.(activeTab)}
 	</div>
@@ -140,6 +153,20 @@
 		font-family: var(--font-mono);
 		font-size: var(--text-2xs);
 		opacity: 0.2;
+	}
+
+	.tab--ai.active {
+		border-bottom-color: #a855f7;
+	}
+
+	.ai-dot {
+		display: inline-block;
+		width: 5px;
+		height: 5px;
+		background: #a855f7;
+		border-radius: 50%;
+		margin-left: 1px;
+		opacity: 0.7;
 	}
 
 	.tab-content {

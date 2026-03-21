@@ -30,6 +30,7 @@
 	import OperatorBadge from '../components/OperatorBadge.svelte';
 	import TeamPanel from '../components/TeamPanel.svelte';
 	import STMapPanel from '../components/STMapPanel.svelte';
+	import AISegmentPanel from '../components/AISegmentPanel.svelte';
 	import LockIndicator from '../components/LockIndicator.svelte';
 	import CommsBar from '../components/CommsBar.svelte';
 	import BottomTabs from '../components/BottomTabs.svelte';
@@ -701,6 +702,7 @@
 			<section class="bottom-panel">
 					<BottomTabs
 					replayActive={store.effectiveState.replay?.state === 'playing' || store.effectiveState.replay?.state === 'paused'}
+					aiSegmentAvailable={store.effectiveState.aiSegmentation?.available === true}
 					onTabChange={(tab) => { layoutTabActive = tab === 'Layout'; graphicsTabActive = tab === 'Graphics'; activeBottomTab = tab; }}
 				>
 					{#snippet children(activeTab)}
@@ -767,6 +769,14 @@
 						{:else if activeTab === 'STMap'}
 							<div class="tab-panel">
 								<STMapPanel state={store.effectiveState} />
+							</div>
+						{:else if activeTab === 'AI BG'}
+							<div class="tab-panel">
+								{#if store.effectiveState.aiSegmentation?.available}
+									<AISegmentPanel state={store.effectiveState} />
+								{:else}
+									<div class="panel-disabled">AI Background Removal not available on this server</div>
+								{/if}
 							</div>
 						{/if}
 					{/snippet}

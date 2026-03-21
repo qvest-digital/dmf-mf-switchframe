@@ -601,9 +601,25 @@ export interface ControlRoomState {
 	macro?: MacroExecutionState;
 	comms?: CommsState;
 	stmap?: STMapState;
+	aiSegmentation?: AISegmentationState;
 	lastChangedBy?: string;
 	seq: number;
 	timestamp: number;
+}
+
+// ── AI Segmentation Types ──
+
+export interface AISegmentConfig {
+	enabled: boolean;
+	sensitivity: number;
+	edgeSmooth: number;
+	background: string;
+}
+
+export interface AISegmentationState {
+	available: boolean;
+	modelName?: string;
+	sources?: Record<string, AISegmentConfig>;
 }
 
 // ── ST Map Types ──
