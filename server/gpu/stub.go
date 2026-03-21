@@ -94,6 +94,60 @@ func FillBlack(ctx *Context, frame *GPUFrame) error {
 	return ErrGPUNotAvailable
 }
 
+// ScaleQuality selects the scaling algorithm.
+type ScaleQuality int
+
+const (
+	ScaleQualityBilinear ScaleQuality = iota
+	ScaleQualityLanczos
+)
+
+// ScaleBilinear returns ErrGPUNotAvailable on non-CUDA builds.
+func ScaleBilinear(ctx *Context, dst, src *GPUFrame) error { return ErrGPUNotAvailable }
+
+// Scale returns ErrGPUNotAvailable on non-CUDA builds.
+func Scale(ctx *Context, dst, src *GPUFrame, quality ScaleQuality) error { return ErrGPUNotAvailable }
+
+// WipeDirection matches transition.WipeDirection values.
+type WipeDirection int
+
+// BlendMix returns ErrGPUNotAvailable on non-CUDA builds.
+func BlendMix(ctx *Context, dst, a, b *GPUFrame, position float64) error { return ErrGPUNotAvailable }
+
+// BlendFTB returns ErrGPUNotAvailable on non-CUDA builds.
+func BlendFTB(ctx *Context, dst, src *GPUFrame, position float64) error { return ErrGPUNotAvailable }
+
+// BlendWipe returns ErrGPUNotAvailable on non-CUDA builds.
+func BlendWipe(ctx *Context, dst, a, b, maskBuf *GPUFrame, position float64, dir WipeDirection, softEdge int) error {
+	return ErrGPUNotAvailable
+}
+
+// BlendStinger returns ErrGPUNotAvailable on non-CUDA builds.
+func BlendStinger(ctx *Context, dst, base, overlay, alpha *GPUFrame) error { return ErrGPUNotAvailable }
+
+// ChromaKeyConfig holds chroma key parameters.
+type ChromaKeyConfig struct {
+	KeyCb, KeyCr       uint8
+	Similarity         float32
+	Smoothness         float32
+	SpillSuppress      float32
+	SpillReplaceCb     uint8
+	SpillReplaceCr     uint8
+}
+
+// ChromaKey returns ErrGPUNotAvailable on non-CUDA builds.
+func ChromaKey(ctx *Context, frame *GPUFrame, maskBuf *GPUFrame, cfg ChromaKeyConfig) error {
+	return ErrGPUNotAvailable
+}
+
+// LumaKey returns ErrGPUNotAvailable on non-CUDA builds.
+func LumaKey(ctx *Context, frame *GPUFrame, maskBuf *GPUFrame, lut [256]byte) error {
+	return ErrGPUNotAvailable
+}
+
+// BuildLumaKeyLUT creates a 256-byte lookup table for luma keying.
+func BuildLumaKeyLUT(lowClip, highClip, softness float32) [256]byte { return [256]byte{} }
+
 // GPUEncoder is a stub for non-CUDA builds.
 type GPUEncoder struct{}
 
