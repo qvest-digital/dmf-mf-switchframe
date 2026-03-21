@@ -357,7 +357,6 @@ flowchart LR
     LYT["layoutCompositorNode"]
     DSK["compositorNode"]
     RS1["rawSinkNode<br/>(MXL output)"]
-    RS2["rawSinkNode<br/>(raw monitor)"]
     ENC["encodeNode"]
     BV["BroadcastVideo"]
 
@@ -365,15 +364,13 @@ flowchart LR
     USK --> LYT
     LYT --> DSK
     DSK --> RS1
-    RS1 --> RS2
-    RS2 --> ENC
+    RS1 --> ENC
     ENC --> BV
 
     USK -.- USKn["Per-source chroma/luma key mask<br/>(Cb/Cr distance, Y threshold, feathering)"]
     LYT -.- LYTn["PIP, side-by-side, quad split<br/>(up to 4 slots, scale + blit + border)"]
     DSK -.- DSKn["8 independent graphics layers<br/>(RGBA → YUV alpha blend, z-ordered)"]
     RS1 -.- RS1n["Deep-copy for MXL shared-memory<br/>output (before encode)"]
-    RS2 -.- RS2n["Deep-copy for raw YUV monitor<br/>(before encode)"]
     ENC -.- ENCn["H.264 encode<br/>(NVENC / VA-API / VideoToolbox / x264)"]
 ```
 
@@ -586,13 +583,6 @@ flowchart TD
     S2 --> persource
     SN --> persource
 
-    subgraph raw ["Raw YUV Path (optional)"]
-        direction LR
-        SPR["MoQ program-raw<br/>(8-byte header +<br/>planar YUV420)"] --> YUV["WebGL YUV→RGB<br/>shader (BT.709)"]
-        YUV --> PMON["Program monitor<br/>(~4ms vs ~15ms<br/>with codec)"]
-    end
-
-    SP --> raw
 ```
 
 ### Connection and State Management
@@ -658,7 +648,7 @@ Two layout modes serve different operator skill levels. Traditional mode provide
 
 ### Rendering
 
-WebCodecs provides hardware-accelerated H.264 decode in the browser. Each source's decoder runs in a Web Worker to avoid blocking the main thread. Multi-canvas rendering uses a clone callback in the decoder -- the primary `VideoRenderBuffer` feeds the multiview tile, and cloned frames feed the program/preview monitors via secondary buffers. This avoids redundant decodes when the same source appears in multiple places. For sources using the raw YUV monitor path (`program-raw` MoQ track), a WebGL shader converts BT.709 limited-range YUV420 to RGB directly, bypassing the H.264 encode/decode round-trip entirely for approximately 4ms total latency versus 15ms with the codec path.
+WebCodecs provides hardware-accelerated H.264 decode in the browser. Each source's decoder runs in a Web Worker to avoid blocking the main thread. Multi-canvas rendering uses a clone callback in the decoder -- the primary `VideoRenderBuffer` feeds the multiview tile, and cloned frames feed the program/preview monitors via secondary buffers. This avoids redundant decodes when the same source appears in multiple places.
 
 ### PFL (Pre-Fade Listen)
 

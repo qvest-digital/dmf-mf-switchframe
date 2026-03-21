@@ -2,7 +2,7 @@
 
 The pipeline transforms decoded YUV420 frames into H.264 program output. It is a chain of immutable processing nodes, atomically swapped at runtime for zero-frame-drop reconfiguration.
 
-**Contents:** [Node Chain](#1-the-node-chain) · [Frame Lifecycle](#2-frame-lifecycle) · [ProcessingFrame](#3-processingframe) · [FramePool](#4-framepool) · [PipelineNode Interface](#5-pipelinenode-interface) · [Node Implementations](#6-node-implementations) · [Atomic Swap](#7-atomic-swap) · [Encoder Management](#8-encoder-management) · [Program Epoch](#9-program-epoch) · [Instrumentation](#10-instrumentation) · [Performance](#11-performance) · [Raw Program Monitor](#12-raw-program-monitor-wire-format)
+**Contents:** [Node Chain](#1-the-node-chain) · [Frame Lifecycle](#2-frame-lifecycle) · [ProcessingFrame](#3-processingframe) · [FramePool](#4-framepool) · [PipelineNode Interface](#5-pipelinenode-interface) · [Node Implementations](#6-node-implementations) · [Atomic Swap](#7-atomic-swap) · [Encoder Management](#8-encoder-management) · [Program Epoch](#9-program-epoch) · [Instrumentation](#10-instrumentation) · [Performance](#11-performance)
 
 ---
 
@@ -35,7 +35,6 @@ flowchart LR
         LC["layout-compositor\nPIP / split"]
         DSK["compositor\nDSK graphics"]
         RS1["raw-sink-mxl"]
-        RS2["raw-sink-monitor"]
         ENC["h264-encode"]
     end
 
@@ -49,10 +48,10 @@ flowchart LR
     FS --> HRV
     DB --> HRV
     HRV --> VPC
-    VPC --> MW --> UK --> LC --> DSK --> RS1 --> RS2 --> ENC --> BR
+    VPC --> MW --> UK --> LC --> DSK --> RS1 --> ENC --> BR
 ```
 
-Six processing nodes execute in a fixed order on a single dedicated goroutine. Each node is a thin wrapper around an existing subsystem — the pipeline provides the sequencing, timing, and lifecycle management.
+Five processing nodes execute in a fixed order on a single dedicated goroutine. Each node is a thin wrapper around an existing subsystem — the pipeline provides the sequencing, timing, and lifecycle management.
 
 | Node | Subsystem | In-Place | Latency | Active When |
 |------|-----------|----------|---------|-------------|
@@ -60,7 +59,6 @@ Six processing nodes execute in a fixed order on a single dedicated goroutine. E
 | `layout-compositor` | [`layout.Compositor`](../server/layout/compositor.go) | Yes | 1ms | Layout has enabled slots |
 | `compositor` | [`graphics.Compositor`](../server/graphics/compositor.go) | Yes | 200μs | Graphics layers active |
 | `raw-sink-mxl` | MXL shared-memory output | No (ref-counted tap) | 50μs | MXL output connected |
-| `raw-sink-monitor` | Raw YUV program monitor | No (ref-counted tap) | 50μs | `--raw-program-monitor` flag |
 | `h264-encode` | [`pipelineCodecs`](../server/switcher/pipeline_codecs.go) | N/A (terminal) | 10ms | Always |
 
 Inactive nodes are filtered out at build time — zero overhead for disabled features.
@@ -185,7 +183,7 @@ Each YUV420 buffer at 1080p is `1920 × 1080 × 3/2 ≈ 3 MB`. The pool pre-allo
 |----------|---------|
 | Source decoder outputs (4 sources) | 4 |
 | `videoProcCh` (being processed) | 1 |
-| Raw sink taps (MXL + monitor) | 2 |
+| Raw sink tap (MXL) | 1 |
 | FrameSync retained references | 2–3 |
 | FRC retained frames | 2 |
 | In-flight across goroutines | ~20 |
@@ -257,12 +255,11 @@ Wraps [`graphics.Compositor.ProcessYUV()`](../server/graphics/compositor.go). Ov
 
 ### raw-sink
 
-Wraps an `atomic.Pointer[RawVideoSink]` for lock-free dispatch. Taps the processed YUV420 frame for external consumers before H.264 encoding. Two instances exist in the node chain:
+Wraps an `atomic.Pointer[RawVideoSink]` for lock-free dispatch. Taps the processed YUV420 frame for external consumers before H.264 encoding. One instance exists in the node chain:
 
 | Instance | Consumer | Purpose |
 |----------|----------|---------|
 | `raw-sink-mxl` | [`mxl.Output`](../server/mxl/output.go) | YUV420 → V210 conversion → shared memory |
-| `raw-sink-monitor` | `program-raw` MoQ track | WebGL YUV renderer in browser (~4ms vs ~15ms with codec) |
 
 The sink receives a reference-counted frame: `Ref()` before the callback, `ReleaseYUV()` after. The pipeline's own reference is unaffected.
 
@@ -322,7 +319,6 @@ The pipeline is stored as an `atomic.Pointer[Pipeline]`. Reconfiguration builds 
 | Upstream key change | `SetKeyBridge(kb)` | Direct call |
 | PIP layout change | `SetLayoutCompositor(c)` | Direct call + `OnActiveChange` callback |
 | MXL output change | `SetRawVideoSink(sink)` | Direct call after atomic store |
-| Raw monitor change | `SetRawMonitorSink(sink)` | Direct call after atomic store |
 | Compositor state change | — | `OnStateChange(fn)` callback wired in `app.go` |
 | Key processor change | — | `OnChange(fn)` callback wired in `app.go` |
 | Format change | `SetPipelineFormat(f)` | Rebuilds with new format, pool, and frame budget |
@@ -431,7 +427,6 @@ switchframe_pipeline_node_duration_seconds{node="upstream-key"}
 switchframe_pipeline_node_duration_seconds{node="layout-compositor"}
 switchframe_pipeline_node_duration_seconds{node="compositor"}
 switchframe_pipeline_node_duration_seconds{node="raw-sink-mxl"}
-switchframe_pipeline_node_duration_seconds{node="raw-sink-monitor"}
 switchframe_pipeline_node_duration_seconds{node="h264-encode"}
 ```
 
@@ -491,7 +486,7 @@ Where `aacFrameDuration = 1024 / 48000 s ≈ 21.3ms`. Negative means video compl
 | upstream-key | 50–200μs | — |
 | layout-compositor | 150–320μs | — |
 | compositor | 100–300μs | — |
-| raw-sink × 2 | 30–100μs each | — |
+| raw-sink | 30–100μs | — |
 | h264-encode (HW) | 5–15ms | — |
 | h264-encode (SW) | 15–40ms | — |
 | **Total (HW)** | **~6–16ms** | **33ms budget** |
@@ -526,38 +521,6 @@ The format drives FramePool buffer sizing, frame budget for deadline monitoring,
 
 ---
 
-## 12. Raw Program Monitor Wire Format
-
-The `raw-sink-monitor` node feeds the `"program-raw"` MoQ track, enabled via `--raw-program-monitor`. Every frame is a keyframe (no inter-frame dependencies), so browsers can join at any point without waiting for an IDR.
-
-### Binary Layout
-
-```
-Offset  Length           Field
-──────  ──────────────   ────────────────────────
-0       4 bytes          Width  (uint32 big-endian)
-4       4 bytes          Height (uint32 big-endian)
-8       W × H bytes      Y plane  (luma, full resolution)
-8+W×H   W/2 × H/2 bytes Cb plane (chroma blue, quarter resolution)
-...     W/2 × H/2 bytes Cr plane (chroma red, quarter resolution)
-```
-
-Total frame size: `8 + W×H×3/2` bytes (e.g., 1920×1080 → 3,110,408 bytes).
-
-### Colorspace
-
-BT.709 limited range: Y=[16,235], Cb/Cr=[16,240]. Planar YUV 4:2:0 (same as the pipeline's internal format).
-
-### Downscaling
-
-`--raw-monitor-scale` accepts `720p`, `480p`, or `360p`. When set, the raw sink applies `transition.ScaleYUV420` before writing to the MoQ track, reducing bandwidth (e.g., 360p → ~194 KB/frame at 30fps ≈ 46 Mbps vs 1080p → ~3 MB/frame ≈ 720 Mbps).
-
-### Browser Rendering
-
-`ui/src/lib/video/yuv-renderer.ts` provides a WebGL2/WebGL shader that uploads Y/Cb/Cr as separate textures and converts to RGB in the fragment shader using the BT.709 limited-range matrix.
-
----
-
 ## File Reference
 
 | File | Purpose |
@@ -567,7 +530,7 @@ BT.709 limited range: Y=[16,235], Cb/Cr=[16,240]. Planar YUV 4:2:0 (same as the 
 | [`node_upstream_key.go`](../server/switcher/node_upstream_key.go) | Upstream chroma/luma key node |
 | [`node_layout_compositor.go`](../server/switcher/node_layout_compositor.go) | PIP/split-screen layout node |
 | [`node_compositor.go`](../server/switcher/node_compositor.go) | DSK graphics compositor node |
-| [`node_raw_sink.go`](../server/switcher/node_raw_sink.go) | Raw video sink node (MXL, monitor) |
+| [`node_raw_sink.go`](../server/switcher/node_raw_sink.go) | Raw video sink node (MXL) |
 | [`node_encode.go`](../server/switcher/node_encode.go) | H.264 encode node |
 | [`pipeline_codecs.go`](../server/switcher/pipeline_codecs.go) | Encoder lifecycle, bitrate adaptation, PTS normalization |
 | [`frame_pool.go`](../server/switcher/frame_pool.go) | LIFO free list for YUV420 buffers |

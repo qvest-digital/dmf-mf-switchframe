@@ -227,8 +227,6 @@ volumes:
 | `--frame-sync` | `false` | Enable freerun frame synchronizer (aligns sources to common tick) |
 | `--frc-quality` | `none` | Frame rate conversion: `none` · `nearest` · `blend` · `mcfi` |
 | `--decode-all-sources` | `false` | Always-on per-source H.264→YUV420 decoders (instant cuts, no IDR gating) |
-| `--raw-program-monitor` | `false` | Enable raw YUV420 program monitor on `program-raw` MoQ track |
-| `--raw-monitor-scale` | native | Downscale raw monitor: `720p` · `480p` · `360p` |
 | `--replay-buffer-secs` | `60` | Per-source replay buffer in seconds (0 = disabled, max 300) |
 | `--captions` | `false` | Enable CEA-608/708 closed captioning |
 | `--preview-proxy` | `false` | Enable low-bitrate preview encoding for browser source previews (480p) |
