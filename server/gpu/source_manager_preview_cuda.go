@@ -55,6 +55,62 @@ func (m *GPUSourceManager) queuePreviewFrame(entry *gpuSourceEntry, _ []byte, _ 
 	}
 }
 
+// scaleYUV420pCPU scales YUV420p on CPU using nearest-neighbor.
+// Used by IngestYUV (source_manager.go) to normalize source resolution to
+// the pool/pipeline format before GPU upload.
+func scaleYUV420pCPU(dst []byte, dstW, dstH int, src []byte, srcW, srcH int) {
+	srcYSize := srcW * srcH
+	dstYSize := dstW * dstH
+	// Y plane
+	for dy := 0; dy < dstH; dy++ {
+		sy := dy * (srcH - 1) / max(dstH-1, 1)
+		if sy >= srcH {
+			sy = srcH - 1
+		}
+		for dx := 0; dx < dstW; dx++ {
+			sx := dx * (srcW - 1) / max(dstW-1, 1)
+			if sx >= srcW {
+				sx = srcW - 1
+			}
+			dst[dy*dstW+dx] = src[sy*srcW+sx]
+		}
+	}
+	// Cb plane
+	srcCW, srcCH := srcW/2, srcH/2
+	dstCW, dstCH := dstW/2, dstH/2
+	srcCbOff := srcYSize
+	dstCbOff := dstYSize
+	for dy := 0; dy < dstCH; dy++ {
+		sy := dy * (srcCH - 1) / max(dstCH-1, 1)
+		if sy >= srcCH {
+			sy = srcCH - 1
+		}
+		for dx := 0; dx < dstCW; dx++ {
+			sx := dx * (srcCW - 1) / max(dstCW-1, 1)
+			if sx >= srcCW {
+				sx = srcCW - 1
+			}
+			dst[dstCbOff+dy*dstCW+dx] = src[srcCbOff+sy*srcCW+sx]
+		}
+	}
+	// Cr plane
+	srcCrOff := srcCbOff + srcCW*srcCH
+	dstCrOff := dstCbOff + dstCW*dstCH
+	for dy := 0; dy < dstCH; dy++ {
+		sy := dy * (srcCH - 1) / max(dstCH-1, 1)
+		if sy >= srcCH {
+			sy = srcCH - 1
+		}
+		for dx := 0; dx < dstCW; dx++ {
+			sx := dx * (srcCW - 1) / max(dstCW-1, 1)
+			if sx >= srcCW {
+				sx = srcCW - 1
+			}
+			dst[dstCrOff+dy*dstCW+dx] = src[srcCrOff+sy*srcCW+sx]
+		}
+	}
+}
+
 // previewLoop reads GPU frame copies and encodes via PreviewEncoder.Encode().
 // CUDA path: GPU ScaleBilinear + NVENC encode — zero CPU pixel processing.
 // Each preview encoder has its own CUDA stream, so scale + encode operations
