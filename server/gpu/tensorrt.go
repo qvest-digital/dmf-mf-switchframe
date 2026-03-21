@@ -248,7 +248,7 @@ func (e *TRTEngine) NumIOTensors() int {
 	if e == nil || e.handle == nil {
 		return 0
 	}
-	return int(C.trt_get_num_io(e.handle))
+	return int(C.trt_get_num_io(unsafe.Pointer(e.handle)))
 }
 
 // TensorInfoAt returns metadata for the i-th I/O tensor.
@@ -261,7 +261,7 @@ func (e *TRTEngine) TensorInfoAt(index int) (TensorInfo, error) {
 	var isInput, dtype, ndims C.int
 	var dims [8]C.int
 
-	rc := C.trt_get_tensor_info(e.handle, C.int(index),
+	rc := C.trt_get_tensor_info(unsafe.Pointer(e.handle), C.int(index),
 		&nameBuf[0], 256,
 		&isInput, &dtype, &ndims, &dims[0])
 	if rc != 0 {
@@ -380,7 +380,7 @@ func (c *TRTContext) InferMulti(bindings []TRTBinding, stream unsafe.Pointer) er
 		}
 	}()
 
-	rc := C.trt_infer_multi(c.handle, &cBindings[0], C.int(len(cBindings)), stream)
+	rc := C.trt_infer_multi(unsafe.Pointer(c.handle), &cBindings[0], C.int(len(cBindings)), stream)
 	if rc != 0 {
 		errMsg := C.GoString(C.trt_get_last_error())
 		return fmt.Errorf("gpu: tensorrt: infer_multi failed: %s", errMsg)
