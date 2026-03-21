@@ -77,3 +77,62 @@ func CopyGPUFrameOn(dst, src *GPUFrame, q *GPUWorkQueue) error {
 	return nil
 }
 
+// CopyNV12FromDevice copies NV12 data from an external CUDA device pointer
+// (e.g., NVDEC output) into a pool GPUFrame. Handles pitch mismatch between
+// source and destination via cudaMemcpy2DAsync.
+//
+// srcDevPtr points to the start of the NV12 data (Y plane).
+// srcPitch is the source row pitch in bytes.
+// width/height are the frame dimensions in pixels.
+func CopyNV12FromDevice(dst *GPUFrame, srcDevPtr uintptr, srcPitch, width, height int) error {
+	if dst == nil {
+		return fmt.Errorf("CopyNV12FromDevice: nil destination frame")
+	}
+	if srcDevPtr == 0 {
+		return fmt.Errorf("CopyNV12FromDevice: nil source device pointer")
+	}
+
+	// Y plane: width bytes per row, height rows.
+	rc := C.cudaMemcpy2DAsync(
+		unsafe.Pointer(uintptr(dst.DevPtr)),   // dst
+		C.size_t(dst.Pitch),                    // dpitch
+		unsafe.Pointer(srcDevPtr),              // src
+		C.size_t(srcPitch),                     // spitch
+		C.size_t(width),                        // width (bytes to copy per row)
+		C.size_t(height),                       // height (number of rows)
+		C.cudaMemcpyDeviceToDevice,
+		defaultCUDAStream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("CopyNV12FromDevice: Y plane cudaMemcpy2DAsync failed: %d", rc)
+	}
+
+	// UV plane: width bytes per row, height/2 rows.
+	// NV12 interleaved UV follows immediately after the Y plane in both src and dst.
+	srcUV := srcDevPtr + uintptr(srcPitch*height)
+	dstUV := uintptr(dst.DevPtr) + uintptr(dst.Pitch*dst.Height)
+
+	rc = C.cudaMemcpy2DAsync(
+		unsafe.Pointer(dstUV),                  // dst
+		C.size_t(dst.Pitch),                    // dpitch
+		unsafe.Pointer(srcUV),                  // src
+		C.size_t(srcPitch),                     // spitch
+		C.size_t(width),                        // width (bytes to copy per row)
+		C.size_t(height/2),                     // height (number of rows)
+		C.cudaMemcpyDeviceToDevice,
+		defaultCUDAStream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("CopyNV12FromDevice: UV plane cudaMemcpy2DAsync failed: %d", rc)
+	}
+
+	// Synchronize — must complete before NVDEC reclaims the surface.
+	if rc := C.cudaStreamSynchronize(defaultCUDAStream); rc != C.cudaSuccess {
+		return fmt.Errorf("CopyNV12FromDevice: stream sync failed: %d", rc)
+	}
+
+	dst.Width = width
+	dst.Height = height
+	return nil
+}
+
