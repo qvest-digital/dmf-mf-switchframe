@@ -7,7 +7,10 @@ package gpu
 */
 import "C"
 
-import "fmt"
+import (
+	"fmt"
+	"unsafe"
+)
 
 // ScaleBilinear scales an NV12 GPU frame using bilinear interpolation.
 func ScaleBilinear(ctx *Context, dst, src *GPUFrame) error {
@@ -35,9 +38,27 @@ func ScaleBilinear(ctx *Context, dst, src *GPUFrame) error {
 		return fmt.Errorf("gpu: scale bilinear Y failed: %d", rc)
 	}
 
-	// Scale UV plane: same byte width, half height
-	// For proper NV12 UV scaling, we need offset-aware buffers.
-	// TODO: Add UV-plane scaling with buffer offset support.
+	// Scale UV plane: NV12 interleaved UV has the same byte width as Y,
+	// half the height. Use offset-aware dispatch to bind at UV offset.
+	srcUVOffset := C.int64_t(src.Pitch * src.Height)
+	dstUVOffset := C.int64_t(dst.Pitch * dst.Height)
+	uvParams := C.MetalScaleParams{
+		srcW:     C.uint32_t(src.Width),
+		srcH:     C.uint32_t(src.Height / 2),
+		srcPitch: C.uint32_t(src.Pitch),
+		dstW:     C.uint32_t(dst.Width),
+		dstH:     C.uint32_t(dst.Height / 2),
+		dstPitch: C.uint32_t(dst.Pitch),
+	}
+	uvBufs := [2]C.MetalBufferRef{dst.MetalBuf, src.MetalBuf}
+	uvOffsets := [2]C.int64_t{dstUVOffset, srcUVOffset}
+	rc = C.metal_dispatch_2d_offset(mtl.queue, pipeline,
+		&uvBufs[0], &uvOffsets[0], 2,
+		unsafe.Pointer(&uvParams), C.size_t(unsafe.Sizeof(uvParams)), 2,
+		C.uint32_t(dst.Width), C.uint32_t(dst.Height/2))
+	if rc != C.METAL_SUCCESS {
+		return fmt.Errorf("gpu: scale bilinear UV failed: %d", rc)
+	}
 
 	return nil
 }
@@ -92,9 +113,46 @@ func ScaleLanczos3(ctx *Context, dst, src *GPUFrame) error {
 		return fmt.Errorf("gpu: scale lanczos3 v Y failed: %d", rc)
 	}
 
-	// --- UV plane (NV12: interleaved Cb/Cr, half width treated as byte-pairs, half height) ---
-	// UV scaling would require offset-aware buffers.
-	// TODO: Add UV-plane Lanczos scaling with buffer offset support.
+	// --- UV plane (NV12: interleaved Cb/Cr, same byte width as Y, half height) ---
+	srcUVOffset := C.int64_t(src.Pitch * src.Height)
+	dstUVOffset := C.int64_t(dst.Pitch * dst.Height)
+	srcChromaH := src.Height / 2
+	dstChromaH := dst.Height / 2
+
+	// Pass 1 (horizontal): UV src -> tmpBuf
+	uvHParams := C.MetalLanczos3HParams{
+		dstW:     C.uint32_t(dst.Width),
+		srcW:     C.uint32_t(src.Width),
+		srcH:     C.uint32_t(srcChromaH),
+		srcPitch: C.uint32_t(src.Pitch),
+	}
+	// src at UV offset, tmpBuf at offset 0
+	hBufs := [2]C.MetalBufferRef{mtl.lanczosTmpBuf, src.MetalBuf}
+	hOffsets := [2]C.int64_t{0, srcUVOffset}
+	rc = C.metal_dispatch_2d_offset(mtl.queue, hPipeline,
+		&hBufs[0], &hOffsets[0], 2,
+		unsafe.Pointer(&uvHParams), C.size_t(unsafe.Sizeof(uvHParams)), 2,
+		C.uint32_t(dst.Width), C.uint32_t(srcChromaH))
+	if rc != C.METAL_SUCCESS {
+		return fmt.Errorf("gpu: scale lanczos3 h UV failed: %d", rc)
+	}
+
+	// Pass 2 (vertical): tmpBuf -> dst UV
+	uvVParams := C.MetalLanczos3VParams{
+		dstW:     C.uint32_t(dst.Width),
+		dstH:     C.uint32_t(dstChromaH),
+		dstPitch: C.uint32_t(dst.Pitch),
+		srcH:     C.uint32_t(srcChromaH),
+	}
+	vBufs := [2]C.MetalBufferRef{dst.MetalBuf, mtl.lanczosTmpBuf}
+	vOffsets := [2]C.int64_t{dstUVOffset, 0}
+	rc = C.metal_dispatch_2d_offset(mtl.queue, vPipeline,
+		&vBufs[0], &vOffsets[0], 2,
+		unsafe.Pointer(&uvVParams), C.size_t(unsafe.Sizeof(uvVParams)), 2,
+		C.uint32_t(dst.Width), C.uint32_t(dstChromaH))
+	if rc != C.METAL_SUCCESS {
+		return fmt.Errorf("gpu: scale lanczos3 v UV failed: %d", rc)
+	}
 
 	return nil
 }

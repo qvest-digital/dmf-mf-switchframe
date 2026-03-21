@@ -103,10 +103,16 @@ func STMapWarp(ctx *Context, dst, src *GPUFrame, stmap *GPUSTMap) error {
 		dstPitch: C.uint32_t(dst.Pitch),
 		srcPitch: C.uint32_t(src.Pitch),
 	}
-	// Note: For UV plane, we need to pass buffers with offsets for the UV portion.
-	// Metal buffers contain both Y and UV planes. The kernel needs to know the UV offset.
-	// TODO: Implement buffer offset support for UV-plane kernels.
-	rc = C.metal_stmap_warp_uv(mtl.queue, uvPipeline, src.MetalBuf, stmap.SBuf, stmap.TBuf, dst.MetalBuf, &uvParams)
+	// UV plane uses offset-aware dispatch to bind NV12 buffers at the UV offset.
+	// The ST maps (float32) are always at offset 0.
+	srcUVOffset := C.int64_t(src.Pitch * src.Height)
+	dstUVOffset := C.int64_t(dst.Pitch * dst.Height)
+	uvBufs := [4]C.MetalBufferRef{src.MetalBuf, stmap.SBuf, stmap.TBuf, dst.MetalBuf}
+	uvOffsets := [4]C.int64_t{srcUVOffset, 0, 0, dstUVOffset}
+	rc = C.metal_dispatch_2d_offset(mtl.queue, uvPipeline,
+		&uvBufs[0], &uvOffsets[0], 4,
+		unsafe.Pointer(&uvParams), C.size_t(unsafe.Sizeof(uvParams)), 4,
+		C.uint32_t(chromaW), C.uint32_t(chromaH))
 	if rc != C.METAL_SUCCESS {
 		return fmt.Errorf("gpu: stmap warp UV failed: %d", rc)
 	}

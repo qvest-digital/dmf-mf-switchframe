@@ -7,7 +7,10 @@ package gpu
 */
 import "C"
 
-import "fmt"
+import (
+	"fmt"
+	"unsafe"
+)
 
 // PIPComposite scales a source GPU frame and composites it into a destination
 // frame at the specified rectangle.
@@ -42,8 +45,40 @@ func PIPComposite(ctx *Context, dst, src *GPUFrame, rect Rect, alpha float64) er
 		return fmt.Errorf("gpu: pip composite Y failed: %d", rc)
 	}
 
-	// UV plane
-	// TODO: Implement UV-plane PIP composite with buffer offsets
+	// UV plane: use offset-aware dispatch with dedicated UV kernel
+	uvPipeline, err := mtl.getPipeline("pip_composite_uv")
+	if err != nil {
+		return fmt.Errorf("gpu: pip composite UV: %w", err)
+	}
+	dstUVOffset := C.int64_t(dst.Pitch * dst.Height)
+	srcUVOffset := C.int64_t(src.Pitch * src.Height)
+
+	chromaRectW := rect.W / 2
+	chromaRectH := rect.H / 2
+	if chromaRectW < 1 {
+		chromaRectW = 1
+	}
+	if chromaRectH < 1 {
+		chromaRectH = 1
+	}
+
+	uvParams := C.MetalPIPCompositeUVParams{
+		dstW: C.uint32_t(dst.Width), dstChromaH: C.uint32_t(dst.Height / 2), dstPitch: C.uint32_t(dst.Pitch),
+		srcW: C.uint32_t(src.Width), srcChromaH: C.uint32_t(src.Height / 2), srcPitch: C.uint32_t(src.Pitch),
+		rectX: C.int32_t(rect.X), rectY: C.int32_t(rect.Y),
+		rectCW: C.int32_t(chromaRectW), rectCH: C.int32_t(chromaRectH),
+		alpha256: C.int32_t(alpha256),
+	}
+	uvBufs := [2]C.MetalBufferRef{dst.MetalBuf, src.MetalBuf}
+	uvOffsets := [2]C.int64_t{dstUVOffset, srcUVOffset}
+	rc = C.metal_dispatch_2d_offset(mtl.queue, uvPipeline,
+		&uvBufs[0], &uvOffsets[0], 2,
+		unsafe.Pointer(&uvParams), C.size_t(unsafe.Sizeof(uvParams)), 2,
+		C.uint32_t(chromaRectW), C.uint32_t(chromaRectH))
+	if rc != C.METAL_SUCCESS {
+		return fmt.Errorf("gpu: pip composite UV failed: %d", rc)
+	}
+
 	return nil
 }
 
