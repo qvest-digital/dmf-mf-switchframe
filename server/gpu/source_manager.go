@@ -23,8 +23,9 @@ type GPUSourceManager struct {
 	pool   *FramePool
 	stmaps SourceSTMapProvider
 
-	mu      sync.RWMutex
-	sources map[string]*gpuSourceEntry
+	mu        sync.RWMutex
+	sources   map[string]*gpuSourceEntry
+	segEngine *SegmentationEngine // nil when AI segmentation is not configured
 }
 
 // gpuSourceEntry holds the GPU state for a single source.
@@ -57,6 +58,15 @@ func NewGPUSourceManager(ctx *Context, pool *FramePool, stmaps SourceSTMapProvid
 		stmaps:  stmaps,
 		sources: make(map[string]*gpuSourceEntry),
 	}
+}
+
+// SetSegmentationEngine wires a SegmentationEngine into the source manager.
+// When set (non-nil), IngestYUV will call engine.Segment() for every source
+// that has segmentation enabled. Pass nil to disable.
+func (m *GPUSourceManager) SetSegmentationEngine(engine *SegmentationEngine) {
+	m.mu.Lock()
+	m.segEngine = engine
+	m.mu.Unlock()
 }
 
 // RegisterSource creates a GPU source entry. If preview is non-nil, a preview
@@ -221,6 +231,19 @@ func (m *GPUSourceManager) IngestYUV(sourceKey string, yuv []byte, w, h int, pts
 	old := entry.current.Swap(frame)
 	if old != nil {
 		old.Release()
+	}
+
+	// Per-source AI segmentation (if enabled for this source).
+	// Reads segEngine under RLock to avoid holding the lock during inference.
+	m.mu.RLock()
+	segEng := m.segEngine
+	m.mu.RUnlock()
+	if segEng != nil && segEng.IsEnabled(sourceKey) {
+		gpuFrame := entry.current.Load()
+		if gpuFrame != nil {
+			segEng.Segment(sourceKey, gpuFrame)
+			// Mask cached in session — pipeline node reads it via MaskForSource()
+		}
 	}
 
 	// Queue frame for preview encoding (platform-specific).
