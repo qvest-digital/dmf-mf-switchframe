@@ -45,8 +45,9 @@ func (a *App) initASR() error {
 	// Wire audio input — fan-out with existing sink if present.
 	a.wireASRAudioSink()
 
-	// Set caption mode to auto.
-	a.captionMgr.SetMode(caption.ModeAuto)
+	// Note: caption mode is set to ModeAuto later in run() after the API is
+	// initialized, because SetMode triggers broadcastState which requires
+	// a.api to be non-nil.
 
 	slog.Info("ASR engine initialized",
 		"model", filepath.Base(a.cfg.ASRModelPath),

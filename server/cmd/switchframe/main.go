@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/comms"
 	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/srt"
@@ -171,6 +172,12 @@ func run() error {
 
 	if err := app.initAPI(); err != nil {
 		return err
+	}
+
+	// Deferred: set caption mode to auto now that broadcastState is safe
+	// (requires a.api to be initialized for enrichState/LastOperator).
+	if app.asrEngine != nil && app.captionMgr != nil {
+		app.captionMgr.SetMode(caption.ModeAuto)
 	}
 
 	return app.Run(context.Background())
