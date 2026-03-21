@@ -54,7 +54,10 @@ func NewGPUPipeline(ctx *Context, pool *FramePool) *GPUPipeline {
 // Pool returns the frame pool used by this pipeline.
 func (p *GPUPipeline) Pool() *FramePool { return p.pool }
 
-// Build validates all nodes, filters active ones, and pre-computes latency.
+// Build validates and configures all nodes. ALL nodes are included in the
+// active list — each node's ProcessGPU checks Active() dynamically and
+// skips processing when inactive. This avoids the need to rebuild the
+// pipeline when nodes toggle on/off (e.g., PIP layout enabled mid-session).
 func (p *GPUPipeline) Build(width, height, pitch int, nodes []GPUPipelineNode) error {
 	p.width = width
 	p.height = height
@@ -66,10 +69,8 @@ func (p *GPUPipeline) Build(width, height, pitch int, nodes []GPUPipelineNode) e
 		if err := n.Configure(width, height, pitch); err != nil {
 			return fmt.Errorf("gpu pipeline: node %s: configure: %w", n.Name(), err)
 		}
-		if n.Active() {
-			p.activeNodes = append(p.activeNodes, n)
-			p.totalLatency += n.Latency()
-		}
+		p.activeNodes = append(p.activeNodes, n)
+		p.totalLatency += n.Latency()
 	}
 
 	p.nodeTiming = make([]atomic.Int64, len(p.activeNodes))

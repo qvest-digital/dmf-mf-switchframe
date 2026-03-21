@@ -92,10 +92,9 @@ func (p *GPUPipeline) Build(width, height, pitch int, nodes []GPUPipelineNode) e
 		if err := n.Configure(width, height, pitch); err != nil {
 			return fmt.Errorf("gpu pipeline: node %s: configure: %w", n.Name(), err)
 		}
-		if n.Active() {
-			p.activeNodes = append(p.activeNodes, n)
-			p.totalLatency += n.Latency()
-		}
+		// Include ALL nodes — each node checks Active() dynamically in ProcessGPU.
+		p.activeNodes = append(p.activeNodes, n)
+		p.totalLatency += n.Latency()
 	}
 
 	p.nodeTiming = make([]atomic.Int64, len(p.activeNodes))

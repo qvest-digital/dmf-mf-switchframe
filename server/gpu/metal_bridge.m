@@ -589,6 +589,8 @@ typedef struct VTEncoderState {
     int outputLen;
     int outputIsIDR;
     dispatch_semaphore_t sem;  // synchronize async callback
+    // Cached CVPixelBuffer — reused across frames to avoid per-frame IOSurface allocation.
+    CVPixelBufferRef cachedPixelBuffer;
 } VTEncoderState;
 
 static void vtOutputCallback(void *outputCallbackRefCon,
@@ -777,6 +779,9 @@ void metal_vt_encoder_destroy(VTEncoderRef enc) {
         VTCompressionSessionInvalidate(state->session);
         CFRelease(state->session);
     }
+    if (state->cachedPixelBuffer) {
+        CVPixelBufferRelease(state->cachedPixelBuffer);
+    }
     if (state->outputBuf) free(state->outputBuf);
     dispatch_release(state->sem);
     free(state);
@@ -788,26 +793,34 @@ int metal_vt_encode(VTEncoderRef enc, void* nv12_ptr, int pitch, int width, int 
     VTEncoderState *state = (VTEncoderState *)enc;
     if (!state || !state->session) return -1;
 
-    // Create a VT-managed CVPixelBuffer and copy NV12 data into it.
-    // Using CVPixelBufferCreate (not CreateWithPlanarBytes) lets CoreVideo
-    // choose its own alignment and format, avoiding pitch mismatch issues
-    // between our 256-byte-aligned Metal buffers and VT's expectations.
-    CVPixelBufferRef pixelBuffer = NULL;
-    NSDictionary *pbAttrs = @{
-        (NSString *)kCVPixelBufferIOSurfacePropertiesKey: @{},
-    };
-    CVReturn cvRet = CVPixelBufferCreate(
-        NULL,
-        width, height,
-        kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-        (__bridge CFDictionaryRef)pbAttrs,
-        &pixelBuffer
-    );
-    if (cvRet != kCVReturnSuccess || !pixelBuffer) {
-        return -2;
+    // Reuse a cached CVPixelBuffer to avoid per-frame IOSurface allocation.
+    // CVPixelBufferCreate + IOSurface on every frame causes resource exhaustion
+    // and encoder stalls (program output freezes in browser).
+    if (!state->cachedPixelBuffer ||
+        (int)CVPixelBufferGetWidth(state->cachedPixelBuffer) != width ||
+        (int)CVPixelBufferGetHeight(state->cachedPixelBuffer) != height) {
+        // First call or resolution changed — create new pixel buffer.
+        if (state->cachedPixelBuffer) {
+            CVPixelBufferRelease(state->cachedPixelBuffer);
+            state->cachedPixelBuffer = NULL;
+        }
+        NSDictionary *pbAttrs = @{
+            (NSString *)kCVPixelBufferIOSurfacePropertiesKey: @{},
+        };
+        CVReturn cvRet = CVPixelBufferCreate(
+            NULL,
+            width, height,
+            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            (__bridge CFDictionaryRef)pbAttrs,
+            &state->cachedPixelBuffer
+        );
+        if (cvRet != kCVReturnSuccess || !state->cachedPixelBuffer) {
+            return -2;
+        }
     }
+    CVPixelBufferRef pixelBuffer = state->cachedPixelBuffer;
 
-    // Lock and copy NV12 data into the VT-managed buffer.
+    // Lock and copy NV12 data into the reusable VT-managed buffer.
     CVPixelBufferLockBaseAddress(pixelBuffer, 0);
 
     // Y plane
@@ -858,7 +871,8 @@ int metal_vt_encode(VTEncoderRef enc, void* nv12_ptr, int pitch, int width, int 
         NULL                            // info flags out
     );
 
-    CVPixelBufferRelease(pixelBuffer);
+    // pixelBuffer is cached (not released per-frame) — VT retains it during
+    // encode and releases its internal reference after the callback.
 
     if (status != noErr) {
         return -3;
