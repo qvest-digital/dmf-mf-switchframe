@@ -85,6 +85,79 @@ __global__ void scale_bilinear_uv_kernel(
     dst[dstByte + 1] = (uint8_t)cr;
 }
 
+// ---------------------------------------------------------------------------
+// Lanczos-3 separable two-pass scaler
+// ---------------------------------------------------------------------------
+// L(x) = sinc(x)*sinc(x/3) for |x| < 3, else 0
+// sinc(x) = sin(pi*x)/(pi*x), sinc(0) = 1
+// NOTE: defined before any kernel that uses it (UV kernels below).
+__device__ __forceinline__ float lanczos3(float x)
+{
+    if (x == 0.0f) return 1.0f;
+    if (x < -3.0f || x > 3.0f) return 0.0f;
+    float pix   = 3.14159265358979323846f * x;
+    float pix3  = pix / 3.0f;
+    return (__sinf(pix) / pix) * (__sinf(pix3) / pix3);
+}
+
+// Pass 1 (horizontal): src uint8 → tmpBuf float
+// tmpBuf layout: row-major [srcH][dstW], row stride = dstW
+__global__ void scale_lanczos3_h_kernel(
+    float* __restrict__ tmpBuf, int dstW, int srcW, int srcH, int srcPitch,
+    const uint8_t* __restrict__ src)
+{
+    int dx = blockIdx.x * blockDim.x + threadIdx.x;
+    int dy = blockIdx.y * blockDim.y + threadIdx.y;
+    if (dx >= dstW || dy >= srcH) return;
+
+    float srcXf = (float)dx * (float)(srcW - 1) / (float)max(dstW - 1, 1);
+    int   center = (int)srcXf;
+
+    float acc    = 0.0f;
+    float wsum   = 0.0f;
+    // 6 taps: floor(srcX) - 2 … floor(srcX) + 3
+    for (int k = -2; k <= 3; ++k) {
+        int sx = center + k;
+        if (sx < 0) sx = 0;
+        if (sx >= srcW) sx = srcW - 1;
+        float w = lanczos3(srcXf - (float)sx);
+        acc  += w * (float)src[dy * srcPitch + sx];
+        wsum += w;
+    }
+
+    tmpBuf[dy * dstW + dx] = (wsum != 0.0f) ? (acc / wsum) : 0.0f;
+}
+
+// Pass 2 (vertical): tmpBuf float → dst uint8
+__global__ void scale_lanczos3_v_kernel(
+    uint8_t* __restrict__ dst, int dstW, int dstH, int dstPitch,
+    const float* __restrict__ tmpBuf, int srcH)
+{
+    int dx = blockIdx.x * blockDim.x + threadIdx.x;
+    int dy = blockIdx.y * blockDim.y + threadIdx.y;
+    if (dx >= dstW || dy >= dstH) return;
+
+    float srcYf = (float)dy * (float)(srcH - 1) / (float)max(dstH - 1, 1);
+    int   center = (int)srcYf;
+
+    float acc    = 0.0f;
+    float wsum   = 0.0f;
+    for (int k = -2; k <= 3; ++k) {
+        int sy = center + k;
+        if (sy < 0) sy = 0;
+        if (sy >= srcH) sy = srcH - 1;
+        float w = lanczos3(srcYf - (float)sy);
+        acc  += w * tmpBuf[sy * dstW + dx];
+        wsum += w;
+    }
+
+    float val = (wsum != 0.0f) ? (acc / wsum) : 0.0f;
+    // clamp to [0, 255]
+    if (val < 0.0f)   val = 0.0f;
+    if (val > 255.0f) val = 255.0f;
+    dst[dy * dstPitch + dx] = (uint8_t)(val + 0.5f);
+}
+
 // Lanczos-3 horizontal pass for NV12 UV plane (interleaved CbCr pairs).
 // One thread per output chroma sample. Writes TWO floats per sample (Cb, Cr)
 // into tmpBuf layout: [srcChromaH][chromaDstW * 2], row stride = chromaDstW * 2.
@@ -155,78 +228,6 @@ __global__ void scale_lanczos3_v_uv_kernel(
     int dstByte = dy * dstPitch + dx * 2;
     dst[dstByte]     = (uint8_t)(valCb + 0.5f);
     dst[dstByte + 1] = (uint8_t)(valCr + 0.5f);
-}
-
-// ---------------------------------------------------------------------------
-// Lanczos-3 separable two-pass scaler
-// ---------------------------------------------------------------------------
-// L(x) = sinc(x)*sinc(x/3) for |x| < 3, else 0
-// sinc(x) = sin(pi*x)/(pi*x), sinc(0) = 1
-__device__ __forceinline__ float lanczos3(float x)
-{
-    if (x == 0.0f) return 1.0f;
-    if (x < -3.0f || x > 3.0f) return 0.0f;
-    float pix   = 3.14159265358979323846f * x;
-    float pix3  = pix / 3.0f;
-    return (__sinf(pix) / pix) * (__sinf(pix3) / pix3);
-}
-
-// Pass 1 (horizontal): src uint8 → tmpBuf float
-// tmpBuf layout: row-major [srcH][dstW], row stride = dstW
-__global__ void scale_lanczos3_h_kernel(
-    float* __restrict__ tmpBuf, int dstW, int srcW, int srcH, int srcPitch,
-    const uint8_t* __restrict__ src)
-{
-    int dx = blockIdx.x * blockDim.x + threadIdx.x;
-    int dy = blockIdx.y * blockDim.y + threadIdx.y;
-    if (dx >= dstW || dy >= srcH) return;
-
-    float srcXf = (float)dx * (float)(srcW - 1) / (float)max(dstW - 1, 1);
-    int   center = (int)srcXf;
-
-    float acc    = 0.0f;
-    float wsum   = 0.0f;
-    // 6 taps: floor(srcX) - 2 … floor(srcX) + 3
-    for (int k = -2; k <= 3; ++k) {
-        int sx = center + k;
-        if (sx < 0) sx = 0;
-        if (sx >= srcW) sx = srcW - 1;
-        float w = lanczos3(srcXf - (float)sx);
-        acc  += w * (float)src[dy * srcPitch + sx];
-        wsum += w;
-    }
-
-    tmpBuf[dy * dstW + dx] = (wsum != 0.0f) ? (acc / wsum) : 0.0f;
-}
-
-// Pass 2 (vertical): tmpBuf float → dst uint8
-__global__ void scale_lanczos3_v_kernel(
-    uint8_t* __restrict__ dst, int dstW, int dstH, int dstPitch,
-    const float* __restrict__ tmpBuf, int srcH)
-{
-    int dx = blockIdx.x * blockDim.x + threadIdx.x;
-    int dy = blockIdx.y * blockDim.y + threadIdx.y;
-    if (dx >= dstW || dy >= dstH) return;
-
-    float srcYf = (float)dy * (float)(srcH - 1) / (float)max(dstH - 1, 1);
-    int   center = (int)srcYf;
-
-    float acc    = 0.0f;
-    float wsum   = 0.0f;
-    for (int k = -2; k <= 3; ++k) {
-        int sy = center + k;
-        if (sy < 0) sy = 0;
-        if (sy >= srcH) sy = srcH - 1;
-        float w = lanczos3(srcYf - (float)sy);
-        acc  += w * tmpBuf[sy * dstW + dx];
-        wsum += w;
-    }
-
-    float val = (wsum != 0.0f) ? (acc / wsum) : 0.0f;
-    // clamp to [0, 255]
-    if (val < 0.0f)   val = 0.0f;
-    if (val > 255.0f) val = 255.0f;
-    dst[dy * dstPitch + dx] = (uint8_t)(val + 0.5f);
 }
 
 extern "C" {
