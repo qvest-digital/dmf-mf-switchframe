@@ -13,8 +13,19 @@ import (
 )
 
 // PIPComposite scales a source GPU frame and composites it into a destination
-// frame at the specified rectangle.
+// frame at the specified rectangle. Equivalent to PIPCompositeWithCrop with
+// zero crop rect (full source).
 func PIPComposite(ctx *Context, dst, src *GPUFrame, rect Rect, alpha float64) error {
+	return PIPCompositeWithCrop(ctx, dst, src, rect, alpha, 0, 0, 0, 0)
+}
+
+// PIPCompositeWithCrop scales a source GPU frame (or a sub-region of it) and
+// composites it into a destination frame at the specified rectangle.
+// cropX/cropY/cropW/cropH define the source crop region; 0,0,0,0 means use
+// the full source (backward compatible with PIPComposite).
+// All crop coordinates must be even-aligned for YUV420 correctness.
+func PIPCompositeWithCrop(ctx *Context, dst, src *GPUFrame, rect Rect, alpha float64,
+	cropX, cropY, cropW, cropH int) error {
 	if ctx == nil || ctx.mtl == nil || dst == nil || src == nil {
 		return ErrGPUNotAvailable
 	}
@@ -39,6 +50,8 @@ func PIPComposite(ctx *Context, dst, src *GPUFrame, rect Rect, alpha float64) er
 		rectX: C.int32_t(rect.X), rectY: C.int32_t(rect.Y),
 		rectW: C.int32_t(rect.W), rectH: C.int32_t(rect.H),
 		alpha256: C.int32_t(alpha256),
+		cropX: C.int32_t(cropX), cropY: C.int32_t(cropY),
+		cropW: C.int32_t(cropW), cropH: C.int32_t(cropH),
 	}
 	rc := C.metal_pip_composite_y(mtl.queue, yPipeline, dst.MetalBuf, src.MetalBuf, &yParams)
 	if rc != C.METAL_SUCCESS {
@@ -62,12 +75,20 @@ func PIPComposite(ctx *Context, dst, src *GPUFrame, rect Rect, alpha float64) er
 		chromaRectH = 1
 	}
 
+	// Chroma crop coordinates are halved from luma crop.
+	chromaCropX := cropX / 2
+	chromaCropY := cropY / 2
+	chromaCropW := cropW / 2
+	chromaCropH := cropH / 2
+
 	uvParams := C.MetalPIPCompositeUVParams{
 		dstW: C.uint32_t(dst.Width), dstChromaH: C.uint32_t(dst.Height / 2), dstPitch: C.uint32_t(dst.Pitch),
 		srcW: C.uint32_t(src.Width), srcChromaH: C.uint32_t(src.Height / 2), srcPitch: C.uint32_t(src.Pitch),
 		rectX: C.int32_t(rect.X), rectY: C.int32_t(rect.Y),
 		rectCW: C.int32_t(chromaRectW), rectCH: C.int32_t(chromaRectH),
 		alpha256: C.int32_t(alpha256),
+		cropX: C.int32_t(chromaCropX), cropY: C.int32_t(chromaCropY),
+		cropCW: C.int32_t(chromaCropW), cropCH: C.int32_t(chromaCropH),
 	}
 	uvBufs := [2]C.MetalBufferRef{dst.MetalBuf, src.MetalBuf}
 	uvOffsets := [2]C.int64_t{dstUVOffset, srcUVOffset}

@@ -176,6 +176,12 @@ func PIPComposite(ctx *Context, dst, src *GPUFrame, rect Rect, alpha float64) er
 	return ErrGPUNotAvailable
 }
 
+// PIPCompositeWithCrop returns ErrGPUNotAvailable on non-GPU builds.
+func PIPCompositeWithCrop(ctx *Context, dst, src *GPUFrame, rect Rect, alpha float64,
+	cropX, cropY, cropW, cropH int) error {
+	return ErrGPUNotAvailable
+}
+
 // DrawBorder returns ErrGPUNotAvailable on non-GPU builds.
 func DrawBorder(ctx *Context, frame *GPUFrame, rect Rect, color YUVColor, thickness int) error {
 	return ErrGPUNotAvailable

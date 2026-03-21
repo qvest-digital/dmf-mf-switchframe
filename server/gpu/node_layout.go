@@ -112,12 +112,20 @@ func (n *gpuLayoutNode) ProcessGPU(frame *GPUFrame) error {
 func (n *gpuLayoutNode) processSlot(frame *GPUFrame, slot *SlotSnapshot) error {
 	rect := Rect{X: slot.Rect.X, Y: slot.Rect.Y, W: slot.Rect.W, H: slot.Rect.H}
 
+	// Compute crop rect if fill mode is active.
+	var cropX, cropY, cropW, cropH int
+	alpha := float64(slot.Alpha)
+
 	// Try GPU cache first (already NV12 in VRAM, no upload needed).
 	fillGPU := n.layout.GPUFill(slot.SourceKey)
 	if fillGPU != nil {
 		defer fillGPU.Release()
-		// PIPComposite handles scaling internally — no pre-scale needed.
-		if err := PIPComposite(n.ctx, frame, fillGPU, rect, float64(slot.Alpha)); err != nil {
+		if slot.ScaleMode == "fill" {
+			cropX, cropY, cropW, cropH = computeGPUCropRect(
+				fillGPU.Width, fillGPU.Height, rect.W, rect.H, slot.CropAnchor)
+		}
+		if err := PIPCompositeWithCrop(n.ctx, frame, fillGPU, rect, alpha,
+			cropX, cropY, cropW, cropH); err != nil {
 			return err
 		}
 	} else if len(slot.FillYUV) == 0 || slot.FillW == 0 || slot.FillH == 0 {
@@ -132,8 +140,12 @@ func (n *gpuLayoutNode) processSlot(frame *GPUFrame, slot *SlotSnapshot) error {
 			return err
 		}
 
-		// PIPComposite handles scaling internally — no pre-scale needed.
-		if err := PIPComposite(n.ctx, frame, uploaded, rect, float64(slot.Alpha)); err != nil {
+		if slot.ScaleMode == "fill" {
+			cropX, cropY, cropW, cropH = computeGPUCropRect(
+				uploaded.Width, uploaded.Height, rect.W, rect.H, slot.CropAnchor)
+		}
+		if err := PIPCompositeWithCrop(n.ctx, frame, uploaded, rect, alpha,
+			cropX, cropY, cropW, cropH); err != nil {
 			return err
 		}
 	}
@@ -151,6 +163,56 @@ func (n *gpuLayoutNode) processSlot(frame *GPUFrame, slot *SlotSnapshot) error {
 	}
 
 	return nil
+}
+
+// computeGPUCropRect computes the largest source sub-region that matches the
+// destination slot's aspect ratio. The region is positioned using the anchor
+// point (0.0-1.0 on each axis). All coordinates are even-aligned for YUV420.
+func computeGPUCropRect(srcW, srcH, dstW, dstH int, anchor [2]float64) (cropX, cropY, cropW, cropH int) {
+	if srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0 {
+		return 0, 0, 0, 0
+	}
+
+	slotAR := float64(dstW) / float64(dstH)
+	srcAR := float64(srcW) / float64(srcH)
+
+	if srcAR > slotAR {
+		// Source is wider — crop horizontally.
+		cropH = srcH
+		cropW = int(float64(srcH) * slotAR)
+	} else {
+		// Source is taller — crop vertically.
+		cropW = srcW
+		cropH = int(float64(srcW) / slotAR)
+	}
+
+	// Even-align for YUV420.
+	cropW &^= 1
+	cropH &^= 1
+	if cropW > srcW {
+		cropW = srcW &^ 1
+	}
+	if cropH > srcH {
+		cropH = srcH &^ 1
+	}
+	if cropW <= 0 || cropH <= 0 {
+		return 0, 0, 0, 0
+	}
+
+	// No crop needed if crop region matches source.
+	if cropW == srcW&^1 && cropH == srcH&^1 {
+		return 0, 0, 0, 0
+	}
+
+	// Position using anchor.
+	cropX = int(float64(srcW-cropW) * anchor[0])
+	cropY = int(float64(srcH-cropH) * anchor[1])
+
+	// Even-align offsets.
+	cropX &^= 1
+	cropY &^= 1
+
+	return cropX, cropY, cropW, cropH
 }
 
 // getOrUploadFill returns a cached GPU fill frame for the given slot,

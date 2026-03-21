@@ -209,6 +209,7 @@ typedef struct {
     uint32_t srcW; uint32_t srcH; uint32_t srcPitch;
     int32_t rectX; int32_t rectY; int32_t rectW; int32_t rectH;
     int32_t alpha256;
+    int32_t cropX; int32_t cropY; int32_t cropW; int32_t cropH; // source crop rect (0,0,0,0 = full source)
 } MetalPIPCompositeYParams;
 
 typedef struct {
@@ -216,6 +217,7 @@ typedef struct {
     uint32_t srcW; uint32_t srcChromaH; uint32_t srcPitch;
     int32_t rectX; int32_t rectY; int32_t rectCW; int32_t rectCH;
     int32_t alpha256;
+    int32_t cropX; int32_t cropY; int32_t cropCW; int32_t cropCH; // chroma crop rect (0,0,0,0 = full source)
 } MetalPIPCompositeUVParams;
 
 MetalResult metal_pip_composite_y(MetalQueueRef queue, MetalPipelineRef pipeline,

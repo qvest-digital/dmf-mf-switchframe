@@ -45,10 +45,27 @@ var ColorBlack = YUVColor{16, 128, 128}
 
 // PIPComposite scales a source GPU frame and composites it into a destination
 // frame at the specified rectangle. alpha is 0.0 (transparent) to 1.0 (opaque).
+// Equivalent to PIPCompositeWithCrop with zero crop rect (full source).
 func PIPComposite(ctx *Context, dst, src *GPUFrame, rect Rect, alpha float64) error {
+	return PIPCompositeWithCrop(ctx, dst, src, rect, alpha, 0, 0, 0, 0)
+}
+
+// PIPCompositeWithCrop scales a source GPU frame (or a sub-region of it) and
+// composites it into a destination frame at the specified rectangle.
+// cropX/cropY/cropW/cropH define the source crop region; 0,0,0,0 means use
+// the full source (backward compatible with PIPComposite).
+// NOTE: CUDA path does not yet support crop — non-zero crop is ignored.
+func PIPCompositeWithCrop(ctx *Context, dst, src *GPUFrame, rect Rect, alpha float64,
+	cropX, cropY, cropW, cropH int) error {
 	if ctx == nil || dst == nil || src == nil {
 		return ErrGPUNotAvailable
 	}
+
+	// CUDA kernel does not yet support crop params — ignored for now.
+	_ = cropX
+	_ = cropY
+	_ = cropW
+	_ = cropH
 
 	alpha256 := int(alpha * 256.0)
 	if alpha256 < 0 {

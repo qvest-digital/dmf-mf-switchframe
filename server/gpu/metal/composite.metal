@@ -13,6 +13,10 @@ struct PIPCompositeYParams {
     int rectW;
     int rectH;
     int alpha256;
+    int cropX;
+    int cropY;
+    int cropW;
+    int cropH;
 };
 
 struct PIPCompositeUVParams {
@@ -27,6 +31,10 @@ struct PIPCompositeUVParams {
     int rectCW;
     int rectCH;
     int alpha256;
+    int cropX;
+    int cropY;
+    int cropCW;
+    int cropCH;
 };
 
 struct BorderParams {
@@ -60,7 +68,7 @@ struct FillRectParams {
     uint8_t colorCr;
 };
 
-// PIP composite Y plane: scale source and place into destination region
+// PIP composite Y plane: scale source (or source crop region) and place into destination region
 kernel void pip_composite_y(
     device uint8_t* dst           [[buffer(0)]],
     device const uint8_t* src     [[buffer(1)]],
@@ -73,9 +81,15 @@ kernel void pip_composite_y(
     int dy = params.rectY + int(gid.y);
     if (dx >= int(params.dstW) || dy >= int(params.dstH) || dx < 0 || dy < 0) return;
 
-    // Map local rect coords to source coords
-    float srcXf = float(gid.x) * float(params.srcW - 1) / float(max(params.rectW - 1, 1));
-    float srcYf = float(gid.y) * float(params.srcH - 1) / float(max(params.rectH - 1, 1));
+    // Determine source region: use crop rect if specified, otherwise full source.
+    int srcRegionX = (params.cropW > 0) ? params.cropX : 0;
+    int srcRegionY = (params.cropW > 0) ? params.cropY : 0;
+    int srcRegionW = (params.cropW > 0) ? params.cropW : int(params.srcW);
+    int srcRegionH = (params.cropW > 0) ? params.cropH : int(params.srcH);
+
+    // Map local rect coords to source crop region coords
+    float srcXf = float(srcRegionX) + float(gid.x) * float(srcRegionW - 1) / float(max(params.rectW - 1, 1));
+    float srcYf = float(srcRegionY) + float(gid.y) * float(srcRegionH - 1) / float(max(params.rectH - 1, 1));
     int sx = int(srcXf);
     int sy = int(srcYf);
     float fx = srcXf - float(sx);
@@ -115,8 +129,14 @@ kernel void pip_composite_uv(
     int dy = params.rectY / 2 + int(gid.y);
     if (dx + 1 >= int(params.dstW) || dy >= int(params.dstChromaH) || dx < 0 || dy < 0) return;
 
-    float srcXf = float(gid.x) * float(params.srcW / 2 - 1) / float(max(params.rectCW - 1, 1));
-    float srcYf = float(gid.y) * float(params.srcChromaH - 1) / float(max(params.rectCH - 1, 1));
+    // Determine source chroma region: use crop rect if specified, otherwise full source.
+    int srcChromaX = (params.cropCW > 0) ? params.cropX : 0;
+    int srcChromaY = (params.cropCW > 0) ? params.cropY : 0;
+    int srcChromaW = (params.cropCW > 0) ? params.cropCW : int(params.srcW / 2);
+    int srcChromaH = (params.cropCW > 0) ? params.cropCH : int(params.srcChromaH);
+
+    float srcXf = float(srcChromaX) + float(gid.x) * float(srcChromaW - 1) / float(max(params.rectCW - 1, 1));
+    float srcYf = float(srcChromaY) + float(gid.y) * float(srcChromaH - 1) / float(max(params.rectCH - 1, 1));
     int sx = min(int(srcXf), int(params.srcW / 2 - 1));
     int sy = min(int(srcYf), int(params.srcChromaH - 1));
 

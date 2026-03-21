@@ -62,6 +62,8 @@ type SlotSnapshot struct {
 	FillPTS      int64
 	Border       BorderSnapshot
 	Alpha        float32
+	ScaleMode    string     // "stretch" (default) or "fill"
+	CropAnchor   [2]float64 // [x,y] 0.0-1.0, anchor point for crop (0.5,0.5 = center)
 }
 
 // BorderSnapshot holds border configuration for a layout slot.

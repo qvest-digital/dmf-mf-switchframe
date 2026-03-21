@@ -537,6 +537,8 @@ type SlotSnap struct {
 	BorderColorY, BorderColorCb, BorderColorCr uint8
 	BorderThickness int
 	Alpha        float32
+	ScaleMode    string     // "stretch" (default) or "fill"
+	CropAnchor   [2]float64 // [x,y] 0.0-1.0, anchor point for crop (0.5,0.5 = center)
 }
 
 // SnapshotSlots returns a deep-copied snapshot of all enabled layout slots
@@ -582,6 +584,8 @@ func (c *Compositor) SnapshotSlots() []SlotSnap {
 			BorderColorCb:   slot.Border.ColorCb,
 			BorderColorCr:   slot.Border.ColorCr,
 			BorderThickness: slot.Border.Width,
+			ScaleMode:       slot.EffectiveScaleMode(),
+			CropAnchor:      slot.CropAnchor,
 		}
 
 		if entry, ok := c.fills[slot.SourceKey]; ok {

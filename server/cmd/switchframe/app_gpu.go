@@ -550,7 +550,9 @@ func (a *layoutStateAdapter) SnapshotSlots() []gpu.SlotSnapshot {
 				ColorCr:   s.BorderColorCr,
 				Thickness: s.BorderThickness,
 			},
-			Alpha: s.Alpha,
+			Alpha:      s.Alpha,
+			ScaleMode:  s.ScaleMode,
+			CropAnchor: s.CropAnchor,
 		}
 	}
 	return result
