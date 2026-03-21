@@ -46,8 +46,10 @@ describe('computeSRTHealth', () => {
 		expect(computeSRTHealth(makeSRT({ lossRate: 0.5 }))).toBe('yellow'));
 	it('returns yellow for moderate RTT', () =>
 		expect(computeSRTHealth(makeSRT({ rttMs: 150 }))).toBe('yellow'));
-	it('returns yellow for low buffer', () =>
+	it('returns yellow for low buffer with real latency', () =>
 		expect(computeSRTHealth(makeSRT({ recvBufMs: 10 }))).toBe('yellow'));
+	it('returns green for low buffer with zero latency (local/demo)', () =>
+		expect(computeSRTHealth(makeSRT({ recvBufMs: 0, latencyMs: 0 }))).toBe('green'));
 	it('returns undefined for non-SRT source', () =>
 		expect(computeSRTHealth(undefined)).toBeUndefined());
 });

@@ -6,7 +6,7 @@ export function computeSRTHealth(srt: SRTSourceInfo | undefined): SRTHealthLevel
 	if (!srt) return undefined;
 	if (!srt.connected) return 'gray';
 	if (srt.lossRate > 1.0 || srt.rttMs > 200) return 'red';
-	if (srt.lossRate > 0.1 || srt.rttMs > 100 || srt.recvBufMs < 20) return 'yellow';
+	if (srt.lossRate > 0.1 || srt.rttMs > 100 || (srt.latencyMs > 0 && srt.recvBufMs < 20)) return 'yellow';
 	return 'green';
 }
 
