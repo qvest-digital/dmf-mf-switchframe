@@ -117,7 +117,7 @@ func UploadV210(ctx *Context, dst *GPUFrame, v210 []byte, width, height int) err
 		ctx.stagingV210Size = expected
 	}
 
-	if rc := C.cudaMemcpy(ctx.stagingV210, unsafe.Pointer(&v210[0]), C.size_t(expected), C.cudaMemcpyHostToDevice); rc != C.cudaSuccess {
+	if rc := C.cudaMemcpyAsync(ctx.stagingV210, unsafe.Pointer(&v210[0]), C.size_t(expected), C.cudaMemcpyHostToDevice, ctx.stream); rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: V210 upload memcpy failed: %d", rc)
 	}
 
@@ -182,12 +182,13 @@ func DownloadV210(ctx *Context, v210 []byte, src *GPUFrame, width, height int) e
 	if rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: NV12→V210 failed: %d", rc)
 	}
+	// Queue async device→host copy after the kernel on the same stream, then
+	// synchronize once to ensure both the kernel and DMA transfer complete.
+	if rc := C.cudaMemcpyAsync(unsafe.Pointer(&v210[0]), ctx.stagingV210, C.size_t(expected), C.cudaMemcpyDeviceToHost, ctx.stream); rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: V210 download memcpy failed: %d", rc)
+	}
 	if rc := C.cudaStreamSynchronize(ctx.stream); rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: V210 download sync failed: %d", rc)
-	}
-
-	if rc := C.cudaMemcpy(unsafe.Pointer(&v210[0]), ctx.stagingV210, C.size_t(expected), C.cudaMemcpyDeviceToHost); rc != C.cudaSuccess {
-		return fmt.Errorf("gpu: V210 download memcpy failed: %d", rc)
 	}
 	return nil
 }

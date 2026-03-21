@@ -81,20 +81,22 @@ func Download(ctx *Context, yuv []byte, frame *GPUFrame, width, height int) erro
 		return fmt.Errorf("gpu: download: nv12_to_yuv420p kernel failed: %d", cerr)
 	}
 
-	// Synchronize before reading back
-	if rc := C.cudaStreamSynchronize(ctx.stream); rc != C.cudaSuccess {
-		return fmt.Errorf("gpu: download: stream sync failed: %d", rc)
-	}
-
-	// Copy planar data from staging buffers to host.
-	if rc := C.cudaMemcpy(unsafe.Pointer(&yuv[0]), ctx.stagingY, C.size_t(ySize), C.cudaMemcpyDeviceToHost); rc != C.cudaSuccess {
+	// Queue async device→host copies after the kernel on the same stream.
+	// A single cudaStreamSynchronize below ensures all three transfers complete
+	// before we return the data to the caller.
+	if rc := C.cudaMemcpyAsync(unsafe.Pointer(&yuv[0]), ctx.stagingY, C.size_t(ySize), C.cudaMemcpyDeviceToHost, ctx.stream); rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: download: memcpy Y failed: %d", rc)
 	}
-	if rc := C.cudaMemcpy(unsafe.Pointer(&yuv[ySize]), ctx.stagingCb, C.size_t(cbSize), C.cudaMemcpyDeviceToHost); rc != C.cudaSuccess {
+	if rc := C.cudaMemcpyAsync(unsafe.Pointer(&yuv[ySize]), ctx.stagingCb, C.size_t(cbSize), C.cudaMemcpyDeviceToHost, ctx.stream); rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: download: memcpy Cb failed: %d", rc)
 	}
-	if rc := C.cudaMemcpy(unsafe.Pointer(&yuv[ySize+cbSize]), ctx.stagingCr, C.size_t(crSize), C.cudaMemcpyDeviceToHost); rc != C.cudaSuccess {
+	if rc := C.cudaMemcpyAsync(unsafe.Pointer(&yuv[ySize+cbSize]), ctx.stagingCr, C.size_t(crSize), C.cudaMemcpyDeviceToHost, ctx.stream); rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: download: memcpy Cr failed: %d", rc)
+	}
+
+	// Synchronize once after all async operations — kernel + three DMA transfers.
+	if rc := C.cudaStreamSynchronize(ctx.stream); rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: download: stream sync failed: %d", rc)
 	}
 
 	return nil

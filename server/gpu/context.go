@@ -56,6 +56,12 @@ type Context struct {
 	// Lazily allocated under ctx.mu, freed in Close().
 	stagingV210     unsafe.Pointer
 	stagingV210Size int
+
+	// Persistent temporary float32 device buffer for Lanczos-3 scaler.
+	// Lazily allocated under ctx.mu, freed in Close().
+	// Size: lanczosTmpSize floats (4 bytes each).
+	lanczosTmp     *C.float
+	lanczosTmpSize int
 }
 
 // NewContext initializes CUDA and creates a shared context on device 0.
@@ -138,6 +144,11 @@ func (c *Context) Close() error {
 		c.stagingV210 = nil
 	}
 	c.stagingV210Size = 0
+	if c.lanczosTmp != nil {
+		C.cudaFree(unsafe.Pointer(c.lanczosTmp))
+		c.lanczosTmp = nil
+	}
+	c.lanczosTmpSize = 0
 	// Note: we don't call cudaDeviceReset() — the primary context
 	// persists for the process lifetime. This is intentional: other
 	// tests or subsystems may still use the GPU.
@@ -190,4 +201,33 @@ func (c *Context) MemoryStats() MemoryStats {
 		FreeMB:  int(free) / (1024 * 1024),
 		UsedMB:  int(total-free) / (1024 * 1024),
 	}
+}
+
+// ensureLanczosTemp ensures the Lanczos-3 temporary float32 device buffer is
+// at least `needed` floats in size. Lazily allocates or grows as required.
+// Must be called under the same serialization as scale_lanczos3_nv12 (i.e.
+// the caller holds no concurrent access to lanczosTmp).
+func (c *Context) ensureLanczosTemp(needed int) error {
+	if needed <= c.lanczosTmpSize {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// Re-check under lock in case another goroutine already grew it.
+	if needed <= c.lanczosTmpSize {
+		return nil
+	}
+	if c.lanczosTmp != nil {
+		C.cudaFree(unsafe.Pointer(c.lanczosTmp))
+		c.lanczosTmp = nil
+		c.lanczosTmpSize = 0
+	}
+	var ptr unsafe.Pointer
+	bytes := C.size_t(needed * 4) // float32 = 4 bytes
+	if rc := C.cudaMalloc(&ptr, bytes); rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: lanczos3 tmpBuf alloc (%d floats) failed: %d", needed, rc)
+	}
+	c.lanczosTmp = (*C.float)(ptr)
+	c.lanczosTmpSize = needed
+	return nil
 }
