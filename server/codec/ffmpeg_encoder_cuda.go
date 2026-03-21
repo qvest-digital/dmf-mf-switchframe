@@ -133,8 +133,8 @@ static int ffenc_open_cuda_hw(ffenc_hw_frames_t* h, int width, int height,
 	frames_ctx->sw_format = AV_PIX_FMT_NV12;
 	frames_ctx->width     = width;
 	frames_ctx->height    = height;
-	// initial_pool_size=0: we provide our own device pointers, no FFmpeg pool needed.
-	frames_ctx->initial_pool_size = 0;
+	// We need at least 1 frame in the pool for av_hwframe_get_buffer().
+	frames_ctx->initial_pool_size = 1;
 
 	rc = av_hwframe_ctx_init(h->hw_frames_ref);
 	if (rc < 0) {
@@ -160,13 +160,23 @@ static int ffenc_open_cuda_hw(ffenc_hw_frames_t* h, int width, int height,
 		return -3;
 	}
 
-	// Allocate reusable CUDA AVFrame
+	// Allocate a CUDA AVFrame with hw_frames backing.
+	// av_hwframe_get_buffer() allocates CUDA device memory managed by FFmpeg
+	// and sets format=AV_PIX_FMT_CUDA with proper buffer references.
 	h->hw_frame = av_frame_alloc();
 	if (!h->hw_frame) {
 		av_buffer_unref(&h->hw_frames_ref);
 		av_buffer_unref(&h->hw_device_ref);
 		avcodec_free_context(&h->base.ctx);
 		return -4;
+	}
+	rc = av_hwframe_get_buffer(h->hw_frames_ref, h->hw_frame, 0);
+	if (rc < 0) {
+		av_frame_free(&h->hw_frame);
+		av_buffer_unref(&h->hw_frames_ref);
+		av_buffer_unref(&h->hw_device_ref);
+		avcodec_free_context(&h->base.ctx);
+		return -15;
 	}
 
 	h->base.pkt = av_packet_alloc();
@@ -201,25 +211,45 @@ static int ffenc_encode_nv12_cuda(ffenc_hw_frames_t* h,
 	cuCtxPushCurrent((CUcontext)cuda_ctx);
 
 	AVFrame* frame = h->hw_frame;
+	int w = h->base.width;
+	int ht = h->base.height;
 
-	// Set up the CUDA frame: point data[] to device memory
-	frame->format         = AV_PIX_FMT_CUDA;
-	frame->width          = h->base.width;
-	frame->height         = h->base.height;
-	frame->data[0]        = (uint8_t*)y_dev_ptr;
-	frame->data[1]        = (uint8_t*)uv_dev_ptr;
-	frame->linesize[0]    = pitch;
-	frame->linesize[1]    = pitch;
-	frame->pts            = input_pts;
-
-	// Attach hw_frames_ctx to the frame (required for NVENC to know the CUDA context).
-	// Unref previous attachment first if present.
-	av_buffer_unref(&frame->hw_frames_ctx);
-	frame->hw_frames_ctx = av_buffer_ref(h->hw_frames_ref);
-	if (!frame->hw_frames_ctx) {
+	// Copy NV12 data from our GPU frame pool into FFmpeg's hw_frame allocation
+	// via device-to-device cuMemcpy2D. FFmpeg's hw_frame was allocated by
+	// av_hwframe_get_buffer() and has its own CUDA memory + buffer references.
+	// Y plane: pitch x height
+	CUDA_MEMCPY2D copyY = {0};
+	copyY.srcMemoryType = CU_MEMORYTYPE_DEVICE;
+	copyY.srcDevice     = (CUdeviceptr)y_dev_ptr;
+	copyY.srcPitch      = pitch;
+	copyY.dstMemoryType = CU_MEMORYTYPE_DEVICE;
+	copyY.dstDevice     = (CUdeviceptr)frame->data[0];
+	copyY.dstPitch      = frame->linesize[0];
+	copyY.WidthInBytes  = w;
+	copyY.Height        = ht;
+	CUresult crc = cuMemcpy2D(&copyY);
+	if (crc != CUDA_SUCCESS) {
 		cuCtxPopCurrent(&prev_ctx);
-		return -7;
+		return -8;
 	}
+
+	// UV plane: pitch x height/2
+	CUDA_MEMCPY2D copyUV = {0};
+	copyUV.srcMemoryType = CU_MEMORYTYPE_DEVICE;
+	copyUV.srcDevice     = (CUdeviceptr)uv_dev_ptr;
+	copyUV.srcPitch      = pitch;
+	copyUV.dstMemoryType = CU_MEMORYTYPE_DEVICE;
+	copyUV.dstDevice     = (CUdeviceptr)frame->data[1];
+	copyUV.dstPitch      = frame->linesize[1];
+	copyUV.WidthInBytes  = w;
+	copyUV.Height        = ht / 2;
+	crc = cuMemcpy2D(&copyUV);
+	if (crc != CUDA_SUCCESS) {
+		cuCtxPopCurrent(&prev_ctx);
+		return -9;
+	}
+
+	frame->pts = input_pts;
 
 	if (force_idr) {
 		frame->pict_type = AV_PICTURE_TYPE_I;
@@ -335,6 +365,7 @@ func NewFFmpegHWFramesEncoder(cudaCtx unsafe.Pointer, width, height, bitrate, fp
 			-12: "hw_frames_ctx alloc failed",
 			-13: "hw_frames_ctx init failed",
 			-14: "hw_frames_ctx ref failed",
+			-15: "hw_frame get_buffer failed",
 		}
 		msg := desc[int(rc)]
 		if msg == "" {
