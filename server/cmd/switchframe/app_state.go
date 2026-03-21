@@ -2,14 +2,14 @@ package main
 
 import (
 	"encoding/hex"
-	"log/slog"
-	"net"
-	"strconv"
-	"strings"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/scte35"
 	"github.com/zsiec/switchframe/server/stmap"
+	"log/slog"
+	"net"
+	"strconv"
+	"strings"
 )
 
 // sourceType derives the source type string from a source key prefix.

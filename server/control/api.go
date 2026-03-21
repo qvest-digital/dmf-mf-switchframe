@@ -278,7 +278,6 @@ func WithSessionAPIToken(token string) APIOption {
 	return func(a *API) { a.sessionAPIToken = token }
 }
 
-
 // WithAllowedOutputPorts constrains SRT listener output to the given ports.
 func WithAllowedOutputPorts(ports []int) APIOption {
 	return func(a *API) {

@@ -23,16 +23,16 @@ type STMapProgramState struct {
 // Registry is the central store for all ST maps and their assignments.
 type Registry struct {
 	mu          sync.RWMutex
-	maps        map[string]*STMap        // static maps by name
+	maps        map[string]*STMap         // static maps by name
 	animated    map[string]*AnimatedSTMap // animated maps by name
-	perSource   map[string]string        // source key -> map name
-	sourceProcs map[string]*Processor    // per-source cached processors
-	programMap  string                   // current program map name (empty = none)
-	programProc *Processor               // cached processor for static program map
-	programAnim *AnimatedSTMap           // reference for animated program map
+	perSource   map[string]string         // source key -> map name
+	sourceProcs map[string]*Processor     // per-source cached processors
+	programMap  string                    // current program map name (empty = none)
+	programProc *Processor                // cached processor for static program map
+	programAnim *AnimatedSTMap            // reference for animated program map
 
-	hasProgramMap atomic.Bool          // fast lock-free check for pipeline node
-	onStateChange func(STMapState)     // callback for state broadcast
+	hasProgramMap atomic.Bool      // fast lock-free check for pipeline node
+	onStateChange func(STMapState) // callback for state broadcast
 }
 
 // NewRegistry creates an empty Registry.

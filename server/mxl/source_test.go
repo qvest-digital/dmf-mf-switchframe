@@ -747,17 +747,17 @@ func (e *fakeVideoEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte,
 		// Keyframe: SPS (NAL type 7) + PPS (NAL type 8) + IDR (NAL type 5)
 		var out []byte
 		out = append(out, 0x00, 0x00, 0x00, 0x01) // start code
-		out = append(out, 0x67, 0x42, 0xC0, 0x1E)  // SPS: type 7, baseline, constraint, level 3.0
-		out = append(out, 0x00, 0x00, 0x00, 0x01)  // start code
-		out = append(out, 0x68, 0xCE, 0x38, 0x80)  // PPS: type 8
-		out = append(out, 0x00, 0x00, 0x00, 0x01)  // start code
-		out = append(out, 0x65, 0x88)               // IDR: type 5
+		out = append(out, 0x67, 0x42, 0xC0, 0x1E) // SPS: type 7, baseline, constraint, level 3.0
+		out = append(out, 0x00, 0x00, 0x00, 0x01) // start code
+		out = append(out, 0x68, 0xCE, 0x38, 0x80) // PPS: type 8
+		out = append(out, 0x00, 0x00, 0x00, 0x01) // start code
+		out = append(out, 0x65, 0x88)             // IDR: type 5
 		return out, true, nil
 	}
 	// P-frame (NAL type 1)
 	var out []byte
 	out = append(out, 0x00, 0x00, 0x00, 0x01) // start code
-	out = append(out, 0x41, 0x9A)              // non-IDR: type 1
+	out = append(out, 0x41, 0x9A)             // non-IDR: type 1
 	return out, false, nil
 }
 

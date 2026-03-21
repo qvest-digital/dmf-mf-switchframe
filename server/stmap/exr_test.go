@@ -22,9 +22,9 @@ func TestHalfToFloat(t *testing.T) {
 		{"negative one", 0xBC00, -1.0},
 		{"half", 0x3800, 0.5},
 		{"two", 0x4000, 2.0},
-		{"smallest normal", 0x0400, float32(math.Ldexp(1, -14))},              // 2^-14
+		{"smallest normal", 0x0400, float32(math.Ldexp(1, -14))},                 // 2^-14
 		{"largest subnormal", 0x03FF, float32(math.Ldexp(1, -14) * 1023 / 1024)}, // just below 2^-14
-		{"smallest subnormal", 0x0001, float32(math.Ldexp(1, -24))},           // 2^-24
+		{"smallest subnormal", 0x0001, float32(math.Ldexp(1, -24))},              // 2^-24
 		{"positive infinity", 0x7C00, float32(math.Inf(1))},
 		{"negative infinity", 0xFC00, float32(math.Inf(-1))},
 	}
@@ -83,18 +83,18 @@ func buildSyntheticEXR(t *testing.T, width, height int, rVals, gVals []float32, 
 	chData.WriteString("G")
 	chData.WriteByte(0)
 	_ = binary.Write(&chData, binary.LittleEndian, int32(2)) // FLOAT
-	chData.WriteByte(0)                                   // pLinear
-	chData.Write([]byte{0, 0, 0})                         // reserved
-	_ = binary.Write(&chData, binary.LittleEndian, int32(1))  // xSampling
-	_ = binary.Write(&chData, binary.LittleEndian, int32(1))  // ySampling
+	chData.WriteByte(0)                                      // pLinear
+	chData.Write([]byte{0, 0, 0})                            // reserved
+	_ = binary.Write(&chData, binary.LittleEndian, int32(1)) // xSampling
+	_ = binary.Write(&chData, binary.LittleEndian, int32(1)) // ySampling
 	// Channel R
 	chData.WriteString("R")
 	chData.WriteByte(0)
 	_ = binary.Write(&chData, binary.LittleEndian, int32(2)) // FLOAT
-	chData.WriteByte(0)                                   // pLinear
-	chData.Write([]byte{0, 0, 0})                         // reserved
-	_ = binary.Write(&chData, binary.LittleEndian, int32(1))  // xSampling
-	_ = binary.Write(&chData, binary.LittleEndian, int32(1))  // ySampling
+	chData.WriteByte(0)                                      // pLinear
+	chData.Write([]byte{0, 0, 0})                            // reserved
+	_ = binary.Write(&chData, binary.LittleEndian, int32(1)) // xSampling
+	_ = binary.Write(&chData, binary.LittleEndian, int32(1)) // ySampling
 	// Terminating null byte for channel list
 	chData.WriteByte(0)
 

@@ -403,16 +403,40 @@ func buildMinimalEXR(t *testing.T, width, height int) []byte {
 	var chData []byte
 	chData = append(chData, []byte("G")...)
 	chData = append(chData, 0)
-	{ b := make([]byte, 4); binary.LittleEndian.PutUint32(b, 2); chData = append(chData, b...) } // FLOAT
-	chData = append(chData, 0, 0, 0, 0)                                                           // pLinear + reserved
-	{ b := make([]byte, 4); binary.LittleEndian.PutUint32(b, 1); chData = append(chData, b...) } // xSampling
-	{ b := make([]byte, 4); binary.LittleEndian.PutUint32(b, 1); chData = append(chData, b...) } // ySampling
+	{
+		b := make([]byte, 4)
+		binary.LittleEndian.PutUint32(b, 2)
+		chData = append(chData, b...)
+	} // FLOAT
+	chData = append(chData, 0, 0, 0, 0) // pLinear + reserved
+	{
+		b := make([]byte, 4)
+		binary.LittleEndian.PutUint32(b, 1)
+		chData = append(chData, b...)
+	} // xSampling
+	{
+		b := make([]byte, 4)
+		binary.LittleEndian.PutUint32(b, 1)
+		chData = append(chData, b...)
+	} // ySampling
 	chData = append(chData, []byte("R")...)
 	chData = append(chData, 0)
-	{ b := make([]byte, 4); binary.LittleEndian.PutUint32(b, 2); chData = append(chData, b...) }
+	{
+		b := make([]byte, 4)
+		binary.LittleEndian.PutUint32(b, 2)
+		chData = append(chData, b...)
+	}
 	chData = append(chData, 0, 0, 0, 0)
-	{ b := make([]byte, 4); binary.LittleEndian.PutUint32(b, 1); chData = append(chData, b...) }
-	{ b := make([]byte, 4); binary.LittleEndian.PutUint32(b, 1); chData = append(chData, b...) }
+	{
+		b := make([]byte, 4)
+		binary.LittleEndian.PutUint32(b, 1)
+		chData = append(chData, b...)
+	}
+	{
+		b := make([]byte, 4)
+		binary.LittleEndian.PutUint32(b, 1)
+		chData = append(chData, b...)
+	}
 	chData = append(chData, 0) // terminator
 	appendAttr("channels", "chlist", chData)
 

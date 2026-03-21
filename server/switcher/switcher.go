@@ -1558,7 +1558,7 @@ func (s *Switcher) normalizeResolution(pf *ProcessingFrame) *ProcessingFrame {
 		DTS:        pf.DTS,
 		IsKeyframe: pf.IsKeyframe,
 		Codec:      pf.Codec,
-		GroupID:     pf.GroupID,
+		GroupID:    pf.GroupID,
 		pool:       s.framePool,
 	}
 	scaled.SetRefs(1)

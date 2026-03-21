@@ -8,9 +8,9 @@ import (
 // GeneratorInfo describes a registered generator with its name and parameter
 // definitions. Used by both static and animated generators.
 type GeneratorInfo struct {
-	Name        string              `json:"name"`
-	Description string              `json:"description"`
-	Type        string              `json:"type"` // "static" or "animated"
+	Name        string               `json:"name"`
+	Description string               `json:"description"`
+	Type        string               `json:"type"` // "static" or "animated"
 	Params      map[string]ParamInfo `json:"params"`
 }
 

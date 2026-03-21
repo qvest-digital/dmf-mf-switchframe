@@ -218,7 +218,7 @@ func TestProcessor_LargerFrame(t *testing.T) {
 
 	// Fill with pseudo-random pattern.
 	for i := range src {
-		src[i] = byte((i * 137 + 43) & 0xFF)
+		src[i] = byte((i*137 + 43) & 0xFF)
 	}
 
 	p.ProcessYUV(dst, src, w, h)

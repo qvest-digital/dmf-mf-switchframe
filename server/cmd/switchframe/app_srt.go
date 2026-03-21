@@ -337,10 +337,10 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	if replayVideoCh != nil {
 		go func() {
 			var (
-				videoEncoder  transition.VideoEncoder
-				groupID       atomic.Uint32
-				encoderYUV    []byte
-				lastW, lastH  int
+				videoEncoder transition.VideoEncoder
+				groupID      atomic.Uint32
+				encoderYUV   []byte
+				lastW, lastH int
 			)
 			replayEncFactory := encoderFactory()
 			for job := range replayVideoCh {

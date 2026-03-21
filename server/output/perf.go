@@ -4,10 +4,10 @@ package output
 // We can't import the perf package from output (circular dependency), so
 // we define compatible types here. The perf.Sampler wraps these via a thin adapter.
 type PerfOutputSample struct {
-	MuxerPTS        int64
-	SRTBytesWritten int64
+	MuxerPTS         int64
+	SRTBytesWritten  int64
 	SRTOverflowCount int64
-	RecordingActive bool
+	RecordingActive  bool
 }
 
 // PerfSample returns a performance snapshot of the output manager's current state.

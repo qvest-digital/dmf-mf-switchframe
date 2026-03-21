@@ -317,7 +317,7 @@ func parseConfig() (AppConfig, error) {
 	return AppConfig{
 		Demo:                 *demoFlag,
 		FrameSync:            *frameSyncFlag,
-		LowLatencySync:      *lowLatencySyncFlag,
+		LowLatencySync:       *lowLatencySyncFlag,
 		FRCQuality:           *frcQualityFlag,
 		Format:               *formatFlag,
 		DemoVideoDir:         *demoVideoDir,

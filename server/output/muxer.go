@@ -77,8 +77,8 @@ type TSMuxer struct {
 // writing frames. The muxer initializes on the first keyframe.
 func NewTSMuxer() *TSMuxer {
 	return &TSMuxer{
-		annexBBuf:     make([]byte, 0, muxerBufCap),
-		prependBuf:    make([]byte, 0, muxerBufCap),
+		annexBBuf:  make([]byte, 0, muxerBufCap),
+		prependBuf: make([]byte, 0, muxerBufCap),
 		muxerEpoch: 90000, // start at 1 second after rebase
 	}
 }

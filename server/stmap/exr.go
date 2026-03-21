@@ -14,9 +14,9 @@ const (
 	exrMagic = 0x01312F76 // bytes on disk: 76 2F 31 01, read as little-endian uint32
 
 	// Version flags (bits 9-11).
-	exrTiledFlag    = 0x200
-	exrLongNameFlag = 0x400
-	exrDeepFlag     = 0x800
+	exrTiledFlag     = 0x200
+	exrLongNameFlag  = 0x400
+	exrDeepFlag      = 0x800
 	exrMultiPartFlag = 0x1000
 
 	// Compression types.
@@ -453,8 +453,8 @@ func zlibDecompress(data []byte) ([]byte, error) {
 	// Reconstruct the original interleaved order.
 	// See ImfZip.cpp interleave_scalar().
 	out := make([]byte, len(tmp))
-	t1 := 0                    // index into first half
-	t2 := (len(tmp) + 1) / 2  // index into second half
+	t1 := 0                  // index into first half
+	t2 := (len(tmp) + 1) / 2 // index into second half
 	for s := 0; s < len(out); s++ {
 		if s%2 == 0 {
 			out[s] = tmp[t1]
