@@ -45,8 +45,13 @@ func Upload(ctx *Context, frame *GPUFrame, yuv []byte, width, height int) error 
 
 	// Copy planar data into Metal buffers (zero-copy on unified memory —
 	// this is just a memcpy within the same address space).
-	// No lock needed: staging buffers are per-dimension and Upload is
-	// called from a single pipeline goroutine per frame size.
+	//
+	// INVARIANT: Upload is called from the single video processing goroutine
+	// (Pipeline.Run on LockOSThread). Staging buffers are shared per-dimension,
+	// so concurrent Upload calls at the same resolution would race on the
+	// staging buffer contents. This is safe as long as the pipeline is the
+	// sole caller. If preview encoding or other paths need GPU upload at the
+	// same resolution, they must use separate staging buffers.
 	C.memcpy(C.metal_buffer_contents(staging.yBuf), unsafe.Pointer(&yuv[0]), C.size_t(ySize))
 	C.memcpy(C.metal_buffer_contents(staging.cbBuf), unsafe.Pointer(&yuv[ySize]), C.size_t(cbSize))
 	C.memcpy(C.metal_buffer_contents(staging.crBuf), unsafe.Pointer(&yuv[ySize+cbSize]), C.size_t(crSize))

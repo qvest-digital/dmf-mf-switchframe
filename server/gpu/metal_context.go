@@ -38,9 +38,11 @@ type metalContext struct {
 	pipelinesMu sync.Mutex
 
 	// Lanczos-3 temporary float buffer (cached, grown as needed).
-	// Size: lanczosTmpSize floats (4 bytes each).
 	lanczosTmpBuf  C.MetalBufferRef
 	lanczosTmpSize int
+
+	// Luma key LUT buffer (cached, 256 bytes).
+	lumaKeyLUTBuf C.MetalBufferRef
 
 	// Temp file path for embedded metallib (cleaned up on Close).
 	tempMetallibPath string
@@ -159,6 +161,12 @@ func (c *metalContext) Close() error {
 		c.lanczosTmpSize = 0
 	}
 
+	// Free cached luma key LUT buffer
+	if c.lumaKeyLUTBuf != nil {
+		C.metal_buffer_free(c.lumaKeyLUTBuf)
+		c.lumaKeyLUTBuf = nil
+	}
+
 	// Free cached staging buffers
 	c.stagingBufsMu.Lock()
 	for _, s := range c.stagingBufs {
@@ -200,7 +208,7 @@ func (c *metalContext) Close() error {
 // getOrCreateStagingBuffers returns cached staging buffers for the given
 // frame dimensions, allocating them on first use.
 func (c *metalContext) getOrCreateStagingBuffers(width, height int) (*stagingBufferSet, error) {
-	key := width*10000 + height // simple dimension key
+	key := width<<16 | height // collision-free for resolutions up to 65535
 	c.stagingBufsMu.Lock()
 	defer c.stagingBufsMu.Unlock()
 

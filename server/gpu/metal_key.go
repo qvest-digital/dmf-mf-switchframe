@@ -67,13 +67,18 @@ func LumaKey(ctx *Context, frame *GPUFrame, maskBuf *GPUFrame, lut [256]byte) er
 		return fmt.Errorf("gpu: luma key: %w", err)
 	}
 
-	// Upload LUT as a Metal buffer (256 bytes).
-	// TODO: Cache this buffer on the context to avoid per-call allocation.
-	lutBuf, err := mtl.allocBuffer(256)
-	if err != nil {
-		return fmt.Errorf("gpu: luma key: alloc LUT: %w", err)
+	// Upload LUT to a cached 256-byte Metal buffer (reused across calls).
+	mtl.mu.Lock()
+	if mtl.lumaKeyLUTBuf == nil {
+		var allocErr error
+		mtl.lumaKeyLUTBuf, allocErr = mtl.allocBuffer(256)
+		if allocErr != nil {
+			mtl.mu.Unlock()
+			return fmt.Errorf("gpu: luma key: alloc LUT: %w", allocErr)
+		}
 	}
-	defer C.metal_buffer_free(lutBuf)
+	lutBuf := mtl.lumaKeyLUTBuf
+	mtl.mu.Unlock()
 	C.memcpy(C.metal_buffer_contents(lutBuf), unsafe.Pointer(&lut[0]), 256)
 
 	params := C.MetalLumaKeyParams{
