@@ -225,6 +225,40 @@ func TestProcessingFrameGPUData(t *testing.T) {
 	require.Same(t, fg, fg2, "DeepCopy should shallow-copy GPUData pointer")
 }
 
+func TestProcessingFrameGPUDataRefCounting(t *testing.T) {
+	// Verify GPUData Ref/Release lifecycle through DeepCopy and ReleaseYUV.
+	fakeRC := &mockGPURefCounter{refs: 1}
+
+	pf := &ProcessingFrame{
+		Width:   4,
+		Height:  4,
+		YUV:     make([]byte, 4*4*3/2),
+		GPUData: fakeRC,
+	}
+
+	// DeepCopy should call Ref() on GPUData
+	cp := pf.DeepCopy()
+	require.NotNil(t, cp.GPUData)
+	require.Equal(t, 2, fakeRC.refs, "DeepCopy should increment GPU ref count")
+
+	// ReleaseYUV on copy should call Release() on GPUData
+	cp.ReleaseYUV()
+	require.Equal(t, 1, fakeRC.refs, "ReleaseYUV should decrement GPU ref count")
+	require.Nil(t, cp.GPUData, "GPUData should be nil after ReleaseYUV")
+
+	// ReleaseYUV on original
+	pf.ReleaseYUV()
+	require.Equal(t, 0, fakeRC.refs, "Original ReleaseYUV should decrement GPU ref count")
+}
+
+// mockGPURefCounter implements GPURefCounter for testing.
+type mockGPURefCounter struct {
+	refs int
+}
+
+func (m *mockGPURefCounter) Ref()     { m.refs++ }
+func (m *mockGPURefCounter) Release() { m.refs-- }
+
 func TestProcessingFrameNilPoolFallback(t *testing.T) {
 	// No pool — DeepCopy falls back to make()
 	original := &ProcessingFrame{

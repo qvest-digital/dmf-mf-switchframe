@@ -5,6 +5,14 @@ import (
 	"sync/atomic"
 )
 
+// GPURefCounter is an interface for GPU frame reference counting.
+// When GPUData implements this interface, DeepCopy will call Ref()
+// and ReleaseYUV will call Release() to maintain correct GPU memory lifecycle.
+type GPURefCounter interface {
+	Ref()
+	Release()
+}
+
 // ProcessingFrame carries decoded YUV420 data through the video processing chain.
 // Created by decoding a media.VideoFrame, consumed by encoding back to one.
 // Used only inside the switcher pipeline — not a replacement for media.VideoFrame.
@@ -93,10 +101,19 @@ func (pf *ProcessingFrame) Ref() {
 }
 
 // ReleaseYUV returns the YUV buffer to the pool when the last reference is
-// dropped. For refcounted frames (refs ≥ 1), decrements and releases only
+// dropped. For refcounted frames (refs >= 1), decrements and releases only
 // when refs reaches 0. For unmanaged frames (nil refs), releases immediately.
 // Safe to call multiple times; subsequent calls on nil YUV are no-ops.
+//
+// Also releases GPUData if it implements GPURefCounter (decrements GPU
+// frame reference count, freeing GPU memory when the last reference drops).
 func (pf *ProcessingFrame) ReleaseYUV() {
+	// Release GPU data reference if present
+	if rc, ok := pf.GPUData.(GPURefCounter); ok {
+		rc.Release()
+		pf.GPUData = nil
+	}
+
 	if pf.YUV == nil {
 		return
 	}
@@ -167,6 +184,10 @@ func (pf *ProcessingFrame) SetPool(pool *FramePool) {
 // DeepCopy returns a new ProcessingFrame with a copied YUV buffer.
 // The copy starts with nil refs (unmanaged, independent lifecycle).
 // Caller should call SetRefs(1) if the copy will flow through the pipeline.
+//
+// If GPUData implements GPURefCounter, Ref() is called so the GPU frame
+// stays alive as long as the copy exists. The caller must ensure
+// ReleaseYUV is called on the copy to release the GPU reference.
 func (pf *ProcessingFrame) DeepCopy() *ProcessingFrame {
 	cp := *pf
 	cp.refs = nil // independent lifecycle — new allocation on SetRefs
@@ -176,5 +197,11 @@ func (pf *ProcessingFrame) DeepCopy() *ProcessingFrame {
 		cp.YUV = make([]byte, len(pf.YUV))
 	}
 	copy(cp.YUV, pf.YUV)
+
+	// Increment GPU frame reference count if present
+	if rc, ok := cp.GPUData.(GPURefCounter); ok {
+		rc.Ref()
+	}
+
 	return &cp
 }
