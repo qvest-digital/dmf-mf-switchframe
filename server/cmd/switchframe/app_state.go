@@ -9,6 +9,7 @@ import (
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/scte35"
+	"github.com/zsiec/switchframe/server/stmap"
 )
 
 // sourceType derives the source type string from a source key prefix.
@@ -228,6 +229,24 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 		}
 	}
 
+	// ST map state (per-source + program assignments).
+	if a.stmapRegistry != nil {
+		stmapState := a.stmapRegistry.State()
+		if len(stmapState.Sources) > 0 || stmapState.Program != nil || len(stmapState.Available) > 0 {
+			state.STMap = &internal.STMapState{
+				Sources:   stmapState.Sources,
+				Available: stmapState.Available,
+			}
+			if stmapState.Program != nil {
+				state.STMap.Program = &internal.STMapProgramState{
+					Map:   stmapState.Program.Map,
+					Type:  stmapState.Program.Type,
+					Frame: stmapState.Program.Frame,
+				}
+			}
+		}
+	}
+
 	// Macro execution state (running/completed progress).
 	if ms := a.api.MacroState(); ms != nil {
 		state.Macro = ms
@@ -370,6 +389,14 @@ func (a *App) wireStateCallbacks() {
 	// SCTE-35 injector state changes.
 	if a.scte35Injector != nil {
 		a.scte35Injector.OnStateChange(func() {
+			a.clearLastOperator()
+			a.broadcastState(nil)
+		})
+	}
+
+	// ST map registry state changes.
+	if a.stmapRegistry != nil {
+		a.stmapRegistry.SetOnStateChange(func(_ stmap.STMapState) {
 			a.clearLastOperator()
 			a.broadcastState(nil)
 		})

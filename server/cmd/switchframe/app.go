@@ -49,6 +49,7 @@ import (
 	"github.com/zsiec/switchframe/server/scte35"
 	"github.com/zsiec/switchframe/server/srt"
 	"github.com/zsiec/switchframe/server/stinger"
+	"github.com/zsiec/switchframe/server/stmap"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -113,6 +114,8 @@ type App struct {
 	layoutCompositor *layout.Compositor
 	layoutStore      *layout.Store
 	fastCtrl         *fastctrl.Dispatcher
+	stmapRegistry    *stmap.Registry
+	stmapStore       *stmap.Store
 
 	// Text rendering engines
 	textRenderer   *textrender.Renderer
@@ -540,6 +543,48 @@ func (a *App) initSubsystems() error {
 	layoutPresetPath := a.statePath("layout_presets.json")
 	a.layoutStore = layout.NewStore(layoutPresetPath)
 	slog.Info("layout store initialized", "path", layoutPresetPath)
+
+	// ST map registry and file store.
+	a.stmapRegistry = stmap.NewRegistry()
+	stmapStoreDir := a.statePath("stmaps")
+	stmapSt, err := stmap.NewStore(stmapStoreDir)
+	if err != nil {
+		slog.Warn("stmap store init failed", "error", err)
+	} else {
+		a.stmapStore = stmapSt
+		// Load persisted static maps.
+		staticNames, _ := a.stmapStore.ListStatic()
+		for _, name := range staticNames {
+			m, loadErr := a.stmapStore.LoadStatic(name)
+			if loadErr != nil {
+				slog.Warn("stmap load failed", "name", name, "error", loadErr)
+				continue
+			}
+			_ = a.stmapRegistry.Store(m)
+		}
+		// Load persisted animated map metadata and regenerate.
+		animNames, _ := a.stmapStore.ListAnimated()
+		for _, name := range animNames {
+			meta, loadErr := a.stmapStore.LoadAnimatedMeta(name)
+			if loadErr != nil {
+				slog.Warn("stmap animated load failed", "name", name, "error", loadErr)
+				continue
+			}
+			anim, genErr := stmap.GenerateAnimated(meta.Generator, meta.Params, meta.Width, meta.Height, meta.FrameCount)
+			if genErr != nil {
+				slog.Warn("stmap animated regenerate failed", "name", name, "error", genErr)
+				continue
+			}
+			anim.Name = name
+			_ = a.stmapRegistry.StoreAnimated(anim)
+		}
+		if n := len(staticNames) + len(animNames); n > 0 {
+			slog.Info("stmap store loaded", "path", stmapStoreDir, "static", len(staticNames), "animated", len(animNames))
+		}
+	}
+
+	// Wire ST map registry to switcher for per-source correction.
+	a.sw.SetSTMapRegistry(a.stmapRegistry)
 
 	// Upstream key processor (chroma/luma keying).
 	a.keyProcessor = graphics.NewKeyProcessor()
@@ -1048,6 +1093,7 @@ func (a *App) initAPI() error {
 		control.WithLayoutCompositor(a.layoutCompositor),
 		control.WithLayoutStore(a.layoutStore),
 		control.WithPerfSampler(a.perfSampler),
+		control.WithSTMapRegistry(a.stmapRegistry),
 	}
 	if a.replayMgr != nil {
 		apiOpts = append(apiOpts, control.WithReplayManager(a.replayMgr))
