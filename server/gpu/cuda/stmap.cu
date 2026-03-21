@@ -144,8 +144,9 @@ __global__ void stmap_warp_y_tex_kernel(
 
     // tex2D with unnormalized coords performs hardware bilinear interpolation.
     // +0.5f because CUDA texture coords reference pixel centers.
-    float val = tex2D<unsigned char>(srcYTex, srcXf + 0.5f, srcYf + 0.5f);
-    dst[y * dstPitch + x] = (uint8_t)val;
+    // readMode=NormalizedFloat returns [0.0, 1.0] for uint8 data → scale to [0, 255].
+    float val = tex2D<float>(srcYTex, srcXf + 0.5f, srcYf + 0.5f);
+    dst[y * dstPitch + x] = (uint8_t)(val * 255.0f + 0.5f);
 }
 
 // UV plane warp using texture object (hardware bilinear, interleaved U/V)
@@ -200,7 +201,7 @@ static cudaError_t create_tex_obj(cudaTextureObject_t* tex,
     texDesc.addressMode[0] = cudaAddressModeClamp;
     texDesc.addressMode[1] = cudaAddressModeClamp;
     texDesc.filterMode = cudaFilterModeLinear;  // hardware bilinear!
-    texDesc.readMode = cudaReadModeElementType;
+    texDesc.readMode = cudaReadModeNormalizedFloat;  // required for linear filter on integer types
     texDesc.normalizedCoords = 0;  // unnormalized (pixel) coordinates
 
     return cudaCreateTextureObject(tex, &resDesc, &texDesc, NULL);
