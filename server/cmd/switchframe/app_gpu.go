@@ -175,16 +175,24 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 	}
 
 	// Build GPU pipeline node chain:
-	//   gpu_key → gpu_layout → gpu_compositor → gpu_ai_segment → gpu_stmap → raw_sinks → gpu_encode
-	nodes := []gpu.GPUPipelineNode{
+	//   gpu_key → gpu_layout → gpu_compositor → [gpu_ai_segment] → gpu_stmap → raw_sinks → gpu_encode
+	// Some nodes return nil on unsupported builds (e.g. AI segment on non-TensorRT).
+	candidateNodes := []gpu.GPUPipelineNode{
 		gpu.NewGPUKeyNode(gs.ctx, gs.pool, keyAdapter),
 		gpu.NewGPULayoutNode(gs.ctx, gs.pool, layoutAdapter),
 		gpu.NewGPUCompositorNode(gs.ctx, compositorAdapter),
-		gpu.NewGPUAISegmentNode(gs.ctx, gs.pool, segAdapter), // AI background replacement (nil on non-TensorRT)
+		gpu.NewGPUAISegmentNode(gs.ctx, gs.pool, segAdapter),
 		gpu.NewGPUSTMapNode(gs.ctx, gs.pool, app.stmapRegistry),
 		gpu.NewGPURawSinkNode(gs.ctx, &gpuRawVideoSink),
 		gpu.NewGPURawSinkNode(gs.ctx, &gpuRawPreviewSink),
 		gpu.NewGPUEncodeNode(gs.ctx, encoder, sw.ForceNextIDRPtr(), gpuOnEncoded),
+	}
+	// Filter nil nodes (stub builds return nil for unsupported features).
+	nodes := make([]gpu.GPUPipelineNode, 0, len(candidateNodes))
+	for _, n := range candidateNodes {
+		if n != nil {
+			nodes = append(nodes, n)
+		}
 	}
 
 	if err := gpuPipeline.Build(pf.Width, pf.Height, gs.pool.Pitch(), nodes); err != nil {
