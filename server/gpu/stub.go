@@ -93,3 +93,11 @@ func Download(ctx *Context, yuv []byte, frame *GPUFrame, width, height int) erro
 func FillBlack(ctx *Context, frame *GPUFrame) error {
 	return ErrGPUNotAvailable
 }
+
+// GPUDecoder is a stub for non-CUDA builds.
+type GPUDecoder struct{}
+
+// NewGPUDecoder returns ErrGPUNotAvailable on non-CUDA builds.
+func NewGPUDecoder(ctx *Context, threadCount int) (*GPUDecoder, error) {
+	return nil, ErrGPUNotAvailable
+}
