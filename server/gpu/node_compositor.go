@@ -79,22 +79,23 @@ func (n *gpuCompositorNode) ProcessGPU(frame *GPUFrame) error {
 		n.visibleSet[layer.ID] = true
 
 		// Check overlay cache — upload or re-upload if generation changed.
+		// When layer.Overlay is nil, the compositor signals "unchanged since
+		// last snapshot" — reuse the cached GPU overlay (same gen = same data).
 		cached, hasCached := n.overlays[layer.ID]
 		cachedGen := n.overlayGen[layer.ID]
 
-		if !hasCached || cachedGen != layer.Gen || cached == nil {
-			// Free old overlay if present.
+		if hasCached && cachedGen == layer.Gen && cached != nil {
+			// Cache hit — overlay unchanged, skip upload entirely.
+		} else if layer.Overlay != nil {
+			// Cache miss or gen changed — upload new RGBA overlay.
 			if cached != nil {
 				FreeOverlay(cached)
 			}
-
-			// Upload new RGBA overlay to GPU.
 			overlay, err := UploadOverlay(n.ctx, layer.Overlay, layer.OverlayW, layer.OverlayH)
 			if err != nil {
 				slog.Warn("gpu_dsk: overlay upload failed",
 					"layer", layer.ID, "error", err)
 				n.lastErr.Store(err)
-				// Remove stale cache entry.
 				delete(n.overlays, layer.ID)
 				delete(n.overlayGen, layer.ID)
 				continue
@@ -102,6 +103,9 @@ func (n *gpuCompositorNode) ProcessGPU(frame *GPUFrame) error {
 			n.overlays[layer.ID] = overlay
 			n.overlayGen[layer.ID] = layer.Gen
 			cached = overlay
+		} else if !hasCached || cached == nil {
+			// Overlay is nil AND no cache — can't composite, skip.
+			continue
 		}
 
 		alpha := float64(layer.Alpha)

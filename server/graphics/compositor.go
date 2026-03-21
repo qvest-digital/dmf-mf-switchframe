@@ -157,6 +157,12 @@ type Compositor struct {
 	// Stored as rational num/den for drift-free advancement.
 	pipelineFPSNum int
 	pipelineFPSDen int
+
+	// Cache of overlay generation counters from the last SnapshotVisibleLayers
+	// call. When a layer's gen matches its cached value, the deep-copy is
+	// skipped (Overlay=nil in the snapshot). The GPU compositor node reuses
+	// its cached GPU overlay for unchanged layers.
+	lastSnapshotGens map[int]uint64
 }
 
 // NewCompositor creates a new multi-layer graphics compositor.
@@ -697,6 +703,7 @@ func (c *Compositor) ProcessYUV(yuv []byte, width, height int, blendScratch *[]b
 				layer.overlay = ts.viewport
 				layer.overlayWidth = ts.viewW
 				layer.overlayHeight = ts.viewH
+				layer.overlayGen++ // GPU cache invalidation
 			}
 		}
 	}
@@ -839,6 +846,7 @@ func (c *Compositor) SnapshotVisibleLayers() []VisibleLayerSnap {
 				layer.overlay = ts.viewport
 				layer.overlayWidth = ts.viewW
 				layer.overlayHeight = ts.viewH
+				layer.overlayGen++ // GPU cache invalidation
 			}
 		}
 	}
@@ -857,27 +865,40 @@ func (c *Compositor) SnapshotVisibleLayers() []VisibleLayerSnap {
 			continue
 		}
 
-		// Deep-copy RGBA overlay.
-		overlayCopy := make([]byte, len(layer.overlay))
-		copy(overlayCopy, layer.overlay)
-
 		rect := layer.rect
 		if (rect == image.Rectangle{}) {
 			rect = image.Rect(0, 0, layer.overlayWidth, layer.overlayHeight)
 		}
 
-		result = append(result, VisibleLayerSnap{
+		snap := VisibleLayerSnap{
 			ID:       layer.id,
 			RectX:    rect.Min.X,
 			RectY:    rect.Min.Y,
 			RectW:    rect.Dx(),
 			RectH:    rect.Dy(),
 			Alpha:    float32(layer.fadePosition),
-			Overlay:  overlayCopy,
 			OverlayW: layer.overlayWidth,
 			OverlayH: layer.overlayHeight,
 			Gen:      layer.overlayGen,
-		})
+		}
+
+		// Only deep-copy overlay RGBA when generation changed since
+		// the GPU node's last upload. When Overlay is nil but Gen is set,
+		// the GPU node reuses its cached GPU overlay (same gen = same data).
+		// This eliminates 8.3MB allocation + memcpy per frame per layer
+		// for static overlays (~250MB/s savings at 1080p 30fps).
+		if knownGen, ok := c.lastSnapshotGens[layer.id]; !ok || knownGen != layer.overlayGen {
+			overlayCopy := make([]byte, len(layer.overlay))
+			copy(overlayCopy, layer.overlay)
+			snap.Overlay = overlayCopy
+			if c.lastSnapshotGens == nil {
+				c.lastSnapshotGens = make(map[int]uint64)
+			}
+			c.lastSnapshotGens[layer.id] = layer.overlayGen
+		}
+		// else: Overlay is nil, Gen is set — GPU node uses cached overlay.
+
+		result = append(result, snap)
 	}
 	return result
 }
