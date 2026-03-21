@@ -281,6 +281,7 @@ type ControlRoomState struct {
 	Comms                *CommsState             `json:"comms,omitempty"`
 	STMap                *STMapState             `json:"stmap,omitempty"`
 	AISegmentation       *AISegmentationState    `json:"aiSegmentation,omitempty"`
+	ASR                  *ASRState               `json:"asr,omitempty"`
 	Macro                *MacroExecutionState    `json:"macro,omitempty"`
 	LastChangedBy        string                  `json:"lastChangedBy,omitempty"`
 	Seq                  uint64                  `json:"seq"`
@@ -458,6 +459,16 @@ type AISegmentationState struct {
 	Available bool                       `json:"available"`
 	ModelName string                     `json:"modelName,omitempty"`
 	Sources   map[string]AISegmentConfig `json:"sources,omitempty"`
+}
+
+// ASRState represents the ASR system state for ControlRoomState broadcast.
+type ASRState struct {
+	Available  bool    `json:"available"`
+	Active     bool    `json:"active"`
+	ModelName  string  `json:"modelName,omitempty"`
+	Language   string  `json:"language,omitempty"`
+	Tentative  string  `json:"tentative,omitempty"`
+	Confidence float64 `json:"confidence,omitempty"`
 }
 
 // LayoutSlotState represents a single layout slot in the state broadcast.
