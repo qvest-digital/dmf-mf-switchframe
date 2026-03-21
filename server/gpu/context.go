@@ -30,24 +30,22 @@ type MemoryStats struct {
 }
 
 // Context manages the shared CUDA context for all GPU operations.
-// One context is shared across all decoders, encoders, and kernel launches.
+// Uses the CUDA Runtime API's primary context (via cudaSetDevice) which is
+// automatically shared across all OS threads — critical for cgo where
+// goroutines may migrate between threads.
 type Context struct {
-	device    C.CUdevice
-	ctx       C.CUcontext
+	device    int
 	stream    C.cudaStream_t // default processing stream
 	encStream C.cudaStream_t // encode stream (concurrent with processing)
 	pool      *FramePool
 	props     DeviceProperties
 	mu        sync.Mutex
+	closed    bool
 }
 
 // NewContext initializes CUDA and creates a shared context on device 0.
+// Uses the Runtime API primary context which is thread-safe across cgo calls.
 func NewContext() (*Context, error) {
-	// Initialize CUDA driver API
-	if rc := C.cuInit(0); rc != C.CUDA_SUCCESS {
-		return nil, fmt.Errorf("gpu: cuInit failed: %d", rc)
-	}
-
 	var deviceCount C.int
 	if rc := C.cudaGetDeviceCount(&deviceCount); rc != C.cudaSuccess {
 		return nil, fmt.Errorf("gpu: cudaGetDeviceCount failed: %d", rc)
@@ -56,22 +54,12 @@ func NewContext() (*Context, error) {
 		return nil, ErrGPUNotAvailable
 	}
 
-	// Select device 0 (single GPU on g2-standard-8)
+	// Select device 0 — this activates the primary context for all threads
 	if rc := C.cudaSetDevice(0); rc != C.cudaSuccess {
 		return nil, fmt.Errorf("gpu: cudaSetDevice failed: %d", rc)
 	}
 
-	c := &Context{}
-
-	// Get device handle via driver API
-	if rc := C.cuDeviceGet(&c.device, 0); rc != C.CUDA_SUCCESS {
-		return nil, fmt.Errorf("gpu: cuDeviceGet failed: %d", rc)
-	}
-
-	// Create CUDA context via driver API
-	if rc := C.cuCtxCreate(&c.ctx, C.CU_CTX_SCHED_BLOCKING_SYNC, c.device); rc != C.CUDA_SUCCESS {
-		return nil, fmt.Errorf("gpu: cuCtxCreate failed: %d", rc)
-	}
+	c := &Context{device: 0}
 
 	// Create CUDA streams for concurrent operations
 	if rc := C.cudaStreamCreateWithFlags(&c.stream, C.cudaStreamNonBlocking); rc != C.cudaSuccess {
@@ -102,9 +90,10 @@ func NewContext() (*Context, error) {
 
 // Close releases all CUDA resources.
 func (c *Context) Close() error {
-	if c == nil {
+	if c == nil || c.closed {
 		return nil
 	}
+	c.closed = true
 	if c.pool != nil {
 		c.pool.Close()
 	}
@@ -116,10 +105,9 @@ func (c *Context) Close() error {
 		C.cudaStreamDestroy(c.encStream)
 		c.encStream = nil
 	}
-	if c.ctx != nil {
-		C.cuCtxDestroy(c.ctx)
-		c.ctx = nil
-	}
+	// Note: we don't call cudaDeviceReset() — the primary context
+	// persists for the process lifetime. This is intentional: other
+	// tests or subsystems may still use the GPU.
 	return nil
 }
 
