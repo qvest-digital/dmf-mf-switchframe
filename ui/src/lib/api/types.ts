@@ -600,7 +600,55 @@ export interface ControlRoomState {
 	clipUpload?: ClipUploadProgress;
 	macro?: MacroExecutionState;
 	comms?: CommsState;
+	stmap?: STMapState;
 	lastChangedBy?: string;
 	seq: number;
 	timestamp: number;
+}
+
+// ── ST Map Types ──
+
+export interface STMapState {
+	sources: Record<string, string>;
+	program?: STMapProgramState;
+	available: string[];
+}
+
+export interface STMapProgramState {
+	map: string;
+	type: 'static' | 'animated';
+	frame: number;
+}
+
+export interface STMapInfo {
+	name: string;
+	width: number;
+	height: number;
+	type: 'static' | 'animated';
+	frame_count?: number;
+}
+
+export interface STMapGeneratorInfo {
+	name: string;
+	description: string;
+	type: 'static' | 'animated';
+	params: Record<string, STMapParamInfo>;
+}
+
+export interface STMapParamInfo {
+	description: string;
+	default: number;
+	min: number;
+	max: number;
+}
+
+export interface STMapGenerateRequest {
+	type: string;
+	params?: Record<string, number>;
+	name: string;
+	width?: number;
+	height?: number;
+	assign_source?: string;
+	assign_program?: boolean;
+	frame_count?: number;
 }
