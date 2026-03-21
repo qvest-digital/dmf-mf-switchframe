@@ -58,6 +58,8 @@ const (
 	// Source actions.
 	ActionKeySet         Action = "key_set"
 	ActionKeyDelete      Action = "key_delete"
+	ActionAISegEnable    Action = "ai_segment_enable"
+	ActionAISegDisable   Action = "ai_segment_disable"
 	ActionSourceLabel    Action = "source_label"
 	ActionSourceDelay    Action = "source_delay"
 	ActionSourcePosition Action = "source_position"
@@ -144,6 +146,8 @@ var allActions = map[Action]bool{
 	ActionPresetRecall:            true,
 	ActionKeySet:                  true,
 	ActionKeyDelete:               true,
+	ActionAISegEnable:             true,
+	ActionAISegDisable:            true,
 	ActionSourceLabel:             true,
 	ActionSourceDelay:             true,
 	ActionSourcePosition:          true,
@@ -311,6 +315,8 @@ var stepSummaryMap = map[Action]stepSummaryFunc{
 	},
 	ActionKeySet:          sourceSummary("Key Set"),
 	ActionKeyDelete:       sourceSummary("Key Delete"),
+	ActionAISegEnable:     sourceSummary("AI BG Enable"),
+	ActionAISegDisable:    sourceSummary("AI BG Disable"),
 	ActionSourceLabel:     sourceSummary("Source Label"),
 	ActionSourceDelay:     sourceSummary("Source Delay"),
 	ActionSourcePosition:  sourceSummary("Source Position"),
