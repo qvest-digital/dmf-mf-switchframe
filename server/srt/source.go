@@ -42,11 +42,12 @@ type Source struct {
 	decoderFactory decoderFactoryFunc
 
 	// Callbacks — set by the app layer before Start().
-	OnRawVideo func(key string, yuv []byte, width, height int, pts int64)
-	OnRawAudio func(key string, pcm []float32, pts int64, sampleRate, channels int)
-	OnCaptions func(key string, data []byte, pts int64)
-	OnSCTE35   func(key string, data []byte, pts int64)
-	OnStopped  func(key string)
+	OnRawVideo    func(key string, yuv []byte, width, height int, pts int64)
+	OnRawVideoGPU func(key string, devPtr uintptr, pitch, width, height int, pts int64)
+	OnRawAudio    func(key string, pcm []float32, pts int64, sampleRate, channels int)
+	OnCaptions    func(key string, data []byte, pts int64)
+	OnSCTE35      func(key string, data []byte, pts int64)
+	OnStopped     func(key string)
 }
 
 // NewSource creates an SRT source orchestrator.
@@ -76,6 +77,11 @@ func (s *Source) Start(ctx context.Context) error {
 		OnVideo: func(yuv []byte, width, height int, pts int64) {
 			s.handleVideoFrame(yuv, width, height, pts)
 		},
+		OnVideoGPU: func(devPtr uintptr, pitch, w, h int, pts int64) {
+			if s.OnRawVideoGPU != nil {
+				s.OnRawVideoGPU(s.config.Key, devPtr, pitch, w, h, pts)
+			}
+		},
 		OnAudio: func(pcm []float32, pts int64, sampleRate, channels int) {
 			s.handleAudioFrame(pcm, pts, sampleRate, channels)
 		},
@@ -89,6 +95,7 @@ func (s *Source) Start(ctx context.Context) error {
 				s.OnSCTE35(s.config.Key, data, pts)
 			}
 		},
+		HWDeviceCtx: s.config.HWDeviceCtx,
 	})
 	if err != nil {
 		return err

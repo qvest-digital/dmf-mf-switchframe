@@ -200,6 +200,11 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		_ = a.sw.SetLabel(context.Background(), key, cfg.Label)
 	}
 
+	// Pass hardware device context for NVDEC when CUDA GPU is active.
+	if a.gpuState != nil && a.gpuState.sourceManager != nil {
+		cfg.HWDeviceCtx = codec.HWDeviceCtx()
+	}
+
 	// Create source orchestrator.
 	src := srt.NewSource(cfg, conn, cs, slog.Default())
 
@@ -731,6 +736,42 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 				}
 			}
 		}
+	}
+
+	// --- NVDEC zero-copy GPU callback ---
+	// When NVDEC is active, the C decode loop calls goOnVideoFrameGPU instead
+	// of goOnVideoFrame. This callback receives a CUDA device pointer to the
+	// NV12 surface in VRAM and copies it directly into a GPU pool frame,
+	// bypassing CPU entirely. PTS linearization still runs here (fast, no alloc).
+	if a.gpuState != nil && a.gpuState.sourceManager != nil && cfg.HWDeviceCtx != nil {
+		srcMgr := a.gpuState.sourceManager
+		pool := srcMgr.Pool()
+
+		src.OnRawVideoGPU = func(sourceKey string, devPtr uintptr, pitch, w, h int, pts int64) {
+			pts = ptsLin.Linearize(pts, srt.StreamVideo)
+
+			// Track source video PTS for A/V gap measurement.
+			a.sourceLastVideoPTS.Store(pts)
+			if a.sourceLastAudioPTS.Load() != 0 {
+				a.sourceAVGapInited.Store(true)
+			}
+
+			// Acquire pool frame for device-to-device copy.
+			frame, err := pool.Acquire()
+			if err != nil {
+				return // pool exhausted, drop frame
+			}
+
+			// Copy NVDEC NV12 surface to pool frame (handles pitch mismatch).
+			if err := gpu.CopyNV12FromDevice(frame, devPtr, pitch, w, h); err != nil {
+				frame.Release()
+				return
+			}
+
+			srcMgr.IngestGPUFrame(sourceKey, frame, pts)
+		}
+
+		slog.Info("SRT source: NVDEC zero-copy path enabled", "key", key)
 	}
 
 	src.OnRawAudio = func(sourceKey string, pcm []float32, pts int64, sampleRate, channels int) {

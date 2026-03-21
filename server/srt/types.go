@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unsafe"
 )
 
 // ErrInvalidConfig is a sentinel error for SRT configuration validation failures.
@@ -33,6 +34,12 @@ type SourceConfig struct {
 	Position  int    `json:"position,omitempty"`
 	LatencyMs int    `json:"latencyMs,omitempty"`
 	DelayMs   int    `json:"delayMs,omitempty"`
+
+	// HWDeviceCtx is an FFmpeg AVBufferRef* for NVDEC hardware decode.
+	// When non-nil, the SRT decoder will attempt NVDEC acceleration and
+	// deliver decoded frames via OnRawVideoGPU instead of OnRawVideo.
+	// Obtain from codec.HWDeviceCtx(). Not persisted to JSON.
+	HWDeviceCtx unsafe.Pointer `json:"-"`
 }
 
 func (c *SourceConfig) Validate() error {
