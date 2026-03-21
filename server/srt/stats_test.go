@@ -313,6 +313,99 @@ func TestStatsManagerConcurrency(t *testing.T) {
 	<-done
 }
 
+func TestToSRTSourceInfo_ExpandedFields(t *testing.T) {
+	cs := NewConnStats("caller", "live/cam1", 120)
+
+	// Ensure some time passes so UptimeMs > 0.
+	time.Sleep(2 * time.Millisecond)
+
+	cs.SetConnected("192.168.1.50:9000", 125)
+	cs.Update(StatsUpdate{
+		RTTMs:           8.5,
+		RTTVarMs:        2.3,
+		RecvRateMbps:    15.0,
+		LossRatePct:     0.25,
+		PacketsReceived: 500000,
+		PacketsLost:     1250,
+		PacketsDropped:  42,
+		PacketsRetrans:  300,
+		PacketsBelated:  17,
+		RecvBufMs:       60.0,
+		RecvBufPackets:  48,
+		FlightSize:      22,
+	})
+
+	// Disconnect and reconnect to get a non-zero reconnect count.
+	cs.SetDisconnected()
+	cs.SetConnected("192.168.1.50:9000", 125)
+
+	info := cs.ToSRTSourceInfo()
+
+	// Original fields.
+	if info.Mode != "caller" {
+		t.Errorf("Mode = %q, want %q", info.Mode, "caller")
+	}
+	if info.StreamID != "live/cam1" {
+		t.Errorf("StreamID = %q, want %q", info.StreamID, "live/cam1")
+	}
+	if info.RemoteAddr != "192.168.1.50:9000" {
+		t.Errorf("RemoteAddr = %q, want %q", info.RemoteAddr, "192.168.1.50:9000")
+	}
+	if info.LatencyMs != 120 {
+		t.Errorf("LatencyMs = %d, want 120", info.LatencyMs)
+	}
+	if info.RTTMs != 8.5 {
+		t.Errorf("RTTMs = %f, want 8.5", info.RTTMs)
+	}
+	if info.LossRate != 0.25 {
+		t.Errorf("LossRate = %f, want 0.25", info.LossRate)
+	}
+	if info.BitrateKbps != 15000 {
+		t.Errorf("BitrateKbps = %f, want 15000", info.BitrateKbps)
+	}
+	if info.RecvBufMs != 60.0 {
+		t.Errorf("RecvBufMs = %f, want 60.0", info.RecvBufMs)
+	}
+	if !info.Connected {
+		t.Error("Connected = false, want true")
+	}
+
+	// New expanded fields.
+	if info.NegotiatedLatencyMs != 125 {
+		t.Errorf("NegotiatedLatencyMs = %d, want 125", info.NegotiatedLatencyMs)
+	}
+	if info.RTTVarMs != 2.3 {
+		t.Errorf("RTTVarMs = %f, want 2.3", info.RTTVarMs)
+	}
+	if info.RecvBufPackets != 48 {
+		t.Errorf("RecvBufPackets = %d, want 48", info.RecvBufPackets)
+	}
+	if info.FlightSize != 22 {
+		t.Errorf("FlightSize = %d, want 22", info.FlightSize)
+	}
+	if info.UptimeMs <= 0 {
+		t.Errorf("UptimeMs = %d, want > 0", info.UptimeMs)
+	}
+	if info.PacketsReceived != 500000 {
+		t.Errorf("PacketsReceived = %d, want 500000", info.PacketsReceived)
+	}
+	if info.PacketsLost != 1250 {
+		t.Errorf("PacketsLost = %d, want 1250", info.PacketsLost)
+	}
+	if info.PacketsDropped != 42 {
+		t.Errorf("PacketsDropped = %d, want 42", info.PacketsDropped)
+	}
+	if info.PacketsRetransmitted != 300 {
+		t.Errorf("PacketsRetransmitted = %d, want 300", info.PacketsRetransmitted)
+	}
+	if info.PacketsBelated != 17 {
+		t.Errorf("PacketsBelated = %d, want 17", info.PacketsBelated)
+	}
+	if info.ReconnectCount != 1 {
+		t.Errorf("ReconnectCount = %d, want 1", info.ReconnectCount)
+	}
+}
+
 func TestConnStatsUptimeGrowsOverTime(t *testing.T) {
 	cs := NewConnStats("listener", "live/cam1", 120)
 	snap1 := cs.Snapshot()

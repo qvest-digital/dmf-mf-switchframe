@@ -113,13 +113,24 @@ func sanitizeStreamKey(key string) string {
 
 // SRTSourceInfo holds live SRT connection metadata broadcast in ControlRoomState.
 type SRTSourceInfo struct {
-	Mode        string  `json:"mode"`
-	StreamID    string  `json:"streamID"`
-	RemoteAddr  string  `json:"remoteAddr,omitempty"`
-	LatencyMs   int     `json:"latencyMs"`
-	RTTMs       float64 `json:"rttMs"`
-	LossRate    float64 `json:"lossRate"`
-	BitrateKbps float64 `json:"bitrateKbps"`
-	RecvBufMs   float64 `json:"recvBufMs"`
-	Connected   bool    `json:"connected"`
+	Mode                string  `json:"mode"`
+	StreamID            string  `json:"streamID"`
+	RemoteAddr          string  `json:"remoteAddr,omitempty"`
+	LatencyMs           int     `json:"latencyMs"`
+	NegotiatedLatencyMs int     `json:"negotiatedLatencyMs"`
+	RTTMs               float64 `json:"rttMs"`
+	RTTVarMs            float64 `json:"rttVarMs"`
+	LossRate            float64 `json:"lossRate"`
+	BitrateKbps         float64 `json:"bitrateKbps"`
+	RecvBufMs           float64 `json:"recvBufMs"`
+	RecvBufPackets      int     `json:"recvBufPackets"`
+	FlightSize          int     `json:"flightSize"`
+	Connected           bool    `json:"connected"`
+	UptimeMs            int64   `json:"uptimeMs"`
+	PacketsReceived     int64   `json:"packetsReceived"`
+	PacketsLost         int64   `json:"packetsLost"`
+	PacketsDropped      int64   `json:"packetsDropped"`
+	PacketsRetransmitted int64  `json:"packetsRetransmitted"`
+	PacketsBelated      int64   `json:"packetsBelated"`
+	ReconnectCount      int     `json:"reconnectCount,omitempty"`
 }

@@ -43,15 +43,26 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 			}
 			srtInfo := cs.ToSRTSourceInfo()
 			info.SRTInfo = &internal.SRTSourceInfo{
-				Mode:        srtInfo.Mode,
-				StreamID:    srtInfo.StreamID,
-				RemoteAddr:  srtInfo.RemoteAddr,
-				LatencyMs:   srtInfo.LatencyMs,
-				RTTMs:       srtInfo.RTTMs,
-				LossRate:    srtInfo.LossRate,
-				BitrateKbps: srtInfo.BitrateKbps,
-				RecvBufMs:   srtInfo.RecvBufMs,
-				Connected:   srtInfo.Connected,
+				Mode:                 srtInfo.Mode,
+				StreamID:             srtInfo.StreamID,
+				RemoteAddr:           srtInfo.RemoteAddr,
+				LatencyMs:            srtInfo.LatencyMs,
+				NegotiatedLatencyMs:  srtInfo.NegotiatedLatencyMs,
+				RTTMs:                srtInfo.RTTMs,
+				RTTVarMs:             srtInfo.RTTVarMs,
+				LossRate:             srtInfo.LossRate,
+				BitrateKbps:          srtInfo.BitrateKbps,
+				RecvBufMs:            srtInfo.RecvBufMs,
+				RecvBufPackets:       srtInfo.RecvBufPackets,
+				FlightSize:           srtInfo.FlightSize,
+				Connected:            srtInfo.Connected,
+				UptimeMs:             srtInfo.UptimeMs,
+				PacketsReceived:      srtInfo.PacketsReceived,
+				PacketsLost:          srtInfo.PacketsLost,
+				PacketsDropped:       srtInfo.PacketsDropped,
+				PacketsRetransmitted: srtInfo.PacketsRetransmitted,
+				PacketsBelated:       srtInfo.PacketsBelated,
+				ReconnectCount:       srtInfo.ReconnectCount,
 			}
 		}
 		state.Sources[key] = info
