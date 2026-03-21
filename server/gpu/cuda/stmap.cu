@@ -214,6 +214,13 @@ static cudaError_t create_tex_obj(cudaTextureObject_t* tex,
 
 extern "C" {
 
+// Forward declaration (defined below)
+cudaError_t stmap_warp_nv12(
+    uint8_t* dst, int dstPitch,
+    const uint8_t* src, int srcPitch,
+    const float* stS, const float* stT,
+    int width, int height, cudaStream_t stream);
+
 // Texture-based warp: uses hardware bilinear for Y plane, global memory for UV.
 // Typically 30-50% faster than full global memory path.
 cudaError_t stmap_warp_nv12_tex(
