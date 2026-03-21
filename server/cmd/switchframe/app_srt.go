@@ -16,6 +16,7 @@ import (
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/control"
+	"github.com/zsiec/switchframe/server/gpu"
 	"github.com/zsiec/switchframe/server/preview"
 	"github.com/zsiec/switchframe/server/srt"
 	"github.com/zsiec/switchframe/server/switcher"
@@ -285,7 +286,61 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 
 	// --- Preview proxy encoder (replaces full-quality relay encode) ---
 	var previewEnc *preview.Encoder
-	if a.cfg.PreviewProxy {
+	var gpuPreviewActive bool
+	if a.cfg.PreviewProxy && a.gpuState != nil && a.gpuState.sourceManager != nil {
+		// GPU preview encoding — source manager handles it in IngestYUV.
+		// Register the source with a PreviewConfig so the GPU source manager
+		// creates a per-source GPU preview encoder. The OnPreview callback
+		// converts Annex B to AVC1 and broadcasts to the browser relay.
+		pw, ph := parsePreviewResolution(a.cfg.PreviewResolution)
+		var groupID atomic.Uint32
+		var videoInfoSent bool
+		a.gpuState.sourceManager.RegisterSource(key, pf.Width, pf.Height, &gpu.PreviewConfig{
+			Width:   pw,
+			Height:  ph,
+			Bitrate: a.cfg.PreviewBitrate,
+			FPSNum:  pf.FPSNum,
+			FPSDen:  pf.FPSDen,
+			OnPreview: func(data []byte, isIDR bool, pts int64) {
+				avc1 := codec.AnnexBToAVC1(data)
+				if isIDR {
+					groupID.Add(1)
+				}
+				frame := &media.VideoFrame{
+					PTS: pts, DTS: pts, IsKeyframe: isIDR,
+					WireData: avc1, Codec: "h264", GroupID: groupID.Load(),
+				}
+				if isIDR {
+					for _, nalu := range codec.ExtractNALUs(avc1) {
+						if len(nalu) == 0 {
+							continue
+						}
+						switch nalu[0] & 0x1F {
+						case 7:
+							frame.SPS = nalu
+						case 8:
+							frame.PPS = nalu
+						}
+					}
+					if !videoInfoSent && frame.SPS != nil && frame.PPS != nil {
+						avcC := moq.BuildAVCDecoderConfig(frame.SPS, frame.PPS)
+						if avcC != nil {
+							relay.SetVideoInfo(distribution.VideoInfo{
+								Codec: codec.ParseSPSCodecString(frame.SPS),
+								Width: pw, Height: ph, DecoderConfig: avcC,
+							})
+							slog.Info("SRT source: GPU preview VideoInfo set", "key", key, "w", pw, "h", ph)
+							videoInfoSent = true
+						}
+					}
+				}
+				relay.BroadcastVideo(frame)
+			},
+		})
+		gpuPreviewActive = true
+		slog.Info("srt: GPU preview encoder registered", "key", key)
+	} else if a.cfg.PreviewProxy {
+		// CPU preview encoder fallback.
 		pw, ph := parsePreviewResolution(a.cfg.PreviewResolution)
 		var err error
 		previewEnc, err = preview.NewEncoder(preview.Config{
@@ -307,7 +362,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 
 	// When preview proxy is active and replay is configured, set up dual-encode:
 	// preview encoder feeds relay (browsers), full-quality encode feeds replay.
-	if previewEnc != nil && a.replayMgr != nil {
+	if (previewEnc != nil || gpuPreviewActive) && a.replayMgr != nil {
 		if err := a.replayMgr.AddSource(key); err != nil {
 			slog.Warn("srt: could not add replay source", "key", key, "err", err)
 		} else if v := a.replayMgr.Viewer(key); v != nil {
@@ -317,9 +372,19 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	}
 
 	// --- Goroutine 2: Relay video encode ---
-	// When preview proxy is enabled, the preview.Encoder handles scaling
-	// and encoding at low bitrate. Otherwise, use existing full-quality encode.
-	if previewEnc != nil {
+	// When GPU preview is active, the GPU source manager handles preview
+	// encoding via IngestYUV, so we just drain the relay channel to release
+	// frame pool buffers. When CPU preview is enabled, the preview.Encoder
+	// handles scaling and encoding. Otherwise, use full-quality encode.
+	if gpuPreviewActive {
+		go func() {
+			for job := range relayVideoCh {
+				if framePool != nil {
+					framePool.Release(job.yuv)
+				}
+			}
+		}()
+	} else if previewEnc != nil {
 		go func() {
 			for job := range relayVideoCh {
 				release := func(buf []byte) {
@@ -412,7 +477,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		}()
 	}
 
-	if previewEnc == nil {
+	if previewEnc == nil && !gpuPreviewActive {
 		// Relay encode goroutine: ultrafast/baseline at configured resolution.
 		relayW, relayH := parseRelayResolution(a.cfg.RelayResolution)
 
@@ -713,6 +778,11 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		// Remove replay viewer from the source relay.
 		if a.replayMgr != nil {
 			a.replayMgr.RemoveSource(sourceKey)
+		}
+
+		// Remove from GPU source manager (releases GPU frames and preview encoder).
+		if a.gpuState != nil && a.gpuState.sourceManager != nil {
+			a.gpuState.sourceManager.RemoveSource(sourceKey)
 		}
 
 		// Don't unregister from switcher -- leave as "no_signal" for reconnect.

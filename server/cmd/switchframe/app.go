@@ -32,6 +32,7 @@ import (
 	"github.com/zsiec/switchframe/server/debug"
 	"github.com/zsiec/switchframe/server/demo"
 	"github.com/zsiec/switchframe/server/fastctrl"
+	"github.com/zsiec/switchframe/server/gpu"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/graphics/textrender"
 	"github.com/zsiec/switchframe/server/internal"
@@ -133,7 +134,9 @@ type App struct {
 	clipRelays [clip.MaxPlayers]*distribution.Relay
 
 	// GPU pipeline (Metal on macOS, CUDA on Linux)
-	gpuState *gpuState
+	gpuState          *gpuState
+	gpuRawVideoSink   *atomic.Pointer[gpu.RawSinkFunc]   // GPU raw sink for MXL output
+	gpuRawPreviewSink *atomic.Pointer[gpu.RawSinkFunc]   // GPU raw sink for preview output
 
 	// SCTE-35 signaling
 	scte35Injector *scte35.Injector
@@ -603,7 +606,7 @@ func (a *App) initSubsystems() error {
 
 	// GPU pipeline auto-detection and wiring.
 	// Must happen after stmap registry is set and before BuildPipeline().
-	a.gpuState = initGPU(a.sw, a.stmapRegistry)
+	a.gpuState = initGPU(a.sw)
 	wireGPUPipeline(a.gpuState, a.sw, a)
 
 	// Pipeline encoder for the video processing chain.
@@ -855,7 +858,63 @@ func (a *App) initMXL() error {
 			}
 		}
 
-		if a.cfg.PreviewProxy {
+		if a.cfg.PreviewProxy && a.gpuState != nil && a.gpuState.sourceManager != nil {
+			// GPU preview encoding — register source with GPU source manager.
+			// IngestYUV (triggered by OnRawVideo → IngestRawVideo → handleRawVideoFrame)
+			// handles upload + ST map + cache + preview encode.
+			pw, ph := parsePreviewResolution(a.cfg.PreviewResolution)
+			var gpuGroupID atomic.Uint32
+			var gpuVideoInfoSent bool
+			mxlRelay := relay // capture for closure
+			a.gpuState.sourceManager.RegisterSource(flowName, pf.Width, pf.Height, &gpu.PreviewConfig{
+				Width:   pw,
+				Height:  ph,
+				Bitrate: a.cfg.PreviewBitrate,
+				FPSNum:  srcCfg.FPSNum,
+				FPSDen:  srcCfg.FPSDen,
+				OnPreview: func(data []byte, isIDR bool, pts int64) {
+					avc1 := codec.AnnexBToAVC1(data)
+					if isIDR {
+						gpuGroupID.Add(1)
+					}
+					frame := &media.VideoFrame{
+						PTS: pts, DTS: pts, IsKeyframe: isIDR,
+						WireData: avc1, Codec: "h264", GroupID: gpuGroupID.Load(),
+					}
+					if isIDR {
+						for _, nalu := range codec.ExtractNALUs(avc1) {
+							if len(nalu) == 0 {
+								continue
+							}
+							switch nalu[0] & 0x1F {
+							case 7:
+								frame.SPS = nalu
+							case 8:
+								frame.PPS = nalu
+							}
+						}
+						if !gpuVideoInfoSent && frame.SPS != nil && frame.PPS != nil {
+							avcC := moq.BuildAVCDecoderConfig(frame.SPS, frame.PPS)
+							if avcC != nil {
+								mxlRelay.SetVideoInfo(distribution.VideoInfo{
+									Codec: codec.ParseSPSCodecString(frame.SPS),
+									Width: pw, Height: ph, DecoderConfig: avcC,
+								})
+								slog.Info("MXL source: GPU preview VideoInfo set", "key", flowName, "w", pw, "h", ph)
+								gpuVideoInfoSent = true
+							}
+						}
+					}
+					mxlRelay.BroadcastVideo(frame)
+				},
+			})
+			// Set a no-op preview encoder so the MXL source's encodeAndBroadcastVideo
+			// delegates relay to the preview encoder (which does nothing — GPU handles it)
+			// and only uses the CPU full-quality path for replay.
+			srcCfg.PreviewEncoder = gpuNoOpPreviewEncoder{}
+			slog.Info("mxl: GPU preview encoder registered", "flow", flowName)
+		} else if a.cfg.PreviewProxy {
+			// CPU preview encoder fallback.
 			pw, ph := parsePreviewResolution(a.cfg.PreviewResolution)
 			pe, err := preview.NewEncoder(preview.Config{
 				SourceKey:     flowName,
@@ -947,6 +1006,7 @@ func (a *App) initMXL() error {
 		a.sw.SetRawVideoSink(switcher.RawVideoSink(func(pf *switcher.ProcessingFrame) {
 			out.Writer().WriteVideo(pf.YUV, pf.Width, pf.Height, pf.PTS)
 		}))
+		a.updateGPURawVideoSink()
 		a.mixer.SetRawAudioSink(audio.RawAudioSink(out.Writer().WriteAudio))
 
 		out.StartLifecycle(context.Background(), videoWriter, audioWriter)
@@ -1337,6 +1397,7 @@ func (a *App) Run(ctx context.Context) error {
 				// program relay and audio mixer.
 				pe.Send(frame.YUV, frame.Width, frame.Height, frame.PTS)
 			}))
+			a.updateGPURawPreviewSink()
 
 			slog.Info("program preview encoder enabled",
 				"width", previewW, "height", previewH,

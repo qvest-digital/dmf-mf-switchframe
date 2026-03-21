@@ -307,6 +307,9 @@ type GPUPipeline struct{}
 // NewGPUPipeline returns a stub on non-GPU builds.
 func NewGPUPipeline(ctx *Context, pool *FramePool) *GPUPipeline { return &GPUPipeline{} }
 
+// Pool returns nil on non-GPU builds.
+func (p *GPUPipeline) Pool() *FramePool { return nil }
+
 // Build returns ErrGPUNotAvailable on non-GPU builds.
 func (p *GPUPipeline) Build(width, height, pitch int, nodes []GPUPipelineNode) error {
 	return ErrGPUNotAvailable

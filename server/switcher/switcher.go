@@ -281,14 +281,19 @@ type Switcher struct {
 	// ST map registry — per-source lens correction applied in sourceDecoder.
 	stmapRegistry *stmap.Registry
 
-	// GPU pipeline nodes — when set, buildNodeList() inserts GPU upload/download
-	// bridge nodes that route processing through the GPU pipeline. The GPU upload
-	// node converts CPU YUV420p to GPU NV12 (stored on ProcessingFrame.GPUData),
-	// GPU processing nodes operate in VRAM, and the GPU download node converts back
-	// to CPU YUV420p. This replaces CPU processing nodes (key, layout, compositor,
-	// stmap) with their GPU equivalents when available.
-	// Typed as []PipelineNode to avoid circular import with gpu package.
-	gpuNodes []PipelineNode
+	// GPU pipeline runner — when set, videoProcessingLoop routes frames through
+	// the GPU pipeline (upload → key → layout → compositor → stmap → raw sinks → encode)
+	// instead of the CPU pipeline. Falls back to CPU on GPU errors.
+	// Stored via atomic pointer for lock-free reads on the hot path.
+	gpuRunner atomic.Pointer[gpuRunnerHolder]
+
+	// GPU source manager — when set, handleRawVideoFrame routes YUV through
+	// GPU upload + ST map + cache instead of CPU fill paths.
+	gpuSourceMgr atomic.Pointer[gpuSourceMgrHolder]
+
+	// gpuSourceActive — when true, sourceDecoder skips CPU ST map correction
+	// (the GPU source manager handles it on GPU instead).
+	gpuSourceActive atomic.Bool
 
 	// Per-source decoder factory — when set, RegisterSource creates a
 	// sourceDecoder for each source that decodes H.264 to YUV at ingest time.
@@ -451,6 +456,11 @@ type videoProcWork struct {
 	// how long the frame waited in the videoProcCh buffer before being
 	// picked up by videoProcessingLoop.
 	enqueueNano int64
+	// sourceKey: the source key of the program source that produced this frame.
+	// Used by the GPU pipeline to look up the source's cached GPU frame
+	// (via RunFromCache) instead of re-uploading from CPU memory.
+	// Empty for transition/FRC output which produces blended/synthesized frames.
+	sourceKey string
 }
 
 // Compile-time check that Switcher implements the frameHandler interface.
@@ -662,6 +672,22 @@ func (s *Switcher) SetRawPreviewSink(sink RawVideoSink) {
 	s.rebuildPipeline()
 }
 
+// GetRawVideoSink returns the currently set raw video sink, or nil if none.
+func (s *Switcher) GetRawVideoSink() RawVideoSink {
+	if p := s.rawVideoSink.Load(); p != nil {
+		return *p
+	}
+	return nil
+}
+
+// GetRawPreviewSink returns the currently set raw preview sink, or nil if none.
+func (s *Switcher) GetRawPreviewSink() RawVideoSink {
+	if p := s.rawPreviewSink.Load(); p != nil {
+		return *p
+	}
+	return nil
+}
+
 // Close stops the health monitor, delay buffer, frame sync, and unregisters all sources.
 func (s *Switcher) Close() {
 	s.health.stop()
@@ -804,19 +830,42 @@ func (s *Switcher) SetSTMapRegistry(r *stmap.Registry) {
 	s.mu.Unlock()
 }
 
-// SetGPUNodes registers GPU pipeline nodes that replace CPU processing nodes.
-// The nodes must implement PipelineNode. When set, buildNodeList() returns a
-// GPU pipeline chain: [gpu-upload → gpu processing nodes → gpu-download → raw-sinks → encode].
-// Pass nil to revert to CPU-only processing.
-//
-// The nodes slice should be ordered: upload node first, processing nodes in the middle,
-// download node last. The caller (app layer) creates these nodes in the gpu package
-// and passes them here to avoid circular imports.
-func (s *Switcher) SetGPUNodes(nodes []PipelineNode) {
-	s.mu.Lock()
-	s.gpuNodes = nodes
-	s.mu.Unlock()
-	s.rebuildPipeline()
+// gpuRunnerHolder wraps a GPUPipelineRunner for atomic pointer storage.
+type gpuRunnerHolder struct {
+	runner GPUPipelineRunner
+}
+
+// SetGPUPipeline registers a GPU pipeline that handles the full video
+// processing chain (upload → key → layout → compositor → stmap → raw sinks → encode).
+// When set, videoProcessingLoop routes frames through the GPU pipeline instead of
+// the CPU pipeline, falling back to CPU on GPU errors. Pass nil to disable.
+func (s *Switcher) SetGPUPipeline(gp GPUPipelineRunner) {
+	if gp != nil {
+		s.gpuRunner.Store(&gpuRunnerHolder{runner: gp})
+	} else {
+		s.gpuRunner.Store(nil)
+	}
+}
+
+// gpuSourceMgrHolder wraps a GPUSourceManagerIface for atomic pointer storage.
+type gpuSourceMgrHolder struct {
+	mgr GPUSourceManagerIface
+}
+
+// SetGPUSourceManager registers a GPU source manager that handles per-source
+// GPU upload, ST map correction, caching, and preview encoding. When set,
+// handleRawVideoFrame routes YUV through IngestYUV instead of CPU fill paths
+// (keyBridge.IngestFillYUV, layoutCompositor.IngestSourceFrame). Also sets
+// gpuSourceActive so sourceDecoder skips redundant CPU ST map correction.
+// Pass nil to disable.
+func (s *Switcher) SetGPUSourceManager(mgr GPUSourceManagerIface) {
+	if mgr != nil {
+		s.gpuSourceMgr.Store(&gpuSourceMgrHolder{mgr: mgr})
+		s.gpuSourceActive.Store(true)
+	} else {
+		s.gpuSourceMgr.Store(nil)
+		s.gpuSourceActive.Store(false)
+	}
 }
 
 // SetSourceDecoderFactory enables always-decode mode. When set, RegisterSource
@@ -851,27 +900,16 @@ func (s *Switcher) SetPipelineVideoInfoCallback(cb func(sps, pps []byte, width, 
 	}
 }
 
-// buildNodeList constructs the ordered list of pipeline nodes.
+// buildNodeList constructs the ordered list of CPU pipeline nodes.
 // Must be called with s.mu held (RLock or Lock) since it reads
-// s.keyBridge, s.compositorRef, s.pipeCodecs, s.gpuNodes, and s.promMetrics.
+// s.keyBridge, s.compositorRef, s.pipeCodecs, and s.promMetrics.
 //
-// When GPU nodes are set, returns:
-//   [gpu-upload → gpu-key → gpu-layout → gpu-compositor → gpu-stmap → gpu-download → raw-sinks → encode]
-// Otherwise (CPU-only):
+// When a GPU pipeline is active (via SetGPUPipeline), the CPU pipeline is
+// only used as fallback. The GPU pipeline runs independently via RunWithUpload.
+//
+// CPU pipeline order:
 //   [upstream-key → layout-compositor → compositor → stmap-program → raw-sink-mxl → raw-sink-preview → h264-encode]
 func (s *Switcher) buildNodeList() []PipelineNode {
-	if len(s.gpuNodes) > 0 {
-		// GPU pipeline: GPU nodes handle upload, processing, and download.
-		// Append raw sinks and encode after the GPU download node.
-		nodes := make([]PipelineNode, 0, len(s.gpuNodes)+3)
-		nodes = append(nodes, s.gpuNodes...)
-		nodes = append(nodes,
-			&rawSinkNode{sink: &s.rawVideoSink, name: "raw-sink-mxl"},
-			&rawSinkNode{sink: &s.rawPreviewSink, name: "raw-sink-preview"},
-			newAsyncEncodeNode(s),
-		)
-		return nodes
-	}
 	return []PipelineNode{
 		&upstreamKeyNode{bridge: s.keyBridge},
 		&layoutCompositorNode{compositor: s.layoutCompositor},
@@ -1352,6 +1390,15 @@ func (s *Switcher) SetCaptionManager(cm captionManager) {
 	s.captionMgr = cm
 }
 
+// ForceNextIDRPtr returns a pointer to the forceNextIDR atomic for GPU encode.
+func (s *Switcher) ForceNextIDRPtr() *atomic.Bool { return &s.forceNextIDR }
+
+// BroadcastWithCaptions returns the caption-injecting broadcast callback
+// for use by the GPU encode node.
+func (s *Switcher) BroadcastWithCaptionsFunc() func(*media.VideoFrame) {
+	return s.broadcastWithCaptions
+}
+
 // broadcastWithCaptions injects caption SEI NALUs into the encoded video frame
 // before broadcasting to the program relay. This is the post-encode callback
 // used by the pipeline's encodeNode when captions are enabled.
@@ -1475,8 +1522,26 @@ func (s *Switcher) videoProcessingLoop() {
 		// which was in a different domain than the mixer's audio PTS.
 		work.yuvFrame.PTS = s.wallClockVideoPTS(work.yuvFrame.PTS)
 
-		if p := s.pipeline.Load(); p != nil {
-			work.yuvFrame = p.Run(work.yuvFrame)
+		// Route through GPU pipeline if available, fall back to CPU.
+		gpuUsed := false
+		if h := s.gpuRunner.Load(); h != nil && h.runner != nil {
+			// Try zero-upload path first: use pre-cached GPU frame from source manager.
+			if work.sourceKey != "" {
+				if err := h.runner.RunFromCache(work.sourceKey, work.yuvFrame.PTS); err == nil {
+					gpuUsed = true
+				}
+			}
+			// Fall back to CPU→GPU upload if cache miss or no source key.
+			if !gpuUsed {
+				if err := h.runner.RunWithUpload(work.yuvFrame.YUV, work.yuvFrame.Width, work.yuvFrame.Height, work.yuvFrame.PTS); err == nil {
+					gpuUsed = true
+				}
+			}
+		}
+		if !gpuUsed {
+			if p := s.pipeline.Load(); p != nil {
+				work.yuvFrame = p.Run(work.yuvFrame)
+			}
 		}
 		work.yuvFrame.ReleaseYUV()
 
@@ -1548,7 +1613,11 @@ func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, 
 // in-place modification, so source frames retained by frame_sync (lastRawVideo)
 // are never mutated. For unmanaged frames (FRC scratch buffers), falls back to
 // DeepCopy since FRC reuses its internal scratch buffers between calls.
-func (s *Switcher) broadcastProcessedFromPF(pf *ProcessingFrame) {
+//
+// sourceKey identifies the program source that produced this frame, enabling
+// the GPU pipeline to use RunFromCache instead of re-uploading from CPU.
+// Pass "" for transition/FRC output (blended/synthesized frames).
+func (s *Switcher) broadcastProcessedFromPF(sourceKey string, pf *ProcessingFrame) {
 	if s.pipeline.Load() == nil {
 		return
 	}
@@ -1560,12 +1629,12 @@ func (s *Switcher) broadcastProcessedFromPF(pf *ProcessingFrame) {
 		pf.Ref()
 		cp := new(ProcessingFrame)
 		*cp = *pf
-		s.enqueueVideoWork(videoProcWork{yuvFrame: cp, epoch: epoch, enqueueNano: enqueueNano})
+		s.enqueueVideoWork(videoProcWork{yuvFrame: cp, epoch: epoch, enqueueNano: enqueueNano, sourceKey: sourceKey})
 	} else {
 		// Unmanaged frame (FRC scratch buffer): must deep-copy.
 		cp := pf.DeepCopy()
 		cp.SetRefs(1)
-		s.enqueueVideoWork(videoProcWork{yuvFrame: cp, epoch: epoch, enqueueNano: enqueueNano})
+		s.enqueueVideoWork(videoProcWork{yuvFrame: cp, epoch: epoch, enqueueNano: enqueueNano, sourceKey: sourceKey})
 	}
 }
 
@@ -2162,7 +2231,7 @@ func (s *Switcher) RegisterSource(key string, relay *distribution.Relay) {
 	// at ingest time. Decoded frames route through frameSync/delayBuffer via callback.
 	if s.sourceDecoderFactory != nil {
 		cb := s.makeDecoderCallback(key)
-		sd := newSourceDecoder(key, s.sourceDecoderFactory, cb, s.framePool, &s.pipelineFormat, s.stmapRegistry)
+		sd := newSourceDecoder(key, s.sourceDecoderFactory, cb, s.framePool, &s.pipelineFormat, s.stmapRegistry, &s.gpuSourceActive)
 		if sd != nil {
 			viewer.srcDecoder.Store(sd)
 			useRaw = true
@@ -3044,17 +3113,19 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 		ss.lastGroupID.Store(pf.GroupID)
 	}
 
-	// Feed key fill bridge with decoded YUV (for upstream keying).
-	// Use HasEnabledKeys (not HasEnabledKeysWithFills) to avoid chicken-and-egg:
-	// fills can't exist until IngestFillYUV is called, which requires this guard
-	// to pass. IngestFillYUV has its own per-source config check internally.
-	if keyBridge != nil {
-		keyBridge.IngestFillYUV(sourceKey, pf.YUV, pf.Width, pf.Height)
-	}
-
-	// Feed layout compositor with decoded YUV (for PIP/split-screen).
-	if layoutComp != nil && layoutComp.NeedsSource(sourceKey) {
-		layoutComp.IngestSourceFrame(sourceKey, pf.YUV, pf.Width, pf.Height, pf.PTS)
+	// GPU source manager: upload + ST map + cache + preview encode.
+	// When active, fills are read from GPU cache by key/layout nodes (via GPUFill),
+	// so CPU IngestFillYUV / IngestSourceFrame are skipped.
+	if h := s.gpuSourceMgr.Load(); h != nil && h.mgr != nil {
+		h.mgr.IngestYUV(sourceKey, pf.YUV, pf.Width, pf.Height, pf.PTS)
+	} else {
+		// CPU fill paths — feed key bridge and layout compositor with decoded YUV.
+		if keyBridge != nil {
+			keyBridge.IngestFillYUV(sourceKey, pf.YUV, pf.Width, pf.Height)
+		}
+		if layoutComp != nil && layoutComp.NeedsSource(sourceKey) {
+			layoutComp.IngestSourceFrame(sourceKey, pf.YUV, pf.Width, pf.Height, pf.PTS)
+		}
 	}
 
 	// During transition (including FTB): route to engine for blending.
@@ -3101,7 +3172,7 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 	}
 
 	// Enqueue as yuvFrame — the processing loop handles key→compositor→encode→broadcast.
-	s.broadcastProcessedFromPF(pf)
+	s.broadcastProcessedFromPF(sourceKey, pf)
 }
 
 // handleCaptionFrame implements frameHandler. Only the current program

@@ -95,6 +95,10 @@ type graphicsLayer struct {
 
 	zOrder int
 
+	// overlayGen is incremented each time the overlay data changes.
+	// Used by the GPU compositor node for cache invalidation.
+	overlayGen uint64
+
 	// Per-layer image storage. imageData retains original PNG bytes for
 	// GET /api/graphics/layers/{id}/image retrieval; imageRGBA holds decoded
 	// RGBA pixels used by SetOverlay for overlay compositing.
@@ -278,6 +282,7 @@ func (c *Compositor) SetOverlay(id int, rgba []byte, width, height int, template
 	layer.overlayWidth = width
 	layer.overlayHeight = height
 	layer.template = template
+	layer.overlayGen++
 	return nil
 }
 
@@ -769,6 +774,68 @@ func (c *Compositor) hasVisibleLayersLocked() bool {
 		}
 	}
 	return false
+}
+
+// HasActiveLayers returns true if any layer is currently active with visible
+// content. Used by the GPU compositor node's Active() check.
+func (c *Compositor) HasActiveLayers() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.hasVisibleLayersLocked()
+}
+
+// VisibleLayerSnap is a deep-copied snapshot of one visible layer's state.
+// Used by the GPU compositor node to avoid holding locks during GPU dispatch.
+type VisibleLayerSnap struct {
+	ID               int
+	RectX, RectY     int
+	RectW, RectH     int
+	Alpha            float32 // 0.0-1.0
+	Overlay          []byte  // RGBA pixel data (deep copy)
+	OverlayW, OverlayH int
+	Gen              uint64  // generation counter for cache invalidation
+}
+
+// SnapshotVisibleLayers returns a deep-copied snapshot of all visible layers
+// sorted by z-order. The GPU compositor node calls this once per frame to get
+// all RGBA overlays and positions, then dispatches GPU kernels without locks.
+func (c *Compositor) SnapshotVisibleLayers() []VisibleLayerSnap {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	var result []VisibleLayerSnap
+	for _, id := range c.sortedIDs {
+		layer := c.layers[id]
+		if !layer.active || layer.fadePosition < 1.0/255.0 || layer.overlay == nil {
+			continue
+		}
+		if isOverlayTransparent(layer.overlay, layer.overlayWidth*layer.overlayHeight) {
+			continue
+		}
+
+		// Deep-copy RGBA overlay.
+		overlayCopy := make([]byte, len(layer.overlay))
+		copy(overlayCopy, layer.overlay)
+
+		rect := layer.rect
+		if (rect == image.Rectangle{}) {
+			rect = image.Rect(0, 0, layer.overlayWidth, layer.overlayHeight)
+		}
+
+		result = append(result, VisibleLayerSnap{
+			ID:       layer.id,
+			RectX:    rect.Min.X,
+			RectY:    rect.Min.Y,
+			RectW:    rect.Dx(),
+			RectH:    rect.Dy(),
+			Alpha:    float32(layer.fadePosition),
+			Overlay:  overlayCopy,
+			OverlayW: layer.overlayWidth,
+			OverlayH: layer.overlayHeight,
+			Gen:      layer.overlayGen,
+		})
+	}
+	return result
 }
 
 // hasActiveTickersLocked returns true if any layer has an active, non-done

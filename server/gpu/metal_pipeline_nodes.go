@@ -61,7 +61,8 @@ func (n *gpuEncodeNode) ProcessGPU(frame *GPUFrame) error {
 type gpuRawSinkNode struct {
 	ctx    *Context
 	sink   *atomic.Pointer[RawSinkFunc]
-	cpuBuf []byte
+	cpuBuf [2][]byte // double-buffer to prevent aliasing if callback retains slice
+	bufIdx int
 	width  int
 	height int
 }
@@ -75,7 +76,9 @@ func (n *gpuRawSinkNode) Name() string { return "gpu_raw_sink" }
 func (n *gpuRawSinkNode) Configure(width, height, pitch int) error {
 	n.width = width
 	n.height = height
-	n.cpuBuf = make([]byte, width*height*3/2)
+	size := width * height * 3 / 2
+	n.cpuBuf[0] = make([]byte, size)
+	n.cpuBuf[1] = make([]byte, size)
 	return nil
 }
 func (n *gpuRawSinkNode) Active() bool {
@@ -90,10 +93,12 @@ func (n *gpuRawSinkNode) ProcessGPU(frame *GPUFrame) error {
 	if fn == nil {
 		return nil
 	}
-	if err := Download(n.ctx, n.cpuBuf, frame, n.width, n.height); err != nil {
+	buf := n.cpuBuf[n.bufIdx]
+	n.bufIdx ^= 1 // flip 0↔1
+	if err := Download(n.ctx, buf, frame, n.width, n.height); err != nil {
 		return err
 	}
-	(*fn)(n.cpuBuf, n.width, n.height)
+	(*fn)(buf, n.width, n.height)
 	return nil
 }
 

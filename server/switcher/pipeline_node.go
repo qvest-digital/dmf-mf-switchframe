@@ -11,6 +11,34 @@ type AsyncMetricsProvider interface {
 	AsyncMetrics() map[string]any
 }
 
+// GPUPipelineRunner is the interface for running the full GPU video pipeline.
+// The implementation lives in the gpu package (wrapped by the app layer).
+// When set on the Switcher, frames are routed through the GPU pipeline
+// instead of the CPU PipelineNode chain.
+type GPUPipelineRunner interface {
+	// RunWithUpload uploads a CPU YUV420p frame to GPU, runs all GPU nodes
+	// (key, layout, compositor, stmap, raw sinks, encode), releases the GPU
+	// frame, and returns. The encode callback has already been called with
+	// the H.264 output by the time this returns.
+	RunWithUpload(yuv []byte, width, height int, pts int64) error
+
+	// RunFromCache retrieves a pre-uploaded GPU frame from the source cache
+	// (GPUSourceManager), copies it to a pipeline frame, and runs the GPU
+	// pipeline — skipping the CPU→GPU upload entirely. Returns an error if
+	// the source has no cached frame, in which case the caller should fall
+	// back to RunWithUpload.
+	RunFromCache(sourceKey string, pts int64) error
+}
+
+// GPUSourceManagerIface provides GPU source frame management.
+// Implemented by gpu.GPUSourceManager in the app layer.
+// When set on the Switcher, handleRawVideoFrame routes YUV frames through
+// GPU upload + ST map + cache instead of CPU fill paths (IngestFillYUV,
+// IngestSourceFrame).
+type GPUSourceManagerIface interface {
+	IngestYUV(sourceKey string, yuv []byte, w, h int, pts int64)
+}
+
 // PipelineNode is the fundamental processing unit in the video pipeline.
 //
 // Lifecycle:

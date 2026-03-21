@@ -108,6 +108,14 @@ func (b *KeyProcessorBridge) HasEnabledKeysWithFills() bool {
 	return len(b.fills) > 0
 }
 
+// HasEnabledKeys returns true if any keys are configured and enabled,
+// regardless of whether CPU fill frames have been cached. Used by the GPU
+// key node where fills come from the GPU source manager cache rather than
+// the CPU bridge's fills map.
+func (b *KeyProcessorBridge) HasEnabledKeys() bool {
+	return b.kp.HasEnabledKeys()
+}
+
 // ProcessYUV applies upstream keys to a raw YUV420 buffer in-place.
 // This is the codec-free processor used by the pipeline coordinator.
 // When no keys are enabled or no fills are cached, returns yuv unchanged.
@@ -159,6 +167,87 @@ func (b *KeyProcessorBridge) ProcessYUV(yuv []byte, width, height int) []byte {
 
 	b.kp.Process(yuv, b.fillMap, width, height)
 	return yuv
+}
+
+// EnabledKeySnap is a deep-copied snapshot of one enabled key's state.
+// Used by the GPU key node to avoid holding locks during GPU dispatch.
+type EnabledKeySnap struct {
+	SourceKey      string
+	Type           string // "chroma" or "luma"
+	KeyCb, KeyCr   uint8
+	Similarity     float32
+	Smoothness     float32
+	SpillSuppress  float32
+	SpillReplaceCb uint8
+	SpillReplaceCr uint8
+	LowClip        float32
+	HighClip       float32
+	Softness       float32
+	FillYUV        []byte // YUV420p fill frame (deep copy)
+	FillW, FillH   int
+}
+
+// SnapshotEnabledKeys returns a deep-copied snapshot of all enabled keys
+// and their fill frames. The GPU key node calls this once per frame to get
+// all needed state, then dispatches GPU kernels without holding any locks.
+//
+// Lock ordering: acquires b.mu then b.kp.mu.RLock (same order as ProcessYUV).
+func (b *KeyProcessorBridge) SnapshotEnabledKeys() []EnabledKeySnap {
+	if !b.kp.HasEnabledKeys() {
+		return nil
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if len(b.fills) == 0 {
+		return nil
+	}
+
+	// Read key configs under kp lock.
+	b.kp.mu.RLock()
+	defer b.kp.mu.RUnlock()
+
+	var result []EnabledKeySnap
+	for _, source := range b.kp.sortedKeys {
+		cfg := b.kp.keys[source]
+		if !cfg.Enabled {
+			continue
+		}
+		entry, ok := b.fills[source]
+		if !ok {
+			continue
+		}
+
+		yuvSize := entry.width * entry.height * 3 / 2
+		if len(entry.yuv) < yuvSize {
+			continue
+		}
+
+		// Deep-copy fill frame.
+		fillCopy := make([]byte, yuvSize)
+		copy(fillCopy, entry.yuv[:yuvSize])
+
+		result = append(result, EnabledKeySnap{
+			SourceKey:      source,
+			Type:           string(cfg.Type),
+			KeyCb:          cfg.KeyColorCb,
+			KeyCr:          cfg.KeyColorCr,
+			Similarity:     cfg.Similarity,
+			Smoothness:     cfg.Smoothness,
+			SpillSuppress:  cfg.SpillSuppress,
+			SpillReplaceCb: cfg.SpillReplaceCb,
+			SpillReplaceCr: cfg.SpillReplaceCr,
+			LowClip:        cfg.LowClip,
+			HighClip:       cfg.HighClip,
+			Softness:       cfg.Softness,
+			FillYUV:        fillCopy,
+			FillW:          entry.width,
+			FillH:          entry.height,
+		})
+	}
+
+	return result
 }
 
 // Close releases all fill resources.

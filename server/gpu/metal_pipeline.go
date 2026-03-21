@@ -51,6 +51,9 @@ func NewGPUPipeline(ctx *Context, pool *FramePool) *GPUPipeline {
 	}
 }
 
+// Pool returns the frame pool used by this pipeline.
+func (p *GPUPipeline) Pool() *FramePool { return p.pool }
+
 // Build validates all nodes, filters active ones, and pre-computes latency.
 func (p *GPUPipeline) Build(width, height, pitch int, nodes []GPUPipelineNode) error {
 	p.width = width

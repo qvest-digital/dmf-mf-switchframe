@@ -26,7 +26,7 @@ func TestSourceDecoder_YUVBufferMatchesFrameSize(t *testing.T) {
 		mu.Unlock()
 	}
 
-	sd := newSourceDecoder("cam1", factory, callback, pool, nil, nil)
+	sd := newSourceDecoder("cam1", factory, callback, pool, nil, nil, nil)
 	defer sd.Close()
 
 	sd.Send(&media.VideoFrame{

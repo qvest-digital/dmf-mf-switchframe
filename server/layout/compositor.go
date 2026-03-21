@@ -523,6 +523,84 @@ func (c *Compositor) Latency() time.Duration {
 	return time.Duration(count) * time.Millisecond
 }
 
+// SlotSnap is a deep-copied snapshot of one layout slot's state.
+// Used by the GPU layout node to avoid holding locks during GPU dispatch.
+type SlotSnap struct {
+	Index        int
+	Enabled      bool
+	SourceKey    string
+	RectX, RectY int
+	RectW, RectH int
+	FillYUV      []byte // YUV420p source frame (deep copy, nil if no signal)
+	FillW, FillH int
+	FillPTS      int64
+	BorderColorY, BorderColorCb, BorderColorCr uint8
+	BorderThickness int
+	Alpha        float32
+}
+
+// SnapshotSlots returns a deep-copied snapshot of all enabled layout slots
+// and their source fill frames. The GPU layout node calls this once per frame,
+// then dispatches GPU kernels without holding any locks.
+func (c *Compositor) SnapshotSlots() []SlotSnap {
+	l := c.layout.Load()
+	if l == nil {
+		return nil
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Tick animations under lock.
+	c.tickAnimations()
+
+	var result []SlotSnap
+	for _, idx := range c.sortedSlots {
+		if idx >= len(l.Slots) {
+			continue
+		}
+		slot := l.Slots[idx]
+		if !slot.Enabled && !c.isAnimating(idx) {
+			continue
+		}
+
+		rect, alpha := c.effectiveRectAndAlpha(idx, slot)
+		if rect.Dx() <= 0 || rect.Dy() <= 0 {
+			continue
+		}
+
+		snap := SlotSnap{
+			Index:           idx,
+			Enabled:         slot.Enabled,
+			SourceKey:       slot.SourceKey,
+			RectX:           rect.Min.X,
+			RectY:           rect.Min.Y,
+			RectW:           rect.Dx(),
+			RectH:           rect.Dy(),
+			Alpha:           float32(alpha),
+			BorderColorY:    slot.Border.ColorY,
+			BorderColorCb:   slot.Border.ColorCb,
+			BorderColorCr:   slot.Border.ColorCr,
+			BorderThickness: slot.Border.Width,
+		}
+
+		if entry, ok := c.fills[slot.SourceKey]; ok {
+			yuvSize := entry.width * entry.height * 3 / 2
+			if len(entry.yuv) >= yuvSize {
+				fillCopy := make([]byte, yuvSize)
+				copy(fillCopy, entry.yuv[:yuvSize])
+				snap.FillYUV = fillCopy
+				snap.FillW = entry.width
+				snap.FillH = entry.height
+				snap.FillPTS = entry.pts
+			}
+		}
+
+		result = append(result, snap)
+	}
+	return result
+}
+
 // effectiveRectAndAlpha returns the current rect and alpha for a slot,
 // accounting for any active animation.
 func (c *Compositor) effectiveRectAndAlpha(slotIdx int, slot Slot) (image.Rectangle, float64) {

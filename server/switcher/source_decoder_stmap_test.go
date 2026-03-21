@@ -73,7 +73,7 @@ func TestSourceDecoder_AppliesSTMap(t *testing.T) {
 		mu.Unlock()
 	}
 
-	sd := newSourceDecoder("test-source", factory, callback, nil, nil, reg)
+	sd := newSourceDecoder("test-source", factory, callback, nil, nil, reg, nil)
 	require.NotNil(t, sd)
 	defer sd.Close()
 
@@ -128,7 +128,7 @@ func TestSourceDecoder_NoSTMapRegistry(t *testing.T) {
 	}
 
 	// nil registry — no stmap applied.
-	sd := newSourceDecoder("test-source", factory, callback, nil, nil, nil)
+	sd := newSourceDecoder("test-source", factory, callback, nil, nil, nil, nil)
 	require.NotNil(t, sd)
 	defer sd.Close()
 
@@ -181,7 +181,7 @@ func TestSourceDecoder_STMapNoAssignment(t *testing.T) {
 		mu.Unlock()
 	}
 
-	sd := newSourceDecoder("test-source", factory, callback, nil, nil, reg)
+	sd := newSourceDecoder("test-source", factory, callback, nil, nil, reg, nil)
 	require.NotNil(t, sd)
 	defer sd.Close()
 

@@ -141,6 +141,7 @@ func (a *App) startMXLDemo(ctx context.Context) func() {
 			existingWriter.Writer().WriteVideo(pf.YUV, pf.Width, pf.Height, pf.PTS)
 		}
 	}))
+	a.updateGPURawVideoSink()
 
 	// Periodic stats logger.
 	go func() {

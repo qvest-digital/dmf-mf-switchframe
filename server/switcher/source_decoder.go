@@ -55,6 +55,10 @@ type sourceDecoder struct {
 	stmapRegistry *stmap.Registry
 	stmapBuf      []byte // reusable buffer for stmap warp output (lazy-allocated)
 
+	// gpuSourceActive — shared pointer to Switcher's atomic.Bool.
+	// When true, skip CPU ST map correction (GPU source manager does it on GPU).
+	gpuSourceActive *atomic.Bool
+
 	// Frame stats (EMA of H.264 frame size/FPS for encoder params).
 	// Written by Send() (relay goroutine), read by Stats() (decoder goroutine
 	// via callback). Use atomic Uint64 + Float64bits/Float64frombits to avoid
@@ -75,7 +79,9 @@ type sourceDecoder struct {
 // decode goroutine, and returns the decoder. Returns nil if the factory fails.
 // pipelineFormat is the shared atomic pointer from Switcher for per-source
 // resolution normalization (may be nil if no normalization is needed).
-func newSourceDecoder(key string, factory transition.DecoderFactory, callback func(string, *ProcessingFrame), pool *FramePool, pipelineFormat *atomic.Pointer[PipelineFormat], stmapRegistry *stmap.Registry) *sourceDecoder {
+// gpuActive is a shared atomic.Bool from the Switcher — when true, CPU ST map
+// correction is skipped (the GPU source manager handles it on GPU).
+func newSourceDecoder(key string, factory transition.DecoderFactory, callback func(string, *ProcessingFrame), pool *FramePool, pipelineFormat *atomic.Pointer[PipelineFormat], stmapRegistry *stmap.Registry, gpuActive *atomic.Bool) *sourceDecoder {
 	dec, err := factory()
 	if err != nil {
 		slog.Warn("source decoder creation failed", "source", key, "error", err)
@@ -83,14 +89,15 @@ func newSourceDecoder(key string, factory transition.DecoderFactory, callback fu
 	}
 
 	sd := &sourceDecoder{
-		sourceKey:      key,
-		decoder:        dec,
-		ch:             make(chan decoderInput, 2),
-		callback:       callback,
-		done:           make(chan struct{}),
-		pool:           pool,
-		pipelineFormat: pipelineFormat,
-		stmapRegistry:  stmapRegistry,
+		sourceKey:       key,
+		decoder:         dec,
+		ch:              make(chan decoderInput, 2),
+		callback:        callback,
+		done:            make(chan struct{}),
+		pool:            pool,
+		pipelineFormat:  pipelineFormat,
+		stmapRegistry:   stmapRegistry,
+		gpuSourceActive: gpuActive,
 	}
 	go sd.decodeLoop()
 	return sd
@@ -279,7 +286,8 @@ func (sd *sourceDecoder) decodeLoop() {
 
 		// Apply per-source ST map correction (post-decode, pre-fan-out).
 		// All consumers (preview, replay, pipeline) see corrected frames.
-		if sd.stmapRegistry != nil {
+		// Skip when GPU source manager is active — it handles ST map on GPU.
+		if (sd.gpuSourceActive == nil || !sd.gpuSourceActive.Load()) && sd.stmapRegistry != nil {
 			if proc := sd.stmapRegistry.SourceProcessor(sd.sourceKey); proc != nil && proc.Active() {
 				dstSize := w * h * 3 / 2
 				if len(sd.stmapBuf) < dstSize {

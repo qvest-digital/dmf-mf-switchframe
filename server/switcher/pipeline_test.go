@@ -629,7 +629,7 @@ func TestPipeline_CompositorDoesNotCorruptSharedBuffer(t *testing.T) {
 			IsKeyframe: i == 0,
 			Codec:      "h264",
 		}
-		sw.broadcastProcessedFromPF(pf)
+		sw.broadcastProcessedFromPF("", pf)
 	}
 
 	// Wait for async processing.
@@ -728,8 +728,9 @@ func TestBuildNodeList_Ordering(t *testing.T) {
 	require.Equal(t, "h264-encode", nodes[6].Name())
 }
 
-func TestBuildNodeList_GPUNodes(t *testing.T) {
-	// When GPU nodes are set, buildNodeList returns the GPU chain + raw-sinks + encode.
+func TestSetGPUPipeline(t *testing.T) {
+	// When a GPU pipeline is set, buildNodeList still returns CPU nodes
+	// (GPU pipeline runs independently via RunWithUpload).
 	programRelay := newTestRelay()
 	sw := newTestSwitcher(programRelay)
 
@@ -740,34 +741,42 @@ func TestBuildNodeList_GPUNodes(t *testing.T) {
 	)
 	defer sw.Close()
 
-	// Create mock GPU nodes (using simple passthrough PipelineNodes).
-	mockUpload := &mockPipelineNode{name: "gpu-upload"}
-	mockKey := &mockPipelineNode{name: "gpu-key"}
-	mockLayout := &mockPipelineNode{name: "gpu-layout"}
-	mockCompositor := &mockPipelineNode{name: "gpu-compositor"}
-	mockSTMap := &mockPipelineNode{name: "gpu-stmap"}
-	mockDownload := &mockPipelineNode{name: "gpu-download"}
-
-	gpuNodes := []PipelineNode{mockUpload, mockKey, mockLayout, mockCompositor, mockSTMap, mockDownload}
-	sw.mu.Lock()
-	sw.gpuNodes = gpuNodes
-	sw.mu.Unlock()
+	// Set a mock GPU pipeline.
+	var called atomic.Bool
+	mockGPU := &mockGPUPipelineRunner{onRun: func() { called.Store(true) }}
+	sw.SetGPUPipeline(mockGPU)
 
 	sw.mu.RLock()
 	nodes := sw.buildNodeList()
 	sw.mu.RUnlock()
 
-	// Should be: 6 GPU nodes + 2 raw sinks + 1 encode = 9
-	require.Len(t, nodes, 9)
-	require.Equal(t, "gpu-upload", nodes[0].Name())
-	require.Equal(t, "gpu-key", nodes[1].Name())
-	require.Equal(t, "gpu-layout", nodes[2].Name())
-	require.Equal(t, "gpu-compositor", nodes[3].Name())
-	require.Equal(t, "gpu-stmap", nodes[4].Name())
-	require.Equal(t, "gpu-download", nodes[5].Name())
-	require.Equal(t, "raw-sink-mxl", nodes[6].Name())
-	require.Equal(t, "raw-sink-preview", nodes[7].Name())
-	require.Equal(t, "h264-encode", nodes[8].Name())
+	// CPU nodes are unchanged — GPU pipeline is a separate path.
+	require.Len(t, nodes, 7)
+	require.Equal(t, "upstream-key", nodes[0].Name())
+
+	// Verify GPU pipeline runner is stored.
+	h := sw.gpuRunner.Load()
+	require.NotNil(t, h)
+	require.NotNil(t, h.runner)
+
+	// Clear GPU pipeline.
+	sw.SetGPUPipeline(nil)
+}
+
+type mockGPUPipelineRunner struct {
+	onRun func()
+}
+
+func (m *mockGPUPipelineRunner) RunWithUpload(yuv []byte, width, height int, pts int64) error {
+	if m.onRun != nil {
+		m.onRun()
+	}
+	return nil
+}
+
+func (m *mockGPUPipelineRunner) RunFromCache(sourceKey string, pts int64) error {
+	// Mock always falls back to RunWithUpload.
+	return fmt.Errorf("mock: no cached GPU frame")
 }
 
 // mockPipelineNode is a simple passthrough PipelineNode for testing.

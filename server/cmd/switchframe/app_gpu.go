@@ -1,24 +1,32 @@
 package main
 
 import (
+	"fmt"
 	"log/slog"
+	"sync/atomic"
 
+	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/gpu"
+	"github.com/zsiec/switchframe/server/graphics"
+	"github.com/zsiec/switchframe/server/layout"
 	"github.com/zsiec/switchframe/server/switcher"
 )
 
 // gpuState holds all GPU subsystem resources. Nil fields mean the GPU
 // subsystem is not active and the CPU pipeline is used instead.
 type gpuState struct {
-	ctx  *gpu.Context
-	pool *gpu.FramePool
+	ctx           *gpu.Context
+	pool          *gpu.FramePool
+	pipeline      *gpu.GPUPipeline
+	encoder       *gpu.GPUEncoder
+	sourceManager *gpu.GPUSourceManager
 }
 
 // initGPU attempts to initialize the GPU pipeline. If the GPU is not
 // available or initialization fails, logs a message and returns nil
 // (CPU fallback). The caller should store the returned state and call
 // closeGPU in cleanup.
-func initGPU(sw *switcher.Switcher, stmapRegistry interface{ HasProgramMap() bool }) *gpuState {
+func initGPU(sw *switcher.Switcher) *gpuState {
 	ctx, err := gpu.NewContext()
 	if err != nil {
 		slog.Info("GPU not available, using CPU pipeline", "error", err)
@@ -31,8 +39,11 @@ func initGPU(sw *switcher.Switcher, stmapRegistry interface{ HasProgramMap() boo
 	)
 
 	// Create GPU frame pool sized for the pipeline format.
+	// Pool sizing: 9 cached source frames + 9 stmapTmp frames + 1 pipeline frame
+	// + 1 stmap temp + 1 mask + 3 headroom = 24. Under-sizing causes pool
+	// exhaustion under load when all sources are active with ST maps.
 	pf := sw.PipelineFormat()
-	pool, err := gpu.NewFramePool(ctx, pf.Width, pf.Height, 8)
+	pool, err := gpu.NewFramePool(ctx, pf.Width, pf.Height, 24)
 	if err != nil {
 		slog.Warn("GPU frame pool failed, falling back to CPU", "error", err)
 		ctx.Close()
@@ -43,40 +54,146 @@ func initGPU(sw *switcher.Switcher, stmapRegistry interface{ HasProgramMap() boo
 	return &gpuState{ctx: ctx, pool: pool}
 }
 
-// wireGPUPipeline creates GPU pipeline nodes and registers them on the
-// switcher. Call after initGPU returns a non-nil state, and before
-// sw.BuildPipeline().
+// wireGPUPipeline creates the full GPU pipeline with all processing nodes
+// and registers it on the switcher. Call after initGPU returns a non-nil state.
 func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 	if gs == nil {
 		return
 	}
 
-	// Build GPU pipeline node chain:
-	//   gpu-upload → gpu-key → gpu-layout → gpu-compositor → gpu-stmap → gpu-download
-	//
-	// The switcher appends raw-sinks and encode after these nodes.
-	nodes := []switcher.PipelineNode{
-		gpu.NewUploadNode(gs.ctx, gs.pool),
-		gpu.NewKeyNode(),
-		gpu.NewLayoutNode(),
-		gpu.NewCompositorNode(),
-		gpu.NewSTMapNode(gs.ctx, gs.pool, app.stmapRegistry),
-		gpu.NewDownloadNode(gs.ctx),
+	pf := sw.PipelineFormat()
+
+	// Create GPU encoder (VideoToolbox on macOS, NVENC on Linux).
+	encoder, err := gpu.NewGPUEncoder(gs.ctx, pf.Width, pf.Height, pf.FPSNum, pf.FPSDen, 8_000_000)
+	if err != nil {
+		slog.Warn("GPU encoder failed, falling back to CPU pipeline", "error", err)
+		return
+	}
+	gs.encoder = encoder
+
+	// Create GPU pipeline.
+	gpuPipeline := gpu.NewGPUPipeline(gs.ctx, gs.pool)
+	gs.pipeline = gpuPipeline
+
+	// Create GPU source manager for per-source upload, ST map, caching,
+	// and (future) preview encoding. Sources auto-register on first
+	// IngestYUV call from handleRawVideoFrame.
+	sourceMgr := gpu.NewGPUSourceManager(gs.ctx, gs.pool, app.stmapRegistry)
+	gs.sourceManager = sourceMgr
+
+	// Register on switcher — gates CPU fill paths in handleRawVideoFrame.
+	sw.SetGPUSourceManager(sourceMgr)
+
+	// Create adapter types for state interfaces.
+	keyAdapter := &keyBridgeAdapter{bridge: app.keyBridge, sourceMgr: sourceMgr}
+	compositorAdapter := &compositorStateAdapter{compositor: app.compositor}
+	layoutAdapter := &layoutStateAdapter{layout: app.layoutCompositor, sourceMgr: sourceMgr}
+
+	// Raw sinks — GPU raw sink nodes download to CPU only when active.
+	var gpuRawVideoSink atomic.Pointer[gpu.RawSinkFunc]
+	var gpuRawPreviewSink atomic.Pointer[gpu.RawSinkFunc]
+
+	// Wire the GPU raw sinks to the same underlying callbacks as the CPU sinks.
+	// The app sets rawVideoSink/rawPreviewSink on the switcher for CPU path;
+	// we mirror them to the GPU raw sink atomic pointers.
+	app.gpuRawVideoSink = &gpuRawVideoSink
+	app.gpuRawPreviewSink = &gpuRawPreviewSink
+
+	// Bridge callback: GPU encode outputs (data, isIDR, pts) → media.VideoFrame → broadcastWithCaptions.
+	broadcastFn := sw.BroadcastWithCaptionsFunc()
+	gpuOnEncoded := func(data []byte, isIDR bool, pts int64) {
+		frame := &media.VideoFrame{
+			PTS:        pts,
+			IsKeyframe: isIDR,
+			WireData:   data,
+			Codec:      "H264",
+		}
+		broadcastFn(frame)
 	}
 
-	sw.SetGPUNodes(nodes)
+	// Build GPU pipeline node chain:
+	//   gpu_key → gpu_layout → gpu_compositor → gpu_stmap → raw_sinks → gpu_encode
+	nodes := []gpu.GPUPipelineNode{
+		gpu.NewGPUKeyNode(gs.ctx, gs.pool, keyAdapter),
+		gpu.NewGPULayoutNode(gs.ctx, gs.pool, layoutAdapter),
+		gpu.NewGPUCompositorNode(gs.ctx, compositorAdapter),
+		gpu.NewGPUSTMapNode(gs.ctx, gs.pool, app.stmapRegistry),
+		gpu.NewGPURawSinkNode(gs.ctx, &gpuRawVideoSink),
+		gpu.NewGPURawSinkNode(gs.ctx, &gpuRawPreviewSink),
+		gpu.NewGPUEncodeNode(gs.ctx, encoder, sw.ForceNextIDRPtr(), gpuOnEncoded),
+	}
+
+	if err := gpuPipeline.Build(pf.Width, pf.Height, gs.pool.Pitch(), nodes); err != nil {
+		slog.Warn("GPU pipeline build failed, falling back to CPU", "error", err)
+		encoder.Close()
+		gs.encoder = nil
+		return
+	}
+
+	// Create the runner wrapper and register on the switcher.
+	runner := &gpuPipelineRunnerImpl{
+		pipeline:      gpuPipeline,
+		sourceManager: sourceMgr,
+	}
+	sw.SetGPUPipeline(runner)
 
 	slog.Info("GPU pipeline active",
 		"backend", gs.ctx.Backend(),
 		"device", gs.ctx.DeviceName(),
-		"pool_frames", 8,
+		"pool_frames", 24,
 	)
+}
+
+// updateGPURawVideoSink mirrors the Switcher's raw video sink to the GPU pipeline.
+// Must be called after every sw.SetRawVideoSink() call so the GPU raw sink node
+// downloads frames to CPU and forwards them to the same callback.
+func (a *App) updateGPURawVideoSink() {
+	if a.gpuRawVideoSink == nil {
+		return
+	}
+	cpuSink := a.sw.GetRawVideoSink()
+	if cpuSink == nil {
+		a.gpuRawVideoSink.Store(nil)
+		return
+	}
+	fn := gpu.RawSinkFunc(func(yuv []byte, w, h int) {
+		cpuSink(&switcher.ProcessingFrame{YUV: yuv, Width: w, Height: h})
+	})
+	a.gpuRawVideoSink.Store(&fn)
+}
+
+// updateGPURawPreviewSink mirrors the Switcher's raw preview sink to the GPU pipeline.
+// Must be called after every sw.SetRawPreviewSink() call so the GPU raw sink node
+// downloads frames to CPU and forwards them to the same callback.
+func (a *App) updateGPURawPreviewSink() {
+	if a.gpuRawPreviewSink == nil {
+		return
+	}
+	cpuSink := a.sw.GetRawPreviewSink()
+	if cpuSink == nil {
+		a.gpuRawPreviewSink.Store(nil)
+		return
+	}
+	fn := gpu.RawSinkFunc(func(yuv []byte, w, h int) {
+		cpuSink(&switcher.ProcessingFrame{YUV: yuv, Width: w, Height: h})
+	})
+	a.gpuRawPreviewSink.Store(&fn)
 }
 
 // closeGPU releases all GPU resources.
 func closeGPU(gs *gpuState) {
 	if gs == nil {
 		return
+	}
+	// Close source manager first — it holds GPU frames from the pool.
+	if gs.sourceManager != nil {
+		gs.sourceManager.Close()
+	}
+	if gs.pipeline != nil {
+		gs.pipeline.Close()
+	}
+	if gs.encoder != nil {
+		gs.encoder.Close()
 	}
 	if gs.pool != nil {
 		gs.pool.Close()
@@ -85,3 +202,182 @@ func closeGPU(gs *gpuState) {
 		gs.ctx.Close()
 	}
 }
+
+// --- GPU Pipeline Runner (implements switcher.GPUPipelineRunner) ---
+
+type gpuPipelineRunnerImpl struct {
+	pipeline      *gpu.GPUPipeline
+	sourceManager *gpu.GPUSourceManager
+}
+
+func (r *gpuPipelineRunnerImpl) RunWithUpload(yuv []byte, width, height int, pts int64) error {
+	frame, err := r.pipeline.RunWithUpload(yuv, width, height, pts)
+	if err != nil {
+		return err
+	}
+	frame.Release()
+	return nil
+}
+
+func (r *gpuPipelineRunnerImpl) RunFromCache(sourceKey string, pts int64) error {
+	if r.sourceManager == nil {
+		return fmt.Errorf("no GPU source manager")
+	}
+	cached := r.sourceManager.GetFrame(sourceKey)
+	if cached == nil {
+		return fmt.Errorf("no cached GPU frame for source %s", sourceKey)
+	}
+	defer cached.Release()
+
+	// Acquire a fresh pipeline frame — the pipeline modifies frames in-place,
+	// so we must not run it on the source cache frame directly.
+	frame, err := r.pipeline.Pool().Acquire()
+	if err != nil {
+		return fmt.Errorf("gpu pipeline: acquire frame: %w", err)
+	}
+
+	// Copy NV12 data from cached source frame to pipeline frame.
+	gpu.CopyGPUFrame(frame, cached)
+	frame.PTS = pts
+
+	if err := r.pipeline.Run(frame); err != nil {
+		frame.Release()
+		return err
+	}
+	frame.Release()
+	return nil
+}
+
+// --- State Adapters (bridge package-local types to gpu interfaces) ---
+
+// keyBridgeAdapter adapts graphics.KeyProcessorBridge to gpu.KeyBridge.
+type keyBridgeAdapter struct {
+	bridge    *graphics.KeyProcessorBridge
+	sourceMgr *gpu.GPUSourceManager // nil until source manager is ready
+}
+
+func (a *keyBridgeAdapter) HasEnabledKeysWithFills() bool {
+	return a.bridge.HasEnabledKeysWithFills()
+}
+
+func (a *keyBridgeAdapter) HasEnabledKeys() bool {
+	return a.bridge.HasEnabledKeys()
+}
+
+func (a *keyBridgeAdapter) GPUFill(sourceKey string) *gpu.GPUFrame {
+	if a.sourceMgr == nil {
+		return nil
+	}
+	return a.sourceMgr.GetFrame(sourceKey)
+}
+
+func (a *keyBridgeAdapter) SnapshotEnabledKeys() []gpu.EnabledKeySnapshot {
+	snaps := a.bridge.SnapshotEnabledKeys()
+	if len(snaps) == 0 {
+		return nil
+	}
+	result := make([]gpu.EnabledKeySnapshot, len(snaps))
+	for i, s := range snaps {
+		result[i] = gpu.EnabledKeySnapshot{
+			SourceKey:      s.SourceKey,
+			Type:           s.Type,
+			KeyCb:          s.KeyCb,
+			KeyCr:          s.KeyCr,
+			Similarity:     s.Similarity,
+			Smoothness:     s.Smoothness,
+			SpillSuppress:  s.SpillSuppress,
+			SpillReplaceCb: s.SpillReplaceCb,
+			SpillReplaceCr: s.SpillReplaceCr,
+			LowClip:        s.LowClip,
+			HighClip:       s.HighClip,
+			Softness:       s.Softness,
+			FillYUV:        s.FillYUV,
+			FillW:          s.FillW,
+			FillH:          s.FillH,
+		}
+	}
+	return result
+}
+
+// compositorStateAdapter adapts graphics.Compositor to gpu.CompositorState.
+type compositorStateAdapter struct {
+	compositor *graphics.Compositor
+}
+
+func (a *compositorStateAdapter) HasActiveLayers() bool {
+	return a.compositor.HasActiveLayers()
+}
+
+func (a *compositorStateAdapter) SnapshotVisibleLayers() []gpu.VisibleLayerSnapshot {
+	snaps := a.compositor.SnapshotVisibleLayers()
+	if len(snaps) == 0 {
+		return nil
+	}
+	result := make([]gpu.VisibleLayerSnapshot, len(snaps))
+	for i, s := range snaps {
+		result[i] = gpu.VisibleLayerSnapshot{
+			ID:       s.ID,
+			Rect:     gpu.Rect{X: s.RectX, Y: s.RectY, W: s.RectW, H: s.RectH},
+			Alpha:    s.Alpha,
+			Overlay:  s.Overlay,
+			OverlayW: s.OverlayW,
+			OverlayH: s.OverlayH,
+			Gen:      s.Gen,
+		}
+	}
+	return result
+}
+
+// layoutStateAdapter adapts layout.Compositor to gpu.LayoutState.
+type layoutStateAdapter struct {
+	layout    *layout.Compositor
+	sourceMgr *gpu.GPUSourceManager // nil until source manager is ready
+}
+
+func (a *layoutStateAdapter) Active() bool {
+	return a.layout.Active()
+}
+
+func (a *layoutStateAdapter) GPUFill(sourceKey string) *gpu.GPUFrame {
+	if a.sourceMgr == nil {
+		return nil
+	}
+	return a.sourceMgr.GetFrame(sourceKey)
+}
+
+func (a *layoutStateAdapter) SnapshotSlots() []gpu.SlotSnapshot {
+	snaps := a.layout.SnapshotSlots()
+	if len(snaps) == 0 {
+		return nil
+	}
+	result := make([]gpu.SlotSnapshot, len(snaps))
+	for i, s := range snaps {
+		result[i] = gpu.SlotSnapshot{
+			Index:     s.Index,
+			Enabled:   s.Enabled,
+			SourceKey: s.SourceKey,
+			Rect:      gpu.Rect{X: s.RectX, Y: s.RectY, W: s.RectW, H: s.RectH},
+			FillYUV:   s.FillYUV,
+			FillW:     s.FillW,
+			FillH:     s.FillH,
+			FillPTS:   s.FillPTS,
+			Border: gpu.BorderSnapshot{
+				ColorY:    s.BorderColorY,
+				ColorCb:   s.BorderColorCb,
+				ColorCr:   s.BorderColorCr,
+				Thickness: s.BorderThickness,
+			},
+			Alpha: s.Alpha,
+		}
+	}
+	return result
+}
+
+// gpuNoOpPreviewEncoder is a no-op preview encoder used when GPU preview encoding
+// is active. When passed as the MXL SourceConfig.PreviewEncoder, it causes
+// encodeAndBroadcastVideo to delegate relay delivery to this (no-op) encoder
+// and only use the CPU full-quality path for replay. The actual relay encoding
+// is handled by the GPU source manager's PreviewConfig.OnPreview callback.
+type gpuNoOpPreviewEncoder struct{}
+
+func (gpuNoOpPreviewEncoder) Send(_ []byte, _, _ int, _ int64) {}

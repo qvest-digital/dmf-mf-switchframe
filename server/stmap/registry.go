@@ -308,6 +308,84 @@ func (r *Registry) List() []string {
 	return names
 }
 
+// ProgramMapName returns the name of the current program map, or "" if none.
+// Used by the GPU stmap node for cache invalidation.
+func (r *Registry) ProgramMapName() string {
+	r.mu.RLock()
+	name := r.programMap
+	r.mu.RUnlock()
+	return name
+}
+
+// ProgramSTArrays returns the S and T float32 arrays for the current static
+// program map. Returns (nil, nil) if no static program map is assigned.
+// Used by the GPU stmap node to upload S/T data to GPU memory.
+func (r *Registry) ProgramSTArrays() (s, t []float32) {
+	r.mu.RLock()
+	proc := r.programProc
+	r.mu.RUnlock()
+	if proc == nil {
+		return nil, nil
+	}
+	return proc.STArrays()
+}
+
+// IsAnimated returns true if the current program map is animated.
+func (r *Registry) IsAnimated() bool {
+	r.mu.RLock()
+	anim := r.programAnim
+	r.mu.RUnlock()
+	return anim != nil
+}
+
+// AdvanceAnimatedIndex advances the animated program map frame counter and
+// returns the wrapped index. Returns -1 if no animated map is assigned.
+func (r *Registry) AdvanceAnimatedIndex() int {
+	r.mu.RLock()
+	anim := r.programAnim
+	r.mu.RUnlock()
+	if anim == nil {
+		return -1
+	}
+	return anim.AdvanceIndex()
+}
+
+// AnimatedSTArraysAt returns the S and T float32 arrays for the given
+// animated frame index. Returns (nil, nil) if no animated map is assigned
+// or the index is out of range.
+func (r *Registry) AnimatedSTArraysAt(idx int) (s, t []float32) {
+	r.mu.RLock()
+	anim := r.programAnim
+	r.mu.RUnlock()
+	if anim == nil || idx < 0 || idx >= len(anim.Frames) {
+		return nil, nil
+	}
+	frame := anim.Frames[idx]
+	return frame.S, frame.T
+}
+
+// SourceMapName returns the map name assigned to a source, or "" if none.
+// Used by the GPU source manager for per-source ST map cache invalidation.
+func (r *Registry) SourceMapName(sourceKey string) string {
+	r.mu.RLock()
+	name := r.perSource[sourceKey]
+	r.mu.RUnlock()
+	return name
+}
+
+// SourceSTArrays returns the S and T float32 arrays for the source's assigned
+// map. Returns (nil, nil) if no map is assigned or the cached processor is nil.
+// Used by the GPU source manager to upload per-source S/T data to GPU memory.
+func (r *Registry) SourceSTArrays(sourceKey string) (s, t []float32) {
+	r.mu.RLock()
+	proc := r.sourceProcs[sourceKey]
+	r.mu.RUnlock()
+	if proc == nil {
+		return nil, nil
+	}
+	return proc.STArrays()
+}
+
 // State returns a snapshot of the current registry state for broadcasting.
 func (r *Registry) State() STMapState {
 	r.mu.RLock()
