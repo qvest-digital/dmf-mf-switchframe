@@ -50,20 +50,24 @@ func TestGPUScaleBilinear(t *testing.T) {
 	err = Download(ctx, dstYUV, dst, 960, 540)
 	require.NoError(t, err)
 
-	// Count non-zero Y pixels — scaled gradient should have many non-zero values
-	nonZero := 0
+	// Verify scaling produced non-trivial output by checking that the Y plane
+	// contains a range of values (source was a horizontal gradient 16-235)
 	dstW, dstH := 960, 540
+	minY, maxY := byte(255), byte(0)
 	for y := 10; y < dstH-10; y++ {
 		for x := 10; x < dstW-10; x++ {
-			if dstYUV[y*dstW+x] > 0 {
-				nonZero++
+			v := dstYUV[y*dstW+x]
+			if v < minY {
+				minY = v
+			}
+			if v > maxY {
+				maxY = v
 			}
 		}
 	}
-	total := (dstH - 20) * (dstW - 20)
-	ratio := float64(nonZero) / float64(total)
-	assert.Greater(t, ratio, 0.5, "most interior pixels should be non-zero after scaling gradient")
-	t.Logf("Scale 1920x1080 → 960x540: %.1f%% non-zero interior Y pixels", ratio*100)
+	yRange := int(maxY) - int(minY)
+	assert.Greater(t, yRange, 50, "scaled gradient should have Y range > 50 (got %d-%d)", minY, maxY)
+	t.Logf("Scale 1920x1080 → 960x540: Y range %d-%d (range=%d)", minY, maxY, yRange)
 }
 
 func TestGPUScaleUpscale(t *testing.T) {
