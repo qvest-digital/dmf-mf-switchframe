@@ -226,7 +226,7 @@ func (w *WhisperTRT) Encode(mel []float32) ([]float32, error) {
 	}
 
 	// Run encoder inference.
-	if err := w.encoderContext.Infer(w.encoderInputDev, w.encoderOutputDev, 1, w.stream); err != nil {
+	if err := w.encoderContext.Infer(w.encoderInputDev, w.encoderOutputDev, 1, unsafe.Pointer(w.stream)); err != nil {
 		return nil, fmt.Errorf("asr: whisper_trt: encoder infer: %w", err)
 	}
 
@@ -311,7 +311,7 @@ func (w *WhisperTRT) Decode(encoderOutput []float32, initialTokens []int) ([]int
 		}
 
 		// Run decoder inference.
-		if err := w.decoderContext.Infer(w.decoderInputDev, w.decoderOutputDev, 1, w.stream); err != nil {
+		if err := w.decoderContext.Infer(w.decoderInputDev, w.decoderOutputDev, 1, unsafe.Pointer(w.stream)); err != nil {
 			return nil, fmt.Errorf("asr: whisper_trt: decoder infer step %d: %w", step, err)
 		}
 

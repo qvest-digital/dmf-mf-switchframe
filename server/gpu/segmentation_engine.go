@@ -412,7 +412,7 @@ func (se *SegmentationEngine) Segment(key string, frame *GPUFrame) {
 	}
 
 	// Step 2: TensorRT inference on session stream.
-	if err := sess.trtCtx.Infer(sess.rgbBuf, sess.maskBuf, 1, sess.stream); err != nil {
+	if err := sess.trtCtx.Infer(sess.rgbBuf, sess.maskBuf, 1, unsafe.Pointer(sess.stream)); err != nil {
 		slog.Warn("gpu: segmentation: inference failed",
 			"source", key, "error", err)
 		return

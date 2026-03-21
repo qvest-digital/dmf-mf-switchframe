@@ -44,7 +44,7 @@ func (e *TRTEngine) OutputSize() int { return 0 }
 func (e *TRTEngine) Close() {}
 
 // Infer returns ErrTensorRTNotAvailable on non-TensorRT builds.
-func (c *TRTContext) Infer(input, output unsafe.Pointer, batchSize int, stream uintptr) error {
+func (c *TRTContext) Infer(input, output unsafe.Pointer, batchSize int, stream unsafe.Pointer) error {
 	return ErrTensorRTNotAvailable
 }
 

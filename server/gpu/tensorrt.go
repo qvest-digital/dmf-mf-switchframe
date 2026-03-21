@@ -192,7 +192,7 @@ func (e *TRTEngine) Close() {
 // input and output must be CUDA device pointers with sufficient size:
 //   - input:  engine.InputSize() * sizeof(float32) bytes
 //   - output: engine.OutputSize() * sizeof(float32) bytes
-func (c *TRTContext) Infer(input, output unsafe.Pointer, batchSize int, stream C.cudaStream_t) error {
+func (c *TRTContext) Infer(input, output unsafe.Pointer, batchSize int, stream unsafe.Pointer) error {
 	if c == nil || c.handle == nil {
 		return fmt.Errorf("gpu: tensorrt: nil context")
 	}
@@ -200,7 +200,7 @@ func (c *TRTContext) Infer(input, output unsafe.Pointer, batchSize int, stream C
 		return fmt.Errorf("gpu: tensorrt: nil input or output pointer")
 	}
 
-	rc := C.trt_infer(c.handle, input, output, C.int(batchSize), unsafe.Pointer(stream))
+	rc := C.trt_infer(c.handle, input, output, C.int(batchSize), stream)
 	if rc != 0 {
 		errMsg := C.GoString(C.trt_get_last_error())
 		return fmt.Errorf("gpu: tensorrt: infer failed: %s", errMsg)
