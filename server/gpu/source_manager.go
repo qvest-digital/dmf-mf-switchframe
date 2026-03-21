@@ -34,7 +34,7 @@ type gpuSourceEntry struct {
 	// Preview encoder (nil if no preview configured).
 	prevEnc   *PreviewEncoder
 	onPreview func(data []byte, isIDR bool, pts int64)
-	prevCh    chan *previewYUVFrame // capacity 1, newest-wins non-blocking send
+	prevCh    chan any // platform-specific frame type (capacity 1, newest-wins)
 	prevDone  chan struct{}  // closed when preview goroutine exits
 
 	// Per-source ST map state.
@@ -88,7 +88,7 @@ func (m *GPUSourceManager) RegisterSource(sourceKey string, w, h int, preview *P
 		} else {
 			entry.prevEnc = enc
 			entry.onPreview = preview.OnPreview
-			entry.prevCh = make(chan *previewYUVFrame, 1)
+			entry.prevCh = make(chan any, 1)
 			entry.prevDone = make(chan struct{})
 			go m.previewLoop(sourceKey, entry)
 		}
@@ -223,27 +223,10 @@ func (m *GPUSourceManager) IngestYUV(sourceKey string, yuv []byte, w, h int, pts
 		old.Release()
 	}
 
-	// Queue CPU YUV420p data for preview encoding. The preview goroutine
-	// scales on CPU and encodes via VT — no GPU ScaleBilinear needed.
-	// This avoids all GPU memory sharing and Metal command queue
-	// interleaving issues between the preview encode and program pipeline.
-	if entry.prevCh != nil && len(yuv) >= w*h*3/2 {
-		previewYUV := make([]byte, w*h*3/2)
-		copy(previewYUV, yuv[:w*h*3/2])
-		select {
-		case entry.prevCh <- &previewYUVFrame{yuv: previewYUV, w: w, h: h, pts: pts}:
-		default:
-			// Channel full — drop oldest, send newest.
-			select {
-			case <-entry.prevCh:
-			default:
-			}
-			select {
-			case entry.prevCh <- &previewYUVFrame{yuv: previewYUV, w: w, h: h, pts: pts}:
-			default:
-			}
-		}
-	}
+	// Queue frame for preview encoding (platform-specific).
+	// Metal: CPU YUV copy + CPU scale (avoids Metal command queue interleaving).
+	// CUDA: GPU frame copy + GPU ScaleBilinear + NVENC (fully in VRAM).
+	m.queuePreviewFrame(entry, yuv, w, h, pts)
 }
 
 // applySourceSTMap checks if a per-source ST map is assigned and applies it
@@ -381,92 +364,6 @@ func (m *GPUSourceManager) Close() {
 	}
 }
 
-// previewYUVFrame carries CPU YUV420p data to the preview goroutine.
-type previewYUVFrame struct {
-	yuv      []byte
-	w, h     int
-	pts      int64
-}
-
-// previewLoop is the per-source preview encoding goroutine. It receives
-// CPU YUV420p frames, scales them to preview resolution on CPU, uploads
-// the scaled result to GPU, and encodes via VT. No GPU ScaleBilinear —
-// the CPU scale avoids all Metal command queue interleaving issues.
-func (m *GPUSourceManager) previewLoop(sourceKey string, entry *gpuSourceEntry) {
-	defer close(entry.prevDone)
-
-	pe := entry.prevEnc
-	dstW, dstH := pe.dstW, pe.dstH
-	scaledBuf := make([]byte, dstW*dstH*3/2)
-
-	forceIDR := true
-	for pf := range entry.prevCh {
-		// CPU scale to preview resolution.
-		if pf.w != dstW || pf.h != dstH {
-			scaleYUV420pCPU(scaledBuf, dstW, dstH, pf.yuv, pf.w, pf.h)
-		} else {
-			copy(scaledBuf, pf.yuv)
-		}
-
-		// Upload scaled YUV420p to GPU and encode.
-		// Use the preview encoder's own pool frame (scaleDst) for upload.
-		pe.mu.Lock()
-		Upload(m.ctx, pe.scaleDst, scaledBuf, dstW, dstH)
-		pe.scaleDst.PTS = pf.pts
-		data, isIDR, err := pe.encoder.EncodeGPU(pe.scaleDst, forceIDR)
-		pe.mu.Unlock()
-
-		if err != nil {
-			slog.Warn("gpu: source manager: preview encode failed",
-				"source", sourceKey, "error", err)
-			continue
-		}
-		forceIDR = false
-		if len(data) > 0 && entry.onPreview != nil {
-			entry.onPreview(data, isIDR, pf.pts)
-		}
-	}
-}
-
-// scaleYUV420pCPU scales YUV420p on CPU using bilinear interpolation.
-// Simple and fast enough for preview (852x480 target).
-func scaleYUV420pCPU(dst []byte, dstW, dstH int, src []byte, srcW, srcH int) {
-	// Y plane
-	srcYSize := srcW * srcH
-	dstYSize := dstW * dstH
-	for dy := 0; dy < dstH; dy++ {
-		sy := dy * (srcH - 1) / (dstH - 1)
-		if sy >= srcH { sy = srcH - 1 }
-		for dx := 0; dx < dstW; dx++ {
-			sx := dx * (srcW - 1) / (dstW - 1)
-			if sx >= srcW { sx = srcW - 1 }
-			dst[dy*dstW+dx] = src[sy*srcW+sx]
-		}
-	}
-	// Cb plane
-	srcCW, srcCH := srcW/2, srcH/2
-	dstCW, dstCH := dstW/2, dstH/2
-	srcCbOff := srcYSize
-	dstCbOff := dstYSize
-	for dy := 0; dy < dstCH; dy++ {
-		sy := dy * (srcCH - 1) / (dstCH - 1)
-		if sy >= srcCH { sy = srcCH - 1 }
-		for dx := 0; dx < dstCW; dx++ {
-			sx := dx * (srcCW - 1) / (dstCW - 1)
-			if sx >= srcCW { sx = srcCW - 1 }
-			dst[dstCbOff+dy*dstCW+dx] = src[srcCbOff+sy*srcCW+sx]
-		}
-	}
-	// Cr plane
-	srcCrOff := srcCbOff + srcCW*srcCH
-	dstCrOff := dstCbOff + dstCW*dstCH
-	for dy := 0; dy < dstCH; dy++ {
-		sy := dy * (srcCH - 1) / (dstCH - 1)
-		if sy >= srcCH { sy = srcCH - 1 }
-		for dx := 0; dx < dstCW; dx++ {
-			sx := dx * (srcCW - 1) / (dstCW - 1)
-			if sx >= srcCW { sx = srcCW - 1 }
-			dst[dstCrOff+dy*dstCW+dx] = src[srcCrOff+sy*srcCW+sx]
-		}
-	}
-}
+// previewLoop and queuePreviewFrame are defined in platform-specific files:
+// - source_manager_preview_darwin.go (CPU scale + Upload)
+// - source_manager_preview_cuda.go (GPU frame copy + ScaleBilinear + NVENC)
