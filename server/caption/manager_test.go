@@ -466,6 +466,163 @@ func TestManagerBroadcastSinkMultiline(t *testing.T) {
 	}
 }
 
+func TestModeAuto_ParseAndString(t *testing.T) {
+	// String() round-trip.
+	if ModeAuto.String() != "auto" {
+		t.Errorf("ModeAuto.String() = %q, want %q", ModeAuto.String(), "auto")
+	}
+
+	// ParseMode round-trip.
+	mode, ok := ParseMode("auto")
+	if !ok {
+		t.Fatal("ParseMode(\"auto\") returned ok=false")
+	}
+	if mode != ModeAuto {
+		t.Errorf("ParseMode(\"auto\") = %v, want ModeAuto", mode)
+	}
+
+	// Verify ModeAuto is distinct from ModeAuthor.
+	if ModeAuto == ModeAuthor {
+		t.Error("ModeAuto should be distinct from ModeAuthor")
+	}
+}
+
+func TestModeAuto_IngestText(t *testing.T) {
+	m := NewManager()
+	m.SetMode(ModeAuto)
+
+	m.IngestText("Hi")
+
+	// Consume frames until we get null pairs (queue empty).
+	var allPairs []CCPair
+	for i := 0; i < 20; i++ {
+		pairs := m.ConsumeForFrame()
+		if pairs == nil {
+			break
+		}
+		if len(pairs) == 1 && pairs[0].IsNull() {
+			break
+		}
+		allPairs = append(allPairs, pairs...)
+	}
+
+	// Should have init (RU2, RU2, PAC) + character pair "Hi" = 4 pairs.
+	if len(allPairs) < 4 {
+		t.Fatalf("got %d pairs, want at least 4", len(allPairs))
+	}
+
+	// Verify the text pair is in there (with odd parity applied).
+	found := false
+	for _, p := range allPairs {
+		if p.Data[0] == oddParity('H') && p.Data[1] == oddParity('i') {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("did not find 'Hi' pair with parity in auto mode output")
+	}
+
+	// Verify state includes author buffer.
+	state := m.State()
+	if state.Mode != "auto" {
+		t.Errorf("state.Mode = %q, want %q", state.Mode, "auto")
+	}
+	if state.AuthorBuffer == "" {
+		t.Error("state.AuthorBuffer should contain text in auto mode")
+	}
+}
+
+func TestModeAuto_IngestNewline(t *testing.T) {
+	m := NewManager()
+	m.SetMode(ModeAuto)
+
+	m.IngestNewline()
+
+	var allPairs []CCPair
+	for i := 0; i < 20; i++ {
+		pairs := m.ConsumeForFrame()
+		if pairs == nil || (len(pairs) == 1 && pairs[0].IsNull()) {
+			break
+		}
+		allPairs = append(allPairs, pairs...)
+	}
+
+	foundCR := false
+	for _, p := range allPairs {
+		if p.Data[0] == oddParity(cc608Ctrl) && p.Data[1] == oddParity(cc608CR) {
+			foundCR = true
+			break
+		}
+	}
+	if !foundCR {
+		t.Error("did not find CR command with parity in auto mode output")
+	}
+}
+
+func TestModeAuto_Clear(t *testing.T) {
+	m := NewManager()
+	m.SetMode(ModeAuto)
+
+	m.Clear()
+
+	var allPairs []CCPair
+	for i := 0; i < 10; i++ {
+		pairs := m.ConsumeForFrame()
+		if pairs == nil || (len(pairs) == 1 && pairs[0].IsNull()) {
+			break
+		}
+		allPairs = append(allPairs, pairs...)
+	}
+
+	foundEDM := false
+	for _, p := range allPairs {
+		if p.Data[0] == oddParity(cc608Ctrl) && p.Data[1] == oddParity(cc608EDM) {
+			foundEDM = true
+			break
+		}
+	}
+	if !foundEDM {
+		t.Error("did not find EDM command with parity in auto mode output")
+	}
+}
+
+func TestModeAuto_NullPairWhenEmpty(t *testing.T) {
+	m := NewManager()
+	m.SetMode(ModeAuto)
+
+	// Drain any init pairs, then verify null pair emitted.
+	for i := 0; i < 10; i++ {
+		pairs := m.ConsumeForFrame()
+		if len(pairs) == 1 && pairs[0].IsNull() {
+			return // Pass: null pair emitted when queue is empty.
+		}
+	}
+
+	pairs := m.ConsumeForFrame()
+	if len(pairs) != 1 || !pairs[0].IsNull() {
+		t.Errorf("expected null pair when auto queue empty, got %v", pairs)
+	}
+}
+
+func TestModeAuto_BroadcastSink(t *testing.T) {
+	m := NewManager()
+	m.SetMode(ModeAuto)
+
+	var frames []*ccx.CaptionFrame
+	m.SetBroadcastSink(func(f *ccx.CaptionFrame) {
+		frames = append(frames, f)
+	})
+
+	m.IngestText("TEST")
+	if len(frames) != 1 {
+		t.Fatalf("expected 1 broadcast frame after IngestText in auto mode, got %d", len(frames))
+	}
+	if frames[0].Text != "TEST" {
+		t.Errorf("text = %q, want %q", frames[0].Text, "TEST")
+	}
+}
+
 func TestManagerAuthorNullPairWhenEmpty(t *testing.T) {
 	m := NewManager()
 	m.SetMode(ModeAuthor)
