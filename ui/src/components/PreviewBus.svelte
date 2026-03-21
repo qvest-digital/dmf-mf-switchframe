@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { ControlRoomState } from '$lib/api/types';
 	import SourceTile from './SourceTile.svelte';
+	import SRTStatsPopover from './SRTStatsPopover.svelte';
 	import { setPreview, apiCall } from '$lib/api/switch-api';
 	import { sortedSourceKeys } from '$lib/util/sort-sources';
 
@@ -8,8 +9,13 @@
 		state: ControlRoomState;
 		onPreview?: (key: string) => void;
 	}
-	let { state, onPreview }: Props = $props();
-	let sourceKeys = $derived(sortedSourceKeys(state.sources));
+	let { state: crState, onPreview }: Props = $props();
+	let sourceKeys = $derived(sortedSourceKeys(crState.sources));
+	let srtPopoverKey: string | null = $state(null);
+
+	function handleSRTClick(key: string) {
+		srtPopoverKey = srtPopoverKey === key ? null : key;
+	}
 </script>
 
 <div class="bus preview-bus">
@@ -17,16 +23,25 @@
 	<div class="bus-buttons">
 		{#each sourceKeys as key, i}
 			<SourceTile
-				source={state.sources[key]}
-				tally={state.previewSource === key ? 'preview' : 'idle'}
+				source={crState.sources[key]}
+				tally={crState.previewSource === key ? 'preview' : 'idle'}
 				index={i}
-				audioLevelDb={state.audioChannels?.[key] ? Math.max(state.audioChannels[key].peakL, state.audioChannels[key].peakR) : undefined}
-				layoutSlots={state.layout?.slots}
+				audioLevelDb={crState.audioChannels?.[key] ? Math.max(crState.audioChannels[key].peakL, crState.audioChannels[key].peakR) : undefined}
+				layoutSlots={crState.layout?.slots}
 				onclick={() => onPreview ? onPreview(key) : apiCall(setPreview(key), 'Preview failed')}
+				onSRTClick={crState.sources[key]?.srt ? () => handleSRTClick(key) : undefined}
 			/>
 		{/each}
 	</div>
 </div>
+
+{#if srtPopoverKey && crState.sources[srtPopoverKey]?.srt}
+	<SRTStatsPopover
+		srt={crState.sources[srtPopoverKey].srt!}
+		sourceLabel={crState.sources[srtPopoverKey].label || srtPopoverKey}
+		onclose={() => srtPopoverKey = null}
+	/>
+{/if}
 
 <style>
 	.bus {
