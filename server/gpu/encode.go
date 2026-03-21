@@ -25,12 +25,12 @@ import (
 // zero-copy path (Phase 12, Option A) will pass CUDA device pointers directly
 // to NVENC via hw_frames_ctx, eliminating all CPU-side frame copies.
 type GPUEncoder struct {
-	ffEnc     *codec.FFmpegEncoder
-	gpuCtx    *Context
-	width     int
-	height    int
-	cpuBuf    []byte     // reusable CPU-side YUV420p buffer for download
-	cpuBufMu  sync.Mutex // protects cpuBuf (Encode is single-writer but defensive)
+	ffEnc    *codec.FFmpegEncoder
+	gpuCtx   *Context
+	width    int
+	height   int
+	cpuBuf   []byte     // reusable CPU-side YUV420p buffer for download
+	cpuBufMu sync.Mutex // protects cpuBuf (Encode is single-writer but defensive)
 }
 
 // NewGPUEncoder creates an NVENC encoder that accepts GPU frames.

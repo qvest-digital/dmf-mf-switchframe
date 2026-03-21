@@ -39,11 +39,11 @@ func (c *Context) Pool() *FramePool { return nil }
 
 // DeviceProperties holds GPU device information.
 type DeviceProperties struct {
-	Name               string
-	ComputeCapability  [2]int
-	TotalMemory        int64
+	Name                string
+	ComputeCapability   [2]int
+	TotalMemory         int64
 	MultiprocessorCount int
-	MaxThreadsPerBlock int
+	MaxThreadsPerBlock  int
 }
 
 // MemoryStats holds GPU memory usage information.
@@ -132,12 +132,12 @@ func BlendStinger(ctx *Context, dst, base, overlay, alpha *GPUFrame) error { ret
 
 // ChromaKeyConfig holds chroma key parameters.
 type ChromaKeyConfig struct {
-	KeyCb, KeyCr       uint8
-	Similarity         float32
-	Smoothness         float32
-	SpillSuppress      float32
-	SpillReplaceCb     uint8
-	SpillReplaceCr     uint8
+	KeyCb, KeyCr   uint8
+	Similarity     float32
+	Smoothness     float32
+	SpillSuppress  float32
+	SpillReplaceCb uint8
+	SpillReplaceCr uint8
 }
 
 // ChromaKey returns ErrGPUNotAvailable on non-CUDA builds.

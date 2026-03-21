@@ -30,12 +30,12 @@ import (
 
 // ChromaKeyConfig holds parameters for GPU chroma keying.
 type ChromaKeyConfig struct {
-	KeyCb, KeyCr       uint8   // Key color in YCbCr space
-	Similarity         float32 // 0-1, inner threshold radius
-	Smoothness         float32 // 0-1, feathering zone width
-	SpillSuppress      float32 // 0-1, spill suppression strength
-	SpillReplaceCb     uint8   // Replacement Cb for spill region
-	SpillReplaceCr     uint8   // Replacement Cr for spill region
+	KeyCb, KeyCr   uint8   // Key color in YCbCr space
+	Similarity     float32 // 0-1, inner threshold radius
+	Smoothness     float32 // 0-1, feathering zone width
+	SpillSuppress  float32 // 0-1, spill suppression strength
+	SpillReplaceCb uint8   // Replacement Cb for spill region
+	SpillReplaceCr uint8   // Replacement Cr for spill region
 }
 
 // ChromaKey generates an alpha mask from an NV12 frame using chroma keying.
@@ -74,12 +74,19 @@ func ChromaKey(ctx *Context, frame *GPUFrame, maskBuf *GPUFrame, cfg ChromaKeyCo
 // LumaKey generates an alpha mask from an NV12 frame using luma keying.
 // lut is a 256-byte lookup table mapping Y values to alpha values.
 // The LUT is uploaded to CUDA constant memory (cached, broadcast to all threads).
+//
+// ctx.mu is held for the duration because cudaMemcpyToSymbol writes to
+// device-global constant memory — concurrent LumaKey calls on the same
+// Context would race and corrupt the LUT mid-kernel.
 func LumaKey(ctx *Context, frame *GPUFrame, maskBuf *GPUFrame, lut [256]byte) error {
 	if ctx == nil || frame == nil || maskBuf == nil {
 		return ErrGPUNotAvailable
 	}
 
-	// Upload LUT to constant memory
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
+
+	// Upload LUT to constant memory (device-global — must be serialized).
 	rc := C.luma_key_upload_lut((*C.uint8_t)(unsafe.Pointer(&lut[0])))
 	if rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: luma key LUT upload failed: %d", rc)
@@ -94,7 +101,14 @@ func LumaKey(ctx *Context, frame *GPUFrame, maskBuf *GPUFrame, lut [256]byte) er
 	if rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: luma key failed: %d", rc)
 	}
-	return ctx.Sync()
+
+	// Sync inside the lock so the kernel completes before we release the mutex.
+	// This prevents a second LumaKey call from overwriting the LUT while
+	// the first call's kernel is still running.
+	if rc := C.cudaStreamSynchronize(ctx.stream); rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: luma key sync failed: %d", rc)
+	}
+	return nil
 }
 
 // BuildLumaKeyLUT creates a 256-byte lookup table for luma keying.

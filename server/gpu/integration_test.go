@@ -87,7 +87,7 @@ func TestMultipleFrameRoundTrip(t *testing.T) {
 	yuv2 := make([]byte, totalSize)
 	for i := range yuv1 {
 		yuv1[i] = byte(i % 256)
-		yuv2[i] = byte((i * 3 + 127) % 256)
+		yuv2[i] = byte((i*3 + 127) % 256)
 	}
 
 	// Upload both

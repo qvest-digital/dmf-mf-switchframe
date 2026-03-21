@@ -186,7 +186,7 @@ func (f *FRUC) Interpolate(prev, curr, output *GPUFrame, alpha float64) error {
 			(*C.uint8_t)(unsafe.Pointer(uintptr(curr.DevPtr))),
 			C.int(curr.Pitch),
 			(*C.int16_t)(f.flowBuf),
-			C.int(f.flowW * 2), // stride in int16_t elements (dx,dy pairs)
+			C.int(f.flowW*2), // stride in int16_t elements (dx,dy pairs)
 			C.int(f.width), C.int(f.height),
 			C.float(alpha),
 			f.gpuCtx.stream,

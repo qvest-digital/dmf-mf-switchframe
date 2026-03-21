@@ -13,15 +13,15 @@ import (
 // in a single GPU pipeline. Uses the L4's second NVENC engine,
 // running concurrently with the program encoder via separate CUDA streams.
 type PreviewEncoder struct {
-	gpuCtx  *Context
-	encoder *GPUEncoder
-	pool    *FramePool   // pool for scaled preview frames
-	scaleDst *GPUFrame   // pre-allocated scaled frame buffer
-	srcW    int          // expected source width
-	srcH    int          // expected source height
-	dstW    int          // preview output width
-	dstH    int          // preview output height
-	mu      sync.Mutex   // protects Encode (single-writer but defensive)
+	gpuCtx   *Context
+	encoder  *GPUEncoder
+	pool     *FramePool // pool for scaled preview frames
+	scaleDst *GPUFrame  // pre-allocated scaled frame buffer
+	srcW     int        // expected source width
+	srcH     int        // expected source height
+	dstW     int        // preview output width
+	dstH     int        // preview output height
+	mu       sync.Mutex // protects Encode (single-writer but defensive)
 }
 
 // NewPreviewEncoder creates a GPU preview encoder that scales and encodes

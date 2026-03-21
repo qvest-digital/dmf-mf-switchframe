@@ -22,7 +22,7 @@ cudaError_t blend_wipe_nv12(
 cudaError_t blend_stinger_nv12(
     uint8_t* dst, const uint8_t* base, const uint8_t* overlay,
     const uint8_t* alpha, int width, int height, int pitch, int alphaPitch,
-    cudaStream_t stream);
+    uint8_t* uvAlphaBuf, cudaStream_t stream);
 */
 import "C"
 
@@ -35,12 +35,12 @@ import (
 type WipeDirection int
 
 const (
-	WipeHLeft      WipeDirection = 0
-	WipeHRight     WipeDirection = 1
-	WipeVTop       WipeDirection = 2
-	WipeVBottom    WipeDirection = 3
-	WipeBoxCenter  WipeDirection = 4
-	WipeBoxEdges   WipeDirection = 5
+	WipeHLeft     WipeDirection = 0
+	WipeHRight    WipeDirection = 1
+	WipeVTop      WipeDirection = 2
+	WipeVBottom   WipeDirection = 3
+	WipeBoxCenter WipeDirection = 4
+	WipeBoxEdges  WipeDirection = 5
 )
 
 // BlendMix performs a uniform mix blend between two NV12 frames.
@@ -99,7 +99,8 @@ func BlendFTB(ctx *Context, dst, src *GPUFrame, position float64) error {
 
 // BlendWipe performs a wipe transition between two frames.
 // position is 0.0 to 1.0. dir selects the wipe pattern. softEdge is in pixels.
-// maskBuf must be a GPUFrame-sized buffer for the wipe alpha mask.
+// maskBuf must be a GPUFrame-sized NV12 buffer used as scratch for the wipe
+// alpha mask (Y-plane) and the downsampled UV-width alpha (UV-plane slot).
 func BlendWipe(ctx *Context, dst, a, b, maskBuf *GPUFrame, position float64, dir WipeDirection, softEdge int) error {
 	if ctx == nil || dst == nil || a == nil || b == nil || maskBuf == nil {
 		return ErrGPUNotAvailable
@@ -121,11 +122,18 @@ func BlendWipe(ctx *Context, dst, a, b, maskBuf *GPUFrame, position float64, dir
 }
 
 // BlendStinger composites a stinger overlay onto a base frame using per-pixel alpha.
-// alpha is a GPUFrame-sized buffer containing the luma-resolution alpha mask.
+// alpha is a full NV12-sized GPUFrame whose Y-plane contains the luma-resolution
+// alpha mask. The UV-plane slot of alpha is used as scratch space for the
+// downsampled UV-width alpha — callers must not use alpha.UV concurrently.
 func BlendStinger(ctx *Context, dst, base, overlay, alpha *GPUFrame) error {
 	if ctx == nil || dst == nil || base == nil || overlay == nil || alpha == nil {
 		return ErrGPUNotAvailable
 	}
+
+	// Use the UV-plane slot of the alpha buffer as scratch for the downsampled
+	// UV-width alpha. The alpha frame is NV12-sized (pitch * height * 3/2),
+	// so offset pitch*height is always valid scratch space.
+	uvAlphaBuf := uintptr(alpha.DevPtr) + uintptr(alpha.Pitch*alpha.Height)
 
 	rc := C.blend_stinger_nv12(
 		(*C.uint8_t)(unsafe.Pointer(uintptr(dst.DevPtr))),
@@ -134,6 +142,7 @@ func BlendStinger(ctx *Context, dst, base, overlay, alpha *GPUFrame) error {
 		(*C.uint8_t)(unsafe.Pointer(uintptr(alpha.DevPtr))),
 		C.int(base.Width), C.int(base.Height), C.int(base.Pitch),
 		C.int(alpha.Pitch),
+		(*C.uint8_t)(unsafe.Pointer(uvAlphaBuf)),
 		ctx.stream,
 	)
 	if rc != C.cudaSuccess {

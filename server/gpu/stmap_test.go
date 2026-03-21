@@ -28,7 +28,7 @@ func TestSTMapIdentityWarp(t *testing.T) {
 	yuv := make([]byte, w*h*3/2)
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
-			yuv[y*w+x] = byte(x * 219 / (w - 1) + 16) // horizontal gradient
+			yuv[y*w+x] = byte(x*219/(w-1) + 16) // horizontal gradient
 		}
 	}
 	for i := w * h; i < len(yuv); i++ {
@@ -93,7 +93,7 @@ func TestSTMapHorizontalFlip(t *testing.T) {
 	yuv := make([]byte, w*h*3/2)
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
-			yuv[y*w+x] = byte(x * 219 / (w - 1) + 16)
+			yuv[y*w+x] = byte(x*219/(w-1) + 16)
 		}
 	}
 	for i := w * h; i < len(yuv); i++ {

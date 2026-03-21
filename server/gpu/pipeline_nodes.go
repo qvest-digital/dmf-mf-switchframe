@@ -28,11 +28,11 @@ func NewGPUEncodeNode(ctx *Context, encoder *GPUEncoder, forceIDR *atomic.Bool, 
 	}
 }
 
-func (n *gpuEncodeNode) Name() string                          { return "gpu_encode" }
+func (n *gpuEncodeNode) Name() string                             { return "gpu_encode" }
 func (n *gpuEncodeNode) Configure(width, height, pitch int) error { return nil }
-func (n *gpuEncodeNode) Active() bool                          { return n.encoder != nil }
-func (n *gpuEncodeNode) Latency() time.Duration                { return 2 * time.Millisecond }
-func (n *gpuEncodeNode) Close() error                          { return nil } // encoder lifecycle managed externally
+func (n *gpuEncodeNode) Active() bool                             { return n.encoder != nil }
+func (n *gpuEncodeNode) Latency() time.Duration                   { return 2 * time.Millisecond }
+func (n *gpuEncodeNode) Close() error                             { return nil } // encoder lifecycle managed externally
 
 func (n *gpuEncodeNode) Err() error {
 	if v := n.lastErr.Load(); v != nil {
@@ -116,10 +116,10 @@ func NewGPUPassthroughNode(name string, active bool) GPUPipelineNode {
 	return &gpuPassthroughNode{name: name, active: active}
 }
 
-func (n *gpuPassthroughNode) Name() string                          { return n.name }
+func (n *gpuPassthroughNode) Name() string                             { return n.name }
 func (n *gpuPassthroughNode) Configure(width, height, pitch int) error { return nil }
-func (n *gpuPassthroughNode) Active() bool                          { return n.active }
-func (n *gpuPassthroughNode) ProcessGPU(frame *GPUFrame) error      { return nil }
-func (n *gpuPassthroughNode) Err() error                            { return nil }
-func (n *gpuPassthroughNode) Latency() time.Duration                { return 0 }
-func (n *gpuPassthroughNode) Close() error                          { return nil }
+func (n *gpuPassthroughNode) Active() bool                             { return n.active }
+func (n *gpuPassthroughNode) ProcessGPU(frame *GPUFrame) error         { return nil }
+func (n *gpuPassthroughNode) Err() error                               { return nil }
+func (n *gpuPassthroughNode) Latency() time.Duration                   { return 0 }
+func (n *gpuPassthroughNode) Close() error                             { return nil }

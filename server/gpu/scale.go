@@ -24,7 +24,7 @@ type ScaleQuality int
 
 const (
 	ScaleQualityBilinear ScaleQuality = iota
-	ScaleQualityLanczos // future: custom CUDA Lanczos-3 kernel
+	ScaleQualityLanczos               // future: custom CUDA Lanczos-3 kernel
 )
 
 // ScaleBilinear scales an NV12 GPU frame using bilinear interpolation.

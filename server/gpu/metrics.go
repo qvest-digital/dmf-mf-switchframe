@@ -62,18 +62,18 @@ func (t *Timer) Close() {
 // PipelineMetrics tracks GPU pipeline performance counters.
 type PipelineMetrics struct {
 	// Per-operation timing (microseconds, atomic for concurrent reads)
-	UploadUs   atomic.Int64
-	EncodeUs   atomic.Int64
-	DownloadUs atomic.Int64
-	ScaleUs    atomic.Int64
-	BlendUs    atomic.Int64
-	KeyUs      atomic.Int64
+	UploadUs    atomic.Int64
+	EncodeUs    atomic.Int64
+	DownloadUs  atomic.Int64
+	ScaleUs     atomic.Int64
+	BlendUs     atomic.Int64
+	KeyUs       atomic.Int64
 	CompositeUs atomic.Int64
-	DSKUs      atomic.Int64
-	STMapUs    atomic.Int64
-	FRUCUs     atomic.Int64
-	V210Us     atomic.Int64
-	TotalUs    atomic.Int64
+	DSKUs       atomic.Int64
+	STMapUs     atomic.Int64
+	FRUCUs      atomic.Int64
+	V210Us      atomic.Int64
+	TotalUs     atomic.Int64
 
 	// Frame counters
 	FramesProcessed atomic.Int64

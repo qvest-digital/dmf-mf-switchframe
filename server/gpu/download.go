@@ -21,9 +21,10 @@ import (
 
 // Download transfers a GPU NV12 frame to a CPU YUV420p buffer.
 //
-// Uses CUDA Runtime API (cudaMalloc/cudaMemcpy) for thread-safe operation
-// across cgo calls. Allocates temporary device buffers, launches the
-// NV12→YUV420p conversion kernel, then copies planes to host.
+// Uses persistent staging device buffers stored in Context to avoid
+// cudaMalloc/cudaFree on every call (~180 allocs/sec at 30fps with 3 planes).
+// Staging buffers are lazily allocated on first use and freed in Close().
+// ctx.mu serializes access to the staging buffers.
 func Download(ctx *Context, yuv []byte, frame *GPUFrame, width, height int) error {
 	if ctx == nil || frame == nil {
 		return ErrGPUNotAvailable
@@ -37,28 +38,40 @@ func Download(ctx *Context, yuv []byte, frame *GPUFrame, width, height int) erro
 		return fmt.Errorf("gpu: download: YUV buffer too small: %d < %d", len(yuv), expectedSize)
 	}
 
-	// Allocate temporary GPU buffers for the 3 planar outputs (Runtime API)
-	var devY, devCb, devCr unsafe.Pointer
-	if rc := C.cudaMalloc(&devY, C.size_t(ySize)); rc != C.cudaSuccess {
-		return fmt.Errorf("gpu: download: alloc Y failed: %d", rc)
-	}
-	defer C.cudaFree(devY)
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
 
-	if rc := C.cudaMalloc(&devCb, C.size_t(cbSize)); rc != C.cudaSuccess {
-		return fmt.Errorf("gpu: download: alloc Cb failed: %d", rc)
+	// Lazily allocate or grow persistent staging buffers.
+	if ctx.stagingSize < ySize {
+		if ctx.stagingY != nil {
+			C.cudaFree(ctx.stagingY)
+			ctx.stagingY = nil
+		}
+		if ctx.stagingCb != nil {
+			C.cudaFree(ctx.stagingCb)
+			ctx.stagingCb = nil
+		}
+		if ctx.stagingCr != nil {
+			C.cudaFree(ctx.stagingCr)
+			ctx.stagingCr = nil
+		}
+		if rc := C.cudaMalloc(&ctx.stagingY, C.size_t(ySize)); rc != C.cudaSuccess {
+			return fmt.Errorf("gpu: download: alloc staging Y failed: %d", rc)
+		}
+		if rc := C.cudaMalloc(&ctx.stagingCb, C.size_t(cbSize)); rc != C.cudaSuccess {
+			return fmt.Errorf("gpu: download: alloc staging Cb failed: %d", rc)
+		}
+		if rc := C.cudaMalloc(&ctx.stagingCr, C.size_t(crSize)); rc != C.cudaSuccess {
+			return fmt.Errorf("gpu: download: alloc staging Cr failed: %d", rc)
+		}
+		ctx.stagingSize = ySize
 	}
-	defer C.cudaFree(devCb)
 
-	if rc := C.cudaMalloc(&devCr, C.size_t(crSize)); rc != C.cudaSuccess {
-		return fmt.Errorf("gpu: download: alloc Cr failed: %d", rc)
-	}
-	defer C.cudaFree(devCr)
-
-	// Launch conversion kernel: NV12 → YUV420p
+	// Launch conversion kernel: NV12 → YUV420p into persistent staging buffers.
 	cerr := C.nv12_to_yuv420p(
-		(*C.uint8_t)(devY),
-		(*C.uint8_t)(devCb),
-		(*C.uint8_t)(devCr),
+		(*C.uint8_t)(ctx.stagingY),
+		(*C.uint8_t)(ctx.stagingCb),
+		(*C.uint8_t)(ctx.stagingCr),
 		(*C.uint8_t)(unsafe.Pointer(uintptr(frame.DevPtr))),
 		C.int(width), C.int(height),
 		C.int(frame.Pitch), C.int(width),
@@ -73,14 +86,14 @@ func Download(ctx *Context, yuv []byte, frame *GPUFrame, width, height int) erro
 		return fmt.Errorf("gpu: download: stream sync failed: %d", rc)
 	}
 
-	// Copy planar data from device to host (Runtime API)
-	if rc := C.cudaMemcpy(unsafe.Pointer(&yuv[0]), devY, C.size_t(ySize), C.cudaMemcpyDeviceToHost); rc != C.cudaSuccess {
+	// Copy planar data from staging buffers to host.
+	if rc := C.cudaMemcpy(unsafe.Pointer(&yuv[0]), ctx.stagingY, C.size_t(ySize), C.cudaMemcpyDeviceToHost); rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: download: memcpy Y failed: %d", rc)
 	}
-	if rc := C.cudaMemcpy(unsafe.Pointer(&yuv[ySize]), devCb, C.size_t(cbSize), C.cudaMemcpyDeviceToHost); rc != C.cudaSuccess {
+	if rc := C.cudaMemcpy(unsafe.Pointer(&yuv[ySize]), ctx.stagingCb, C.size_t(cbSize), C.cudaMemcpyDeviceToHost); rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: download: memcpy Cb failed: %d", rc)
 	}
-	if rc := C.cudaMemcpy(unsafe.Pointer(&yuv[ySize+cbSize]), devCr, C.size_t(crSize), C.cudaMemcpyDeviceToHost); rc != C.cudaSuccess {
+	if rc := C.cudaMemcpy(unsafe.Pointer(&yuv[ySize+cbSize]), ctx.stagingCr, C.size_t(crSize), C.cudaMemcpyDeviceToHost); rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: download: memcpy Cr failed: %d", rc)
 	}
 

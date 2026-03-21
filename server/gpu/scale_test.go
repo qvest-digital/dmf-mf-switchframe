@@ -33,7 +33,7 @@ func TestGPUScaleBilinear(t *testing.T) {
 	// Upload gradient pattern to source
 	srcYUV := make([]byte, 1920*1080*3/2)
 	for i := 0; i < 1920*1080; i++ {
-		srcYUV[i] = byte((i % 1920) * 219 / 1919 + 16) // horizontal gradient
+		srcYUV[i] = byte((i%1920)*219/1919 + 16) // horizontal gradient
 	}
 	for i := 1920 * 1080; i < len(srcYUV); i++ {
 		srcYUV[i] = 128

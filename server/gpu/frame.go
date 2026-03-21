@@ -9,6 +9,7 @@ package gpu
 import "C"
 
 import (
+	"log/slog"
 	"sync/atomic"
 	"unsafe"
 )
@@ -40,6 +41,13 @@ func (f *GPUFrame) Release() {
 	}
 	new := f.refs.Add(-1)
 	if new > 0 {
+		return
+	}
+	if new < 0 {
+		// Log and leak rather than double-freeing GPU memory. A leaked
+		// buffer is invisible to the viewer; a double-free corrupts VRAM.
+		slog.Error("GPUFrame.Release: refcount underflow (double release)",
+			"refs", new)
 		return
 	}
 	if f.pool != nil {

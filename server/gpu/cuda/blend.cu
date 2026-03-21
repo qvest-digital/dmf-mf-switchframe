@@ -121,6 +121,31 @@ __global__ void downsample_alpha_2x2_kernel(
     dst[cy * dstPitch + cx] = (uint8_t)avg;
 }
 
+// Downsample luma-resolution alpha to NV12 UV-plane width.
+// For each chroma sample (cx, cy), computes a 2x2 average from the luma mask
+// and writes the result to both the Cb position (2*cx) and Cr position (2*cx+1)
+// in the interleaved UV output row. This produces a width-wide alpha buffer
+// (same layout as the NV12 UV plane) suitable for blend_alpha_kernel.
+__global__ void downsample_alpha_to_nv12_uv_kernel(
+    uint8_t* __restrict__ dst,
+    const uint8_t* __restrict__ src,
+    int chromaW, int chromaH, int srcPitch, int dstPitch)
+{
+    int cx = blockIdx.x * blockDim.x + threadIdx.x;
+    int cy = blockIdx.y * blockDim.y + threadIdx.y;
+    if (cx >= chromaW || cy >= chromaH) return;
+
+    int lx = cx * 2;
+    int ly = cy * 2;
+    int avg = (src[ly * srcPitch + lx] +
+               src[ly * srcPitch + lx + 1] +
+               src[(ly+1) * srcPitch + lx] +
+               src[(ly+1) * srcPitch + lx + 1] + 2) >> 2;
+    // Write to both Cb (even) and Cr (odd) interleaved positions
+    dst[cy * dstPitch + cx * 2]     = (uint8_t)avg;
+    dst[cy * dstPitch + cx * 2 + 1] = (uint8_t)avg;
+}
+
 extern "C" {
 
 cudaError_t blend_uniform_nv12(
@@ -176,22 +201,21 @@ cudaError_t blend_wipe_nv12(
     // Blend Y plane with per-pixel alpha
     blend_alpha_kernel<<<grid, block, 0, stream>>>(dst, a, b, maskBuf, width, height, pitch, pitch);
 
-    // Downsample alpha for UV, then blend UV
+    // Downsample luma-resolution mask to NV12-UV-plane width.
+    // The output has 'width' bytes per row (each chroma alpha written to both
+    // Cb and Cr interleaved positions), stored in the UV-plane slot of maskBuf.
     int chromaW = width / 2;
     int chromaH = height / 2;
-    uint8_t* chromaMask = maskBuf + pitch * height; // reuse tail of mask buffer
+    uint8_t* uvMask = maskBuf + pitch * height; // UV-plane slot of maskBuf
     dim3 gridC((chromaW + block.x - 1) / block.x, (chromaH + block.y - 1) / block.y);
-    downsample_alpha_2x2_kernel<<<gridC, block, 0, stream>>>(chromaMask, maskBuf, chromaW, chromaH, pitch, pitch);
+    downsample_alpha_to_nv12_uv_kernel<<<gridC, block, 0, stream>>>(uvMask, maskBuf, chromaW, chromaH, pitch, pitch);
 
-    // Blend UV with downsampled alpha (UV is interleaved, process as width x chromaH)
+    // Blend UV plane with the per-pixel downsampled alpha (full pitch width, half height)
     uint8_t* dstUV = dst + pitch * height;
     const uint8_t* aUV = a + pitch * height;
     const uint8_t* bUV = b + pitch * height;
     dim3 gridUV((width + block.x - 1) / block.x, (chromaH + block.y - 1) / block.y);
-    // For UV we need chroma-resolution alpha expanded to interleaved width
-    // Simpler: blend UV uniformly with the average alpha position (approximate)
-    int avgAlpha = (int)(position * 256.0f);
-    blend_uniform_kernel<<<gridUV, block, 0, stream>>>(dstUV, aUV, bUV, avgAlpha, width, chromaH, pitch);
+    blend_alpha_kernel<<<gridUV, block, 0, stream>>>(dstUV, aUV, bUV, uvMask, width, chromaH, pitch, pitch);
 
     return cudaGetLastError();
 }
@@ -199,22 +223,28 @@ cudaError_t blend_wipe_nv12(
 cudaError_t blend_stinger_nv12(
     uint8_t* dst, const uint8_t* base, const uint8_t* overlay,
     const uint8_t* alpha, int width, int height, int pitch, int alphaPitch,
-    cudaStream_t stream)
+    uint8_t* uvAlphaBuf, cudaStream_t stream)
 {
     dim3 block(BLOCK_DIM_X, BLOCK_DIM_Y);
     dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
 
-    // Blend Y plane with per-pixel alpha
+    // Blend Y plane with per-pixel alpha (alpha is at luma resolution)
     blend_alpha_kernel<<<grid, block, 0, stream>>>(dst, base, overlay, alpha, width, height, pitch, alphaPitch);
 
-    // For UV: use uniform blend at average alpha (simplified for Phase 5)
-    // Full per-pixel chroma alpha requires downsample + expand for NV12 interleaved UV
+    // Downsample luma-resolution alpha to NV12-UV-plane width.
+    // Each chroma alpha value is written to both Cb and Cr interleaved positions,
+    // producing a width-wide alpha row suitable for blend_alpha_kernel on UV.
+    int chromaW = width / 2;
     int chromaH = height / 2;
-    dim3 gridUV((width + block.x - 1) / block.x, (chromaH + block.y - 1) / block.y);
+    dim3 gridC((chromaW + block.x - 1) / block.x, (chromaH + block.y - 1) / block.y);
+    downsample_alpha_to_nv12_uv_kernel<<<gridC, block, 0, stream>>>(uvAlphaBuf, alpha, chromaW, chromaH, alphaPitch, pitch);
+
+    // Blend UV plane with per-pixel downsampled alpha
     uint8_t* dstUV = dst + pitch * height;
     const uint8_t* baseUV = base + pitch * height;
     const uint8_t* overlayUV = overlay + pitch * height;
-    blend_alpha_kernel<<<gridUV, block, 0, stream>>>(dstUV, baseUV, overlayUV, alpha, width, chromaH, pitch, alphaPitch);
+    dim3 gridUV((width + block.x - 1) / block.x, (chromaH + block.y - 1) / block.y);
+    blend_alpha_kernel<<<gridUV, block, 0, stream>>>(dstUV, baseUV, overlayUV, uvAlphaBuf, width, chromaH, pitch, pitch);
 
     return cudaGetLastError();
 }

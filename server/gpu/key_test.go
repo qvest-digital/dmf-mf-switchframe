@@ -153,7 +153,7 @@ func TestLumaKey(t *testing.T) {
 	require.NoError(t, Download(ctx, maskYUV, maskBuf, w, h))
 
 	// Dark side should be transparent, bright side opaque
-	darkAlpha := int(maskYUV[h/2*w+w/4])   // center of dark side
+	darkAlpha := int(maskYUV[h/2*w+w/4])     // center of dark side
 	brightAlpha := int(maskYUV[h/2*w+3*w/4]) // center of bright side
 
 	assert.Less(t, darkAlpha, 64, "dark pixels should be transparent")

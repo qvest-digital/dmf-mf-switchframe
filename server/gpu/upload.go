@@ -24,9 +24,10 @@ import (
 
 // Upload transfers a CPU YUV420p frame to a GPU NV12 frame.
 //
-// Uses CUDA Runtime API (cudaMalloc/cudaMemcpy) for thread-safe operation
-// across cgo calls. Allocates temporary device buffers for the 3 YUV planes,
-// copies from host, then launches the conversion kernel.
+// Uses persistent staging device buffers stored in Context to avoid
+// cudaMalloc/cudaFree on every call (~180 allocs/sec at 30fps with 3 planes).
+// Staging buffers are lazily allocated on first use and freed in Close().
+// ctx.mu serializes access to the staging buffers.
 func Upload(ctx *Context, frame *GPUFrame, yuv []byte, width, height int) error {
 	if ctx == nil || frame == nil {
 		return ErrGPUNotAvailable
@@ -44,40 +45,52 @@ func Upload(ctx *Context, frame *GPUFrame, yuv []byte, width, height int) error 
 	cbData := yuv[ySize : ySize+cbSize]
 	crData := yuv[ySize+cbSize : ySize+cbSize+crSize]
 
-	// Allocate temporary GPU buffers for the 3 planar inputs (Runtime API)
-	var devY, devCb, devCr unsafe.Pointer
-	if rc := C.cudaMalloc(&devY, C.size_t(ySize)); rc != C.cudaSuccess {
-		return fmt.Errorf("gpu: upload: alloc Y failed: %d", rc)
-	}
-	defer C.cudaFree(devY)
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
 
-	if rc := C.cudaMalloc(&devCb, C.size_t(cbSize)); rc != C.cudaSuccess {
-		return fmt.Errorf("gpu: upload: alloc Cb failed: %d", rc)
+	// Lazily allocate or grow persistent staging buffers.
+	if ctx.stagingSize < ySize {
+		if ctx.stagingY != nil {
+			C.cudaFree(ctx.stagingY)
+			ctx.stagingY = nil
+		}
+		if ctx.stagingCb != nil {
+			C.cudaFree(ctx.stagingCb)
+			ctx.stagingCb = nil
+		}
+		if ctx.stagingCr != nil {
+			C.cudaFree(ctx.stagingCr)
+			ctx.stagingCr = nil
+		}
+		if rc := C.cudaMalloc(&ctx.stagingY, C.size_t(ySize)); rc != C.cudaSuccess {
+			return fmt.Errorf("gpu: upload: alloc staging Y failed: %d", rc)
+		}
+		if rc := C.cudaMalloc(&ctx.stagingCb, C.size_t(cbSize)); rc != C.cudaSuccess {
+			return fmt.Errorf("gpu: upload: alloc staging Cb failed: %d", rc)
+		}
+		if rc := C.cudaMalloc(&ctx.stagingCr, C.size_t(crSize)); rc != C.cudaSuccess {
+			return fmt.Errorf("gpu: upload: alloc staging Cr failed: %d", rc)
+		}
+		ctx.stagingSize = ySize
 	}
-	defer C.cudaFree(devCb)
 
-	if rc := C.cudaMalloc(&devCr, C.size_t(crSize)); rc != C.cudaSuccess {
-		return fmt.Errorf("gpu: upload: alloc Cr failed: %d", rc)
-	}
-	defer C.cudaFree(devCr)
-
-	// Copy planar data from host to device (Runtime API)
-	if rc := C.cudaMemcpy(devY, unsafe.Pointer(&yData[0]), C.size_t(ySize), C.cudaMemcpyHostToDevice); rc != C.cudaSuccess {
+	// Copy planar data from host to persistent staging buffers.
+	if rc := C.cudaMemcpy(ctx.stagingY, unsafe.Pointer(&yData[0]), C.size_t(ySize), C.cudaMemcpyHostToDevice); rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: upload: memcpy Y failed: %d", rc)
 	}
-	if rc := C.cudaMemcpy(devCb, unsafe.Pointer(&cbData[0]), C.size_t(cbSize), C.cudaMemcpyHostToDevice); rc != C.cudaSuccess {
+	if rc := C.cudaMemcpy(ctx.stagingCb, unsafe.Pointer(&cbData[0]), C.size_t(cbSize), C.cudaMemcpyHostToDevice); rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: upload: memcpy Cb failed: %d", rc)
 	}
-	if rc := C.cudaMemcpy(devCr, unsafe.Pointer(&crData[0]), C.size_t(crSize), C.cudaMemcpyHostToDevice); rc != C.cudaSuccess {
+	if rc := C.cudaMemcpy(ctx.stagingCr, unsafe.Pointer(&crData[0]), C.size_t(crSize), C.cudaMemcpyHostToDevice); rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: upload: memcpy Cr failed: %d", rc)
 	}
 
 	// Launch conversion kernel: YUV420p → NV12
 	cerr := C.yuv420p_to_nv12(
 		(*C.uint8_t)(unsafe.Pointer(uintptr(frame.DevPtr))),
-		(*C.uint8_t)(devY),
-		(*C.uint8_t)(devCb),
-		(*C.uint8_t)(devCr),
+		(*C.uint8_t)(ctx.stagingY),
+		(*C.uint8_t)(ctx.stagingCb),
+		(*C.uint8_t)(ctx.stagingCr),
 		C.int(width), C.int(height),
 		C.int(frame.Pitch), C.int(width),
 		ctx.stream,

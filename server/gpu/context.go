@@ -11,6 +11,8 @@ import "C"
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
+	"unsafe"
 )
 
 // DeviceProperties holds GPU device information.
@@ -40,7 +42,15 @@ type Context struct {
 	pool      *FramePool
 	props     DeviceProperties
 	mu        sync.Mutex
-	closed    bool
+	closed    atomic.Bool
+
+	// Persistent staging buffers for Upload/Download — lazily allocated
+	// on first use, freed in Close(). Avoids 180 cudaMalloc/cudaFree per
+	// second at 30fps (6 allocs per upload + 6 per download × 30fps).
+	stagingY    unsafe.Pointer
+	stagingCb   unsafe.Pointer
+	stagingCr   unsafe.Pointer
+	stagingSize int // size of each of the three staging buffers (Y size)
 }
 
 // NewContext initializes CUDA and creates a shared context on device 0.
@@ -90,10 +100,9 @@ func NewContext() (*Context, error) {
 
 // Close releases all CUDA resources.
 func (c *Context) Close() error {
-	if c == nil || c.closed {
+	if c == nil || c.closed.Swap(true) {
 		return nil
 	}
-	c.closed = true
 	if c.pool != nil {
 		c.pool.Close()
 	}
@@ -105,6 +114,20 @@ func (c *Context) Close() error {
 		C.cudaStreamDestroy(c.encStream)
 		c.encStream = nil
 	}
+	// Free persistent staging buffers if allocated.
+	if c.stagingY != nil {
+		C.cudaFree(c.stagingY)
+		c.stagingY = nil
+	}
+	if c.stagingCb != nil {
+		C.cudaFree(c.stagingCb)
+		c.stagingCb = nil
+	}
+	if c.stagingCr != nil {
+		C.cudaFree(c.stagingCr)
+		c.stagingCr = nil
+	}
+	c.stagingSize = 0
 	// Note: we don't call cudaDeviceReset() — the primary context
 	// persists for the process lifetime. This is intentional: other
 	// tests or subsystems may still use the GPU.
@@ -139,6 +162,9 @@ func (c *Context) Pool() *FramePool {
 // Sync synchronizes the default processing stream, blocking until
 // all previously queued operations complete.
 func (c *Context) Sync() error {
+	if c.closed.Load() {
+		return nil
+	}
 	if rc := C.cudaStreamSynchronize(c.stream); rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: stream sync failed: %d", rc)
 	}
