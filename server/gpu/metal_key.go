@@ -54,21 +54,21 @@ func ChromaKey(ctx *Context, frame *GPUFrame, maskBuf *GPUFrame, cfg ChromaKeyCo
 }
 
 // LumaKey generates an alpha mask from an NV12 frame using luma keying.
+// No lock needed — Metal command queues are thread-safe.
 func LumaKey(ctx *Context, frame *GPUFrame, maskBuf *GPUFrame, lut [256]byte) error {
 	if ctx == nil || ctx.mtl == nil || frame == nil || maskBuf == nil {
 		return ErrGPUNotAvailable
 	}
 
 	mtl := ctx.mtl
-	mtl.mu.Lock()
-	defer mtl.mu.Unlock()
 
 	pipeline, err := mtl.getPipeline("luma_key_nv12")
 	if err != nil {
 		return fmt.Errorf("gpu: luma key: %w", err)
 	}
 
-	// Upload LUT as a Metal buffer (256 bytes)
+	// Upload LUT as a Metal buffer (256 bytes).
+	// TODO: Cache this buffer on the context to avoid per-call allocation.
 	lutBuf, err := mtl.allocBuffer(256)
 	if err != nil {
 		return fmt.Errorf("gpu: luma key: alloc LUT: %w", err)

@@ -19,6 +19,9 @@ import (
 // Metal buffer (CPU and GPU share the same physical RAM), followed
 // by a compute kernel to convert YUV420p planar to NV12 interleaved.
 // Much faster than CUDA (no PCIe transfer).
+//
+// Staging buffers are cached per-dimension to avoid per-call allocation.
+// The lock is only held during staging buffer access, not the kernel dispatch.
 func Upload(ctx *Context, frame *GPUFrame, yuv []byte, width, height int) error {
 	if ctx == nil || ctx.mtl == nil || frame == nil {
 		return ErrGPUNotAvailable
@@ -33,50 +36,35 @@ func Upload(ctx *Context, frame *GPUFrame, yuv []byte, width, height int) error 
 	}
 
 	mtl := ctx.mtl
-	mtl.mu.Lock()
-	defer mtl.mu.Unlock()
 
-	// Allocate temporary staging buffers for the 3 planar inputs.
-	// On Metal with unified memory, these are just regular buffers that
-	// both CPU and GPU can access.
-	yBuf, err := mtl.allocBuffer(ySize)
+	// Get or create cached staging buffers (lock held briefly)
+	staging, err := mtl.getOrCreateStagingBuffers(width, height)
 	if err != nil {
-		return fmt.Errorf("gpu: upload: alloc Y staging: %w", err)
+		return fmt.Errorf("gpu: upload: %w", err)
 	}
-	defer C.metal_buffer_free(yBuf)
-
-	cbBuf, err := mtl.allocBuffer(cbSize)
-	if err != nil {
-		return fmt.Errorf("gpu: upload: alloc Cb staging: %w", err)
-	}
-	defer C.metal_buffer_free(cbBuf)
-
-	crBuf, err := mtl.allocBuffer(crSize)
-	if err != nil {
-		return fmt.Errorf("gpu: upload: alloc Cr staging: %w", err)
-	}
-	defer C.metal_buffer_free(crBuf)
 
 	// Copy planar data into Metal buffers (zero-copy on unified memory —
-	// this is just a memcpy within the same address space)
-	C.memcpy(C.metal_buffer_contents(yBuf), unsafe.Pointer(&yuv[0]), C.size_t(ySize))
-	C.memcpy(C.metal_buffer_contents(cbBuf), unsafe.Pointer(&yuv[ySize]), C.size_t(cbSize))
-	C.memcpy(C.metal_buffer_contents(crBuf), unsafe.Pointer(&yuv[ySize+cbSize]), C.size_t(crSize))
+	// this is just a memcpy within the same address space).
+	// No lock needed: staging buffers are per-dimension and Upload is
+	// called from a single pipeline goroutine per frame size.
+	C.memcpy(C.metal_buffer_contents(staging.yBuf), unsafe.Pointer(&yuv[0]), C.size_t(ySize))
+	C.memcpy(C.metal_buffer_contents(staging.cbBuf), unsafe.Pointer(&yuv[ySize]), C.size_t(cbSize))
+	C.memcpy(C.metal_buffer_contents(staging.crBuf), unsafe.Pointer(&yuv[ySize+cbSize]), C.size_t(crSize))
 
-	// Launch conversion kernel: YUV420p → NV12
+	// Launch conversion kernel: YUV420p -> NV12 (no lock — Metal command queues are thread-safe)
 	pipeline, err := mtl.getPipeline("yuv420p_to_nv12")
 	if err != nil {
 		return fmt.Errorf("gpu: upload: %w", err)
 	}
 
 	params := C.MetalConvertParams{
-		width:    C.uint32_t(width),
-		height:   C.uint32_t(height),
+		width:     C.uint32_t(width),
+		height:    C.uint32_t(height),
 		nv12Pitch: C.uint32_t(frame.Pitch),
 		srcStride: C.uint32_t(width),
 	}
 
-	rc := C.metal_yuv420p_to_nv12(mtl.queue, pipeline, yBuf, cbBuf, crBuf, frame.MetalBuf, &params)
+	rc := C.metal_yuv420p_to_nv12(mtl.queue, pipeline, staging.yBuf, staging.cbBuf, staging.crBuf, frame.MetalBuf, &params)
 	if rc != C.METAL_SUCCESS {
 		return fmt.Errorf("gpu: upload: yuv420p_to_nv12 kernel failed: %d", rc)
 	}

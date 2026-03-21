@@ -10,6 +10,8 @@ import (
 
 // Timer measures GPU kernel execution time.
 // Metal doesn't have CUDA-style events, so we use wall-clock timing.
+// TODO(S3): Use MTLCommandBuffer.GPUStartTime/GPUEndTime for accurate
+// per-kernel GPU timing (requires storing command buffer references).
 type Timer struct {
 	startTime time.Time
 }

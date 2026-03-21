@@ -27,9 +27,11 @@ type metalContext struct {
 	device  C.MetalDeviceRef
 	queue   C.MetalQueueRef
 	library C.MetalLibraryRef
-	pool    *FramePool
-	mu      sync.Mutex
-	closed  atomic.Bool
+	pool *FramePool
+	// mu is no longer used for Upload/Download (staging buffers have their own lock).
+	// Retained for future use by operations that require exclusive GPU access.
+	mu     sync.Mutex
+	closed atomic.Bool
 
 	// Lazily-created compute pipeline states keyed by kernel function name
 	pipelines   map[string]C.MetalPipelineRef
@@ -39,6 +41,23 @@ type metalContext struct {
 	// Size: lanczosTmpSize floats (4 bytes each).
 	lanczosTmpBuf  C.MetalBufferRef
 	lanczosTmpSize int
+
+	// Temp file path for embedded metallib (cleaned up on Close).
+	tempMetallibPath string
+
+	// Staging buffer cache for Upload/Download (keyed by total NV12 size).
+	// Avoids per-call allocation overhead.
+	stagingBufs   map[int]*stagingBufferSet
+	stagingBufsMu sync.Mutex
+}
+
+// stagingBufferSet holds the three planar staging buffers used for
+// YUV420p <-> NV12 conversion during Upload/Download.
+type stagingBufferSet struct {
+	yBuf  C.MetalBufferRef
+	cbBuf C.MetalBufferRef
+	crBuf C.MetalBufferRef
+	ySize int
 }
 
 // findMetallib searches for the compiled Metal shader library.
@@ -83,6 +102,7 @@ func findMetallib() (string, error) {
 // Tries to find the metallib on disk first; falls back to the embedded
 // metallib (written to a temp file) if not found.
 func newMetalContext() (*metalContext, error) {
+	var tempPath string
 	libPath, err := findMetallib()
 	if err != nil {
 		// Fallback: write embedded metallib to temp file.
@@ -100,26 +120,30 @@ func newMetalContext() (*metalContext, error) {
 		}
 		tmpFile.Close()
 		libPath = tmpFile.Name()
-		// Note: temp file is intentionally not cleaned up — it persists for
-		// the process lifetime. OS cleanup handles it if the process crashes.
+		tempPath = libPath
 	}
 
 	cPath := C.CString(libPath)
 	defer C.free(unsafe.Pointer(cPath))
 
 	c := &metalContext{
-		pipelines: make(map[string]C.MetalPipelineRef),
+		pipelines:        make(map[string]C.MetalPipelineRef),
+		stagingBufs:      make(map[int]*stagingBufferSet),
+		tempMetallibPath: tempPath,
 	}
 
 	rc := C.metal_init(&c.device, &c.queue, &c.library, cPath)
 	if rc != C.METAL_SUCCESS {
+		if tempPath != "" {
+			os.Remove(tempPath)
+		}
 		return nil, fmt.Errorf("gpu: metal_init failed: %d", rc)
 	}
 
 	return c, nil
 }
 
-// Close releases all Metal resources.
+// Close releases all Metal resources, staging buffers, and temp files.
 func (c *metalContext) Close() error {
 	if c == nil || c.closed.Swap(true) {
 		return nil
@@ -135,6 +159,22 @@ func (c *metalContext) Close() error {
 		c.lanczosTmpSize = 0
 	}
 
+	// Free cached staging buffers
+	c.stagingBufsMu.Lock()
+	for _, s := range c.stagingBufs {
+		if s.yBuf != nil {
+			C.metal_buffer_free(s.yBuf)
+		}
+		if s.cbBuf != nil {
+			C.metal_buffer_free(s.cbBuf)
+		}
+		if s.crBuf != nil {
+			C.metal_buffer_free(s.crBuf)
+		}
+	}
+	c.stagingBufs = nil
+	c.stagingBufsMu.Unlock()
+
 	// Free all cached pipeline states
 	c.pipelinesMu.Lock()
 	for _, p := range c.pipelines {
@@ -147,7 +187,49 @@ func (c *metalContext) Close() error {
 	c.device = nil
 	c.queue = nil
 	c.library = nil
+
+	// Clean up temp metallib file
+	if c.tempMetallibPath != "" {
+		os.Remove(c.tempMetallibPath)
+		c.tempMetallibPath = ""
+	}
+
 	return nil
+}
+
+// getOrCreateStagingBuffers returns cached staging buffers for the given
+// frame dimensions, allocating them on first use.
+func (c *metalContext) getOrCreateStagingBuffers(width, height int) (*stagingBufferSet, error) {
+	key := width*10000 + height // simple dimension key
+	c.stagingBufsMu.Lock()
+	defer c.stagingBufsMu.Unlock()
+
+	if s, ok := c.stagingBufs[key]; ok {
+		return s, nil
+	}
+
+	ySize := width * height
+	cbSize := (width / 2) * (height / 2)
+
+	yBuf, err := c.allocBuffer(ySize)
+	if err != nil {
+		return nil, fmt.Errorf("alloc Y staging: %w", err)
+	}
+	cbBuf, err := c.allocBuffer(cbSize)
+	if err != nil {
+		C.metal_buffer_free(yBuf)
+		return nil, fmt.Errorf("alloc Cb staging: %w", err)
+	}
+	crBuf, err := c.allocBuffer(cbSize)
+	if err != nil {
+		C.metal_buffer_free(yBuf)
+		C.metal_buffer_free(cbBuf)
+		return nil, fmt.Errorf("alloc Cr staging: %w", err)
+	}
+
+	s := &stagingBufferSet{yBuf: yBuf, cbBuf: cbBuf, crBuf: crBuf, ySize: ySize}
+	c.stagingBufs[key] = s
+	return s, nil
 }
 
 // ensureLanczosTemp ensures the Lanczos-3 temporary float32 buffer is
