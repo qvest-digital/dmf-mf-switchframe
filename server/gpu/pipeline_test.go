@@ -156,12 +156,13 @@ func TestGPUPipelineRawSinkInactive(t *testing.T) {
 	require.NoError(t, err)
 	defer pipe.Close()
 
-	// Verify raw sink is not in active nodes (no download cost)
-	snap := pipe.Snapshot()
-	activeNodes := snap["active_nodes"].([]map[string]any)
-	for _, n := range activeNodes {
-		assert.NotEqual(t, "gpu_raw_sink", n["name"], "inactive raw sink should not be in active nodes")
-	}
+	// All nodes are included in the active list (nodes check Active()
+	// dynamically in ProcessGPU). Verify the pipeline runs successfully
+	// even with an inactive raw sink — it skips download when no sink is set.
+	frame, err := pool.Acquire()
+	require.NoError(t, err)
+	require.NoError(t, pipe.Run(frame))
+	frame.Release()
 }
 
 func TestGPUPipelineSnapshot(t *testing.T) {
