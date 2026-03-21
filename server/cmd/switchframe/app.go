@@ -609,6 +609,24 @@ func (a *App) initSubsystems() error {
 	a.gpuState = initGPU(a.sw)
 	wireGPUPipeline(a.gpuState, a.sw, a)
 
+	// Rebuild GPU pipeline on format change (e.g., 1080p → 720p).
+	// Full teardown + recreate: pool, encoder, pipeline, source manager
+	// all need to match the new dimensions.
+	if a.gpuState != nil {
+		a.sw.SetOnFormatChange(func(w, h, fpsNum, fpsDen int) {
+			slog.Info("rebuilding GPU pipeline for format change",
+				"width", w, "height", h,
+				"fps_num", fpsNum, "fps_den", fpsDen)
+			// Tear down old GPU pipeline (releases all GPU resources).
+			a.sw.SetGPUPipeline(nil)
+			a.sw.SetGPUSourceManager(nil)
+			closeGPU(a.gpuState)
+			// Recreate at new dimensions.
+			a.gpuState = initGPU(a.sw)
+			wireGPUPipeline(a.gpuState, a.sw, a)
+		})
+	}
+
 	// Pipeline encoder for the video processing chain.
 	a.sw.SetPipelineCodecs(encoderFactory())
 	a.sw.SetPipelineVideoInfoCallback(a.videoInfoCallback("pipeline"))

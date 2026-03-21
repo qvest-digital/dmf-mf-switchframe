@@ -295,6 +295,11 @@ type Switcher struct {
 	// (the GPU source manager handles it on GPU instead).
 	gpuSourceActive atomic.Bool
 
+	// onFormatChange — called after SetPipelineFormat rebuilds the CPU pipeline.
+	// Used by the app layer to tear down and recreate the GPU pipeline at the
+	// new dimensions. Protected by s.mu (set during init, read during format change).
+	onFormatChange func(width, height, fpsNum, fpsDen int)
+
 	// Per-source decoder factory — when set, RegisterSource creates a
 	// sourceDecoder for each source that decodes H.264 to YUV at ingest time.
 	// This eliminates keyframe wait on cuts/transitions (always-decode mode).
@@ -874,6 +879,15 @@ func (s *Switcher) SetGPUSourceManager(mgr GPUSourceManagerIface) {
 	}
 }
 
+// SetOnFormatChange registers a callback that fires after SetPipelineFormat
+// rebuilds the CPU pipeline. Used by the app layer to tear down and recreate
+// the GPU pipeline at the new dimensions.
+func (s *Switcher) SetOnFormatChange(fn func(width, height, fpsNum, fpsDen int)) {
+	s.mu.Lock()
+	s.onFormatChange = fn
+	s.mu.Unlock()
+}
+
 // SetSourceDecoderFactory enables always-decode mode. When set, RegisterSource
 // creates a per-source decoder that decodes H.264 to raw YUV at ingest time,
 // eliminating keyframe waits on cuts and transitions. Must be called before
@@ -1181,6 +1195,7 @@ func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
 	// Capture node list and metrics under lock to avoid race on s.compositorRef etc.
 	hasPipeCodecs := s.pipeCodecs != nil
 	prom := s.promMetrics
+	formatChangeFn := s.onFormatChange
 	var nodes []PipelineNode
 	if hasPipeCodecs {
 		nodes = s.buildNodeList()
@@ -1196,6 +1211,11 @@ func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
 			p.epoch = s.pipelineEpoch.Add(1)
 			s.swapPipeline(p)
 		}
+	}
+
+	// Notify GPU pipeline of format change (tear down + rebuild at new dimensions).
+	if formatChangeFn != nil {
+		formatChangeFn(f.Width, f.Height, f.FPSNum, f.FPSDen)
 	}
 
 	s.log.Info("pipeline format changed",
@@ -2500,6 +2520,10 @@ func (s *Switcher) UnregisterSource(key string) {
 	s.delayBuffer.RemoveSource(key)
 	if s.frameSync != nil {
 		s.frameSync.RemoveSource(key)
+	}
+	// Clean up GPU source cache so stale frames aren't used after re-registration.
+	if h := s.gpuSourceMgr.Load(); h != nil && h.mgr != nil {
+		h.mgr.RemoveSource(key)
 	}
 	if s.programSource == key {
 		s.programSource = ""

@@ -312,6 +312,38 @@ func TestSetPipelineFormat_SwapsPipeline(t *testing.T) {
 	require.NotNil(t, p)
 }
 
+func TestSetPipelineFormat_CallsOnFormatChange(t *testing.T) {
+	sw := createTestSwitcher(t)
+	defer sw.Close()
+
+	// Set up pipeCodecs + initial pipeline.
+	sw.mu.Lock()
+	sw.pipeCodecs = &pipelineCodecs{}
+	sw.mu.Unlock()
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+	sw.rebuildPipeline()
+
+	// Register callback.
+	var called atomic.Bool
+	var gotW, gotH, gotFPS atomic.Int32
+	sw.SetOnFormatChange(func(w, h, fpsNum, fpsDen int) {
+		called.Store(true)
+		gotW.Store(int32(w))
+		gotH.Store(int32(h))
+		gotFPS.Store(int32(fpsNum))
+	})
+
+	// Change format.
+	newFormat := PipelineFormat{Width: 1280, Height: 720, FPSNum: 30, FPSDen: 1, Name: "720p30"}
+	err := sw.SetPipelineFormat(newFormat)
+	require.NoError(t, err)
+
+	require.True(t, called.Load(), "onFormatChange should be called")
+	require.Equal(t, int32(1280), gotW.Load())
+	require.Equal(t, int32(720), gotH.Load())
+	require.Equal(t, int32(30), gotFPS.Load())
+}
+
 func TestClose_SwapsNilAndWaits(t *testing.T) {
 	sw := createTestSwitcher(t)
 

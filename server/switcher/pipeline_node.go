@@ -59,6 +59,7 @@ type GPUStingerFrame struct {
 // IngestSourceFrame).
 type GPUSourceManagerIface interface {
 	IngestYUV(sourceKey string, yuv []byte, w, h int, pts int64)
+	RemoveSource(sourceKey string)
 }
 
 // PipelineNode is the fundamental processing unit in the video pipeline.

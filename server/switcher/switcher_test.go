@@ -228,6 +228,37 @@ func TestUnregisterSource_BroadcastsState(t *testing.T) {
 	}
 }
 
+func TestUnregisterSource_CleansUpGPUSourceManager(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := newTestSwitcher(programRelay)
+	cam1Relay := newTestRelay()
+
+	// Track RemoveSource calls.
+	var removedKeys []string
+	mockMgr := &mockGPUSourceManager{
+		onRemove: func(key string) { removedKeys = append(removedKeys, key) },
+	}
+	sw.SetGPUSourceManager(mockMgr)
+
+	sw.RegisterSource("camera1", cam1Relay)
+	sw.UnregisterSource("camera1")
+
+	require.Equal(t, []string{"camera1"}, removedKeys,
+		"UnregisterSource should call GPUSourceManager.RemoveSource")
+}
+
+// mockGPUSourceManager implements GPUSourceManagerIface for testing.
+type mockGPUSourceManager struct {
+	onRemove func(key string)
+}
+
+func (m *mockGPUSourceManager) IngestYUV(sourceKey string, yuv []byte, w, h int, pts int64) {}
+func (m *mockGPUSourceManager) RemoveSource(sourceKey string) {
+	if m.onRemove != nil {
+		m.onRemove(sourceKey)
+	}
+}
+
 func TestRegisterVirtualSource_SkipsDelayAndFrameSync(t *testing.T) {
 	programRelay := newTestRelay()
 	sw := newTestSwitcher(programRelay)
