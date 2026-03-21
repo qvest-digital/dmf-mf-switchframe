@@ -1,4 +1,4 @@
-.PHONY: build build-server build-server-mxl dev demo mxl-demo ui-install ui-build ui-test ui-e2e test test-mxl test-all docker clean sync-prism-ts lint format setup-mkcert
+.PHONY: build build-server build-server-mxl dev demo mxl-demo ui-install ui-build ui-test ui-e2e test test-mxl test-all docker clean sync-prism-ts lint format setup-mkcert metal-shaders
 
 EMBED_LINK := server/cmd/switchframe/ui
 
@@ -19,12 +19,18 @@ ui-e2e:
 $(EMBED_LINK): ui-build
 	@ln -sfn ../../../ui/build $(EMBED_LINK)
 
+# Metal shader compilation (macOS only, no-op on Linux)
+metal-shaders:
+	@if [ "$$(uname)" = "Darwin" ] && command -v xcrun >/dev/null 2>&1; then \
+		cd server/gpu/metal && $(MAKE) -s 2>/dev/null || true; \
+	fi
+
 # Production build: UI + embedded Go binary
-build: $(EMBED_LINK)
+build: $(EMBED_LINK) metal-shaders
 	cd server && go build -tags embed_ui -o ../bin/switchframe ./cmd/switchframe
 
 # Dev build: Go only (no UI embed)
-build-server:
+build-server: metal-shaders
 	cd server && go build -o ../bin/switchframe ./cmd/switchframe
 
 # Go tests
