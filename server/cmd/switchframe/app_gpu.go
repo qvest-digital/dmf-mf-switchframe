@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/gpu"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/layout"
@@ -99,13 +100,18 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 	app.gpuRawVideoSink = &gpuRawVideoSink
 	app.gpuRawPreviewSink = &gpuRawPreviewSink
 
-	// Bridge callback: GPU encode outputs (data, isIDR, pts) → media.VideoFrame → broadcastWithCaptions.
+	// Bridge callback: GPU encode outputs Annex B H.264 (data, isIDR, pts).
+	// Convert to AVC1 format (length-prefixed NALUs) before broadcasting,
+	// matching the CPU pipeline's encode path (pipeline_codecs.go:208).
+	// broadcastWithCaptions expects AVC1 and converts back to Annex B
+	// for caption SEI injection.
 	broadcastFn := sw.BroadcastWithCaptionsFunc()
 	gpuOnEncoded := func(data []byte, isIDR bool, pts int64) {
+		avc1 := codec.AnnexBToAVC1Into(data, nil)
 		frame := &media.VideoFrame{
 			PTS:        pts,
 			IsKeyframe: isIDR,
-			WireData:   data,
+			WireData:   avc1,
 			Codec:      "H264",
 		}
 		broadcastFn(frame)
