@@ -55,8 +55,8 @@ type WhisperTRT struct {
 	encoderOutputDev unsafe.Pointer // encoder hidden states
 
 	// CUDA device memory for decoder
-	decoderInputDev  unsafe.Pointer // token IDs (int32)
-	decoderOutputDev unsafe.Pointer // logits over vocabulary
+	decoderTokensDev unsafe.Pointer // input_ids (int32, max 448)
+	decoderLogitsDev unsafe.Pointer // logits (float32, max 448*51865)
 
 	// CUDA stream for async operations
 	stream C.cudaStream_t
@@ -117,10 +117,11 @@ func NewWhisperTRT(cfg WhisperTRTConfig) (*WhisperTRT, error) {
 	}
 	w.encoderContext = encoderCtx
 
-	// Build or load decoder engine.
+	// Build or load decoder engine (V2: supports dynamic sequence length).
 	decoderPlan := filepath.Join(planDir, "decoder.plan")
-	decoderEngine, err := gpu.NewTRTEngine(decoderONNX, gpu.TRTEngineOpts{
+	decoderEngine, err := gpu.NewTRTEngineV2(decoderONNX, gpu.TRTEngineOptsV2{
 		MaxBatchSize:  1,
+		MaxSeqLen:     whisperMaxTokens,
 		UseFP16:       cfg.UseFP16,
 		PlanCachePath: decoderPlan,
 	})
@@ -177,21 +178,23 @@ func (w *WhisperTRT) allocEncoderBuffers() error {
 	return nil
 }
 
-// allocDecoderBuffers allocates CUDA device memory for decoder input (token IDs
-// as int32) and output (logits over vocabulary).
+// allocDecoderBuffers allocates CUDA device memory for decoder token input
+// and logit output. The encoder output buffer (encoderOutputDev) is shared
+// between encoder output and decoder cross-attention input.
 func (w *WhisperTRT) allocDecoderBuffers() error {
-	// Decoder input: max tokens as int32 (we copy the current token sequence each step).
-	inputBytes := C.size_t(whisperMaxTokens * 4) // int32
-	rc := C.cudaMalloc(&w.decoderInputDev, inputBytes)
+	// Decoder tokens: max sequence as int32.
+	tokenBytes := C.size_t(whisperMaxTokens * 4) // int32
+	rc := C.cudaMalloc(&w.decoderTokensDev, tokenBytes)
 	if rc != C.cudaSuccess {
-		return fmt.Errorf("asr: whisper_trt: cudaMalloc decoder input: %d", int(rc))
+		return fmt.Errorf("asr: whisper_trt: cudaMalloc decoder tokens: %d", int(rc))
 	}
 
-	// Decoder output: logits over full vocabulary for the last position.
-	outputBytes := C.size_t(vocabSize * 4) // float32
-	rc = C.cudaMalloc(&w.decoderOutputDev, outputBytes)
+	// Decoder logits: full sequence output over vocabulary.
+	// At max, [1, 448, 51865] = 23,235,720 float32 = ~89MB.
+	logitBytes := C.size_t(whisperMaxTokens * vocabSize * 4) // float32
+	rc = C.cudaMalloc(&w.decoderLogitsDev, logitBytes)
 	if rc != C.cudaSuccess {
-		return fmt.Errorf("asr: whisper_trt: cudaMalloc decoder output: %d", int(rc))
+		return fmt.Errorf("asr: whisper_trt: cudaMalloc decoder logits: %d", int(rc))
 	}
 
 	return nil
@@ -259,6 +262,10 @@ func (w *WhisperTRT) Encode(mel []float32) ([]float32, error) {
 //
 // Returns the sequence of generated token IDs (excluding initial tokens),
 // terminated by EOT or after whisperMaxTokens iterations.
+//
+// The decoder ONNX model has 2 inputs (input_ids + encoder_hidden_states) and
+// 1 output (logits). InferMulti is used to bind all three tensors by name with
+// their actual dynamic dimensions each step.
 func (w *WhisperTRT) Decode(encoderOutput []float32, initialTokens []int) ([]int, error) {
 	if w == nil {
 		return nil, errors.New("asr: whisper_trt: nil WhisperTRT")
@@ -271,8 +278,7 @@ func (w *WhisperTRT) Decode(encoderOutput []float32, initialTokens []int) ([]int
 		return nil, errors.New("asr: whisper_trt: initialTokens must not be empty")
 	}
 
-	// Copy encoder output to device (decoder cross-attention input).
-	// The encoder output stays on the device for the entire decode loop.
+	// Copy encoder output to device (stays constant for entire decode loop).
 	encOutBytes := C.size_t(whisperEncoderOutputSize * 4)
 	rc := C.cudaMemcpy(
 		w.encoderOutputDev,
@@ -281,11 +287,10 @@ func (w *WhisperTRT) Decode(encoderOutput []float32, initialTokens []int) ([]int
 		C.cudaMemcpyHostToDevice,
 	)
 	if rc != C.cudaSuccess {
-		return nil, fmt.Errorf("asr: whisper_trt: cudaMemcpy encoder output for decode: %d", int(rc))
+		return nil, fmt.Errorf("asr: whisper_trt: cudaMemcpy encoder output: %d", int(rc))
 	}
 
-	// Build the token sequence. Start with initial tokens, then append
-	// generated tokens one at a time (greedy decoding).
+	// Build token sequence. Int64->Int32 cast happens here.
 	tokens := make([]int32, 0, whisperMaxTokens)
 	for _, t := range initialTokens {
 		tokens = append(tokens, int32(t))
@@ -297,40 +302,60 @@ func (w *WhisperTRT) Decode(encoderOutput []float32, initialTokens []int) ([]int
 	for step := 0; step < whisperMaxTokens-len(initialTokens); step++ {
 		nTokens := len(tokens)
 
-		// Copy current token sequence to device as int32.
+		// Copy current int32 token sequence to device.
 		tokenBytes := C.size_t(nTokens * 4)
 		rc := C.cudaMemcpyAsync(
-			w.decoderInputDev,
+			w.decoderTokensDev,
 			unsafe.Pointer(&tokens[0]),
 			tokenBytes,
 			C.cudaMemcpyHostToDevice,
 			w.stream,
 		)
 		if rc != C.cudaSuccess {
-			return nil, fmt.Errorf("asr: whisper_trt: cudaMemcpy decoder input step %d: %d", step, int(rc))
+			return nil, fmt.Errorf("asr: whisper_trt: cudaMemcpy tokens step %d: %d", step, int(rc))
 		}
 
-		// Run decoder inference.
-		if err := w.decoderContext.Infer(w.decoderInputDev, w.decoderOutputDev, 1, unsafe.Pointer(w.stream)); err != nil {
+		// Run decoder with named multi-input bindings.
+		bindings := []gpu.TRTBinding{
+			{
+				Name:   "input_ids",
+				DevPtr: w.decoderTokensDev,
+				Dims:   []int{1, nTokens},
+			},
+			{
+				Name:   "encoder_hidden_states",
+				DevPtr: w.encoderOutputDev,
+				Dims:   []int{1, whisperEncoderOutputLen, whisperEncoderOutputDim},
+			},
+			{
+				Name:   "logits",
+				DevPtr: w.decoderLogitsDev,
+				Dims:   []int{1, nTokens, vocabSize},
+			},
+		}
+
+		if err := w.decoderContext.InferMulti(bindings, unsafe.Pointer(w.stream)); err != nil {
 			return nil, fmt.Errorf("asr: whisper_trt: decoder infer step %d: %w", step, err)
 		}
 
 		// Synchronize.
 		rc = C.cudaStreamSynchronize(w.stream)
 		if rc != C.cudaSuccess {
-			return nil, fmt.Errorf("asr: whisper_trt: cudaStreamSynchronize step %d: %d", step, int(rc))
+			return nil, fmt.Errorf("asr: whisper_trt: sync step %d: %d", step, int(rc))
 		}
 
-		// Copy logits back to host.
+		// Read ONLY the last token's logits from device.
+		// Logits are [1, nTokens, vocabSize]. Last token at offset (nTokens-1)*vocabSize.
+		lastTokenOffset := C.size_t((nTokens - 1) * vocabSize * 4)
 		logitBytes := C.size_t(vocabSize * 4)
 		rc = C.cudaMemcpy(
 			unsafe.Pointer(&logits[0]),
-			w.decoderOutputDev,
+			unsafe.Pointer(uintptr(w.decoderLogitsDev)+uintptr(lastTokenOffset)),
 			logitBytes,
 			C.cudaMemcpyDeviceToHost,
 		)
 		if rc != C.cudaSuccess {
-			return nil, fmt.Errorf("asr: whisper_trt: cudaMemcpy decoder output step %d: %d", step, int(rc))
+			return nil, fmt.Errorf("asr: whisper_trt: cudaMemcpy logits step %d: %d", step, int(rc))
 		}
 
 		// Greedy argmax over vocabulary to get next token.
@@ -377,13 +402,13 @@ func (w *WhisperTRT) Close() {
 		C.cudaFree(w.encoderOutputDev)
 		w.encoderOutputDev = nil
 	}
-	if w.decoderInputDev != nil {
-		C.cudaFree(w.decoderInputDev)
-		w.decoderInputDev = nil
+	if w.decoderTokensDev != nil {
+		C.cudaFree(w.decoderTokensDev)
+		w.decoderTokensDev = nil
 	}
-	if w.decoderOutputDev != nil {
-		C.cudaFree(w.decoderOutputDev)
-		w.decoderOutputDev = nil
+	if w.decoderLogitsDev != nil {
+		C.cudaFree(w.decoderLogitsDev)
+		w.decoderLogitsDev = nil
 	}
 
 	// Destroy TensorRT contexts and engines.
