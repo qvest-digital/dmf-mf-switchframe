@@ -31,6 +31,24 @@ func (p *Processor) Active() bool {
 	return p.stmap != nil
 }
 
+// Name returns the name of the underlying ST map, or "" if inactive.
+func (p *Processor) Name() string {
+	if p.stmap == nil {
+		return ""
+	}
+	return p.stmap.Name
+}
+
+// STArrays returns the raw S and T float32 arrays from the underlying ST map.
+// Returns (nil, nil) if the processor is inactive. Used by the GPU pipeline
+// to upload S/T data to GPU memory.
+func (p *Processor) STArrays() (s, t []float32) {
+	if p.stmap == nil {
+		return nil, nil
+	}
+	return p.stmap.S, p.stmap.T
+}
+
 // ProcessYUV applies the ST map warp to a YUV420 frame. src and dst must
 // both be w*h*3/2 bytes. The three planes (Y, Cb, Cr) are warped
 // sequentially on the calling goroutine.

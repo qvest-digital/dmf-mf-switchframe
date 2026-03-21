@@ -235,6 +235,40 @@ func TestProcessor_LargerFrame(t *testing.T) {
 	}
 }
 
+func TestProcessor_Name(t *testing.T) {
+	m := Identity(8, 8)
+	m.Name = "test-correction"
+	p := NewProcessor(m)
+	require.Equal(t, "test-correction", p.Name())
+
+	nilP := NewProcessor(nil)
+	require.Equal(t, "", nilP.Name())
+}
+
+func TestProcessor_STArrays(t *testing.T) {
+	m := Identity(8, 8)
+	p := NewProcessor(m)
+
+	s, tt := p.STArrays()
+	require.NotNil(t, s)
+	require.NotNil(t, tt)
+	require.Len(t, s, 64) // 8*8
+	require.Len(t, tt, 64)
+
+	// Verify coordinates are in 0-1 range.
+	for i := range s {
+		require.GreaterOrEqual(t, s[i], float32(0))
+		require.LessOrEqual(t, s[i], float32(1))
+		require.GreaterOrEqual(t, tt[i], float32(0))
+		require.LessOrEqual(t, tt[i], float32(1))
+	}
+
+	nilP := NewProcessor(nil)
+	ns, nt := nilP.STArrays()
+	require.Nil(t, ns)
+	require.Nil(t, nt)
+}
+
 func BenchmarkProcessor_1080p(b *testing.B) {
 	const w, h = 1920, 1080
 	m := Identity(w, h)

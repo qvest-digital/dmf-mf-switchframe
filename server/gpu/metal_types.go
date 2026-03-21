@@ -56,6 +56,22 @@ func (c *Context) Close() error {
 	return c.mtl.Close()
 }
 
+// Backend returns the GPU backend name ("metal").
+func (c *Context) Backend() string {
+	if c == nil || c.mtl == nil {
+		return ""
+	}
+	return c.mtl.Backend()
+}
+
+// DeviceName returns the GPU device name (e.g., "Apple M2 Max").
+func (c *Context) DeviceName() string {
+	if c == nil || c.mtl == nil {
+		return ""
+	}
+	return c.mtl.DeviceName()
+}
+
 // DeviceProperties returns the GPU device properties.
 func (c *Context) DeviceProperties() DeviceProperties {
 	if c == nil || c.mtl == nil {

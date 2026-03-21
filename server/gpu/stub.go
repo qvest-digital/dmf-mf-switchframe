@@ -16,6 +16,12 @@ func NewContext() (*Context, error) { return nil, ErrGPUNotAvailable }
 // Close is a no-op on non-CUDA builds.
 func (c *Context) Close() error { return nil }
 
+// Backend returns "" on non-GPU builds.
+func (c *Context) Backend() string { return "" }
+
+// DeviceName returns "" on non-GPU builds.
+func (c *Context) DeviceName() string { return "" }
+
 // DeviceProperties returns a zero-value DeviceProperties.
 func (c *Context) DeviceProperties() DeviceProperties { return DeviceProperties{} }
 
