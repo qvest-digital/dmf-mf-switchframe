@@ -18,6 +18,9 @@ func TestGetFormat(t *testing.T) {
 	api, sw := setupTestAPI(t)
 	defer sw.Close()
 
+	// Set a known format (test switcher uses 320x240 by default to save memory).
+	require.NoError(t, sw.SetPipelineFormat(switcher.DefaultFormat))
+
 	req := httptest.NewRequest("GET", "/api/format", nil)
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
@@ -28,7 +31,7 @@ func TestGetFormat(t *testing.T) {
 	err := json.NewDecoder(rec.Body).Decode(&resp)
 	require.NoError(t, err)
 
-	// Default format should be 1080p29.97
+	// Should match DefaultFormat (1080p29.97)
 	require.Equal(t, 1920, resp.Format.Width)
 	require.Equal(t, 1080, resp.Format.Height)
 	require.Equal(t, 30000, resp.Format.FPSNum)
@@ -178,6 +181,9 @@ func TestSetFormatDuringTransition(t *testing.T) {
 			return transition.NewMockDecoder(320, 240), nil
 		},
 	})
+
+	// Set a known format before testing (test switcher uses 320x240/"test" by default).
+	require.NoError(t, sw.SetPipelineFormat(switcher.DefaultFormat))
 	_ = sw.Cut(context.Background(), "camera1")
 	api := NewAPI(sw)
 

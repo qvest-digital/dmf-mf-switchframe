@@ -50,7 +50,7 @@ func initGPU(sw *switcher.Switcher) *gpuState {
 	pool, err := gpu.NewFramePool(ctx, pf.Width, pf.Height, 32)
 	if err != nil {
 		slog.Warn("GPU frame pool failed, falling back to CPU", "error", err)
-		ctx.Close()
+		_ = ctx.Close()
 		return nil
 	}
 	ctx.SetPool(pool)
@@ -263,7 +263,7 @@ func closeGPU(gs *gpuState) {
 		gs.sourceManager.Close()
 	}
 	if gs.pipeline != nil {
-		gs.pipeline.Close()
+		_ = gs.pipeline.Close()
 	}
 	if gs.encoder != nil {
 		gs.encoder.Close()
@@ -272,7 +272,7 @@ func closeGPU(gs *gpuState) {
 		gs.pool.Close()
 	}
 	if gs.ctx != nil {
-		gs.ctx.Close()
+		_ = gs.ctx.Close()
 	}
 }
 
