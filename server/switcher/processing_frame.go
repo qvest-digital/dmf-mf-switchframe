@@ -45,6 +45,13 @@ type ProcessingFrame struct {
 	// releaseTick Phase 3 (T3 in the latency breakdown).
 	SyncReleaseNano int64
 
+	// GPUData holds a reference to the GPU-resident frame (e.g., *gpu.GPUFrame)
+	// when the frame is being processed on the GPU. Set by the GPU upload node,
+	// cleared by the GPU download node. Typed as `any` to avoid a circular
+	// import between switcher and gpu packages. GPU pipeline nodes type-assert
+	// this to access the underlying GPU frame.
+	GPUData any
+
 	// pool is the FramePool this buffer was acquired from.
 	// nil-safe: falls back to make()/no-op for tests and transient wrappers.
 	pool *FramePool

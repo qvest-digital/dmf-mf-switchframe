@@ -193,6 +193,38 @@ func TestDeepCopyPoolSizeMismatch(t *testing.T) {
 	require.NotEqual(t, original.YUV[0], copied.YUV[0])
 }
 
+func TestProcessingFrameGPUData(t *testing.T) {
+	// GPUData is typed as `any` to avoid circular import with gpu package.
+	// Verify it can hold an arbitrary pointer and survives DeepCopy.
+	type fakeGPU struct{ id int }
+
+	pf := &ProcessingFrame{
+		Width:  4,
+		Height: 4,
+		YUV:    make([]byte, 4*4*3/2),
+	}
+
+	// Initially nil.
+	require.Nil(t, pf.GPUData)
+
+	// Set a fake GPU frame.
+	pf.GPUData = &fakeGPU{id: 42}
+	require.NotNil(t, pf.GPUData)
+
+	fg, ok := pf.GPUData.(*fakeGPU)
+	require.True(t, ok)
+	require.Equal(t, 42, fg.id)
+
+	// DeepCopy preserves GPUData reference (shallow copy — the GPU
+	// upload/download nodes manage GPU frame lifecycle explicitly).
+	cp := pf.DeepCopy()
+	require.NotNil(t, cp.GPUData)
+	fg2, ok := cp.GPUData.(*fakeGPU)
+	require.True(t, ok)
+	require.Equal(t, 42, fg2.id)
+	require.Same(t, fg, fg2, "DeepCopy should shallow-copy GPUData pointer")
+}
+
 func TestProcessingFrameNilPoolFallback(t *testing.T) {
 	// No pool — DeepCopy falls back to make()
 	original := &ProcessingFrame{
