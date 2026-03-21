@@ -88,6 +88,9 @@ func NV12ToV210(ctx *Context, v210DevPtr uintptr, v210Stride int, src *GPUFrame,
 // UploadV210 uploads a CPU V210 buffer to GPU memory and converts to NV12.
 // This is the common path for MXL sources: V210 arrives from shared memory,
 // gets uploaded and converted in one step.
+//
+// Uses a persistent V210 staging buffer in Context to avoid per-call
+// cudaMalloc/cudaFree at 30fps. ctx.mu serializes access.
 func UploadV210(ctx *Context, dst *GPUFrame, v210 []byte, width, height int) error {
 	if ctx == nil || dst == nil {
 		return ErrGPUNotAvailable
@@ -99,22 +102,49 @@ func UploadV210(ctx *Context, dst *GPUFrame, v210 []byte, width, height int) err
 		return fmt.Errorf("gpu: V210 buffer too small: %d < %d", len(v210), expected)
 	}
 
-	// Upload V210 to GPU temporary buffer
-	var devV210 unsafe.Pointer
-	if rc := C.cudaMalloc(&devV210, C.size_t(expected)); rc != C.cudaSuccess {
-		return fmt.Errorf("gpu: V210 upload alloc failed: %d", rc)
-	}
-	defer C.cudaFree(devV210)
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
 
-	if rc := C.cudaMemcpy(devV210, unsafe.Pointer(&v210[0]), C.size_t(expected), C.cudaMemcpyHostToDevice); rc != C.cudaSuccess {
+	// Lazily allocate or grow the persistent V210 staging buffer.
+	if ctx.stagingV210Size < expected {
+		if ctx.stagingV210 != nil {
+			C.cudaFree(ctx.stagingV210)
+			ctx.stagingV210 = nil
+		}
+		if rc := C.cudaMalloc(&ctx.stagingV210, C.size_t(expected)); rc != C.cudaSuccess {
+			return fmt.Errorf("gpu: V210 upload alloc failed: %d", rc)
+		}
+		ctx.stagingV210Size = expected
+	}
+
+	if rc := C.cudaMemcpy(ctx.stagingV210, unsafe.Pointer(&v210[0]), C.size_t(expected), C.cudaMemcpyHostToDevice); rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: V210 upload memcpy failed: %d", rc)
 	}
 
-	return V210ToNV12(ctx, dst, uintptr(devV210), v210Stride, width, height)
+	// V210ToNV12 calls ctx.Sync() which requires the stream — call the kernel
+	// directly here since we already hold ctx.mu and can't recurse into
+	// V210ToNV12 (it doesn't acquire ctx.mu, but we keep the call path simple).
+	rc := C.v210_to_nv12(
+		(*C.uint8_t)(unsafe.Pointer(uintptr(dst.DevPtr))),
+		(*C.uint32_t)(ctx.stagingV210),
+		C.int(width), C.int(height),
+		C.int(dst.Pitch), C.int(v210Stride),
+		ctx.stream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: V210→NV12 failed: %d", rc)
+	}
+	if rc := C.cudaStreamSynchronize(ctx.stream); rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: V210 upload sync failed: %d", rc)
+	}
+	return nil
 }
 
 // DownloadV210 converts an NV12 GPUFrame to V210 and downloads to CPU.
 // This is the output path for MXL: NV12 program frame → V210 for shared memory.
+//
+// Uses a persistent V210 staging buffer in Context to avoid per-call
+// cudaMalloc/cudaFree at 30fps. ctx.mu serializes access.
 func DownloadV210(ctx *Context, v210 []byte, src *GPUFrame, width, height int) error {
 	if ctx == nil || src == nil {
 		return ErrGPUNotAvailable
@@ -126,18 +156,37 @@ func DownloadV210(ctx *Context, v210 []byte, src *GPUFrame, width, height int) e
 		return fmt.Errorf("gpu: V210 download buffer too small: %d < %d", len(v210), expected)
 	}
 
-	// Allocate GPU temporary for V210 output
-	var devV210 unsafe.Pointer
-	if rc := C.cudaMalloc(&devV210, C.size_t(expected)); rc != C.cudaSuccess {
-		return fmt.Errorf("gpu: V210 download alloc failed: %d", rc)
-	}
-	defer C.cudaFree(devV210)
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
 
-	if err := NV12ToV210(ctx, uintptr(devV210), v210Stride, src, width, height); err != nil {
-		return err
+	// Lazily allocate or grow the persistent V210 staging buffer.
+	if ctx.stagingV210Size < expected {
+		if ctx.stagingV210 != nil {
+			C.cudaFree(ctx.stagingV210)
+			ctx.stagingV210 = nil
+		}
+		if rc := C.cudaMalloc(&ctx.stagingV210, C.size_t(expected)); rc != C.cudaSuccess {
+			return fmt.Errorf("gpu: V210 download alloc failed: %d", rc)
+		}
+		ctx.stagingV210Size = expected
 	}
 
-	if rc := C.cudaMemcpy(unsafe.Pointer(&v210[0]), devV210, C.size_t(expected), C.cudaMemcpyDeviceToHost); rc != C.cudaSuccess {
+	// Run the NV12→V210 kernel into the persistent staging buffer.
+	rc := C.nv12_to_v210(
+		(*C.uint32_t)(ctx.stagingV210),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(src.DevPtr))),
+		C.int(width), C.int(height),
+		C.int(src.Pitch), C.int(v210Stride),
+		ctx.stream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: NV12→V210 failed: %d", rc)
+	}
+	if rc := C.cudaStreamSynchronize(ctx.stream); rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: V210 download sync failed: %d", rc)
+	}
+
+	if rc := C.cudaMemcpy(unsafe.Pointer(&v210[0]), ctx.stagingV210, C.size_t(expected), C.cudaMemcpyDeviceToHost); rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: V210 download memcpy failed: %d", rc)
 	}
 	return nil

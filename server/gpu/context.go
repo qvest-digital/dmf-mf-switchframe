@@ -51,6 +51,11 @@ type Context struct {
 	stagingCb   unsafe.Pointer
 	stagingCr   unsafe.Pointer
 	stagingSize int // size of each of the three staging buffers (Y size)
+
+	// Persistent staging buffer for UploadV210/DownloadV210.
+	// Lazily allocated under ctx.mu, freed in Close().
+	stagingV210     unsafe.Pointer
+	stagingV210Size int
 }
 
 // NewContext initializes CUDA and creates a shared context on device 0.
@@ -128,6 +133,11 @@ func (c *Context) Close() error {
 		c.stagingCr = nil
 	}
 	c.stagingSize = 0
+	if c.stagingV210 != nil {
+		C.cudaFree(c.stagingV210)
+		c.stagingV210 = nil
+	}
+	c.stagingV210Size = 0
 	// Note: we don't call cudaDeviceReset() — the primary context
 	// persists for the process lifetime. This is intentional: other
 	// tests or subsystems may still use the GPU.
