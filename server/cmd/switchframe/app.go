@@ -139,7 +139,8 @@ type App struct {
 	gpuRawPreviewSink *atomic.Pointer[gpu.RawSinkFunc]   // GPU raw sink for preview output
 
 	// AI segmentation engine (CUDA + TensorRT, nil on other platforms)
-	segEngine *gpu.SegmentationEngine
+	segEngine  *gpu.SegmentationEngine
+	segAdapter *segmentationStateAdapter // non-nil when segEngine is active
 
 	// SCTE-35 signaling
 	scte35Injector *scte35.Injector
@@ -1209,6 +1210,12 @@ func (a *App) initAPI() error {
 			caller: a.srtCaller,
 			stats:  a.srtStats,
 			store:  a.srtStore,
+		}))
+	}
+	if a.segEngine != nil && a.segAdapter != nil {
+		apiOpts = append(apiOpts, control.WithAISegmentManager(&aiSegmentManagerAdapter{
+			engine:  a.segEngine,
+			adapter: a.segAdapter,
 		}))
 	}
 

@@ -258,6 +258,17 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 		}
 	}
 
+	// AI segmentation state (GPU/TensorRT builds only).
+	if a.segEngine != nil && a.segAdapter != nil {
+		mgr := &aiSegmentManagerAdapter{engine: a.segEngine, adapter: a.segAdapter}
+		aiState := &internal.AISegmentationState{
+			Available: true,
+			ModelName: a.cfg.AIModelPath,
+			Sources:   mgr.AllConfigs(),
+		}
+		state.AISegmentation = aiState
+	}
+
 	// Macro execution state (running/completed progress).
 	if ms := a.api.MacroState(); ms != nil {
 		state.Macro = ms

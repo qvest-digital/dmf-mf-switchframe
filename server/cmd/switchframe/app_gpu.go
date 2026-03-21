@@ -8,8 +8,10 @@ import (
 
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/codec"
+	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/gpu"
 	"github.com/zsiec/switchframe/server/graphics"
+	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/layout"
 	"github.com/zsiec/switchframe/server/switcher"
 )
@@ -95,10 +97,12 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 		} else {
 			sourceMgr.SetSegmentationEngine(segEngine)
 			app.segEngine = segEngine
-			segAdapter = &segmentationStateAdapter{
+			sa := &segmentationStateAdapter{
 				engine:   segEngine,
 				switcher: sw,
 			}
+			app.segAdapter = sa
+			segAdapter = sa
 			slog.Info("AI segmentation engine initialized", "model", app.cfg.AIModelPath)
 		}
 	}
@@ -695,4 +699,104 @@ func (a *segmentationStateAdapter) DeleteConfig(key string) {
 	if a.configs != nil {
 		delete(a.configs, key)
 	}
+}
+
+// --- AI Segment Manager Adapter ---
+
+// aiSegmentManagerAdapter implements control.AISegmentManager.
+// It bridges the GPU SegmentationEngine and segmentationStateAdapter
+// to the REST API interface. Non-nil only when segEngine is active.
+type aiSegmentManagerAdapter struct {
+	engine  *gpu.SegmentationEngine
+	adapter *segmentationStateAdapter
+}
+
+// Ensure interface compliance at compile time.
+var _ control.AISegmentManager = (*aiSegmentManagerAdapter)(nil)
+
+// IsAISegmentAvailable returns true when a working segmentation engine exists.
+func (m *aiSegmentManagerAdapter) IsAISegmentAvailable() bool {
+	return m.engine != nil
+}
+
+// EnableAISegment enables AI segmentation for a source and stores its config.
+// The source resolution is not known at REST API call time — the segmentation
+// engine will receive the actual dimensions on first IngestYUV call from the
+// source manager. Until then, EnableSource is called with zero dimensions
+// and the engine will update them when it sees the first frame.
+//
+// For now, we store the config and enable the engine with placeholder
+// dimensions (0, 0). The source manager calls engine.EnableSource with
+// real dimensions on first frame via GPUSourceManager.IngestYUV.
+// The smoothing value is derived from edgeSmooth (0→0 smoothing, 1→0.9 smoothing).
+func (m *aiSegmentManagerAdapter) EnableAISegment(source string, sensitivity, edgeSmooth float32, background string) error {
+	if m.engine == nil {
+		return gpu.ErrTensorRTNotAvailable
+	}
+
+	// Map edgeSmooth (0.0-1.0) to EMA alpha (0.0-0.9).
+	// Higher edgeSmooth = heavier temporal filtering = smoother but more laggy.
+	smoothing := edgeSmooth * 0.9
+
+	// Enable in the segmentation engine. The source manager will call this
+	// again with real dimensions on first frame, so placeholder size (1x1) is fine.
+	// EnableSource is idempotent — it replaces any existing session.
+	if err := m.engine.EnableSource(source, 1, 1, smoothing); err != nil {
+		return err
+	}
+
+	// Store the REST config for the pipeline node to read.
+	m.adapter.SetConfig(source, &gpu.AISegmentConfig{
+		Background:  background,
+		Sensitivity: sensitivity,
+	})
+
+	return nil
+}
+
+// DisableAISegment stops AI segmentation for a source.
+func (m *aiSegmentManagerAdapter) DisableAISegment(source string) {
+	if m.engine != nil {
+		m.engine.DisableSource(source)
+	}
+	m.adapter.DeleteConfig(source)
+}
+
+// GetAISegmentConfig returns the current AI segmentation config for a source.
+func (m *aiSegmentManagerAdapter) GetAISegmentConfig(source string) (internal.AISegmentConfig, bool) {
+	gpuCfg := m.adapter.ConfigForSource(source)
+	if gpuCfg == nil {
+		return internal.AISegmentConfig{}, false
+	}
+	enabled := m.engine != nil && m.engine.IsEnabled(source)
+	return internal.AISegmentConfig{
+		Enabled:     enabled,
+		Sensitivity: gpuCfg.Sensitivity,
+		EdgeSmooth:  gpuCfg.Sensitivity * (1.0 / 0.9), // reverse map from smoothing
+		Background:  gpuCfg.Background,
+	}, true
+}
+
+// AllConfigs returns a snapshot of all per-source AI segmentation configs.
+// Used by enrichState for ControlRoomState broadcast.
+func (m *aiSegmentManagerAdapter) AllConfigs() map[string]internal.AISegmentConfig {
+	m.adapter.mu.Lock()
+	defer m.adapter.mu.Unlock()
+	if len(m.adapter.configs) == 0 {
+		return nil
+	}
+	out := make(map[string]internal.AISegmentConfig, len(m.adapter.configs))
+	for key, gpuCfg := range m.adapter.configs {
+		if gpuCfg == nil {
+			continue
+		}
+		enabled := m.engine != nil && m.engine.IsEnabled(key)
+		out[key] = internal.AISegmentConfig{
+			Enabled:     enabled,
+			Sensitivity: gpuCfg.Sensitivity,
+			EdgeSmooth:  gpuCfg.Sensitivity * (1.0 / 0.9),
+			Background:  gpuCfg.Background,
+		}
+	}
+	return out
 }
