@@ -906,3 +906,175 @@ func TestSwitcherFTBReverseAbortCallsOnTransitionAbort(t *testing.T) {
 	require.False(t, state.InTransition)
 	require.True(t, state.FTBActive, "aborting reverse FTB should keep FTB active (screen stays black)")
 }
+
+// gpuTransitionMock tracks RunTransition calls.
+type gpuTransitionMock struct {
+	mu               sync.Mutex
+	runTransCalls    []gpuTransitionCall
+	runWithUploadErr error
+	runFromCacheErr  error
+	runTransErr      error
+}
+
+type gpuTransitionCall struct {
+	fromKey   string
+	toKey     string
+	transType string
+	wipeDir   int
+	position  float64
+	pts       int64
+}
+
+func (m *gpuTransitionMock) RunWithUpload(yuv []byte, width, height int, pts int64) error {
+	if m.runWithUploadErr != nil {
+		return m.runWithUploadErr
+	}
+	return nil
+}
+
+func (m *gpuTransitionMock) RunFromCache(sourceKey string, pts int64) error {
+	if m.runFromCacheErr != nil {
+		return m.runFromCacheErr
+	}
+	return nil
+}
+
+func (m *gpuTransitionMock) RunTransition(fromKey, toKey string, transType string, wipeDir int, position float64, pts int64, stingerAlpha []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.runTransCalls = append(m.runTransCalls, gpuTransitionCall{
+		fromKey:   fromKey,
+		toKey:     toKey,
+		transType: transType,
+		wipeDir:   wipeDir,
+		position:  position,
+		pts:       pts,
+	})
+	return m.runTransErr
+}
+
+func TestSwitcherGPUTransitionSkipsCPUBlend(t *testing.T) {
+	programRelay := newTestRelay()
+	viewer := newMockProgramViewer("test-viewer")
+	programRelay.AddViewer(viewer)
+
+	sw := newTestSwitcher(programRelay)
+	sw.SetTransitionConfig(mockTransitionCodecs())
+	sw.SetPipelineCodecs(
+		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	)
+	require.NoError(t, sw.BuildPipeline())
+	defer sw.Close()
+
+	cam1Relay := newTestRelay()
+	cam2Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	sw.RegisterSource("cam2", cam2Relay)
+
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true, WireData: []byte{0x01}})
+	require.NoError(t, sw.SetPreview(context.Background(), "cam2"))
+
+	// Set GPU pipeline runner
+	gpuMock := &gpuTransitionMock{}
+	sw.SetGPUPipeline(gpuMock)
+
+	// Start transition — should set SkipBlend on the engine
+	err := sw.StartTransition(context.Background(), "cam2", "mix", 60000, "")
+	require.NoError(t, err)
+
+	// Verify engine has SkipBlend set by checking it produces no CPU output.
+	// Send frames from both sources — FROM first, then TO triggers blend.
+	// In SkipBlend mode, no CPU output should be produced.
+	viewer.mu.Lock()
+	preCount := len(viewer.videos)
+	viewer.mu.Unlock()
+
+	// Feed raw YUV frames to the switcher (always-decode path).
+	frame := make([]byte, 4*4*3/2)
+	sw.handleRawVideoFrame("cam1", &ProcessingFrame{YUV: frame, Width: 4, Height: 4, PTS: 100})
+	sw.handleRawVideoFrame("cam2", &ProcessingFrame{YUV: frame, Width: 4, Height: 4, PTS: 101})
+	time.Sleep(20 * time.Millisecond)
+
+	// GPU RunTransition should have been called (triggered by cam2, the TO source).
+	gpuMock.mu.Lock()
+	require.NotEmpty(t, gpuMock.runTransCalls, "RunTransition should be called on GPU")
+	call := gpuMock.runTransCalls[0]
+	require.Equal(t, "cam1", call.fromKey)
+	require.Equal(t, "cam2", call.toKey)
+	require.Equal(t, "mix", call.transType)
+	gpuMock.mu.Unlock()
+
+	// CPU output should NOT have been produced (SkipBlend).
+	viewer.mu.Lock()
+	postCount := len(viewer.videos)
+	viewer.mu.Unlock()
+	require.Equal(t, preCount, postCount, "CPU blend output should be suppressed with GPU active")
+
+	sw.AbortTransition()
+}
+
+func TestSwitcherGPUTransitionFTB(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := newTestSwitcher(programRelay)
+	sw.SetTransitionConfig(mockTransitionCodecs())
+	sw.SetPipelineCodecs(
+		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	)
+	require.NoError(t, sw.BuildPipeline())
+	defer sw.Close()
+
+	cam1Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+	cam1Relay.BroadcastVideo(&media.VideoFrame{PTS: 50, IsKeyframe: true, WireData: []byte{0x01}})
+
+	// Set GPU pipeline runner
+	gpuMock := &gpuTransitionMock{}
+	sw.SetGPUPipeline(gpuMock)
+
+	// Start FTB
+	err := sw.FadeToBlack(context.Background())
+	require.NoError(t, err)
+
+	// FTB triggers on FROM source (cam1) frames.
+	frame := make([]byte, 4*4*3/2)
+	sw.handleRawVideoFrame("cam1", &ProcessingFrame{YUV: frame, Width: 4, Height: 4, PTS: 200})
+	time.Sleep(20 * time.Millisecond)
+
+	gpuMock.mu.Lock()
+	require.NotEmpty(t, gpuMock.runTransCalls, "RunTransition should be called for FTB")
+	call := gpuMock.runTransCalls[0]
+	require.Equal(t, "cam1", call.fromKey)
+	require.Equal(t, "ftb", call.transType)
+	gpuMock.mu.Unlock()
+
+	sw.AbortTransition()
+}
+
+func TestSwitcherTransitionWipeDirToGPU(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := newTestSwitcher(programRelay)
+	defer sw.Close()
+
+	tests := []struct {
+		dir    transition.WipeDirection
+		expect int
+	}{
+		{transition.WipeHLeft, 0},
+		{transition.WipeHRight, 1},
+		{transition.WipeVTop, 2},
+		{transition.WipeVBottom, 3},
+		{transition.WipeBoxCenterOut, 4},
+		{transition.WipeBoxEdgesIn, 5},
+		{"unknown", 0},
+	}
+	for _, tc := range tests {
+		require.Equal(t, tc.expect, sw.transitionWipeDirToGPU(tc.dir),
+			"WipeDirection %q should map to GPU %d", tc.dir, tc.expect)
+	}
+}

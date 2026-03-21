@@ -63,7 +63,13 @@ func NewGPUEncoder(gpuCtx *Context, width, height, fpsNum, fpsDen, bitrate int) 
 }
 
 // EncodeGPU encodes a GPU-resident NV12 frame to H.264.
-// Downloads the frame to CPU (NV12→YUV420p conversion), then encodes via NVENC.
+// Currently downloads NV12→YUV420p to CPU then encodes via NVENC through FFmpeg.
+// TODO: Use FFmpeg hw_frames_ctx with AV_PIX_FMT_CUDA to pass CUDA device
+// pointers directly to NVENC, eliminating the GPU→CPU download. Requires:
+//   1. av_hwdevice_ctx setup for CUDA in ffenc_open
+//   2. AVFrame with format=AV_PIX_FMT_CUDA pointing to device memory
+//   3. hw_frames_ctx attached to the AVFrame
+// The Metal path already does zero-copy via native VideoToolbox.
 // Returns the H.264 bitstream, whether it's an IDR, and any error.
 func (e *GPUEncoder) EncodeGPU(frame *GPUFrame, forceIDR bool) ([]byte, bool, error) {
 	if frame == nil {

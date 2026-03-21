@@ -38,24 +38,31 @@ func ScaleBilinear(ctx *Context, dst, src *GPUFrame) error {
 		return fmt.Errorf("gpu: scale bilinear Y failed: %d", rc)
 	}
 
-	// Scale UV plane: NV12 interleaved UV has the same byte width as Y,
-	// half the height. Use offset-aware dispatch to bind at UV offset.
+	// Scale UV plane using UV-aware kernel that interpolates CbCr pairs
+	// independently. Width is in CHROMA SAMPLES (width/2), not bytes.
+	uvPipeline, err := mtl.getPipeline("scale_bilinear_uv")
+	if err != nil {
+		return fmt.Errorf("gpu: scale bilinear UV pipeline: %w", err)
+	}
+
 	srcUVOffset := C.int64_t(src.Pitch * src.Height)
 	dstUVOffset := C.int64_t(dst.Pitch * dst.Height)
+	chromaSrcW := src.Width / 2
+	chromaDstW := dst.Width / 2
 	uvParams := C.MetalScaleParams{
-		srcW:     C.uint32_t(src.Width),
+		srcW:     C.uint32_t(chromaSrcW),
 		srcH:     C.uint32_t(src.Height / 2),
 		srcPitch: C.uint32_t(src.Pitch),
-		dstW:     C.uint32_t(dst.Width),
+		dstW:     C.uint32_t(chromaDstW),
 		dstH:     C.uint32_t(dst.Height / 2),
 		dstPitch: C.uint32_t(dst.Pitch),
 	}
 	uvBufs := [2]C.MetalBufferRef{dst.MetalBuf, src.MetalBuf}
 	uvOffsets := [2]C.int64_t{dstUVOffset, srcUVOffset}
-	rc = C.metal_dispatch_2d_offset(mtl.queue, pipeline,
+	rc = C.metal_dispatch_2d_offset(mtl.queue, uvPipeline,
 		&uvBufs[0], &uvOffsets[0], 2,
 		unsafe.Pointer(&uvParams), C.size_t(unsafe.Sizeof(uvParams)), 2,
-		C.uint32_t(dst.Width), C.uint32_t(dst.Height/2))
+		C.uint32_t(chromaDstW), C.uint32_t(dst.Height/2))
 	if rc != C.METAL_SUCCESS {
 		return fmt.Errorf("gpu: scale bilinear UV failed: %d", rc)
 	}

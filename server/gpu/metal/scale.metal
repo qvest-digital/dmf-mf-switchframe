@@ -56,6 +56,59 @@ kernel void scale_bilinear(
     dst[gid.y * params.dstPitch + gid.x] = uint8_t(val);
 }
 
+// Bilinear scale for NV12 UV plane (interleaved CbCr pairs)
+// One thread per OUTPUT chroma sample (CbCr pair). Interpolates Cb and Cr
+// independently to prevent cross-channel mixing.
+// dstW/srcW are in CHROMA SAMPLES (width/2), not bytes.
+kernel void scale_bilinear_uv(
+    device uint8_t* dst           [[buffer(0)]],
+    device const uint8_t* src     [[buffer(1)]],
+    constant ScaleParams& params  [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    // params.dstW = chroma width (luma width / 2)
+    // params.srcW = chroma width (luma width / 2)
+    if (gid.x >= params.dstW || gid.y >= params.dstH) return;
+
+    float srcXf = float(gid.x) * float(params.srcW - 1) / float(max(params.dstW - 1, 1u));
+    float srcYf = float(gid.y) * float(params.srcH - 1) / float(max(params.dstH - 1, 1u));
+    int sx = int(srcXf);
+    int sy = int(srcYf);
+    int fx = int((srcXf - float(sx)) * 65536.0f);
+    int fy = int((srcYf - float(sy)) * 65536.0f);
+
+    uint sx1 = min(uint(sx + 1), params.srcW - 1);
+    uint sy1 = min(uint(sy + 1), params.srcH - 1);
+
+    // Read CbCr pairs (2 bytes each) — index by chroma sample, offset by 2
+    uint srcByteX0 = uint(sx) * 2;
+    uint srcByteX1 = sx1 * 2;
+
+    // Cb channel
+    int cb00 = int(src[uint(sy)  * params.srcPitch + srcByteX0]);
+    int cb10 = int(src[uint(sy)  * params.srcPitch + srcByteX1]);
+    int cb01 = int(src[sy1 * params.srcPitch + srcByteX0]);
+    int cb11 = int(src[sy1 * params.srcPitch + srcByteX1]);
+
+    int cbTop = cb00 + ((cb10 - cb00) * fx >> 16);
+    int cbBot = cb01 + ((cb11 - cb01) * fx >> 16);
+    int cb = cbTop + ((cbBot - cbTop) * fy >> 16);
+
+    // Cr channel (offset +1 from Cb)
+    int cr00 = int(src[uint(sy)  * params.srcPitch + srcByteX0 + 1]);
+    int cr10 = int(src[uint(sy)  * params.srcPitch + srcByteX1 + 1]);
+    int cr01 = int(src[sy1 * params.srcPitch + srcByteX0 + 1]);
+    int cr11 = int(src[sy1 * params.srcPitch + srcByteX1 + 1]);
+
+    int crTop = cr00 + ((cr10 - cr00) * fx >> 16);
+    int crBot = cr01 + ((cr11 - cr01) * fx >> 16);
+    int cr = crTop + ((crBot - crTop) * fy >> 16);
+
+    uint dstByte = gid.y * params.dstPitch + gid.x * 2;
+    dst[dstByte]     = uint8_t(cb);
+    dst[dstByte + 1] = uint8_t(cr);
+}
+
 // ---------------------------------------------------------------------------
 // Lanczos-3 separable two-pass scaler
 // ---------------------------------------------------------------------------

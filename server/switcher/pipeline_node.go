@@ -28,6 +28,17 @@ type GPUPipelineRunner interface {
 	// the source has no cached frame, in which case the caller should fall
 	// back to RunWithUpload.
 	RunFromCache(sourceKey string, pts int64) error
+
+	// RunTransition blends two source frames on GPU and runs the result
+	// through the rest of the GPU pipeline (key → layout → compositor →
+	// stmap → raw sinks → encode). Both source frames are read from the
+	// GPU source cache. transType is "mix", "dip", "wipe", "ftb",
+	// "ftb_reverse", or "stinger". wipeDir is an int matching gpu.WipeDirection.
+	// position is 0.0 (all A) to 1.0 (all B). stingerAlpha carries
+	// the per-pixel alpha plane for stinger transitions (nil otherwise).
+	// Returns an error if either source frame is not cached, in which case
+	// the caller should fall back to the CPU transition path.
+	RunTransition(fromKey, toKey string, transType string, wipeDir int, position float64, pts int64, stingerAlpha []byte) error
 }
 
 // GPUSourceManagerIface provides GPU source frame management.

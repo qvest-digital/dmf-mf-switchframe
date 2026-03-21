@@ -1774,6 +1774,22 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		return fmt.Errorf("start transition: %w", err)
 	}
 
+	// When GPU pipeline is active, set SkipBlend so the CPU engine only
+	// tracks state (position, auto-complete) without performing the pixel
+	// blend — the GPU handles blending directly in VRAM. Output is nil
+	// because the GPU pipeline produces the encoded output.
+	gpuActive := false
+	if h := s.gpuRunner.Load(); h != nil && h.runner != nil {
+		gpuActive = true
+	}
+
+	var outputCb func(yuv []byte, width, height int, pts int64, isKeyframe bool)
+	if !gpuActive {
+		outputCb = func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
+			s.broadcastProcessed(yuv, width, height, pts, isKeyframe)
+		}
+	}
+
 	engine := transition.NewEngine(transition.EngineConfig{
 		DecoderFactory: decoderFactory,
 		WipeDirection:  wipeDir,
@@ -1781,9 +1797,8 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		Easing:         topts.easing,
 		HintWidth:      hintW,
 		HintHeight:     hintH,
-		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
-			s.broadcastProcessed(yuv, width, height, pts, isKeyframe)
-		},
+		SkipBlend:      gpuActive,
+		Output:         outputCb,
 		OnComplete: func(aborted bool) {
 			s.handleTransitionComplete(aborted)
 		},
@@ -1900,13 +1915,22 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		s.mu.Unlock()
 
 		// No decoder warmup needed — sources provide raw YUV.
+		ftbRevGPUActive := false
+		if gh := s.gpuRunner.Load(); gh != nil && gh.runner != nil {
+			ftbRevGPUActive = true
+		}
+		var ftbRevOutputCb func(yuv []byte, width, height int, pts int64, isKeyframe bool)
+		if !ftbRevGPUActive {
+			ftbRevOutputCb = func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
+				s.broadcastProcessed(yuv, width, height, pts, isKeyframe)
+			}
+		}
 		engine := transition.NewEngine(transition.EngineConfig{
 			DecoderFactory: ftbRevDecoderFactory,
 			HintWidth:      ftbHintW,
 			HintHeight:     ftbHintH,
-			Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
-				s.broadcastProcessed(yuv, width, height, pts, isKeyframe)
-			},
+			SkipBlend:      ftbRevGPUActive,
+			Output:         ftbRevOutputCb,
 			OnComplete: func(aborted bool) {
 				s.handleFTBReverseComplete(aborted)
 			},
@@ -1958,13 +1982,22 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	s.mu.Unlock()
 
 	// No decoder warmup needed — sources provide raw YUV.
+	ftbFwdGPUActive := false
+	if gh := s.gpuRunner.Load(); gh != nil && gh.runner != nil {
+		ftbFwdGPUActive = true
+	}
+	var ftbFwdOutputCb func(yuv []byte, width, height int, pts int64, isKeyframe bool)
+	if !ftbFwdGPUActive {
+		ftbFwdOutputCb = func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
+			s.broadcastProcessed(yuv, width, height, pts, isKeyframe)
+		}
+	}
 	engine := transition.NewEngine(transition.EngineConfig{
 		DecoderFactory: ftbFwdDecoderFactory,
 		HintWidth:      ftbFwdHintW,
 		HintHeight:     ftbFwdHintH,
-		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
-			s.broadcastProcessed(yuv, width, height, pts, isKeyframe)
-		},
+		SkipBlend:      ftbFwdGPUActive,
+		Output:         ftbFwdOutputCb,
 		OnComplete: func(aborted bool) {
 			s.handleFTBComplete(aborted)
 		},
@@ -2043,6 +2076,27 @@ func (s *Switcher) AbortTransition() {
 // transition finishes. If completed (not aborted), it swaps program/preview
 // sources. All sources use the raw pipeline (always-decode), so no GOP
 // replay or IDR gating is needed — frames flow immediately.
+// transitionWipeDirToGPU maps transition.WipeDirection (string) to gpu.WipeDirection (int).
+// Returns 0 (WipeHLeft) for unknown directions.
+func (s *Switcher) transitionWipeDirToGPU(dir transition.WipeDirection) int {
+	switch dir {
+	case transition.WipeHLeft:
+		return 0
+	case transition.WipeHRight:
+		return 1
+	case transition.WipeVTop:
+		return 2
+	case transition.WipeVBottom:
+		return 3
+	case transition.WipeBoxCenterOut:
+		return 4
+	case transition.WipeBoxEdgesIn:
+		return 5
+	default:
+		return 0
+	}
+}
+
 func (s *Switcher) handleTransitionComplete(aborted bool) {
 	completeStart := time.Now()
 
@@ -3137,6 +3191,45 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 			return
 		}
 		s.routeToEngine.Add(1)
+
+		// GPU transition path: blend both sources on GPU, bypassing CPU blend.
+		// The engine still tracks position and handles auto-complete (SkipBlend
+		// mode), but the actual pixel blend happens on GPU.
+		if h := s.gpuRunner.Load(); h != nil && h.runner != nil {
+			// Feed the engine for state tracking (SkipBlend skips CPU blend).
+			engine.IngestRawFrame(sourceKey, pf.YUV, pf.Width, pf.Height, pf.PTS)
+			pos := engine.Position()
+
+			if audioHandler != nil {
+				audioHandler.OnTransitionPosition(pos)
+			}
+
+			// Determine if this frame should trigger GPU blend output.
+			// Same trigger logic as CPU blendAndOutput: TO-source triggers
+			// for most types, FROM-source triggers for FTB/FTBReverse.
+			tt := engine.TransitionType()
+			isTrigger := false
+			if (tt == transition.FTB || tt == transition.FTBReverse) && sourceKey == engine.FromSource() {
+				isTrigger = true
+			} else if sourceKey == engine.ToSource() {
+				isTrigger = true
+			}
+
+			if isTrigger {
+				fromKey := engine.FromSource()
+				toKey := engine.ToSource()
+				wipeDir := s.transitionWipeDirToGPU(engine.WipeDirection())
+				pts := s.wallClockVideoPTS(pf.PTS)
+
+				if err := h.runner.RunTransition(fromKey, toKey, string(tt), wipeDir, pos, pts, nil); err != nil {
+					s.log.Debug("GPU transition blend failed, no fallback",
+						"err", err, "from", fromKey, "to", toKey, "type", tt)
+				}
+			}
+			return
+		}
+
+		// CPU transition path (no GPU available).
 		engine.IngestRawFrame(sourceKey, pf.YUV, pf.Width, pf.Height, pf.PTS)
 		if audioHandler != nil {
 			audioHandler.OnTransitionPosition(engine.Position())

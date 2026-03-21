@@ -67,6 +67,12 @@ type EngineConfig struct {
 	// resolution to eliminate output gaps during B-frame reorder warmup.
 	HintWidth  int
 	HintHeight int
+
+	// SkipBlend skips the CPU pixel blend in blendAndOutput but still
+	// tracks position and handles auto-complete timing. Used when GPU
+	// transitions are active — the GPU pipeline performs the blend, and
+	// the CPU engine only manages transition state.
+	SkipBlend bool
 }
 
 // Engine manages the dissolve pipeline lifecycle.
@@ -214,6 +220,13 @@ func (e *Engine) ToSource() string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.toSource
+}
+
+// WipeDirection returns the wipe direction for the current transition.
+func (e *Engine) WipeDirection() WipeDirection {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.wipeDirection
 }
 
 // Easing returns the current easing type, or "smoothstep" if nil.
@@ -687,7 +700,34 @@ func (e *Engine) blendAndOutput(isFrom bool, pts int64) {
 		shouldBlend = true
 	}
 
-	if !shouldBlend || e.blender == nil {
+	if !shouldBlend {
+		e.mu.Unlock()
+		return
+	}
+
+	// SkipBlend mode: GPU handles the pixel blend, we only track state.
+	// Still calculate position and handle auto-complete, but skip the
+	// CPU blend, blender init, and output callback entirely.
+	if e.config.SkipBlend {
+		pos := e.currentPosition()
+		e.framesBlended.Add(1)
+		e.log.Debug("skip-blend (GPU)", "pos", fmt.Sprintf("%.3f", pos))
+
+		var autoComplete bool
+		if !e.manualControl && pos >= 1.0 {
+			autoComplete = true
+			e.log.Info("auto-complete", "type", e.transitionType)
+			e.cleanup()
+		}
+		e.mu.Unlock()
+
+		if autoComplete && e.config.OnComplete != nil {
+			e.config.OnComplete(false)
+		}
+		return
+	}
+
+	if e.blender == nil {
 		e.mu.Unlock()
 		return
 	}

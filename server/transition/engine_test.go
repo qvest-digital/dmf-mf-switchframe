@@ -2119,3 +2119,63 @@ func TestCleanupBlocksConcurrentStart(t *testing.T) {
 	require.NoError(t, err, "Start() should succeed after cleanup completes")
 	e.Stop()
 }
+
+func TestEngineSkipBlend(t *testing.T) {
+	// SkipBlend mode: engine tracks position and auto-completes, but
+	// never calls the Output callback (GPU handles the pixel blend).
+	var outputCalled bool
+	var completions []bool
+	var mu sync.Mutex
+
+	e := NewEngine(EngineConfig{
+		SkipBlend: true,
+		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
+			mu.Lock()
+			outputCalled = true
+			mu.Unlock()
+		},
+		OnComplete: func(aborted bool) {
+			mu.Lock()
+			completions = append(completions, !aborted)
+			mu.Unlock()
+		},
+		HintWidth:  4,
+		HintHeight: 4,
+	})
+
+	err := e.Start("cam1", "cam2", Mix, 10) // 10ms — completes quickly
+	require.NoError(t, err)
+
+	// Feed frames to drive position tracking.
+	frame := make([]byte, 4*4*3/2)
+	for i := 0; i < 5; i++ {
+		e.IngestRawFrame("cam1", frame, 4, 4, int64(i*3000))
+		e.IngestRawFrame("cam2", frame, 4, 4, int64(i*3000))
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Give auto-complete time to trigger.
+	time.Sleep(50 * time.Millisecond)
+
+	mu.Lock()
+	require.False(t, outputCalled, "Output should never be called in SkipBlend mode")
+	require.NotEmpty(t, completions, "auto-complete should still fire in SkipBlend mode")
+	require.True(t, completions[0], "auto-complete should report success, not abort")
+	mu.Unlock()
+}
+
+func TestEngineWipeDirectionAccessor(t *testing.T) {
+	e := NewEngine(EngineConfig{
+		WipeDirection: WipeHRight,
+		HintWidth:     4,
+		HintHeight:    4,
+	})
+
+	err := e.Start("cam1", "cam2", Wipe, 1000)
+	require.NoError(t, err)
+	require.Equal(t, WipeHRight, e.WipeDirection())
+	e.Stop()
+
+	// After stop, WipeDirection returns whatever was set.
+	require.Equal(t, WipeHRight, e.WipeDirection())
+}

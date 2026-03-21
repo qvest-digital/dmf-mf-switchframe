@@ -175,6 +175,7 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 	runner := &gpuPipelineRunnerImpl{
 		pipeline:      gpuPipeline,
 		sourceManager: sourceMgr,
+		ctx:           gs.ctx,
 	}
 	sw.SetGPUPipeline(runner)
 
@@ -249,6 +250,7 @@ func closeGPU(gs *gpuState) {
 type gpuPipelineRunnerImpl struct {
 	pipeline      *gpu.GPUPipeline
 	sourceManager *gpu.GPUSourceManager
+	ctx           *gpu.Context
 }
 
 func (r *gpuPipelineRunnerImpl) RunWithUpload(yuv []byte, width, height int, pts int64) error {
@@ -286,6 +288,146 @@ func (r *gpuPipelineRunnerImpl) RunFromCache(sourceKey string, pts int64) error 
 		return err
 	}
 	frame.Release()
+	return nil
+}
+
+func (r *gpuPipelineRunnerImpl) RunTransition(fromKey, toKey string, transType string, wipeDir int, position float64, pts int64, stingerAlpha []byte) error {
+	if r.sourceManager == nil {
+		return fmt.Errorf("no GPU source manager")
+	}
+
+	// Get FROM source frame from GPU cache.
+	frameA := r.sourceManager.GetFrame(fromKey)
+	if frameA == nil {
+		return fmt.Errorf("no cached GPU frame for source %s", fromKey)
+	}
+	defer frameA.Release()
+
+	// Get TO source frame from GPU cache (not needed for FTB/FTBReverse).
+	var frameB *gpu.GPUFrame
+	if transType != "ftb" && transType != "ftb_reverse" {
+		frameB = r.sourceManager.GetFrame(toKey)
+		if frameB == nil {
+			return fmt.Errorf("no cached GPU frame for source %s", toKey)
+		}
+		defer frameB.Release()
+	}
+
+	// Acquire output frame for the blend result.
+	pool := r.pipeline.Pool()
+	dst, err := pool.Acquire()
+	if err != nil {
+		return fmt.Errorf("gpu transition: acquire blend frame: %w", err)
+	}
+	dst.PTS = pts
+
+	// GPU blend based on transition type.
+	ctx := r.ctx
+	switch transType {
+	case "mix":
+		if err := gpu.BlendMix(ctx, dst, frameA, frameB, position); err != nil {
+			dst.Release()
+			return fmt.Errorf("gpu transition mix: %w", err)
+		}
+	case "dip":
+		// Dip = fade to black then from black.
+		// Phase 1 (pos 0-0.5): fade A to black.
+		// Phase 2 (pos 0.5-1.0): fade B from black.
+		if position <= 0.5 {
+			dipPos := position * 2.0
+			if err := gpu.BlendFTB(ctx, dst, frameA, dipPos); err != nil {
+				dst.Release()
+				return fmt.Errorf("gpu transition dip phase1: %w", err)
+			}
+		} else {
+			dipPos := (1.0 - position) * 2.0
+			if err := gpu.BlendFTB(ctx, dst, frameB, dipPos); err != nil {
+				dst.Release()
+				return fmt.Errorf("gpu transition dip phase2: %w", err)
+			}
+		}
+	case "ftb":
+		if err := gpu.BlendFTB(ctx, dst, frameA, position); err != nil {
+			dst.Release()
+			return fmt.Errorf("gpu transition ftb: %w", err)
+		}
+	case "ftb_reverse":
+		if err := gpu.BlendFTB(ctx, dst, frameA, 1.0-position); err != nil {
+			dst.Release()
+			return fmt.Errorf("gpu transition ftb_reverse: %w", err)
+		}
+	case "wipe":
+		maskBuf, maskErr := pool.Acquire()
+		if maskErr != nil {
+			dst.Release()
+			return fmt.Errorf("gpu transition wipe: acquire mask: %w", maskErr)
+		}
+		dir := gpu.WipeDirection(wipeDir)
+		if err := gpu.BlendWipe(ctx, dst, frameA, frameB, maskBuf, position, dir, 4); err != nil {
+			maskBuf.Release()
+			dst.Release()
+			return fmt.Errorf("gpu transition wipe: %w", err)
+		}
+		maskBuf.Release()
+	case "stinger":
+		// Stinger with per-pixel alpha plane. If alpha data is provided,
+		// upload it to a GPU frame and use BlendStinger. Otherwise fall
+		// back to mix blend.
+		if stingerAlpha != nil && len(stingerAlpha) > 0 {
+			alphaFrame, alphaErr := pool.Acquire()
+			if alphaErr != nil {
+				dst.Release()
+				return fmt.Errorf("gpu transition stinger: acquire alpha: %w", alphaErr)
+			}
+			// Upload alpha plane to GPU frame's Y plane. The alpha data is
+			// luma-resolution (width*height bytes). Upload fills Y, UV is
+			// used as scratch by BlendStinger for downsampled chroma alpha.
+			if err := gpu.Upload(ctx, alphaFrame, stingerAlpha, frameA.Width, frameA.Height); err != nil {
+				alphaFrame.Release()
+				dst.Release()
+				return fmt.Errorf("gpu transition stinger: upload alpha: %w", err)
+			}
+
+			// Determine base source: A before cut point, B after.
+			// For now, use 0.5 as cut point (matches default stinger behavior).
+			base := frameA
+			overlay := frameB
+			if position >= 0.5 && frameB != nil {
+				base = frameB
+				overlay = frameA
+			}
+			if overlay == nil {
+				overlay = frameA
+			}
+
+			if err := gpu.BlendStinger(ctx, dst, base, overlay, alphaFrame); err != nil {
+				alphaFrame.Release()
+				dst.Release()
+				return fmt.Errorf("gpu transition stinger: %w", err)
+			}
+			alphaFrame.Release()
+		} else {
+			// No alpha data — fall back to mix blend.
+			if err := gpu.BlendMix(ctx, dst, frameA, frameB, position); err != nil {
+				dst.Release()
+				return fmt.Errorf("gpu transition stinger fallback: %w", err)
+			}
+		}
+	default:
+		// Unknown type — use mix as fallback.
+		if err := gpu.BlendMix(ctx, dst, frameA, frameB, position); err != nil {
+			dst.Release()
+			return fmt.Errorf("gpu transition fallback: %w", err)
+		}
+	}
+
+	// Run blended result through rest of GPU pipeline (key → layout →
+	// compositor → stmap → raw sinks → encode).
+	if err := r.pipeline.Run(dst); err != nil {
+		dst.Release()
+		return fmt.Errorf("gpu transition pipeline: %w", err)
+	}
+	dst.Release()
 	return nil
 }
 
