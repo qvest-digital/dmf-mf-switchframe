@@ -59,10 +59,17 @@ func DrawBorder(ctx *Context, frame *GPUFrame, rect Rect, color YUVColor, thickn
 		return fmt.Errorf("gpu: draw border: %w", err)
 	}
 
+	outerX := rect.X - thickness
+	outerY := rect.Y - thickness
+	outerW := rect.W + thickness*2
+	outerH := rect.H + thickness*2
+
 	params := C.MetalBorderParams{
 		dstW: C.uint32_t(frame.Width), dstH: C.uint32_t(frame.Height), dstPitch: C.uint32_t(frame.Pitch),
 		rectX: C.int32_t(rect.X), rectY: C.int32_t(rect.Y),
 		rectW: C.int32_t(rect.W), rectH: C.int32_t(rect.H),
+		outerX: C.int32_t(outerX), outerY: C.int32_t(outerY),
+		outerW: C.int32_t(outerW), outerH: C.int32_t(outerH),
 		thickness: C.int32_t(thickness),
 		colorY: C.uint8_t(color.Y), colorCb: C.uint8_t(color.Cb), colorCr: C.uint8_t(color.Cr),
 	}

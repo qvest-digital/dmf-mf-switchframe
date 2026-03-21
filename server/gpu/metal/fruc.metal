@@ -66,8 +66,8 @@ kernel void fruc_interpolate_y(
     int bx = int(gid.x) / 4;
     int by = int(gid.y) / 4;
     int flowIdx = by * params.flowStride + bx * 2;
-    float dx = float(flowXY[flowIdx]) * 0.25f;
-    float dy = float(flowXY[flowIdx + 1]) * 0.25f;
+    float dx = float(flowXY[flowIdx]) * 0.03125f;
+    float dy = float(flowXY[flowIdx + 1]) * 0.03125f;
 
     // Source positions in prev and curr (bidirectional interpolation)
     float prevX = float(gid.x) - dx * params.alpha;
@@ -123,8 +123,8 @@ kernel void fruc_interpolate_uv(
     for (int j = 0; j < 2; j++) {
         for (int i = 0; i < 2; i++) {
             int idx = bys[j] * params.flowStride + bxs[i] * 2;
-            dx += float(flowXY[idx]) * 0.25f;
-            dy += float(flowXY[idx + 1]) * 0.25f;
+            dx += float(flowXY[idx]) * 0.03125f;
+            dy += float(flowXY[idx + 1]) * 0.03125f;
         }
     }
     dx *= 0.25f;

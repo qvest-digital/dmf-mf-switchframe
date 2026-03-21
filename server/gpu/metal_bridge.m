@@ -298,6 +298,30 @@ MetalResult metal_scale_bilinear(MetalQueueRef queue, MetalPipelineRef pipeline,
                        params->dstW, params->dstH);
 }
 
+MetalResult metal_scale_lanczos3_h(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef tmpBuf, MetalBufferRef src, const MetalLanczos3HParams* params) {
+    id<MTLBuffer> bufs[] = {
+        (id<MTLBuffer>)tmpBuf,
+        (id<MTLBuffer>)src,
+    };
+    return dispatch_2d((id<MTLCommandQueue>)queue,
+                       (id<MTLComputePipelineState>)pipeline,
+                       bufs, 2, params, sizeof(*params), 2,
+                       params->dstW, params->srcH);
+}
+
+MetalResult metal_scale_lanczos3_v(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dst, MetalBufferRef tmpBuf, const MetalLanczos3VParams* params) {
+    id<MTLBuffer> bufs[] = {
+        (id<MTLBuffer>)dst,
+        (id<MTLBuffer>)tmpBuf,
+    };
+    return dispatch_2d((id<MTLCommandQueue>)queue,
+                       (id<MTLComputePipelineState>)pipeline,
+                       bufs, 2, params, sizeof(*params), 2,
+                       params->dstW, params->dstH);
+}
+
 // ============================================================================
 // Key kernels
 // ============================================================================
@@ -473,12 +497,10 @@ MetalResult metal_nv12_to_v210(MetalQueueRef queue, MetalPipelineRef pipeline,
 MetalResult metal_draw_border(MetalQueueRef queue, MetalPipelineRef pipeline,
     MetalBufferRef dst, const MetalBorderParams* params) {
     id<MTLBuffer> bufs[] = { (id<MTLBuffer>)dst };
-    uint32_t outerW = (uint32_t)(params->rectW + params->thickness * 2);
-    uint32_t outerH = (uint32_t)(params->rectH + params->thickness * 2);
     return dispatch_2d((id<MTLCommandQueue>)queue,
                        (id<MTLComputePipelineState>)pipeline,
                        bufs, 1, params, sizeof(*params), 1,
-                       outerW, outerH);
+                       (uint32_t)params->outerW, (uint32_t)params->outerH);
 }
 
 MetalResult metal_fill_rect(MetalQueueRef queue, MetalPipelineRef pipeline,

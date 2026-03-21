@@ -34,6 +34,11 @@ type metalContext struct {
 	// Lazily-created compute pipeline states keyed by kernel function name
 	pipelines   map[string]C.MetalPipelineRef
 	pipelinesMu sync.Mutex
+
+	// Lanczos-3 temporary float buffer (cached, grown as needed).
+	// Size: lanczosTmpSize floats (4 bytes each).
+	lanczosTmpBuf  C.MetalBufferRef
+	lanczosTmpSize int
 }
 
 // findMetallib searches for the compiled Metal shader library.
@@ -105,6 +110,13 @@ func (c *metalContext) Close() error {
 		c.pool.Close()
 	}
 
+	// Free Lanczos temp buffer
+	if c.lanczosTmpBuf != nil {
+		C.metal_buffer_free(c.lanczosTmpBuf)
+		c.lanczosTmpBuf = nil
+		c.lanczosTmpSize = 0
+	}
+
 	// Free all cached pipeline states
 	c.pipelinesMu.Lock()
 	for _, p := range c.pipelines {
@@ -117,6 +129,26 @@ func (c *metalContext) Close() error {
 	c.device = nil
 	c.queue = nil
 	c.library = nil
+	return nil
+}
+
+// ensureLanczosTemp ensures the Lanczos-3 temporary float32 buffer is
+// large enough for the given number of floats. Grows but never shrinks.
+func (c *metalContext) ensureLanczosTemp(needed int) error {
+	if needed <= c.lanczosTmpSize {
+		return nil
+	}
+	if c.lanczosTmpBuf != nil {
+		C.metal_buffer_free(c.lanczosTmpBuf)
+		c.lanczosTmpBuf = nil
+		c.lanczosTmpSize = 0
+	}
+	buf, err := c.allocBuffer(needed * 4) // 4 bytes per float32
+	if err != nil {
+		return fmt.Errorf("gpu: lanczos temp alloc (%d floats): %w", needed, err)
+	}
+	c.lanczosTmpBuf = buf
+	c.lanczosTmpSize = needed
 	return nil
 }
 

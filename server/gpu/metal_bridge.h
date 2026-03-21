@@ -143,8 +143,28 @@ typedef struct {
     uint32_t dstPitch;
 } MetalScaleParams;
 
+typedef struct {
+    uint32_t dstW;
+    uint32_t srcW;
+    uint32_t srcH;
+    uint32_t srcPitch;
+} MetalLanczos3HParams;
+
+typedef struct {
+    uint32_t dstW;
+    uint32_t dstH;
+    uint32_t dstPitch;
+    uint32_t srcH;
+} MetalLanczos3VParams;
+
 MetalResult metal_scale_bilinear(MetalQueueRef queue, MetalPipelineRef pipeline,
     MetalBufferRef dst, MetalBufferRef src, const MetalScaleParams* params);
+
+MetalResult metal_scale_lanczos3_h(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef tmpBuf, MetalBufferRef src, const MetalLanczos3HParams* params);
+
+MetalResult metal_scale_lanczos3_v(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dst, MetalBufferRef tmpBuf, const MetalLanczos3VParams* params);
 
 // --- Key kernels ---
 typedef struct {
@@ -262,6 +282,7 @@ MetalResult metal_nv12_to_v210(MetalQueueRef queue, MetalPipelineRef pipeline,
 typedef struct {
     uint32_t dstW; uint32_t dstH; uint32_t dstPitch;
     int32_t rectX; int32_t rectY; int32_t rectW; int32_t rectH;
+    int32_t outerX; int32_t outerY; int32_t outerW; int32_t outerH;
     int32_t thickness;
     uint8_t colorY; uint8_t colorCb; uint8_t colorCr;
 } MetalBorderParams;

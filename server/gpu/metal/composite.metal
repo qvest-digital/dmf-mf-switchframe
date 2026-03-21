@@ -37,6 +37,10 @@ struct BorderParams {
     int rectY;
     int rectW;
     int rectH;
+    int outerX;
+    int outerY;
+    int outerW;
+    int outerH;
     int thickness;
     uint8_t colorY;
     uint8_t colorCb;
@@ -131,21 +135,23 @@ kernel void pip_composite_uv(
 }
 
 // Draw border around a rectangle
+// Thread indices are relative to the outer bounding box origin (outerX, outerY).
 kernel void draw_border_nv12(
     device uint8_t* dst           [[buffer(0)]],
     constant BorderParams& params [[buffer(1)]],
     uint2 gid [[thread_position_in_grid]])
 {
-    int x = int(gid.x);
-    int y = int(gid.y);
+    int lx = int(gid.x);
+    int ly = int(gid.y);
 
-    int outerX = params.rectX - params.thickness;
-    int outerY = params.rectY - params.thickness;
-    int outerW = params.rectW + params.thickness * 2;
-    int outerH = params.rectH + params.thickness * 2;
+    // Convert local (outer-box-relative) coords to absolute frame coords
+    int x = params.outerX + lx;
+    int y = params.outerY + ly;
 
-    if (x < outerX || x >= outerX + outerW || y < outerY || y >= outerY + outerH) return;
+    if (lx >= params.outerW || ly >= params.outerH) return;
     if (x >= int(params.dstW) || y >= int(params.dstH) || x < 0 || y < 0) return;
+
+    // Inside the rect itself? Skip (not border)
     if (x >= params.rectX && x < params.rectX + params.rectW && y >= params.rectY && y < params.rectY + params.rectH) return;
 
     dst[uint(y) * params.dstPitch + uint(x)] = params.colorY;
