@@ -222,6 +222,12 @@ func (fs *frcSource) ingest(pf *ProcessingFrame) {
 		}
 	}
 
+	// Skip MCFI when frames lack CPU YUV data (GPU path).
+	ySize := fs.prevFrame.Width * fs.prevFrame.Height * 3 / 2
+	if len(fs.prevFrame.YUV) < ySize || len(fs.currFrame.YUV) < ySize {
+		return
+	}
+
 	// Detect scene change via subsampled SAD.
 	fs.sceneChange = fs.detectSceneChange(fs.prevFrame, fs.currFrame)
 	if fs.sceneChange {
@@ -448,8 +454,12 @@ func (fs *frcSource) reset() {
 func (fs *frcSource) detectSceneChange(prev, curr *ProcessingFrame) bool {
 	width := prev.Width
 	height := prev.Height
-	yA := prev.YUV[:width*height]
-	yB := curr.YUV[:width*height]
+	ySize := width * height
+	if len(prev.YUV) < ySize || len(curr.YUV) < ySize {
+		return false // No CPU YUV data (GPU path) — skip scene detection.
+	}
+	yA := prev.YUV[:ySize]
+	yB := curr.YUV[:ySize]
 
 	var totalSAD uint64
 	rows := 0
