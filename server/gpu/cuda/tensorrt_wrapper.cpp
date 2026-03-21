@@ -482,7 +482,9 @@ int trt_build_engine_v2(const char* onnxPath, const char* planPath,
         return -1;
     }
 
-    // Set optimization profile for ALL dynamic dimensions, not just batch.
+    // Set optimization profile for ALL inputs. Always set profiles even for
+    // inputs that appear fully static — TensorRT may internally transform
+    // data types (e.g., Int64 → Int32) and still require explicit profiles.
     int numInputs = network->getNbInputs();
     for (int i = 0; i < numInputs; i++) {
         auto input = network->getInput(i);
@@ -490,11 +492,9 @@ int trt_build_engine_v2(const char* onnxPath, const char* planPath,
         const char* inputName = input->getName();
 
         nvinfer1::Dims minDims = dims, optDims = dims, maxDims = dims;
-        bool hasDynamic = false;
 
         for (int d = 0; d < dims.nbDims; d++) {
             if (dims.d[d] == -1) {
-                hasDynamic = true;
                 if (d == 0) {
                     // Batch dimension.
                     minDims.d[d] = 1;
@@ -509,11 +509,9 @@ int trt_build_engine_v2(const char* onnxPath, const char* planPath,
             }
         }
 
-        if (hasDynamic) {
-            profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kMIN, minDims);
-            profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kOPT, optDims);
-            profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kMAX, maxDims);
-        }
+        profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kMIN, minDims);
+        profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kOPT, optDims);
+        profile->setDimensions(inputName, nvinfer1::OptProfileSelector::kMAX, maxDims);
     }
     config->addOptimizationProfile(profile);
 
