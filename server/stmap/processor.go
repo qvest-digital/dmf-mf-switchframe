@@ -6,11 +6,13 @@ package stmap
 type Processor struct {
 	stmap *STMap
 	// LUTs for the Y plane (full resolution).
-	lutSX []int64
-	lutSY []int64
+	// int32 is sufficient for resolutions up to 32767px (32767*65536 < 2^31).
+	// Halves LUT memory vs int64: 16.6MB vs 33.2MB at 1080p, improving cache hit rate.
+	lutSX []int32
+	lutSY []int32
 	// LUTs for chroma planes (half resolution).
-	lutCSX []int64
-	lutCSY []int64
+	lutCSX []int32
+	lutCSY []int32
 }
 
 // NewProcessor creates a Processor that warps frames according to the
@@ -70,14 +72,14 @@ func (p *Processor) buildLUT() {
 	fw := float64(w)
 	fh := float64(h)
 
-	p.lutSX = make([]int64, n)
-	p.lutSY = make([]int64, n)
+	p.lutSX = make([]int32, n)
+	p.lutSY = make([]int32, n)
 
 	for i := 0; i < n; i++ {
 		sx := float64(m.S[i])*fw - 0.5
 		sy := float64(m.T[i])*fh - 0.5
-		p.lutSX[i] = int64(sx * 65536)
-		p.lutSY[i] = int64(sy * 65536)
+		p.lutSX[i] = int32(sx * 65536)
+		p.lutSY[i] = int32(sy * 65536)
 	}
 
 	// Chroma LUT: average the 4 luma values in each 2x2 block, then
@@ -92,8 +94,8 @@ func (p *Processor) buildLUT() {
 	cw := w / 2
 	ch := h / 2
 	cn := cw * ch
-	p.lutCSX = make([]int64, cn)
-	p.lutCSY = make([]int64, cn)
+	p.lutCSX = make([]int32, cn)
+	p.lutCSY = make([]int32, cn)
 
 	for cy := 0; cy < ch; cy++ {
 		for cx := 0; cx < cw; cx++ {
@@ -114,8 +116,8 @@ func (p *Processor) buildLUT() {
 			csy := avgT*float64(ch) - 0.5
 
 			ci := cy*cw + cx
-			p.lutCSX[ci] = int64(csx * 65536)
-			p.lutCSY[ci] = int64(csy * 65536)
+			p.lutCSX[ci] = int32(csx * 65536)
+			p.lutCSY[ci] = int32(csy * 65536)
 		}
 	}
 }
@@ -124,7 +126,7 @@ func (p *Processor) buildLUT() {
 // dst receives len(lutX) output pixels. src is the FULL source plane (w*h bytes).
 // Uses the platform-specific warpBilinearRow kernel (assembly on amd64/arm64,
 // Go fallback on other platforms).
-func warpPlaneBand(dst, src []byte, w, h int, lutX, lutY []int64) {
+func warpPlaneBand(dst, src []byte, w, h int, lutX, lutY []int32) {
 	n := len(lutX)
 	if n == 0 {
 		return
@@ -133,7 +135,7 @@ func warpPlaneBand(dst, src []byte, w, h int, lutX, lutY []int64) {
 }
 
 // warpPlane applies bilinear interpolation for one complete plane.
-func warpPlane(dst, src []byte, w, h int, lutX, lutY []int64) {
+func warpPlane(dst, src []byte, w, h int, lutX, lutY []int32) {
 	n := w * h
 	if n == 0 {
 		return

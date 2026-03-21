@@ -2,8 +2,9 @@
 
 package stmap
 
-// warpBilinearRow processes one band of pixels using precomputed 16.16
-// fixed-point LUT coordinates. See warp_kernels_amd64.go for documentation.
+// warpBilinearRow processes n output pixels using precomputed 16.16
+// fixed-point LUT coordinates (int32). Uses software prefetching via
+// PRFM to hide cache miss latency from the random source access pattern.
 //
 //go:noescape
-func warpBilinearRow(dst, src *byte, srcW, srcH, n int, lutX, lutY *int64)
+func warpBilinearRow(dst, src *byte, srcW, srcH, n int, lutX, lutY *int32)

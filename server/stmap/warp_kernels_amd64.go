@@ -2,13 +2,14 @@
 
 package stmap
 
-// warpBilinearRow processes one band of pixels using precomputed 16.16
-// fixed-point LUT coordinates. For each output pixel i, reads lutX[i] and
-// lutY[i], samples 4 source pixels from src (full plane, srcW×srcH), and
-// writes the bilinear-interpolated result to dst[i].
+// warpBilinearRow processes n output pixels using precomputed 16.16
+// fixed-point LUT coordinates (int32). For each pixel, reads source
+// coordinates from lutX/lutY, samples 4 source pixels with bilinear
+// interpolation, and writes the result to dst.
 //
-// This eliminates Go bounds checks on the src array access and uses
-// register-pinned loop variables for ~2x speedup over the Go fallback.
+// Uses software prefetching to hide memory latency from the random
+// source pixel access pattern (each pixel reads from a different
+// source location, causing L2/L3 cache misses).
 //
 //go:noescape
-func warpBilinearRow(dst, src *byte, srcW, srcH, n int, lutX, lutY *int64)
+func warpBilinearRow(dst, src *byte, srcW, srcH, n int, lutX, lutY *int32)

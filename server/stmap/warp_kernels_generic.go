@@ -5,9 +5,8 @@ package stmap
 import "unsafe"
 
 // warpBilinearRow is the generic Go fallback for platforms without assembly
-// kernels. Performs bilinear interpolation using precomputed 16.16 fixed-point
-// LUT coordinates. Functionally identical to the assembly versions.
-func warpBilinearRow(dst, src *byte, srcW, srcH, n int, lutX, lutY *int64) {
+// kernels. Uses int32 LUT coordinates (16.16 fixed-point).
+func warpBilinearRow(dst, src *byte, srcW, srcH, n int, lutX, lutY *int32) {
 	if n <= 0 {
 		return
 	}
@@ -16,8 +15,8 @@ func warpBilinearRow(dst, src *byte, srcW, srcH, n int, lutX, lutY *int64) {
 	lx := unsafe.Slice(lutX, n)
 	ly := unsafe.Slice(lutY, n)
 
-	maxX := int64(srcW-1) << 16
-	maxY := int64(srcH-1) << 16
+	maxX := int32((srcW - 1) << 16)
+	maxY := int32((srcH - 1) << 16)
 	lastCol := srcW - 1
 	lastRow := srcH - 1
 
@@ -25,7 +24,6 @@ func warpBilinearRow(dst, src *byte, srcW, srcH, n int, lutX, lutY *int64) {
 		sx := lx[i]
 		sy := ly[i]
 
-		// Clamp to valid source range.
 		if sx < 0 {
 			sx = 0
 		} else if sx > maxX {
