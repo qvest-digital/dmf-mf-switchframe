@@ -228,6 +228,21 @@ func (a *GPUAnimatedSTMap) FrameCount() int { return 0 }
 // Free is a no-op on non-CUDA builds.
 func (a *GPUAnimatedSTMap) Free() {}
 
+// FRUC is a stub for non-CUDA builds.
+type FRUC struct{}
+
+// FRUCAvailable returns false on non-CUDA builds.
+func FRUCAvailable() bool { return false }
+
+// NewFRUC returns ErrGPUNotAvailable on non-CUDA builds.
+func NewFRUC(ctx *Context, width, height int) (*FRUC, error) { return nil, ErrGPUNotAvailable }
+
+// Interpolate returns ErrGPUNotAvailable on non-CUDA builds.
+func (f *FRUC) Interpolate(prev, curr, output *GPUFrame) error { return ErrGPUNotAvailable }
+
+// Close is a no-op on non-CUDA builds.
+func (f *FRUC) Close() {}
+
 // GPUEncoder is a stub for non-CUDA builds.
 type GPUEncoder struct{}
 
