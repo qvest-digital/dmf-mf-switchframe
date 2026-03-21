@@ -3,6 +3,7 @@
 package codec
 
 /*
+#cgo CFLAGS: -I/usr/local/cuda/include
 #include <libavcodec/avcodec.h>
 #include <libavutil/frame.h>
 #include <libavutil/imgutils.h>
