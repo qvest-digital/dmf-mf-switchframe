@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, CreateSRTSourceConfig, SRTSourceStats, CommsState } from './types';
+import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest } from './types';
 import { notify } from '$lib/state/notifications.svelte';
 import { resolveApiUrl } from './base-url';
 
@@ -1003,4 +1003,75 @@ export function commsMute(operatorId: string, muted: boolean): Promise<ControlRo
 
 export function commsStatus(): Promise<CommsState> {
 	return request('/api/comms/status');
+}
+
+// ─── ST Map ─────────────────────────────────────────
+
+export function stmapList(): Promise<{ maps: string[] }> {
+	return request('/api/stmap');
+}
+
+export function stmapState(): Promise<STMapState> {
+	return request('/api/stmap/state');
+}
+
+export function stmapGenerators(): Promise<{ generators: STMapGeneratorInfo[] }> {
+	return request('/api/stmap/generators');
+}
+
+export function stmapGenerate(req: STMapGenerateRequest): Promise<STMapInfo> {
+	return post('/api/stmap/generate', req);
+}
+
+export async function stmapUpload(name: string, file: File): Promise<STMapInfo> {
+	const res = await fetch(resolveApiUrl(`/api/stmap/upload/${encodeURIComponent(name)}`), {
+		method: 'POST',
+		headers: authHeaders(),
+		body: file,
+	});
+	if (!res.ok) {
+		const body = await res.json().catch(() => ({ error: 'unknown error' }));
+		throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
+	}
+	return res.json();
+}
+
+export function stmapGet(name: string): Promise<STMapInfo> {
+	return request(`/api/stmap/${encodeURIComponent(name)}`);
+}
+
+export function stmapDelete(name: string): Promise<void> {
+	return request(`/api/stmap/${encodeURIComponent(name)}`, { method: 'DELETE' });
+}
+
+export async function stmapDownload(name: string): Promise<ArrayBuffer> {
+	const res = await fetch(resolveApiUrl(`/api/stmap/${encodeURIComponent(name)}/download`), {
+		headers: authHeaders(),
+	});
+	if (!res.ok) throw new SwitchApiError(res.status, `download failed: ${res.status}`);
+	return res.arrayBuffer();
+}
+
+export function stmapAssignSource(sourceKey: string, mapName: string): Promise<STMapState> {
+	return request(`/api/stmap/source/${encodeURIComponent(sourceKey)}`, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json', ...authHeaders() },
+		body: JSON.stringify({ map: mapName }),
+	});
+}
+
+export function stmapRemoveSource(sourceKey: string): Promise<void> {
+	return request(`/api/stmap/source/${encodeURIComponent(sourceKey)}`, { method: 'DELETE' });
+}
+
+export function stmapAssignProgram(mapName: string): Promise<STMapState> {
+	return request('/api/stmap/program', {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json', ...authHeaders() },
+		body: JSON.stringify({ map: mapName }),
+	});
+}
+
+export function stmapRemoveProgram(): Promise<void> {
+	return request('/api/stmap/program', { method: 'DELETE' });
 }

@@ -29,6 +29,7 @@
 	import OperatorRegistration from '../components/OperatorRegistration.svelte';
 	import OperatorBadge from '../components/OperatorBadge.svelte';
 	import TeamPanel from '../components/TeamPanel.svelte';
+	import STMapPanel from '../components/STMapPanel.svelte';
 	import LockIndicator from '../components/LockIndicator.svelte';
 	import CommsBar from '../components/CommsBar.svelte';
 	import BottomTabs from '../components/BottomTabs.svelte';
@@ -762,6 +763,10 @@
 						{:else if activeTab === 'Team'}
 							<div class="tab-panel">
 								<TeamPanel state={store.effectiveState} />
+							</div>
+						{:else if activeTab === 'STMap'}
+							<div class="tab-panel">
+								<STMapPanel state={store.effectiveState} />
 							</div>
 						{/if}
 					{/snippet}

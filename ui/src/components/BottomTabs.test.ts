@@ -23,7 +23,8 @@ describe('BottomTabs', () => {
 		expect(tabLabels).toContain('Captions');
 		expect(tabLabels).toContain('Clips');
 		expect(tabLabels).toContain('Team');
-		expect(tabs.length).toBe(11);
+		expect(tabLabels).toContain('STMap');
+		expect(tabs.length).toBe(12);
 	});
 
 	it('renders Presets tab', () => {
