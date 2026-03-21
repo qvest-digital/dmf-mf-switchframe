@@ -119,6 +119,15 @@ func TestGPUEncodeCPUFallback(t *testing.T) {
 	require.NoError(t, err)
 	defer enc.Close()
 
+	// When hw_frames is active, EncodeCPU is not supported
+	// (GPU→CPU fallback encoder is not allocated). Skip in that case.
+	if enc.IsHWFrames() {
+		_, _, err := enc.EncodeCPU(make([]byte, w*h*3/2), 0, true)
+		require.Error(t, err, "EncodeCPU should return error when hw_frames is active")
+		t.Log("hw_frames active — EncodeCPU correctly returns error")
+		return
+	}
+
 	// Encode from CPU-side YUV directly (bypass GPU path)
 	testYUV := make([]byte, w*h*3/2)
 	for i := 0; i < w*h; i++ {
