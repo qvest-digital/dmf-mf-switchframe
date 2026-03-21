@@ -4,6 +4,8 @@
 	import Clock from './Clock.svelte';
 	import RecordingControl from './RecordingControl.svelte';
 	import ConnectionStatus from './ConnectionStatus.svelte';
+	import SRTHealthDot from './SRTHealthDot.svelte';
+	import { computeOutputHealth } from '$lib/util/srt-health';
 
 	type ConnectionIndicatorState = 'webtransport' | 'polling' | 'disconnected';
 
@@ -42,6 +44,8 @@
 	);
 	const ioWarning = $derived(hasUnhealthySRTInput || hasOutputError);
 
+	const outputHealth = $derived(computeOutputHealth(crState.destinations));
+
 	$effect(() => {
 		if (showConfidence) {
 			thumbInterval = setInterval(() => { thumbKey++; }, 1000);
@@ -71,7 +75,7 @@
 		class:io-active={ioActive}
 		class:io-warning={ioWarning && !ioActive}
 		onclick={() => onToggleIOPanel?.()}
-	>I/O</button>
+	>I/O{#if outputHealth}<span class="io-dot-wrapper"><SRTHealthDot level={outputHealth} /></span>{/if}</button>
 	<button
 		class="header-btn comms-btn-header"
 		class:comms-active={commsActive}
@@ -147,6 +151,18 @@
 		border-color: var(--accent-orange);
 		background: var(--accent-orange-dim);
 		color: var(--accent-orange);
+	}
+
+	.io-dot-wrapper {
+		display: inline-flex;
+		margin-left: 4px;
+		vertical-align: middle;
+	}
+
+	.io-btn :global(.srt-dot) {
+		position: static;
+		width: 6px;
+		height: 6px;
 	}
 
 	.confidence-thumb {
