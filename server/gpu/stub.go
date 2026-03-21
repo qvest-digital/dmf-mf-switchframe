@@ -94,6 +94,27 @@ func FillBlack(ctx *Context, frame *GPUFrame) error {
 	return ErrGPUNotAvailable
 }
 
+// GPUEncoder is a stub for non-CUDA builds.
+type GPUEncoder struct{}
+
+// NewGPUEncoder returns ErrGPUNotAvailable on non-CUDA builds.
+func NewGPUEncoder(ctx *Context, width, height, fpsNum, fpsDen, bitrate int) (*GPUEncoder, error) {
+	return nil, ErrGPUNotAvailable
+}
+
+// EncodeGPU returns ErrGPUNotAvailable on non-CUDA builds.
+func (e *GPUEncoder) EncodeGPU(frame *GPUFrame, forceIDR bool) ([]byte, bool, error) {
+	return nil, false, ErrGPUNotAvailable
+}
+
+// EncodeCPU returns ErrGPUNotAvailable on non-CUDA builds.
+func (e *GPUEncoder) EncodeCPU(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
+	return nil, false, ErrGPUNotAvailable
+}
+
+// Close is a no-op on non-CUDA builds.
+func (e *GPUEncoder) Close() {}
+
 // GPUDecoder is a stub for non-CUDA builds.
 type GPUDecoder struct{}
 
