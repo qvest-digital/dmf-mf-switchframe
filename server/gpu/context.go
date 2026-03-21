@@ -155,6 +155,22 @@ func (c *Context) Close() error {
 	return nil
 }
 
+// Backend returns the GPU backend name ("cuda").
+func (c *Context) Backend() string {
+	if c == nil {
+		return ""
+	}
+	return "cuda"
+}
+
+// DeviceName returns the GPU device name (e.g., "NVIDIA Tesla T4").
+func (c *Context) DeviceName() string {
+	if c == nil {
+		return ""
+	}
+	return c.props.Name
+}
+
 // DeviceProperties returns the GPU device properties.
 func (c *Context) DeviceProperties() DeviceProperties {
 	return c.props
