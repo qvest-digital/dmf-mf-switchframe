@@ -4,6 +4,8 @@ package codec
 
 /*
 #cgo CFLAGS: -I/usr/local/cuda/include
+#cgo LDFLAGS: -L/usr/local/cuda/lib64 -lcuda
+#include <cuda.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/frame.h>
 #include <libavutil/imgutils.h>
@@ -182,14 +184,21 @@ static int ffenc_open_cuda_hw(ffenc_hw_frames_t* h, int width, int height,
 // ffenc_encode_nv12_cuda encodes one NV12 frame from CUDA device memory.
 // y_dev_ptr points to Y plane, uv_dev_ptr points to UV plane (both device pointers).
 // pitch is the row stride in bytes.
+// cuda_ctx is the CUcontext to push before encoding (cgo goroutines may migrate threads).
 // Returns 0 on success, 1 if EAGAIN, negative on error.
 static int ffenc_encode_nv12_cuda(ffenc_hw_frames_t* h,
                                    void* y_dev_ptr, void* uv_dev_ptr,
                                    int pitch, int64_t input_pts, int force_idr,
+                                   void* cuda_ctx,
                                    unsigned char** out_buf, int* out_len, int* is_idr) {
 	*out_buf = NULL;
 	*out_len = 0;
 	*is_idr  = 0;
+
+	// Ensure CUDA context is active on this thread. cgo goroutines may
+	// migrate to threads that haven't called cudaSetDevice(0).
+	CUcontext prev_ctx;
+	cuCtxPushCurrent((CUcontext)cuda_ctx);
 
 	AVFrame* frame = h->hw_frame;
 
@@ -208,6 +217,7 @@ static int ffenc_encode_nv12_cuda(ffenc_hw_frames_t* h,
 	av_buffer_unref(&frame->hw_frames_ctx);
 	frame->hw_frames_ctx = av_buffer_ref(h->hw_frames_ref);
 	if (!frame->hw_frames_ctx) {
+		cuCtxPopCurrent(&prev_ctx);
 		return -7;
 	}
 
@@ -220,9 +230,14 @@ static int ffenc_encode_nv12_cuda(ffenc_hw_frames_t* h,
 	}
 
 	int rc = avcodec_send_frame(h->base.ctx, frame);
-	if (rc < 0) return -2;
+	if (rc < 0) {
+		cuCtxPopCurrent(&prev_ctx);
+		return rc; // return actual FFmpeg error code (negative)
+	}
 
 	rc = avcodec_receive_packet(h->base.ctx, h->base.pkt);
+	cuCtxPopCurrent(&prev_ctx);
+
 	if (rc == AVERROR(EAGAIN)) return 1;
 	if (rc < 0) return -3;
 
@@ -271,8 +286,9 @@ import (
 // FFmpegHWFramesEncoder is NOT safe for concurrent use. Callers must
 // synchronize access externally.
 type FFmpegHWFramesEncoder struct {
-	handle C.ffenc_hw_frames_t
-	closed bool
+	handle  C.ffenc_hw_frames_t
+	cudaCtx unsafe.Pointer // CUcontext for thread-safe CUDA access
+	closed  bool
 }
 
 // NewFFmpegHWFramesEncoder creates an NVENC encoder that reads NV12 directly
@@ -326,6 +342,7 @@ func NewFFmpegHWFramesEncoder(cudaCtx unsafe.Pointer, width, height, bitrate, fp
 		}
 		return nil, fmt.Errorf("failed to create NVENC hw_frames encoder: %s (code %d)", msg, int(rc))
 	}
+	e.cudaCtx = cudaCtx
 	return e, nil
 }
 
@@ -350,6 +367,7 @@ func (e *FFmpegHWFramesEncoder) EncodeNV12CUDA(yDevPtr, uvDevPtr unsafe.Pointer,
 	rc := C.ffenc_encode_nv12_cuda(&e.handle,
 		yDevPtr, uvDevPtr,
 		C.int(pitch), C.int64_t(pts), forceIDRInt,
+		e.cudaCtx,
 		&outBuf, &outLen, &isIDR)
 	if rc < 0 {
 		return nil, false, fmt.Errorf("NVENC hw_frames encode error: code %d", int(rc))
