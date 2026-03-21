@@ -10,13 +10,14 @@ __global__ void scale_bilinear_kernel(
     int dy = blockIdx.y * blockDim.y + threadIdx.y;
     if (dx >= dstW || dy >= dstH) return;
 
-    // Map destination to source coordinates (16.16 fixed-point)
-    int sx_fp = dx * ((srcW - 1) << 16) / max(dstW - 1, 1);
-    int sy_fp = dy * ((srcH - 1) << 16) / max(dstH - 1, 1);
-    int sx = sx_fp >> 16;
-    int sy = sy_fp >> 16;
-    int fx = sx_fp & 0xFFFF;
-    int fy = sy_fp & 0xFFFF;
+    // Map destination to source coordinates using float to avoid int32 overflow
+    // (e.g., 1920 * 65536 overflows 32-bit int for coordinates > ~32)
+    float srcXf = (float)dx * (float)(srcW - 1) / (float)max(dstW - 1, 1);
+    float srcYf = (float)dy * (float)(srcH - 1) / (float)max(dstH - 1, 1);
+    int sx = (int)srcXf;
+    int sy = (int)srcYf;
+    int fx = (int)((srcXf - sx) * 65536.0f); // 16-bit fractional part
+    int fy = (int)((srcYf - sy) * 65536.0f);
 
     int sx1 = min(sx + 1, srcW - 1);
     int sy1 = min(sy + 1, srcH - 1);
