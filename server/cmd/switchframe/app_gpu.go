@@ -427,20 +427,16 @@ func (r *gpuPipelineRunnerImpl) RunTransition(fromKey, toKey string, transType s
 				dst.Release()
 				return fmt.Errorf("gpu transition stinger: upload overlay: %w", err)
 			}
-			// Set correct dimensions (pool frame may be larger).
 			overlayFrame.Width = stinger.Width
 			overlayFrame.Height = stinger.Height
 
-			// Upload alpha plane. Alpha is luma-resolution (width*height bytes).
-			// We need it as a "frame" for BlendStinger — Y plane holds alpha,
-			// UV plane is used as scratch for downsampled chroma alpha.
+			// Upload alpha plane as fake NV12: Y=alpha, UV=128 (neutral).
 			alphaFrame, alphaErr := pool.Acquire()
 			if alphaErr != nil {
 				overlayFrame.Release()
 				dst.Release()
 				return fmt.Errorf("gpu transition stinger: acquire alpha: %w", alphaErr)
 			}
-			// Build a YUV420p buffer where Y = alpha, Cb/Cr = 128 (neutral).
 			alphaYUV := make([]byte, stinger.Width*stinger.Height*3/2)
 			copy(alphaYUV[:len(stinger.Alpha)], stinger.Alpha)
 			cbOff := stinger.Width * stinger.Height
@@ -455,6 +451,49 @@ func (r *gpuPipelineRunnerImpl) RunTransition(fromKey, toKey string, transType s
 			}
 			alphaFrame.Width = stinger.Width
 			alphaFrame.Height = stinger.Height
+
+			// GPU scale overlay and alpha to match base frame if dimensions differ.
+			// Stingers may be stored at a different resolution than the pipeline
+			// (e.g. 720p stinger PNGs with a 1080p pipeline).
+			if stinger.Width != frameA.Width || stinger.Height != frameA.Height {
+				scaledOverlay, scaleErr := pool.Acquire()
+				if scaleErr != nil {
+					alphaFrame.Release()
+					overlayFrame.Release()
+					dst.Release()
+					return fmt.Errorf("gpu transition stinger: acquire scaled overlay: %w", scaleErr)
+				}
+				scaledOverlay.Width = frameA.Width
+				scaledOverlay.Height = frameA.Height
+				if err := gpu.ScaleBilinear(ctx, scaledOverlay, overlayFrame); err != nil {
+					scaledOverlay.Release()
+					alphaFrame.Release()
+					overlayFrame.Release()
+					dst.Release()
+					return fmt.Errorf("gpu transition stinger: scale overlay: %w", err)
+				}
+				overlayFrame.Release()
+				overlayFrame = scaledOverlay
+
+				scaledAlpha, scaleErr := pool.Acquire()
+				if scaleErr != nil {
+					alphaFrame.Release()
+					overlayFrame.Release()
+					dst.Release()
+					return fmt.Errorf("gpu transition stinger: acquire scaled alpha: %w", scaleErr)
+				}
+				scaledAlpha.Width = frameA.Width
+				scaledAlpha.Height = frameA.Height
+				if err := gpu.ScaleBilinear(ctx, scaledAlpha, alphaFrame); err != nil {
+					scaledAlpha.Release()
+					alphaFrame.Release()
+					overlayFrame.Release()
+					dst.Release()
+					return fmt.Errorf("gpu transition stinger: scale alpha: %w", err)
+				}
+				alphaFrame.Release()
+				alphaFrame = scaledAlpha
+			}
 
 			// Determine base source: A before cut point, B after.
 			base := frameA

@@ -587,10 +587,12 @@ MetalResult metal_fill_rect(MetalQueueRef queue, MetalPipelineRef pipeline,
 
 typedef struct VTEncoderState {
     VTCompressionSessionRef session;
+    CVPixelBufferPoolRef pixelBufferPool;  // reusable pixel buffer pool
     int width, height, pitch;
-    // Output buffer (filled by compression callback)
+    // Output buffer (reused across frames, grows as needed)
     uint8_t *outputBuf;
     int outputLen;
+    int outputCap;   // allocated capacity of outputBuf
     int outputIsIDR;
     dispatch_semaphore_t sem;  // synchronize async callback
 } VTEncoderState;
@@ -642,11 +644,17 @@ static void vtOutputCallback(void *outputCallbackRefCon,
     // Total size: parameter sets (for IDR) + block data (AVCC → Annex B is same size: 4→4)
     size_t totalLen = paramSetsLen + blockLen;
 
-    state->outputBuf = (uint8_t *)malloc(totalLen);
-    if (!state->outputBuf) {
-        state->outputLen = 0;
-        dispatch_semaphore_signal(state->sem);
-        return;
+    // Reuse output buffer — only reallocate when capacity is insufficient.
+    if ((int)totalLen > state->outputCap) {
+        free(state->outputBuf);
+        state->outputBuf = (uint8_t *)malloc(totalLen);
+        if (!state->outputBuf) {
+            state->outputLen = 0;
+            state->outputCap = 0;
+            dispatch_semaphore_signal(state->sem);
+            return;
+        }
+        state->outputCap = (int)totalLen;
     }
 
     size_t offset = 0;
@@ -766,6 +774,27 @@ VTEncoderRef metal_vt_encoder_create(int width, int height, int fps_num, int fps
     VTCompressionSessionPrepareToEncodeFrames(session);
 
     state->session = session;
+
+    // Create a CVPixelBufferPool for reusable pixel buffers. This avoids
+    // per-frame CVPixelBufferCreate overhead (~1-2ms per call) by recycling
+    // previously allocated buffers. The pool attributes match the session.
+    NSDictionary *poolAttrs = @{
+        (NSString *)kCVPixelBufferWidthKey: @(width),
+        (NSString *)kCVPixelBufferHeightKey: @(height),
+        (NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
+    };
+    CVPixelBufferPoolRef pool = NULL;
+    CVReturn poolRet = CVPixelBufferPoolCreate(
+        NULL,   // allocator
+        NULL,   // pool attributes (min/max buffer count — NULL = auto)
+        (__bridge CFDictionaryRef)poolAttrs,
+        &pool
+    );
+    if (poolRet == kCVReturnSuccess && pool) {
+        state->pixelBufferPool = pool;
+    }
+    // If pool creation fails, fall back to per-frame CVPixelBufferCreate (slower but works)
+
     return (VTEncoderRef)state;
 }
 
@@ -776,6 +805,9 @@ void metal_vt_encoder_destroy(VTEncoderRef enc) {
         VTCompressionSessionCompleteFrames(state->session, kCMTimeInvalid);
         VTCompressionSessionInvalidate(state->session);
         CFRelease(state->session);
+    }
+    if (state->pixelBufferPool) {
+        CVPixelBufferPoolRelease(state->pixelBufferPool);
     }
     if (state->outputBuf) free(state->outputBuf);
     dispatch_release(state->sem);
@@ -788,42 +820,54 @@ int metal_vt_encode(VTEncoderRef enc, void* nv12_ptr, int pitch, int width, int 
     VTEncoderState *state = (VTEncoderState *)enc;
     if (!state || !state->session) return -1;
 
-    // Create a fresh CVPixelBuffer per frame. No IOSurface backing — plain
-    // memory-backed buffer avoids IOSurface pool exhaustion (which causes
-    // encoder stalls). VT retains the buffer during encode; we release our
-    // reference after submission. VT's internal release happens after the
-    // output callback fires (which we wait for via semaphore).
+    // Acquire a CVPixelBuffer from the pool (or create one if pool unavailable).
+    // Pool buffers are recycled across frames, avoiding per-frame kernel memory
+    // allocation (~1-2ms savings per frame).
     CVPixelBufferRef pixelBuffer = NULL;
-    CVReturn cvRet = CVPixelBufferCreate(
-        NULL,
-        width, height,
-        kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-        NULL,  // no IOSurface — plain memory-backed buffer
-        &pixelBuffer
-    );
+    CVReturn cvRet;
+    if (state->pixelBufferPool) {
+        cvRet = CVPixelBufferPoolCreatePixelBuffer(NULL, state->pixelBufferPool, &pixelBuffer);
+    } else {
+        cvRet = CVPixelBufferCreate(
+            NULL, width, height,
+            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            NULL, &pixelBuffer
+        );
+    }
     if (cvRet != kCVReturnSuccess || !pixelBuffer) {
         return -2;
     }
 
-    // Lock and copy NV12 data into the VT-managed buffer.
+    // Copy NV12 data from the Metal unified-memory buffer into the VT pixel buffer.
+    // VT needs its own copy because it holds reference frames for P-frame prediction
+    // beyond the lifetime of this call.
     CVPixelBufferLockBaseAddress(pixelBuffer, 0);
 
-    // Y plane
+    // Y plane — bulk copy if strides match, row-by-row otherwise.
     uint8_t *vtY = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0);
     size_t vtYStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0);
     const uint8_t *srcY = (const uint8_t *)nv12_ptr;
-    for (int row = 0; row < height; row++) {
-        memcpy(vtY + row * vtYStride, srcY + row * pitch, width);
+    if (vtYStride == (size_t)pitch) {
+        // Strides match — single memcpy for the entire Y plane.
+        memcpy(vtY, srcY, (size_t)pitch * height);
+    } else {
+        for (int row = 0; row < height; row++) {
+            memcpy(vtY + row * vtYStride, srcY + row * pitch, width);
+        }
     }
 
-    // UV plane
+    // UV plane — same bulk/row-by-row optimization.
     uint8_t *vtUV = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1);
     size_t vtUVStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1);
     const uint8_t *srcUV = (const uint8_t *)nv12_ptr + pitch * height;
     int chromaW = width;  // NV12 UV row is width bytes (width/2 CbCr pairs × 2 bytes)
     int chromaH = height / 2;
-    for (int row = 0; row < chromaH; row++) {
-        memcpy(vtUV + row * vtUVStride, srcUV + row * pitch, chromaW);
+    if (vtUVStride == (size_t)pitch) {
+        memcpy(vtUV, srcUV, (size_t)pitch * chromaH);
+    } else {
+        for (int row = 0; row < chromaH; row++) {
+            memcpy(vtUV + row * vtUVStride, srcUV + row * pitch, chromaW);
+        }
     }
 
     CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
@@ -839,11 +883,7 @@ int metal_vt_encode(VTEncoderRef enc, void* nv12_ptr, int pitch, int width, int 
         };
     }
 
-    // Free previous output
-    if (state->outputBuf) {
-        free(state->outputBuf);
-        state->outputBuf = NULL;
-    }
+    // Reset output length — buffer is reused (grown as needed in callback).
     state->outputLen = 0;
 
     OSStatus status = VTCompressionSessionEncodeFrame(
@@ -871,8 +911,8 @@ int metal_vt_encode(VTEncoderRef enc, void* nv12_ptr, int pitch, int width, int 
     *out_len = state->outputLen;
     *out_is_idr = state->outputIsIDR;
 
-    // Don't free outputBuf here — caller takes ownership (Go will copy it)
-    state->outputBuf = NULL;
+    // Buffer is owned by VTEncoderState and reused across frames.
+    // Go side copies via C.GoBytes() — do NOT null the pointer.
 
     return 0;
 }

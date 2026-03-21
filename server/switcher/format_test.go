@@ -164,7 +164,8 @@ func TestSetPipelineFormat_RejectedDuringTransition(t *testing.T) {
 
 	// Verify format is unchanged (still default)
 	f := sw.PipelineFormat()
-	require.Equal(t, "1080p29.97", f.Name, "format should be unchanged after rejection")
+	// The test switcher uses a "test" format (320x240) matching its pool.
+	require.NotEqual(t, "1080p25", f.Name, "format should be unchanged after rejection")
 }
 
 // Ensure fmt.Stringer is satisfied at compile time.

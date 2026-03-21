@@ -14,7 +14,18 @@ import (
 // control API tests) that need a Switcher but don't exercise video
 // processing at full resolution.
 func NewTestSwitcher(programRelay *distribution.Relay) *Switcher {
-	defaultFmt := DefaultFormat
+	// Use a small format matching the test frame pool (320×240) so that
+	// transition hint dimensions don't create 1080p blenders. The default
+	// format is 1080p which causes "frame exceeds pool buffer size" drops
+	// when the transition engine tries to broadcast 1920×1080 frames into
+	// the tiny test pool.
+	testFmt := PipelineFormat{
+		Name:   "test",
+		Width:  320,
+		Height: 240,
+		FPSNum: 30000,
+		FPSDen: 1001,
+	}
 	s := &Switcher{
 		log:           slog.With("component", "switcher"),
 		sources:       make(map[string]*sourceState),
@@ -24,8 +35,8 @@ func NewTestSwitcher(programRelay *distribution.Relay) *Switcher {
 		videoProcDone: make(chan struct{}),
 		framePool:     NewFramePool(4, 320, 240),
 	}
-	s.frameBudgetNs.Store(defaultFmt.FrameBudgetNs())
-	s.pipelineFormat.Store(&defaultFmt)
+	s.frameBudgetNs.Store(testFmt.FrameBudgetNs())
+	s.pipelineFormat.Store(&testFmt)
 	s.delayBuffer = NewDelayBuffer(s)
 	go s.videoProcessingLoop()
 	return s

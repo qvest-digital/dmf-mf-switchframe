@@ -137,9 +137,10 @@ func (e *GPUEncoder) EncodeGPU(frame *GPUFrame, forceIDR bool) ([]byte, bool, er
 			return nil, false, nil
 		}
 
-		// Copy encoded data from C heap to Go memory
+		// Copy encoded data from C-side reusable buffer to Go memory.
+		// The buffer is owned by VTEncoderState and reused across frames —
+		// do NOT free it here.
 		data := C.GoBytes(unsafe.Pointer(outBuf), outLen)
-		C.free(unsafe.Pointer(outBuf))
 		return data, outIsIDR != 0, nil
 	}
 
