@@ -5,8 +5,6 @@ import { PrismAudioDecoder } from '$lib/prism/audio-decoder';
 import { PrismRenderer } from '$lib/prism/renderer';
 import type { TrackInfo } from '$lib/prism/transport';
 import type { CaptionData } from '$lib/prism/protocol';
-import { createYUVRenderer, type YUVRenderer } from '$lib/video/yuv-renderer';
-
 /** Configuration for the media pipeline. */
 export interface MediaPipelineConfig {
 	/** Called when MoQ control track delivers state data. */
@@ -17,8 +15,6 @@ export interface MediaPipelineConfig {
 	 * handshake succeeded, so REST polling can be stopped.
 	 */
 	onMoQActive?: () => void;
-	/** Called when a source is identified as raw YUV (after catalog arrives). */
-	onRawSourceReady?: (sourceKey: string) => void;
 	/** Called when a caption frame arrives on the program stream. */
 	onProgramCaptionFrame?: (caption: CaptionData, timestamp: number) => void;
 }
@@ -56,12 +52,6 @@ interface SourceMedia {
 	videoWidth: number;
 	videoHeight: number;
 	videoInitData: string | null; // base64 avcC
-	/** WebGL YUV420 renderer for raw YUV sources (no H.264 decode needed). */
-	yuvRenderer: YUVRenderer | null;
-	/** True if this source uses raw/yuv420 codec instead of H.264. */
-	isRawYUV: boolean;
-	/** Count of raw YUV frames dropped because yuvRenderer was null. */
-	rawDropCount: number;
 }
 
 /** Orchestrates MoQ media subscriptions and per-source decode pipelines. */
@@ -109,8 +99,6 @@ export interface MediaPipeline {
 	resetRendererSync(sourceKey: string): void;
 	/** Check if a source exists in the pipeline (added but not necessarily catalog-ready). */
 	hasSource(sourceKey: string): boolean;
-	/** Check if a source uses raw YUV420. */
-	isRawYUVSource(sourceKey: string): boolean;
 	/** Get diagnostics from all active sources for debug snapshot. */
 	getAllDiagnostics(): Promise<Record<string, SourceDiagnostics>>;
 }
@@ -154,9 +142,6 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 			videoWidth: 0,
 			videoHeight: 0,
 			videoInitData: null,
-			yuvRenderer: null,
-			isRawYUV: false,
-			rawDropCount: 0,
 		};
 	}
 
@@ -183,22 +168,6 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 						source.videoWidth = track.width;
 						source.videoHeight = track.height;
 						source.videoInitData = track.initData ?? null;
-						if (track.codec === 'raw/yuv420') {
-							source.isRawYUV = true;
-							// If a PrismRenderer was already attached (before we knew
-							// this was raw YUV), detach it so the pipeline manager
-							// re-attaches with a YUVRenderer on the next sync call.
-							for (const [canvasId, renderer] of source.renderers) {
-								renderer.destroy();
-							}
-							source.renderers.clear();
-							for (const buf of source.secondaryBuffers.values()) {
-								buf.clear();
-							}
-							source.secondaryBuffers.clear();
-							// Notify so the pipeline manager can re-attach canvases.
-							config?.onRawSourceReady?.(key);
-						}
 					} else if (track.type === 'audio' && !source.audioConfigured) {
 						// Configure audio decoder from catalog info
 						const codec = track.codec || 'mp4a.40.2';
@@ -302,23 +271,6 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		const source = sources.get(sourceKey);
 		if (!source) return;
 
-		// Raw YUV path: bypass WebCodecs, render directly via WebGL
-		if (source.isRawYUV) {
-			if (source.yuvRenderer) {
-				source.yuvRenderer.render(data);
-				source.rawDropCount = 0;
-			} else {
-				// No renderer — track drops and disconnect after 1s (~30 frames)
-				// to stop wasting bandwidth on data we can't render.
-				source.rawDropCount++;
-				if (source.rawDropCount >= 30) {
-					console.warn(`[MediaPipeline] Disconnecting "${sourceKey}": no YUV renderer after ${source.rawDropCount} frames`);
-					disconnectSource(sourceKey);
-				}
-			}
-			return;
-		}
-
 		// Configure decoder on first frame with description (avcC config record).
 		// description is often a subarray (view into a larger extensions buffer),
 		// so we must slice() to get an owned copy — .buffer would return the
@@ -401,12 +353,6 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 			source.audioDecoder = null;
 		}
 
-		// Clean up YUV renderer
-		if (source.yuvRenderer) {
-			source.yuvRenderer.destroy();
-			source.yuvRenderer = null;
-		}
-
 		sources.delete(key);
 	}
 
@@ -450,20 +396,6 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		if (existing) {
 			existing.destroy();
 			source.secondaryBuffers.delete(canvasId);
-		}
-
-		// Raw YUV sources use WebGL renderer instead of PrismRenderer.
-		// With deferred attachment, the canvas should never have a 2D context
-		// when we reach here. If it does, log a warning instead of replacing
-		// the DOM element (which breaks Svelte bind:this references).
-		if (source.isRawYUV) {
-			const yuvR = createYUVRenderer(canvas);
-			if (yuvR) {
-				source.yuvRenderer = yuvR;
-			} else {
-				console.warn(`[MediaPipeline] Cannot create WebGL renderer for "${sourceKey}" — canvas may have existing 2D context`);
-			}
-			return true;
 		}
 
 		// Create audio clock from the source's audio decoder (or a no-op clock)
@@ -593,22 +525,14 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		return sources.has(sourceKey);
 	}
 
-	function isRawYUVSource(sourceKey: string): boolean {
-		return sources.get(sourceKey)?.isRawYUV === true;
-	}
-
 	async function getAllDiagnostics(): Promise<Record<string, SourceDiagnostics>> {
 		const result: Record<string, SourceDiagnostics> = {};
 		for (const [key, source] of sources) {
-			// Get diagnostics from first PrismRenderer (tile renderer) or YUV renderer
+			// Get diagnostics from first PrismRenderer (tile renderer)
 			let rendererDiag: Record<string, unknown> | null = null;
-			if (source.yuvRenderer) {
-				rendererDiag = source.yuvRenderer.getDiagnostics();
-			} else {
-				for (const renderer of source.renderers.values()) {
-					rendererDiag = renderer.getDiagnostics() as unknown as Record<string, unknown>;
-					break;
-				}
+			for (const renderer of source.renderers.values()) {
+				rendererDiag = renderer.getDiagnostics() as unknown as Record<string, unknown>;
+				break;
 			}
 
 			result[key] = {
@@ -643,7 +567,6 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		feedAudioFrame,
 		resetRendererSync,
 		hasSource,
-		isRawYUVSource,
 		getAllDiagnostics,
 	};
 }

@@ -37,10 +37,6 @@ type PlayerConfig struct {
 	// Called for every output frame (including slow-mo duplicates/interpolations).
 	RawVideoOutput func(yuv []byte, w, h int, pts int64)
 
-	// RawMonitorOutput sends raw YUV to a monitoring relay (e.g. "replay-raw").
-	// Optional — only set when raw program monitor is enabled.
-	RawMonitorOutput func(yuv []byte, w, h int, pts int64)
-
 	// AudioDecoderFactory creates an AAC decoder for WSOLA pre-processing.
 	// Required when Speed < 1.0 for pitch-preserved slow-motion audio.
 	AudioDecoderFactory audio.DecoderFactory
@@ -543,11 +539,6 @@ func (p *replayPlayer) outputGOP(
 			// Primary output: raw YUV to switcher pipeline.
 			if p.config.RawVideoOutput != nil {
 				p.config.RawVideoOutput(yuvToEncode, df.width, df.height, gs.outputPTS)
-			}
-
-			// Raw monitoring output (e.g. "replay-raw" relay).
-			if p.config.RawMonitorOutput != nil {
-				p.config.RawMonitorOutput(yuvToEncode, df.width, df.height, gs.outputPTS)
 			}
 
 			// Pace BEFORE output: wait until the deadline, then emit

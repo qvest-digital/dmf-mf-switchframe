@@ -310,18 +310,6 @@
 		onProgramCaptionFrame: (caption, _timestamp) => {
 			captionRenderer?.show(caption);
 		},
-		onRawSourceReady: (sourceKey: string) => {
-			// Raw YUV source catalog arrived — re-sync canvases so the pipeline
-			// manager switches from PrismRenderer to YUVRenderer.
-			// Only react to program-raw (not replay-raw or other raw sources).
-			if (mounted && sourceKey === 'program-raw') {
-				pipelineManager.resetProgramCanvas();
-				pipelineManager.syncProgramPreviewCanvases(store.effectiveState.previewSource, programCanvas, previewCanvas);
-				// Disconnect H.264 program transport — raw YUV replaces it,
-				// so decoding H.264 wastes CPU and bandwidth.
-				pipeline.disconnectSource('program');
-			}
-		},
 	});
 	// Pre-register "program" source so ProgramPreview's $effect can attach
 	// the canvas renderer before onMount (which connects the MoQ transport).
@@ -331,13 +319,6 @@
 	// Preferred over full-quality "program" (10 Mbps) to reduce bandwidth.
 	pipeline.setSourceMuted('program-preview', false);
 	pipeline.addSource('program-preview');
-	// Only add program-raw if WebGL is available (needed for YUV rendering).
-	// Without WebGL, subscribing to program-raw wastes bandwidth (~1.5 MB/frame).
-	const _testCanvas = document.createElement('canvas');
-	const hasWebGL = !!(_testCanvas.getContext('webgl2') || _testCanvas.getContext('webgl'));
-	if (hasWebGL) {
-		pipeline.addSource('program-raw');
-	}
 
 	const pipelineManager = new PipelineManager(pipeline, () => store.sourceKeys, (src, pgm) => {
 		sourceLevels = src;

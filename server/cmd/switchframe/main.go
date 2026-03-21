@@ -50,10 +50,6 @@ type AppConfig struct {
 	TLSKey           string
 	StateDir         string // State directory (env: SWITCHFRAME_STATE_DIR, default: ~/.switchframe)
 
-	// Raw program monitor.
-	RawProgramMonitor bool   // Enable raw YUV420 program monitor track
-	RawMonitorScale   string // Resolution for raw monitor (e.g. 720p, 480p)
-
 	// Relay encoding (SRT source → WebTransport).
 	RelayBitrate    int    // Relay encode bitrate in bps (default 2000000)
 	RelayResolution string // Relay encode resolution (e.g. "720p", "480p", "source")
@@ -191,10 +187,6 @@ func parseConfig() (AppConfig, error) {
 	httpAddrFlag := flag.String("http-addr", ":8081", "HTTP/1.1 fallback listen address (requires --http-fallback)")
 	tlsCertFlag := flag.String("tls-cert", "", "Path to TLS certificate PEM file (e.g. from mkcert)")
 	tlsKeyFlag := flag.String("tls-key", "", "Path to TLS private key PEM file")
-
-	// Raw program monitor flags.
-	rawProgramMonitorFlag := flag.Bool("raw-program-monitor", false, "Enable raw YUV420 program monitor track for low-latency local display")
-	rawMonitorScaleFlag := flag.String("raw-monitor-scale", "", "Resolution for raw program monitor (e.g. 720p, 480p; default: pipeline resolution)")
 
 	// Relay encoding flags.
 	relayBitrateFlag := flag.Int("relay-bitrate", 2000000, "Relay encode bitrate in bps for SRT source WebTransport distribution")
@@ -340,8 +332,6 @@ func parseConfig() (AppConfig, error) {
 		HTTPAddr:             *httpAddrFlag,
 		TLSCert:              *tlsCertFlag,
 		TLSKey:               *tlsKeyFlag,
-		RawProgramMonitor:    *rawProgramMonitorFlag,
-		RawMonitorScale:      *rawMonitorScaleFlag,
 		RelayBitrate:         *relayBitrateFlag,
 		RelayResolution:      *relayResolutionFlag,
 		PreviewProxy:         *previewProxyFlag,

@@ -395,9 +395,6 @@ type Switcher struct {
 	// before encode. Used by MXL output to write raw video to shared memory.
 	rawVideoSink atomic.Pointer[RawVideoSink]
 
-	// Raw monitor output — sends YUV copy to program-raw MoQ track.
-	rawMonitorSink atomic.Pointer[RawVideoSink]
-
 	// Raw preview output — feeds program preview encoder (low-bitrate browser delivery).
 	rawPreviewSink atomic.Pointer[RawVideoSink]
 
@@ -631,19 +628,6 @@ func (s *Switcher) SetRawVideoSink(sink RawVideoSink) {
 	s.rebuildPipeline()
 }
 
-// SetRawMonitorSink sets or clears the raw monitor output tap.
-// Like RawVideoSink, it receives a deep copy of each processed YUV420p frame
-// after all video processing but before H.264 encode.
-func (s *Switcher) SetRawMonitorSink(sink RawVideoSink) {
-	if sink != nil {
-		s.rawMonitorSink.Store(&sink)
-	} else {
-		s.rawMonitorSink.Store(nil)
-	}
-	s.rebuildPipeline()
-}
-
-
 // SetOutputVideoCallback registers a direct video output callback that
 // bypasses the relay for zero-latency delivery to the MPEG-TS muxer.
 // Called synchronously from the encode goroutine — no channels, no
@@ -846,7 +830,7 @@ func (s *Switcher) SetPipelineVideoInfoCallback(cb func(sps, pps []byte, width, 
 // buildNodeList constructs the ordered list of pipeline nodes.
 // Must be called with s.mu held (RLock or Lock) since it reads
 // s.keyBridge, s.compositorRef, s.pipeCodecs, and s.promMetrics.
-// Node order: upstream-key → layout-compositor → compositor → stmap-program → raw-sink-mxl → raw-sink-monitor → raw-sink-preview → h264-encode
+// Node order: upstream-key → layout-compositor → compositor → stmap-program → raw-sink-mxl → raw-sink-preview → h264-encode
 func (s *Switcher) buildNodeList() []PipelineNode {
 	return []PipelineNode{
 		&upstreamKeyNode{bridge: s.keyBridge},
@@ -854,7 +838,6 @@ func (s *Switcher) buildNodeList() []PipelineNode {
 		&compositorNode{compositor: s.compositorRef},
 		&stmapProgramNode{registry: s.stmapRegistry},
 		&rawSinkNode{sink: &s.rawVideoSink, name: "raw-sink-mxl"},
-		&rawSinkNode{sink: &s.rawMonitorSink, name: "raw-sink-monitor"},
 		&rawSinkNode{sink: &s.rawPreviewSink, name: "raw-sink-preview"},
 		newAsyncEncodeNode(s),
 	}
@@ -928,7 +911,7 @@ func (s *Switcher) swapPipeline(newPipeline *Pipeline) {
 // rebuildPipeline builds a fresh Pipeline from current state and atomically
 // swaps it in. Logs a warning and keeps the old pipeline if Build() fails.
 // This is the runtime reconfiguration path — SetCompositor, SetKeyBridge,
-// SetRawVideoSink, SetRawMonitorSink, and external callbacks all use this.
+// SetRawVideoSink, and external callbacks all use this.
 func (s *Switcher) rebuildPipeline() {
 	s.mu.RLock()
 	hasPipeCodecs := s.pipeCodecs != nil

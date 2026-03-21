@@ -54,9 +54,8 @@ type Manager struct {
 	ptsProvider       func() int64
 
 	// Raw output callbacks for uncompressed pipeline.
-	rawVideoOutput   func(yuv []byte, w, h int, pts int64)
-	rawMonitorOutput func(yuv []byte, w, h int, pts int64)
-	audioOutput      func(frame *media.AudioFrame) // direct audio output (e.g. to mixer)
+	rawVideoOutput func(yuv []byte, w, h int, pts int64)
+	audioOutput    func(frame *media.AudioFrame) // direct audio output (e.g. to mixer)
 
 	// Audio codec factories for WSOLA time-stretching.
 	audioDecoderFactory audio.DecoderFactory
@@ -262,7 +261,6 @@ func (m *Manager) Play(source string, speed float64, loop bool) error {
 
 		videoInfoCb := m.onVideoInfoChange
 		rawVideoCb := m.rawVideoOutput
-		rawMonitorCb := m.rawMonitorOutput
 		audioOutputCb := m.audioOutput
 
 		m.player = newReplayPlayer(PlayerConfig{
@@ -284,7 +282,6 @@ func (m *Manager) Play(source string, speed float64, loop bool) error {
 				}
 			},
 			RawVideoOutput:      rawVideoCb,
-			RawMonitorOutput:    rawMonitorCb,
 			AudioDecoderFactory: m.audioDecoderFactory,
 			AudioEncoderFactory: m.audioEncoderFactory,
 			OnDone: func() {
@@ -569,14 +566,6 @@ func (m *Manager) SetRawVideoOutput(fn func(yuv []byte, w, h int, pts int64)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.rawVideoOutput = fn
-}
-
-// SetRawMonitorOutput registers a callback for sending raw YUV to a
-// monitoring relay (e.g. "replay-raw" track).
-func (m *Manager) SetRawMonitorOutput(fn func(yuv []byte, w, h int, pts int64)) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.rawMonitorOutput = fn
 }
 
 // SetAudioOutput registers a callback for sending audio directly to the
