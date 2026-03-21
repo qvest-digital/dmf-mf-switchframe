@@ -706,24 +706,13 @@ func (e *Engine) blendAndOutput(isFrom bool, pts int64) {
 	}
 
 	// SkipBlend mode: GPU handles the pixel blend, we only track state.
-	// Still calculate position and handle auto-complete, but skip the
-	// CPU blend, blender init, and output callback entirely.
+	// Position is calculated but auto-complete is NOT triggered here —
+	// the GPU transition path in handleRawVideoFrame calls ForceComplete()
+	// AFTER the GPU blend frame is produced, ensuring the last blended
+	// frame reaches the encoder before the transition completes.
 	if e.config.SkipBlend {
-		pos := e.currentPosition()
 		e.framesBlended.Add(1)
-		e.log.Debug("skip-blend (GPU)", "pos", fmt.Sprintf("%.3f", pos))
-
-		var autoComplete bool
-		if !e.manualControl && pos >= 1.0 {
-			autoComplete = true
-			e.log.Info("auto-complete", "type", e.transitionType)
-			e.cleanup()
-		}
 		e.mu.Unlock()
-
-		if autoComplete && e.config.OnComplete != nil {
-			e.config.OnComplete(false)
-		}
 		return
 	}
 
@@ -823,6 +812,24 @@ func (e *Engine) WarmupDecode(sourceKey string, wireData []byte) {
 // first live frame from either source is a keyframe, the decoder is flushed
 // to discard stale warmup references before decoding the fresh IDR.
 // No-op when decoders are nil (raw-only mode).
+// ForceComplete triggers transition completion from the caller (GPU transition
+// path). Used in SkipBlend mode where auto-complete is deferred so the GPU
+// blend frame is produced BEFORE the transition state changes.
+func (e *Engine) ForceComplete() {
+	e.mu.Lock()
+	if e.state != StateActive {
+		e.mu.Unlock()
+		return
+	}
+	e.log.Info("force-complete (GPU)", "type", e.transitionType)
+	e.cleanup()
+	e.mu.Unlock()
+
+	if e.config.OnComplete != nil {
+		e.config.OnComplete(false)
+	}
+}
+
 func (e *Engine) WarmupComplete() {
 	e.mu.Lock()
 	defer e.mu.Unlock()

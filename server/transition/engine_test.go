@@ -2121,8 +2121,10 @@ func TestCleanupBlocksConcurrentStart(t *testing.T) {
 }
 
 func TestEngineSkipBlend(t *testing.T) {
-	// SkipBlend mode: engine tracks position and auto-completes, but
-	// never calls the Output callback (GPU handles the pixel blend).
+	// SkipBlend mode: engine tracks position but does NOT auto-complete.
+	// The caller (GPU transition path) calls ForceComplete after the GPU
+	// blend frame is produced, ensuring the last frame reaches the encoder
+	// before the transition state changes.
 	var outputCalled bool
 	var completions []bool
 	var mu sync.Mutex
@@ -2154,13 +2156,22 @@ func TestEngineSkipBlend(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 
-	// Give auto-complete time to trigger.
-	time.Sleep(50 * time.Millisecond)
-
+	// SkipBlend does NOT auto-complete — verify no completion yet.
+	time.Sleep(20 * time.Millisecond)
 	mu.Lock()
 	require.False(t, outputCalled, "Output should never be called in SkipBlend mode")
-	require.NotEmpty(t, completions, "auto-complete should still fire in SkipBlend mode")
-	require.True(t, completions[0], "auto-complete should report success, not abort")
+	require.Empty(t, completions, "SkipBlend should NOT auto-complete")
+	mu.Unlock()
+
+	// Position should be >= 1.0 after 50ms of a 10ms transition.
+	require.GreaterOrEqual(t, e.Position(), 1.0)
+
+	// Caller drives completion after GPU blend.
+	e.ForceComplete()
+
+	mu.Lock()
+	require.NotEmpty(t, completions, "ForceComplete should trigger OnComplete")
+	require.True(t, completions[0], "ForceComplete should report success")
 	mu.Unlock()
 }
 

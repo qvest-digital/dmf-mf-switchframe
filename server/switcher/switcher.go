@@ -3221,9 +3221,22 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 				wipeDir := s.transitionWipeDirToGPU(engine.WipeDirection())
 				pts := s.wallClockVideoPTS(pf.PTS)
 
-				if err := h.runner.RunTransition(fromKey, toKey, string(tt), wipeDir, pos, pts, nil); err != nil {
+				// Clamp position to 1.0 for the final blend frame.
+				blendPos := pos
+				if blendPos > 1.0 {
+					blendPos = 1.0
+				}
+
+				if err := h.runner.RunTransition(fromKey, toKey, string(tt), wipeDir, blendPos, pts, nil); err != nil {
 					s.log.Debug("GPU transition blend failed, no fallback",
 						"err", err, "from", fromKey, "to", toKey, "type", tt)
+				}
+
+				// Complete transition AFTER the GPU blend frame is produced.
+				// This ensures the last blended frame reaches the encoder
+				// before the switcher changes programSource and epoch.
+				if pos >= 1.0 {
+					engine.ForceComplete()
 				}
 			}
 			return
