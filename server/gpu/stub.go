@@ -3,6 +3,7 @@
 package gpu
 
 import (
+	"sync/atomic"
 	"time"
 	"unsafe"
 )
@@ -96,6 +97,9 @@ func (p *FramePool) Close() {}
 
 // Stats returns zero stats on non-GPU builds.
 func (p *FramePool) Stats() (hits, misses uint64) { return 0, 0 }
+
+// Pitch returns 0 on non-GPU builds.
+func (p *FramePool) Pitch() int { return 0 }
 
 // Upload returns ErrGPUNotAvailable on non-GPU builds.
 func Upload(ctx *Context, frame *GPUFrame, yuv []byte, width, height int) error {
@@ -347,6 +351,19 @@ func (p *GPUPipeline) Close() error { return nil }
 
 // RawSinkFunc is a callback for raw YUV420p frames.
 type RawSinkFunc func(yuv []byte, width, height int)
+
+// NewGPURawSinkNode returns nil on non-GPU builds.
+func NewGPURawSinkNode(ctx *Context, sink *atomic.Pointer[RawSinkFunc]) GPUPipelineNode {
+	return nil
+}
+
+// NewGPUEncodeNode returns nil on non-GPU builds.
+func NewGPUEncodeNode(ctx *Context, encoder *GPUEncoder, forceIDR *atomic.Bool, onEncoded func([]byte, bool, int64)) GPUPipelineNode {
+	return nil
+}
+
+// NewGPUPassthroughNode returns nil on non-GPU builds.
+func NewGPUPassthroughNode(name string, active bool) GPUPipelineNode { return nil }
 
 // V210LineStride returns the byte stride for one line of V210 data.
 func V210LineStride(width int) int {
