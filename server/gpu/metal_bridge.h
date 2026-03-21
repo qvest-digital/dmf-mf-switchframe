@@ -74,6 +74,15 @@ MetalResult metal_nv12_to_yuv420p(MetalQueueRef queue, MetalPipelineRef pipeline
 MetalResult metal_nv12_fill(MetalQueueRef queue, MetalPipelineRef pipeline,
     MetalBufferRef nv12, const MetalFillParams* params);
 
+// --- Offset-aware dispatch ---
+// dispatch_2d_offset binds each buffer at a caller-specified byte offset.
+// This is critical for NV12 UV-plane operations where UV data starts at
+// pitch * height within the same buffer.
+MetalResult metal_dispatch_2d_offset(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef buffers[], int64_t offsets[], int nbuf,
+    const void* params, size_t paramsSize, int paramsIndex,
+    uint32_t gridW, uint32_t gridH);
+
 // --- Blend kernels ---
 typedef struct {
     uint32_t width;

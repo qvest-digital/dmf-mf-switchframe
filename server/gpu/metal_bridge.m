@@ -7,10 +7,16 @@
 // Internal helpers
 // ============================================================================
 
-// Standard thread group size matching CUDA block dimensions
+// Standard thread group size matching CUDA block dimensions.
+// 32x8 = 256 threads per group, optimal for Apple Silicon GPU.
 static MTLSize defaultGroupSize(void) {
     return MTLSizeMake(32, 8, 1);
 }
+
+// NOTE: We use dispatchThreadgroups (not dispatchThreads) because it works on
+// all Metal GPUs including older Intel/AMD Macs and Apple Silicon. Each kernel
+// includes bounds checks (if gid.x >= width) to handle non-aligned grids.
+// dispatchThreads requires Metal GPU Family Apple 4+.
 
 // Compute grid size for a 2D dispatch
 static MTLSize gridSize2D(uint32_t width, uint32_t height) {
@@ -22,36 +28,86 @@ static MTLSize gridSize2D(uint32_t width, uint32_t height) {
     );
 }
 
-// Dispatch a compute kernel with params buffer and wait for completion
+// Dispatch a compute kernel with params buffer and wait for completion.
+// Wrapped in @autoreleasepool for safety on cgo threads.
 static MetalResult dispatch_2d(id<MTLCommandQueue> queue,
                                id<MTLComputePipelineState> pipeline,
                                id<MTLBuffer> buffers[], int nbuf,
                                const void* params, size_t paramsSize,
                                int paramsIndex,
                                uint32_t gridW, uint32_t gridH) {
-    id<MTLCommandBuffer> cmdBuf = [queue commandBuffer];
-    if (!cmdBuf) return METAL_ERROR_COMMIT;
+    @autoreleasepool {
+        id<MTLCommandBuffer> cmdBuf = [queue commandBuffer];
+        if (!cmdBuf) return METAL_ERROR_COMMIT;
 
-    id<MTLComputeCommandEncoder> encoder = [cmdBuf computeCommandEncoder];
-    if (!encoder) return METAL_ERROR_ENCODE;
+        id<MTLComputeCommandEncoder> encoder = [cmdBuf computeCommandEncoder];
+        if (!encoder) return METAL_ERROR_ENCODE;
 
-    [encoder setComputePipelineState:pipeline];
+        [encoder setComputePipelineState:pipeline];
 
-    for (int i = 0; i < nbuf; i++) {
-        [encoder setBuffer:buffers[i] offset:0 atIndex:i];
+        for (int i = 0; i < nbuf; i++) {
+            [encoder setBuffer:buffers[i] offset:0 atIndex:i];
+        }
+        [encoder setBytes:params length:paramsSize atIndex:paramsIndex];
+
+        MTLSize groupSize = defaultGroupSize();
+        MTLSize threadgroups = gridSize2D(gridW, gridH);
+        [encoder dispatchThreadgroups:threadgroups threadsPerThreadgroup:groupSize];
+        [encoder endEncoding];
+
+        [cmdBuf commit];
+        [cmdBuf waitUntilCompleted];
+
+        if (cmdBuf.error) return METAL_ERROR_COMMIT;
+        return METAL_SUCCESS;
     }
-    [encoder setBytes:params length:paramsSize atIndex:paramsIndex];
+}
 
-    MTLSize groupSize = defaultGroupSize();
-    MTLSize threadgroups = gridSize2D(gridW, gridH);
-    [encoder dispatchThreadgroups:threadgroups threadsPerThreadgroup:groupSize];
-    [encoder endEncoding];
+// Dispatch a compute kernel with per-buffer offsets and wait for completion.
+// Each buffer is bound at the corresponding offset (in bytes).
+static MetalResult dispatch_2d_offset(id<MTLCommandQueue> queue,
+                                       id<MTLComputePipelineState> pipeline,
+                                       id<MTLBuffer> buffers[], int64_t offsets[], int nbuf,
+                                       const void* params, size_t paramsSize,
+                                       int paramsIndex,
+                                       uint32_t gridW, uint32_t gridH) {
+    @autoreleasepool {
+        id<MTLCommandBuffer> cmdBuf = [queue commandBuffer];
+        if (!cmdBuf) return METAL_ERROR_COMMIT;
 
-    [cmdBuf commit];
-    [cmdBuf waitUntilCompleted];
+        id<MTLComputeCommandEncoder> encoder = [cmdBuf computeCommandEncoder];
+        if (!encoder) return METAL_ERROR_ENCODE;
 
-    if (cmdBuf.error) return METAL_ERROR_COMMIT;
-    return METAL_SUCCESS;
+        [encoder setComputePipelineState:pipeline];
+
+        for (int i = 0; i < nbuf; i++) {
+            [encoder setBuffer:buffers[i] offset:(NSUInteger)offsets[i] atIndex:i];
+        }
+        [encoder setBytes:params length:paramsSize atIndex:paramsIndex];
+
+        MTLSize groupSize = defaultGroupSize();
+        MTLSize threadgroups = gridSize2D(gridW, gridH);
+        [encoder dispatchThreadgroups:threadgroups threadsPerThreadgroup:groupSize];
+        [encoder endEncoding];
+
+        [cmdBuf commit];
+        [cmdBuf waitUntilCompleted];
+
+        if (cmdBuf.error) return METAL_ERROR_COMMIT;
+        return METAL_SUCCESS;
+    }
+}
+
+// Public C wrapper for dispatch_2d_offset (used from Go via cgo).
+MetalResult metal_dispatch_2d_offset(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef buffers[], int64_t offsets[], int nbuf,
+    const void* params, size_t paramsSize, int paramsIndex,
+    uint32_t gridW, uint32_t gridH) {
+    return dispatch_2d_offset((id<MTLCommandQueue>)queue,
+                              (id<MTLComputePipelineState>)pipeline,
+                              (id<MTLBuffer>*)buffers, offsets, nbuf,
+                              params, paramsSize, paramsIndex,
+                              gridW, gridH);
 }
 
 // ============================================================================
