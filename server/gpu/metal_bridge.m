@@ -788,7 +788,7 @@ int metal_vt_encode(VTEncoderRef enc, void* nv12_ptr, int pitch, int width, int 
         nv12_ptr,
         (uint8_t *)nv12_ptr + pitch * height
     };
-    size_t planeWidths[2] = { width, width };
+    size_t planeWidths[2] = { width, width / 2 };  // NV12 4:2:0: UV has half pixel width
     size_t planeHeights[2] = { height, height / 2 };
     size_t planeBytesPerRow[2] = { pitch, pitch };
 
