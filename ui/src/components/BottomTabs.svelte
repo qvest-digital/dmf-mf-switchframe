@@ -19,11 +19,12 @@
 			: ([...staticTabs] as TabId[]),
 	);
 
+	const allValidTabs: readonly string[] = [...staticTabs, 'AI'];
+
 	function loadSavedTab(): TabId {
 		if (typeof localStorage === 'undefined') return 'Audio';
 		const saved = localStorage.getItem('sf-active-tab');
-		// Accept any known tab name — 'AI' is valid if server reports available
-		if (saved) return saved as TabId;
+		if (saved && allValidTabs.includes(saved)) return saved as TabId;
 		return 'Audio';
 	}
 
