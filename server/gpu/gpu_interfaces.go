@@ -123,3 +123,9 @@ type PreviewConfig struct {
 	FPSNum, FPSDen int
 	OnPreview      func(data []byte, isIDR bool, pts int64)
 }
+
+// PreviewEncodeForceIDR is the subset of gpuPreviewEncodeNode needed by the
+// app layer to force IDR keyframes on program source cuts.
+type PreviewEncodeForceIDR interface {
+	ForceIDR()
+}

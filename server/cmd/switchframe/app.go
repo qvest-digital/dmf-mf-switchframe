@@ -136,7 +136,6 @@ type App struct {
 	// GPU pipeline (Metal on macOS, CUDA on Linux)
 	gpuState          *gpuState
 	gpuRawVideoSink   *atomic.Pointer[gpu.RawSinkFunc]   // GPU raw sink for MXL output
-	gpuRawPreviewSink *atomic.Pointer[gpu.RawSinkFunc]   // GPU raw sink for preview output
 
 	// AI segmentation engine (CUDA + TensorRT, nil on other platforms)
 	segEngine  *gpu.SegmentationEngine
@@ -607,6 +606,10 @@ func (a *App) initSubsystems() error {
 	a.keyProcessor.OnChange(func() {
 		a.sw.RebuildPipeline()
 	})
+
+	// Register program preview relay early so wireGPUPipeline can use it
+	// for the GPU preview encode node (which broadcasts directly to this relay).
+	a.programPreviewRelay = a.server.RegisterStream("program-preview")
 
 	// GPU pipeline auto-detection and wiring.
 	// Must happen after stmap registry is set and before BuildPipeline().
@@ -1379,17 +1382,32 @@ func (a *App) Run(ctx context.Context) error {
 	a.debugCollector.Register("demo", demoStats)
 
 	// Program preview encoder — low-bitrate H.264 for browser program monitor.
-	// Taps the raw YUV pipeline output (same pattern as MXL and raw monitor sinks)
-	// and re-encodes at 3 Mbps. Browsers subscribe to "program-preview" instead
-	// of the full-quality 10 Mbps "program" relay, reducing bandwidth by ~70%.
-	{
-		pf := a.sw.PipelineFormat()
+	// Browsers subscribe to "program-preview" instead of the full-quality
+	// 10 Mbps "program" relay, reducing bandwidth by ~70%.
+	//
+	// When the GPU pipeline is active with a preview encode node, the GPU
+	// handles scale + encode entirely in VRAM (no CPU download). The relay
+	// is registered early so wireGPUPipeline can reference it.
+	//
+	// When the GPU pipeline is not active (or doesn't have a preview node),
+	// fall back to the CPU path: tap raw YUV from the pipeline and re-encode
+	// at 720p/3 Mbps via preview.Encoder.
+	if a.programPreviewRelay == nil {
 		a.programPreviewRelay = a.server.RegisterStream("program-preview")
-		// Scale to 720p for faster encode (~2ms vs ~5ms at 1080p) and lower
-		// bandwidth (~1.5 Mbps). The program monitor canvas is not full-screen,
-		// so 720p is visually indistinguishable. Faster encode also tightens
-		// delivery timing, reducing the video-ahead-of-audio offset that causes
-		// the renderer's look-ahead tolerance to intermittently skip frames.
+	}
+	if a.gpuState != nil && a.gpuState.previewNode != nil {
+		// GPU preview encode is active — wire ForceIDR on source cuts.
+		var lastProgramSource string
+		gpuPreviewNode := a.gpuState.previewNode
+		a.sw.OnStateChange(func(state internal.ControlRoomState) {
+			if state.ProgramSource != lastProgramSource {
+				lastProgramSource = state.ProgramSource
+				gpuPreviewNode.ForceIDR()
+			}
+		})
+		slog.Info("program preview uses GPU encode, skipping CPU preview encoder")
+	} else {
+		pf := a.sw.PipelineFormat()
 		previewW, previewH := 1280, 720
 		pe, err := preview.NewEncoder(preview.Config{
 			SourceKey: "program-preview",
@@ -1419,15 +1437,10 @@ func (a *App) Run(ctx context.Context) error {
 			})
 
 			a.sw.SetRawPreviewSink(switcher.RawVideoSink(func(frame *switcher.ProcessingFrame) {
-				// PTS is already in wall-clock domain — rewritten in
-				// videoProcessingLoop before pipeline.Run(). All sinks
-				// (preview, MXL, raw monitor) see the same PTS as the
-				// program relay and audio mixer.
 				pe.Send(frame.YUV, frame.Width, frame.Height, frame.PTS)
 			}))
-			a.updateGPURawPreviewSink()
 
-			slog.Info("program preview encoder enabled",
+			slog.Info("program preview encoder enabled (CPU fallback)",
 				"width", previewW, "height", previewH,
 				"bitrate", 3_000_000)
 		}

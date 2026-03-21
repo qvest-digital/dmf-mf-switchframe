@@ -24,6 +24,7 @@ type gpuState struct {
 	pipeline      *gpu.GPUPipeline
 	encoder       *gpu.GPUEncoder
 	sourceManager *gpu.GPUSourceManager
+	previewNode   gpu.PreviewEncodeForceIDR // non-nil when GPU program preview encode is active
 }
 
 // initGPU attempts to initialize the GPU pipeline. If the GPU is not
@@ -114,13 +115,11 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 
 	// Raw sinks — GPU raw sink nodes download to CPU only when active.
 	var gpuRawVideoSink atomic.Pointer[gpu.RawSinkFunc]
-	var gpuRawPreviewSink atomic.Pointer[gpu.RawSinkFunc]
 
-	// Wire the GPU raw sinks to the same underlying callbacks as the CPU sinks.
-	// The app sets rawVideoSink/rawPreviewSink on the switcher for CPU path;
-	// we mirror them to the GPU raw sink atomic pointers.
+	// Wire the GPU raw video sink to the same underlying callback as the CPU sink.
+	// The app sets rawVideoSink on the switcher for CPU path;
+	// we mirror it to the GPU raw sink atomic pointer.
 	app.gpuRawVideoSink = &gpuRawVideoSink
-	app.gpuRawPreviewSink = &gpuRawPreviewSink
 
 	// Bridge callback: GPU encode outputs Annex B H.264 (data, isIDR, pts).
 	// Convert to AVC1 format (length-prefixed NALUs) before broadcasting,
@@ -174,8 +173,62 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 		broadcastFn(frame)
 	}
 
+	// GPU preview encode callback: Annex B H.264 → AVC1 → broadcast on
+	// program-preview relay. Mirrors the per-source OnPreview pattern but
+	// for the program output. The node returns nil on stub builds (filtered
+	// below), and the CPU preview encoder path remains as fallback.
+	previewW, previewH := 1280, 720
+	previewBitrate := 3_000_000
+	var previewGroupID atomic.Uint32
+	var previewSPS, previewPPS []byte
+	var previewVideoInfoSent bool
+	var previewEncodeNode gpu.GPUPipelineNode
+	if app.programPreviewRelay != nil {
+		gpuOnPreviewEncoded := func(data []byte, isIDR bool, pts int64) {
+			avc1 := codec.AnnexBToAVC1Into(data, nil)
+
+			if isIDR {
+				previewGroupID.Add(1)
+			}
+			frame := &media.VideoFrame{
+				PTS: pts, DTS: pts, IsKeyframe: isIDR,
+				WireData: avc1, Codec: "h264", GroupID: previewGroupID.Load(),
+			}
+			if isIDR {
+				for _, nalu := range codec.ExtractNALUs(avc1) {
+					if len(nalu) == 0 {
+						continue
+					}
+					switch nalu[0] & 0x1F {
+					case 7:
+						sps := make([]byte, len(nalu))
+						copy(sps, nalu)
+						previewSPS = sps
+						frame.SPS = sps
+					case 8:
+						pps := make([]byte, len(nalu))
+						copy(pps, nalu)
+						previewPPS = pps
+						frame.PPS = pps
+					}
+				}
+				if !previewVideoInfoSent && previewSPS != nil && previewPPS != nil {
+					avcC := app.buildAVCConfig(previewSPS, previewPPS)
+					if avcC != nil {
+						app.programPreviewRelay.SetVideoInfo(app.buildVideoInfo(previewSPS, avcC, previewW, previewH))
+						slog.Info("gpu-pipeline: program preview VideoInfo set", "w", previewW, "h", previewH)
+						previewVideoInfoSent = true
+					}
+				}
+			}
+			app.programPreviewRelay.BroadcastVideo(frame)
+		}
+		previewEncodeNode = gpu.NewGPUPreviewEncodeNode(gs.ctx, previewW, previewH, previewBitrate,
+			pf.FPSNum, pf.FPSDen, gpuOnPreviewEncoded)
+	}
+
 	// Build GPU pipeline node chain:
-	//   gpu_key → gpu_layout → gpu_compositor → [gpu_ai_segment] → gpu_stmap → raw_sinks → gpu_encode
+	//   gpu_key → gpu_layout → gpu_compositor → [gpu_ai_segment] → gpu_stmap → raw_sink → gpu_preview_encode → gpu_encode
 	// Some nodes return nil on unsupported builds (e.g. AI segment on non-TensorRT).
 	candidateNodes := []gpu.GPUPipelineNode{
 		gpu.NewGPUKeyNode(gs.ctx, gs.pool, keyAdapter),
@@ -184,7 +237,7 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 		gpu.NewGPUAISegmentNode(gs.ctx, gs.pool, segAdapter),
 		gpu.NewGPUSTMapNode(gs.ctx, gs.pool, app.stmapRegistry),
 		gpu.NewGPURawSinkNode(gs.ctx, &gpuRawVideoSink),
-		gpu.NewGPURawSinkNode(gs.ctx, &gpuRawPreviewSink),
+		previewEncodeNode,
 		gpu.NewGPUEncodeNode(gs.ctx, encoder, sw.ForceNextIDRPtr(), gpuOnEncoded),
 	}
 	// Filter nil nodes (stub builds return nil for unsupported features).
@@ -200,6 +253,13 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 		encoder.Close()
 		gs.encoder = nil
 		return
+	}
+
+	// Store preview node reference for ForceIDR on source cuts.
+	if previewEncodeNode != nil {
+		if pn, ok := previewEncodeNode.(gpu.PreviewEncodeForceIDR); ok {
+			gs.previewNode = pn
+		}
 	}
 
 	// Create the runner wrapper and register on the switcher.
@@ -235,23 +295,6 @@ func (a *App) updateGPURawVideoSink() {
 	a.gpuRawVideoSink.Store(&fn)
 }
 
-// updateGPURawPreviewSink mirrors the Switcher's raw preview sink to the GPU pipeline.
-// Must be called after every sw.SetRawPreviewSink() call so the GPU raw sink node
-// downloads frames to CPU and forwards them to the same callback.
-func (a *App) updateGPURawPreviewSink() {
-	if a.gpuRawPreviewSink == nil {
-		return
-	}
-	cpuSink := a.sw.GetRawPreviewSink()
-	if cpuSink == nil {
-		a.gpuRawPreviewSink.Store(nil)
-		return
-	}
-	fn := gpu.RawSinkFunc(func(yuv []byte, w, h int) {
-		cpuSink(&switcher.ProcessingFrame{YUV: yuv, Width: w, Height: h})
-	})
-	a.gpuRawPreviewSink.Store(&fn)
-}
 
 // closeGPU releases all GPU resources.
 func closeGPU(gs *gpuState) {
