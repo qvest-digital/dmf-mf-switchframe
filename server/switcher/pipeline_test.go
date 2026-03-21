@@ -729,8 +729,7 @@ func TestBuildNodeList_Ordering(t *testing.T) {
 }
 
 func TestBuildNodeList_GPUNodes(t *testing.T) {
-	// When GPU nodes are set, buildNodeList returns a hybrid pipeline:
-	// CPU processing nodes + GPU acceleration nodes + raw-sinks + encode.
+	// When GPU nodes are set, buildNodeList returns the GPU chain + raw-sinks + encode.
 	programRelay := newTestRelay()
 	sw := newTestSwitcher(programRelay)
 
@@ -741,12 +740,15 @@ func TestBuildNodeList_GPUNodes(t *testing.T) {
 	)
 	defer sw.Close()
 
-	// Create mock GPU nodes (upload → stmap → download only).
+	// Create mock GPU nodes (using simple passthrough PipelineNodes).
 	mockUpload := &mockPipelineNode{name: "gpu-upload"}
+	mockKey := &mockPipelineNode{name: "gpu-key"}
+	mockLayout := &mockPipelineNode{name: "gpu-layout"}
+	mockCompositor := &mockPipelineNode{name: "gpu-compositor"}
 	mockSTMap := &mockPipelineNode{name: "gpu-stmap"}
 	mockDownload := &mockPipelineNode{name: "gpu-download"}
 
-	gpuNodes := []PipelineNode{mockUpload, mockSTMap, mockDownload}
+	gpuNodes := []PipelineNode{mockUpload, mockKey, mockLayout, mockCompositor, mockSTMap, mockDownload}
 	sw.mu.Lock()
 	sw.gpuNodes = gpuNodes
 	sw.mu.Unlock()
@@ -755,17 +757,14 @@ func TestBuildNodeList_GPUNodes(t *testing.T) {
 	nodes := sw.buildNodeList()
 	sw.mu.RUnlock()
 
-	// Should be: 3 CPU nodes + 3 GPU nodes + 2 raw sinks + 1 encode = 9
+	// Should be: 6 GPU nodes + 2 raw sinks + 1 encode = 9
 	require.Len(t, nodes, 9)
-	// CPU processing (operates on YUV420p)
-	require.Equal(t, "upstream-key", nodes[0].Name())
-	require.Equal(t, "layout-compositor", nodes[1].Name())
-	require.Equal(t, "compositor", nodes[2].Name())
-	// GPU acceleration (upload → stmap → download)
-	require.Equal(t, "gpu-upload", nodes[3].Name())
+	require.Equal(t, "gpu-upload", nodes[0].Name())
+	require.Equal(t, "gpu-key", nodes[1].Name())
+	require.Equal(t, "gpu-layout", nodes[2].Name())
+	require.Equal(t, "gpu-compositor", nodes[3].Name())
 	require.Equal(t, "gpu-stmap", nodes[4].Name())
 	require.Equal(t, "gpu-download", nodes[5].Name())
-	// Output (operates on YUV420p after GPU download)
 	require.Equal(t, "raw-sink-mxl", nodes[6].Name())
 	require.Equal(t, "raw-sink-preview", nodes[7].Name())
 	require.Equal(t, "h264-encode", nodes[8].Name())

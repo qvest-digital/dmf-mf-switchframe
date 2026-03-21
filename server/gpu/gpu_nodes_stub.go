@@ -17,3 +17,12 @@ func NewDownloadNode(ctx *Context) switcher.PipelineNode { return nil }
 func NewSTMapNode(ctx *Context, pool *FramePool, registry *stmap.Registry) switcher.PipelineNode {
 	return nil
 }
+
+// NewKeyNode returns nil on non-GPU builds.
+func NewKeyNode() switcher.PipelineNode { return nil }
+
+// NewLayoutNode returns nil on non-GPU builds.
+func NewLayoutNode() switcher.PipelineNode { return nil }
+
+// NewCompositorNode returns nil on non-GPU builds.
+func NewCompositorNode() switcher.PipelineNode { return nil }

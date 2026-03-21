@@ -46,20 +46,20 @@ func initGPU(sw *switcher.Switcher, stmapRegistry interface{ HasProgramMap() boo
 // wireGPUPipeline creates GPU pipeline nodes and registers them on the
 // switcher. Call after initGPU returns a non-nil state, and before
 // sw.BuildPipeline().
-//
-// The GPU path only accelerates the ST map warp (upload → stmap → download).
-// CPU nodes (upstream key, layout compositor, DSK compositor) run before
-// GPU upload and operate on YUV420p data as usual.
 func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 	if gs == nil {
 		return
 	}
 
-	// Build GPU-accelerated node chain: upload → stmap → download.
-	// The switcher prepends CPU processing nodes (key, layout, compositor)
-	// and appends raw-sinks + encode around this chain.
+	// Build GPU pipeline node chain:
+	//   gpu-upload → gpu-key → gpu-layout → gpu-compositor → gpu-stmap → gpu-download
+	//
+	// The switcher appends raw-sinks and encode after these nodes.
 	nodes := []switcher.PipelineNode{
 		gpu.NewUploadNode(gs.ctx, gs.pool),
+		gpu.NewKeyNode(),
+		gpu.NewLayoutNode(),
+		gpu.NewCompositorNode(),
 		gpu.NewSTMapNode(gs.ctx, gs.pool, app.stmapRegistry),
 		gpu.NewDownloadNode(gs.ctx),
 	}

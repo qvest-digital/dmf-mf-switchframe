@@ -804,11 +804,9 @@ func (s *Switcher) SetSTMapRegistry(r *stmap.Registry) {
 	s.mu.Unlock()
 }
 
-// SetGPUNodes registers GPU-accelerated pipeline nodes.
+// SetGPUNodes registers GPU pipeline nodes that replace CPU processing nodes.
 // The nodes must implement PipelineNode. When set, buildNodeList() returns a
-// hybrid CPU+GPU pipeline: CPU processing nodes (key, layout, compositor)
-// operate on YUV420p first, then GPU nodes (upload → stmap → download)
-// accelerate the ST map warp, followed by raw-sinks and encode.
+// GPU pipeline chain: [gpu-upload → gpu processing nodes → gpu-download → raw-sinks → encode].
 // Pass nil to revert to CPU-only processing.
 //
 // The nodes slice should be ordered: upload node first, processing nodes in the middle,
@@ -857,32 +855,16 @@ func (s *Switcher) SetPipelineVideoInfoCallback(cb func(sps, pps []byte, width, 
 // Must be called with s.mu held (RLock or Lock) since it reads
 // s.keyBridge, s.compositorRef, s.pipeCodecs, s.gpuNodes, and s.promMetrics.
 //
-// When GPU nodes are set, returns a hybrid CPU+GPU pipeline:
-//
-//	[upstream-key → layout-compositor → compositor → gpu-upload → gpu-stmap → gpu-download → raw-sinks → encode]
-//
-// CPU nodes (key, layout, compositor) operate on YUV420p data before GPU upload.
-// GPU nodes (upload → stmap → download) accelerate the ST map warp on NV12.
-// Raw sinks and encode operate on YUV420p data after GPU download.
-//
+// When GPU nodes are set, returns:
+//   [gpu-upload → gpu-key → gpu-layout → gpu-compositor → gpu-stmap → gpu-download → raw-sinks → encode]
 // Otherwise (CPU-only):
-//
-//	[upstream-key → layout-compositor → compositor → stmap-program → raw-sink-mxl → raw-sink-preview → h264-encode]
+//   [upstream-key → layout-compositor → compositor → stmap-program → raw-sink-mxl → raw-sink-preview → h264-encode]
 func (s *Switcher) buildNodeList() []PipelineNode {
 	if len(s.gpuNodes) > 0 {
-		// Hybrid GPU pipeline: CPU processing nodes + GPU-accelerated stmap.
-		// CPU nodes operate on YUV420p, GPU nodes operate on NV12.
-		// GPU upload/download sandwich only the GPU-accelerated operations.
-		nodes := make([]PipelineNode, 0, 3+len(s.gpuNodes)+3)
-		// CPU processing first (operates on YUV420p)
-		nodes = append(nodes,
-			&upstreamKeyNode{bridge: s.keyBridge},
-			&layoutCompositorNode{compositor: s.layoutCompositor},
-			&compositorNode{compositor: s.compositorRef},
-		)
-		// GPU acceleration (upload → stmap → download)
+		// GPU pipeline: GPU nodes handle upload, processing, and download.
+		// Append raw sinks and encode after the GPU download node.
+		nodes := make([]PipelineNode, 0, len(s.gpuNodes)+3)
 		nodes = append(nodes, s.gpuNodes...)
-		// Output (operates on YUV420p after GPU download)
 		nodes = append(nodes,
 			&rawSinkNode{sink: &s.rawVideoSink, name: "raw-sink-mxl"},
 			&rawSinkNode{sink: &s.rawPreviewSink, name: "raw-sink-preview"},
