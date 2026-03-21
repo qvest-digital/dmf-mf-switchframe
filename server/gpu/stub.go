@@ -2,11 +2,6 @@
 
 package gpu
 
-import "errors"
-
-// ErrGPUNotAvailable is returned by all GPU functions when built without the cuda tag.
-var ErrGPUNotAvailable = errors.New("gpu: CUDA not available (build without cuda tag)")
-
 // Context is a stub for non-CUDA builds.
 type Context struct{}
 
@@ -27,6 +22,15 @@ func (c *Context) EncStream() uintptr { return 0 }
 
 // MemoryStats returns zero stats on non-CUDA builds.
 func (c *Context) MemoryStats() MemoryStats { return MemoryStats{} }
+
+// Sync is a no-op on non-CUDA builds.
+func (c *Context) Sync() error { return nil }
+
+// SetPool is a no-op on non-CUDA builds.
+func (c *Context) SetPool(pool *FramePool) {}
+
+// Pool returns nil on non-CUDA builds.
+func (c *Context) Pool() *FramePool { return nil }
 
 // DeviceProperties holds GPU device information.
 type DeviceProperties struct {
