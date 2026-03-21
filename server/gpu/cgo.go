@@ -4,7 +4,7 @@ package gpu
 
 /*
 #cgo CFLAGS: -I/usr/local/cuda/include
-#cgo LDFLAGS: -L${SRCDIR}/cuda -lswitchframe_cuda -L/usr/local/cuda/lib64 -lcuda -lcudart -lnppc -lnppi -lnppig -lnppidei
+#cgo LDFLAGS: -L${SRCDIR}/cuda -lswitchframe_cuda -L/usr/local/cuda/lib64 -lcuda -lcudart -lnppc -lnppig -lnppidei
 
 #include <cuda.h>
 #include <cuda_runtime.h>
