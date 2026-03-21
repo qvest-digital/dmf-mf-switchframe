@@ -70,6 +70,66 @@ func ScaleBilinear(ctx *Context, dst, src *GPUFrame) error {
 	return nil
 }
 
+// ScaleBilinearWithQueue is like ScaleBilinear but uses a dedicated command
+// queue instead of the shared context queue. This prevents command buffer
+// interleaving when multiple goroutines perform GPU work concurrently.
+func ScaleBilinearWithQueue(ctx *Context, dst, src *GPUFrame, queue C.MetalQueueRef) error {
+	if ctx == nil || ctx.mtl == nil || dst == nil || src == nil {
+		return ErrGPUNotAvailable
+	}
+
+	mtl := ctx.mtl
+	pipeline, err := mtl.getPipeline("scale_bilinear")
+	if err != nil {
+		return fmt.Errorf("gpu: scale bilinear: %w", err)
+	}
+
+	// Scale Y plane
+	yParams := C.MetalScaleParams{
+		srcW:     C.uint32_t(src.Width),
+		srcH:     C.uint32_t(src.Height),
+		srcPitch: C.uint32_t(src.Pitch),
+		dstW:     C.uint32_t(dst.Width),
+		dstH:     C.uint32_t(dst.Height),
+		dstPitch: C.uint32_t(dst.Pitch),
+	}
+	rc := C.metal_scale_bilinear(queue, pipeline, dst.MetalBuf, src.MetalBuf, &yParams)
+	if rc != C.METAL_SUCCESS {
+		return fmt.Errorf("gpu: scale bilinear Y failed: %d", rc)
+	}
+
+	// Scale UV plane using UV-aware kernel that interpolates CbCr pairs
+	// independently. Width is in CHROMA SAMPLES (width/2), not bytes.
+	uvPipeline, err := mtl.getPipeline("scale_bilinear_uv")
+	if err != nil {
+		return fmt.Errorf("gpu: scale bilinear UV pipeline: %w", err)
+	}
+
+	srcUVOffset := C.int64_t(src.Pitch * src.Height)
+	dstUVOffset := C.int64_t(dst.Pitch * dst.Height)
+	chromaSrcW := src.Width / 2
+	chromaDstW := dst.Width / 2
+	uvParams := C.MetalScaleParams{
+		srcW:     C.uint32_t(chromaSrcW),
+		srcH:     C.uint32_t(src.Height / 2),
+		srcPitch: C.uint32_t(src.Pitch),
+		dstW:     C.uint32_t(chromaDstW),
+		dstH:     C.uint32_t(dst.Height / 2),
+		dstPitch: C.uint32_t(dst.Pitch),
+	}
+	uvBufs := [2]C.MetalBufferRef{dst.MetalBuf, src.MetalBuf}
+	uvOffsets := [2]C.int64_t{dstUVOffset, srcUVOffset}
+	rc = C.metal_dispatch_2d_offset(queue, uvPipeline,
+		&uvBufs[0], &uvOffsets[0], 2,
+		unsafe.Pointer(&uvParams), C.size_t(unsafe.Sizeof(uvParams)), 2,
+		C.uint32_t(chromaDstW), C.uint32_t(dst.Height/2))
+	if rc != C.METAL_SUCCESS {
+		return fmt.Errorf("gpu: scale bilinear UV failed: %d", rc)
+	}
+
+	return nil
+}
+
 // ScaleLanczos3 scales an NV12 GPU frame using a two-pass separable Lanczos-3
 // kernel. It allocates (and caches on the Context) a temporary float buffer
 // sized dstW * srcH floats, sufficient for both Y and UV passes.

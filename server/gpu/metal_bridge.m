@@ -143,6 +143,12 @@ void metal_release(MetalDeviceRef device, MetalQueueRef queue, MetalLibraryRef l
     if (device)  CFRelease(device);
 }
 
+MetalQueueRef metal_create_queue(MetalDeviceRef device) {
+    id<MTLDevice> dev = (id<MTLDevice>)device;
+    id<MTLCommandQueue> q = [dev newCommandQueue];
+    return (MetalQueueRef)q;
+}
+
 const char* metal_device_name(MetalDeviceRef device) {
     id<MTLDevice> dev = (id<MTLDevice>)device;
     // Returns a pointer into the NSString's UTF8 buffer — valid for the device's lifetime.
@@ -782,36 +788,47 @@ int metal_vt_encode(VTEncoderRef enc, void* nv12_ptr, int pitch, int width, int 
     VTEncoderState *state = (VTEncoderState *)enc;
     if (!state || !state->session) return -1;
 
-    // Create CVPixelBuffer wrapping the NV12 data in unified memory.
-    // NV12 = Y plane (pitch * height) followed by interleaved UV plane (pitch * height/2).
-    void *planeBaseAddresses[2] = {
-        nv12_ptr,
-        (uint8_t *)nv12_ptr + pitch * height
-    };
-    size_t planeWidths[2] = { width, width / 2 };  // NV12 4:2:0: UV has half pixel width
-    size_t planeHeights[2] = { height, height / 2 };
-    size_t planeBytesPerRow[2] = { pitch, pitch };
-
+    // Create a VT-managed CVPixelBuffer and copy NV12 data into it.
+    // Using CVPixelBufferCreate (not CreateWithPlanarBytes) lets CoreVideo
+    // choose its own alignment and format, avoiding pitch mismatch issues
+    // between our 256-byte-aligned Metal buffers and VT's expectations.
     CVPixelBufferRef pixelBuffer = NULL;
-    CVReturn cvRet = CVPixelBufferCreateWithPlanarBytes(
-        NULL,                           // allocator
+    NSDictionary *pbAttrs = @{
+        (NSString *)kCVPixelBufferIOSurfacePropertiesKey: @{},
+    };
+    CVReturn cvRet = CVPixelBufferCreate(
+        NULL,
         width, height,
-        kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,  // NV12
-        nv12_ptr,                       // data ptr (not used but required)
-        pitch * height * 3 / 2,         // total data size
-        2,                              // plane count
-        planeBaseAddresses,
-        planeWidths,
-        planeHeights,
-        planeBytesPerRow,
-        NULL,                           // release callback
-        NULL,                           // release ref
-        NULL,                           // pixel buffer attributes
+        kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+        (__bridge CFDictionaryRef)pbAttrs,
         &pixelBuffer
     );
     if (cvRet != kCVReturnSuccess || !pixelBuffer) {
         return -2;
     }
+
+    // Lock and copy NV12 data into the VT-managed buffer.
+    CVPixelBufferLockBaseAddress(pixelBuffer, 0);
+
+    // Y plane
+    uint8_t *vtY = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0);
+    size_t vtYStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0);
+    const uint8_t *srcY = (const uint8_t *)nv12_ptr;
+    for (int row = 0; row < height; row++) {
+        memcpy(vtY + row * vtYStride, srcY + row * pitch, width);
+    }
+
+    // UV plane
+    uint8_t *vtUV = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1);
+    size_t vtUVStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1);
+    const uint8_t *srcUV = (const uint8_t *)nv12_ptr + pitch * height;
+    int chromaW = width;  // NV12 UV row is width bytes (width/2 CbCr pairs × 2 bytes)
+    int chromaH = height / 2;
+    for (int row = 0; row < chromaH; row++) {
+        memcpy(vtUV + row * vtUVStride, srcUV + row * pitch, chromaW);
+    }
+
+    CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
 
     // Create presentation timestamp
     CMTime cmPTS = CMTimeMake(pts, 90000); // 90kHz timebase

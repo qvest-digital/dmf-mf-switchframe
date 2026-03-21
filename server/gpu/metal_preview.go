@@ -2,6 +2,11 @@
 
 package gpu
 
+/*
+#include "metal_bridge.h"
+*/
+import "C"
+
 import (
 	"fmt"
 	"log/slog"
@@ -9,11 +14,14 @@ import (
 )
 
 // PreviewEncoder provides GPU-accelerated preview encoding on Metal.
+// Each encoder has its own dedicated Metal command queue to prevent
+// command buffer interleaving with other GPU work (pipeline, other previews).
 type PreviewEncoder struct {
 	gpuCtx   *Context
 	encoder  *GPUEncoder
 	pool     *FramePool
 	scaleDst *GPUFrame
+	queue    C.MetalQueueRef // dedicated command queue for this encoder
 	srcW     int
 	srcH     int
 	dstW     int
@@ -25,6 +33,13 @@ type PreviewEncoder struct {
 func NewPreviewEncoder(ctx *Context, srcW, srcH, dstW, dstH, bitrate, fpsNum, fpsDen int) (*PreviewEncoder, error) {
 	if ctx == nil || ctx.mtl == nil {
 		return nil, ErrGPUNotAvailable
+	}
+
+	// Create a dedicated command queue so this encoder's ScaleBilinear
+	// operations don't interleave with the main pipeline or other encoders.
+	queue := ctx.mtl.createQueue()
+	if queue == nil {
+		return nil, fmt.Errorf("gpu: preview: failed to create command queue")
 	}
 
 	pool, err := NewFramePool(ctx, dstW, dstH, 2)
@@ -55,6 +70,7 @@ func NewPreviewEncoder(ctx *Context, srcW, srcH, dstW, dstH, bitrate, fpsNum, fp
 		encoder:  encoder,
 		pool:     pool,
 		scaleDst: scaleDst,
+		queue:    queue,
 		srcW:     srcW,
 		srcH:     srcH,
 		dstW:     dstW,
@@ -71,7 +87,7 @@ func (p *PreviewEncoder) Encode(src *GPUFrame, forceIDR bool) ([]byte, bool, err
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if err := ScaleBilinear(p.gpuCtx, p.scaleDst, src); err != nil {
+	if err := ScaleBilinearWithQueue(p.gpuCtx, p.scaleDst, src, p.queue); err != nil {
 		return nil, false, fmt.Errorf("gpu: preview scale failed: %w", err)
 	}
 
@@ -96,4 +112,5 @@ func (p *PreviewEncoder) Close() {
 		p.pool.Close()
 		p.pool = nil
 	}
+	p.queue = nil
 }

@@ -260,6 +260,13 @@ func (c *metalContext) ensureLanczosTemp(needed int) error {
 	return nil
 }
 
+// createQueue creates a new Metal command queue on the same device.
+// Each queue serializes its own command buffers independently,
+// preventing interleaving with other queues.
+func (c *metalContext) createQueue() C.MetalQueueRef {
+	return C.metal_create_queue(c.device)
+}
+
 // Backend returns "metal".
 func (c *metalContext) Backend() string {
 	return BackendMetal
