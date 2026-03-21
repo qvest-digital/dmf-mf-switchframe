@@ -1812,13 +1812,19 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	// tracks state (position, auto-complete) without performing the pixel
 	// blend — the GPU handles blending directly in VRAM. Output is nil
 	// because the GPU pipeline produces the encoded output.
+	//
+	// Exception: stinger transitions use CPU blend because the GPU
+	// BlendStinger kernel doesn't handle the stinger overlay + alpha
+	// NV12 composition correctly. Stingers are infrequent (1-2s) so
+	// the CPU blend overhead is negligible.
 	gpuActive := false
 	if h := s.gpuRunner.Load(); h != nil && h.runner != nil {
 		gpuActive = true
 	}
+	skipBlend := gpuActive && tt != transition.Stinger
 
 	var outputCb func(yuv []byte, width, height int, pts int64, isKeyframe bool)
-	if !gpuActive {
+	if !skipBlend {
 		outputCb = func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
 			s.broadcastProcessed(yuv, width, height, pts, isKeyframe)
 		}
@@ -1831,7 +1837,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		Easing:         topts.easing,
 		HintWidth:      hintW,
 		HintHeight:     hintH,
-		SkipBlend:      gpuActive,
+		SkipBlend:      skipBlend,
 		Output:         outputCb,
 		OnComplete: func(aborted bool) {
 			s.handleTransitionComplete(aborted)
@@ -3242,7 +3248,13 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 		// GPU transition path: blend both sources on GPU, bypassing CPU blend.
 		// The engine still tracks position and handles auto-complete (SkipBlend
 		// mode), but the actual pixel blend happens on GPU.
-		if h := s.gpuRunner.Load(); h != nil && h.runner != nil {
+		//
+		// Exception: stinger transitions use the CPU blend path. The stinger's
+		// per-pixel alpha compositing with PNG overlay data requires careful
+		// NV12 format handling that the GPU BlendStinger kernel doesn't match.
+		// Stingers are infrequent (1-2s animations) so CPU blend is acceptable.
+		tt := engine.TransitionType()
+		if h := s.gpuRunner.Load(); h != nil && h.runner != nil && tt != transition.Stinger {
 			// Feed the engine for state tracking (SkipBlend skips CPU blend).
 			engine.IngestRawFrame(sourceKey, pf.YUV, pf.Width, pf.Height, pf.PTS)
 			pos := engine.Position()
@@ -3254,7 +3266,6 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 			// Determine if this frame should trigger GPU blend output.
 			// Same trigger logic as CPU blendAndOutput: TO-source triggers
 			// for most types, FROM-source triggers for FTB/FTBReverse.
-			tt := engine.TransitionType()
 			isTrigger := false
 			if (tt == transition.FTB || tt == transition.FTBReverse) && sourceKey == engine.FromSource() {
 				isTrigger = true
@@ -3274,22 +3285,7 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 					blendPos = 1.0
 				}
 
-				// Extract stinger frame data if this is a stinger transition.
-				var stinger *GPUStingerFrame
-				if tt == transition.Stinger {
-					yuv, alpha, sw, sh, cutPt := engine.StingerFrameAt(blendPos)
-					if yuv != nil && alpha != nil {
-						stinger = &GPUStingerFrame{
-							YUV:      yuv,
-							Alpha:    alpha,
-							Width:    sw,
-							Height:   sh,
-							CutPoint: cutPt,
-						}
-					}
-				}
-
-				if err := h.runner.RunTransition(fromKey, toKey, string(tt), wipeDir, blendPos, pts, stinger); err != nil {
+				if err := h.runner.RunTransition(fromKey, toKey, string(tt), wipeDir, blendPos, pts, nil); err != nil {
 					s.log.Debug("GPU transition blend failed, no fallback",
 						"err", err, "from", fromKey, "to", toKey, "type", tt)
 				} else {
@@ -3297,8 +3293,6 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 				}
 
 				// Complete transition AFTER the GPU blend frame is produced.
-				// This ensures the last blended frame reaches the encoder
-				// before the switcher changes programSource and epoch.
 				if pos >= 1.0 {
 					engine.ForceComplete()
 				}
