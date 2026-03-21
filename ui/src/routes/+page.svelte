@@ -557,9 +557,6 @@
 		// so the canvas can attach before onMount via ProgramPreview's $effect).
 		pipeline.connectSource('program');
 		pipeline.connectSource('program-preview');
-		if (hasWebGL) {
-			pipeline.connectSource('program-raw');
-		}
 
 		// Resume AudioContexts on first user gesture (browser autoplay policy).
 		const resumeAudio = () => {
