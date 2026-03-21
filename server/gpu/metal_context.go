@@ -80,10 +80,28 @@ func findMetallib() (string, error) {
 }
 
 // newMetalContext initializes Metal and creates a shared context.
+// Tries to find the metallib on disk first; falls back to the embedded
+// metallib (written to a temp file) if not found.
 func newMetalContext() (*metalContext, error) {
 	libPath, err := findMetallib()
 	if err != nil {
-		return nil, err
+		// Fallback: write embedded metallib to temp file.
+		if len(embeddedMetallib) == 0 {
+			return nil, fmt.Errorf("gpu: metal: no metallib found and no embedded metallib available")
+		}
+		tmpFile, tmpErr := os.CreateTemp("", "switchframe_gpu_*.metallib")
+		if tmpErr != nil {
+			return nil, fmt.Errorf("gpu: metal: create temp metallib: %w", tmpErr)
+		}
+		if _, wErr := tmpFile.Write(embeddedMetallib); wErr != nil {
+			tmpFile.Close()
+			os.Remove(tmpFile.Name())
+			return nil, fmt.Errorf("gpu: metal: write temp metallib: %w", wErr)
+		}
+		tmpFile.Close()
+		libPath = tmpFile.Name()
+		// Note: temp file is intentionally not cleaned up — it persists for
+		// the process lifetime. OS cleanup handles it if the process crashes.
 	}
 
 	cPath := C.CString(libPath)
