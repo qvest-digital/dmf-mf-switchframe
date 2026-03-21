@@ -10,6 +10,7 @@ import "C"
 
 import (
 	"sync/atomic"
+	"unsafe"
 )
 
 // GPUFrame holds a single NV12 frame in GPU VRAM.
@@ -44,7 +45,7 @@ func (f *GPUFrame) Release() {
 	if f.pool != nil {
 		f.pool.release(f)
 	} else if f.DevPtr != 0 {
-		C.cuMemFree(f.DevPtr)
+		C.cudaFree(unsafe.Pointer(uintptr(f.DevPtr)))
 		f.DevPtr = 0
 	}
 }

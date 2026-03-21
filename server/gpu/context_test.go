@@ -58,7 +58,8 @@ func TestContextMemoryStats(t *testing.T) {
 	assert.Greater(t, stats.TotalMB, 0, "total VRAM should be > 0")
 	assert.Greater(t, stats.FreeMB, 0, "free VRAM should be > 0")
 	assert.GreaterOrEqual(t, stats.UsedMB, 0, "used VRAM should be >= 0")
-	assert.Equal(t, stats.TotalMB, stats.FreeMB+stats.UsedMB)
+	// Integer division rounding means total may differ from free+used by ±1
+	assert.InDelta(t, stats.TotalMB, stats.FreeMB+stats.UsedMB, 1)
 
 	t.Logf("VRAM: %d MB total, %d MB free, %d MB used",
 		stats.TotalMB, stats.FreeMB, stats.UsedMB)

@@ -24,15 +24,9 @@ import (
 
 // Upload transfers a CPU YUV420p frame to a GPU NV12 frame.
 //
-// The process:
-// 1. Copy YUV420p planes to pinned (page-locked) host memory
-// 2. Async memcpy from pinned host to GPU staging area
-// 3. Launch yuv420p_to_nv12 kernel to convert and place in pitched NV12
-//
-// For the initial implementation, we use a simpler approach:
-// 1. cudaMemcpy the 3 planes to separate GPU buffers
-// 2. Launch conversion kernel
-// The pinned-memory optimization can be added in Phase 14.
+// Uses CUDA Runtime API (cudaMalloc/cudaMemcpy) for thread-safe operation
+// across cgo calls. Allocates temporary device buffers for the 3 YUV planes,
+// copies from host, then launches the conversion kernel.
 func Upload(ctx *Context, frame *GPUFrame, yuv []byte, width, height int) error {
 	if ctx == nil || frame == nil {
 		return ErrGPUNotAvailable
@@ -50,47 +44,40 @@ func Upload(ctx *Context, frame *GPUFrame, yuv []byte, width, height int) error 
 	cbData := yuv[ySize : ySize+cbSize]
 	crData := yuv[ySize+cbSize : ySize+cbSize+crSize]
 
-	// Allocate temporary GPU buffers for the 3 planar inputs
-	var devY, devCb, devCr C.CUdeviceptr
-	rc := C.cuMemAlloc(&devY, C.size_t(ySize))
-	if rc != C.CUDA_SUCCESS {
+	// Allocate temporary GPU buffers for the 3 planar inputs (Runtime API)
+	var devY, devCb, devCr unsafe.Pointer
+	if rc := C.cudaMalloc(&devY, C.size_t(ySize)); rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: upload: alloc Y failed: %d", rc)
 	}
-	defer C.cuMemFree(devY)
+	defer C.cudaFree(devY)
 
-	rc = C.cuMemAlloc(&devCb, C.size_t(cbSize))
-	if rc != C.CUDA_SUCCESS {
+	if rc := C.cudaMalloc(&devCb, C.size_t(cbSize)); rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: upload: alloc Cb failed: %d", rc)
 	}
-	defer C.cuMemFree(devCb)
+	defer C.cudaFree(devCb)
 
-	rc = C.cuMemAlloc(&devCr, C.size_t(crSize))
-	if rc != C.CUDA_SUCCESS {
+	if rc := C.cudaMalloc(&devCr, C.size_t(crSize)); rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: upload: alloc Cr failed: %d", rc)
 	}
-	defer C.cuMemFree(devCr)
+	defer C.cudaFree(devCr)
 
-	// Copy planar data from host to device
-	rc = C.cuMemcpyHtoD(devY, unsafe.Pointer(&yData[0]), C.size_t(ySize))
-	if rc != C.CUDA_SUCCESS {
+	// Copy planar data from host to device (Runtime API)
+	if rc := C.cudaMemcpy(devY, unsafe.Pointer(&yData[0]), C.size_t(ySize), C.cudaMemcpyHostToDevice); rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: upload: memcpy Y failed: %d", rc)
 	}
-	rc = C.cuMemcpyHtoD(devCb, unsafe.Pointer(&cbData[0]), C.size_t(cbSize))
-	if rc != C.CUDA_SUCCESS {
+	if rc := C.cudaMemcpy(devCb, unsafe.Pointer(&cbData[0]), C.size_t(cbSize), C.cudaMemcpyHostToDevice); rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: upload: memcpy Cb failed: %d", rc)
 	}
-	rc = C.cuMemcpyHtoD(devCr, unsafe.Pointer(&crData[0]), C.size_t(crSize))
-	if rc != C.CUDA_SUCCESS {
+	if rc := C.cudaMemcpy(devCr, unsafe.Pointer(&crData[0]), C.size_t(crSize), C.cudaMemcpyHostToDevice); rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: upload: memcpy Cr failed: %d", rc)
 	}
 
 	// Launch conversion kernel: YUV420p → NV12
-	// CUdeviceptr is uint64 (device address), cast via uintptr → unsafe.Pointer
 	cerr := C.yuv420p_to_nv12(
 		(*C.uint8_t)(unsafe.Pointer(uintptr(frame.DevPtr))),
-		(*C.uint8_t)(unsafe.Pointer(uintptr(devY))),
-		(*C.uint8_t)(unsafe.Pointer(uintptr(devCb))),
-		(*C.uint8_t)(unsafe.Pointer(uintptr(devCr))),
+		(*C.uint8_t)(devY),
+		(*C.uint8_t)(devCb),
+		(*C.uint8_t)(devCr),
 		C.int(width), C.int(height),
 		C.int(frame.Pitch), C.int(width),
 		ctx.stream,

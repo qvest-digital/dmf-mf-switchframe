@@ -21,11 +21,9 @@ import (
 
 // Download transfers a GPU NV12 frame to a CPU YUV420p buffer.
 //
-// The process:
-// 1. Launch nv12_to_yuv420p kernel to convert NV12 → planar YUV420p in GPU memory
-// 2. Copy the 3 planes from GPU to CPU
-//
-// The destination buffer must be at least width*height*3/2 bytes.
+// Uses CUDA Runtime API (cudaMalloc/cudaMemcpy) for thread-safe operation
+// across cgo calls. Allocates temporary device buffers, launches the
+// NV12→YUV420p conversion kernel, then copies planes to host.
 func Download(ctx *Context, yuv []byte, frame *GPUFrame, width, height int) error {
 	if ctx == nil || frame == nil {
 		return ErrGPUNotAvailable
@@ -39,32 +37,28 @@ func Download(ctx *Context, yuv []byte, frame *GPUFrame, width, height int) erro
 		return fmt.Errorf("gpu: download: YUV buffer too small: %d < %d", len(yuv), expectedSize)
 	}
 
-	// Allocate temporary GPU buffers for the 3 planar outputs
-	var devY, devCb, devCr C.CUdeviceptr
-	rc := C.cuMemAlloc(&devY, C.size_t(ySize))
-	if rc != C.CUDA_SUCCESS {
+	// Allocate temporary GPU buffers for the 3 planar outputs (Runtime API)
+	var devY, devCb, devCr unsafe.Pointer
+	if rc := C.cudaMalloc(&devY, C.size_t(ySize)); rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: download: alloc Y failed: %d", rc)
 	}
-	defer C.cuMemFree(devY)
+	defer C.cudaFree(devY)
 
-	rc = C.cuMemAlloc(&devCb, C.size_t(cbSize))
-	if rc != C.CUDA_SUCCESS {
+	if rc := C.cudaMalloc(&devCb, C.size_t(cbSize)); rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: download: alloc Cb failed: %d", rc)
 	}
-	defer C.cuMemFree(devCb)
+	defer C.cudaFree(devCb)
 
-	rc = C.cuMemAlloc(&devCr, C.size_t(crSize))
-	if rc != C.CUDA_SUCCESS {
+	if rc := C.cudaMalloc(&devCr, C.size_t(crSize)); rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: download: alloc Cr failed: %d", rc)
 	}
-	defer C.cuMemFree(devCr)
+	defer C.cudaFree(devCr)
 
 	// Launch conversion kernel: NV12 → YUV420p
-	// CUdeviceptr is uint64 (device address), cast via uintptr → unsafe.Pointer
 	cerr := C.nv12_to_yuv420p(
-		(*C.uint8_t)(unsafe.Pointer(uintptr(devY))),
-		(*C.uint8_t)(unsafe.Pointer(uintptr(devCb))),
-		(*C.uint8_t)(unsafe.Pointer(uintptr(devCr))),
+		(*C.uint8_t)(devY),
+		(*C.uint8_t)(devCb),
+		(*C.uint8_t)(devCr),
 		(*C.uint8_t)(unsafe.Pointer(uintptr(frame.DevPtr))),
 		C.int(width), C.int(height),
 		C.int(frame.Pitch), C.int(width),
@@ -75,21 +69,18 @@ func Download(ctx *Context, yuv []byte, frame *GPUFrame, width, height int) erro
 	}
 
 	// Synchronize before reading back
-	if syncRc := C.cudaStreamSynchronize(ctx.stream); syncRc != C.cudaSuccess {
-		return fmt.Errorf("gpu: download: stream sync failed: %d", syncRc)
+	if rc := C.cudaStreamSynchronize(ctx.stream); rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: download: stream sync failed: %d", rc)
 	}
 
-	// Copy planar data from device to host
-	rc = C.cuMemcpyDtoH(unsafe.Pointer(&yuv[0]), devY, C.size_t(ySize))
-	if rc != C.CUDA_SUCCESS {
+	// Copy planar data from device to host (Runtime API)
+	if rc := C.cudaMemcpy(unsafe.Pointer(&yuv[0]), devY, C.size_t(ySize), C.cudaMemcpyDeviceToHost); rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: download: memcpy Y failed: %d", rc)
 	}
-	rc = C.cuMemcpyDtoH(unsafe.Pointer(&yuv[ySize]), devCb, C.size_t(cbSize))
-	if rc != C.CUDA_SUCCESS {
+	if rc := C.cudaMemcpy(unsafe.Pointer(&yuv[ySize]), devCb, C.size_t(cbSize), C.cudaMemcpyDeviceToHost); rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: download: memcpy Cb failed: %d", rc)
 	}
-	rc = C.cuMemcpyDtoH(unsafe.Pointer(&yuv[ySize+cbSize]), devCr, C.size_t(crSize))
-	if rc != C.CUDA_SUCCESS {
+	if rc := C.cudaMemcpy(unsafe.Pointer(&yuv[ySize+cbSize]), devCr, C.size_t(crSize), C.cudaMemcpyDeviceToHost); rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: download: memcpy Cr failed: %d", rc)
 	}
 

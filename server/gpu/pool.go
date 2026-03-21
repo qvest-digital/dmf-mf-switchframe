@@ -72,42 +72,40 @@ func NewFramePool(ctx *Context, width, height, initialSize int) (*FramePool, err
 // determinePitch allocates a temporary pitched buffer to discover the
 // pitch that cudaMallocPitch returns for our dimensions, then frees it.
 func (p *FramePool) determinePitch() (int, error) {
-	var devPtr C.CUdeviceptr
+	var devPtr unsafe.Pointer
 	var pitch C.size_t
 	// NV12 total height: height + height/2 (Y + UV planes)
 	totalHeight := C.size_t(p.height * 3 / 2)
-	rc := C.cuMemAllocPitch(
+	rc := C.cudaMallocPitch(
 		&devPtr,
 		&pitch,
-		C.size_t(p.width)*C.size_t(unsafe.Sizeof(byte(0))),
+		C.size_t(p.width),
 		totalHeight,
-		16, // element size for alignment
 	)
-	if rc != C.CUDA_SUCCESS {
-		return 0, fmt.Errorf("cuMemAllocPitch probe failed: %d", rc)
+	if rc != C.cudaSuccess {
+		return 0, fmt.Errorf("cudaMallocPitch probe failed: %d", rc)
 	}
-	C.cuMemFree(devPtr)
+	C.cudaFree(devPtr)
 	return int(pitch), nil
 }
 
 // allocFrame allocates a single NV12 frame on the GPU.
 func (p *FramePool) allocFrame() (*GPUFrame, error) {
-	var devPtr C.CUdeviceptr
+	var devPtr unsafe.Pointer
 	var pitch C.size_t
 	totalHeight := C.size_t(p.height * 3 / 2)
-	rc := C.cuMemAllocPitch(
+	rc := C.cudaMallocPitch(
 		&devPtr,
 		&pitch,
-		C.size_t(p.width)*C.size_t(unsafe.Sizeof(byte(0))),
+		C.size_t(p.width),
 		totalHeight,
-		16,
 	)
-	if rc != C.CUDA_SUCCESS {
-		return nil, fmt.Errorf("cuMemAllocPitch failed: %d", rc)
+	if rc != C.cudaSuccess {
+		return nil, fmt.Errorf("cudaMallocPitch failed: %d", rc)
 	}
 
 	frame := &GPUFrame{
-		DevPtr: devPtr,
+		DevPtr: C.CUdeviceptr(uintptr(devPtr)),
 		Pitch:  int(pitch),
 		Width:  p.width,
 		Height: p.height,
@@ -150,7 +148,7 @@ func (p *FramePool) release(frame *GPUFrame) {
 	p.mu.Unlock()
 	// Pool full — free GPU memory
 	if frame.DevPtr != 0 {
-		C.cuMemFree(frame.DevPtr)
+		C.cudaFree(unsafe.Pointer(uintptr(frame.DevPtr)))
 		frame.DevPtr = 0
 	}
 }
@@ -160,7 +158,7 @@ func (p *FramePool) Close() {
 	p.mu.Lock()
 	for _, frame := range p.free {
 		if frame.DevPtr != 0 {
-			C.cuMemFree(frame.DevPtr)
+			C.cudaFree(unsafe.Pointer(uintptr(frame.DevPtr)))
 			frame.DevPtr = 0
 		}
 	}
