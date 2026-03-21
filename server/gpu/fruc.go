@@ -20,7 +20,7 @@ typedef struct NvOFGPUBufferHandle_st* NvOFGPUBufferHandle;
 
 typedef int NV_OF_STATUS;
 #define NV_OF_SUCCESS 0
-#define NV_OF_API_VERSION 0x0050  // SDK 5.0
+#define NV_OF_API_VERSION 0x0500  // SDK 5.0 (major=5, minor=0)
 
 // Enums (matching nvOpticalFlowCommon.h values)
 #define NV_OF_FALSE 0
@@ -208,16 +208,16 @@ static NV_OF_STATUS nvof_create_session(NvOF_Session* s, int width, int height) 
     // Create input buffer
     NvOF_BufferDesc inputDesc = {width, height, NV_OF_BUFFER_USAGE_INPUT, NV_OF_BUFFER_FORMAT_NV12};
     rc = nvof_funcs.nvOFCreateGPUBufferCuda(s->hOf, &inputDesc, NV_OF_CUDA_BUFFER_TYPE_CUDEVICEPTR, &s->hInput);
-    if (rc != NV_OF_SUCCESS) { nvof_funcs.nvOFDestroy(s->hOf); return rc; }
+    if (rc != NV_OF_SUCCESS) { nvof_destroy_session(s); return rc; }
 
     // Create reference buffer
     rc = nvof_funcs.nvOFCreateGPUBufferCuda(s->hOf, &inputDesc, NV_OF_CUDA_BUFFER_TYPE_CUDEVICEPTR, &s->hRef);
-    if (rc != NV_OF_SUCCESS) { nvof_funcs.nvOFDestroy(s->hOf); return rc; }
+    if (rc != NV_OF_SUCCESS) { nvof_destroy_session(s); return rc; }
 
     // Create output buffer (SHORT2 = flow vectors)
     NvOF_BufferDesc outputDesc = {s->flowW, s->flowH, NV_OF_BUFFER_USAGE_OUTPUT, NV_OF_BUFFER_FORMAT_SHORT2};
     rc = nvof_funcs.nvOFCreateGPUBufferCuda(s->hOf, &outputDesc, NV_OF_CUDA_BUFFER_TYPE_CUDEVICEPTR, &s->hOutput);
-    if (rc != NV_OF_SUCCESS) { nvof_funcs.nvOFDestroy(s->hOf); return rc; }
+    if (rc != NV_OF_SUCCESS) { nvof_destroy_session(s); return rc; }
 
     // Get device pointers for memcpy
     s->inputPtr = nvof_funcs.nvOFGPUBufferGetCUdeviceptr(s->hInput);
@@ -233,17 +233,47 @@ static NV_OF_STATUS nvof_create_session(NvOF_Session* s, int width, int height) 
     return NV_OF_SUCCESS;
 }
 
+// nvof_get_input_stride retrieves the stride of an OF input buffer.
+static uint32_t nvof_get_input_stride(NvOFGPUBufferHandle hBuf) {
+    NvOF_CudaBufferStrideInfo si;
+    memset(&si, 0, sizeof(si));
+    nvof_funcs.nvOFGPUBufferGetStrideInfo(hBuf, &si);
+    return si.strideInfo[0].strideXInBytes;
+}
+
 static NV_OF_STATUS nvof_compute_flow(NvOF_Session* s,
     CUdeviceptr prevNV12, int prevPitch,
     CUdeviceptr currNV12, int currPitch)
 {
-    // Copy input frames to OF buffers (pitched → OF buffer layout)
-    // The OF buffers may have different pitch than our frame pool
-    int nv12Size = s->width * s->height * 3 / 2;
-    cuMemcpy(s->inputPtr, prevNV12, nv12Size);
-    cuMemcpy(s->refPtr, currNV12, nv12Size);
+    // Copy input frames to OF buffers using 2D pitched copy.
+    // Source frames use frame pool pitch; OF buffers have their own stride.
+    uint32_t ofInputStride = nvof_get_input_stride(s->hInput);
+    int h = s->height;
+    int w = s->width;
+    int totalRows = h + h / 2; // NV12: Y rows + UV rows
 
-    // Execute optical flow
+    CUDA_MEMCPY2D cp;
+    memset(&cp, 0, sizeof(cp));
+    cp.srcMemoryType = CU_MEMORYTYPE_DEVICE;
+    cp.dstMemoryType = CU_MEMORYTYPE_DEVICE;
+    cp.WidthInBytes = w;
+    cp.Height = totalRows;
+
+    // Copy prev frame (pitched source → OF buffer stride)
+    cp.srcDevice = prevNV12;
+    cp.srcPitch = prevPitch;
+    cp.dstDevice = s->inputPtr;
+    cp.dstPitch = ofInputStride;
+    cuMemcpy2D(&cp);
+
+    // Copy curr frame
+    cp.srcDevice = currNV12;
+    cp.srcPitch = currPitch;
+    cp.dstDevice = s->refPtr;
+    cp.dstPitch = nvof_get_input_stride(s->hRef);
+    cuMemcpy2D(&cp);
+
+    // Execute optical flow on NVOFA hardware
     NvOF_ExecInParams inParams;
     NvOF_ExecOutParams outParams;
     memset(&inParams, 0, sizeof(inParams));
@@ -398,19 +428,33 @@ func (f *FRUC) Interpolate(prev, curr, output *GPUFrame, alpha float64) error {
 			C.CUdeviceptr(curr.DevPtr), C.int(curr.Pitch),
 		)
 		if rc == C.NV_OF_SUCCESS {
-			// Copy flow vectors from OF output buffer to our flow buffer.
-			// OF output is int16_t pairs in S10.5 format at outputPtr.
-			flowBytes := C.size_t(f.flowW * f.flowH * 4) // 4 bytes per (dx,dy) pair
-			C.cuMemcpy(C.CUdeviceptr(uintptr(f.flowBuf)),
-				f.session.outputPtr, flowBytes)
+			// Copy flow vectors from OF output buffer to our flow buffer,
+			// respecting the OF output stride (hardware buffers are often
+			// aligned to power-of-2 boundaries).
+			dstStride := C.size_t(f.flowW * 4) // our buffer: flowW * sizeof(int16_t) * 2
+			srcStride := C.size_t(f.session.outputStrideX)
+			if srcStride == dstStride {
+				// Strides match — flat copy
+				flowBytes := C.size_t(f.flowW * f.flowH * 4)
+				C.cuMemcpy(C.CUdeviceptr(uintptr(f.flowBuf)),
+					f.session.outputPtr, flowBytes)
+			} else {
+				// Strides differ — row-by-row 2D copy
+				var cp C.CUDA_MEMCPY2D
+				C.memset(unsafe.Pointer(&cp), 0, C.size_t(unsafe.Sizeof(cp)))
+				cp.srcMemoryType = C.CU_MEMORYTYPE_DEVICE
+				cp.dstMemoryType = C.CU_MEMORYTYPE_DEVICE
+				cp.srcDevice = f.session.outputPtr
+				cp.srcPitch = srcStride
+				cp.dstDevice = C.CUdeviceptr(uintptr(f.flowBuf))
+				cp.dstPitch = dstStride
+				cp.WidthInBytes = dstStride
+				cp.Height = C.size_t(f.flowH)
+				C.cuMemcpy2D(&cp)
+			}
 
-			// Run motion-compensated interpolation with NVOFA flow vectors.
-			// Note: fruc_interpolate_nv12 expects quarter-pixel (divide by 4).
-			// NVOFA outputs S10.5 (divide by 32). The kernel's 0.25f multiplier
-			// needs to be 1/32 = 0.03125f for S10.5. We handle this by updating
-			// the kernel to accept a flow scale parameter, or by pre-scaling.
-			// For now, the flow vectors provide motion direction even if magnitude
-			// is off by 8x — still much better than zero-motion blend.
+			// Motion-compensated interpolation with NVOFA S10.5 flow vectors.
+			// The CUDA kernel converts S10.5 to pixels via * 0.03125f (1/32).
 			cerr := C.fruc_interpolate_nv12(
 				(*C.uint8_t)(unsafe.Pointer(uintptr(output.DevPtr))),
 				C.int(output.Pitch),

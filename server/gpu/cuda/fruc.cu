@@ -89,8 +89,8 @@ __global__ void fruc_interpolate_uv_kernel(
     for (int j = 0; j < 2; j++) {
         for (int i = 0; i < 2; i++) {
             int idx = bys[j] * flowW + bxs[i] * 2;
-            dx += (float)flowXY[idx] * 0.25f;
-            dy += (float)flowXY[idx + 1] * 0.25f;
+            dx += (float)flowXY[idx] * 0.03125f;      // S10.5 to pixel (1/32)
+            dy += (float)flowXY[idx + 1] * 0.03125f;
             count++;
         }
     }

@@ -208,12 +208,8 @@ func (c *Context) MemoryStats() MemoryStats {
 // Must be called under the same serialization as scale_lanczos3_nv12 (i.e.
 // the caller holds no concurrent access to lanczosTmp).
 func (c *Context) ensureLanczosTemp(needed int) error {
-	if needed <= c.lanczosTmpSize {
-		return nil
-	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	// Re-check under lock in case another goroutine already grew it.
 	if needed <= c.lanczosTmpSize {
 		return nil
 	}
