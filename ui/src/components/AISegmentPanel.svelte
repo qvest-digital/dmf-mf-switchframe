@@ -1,6 +1,7 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import type { ControlRoomState, AISegmentConfig } from '$lib/api/types';
-	import { setAISegment, deleteAISegment, getAISegment, apiCall } from '$lib/api/switch-api';
+	import { setAISegment, deleteAISegment, apiCall } from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
 
 	interface Props {
@@ -11,7 +12,6 @@
 
 	let sourceKeys = $derived(Object.keys(crState.sources).sort());
 	let activeSource = $state('');
-	let loadGeneration = 0;
 
 	// Per-source controls
 	let enabled = $state(false);
@@ -37,31 +37,19 @@
 		}
 	});
 
-	// Load existing AI segment config when source changes
+	// Load config from MoQ state broadcast when source changes.
+	// No REST polling — config comes via the control track like all other state.
 	$effect(() => {
 		const source = activeSource;
 		if (!source) return;
-		const gen = ++loadGeneration;
 
-		// First check the state broadcast for this source
-		const stateConfig = crState.aiSegmentation?.sources?.[source];
+		// Read state broadcast for this source (untracked so edits aren't overwritten)
+		const stateConfig = untrack(() => crState.aiSegmentation?.sources?.[source]);
 		if (stateConfig) {
-			if (gen !== loadGeneration) return;
 			applyConfig(stateConfig);
-			return;
+		} else {
+			resetDefaults();
 		}
-
-		// Fall back to REST fetch
-		getAISegment(source)
-			.then((config) => {
-				if (gen !== loadGeneration) return;
-				applyConfig(config);
-			})
-			.catch(() => {
-				if (gen !== loadGeneration) return;
-				// No config for this source — reset to defaults
-				resetDefaults();
-			});
 	});
 
 	function applyConfig(config: AISegmentConfig) {
@@ -99,8 +87,22 @@
 	function applySegment() {
 		if (!activeSource) return;
 
+		const label = crState.sources[activeSource]?.label || activeSource;
+
+		if (!enabled) {
+			// Disable = DELETE (server treats PUT as enable regardless of body)
+			apiCall(
+				deleteAISegment(activeSource).then((r) => {
+					if (!r.ok) throw new Error(`HTTP ${r.status}`);
+				}),
+				'AI Segment',
+			);
+			notify('info', `AI BG disabled on ${label}`);
+			return;
+		}
+
 		const config: Partial<AISegmentConfig> = {
-			enabled,
+			enabled: true,
 			sensitivity: sensitivity / 100,
 			edgeSmooth: edgeSmooth / 100,
 			background: backgroundValue,
@@ -112,9 +114,7 @@
 			}),
 			'AI Segment',
 		);
-
-		const label = crState.sources[activeSource]?.label || activeSource;
-		notify('info', enabled ? `AI BG enabled on ${label}` : `AI BG disabled on ${label}`);
+		notify('info', `AI BG enabled on ${label}`);
 	}
 
 	function removeSegment() {
