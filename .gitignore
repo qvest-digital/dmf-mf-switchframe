@@ -34,3 +34,6 @@ docs/plans/
 claude/*
 doc/plans/*
 DocsPlans/*
+
+# Claude Code project instructions (local only)
+CLAUDE.md
