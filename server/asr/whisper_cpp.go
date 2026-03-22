@@ -126,7 +126,13 @@ func (w *WhisperCpp) TranscribeWithConfidence(samples []float32, language string
 	}
 
 	// Translate mode: transcribe in detected language then translate to English.
-	params.translate = C.bool(translate)
+	// Note: C.bool may not work correctly in all cgo configurations.
+	// Use direct assignment with the C boolean value.
+	if translate {
+		params.translate = true
+	} else {
+		params.translate = false
+	}
 
 	// Run inference
 	rc := C.whisper_full(w.ctx, params, (*C.float)(&samples[0]), C.int(len(samples)))
