@@ -418,7 +418,7 @@
 								onclick={() => setEQThrottled(selectedChannel, bandIdx, band.frequency, band.gain, band.q, !band.enabled)}
 							>{EQ_BAND_NAMES[bandIdx]}</button>
 							<div class="eq-param">
-								<span class="eq-param-label">F</span>
+								<span class="eq-param-label">FREQ</span>
 								<input type="range"
 									class="detail-slider"
 									min={bandIdx === 0 ? 80 : bandIdx === 1 ? 200 : 1000}
@@ -430,7 +430,7 @@
 								<span class="eq-param-value">{band.frequency >= 1000 ? (band.frequency / 1000).toFixed(1) + 'k' : band.frequency}</span>
 							</div>
 							<div class="eq-param">
-								<span class="eq-param-label">G</span>
+								<span class="eq-param-label">GAIN</span>
 								<input type="range"
 									class="detail-slider"
 									min="-12"
@@ -466,39 +466,39 @@
 						class="comp-bypass-btn"
 						class:active={!(compBypass[selectedChannel] ?? false)}
 						onclick={() => toggleCompBypass(selectedChannel, ch)}
-					>{compBypass[selectedChannel] ? 'OFF' : 'ON'}</button>
+					>{compBypass[selectedChannel] ? 'OUT' : 'IN'}</button>
 				</div>
 				<div class="comp-params" class:bypassed={compBypass[selectedChannel] ?? false}>
 					<div class="comp-param">
-						<span class="eq-param-label">Thr</span>
+						<span class="eq-param-label">THRESH</span>
 						<input type="range" class="detail-slider" min="-40" max="0" step="0.5" value={ch.compressor.threshold}
 							oninput={(e) => setCompressorThrottled(selectedChannel, parseFloat(e.currentTarget.value), ch.compressor.ratio, ch.compressor.attack, ch.compressor.release, ch.compressor.makeupGain)}
 						/>
 						<span class="eq-param-value">{ch.compressor.threshold.toFixed(0)}</span>
 					</div>
 					<div class="comp-param">
-						<span class="eq-param-label">Rat</span>
+						<span class="eq-param-label">RATIO</span>
 						<input type="range" class="detail-slider" min="1" max="20" step="0.5" value={ch.compressor.ratio}
 							oninput={(e) => setCompressorThrottled(selectedChannel, ch.compressor.threshold, parseFloat(e.currentTarget.value), ch.compressor.attack, ch.compressor.release, ch.compressor.makeupGain)}
 						/>
 						<span class="eq-param-value">{ch.compressor.ratio.toFixed(1)}</span>
 					</div>
 					<div class="comp-param">
-						<span class="eq-param-label">Atk</span>
+						<span class="eq-param-label">ATK</span>
 						<input type="range" class="detail-slider" min="0.1" max="100" step="0.1" value={ch.compressor.attack}
 							oninput={(e) => setCompressorThrottled(selectedChannel, ch.compressor.threshold, ch.compressor.ratio, parseFloat(e.currentTarget.value), ch.compressor.release, ch.compressor.makeupGain)}
 						/>
 						<span class="eq-param-value">{ch.compressor.attack.toFixed(1)}</span>
 					</div>
 					<div class="comp-param">
-						<span class="eq-param-label">Rel</span>
+						<span class="eq-param-label">REL</span>
 						<input type="range" class="detail-slider" min="10" max="1000" step="1" value={ch.compressor.release}
 							oninput={(e) => setCompressorThrottled(selectedChannel, ch.compressor.threshold, ch.compressor.ratio, ch.compressor.attack, parseFloat(e.currentTarget.value), ch.compressor.makeupGain)}
 						/>
 						<span class="eq-param-value">{ch.compressor.release.toFixed(0)}</span>
 					</div>
 					<div class="comp-param">
-						<span class="eq-param-label">Mup</span>
+						<span class="eq-param-label">MAKEUP</span>
 						<input type="range" class="detail-slider" min="0" max="24" step="0.5" value={ch.compressor.makeupGain}
 							oninput={(e) => setCompressorThrottled(selectedChannel, ch.compressor.threshold, ch.compressor.ratio, ch.compressor.attack, ch.compressor.release, parseFloat(e.currentTarget.value))}
 						/>
@@ -515,7 +515,7 @@
 			<div class="detail-section detail-delays">
 				<span class="detail-section-label">DELAY</span>
 				<div class="delay-param">
-					<span class="eq-param-label">Src</span>
+					<span class="eq-param-label">VIDEO</span>
 					<input type="range" class="detail-slider" min="0" max="500" step="1"
 						value={crState.sources?.[selectedChannel]?.delayMs ?? 0}
 						oninput={(e) => setDelayThrottled(selectedChannel, parseFloat(e.currentTarget.value))}
@@ -523,7 +523,7 @@
 					<span class="eq-param-value">{crState.sources?.[selectedChannel]?.delayMs ?? 0}ms</span>
 				</div>
 				<div class="delay-param">
-					<span class="eq-param-label">Lip</span>
+					<span class="eq-param-label">AUDIO</span>
 					<input type="range" class="detail-slider" min="0" max="500" step="1"
 						value={ch.audioDelayMs ?? 0}
 						oninput={(e) => setAudioDelayThrottled(selectedChannel, parseFloat(e.currentTarget.value))}
@@ -1002,7 +1002,7 @@
 		font-size: 9px;
 		text-transform: uppercase;
 		color: var(--text-tertiary);
-		width: 16px;
+		min-width: 18px;
 		flex-shrink: 0;
 	}
 
@@ -1086,7 +1086,7 @@
 	.gr-fill {
 		position: absolute;
 		top: 0;
-		left: 0;
+		right: 0;
 		height: 100%;
 		background: #f59e0b;
 		border-radius: var(--radius-xs);
