@@ -20,8 +20,8 @@ func TestStore_List(t *testing.T) {
 	store := setupTestStore(t)
 
 	looks := store.List()
-	if len(looks) < 6 {
-		t.Fatalf("expected at least 6 built-in looks, got %d", len(looks))
+	if len(looks) < 41 {
+		t.Fatalf("expected at least 41 built-in looks, got %d", len(looks))
 	}
 	// Verify all are builtin.
 	for _, l := range looks {
@@ -32,19 +32,19 @@ func TestStore_List(t *testing.T) {
 	// Check one known look exists.
 	found := false
 	for _, l := range looks {
-		if l.Name == "broadcast-news" {
+		if l.Name == "kodachrome" {
 			found = true
 		}
 	}
 	if !found {
-		t.Error("broadcast-news not found in built-in looks")
+		t.Error("kodachrome not found in built-in looks")
 	}
 }
 
 func TestStore_Load(t *testing.T) {
 	store := setupTestStore(t)
 
-	lut, err := store.Load("broadcast-news")
+	lut, err := store.Load("kodachrome")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestStore_Upload(t *testing.T) {
 	store := setupTestStore(t)
 
 	// Create a valid .cube string.
-	lut := GenerateLook(BuiltinLooks()[1]) // cinematic
+	lut := GenerateLook(BuiltinLooks()[0]) // golden-hour
 	var sb strings.Builder
 	if err := WriteCube(&sb, lut); err != nil {
 		t.Fatal(err)
@@ -138,7 +138,7 @@ func TestStore_Delete(t *testing.T) {
 func TestStore_Delete_Builtin(t *testing.T) {
 	store := setupTestStore(t)
 
-	err := store.Delete("broadcast-news")
+	err := store.Delete("kodachrome")
 	if err == nil {
 		t.Fatal("expected error when deleting built-in look")
 	}

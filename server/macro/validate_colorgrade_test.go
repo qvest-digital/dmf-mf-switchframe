@@ -8,7 +8,7 @@ import (
 
 func TestValidateSteps_ColorGradeSetValid(t *testing.T) {
 	result := ValidateSteps([]Step{
-		{Action: ActionColorGradeSet, Params: map[string]any{"lookName": "cinematic", "intensity": 0.8}},
+		{Action: ActionColorGradeSet, Params: map[string]any{"lookName": "kodachrome", "intensity": 0.8}},
 	})
 	require.False(t, result.HasErrors(), "expected no errors: %v", result.Errors)
 }
@@ -23,7 +23,7 @@ func TestValidateSteps_ColorGradeSetMissingLookName(t *testing.T) {
 
 func TestValidateSteps_ColorGradeSetIntensityTooHigh(t *testing.T) {
 	result := ValidateSteps([]Step{
-		{Action: ActionColorGradeSet, Params: map[string]any{"lookName": "cinematic", "intensity": 1.5}},
+		{Action: ActionColorGradeSet, Params: map[string]any{"lookName": "kodachrome", "intensity": 1.5}},
 	})
 	require.True(t, result.HasErrors())
 	require.Contains(t, result.Errors[0].Message, "intensity")
@@ -31,7 +31,7 @@ func TestValidateSteps_ColorGradeSetIntensityTooHigh(t *testing.T) {
 
 func TestValidateSteps_ColorGradeSetIntensityNegative(t *testing.T) {
 	result := ValidateSteps([]Step{
-		{Action: ActionColorGradeSet, Params: map[string]any{"lookName": "cinematic", "intensity": -0.1}},
+		{Action: ActionColorGradeSet, Params: map[string]any{"lookName": "kodachrome", "intensity": -0.1}},
 	})
 	require.True(t, result.HasErrors())
 	require.Contains(t, result.Errors[0].Message, "intensity")
@@ -40,7 +40,7 @@ func TestValidateSteps_ColorGradeSetIntensityNegative(t *testing.T) {
 func TestValidateSteps_ColorGradeSetIntensityOptional(t *testing.T) {
 	// No intensity param is valid — defaults to 1.0 at runtime.
 	result := ValidateSteps([]Step{
-		{Action: ActionColorGradeSet, Params: map[string]any{"lookName": "warm-natural"}},
+		{Action: ActionColorGradeSet, Params: map[string]any{"lookName": "golden-hour"}},
 	})
 	require.False(t, result.HasErrors())
 }
@@ -65,7 +65,7 @@ func TestRunner_ColorGradeActionsDispatchViaExecute(t *testing.T) {
 			target := &mockTarget{}
 			m := Macro{
 				Name:  "colorgrade-" + string(action),
-				Steps: []Step{{Action: action, Params: map[string]any{"lookName": "cinematic"}}},
+				Steps: []Step{{Action: action, Params: map[string]any{"lookName": "kodachrome"}}},
 			}
 			err := Run(t.Context(), m, target, nil)
 			require.NoError(t, err)
@@ -80,9 +80,9 @@ func TestRunner_ColorGradeActionsDispatchViaExecute(t *testing.T) {
 func TestStepSummary_ColorGradeSet(t *testing.T) {
 	s := StepSummary(Step{
 		Action: ActionColorGradeSet,
-		Params: map[string]any{"lookName": "cinematic", "intensity": 0.8},
+		Params: map[string]any{"lookName": "kodachrome", "intensity": 0.8},
 	})
-	require.Contains(t, s, "cinematic")
+	require.Contains(t, s, "kodachrome")
 	require.Contains(t, s, "80%")
 }
 
