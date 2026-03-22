@@ -1,10 +1,11 @@
 import { VideoRenderBuffer } from "./video-render-buffer";
 
-// Allow up to 8 frames (~267ms at 30fps) before live-edge skip.
-// After a transport stall, this ensures the renderer catches up within
-// ~300ms instead of buffering a full second. Group-level skip (in
-// media-pipeline) handles keyframe-aware recovery; this is the safety net.
-const LIVE_EDGE_TARGET_DEPTH = 8;
+// Allow up to 20 frames (~667ms at 30fps) before live-edge skip.
+// Group-level skip (in media-pipeline) handles keyframe-aware stall
+// recovery; this is the safety net for extreme accumulation. Must be
+// high enough to tolerate normal WebTransport delivery bursts without
+// triggering spurious skips that cause choppy playback.
+const LIVE_EDGE_TARGET_DEPTH = 20;
 const RAF_THROTTLE_THRESHOLD_MS = 50;
 const RAF_THROTTLE_COUNT = 3; // consecutive slow frames before switching
 const RAF_NORMAL_COUNT = 5; // consecutive normal frames before switching back

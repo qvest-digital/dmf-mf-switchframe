@@ -29,11 +29,11 @@ func main() {
 		}
 
 		if err := colorgrade.WriteCube(f, lut); err != nil {
-			f.Close()
+			_ = f.Close()
 			fmt.Fprintf(os.Stderr, "write %s: %v\n", path, err)
 			os.Exit(1)
 		}
-		f.Close()
+		_ = f.Close()
 
 		fi, _ := os.Stat(path)
 		fmt.Printf("Generated %s (%s)\n", path, humanSize(fi.Size()))

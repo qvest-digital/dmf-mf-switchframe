@@ -110,7 +110,7 @@ func (a *API) handleColorGradeUpload(w http.ResponseWriter, r *http.Request) {
 		httperr.Write(w, http.StatusBadRequest, "file required")
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	if err := a.colorGradeMgr.UploadLUT(name, file); err != nil {
 		httperr.WriteErr(w, http.StatusBadRequest, err)

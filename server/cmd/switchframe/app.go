@@ -605,23 +605,14 @@ func (a *App) initSubsystems() error {
 	a.sw.SetSTMapRegistry(a.stmapRegistry)
 
 	// Color grading store and controller.
-	builtinLooksDir := filepath.Join(filepath.Dir(os.Args[0]), "colorgrade", "looks")
-	// Fallback: try relative paths for dev mode (CWD may be repo root or server/).
-	if _, err := os.Stat(builtinLooksDir); err != nil {
-		builtinLooksDir = filepath.Join("colorgrade", "looks")
-	}
-	if _, err := os.Stat(builtinLooksDir); err != nil {
-		builtinLooksDir = filepath.Join("server", "colorgrade", "looks")
-	}
 	uploadLooksDir := a.statePath("luts")
-	colorGradeStore, err := colorgrade.NewStore(builtinLooksDir, uploadLooksDir)
+	colorGradeStore, err := colorgrade.NewStore(uploadLooksDir)
 	if err != nil {
 		slog.Warn("color grade store init failed", "error", err)
 	} else {
 		a.colorGradeCtrl = newColorGradeController(colorGradeStore)
 		a.debugCollector.Register("colorgrade", a.colorGradeCtrl)
 		slog.Info("color grade store loaded",
-			"builtin", builtinLooksDir,
 			"upload", uploadLooksDir,
 			"looks", len(colorGradeStore.List()),
 		)

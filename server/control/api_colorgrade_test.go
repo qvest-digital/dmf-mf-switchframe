@@ -180,7 +180,7 @@ func TestColorGrade_Upload(t *testing.T) {
 	_ = writer.WriteField("name", "my-look")
 	part, _ := writer.CreateFormFile("file", "my-look.cube")
 	_, _ = part.Write([]byte("dummy cube data"))
-	writer.Close()
+	_ = writer.Close()
 
 	req := httptest.NewRequest("POST", "/api/colorgrade/upload", &buf)
 	req.Header.Set("Content-Type", writer.FormDataContentType())

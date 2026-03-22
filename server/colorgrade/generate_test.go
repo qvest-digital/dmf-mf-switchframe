@@ -183,10 +183,10 @@ func TestGenerateLookFiles(t *testing.T) {
 			t.Fatalf("create %s: %v", path, err)
 		}
 		if err := WriteCube(f, lut); err != nil {
-			f.Close()
+			_ = f.Close()
 			t.Fatalf("write %s: %v", path, err)
 		}
-		f.Close()
+		_ = f.Close()
 
 		// Verify the file parses back.
 		data, err := os.ReadFile(path)

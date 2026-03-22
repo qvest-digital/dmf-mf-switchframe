@@ -1,9 +1,11 @@
 package colorgrade
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -28,21 +30,38 @@ type LookInfo struct {
 	Path    string `json:"-"`
 }
 
-// Store manages built-in and uploaded .cube LUT files.
+// Store manages built-in (embedded) and uploaded .cube LUT files.
 type Store struct {
-	builtinDir string
-	uploadDir  string
+	uploadDir string
+	builtins  map[string][]byte // name → raw .cube content
 }
 
-// NewStore creates a store. builtinDir contains shipped .cube files (read-only).
-// uploadDir is where user-uploaded .cube files are saved.
-func NewStore(builtinDir, uploadDir string) (*Store, error) {
+// NewStore creates a store with embedded built-in looks and a filesystem
+// directory for user uploads.
+func NewStore(uploadDir string) (*Store, error) {
 	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
 		return nil, fmt.Errorf("colorgrade store: create upload dir: %w", err)
 	}
+
+	builtins := make(map[string][]byte)
+	entries, err := fs.ReadDir(builtinLooksFS, "looks")
+	if err == nil {
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".cube") {
+				continue
+			}
+			data, err := fs.ReadFile(builtinLooksFS, "looks/"+e.Name())
+			if err != nil {
+				continue
+			}
+			name := strings.TrimSuffix(e.Name(), ".cube")
+			builtins[name] = data
+		}
+	}
+
 	return &Store{
-		builtinDir: builtinDir,
-		uploadDir:  uploadDir,
+		uploadDir: uploadDir,
+		builtins:  builtins,
 	}, nil
 }
 
@@ -50,19 +69,12 @@ func NewStore(builtinDir, uploadDir string) (*Store, error) {
 func (s *Store) List() []LookInfo {
 	var looks []LookInfo
 
-	// Scan built-in directory.
-	if entries, err := os.ReadDir(s.builtinDir); err == nil {
-		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".cube") {
-				continue
-			}
-			name := strings.TrimSuffix(e.Name(), ".cube")
-			looks = append(looks, LookInfo{
-				Name:    name,
-				Builtin: true,
-				Path:    filepath.Join(s.builtinDir, e.Name()),
-			})
-		}
+	// Built-in looks from embedded FS.
+	for name := range s.builtins {
+		looks = append(looks, LookInfo{
+			Name:    name,
+			Builtin: true,
+		})
 	}
 
 	// Scan upload directory.
@@ -87,20 +99,19 @@ func (s *Store) List() []LookInfo {
 }
 
 // Load parses and returns the LUT3D for the named look.
-// Searches built-in directory first, then uploads.
+// Searches built-in looks first, then uploads.
 func (s *Store) Load(name string) (*LUT3D, error) {
 	if err := validateName(name); err != nil {
 		return nil, err
 	}
 
 	// Try built-in first.
-	path := filepath.Join(s.builtinDir, name+".cube")
-	if _, err := os.Stat(path); err == nil {
-		return s.loadFile(path)
+	if data, ok := s.builtins[name]; ok {
+		return ParseCube(bytes.NewReader(data))
 	}
 
 	// Try uploaded.
-	path = filepath.Join(s.uploadDir, name+".cube")
+	path := filepath.Join(s.uploadDir, name+".cube")
 	if _, err := os.Stat(path); err == nil {
 		return s.loadFile(path)
 	}
@@ -128,7 +139,7 @@ func (s *Store) Upload(name string, data io.Reader) error {
 	defer f.Close()
 
 	if err := WriteCube(f, lut); err != nil {
-		os.Remove(path)
+		_ = os.Remove(path)
 		return fmt.Errorf("colorgrade store: write file: %w", err)
 	}
 
@@ -142,8 +153,7 @@ func (s *Store) Delete(name string) error {
 	}
 
 	// Check if it's a built-in look.
-	builtinPath := filepath.Join(s.builtinDir, name+".cube")
-	if _, err := os.Stat(builtinPath); err == nil {
+	if _, ok := s.builtins[name]; ok {
 		return fmt.Errorf("colorgrade store: %q: %w", name, ErrBuiltinLook)
 	}
 
