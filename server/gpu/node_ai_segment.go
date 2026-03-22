@@ -4,6 +4,7 @@ package gpu
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync/atomic"
 	"time"
@@ -91,12 +92,9 @@ func (n *gpuAISegmentNode) Err() error {
 //  4. Apply background replacement based on the source's config.
 //
 // Background modes:
-//   - "transparent" or "": no-op pass-through (mask available for downstream use)
-//   - "blur:N": GPU blur the frame -> composite person (mask) on blurred bg
-//   - "color:RRGGBB": GPU fill with solid color -> composite person on color bg
-//
-// Note: blur and color modes require CUDA kernels from Phase 3.2. Until those
-// are implemented, those modes log a warning and pass through unchanged.
+//   - "transparent" or "": black background + person composite (background removed)
+//   - "blur:N": Gaussian blur original frame + person composite
+//   - "color:RRGGBB": solid color fill + person composite
 func (n *gpuAISegmentNode) ProcessGPU(frame *GPUFrame) error {
 	if n.state == nil {
 		return nil
@@ -126,23 +124,9 @@ func (n *gpuAISegmentNode) ProcessGPU(frame *GPUFrame) error {
 		return nil
 	}
 
-	// Apply background replacement based on config.
-	bg := config.Background
-	if bg == "" || bg == "transparent" {
-		// Transparent mode: the mask is available but we don't modify the
-		// program frame. This mode is useful when the segmented source is
-		// used as a fill for upstream keying (the mask serves as the key).
-		return nil
-	}
-
-	// For blur and color modes, we need to:
-	// 1. Create the replacement background in blurTmp
-	// 2. Composite the person (via mask) from the original frame onto blurTmp
-	// 3. Copy the result back to frame
-
-	if err := n.applyBackground(frame, mask, bg); err != nil {
+	if err := n.applyBackground(frame, mask, config.Background); err != nil {
 		slog.Warn("gpu_ai_segment: background replacement failed",
-			"source", programKey, "background", bg, "error", err)
+			"source", programKey, "background", config.Background, "error", err)
 		n.lastErr.Store(err)
 		// Don't fail the pipeline — pass through the unmodified frame.
 	}
@@ -150,47 +134,51 @@ func (n *gpuAISegmentNode) ProcessGPU(frame *GPUFrame) error {
 	return nil
 }
 
-// applyBackground dispatches to the appropriate background replacement kernel.
+// applyBackground fills the scratch buffer with the replacement background,
+// then composites the person (via mask) from the original frame on top.
+//
+// All modes follow the same pattern:
+//  1. Fill blurTmp with the desired background
+//  2. BlendStinger: dst[i] = lerp(blurTmp[i], frame[i], mask.Y[i])
 func (n *gpuAISegmentNode) applyBackground(frame, mask *GPUFrame, bg string) error {
 	switch {
-	case len(bg) > 5 && bg[:5] == "blur:":
-		// Gaussian blur mode: blur the entire frame, then composite person.
-		// Phase 3.2 will implement the GPU Gaussian blur kernel.
-		// For now, copy frame to blurTmp and composite using mask —
-		// this demonstrates the compositing path works (with identity blur).
-		if err := CopyGPUFrame(n.blurTmp, frame); err != nil {
+	case bg == "" || bg == "transparent":
+		// Transparent = black background. Since NV12/H.264 has no alpha channel,
+		// "transparent" means background removed (replaced with black).
+		if err := FillBlack(n.ctx, n.blurTmp); err != nil {
 			return err
 		}
 
-		// TODO(phase-3.2): Apply GPU Gaussian blur to blurTmp here.
-		// Parse radius: blur:N where N is the kernel radius.
-
-		// Composite: dst[i] = lerp(blurTmp[i], frame[i], mask[i])
-		// BlendStinger reads mask Y-plane as per-pixel alpha (255=foreground).
-		// base = blurTmp (blurred background), overlay = frame (person)
-		return BlendStinger(n.ctx, frame, n.blurTmp, frame, mask)
+	case len(bg) > 5 && bg[:5] == "blur:":
+		// Gaussian blur the original frame to create a soft background.
+		radius := 10 // default
+		fmt.Sscanf(bg[5:], "%d", &radius)
+		if radius < 1 {
+			radius = 1
+		} else if radius > 50 {
+			radius = 50
+		}
+		if err := GaussianBlur(n.ctx, n.blurTmp, frame, radius); err != nil {
+			return err
+		}
 
 	case len(bg) > 6 && bg[:6] == "color:":
-		// Solid color mode: fill blurTmp with color, then composite person.
-		// Phase 3.2 will implement FillSolidColor CUDA kernel.
-		// For now, use BlendFTB at full position to fill with black, which
-		// demonstrates the path. Proper color fill comes with the kernel.
-		slog.Debug("gpu_ai_segment: color mode placeholder (using black until Phase 3.2 kernel)")
-
-		// Fill blurTmp with black (Y=16, Cb=128, Cr=128 limited range).
-		if err := BlendFTB(n.ctx, n.blurTmp, frame, 1.0); err != nil {
+		// Solid color background from hex RRGGBB.
+		y, cb, cr, err := parseHexColorToYCbCr(bg[6:])
+		if err != nil {
+			return err
+		}
+		if err := FillColor(n.ctx, n.blurTmp, YUVColor{y, cb, cr}); err != nil {
 			return err
 		}
 
-		// Composite: person from original frame onto color background.
-		return BlendStinger(n.ctx, frame, n.blurTmp, frame, mask)
-
 	default:
-		// Unknown mode — treat as transparent (no-op).
-		slog.Warn("gpu_ai_segment: unknown background mode, treating as transparent",
-			"background", bg)
 		return nil
 	}
+
+	// Composite: person from original frame onto the replacement background.
+	// BlendStinger reads mask Y-plane as per-pixel alpha (255=foreground).
+	return BlendStinger(n.ctx, frame, n.blurTmp, frame, mask)
 }
 
 func (n *gpuAISegmentNode) Close() error {

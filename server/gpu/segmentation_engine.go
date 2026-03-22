@@ -17,18 +17,6 @@ cudaError_t mask_to_u8_upscale(
     uint8_t* dst, int dstW, int dstH,
     const float* src, int srcW, int srcH,
     cudaStream_t stream);
-cudaError_t mask_ema(
-    uint8_t* output,
-    const uint8_t* prev,
-    const uint8_t* curr,
-    float alpha,
-    int size,
-    cudaStream_t stream);
-cudaError_t mask_erode_3x3(
-    uint8_t* dst,
-    const uint8_t* src,
-    int width, int height,
-    cudaStream_t stream);
 */
 import "C"
 
@@ -43,9 +31,15 @@ import (
 )
 
 const (
-	// segModelW and segModelH are the input dimensions expected by u2netp.
+	// segModelW and segModelH are the input dimensions expected by the RVM model.
 	segModelW = 320
 	segModelH = 320
+
+	// RVM hidden state sizes at 320x320 input.
+	rvmR1C, rvmR1H, rvmR1W = 16, 160, 160
+	rvmR2C, rvmR2H, rvmR2W = 20, 80, 80
+	rvmR3C, rvmR3H, rvmR3W = 40, 40, 40
+	rvmR4C, rvmR4H, rvmR4W = 64, 20, 20
 )
 
 // SegmentationEngine manages GPU-native person segmentation using TensorRT.
@@ -69,15 +63,19 @@ type SegmentationEngine struct {
 // segSession holds per-source TensorRT inference state.
 type segSession struct {
 	stream  C.cudaStream_t
-	rgbBuf  unsafe.Pointer // [1,3,320,320] float32 device buffer
-	maskBuf unsafe.Pointer // [1,1,320,320] float32 device buffer
-	maskU8  unsafe.Pointer // [srcW*srcH*3/2] uint8 device buffer (NV12-sized: Y=mask, UV=128)
-	erodeTmp unsafe.Pointer // [srcW*srcH] uint8 device buffer (erosion scratch)
-	prevMask unsafe.Pointer // [srcW*srcH] uint8 device buffer (EMA temporal)
-	trtCtx  *TRTContext
+	rgbBuf  unsafe.Pointer // [1,3,segModelH,segModelW] float32
+	maskBuf unsafe.Pointer // [1,1,segModelH,segModelW] float32 (pha output)
+	fgrBuf  unsafe.Pointer // [1,3,segModelH,segModelW] float32 (fgr output, unused but required)
+	maskU8  unsafe.Pointer // [srcW*srcH*3/2] uint8 (NV12-sized)
 
-	smoothing float32
-	hasPrev   bool
+	// RVM recurrent hidden states. Two sets for ping-pong swap:
+	// rIn is read during inference, rOut is written. After inference, swap pointers.
+	r1In, r1Out unsafe.Pointer // [1,rvmR1C,rvmR1H,rvmR1W] float32
+	r2In, r2Out unsafe.Pointer // [1,rvmR2C,rvmR2H,rvmR2W] float32
+	r3In, r3Out unsafe.Pointer // [1,rvmR3C,rvmR3H,rvmR3W] float32
+	r4In, r4Out unsafe.Pointer // [1,rvmR4C,rvmR4H,rvmR4W] float32
+
+	trtCtx     *TRTContext
 	srcW, srcH int
 
 	// Latest mask, stored as atomic pointer for lock-free pipeline reads.
@@ -123,9 +121,11 @@ func NewSegmentationEngine(ctx *Context, modelPath string) (*SegmentationEngine,
 		planPath = filepath.Join(cacheDir, base[:len(base)-len(ext)]+".plan")
 	}
 
-	slog.Info("gpu: segmentation: building TensorRT engine",
+	slog.Info("gpu: segmentation: building TensorRT engine (RVM)",
 		"onnx", modelPath, "plan_cache", planPath)
 
+	// Use v1 builder — the ONNX model has been pre-processed with fixed shapes
+	// (downsample_ratio baked as constant, all input dims concrete).
 	engine, err := NewTRTEngine(modelPath, TRTEngineOpts{
 		MaxBatchSize:  1,
 		UseFP16:       true,
@@ -135,23 +135,19 @@ func NewSegmentationEngine(ctx *Context, modelPath string) (*SegmentationEngine,
 		return nil, fmt.Errorf("gpu: segmentation: engine build: %w", err)
 	}
 
-	// Validate input/output sizes match u2netp model expectations.
-	expectedInput := 1 * 3 * segModelW * segModelH  // [1,3,320,320]
-	expectedOutput := 1 * 1 * segModelW * segModelH  // [1,1,320,320]
-	if engine.InputSize() != expectedInput {
-		engine.Close()
-		return nil, fmt.Errorf("gpu: segmentation: unexpected input size: got %d, want %d",
-			engine.InputSize(), expectedInput)
-	}
-	if engine.OutputSize() != expectedOutput {
-		engine.Close()
-		return nil, fmt.Errorf("gpu: segmentation: unexpected output size: got %d, want %d",
-			engine.OutputSize(), expectedOutput)
-	}
-
+	// Log I/O tensor details for debugging (RVM has multiple I/O tensors).
+	numIO := engine.NumIOTensors()
 	slog.Info("gpu: segmentation: engine ready",
-		"input_size", engine.InputSize(),
-		"output_size", engine.OutputSize())
+		"num_io_tensors", numIO)
+	for i := 0; i < numIO; i++ {
+		info, infoErr := engine.TensorInfoAt(i)
+		if infoErr != nil {
+			continue
+		}
+		slog.Info("gpu: segmentation: tensor",
+			"index", i, "name", info.Name,
+			"is_input", info.IsInput, "dims", info.Dims)
+	}
 
 	return &SegmentationEngine{
 		ctx:            ctx,
@@ -164,8 +160,8 @@ func NewSegmentationEngine(ctx *Context, modelPath string) (*SegmentationEngine,
 // EnableSource creates a segmentation session for the given source with
 // dedicated CUDA stream and pre-allocated device buffers.
 //
-// smoothing controls the EMA temporal filter alpha (0.0 = no smoothing,
-// higher = heavier smoothing, typical 0.3-0.7).
+// smoothing is accepted for API compatibility but ignored — RVM's recurrent
+// hidden states provide temporal consistency without explicit EMA smoothing.
 func (se *SegmentationEngine) EnableSource(key string, w, h int, smoothing float32) error {
 	if se == nil {
 		return ErrTensorRTNotAvailable
@@ -184,64 +180,94 @@ func (se *SegmentationEngine) EnableSource(key string, w, h int, smoothing float
 		return fmt.Errorf("gpu: segmentation: create TRT context for %s: %w", key, err)
 	}
 
-	// Allocate device buffers.
-	rgbSize := 3 * segModelW * segModelH * 4 // float32
-	rgbBuf, err := AllocDeviceBytes(rgbSize)
-	if err != nil {
+	// Helper to clean up on allocation failure.
+	var allocated []unsafe.Pointer
+	cleanup := func() {
+		for i := len(allocated) - 1; i >= 0; i-- {
+			FreeDeviceBytes(allocated[i])
+		}
 		trtCtx.Close()
 		se.ctx.DestroyStream(stream)
-		return fmt.Errorf("gpu: segmentation: alloc RGB buffer for %s: %w", key, err)
+	}
+	alloc := func(size int, label string) (unsafe.Pointer, error) {
+		buf, allocErr := AllocDeviceBytes(size)
+		if allocErr != nil {
+			cleanup()
+			return nil, fmt.Errorf("gpu: segmentation: alloc %s for %s: %w", label, key, allocErr)
+		}
+		allocated = append(allocated, buf)
+		return buf, nil
 	}
 
-	maskSize := 1 * segModelW * segModelH * 4 // float32
-	maskBuf, err := AllocDeviceBytes(maskSize)
+	// Allocate model I/O buffers (float32).
+	rgbBuf, err := alloc(3*segModelW*segModelH*4, "RGB")
 	if err != nil {
-		FreeDeviceBytes(rgbBuf)
-		trtCtx.Close()
-		se.ctx.DestroyStream(stream)
-		return fmt.Errorf("gpu: segmentation: alloc mask buffer for %s: %w", key, err)
+		return err
+	}
+	maskBuf, err := alloc(1*segModelW*segModelH*4, "maskBuf")
+	if err != nil {
+		return err
+	}
+	fgrBuf, err := alloc(3*segModelW*segModelH*4, "fgrBuf")
+	if err != nil {
+		return err
+	}
+
+	// RVM hidden state buffers (float32), two sets for ping-pong swap.
+	r1Size := rvmR1C * rvmR1H * rvmR1W * 4
+	r2Size := rvmR2C * rvmR2H * rvmR2W * 4
+	r3Size := rvmR3C * rvmR3H * rvmR3W * 4
+	r4Size := rvmR4C * rvmR4H * rvmR4W * 4
+
+	r1In, err := alloc(r1Size, "r1In")
+	if err != nil {
+		return err
+	}
+	r1Out, err := alloc(r1Size, "r1Out")
+	if err != nil {
+		return err
+	}
+	r2In, err := alloc(r2Size, "r2In")
+	if err != nil {
+		return err
+	}
+	r2Out, err := alloc(r2Size, "r2Out")
+	if err != nil {
+		return err
+	}
+	r3In, err := alloc(r3Size, "r3In")
+	if err != nil {
+		return err
+	}
+	r3Out, err := alloc(r3Size, "r3Out")
+	if err != nil {
+		return err
+	}
+	r4In, err := alloc(r4Size, "r4In")
+	if err != nil {
+		return err
+	}
+	r4Out, err := alloc(r4Size, "r4Out")
+	if err != nil {
+		return err
 	}
 
 	// Allocate NV12-sized mask buffer: Y plane (w*h) for the actual mask +
 	// UV plane (w*h/2) for neutral chroma. BlendStinger reads the UV portion
 	// as scratch space for downsampled chroma alpha, so the allocation must
 	// be pitch*height*3/2 — not just w*h (single-plane would cause OOB reads).
-	maskU8Size := w * h * 3 / 2 // NV12 size
-	maskU8, err := AllocDeviceBytes(maskU8Size)
+	maskU8, err := alloc(w*h*3/2, "maskU8")
 	if err != nil {
-		FreeDeviceBytes(maskBuf)
-		FreeDeviceBytes(rgbBuf)
-		trtCtx.Close()
-		se.ctx.DestroyStream(stream)
-		return fmt.Errorf("gpu: segmentation: alloc maskU8 buffer for %s: %w", key, err)
+		return err
 	}
 
-	erodeTmpSize := w * h // erosion operates on Y-plane only
-	erodeTmp, err := AllocDeviceBytes(erodeTmpSize)
-	if err != nil {
-		FreeDeviceBytes(maskU8)
-		FreeDeviceBytes(maskBuf)
-		FreeDeviceBytes(rgbBuf)
-		trtCtx.Close()
-		se.ctx.DestroyStream(stream)
-		return fmt.Errorf("gpu: segmentation: alloc erode tmp for %s: %w", key, err)
-	}
-
-	prevMaskSize := w * h // EMA operates on Y-plane only
-	prevMask, err := AllocDeviceBytes(prevMaskSize)
-	if err != nil {
-		FreeDeviceBytes(erodeTmp)
-		FreeDeviceBytes(maskU8)
-		FreeDeviceBytes(maskBuf)
-		FreeDeviceBytes(rgbBuf)
-		trtCtx.Close()
-		se.ctx.DestroyStream(stream)
-		return fmt.Errorf("gpu: segmentation: alloc prevMask for %s: %w", key, err)
-	}
+	// Zero-initialize hidden state inputs (RVM starts from zeros).
+	C.cudaMemsetAsync(r1In, 0, C.size_t(r1Size), stream)
+	C.cudaMemsetAsync(r2In, 0, C.size_t(r2Size), stream)
+	C.cudaMemsetAsync(r3In, 0, C.size_t(r3Size), stream)
+	C.cudaMemsetAsync(r4In, 0, C.size_t(r4Size), stream)
 
 	// Initialize the UV portion of the mask buffer to 128 (neutral chroma).
-	// BlendStinger uses the UV area as scratch for downsampled chroma alpha.
-	// cudaMemset on the device is the most efficient way.
 	uvOffset := C.size_t(w * h)
 	uvSize := C.size_t(w * h / 2)
 	C.cudaMemsetAsync(
@@ -265,11 +291,17 @@ func (se *SegmentationEngine) EnableSource(key string, w, h int, smoothing float
 		stream:    stream,
 		rgbBuf:    rgbBuf,
 		maskBuf:   maskBuf,
+		fgrBuf:    fgrBuf,
 		maskU8:    maskU8,
-		erodeTmp:  erodeTmp,
-		prevMask:  prevMask,
+		r1In:      r1In,
+		r1Out:     r1Out,
+		r2In:      r2In,
+		r2Out:     r2Out,
+		r3In:      r3In,
+		r3Out:     r3Out,
+		r4In:      r4In,
+		r4Out:     r4Out,
 		trtCtx:    trtCtx,
-		smoothing: smoothing,
 		srcW:      w,
 		srcH:      h,
 		maskFrame: maskFrame,
@@ -283,9 +315,8 @@ func (se *SegmentationEngine) EnableSource(key string, w, h int, smoothing float
 	se.sessions[key] = sess
 	se.mu.Unlock()
 
-	slog.Info("gpu: segmentation: enabled source",
-		"source", key, "size", [2]int{w, h},
-		"smoothing", smoothing)
+	slog.Info("gpu: segmentation: enabled source (RVM)",
+		"source", key, "size", [2]int{w, h})
 	return nil
 }
 
@@ -372,15 +403,17 @@ func (se *SegmentationEngine) IsEnabled(key string) bool {
 	return exists
 }
 
-// Segment runs the full segmentation pipeline for a source frame:
+// Segment runs the RVM segmentation pipeline for a source frame:
 //
 //  1. NV12 → 320x320 RGB float32 CHW preprocessing (on session stream)
-//  2. TensorRT inference (on session stream)
-//  3. Float32 mask → uint8 upscale to source resolution (on session stream)
-//  4. 3x3 morphological erosion for edge cleanup (on session stream)
-//  5. EMA temporal smoothing with previous mask (on session stream)
-//  6. Sync session stream
-//  7. Store result in atomic pointer for lock-free pipeline reads
+//  2. RVM inference via InferMulti with hidden state bindings
+//  3. Swap hidden state pointers (zero-copy ping-pong)
+//  4. Alpha matte → uint8 upscale to source resolution
+//  5. Sync session stream
+//  6. Store result in atomic pointer for lock-free pipeline reads
+//
+// RVM's recurrent hidden states provide temporal consistency across frames,
+// eliminating the need for explicit erosion or EMA smoothing.
 //
 // This function is called from GPUSourceManager.IngestYUV() — it runs on
 // the source manager goroutine. The dedicated CUDA stream ensures inference
@@ -411,17 +444,37 @@ func (se *SegmentationEngine) Segment(key string, frame *GPUFrame) {
 		return
 	}
 
-	// Step 2: TensorRT inference on session stream.
-	if err := sess.trtCtx.Infer(sess.rgbBuf, sess.maskBuf, 1, unsafe.Pointer(sess.stream)); err != nil {
-		slog.Warn("gpu: segmentation: inference failed",
+	// Step 2: RVM inference via InferMulti (5 inputs, 6 outputs).
+	// downsample_ratio is baked into the ONNX model as a constant (1.0).
+	bindings := []TRTBinding{
+		{Name: "src", DevPtr: sess.rgbBuf, Dims: []int{1, 3, segModelH, segModelW}},
+		{Name: "r1i", DevPtr: sess.r1In, Dims: []int{1, rvmR1C, rvmR1H, rvmR1W}},
+		{Name: "r2i", DevPtr: sess.r2In, Dims: []int{1, rvmR2C, rvmR2H, rvmR2W}},
+		{Name: "r3i", DevPtr: sess.r3In, Dims: []int{1, rvmR3C, rvmR3H, rvmR3W}},
+		{Name: "r4i", DevPtr: sess.r4In, Dims: []int{1, rvmR4C, rvmR4H, rvmR4W}},
+		{Name: "fgr", DevPtr: sess.fgrBuf, Dims: []int{1, 3, segModelH, segModelW}},
+		{Name: "pha", DevPtr: sess.maskBuf, Dims: []int{1, 1, segModelH, segModelW}},
+		{Name: "r1o", DevPtr: sess.r1Out, Dims: []int{1, rvmR1C, rvmR1H, rvmR1W}},
+		{Name: "r2o", DevPtr: sess.r2Out, Dims: []int{1, rvmR2C, rvmR2H, rvmR2W}},
+		{Name: "r3o", DevPtr: sess.r3Out, Dims: []int{1, rvmR3C, rvmR3H, rvmR3W}},
+		{Name: "r4o", DevPtr: sess.r4Out, Dims: []int{1, rvmR4C, rvmR4H, rvmR4W}},
+	}
+	if err := sess.trtCtx.InferMulti(bindings, unsafe.Pointer(sess.stream)); err != nil {
+		slog.Warn("gpu: segmentation: RVM inference failed",
 			"source", key, "error", err)
 		return
 	}
 
-	// Step 3: Float32 mask → uint8, upscale to source resolution.
-	// Write to erodeTmp first (erosion input).
+	// Step 3: Swap hidden states (pointer swap, zero-copy).
+	sess.r1In, sess.r1Out = sess.r1Out, sess.r1In
+	sess.r2In, sess.r2Out = sess.r2Out, sess.r2In
+	sess.r3In, sess.r3Out = sess.r3Out, sess.r3In
+	sess.r4In, sess.r4Out = sess.r4Out, sess.r4In
+
+	// Step 4: Alpha matte (pha) → uint8, upscale to source resolution.
+	// Writes directly to maskU8 Y-plane.
 	rc = C.mask_to_u8_upscale(
-		(*C.uint8_t)(sess.erodeTmp),
+		(*C.uint8_t)(sess.maskU8),
 		C.int(sess.srcW), C.int(sess.srcH),
 		(*C.float)(sess.maskBuf),
 		C.int(segModelW), C.int(segModelH),
@@ -433,64 +486,7 @@ func (se *SegmentationEngine) Segment(key string, frame *GPUFrame) {
 		return
 	}
 
-	// Step 4: 3x3 erosion to clean up edge artifacts.
-	// erodeTmp → maskU8.
-	rc = C.mask_erode_3x3(
-		(*C.uint8_t)(sess.maskU8),
-		(*C.uint8_t)(sess.erodeTmp),
-		C.int(sess.srcW), C.int(sess.srcH),
-		sess.stream,
-	)
-	if rc != C.cudaSuccess {
-		slog.Warn("gpu: segmentation: mask erode failed",
-			"source", key, "cuda_rc", rc)
-		return
-	}
-
-	// Step 5: Temporal EMA smoothing.
-	if sess.hasPrev && sess.smoothing > 0 {
-		// Blend: output = prev * alpha + curr * (1 - alpha).
-		// Use erodeTmp as output to avoid in-place aliasing.
-		maskSize := sess.srcW * sess.srcH
-		rc = C.mask_ema(
-			(*C.uint8_t)(sess.erodeTmp),
-			(*C.uint8_t)(sess.prevMask),
-			(*C.uint8_t)(sess.maskU8),
-			C.float(sess.smoothing),
-			C.int(maskSize),
-			sess.stream,
-		)
-		if rc != C.cudaSuccess {
-			slog.Warn("gpu: segmentation: mask EMA failed",
-				"source", key, "cuda_rc", rc)
-			// Fall through — use un-smoothed mask.
-		} else {
-			// Copy smoothed result back to maskU8.
-			copySize := C.size_t(maskSize)
-			C.cudaMemcpyAsync(
-				sess.maskU8,
-				sess.erodeTmp,
-				copySize,
-				C.cudaMemcpyDeviceToDevice,
-				sess.stream,
-			)
-		}
-	}
-
-	// Copy current mask to prevMask for next frame's EMA.
-	{
-		maskSize := C.size_t(sess.srcW * sess.srcH)
-		C.cudaMemcpyAsync(
-			sess.prevMask,
-			sess.maskU8,
-			maskSize,
-			C.cudaMemcpyDeviceToDevice,
-			sess.stream,
-		)
-		sess.hasPrev = true
-	}
-
-	// Step 6: Synchronize session stream — all GPU work must complete
+	// Step 5: Synchronize session stream — all GPU work must complete
 	// before we expose the mask to the pipeline.
 	if err := se.ctx.SyncStream(sess.stream); err != nil {
 		slog.Warn("gpu: segmentation: stream sync failed",
@@ -498,7 +494,7 @@ func (se *SegmentationEngine) Segment(key string, frame *GPUFrame) {
 		return
 	}
 
-	// Step 7: Update the atomic mask pointer.
+	// Step 6: Update the atomic mask pointer.
 	// The maskFrame's DevPtr points to maskU8 which now has the final mask.
 	// We store a reference to the same frame each time — pipeline readers
 	// just need to read the mask data at the DevPtr, which is updated in-place.
@@ -560,23 +556,30 @@ func (se *SegmentationEngine) destroySessionLocked(sess *segSession) {
 		sess.trtCtx = nil
 	}
 
-	// Free device buffers (maskU8 is owned by maskFrame, don't double-free).
-	if sess.rgbBuf != nil {
-		FreeDeviceBytes(sess.rgbBuf)
-		sess.rgbBuf = nil
+	// Free device buffers.
+	for _, buf := range []unsafe.Pointer{
+		sess.rgbBuf, sess.maskBuf, sess.fgrBuf,
+		sess.r1In, sess.r1Out,
+		sess.r2In, sess.r2Out,
+		sess.r3In, sess.r3Out,
+		sess.r4In, sess.r4Out,
+	} {
+		if buf != nil {
+			FreeDeviceBytes(buf)
+		}
 	}
-	if sess.maskBuf != nil {
-		FreeDeviceBytes(sess.maskBuf)
-		sess.maskBuf = nil
-	}
-	if sess.erodeTmp != nil {
-		FreeDeviceBytes(sess.erodeTmp)
-		sess.erodeTmp = nil
-	}
-	if sess.prevMask != nil {
-		FreeDeviceBytes(sess.prevMask)
-		sess.prevMask = nil
-	}
+	sess.rgbBuf = nil
+	sess.maskBuf = nil
+	sess.fgrBuf = nil
+	sess.r1In = nil
+	sess.r1Out = nil
+	sess.r2In = nil
+	sess.r2Out = nil
+	sess.r3In = nil
+	sess.r3Out = nil
+	sess.r4In = nil
+	sess.r4Out = nil
+
 	// maskU8 is the backing memory for maskFrame.DevPtr — free it directly.
 	if sess.maskU8 != nil {
 		FreeDeviceBytes(sess.maskU8)

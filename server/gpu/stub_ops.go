@@ -17,6 +17,14 @@ func FillBlack(ctx *Context, frame *GPUFrame) error {
 	return ErrGPUNotAvailable
 }
 
+// FillColor returns ErrGPUNotAvailable on non-GPU builds.
+func FillColor(ctx *Context, frame *GPUFrame, color YUVColor) error {
+	return ErrGPUNotAvailable
+}
+
+// GaussianBlur returns ErrGPUNotAvailable on non-GPU builds.
+func GaussianBlur(ctx *Context, dst, src *GPUFrame, radius int) error { return ErrGPUNotAvailable }
+
 // ScaleQuality selects the scaling algorithm.
 type ScaleQuality int
 

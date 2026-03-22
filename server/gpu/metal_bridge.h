@@ -338,4 +338,20 @@ void metal_nv12_to_yuv420p_cpu(const void* src, int srcPitch,
                                 void* y, void* cb, void* cr,
                                 int width, int height);
 
+// --- Gaussian blur kernels ---
+typedef struct {
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;
+    uint32_t radius;
+} MetalBlurParams;
+
+MetalResult metal_gaussian_blur_h(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef tmpBuf, MetalBufferRef src, MetalBufferRef weights,
+    const MetalBlurParams* params);
+
+MetalResult metal_gaussian_blur_v(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dst, MetalBufferRef tmpBuf, MetalBufferRef weights,
+    const MetalBlurParams* params);
+
 #endif // SWITCHFRAME_METAL_BRIDGE_H

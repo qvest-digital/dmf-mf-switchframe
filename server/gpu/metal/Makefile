@@ -3,7 +3,7 @@ METAL := $(XCRUN) -sdk macosx metal
 METALLIB := $(XCRUN) -sdk macosx metallib
 
 SOURCES := convert.metal blend.metal scale.metal key.metal \
-           composite.metal dsk.metal stmap.metal fruc.metal v210.metal
+           composite.metal dsk.metal stmap.metal fruc.metal v210.metal blur.metal
 AIRFILES := $(SOURCES:.metal=.air)
 LIBRARY := switchframe_gpu.metallib
 
