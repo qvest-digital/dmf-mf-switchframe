@@ -17,6 +17,11 @@ func FillBlack(ctx *Context, frame *GPUFrame) error {
 	return ErrGPUNotAvailable
 }
 
+// FillColor returns ErrGPUNotAvailable on non-GPU builds.
+func FillColor(ctx *Context, frame *GPUFrame, color YUVColor) error {
+	return ErrGPUNotAvailable
+}
+
 // ScaleQuality selects the scaling algorithm.
 type ScaleQuality int
 

@@ -134,3 +134,26 @@ func FillBlack(ctx *Context, frame *GPUFrame) error {
 
 	return nil
 }
+
+// FillColor fills a GPU NV12 frame with an arbitrary YUV color.
+func FillColor(ctx *Context, frame *GPUFrame, color YUVColor) error {
+	if ctx == nil || frame == nil {
+		return ErrGPUNotAvailable
+	}
+
+	cerr := C.nv12_fill(
+		(*C.uint8_t)(unsafe.Pointer(uintptr(frame.DevPtr))),
+		C.int(frame.Width), C.int(frame.Height), C.int(frame.Pitch),
+		C.uint8_t(color.Y), C.uint8_t(color.Cb), C.uint8_t(color.Cr),
+		ctx.stream,
+	)
+	if cerr != C.cudaSuccess {
+		return fmt.Errorf("gpu: fill color: kernel failed: %d", cerr)
+	}
+
+	if rc := C.cudaStreamSynchronize(ctx.stream); rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: fill color: sync failed: %d", rc)
+	}
+
+	return nil
+}
