@@ -226,6 +226,18 @@ func (e *Engine) runInference(isFinal bool) {
 		"first5", encOut[:5],
 	)
 
+	// Debug: log TRT engine tensor info for decoder.
+	if e.trt != nil && e.trt.decoderEngine != nil {
+		nIO := e.trt.decoderEngine.NumIOTensors()
+		for i := 0; i < nIO; i++ {
+			info, err := e.trt.decoderEngine.TensorInfoAt(i)
+			if err == nil {
+				slog.Info("ASR decoder tensor", "idx", i, "name", info.Name,
+					"isInput", info.IsInput, "dtype", info.DType, "dims", info.Dims)
+			}
+		}
+	}
+
 	tok := e.tokenizer
 	initialTokens := []int{
 		tok.SOT(),
