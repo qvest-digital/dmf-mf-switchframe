@@ -1115,7 +1115,7 @@
 		padding: 0;
 		border-top: 1px solid var(--border-default);
 		background: rgba(255, 255, 255, 0.02);
-		min-height: 88px;
+		min-height: 105px;
 		overflow-x: auto;
 		overflow-y: auto;
 		flex-shrink: 0;
