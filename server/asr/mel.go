@@ -287,17 +287,17 @@ func (m *MelSpectrogram) Compute(samples []float32) [][]float32 {
 		}
 	}
 
-	// Clamp and scale: map [maxVal-8, maxVal] to [0, 1], then apply Whisper normalization
+	// Whisper normalization (from whisper/audio.py):
+	//   log_spec = torch.maximum(log_spec, log_spec.max() - 8.0)
+	//   log_spec = (log_spec + 4.0) / 4.0
 	clampMin := maxVal - 8.0
-	invEight := float32(1.0 / 8.0)
 	for mel := 0; mel < melNMels; mel++ {
 		row := output[mel]
 		for i, v := range row {
 			if v < clampMin {
 				v = clampMin
 			}
-			// Scale to [0, 1], then Whisper normalization
-			row[i] = ((v-clampMin)*invEight + 4.0) * 0.25
+			row[i] = (v + 4.0) * 0.25
 		}
 	}
 

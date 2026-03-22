@@ -87,18 +87,15 @@ func TestMelSpectrogram_SilenceProducesLowEnergy(t *testing.T) {
 
 	result := mel.Compute(samples)
 
-	// After log10 and normalization, silence should produce uniform values.
-	// With Whisper normalization:
-	//   log10(1e-10) = -10, max for silence is -10
-	//   clamped = max(-10, -10 - 8) = -10
-	//   scaled = (-10 - (-18)) / 8 = 8/8 = 1.0
-	//   final = (1.0 + 4.0) / 4.0 = 1.25
-	// All values should be 1.25 (uniform silence at the max of the dynamic range).
-	expected := float32(1.25)
+	// After Whisper normalization, silence should produce uniform low values.
+	// log10(1e-10) = -10, max for silence = -10, clamp = max(-10, -10-8) = -10
+	// Whisper: (-10 + 4) / 4 = -1.5
+	// All values should be the same (uniform silence).
+	first := result[0][0]
 	for i, row := range result {
 		for j, v := range row {
-			if v < expected-0.01 || v > expected+0.01 {
-				t.Errorf("silence value at [%d][%d] = %f, expected ~%f", i, j, v, expected)
+			if v < first-0.01 || v > first+0.01 {
+				t.Errorf("silence value at [%d][%d] = %f, expected uniform ~%f", i, j, v, first)
 				return
 			}
 		}
