@@ -1175,18 +1175,19 @@
 
 	/* EQ section */
 	.detail-eq {
-		min-width: 240px;
+		min-width: 200px;
 	}
 
 	.eq-bands {
 		display: flex;
-		gap: 8px;
+		gap: 4px;
 	}
 
 	.eq-band {
 		display: flex;
 		flex-direction: column;
-		gap: 2px;
+		gap: 1px;
+		min-width: 60px;
 	}
 
 	.eq-band-toggle {
@@ -1234,9 +1235,9 @@
 
 	.detail-slider {
 		flex: 1;
-		height: 10px;
+		height: 8px;
 		accent-color: rgb(99, 102, 241);
-		min-width: 40px;
+		min-width: 32px;
 	}
 
 	/* Compressor section */
@@ -1426,7 +1427,22 @@
 	.gate-params {
 		display: flex;
 		gap: 4px;
-		flex-wrap: wrap;
+	}
+
+	.gate-params .eq-param {
+		flex-direction: column;
+		align-items: center;
+		gap: 1px;
+	}
+
+	.gate-params .detail-slider {
+		writing-mode: horizontal-tb;
+		width: 40px;
+		min-width: 32px;
+	}
+
+	.gate-params .eq-param-label {
+		min-width: unset;
 	}
 
 	/* Balance controls */
