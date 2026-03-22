@@ -312,6 +312,15 @@ cudaError_t fruc_blend_nv12(
     const uint8_t* curr, int currPitch,
     int width, int height, float alpha,
     cudaStream_t stream);
+
+cudaError_t fruc_motionblur_nv12(
+    uint8_t* dst, int dstPitch,
+    const uint8_t* prev, int prevPitch,
+    const uint8_t* curr, int currPitch,
+    const int16_t* flowXY, int flowStride,
+    int width, int height,
+    float alpha, float shutterAngle,
+    cudaStream_t stream);
 */
 import "C"
 
@@ -497,6 +506,96 @@ func (f *FRUC) Interpolate(prev, curr, output *GPUFrame, alpha float64) error {
 		return fmt.Errorf("gpu: FRUC blend fallback failed: %d", rc)
 	}
 	return f.gpuCtx.Sync()
+}
+
+// ComputeFlow extracts NVOFA optical flow vectors from prev→curr into the
+// cached flow buffer. Returns true if hardware OF succeeded. The caller can
+// then invoke MotionBlur() multiple times with different alpha/shutter values
+// without recomputing flow each time.
+func (f *FRUC) ComputeFlow(prev, curr *GPUFrame) bool {
+	if f == nil || !f.hasNVOFA || prev == nil || curr == nil {
+		return false
+	}
+
+	rc := C.nvof_compute_flow(&f.session,
+		C.CUdeviceptr(prev.DevPtr), C.int(prev.Pitch),
+		C.CUdeviceptr(curr.DevPtr), C.int(curr.Pitch),
+	)
+	if rc != C.NV_OF_SUCCESS {
+		slog.Debug("gpu: NVOFA compute flow failed", "rc", rc)
+		// Zero flow buffer so MotionBlur degrades gracefully
+		flowBytes := C.size_t(f.flowW * f.flowH * 4)
+		C.cudaMemset(f.flowBuf, 0, flowBytes)
+		return false
+	}
+
+	// Copy flow vectors from OF output buffer to our flow buffer,
+	// respecting the OF output stride (hardware buffers are often
+	// aligned to power-of-2 boundaries).
+	dstStride := C.size_t(f.flowW * 4) // our buffer: flowW * sizeof(int16_t) * 2
+	srcStride := C.size_t(f.session.outputStrideX)
+	if srcStride == dstStride {
+		// Strides match — flat copy
+		flowBytes := C.size_t(f.flowW * f.flowH * 4)
+		C.cuMemcpy(C.CUdeviceptr(uintptr(f.flowBuf)),
+			f.session.outputPtr, flowBytes)
+	} else {
+		// Strides differ — row-by-row 2D copy
+		var cp C.CUDA_MEMCPY2D
+		C.memset(unsafe.Pointer(&cp), 0, C.size_t(unsafe.Sizeof(cp)))
+		cp.srcMemoryType = C.CU_MEMORYTYPE_DEVICE
+		cp.dstMemoryType = C.CU_MEMORYTYPE_DEVICE
+		cp.srcDevice = f.session.outputPtr
+		cp.srcPitch = srcStride
+		cp.dstDevice = C.CUdeviceptr(uintptr(f.flowBuf))
+		cp.dstPitch = dstStride
+		cp.WidthInBytes = dstStride
+		cp.Height = C.size_t(f.flowH)
+		C.cuMemcpy2D(&cp)
+	}
+
+	return true
+}
+
+// MotionBlur produces a motion-blurred frame using previously computed flow
+// vectors (via ComputeFlow). The shutterAngle is normalized 0.0-1.0, where
+// 0.5 = 180° (standard cinematic motion blur) and 1.0 = 360°. If no NVOFA
+// is available or shutterAngle <= 0, falls back to Interpolate().
+func (f *FRUC) MotionBlur(prev, curr, output *GPUFrame, alpha, shutterAngle float64) error {
+	if f == nil || prev == nil || curr == nil || output == nil {
+		return ErrGPUNotAvailable
+	}
+
+	// Fall back to interpolation if no hardware OF or no blur requested
+	if !f.hasNVOFA || shutterAngle <= 0 {
+		return f.Interpolate(prev, curr, output, alpha)
+	}
+
+	cerr := C.fruc_motionblur_nv12(
+		(*C.uint8_t)(unsafe.Pointer(uintptr(output.DevPtr))),
+		C.int(output.Pitch),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(prev.DevPtr))),
+		C.int(prev.Pitch),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(curr.DevPtr))),
+		C.int(curr.Pitch),
+		(*C.int16_t)(f.flowBuf),
+		C.int(f.flowW*2),
+		C.int(f.width), C.int(f.height),
+		C.float(alpha), C.float(shutterAngle),
+		f.gpuCtx.stream,
+	)
+	if cerr != C.cudaSuccess {
+		return fmt.Errorf("gpu: FRUC motion blur failed: %d", cerr)
+	}
+	return f.gpuCtx.Sync()
+}
+
+// HasNVOFA returns true if this FRUC instance has hardware optical flow.
+func (f *FRUC) HasNVOFA() bool {
+	if f == nil {
+		return false
+	}
+	return f.hasNVOFA
 }
 
 // Close releases FRUC resources.

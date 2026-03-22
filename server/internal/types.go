@@ -175,15 +175,17 @@ type GraphicsLayerState struct {
 // ReplayState is the JSON-serializable state for the instant replay system,
 // included in ControlRoomState for the browser.
 type ReplayState struct {
-	State      string             `json:"state"`
-	Source     string             `json:"source,omitempty"`
-	Speed      float64            `json:"speed,omitempty"`
-	Loop       bool               `json:"loop,omitempty"`
-	Position   float64            `json:"position,omitempty"`
-	MarkIn     *int64             `json:"markIn,omitempty"`  // Unix ms
-	MarkOut    *int64             `json:"markOut,omitempty"` // Unix ms
-	MarkSource string             `json:"markSource,omitempty"`
-	Buffers    []ReplayBufferInfo `json:"buffers,omitempty"`
+	State          string             `json:"state"`
+	Source         string             `json:"source,omitempty"`
+	Speed          float64            `json:"speed,omitempty"`
+	Loop           bool               `json:"loop,omitempty"`
+	Position       float64            `json:"position,omitempty"`
+	MarkIn         *int64             `json:"markIn,omitempty"`  // Unix ms
+	MarkOut        *int64             `json:"markOut,omitempty"` // Unix ms
+	MarkSource     string             `json:"markSource,omitempty"`
+	Buffers        []ReplayBufferInfo `json:"buffers,omitempty"`
+	ShutterAngle   float64            `json:"shutterAngle,omitempty"`   // 0-360 degrees
+	GPUAccelerated bool               `json:"gpuAccelerated,omitempty"`
 }
 
 // ReplayBufferInfo describes the buffer state for a single replay source.

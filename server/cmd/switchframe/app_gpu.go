@@ -26,6 +26,7 @@ type gpuState struct {
 	encoder       *gpu.GPUEncoder
 	sourceManager *gpu.GPUSourceManager
 	previewNode   gpu.PreviewEncodeForceIDR // non-nil when GPU program preview encode is active
+	fruc          *gpu.FRUC                 // FRUC for GPU-accelerated replay motion blur (nil if unavailable)
 }
 
 // initGPU attempts to initialize the GPU pipeline. If the GPU is not
@@ -332,13 +333,40 @@ func (a *App) updateGPURawVideoSink() {
 	a.gpuRawVideoSink.Store(&fn)
 }
 
+// wireGPUReplay creates a GPU FRUC instance and wires it into the replay
+// manager for GPU-accelerated motion-blur slow-motion. No-op if the GPU
+// is unavailable or the replay manager hasn't been created yet.
+func (a *App) wireGPUReplay() {
+	if a.gpuState == nil || a.gpuState.ctx == nil || a.replayMgr == nil {
+		return
+	}
+
+	pf := a.sw.PipelineFormat()
+	fruc, err := gpu.NewFRUC(a.gpuState.ctx, pf.Width, pf.Height)
+	if err != nil {
+		slog.Warn("GPU FRUC init failed, replay will use CPU path", "error", err)
+		return
+	}
+
+	a.gpuState.fruc = fruc
+	a.replayMgr.SetGPUReplay(a.gpuState.ctx, fruc, a.gpuState.pool)
+	slog.Info("GPU motion-blur replay enabled",
+		"hasNVOFA", fruc.HasNVOFA(),
+		"width", pf.Width,
+		"height", pf.Height,
+		"shutterAngle", "180deg")
+}
 
 // closeGPU releases all GPU resources.
 func closeGPU(gs *gpuState) {
 	if gs == nil {
 		return
 	}
-	// Close source manager first — it holds GPU frames from the pool.
+	// Close FRUC first — it holds CUDA/NVOFA resources.
+	if gs.fruc != nil {
+		gs.fruc.Close()
+	}
+	// Close source manager — it holds GPU frames from the pool.
 	if gs.sourceManager != nil {
 		gs.sourceManager.Close()
 	}

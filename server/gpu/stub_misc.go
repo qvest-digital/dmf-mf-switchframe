@@ -45,6 +45,17 @@ func (f *FRUC) Interpolate(prev, curr, output *GPUFrame, alpha float64) error {
 // Close is a no-op on non-GPU builds.
 func (f *FRUC) Close() {}
 
+// ComputeFlow returns false on non-GPU builds.
+func (f *FRUC) ComputeFlow(prev, curr *GPUFrame) bool { return false }
+
+// MotionBlur returns ErrGPUNotAvailable on non-GPU builds.
+func (f *FRUC) MotionBlur(prev, curr, output *GPUFrame, alpha, shutterAngle float64) error {
+	return ErrGPUNotAvailable
+}
+
+// HasNVOFA returns false on non-GPU builds.
+func (f *FRUC) HasNVOFA() bool { return false }
+
 // V210LineStride returns the byte stride for one line of V210 data.
 func V210LineStride(width int) int {
 	groups := (width + 5) / 6

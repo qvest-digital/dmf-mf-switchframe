@@ -96,15 +96,17 @@ type gopDescriptor struct {
 // Status is the JSON-serializable status for the replay system,
 // included in ControlRoomState for the browser.
 type Status struct {
-	State      PlayerState        `json:"state"`
-	Source     string             `json:"source,omitempty"`
-	Speed      float64            `json:"speed,omitempty"`
-	Loop       bool               `json:"loop,omitempty"`
-	Position   float64            `json:"position,omitempty"` // 0.0–1.0 playback progress
-	MarkIn     *time.Time         `json:"markIn,omitempty"`
-	MarkOut    *time.Time         `json:"markOut,omitempty"`
-	MarkSource string             `json:"markSource,omitempty"`
-	Buffers    []SourceBufferInfo `json:"buffers,omitempty"`
+	State          PlayerState        `json:"state"`
+	Source         string             `json:"source,omitempty"`
+	Speed          float64            `json:"speed,omitempty"`
+	Loop           bool               `json:"loop,omitempty"`
+	Position       float64            `json:"position,omitempty"` // 0.0–1.0 playback progress
+	MarkIn         *time.Time         `json:"markIn,omitempty"`
+	MarkOut        *time.Time         `json:"markOut,omitempty"`
+	MarkSource     string             `json:"markSource,omitempty"`
+	ShutterAngle   float64            `json:"shutterAngle,omitempty"`   // 0-360 degrees
+	GPUAccelerated bool               `json:"gpuAccelerated,omitempty"`
+	Buffers        []SourceBufferInfo `json:"buffers,omitempty"`
 }
 
 // MarkInUnixMs returns the mark-in time as Unix milliseconds, or nil if not set.
