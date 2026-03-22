@@ -671,6 +671,8 @@ func (a *App) initSubsystems() error {
 			// Recreate at new dimensions.
 			a.gpuState = initGPU(a.sw)
 			wireGPUPipeline(a.gpuState, a.sw, a)
+			// Re-wire GPU replay FRUC at the new dimensions.
+			a.wireGPUReplay()
 		})
 	}
 
@@ -754,6 +756,9 @@ func (a *App) initSubsystems() error {
 			tmpfsStatus = "disabled"
 		}
 		slog.Info("replay manager initialized", "bufferSecs", a.cfg.ReplayBufferSecs, "tmpfsDir", tmpfsStatus)
+
+		// Enable GPU replay with NVOFA motion blur if available.
+		a.wireGPUReplay()
 	}
 
 	return nil
