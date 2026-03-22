@@ -42,6 +42,17 @@ func NewGPUDecoder(ctx *Context, threadCount int) (*GPUDecoder, error) {
 	return nil, ErrGPUNotAvailable
 }
 
+// Decode returns ErrGPUNotAvailable on non-GPU builds.
+func (d *GPUDecoder) Decode(data []byte) ([]byte, int, int, error) {
+	return nil, 0, 0, ErrGPUNotAvailable
+}
+
+// Flush is a no-op on non-GPU builds.
+func (d *GPUDecoder) Flush() {}
+
+// Close is a no-op on non-GPU builds.
+func (d *GPUDecoder) Close() {}
+
 // PreviewEncoder is a stub for non-GPU builds.
 type PreviewEncoder struct{}
 
