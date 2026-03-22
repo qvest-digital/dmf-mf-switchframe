@@ -77,14 +77,10 @@ func createTestYUV420p(w, h int, yVal, cbVal, crVal byte) []byte {
 // setupGPU creates a GPU context and frame pool, skipping the test if GPU is not available.
 func setupGPU(t *testing.T, w, h, poolSize int) (*Context, *FramePool) {
 	t.Helper()
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
+	ctx := testContext(t)
 
 	pool, err := NewFramePool(ctx, w, h, poolSize)
 	if err != nil {
-		ctx.Close()
 		t.Skip("GPU frame pool creation failed:", err)
 	}
 

@@ -10,11 +10,7 @@ import (
 )
 
 func TestPIPComposite(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	dstW, dstH := 640, 480
 	srcW, srcH := 320, 240
@@ -66,11 +62,7 @@ func TestPIPComposite(t *testing.T) {
 }
 
 func TestPIPCompositeWithAlpha(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	w, h := 320, 240
 	pool, err := NewFramePool(ctx, w, h, 3)
@@ -109,11 +101,7 @@ func TestPIPCompositeWithAlpha(t *testing.T) {
 }
 
 func TestFillRect(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	w, h := 320, 240
 	pool, err := NewFramePool(ctx, w, h, 2)
@@ -151,11 +139,7 @@ func TestFillRect(t *testing.T) {
 }
 
 func TestPIPCompositeWithCrop(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	dstW, dstH := 640, 480
 	srcW, srcH := 640, 480
@@ -211,11 +195,7 @@ func TestPIPCompositeWithCrop(t *testing.T) {
 
 func TestPIPCompositeWithCropZero(t *testing.T) {
 	// Verify that crop=(0,0,0,0) behaves like full-source PIPComposite
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	w, h := 320, 240
 	pool, err := NewFramePool(ctx, w, h, 3)
@@ -256,11 +236,7 @@ func TestCompositeNilArgs(t *testing.T) {
 }
 
 func TestDrawBorder(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	w, h := 320, 240
 	pool, err := NewFramePool(ctx, w, h, 2)

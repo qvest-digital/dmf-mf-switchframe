@@ -10,11 +10,7 @@ import (
 )
 
 func TestCUDATimer(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	timer, err := NewTimer()
 	require.NoError(t, err)
@@ -37,11 +33,7 @@ func TestCUDATimer(t *testing.T) {
 }
 
 func TestCUDATimerMultipleOps(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	timer, err := NewTimer()
 	require.NoError(t, err)
@@ -84,11 +76,7 @@ func TestPipelineMetrics(t *testing.T) {
 }
 
 func TestMemoryStatsExtended(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	stats := MemoryStatsExtended(ctx)
 	assert.True(t, stats["available"].(bool))

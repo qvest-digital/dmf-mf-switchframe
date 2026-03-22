@@ -10,11 +10,7 @@ import (
 )
 
 func TestDSKCompositeFullFrame(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	w, h := 320, 240
 	pool, err := NewFramePool(ctx, w, h, 2)
@@ -59,11 +55,7 @@ func TestDSKCompositeFullFrame(t *testing.T) {
 }
 
 func TestDSKCompositeWithGlobalAlpha(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	w, h := 320, 240
 	pool, err := NewFramePool(ctx, w, h, 2)
@@ -106,11 +98,7 @@ func TestDSKCompositeWithGlobalAlpha(t *testing.T) {
 }
 
 func TestDSKCompositeRect(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	w, h := 640, 480
 	pool, err := NewFramePool(ctx, w, h, 2)
@@ -162,11 +150,7 @@ func TestDSKNilArgs(t *testing.T) {
 }
 
 func TestUploadFreeOverlay(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	rgba := make([]byte, 100*50*4)
 	for i := range rgba {

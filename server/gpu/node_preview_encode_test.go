@@ -16,29 +16,13 @@ func TestGPUPreviewEncodeNode_NilCtx(t *testing.T) {
 }
 
 func TestGPUPreviewEncodeNode_NilCallback(t *testing.T) {
-	// We can't create a real context here without GPU, but we need a
-	// non-nil *Context to test this path. Use NewContext which will
-	// fail on non-GPU systems — in that case skip.
-	ctx, err := NewContext()
-	if err != nil {
-		// Even without a GPU, we can verify the nil-callback check
-		// by confirming that nil ctx + nil callback = nil.
-		node := NewGPUPreviewEncodeNode(nil, 854, 480, 500_000, 30, 1, nil)
-		assert.Nil(t, node, "nil ctx + nil callback should return nil node")
-		return
-	}
-	defer ctx.Close()
-
+	ctx := testContext(t)
 	node := NewGPUPreviewEncodeNode(ctx, 854, 480, 500_000, 30, 1, nil)
 	assert.Nil(t, node, "nil callback should return nil node")
 }
 
 func TestGPUPreviewEncodeNode_Interface(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	var encoded [][]byte
 	cb := func(data []byte, isIDR bool, pts int64) {
@@ -63,7 +47,7 @@ func TestGPUPreviewEncodeNode_Interface(t *testing.T) {
 	assert.NoError(t, node.Err())
 
 	// Configure with 1080p source dimensions.
-	err = node.Configure(1920, 1080, 1920)
+	err := node.Configure(1920, 1080, 1920)
 	require.NoError(t, err, "Configure should succeed with valid GPU context")
 
 	// Active after Configure.
@@ -78,7 +62,7 @@ func TestGPUPreviewEncodeNode_Interface(t *testing.T) {
 	assert.True(t, concrete.forceIDR.Load(), "ForceIDR should set the flag")
 
 	// Close should succeed and deactivate.
-	err = node.Close()
+	err = node.Close() //nolint:ineffassign // verify Close returns no error
 	assert.NoError(t, err, "Close should succeed")
 	assert.False(t, node.Active(), "should not be active after Close")
 }

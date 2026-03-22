@@ -32,11 +32,7 @@ func packV210Group(y [6]byte, cb [3]byte, cr [3]byte) [4]uint32 {
 }
 
 func TestV210UploadDownloadRoundTrip(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	// 12 pixels wide (2 V210 groups), 4 rows tall (even)
 	w, h := 12, 4
@@ -89,11 +85,7 @@ func TestV210UploadDownloadRoundTrip(t *testing.T) {
 }
 
 func TestV210GradientRoundTrip(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	// 1920x1080 is a realistic size (must be divisible by 6)
 	w, h := 1920, 1080
@@ -142,11 +134,7 @@ func TestV210GradientRoundTrip(t *testing.T) {
 }
 
 func TestV210NV12ToV210RoundTrip(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	w, h := 12, 4
 	pool, err := NewFramePool(ctx, w, h, 2)

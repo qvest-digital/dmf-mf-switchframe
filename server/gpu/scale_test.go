@@ -10,11 +10,7 @@ import (
 )
 
 func TestGPUScaleBilinear(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	srcPool, err := NewFramePool(ctx, 1920, 1080, 2)
 	require.NoError(t, err)
@@ -73,11 +69,7 @@ func TestGPUScaleBilinear(t *testing.T) {
 }
 
 func TestGPUScaleUpscale(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	srcPool, err := NewFramePool(ctx, 320, 240, 2)
 	require.NoError(t, err)
@@ -123,11 +115,7 @@ func TestGPUScaleBilinearUVCorrectness(t *testing.T) {
 	// Verify that UV plane scaling preserves CbCr channel independence.
 	// Before the fix, the UV plane was scaled byte-by-byte, which mixed
 	// Cb and Cr values and caused color corruption.
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	srcW, srcH := 640, 480
 	dstW, dstH := 320, 240

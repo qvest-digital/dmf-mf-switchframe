@@ -10,11 +10,7 @@ import (
 )
 
 func TestGPUEncode(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	pool, err := NewFramePool(ctx, 640, 480, 2)
 	require.NoError(t, err)
@@ -66,11 +62,7 @@ func TestGPUEncode(t *testing.T) {
 }
 
 func TestGPUEncodeMultipleFrames(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	pool, err := NewFramePool(ctx, 320, 240, 2)
 	require.NoError(t, err)
@@ -114,11 +106,7 @@ func TestGPUEncodeMultipleFrames(t *testing.T) {
 }
 
 func TestGPUEncodeCPUFallback(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	w, h := 320, 240
 	enc, err := NewGPUEncoder(ctx, w, h, 30, 1, 1_000_000)
@@ -164,11 +152,7 @@ func TestGPUEncodeNilContext(t *testing.T) {
 }
 
 func TestGPUEncodeNilFrame(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	enc, err := NewGPUEncoder(ctx, 320, 240, 30, 1, 1_000_000)
 	require.NoError(t, err)
@@ -179,11 +163,7 @@ func TestGPUEncodeNilFrame(t *testing.T) {
 }
 
 func TestGPUEncodeHWFrames(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	w, h := 640, 480
 	pool, err := NewFramePool(ctx, w, h, 2)

@@ -13,11 +13,7 @@ import (
 // (chroma) blending with per-pixel alpha. This catches the magenta/green
 // corruption bug where the NV12 UV plane was not composited correctly.
 func TestBlendStingerUV(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	w, h := 64, 64
 	pool, err := NewFramePool(ctx, w, h, 5)
@@ -111,11 +107,7 @@ func TestBlendStingerUV(t *testing.T) {
 
 // TestBlendStingerFullAlphaUV verifies that 100% alpha produces pure overlay UV.
 func TestBlendStingerFullAlphaUV(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	w, h := 64, 64
 	pool, err := NewFramePool(ctx, w, h, 5)
@@ -190,11 +182,7 @@ func TestBlendStingerFullAlphaUV(t *testing.T) {
 // Expected: left half Cb=200 (overlay), right half Cb=80 (base right).
 // If pitch is wrong, the right-half Cb would be wrong (shifted data).
 func TestBlendStingerSpatialUV(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	// Use a realistic-ish size where pitch != width (320 → pitch=512)
 	w, h := 320, 240
@@ -286,11 +274,7 @@ func TestBlendStingerSpatialUV(t *testing.T) {
 
 // TestBlendStingerZeroAlphaUV verifies that 0% alpha produces pure base UV.
 func TestBlendStingerZeroAlphaUV(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	w, h := 64, 64
 	pool, err := NewFramePool(ctx, w, h, 5)

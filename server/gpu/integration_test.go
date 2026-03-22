@@ -14,11 +14,7 @@ import (
 // to YUV420p), and verifies pixel-level accuracy. This validates that the
 // NV12 conversion is lossless for 8-bit content.
 func TestColorBarRoundTrip(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	pool, err := NewFramePool(ctx, 1920, 1080, 2)
 	require.NoError(t, err)
@@ -73,11 +69,7 @@ func TestColorBarRoundTrip(t *testing.T) {
 // uploaded, downloaded, and compared independently. This validates that
 // the pool correctly isolates frame buffers.
 func TestMultipleFrameRoundTrip(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	pool, err := NewFramePool(ctx, 320, 240, 4)
 	require.NoError(t, err)
@@ -131,11 +123,7 @@ func TestMultipleFrameRoundTrip(t *testing.T) {
 // TestFillBlackAndDownload verifies FillBlack produces correct limited-range
 // black values and that these round-trip correctly through download.
 func TestFillBlackAndDownload(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	pool, err := NewFramePool(ctx, 1920, 1080, 2)
 	require.NoError(t, err)

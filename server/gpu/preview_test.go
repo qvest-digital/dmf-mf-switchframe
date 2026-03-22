@@ -10,11 +10,7 @@ import (
 )
 
 func TestPreviewEncoder(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	srcW, srcH := 1920, 1080
 	dstW, dstH := 854, 480
@@ -62,11 +58,7 @@ func TestPreviewEncoder(t *testing.T) {
 }
 
 func TestPreviewEncoderSmallResolution(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	// 640x480 → 320x240 preview
 	pe, err := NewPreviewEncoder(ctx, 640, 480, 320, 240, 300_000, 30, 1)
@@ -103,11 +95,7 @@ func TestPreviewEncoderNilArgs(t *testing.T) {
 }
 
 func TestPreviewEncoderDoubleClose(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	pe, err := NewPreviewEncoder(ctx, 640, 480, 320, 240, 300_000, 30, 1)
 	require.NoError(t, err)

@@ -10,11 +10,7 @@ import (
 )
 
 func TestFramePool(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	pool, err := NewFramePool(ctx, 1920, 1080, 4)
 	require.NoError(t, err)
@@ -41,11 +37,7 @@ func TestFramePool(t *testing.T) {
 }
 
 func TestFramePoolExhaustion(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	pool, err := NewFramePool(ctx, 320, 240, 2)
 	require.NoError(t, err)
@@ -73,11 +65,7 @@ func TestFramePoolExhaustion(t *testing.T) {
 }
 
 func TestFramePoolRefCounting(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	pool, err := NewFramePool(ctx, 320, 240, 2)
 	require.NoError(t, err)

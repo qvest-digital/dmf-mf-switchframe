@@ -10,11 +10,7 @@ import (
 )
 
 func TestChromaKeyGreenScreen(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	w, h := 320, 240
 	pool, err := NewFramePool(ctx, w, h, 3)
@@ -67,11 +63,7 @@ func TestChromaKeyGreenScreen(t *testing.T) {
 }
 
 func TestChromaKeyNonGreen(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	w, h := 320, 240
 	pool, err := NewFramePool(ctx, w, h, 3)
@@ -118,11 +110,7 @@ func TestChromaKeyNonGreen(t *testing.T) {
 }
 
 func TestLumaKey(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	w, h := 320, 240
 	pool, err := NewFramePool(ctx, w, h, 3)

@@ -10,11 +10,7 @@ import (
 )
 
 func TestMetalContext(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skipf("Metal not available: %v", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	props := ctx.DeviceProperties()
 	assert.NotEmpty(t, props.Name)
@@ -24,22 +20,14 @@ func TestMetalContext(t *testing.T) {
 }
 
 func TestMetalContextSync(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skipf("Metal not available: %v", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
-	err = ctx.Sync()
+	err := ctx.Sync()
 	require.NoError(t, err)
 }
 
 func TestMetalContextMemoryStats(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skipf("Metal not available: %v", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	stats := ctx.MemoryStats()
 	assert.Greater(t, stats.TotalMB, 0)
@@ -64,11 +52,7 @@ func TestMetalContextDoubleClose(t *testing.T) {
 }
 
 func TestMetalFramePool(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skipf("Metal not available: %v", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	pool, err := NewFramePool(ctx, 1920, 1080, 4)
 	require.NoError(t, err)
@@ -93,11 +77,7 @@ func TestMetalFramePool(t *testing.T) {
 }
 
 func TestMetalUploadDownloadRoundTrip(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skipf("Metal not available: %v", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	width, height := 64, 64
 	pool, err := NewFramePool(ctx, width, height, 2)
@@ -147,11 +127,7 @@ func TestMetalUploadDownloadRoundTrip(t *testing.T) {
 }
 
 func TestMetalFillBlack(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skipf("Metal not available: %v", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	width, height := 64, 64
 	pool, err := NewFramePool(ctx, width, height, 2)
@@ -188,11 +164,7 @@ func TestMetalFillBlack(t *testing.T) {
 }
 
 func TestMetalSTMapIdentity(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skipf("Metal not available: %v", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	width, height := 64, 64
 	pool, err := NewFramePool(ctx, width, height, 4)
@@ -287,11 +259,7 @@ func avgPlanes(t *testing.T, ctx *Context, frame *GPUFrame, width, height int) (
 }
 
 func TestMetalBlendMixPreservesChroma(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skipf("Metal not available: %v", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	width, height := 64, 64
 	pool, err := NewFramePool(ctx, width, height, 4)
@@ -325,11 +293,7 @@ func TestMetalBlendMixPreservesChroma(t *testing.T) {
 }
 
 func TestMetalBlendMixEndpoints(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skipf("Metal not available: %v", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	width, height := 64, 64
 	pool, err := NewFramePool(ctx, width, height, 4)
@@ -363,11 +327,7 @@ func TestMetalBlendMixEndpoints(t *testing.T) {
 }
 
 func TestMetalBlendFTBFullBlack(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skipf("Metal not available: %v", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	width, height := 64, 64
 	pool, err := NewFramePool(ctx, width, height, 4)
@@ -395,11 +355,7 @@ func TestMetalBlendFTBFullBlack(t *testing.T) {
 }
 
 func TestMetalBlendFTBNoChange(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skipf("Metal not available: %v", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	width, height := 64, 64
 	pool, err := NewFramePool(ctx, width, height, 4)
@@ -424,11 +380,7 @@ func TestMetalBlendFTBNoChange(t *testing.T) {
 }
 
 func TestMetalBlendFTBHalfway(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skipf("Metal not available: %v", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	width, height := 64, 64
 	pool, err := NewFramePool(ctx, width, height, 4)
@@ -456,11 +408,7 @@ func TestMetalBlendFTBHalfway(t *testing.T) {
 }
 
 func TestMetalScaleBilinearPreservesChroma(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skipf("Metal not available: %v", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	// Use same width, different height — avoids UV interleaving artifact
 	// in the byte-level scaler. Full resolution changes need a UV-aware kernel.
@@ -495,11 +443,7 @@ func TestMetalScaleBilinearPreservesChroma(t *testing.T) {
 }
 
 func TestMetalScaleLanczos3PreservesChroma(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skipf("Metal not available: %v", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	// Use same width, different height — avoids UV interleaving artifact
 	// in the byte-level scaler. Full resolution changes need a UV-aware kernel.
@@ -533,11 +477,7 @@ func TestMetalScaleLanczos3PreservesChroma(t *testing.T) {
 }
 
 func TestMetalPIPCompositePreservesChroma(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skipf("Metal not available: %v", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	width, height := 128, 128
 	pool, err := NewFramePool(ctx, width, height, 4)
@@ -585,11 +525,7 @@ func TestMetalPIPCompositePreservesChroma(t *testing.T) {
 }
 
 func TestMetalSTMapWarpPreservesChroma(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skipf("Metal not available: %v", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	width, height := 64, 64
 	pool, err := NewFramePool(ctx, width, height, 4)
@@ -632,11 +568,7 @@ func TestMetalSTMapWarpPreservesChroma(t *testing.T) {
 }
 
 func TestMetalBlendWipeTransition(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skipf("Metal not available: %v", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	width, height := 64, 64
 	pool, err := NewFramePool(ctx, width, height, 6)
@@ -676,11 +608,7 @@ func TestMetalBlendWipeTransition(t *testing.T) {
 }
 
 func TestMetalBlendStingerAlpha(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skipf("Metal not available: %v", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	width, height := 64, 64
 	pool, err := NewFramePool(ctx, width, height, 6)
@@ -725,11 +653,7 @@ func TestMetalBlendStingerAlpha(t *testing.T) {
 }
 
 func TestMetalBlendStingerZeroAlpha(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skipf("Metal not available: %v", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	width, height := 64, 64
 	pool, err := NewFramePool(ctx, width, height, 6)
@@ -784,11 +708,7 @@ func TestErrGPUNotAvailableMessage(t *testing.T) {
 // ============================================================================
 
 func TestMetalDownloadDirectCPU(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skipf("Metal not available: %v", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	width, height := 64, 64
 	pool, err := NewFramePool(ctx, width, height, 2)

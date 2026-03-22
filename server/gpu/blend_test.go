@@ -10,11 +10,7 @@ import (
 )
 
 func TestBlendMix50(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	w, h := 320, 240
 	pool, err := NewFramePool(ctx, w, h, 4)
@@ -56,11 +52,7 @@ func TestBlendMix50(t *testing.T) {
 }
 
 func TestBlendMixEndpoints(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	w, h := 64, 64
 	pool, err := NewFramePool(ctx, w, h, 4)
@@ -100,11 +92,7 @@ func TestBlendMixEndpoints(t *testing.T) {
 }
 
 func TestBlendFTB(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	w, h := 320, 240
 	pool, err := NewFramePool(ctx, w, h, 3)
@@ -141,11 +129,7 @@ func TestBlendFTB(t *testing.T) {
 }
 
 func TestBlendWipe(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	w, h := 320, 240
 	pool, err := NewFramePool(ctx, w, h, 5)
@@ -193,11 +177,7 @@ func TestBlendNilArgs(t *testing.T) {
 }
 
 func TestBlendStinger(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	w, h := 320, 240
 	pool, err := NewFramePool(ctx, w, h, 5)

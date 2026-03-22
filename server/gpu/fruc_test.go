@@ -16,11 +16,7 @@ func TestFRUCAvailable(t *testing.T) {
 }
 
 func TestFRUCCreate(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	fruc, err := NewFRUC(ctx, 1920, 1080)
 	require.NoError(t, err)
@@ -33,11 +29,7 @@ func TestFRUCCreate(t *testing.T) {
 }
 
 func TestFRUCInterpolate(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	w, h := 320, 240
 	fruc, err := NewFRUC(ctx, w, h)
@@ -86,11 +78,7 @@ func TestFRUCInterpolate(t *testing.T) {
 }
 
 func TestFRUCInterpolateEndpoints(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	w, h := 320, 240
 	fruc, err := NewFRUC(ctx, w, h)
@@ -140,11 +128,7 @@ func TestFRUCNilContext(t *testing.T) {
 }
 
 func TestFRUCDoubleClose(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	fruc, err := NewFRUC(ctx, 320, 240)
 	require.NoError(t, err)

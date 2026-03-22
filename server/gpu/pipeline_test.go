@@ -11,11 +11,7 @@ import (
 )
 
 func TestGPUPipelineFullChain(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	w, h := 640, 480
 	pool, err := NewFramePool(ctx, w, h, 4)
@@ -77,11 +73,7 @@ func TestGPUPipelineFullChain(t *testing.T) {
 }
 
 func TestGPUPipelineWithRawSink(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	w, h := 320, 240
 	pool, err := NewFramePool(ctx, w, h, 4)
@@ -136,11 +128,7 @@ func TestGPUPipelineWithRawSink(t *testing.T) {
 }
 
 func TestGPUPipelineRawSinkInactive(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	w, h := 320, 240
 	pool, err := NewFramePool(ctx, w, h, 4)
@@ -172,11 +160,7 @@ func TestGPUPipelineRawSinkInactive(t *testing.T) {
 }
 
 func TestGPUPipelineSnapshot(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	w, h := 320, 240
 	pool, err := NewFramePool(ctx, w, h, 2)

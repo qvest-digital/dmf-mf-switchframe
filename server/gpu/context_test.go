@@ -10,12 +10,8 @@ import (
 )
 
 func TestNewContext(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
+	ctx := testContext(t)
 	require.NotNil(t, ctx)
-	defer ctx.Close()
 
 	// Verify device properties are populated
 	props := ctx.DeviceProperties()
@@ -33,34 +29,22 @@ func TestNewContext(t *testing.T) {
 }
 
 func TestContextStreams(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	assert.NotNil(t, ctx.Stream(), "processing stream should be non-nil")
 	assert.NotNil(t, ctx.EncStream(), "encode stream should be non-nil")
 }
 
 func TestContextSync(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	// Sync on empty stream should succeed immediately
-	err = ctx.Sync()
+	err := ctx.Sync()
 	require.NoError(t, err)
 }
 
 func TestContextMemoryStats(t *testing.T) {
-	ctx, err := NewContext()
-	if err != nil {
-		t.Skip("GPU not available:", err)
-	}
-	defer ctx.Close()
+	ctx := testContext(t)
 
 	stats := ctx.MemoryStats()
 	assert.Greater(t, stats.TotalMB, 0, "total VRAM should be > 0")
