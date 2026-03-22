@@ -165,6 +165,7 @@
 	}
 </script>
 
+<!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
 <svg
 	bind:this={svgEl}
 	width={SIZE}
@@ -173,7 +174,9 @@
 	class="curve-editor"
 	role="application"
 	aria-label="Tone curve editor"
+	tabindex="0"
 	onclick={handleSvgClick}
+	onkeydown={() => {}}
 	onpointermove={handlePointerMove}
 	onpointerup={handlePointerUp}
 >
@@ -209,8 +212,11 @@
 			class="curve-dot"
 			class:endpoint={isEndpoint}
 			role="slider"
+			tabindex="0"
 			aria-label="Curve point {i + 1}"
 			aria-valuenow={Math.round(pt.y * 100)}
+			aria-valuemin={0}
+			aria-valuemax={100}
 			onpointerdown={(e) => handlePointerDown(e, i)}
 			ondblclick={(e) => handleDblClick(e, i)}
 		/>

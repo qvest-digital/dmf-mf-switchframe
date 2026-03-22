@@ -112,7 +112,7 @@
 	});
 </script>
 
-<div class="color-wheel" ondblclick={handleDblClick}>
+<div class="color-wheel" ondblclick={handleDblClick} role="group" aria-label="Color wheel">
 	<svg
 		bind:this={svgEl}
 		width={SIZE}
@@ -122,6 +122,8 @@
 		onpointermove={handlePointerMove}
 		onpointerup={handlePointerUp}
 		class="wheel-svg"
+		role="application"
+		aria-label="Color wheel control"
 	>
 		<!-- Background circle -->
 		<circle cx={CENTER} cy={CENTER} r={RADIUS + 2} fill="none" stroke="#555" stroke-width="1" />

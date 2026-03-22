@@ -156,16 +156,16 @@
 			<label class="intensity-label">
 				<span>Intensity</span>
 				<span class="intensity-value">{intensity}%</span>
+				<input
+					type="range"
+					min="0"
+					max="100"
+					step="1"
+					bind:value={intensity}
+					onchange={updateIntensity}
+					class="intensity-slider"
+				/>
 			</label>
-			<input
-				type="range"
-				min="0"
-				max="100"
-				step="1"
-				bind:value={intensity}
-				onchange={updateIntensity}
-				class="intensity-slider"
-			/>
 		</div>
 	{/if}
 
