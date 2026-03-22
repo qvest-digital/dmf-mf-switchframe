@@ -58,9 +58,9 @@ func TestSegmentationEngineCreate(t *testing.T) {
 	require.NotNil(t, se)
 	defer se.Close()
 
-	// RVM has multiple I/O tensors (6 inputs + 6 outputs = 12 total).
-	assert.GreaterOrEqual(t, se.engine.NumIOTensors(), 12,
-		"RVM should have at least 12 I/O tensors")
+	// RVM has 5 inputs + 6 outputs = 11 I/O tensors (downsample_ratio is baked as constant).
+	assert.GreaterOrEqual(t, se.engine.NumIOTensors(), 11,
+		"RVM should have at least 11 I/O tensors")
 }
 
 func TestSegmentationEngineCreateNilCtx(t *testing.T) {
