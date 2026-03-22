@@ -1664,8 +1664,47 @@
 
 			<!-- Frame Budget Bar -->
 			<div class="section">
-				<div class="section-label">FRAME BUDGET</div>
-				{#if pipelineData}
+				<div class="section-label">FRAME BUDGET {#if gpuActive}<span class="gpu-backend-badge">GPU</span>{/if}</div>
+				{#if gpuActive && snapshot?.switcher?.gpu_pipeline}
+					{@const gpuPipe = snapshot.switcher.gpu_pipeline}
+					{@const budgetNs = pipelineData?.frameBudgetNs ?? DEFAULT_FRAME_BUDGET_NS}
+					{@const budgetMs = budgetNs / 1e6}
+					{@const gpuUsedNs = gpuPipe.last_run_ns}
+					{@const gpuUsedMs = gpuUsedNs / 1e6}
+					{@const gpuPct = Math.min((gpuUsedNs / budgetNs) * 100, 100)}
+					{@const gpuHeadroom = Math.max(100 - gpuPct, 0)}
+					{@const gpuHeadClass = gpuHeadroom < 10 ? 'crit' : gpuHeadroom < 30 ? 'warn' : 'ok'}
+					{@const isOverBudget = gpuUsedMs > budgetMs}
+					<!-- GPU pipeline bar -->
+					<div class="budget-bar">
+						{#each (gpuPipe.active_nodes ?? []) as node}
+							{@const pct = (node.last_ns / budgetNs) * 100}
+							{#if pct > MIN_SEGMENT_PCT}
+								<div
+									class="budget-segment"
+									style="width: {Math.min(pct, 100)}%; background: {nodeColor(node.name).replace('0.7', '0.25')}"
+									title="{NODE_META[node.name]?.display ?? node.name}: {fmtUs(node.last_ns)}us"
+								>
+									{#if pct > MIN_LABEL_PCT}
+										<span class="seg-label">{NODE_META[node.name]?.short ?? node.name.replace('gpu_', '').toUpperCase()}</span>
+									{/if}
+								</div>
+							{/if}
+						{/each}
+						<div class="budget-headroom {gpuHeadClass}" title="Headroom: {(budgetMs - gpuUsedMs).toFixed(1)}ms">
+							{#if gpuHeadroom > MIN_HEADROOM_LABEL_PCT}
+								<span class="seg-label">{(budgetMs - gpuUsedMs).toFixed(1)}ms</span>
+							{/if}
+						</div>
+					</div>
+					<div class="budget-summary" class:over-budget={isOverBudget}>
+						{#if isOverBudget}
+							{gpuUsedMs.toFixed(1)}ms / {budgetMs.toFixed(1)}ms — <span class="over-label">+{(gpuUsedMs - budgetMs).toFixed(1)}ms OVER</span>
+						{:else}
+							{gpuUsedMs.toFixed(1)}ms / {budgetMs.toFixed(1)}ms ({gpuPct.toFixed(0)}%)
+						{/if}
+					</div>
+				{:else if pipelineData}
 					{@const budgetMs = pipelineData.frameBudgetNs / 1e6}
 					{@const syncNodes = pipelineData.activeNodes.filter(n => n.encode_last_ns === undefined)}
 					{@const encodeNode = pipelineData.activeNodes.find(n => n.encode_last_ns !== undefined)}
@@ -1675,7 +1714,7 @@
 					{@const headroomPct = Math.max(100 - pipelinePct, 0)}
 					{@const headroomClass = headroomPct < 10 ? 'crit' : headroomPct < 30 ? 'warn' : 'ok'}
 					{@const isOverBudget = pipelineUsedMs > budgetMs}
-					<!-- Sync pipeline bar (nodes that run sequentially on the pipeline goroutine) -->
+					<!-- CPU pipeline bar -->
 					<div class="budget-bar">
 						{#each syncNodes as node}
 							{@const pct = (node.last_ns / pipelineData.frameBudgetNs) * 100}
