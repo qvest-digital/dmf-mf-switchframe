@@ -219,6 +219,22 @@ func (e *Engine) runInference(isFinal bool) {
 	}
 
 	text := tok.Decode(outputTokens)
+
+	// Debug: log first inference result to verify pipeline.
+	if len(outputTokens) > 0 {
+		maxLog := 10
+		if len(outputTokens) < maxLog {
+			maxLog = len(outputTokens)
+		}
+		slog.Info("ASR inference result",
+			"tokens", len(outputTokens),
+			"first_tokens", outputTokens[:maxLog],
+			"text_len", len(text),
+			"text_preview", text,
+			"isFinal", isFinal,
+		)
+	}
+
 	e.processTranscript(text, isFinal)
 }
 
