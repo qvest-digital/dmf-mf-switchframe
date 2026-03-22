@@ -15,7 +15,9 @@ import (
 // NV12 conversion is lossless for 8-bit content.
 func TestColorBarRoundTrip(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	pool, err := NewFramePool(ctx, 1920, 1080, 2)
@@ -72,7 +74,9 @@ func TestColorBarRoundTrip(t *testing.T) {
 // the pool correctly isolates frame buffers.
 func TestMultipleFrameRoundTrip(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	pool, err := NewFramePool(ctx, 320, 240, 4)
@@ -128,7 +132,9 @@ func TestMultipleFrameRoundTrip(t *testing.T) {
 // black values and that these round-trip correctly through download.
 func TestFillBlackAndDownload(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	pool, err := NewFramePool(ctx, 1920, 1080, 2)

@@ -12,7 +12,9 @@ import (
 
 func TestGPUPipelineFullChain(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	w, h := 640, 480
@@ -76,7 +78,9 @@ func TestGPUPipelineFullChain(t *testing.T) {
 
 func TestGPUPipelineWithRawSink(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	w, h := 320, 240
@@ -133,7 +137,9 @@ func TestGPUPipelineWithRawSink(t *testing.T) {
 
 func TestGPUPipelineRawSinkInactive(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	w, h := 320, 240
@@ -167,7 +173,9 @@ func TestGPUPipelineRawSinkInactive(t *testing.T) {
 
 func TestGPUPipelineSnapshot(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	w, h := 320, 240

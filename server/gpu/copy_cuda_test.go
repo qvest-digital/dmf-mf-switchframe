@@ -17,7 +17,9 @@ func TestCopyNV12FromDevice_NilDst(t *testing.T) {
 
 func TestCopyNV12FromDevice_NilSrc(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	pool, err := NewFramePool(ctx, 1920, 1080, 1)

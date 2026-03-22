@@ -11,7 +11,9 @@ import (
 
 func TestBlendMix50(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	w, h := 320, 240
@@ -55,7 +57,9 @@ func TestBlendMix50(t *testing.T) {
 
 func TestBlendMixEndpoints(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	w, h := 64, 64
@@ -97,7 +101,9 @@ func TestBlendMixEndpoints(t *testing.T) {
 
 func TestBlendFTB(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	w, h := 320, 240
@@ -136,7 +142,9 @@ func TestBlendFTB(t *testing.T) {
 
 func TestBlendWipe(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	w, h := 320, 240
@@ -186,7 +194,9 @@ func TestBlendNilArgs(t *testing.T) {
 
 func TestBlendStinger(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	w, h := 320, 240

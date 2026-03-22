@@ -11,7 +11,9 @@ import (
 
 func TestDSKCompositeFullFrame(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	w, h := 320, 240
@@ -58,7 +60,9 @@ func TestDSKCompositeFullFrame(t *testing.T) {
 
 func TestDSKCompositeWithGlobalAlpha(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	w, h := 320, 240
@@ -103,7 +107,9 @@ func TestDSKCompositeWithGlobalAlpha(t *testing.T) {
 
 func TestDSKCompositeRect(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	w, h := 640, 480
@@ -157,7 +163,9 @@ func TestDSKNilArgs(t *testing.T) {
 
 func TestUploadFreeOverlay(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	rgba := make([]byte, 100*50*4)

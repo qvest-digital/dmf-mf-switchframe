@@ -53,7 +53,9 @@ func generateH264IDR(t *testing.T, w, h int) []byte {
 
 func TestNVDECDecode(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	w, h := 640, 480
@@ -116,7 +118,9 @@ func TestNVDECDecode(t *testing.T) {
 
 func TestNVDECDecodeMultipleFrames(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	w, h := 320, 240
@@ -167,7 +171,9 @@ func TestNVDECDecodeMultipleFrames(t *testing.T) {
 
 func TestGPUDecoderFactory(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	factory := NewGPUDecoderFactory(ctx)

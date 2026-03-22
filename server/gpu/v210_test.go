@@ -33,7 +33,9 @@ func packV210Group(y [6]byte, cb [3]byte, cr [3]byte) [4]uint32 {
 
 func TestV210UploadDownloadRoundTrip(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	// 12 pixels wide (2 V210 groups), 4 rows tall (even)
@@ -88,7 +90,9 @@ func TestV210UploadDownloadRoundTrip(t *testing.T) {
 
 func TestV210GradientRoundTrip(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	// 1920x1080 is a realistic size (must be divisible by 6)
@@ -139,7 +143,9 @@ func TestV210GradientRoundTrip(t *testing.T) {
 
 func TestV210NV12ToV210RoundTrip(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	w, h := 12, 4

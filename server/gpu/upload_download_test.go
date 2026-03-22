@@ -11,7 +11,9 @@ import (
 
 func TestUploadDownloadRoundTrip(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	pool, err := NewFramePool(ctx, 1920, 1080, 2)
@@ -69,7 +71,9 @@ func TestUploadDownloadRoundTrip(t *testing.T) {
 
 func TestUploadDownloadSmallFrame(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	pool, err := NewFramePool(ctx, 320, 240, 2)
@@ -106,7 +110,9 @@ func TestUploadDownloadSmallFrame(t *testing.T) {
 
 func TestFillBlack(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	pool, err := NewFramePool(ctx, 320, 240, 2)
@@ -160,7 +166,9 @@ func TestDownloadNilArgs(t *testing.T) {
 
 func TestUploadBufferTooSmall(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	pool, err := NewFramePool(ctx, 320, 240, 1)
@@ -182,7 +190,9 @@ func TestUploadBufferTooSmall(t *testing.T) {
 // one.  This exercises the "grow" branch of the lazy-alloc path.
 func TestUploadResolutionChange(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	// Small pool: 320x240

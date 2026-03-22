@@ -11,7 +11,9 @@ import (
 
 func TestPIPComposite(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	dstW, dstH := 640, 480
@@ -65,7 +67,9 @@ func TestPIPComposite(t *testing.T) {
 
 func TestPIPCompositeWithAlpha(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	w, h := 320, 240
@@ -106,7 +110,9 @@ func TestPIPCompositeWithAlpha(t *testing.T) {
 
 func TestFillRect(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	w, h := 320, 240
@@ -146,7 +152,9 @@ func TestFillRect(t *testing.T) {
 
 func TestPIPCompositeWithCrop(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	dstW, dstH := 640, 480
@@ -204,7 +212,9 @@ func TestPIPCompositeWithCrop(t *testing.T) {
 func TestPIPCompositeWithCropZero(t *testing.T) {
 	// Verify that crop=(0,0,0,0) behaves like full-source PIPComposite
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	w, h := 320, 240
@@ -247,7 +257,9 @@ func TestCompositeNilArgs(t *testing.T) {
 
 func TestDrawBorder(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	w, h := 320, 240

@@ -11,7 +11,9 @@ import (
 
 func TestGPUScaleBilinear(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	srcPool, err := NewFramePool(ctx, 1920, 1080, 2)
@@ -72,7 +74,9 @@ func TestGPUScaleBilinear(t *testing.T) {
 
 func TestGPUScaleUpscale(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	srcPool, err := NewFramePool(ctx, 320, 240, 2)
@@ -120,7 +124,9 @@ func TestGPUScaleBilinearUVCorrectness(t *testing.T) {
 	// Before the fix, the UV plane was scaled byte-by-byte, which mixed
 	// Cb and Cr values and caused color corruption.
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	srcW, srcH := 640, 480

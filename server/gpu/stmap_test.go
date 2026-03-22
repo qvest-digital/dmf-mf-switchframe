@@ -11,7 +11,9 @@ import (
 
 func TestSTMapIdentityWarp(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	w, h := 320, 240
@@ -76,7 +78,9 @@ func TestSTMapIdentityWarp(t *testing.T) {
 
 func TestSTMapHorizontalFlip(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	w, h := 320, 240
@@ -132,7 +136,9 @@ func TestSTMapHorizontalFlip(t *testing.T) {
 
 func TestSTMapAnimated(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	w, h := 64, 64
@@ -171,7 +177,9 @@ func TestSTMapAnimated(t *testing.T) {
 
 func TestSTMapUploadFree(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	w, h := 64, 64
@@ -204,7 +212,9 @@ func TestSTMapNilArgs(t *testing.T) {
 
 func TestSTMapDimensionMismatch(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	pool320, err := NewFramePool(ctx, 320, 240, 2)

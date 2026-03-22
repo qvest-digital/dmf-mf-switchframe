@@ -11,7 +11,9 @@ import (
 
 func TestChromaKeyGreenScreen(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	w, h := 320, 240
@@ -66,7 +68,9 @@ func TestChromaKeyGreenScreen(t *testing.T) {
 
 func TestChromaKeyNonGreen(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	w, h := 320, 240
@@ -115,7 +119,9 @@ func TestChromaKeyNonGreen(t *testing.T) {
 
 func TestLumaKey(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	w, h := 320, 240

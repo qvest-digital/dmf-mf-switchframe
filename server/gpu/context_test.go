@@ -11,7 +11,9 @@ import (
 
 func TestNewContext(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	require.NotNil(t, ctx)
 	defer ctx.Close()
 
@@ -32,7 +34,9 @@ func TestNewContext(t *testing.T) {
 
 func TestContextStreams(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	assert.NotNil(t, ctx.Stream(), "processing stream should be non-nil")
@@ -41,7 +45,9 @@ func TestContextStreams(t *testing.T) {
 
 func TestContextSync(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	// Sync on empty stream should succeed immediately
@@ -51,7 +57,9 @@ func TestContextSync(t *testing.T) {
 
 func TestContextMemoryStats(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	stats := ctx.MemoryStats()
@@ -73,7 +81,9 @@ func TestContextCloseNilSafe(t *testing.T) {
 
 func TestContextDoubleClose(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 
 	err = ctx.Close()
 	assert.NoError(t, err)

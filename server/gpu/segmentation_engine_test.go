@@ -52,7 +52,9 @@ func TestSegmentationEngineCreate(t *testing.T) {
 	modelPath := segModelPath(t)
 
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	se, err := NewSegmentationEngine(ctx, modelPath)
@@ -73,7 +75,9 @@ func TestSegmentationEngineCreateNilCtx(t *testing.T) {
 
 func TestSegmentationEngineCreateEmptyPath(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	se, err := NewSegmentationEngine(ctx, "")
@@ -84,7 +88,9 @@ func TestSegmentationEngineCreateEmptyPath(t *testing.T) {
 
 func TestSegmentationEngineCreateMissingModel(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	se, err := NewSegmentationEngine(ctx, "/nonexistent/model.onnx")
@@ -97,7 +103,9 @@ func TestSegmentationEngineSession(t *testing.T) {
 	modelPath := segModelPath(t)
 
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	pool, err := NewFramePool(ctx, 1920, 1080, 4)
@@ -130,7 +138,9 @@ func TestSegmentationEngineMaskForSource(t *testing.T) {
 	modelPath := segModelPath(t)
 
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	pool, err := NewFramePool(ctx, 1920, 1080, 4)
@@ -171,7 +181,9 @@ func TestSegmentationEngineDisable(t *testing.T) {
 	modelPath := segModelPath(t)
 
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	se, err := NewSegmentationEngine(ctx, modelPath)
@@ -207,7 +219,9 @@ func TestSegmentationEngineEnableDisableMultipleSources(t *testing.T) {
 	modelPath := segModelPath(t)
 
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	se, err := NewSegmentationEngine(ctx, modelPath)
@@ -235,7 +249,9 @@ func TestSegmentationEngineReEnable(t *testing.T) {
 	modelPath := segModelPath(t)
 
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	se, err := NewSegmentationEngine(ctx, modelPath)
