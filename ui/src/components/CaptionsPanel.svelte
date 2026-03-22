@@ -1,6 +1,7 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import type { ControlRoomState, CaptionMode } from '$lib/api/types';
-	import { setCaptionMode, sendCaptionText, sendCaptionNewline, clearCaptions, setASRConfig, apiCall } from '$lib/api/switch-api';
+	import { setCaptionMode, sendCaptionText, sendCaptionNewline, clearCaptions, setASRConfig, getASRModels, apiCall } from '$lib/api/switch-api';
 
 	interface Props {
 		state: ControlRoomState;
@@ -17,6 +18,19 @@
 	let isAuto = $derived(mode === 'auto');
 	let asrState = $derived(crState.asr);
 	let asrAvailable = $derived(asrState?.available ?? false);
+	let availableModels = $state<string[]>([]);
+
+	// Fetch available models when ASR is available.
+	onMount(() => {
+		if (asrAvailable) {
+			getASRModels().then((models) => { availableModels = models; }).catch(() => {});
+		}
+	});
+	$effect(() => {
+		if (asrAvailable && availableModels.length === 0) {
+			getASRModels().then((models) => { availableModels = models; }).catch(() => {});
+		}
+	});
 
 	const modes: { id: CaptionMode; label: string }[] = [
 		{ id: 'off', label: 'Off' },
@@ -119,9 +133,17 @@
 
 	function handleModeChange(newMode: CaptionMode) {
 		apiCall(setCaptionMode(newMode), 'Set caption mode');
+		// Auto mode enables ASR; leaving auto disables it.
 		if (newMode === 'auto') {
 			apiCall(setASRConfig({ active: true }), 'Enable ASR');
+		} else if (mode === 'auto' && newMode !== 'auto') {
+			apiCall(setASRConfig({ active: false }), 'Disable ASR');
 		}
+	}
+
+	function handleModelChange(e: Event) {
+		const model = (e.target as HTMLSelectElement).value;
+		apiCall(setASRConfig({ model }), 'Set ASR model');
 	}
 
 	function handleLanguageChange(e: Event) {
@@ -195,10 +217,22 @@
 						<option value={lang.code}>{lang.label}</option>
 					{/each}
 				</select>
-				{#if asrState?.modelName}
-					<span class="model-name">{asrState.modelName}</span>
-				{/if}
 			</div>
+			{#if availableModels.length > 0}
+				<div class="language-row">
+					<label class="language-label" for="asr-model">Model</label>
+					<select
+						id="asr-model"
+						class="language-select model-select"
+						value={asrState?.modelName ?? ''}
+						onchange={handleModelChange}
+					>
+						{#each availableModels as model}
+							<option value={model}>{model}</option>
+						{/each}
+					</select>
+				</div>
+			{/if}
 		{/if}
 	</div>
 
@@ -386,11 +420,12 @@
 		border-color: #a855f7;
 	}
 
-	.model-name {
+	.model-select {
 		font-family: var(--font-mono);
-		font-size: var(--text-2xs);
-		color: var(--text-tertiary);
-		white-space: nowrap;
+	}
+
+	.model-select:focus {
+		border-color: #a855f7;
 	}
 
 	.tentative-text {

@@ -1082,12 +1082,16 @@ export function getASRStatus(): Promise<any> {
 	return request('/api/asr/status');
 }
 
-export function setASRConfig(config: { active?: boolean; language?: string }): Promise<any> {
+export function setASRConfig(config: { active?: boolean; language?: string; model?: string }): Promise<any> {
 	return request('/api/asr/config', {
 		method: 'PUT',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(config),
 	});
+}
+
+export function getASRModels(): Promise<string[]> {
+	return request<string[]>('/api/asr/models');
 }
 
 // ── AI Background Segmentation ──
