@@ -71,6 +71,7 @@ func (e *TRTEngine) TensorInfoAt(index int) (TensorInfo, error) {
 type TRTEngineOptsV2 struct {
 	MaxBatchSize  int
 	MaxSeqLen     int
+	MaxEncSeqLen  int
 	UseFP16       bool
 	UseINT8       bool
 	PlanCachePath string

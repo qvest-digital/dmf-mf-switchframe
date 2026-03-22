@@ -430,8 +430,13 @@ int trt_get_tensor_info(void* engineHandle, int index,
 // dimension support. Unlike trt_build_engine which only handles dynamic batch
 // (dim 0), this handles ALL dynamic dimensions. maxSeqLen sets the maximum
 // for non-batch dynamic dims (e.g. sequence length in Whisper decoder).
+// trt_build_engine_v2 builds a TensorRT engine with full dynamic dimension support.
+// maxSeqLen: max for token-like dynamic dims (e.g., decoder input_ids).
+// maxEncSeqLen: max for encoder-like dynamic dims (e.g., encoder_hidden_states).
+//   If 0, defaults to maxSeqLen.
 int trt_build_engine_v2(const char* onnxPath, const char* planPath,
-                        int maxBatch, int maxSeqLen, int useFP16, int useINT8) {
+                        int maxBatch, int maxSeqLen, int maxEncSeqLen,
+                        int useFP16, int useINT8) {
     auto builder = std::unique_ptr<nvinfer1::IBuilder>(
         nvinfer1::createInferBuilder(getTRTLogger()));
     if (!builder) {
@@ -482,6 +487,9 @@ int trt_build_engine_v2(const char* onnxPath, const char* planPath,
         return -1;
     }
 
+    // Resolve encoder sequence length fallback.
+    int encSeq = maxEncSeqLen > 0 ? maxEncSeqLen : maxSeqLen;
+
     // Set optimization profile for ALL inputs. Always set profiles even for
     // inputs that appear fully static — TensorRT may internally transform
     // data types (e.g., Int64 → Int32) and still require explicit profiles.
@@ -490,6 +498,13 @@ int trt_build_engine_v2(const char* onnxPath, const char* planPath,
         auto input = network->getInput(i);
         auto dims = input->getDimensions();
         const char* inputName = input->getName();
+
+        // Determine which max sequence length to use for this input.
+        // Inputs with "encoder" in the name use the encoder sequence length;
+        // all others (e.g., input_ids) use the decoder token max.
+        bool isEncoderInput = (strstr(inputName, "encoder") != nullptr);
+        int seqMax = isEncoderInput ? encSeq : maxSeqLen;
+        int seqOpt = isEncoderInput ? encSeq : (maxSeqLen > 0 ? (maxSeqLen / 2) : 64);
 
         nvinfer1::Dims minDims = dims, optDims = dims, maxDims = dims;
 
@@ -501,10 +516,10 @@ int trt_build_engine_v2(const char* onnxPath, const char* planPath,
                     optDims.d[d] = 1;
                     maxDims.d[d] = maxBatch;
                 } else {
-                    // Non-batch dynamic dimension (e.g. sequence length).
+                    // Non-batch dynamic dimension.
                     minDims.d[d] = 1;
-                    optDims.d[d] = maxSeqLen > 0 ? (maxSeqLen / 2) : 64;
-                    maxDims.d[d] = maxSeqLen > 0 ? maxSeqLen : 1500;
+                    optDims.d[d] = seqOpt;
+                    maxDims.d[d] = seqMax;
                 }
             }
         }

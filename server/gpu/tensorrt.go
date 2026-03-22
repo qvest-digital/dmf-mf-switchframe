@@ -32,7 +32,8 @@ extern void trt_destroy_engine(trt_engine_t engine);
 extern const char* trt_get_last_error(void);
 
 extern int trt_build_engine_v2(const char* onnxPath, const char* planPath,
-                               int maxBatch, int maxSeqLen, int useFP16, int useINT8);
+                               int maxBatch, int maxSeqLen, int maxEncSeqLen,
+                               int useFP16, int useINT8);
 extern int trt_get_num_io(void* engineHandle);
 extern int trt_get_tensor_info(void* engineHandle, int index,
                                char* name_buf, int name_buf_size,
@@ -283,7 +284,8 @@ func (e *TRTEngine) TensorInfoAt(index int) (TensorInfo, error) {
 // TRTEngineOptsV2 extends TRTEngineOpts with sequence length for decoder models.
 type TRTEngineOptsV2 struct {
 	MaxBatchSize  int
-	MaxSeqLen     int    // Max sequence length for dynamic dims (e.g., 448 for Whisper)
+	MaxSeqLen     int    // Max token sequence length (e.g., 448 for Whisper decoder input_ids)
+	MaxEncSeqLen  int    // Max encoder sequence length (e.g., 1500 for Whisper encoder_hidden_states); 0 = use MaxSeqLen
 	UseFP16       bool
 	UseINT8       bool
 	PlanCachePath string
@@ -304,6 +306,7 @@ func NewTRTEngineV2(onnxPath string, opts TRTEngineOptsV2) (*TRTEngine, error) {
 	if maxSeqLen <= 0 {
 		maxSeqLen = 448
 	}
+	maxEncSeqLen := opts.MaxEncSeqLen // 0 = use maxSeqLen (handled in C)
 
 	planPath := opts.PlanCachePath
 
@@ -332,7 +335,7 @@ func NewTRTEngineV2(onnxPath string, opts TRTEngineOptsV2) (*TRTEngine, error) {
 		useINT8 = 1
 	}
 
-	rc := C.trt_build_engine_v2(cOnnx, cPlan, C.int(maxBatch), C.int(maxSeqLen), useFP16, useINT8)
+	rc := C.trt_build_engine_v2(cOnnx, cPlan, C.int(maxBatch), C.int(maxSeqLen), C.int(maxEncSeqLen), useFP16, useINT8)
 	if rc != 0 {
 		errMsg := C.GoString(C.trt_get_last_error())
 		return nil, fmt.Errorf("gpu: tensorrt: build v2 failed: %s", errMsg)

@@ -121,7 +121,8 @@ func NewWhisperTRT(cfg WhisperTRTConfig) (*WhisperTRT, error) {
 	decoderPlan := filepath.Join(planDir, "decoder.plan")
 	decoderEngine, err := gpu.NewTRTEngineV2(decoderONNX, gpu.TRTEngineOptsV2{
 		MaxBatchSize:  1,
-		MaxSeqLen:     whisperEncoderOutputLen, // 1500 — must cover encoder_hidden_states dim 1
+		MaxSeqLen:     whisperMaxTokens,        // 448 — decoder input_ids max
+		MaxEncSeqLen:  whisperEncoderOutputLen,  // 1500 — encoder_hidden_states dim 1
 		UseFP16:       cfg.UseFP16,
 		PlanCachePath: decoderPlan,
 	})
