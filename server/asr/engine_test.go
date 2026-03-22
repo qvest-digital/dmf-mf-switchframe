@@ -230,6 +230,160 @@ func TestEngine_IngestSilenceNoSpeech(t *testing.T) {
 	}
 }
 
+func TestEngine_SetInferSpeed(t *testing.T) {
+	e := newTestEngine()
+	defer e.Close()
+
+	// "fast" -> 1000ms
+	e.SetInferSpeed("fast")
+	e.mu.Lock()
+	if e.inferMs != 1000 {
+		t.Fatalf("expected inferMs=1000 for 'fast', got %d", e.inferMs)
+	}
+	e.mu.Unlock()
+
+	// "balanced" -> 3000ms
+	e.SetInferSpeed("balanced")
+	e.mu.Lock()
+	if e.inferMs != 3000 {
+		t.Fatalf("expected inferMs=3000 for 'balanced', got %d", e.inferMs)
+	}
+	e.mu.Unlock()
+
+	// "accurate" -> 5000ms
+	e.SetInferSpeed("accurate")
+	e.mu.Lock()
+	if e.inferMs != 5000 {
+		t.Fatalf("expected inferMs=5000 for 'accurate', got %d", e.inferMs)
+	}
+	e.mu.Unlock()
+
+	// Invalid value is ignored — stays at 5000.
+	e.SetInferSpeed("bogus")
+	e.mu.Lock()
+	if e.inferMs != 5000 {
+		t.Fatalf("expected inferMs=5000 after invalid preset, got %d", e.inferMs)
+	}
+	e.mu.Unlock()
+}
+
+func TestEngine_InferSpeed(t *testing.T) {
+	e := newTestEngine()
+	defer e.Close()
+
+	// Default is 3000 -> "balanced"
+	if got := e.InferSpeed(); got != "balanced" {
+		t.Fatalf("expected 'balanced' for 3000ms, got %q", got)
+	}
+
+	e.SetInferSpeed("fast")
+	if got := e.InferSpeed(); got != "fast" {
+		t.Fatalf("expected 'fast', got %q", got)
+	}
+
+	e.SetInferSpeed("accurate")
+	if got := e.InferSpeed(); got != "accurate" {
+		t.Fatalf("expected 'accurate', got %q", got)
+	}
+
+	// Edge: exactly 1000 -> "fast"
+	e.mu.Lock()
+	e.inferMs = 1000
+	e.mu.Unlock()
+	if got := e.InferSpeed(); got != "fast" {
+		t.Fatalf("expected 'fast' for 1000ms, got %q", got)
+	}
+
+	// Edge: 1001 -> "balanced"
+	e.mu.Lock()
+	e.inferMs = 1001
+	e.mu.Unlock()
+	if got := e.InferSpeed(); got != "balanced" {
+		t.Fatalf("expected 'balanced' for 1001ms, got %q", got)
+	}
+
+	// Edge: 3001 -> "accurate"
+	e.mu.Lock()
+	e.inferMs = 3001
+	e.mu.Unlock()
+	if got := e.InferSpeed(); got != "accurate" {
+		t.Fatalf("expected 'accurate' for 3001ms, got %q", got)
+	}
+}
+
+func TestEngine_SetVADSensitivity(t *testing.T) {
+	e := newTestEngine()
+	defer e.Close()
+
+	// "quiet" -> -30 dBFS
+	e.SetVADSensitivity("quiet")
+	if got := e.vad.ThresholdDB(); got != -30 {
+		t.Fatalf("expected thresholdDB=-30 for 'quiet', got %v", got)
+	}
+
+	// "normal" -> -26 dBFS
+	e.SetVADSensitivity("normal")
+	if got := e.vad.ThresholdDB(); got != -26 {
+		t.Fatalf("expected thresholdDB=-26 for 'normal', got %v", got)
+	}
+
+	// "noisy" -> -20 dBFS
+	e.SetVADSensitivity("noisy")
+	if got := e.vad.ThresholdDB(); got != -20 {
+		t.Fatalf("expected thresholdDB=-20 for 'noisy', got %v", got)
+	}
+
+	// Invalid is ignored — stays at -20.
+	e.SetVADSensitivity("invalid")
+	if got := e.vad.ThresholdDB(); got != -20 {
+		t.Fatalf("expected thresholdDB=-20 after invalid preset, got %v", got)
+	}
+}
+
+func TestEngine_VADSensitivity(t *testing.T) {
+	e := newTestEngine()
+	defer e.Close()
+
+	// Default engine VAD threshold is -35, which is <= -29 -> "quiet"
+	if got := e.VADSensitivity(); got != "quiet" {
+		t.Fatalf("expected 'quiet' for -35dB, got %q", got)
+	}
+
+	e.SetVADSensitivity("normal")
+	if got := e.VADSensitivity(); got != "normal" {
+		t.Fatalf("expected 'normal', got %q", got)
+	}
+
+	e.SetVADSensitivity("noisy")
+	if got := e.VADSensitivity(); got != "noisy" {
+		t.Fatalf("expected 'noisy', got %q", got)
+	}
+
+	// Edge: exactly -29 -> "quiet"
+	e.vad.SetThresholdDB(-29)
+	if got := e.VADSensitivity(); got != "quiet" {
+		t.Fatalf("expected 'quiet' for -29dB, got %q", got)
+	}
+
+	// Edge: -28 -> "normal" (above -29 threshold)
+	e.vad.SetThresholdDB(-28)
+	if got := e.VADSensitivity(); got != "normal" {
+		t.Fatalf("expected 'normal' for -28dB, got %q", got)
+	}
+
+	// Edge: exactly -23 -> "normal"
+	e.vad.SetThresholdDB(-23)
+	if got := e.VADSensitivity(); got != "normal" {
+		t.Fatalf("expected 'normal' for -23dB, got %q", got)
+	}
+
+	// Edge: -22 -> "noisy"
+	e.vad.SetThresholdDB(-22)
+	if got := e.VADSensitivity(); got != "noisy" {
+		t.Fatalf("expected 'noisy' for -22dB, got %q", got)
+	}
+}
+
 func TestEngine_ConfigDefaults(t *testing.T) {
 	cfg := EngineConfig{}
 
