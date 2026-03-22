@@ -415,6 +415,21 @@ func (m *GPUSourceManager) autoRegister(sourceKey string, w, h int) *gpuSourceEn
 	return entry
 }
 
+// CurrentFrame returns the latest GPU frame for the given source, or nil.
+// The returned frame is owned by the source manager -- callers must NOT
+// release it. This is a lightweight read for use cases that only need
+// transient access (e.g., GPU encode from VRAM where the encoder reads
+// the frame synchronously before returning).
+func (m *GPUSourceManager) CurrentFrame(sourceKey string) *GPUFrame {
+	m.mu.RLock()
+	entry, ok := m.sources[sourceKey]
+	m.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+	return entry.current.Load()
+}
+
 // GetFrame returns the latest GPU frame for a source, incrementing its
 // reference count. The caller must call Release() when done. Returns nil
 // if the source is not found or has no frame yet.

@@ -28,6 +28,9 @@ func (m *GPUSourceManager) IngestGPUFrame(sourceKey string, frame *GPUFrame, pts
 // Pool returns nil on non-GPU builds.
 func (m *GPUSourceManager) Pool() *FramePool { return nil }
 
+// CurrentFrame returns nil on non-GPU builds.
+func (m *GPUSourceManager) CurrentFrame(sourceKey string) *GPUFrame { return nil }
+
 // GetFrame returns nil on non-GPU builds.
 func (m *GPUSourceManager) GetFrame(sourceKey string) *GPUFrame { return nil }
 
