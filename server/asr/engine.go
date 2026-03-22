@@ -55,6 +55,7 @@ type Engine struct {
 	speechStart    time.Time
 	lastInfer      time.Time
 	wasSpeaking    bool
+	inferring      sync.Mutex // serializes TRT inference (one at a time)
 
 	// Lifecycle
 	doneCh chan struct{}
@@ -174,6 +175,12 @@ func (e *Engine) IngestAudio(pcm []float32, pts int64, sampleRate, channels int)
 // runs TRT encode+decode, and processes the resulting transcript.
 // It is called from a goroutine to avoid blocking the audio ingest path.
 func (e *Engine) runInference(isFinal bool) {
+	// Serialize TRT inference — only one call at a time. If a previous
+	// inference is still running, this goroutine blocks until it finishes.
+	// TensorRT execution contexts are not thread-safe.
+	e.inferring.Lock()
+	defer e.inferring.Unlock()
+
 	e.mu.Lock()
 	audio := e.ringBuf.Snapshot()
 	e.mu.Unlock()
