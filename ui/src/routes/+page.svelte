@@ -712,16 +712,20 @@
 					{#snippet children(activeTab)}
 						{#if activeTab === 'Audio'}
 							<div class="tab-panel audio-tab">
-								<div class="panel-header">
-									<LockIndicator state={store.effectiveState} subsystem="audio" />
-								</div>
+								{#if (store.effectiveState.operators?.length ?? 0) > 0}
+									<div class="panel-header">
+										<LockIndicator state={store.effectiveState} subsystem="audio" />
+									</div>
+								{/if}
 								<AudioMixer state={store.effectiveState} {sourceLevels} {programLevels} {pflActiveSource} pflMode={pflActiveMode} {pflManager} selectedChannel={selectedAudioChannel} onPFLToggle={handlePFLToggle} onStateUpdate={store.applyUpdate} onChannelSelect={(key) => { selectedAudioChannel = key; }} />
 							</div>
 						{:else if activeTab === 'Graphics'}
 							<div class="tab-panel">
-								<div class="panel-header">
-									<LockIndicator state={store.effectiveState} subsystem="graphics" />
-								</div>
+								{#if (store.effectiveState.operators?.length ?? 0) > 0}
+									<div class="panel-header">
+										<LockIndicator state={store.effectiveState} subsystem="graphics" />
+									</div>
+								{/if}
 								<GraphicsPanel state={store.effectiveState} externalSelectedLayerId={graphicsSelectedLayerId} />
 							</div>
 						{:else if activeTab === 'Macros'}
@@ -734,9 +738,11 @@
 							</div>
 						{:else if activeTab === 'Replay'}
 							<div class="tab-panel">
-								<div class="panel-header">
-									<LockIndicator state={store.effectiveState} subsystem="replay" />
-								</div>
+								{#if (store.effectiveState.operators?.length ?? 0) > 0}
+									<div class="panel-header">
+										<LockIndicator state={store.effectiveState} subsystem="replay" />
+									</div>
+								{/if}
 								<ReplayPanel state={store.effectiveState} {pipeline} />
 							</div>
 						{:else if activeTab === 'Presets'}
@@ -757,9 +763,11 @@
 							</div>
 						{:else if activeTab === 'Captions'}
 							<div class="tab-panel">
-								<div class="panel-header">
-									<LockIndicator state={store.effectiveState} subsystem="captions" />
-								</div>
+								{#if (store.effectiveState.operators?.length ?? 0) > 0}
+									<div class="panel-header">
+										<LockIndicator state={store.effectiveState} subsystem="captions" />
+									</div>
+								{/if}
 								<CaptionsPanel state={store.effectiveState} />
 							</div>
 						{:else if activeTab === 'Clips'}
