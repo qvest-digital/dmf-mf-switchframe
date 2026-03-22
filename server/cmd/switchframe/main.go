@@ -249,7 +249,7 @@ func parseConfig() (AppConfig, error) {
 	aiModelFlag := flag.String("ai-model", "", "Path to ONNX segmentation model for AI background replacement (requires CUDA + TensorRT)")
 
 	// ASR (Whisper speech-to-text) flags.
-	asrModelFlag := flag.String("asr-model", "", "Path to Whisper ONNX model directory for AI captioning (requires CUDA + TensorRT)")
+	asrModelFlag := flag.String("asr-model", "", "Path to Whisper GGML model file for speech-to-text (e.g., ggml-medium.en.bin)")
 
 	flag.Parse()
 
