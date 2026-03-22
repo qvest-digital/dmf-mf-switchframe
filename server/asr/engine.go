@@ -168,6 +168,7 @@ func (e *Engine) IngestAudio(pcm []float32, pts int64, sampleRate, channels int)
 		// Ongoing speech: run inference periodically.
 		if e.wasSpeaking && now.Sub(e.lastInfer) >= time.Duration(e.inferMs)*time.Millisecond {
 			e.lastInfer = now
+			slog.Info("ASR: triggering inference", "isFinal", false, "elapsed_ms", now.Sub(e.speechStart).Milliseconds())
 			go e.runInference(false)
 		}
 
