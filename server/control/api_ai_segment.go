@@ -126,20 +126,17 @@ func (a *API) handleAISegmentStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // validateAIBackground validates the background field value.
-// Valid values: "" or "transparent", "color:RRGGBB".
-// "blur:N" is recognized but not yet implemented (returns error).
+// Valid values: "" or "transparent", "blur:N" (radius 1-50), "color:RRGGBB".
 func validateAIBackground(bg string) error {
 	if bg == "" || bg == "transparent" {
 		return nil
 	}
 	if len(bg) > 5 && bg[:5] == "blur:" {
-		// Validate the format for forward compatibility, but reject until
-		// the GPU Gaussian blur kernel is implemented.
 		var n int
 		if _, err := fmt.Sscanf(bg[5:], "%d", &n); err != nil || n < 1 || n > 50 {
 			return fmt.Errorf("blur radius must be 1-50 (e.g. 'blur:10')")
 		}
-		return fmt.Errorf("blur mode not yet implemented; use 'transparent' or 'color:RRGGBB'")
+		return nil
 	}
 	if len(bg) == 12 && bg[:6] == "color:" {
 		hex := bg[6:]
@@ -148,5 +145,5 @@ func validateAIBackground(bg string) error {
 		}
 		return nil
 	}
-	return fmt.Errorf("background must be '', 'transparent', or 'color:RRGGBB'")
+	return fmt.Errorf("background must be '', 'transparent', 'blur:N', or 'color:RRGGBB'")
 }
