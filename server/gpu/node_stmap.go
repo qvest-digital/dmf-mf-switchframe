@@ -28,12 +28,6 @@ type gpuSTMapNode struct {
 	gpuMap  *GPUSTMap
 	mapName string // for cache invalidation
 
-	// Cached GPU ST maps for animated maps, keyed by frame index.
-	// Populated on first cycle (90 frames = 90 uploads), reused thereafter.
-	animCache    []*GPUSTMap
-	animMapName  string // for cache invalidation on map change
-	animPopulated bool  // true once all frames have been cached
-
 	width, height, pitch int
 	lastErr              atomic.Value
 }
@@ -76,20 +70,7 @@ func (n *gpuSTMapNode) Close() error {
 		n.gpuMap = nil
 		n.mapName = ""
 	}
-	n.freeAnimCache()
 	return nil
-}
-
-// freeAnimCache releases all cached GPU ST maps for animated frames.
-func (n *gpuSTMapNode) freeAnimCache() {
-	for i, m := range n.animCache {
-		if m != nil {
-			m.Free()
-			n.animCache[i] = nil
-		}
-	}
-	n.animCache = nil
-	n.animMapName = ""
 }
 
 func (n *gpuSTMapNode) ProcessGPU(frame *GPUFrame) error {
@@ -99,42 +80,25 @@ func (n *gpuSTMapNode) ProcessGPU(frame *GPUFrame) error {
 
 	// Determine the GPU ST map to use for this frame.
 	var gpuMap *GPUSTMap
+	var freeAfter bool
 
 	if n.registry.IsAnimated() {
-		// Animated maps cycle through N frames. Cache GPU textures per index
-		// so we only upload once per unique frame (not every pipeline tick).
-		name := n.registry.ProgramMapName()
+		// Animated maps change every frame — upload fresh S/T arrays each time.
 		idx := n.registry.AdvanceAnimatedIndex()
-
-		// Invalidate cache if map changed.
-		if name != n.animMapName {
-			n.freeAnimCache()
-			n.animMapName = name
+		sOrig, tOrig := n.registry.AnimatedSTArraysAt(idx)
+		if sOrig == nil || tOrig == nil {
+			return nil
 		}
-
-		// Check cache first.
-		if idx >= 0 && idx < len(n.animCache) && n.animCache[idx] != nil {
-			gpuMap = n.animCache[idx]
-		} else {
-			// Cache miss — generate S/T arrays and upload to GPU.
-			sOrig, tOrig := n.registry.AnimatedSTArraysAt(idx)
-			if sOrig == nil || tOrig == nil {
-				return nil
-			}
-			m, err := UploadSTMap(n.ctx, sOrig, tOrig, frame.Width, frame.Height)
-			if err != nil {
-				n.lastErr.Store(err)
-				slog.Warn("gpu_stmap: animated upload failed, skipping", "error", err)
-				return nil
-			}
-			// Grow cache slice if needed.
-			for len(n.animCache) <= idx {
-				n.animCache = append(n.animCache, nil)
-			}
-			n.animCache[idx] = m
-			gpuMap = m
+		// UploadSTMap only reads S/T to copy to GPU — no deep copy needed.
+		// The registry's arrays are immutable during frame processing.
+		m, err := UploadSTMap(n.ctx, sOrig, tOrig, frame.Width, frame.Height)
+		if err != nil {
+			n.lastErr.Store(err)
+			slog.Warn("gpu_stmap: animated upload failed, skipping", "error", err)
+			return nil
 		}
-		// Do NOT free after use — cached for reuse.
+		gpuMap = m
+		freeAfter = true // per-frame upload must be freed after use
 	} else {
 		// Static map — check cache.
 		name := n.registry.ProgramMapName()
@@ -165,6 +129,9 @@ func (n *gpuSTMapNode) ProcessGPU(frame *GPUFrame) error {
 	// warp into it, then copy the result back into the original frame.
 	tempFrame, err := n.pool.Acquire()
 	if err != nil {
+		if freeAfter {
+			gpuMap.Free()
+		}
 		slog.Warn("gpu_stmap: pool acquire failed, skipping", "error", err)
 		return nil
 	}
@@ -173,6 +140,9 @@ func (n *gpuSTMapNode) ProcessGPU(frame *GPUFrame) error {
 	if err := STMapWarp(n.ctx, tempFrame, frame, gpuMap); err != nil {
 		n.lastErr.Store(err)
 		tempFrame.Release()
+		if freeAfter {
+			gpuMap.Free()
+		}
 		slog.Warn("gpu_stmap: warp failed, skipping", "error", err)
 		return nil
 	}
@@ -184,5 +154,9 @@ func (n *gpuSTMapNode) ProcessGPU(frame *GPUFrame) error {
 	}
 
 	tempFrame.Release()
+	if freeAfter {
+		gpuMap.Free()
+	}
+
 	return nil
 }
