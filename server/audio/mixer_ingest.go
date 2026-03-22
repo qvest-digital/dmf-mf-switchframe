@@ -87,6 +87,11 @@ func (m *Mixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 		}
 	}
 
+	// Apply high-pass filter
+	if !ch.hpf.IsBypassed() {
+		ch.hpf.Process(trimmedPCM, m.numChannels)
+	}
+
 	// Apply EQ (3-band parametric)
 	if !ch.eq.IsBypassed() {
 		ch.eq.Process(trimmedPCM, m.numChannels)
@@ -162,6 +167,11 @@ func (m *Mixer) IngestPCM(sourceKey string, pcm []float32, pts int64, channels i
 		for i := range trimmedPCM {
 			trimmedPCM[i] = -trimmedPCM[i]
 		}
+	}
+
+	// Apply high-pass filter
+	if !ch.hpf.IsBypassed() {
+		ch.hpf.Process(trimmedPCM, m.numChannels)
 	}
 
 	// Apply EQ (3-band parametric)

@@ -15,6 +15,30 @@ func (m *Mixer) SetPhaseInvert(sourceKey string, invert bool) error {
 	return nil
 }
 
+// SetHPF sets the high-pass filter parameters for a channel.
+func (m *Mixer) SetHPF(sourceKey string, frequency float64, enabled bool) error {
+	m.mu.Lock()
+	ch, ok := m.channels[sourceKey]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("audio: unknown source %q", sourceKey)
+	}
+	hpf := ch.hpf
+	m.mu.Unlock()
+	return hpf.SetParams(frequency, enabled)
+}
+
+// GetHPF returns the current HPF frequency and enabled state for a channel.
+func (m *Mixer) GetHPF(sourceKey string) (frequency float64, enabled bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	ch, ok := m.channels[sourceKey]
+	if !ok {
+		return 80, false
+	}
+	return ch.hpf.Frequency(), ch.hpf.Enabled()
+}
+
 // DebugSnapshot implements debug.SnapshotProvider.
 func (m *Mixer) DebugSnapshot() map[string]any {
 	m.mu.RLock()
@@ -33,6 +57,8 @@ func (m *Mixer) DebugSnapshot() map[string]any {
 			"muted":               ch.muted,
 			"afv":                 ch.afv,
 			"phase_invert":        ch.phaseInvert,
+			"hpf_frequency":       ch.hpf.Frequency(),
+			"hpf_enabled":         ch.hpf.Enabled(),
 			"level":               ch.level,
 			"trim":                ch.trim,
 			"eq_bypassed":         ch.eq.IsBypassed(),

@@ -44,6 +44,8 @@ type AudioMixerAPI interface {
 	GetEQ(sourceKey string) ([3]audio.EQBandSettings, error)
 	SetCompressor(sourceKey string, threshold, ratio, attack, release, makeupGain float64) error
 	GetCompressor(sourceKey string) (audio.CompressorState, error)
+	SetHPF(sourceKey string, frequency float64, enabled bool) error
+	GetHPF(sourceKey string) (frequency float64, enabled bool)
 	SetAudioDelay(sourceKey string, delayMs int) error
 	AudioDelayMs(sourceKey string) int
 }

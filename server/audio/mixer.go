@@ -61,6 +61,7 @@ type Channel struct {
 	levelLinear      float32 // cached linear gain from level (avoids per-frame math.Pow)
 	trim             float64 // dB (-20 to +20), input gain/trim
 	trimLinear       float32 // cached linear gain from trim (avoids per-frame math.Pow)
+	hpf              *HPF           // high-pass filter (always initialized)
 	phaseInvert      bool
 	muted            bool
 	afv              bool
@@ -382,6 +383,7 @@ func (m *Mixer) AddChannel(sourceKey string) {
 		sourceKey:   sourceKey,
 		levelLinear: 1.0, // 0 dB = unity
 		trimLinear:  1.0, // 0 dB = unity
+		hpf:         NewHPF(m.sampleRate),
 		eq:          NewEQ(m.sampleRate, m.numChannels),
 		compressor:  NewCompressor(m.sampleRate, m.numChannels),
 		audioDelay:  NewDelayBuffer(0),
@@ -613,6 +615,8 @@ func (m *Mixer) ChannelStates() map[string]internal.AudioChannel {
 			Muted:        ch.muted,
 			AFV:          ch.afv,
 			PhaseInvert:  ch.phaseInvert,
+			HPFFrequency: ch.hpf.Frequency(),
+			HPFEnabled:   ch.hpf.Enabled(),
 			PeakL:        LinearToDBFS(ch.peakL),
 			PeakR:        LinearToDBFS(ch.peakR),
 			AudioDelayMs: ch.audioDelay.DelayMs(),

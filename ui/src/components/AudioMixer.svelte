@@ -7,6 +7,7 @@
 		setAFV as apiSetAFV,
 		setPhaseInvert as apiSetPhaseInvert,
 		setMasterLevel as apiSetMasterLevel,
+		setHPF as apiSetHPF,
 		setEQ as apiSetEQ,
 		setCompressor as apiSetCompressor,
 		setSourceDelay,
@@ -70,6 +71,11 @@
 	function setMasterLevel(level: number) {
 		setMasterLevelThrottled(level);
 	}
+
+	/** Throttled HPF API call -- max 20 calls/sec (50ms). */
+	const setHPFThrottled = throttle((source: string, frequency: number, enabled: boolean) => {
+		applyResult(apiSetHPF(source, frequency, enabled));
+	}, 50);
 
 	/** Throttled EQ API call -- max 20 calls/sec (50ms). */
 	const setEQThrottled = throttle((source: string, band: number, frequency: number, gain: number, q: number, enabled: boolean) => {
@@ -323,6 +329,14 @@
 					title="Phase invert"
 				>
 					&Oslash;
+				</button>
+				<button
+					class="strip-btn hpf-btn"
+					class:active={channel.hpfEnabled}
+					onclick={() => setHPFThrottled(key, channel.hpfFrequency ?? 80, !channel.hpfEnabled)}
+					title="High-pass filter"
+				>
+					{channel.hpfEnabled ? (channel.hpfFrequency ?? 80) : 'HPF'}
 				</button>
 				<button
 					class="strip-btn eq-toggle-btn"
@@ -835,6 +849,16 @@
 		background: var(--tally-program-dim);
 		border-color: rgba(239, 68, 68, 0.4);
 		color: var(--color-error);
+	}
+
+	.hpf-btn {
+		font-size: 0.6rem;
+	}
+
+	.hpf-btn.active {
+		background: rgba(20, 184, 166, 0.15);
+		color: rgb(20, 184, 166);
+		border-color: rgba(20, 184, 166, 0.4);
 	}
 
 	.eq-toggle-btn.active {

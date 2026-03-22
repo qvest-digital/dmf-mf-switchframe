@@ -437,6 +437,20 @@ func (m *mockMixer) GetCompressor(sourceKey string) (audio.CompressorState, erro
 	}, nil
 }
 
+func (m *mockMixer) SetHPF(sourceKey string, frequency float64, enabled bool) error {
+	if !m.knownKeys[sourceKey] {
+		return fmt.Errorf("audio: unknown source %q", sourceKey)
+	}
+	return nil
+}
+
+func (m *mockMixer) GetHPF(sourceKey string) (float64, bool) {
+	if !m.knownKeys[sourceKey] {
+		return 80, false
+	}
+	return 80, false
+}
+
 func (m *mockMixer) SetAudioDelay(sourceKey string, delayMs int) error {
 	if !m.knownKeys[sourceKey] {
 		return fmt.Errorf("channel %q: %w", sourceKey, audio.ErrChannelNotFound)

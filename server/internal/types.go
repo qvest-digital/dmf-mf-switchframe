@@ -81,8 +81,10 @@ type AudioChannel struct {
 	Level         float64            `json:"level"` // dB (-inf to +12)
 	Trim          float64            `json:"trim"`  // dB (-20 to +20), input gain
 	Muted         bool               `json:"muted"`
-	AFV           bool               `json:"afv"`          // audio-follows-video
+	AFV           bool               `json:"afv"`                   // audio-follows-video
 	PhaseInvert   bool               `json:"phaseInvert,omitempty"` // 180-degree phase flip
+	HPFFrequency  float64            `json:"hpfFrequency,omitempty"`
+	HPFEnabled    bool               `json:"hpfEnabled,omitempty"`
 	PeakL         float64            `json:"peakL"`        // dBFS, updated per frame
 	PeakR         float64            `json:"peakR"`        // dBFS
 	EQ            [3]EQBand          `json:"eq"`

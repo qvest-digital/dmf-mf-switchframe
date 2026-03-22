@@ -16,6 +16,8 @@ const (
 	MaxLevelDB  = 10.0
 	MinDelayMs  = 0
 	MaxDelayMs  = 500
+	MinHPFFreq  = 20.0
+	MaxHPFFreq  = 500.0
 	MinEQFreq   = 20.0
 	MaxEQFreq   = 20000.0
 	MinEQGainDB = -20.0

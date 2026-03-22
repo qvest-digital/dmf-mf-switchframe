@@ -70,6 +70,18 @@ type audioPhaseRequest struct {
 	Invert bool   `json:"invert"`
 }
 
+// hpfRequest is the JSON body for the HPF endpoint.
+type hpfRequest struct {
+	Frequency float64 `json:"frequency"`
+	Enabled   bool    `json:"enabled"`
+}
+
+// hpfResponse is the JSON response for the HPF GET endpoint.
+type hpfResponse struct {
+	Frequency float64 `json:"frequency"`
+	Enabled   bool    `json:"enabled"`
+}
+
 // audioDelayRequest is the JSON body for the audio delay endpoint.
 type audioDelayRequest struct {
 	DelayMs int `json:"delayMs"`
@@ -87,6 +99,8 @@ func (a *API) registerAudioRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/audio/{source}/eq", a.handleGetEQ)
 	mux.HandleFunc("PUT /api/audio/{source}/compressor", a.handleSetCompressor)
 	mux.HandleFunc("GET /api/audio/{source}/compressor", a.handleGetCompressor)
+	mux.HandleFunc("PUT /api/audio/{source}/hpf", a.handleSetHPF)
+	mux.HandleFunc("GET /api/audio/{source}/hpf", a.handleGetHPF)
 	mux.HandleFunc("PUT /api/audio/{source}/audio-delay", a.handleSetAudioDelay)
 }
 
@@ -368,6 +382,54 @@ func (a *API) handleGetCompressor(w http.ResponseWriter, r *http.Request) {
 		Release:       state.Release,
 		MakeupGain:    state.MakeupGain,
 		GainReduction: state.GainReduction,
+	})
+}
+
+// handleSetHPF sets the high-pass filter parameters for a source channel.
+func (a *API) handleSetHPF(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	if a.mixer == nil {
+		httperr.Write(w, http.StatusNotImplemented, "audio mixer not configured")
+		return
+	}
+	source := r.PathValue("source")
+	if source == "" {
+		httperr.Write(w, http.StatusBadRequest, "source required")
+		return
+	}
+	var req hpfRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := validateRange("frequency", req.Frequency, MinHPFFreq, MaxHPFFreq); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := a.mixer.SetHPF(source, req.Frequency, req.Enabled); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
+}
+
+// handleGetHPF returns the current HPF settings for a source channel.
+func (a *API) handleGetHPF(w http.ResponseWriter, r *http.Request) {
+	if a.mixer == nil {
+		httperr.Write(w, http.StatusNotImplemented, "audio mixer not configured")
+		return
+	}
+	source := r.PathValue("source")
+	if source == "" {
+		httperr.Write(w, http.StatusBadRequest, "source required")
+		return
+	}
+	freq, enabled := a.mixer.GetHPF(source)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(hpfResponse{
+		Frequency: freq,
+		Enabled:   enabled,
 	})
 }
 

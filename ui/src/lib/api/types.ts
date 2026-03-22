@@ -58,6 +58,8 @@ export interface AudioChannel {
 	muted: boolean;
 	afv: boolean;   // audio-follows-video
 	phaseInvert?: boolean; // 180-degree phase flip
+	hpfFrequency?: number;
+	hpfEnabled?: boolean;
 	peakL: number;  // dBFS
 	peakR: number;  // dBFS
 	eq: [EQBand, EQBand, EQBand];

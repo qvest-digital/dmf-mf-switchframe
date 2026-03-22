@@ -303,6 +303,16 @@ export async function uploadStinger(name: string, file: File): Promise<void> {
 	}
 }
 
+// --- HPF API ---
+
+export function setHPF(source: string, frequency: number, enabled: boolean): Promise<ControlRoomState> {
+	return request(`/api/audio/${encodeURIComponent(source)}/hpf`, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ frequency, enabled }),
+	});
+}
+
 // --- EQ & Compressor API ---
 
 export function setEQ(source: string, band: number, frequency: number, gain: number, q: number, enabled: boolean): Promise<ControlRoomState> {
