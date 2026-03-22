@@ -72,6 +72,12 @@ type Context struct {
 	// Size: lanczosTmpSize floats (4 bytes each).
 	lanczosTmp     *C.float
 	lanczosTmpSize int
+
+	// Persistent temporary float32 device buffer for Gaussian blur.
+	// Lazily allocated under ctx.mu, freed in Close().
+	// Size: blurTmpSize floats (4 bytes each).
+	blurTmp     *C.float
+	blurTmpSize int
 }
 
 // NewContext initializes CUDA and creates a shared context on device 0.
@@ -177,6 +183,11 @@ func (c *Context) Close() error {
 		c.lanczosTmp = nil
 	}
 	c.lanczosTmpSize = 0
+	if c.blurTmp != nil {
+		C.cudaFree(unsafe.Pointer(c.blurTmp))
+		c.blurTmp = nil
+	}
+	c.blurTmpSize = 0
 	c.mu.Unlock()
 	// Note: we don't call cudaDeviceReset() — the primary context
 	// persists for the process lifetime. This is intentional: other
@@ -327,5 +338,30 @@ func (c *Context) ensureLanczosTemp(needed int) error {
 	}
 	c.lanczosTmp = (*C.float)(ptr)
 	c.lanczosTmpSize = needed
+	return nil
+}
+
+// ensureBlurTemp ensures the Gaussian blur temporary float32 device buffer is
+// at least `needed` floats in size. Lazily allocates or grows as required.
+// Must be called under the same serialization as gaussian_blur_nv12 (i.e.
+// the caller holds no concurrent access to blurTmp).
+func (c *Context) ensureBlurTemp(needed int) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if needed <= c.blurTmpSize {
+		return nil
+	}
+	if c.blurTmp != nil {
+		C.cudaFree(unsafe.Pointer(c.blurTmp))
+		c.blurTmp = nil
+		c.blurTmpSize = 0
+	}
+	var ptr unsafe.Pointer
+	bytes := C.size_t(needed * 4) // float32 = 4 bytes
+	if rc := C.cudaMalloc(&ptr, bytes); rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: blur tmpBuf alloc (%d floats) failed: %d", needed, rc)
+	}
+	c.blurTmp = (*C.float)(ptr)
+	c.blurTmpSize = needed
 	return nil
 }

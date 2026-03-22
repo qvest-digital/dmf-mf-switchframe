@@ -40,6 +40,10 @@ type metalContext struct {
 	lanczosTmpBuf  C.MetalBufferRef
 	lanczosTmpSize int
 
+	// Gaussian blur temporary float buffer (cached, grown as needed).
+	blurTmpBuf  C.MetalBufferRef
+	blurTmpSize int
+
 	// Luma key LUT buffer (cached, 256 bytes).
 	lumaKeyLUTBuf C.MetalBufferRef
 
@@ -153,6 +157,13 @@ func (c *metalContext) Close() error {
 		c.lanczosTmpSize = 0
 	}
 
+	// Free Gaussian blur temp buffer
+	if c.blurTmpBuf != nil {
+		C.metal_buffer_free(c.blurTmpBuf)
+		c.blurTmpBuf = nil
+		c.blurTmpSize = 0
+	}
+
 	// Free cached luma key LUT buffer
 	if c.lumaKeyLUTBuf != nil {
 		C.metal_buffer_free(c.lumaKeyLUTBuf)
@@ -203,6 +214,29 @@ func (c *metalContext) ensureLanczosTemp(needed int) error {
 	}
 	c.lanczosTmpBuf = buf
 	c.lanczosTmpSize = needed
+	return nil
+}
+
+// ensureBlurTemp ensures the Gaussian blur temporary float32 buffer is
+// large enough for the given number of floats. Grows but never shrinks.
+// Thread-safe: acquires c.mu to protect lazy allocation.
+func (c *metalContext) ensureBlurTemp(needed int) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if needed <= c.blurTmpSize {
+		return nil
+	}
+	if c.blurTmpBuf != nil {
+		C.metal_buffer_free(c.blurTmpBuf)
+		c.blurTmpBuf = nil
+		c.blurTmpSize = 0
+	}
+	buf, err := c.allocBuffer(needed * 4) // 4 bytes per float32
+	if err != nil {
+		return fmt.Errorf("gpu: blur temp alloc (%d floats): %w", needed, err)
+	}
+	c.blurTmpBuf = buf
+	c.blurTmpSize = needed
 	return nil
 }
 

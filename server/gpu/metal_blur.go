@@ -44,13 +44,12 @@ func GaussianBlur(ctx *Context, dst, src *GPUFrame, radius int) error {
 	wSlice := unsafe.Slice((*float32)(wPtr), len(weights))
 	copy(wSlice, weights)
 
-	// Allocate temp float buffer: pitch * height * 3/2 floats (covers Y + UV)
+	// Ensure cached temp float buffer: pitch * height * 3/2 floats (covers Y + UV)
 	tmpFloats := src.Pitch * src.Height * 3 / 2
-	tmpBuf, err := mtl.allocBuffer(tmpFloats * 4) // 4 bytes per float32
-	if err != nil {
-		return fmt.Errorf("gpu: gaussian blur: alloc tmp: %w", err)
+	if err := mtl.ensureBlurTemp(tmpFloats); err != nil {
+		return fmt.Errorf("gpu: gaussian blur: %w", err)
 	}
-	defer C.metal_buffer_free(tmpBuf)
+	tmpBuf := mtl.blurTmpBuf
 
 	// Get pipelines
 	hPipeline, err := mtl.getPipeline("gaussian_blur_h")

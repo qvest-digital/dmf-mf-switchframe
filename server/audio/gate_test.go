@@ -378,7 +378,7 @@ func TestMixer_GetGate_UnknownSource(t *testing.T) {
 		Channels:   2,
 		Output:     func(*media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	_, err := m.GetGate("nonexistent")
 	require.Error(t, err)
@@ -391,7 +391,7 @@ func TestMixer_ChannelStates_IncludesGate(t *testing.T) {
 		Channels:   2,
 		Output:     func(*media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	err := m.SetGate("cam1", -25, -45, 2.0, 150, 60, true)
@@ -415,7 +415,7 @@ func TestMixer_DebugSnapshot_IncludesGate(t *testing.T) {
 		Channels:   2,
 		Output:     func(*media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	err := m.SetGate("cam1", -30, -60, 0.5, 100, 50, true)
@@ -438,7 +438,7 @@ func TestMixer_IngestPCM_GateApplied(t *testing.T) {
 		Channels:   2,
 		Output:     func(*media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 	m.SetActive("cam1", true)

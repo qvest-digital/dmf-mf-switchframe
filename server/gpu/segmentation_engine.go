@@ -149,6 +149,38 @@ func NewSegmentationEngine(ctx *Context, modelPath string) (*SegmentationEngine,
 			"is_input", info.IsInput, "dims", info.Dims)
 	}
 
+	// Validate that hidden-state tensor shapes match our hardcoded constants.
+	// A mismatch means the ONNX model was exported with different settings
+	// than expected, and inference would produce corrupt results.
+	expectedShapes := map[string][]int{
+		"r1i": {1, rvmR1C, rvmR1H, rvmR1W},
+		"r2i": {1, rvmR2C, rvmR2H, rvmR2W},
+		"r3i": {1, rvmR3C, rvmR3H, rvmR3W},
+		"r4i": {1, rvmR4C, rvmR4H, rvmR4W},
+	}
+	for i := 0; i < numIO; i++ {
+		info, infoErr := engine.TensorInfoAt(i)
+		if infoErr != nil {
+			continue
+		}
+		expected, ok := expectedShapes[info.Name]
+		if !ok {
+			continue
+		}
+		if len(info.Dims) != len(expected) {
+			engine.Close()
+			return nil, fmt.Errorf("gpu: segmentation: tensor %s has %d dims, expected %d",
+				info.Name, len(info.Dims), len(expected))
+		}
+		for d := 0; d < len(expected); d++ {
+			if info.Dims[d] != expected[d] {
+				engine.Close()
+				return nil, fmt.Errorf("gpu: segmentation: tensor %s dim[%d]=%d, expected %d",
+					info.Name, d, info.Dims[d], expected[d])
+			}
+		}
+	}
+
 	return &SegmentationEngine{
 		ctx:            ctx,
 		engine:         engine,
@@ -262,20 +294,35 @@ func (se *SegmentationEngine) EnableSource(key string, w, h int, smoothing float
 	}
 
 	// Zero-initialize hidden state inputs (RVM starts from zeros).
-	C.cudaMemsetAsync(r1In, 0, C.size_t(r1Size), stream)
-	C.cudaMemsetAsync(r2In, 0, C.size_t(r2Size), stream)
-	C.cudaMemsetAsync(r3In, 0, C.size_t(r3Size), stream)
-	C.cudaMemsetAsync(r4In, 0, C.size_t(r4Size), stream)
+	if rc := C.cudaMemsetAsync(r1In, 0, C.size_t(r1Size), stream); rc != C.cudaSuccess {
+		cleanup()
+		return fmt.Errorf("gpu: segmentation: memset r1In for %s: cuda error %d", key, rc)
+	}
+	if rc := C.cudaMemsetAsync(r2In, 0, C.size_t(r2Size), stream); rc != C.cudaSuccess {
+		cleanup()
+		return fmt.Errorf("gpu: segmentation: memset r2In for %s: cuda error %d", key, rc)
+	}
+	if rc := C.cudaMemsetAsync(r3In, 0, C.size_t(r3Size), stream); rc != C.cudaSuccess {
+		cleanup()
+		return fmt.Errorf("gpu: segmentation: memset r3In for %s: cuda error %d", key, rc)
+	}
+	if rc := C.cudaMemsetAsync(r4In, 0, C.size_t(r4Size), stream); rc != C.cudaSuccess {
+		cleanup()
+		return fmt.Errorf("gpu: segmentation: memset r4In for %s: cuda error %d", key, rc)
+	}
 
 	// Initialize the UV portion of the mask buffer to 128 (neutral chroma).
 	uvOffset := C.size_t(w * h)
 	uvSize := C.size_t(w * h / 2)
-	C.cudaMemsetAsync(
+	if rc := C.cudaMemsetAsync(
 		unsafe.Pointer(uintptr(maskU8)+uintptr(uvOffset)),
 		C.int(128),
 		uvSize,
 		stream,
-	)
+	); rc != C.cudaSuccess {
+		cleanup()
+		return fmt.Errorf("gpu: segmentation: memset UV for %s: cuda error %d", key, rc)
+	}
 
 	// Allocate a dedicated mask frame with NV12-compatible layout so
 	// BlendStinger's Pitch*Height offset math reaches the UV scratch area.
@@ -310,7 +357,7 @@ func (se *SegmentationEngine) EnableSource(key string, w, h int, smoothing float
 	se.mu.Lock()
 	// Clean up any existing session for this source.
 	if old, exists := se.sessions[key]; exists {
-		se.destroySessionLocked(old)
+		se.destroySession(old)
 	}
 	se.sessions[key] = sess
 	se.mu.Unlock()
@@ -339,7 +386,7 @@ func (se *SegmentationEngine) DisableSource(key string) {
 		return
 	}
 
-	se.destroySessionLocked(sess)
+	se.destroySession(sess)
 	slog.Info("gpu: segmentation: disabled source", "source", key)
 }
 
@@ -424,8 +471,8 @@ func (se *SegmentationEngine) Segment(key string, frame *GPUFrame) {
 	}
 
 	se.mu.RLock()
+	defer se.mu.RUnlock()
 	sess, exists := se.sessions[key]
-	se.mu.RUnlock()
 	if !exists {
 		return
 	}
@@ -534,7 +581,7 @@ func (se *SegmentationEngine) Close() {
 	se.mu.Unlock()
 
 	for _, sess := range sessions {
-		se.destroySessionLocked(sess)
+		se.destroySession(sess)
 	}
 
 	if se.engine != nil {
@@ -545,9 +592,9 @@ func (se *SegmentationEngine) Close() {
 	slog.Info("gpu: segmentation: engine closed")
 }
 
-// destroySessionLocked frees all GPU resources for a session.
+// destroySession frees all GPU resources for a session.
 // The session must already be removed from the sessions map.
-func (se *SegmentationEngine) destroySessionLocked(sess *segSession) {
+func (se *SegmentationEngine) destroySession(sess *segSession) {
 	// Clear the atomic mask pointer.
 	sess.mask.Store(nil)
 

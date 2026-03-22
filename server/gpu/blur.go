@@ -51,18 +51,16 @@ func GaussianBlur(ctx *Context, dst, src *GPUFrame, radius int) error {
 		return fmt.Errorf("gpu: gaussian blur: copy weights failed: %d", rc)
 	}
 
-	// Allocate temp float buffer: pitch * height * 3/2 floats
+	// Ensure cached temp float buffer: pitch * height * 3/2 floats
 	tmpFloats := src.Pitch * src.Height * 3 / 2
-	var tmpBuf unsafe.Pointer
-	if rc := C.cudaMalloc(&tmpBuf, C.size_t(tmpFloats*4)); rc != C.cudaSuccess {
-		return fmt.Errorf("gpu: gaussian blur: alloc tmp failed: %d", rc)
+	if err := ctx.ensureBlurTemp(tmpFloats); err != nil {
+		return fmt.Errorf("gpu: gaussian blur: %w", err)
 	}
-	defer C.cudaFree(tmpBuf)
 
 	rc := C.gaussian_blur_nv12(
 		(*C.uint8_t)(unsafe.Pointer(uintptr(dst.DevPtr))),
 		(*C.uint8_t)(unsafe.Pointer(uintptr(src.DevPtr))),
-		(*C.float)(tmpBuf),
+		ctx.blurTmp,
 		(*C.float)(dWeights),
 		C.int(src.Width), C.int(src.Height), C.int(src.Pitch), C.int(radius),
 		ctx.stream,
