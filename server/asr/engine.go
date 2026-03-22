@@ -23,7 +23,7 @@ type EngineConfig struct {
 	// InferIntervalMs is the minimum interval between inference runs in milliseconds.
 	// Defaults to 3000.
 	InferIntervalMs int
-	// UseGPU enables CUDA GPU acceleration for whisper.cpp.
+	// UseGPU enables GPU acceleration for whisper.cpp (CUDA on Linux, Metal on macOS).
 	UseGPU bool
 }
 
