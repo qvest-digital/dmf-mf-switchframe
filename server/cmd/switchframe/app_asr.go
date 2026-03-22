@@ -201,7 +201,7 @@ const (
 	pacerWordsPerSecond   = 3   // ~180 WPM
 	pacerConfidenceThresh = 0.7 // words below this are held back one tick
 	pacerSpeakerChangeGap = 300 // ms gap in whisper segments → speaker change
-	pacerMaxQueueWords    = 30  // cap to prevent unbounded growth
+	pacerMaxQueueWords    = 50  // cap to prevent unbounded growth (higher since adaptive drain)
 )
 
 func newCaptionPacer(mgr *caption.Manager) *captionPacer {
@@ -243,9 +243,18 @@ func (p *captionPacer) EnqueueTranscriptWords(words []asr.TranscriptWord, isFina
 	}
 }
 
-// run is the pacer goroutine that drains words at a steady rate.
+// run is the pacer goroutine. Uses a fast base tick and emits 1-3 words
+// per tick depending on queue depth — speeding up when falling behind,
+// slowing down when caught up. This keeps captions in sync with speech
+// cadence regardless of speaking speed.
 func (p *captionPacer) run() {
-	ticker := time.NewTicker(time.Second / pacerWordsPerSecond)
+	// Base tick at the max drain rate (6 words/sec). The number of words
+	// emitted per tick scales with queue depth:
+	//   queue <= 5:  1 word/tick  (~6 WPS, comfortable reading)
+	//   queue 6-15:  2 words/tick (~12 WPS, catching up)
+	//   queue > 15:  3 words/tick (~18 WPS, fast drain to recover)
+	const baseTick = time.Second / 6
+	ticker := time.NewTicker(baseTick)
 	defer ticker.Stop()
 
 	for {
@@ -253,7 +262,20 @@ func (p *captionPacer) run() {
 		case <-p.stopCh:
 			return
 		case <-ticker.C:
-			p.emitNextWord()
+			p.mu.Lock()
+			depth := len(p.queue)
+			p.mu.Unlock()
+
+			wordsThisTick := 1
+			if depth > 15 {
+				wordsThisTick = 3
+			} else if depth > 5 {
+				wordsThisTick = 2
+			}
+
+			for i := 0; i < wordsThisTick; i++ {
+				p.emitNextWord()
+			}
 		}
 	}
 }
