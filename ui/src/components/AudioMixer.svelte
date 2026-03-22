@@ -738,7 +738,6 @@
 		display: flex;
 		flex-direction: column;
 		height: 100%;
-		overflow: hidden;
 	}
 
 	.mixer-strips {
@@ -755,12 +754,13 @@
 		display: flex;
 		flex-direction: column;
 		align-items: center;
-		gap: 4px;
-		padding: 6px 6px 5px;
+		gap: 2px;
+		padding: 4px 4px 3px;
 		background: var(--bg-panel);
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
-		min-width: 90px;
+		min-width: 80px;
+		overflow: hidden;
 		transition:
 			border-color var(--transition-fast),
 			box-shadow var(--transition-normal);
@@ -788,11 +788,12 @@
 
 	.strip-label {
 		font-family: var(--font-ui);
-		font-size: var(--text-sm);
+		font-size: 10px;
 		font-weight: 600;
 		letter-spacing: 0.04em;
 		color: var(--text-primary);
 		text-align: center;
+		line-height: 1;
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -1062,9 +1063,10 @@
 
 	.strip-db {
 		font-family: var(--font-mono);
-		font-size: var(--text-sm);
+		font-size: 9px;
 		font-weight: 500;
 		color: var(--text-tertiary);
+		line-height: 1;
 	}
 
 	/* Collapse toggle (visible at narrow viewports) */
