@@ -145,6 +145,55 @@ func TestFramePoolFormatChange(t *testing.T) {
 	newPool.Close()
 }
 
+func TestFramePool_MmapBacked(t *testing.T) {
+	fp := NewFramePool(4, 64, 48)
+	defer fp.Close()
+
+	buf := fp.Acquire()
+	require.Len(t, buf, 64*48*3/2)
+
+	// Write and read back to verify the mmap region is usable.
+	buf[0] = 0xAB
+	buf[len(buf)-1] = 0xCD
+	require.Equal(t, byte(0xAB), buf[0])
+	require.Equal(t, byte(0xCD), buf[len(buf)-1])
+
+	fp.Release(buf)
+
+	hits, misses := fp.Stats()
+	require.Equal(t, uint64(1), hits)
+	require.Equal(t, uint64(0), misses)
+}
+
+func TestFramePool_CloseFreesMemory(t *testing.T) {
+	fp := NewFramePool(4, 64, 48)
+	// Acquire and release to exercise the pool.
+	buf := fp.Acquire()
+	fp.Release(buf)
+	fp.Close()
+	// After close, acquire falls back to make().
+	buf2 := fp.Acquire()
+	require.Len(t, buf2, 64*48*3/2)
+}
+
+func TestFramePool_MmapBufsTracked(t *testing.T) {
+	fp := NewFramePool(8, 64, 48)
+
+	// All pre-allocated buffers should be tracked as mmap'd.
+	fp.mu.Lock()
+	mmapCount := len(fp.mmapBufs)
+	fp.mu.Unlock()
+
+	require.Equal(t, 8, mmapCount)
+
+	fp.Close()
+
+	// After close, mmapBufs should be nil.
+	fp.mu.Lock()
+	require.Nil(t, fp.mmapBufs)
+	fp.mu.Unlock()
+}
+
 func BenchmarkFramePoolAcquireRelease(b *testing.B) {
 	fp := NewFramePool(8, 1920, 1080)
 	defer fp.Close()
