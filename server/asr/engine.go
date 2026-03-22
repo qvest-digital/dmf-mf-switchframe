@@ -191,6 +191,8 @@ func (e *Engine) runInference(isFinal bool) {
 	e.inferring.Lock()
 	defer e.inferring.Unlock()
 
+	inferStart := time.Now()
+
 	e.mu.Lock()
 	audio := e.ringBuf.Snapshot()
 	e.mu.Unlock()
@@ -200,7 +202,9 @@ func (e *Engine) runInference(isFinal bool) {
 		return
 	}
 
+	melStart := time.Now()
 	melSpec := e.mel.Compute(audio)
+	slog.Info("ASR mel computed", "ms", time.Since(melStart).Milliseconds(), "audioSamples", len(audio))
 
 	// Flatten [80][3000] mel spectrogram to contiguous [80*3000] for TRT input.
 	flat := make([]float32, 80*3000)
@@ -229,6 +233,15 @@ func (e *Engine) runInference(isFinal bool) {
 	}
 
 	text := tok.Decode(outputTokens)
+
+	slog.Info("ASR inference complete",
+		"melMs", time.Since(inferStart).Milliseconds(),
+		"tokens", len(outputTokens),
+		"textLen", len(text),
+		"isFinal", isFinal,
+		"text", text,
+	)
+
 	e.processTranscript(text, isFinal)
 }
 
