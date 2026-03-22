@@ -12,14 +12,14 @@ import (
 // ST map configuration. Deterministic: same inputs always produce the same key.
 func CacheKey(name string, params map[string]float64, w, h, frameCount int) string {
 	hash := sha256.New()
-	fmt.Fprintf(hash, "%s:%d:%d:%d", name, w, h, frameCount)
+	_, _ = fmt.Fprintf(hash, "%s:%d:%d:%d", name, w, h, frameCount)
 	keys := make([]string, 0, len(params))
 	for k := range params {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		fmt.Fprintf(hash, ":%s=%.10g", k, params[k])
+		_, _ = fmt.Fprintf(hash, ":%s=%.10g", k, params[k])
 	}
 	return hex.EncodeToString(hash.Sum(nil))[:16]
 }
