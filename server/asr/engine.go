@@ -71,7 +71,7 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 
 	vadThreshold := cfg.VADThresholdDB
 	if vadThreshold == 0 {
-		vadThreshold = -35
+		vadThreshold = -26 // ~-26 dBFS — above typical background music/noise
 	}
 	inferMs := cfg.InferIntervalMs
 	if inferMs == 0 {
@@ -186,15 +186,16 @@ func (e *Engine) runInference(isFinal bool) {
 		return
 	}
 
-	// Check audio energy — skip inference if the audio is mostly silence.
-	// Whisper hallucinates plausible text ("just admit that you're rope")
-	// when fed low-energy audio that slipped past VAD.
+	// Check audio energy — skip inference if the audio is mostly silence
+	// or low-level background noise. Whisper hallucinates plausible
+	// sentences when fed noise that slipped past VAD.
 	var sumSq float64
 	for _, s := range audio {
 		sumSq += float64(s) * float64(s)
 	}
 	rms := math.Sqrt(sumSq / float64(audioLen))
-	if rms < 0.005 { // ~-46 dBFS — well below any real speech
+	if rms < 0.02 { // ~-34 dBFS — background noise/music below speech level
+		slog.Debug("ASR: skipping inference, low energy", "rms", rms)
 		return
 	}
 
