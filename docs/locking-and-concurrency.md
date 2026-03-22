@@ -24,7 +24,7 @@ SwitchFrame processes video at 30--60 fps across dozens of goroutines. Three rul
 2. **Every lock has a tier.** A goroutine holding a tier-N lock never acquires a tier-(N-1) lock. This strict ordering makes deadlocks structurally impossible.
 3. **The hot path is sub-microsecond.** Lock hold times on the per-frame video path total under 1 us, leaving 99.997% of the 33 ms frame budget for actual processing.
 
-The system has ~70 mutexes, ~130 atomic variables, ~90 channels, and 10 long-lived goroutines. This document maps the architecturally significant ones to their roles.
+The system has ~80 mutexes, ~140 atomic variables, ~90 channels, and 15+ long-lived goroutines. This document maps the architecturally significant ones to their roles.
 
 ---
 
@@ -79,6 +79,12 @@ flowchart TD
         srt["SRT / Recorder"]
     end
 
+    subgraph ai ["AI / ML"]
+        asr["ASR Engine<br/>(Whisper inference)"]
+        cp["captionPacer<br/>(word drain)"]
+        seg["SegmentationEngine<br/>(per-source TensorRT)"]
+    end
+
     subgraph bg ["Background"]
         hm["healthMonitor<br/>(periodic check)"]
         sm["SessionManager<br/>(15s cleanup)"]
@@ -107,6 +113,10 @@ flowchart TD
     ov --> mux
     mux -->|"atomic.Pointer<br/>adapter list"| aa
     aa --> srt
+    tick -.->|"post-master PCM"| asr
+    asr -->|"TranscriptWord[]"| cp
+    cp -->|"CEA-608 pairs"| ov
+    seg -.->|"atomic.Pointer<br/>mask"| pipe
 ```
 
 ### Long-Lived Goroutines
@@ -127,6 +137,9 @@ flowchart TD
 | `SessionManager.cleanupLoop` | `NewSessionManager()` | `ctx.Done()` + `done` signal | 15s stale operator session cleanup |
 | `SCTE-35 heartbeat` | `Injector.Start()` | `heartbeatStop` close | Periodic splice_null emission |
 | `WebhookDispatcher.worker` | `NewWebhookDispatcher()` | `queue` close + `done` signal | Async SCTE-35 webhook POST |
+| `ASR Engine.inferLoop` | `Engine.Start()` | `Engine.Stop()` via context cancel | VAD-gated Whisper inference at adaptive intervals |
+| `captionPacer.run` | `initASR()` | App close via context cancel | Steady-rate caption word drain (~3 words/sec) |
+| `SegmentationEngine.Segment` | Per-source on first frame | `DisableSource()` frees CUDA resources | Async TensorRT inference per source (dedicated CUDA stream) |
 
 ### Per-Event Goroutines
 
@@ -504,6 +517,16 @@ Every mutex in the system, what it protects, and whether it's on the per-frame h
 | [Store](../server/operator/store.go) | `s.mu` | `RWMutex` | operators, tokenIdx, filePath | CRUD |
 | [SessionManager](../server/operator/session.go) | `sm.mu` | `Mutex` | sessions, locks, onStateChange | Session mgmt |
 
+### ASR & AI
+
+| Component | Field | Type | Protects | Hot Path? |
+|-----------|-------|------|----------|-----------|
+| [Engine](../server/asr/engine.go) | `e.mu` | `Mutex` | ringBuf, vad, whisper context, callbacks, inference state | Audio ingest |
+| [SegmentationEngine](../server/gpu/segmentation_engine.go) | `e.mu` | `RWMutex` | sessions map (per-source CUDA inference state) | Config only |
+| [segSession](../server/gpu/segmentation_engine.go) | `sess.mask` | `atomic.Pointer[GPUFrame]` | Lock-free mask delivery to pipeline node | Yes |
+| [colorGradeController](../server/cmd/switchframe/app_colorgrade.go) | `c.mu` | `Mutex` | enabled, lookName, intensity, generation | Config only |
+| [Store](../server/colorgrade/store.go) | `s.mu` | `RWMutex` | looks map, file paths | CRUD |
+
 ### Other
 
 | Component | Field | Type | Protects | Hot Path? |
@@ -543,6 +566,8 @@ These enable runtime reconfiguration without blocking the frame-processing gorou
 | SRTCaller | `lastError` | `atomic.Pointer[string]` | Last error message | No |
 | SRTListener | `state` | `atomic.Pointer[AdapterState]` | Listener active state | No |
 | API | `lastOperator` | `atomic.Pointer[string]` | Graphics state tracking | No |
+| segSession | `mask` | `atomic.Pointer[GPUFrame]` | Lock-free AI mask delivery to pipeline | Yes |
+| colorGradeController | `generation` | `atomic.Uint64` | LUT upload skip when unchanged | Yes |
 
 ### Atomic Flags and Counters
 
@@ -831,6 +856,46 @@ videoProcessingLoop:
 
 Transition engine output uses `epoch=0`, which bypasses the check -- transition frames are always valid.
 
+### Pattern 9: Per-Source CUDA Streams (GPU Pipeline)
+
+The AI segmentation engine uses per-source CUDA streams so inference for one source never blocks another:
+
+```go
+Segment(sourceKey, gpuFrame):
+    e.mu.RLock()
+    sess := e.sessions[sourceKey]           // per-source state
+    e.mu.RUnlock()
+
+    // All CUDA ops on sess.stream (no global lock):
+    preprocessNV12ToRGB(sess.stream, ...)   // NV12 → 320×320 RGB
+    trt_infer(sess.trtCtx, sess.stream)     // TensorRT inference
+    upscaleMask(sess.stream, ...)           // bilinear upscale
+    erodeMask(sess.stream, ...)             // 3×3 morphological erosion
+    emaMask(sess.stream, ...)               // temporal smoothing
+    cudaStreamSynchronize(sess.stream)      // wait for completion
+
+    sess.mask.Store(maskFrame)              // atomic publish to pipeline
+```
+
+The pipeline node reads the mask with `sess.mask.Load()` -- lock-free on every frame. The segmentation goroutine writes masks asynchronously. No mutex is ever held during GPU inference.
+
+### Pattern 10: mmap Resource Lifecycle
+
+mmap-backed buffers (frame pools, ST map LUTs, stinger caches) live outside the Go heap and are invisible to the garbage collector. Their lifecycle is explicit:
+
+```go
+// Allocation (anonymous mmap, not tracked by GC):
+buf := mmaputil.Alloc(size)                 // syscall.Mmap(MAP_PRIVATE|MAP_ANON)
+
+// File-backed (read-only mmap of cached data):
+buf := mmaputil.MapFile(path)               // mmap existing file
+
+// Release (explicit, not garbage-collected):
+mmaputil.Free(buf)                          // syscall.Munmap
+```
+
+Callers must ensure no goroutine references the buffer after `Free()`. The stinger cache and ST map cache use `Close()` methods called during app shutdown after the pipeline is stopped.
+
 ---
 
 ## 12. Per-Frame Budget
@@ -853,6 +918,10 @@ The actual expensive work runs entirely without locks:
 | H.264 decode (FFmpeg) | 5--15ms | None (sourceDecoder goroutine) |
 | YUV blend (transition) | 1--3ms | None (after `e.mu` release) |
 | Pipeline nodes (key, PIP, DSK) | 0.5--2ms | None (immutable pipeline) |
+| GPU pipeline (upload → nodes → download) | 1--5ms | None (GPU command queue) |
+| ST map warp (CPU) | 15--29ms | None (immutable LUT) |
+| ST map warp (GPU) | <1ms | None (hardware texture sampling) |
+| AI segmentation (TensorRT) | 5--15ms | None (per-source CUDA stream) |
 | H.264 encode (x264/HW) | 5--30ms | None (released before encode) |
 | MPEG-TS mux | 0.5--2ms | `mux.mu` (downstream, not on hot path) |
 
@@ -884,3 +953,5 @@ The system is deadlock-free because five structural properties hold simultaneous
 | **[MXL](mxl.md)** | Shared-memory transport, V210 format, NMOS discovery |
 | **[API Reference](api.md)** | REST endpoints with request/response examples |
 | **[Deployment](deployment.md)** | CLI flags, Docker, TLS, monitoring |
+| **[GPU Acceleration](gpu.md)** | Metal, CUDA, SIMD kernels, TensorRT |
+| **[AI Captions](asr.md)** | Whisper.cpp, VAD, caption pacing |

@@ -53,6 +53,9 @@ The resulting binary serves the entire application — REST API, embedded UI, We
 | `noffmpeg` | Disables FFmpeg cgo bindings. Codec probing and hardware acceleration become no-ops. |
 | `openh264` | Enables OpenH264 fallback encoder/decoder (requires the OpenH264 shared library at runtime). |
 | `mxl` | Enables MXL shared-memory transport (requires MXL SDK at `MXL_ROOT`). Without it, MXL functions return `ErrMXLNotAvailable`. |
+| `cuda` | Enables CUDA GPU pipeline (compute shaders, frame pool, NVENC encode). Requires CUDA Toolkit. |
+| `tensorrt` | Enables TensorRT AI segmentation (requires `cuda` tag + TensorRT SDK). |
+| `whisper` | Enables whisper.cpp speech-to-text engine for automatic captioning. |
 
 ### C Dependencies
 
@@ -232,6 +235,17 @@ volumes:
 | `--preview-proxy` | `false` | Enable low-bitrate preview encoding for browser source previews (480p) |
 | `--preview-resolution` | `480p` | Preview encode resolution (`360p`, `480p`, `720p`) |
 | `--preview-bitrate` | `500000` | Preview encode bitrate in bits per second |
+| `--preview-frame-interval` | `1` | Preview encode every Nth frame (1 = all, 2 = half rate) |
+| `--relay-bitrate` | `2000000` | Relay encode bitrate in bps for SRT source WebTransport distribution |
+| `--relay-resolution` | `720p` | Relay encode resolution (`720p`, `480p`, `360p`, `source`) |
+
+#### ASR / AI / Color Grading
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--asr-model` | — | Path to whisper.cpp GGML model file (e.g., `ggml-medium.en.bin`). Requires `--captions`. |
+| `--ai-model` | — | Path to ONNX segmentation model for AI background replacement (requires CUDA + TensorRT build) |
+| `--cache-dir` | platform-specific | Persistent cache directory for mmap'd LUTs and decoded assets. Linux: `/data/switchframe/cache`, macOS: `~/.switchframe/cache` |
 
 #### SCTE-35 / SCTE-104
 
@@ -270,10 +284,14 @@ When `--srt-listen` is set, the server accepts incoming SRT push connections on 
 | Variable | Description |
 |----------|-------------|
 | `SWITCHFRAME_API_TOKEN` | API token. Overridden by `--api-token` if both set. |
+| `SWITCHFRAME_ADMIN_TOKEN` | Admin server bearer token. Overridden by `--admin-token` if both set. |
 | `SWITCHFRAME_MXL_SOURCES` | MXL source specs. Overridden by `--mxl-sources` if both set. |
+| `SWITCHFRAME_STATE_DIR` | State directory path. Defaults to `~/.switchframe`. |
+| `SWITCHFRAME_INVITE_TOKENS` | Operator invite tokens as `role:token,...` pairs (e.g., `director:abc123,audio:def456`). |
 | `APP_ENV` | Set to `production` for JSON-formatted structured logs. |
 | `GOGC` | Go GC target percentage. Switchframe defaults to `400` if unset. |
 | `GOMEMLIMIT` | Go memory limit. Switchframe defaults to `2GB` if unset. |
+| `METAL_LIBRARY_PATH` | Override path to compiled Metal shader library (macOS GPU builds). |
 
 ### Format Presets
 
@@ -629,6 +647,79 @@ docker run --device /dev/dri/renderD128:/dev/dri/renderD128 switchframe
 
 Automatically available on macOS (Intel and Apple Silicon). No setup needed for native builds.
 
+### GPU Acceleration Setup
+
+Beyond hardware _codec_ acceleration (NVENC/VA-API/VideoToolbox for H.264 encode/decode), Switchframe supports full GPU pipeline processing where the entire video chain runs on GPU-resident NV12 frames. See [`docs/gpu.md`](gpu.md) for the full architecture reference.
+
+#### CUDA (Linux/NVIDIA)
+
+1. Install the [CUDA Toolkit](https://developer.nvidia.com/cuda-toolkit) (12.x recommended)
+2. For AI segmentation, also install [TensorRT](https://developer.nvidia.com/tensorrt)
+3. Build with the appropriate tags:
+
+```bash
+# GPU pipeline (compute shaders + NVENC)
+go build -tags "cgo cuda" ./cmd/switchframe
+
+# GPU pipeline + AI background segmentation
+go build -tags "cgo cuda tensorrt" ./cmd/switchframe
+```
+
+CUDA kernels are compiled by the Makefile (`cd server/gpu/cuda && make`). The resulting `.fatbin` files are linked statically.
+
+#### Metal (macOS/Apple Silicon)
+
+Auto-detected on macOS. Metal compute shaders are compiled to a `.metallib` by `make build` / `make demo`, then embedded in the binary via `//go:embed`. No additional setup is needed. Apple Silicon's unified memory enables zero-copy CPU/GPU data sharing.
+
+#### GPU Build Tags
+
+| Tag | Platform | Effect |
+|-----|----------|--------|
+| `darwin` | macOS | Metal GPU pipeline (auto-enabled on macOS builds) |
+| `cgo && cuda` | Linux | CUDA GPU pipeline (compute shaders + NVENC) |
+| `cgo && cuda && tensorrt` | Linux | AI background segmentation via TensorRT |
+| `cgo && whisper` | Linux/macOS | Whisper.cpp speech-to-text for ASR captions |
+
+### ASR Model Setup
+
+Switchframe includes a speech-to-text engine powered by [whisper.cpp](https://github.com/ggerganov/whisper.cpp) for automatic closed captioning. Requires the `cgo && whisper` build tag.
+
+1. Download a Whisper GGML model from <https://huggingface.co/ggerganov/whisper.cpp/tree/main>:
+   - `ggml-base.bin` — fastest inference, lower accuracy (~75 MB)
+   - `ggml-medium.en.bin` — recommended for English-only production use (~1.5 GB)
+   - `ggml-large-v3-turbo.bin` — highest accuracy, multilingual (~3 GB)
+
+2. Optionally download the Silero VAD model for neural speech detection:
+   - `ggml-silero-v6.2.0.bin` — place in the same directory as the Whisper model
+   - Auto-detected on startup; falls back to energy-based VAD if not found
+
+3. Run with the `--asr-model` flag and `--captions`:
+
+```bash
+./switchframe --captions --asr-model /path/to/models/ggml-medium.en.bin
+```
+
+ASR initializes but remains inactive until the operator enables auto-captions via the UI (Captions panel). GPU acceleration (CUDA-enabled whisper.cpp) provides faster-than-realtime inference when available.
+
+### AI Background Segmentation Setup
+
+Real-time person segmentation with background replacement (blur, solid color, or transparent pass-through). Requires CUDA + TensorRT.
+
+1. Install CUDA Toolkit and TensorRT
+2. Download the U2-Net ONNX model (`u2netp.onnx`, ~4.7 MB)
+3. Build with the `tensorrt` tag and run with `--ai-model`:
+
+```bash
+go build -tags "cgo cuda tensorrt" ./cmd/switchframe
+./switchframe --ai-model /path/to/u2netp.onnx
+```
+
+On first launch, TensorRT serializes an optimized engine plan (~30s), cached at `~/.switchframe/models/` for subsequent starts. FP16 mixed precision is enabled by default. The model input is 320x320 RGB; output masks are upscaled to source resolution with 3x3 morphological erosion and EMA temporal smoothing.
+
+### Color Grading
+
+6 built-in color looks are available out of the box (no setup needed). Custom `.cube` 3D LUT files can be uploaded via the REST API or placed in `~/.switchframe/colorgrade/`. Standard 3D LUT cube format is supported. Color grading runs as a GPU pipeline node (CUDA only) with adjustable intensity (0.0-1.0).
+
 ---
 
 ## 9. Output
@@ -961,6 +1052,8 @@ ulimit -n 65536
 - [ ] Monitor SRT source health via `GET /api/sources` status field
 - [ ] Install `libopus-dev` for operator voice comms (required for cgo build)
 - [ ] Configure `--preview-proxy` for reduced browser bandwidth (recommended for >4 sources)
+- [ ] If using GPU pipeline, verify GPU detection at startup (`"gpu pipeline: built"` log line)
+- [ ] If using ASR, download Whisper model and optional Silero VAD model to a persistent directory
 
 ---
 

@@ -162,6 +162,20 @@ Base URL: `https://localhost:8080` (HTTP/3, primary) or `http://localhost:8081` 
 - [Format](#format)
   - [GET /api/format](#get-apiformat)
   - [PUT /api/format](#put-apiformat)
+- [ASR (Automatic Speech Recognition)](#asr-automatic-speech-recognition)
+  - [GET /api/asr/status](#get-apiasrstatus)
+  - [PUT /api/asr/config](#put-apiasrconfig)
+  - [GET /api/asr/models](#get-apiasrmodels)
+- [Color Grading](#color-grading)
+  - [GET /api/colorgrade](#get-apicolorgrade)
+  - [PUT /api/colorgrade](#put-apicolorgrade)
+  - [POST /api/colorgrade/upload](#post-apicolorgradeupload)
+  - [DELETE /api/colorgrade/{name}](#delete-apicolorgradename)
+- [AI Background Segmentation](#ai-background-segmentation)
+  - [GET /api/ai-segment/status](#get-apiai-segmentstatus)
+  - [PUT /api/sources/{source}/ai-segment](#put-apisourcessourceai-segment)
+  - [GET /api/sources/{source}/ai-segment](#get-apisourcessourceai-segment)
+  - [DELETE /api/sources/{source}/ai-segment](#delete-apisourcessourceai-segment)
 - [Debug](#debug)
   - [GET /api/debug/snapshot](#get-apidebugsnapshot)
 - [Admin Endpoints](#admin-endpoints)
@@ -6118,6 +6132,501 @@ curl -X PUT https://localhost:8080/api/format \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"format": "1080p25"}'
+```
+
+---
+
+## ASR (Automatic Speech Recognition)
+
+Automatic speech recognition using Whisper models for live captioning. ASR endpoints are always registered but return `501 Not Implemented` when the ASR engine is not available (no Whisper model installed or ASR manager not configured).
+
+When ASR is not configured at all (no `ASRManager` wired), the status endpoint returns `{"available": false}` with all other fields at zero values.
+
+### GET /api/asr/status
+
+Return the current ASR system state including availability, active status, language, model, and tuning parameters.
+
+**Request Body:** None
+
+**Response:** `200 OK`
+
+```json
+{
+  "available": true,
+  "active": true,
+  "translate": false,
+  "modelName": "large-v3-turbo",
+  "language": "en",
+  "tentative": "",
+  "confidence": 0.0,
+  "speed": "balanced",
+  "confidenceFilter": "medium",
+  "noiseFloor": "normal",
+  "speakerDetection": "normal"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `available` | `bool` | Whether an ASR engine is present and usable |
+| `active` | `bool` | Whether ASR is currently running |
+| `translate` | `bool` | Whether translation to English is enabled |
+| `modelName` | `string` | Name of the loaded Whisper model (e.g., `"large-v3-turbo"`) |
+| `language` | `string` | ISO 639-1 language code (e.g., `"en"`, `"fr"`, `"es"`) |
+| `tentative` | `string` | Tentative (unconfirmed) transcription text. Empty when idle. |
+| `confidence` | `float` | Confidence score of the last transcription segment. `0.0` when idle. |
+| `speed` | `string` | Inference speed preset: `"fast"`, `"balanced"`, or `"accurate"` |
+| `confidenceFilter` | `string` | Confidence holdback preset: `"low"`, `"medium"`, or `"high"` |
+| `noiseFloor` | `string` | VAD sensitivity preset: `"quiet"`, `"normal"`, or `"noisy"` |
+| `speakerDetection` | `string` | Speaker change gap preset: `"sensitive"`, `"normal"`, or `"relaxed"` |
+
+When ASR is not configured, only `available: false` is meaningful; all other fields are zero values.
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/asr/status \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### PUT /api/asr/config
+
+Update ASR configuration. Accepts a partial JSON body -- only the fields you include are changed. All fields are optional; omitted fields retain their current values.
+
+**Request Body:**
+
+```json
+{
+  "active": true,
+  "language": "es",
+  "translate": true,
+  "model": "large-v3-turbo",
+  "speed": "fast",
+  "confidenceFilter": "high",
+  "noiseFloor": "noisy",
+  "speakerDetection": "sensitive"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `active` | `bool` | No | Enable or disable ASR |
+| `language` | `string` | No | ISO 639-1 language code (e.g., `"en"`, `"fr"`, `"ja"`) |
+| `translate` | `bool` | No | Enable translation to English |
+| `model` | `string` | No | Switch to a different Whisper model by name |
+| `speed` | `string` | No | Inference speed preset: `"fast"`, `"balanced"`, or `"accurate"` |
+| `confidenceFilter` | `string` | No | Confidence holdback: `"low"`, `"medium"`, or `"high"` |
+| `noiseFloor` | `string` | No | VAD sensitivity: `"quiet"`, `"normal"`, or `"noisy"` |
+| `speakerDetection` | `string` | No | Speaker change gap: `"sensitive"`, `"normal"`, or `"relaxed"` |
+
+The `model` field is processed first (before `active`), so you can switch models and activate in a single request.
+
+**Response:** `200 OK` with updated `ASRState`:
+
+```json
+{
+  "available": true,
+  "active": true,
+  "translate": true,
+  "modelName": "large-v3-turbo",
+  "language": "es",
+  "speed": "fast",
+  "confidenceFilter": "high",
+  "noiseFloor": "noisy",
+  "speakerDetection": "sensitive"
+}
+```
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid JSON or invalid model name |
+| `500` | Internal error activating/deactivating ASR |
+| `501` | ASR not available (no engine configured or engine reports unavailable) |
+
+**Examples:**
+
+```bash
+# Enable ASR with Spanish language
+curl -X PUT http://localhost:8081/api/asr/config \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"active": true, "language": "es"}'
+
+# Change just the speed preset
+curl -X PUT http://localhost:8081/api/asr/config \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"speed": "accurate"}'
+
+# Switch model and enable translation
+curl -X PUT http://localhost:8081/api/asr/config \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "large-v3", "translate": true}'
+```
+
+---
+
+### GET /api/asr/models
+
+List available Whisper models installed on the server. The server scans its models directory for `ggml-*.bin` files.
+
+**Request Body:** None
+
+**Response:** `200 OK` with a JSON array of model name strings:
+
+```json
+["base", "medium.en", "large-v3", "large-v3-turbo"]
+```
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `501` | ASR not available (no ASR manager configured) |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/asr/models \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+## Color Grading
+
+Color grading applies 3D LUT (Look-Up Table) color transforms to the program output. The system includes built-in looks and supports uploading custom `.cube` LUT files. Color grading endpoints are only registered when a `ColorGradeManager` is configured; otherwise these routes return `404 Not Found` (unregistered).
+
+### GET /api/colorgrade
+
+Return the current color grading state, including whether grading is enabled, the active look name, intensity, and list of available looks.
+
+**Request Body:** None
+
+**Response:** `200 OK`
+
+```json
+{
+  "enabled": true,
+  "lookName": "cinematic-warm",
+  "intensity": 0.75,
+  "available": ["cinematic-warm", "cool-blue", "film-noir", "vintage", "my-custom-lut"]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `enabled` | `bool` | Whether color grading is active |
+| `lookName` | `string` | Name of the currently applied look. Empty when disabled. |
+| `intensity` | `float` | Blend intensity from `0.0` (original) to `1.0` (full effect) |
+| `available` | `array` | List of all available look names (built-in + uploaded) |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/colorgrade \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### PUT /api/colorgrade
+
+Enable, configure, or disable color grading. To disable, set `enabled` to `false`. To enable or change the look, provide `lookName` and optionally `intensity`. To adjust only the intensity of the currently active look, provide `intensity` alone (without `lookName`).
+
+**Request Body:**
+
+```json
+{
+  "enabled": true,
+  "lookName": "cinematic-warm",
+  "intensity": 0.8
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `enabled` | `bool` | No | Set to `false` to disable color grading |
+| `lookName` | `string` | Conditional | Name of the look to apply. Required when enabling unless only adjusting intensity. |
+| `intensity` | `float` | No | Blend intensity from `0.0` to `1.0`. Defaults to `1.0` if not specified. |
+
+**Response:** `200 OK` with full `ControlRoomState`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid JSON, missing `lookName` when required, look not found, or no active look for intensity-only update |
+
+**Examples:**
+
+```bash
+# Enable a look at full intensity
+curl -X PUT http://localhost:8081/api/colorgrade \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"lookName": "cinematic-warm"}'
+
+# Enable at reduced intensity
+curl -X PUT http://localhost:8081/api/colorgrade \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"lookName": "film-noir", "intensity": 0.5}'
+
+# Adjust intensity of current look
+curl -X PUT http://localhost:8081/api/colorgrade \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"intensity": 0.3}'
+
+# Disable color grading
+curl -X PUT http://localhost:8081/api/colorgrade \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": false}'
+```
+
+---
+
+### POST /api/colorgrade/upload
+
+Upload a custom `.cube` LUT file. The file is validated (parsed as a 3D LUT) before being saved. The look becomes immediately available in the `available` list.
+
+**Request:** Multipart form data with a maximum upload size of 16 MB.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | `string` (form value) | Yes | Name for the uploaded look. Must be alphanumeric with hyphens/underscores, max 64 characters. |
+| `file` | file (form file) | Yes | The `.cube` LUT file to upload |
+
+**Response:** `201 Created` with updated color grade state:
+
+```json
+{
+  "enabled": false,
+  "lookName": "",
+  "intensity": 0,
+  "available": ["cinematic-warm", "cool-blue", "film-noir", "my-custom-lut", "vintage"]
+}
+```
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Missing `name`, missing `file`, invalid `.cube` file format, or invalid name |
+| `413` | Upload exceeds 16 MB size limit |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/colorgrade/upload \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "name=my-custom-lut" \
+  -F "file=@/path/to/my-look.cube"
+```
+
+---
+
+### DELETE /api/colorgrade/{name}
+
+Delete an uploaded look. Built-in looks cannot be deleted.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `name` | Name of the look to delete |
+
+**Request Body:** None
+
+**Response:** `204 No Content`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Missing or invalid name |
+| `403` | Attempted to delete a built-in look |
+| `404` | Look not found |
+
+**Example:**
+
+```bash
+curl -X DELETE http://localhost:8081/api/colorgrade/my-custom-lut \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+## AI Background Segmentation
+
+GPU-accelerated AI background segmentation for per-source background removal or replacement. Requires a GPU with TensorRT support. AI segmentation endpoints are only registered when an `AISegmentManager` is configured; otherwise these routes return `404 Not Found` (unregistered).
+
+### GET /api/ai-segment/status
+
+Check whether AI background segmentation is available on this server. Returns `true` when both a GPU and the TensorRT segmentation engine are present.
+
+**Request Body:** None
+
+**Response:** `200 OK`
+
+```json
+{
+  "available": true
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `available` | `bool` | Whether AI segmentation can be used |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/ai-segment/status \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### PUT /api/sources/{source}/ai-segment
+
+Enable and configure AI background segmentation for a specific source. If already enabled, reconfigures with the new parameters.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `source` | Source key (e.g., `"cam1"`, `"srt:encoder1"`) |
+
+**Request Body:**
+
+```json
+{
+  "sensitivity": 0.7,
+  "edgeSmooth": 0.5,
+  "background": "color:00FF00"
+}
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `sensitivity` | `float` | No | `0.7` | Segmentation sensitivity from `0.0` to `1.0`. Higher values detect more of the subject. |
+| `edgeSmooth` | `float` | No | `0.5` | Edge smoothing from `0.0` (hard edge) to `1.0` (soft feathered edge) |
+| `background` | `string` | No | `""` | Background mode: `""` or `"transparent"` for transparent, `"color:RRGGBB"` for solid color (hex). `"blur:N"` format is recognized but not yet implemented. |
+
+**Response:** `200 OK` with the applied configuration:
+
+```json
+{
+  "enabled": true,
+  "sensitivity": 0.7,
+  "edgeSmooth": 0.5,
+  "background": "color:00FF00"
+}
+```
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid JSON, `sensitivity` or `edgeSmooth` out of range (0.0-1.0), or invalid `background` value |
+| `503` | AI segmentation engine unavailable (GPU/TensorRT not present) |
+
+**Examples:**
+
+```bash
+# Enable with transparent background (defaults)
+curl -X PUT http://localhost:8081/api/sources/cam1/ai-segment \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+
+# Enable with green background
+curl -X PUT http://localhost:8081/api/sources/cam1/ai-segment \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"sensitivity": 0.8, "edgeSmooth": 0.6, "background": "color:00FF00"}'
+
+# Enable with transparent background, high sensitivity
+curl -X PUT http://localhost:8081/api/sources/srt:encoder1/ai-segment \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"sensitivity": 0.9, "background": "transparent"}'
+```
+
+---
+
+### GET /api/sources/{source}/ai-segment
+
+Get the current AI segmentation configuration for a specific source.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `source` | Source key (e.g., `"cam1"`, `"srt:encoder1"`) |
+
+**Request Body:** None
+
+**Response:** `200 OK`
+
+```json
+{
+  "enabled": true,
+  "sensitivity": 0.7,
+  "edgeSmooth": 0.5,
+  "background": "color:00FF00"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `enabled` | `bool` | Whether AI segmentation is active for this source |
+| `sensitivity` | `float` | Current sensitivity (0.0-1.0) |
+| `edgeSmooth` | `float` | Current edge smoothing (0.0-1.0) |
+| `background` | `string` | Current background mode |
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `404` | No AI segmentation configured for this source |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/sources/cam1/ai-segment \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### DELETE /api/sources/{source}/ai-segment
+
+Disable AI background segmentation for a specific source and free associated GPU resources.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `source` | Source key (e.g., `"cam1"`, `"srt:encoder1"`) |
+
+**Request Body:** None
+
+**Response:** `204 No Content`
+
+**Example:**
+
+```bash
+curl -X DELETE http://localhost:8081/api/sources/cam1/ai-segment \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 ---

@@ -11,7 +11,10 @@
 9. [The Browser](#9-the-browser)
 10. [Control & Coordination](#10-control--coordination)
 11. [Operator Voice Comms](#11-operator-voice-comms)
-12. [Performance & Design Philosophy](#12-performance--design-philosophy)
+12. [GPU Acceleration](#12-gpu-acceleration)
+13. [AI & Machine Learning](#13-ai--machine-learning)
+14. [Resource Management](#14-resource-management)
+15. [Performance & Design Philosophy](#15-performance--design-philosophy)
 
 ---
 
@@ -49,11 +52,12 @@ flowchart LR
         core --> trans
     end
 
-    subgraph vidpipe ["Video Pipeline"]
+    subgraph vidpipe ["Video Pipeline (CPU or GPU)"]
         direction LR
         usk["Upstream<br/>Key"] --> pip["PIP /<br/>Layout"]
         pip --> dsk["DSK<br/>Graphics"]
-        dsk --> raw["Raw Sink"]
+        dsk --> stm["ST Map /<br/>Color Grade"]
+        stm --> raw["Raw Sink"]
         raw --> enc["H.264<br/>Encode"]
     end
 
@@ -768,7 +772,240 @@ When any participant is speaking (detected via voice activity detection on the s
 
 Four endpoints manage the comms lifecycle: `POST /api/comms/join` (register as participant), `POST /api/comms/leave`, `PUT /api/comms/mute` (toggle mute state), and `GET /api/comms/status` (participant list and mute states). The `CommsBar` UI component provides push-to-talk (backtick key), a volume slider, and participant badges showing who is connected and speaking. The system supports up to 6 simultaneous participants and is always available -- no CLI flag is required to enable it. Comms state is broadcast via `ControlRoomState.comms` so all browsers see participant presence in real time.
 
-## 12. Performance & Design Philosophy
+## 12. GPU Acceleration
+
+The CPU video pipeline described in Section 6 handles every frame through Go code and hand-written assembly kernels. For higher resolutions or more complex compositing chains, GPU acceleration provides an order-of-magnitude speedup by offloading pixel-level operations to massively parallel shader hardware. SwitchFrame supports two GPU backends -- Metal on macOS (Apple Silicon) and CUDA on NVIDIA Linux -- auto-detected at startup with transparent CPU fallback.
+
+### Dual Backend Architecture
+
+```mermaid
+flowchart TD
+    INIT["gpu.NewContext()"] --> DETECT{"Platform?"}
+
+    DETECT -->|"macOS (darwin)"| METAL["Metal Context<br/>(MTLDevice, command queue,<br/>pipeline state cache)"]
+    DETECT -->|"Linux + NVIDIA<br/>(cgo && cuda)"| CUDA["CUDA Context<br/>(cuInit, device, streams)"]
+    DETECT -->|"Neither"| STUB["Stub<br/>(ErrGPUNotAvailable)"]
+
+    METAL --> NODES["GPU Pipeline Nodes"]
+    CUDA --> NODES
+    STUB --> CPU["CPU-only pipeline<br/>(Section 6)"]
+
+    NODES --> UP["uploadNode<br/>(YUV420p → NV12)"]
+    UP --> KEY["gpuKeyNode<br/>(chroma/luma key)"]
+    KEY --> LYT["gpuLayoutNode<br/>(PIP compositor)"]
+    LYT --> DSK["gpuCompositorNode<br/>(DSK overlay)"]
+    DSK --> STM["gpuSTMapNode<br/>(per-pixel warp)"]
+    STM --> DL["downloadNode<br/>(NV12 → YUV420p)"]
+```
+
+The GPU backend is chosen at compile time via build tags: `darwin` for Metal, `cgo && cuda` for CUDA, and a stub for everything else. At runtime, `gpu.NewContext()` initializes the appropriate backend and returns a context or `ErrGPUNotAvailable`. The application never checks which backend is active -- it calls the same interface methods regardless.
+
+### GPU Pipeline Integration
+
+GPU bridge nodes implement the same `switcher.PipelineNode` interface as CPU nodes and are inserted into the pipeline via `SetGPUNodes()`. The key design challenge is avoiding circular imports: `gpu` imports `switcher` for the `PipelineNode` interface, but `switcher` must not import `gpu`. This is solved by a `ProcessingFrame.GPUData` field typed as `any` -- the upload node acquires a GPU frame from the pool, attaches it to `GPUData`, and subsequent GPU nodes type-assert it back. The download node converts NV12 back to YUV420p and releases the GPU frame.
+
+If any GPU node encounters an error (shader compilation failure, out of memory, unsupported operation), it passes the `ProcessingFrame` through unchanged, preserving the CPU YUV420 data. The pipeline continues on the CPU path for that frame. This graceful fallback means a GPU failure never causes a frame drop or program interruption.
+
+### NV12 Internal Format
+
+All GPU operations use NV12 (planar Y + interleaved UV) as the internal format, matching the native format of hardware video encoders and decoders. The upload node converts YUV420p (three separate planes) to NV12, and the download node converts back. On Apple Silicon, Metal uses unified memory -- the CPU and GPU share the same physical memory, so upload and download are effectively zero-copy pointer operations rather than DMA transfers.
+
+### Compute Shaders
+
+Ten Metal compute shaders and twelve CUDA kernels cover the full processing pipeline:
+
+| Shader | Purpose |
+|--------|---------|
+| `convert` | YUV420p ↔ NV12 format conversion |
+| `blend` | Transition blending (uniform, fade, alpha, wipe) |
+| `scale` | Bilinear + Lanczos-3 scaling |
+| `key` | Chroma/luma keying |
+| `composite` | PIP compositor |
+| `dsk` | DSK graphics overlay |
+| `stmap` | ST map per-pixel warp (hardware bilinear texture sampling) |
+| `fruc` | Frame rate up-conversion |
+| `v210` | V210 ↔ NV12 for MXL shared-memory I/O |
+| `colorgrade` | 3D LUT color grading with trilinear interpolation |
+
+The ST map shader deserves special mention: CPU warp kernels take ~29ms per 1080p frame due to random memory access patterns (each output pixel reads from an arbitrary source location). The GPU shader achieves the same operation in under 1ms by leveraging hardware texture sampling units, which have dedicated silicon for bilinear interpolation and spatial caching.
+
+Metal shaders are compiled into a `.metallib` binary at build time (via `make build` or `make demo`), embedded into the Go binary via `//go:embed`, and loaded at context initialization. CUDA kernels are compiled to PTX and loaded similarly. The Objective-C bridge layer (`metal_bridge.m`) handles UV-plane operations with offset-aware dispatch -- since NV12 stores Y and UV in a single `MTLBuffer`, shader dispatch for UV operations must account for the Y-plane offset.
+
+### SIMD Assembly Kernels
+
+For CPU-bound processing paths and platforms without GPU support, 56+ hand-written SIMD assembly kernels provide near-GPU performance for critical operations on amd64 (AVX2/SSE2) and arm64 (NEON), with pure Go generic fallbacks:
+
+| Category | Kernels | Platforms |
+|----------|---------|-----------|
+| Transition blend/wipe | Uniform blend, alpha blend, wipe threshold | amd64, arm64 |
+| Alpha downsampling | Chroma-plane alpha from luma-plane alpha | amd64, arm64 |
+| Graphics overlay | RGBA alpha blend onto YUV420 | amd64, arm64 |
+| Chroma/luma keying | Key mask generation, blend, spill replacement | amd64, arm64 |
+| FRC block matching | SAD (Sum of Absolute Differences) for motion estimation | amd64, arm64 |
+| ST map warp | Bilinear warp with software prefetch (PREFETCHT0/PRFM) | amd64, arm64 |
+| FFT butterfly | Radix-2 Cooley-Tukey for phase vocoder | amd64, arm64 |
+| Audio vector ops | float32 sum, scale, multiply-accumulate | amd64, arm64 |
+| V210 conversion | 10-bit 4:2:2 packed ↔ 8-bit 4:2:0 planar | amd64, arm64 |
+| Lanczos scaling | Lanczos-3 sinc-based interpolation | amd64, arm64 |
+
+The ST map warp kernels use software prefetch instructions (PREFETCHT0 on x86, PRFM on ARM) to hide the cache miss latency inherent in random source pixel access patterns. The FRC SAD kernels use integer SIMD (no floating point) for deterministic motion estimation results across platforms.
+
+## 13. AI & Machine Learning
+
+SwitchFrame integrates machine learning models for two real-time inference tasks: automatic speech recognition (captioning) and person segmentation (background removal). Both are optional, activated via CLI flags, and designed to fail gracefully -- if the model is unavailable or inference is too slow, the system continues without the feature.
+
+### AI Captions (ASR)
+
+```mermaid
+flowchart LR
+    subgraph capture ["Audio Capture"]
+        MIX["Audio Mixer<br/>(post-master PCM)"] --> VAD["Voice Activity<br/>Detection"]
+    end
+
+    subgraph inference ["Whisper Inference"]
+        VAD -->|"speech detected"| BUF["Accumulation<br/>Buffer<br/>(adaptive 1-3s)"]
+        BUF --> WHISPER["whisper.cpp<br/>(C++ cgo)"]
+        WHISPER --> CONF["Per-Word<br/>Confidence<br/>Scores"]
+    end
+
+    subgraph output ["Caption Output"]
+        CONF --> HOLD["Holdback<br/>Filter<br/>(confidence<br/>threshold)"]
+        HOLD --> PACER["Caption Pacer<br/>(adaptive rate:<br/>1-3 words/tick)"]
+        PACER --> CEA["CEA-608<br/>Encoder"]
+        CEA --> SEI["H.264 SEI<br/>Injection"]
+        CEA --> VANC["SMPTE ST 334<br/>VANC (MXL)"]
+    end
+```
+
+The ASR pipeline uses whisper.cpp with C++ cgo bindings (build tag: `cgo && whisper`). Rather than running inference on fixed intervals, the system uses adaptive timing that starts at 1-second inference intervals and extends to 2-3 seconds when speech is continuous, reducing redundant inference passes while keeping latency low for new utterances.
+
+**Voice Activity Detection (VAD):** A Silero neural VAD model is auto-detected from the model directory at startup. If unavailable, the system falls back to energy-based RMS detection. VAD gates the inference engine -- whisper.cpp only runs when speech is detected, saving significant GPU/CPU resources during silence (common in live production with pre-roll, music segments, and video playback).
+
+**Confidence Filtering:** Whisper returns per-word confidence scores. A holdback filter suppresses words below a configurable threshold, preventing low-confidence hallucinations from reaching the output. This is particularly important for live captioning where corrections are visible and disruptive.
+
+**Speaker Change Detection:** Inter-segment gaps exceeding 300ms trigger speaker change markers, enabling downstream caption formatting to separate speakers visually (new line, dash prefix).
+
+**Caption Pacing:** A pacer drains recognized words at an adaptive rate -- 1 word per tick when the queue is short, scaling to 3 words per tick when backed up. This prevents word dumps (entire sentences appearing at once) while keeping up with fast speech. Output feeds into the existing CEA-608 caption encoder for on-screen display and MPEG-TS embedding.
+
+**Tuning Presets:** Four operator-facing tuning dimensions with named presets:
+- **Inference speed:** fast (1s intervals), balanced (adaptive), accurate (3s intervals)
+- **Confidence filter:** low (0.3), medium (0.5), high (0.7)
+- **Noise floor:** quiet (sensitive VAD), normal, noisy (aggressive VAD threshold)
+- **Speaker detection:** sensitive (200ms gap), normal (300ms), relaxed (500ms)
+
+Three REST endpoints expose status, configuration, and available model list. Enabled via `--asr-model <path>`.
+
+### AI Background Segmentation
+
+```mermaid
+flowchart LR
+    subgraph perpixel ["Per-Source Segmentation Pipeline"]
+        NV12["NV12 Frame<br/>(GPU)"] --> PRE["Preprocess<br/>(bilinear downscale<br/>to 320x320,<br/>NV12 → RGB CHW,<br/>BT.709)"]
+        PRE --> INFER["TensorRT<br/>FP16 Inference<br/>(U2-Net ONNX)"]
+        INFER --> UP["Bilinear<br/>Upscale<br/>(→ source res)"]
+        UP --> ERODE["3x3 Morphological<br/>Erosion<br/>(boundary cleanup)"]
+        ERODE --> EMA["Temporal EMA<br/>Smoothing<br/>(α 0.0–0.9)"]
+        EMA --> SYNC["CUDA Stream<br/>Sync"]
+        SYNC --> MASK["Atomic Mask<br/>Pointer Update"]
+    end
+
+    MASK --> NODE["GPU Pipeline Node<br/>(background replace)"]
+```
+
+Per-source person segmentation runs on dedicated CUDA streams (build tag: `cgo && cuda && tensorrt`), preventing cross-source GPU contention. The 7-step pipeline is designed for real-time operation at 30fps:
+
+1. **Preprocessing:** NV12 → RGB CHW conversion with bilinear downscale to 320x320. BT.709 color matrix ensures correct skin tone representation.
+2. **Inference:** TensorRT FP16 on U2-Net ONNX model. FP16 halves memory bandwidth and doubles throughput on consumer GPUs with minimal quality loss for binary segmentation.
+3. **Upscale:** Bilinear upscale from 320x320 back to source resolution. The low inference resolution is the key latency/quality tradeoff -- 320x320 keeps inference under 5ms on an RTX 3060 while capturing person boundaries accurately enough for broadcast use.
+4. **Erosion:** 3x3 morphological erosion cleans up boundary artifacts where the model is uncertain (hair edges, translucent objects).
+5. **Temporal smoothing:** Exponential moving average across frames (configurable alpha 0.0-0.9) eliminates per-frame mask flicker. Higher alpha values produce smoother masks at the cost of latency when subjects move quickly.
+6. **CUDA stream sync:** Ensures the mask is fully computed before the pipeline node reads it.
+7. **Atomic mask update:** The completed mask is published via atomic pointer swap, so the pipeline node never blocks on inference.
+
+**Lock-free mask delivery** is critical: inference may take longer than one frame period (33ms at 30fps). The pipeline node reads whatever mask is currently published -- if inference is slow, it reuses the previous mask rather than blocking. This means the pipeline frame rate is never gated by segmentation speed.
+
+**Deferred session creation:** When the operator enables segmentation via REST API, the source resolution is not yet known (the source may not have delivered a frame). The CUDA session is created lazily on the first frame arrival, using the actual resolution to allocate buffers.
+
+**Background replacement modes:** transparent (alpha mask only, for downstream compositing), solid color (configurable hex value), and blur (planned). Four REST endpoints manage per-source enable/disable, mode selection, and tuning. Enabled via `--ai-model <path>`.
+
+### Color Grading
+
+```mermaid
+flowchart LR
+    LUT["3D LUT<br/>(.cube file)"] --> UPLOAD["Upload to GPU<br/>(on generation change only,<br/>atomic counter cache)"]
+    UPLOAD --> KERNEL["CUDA Kernel<br/>(trilinear interpolation,<br/>per-pixel)"]
+
+    FRAME["NV12 Frame"] --> KERNEL
+    KERNEL --> BLEND["Intensity Blend<br/>(0.0–1.0 between<br/>original and graded)"]
+    BLEND --> OUT["Graded Frame"]
+
+    subgraph looks ["6 Embedded Broadcast Looks"]
+        direction TB
+        L1["broadcast-news"]
+        L2["cinematic"]
+        L3["cool-drama"]
+        L4["log-to-rec709"]
+        L5["vivid"]
+        L6["warm-natural"]
+    end
+
+    looks -.-> LUT
+```
+
+GPU-accelerated 3D LUT color grading applies a color transformation to every pixel via trilinear interpolation in a CUDA kernel. The pipeline node sits after the DSK compositor, grading the final composited image rather than individual sources. Six embedded broadcast looks provide common starting points; operators can also upload custom `.cube` files stored at `~/.switchframe/colorgrade/`.
+
+**Intensity blending** (0.0 to 1.0) mixes between the original and graded output, allowing subtle adjustments rather than full-strength LUT application. At intensity 0.0, the LUT is effectively bypassed with zero overhead -- the kernel short-circuits.
+
+**LUT caching:** The 3D LUT texture is uploaded to GPU memory only when the generation counter changes (new LUT selected or intensity modified). An atomic counter comparison on each frame avoids redundant uploads -- the common case (same LUT, same intensity) is a single atomic load.
+
+Four REST endpoints manage look selection, intensity, custom LUT upload, and available look listing.
+
+## 14. Resource Management
+
+Real-time video processing at 1080p30 generates significant memory pressure: each YUV420 frame is ~3MB, and the system may hold 50+ frames in flight across the pipeline, frame pool, replay buffers, and stinger clips. Go's garbage collector was never designed for this workload -- scanning gigabytes of frame buffers on every GC cycle introduces unpredictable latency spikes that violate frame deadlines. SwitchFrame addresses this with three mmap-backed caching systems that move large allocations outside the Go heap entirely.
+
+### mmap Allocations
+
+The `server/mmaputil/` package provides memory-mapped allocations via `mmap(2)` (anonymous, private mappings). These allocations are invisible to the Go garbage collector -- they are not part of the heap, so GC never scans them. The tradeoff is that the application must manage their lifecycle explicitly (no finalizers, no automatic collection), but for fixed-size frame buffers with deterministic lifetimes, this is straightforward.
+
+Three subsystems use mmap-backed storage:
+
+**Frame Pool:** The `FramePool` described in Section 2 pre-allocates 32 YUV420 buffers at the pipeline resolution. At 1080p, each buffer is ~3MB, totaling ~96MB. With mmap backing, this 96MB is excluded from GC scanning entirely. Without it, the GC would scan all 96MB on every cycle -- at GOGC=400, that means every ~384MB of allocation triggers a scan of 96MB of frame data that never contains pointers. The mmap approach eliminates ~1.5GB of cumulative GC scanning pressure per minute at 30fps.
+
+**Stinger Clip Cache:** Stinger transitions store pre-decoded PNG frames as YUV420 + per-pixel alpha planes. A 30-frame 1080p stinger is ~156MB. Rather than holding this as Go slices (which the GC would scan), stinger clips are serialized to a flat binary format (magic + header + YUV+alpha per frame), written to a cache file, and memory-mapped back. Go slices point into the mmap region, so frame data is accessible with normal slice operations but invisible to GC. The cache file also enables fast reload -- a previously decoded stinger loads in microseconds (mmap + slice construction) rather than re-decoding PNGs.
+
+**ST Map LUT Cache:** ST map processors pre-compute int32 16.16 fixed-point lookup tables for bilinear warp (two int32 arrays per pixel: source X and source Y coordinates). At 1080p, each LUT pair is ~16MB. Animated ST maps with 90 frames of precomputed cycles would require ~1.4GB of LUTs in Go heap. Instead, LUTs are computed once, serialized to `.st` cache files at `~/.switchframe/stmaps/`, and memory-mapped for subsequent use. The GPU path uses a separate float32 S/T array format optimized for texture upload. Cache files are invalidated by resolution or parameter changes via a header checksum.
+
+### Preview Proxy Encoding
+
+Multiview monitoring requires each browser to decode N source streams simultaneously. At full quality (1080p, ~6 Mbps per source), 9 sources consume ~55 Mbps of bandwidth -- impractical over WiFi and unnecessary for small multiview tiles. Preview proxy encoding solves this by producing a separate low-bitrate encode per source specifically for browser consumption.
+
+```mermaid
+flowchart TD
+    DEC["sourceDecoder<br/>(YUV420, full resolution)"] --> FAN{"Fan-out"}
+
+    FAN -->|"full quality"| SW["Switcher Pipeline<br/>(program processing)"]
+    FAN -->|"scale + encode"| PE["preview.Encoder<br/>(480p, 500 kbps,<br/>ultrafast / baseline)"]
+
+    PE --> RELAY["Per-Source<br/>Browser Relay"]
+    RELAY --> B1["Browser 1<br/>(multiview tile)"]
+    RELAY --> B2["Browser 2"]
+    RELAY --> BN["Browser N"]
+
+    SW --> PROG["Program Relay<br/>(full quality for<br/>recording / SRT / MXL)"]
+```
+
+Each source gets an independent `preview.Encoder` goroutine that scales decoded YUV to 480p and encodes with `ultrafast`/`baseline` x264 at 500 kbps (or GPU-accelerated via NVENC/VideoToolbox when available). The preview encoder replaces the full-quality relay encode for browser consumption -- browsers receive 480p previews for multiview tiles, while the program output path remains full quality for recording, SRT, and MXL.
+
+Key design points:
+- **Independent goroutines:** Each encoder runs in its own goroutine with a channel capacity of 2. If the encoder falls behind, the oldest frame is dropped (newest-wins). No shared state between encoders, so a slow encode on one source never affects others.
+- **Separate codec profile:** `codec.NewPreviewEncoder` uses a dedicated FFmpeg configuration (`ultrafast` preset, `baseline` profile) tuned for minimum encode latency rather than compression efficiency. This is distinct from the program encoder configuration.
+- **Bandwidth reduction:** 9 sources drop from ~55 Mbps (full quality) to ~10 Mbps (480p previews), making WiFi-connected operator tablets practical.
+- **Program path unchanged:** The full-quality pipeline encode feeds recording, SRT destinations, and MXL output at native resolution and bitrate. Only browser multiview uses the preview proxy.
+
+Enabled via `--preview-proxy` (on by default in `make demo`). Configurable resolution (`--preview-resolution`, default 480p) and bitrate (`--preview-bitrate`, default 500 kbps).
+
+## 15. Performance & Design Philosophy
 
 Several cross-cutting design decisions shape the system's architecture. These choices prioritize real-time correctness and operational simplicity over theoretical flexibility.
 
@@ -785,6 +1022,9 @@ Several cross-cutting design decisions shape the system's architecture. These ch
 | Per-transition engine lifecycle | No persistent codec resources between transitions; clean create/destroy |
 | Encoder auto-detection | Same binary on GPU and CPU machines without configuration |
 | Immutable pipeline with atomic swap | Zero-frame-drop reconfiguration; no locks on the processing hot path |
+| GPU graceful fallback | Any GPU node failure passes frame through unchanged; never drops frames |
+| mmap for frame buffers | Eliminates GC scanning of multi-GB frame data; deterministic latency |
+| NV12 GPU internal format | Matches hardware encoder/decoder native format; zero-copy on unified memory |
 | MPEG-TS for recording | Crash-resilient (no moov atom); same muxer as SRT output |
 
 ### Performance Highlights
@@ -796,8 +1036,11 @@ Several cross-cutting design decisions shape the system's architecture. These ch
 - **Per-source frame sync locks:** global lock held only for source lookup, per-source for ring buffer
 - **Atomic source stats:** single-writer pattern, lock-free reads via atomic.Uint32
 - **Cache-line padding:** 56-byte padding on source viewer hot atomics prevents false sharing
-- **SIMD kernels:** alpha blend, chroma key, luma key, SAD (amd64 + arm64 assembly)
+- **SIMD kernels:** 56+ hand-written assembly kernels (amd64 AVX2/SSE2 + arm64 NEON)
 - **GC tuning:** GOGC=400, GOMEMLIMIT=2G, runtime.LockOSThread on video processing goroutine
+- **mmap frame pool:** 1.5GB/min GC scanning eliminated by moving frame buffers off-heap
+- **GPU ST map warp:** <1ms vs 29ms CPU for 1080p per-pixel warp (hardware texture sampling)
+- **Preview proxy:** 55 Mbps → 10 Mbps browser bandwidth for 9-source multiview
 - **Frame rate conversion:** 4 quality levels (none, nearest, blend, MCFI)
 
 ### Technology Stack
@@ -812,6 +1055,10 @@ Several cross-cutting design decisions shape the system's architecture. These ch
 | Video fallback | OpenH264 (cgo, build tag) | Fallback when FFmpeg unavailable |
 | Audio codec | FDK-AAC (cgo) | AAC decode/encode for audio mixing |
 | Shared memory | MXL SDK (cgo, optional) | V210 video + float32 audio via shared memory |
+| GPU compute (macOS) | Metal (Objective-C bridge) | Pipeline acceleration on Apple Silicon |
+| GPU compute (Linux) | CUDA + TensorRT | Pipeline acceleration + AI inference on NVIDIA |
+| ASR inference | whisper.cpp (C++ cgo) | Real-time speech-to-text captioning |
+| Voice activity | Silero VAD (ONNX) | Neural VAD with energy-based fallback |
 | SRT transport | zsiec/srtgo (pure Go) | SRT caller and listener output |
 | TS muxing | go-astits | MPEG-TS container for recording/SRT |
 | Frontend | Svelte 5 + SvelteKit | Reactive SPA with static adapter |
@@ -825,6 +1072,10 @@ Several cross-cutting design decisions shape the system's architecture. These ch
 - `cgo && !noffmpeg` -- enable FFmpeg video codec
 - `cgo && openh264` -- enable OpenH264 fallback codec
 - `cgo && mxl` -- enable MXL shared-memory transport
+- `darwin` -- enable Metal GPU backend (macOS / Apple Silicon)
+- `cgo && cuda` -- enable CUDA GPU backend (NVIDIA Linux)
+- `cgo && whisper` -- enable Whisper.cpp ASR captions
+- `cgo && cuda && tensorrt` -- enable TensorRT AI segmentation
 
 ### Network Ports
 
@@ -845,4 +1096,4 @@ Several cross-cutting design decisions shape the system's architecture. These ch
 | **[Concurrency Model](locking-and-concurrency.md)** | Lock inventory, frame flow diagrams, ordering rules |
 | **[SCTE-35 Guide](scte35.md)** | Ad insertion, rules engine, SCTE-104 integration |
 | **[MXL Guide](mxl.md)** | Shared-memory transport, V210 format, NMOS discovery |
-| **[Deployment](deployment.md)** | CLI flags, Docker, TLS, monitoring |
+| **[Deployment Guide](deployment.md)** | Configuration, CLI flags, GPU setup, production tuning |
