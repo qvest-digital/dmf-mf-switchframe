@@ -419,6 +419,10 @@ export interface ASRState {
 	language?: string;
 	tentative?: string;
 	confidence?: number;
+	speed?: 'fast' | 'balanced' | 'accurate';
+	confidenceFilter?: 'low' | 'medium' | 'high';
+	noiseFloor?: 'quiet' | 'normal' | 'noisy';
+	speakerDetection?: 'sensitive' | 'normal' | 'relaxed';
 }
 
 export type ClipUploadStage = 'uploading' | 'analyzing' | 'transcoding' | 'validating';
