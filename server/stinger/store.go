@@ -113,7 +113,8 @@ type Store struct {
 // NewStore creates a store backed by the given directory.
 // Pre-loads any existing stinger directories.
 // maxClips limits the number of clips that can be loaded; <= 0 defaults to 16.
-func NewStore(dir string, maxClips int) (*Store, error) {
+// cacheDir, if non-empty, enables mmap-backed frame caching for faster restarts.
+func NewStore(dir string, maxClips int, cacheDir string) (*Store, error) {
 	if maxClips <= 0 {
 		maxClips = 16
 	}
@@ -124,6 +125,10 @@ func NewStore(dir string, maxClips int) (*Store, error) {
 		dir:      dir,
 		clips:    make(map[string]*Clip),
 		maxClips: maxClips,
+		cacheDir: cacheDir,
+	}
+	if cacheDir != "" {
+		_ = os.MkdirAll(cacheDir, 0755)
 	}
 	// Pre-load existing stingers
 	entries, err := os.ReadDir(dir)

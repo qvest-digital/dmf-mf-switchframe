@@ -39,7 +39,7 @@ func TestStingerStore_LoadAndList(t *testing.T) {
 	createTestPNG(t, stingerDir, "002.png", 8, 8, color.NRGBA{R: 255, A: 255})
 	createTestPNG(t, stingerDir, "003.png", 8, 8, color.NRGBA{R: 255, A: 0})
 
-	store, err := NewStore(dir, 0)
+	store, err := NewStore(dir, 0, "")
 	require.NoError(t, err)
 
 	names := store.List()
@@ -60,7 +60,7 @@ func TestStingerStore_Delete(t *testing.T) {
 	require.NoError(t, os.MkdirAll(stingerDir, 0755))
 	createTestPNG(t, stingerDir, "001.png", 4, 4, color.NRGBA{A: 255})
 
-	store, err := NewStore(dir, 0)
+	store, err := NewStore(dir, 0, "")
 	require.NoError(t, err)
 	require.Equal(t, 1, len(store.List()))
 
@@ -72,7 +72,7 @@ func TestStingerStore_Delete(t *testing.T) {
 
 func TestStingerStore_DeleteNotFound(t *testing.T) {
 	dir := t.TempDir()
-	store, err := NewStore(dir, 0)
+	store, err := NewStore(dir, 0, "")
 	require.NoError(t, err)
 
 	err = store.Delete("nonexistent")
@@ -85,7 +85,7 @@ func TestStingerStore_SetCutPoint(t *testing.T) {
 	require.NoError(t, os.MkdirAll(stingerDir, 0755))
 	createTestPNG(t, stingerDir, "001.png", 4, 4, color.NRGBA{A: 255})
 
-	store, err := NewStore(dir, 0)
+	store, err := NewStore(dir, 0, "")
 	require.NoError(t, err)
 
 	err = store.SetCutPoint("wipe1", 0.75)
@@ -153,7 +153,7 @@ func TestStingerStore_MismatchedDimensions(t *testing.T) {
 	createTestPNG(t, stingerDir, "001.png", 8, 8, color.NRGBA{A: 255})
 	createTestPNG(t, stingerDir, "002.png", 4, 4, color.NRGBA{A: 255})
 
-	store, err := NewStore(dir, 0)
+	store, err := NewStore(dir, 0, "")
 	require.NoError(t, err)
 	// Should not have loaded the bad stinger
 	_, ok := store.Get("bad")
@@ -166,7 +166,7 @@ func TestStingerStore_OddDimensions(t *testing.T) {
 	require.NoError(t, os.MkdirAll(stingerDir, 0755))
 	createTestPNG(t, stingerDir, "001.png", 3, 3, color.NRGBA{A: 255})
 
-	store, err := NewStore(dir, 0)
+	store, err := NewStore(dir, 0, "")
 	require.NoError(t, err)
 	// Should not have loaded (odd dimensions)
 	_, ok := store.Get("odd")
@@ -178,7 +178,7 @@ func TestStingerStore_EmptyDir(t *testing.T) {
 	stingerDir := filepath.Join(dir, "empty")
 	require.NoError(t, os.MkdirAll(stingerDir, 0755))
 
-	store, err := NewStore(dir, 0)
+	store, err := NewStore(dir, 0, "")
 	require.NoError(t, err)
 	// Should not have loaded (no PNGs)
 	_, ok := store.Get("empty")
@@ -187,7 +187,7 @@ func TestStingerStore_EmptyDir(t *testing.T) {
 
 func TestStingerStore_PathTraversal(t *testing.T) {
 	dir := t.TempDir()
-	store, err := NewStore(dir, 0)
+	store, err := NewStore(dir, 0, "")
 	require.NoError(t, err)
 
 	// These names should all be rejected
@@ -221,7 +221,7 @@ func TestStingerStore_PathTraversal(t *testing.T) {
 
 func TestStingerStore_SentinelErrors(t *testing.T) {
 	dir := t.TempDir()
-	store, err := NewStore(dir, 0)
+	store, err := NewStore(dir, 0, "")
 	require.NoError(t, err)
 
 	// Delete non-existent should return ErrNotFound
@@ -238,7 +238,7 @@ func TestStingerStore_SentinelErrors(t *testing.T) {
 
 func TestStingerStore_Upload(t *testing.T) {
 	dir := t.TempDir()
-	store, err := NewStore(dir, 0)
+	store, err := NewStore(dir, 0, "")
 	require.NoError(t, err)
 
 	// Create a zip with a small 2x2 PNG
@@ -290,7 +290,7 @@ func createTestZip(t *testing.T, width, height, numFrames int) []byte {
 
 func TestStingerStore_MaxClipsLimit(t *testing.T) {
 	dir := t.TempDir()
-	store, err := NewStore(dir, 2) // limit to 2 clips
+	store, err := NewStore(dir, 2, "") // limit to 2 clips
 	require.NoError(t, err)
 
 	// Create 3 stinger directories with small even-dimension PNGs
@@ -318,7 +318,7 @@ func TestStingerStore_MaxClipsLimit(t *testing.T) {
 
 func TestStingerStore_MaxClipsLimitUpload(t *testing.T) {
 	dir := t.TempDir()
-	store, err := NewStore(dir, 2) // limit to 2 clips
+	store, err := NewStore(dir, 2, "") // limit to 2 clips
 	require.NoError(t, err)
 
 	zipData := createTestZip(t, 2, 2, 1) // 1 frame
@@ -339,7 +339,7 @@ func TestStingerStore_UploadConcurrentTOCTOU(t *testing.T) {
 	// Before the pending-set fix, two concurrent Upload calls could both
 	// pass the len(clips) < maxClips check and both succeed.
 	dir := t.TempDir()
-	store, err := NewStore(dir, 2) // limit to 2 clips
+	store, err := NewStore(dir, 2, "") // limit to 2 clips
 	require.NoError(t, err)
 
 	zipData := createTestZip(t, 2, 2, 1) // 1 frame, small
@@ -380,7 +380,7 @@ func TestStingerStore_UploadPendingBlocksDuplicateName(t *testing.T) {
 	// Two concurrent uploads with the same name: the second must get
 	// ErrAlreadyExists even if the first hasn't finished yet.
 	dir := t.TempDir()
-	store, err := NewStore(dir, 16)
+	store, err := NewStore(dir, 16, "")
 	require.NoError(t, err)
 
 	zipData := createTestZip(t, 2, 2, 1)
@@ -414,7 +414,7 @@ func TestStingerStore_UploadPendingBlocksDuplicateName(t *testing.T) {
 func TestStingerStore_DefaultMaxClips(t *testing.T) {
 	dir := t.TempDir()
 	// maxClips <= 0 should default to 16
-	store, err := NewStore(dir, 0)
+	store, err := NewStore(dir, 0, "")
 	require.NoError(t, err)
 	require.Equal(t, 16, store.maxClips)
 }
@@ -464,7 +464,7 @@ func createTestZipWithAudio(t *testing.T, width, height, numFrames, sampleRate, 
 
 func TestStingerStore_UploadWithAudio(t *testing.T) {
 	dir := t.TempDir()
-	store, err := NewStore(dir, 0)
+	store, err := NewStore(dir, 0, "")
 	require.NoError(t, err)
 
 	// Create a zip with PNGs + WAV
@@ -491,7 +491,7 @@ func TestStingerStore_UploadWithAudio(t *testing.T) {
 
 func TestStingerStore_UploadWithoutAudio(t *testing.T) {
 	dir := t.TempDir()
-	store, err := NewStore(dir, 0)
+	store, err := NewStore(dir, 0, "")
 	require.NoError(t, err)
 
 	// Create a zip with only PNGs (no WAV)
@@ -522,7 +522,7 @@ func TestStingerStore_LoadFromDirWithAudio(t *testing.T) {
 	createTestWAV(t, stingerDir, "audio.wav", 48000, 2, 960)
 
 	// Create store - should auto-load the clip with audio
-	store, err := NewStore(dir, 0)
+	store, err := NewStore(dir, 0, "")
 	require.NoError(t, err)
 
 	clip, ok := store.Get("audio-clip")
@@ -541,7 +541,7 @@ func TestStingerStore_LoadFromDirWithAudio(t *testing.T) {
 
 func TestUploadRejectsOversizedZipEntry(t *testing.T) {
 	dir := t.TempDir()
-	store, err := NewStore(dir, 0)
+	store, err := NewStore(dir, 0, "")
 	require.NoError(t, err)
 
 	// Create a zip with a .png-named file that exceeds maxZipEntrySize.
@@ -721,7 +721,7 @@ func TestRGBAToFrame_LimitedRangeRed(t *testing.T) {
 
 func TestStingerStore_UploadRejectsTooManyFrames(t *testing.T) {
 	dir := t.TempDir()
-	store, err := NewStore(dir, 0)
+	store, err := NewStore(dir, 0, "")
 	require.NoError(t, err)
 
 	// Create a zip with maxFramesPerClip+1 PNG frames.
@@ -769,7 +769,7 @@ func BenchmarkRGBAToFrame_GenericAt(b *testing.B) {
 
 func TestStingerStore_UploadAtFrameLimit(t *testing.T) {
 	dir := t.TempDir()
-	store, err := NewStore(dir, 0)
+	store, err := NewStore(dir, 0, "")
 	require.NoError(t, err)
 
 	// Exactly maxFramesPerClip frames should succeed.

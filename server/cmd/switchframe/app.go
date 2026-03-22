@@ -522,11 +522,15 @@ func (a *App) initSubsystems() error {
 	slog.Info("operator store initialized", "path", operatorPath)
 
 	stingerDir := a.statePath("stingers")
-	a.stingerStore, err = stinger.NewStore(stingerDir, 0)
+	stingerCacheDir := ""
+	if a.cfg.CacheDir != "" {
+		stingerCacheDir = filepath.Join(a.cfg.CacheDir, "stingers")
+	}
+	a.stingerStore, err = stinger.NewStore(stingerDir, 0, stingerCacheDir)
 	if err != nil {
 		return fmt.Errorf("create stinger store: %w", err)
 	}
-	slog.Info("stinger store initialized", "path", stingerDir)
+	slog.Info("stinger store initialized", "path", stingerDir, "cacheDir", stingerCacheDir)
 
 	// Session manager for operator session tracking and subsystem locks.
 	a.sessionMgr = operator.NewSessionManager()
