@@ -40,8 +40,8 @@ type Manager struct {
 // NewManager creates a caption manager in ModeOff.
 func NewManager() *Manager {
 	return &Manager{
-		encoder:        NewEncoder(2),
-		ptEncoder:      NewEncoder(2),
+		encoder:        NewEncoder(3),
+		ptEncoder:      NewEncoder(3),
 		sourceCaptions: make(map[string]bool),
 	}
 }

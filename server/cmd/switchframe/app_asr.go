@@ -3,6 +3,7 @@ package main
 import (
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/zsiec/switchframe/server/asr"
@@ -11,6 +12,11 @@ import (
 	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/internal"
 )
+
+// splitWords splits text on whitespace, preserving word boundaries.
+func splitWords(text string) []string {
+	return strings.Fields(text)
+}
 
 // initASR sets up the ASR engine when --asr-model is provided.
 // Requires --captions to be enabled (needs caption manager for output).
@@ -35,11 +41,45 @@ func (a *App) initASR() error {
 
 	a.asrEngine = engine
 
-	// Wire transcript output to caption manager.
+	// Wire transcript output to caption manager with line wrapping.
+	// CEA-608 supports 32 chars per line. We word-wrap and use newlines
+	// to scroll, keeping captions readable on screen.
+	const maxLineChars = 32
+	var captionLinePos int
+
 	engine.OnTranscript(func(text string, isFinal bool) {
-		a.captionMgr.IngestText(text)
+		// Word-wrap: split text into chunks that fit in 32-char lines.
+		words := splitWords(text)
+		for _, word := range words {
+			wordLen := len(word)
+			if wordLen == 0 {
+				continue
+			}
+
+			// If this word would overflow the current line, start a new line.
+			needSpace := captionLinePos > 0
+			spaceNeeded := wordLen
+			if needSpace {
+				spaceNeeded++ // for the space before the word
+			}
+
+			if captionLinePos+spaceNeeded > maxLineChars && captionLinePos > 0 {
+				a.captionMgr.IngestNewline()
+				captionLinePos = 0
+				needSpace = false
+			}
+
+			if needSpace {
+				a.captionMgr.IngestText(" ")
+				captionLinePos++
+			}
+			a.captionMgr.IngestText(word)
+			captionLinePos += wordLen
+		}
+
 		if isFinal {
 			a.captionMgr.IngestNewline()
+			captionLinePos = 0
 		}
 	})
 
