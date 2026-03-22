@@ -27,8 +27,6 @@
 	import OperatorRegistration from '../components/OperatorRegistration.svelte';
 	import OperatorBadge from '../components/OperatorBadge.svelte';
 	import TeamPanel from '../components/TeamPanel.svelte';
-	import STMapPanel from '../components/STMapPanel.svelte';
-	import ColorGradePanel from '../components/ColorGradePanel.svelte';
 	import VideoProcessingPanel from '../components/VideoProcessingPanel.svelte';
 	import AISegmentPanel from '../components/AISegmentPanel.svelte';
 	import LockIndicator from '../components/LockIndicator.svelte';
