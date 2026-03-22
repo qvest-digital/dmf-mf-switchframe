@@ -90,6 +90,8 @@ type AnimatedSTMap struct {
 	index      atomic.Int64
 	processors []*Processor // pre-built per-frame processors
 	buildOnce  sync.Once    // guards processors initialization
+	regenOnce  sync.Once    // guards one-time frame regeneration for GPU path
+	regenFrames []*STMap    // cached regenerated frames (GPU path only)
 }
 
 // NewAnimatedSTMap creates a new animated ST map from a sequence of frames.
@@ -160,20 +162,20 @@ func (a *AnimatedSTMap) RegenerateFrame(idx int) *STMap {
 	}
 
 	// Slow path: Frames freed after BuildProcessorsCached.
-	// Regenerate all frames but return only the one we need.
-	fn, ok := animatedGenerators[a.Generator]
-	if !ok {
-		return nil
-	}
-	if a.Width == 0 || a.Height == 0 {
-		return nil
-	}
-	anim, err := fn(a.GenParams, a.Width, a.Height, frameCount)
-	if err != nil {
-		return nil
-	}
-	if wrapped < len(anim.Frames) {
-		return anim.Frames[wrapped]
+	// Regenerate all frames once and cache for subsequent calls (GPU upload path).
+	a.regenOnce.Do(func() {
+		fn, ok := animatedGenerators[a.Generator]
+		if !ok || a.Width == 0 || a.Height == 0 {
+			return
+		}
+		anim, err := fn(a.GenParams, a.Width, a.Height, frameCount)
+		if err != nil {
+			return
+		}
+		a.regenFrames = anim.Frames
+	})
+	if a.regenFrames != nil && wrapped < len(a.regenFrames) {
+		return a.regenFrames[wrapped]
 	}
 	return nil
 }
