@@ -558,9 +558,9 @@ func (f *FRUC) ComputeFlow(prev, curr *GPUFrame) bool {
 }
 
 // MotionBlur produces a motion-blurred frame using previously computed flow
-// vectors (via ComputeFlow). The shutterAngle controls blur intensity (0-360
-// degrees, where 180 is standard cinematic motion blur). If no NVOFA is
-// available or shutterAngle <= 0, falls back to Interpolate().
+// vectors (via ComputeFlow). The shutterAngle is normalized 0.0-1.0, where
+// 0.5 = 180° (standard cinematic motion blur) and 1.0 = 360°. If no NVOFA
+// is available or shutterAngle <= 0, falls back to Interpolate().
 func (f *FRUC) MotionBlur(prev, curr, output *GPUFrame, alpha, shutterAngle float64) error {
 	if f == nil || prev == nil || curr == nil || output == nil {
 		return ErrGPUNotAvailable

@@ -340,8 +340,8 @@ func (p *gpuReplayPlayer) run(ctx context.Context) {
 	}
 	p.totalOutputFrames = totalFrames
 
-	// Shutter angle: config is 0.0-1.0 normalized, FRUC expects degrees (0-360).
-	shutterAngle := p.config.ShutterAngle * 360.0
+	// Shutter angle: config is 0.0-1.0 normalized, CUDA kernel expects the same.
+	shutterAngle := p.config.ShutterAngle
 
 	// Acquire an output frame for motion blur results.
 	outputFrame, err := pool.Acquire()
