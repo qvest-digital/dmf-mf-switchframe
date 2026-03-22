@@ -58,27 +58,21 @@ function mockSnapshot(overrides: Record<string, any> = {}) {
 			...overrides.switcher,
 		},
 		mixer: {
-			mode: 'passthrough',
+			mode: 'mixing',
 			program_peak_dbfs: [-20.0, -22.3],
 			channels_active: 1,
 			channels_muted: 0,
 			frames_mixed: 0,
-			frames_passthrough: 500,
 			frames_output_total: 500,
-			crossfade_count: 1,
-			crossfade_timeouts: 0,
 			decode_errors: 0,
 			encode_errors: 0,
-			deadline_flushes: 0,
 			max_inter_frame_gap_ms: 34.0,
-			mode_transitions: 4,
 			trans_crossfade_count: 2,
 			...overrides.mixer,
 		},
 		output: {
 			recording: { active: false },
 			srt: { active: false },
-			viewer: null,
 			...overrides.output,
 		},
 		replay: {
@@ -269,11 +263,9 @@ describe('StatsPanel', () => {
 				channels_active: 2,
 				channels_muted: 1,
 				frames_mixed: 1000,
-				frames_passthrough: 0,
+				frames_output_total: 1200,
 				max_inter_frame_gap_ms: 45.0,
-				crossfade_count: 3,
 				trans_crossfade_count: 5,
-				mode_transitions: 8,
 			},
 		}));
 
@@ -287,11 +279,10 @@ describe('StatsPanel', () => {
 		expect(panel?.textContent).toContain('AUDIO MIXER');
 		expect(panel?.textContent).toContain('mixing');
 		expect(panel?.textContent).toContain('1,000 mixed');
+		expect(panel?.textContent).toContain('1,200 output');
 		expect(panel?.textContent).toContain('-20.0');
 		expect(panel?.textContent).toContain('-22.3');
-		expect(panel?.textContent).toContain('3 cut');
 		expect(panel?.textContent).toContain('5 trans');
-		expect(panel?.textContent).toContain('8 transitions');
 	});
 
 	it('shows system stats with frame pool hit rate and memory', async () => {
@@ -528,7 +519,7 @@ describe('StatsPanel', () => {
 			mixer: {
 				mode: 'mixing',
 				frames_mixed: 100,
-				frames_passthrough: 0,
+	
 				decode_errors: 3,
 				encode_errors: 1,
 			},
@@ -645,7 +636,7 @@ describe('StatsPanel', () => {
 			output: {
 				recording: { active: false },
 				srt: { active: true, mode: 'caller', address: '192.168.1.100', port: 9000, bytesWritten: 10485760, droppedPackets: 2, overflowCount: 0 },
-				viewer: null,
+	
 			},
 		}));
 
@@ -668,7 +659,7 @@ describe('StatsPanel', () => {
 			output: {
 				recording: { active: true },
 				srt: { active: false },
-				viewer: null,
+	
 				muxer_pts: 5400000, // 60s at 90kHz
 			},
 		}));
@@ -689,7 +680,7 @@ describe('StatsPanel', () => {
 			output: {
 				recording: { active: true },
 				srt: { active: false },
-				viewer: null,
+	
 				cbr_pacer: { enabled: true, muxrateBps: 10000000, nullPacketsTotal: 5000, realBytesTotal: 1000000, padBytesTotal: 200000, burstTicksTotal: 10 },
 			},
 		}));
@@ -711,7 +702,7 @@ describe('StatsPanel', () => {
 			mixer: {
 				mode: 'mixing',
 				frames_mixed: 100,
-				frames_passthrough: 0,
+	
 				loudness: { momentary_lufs: -23.5, short_term_lufs: -24.0, integrated_lufs: -14.5 },
 			},
 		}));
@@ -733,7 +724,7 @@ describe('StatsPanel', () => {
 			mixer: {
 				mode: 'mixing',
 				frames_mixed: 100,
-				frames_passthrough: 0,
+	
 				channels: {
 					cam1: { active: true, muted: false, afv: true, level: 0, trim: 0, eq_bypassed: false, compressor_bypassed: true, delay_ms: 50, peak_l_dbfs: -18.5, peak_r_dbfs: -20.1 },
 					cam2: { active: true, muted: true, afv: false, level: -6, trim: 3, eq_bypassed: true, compressor_bypassed: true, delay_ms: 0 },
@@ -815,7 +806,7 @@ describe('StatsPanel', () => {
 			mixer: {
 				mode: 'mixing',
 				frames_mixed: 100,
-				frames_passthrough: 0,
+	
 				channels: {
 					cam1: { active: true, muted: false, afv: false, level: 0, trim: 0, eq_bypassed: true, compressor_bypassed: true, delay_ms: 0, peak_l_dbfs: -12.0, peak_r_dbfs: -20.0 },
 					cam2: { active: true, muted: false, afv: false, level: 0, trim: 0, eq_bypassed: true, compressor_bypassed: true, delay_ms: 0, peak_l_dbfs: -18.0, peak_r_dbfs: -19.5 },

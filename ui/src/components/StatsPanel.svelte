@@ -29,7 +29,7 @@
 		sources: Record<string, {
 			health: string;
 			decode: {
-				current: { last_ns: number; drops: number; avg_fps: number; avg_frame_bytes: number };
+				current: { last_ns: number; drops: number; avg_fps: number; avg_frame_bytes: number; ingest_fps: number };
 				windows: PerfWindows;
 			};
 		}>;
@@ -72,7 +72,6 @@
 			};
 		};
 		output: {
-			viewer: { video_sent: number; video_dropped: number; audio_dropped: number };
 			muxer_pts: number;
 			srt: { bytes_written: number; overflow_count: number };
 			recording: { active: boolean };
@@ -181,6 +180,10 @@
 	interface FrameSyncData {
 		sources: Record<string, FrameSyncSource>;
 		frc_quality: string;
+		clock_driven?: boolean;
+		program_source?: string;
+		program_driven_releases?: number;
+		timer_driven_releases?: number;
 	}
 
 	interface RelayViewer {
@@ -190,6 +193,7 @@
 		audio_sent: number;
 		audio_dropped: number;
 		bytes_sent: number;
+		last_video_ts_ms?: number;
 	}
 
 	interface ReplayBuffer {
@@ -233,7 +237,6 @@
 
 	interface GPUPipelineDebugSnapshot {
 		gpu: boolean;
-		backend: string;
 		active_nodes: GPUPipelineDebugNode[];
 		total_nodes: number;
 		run_count: number;
@@ -263,7 +266,9 @@
 				frames_processed: number;
 				frames_broadcast: number;
 				frames_dropped: number;
+				epoch_stale: number;
 				encode_nil: number;
+				encode_drop: number;
 				queue_len: number;
 				last_proc_time_ms: number;
 				max_proc_time_ms: number;
@@ -276,6 +281,10 @@
 				trans_seam_last_ms: number;
 				trans_seam_max_ms: number;
 				trans_seam_count: number;
+				gpu_frames_processed: number;
+				gpu_cache_misses: number;
+				gpu_transition_frames: number;
+				gpu_fallback_frames: number;
 			};
 			frame_budget_ms?: number;
 			frame_pool?: { hits: number; misses: number; capacity: number; buf_size: number };
@@ -302,27 +311,29 @@
 			channels?: Record<string, ChannelDetail>;
 			loudness?: LoudnessData;
 			frames_mixed: number;
-			frames_passthrough: number;
 			frames_output_total?: number;
-			crossfade_count?: number;
-			crossfade_timeouts?: number;
-			decode_errors?: number;
-			encode_errors?: number;
-			deadline_flushes?: number;
-			max_inter_frame_gap_ms?: number;
-			mode_transitions?: number;
 			trans_crossfade_active?: boolean;
 			trans_crossfade_pos?: number;
 			trans_crossfade_from?: string;
 			trans_crossfade_to?: string;
 			trans_crossfade_count?: number;
+			decode_errors?: number;
+			encode_errors?: number;
+			max_inter_frame_gap_ms?: number;
 		};
 		output?: {
-			recording?: { active: boolean; fileCount?: number; latestFile?: string };
+			recording?: {
+				active: boolean;
+				filename?: string;
+				bytesWritten?: number;
+				durationSecs?: number;
+				droppedPackets?: number;
+				error?: string;
+			};
 			srt?: SRTStatusDetail;
-			viewer?: { video_sent: number; video_dropped: number; audio_sent: number; audio_dropped: number } | null;
 			destinations?: Array<{ name?: string; active?: boolean }>;
 			muxer_pts?: number;
+			lip_sync_offset_ms?: number;
 			cbr_pacer?: CBRPacerStatus;
 		};
 		replay?: {
@@ -421,6 +432,8 @@
 	}
 
 	// Perf view state
+	let cpuPipelineExpanded = $state(false);
+	const gpuActive = $derived(!!snapshot?.switcher?.gpu_pipeline);
 	let viewMode = $state<'debug' | 'perf' | 'browser'>('debug');
 	let perfData = $state<PerfSnapshot | null>(null);
 	let browserData = $state<Record<string, SourceDiagnostics> | null>(null);
@@ -1082,17 +1095,19 @@
 				<div class="section">
 					<div class="section-label">OUTPUT</div>
 					<div class="perf-stat-row">
-						<span>Video sent</span>
-						<span>{fmtCount(perfData.output.viewer.video_sent)}</span>
-					</div>
-					<div class="perf-stat-row">
-						<span>Video dropped</span>
-						<span class:warn={perfData.output.viewer.video_dropped > 0}>{perfData.output.viewer.video_dropped}</span>
+						<span>Muxer PTS</span>
+						<span>{perfData.output.muxer_pts > 0 ? fmtPtsTimecode(perfData.output.muxer_pts) : '-'}</span>
 					</div>
 					<div class="perf-stat-row">
 						<span>SRT bytes</span>
 						<span>{fmtBytes(perfData.output.srt.bytes_written)}</span>
 					</div>
+					{#if perfData.output.srt.overflow_count > 0}
+						<div class="perf-stat-row">
+							<span>SRT overflows</span>
+							<span class="warn">{perfData.output.srt.overflow_count}</span>
+						</div>
+					{/if}
 					<div class="perf-stat-row">
 						<span>Recording</span>
 						<span>{perfData.output.recording.active ? 'ACTIVE' : 'inactive'}</span>
@@ -1489,7 +1504,7 @@
 				<div class="section">
 					<div class="section-label">
 						GPU PIPELINE
-						<span class="gpu-backend-badge">{gpuPipe.backend?.toUpperCase() ?? 'GPU'}</span>
+						<span class="gpu-backend-badge">GPU</span>
 						<span class="node-count">{gpuPipe.active_nodes?.length ?? 0}/{gpuPipe.total_nodes ?? 0} nodes</span>
 					</div>
 					<div class="pipeline-flow">
@@ -1551,8 +1566,13 @@
 
 			<!-- Pipeline Graph -->
 			<div class="section">
-				<div class="section-label">
-					{#if snapshot?.switcher?.gpu_pipeline}CPU{/if} PIPELINE
+				<div class="section-label" class:collapsible={gpuActive} onclick={() => { if (gpuActive) cpuPipelineExpanded = !cpuPipelineExpanded; }} role={gpuActive ? 'button' : undefined}>
+					{#if gpuActive}
+						<span class="collapse-arrow" class:expanded={cpuPipelineExpanded}>&#x25B6;</span>
+						CPU PIPELINE <span class="dim">(pass-through)</span>
+					{:else}
+						PIPELINE
+					{/if}
 					{#if pipelineData}
 						<span class="epoch-badge">epoch {pipelineData.epoch}</span>
 						{#if pipelineData.totalNodes}
@@ -1560,7 +1580,7 @@
 						{/if}
 					{/if}
 				</div>
-				{#if pipelineData}
+				{#if pipelineData && (!gpuActive || cpuPipelineExpanded)}
 					<div class="pipeline-flow">
 						<!-- Input summary -->
 						<div class="flow-input">
@@ -1751,11 +1771,27 @@
 								{pipe.trans_seam_max_ms.toFixed(1)}ms seam
 							</span>
 						{/if}
+						{#if (pipe.gpu_frames_processed ?? 0) > 0}
+							<span class="chip gpu-chip">
+								GPU {fmtCount(pipe.gpu_frames_processed)}
+							</span>
+							{#if (pipe.gpu_fallback_frames ?? 0) > 0}
+								<span class="chip warn-chip">
+									{pipe.gpu_fallback_frames} fallback
+								</span>
+							{/if}
+							{#if (pipe.gpu_cache_misses ?? 0) > 0}
+								<span class="chip">
+									{pipe.gpu_cache_misses} cache miss
+								</span>
+							{/if}
+						{/if}
 					</div>
 				{/if}
 			</div>
 
-			<!-- Node Timing Sparklines -->
+			<!-- Node Timing Sparklines (hidden when GPU active — CPU nodes are pass-through) -->
+			{#if !gpuActive}
 			<div class="section">
 				<div class="section-label">NODE TIMING</div>
 				{#if pipelineData}
@@ -1790,6 +1826,7 @@
 					</div>
 				{/if}
 			</div>
+			{/if}
 
 			<!-- Lip-Sync Gauge -->
 			{#if pipelineData}
@@ -1919,6 +1956,12 @@
 						<span class="stat-val" style="flex: 2">
 							{#if snapshot?.output?.recording?.active}
 								<span class="rec-active">REC</span>
+								{#if snapshot.output.recording.durationSecs}
+									{fmtDuration(snapshot.output.recording.durationSecs)}
+								{/if}
+								{#if snapshot.output.recording.bytesWritten}
+									· {fmtBytes(snapshot.output.recording.bytesWritten)}
+								{/if}
 							{:else}
 								inactive
 							{/if}
@@ -1967,6 +2010,12 @@
 						<div class="stat-row">
 							<span class="stat-key">Muxer PTS</span>
 							<span class="stat-val" style="flex: 2">{fmtPtsTimecode(snapshot.output.muxer_pts)}</span>
+						</div>
+					{/if}
+					{#if snapshot?.output?.lip_sync_offset_ms !== undefined}
+						<div class="stat-row">
+							<span class="stat-key">Lip Sync</span>
+							<span class="stat-val" style="flex: 2">{snapshot.output.lip_sync_offset_ms.toFixed(1)}ms</span>
 						</div>
 					{/if}
 					{#if snapshot?.output?.cbr_pacer}
@@ -2070,7 +2119,7 @@
 						<div class="stat-row">
 							<span class="stat-key">Frames</span>
 							<span class="stat-val">{fmtCount(mixer.frames_mixed)} mixed</span>
-							<span class="stat-val">{fmtCount(mixer.frames_passthrough)} pass</span>
+							<span class="stat-val">{fmtCount(mixer.frames_output_total)} output</span>
 						</div>
 						{#if (mixer.channels_active ?? 0) > 0 || (mixer.channels_muted ?? 0) > 0}
 							<div class="stat-row">
@@ -2085,11 +2134,10 @@
 								<span class="stat-val" style="flex: 2">{(mixer.max_inter_frame_gap_ms ?? 0).toFixed(1)}ms</span>
 							</div>
 						{/if}
-						{#if (mixer.trans_crossfade_count ?? 0) > 0 || (mixer.crossfade_count ?? 0) > 0}
+						{#if (mixer.trans_crossfade_count ?? 0) > 0}
 							<div class="stat-row">
 								<span class="stat-key">Crossfades</span>
-								<span class="stat-val">{mixer.crossfade_count ?? 0} cut</span>
-								<span class="stat-val">{mixer.trans_crossfade_count ?? 0} trans</span>
+								<span class="stat-val" style="flex: 2">{mixer.trans_crossfade_count ?? 0} trans</span>
 							</div>
 						{/if}
 						{#if mixer.trans_crossfade_active}
@@ -2106,12 +2154,6 @@
 								<span class="stat-key">Errors</span>
 								<span class="stat-val">{mixer.decode_errors ?? 0} dec</span>
 								<span class="stat-val">{mixer.encode_errors ?? 0} enc</span>
-							</div>
-						{/if}
-						{#if (mixer.mode_transitions ?? 0) > 0}
-							<div class="stat-row">
-								<span class="stat-key">Mode Δ</span>
-								<span class="stat-val" style="flex: 2">{mixer.mode_transitions} transitions</span>
 							</div>
 						{/if}
 						{#if mixer.loudness}
@@ -2161,7 +2203,17 @@
 					<div class="section-label">
 						FRAME SYNC
 						<span class="node-count">FRC: {fsync.frc_quality}</span>
+						{#if fsync.clock_driven}
+							<span class="node-count">clock</span>
+						{/if}
 					</div>
+					{#if fsync.program_driven_releases || fsync.timer_driven_releases}
+						<div class="stat-row">
+							<span class="stat-key">Releases</span>
+							<span class="stat-val">{fmtCount(fsync.program_driven_releases)} pgm</span>
+							<span class="stat-val">{fmtCount(fsync.timer_driven_releases)} timer</span>
+						</div>
+					{/if}
 					<div class="stats-grid">
 						{#each fsyncKeys as key}
 							{@const ss = fsync.sources[key]}
@@ -2364,6 +2416,21 @@
 		display: flex;
 		align-items: center;
 		gap: 8px;
+	}
+	.section-label.collapsible {
+		cursor: pointer;
+		user-select: none;
+	}
+	.section-label.collapsible:hover {
+		color: var(--text-secondary);
+	}
+	.collapse-arrow {
+		font-size: 8px;
+		transition: transform 150ms ease;
+		display: inline-block;
+	}
+	.collapse-arrow.expanded {
+		transform: rotate(90deg);
 	}
 
 	.loading {
@@ -2708,6 +2775,10 @@
 	.crit-chip {
 		color: var(--status-crit);
 		border-color: var(--tally-program-medium);
+	}
+	.gpu-chip {
+		color: rgba(56, 189, 248, 0.9);
+		border-color: rgba(56, 189, 248, 0.3);
 	}
 
 	/* --- Sparklines --- */
