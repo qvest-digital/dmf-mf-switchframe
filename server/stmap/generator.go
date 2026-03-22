@@ -73,13 +73,25 @@ func registerAnimatedGenerator(info GeneratorInfo, fn AnimatedGeneratorFunc) {
 
 // GenerateAnimated creates an animated ST map using the named generator.
 // Unknown params are ignored; missing params use defaults from GeneratorInfo.
+// Generator metadata (name, resolved params, dimensions) is stored on the
+// returned AnimatedSTMap so frames can be regenerated on demand after
+// BuildProcessorsCached frees the float32 source data.
 func GenerateAnimated(typeName string, params map[string]float64, w, h, frameCount int) (*AnimatedSTMap, error) {
 	fn, ok := animatedGenerators[typeName]
 	if !ok {
 		return nil, fmt.Errorf("stmap: unknown animated generator type %q", typeName)
 	}
 	resolved := resolveParams(animatedGeneratorInfos[typeName], params)
-	return fn(resolved, w, h, frameCount)
+	anim, err := fn(resolved, w, h, frameCount)
+	if err != nil {
+		return nil, err
+	}
+	// Store generator metadata for on-demand frame regeneration (GPU path).
+	anim.Generator = typeName
+	anim.GenParams = resolved
+	anim.Width = w
+	anim.Height = h
+	return anim, nil
 }
 
 // ListAnimatedGenerators returns sorted names of all registered animated generators.
