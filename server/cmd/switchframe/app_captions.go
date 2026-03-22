@@ -28,10 +28,15 @@ func (a *App) initCaptions() error {
 		a.broadcastState(nil)
 	})
 
-	// Wire broadcast sink so authored captions go to the MoQ captions track.
+	// Wire broadcast sink so authored captions go to the MoQ captions track
+	// on both the program relay (full-quality SRT/recording subscribers) and
+	// the program-preview relay (browser multiview subscribers).
 	mgr.SetBroadcastSink(func(frame *ccx.CaptionFrame) {
 		if relay := a.sw.ProgramRelay(); relay != nil {
 			relay.BroadcastCaptions(frame)
+		}
+		if a.programPreviewRelay != nil {
+			a.programPreviewRelay.BroadcastCaptions(frame)
 		}
 	})
 
@@ -54,6 +59,13 @@ func (a *App) initCaptions() error {
 			}
 		})
 	}
+
+	// Mirror passthrough captions (from source SEI) to program-preview relay.
+	a.sw.SetOnCaptionBroadcast(func(frame *ccx.CaptionFrame) {
+		if a.programPreviewRelay != nil {
+			a.programPreviewRelay.BroadcastCaptions(frame)
+		}
+	})
 
 	slog.Info("captions enabled")
 	return nil

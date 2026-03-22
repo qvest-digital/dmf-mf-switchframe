@@ -434,6 +434,11 @@ type Switcher struct {
 	// and SEI injection into encoded video frames. Optional (nil = no captions).
 	captionMgr captionManager
 
+	// onCaptionBroadcast is called after captions are broadcast to the program
+	// relay, allowing additional sinks (e.g., program-preview relay) to receive
+	// the same caption data. Set by the app layer via SetOnCaptionBroadcast.
+	onCaptionBroadcast atomic.Pointer[func(*ccx.CaptionFrame)]
+
 	// Caption SEI injection buffers removed — broadcastWithCaptions is now
 	// called from the async encodeLoop goroutine, so shared mutable buffers
 	// would race during pipeline swap. Per-frame allocation is negligible.
@@ -1415,6 +1420,13 @@ func (s *Switcher) SetCaptionManager(cm captionManager) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.captionMgr = cm
+}
+
+// SetOnCaptionBroadcast registers a callback that fires whenever passthrough
+// captions are broadcast to the program relay. Used by the app layer to
+// mirror captions to the program-preview relay.
+func (s *Switcher) SetOnCaptionBroadcast(fn func(*ccx.CaptionFrame)) {
+	s.onCaptionBroadcast.Store(&fn)
 }
 
 // ForceNextIDRPtr returns a pointer to the forceNextIDR atomic for GPU encode.
@@ -3413,4 +3425,9 @@ func (s *Switcher) handleCaptionFrame(sourceKey string, frame *ccx.CaptionFrame)
 	}
 
 	s.programRelay.BroadcastCaptions(frame)
+
+	// Notify additional caption sinks (e.g., program-preview relay).
+	if cb := s.onCaptionBroadcast.Load(); cb != nil {
+		(*cb)(frame)
+	}
 }
