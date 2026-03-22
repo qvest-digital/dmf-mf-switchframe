@@ -6,8 +6,7 @@ import (
 	"time"
 )
 
-// newTestEngine creates an Engine with nil TRT for testing non-inference paths.
-// NewEngine cannot be used on macOS because WhisperTRT returns ErrASRNotAvailable.
+// newTestEngine creates an Engine with nil whisper for testing non-inference paths.
 func newTestEngine() *Engine {
 	return &Engine{
 		resampler: NewResampler(48000, 2, 16000),
@@ -17,7 +16,6 @@ func newTestEngine() *Engine {
 			HangoverMs:  500,
 			SampleRate:  16000,
 		}),
-		mel:      NewMelSpectrogram(),
 		language: "en",
 		inferMs:  3000,
 		doneCh:   make(chan struct{}),
@@ -244,7 +242,7 @@ func TestEngine_SetLanguage(t *testing.T) {
 }
 
 func TestEngine_NewEngineFailsWithoutTRT(t *testing.T) {
-	_, err := NewEngine(EngineConfig{ModelDir: "/tmp/nonexistent"})
+	_, err := NewEngine(EngineConfig{ModelPath: "/tmp/nonexistent"})
 	if err == nil {
 		t.Fatal("expected error without TensorRT")
 	}

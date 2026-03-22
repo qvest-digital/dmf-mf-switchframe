@@ -25,8 +25,8 @@ func (a *App) initASR() error {
 	}
 
 	engine, err := asr.NewEngine(asr.EngineConfig{
-		ModelDir: a.cfg.ASRModelPath,
-		UseFP16:  true,
+		ModelPath: a.cfg.ASRModelPath,
+		UseGPU:    true,
 	})
 	if err != nil {
 		slog.Warn("ASR engine unavailable", "error", err)
