@@ -223,6 +223,10 @@ func (a *AnimatedSTMap) BuildProcessorsCached(cacheDir string) {
 }
 
 // Close munmaps all mmap-backed processors. Safe to call multiple times.
+// IMPORTANT: Close must not be called while any goroutine is using
+// ProcessorAt(). In practice this is enforced by the Registry: RemoveProgram()
+// is always called before Delete(), ensuring the pipeline has stopped
+// referencing the processors before they are munmapped.
 func (a *AnimatedSTMap) Close() error {
 	var firstErr error
 	for _, p := range a.processors {

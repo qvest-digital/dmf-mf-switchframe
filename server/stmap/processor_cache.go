@@ -169,6 +169,10 @@ func serializeLUTs(sx, sy, csx, csy []int32) []byte {
 // byteSliceToInt32 reinterprets a byte slice as an int32 slice without
 // copying. The byte slice must be aligned (mmap'd regions are page-aligned)
 // and its length must be a multiple of 4.
+//
+// IMPORTANT: This assumes native little-endian byte order, matching the
+// little-endian serialization in serializeLUTs. Both target platforms
+// (linux/amd64, linux/arm64, darwin/arm64) are little-endian.
 func byteSliceToInt32(b []byte) []int32 {
 	if len(b) == 0 {
 		return nil

@@ -23,33 +23,35 @@ const cacheHeaderSize = 28 // 4 (magic) + 4 (version) + 4 (width) + 4 (height) +
 //	[frame1 YUV: w*h*3/2 bytes][frame1 Alpha: w*h bytes]
 //	...
 func WriteCache(path string, clip *Clip) error {
-	w := clip.Width
-	h := clip.Height
-	yuvSize := w * h * 3 / 2
-	alphaSize := w * h
-	frameSize := yuvSize + alphaSize
-	totalSize := cacheHeaderSize + len(clip.Frames)*frameSize
-
-	buf := make([]byte, totalSize)
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("stinger cache: create %s: %w", path, err)
+	}
+	defer func() { _ = f.Close() }()
 
 	// Write header.
-	copy(buf[0:4], cacheMagic)
-	binary.LittleEndian.PutUint32(buf[4:8], cacheVersion)
-	binary.LittleEndian.PutUint32(buf[8:12], uint32(w))
-	binary.LittleEndian.PutUint32(buf[12:16], uint32(h))
-	binary.LittleEndian.PutUint32(buf[16:20], uint32(len(clip.Frames)))
-	binary.LittleEndian.PutUint64(buf[20:28], math.Float64bits(clip.CutPoint))
-
-	// Write frames.
-	off := cacheHeaderSize
-	for i := range clip.Frames {
-		copy(buf[off:off+yuvSize], clip.Frames[i].YUV)
-		off += yuvSize
-		copy(buf[off:off+alphaSize], clip.Frames[i].Alpha)
-		off += alphaSize
+	var hdr [cacheHeaderSize]byte
+	copy(hdr[0:4], cacheMagic)
+	binary.LittleEndian.PutUint32(hdr[4:8], cacheVersion)
+	binary.LittleEndian.PutUint32(hdr[8:12], uint32(clip.Width))
+	binary.LittleEndian.PutUint32(hdr[12:16], uint32(clip.Height))
+	binary.LittleEndian.PutUint32(hdr[16:20], uint32(len(clip.Frames)))
+	binary.LittleEndian.PutUint64(hdr[20:28], math.Float64bits(clip.CutPoint))
+	if _, err := f.Write(hdr[:]); err != nil {
+		return fmt.Errorf("stinger cache: write header: %w", err)
 	}
 
-	return os.WriteFile(path, buf, 0644)
+	// Stream frames directly to file (avoids large heap allocation).
+	for i := range clip.Frames {
+		if _, err := f.Write(clip.Frames[i].YUV); err != nil {
+			return fmt.Errorf("stinger cache: write frame %d YUV: %w", i, err)
+		}
+		if _, err := f.Write(clip.Frames[i].Alpha); err != nil {
+			return fmt.Errorf("stinger cache: write frame %d alpha: %w", i, err)
+		}
+	}
+
+	return f.Close()
 }
 
 // LoadCache loads a clip from a cache file via mmap. The returned Clip's
