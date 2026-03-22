@@ -17,13 +17,11 @@
 	import StatsPanel from '../components/StatsPanel.svelte';
 	import PipelineGraph from '../components/PipelineGraph.svelte';
 	import IOPanel from '../components/IOPanel.svelte';
-	import GraphicsPanel from '../components/GraphicsPanel.svelte';
+	import CompositionPanel from '../components/CompositionPanel.svelte';
 	import MacroPanel from '../components/MacroPanel.svelte';
-	import KeyPanel from '../components/KeyPanel.svelte';
 	import ReplayPanel from '../components/ReplayPanel.svelte';
 	import PresetPanel from '../components/PresetPanel.svelte';
 	import SCTE35Panel from '../components/SCTE35Panel.svelte';
-	import LayoutPanel from '../components/LayoutPanel.svelte';
 	import CaptionsPanel from '../components/CaptionsPanel.svelte';
 	import ClipsPanel from '../components/ClipsPanel.svelte';
 	import OperatorRegistration from '../components/OperatorRegistration.svelte';
@@ -67,6 +65,7 @@
 	let layoutTabActive = $state(false);
 	let graphicsTabActive = $state(false);
 	let activeBottomTab = $state('Audio');
+	let composeSubTab = $state<'layout' | 'graphics' | 'keys'>('layout');
 	let graphicsSelectedLayerId = $state<number | null>(null);
 	let layoutMode = $state<LayoutMode>(getLayoutMode());
 	let mounted = $state(false);
@@ -517,6 +516,13 @@
 		prevProgramError = error;
 	});
 
+	// Sync overlay visibility when compose sub-tab changes
+	$effect(() => {
+		const _subTab = composeSubTab;
+		layoutTabActive = activeBottomTab === 'Compose' && _subTab === 'layout';
+		graphicsTabActive = activeBottomTab === 'Compose' && _subTab === 'graphics';
+	});
+
 	// Create/destroy FastControl based on WebTransport connection state
 	$effect(() => {
 		if (connectionState === 'webtransport' && !fastControl) {
@@ -708,7 +714,7 @@
 					<BottomTabs
 					replayActive={store.effectiveState.replay?.state === 'playing' || store.effectiveState.replay?.state === 'paused'}
 					aiAvailable={store.effectiveState.aiSegmentation?.available === true}
-					onTabChange={(tab) => { layoutTabActive = tab === 'Layout'; graphicsTabActive = tab === 'Graphics'; activeBottomTab = tab; }}
+					onTabChange={(tab) => { layoutTabActive = tab === 'Compose' && composeSubTab === 'layout'; graphicsTabActive = tab === 'Compose' && composeSubTab === 'graphics'; activeBottomTab = tab; }}
 				>
 					{#snippet children(activeTab)}
 						{#if activeTab === 'Audio'}
@@ -720,22 +726,18 @@
 								{/if}
 								<AudioMixer state={store.effectiveState} {sourceLevels} {programLevels} {pflActiveSource} pflMode={pflActiveMode} {pflManager} selectedChannel={selectedAudioChannel} onPFLToggle={handlePFLToggle} onStateUpdate={store.applyUpdate} onChannelSelect={(key) => { selectedAudioChannel = key; }} />
 							</div>
-						{:else if activeTab === 'Graphics'}
+						{:else if activeTab === 'Compose'}
 							<div class="tab-panel">
 								{#if (store.effectiveState.operators?.length ?? 0) > 0}
 									<div class="panel-header">
 										<LockIndicator state={store.effectiveState} subsystem="graphics" />
 									</div>
 								{/if}
-								<GraphicsPanel state={store.effectiveState} externalSelectedLayerId={graphicsSelectedLayerId} />
+								<CompositionPanel state={store.effectiveState} bind:activeSubTab={composeSubTab} externalSelectedLayerId={graphicsSelectedLayerId} />
 							</div>
 						{:else if activeTab === 'Macros'}
 							<div class="tab-panel">
 								<MacroPanel state={store.effectiveState} />
-							</div>
-						{:else if activeTab === 'Keys'}
-							<div class="tab-panel">
-								<KeyPanel state={store.effectiveState} />
 							</div>
 						{:else if activeTab === 'Replay'}
 							<div class="tab-panel">
@@ -757,10 +759,6 @@
 								{:else}
 									<div class="panel-disabled">SCTE-35 not enabled on server</div>
 								{/if}
-							</div>
-						{:else if activeTab === 'Layout'}
-							<div class="tab-panel">
-								<LayoutPanel state={store.effectiveState} />
 							</div>
 						{:else if activeTab === 'Captions'}
 							<div class="tab-panel">

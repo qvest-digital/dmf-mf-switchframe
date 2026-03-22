@@ -8,23 +8,30 @@ afterEach(() => {
 });
 
 describe('BottomTabs', () => {
-	it('renders all tabs including Presets', () => {
+	it('renders all tabs including Compose', () => {
 		const { container } = render(BottomTabs);
 		const tabs = container.querySelectorAll('[role="tab"]');
 		const tabLabels = Array.from(tabs).map((t) => t.textContent?.replace(/\^[0-9]/, '').trim());
 		expect(tabLabels).toContain('Audio');
-		expect(tabLabels).toContain('Graphics');
-		expect(tabLabels).toContain('Macros');
-		expect(tabLabels).toContain('Keys');
+		expect(tabLabels).toContain('Compose');
+		expect(tabLabels).toContain('Video');
 		expect(tabLabels).toContain('Replay');
-		expect(tabLabels).toContain('Presets');
-		expect(tabLabels).toContain('SCTE');
-		expect(tabLabels).toContain('Layout');
 		expect(tabLabels).toContain('Captions');
+		expect(tabLabels).toContain('SCTE');
+		expect(tabLabels).toContain('Macros');
+		expect(tabLabels).toContain('Presets');
 		expect(tabLabels).toContain('Clips');
 		expect(tabLabels).toContain('Team');
-		expect(tabLabels).toContain('Video');
-		expect(tabs.length).toBe(12);
+		expect(tabs.length).toBe(10);
+	});
+
+	it('does not render old Layout, Graphics, or Keys tabs', () => {
+		const { container } = render(BottomTabs);
+		const tabs = container.querySelectorAll('[role="tab"]');
+		const tabLabels = Array.from(tabs).map((t) => t.textContent?.replace(/\^[0-9]/, '').trim());
+		expect(tabLabels).not.toContain('Layout');
+		expect(tabLabels).not.toContain('Graphics');
+		expect(tabLabels).not.toContain('Keys');
 	});
 
 	it('renders Presets tab', () => {
@@ -34,12 +41,12 @@ describe('BottomTabs', () => {
 		expect(presetsTab!.textContent).toContain('Presets');
 	});
 
-	it('responds to Ctrl+Shift+9 for Presets tab', async () => {
+	it('responds to Ctrl+Shift+8 for Presets tab', async () => {
 		const { container } = render(BottomTabs);
 
-		// Presets is the 9th tab, triggered by Ctrl+Shift+9
+		// Presets is the 8th tab, triggered by Ctrl+Shift+8
 		const event = new KeyboardEvent('keydown', {
-			code: 'Digit9',
+			code: 'Digit8',
 			ctrlKey: true,
 			shiftKey: true,
 			altKey: false,
@@ -84,6 +91,30 @@ describe('BottomTabs', () => {
 		const videoTab = container.querySelector('#tab-video');
 		expect(videoTab?.getAttribute('aria-selected')).toBe('true');
 		expect(localStorage.getItem('sf-active-tab')).toBe('Video');
+	});
+
+	it('migrates old Layout tab to Compose', () => {
+		localStorage.setItem('sf-active-tab', 'Layout');
+		const { container } = render(BottomTabs);
+		const composeTab = container.querySelector('#tab-compose');
+		expect(composeTab?.getAttribute('aria-selected')).toBe('true');
+		expect(localStorage.getItem('sf-active-tab')).toBe('Compose');
+	});
+
+	it('migrates old Graphics tab to Compose', () => {
+		localStorage.setItem('sf-active-tab', 'Graphics');
+		const { container } = render(BottomTabs);
+		const composeTab = container.querySelector('#tab-compose');
+		expect(composeTab?.getAttribute('aria-selected')).toBe('true');
+		expect(localStorage.getItem('sf-active-tab')).toBe('Compose');
+	});
+
+	it('migrates old Keys tab to Compose', () => {
+		localStorage.setItem('sf-active-tab', 'Keys');
+		const { container } = render(BottomTabs);
+		const composeTab = container.querySelector('#tab-compose');
+		expect(composeTab?.getAttribute('aria-selected')).toBe('true');
+		expect(localStorage.getItem('sf-active-tab')).toBe('Compose');
 	});
 
 	it('ignores invalid localStorage tab values', () => {
