@@ -244,20 +244,23 @@ type pacerWord struct {
 type captionPacer struct {
 	mgr *caption.Manager
 
-	mu      sync.Mutex
-	queue   []pacerWord
-	held    *pacerWord // low-confidence word waiting for confirmation
-	stopCh  chan struct{}
-	stopped bool
-	linePos int // current position on the CEA-608 line
+	mu           sync.Mutex
+	queue        []pacerWord
+	held         *pacerWord // low-confidence word waiting for confirmation
+	stopCh       chan struct{}
+	stopped      bool
+	linePos      int       // current position on the CEA-608 line
+	lastEmitTime time.Time // when the last word was displayed
+	cleared      bool      // true if we already cleared after timeout
 }
 
 const (
 	pacerMaxLineChars     = 32
-	pacerWordsPerSecond   = 3   // ~180 WPM
-	pacerConfidenceThresh = 0.7 // words below this are held back one tick
-	pacerSpeakerChangeGap = 300 // ms gap in whisper segments → speaker change
-	pacerMaxQueueWords    = 50  // cap to prevent unbounded growth (higher since adaptive drain)
+	pacerWordsPerSecond   = 3             // ~180 WPM
+	pacerConfidenceThresh = 0.7           // words below this are held back one tick
+	pacerSpeakerChangeGap = 300           // ms gap in whisper segments → speaker change
+	pacerMaxQueueWords    = 50            // cap to prevent unbounded growth
+	pacerClearTimeout     = 5 * time.Second // clear display after 5s of no new words
 )
 
 func newCaptionPacer(mgr *caption.Manager) *captionPacer {
@@ -332,6 +335,17 @@ func (p *captionPacer) run() {
 			for i := 0; i < wordsThisTick; i++ {
 				p.emitNextWord()
 			}
+
+			// Auto-clear: if no words emitted for 5s, erase displayed captions.
+			p.mu.Lock()
+			if !p.lastEmitTime.IsZero() && !p.cleared && time.Since(p.lastEmitTime) >= pacerClearTimeout {
+				p.cleared = true
+				p.linePos = 0
+				p.mu.Unlock()
+				p.mgr.Clear()
+			} else {
+				p.mu.Unlock()
+			}
 		}
 	}
 }
@@ -373,8 +387,12 @@ func (p *captionPacer) emitNextWord() {
 }
 
 // emitWord sends a word to the caption manager with speaker-change
-// detection and line wrapping.
+// detection and line wrapping. Updates lastEmitTime for auto-clear.
 func (p *captionPacer) emitWord(word pacerWord) {
+	p.mu.Lock()
+	p.lastEmitTime = time.Now()
+	p.cleared = false
+	p.mu.Unlock()
 	// Speaker change: Whisper segment gap > 300ms → new line with >> prefix.
 	if word.gapBefore >= pacerSpeakerChangeGap {
 		p.mgr.IngestNewline()
