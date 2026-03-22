@@ -1039,25 +1039,27 @@
 		border-color: rgba(99, 102, 241, 0.4);
 	}
 
-	/* Trim control */
+	/* Trim control — small, set-and-forget like a hardware trim pot */
 	.trim-control {
 		display: flex;
 		align-items: center;
-		gap: 2px;
+		gap: 1px;
 		width: 100%;
+		height: 14px;
+		flex-shrink: 0;
 	}
 
 	.trim-knob {
 		flex: 1;
-		height: 12px;
-		accent-color: var(--text-secondary);
+		height: 6px;
+		accent-color: var(--text-tertiary);
 	}
 
 	.trim-value {
 		font-family: var(--font-mono);
-		font-size: var(--text-xs);
+		font-size: 8px;
 		color: var(--text-tertiary);
-		min-width: 28px;
+		min-width: 22px;
 		text-align: right;
 	}
 
@@ -1113,9 +1115,9 @@
 		padding: 0;
 		border-top: 1px solid var(--border-default);
 		background: rgba(255, 255, 255, 0.02);
-		min-height: 72px;
+		min-height: 88px;
 		overflow-x: auto;
-		overflow-y: hidden;
+		overflow-y: auto;
 		flex-shrink: 0;
 	}
 
