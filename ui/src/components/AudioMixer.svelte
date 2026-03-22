@@ -397,9 +397,140 @@
 	</div>
 
 	{#if selectedChannel && crState.audioChannels?.[selectedChannel]}
+		{@const ch = crState.audioChannels[selectedChannel]}
 		<div class="channel-detail">
-			<span class="detail-channel-name">{crState.sources[selectedChannel]?.label || selectedChannel}</span>
-			<span style="color: var(--text-tertiary); font-size: 10px">Detail panel — Task 4</span>
+			<!-- Channel header -->
+			<div class="detail-section detail-header">
+				<span class="detail-channel-name">{crState.sources[selectedChannel]?.label || selectedChannel}</span>
+				<button class="detail-close" onclick={() => onChannelSelect?.(null)} title="Close detail panel">&times;</button>
+			</div>
+
+			<!-- 3-band EQ -->
+			<div class="detail-section detail-eq">
+				<span class="detail-section-label">EQ</span>
+				<div class="eq-bands">
+					{#each [0, 1, 2] as bandIdx}
+						{@const band = ch.eq[bandIdx]}
+						<div class="eq-band">
+							<button
+								class="eq-band-toggle"
+								class:active={band.enabled}
+								onclick={() => setEQThrottled(selectedChannel, bandIdx, band.frequency, band.gain, band.q, !band.enabled)}
+							>{EQ_BAND_NAMES[bandIdx]}</button>
+							<div class="eq-param">
+								<span class="eq-param-label">F</span>
+								<input type="range"
+									class="detail-slider"
+									min={bandIdx === 0 ? 80 : bandIdx === 1 ? 200 : 1000}
+									max={bandIdx === 0 ? 1000 : bandIdx === 1 ? 8000 : 16000}
+									step="1"
+									value={band.frequency}
+									oninput={(e) => setEQThrottled(selectedChannel, bandIdx, parseFloat(e.currentTarget.value), band.gain, band.q, band.enabled)}
+								/>
+								<span class="eq-param-value">{band.frequency >= 1000 ? (band.frequency / 1000).toFixed(1) + 'k' : band.frequency}</span>
+							</div>
+							<div class="eq-param">
+								<span class="eq-param-label">G</span>
+								<input type="range"
+									class="detail-slider"
+									min="-12"
+									max="12"
+									step="0.5"
+									value={band.gain}
+									oninput={(e) => setEQThrottled(selectedChannel, bandIdx, band.frequency, parseFloat(e.currentTarget.value), band.q, band.enabled)}
+								/>
+								<span class="eq-param-value">{band.gain > 0 ? '+' : ''}{band.gain.toFixed(1)}</span>
+							</div>
+							<div class="eq-param">
+								<span class="eq-param-label">Q</span>
+								<input type="range"
+									class="detail-slider"
+									min="0.5"
+									max="4.0"
+									step="0.1"
+									value={band.q}
+									oninput={(e) => setEQThrottled(selectedChannel, bandIdx, band.frequency, band.gain, parseFloat(e.currentTarget.value), band.enabled)}
+								/>
+								<span class="eq-param-value">{band.q.toFixed(1)}</span>
+							</div>
+						</div>
+					{/each}
+				</div>
+			</div>
+
+			<!-- Compressor -->
+			<div class="detail-section detail-comp">
+				<div class="comp-header">
+					<span class="detail-section-label">COMP</span>
+					<button
+						class="comp-bypass-btn"
+						class:active={!(compBypass[selectedChannel] ?? false)}
+						onclick={() => toggleCompBypass(selectedChannel, ch)}
+					>{compBypass[selectedChannel] ? 'OFF' : 'ON'}</button>
+				</div>
+				<div class="comp-params" class:bypassed={compBypass[selectedChannel] ?? false}>
+					<div class="comp-param">
+						<span class="eq-param-label">Thr</span>
+						<input type="range" class="detail-slider" min="-40" max="0" step="0.5" value={ch.compressor.threshold}
+							oninput={(e) => setCompressorThrottled(selectedChannel, parseFloat(e.currentTarget.value), ch.compressor.ratio, ch.compressor.attack, ch.compressor.release, ch.compressor.makeupGain)}
+						/>
+						<span class="eq-param-value">{ch.compressor.threshold.toFixed(0)}</span>
+					</div>
+					<div class="comp-param">
+						<span class="eq-param-label">Rat</span>
+						<input type="range" class="detail-slider" min="1" max="20" step="0.5" value={ch.compressor.ratio}
+							oninput={(e) => setCompressorThrottled(selectedChannel, ch.compressor.threshold, parseFloat(e.currentTarget.value), ch.compressor.attack, ch.compressor.release, ch.compressor.makeupGain)}
+						/>
+						<span class="eq-param-value">{ch.compressor.ratio.toFixed(1)}</span>
+					</div>
+					<div class="comp-param">
+						<span class="eq-param-label">Atk</span>
+						<input type="range" class="detail-slider" min="0.1" max="100" step="0.1" value={ch.compressor.attack}
+							oninput={(e) => setCompressorThrottled(selectedChannel, ch.compressor.threshold, ch.compressor.ratio, parseFloat(e.currentTarget.value), ch.compressor.release, ch.compressor.makeupGain)}
+						/>
+						<span class="eq-param-value">{ch.compressor.attack.toFixed(1)}</span>
+					</div>
+					<div class="comp-param">
+						<span class="eq-param-label">Rel</span>
+						<input type="range" class="detail-slider" min="10" max="1000" step="1" value={ch.compressor.release}
+							oninput={(e) => setCompressorThrottled(selectedChannel, ch.compressor.threshold, ch.compressor.ratio, ch.compressor.attack, parseFloat(e.currentTarget.value), ch.compressor.makeupGain)}
+						/>
+						<span class="eq-param-value">{ch.compressor.release.toFixed(0)}</span>
+					</div>
+					<div class="comp-param">
+						<span class="eq-param-label">Mup</span>
+						<input type="range" class="detail-slider" min="0" max="24" step="0.5" value={ch.compressor.makeupGain}
+							oninput={(e) => setCompressorThrottled(selectedChannel, ch.compressor.threshold, ch.compressor.ratio, ch.compressor.attack, ch.compressor.release, parseFloat(e.currentTarget.value))}
+						/>
+						<span class="eq-param-value">{ch.compressor.makeupGain.toFixed(1)}</span>
+					</div>
+				</div>
+				<div class="gr-meter">
+					<div class="gr-fill" style="width: {grToPercent(ch.gainReduction)}%"></div>
+					<span class="gr-label">GR {ch.gainReduction > 0 ? '-' + ch.gainReduction.toFixed(1) : '0.0'}</span>
+				</div>
+			</div>
+
+			<!-- Delays -->
+			<div class="detail-section detail-delays">
+				<span class="detail-section-label">DELAY</span>
+				<div class="delay-param">
+					<span class="eq-param-label">Src</span>
+					<input type="range" class="detail-slider" min="0" max="500" step="1"
+						value={crState.sources?.[selectedChannel]?.delayMs ?? 0}
+						oninput={(e) => setDelayThrottled(selectedChannel, parseFloat(e.currentTarget.value))}
+					/>
+					<span class="eq-param-value">{crState.sources?.[selectedChannel]?.delayMs ?? 0}ms</span>
+				</div>
+				<div class="delay-param">
+					<span class="eq-param-label">Lip</span>
+					<input type="range" class="detail-slider" min="0" max="500" step="1"
+						value={ch.audioDelayMs ?? 0}
+						oninput={(e) => setAudioDelayThrottled(selectedChannel, parseFloat(e.currentTarget.value))}
+					/>
+					<span class="eq-param-value">{ch.audioDelayMs ?? 0}ms</span>
+				</div>
+			</div>
 		</div>
 	{/if}
 	{:else}
@@ -756,13 +887,44 @@
 
 	.channel-detail {
 		display: flex;
-		align-items: center;
-		gap: 12px;
-		padding: 6px 10px;
+		align-items: stretch;
+		gap: 0;
+		padding: 0;
 		border-top: 1px solid var(--border-default);
 		background: rgba(255, 255, 255, 0.02);
 		min-height: 72px;
+		max-height: 88px;
 		flex-shrink: 0;
+		overflow-x: auto;
+	}
+
+	.detail-section {
+		display: flex;
+		flex-direction: column;
+		gap: 3px;
+		padding: 6px 10px;
+	}
+
+	.detail-section + .detail-section {
+		border-left: 1px solid var(--border-subtle);
+	}
+
+	.detail-section-label {
+		font-family: var(--font-ui);
+		font-size: 9px;
+		font-weight: 600;
+		text-transform: uppercase;
+		color: var(--text-tertiary);
+		letter-spacing: 0.06em;
+	}
+
+	.detail-header {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 4px;
+		min-width: 56px;
 	}
 
 	.detail-channel-name {
@@ -770,6 +932,186 @@
 		font-size: var(--text-xs);
 		font-weight: 600;
 		color: var(--text-primary);
+		white-space: nowrap;
+	}
+
+	.detail-close {
+		background: none;
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-xs);
+		color: var(--text-tertiary);
+		font-size: 14px;
+		line-height: 1;
+		padding: 1px 5px;
+		cursor: pointer;
+	}
+
+	.detail-close:hover {
+		color: var(--text-primary);
+		border-color: var(--border-default);
+	}
+
+	/* EQ section */
+	.detail-eq {
+		min-width: 240px;
+	}
+
+	.eq-bands {
+		display: flex;
+		gap: 8px;
+	}
+
+	.eq-band {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.eq-band-toggle {
+		font-family: var(--font-mono);
+		font-size: 9px;
+		font-weight: 700;
+		padding: 1px 4px;
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-xs);
+		background: rgba(255, 255, 255, 0.04);
+		color: var(--text-tertiary);
+		cursor: pointer;
+		text-align: center;
+	}
+
+	.eq-band-toggle.active {
+		background: rgba(99, 102, 241, 0.15);
+		border-color: rgba(99, 102, 241, 0.4);
+		color: rgb(99, 102, 241);
+	}
+
+	.eq-param {
+		display: flex;
+		align-items: center;
+		gap: 2px;
+	}
+
+	.eq-param-label {
+		font-family: var(--font-ui);
+		font-size: 9px;
+		text-transform: uppercase;
+		color: var(--text-tertiary);
+		width: 16px;
+		flex-shrink: 0;
+	}
+
+	.eq-param-value {
+		font-family: var(--font-mono);
+		font-size: 9px;
+		color: var(--text-secondary);
+		text-align: right;
+		min-width: 28px;
+		flex-shrink: 0;
+	}
+
+	.detail-slider {
+		flex: 1;
+		height: 10px;
+		accent-color: rgb(99, 102, 241);
+		min-width: 40px;
+	}
+
+	/* Compressor section */
+	.detail-comp {
+		min-width: 180px;
+	}
+
+	.comp-header {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+
+	.comp-bypass-btn {
+		font-family: var(--font-mono);
+		font-size: 9px;
+		font-weight: 700;
+		padding: 1px 4px;
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-xs);
+		background: rgba(255, 255, 255, 0.04);
+		color: var(--text-tertiary);
+		cursor: pointer;
+	}
+
+	.comp-bypass-btn.active {
+		background: rgba(99, 102, 241, 0.15);
+		border-color: rgba(99, 102, 241, 0.4);
+		color: rgb(99, 102, 241);
+	}
+
+	.comp-params {
+		display: flex;
+		gap: 6px;
+	}
+
+	.comp-params.bypassed {
+		opacity: 0.35;
+		pointer-events: none;
+	}
+
+	.comp-param {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 1px;
+	}
+
+	.comp-param .detail-slider {
+		writing-mode: horizontal-tb;
+		width: 40px;
+		min-width: 32px;
+	}
+
+	.gr-meter {
+		position: relative;
+		height: 6px;
+		background: var(--bg-base);
+		border-radius: var(--radius-xs);
+		overflow: hidden;
+		margin-top: 2px;
+	}
+
+	.gr-fill {
+		position: absolute;
+		top: 0;
+		left: 0;
+		height: 100%;
+		background: #f59e0b;
+		border-radius: var(--radius-xs);
+		transition: width 0.1s linear;
+	}
+
+	.gr-label {
+		position: absolute;
+		right: 2px;
+		top: -1px;
+		font-family: var(--font-mono);
+		font-size: 7px;
+		color: var(--text-tertiary);
+		line-height: 1;
+		pointer-events: none;
+	}
+
+	/* Delays section */
+	.detail-delays {
+		min-width: 120px;
+	}
+
+	.delay-param {
+		display: flex;
+		align-items: center;
+		gap: 2px;
+	}
+
+	.delay-param .eq-param-value {
+		min-width: 36px;
 	}
 
 	.lufs-readout {
