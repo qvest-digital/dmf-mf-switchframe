@@ -158,7 +158,7 @@ func TestAnimatedSTMap_STArraysAt_FromMmap(t *testing.T) {
 	}
 
 	// Wrapping works.
-	s, tArr = orig.STArraysAt(frameCount + 2)
+	s, _ = orig.STArraysAt(frameCount + 2)
 	require.Equal(t, origS[2], s)
 
 	require.NoError(t, orig.Close())
