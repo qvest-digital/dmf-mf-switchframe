@@ -15,7 +15,7 @@
 	let authorBuffer = $derived(captionState?.authorBuffer ?? '');
 	let sourceCaptions = $derived(captionState?.sourceCaptions ?? {});
 	let isAuthor = $derived(mode === 'author');
-	let isAuto = $derived(mode === 'auto');
+	let isAuto = $derived((mode as string) === 'auto');
 	let asrState = $derived(crState.asr);
 	let asrAvailable = $derived(asrState?.available ?? false);
 	let availableModels = $state<string[]>([]);
@@ -132,12 +132,12 @@
 		};
 	});
 
-	function handleModeChange(newMode: CaptionMode) {
-		apiCall(setCaptionMode(newMode), 'Set caption mode');
+	function handleModeChange(newMode: CaptionMode | 'auto') {
+		apiCall(setCaptionMode(newMode as CaptionMode), 'Set caption mode');
 		// Auto mode enables ASR; leaving auto disables it.
 		if (newMode === 'auto') {
 			apiCall(setASRConfig({ active: true }), 'Enable ASR');
-		} else if (mode === 'auto' && newMode !== 'auto') {
+		} else if ((mode as string) === 'auto') {
 			apiCall(setASRConfig({ active: false }), 'Disable ASR');
 		}
 	}

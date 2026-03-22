@@ -14,7 +14,9 @@ import (
 // corruption bug where the NV12 UV plane was not composited correctly.
 func TestBlendStingerUV(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	w, h := 64, 64
@@ -110,7 +112,9 @@ func TestBlendStingerUV(t *testing.T) {
 // TestBlendStingerFullAlphaUV verifies that 100% alpha produces pure overlay UV.
 func TestBlendStingerFullAlphaUV(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	w, h := 64, 64
@@ -187,7 +191,9 @@ func TestBlendStingerFullAlphaUV(t *testing.T) {
 // If pitch is wrong, the right-half Cb would be wrong (shifted data).
 func TestBlendStingerSpatialUV(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	// Use a realistic-ish size where pitch != width (320 → pitch=512)
@@ -281,7 +287,9 @@ func TestBlendStingerSpatialUV(t *testing.T) {
 // TestBlendStingerZeroAlphaUV verifies that 0% alpha produces pure base UV.
 func TestBlendStingerZeroAlphaUV(t *testing.T) {
 	ctx, err := NewContext()
-	require.NoError(t, err)
+	if err != nil {
+		t.Skip("GPU not available:", err)
+	}
 	defer ctx.Close()
 
 	w, h := 64, 64
