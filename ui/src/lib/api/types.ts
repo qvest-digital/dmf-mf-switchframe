@@ -715,11 +715,43 @@ export interface STMapGenerateRequest {
 
 // ── Color Grading Types ──
 
+export interface CurvePoint {
+	x: number;
+	y: number;
+}
+
+export interface CorrectorState {
+	lift: [number, number, number];
+	gamma: [number, number, number];
+	gain: [number, number, number];
+	temperature: number;
+	tint: number;
+	saturation: number;
+	contrast: number;
+	shadows: [number, number, number];
+	midtones: [number, number, number];
+	highlights: [number, number, number];
+	curveMaster?: CurvePoint[];
+	curveR?: CurvePoint[];
+	curveG?: CurvePoint[];
+	curveB?: CurvePoint[];
+	sharpness: number;
+}
+
+export interface LookMetadata {
+	name: string;
+	group: string;
+	description: string;
+	builtin: boolean;
+}
+
 export interface ColorGradeState {
 	enabled: boolean;
 	lookName: string;
+	lookGroup: string;
 	intensity: number;
-	available: string[];
+	corrector?: CorrectorState;
+	available: LookMetadata[];
 }
 
 // ── GPU Pipeline Types ──
