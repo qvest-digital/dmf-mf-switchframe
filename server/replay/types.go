@@ -36,7 +36,7 @@ const (
 // Config holds configuration for the replay manager.
 type Config struct {
 	// BufferDurationSecs is the per-source buffer duration in seconds.
-	// Default 60, max 300.
+	// Default 300, max 300.
 	BufferDurationSecs int
 
 	// MaxSources is the maximum number of sources to buffer simultaneously.
@@ -56,7 +56,7 @@ type Config struct {
 // DefaultConfig returns the default replay configuration.
 func DefaultConfig() Config {
 	return Config{
-		BufferDurationSecs: 60,
+		BufferDurationSecs: 300,
 		MaxSources:         8,
 		MaxBufferBytes:     200 * 1024 * 1024, // 200MB
 	}

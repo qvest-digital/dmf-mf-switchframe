@@ -686,7 +686,10 @@ func (a *App) initSubsystems() error {
 	if a.cfg.ReplayBufferSecs > 0 {
 		a.replayMgr = replay.NewManager(
 			a.replayRelay,
-			replay.Config{BufferDurationSecs: a.cfg.ReplayBufferSecs},
+			replay.Config{
+				BufferDurationSecs: a.cfg.ReplayBufferSecs,
+				TmpfsDir:           a.cfg.ReplayTmpfsDir,
+			},
 			decoderFactory(),
 			encoderFactory(),
 		)
@@ -746,7 +749,11 @@ func (a *App) initSubsystems() error {
 		// Anchor replay PTS to program timeline to prevent backward jumps.
 		a.replayMgr.SetPTSProvider(a.sw.LastBroadcastVideoPTS)
 
-		slog.Info("replay manager initialized", "bufferSecs", a.cfg.ReplayBufferSecs)
+		tmpfsStatus := a.cfg.ReplayTmpfsDir
+		if tmpfsStatus == "none" || tmpfsStatus == "" {
+			tmpfsStatus = "disabled"
+		}
+		slog.Info("replay manager initialized", "bufferSecs", a.cfg.ReplayBufferSecs, "tmpfsDir", tmpfsStatus)
 	}
 
 	return nil
