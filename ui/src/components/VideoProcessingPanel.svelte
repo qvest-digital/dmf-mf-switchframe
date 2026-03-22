@@ -2,7 +2,7 @@
 	import type { ControlRoomState } from '$lib/api/types';
 	import LooksTab from './videoprocessing/LooksTab.svelte';
 	import ColorTab from './videoprocessing/ColorTab.svelte';
-	// EffectsTab will be added in Task 12
+	import EffectsTab from './videoprocessing/EffectsTab.svelte';
 
 	let { state: crState }: { state: ControlRoomState } = $props();
 	let activeTab = $state<'looks' | 'color' | 'effects'>('looks');
@@ -32,7 +32,7 @@
 		{:else if activeTab === 'color'}
 			<ColorTab state={crState} />
 		{:else}
-			<div class="placeholder">Effects (coming soon)</div>
+			<EffectsTab state={crState} />
 		{/if}
 	</div>
 </div>
@@ -82,13 +82,4 @@
 		overflow: hidden;
 	}
 
-	.placeholder {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		height: 100%;
-		color: var(--text-secondary, #999);
-		font-size: 12px;
-		font-style: italic;
-	}
 </style>
