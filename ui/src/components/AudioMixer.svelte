@@ -1148,15 +1148,22 @@
 		align-items: center;
 		justify-content: center;
 		gap: 4px;
-		min-width: 56px;
+		width: 48px;
+		min-width: 48px;
+		max-width: 48px;
+		flex-shrink: 0;
 	}
 
 	.detail-channel-name {
 		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		font-size: 9px;
 		font-weight: 600;
 		color: var(--text-primary);
+		max-width: 44px;
+		overflow: hidden;
+		text-overflow: ellipsis;
 		white-space: nowrap;
+		text-align: center;
 	}
 
 	.detail-close {
