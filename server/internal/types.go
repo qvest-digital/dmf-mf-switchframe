@@ -509,13 +509,39 @@ type LookMetadata struct {
 	Builtin     bool   `json:"builtin"`
 }
 
+// CurvePoint represents a control point on a tone curve.
+type CurvePoint struct {
+	X float32 `json:"x"`
+	Y float32 `json:"y"`
+}
+
+// CorrectorState holds all color corrector parameters for the state broadcast.
+type CorrectorState struct {
+	Lift        [3]float32   `json:"lift"`
+	Gamma       [3]float32   `json:"gamma"`
+	Gain        [3]float32   `json:"gain"`
+	Temperature float32      `json:"temperature"`
+	Tint        float32      `json:"tint"`
+	Saturation  float32      `json:"saturation"`
+	Contrast    float32      `json:"contrast"`
+	Shadows     [3]float32   `json:"shadows"`
+	Midtones    [3]float32   `json:"midtones"`
+	Highlights  [3]float32   `json:"highlights"`
+	CurveMaster []CurvePoint `json:"curveMaster,omitempty"`
+	CurveR      []CurvePoint `json:"curveR,omitempty"`
+	CurveG      []CurvePoint `json:"curveG,omitempty"`
+	CurveB      []CurvePoint `json:"curveB,omitempty"`
+	Sharpness   float32      `json:"sharpness"`
+}
+
 // ColorGradeState represents the color grading state in ControlRoomState.
 type ColorGradeState struct {
-	Enabled   bool           `json:"enabled"`
-	LookName  string         `json:"lookName"`
-	LookGroup string         `json:"lookGroup"`
-	Intensity float32        `json:"intensity"`
-	Available []LookMetadata `json:"available"`
+	Enabled   bool             `json:"enabled"`
+	LookName  string           `json:"lookName"`
+	LookGroup string           `json:"lookGroup"`
+	Intensity float32          `json:"intensity"`
+	Available []LookMetadata   `json:"available"`
+	Corrector *CorrectorState  `json:"corrector,omitempty"`
 }
 
 // LayoutSlotState represents a single layout slot in the state broadcast.
