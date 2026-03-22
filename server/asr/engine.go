@@ -2,6 +2,7 @@ package asr
 
 import (
 	"log/slog"
+	"math"
 	"sync"
 	"time"
 )
@@ -159,9 +160,11 @@ func (e *Engine) IngestAudio(pcm []float32, pts int64, sampleRate, channels int)
 	}
 }
 
-// contextOverlapSamples is how many samples to keep after draining
-// for Whisper context continuity (~2 seconds at 16kHz).
-const contextOverlapSamples = 16000 * 2
+// contextOverlapSamples: zero overlap — each inference gets only fresh
+// audio. Overlap causes Whisper to re-transcribe the tail of the previous
+// segment, producing duplicate words. Whisper handles cold-start well
+// enough that context overlap isn't worth the repetition cost.
+const contextOverlapSamples = 0
 
 // runInference takes a snapshot of the ring buffer and runs whisper.cpp.
 // After successful transcription, drains the consumed audio from the ring
@@ -183,6 +186,18 @@ func (e *Engine) runInference(isFinal bool) {
 		return
 	}
 
+	// Check audio energy — skip inference if the audio is mostly silence.
+	// Whisper hallucinates plausible text ("just admit that you're rope")
+	// when fed low-energy audio that slipped past VAD.
+	var sumSq float64
+	for _, s := range audio {
+		sumSq += float64(s) * float64(s)
+	}
+	rms := math.Sqrt(sumSq / float64(audioLen))
+	if rms < 0.005 { // ~-46 dBFS — well below any real speech
+		return
+	}
+
 	words, err := e.whisper.TranscribeWithConfidence(audio, lang)
 	if err != nil {
 		slog.Warn("ASR inference failed", "error", err)
@@ -196,14 +211,11 @@ func (e *Engine) runInference(isFinal bool) {
 		"isFinal", isFinal,
 	)
 
-	// Drain transcribed audio from ring buffer, keeping an overlap
-	// for context continuity. On final, clear entirely.
+	// Drain all transcribed audio from the ring buffer so the next
+	// inference only sees fresh audio. No overlap — Whisper handles
+	// cold-start well and overlap causes word repetition.
 	e.mu.Lock()
-	if isFinal {
-		e.ringBuf.Clear()
-	} else if audioLen > contextOverlapSamples {
-		e.ringBuf.Drain(audioLen - contextOverlapSamples)
-	}
+	e.ringBuf.Clear()
 	e.mu.Unlock()
 
 	e.mu.Lock()

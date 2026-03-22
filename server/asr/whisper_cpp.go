@@ -117,9 +117,15 @@ func (w *WhisperCpp) TranscribeWithConfidence(samples []float32, language string
 			tokenText := C.GoString(C.whisper_full_get_token_text(w.ctx, C.int(i), C.int(j)))
 			prob := float32(tdata.p)
 
-			// Skip special tokens (negative IDs in whisper.cpp).
-			if tdata.id < 0 {
+			// Skip special tokens. whisper.cpp marks them with
+			// whisper_token_is_special. Also filter by text pattern
+			// since some builds don't set negative IDs consistently.
+			tokenID := int(tdata.id)
+			if tokenID < 0 || C.whisper_token_eot(w.ctx) == tdata.id {
 				continue
+			}
+			if len(tokenText) > 0 && (tokenText[0] == '[' || tokenText[0] == '<') {
+				continue // skip [_EOT_], [_BEG_], <|endoftext|>, etc.
 			}
 
 			// Whisper tokens starting with a space indicate a word boundary.
