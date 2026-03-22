@@ -171,6 +171,8 @@
 	height={SIZE}
 	viewBox="0 0 {SIZE} {SIZE}"
 	class="curve-editor"
+	role="application"
+	aria-label="Tone curve editor"
 	onclick={handleSvgClick}
 	onpointermove={handlePointerMove}
 	onpointerup={handlePointerUp}
@@ -206,6 +208,9 @@
 			stroke-width="1"
 			class="curve-dot"
 			class:endpoint={isEndpoint}
+			role="slider"
+			aria-label="Curve point {i + 1}"
+			aria-valuenow={Math.round(pt.y * 100)}
 			onpointerdown={(e) => handlePointerDown(e, i)}
 			ondblclick={(e) => handleDblClick(e, i)}
 		/>

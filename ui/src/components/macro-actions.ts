@@ -94,6 +94,9 @@ export const ACTION_META: Record<MacroAction, ActionMeta> = {
 	// Color Grade
 	colorgrade_set: { label: 'Set Look', category: 'Color Grade', description: 'Apply color grading look' },
 	colorgrade_off: { label: 'Grade Off', category: 'Color Grade', description: 'Disable color grading' },
+	colorgrade_save: { label: 'Save Look', category: 'Color Grade', description: 'Save current corrector + look as custom preset' },
+	corrector_set: { label: 'Corrector Set', category: 'Color Grade', description: 'Set color corrector parameters' },
+	corrector_reset: { label: 'Corrector Reset', category: 'Color Grade', description: 'Reset color corrector to defaults' },
 };
 
 export const CATEGORIES = ['Switching', 'Timing', 'Audio', 'Graphics', 'Output', 'Presets', 'Keys', 'Source', 'Replay', 'SCTE-35', 'Captions', 'Clips', 'ST Map', 'Layout', 'Color Grade'] as const;
