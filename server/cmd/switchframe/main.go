@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -101,6 +102,9 @@ type AppConfig struct {
 
 	// ASR (Whisper speech-to-text).
 	ASRModelPath string // Path to Whisper ONNX model directory (empty = disabled)
+
+	// Persistent cache directory for mmap'd LUTs and decoded assets.
+	CacheDir string
 }
 
 func main() {
@@ -251,6 +255,9 @@ func parseConfig() (AppConfig, error) {
 	// ASR (Whisper speech-to-text) flags.
 	asrModelFlag := flag.String("asr-model", "", "Path to Whisper GGML model file for speech-to-text (e.g., ggml-medium.en.bin)")
 
+	// Persistent cache directory.
+	cacheDirFlag := flag.String("cache-dir", defaultCacheDir(), "persistent cache directory for mmap'd LUTs and decoded assets")
+
 	flag.Parse()
 
 	// Parse SRT output port range if provided.
@@ -382,6 +389,7 @@ func parseConfig() (AppConfig, error) {
 		StateDir:             stateDir,
 		AIModelPath:          *aiModelFlag,
 		ASRModelPath:         *asrModelFlag,
+		CacheDir:             *cacheDirFlag,
 	}, nil
 }
 
@@ -412,4 +420,18 @@ func splitAndTrim(s string) []string {
 		}
 	}
 	return result
+}
+
+// defaultCacheDir returns a platform-appropriate persistent cache directory.
+// Linux (production): /data/switchframe/cache
+// macOS (dev):        ~/.switchframe/cache
+func defaultCacheDir() string {
+	if runtime.GOOS == "linux" {
+		return "/data/switchframe/cache"
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(os.TempDir(), "switchframe", "cache")
+	}
+	return filepath.Join(home, ".switchframe", "cache")
 }

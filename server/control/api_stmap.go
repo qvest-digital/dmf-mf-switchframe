@@ -146,7 +146,13 @@ func (a *API) handleSTMapGenerate(w http.ResponseWriter, r *http.Request) {
 		// Pre-build all per-frame processors now (in the HTTP handler goroutine)
 		// rather than lazily on the pipeline goroutine, which would freeze video
 		// processing for several seconds.
-		am.BuildProcessors()
+		if a.stmapCacheDir != "" {
+			cacheDir := filepath.Join(a.stmapCacheDir,
+				req.Type+"_"+stmap.CacheKey(req.Type, req.Params, req.Width, req.Height, frameCount))
+			am.BuildProcessorsCached(cacheDir)
+		} else {
+			am.BuildProcessors()
+		}
 		if err := a.stmapRegistry.StoreAnimated(am); err != nil {
 			httperr.WriteErr(w, errorStatus(err), err)
 			return

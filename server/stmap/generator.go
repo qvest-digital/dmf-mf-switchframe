@@ -104,6 +104,18 @@ func resolveParams(info GeneratorInfo, params map[string]float64) map[string]flo
 	return resolved
 }
 
+// AnimatedGeneratorInfoList returns info for all registered animated generators, sorted by name.
+func AnimatedGeneratorInfoList() []GeneratorInfo {
+	infos := make([]GeneratorInfo, 0, len(animatedGeneratorInfos))
+	for _, info := range animatedGeneratorInfos {
+		infos = append(infos, info)
+	}
+	sort.Slice(infos, func(i, j int) bool {
+		return infos[i].Name < infos[j].Name
+	})
+	return infos
+}
+
 // GeneratorInfoList returns all generator info (static and animated) sorted by name.
 func GeneratorInfoList() []GeneratorInfo {
 	infos := make([]GeneratorInfo, 0, len(generatorInfos)+len(animatedGeneratorInfos))

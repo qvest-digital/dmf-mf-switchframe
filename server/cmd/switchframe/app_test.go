@@ -114,6 +114,25 @@ func TestCloseWithTimeout(t *testing.T) {
 	}
 }
 
+func TestDefaultCacheDir(t *testing.T) {
+	dir := defaultCacheDir()
+	require.NotEmpty(t, dir)
+	require.Contains(t, dir, "cache", "should contain 'cache' in path")
+	// On macOS (dev), should use ~/.switchframe/cache.
+	// On Linux (prod), should use /data/switchframe/cache.
+	// Just verify it's not empty and ends with "cache".
+	require.Equal(t, "cache", filepath.Base(dir))
+}
+
+func TestParseConfig_CacheDir_Default(t *testing.T) {
+	os.Args = []string{"switchframe"}
+	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+	cfg, err := parseConfig()
+	require.NoError(t, err)
+	require.NotEmpty(t, cfg.CacheDir, "CacheDir should have a default value")
+	require.Equal(t, "cache", filepath.Base(cfg.CacheDir))
+}
+
 func TestValidateSCTE35PID(t *testing.T) {
 	tests := []struct {
 		name    string
