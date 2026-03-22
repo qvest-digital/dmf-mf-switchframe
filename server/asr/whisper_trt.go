@@ -31,6 +31,19 @@ import (
 // defined here so that both build-tagged files export the same symbol.
 var ErrASRNotAvailable error
 
+// whisperSuppressTokens is the list of token IDs that Whisper suppresses during
+// decoding to prevent hallucination of non-speech sounds and special tokens.
+// From whisper-base/config.json "suppress_tokens".
+var whisperSuppressTokens = []int{
+	1, 2, 7, 8, 9, 10, 14, 25, 26, 27, 28, 29, 31, 58, 59, 60, 61, 62, 63,
+	90, 91, 92, 93, 359, 503, 522, 542, 873, 893, 902, 918, 922, 931, 1350,
+	1853, 1982, 2460, 2627, 3246, 3253, 3268, 3536, 3846, 3961, 4183, 4667,
+	6585, 6647, 7273, 9061, 9383, 10428, 10929, 11938, 12033, 12331, 12562,
+	13793, 14157, 14635, 15265, 15618, 16553, 16604, 18362, 18956, 20075,
+	21675, 22520, 26130, 26161, 26435, 28279, 29464, 31650, 32302, 32470,
+	36865, 42863, 47425, 49870, 50254, 50258, 50358, 50359, 50360, 50361, 50362,
+}
+
 // Whisper model dimension constants.
 const (
 	whisperEncoderInputSize  = melNMels * melMaxFrames // 80 * 3000 = 240000 floats
@@ -357,6 +370,26 @@ func (w *WhisperTRT) Decode(encoderOutput []float32, initialTokens []int) ([]int
 		)
 		if rc != C.cudaSuccess {
 			return nil, fmt.Errorf("asr: whisper_trt: cudaMemcpy logits step %d: %d", step, int(rc))
+		}
+
+		// Suppress tokens that Whisper's Python implementation suppresses.
+		// These include special tokens and non-text tokens that cause hallucination.
+		for _, st := range whisperSuppressTokens {
+			logits[st] = -1e9
+		}
+
+		// Suppress begin_suppress_tokens after the first token.
+		if step > 0 {
+			logits[220] = -1e9  // space token (begin_suppress)
+			logits[50257] = -1e9 // EOT as begin_suppress
+		}
+
+		// Repetition suppression: if the last 3 tokens are identical, suppress that token.
+		if len(tokens) >= 3 {
+			last := tokens[len(tokens)-1]
+			if tokens[len(tokens)-2] == last && tokens[len(tokens)-3] == last {
+				logits[int(last)] = -1e9
+			}
 		}
 
 		// Greedy argmax over vocabulary to get next token.

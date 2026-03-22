@@ -34,7 +34,12 @@ type MelSpectrogram struct {
 	hannWindow [melFFTSize]float32
 	melFilters [melNMels]melFilterRange
 
-	// FFT precomputed data (512-point radix-2 Cooley-Tukey)
+	// DFT precomputed twiddle factors for 400-point transform, 201 output bins.
+	// dftCos[k][n] = cos(-2π·k·n/400), dftSin[k][n] = sin(-2π·k·n/400)
+	dftCos [melNBins][melFFTSize]float32
+	dftSin [melNBins][melFFTSize]float32
+
+	// Legacy FFT data (kept for compatibility, unused in Compute)
 	twiddleRe [melNFFT / 2]float32
 	twiddleIm [melNFFT / 2]float32
 	fftBitrev [melNFFT]uint16
@@ -50,8 +55,21 @@ func NewMelSpectrogram() *MelSpectrogram {
 	m := &MelSpectrogram{}
 	m.initHannWindow()
 	m.initMelFilterbank()
-	m.initFFT()
+	m.initDFTTwiddles()
+	m.initFFT() // legacy, kept for compatibility
 	return m
+}
+
+// initDFTTwiddles precomputes cos/sin tables for the 400-point DFT.
+// This eliminates per-sample math.Cos/Sin calls during Compute().
+func (m *MelSpectrogram) initDFTTwiddles() {
+	for k := 0; k < melNBins; k++ {
+		for n := 0; n < melFFTSize; n++ {
+			angle := -2.0 * math.Pi * float64(k) * float64(n) / float64(melFFTSize)
+			m.dftCos[k][n] = float32(math.Cos(angle))
+			m.dftSin[k][n] = float32(math.Sin(angle))
+		}
+	}
 }
 
 // initHannWindow precomputes the Hann window: 0.5 * (1 - cos(2*pi*n/N))
@@ -239,16 +257,17 @@ func (m *MelSpectrogram) Compute(samples []float32) [][]float32 {
 		}
 
 		// 400-point DFT: compute first 201 bins (DC to Nyquist).
-		// X[k] = sum_{n=0}^{N-1} x[n] * exp(-2πi·k·n/N)
-		// |X[k]|² = Re²+Im²
+		// Uses precomputed cos/sin tables — no trig calls in hot loop.
 		for k := 0; k < melNBins; k++ {
-			var sumRe, sumIm float64
+			var sumRe, sumIm float32
+			cosK := &m.dftCos[k]
+			sinK := &m.dftSin[k]
 			for n := 0; n < melFFTSize; n++ {
-				angle := -2.0 * math.Pi * float64(k) * float64(n) / float64(melFFTSize)
-				sumRe += float64(windowed[n]) * math.Cos(angle)
-				sumIm += float64(windowed[n]) * math.Sin(angle)
+				s := windowed[n]
+				sumRe += s * cosK[n]
+				sumIm += s * sinK[n]
 			}
-			power[k] = float32(sumRe*sumRe + sumIm*sumIm)
+			power[k] = sumRe*sumRe + sumIm*sumIm
 		}
 
 		// Apply mel filterbank using sparse ranges and log scale.
