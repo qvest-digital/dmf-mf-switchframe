@@ -1,6 +1,8 @@
 // Package internal provides shared types for the Switchframe server.
 package internal
 
+import "github.com/zsiec/switchframe/server/colorgrade"
+
 // SourceKeyConfig describes the upstream key configuration for a source,
 // included in SourceInfo so the browser knows the current key state.
 type SourceKeyConfig struct {
@@ -509,30 +511,11 @@ type LookMetadata struct {
 	Builtin     bool   `json:"builtin"`
 }
 
-// CurvePoint represents a control point on a tone curve.
-type CurvePoint struct {
-	X float32 `json:"x"`
-	Y float32 `json:"y"`
-}
+// CurvePoint is an alias for colorgrade.CurvePoint (single source of truth).
+type CurvePoint = colorgrade.CurvePoint
 
-// CorrectorState holds all color corrector parameters for the state broadcast.
-type CorrectorState struct {
-	Lift        [3]float32   `json:"lift"`
-	Gamma       [3]float32   `json:"gamma"`
-	Gain        [3]float32   `json:"gain"`
-	Temperature float32      `json:"temperature"`
-	Tint        float32      `json:"tint"`
-	Saturation  float32      `json:"saturation"`
-	Contrast    float32      `json:"contrast"`
-	Shadows     [3]float32   `json:"shadows"`
-	Midtones    [3]float32   `json:"midtones"`
-	Highlights  [3]float32   `json:"highlights"`
-	CurveMaster []CurvePoint `json:"curveMaster,omitempty"`
-	CurveR      []CurvePoint `json:"curveR,omitempty"`
-	CurveG      []CurvePoint `json:"curveG,omitempty"`
-	CurveB      []CurvePoint `json:"curveB,omitempty"`
-	Sharpness   float32      `json:"sharpness"`
-}
+// CorrectorState is an alias for colorgrade.CorrectorState (single source of truth).
+type CorrectorState = colorgrade.CorrectorState
 
 // ColorGradeState represents the color grading state in ControlRoomState.
 type ColorGradeState struct {

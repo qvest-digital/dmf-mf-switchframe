@@ -86,45 +86,9 @@ func (c *colorGradeController) GetState() internal.ColorGradeState {
 		}
 	}
 
-	// Convert colorgrade.CorrectorState → internal.CorrectorState.
-	cs := &internal.CorrectorState{
-		Lift:        c.corrector.Lift,
-		Gamma:       c.corrector.Gamma,
-		Gain:        c.corrector.Gain,
-		Temperature: c.corrector.Temperature,
-		Tint:        c.corrector.Tint,
-		Saturation:  c.corrector.Saturation,
-		Contrast:    c.corrector.Contrast,
-		Shadows:     c.corrector.Shadows,
-		Midtones:    c.corrector.Midtones,
-		Highlights:  c.corrector.Highlights,
-		Sharpness:   c.corrector.Sharpness,
-	}
-	// Copy curve slices.
-	if len(c.corrector.CurveMaster) > 0 {
-		cs.CurveMaster = make([]internal.CurvePoint, len(c.corrector.CurveMaster))
-		for i, p := range c.corrector.CurveMaster {
-			cs.CurveMaster[i] = internal.CurvePoint{X: p.X, Y: p.Y}
-		}
-	}
-	if len(c.corrector.CurveR) > 0 {
-		cs.CurveR = make([]internal.CurvePoint, len(c.corrector.CurveR))
-		for i, p := range c.corrector.CurveR {
-			cs.CurveR[i] = internal.CurvePoint{X: p.X, Y: p.Y}
-		}
-	}
-	if len(c.corrector.CurveG) > 0 {
-		cs.CurveG = make([]internal.CurvePoint, len(c.corrector.CurveG))
-		for i, p := range c.corrector.CurveG {
-			cs.CurveG[i] = internal.CurvePoint{X: p.X, Y: p.Y}
-		}
-	}
-	if len(c.corrector.CurveB) > 0 {
-		cs.CurveB = make([]internal.CurvePoint, len(c.corrector.CurveB))
-		for i, p := range c.corrector.CurveB {
-			cs.CurveB[i] = internal.CurvePoint{X: p.X, Y: p.Y}
-		}
-	}
+	// internal.CorrectorState is a type alias for colorgrade.CorrectorState,
+	// so direct assignment works — no field-by-field copy needed.
+	cs := c.corrector
 
 	return internal.ColorGradeState{
 		Enabled:   c.enabled,
@@ -132,7 +96,7 @@ func (c *colorGradeController) GetState() internal.ColorGradeState {
 		LookGroup: lookGroup,
 		Intensity: c.intensity,
 		Available: available,
-		Corrector: cs,
+		Corrector: &cs,
 	}
 }
 
