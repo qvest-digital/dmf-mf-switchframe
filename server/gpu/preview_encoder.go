@@ -1,4 +1,4 @@
-//go:build darwin || (cgo && cuda)
+//go:build (cgo && darwin) || (cgo && cuda)
 
 package gpu
 
@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+
+	"github.com/zsiec/switchframe/server/transition"
 )
 
 // PreviewEncoder provides GPU-accelerated preview encoding on both Metal
@@ -56,7 +58,7 @@ func NewPreviewEncoder(ctx *Context, srcW, srcH, dstW, dstH, bitrate, fpsNum, fp
 		return nil, fmt.Errorf("gpu: preview frame alloc failed: %w", err)
 	}
 
-	encoder, err := NewGPUEncoder(ctx, dstW, dstH, fpsNum, fpsDen, bitrate)
+	encoder, err := newGPUEncoderWithGOP(ctx, dstW, dstH, fpsNum, fpsDen, bitrate, transition.PreviewGOPSecs)
 	if err != nil {
 		scaleDst.Release()
 		pool.Close()

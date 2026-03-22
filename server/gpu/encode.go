@@ -38,13 +38,17 @@ type GPUEncoder struct {
 
 // NewGPUEncoder creates an NVENC encoder that accepts GPU frames.
 // Tries hw_frames_ctx (zero-copy) first, falls back to download+NVENC,
-// then libx264 if NVENC is unavailable.
+// then libx264 if NVENC is unavailable. Uses DefaultGOPSecs (2s).
 func NewGPUEncoder(gpuCtx *Context, width, height, fpsNum, fpsDen, bitrate int) (*GPUEncoder, error) {
+	return newGPUEncoderWithGOP(gpuCtx, width, height, fpsNum, fpsDen, bitrate, transition.DefaultGOPSecs)
+}
+
+// newGPUEncoderWithGOP is the internal constructor with explicit GOP interval.
+// Preview encoders use PreviewGOPSecs (1s) for faster recovery after stalls.
+func newGPUEncoderWithGOP(gpuCtx *Context, width, height, fpsNum, fpsDen, bitrate, gopSecs int) (*GPUEncoder, error) {
 	if gpuCtx == nil {
 		return nil, ErrGPUNotAvailable
 	}
-
-	gopSecs := transition.DefaultGOPSecs
 
 	// Try zero-copy hw_frames_ctx path first
 	cudaCtx := gpuCtx.CUDAContext()

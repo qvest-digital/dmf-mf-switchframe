@@ -1,4 +1,4 @@
-//go:build darwin
+//go:build cgo && darwin
 
 package gpu
 
@@ -40,12 +40,18 @@ type GPUEncoder struct {
 
 // NewGPUEncoder creates a native VideoToolbox encoder that accepts GPU frames
 // directly from unified memory. Falls back to FFmpeg if VT session creation fails.
+// Uses DefaultGOPSecs (2s).
 func NewGPUEncoder(gpuCtx *Context, width, height, fpsNum, fpsDen, bitrate int) (*GPUEncoder, error) {
+	return newGPUEncoderWithGOP(gpuCtx, width, height, fpsNum, fpsDen, bitrate, transition.DefaultGOPSecs)
+}
+
+// newGPUEncoderWithGOP is the internal constructor with explicit GOP interval.
+// Preview encoders use PreviewGOPSecs (1s) for faster recovery after stalls.
+func newGPUEncoderWithGOP(gpuCtx *Context, width, height, fpsNum, fpsDen, bitrate, gopSecs int) (*GPUEncoder, error) {
 	if gpuCtx == nil || gpuCtx.mtl == nil {
 		return nil, ErrGPUNotAvailable
 	}
 
-	gopSecs := transition.DefaultGOPSecs
 	gopFrames := fpsNum * gopSecs / fpsDen
 	if gopFrames < 1 {
 		gopFrames = 60

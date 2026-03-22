@@ -105,6 +105,10 @@ const (
 	ActionSTMapRemoveSource  Action = "stmap_remove_source"
 	ActionSTMapAssignProgram Action = "stmap_assign_program"
 	ActionSTMapRemoveProgram Action = "stmap_remove_program"
+
+	// Color grade actions.
+	ActionColorGradeSet Action = "colorgrade_set"
+	ActionColorGradeOff Action = "colorgrade_off"
 )
 
 // allActions is the set of all valid macro actions.
