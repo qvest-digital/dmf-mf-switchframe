@@ -204,6 +204,7 @@ func (e *Engine) runInference(isFinal bool) {
 		return
 	}
 
+	slog.Info("ASR inference starting", "lang", lang, "translate", xlate, "audioSamples", audioLen)
 	words, err := e.whisper.TranscribeWithConfidence(audio, lang, xlate)
 	if err != nil {
 		slog.Warn("ASR inference failed", "error", err)
