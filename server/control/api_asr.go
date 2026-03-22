@@ -12,6 +12,7 @@ import (
 func (a *API) registerASRRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/asr/status", a.handleASRStatus)
 	mux.HandleFunc("PUT /api/asr/config", a.handleASRConfig)
+	mux.HandleFunc("GET /api/asr/models", a.handleASRModels)
 }
 
 // handleASRStatus returns the current ASR system state.
@@ -41,12 +42,19 @@ func (a *API) handleASRConfig(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Active   *bool  `json:"active,omitempty"`
 		Language string `json:"language,omitempty"`
+		Model    string `json:"model,omitempty"` // runtime model swap (e.g., "medium.en", "large-v3")
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
+	if req.Model != "" {
+		if err := a.asrManager.SetASRModel(req.Model); err != nil {
+			httperr.WriteErr(w, http.StatusBadRequest, err)
+			return
+		}
+	}
 	if req.Active != nil {
 		if err := a.asrManager.SetASRActive(*req.Active); err != nil {
 			httperr.Write(w, http.StatusInternalServerError, err.Error())
@@ -63,6 +71,22 @@ func (a *API) handleASRConfig(w http.ResponseWriter, r *http.Request) {
 		Language:  a.asrManager.ASRLanguage(),
 		ModelName: a.asrManager.ASRModelName(),
 	}
+
+	a.broadcast()
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(state)
+}
+
+// handleASRModels lists available whisper models.
+//
+// GET /api/asr/models
+func (a *API) handleASRModels(w http.ResponseWriter, r *http.Request) {
+	if a.asrManager == nil {
+		httperr.Write(w, http.StatusNotImplemented, "ASR not available")
+		return
+	}
+	models := a.asrManager.AvailableASRModels()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(models)
 }

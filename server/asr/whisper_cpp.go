@@ -23,7 +23,8 @@ var ErrASRNotAvailable error
 
 // WhisperCpp wraps the whisper.cpp C library for speech-to-text inference.
 type WhisperCpp struct {
-	ctx *C.struct_whisper_context
+	ctx    *C.struct_whisper_context
+	useGPU bool
 }
 
 // WhisperCppConfig configures the whisper.cpp wrapper.
@@ -49,7 +50,33 @@ func NewWhisperCpp(cfg WhisperCppConfig) (*WhisperCpp, error) {
 		return nil, fmt.Errorf("asr: whisper_cpp: failed to load model from %s", cfg.ModelPath)
 	}
 
-	return &WhisperCpp{ctx: ctx}, nil
+	return &WhisperCpp{ctx: ctx, useGPU: cfg.UseGPU}, nil
+}
+
+// LoadModel swaps the whisper model at runtime. Thread-safe — the caller
+// must ensure no inference is running concurrently (Engine.inferring mutex).
+func (w *WhisperCpp) LoadModel(modelPath string) error {
+	if modelPath == "" {
+		return errors.New("asr: whisper_cpp: empty model path")
+	}
+
+	cPath := C.CString(modelPath)
+	defer C.free(unsafe.Pointer(cPath))
+
+	cparams := C.whisper_context_default_params()
+	cparams.use_gpu = C.bool(w.useGPU)
+
+	newCtx := C.whisper_init_from_file_with_params(cPath, cparams)
+	if newCtx == nil {
+		return fmt.Errorf("asr: whisper_cpp: failed to load model from %s", modelPath)
+	}
+
+	// Free old context and swap.
+	if w.ctx != nil {
+		C.whisper_free(w.ctx)
+	}
+	w.ctx = newCtx
+	return nil
 }
 
 // TranscribeWithConfidence runs whisper inference on 16kHz mono float32 PCM

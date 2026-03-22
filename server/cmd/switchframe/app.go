@@ -1231,6 +1231,7 @@ func (a *App) initAPI() error {
 			engine:     a.asrEngine,
 			captionMgr: a.captionMgr,
 			modelPath:  a.cfg.ASRModelPath,
+			modelsDir:  filepath.Dir(a.cfg.ASRModelPath),
 		}))
 	}
 

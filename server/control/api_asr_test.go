@@ -22,11 +22,13 @@ type mockASRManager struct {
 	lastErr   error
 }
 
-func (m *mockASRManager) IsASRAvailable() bool          { return m.available }
-func (m *mockASRManager) IsASRActive() bool             { return m.active }
-func (m *mockASRManager) ASRLanguage() string            { return m.language }
-func (m *mockASRManager) ASRModelName() string           { return m.modelName }
-func (m *mockASRManager) SetASRLanguage(lang string)     { m.language = lang }
+func (m *mockASRManager) IsASRAvailable() bool              { return m.available }
+func (m *mockASRManager) IsASRActive() bool                 { return m.active }
+func (m *mockASRManager) ASRLanguage() string               { return m.language }
+func (m *mockASRManager) ASRModelName() string              { return m.modelName }
+func (m *mockASRManager) SetASRLanguage(lang string)        { m.language = lang }
+func (m *mockASRManager) SetASRModel(name string) error     { m.modelName = name; return nil }
+func (m *mockASRManager) AvailableASRModels() []string      { return []string{"base", "medium.en", "large-v3"} }
 func (m *mockASRManager) SetASRActive(active bool) error {
 	if m.lastErr != nil {
 		return m.lastErr

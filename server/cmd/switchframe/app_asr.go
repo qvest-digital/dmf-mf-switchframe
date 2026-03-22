@@ -2,6 +2,7 @@ package main
 
 import (
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -127,6 +128,7 @@ type asrManagerAdapter struct {
 	engine     *asr.Engine
 	captionMgr *caption.Manager
 	modelPath  string
+	modelsDir  string // directory containing ggml-*.bin files
 }
 
 var _ control.ASRManager = (*asrManagerAdapter)(nil)
@@ -167,6 +169,37 @@ func (m *asrManagerAdapter) ASRLanguage() string {
 
 func (m *asrManagerAdapter) ASRModelName() string {
 	return filepath.Base(m.modelPath)
+}
+
+func (m *asrManagerAdapter) SetASRModel(name string) error {
+	if m.engine == nil {
+		return nil
+	}
+	path := filepath.Join(m.modelsDir, "ggml-"+name+".bin")
+	if err := m.engine.SetModel(path); err != nil {
+		return err
+	}
+	m.modelPath = path
+	return nil
+}
+
+func (m *asrManagerAdapter) AvailableASRModels() []string {
+	entries, err := os.ReadDir(m.modelsDir)
+	if err != nil {
+		return nil
+	}
+	var models []string
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, "ggml-") && strings.HasSuffix(name, ".bin") &&
+			!strings.HasPrefix(name, "for-tests-") {
+			// "ggml-medium.en.bin" → "medium.en"
+			model := strings.TrimPrefix(name, "ggml-")
+			model = strings.TrimSuffix(model, ".bin")
+			models = append(models, model)
+		}
+	}
+	return models
 }
 
 // --- Caption Pacer ---

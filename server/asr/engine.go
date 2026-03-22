@@ -228,6 +228,33 @@ func (e *Engine) runInference(isFinal bool) {
 	}
 }
 
+// SetModel swaps the whisper model at runtime. Blocks until any in-flight
+// inference completes, loads the new model, and clears the audio buffer.
+func (e *Engine) SetModel(modelPath string) error {
+	// Serialize with inference to prevent concurrent model access.
+	e.inferring.Lock()
+	defer e.inferring.Unlock()
+
+	if err := e.whisper.LoadModel(modelPath); err != nil {
+		return err
+	}
+
+	e.mu.Lock()
+	e.ringBuf.Clear()
+	e.vad.Reset()
+	e.wasSpeaking = false
+	e.mu.Unlock()
+
+	slog.Info("ASR model changed", "model", modelPath)
+	return nil
+}
+
+// ModelPath returns the path to a model file given a model name.
+// Searches the standard whisper.cpp models directory.
+func ModelPath(modelsDir, name string) string {
+	return modelsDir + "/ggml-" + name + ".bin"
+}
+
 // SetLanguage changes the target language for transcription.
 func (e *Engine) SetLanguage(lang string) {
 	e.mu.Lock()

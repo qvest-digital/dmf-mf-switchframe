@@ -21,6 +21,9 @@ func NewWhisperCpp(cfg WhisperCppConfig) (*WhisperCpp, error) {
 	return nil, ErrASRNotAvailable
 }
 
+// LoadModel returns ErrASRNotAvailable on non-whisper builds.
+func (w *WhisperCpp) LoadModel(modelPath string) error { return ErrASRNotAvailable }
+
 // TranscribeWithConfidence returns ErrASRNotAvailable on non-whisper builds.
 func (w *WhisperCpp) TranscribeWithConfidence(samples []float32, language string) ([]TranscriptWord, error) {
 	return nil, ErrASRNotAvailable
