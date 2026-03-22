@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/gpu"
@@ -121,20 +122,46 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 	// we mirror it to the GPU raw sink atomic pointer.
 	app.gpuRawVideoSink = &gpuRawVideoSink
 
+	// Shared caption SEI cache: consumed once per frame by the program encode
+	// callback, read by the async preview encode callback. Both outputs get
+	// the same caption data without double-consuming.
+	var lastCaptionSEI atomic.Pointer[[]byte]
+
+	// injectCaptionSEI inserts the given SEI NALU into AVC1 data.
+	// Returns the modified AVC1 data, or the original if sei is nil/empty.
+	injectCaptionSEI := func(avc1 []byte, sei []byte) []byte {
+		if len(sei) == 0 {
+			return avc1
+		}
+		annexB := codec.AVC1ToAnnexBInto(avc1, nil)
+		inserted := caption.InsertSEIBeforeVCLInto(sei, annexB, nil)
+		return codec.AnnexBToAVC1Into(inserted, nil)
+	}
+
 	// Bridge callback: GPU encode outputs Annex B H.264 (data, isIDR, pts).
-	// Convert to AVC1 format (length-prefixed NALUs) before broadcasting,
-	// matching the CPU pipeline's encode path (pipeline_codecs.go:208).
-	// broadcastWithCaptions expects AVC1 and converts back to Annex B
-	// for caption SEI injection.
-	//
-	// On IDR keyframes, extract SPS/PPS and set VideoInfo on the program
-	// relay so the browser can configure its VideoDecoder. The CPU path
-	// does this in pipeline_codecs.go via onVideoInfoChange.
-	broadcastFn := sw.BroadcastWithCaptionsFunc()
+	// Consumes caption pairs once per frame, caches the SEI NALU for the
+	// preview encoder, injects into the program output, and broadcasts.
+	broadcastToProgram := sw.BroadcastToProgramFunc()
 	videoInfoCb := app.videoInfoCallback("gpu-pipeline")
 	var gpuSPS, gpuPPS []byte
 	gpuOnEncoded := func(data []byte, isIDR bool, pts int64) {
 		avc1 := codec.AnnexBToAVC1Into(data, nil)
+
+		// Consume caption pairs (once per frame) and cache SEI for preview.
+		if app.captionMgr != nil {
+			pairs := app.captionMgr.ConsumeForFrameWithVANC()
+			if len(pairs) > 0 {
+				sei := caption.BuildSEINALU(pairs)
+				if len(sei) > 0 {
+					lastCaptionSEI.Store(&sei)
+					avc1 = injectCaptionSEI(avc1, sei)
+				} else {
+					lastCaptionSEI.Store(nil)
+				}
+			} else {
+				lastCaptionSEI.Store(nil)
+			}
+		}
 
 		// Extract SPS/PPS from IDR keyframes for VideoInfo.
 		if isIDR {
@@ -143,8 +170,7 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 				if len(nalu) == 0 {
 					continue
 				}
-				naluType := nalu[0] & 0x1F
-				switch naluType {
+				switch nalu[0] & 0x1F {
 				case 7: // SPS
 					sps := make([]byte, len(nalu))
 					copy(sps, nalu)
@@ -170,13 +196,12 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 			frame.SPS = gpuSPS
 			frame.PPS = gpuPPS
 		}
-		broadcastFn(frame)
+		broadcastToProgram(frame)
 	}
 
-	// GPU preview encode callback: Annex B H.264 → AVC1 → broadcast on
-	// program-preview relay. Mirrors the per-source OnPreview pattern but
-	// for the program output. The node returns nil on stub builds (filtered
-	// below), and the CPU preview encoder path remains as fallback.
+	// GPU preview encode callback: Annex B H.264 → AVC1 → inject cached
+	// caption SEI → broadcast on program-preview relay. Reads the SEI NALU
+	// cached by gpuOnEncoded (same frame's captions, no double-consume).
 	previewW, previewH := 1280, 720
 	previewBitrate := 3_000_000
 	var previewGroupID atomic.Uint32
@@ -186,6 +211,11 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 	if app.programPreviewRelay != nil {
 		gpuOnPreviewEncoded := func(data []byte, isIDR bool, pts int64) {
 			avc1 := codec.AnnexBToAVC1Into(data, nil)
+
+			// Inject cached caption SEI (produced by program encode callback).
+			if seiPtr := lastCaptionSEI.Load(); seiPtr != nil {
+				avc1 = injectCaptionSEI(avc1, *seiPtr)
+			}
 
 			if isIDR {
 				previewGroupID.Add(1)

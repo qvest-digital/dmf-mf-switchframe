@@ -1420,10 +1420,17 @@ func (s *Switcher) SetCaptionManager(cm captionManager) {
 // ForceNextIDRPtr returns a pointer to the forceNextIDR atomic for GPU encode.
 func (s *Switcher) ForceNextIDRPtr() *atomic.Bool { return &s.forceNextIDR }
 
-// BroadcastWithCaptions returns the caption-injecting broadcast callback
-// for use by the GPU encode node.
+// BroadcastWithCaptionsFunc returns the caption-injecting broadcast callback
+// for use by the CPU pipeline's encode node.
 func (s *Switcher) BroadcastWithCaptionsFunc() func(*media.VideoFrame) {
 	return s.broadcastWithCaptions
+}
+
+// BroadcastToProgramFunc returns the direct program broadcast callback
+// (no caption injection). Used when the caller handles caption SEI
+// injection externally (e.g., GPU pipeline with shared caption cache).
+func (s *Switcher) BroadcastToProgramFunc() func(*media.VideoFrame) {
+	return s.broadcastOwnedToProgram
 }
 
 // broadcastWithCaptions injects caption SEI NALUs into the encoded video frame
