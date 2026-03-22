@@ -204,40 +204,6 @@ func (e *Engine) runInference(isFinal bool) {
 		return
 	}
 
-	// Debug: check encoder output quality.
-	var encMin, encMax, encSum float32
-	encMin = encOut[0]
-	encMax = encOut[0]
-	for _, v := range encOut {
-		if v < encMin {
-			encMin = v
-		}
-		if v > encMax {
-			encMax = v
-		}
-		encSum += v
-	}
-	encMean := encSum / float32(len(encOut))
-	slog.Info("ASR encoder output stats",
-		"len", len(encOut),
-		"min", encMin,
-		"max", encMax,
-		"mean", encMean,
-		"first5", encOut[:5],
-	)
-
-	// Debug: log TRT engine tensor info for decoder.
-	if e.trt != nil && e.trt.decoderEngine != nil {
-		nIO := e.trt.decoderEngine.NumIOTensors()
-		for i := 0; i < nIO; i++ {
-			info, err := e.trt.decoderEngine.TensorInfoAt(i)
-			if err == nil {
-				slog.Info("ASR decoder tensor", "idx", i, "name", info.Name,
-					"isInput", info.IsInput, "dtype", info.DType, "dims", info.Dims)
-			}
-		}
-	}
-
 	tok := e.tokenizer
 	initialTokens := []int{
 		tok.SOT(),
@@ -253,22 +219,6 @@ func (e *Engine) runInference(isFinal bool) {
 	}
 
 	text := tok.Decode(outputTokens)
-
-	// Debug: log first inference result to verify pipeline.
-	if len(outputTokens) > 0 {
-		maxLog := 10
-		if len(outputTokens) < maxLog {
-			maxLog = len(outputTokens)
-		}
-		slog.Info("ASR inference result",
-			"tokens", len(outputTokens),
-			"first_tokens", outputTokens[:maxLog],
-			"text_len", len(text),
-			"text_preview", text,
-			"isFinal", isFinal,
-		)
-	}
-
 	e.processTranscript(text, isFinal)
 }
 

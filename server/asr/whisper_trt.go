@@ -183,8 +183,8 @@ func (w *WhisperTRT) allocEncoderBuffers() error {
 // and logit output. The encoder output buffer (encoderOutputDev) is shared
 // between encoder output and decoder cross-attention input.
 func (w *WhisperTRT) allocDecoderBuffers() error {
-	// Decoder tokens: max sequence as int32.
-	tokenBytes := C.size_t(whisperMaxTokens * 4) // int32
+	// Decoder tokens: max sequence as int64 (TensorRT keeps Int64 for input_ids).
+	tokenBytes := C.size_t(whisperMaxTokens * 8) // int64
 	rc := C.cudaMalloc(&w.decoderTokensDev, tokenBytes)
 	if rc != C.cudaSuccess {
 		return fmt.Errorf("asr: whisper_trt: cudaMalloc decoder tokens: %d", int(rc))
@@ -291,10 +291,10 @@ func (w *WhisperTRT) Decode(encoderOutput []float32, initialTokens []int) ([]int
 		return nil, fmt.Errorf("asr: whisper_trt: cudaMemcpy encoder output: %d", int(rc))
 	}
 
-	// Build token sequence. Int64->Int32 cast happens here.
-	tokens := make([]int32, 0, whisperMaxTokens)
+	// Build token sequence as int64 (TensorRT keeps Int64 dtype for input_ids).
+	tokens := make([]int64, 0, whisperMaxTokens)
 	for _, t := range initialTokens {
-		tokens = append(tokens, int32(t))
+		tokens = append(tokens, int64(t))
 	}
 
 	var generatedTokens []int
@@ -303,8 +303,8 @@ func (w *WhisperTRT) Decode(encoderOutput []float32, initialTokens []int) ([]int
 	for step := 0; step < whisperMaxTokens-len(initialTokens); step++ {
 		nTokens := len(tokens)
 
-		// Copy current int32 token sequence to device.
-		tokenBytes := C.size_t(nTokens * 4)
+		// Copy current int64 token sequence to device.
+		tokenBytes := C.size_t(nTokens * 8)
 		rc := C.cudaMemcpyAsync(
 			w.decoderTokensDev,
 			unsafe.Pointer(&tokens[0]),
@@ -368,7 +368,7 @@ func (w *WhisperTRT) Decode(encoderOutput []float32, initialTokens []int) ([]int
 		}
 
 		generatedTokens = append(generatedTokens, nextToken)
-		tokens = append(tokens, int32(nextToken))
+		tokens = append(tokens, int64(nextToken))
 	}
 
 	return generatedTokens, nil
