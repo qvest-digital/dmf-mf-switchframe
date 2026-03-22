@@ -1,3 +1,5 @@
+//go:build darwin || (cgo && cuda)
+
 package gpu
 
 import "testing"
