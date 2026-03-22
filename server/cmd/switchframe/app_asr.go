@@ -66,6 +66,21 @@ func (a *App) initASR() error {
 	return nil
 }
 
+// resetASROnProgramChange clears the ASR engine and caption pacer when the
+// program source changes. Without this, stale text from the old source
+// continues to drain through the pacer for minutes after a cut.
+func (a *App) resetASROnProgramChange() {
+	if a.asrEngine != nil {
+		a.asrEngine.Reset()
+	}
+	if a.captionPacer != nil {
+		a.captionPacer.Flush()
+	}
+	if a.captionMgr != nil {
+		a.captionMgr.Clear()
+	}
+}
+
 // wireASRAudioSink sets the mixer's raw audio sink to feed the ASR engine,
 // preserving any existing sink (e.g., MXL output) via fan-out.
 func (a *App) wireASRAudioSink() {
@@ -183,13 +198,30 @@ func newCaptionPacer(mgr *caption.Manager) *captionPacer {
 	return p
 }
 
+// Flush discards all queued words. Called on program source changes
+// to prevent stale text from the old source draining for minutes.
+func (p *captionPacer) Flush() {
+	p.mu.Lock()
+	p.queue = p.queue[:0]
+	p.linePos = 0
+	p.mu.Unlock()
+}
+
 // EnqueueWords adds words to the output queue.
+// If the queue is too large (>30 words), it's trimmed to prevent
+// unbounded accumulation when Whisper produces faster than we drain.
 func (p *captionPacer) EnqueueWords(words []string, isFinal bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.queue = append(p.queue, words...)
 	if isFinal {
 		p.queue = append(p.queue, "\n") // sentinel for newline
+	}
+	// Cap queue to prevent unbounded growth. If Whisper produces faster
+	// than we drain (3 words/sec), drop oldest words.
+	const maxQueueWords = 30
+	if len(p.queue) > maxQueueWords {
+		p.queue = p.queue[len(p.queue)-maxQueueWords:]
 	}
 }
 

@@ -374,7 +374,14 @@ func (a *App) wireStateCallbacks() {
 	a.api.SetBroadcastFunc(func() { a.broadcastState(nil) })
 
 	// Switcher state changes (cut, preview, transition, etc.).
+	// Track program source to flush ASR on source changes.
+	var lastProgramSource string
 	a.sw.OnStateChange(func(state internal.ControlRoomState) {
+		if state.ProgramSource != lastProgramSource && lastProgramSource != "" {
+			a.resetASROnProgramChange()
+		}
+		lastProgramSource = state.ProgramSource
+
 		a.controlPub.Publish(a.enrichState(state, nil))
 	})
 

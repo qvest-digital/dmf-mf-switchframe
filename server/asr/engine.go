@@ -223,6 +223,16 @@ func (e *Engine) Language() string {
 	return e.language
 }
 
+// Reset clears the audio buffer and resets VAD state. Called on program
+// source changes to prevent stale audio from the old source being transcribed.
+func (e *Engine) Reset() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.ringBuf.Clear()
+	e.vad.Reset()
+	e.wasSpeaking = false
+}
+
 // Close shuts down the engine and releases resources.
 func (e *Engine) Close() {
 	e.mu.Lock()
