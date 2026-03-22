@@ -263,6 +263,11 @@ func (r *Registry) Delete(name string) error {
 		return ErrNotFound
 	}
 
+	// Close mmap-backed processors before deleting.
+	if anim, ok := r.animated[name]; ok {
+		_ = anim.Close()
+	}
+
 	delete(r.maps, name)
 	delete(r.animated, name)
 
