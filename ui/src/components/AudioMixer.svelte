@@ -270,6 +270,9 @@
 		{@const peakHold = getPeakHold(key, peakLDb, peakRDb)}
 		{@const _tick = peakHoldTick}
 		<div class="channel-strip" class:program={tally === 'program'} class:preview={tally === 'preview'} class:selected={selectedChannel === key}>
+			{#if tally === 'program' || tally === 'preview'}
+				<div class="tally-bar {tally}"></div>
+			{/if}
 			<span class="strip-label">{label}</span>
 			{#if channel.hpfEnabled}
 				<span class="strip-hpf-indicator">{channel.hpfFrequency ?? 80}Hz</span>
@@ -767,13 +770,28 @@
 	}
 
 	.channel-strip.program {
-		border-color: rgba(220, 38, 38, 0.35);
-		box-shadow: 0 0 8px rgba(220, 38, 38, 0.1);
+		border-color: #dc2626;
+		border-width: 2px;
+		box-shadow: 0 0 12px rgba(220, 38, 38, 0.3), inset 0 0 8px rgba(220, 38, 38, 0.06);
 	}
 
 	.channel-strip.preview {
-		border-color: rgba(22, 163, 74, 0.35);
-		box-shadow: 0 0 8px rgba(22, 163, 74, 0.1);
+		border-color: #16a34a;
+		border-width: 2px;
+		box-shadow: 0 0 12px rgba(22, 163, 74, 0.3), inset 0 0 8px rgba(22, 163, 74, 0.06);
+	}
+
+	.tally-bar {
+		width: 100%;
+		height: 3px;
+		border-radius: 1px;
+		flex-shrink: 0;
+	}
+	.tally-bar.program {
+		background: #dc2626;
+	}
+	.tally-bar.preview {
+		background: #16a34a;
 	}
 
 	.channel-strip.selected {
