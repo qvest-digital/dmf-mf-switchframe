@@ -43,7 +43,12 @@ type gpuSourceEntry struct {
 	stmapName string
 	stmapTmp  *GPUFrame // temp buffer for ST map warp
 
-	// CPU scale buffer for resolution normalization (reused across frames).
+	// GPU scaling for resolution-mismatched sources (e.g., 720p → 1080p).
+	scalePool *FramePool // per-source pool at source resolution
+	scaleW    int        // source width that scalePool was created for
+	scaleH    int        // source height
+
+	// CPU scale buffer (fallback when GPU scaling unavailable).
 	scaleBuf []byte
 
 	width, height int
@@ -154,6 +159,12 @@ func (m *GPUSourceManager) cleanupEntryLocked(entry *gpuSourceEntry) {
 		cur.Release()
 	}
 
+	// Free GPU scale pool.
+	if entry.scalePool != nil {
+		entry.scalePool.Close()
+		entry.scalePool = nil
+	}
+
 	// Free ST map resources.
 	if entry.stmap != nil {
 		entry.stmap.Free()
@@ -200,28 +211,8 @@ func (m *GPUSourceManager) IngestYUV(sourceKey string, yuv []byte, w, h int, pts
 		return
 	}
 
-	// Scale to pool dimensions if source is at a different resolution.
-	// SRT sources arrive at their native resolution (e.g., 1280x720) but
-	// the pool frames are sized for the pipeline format (e.g., 1920x1080).
-	// Without scaling, Upload writes a small NV12 region into a large frame,
-	// and downstream consumers (VT encode) read garbage beyond the valid data.
-	uploadYUV := yuv
-	uploadW, uploadH := w, h
-	if w != frame.Width || h != frame.Height {
-		targetW, targetH := frame.Width, frame.Height
-		scaledSize := targetW * targetH * 3 / 2
-		// Use entry's cached scale buffer to avoid per-frame allocation.
-		if len(entry.scaleBuf) < scaledSize {
-			entry.scaleBuf = make([]byte, scaledSize)
-		}
-		scaleYUV420pCPU(entry.scaleBuf[:scaledSize], targetW, targetH, yuv, w, h)
-		uploadYUV = entry.scaleBuf[:scaledSize]
-		uploadW = targetW
-		uploadH = targetH
-	}
-
-	// Upload CPU YUV420p to GPU NV12.
-	if err := Upload(m.ctx, frame, uploadYUV, uploadW, uploadH); err != nil {
+	// Upload and optionally scale to pool dimensions.
+	if err := m.uploadAndScale(entry, frame, yuv, sourceKey, w, h); err != nil {
 		slog.Warn("gpu: source manager: upload failed",
 			"source", sourceKey, "error", err)
 		frame.Release()
@@ -277,6 +268,62 @@ func (m *GPUSourceManager) IngestYUV(sourceKey string, yuv []byte, w, h int, pts
 
 // applySourceSTMap checks if a per-source ST map is assigned and applies it
 // to the frame in-place using the stmapTmp buffer.
+// uploadAndScale uploads CPU YUV420p to the GPU frame, applying GPU-side
+// bilinear scaling when the source resolution doesn't match the pool format.
+// Falls back to CPU scaling if GPU scaling fails.
+func (m *GPUSourceManager) uploadAndScale(entry *gpuSourceEntry, dst *GPUFrame, yuv []byte, sourceKey string, w, h int) error {
+	if w == dst.Width && h == dst.Height {
+		// Matching dimensions — direct upload, no scaling.
+		return Upload(m.ctx, dst, yuv, w, h)
+	}
+
+	// GPU-side scaling: upload at source resolution, then ScaleBilinear to pool size.
+	// Lazy-create a per-source temp frame pool at source resolution.
+	if entry.scalePool == nil || entry.scaleW != w || entry.scaleH != h {
+		if entry.scalePool != nil {
+			entry.scalePool.Close()
+		}
+		pool, err := NewFramePool(m.ctx, w, h, 2)
+		if err != nil {
+			// Fallback: CPU scale + upload at pool dimensions.
+			return m.uploadCPUScaled(entry, dst, yuv, w, h)
+		}
+		entry.scalePool = pool
+		entry.scaleW = w
+		entry.scaleH = h
+	}
+
+	srcFrame, err := entry.scalePool.Acquire()
+	if err != nil {
+		return m.uploadCPUScaled(entry, dst, yuv, w, h)
+	}
+
+	if err := Upload(m.ctx, srcFrame, yuv, w, h); err != nil {
+		srcFrame.Release()
+		return err
+	}
+
+	if err := ScaleBilinear(m.ctx, dst, srcFrame); err != nil {
+		srcFrame.Release()
+		slog.Warn("gpu: GPU scale failed, falling back to CPU", "source", sourceKey, "error", err)
+		return m.uploadCPUScaled(entry, dst, yuv, w, h)
+	}
+
+	srcFrame.Release()
+	return nil
+}
+
+// uploadCPUScaled is the fallback when GPU scaling isn't available.
+func (m *GPUSourceManager) uploadCPUScaled(entry *gpuSourceEntry, dst *GPUFrame, yuv []byte, w, h int) error {
+	targetW, targetH := dst.Width, dst.Height
+	scaledSize := targetW * targetH * 3 / 2
+	if len(entry.scaleBuf) < scaledSize {
+		entry.scaleBuf = make([]byte, scaledSize)
+	}
+	scaleYUV420pCPU(entry.scaleBuf[:scaledSize], targetW, targetH, yuv, w, h)
+	return Upload(m.ctx, dst, entry.scaleBuf[:scaledSize], targetW, targetH)
+}
+
 func (m *GPUSourceManager) applySourceSTMap(sourceKey string, entry *gpuSourceEntry, frame *GPUFrame) {
 	name := m.stmaps.SourceMapName(sourceKey)
 	if name == "" {

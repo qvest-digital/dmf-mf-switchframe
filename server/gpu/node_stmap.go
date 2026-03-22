@@ -89,12 +89,9 @@ func (n *gpuSTMapNode) ProcessGPU(frame *GPUFrame) error {
 		if sOrig == nil || tOrig == nil {
 			return nil
 		}
-		// Deep copy to prevent aliasing with registry's internal arrays.
-		s := make([]float32, len(sOrig))
-		t := make([]float32, len(tOrig))
-		copy(s, sOrig)
-		copy(t, tOrig)
-		m, err := UploadSTMap(n.ctx, s, t, frame.Width, frame.Height)
+		// UploadSTMap only reads S/T to copy to GPU — no deep copy needed.
+		// The registry's arrays are immutable during frame processing.
+		m, err := UploadSTMap(n.ctx, sOrig, tOrig, frame.Width, frame.Height)
 		if err != nil {
 			n.lastErr.Store(err)
 			slog.Warn("gpu_stmap: animated upload failed, skipping", "error", err)
@@ -115,12 +112,8 @@ func (n *gpuSTMapNode) ProcessGPU(frame *GPUFrame) error {
 			if sOrig == nil || tOrig == nil {
 				return nil
 			}
-			// Deep copy to prevent aliasing with registry's internal arrays.
-			s := make([]float32, len(sOrig))
-			t := make([]float32, len(tOrig))
-			copy(s, sOrig)
-			copy(t, tOrig)
-			m, err := UploadSTMap(n.ctx, s, t, frame.Width, frame.Height)
+			// UploadSTMap only reads S/T to copy to GPU — no deep copy needed.
+			m, err := UploadSTMap(n.ctx, sOrig, tOrig, frame.Width, frame.Height)
 			if err != nil {
 				n.lastErr.Store(err)
 				slog.Warn("gpu_stmap: static upload failed, skipping", "error", err)
