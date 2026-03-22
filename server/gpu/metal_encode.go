@@ -40,14 +40,15 @@ type GPUEncoder struct {
 
 // NewGPUEncoder creates a native VideoToolbox encoder that accepts GPU frames
 // directly from unified memory. Falls back to FFmpeg if VT session creation fails.
-// Uses DefaultGOPSecs (2s).
+// Uses DefaultGOPSecs (2s), program quality.
 func NewGPUEncoder(gpuCtx *Context, width, height, fpsNum, fpsDen, bitrate int) (*GPUEncoder, error) {
-	return newGPUEncoderWithGOP(gpuCtx, width, height, fpsNum, fpsDen, bitrate, transition.DefaultGOPSecs)
+	return newGPUEncoderWithGOP(gpuCtx, width, height, fpsNum, fpsDen, bitrate, transition.DefaultGOPSecs, false)
 }
 
 // newGPUEncoderWithGOP is the internal constructor with explicit GOP interval.
-// Preview encoders use PreviewGOPSecs (1s) for faster recovery after stalls.
-func newGPUEncoderWithGOP(gpuCtx *Context, width, height, fpsNum, fpsDen, bitrate, gopSecs int) (*GPUEncoder, error) {
+// When isPreview is true, uses Baseline profile for tight bitrate control.
+// Otherwise uses High profile for broadcast quality.
+func newGPUEncoderWithGOP(gpuCtx *Context, width, height, fpsNum, fpsDen, bitrate, gopSecs int, isPreview bool) (*GPUEncoder, error) {
 	if gpuCtx == nil || gpuCtx.mtl == nil {
 		return nil, ErrGPUNotAvailable
 	}
@@ -58,10 +59,15 @@ func newGPUEncoderWithGOP(gpuCtx *Context, width, height, fpsNum, fpsDen, bitrat
 	}
 
 	// Try native VT encoder first — zero-copy from unified memory
+	previewInt := C.int(0)
+	if isPreview {
+		previewInt = C.int(1)
+	}
 	vtEnc := C.metal_vt_encoder_create(
 		C.int(width), C.int(height),
 		C.int(fpsNum), C.int(fpsDen),
 		C.int(bitrate), C.int(gopFrames),
+		previewInt,
 	)
 
 	if vtEnc != nil {
@@ -69,6 +75,7 @@ func newGPUEncoderWithGOP(gpuCtx *Context, width, height, fpsNum, fpsDen, bitrat
 			"size", fmt.Sprintf("%dx%d", width, height),
 			"bitrate", bitrate,
 			"gop", gopFrames,
+			"preview", isPreview,
 		)
 		return &GPUEncoder{
 			vtEnc:  vtEnc,

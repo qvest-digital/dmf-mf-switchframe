@@ -12,7 +12,7 @@ import (
 type FFmpegHWFramesEncoder struct{}
 
 // NewFFmpegHWFramesEncoder returns an error on non-CUDA builds.
-func NewFFmpegHWFramesEncoder(cudaCtx unsafe.Pointer, width, height, bitrate, fpsNum, fpsDen, gopSecs int) (*FFmpegHWFramesEncoder, error) {
+func NewFFmpegHWFramesEncoder(cudaCtx unsafe.Pointer, width, height, bitrate, fpsNum, fpsDen, gopSecs int, preview ...bool) (*FFmpegHWFramesEncoder, error) {
 	return nil, fmt.Errorf("CUDA hw_frames encoder not available: built without CUDA support")
 }
 

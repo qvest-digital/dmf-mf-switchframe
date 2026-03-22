@@ -198,3 +198,22 @@ func TestGPUEncoderClose(t *testing.T) {
 	// Double close should also not panic
 	enc.Close()
 }
+
+func TestNewGPUEncoderPreviewMode(t *testing.T) {
+	ctx := testContext(t)
+
+	// Preview encoder should create successfully with isPreview=true
+	enc, err := newGPUEncoderWithGOP(ctx, 854, 480, 30, 1, 500_000, 1, true)
+	require.NoError(t, err, "preview encoder should create on Metal")
+	defer enc.Close()
+
+	// Program encoder should also create with isPreview=false
+	enc2, err := newGPUEncoderWithGOP(ctx, 1920, 1080, 30, 1, 8_000_000, 2, false)
+	require.NoError(t, err, "program encoder should create on Metal")
+	defer enc2.Close()
+}
+
+func TestNewGPUEncoderPreviewNilCtx(t *testing.T) {
+	_, err := newGPUEncoderWithGOP(nil, 854, 480, 30, 1, 500_000, 1, true)
+	require.ErrorIs(t, err, ErrGPUNotAvailable)
+}

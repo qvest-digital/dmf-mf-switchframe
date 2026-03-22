@@ -703,7 +703,7 @@ static void vtOutputCallback(void *outputCallbackRefCon,
     dispatch_semaphore_signal(state->sem);
 }
 
-VTEncoderRef metal_vt_encoder_create(int width, int height, int fps_num, int fps_den, int bitrate, int gop_frames) {
+VTEncoderRef metal_vt_encoder_create(int width, int height, int fps_num, int fps_den, int bitrate, int gop_frames, int preview) {
     VTEncoderState *state = calloc(1, sizeof(VTEncoderState));
     if (!state) return NULL;
 
@@ -735,9 +735,17 @@ VTEncoderRef metal_vt_encoder_create(int width, int height, int fps_num, int fps
         return NULL;
     }
 
-    // Configure encoder properties
+    // Configure encoder properties.
+    // Preview mode: Baseline profile for tight bitrate control at low targets.
+    // Program mode: High profile for broadcast quality.
     VTSessionSetProperty(session, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue);
-    VTSessionSetProperty(session, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_High_AutoLevel);
+    if (preview) {
+        VTSessionSetProperty(session, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_Baseline_AutoLevel);
+        VTSessionSetProperty(session, kVTCompressionPropertyKey_H264EntropyMode, kVTH264EntropyMode_CAVLC);
+    } else {
+        VTSessionSetProperty(session, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_High_AutoLevel);
+        VTSessionSetProperty(session, kVTCompressionPropertyKey_H264EntropyMode, kVTH264EntropyMode_CABAC);
+    }
     VTSessionSetProperty(session, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse);
 
     // BT.709 colorspace signaling

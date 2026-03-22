@@ -259,7 +259,7 @@ export class MoQTransport {
 		const subPromises: Promise<number>[] = [];
 		for (const name of wantNames) {
 			if (!this.activeSubscriptions.has(name)) {
-				subPromises.push(this.subscribe(this.namespace, name, 64));
+				subPromises.push(this.subscribe(this.namespace, name, 0));
 			}
 		}
 		await Promise.all(subPromises);

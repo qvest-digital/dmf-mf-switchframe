@@ -262,10 +262,13 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 			},
 
 			onClose() {
-				// Transport closed -- could reconnect
+				// Transport closed -- could reconnect.
+				// Reset latestGroupID so reconnection starts fresh
+				// (new Prism relay restarts group IDs from 1).
 				const source = sources.get(key);
 				if (source) {
 					source.transport = null;
+					source.latestGroupID = 0;
 				}
 			},
 

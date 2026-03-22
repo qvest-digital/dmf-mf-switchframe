@@ -38,14 +38,15 @@ type GPUEncoder struct {
 
 // NewGPUEncoder creates an NVENC encoder that accepts GPU frames.
 // Tries hw_frames_ctx (zero-copy) first, falls back to download+NVENC,
-// then libx264 if NVENC is unavailable. Uses DefaultGOPSecs (2s).
+// then libx264 if NVENC is unavailable. Uses DefaultGOPSecs (2s), program quality.
 func NewGPUEncoder(gpuCtx *Context, width, height, fpsNum, fpsDen, bitrate int) (*GPUEncoder, error) {
-	return newGPUEncoderWithGOP(gpuCtx, width, height, fpsNum, fpsDen, bitrate, transition.DefaultGOPSecs)
+	return newGPUEncoderWithGOP(gpuCtx, width, height, fpsNum, fpsDen, bitrate, transition.DefaultGOPSecs, false)
 }
 
 // newGPUEncoderWithGOP is the internal constructor with explicit GOP interval.
-// Preview encoders use PreviewGOPSecs (1s) for faster recovery after stalls.
-func newGPUEncoderWithGOP(gpuCtx *Context, width, height, fpsNum, fpsDen, bitrate, gopSecs int) (*GPUEncoder, error) {
+// When isPreview is true, uses fast NVENC preset (p1/baseline/no-aq) for tight
+// bitrate control at low targets. Otherwise uses quality preset (p4/high/spatial-aq).
+func newGPUEncoderWithGOP(gpuCtx *Context, width, height, fpsNum, fpsDen, bitrate, gopSecs int, isPreview bool) (*GPUEncoder, error) {
 	if gpuCtx == nil {
 		return nil, ErrGPUNotAvailable
 	}
@@ -53,7 +54,7 @@ func newGPUEncoderWithGOP(gpuCtx *Context, width, height, fpsNum, fpsDen, bitrat
 	// Try zero-copy hw_frames_ctx path first
 	cudaCtx := gpuCtx.CUDAContext()
 	if cudaCtx != nil {
-		hwEnc, err := codec.NewFFmpegHWFramesEncoder(cudaCtx, width, height, bitrate, fpsNum, fpsDen, gopSecs)
+		hwEnc, err := codec.NewFFmpegHWFramesEncoder(cudaCtx, width, height, bitrate, fpsNum, fpsDen, gopSecs, isPreview)
 		if err == nil {
 			slog.Info("gpu: NVENC hw_frames_ctx encoder created (zero-copy GPU encode)",
 				"size", fmt.Sprintf("%dx%d", width, height),

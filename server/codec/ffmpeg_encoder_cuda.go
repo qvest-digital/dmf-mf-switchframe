@@ -50,7 +50,7 @@ typedef struct {
 // Returns 0 on success, negative on error.
 static int ffenc_open_cuda_hw(ffenc_hw_frames_t* h, int width, int height,
                                int bitrate, int fps_num, int fps_den,
-                               int gop_secs, void* cuda_ctx) {
+                               int gop_secs, void* cuda_ctx, int preview) {
 	memset(h, 0, sizeof(ffenc_hw_frames_t));
 
 	const AVCodec* codec = avcodec_find_encoder_by_name("h264_nvenc");
@@ -89,18 +89,33 @@ static int ffenc_open_cuda_hw(ffenc_hw_frames_t* h, int width, int height,
 	else
 		level = 42;
 
-	// NVENC options (matching ffenc_open in ffmpeg_encoder.go)
-	av_opt_set(h->base.ctx->priv_data, "preset", "p4", 0);
-	av_opt_set(h->base.ctx->priv_data, "profile", "high", 0);
-	av_opt_set(h->base.ctx->priv_data, "delay", "0", 0);
-	av_opt_set_int(h->base.ctx->priv_data, "spatial-aq", 1, 0);
-	av_opt_set_int(h->base.ctx->priv_data, "aq-strength", 8, 0);
-	av_opt_set_int(h->base.ctx->priv_data, "no-scenecut", 1, 0);
-	av_opt_set_int(h->base.ctx->priv_data, "forced-idr", 1, 0);
-	av_opt_set_int(h->base.ctx->priv_data, "level", level, 0);
-	av_opt_set(h->base.ctx->priv_data, "rc", "cbr", 0);
-	av_opt_set_int(h->base.ctx->priv_data, "temporal-aq", 0, 0);
-	av_opt_set(h->base.ctx->priv_data, "aud", "1", 0);
+	// NVENC options: preview mode uses fast preset with no AQ for tight
+	// bitrate control at low targets (480p/750kbps). Program mode uses
+	// quality preset with spatial AQ for broadcast output.
+	if (preview) {
+		av_opt_set(h->base.ctx->priv_data, "preset", "p1", 0);
+		av_opt_set(h->base.ctx->priv_data, "profile", "baseline", 0);
+		av_opt_set(h->base.ctx->priv_data, "delay", "0", 0);
+		av_opt_set_int(h->base.ctx->priv_data, "spatial-aq", 0, 0);
+		av_opt_set_int(h->base.ctx->priv_data, "temporal-aq", 0, 0);
+		av_opt_set_int(h->base.ctx->priv_data, "no-scenecut", 1, 0);
+		av_opt_set_int(h->base.ctx->priv_data, "forced-idr", 1, 0);
+		av_opt_set_int(h->base.ctx->priv_data, "level", level, 0);
+		av_opt_set(h->base.ctx->priv_data, "rc", "cbr", 0);
+		av_opt_set(h->base.ctx->priv_data, "aud", "1", 0);
+	} else {
+		av_opt_set(h->base.ctx->priv_data, "preset", "p4", 0);
+		av_opt_set(h->base.ctx->priv_data, "profile", "high", 0);
+		av_opt_set(h->base.ctx->priv_data, "delay", "0", 0);
+		av_opt_set_int(h->base.ctx->priv_data, "spatial-aq", 1, 0);
+		av_opt_set_int(h->base.ctx->priv_data, "aq-strength", 8, 0);
+		av_opt_set_int(h->base.ctx->priv_data, "no-scenecut", 1, 0);
+		av_opt_set_int(h->base.ctx->priv_data, "forced-idr", 1, 0);
+		av_opt_set_int(h->base.ctx->priv_data, "level", level, 0);
+		av_opt_set(h->base.ctx->priv_data, "rc", "cbr", 0);
+		av_opt_set_int(h->base.ctx->priv_data, "temporal-aq", 0, 0);
+		av_opt_set(h->base.ctx->priv_data, "aud", "1", 0);
+	}
 
 	// --- Create CUDA hw_device_ctx from existing CUcontext ---
 	h->hw_device_ref = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_CUDA);
@@ -344,7 +359,7 @@ type FFmpegHWFramesEncoder struct {
 //
 // Returns an error if NVENC or CUDA hw context creation fails. The caller
 // should fall back to the standard GPU->CPU download path in that case.
-func NewFFmpegHWFramesEncoder(cudaCtx unsafe.Pointer, width, height, bitrate, fpsNum, fpsDen, gopSecs int) (*FFmpegHWFramesEncoder, error) {
+func NewFFmpegHWFramesEncoder(cudaCtx unsafe.Pointer, width, height, bitrate, fpsNum, fpsDen, gopSecs int, preview ...bool) (*FFmpegHWFramesEncoder, error) {
 	initFFmpegLogLevel()
 
 	if cudaCtx == nil {
@@ -363,12 +378,17 @@ func NewFFmpegHWFramesEncoder(cudaCtx unsafe.Pointer, width, height, bitrate, fp
 		return nil, fmt.Errorf("invalid gopSecs: %d", gopSecs)
 	}
 
+	isPreview := C.int(0)
+	if len(preview) > 0 && preview[0] {
+		isPreview = C.int(1)
+	}
+
 	e := &FFmpegHWFramesEncoder{}
 	FFmpegOpenMu.Lock()
 	rc := C.ffenc_open_cuda_hw(&e.handle,
 		C.int(width), C.int(height), C.int(bitrate),
 		C.int(fpsNum), C.int(fpsDen),
-		C.int(gopSecs), cudaCtx)
+		C.int(gopSecs), cudaCtx, isPreview)
 	FFmpegOpenMu.Unlock()
 	if rc != 0 {
 		desc := map[int]string{

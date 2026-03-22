@@ -39,7 +39,7 @@ func (e *FFmpegEncoder) Close() {}
 type FFmpegHWFramesEncoder struct{}
 
 // NewFFmpegHWFramesEncoder returns an error when FFmpeg is not available.
-func NewFFmpegHWFramesEncoder(cudaCtx unsafe.Pointer, width, height, bitrate, fpsNum, fpsDen, gopSecs int) (*FFmpegHWFramesEncoder, error) {
+func NewFFmpegHWFramesEncoder(cudaCtx unsafe.Pointer, width, height, bitrate, fpsNum, fpsDen, gopSecs int, preview ...bool) (*FFmpegHWFramesEncoder, error) {
 	return nil, errFFmpegDisabled
 }
 

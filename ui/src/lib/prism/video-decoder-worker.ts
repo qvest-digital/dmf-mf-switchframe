@@ -278,7 +278,7 @@ self.onmessage = async (e: MessageEvent) => {
 		// from before the pause don't cause artifacts.
 		if (videoDecoder && videoDecoder.state === "configured") {
 			try {
-				videoDecoder.flush();
+				await videoDecoder.flush();
 			} catch { /* ignore */ }
 		}
 	} else if (msg.type === "stop") {

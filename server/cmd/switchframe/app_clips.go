@@ -8,11 +8,13 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/codec"
+	"github.com/zsiec/switchframe/server/gpu"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -51,6 +53,12 @@ func (a *App) initClips() error {
 		slog.Info("clip relay registered", "key", key)
 	}
 
+	// Per-slot flag: true when GPU preview encoding handles relay, so the
+	// full-quality SetVideoOutput callback should skip relay broadcast.
+	var clipGPUPreview [clip.MaxPlayers]bool
+	// Per-slot MoQ group ID counter for GPU preview frames.
+	var clipPreviewGroupID [clip.MaxPlayers]atomic.Uint32
+
 	// Player lifecycle: register/unregister virtual sources.
 	mgr.OnPlayerLifecycle(
 		// onStart: register clip player as a raw YUV switcher source + mixer channel.
@@ -61,11 +69,70 @@ func (a *App) initClips() error {
 			// If program is already this key, re-trigger AFV activation
 			// so the new channel becomes active.
 			a.mixer.OnProgramChange(a.sw.ProgramSource())
+
+			// Register clip source with GPU preview encoder when available.
+			// This replaces the full-quality relay encode with 480p preview,
+			// matching the SRT source preview proxy path.
+			idx := playerID - 1
+			if idx >= 0 && idx < clip.MaxPlayers && a.cfg.PreviewProxy && a.gpuState != nil && a.gpuState.sourceManager != nil {
+				pw, ph := parsePreviewResolution(a.cfg.PreviewResolution)
+				pf := a.sw.PipelineFormat()
+				relay := a.clipRelays[idx]
+				a.gpuState.sourceManager.RegisterSource(key, pf.Width, pf.Height, &gpu.PreviewConfig{
+					Width:   pw,
+					Height:  ph,
+					Bitrate: a.cfg.PreviewBitrate,
+					FPSNum:  pf.FPSNum,
+					FPSDen:  pf.FPSDen,
+					OnPreview: func(data []byte, isIDR bool, pts int64) {
+						avc1 := codec.AnnexBToAVC1(data)
+						if isIDR {
+							clipPreviewGroupID[idx].Add(1)
+						}
+						frame := &media.VideoFrame{
+							PTS: pts, DTS: pts, IsKeyframe: isIDR,
+							WireData: avc1, Codec: "h264",
+							GroupID: clipPreviewGroupID[idx].Load(),
+						}
+						if isIDR {
+							for _, nalu := range codec.ExtractNALUs(avc1) {
+								if len(nalu) == 0 {
+									continue
+								}
+								switch nalu[0] & 0x1F {
+								case 7:
+									frame.SPS = nalu
+								case 8:
+									frame.PPS = nalu
+								}
+							}
+							if frame.SPS != nil && frame.PPS != nil {
+								avcC := a.buildAVCConfig(frame.SPS, frame.PPS)
+								if avcC != nil {
+									relay.SetVideoInfo(a.buildVideoInfo(frame.SPS, avcC, pw, ph))
+								}
+							}
+						}
+						relay.BroadcastVideo(frame)
+					},
+				})
+				clipGPUPreview[idx] = true
+				slog.Info("clip: GPU preview encoder registered", "key", key)
+			}
 		},
 		// onStop: unregister clip player source.
 		func(playerID int, key string) {
 			a.sw.UnregisterSource(key)
 			a.mixer.RemoveChannel(key)
+			idx := playerID - 1
+			if idx >= 0 && idx < clip.MaxPlayers {
+				clipGPUPreview[idx] = false
+				clipPreviewGroupID[idx].Store(0)
+			}
+			// Release GPU preview encoder and cached frames.
+			if a.gpuState != nil && a.gpuState.sourceManager != nil {
+				a.gpuState.sourceManager.RemoveSource(key)
+			}
 		},
 	)
 
@@ -124,6 +191,12 @@ func (a *App) initClips() error {
 	mgr.SetVideoOutput(func(key string, wireData []byte, pts int64, isKeyframe bool, sps, pps []byte) {
 		idx := clipPlayerIDFromKey(key) - 1
 		if idx < 0 || idx >= clip.MaxPlayers {
+			return
+		}
+		// When GPU preview encoding is active for this slot, skip the
+		// full-quality relay broadcast — the GPU source manager handles
+		// preview encode via the IngestYUV → preview encoder path.
+		if clipGPUPreview[idx] {
 			return
 		}
 		relay := a.clipRelays[idx]
