@@ -579,6 +579,38 @@ MetalResult metal_fill_rect(MetalQueueRef queue, MetalPipelineRef pipeline,
 }
 
 // ============================================================================
+// Gaussian blur kernels
+// ============================================================================
+
+MetalResult metal_gaussian_blur_h(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef tmpBuf, MetalBufferRef src, MetalBufferRef weights,
+    const MetalBlurParams* params) {
+    id<MTLBuffer> bufs[] = {
+        (id<MTLBuffer>)tmpBuf,
+        (id<MTLBuffer>)src,
+        (id<MTLBuffer>)weights,
+    };
+    return dispatch_2d((id<MTLCommandQueue>)queue,
+                       (id<MTLComputePipelineState>)pipeline,
+                       bufs, 3, params, sizeof(*params), 3,
+                       params->width, params->height);
+}
+
+MetalResult metal_gaussian_blur_v(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dst, MetalBufferRef tmpBuf, MetalBufferRef weights,
+    const MetalBlurParams* params) {
+    id<MTLBuffer> bufs[] = {
+        (id<MTLBuffer>)dst,
+        (id<MTLBuffer>)tmpBuf,
+        (id<MTLBuffer>)weights,
+    };
+    return dispatch_2d((id<MTLCommandQueue>)queue,
+                       (id<MTLComputePipelineState>)pipeline,
+                       bufs, 3, params, sizeof(*params), 3,
+                       params->width, params->height);
+}
+
+// ============================================================================
 // VideoToolbox direct encode from NV12 unified memory
 // ============================================================================
 
