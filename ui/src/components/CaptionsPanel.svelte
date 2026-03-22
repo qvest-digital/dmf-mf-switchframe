@@ -157,6 +157,26 @@
 		apiCall(setASRConfig({ translate: on }), 'Set ASR translate');
 	}
 
+	let tuningOpen = $state(false);
+
+	function handleSpeedChange(value: string) {
+		apiCall(setASRConfig({ speed: value }), 'Set ASR speed');
+	}
+
+	function handleConfidenceChange(value: string) {
+		apiCall(setASRConfig({ confidenceFilter: value }), 'Set ASR confidence filter');
+	}
+
+	function handleNoiseFloorChange(e: Event) {
+		const value = (e.target as HTMLSelectElement).value;
+		apiCall(setASRConfig({ noiseFloor: value }), 'Set ASR noise floor');
+	}
+
+	function handleSpeakerDetectionChange(e: Event) {
+		const value = (e.target as HTMLSelectElement).value;
+		apiCall(setASRConfig({ speakerDetection: value }), 'Set ASR speaker detection');
+	}
+
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.key === 'Enter' && !e.shiftKey) {
 			e.preventDefault();
@@ -249,6 +269,54 @@
 							<option value={model}>{model}</option>
 						{/each}
 					</select>
+				</div>
+			{/if}
+			<button class="tuning-toggle" class:open={tuningOpen} onclick={() => tuningOpen = !tuningOpen}>
+				<span class="tuning-icon">&#9881;</span> Tuning
+				<span class="tuning-chevron">{tuningOpen ? '\u25B2' : '\u25BC'}</span>
+			</button>
+			{#if tuningOpen}
+				<div class="tuning-section">
+					<div class="tuning-row">
+						<span class="tuning-label">Speed</span>
+						<div class="segment-toggle">
+							<button class:active={(asrState?.speed ?? 'balanced') === 'fast'} onclick={() => handleSpeedChange('fast')}>Fast</button>
+							<button class:active={(asrState?.speed ?? 'balanced') === 'balanced'} onclick={() => handleSpeedChange('balanced')}>Balanced</button>
+							<button class:active={(asrState?.speed ?? 'balanced') === 'accurate'} onclick={() => handleSpeedChange('accurate')}>Accurate</button>
+						</div>
+					</div>
+					<div class="tuning-row">
+						<span class="tuning-label">Confidence</span>
+						<div class="segment-toggle">
+							<button class:active={(asrState?.confidenceFilter ?? 'medium') === 'low'} onclick={() => handleConfidenceChange('low')}>Show More</button>
+							<button class:active={(asrState?.confidenceFilter ?? 'medium') === 'medium'} onclick={() => handleConfidenceChange('medium')}>Balanced</button>
+							<button class:active={(asrState?.confidenceFilter ?? 'medium') === 'high'} onclick={() => handleConfidenceChange('high')}>Fewer Errors</button>
+						</div>
+					</div>
+					<div class="tuning-row">
+						<span class="tuning-label">Noise Floor</span>
+						<select
+							class="language-select"
+							value={asrState?.noiseFloor ?? 'normal'}
+							onchange={handleNoiseFloorChange}
+						>
+							<option value="quiet">Quiet Studio</option>
+							<option value="normal">Normal</option>
+							<option value="noisy">Noisy Venue</option>
+						</select>
+					</div>
+					<div class="tuning-row">
+						<span class="tuning-label">Speaker Detection</span>
+						<select
+							class="language-select"
+							value={asrState?.speakerDetection ?? 'normal'}
+							onchange={handleSpeakerDetectionChange}
+						>
+							<option value="sensitive">Sensitive (200ms)</option>
+							<option value="normal">Normal (300ms)</option>
+							<option value="relaxed">Relaxed (500ms)</option>
+						</select>
+					</div>
 				</div>
 			{/if}
 		{/if}
@@ -606,6 +674,109 @@
 		font-family: var(--font-ui);
 		font-size: var(--text-xs);
 		color: var(--text-primary);
+	}
+
+	.tuning-toggle {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		padding: 4px 8px;
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		background: var(--bg-base);
+		color: var(--text-secondary);
+		cursor: pointer;
+		margin-top: 2px;
+		transition: all var(--transition-fast);
+	}
+
+	.tuning-toggle:hover {
+		background: var(--bg-elevated);
+		color: var(--text-primary);
+	}
+
+	.tuning-toggle.open {
+		border-color: #a855f7;
+		color: #a855f7;
+	}
+
+	.tuning-icon {
+		font-size: 12px;
+	}
+
+	.tuning-chevron {
+		margin-left: auto;
+		font-size: 8px;
+	}
+
+	.tuning-section {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		padding: 6px;
+		background: var(--bg-base);
+		border-radius: var(--radius-sm);
+		border: 1px solid var(--border-default);
+	}
+
+	.tuning-row {
+		display: flex;
+		flex-direction: column;
+		gap: 3px;
+	}
+
+	.tuning-label {
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		color: var(--text-secondary);
+	}
+
+	.segment-toggle {
+		display: flex;
+		gap: 0;
+	}
+
+	.segment-toggle button {
+		flex: 1;
+		padding: 4px 8px;
+		font-family: var(--font-ui);
+		font-size: 11px;
+		border: 1px solid var(--border-default);
+		background: var(--bg-secondary);
+		color: var(--text-secondary);
+		cursor: pointer;
+		transition: all var(--transition-fast);
+	}
+
+	.segment-toggle button:first-child {
+		border-radius: 4px 0 0 4px;
+	}
+
+	.segment-toggle button:last-child {
+		border-radius: 0 4px 4px 0;
+	}
+
+	.segment-toggle button:not(:first-child) {
+		border-left: none;
+	}
+
+	.segment-toggle button:hover:not(.active) {
+		background: var(--bg-elevated);
+		color: var(--text-primary);
+	}
+
+	.segment-toggle button.active {
+		background: #a855f7;
+		color: white;
+		border-color: #a855f7;
+	}
+
+	.segment-toggle button.active + button {
+		border-left-color: #a855f7;
 	}
 
 	@media (max-width: 1024px) {
