@@ -501,12 +501,21 @@ type ASRState struct {
 	SpeakerDetection string  `json:"speakerDetection,omitempty"`
 }
 
+// LookMetadata describes a single available color look with group/description.
+type LookMetadata struct {
+	Name        string `json:"name"`
+	Group       string `json:"group"`
+	Description string `json:"description"`
+	Builtin     bool   `json:"builtin"`
+}
+
 // ColorGradeState represents the color grading state in ControlRoomState.
 type ColorGradeState struct {
-	Enabled   bool     `json:"enabled"`
-	LookName  string   `json:"lookName"`
-	Intensity float32  `json:"intensity"`
-	Available []string `json:"available"`
+	Enabled   bool           `json:"enabled"`
+	LookName  string         `json:"lookName"`
+	LookGroup string         `json:"lookGroup"`
+	Intensity float32        `json:"intensity"`
+	Available []LookMetadata `json:"available"`
 }
 
 // LayoutSlotState represents a single layout slot in the state broadcast.

@@ -69,14 +69,24 @@ func (c *colorGradeController) GetState() internal.ColorGradeState {
 	defer c.mu.RUnlock()
 
 	looks := c.store.List()
-	available := make([]string, len(looks))
+	available := make([]internal.LookMetadata, len(looks))
+	var lookGroup string
 	for i, l := range looks {
-		available[i] = l.Name
+		available[i] = internal.LookMetadata{
+			Name:        l.Name,
+			Group:       l.Group,
+			Description: l.Description,
+			Builtin:     l.Builtin,
+		}
+		if l.Name == c.lookName {
+			lookGroup = l.Group
+		}
 	}
 
 	return internal.ColorGradeState{
 		Enabled:   c.enabled,
 		LookName:  c.lookName,
+		LookGroup: lookGroup,
 		Intensity: c.intensity,
 		Available: available,
 	}

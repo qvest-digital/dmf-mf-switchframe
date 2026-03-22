@@ -19,14 +19,18 @@ type mockColorGradeManager struct {
 	enabled   bool
 	lookName  string
 	intensity float32
-	available []string
+	available []internal.LookMetadata
 	uploaded  map[string]bool
 	err       error
 }
 
 func newMockColorGradeManager() *mockColorGradeManager {
 	return &mockColorGradeManager{
-		available: []string{"golden-hour", "kodachrome", "broadcast"},
+		available: []internal.LookMetadata{
+			{Name: "golden-hour", Group: "Light", Description: "Amber glow", Builtin: true},
+			{Name: "kodachrome", Group: "Film", Description: "Legendary warmth", Builtin: true},
+			{Name: "broadcast", Group: "Clean", Description: "Crisp standard", Builtin: true},
+		},
 		uploaded:  make(map[string]bool),
 		intensity: 1.0,
 	}
@@ -40,7 +44,7 @@ func (m *mockColorGradeManager) SetColorGrade(lookName string, intensity float32
 	}
 	found := false
 	for _, a := range m.available {
-		if a == lookName {
+		if a.Name == lookName {
 			found = true
 			break
 		}
@@ -60,9 +64,17 @@ func (m *mockColorGradeManager) DisableColorGrade() {
 }
 
 func (m *mockColorGradeManager) GetState() internal.ColorGradeState {
+	var lookGroup string
+	for _, a := range m.available {
+		if a.Name == m.lookName {
+			lookGroup = a.Group
+			break
+		}
+	}
 	return internal.ColorGradeState{
 		Enabled:   m.enabled,
 		LookName:  m.lookName,
+		LookGroup: lookGroup,
 		Intensity: m.intensity,
 		Available: m.available,
 	}
@@ -73,7 +85,12 @@ func (m *mockColorGradeManager) UploadLUT(name string, data io.Reader) error {
 		return m.err
 	}
 	m.uploaded[name] = true
-	m.available = append(m.available, name)
+	m.available = append(m.available, internal.LookMetadata{
+		Name:        name,
+		Group:       "Custom",
+		Description: "Custom look",
+		Builtin:     false,
+	})
 	return nil
 }
 
