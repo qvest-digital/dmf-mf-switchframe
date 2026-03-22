@@ -31,7 +31,7 @@ type WhisperCpp struct {
 type WhisperCppConfig struct {
 	ModelPath    string // Path to ggml model file (e.g., ggml-base.bin)
 	VADModelPath string // Path to Silero VAD model (e.g., ggml-silero-v6.2.0.bin); empty = no VAD
-	UseGPU       bool   // Enable CUDA GPU acceleration
+	UseGPU       bool   // Enable GPU acceleration (CUDA on Linux, Metal on macOS)
 }
 
 // NewWhisperCpp loads a whisper model and creates a context.
