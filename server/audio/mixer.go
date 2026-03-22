@@ -54,6 +54,17 @@ type CompressorState struct {
 	GainReduction float64
 }
 
+// GateState holds the current state of a channel's noise gate.
+type GateState struct {
+	Threshold     float64
+	Range         float64
+	Attack        float64
+	Release       float64
+	Hold          float64
+	Enabled       bool
+	GainReduction float64
+}
+
 // Channel tracks per-source audio state.
 type Channel struct {
 	sourceKey        string
@@ -62,6 +73,7 @@ type Channel struct {
 	trim             float64 // dB (-20 to +20), input gain/trim
 	trimLinear       float32 // cached linear gain from trim (avoids per-frame math.Pow)
 	hpf              *HPF           // high-pass filter (always initialized)
+	gate             *Gate          // noise gate (always initialized)
 	phaseInvert      bool
 	muted            bool
 	afv              bool
@@ -72,6 +84,9 @@ type Channel struct {
 	peakR            float64        // linear amplitude [0,1]
 	eq               *EQ            // 3-band parametric EQ (always initialized)
 	compressor       *Compressor    // single-band compressor (always initialized)
+	balance          float64        // -1.0 (hard left) to +1.0 (hard right), 0.0 = center
+	balL             float32        // cached left gain from BalanceGains()
+	balR             float32        // cached right gain from BalanceGains()
 	audioDelay       *DelayBuffer   // per-source audio delay for lip-sync correction
 	isPCM            bool           // true if this channel receives raw PCM (not AAC)
 	sampleRateWarned bool           // true after first sample rate mismatch log (once per channel)
@@ -384,8 +399,12 @@ func (m *Mixer) AddChannel(sourceKey string) {
 		levelLinear: 1.0, // 0 dB = unity
 		trimLinear:  1.0, // 0 dB = unity
 		hpf:         NewHPF(m.sampleRate),
+		gate:        NewGate(m.sampleRate, m.numChannels),
 		eq:          NewEQ(m.sampleRate, m.numChannels),
 		compressor:  NewCompressor(m.sampleRate, m.numChannels),
+		balance:     0,
+		balL:        1.0,
+		balR:        1.0,
 		audioDelay:  NewDelayBuffer(0),
 		ringBuf:     NewPCMRingBuffer(10 * 1024 * m.numChannels),
 	}
@@ -509,6 +528,7 @@ func (m *Mixer) SetProgramMute(muted bool) {
 		m.limiter.Reset()
 		for _, ch := range m.channels {
 			ch.compressor.Reset()
+			ch.gate.Reset()
 		}
 		m.unmuteFadeRemaining = 0
 	} else if wasMuted {
@@ -615,6 +635,7 @@ func (m *Mixer) ChannelStates() map[string]internal.AudioChannel {
 			Muted:        ch.muted,
 			AFV:          ch.afv,
 			PhaseInvert:  ch.phaseInvert,
+			Balance:      ch.balance,
 			HPFFrequency: ch.hpf.Frequency(),
 			HPFEnabled:   ch.hpf.Enabled(),
 			PeakL:        LinearToDBFS(ch.peakL),
@@ -644,6 +665,19 @@ func (m *Mixer) ChannelStates() map[string]internal.AudioChannel {
 				MakeupGain: makeup,
 			}
 			ac.GainReduction = ch.compressor.GainReduction()
+		}
+		// Include gate settings and gain reduction
+		if ch.gate != nil {
+			gThreshold, gRange, gAttack, gRelease, gHold, gEnabled := ch.gate.Settings()
+			ac.Gate = internal.GateSettings{
+				Threshold: gThreshold,
+				Range:     gRange,
+				Attack:    gAttack,
+				Release:   gRelease,
+				Hold:      gHold,
+			}
+			ac.GateEnabled = gEnabled
+			ac.GateReduction = ch.gate.GainReduction()
 		}
 		result[key] = ac
 	}

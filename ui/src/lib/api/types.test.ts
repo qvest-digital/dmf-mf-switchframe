@@ -16,6 +16,7 @@ function makeChannel(overrides: Partial<AudioChannel> = {}): AudioChannel {
 		],
 		compressor: { threshold: -20, ratio: 4, attack: 10, release: 100, makeupGain: 0 },
 		gainReduction: 0,
+		gate: { threshold: -40, range: -60, attack: 0.5, release: 100, hold: 50 },
 		...overrides,
 	};
 }

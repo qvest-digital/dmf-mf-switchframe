@@ -92,6 +92,11 @@ func (m *Mixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 		ch.hpf.Process(trimmedPCM, m.numChannels)
 	}
 
+	// Apply noise gate
+	if !ch.gate.IsBypassed() {
+		ch.gate.Process(trimmedPCM)
+	}
+
 	// Apply EQ (3-band parametric)
 	if !ch.eq.IsBypassed() {
 		ch.eq.Process(trimmedPCM, m.numChannels)
@@ -100,6 +105,15 @@ func (m *Mixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 	// Apply compressor
 	if !ch.compressor.IsBypassed() {
 		ch.compressor.Process(trimmedPCM)
+	}
+
+	// Apply stereo balance (after compressor, before ring buffer push).
+	// At center (0.0) both gains are 1.0, so this is a no-op.
+	if ch.balL != 1.0 || ch.balR != 1.0 {
+		for i := 0; i < len(trimmedPCM)-1; i += 2 {
+			trimmedPCM[i] *= ch.balL
+			trimmedPCM[i+1] *= ch.balR
+		}
 	}
 
 	// Push processed PCM to ring buffer for clock-driven output.
@@ -174,6 +188,11 @@ func (m *Mixer) IngestPCM(sourceKey string, pcm []float32, pts int64, channels i
 		ch.hpf.Process(trimmedPCM, m.numChannels)
 	}
 
+	// Apply noise gate
+	if !ch.gate.IsBypassed() {
+		ch.gate.Process(trimmedPCM)
+	}
+
 	// Apply EQ (3-band parametric)
 	if !ch.eq.IsBypassed() {
 		ch.eq.Process(trimmedPCM, m.numChannels)
@@ -182,6 +201,15 @@ func (m *Mixer) IngestPCM(sourceKey string, pcm []float32, pts int64, channels i
 	// Apply compressor
 	if !ch.compressor.IsBypassed() {
 		ch.compressor.Process(trimmedPCM)
+	}
+
+	// Apply stereo balance (after compressor, before ring buffer push).
+	// At center (0.0) both gains are 1.0, so this is a no-op.
+	if ch.balL != 1.0 || ch.balR != 1.0 {
+		for i := 0; i < len(trimmedPCM)-1; i += 2 {
+			trimmedPCM[i] *= ch.balL
+			trimmedPCM[i+1] *= ch.balR
+		}
 	}
 
 	// Push processed PCM to ring buffer for clock-driven output.

@@ -6,10 +6,12 @@
 		setMute as apiSetMute,
 		setAFV as apiSetAFV,
 		setPhaseInvert as apiSetPhaseInvert,
+		setBalance as apiSetBalance,
 		setMasterLevel as apiSetMasterLevel,
 		setHPF as apiSetHPF,
 		setEQ as apiSetEQ,
 		setCompressor as apiSetCompressor,
+		setGate as apiSetGate,
 		setSourceDelay,
 		setAudioDelay as apiSetAudioDelay,
 	} from '$lib/api/switch-api';
@@ -63,6 +65,11 @@
 		applyResult(apiSetPhaseInvert(source, invert));
 	}
 
+	/** Throttled balance API call -- max 20 calls/sec (50ms). */
+	const setBalanceThrottled = throttle((source: string, balance: number) => {
+		applyResult(apiSetBalance(source, balance));
+	}, 50);
+
 	/** Throttled master level API call -- max 20 calls/sec (50ms). */
 	const setMasterLevelThrottled = throttle((level: number) => {
 		applyResult(apiSetMasterLevel(level));
@@ -85,6 +92,11 @@
 	/** Throttled compressor API call -- max 20 calls/sec (50ms). */
 	const setCompressorThrottled = throttle((source: string, threshold: number, ratio: number, attack: number, release: number, makeupGain: number) => {
 		applyResult(apiSetCompressor(source, threshold, ratio, attack, release, makeupGain));
+	}, 50);
+
+	/** Throttled gate API call -- max 20 calls/sec (50ms). */
+	const setGateThrottled = throttle((source: string, threshold: number, range: number, attack: number, release: number, hold: number, enabled: boolean) => {
+		applyResult(apiSetGate(source, threshold, range, attack, release, hold, enabled));
 	}, 50);
 
 	/** Throttled source delay API call -- max 20 calls/sec (50ms). */

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import AudioMixer from './AudioMixer.svelte';
-import type { EQBand, CompressorSettings } from '$lib/api/types';
+import type { EQBand, CompressorSettings, GateSettings } from '$lib/api/types';
 
 vi.mock('$lib/api/switch-api', () => ({
 	setLevel: vi.fn().mockResolvedValue({}),
@@ -13,6 +13,7 @@ vi.mock('$lib/api/switch-api', () => ({
 	setCompressor: vi.fn().mockResolvedValue({}),
 	setSourceDelay: vi.fn().mockResolvedValue({}),
 	setAudioDelay: vi.fn().mockResolvedValue({}),
+	setGate: vi.fn().mockResolvedValue({}),
 }));
 
 const defaultEQ: [EQBand, EQBand, EQBand] = [
@@ -29,6 +30,14 @@ const defaultCompressor: CompressorSettings = {
 	makeupGain: 0,
 };
 
+const defaultGate: GateSettings = {
+	threshold: -40,
+	range: -60,
+	attack: 0.5,
+	release: 100,
+	hold: 50,
+};
+
 describe('AudioMixer', () => {
 	const state = {
 		programSource: 'cam1',
@@ -39,8 +48,8 @@ describe('AudioMixer', () => {
 		inTransition: false,
 		ftbActive: false,
 		audioChannels: {
-			cam1: { level: 0, trim: 0, muted: false, afv: true, peakL: -96, peakR: -96, eq: defaultEQ, compressor: defaultCompressor, gainReduction: 0 },
-			cam2: { level: -6, trim: -3, muted: true, afv: false, peakL: -96, peakR: -96, eq: defaultEQ, compressor: defaultCompressor, gainReduction: 0 },
+			cam1: { level: 0, trim: 0, muted: false, afv: true, peakL: -96, peakR: -96, eq: defaultEQ, compressor: defaultCompressor, gainReduction: 0, gate: defaultGate },
+			cam2: { level: -6, trim: -3, muted: true, afv: false, peakL: -96, peakR: -96, eq: defaultEQ, compressor: defaultCompressor, gainReduction: 0, gate: defaultGate },
 		},
 		masterLevel: 0,
 		programPeak: [-12, -14] as [number, number],
@@ -198,8 +207,8 @@ describe('AudioMixer', () => {
 		const stateWithPeaks = {
 			...state,
 			audioChannels: {
-				cam1: { level: 0, trim: 0, muted: false, afv: true, peakL: -12, peakR: -18, eq: defaultEQ, compressor: defaultCompressor, gainReduction: 0 },
-				cam2: { level: -6, trim: 0, muted: true, afv: false, peakL: -96, peakR: -96, eq: defaultEQ, compressor: defaultCompressor, gainReduction: 0 },
+				cam1: { level: 0, trim: 0, muted: false, afv: true, peakL: -12, peakR: -18, eq: defaultEQ, compressor: defaultCompressor, gainReduction: 0, gate: defaultGate },
+				cam2: { level: -6, trim: 0, muted: true, afv: false, peakL: -96, peakR: -96, eq: defaultEQ, compressor: defaultCompressor, gainReduction: 0, gate: defaultGate },
 			},
 		};
 		const { container } = render(AudioMixer, { props: { state: stateWithPeaks } });
@@ -299,7 +308,7 @@ describe('AudioMixer', () => {
 					cam1: { key: 'cam1', label: '', type: 'demo' as const, status: 'healthy' as const },
 				},
 				audioChannels: {
-					cam1: { level: 0, trim: 0, muted: false, afv: false, peakL: -96, peakR: -96, eq: defaultEQ, compressor: defaultCompressor, gainReduction: 0 },
+					cam1: { level: 0, trim: 0, muted: false, afv: false, peakL: -96, peakR: -96, eq: defaultEQ, compressor: defaultCompressor, gainReduction: 0, gate: defaultGate },
 				},
 				tallyState: { cam1: 'program' as const },
 			};

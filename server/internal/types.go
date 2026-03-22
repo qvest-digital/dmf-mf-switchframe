@@ -76,6 +76,15 @@ type CompressorSettings struct {
 	MakeupGain float64 `json:"makeupGain"`
 }
 
+// GateSettings describes the settings for a channel noise gate.
+type GateSettings struct {
+	Threshold float64 `json:"threshold"`
+	Range     float64 `json:"range"`
+	Attack    float64 `json:"attack"`
+	Release   float64 `json:"release"`
+	Hold      float64 `json:"hold"`
+}
+
 // AudioChannel describes the audio mixer state for a single source.
 type AudioChannel struct {
 	Level         float64            `json:"level"` // dB (-inf to +12)
@@ -83,6 +92,7 @@ type AudioChannel struct {
 	Muted         bool               `json:"muted"`
 	AFV           bool               `json:"afv"`                   // audio-follows-video
 	PhaseInvert   bool               `json:"phaseInvert,omitempty"` // 180-degree phase flip
+	Balance       float64            `json:"balance"`               // -1.0 (L) to +1.0 (R), 0 = center
 	HPFFrequency  float64            `json:"hpfFrequency,omitempty"`
 	HPFEnabled    bool               `json:"hpfEnabled,omitempty"`
 	PeakL         float64            `json:"peakL"`        // dBFS, updated per frame
@@ -90,7 +100,10 @@ type AudioChannel struct {
 	EQ            [3]EQBand          `json:"eq"`
 	Compressor    CompressorSettings `json:"compressor"`
 	GainReduction float64            `json:"gainReduction"`          // compressor GR in dB
-	AudioDelayMs  int                `json:"audioDelayMs,omitempty"` // lip-sync delay (0-500ms)
+	Gate          GateSettings       `json:"gate"`
+	GateEnabled   bool               `json:"gateEnabled,omitempty"`
+	GateReduction float64            `json:"gateReduction,omitempty"` // gate GR in dB
+	AudioDelayMs  int                `json:"audioDelayMs,omitempty"`  // lip-sync delay (0-500ms)
 }
 
 // RecordingStatus is the JSON-serializable status for recording output,

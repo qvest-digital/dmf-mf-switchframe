@@ -396,6 +396,16 @@ func (m *mockMixer) SetPhaseInvert(sourceKey string, invert bool) error {
 	return nil
 }
 
+func (m *mockMixer) SetBalance(sourceKey string, balance float64) error {
+	if !m.knownKeys[sourceKey] {
+		return fmt.Errorf("audio: unknown source %q", sourceKey)
+	}
+	if balance < -1.0 || balance > 1.0 {
+		return fmt.Errorf("audio: balance must be between -1.0 and 1.0")
+	}
+	return nil
+}
+
 func (m *mockMixer) SetMasterLevel(level float64) error {
 	m.masterCalls = append(m.masterCalls, level)
 	return nil
@@ -434,6 +444,27 @@ func (m *mockMixer) GetCompressor(sourceKey string) (audio.CompressorState, erro
 		Ratio:   1.0,
 		Attack:  5.0,
 		Release: 100.0,
+	}, nil
+}
+
+func (m *mockMixer) SetGate(sourceKey string, threshold, rangeDB, attack, release, hold float64, enabled bool) error {
+	if !m.knownKeys[sourceKey] {
+		return fmt.Errorf("audio: unknown source %q", sourceKey)
+	}
+	return nil
+}
+
+func (m *mockMixer) GetGate(sourceKey string) (audio.GateState, error) {
+	if !m.knownKeys[sourceKey] {
+		return audio.GateState{}, fmt.Errorf("audio: unknown source %q", sourceKey)
+	}
+	return audio.GateState{
+		Threshold: -40,
+		Range:     -60,
+		Attack:    0.5,
+		Release:   100,
+		Hold:      50,
+		Enabled:   false,
 	}, nil
 }
 

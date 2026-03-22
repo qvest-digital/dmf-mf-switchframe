@@ -64,6 +64,12 @@ type compressorResponse struct {
 	GainReduction float64 `json:"gainReduction"`
 }
 
+// audioBalanceRequest is the JSON body for the audio balance endpoint.
+type audioBalanceRequest struct {
+	Source  string  `json:"source"`
+	Balance float64 `json:"balance"`
+}
+
 // audioPhaseRequest is the JSON body for the audio phase invert endpoint.
 type audioPhaseRequest struct {
 	Source string `json:"source"`
@@ -82,6 +88,27 @@ type hpfResponse struct {
 	Enabled   bool    `json:"enabled"`
 }
 
+// gateRequest is the JSON body for the gate endpoint.
+type gateRequest struct {
+	Threshold float64 `json:"threshold"`
+	Range     float64 `json:"range"`
+	Attack    float64 `json:"attack"`
+	Release   float64 `json:"release"`
+	Hold      float64 `json:"hold"`
+	Enabled   bool    `json:"enabled"`
+}
+
+// gateResponse is the JSON response for the gate GET endpoint.
+type gateResponse struct {
+	Threshold     float64 `json:"threshold"`
+	Range         float64 `json:"range"`
+	Attack        float64 `json:"attack"`
+	Release       float64 `json:"release"`
+	Hold          float64 `json:"hold"`
+	Enabled       bool    `json:"enabled"`
+	GainReduction float64 `json:"gainReduction"`
+}
+
 // audioDelayRequest is the JSON body for the audio delay endpoint.
 type audioDelayRequest struct {
 	DelayMs int `json:"delayMs"`
@@ -94,6 +121,7 @@ func (a *API) registerAudioRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/audio/mute", a.handleAudioMute)
 	mux.HandleFunc("POST /api/audio/afv", a.handleAudioAFV)
 	mux.HandleFunc("POST /api/audio/phase", a.handleAudioPhase)
+	mux.HandleFunc("POST /api/audio/balance", a.handleAudioBalance)
 	mux.HandleFunc("POST /api/audio/master", a.handleAudioMaster)
 	mux.HandleFunc("PUT /api/audio/{source}/eq", a.handleSetEQ)
 	mux.HandleFunc("GET /api/audio/{source}/eq", a.handleGetEQ)
@@ -101,6 +129,8 @@ func (a *API) registerAudioRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/audio/{source}/compressor", a.handleGetCompressor)
 	mux.HandleFunc("PUT /api/audio/{source}/hpf", a.handleSetHPF)
 	mux.HandleFunc("GET /api/audio/{source}/hpf", a.handleGetHPF)
+	mux.HandleFunc("PUT /api/audio/{source}/gate", a.handleSetGate)
+	mux.HandleFunc("GET /api/audio/{source}/gate", a.handleGetGate)
 	mux.HandleFunc("PUT /api/audio/{source}/audio-delay", a.handleSetAudioDelay)
 }
 
@@ -225,6 +255,34 @@ func (a *API) handleAudioPhase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.mixer.SetPhaseInvert(req.Source, req.Invert); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
+}
+
+// handleAudioBalance sets the stereo balance for a source channel.
+func (a *API) handleAudioBalance(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	if a.mixer == nil {
+		httperr.Write(w, http.StatusNotImplemented, "audio mixer not configured")
+		return
+	}
+	var req audioBalanceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.Source == "" {
+		httperr.Write(w, http.StatusBadRequest, "source required")
+		return
+	}
+	if err := validateRange("balance", req.Balance, -1.0, 1.0); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := a.mixer.SetBalance(req.Source, req.Balance); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}
@@ -430,6 +488,79 @@ func (a *API) handleGetHPF(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(hpfResponse{
 		Frequency: freq,
 		Enabled:   enabled,
+	})
+}
+
+// handleSetGate sets the noise gate parameters for a source channel.
+func (a *API) handleSetGate(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	if a.mixer == nil {
+		httperr.Write(w, http.StatusNotImplemented, "audio mixer not configured")
+		return
+	}
+	source := r.PathValue("source")
+	if source == "" {
+		httperr.Write(w, http.StatusBadRequest, "source required")
+		return
+	}
+	var req gateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := validateRange("threshold", req.Threshold, MinGateThreshold, MaxGateThreshold); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateRange("range", req.Range, MinGateRange, MaxGateRange); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateRange("attack", req.Attack, MinGateAttack, MaxGateAttack); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateRange("release", req.Release, MinGateRelease, MaxGateRelease); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateRange("hold", req.Hold, MinGateHold, MaxGateHold); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := a.mixer.SetGate(source, req.Threshold, req.Range, req.Attack, req.Release, req.Hold, req.Enabled); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
+}
+
+// handleGetGate returns the current noise gate settings and gain reduction for a source channel.
+func (a *API) handleGetGate(w http.ResponseWriter, r *http.Request) {
+	if a.mixer == nil {
+		httperr.Write(w, http.StatusNotImplemented, "audio mixer not configured")
+		return
+	}
+	source := r.PathValue("source")
+	if source == "" {
+		httperr.Write(w, http.StatusBadRequest, "source required")
+		return
+	}
+	state, err := a.mixer.GetGate(source)
+	if err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(gateResponse{
+		Threshold:     state.Threshold,
+		Range:         state.Range,
+		Attack:        state.Attack,
+		Release:       state.Release,
+		Hold:          state.Hold,
+		Enabled:       state.Enabled,
+		GainReduction: state.GainReduction,
 	})
 }
 

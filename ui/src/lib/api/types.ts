@@ -52,12 +52,21 @@ export interface CompressorSettings {
 	makeupGain: number;
 }
 
+export interface GateSettings {
+	threshold: number;
+	range: number;
+	attack: number;
+	release: number;
+	hold: number;
+}
+
 export interface AudioChannel {
 	level: number;  // dB (-inf to +12)
 	trim: number;   // dB (-20 to +20), input gain
 	muted: boolean;
 	afv: boolean;   // audio-follows-video
 	phaseInvert?: boolean; // 180-degree phase flip
+	balance?: number;     // -1.0 (L) to +1.0 (R), 0 = center
 	hpfFrequency?: number;
 	hpfEnabled?: boolean;
 	peakL: number;  // dBFS
@@ -65,6 +74,9 @@ export interface AudioChannel {
 	eq: [EQBand, EQBand, EQBand];
 	compressor: CompressorSettings;
 	gainReduction: number;  // compressor GR in dB
+	gate: GateSettings;
+	gateEnabled?: boolean;
+	gateReduction?: number;  // gate GR in dB
 	audioDelayMs?: number;  // lip-sync delay (0-500ms)
 }
 

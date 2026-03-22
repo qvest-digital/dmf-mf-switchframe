@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig, ColorGradeState } from './types';
+import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, GateSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig, ColorGradeState } from './types';
 import { notify } from '$lib/state/notifications.svelte';
 import { resolveApiUrl } from './base-url';
 
@@ -155,6 +155,10 @@ export function setAFV(source: string, afv: boolean): Promise<ControlRoomState> 
 
 export function setPhaseInvert(source: string, invert: boolean): Promise<ControlRoomState> {
 	return post('/api/audio/phase', { source, invert });
+}
+
+export function setBalance(source: string, balance: number): Promise<ControlRoomState> {
+	return post('/api/audio/balance', { source, balance });
 }
 
 export function setMasterLevel(level: number): Promise<ControlRoomState> {
@@ -341,6 +345,23 @@ export interface CompressorResponse extends CompressorSettings {
 
 export function getCompressor(source: string): Promise<CompressorResponse> {
 	return request(`/api/audio/${encodeURIComponent(source)}/compressor`);
+}
+
+export function setGate(source: string, threshold: number, range: number, attack: number, release: number, hold: number, enabled: boolean): Promise<ControlRoomState> {
+	return request(`/api/audio/${encodeURIComponent(source)}/gate`, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ threshold, range, attack, release, hold, enabled }),
+	});
+}
+
+export interface GateResponse extends GateSettings {
+	enabled: boolean;
+	gainReduction: number;
+}
+
+export function getGate(source: string): Promise<GateResponse> {
+	return request(`/api/audio/${encodeURIComponent(source)}/gate`);
 }
 
 // --- Graphics Layer API ---

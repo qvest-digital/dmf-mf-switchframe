@@ -39,6 +39,7 @@ type AudioMixerAPI interface {
 	SetMuted(sourceKey string, muted bool) error
 	SetAFV(sourceKey string, afv bool) error
 	SetPhaseInvert(sourceKey string, invert bool) error
+	SetBalance(sourceKey string, balance float64) error
 	SetMasterLevel(level float64) error
 	SetEQ(sourceKey string, band int, frequency, gain, q float64, enabled bool) error
 	GetEQ(sourceKey string) ([3]audio.EQBandSettings, error)
@@ -46,6 +47,8 @@ type AudioMixerAPI interface {
 	GetCompressor(sourceKey string) (audio.CompressorState, error)
 	SetHPF(sourceKey string, frequency float64, enabled bool) error
 	GetHPF(sourceKey string) (frequency float64, enabled bool)
+	SetGate(sourceKey string, threshold, rangeDB, attack, release, hold float64, enabled bool) error
+	GetGate(sourceKey string) (audio.GateState, error)
 	SetAudioDelay(sourceKey string, delayMs int) error
 	AudioDelayMs(sourceKey string) int
 }

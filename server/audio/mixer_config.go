@@ -2,6 +2,24 @@ package audio
 
 import "fmt"
 
+// SetBalance sets the stereo balance for a source channel.
+// balance: -1.0 (hard left) to +1.0 (hard right), 0.0 = center.
+// At center both L/R gains are 1.0 (transparent, zero CPU).
+func (m *Mixer) SetBalance(sourceKey string, balance float64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ch, ok := m.channels[sourceKey]
+	if !ok {
+		return fmt.Errorf("audio: unknown source %q", sourceKey)
+	}
+	if balance < -1.0 || balance > 1.0 {
+		return fmt.Errorf("audio: balance must be between -1.0 and 1.0")
+	}
+	ch.balance = balance
+	ch.balL, ch.balR = BalanceGains(balance)
+	return nil
+}
+
 // SetPhaseInvert enables or disables phase inversion for a source channel.
 // When enabled, all PCM samples are multiplied by -1.0 (180-degree phase flip).
 func (m *Mixer) SetPhaseInvert(sourceKey string, invert bool) error {
@@ -39,6 +57,39 @@ func (m *Mixer) GetHPF(sourceKey string) (frequency float64, enabled bool) {
 	return ch.hpf.Frequency(), ch.hpf.Enabled()
 }
 
+// SetGate sets the noise gate parameters for a channel.
+func (m *Mixer) SetGate(sourceKey string, threshold, rangeDB, attack, release, hold float64, enabled bool) error {
+	m.mu.Lock()
+	ch, ok := m.channels[sourceKey]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("audio: unknown source %q", sourceKey)
+	}
+	gate := ch.gate
+	m.mu.Unlock()
+	return gate.SetParams(threshold, rangeDB, attack, release, hold, enabled)
+}
+
+// GetGate returns the current noise gate settings and gain reduction for a channel.
+func (m *Mixer) GetGate(sourceKey string) (GateState, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	ch, ok := m.channels[sourceKey]
+	if !ok {
+		return GateState{}, fmt.Errorf("audio: unknown source %q", sourceKey)
+	}
+	threshold, rangeDB, attack, release, hold, enabled := ch.gate.Settings()
+	return GateState{
+		Threshold:     threshold,
+		Range:         rangeDB,
+		Attack:        attack,
+		Release:       release,
+		Hold:          hold,
+		Enabled:       enabled,
+		GainReduction: ch.gate.GainReduction(),
+	}, nil
+}
+
 // DebugSnapshot implements debug.SnapshotProvider.
 func (m *Mixer) DebugSnapshot() map[string]any {
 	m.mu.RLock()
@@ -57,8 +108,10 @@ func (m *Mixer) DebugSnapshot() map[string]any {
 			"muted":               ch.muted,
 			"afv":                 ch.afv,
 			"phase_invert":        ch.phaseInvert,
+			"balance":             ch.balance,
 			"hpf_frequency":       ch.hpf.Frequency(),
 			"hpf_enabled":         ch.hpf.Enabled(),
+			"gate_bypassed":       ch.gate.IsBypassed(),
 			"level":               ch.level,
 			"trim":                ch.trim,
 			"eq_bypassed":         ch.eq.IsBypassed(),

@@ -24,6 +24,17 @@ const (
 	MaxEQGainDB = 20.0
 	MinEQQ      = 0.1
 	MaxEQQ      = 20.0
+
+	MinGateThreshold = -60.0
+	MaxGateThreshold = 0.0
+	MinGateRange     = -80.0
+	MaxGateRange     = -20.0
+	MinGateAttack    = 0.01
+	MaxGateAttack    = 10.0
+	MinGateRelease   = 10.0
+	MaxGateRelease   = 500.0
+	MinGateHold      = 0.0
+	MaxGateHold      = 500.0
 )
 
 // validateStringLen checks that value does not exceed max bytes.
