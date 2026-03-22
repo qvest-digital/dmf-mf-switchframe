@@ -131,6 +131,8 @@ func newMetalContext() (*metalContext, error) {
 }
 
 // Close releases all Metal resources and temp files.
+// Sets closed=true atomically (prevents new Sync callers), then acquires mu
+// (waits for any in-flight Sync to finish) before destroying GPU resources.
 func (c *metalContext) Close() error {
 	if c == nil || c.closed.Swap(true) {
 		return nil
@@ -138,6 +140,11 @@ func (c *metalContext) Close() error {
 	if c.pool != nil {
 		c.pool.Close()
 	}
+
+	// Acquire mu to wait for any in-flight Sync() to finish before
+	// destroying GPU resources. Sync() checks closed under this lock,
+	// so after we set closed=true above, no new Sync will proceed.
+	c.mu.Lock()
 
 	// Free Lanczos temp buffer
 	if c.lanczosTmpBuf != nil {
@@ -165,7 +172,9 @@ func (c *metalContext) Close() error {
 	c.queue = nil
 	c.library = nil
 
-	// Clean up temp metallib file
+	c.mu.Unlock()
+
+	// Clean up temp metallib file (no GPU resources involved, safe outside lock)
 	if c.tempMetallibPath != "" {
 		_ = os.Remove(c.tempMetallibPath)
 		c.tempMetallibPath = ""
@@ -226,8 +235,14 @@ func (c *metalContext) DeviceMemory() int64 {
 }
 
 // Sync waits for all queued GPU operations to complete.
+// Acquires mu to prevent Close() from destroying the queue mid-call.
 func (c *metalContext) Sync() error {
-	if c == nil || c.closed.Load() {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed.Load() {
 		return nil
 	}
 	rc := C.metal_sync(c.queue)

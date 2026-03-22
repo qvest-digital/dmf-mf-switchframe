@@ -4,6 +4,7 @@ import (
 	"sort"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -448,4 +449,202 @@ func TestRegistry_ConcurrentAccess(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+func TestRegistry_ProgramSnapshotBlocksDelete(t *testing.T) {
+	reg := NewRegistry()
+
+	frames := make([]*STMap, 2)
+	for i := range frames {
+		frames[i] = Identity(8, 8)
+	}
+	anim := NewAnimatedSTMap("warp", frames, 30)
+	require.NoError(t, reg.StoreAnimated(anim))
+	require.NoError(t, reg.AssignProgram("warp"))
+
+	// Hold the snapshot (which holds RLock).
+	_, animRef, release := reg.ProgramSnapshot()
+	require.NotNil(t, animRef)
+
+	// Delete should block because we hold the read lock.
+	deleteStarted := make(chan struct{})
+	deleteDone := make(chan struct{})
+	go func() {
+		close(deleteStarted)
+		_ = reg.Delete("warp")
+		close(deleteDone)
+	}()
+
+	<-deleteStarted
+	time.Sleep(50 * time.Millisecond)
+
+	// Delete should not have completed yet.
+	select {
+	case <-deleteDone:
+		t.Fatal("Delete() completed while ProgramSnapshot is held")
+	default:
+	}
+
+	release()
+
+	select {
+	case <-deleteDone:
+	case <-time.After(time.Second):
+		t.Fatal("Delete() did not complete after release()")
+	}
+}
+
+func TestRegistry_ProgramSnapshotReturnsNilWhenNoMap(t *testing.T) {
+	reg := NewRegistry()
+
+	proc, anim, release := reg.ProgramSnapshot()
+	defer release()
+
+	require.Nil(t, proc)
+	require.Nil(t, anim)
+}
+
+func TestRegistry_ProgramSnapshot_ConcurrentProcessAndDelete(t *testing.T) {
+	// This test exercises the race detector: concurrent Process() calls
+	// (via ProgramSnapshot) and Delete() must not race on LUT memory.
+	reg := NewRegistry()
+
+	frames := make([]*STMap, 3)
+	for i := range frames {
+		frames[i] = Identity(8, 8)
+	}
+	anim := NewAnimatedSTMap("warp", frames, 30)
+	require.NoError(t, reg.StoreAnimated(anim))
+	require.NoError(t, reg.AssignProgram("warp"))
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	// Simulate pipeline: repeatedly snapshot and process.
+	for g := 0; g < 4; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			buf := make([]byte, 8*8*3/2)
+			src := make([]byte, 8*8*3/2)
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				proc, animRef, release := reg.ProgramSnapshot()
+				if animRef != nil {
+					idx := animRef.AdvanceIndex()
+					p := animRef.ProcessorAt(idx)
+					if p.Active() {
+						p.ProcessYUV(buf, src, 8, 8)
+					}
+				} else if proc != nil && proc.Active() {
+					proc.ProcessYUV(buf, src, 8, 8)
+				}
+				release()
+			}
+		}()
+	}
+
+	// Let pipeline goroutines run.
+	time.Sleep(10 * time.Millisecond)
+	_ = reg.Delete("warp")
+	close(stop)
+	wg.Wait()
+}
+
+func TestRegistry_ProgramGPUSnapshot_Static(t *testing.T) {
+	reg := NewRegistry()
+
+	m := Identity(8, 8)
+	m.Name = "barrel"
+	require.NoError(t, reg.Store(m))
+	require.NoError(t, reg.AssignProgram("barrel"))
+
+	name, animated, idx, s, tArr, release := reg.ProgramGPUSnapshot()
+	defer release()
+
+	require.Equal(t, "barrel", name)
+	require.False(t, animated)
+	require.Equal(t, 0, idx)
+	require.NotNil(t, s)
+	require.NotNil(t, tArr)
+	require.Len(t, s, 8*8)
+	require.Len(t, tArr, 8*8)
+}
+
+func TestRegistry_ProgramGPUSnapshot_Animated(t *testing.T) {
+	reg := NewRegistry()
+
+	frames := make([]*STMap, 3)
+	for i := range frames {
+		frames[i] = Identity(8, 8)
+	}
+	anim := NewAnimatedSTMap("warp", frames, 30)
+	require.NoError(t, reg.StoreAnimated(anim))
+	require.NoError(t, reg.AssignProgram("warp"))
+
+	name, animated, idx, s, tArr, release := reg.ProgramGPUSnapshot()
+	defer release()
+
+	require.Equal(t, "warp", name)
+	require.True(t, animated)
+	require.GreaterOrEqual(t, idx, 0)
+	require.NotNil(t, s)
+	require.NotNil(t, tArr)
+}
+
+func TestRegistry_ProgramGPUSnapshot_NoMap(t *testing.T) {
+	reg := NewRegistry()
+
+	name, animated, idx, s, tArr, release := reg.ProgramGPUSnapshot()
+	defer release()
+
+	require.Empty(t, name)
+	require.False(t, animated)
+	require.Equal(t, 0, idx)
+	require.Nil(t, s)
+	require.Nil(t, tArr)
+}
+
+func TestRegistry_ProgramGPUSnapshot_BlocksDelete(t *testing.T) {
+	reg := NewRegistry()
+
+	frames := make([]*STMap, 2)
+	for i := range frames {
+		frames[i] = Identity(8, 8)
+	}
+	anim := NewAnimatedSTMap("warp", frames, 30)
+	require.NoError(t, reg.StoreAnimated(anim))
+	require.NoError(t, reg.AssignProgram("warp"))
+
+	// Hold the GPU snapshot (which holds RLock).
+	_, _, _, _, _, release := reg.ProgramGPUSnapshot()
+
+	deleteStarted := make(chan struct{})
+	deleteDone := make(chan struct{})
+	go func() {
+		close(deleteStarted)
+		_ = reg.Delete("warp")
+		close(deleteDone)
+	}()
+
+	<-deleteStarted
+	time.Sleep(50 * time.Millisecond)
+
+	select {
+	case <-deleteDone:
+		t.Fatal("Delete() completed while ProgramGPUSnapshot is held")
+	default:
+	}
+
+	release()
+
+	select {
+	case <-deleteDone:
+	case <-time.After(time.Second):
+		t.Fatal("Delete() did not complete after release()")
+	}
 }

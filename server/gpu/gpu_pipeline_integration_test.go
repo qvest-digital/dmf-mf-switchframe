@@ -52,6 +52,17 @@ func (m *mockSTMapState) ProgramSTArrays() ([]float32, []float32)        { retur
 func (m *mockSTMapState) IsAnimated() bool                               { return m.animated }
 func (m *mockSTMapState) AdvanceAnimatedIndex() int                      { i := m.animIdx; m.animIdx++; return i }
 func (m *mockSTMapState) AnimatedSTArraysAt(idx int) ([]float32, []float32) { return m.s, m.t }
+func (m *mockSTMapState) ProgramGPUSnapshot() (string, bool, int, []float32, []float32, func()) {
+	if !m.hasMap {
+		return "", false, 0, nil, nil, func() {}
+	}
+	idx := 0
+	if m.animated {
+		idx = m.animIdx
+		m.animIdx++
+	}
+	return m.name, m.animated, idx, m.s, m.t, func() {}
+}
 
 // --- Helper functions ---
 

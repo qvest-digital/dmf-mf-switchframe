@@ -90,6 +90,7 @@ type AnimatedSTMap struct {
 	Generator  string             // generator name (for cache key computation)
 	GenParams  map[string]float64 // resolved params (for cache key computation)
 	index      atomic.Int64
+	frameCount atomic.Int32  // total frames, set at construction (race-free)
 	processors []*Processor // pre-built per-frame processors (int32 LUTs, CPU warp)
 	buildOnce  sync.Once    // guards processors initialization
 
@@ -108,11 +109,13 @@ type stArrayEntry struct {
 
 // NewAnimatedSTMap creates a new animated ST map from a sequence of frames.
 func NewAnimatedSTMap(name string, frames []*STMap, fps int) *AnimatedSTMap {
-	return &AnimatedSTMap{
+	a := &AnimatedSTMap{
 		Name:   name,
 		Frames: frames,
 		FPS:    fps,
 	}
+	a.frameCount.Store(int32(len(frames)))
+	return a
 }
 
 // FrameAt returns the frame at the given index, wrapping around with modulo.
@@ -134,24 +137,18 @@ func (a *AnimatedSTMap) CurrentFrame() *STMap {
 
 // AdvanceIndex increments the internal frame counter and returns the
 // wrapped frame index. Use with ProcessorAt for allocation-free pipeline
-// processing of animated maps. Uses len(processors) when built (Frames
-// may be nil after BuildProcessorsCached), falls back to len(Frames).
+// processing of animated maps. Uses the atomic frameCount set at
+// construction time (race-free even before BuildProcessors is called).
 func (a *AnimatedSTMap) AdvanceIndex() int {
 	idx := a.index.Add(1)
-	n := len(a.processors)
-	if n == 0 {
-		n = len(a.Frames)
-	}
+	n := int(a.frameCount.Load())
 	return int(idx) % n
 }
 
-// FrameCount returns the number of frames in this animation. Works correctly
-// even after Frames have been freed by BuildProcessorsCached.
+// FrameCount returns the number of frames in this animation. Uses the atomic
+// frameCount set at construction time (race-free).
 func (a *AnimatedSTMap) FrameCount() int {
-	if n := len(a.processors); n > 0 {
-		return n
-	}
-	return len(a.Frames)
+	return int(a.frameCount.Load())
 }
 
 // STArraysAt returns the pre-built float32 S and T arrays for the given frame

@@ -128,6 +128,9 @@ func NewContext() (*Context, error) {
 }
 
 // Close releases all CUDA resources.
+// Sets closed=true atomically (prevents new Sync/SyncStream callers), then
+// acquires mu (waits for any in-flight Sync to finish) before destroying
+// GPU resources.
 func (c *Context) Close() error {
 	if c == nil || c.closed.Swap(true) {
 		return nil
@@ -135,6 +138,11 @@ func (c *Context) Close() error {
 	if c.pool != nil {
 		c.pool.Close()
 	}
+
+	// Acquire mu to wait for any in-flight Sync()/SyncStream() to finish
+	// before destroying GPU resources. Those methods check closed under
+	// this lock, so after we set closed=true above, no new sync will proceed.
+	c.mu.Lock()
 	if c.stream != nil {
 		C.cudaStreamDestroy(c.stream)
 		c.stream = nil
@@ -169,6 +177,7 @@ func (c *Context) Close() error {
 		c.lanczosTmp = nil
 	}
 	c.lanczosTmpSize = 0
+	c.mu.Unlock()
 	// Note: we don't call cudaDeviceReset() — the primary context
 	// persists for the process lifetime. This is intentional: other
 	// tests or subsystems may still use the GPU.
@@ -218,7 +227,10 @@ func (c *Context) Pool() *FramePool {
 
 // Sync synchronizes the default processing stream, blocking until
 // all previously queued operations complete.
+// Acquires mu to prevent Close() from destroying the stream mid-call.
 func (c *Context) Sync() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.closed.Load() {
 		return nil
 	}
@@ -280,7 +292,10 @@ func (c *Context) DestroyStream(stream C.cudaStream_t) {
 
 // SyncStream synchronizes a specific CUDA stream, blocking until all
 // previously queued operations on that stream complete.
+// Acquires mu to prevent Close() from destroying resources mid-call.
 func (c *Context) SyncStream(stream C.cudaStream_t) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.closed.Load() {
 		return nil
 	}

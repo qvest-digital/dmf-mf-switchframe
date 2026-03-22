@@ -33,17 +33,18 @@ func (n *stmapProgramNode) Latency() time.Duration { return 8 * time.Millisecond
 func (n *stmapProgramNode) Close() error           { return nil }
 
 func (n *stmapProgramNode) Process(dst, src *ProcessingFrame) *ProcessingFrame {
-	// Try animated map first (checked via registry — returns nil if not animated).
-	if anim := n.registry.ProgramAnimatedFrame(); anim != nil {
+	proc, anim, release := n.registry.ProgramSnapshot()
+	defer release()
+
+	if anim != nil {
 		idx := anim.AdvanceIndex()
-		proc := anim.ProcessorAt(idx)
-		proc.ProcessYUV(n.buf, src.YUV, src.Width, src.Height)
+		p := anim.ProcessorAt(idx)
+		p.ProcessYUV(n.buf, src.YUV, src.Width, src.Height)
 		copy(src.YUV, n.buf)
 		return src
 	}
 
-	// Static map path.
-	if proc := n.registry.ProgramProcessor(); proc != nil && proc.Active() {
+	if proc != nil && proc.Active() {
 		proc.ProcessYUV(n.buf, src.YUV, src.Width, src.Height)
 		copy(src.YUV, n.buf)
 	}

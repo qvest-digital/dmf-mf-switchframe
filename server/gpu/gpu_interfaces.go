@@ -81,6 +81,12 @@ type STMapState interface {
 	IsAnimated() bool
 	AdvanceAnimatedIndex() int
 	AnimatedSTArraysAt(idx int) (s, t []float32)
+
+	// ProgramGPUSnapshot returns an atomic snapshot of the program map state.
+	// All returned values are consistent (read under a single lock hold).
+	// The caller MUST call release() when done reading the S/T slices —
+	// Delete() is blocked from munmapping backing memory until release().
+	ProgramGPUSnapshot() (mapName string, animated bool, animIdx int, s, t []float32, release func())
 }
 
 // SourceSTMapProvider provides per-source ST map state to the GPU source manager.

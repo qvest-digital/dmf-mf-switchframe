@@ -95,15 +95,19 @@ func (n *gpuSTMapNode) ProcessGPU(frame *GPUFrame) error {
 		return nil
 	}
 
+	// Acquire an atomic snapshot of the program map state. The release
+	// function holds the registry's RLock, preventing Delete() from
+	// munmapping the S/T backing memory while we read it for GPU upload.
+	name, isAnimated, idx, sOrig, tOrig, release := n.registry.ProgramGPUSnapshot()
+	if name == "" {
+		release()
+		return nil
+	}
+
 	// Determine the GPU ST map to use for this frame.
 	var gpuMap *GPUSTMap
 
-	if n.registry.IsAnimated() {
-		// Animated maps cycle through N frames. Cache GPU textures per index
-		// so we upload once per unique frame from pre-built mmap'd .st files.
-		name := n.registry.ProgramMapName()
-		idx := n.registry.AdvanceAnimatedIndex()
-
+	if isAnimated {
 		// Invalidate cache if map changed.
 		if name != n.animMapName {
 			n.freeAnimCache()
@@ -113,13 +117,15 @@ func (n *gpuSTMapNode) ProcessGPU(frame *GPUFrame) error {
 		// Check GPU texture cache.
 		if idx >= 0 && idx < len(n.animCache) && n.animCache[idx] != nil {
 			gpuMap = n.animCache[idx]
+			release() // S/T arrays not needed — cached GPU texture
 		} else {
 			// Cache miss — read from pre-built .st files and upload to GPU.
-			sOrig, tOrig := n.registry.AnimatedSTArraysAt(idx)
 			if sOrig == nil || tOrig == nil {
+				release()
 				return nil // .st files not available — skip
 			}
 			m, err := UploadSTMap(n.ctx, sOrig, tOrig, frame.Width, frame.Height)
+			release() // S/T arrays copied to GPU — safe to release
 			if err != nil {
 				n.lastErr.Store(err)
 				slog.Warn("gpu_stmap: animated upload failed, skipping", "error", err)
@@ -133,19 +139,18 @@ func (n *gpuSTMapNode) ProcessGPU(frame *GPUFrame) error {
 		}
 	} else {
 		// Static map — check cache.
-		name := n.registry.ProgramMapName()
 		if n.gpuMap == nil || n.mapName != name {
 			// Cache miss — upload new S/T arrays.
 			if n.gpuMap != nil {
 				n.gpuMap.Free()
 				n.gpuMap = nil
 			}
-			sOrig, tOrig := n.registry.ProgramSTArrays()
 			if sOrig == nil || tOrig == nil {
+				release()
 				return nil
 			}
-			// UploadSTMap only reads S/T to copy to GPU — no deep copy needed.
 			m, err := UploadSTMap(n.ctx, sOrig, tOrig, frame.Width, frame.Height)
+			release() // S/T arrays copied to GPU — safe to release
 			if err != nil {
 				n.lastErr.Store(err)
 				slog.Warn("gpu_stmap: static upload failed, skipping", "error", err)
@@ -153,6 +158,8 @@ func (n *gpuSTMapNode) ProcessGPU(frame *GPUFrame) error {
 			}
 			n.gpuMap = m
 			n.mapName = name
+		} else {
+			release() // S/T arrays not needed — cached GPU texture
 		}
 		gpuMap = n.gpuMap
 	}

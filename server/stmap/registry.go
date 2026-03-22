@@ -241,6 +241,36 @@ func (r *Registry) ProgramProcessor() *Processor {
 	return p
 }
 
+// ProgramSnapshot returns the current program map processor and animated map
+// references along with a release function. The caller MUST call release()
+// when done using the returned pointers. While held, Delete() is blocked
+// from destroying underlying mmap memory.
+func (r *Registry) ProgramSnapshot() (proc *Processor, anim *AnimatedSTMap, release func()) {
+	r.mu.RLock()
+	return r.programProc, r.programAnim, r.mu.RUnlock
+}
+
+// ProgramGPUSnapshot returns an atomic snapshot of the program map state for
+// GPU processing. All returned values are consistent (read under a single
+// RLock). The caller MUST call release() when done reading the S/T slices.
+// While held, Delete() is blocked from munmapping backing memory.
+func (r *Registry) ProgramGPUSnapshot() (mapName string, animated bool, animIdx int, s, t []float32, release func()) {
+	r.mu.RLock()
+	if r.programMap == "" {
+		r.mu.RUnlock()
+		return "", false, 0, nil, nil, func() {}
+	}
+	mapName = r.programMap
+	if r.programAnim != nil {
+		animated = true
+		animIdx = r.programAnim.AdvanceIndex()
+		s, t = r.programAnim.STArraysAt(animIdx)
+	} else if r.programProc != nil {
+		s, t = r.programProc.STArrays()
+	}
+	return mapName, animated, animIdx, s, t, r.mu.RUnlock
+}
+
 // ProgramAnimatedFrame returns the AnimatedSTMap reference for an animated
 // program map, or nil if no animated program map is assigned.
 func (r *Registry) ProgramAnimatedFrame() *AnimatedSTMap {
