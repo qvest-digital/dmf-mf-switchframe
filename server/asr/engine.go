@@ -11,10 +11,14 @@ import (
 type EngineConfig struct {
 	// ModelPath is the path to a whisper.cpp ggml model file (e.g., ggml-base.bin).
 	ModelPath string
+	// VADModelPath is the path to a Silero VAD GGML model for neural speech detection.
+	// When set, whisper.cpp uses Silero VAD to filter non-speech audio before
+	// transcription — much more accurate than RMS energy thresholds.
+	VADModelPath string
 	// Language is the ISO 639-1 language code (e.g., "en", "fr"). Defaults to "en".
 	Language string
-	// VADThresholdDB is the RMS threshold in dBFS for voice activity detection.
-	// Defaults to -35.
+	// VADThresholdDB is the RMS threshold in dBFS for the backup energy-based VAD.
+	// Only used when VADModelPath is empty. Defaults to -26.
 	VADThresholdDB float64
 	// InferIntervalMs is the minimum interval between inference runs in milliseconds.
 	// Defaults to 3000.
@@ -62,8 +66,9 @@ type Engine struct {
 // Returns an error if the whisper.cpp backend is not available.
 func NewEngine(cfg EngineConfig) (*Engine, error) {
 	w, err := NewWhisperCpp(WhisperCppConfig{
-		ModelPath: cfg.ModelPath,
-		UseGPU:    cfg.UseGPU,
+		ModelPath:    cfg.ModelPath,
+		VADModelPath: cfg.VADModelPath,
+		UseGPU:       cfg.UseGPU,
 	})
 	if err != nil {
 		return nil, err

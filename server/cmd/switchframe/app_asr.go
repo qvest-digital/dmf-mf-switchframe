@@ -32,13 +32,36 @@ func (a *App) initASR() error {
 		return nil
 	}
 
+	// Auto-detect Silero VAD model in the same directory as the whisper model.
+	// Silero VAD is a neural-network speech detector that filters background
+	// noise/music before Whisper processes the audio — far more accurate than
+	// RMS energy thresholds.
+	vadModelPath := ""
+	modelsDir := filepath.Dir(a.cfg.ASRModelPath)
+	vadCandidates := []string{
+		filepath.Join(modelsDir, "ggml-silero-v6.2.0.bin"),
+		filepath.Join(modelsDir, "ggml-silero-v5.1.2.bin"),
+	}
+	for _, p := range vadCandidates {
+		if _, err := os.Stat(p); err == nil {
+			vadModelPath = p
+			break
+		}
+	}
+
 	engine, err := asr.NewEngine(asr.EngineConfig{
-		ModelPath: a.cfg.ASRModelPath,
-		UseGPU:    true,
+		ModelPath:    a.cfg.ASRModelPath,
+		VADModelPath: vadModelPath,
+		UseGPU:       true,
 	})
 	if err != nil {
 		slog.Warn("ASR engine unavailable", "error", err)
 		return nil // Non-fatal
+	}
+	if vadModelPath != "" {
+		slog.Info("ASR: Silero VAD enabled", "model", filepath.Base(vadModelPath))
+	} else {
+		slog.Info("ASR: using energy-based VAD (no Silero model found)")
 	}
 
 	a.asrEngine = engine

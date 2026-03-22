@@ -12,8 +12,9 @@ type WhisperCpp struct{}
 
 // WhisperCppConfig configures the whisper.cpp wrapper.
 type WhisperCppConfig struct {
-	ModelPath string
-	UseGPU    bool
+	ModelPath    string
+	VADModelPath string
+	UseGPU       bool
 }
 
 // NewWhisperCpp returns ErrASRNotAvailable on non-whisper builds.

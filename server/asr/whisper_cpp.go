@@ -23,14 +23,16 @@ var ErrASRNotAvailable error
 
 // WhisperCpp wraps the whisper.cpp C library for speech-to-text inference.
 type WhisperCpp struct {
-	ctx    *C.struct_whisper_context
-	useGPU bool
+	ctx          *C.struct_whisper_context
+	useGPU       bool
+	vadModelPath string // empty = no Silero VAD
 }
 
 // WhisperCppConfig configures the whisper.cpp wrapper.
 type WhisperCppConfig struct {
-	ModelPath string // Path to ggml model file (e.g., ggml-base.bin)
-	UseGPU    bool   // Enable CUDA GPU acceleration
+	ModelPath    string // Path to ggml model file (e.g., ggml-base.bin)
+	VADModelPath string // Path to Silero VAD model (e.g., ggml-silero-v6.2.0.bin); empty = no VAD
+	UseGPU       bool   // Enable CUDA GPU acceleration
 }
 
 // NewWhisperCpp loads a whisper model and creates a context.
@@ -50,7 +52,7 @@ func NewWhisperCpp(cfg WhisperCppConfig) (*WhisperCpp, error) {
 		return nil, fmt.Errorf("asr: whisper_cpp: failed to load model from %s", cfg.ModelPath)
 	}
 
-	return &WhisperCpp{ctx: ctx, useGPU: cfg.UseGPU}, nil
+	return &WhisperCpp{ctx: ctx, useGPU: cfg.UseGPU, vadModelPath: cfg.VADModelPath}, nil
 }
 
 // LoadModel swaps the whisper model at runtime. Thread-safe — the caller
@@ -104,7 +106,17 @@ func (w *WhisperCpp) TranscribeWithConfidence(samples []float32, language string
 	params.logprob_thold = -1.5     // skip tokens with avg logprob below this
 	params.entropy_thold = 2.4      // skip segments with high entropy (hallucination)
 	params.beam_search.beam_size = 5
-	params.token_timestamps = true  // needed for per-token data
+	params.token_timestamps = true // needed for per-token data
+
+	// Silero VAD: neural-network speech detection that's far more accurate
+	// than RMS energy thresholds. Filters out music, background noise,
+	// applause, and silence before Whisper processes the audio.
+	if w.vadModelPath != "" {
+		params.vad = true
+		cVADPath := C.CString(w.vadModelPath)
+		defer C.free(unsafe.Pointer(cVADPath))
+		params.vad_model_path = cVADPath
+	}
 
 	// Set language
 	if language != "" {
