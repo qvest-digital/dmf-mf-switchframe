@@ -1177,6 +1177,18 @@ export function saveCustomLook(name: string): Promise<ColorGradeState> {
 	return post('/api/colorgrade/save', { name });
 }
 
+export async function getLookSettings(name: string): Promise<CorrectorState | null> {
+	const res = await fetch(resolveApiUrl(`/api/colorgrade/looks/${encodeURIComponent(name)}/settings`), {
+		headers: authHeaders(),
+	});
+	if (res.status === 404) return null;
+	if (!res.ok) {
+		const body = await res.json().catch(() => ({ error: 'unknown error' }));
+		throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
+	}
+	return res.json();
+}
+
 // ── ASR (Automatic Speech Recognition) ──
 
 export function getASRStatus(): Promise<any> {

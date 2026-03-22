@@ -171,6 +171,86 @@ func TestStore_Delete_NotFound(t *testing.T) {
 	}
 }
 
+func TestStore_SaveSettings(t *testing.T) {
+	store := setupTestStore(t)
+
+	settings := CorrectorState{
+		Lift:        [3]float32{0.1, 0, -0.1},
+		Gamma:       [3]float32{1, 1, 1},
+		Gain:        [3]float32{1, 1, 1},
+		Temperature: 35,
+		Saturation:  1.2,
+		Contrast:    0.1,
+	}
+
+	if err := store.SaveSettings("my-look", settings); err != nil {
+		t.Fatalf("SaveSettings error: %v", err)
+	}
+
+	loaded := store.LoadSettings("my-look")
+	if loaded == nil {
+		t.Fatal("LoadSettings returned nil")
+	}
+
+	if loaded.Temperature != 35 {
+		t.Errorf("temperature = %f, want 35", loaded.Temperature)
+	}
+	if loaded.Saturation != 1.2 {
+		t.Errorf("saturation = %f, want 1.2", loaded.Saturation)
+	}
+	if loaded.Lift[0] != 0.1 {
+		t.Errorf("lift[0] = %f, want 0.1", loaded.Lift[0])
+	}
+	if loaded.Contrast != 0.1 {
+		t.Errorf("contrast = %f, want 0.1", loaded.Contrast)
+	}
+}
+
+func TestStore_LoadSettings_NotFound(t *testing.T) {
+	store := setupTestStore(t)
+
+	loaded := store.LoadSettings("nonexistent")
+	if loaded != nil {
+		t.Errorf("expected nil for nonexistent settings, got %+v", loaded)
+	}
+}
+
+func TestStore_Delete_CleansUpSettings(t *testing.T) {
+	store := setupTestStore(t)
+
+	// Upload a look first.
+	lut := GenerateIdentityLUT()
+	var sb strings.Builder
+	_ = WriteCube(&sb, lut)
+	_ = store.Upload("with-settings", strings.NewReader(sb.String()))
+
+	// Save corrector settings alongside it.
+	settings := CorrectorState{
+		Lift:       [3]float32{0, 0, 0},
+		Gamma:      [3]float32{1, 1, 1},
+		Gain:       [3]float32{1, 1, 1},
+		Saturation: 1.5,
+	}
+	if err := store.SaveSettings("with-settings", settings); err != nil {
+		t.Fatalf("SaveSettings error: %v", err)
+	}
+
+	// Verify settings exist.
+	if store.LoadSettings("with-settings") == nil {
+		t.Fatal("expected settings to exist before delete")
+	}
+
+	// Delete the look.
+	if err := store.Delete("with-settings"); err != nil {
+		t.Fatalf("delete error: %v", err)
+	}
+
+	// Settings should be cleaned up.
+	if store.LoadSettings("with-settings") != nil {
+		t.Error("expected settings to be nil after look deletion")
+	}
+}
+
 func TestStore_Upload_InvalidName(t *testing.T) {
 	store := setupTestStore(t)
 

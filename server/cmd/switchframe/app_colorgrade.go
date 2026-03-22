@@ -155,17 +155,28 @@ func (c *colorGradeController) ResetCorrector() {
 	c.regenerateLUT()
 }
 
-// SaveCustomLook bakes the current corrector + look into a new .cube file.
+// SaveCustomLook bakes the current corrector + look into a new .cube file
+// and saves the corrector settings as a JSON sidecar for UI recall.
 func (c *colorGradeController) SaveCustomLook(name string) error {
 	c.mu.RLock()
 	combined := colorgrade.CombineLUT(c.corrector, c.lookLUT)
+	settings := c.corrector // copy under lock
 	c.mu.RUnlock()
 
 	var buf bytes.Buffer
 	if err := colorgrade.WriteCube(&buf, combined); err != nil {
 		return fmt.Errorf("write cube: %w", err)
 	}
-	return c.store.Upload(name, &buf)
+	if err := c.store.Upload(name, &buf); err != nil {
+		return err
+	}
+	// Save corrector settings as JSON sidecar for UI recall.
+	return c.store.SaveSettings(name, settings)
+}
+
+// LoadLookSettings returns the saved corrector settings for a custom look, or nil if none exist.
+func (c *colorGradeController) LoadLookSettings(name string) *colorgrade.CorrectorState {
+	return c.store.LoadSettings(name)
 }
 
 // regenerateLUT rebuilds the combined LUT from corrector + look. Caller must hold c.mu.

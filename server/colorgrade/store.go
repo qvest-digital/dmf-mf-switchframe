@@ -2,6 +2,7 @@ package colorgrade
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -186,7 +187,42 @@ func (s *Store) Delete(name string) error {
 	if err := os.Remove(uploadPath); err != nil {
 		return fmt.Errorf("colorgrade store: delete: %w", err)
 	}
+	// Best-effort removal of the JSON sidecar (corrector settings).
+	_ = os.Remove(filepath.Join(s.uploadDir, name+".json"))
 	return nil
+}
+
+// SaveSettings saves corrector settings JSON alongside a .cube file.
+func (s *Store) SaveSettings(name string, settings CorrectorState) error {
+	if err := validateName(name); err != nil {
+		return err
+	}
+	path := filepath.Join(s.uploadDir, name+".json")
+	data, err := json.Marshal(settings)
+	if err != nil {
+		return fmt.Errorf("colorgrade store: marshal settings: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("colorgrade store: write settings: %w", err)
+	}
+	return nil
+}
+
+// LoadSettings loads corrector settings for a custom look. Returns nil if none exist.
+func (s *Store) LoadSettings(name string) *CorrectorState {
+	if validateName(name) != nil {
+		return nil
+	}
+	path := filepath.Join(s.uploadDir, name+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var cs CorrectorState
+	if json.Unmarshal(data, &cs) != nil {
+		return nil
+	}
+	return &cs
 }
 
 func (s *Store) loadFile(path string) (*LUT3D, error) {

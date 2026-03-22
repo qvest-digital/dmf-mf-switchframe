@@ -27,6 +27,9 @@ func (a *API) registerColorGradeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/colorgrade/corrector", a.handleCorrectorReset)
 	mux.HandleFunc("POST /api/colorgrade/save", a.handleSaveLook)
 
+	// Look settings (corrector recall) — registered BEFORE {name} catch-all.
+	mux.HandleFunc("GET /api/colorgrade/looks/{name}/settings", a.handleLookSettings)
+
 	mux.HandleFunc("DELETE /api/colorgrade/{name}", a.handleColorGradeDelete)
 }
 
@@ -231,6 +234,24 @@ func (a *API) handleSaveLook(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(a.enrichedState())
+}
+
+// handleLookSettings returns the saved corrector settings for a custom look.
+func (a *API) handleLookSettings(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" {
+		httperr.Write(w, http.StatusBadRequest, "name required")
+		return
+	}
+
+	settings := a.colorGradeMgr.LoadLookSettings(name)
+	if settings == nil {
+		httperr.Write(w, http.StatusNotFound, "no corrector settings for this look")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(settings)
 }
 
 // validateCorrectorState checks that all corrector parameters are within valid ranges.

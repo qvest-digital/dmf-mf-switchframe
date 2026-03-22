@@ -127,6 +127,7 @@ type ColorGradeManager interface {
 	GetCorrector() colorgrade.CorrectorState
 	ResetCorrector()
 	SaveCustomLook(name string) error
+	LoadLookSettings(name string) *colorgrade.CorrectorState
 }
 
 // APIOption configures optional API dependencies.

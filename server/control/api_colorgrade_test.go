@@ -17,14 +17,15 @@ import (
 )
 
 type mockColorGradeManager struct {
-	enabled   bool
-	lookName  string
-	intensity float32
-	available []internal.LookMetadata
-	uploaded  map[string]bool
-	corrector colorgrade.CorrectorState
-	savedLook string
-	err       error
+	enabled      bool
+	lookName     string
+	intensity    float32
+	available    []internal.LookMetadata
+	uploaded     map[string]bool
+	corrector    colorgrade.CorrectorState
+	savedLook    string
+	lookSettings map[string]*colorgrade.CorrectorState
+	err          error
 }
 
 func newMockColorGradeManager() *mockColorGradeManager {
@@ -34,9 +35,10 @@ func newMockColorGradeManager() *mockColorGradeManager {
 			{Name: "kodachrome", Group: "Film", Description: "Legendary warmth", Builtin: true},
 			{Name: "broadcast", Group: "Clean", Description: "Crisp standard", Builtin: true},
 		},
-		uploaded:  make(map[string]bool),
-		intensity: 1.0,
-		corrector: colorgrade.DefaultCorrectorState(),
+		uploaded:     make(map[string]bool),
+		intensity:    1.0,
+		corrector:    colorgrade.DefaultCorrectorState(),
+		lookSettings: make(map[string]*colorgrade.CorrectorState),
 	}
 }
 
@@ -122,12 +124,18 @@ func (m *mockColorGradeManager) SaveCustomLook(name string) error {
 		return m.err
 	}
 	m.savedLook = name
+	settings := m.corrector // copy
+	m.lookSettings[name] = &settings
 	m.available = append(m.available, internal.LookMetadata{
 		Name:    name,
 		Group:   "Custom",
 		Builtin: false,
 	})
 	return nil
+}
+
+func (m *mockColorGradeManager) LoadLookSettings(name string) *colorgrade.CorrectorState {
+	return m.lookSettings[name]
 }
 
 func setupColorGradeAPI(t *testing.T) (*API, *mockColorGradeManager) {
@@ -442,5 +450,57 @@ func TestHandleCorrectorSet_InvalidJSON(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+}
+
+// ─── Look Settings Tests ────────────────────────────────────────────────────
+
+func TestHandleLookSettings(t *testing.T) {
+	api, mgr := setupColorGradeAPI(t)
+
+	// Save a custom look (which stores corrector settings in the mock).
+	mgr.corrector.Temperature = 40
+	mgr.corrector.Saturation = 1.3
+
+	body := `{"name":"warm-look"}`
+	req := httptest.NewRequest("POST", "/api/colorgrade/save", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	api.Mux().ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("save: status = %d, want 201, body = %s", w.Code, w.Body.String())
+	}
+
+	// Now retrieve the settings.
+	req = httptest.NewRequest("GET", "/api/colorgrade/looks/warm-look/settings", nil)
+	w = httptest.NewRecorder()
+	api.Mux().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", w.Code, w.Body.String())
+	}
+
+	var state colorgrade.CorrectorState
+	if err := json.NewDecoder(w.Body).Decode(&state); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+
+	if state.Temperature != 40 {
+		t.Errorf("temperature = %f, want 40", state.Temperature)
+	}
+	if state.Saturation != 1.3 {
+		t.Errorf("saturation = %f, want 1.3", state.Saturation)
+	}
+}
+
+func TestHandleLookSettings_NotFound(t *testing.T) {
+	api, _ := setupColorGradeAPI(t)
+
+	req := httptest.NewRequest("GET", "/api/colorgrade/looks/nonexistent/settings", nil)
+	w := httptest.NewRecorder()
+	api.Mux().ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404, body = %s", w.Code, w.Body.String())
 	}
 }
