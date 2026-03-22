@@ -14,6 +14,7 @@ import (
 
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/audio"
+	"github.com/zsiec/switchframe/server/gpu"
 	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -42,13 +43,19 @@ type Manager struct {
 	markIn     *time.Time
 	markOut    *time.Time
 
-	player       *replayPlayer
+	player       replayPlayerIface
 	playerState  PlayerState
 	playerSource string
 	playerSpeed  float64
 	playerLoop   bool
 	playerCtx    context.Context
 	playerCancel context.CancelFunc
+
+	// GPU replay (nil = use CPU player).
+	gpuCtx       *gpu.Context
+	gpuFRUC      *gpu.FRUC
+	gpuPool      *gpu.FramePool
+	shutterAngle float64 // 0.0-1.0 normalized, default 0.5 (180°)
 
 	onStateChange     func()
 	onPlaybackStart   func() // called when player transitions to playing
@@ -303,55 +310,83 @@ func (m *Manager) Play(source string, speed float64, loop bool) error {
 		rawVideoCb := m.rawVideoOutput
 		audioOutputCb := m.audioOutput
 
-		m.player = newReplayPlayer(PlayerConfig{
-			Clip:           clip,
-			AudioClip:      audioClip,
-			Speed:          speed,
-			Loop:           loop,
-			InitialPTS:     initialPTS,
-			Interpolation:  InterpolationHoldCrossfade,
-			DecoderFactory: m.decoderFactory,
-			EncoderFactory: m.encoderFactory,
-			Output: func(frame *media.VideoFrame) {
-				m.relay.BroadcastVideo(frame)
-			},
-			AudioOutput: func(frame *media.AudioFrame) {
-				m.relay.BroadcastAudio(frame)
-				if audioOutputCb != nil {
-					audioOutputCb(frame)
-				}
-			},
-			RawVideoOutput:      rawVideoCb,
-			AudioDecoderFactory: m.audioDecoderFactory,
-			AudioEncoderFactory: m.audioEncoderFactory,
-			OnDone: func() {
-				m.mu.Lock()
-				m.player = nil
-				m.playerState = PlayerIdle
-				m.playerCancel = nil
-				stopCb := m.onPlaybackStop
-				m.mu.Unlock()
-				if stopCb != nil {
-					stopCb()
-				}
-				m.notifyStateChange()
-			},
-			OnReady: func() {
-				m.mu.Lock()
-				m.playerState = PlayerPlaying
-				startCb := m.onPlaybackStart
-				m.mu.Unlock()
-				if startCb != nil {
-					startCb()
-				}
-				m.notifyStateChange()
-			},
-			OnVideoInfo: videoInfoCb,
-		})
+		// Common callbacks shared by both GPU and CPU players.
+		onDone := func() {
+			m.mu.Lock()
+			m.player = nil
+			m.playerState = PlayerIdle
+			m.playerCancel = nil
+			stopCb := m.onPlaybackStop
+			m.mu.Unlock()
+			if stopCb != nil {
+				stopCb()
+			}
+			m.notifyStateChange()
+		}
+		onReady := func() {
+			m.mu.Lock()
+			m.playerState = PlayerPlaying
+			startCb := m.onPlaybackStart
+			m.mu.Unlock()
+			if startCb != nil {
+				startCb()
+			}
+			m.notifyStateChange()
+		}
+		outputCb := func(frame *media.VideoFrame) {
+			m.relay.BroadcastVideo(frame)
+		}
+		audioOutCb := func(frame *media.AudioFrame) {
+			m.relay.BroadcastAudio(frame)
+			if audioOutputCb != nil {
+				audioOutputCb(frame)
+			}
+		}
 
-		m.player.Start(ctx)
-
-		m.log.Info("playback started", "source", source, "speed", speed, "loop", loop, "clipFrames", len(clip))
+		if m.gpuFRUC != nil && m.gpuFRUC.HasNVOFA() {
+			m.player = newGPUReplayPlayer(GPUPlayerConfig{
+				Clip:           clip,
+				AudioClip:      audioClip,
+				Speed:          speed,
+				Loop:           loop,
+				InitialPTS:     initialPTS,
+				ShutterAngle:   m.shutterAngle,
+				GPUCtx:         m.gpuCtx,
+				FRUC:           m.gpuFRUC,
+				Pool:           m.gpuPool,
+				Output:         outputCb,
+				AudioOutput:    audioOutCb,
+				RawVideoOutput: rawVideoCb,
+				OnDone:         onDone,
+				OnReady:        onReady,
+				OnVideoInfo:    videoInfoCb,
+			})
+			m.player.Start(ctx)
+			m.log.Info("playback started (GPU motion-blur)",
+				"source", source, "speed", speed, "loop", loop,
+				"shutterAngle", m.shutterAngle*360, "clipFrames", len(clip))
+		} else {
+			m.player = newReplayPlayer(PlayerConfig{
+				Clip:                clip,
+				AudioClip:           audioClip,
+				Speed:               speed,
+				Loop:                loop,
+				InitialPTS:          initialPTS,
+				Interpolation:       InterpolationHoldCrossfade,
+				DecoderFactory:      m.decoderFactory,
+				EncoderFactory:      m.encoderFactory,
+				Output:              outputCb,
+				AudioOutput:         audioOutCb,
+				RawVideoOutput:      rawVideoCb,
+				AudioDecoderFactory: m.audioDecoderFactory,
+				AudioEncoderFactory: m.audioEncoderFactory,
+				OnDone:              onDone,
+				OnReady:             onReady,
+				OnVideoInfo:         videoInfoCb,
+			})
+			m.player.Start(ctx)
+			m.log.Info("playback started", "source", source, "speed", speed, "loop", loop, "clipFrames", len(clip))
+		}
 		return nil
 	}()
 	if err != nil {
@@ -539,13 +574,15 @@ func (m *Manager) Status() Status {
 	defer m.mu.Unlock()
 
 	status := Status{
-		State:      m.playerState,
-		Source:     m.playerSource,
-		Speed:      m.playerSpeed,
-		Loop:       m.playerLoop,
-		MarkIn:     m.markIn,
-		MarkOut:    m.markOut,
-		MarkSource: m.markSource,
+		State:          m.playerState,
+		Source:         m.playerSource,
+		Speed:          m.playerSpeed,
+		Loop:           m.playerLoop,
+		MarkIn:         m.markIn,
+		MarkOut:        m.markOut,
+		MarkSource:     m.markSource,
+		ShutterAngle:   m.shutterAngle * 360.0,
+		GPUAccelerated: m.gpuFRUC != nil && m.gpuFRUC.HasNVOFA(),
 	}
 
 	if m.player != nil {
@@ -633,6 +670,40 @@ func (m *Manager) SetOnClipExported(fn func(source string, filePath string)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.onClipExported = fn
+}
+
+// SetGPUReplay enables GPU-accelerated replay with NVOFA motion blur.
+// When set and NVOFA is available, Play() will use the GPU player instead
+// of the CPU player. Pass nil values to disable GPU replay.
+func (m *Manager) SetGPUReplay(ctx *gpu.Context, fruc *gpu.FRUC, pool *gpu.FramePool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.gpuCtx = ctx
+	m.gpuFRUC = fruc
+	m.gpuPool = pool
+	m.shutterAngle = 0.5 // default 180°
+}
+
+// SetShutterAngle sets the motion-blur shutter angle (0-360 degrees).
+// Only affects GPU-accelerated replay. A shutter angle of 0 disables
+// motion blur (pure interpolation). 180° is the film standard.
+func (m *Manager) SetShutterAngle(degrees float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if degrees < 0 {
+		degrees = 0
+	}
+	if degrees > 360 {
+		degrees = 360
+	}
+	m.shutterAngle = degrees / 360.0
+}
+
+// ShutterAngle returns the current shutter angle in degrees.
+func (m *Manager) ShutterAngle() float64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.shutterAngle * 360.0
 }
 
 // Close stops any active player, waits for background export goroutines,
