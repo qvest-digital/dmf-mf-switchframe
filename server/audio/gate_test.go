@@ -325,7 +325,7 @@ func TestMixer_SetGate_UnknownSource(t *testing.T) {
 		Channels:   2,
 		Output:     func(*media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	err := m.SetGate("nonexistent", -40, -60, 0.5, 100, 50, true)
 	require.Error(t, err)
@@ -339,7 +339,7 @@ func TestMixer_SetGate_ValidParams(t *testing.T) {
 		Channels:   2,
 		Output:     func(*media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 
@@ -354,7 +354,7 @@ func TestMixer_GetGate_ReturnsState(t *testing.T) {
 		Channels:   2,
 		Output:     func(*media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 
