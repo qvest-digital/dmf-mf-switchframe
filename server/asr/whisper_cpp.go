@@ -52,14 +52,15 @@ func NewWhisperCpp(cfg WhisperCppConfig) (*WhisperCpp, error) {
 	return &WhisperCpp{ctx: ctx}, nil
 }
 
-// Transcribe runs whisper inference on 16kHz mono float32 PCM audio.
-// Returns the transcribed text. Uses beam search for quality.
-func (w *WhisperCpp) Transcribe(samples []float32, language string) (string, error) {
+// TranscribeWithConfidence runs whisper inference on 16kHz mono float32 PCM
+// audio. Returns per-word text with confidence scores from whisper's token
+// probabilities. Uses beam search for quality.
+func (w *WhisperCpp) TranscribeWithConfidence(samples []float32, language string) ([]TranscriptWord, error) {
 	if w == nil || w.ctx == nil {
-		return "", errors.New("asr: whisper_cpp: nil context")
+		return nil, errors.New("asr: whisper_cpp: nil context")
 	}
 	if len(samples) == 0 {
-		return "", nil
+		return nil, nil
 	}
 
 	params := C.whisper_full_default_params(C.WHISPER_SAMPLING_BEAM_SEARCH)
@@ -73,6 +74,7 @@ func (w *WhisperCpp) Transcribe(samples []float32, language string) (string, err
 	params.suppress_blank = true
 	params.suppress_nst = true // suppress non-speech tokens
 	params.beam_search.beam_size = 5
+	params.token_timestamps = true // needed for per-token data
 
 	// Set language
 	if language != "" {
@@ -84,18 +86,107 @@ func (w *WhisperCpp) Transcribe(samples []float32, language string) (string, err
 	// Run inference
 	rc := C.whisper_full(w.ctx, params, (*C.float)(&samples[0]), C.int(len(samples)))
 	if rc != 0 {
-		return "", fmt.Errorf("asr: whisper_cpp: inference failed with code %d", int(rc))
+		return nil, fmt.Errorf("asr: whisper_cpp: inference failed with code %d", int(rc))
 	}
 
-	// Collect segments
+	// Collect tokens with probabilities, group into words.
+	// Track inter-segment timestamp gaps for speaker change detection.
 	nSegments := int(C.whisper_full_n_segments(w.ctx))
-	var sb strings.Builder
+	var words []TranscriptWord
+	var currentWord strings.Builder
+	var sumProb float32
+	var tokenCount int
+	var lastSegEndMs int64 = -1
+	var pendingGapMs int
+
 	for i := 0; i < nSegments; i++ {
-		text := C.GoString(C.whisper_full_get_segment_text(w.ctx, C.int(i)))
-		sb.WriteString(text)
+		// Detect inter-segment gaps — whisper creates a new segment when
+		// it detects a pause. Gaps > 300ms likely indicate a speaker change.
+		segStartMs := int64(C.whisper_full_get_segment_t0(w.ctx, C.int(i))) * 10 // centiseconds → ms
+		if lastSegEndMs >= 0 {
+			gap := int(segStartMs - lastSegEndMs)
+			if gap > 0 {
+				pendingGapMs = gap
+			}
+		}
+		lastSegEndMs = int64(C.whisper_full_get_segment_t1(w.ctx, C.int(i))) * 10
+
+		nTokens := int(C.whisper_full_n_tokens(w.ctx, C.int(i)))
+		for j := 0; j < nTokens; j++ {
+			tdata := C.whisper_full_get_token_data(w.ctx, C.int(i), C.int(j))
+			tokenText := C.GoString(C.whisper_full_get_token_text(w.ctx, C.int(i), C.int(j)))
+			prob := float32(tdata.p)
+
+			// Skip special tokens (negative IDs in whisper.cpp).
+			if tdata.id < 0 {
+				continue
+			}
+
+			// Whisper tokens starting with a space indicate a word boundary.
+			if len(tokenText) > 0 && tokenText[0] == ' ' && currentWord.Len() > 0 {
+				word := strings.TrimSpace(currentWord.String())
+				if word != "" {
+					avgProb := sumProb / float32(tokenCount)
+					words = append(words, TranscriptWord{Text: word, Confidence: avgProb})
+				}
+				currentWord.Reset()
+				sumProb = 0
+				tokenCount = 0
+			}
+
+			// Attach pending gap to the first token of a new segment.
+			if currentWord.Len() == 0 && pendingGapMs > 0 {
+				// Will be attached to the word when it's flushed.
+			}
+
+			currentWord.WriteString(tokenText)
+			sumProb += prob
+			tokenCount++
+		}
+
+		// Flush word at segment boundary with gap info.
+		if currentWord.Len() > 0 {
+			word := strings.TrimSpace(currentWord.String())
+			if word != "" {
+				avgProb := sumProb / float32(tokenCount)
+				words = append(words, TranscriptWord{
+					Text: word, Confidence: avgProb, GapBefore: pendingGapMs,
+				})
+			}
+			currentWord.Reset()
+			sumProb = 0
+			tokenCount = 0
+			pendingGapMs = 0
+		}
 	}
 
-	return strings.TrimSpace(sb.String()), nil
+	// Flush last word.
+	if word := strings.TrimSpace(currentWord.String()); word != "" {
+		avgProb := sumProb
+		if tokenCount > 0 {
+			avgProb /= float32(tokenCount)
+		}
+		words = append(words, TranscriptWord{Text: word, Confidence: avgProb, GapBefore: pendingGapMs})
+	}
+
+	return words, nil
+}
+
+// Transcribe runs whisper inference and returns plain text (no confidence).
+// Convenience wrapper around TranscribeWithConfidence.
+func (w *WhisperCpp) Transcribe(samples []float32, language string) (string, error) {
+	words, err := w.TranscribeWithConfidence(samples, language)
+	if err != nil {
+		return "", err
+	}
+	var sb strings.Builder
+	for i, w := range words {
+		if i > 0 {
+			sb.WriteByte(' ')
+		}
+		sb.WriteString(w.Text)
+	}
+	return sb.String(), nil
 }
 
 // Close releases the whisper context.

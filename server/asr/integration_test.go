@@ -4,7 +4,6 @@ import (
 	"math"
 	"sync"
 	"testing"
-	"time"
 )
 
 func TestIntegration_FullPipeline(t *testing.T) {
@@ -98,36 +97,42 @@ func TestIntegration_SpeechThenSilence(t *testing.T) {
 func TestIntegration_TranscriptCallback(t *testing.T) {
 	var mu sync.Mutex
 	var results []struct {
-		text    string
+		words   []TranscriptWord
 		isFinal bool
 	}
 
 	e := newTestEngine()
-	e.OnTranscript(func(text string, isFinal bool) {
+	e.OnTranscript(func(words []TranscriptWord, isFinal bool) {
 		mu.Lock()
 		results = append(results, struct {
-			text    string
+			words   []TranscriptWord
 			isFinal bool
-		}{text, isFinal})
+		}{words, isFinal})
 		mu.Unlock()
 	})
 	defer e.Close()
 
-	e.emitTranscript("hello ", false)
-	e.emitTranscript("hello world ", false)
-	e.emitTranscript("hello world today", true)
+	// Simulate callback invocations (normally called from runInference).
+	e.mu.Lock()
+	cb := e.onTranscript
+	e.mu.Unlock()
 
-	time.Sleep(10 * time.Millisecond)
+	cb([]TranscriptWord{{Text: "hello", Confidence: 0.9}}, false)
+	cb([]TranscriptWord{{Text: "world", Confidence: 0.95}}, false)
+	cb([]TranscriptWord{{Text: "today", Confidence: 0.85}}, true)
 
 	mu.Lock()
 	defer mu.Unlock()
 
-	if len(results) < 2 {
-		t.Fatalf("expected at least 2 callbacks, got %d", len(results))
+	if len(results) != 3 {
+		t.Fatalf("expected 3 callbacks, got %d", len(results))
 	}
 
 	last := results[len(results)-1]
 	if !last.isFinal {
 		t.Fatal("last callback should be isFinal")
+	}
+	if last.words[0].Text != "today" {
+		t.Fatalf("expected 'today', got %q", last.words[0].Text)
 	}
 }

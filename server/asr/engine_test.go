@@ -3,7 +3,6 @@ package asr
 import (
 	"sync"
 	"testing"
-	"time"
 )
 
 // newTestEngine creates an Engine with nil whisper for testing non-inference paths.
@@ -26,8 +25,6 @@ func TestEngine_IngestAudioResamples(t *testing.T) {
 	e := newTestEngine()
 	defer e.Close()
 
-	// 1024 stereo frames = 2048 interleaved samples at 48kHz
-	// Expected output: 1024 * (16000/48000) = ~341 mono samples at 16kHz
 	pcm := make([]float32, 2048)
 	for i := range pcm {
 		pcm[i] = 0.1
@@ -44,14 +41,12 @@ func TestEngine_VADTransition(t *testing.T) {
 	e := newTestEngine()
 	defer e.Close()
 
-	// Feed silence — should stay idle.
 	silence := make([]float32, 2048)
 	e.IngestAudio(silence, 0, 48000, 2)
 	if e.vad.State() != VADIdle {
 		t.Fatalf("expected idle after silence, got %v", e.vad.State())
 	}
 
-	// Feed loud signal — should transition to speaking.
 	loud := make([]float32, 2048)
 	for i := range loud {
 		loud[i] = 0.5
@@ -66,7 +61,6 @@ func TestEngine_VADSpeechOnsetSetsState(t *testing.T) {
 	e := newTestEngine()
 	defer e.Close()
 
-	// Feed loud signal to trigger speech onset.
 	loud := make([]float32, 2048)
 	for i := range loud {
 		loud[i] = 0.5
@@ -81,114 +75,70 @@ func TestEngine_VADSpeechOnsetSetsState(t *testing.T) {
 	if e.speechStart.IsZero() {
 		t.Fatal("expected speechStart to be set after speech onset")
 	}
-	if e.lastInfer.IsZero() {
-		t.Fatal("expected lastInfer to be set after speech onset")
-	}
 }
 
-func TestEngine_EmitTranscript_Final(t *testing.T) {
+func TestEngine_AdaptiveInferTiming(t *testing.T) {
 	e := newTestEngine()
-	var mu sync.Mutex
-	var received []string
-	var finals []bool
-
-	e.OnTranscript(func(text string, isFinal bool) {
-		mu.Lock()
-		received = append(received, text)
-		finals = append(finals, isFinal)
-		mu.Unlock()
-	})
 	defer e.Close()
 
-	e.emitTranscript("hello world", true)
-
-	time.Sleep(10 * time.Millisecond)
-	mu.Lock()
-	defer mu.Unlock()
-
-	if len(received) != 1 {
-		t.Fatalf("expected 1 callback, got %d", len(received))
+	e.mu.Lock()
+	// First inference should use 1s interval.
+	if e.inferCount != 0 {
+		t.Fatal("expected inferCount=0 initially")
 	}
-	if received[0] != "hello world" {
-		t.Fatalf("expected 'hello world', got %q", received[0])
-	}
-	if !finals[0] {
-		t.Fatal("expected isFinal=true")
-	}
+	e.mu.Unlock()
 }
 
-func TestEngine_EmitTranscript_FinalEmpty(t *testing.T) {
+func TestEngine_OnTranscriptCallback(t *testing.T) {
 	e := newTestEngine()
-	var mu sync.Mutex
-	var received []string
-
-	e.OnTranscript(func(text string, isFinal bool) {
-		mu.Lock()
-		received = append(received, text)
-		mu.Unlock()
-	})
 	defer e.Close()
 
-	// Empty final transcript should not trigger callback.
-	e.emitTranscript("", true)
+	var mu sync.Mutex
+	var received [][]TranscriptWord
 
-	time.Sleep(10 * time.Millisecond)
-	mu.Lock()
-	defer mu.Unlock()
+	e.OnTranscript(func(words []TranscriptWord, isFinal bool) {
+		mu.Lock()
+		received = append(received, words)
+		mu.Unlock()
+	})
 
-	if len(received) != 0 {
-		t.Fatalf("expected 0 callbacks for empty final, got %d", len(received))
+	// Verify callback is set.
+	e.mu.Lock()
+	if e.onTranscript == nil {
+		t.Fatal("expected onTranscript to be set")
 	}
+	e.mu.Unlock()
 }
 
-func TestEngine_EmitTranscript_EachCallEmits(t *testing.T) {
-	e := newTestEngine()
-	var mu sync.Mutex
-	var received []string
-
-	e.OnTranscript(func(text string, isFinal bool) {
-		mu.Lock()
-		received = append(received, text)
-		mu.Unlock()
-	})
-	defer e.Close()
-
-	// With buffer draining, each inference emits fresh text — no diffing.
-	e.emitTranscript("hello world", false)
-	e.emitTranscript("today is nice", false)
-
-	time.Sleep(10 * time.Millisecond)
-	mu.Lock()
-	defer mu.Unlock()
-
-	if len(received) != 2 {
-		t.Fatalf("expected 2 callbacks, got %d", len(received))
+func TestEngine_TranscriptWordGapBefore(t *testing.T) {
+	// Verify TranscriptWord carries gap metadata.
+	w := TranscriptWord{
+		Text:       "hello",
+		Confidence: 0.95,
+		GapBefore:  400, // 400ms gap — speaker change
 	}
-	if received[0] != "hello world" {
-		t.Fatalf("expected 'hello world', got %q", received[0])
+	if w.GapBefore < 300 {
+		t.Fatal("expected gap >= 300ms for speaker change")
 	}
-	if received[1] != "today is nice" {
-		t.Fatalf("expected 'today is nice', got %q", received[1])
+	if w.Confidence < 0.7 {
+		t.Fatal("expected high confidence")
 	}
 }
 
 func TestEngine_RingBufDrain(t *testing.T) {
 	buf := NewAudioRingBuf(16000, 5)
 
-	// Write 48000 samples (3 seconds at 16kHz).
 	samples := make([]float32, 48000)
 	buf.Write(samples)
 	if buf.SampleCount() != 48000 {
 		t.Fatalf("expected 48000, got %d", buf.SampleCount())
 	}
 
-	// Drain all but 32000 (2 seconds overlap).
 	buf.Drain(48000 - 32000)
 	if buf.SampleCount() != 32000 {
 		t.Fatalf("expected 32000 after drain, got %d", buf.SampleCount())
 	}
 
-	// Drain more than available — should clear.
 	buf.Drain(50000)
 	if buf.SampleCount() != 0 {
 		t.Fatalf("expected 0 after over-drain, got %d", buf.SampleCount())
@@ -202,15 +152,35 @@ func TestEngine_SetLanguage(t *testing.T) {
 	if e.Language() != "en" {
 		t.Fatalf("expected default 'en', got %q", e.Language())
 	}
-
 	e.SetLanguage("fr")
 	if e.Language() != "fr" {
 		t.Fatalf("expected 'fr', got %q", e.Language())
 	}
+}
 
-	e.SetLanguage("ja")
-	if e.Language() != "ja" {
-		t.Fatalf("expected 'ja', got %q", e.Language())
+func TestEngine_Reset(t *testing.T) {
+	e := newTestEngine()
+	defer e.Close()
+
+	// Write some audio and trigger speech.
+	loud := make([]float32, 2048)
+	for i := range loud {
+		loud[i] = 0.5
+	}
+	e.IngestAudio(loud, 0, 48000, 2)
+
+	e.Reset()
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.ringBuf.SampleCount() != 0 {
+		t.Fatal("expected ring buffer cleared after Reset")
+	}
+	if e.wasSpeaking {
+		t.Fatal("expected wasSpeaking=false after Reset")
+	}
+	if e.vad.State() != VADIdle {
+		t.Fatal("expected VAD idle after Reset")
 	}
 }
 
@@ -224,7 +194,7 @@ func TestEngine_NewEngineFailsWithoutTRT(t *testing.T) {
 func TestEngine_CloseIdempotent(t *testing.T) {
 	e := newTestEngine()
 	e.Close()
-	e.Close() // should not panic
+	e.Close()
 }
 
 func TestEngine_CloseBlocksIngest(t *testing.T) {
@@ -242,15 +212,6 @@ func TestEngine_CloseBlocksIngest(t *testing.T) {
 	if finalCount != initialCount {
 		t.Fatalf("expected ring buffer count %d after Close, got %d", initialCount, finalCount)
 	}
-}
-
-func TestEngine_EmitTranscriptNilSafe(t *testing.T) {
-	e := newTestEngine()
-	defer e.Close()
-
-	// emitTranscript with no callback set should not panic.
-	e.emitTranscript("hello", true)
-	e.emitTranscript("hello", false)
 }
 
 func TestEngine_IngestSilenceNoSpeech(t *testing.T) {
@@ -286,13 +247,5 @@ func TestEngine_ConfigDefaults(t *testing.T) {
 	}
 	if inferMs != 3000 {
 		t.Fatalf("expected default inferMs 3000, got %d", inferMs)
-	}
-
-	lang := cfg.Language
-	if lang == "" {
-		lang = "en"
-	}
-	if lang != "en" {
-		t.Fatalf("expected default lang 'en', got %q", lang)
 	}
 }

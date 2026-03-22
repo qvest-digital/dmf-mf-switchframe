@@ -42,13 +42,13 @@ func (a *App) initASR() error {
 
 	a.asrEngine = engine
 
-	// Paced caption output: ASR dumps words into a queue, a timer drains
-	// them at ~3 words/sec (~180 WPM) with CEA-608 line wrapping at 32 chars.
-	// This prevents burst output when Whisper returns a full transcript.
+	// Paced caption output: ASR produces words with confidence scores and
+	// inter-segment gap timing. The pacer drains words at a steady rate
+	// with speaker-change detection (>> prefix) and confidence-based
+	// holdback (low-confidence words wait one more cycle).
 	pacer := newCaptionPacer(a.captionMgr)
-	engine.OnTranscript(func(text string, isFinal bool) {
-		words := splitWords(text)
-		pacer.EnqueueWords(words, isFinal)
+	engine.OnTranscript(func(words []asr.TranscriptWord, isFinal bool) {
+		pacer.EnqueueTranscriptWords(words, isFinal)
 	})
 	a.captionPacer = pacer
 
@@ -171,22 +171,37 @@ func (m *asrManagerAdapter) ASRModelName() string {
 
 // --- Caption Pacer ---
 
+// pacerWord is a word in the pacer queue with metadata from Whisper.
+type pacerWord struct {
+	text       string
+	confidence float32 // 0.0-1.0 from whisper token probability
+	gapBefore  int     // ms of silence before this word (from whisper segments)
+	isFinal    bool    // last word of a final transcript — insert newline after
+}
+
 // captionPacer drains words from a queue at a steady rate (~3 words/sec)
-// with CEA-608 line wrapping at 32 characters. This prevents the burst
-// output that occurs when Whisper returns a full transcript at once.
+// with three broadcast-quality features:
+//
+//  1. CEA-608 line wrapping at 32 characters
+//  2. Speaker-change detection via Whisper segment gaps (>> prefix)
+//  3. Confidence-based holdback: low-confidence words wait one tick
 type captionPacer struct {
 	mgr *caption.Manager
 
 	mu      sync.Mutex
-	queue   []string // pending words
+	queue   []pacerWord
+	held    *pacerWord // low-confidence word waiting for confirmation
 	stopCh  chan struct{}
 	stopped bool
 	linePos int // current position on the CEA-608 line
 }
 
 const (
-	pacerMaxLineChars   = 32
-	pacerWordsPerSecond = 3 // ~180 WPM — slightly fast for readability
+	pacerMaxLineChars     = 32
+	pacerWordsPerSecond   = 3   // ~180 WPM
+	pacerConfidenceThresh = 0.7 // words below this are held back one tick
+	pacerSpeakerChangeGap = 300 // ms gap in whisper segments → speaker change
+	pacerMaxQueueWords    = 30  // cap to prevent unbounded growth
 )
 
 func newCaptionPacer(mgr *caption.Manager) *captionPacer {
@@ -203,25 +218,28 @@ func newCaptionPacer(mgr *caption.Manager) *captionPacer {
 func (p *captionPacer) Flush() {
 	p.mu.Lock()
 	p.queue = p.queue[:0]
+	p.held = nil
 	p.linePos = 0
 	p.mu.Unlock()
 }
 
-// EnqueueWords adds words to the output queue.
-// If the queue is too large (>30 words), it's trimmed to prevent
-// unbounded accumulation when Whisper produces faster than we drain.
-func (p *captionPacer) EnqueueWords(words []string, isFinal bool) {
+// EnqueueTranscriptWords adds words with confidence and gap metadata.
+func (p *captionPacer) EnqueueTranscriptWords(words []asr.TranscriptWord, isFinal bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.queue = append(p.queue, words...)
-	if isFinal {
-		p.queue = append(p.queue, "\n") // sentinel for newline
+	for _, w := range words {
+		p.queue = append(p.queue, pacerWord{
+			text:       w.Text,
+			confidence: w.Confidence,
+			gapBefore:  w.GapBefore,
+		})
 	}
-	// Cap queue to prevent unbounded growth. If Whisper produces faster
-	// than we drain (3 words/sec), drop oldest words.
-	const maxQueueWords = 30
-	if len(p.queue) > maxQueueWords {
-		p.queue = p.queue[len(p.queue)-maxQueueWords:]
+	if isFinal && len(p.queue) > 0 {
+		p.queue[len(p.queue)-1].isFinal = true
+	}
+	// Cap queue to prevent unbounded growth.
+	if len(p.queue) > pacerMaxQueueWords {
+		p.queue = p.queue[len(p.queue)-pacerMaxQueueWords:]
 	}
 }
 
@@ -240,24 +258,53 @@ func (p *captionPacer) run() {
 	}
 }
 
-// emitNextWord pops one word from the queue and sends it to the caption manager.
+// emitNextWord pops one word from the queue and sends it to the caption
+// manager. Low-confidence words are held for one tick — giving the next
+// inference a chance to correct them. After one tick, held words emit
+// regardless (better late than never in live captioning).
 func (p *captionPacer) emitNextWord() {
 	p.mu.Lock()
+
+	// Emit held word from last tick (held long enough).
+	if p.held != nil {
+		w := *p.held
+		p.held = nil
+		p.mu.Unlock()
+		p.emitWord(w)
+		return
+	}
+
 	if len(p.queue) == 0 {
 		p.mu.Unlock()
 		return
 	}
+
 	word := p.queue[0]
 	p.queue = p.queue[1:]
 	p.mu.Unlock()
 
-	if word == "\n" {
-		p.mgr.IngestNewline()
-		p.linePos = 0
+	// Confidence holdback: low-confidence words wait one tick.
+	if word.confidence > 0 && word.confidence < pacerConfidenceThresh && !word.isFinal {
+		p.mu.Lock()
+		p.held = &word
+		p.mu.Unlock()
 		return
 	}
 
-	wordLen := len(word)
+	p.emitWord(word)
+}
+
+// emitWord sends a word to the caption manager with speaker-change
+// detection and line wrapping.
+func (p *captionPacer) emitWord(word pacerWord) {
+	// Speaker change: Whisper segment gap > 300ms → new line with >> prefix.
+	if word.gapBefore >= pacerSpeakerChangeGap {
+		p.mgr.IngestNewline()
+		p.mgr.IngestText(">> ")
+		p.linePos = 3
+	}
+
+	wordLen := len(word.text)
 	needSpace := p.linePos > 0
 	spaceNeeded := wordLen
 	if needSpace {
@@ -275,8 +322,14 @@ func (p *captionPacer) emitNextWord() {
 		p.mgr.IngestText(" ")
 		p.linePos++
 	}
-	p.mgr.IngestText(word)
+	p.mgr.IngestText(word.text)
 	p.linePos += wordLen
+
+	// Final word: insert newline to close the utterance.
+	if word.isFinal {
+		p.mgr.IngestNewline()
+		p.linePos = 0
+	}
 }
 
 // Stop halts the pacer goroutine.

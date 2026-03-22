@@ -21,6 +21,11 @@ func NewWhisperCpp(cfg WhisperCppConfig) (*WhisperCpp, error) {
 	return nil, ErrASRNotAvailable
 }
 
+// TranscribeWithConfidence returns ErrASRNotAvailable on non-whisper builds.
+func (w *WhisperCpp) TranscribeWithConfidence(samples []float32, language string) ([]TranscriptWord, error) {
+	return nil, ErrASRNotAvailable
+}
+
 // Transcribe returns ErrASRNotAvailable on non-whisper builds.
 func (w *WhisperCpp) Transcribe(samples []float32, language string) (string, error) {
 	return "", ErrASRNotAvailable

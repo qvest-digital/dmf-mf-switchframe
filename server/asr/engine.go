@@ -43,11 +43,12 @@ type Engine struct {
 
 	language     string
 	inferMs      int
-	onTranscript func(text string, isFinal bool)
+	onTranscript func(words []TranscriptWord, isFinal bool)
 
 	// Inference state
 	speechStart time.Time
 	lastInfer   time.Time
+	inferCount  int  // number of inferences in current speech segment
 	wasSpeaking bool
 	inferring   sync.Mutex // serializes whisper inference (one at a time)
 
@@ -96,7 +97,9 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 }
 
 // OnTranscript sets the callback for transcript updates.
-func (e *Engine) OnTranscript(fn func(text string, isFinal bool)) {
+// words carry per-word confidence scores and inter-segment gap timing
+// from Whisper (GapBefore > 300ms indicates likely speaker change).
+func (e *Engine) OnTranscript(fn func(words []TranscriptWord, isFinal bool)) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.onTranscript = fn
@@ -129,10 +132,22 @@ func (e *Engine) IngestAudio(pcm []float32, pts int64, sampleRate, channels int)
 		e.speechStart = now
 		e.lastInfer = now
 		e.wasSpeaking = true
+		e.inferCount = 0
 
 	case newState == VADSpeaking || newState == VADTrailing:
-		if e.wasSpeaking && now.Sub(e.lastInfer) >= time.Duration(e.inferMs)*time.Millisecond {
+		// Adaptive inference timing: start fast (1s), ramp to inferMs.
+		// First inference at 1s gives fast initial words on screen.
+		// Second at 2s balances speed and accuracy. Then steady state.
+		inferInterval := time.Duration(e.inferMs) * time.Millisecond
+		if e.inferCount == 0 {
+			inferInterval = 1000 * time.Millisecond
+		} else if e.inferCount == 1 {
+			inferInterval = 2000 * time.Millisecond
+		}
+
+		if e.wasSpeaking && now.Sub(e.lastInfer) >= inferInterval {
 			e.lastInfer = now
+			e.inferCount++
 			go e.runInference(false)
 		}
 
@@ -151,8 +166,7 @@ const contextOverlapSamples = 16000 * 2
 // runInference takes a snapshot of the ring buffer and runs whisper.cpp.
 // After successful transcription, drains the consumed audio from the ring
 // buffer (keeping a small overlap for context) so the next inference only
-// processes new audio. This prevents re-transcription of old audio which
-// causes repeated/stuttered captions.
+// processes new audio.
 func (e *Engine) runInference(isFinal bool) {
 	e.inferring.Lock()
 	defer e.inferring.Unlock()
@@ -169,7 +183,7 @@ func (e *Engine) runInference(isFinal bool) {
 		return
 	}
 
-	text, err := e.whisper.Transcribe(audio, lang)
+	words, err := e.whisper.TranscribeWithConfidence(audio, lang)
 	if err != nil {
 		slog.Warn("ASR inference failed", "error", err)
 		return
@@ -178,9 +192,8 @@ func (e *Engine) runInference(isFinal bool) {
 	slog.Info("ASR inference complete",
 		"ms", time.Since(start).Milliseconds(),
 		"audioSamples", audioLen,
-		"textLen", len(text),
+		"words", len(words),
 		"isFinal", isFinal,
-		"text", text,
 	)
 
 	// Drain transcribed audio from ring buffer, keeping an overlap
@@ -193,19 +206,12 @@ func (e *Engine) runInference(isFinal bool) {
 	}
 	e.mu.Unlock()
 
-	e.emitTranscript(text, isFinal)
-}
-
-// emitTranscript sends the transcribed text to the callback.
-// Since the ring buffer is drained after each inference, each call
-// produces text for only the NEW audio segment — no diffing needed.
-func (e *Engine) emitTranscript(text string, isFinal bool) {
 	e.mu.Lock()
 	cb := e.onTranscript
 	e.mu.Unlock()
 
-	if cb != nil && text != "" {
-		cb(text, isFinal)
+	if cb != nil && len(words) > 0 {
+		cb(words, isFinal)
 	}
 }
 
