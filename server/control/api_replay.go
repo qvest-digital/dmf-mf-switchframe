@@ -26,6 +26,8 @@ func (a *API) registerReplayRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /api/replay/speed", a.handleReplaySpeed)
 	mux.HandleFunc("PATCH /api/replay/marks", a.handleReplayMarks)
 	mux.HandleFunc("GET /api/replay/peek", a.handleReplayPeek)
+	mux.HandleFunc("PUT /api/replay/shutter-angle", a.handleSetShutterAngle)
+	mux.HandleFunc("GET /api/replay/shutter-angle", a.handleGetShutterAngle)
 }
 
 func (a *API) handleReplayMarkIn(w http.ResponseWriter, r *http.Request) {
@@ -289,4 +291,36 @@ func (a *API) handleReplayPeek(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(data)
+}
+
+func (a *API) handleSetShutterAngle(w http.ResponseWriter, r *http.Request) {
+	if a.replayMgr == nil {
+		httperr.Write(w, http.StatusNotImplemented, "replay not enabled")
+		return
+	}
+	a.setLastOperator(r)
+	var req struct {
+		Angle float64 `json:"angle"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.Angle < 0 || req.Angle > 360 {
+		httperr.Write(w, http.StatusBadRequest, "angle must be 0-360")
+		return
+	}
+	a.replayMgr.SetShutterAngle(req.Angle)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
+}
+
+func (a *API) handleGetShutterAngle(w http.ResponseWriter, _ *http.Request) {
+	if a.replayMgr == nil {
+		httperr.Write(w, http.StatusNotImplemented, "replay not enabled")
+		return
+	}
+	angle := a.replayMgr.ShutterAngle()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]float64{"angle": angle})
 }
