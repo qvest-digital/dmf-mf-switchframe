@@ -131,27 +131,94 @@ func ApplyCurves(lut *LUT3D, master, curveR, curveG, curveB []CurvePoint) {
 	}
 }
 
-// evalCurve evaluates a piecewise-linear curve at input value x.
+// evalCurve evaluates a monotone cubic Hermite spline (Fritsch-Carlson method)
+// at input value x. This matches the UI's CurveEditor.svelte algorithm exactly.
 // Points must be sorted by X. Values outside the point range are clamped
-// to the nearest endpoint Y value.
+// to the nearest endpoint Y value. For 2 points, falls back to linear.
 func evalCurve(pts []CurvePoint, x float32) float32 {
-	if len(pts) == 0 {
+	n := len(pts)
+	if n == 0 {
 		return x
 	}
 	if x <= pts[0].X {
 		return pts[0].Y
 	}
-	if x >= pts[len(pts)-1].X {
-		return pts[len(pts)-1].Y
+	if x >= pts[n-1].X {
+		return pts[n-1].Y
 	}
-	// Find the segment.
-	for i := 1; i < len(pts); i++ {
-		if x <= pts[i].X {
-			t := (x - pts[i-1].X) / (pts[i].X - pts[i-1].X)
-			return pts[i-1].Y + t*(pts[i].Y-pts[i-1].Y)
+	// Two points: linear interpolation (matches UI behavior).
+	if n == 2 {
+		t := (x - pts[0].X) / (pts[1].X - pts[0].X)
+		return pts[0].Y + t*(pts[1].Y-pts[0].Y)
+	}
+
+	// Compute secant slopes for each segment.
+	dx := make([]float64, n-1)
+	dy := make([]float64, n-1)
+	m := make([]float64, n-1)
+	for i := 0; i < n-1; i++ {
+		dx[i] = float64(pts[i+1].X - pts[i].X)
+		dy[i] = float64(pts[i+1].Y - pts[i].Y)
+		if dx[i] == 0 {
+			m[i] = 0
+		} else {
+			m[i] = dy[i] / dx[i]
 		}
 	}
-	return pts[len(pts)-1].Y
+
+	// Compute initial tangents (Fritsch-Carlson).
+	tangents := make([]float64, n)
+	tangents[0] = m[0]
+	for i := 1; i < n-1; i++ {
+		if m[i-1]*m[i] <= 0 {
+			tangents[i] = 0
+		} else {
+			tangents[i] = (m[i-1] + m[i]) / 2
+		}
+	}
+	tangents[n-1] = m[n-2]
+
+	// Adjust tangents for monotonicity.
+	for i := 0; i < n-1; i++ {
+		if math.Abs(m[i]) < 1e-10 {
+			tangents[i] = 0
+			tangents[i+1] = 0
+		} else {
+			alpha := tangents[i] / m[i]
+			beta := tangents[i+1] / m[i]
+			s := alpha*alpha + beta*beta
+			if s > 9 {
+				tau := 3 / math.Sqrt(s)
+				tangents[i] = tau * alpha * m[i]
+				tangents[i+1] = tau * beta * m[i]
+			}
+		}
+	}
+
+	// Find the segment containing x.
+	seg := 0
+	for i := 1; i < n-1; i++ {
+		if x >= pts[i].X {
+			seg = i
+		}
+	}
+
+	// Cubic Hermite interpolation on the segment [seg, seg+1].
+	h := dx[seg]
+	t := (float64(x) - float64(pts[seg].X)) / h
+	t2 := t * t
+	t3 := t2 * t
+
+	// Hermite basis functions.
+	h00 := 2*t3 - 3*t2 + 1
+	h10 := t3 - 2*t2 + t
+	h01 := -2*t3 + 3*t2
+	h11 := t3 - t2
+
+	y := h00*float64(pts[seg].Y) + h10*h*tangents[seg] +
+		h01*float64(pts[seg+1].Y) + h11*h*tangents[seg+1]
+
+	return float32(y)
 }
 
 // ─── CorrectorState ─────────────────────────────────────────────────────────

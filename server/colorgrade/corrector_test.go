@@ -361,11 +361,102 @@ func TestEvalCurve_Endpoints(t *testing.T) {
 	if v := evalCurve(pts, 1.0); v != 0.9 {
 		t.Errorf("above range: got %f, want 0.9", v)
 	}
-	// At midpoint: linear interpolation.
+	// At midpoint: linear interpolation (2-point curves are linear).
 	mid := evalCurve(pts, 0.5)
 	expected := float32(0.6) // 0.3 + (0.5-0.2)/(0.8-0.2) * (0.9-0.3)
 	if math.Abs(float64(mid-expected)) > 1e-5 {
 		t.Errorf("midpoint: got %f, want %f", mid, expected)
+	}
+}
+
+func TestEvalCurve_MonotoneCubicNotLinear(t *testing.T) {
+	// With 3+ control points, the cubic spline between two control points
+	// should NOT equal simple piecewise-linear interpolation.
+	// Use an asymmetric curve where the tangent influence is visible.
+	pts := []CurvePoint{{0, 0}, {0.3, 0.5}, {0.7, 0.6}, {1, 1}}
+
+	// Evaluate at x=0.5 (midpoint of the middle segment).
+	// Piecewise-linear would give: 0.5 + (0.5-0.3)/(0.7-0.3) * (0.6-0.5) = 0.55
+	linearMid := float32(0.55)
+	cubicMid := evalCurve(pts, 0.5)
+
+	// The cubic result should differ from linear by a meaningful amount.
+	diff := math.Abs(float64(cubicMid - linearMid))
+	if diff < 0.001 {
+		t.Errorf("cubic midpoint = %f, same as linear %f (diff=%f); expected cubic to differ",
+			cubicMid, linearMid, diff)
+	}
+
+	// The curve should still be smooth and in a reasonable range.
+	if cubicMid < 0 || cubicMid > 1 {
+		t.Errorf("cubic midpoint = %f, out of [0,1] range", cubicMid)
+	}
+}
+
+func TestEvalCurve_MonotoneCubicSmoothness(t *testing.T) {
+	// Test that the cubic interpolation produces a smooth curve by checking
+	// that intermediate samples don't have discontinuities.
+	pts := []CurvePoint{{0, 0}, {0.3, 0.5}, {0.7, 0.6}, {1, 1}}
+
+	const numSamples = 100
+	prev := evalCurve(pts, 0)
+	maxJump := float64(0)
+	for i := 1; i <= numSamples; i++ {
+		x := float32(i) / float32(numSamples)
+		y := evalCurve(pts, x)
+		jump := math.Abs(float64(y - prev))
+		if jump > maxJump {
+			maxJump = jump
+		}
+		prev = y
+	}
+
+	// With smooth cubic interpolation, the maximum jump between adjacent
+	// samples (1/100 apart) should be small. Linear interpolation on this
+	// curve would have max jump ~0.016; cubic should be similar or smaller.
+	if maxJump > 0.05 {
+		t.Errorf("max jump between adjacent samples = %f, too large for smooth curve", maxJump)
+	}
+}
+
+func TestEvalCurve_MonotoneCubicPassesThroughControlPoints(t *testing.T) {
+	// The spline must pass exactly through every control point.
+	pts := []CurvePoint{{0, 0}, {0.25, 0.4}, {0.5, 0.3}, {0.75, 0.8}, {1, 1}}
+
+	for _, pt := range pts {
+		got := evalCurve(pts, pt.X)
+		if math.Abs(float64(got-pt.Y)) > 1e-5 {
+			t.Errorf("evalCurve(pts, %f) = %f, want %f (control point)", pt.X, got, pt.Y)
+		}
+	}
+}
+
+func TestEvalCurve_MonotoneCubicIdentityCurve(t *testing.T) {
+	// Identity curve with interior points should be close to y=x.
+	pts := []CurvePoint{{0, 0}, {0.25, 0.25}, {0.5, 0.5}, {0.75, 0.75}, {1, 1}}
+
+	for i := 0; i <= 20; i++ {
+		x := float32(i) / 20.0
+		y := evalCurve(pts, x)
+		if math.Abs(float64(y-x)) > 0.01 {
+			t.Errorf("identity curve at x=%f: got %f, expected ~%f", x, y, x)
+		}
+	}
+}
+
+func TestEvalCurve_EmptyAndSingle(t *testing.T) {
+	// Empty: passthrough.
+	if v := evalCurve(nil, 0.5); v != 0.5 {
+		t.Errorf("nil curve: got %f, want 0.5", v)
+	}
+
+	// Single point: clamp.
+	single := []CurvePoint{{0.5, 0.7}}
+	if v := evalCurve(single, 0.3); v != 0.7 {
+		t.Errorf("single point below: got %f, want 0.7", v)
+	}
+	if v := evalCurve(single, 0.8); v != 0.7 {
+		t.Errorf("single point above: got %f, want 0.7", v)
 	}
 }
 
