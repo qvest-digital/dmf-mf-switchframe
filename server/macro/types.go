@@ -107,8 +107,13 @@ const (
 	ActionSTMapRemoveProgram Action = "stmap_remove_program"
 
 	// Color grade actions.
-	ActionColorGradeSet Action = "colorgrade_set"
-	ActionColorGradeOff Action = "colorgrade_off"
+	ActionColorGradeSet  Action = "colorgrade_set"
+	ActionColorGradeOff  Action = "colorgrade_off"
+	ActionColorGradeSave Action = "colorgrade_save"
+
+	// Corrector actions.
+	ActionCorrectorSet   Action = "corrector_set"
+	ActionCorrectorReset Action = "corrector_reset"
 )
 
 // allActions is the set of all valid macro actions.
@@ -187,6 +192,9 @@ var allActions = map[Action]bool{
 	ActionSTMapRemoveProgram:      true,
 	ActionColorGradeSet:           true,
 	ActionColorGradeOff:           true,
+	ActionColorGradeSave:          true,
+	ActionCorrectorSet:            true,
+	ActionCorrectorReset:          true,
 }
 
 // IsValidAction reports whether a is a recognized macro action.
@@ -399,6 +407,16 @@ var stepSummaryMap = map[Action]stepSummaryFunc{
 		return fmt.Sprintf("Color Grade %s %.0f%%", look, intensity*100)
 	},
 	ActionColorGradeOff: staticSummary("Color Grade Off"),
+	ActionColorGradeSave: func(s Step) string {
+		name, _ := s.Params["name"].(string)
+		return fmt.Sprintf("Save Look: %s", name)
+	},
+
+	// Corrector actions.
+	ActionCorrectorSet: func(s Step) string {
+		return "Corrector: set parameters"
+	},
+	ActionCorrectorReset: staticSummary("Corrector: reset"),
 }
 
 // paramStr extracts a string parameter from a step.

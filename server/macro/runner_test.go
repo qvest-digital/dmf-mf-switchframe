@@ -391,6 +391,9 @@ func TestRunner_ExecuteDispatchAllNewActions(t *testing.T) {
 		ActionCaptionClear,
 		ActionColorGradeSet,
 		ActionColorGradeOff,
+		ActionColorGradeSave,
+		ActionCorrectorSet,
+		ActionCorrectorReset,
 	}
 
 	for _, action := range newActions {
@@ -796,7 +799,8 @@ func TestRunner_AllActionsMapComplete(t *testing.T) {
 		ActionLayoutSlotSource, ActionLayoutClear,
 		ActionCaptionMode, ActionCaptionText, ActionCaptionClear,
 		ActionClipLoad, ActionClipPlay, ActionClipPause, ActionClipStop, ActionClipEject, ActionClipSeek,
-		ActionColorGradeSet, ActionColorGradeOff,
+		ActionColorGradeSet, ActionColorGradeOff, ActionColorGradeSave,
+		ActionCorrectorSet, ActionCorrectorReset,
 	}
 
 	for _, action := range expectedActions {
