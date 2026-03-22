@@ -1,5 +1,20 @@
 package audio
 
+import "fmt"
+
+// SetPhaseInvert enables or disables phase inversion for a source channel.
+// When enabled, all PCM samples are multiplied by -1.0 (180-degree phase flip).
+func (m *Mixer) SetPhaseInvert(sourceKey string, invert bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ch, ok := m.channels[sourceKey]
+	if !ok {
+		return fmt.Errorf("audio: unknown source %q", sourceKey)
+	}
+	ch.phaseInvert = invert
+	return nil
+}
+
 // DebugSnapshot implements debug.SnapshotProvider.
 func (m *Mixer) DebugSnapshot() map[string]any {
 	m.mu.RLock()
@@ -17,6 +32,7 @@ func (m *Mixer) DebugSnapshot() map[string]any {
 			"active":              ch.active,
 			"muted":               ch.muted,
 			"afv":                 ch.afv,
+			"phase_invert":        ch.phaseInvert,
 			"level":               ch.level,
 			"trim":                ch.trim,
 			"eq_bypassed":         ch.eq.IsBypassed(),

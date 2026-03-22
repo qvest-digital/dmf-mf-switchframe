@@ -61,6 +61,7 @@ type Channel struct {
 	levelLinear      float32 // cached linear gain from level (avoids per-frame math.Pow)
 	trim             float64 // dB (-20 to +20), input gain/trim
 	trimLinear       float32 // cached linear gain from trim (avoids per-frame math.Pow)
+	phaseInvert      bool
 	muted            bool
 	afv              bool
 	active           bool
@@ -611,6 +612,7 @@ func (m *Mixer) ChannelStates() map[string]internal.AudioChannel {
 			Trim:         ch.trim,
 			Muted:        ch.muted,
 			AFV:          ch.afv,
+			PhaseInvert:  ch.phaseInvert,
 			PeakL:        LinearToDBFS(ch.peakL),
 			PeakR:        LinearToDBFS(ch.peakR),
 			AudioDelayMs: ch.audioDelay.DelayMs(),

@@ -389,6 +389,13 @@ func (m *mockMixer) SetAFV(sourceKey string, afv bool) error {
 	return nil
 }
 
+func (m *mockMixer) SetPhaseInvert(sourceKey string, invert bool) error {
+	if !m.knownKeys[sourceKey] {
+		return fmt.Errorf("channel %q: %w", sourceKey, audio.ErrChannelNotFound)
+	}
+	return nil
+}
+
 func (m *mockMixer) SetMasterLevel(level float64) error {
 	m.masterCalls = append(m.masterCalls, level)
 	return nil

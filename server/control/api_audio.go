@@ -64,6 +64,12 @@ type compressorResponse struct {
 	GainReduction float64 `json:"gainReduction"`
 }
 
+// audioPhaseRequest is the JSON body for the audio phase invert endpoint.
+type audioPhaseRequest struct {
+	Source string `json:"source"`
+	Invert bool   `json:"invert"`
+}
+
 // audioDelayRequest is the JSON body for the audio delay endpoint.
 type audioDelayRequest struct {
 	DelayMs int `json:"delayMs"`
@@ -75,6 +81,7 @@ func (a *API) registerAudioRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/audio/level", a.handleAudioLevel)
 	mux.HandleFunc("POST /api/audio/mute", a.handleAudioMute)
 	mux.HandleFunc("POST /api/audio/afv", a.handleAudioAFV)
+	mux.HandleFunc("POST /api/audio/phase", a.handleAudioPhase)
 	mux.HandleFunc("POST /api/audio/master", a.handleAudioMaster)
 	mux.HandleFunc("PUT /api/audio/{source}/eq", a.handleSetEQ)
 	mux.HandleFunc("GET /api/audio/{source}/eq", a.handleGetEQ)
@@ -180,6 +187,30 @@ func (a *API) handleAudioAFV(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.mixer.SetAFV(req.Source, req.AFV); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
+}
+
+// handleAudioPhase sets the phase invert state for a source channel.
+func (a *API) handleAudioPhase(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	if a.mixer == nil {
+		httperr.Write(w, http.StatusNotImplemented, "audio mixer not configured")
+		return
+	}
+	var req audioPhaseRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Source == "" {
+		httperr.Write(w, http.StatusBadRequest, "source required")
+		return
+	}
+	if err := a.mixer.SetPhaseInvert(req.Source, req.Invert); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}

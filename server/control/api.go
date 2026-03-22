@@ -38,6 +38,7 @@ type AudioMixerAPI interface {
 	SetTrim(sourceKey string, trimDB float64) error
 	SetMuted(sourceKey string, muted bool) error
 	SetAFV(sourceKey string, afv bool) error
+	SetPhaseInvert(sourceKey string, invert bool) error
 	SetMasterLevel(level float64) error
 	SetEQ(sourceKey string, band int, frequency, gain, q float64, enabled bool) error
 	GetEQ(sourceKey string) ([3]audio.EQBandSettings, error)

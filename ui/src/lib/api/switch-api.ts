@@ -153,6 +153,10 @@ export function setAFV(source: string, afv: boolean): Promise<ControlRoomState> 
 	return post('/api/audio/afv', { source, afv });
 }
 
+export function setPhaseInvert(source: string, invert: boolean): Promise<ControlRoomState> {
+	return post('/api/audio/phase', { source, invert });
+}
+
 export function setMasterLevel(level: number): Promise<ControlRoomState> {
 	return post('/api/audio/master', { level });
 }

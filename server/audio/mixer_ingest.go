@@ -80,6 +80,13 @@ func (m *Mixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 		trimmedPCM[i] = s * ch.trimLinear
 	}
 
+	// Apply phase invert
+	if ch.phaseInvert {
+		for i := range trimmedPCM {
+			trimmedPCM[i] = -trimmedPCM[i]
+		}
+	}
+
 	// Apply EQ (3-band parametric)
 	if !ch.eq.IsBypassed() {
 		ch.eq.Process(trimmedPCM, m.numChannels)
@@ -148,6 +155,13 @@ func (m *Mixer) IngestPCM(sourceKey string, pcm []float32, pts int64, channels i
 	trimmedPCM := ch.trimBuf
 	for i, s := range pcm {
 		trimmedPCM[i] = s * ch.trimLinear
+	}
+
+	// Apply phase invert
+	if ch.phaseInvert {
+		for i := range trimmedPCM {
+			trimmedPCM[i] = -trimmedPCM[i]
+		}
 	}
 
 	// Apply EQ (3-band parametric)

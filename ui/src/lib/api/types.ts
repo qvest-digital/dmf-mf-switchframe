@@ -57,6 +57,7 @@ export interface AudioChannel {
 	trim: number;   // dB (-20 to +20), input gain
 	muted: boolean;
 	afv: boolean;   // audio-follows-video
+	phaseInvert?: boolean; // 180-degree phase flip
 	peakL: number;  // dBFS
 	peakR: number;  // dBFS
 	eq: [EQBand, EQBand, EQBand];

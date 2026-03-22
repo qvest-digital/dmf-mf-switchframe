@@ -5,6 +5,7 @@
 		setTrim as apiSetTrim,
 		setMute as apiSetMute,
 		setAFV as apiSetAFV,
+		setPhaseInvert as apiSetPhaseInvert,
 		setMasterLevel as apiSetMasterLevel,
 		setEQ as apiSetEQ,
 		setCompressor as apiSetCompressor,
@@ -55,6 +56,10 @@
 
 	function setAFV(source: string, afv: boolean) {
 		applyResult(apiSetAFV(source, afv));
+	}
+
+	function setPhaseInvert(source: string, invert: boolean) {
+		applyResult(apiSetPhaseInvert(source, invert));
 	}
 
 	/** Throttled master level API call -- max 20 calls/sec (50ms). */
@@ -310,6 +315,14 @@
 					title="Audio Follows Video"
 				>
 					AFV
+				</button>
+				<button
+					class="strip-btn phase-btn"
+					class:active={channel.phaseInvert}
+					onclick={() => setPhaseInvert(key, !channel.phaseInvert)}
+					title="Phase invert"
+				>
+					&Oslash;
 				</button>
 				<button
 					class="strip-btn eq-toggle-btn"
@@ -816,6 +829,12 @@
 		background: var(--tally-preview-dim);
 		color: var(--color-success);
 		border-color: rgba(34, 197, 94, 0.4);
+	}
+
+	.phase-btn.active {
+		background: var(--tally-program-dim);
+		border-color: rgba(239, 68, 68, 0.4);
+		color: var(--color-error);
 	}
 
 	.eq-toggle-btn.active {
