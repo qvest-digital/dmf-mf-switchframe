@@ -23,9 +23,8 @@ describe('BottomTabs', () => {
 		expect(tabLabels).toContain('Captions');
 		expect(tabLabels).toContain('Clips');
 		expect(tabLabels).toContain('Team');
-		expect(tabLabels).toContain('STMap');
-		expect(tabLabels).toContain('Color');
-		expect(tabs.length).toBe(13);
+		expect(tabLabels).toContain('Video');
+		expect(tabs.length).toBe(12);
 	});
 
 	it('renders Presets tab', () => {
@@ -69,6 +68,22 @@ describe('BottomTabs', () => {
 		const presetsTab = container.querySelector('#tab-presets');
 		expect(presetsTab?.getAttribute('aria-selected')).toBe('true');
 		localStorage.removeItem('sf-active-tab');
+	});
+
+	it('migrates old Color tab to Video', () => {
+		localStorage.setItem('sf-active-tab', 'Color');
+		const { container } = render(BottomTabs);
+		const videoTab = container.querySelector('#tab-video');
+		expect(videoTab?.getAttribute('aria-selected')).toBe('true');
+		expect(localStorage.getItem('sf-active-tab')).toBe('Video');
+	});
+
+	it('migrates old STMap tab to Video', () => {
+		localStorage.setItem('sf-active-tab', 'STMap');
+		const { container } = render(BottomTabs);
+		const videoTab = container.querySelector('#tab-video');
+		expect(videoTab?.getAttribute('aria-selected')).toBe('true');
+		expect(localStorage.getItem('sf-active-tab')).toBe('Video');
 	});
 
 	it('ignores invalid localStorage tab values', () => {

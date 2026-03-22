@@ -31,6 +31,7 @@
 	import TeamPanel from '../components/TeamPanel.svelte';
 	import STMapPanel from '../components/STMapPanel.svelte';
 	import ColorGradePanel from '../components/ColorGradePanel.svelte';
+	import VideoProcessingPanel from '../components/VideoProcessingPanel.svelte';
 	import AISegmentPanel from '../components/AISegmentPanel.svelte';
 	import LockIndicator from '../components/LockIndicator.svelte';
 	import CommsBar from '../components/CommsBar.svelte';
@@ -778,13 +779,9 @@
 							<div class="tab-panel">
 								<TeamPanel state={store.effectiveState} />
 							</div>
-						{:else if activeTab === 'STMap'}
+						{:else if activeTab === 'Video'}
 							<div class="tab-panel">
-								<STMapPanel state={store.effectiveState} />
-							</div>
-						{:else if activeTab === 'Color'}
-							<div class="tab-panel">
-								<ColorGradePanel state={store.effectiveState} />
+								<VideoProcessingPanel state={store.effectiveState} />
 							</div>
 						{:else if activeTab === 'AI'}
 							<div class="tab-panel">

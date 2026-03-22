@@ -9,7 +9,7 @@
 	}
 	let { children, onTabChange, replayActive = false, aiAvailable = false }: Props = $props();
 
-	const staticTabs = ['Audio', 'Layout', 'Graphics', 'Replay', 'Keys', 'Captions', 'SCTE', 'Macros', 'Presets', 'Clips', 'Team', 'STMap', 'Color'] as const;
+	const staticTabs = ['Audio', 'Layout', 'Graphics', 'Replay', 'Keys', 'Captions', 'SCTE', 'Macros', 'Presets', 'Clips', 'Team', 'Video'] as const;
 	type StaticTabId = typeof staticTabs[number];
 	type TabId = StaticTabId | 'AI';
 
@@ -24,6 +24,11 @@
 	function loadSavedTab(): TabId {
 		if (typeof localStorage === 'undefined') return 'Audio';
 		const saved = localStorage.getItem('sf-active-tab');
+		// Migrate old tab names to new Video tab
+		if (saved === 'Color' || saved === 'STMap') {
+			localStorage.setItem('sf-active-tab', 'Video');
+			return 'Video';
+		}
 		if (saved && allValidTabs.includes(saved)) return saved as TabId;
 		return 'Audio';
 	}
