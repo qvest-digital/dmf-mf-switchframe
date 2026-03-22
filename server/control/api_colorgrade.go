@@ -2,8 +2,10 @@ package control
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
+	"github.com/zsiec/switchframe/server/colorgrade"
 	"github.com/zsiec/switchframe/server/control/httperr"
 )
 
@@ -131,10 +133,9 @@ func (a *API) handleColorGradeDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := a.colorGradeMgr.DeleteLUT(name); err != nil {
-		// Distinguish between "cannot delete builtin" (403) and "not found" (404).
-		if contains(err.Error(), "built-in") {
+		if errors.Is(err, colorgrade.ErrBuiltinLook) {
 			httperr.Write(w, http.StatusForbidden, err.Error())
-		} else if contains(err.Error(), "not found") {
+		} else if errors.Is(err, colorgrade.ErrLookNotFound) {
 			httperr.Write(w, http.StatusNotFound, err.Error())
 		} else {
 			httperr.WriteErr(w, http.StatusBadRequest, err)
@@ -143,17 +144,4 @@ func (a *API) handleColorGradeDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && (s == sub || len(s) > 0 && containsSubstr(s, sub))
-}
-
-func containsSubstr(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"sync"
-	"sync/atomic"
 
 	"github.com/zsiec/switchframe/server/colorgrade"
 	"github.com/zsiec/switchframe/server/internal"
@@ -105,8 +104,7 @@ func (c *colorGradeController) DeleteLUT(name string) error {
 
 // colorGradeStateAdapter implements gpu.ColorGradeState for the pipeline node.
 type colorGradeStateAdapter struct {
-	ctrl    *colorGradeController
-	enabled atomic.Bool // fast path for Active() check
+	ctrl *colorGradeController
 }
 
 func newColorGradeStateAdapter(ctrl *colorGradeController) *colorGradeStateAdapter {

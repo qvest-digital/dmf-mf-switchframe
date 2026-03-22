@@ -1,6 +1,7 @@
 package colorgrade
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,7 +11,15 @@ import (
 	"strings"
 )
 
-var validNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+var (
+	// ErrBuiltinLook is returned when attempting to delete a built-in look.
+	ErrBuiltinLook = errors.New("cannot delete built-in look")
+
+	// ErrLookNotFound is returned when a look does not exist.
+	ErrLookNotFound = errors.New("look not found")
+
+	validNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+)
 
 // LookInfo describes an available color look.
 type LookInfo struct {
@@ -96,7 +105,7 @@ func (s *Store) Load(name string) (*LUT3D, error) {
 		return s.loadFile(path)
 	}
 
-	return nil, fmt.Errorf("colorgrade store: look %q not found", name)
+	return nil, fmt.Errorf("colorgrade store: look %q: %w", name, ErrLookNotFound)
 }
 
 // Upload validates and saves a .cube file under the given name.
@@ -135,12 +144,12 @@ func (s *Store) Delete(name string) error {
 	// Check if it's a built-in look.
 	builtinPath := filepath.Join(s.builtinDir, name+".cube")
 	if _, err := os.Stat(builtinPath); err == nil {
-		return fmt.Errorf("colorgrade store: cannot delete built-in look %q", name)
+		return fmt.Errorf("colorgrade store: %q: %w", name, ErrBuiltinLook)
 	}
 
 	uploadPath := filepath.Join(s.uploadDir, name+".cube")
 	if _, err := os.Stat(uploadPath); err != nil {
-		return fmt.Errorf("colorgrade store: look %q not found", name)
+		return fmt.Errorf("colorgrade store: %q: %w", name, ErrLookNotFound)
 	}
 
 	if err := os.Remove(uploadPath); err != nil {
