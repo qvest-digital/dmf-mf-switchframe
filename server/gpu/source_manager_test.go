@@ -60,6 +60,35 @@ func TestGPUSourceManager_IngestAndGetFrame(t *testing.T) {
 		"Y center pixel should be close to 200 after upload+download round-trip")
 }
 
+func TestGPUSourceManager_CurrentFrame(t *testing.T) {
+	const w, h = 32, 32
+	ctx, pool := setupGPU(t, w, h, 8)
+	defer func() { _ = ctx.Close() }()
+	defer pool.Close()
+
+	mgr := NewGPUSourceManager(ctx, pool, nil)
+	defer mgr.Close()
+
+	// CurrentFrame returns nil for unknown source.
+	frame := mgr.CurrentFrame("nonexistent")
+	assert.Nil(t, frame, "CurrentFrame for unknown source should return nil")
+
+	// CurrentFrame returns nil before any ingest.
+	frame = mgr.CurrentFrame("cam1")
+	assert.Nil(t, frame, "CurrentFrame before ingest should return nil")
+
+	// Ingest a frame via auto-register path.
+	yuv := createTestYUV420p(w, h, 200, 100, 150)
+	mgr.IngestYUV("cam1", yuv, w, h, 42000)
+
+	// CurrentFrame should now return the frame (without incrementing refcount).
+	frame = mgr.CurrentFrame("cam1")
+	require.NotNil(t, frame, "CurrentFrame after ingest should return a frame")
+	assert.Equal(t, int64(42000), frame.PTS)
+	assert.Equal(t, w, frame.Width)
+	// NOTE: do NOT call frame.Release() — CurrentFrame does not increment refcount.
+}
+
 func TestGPUSourceManager_RemoveSource(t *testing.T) {
 	const w, h = 32, 32
 	ctx, pool := setupGPU(t, w, h, 8)

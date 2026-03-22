@@ -70,24 +70,26 @@ func TestWriteCubeRoundtrip(t *testing.T) {
 	}
 }
 
-func TestGenerateLook_Cinematic(t *testing.T) {
+func TestGenerateLook_DiffersFromIdentity(t *testing.T) {
 	identity := GenerateIdentityLUT()
-	cinematic := GenerateLook(BuiltinLooks()[1]) // cinematic
+	looks := BuiltinLooks()
+	// Pick the first look (golden-hour).
+	lut := GenerateLook(looks[0])
 
-	// The cinematic look should differ from identity.
+	// The look should differ from identity.
 	differences := 0
 	for i := range identity.Data {
-		if math.Abs(float64(cinematic.Data[i]-identity.Data[i])) > 1e-5 {
+		if math.Abs(float64(lut.Data[i]-identity.Data[i])) > 1e-5 {
 			differences++
 		}
 	}
 
 	if differences == 0 {
-		t.Error("cinematic look is identical to identity")
+		t.Errorf("%s look is identical to identity", looks[0].Name)
 	}
 
 	// All values should remain in [0, 1].
-	for i, v := range cinematic.Data {
+	for i, v := range lut.Data {
 		if v < 0 || v > 1 {
 			t.Errorf("data[%d] = %f, out of [0,1] range", i, v)
 			break
@@ -95,11 +97,68 @@ func TestGenerateLook_Cinematic(t *testing.T) {
 	}
 }
 
-func TestAllBuiltinLooks(t *testing.T) {
+func TestAllBuiltinLooks_Count(t *testing.T) {
 	looks := BuiltinLooks()
-	if len(looks) != 6 {
-		t.Fatalf("expected 6 built-in looks, got %d", len(looks))
+	if len(looks) != 41 {
+		t.Fatalf("expected 41 built-in looks, got %d", len(looks))
 	}
+}
+
+func TestAllBuiltinLooks_UniqueNames(t *testing.T) {
+	looks := BuiltinLooks()
+	seen := make(map[string]bool)
+	for _, p := range looks {
+		if seen[p.Name] {
+			t.Errorf("duplicate look name: %q", p.Name)
+		}
+		seen[p.Name] = true
+	}
+}
+
+func TestAllBuiltinLooks_GroupsPresent(t *testing.T) {
+	looks := BuiltinLooks()
+	groupCounts := make(map[string]int)
+	for _, p := range looks {
+		groupCounts[p.Group]++
+	}
+
+	expected := map[string]int{
+		"Light":   6,
+		"Shadow":  6,
+		"Film":    7,
+		"Drama":   6,
+		"Vivid":   6,
+		"Vintage": 5,
+		"Clean":   5,
+	}
+
+	if len(groupCounts) != len(expected) {
+		t.Errorf("expected %d groups, got %d: %v", len(expected), len(groupCounts), groupCounts)
+	}
+
+	for group, want := range expected {
+		got := groupCounts[group]
+		if got != want {
+			t.Errorf("group %q: count = %d, want %d", group, got, want)
+		}
+	}
+}
+
+func TestAllBuiltinLooks_GroupAndDescriptionPopulated(t *testing.T) {
+	for _, p := range BuiltinLooks() {
+		if p.Group == "" {
+			t.Errorf("look %q has empty Group", p.Name)
+		}
+		if p.Description == "" {
+			t.Errorf("look %q has empty Description", p.Name)
+		}
+	}
+}
+
+func TestAllBuiltinLooks_ValidLUTs(t *testing.T) {
+	looks := BuiltinLooks()
+
+	expectedLen := 33 * 33 * 33 * 3
 
 	for _, params := range looks {
 		t.Run(params.Name, func(t *testing.T) {
@@ -112,9 +171,8 @@ func TestAllBuiltinLooks(t *testing.T) {
 				t.Errorf("size = %d, want 33", lut.Size)
 			}
 
-			expected := 33 * 33 * 33 * 3
-			if len(lut.Data) != expected {
-				t.Fatalf("data length = %d, want %d", len(lut.Data), expected)
+			if len(lut.Data) != expectedLen {
+				t.Fatalf("data length = %d, want %d", len(lut.Data), expectedLen)
 			}
 
 			// All values should be in [0, 1].
@@ -136,6 +194,24 @@ func TestAllBuiltinLooks(t *testing.T) {
 			}
 			if parsed.Size != lut.Size {
 				t.Errorf("roundtrip size mismatch: %d vs %d", parsed.Size, lut.Size)
+			}
+		})
+	}
+}
+
+func TestAllBuiltinLooks_EachDiffersFromIdentity(t *testing.T) {
+	identity := GenerateIdentityLUT()
+	for _, params := range BuiltinLooks() {
+		t.Run(params.Name, func(t *testing.T) {
+			lut := GenerateLook(params)
+			differences := 0
+			for i := range identity.Data {
+				if math.Abs(float64(lut.Data[i]-identity.Data[i])) > 1e-5 {
+					differences++
+				}
+			}
+			if differences == 0 {
+				t.Errorf("look %q is identical to identity", params.Name)
 			}
 		})
 	}

@@ -47,6 +47,17 @@ func TestStubGPUSourceManagerSnapshot(t *testing.T) {
 	require.Equal(t, 0, snap["source_count"])
 }
 
+func TestStubGPUSourceManagerCurrentFrame(t *testing.T) {
+	mgr := NewGPUSourceManager(nil, nil, nil)
+	// Stub returns nil manager.
+	if mgr == nil {
+		return
+	}
+	// CurrentFrame on unknown source returns nil.
+	frame := mgr.CurrentFrame("nonexistent")
+	assert.Nil(t, frame)
+}
+
 func TestStubGPUPipelineSnapshot(t *testing.T) {
 	pipe := NewGPUPipeline(nil, nil)
 	snap := pipe.Snapshot()

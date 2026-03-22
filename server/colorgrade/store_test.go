@@ -20,31 +20,43 @@ func TestStore_List(t *testing.T) {
 	store := setupTestStore(t)
 
 	looks := store.List()
-	if len(looks) < 6 {
-		t.Fatalf("expected at least 6 built-in looks, got %d", len(looks))
+	if len(looks) < 41 {
+		t.Fatalf("expected at least 41 built-in looks, got %d", len(looks))
 	}
-	// Verify all are builtin.
+	// Verify all are builtin with non-empty Group and Description.
 	for _, l := range looks {
 		if !l.Builtin {
 			t.Errorf("expected look %q to be builtin", l.Name)
 		}
+		if l.Group == "" {
+			t.Errorf("look %q has empty Group", l.Name)
+		}
+		if l.Description == "" {
+			t.Errorf("look %q has empty Description", l.Name)
+		}
 	}
-	// Check one known look exists.
+	// Check one known look exists with correct metadata.
 	found := false
 	for _, l := range looks {
-		if l.Name == "broadcast-news" {
+		if l.Name == "kodachrome" {
 			found = true
+			if l.Group != "Film" {
+				t.Errorf("kodachrome Group = %q, want Film", l.Group)
+			}
+			if l.Description != "Legendary warmth, rich reds, deep blacks" {
+				t.Errorf("kodachrome Description = %q, want expected value", l.Description)
+			}
 		}
 	}
 	if !found {
-		t.Error("broadcast-news not found in built-in looks")
+		t.Error("kodachrome not found in built-in looks")
 	}
 }
 
 func TestStore_Load(t *testing.T) {
 	store := setupTestStore(t)
 
-	lut, err := store.Load("broadcast-news")
+	lut, err := store.Load("kodachrome")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -69,7 +81,7 @@ func TestStore_Upload(t *testing.T) {
 	store := setupTestStore(t)
 
 	// Create a valid .cube string.
-	lut := GenerateLook(BuiltinLooks()[1]) // cinematic
+	lut := GenerateLook(BuiltinLooks()[0]) // golden-hour
 	var sb strings.Builder
 	if err := WriteCube(&sb, lut); err != nil {
 		t.Fatal(err)
@@ -79,7 +91,7 @@ func TestStore_Upload(t *testing.T) {
 		t.Fatalf("upload error: %v", err)
 	}
 
-	// Should appear in list.
+	// Should appear in list with Custom group.
 	looks := store.List()
 	found := false
 	for _, l := range looks {
@@ -87,6 +99,12 @@ func TestStore_Upload(t *testing.T) {
 			found = true
 			if l.Builtin {
 				t.Error("uploaded look should not be builtin")
+			}
+			if l.Group != "Custom" {
+				t.Errorf("uploaded look Group = %q, want Custom", l.Group)
+			}
+			if l.Description != "Custom look" {
+				t.Errorf("uploaded look Description = %q, want 'Custom look'", l.Description)
 			}
 		}
 	}
@@ -138,7 +156,7 @@ func TestStore_Delete(t *testing.T) {
 func TestStore_Delete_Builtin(t *testing.T) {
 	store := setupTestStore(t)
 
-	err := store.Delete("broadcast-news")
+	err := store.Delete("kodachrome")
 	if err == nil {
 		t.Fatal("expected error when deleting built-in look")
 	}

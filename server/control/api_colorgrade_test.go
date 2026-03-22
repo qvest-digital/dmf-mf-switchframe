@@ -19,14 +19,18 @@ type mockColorGradeManager struct {
 	enabled   bool
 	lookName  string
 	intensity float32
-	available []string
+	available []internal.LookMetadata
 	uploaded  map[string]bool
 	err       error
 }
 
 func newMockColorGradeManager() *mockColorGradeManager {
 	return &mockColorGradeManager{
-		available: []string{"broadcast-news", "cinematic", "warm-natural"},
+		available: []internal.LookMetadata{
+			{Name: "golden-hour", Group: "Light", Description: "Amber glow", Builtin: true},
+			{Name: "kodachrome", Group: "Film", Description: "Legendary warmth", Builtin: true},
+			{Name: "broadcast", Group: "Clean", Description: "Crisp standard", Builtin: true},
+		},
 		uploaded:  make(map[string]bool),
 		intensity: 1.0,
 	}
@@ -40,7 +44,7 @@ func (m *mockColorGradeManager) SetColorGrade(lookName string, intensity float32
 	}
 	found := false
 	for _, a := range m.available {
-		if a == lookName {
+		if a.Name == lookName {
 			found = true
 			break
 		}
@@ -60,9 +64,17 @@ func (m *mockColorGradeManager) DisableColorGrade() {
 }
 
 func (m *mockColorGradeManager) GetState() internal.ColorGradeState {
+	var lookGroup string
+	for _, a := range m.available {
+		if a.Name == m.lookName {
+			lookGroup = a.Group
+			break
+		}
+	}
 	return internal.ColorGradeState{
 		Enabled:   m.enabled,
 		LookName:  m.lookName,
+		LookGroup: lookGroup,
 		Intensity: m.intensity,
 		Available: m.available,
 	}
@@ -73,7 +85,12 @@ func (m *mockColorGradeManager) UploadLUT(name string, data io.Reader) error {
 		return m.err
 	}
 	m.uploaded[name] = true
-	m.available = append(m.available, name)
+	m.available = append(m.available, internal.LookMetadata{
+		Name:        name,
+		Group:       "Custom",
+		Description: "Custom look",
+		Builtin:     false,
+	})
 	return nil
 }
 
@@ -120,7 +137,7 @@ func TestColorGrade_GetState(t *testing.T) {
 func TestColorGrade_SetLook(t *testing.T) {
 	api, mgr := setupColorGradeAPI(t)
 
-	body := `{"lookName":"cinematic","intensity":0.8}`
+	body := `{"lookName":"kodachrome","intensity":0.8}`
 	req := httptest.NewRequest("PUT", "/api/colorgrade", strings.NewReader(body))
 	w := httptest.NewRecorder()
 	api.Mux().ServeHTTP(w, req)
@@ -132,8 +149,8 @@ func TestColorGrade_SetLook(t *testing.T) {
 	if !mgr.enabled {
 		t.Error("expected enabled after set")
 	}
-	if mgr.lookName != "cinematic" {
-		t.Errorf("lookName = %q, want cinematic", mgr.lookName)
+	if mgr.lookName != "kodachrome" {
+		t.Errorf("lookName = %q, want kodachrome", mgr.lookName)
 	}
 	if mgr.intensity != 0.8 {
 		t.Errorf("intensity = %f, want 0.8", mgr.intensity)
@@ -143,7 +160,7 @@ func TestColorGrade_SetLook(t *testing.T) {
 func TestColorGrade_Disable(t *testing.T) {
 	api, mgr := setupColorGradeAPI(t)
 	mgr.enabled = true
-	mgr.lookName = "cinematic"
+	mgr.lookName = "kodachrome"
 
 	body := `{"enabled":false}`
 	req := httptest.NewRequest("PUT", "/api/colorgrade", strings.NewReader(body))

@@ -25,15 +25,18 @@ var (
 
 // LookInfo describes an available color look.
 type LookInfo struct {
-	Name    string `json:"name"`
-	Builtin bool   `json:"builtin"`
-	Path    string `json:"-"`
+	Name        string `json:"name"`
+	Group       string `json:"group"`
+	Description string `json:"description"`
+	Builtin     bool   `json:"builtin"`
+	Path        string `json:"-"` // internal, not serialized
 }
 
 // Store manages built-in (embedded) and uploaded .cube LUT files.
 type Store struct {
 	uploadDir string
-	builtins  map[string][]byte // name → raw .cube content
+	builtins  map[string][]byte      // name → raw .cube content
+	metadata  map[string]*LookParams // name → params (for Group/Description)
 }
 
 // NewStore creates a store with embedded built-in looks and a filesystem
@@ -59,9 +62,17 @@ func NewStore(uploadDir string) (*Store, error) {
 		}
 	}
 
+	// Build metadata lookup from BuiltinLooks() for Group/Description.
+	allLooks := BuiltinLooks()
+	meta := make(map[string]*LookParams, len(allLooks))
+	for i := range allLooks {
+		meta[allLooks[i].Name] = &allLooks[i]
+	}
+
 	return &Store{
 		uploadDir: uploadDir,
 		builtins:  builtins,
+		metadata:  meta,
 	}, nil
 }
 
@@ -71,10 +82,15 @@ func (s *Store) List() []LookInfo {
 
 	// Built-in looks from embedded FS.
 	for name := range s.builtins {
-		looks = append(looks, LookInfo{
+		info := LookInfo{
 			Name:    name,
 			Builtin: true,
-		})
+		}
+		if p, ok := s.metadata[name]; ok {
+			info.Group = p.Group
+			info.Description = p.Description
+		}
+		looks = append(looks, info)
 	}
 
 	// Scan upload directory.
@@ -85,9 +101,11 @@ func (s *Store) List() []LookInfo {
 			}
 			name := strings.TrimSuffix(e.Name(), ".cube")
 			looks = append(looks, LookInfo{
-				Name:    name,
-				Builtin: false,
-				Path:    filepath.Join(s.uploadDir, e.Name()),
+				Name:        name,
+				Group:       "Custom",
+				Description: "Custom look",
+				Builtin:     false,
+				Path:        filepath.Join(s.uploadDir, e.Name()),
 			})
 		}
 	}

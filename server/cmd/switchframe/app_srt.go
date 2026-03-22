@@ -255,6 +255,13 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		channels   int
 	}
 
+	// replayGPUJob is a lightweight signal for the GPU replay encode goroutine.
+	// No YUV data — the GPU frame is read from the source manager's atomic pointer.
+	type replayGPUJob struct {
+		pts  int64
+		w, h int
+	}
+
 	pipelineCh := make(chan videoJob, 4)   // → IngestRawVideo
 	relayVideoCh := make(chan videoJob, 4) // → H.264 encode + relay
 	audioCh := make(chan audioJob, 8)      // → IngestPCM + AAC encode + relay
@@ -403,8 +410,93 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		}()
 	}
 
+	// --- Goroutine 2c: GPU replay encode (NVDEC + NVENC, zero CPU-copy) ---
+	// When NVDEC is active, OnRawVideo never fires, so the CPU replay encode
+	// goroutine (2b) starves. Instead, read the GPU-resident NV12 frame from
+	// the source manager and NVENC-encode directly from VRAM.
+	var replayGPUCh chan replayGPUJob
+	if a.gpuState != nil && a.gpuState.sourceManager != nil && cfg.HWDeviceCtx != nil && replayViewer != nil {
+		replayGPUCh = make(chan replayGPUJob, 2)
+		srcMgr := a.gpuState.sourceManager
+
+		go func() {
+			var (
+				gpuEnc       *gpu.GPUEncoder
+				groupID      atomic.Uint32
+				lastW, lastH int
+			)
+			defer func() {
+				if gpuEnc != nil {
+					gpuEnc.Close()
+				}
+			}()
+
+			for job := range replayGPUCh {
+				// Resolution change → recreate encoder.
+				if gpuEnc != nil && (job.w != lastW || job.h != lastH) {
+					gpuEnc.Close()
+					gpuEnc = nil
+				}
+
+				if gpuEnc == nil {
+					enc, err := gpu.NewGPUEncoder(a.gpuState.ctx, job.w, job.h, pf.FPSNum, pf.FPSDen, 6_000_000)
+					if err != nil {
+						slog.Error("srt: GPU replay encoder init failed", "key", key, "error", err)
+						continue
+					}
+					gpuEnc = enc
+					lastW, lastH = job.w, job.h
+				}
+
+				// Load current GPU frame (atomic, lock-free read).
+				gpuFrame := srcMgr.CurrentFrame(key)
+				if gpuFrame == nil {
+					continue
+				}
+
+				// NVENC encode directly from VRAM.
+				data, isIDR, err := gpuEnc.EncodeGPU(gpuFrame, false)
+				if err != nil || len(data) == 0 {
+					continue
+				}
+
+				avc1 := codec.AnnexBToAVC1(data)
+				if isIDR {
+					groupID.Add(1)
+				}
+
+				vf := &media.VideoFrame{
+					PTS:        job.pts,
+					DTS:        job.pts,
+					IsKeyframe: isIDR,
+					GroupID:    groupID.Load(),
+					WireData:   avc1,
+					Codec:      "h264",
+				}
+
+				// Extract SPS/PPS from IDR frames for decoder init.
+				if isIDR {
+					for _, nalu := range codec.ExtractNALUs(avc1) {
+						if len(nalu) == 0 {
+							continue
+						}
+						switch nalu[0] & 0x1F {
+						case 7:
+							vf.SPS = nalu
+						case 8:
+							vf.PPS = nalu
+						}
+					}
+				}
+
+				replayViewer.SendVideo(vf)
+			}
+		}()
+	}
+
 	// --- Goroutine 2b: Replay full-quality encode (only when preview proxy + replay) ---
-	if replayVideoCh != nil {
+	// Skipped when GPU replay encode (2c) is active — NVDEC path handles replay.
+	if replayVideoCh != nil && replayGPUCh == nil {
 		go func() {
 			var (
 				videoEncoder transition.VideoEncoder
@@ -781,6 +873,15 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 				PTS:    pts,
 				DTS:    pts,
 			})
+
+			// Fan out to GPU replay encode (NVENC from VRAM).
+			if replayGPUCh != nil {
+				select {
+				case replayGPUCh <- replayGPUJob{pts: pts, w: w, h: h}:
+				default:
+					// Drop if replay encode can't keep up.
+				}
+			}
 		}
 
 		slog.Info("SRT source: NVDEC zero-copy path enabled", "key", key)
@@ -815,6 +916,9 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		close(audioCh)
 		if replayVideoCh != nil {
 			close(replayVideoCh)
+		}
+		if replayGPUCh != nil {
+			close(replayGPUCh)
 		}
 
 		// Remove from active sources map.

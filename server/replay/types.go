@@ -36,7 +36,7 @@ const (
 // Config holds configuration for the replay manager.
 type Config struct {
 	// BufferDurationSecs is the per-source buffer duration in seconds.
-	// Default 60, max 300.
+	// Default 300, max 300.
 	BufferDurationSecs int
 
 	// MaxSources is the maximum number of sources to buffer simultaneously.
@@ -46,12 +46,17 @@ type Config struct {
 	// MaxBufferBytes is the per-source byte limit for the replay buffer.
 	// When exceeded, oldest GOPs are trimmed. Default 200MB. 0 disables.
 	MaxBufferBytes int64
+
+	// TmpfsDir is the directory for tmpfs-backed replay buffers.
+	// Empty string = auto-detect (/dev/shm/switchframe/replay).
+	// "none" = disable tmpfs, use in-memory buffers only.
+	TmpfsDir string
 }
 
 // DefaultConfig returns the default replay configuration.
 func DefaultConfig() Config {
 	return Config{
-		BufferDurationSecs: 60,
+		BufferDurationSecs: 300,
 		MaxSources:         8,
 		MaxBufferBytes:     200 * 1024 * 1024, // 200MB
 	}
@@ -59,12 +64,17 @@ func DefaultConfig() Config {
 
 // bufferedFrame stores a single encoded video frame with wall-clock timestamp.
 type bufferedFrame struct {
-	wireData   []byte // AVC1 format (original from relay)
+	wireData   []byte // AVC1 format (original from relay); nil when ring-backed
 	sps        []byte // SPS NAL unit (keyframes only)
 	pps        []byte // PPS NAL unit (keyframes only)
 	pts        int64  // Original 90kHz PTS
 	isKeyframe bool
 	wallTime   time.Time // Wall-clock time for IN/OUT matching
+
+	// File ring fields (only used when replayBuffer.ring != nil).
+	// wireData is nil; actual bytes live in the file ring at ringOffset.
+	ringOffset int64
+	ringSize   int32
 }
 
 // bufferedAudioFrame stores a single encoded audio frame with wall-clock timestamp.
