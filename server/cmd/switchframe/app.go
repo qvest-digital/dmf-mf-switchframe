@@ -28,6 +28,7 @@ import (
 	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/codec"
+	"github.com/zsiec/switchframe/server/colorgrade"
 	"github.com/zsiec/switchframe/server/comms"
 	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/debug"
@@ -117,6 +118,9 @@ type App struct {
 	fastCtrl         *fastctrl.Dispatcher
 	stmapRegistry    *stmap.Registry
 	stmapStore       *stmap.Store
+
+	// Color grading
+	colorGradeCtrl *colorGradeController
 
 	// Text rendering engines
 	textRenderer   *textrender.Renderer
@@ -599,6 +603,25 @@ func (a *App) initSubsystems() error {
 
 	// Wire ST map registry to switcher for per-source correction.
 	a.sw.SetSTMapRegistry(a.stmapRegistry)
+
+	// Color grading store and controller.
+	builtinLooksDir := filepath.Join(filepath.Dir(os.Args[0]), "colorgrade", "looks")
+	// Fallback: try relative to server/ directory (dev mode).
+	if _, err := os.Stat(builtinLooksDir); err != nil {
+		builtinLooksDir = filepath.Join("colorgrade", "looks")
+	}
+	uploadLooksDir := a.statePath("luts")
+	colorGradeStore, err := colorgrade.NewStore(builtinLooksDir, uploadLooksDir)
+	if err != nil {
+		slog.Warn("color grade store init failed", "error", err)
+	} else {
+		a.colorGradeCtrl = newColorGradeController(colorGradeStore)
+		slog.Info("color grade store loaded",
+			"builtin", builtinLooksDir,
+			"upload", uploadLooksDir,
+			"looks", len(colorGradeStore.List()),
+		)
+	}
 
 	// Upstream key processor (chroma/luma keying).
 	a.keyProcessor = graphics.NewKeyProcessor()
@@ -1193,6 +1216,9 @@ func (a *App) initAPI() error {
 		control.WithPerfSampler(a.perfSampler),
 		control.WithSTMapRegistry(a.stmapRegistry),
 		control.WithSTMapStore(a.stmapStore),
+	}
+	if a.colorGradeCtrl != nil {
+		apiOpts = append(apiOpts, control.WithColorGradeManager(a.colorGradeCtrl))
 	}
 	if a.replayMgr != nil {
 		apiOpts = append(apiOpts, control.WithReplayManager(a.replayMgr))

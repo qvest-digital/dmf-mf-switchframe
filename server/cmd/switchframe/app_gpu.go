@@ -257,14 +257,21 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 			pf.FPSNum, pf.FPSDen, gpuOnPreviewEncoded)
 	}
 
+	// Color grade state adapter for GPU pipeline node.
+	var colorGradeAdapter gpu.ColorGradeState
+	if app.colorGradeCtrl != nil {
+		colorGradeAdapter = newColorGradeStateAdapter(app.colorGradeCtrl)
+	}
+
 	// Build GPU pipeline node chain:
-	//   gpu_key → gpu_layout → gpu_compositor → [gpu_ai_segment] → gpu_stmap → raw_sink → gpu_preview_encode → gpu_encode
+	//   gpu_key → gpu_layout → gpu_compositor → [gpu_ai_segment] → gpu_colorgrade → gpu_stmap → raw_sink → gpu_preview_encode → gpu_encode
 	// Some nodes return nil on unsupported builds (e.g. AI segment on non-TensorRT).
 	candidateNodes := []gpu.GPUPipelineNode{
 		gpu.NewGPUKeyNode(gs.ctx, gs.pool, keyAdapter),
 		gpu.NewGPULayoutNode(gs.ctx, gs.pool, layoutAdapter),
 		gpu.NewGPUCompositorNode(gs.ctx, compositorAdapter),
 		gpu.NewGPUAISegmentNode(gs.ctx, gs.pool, segAdapter),
+		gpu.NewGPUColorGradeNode(gs.ctx, colorGradeAdapter),
 		gpu.NewGPUSTMapNode(gs.ctx, gs.pool, app.stmapRegistry),
 		gpu.NewGPURawSinkNode(gs.ctx, &gpuRawVideoSink),
 		previewEncodeNode,
