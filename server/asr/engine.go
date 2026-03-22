@@ -146,6 +146,15 @@ func (e *Engine) IngestAudio(pcm []float32, pts int64, sampleRate, channels int)
 
 	now := time.Now()
 
+	// Log VAD state transitions for debugging.
+	if prevState != newState {
+		slog.Info("ASR VAD state change",
+			"from", prevState.String(),
+			"to", newState.String(),
+			"ringBufSamples", e.ringBuf.SampleCount(),
+		)
+	}
+
 	switch {
 	case prevState == VADIdle && newState == VADSpeaking:
 		// Speech onset: reset state for new utterance.

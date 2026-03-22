@@ -3,6 +3,7 @@ package main
 import (
 	"log/slog"
 	"path/filepath"
+	"sync"
 
 	"github.com/zsiec/switchframe/server/asr"
 	"github.com/zsiec/switchframe/server/audio"
@@ -59,7 +60,17 @@ func (a *App) initASR() error {
 // wireASRAudioSink sets the mixer's raw audio sink to feed the ASR engine,
 // preserving any existing sink (e.g., MXL output) via fan-out.
 func (a *App) wireASRAudioSink() {
-	asrSink := audio.RawAudioSink(a.asrEngine.IngestAudio)
+	var logOnce sync.Once
+	asrSink := audio.RawAudioSink(func(pcm []float32, pts int64, sampleRate, channels int) {
+		logOnce.Do(func() {
+			slog.Info("ASR audio sink: first audio received",
+				"samples", len(pcm),
+				"sampleRate", sampleRate,
+				"channels", channels,
+			)
+		})
+		a.asrEngine.IngestAudio(pcm, pts, sampleRate, channels)
+	})
 
 	if a.mxlOutput != nil {
 		// MXL output already has a sink set. Create fan-out that calls both.
