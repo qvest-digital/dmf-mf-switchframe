@@ -133,7 +133,7 @@ func TestColorGrade_SetLook(t *testing.T) {
 		t.Error("expected enabled after set")
 	}
 	if mgr.lookName != "kodachrome" {
-		t.Errorf("lookName = %q, want cinematic", mgr.lookName)
+		t.Errorf("lookName = %q, want kodachrome", mgr.lookName)
 	}
 	if mgr.intensity != 0.8 {
 		t.Errorf("intensity = %f, want 0.8", mgr.intensity)
