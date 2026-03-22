@@ -202,14 +202,17 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 				const source = sources.get(key);
 				if (!source) return;
 
-				// Group-level skip-to-latest: when a keyframe from a newer MoQ
-				// group arrives, flush stale decoder state and jump forward.
-				// This converts multi-second transport stalls into a single
-				// visible skip instead of a growing delay.
+				// Group-level skip-to-latest: when a keyframe arrives and we've
+				// SKIPPED groups (gap > 1), flush stale decoder state and jump
+				// forward. Normal sequential groups (gap == 1) just advance the
+				// tracker without flushing — the decoder pipeline continues
+				// smoothly. Only a gap indicates a transport stall where we
+				// fell behind and should discard stale state.
 				if (groupID > 0 && groupID > source.latestGroupID) {
 					if (isKeyframe) {
-						if (source.latestGroupID > 0) {
-							// We're skipping from an older group — flush decoder + buffer
+						const gap = groupID - source.latestGroupID;
+						if (gap > 1 && source.latestGroupID > 0) {
+							// Skipped group(s) — transport stall, flush and jump forward
 							source.videoDecoder.flush();
 							for (const buf of source.secondaryBuffers.values()) {
 								buf.clear();
