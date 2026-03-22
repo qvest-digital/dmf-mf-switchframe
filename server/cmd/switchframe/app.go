@@ -143,7 +143,8 @@ type App struct {
 	segAdapter *segmentationStateAdapter // non-nil when segEngine is active
 
 	// ASR engine (Whisper speech-to-text, nil when unavailable)
-	asrEngine *asr.Engine
+	asrEngine    *asr.Engine
+	captionPacer *captionPacer
 
 	// SCTE-35 signaling
 	scte35Injector *scte35.Injector
@@ -1603,6 +1604,9 @@ func (a *App) closeSubsystems() {
 		a.sw.Close()
 	}
 	// ASR engine cleanup (before mixer — it reads from mixer's raw audio sink).
+	if a.captionPacer != nil {
+		a.captionPacer.Stop()
+	}
 	if a.asrEngine != nil {
 		a.asrEngine.Close()
 	}

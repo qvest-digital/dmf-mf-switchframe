@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/zsiec/switchframe/server/asr"
 	"github.com/zsiec/switchframe/server/audio"
@@ -41,47 +42,15 @@ func (a *App) initASR() error {
 
 	a.asrEngine = engine
 
-	// Wire transcript output to caption manager with line wrapping.
-	// CEA-608 supports 32 chars per line. We word-wrap and use newlines
-	// to scroll, keeping captions readable on screen.
-	const maxLineChars = 32
-	var captionLinePos int
-
+	// Paced caption output: ASR dumps words into a queue, a timer drains
+	// them at ~3 words/sec (~180 WPM) with CEA-608 line wrapping at 32 chars.
+	// This prevents burst output when Whisper returns a full transcript.
+	pacer := newCaptionPacer(a.captionMgr)
 	engine.OnTranscript(func(text string, isFinal bool) {
-		// Word-wrap: split text into chunks that fit in 32-char lines.
 		words := splitWords(text)
-		for _, word := range words {
-			wordLen := len(word)
-			if wordLen == 0 {
-				continue
-			}
-
-			// If this word would overflow the current line, start a new line.
-			needSpace := captionLinePos > 0
-			spaceNeeded := wordLen
-			if needSpace {
-				spaceNeeded++ // for the space before the word
-			}
-
-			if captionLinePos+spaceNeeded > maxLineChars && captionLinePos > 0 {
-				a.captionMgr.IngestNewline()
-				captionLinePos = 0
-				needSpace = false
-			}
-
-			if needSpace {
-				a.captionMgr.IngestText(" ")
-				captionLinePos++
-			}
-			a.captionMgr.IngestText(word)
-			captionLinePos += wordLen
-		}
-
-		if isFinal {
-			a.captionMgr.IngestNewline()
-			captionLinePos = 0
-		}
+		pacer.EnqueueWords(words, isFinal)
 	})
+	a.captionPacer = pacer
 
 	// Wire audio input — fan-out with existing sink if present.
 	a.wireASRAudioSink()
@@ -183,4 +152,107 @@ func (m *asrManagerAdapter) ASRLanguage() string {
 
 func (m *asrManagerAdapter) ASRModelName() string {
 	return filepath.Base(m.modelPath)
+}
+
+// --- Caption Pacer ---
+
+// captionPacer drains words from a queue at a steady rate (~3 words/sec)
+// with CEA-608 line wrapping at 32 characters. This prevents the burst
+// output that occurs when Whisper returns a full transcript at once.
+type captionPacer struct {
+	mgr *caption.Manager
+
+	mu      sync.Mutex
+	queue   []string // pending words
+	stopCh  chan struct{}
+	stopped bool
+	linePos int // current position on the CEA-608 line
+}
+
+const (
+	pacerMaxLineChars   = 32
+	pacerWordsPerSecond = 3 // ~180 WPM — slightly fast for readability
+)
+
+func newCaptionPacer(mgr *caption.Manager) *captionPacer {
+	p := &captionPacer{
+		mgr:    mgr,
+		stopCh: make(chan struct{}),
+	}
+	go p.run()
+	return p
+}
+
+// EnqueueWords adds words to the output queue.
+func (p *captionPacer) EnqueueWords(words []string, isFinal bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.queue = append(p.queue, words...)
+	if isFinal {
+		p.queue = append(p.queue, "\n") // sentinel for newline
+	}
+}
+
+// run is the pacer goroutine that drains words at a steady rate.
+func (p *captionPacer) run() {
+	ticker := time.NewTicker(time.Second / pacerWordsPerSecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-p.stopCh:
+			return
+		case <-ticker.C:
+			p.emitNextWord()
+		}
+	}
+}
+
+// emitNextWord pops one word from the queue and sends it to the caption manager.
+func (p *captionPacer) emitNextWord() {
+	p.mu.Lock()
+	if len(p.queue) == 0 {
+		p.mu.Unlock()
+		return
+	}
+	word := p.queue[0]
+	p.queue = p.queue[1:]
+	p.mu.Unlock()
+
+	if word == "\n" {
+		p.mgr.IngestNewline()
+		p.linePos = 0
+		return
+	}
+
+	wordLen := len(word)
+	needSpace := p.linePos > 0
+	spaceNeeded := wordLen
+	if needSpace {
+		spaceNeeded++
+	}
+
+	// Word-wrap at 32 characters.
+	if p.linePos+spaceNeeded > pacerMaxLineChars && p.linePos > 0 {
+		p.mgr.IngestNewline()
+		p.linePos = 0
+		needSpace = false
+	}
+
+	if needSpace {
+		p.mgr.IngestText(" ")
+		p.linePos++
+	}
+	p.mgr.IngestText(word)
+	p.linePos += wordLen
+}
+
+// Stop halts the pacer goroutine.
+func (p *captionPacer) Stop() {
+	p.mu.Lock()
+	if !p.stopped {
+		p.stopped = true
+		close(p.stopCh)
+	}
+	p.mu.Unlock()
 }
