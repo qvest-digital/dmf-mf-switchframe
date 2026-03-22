@@ -2,6 +2,7 @@
 	import type { ControlRoomState, CorrectorState, CurvePoint } from '$lib/api/types';
 	import { setCorrector, resetCorrector, saveCustomLook } from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
+	import { onDestroy } from 'svelte';
 	import ColorWheel from './ColorWheel.svelte';
 	import CurveEditor from './CurveEditor.svelte';
 
@@ -26,6 +27,11 @@
 		sharpness: 0,
 	});
 
+	// Local UI values for sliders that need scaling (server uses 0-2, -1..+1, 0-1)
+	let satUI = $state(100);
+	let contrastUI = $state(0);
+	let sharpnessUI = $state(0);
+
 	// Sync from server state
 	$effect(() => {
 		const sc = crState.colorGrade?.corrector;
@@ -37,6 +43,9 @@
 				curveG: sc.curveG ?? [{ x: 0, y: 0 }, { x: 1, y: 1 }],
 				curveB: sc.curveB ?? [{ x: 0, y: 0 }, { x: 1, y: 1 }],
 			};
+			satUI = Math.round(sc.saturation * 100);
+			contrastUI = Math.round(sc.contrast * 100);
+			sharpnessUI = Math.round(sc.sharpness * 100);
 		}
 	});
 
@@ -84,6 +93,8 @@
 		}, 200);
 	}
 
+	onDestroy(() => clearTimeout(sendTimeout));
+
 	function handleLiftChange(rgb: [number, number, number]) {
 		corrector.lift = rgb;
 		sendCorrector();
@@ -101,6 +112,22 @@
 
 	// Slider handlers for temperature, tint, etc.
 	function handleSliderInput() {
+		sendCorrector();
+	}
+
+	// Handlers for scaled sliders (UI integer range -> server float range)
+	function handleSatInput() {
+		corrector.saturation = satUI / 100;
+		sendCorrector();
+	}
+
+	function handleContrastInput() {
+		corrector.contrast = contrastUI / 100;
+		sendCorrector();
+	}
+
+	function handleSharpnessInput() {
+		corrector.sharpness = sharpnessUI / 100;
 		sendCorrector();
 	}
 
@@ -183,26 +210,26 @@
 			<label class="slider-row">
 				<span class="slider-label">Saturation</span>
 				<input type="range" min="0" max="200" step="1"
-					bind:value={corrector.saturation}
-					oninput={handleSliderInput}
+					bind:value={satUI}
+					oninput={handleSatInput}
 				/>
-				<span class="slider-value">{fmtSlider(corrector.saturation)}</span>
+				<span class="slider-value">{fmtSlider(satUI)}</span>
 			</label>
 			<label class="slider-row">
 				<span class="slider-label">Contrast</span>
 				<input type="range" min="-100" max="100" step="1"
-					bind:value={corrector.contrast}
-					oninput={handleSliderInput}
+					bind:value={contrastUI}
+					oninput={handleContrastInput}
 				/>
-				<span class="slider-value">{fmtSlider(corrector.contrast)}</span>
+				<span class="slider-value">{fmtSlider(contrastUI)}</span>
 			</label>
 			<label class="slider-row">
 				<span class="slider-label">Sharpness</span>
 				<input type="range" min="0" max="100" step="1"
-					bind:value={corrector.sharpness}
-					oninput={handleSliderInput}
+					bind:value={sharpnessUI}
+					oninput={handleSharpnessInput}
 				/>
-				<span class="slider-value">{fmtSlider(corrector.sharpness)}</span>
+				<span class="slider-value">{fmtSlider(sharpnessUI)}</span>
 			</label>
 		</div>
 	</div>

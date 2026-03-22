@@ -1161,7 +1161,7 @@ export function getCorrector(): Promise<CorrectorState> {
 	return request('/api/colorgrade/corrector');
 }
 
-export function setCorrector(state: Partial<CorrectorState>): Promise<ControlRoomState> {
+export function setCorrector(state: CorrectorState): Promise<ControlRoomState> {
 	return request('/api/colorgrade/corrector', {
 		method: 'PUT',
 		headers: { 'Content-Type': 'application/json' },

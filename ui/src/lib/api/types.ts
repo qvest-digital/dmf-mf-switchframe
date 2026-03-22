@@ -322,7 +322,8 @@ export type MacroAction =
 	// Layout
 	| 'layout_preset' | 'layout_slot_on' | 'layout_slot_off' | 'layout_slot_source' | 'layout_clear'
 	// Color Grade
-	| 'colorgrade_set' | 'colorgrade_off';
+	| 'colorgrade_set' | 'colorgrade_off'
+	| 'corrector_set' | 'corrector_reset' | 'colorgrade_save';
 
 export interface MacroStep {
 	action: MacroAction;
