@@ -51,11 +51,12 @@ type Engine struct {
 	onTranscript func(words []TranscriptWord, isFinal bool)
 
 	// Inference state
-	speechStart time.Time
-	lastInfer   time.Time
-	inferCount  int  // number of inferences in current speech segment
-	wasSpeaking bool
-	inferring   sync.Mutex // serializes whisper inference (one at a time)
+	speechStart    time.Time
+	lastInfer      time.Time
+	inferCount     int  // number of inferences in current speech segment
+	wasSpeaking    bool
+	lastWordCount  int  // words emitted from current speech segment (for dedup)
+	inferring      sync.Mutex // serializes whisper inference (one at a time)
 
 	// Lifecycle
 	doneCh chan struct{}
@@ -139,6 +140,7 @@ func (e *Engine) IngestAudio(pcm []float32, pts int64, sampleRate, channels int)
 		e.lastInfer = now
 		e.wasSpeaking = true
 		e.inferCount = 0
+		e.lastWordCount = 0
 
 	case newState == VADSpeaking || newState == VADTrailing:
 		// Adaptive inference timing: start fast (1s), ramp to inferMs.
@@ -165,16 +167,13 @@ func (e *Engine) IngestAudio(pcm []float32, pts int64, sampleRate, channels int)
 	}
 }
 
-// contextOverlapSamples: zero overlap — each inference gets only fresh
-// audio. Overlap causes Whisper to re-transcribe the tail of the previous
-// segment, producing duplicate words. Whisper handles cold-start well
-// enough that context overlap isn't worth the repetition cost.
-const contextOverlapSamples = 0
-
 // runInference takes a snapshot of the ring buffer and runs whisper.cpp.
-// After successful transcription, drains the consumed audio from the ring
-// buffer (keeping a small overlap for context) so the next inference only
-// processes new audio.
+//
+// Non-final: the buffer is NOT drained — Whisper re-transcribes the growing
+// speech segment each time. Only NEW words (beyond lastWordCount) are emitted
+// to avoid duplicates. This gives Whisper full context for better accuracy.
+//
+// Final: the buffer is cleared and all remaining words are emitted.
 func (e *Engine) runInference(isFinal bool) {
 	e.inferring.Lock()
 	defer e.inferring.Unlock()
@@ -185,22 +184,20 @@ func (e *Engine) runInference(isFinal bool) {
 	audio := e.ringBuf.Snapshot()
 	audioLen := len(audio)
 	lang := e.language
+	prevWordCount := e.lastWordCount
 	e.mu.Unlock()
 
 	if audioLen < 1600 {
 		return
 	}
 
-	// Check audio energy — skip inference if the audio is mostly silence
-	// or low-level background noise. Whisper hallucinates plausible
-	// sentences when fed noise that slipped past VAD.
+	// Check audio energy — skip inference if mostly silence/noise.
 	var sumSq float64
 	for _, s := range audio {
 		sumSq += float64(s) * float64(s)
 	}
 	rms := math.Sqrt(sumSq / float64(audioLen))
-	if rms < 0.02 { // ~-34 dBFS — background noise/music below speech level
-		slog.Debug("ASR: skipping inference, low energy", "rms", rms)
+	if rms < 0.02 {
 		return
 	}
 
@@ -213,24 +210,49 @@ func (e *Engine) runInference(isFinal bool) {
 	slog.Info("ASR inference complete",
 		"ms", time.Since(start).Milliseconds(),
 		"audioSamples", audioLen,
-		"words", len(words),
+		"totalWords", len(words),
+		"newWords", max(0, len(words)-prevWordCount),
 		"isFinal", isFinal,
 	)
 
-	// Drain all transcribed audio from the ring buffer so the next
-	// inference only sees fresh audio. No overlap — Whisper handles
-	// cold-start well and overlap causes word repetition.
-	e.mu.Lock()
-	e.ringBuf.Clear()
-	e.mu.Unlock()
+	if isFinal {
+		// Final: clear buffer, emit any words beyond what we've already sent.
+		e.mu.Lock()
+		e.ringBuf.Clear()
+		e.lastWordCount = 0
+		cb := e.onTranscript
+		e.mu.Unlock()
 
-	e.mu.Lock()
-	cb := e.onTranscript
-	e.mu.Unlock()
+		newWords := words
+		if prevWordCount < len(words) {
+			newWords = words[prevWordCount:]
+		} else {
+			newWords = nil
+		}
+		if cb != nil && len(newWords) > 0 {
+			cb(newWords, true)
+		}
+	} else {
+		// Non-final: don't drain buffer. Emit only new words.
+		e.mu.Lock()
+		e.lastWordCount = len(words)
+		cb := e.onTranscript
+		e.mu.Unlock()
 
-	if cb != nil && len(words) > 0 {
-		cb(words, isFinal)
+		if len(words) > prevWordCount {
+			newWords := words[prevWordCount:]
+			if cb != nil && len(newWords) > 0 {
+				cb(newWords, false)
+			}
+		}
 	}
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // SetModel swaps the whisper model at runtime. Blocks until any in-flight

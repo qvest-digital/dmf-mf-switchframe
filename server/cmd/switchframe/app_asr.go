@@ -215,7 +215,8 @@ func (m *asrManagerAdapter) AvailableASRModels() []string {
 	for _, e := range entries {
 		name := e.Name()
 		if strings.HasPrefix(name, "ggml-") && strings.HasSuffix(name, ".bin") &&
-			!strings.HasPrefix(name, "for-tests-") {
+			!strings.HasPrefix(name, "for-tests-") &&
+			!strings.Contains(name, "silero") {
 			// "ggml-medium.en.bin" → "medium.en"
 			model := strings.TrimPrefix(name, "ggml-")
 			model = strings.TrimSuffix(model, ".bin")
