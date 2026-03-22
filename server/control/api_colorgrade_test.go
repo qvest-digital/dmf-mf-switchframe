@@ -11,17 +11,21 @@ import (
 	"testing"
 
 	"github.com/zsiec/prism/distribution"
+	"github.com/zsiec/switchframe/server/colorgrade"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/switcher"
 )
 
 type mockColorGradeManager struct {
-	enabled   bool
-	lookName  string
-	intensity float32
-	available []internal.LookMetadata
-	uploaded  map[string]bool
-	err       error
+	enabled      bool
+	lookName     string
+	intensity    float32
+	available    []internal.LookMetadata
+	uploaded     map[string]bool
+	corrector    colorgrade.CorrectorState
+	savedLook    string
+	lookSettings map[string]*colorgrade.CorrectorState
+	err          error
 }
 
 func newMockColorGradeManager() *mockColorGradeManager {
@@ -31,8 +35,10 @@ func newMockColorGradeManager() *mockColorGradeManager {
 			{Name: "kodachrome", Group: "Film", Description: "Legendary warmth", Builtin: true},
 			{Name: "broadcast", Group: "Clean", Description: "Crisp standard", Builtin: true},
 		},
-		uploaded:  make(map[string]bool),
-		intensity: 1.0,
+		uploaded:     make(map[string]bool),
+		intensity:    1.0,
+		corrector:    colorgrade.DefaultCorrectorState(),
+		lookSettings: make(map[string]*colorgrade.CorrectorState),
 	}
 }
 
@@ -99,6 +105,37 @@ func (m *mockColorGradeManager) DeleteLUT(name string) error {
 		return m.err
 	}
 	return nil
+}
+
+func (m *mockColorGradeManager) SetCorrector(state colorgrade.CorrectorState) {
+	m.corrector = state
+}
+
+func (m *mockColorGradeManager) GetCorrector() colorgrade.CorrectorState {
+	return m.corrector
+}
+
+func (m *mockColorGradeManager) ResetCorrector() {
+	m.corrector = colorgrade.DefaultCorrectorState()
+}
+
+func (m *mockColorGradeManager) SaveCustomLook(name string) error {
+	if m.err != nil {
+		return m.err
+	}
+	m.savedLook = name
+	settings := m.corrector // copy
+	m.lookSettings[name] = &settings
+	m.available = append(m.available, internal.LookMetadata{
+		Name:    name,
+		Group:   "Custom",
+		Builtin: false,
+	})
+	return nil
+}
+
+func (m *mockColorGradeManager) LoadLookSettings(name string) *colorgrade.CorrectorState {
+	return m.lookSettings[name]
 }
 
 func setupColorGradeAPI(t *testing.T) (*API, *mockColorGradeManager) {
@@ -235,5 +272,235 @@ func TestColorGrade_MissingLookName(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+}
+
+// ─── Corrector Tests ────────────────────────────────────────────────────────
+
+func TestHandleCorrectorGet(t *testing.T) {
+	api, _ := setupColorGradeAPI(t)
+
+	req := httptest.NewRequest("GET", "/api/colorgrade/corrector", nil)
+	w := httptest.NewRecorder()
+	api.Mux().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	var state colorgrade.CorrectorState
+	if err := json.NewDecoder(w.Body).Decode(&state); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+
+	// Default state: gamma and gain should be [1,1,1], saturation 1.0.
+	dflt := colorgrade.DefaultCorrectorState()
+	if state.Gamma != dflt.Gamma {
+		t.Errorf("gamma = %v, want %v", state.Gamma, dflt.Gamma)
+	}
+	if state.Saturation != dflt.Saturation {
+		t.Errorf("saturation = %f, want %f", state.Saturation, dflt.Saturation)
+	}
+}
+
+func TestHandleCorrectorSet(t *testing.T) {
+	api, mgr := setupColorGradeAPI(t)
+
+	body := `{
+		"lift": [0.1, 0.0, -0.1],
+		"gamma": [1.0, 1.0, 1.0],
+		"gain": [1.0, 1.0, 1.0],
+		"temperature": 25,
+		"tint": -10,
+		"saturation": 1.2,
+		"contrast": 0.1,
+		"shadows": [0.0, 0.0, 0.0],
+		"midtones": [0.0, 0.0, 0.0],
+		"highlights": [0.0, 0.0, 0.0],
+		"sharpness": 0.5
+	}`
+	req := httptest.NewRequest("PUT", "/api/colorgrade/corrector", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	api.Mux().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	if mgr.corrector.Temperature != 25 {
+		t.Errorf("temperature = %f, want 25", mgr.corrector.Temperature)
+	}
+	if mgr.corrector.Tint != -10 {
+		t.Errorf("tint = %f, want -10", mgr.corrector.Tint)
+	}
+	if mgr.corrector.Saturation != 1.2 {
+		t.Errorf("saturation = %f, want 1.2", mgr.corrector.Saturation)
+	}
+	if mgr.corrector.Lift[0] != 0.1 {
+		t.Errorf("lift[0] = %f, want 0.1", mgr.corrector.Lift[0])
+	}
+	if mgr.corrector.Sharpness != 0.5 {
+		t.Errorf("sharpness = %f, want 0.5", mgr.corrector.Sharpness)
+	}
+}
+
+func TestHandleCorrectorSet_ValidationFails(t *testing.T) {
+	api, _ := setupColorGradeAPI(t)
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"temperature too high", `{"lift":[0,0,0],"gamma":[1,1,1],"gain":[1,1,1],"temperature":200,"saturation":1}`},
+		{"saturation negative", `{"lift":[0,0,0],"gamma":[1,1,1],"gain":[1,1,1],"saturation":-1}`},
+		{"gamma too low", `{"lift":[0,0,0],"gamma":[0.01,1,1],"gain":[1,1,1],"saturation":1}`},
+		{"gain too high", `{"lift":[0,0,0],"gamma":[1,1,1],"gain":[5,1,1],"saturation":1}`},
+		{"lift out of range", `{"lift":[2,0,0],"gamma":[1,1,1],"gain":[1,1,1],"saturation":1}`},
+		{"contrast out of range", `{"lift":[0,0,0],"gamma":[1,1,1],"gain":[1,1,1],"saturation":1,"contrast":2}`},
+		{"sharpness out of range", `{"lift":[0,0,0],"gamma":[1,1,1],"gain":[1,1,1],"saturation":1,"sharpness":5}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("PUT", "/api/colorgrade/corrector", strings.NewReader(tt.body))
+			w := httptest.NewRecorder()
+			api.Mux().ServeHTTP(w, req)
+
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400, body = %s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandleCorrectorReset(t *testing.T) {
+	api, mgr := setupColorGradeAPI(t)
+
+	// Set a non-default corrector state first.
+	mgr.corrector.Temperature = 50
+	mgr.corrector.Saturation = 1.5
+
+	req := httptest.NewRequest("DELETE", "/api/colorgrade/corrector", nil)
+	w := httptest.NewRecorder()
+	api.Mux().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	dflt := colorgrade.DefaultCorrectorState()
+	if mgr.corrector.Temperature != dflt.Temperature {
+		t.Errorf("temperature = %f, want %f", mgr.corrector.Temperature, dflt.Temperature)
+	}
+	if mgr.corrector.Saturation != dflt.Saturation {
+		t.Errorf("saturation = %f, want %f", mgr.corrector.Saturation, dflt.Saturation)
+	}
+}
+
+func TestHandleSaveLook(t *testing.T) {
+	api, mgr := setupColorGradeAPI(t)
+
+	body := `{"name":"my-custom-look"}`
+	req := httptest.NewRequest("POST", "/api/colorgrade/save", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	api.Mux().ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201, body = %s", w.Code, w.Body.String())
+	}
+
+	if mgr.savedLook != "my-custom-look" {
+		t.Errorf("savedLook = %q, want my-custom-look", mgr.savedLook)
+	}
+}
+
+func TestHandleSaveLook_EmptyName(t *testing.T) {
+	api, _ := setupColorGradeAPI(t)
+
+	body := `{"name":""}`
+	req := httptest.NewRequest("POST", "/api/colorgrade/save", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	api.Mux().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleSaveLook_MissingName(t *testing.T) {
+	api, _ := setupColorGradeAPI(t)
+
+	body := `{}`
+	req := httptest.NewRequest("POST", "/api/colorgrade/save", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	api.Mux().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleCorrectorSet_InvalidJSON(t *testing.T) {
+	api, _ := setupColorGradeAPI(t)
+
+	body := `{not valid json}`
+	req := httptest.NewRequest("PUT", "/api/colorgrade/corrector", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	api.Mux().ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body = %s", w.Code, w.Body.String())
+	}
+}
+
+// ─── Look Settings Tests ────────────────────────────────────────────────────
+
+func TestHandleLookSettings(t *testing.T) {
+	api, mgr := setupColorGradeAPI(t)
+
+	// Save a custom look (which stores corrector settings in the mock).
+	mgr.corrector.Temperature = 40
+	mgr.corrector.Saturation = 1.3
+
+	body := `{"name":"warm-look"}`
+	req := httptest.NewRequest("POST", "/api/colorgrade/save", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	api.Mux().ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("save: status = %d, want 201, body = %s", w.Code, w.Body.String())
+	}
+
+	// Now retrieve the settings.
+	req = httptest.NewRequest("GET", "/api/colorgrade/looks/warm-look/settings", nil)
+	w = httptest.NewRecorder()
+	api.Mux().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body = %s", w.Code, w.Body.String())
+	}
+
+	var state colorgrade.CorrectorState
+	if err := json.NewDecoder(w.Body).Decode(&state); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+
+	if state.Temperature != 40 {
+		t.Errorf("temperature = %f, want 40", state.Temperature)
+	}
+	if state.Saturation != 1.3 {
+		t.Errorf("saturation = %f, want 1.3", state.Saturation)
+	}
+}
+
+func TestHandleLookSettings_NotFound(t *testing.T) {
+	api, _ := setupColorGradeAPI(t)
+
+	req := httptest.NewRequest("GET", "/api/colorgrade/looks/nonexistent/settings", nil)
+	w := httptest.NewRecorder()
+	api.Mux().ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404, body = %s", w.Code, w.Body.String())
 	}
 }

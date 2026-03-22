@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, GateSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig, ColorGradeState } from './types';
+import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, GateSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig, ColorGradeState, CorrectorState } from './types';
 import { notify } from '$lib/state/notifications.svelte';
 import { resolveApiUrl } from './base-url';
 
@@ -1129,7 +1129,7 @@ export function getColorGrade(): Promise<ColorGradeState> {
 	return request('/api/colorgrade');
 }
 
-export function setColorGrade(config: { lookName?: string; intensity?: number; enabled?: boolean }): Promise<ControlRoomState> {
+export function setColorGrade(config: { lookName?: string; lookGroup?: string; intensity?: number; enabled?: boolean }): Promise<ControlRoomState> {
 	return request('/api/colorgrade', {
 		method: 'PUT',
 		headers: { 'Content-Type': 'application/json', ...authHeaders() },
@@ -1155,6 +1155,38 @@ export async function uploadColorGradeLUT(name: string, file: File): Promise<Col
 
 export function deleteColorGradeLUT(name: string): Promise<void> {
 	return request(`/api/colorgrade/${encodeURIComponent(name)}`, { method: 'DELETE' });
+}
+
+export function getCorrector(): Promise<CorrectorState> {
+	return request('/api/colorgrade/corrector');
+}
+
+export function setCorrector(state: CorrectorState): Promise<ControlRoomState> {
+	return request('/api/colorgrade/corrector', {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(state),
+	});
+}
+
+export function resetCorrector(): Promise<ControlRoomState> {
+	return request('/api/colorgrade/corrector', { method: 'DELETE' });
+}
+
+export function saveCustomLook(name: string): Promise<ColorGradeState> {
+	return post('/api/colorgrade/save', { name });
+}
+
+export async function getLookSettings(name: string): Promise<CorrectorState | null> {
+	const res = await fetch(resolveApiUrl(`/api/colorgrade/looks/${encodeURIComponent(name)}/settings`), {
+		headers: authHeaders(),
+	});
+	if (res.status === 404) return null;
+	if (!res.ok) {
+		const body = await res.json().catch(() => ({ error: 'unknown error' }));
+		throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
+	}
+	return res.json();
 }
 
 // ── ASR (Automatic Speech Recognition) ──

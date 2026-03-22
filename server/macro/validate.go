@@ -161,6 +161,12 @@ func validateStep(i int, step Step, result *ValidationResult) {
 	// Color grade actions.
 	case ActionColorGradeSet:
 		validateColorGradeSet(i, step, result)
+	case ActionColorGradeSave:
+		validateColorGradeSave(i, step, result)
+
+	// Corrector actions.
+	case ActionCorrectorSet:
+		validateCorrectorSet(i, step, result)
 
 	// Clip player actions that require player (1-4).
 	case ActionClipLoad, ActionClipPlay, ActionClipPause, ActionClipStop, ActionClipEject, ActionClipSeek:
@@ -372,6 +378,69 @@ func validateColorGradeSet(i int, step Step, result *ValidationResult) {
 				Step:    i,
 				Message: fmt.Sprintf("colorgrade_set intensity must be between 0.0 and 1.0, got %.2f", v),
 			})
+		}
+	}
+}
+
+// validateColorGradeSave checks that name is a non-empty string.
+func validateColorGradeSave(i int, step Step, result *ValidationResult) {
+	if !hasStringParam(step.Params, "name") {
+		result.Errors = append(result.Errors, ValidationError{
+			Step:    i,
+			Message: "colorgrade_save requires 'name' param",
+		})
+	}
+}
+
+// correctorRanges defines the valid [min, max] for each corrector parameter.
+var correctorRanges = map[string][2]float64{
+	"temperature": {-100, 100},
+	"tint":        {-100, 100},
+	"saturation":  {0, 2.0},
+	"contrast":    {-1, 1},
+	"sharpness":   {0, 1},
+}
+
+// validateCorrectorSet checks that corrector parameters are within valid ranges.
+func validateCorrectorSet(i int, step Step, result *ValidationResult) {
+	// Validate simple scalar fields.
+	for key, bounds := range correctorRanges {
+		if v, ok := step.Params[key].(float64); ok {
+			if v < bounds[0] || v > bounds[1] {
+				result.Errors = append(result.Errors, ValidationError{
+					Step:    i,
+					Message: fmt.Sprintf("corrector_set %s must be between %.4g and %.4g, got %.4g", key, bounds[0], bounds[1], v),
+				})
+			}
+		}
+	}
+
+	// Validate indexed triplet fields: lift, gamma, gain, shadows, midtones, highlights.
+	type tripletRange struct {
+		prefix string
+		min    float64
+		max    float64
+	}
+	triplets := []tripletRange{
+		{"lift", -1, 1},
+		{"gamma", 0.1, 4.0},
+		{"gain", 0, 4.0},
+		{"shadows", -1, 1},
+		{"midtones", -1, 1},
+		{"highlights", -1, 1},
+	}
+
+	for _, tr := range triplets {
+		for idx := 0; idx <= 2; idx++ {
+			key := fmt.Sprintf("%s%d", tr.prefix, idx)
+			if v, ok := step.Params[key].(float64); ok {
+				if v < tr.min || v > tr.max {
+					result.Errors = append(result.Errors, ValidationError{
+						Step:    i,
+						Message: fmt.Sprintf("corrector_set %s must be between %.4g and %.4g, got %.4g", key, tr.min, tr.max, v),
+					})
+				}
+			}
 		}
 	}
 }

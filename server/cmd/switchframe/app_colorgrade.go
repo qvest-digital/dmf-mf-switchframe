@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"sync"
@@ -18,7 +19,9 @@ type colorGradeController struct {
 	enabled   bool
 	lookName  string
 	intensity float32
-	lutData   []float32
+	corrector colorgrade.CorrectorState // per-channel color corrector
+	lookLUT   *colorgrade.LUT3D         // cached raw look LUT (before corrector combination)
+	lutData   []float32                 // combined LUT (corrector + look)
 	lutSize   int
 	lutGen    uint64
 }
@@ -27,6 +30,7 @@ func newColorGradeController(store *colorgrade.Store) *colorGradeController {
 	return &colorGradeController{
 		store:     store,
 		intensity: 1.0,
+		corrector: colorgrade.DefaultCorrectorState(),
 	}
 }
 
@@ -46,12 +50,10 @@ func (c *colorGradeController) SetColorGrade(lookName string, intensity float32)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.enabled = true
 	c.lookName = lookName
 	c.intensity = intensity
-	c.lutData = lut.Data
-	c.lutSize = lut.Size
-	c.lutGen++
+	c.lookLUT = lut
+	c.regenerateLUT()
 	return nil
 }
 
@@ -60,8 +62,9 @@ func (c *colorGradeController) DisableColorGrade() {
 	defer c.mu.Unlock()
 	c.enabled = false
 	c.lookName = ""
-	c.lutData = nil
-	c.lutSize = 0
+	c.lookLUT = nil
+	c.corrector = colorgrade.DefaultCorrectorState()
+	c.regenerateLUT()
 }
 
 func (c *colorGradeController) GetState() internal.ColorGradeState {
@@ -83,12 +86,17 @@ func (c *colorGradeController) GetState() internal.ColorGradeState {
 		}
 	}
 
+	// internal.CorrectorState is a type alias for colorgrade.CorrectorState,
+	// so direct assignment works — no field-by-field copy needed.
+	cs := c.corrector
+
 	return internal.ColorGradeState{
 		Enabled:   c.enabled,
 		LookName:  c.lookName,
 		LookGroup: lookGroup,
 		Intensity: c.intensity,
 		Available: available,
+		Corrector: &cs,
 	}
 }
 
@@ -111,16 +119,76 @@ func (c *colorGradeController) UploadLUT(name string, data io.Reader) error {
 
 func (c *colorGradeController) DeleteLUT(name string) error {
 	c.mu.Lock()
-	// If the deleted look is currently active, disable.
+	// If the deleted look is currently active, clear the look but keep corrector.
 	if c.lookName == name {
-		c.enabled = false
 		c.lookName = ""
-		c.lutData = nil
-		c.lutSize = 0
+		c.lookLUT = nil
+		c.regenerateLUT()
 	}
 	c.mu.Unlock()
 
 	return c.store.Delete(name)
+}
+
+// --- Corrector methods ---
+
+// SetCorrector updates the color corrector state and regenerates the combined LUT.
+func (c *colorGradeController) SetCorrector(state colorgrade.CorrectorState) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.corrector = state
+	c.regenerateLUT()
+}
+
+// GetCorrector returns the current corrector state.
+func (c *colorGradeController) GetCorrector() colorgrade.CorrectorState {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.corrector
+}
+
+// ResetCorrector resets the corrector to the neutral default and regenerates the LUT.
+func (c *colorGradeController) ResetCorrector() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.corrector = colorgrade.DefaultCorrectorState()
+	c.regenerateLUT()
+}
+
+// SaveCustomLook bakes the current corrector + look into a new .cube file
+// and saves the corrector settings as a JSON sidecar for UI recall.
+func (c *colorGradeController) SaveCustomLook(name string) error {
+	c.mu.RLock()
+	combined := colorgrade.CombineLUT(c.corrector, c.lookLUT)
+	settings := c.corrector // copy under lock
+	c.mu.RUnlock()
+
+	var buf bytes.Buffer
+	if err := colorgrade.WriteCube(&buf, combined); err != nil {
+		return fmt.Errorf("write cube: %w", err)
+	}
+	if err := c.store.Upload(name, &buf); err != nil {
+		return err
+	}
+	// Save corrector settings as JSON sidecar for UI recall.
+	return c.store.SaveSettings(name, settings)
+}
+
+// LoadLookSettings returns the saved corrector settings for a custom look, or nil if none exist.
+func (c *colorGradeController) LoadLookSettings(name string) *colorgrade.CorrectorState {
+	return c.store.LoadSettings(name)
+}
+
+// regenerateLUT rebuilds the combined LUT from corrector + look. Caller must hold c.mu.
+func (c *colorGradeController) regenerateLUT() {
+	combined := colorgrade.CombineLUT(c.corrector, c.lookLUT)
+	c.lutData = combined.Data
+	c.lutSize = combined.Size
+	c.lutGen++
+	// Auto-enable if there's something to show.
+	if c.lookName != "" || !c.corrector.IsDefault() {
+		c.enabled = true
+	}
 }
 
 // --- gpu.ColorGradeState interface (via adapter) ---

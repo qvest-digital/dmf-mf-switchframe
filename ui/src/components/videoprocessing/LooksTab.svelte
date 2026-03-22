@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { ControlRoomState } from '$lib/api/types';
+	import type { ControlRoomState, LookMetadata } from '$lib/api/types';
 	import { setColorGrade, uploadColorGradeLUT, deleteColorGradeLUT } from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
 
@@ -8,24 +8,45 @@
 	let colorGrade = $derived(crState.colorGrade);
 	let activeLook = $derived(colorGrade?.lookName ?? '');
 	let intensity = $state(100);
+	let selectedGroup = $state<string>('All');
 	let uploading = $state(false);
 	let fileInput: HTMLInputElement;
 
-	// Sync intensity from server state.
+	// Get unique groups from available looks, preserving a stable order
+	let groups = $derived.by(() => {
+		if (!colorGrade?.available) return ['All'];
+		const seen = new Set<string>();
+		for (const look of colorGrade.available) {
+			seen.add(look.group);
+		}
+		return ['All', ...Array.from(seen)];
+	});
+
+	// Filter looks by selected group
+	let filteredLooks = $derived.by(() => {
+		if (!colorGrade?.available) return [];
+		if (selectedGroup === 'All') return colorGrade.available;
+		return colorGrade.available.filter(l => l.group === selectedGroup);
+	});
+
+	// Custom (non-builtin) looks for the upload section
+	let customLooks = $derived.by(() => {
+		if (!colorGrade?.available) return [];
+		return colorGrade.available.filter(l => !l.builtin);
+	});
+
+	// Sync intensity from server state
 	$effect(() => {
 		if (colorGrade) {
 			intensity = Math.round(colorGrade.intensity * 100);
 		}
 	});
 
-	const lookDescriptions: Record<string, string> = {
-		'broadcast-news': 'Clean, slightly cool',
-		'cinematic': 'Orange-teal split',
-		'warm-natural': 'Golden warmth',
-		'cool-drama': 'Desaturated blue',
-		'vivid': 'Punchy saturated',
-		'log-to-rec709': 'Log to broadcast',
-	};
+	function formatLookName(name: string): string {
+		return name
+			.replace(/-/g, ' ')
+			.replace(/\b\w/g, c => c.toUpperCase());
+	}
 
 	async function applyLook(name: string) {
 		try {
@@ -82,61 +103,74 @@
 			notify('error', `Delete failed: ${err instanceof Error ? err.message : 'unknown'}`);
 		}
 	}
-
-	function isBuiltin(name: string): boolean {
-		return name in lookDescriptions;
-	}
 </script>
 
-<div class="colorgrade-panel">
-	<div class="section">
-		<div class="section-header">
-			<span class="section-title">Color Grade</span>
-			{#if colorGrade?.enabled}
-				<button class="btn-off" onclick={disable}>Off</button>
-			{/if}
-		</div>
-
-		<div class="looks-grid">
-			{#if colorGrade?.available}
-				{#each colorGrade.available as look}
-					<button
-						class="look-btn"
-						class:active={colorGrade?.enabled && activeLook === look}
-						onclick={() => applyLook(look)}
-						title={lookDescriptions[look] ?? 'Custom look'}
-					>
-						<span class="look-name">{look}</span>
-						{#if colorGrade?.enabled && activeLook === look}
-							<span class="checkmark">&#10003;</span>
-						{/if}
-					</button>
-				{/each}
-			{:else}
-				<span class="no-looks">No looks available</span>
-			{/if}
-		</div>
+<div class="looks-tab">
+	<!-- Header with Off button -->
+	<div class="section-header">
+		<span class="section-title">Looks</span>
+		{#if colorGrade?.enabled}
+			<button class="btn-off" onclick={disable}>Off</button>
+		{/if}
 	</div>
 
+	<!-- Group selector bar -->
+	<div class="group-bar">
+		{#each groups as group}
+			<button
+				class="group-btn"
+				class:active={selectedGroup === group}
+				onclick={() => selectedGroup = group}
+			>{group}</button>
+		{/each}
+	</div>
+
+	<!-- Preset grid -->
+	<div class="looks-grid">
+		{#if filteredLooks.length > 0}
+			{#each filteredLooks as look}
+				<button
+					class="look-btn"
+					class:active={colorGrade?.enabled && activeLook === look.name}
+					onclick={() => applyLook(look.name)}
+				>
+					<div class="look-info">
+						<span class="look-name">{formatLookName(look.name)}</span>
+						{#if look.description}
+							<span class="look-desc">{look.description}</span>
+						{/if}
+					</div>
+					{#if colorGrade?.enabled && activeLook === look.name}
+						<span class="checkmark">&#10003;</span>
+					{/if}
+				</button>
+			{/each}
+		{:else}
+			<span class="no-looks">No looks available</span>
+		{/if}
+	</div>
+
+	<!-- Intensity slider (shown when a look is active) -->
 	{#if colorGrade?.enabled}
-		<div class="section">
+		<div class="intensity-section">
 			<label class="intensity-label">
 				<span>Intensity</span>
 				<span class="intensity-value">{intensity}%</span>
-				<input
-					type="range"
-					min="0"
-					max="100"
-					step="1"
-					bind:value={intensity}
-					onchange={updateIntensity}
-					class="intensity-slider"
-				/>
 			</label>
+			<input
+				type="range"
+				min="0"
+				max="100"
+				step="1"
+				bind:value={intensity}
+				onchange={updateIntensity}
+				class="intensity-slider"
+			/>
 		</div>
 	{/if}
 
-	<div class="section">
+	<!-- Upload section -->
+	<div class="upload-section">
 		<div class="section-header">
 			<span class="section-title">Upload</span>
 		</div>
@@ -150,40 +184,32 @@
 				disabled={uploading}
 			/>
 			{#if uploading}
-				<span class="uploading">Uploading...</span>
+				<span class="uploading-label">Uploading...</span>
 			{/if}
 		</div>
 
-		{#if colorGrade?.available}
-			{@const custom = colorGrade.available.filter(n => !isBuiltin(n))}
-			{#if custom.length > 0}
-				<div class="custom-looks">
-					{#each custom as name}
-						<div class="custom-look-item">
-							<span>{name}</span>
-							<button class="btn-delete" onclick={() => handleDelete(name)} title="Delete">&#x2715;</button>
-						</div>
-					{/each}
-				</div>
-			{/if}
+		<!-- Custom looks list -->
+		{#if customLooks.length > 0}
+			<div class="custom-looks">
+				{#each customLooks as look}
+					<div class="custom-look-item">
+						<span>{formatLookName(look.name)}</span>
+						<button class="btn-delete" onclick={() => handleDelete(look.name)} title="Delete">&#x2715;</button>
+					</div>
+				{/each}
+			</div>
 		{/if}
 	</div>
 </div>
 
 <style>
-	.colorgrade-panel {
+	.looks-tab {
 		display: flex;
 		flex-direction: column;
-		gap: 12px;
+		gap: 10px;
 		padding: 8px;
 		height: 100%;
 		overflow-y: auto;
-	}
-
-	.section {
-		display: flex;
-		flex-direction: column;
-		gap: 6px;
 	}
 
 	.section-header {
@@ -200,9 +226,47 @@
 		color: var(--text-secondary, #999);
 	}
 
+	/* Group selector bar */
+	.group-bar {
+		display: flex;
+		gap: 2px;
+		overflow-x: auto;
+		flex-shrink: 0;
+		scrollbar-width: none;
+	}
+
+	.group-bar::-webkit-scrollbar {
+		display: none;
+	}
+
+	.group-btn {
+		padding: 3px 8px;
+		background: var(--surface-secondary, #2a2a2a);
+		border: 1px solid var(--border-color, #444);
+		border-radius: 3px;
+		color: var(--text-secondary, #999);
+		cursor: pointer;
+		font-size: 11px;
+		white-space: nowrap;
+		transition: background 0.15s, border-color 0.15s, color 0.15s;
+		flex-shrink: 0;
+	}
+
+	.group-btn:hover {
+		background: var(--surface-hover, #333);
+		color: var(--text-primary, #eee);
+	}
+
+	.group-btn.active {
+		background: var(--accent-yellow-bg, #3a3520);
+		border-color: var(--accent-yellow, #d4a017);
+		color: var(--accent-yellow, #d4a017);
+	}
+
+	/* Preset grid */
 	.looks-grid {
 		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+		grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
 		gap: 4px;
 	}
 
@@ -217,6 +281,7 @@
 		color: var(--text-primary, #eee);
 		cursor: pointer;
 		font-size: 12px;
+		text-align: left;
 		transition: background 0.15s, border-color 0.15s;
 	}
 
@@ -231,10 +296,32 @@
 		color: var(--accent-yellow, #d4a017);
 	}
 
+	.look-info {
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
+		min-width: 0;
+		overflow: hidden;
+	}
+
 	.look-name {
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+		font-size: 12px;
+	}
+
+	.look-desc {
+		font-size: 10px;
+		color: var(--text-secondary, #999);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.look-btn.active .look-desc {
+		color: var(--accent-yellow, #d4a017);
+		opacity: 0.7;
 	}
 
 	.checkmark {
@@ -250,19 +337,11 @@
 		font-style: italic;
 	}
 
-	.btn-off {
-		padding: 2px 10px;
-		background: var(--surface-secondary, #2a2a2a);
-		border: 1px solid var(--border-color, #444);
-		border-radius: 3px;
-		color: var(--text-secondary, #999);
-		cursor: pointer;
-		font-size: 11px;
-	}
-
-	.btn-off:hover {
-		background: var(--surface-hover, #333);
-		color: var(--text-primary, #eee);
+	/* Intensity slider */
+	.intensity-section {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
 	}
 
 	.intensity-label {
@@ -280,6 +359,29 @@
 	.intensity-slider {
 		width: 100%;
 		accent-color: var(--accent-yellow, #d4a017);
+	}
+
+	/* Off button */
+	.btn-off {
+		padding: 2px 10px;
+		background: var(--surface-secondary, #2a2a2a);
+		border: 1px solid var(--border-color, #444);
+		border-radius: 3px;
+		color: var(--text-secondary, #999);
+		cursor: pointer;
+		font-size: 11px;
+	}
+
+	.btn-off:hover {
+		background: var(--surface-hover, #333);
+		color: var(--text-primary, #eee);
+	}
+
+	/* Upload section */
+	.upload-section {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
 	}
 
 	.upload-row {
@@ -305,11 +407,12 @@
 		margin-right: 8px;
 	}
 
-	.uploading {
+	.uploading-label {
 		font-size: 11px;
 		color: var(--accent-yellow, #d4a017);
 	}
 
+	/* Custom looks list */
 	.custom-looks {
 		display: flex;
 		flex-direction: column;

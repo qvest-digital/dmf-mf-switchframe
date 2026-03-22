@@ -12,6 +12,7 @@ import (
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/clip"
+	"github.com/zsiec/switchframe/server/colorgrade"
 	"github.com/zsiec/switchframe/server/control/httperr"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
@@ -122,6 +123,11 @@ type ColorGradeManager interface {
 	GetState() internal.ColorGradeState
 	UploadLUT(name string, data io.Reader) error
 	DeleteLUT(name string) error
+	SetCorrector(state colorgrade.CorrectorState)
+	GetCorrector() colorgrade.CorrectorState
+	ResetCorrector()
+	SaveCustomLook(name string) error
+	LoadLookSettings(name string) *colorgrade.CorrectorState
 }
 
 // APIOption configures optional API dependencies.

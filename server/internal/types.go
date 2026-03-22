@@ -1,6 +1,8 @@
 // Package internal provides shared types for the Switchframe server.
 package internal
 
+import "github.com/zsiec/switchframe/server/colorgrade"
+
 // SourceKeyConfig describes the upstream key configuration for a source,
 // included in SourceInfo so the browser knows the current key state.
 type SourceKeyConfig struct {
@@ -511,13 +513,20 @@ type LookMetadata struct {
 	Builtin     bool   `json:"builtin"`
 }
 
+// CurvePoint is an alias for colorgrade.CurvePoint (single source of truth).
+type CurvePoint = colorgrade.CurvePoint
+
+// CorrectorState is an alias for colorgrade.CorrectorState (single source of truth).
+type CorrectorState = colorgrade.CorrectorState
+
 // ColorGradeState represents the color grading state in ControlRoomState.
 type ColorGradeState struct {
-	Enabled   bool           `json:"enabled"`
-	LookName  string         `json:"lookName"`
-	LookGroup string         `json:"lookGroup"`
-	Intensity float32        `json:"intensity"`
-	Available []LookMetadata `json:"available"`
+	Enabled   bool             `json:"enabled"`
+	LookName  string           `json:"lookName"`
+	LookGroup string           `json:"lookGroup"`
+	Intensity float32          `json:"intensity"`
+	Available []LookMetadata   `json:"available"`
+	Corrector *CorrectorState  `json:"corrector,omitempty"`
 }
 
 // LayoutSlotState represents a single layout slot in the state broadcast.

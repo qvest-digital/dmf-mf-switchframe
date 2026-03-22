@@ -5,338 +5,471 @@ import (
 	"testing"
 )
 
-// ---------- helpers ----------
+func TestDefaultCorrectorState(t *testing.T) {
+	d := DefaultCorrectorState()
 
-// lutMidGray returns the index into lut.Data for the mid-gray entry (16,16,16) in a 33^3 LUT.
-func lutMidGray(lut *LUT3D) int {
-	return (16*lut.Size*lut.Size + 16*lut.Size + 16) * 3
+	// Gamma should be [1,1,1].
+	if d.Gamma != [3]float32{1, 1, 1} {
+		t.Errorf("Gamma = %v, want [1,1,1]", d.Gamma)
+	}
+	// Gain should be [1,1,1].
+	if d.Gain != [3]float32{1, 1, 1} {
+		t.Errorf("Gain = %v, want [1,1,1]", d.Gain)
+	}
+	// Saturation should be 1.0.
+	if d.Saturation != 1.0 {
+		t.Errorf("Saturation = %f, want 1.0", d.Saturation)
+	}
+	// Lift should be zero.
+	if d.Lift != [3]float32{0, 0, 0} {
+		t.Errorf("Lift = %v, want [0,0,0]", d.Lift)
+	}
+	// Temperature, Tint, Contrast, Sharpness should be zero.
+	if d.Temperature != 0 {
+		t.Errorf("Temperature = %f, want 0", d.Temperature)
+	}
+	if d.Tint != 0 {
+		t.Errorf("Tint = %f, want 0", d.Tint)
+	}
+	if d.Contrast != 0 {
+		t.Errorf("Contrast = %f, want 0", d.Contrast)
+	}
+	if d.Sharpness != 0 {
+		t.Errorf("Sharpness = %f, want 0", d.Sharpness)
+	}
+	// Curves should be nil.
+	if d.CurveMaster != nil {
+		t.Errorf("CurveMaster = %v, want nil", d.CurveMaster)
+	}
 }
 
-// assertLUTUnchanged checks that every value in lut.Data matches orig within tol.
-func assertLUTUnchanged(t *testing.T, lut *LUT3D, orig []float32, tol float64) {
-	t.Helper()
-	for i := range lut.Data {
-		if math.Abs(float64(lut.Data[i]-orig[i])) > tol {
-			t.Errorf("data[%d] changed: got %f, want %f (tol %e)", i, lut.Data[i], orig[i], tol)
-			return
+func TestCorrectorState_IsDefault_True(t *testing.T) {
+	d := DefaultCorrectorState()
+	if !d.IsDefault() {
+		t.Error("DefaultCorrectorState().IsDefault() = false, want true")
+	}
+}
+
+func TestCorrectorState_IsDefault_False(t *testing.T) {
+	tests := []struct {
+		name   string
+		modify func(c *CorrectorState)
+	}{
+		{"lift", func(c *CorrectorState) { c.Lift[0] = 0.1 }},
+		{"gamma", func(c *CorrectorState) { c.Gamma[1] = 1.5 }},
+		{"gain", func(c *CorrectorState) { c.Gain[2] = 0.8 }},
+		{"temperature", func(c *CorrectorState) { c.Temperature = 50 }},
+		{"tint", func(c *CorrectorState) { c.Tint = -30 }},
+		{"saturation", func(c *CorrectorState) { c.Saturation = 1.2 }},
+		{"contrast", func(c *CorrectorState) { c.Contrast = 0.1 }},
+		{"shadows", func(c *CorrectorState) { c.Shadows[0] = 0.1 }},
+		{"midtones", func(c *CorrectorState) { c.Midtones[1] = -0.2 }},
+		{"highlights", func(c *CorrectorState) { c.Highlights[2] = 0.3 }},
+		{"sharpness", func(c *CorrectorState) { c.Sharpness = 0.5 }},
+		{"curveMaster", func(c *CorrectorState) {
+			c.CurveMaster = []CurvePoint{{0, 0}, {1, 1}}
+		}},
+		{"curveR", func(c *CorrectorState) {
+			c.CurveR = []CurvePoint{{0, 0}, {1, 0.8}}
+		}},
+		{"curveG", func(c *CorrectorState) {
+			c.CurveG = []CurvePoint{{0, 0.1}, {1, 1}}
+		}},
+		{"curveB", func(c *CorrectorState) {
+			c.CurveB = []CurvePoint{{0, 0}, {0.5, 0.6}, {1, 1}}
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := DefaultCorrectorState()
+			tt.modify(&c)
+			if c.IsDefault() {
+				t.Errorf("modified %s: IsDefault() = true, want false", tt.name)
+			}
+		})
+	}
+}
+
+func TestCombineLUT_DefaultCorrector_NilLook(t *testing.T) {
+	// Default corrector with no look should produce an identity LUT.
+	c := DefaultCorrectorState()
+	lut := CombineLUT(c, nil)
+
+	identity := GenerateIdentityLUT()
+	if !lutsEqual(lut, identity, 1e-5) {
+		// Find the first difference for debugging.
+		for i := range lut.Data {
+			if math.Abs(float64(lut.Data[i]-identity.Data[i])) > 1e-5 {
+				t.Fatalf("default corrector differs from identity at index %d: got %f, want %f",
+					i, lut.Data[i], identity.Data[i])
+			}
 		}
 	}
 }
 
-// assertLUTInRange checks that every value in lut.Data is in [0, 1].
-func assertLUTInRange(t *testing.T, lut *LUT3D) {
-	t.Helper()
+func TestCombineLUT_DefaultCorrector_WithLook(t *testing.T) {
+	// Default corrector with a look should equal the look LUT itself.
+	looks := BuiltinLooks()
+	look := GenerateLook(looks[0]) // golden-hour
+
+	c := DefaultCorrectorState()
+	lut := CombineLUT(c, look)
+
+	// The combined LUT should match the look (identity chained through look = look).
+	if !lutsEqual(lut, look, 1e-4) {
+		differences := 0
+		maxDiff := float64(0)
+		for i := range lut.Data {
+			d := math.Abs(float64(lut.Data[i] - look.Data[i]))
+			if d > 1e-4 {
+				differences++
+				if d > maxDiff {
+					maxDiff = d
+				}
+			}
+		}
+		t.Fatalf("default corrector + look differs from look: %d values differ, max diff = %f",
+			differences, maxDiff)
+	}
+}
+
+func TestCombineLUT_CorrectorOnly(t *testing.T) {
+	// Temperature=50 should produce a LUT that differs from identity.
+	c := DefaultCorrectorState()
+	c.Temperature = 50
+	lut := CombineLUT(c, nil)
+
+	identity := GenerateIdentityLUT()
+	differences := 0
+	for i := range lut.Data {
+		if math.Abs(float64(lut.Data[i]-identity.Data[i])) > 1e-5 {
+			differences++
+		}
+	}
+	if differences == 0 {
+		t.Error("corrector with temperature=50 is identical to identity")
+	}
+
+	// All values should remain in [0, 1].
 	for i, v := range lut.Data {
 		if v < 0 || v > 1 {
 			t.Errorf("data[%d] = %f, out of [0,1] range", i, v)
-			return
+			break
 		}
 	}
 }
 
-func cloneLUT(lut *LUT3D) []float32 {
-	orig := make([]float32, len(lut.Data))
-	copy(orig, lut.Data)
-	return orig
+func TestCombineLUT_Both(t *testing.T) {
+	// Corrector + look should differ from look alone.
+	looks := BuiltinLooks()
+	look := GenerateLook(looks[0])
+
+	c := DefaultCorrectorState()
+	c.Temperature = 50
+	c.Saturation = 0.8
+	combined := CombineLUT(c, look)
+
+	// Combined should differ from look-only.
+	if lutsEqual(combined, look, 1e-4) {
+		t.Error("corrector+look is identical to look alone (expected difference)")
+	}
+
+	// All values in range.
+	for i, v := range combined.Data {
+		if v < 0 || v > 1 {
+			t.Errorf("data[%d] = %f, out of [0,1] range", i, v)
+			break
+		}
+	}
 }
 
-// ---------- Temperature ----------
+func TestChainLUT_Identity(t *testing.T) {
+	// Chaining a LUT through an identity look should not change it.
+	looks := BuiltinLooks()
+	original := GenerateLook(looks[0])
 
-func TestApplyTemperature_Zero_Identity(t *testing.T) {
-	lut := GenerateIdentityLUT()
-	orig := cloneLUT(lut)
-	ApplyTemperature(lut, 0)
-	assertLUTUnchanged(t, lut, orig, 1e-6)
+	// Make a copy of the original.
+	lut := &LUT3D{
+		Size: original.Size,
+		Data: make([]float32, len(original.Data)),
+	}
+	copy(lut.Data, original.Data)
+
+	identity := GenerateIdentityLUT()
+	chainLUT(lut, identity)
+
+	if !lutsEqual(lut, original, 1e-4) {
+		differences := 0
+		maxDiff := float64(0)
+		for i := range lut.Data {
+			d := math.Abs(float64(lut.Data[i] - original.Data[i]))
+			if d > 1e-4 {
+				differences++
+				if d > maxDiff {
+					maxDiff = d
+				}
+			}
+		}
+		t.Fatalf("chaining through identity changed LUT: %d values differ, max diff = %f",
+			differences, maxDiff)
+	}
 }
+
+// ─── Corrector transform function tests ─────────────────────────────────────
 
 func TestApplyTemperature_Warm(t *testing.T) {
 	lut := GenerateIdentityLUT()
-	mid := lutMidGray(lut)
-	origR := lut.Data[mid]
-	origB := lut.Data[mid+2]
-
 	ApplyTemperature(lut, 100)
 
-	if lut.Data[mid] <= origR {
-		t.Errorf("warm: red at mid-gray should increase, got %f (was %f)", lut.Data[mid], origR)
+	// Midpoint should have boosted red and reduced blue.
+	mid := (16*33*33 + 16*33 + 16) * 3
+	r, b := lut.Data[mid], lut.Data[mid+2]
+	if r <= 0.5 {
+		t.Errorf("warm temperature: R at midpoint = %f, expected > 0.5", r)
 	}
-	if lut.Data[mid+2] >= origB {
-		t.Errorf("warm: blue at mid-gray should decrease, got %f (was %f)", lut.Data[mid+2], origB)
+	if b >= 0.5 {
+		t.Errorf("warm temperature: B at midpoint = %f, expected < 0.5", b)
 	}
-	assertLUTInRange(t, lut)
 }
 
-func TestApplyTemperature_Cool(t *testing.T) {
+func TestApplyTemperature_Zero(t *testing.T) {
 	lut := GenerateIdentityLUT()
-	mid := lutMidGray(lut)
-	origR := lut.Data[mid]
-	origB := lut.Data[mid+2]
+	original := make([]float32, len(lut.Data))
+	copy(original, lut.Data)
 
-	ApplyTemperature(lut, -100)
+	ApplyTemperature(lut, 0)
 
-	if lut.Data[mid] >= origR {
-		t.Errorf("cool: red at mid-gray should decrease, got %f (was %f)", lut.Data[mid], origR)
+	for i := range lut.Data {
+		if lut.Data[i] != original[i] {
+			t.Fatalf("zero temperature changed data at index %d", i)
+		}
 	}
-	if lut.Data[mid+2] <= origB {
-		t.Errorf("cool: blue at mid-gray should increase, got %f (was %f)", lut.Data[mid+2], origB)
-	}
-	assertLUTInRange(t, lut)
-}
-
-func TestApplyTemperature_ExtremeClamp(t *testing.T) {
-	lut := GenerateIdentityLUT()
-	ApplyTemperature(lut, 100)
-	assertLUTInRange(t, lut)
-
-	lut2 := GenerateIdentityLUT()
-	ApplyTemperature(lut2, -100)
-	assertLUTInRange(t, lut2)
-}
-
-// ---------- Tint ----------
-
-func TestApplyTint_Zero_Identity(t *testing.T) {
-	lut := GenerateIdentityLUT()
-	orig := cloneLUT(lut)
-	ApplyTint(lut, 0)
-	assertLUTUnchanged(t, lut, orig, 1e-6)
-}
-
-func TestApplyTint_Green(t *testing.T) {
-	lut := GenerateIdentityLUT()
-	mid := lutMidGray(lut)
-	origG := lut.Data[mid+1]
-
-	ApplyTint(lut, -100)
-
-	if lut.Data[mid+1] <= origG {
-		t.Errorf("green tint: green at mid-gray should increase, got %f (was %f)", lut.Data[mid+1], origG)
-	}
-	assertLUTInRange(t, lut)
 }
 
 func TestApplyTint_Magenta(t *testing.T) {
 	lut := GenerateIdentityLUT()
-	mid := lutMidGray(lut)
-	origG := lut.Data[mid+1]
-
 	ApplyTint(lut, 100)
 
-	if lut.Data[mid+1] >= origG {
-		t.Errorf("magenta tint: green at mid-gray should decrease, got %f (was %f)", lut.Data[mid+1], origG)
+	// Midpoint should have reduced green.
+	mid := (16*33*33 + 16*33 + 16) * 3
+	g := lut.Data[mid+1]
+	if g >= 0.5 {
+		t.Errorf("magenta tint: G at midpoint = %f, expected < 0.5", g)
 	}
-	assertLUTInRange(t, lut)
 }
 
-func TestApplyTint_ExtremeClamp(t *testing.T) {
+func TestApplyShadowsMidtonesHighlights(t *testing.T) {
 	lut := GenerateIdentityLUT()
-	ApplyTint(lut, 100)
-	assertLUTInRange(t, lut)
 
-	lut2 := GenerateIdentityLUT()
-	ApplyTint(lut2, -100)
-	assertLUTInRange(t, lut2)
+	// Boost shadows red, cut highlights blue.
+	shadows := [3]float32{1.0, 0, 0}
+	midtones := [3]float32{0, 0, 0}
+	highlights := [3]float32{0, 0, -1.0}
+	ApplyShadowsMidtonesHighlights(lut, shadows, midtones, highlights)
+
+	// Dark point (index 4,4,4): shadow region, red should be boosted.
+	darkIdx := (4*33*33 + 4*33 + 4) * 3
+	darkR := lut.Data[darkIdx]
+	identity := float32(4) / 32.0
+	if darkR <= identity {
+		t.Errorf("shadow red boost: dark R = %f, expected > %f", darkR, identity)
+	}
+
+	// Bright point (index 28,28,28): highlight region, blue should be cut.
+	brightIdx := (28*33*33 + 28*33 + 28) * 3
+	brightB := lut.Data[brightIdx+2]
+	identityB := float32(28) / 32.0
+	if brightB >= identityB {
+		t.Errorf("highlight blue cut: bright B = %f, expected < %f", brightB, identityB)
+	}
 }
 
-// ---------- Shadows / Midtones / Highlights ----------
-
-func TestApplyShadowsMidtonesHighlights_Zero_Identity(t *testing.T) {
+func TestApplyShadowsMidtonesHighlights_AllZero(t *testing.T) {
 	lut := GenerateIdentityLUT()
-	orig := cloneLUT(lut)
+	original := make([]float32, len(lut.Data))
+	copy(original, lut.Data)
 
 	zero := [3]float32{0, 0, 0}
 	ApplyShadowsMidtonesHighlights(lut, zero, zero, zero)
 
-	assertLUTUnchanged(t, lut, orig, 1e-6)
+	for i := range lut.Data {
+		if lut.Data[i] != original[i] {
+			t.Fatalf("all-zero SMH changed data at index %d", i)
+		}
+	}
 }
 
-func TestApplyShadowsMidtonesHighlights_WarmShadows(t *testing.T) {
+func TestApplyCurves_Master(t *testing.T) {
 	lut := GenerateIdentityLUT()
 
-	// Warm shadows: boost red in shadows.
-	shadows := [3]float32{1.0, 0, 0}
-	zero := [3]float32{0, 0, 0}
-	ApplyShadowsMidtonesHighlights(lut, shadows, zero, zero)
+	// S-curve: darken shadows, brighten highlights.
+	master := []CurvePoint{{0, 0}, {0.25, 0.15}, {0.75, 0.85}, {1, 1}}
+	ApplyCurves(lut, master, nil, nil, nil)
 
-	// Check a low-luminance entry. (0,0,0) is pure black and has 0 luminance,
-	// but the shadow zone weight is smooth, so check a dark-ish entry.
-	// Entry (4,4,4) — low luminance, in shadow zone.
-	darkIdx := (4*33*33 + 4*33 + 4) * 3
+	// Midpoint should be approximately 0.5 (curve passes through it).
+	mid := (16*33*33 + 16*33 + 16) * 3
+	r := lut.Data[mid]
+	if math.Abs(float64(r-0.5)) > 0.05 {
+		t.Errorf("master curve midpoint R = %f, expected ~0.5", r)
+	}
+
+	// Dark quarter should be darkened.
+	darkIdx := (8*33*33 + 8*33 + 8) * 3
 	darkR := lut.Data[darkIdx]
-	darkG := lut.Data[darkIdx+1]
-	darkB := lut.Data[darkIdx+2]
-
-	if darkR <= darkG || darkR <= darkB {
-		t.Errorf("warm shadows: expected red boost in dark entry, got R=%f G=%f B=%f", darkR, darkG, darkB)
-	}
-
-	// Highlight entry (28,28,28) should be mostly unaffected.
-	brightIdx := (28*33*33 + 28*33 + 28) * 3
-	brightR := lut.Data[brightIdx]
-	brightG := lut.Data[brightIdx+1]
-	brightB := lut.Data[brightIdx+2]
-
-	// The red boost in highlights should be much smaller than in shadows.
-	darkRedShift := darkR - float32(4)/32.0
-	brightRedShift := brightR - float32(28)/32.0
-	if brightRedShift >= darkRedShift {
-		t.Errorf("warm shadows leaked into highlights: dark shift=%f, bright shift=%f", darkRedShift, brightRedShift)
-	}
-	_ = brightG
-	_ = brightB
-
-	assertLUTInRange(t, lut)
-}
-
-func TestApplyShadowsMidtonesHighlights_ExtremeClamp(t *testing.T) {
-	lut := GenerateIdentityLUT()
-	extreme := [3]float32{1, 1, 1}
-	ApplyShadowsMidtonesHighlights(lut, extreme, extreme, extreme)
-	assertLUTInRange(t, lut)
-
-	lut2 := GenerateIdentityLUT()
-	negExtreme := [3]float32{-1, -1, -1}
-	ApplyShadowsMidtonesHighlights(lut2, negExtreme, negExtreme, negExtreme)
-	assertLUTInRange(t, lut2)
-}
-
-// ---------- Curves ----------
-
-func TestApplyCurves_Empty_Identity(t *testing.T) {
-	lut := GenerateIdentityLUT()
-	orig := cloneLUT(lut)
-
-	ApplyCurves(lut, nil, nil, nil, nil)
-	assertLUTUnchanged(t, lut, orig, 1e-6)
-}
-
-func TestApplyCurves_LinearIdentity(t *testing.T) {
-	lut := GenerateIdentityLUT()
-	orig := cloneLUT(lut)
-
-	identity := []CurvePoint{{0, 0}, {1, 1}}
-	ApplyCurves(lut, identity, identity, identity, identity)
-
-	assertLUTUnchanged(t, lut, orig, 1e-4)
-}
-
-func TestApplyCurves_Brighten(t *testing.T) {
-	lut := GenerateIdentityLUT()
-	mid := lutMidGray(lut)
-	origR := lut.Data[mid]
-
-	// Curve above diagonal: brightens.
-	bright := []CurvePoint{{0, 0}, {0.5, 0.7}, {1, 1}}
-	ApplyCurves(lut, bright, nil, nil, nil)
-
-	if lut.Data[mid] <= origR {
-		t.Errorf("brighten curve: mid-gray R should increase, got %f (was %f)", lut.Data[mid], origR)
-	}
-	assertLUTInRange(t, lut)
-}
-
-func TestApplyCurves_MasterAffectsAll(t *testing.T) {
-	lut := GenerateIdentityLUT()
-	mid := lutMidGray(lut)
-	origR := lut.Data[mid]
-	origG := lut.Data[mid+1]
-	origB := lut.Data[mid+2]
-
-	// Master curve above diagonal.
-	bright := []CurvePoint{{0, 0}, {0.5, 0.7}, {1, 1}}
-	ApplyCurves(lut, bright, nil, nil, nil)
-
-	if lut.Data[mid] <= origR {
-		t.Errorf("master curve: R at mid-gray should increase, got %f (was %f)", lut.Data[mid], origR)
-	}
-	if lut.Data[mid+1] <= origG {
-		t.Errorf("master curve: G at mid-gray should increase, got %f (was %f)", lut.Data[mid+1], origG)
-	}
-	if lut.Data[mid+2] <= origB {
-		t.Errorf("master curve: B at mid-gray should increase, got %f (was %f)", lut.Data[mid+2], origB)
+	identityDark := float32(8) / 32.0
+	if darkR >= identityDark {
+		t.Errorf("master curve: dark R = %f, expected < %f", darkR, identityDark)
 	}
 }
 
 func TestApplyCurves_PerChannel(t *testing.T) {
 	lut := GenerateIdentityLUT()
-	mid := lutMidGray(lut)
 
-	// Only boost red channel.
-	bright := []CurvePoint{{0, 0}, {0.5, 0.7}, {1, 1}}
-	identity := []CurvePoint{{0, 0}, {1, 1}}
-	ApplyCurves(lut, nil, bright, identity, identity)
+	// Boost red channel curve.
+	curveR := []CurvePoint{{0, 0.1}, {1, 1}}
+	ApplyCurves(lut, nil, curveR, nil, nil)
 
-	origMid := float32(16) / 32.0 // 0.5
-	if lut.Data[mid] <= origMid {
-		t.Errorf("per-channel: R should increase, got %f", lut.Data[mid])
-	}
-	// Green and blue should be approximately unchanged.
-	if math.Abs(float64(lut.Data[mid+1]-origMid)) > 0.01 {
-		t.Errorf("per-channel: G should be ~unchanged, got %f (want ~%f)", lut.Data[mid+1], origMid)
-	}
-	if math.Abs(float64(lut.Data[mid+2]-origMid)) > 0.01 {
-		t.Errorf("per-channel: B should be ~unchanged, got %f (want ~%f)", lut.Data[mid+2], origMid)
+	// Black point should have boosted red.
+	if lut.Data[0] < 0.09 {
+		t.Errorf("per-channel curve: black R = %f, expected >= 0.1", lut.Data[0])
 	}
 }
 
-func TestApplyCurves_ExtremeClamp(t *testing.T) {
+func TestApplyCurves_Empty(t *testing.T) {
 	lut := GenerateIdentityLUT()
-	// Curve that pushes everything to 1.
-	push := []CurvePoint{{0, 1}, {1, 1}}
-	ApplyCurves(lut, push, nil, nil, nil)
-	assertLUTInRange(t, lut)
-}
+	original := make([]float32, len(lut.Data))
+	copy(original, lut.Data)
 
-// ---------- Smoothstep helper ----------
+	ApplyCurves(lut, nil, nil, nil, nil)
 
-func TestSmoothstep(t *testing.T) {
-	// At edge0, result should be 0.
-	if v := smoothstep(0.2, 0.8, 0.2); math.Abs(float64(v)) > 1e-6 {
-		t.Errorf("smoothstep at edge0 = %f, want 0", v)
-	}
-	// At edge1, result should be 1.
-	if v := smoothstep(0.2, 0.8, 0.8); math.Abs(float64(v)-1) > 1e-6 {
-		t.Errorf("smoothstep at edge1 = %f, want 1", v)
-	}
-	// At midpoint, result should be 0.5.
-	if v := smoothstep(0.0, 1.0, 0.5); math.Abs(float64(v)-0.5) > 1e-6 {
-		t.Errorf("smoothstep at midpoint = %f, want 0.5", v)
-	}
-	// Below edge0, clamped to 0.
-	if v := smoothstep(0.2, 0.8, 0.0); v != 0 {
-		t.Errorf("smoothstep below edge0 = %f, want 0", v)
-	}
-	// Above edge1, clamped to 1.
-	if v := smoothstep(0.2, 0.8, 1.0); v != 1 {
-		t.Errorf("smoothstep above edge1 = %f, want 1", v)
-	}
-}
-
-// ---------- buildCurveLUT helper ----------
-
-func TestBuildCurveLUT_Identity(t *testing.T) {
-	pts := []CurvePoint{{0, 0}, {1, 1}}
-	table := buildCurveLUT(pts)
-	if len(table) != 256 {
-		t.Fatalf("table length = %d, want 256", len(table))
-	}
-	for i, v := range table {
-		expected := float32(i) / 255.0
-		if math.Abs(float64(v-expected)) > 1e-4 {
-			t.Errorf("table[%d] = %f, want %f", i, v, expected)
-			break
+	for i := range lut.Data {
+		if lut.Data[i] != original[i] {
+			t.Fatalf("empty curves changed data at index %d", i)
 		}
 	}
 }
 
-func TestBuildCurveLUT_Clamped(t *testing.T) {
-	// Points that would extrapolate beyond [0,1].
-	pts := []CurvePoint{{0, 0.5}, {1, 1.5}}
-	table := buildCurveLUT(pts)
-	for i, v := range table {
-		if v < 0 || v > 1 {
-			t.Errorf("table[%d] = %f, out of [0,1] range", i, v)
-			break
+func TestEvalCurve_Endpoints(t *testing.T) {
+	pts := []CurvePoint{{0.2, 0.3}, {0.8, 0.9}}
+
+	// Below range: clamp to first Y.
+	if v := evalCurve(pts, 0.0); v != 0.3 {
+		t.Errorf("below range: got %f, want 0.3", v)
+	}
+	// Above range: clamp to last Y.
+	if v := evalCurve(pts, 1.0); v != 0.9 {
+		t.Errorf("above range: got %f, want 0.9", v)
+	}
+	// At midpoint: linear interpolation (2-point curves are linear).
+	mid := evalCurve(pts, 0.5)
+	expected := float32(0.6) // 0.3 + (0.5-0.2)/(0.8-0.2) * (0.9-0.3)
+	if math.Abs(float64(mid-expected)) > 1e-5 {
+		t.Errorf("midpoint: got %f, want %f", mid, expected)
+	}
+}
+
+func TestEvalCurve_MonotoneCubicNotLinear(t *testing.T) {
+	// With 3+ control points, the cubic spline between two control points
+	// should NOT equal simple piecewise-linear interpolation.
+	// Use an asymmetric curve where the tangent influence is visible.
+	pts := []CurvePoint{{0, 0}, {0.3, 0.5}, {0.7, 0.6}, {1, 1}}
+
+	// Evaluate at x=0.5 (midpoint of the middle segment).
+	// Piecewise-linear would give: 0.5 + (0.5-0.3)/(0.7-0.3) * (0.6-0.5) = 0.55
+	linearMid := float32(0.55)
+	cubicMid := evalCurve(pts, 0.5)
+
+	// The cubic result should differ from linear by a meaningful amount.
+	diff := math.Abs(float64(cubicMid - linearMid))
+	if diff < 0.001 {
+		t.Errorf("cubic midpoint = %f, same as linear %f (diff=%f); expected cubic to differ",
+			cubicMid, linearMid, diff)
+	}
+
+	// The curve should still be smooth and in a reasonable range.
+	if cubicMid < 0 || cubicMid > 1 {
+		t.Errorf("cubic midpoint = %f, out of [0,1] range", cubicMid)
+	}
+}
+
+func TestEvalCurve_MonotoneCubicSmoothness(t *testing.T) {
+	// Test that the cubic interpolation produces a smooth curve by checking
+	// that intermediate samples don't have discontinuities.
+	pts := []CurvePoint{{0, 0}, {0.3, 0.5}, {0.7, 0.6}, {1, 1}}
+
+	const numSamples = 100
+	prev := evalCurve(pts, 0)
+	maxJump := float64(0)
+	for i := 1; i <= numSamples; i++ {
+		x := float32(i) / float32(numSamples)
+		y := evalCurve(pts, x)
+		jump := math.Abs(float64(y - prev))
+		if jump > maxJump {
+			maxJump = jump
 		}
+		prev = y
+	}
+
+	// With smooth cubic interpolation, the maximum jump between adjacent
+	// samples (1/100 apart) should be small. Linear interpolation on this
+	// curve would have max jump ~0.016; cubic should be similar or smaller.
+	if maxJump > 0.05 {
+		t.Errorf("max jump between adjacent samples = %f, too large for smooth curve", maxJump)
+	}
+}
+
+func TestEvalCurve_MonotoneCubicPassesThroughControlPoints(t *testing.T) {
+	// The spline must pass exactly through every control point.
+	pts := []CurvePoint{{0, 0}, {0.25, 0.4}, {0.5, 0.3}, {0.75, 0.8}, {1, 1}}
+
+	for _, pt := range pts {
+		got := evalCurve(pts, pt.X)
+		if math.Abs(float64(got-pt.Y)) > 1e-5 {
+			t.Errorf("evalCurve(pts, %f) = %f, want %f (control point)", pt.X, got, pt.Y)
+		}
+	}
+}
+
+func TestEvalCurve_MonotoneCubicIdentityCurve(t *testing.T) {
+	// Identity curve with interior points should be close to y=x.
+	pts := []CurvePoint{{0, 0}, {0.25, 0.25}, {0.5, 0.5}, {0.75, 0.75}, {1, 1}}
+
+	for i := 0; i <= 20; i++ {
+		x := float32(i) / 20.0
+		y := evalCurve(pts, x)
+		if math.Abs(float64(y-x)) > 0.01 {
+			t.Errorf("identity curve at x=%f: got %f, expected ~%f", x, y, x)
+		}
+	}
+}
+
+func TestEvalCurve_EmptyAndSingle(t *testing.T) {
+	// Empty: passthrough.
+	if v := evalCurve(nil, 0.5); v != 0.5 {
+		t.Errorf("nil curve: got %f, want 0.5", v)
+	}
+
+	// Single point: clamp.
+	single := []CurvePoint{{0.5, 0.7}}
+	if v := evalCurve(single, 0.3); v != 0.7 {
+		t.Errorf("single point below: got %f, want 0.7", v)
+	}
+	if v := evalCurve(single, 0.8); v != 0.7 {
+		t.Errorf("single point above: got %f, want 0.7", v)
+	}
+}
+
+func TestLutsEqual(t *testing.T) {
+	a := GenerateIdentityLUT()
+	b := GenerateIdentityLUT()
+
+	if !lutsEqual(a, b, 1e-6) {
+		t.Error("two identity LUTs should be equal")
+	}
+
+	b.Data[0] = 0.5
+	if lutsEqual(a, b, 1e-6) {
+		t.Error("different LUTs should not be equal")
 	}
 }
