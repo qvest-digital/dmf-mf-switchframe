@@ -1251,6 +1251,7 @@ func (a *App) initAPI() error {
 		apiOpts = append(apiOpts, control.WithASRManager(&asrManagerAdapter{
 			engine:     a.asrEngine,
 			captionMgr: a.captionMgr,
+			pacer:      a.captionPacer,
 			modelPath:  a.cfg.ASRModelPath,
 			modelsDir:  filepath.Dir(a.cfg.ASRModelPath),
 		}))

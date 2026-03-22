@@ -132,13 +132,20 @@ func (a *App) enrichASRState(state internal.ControlRoomState) internal.ControlRo
 	if a.asrEngine == nil {
 		return state
 	}
-	state.ASR = &internal.ASRState{
+	asrState := &internal.ASRState{
 		Available: true,
 		Active:    a.captionMgr != nil && a.captionMgr.Mode() == caption.ModeAuto,
 		Translate: a.asrEngine.Translate(),
 		Language:  a.asrEngine.Language(),
 		ModelName: filepath.Base(a.cfg.ASRModelPath),
+		Speed:     a.asrEngine.InferSpeed(),
+		NoiseFloor: a.asrEngine.VADSensitivity(),
 	}
+	if a.captionPacer != nil {
+		asrState.ConfidenceFilter = a.captionPacer.ConfidencePreset()
+		asrState.SpeakerDetection = a.captionPacer.SpeakerDetectionPreset()
+	}
+	state.ASR = asrState
 	return state
 }
 
@@ -146,6 +153,7 @@ func (a *App) enrichASRState(state internal.ControlRoomState) internal.ControlRo
 type asrManagerAdapter struct {
 	engine     *asr.Engine
 	captionMgr *caption.Manager
+	pacer      *captionPacer
 	modelPath  string
 	modelsDir  string // directory containing ggml-*.bin files
 }
@@ -235,6 +243,58 @@ func (m *asrManagerAdapter) AvailableASRModels() []string {
 	return models
 }
 
+func (m *asrManagerAdapter) SetASRSpeed(preset string) {
+	if m.engine != nil {
+		m.engine.SetInferSpeed(preset)
+	}
+}
+
+func (m *asrManagerAdapter) ASRSpeed() string {
+	if m.engine != nil {
+		return m.engine.InferSpeed()
+	}
+	return "balanced"
+}
+
+func (m *asrManagerAdapter) SetASRConfidence(preset string) {
+	if m.pacer != nil {
+		m.pacer.SetConfidencePreset(preset)
+	}
+}
+
+func (m *asrManagerAdapter) ASRConfidence() string {
+	if m.pacer != nil {
+		return m.pacer.ConfidencePreset()
+	}
+	return "medium"
+}
+
+func (m *asrManagerAdapter) SetASRNoiseFloor(preset string) {
+	if m.engine != nil {
+		m.engine.SetVADSensitivity(preset)
+	}
+}
+
+func (m *asrManagerAdapter) ASRNoiseFloor() string {
+	if m.engine != nil {
+		return m.engine.VADSensitivity()
+	}
+	return "normal"
+}
+
+func (m *asrManagerAdapter) SetASRSpeakerDetection(preset string) {
+	if m.pacer != nil {
+		m.pacer.SetSpeakerDetectionPreset(preset)
+	}
+}
+
+func (m *asrManagerAdapter) ASRSpeakerDetection() string {
+	if m.pacer != nil {
+		return m.pacer.SpeakerDetectionPreset()
+	}
+	return "normal"
+}
+
 // --- Caption Pacer ---
 
 // pacerWord is a word in the pacer queue with metadata from Whisper.
@@ -254,32 +314,88 @@ type pacerWord struct {
 type captionPacer struct {
 	mgr *caption.Manager
 
-	mu           sync.Mutex
-	queue        []pacerWord
-	held         *pacerWord // low-confidence word waiting for confirmation
-	stopCh       chan struct{}
-	stopped      bool
-	linePos      int       // current position on the CEA-608 line
-	lastEmitTime time.Time // when the last word was displayed
-	cleared      bool      // true if we already cleared after timeout
+	mu               sync.Mutex
+	queue            []pacerWord
+	held             *pacerWord // low-confidence word waiting for confirmation
+	stopCh           chan struct{}
+	stopped          bool
+	linePos          int       // current position on the CEA-608 line
+	lastEmitTime     time.Time // when the last word was displayed
+	cleared          bool      // true if we already cleared after timeout
+	confidenceThresh float32   // default 0.7; words below this held back one tick
+	speakerChangeGap int       // default 300; ms gap → speaker change
 }
 
 const (
-	pacerMaxLineChars     = 32
-	pacerWordsPerSecond   = 3             // ~180 WPM
-	pacerConfidenceThresh = 0.7           // words below this are held back one tick
-	pacerSpeakerChangeGap = 300           // ms gap in whisper segments → speaker change
-	pacerMaxQueueWords    = 50            // cap to prevent unbounded growth
-	pacerClearTimeout     = 5 * time.Second // clear display after 5s of no new words
+	pacerMaxLineChars   = 32
+	pacerWordsPerSecond = 3              // ~180 WPM
+	pacerMaxQueueWords  = 50             // cap to prevent unbounded growth
+	pacerClearTimeout   = 5 * time.Second // clear display after 5s of no new words
 )
 
 func newCaptionPacer(mgr *caption.Manager) *captionPacer {
 	p := &captionPacer{
-		mgr:    mgr,
-		stopCh: make(chan struct{}),
+		mgr:              mgr,
+		stopCh:           make(chan struct{}),
+		confidenceThresh: 0.7,
+		speakerChangeGap: 300,
 	}
 	go p.run()
 	return p
+}
+
+// SetConfidencePreset sets the confidence holdback threshold from a preset name.
+func (p *captionPacer) SetConfidencePreset(preset string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	switch preset {
+	case "low":
+		p.confidenceThresh = 0.5
+	case "medium":
+		p.confidenceThresh = 0.7
+	case "high":
+		p.confidenceThresh = 0.9
+	}
+}
+
+// ConfidencePreset returns the current confidence threshold as a preset name.
+func (p *captionPacer) ConfidencePreset() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.confidenceThresh <= 0.55 {
+		return "low"
+	}
+	if p.confidenceThresh <= 0.75 {
+		return "medium"
+	}
+	return "high"
+}
+
+// SetSpeakerDetectionPreset sets the speaker-change gap threshold from a preset name.
+func (p *captionPacer) SetSpeakerDetectionPreset(preset string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	switch preset {
+	case "sensitive":
+		p.speakerChangeGap = 200
+	case "normal":
+		p.speakerChangeGap = 300
+	case "relaxed":
+		p.speakerChangeGap = 500
+	}
+}
+
+// SpeakerDetectionPreset returns the current speaker-change gap as a preset name.
+func (p *captionPacer) SpeakerDetectionPreset() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.speakerChangeGap <= 250 {
+		return "sensitive"
+	}
+	if p.speakerChangeGap <= 400 {
+		return "normal"
+	}
+	return "relaxed"
 }
 
 // Flush discards all queued words. Called on program source changes
@@ -386,7 +502,10 @@ func (p *captionPacer) emitNextWord() {
 	p.mu.Unlock()
 
 	// Confidence holdback: low-confidence words wait one tick.
-	if word.confidence > 0 && word.confidence < pacerConfidenceThresh && !word.isFinal {
+	p.mu.Lock()
+	thresh := p.confidenceThresh
+	p.mu.Unlock()
+	if word.confidence > 0 && word.confidence < thresh && !word.isFinal {
 		p.mu.Lock()
 		p.held = &word
 		p.mu.Unlock()
@@ -403,8 +522,11 @@ func (p *captionPacer) emitWord(word pacerWord) {
 	p.lastEmitTime = time.Now()
 	p.cleared = false
 	p.mu.Unlock()
-	// Speaker change: Whisper segment gap > 300ms → new line with >> prefix.
-	if word.gapBefore >= pacerSpeakerChangeGap {
+	// Speaker change: Whisper segment gap exceeds threshold → new line with >> prefix.
+	p.mu.Lock()
+	gap := p.speakerChangeGap
+	p.mu.Unlock()
+	if word.gapBefore >= gap {
 		p.mgr.IngestNewline()
 		p.mgr.IngestText(">> ")
 		p.linePos = 3
