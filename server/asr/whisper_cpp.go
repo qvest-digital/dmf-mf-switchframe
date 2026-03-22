@@ -84,7 +84,7 @@ func (w *WhisperCpp) LoadModel(modelPath string) error {
 // TranscribeWithConfidence runs whisper inference on 16kHz mono float32 PCM
 // audio. Returns per-word text with confidence scores from whisper's token
 // probabilities. Uses beam search for quality.
-func (w *WhisperCpp) TranscribeWithConfidence(samples []float32, language string) ([]TranscriptWord, error) {
+func (w *WhisperCpp) TranscribeWithConfidence(samples []float32, language string, translate bool) ([]TranscriptWord, error) {
 	if w == nil || w.ctx == nil {
 		return nil, errors.New("asr: whisper_cpp: nil context")
 	}
@@ -124,6 +124,9 @@ func (w *WhisperCpp) TranscribeWithConfidence(samples []float32, language string
 		defer C.free(unsafe.Pointer(cLang))
 		params.language = cLang
 	}
+
+	// Translate mode: transcribe in detected language then translate to English.
+	params.translate = C.bool(translate)
 
 	// Run inference
 	rc := C.whisper_full(w.ctx, params, (*C.float)(&samples[0]), C.int(len(samples)))
@@ -223,7 +226,7 @@ func (w *WhisperCpp) TranscribeWithConfidence(samples []float32, language string
 // Transcribe runs whisper inference and returns plain text (no confidence).
 // Convenience wrapper around TranscribeWithConfidence.
 func (w *WhisperCpp) Transcribe(samples []float32, language string) (string, error) {
-	words, err := w.TranscribeWithConfidence(samples, language)
+	words, err := w.TranscribeWithConfidence(samples, language, false)
 	if err != nil {
 		return "", err
 	}

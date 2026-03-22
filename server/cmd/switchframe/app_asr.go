@@ -140,6 +140,7 @@ func (a *App) enrichASRState(state internal.ControlRoomState) internal.ControlRo
 	state.ASR = &internal.ASRState{
 		Available: true,
 		Active:    a.captionMgr != nil && a.captionMgr.Mode() == caption.ModeAuto,
+		Translate: a.asrEngine.Translate(),
 		Language:  a.asrEngine.Language(),
 		ModelName: filepath.Base(a.cfg.ASRModelPath),
 	}
@@ -188,6 +189,19 @@ func (m *asrManagerAdapter) ASRLanguage() string {
 		return m.engine.Language()
 	}
 	return ""
+}
+
+func (m *asrManagerAdapter) SetASRTranslate(on bool) {
+	if m.engine != nil {
+		m.engine.SetTranslate(on)
+	}
+}
+
+func (m *asrManagerAdapter) ASRTranslate() bool {
+	if m.engine != nil {
+		return m.engine.Translate()
+	}
+	return true
 }
 
 func (m *asrManagerAdapter) ASRModelName() string {

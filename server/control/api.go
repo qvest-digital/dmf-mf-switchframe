@@ -244,6 +244,8 @@ type ASRManager interface {
 	SetASRActive(active bool) error
 	SetASRLanguage(lang string)
 	ASRLanguage() string
+	SetASRTranslate(on bool)
+	ASRTranslate() bool
 	ASRModelName() string
 	SetASRModel(name string) error  // runtime model swap
 	AvailableASRModels() []string   // list installed models

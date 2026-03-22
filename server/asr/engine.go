@@ -47,6 +47,7 @@ type Engine struct {
 	whisper   *WhisperCpp
 
 	language     string
+	translate    bool // translate to English (default true)
 	inferMs      int
 	onTranscript func(words []TranscriptWord, isFinal bool)
 
@@ -96,10 +97,11 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 			HangoverMs:  500,
 			SampleRate:  16000,
 		}),
-		whisper:  w,
-		language: lang,
-		inferMs:  inferMs,
-		doneCh:   make(chan struct{}),
+		whisper:   w,
+		language:  lang,
+		translate: true, // translate to English by default
+		inferMs:   inferMs,
+		doneCh:    make(chan struct{}),
 	}, nil
 }
 
@@ -184,6 +186,7 @@ func (e *Engine) runInference(isFinal bool) {
 	audio := e.ringBuf.Snapshot()
 	audioLen := len(audio)
 	lang := e.language
+	xlate := e.translate
 	prevWordCount := e.lastWordCount
 	e.mu.Unlock()
 
@@ -201,7 +204,7 @@ func (e *Engine) runInference(isFinal bool) {
 		return
 	}
 
-	words, err := e.whisper.TranscribeWithConfidence(audio, lang)
+	words, err := e.whisper.TranscribeWithConfidence(audio, lang, xlate)
 	if err != nil {
 		slog.Warn("ASR inference failed", "error", err)
 		return
@@ -294,6 +297,20 @@ func (e *Engine) Language() string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.language
+}
+
+// SetTranslate enables or disables translation to English.
+func (e *Engine) SetTranslate(on bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.translate = on
+}
+
+// Translate returns whether translation to English is enabled.
+func (e *Engine) Translate() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.translate
 }
 
 // Reset clears the audio buffer and resets VAD state. Called on program

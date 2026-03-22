@@ -408,6 +408,7 @@ export interface CaptionState {
 export interface ASRState {
 	available: boolean;
 	active: boolean;
+	translate: boolean;
 	modelName?: string;
 	language?: string;
 	tentative?: string;

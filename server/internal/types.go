@@ -465,6 +465,7 @@ type AISegmentationState struct {
 type ASRState struct {
 	Available  bool    `json:"available"`
 	Active     bool    `json:"active"`
+	Translate  bool    `json:"translate"`
 	ModelName  string  `json:"modelName,omitempty"`
 	Language   string  `json:"language,omitempty"`
 	Tentative  string  `json:"tentative,omitempty"`

@@ -17,6 +17,7 @@ import (
 type mockASRManager struct {
 	available bool
 	active    bool
+	translate bool
 	language  string
 	modelName string
 	lastErr   error
@@ -25,8 +26,10 @@ type mockASRManager struct {
 func (m *mockASRManager) IsASRAvailable() bool              { return m.available }
 func (m *mockASRManager) IsASRActive() bool                 { return m.active }
 func (m *mockASRManager) ASRLanguage() string               { return m.language }
+func (m *mockASRManager) ASRTranslate() bool                { return m.translate }
 func (m *mockASRManager) ASRModelName() string              { return m.modelName }
 func (m *mockASRManager) SetASRLanguage(lang string)        { m.language = lang }
+func (m *mockASRManager) SetASRTranslate(on bool)           { m.translate = on }
 func (m *mockASRManager) SetASRModel(name string) error     { m.modelName = name; return nil }
 func (m *mockASRManager) AvailableASRModels() []string      { return []string{"base", "medium.en", "large-v3"} }
 func (m *mockASRManager) SetASRActive(active bool) error {

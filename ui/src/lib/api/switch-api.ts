@@ -1082,7 +1082,7 @@ export function getASRStatus(): Promise<any> {
 	return request('/api/asr/status');
 }
 
-export function setASRConfig(config: { active?: boolean; language?: string; model?: string }): Promise<any> {
+export function setASRConfig(config: { active?: boolean; language?: string; translate?: boolean; model?: string }): Promise<any> {
 	return request('/api/asr/config', {
 		method: 'PUT',
 		headers: { 'Content-Type': 'application/json' },

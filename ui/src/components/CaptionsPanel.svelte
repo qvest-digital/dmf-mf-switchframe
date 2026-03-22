@@ -152,6 +152,11 @@
 		apiCall(setASRConfig({ language: lang }), 'Set ASR language');
 	}
 
+	function handleTranslateChange(e: Event) {
+		const on = (e.target as HTMLInputElement).checked;
+		apiCall(setASRConfig({ translate: on }), 'Set ASR translate');
+	}
+
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.key === 'Enter' && !e.shiftKey) {
 			e.preventDefault();
@@ -207,7 +212,19 @@
 		</div>
 		{#if isAuto}
 			<div class="language-row">
-				<label class="language-label" for="asr-lang">Language</label>
+				<label class="language-label" for="asr-translate">Translate</label>
+				<label class="translate-toggle">
+					<input
+						type="checkbox"
+						id="asr-translate"
+						checked={asrState?.translate ?? true}
+						onchange={handleTranslateChange}
+					/>
+					<span class="translate-label">to English</span>
+				</label>
+			</div>
+			<div class="language-row">
+				<label class="language-label" for="asr-lang">Source</label>
 				<select
 					id="asr-lang"
 					class="language-select"
@@ -419,6 +436,23 @@
 
 	.language-select:focus {
 		border-color: #a855f7;
+	}
+
+	.translate-toggle {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		cursor: pointer;
+	}
+
+	.translate-toggle input[type="checkbox"] {
+		accent-color: #a855f7;
+	}
+
+	.translate-label {
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		color: var(--text-secondary);
 	}
 
 	.model-select {

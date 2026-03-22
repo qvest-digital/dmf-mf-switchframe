@@ -24,6 +24,7 @@ func (a *API) handleASRStatus(w http.ResponseWriter, r *http.Request) {
 		state.Available = a.asrManager.IsASRAvailable()
 		state.Active = a.asrManager.IsASRActive()
 		state.Language = a.asrManager.ASRLanguage()
+		state.Translate = a.asrManager.ASRTranslate()
 		state.ModelName = a.asrManager.ASRModelName()
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -40,9 +41,10 @@ func (a *API) handleASRConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Active   *bool  `json:"active,omitempty"`
-		Language string `json:"language,omitempty"`
-		Model    string `json:"model,omitempty"` // runtime model swap (e.g., "medium.en", "large-v3")
+		Active    *bool  `json:"active,omitempty"`
+		Language  string `json:"language,omitempty"`
+		Translate *bool  `json:"translate,omitempty"` // translate to English
+		Model     string `json:"model,omitempty"`     // runtime model swap
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid request body")
@@ -64,11 +66,15 @@ func (a *API) handleASRConfig(w http.ResponseWriter, r *http.Request) {
 	if req.Language != "" {
 		a.asrManager.SetASRLanguage(req.Language)
 	}
+	if req.Translate != nil {
+		a.asrManager.SetASRTranslate(*req.Translate)
+	}
 
 	state := internal.ASRState{
 		Available: true,
 		Active:    a.asrManager.IsASRActive(),
 		Language:  a.asrManager.ASRLanguage(),
+		Translate: a.asrManager.ASRTranslate(),
 		ModelName: a.asrManager.ASRModelName(),
 	}
 
