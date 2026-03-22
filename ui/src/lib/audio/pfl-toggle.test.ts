@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createPFLToggle } from './pfl-toggle';
 
-describe('PFL toggle debounce', () => {
+describe('PFL/AFL toggle', () => {
 	beforeEach(() => { vi.useFakeTimers(); });
 	afterEach(() => { vi.useRealTimers(); });
 
@@ -11,9 +11,10 @@ describe('PFL toggle debounce', () => {
 			pipeline: { setSourceMuted: vi.fn() },
 		};
 		const pfl = createPFLToggle(ctx);
-		pfl.toggle('cam1'); // enables cam1
+		pfl.toggle('cam1'); // enables cam1 PFL
 		pfl.toggle('cam2'); // should be ignored (busy)
 		expect(pfl.activeSource).toBe('cam1');
+		expect(pfl.activeMode).toBe('pfl');
 		expect(ctx.pflManager.enablePFL).toHaveBeenCalledTimes(1);
 	});
 
@@ -27,19 +28,38 @@ describe('PFL toggle debounce', () => {
 		vi.advanceTimersByTime(100);
 		pfl.toggle('cam2');
 		expect(pfl.activeSource).toBe('cam2');
+		expect(pfl.activeMode).toBe('pfl');
 		expect(ctx.pflManager.enablePFL).toHaveBeenCalledTimes(2);
 	});
 
-	it('concurrent enable/disable settles to final state', () => {
+	it('cycles through OFF -> PFL -> AFL -> OFF on same source', () => {
 		const ctx = {
 			pflManager: { enablePFL: vi.fn(), disablePFL: vi.fn() },
 			pipeline: { setSourceMuted: vi.fn() },
 		};
 		const pfl = createPFLToggle(ctx);
-		pfl.toggle('cam1'); // enable cam1
+
+		// OFF -> PFL
+		const r1 = pfl.toggle('cam1');
+		expect(r1).toEqual({ source: 'cam1', mode: 'pfl' });
+		expect(pfl.activeSource).toBe('cam1');
+		expect(pfl.activeMode).toBe('pfl');
+		expect(ctx.pflManager.enablePFL).toHaveBeenCalledWith('cam1', 'pfl');
+
+		// PFL -> AFL
 		vi.advanceTimersByTime(100);
-		pfl.toggle('cam1'); // disable cam1
-		expect(pfl.activeSource).toBe(null);
+		const r2 = pfl.toggle('cam1');
+		expect(r2).toEqual({ source: 'cam1', mode: 'afl' });
+		expect(pfl.activeSource).toBe('cam1');
+		expect(pfl.activeMode).toBe('afl');
+		expect(ctx.pflManager.enablePFL).toHaveBeenCalledWith('cam1', 'afl');
+
+		// AFL -> OFF
+		vi.advanceTimersByTime(100);
+		const r3 = pfl.toggle('cam1');
+		expect(r3).toEqual({ source: null, mode: 'off' });
+		expect(pfl.activeSource).toBeNull();
+		expect(pfl.activeMode).toBe('off');
 		expect(ctx.pflManager.disablePFL).toHaveBeenCalledTimes(1);
 	});
 
@@ -57,40 +77,47 @@ describe('PFL toggle debounce', () => {
 		expect(ctx.pipeline.setSourceMuted).toHaveBeenCalledWith('cam1', true);
 		// cam2 should be unmuted in pipeline
 		expect(ctx.pipeline.setSourceMuted).toHaveBeenCalledWith('cam2', false);
-		// pflManager should enable cam2
-		expect(ctx.pflManager.enablePFL).toHaveBeenCalledWith('cam2');
+		// pflManager should enable cam2 in PFL mode
+		expect(ctx.pflManager.enablePFL).toHaveBeenCalledWith('cam2', 'pfl');
 	});
 
-	it('mutes source when disabling PFL', () => {
+	it('switching source always starts in PFL mode', () => {
 		const ctx = {
 			pflManager: { enablePFL: vi.fn(), disablePFL: vi.fn() },
 			pipeline: { setSourceMuted: vi.fn() },
 		};
 		const pfl = createPFLToggle(ctx);
-		pfl.toggle('cam1'); // enable
+		// Activate cam1 and cycle to AFL
+		pfl.toggle('cam1');
 		vi.advanceTimersByTime(100);
-		pfl.toggle('cam1'); // disable
+		pfl.toggle('cam1'); // now AFL
+		expect(pfl.activeMode).toBe('afl');
+
+		// Switch to cam2 -- should start in PFL, not AFL
+		vi.advanceTimersByTime(100);
+		pfl.toggle('cam2');
+		expect(pfl.activeSource).toBe('cam2');
+		expect(pfl.activeMode).toBe('pfl');
+	});
+
+	it('mutes source when transitioning from AFL to OFF', () => {
+		const ctx = {
+			pflManager: { enablePFL: vi.fn(), disablePFL: vi.fn() },
+			pipeline: { setSourceMuted: vi.fn() },
+		};
+		const pfl = createPFLToggle(ctx);
+		pfl.toggle('cam1'); // PFL
+		vi.advanceTimersByTime(100);
+		pfl.toggle('cam1'); // AFL
+		vi.advanceTimersByTime(100);
+		pfl.toggle('cam1'); // OFF
 
 		expect(ctx.pflManager.disablePFL).toHaveBeenCalledTimes(1);
 		expect(ctx.pipeline.setSourceMuted).toHaveBeenCalledWith('cam1', true);
 		expect(pfl.activeSource).toBeNull();
 	});
 
-	it('returns the new active source from toggle', () => {
-		const ctx = {
-			pflManager: { enablePFL: vi.fn(), disablePFL: vi.fn() },
-			pipeline: { setSourceMuted: vi.fn() },
-		};
-		const pfl = createPFLToggle(ctx);
-		const result1 = pfl.toggle('cam1');
-		expect(result1).toBe('cam1');
-
-		vi.advanceTimersByTime(100);
-		const result2 = pfl.toggle('cam1');
-		expect(result2).toBeNull();
-	});
-
-	it('returns current active source when busy (no change)', () => {
+	it('returns current state when busy (no change)', () => {
 		const ctx = {
 			pflManager: { enablePFL: vi.fn(), disablePFL: vi.fn() },
 			pipeline: { setSourceMuted: vi.fn() },
@@ -98,6 +125,24 @@ describe('PFL toggle debounce', () => {
 		const pfl = createPFLToggle(ctx);
 		pfl.toggle('cam1');
 		const result = pfl.toggle('cam2'); // busy, ignored
-		expect(result).toBe('cam1'); // returns current, not cam2
+		expect(result).toEqual({ source: 'cam1', mode: 'pfl' });
+	});
+
+	it('returns result with source and mode from toggle', () => {
+		const ctx = {
+			pflManager: { enablePFL: vi.fn(), disablePFL: vi.fn() },
+			pipeline: { setSourceMuted: vi.fn() },
+		};
+		const pfl = createPFLToggle(ctx);
+		const result1 = pfl.toggle('cam1');
+		expect(result1).toEqual({ source: 'cam1', mode: 'pfl' });
+
+		vi.advanceTimersByTime(100);
+		const result2 = pfl.toggle('cam1');
+		expect(result2).toEqual({ source: 'cam1', mode: 'afl' });
+
+		vi.advanceTimersByTime(100);
+		const result3 = pfl.toggle('cam1');
+		expect(result3).toEqual({ source: null, mode: 'off' });
 	});
 });

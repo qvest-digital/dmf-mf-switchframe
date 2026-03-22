@@ -1,5 +1,8 @@
 import { PrismAudioDecoder } from '$lib/prism/audio-decoder';
 
+/** Monitoring mode for a source: off, pre-fader listen, or after-fader listen. */
+export type PFLMode = 'off' | 'pfl' | 'afl';
+
 /** Audio level measurements for a single source (stereo). */
 export interface AudioLevels {
 	peakL: number;
@@ -29,6 +32,7 @@ interface SourceAudio {
  */
 export function createPFLManager() {
 	let _activeSource: string | null = null;
+	let _activeMode: PFLMode = 'off';
 	const decoders = new Map<string, SourceAudio>();
 	let _sharedContext: AudioContext | null = null;
 	let _contextResumed = false;
@@ -108,6 +112,7 @@ export function createPFLManager() {
 
 		if (_activeSource === sourceKey) {
 			_activeSource = null;
+			_activeMode = 'off';
 		}
 	}
 
@@ -129,11 +134,14 @@ export function createPFLManager() {
 	}
 
 	/**
-	 * Enable PFL for a source. Only one source can be PFL'd at a time.
-	 * Switching PFL to a new source automatically mutes the previous one.
+	 * Enable PFL or AFL for a source. Only one source can be monitored at a time.
+	 * Switching to a new source automatically mutes the previous one.
+	 *
+	 * In PFL mode, audio plays at unity gain (pre-fader).
+	 * In AFL mode, audio plays at the channel's fader level (after-fader).
 	 */
-	function enablePFL(sourceKey: string) {
-		// Mute previous PFL source
+	function enablePFL(sourceKey: string, mode: PFLMode = 'pfl') {
+		// Mute previous PFL/AFL source
 		if (_activeSource && _activeSource !== sourceKey) {
 			const prev = decoders.get(_activeSource);
 			if (prev) {
@@ -142,11 +150,14 @@ export function createPFLManager() {
 		}
 
 		_activeSource = sourceKey;
+		_activeMode = mode;
 
-		// Unmute the new PFL source
+		// Unmute the new source
 		const source = decoders.get(sourceKey);
 		if (source) {
 			source.decoder.setMuted(false);
+			// AFL mode: gain is set externally via setAFLGain()
+			// PFL mode: unity gain (setMuted(false) sets gain to 1.0)
 		}
 
 		// Ensure context is resumed (best effort -- may need user gesture)
@@ -155,7 +166,23 @@ export function createPFLManager() {
 		});
 	}
 
-	/** Disable PFL -- mute all sources (stop routing audio to speakers). */
+	/**
+	 * Update the monitoring gain for AFL mode. Called when the channel fader
+	 * level changes so the monitored audio tracks the fader.
+	 * Only applies when the source is the active monitored source in AFL mode.
+	 *
+	 * @param sourceKey - The source to update
+	 * @param linearGain - Linear gain value (e.g., Math.pow(10, dB / 20))
+	 */
+	function setAFLGain(sourceKey: string, linearGain: number): void {
+		if (_activeSource !== sourceKey || _activeMode !== 'afl') return;
+		const source = decoders.get(sourceKey);
+		if (source) {
+			source.decoder.setGain(linearGain);
+		}
+	}
+
+	/** Disable PFL/AFL -- mute all sources (stop routing audio to speakers). */
 	function disablePFL() {
 		if (_activeSource) {
 			const source = decoders.get(_activeSource);
@@ -164,6 +191,7 @@ export function createPFLManager() {
 			}
 		}
 		_activeSource = null;
+		_activeMode = 'off';
 	}
 
 	/** Get the current audio levels for a source. Returns zeros if source is not being metered. */
@@ -199,6 +227,7 @@ export function createPFLManager() {
 		}
 		decoders.clear();
 		_activeSource = null;
+		_activeMode = 'off';
 
 		if (_sharedContext) {
 			_sharedContext.close().catch(() => { /* ignore */ });
@@ -254,6 +283,9 @@ export function createPFLManager() {
 		get activeSource() {
 			return _activeSource;
 		},
+		get activeMode() {
+			return _activeMode;
+		},
 		get dimmed() {
 			return _dimmed;
 		},
@@ -266,6 +298,7 @@ export function createPFLManager() {
 		getDecoder,
 		enablePFL,
 		disablePFL,
+		setAFLGain,
 		getSourceLevels,
 		getPlaybackPTS,
 		resumeContext,

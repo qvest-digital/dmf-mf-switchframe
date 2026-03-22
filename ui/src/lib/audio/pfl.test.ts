@@ -9,6 +9,7 @@ vi.mock('$lib/prism/audio-decoder', () => {
 			configure = vi.fn().mockResolvedValue(undefined);
 			decode = vi.fn();
 			setMuted = vi.fn();
+			setGain = vi.fn();
 			isMuted = vi.fn().mockReturnValue(true);
 			enableMetering = vi.fn();
 			disableMetering = vi.fn();
@@ -56,6 +57,7 @@ describe('PFLManager', () => {
 	it('should start with no active PFL', () => {
 		const pfl = createPFLManager();
 		expect(pfl.activeSource).toBeNull();
+		expect(pfl.activeMode).toBe('off');
 	});
 
 	it('should enable PFL for a source', async () => {
@@ -63,6 +65,15 @@ describe('PFLManager', () => {
 		await pfl.addSource('cam1');
 		pfl.enablePFL('cam1');
 		expect(pfl.activeSource).toBe('cam1');
+		expect(pfl.activeMode).toBe('pfl');
+	});
+
+	it('should enable AFL for a source', async () => {
+		const pfl = createPFLManager();
+		await pfl.addSource('cam1');
+		pfl.enablePFL('cam1', 'afl');
+		expect(pfl.activeSource).toBe('cam1');
+		expect(pfl.activeMode).toBe('afl');
 	});
 
 	it('should disable PFL', async () => {
@@ -71,6 +82,7 @@ describe('PFLManager', () => {
 		pfl.enablePFL('cam1');
 		pfl.disablePFL();
 		expect(pfl.activeSource).toBeNull();
+		expect(pfl.activeMode).toBe('off');
 	});
 
 	it('should switch PFL between sources', async () => {
@@ -137,12 +149,13 @@ describe('PFLManager', () => {
 		expect(pfl.getDecoder('cam1')).toBeNull();
 	});
 
-	it('should clear active source when removed source was PFLd', async () => {
+	it('should clear active source and mode when removed source was PFLd', async () => {
 		const pfl = createPFLManager();
 		await pfl.addSource('cam1');
 		pfl.enablePFL('cam1');
 		pfl.removeSource('cam1');
 		expect(pfl.activeSource).toBeNull();
+		expect(pfl.activeMode).toBe('off');
 	});
 
 	it('should clean up on destroy', async () => {
@@ -151,6 +164,7 @@ describe('PFLManager', () => {
 		pfl.enablePFL('cam1');
 		pfl.destroy();
 		expect(pfl.activeSource).toBeNull();
+		expect(pfl.activeMode).toBe('off');
 	});
 
 	it('should return playback PTS for source', async () => {
@@ -164,5 +178,55 @@ describe('PFLManager', () => {
 		const pfl = createPFLManager();
 		const pts = pfl.getPlaybackPTS('unknown');
 		expect(pts).toBe(-1);
+	});
+
+	describe('AFL gain', () => {
+		it('should set gain on decoder when in AFL mode', async () => {
+			const pfl = createPFLManager();
+			await pfl.addSource('cam1');
+			pfl.enablePFL('cam1', 'afl');
+			const decoder = pfl.getDecoder('cam1');
+
+			pfl.setAFLGain('cam1', 0.5);
+			expect(decoder!.setGain).toHaveBeenCalledWith(0.5);
+		});
+
+		it('should not set gain when source is not active', async () => {
+			const pfl = createPFLManager();
+			await pfl.addSource('cam1');
+			await pfl.addSource('cam2');
+			pfl.enablePFL('cam1', 'afl');
+			const decoder2 = pfl.getDecoder('cam2');
+
+			pfl.setAFLGain('cam2', 0.5);
+			expect(decoder2!.setGain).not.toHaveBeenCalled();
+		});
+
+		it('should not set gain when in PFL mode', async () => {
+			const pfl = createPFLManager();
+			await pfl.addSource('cam1');
+			pfl.enablePFL('cam1', 'pfl');
+			const decoder = pfl.getDecoder('cam1');
+
+			pfl.setAFLGain('cam1', 0.5);
+			expect(decoder!.setGain).not.toHaveBeenCalled();
+		});
+
+		it('should switch from PFL to AFL mode without interrupting audio', async () => {
+			const pfl = createPFLManager();
+			await pfl.addSource('cam1');
+
+			// Start in PFL mode
+			pfl.enablePFL('cam1', 'pfl');
+			const decoder = pfl.getDecoder('cam1');
+			expect(decoder!.setMuted).toHaveBeenCalledWith(false);
+
+			// Switch to AFL mode on same source
+			vi.clearAllMocks();
+			pfl.enablePFL('cam1', 'afl');
+			// Should not mute (since same source)
+			expect(decoder!.setMuted).toHaveBeenCalledWith(false);
+			expect(pfl.activeMode).toBe('afl');
+		});
 	});
 });

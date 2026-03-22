@@ -250,6 +250,18 @@ export class PrismAudioDecoder {
 		return this.muted;
 	}
 
+	/**
+	 * Set the output gain (linear amplitude). Used by AFL monitoring to apply
+	 * the channel fader level to the monitoring output. Only effective when
+	 * not muted (mute overrides gain to 0).
+	 */
+	setGain(linearGain: number): void {
+		if (this.muted) return;
+		if (this.gainNode) {
+			this.gainNode.gain.value = linearGain;
+		}
+	}
+
 	getAudioDebug(): { muted: boolean; suspended: boolean; gain: number; playing: boolean; contextState: string } {
 		return {
 			muted: this.muted,

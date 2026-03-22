@@ -47,7 +47,7 @@
 	import { createMediaPipeline } from '$lib/transport/media-pipeline';
 	import { PipelineManager } from '$lib/pipeline/manager';
 	import { createPFLManager } from '$lib/audio/pfl';
-	import { createPFLToggle } from '$lib/audio/pfl-toggle';
+	import { createPFLToggle, type PFLToggleResult } from '$lib/audio/pfl-toggle';
 	import { getLayoutMode, setLayoutMode, type LayoutMode } from '$lib/layout/preferences';
 	import { createFastControl, type FastControl } from '$lib/transport/fast-control';
 	import { CaptionRenderer } from '$lib/prism/captions';
@@ -328,9 +328,10 @@
 		programLevels = pgm;
 	});
 
-	// PFL (Pre-Fade Listen) manager for client-side per-source audio monitoring
+	// PFL/AFL (Pre/After-Fade Listen) manager for client-side per-source audio monitoring
 	const pflManager = createPFLManager();
 	let pflActiveSource = $state<string | null>(null);
+	let pflActiveMode = $state<import('$lib/audio/pfl').PFLMode>('off');
 	const pflToggle = createPFLToggle({ pflManager, pipeline });
 
 	// Macro list for keyboard trigger (Ctrl+1-9)
@@ -344,7 +345,9 @@
 	}
 
 	function handlePFLToggle(sourceKey: string) {
-		pflActiveSource = pflToggle.toggle(sourceKey);
+		const result = pflToggle.toggle(sourceKey);
+		pflActiveSource = result.source;
+		pflActiveMode = result.mode;
 	}
 
 	// Per-source audio levels sampled from media pipeline decoders (linear 0..1)
@@ -712,7 +715,7 @@
 								<div class="panel-header">
 									<LockIndicator state={store.effectiveState} subsystem="audio" />
 								</div>
-								<AudioMixer state={store.effectiveState} {sourceLevels} {programLevels} {pflActiveSource} selectedChannel={selectedAudioChannel} onPFLToggle={handlePFLToggle} onStateUpdate={store.applyUpdate} onChannelSelect={(key) => { selectedAudioChannel = key; }} />
+								<AudioMixer state={store.effectiveState} {sourceLevels} {programLevels} {pflActiveSource} pflMode={pflActiveMode} {pflManager} selectedChannel={selectedAudioChannel} onPFLToggle={handlePFLToggle} onStateUpdate={store.applyUpdate} onChannelSelect={(key) => { selectedAudioChannel = key; }} />
 							</div>
 						{:else if activeTab === 'Graphics'}
 							<div class="tab-panel">

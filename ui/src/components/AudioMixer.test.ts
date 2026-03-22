@@ -99,18 +99,28 @@ describe('AudioMixer', () => {
 	});
 
 	it('should show PFL active state for matching source', () => {
-		const { container } = render(AudioMixer, { props: { state, pflActiveSource: 'cam1' } });
+		const { container } = render(AudioMixer, { props: { state, pflActiveSource: 'cam1', pflMode: 'pfl' as const } });
 		const pflButtons = container.querySelectorAll('.pfl-btn');
 		// cam1 is first (sorted), cam2 is second
-		expect(pflButtons[0].classList.contains('active')).toBe(true);
-		expect(pflButtons[1].classList.contains('active')).toBe(false);
+		expect(pflButtons[0].classList.contains('pfl-active')).toBe(true);
+		expect(pflButtons[1].classList.contains('pfl-active')).toBe(false);
+	});
+
+	it('should show AFL active state for matching source', () => {
+		const { container } = render(AudioMixer, { props: { state, pflActiveSource: 'cam1', pflMode: 'afl' as const } });
+		const pflButtons = container.querySelectorAll('.pfl-btn');
+		expect(pflButtons[0].classList.contains('afl-active')).toBe(true);
+		expect(pflButtons[0].textContent?.trim()).toBe('AFL');
+		expect(pflButtons[1].classList.contains('afl-active')).toBe(false);
 	});
 
 	it('should not show any PFL active when pflActiveSource is null', () => {
 		const { container } = render(AudioMixer, { props: { state, pflActiveSource: null } });
 		const pflButtons = container.querySelectorAll('.pfl-btn');
-		expect(pflButtons[0].classList.contains('active')).toBe(false);
-		expect(pflButtons[1].classList.contains('active')).toBe(false);
+		expect(pflButtons[0].classList.contains('pfl-active')).toBe(false);
+		expect(pflButtons[0].classList.contains('afl-active')).toBe(false);
+		expect(pflButtons[1].classList.contains('pfl-active')).toBe(false);
+		expect(pflButtons[1].classList.contains('afl-active')).toBe(false);
 	});
 
 	it('should call onPFLToggle when PFL button is clicked', async () => {

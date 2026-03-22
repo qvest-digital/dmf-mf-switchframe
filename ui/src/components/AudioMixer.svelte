@@ -18,19 +18,22 @@
 	import { throttle } from '$lib/util/throttle';
 	import { sortedSourceKeys } from '$lib/util/sort-sources';
 	import { updatePeakHold as _updatePeakHold, isClipActive, CLIP_THRESHOLD_DB } from '$lib/audio/peak-hold';
+	import type { PFLMode } from '$lib/audio/pfl';
 
 	interface Props {
 		state: ControlRoomState;
 		sourceLevels?: Record<string, { peakL: number; peakR: number }>;
 		programLevels?: { peakL: number; peakR: number };
 		pflActiveSource?: string | null;
+		pflMode?: PFLMode;
+		pflManager?: { setAFLGain(sourceKey: string, linearGain: number): void } | null;
 		selectedChannel?: string | null;
 		onPFLToggle?: (sourceKey: string) => void;
 		onStateUpdate?: (state: ControlRoomState) => void;
 		onChannelSelect?: (sourceKey: string | null) => void;
 	}
 
-	let { state: crState, sourceLevels = {}, programLevels = { peakL: 0, peakR: 0 }, pflActiveSource = null, selectedChannel = null, onPFLToggle, onStateUpdate, onChannelSelect }: Props = $props();
+	let { state: crState, sourceLevels = {}, programLevels = { peakL: 0, peakR: 0 }, pflActiveSource = null, pflMode = 'off' as PFLMode, pflManager = null, selectedChannel = null, onPFLToggle, onStateUpdate, onChannelSelect }: Props = $props();
 
 	let ui = $state({ collapsed: false });
 
@@ -46,7 +49,21 @@
 
 	function setLevel(source: string, level: number) {
 		setLevelThrottled(source, level);
+		// Update AFL gain in real time as fader moves
+		if (pflActiveSource === source && pflMode === 'afl' && pflManager) {
+			pflManager.setAFLGain(source, Math.pow(10, level / 20));
+		}
 	}
+
+	// Keep AFL gain in sync with server-side fader level updates
+	$effect(() => {
+		if (pflActiveSource && pflMode === 'afl' && pflManager) {
+			const channel = crState.audioChannels?.[pflActiveSource];
+			if (channel) {
+				pflManager.setAFLGain(pflActiveSource, Math.pow(10, channel.level / 20));
+			}
+		}
+	});
 
 	/** Throttled trim API call -- max 20 calls/sec (50ms). */
 	const setTrimThrottled = throttle((source: string, level: number) => {
@@ -248,6 +265,8 @@
 		{@const tally = crState.tallyState[key] ?? 'idle'}
 		{@const peakLDb = channelPeakDb(channel?.peakL, sourceLevels[key]?.peakL)}
 		{@const peakRDb = channelPeakDb(channel?.peakR, sourceLevels[key]?.peakR)}
+		{@const isPfl = pflActiveSource === key && pflMode === 'pfl'}
+		{@const isAfl = pflActiveSource === key && pflMode === 'afl'}
 		{@const peakHold = getPeakHold(key, peakLDb, peakRDb)}
 		{@const _tick = peakHoldTick}
 		<div class="channel-strip" class:program={tally === 'program'} class:preview={tally === 'preview'} class:selected={selectedChannel === key}>
@@ -312,11 +331,12 @@
 			<div class="strip-buttons">
 				<button
 					class="strip-btn pfl-btn"
-					class:active={pflActiveSource === key}
+					class:pfl-active={isPfl}
+					class:afl-active={isAfl}
 					onclick={() => onPFLToggle?.(key)}
-					title="Pre-Fader Listen"
+					title={isPfl ? 'After-Fader Listen' : isAfl ? 'Monitor off' : 'Pre-Fader Listen'}
 				>
-					PFL
+					{isAfl ? 'AFL' : 'PFL'}
 				</button>
 				<button
 					class="strip-btn mute-btn"
@@ -839,10 +859,16 @@
 		color: var(--text-secondary);
 	}
 
-	.pfl-btn.active {
-		background: var(--accent-yellow-dim);
-		color: var(--accent-yellow);
-		border-color: rgba(234, 179, 8, 0.4);
+	.pfl-btn.pfl-active {
+		background: #eab308;
+		border-color: #eab308;
+		color: black;
+	}
+
+	.pfl-btn.afl-active {
+		background: #f59e0b;
+		border-color: #f59e0b;
+		color: black;
 	}
 
 	.mute-btn.active {
