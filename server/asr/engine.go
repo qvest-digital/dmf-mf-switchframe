@@ -85,7 +85,7 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 	}
 	lang := cfg.Language
 	if lang == "" {
-		lang = "en"
+		lang = "auto"
 	}
 
 	return &Engine{

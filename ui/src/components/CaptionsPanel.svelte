@@ -39,6 +39,7 @@
 	];
 
 	const languages = [
+		{ code: 'auto', label: 'Auto-detect' },
 		{ code: 'en', label: 'English' },
 		{ code: 'es', label: 'Spanish' },
 		{ code: 'fr', label: 'French' },
@@ -210,7 +211,7 @@
 				<select
 					id="asr-lang"
 					class="language-select"
-					value={asrState?.language ?? 'en'}
+					value={asrState?.language ?? 'auto'}
 					onchange={handleLanguageChange}
 				>
 					{#each languages as lang}

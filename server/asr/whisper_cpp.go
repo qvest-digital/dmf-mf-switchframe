@@ -118,8 +118,8 @@ func (w *WhisperCpp) TranscribeWithConfidence(samples []float32, language string
 		params.vad_model_path = cVADPath
 	}
 
-	// Set language
-	if language != "" {
+	// Set language ("auto" or empty = auto-detect)
+	if language != "" && language != "auto" {
 		cLang := C.CString(language)
 		defer C.free(unsafe.Pointer(cLang))
 		params.language = cLang
