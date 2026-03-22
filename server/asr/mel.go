@@ -181,21 +181,37 @@ func (m *MelSpectrogram) fft512() {
 // Compute produces a Whisper-compatible [80][3000] log-mel spectrogram
 // from the given PCM samples (mono float32 at 16kHz).
 //
-// The input is padded or truncated to exactly 480000 samples (30 seconds).
-// Each of the 3000 output frames corresponds to a 10ms hop.
+// Matches Whisper's Python implementation exactly:
+//   - Reflect padding of n_fft//2 = 200 samples on each side (torch.stft center=True)
+//   - 400-point DFT (naive, matching torch.stft n_fft=400)
+//   - 201 frequency bins (n_fft//2 + 1)
+//   - Whisper's precomputed 80×201 mel filterbank
+//   - Log10 with 1e-10 floor, clamp to [max-8, max], normalize (v+4)/4
 func (m *MelSpectrogram) Compute(samples []float32) [][]float32 {
-	// Pad input to accommodate all STFT frames. The last frame starts at
-	// (melMaxFrames-1)*melHopLength = 479840 and needs melFFTSize=400 samples,
-	// so we need at least 480240 samples. Allocate with extra room and
-	// zero-pad beyond the actual audio (Whisper zero-pads short audio).
-	paddedLen := (melMaxFrames-1)*melHopLength + melFFTSize // 480240
-	padded := make([]float32, paddedLen)
+	// Truncate or zero-pad input to 30s.
 	n := len(samples)
 	if n > melMaxSamples {
 		n = melMaxSamples
 	}
-	copy(padded, samples[:n])
-	// Remaining samples are zero (silence padding)
+	audio := make([]float32, melMaxSamples)
+	copy(audio, samples[:n])
+
+	// Reflect padding: n_fft//2 = 200 samples on each side.
+	// This matches torch.stft(center=True) which uses reflect padding.
+	padLen := melFFTSize / 2 // 200
+	paddedLen := padLen + melMaxSamples + padLen
+	padded := make([]float32, paddedLen)
+	// Left reflect: audio[padLen, padLen-1, ..., 1] (reflect from index 1, not 0)
+	// Matches np.pad(mode='reflect') / torch.stft(center=True) behavior.
+	for i := 0; i < padLen; i++ {
+		padded[i] = audio[padLen-i]
+	}
+	// Center: audio
+	copy(padded[padLen:], audio)
+	// Right reflect: audio[len-2, len-3, ..., len-padLen-1]
+	for i := 0; i < padLen; i++ {
+		padded[padLen+melMaxSamples+i] = audio[melMaxSamples-2-i]
+	}
 
 	// Allocate output: [melNMels][melMaxFrames]
 	output := make([][]float32, melNMels)
@@ -203,41 +219,39 @@ func (m *MelSpectrogram) Compute(samples []float32) [][]float32 {
 		output[i] = make([]float32, melMaxFrames)
 	}
 
-	// Scratch for magnitude-squared power spectrum
+	// Precompute DFT twiddle factors for 400-point DFT, 201 output bins.
+	// W(k,n) = exp(-2πi·k·n/N), we need cos and sin for k=0..200, n=0..399.
+	// Store per-bin: twRe[k][n] = cos(-2π·k·n/400), twIm[k][n] = sin(-2π·k·n/400)
+	// To save memory, compute on the fly using the angle.
+
+	// Scratch for windowed frame and power spectrum.
+	var windowed [melFFTSize]float32
 	var power [melNBins]float32
 
-	// Process each frame
+	// Process each frame.
 	for frame := 0; frame < melMaxFrames; frame++ {
 		offset := frame * melHopLength
 
-		// Clear FFT buffers and apply windowed input in one pass.
-		// First melFFTSize samples: window * input. Rest: zero.
+		// Apply Hann window.
 		src := padded[offset : offset+melFFTSize]
-		win := &m.hannWindow
-		re := &m.fftRe
-		im := &m.fftIm
-
 		for i := 0; i < melFFTSize; i++ {
-			re[i] = src[i] * win[i]
-		}
-		for i := melFFTSize; i < melNFFT; i++ {
-			re[i] = 0
-		}
-		for i := range im {
-			im[i] = 0
+			windowed[i] = src[i] * m.hannWindow[i]
 		}
 
-		// Compute FFT
-		m.fft512()
-
-		// Compute magnitude squared of first 257 bins (DC to Nyquist)
-		for bin := 0; bin < melNBins; bin++ {
-			r := re[bin]
-			i := im[bin]
-			power[bin] = r*r + i*i
+		// 400-point DFT: compute first 201 bins (DC to Nyquist).
+		// X[k] = sum_{n=0}^{N-1} x[n] * exp(-2πi·k·n/N)
+		// |X[k]|² = Re²+Im²
+		for k := 0; k < melNBins; k++ {
+			var sumRe, sumIm float64
+			for n := 0; n < melFFTSize; n++ {
+				angle := -2.0 * math.Pi * float64(k) * float64(n) / float64(melFFTSize)
+				sumRe += float64(windowed[n]) * math.Cos(angle)
+				sumIm += float64(windowed[n]) * math.Sin(angle)
+			}
+			power[k] = float32(sumRe*sumRe + sumIm*sumIm)
 		}
 
-		// Apply mel filterbank using sparse ranges and log scale
+		// Apply mel filterbank using sparse ranges and log scale.
 		for mel := 0; mel < melNMels; mel++ {
 			filt := &m.melFilters[mel]
 			energy := float32(0)
@@ -246,7 +260,6 @@ func (m *MelSpectrogram) Compute(samples []float32) [][]float32 {
 			for i, p := range pw {
 				energy += p * w[i]
 			}
-			// Log scale with floor to prevent log(0)
 			if energy < 1e-10 {
 				energy = 1e-10
 			}
@@ -254,20 +267,17 @@ func (m *MelSpectrogram) Compute(samples []float32) [][]float32 {
 		}
 	}
 
-	// Normalize: find global max, clamp to [max-8, max], scale to Whisper range
+	// Whisper normalization (from whisper/audio.py):
+	//   log_spec = torch.maximum(log_spec, log_spec.max() - 8.0)
+	//   log_spec = (log_spec + 4.0) / 4.0
 	maxVal := float32(-math.MaxFloat32)
 	for mel := 0; mel < melNMels; mel++ {
-		row := output[mel]
-		for _, v := range row {
+		for _, v := range output[mel] {
 			if v > maxVal {
 				maxVal = v
 			}
 		}
 	}
-
-	// Whisper normalization (from whisper/audio.py):
-	//   log_spec = torch.maximum(log_spec, log_spec.max() - 8.0)
-	//   log_spec = (log_spec + 4.0) / 4.0
 	clampMin := maxVal - 8.0
 	for mel := 0; mel < melNMels; mel++ {
 		row := output[mel]
