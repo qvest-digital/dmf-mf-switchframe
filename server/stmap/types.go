@@ -5,6 +5,8 @@ package stmap
 
 import (
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -114,10 +116,15 @@ func (a *AnimatedSTMap) CurrentFrame() *STMap {
 
 // AdvanceIndex increments the internal frame counter and returns the
 // wrapped frame index. Use with ProcessorAt for allocation-free pipeline
-// processing of animated maps.
+// processing of animated maps. Uses len(processors) when built (Frames
+// may be nil after BuildProcessorsCached), falls back to len(Frames).
 func (a *AnimatedSTMap) AdvanceIndex() int {
 	idx := a.index.Add(1)
-	return int(idx) % len(a.Frames)
+	n := len(a.processors)
+	if n == 0 {
+		n = len(a.Frames)
+	}
+	return int(idx) % n
 }
 
 // BuildProcessors pre-builds all per-frame Processors. Call this after
@@ -135,9 +142,46 @@ func (a *AnimatedSTMap) BuildProcessors() {
 
 // ProcessorAt returns the precomputed Processor for the given frame index.
 // Calls BuildProcessors on first access if not already called.
+// Uses len(processors) for modulo (not len(Frames)) because
+// BuildProcessorsCached nils the Frames slice after building.
 func (a *AnimatedSTMap) ProcessorAt(idx int) *Processor {
 	a.BuildProcessors()
-	return a.processors[idx%len(a.Frames)]
+	return a.processors[idx%len(a.processors)]
+}
+
+// BuildProcessorsCached pre-builds all per-frame Processors, writing LUT data
+// to cache files in cacheDir. If cache files already exist with the correct
+// size, they are mmap'd directly (instant). After building, Frames is niled
+// to free the float32 source data (regenerable from generator formula).
+func (a *AnimatedSTMap) BuildProcessorsCached(cacheDir string) {
+	a.buildOnce.Do(func() {
+		_ = os.MkdirAll(cacheDir, 0755)
+		a.processors = make([]*Processor, len(a.Frames))
+		for i, frame := range a.Frames {
+			cachePath := filepath.Join(cacheDir, fmt.Sprintf("frame_%03d.lut", i))
+			p, err := NewProcessorCached(frame, cachePath)
+			if err != nil {
+				// Fallback to heap-based processor.
+				p = NewProcessor(frame)
+			}
+			a.processors[i] = p
+		}
+		// Free float32 source data — regenerable from generator.
+		a.Frames = nil
+	})
+}
+
+// Close munmaps all mmap-backed processors. Safe to call multiple times.
+func (a *AnimatedSTMap) Close() error {
+	var firstErr error
+	for _, p := range a.processors {
+		if p != nil {
+			if err := p.Close(); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
 }
 
 // ValidateName rejects names that could cause path traversal or are otherwise
