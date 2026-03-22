@@ -963,21 +963,21 @@
 
 	/* Strip buttons */
 	.strip-buttons {
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 1px;
 		width: 100%;
 	}
 
 	.strip-btn {
-		padding: 2px 3px;
+		padding: 1px 2px;
 		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
+		border-radius: 2px;
 		background: var(--bg-elevated);
 		color: var(--text-tertiary);
 		cursor: pointer;
 		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		font-size: 8px;
 		font-weight: 600;
 		letter-spacing: 0.04em;
 		text-align: center;
@@ -1112,16 +1112,17 @@
 		border-top: 1px solid var(--border-default);
 		background: rgba(255, 255, 255, 0.02);
 		min-height: 72px;
-		max-height: 88px;
-		flex-shrink: 0;
 		overflow-x: auto;
+		overflow-y: hidden;
+		flex-shrink: 0;
 	}
 
 	.detail-section {
 		display: flex;
 		flex-direction: column;
-		gap: 3px;
-		padding: 6px 10px;
+		gap: 2px;
+		padding: 4px 8px;
+		flex-shrink: 0;
 	}
 
 	.detail-section + .detail-section {
