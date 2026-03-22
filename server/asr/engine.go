@@ -46,12 +46,10 @@ type Engine struct {
 	onTranscript func(text string, isFinal bool)
 
 	// Inference state
-	lastTranscript string
-	confirmedText  string
-	speechStart    time.Time
-	lastInfer      time.Time
-	wasSpeaking    bool
-	inferring      sync.Mutex // serializes whisper inference (one at a time)
+	speechStart time.Time
+	lastInfer   time.Time
+	wasSpeaking bool
+	inferring   sync.Mutex // serializes whisper inference (one at a time)
 
 	// Lifecycle
 	doneCh chan struct{}
@@ -131,8 +129,6 @@ func (e *Engine) IngestAudio(pcm []float32, pts int64, sampleRate, channels int)
 		e.speechStart = now
 		e.lastInfer = now
 		e.wasSpeaking = true
-		e.confirmedText = ""
-		e.lastTranscript = ""
 
 	case newState == VADSpeaking || newState == VADTrailing:
 		if e.wasSpeaking && now.Sub(e.lastInfer) >= time.Duration(e.inferMs)*time.Millisecond {
@@ -148,7 +144,15 @@ func (e *Engine) IngestAudio(pcm []float32, pts int64, sampleRate, channels int)
 	}
 }
 
+// contextOverlapSamples is how many samples to keep after draining
+// for Whisper context continuity (~2 seconds at 16kHz).
+const contextOverlapSamples = 16000 * 2
+
 // runInference takes a snapshot of the ring buffer and runs whisper.cpp.
+// After successful transcription, drains the consumed audio from the ring
+// buffer (keeping a small overlap for context) so the next inference only
+// processes new audio. This prevents re-transcription of old audio which
+// causes repeated/stuttered captions.
 func (e *Engine) runInference(isFinal bool) {
 	e.inferring.Lock()
 	defer e.inferring.Unlock()
@@ -157,10 +161,11 @@ func (e *Engine) runInference(isFinal bool) {
 
 	e.mu.Lock()
 	audio := e.ringBuf.Snapshot()
+	audioLen := len(audio)
 	lang := e.language
 	e.mu.Unlock()
 
-	if len(audio) < 1600 {
+	if audioLen < 1600 {
 		return
 	}
 
@@ -172,62 +177,36 @@ func (e *Engine) runInference(isFinal bool) {
 
 	slog.Info("ASR inference complete",
 		"ms", time.Since(start).Milliseconds(),
-		"audioSamples", len(audio),
+		"audioSamples", audioLen,
 		"textLen", len(text),
 		"isFinal", isFinal,
 		"text", text,
 	)
 
-	e.processTranscript(text, isFinal)
+	// Drain transcribed audio from ring buffer, keeping an overlap
+	// for context continuity. On final, clear entirely.
+	e.mu.Lock()
+	if isFinal {
+		e.ringBuf.Clear()
+	} else if audioLen > contextOverlapSamples {
+		e.ringBuf.Drain(audioLen - contextOverlapSamples)
+	}
+	e.mu.Unlock()
+
+	e.emitTranscript(text, isFinal)
 }
 
-// processTranscript compares the new transcript with the previous one,
-// finds confirmed (stable) text, and emits deltas through the callback.
-func (e *Engine) processTranscript(text string, isFinal bool) {
+// emitTranscript sends the transcribed text to the callback.
+// Since the ring buffer is drained after each inference, each call
+// produces text for only the NEW audio segment — no diffing needed.
+func (e *Engine) emitTranscript(text string, isFinal bool) {
 	e.mu.Lock()
 	cb := e.onTranscript
-
-	if isFinal {
-		e.confirmedText = ""
-		e.lastTranscript = ""
-		e.mu.Unlock()
-		if cb != nil && text != "" {
-			cb(text, true)
-		}
-		return
-	}
-
-	prev := e.lastTranscript
-	e.lastTranscript = text
-
-	commonLen := 0
-	minLen := len(prev)
-	if len(text) < minLen {
-		minLen = len(text)
-	}
-	for i := 0; i < minLen; i++ {
-		if prev[i] == text[i] {
-			commonLen = i + 1
-		} else {
-			break
-		}
-	}
-	for commonLen > 0 && commonLen < len(text) && text[commonLen-1] != ' ' {
-		commonLen--
-	}
-
-	newConfirmed := text[:commonLen]
-	if len(newConfirmed) > len(e.confirmedText) {
-		delta := newConfirmed[len(e.confirmedText):]
-		e.confirmedText = newConfirmed
-		e.mu.Unlock()
-		if cb != nil && delta != "" {
-			cb(delta, false)
-		}
-		return
-	}
-
 	e.mu.Unlock()
+
+	if cb != nil && text != "" {
+		cb(text, isFinal)
+	}
 }
 
 // SetLanguage changes the target language for transcription.

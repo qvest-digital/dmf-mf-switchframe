@@ -60,3 +60,14 @@ func (b *AudioRingBuf) Clear() {
 	b.writePos = 0
 	b.count = 0
 }
+
+// Drain removes the oldest n samples from the buffer (advancing the read
+// position). If n >= count, the buffer is cleared. Used after inference
+// to discard transcribed audio while keeping a context overlap.
+func (b *AudioRingBuf) Drain(n int) {
+	if n >= b.count {
+		b.Clear()
+		return
+	}
+	b.count -= n
+}

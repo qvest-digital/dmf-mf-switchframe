@@ -113,9 +113,9 @@ func TestIntegration_TranscriptCallback(t *testing.T) {
 	})
 	defer e.Close()
 
-	e.processTranscript("hello ", false)
-	e.processTranscript("hello world ", false)
-	e.processTranscript("hello world today", true)
+	e.emitTranscript("hello ", false)
+	e.emitTranscript("hello world ", false)
+	e.emitTranscript("hello world today", true)
 
 	time.Sleep(10 * time.Millisecond)
 

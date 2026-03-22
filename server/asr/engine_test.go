@@ -86,7 +86,7 @@ func TestEngine_VADSpeechOnsetSetsState(t *testing.T) {
 	}
 }
 
-func TestEngine_ProcessTranscript_Final(t *testing.T) {
+func TestEngine_EmitTranscript_Final(t *testing.T) {
 	e := newTestEngine()
 	var mu sync.Mutex
 	var received []string
@@ -100,7 +100,7 @@ func TestEngine_ProcessTranscript_Final(t *testing.T) {
 	})
 	defer e.Close()
 
-	e.processTranscript("hello world", true)
+	e.emitTranscript("hello world", true)
 
 	time.Sleep(10 * time.Millisecond)
 	mu.Lock()
@@ -117,7 +117,7 @@ func TestEngine_ProcessTranscript_Final(t *testing.T) {
 	}
 }
 
-func TestEngine_ProcessTranscript_FinalEmpty(t *testing.T) {
+func TestEngine_EmitTranscript_FinalEmpty(t *testing.T) {
 	e := newTestEngine()
 	var mu sync.Mutex
 	var received []string
@@ -130,7 +130,7 @@ func TestEngine_ProcessTranscript_FinalEmpty(t *testing.T) {
 	defer e.Close()
 
 	// Empty final transcript should not trigger callback.
-	e.processTranscript("", true)
+	e.emitTranscript("", true)
 
 	time.Sleep(10 * time.Millisecond)
 	mu.Lock()
@@ -141,42 +141,7 @@ func TestEngine_ProcessTranscript_FinalEmpty(t *testing.T) {
 	}
 }
 
-func TestEngine_ProcessTranscript_ConfirmedDiff(t *testing.T) {
-	e := newTestEngine()
-	var mu sync.Mutex
-	var received []string
-	var finals []bool
-
-	e.OnTranscript(func(text string, isFinal bool) {
-		mu.Lock()
-		received = append(received, text)
-		finals = append(finals, isFinal)
-		mu.Unlock()
-	})
-	defer e.Close()
-
-	// First inference: "hello world"
-	e.processTranscript("hello world", false)
-	// Second inference with extended text: "hello " prefix is confirmed
-	e.processTranscript("hello world today", false)
-
-	time.Sleep(10 * time.Millisecond)
-	mu.Lock()
-	defer mu.Unlock()
-
-	// The confirmed prefix "hello " should be emitted as a tentative delta.
-	if len(received) == 0 {
-		t.Fatal("expected at least one confirmed text callback")
-	}
-	// All should be tentative (not final).
-	for i, f := range finals {
-		if f {
-			t.Fatalf("callback %d: expected isFinal=false, got true", i)
-		}
-	}
-}
-
-func TestEngine_ProcessTranscript_NoCallbackOnFirstInference(t *testing.T) {
+func TestEngine_EmitTranscript_EachCallEmits(t *testing.T) {
 	e := newTestEngine()
 	var mu sync.Mutex
 	var received []string
@@ -188,38 +153,46 @@ func TestEngine_ProcessTranscript_NoCallbackOnFirstInference(t *testing.T) {
 	})
 	defer e.Close()
 
-	// First inference has no previous transcript to diff against,
-	// so there's no confirmed prefix yet.
-	e.processTranscript("hello world", false)
+	// With buffer draining, each inference emits fresh text — no diffing.
+	e.emitTranscript("hello world", false)
+	e.emitTranscript("today is nice", false)
 
 	time.Sleep(10 * time.Millisecond)
 	mu.Lock()
 	defer mu.Unlock()
 
-	if len(received) != 0 {
-		t.Fatalf("expected 0 callbacks on first tentative inference, got %d", len(received))
+	if len(received) != 2 {
+		t.Fatalf("expected 2 callbacks, got %d", len(received))
+	}
+	if received[0] != "hello world" {
+		t.Fatalf("expected 'hello world', got %q", received[0])
+	}
+	if received[1] != "today is nice" {
+		t.Fatalf("expected 'today is nice', got %q", received[1])
 	}
 }
 
-func TestEngine_ProcessTranscript_ResetOnFinal(t *testing.T) {
-	e := newTestEngine()
-	defer e.Close()
+func TestEngine_RingBufDrain(t *testing.T) {
+	buf := NewAudioRingBuf(16000, 5)
 
-	// Simulate a confirmed prefix accumulation.
-	e.processTranscript("hello world", false)
-	e.processTranscript("hello world today", false)
-
-	// Final should reset state.
-	e.processTranscript("hello world today", true)
-
-	e.mu.Lock()
-	if e.confirmedText != "" {
-		t.Fatalf("expected confirmedText reset after final, got %q", e.confirmedText)
+	// Write 48000 samples (3 seconds at 16kHz).
+	samples := make([]float32, 48000)
+	buf.Write(samples)
+	if buf.SampleCount() != 48000 {
+		t.Fatalf("expected 48000, got %d", buf.SampleCount())
 	}
-	if e.lastTranscript != "" {
-		t.Fatalf("expected lastTranscript reset after final, got %q", e.lastTranscript)
+
+	// Drain all but 32000 (2 seconds overlap).
+	buf.Drain(48000 - 32000)
+	if buf.SampleCount() != 32000 {
+		t.Fatalf("expected 32000 after drain, got %d", buf.SampleCount())
 	}
-	e.mu.Unlock()
+
+	// Drain more than available — should clear.
+	buf.Drain(50000)
+	if buf.SampleCount() != 0 {
+		t.Fatalf("expected 0 after over-drain, got %d", buf.SampleCount())
+	}
 }
 
 func TestEngine_SetLanguage(t *testing.T) {
@@ -258,7 +231,6 @@ func TestEngine_CloseBlocksIngest(t *testing.T) {
 	e := newTestEngine()
 	e.Close()
 
-	// IngestAudio after Close should not panic or write to ring buffer.
 	pcm := make([]float32, 2048)
 	for i := range pcm {
 		pcm[i] = 0.5
@@ -266,33 +238,25 @@ func TestEngine_CloseBlocksIngest(t *testing.T) {
 	initialCount := e.ringBuf.SampleCount()
 	e.IngestAudio(pcm, 0, 48000, 2)
 
-	// The resampler runs outside the lock, so samples may be resampled,
-	// but the ring buffer write inside the lock should be skipped.
-	// However, since resampler.Process runs before the lock check,
-	// and the ring buffer write is inside the lock, count should not increase.
-	// Note: The resampled data is computed but not written.
 	finalCount := e.ringBuf.SampleCount()
 	if finalCount != initialCount {
 		t.Fatalf("expected ring buffer count %d after Close, got %d", initialCount, finalCount)
 	}
 }
 
-func TestEngine_OnTranscriptNilSafe(t *testing.T) {
+func TestEngine_EmitTranscriptNilSafe(t *testing.T) {
 	e := newTestEngine()
 	defer e.Close()
 
-	// processTranscript with no callback set should not panic.
-	e.processTranscript("hello", true)
-	e.processTranscript("hello", false)
-	e.processTranscript("hello world", false)
+	// emitTranscript with no callback set should not panic.
+	e.emitTranscript("hello", true)
+	e.emitTranscript("hello", false)
 }
 
 func TestEngine_IngestSilenceNoSpeech(t *testing.T) {
 	e := newTestEngine()
 	defer e.Close()
 
-	// Feed multiple chunks of silence — VAD should remain idle,
-	// wasSpeaking should stay false.
 	for i := 0; i < 10; i++ {
 		silence := make([]float32, 2048)
 		e.IngestAudio(silence, int64(i)*90000, 48000, 2)
@@ -306,8 +270,6 @@ func TestEngine_IngestSilenceNoSpeech(t *testing.T) {
 }
 
 func TestEngine_ConfigDefaults(t *testing.T) {
-	// Verify that zero-value config fields get populated with defaults.
-	// We can't actually create via NewEngine (no TRT), so test the logic directly.
 	cfg := EngineConfig{}
 
 	vadThreshold := cfg.VADThresholdDB
