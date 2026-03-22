@@ -74,7 +74,6 @@ type segSession struct {
 	r2In, r2Out unsafe.Pointer // [1,rvmR2C,rvmR2H,rvmR2W] float32
 	r3In, r3Out unsafe.Pointer // [1,rvmR3C,rvmR3H,rvmR3W] float32
 	r4In, r4Out unsafe.Pointer // [1,rvmR4C,rvmR4H,rvmR4W] float32
-	dsRatio     unsafe.Pointer // [1] float32 — downsample_ratio (0.25)
 
 	trtCtx     *TRTContext
 	srcW, srcH int
@@ -122,12 +121,13 @@ func NewSegmentationEngine(ctx *Context, modelPath string) (*SegmentationEngine,
 		planPath = filepath.Join(cacheDir, base[:len(base)-len(ext)]+".plan")
 	}
 
-	slog.Info("gpu: segmentation: building TensorRT engine (RVM v2)",
+	slog.Info("gpu: segmentation: building TensorRT engine (RVM)",
 		"onnx", modelPath, "plan_cache", planPath)
 
-	engine, err := NewTRTEngineV2(modelPath, TRTEngineOptsV2{
+	// Use v1 builder — the ONNX model has been pre-processed with fixed shapes
+	// (downsample_ratio baked as constant, all input dims concrete).
+	engine, err := NewTRTEngine(modelPath, TRTEngineOpts{
 		MaxBatchSize:  1,
-		MaxSeqLen:     segModelW, // max spatial dimension for dynamic shapes
 		UseFP16:       true,
 		PlanCachePath: planPath,
 	})
@@ -252,12 +252,6 @@ func (se *SegmentationEngine) EnableSource(key string, w, h int, smoothing float
 		return err
 	}
 
-	// Downsample ratio scalar (float32).
-	dsRatio, err := alloc(1*4, "dsRatio")
-	if err != nil {
-		return err
-	}
-
 	// Allocate NV12-sized mask buffer: Y plane (w*h) for the actual mask +
 	// UV plane (w*h/2) for neutral chroma. BlendStinger reads the UV portion
 	// as scratch space for downsampled chroma alpha, so the allocation must
@@ -272,11 +266,6 @@ func (se *SegmentationEngine) EnableSource(key string, w, h int, smoothing float
 	C.cudaMemsetAsync(r2In, 0, C.size_t(r2Size), stream)
 	C.cudaMemsetAsync(r3In, 0, C.size_t(r3Size), stream)
 	C.cudaMemsetAsync(r4In, 0, C.size_t(r4Size), stream)
-
-	// Set downsample_ratio = 0.25 (constant for 320x320 input).
-	var dsRatioVal float32 = 0.25
-	C.cudaMemcpyAsync(dsRatio, unsafe.Pointer(&dsRatioVal), 4,
-		C.cudaMemcpyHostToDevice, stream)
 
 	// Initialize the UV portion of the mask buffer to 128 (neutral chroma).
 	uvOffset := C.size_t(w * h)
@@ -312,7 +301,6 @@ func (se *SegmentationEngine) EnableSource(key string, w, h int, smoothing float
 		r3Out:     r3Out,
 		r4In:      r4In,
 		r4Out:     r4Out,
-		dsRatio:   dsRatio,
 		trtCtx:    trtCtx,
 		srcW:      w,
 		srcH:      h,
@@ -456,14 +444,14 @@ func (se *SegmentationEngine) Segment(key string, frame *GPUFrame) {
 		return
 	}
 
-	// Step 2: RVM inference via InferMulti (6 inputs, 6 outputs).
+	// Step 2: RVM inference via InferMulti (5 inputs, 6 outputs).
+	// downsample_ratio is baked into the ONNX model as a constant (1.0).
 	bindings := []TRTBinding{
 		{Name: "src", DevPtr: sess.rgbBuf, Dims: []int{1, 3, segModelH, segModelW}},
 		{Name: "r1i", DevPtr: sess.r1In, Dims: []int{1, rvmR1C, rvmR1H, rvmR1W}},
 		{Name: "r2i", DevPtr: sess.r2In, Dims: []int{1, rvmR2C, rvmR2H, rvmR2W}},
 		{Name: "r3i", DevPtr: sess.r3In, Dims: []int{1, rvmR3C, rvmR3H, rvmR3W}},
 		{Name: "r4i", DevPtr: sess.r4In, Dims: []int{1, rvmR4C, rvmR4H, rvmR4W}},
-		{Name: "downsample_ratio", DevPtr: sess.dsRatio, Dims: []int{1}},
 		{Name: "fgr", DevPtr: sess.fgrBuf, Dims: []int{1, 3, segModelH, segModelW}},
 		{Name: "pha", DevPtr: sess.maskBuf, Dims: []int{1, 1, segModelH, segModelW}},
 		{Name: "r1o", DevPtr: sess.r1Out, Dims: []int{1, rvmR1C, rvmR1H, rvmR1W}},
@@ -575,7 +563,6 @@ func (se *SegmentationEngine) destroySessionLocked(sess *segSession) {
 		sess.r2In, sess.r2Out,
 		sess.r3In, sess.r3Out,
 		sess.r4In, sess.r4Out,
-		sess.dsRatio,
 	} {
 		if buf != nil {
 			FreeDeviceBytes(buf)
@@ -592,7 +579,6 @@ func (se *SegmentationEngine) destroySessionLocked(sess *segSession) {
 	sess.r3Out = nil
 	sess.r4In = nil
 	sess.r4Out = nil
-	sess.dsRatio = nil
 
 	// maskU8 is the backing memory for maskFrame.DevPtr — free it directly.
 	if sess.maskU8 != nil {
