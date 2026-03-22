@@ -571,7 +571,7 @@
 				</div>
 				{#if ch.gateEnabled && (ch.gateReduction ?? 0) > 0.1}
 					<div class="gr-meter">
-						<div class="gr-fill" style="width: {Math.min((ch.gateReduction ?? 0) / 60 * 100, 100)}%"></div>
+						<div class="gr-fill" style="width: {Math.min((ch.gateReduction ?? 0) / 80 * 100, 100)}%"></div>
 						<span class="gr-label">GR {(ch.gateReduction ?? 0) > 0 ? '-' + (ch.gateReduction ?? 0).toFixed(1) : '0.0'}</span>
 					</div>
 				{/if}

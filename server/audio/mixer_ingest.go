@@ -70,7 +70,7 @@ func (m *Mixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 	copy(ch.storedBuf, pcm)
 	m.lastDecodedPCM[sourceKey] = ch.storedBuf
 
-	// Pipeline order: Trim -> EQ -> Compressor -> [push to ring buffer]
+	// Pipeline order: Trim -> Phase -> HPF -> Gate -> EQ -> Compressor -> Balance -> [push to ring buffer]
 	// Fader gain and transition gain are applied by the ticker at read time.
 
 	// Apply trim (input gain)
@@ -166,7 +166,7 @@ func (m *Mixer) IngestPCM(sourceKey string, pcm []float32, pts int64, channels i
 	copy(ch.storedBuf, pcm)
 	m.lastDecodedPCM[sourceKey] = ch.storedBuf
 
-	// Pipeline order: Trim -> EQ -> Compressor -> [push to ring buffer]
+	// Pipeline order: Trim -> Phase -> HPF -> Gate -> EQ -> Compressor -> Balance -> [push to ring buffer]
 	// Fader gain and transition gain are applied by the ticker at read time.
 
 	// Apply trim (input gain)
