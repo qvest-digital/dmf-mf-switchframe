@@ -62,13 +62,10 @@ func ApplyShadowsMidtonesHighlights(lut *LUT3D, shadows, midtones, highlights [3
 		// Shadows: strongest at lum=0, fades to 0 at lum=0.5
 		// Highlights: strongest at lum=1, fades to 0 at lum=0.5
 		// Midtones: peak at lum=0.5, fades toward 0 and 1
-		shadowW := float32(1.0)
-		highlightW := float32(0.0)
+		var shadowW, highlightW float32
 		if lum <= 0.5 {
 			shadowW = 1.0 - lum*2.0
-			highlightW = 0.0
 		} else {
-			shadowW = 0.0
 			highlightW = (lum - 0.5) * 2.0
 		}
 		midtoneW := 1.0 - shadowW - highlightW

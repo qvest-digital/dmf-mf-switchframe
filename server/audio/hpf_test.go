@@ -250,7 +250,7 @@ func TestMixer_SetHPF(t *testing.T) {
 		Channels:   2,
 		Output:     func(f *media.AudioFrame) {},
 	})
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.AddChannel("cam1")
 

@@ -396,7 +396,7 @@ func newTestMixerForLimiter(t *testing.T) *Mixer {
 func TestMixer_SetLimiterThreshold_ValidRange(t *testing.T) {
 	t.Parallel()
 	m := newTestMixerForLimiter(t)
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	require.NoError(t, m.SetLimiterThreshold(-6.0))
 	threshold, _, _ := m.LimiterSettings()
@@ -406,7 +406,7 @@ func TestMixer_SetLimiterThreshold_ValidRange(t *testing.T) {
 func TestMixer_SetLimiterThreshold_OutOfRange(t *testing.T) {
 	t.Parallel()
 	m := newTestMixerForLimiter(t)
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	require.Error(t, m.SetLimiterThreshold(-13.0), "below -12 should error")
 	require.Error(t, m.SetLimiterThreshold(1.0), "above 0 should error")
@@ -415,7 +415,7 @@ func TestMixer_SetLimiterThreshold_OutOfRange(t *testing.T) {
 func TestMixer_SetLimiterCeiling_ValidRange(t *testing.T) {
 	t.Parallel()
 	m := newTestMixerForLimiter(t)
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	require.NoError(t, m.SetLimiterCeiling(-1.5))
 	_, ceiling, _ := m.LimiterSettings()
@@ -425,7 +425,7 @@ func TestMixer_SetLimiterCeiling_ValidRange(t *testing.T) {
 func TestMixer_SetLimiterCeiling_OutOfRange(t *testing.T) {
 	t.Parallel()
 	m := newTestMixerForLimiter(t)
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	require.Error(t, m.SetLimiterCeiling(-4.0), "below -3 should error")
 	require.Error(t, m.SetLimiterCeiling(1.0), "above 0 should error")
@@ -434,7 +434,7 @@ func TestMixer_SetLimiterCeiling_OutOfRange(t *testing.T) {
 func TestMixer_LimiterSettings_Defaults(t *testing.T) {
 	t.Parallel()
 	m := newTestMixerForLimiter(t)
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	threshold, ceiling, gr := m.LimiterSettings()
 	require.InDelta(t, -1.0, threshold, 0.01, "default threshold should be -1 dBFS")
