@@ -51,6 +51,9 @@ type AudioMixerAPI interface {
 	GetGate(sourceKey string) (audio.GateState, error)
 	SetAudioDelay(sourceKey string, delayMs int) error
 	AudioDelayMs(sourceKey string) int
+	SetLimiterThreshold(thresholdDB float64) error
+	SetLimiterCeiling(ceilingDB float64) error
+	LimiterSettings() (thresholdDB, ceilingDB, gainReduction float64)
 }
 
 // OutputManagerAPI is the interface for recording and SRT output operations

@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 )
 
-// Limiter is a brickwall peak limiter at -1 dBFS for the program output bus.
+// Limiter is a brickwall peak limiter for the program output bus.
 // It uses a peak-following envelope with fast attack and slow release to prevent
 // clipping without audible pumping. Always active on the program bus.
 //
@@ -14,10 +14,12 @@ import (
 // GainReduction is stored as an atomic float64 for lock-free metering reads.
 // Reset() sets an atomic flag; Process() performs the actual state clearing.
 type Limiter struct {
-	threshold    float64 // linear amplitude threshold (-1 dBFS)
+	threshold    float64 // linear amplitude threshold (default -1 dBFS)
 	attackCoeff  float64 // envelope attack coefficient
 	releaseCoeff float64 // envelope release coefficient
 	channels     int     // interleaved channel count for linked stereo
+	ceiling      float64 // linear amplitude ceiling (default 1.0 = 0 dBFS)
+	ceilingDB    float64 // dBFS readback cache (default 0)
 
 	// Envelope state: only written by Process() (single-writer)
 	envelope float64
@@ -46,6 +48,8 @@ func NewLimiter(sampleRate, channels int) *Limiter {
 		attackCoeff:  1 - math.Exp(-1/(sr*0.0001)), // 0.1ms
 		releaseCoeff: 1 - math.Exp(-1/(sr*0.050)),  // 50ms
 		channels:     channels,
+		ceiling:      1.0, // 0 dBFS (no ceiling reduction)
+		ceilingDB:    0,
 	}
 }
 
@@ -100,6 +104,14 @@ func (l *Limiter) Process(samples []float32) float64 {
 
 	l.envelope = env
 
+	// Apply output ceiling
+	if l.ceiling < 1.0 {
+		ceil := float32(l.ceiling)
+		for i := range samples {
+			samples[i] *= ceil
+		}
+	}
+
 	var gr float64
 	if env > threshold {
 		gr = 20 * math.Log10(env/threshold)
@@ -107,6 +119,29 @@ func (l *Limiter) Process(samples []float32) float64 {
 	l.gainReductionBits.Store(math.Float64bits(gr))
 
 	return gr
+}
+
+// SetThreshold changes the limiter threshold.
+// thresholdDB: -12 to 0 dBFS.
+func (l *Limiter) SetThreshold(thresholdDB float64) {
+	l.threshold = math.Pow(10, thresholdDB/20.0)
+}
+
+// ThresholdDB returns the current threshold in dBFS.
+func (l *Limiter) ThresholdDB() float64 {
+	return 20 * math.Log10(l.threshold)
+}
+
+// SetCeiling changes the output ceiling.
+// ceilingDB: -3 to 0 dBFS.
+func (l *Limiter) SetCeiling(ceilingDB float64) {
+	l.ceilingDB = ceilingDB
+	l.ceiling = math.Pow(10, ceilingDB/20.0)
+}
+
+// CeilingDB returns the current ceiling in dBFS.
+func (l *Limiter) CeilingDB() float64 {
+	return l.ceilingDB
 }
 
 // Reset clears the envelope and gain reduction state.

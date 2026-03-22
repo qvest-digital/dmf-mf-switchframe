@@ -125,6 +125,7 @@ type audioStateProvider interface {
 	ChannelStates() map[string]internal.AudioChannel
 	MasterLevel() float64
 	GainReduction() float64
+	LimiterSettings() (thresholdDB, ceilingDB, gainReduction float64)
 	MomentaryLUFS() float64
 	ShortTermLUFS() float64
 	IntegratedLUFS() float64
@@ -3024,6 +3025,12 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 		state.MasterLevel = s.mixer.MasterLevel()
 		state.ProgramPeak = s.mixer.ProgramPeak()
 		state.GainReduction = s.mixer.GainReduction()
+		limThreshold, limCeiling, limGR := s.mixer.LimiterSettings()
+		state.Limiter = &internal.LimiterSettings{
+			Threshold:     limThreshold,
+			Ceiling:       limCeiling,
+			GainReduction: limGR,
+		}
 		state.MomentaryLUFS = clampLUFS(s.mixer.MomentaryLUFS())
 		state.ShortTermLUFS = clampLUFS(s.mixer.ShortTermLUFS())
 		state.IntegratedLUFS = clampLUFS(s.mixer.IntegratedLUFS())

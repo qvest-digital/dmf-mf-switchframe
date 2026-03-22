@@ -165,6 +165,18 @@ export function setMasterLevel(level: number): Promise<ControlRoomState> {
 	return post('/api/audio/master', { level });
 }
 
+export function setLimiter(threshold: number, ceiling: number): Promise<ControlRoomState> {
+	return request('/api/audio/limiter', {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ threshold, ceiling }),
+	});
+}
+
+export function getLimiter(): Promise<{ threshold: number; ceiling: number; gainReduction: number }> {
+	return request('/api/audio/limiter');
+}
+
 export function startTransition(source: string, type: string, durationMs: number, wipeDirection?: string, stingerName?: string, easing?: EasingConfig): Promise<ControlRoomState> {
 	const body: Record<string, unknown> = { source, type, durationMs };
 	if (wipeDirection) {

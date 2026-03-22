@@ -114,6 +114,19 @@ type audioDelayRequest struct {
 	DelayMs int `json:"delayMs"`
 }
 
+// limiterRequest is the JSON body for the limiter PUT endpoint.
+type limiterRequest struct {
+	Threshold float64 `json:"threshold"`
+	Ceiling   float64 `json:"ceiling"`
+}
+
+// limiterResponse is the JSON response for the limiter endpoints.
+type limiterResponse struct {
+	Threshold     float64 `json:"threshold"`
+	Ceiling       float64 `json:"ceiling"`
+	GainReduction float64 `json:"gainReduction"`
+}
+
 // registerAudioRoutes registers audio-related API routes on the given mux.
 func (a *API) registerAudioRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/audio/trim", a.handleAudioTrim)
@@ -132,6 +145,8 @@ func (a *API) registerAudioRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/audio/{source}/gate", a.handleSetGate)
 	mux.HandleFunc("GET /api/audio/{source}/gate", a.handleGetGate)
 	mux.HandleFunc("PUT /api/audio/{source}/audio-delay", a.handleSetAudioDelay)
+	mux.HandleFunc("PUT /api/audio/limiter", a.handleSetLimiter)
+	mux.HandleFunc("GET /api/audio/limiter", a.handleGetLimiter)
 }
 
 // handleAudioTrim sets the input trim for a source channel.
@@ -591,4 +606,43 @@ func (a *API) handleSetAudioDelay(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(a.enrichedState())
+}
+
+// handleSetLimiter sets the master limiter threshold and ceiling.
+func (a *API) handleSetLimiter(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	if a.mixer == nil {
+		httperr.Write(w, http.StatusNotImplemented, "audio mixer not configured")
+		return
+	}
+	var req limiterRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := a.mixer.SetLimiterThreshold(req.Threshold); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := a.mixer.SetLimiterCeiling(req.Ceiling); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
+}
+
+// handleGetLimiter returns the current master limiter settings and gain reduction.
+func (a *API) handleGetLimiter(w http.ResponseWriter, r *http.Request) {
+	if a.mixer == nil {
+		httperr.Write(w, http.StatusNotImplemented, "audio mixer not configured")
+		return
+	}
+	threshold, ceiling, gr := a.mixer.LimiterSettings()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(limiterResponse{
+		Threshold:     threshold,
+		Ceiling:       ceiling,
+		GainReduction: gr,
+	})
 }

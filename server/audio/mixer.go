@@ -776,6 +776,36 @@ func (m *Mixer) GainReduction() float64 {
 	return m.limiter.GainReduction()
 }
 
+// SetLimiterThreshold changes the master limiter threshold.
+// thresholdDB: -12 to 0 dBFS.
+func (m *Mixer) SetLimiterThreshold(thresholdDB float64) error {
+	if thresholdDB < -12 || thresholdDB > 0 {
+		return fmt.Errorf("audio: limiter threshold must be between -12 and 0 dBFS")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.limiter.SetThreshold(thresholdDB)
+	return nil
+}
+
+// SetLimiterCeiling changes the master limiter output ceiling.
+// ceilingDB: -3 to 0 dBFS.
+func (m *Mixer) SetLimiterCeiling(ceilingDB float64) error {
+	if ceilingDB < -3 || ceilingDB > 0 {
+		return fmt.Errorf("audio: limiter ceiling must be between -3 and 0 dBFS")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.limiter.SetCeiling(ceilingDB)
+	return nil
+}
+
+// LimiterSettings returns the current limiter threshold, ceiling (in dBFS),
+// and gain reduction (in dB, positive = reducing).
+func (m *Mixer) LimiterSettings() (thresholdDB, ceilingDB, gainReduction float64) {
+	return m.limiter.ThresholdDB(), m.limiter.CeilingDB(), m.limiter.GainReduction()
+}
+
 // MasterLevel returns the current master level in dB.
 func (m *Mixer) MasterLevel() float64 {
 	m.mu.RLock()

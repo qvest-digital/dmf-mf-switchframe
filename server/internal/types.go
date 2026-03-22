@@ -76,6 +76,13 @@ type CompressorSettings struct {
 	MakeupGain float64 `json:"makeupGain"`
 }
 
+// LimiterSettings describes the master bus limiter state.
+type LimiterSettings struct {
+	Threshold     float64 `json:"threshold"`
+	Ceiling       float64 `json:"ceiling"`
+	GainReduction float64 `json:"gainReduction"`
+}
+
 // GateSettings describes the settings for a channel noise gate.
 type GateSettings struct {
 	Threshold float64 `json:"threshold"`
@@ -271,6 +278,7 @@ type ControlRoomState struct {
 	MasterLevel          float64                 `json:"masterLevel"`
 	ProgramPeak          [2]float64              `json:"programPeak"`
 	GainReduction        float64                 `json:"gainReduction,omitempty"`
+	Limiter              *LimiterSettings        `json:"limiter,omitempty"`
 	MomentaryLUFS        float64                 `json:"momentaryLufs,omitempty"`
 	ShortTermLUFS        float64                 `json:"shortTermLufs,omitempty"`
 	IntegratedLUFS       float64                 `json:"integratedLufs,omitempty"`

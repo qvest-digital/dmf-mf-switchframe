@@ -80,6 +80,12 @@ export interface AudioChannel {
 	audioDelayMs?: number;  // lip-sync delay (0-500ms)
 }
 
+export interface LimiterSettings {
+	threshold: number;
+	ceiling: number;
+	gainReduction: number;
+}
+
 export interface RecordingStatus {
 	active: boolean;
 	filename?: string;
@@ -611,6 +617,7 @@ export interface ControlRoomState {
 	masterLevel: number;
 	programPeak: [number, number];
 	gainReduction?: number;
+	limiter?: LimiterSettings;
 	momentaryLufs?: number;
 	shortTermLufs?: number;
 	integratedLufs?: number;

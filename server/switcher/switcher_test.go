@@ -571,6 +571,10 @@ func (m *mockAudioStateProvider) GainReduction() float64 {
 	return m.gainReduction
 }
 
+func (m *mockAudioStateProvider) LimiterSettings() (float64, float64, float64) {
+	return -1.0, 0.0, m.gainReduction
+}
+
 func (m *mockAudioStateProvider) MomentaryLUFS() float64 {
 	return 0
 }

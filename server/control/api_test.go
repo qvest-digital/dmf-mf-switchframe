@@ -493,6 +493,24 @@ func (m *mockMixer) AudioDelayMs(sourceKey string) int {
 	return 0
 }
 
+func (m *mockMixer) SetLimiterThreshold(thresholdDB float64) error {
+	if thresholdDB < -12 || thresholdDB > 0 {
+		return fmt.Errorf("audio: limiter threshold must be between -12 and 0 dBFS")
+	}
+	return nil
+}
+
+func (m *mockMixer) SetLimiterCeiling(ceilingDB float64) error {
+	if ceilingDB < -3 || ceilingDB > 0 {
+		return fmt.Errorf("audio: limiter ceiling must be between -3 and 0 dBFS")
+	}
+	return nil
+}
+
+func (m *mockMixer) LimiterSettings() (float64, float64, float64) {
+	return -1.0, 0.0, 0.0
+}
+
 func setupAudioTestAPI(t *testing.T) (*API, *mockMixer) {
 	t.Helper()
 	programRelay := distribution.NewRelay()
@@ -771,6 +789,93 @@ func TestAudioTrimNoMixer(t *testing.T) {
 	body := `{"source":"camera1","trim":-6.0}`
 	req := httptest.NewRequest("POST", "/api/audio/trim", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotImplemented, rec.Code)
+}
+
+// --- Limiter API tests ---
+
+func TestSetLimiter(t *testing.T) {
+	api, _ := setupAudioTestAPI(t)
+
+	body := `{"threshold":-6,"ceiling":-1}`
+	req := httptest.NewRequest("PUT", "/api/audio/limiter", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+}
+
+func TestSetLimiter_InvalidThreshold(t *testing.T) {
+	api, _ := setupAudioTestAPI(t)
+
+	body := `{"threshold":-15,"ceiling":-1}`
+	req := httptest.NewRequest("PUT", "/api/audio/limiter", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
+}
+
+func TestSetLimiter_InvalidCeiling(t *testing.T) {
+	api, _ := setupAudioTestAPI(t)
+
+	body := `{"threshold":-6,"ceiling":-5}`
+	req := httptest.NewRequest("PUT", "/api/audio/limiter", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code, "body: %s", rec.Body.String())
+}
+
+func TestSetLimiter_InvalidJSON(t *testing.T) {
+	api, _ := setupAudioTestAPI(t)
+
+	req := httptest.NewRequest("PUT", "/api/audio/limiter", strings.NewReader("{bad"))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestSetLimiter_NoMixer(t *testing.T) {
+	api, _ := setupTestAPI(t) // no mixer
+
+	body := `{"threshold":-6,"ceiling":-1}`
+	req := httptest.NewRequest("PUT", "/api/audio/limiter", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotImplemented, rec.Code)
+}
+
+func TestGetLimiter(t *testing.T) {
+	api, _ := setupAudioTestAPI(t)
+
+	req := httptest.NewRequest("GET", "/api/audio/limiter", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+	var resp limiterResponse
+	err := json.NewDecoder(rec.Body).Decode(&resp)
+	require.NoError(t, err)
+	require.InDelta(t, -1.0, resp.Threshold, 0.01)
+	require.InDelta(t, 0.0, resp.Ceiling, 0.01)
+	require.InDelta(t, 0.0, resp.GainReduction, 0.01)
+}
+
+func TestGetLimiter_NoMixer(t *testing.T) {
+	api, _ := setupTestAPI(t) // no mixer
+
+	req := httptest.NewRequest("GET", "/api/audio/limiter", nil)
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
