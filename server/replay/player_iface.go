@@ -14,6 +14,7 @@ type replayPlayerIface interface {
 	Resume()
 	Seek(position float64)
 	SetSpeed(speed float64)
+	SetShutterAngle(angle float64)
 }
 
 // Compile-time interface checks.

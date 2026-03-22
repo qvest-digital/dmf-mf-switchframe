@@ -74,6 +74,9 @@ type gpuReplayPlayer struct {
 
 	// Speed changes mid-playback.
 	speed atomic.Value // float64
+
+	// Shutter angle changes mid-playback.
+	shutterAngle atomic.Value // float64
 }
 
 // newGPUReplayPlayer creates a GPU-accelerated player for the given clip.
@@ -84,6 +87,7 @@ func newGPUReplayPlayer(cfg GPUPlayerConfig) *gpuReplayPlayer {
 		seekCh: make(chan float64, 1),
 	}
 	p.speed.Store(cfg.Speed)
+	p.shutterAngle.Store(cfg.ShutterAngle)
 
 	// Initialize pause channel as closed (not paused).
 	ch := make(chan struct{})
@@ -176,6 +180,18 @@ func (p *gpuReplayPlayer) SetSpeed(speed float64) {
 		speed = 1.0
 	}
 	p.speed.Store(speed)
+}
+
+// SetShutterAngle changes the motion-blur shutter angle mid-playback.
+// Normalized 0.0-1.0 (0.5 = 180°).
+func (p *gpuReplayPlayer) SetShutterAngle(angle float64) {
+	if angle < 0 {
+		angle = 0
+	}
+	if angle > 1.0 {
+		angle = 1.0
+	}
+	p.shutterAngle.Store(angle)
 }
 
 // Seek seeks to the given position (0.0-1.0) within the clip.
@@ -340,8 +356,7 @@ func (p *gpuReplayPlayer) run(ctx context.Context) {
 	}
 	p.totalOutputFrames = totalFrames
 
-	// Shutter angle: config is 0.0-1.0 normalized, CUDA kernel expects the same.
-	shutterAngle := p.config.ShutterAngle
+	// Shutter angle is read from atomic each frame (supports mid-playback changes).
 
 	// Acquire an output frame for motion blur results.
 	outputFrame, err := pool.Acquire()
@@ -472,9 +487,10 @@ func (p *gpuReplayPlayer) run(ctx context.Context) {
 
 				// Apply motion blur (or interpolation fallback).
 				outputFrame.PTS = outputPTS
+				curShutter := p.shutterAngle.Load().(float64)
 				var blurErr error
-				if hasFlow && shutterAngle > 0 {
-					blurErr = p.config.FRUC.MotionBlur(prev.frame, curr.frame, outputFrame, alpha, shutterAngle)
+				if hasFlow && curShutter > 0 {
+					blurErr = p.config.FRUC.MotionBlur(prev.frame, curr.frame, outputFrame, alpha, curShutter)
 				} else {
 					blurErr = p.config.FRUC.Interpolate(prev.frame, curr.frame, outputFrame, alpha)
 				}

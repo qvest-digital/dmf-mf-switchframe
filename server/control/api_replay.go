@@ -123,25 +123,29 @@ func (a *API) handleReplayStatus(w http.ResponseWriter, _ *http.Request) {
 	}
 	rs := a.replayMgr.Status()
 	resp := struct {
-		State      string                    `json:"state"`
-		Source     string                    `json:"source,omitempty"`
-		Speed      float64                   `json:"speed,omitempty"`
-		Loop       bool                      `json:"loop,omitempty"`
-		Position   float64                   `json:"position,omitempty"`
-		MarkIn     *int64                    `json:"markIn,omitempty"`
-		MarkOut    *int64                    `json:"markOut,omitempty"`
-		MarkSource string                    `json:"markSource,omitempty"`
-		Buffers    []replay.SourceBufferInfo `json:"buffers,omitempty"`
+		State          string                    `json:"state"`
+		Source         string                    `json:"source,omitempty"`
+		Speed          float64                   `json:"speed,omitempty"`
+		Loop           bool                      `json:"loop,omitempty"`
+		Position       float64                   `json:"position,omitempty"`
+		MarkIn         *int64                    `json:"markIn,omitempty"`
+		MarkOut        *int64                    `json:"markOut,omitempty"`
+		MarkSource     string                    `json:"markSource,omitempty"`
+		Buffers        []replay.SourceBufferInfo `json:"buffers,omitempty"`
+		ShutterAngle   float64                   `json:"shutterAngle,omitempty"`
+		GPUAccelerated bool                      `json:"gpuAccelerated,omitempty"`
 	}{
-		State:      string(rs.State),
-		Source:     rs.Source,
-		Speed:      rs.Speed,
-		Loop:       rs.Loop,
-		Position:   rs.Position,
-		MarkIn:     rs.MarkInUnixMs(),
-		MarkOut:    rs.MarkOutUnixMs(),
-		MarkSource: rs.MarkSource,
-		Buffers:    rs.Buffers,
+		State:          string(rs.State),
+		Source:         rs.Source,
+		Speed:          rs.Speed,
+		Loop:           rs.Loop,
+		Position:       rs.Position,
+		MarkIn:         rs.MarkInUnixMs(),
+		MarkOut:        rs.MarkOutUnixMs(),
+		MarkSource:     rs.MarkSource,
+		Buffers:        rs.Buffers,
+		ShutterAngle:   rs.ShutterAngle,
+		GPUAccelerated: rs.GPUAccelerated,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)

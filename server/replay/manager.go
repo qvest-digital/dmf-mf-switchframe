@@ -689,7 +689,6 @@ func (m *Manager) SetGPUReplay(ctx *gpu.Context, fruc *gpu.FRUC, pool *gpu.Frame
 // motion blur (pure interpolation). 180° is the film standard.
 func (m *Manager) SetShutterAngle(degrees float64) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if degrees < 0 {
 		degrees = 0
 	}
@@ -697,6 +696,13 @@ func (m *Manager) SetShutterAngle(degrees float64) {
 		degrees = 360
 	}
 	m.shutterAngle = degrees / 360.0
+	player := m.player
+	m.mu.Unlock()
+
+	// Push to active player for mid-playback changes.
+	if player != nil {
+		player.SetShutterAngle(m.shutterAngle)
+	}
 }
 
 // ShutterAngle returns the current shutter angle in degrees.

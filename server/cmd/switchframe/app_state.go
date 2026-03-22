@@ -165,14 +165,16 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 		rs := a.replayMgr.Status()
 		if rs.State != "idle" || rs.MarkIn != nil || len(rs.Buffers) > 0 {
 			rState := &internal.ReplayState{
-				State:      string(rs.State),
-				Source:     rs.Source,
-				Speed:      rs.Speed,
-				Loop:       rs.Loop,
-				Position:   rs.Position,
-				MarkIn:     rs.MarkInUnixMs(),
-				MarkOut:    rs.MarkOutUnixMs(),
-				MarkSource: rs.MarkSource,
+				State:          string(rs.State),
+				Source:         rs.Source,
+				Speed:          rs.Speed,
+				Loop:           rs.Loop,
+				Position:       rs.Position,
+				MarkIn:         rs.MarkInUnixMs(),
+				MarkOut:        rs.MarkOutUnixMs(),
+				MarkSource:     rs.MarkSource,
+				ShutterAngle:   rs.ShutterAngle,
+				GPUAccelerated: rs.GPUAccelerated,
 			}
 			for _, b := range rs.Buffers {
 				rState.Buffers = append(rState.Buffers, internal.ReplayBufferInfo{

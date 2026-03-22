@@ -193,6 +193,9 @@ func (p *replayPlayer) SetSpeed(speed float64) {
 	p.speed.Store(speed)
 }
 
+// SetShutterAngle is a no-op on the CPU player (motion blur is GPU-only).
+func (p *replayPlayer) SetShutterAngle(angle float64) {}
+
 // Seek seeks to the given position (0.0-1.0) within the clip.
 func (p *replayPlayer) Seek(position float64) {
 	if position < 0.0 {
