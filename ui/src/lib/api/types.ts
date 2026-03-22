@@ -295,7 +295,13 @@ export type MacroAction =
 	// Captions
 	| 'caption_mode' | 'caption_text' | 'caption_clear'
 	// Clips
-	| 'clip_load' | 'clip_play' | 'clip_pause' | 'clip_stop' | 'clip_eject' | 'clip_seek';
+	| 'clip_load' | 'clip_play' | 'clip_pause' | 'clip_stop' | 'clip_eject' | 'clip_seek'
+	// ST Map
+	| 'stmap_assign_source' | 'stmap_remove_source' | 'stmap_assign_program' | 'stmap_remove_program'
+	// Layout
+	| 'layout_preset' | 'layout_slot_on' | 'layout_slot_off' | 'layout_slot_source' | 'layout_clear'
+	// Color Grade
+	| 'colorgrade_set' | 'colorgrade_off';
 
 export interface MacroStep {
 	action: MacroAction;

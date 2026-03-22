@@ -158,6 +158,10 @@ func validateStep(i int, step Step, result *ValidationResult) {
 			})
 		}
 
+	// Color grade actions.
+	case ActionColorGradeSet:
+		validateColorGradeSet(i, step, result)
+
 	// Clip player actions that require player (1-4).
 	case ActionClipLoad, ActionClipPlay, ActionClipPause, ActionClipStop, ActionClipEject, ActionClipSeek:
 		validateClipStep(i, step, result)
@@ -349,6 +353,24 @@ func validateClipStep(i int, step Step, result *ValidationResult) {
 			result.Errors = append(result.Errors, ValidationError{
 				Step:    i,
 				Message: "clip_seek requires 'position' param (0.0-1.0)",
+			})
+		}
+	}
+}
+
+// validateColorGradeSet checks that lookName is present and intensity (if given) is in [0,1].
+func validateColorGradeSet(i int, step Step, result *ValidationResult) {
+	if !hasStringParam(step.Params, "lookName") {
+		result.Errors = append(result.Errors, ValidationError{
+			Step:    i,
+			Message: "colorgrade_set requires 'lookName' param",
+		})
+	}
+	if v, ok := step.Params["intensity"].(float64); ok {
+		if v < 0 || v > 1 {
+			result.Errors = append(result.Errors, ValidationError{
+				Step:    i,
+				Message: fmt.Sprintf("colorgrade_set intensity must be between 0.0 and 1.0, got %.2f", v),
 			})
 		}
 	}

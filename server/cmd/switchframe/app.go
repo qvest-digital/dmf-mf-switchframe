@@ -616,6 +616,7 @@ func (a *App) initSubsystems() error {
 		slog.Warn("color grade store init failed", "error", err)
 	} else {
 		a.colorGradeCtrl = newColorGradeController(colorGradeStore)
+		a.debugCollector.Register("colorgrade", a.colorGradeCtrl)
 		slog.Info("color grade store loaded",
 			"builtin", builtinLooksDir,
 			"upload", uploadLooksDir,

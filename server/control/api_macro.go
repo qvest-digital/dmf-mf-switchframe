@@ -15,12 +15,14 @@ import (
 	"github.com/zsiec/switchframe/server/control/httperr"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
+	"github.com/zsiec/switchframe/server/layout"
 	"github.com/zsiec/switchframe/server/macro"
 	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/preset"
 	"github.com/zsiec/switchframe/server/replay"
 	"github.com/zsiec/switchframe/server/scte35"
 	"github.com/zsiec/switchframe/server/stinger"
+	"github.com/zsiec/switchframe/server/stmap"
 	"github.com/zsiec/switchframe/server/switcher"
 )
 
@@ -115,18 +117,23 @@ func (a *API) handleRunMacro(w http.ResponseWriter, r *http.Request) {
 	a.macroMu.Unlock()
 
 	target := &apiMacroTarget{
-		switcher:     a.switcher,
-		mixer:        a.mixer,
-		compositor:   a.compositor,
-		keyer:        a.keyer,
-		replayMgr:    a.replayMgr,
-		presetStore:  a.presetStore,
-		outputMgr:    a.outputMgr,
-		stingerStore: a.stingerStore,
-		scte35:       a.scte35,
-		captionMgr:   a.captionMgr,
-		clipMgr:      a.clipMgr,
-		aiSegmentMgr: a.aiSegmentMgr,
+		switcher:         a.switcher,
+		mixer:            a.mixer,
+		compositor:       a.compositor,
+		keyer:            a.keyer,
+		replayMgr:        a.replayMgr,
+		presetStore:      a.presetStore,
+		outputMgr:        a.outputMgr,
+		stingerStore:     a.stingerStore,
+		scte35:           a.scte35,
+		captionMgr:       a.captionMgr,
+		clipMgr:          a.clipMgr,
+		aiSegmentMgr:     a.aiSegmentMgr,
+		colorGradeMgr:    a.colorGradeMgr,
+		layoutCompositor: a.layoutCompositor,
+		stmapRegistry:    a.stmapRegistry,
+		textAnimEngine:   a.textAnimEngine,
+		tickerEngine:     a.tickerEngine,
 	}
 
 	onProgress := func(state macro.ExecutionState) {
@@ -208,18 +215,23 @@ func (a *API) handleCancelMacro(w http.ResponseWriter, r *http.Request) {
 // apiMacroTarget adapts the API's subsystems to the macro.Target
 // interface so Run() can execute macro steps without knowing concrete types.
 type apiMacroTarget struct {
-	switcher     *switcher.Switcher
-	mixer        AudioMixerAPI
-	compositor   *graphics.Compositor
-	keyer        *graphics.KeyProcessor
-	replayMgr    *replay.Manager
-	presetStore  *preset.Store
-	outputMgr    OutputManagerAPI
-	stingerStore *stinger.Store
-	scte35       SCTE35API
-	captionMgr   CaptionManagerAPI
-	clipMgr      *clip.Manager
-	aiSegmentMgr AISegmentManager
+	switcher         *switcher.Switcher
+	mixer            AudioMixerAPI
+	compositor       *graphics.Compositor
+	keyer            *graphics.KeyProcessor
+	replayMgr        *replay.Manager
+	presetStore      *preset.Store
+	outputMgr        OutputManagerAPI
+	stingerStore     *stinger.Store
+	scte35           SCTE35API
+	captionMgr       CaptionManagerAPI
+	clipMgr          *clip.Manager
+	aiSegmentMgr     AISegmentManager
+	colorGradeMgr    ColorGradeManager
+	layoutCompositor *layout.Compositor
+	stmapRegistry    *stmap.Registry
+	textAnimEngine   *graphics.TextAnimationEngine
+	tickerEngine     *graphics.TickerEngine
 }
 
 func (t *apiMacroTarget) Cut(ctx context.Context, source string) error {
@@ -410,6 +422,49 @@ func (t *apiMacroTarget) Execute(ctx context.Context, action string, params map[
 		return t.execClipEject(params)
 	case macro.ActionClipSeek:
 		return t.execClipSeek(params)
+
+	// Color Grade
+	case macro.ActionColorGradeSet:
+		return t.execColorGradeSet(params)
+	case macro.ActionColorGradeOff:
+		return t.execColorGradeOff()
+
+	// Layout
+	case macro.ActionLayoutPreset:
+		return t.execLayoutPreset(params)
+	case macro.ActionLayoutSlotOn:
+		return t.execLayoutSlotOn(params)
+	case macro.ActionLayoutSlotOff:
+		return t.execLayoutSlotOff(params)
+	case macro.ActionLayoutSlotSource:
+		return t.execLayoutSlotSource(params)
+	case macro.ActionLayoutClear:
+		return t.execLayoutClear()
+
+	// ST Map
+	case macro.ActionSTMapAssignSource:
+		return t.execSTMapAssignSource(params)
+	case macro.ActionSTMapRemoveSource:
+		return t.execSTMapRemoveSource(params)
+	case macro.ActionSTMapAssignProgram:
+		return t.execSTMapAssignProgram(params)
+	case macro.ActionSTMapRemoveProgram:
+		return t.execSTMapRemoveProgram()
+
+	// Graphics (text/ticker/fly-on)
+	case macro.ActionGraphicsFlyOn:
+		id := int(floatParam(params, "layerId", 0))
+		dir, _ := params["direction"].(string)
+		dur := int(floatParam(params, "durationMs", 500))
+		return t.execGraphics(func(c *graphics.Compositor) error { return c.FlyOn(id, dir, dur) })
+	case macro.ActionGraphicsTextAnimate:
+		return t.execTextAnimate(params)
+	case macro.ActionGraphicsTextAnimateStop:
+		return t.execTextAnimateStop(params)
+	case macro.ActionGraphicsTickerStart:
+		return t.execTickerStart(params)
+	case macro.ActionGraphicsTickerStop:
+		return t.execTickerStop(params)
 
 	default:
 		return fmt.Errorf("unimplemented action %q", action)
@@ -997,7 +1052,186 @@ func (t *apiMacroTarget) execAISegDisable(params map[string]any) error {
 	return nil
 }
 
+// --- Color Grade helpers ---
+
+func (t *apiMacroTarget) execColorGradeSet(params map[string]any) error {
+	if t.colorGradeMgr == nil {
+		return nil
+	}
+	lookName, _ := params["lookName"].(string)
+	if lookName == "" {
+		return errors.New("colorgrade_set requires 'lookName' param")
+	}
+	intensity := float32(floatParam(params, "intensity", 1.0))
+	return t.colorGradeMgr.SetColorGrade(lookName, intensity)
+}
+
+func (t *apiMacroTarget) execColorGradeOff() error {
+	if t.colorGradeMgr == nil {
+		return nil
+	}
+	t.colorGradeMgr.DisableColorGrade()
+	return nil
+}
+
+// --- Layout helpers ---
+
+func (t *apiMacroTarget) execLayoutPreset(params map[string]any) error {
+	if t.layoutCompositor == nil {
+		return nil
+	}
+	preset, _ := params["preset"].(string)
+	if preset == "" {
+		return errors.New("layout_preset requires 'preset' param")
+	}
+	w, h := t.layoutCompositor.FrameSize()
+	l := layout.ResolveBuiltinPreset(preset, w, h)
+	if l == nil {
+		return fmt.Errorf("layout preset %q not found", preset)
+	}
+	t.layoutCompositor.SetLayout(l)
+	return nil
+}
+
+func (t *apiMacroTarget) execLayoutSlotOn(params map[string]any) error {
+	if t.layoutCompositor == nil {
+		return nil
+	}
+	slot := int(floatParam(params, "slot", 0))
+	t.layoutCompositor.SlotOn(slot)
+	return nil
+}
+
+func (t *apiMacroTarget) execLayoutSlotOff(params map[string]any) error {
+	if t.layoutCompositor == nil {
+		return nil
+	}
+	slot := int(floatParam(params, "slot", 0))
+	t.layoutCompositor.SlotOff(slot)
+	return nil
+}
+
+func (t *apiMacroTarget) execLayoutSlotSource(params map[string]any) error {
+	if t.layoutCompositor == nil {
+		return nil
+	}
+	slot := int(floatParam(params, "slot", 0))
+	source, _ := params["source"].(string)
+	t.layoutCompositor.UpdateSlot(slot, func(s *layout.Slot) {
+		s.SourceKey = source
+	})
+	return nil
+}
+
+func (t *apiMacroTarget) execLayoutClear() error {
+	if t.layoutCompositor == nil {
+		return nil
+	}
+	t.layoutCompositor.SetLayout(nil)
+	return nil
+}
+
+// --- ST Map helpers ---
+
+func (t *apiMacroTarget) execSTMapAssignSource(params map[string]any) error {
+	if t.stmapRegistry == nil {
+		return nil
+	}
+	source, _ := params["source"].(string)
+	mapName, _ := params["map"].(string)
+	return t.stmapRegistry.AssignSource(source, mapName)
+}
+
+func (t *apiMacroTarget) execSTMapRemoveSource(params map[string]any) error {
+	if t.stmapRegistry == nil {
+		return nil
+	}
+	source, _ := params["source"].(string)
+	t.stmapRegistry.RemoveSource(source)
+	return nil
+}
+
+func (t *apiMacroTarget) execSTMapAssignProgram(params map[string]any) error {
+	if t.stmapRegistry == nil {
+		return nil
+	}
+	mapName, _ := params["map"].(string)
+	return t.stmapRegistry.AssignProgram(mapName)
+}
+
+func (t *apiMacroTarget) execSTMapRemoveProgram() error {
+	if t.stmapRegistry == nil {
+		return nil
+	}
+	t.stmapRegistry.RemoveProgram()
+	return nil
+}
+
+// --- Text Animation / Ticker helpers ---
+
+func (t *apiMacroTarget) execTextAnimate(params map[string]any) error {
+	if t.textAnimEngine == nil {
+		return nil
+	}
+	id := int(floatParam(params, "layerId", 0))
+	cfg := graphics.TextAnimationConfig{
+		Mode:     stringParam(params, "mode"),
+		Text:     stringParam(params, "text"),
+		FontSize: floatParam(params, "fontSize", 0),
+	}
+	if v, ok := params["bold"].(bool); ok {
+		cfg.Bold = v
+	}
+	cfg.CharsPerSec = floatParam(params, "charsPerSec", 0)
+	cfg.WordDelayMs = int(floatParam(params, "wordDelayMs", 0))
+	cfg.FadeDurationMs = int(floatParam(params, "fadeDurationMs", 0))
+	cfg.Width = int(floatParam(params, "width", 0))
+	cfg.Height = int(floatParam(params, "height", 0))
+	return t.textAnimEngine.Start(id, cfg)
+}
+
+func (t *apiMacroTarget) execTextAnimateStop(params map[string]any) error {
+	if t.textAnimEngine == nil {
+		return nil
+	}
+	id := int(floatParam(params, "layerId", 0))
+	return t.textAnimEngine.Stop(id)
+}
+
+func (t *apiMacroTarget) execTickerStart(params map[string]any) error {
+	if t.tickerEngine == nil {
+		return nil
+	}
+	id := int(floatParam(params, "layerId", 0))
+	cfg := graphics.TickerConfig{
+		Text:  stringParam(params, "text"),
+		Speed: floatParam(params, "speed", 50),
+	}
+	cfg.FontSize = floatParam(params, "fontSize", 0)
+	if v, ok := params["bold"].(bool); ok {
+		cfg.Bold = v
+	}
+	if v, ok := params["loop"].(bool); ok {
+		cfg.Loop = v
+	}
+	cfg.Height = int(floatParam(params, "height", 0))
+	return t.tickerEngine.Start(id, cfg)
+}
+
+func (t *apiMacroTarget) execTickerStop(params map[string]any) error {
+	if t.tickerEngine == nil {
+		return nil
+	}
+	id := int(floatParam(params, "layerId", 0))
+	return t.tickerEngine.Stop(id)
+}
+
 // --- Param helpers ---
+
+func stringParam(params map[string]any, key string) string {
+	v, _ := params[key].(string)
+	return v
+}
 
 func floatParam(params map[string]any, key string, defaultVal float64) float64 {
 	if v, ok := params[key].(float64); ok {

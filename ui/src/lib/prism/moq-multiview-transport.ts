@@ -62,7 +62,8 @@ export class MoQMultiviewTransport {
 				onReady!();
 			}, onReady!);
 
-			const transport = new MoQTransport(key, moqCallbacks);
+			// Multiview tiles get lower video priority (96) than program feed (16)
+			const transport = new MoQTransport(key, moqCallbacks, 96);
 			this.transports.push(transport);
 		}
 

@@ -41,7 +41,7 @@ func NewVideoEncoder(width, height, bitrate, fpsNum, fpsDen int) (transition.Vid
 // fpsNum/fpsDen express the frame rate as a rational number (e.g. 30/1 for 30fps).
 func NewPreviewEncoder(width, height, bitrate, fpsNum, fpsDen int, preset ...string) (transition.VideoEncoder, error) {
 	enc, _ := ProbeEncoders()
-	gopSecs := transition.DefaultGOPSecs
+	gopSecs := transition.PreviewGOPSecs
 	// Use hardware encoder for previews when available (NVENC/VA-API/VT).
 	// GPU encode is near-zero CPU, freeing cores for decode and compositing.
 	// Pass nil hwDeviceCtx so each encoder creates its own CUDA context.

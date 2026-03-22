@@ -111,9 +111,13 @@ export class MoQTransport {
 	private _diagVideoArrivalMax = 0;
 	private _diagVideoArrivalCount = 0;
 
-	constructor(streamKey: string, callbacks: MoQTransportCallbacks) {
+	/** Video subscriber priority (lower = higher priority). Default 64. */
+	private videoPriority: number;
+
+	constructor(streamKey: string, callbacks: MoQTransportCallbacks, videoPriority = 64) {
 		this.streamKey = streamKey;
 		this.callbacks = callbacks;
+		this.videoPriority = videoPriority;
 	}
 
 	/** Returns the underlying WebTransport session, or null if not connected. */
@@ -205,8 +209,9 @@ export class MoQTransport {
 			if (track.name === "catalog") continue;
 			// Audio gets highest priority (0) — broadcast principle: viewers
 			// tolerate a frozen frame but notice audio glitches instantly.
-			// Video at 64, captions at 128.
-			const priority = track.name.startsWith("audio") ? 0 : track.name === "video" ? 64 : 128;
+			// Video priority is per-transport (program=16, multiview=96).
+			// Captions at 128.
+			const priority = track.name.startsWith("audio") ? 0 : track.name === "video" ? this.videoPriority : 128;
 			mediaSubscriptions.push(this.subscribe(this.namespace, track.name, priority));
 		}
 		await Promise.all(mediaSubscriptions);

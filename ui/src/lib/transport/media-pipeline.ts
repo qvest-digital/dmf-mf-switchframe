@@ -52,6 +52,10 @@ interface SourceMedia {
 	videoWidth: number;
 	videoHeight: number;
 	videoInitData: string | null; // base64 avcC
+	/** Newest MoQ group ID seen — used for skip-to-latest on stall recovery. */
+	latestGroupID: number;
+	/** Count of group-level skips (diagnostic). */
+	groupSkips: number;
 }
 
 /** Orchestrates MoQ media subscriptions and per-source decode pipelines. */
@@ -142,6 +146,8 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 			videoWidth: 0,
 			videoHeight: 0,
 			videoInitData: null,
+			latestGroupID: 0,
+			groupSkips: 0,
 		};
 	}
 
@@ -190,10 +196,38 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 				data: Uint8Array,
 				isKeyframe: boolean,
 				timestamp: number,
-				_groupID: number,
+				groupID: number,
 				description: Uint8Array | null,
 			) {
-					// MoQ timestamps are in 90kHz (MPEG-TS clock); WebCodecs expects microseconds.
+				const source = sources.get(key);
+				if (!source) return;
+
+				// Group-level skip-to-latest: when a keyframe from a newer MoQ
+				// group arrives, flush stale decoder state and jump forward.
+				// This converts multi-second transport stalls into a single
+				// visible skip instead of a growing delay.
+				if (groupID > 0 && groupID > source.latestGroupID) {
+					if (isKeyframe) {
+						if (source.latestGroupID > 0) {
+							// We're skipping from an older group — flush decoder + buffer
+							source.videoDecoder.flush();
+							for (const buf of source.secondaryBuffers.values()) {
+								buf.clear();
+							}
+							source.groupSkips++;
+						}
+						source.latestGroupID = groupID;
+					} else {
+						// Non-keyframe from a group newer than what we've decoded —
+						// drop it, we need the keyframe first.
+						return;
+					}
+				} else if (groupID > 0 && groupID < source.latestGroupID) {
+					// Stale frame from an older group — drop silently.
+					return;
+				}
+
+				// MoQ timestamps are in 90kHz (MPEG-TS clock); WebCodecs expects microseconds.
 				const timestampUs = Math.round(timestamp * 1_000_000 / 90_000);
 				feedVideoFrame(key, data, isKeyframe, timestampUs, description);
 			},
@@ -362,7 +396,11 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		if (source.transport) return; // already connected
 
 		const callbacks = makeCallbacks(key);
-		const transport = new MoQTransport(key, callbacks);
+		// Program/program-preview get high priority (16) so QUIC schedules them
+		// ahead of multiview tiles (96) during bandwidth contention.
+		const isProgramFeed = key === "program" || key === "program-preview";
+		const videoPriority = isProgramFeed ? 16 : 96;
+		const transport = new MoQTransport(key, callbacks, videoPriority);
 		source.transport = transport;
 
 		// Connect asynchronously
@@ -535,11 +573,16 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 				break;
 			}
 
+			const transportDiag = (source.transport?.getDiagnostics() ?? null) as Record<string, unknown> | null;
+			if (transportDiag) {
+				transportDiag.groupSkips = source.groupSkips;
+				transportDiag.latestGroupID = source.latestGroupID;
+			}
 			result[key] = {
 				renderer: rendererDiag,
 				videoDecoder: await source.videoDecoder.getDiagnostics() as unknown as Record<string, unknown>,
 				audio: (source.audioDecoder?.getDiagnostics() ?? null) as Record<string, unknown> | null,
-				transport: (source.transport?.getDiagnostics() ?? null) as Record<string, unknown> | null,
+				transport: transportDiag,
 			};
 		}
 		return result;

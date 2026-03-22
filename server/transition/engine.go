@@ -15,7 +15,12 @@ import (
 const (
 	DefaultBitrate = 4_000_000 // 4 Mbps
 	DefaultFPS     = 30.0
-	DefaultGOPSecs = 2 // IDR interval in seconds
+	DefaultGOPSecs = 2 // IDR interval in seconds (program output)
+
+	// PreviewGOPSecs is a shorter IDR interval for preview/relay encodes.
+	// Shorter GOPs mean faster recovery after transport stalls — the browser
+	// waits at most 1s for the next keyframe instead of 2s.
+	PreviewGOPSecs = 1
 )
 
 // DefaultTimeout is the default watchdog timeout for transition frame starvation.

@@ -87,18 +87,25 @@ export class PrismVideoDecoder {
 		this.configured = true;
 	}
 
+	/**
+	 * Flush the decoder pipeline and clear the render buffer.
+	 * The worker discards pending frames and waits for the next keyframe.
+	 * Used by group-level skip-to-latest when a newer MoQ group arrives.
+	 */
+	flush(): void {
+		if (this.worker) {
+			this.worker.postMessage({ type: "flush" });
+		}
+		this.renderBuffer.clear();
+	}
+
 	pause(): void {
 		this._paused = true;
 	}
 
 	resume(): void {
 		this._paused = false;
-		// Tell worker to wait for next keyframe
-		if (this.worker) {
-			this.worker.postMessage({ type: "flush" });
-		}
-		// Clear stale frames from all buffers
-		this.renderBuffer.clear();
+		this.flush();
 	}
 
 	decode(data: Uint8Array, isKeyframe: boolean, timestamp: number, isDisco: boolean): void {

@@ -303,7 +303,7 @@ describe('MediaPipeline', () => {
 		pipeline.connectSource('cam1');
 
 		const diag = await pipeline.getAllDiagnostics();
-		// Transport getDiagnostics was called (mock returns {})
-		expect(diag['cam1'].transport).toEqual({});
+		// Transport getDiagnostics was called (mock returns {} + group skip fields)
+		expect(diag['cam1'].transport).toEqual({ groupSkips: 0, latestGroupID: 0 });
 	});
 });

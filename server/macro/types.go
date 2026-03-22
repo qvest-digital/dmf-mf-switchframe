@@ -185,6 +185,8 @@ var allActions = map[Action]bool{
 	ActionSTMapRemoveSource:       true,
 	ActionSTMapAssignProgram:      true,
 	ActionSTMapRemoveProgram:      true,
+	ActionColorGradeSet:           true,
+	ActionColorGradeOff:           true,
 }
 
 // IsValidAction reports whether a is a recognized macro action.
@@ -386,6 +388,17 @@ var stepSummaryMap = map[Action]stepSummaryFunc{
 	ActionSTMapRemoveSource:  sourceSummary("ST Map Remove Source"),
 	ActionSTMapAssignProgram: staticSummary("ST Map Assign Program"),
 	ActionSTMapRemoveProgram: staticSummary("ST Map Remove Program"),
+
+	// Color grade actions.
+	ActionColorGradeSet: func(s Step) string {
+		look, _ := s.Params["lookName"].(string)
+		intensity := 1.0
+		if v, ok := s.Params["intensity"].(float64); ok {
+			intensity = v
+		}
+		return fmt.Sprintf("Color Grade %s %.0f%%", look, intensity*100)
+	},
+	ActionColorGradeOff: staticSummary("Color Grade Off"),
 }
 
 // paramStr extracts a string parameter from a step.

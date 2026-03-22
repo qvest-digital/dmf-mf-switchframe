@@ -80,9 +80,23 @@ export const ACTION_META: Record<MacroAction, ActionMeta> = {
 	clip_stop: { label: 'Stop Clip', category: 'Clips', description: 'Stop and reset clip' },
 	clip_eject: { label: 'Eject Clip', category: 'Clips', description: 'Eject clip from player' },
 	clip_seek: { label: 'Seek Clip', category: 'Clips', description: 'Seek to position in clip' },
+	// ST Map
+	stmap_assign_source: { label: 'Assign Source Map', category: 'ST Map', description: 'Apply ST map to source' },
+	stmap_remove_source: { label: 'Remove Source Map', category: 'ST Map', description: 'Remove ST map from source' },
+	stmap_assign_program: { label: 'Assign Program Map', category: 'ST Map', description: 'Apply ST map to program' },
+	stmap_remove_program: { label: 'Remove Program Map', category: 'ST Map', description: 'Remove ST map from program' },
+	// Layout
+	layout_preset: { label: 'Layout Preset', category: 'Layout', description: 'Apply a layout preset' },
+	layout_slot_on: { label: 'Slot On', category: 'Layout', description: 'Enable a layout slot' },
+	layout_slot_off: { label: 'Slot Off', category: 'Layout', description: 'Disable a layout slot' },
+	layout_slot_source: { label: 'Slot Source', category: 'Layout', description: 'Set layout slot source' },
+	layout_clear: { label: 'Clear Layout', category: 'Layout', description: 'Remove all layout slots' },
+	// Color Grade
+	colorgrade_set: { label: 'Set Look', category: 'Color Grade', description: 'Apply color grading look' },
+	colorgrade_off: { label: 'Grade Off', category: 'Color Grade', description: 'Disable color grading' },
 };
 
-export const CATEGORIES = ['Switching', 'Timing', 'Audio', 'Graphics', 'Output', 'Presets', 'Keys', 'Source', 'Replay', 'SCTE-35', 'Captions', 'Clips'] as const;
+export const CATEGORIES = ['Switching', 'Timing', 'Audio', 'Graphics', 'Output', 'Presets', 'Keys', 'Source', 'Replay', 'SCTE-35', 'Captions', 'Clips', 'ST Map', 'Layout', 'Color Grade'] as const;
 
 export const SOURCE_ACTIONS: MacroAction[] = [
 	'cut', 'preview', 'transition', 'set_audio',
@@ -92,6 +106,8 @@ export const SOURCE_ACTIONS: MacroAction[] = [
 	'source_delay', 'source_position',
 	'replay_mark_in', 'replay_mark_out', 'replay_play',
 	'replay_quick_clip', 'replay_play_clip',
+	'stmap_assign_source', 'stmap_remove_source',
+	'layout_slot_source',
 ];
 
 /** Graphics actions that take a layerId parameter. */

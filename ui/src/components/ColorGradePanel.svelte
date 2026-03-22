@@ -3,13 +3,9 @@
 	import { setColorGrade, uploadColorGradeLUT, deleteColorGradeLUT } from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
 
-	interface Props {
-		state: ControlRoomState;
-	}
+	let { state: crState }: { state: ControlRoomState } = $props();
 
-	let { state }: Props = $props();
-
-	let colorGrade = $derived(state.colorGrade);
+	let colorGrade = $derived(crState.colorGrade);
 	let activeLook = $derived(colorGrade?.lookName ?? '');
 	let intensity = $state(100);
 	let uploading = $state(false);
@@ -127,16 +123,16 @@
 			<label class="intensity-label">
 				<span>Intensity</span>
 				<span class="intensity-value">{intensity}%</span>
+				<input
+					type="range"
+					min="0"
+					max="100"
+					step="1"
+					bind:value={intensity}
+					onchange={updateIntensity}
+					class="intensity-slider"
+				/>
 			</label>
-			<input
-				type="range"
-				min="0"
-				max="100"
-				step="1"
-				bind:value={intensity}
-				onchange={updateIntensity}
-				class="intensity-slider"
-			/>
 		</div>
 	{/if}
 

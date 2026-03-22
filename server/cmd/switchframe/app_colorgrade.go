@@ -82,6 +82,19 @@ func (c *colorGradeController) GetState() internal.ColorGradeState {
 	}
 }
 
+// DebugSnapshot implements debug.SnapshotProvider.
+func (c *colorGradeController) DebugSnapshot() map[string]any {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return map[string]any{
+		"enabled":   c.enabled,
+		"lookName":  c.lookName,
+		"intensity": c.intensity,
+		"lutSize":   c.lutSize,
+		"lutGen":    c.lutGen,
+	}
+}
+
 func (c *colorGradeController) UploadLUT(name string, data io.Reader) error {
 	return c.store.Upload(name, data)
 }
