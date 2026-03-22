@@ -77,3 +77,14 @@ func (f *FRUC) Interpolate(prev, curr, output *GPUFrame, alpha float64) error {
 func (f *FRUC) Close() {
 	// No GPU-resident resources to free (Metal buffers are in the pool)
 }
+
+// ComputeFlow is a no-op on Metal (no hardware optical flow).
+func (f *FRUC) ComputeFlow(prev, curr *GPUFrame) bool { return false }
+
+// MotionBlur falls back to Interpolate on Metal (no hardware optical flow).
+func (f *FRUC) MotionBlur(prev, curr, output *GPUFrame, alpha, shutterAngle float64) error {
+	return f.Interpolate(prev, curr, output, alpha)
+}
+
+// HasNVOFA returns false on Metal (no NVIDIA hardware).
+func (f *FRUC) HasNVOFA() bool { return false }
