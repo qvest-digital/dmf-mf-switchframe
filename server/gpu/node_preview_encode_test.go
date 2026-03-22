@@ -35,7 +35,7 @@ func TestGPUPreviewEncodeNode_Interface(t *testing.T) {
 	require.NotNil(t, node, "node should be non-nil with valid ctx and callback")
 
 	// Verify interface compliance.
-	var _ GPUPipelineNode = node
+	_ = GPUPipelineNode(node)
 
 	// Check Name.
 	assert.Equal(t, "gpu_preview_encode", node.Name())

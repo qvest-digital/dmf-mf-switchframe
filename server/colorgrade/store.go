@@ -136,13 +136,16 @@ func (s *Store) Upload(name string, data io.Reader) error {
 	if err != nil {
 		return fmt.Errorf("colorgrade store: create file: %w", err)
 	}
-	defer f.Close()
 
 	if err := WriteCube(f, lut); err != nil {
+		_ = f.Close()
 		_ = os.Remove(path)
 		return fmt.Errorf("colorgrade store: write file: %w", err)
 	}
 
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("colorgrade store: close file: %w", err)
+	}
 	return nil
 }
 
@@ -173,7 +176,7 @@ func (s *Store) loadFile(path string) (*LUT3D, error) {
 	if err != nil {
 		return nil, fmt.Errorf("colorgrade store: open: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	lut, err := ParseCube(f)
 	if err != nil {

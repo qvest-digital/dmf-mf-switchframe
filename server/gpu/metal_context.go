@@ -102,11 +102,11 @@ func newMetalContext() (*metalContext, error) {
 			return nil, fmt.Errorf("gpu: metal: create temp metallib: %w", tmpErr)
 		}
 		if _, wErr := tmpFile.Write(embeddedMetallib); wErr != nil {
-			tmpFile.Close()
-			os.Remove(tmpFile.Name())
+			_ = tmpFile.Close()
+			_ = os.Remove(tmpFile.Name())
 			return nil, fmt.Errorf("gpu: metal: write temp metallib: %w", wErr)
 		}
-		tmpFile.Close()
+		_ = tmpFile.Close()
 		libPath = tmpFile.Name()
 		tempPath = libPath
 	}
@@ -122,7 +122,7 @@ func newMetalContext() (*metalContext, error) {
 	rc := C.metal_init(&c.device, &c.queue, &c.library, cPath)
 	if rc != C.METAL_SUCCESS {
 		if tempPath != "" {
-			os.Remove(tempPath)
+			_ = os.Remove(tempPath)
 		}
 		return nil, fmt.Errorf("gpu: metal_init failed: %d", rc)
 	}
@@ -167,7 +167,7 @@ func (c *metalContext) Close() error {
 
 	// Clean up temp metallib file
 	if c.tempMetallibPath != "" {
-		os.Remove(c.tempMetallibPath)
+		_ = os.Remove(c.tempMetallibPath)
 		c.tempMetallibPath = ""
 	}
 

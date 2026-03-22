@@ -191,7 +191,7 @@ func (f *GPUFrame) NV12Size() int {
 
 // contentsPtr returns a Go-accessible unsafe.Pointer to the Metal buffer contents.
 func (f *GPUFrame) contentsPtr() unsafe.Pointer {
-	return unsafe.Pointer(f.DevPtr)
+	return unsafe.Pointer(f.DevPtr) //nolint:govet // intentional Metal buffer pointer conversion
 }
 
 // ScaleQuality selects the scaling algorithm.

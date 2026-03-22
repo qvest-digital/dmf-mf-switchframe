@@ -31,7 +31,7 @@ func NewWorkQueue(ctx *Context) (*GPUWorkQueue, error) {
 // must be explicitly released via CFRelease.
 func CloseWorkQueue(q *GPUWorkQueue) {
 	if q != nil && q.handle != 0 {
-		C.metal_queue_release(C.MetalQueueRef(unsafe.Pointer(q.handle)))
+		C.metal_queue_release(C.MetalQueueRef(unsafe.Pointer(q.handle))) //nolint:govet // intentional Metal queue handle conversion
 		q.handle = 0
 	}
 }
@@ -42,7 +42,7 @@ func SyncWorkQueue(q *GPUWorkQueue) error {
 	if q == nil || q.handle == 0 {
 		return nil
 	}
-	queue := C.MetalQueueRef(unsafe.Pointer(q.handle))
+	queue := C.MetalQueueRef(unsafe.Pointer(q.handle)) //nolint:govet // intentional Metal queue handle conversion
 	rc := C.metal_sync(queue)
 	if rc != C.METAL_SUCCESS {
 		return fmt.Errorf("gpu: metal work queue sync failed: %d", rc)
@@ -56,5 +56,5 @@ func metalQueueRef(q *GPUWorkQueue) C.MetalQueueRef {
 	if q == nil || q.handle == 0 {
 		return nil
 	}
-	return C.MetalQueueRef(unsafe.Pointer(q.handle))
+	return C.MetalQueueRef(unsafe.Pointer(q.handle)) //nolint:govet // intentional Metal queue handle conversion
 }

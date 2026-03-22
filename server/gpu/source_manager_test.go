@@ -16,7 +16,7 @@ import (
 func TestGPUSourceManager_IngestAndGetFrame(t *testing.T) {
 	const w, h = 32, 32
 	ctx, pool := setupGPU(t, w, h, 8)
-	defer ctx.Close()
+	defer func() { _ = ctx.Close() }()
 	defer pool.Close()
 
 	mgr := NewGPUSourceManager(ctx, pool, nil)
@@ -63,7 +63,7 @@ func TestGPUSourceManager_IngestAndGetFrame(t *testing.T) {
 func TestGPUSourceManager_RemoveSource(t *testing.T) {
 	const w, h = 32, 32
 	ctx, pool := setupGPU(t, w, h, 8)
-	defer ctx.Close()
+	defer func() { _ = ctx.Close() }()
 	defer pool.Close()
 
 	mgr := NewGPUSourceManager(ctx, pool, nil)
@@ -97,7 +97,7 @@ func TestGPUSourceManager_RemoveSource(t *testing.T) {
 func TestGPUSourceManager_STMapCorrection(t *testing.T) {
 	const w, h = 32, 32
 	ctx, pool := setupGPU(t, w, h, 12) // extra frames for stmap tmp buffers
-	defer ctx.Close()
+	defer func() { _ = ctx.Close() }()
 	defer pool.Close()
 
 	// Create a horizontal flip ST map: each pixel reads from (w-1-x, y).
@@ -169,7 +169,7 @@ func TestGPUSourceManager_STMapCorrection(t *testing.T) {
 func TestGPUSourceManager_ConcurrentIngestGet(t *testing.T) {
 	const w, h = 32, 32
 	ctx, pool := setupGPU(t, w, h, 32) // large pool for concurrent access
-	defer ctx.Close()
+	defer func() { _ = ctx.Close() }()
 	defer pool.Close()
 
 	mgr := NewGPUSourceManager(ctx, pool, nil)
@@ -235,7 +235,7 @@ func TestGPUSourceManager_PreviewEncode(t *testing.T) {
 	const w, h = 64, 64
 	const previewW, previewH = 32, 32
 	ctx, pool := setupGPU(t, w, h, 12)
-	defer ctx.Close()
+	defer func() { _ = ctx.Close() }()
 	defer pool.Close()
 
 	var previewFrames atomic.Int64

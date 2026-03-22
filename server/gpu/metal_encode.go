@@ -134,7 +134,7 @@ func (e *GPUEncoder) EncodeGPU(frame *GPUFrame, forceIDR bool) ([]byte, bool, er
 
 		rc := C.metal_vt_encode(
 			e.vtEnc,
-			unsafe.Pointer(frame.DevPtr),
+			unsafe.Pointer(frame.DevPtr), //nolint:govet // intentional Metal buffer pointer conversion
 			C.int(frame.Pitch),
 			C.int(frame.Width),
 			C.int(frame.Height),

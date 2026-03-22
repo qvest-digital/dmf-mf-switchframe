@@ -92,7 +92,7 @@ func setupGPU(t *testing.T, w, h, poolSize int) (*Context, *FramePool) {
 func TestGPUPipelineIntegration_PassthroughAllInactive(t *testing.T) {
 	const w, h = 64, 64
 	ctx, pool := setupGPU(t, w, h, 4)
-	defer ctx.Close()
+	defer func() { _ = ctx.Close() }()
 	defer pool.Close()
 
 	// All mocks return inactive state.
@@ -110,7 +110,7 @@ func TestGPUPipelineIntegration_PassthroughAllInactive(t *testing.T) {
 		NewGPUSTMapNode(ctx, pool, stmapState),
 	})
 	require.NoError(t, err)
-	defer pipe.Close()
+	defer func() { _ = pipe.Close() }()
 
 	// Create a test frame: Y=180, Cb=100, Cr=200
 	inputYUV := createTestYUV420p(w, h, 180, 100, 200)
@@ -159,7 +159,7 @@ func TestGPUPipelineIntegration_PassthroughAllInactive(t *testing.T) {
 func TestGPUPipelineIntegration_CompositorOverlay(t *testing.T) {
 	const w, h = 64, 64
 	ctx, pool := setupGPU(t, w, h, 4)
-	defer ctx.Close()
+	defer func() { _ = ctx.Close() }()
 	defer pool.Close()
 
 	// Create a 4x4 red RGBA overlay at full alpha.
@@ -200,7 +200,7 @@ func TestGPUPipelineIntegration_CompositorOverlay(t *testing.T) {
 		NewGPUSTMapNode(ctx, pool, stmapState),
 	})
 	require.NoError(t, err)
-	defer pipe.Close()
+	defer func() { _ = pipe.Close() }()
 
 	// Create a uniform gray frame: Y=128, Cb=128, Cr=128
 	inputYUV := createTestYUV420p(w, h, 128, 128, 128)
@@ -230,7 +230,7 @@ func TestGPUPipelineIntegration_CompositorOverlay(t *testing.T) {
 func TestGPUPipelineIntegration_STMapIdentity(t *testing.T) {
 	const w, h = 64, 64
 	ctx, pool := setupGPU(t, w, h, 6) // extra frames for stmap temp buffer
-	defer ctx.Close()
+	defer func() { _ = ctx.Close() }()
 	defer pool.Close()
 
 	// Create an identity ST map: each pixel maps to itself.
@@ -264,7 +264,7 @@ func TestGPUPipelineIntegration_STMapIdentity(t *testing.T) {
 		NewGPUSTMapNode(ctx, pool, stmapState),
 	})
 	require.NoError(t, err)
-	defer pipe.Close()
+	defer func() { _ = pipe.Close() }()
 
 	// Create a gradient frame for easy verification.
 	inputYUV := make([]byte, w*h*3/2)
@@ -316,7 +316,7 @@ func TestGPUPipelineIntegration_STMapIdentity(t *testing.T) {
 func TestGPUPipelineIntegration_LayoutSlotFill(t *testing.T) {
 	const w, h = 64, 64
 	ctx, pool := setupGPU(t, w, h, 4)
-	defer ctx.Close()
+	defer func() { _ = ctx.Close() }()
 	defer pool.Close()
 
 	// Create a solid white fill for the layout slot.
@@ -352,7 +352,7 @@ func TestGPUPipelineIntegration_LayoutSlotFill(t *testing.T) {
 		NewGPUSTMapNode(ctx, pool, stmapState),
 	})
 	require.NoError(t, err)
-	defer pipe.Close()
+	defer func() { _ = pipe.Close() }()
 
 	// Create a black program frame.
 	inputYUV := createTestYUV420p(w, h, 16, 128, 128)
@@ -390,7 +390,7 @@ func TestGPUPipelineIntegration_LayoutSlotFill(t *testing.T) {
 func TestGPUPipelineIntegration_FullPipeline(t *testing.T) {
 	const w, h = 64, 64
 	ctx, pool := setupGPU(t, w, h, 8) // extra frames for stmap + key
-	defer ctx.Close()
+	defer func() { _ = ctx.Close() }()
 	defer pool.Close()
 
 	// --- Key bridge: active with a green-screen chroma key ---
@@ -485,7 +485,7 @@ func TestGPUPipelineIntegration_FullPipeline(t *testing.T) {
 		NewGPUSTMapNode(ctx, pool, stmapState),
 	})
 	require.NoError(t, err)
-	defer pipe.Close()
+	defer func() { _ = pipe.Close() }()
 
 	// Create a test input frame.
 	inputYUV := createTestYUV420p(w, h, 100, 128, 128)
@@ -523,7 +523,7 @@ func TestGPUPipelineIntegration_FullPipeline(t *testing.T) {
 func TestGPUSourceManager_AutoRegister(t *testing.T) {
 	const w, h = 64, 64
 	ctx, pool := setupGPU(t, w, h, 8)
-	defer ctx.Close()
+	defer func() { _ = ctx.Close() }()
 	defer pool.Close()
 
 	mgr := NewGPUSourceManager(ctx, pool, nil)
@@ -554,7 +554,7 @@ func TestGPUSourceManager_AutoRegister(t *testing.T) {
 func TestGPUSourceManager_AutoRegisterMultipleSources(t *testing.T) {
 	const w, h = 64, 64
 	ctx, pool := setupGPU(t, w, h, 16)
-	defer ctx.Close()
+	defer func() { _ = ctx.Close() }()
 	defer pool.Close()
 
 	mgr := NewGPUSourceManager(ctx, pool, nil)
@@ -581,7 +581,7 @@ func TestGPUSourceManager_AutoRegisterMultipleSources(t *testing.T) {
 func TestGPUSourceManager_ExplicitRegisterThenIngest(t *testing.T) {
 	const w, h = 64, 64
 	ctx, pool := setupGPU(t, w, h, 8)
-	defer ctx.Close()
+	defer func() { _ = ctx.Close() }()
 	defer pool.Close()
 
 	mgr := NewGPUSourceManager(ctx, pool, nil)
@@ -598,23 +598,6 @@ func TestGPUSourceManager_ExplicitRegisterThenIngest(t *testing.T) {
 	require.NotNil(t, frame)
 	assert.Equal(t, int64(90000), frame.PTS)
 	frame.Release()
-}
-
-// mockKeyBridgeWithSourceMgr uses a real GPUSourceManager for GPUFill.
-type mockKeyBridgeWithSourceMgr struct {
-	hasKeys   bool
-	keys      []EnabledKeySnapshot
-	sourceMgr *GPUSourceManager
-}
-
-func (m *mockKeyBridgeWithSourceMgr) HasEnabledKeysWithFills() bool             { return m.hasKeys }
-func (m *mockKeyBridgeWithSourceMgr) HasEnabledKeys() bool                      { return m.hasKeys }
-func (m *mockKeyBridgeWithSourceMgr) SnapshotEnabledKeys() []EnabledKeySnapshot { return m.keys }
-func (m *mockKeyBridgeWithSourceMgr) GPUFill(sourceKey string) *GPUFrame {
-	if m.sourceMgr == nil {
-		return nil
-	}
-	return m.sourceMgr.GetFrame(sourceKey)
 }
 
 // mockLayoutStateWithSourceMgr uses a real GPUSourceManager for GPUFill.
@@ -636,7 +619,7 @@ func (m *mockLayoutStateWithSourceMgr) GPUFill(sourceKey string) *GPUFrame {
 func TestGPUPipelineIntegration_SourceManagerWithPipeline(t *testing.T) {
 	const w, h = 64, 64
 	ctx, pool := setupGPU(t, w, h, 16) // extra frames for source mgr + pipeline
-	defer ctx.Close()
+	defer func() { _ = ctx.Close() }()
 	defer pool.Close()
 
 	// Create source manager and auto-register via IngestYUV.
@@ -675,7 +658,7 @@ func TestGPUPipelineIntegration_SourceManagerWithPipeline(t *testing.T) {
 		NewGPUSTMapNode(ctx, pool, stmapState),
 	})
 	require.NoError(t, err)
-	defer pipe.Close()
+	defer func() { _ = pipe.Close() }()
 
 	// Create a black program frame.
 	inputYUV := createTestYUV420p(w, h, 16, 128, 128) // black
@@ -708,7 +691,7 @@ func TestGPUPipelineIntegration_SourceManagerWithPipeline(t *testing.T) {
 func TestGPUPipelineIntegration_MultipleFrames(t *testing.T) {
 	const w, h = 64, 64
 	ctx, pool := setupGPU(t, w, h, 4)
-	defer ctx.Close()
+	defer func() { _ = ctx.Close() }()
 	defer pool.Close()
 
 	// Simple pipeline with no active processing.
@@ -717,7 +700,7 @@ func TestGPUPipelineIntegration_MultipleFrames(t *testing.T) {
 		NewGPUPassthroughNode("test", false),
 	})
 	require.NoError(t, err)
-	defer pipe.Close()
+	defer func() { _ = pipe.Close() }()
 
 	// Run 10 frames through the pipeline to verify stability.
 	for i := 0; i < 10; i++ {
