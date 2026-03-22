@@ -1,6 +1,7 @@
 package replay
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -9,6 +10,11 @@ import (
 
 // replayBuffer stores encoded H.264 frames in a circular, GOP-aligned buffer.
 // When capacity is exceeded, the oldest complete GOP is removed.
+//
+// When ring is non-nil, video frame wireData is stored in the file-backed
+// ring buffer (typically on tmpfs) instead of the Go heap. The bufferedFrame
+// entries keep only metadata (pts, wallTime, isKeyframe, ringOffset, ringSize)
+// with wireData=nil. SPS/PPS remain on the Go heap (tiny, ~8 bytes each).
 type replayBuffer struct {
 	mu             sync.RWMutex
 	frames         []bufferedFrame
@@ -18,6 +24,7 @@ type replayBuffer struct {
 	bytesUsed      int64
 	audioFrames    []bufferedAudioFrame
 	audioBytesUsed int64
+	ring           *fileRing // nil = in-memory, non-nil = file-backed wireData
 }
 
 // newReplayBuffer creates a replay buffer with the given maximum duration in seconds
@@ -26,6 +33,19 @@ func newReplayBuffer(durationSecs int, maxBytes int64) *replayBuffer {
 	return &replayBuffer{
 		maxDuration: time.Duration(durationSecs) * time.Second,
 		maxBytes:    maxBytes,
+	}
+}
+
+// newReplayBufferWithRing creates a replay buffer backed by a file ring.
+// Video frame wireData is written to the ring file instead of the Go heap.
+// The ring handles its own capacity management via circular overwrite;
+// the replayBuffer still trims by time/bytes for GOP alignment.
+func newReplayBufferWithRing(durationSecs int, ring *fileRing) *replayBuffer {
+	return &replayBuffer{
+		maxDuration: time.Duration(durationSecs) * time.Second,
+		ring:        ring,
+		// maxBytes is 0 (disabled) — the file ring manages its own capacity.
+		// Time-based trimming still applies via maxDuration.
 	}
 }
 
@@ -52,11 +72,29 @@ func (b *replayBuffer) recordFrameAt(frame *media.VideoFrame, wallTime time.Time
 		isKeyframe: frame.IsKeyframe,
 		wallTime:   wallTime,
 	}
-	if len(frame.WireData) > 0 {
-		bf.wireData = make([]byte, len(frame.WireData))
-		copy(bf.wireData, frame.WireData)
-		b.bytesUsed += int64(len(frame.WireData))
+
+	if b.ring != nil {
+		// File-ring path: wireData goes to the file, not the Go heap.
+		if len(frame.WireData) > 0 {
+			offset, err := b.ring.Write(frame.WireData, frame.PTS, wallTime, frame.IsKeyframe)
+			if err != nil {
+				// Write failed (frame too large, I/O error) — drop frame silently.
+				return
+			}
+			bf.ringOffset = offset
+			bf.ringSize = int32(len(frame.WireData))
+			// wireData stays nil — data lives in the file ring.
+		}
+	} else {
+		// In-memory path: deep-copy wireData onto Go heap.
+		if len(frame.WireData) > 0 {
+			bf.wireData = make([]byte, len(frame.WireData))
+			copy(bf.wireData, frame.WireData)
+			b.bytesUsed += int64(len(frame.WireData))
+		}
 	}
+
+	// SPS/PPS always stay on the Go heap (tiny, ~8 bytes each).
 	if frame.IsKeyframe {
 		if len(frame.SPS) > 0 {
 			bf.sps = make([]byte, len(frame.SPS))
@@ -283,10 +321,19 @@ func (b *replayBuffer) ExtractClip(inTime, outTime time.Time) ([]bufferedFrame, 
 		dst.pts = src.pts
 		dst.isKeyframe = src.isKeyframe
 		dst.wallTime = src.wallTime
-		if len(src.wireData) > 0 {
+
+		if b.ring != nil && src.ringSize > 0 {
+			// Read wireData from the file ring.
+			data, err := b.ring.Read(src.ringOffset, src.ringSize)
+			if err != nil {
+				return nil, nil, fmt.Errorf("replay: read ring frame: %w", err)
+			}
+			dst.wireData = data
+		} else if len(src.wireData) > 0 {
 			dst.wireData = make([]byte, len(src.wireData))
 			copy(dst.wireData, src.wireData)
 		}
+
 		if len(src.sps) > 0 {
 			dst.sps = make([]byte, len(src.sps))
 			copy(dst.sps, src.sps)
@@ -343,10 +390,17 @@ func (b *replayBuffer) Status() SourceBufferInfo {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
+	bytesUsed := b.bytesUsed
+	if b.ring != nil {
+		// When ring-backed, wireData bytes are in the file, not tracked in bytesUsed.
+		// Report ring's byte count instead (plus any SPS/PPS on heap).
+		bytesUsed = b.ring.BytesUsed() + b.bytesUsed // b.bytesUsed has SPS/PPS only
+	}
+
 	info := SourceBufferInfo{
 		FrameCount: len(b.frames),
 		GOPCount:   len(b.gops),
-		BytesUsed:  b.bytesUsed,
+		BytesUsed:  bytesUsed,
 	}
 
 	if len(b.frames) >= 2 {

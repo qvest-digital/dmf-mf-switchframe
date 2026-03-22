@@ -72,7 +72,7 @@ func TestFileRing_WriteAndRead(t *testing.T) {
 	now := time.Now()
 	pts := int64(90000)
 
-	if err := ring.Write(data, pts, now, true); err != nil {
+	if _, err := ring.Write(data, pts, now, true); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
@@ -105,7 +105,7 @@ func TestFileRing_MultipleFrames(t *testing.T) {
 		frameData[i] = make([]byte, 100)
 		rand.Read(frameData[i])
 		isIDR := i == 0 || i == 5
-		if err := ring.Write(frameData[i], int64(i*3000), now.Add(time.Duration(i)*33*time.Millisecond), isIDR); err != nil {
+		if _, err := ring.Write(frameData[i], int64(i*3000), now.Add(time.Duration(i)*33*time.Millisecond), isIDR); err != nil {
 			t.Fatalf("Write frame %d: %v", i, err)
 		}
 	}
@@ -145,7 +145,7 @@ func TestFileRing_Wrap(t *testing.T) {
 	for i := range frameData {
 		frameData[i] = make([]byte, 150)
 		rand.Read(frameData[i])
-		if err := ring.Write(frameData[i], int64(i*3000), now.Add(time.Duration(i)*33*time.Millisecond), i == 0); err != nil {
+		if _, err := ring.Write(frameData[i], int64(i*3000), now.Add(time.Duration(i)*33*time.Millisecond), i == 0); err != nil {
 			t.Fatalf("Write frame %d: %v", i, err)
 		}
 	}
@@ -196,7 +196,7 @@ func TestFileRing_WrapInvalidatesMultiple(t *testing.T) {
 	// Write 3 frames of 100 bytes each (fills the buffer exactly).
 	for i := 0; i < 3; i++ {
 		data := bytes.Repeat([]byte{byte(i)}, 100)
-		if err := ring.Write(data, int64(i*3000), now.Add(time.Duration(i)*33*time.Millisecond), false); err != nil {
+		if _, err := ring.Write(data, int64(i*3000), now.Add(time.Duration(i)*33*time.Millisecond), false); err != nil {
 			t.Fatalf("Write frame %d: %v", i, err)
 		}
 	}
@@ -206,7 +206,7 @@ func TestFileRing_WrapInvalidatesMultiple(t *testing.T) {
 
 	// Write a 200-byte frame — wraps to 0, invalidating frames 0 and 1.
 	bigData := bytes.Repeat([]byte{0xFF}, 200)
-	if err := ring.Write(bigData, 9000, now.Add(100*time.Millisecond), true); err != nil {
+	if _, err := ring.Write(bigData, 9000, now.Add(100*time.Millisecond), true); err != nil {
 		t.Fatalf("Write big frame: %v", err)
 	}
 
@@ -311,7 +311,7 @@ func TestFileRing_FrameTooLarge(t *testing.T) {
 	defer ring.CloseAndRemove()
 
 	data := make([]byte, 101)
-	err = ring.Write(data, 0, time.Now(), false)
+	_, err = ring.Write(data, 0, time.Now(), false)
 	if err == nil {
 		t.Fatal("expected error for frame too large, got nil")
 	}

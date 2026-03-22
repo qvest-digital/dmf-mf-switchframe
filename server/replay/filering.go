@@ -54,13 +54,14 @@ func newFileRing(path string, maxBytes int64) (*fileRing, error) {
 
 // Write appends frame data to the ring file. Wraps to the beginning
 // when reaching maxBytes, invalidating old entries that overlap.
-func (r *fileRing) Write(data []byte, pts int64, wallTime time.Time, isIDR bool) error {
+// Returns the file offset where the data was written.
+func (r *fileRing) Write(data []byte, pts int64, wallTime time.Time, isIDR bool) (int64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	size := int64(len(data))
 	if size > r.maxBytes {
-		return fmt.Errorf("filering: frame too large (%d > %d)", size, r.maxBytes)
+		return 0, fmt.Errorf("filering: frame too large (%d > %d)", size, r.maxBytes)
 	}
 
 	// Check if we need to wrap.
@@ -73,7 +74,7 @@ func (r *fileRing) Write(data []byte, pts int64, wallTime time.Time, isIDR bool)
 	// Write frame data at current position.
 	_, err := r.f.WriteAt(data, writeStart)
 	if err != nil {
-		return fmt.Errorf("filering: write: %w", err)
+		return 0, fmt.Errorf("filering: write: %w", err)
 	}
 
 	r.totalWritten += size
@@ -93,7 +94,7 @@ func (r *fileRing) Write(data []byte, pts int64, wallTime time.Time, isIDR bool)
 	r.frames = append(r.frames, entry)
 	r.writePos = writeStart + size
 
-	return nil
+	return writeStart, nil
 }
 
 // invalidateRange removes frames whose file region overlaps [start, end).

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,8 +34,9 @@ type Manager struct {
 	decoderFactory transition.DecoderFactory
 	encoderFactory transition.EncoderFactory
 
-	buffers map[string]*replayBuffer
-	viewers map[string]*replayViewer
+	tmpfsDir string // resolved tmpfs path, empty = in-memory only
+	buffers  map[string]*replayBuffer
+	viewers  map[string]*replayViewer
 
 	markSource string
 	markIn     *time.Time
@@ -80,12 +83,27 @@ func NewManager(relay Relay, cfg Config, decoderFactory transition.DecoderFactor
 	if cfg.MaxBufferBytes == 0 {
 		cfg.MaxBufferBytes = 200 * 1024 * 1024 // 200MB default
 	}
+
+	log := slog.With("component", "replay")
+
+	var tmpfsDir string
+	if cfg.TmpfsDir != "none" {
+		dir, ok := detectTmpfsDir(cfg.TmpfsDir)
+		if ok {
+			tmpfsDir = dir
+			log.Info("tmpfs-backed replay buffers enabled", "dir", dir)
+		} else {
+			log.Info("tmpfs not available, using in-memory replay buffers")
+		}
+	}
+
 	return &Manager{
-		log:            slog.With("component", "replay"),
+		log:            log,
 		relay:          relay,
 		config:         cfg,
 		decoderFactory: decoderFactory,
 		encoderFactory: encoderFactory,
+		tmpfsDir:       tmpfsDir,
 		buffers:        make(map[string]*replayBuffer),
 		viewers:        make(map[string]*replayViewer),
 		playerState:    PlayerIdle,
@@ -106,7 +124,26 @@ func (m *Manager) AddSource(key string) error {
 		return ErrMaxSources
 	}
 
-	buf := newReplayBuffer(m.config.BufferDurationSecs, m.config.MaxBufferBytes)
+	var buf *replayBuffer
+	if m.tmpfsDir != "" {
+		safeName := sanitizeKey(key)
+		path := filepath.Join(m.tmpfsDir, safeName+".buf")
+		// Size: buffer duration * ~750KB/s (6Mbps H.264)
+		maxBytes := int64(m.config.BufferDurationSecs) * 750_000
+		ring, err := newFileRing(path, maxBytes)
+		if err != nil {
+			m.log.Warn("file ring failed, falling back to memory",
+				"key", key, "err", err)
+			buf = newReplayBuffer(m.config.BufferDurationSecs, m.config.MaxBufferBytes)
+		} else {
+			buf = newReplayBufferWithRing(m.config.BufferDurationSecs, ring)
+			m.log.Info("using tmpfs-backed buffer",
+				"key", key, "path", path, "maxBytes", maxBytes)
+		}
+	} else {
+		buf = newReplayBuffer(m.config.BufferDurationSecs, m.config.MaxBufferBytes)
+	}
+
 	v := newReplayViewer(key, buf)
 	m.buffers[key] = buf
 	m.viewers[key] = v
@@ -120,6 +157,9 @@ func (m *Manager) RemoveSource(key string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if buf, ok := m.buffers[key]; ok && buf.ring != nil {
+		_ = buf.ring.CloseAndRemove()
+	}
 	delete(m.buffers, key)
 	delete(m.viewers, key)
 
@@ -596,7 +636,7 @@ func (m *Manager) SetOnClipExported(fn func(source string, filePath string)) {
 }
 
 // Close stops any active player, waits for background export goroutines,
-// and releases resources.
+// and releases resources. Cleans up any tmpfs-backed ring buffer files.
 func (m *Manager) Close() {
 	m.mu.Lock()
 	player := m.player
@@ -612,6 +652,15 @@ func (m *Manager) Close() {
 
 	// Wait for any in-flight export goroutines to finish.
 	m.exportWg.Wait()
+
+	// Clean up file ring buffers.
+	m.mu.Lock()
+	for _, buf := range m.buffers {
+		if buf.ring != nil {
+			_ = buf.ring.CloseAndRemove()
+		}
+	}
+	m.mu.Unlock()
 }
 
 // DebugSnapshot returns debug information about the replay system.
@@ -714,6 +763,24 @@ func muxClipToTempFile(videoFrames []bufferedFrame, audioFrames []bufferedAudioF
 	}
 
 	return tmpPath, nil
+}
+
+// detectTmpfsDir checks if a directory exists (or can be created) for
+// tmpfs-backed replay buffers. Returns the resolved path and true if
+// available, empty string and false otherwise.
+func detectTmpfsDir(dir string) (string, bool) {
+	if dir == "" {
+		dir = "/dev/shm/switchframe/replay"
+	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", false
+	}
+	return dir, true
+}
+
+// sanitizeKey replaces characters unsafe for filenames with underscores.
+func sanitizeKey(key string) string {
+	return strings.NewReplacer("/", "_", ":", "_", "\\", "_").Replace(key)
 }
 
 // notifyStateChange safely reads the callback under lock, releases the lock,
