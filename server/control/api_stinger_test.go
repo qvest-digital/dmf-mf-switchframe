@@ -45,7 +45,7 @@ func setupStingerTestAPI(t *testing.T) (*API, *stinger.Store) {
 		require.NoError(t, err)
 	}
 
-	store, err := stinger.NewStore(dir, 0)
+	store, err := stinger.NewStore(dir, 0, "")
 	require.NoError(t, err)
 
 	programRelay := distribution.NewRelay()

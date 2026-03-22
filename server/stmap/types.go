@@ -5,6 +5,8 @@ package stmap
 
 import (
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -79,8 +81,12 @@ func Identity(width, height int) *STMap {
 // AnimatedSTMap holds a sequence of ST map frames for animated effects.
 type AnimatedSTMap struct {
 	Name       string
+	Width      int                // frame width (set by GenerateAnimated)
+	Height     int                // frame height (set by GenerateAnimated)
 	Frames     []*STMap
 	FPS        int
+	Generator  string             // generator name (for on-demand regeneration)
+	GenParams  map[string]float64 // resolved params (for on-demand regeneration)
 	index      atomic.Int64
 	processors []*Processor // pre-built per-frame processors
 	buildOnce  sync.Once    // guards processors initialization
@@ -114,10 +120,62 @@ func (a *AnimatedSTMap) CurrentFrame() *STMap {
 
 // AdvanceIndex increments the internal frame counter and returns the
 // wrapped frame index. Use with ProcessorAt for allocation-free pipeline
-// processing of animated maps.
+// processing of animated maps. Uses len(processors) when built (Frames
+// may be nil after BuildProcessorsCached), falls back to len(Frames).
 func (a *AnimatedSTMap) AdvanceIndex() int {
 	idx := a.index.Add(1)
-	return int(idx) % len(a.Frames)
+	n := len(a.processors)
+	if n == 0 {
+		n = len(a.Frames)
+	}
+	return int(idx) % n
+}
+
+// FrameCount returns the number of frames in this animation. Works correctly
+// even after Frames have been freed by BuildProcessorsCached.
+func (a *AnimatedSTMap) FrameCount() int {
+	if n := len(a.processors); n > 0 {
+		return n
+	}
+	return len(a.Frames)
+}
+
+// RegenerateFrame regenerates a single frame's float32 S/T data on demand.
+// Used by the GPU path to get float32 data for GPU upload after Frames
+// have been freed by BuildProcessorsCached. Returns nil if generator
+// metadata is not set or generation fails.
+func (a *AnimatedSTMap) RegenerateFrame(idx int) *STMap {
+	if a.Generator == "" {
+		return nil
+	}
+	frameCount := a.FrameCount()
+	if frameCount == 0 {
+		return nil
+	}
+	wrapped := idx % frameCount
+
+	// Fast path: Frames still in memory.
+	if a.Frames != nil && wrapped < len(a.Frames) {
+		return a.Frames[wrapped]
+	}
+
+	// Slow path: Frames freed after BuildProcessorsCached.
+	// Regenerate all frames but return only the one we need.
+	fn, ok := animatedGenerators[a.Generator]
+	if !ok {
+		return nil
+	}
+	if a.Width == 0 || a.Height == 0 {
+		return nil
+	}
+	anim, err := fn(a.GenParams, a.Width, a.Height, frameCount)
+	if err != nil {
+		return nil
+	}
+	if wrapped < len(anim.Frames) {
+		return anim.Frames[wrapped]
+	}
+	return nil
 }
 
 // BuildProcessors pre-builds all per-frame Processors. Call this after
@@ -135,9 +193,50 @@ func (a *AnimatedSTMap) BuildProcessors() {
 
 // ProcessorAt returns the precomputed Processor for the given frame index.
 // Calls BuildProcessors on first access if not already called.
+// Uses len(processors) for modulo (not len(Frames)) because
+// BuildProcessorsCached nils the Frames slice after building.
 func (a *AnimatedSTMap) ProcessorAt(idx int) *Processor {
 	a.BuildProcessors()
-	return a.processors[idx%len(a.Frames)]
+	return a.processors[idx%len(a.processors)]
+}
+
+// BuildProcessorsCached pre-builds all per-frame Processors, writing LUT data
+// to cache files in cacheDir. If cache files already exist with the correct
+// size, they are mmap'd directly (instant). After building, Frames is niled
+// to free the float32 source data (regenerable from generator formula).
+func (a *AnimatedSTMap) BuildProcessorsCached(cacheDir string) {
+	a.buildOnce.Do(func() {
+		_ = os.MkdirAll(cacheDir, 0755)
+		a.processors = make([]*Processor, len(a.Frames))
+		for i, frame := range a.Frames {
+			cachePath := filepath.Join(cacheDir, fmt.Sprintf("frame_%03d.lut", i))
+			p, err := NewProcessorCached(frame, cachePath)
+			if err != nil {
+				// Fallback to heap-based processor.
+				p = NewProcessor(frame)
+			}
+			a.processors[i] = p
+		}
+		// Free float32 source data — regenerable from generator.
+		a.Frames = nil
+	})
+}
+
+// Close munmaps all mmap-backed processors. Safe to call multiple times.
+// IMPORTANT: Close must not be called while any goroutine is using
+// ProcessorAt(). In practice this is enforced by the Registry: RemoveProgram()
+// is always called before Delete(), ensuring the pipeline has stopped
+// referencing the processors before they are munmapped.
+func (a *AnimatedSTMap) Close() error {
+	var firstErr error
+	for _, p := range a.processors {
+		if p != nil {
+			if err := p.Close(); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
 }
 
 // ValidateName rejects names that could cause path traversal or are otherwise

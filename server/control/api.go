@@ -320,6 +320,12 @@ func WithSTMapStore(s *stmap.Store) APIOption {
 	return func(a *API) { a.stmapStore = s }
 }
 
+// WithSTMapCacheDir sets the base cache directory for mmap-backed ST map LUTs.
+// When set, animated ST maps use BuildProcessorsCached instead of BuildProcessors.
+func WithSTMapCacheDir(dir string) APIOption {
+	return func(a *API) { a.stmapCacheDir = dir }
+}
+
 // WithColorGradeManager attaches a color grade manager to the API.
 func WithColorGradeManager(m ColorGradeManager) APIOption {
 	return func(a *API) { a.colorGradeMgr = m }
@@ -386,6 +392,7 @@ type API struct {
 	asrManager         ASRManager
 	stmapRegistry      *stmap.Registry
 	stmapStore         *stmap.Store
+	stmapCacheDir      string // base cache dir for mmap'd ST map LUTs (empty = disabled)
 	colorGradeMgr      ColorGradeManager
 	inviteTokens       map[string]string // token -> role; nil = no invite gating
 	sessionAPIToken    string            // used to bypass invite token requirement for session owner

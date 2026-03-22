@@ -1,6 +1,8 @@
 package stmap
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -267,6 +269,118 @@ func TestProcessor_STArrays(t *testing.T) {
 	ns, nt := nilP.STArrays()
 	require.Nil(t, ns)
 	require.Nil(t, nt)
+}
+
+func TestNewProcessorCached_WritesAndMmaps(t *testing.T) {
+	dir := t.TempDir()
+	cachePath := filepath.Join(dir, "test.lut")
+
+	m := Identity(64, 48)
+	p, err := NewProcessorCached(m, cachePath)
+	require.NoError(t, err)
+	require.True(t, p.Active())
+
+	// Cache file should exist.
+	fi, err := os.Stat(cachePath)
+	require.NoError(t, err)
+	// Expected: (64*48 + 64*48 + 32*24 + 32*24) * 4 = (3072+3072+768+768)*4 = 30720
+	require.Equal(t, int64(30720), fi.Size())
+
+	// Should produce same output as heap-based.
+	heapP := NewProcessor(m)
+	src := make([]byte, 64*48*3/2)
+	for i := range src {
+		src[i] = byte(i % 256)
+	}
+	dstCached := make([]byte, len(src))
+	dstHeap := make([]byte, len(src))
+	p.ProcessYUV(dstCached, src, 64, 48)
+	heapP.ProcessYUV(dstHeap, src, 64, 48)
+	require.Equal(t, dstHeap, dstCached)
+
+	require.NoError(t, p.Close())
+}
+
+func TestNewProcessorCached_LoadsExisting(t *testing.T) {
+	dir := t.TempDir()
+	cachePath := filepath.Join(dir, "test.lut")
+
+	m := Identity(64, 48)
+	p1, err := NewProcessorCached(m, cachePath)
+	require.NoError(t, err)
+
+	// Get reference output.
+	src := make([]byte, 64*48*3/2)
+	for i := range src {
+		src[i] = byte(i % 256)
+	}
+	ref := make([]byte, len(src))
+	p1.ProcessYUV(ref, src, 64, 48)
+	require.NoError(t, p1.Close())
+
+	// Load from cache with nil stmap.
+	p2, err := NewProcessorCached(nil, cachePath)
+	require.NoError(t, err)
+	require.True(t, p2.Active())
+
+	out := make([]byte, len(src))
+	p2.ProcessYUV(out, src, 64, 48)
+	require.Equal(t, ref, out)
+	require.NoError(t, p2.Close())
+}
+
+func TestNewProcessorCached_NilStmapNoCacheFails(t *testing.T) {
+	_, err := NewProcessorCached(nil, "/nonexistent/cache.lut")
+	require.Error(t, err)
+}
+
+func TestProcessorClose_Idempotent(t *testing.T) {
+	dir := t.TempDir()
+	cachePath := filepath.Join(dir, "test.lut")
+	m := Identity(64, 48)
+	p, err := NewProcessorCached(m, cachePath)
+	require.NoError(t, err)
+	require.NoError(t, p.Close())
+	require.NoError(t, p.Close()) // second close is no-op
+}
+
+func TestProcessorClose_HeapProcessor_NoOp(t *testing.T) {
+	m := Identity(8, 8)
+	p := NewProcessor(m)
+	require.NoError(t, p.Close()) // no mmap backing, should be no-op
+	require.True(t, p.Active())   // heap LUTs still valid
+}
+
+func TestNewProcessorCached_RecomputesOnSizeMismatch(t *testing.T) {
+	dir := t.TempDir()
+	cachePath := filepath.Join(dir, "test.lut")
+
+	// Write cache for 8x8.
+	m8 := Identity(8, 8)
+	p1, err := NewProcessorCached(m8, cachePath)
+	require.NoError(t, err)
+	require.NoError(t, p1.Close())
+
+	// Now request 64x48 — cache size won't match, should recompute.
+	m64 := Identity(64, 48)
+	p2, err := NewProcessorCached(m64, cachePath)
+	require.NoError(t, err)
+	require.True(t, p2.Active())
+
+	// Verify file was overwritten with correct size.
+	fi, err := os.Stat(cachePath)
+	require.NoError(t, err)
+	require.Equal(t, int64(30720), fi.Size())
+
+	require.NoError(t, p2.Close())
+}
+
+func TestExpectedCacheSize(t *testing.T) {
+	// 1080p: (1920*1080*2 + 960*540*2) * 4 = (4147200 + 1036800) * 4 = 20736000
+	require.Equal(t, 20736000, expectedCacheSize(1920, 1080))
+
+	// 64x48: (3072*2 + 768*2) * 4 = 7680 * 4 = 30720
+	require.Equal(t, 30720, expectedCacheSize(64, 48))
 }
 
 func BenchmarkProcessor_1080p(b *testing.B) {

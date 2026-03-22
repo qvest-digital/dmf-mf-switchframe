@@ -522,11 +522,15 @@ func (a *App) initSubsystems() error {
 	slog.Info("operator store initialized", "path", operatorPath)
 
 	stingerDir := a.statePath("stingers")
-	a.stingerStore, err = stinger.NewStore(stingerDir, 0)
+	stingerCacheDir := ""
+	if a.cfg.CacheDir != "" {
+		stingerCacheDir = filepath.Join(a.cfg.CacheDir, "stingers")
+	}
+	a.stingerStore, err = stinger.NewStore(stingerDir, 0, stingerCacheDir)
 	if err != nil {
 		return fmt.Errorf("create stinger store: %w", err)
 	}
-	slog.Info("stinger store initialized", "path", stingerDir)
+	slog.Info("stinger store initialized", "path", stingerDir, "cacheDir", stingerCacheDir)
 
 	// Session manager for operator session tracking and subsystem locks.
 	a.sessionMgr = operator.NewSessionManager()
@@ -593,7 +597,14 @@ func (a *App) initSubsystems() error {
 				continue
 			}
 			anim.Name = name
-			anim.BuildProcessors() // pre-build LUTs at startup, not on first pipeline frame
+			// Use mmap-cached LUT build when cache dir is configured.
+			if a.cfg.CacheDir != "" {
+				cacheDir := filepath.Join(a.cfg.CacheDir, "stmap",
+					name+"_"+stmap.CacheKey(meta.Generator, meta.Params, meta.Width, meta.Height, meta.FrameCount))
+				anim.BuildProcessorsCached(cacheDir)
+			} else {
+				anim.BuildProcessors()
+			}
 			_ = a.stmapRegistry.StoreAnimated(anim)
 		}
 		if n := len(staticNames) + len(animNames); n > 0 {
@@ -603,6 +614,12 @@ func (a *App) initSubsystems() error {
 
 	// Wire ST map registry to switcher for per-source correction.
 	a.sw.SetSTMapRegistry(a.stmapRegistry)
+
+	// Background pre-warm: generate mmap-cached LUTs for built-in animated effects.
+	if a.cfg.CacheDir != "" {
+		a.bgWG.Add(1)
+		go a.prewarmSTMapCache()
+	}
 
 	// Color grading store and controller.
 	uploadLooksDir := a.statePath("luts")
@@ -1212,6 +1229,10 @@ func (a *App) initAPI() error {
 		control.WithSTMapRegistry(a.stmapRegistry),
 		control.WithSTMapStore(a.stmapStore),
 	}
+	if a.cfg.CacheDir != "" {
+		stmapCacheBase := filepath.Join(a.cfg.CacheDir, "stmap")
+		apiOpts = append(apiOpts, control.WithSTMapCacheDir(stmapCacheBase))
+	}
 	if a.colorGradeCtrl != nil {
 		apiOpts = append(apiOpts, control.WithColorGradeManager(a.colorGradeCtrl))
 	}
@@ -1652,4 +1673,50 @@ func (a *App) handleCertHash(w http.ResponseWriter, _ *http.Request) {
 		"addr":    a.cfg.Addr,
 		"trusted": a.externalCert,
 	})
+}
+
+// prewarmSTMapCache pre-generates mmap-cached LUT files for all built-in
+// animated ST map effects at the current pipeline resolution. This runs in
+// the background so the first use of any effect is instant (mmap load)
+// rather than a multi-second generation pause.
+func (a *App) prewarmSTMapCache() {
+	defer a.bgWG.Done()
+
+	pf := a.sw.PipelineFormat()
+	w, h := pf.Width, pf.Height
+	if w == 0 || h == 0 {
+		return
+	}
+
+	const defaultFrameCount = 90
+
+	for _, info := range stmap.AnimatedGeneratorInfoList() {
+		// Compute default params for this generator.
+		params := make(map[string]float64, len(info.Params))
+		for name, p := range info.Params {
+			params[name] = p.Default
+		}
+
+		cacheDir := filepath.Join(a.cfg.CacheDir, "stmap",
+			info.Name+"_"+stmap.CacheKey(info.Name, params, w, h, defaultFrameCount))
+
+		// Skip if the cache directory already has all frame files.
+		if stmap.DirComplete(cacheDir, defaultFrameCount) {
+			slog.Debug("stmap cache already warm", "effect", info.Name, "dir", cacheDir)
+			continue
+		}
+
+		// Generate the animated map and build cached processors.
+		anim, err := stmap.GenerateAnimated(info.Name, params, w, h, defaultFrameCount)
+		if err != nil {
+			slog.Warn("stmap prewarm generate failed", "effect", info.Name, "error", err)
+			continue
+		}
+		anim.BuildProcessorsCached(cacheDir)
+		// Close immediately — we're just populating the cache files, not keeping
+		// the LUTs mapped in memory.
+		_ = anim.Close()
+		slog.Info("stmap cache warmed", "effect", info.Name, "dir", cacheDir)
+	}
+	slog.Info("stmap cache prewarm complete", "width", w, "height", h)
 }

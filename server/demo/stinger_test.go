@@ -77,7 +77,7 @@ func TestGenerateStingerZip_LoadsIntoStore(t *testing.T) {
 
 	// Create a real stinger.Store in a temp directory.
 	dir := t.TempDir()
-	store, err := stinger.NewStore(dir, 0)
+	store, err := stinger.NewStore(dir, 0, "")
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestGenerateWhooshStingerZip_LoadsWithAudio(t *testing.T) {
 	require.NoError(t, err)
 
 	dir := t.TempDir()
-	store, err := stinger.NewStore(dir, 0)
+	store, err := stinger.NewStore(dir, 0, "")
 	require.NoError(t, err)
 
 	err = store.Upload("whoosh", data)
@@ -198,7 +198,7 @@ func TestGenerateSlamStingerZip_LoadsWithAudio(t *testing.T) {
 	require.NoError(t, err)
 
 	dir := t.TempDir()
-	store, err := stinger.NewStore(dir, 0)
+	store, err := stinger.NewStore(dir, 0, "")
 	require.NoError(t, err)
 
 	err = store.Upload("slam", data)
@@ -217,7 +217,7 @@ func TestGenerateMusicalStingerZip_LoadsWithAudio(t *testing.T) {
 	require.NoError(t, err)
 
 	dir := t.TempDir()
-	store, err := stinger.NewStore(dir, 0)
+	store, err := stinger.NewStore(dir, 0, "")
 	require.NoError(t, err)
 
 	err = store.Upload("musical", data)

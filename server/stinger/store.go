@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/zsiec/switchframe/server/mmaputil"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -70,6 +71,18 @@ type Clip struct {
 	Audio           []float32 // interleaved PCM float32 (optional, nil = no audio)
 	AudioSampleRate int       // e.g. 48000
 	AudioChannels   int       // e.g. 2 (stereo)
+	mmapBacking     []byte    // non-nil if frames are mmap-backed
+}
+
+// Close releases the mmap backing if present. Safe to call multiple times.
+func (c *Clip) Close() error {
+	if c.mmapBacking == nil {
+		return nil
+	}
+	err := mmaputil.Free(c.mmapBacking)
+	c.mmapBacking = nil
+	c.Frames = nil
+	return err
 }
 
 // FrameAt returns the stinger frame for a given transition position [0.0, 1.0].
@@ -90,6 +103,7 @@ func (c *Clip) FrameAt(position float64) *Frame {
 // Store manages stinger clips stored as PNG sequences on disk.
 type Store struct {
 	dir      string
+	cacheDir string // if non-empty, mmap cache files are stored here
 	mu       sync.RWMutex
 	clips    map[string]*Clip
 	pending  map[string]struct{} // slots reserved by in-progress uploads
@@ -99,7 +113,8 @@ type Store struct {
 // NewStore creates a store backed by the given directory.
 // Pre-loads any existing stinger directories.
 // maxClips limits the number of clips that can be loaded; <= 0 defaults to 16.
-func NewStore(dir string, maxClips int) (*Store, error) {
+// cacheDir, if non-empty, enables mmap-backed frame caching for faster restarts.
+func NewStore(dir string, maxClips int, cacheDir string) (*Store, error) {
 	if maxClips <= 0 {
 		maxClips = 16
 	}
@@ -110,6 +125,10 @@ func NewStore(dir string, maxClips int) (*Store, error) {
 		dir:      dir,
 		clips:    make(map[string]*Clip),
 		maxClips: maxClips,
+		cacheDir: cacheDir,
+	}
+	if cacheDir != "" {
+		_ = os.MkdirAll(cacheDir, 0755)
 	}
 	// Pre-load existing stingers
 	entries, err := os.ReadDir(dir)
@@ -162,10 +181,18 @@ func (s *Store) Delete(name string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.clips[name]; !ok {
+	clip, ok := s.clips[name]
+	if !ok {
 		return ErrNotFound
 	}
+	if clip != nil {
+		_ = clip.Close() // release mmap backing if present
+	}
 	delete(s.clips, name)
+	// Remove cache file if present.
+	if s.cacheDir != "" {
+		_ = os.Remove(filepath.Join(s.cacheDir, name+".bin"))
+	}
 	return os.RemoveAll(filepath.Join(s.dir, name))
 }
 
@@ -351,6 +378,17 @@ func (s *Store) Upload(name string, zipData []byte) error {
 }
 
 func (s *Store) loadClip(name string) (*Clip, error) {
+	// Try cache first.
+	if s.cacheDir != "" {
+		cachePath := filepath.Join(s.cacheDir, name+".bin")
+		if clip, err := LoadCache(cachePath); err == nil {
+			clip.Name = name
+			// Load audio separately (small, kept on heap).
+			s.loadClipAudio(clip, name)
+			return clip, nil
+		}
+	}
+
 	dir := filepath.Join(s.dir, name)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -411,7 +449,51 @@ func (s *Store) loadClip(name string) (*Clip, error) {
 		// Silently ignore file read errors — audio is optional
 	}
 
+	// After successful decode, write cache for next time.
+	if s.cacheDir != "" {
+		cachePath := filepath.Join(s.cacheDir, name+".bin")
+		_ = os.MkdirAll(s.cacheDir, 0755)
+		if writeErr := WriteCache(cachePath, clip); writeErr == nil {
+			// Re-load from cache to get mmap-backed frames.
+			if mmapClip, loadErr := LoadCache(cachePath); loadErr == nil {
+				mmapClip.Name = clip.Name
+				mmapClip.Audio = clip.Audio
+				mmapClip.AudioSampleRate = clip.AudioSampleRate
+				mmapClip.AudioChannels = clip.AudioChannels
+				return mmapClip, nil
+			}
+		}
+	}
+
 	return clip, nil
+}
+
+// loadClipAudio loads optional WAV audio for a clip from its PNG directory.
+// Audio is small and writable (mixer overlay), so it stays on the heap.
+func (s *Store) loadClipAudio(clip *Clip, name string) {
+	dir := filepath.Join(s.dir, name)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if strings.HasSuffix(strings.ToLower(e.Name()), ".wav") {
+			wavData, err := os.ReadFile(filepath.Join(dir, e.Name()))
+			if err != nil {
+				return
+			}
+			pcm, sampleRate, channels, parseErr := ParseWAV(wavData)
+			if parseErr == nil {
+				clip.Audio = pcm
+				clip.AudioSampleRate = sampleRate
+				clip.AudioChannels = channels
+			}
+			return // only use first WAV
+		}
+	}
 }
 
 // loadPNGFrame loads a PNG file and converts it to a Frame (YUV420 + alpha).

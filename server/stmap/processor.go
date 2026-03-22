@@ -13,6 +13,9 @@ type Processor struct {
 	// LUTs for chroma planes (half resolution).
 	lutCSX []int32
 	lutCSY []int32
+	// mmapBacking is non-nil when the LUT slices point into an mmap'd region.
+	// Close() must be called to munmap.
+	mmapBacking []byte
 }
 
 // NewProcessor creates a Processor that warps frames according to the
@@ -27,8 +30,10 @@ func NewProcessor(stmap *STMap) *Processor {
 }
 
 // Active returns true if a map is loaded and the processor will warp frames.
+// This is true both for heap-allocated LUTs (stmap != nil) and mmap-backed
+// LUTs loaded from a cache file.
 func (p *Processor) Active() bool {
-	return p.stmap != nil
+	return len(p.lutSX) > 0
 }
 
 // Name returns the name of the underlying ST map, or "" if inactive.
@@ -59,7 +64,7 @@ func (p *Processor) STArrays() (s, t []float32) {
 // The sequential approach has zero coordination cost and benefits from
 // better cache locality (no cross-core cache line bouncing).
 func (p *Processor) ProcessYUV(dst, src []byte, w, h int) {
-	if p.stmap == nil {
+	if len(p.lutSX) == 0 {
 		return
 	}
 

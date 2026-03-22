@@ -263,6 +263,11 @@ func (r *Registry) Delete(name string) error {
 		return ErrNotFound
 	}
 
+	// Close mmap-backed processors before deleting.
+	if anim, ok := r.animated[name]; ok {
+		_ = anim.Close()
+	}
+
 	delete(r.maps, name)
 	delete(r.animated, name)
 
@@ -352,15 +357,29 @@ func (r *Registry) AdvanceAnimatedIndex() int {
 
 // AnimatedSTArraysAt returns the S and T float32 arrays for the given
 // animated frame index. Returns (nil, nil) if no animated map is assigned
-// or the index is out of range.
+// or the index is out of range. If Frames have been freed by
+// BuildProcessorsCached, falls back to on-demand regeneration via
+// RegenerateFrame (used by the GPU upload path).
 func (r *Registry) AnimatedSTArraysAt(idx int) (s, t []float32) {
 	r.mu.RLock()
 	anim := r.programAnim
 	r.mu.RUnlock()
-	if anim == nil || idx < 0 || idx >= len(anim.Frames) {
+	if anim == nil || idx < 0 {
 		return nil, nil
 	}
-	frame := anim.Frames[idx]
+
+	// Fast path: Frames still in memory.
+	if anim.Frames != nil && idx < len(anim.Frames) {
+		frame := anim.Frames[idx]
+		return frame.S, frame.T
+	}
+
+	// Slow path: Frames freed after BuildProcessorsCached.
+	// Regenerate on demand for GPU upload.
+	frame := anim.RegenerateFrame(idx)
+	if frame == nil {
+		return nil, nil
+	}
 	return frame.S, frame.T
 }
 
@@ -421,7 +440,9 @@ func (r *Registry) stateLocked() STMapState {
 		}
 		if r.programAnim != nil {
 			ps.Type = "animated"
-			ps.Frame = int(r.programAnim.index.Load()) % len(r.programAnim.Frames)
+			if fc := r.programAnim.FrameCount(); fc > 0 {
+				ps.Frame = int(r.programAnim.index.Load()) % fc
+			}
 		} else {
 			ps.Type = "static"
 		}

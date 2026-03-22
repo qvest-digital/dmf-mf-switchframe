@@ -255,6 +255,32 @@ func TestGenerateAnimated_Ripple_CustomCenter(t *testing.T) {
 	}
 }
 
+func TestAnimatedGeneratorInfoList(t *testing.T) {
+	infos := AnimatedGeneratorInfoList()
+
+	// Should contain all 5 animated generators with correct metadata.
+	require.GreaterOrEqual(t, len(infos), 5)
+
+	expected := map[string]bool{
+		"dream": true, "heat_shimmer": true, "lens_breathe": true,
+		"ripple": true, "vortex": true,
+	}
+	for _, info := range infos {
+		if expected[info.Name] {
+			require.Equal(t, "animated", info.Type, "generator %q type", info.Name)
+			require.NotEmpty(t, info.Params, "generator %q should have params", info.Name)
+			delete(expected, info.Name)
+		}
+	}
+	require.Empty(t, expected, "missing animated generators: %v", expected)
+
+	// Should be sorted by name.
+	for i := 1; i < len(infos); i++ {
+		require.LessOrEqual(t, infos[i-1].Name, infos[i].Name,
+			"infos should be sorted by name")
+	}
+}
+
 func abs32(x float32) float32 {
 	if x < 0 {
 		return -x
