@@ -283,6 +283,7 @@ type ControlRoomState struct {
 	AISegmentation       *AISegmentationState    `json:"aiSegmentation,omitempty"`
 	ASR                  *ASRState               `json:"asr,omitempty"`
 	Macro                *MacroExecutionState    `json:"macro,omitempty"`
+	ColorGrade           *ColorGradeState        `json:"colorGrade,omitempty"`
 	LastChangedBy        string                  `json:"lastChangedBy,omitempty"`
 	Seq                  uint64                  `json:"seq"`
 	Timestamp            int64                   `json:"timestamp"`
@@ -470,6 +471,14 @@ type ASRState struct {
 	Language   string  `json:"language,omitempty"`
 	Tentative  string  `json:"tentative,omitempty"`
 	Confidence float64 `json:"confidence,omitempty"`
+}
+
+// ColorGradeState represents the color grading state in ControlRoomState.
+type ColorGradeState struct {
+	Enabled   bool     `json:"enabled"`
+	LookName  string   `json:"lookName"`
+	Intensity float32  `json:"intensity"`
+	Available []string `json:"available"`
 }
 
 // LayoutSlotState represents a single layout slot in the state broadcast.

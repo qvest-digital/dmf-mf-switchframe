@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -102,6 +103,16 @@ type SCTE35RulesAPI interface {
 	SetDefaultAction(action scte35.RuleAction) error
 	Templates() []scte35.Rule
 	CreateFromTemplate(templateName string) (scte35.Rule, error)
+}
+
+// ColorGradeManager is the interface for color grading operations.
+type ColorGradeManager interface {
+	IsEnabled() bool
+	SetColorGrade(lookName string, intensity float32) error
+	DisableColorGrade()
+	GetState() internal.ColorGradeState
+	UploadLUT(name string, data io.Reader) error
+	DeleteLUT(name string) error
 }
 
 // APIOption configures optional API dependencies.
@@ -309,6 +320,11 @@ func WithSTMapStore(s *stmap.Store) APIOption {
 	return func(a *API) { a.stmapStore = s }
 }
 
+// WithColorGradeManager attaches a color grade manager to the API.
+func WithColorGradeManager(m ColorGradeManager) APIOption {
+	return func(a *API) { a.colorGradeMgr = m }
+}
+
 // WithInviteTokens sets the invite token map (token -> role) for operator registration gating.
 func WithInviteTokens(tokens map[string]string) APIOption {
 	return func(a *API) { a.inviteTokens = tokens }
@@ -370,6 +386,7 @@ type API struct {
 	asrManager         ASRManager
 	stmapRegistry      *stmap.Registry
 	stmapStore         *stmap.Store
+	colorGradeMgr      ColorGradeManager
 	inviteTokens       map[string]string // token -> role; nil = no invite gating
 	sessionAPIToken    string            // used to bypass invite token requirement for session owner
 	allowedOutputPorts map[int]bool      // nil = unconstrained
@@ -532,6 +549,7 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	a.registerClipRoutes(mux)
 	a.registerCommsRoutes(mux)
 	a.registerSTMapRoutes(mux)
+	a.registerColorGradeRoutes(mux)
 	a.registerAISegmentRoutes(mux)
 	a.registerASRRoutes(mux)
 }

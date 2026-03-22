@@ -116,6 +116,16 @@ type AISegmentConfig struct {
 	EdgeSmooth  float32 // 0.0-1.0 (maps to EMA temporal smoothing alpha)
 }
 
+// ColorGradeState provides color grading state to the GPU color grade node.
+// Implemented by an adapter wrapping the colorGradeController.
+type ColorGradeState interface {
+	HasGradingEnabled() bool
+	GradingLUTData() []float32 // 33^3 * 3 float32s (pre-parsed)
+	GradingLUTSize() int       // cube dimension (e.g., 33)
+	GradingLUTGen() uint64     // generation counter for cache invalidation
+	GradingIntensity() float32 // 0.0-1.0
+}
+
 // PreviewConfig configures per-source GPU preview encoding.
 type PreviewConfig struct {
 	Width, Height  int

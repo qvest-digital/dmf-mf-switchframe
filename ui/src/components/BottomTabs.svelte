@@ -9,7 +9,7 @@
 	}
 	let { children, onTabChange, replayActive = false, aiAvailable = false }: Props = $props();
 
-	const staticTabs = ['Audio', 'Layout', 'Graphics', 'Replay', 'Keys', 'Captions', 'SCTE', 'Macros', 'Presets', 'Clips', 'Team', 'STMap'] as const;
+	const staticTabs = ['Audio', 'Layout', 'Graphics', 'Replay', 'Keys', 'Captions', 'SCTE', 'Macros', 'Presets', 'Clips', 'Team', 'STMap', 'Color'] as const;
 	type StaticTabId = typeof staticTabs[number];
 	type TabId = StaticTabId | 'AI';
 

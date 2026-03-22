@@ -30,6 +30,7 @@
 	import OperatorBadge from '../components/OperatorBadge.svelte';
 	import TeamPanel from '../components/TeamPanel.svelte';
 	import STMapPanel from '../components/STMapPanel.svelte';
+	import ColorGradePanel from '../components/ColorGradePanel.svelte';
 	import AISegmentPanel from '../components/AISegmentPanel.svelte';
 	import LockIndicator from '../components/LockIndicator.svelte';
 	import CommsBar from '../components/CommsBar.svelte';
@@ -769,6 +770,10 @@
 						{:else if activeTab === 'STMap'}
 							<div class="tab-panel">
 								<STMapPanel state={store.effectiveState} />
+							</div>
+						{:else if activeTab === 'Color'}
+							<div class="tab-panel">
+								<ColorGradePanel state={store.effectiveState} />
 							</div>
 						{:else if activeTab === 'AI'}
 							<div class="tab-panel">

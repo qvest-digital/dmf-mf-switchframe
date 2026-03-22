@@ -269,6 +269,12 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 		state.AISegmentation = aiState
 	}
 
+	// Color grade state.
+	if a.colorGradeCtrl != nil {
+		cgState := a.colorGradeCtrl.GetState()
+		state.ColorGrade = &cgState
+	}
+
 	// Macro execution state (running/completed progress).
 	if ms := a.api.MacroState(); ms != nil {
 		state.Macro = ms
