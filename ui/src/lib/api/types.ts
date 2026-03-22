@@ -611,6 +611,7 @@ export interface ControlRoomState {
 	macro?: MacroExecutionState;
 	comms?: CommsState;
 	stmap?: STMapState;
+	colorGrade?: ColorGradeState;
 	aiSegmentation?: AISegmentationState;
 	lastChangedBy?: string;
 	seq: number;
@@ -677,6 +678,15 @@ export interface STMapGenerateRequest {
 	assign_source?: string;
 	assign_program?: boolean;
 	frame_count?: number;
+}
+
+// ── Color Grading Types ──
+
+export interface ColorGradeState {
+	enabled: boolean;
+	lookName: string;
+	intensity: number;
+	available: string[];
 }
 
 // ── GPU Pipeline Types ──

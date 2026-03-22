@@ -24,7 +24,8 @@ describe('BottomTabs', () => {
 		expect(tabLabels).toContain('Clips');
 		expect(tabLabels).toContain('Team');
 		expect(tabLabels).toContain('STMap');
-		expect(tabs.length).toBe(12);
+		expect(tabLabels).toContain('Color');
+		expect(tabs.length).toBe(13);
 	});
 
 	it('renders Presets tab', () => {
