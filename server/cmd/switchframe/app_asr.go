@@ -15,11 +15,6 @@ import (
 	"github.com/zsiec/switchframe/server/internal"
 )
 
-// splitWords splits text on whitespace, preserving word boundaries.
-func splitWords(text string) []string {
-	return strings.Fields(text)
-}
-
 // initASR sets up the ASR engine when --asr-model is provided.
 // Requires --captions to be enabled (needs caption manager for output).
 // Non-fatal: if the engine fails to initialize, ASR is simply unavailable.

@@ -800,18 +800,6 @@ func (m *mockGPUPipelineRunner) Snapshot() map[string]any {
 	}
 }
 
-// mockPipelineNode is a simple passthrough PipelineNode for testing.
-type mockPipelineNode struct {
-	name string
-}
-
-func (n *mockPipelineNode) Name() string                             { return n.name }
-func (n *mockPipelineNode) Configure(format PipelineFormat) error    { return nil }
-func (n *mockPipelineNode) Active() bool                             { return false }
-func (n *mockPipelineNode) Process(dst, src *ProcessingFrame) *ProcessingFrame { return src }
-func (n *mockPipelineNode) Err() error                               { return nil }
-func (n *mockPipelineNode) Latency() time.Duration                   { return 0 }
-func (n *mockPipelineNode) Close() error                             { return nil }
 
 func TestBuildPipeline_NilPipeCodecs(t *testing.T) {
 	// BuildPipeline with no encoder configured should be a no-op.

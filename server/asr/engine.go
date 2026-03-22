@@ -148,11 +148,14 @@ func (e *Engine) IngestAudio(pcm []float32, pts int64, sampleRate, channels int)
 		// Adaptive inference timing: start fast (1s), ramp to inferMs.
 		// First inference at 1s gives fast initial words on screen.
 		// Second at 2s balances speed and accuracy. Then steady state.
-		inferInterval := time.Duration(e.inferMs) * time.Millisecond
-		if e.inferCount == 0 {
+		var inferInterval time.Duration
+		switch e.inferCount {
+		case 0:
 			inferInterval = 1000 * time.Millisecond
-		} else if e.inferCount == 1 {
+		case 1:
 			inferInterval = 2000 * time.Millisecond
+		default:
+			inferInterval = time.Duration(e.inferMs) * time.Millisecond
 		}
 
 		if e.wasSpeaking && now.Sub(e.lastInfer) >= inferInterval {
@@ -227,11 +230,9 @@ func (e *Engine) runInference(isFinal bool) {
 		cb := e.onTranscript
 		e.mu.Unlock()
 
-		newWords := words
+		var newWords []TranscriptWord
 		if prevWordCount < len(words) {
 			newWords = words[prevWordCount:]
-		} else {
-			newWords = nil
 		}
 		if cb != nil && len(newWords) > 0 {
 			cb(newWords, true)
