@@ -28,7 +28,7 @@ func CopyGPUFrame(dst, src *GPUFrame) error {
 
 // CopyNV12FromDevice is a no-op on darwin (Apple Silicon uses Metal, not CUDA).
 // NVDEC zero-copy decode is only available on Linux with NVIDIA GPUs.
-func CopyNV12FromDevice(_ *GPUFrame, _ uintptr, _, _, _ int) error {
+func CopyNV12FromDevice(_ *GPUFrame, _, _ uintptr, _, _, _ int) error {
 	return errors.New("CopyNV12FromDevice: not supported on darwin (CUDA-only)")
 }
 

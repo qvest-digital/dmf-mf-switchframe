@@ -77,18 +77,21 @@ func CopyGPUFrameOn(dst, src *GPUFrame, q *GPUWorkQueue) error {
 	return nil
 }
 
-// CopyNV12FromDevice copies NV12 data from an external CUDA device pointer
+// CopyNV12FromDevice copies NV12 data from external CUDA device pointers
 // (e.g., NVDEC output) into a pool GPUFrame. Handles pitch mismatch between
 // source and destination via cudaMemcpy2DAsync.
 //
-// srcDevPtr points to the start of the NV12 data (Y plane).
+// yDevPtr and uvDevPtr are the Y and UV plane device pointers from NVDEC.
+// NVDEC may pad height to alignment boundaries (16/32 pixels), so the UV
+// plane offset is NOT simply pitch*height — the caller must pass both
+// pointers from FFmpeg's frame->data[0] and frame->data[1].
 // srcPitch is the source row pitch in bytes.
-// width/height are the frame dimensions in pixels.
-func CopyNV12FromDevice(dst *GPUFrame, srcDevPtr uintptr, srcPitch, width, height int) error {
+// width/height are the content dimensions in pixels.
+func CopyNV12FromDevice(dst *GPUFrame, yDevPtr, uvDevPtr uintptr, srcPitch, width, height int) error {
 	if dst == nil {
 		return fmt.Errorf("CopyNV12FromDevice: nil destination frame")
 	}
-	if srcDevPtr == 0 {
+	if yDevPtr == 0 {
 		return fmt.Errorf("CopyNV12FromDevice: nil source device pointer")
 	}
 
@@ -96,7 +99,7 @@ func CopyNV12FromDevice(dst *GPUFrame, srcDevPtr uintptr, srcPitch, width, heigh
 	rc := C.cudaMemcpy2DAsync(
 		unsafe.Pointer(uintptr(dst.DevPtr)),   // dst
 		C.size_t(dst.Pitch),                    // dpitch
-		unsafe.Pointer(srcDevPtr),              // src
+		unsafe.Pointer(yDevPtr),                // src
 		C.size_t(srcPitch),                     // spitch
 		C.size_t(width),                        // width (bytes to copy per row)
 		C.size_t(height),                       // height (number of rows)
@@ -108,14 +111,14 @@ func CopyNV12FromDevice(dst *GPUFrame, srcDevPtr uintptr, srcPitch, width, heigh
 	}
 
 	// UV plane: width bytes per row, height/2 rows.
-	// NV12 interleaved UV follows immediately after the Y plane in both src and dst.
-	srcUV := srcDevPtr + uintptr(srcPitch*height)
-	dstUV := uintptr(dst.DevPtr) + uintptr(dst.Pitch*dst.Height)
+	// Destination UV follows Y in our pool frame (pitch*height offset).
+	// Source UV comes from uvDevPtr (FFmpeg data[1], correctly aligned by NVDEC).
+	dstUV := uintptr(dst.DevPtr) + uintptr(dst.Pitch*height)
 
 	rc = C.cudaMemcpy2DAsync(
 		unsafe.Pointer(dstUV),                  // dst
 		C.size_t(dst.Pitch),                    // dpitch
-		unsafe.Pointer(srcUV),                  // src
+		unsafe.Pointer(uvDevPtr),               // src (from frame->data[1])
 		C.size_t(srcPitch),                     // spitch
 		C.size_t(width),                        // width (bytes to copy per row)
 		C.size_t(height/2),                     // height (number of rows)

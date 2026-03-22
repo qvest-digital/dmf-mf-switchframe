@@ -747,7 +747,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		srcMgr := a.gpuState.sourceManager
 		pool := srcMgr.Pool()
 
-		src.OnRawVideoGPU = func(sourceKey string, devPtr uintptr, pitch, w, h int, pts int64) {
+		src.OnRawVideoGPU = func(sourceKey string, yDevPtr, uvDevPtr uintptr, pitch, w, h int, pts int64) {
 			pts = ptsLin.Linearize(pts, srt.StreamVideo)
 
 			// Track source video PTS for A/V gap measurement.
@@ -762,8 +762,9 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 				return // pool exhausted, drop frame
 			}
 
-			// Copy NVDEC NV12 surface to pool frame (handles pitch mismatch).
-			if err := gpu.CopyNV12FromDevice(frame, devPtr, pitch, w, h); err != nil {
+			// Copy NVDEC NV12 Y+UV planes to pool frame (separate pointers
+			// because NVDEC pads height to alignment boundaries).
+			if err := gpu.CopyNV12FromDevice(frame, yDevPtr, uvDevPtr, pitch, w, h); err != nil {
 				frame.Release()
 				return
 			}

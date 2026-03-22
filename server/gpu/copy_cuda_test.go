@@ -10,7 +10,7 @@ import (
 )
 
 func TestCopyNV12FromDevice_NilDst(t *testing.T) {
-	err := CopyNV12FromDevice(nil, 0xDEAD, 1920, 1920, 1080)
+	err := CopyNV12FromDevice(nil, 0xDEAD, 0xBEEF, 1920, 1920, 1080)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nil destination")
 }
@@ -28,7 +28,7 @@ func TestCopyNV12FromDevice_NilSrc(t *testing.T) {
 	require.NoError(t, err)
 	defer frame.Release()
 
-	err = CopyNV12FromDevice(frame, 0, 1920, 1920, 1080)
+	err = CopyNV12FromDevice(frame, 0, 0, 1920, 1920, 1080)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nil source")
 }
