@@ -113,16 +113,14 @@ func TestAnimatedSTMap_BuildProcessorsCached_OnceSemantics(t *testing.T) {
 	require.NoError(t, anim.Close())
 }
 
-func TestAnimatedSTMap_RegenerateFrame(t *testing.T) {
+func TestAnimatedSTMap_STArraysAt_FromMmap(t *testing.T) {
 	params := map[string]float64{"intensity": 0.3, "frequency": 2.0}
 	w, h, frameCount := 64, 48, 5
 
 	// Generate with frames in memory — capture original S/T data.
 	orig, err := GenerateAnimated("heat_shimmer", params, w, h, frameCount)
 	require.NoError(t, err)
-	require.Len(t, orig.Frames, frameCount)
 
-	// Capture all original S/T slices.
 	origS := make([][]float32, frameCount)
 	origT := make([][]float32, frameCount)
 	for i := 0; i < frameCount; i++ {
@@ -132,41 +130,56 @@ func TestAnimatedSTMap_RegenerateFrame(t *testing.T) {
 		copy(origT[i], orig.Frames[i].T)
 	}
 
-	// RegenerateFrame with Frames still present returns the in-memory frame.
-	f := orig.RegenerateFrame(2)
-	require.NotNil(t, f)
-	require.Equal(t, origS[2], f.S)
-	require.Equal(t, origT[2], f.T)
+	// STArraysAt before cache build reads from Frames.
+	s, tArr := orig.STArraysAt(2)
+	require.NotNil(t, s)
+	require.Equal(t, origS[2], s)
+	require.Equal(t, origT[2], tArr)
 
-	// Now simulate BuildProcessorsCached clearing Frames.
+	// Build cached — writes .st files and mmap's them.
 	dir := t.TempDir()
 	orig.BuildProcessorsCached(dir)
-	require.Nil(t, orig.Frames)
+	require.Nil(t, orig.Frames) // float32 data freed
 
-	// RegenerateFrame should still return valid data via generator re-invocation.
+	// .st files should exist.
 	for i := 0; i < frameCount; i++ {
-		f := orig.RegenerateFrame(i)
-		require.NotNil(t, f, "frame %d should be regenerated", i)
-		require.Equal(t, origS[i], f.S, "frame %d S mismatch", i)
-		require.Equal(t, origT[i], f.T, "frame %d T mismatch", i)
+		path := filepath.Join(dir, fmt.Sprintf("frame_%03d.st", i))
+		_, statErr := os.Stat(path)
+		require.NoError(t, statErr, "missing .st file for frame %d", i)
 	}
 
-	// Wrapping: frame index beyond frameCount wraps correctly.
-	f = orig.RegenerateFrame(frameCount + 2)
-	require.NotNil(t, f)
-	require.Equal(t, origS[2], f.S)
+	// STArraysAt should serve from mmap'd .st files.
+	for i := 0; i < frameCount; i++ {
+		s, tArr := orig.STArraysAt(i)
+		require.NotNil(t, s, "frame %d S should not be nil", i)
+		require.NotNil(t, tArr, "frame %d T should not be nil", i)
+		require.Equal(t, origS[i], s, "frame %d S mismatch", i)
+		require.Equal(t, origT[i], tArr, "frame %d T mismatch", i)
+	}
+
+	// Wrapping works.
+	s, tArr = orig.STArraysAt(frameCount + 2)
+	require.Equal(t, origS[2], s)
 
 	require.NoError(t, orig.Close())
 }
 
-func TestAnimatedSTMap_RegenerateFrame_NoGenerator(t *testing.T) {
-	// AnimatedSTMap created directly (not via GenerateAnimated) has no generator metadata.
+func TestAnimatedSTMap_STArraysAt_NoCache(t *testing.T) {
+	// AnimatedSTMap without cached build — STArraysAt falls back to Frames.
 	f0 := Identity(8, 8)
 	f1 := Identity(8, 8)
 	anim := NewAnimatedSTMap("manual", []*STMap{f0, f1}, 30)
 
-	// With Frames present, RegenerateFrame returns nil (no generator).
-	require.Nil(t, anim.RegenerateFrame(0))
+	s, tArr := anim.STArraysAt(0)
+	require.NotNil(t, s)
+	require.NotNil(t, tArr)
+	require.Len(t, s, 64) // 8*8
+
+	// After niling Frames with no stArrays, returns nil.
+	anim.Frames = nil
+	s, tArr = anim.STArraysAt(0)
+	require.Nil(t, s)
+	require.Nil(t, tArr)
 }
 
 func TestAnimatedSTMap_FrameCount(t *testing.T) {
@@ -222,7 +235,7 @@ func TestRegistry_AnimatedSTArraysAt_AfterBuildProcessorsCached(t *testing.T) {
 	anim.BuildProcessorsCached(dir)
 	require.Nil(t, anim.Frames)
 
-	// AnimatedSTArraysAt should still return valid data via regeneration.
+	// AnimatedSTArraysAt should return valid data from mmap'd .st files.
 	s, tArr := r.AnimatedSTArraysAt(2)
 	require.NotNil(t, s)
 	require.NotNil(t, tArr)

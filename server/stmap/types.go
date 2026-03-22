@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/zsiec/switchframe/server/mmaputil"
 )
 
 var (
@@ -85,11 +87,23 @@ type AnimatedSTMap struct {
 	Height     int                // frame height (set by GenerateAnimated)
 	Frames     []*STMap
 	FPS        int
-	Generator  string             // generator name (for on-demand regeneration)
-	GenParams  map[string]float64 // resolved params (for on-demand regeneration)
+	Generator  string             // generator name (for cache key computation)
+	GenParams  map[string]float64 // resolved params (for cache key computation)
 	index      atomic.Int64
-	processors []*Processor // pre-built per-frame processors
+	processors []*Processor // pre-built per-frame processors (int32 LUTs, CPU warp)
 	buildOnce  sync.Once    // guards processors initialization
+
+	// Pre-built float32 S/T arrays for GPU upload path. Each entry is an mmap'd
+	// region containing [S: w*h*float32][T: w*h*float32]. Written at cache build
+	// time alongside .lut files. Zero runtime generation.
+	stArrays    []stArrayEntry
+}
+
+// stArrayEntry holds mmap'd float32 S/T arrays for one animation frame.
+type stArrayEntry struct {
+	S    []float32 // sub-slice of backing
+	T    []float32 // sub-slice of backing
+	backing []byte // mmap region (for munmap)
 }
 
 // NewAnimatedSTMap creates a new animated ST map from a sequence of frames.
@@ -140,42 +154,28 @@ func (a *AnimatedSTMap) FrameCount() int {
 	return len(a.Frames)
 }
 
-// RegenerateFrame regenerates a single frame's float32 S/T data on demand.
-// Used by the GPU path to get float32 data for GPU upload after Frames
-// have been freed by BuildProcessorsCached. Returns nil if generator
-// metadata is not set or generation fails.
-func (a *AnimatedSTMap) RegenerateFrame(idx int) *STMap {
-	if a.Generator == "" {
-		return nil
-	}
+// STArraysAt returns the pre-built float32 S and T arrays for the given frame
+// index. Returns (nil, nil) if the frame index is out of range or no pre-built
+// arrays are available. These arrays are mmap'd from .st cache files written
+// at build time — no runtime generation.
+func (a *AnimatedSTMap) STArraysAt(idx int) (s, t []float32) {
 	frameCount := a.FrameCount()
 	if frameCount == 0 {
-		return nil
+		return nil, nil
 	}
 	wrapped := idx % frameCount
 
-	// Fast path: Frames still in memory.
-	if a.Frames != nil && wrapped < len(a.Frames) {
-		return a.Frames[wrapped]
+	// Pre-built mmap'd arrays (normal path after BuildProcessorsCached).
+	if wrapped < len(a.stArrays) && a.stArrays[wrapped].S != nil {
+		return a.stArrays[wrapped].S, a.stArrays[wrapped].T
 	}
 
-	// Slow path: Frames freed after BuildProcessorsCached.
-	// Regenerate all frames but return only the one we need.
-	fn, ok := animatedGenerators[a.Generator]
-	if !ok {
-		return nil
+	// Fallback: Frames still in memory (before BuildProcessorsCached).
+	if a.Frames != nil && wrapped < len(a.Frames) {
+		return a.Frames[wrapped].S, a.Frames[wrapped].T
 	}
-	if a.Width == 0 || a.Height == 0 {
-		return nil
-	}
-	anim, err := fn(a.GenParams, a.Width, a.Height, frameCount)
-	if err != nil {
-		return nil
-	}
-	if wrapped < len(anim.Frames) {
-		return anim.Frames[wrapped]
-	}
-	return nil
+
+	return nil, nil
 }
 
 // BuildProcessors pre-builds all per-frame Processors. Call this after
@@ -207,17 +207,25 @@ func (a *AnimatedSTMap) ProcessorAt(idx int) *Processor {
 func (a *AnimatedSTMap) BuildProcessorsCached(cacheDir string) {
 	a.buildOnce.Do(func() {
 		_ = os.MkdirAll(cacheDir, 0755)
-		a.processors = make([]*Processor, len(a.Frames))
+		n := len(a.Frames)
+		a.processors = make([]*Processor, n)
+		a.stArrays = make([]stArrayEntry, n)
+
 		for i, frame := range a.Frames {
-			cachePath := filepath.Join(cacheDir, fmt.Sprintf("frame_%03d.lut", i))
-			p, err := NewProcessorCached(frame, cachePath)
+			// Write/load int32 LUT cache (CPU warp path).
+			lutPath := filepath.Join(cacheDir, fmt.Sprintf("frame_%03d.lut", i))
+			p, err := NewProcessorCached(frame, lutPath)
 			if err != nil {
-				// Fallback to heap-based processor.
 				p = NewProcessor(frame)
 			}
 			a.processors[i] = p
+
+			// Write/load float32 S/T cache (GPU upload path).
+			stPath := filepath.Join(cacheDir, fmt.Sprintf("frame_%03d.st", i))
+			a.stArrays[i] = loadOrWriteSTCache(stPath, frame)
 		}
-		// Free float32 source data — regenerable from generator.
+
+		// Free heap-allocated float32 source data — now served from mmap.
 		a.Frames = nil
 	})
 }
@@ -234,6 +242,14 @@ func (a *AnimatedSTMap) Close() error {
 			if err := p.Close(); err != nil && firstErr == nil {
 				firstErr = err
 			}
+		}
+	}
+	for i := range a.stArrays {
+		if a.stArrays[i].backing != nil {
+			if err := mmaputil.Free(a.stArrays[i].backing); err != nil && firstErr == nil {
+				firstErr = err
+			}
+			a.stArrays[i] = stArrayEntry{}
 		}
 	}
 	return firstErr

@@ -356,10 +356,9 @@ func (r *Registry) AdvanceAnimatedIndex() int {
 }
 
 // AnimatedSTArraysAt returns the S and T float32 arrays for the given
-// animated frame index. Returns (nil, nil) if no animated map is assigned
-// or the index is out of range. If Frames have been freed by
-// BuildProcessorsCached, falls back to on-demand regeneration via
-// RegenerateFrame (used by the GPU upload path).
+// animated frame index. Returns (nil, nil) if no animated map is assigned.
+// After BuildProcessorsCached, serves from pre-built mmap'd .st cache files
+// (zero runtime generation).
 func (r *Registry) AnimatedSTArraysAt(idx int) (s, t []float32) {
 	r.mu.RLock()
 	anim := r.programAnim
@@ -367,20 +366,7 @@ func (r *Registry) AnimatedSTArraysAt(idx int) (s, t []float32) {
 	if anim == nil || idx < 0 {
 		return nil, nil
 	}
-
-	// Fast path: Frames still in memory.
-	if anim.Frames != nil && idx < len(anim.Frames) {
-		frame := anim.Frames[idx]
-		return frame.S, frame.T
-	}
-
-	// Slow path: Frames freed after BuildProcessorsCached.
-	// Regenerate on demand for GPU upload.
-	frame := anim.RegenerateFrame(idx)
-	if frame == nil {
-		return nil, nil
-	}
-	return frame.S, frame.T
+	return anim.STArraysAt(idx)
 }
 
 // SourceMapName returns the map name assigned to a source, or "" if none.
