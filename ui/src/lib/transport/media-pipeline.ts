@@ -209,7 +209,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 			},
 
 			onCaptionFrame(caption: CaptionData, timestamp: number) {
-				if (key === 'program' && config?.onProgramCaptionFrame) {
+				if ((key === 'program' || key === 'program-preview') && config?.onProgramCaptionFrame) {
 					config.onProgramCaptionFrame(caption, timestamp);
 				}
 			},
