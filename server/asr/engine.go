@@ -204,6 +204,28 @@ func (e *Engine) runInference(isFinal bool) {
 		return
 	}
 
+	// Debug: check encoder output quality.
+	var encMin, encMax, encSum float32
+	encMin = encOut[0]
+	encMax = encOut[0]
+	for _, v := range encOut {
+		if v < encMin {
+			encMin = v
+		}
+		if v > encMax {
+			encMax = v
+		}
+		encSum += v
+	}
+	encMean := encSum / float32(len(encOut))
+	slog.Info("ASR encoder output stats",
+		"len", len(encOut),
+		"min", encMin,
+		"max", encMax,
+		"mean", encMean,
+		"first5", encOut[:5],
+	)
+
 	tok := e.tokenizer
 	initialTokens := []int{
 		tok.SOT(),
