@@ -227,7 +227,7 @@
 		{@const peakRDb = channelPeakDb(channel?.peakR, sourceLevels[key]?.peakR)}
 		{@const peakHold = getPeakHold(key, peakLDb, peakRDb)}
 		{@const _tick = peakHoldTick}
-		<div class="channel-strip" class:program={tally === 'program'} class:preview={tally === 'preview'}>
+		<div class="channel-strip" class:program={tally === 'program'} class:preview={tally === 'preview'} class:selected={selectedChannel === key}>
 			<span class="strip-label">{label}</span>
 
 			<div class="trim-control">
@@ -582,6 +582,11 @@
 	.channel-strip.preview {
 		border-color: rgba(22, 163, 74, 0.35);
 		box-shadow: 0 0 8px rgba(22, 163, 74, 0.1);
+	}
+
+	.channel-strip.selected {
+		background: rgba(99, 102, 241, 0.05);
+		border-bottom: 2px solid rgba(99, 102, 241, 0.5);
 	}
 
 	.master-strip {
