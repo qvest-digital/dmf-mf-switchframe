@@ -271,6 +271,9 @@
 		{@const _tick = peakHoldTick}
 		<div class="channel-strip" class:program={tally === 'program'} class:preview={tally === 'preview'} class:selected={selectedChannel === key}>
 			<span class="strip-label">{label}</span>
+			{#if channel.hpfEnabled}
+				<span class="strip-hpf-indicator">{channel.hpfFrequency ?? 80}Hz</span>
+			{/if}
 
 			<div class="trim-control">
 				<input
@@ -452,6 +455,15 @@
 			</div>
 			<span class="lufs-unit">LUFS</span>
 		</div>
+
+		{#if crState.limiter}
+			<div class="master-limiter">
+				<div class="gr-meter master-gr">
+					<div class="gr-fill" style="width: {Math.min((crState.limiter.gainReduction) / 12 * 100, 100)}%"></div>
+					<span class="gr-label">LIM {crState.limiter.gainReduction > 0.1 ? '-' + crState.limiter.gainReduction.toFixed(1) : '0.0'}</span>
+				</div>
+			</div>
+		{/if}
 	</div>
 	</div>
 
@@ -462,6 +474,107 @@
 			<div class="detail-section detail-header">
 				<span class="detail-channel-name">{crState.sources[selectedChannel]?.label || selectedChannel}</span>
 				<button class="detail-close" onclick={() => onChannelSelect?.(null)} title="Close detail panel">&times;</button>
+			</div>
+
+			<!-- HPF -->
+			<div class="detail-section detail-hpf">
+				<div class="detail-section-header">
+					<span class="detail-section-label">HPF</span>
+					<button
+						class="detail-toggle-btn"
+						class:active={ch.hpfEnabled}
+						onclick={() => setHPFThrottled(selectedChannel, ch.hpfFrequency ?? 80, !ch.hpfEnabled)}
+					>{ch.hpfEnabled ? 'IN' : 'OUT'}</button>
+				</div>
+				<div class="hpf-param" class:disabled={!ch.hpfEnabled}>
+					<label class="eq-param">
+						<span class="eq-param-label">FREQ</span>
+						<input type="range" class="detail-slider"
+							min="20" max="500" step="1"
+							value={ch.hpfFrequency ?? 80}
+							oninput={(e) => setHPFThrottled(selectedChannel, parseFloat(e.currentTarget.value), ch.hpfEnabled ?? false)}
+						/>
+						<span class="eq-param-value">{ch.hpfFrequency ?? 80}Hz</span>
+					</label>
+				</div>
+			</div>
+
+			<!-- Gate -->
+			<div class="detail-section detail-gate">
+				<div class="detail-section-header">
+					<span class="detail-section-label">GATE</span>
+					<button
+						class="detail-toggle-btn"
+						class:active={ch.gateEnabled}
+						onclick={() => {
+							const g = ch.gate;
+							setGateThrottled(selectedChannel, g?.threshold ?? -40, g?.range ?? -60, g?.attack ?? 0.5, g?.release ?? 100, g?.hold ?? 50, !ch.gateEnabled);
+						}}
+					>{ch.gateEnabled ? 'IN' : 'OUT'}</button>
+				</div>
+				<div class="gate-params" class:disabled={!ch.gateEnabled}>
+					<div class="eq-param">
+						<span class="eq-param-label">THRESH</span>
+						<input type="range" class="detail-slider" min="-60" max="0" step="0.5"
+							value={ch.gate?.threshold ?? -40}
+							oninput={(e) => {
+								const g = ch.gate;
+								setGateThrottled(selectedChannel, parseFloat(e.currentTarget.value), g?.range ?? -60, g?.attack ?? 0.5, g?.release ?? 100, g?.hold ?? 50, ch.gateEnabled ?? false);
+							}}
+						/>
+						<span class="eq-param-value">{(ch.gate?.threshold ?? -40).toFixed(0)}</span>
+					</div>
+					<div class="eq-param">
+						<span class="eq-param-label">RANGE</span>
+						<input type="range" class="detail-slider" min="-80" max="-20" step="1"
+							value={ch.gate?.range ?? -60}
+							oninput={(e) => {
+								const g = ch.gate;
+								setGateThrottled(selectedChannel, g?.threshold ?? -40, parseFloat(e.currentTarget.value), g?.attack ?? 0.5, g?.release ?? 100, g?.hold ?? 50, ch.gateEnabled ?? false);
+							}}
+						/>
+						<span class="eq-param-value">{(ch.gate?.range ?? -60).toFixed(0)}</span>
+					</div>
+					<div class="eq-param">
+						<span class="eq-param-label">ATK</span>
+						<input type="range" class="detail-slider" min="0.01" max="10" step="0.01"
+							value={ch.gate?.attack ?? 0.5}
+							oninput={(e) => {
+								const g = ch.gate;
+								setGateThrottled(selectedChannel, g?.threshold ?? -40, g?.range ?? -60, parseFloat(e.currentTarget.value), g?.release ?? 100, g?.hold ?? 50, ch.gateEnabled ?? false);
+							}}
+						/>
+						<span class="eq-param-value">{(ch.gate?.attack ?? 0.5).toFixed(1)}</span>
+					</div>
+					<div class="eq-param">
+						<span class="eq-param-label">REL</span>
+						<input type="range" class="detail-slider" min="10" max="500" step="1"
+							value={ch.gate?.release ?? 100}
+							oninput={(e) => {
+								const g = ch.gate;
+								setGateThrottled(selectedChannel, g?.threshold ?? -40, g?.range ?? -60, g?.attack ?? 0.5, parseFloat(e.currentTarget.value), g?.hold ?? 50, ch.gateEnabled ?? false);
+							}}
+						/>
+						<span class="eq-param-value">{(ch.gate?.release ?? 100).toFixed(0)}</span>
+					</div>
+					<div class="eq-param">
+						<span class="eq-param-label">HOLD</span>
+						<input type="range" class="detail-slider" min="0" max="500" step="1"
+							value={ch.gate?.hold ?? 50}
+							oninput={(e) => {
+								const g = ch.gate;
+								setGateThrottled(selectedChannel, g?.threshold ?? -40, g?.range ?? -60, g?.attack ?? 0.5, g?.release ?? 100, parseFloat(e.currentTarget.value), ch.gateEnabled ?? false);
+							}}
+						/>
+						<span class="eq-param-value">{(ch.gate?.hold ?? 50).toFixed(0)}</span>
+					</div>
+				</div>
+				{#if ch.gateEnabled && (ch.gateReduction ?? 0) > 0.1}
+					<div class="gr-meter">
+						<div class="gr-fill" style="width: {Math.min((ch.gateReduction ?? 0) / 60 * 100, 100)}%"></div>
+						<span class="gr-label">GR {(ch.gateReduction ?? 0) > 0 ? '-' + (ch.gateReduction ?? 0).toFixed(1) : '0.0'}</span>
+					</div>
+				{/if}
 			</div>
 
 			<!-- 3-band EQ -->
@@ -568,6 +681,26 @@
 					<div class="gr-fill" style="width: {grToPercent(ch.gainReduction)}%"></div>
 					<span class="gr-label">GR {ch.gainReduction > 0 ? '-' + ch.gainReduction.toFixed(1) : '0.0'}</span>
 				</div>
+			</div>
+
+			<!-- Balance -->
+			<div class="detail-section detail-bal">
+				<span class="detail-section-label">BAL</span>
+				<div class="balance-control">
+					<span class="bal-label-l">L</span>
+					<input type="range" class="detail-slider balance-slider"
+						min="-1" max="1" step="0.01"
+						value={ch.balance ?? 0}
+						oninput={(e) => setBalanceThrottled(selectedChannel, parseFloat(e.currentTarget.value))}
+					/>
+					<span class="bal-label-r">R</span>
+				</div>
+				<span class="balance-value">
+					{#if (ch.balance ?? 0) === 0}C
+					{:else if (ch.balance ?? 0) < 0}L{Math.round(Math.abs(ch.balance ?? 0) * 100)}
+					{:else}R{Math.round((ch.balance ?? 0) * 100)}
+					{/if}
+				</span>
 			</div>
 
 			<!-- Delays -->
@@ -1246,5 +1379,84 @@
 		color: var(--text-muted);
 		font-size: var(--text-xs);
 		margin-top: 2px;
+	}
+
+	/* HPF indicator on strip */
+	.strip-hpf-indicator {
+		font-family: var(--font-mono);
+		font-size: 8px;
+		color: rgba(20, 184, 166, 0.8);
+		margin-top: -2px;
+	}
+
+	/* Detail panel toggle buttons (HPF IN/OUT, Gate IN/OUT) */
+	.disabled {
+		opacity: 0.35;
+		pointer-events: none;
+	}
+
+	.detail-section-header {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		margin-bottom: 2px;
+	}
+
+	.detail-toggle-btn {
+		font-family: var(--font-mono);
+		font-size: 9px;
+		font-weight: 600;
+		padding: 1px 6px;
+		border: 1px solid rgba(255,255,255,0.1);
+		border-radius: 2px;
+		background: rgba(255,255,255,0.04);
+		color: var(--text-tertiary);
+		cursor: pointer;
+	}
+	.detail-toggle-btn.active {
+		background: rgba(99, 102, 241, 0.15);
+		border-color: rgba(99, 102, 241, 0.4);
+		color: rgb(165, 167, 252);
+	}
+
+	/* Gate params layout */
+	.gate-params {
+		display: flex;
+		gap: 4px;
+		flex-wrap: wrap;
+	}
+
+	/* Balance controls */
+	.balance-control {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+	}
+
+	.bal-label-l, .bal-label-r {
+		font-family: var(--font-mono);
+		font-size: 9px;
+		color: var(--text-tertiary);
+	}
+
+	.balance-slider {
+		accent-color: rgb(99, 102, 241);
+	}
+
+	.balance-value {
+		font-family: var(--font-mono);
+		font-size: 9px;
+		color: var(--text-secondary);
+		text-align: center;
+		min-width: 24px;
+	}
+
+	/* Master limiter GR */
+	.master-limiter {
+		margin-top: 4px;
+	}
+
+	.master-gr .gr-fill {
+		background: var(--status-crit);
 	}
 </style>
