@@ -136,7 +136,7 @@
 	}
 	let transitionType: 'mix' | 'dip' = 'mix';
 	let transitionDuration = 1000;
-	let eqExpandedKeys: Record<string, boolean> = $state({});
+	let selectedAudioChannel = $state<string | null>(null);
 
 	const keyboard = new KeyboardHandler({
 		onCut: () => {
@@ -712,7 +712,7 @@
 								<div class="panel-header">
 									<LockIndicator state={store.effectiveState} subsystem="audio" />
 								</div>
-								<AudioMixer state={store.effectiveState} {sourceLevels} {programLevels} {pflActiveSource} expandedKeys={eqExpandedKeys} onPFLToggle={handlePFLToggle} onStateUpdate={store.applyUpdate} onExpandToggle={(key) => { eqExpandedKeys = { ...eqExpandedKeys, [key]: !eqExpandedKeys[key] }; }} />
+								<AudioMixer state={store.effectiveState} {sourceLevels} {programLevels} {pflActiveSource} selectedChannel={selectedAudioChannel} onPFLToggle={handlePFLToggle} onStateUpdate={store.applyUpdate} onChannelSelect={(key) => { selectedAudioChannel = key; }} />
 							</div>
 						{:else if activeTab === 'Graphics'}
 							<div class="tab-panel">
@@ -840,7 +840,7 @@
 	.bottom-panel {
 		border-top: 1px solid var(--border-default);
 		background: var(--bg-surface);
-		height: clamp(180px, 25vh, 280px);
+		height: clamp(220px, 30vh, 380px);
 	}
 
 	.tab-panel {

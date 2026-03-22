@@ -20,13 +20,13 @@
 		sourceLevels?: Record<string, { peakL: number; peakR: number }>;
 		programLevels?: { peakL: number; peakR: number };
 		pflActiveSource?: string | null;
-		expandedKeys?: Record<string, boolean>;
+		selectedChannel?: string | null;
 		onPFLToggle?: (sourceKey: string) => void;
 		onStateUpdate?: (state: ControlRoomState) => void;
-		onExpandToggle?: (sourceKey: string) => void;
+		onChannelSelect?: (sourceKey: string | null) => void;
 	}
 
-	let { state: crState, sourceLevels = {}, programLevels = { peakL: 0, peakR: 0 }, pflActiveSource = null, expandedKeys = {}, onPFLToggle, onStateUpdate, onExpandToggle }: Props = $props();
+	let { state: crState, sourceLevels = {}, programLevels = { peakL: 0, peakR: 0 }, pflActiveSource = null, selectedChannel = null, onPFLToggle, onStateUpdate, onChannelSelect }: Props = $props();
 
 	let ui = $state({ collapsed: false });
 
@@ -126,8 +126,8 @@
 		return (gr / 20) * 100;
 	}
 
-	function toggleExpanded(key: string) {
-		onExpandToggle?.(key);
+	function toggleSelect(key: string) {
+		onChannelSelect?.(selectedChannel === key ? null : key);
 	}
 
 	/** Per-source compressor bypass state (true = bypassed). */
@@ -211,23 +211,23 @@
 </script>
 
 <div class="audio-mixer" class:collapsed={ui.collapsed}>
+	{#if !ui.collapsed}
+	<div class="mixer-strips">
 	<button class="collapse-toggle" onclick={() => ui = { ...ui, collapsed: !ui.collapsed }} title={ui.collapsed ? 'Expand audio mixer' : 'Collapse audio mixer'}>
 		<span class="toggle-arrow">{ui.collapsed ? '\u25B6' : '\u25BC'}</span>
 		<span class="toggle-label">AUDIO</span>
 	</button>
-	{#if !ui.collapsed}
 	<!-- Channel strips -->
 	{#each sortedKeys as key (key)}
 		{@const channel = crState.audioChannels?.[key]!}
 		{@const source = crState.sources[key]}
 		{@const label = source?.label || key}
 		{@const tally = crState.tallyState[key] ?? 'idle'}
-		{@const isExpanded = expandedKeys[key] ?? false}
 		{@const peakLDb = channelPeakDb(channel?.peakL, sourceLevels[key]?.peakL)}
 		{@const peakRDb = channelPeakDb(channel?.peakR, sourceLevels[key]?.peakR)}
 		{@const peakHold = getPeakHold(key, peakLDb, peakRDb)}
 		{@const _tick = peakHoldTick}
-		<div class="channel-strip" class:program={tally === 'program'} class:preview={tally === 'preview'} class:expanded={isExpanded}>
+		<div class="channel-strip" class:program={tally === 'program'} class:preview={tally === 'preview'}>
 			<span class="strip-label">{label}</span>
 
 			<div class="trim-control">
@@ -313,8 +313,8 @@
 				</button>
 				<button
 					class="strip-btn eq-toggle-btn"
-					class:active={isExpanded}
-					onclick={() => toggleExpanded(key)}
+					class:active={selectedChannel === key}
+					onclick={() => toggleSelect(key)}
 					title="EQ & Dynamics"
 				>
 					EQ
@@ -322,230 +322,6 @@
 			</div>
 
 			<span class="strip-db">{channel.level.toFixed(1)}</span>
-
-			<!-- Expandable EQ & Compressor section -->
-			{#if isExpanded && channel.eq && channel.compressor}
-				<div class="eq-comp-section">
-					<div class="eq-section">
-						<span class="section-title">EQ</span>
-						{#each [0, 1, 2] as band}
-							{@const eqBand = channel.eq[band]}
-							<div class="eq-band">
-								<div class="eq-band-header">
-									<span class="eq-band-name">{EQ_BAND_NAMES[band]}</span>
-									<button
-										class="eq-enable-btn"
-										class:active={eqBand?.enabled}
-										onclick={() => {
-											if (eqBand) {
-												setEQThrottled(key, band, eqBand.frequency, eqBand.gain, eqBand.q, !eqBand.enabled);
-											}
-										}}
-										aria-label="Enable {EQ_BAND_NAMES[band]} EQ for {label}"
-									>
-										{eqBand?.enabled ? 'ON' : 'OFF'}
-									</button>
-								</div>
-								<label class="eq-param">
-									<span class="eq-param-label">Freq</span>
-									<input
-										type="range"
-										class="eq-slider"
-										min={band === 0 ? 80 : band === 1 ? 200 : 1000}
-										max={band === 0 ? 1000 : band === 1 ? 8000 : 16000}
-										step="1"
-										value={eqBand?.frequency ?? (band === 0 ? 250 : band === 1 ? 1000 : 4000)}
-										aria-label="{EQ_BAND_NAMES[band]} frequency for {label}"
-										oninput={(e) => {
-											if (eqBand) {
-												setEQThrottled(key, band, parseFloat((e.target as HTMLInputElement).value), eqBand.gain, eqBand.q, eqBand.enabled);
-											}
-										}}
-									/>
-									<span class="eq-param-value">{(eqBand?.frequency ?? 0).toFixed(0)}</span>
-								</label>
-								<label class="eq-param">
-									<span class="eq-param-label">Gain</span>
-									<input
-										type="range"
-										class="eq-slider"
-										min="-12"
-										max="12"
-										step="0.5"
-										value={eqBand?.gain ?? 0}
-										aria-label="{EQ_BAND_NAMES[band]} gain for {label}"
-										oninput={(e) => {
-											if (eqBand) {
-												setEQThrottled(key, band, eqBand.frequency, parseFloat((e.target as HTMLInputElement).value), eqBand.q, eqBand.enabled);
-											}
-										}}
-									/>
-									<span class="eq-param-value">{(eqBand?.gain ?? 0).toFixed(1)}</span>
-								</label>
-								<label class="eq-param">
-									<span class="eq-param-label">Q</span>
-									<input
-										type="range"
-										class="eq-slider"
-										min="0.5"
-										max="4.0"
-										step="0.1"
-										value={eqBand?.q ?? 1.0}
-										aria-label="{EQ_BAND_NAMES[band]} Q for {label}"
-										oninput={(e) => {
-											if (eqBand) {
-												setEQThrottled(key, band, eqBand.frequency, eqBand.gain, parseFloat((e.target as HTMLInputElement).value), eqBand.enabled);
-											}
-										}}
-									/>
-									<span class="eq-param-value">{(eqBand?.q ?? 1.0).toFixed(1)}</span>
-								</label>
-							</div>
-						{/each}
-					</div>
-
-					<div class="comp-section" class:comp-bypassed={compBypass[key]}>
-						<div class="section-header">
-							<span class="section-title">COMP</span>
-							<button
-								class="bypass-toggle"
-								class:bypass-active={!compBypass[key]}
-								onclick={() => toggleCompBypass(key, channel)}
-								aria-label="Compressor {compBypass[key] ? 'off' : 'on'}"
-							>ON</button>
-						</div>
-						<label class="eq-param">
-							<span class="eq-param-label">Thresh</span>
-							<input
-								type="range"
-								class="eq-slider"
-								min="-40"
-								max="0"
-								step="0.5"
-								value={channel.compressor.threshold}
-								aria-label="Compressor threshold for {label}"
-								oninput={(e) => {
-									const c = channel.compressor;
-									setCompressorThrottled(key, parseFloat((e.target as HTMLInputElement).value), c.ratio, c.attack, c.release, c.makeupGain);
-								}}
-							/>
-							<span class="eq-param-value">{channel.compressor.threshold.toFixed(1)}</span>
-						</label>
-						<label class="eq-param">
-							<span class="eq-param-label">Ratio</span>
-							<input
-								type="range"
-								class="eq-slider"
-								min="1"
-								max="20"
-								step="0.5"
-								value={channel.compressor.ratio}
-								aria-label="Compressor ratio for {label}"
-								oninput={(e) => {
-									const c = channel.compressor;
-									setCompressorThrottled(key, c.threshold, parseFloat((e.target as HTMLInputElement).value), c.attack, c.release, c.makeupGain);
-								}}
-							/>
-							<span class="eq-param-value">{channel.compressor.ratio.toFixed(1)}</span>
-						</label>
-						<label class="eq-param">
-							<span class="eq-param-label">Attack</span>
-							<input
-								type="range"
-								class="eq-slider"
-								min="0.1"
-								max="100"
-								step="0.1"
-								value={channel.compressor.attack}
-								aria-label="Compressor attack for {label}"
-								oninput={(e) => {
-									const c = channel.compressor;
-									setCompressorThrottled(key, c.threshold, c.ratio, parseFloat((e.target as HTMLInputElement).value), c.release, c.makeupGain);
-								}}
-							/>
-							<span class="eq-param-value">{channel.compressor.attack.toFixed(1)}ms</span>
-						</label>
-						<label class="eq-param">
-							<span class="eq-param-label">Release</span>
-							<input
-								type="range"
-								class="eq-slider"
-								min="10"
-								max="1000"
-								step="1"
-								value={channel.compressor.release}
-								aria-label="Compressor release for {label}"
-								oninput={(e) => {
-									const c = channel.compressor;
-									setCompressorThrottled(key, c.threshold, c.ratio, c.attack, parseFloat((e.target as HTMLInputElement).value), c.makeupGain);
-								}}
-							/>
-							<span class="eq-param-value">{channel.compressor.release.toFixed(0)}ms</span>
-						</label>
-						<label class="eq-param">
-							<span class="eq-param-label">Makeup</span>
-							<input
-								type="range"
-								class="eq-slider"
-								min="0"
-								max="24"
-								step="0.5"
-								value={channel.compressor.makeupGain}
-								aria-label="Compressor makeup gain for {label}"
-								oninput={(e) => {
-									const c = channel.compressor;
-									setCompressorThrottled(key, c.threshold, c.ratio, c.attack, c.release, parseFloat((e.target as HTMLInputElement).value));
-								}}
-							/>
-							<span class="eq-param-value">{channel.compressor.makeupGain.toFixed(1)}</span>
-						</label>
-						<!-- GR meter bar -->
-						<div class="gr-meter" aria-label="Gain reduction for {label}">
-							<span class="gr-label">GR</span>
-							<div class="gr-bar">
-								<div class="gr-fill" style="width: {grToPercent(channel.gainReduction ?? 0)}%"></div>
-							</div>
-							<span class="gr-value">{(channel.gainReduction ?? 0).toFixed(1)}</span>
-						</div>
-					</div>
-
-					<!-- Source Delay -->
-					<div class="delay-section">
-						<div class="section-header">
-							<span class="section-title">DELAY</span>
-							<span class="param-value">{crState.sources?.[key]?.delayMs ?? 0}ms</span>
-						</div>
-						<input
-							type="range"
-							class="eq-slider"
-							min="0"
-							max="500"
-							step="1"
-							value={crState.sources?.[key]?.delayMs ?? 0}
-							oninput={(e) => setDelayThrottled(key, parseInt(e.currentTarget.value))}
-							aria-label="Source delay"
-						/>
-					</div>
-
-					<!-- Audio Delay (Lip Sync) -->
-					<div class="delay-section">
-						<div class="section-header">
-							<span class="section-title">LIP SYNC</span>
-							<span class="param-value">{channel.audioDelayMs ?? 0}ms</span>
-						</div>
-						<input
-							type="range"
-							class="eq-slider"
-							min="0"
-							max="500"
-							step="1"
-							value={channel.audioDelayMs ?? 0}
-							oninput={(e) => setAudioDelayThrottled(key, parseInt(e.currentTarget.value))}
-							aria-label="Audio delay for lip-sync correction"
-						/>
-					</div>
-				</div>
-			{/if}
 		</div>
 	{/each}
 
@@ -618,16 +394,37 @@
 			<span class="lufs-unit">LUFS</span>
 		</div>
 	</div>
+	</div>
+
+	{#if selectedChannel && crState.audioChannels?.[selectedChannel]}
+		<div class="channel-detail">
+			<span class="detail-channel-name">{crState.sources[selectedChannel]?.label || selectedChannel}</span>
+			<span style="color: var(--text-tertiary); font-size: 10px">Detail panel — Task 4</span>
+		</div>
+	{/if}
+	{:else}
+	<button class="collapse-toggle" onclick={() => ui = { ...ui, collapsed: !ui.collapsed }} title={ui.collapsed ? 'Expand audio mixer' : 'Collapse audio mixer'}>
+		<span class="toggle-arrow">{ui.collapsed ? '\u25B6' : '\u25BC'}</span>
+		<span class="toggle-label">AUDIO</span>
+	</button>
 	{/if}
 </div>
 
 <style>
 	.audio-mixer {
 		display: flex;
+		flex-direction: column;
+		height: 100%;
+		overflow: hidden;
+	}
+
+	.mixer-strips {
+		display: flex;
 		gap: 3px;
 		padding: 6px;
 		overflow-x: auto;
-		height: 100%;
+		flex: 1;
+		min-height: 0;
 	}
 
 	.channel-strip,
@@ -644,10 +441,6 @@
 		transition:
 			border-color var(--transition-fast),
 			box-shadow var(--transition-normal);
-	}
-
-	.channel-strip.expanded {
-		min-width: 180px;
 	}
 
 	.channel-strip.program {
@@ -924,182 +717,6 @@
 		color: var(--text-tertiary);
 	}
 
-	/* EQ & Compressor section */
-	.eq-comp-section {
-		width: 100%;
-		display: flex;
-		flex-direction: column;
-		gap: 6px;
-		padding-top: 4px;
-		border-top: 1px solid var(--border-subtle);
-	}
-
-	.section-title {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		font-weight: 700;
-		letter-spacing: 0.08em;
-		color: var(--text-secondary);
-		text-transform: uppercase;
-	}
-
-	.eq-section,
-	.comp-section {
-		display: flex;
-		flex-direction: column;
-		gap: 3px;
-	}
-
-	.eq-band {
-		display: flex;
-		flex-direction: column;
-		gap: 1px;
-		padding: 2px 0;
-	}
-
-	.eq-band-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-	}
-
-	.eq-band-name {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		font-weight: 600;
-		color: var(--text-tertiary);
-	}
-
-	.eq-enable-btn {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		font-weight: 600;
-		padding: 1px 4px;
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-xs);
-		background: var(--bg-elevated);
-		color: var(--text-tertiary);
-		cursor: pointer;
-	}
-
-	.eq-enable-btn.active {
-		background: rgba(99, 102, 241, 0.2);
-		color: var(--accent-indigo);
-		border-color: rgba(99, 102, 241, 0.4);
-	}
-
-	.eq-param {
-		display: flex;
-		align-items: center;
-		gap: 2px;
-	}
-
-	.eq-param-label {
-		font-family: var(--font-mono);
-		font-size: var(--text-2xs);
-		color: var(--text-tertiary);
-		min-width: 28px;
-	}
-
-	.eq-slider {
-		flex: 1;
-		height: 10px;
-		accent-color: var(--text-secondary);
-	}
-
-	.eq-param-value {
-		font-family: var(--font-mono);
-		font-size: var(--text-2xs);
-		color: var(--text-tertiary);
-		min-width: 32px;
-		text-align: right;
-	}
-
-	/* Compressor bypass */
-	.comp-bypassed .eq-param {
-		opacity: 0.4;
-		pointer-events: none;
-	}
-
-	.section-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-	}
-
-	.bypass-toggle {
-		font-size: var(--text-xs);
-		padding: 1px 5px;
-		border-radius: var(--radius-sm);
-		border: 1px solid var(--border-subtle);
-		background: var(--bg-control);
-		color: var(--text-secondary);
-		cursor: pointer;
-		font-family: var(--font-ui);
-		font-weight: 600;
-		letter-spacing: 0.06em;
-	}
-
-	.bypass-active {
-		background: color-mix(in srgb, var(--accent-green, #4caf50) 20%, transparent);
-		color: var(--accent-green, #4caf50);
-		border-color: var(--accent-green, #4caf50);
-	}
-
-	/* GR meter */
-	.gr-meter {
-		display: flex;
-		align-items: center;
-		gap: 3px;
-		margin-top: 2px;
-	}
-
-	.gr-label {
-		font-family: var(--font-mono);
-		font-size: var(--text-2xs);
-		color: var(--text-tertiary);
-		min-width: 16px;
-	}
-
-	.gr-bar {
-		flex: 1;
-		height: 6px;
-		background: var(--bg-base);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-xs);
-		overflow: hidden;
-	}
-
-	.gr-fill {
-		height: 100%;
-		background: #f59e0b;
-		transition: width 0.06s linear;
-	}
-
-	.gr-value {
-		font-family: var(--font-mono);
-		font-size: var(--text-2xs);
-		color: var(--text-tertiary);
-		min-width: 24px;
-		text-align: right;
-	}
-
-	/* Source delay section */
-	.delay-section {
-		display: flex;
-		flex-direction: column;
-		gap: 3px;
-		border-top: 1px solid var(--border-subtle);
-		padding-top: 6px;
-		margin-top: 3px;
-	}
-
-	.param-value {
-		font-family: var(--font-mono);
-		font-size: var(--text-xs);
-		color: var(--text-tertiary);
-	}
-
 	/* Collapse toggle (visible at narrow viewports) */
 	.collapse-toggle {
 		display: none;
@@ -1135,6 +752,24 @@
 	.audio-mixer.collapsed {
 		gap: 0;
 		padding: 4px;
+	}
+
+	.channel-detail {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		padding: 6px 10px;
+		border-top: 1px solid var(--border-default);
+		background: rgba(255, 255, 255, 0.02);
+		min-height: 72px;
+		flex-shrink: 0;
+	}
+
+	.detail-channel-name {
+		font-family: var(--font-ui);
+		font-size: var(--text-xs);
+		font-weight: 600;
+		color: var(--text-primary);
 	}
 
 	.lufs-readout {

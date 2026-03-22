@@ -12,6 +12,7 @@ vi.mock('$lib/api/switch-api', () => ({
 	setEQ: vi.fn().mockResolvedValue({}),
 	setCompressor: vi.fn().mockResolvedValue({}),
 	setSourceDelay: vi.fn().mockResolvedValue({}),
+	setAudioDelay: vi.fn().mockResolvedValue({}),
 }));
 
 const defaultEQ: [EQBand, EQBand, EQBand] = [
@@ -221,101 +222,43 @@ describe('AudioMixer', () => {
 		expect(eqButtons.length).toBe(2);
 	});
 
-	it('should show EQ section when expandedKeys has channel', () => {
-		const { container } = render(AudioMixer, { props: { state, expandedKeys: { cam1: true } } });
+	it('should show channel-detail when selectedChannel is set', () => {
+		const { container } = render(AudioMixer, { props: { state, selectedChannel: 'cam1' } });
 
-		// eq-comp-section should be visible for cam1
-		const section = container.querySelector('.eq-comp-section');
-		expect(section).toBeTruthy();
+		const detail = container.querySelector('.channel-detail');
+		expect(detail).toBeTruthy();
+		expect(detail!.textContent).toContain('Camera 1');
 	});
 
-	it('should render 3 EQ bands in the expanded section', () => {
-		const { container } = render(AudioMixer, { props: { state, expandedKeys: { cam1: true } } });
+	it('should not show channel-detail when selectedChannel is null', () => {
+		const { container } = render(AudioMixer, { props: { state, selectedChannel: null } });
 
-		const bands = container.querySelectorAll('.eq-band');
-		expect(bands.length).toBe(3);
+		const detail = container.querySelector('.channel-detail');
+		expect(detail).toBeFalsy();
 	});
 
-	it('should render compressor section with GR meter in expanded section', () => {
-		const { container } = render(AudioMixer, { props: { state, expandedKeys: { cam1: true } } });
-
-		const compSection = container.querySelector('.comp-section');
-		expect(compSection).toBeTruthy();
-
-		const grMeter = container.querySelector('.gr-meter');
-		expect(grMeter).toBeTruthy();
-	});
-
-	it('should call onExpandToggle when EQ button is clicked', async () => {
-		const onExpandToggle = vi.fn();
-		const { container } = render(AudioMixer, { props: { state, onExpandToggle } });
+	it('should call onChannelSelect when EQ button is clicked', async () => {
+		const onChannelSelect = vi.fn();
+		const { container } = render(AudioMixer, { props: { state, onChannelSelect } });
 		const eqButtons = container.querySelectorAll('.eq-toggle-btn');
 		await fireEvent.click(eqButtons[0]);
-		expect(onExpandToggle).toHaveBeenCalledWith('cam1');
+		expect(onChannelSelect).toHaveBeenCalledWith('cam1');
 	});
 
-	it('renders compressor ON toggle when expanded', () => {
-		const { container } = render(AudioMixer, { props: { state, expandedKeys: { cam1: true } } });
-
-		const compSection = container.querySelector('.comp-section');
-		expect(compSection).toBeTruthy();
-
-		const bypassBtn = compSection!.querySelector('button[aria-label]');
-		expect(bypassBtn).toBeTruthy();
-		const label = bypassBtn!.getAttribute('aria-label')!.toLowerCase();
-		expect(label).toContain('compressor');
-		expect(label).toMatch(/on|off/);
+	it('should call onChannelSelect with null to deselect when clicking active EQ button', async () => {
+		const onChannelSelect = vi.fn();
+		const { container } = render(AudioMixer, { props: { state, selectedChannel: 'cam1', onChannelSelect } });
+		const eqButtons = container.querySelectorAll('.eq-toggle-btn');
+		await fireEvent.click(eqButtons[0]);
+		expect(onChannelSelect).toHaveBeenCalledWith(null);
 	});
 
-	it('renders delay slider when expanded', () => {
-		const stateWithDelay = {
-			...state,
-			sources: {
-				...state.sources,
-				cam1: { ...state.sources.cam1, delayMs: 100 },
-			},
-		};
-		const { container } = render(AudioMixer, { props: { state: stateWithDelay, expandedKeys: { cam1: true } } });
+	it('highlights EQ button for selected channel', () => {
+		const { container } = render(AudioMixer, { props: { state, selectedChannel: 'cam1' } });
 
-		const delaySlider = container.querySelector('input[aria-label="Source delay"]') as HTMLInputElement;
-		expect(delaySlider).toBeTruthy();
-		expect(delaySlider.type).toBe('range');
-		expect(delaySlider.min).toBe('0');
-		expect(delaySlider.max).toBe('500');
-		expect(delaySlider.value).toBe('100');
-	});
-
-	it('shows delay value text when expanded', () => {
-		const stateWithDelay = {
-			...state,
-			sources: {
-				...state.sources,
-				cam1: { ...state.sources.cam1, delayMs: 42 },
-			},
-		};
-		const { container } = render(AudioMixer, { props: { state: stateWithDelay, expandedKeys: { cam1: true } } });
-
-		const delaySection = container.querySelector('.delay-section');
-		expect(delaySection).toBeTruthy();
-		expect(delaySection!.textContent).toContain('42ms');
-	});
-
-	it('dims compressor controls when bypassed', async () => {
-		const { container } = render(AudioMixer, { props: { state, expandedKeys: { cam1: true } } });
-
-		const compSection = container.querySelector('.comp-section');
-		expect(compSection).toBeTruthy();
-
-		// Should not start bypassed
-		expect(compSection!.classList.contains('comp-bypassed')).toBe(false);
-
-		// Click the bypass toggle
-		const bypassBtn = compSection!.querySelector('button[aria-label]') as HTMLElement;
-		expect(bypassBtn).toBeTruthy();
-		await fireEvent.click(bypassBtn);
-
-		// After click, comp-section should have comp-bypassed class
-		expect(compSection!.classList.contains('comp-bypassed')).toBe(true);
+		const eqButtons = container.querySelectorAll('.eq-toggle-btn');
+		expect(eqButtons[0].classList.contains('active')).toBe(true);
+		expect(eqButtons[1].classList.contains('active')).toBe(false);
 	});
 
 	describe('ARIA labels', () => {
