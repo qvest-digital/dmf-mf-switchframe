@@ -13,10 +13,10 @@ import (
 // eliminates the CPU download + software encode round-trip that previously
 // consumed ~44% CPU.
 //
-// The node creates a PreviewEncoder lazily in Configure() once the
-// pipeline dimensions are known. ProcessGPU hands each frame to the
-// encoder (which scales + encodes on its own GPUWorkQueue) and delivers
-// the encoded bitstream via the onEncoded callback.
+// Encoding runs asynchronously in a background goroutine to avoid blocking
+// the pipeline. ProcessGPU refs the frame and sends it to a channel (newest-
+// wins, capacity 1). The background goroutine scales + encodes + broadcasts.
+// This mirrors the per-source previewLoop pattern.
 type gpuPreviewEncodeNode struct {
 	ctx       *Context
 	enc       *PreviewEncoder
@@ -31,6 +31,10 @@ type gpuPreviewEncodeNode struct {
 	forceIDR atomic.Bool
 	active   atomic.Bool
 	lastErr  atomic.Value
+
+	// Async encode channel + goroutine
+	frameCh chan *GPUFrame
+	done    chan struct{}
 }
 
 // NewGPUPreviewEncodeNode creates a GPU preview encode pipeline node.
@@ -57,6 +61,7 @@ func (n *gpuPreviewEncodeNode) Name() string { return "gpu_preview_encode" }
 // dimensions are known. Called once when the pipeline is built.
 func (n *gpuPreviewEncodeNode) Configure(width, height, pitch int) error {
 	// Close any previous encoder (pipeline reconfiguration).
+	n.stopLoop()
 	if n.enc != nil {
 		n.enc.Close()
 		n.enc = nil
@@ -76,6 +81,11 @@ func (n *gpuPreviewEncodeNode) Configure(width, height, pitch int) error {
 
 	n.enc = enc
 	n.active.Store(true)
+
+	// Start async encode goroutine.
+	n.frameCh = make(chan *GPUFrame, 1)
+	n.done = make(chan struct{})
+	go n.encodeLoop()
 
 	slog.Info("gpu_preview_encode: configured",
 		"src", [2]int{width, height},
@@ -98,26 +108,55 @@ func (n *gpuPreviewEncodeNode) Err() error {
 	return nil
 }
 
-// ProcessGPU scales and encodes the frame on the GPU, then delivers the
-// encoded bitstream via the onEncoded callback. The source frame is not
-// modified (PreviewEncoder.Encode reads but does not write to src).
+// ProcessGPU refs the frame and dispatches it to the async encode goroutine.
+// Non-blocking: if the encode goroutine is busy, the old frame is dropped
+// (newest-wins policy, same as per-source previewLoop).
 func (n *gpuPreviewEncodeNode) ProcessGPU(frame *GPUFrame) error {
-	if n.enc == nil {
+	if n.enc == nil || n.frameCh == nil {
 		return nil
 	}
 
-	forceIDR := n.forceIDR.Swap(false)
+	// Ref the frame so it's not recycled before the encode goroutine reads it.
+	frame.Ref()
 
-	data, isIDR, err := n.enc.Encode(frame, forceIDR)
-	if err != nil {
-		n.lastErr.Store(err)
-		return err
+	// Newest-wins: drop old frame if channel is full.
+	select {
+	case old := <-n.frameCh:
+		old.Release()
+	default:
 	}
+	n.frameCh <- frame
 
-	if len(data) > 0 {
-		n.onEncoded(data, isIDR, frame.PTS)
-	}
 	return nil
+}
+
+// encodeLoop runs in a background goroutine, encoding frames as they arrive.
+func (n *gpuPreviewEncodeNode) encodeLoop() {
+	defer close(n.done)
+	for frame := range n.frameCh {
+		forceIDR := n.forceIDR.Swap(false)
+		pts := frame.PTS // capture before Release
+		data, isIDR, err := n.enc.Encode(frame, forceIDR)
+		frame.Release()
+
+		if err != nil {
+			n.lastErr.Store(err)
+			continue
+		}
+		if len(data) > 0 {
+			n.onEncoded(data, isIDR, pts)
+		}
+	}
+}
+
+// stopLoop shuts down the async encode goroutine if running.
+func (n *gpuPreviewEncodeNode) stopLoop() {
+	if n.frameCh != nil {
+		close(n.frameCh)
+		<-n.done
+		n.frameCh = nil
+		n.done = nil
+	}
 }
 
 // ForceIDR requests that the next encoded frame be an IDR keyframe.
@@ -127,6 +166,7 @@ func (n *gpuPreviewEncodeNode) ForceIDR() {
 }
 
 func (n *gpuPreviewEncodeNode) Close() error {
+	n.stopLoop()
 	if n.enc != nil {
 		n.enc.Close()
 		n.enc = nil
