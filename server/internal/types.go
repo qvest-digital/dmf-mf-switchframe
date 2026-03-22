@@ -464,13 +464,17 @@ type AISegmentationState struct {
 
 // ASRState represents the ASR system state for ControlRoomState broadcast.
 type ASRState struct {
-	Available  bool    `json:"available"`
-	Active     bool    `json:"active"`
-	Translate  bool    `json:"translate"`
-	ModelName  string  `json:"modelName,omitempty"`
-	Language   string  `json:"language,omitempty"`
-	Tentative  string  `json:"tentative,omitempty"`
-	Confidence float64 `json:"confidence,omitempty"`
+	Available        bool    `json:"available"`
+	Active           bool    `json:"active"`
+	Translate        bool    `json:"translate"`
+	ModelName        string  `json:"modelName,omitempty"`
+	Language         string  `json:"language,omitempty"`
+	Tentative        string  `json:"tentative,omitempty"`
+	Confidence       float64 `json:"confidence,omitempty"`
+	Speed            string  `json:"speed,omitempty"`
+	ConfidenceFilter string  `json:"confidenceFilter,omitempty"`
+	NoiseFloor       string  `json:"noiseFloor,omitempty"`
+	SpeakerDetection string  `json:"speakerDetection,omitempty"`
 }
 
 // ColorGradeState represents the color grading state in ControlRoomState.

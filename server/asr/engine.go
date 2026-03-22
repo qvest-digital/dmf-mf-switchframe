@@ -286,6 +286,77 @@ func ModelPath(modelsDir, name string) string {
 	return modelsDir + "/ggml-" + name + ".bin"
 }
 
+// SetInferSpeed sets the inference interval from a named preset.
+// Valid presets: "fast" (1000ms), "balanced" (3000ms), "accurate" (5000ms).
+// Invalid values are silently ignored.
+func (e *Engine) SetInferSpeed(preset string) {
+	var ms int
+	switch preset {
+	case "fast":
+		ms = 1000
+	case "balanced":
+		ms = 3000
+	case "accurate":
+		ms = 5000
+	default:
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.inferMs = ms
+}
+
+// InferSpeed returns the current inference speed preset name.
+// <=1000ms -> "fast", <=3000ms -> "balanced", else -> "accurate".
+func (e *Engine) InferSpeed() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	switch {
+	case e.inferMs <= 1000:
+		return "fast"
+	case e.inferMs <= 3000:
+		return "balanced"
+	default:
+		return "accurate"
+	}
+}
+
+// SetVADSensitivity sets the VAD threshold from a named preset.
+// Valid presets: "quiet" (-30 dBFS), "normal" (-26 dBFS), "noisy" (-20 dBFS).
+// Invalid values are silently ignored.
+func (e *Engine) SetVADSensitivity(preset string) {
+	var db float64
+	switch preset {
+	case "quiet":
+		db = -30
+	case "normal":
+		db = -26
+	case "noisy":
+		db = -20
+	default:
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.vad.SetThresholdDB(db)
+}
+
+// VADSensitivity returns the current VAD sensitivity preset name.
+// <=-29 dBFS -> "quiet", <=-23 dBFS -> "normal", else -> "noisy".
+func (e *Engine) VADSensitivity() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	db := e.vad.ThresholdDB()
+	switch {
+	case db <= -29:
+		return "quiet"
+	case db <= -23:
+		return "normal"
+	default:
+		return "noisy"
+	}
+}
+
 // SetLanguage changes the target language for transcription.
 func (e *Engine) SetLanguage(lang string) {
 	e.mu.Lock()

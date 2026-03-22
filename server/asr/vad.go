@@ -113,6 +113,16 @@ func (v *VAD) Process(samples []float32) {
 	}
 }
 
+// ThresholdDB returns the current RMS threshold in dBFS.
+func (v *VAD) ThresholdDB() float64 { return v.cfg.ThresholdDB }
+
+// SetThresholdDB sets the RMS threshold in dBFS and recalculates
+// the linear threshold used for speech detection.
+func (v *VAD) SetThresholdDB(db float64) {
+	v.cfg.ThresholdDB = db
+	v.thresholdLinear = math.Pow(10, db/20.0)
+}
+
 // Reset returns the VAD to its initial idle state.
 func (v *VAD) Reset() {
 	v.state = VADIdle

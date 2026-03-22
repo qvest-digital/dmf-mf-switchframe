@@ -260,6 +260,14 @@ type ASRManager interface {
 	ASRModelName() string
 	SetASRModel(name string) error  // runtime model swap
 	AvailableASRModels() []string   // list installed models
+	SetASRSpeed(preset string)
+	ASRSpeed() string
+	SetASRConfidence(preset string)
+	ASRConfidence() string
+	SetASRNoiseFloor(preset string)
+	ASRNoiseFloor() string
+	SetASRSpeakerDetection(preset string)
+	ASRSpeakerDetection() string
 }
 
 // CommsManagerAPI is the interface for operator voice comms operations.

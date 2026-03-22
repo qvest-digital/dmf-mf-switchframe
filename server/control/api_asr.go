@@ -26,6 +26,10 @@ func (a *API) handleASRStatus(w http.ResponseWriter, r *http.Request) {
 		state.Language = a.asrManager.ASRLanguage()
 		state.Translate = a.asrManager.ASRTranslate()
 		state.ModelName = a.asrManager.ASRModelName()
+		state.Speed = a.asrManager.ASRSpeed()
+		state.ConfidenceFilter = a.asrManager.ASRConfidence()
+		state.NoiseFloor = a.asrManager.ASRNoiseFloor()
+		state.SpeakerDetection = a.asrManager.ASRSpeakerDetection()
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(state)
@@ -41,10 +45,14 @@ func (a *API) handleASRConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Active    *bool  `json:"active,omitempty"`
-		Language  string `json:"language,omitempty"`
-		Translate *bool  `json:"translate,omitempty"` // translate to English
-		Model     string `json:"model,omitempty"`     // runtime model swap
+		Active           *bool  `json:"active,omitempty"`
+		Language         string `json:"language,omitempty"`
+		Translate        *bool  `json:"translate,omitempty"`        // translate to English
+		Model            string `json:"model,omitempty"`            // runtime model swap
+		Speed            string `json:"speed,omitempty"`            // inference speed preset
+		ConfidenceFilter string `json:"confidenceFilter,omitempty"` // confidence holdback preset
+		NoiseFloor       string `json:"noiseFloor,omitempty"`       // VAD sensitivity preset
+		SpeakerDetection string `json:"speakerDetection,omitempty"` // speaker change gap preset
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid request body")
@@ -69,13 +77,29 @@ func (a *API) handleASRConfig(w http.ResponseWriter, r *http.Request) {
 	if req.Translate != nil {
 		a.asrManager.SetASRTranslate(*req.Translate)
 	}
+	if req.Speed != "" {
+		a.asrManager.SetASRSpeed(req.Speed)
+	}
+	if req.ConfidenceFilter != "" {
+		a.asrManager.SetASRConfidence(req.ConfidenceFilter)
+	}
+	if req.NoiseFloor != "" {
+		a.asrManager.SetASRNoiseFloor(req.NoiseFloor)
+	}
+	if req.SpeakerDetection != "" {
+		a.asrManager.SetASRSpeakerDetection(req.SpeakerDetection)
+	}
 
 	state := internal.ASRState{
-		Available: true,
-		Active:    a.asrManager.IsASRActive(),
-		Language:  a.asrManager.ASRLanguage(),
-		Translate: a.asrManager.ASRTranslate(),
-		ModelName: a.asrManager.ASRModelName(),
+		Available:        true,
+		Active:           a.asrManager.IsASRActive(),
+		Language:         a.asrManager.ASRLanguage(),
+		Translate:        a.asrManager.ASRTranslate(),
+		ModelName:        a.asrManager.ASRModelName(),
+		Speed:            a.asrManager.ASRSpeed(),
+		ConfidenceFilter: a.asrManager.ASRConfidence(),
+		NoiseFloor:       a.asrManager.ASRNoiseFloor(),
+		SpeakerDetection: a.asrManager.ASRSpeakerDetection(),
 	}
 
 	a.broadcast()

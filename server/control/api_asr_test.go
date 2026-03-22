@@ -15,12 +15,16 @@ import (
 
 // mockASRManager is a test double for ASRManager.
 type mockASRManager struct {
-	available bool
-	active    bool
-	translate bool
-	language  string
-	modelName string
-	lastErr   error
+	available        bool
+	active           bool
+	translate        bool
+	language         string
+	modelName        string
+	lastErr          error
+	speed            string
+	confidenceFilter string
+	noiseFloor       string
+	speakerDetection string
 }
 
 func (m *mockASRManager) IsASRAvailable() bool              { return m.available }
@@ -32,6 +36,14 @@ func (m *mockASRManager) SetASRLanguage(lang string)        { m.language = lang 
 func (m *mockASRManager) SetASRTranslate(on bool)           { m.translate = on }
 func (m *mockASRManager) SetASRModel(name string) error     { m.modelName = name; return nil }
 func (m *mockASRManager) AvailableASRModels() []string      { return []string{"base", "medium.en", "large-v3"} }
+func (m *mockASRManager) SetASRSpeed(preset string)         { m.speed = preset }
+func (m *mockASRManager) ASRSpeed() string                  { return m.speed }
+func (m *mockASRManager) SetASRConfidence(preset string)    { m.confidenceFilter = preset }
+func (m *mockASRManager) ASRConfidence() string             { return m.confidenceFilter }
+func (m *mockASRManager) SetASRNoiseFloor(preset string)    { m.noiseFloor = preset }
+func (m *mockASRManager) ASRNoiseFloor() string             { return m.noiseFloor }
+func (m *mockASRManager) SetASRSpeakerDetection(preset string) { m.speakerDetection = preset }
+func (m *mockASRManager) ASRSpeakerDetection() string       { return m.speakerDetection }
 func (m *mockASRManager) SetASRActive(active bool) error {
 	if m.lastErr != nil {
 		return m.lastErr
@@ -187,6 +199,56 @@ func TestASRConfigEndpoint_SetActiveError(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
+}
+
+func TestASRConfigTuning(t *testing.T) {
+	mgr := &mockASRManager{
+		available:        true,
+		active:           true,
+		language:         "en",
+		modelName:        "large-v3-turbo",
+		speed:            "balanced",
+		confidenceFilter: "medium",
+		noiseFloor:       "normal",
+		speakerDetection: "normal",
+	}
+	api := setupASRAPI(t, mgr)
+
+	// PUT all 4 tuning fields.
+	body := `{"speed":"fast","confidenceFilter":"high","noiseFloor":"aggressive","speakerDetection":"sensitive"}`
+	req := httptest.NewRequest("PUT", "/api/asr/config", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var state internal.ASRState
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&state))
+
+	// Verify tuning fields in the response.
+	require.Equal(t, "fast", state.Speed)
+	require.Equal(t, "high", state.ConfidenceFilter)
+	require.Equal(t, "aggressive", state.NoiseFloor)
+	require.Equal(t, "sensitive", state.SpeakerDetection)
+
+	// Verify mock received them.
+	require.Equal(t, "fast", mgr.speed)
+	require.Equal(t, "high", mgr.confidenceFilter)
+	require.Equal(t, "aggressive", mgr.noiseFloor)
+	require.Equal(t, "sensitive", mgr.speakerDetection)
+
+	// GET /api/asr/status should also include tuning fields.
+	req2 := httptest.NewRequest("GET", "/api/asr/status", nil)
+	rec2 := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec2, req2)
+	require.Equal(t, http.StatusOK, rec2.Code)
+
+	var status internal.ASRState
+	require.NoError(t, json.NewDecoder(rec2.Body).Decode(&status))
+	require.Equal(t, "fast", status.Speed)
+	require.Equal(t, "high", status.ConfidenceFilter)
+	require.Equal(t, "aggressive", status.NoiseFloor)
+	require.Equal(t, "sensitive", status.SpeakerDetection)
 }
 
 var errTestASR = errTest("asr test error")
