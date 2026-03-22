@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const defaultModelPath = "/opt/switchframe/models/u2netp.onnx"
+const defaultModelPath = "/opt/switchframe/models/rvm_mobilenetv3_fp32.onnx"
 
 func segModelPath(t *testing.T) string {
 	t.Helper()
@@ -58,9 +58,9 @@ func TestSegmentationEngineCreate(t *testing.T) {
 	require.NotNil(t, se)
 	defer se.Close()
 
-	// Verify the engine has the expected input/output sizes for u2netp.
-	assert.Equal(t, 1*3*320*320, se.engine.InputSize(), "input size should be [1,3,320,320]")
-	assert.Equal(t, 1*1*320*320, se.engine.OutputSize(), "output size should be [1,1,320,320]")
+	// RVM has multiple I/O tensors (6 inputs + 6 outputs = 12 total).
+	assert.GreaterOrEqual(t, se.engine.NumIOTensors(), 12,
+		"RVM should have at least 12 I/O tensors")
 }
 
 func TestSegmentationEngineCreateNilCtx(t *testing.T) {
