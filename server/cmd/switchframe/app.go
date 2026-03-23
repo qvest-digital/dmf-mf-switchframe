@@ -37,6 +37,7 @@ import (
 	"github.com/zsiec/switchframe/server/gpu"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/graphics/textrender"
+	"github.com/zsiec/switchframe/server/htmlgfx"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/layout"
 	"github.com/zsiec/switchframe/server/macro"
@@ -126,6 +127,9 @@ type App struct {
 	textRenderer   *textrender.Renderer
 	tickerEngine   *graphics.TickerEngine
 	textAnimEngine *graphics.TextAnimationEngine
+
+	// HTML5 graphics sidecar
+	htmlGfxMgr *htmlgfx.Manager
 
 	// Closed captions
 	captionMgr *caption.Manager

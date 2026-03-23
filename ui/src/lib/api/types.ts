@@ -212,6 +212,10 @@ export interface GraphicsLayerState {
 	imageName?: string;
 	imageWidth?: number;
 	imageHeight?: number;
+	html5Url?: string;
+	html5Format?: 'ograf' | 'casparcg' | 'unknown';
+	html5Status?: 'loading' | 'ready' | 'playing' | 'stopped' | 'error';
+	html5DataSchema?: Record<string, unknown>;
 }
 
 export interface GraphicsState {

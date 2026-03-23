@@ -125,6 +125,22 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 				ImageHeight:   l.ImageHeight,
 			})
 		}
+		if a.htmlGfxMgr != nil {
+			for _, bs := range a.htmlGfxMgr.BrowserStates() {
+				if bs.Status == "empty" || bs.LayerID < 0 {
+					continue
+				}
+				for i := range gfxState.Layers {
+					if gfxState.Layers[i].ID == bs.LayerID {
+						gfxState.Layers[i].HTML5URL = bs.URL
+						gfxState.Layers[i].HTML5Format = bs.Format
+						gfxState.Layers[i].HTML5Status = bs.Status
+						gfxState.Layers[i].HTML5DataSchema = bs.DataSchema
+						break
+					}
+				}
+			}
+		}
 		state.Graphics = gfxState
 	}
 
