@@ -221,8 +221,8 @@ html, body {
             <div id="divider-diamond"></div>
             <div id="divider-line-right"></div>
         </div>
-        <div id="attribution"></div>
-        <div id="source"></div>
+        <div id="attribution">Steve Jobs</div>
+        <div id="source">Stanford Commencement, 2005</div>
         <div id="quote-mark-close" class="quote-mark">&rdquo;</div>
     </div>
 </div>
@@ -426,14 +426,14 @@ html, body {
         // 5. Decorative quote marks drift in -- ethereal
         if (data.showQuoteMarks) {
             playTL.to(els.quoteMarkOpen, {
-                opacity: 0.06,
+                opacity: 0.15,
                 y: 0,
                 duration: 1.0,
                 ease: 'power2.out'
             }, '-=0.7');
 
             playTL.to(els.quoteMarkClose, {
-                opacity: 0.06,
+                opacity: 0.15,
                 y: 0,
                 duration: 1.0,
                 ease: 'power2.out'
