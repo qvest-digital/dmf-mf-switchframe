@@ -5,7 +5,9 @@ package output
 import "context"
 
 // RTMPCaller is a stub for builds without FFmpeg support.
-type RTMPCaller struct{}
+type RTMPCaller struct {
+	onReconnect func()
+}
 
 // NewRTMPCaller returns an error when FFmpeg is not available.
 func NewRTMPCaller(_ RTMPCallerConfig) (*RTMPCaller, error) {
