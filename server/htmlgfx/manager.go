@@ -7,7 +7,12 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
+	"time"
 )
 
 // compositorSetter is the interface the Manager needs from graphics.Compositor.
@@ -19,15 +24,18 @@ type compositorSetter interface {
 // It communicates over Unix domain sockets using the JSON control protocol
 // and binary frame protocol defined in protocol.go.
 type Manager struct {
-	compositor compositorSetter
-	config     Config
+	compositor  compositorSetter
+	config      Config
 	controlConn net.Conn
 	frameConn   net.Conn
+	process     *os.Process
+	socketDir   string // temp directory for Unix sockets
 
 	mu       sync.Mutex
 	browsers []*BrowserState
 	done     chan struct{}
 	stopOnce sync.Once
+	started  bool
 
 	onStateChange func()
 }
@@ -47,6 +55,141 @@ func NewManager(compositor compositorSetter, cfg Config) *Manager {
 		browsers:   browsers,
 		done:       make(chan struct{}),
 	}
+}
+
+// Start spawns the CEF sidecar process and connects to it.
+// If the sidecar binary is not found, it logs a warning and returns nil
+// (graceful degradation — HTML5 graphics won't be available but the server runs).
+func (m *Manager) Start() error {
+	binPath := m.config.BinaryPath
+	if binPath == "" {
+		slog.Info("htmlgfx: no sidecar binary path configured, HTML5 graphics disabled")
+		return nil
+	}
+
+	// Resolve relative to the server binary's directory.
+	if !filepath.IsAbs(binPath) {
+		if execPath, err := os.Executable(); err == nil {
+			binPath = filepath.Join(filepath.Dir(execPath), binPath)
+		}
+	}
+
+	if _, err := os.Stat(binPath); os.IsNotExist(err) {
+		slog.Warn("htmlgfx: sidecar binary not found, HTML5 graphics disabled", "path", binPath)
+		return nil
+	}
+
+	return m.spawn(binPath)
+}
+
+// spawn starts the sidecar process and connects sockets.
+func (m *Manager) spawn(binPath string) error {
+	// Create temp directory for Unix sockets.
+	socketDir, err := os.MkdirTemp("", "switchframe-cef-*")
+	if err != nil {
+		return fmt.Errorf("create socket dir: %w", err)
+	}
+	m.socketDir = socketDir
+
+	controlPath := filepath.Join(socketDir, "control.sock")
+	framePath := filepath.Join(socketDir, "frames.sock")
+
+	// Spawn the sidecar.
+	cmd := exec.Command(binPath,
+		"--control-socket", controlPath,
+		"--frame-socket", framePath,
+	)
+	cmd.Stderr = &sidecarLogger{prefix: "cef-sidecar"}
+
+	// Capture stdout to wait for READY signal.
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		os.RemoveAll(socketDir)
+		return fmt.Errorf("stdout pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		os.RemoveAll(socketDir)
+		return fmt.Errorf("start sidecar: %w", err)
+	}
+	m.process = cmd.Process
+
+	slog.Info("htmlgfx: sidecar started", "pid", cmd.Process.Pid, "binary", binPath)
+
+	// Wait for READY signal (with timeout).
+	readyCh := make(chan error, 1)
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "READY" {
+				readyCh <- nil
+				return
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			readyCh <- fmt.Errorf("reading sidecar stdout: %w", err)
+		} else {
+			readyCh <- fmt.Errorf("sidecar exited before READY signal")
+		}
+	}()
+
+	select {
+	case err := <-readyCh:
+		if err != nil {
+			m.killProcess()
+			return err
+		}
+	case <-time.After(10 * time.Second):
+		m.killProcess()
+		return fmt.Errorf("sidecar did not send READY within 10s")
+	}
+
+	// Connect to the sidecar's sockets.
+	if err := m.connectSockets(controlPath, framePath); err != nil {
+		m.killProcess()
+		return fmt.Errorf("connect to sidecar: %w", err)
+	}
+
+	m.started = true
+	slog.Info("htmlgfx: sidecar connected", "control", controlPath, "frames", framePath)
+
+	// Monitor for unexpected exit.
+	go m.watchProcess(cmd)
+
+	return nil
+}
+
+// watchProcess waits for the sidecar to exit and attempts restart if unexpected.
+func (m *Manager) watchProcess(cmd *exec.Cmd) {
+	err := cmd.Wait()
+
+	select {
+	case <-m.done:
+		return // expected shutdown
+	default:
+	}
+
+	slog.Error("htmlgfx: sidecar exited unexpectedly", "error", err)
+	// Future: could implement auto-restart with backoff here.
+}
+
+// killProcess terminates the sidecar and cleans up.
+func (m *Manager) killProcess() {
+	if m.process != nil {
+		_ = m.process.Kill()
+		_, _ = m.process.Wait() // reap zombie
+		m.process = nil
+	}
+	if m.socketDir != "" {
+		os.RemoveAll(m.socketDir)
+		m.socketDir = ""
+	}
+}
+
+// Started returns whether the sidecar was successfully started.
+func (m *Manager) Started() bool {
+	return m.started
 }
 
 // connectSockets connects the manager to the sidecar's Unix domain sockets
@@ -315,7 +458,7 @@ func (m *Manager) OnStateChange(fn func()) {
 	m.onStateChange = fn
 }
 
-// Close sends a "shutdown" command and closes all connections.
+// Close sends a "shutdown" command, closes connections, and kills the sidecar.
 // It is safe to call multiple times.
 func (m *Manager) Close() error {
 	var closeErr error
@@ -338,9 +481,58 @@ func (m *Manager) Close() error {
 				closeErr = err
 			}
 		}
+
+		// Give the sidecar 2s to exit gracefully, then kill.
+		if m.process != nil {
+			done := make(chan struct{})
+			go func() {
+				_, _ = m.process.Wait()
+				close(done)
+			}()
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				_ = m.process.Kill()
+				<-done
+			}
+			m.process = nil
+		}
+
+		if m.socketDir != "" {
+			os.RemoveAll(m.socketDir)
+			m.socketDir = ""
+		}
 	})
 
 	return closeErr
+}
+
+// sidecarLogger forwards sidecar stderr lines to slog.
+type sidecarLogger struct {
+	prefix string
+	buf    []byte
+}
+
+func (l *sidecarLogger) Write(p []byte) (int, error) {
+	l.buf = append(l.buf, p...)
+	for {
+		idx := -1
+		for i, b := range l.buf {
+			if b == '\n' {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			break
+		}
+		line := strings.TrimSpace(string(l.buf[:idx]))
+		l.buf = l.buf[idx+1:]
+		if line != "" {
+			slog.Debug(l.prefix, "msg", line)
+		}
+	}
+	return len(p), nil
 }
 
 // frameReadLoop reads frames from the frame connection and delivers them

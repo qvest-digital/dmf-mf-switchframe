@@ -563,11 +563,16 @@ func (a *App) initSubsystems() error {
 
 	// HTML5 graphics sidecar manager.
 	a.htmlGfxMgr = htmlgfx.NewManager(a.compositor, htmlgfx.Config{
-		PoolSize: 4,
-		Width:    pf.Width,
-		Height:   pf.Height,
-		FPS:      pf.FPSNum / pf.FPSDen,
+		BinaryPath: "switchframe-cef",
+		PoolSize:   4,
+		Width:      pf.Width,
+		Height:     pf.Height,
+		FPS:        pf.FPSNum / pf.FPSDen,
 	})
+	if err := a.htmlGfxMgr.Start(); err != nil {
+		slog.Warn("HTML5 graphics sidecar failed to start", "error", err)
+		// Non-fatal: server runs without HTML5 graphics.
+	}
 
 	// Layout compositor (PIP / multi-layout).
 	format := a.sw.PipelineFormat()
