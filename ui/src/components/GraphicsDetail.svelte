@@ -2,6 +2,7 @@
 	import type { GraphicsLayerState } from '$lib/api/types';
 	import type { GraphicsPublisher } from '$lib/graphics/publisher';
 	import { templateList, builtinTemplates } from '$lib/graphics/templates';
+	import { graphicsListHTML5Templates, type HTML5TemplateInfo } from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
 
 	interface AnimConfig {
@@ -113,6 +114,20 @@
 	// HTML5 local config
 	let html5Url = $state('');
 	let html5DataJson = $state('{}');
+	let html5Templates = $state<HTML5TemplateInfo[]>([]);
+	let html5TemplatesLoaded = $state(false);
+
+	// Fetch available HTML5 templates when mode switches to html5.
+	$effect(() => {
+		if (sourceMode === 'html5' && !html5TemplatesLoaded) {
+			graphicsListHTML5Templates().then((t) => {
+				html5Templates = t;
+				html5TemplatesLoaded = true;
+			}).catch(() => {
+				html5TemplatesLoaded = true;
+			});
+		}
+	});
 
 	const tpl = $derived(builtinTemplates[templateId]);
 	const busy = $derived(
@@ -450,6 +465,26 @@
 			<!-- ═══════════════ HTML5 MODE ═══════════════ -->
 			{:else if sourceMode === 'html5'}
 				<div class="html5-section">
+					{#if html5Templates.length > 0}
+						<div class="html5-template-picker">
+							<select
+								class="field-inp html5-select"
+								aria-label="Select HTML5 template"
+								onchange={(e) => {
+									const val = (e.target as HTMLSelectElement).value;
+									if (val) html5Url = val;
+								}}
+							>
+								<option value="">— Select a template —</option>
+								{#each html5Templates as tmpl}
+									<option value={tmpl.url}>
+										{tmpl.name} ({tmpl.format})
+									</option>
+								{/each}
+								<option value="__custom__">Custom URL...</option>
+							</select>
+						</div>
+					{/if}
 					<div class="html5-url-row">
 						<input
 							class="field-inp html5-url"
@@ -1101,6 +1136,18 @@
 		display: flex;
 		flex-direction: column;
 		gap: 4px;
+	}
+	.html5-template-picker {
+		margin-bottom: 2px;
+	}
+	.html5-select {
+		width: 100%;
+		background: var(--surface-2);
+		color: var(--text-primary);
+		border: 1px solid var(--border);
+		border-radius: 3px;
+		padding: 4px 6px;
+		font-size: var(--text-xs);
 	}
 
 	.html5-url-row {

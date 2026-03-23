@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/switchframe/server/graphics"
+	"github.com/zsiec/switchframe/server/htmlgfx"
 	"github.com/zsiec/switchframe/server/switcher"
 )
 
@@ -126,6 +127,10 @@ func (m *mockHTMLGfxManager) CustomAction(browserID int, action, payload string)
 		return m.customErr
 	}
 	m.customs[browserID] = append(m.customs[browserID], customCall{action, payload})
+	return nil
+}
+
+func (m *mockHTMLGfxManager) DiscoverTemplates() []htmlgfx.TemplateInfo {
 	return nil
 }
 

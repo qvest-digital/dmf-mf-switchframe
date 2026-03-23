@@ -567,6 +567,19 @@ export function graphicsTickerUpdateText(layerId: number, text: string): Promise
 
 // --- HTML5 Graphics API ---
 
+export interface HTML5TemplateInfo {
+	id: string;
+	name: string;
+	description?: string;
+	format: 'ograf' | 'casparcg';
+	url: string;
+	dataSchema?: Record<string, unknown>;
+}
+
+export function graphicsListHTML5Templates(): Promise<HTML5TemplateInfo[]> {
+	return request('/api/graphics/html5/templates');
+}
+
 export function graphicsLoadHTML5(
 	layerId: number,
 	url: string,
