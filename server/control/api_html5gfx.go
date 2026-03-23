@@ -10,19 +10,19 @@ import (
 
 // html5LoadRequest is the JSON body for loading an HTML5 graphic on a layer.
 type html5LoadRequest struct {
-	URL  string `json:"url"`
-	Data string `json:"data,omitempty"`
+	URL  string          `json:"url"`
+	Data json.RawMessage `json:"data,omitempty"`
 }
 
 // html5UpdateDataRequest is the JSON body for updating HTML5 data on a layer.
 type html5UpdateDataRequest struct {
-	Data string `json:"data"`
+	Data json.RawMessage `json:"data"`
 }
 
 // html5CustomRequest is the JSON body for a custom action on an HTML5 layer.
 type html5CustomRequest struct {
-	Action  string `json:"action"`
-	Payload string `json:"payload,omitempty"`
+	Action  string          `json:"action"`
+	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
 // registerHTML5GraphicsRoutes registers HTML5 graphics API routes on the given mux.
@@ -79,8 +79,8 @@ func (a *API) handleHTML5Load(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Send initial data if provided.
-	if req.Data != "" {
-		if err := a.htmlGfxMgr.Update(browserID, req.Data); err != nil {
+	if len(req.Data) > 0 {
+		if err := a.htmlGfxMgr.Update(browserID, string(req.Data)); err != nil {
 			// URL is loaded, data send failed — don't roll back, just report.
 			httperr.Write(w, http.StatusInternalServerError, err.Error())
 			return
@@ -118,7 +118,7 @@ func (a *API) handleHTML5UpdateData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := a.htmlGfxMgr.Update(browserID, req.Data); err != nil {
+	if err := a.htmlGfxMgr.Update(browserID, string(req.Data)); err != nil {
 		httperr.Write(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -249,7 +249,7 @@ func (a *API) handleHTML5Custom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := a.htmlGfxMgr.CustomAction(browserID, req.Action, req.Payload); err != nil {
+	if err := a.htmlGfxMgr.CustomAction(browserID, req.Action, string(req.Payload)); err != nil {
 		httperr.Write(w, http.StatusInternalServerError, err.Error())
 		return
 	}

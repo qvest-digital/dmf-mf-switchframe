@@ -2,6 +2,7 @@
 	import type { GraphicsLayerState } from '$lib/api/types';
 	import type { GraphicsPublisher } from '$lib/graphics/publisher';
 	import { templateList, builtinTemplates } from '$lib/graphics/templates';
+	import { notify } from '$lib/state/notifications.svelte';
 
 	interface AnimConfig {
 		mode: string;
@@ -211,7 +212,7 @@
 			const data = JSON.parse(html5DataJson);
 			onHTML5UpdateData(data);
 		} catch {
-			// Invalid JSON - ignore
+			notify('error', 'Invalid JSON data');
 		}
 	}
 </script>

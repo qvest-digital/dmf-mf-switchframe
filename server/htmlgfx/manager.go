@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"sync"
 )
@@ -143,16 +144,26 @@ func (m *Manager) LoadURL(browserID int, url string) error {
 		return err
 	}
 
+	prevURL := m.browsers[browserID].URL
+	prevStatus := m.browsers[browserID].Status
+
 	m.browsers[browserID].URL = url
 	m.browsers[browserID].Status = "loading"
 
 	m.notifyStateChange()
 
-	return m.sendCommand(ControlCommand{
+	if err := m.sendCommand(ControlCommand{
 		Cmd: "load",
 		ID:  intPtrHelper(browserID),
 		URL: url,
-	})
+	}); err != nil {
+		// Roll back state on send failure.
+		m.browsers[browserID].URL = prevURL
+		m.browsers[browserID].Status = prevStatus
+		m.notifyStateChange()
+		return err
+	}
+	return nil
 }
 
 // Play sends a "play" command for the given browser.
@@ -164,14 +175,22 @@ func (m *Manager) Play(browserID int) error {
 		return err
 	}
 
+	prevStatus := m.browsers[browserID].Status
+
 	m.browsers[browserID].Status = "playing"
 
 	m.notifyStateChange()
 
-	return m.sendCommand(ControlCommand{
+	if err := m.sendCommand(ControlCommand{
 		Cmd: "play",
 		ID:  intPtrHelper(browserID),
-	})
+	}); err != nil {
+		// Roll back state on send failure.
+		m.browsers[browserID].Status = prevStatus
+		m.notifyStateChange()
+		return err
+	}
+	return nil
 }
 
 // Stop sends a "stop" command for the given browser.
@@ -183,10 +202,22 @@ func (m *Manager) Stop(browserID int) error {
 		return err
 	}
 
-	return m.sendCommand(ControlCommand{
+	prevStatus := m.browsers[browserID].Status
+
+	m.browsers[browserID].Status = "stopped"
+
+	m.notifyStateChange()
+
+	if err := m.sendCommand(ControlCommand{
 		Cmd: "stop",
 		ID:  intPtrHelper(browserID),
-	})
+	}); err != nil {
+		// Roll back state on send failure.
+		m.browsers[browserID].Status = prevStatus
+		m.notifyStateChange()
+		return err
+	}
+	return nil
 }
 
 // Next sends a "next" command for the given browser.
@@ -213,15 +244,23 @@ func (m *Manager) Update(browserID int, data string) error {
 		return err
 	}
 
+	prevData := m.browsers[browserID].LastData
+
 	m.browsers[browserID].LastData = data
 
 	m.notifyStateChange()
 
-	return m.sendCommand(ControlCommand{
+	if err := m.sendCommand(ControlCommand{
 		Cmd:  "update",
 		ID:   intPtrHelper(browserID),
 		Data: data,
-	})
+	}); err != nil {
+		// Roll back state on send failure.
+		m.browsers[browserID].LastData = prevData
+		m.notifyStateChange()
+		return err
+	}
+	return nil
 }
 
 // CustomAction sends a "custom" command with the given action and payload.
@@ -325,6 +364,7 @@ func (m *Manager) frameReadLoop() {
 				return
 			}
 			// Log and continue on transient errors.
+			slog.Warn("htmlgfx: frame read error", "error", err)
 			continue
 		}
 
@@ -346,7 +386,9 @@ func (m *Manager) frameReadLoop() {
 		bgraToRGBA(frame.Pixels, frame.Pixels)
 
 		// Deliver to compositor.
-		_ = m.compositor.SetOverlay(layerID, frame.Pixels, int(frame.Width), int(frame.Height), "html5")
+		if err := m.compositor.SetOverlay(layerID, frame.Pixels, int(frame.Width), int(frame.Height), "html5"); err != nil {
+			slog.Warn("htmlgfx: compositor SetOverlay failed", "layer", layerID, "error", err)
+		}
 	}
 }
 
@@ -365,6 +407,7 @@ func (m *Manager) controlReadLoop() {
 
 		var resp ControlResponse
 		if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
+			slog.Debug("htmlgfx: control response unmarshal error", "error", err)
 			continue
 		}
 

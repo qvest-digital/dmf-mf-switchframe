@@ -214,7 +214,7 @@ export interface GraphicsLayerState {
 	imageHeight?: number;
 	html5Url?: string;
 	html5Format?: 'ograf' | 'casparcg' | 'unknown';
-	html5Status?: 'loading' | 'ready' | 'playing' | 'stopped' | 'error';
+	html5Status?: 'allocated' | 'loading' | 'ready' | 'playing' | 'stopped' | 'error';
 	html5DataSchema?: Record<string, unknown>;
 }
 

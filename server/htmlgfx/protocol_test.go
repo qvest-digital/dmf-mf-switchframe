@@ -259,7 +259,7 @@ func TestControlResponseParse(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			r := bytes.NewBufferString(tt.input + "\n")
-			got, err := ReadControlResponse(r)
+			got, err := readControlResponse(r)
 			if err != nil {
 				t.Fatalf("parse error: %v", err)
 			}
