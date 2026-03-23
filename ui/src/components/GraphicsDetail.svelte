@@ -123,7 +123,9 @@
 
 	// HTML5 dynamic form state
 	let html5FormValues = $state<Record<string, any>>({});
-	let html5Schema = $derived(layer.html5DataSchema as any);
+	let html5LocalSchema = $state<any>(null); // set when template selected from picker
+	// Use local schema (from picker) or server-broadcast schema
+	let html5Schema = $derived(html5LocalSchema ?? layer.html5DataSchema as any);
 	// Normalize both CasparCG (fields array) and OGraf (JSON Schema properties)
 	let html5Fields = $derived(normalizeSchemaFields(html5Schema));
 	let html5Actions = $derived((html5Schema?.actions as any[]) ?? []);
@@ -480,7 +482,22 @@
 								aria-label="Select HTML5 template"
 								onchange={(e) => {
 									const val = (e.target as HTMLSelectElement).value;
-									if (val) html5Url = val;
+									if (val && val !== '__custom__') {
+										html5Url = val;
+										const tmpl = html5Templates.find(t => t.url === val);
+										html5LocalSchema = tmpl?.dataSchema ?? null;
+										html5FormValues = {};
+										// Pre-fill JSON textarea with defaults from schema
+										const fields = normalizeSchemaFields(tmpl?.dataSchema);
+										if (fields.length > 0) {
+											const defaults: Record<string, any> = {};
+											for (const f of fields) defaults[f.key] = f.default ?? '';
+											html5DataJson = JSON.stringify(defaults, null, 2);
+										}
+									} else {
+										html5LocalSchema = null;
+										html5FormValues = {};
+									}
 								}}
 							>
 								<option value="">— Select a template —</option>
