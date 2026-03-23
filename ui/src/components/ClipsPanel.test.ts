@@ -39,22 +39,22 @@ describe('ClipsPanel', () => {
 		vi.clearAllMocks();
 	});
 
-	it('renders upload button', () => {
+	it('renders upload zone', () => {
 		const { container } = render(ClipsPanel, { props: { state: makeState() } });
-		expect(container.textContent).toContain('Upload');
+		expect(container.textContent).toContain('Add clips');
 	});
 
 	it('shows 4 player slots', () => {
 		const { container } = render(ClipsPanel, { props: { state: makeState() } });
-		const playerHeaders = Array.from(container.querySelectorAll('.player-slot .player-header'));
-		const playerTexts = playerHeaders.map(el => el.textContent);
-		expect(playerTexts.filter(t => t && /Player \d/.test(t))).toHaveLength(4);
+		const slotIds = Array.from(container.querySelectorAll('.player-card .player-slot-id'));
+		expect(slotIds).toHaveLength(4);
+		expect(slotIds.map((el) => el.textContent)).toEqual(['P1', 'P2', 'P3', 'P4']);
 	});
 
 	it('shows clip library sections', () => {
 		const { container } = render(ClipsPanel, { props: { state: makeState() } });
 		expect(container.textContent).toContain('Uploaded');
-		expect(container.textContent).toContain('Replay Clips');
+		expect(container.textContent).toContain('Replay');
 		expect(container.textContent).toContain('Recordings');
 	});
 

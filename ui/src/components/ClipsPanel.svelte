@@ -7,6 +7,10 @@
 		apiCall,
 	} from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
+	import {
+		ICON_PLAY, ICON_PAUSE, ICON_STOP, ICON_EJECT, ICON_UPLOAD, ICON_TRASH, ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT,
+		ICON_PIN, ICON_FILM, renderIcon,
+	} from '$lib/icons';
 
 	interface Props {
 		state: ControlRoomState;
@@ -22,6 +26,10 @@
 	let playerSpeeds = $state<Record<number, number>>({ 1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0 });
 	let playerLoops = $state<Record<number, boolean>>({ 1: false, 2: false, 3: false, 4: false });
 
+	let sectionOpen = $state({ uploaded: true, replay: true, recordings: true });
+	let uploadZoneDragDepth = $state(0);
+	let dragOverPlayerId = $state<number | null>(null);
+
 	// ── Derived ──
 	const players = $derived<ClipPlayerState[]>(crState.clipPlayers ?? [
 		{ id: 1, state: 'empty' as const },
@@ -34,7 +42,6 @@
 	const replayClips = $derived(clips.filter(c => c.source === 'replay'));
 	const uploadProgress = $derived<ClipUploadProgress | undefined>(crState.clipUpload);
 
-	// Map 4 stages to overall 0-100 (weighted toward transcode which is longest).
 	const stageWeights: Record<string, [number, number]> = {
 		uploading: [0, 25],
 		analyzing: [25, 50],
@@ -47,7 +54,6 @@
 		const stage = uploadProgress?.stage ?? 'uploading';
 		const stagePct = uploadProgress?.percent ?? uploadPercent;
 		const [lo, hi] = stageWeights[stage] ?? [0, 25];
-		// During uploading stage, use client-side uploadPercent if no server stage yet
 		if (stage === 'uploading') {
 			return lo + Math.round((uploadPercent / 100) * (hi - lo));
 		}
@@ -76,7 +82,6 @@
 		}
 	});
 
-	// Fetch recordings once on mount (no reactive dependency needed).
 	let recordingsLoaded = false;
 	$effect(() => {
 		if (!recordingsLoaded) {
@@ -85,7 +90,6 @@
 		}
 	});
 
-	// Sync server-side loop/speed into local UI state
 	$effect(() => {
 		for (const p of players) {
 			if (p.speed != null) playerSpeeds[p.id] = p.speed;
@@ -109,6 +113,29 @@
 
 	const emptyPlayerIds = $derived(players.filter(p => p.state === 'empty').map(p => p.id));
 
+	function slotDragOver(playerId: number): boolean {
+		return dragOverPlayerId === playerId;
+	}
+
+	function onPlayerSlotDragEnter(e: DragEvent, playerId: number) {
+		e.preventDefault();
+		const cur = e.currentTarget as HTMLElement;
+		const rel = e.relatedTarget as Node | null;
+		if (rel && cur.contains(rel)) return;
+		dragOverPlayerId = playerId;
+	}
+
+	function onPlayerSlotDragLeave(e: DragEvent, playerId: number) {
+		const cur = e.currentTarget as HTMLElement;
+		const rel = e.relatedTarget as Node | null;
+		if (rel && cur.contains(rel)) return;
+		if (dragOverPlayerId === playerId) dragOverPlayerId = null;
+	}
+
+	function resetPlayerDropHighlight() {
+		dragOverPlayerId = null;
+	}
+
 	// ── Handlers ──
 	async function refreshClips() {
 		try {
@@ -130,10 +157,7 @@
 		fileInput?.click();
 	}
 
-	async function onFileSelected(e: Event) {
-		const input = e.target as HTMLInputElement;
-		const file = input.files?.[0];
-		if (!file) return;
+	async function uploadSelectedFile(file: File) {
 		uploading = true;
 		uploadPercent = 0;
 		try {
@@ -145,8 +169,66 @@
 		} finally {
 			uploading = false;
 			uploadPercent = 0;
-			input.value = '';
 		}
+	}
+
+	async function onFileSelected(e: Event) {
+		const input = e.target as HTMLInputElement;
+		const file = input.files?.[0];
+		if (!file) return;
+		await uploadSelectedFile(file);
+		input.value = '';
+	}
+
+	function onUploadZoneDragEnter(e: DragEvent) {
+		e.preventDefault();
+		if (e.dataTransfer?.types.includes('Files')) uploadZoneDragDepth += 1;
+	}
+
+	function onUploadZoneDragLeave(e: DragEvent) {
+		e.preventDefault();
+		const related = e.relatedTarget as Node | null;
+		if (related && e.currentTarget instanceof HTMLElement && e.currentTarget.contains(related)) return;
+		uploadZoneDragDepth = Math.max(0, uploadZoneDragDepth - 1);
+	}
+
+	function onUploadZoneDragOver(e: DragEvent) {
+		e.preventDefault();
+		if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+	}
+
+	async function onUploadZoneDrop(e: DragEvent) {
+		e.preventDefault();
+		uploadZoneDragDepth = 0;
+		const file = e.dataTransfer?.files?.[0];
+		if (!file) return;
+		await uploadSelectedFile(file);
+	}
+
+	function onClipDragStart(e: DragEvent, clipId: string) {
+		e.dataTransfer?.setData('text/plain', clipId);
+		e.dataTransfer!.effectAllowed = 'copy';
+	}
+
+	function onPlayerDragOver(e: DragEvent) {
+		e.preventDefault();
+		if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+	}
+
+	function handleLoadClip(clipId: string, playerId: number) {
+		apiCall(clipPlayerLoad(playerId, clipId), 'Load clip');
+	}
+
+	function onPlayerDrop(e: DragEvent, playerId: number) {
+		e.preventDefault();
+		const clipId = e.dataTransfer?.getData('text/plain')?.trim();
+		resetPlayerDropHighlight();
+		if (clipId) handleLoadClip(clipId, playerId);
+	}
+
+	function onPlayerDragEnd() {
+		resetPlayerDropHighlight();
+		uploadZoneDragDepth = 0;
 	}
 
 	async function handleDelete(clipId: string) {
@@ -166,10 +248,6 @@
 		} catch (err) {
 			notify('error', `Pin failed: ${err instanceof Error ? err.message : 'unknown'}`);
 		}
-	}
-
-	function handleLoad(playerID: number, clipId: string) {
-		apiCall(clipPlayerLoad(playerID, clipId), 'Load clip');
 	}
 
 	function handlePlay(playerID: number) {
@@ -213,216 +291,305 @@
 			notify('error', `Import failed: ${err instanceof Error ? err.message : 'unknown'}`);
 		}
 	}
+
+	function toggleSection(key: keyof typeof sectionOpen) {
+		sectionOpen = { ...sectionOpen, [key]: !sectionOpen[key] };
+	}
 </script>
+
+<svelte:window ondragend={onPlayerDragEnd} />
 
 <div class="clips-panel">
 	<div class="clips-layout">
-		<!-- Left: Clip Library -->
+		<!-- Left: Clip library -->
 		<div class="clip-library">
-			<div class="library-header">
-				<h3>CLIPS</h3>
-				<div class="library-actions">
-					<button class="action-btn upload-btn" onclick={handleUpload} disabled={uploading}>
-						{uploading ? 'Uploading...' : 'Upload'}
-					</button>
-					<input
-						bind:this={fileInput}
-						type="file"
-						accept=".ts,.mp4,.mov,.m4v,.mkv,.webm,.avi,.flv,.mxf,.wmv,.mpg,.mpeg,.ogv"
-						class="file-input"
-						onchange={onFileSelected}
-					/>
+			<div
+				class="upload-zone"
+				class:drag-over={uploadZoneDragDepth > 0}
+				role="button"
+				tabindex="0"
+				ondragenter={onUploadZoneDragEnter}
+				ondragleave={onUploadZoneDragLeave}
+				ondragover={onUploadZoneDragOver}
+				ondrop={onUploadZoneDrop}
+				onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleUpload(); } }}
+				onclick={handleUpload}
+			>
+				<span class="upload-zone-icon" aria-hidden="true">{@html renderIcon(ICON_UPLOAD, 14)}</span>
+				<div class="upload-zone-text">
+					<span class="upload-zone-title">Add clips</span>
+					<span class="upload-zone-hint">Drop files or click to browse</span>
 				</div>
+				<input
+					bind:this={fileInput}
+					type="file"
+					accept=".ts,.mp4,.mov,.m4v,.mkv,.webm,.avi,.flv,.mxf,.wmv,.mpg,.mpeg,.ogv"
+					class="file-input"
+					onchange={onFileSelected}
+				/>
+				{#if uploading || uploadProgress}
+					<div class="upload-progress upload-progress-inline" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()} role="presentation">
+						<div class="upload-progress-label">
+							<span class="upload-stage">{stageLabel}</span>
+							{#if uploadProgress?.filename}
+								<span class="upload-filename" title={uploadProgress.filename}>{uploadProgress.filename}</span>
+							{/if}
+							<span class="upload-pct">{overallPercent}%</span>
+						</div>
+						<div class="upload-progress-bar">
+							<div class="upload-progress-fill" style="width: {overallPercent}%"></div>
+						</div>
+						<div class="upload-stages">
+							<span class="stage-dot" class:active={!uploadProgress || uploadProgress.stage === 'uploading'} class:done={uploadProgress && uploadProgress.stage !== 'uploading'}>Upload</span>
+							<span class="stage-dot" class:active={uploadProgress?.stage === 'analyzing'} class:done={uploadProgress && ['transcoding','validating'].includes(uploadProgress.stage)}>Analyze</span>
+							<span class="stage-dot" class:active={uploadProgress?.stage === 'transcoding'} class:done={uploadProgress?.stage === 'validating'}>Transcode</span>
+							<span class="stage-dot" class:active={uploadProgress?.stage === 'validating'}>Validate</span>
+						</div>
+					</div>
+				{/if}
 			</div>
 
-			{#if uploading || uploadProgress}
-				<div class="upload-progress">
-					<div class="upload-progress-label">
-						<span class="upload-stage">{stageLabel}</span>
-						{#if uploadProgress?.filename}
-							<span class="upload-filename" title={uploadProgress.filename}>{uploadProgress.filename}</span>
-						{/if}
-						<span class="upload-pct">{overallPercent}%</span>
-					</div>
-					<div class="upload-progress-bar">
-						<div class="upload-progress-fill" style="width: {overallPercent}%"></div>
-					</div>
-					<div class="upload-stages">
-						<span class="stage-dot" class:active={!uploadProgress || uploadProgress.stage === 'uploading'} class:done={uploadProgress && uploadProgress.stage !== 'uploading'}>Upload</span>
-						<span class="stage-dot" class:active={uploadProgress?.stage === 'analyzing'} class:done={uploadProgress && ['transcoding','validating'].includes(uploadProgress.stage)}>Analyze</span>
-						<span class="stage-dot" class:active={uploadProgress?.stage === 'transcoding'} class:done={uploadProgress?.stage === 'validating'}>Transcode</span>
-						<span class="stage-dot" class:active={uploadProgress?.stage === 'validating'}>Validate</span>
-					</div>
-				</div>
-			{/if}
-
-			<div class="library-sections">
+			<div class="library-scroll">
 				<!-- Uploaded -->
 				<div class="library-section">
-					<div class="section-header">Uploaded</div>
-					{#if uploadedClips.length === 0}
-						<div class="empty-hint">No uploaded clips</div>
-					{:else}
-						{#each uploadedClips as clip (clip.id)}
-							<div class="clip-item">
-								<div class="clip-info">
-									<span class="clip-name" title={clip.filename}>{clip.name}</span>
-									<span class="clip-meta">{formatDuration(clip.durationMs)}</span>
+					<button type="button" class="section-toggle" onclick={() => toggleSection('uploaded')}>
+						<span class="section-chevron" aria-hidden="true">
+							{@html renderIcon(sectionOpen.uploaded ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT, 12)}
+						</span>
+						<span class="section-toggle-label">Uploaded</span>
+						<span class="section-badge">{uploadedClips.length}</span>
+					</button>
+					{#if sectionOpen.uploaded}
+						<div class="section-body">
+							{#if uploadedClips.length === 0}
+								<div class="empty-hint">No uploaded clips</div>
+							{:else}
+								<div class="section-list" role="list">
+								{#each uploadedClips as clip (clip.id)}
+									<div
+										class="clip-item"
+										role="listitem"
+										draggable="true"
+										ondragstart={(e) => onClipDragStart(e, clip.id)}
+									>
+										<div class="clip-info">
+											<span class="clip-drag-hint" aria-hidden="true">{@html renderIcon(ICON_FILM, 12)}</span>
+											<span class="clip-name" title={clip.filename}>{clip.name}</span>
+											<span class="clip-meta">{formatDuration(clip.durationMs)}</span>
+										</div>
+										<div class="clip-actions">
+											{#each emptyPlayerIds as pid}
+												<button
+													type="button"
+													class="load-btn"
+													draggable="false"
+													ondragstart={(e) => e.stopPropagation()}
+													title={`Load into Player ${pid}`}
+													onclick={() => handleLoadClip(clip.id, pid)}
+												>{pid}</button>
+											{/each}
+											<button type="button" class="icon-btn danger" draggable="false" title="Delete" ondragstart={(e) => e.stopPropagation()} onclick={() => handleDelete(clip.id)}>
+												{@html renderIcon(ICON_TRASH, 12)}
+											</button>
+										</div>
+									</div>
+								{/each}
 								</div>
-								<div class="clip-actions">
-									{#each emptyPlayerIds as pid}
-										<button
-											class="load-btn"
-											title={`Load into Player ${pid}`}
-											onclick={() => handleLoad(pid, clip.id)}
-										>&rarr;{pid}</button>
-									{/each}
-									<button class="del-btn" title="Delete" onclick={() => handleDelete(clip.id)}>&times;</button>
-								</div>
-							</div>
-						{/each}
+							{/if}
+						</div>
 					{/if}
 				</div>
 
-				<!-- Replay Clips -->
+				<!-- Replay -->
 				<div class="library-section">
-					<div class="section-header">Replay Clips</div>
-					{#if replayClips.length === 0}
-						<div class="empty-hint">No replay clips</div>
-					{:else}
-						{#each replayClips as clip (clip.id)}
-							<div class="clip-item">
-								<div class="clip-info">
-									<span class="clip-name">{clip.name}</span>
-									<span class="clip-meta">{formatDuration(clip.durationMs)}</span>
+					<button type="button" class="section-toggle" onclick={() => toggleSection('replay')}>
+						<span class="section-chevron" aria-hidden="true">
+							{@html renderIcon(sectionOpen.replay ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT, 12)}
+						</span>
+						<span class="section-toggle-label">Replay</span>
+						<span class="section-badge">{replayClips.length}</span>
+					</button>
+					{#if sectionOpen.replay}
+						<div class="section-body">
+							{#if replayClips.length === 0}
+								<div class="empty-hint">No replay clips</div>
+							{:else}
+								<div class="section-list" role="list">
+								{#each replayClips as clip (clip.id)}
+									<div
+										class="clip-item"
+										role="listitem"
+										draggable="true"
+										ondragstart={(e) => onClipDragStart(e, clip.id)}
+									>
+										<div class="clip-info">
+											<span class="clip-drag-hint" aria-hidden="true">{@html renderIcon(ICON_FILM, 12)}</span>
+											<span class="clip-name" title={clip.filename}>{clip.name}</span>
+											<span class="clip-meta">{formatDuration(clip.durationMs)}</span>
+										</div>
+										<div class="clip-actions">
+											{#each emptyPlayerIds as pid}
+												<button
+													type="button"
+													class="load-btn"
+													draggable="false"
+													ondragstart={(e) => e.stopPropagation()}
+													title={`Load into Player ${pid}`}
+													onclick={() => handleLoadClip(clip.id, pid)}
+												>{pid}</button>
+											{/each}
+											{#if clip.ephemeral}
+												<button type="button" class="icon-btn pin" draggable="false" title="Pin (make permanent)" ondragstart={(e) => e.stopPropagation()} onclick={() => handlePin(clip.id)}>
+													{@html renderIcon(ICON_PIN, 12)}
+												</button>
+											{/if}
+											<button type="button" class="icon-btn danger" draggable="false" title="Delete" ondragstart={(e) => e.stopPropagation()} onclick={() => handleDelete(clip.id)}>
+												{@html renderIcon(ICON_TRASH, 12)}
+											</button>
+										</div>
+									</div>
+								{/each}
 								</div>
-								<div class="clip-actions">
-									{#each emptyPlayerIds as pid}
-										<button
-											class="load-btn"
-											title={`Load into Player ${pid}`}
-											onclick={() => handleLoad(pid, clip.id)}
-										>&rarr;{pid}</button>
-									{/each}
-									{#if clip.ephemeral}
-										<button class="pin-btn" title="Pin (make permanent)" onclick={() => handlePin(clip.id)}>Pin</button>
-									{/if}
-									<button class="del-btn" title="Delete" onclick={() => handleDelete(clip.id)}>&times;</button>
-								</div>
-							</div>
-						{/each}
+							{/if}
+						</div>
 					{/if}
 				</div>
 
 				<!-- Recordings -->
 				<div class="library-section">
-					<div class="section-header">Recordings</div>
-					{#if recordings.length === 0}
-						<div class="empty-hint">No recordings</div>
-					{:else}
-						{#each recordings as rec (rec.path)}
-							<div class="clip-item">
-								<div class="clip-info">
-									<span class="clip-name">{rec.filename}</span>
-									<span class="clip-meta">{formatBytes(rec.byteSize)}</span>
-								</div>
-								<div class="clip-actions">
-									<button class="import-btn" onclick={() => handleImport(rec.path)}>Import</button>
-								</div>
-							</div>
-						{/each}
+					<button type="button" class="section-toggle" onclick={() => toggleSection('recordings')}>
+						<span class="section-chevron" aria-hidden="true">
+							{@html renderIcon(sectionOpen.recordings ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT, 12)}
+						</span>
+						<span class="section-toggle-label">Recordings</span>
+						<span class="section-badge">{recordings.length}</span>
+					</button>
+					{#if sectionOpen.recordings}
+						<div class="section-body">
+							{#if recordings.length === 0}
+								<div class="empty-hint">No recordings</div>
+							{:else}
+								{#each recordings as rec (rec.path)}
+									<div class="clip-item recording-item">
+										<div class="clip-info">
+											<span class="clip-name">{rec.filename}</span>
+											<span class="clip-meta">{formatBytes(rec.byteSize)}</span>
+										</div>
+										<div class="clip-actions">
+											<button type="button" class="import-btn" onclick={() => handleImport(rec.path)}>Import</button>
+										</div>
+									</div>
+								{/each}
+							{/if}
+						</div>
 					{/if}
 				</div>
 			</div>
 		</div>
 
-		<!-- Right: Players -->
-		<div class="player-strip">
-			{#each players as player (player.id)}
-				<div class="player-slot" class:playing={player.state === 'playing'} class:paused={player.state === 'paused'}>
-					<div class="player-header">
-						<span class="player-number">Player {player.id}</span>
-						{#if player.state !== 'empty'}
-							<span class="player-clip-name">{player.clipName ?? 'Unknown'}</span>
-						{/if}
-						{#if player.state === 'playing'}
-							<span class="player-state-badge playing-badge">PLAYING</span>
-						{:else if player.state === 'paused'}
-							<span class="player-state-badge paused-badge">PAUSED</span>
-						{:else if player.state === 'holding'}
-							<span class="player-state-badge holding-badge">HOLD</span>
-						{:else if player.state === 'loaded'}
-							<span class="player-state-badge loaded-badge">READY</span>
+		<!-- Right: Player slots -->
+		<div class="players-pane">
+			<div class="players-header">
+				<h3 class="players-title">Players</h3>
+			</div>
+			<div class="player-grid">
+				{#each players as player (player.id)}
+					<div
+						class="player-card"
+						role="group"
+						aria-label="Player {player.id} clip slot"
+						class:playing={player.state === 'playing'}
+						class:paused={player.state === 'paused'}
+						class:drag-over={slotDragOver(player.id)}
+						ondragenter={(e) => onPlayerSlotDragEnter(e, player.id)}
+						ondragleave={(e) => onPlayerSlotDragLeave(e, player.id)}
+						ondragover={onPlayerDragOver}
+						ondrop={(e) => onPlayerDrop(e, player.id)}
+					>
+						<div class="player-card-top">
+							<span class="player-slot-id">P{player.id}</span>
+							{#if player.state !== 'empty'}
+								<span class="player-clip-title" title={player.clipName ?? ''}>{player.clipName ?? 'Unknown'}</span>
+							{/if}
+							{#if player.state === 'playing'}
+								<span class="state-pill playing">Play</span>
+							{:else if player.state === 'paused'}
+								<span class="state-pill paused">Pause</span>
+							{:else if player.state === 'holding'}
+								<span class="state-pill hold">Hold</span>
+							{:else if player.state === 'loaded'}
+								<span class="state-pill ready">Ready</span>
+							{/if}
+						</div>
+
+						{#if player.state === 'empty'}
+							<div class="player-empty-drop">Drop clip here</div>
+						{:else}
+							<div
+								class="mini-progress"
+								role="slider"
+								tabindex="0"
+								aria-valuenow={Math.round((player.position ?? 0) * 100)}
+								aria-valuemin={0}
+								aria-valuemax={100}
+								aria-label="Playback position"
+								onclick={(e) => handleSeek(player.id, e)}
+								onkeydown={(e) => {
+									if (e.key === 'ArrowRight') { e.preventDefault(); handleSeekDelta(player.id, 0.05); }
+									else if (e.key === 'ArrowLeft') { e.preventDefault(); handleSeekDelta(player.id, -0.05); }
+								}}
+							>
+								<div class="mini-progress-fill" style="width: {(player.position ?? 0) * 100}%"></div>
+							</div>
+
+							<div class="player-toolbar">
+								<div class="transport-icons">
+									{#if player.state === 'playing'}
+										<button type="button" class="transport-icon" onclick={() => handlePause(player.id)} title="Pause">
+											{@html renderIcon(ICON_PAUSE, 13)}
+										</button>
+									{:else}
+										<button type="button" class="transport-icon" onclick={() => handlePlay(player.id)} title="Play">
+											{@html renderIcon(ICON_PLAY, 13, 'fill')}
+										</button>
+									{/if}
+									<button
+										type="button"
+										class="transport-icon"
+										onclick={() => handleStop(player.id)}
+										title="Stop"
+										disabled={player.state === 'loaded'}
+									>
+										{@html renderIcon(ICON_STOP, 13, 'fill')}
+									</button>
+									<button type="button" class="transport-icon" onclick={() => handleEject(player.id)} title="Eject">
+										{@html renderIcon(ICON_EJECT, 13)}
+									</button>
+								</div>
+								<select
+									class="speed-select"
+									bind:value={playerSpeeds[player.id]}
+									disabled={player.state === 'playing'}
+								>
+									<option value={0.25}>0.25×</option>
+									<option value={0.5}>0.5×</option>
+									<option value={1.0}>1×</option>
+									<option value={1.5}>1.5×</option>
+									<option value={2.0}>2×</option>
+								</select>
+								<label class="loop-tick">
+									<input
+										type="checkbox"
+										bind:checked={playerLoops[player.id]}
+										disabled={player.state === 'playing'}
+									/>
+									<span>Loop</span>
+								</label>
+							</div>
 						{/if}
 					</div>
-
-					{#if player.state === 'empty'}
-						<div class="player-empty">Load a clip from the library</div>
-					{:else}
-						<!-- Speed + Loop -->
-						<div class="player-controls-row">
-							<select
-								class="speed-select"
-								bind:value={playerSpeeds[player.id]}
-								disabled={player.state === 'playing'}
-							>
-								<option value={0.25}>0.25x</option>
-								<option value={0.5}>0.5x</option>
-								<option value={1.0}>1.0x</option>
-								<option value={1.5}>1.5x</option>
-								<option value={2.0}>2.0x</option>
-							</select>
-							<label class="loop-label">
-								<input
-									type="checkbox"
-									bind:checked={playerLoops[player.id]}
-									disabled={player.state === 'playing'}
-								/>
-								Loop
-							</label>
-						</div>
-
-						<!-- Transport buttons -->
-						<div class="transport-row">
-							{#if player.state === 'playing'}
-								<button class="transport-btn pause-btn" onclick={() => handlePause(player.id)} title="Pause">
-									&#x23F8;
-								</button>
-							{:else}
-								<button class="transport-btn play-btn" onclick={() => handlePlay(player.id)} title="Play">
-									&#x25B6;
-								</button>
-							{/if}
-							<button class="transport-btn stop-btn" onclick={() => handleStop(player.id)} title="Stop"
-								disabled={player.state === 'loaded'}
-							>
-								&#x25A0;
-							</button>
-							<button class="transport-btn eject-btn" onclick={() => handleEject(player.id)} title="Eject">
-								&#x23CF;
-							</button>
-						</div>
-
-						<!-- Progress bar -->
-						<div
-							class="progress-bar"
-							role="slider"
-							tabindex="0"
-							aria-valuenow={Math.round((player.position ?? 0) * 100)}
-							aria-valuemin={0}
-							aria-valuemax={100}
-							aria-label="Playback position"
-							onclick={(e) => handleSeek(player.id, e)}
-							onkeydown={(e) => {
-								if (e.key === 'ArrowRight') { e.preventDefault(); handleSeekDelta(player.id, 0.05); }
-								else if (e.key === 'ArrowLeft') { e.preventDefault(); handleSeekDelta(player.id, -0.05); }
-							}}
-						>
-							<div class="progress-fill" style="width: {(player.position ?? 0) * 100}%"></div>
-						</div>
-					{/if}
-				</div>
-			{/each}
+				{/each}
+			</div>
 		</div>
 	</div>
 </div>
@@ -432,193 +599,96 @@
 		display: flex;
 		flex-direction: column;
 		height: 100%;
+		min-height: 0;
 		overflow: hidden;
 		padding: 6px;
+		font-family: var(--font-ui);
+		box-sizing: border-box;
 	}
 
 	.clips-layout {
 		display: flex;
 		gap: 8px;
-		height: 100%;
+		flex: 1;
+		min-height: 0;
 		overflow: hidden;
 	}
 
-	/* ── Clip Library (left column) ── */
 	.clip-library {
 		flex: 0 0 40%;
+		min-width: 0;
 		display: flex;
 		flex-direction: column;
+		min-height: 0;
 		overflow: hidden;
 	}
 
-	.library-header {
+	.upload-zone {
+		flex-shrink: 0;
 		display: flex;
+		flex-wrap: wrap;
 		align-items: center;
-		justify-content: space-between;
-		margin-bottom: 6px;
+		gap: 8px;
+		padding: 8px 10px;
+		border: 1px dashed var(--border-default);
+		border-radius: var(--radius-sm);
+		background: var(--bg-surface);
+		cursor: pointer;
+		transition: border-color var(--transition-fast), background var(--transition-fast);
+		position: relative;
 	}
 
-	h3 {
-		margin: 0;
-		padding: 0 2px;
-		font-size: var(--text-xs);
-		color: var(--text-secondary);
-		font-family: var(--font-ui);
-		font-weight: 700;
-		text-transform: uppercase;
-		letter-spacing: 0.06em;
+	.upload-zone:hover {
+		background: var(--bg-hover);
+		border-color: var(--border-strong);
 	}
 
-	.library-actions {
+	.upload-zone.drag-over {
+		border-color: var(--accent-blue);
+		background: var(--bg-elevated);
+	}
+
+	.upload-zone-icon {
 		display: flex;
-		gap: 4px;
+		color: var(--text-tertiary);
+		flex-shrink: 0;
+	}
+
+	.upload-zone.drag-over .upload-zone-icon {
+		color: var(--accent-blue);
+	}
+
+	.upload-zone-text {
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
+		min-width: 0;
+		flex: 1;
+	}
+
+	.upload-zone-title {
+		font-size: var(--text-xs);
+		font-weight: 600;
+		color: var(--text-primary);
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+	}
+
+	.upload-zone-hint {
+		font-size: var(--text-2xs);
+		color: var(--text-tertiary);
 	}
 
 	.file-input {
 		display: none;
 	}
 
-	.action-btn {
-		padding: 3px 8px;
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
-		background: var(--bg-surface);
-		color: var(--text-primary);
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		cursor: pointer;
-	}
-
-	.action-btn:hover:not(:disabled) {
-		background: var(--bg-base);
-	}
-
-	.action-btn:disabled {
-		opacity: 0.5;
-		cursor: default;
-	}
-
-	.library-sections {
-		flex: 1;
-		overflow-y: auto;
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-	}
-
-	.library-section {
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
-		background: var(--bg-surface);
-		padding: 4px;
-	}
-
-	.section-header {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		font-weight: 600;
-		color: var(--text-secondary);
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		padding: 2px 4px;
-		margin-bottom: 2px;
-	}
-
-	.empty-hint {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		color: var(--text-tertiary);
-		padding: 4px;
-		text-align: center;
-		font-style: italic;
-	}
-
-	.clip-item {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: 3px 4px;
-		border-radius: var(--radius-sm);
-		gap: 4px;
-	}
-
-	.clip-item:hover {
-		background: var(--bg-base);
-	}
-
-	.clip-info {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		min-width: 0;
-		flex: 1;
-	}
-
-	.clip-name {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		color: var(--text-primary);
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-
-	.clip-meta {
-		font-family: var(--font-mono);
-		font-size: var(--text-xs);
-		color: var(--text-tertiary);
-		flex-shrink: 0;
-	}
-
-	.clip-actions {
-		display: flex;
-		gap: 2px;
-		flex-shrink: 0;
-	}
-
-	.load-btn, .del-btn, .pin-btn, .import-btn {
-		padding: 1px 5px;
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
-		background: var(--bg-base);
-		color: var(--text-secondary);
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		cursor: pointer;
-		line-height: 1.4;
-	}
-
-	.load-btn:hover {
-		background: var(--accent-blue-dim);
-		color: var(--accent-blue);
-		border-color: var(--accent-blue-medium);
-	}
-
-	.del-btn:hover {
-		background: rgba(220, 38, 38, 0.15);
-		color: var(--tally-program);
-		border-color: var(--tally-program-medium);
-	}
-
-	.pin-btn:hover {
-		background: rgba(22, 163, 74, 0.15);
-		color: var(--tally-preview);
-		border-color: var(--tally-preview-medium);
-	}
-
-	.import-btn:hover {
-		background: var(--accent-blue-dim);
-		color: var(--accent-blue);
-		border-color: var(--accent-blue-medium);
-	}
-
-	/* ── Upload Progress ── */
-	.upload-progress {
-		margin-bottom: 6px;
-		padding: 6px;
-		border: 1px solid var(--accent-blue-medium, var(--border-default));
-		border-radius: var(--radius-sm);
-		background: var(--bg-surface);
+	.upload-progress-inline {
+		width: 100%;
+		flex-basis: 100%;
+		margin-top: 4px;
+		padding-top: 8px;
+		border-top: 1px solid var(--border-subtle);
 	}
 
 	.upload-progress-label {
@@ -626,8 +696,7 @@
 		align-items: center;
 		gap: 6px;
 		margin-bottom: 4px;
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 	}
 
 	.upload-stage {
@@ -651,9 +720,9 @@
 	}
 
 	.upload-progress-bar {
-		height: 4px;
+		height: 3px;
 		background: var(--bg-base);
-		border-radius: 2px;
+		border-radius: var(--radius-xs);
 		overflow: hidden;
 		margin-bottom: 4px;
 	}
@@ -661,15 +730,14 @@
 	.upload-progress-fill {
 		height: 100%;
 		background: var(--accent-blue);
-		border-radius: 2px;
-		transition: width 0.2s ease;
+		border-radius: var(--radius-xs);
+		transition: width var(--transition-normal);
 	}
 
 	.upload-stages {
 		display: flex;
-		gap: 8px;
-		font-family: var(--font-ui);
-		font-size: 9px;
+		gap: 6px;
+		font-size: var(--text-2xs);
 		color: var(--text-tertiary);
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
@@ -686,195 +754,428 @@
 	}
 
 	.stage-dot.done {
-		opacity: 0.7;
-		color: var(--tally-preview, #16a34a);
+		opacity: 0.75;
+		color: var(--color-success);
 	}
 
-	/* ── Player Strip (right column) ── */
-	.player-strip {
-		flex: 0 0 60%;
+	.library-scroll {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+		overflow-x: hidden;
 		display: flex;
 		flex-direction: column;
-		gap: 4px;
-		overflow-y: auto;
+		gap: 6px;
+		margin-top: 6px;
 	}
 
-	.player-slot {
-		border: 1px solid var(--border-default);
+	.library-section {
+		border: 1px solid var(--border-subtle);
 		border-radius: var(--radius-sm);
 		background: var(--bg-surface);
-		padding: 6px;
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
+		overflow: hidden;
 	}
 
-	.player-slot.playing {
-		border-color: var(--tally-program-medium);
-	}
-
-	.player-slot.paused {
-		border-color: var(--accent-amber-medium, var(--border-default));
-	}
-
-	.player-header {
+	.section-toggle {
 		display: flex;
 		align-items: center;
 		gap: 6px;
-	}
-
-	.player-number {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		font-weight: 700;
+		width: 100%;
+		padding: 5px 8px;
+		border: none;
+		background: var(--bg-control);
 		color: var(--text-secondary);
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 600;
 		text-transform: uppercase;
-		letter-spacing: 0.04em;
+		letter-spacing: 0.05em;
+		cursor: pointer;
+		text-align: left;
+		transition: background var(--transition-fast);
 	}
 
-	.player-clip-name {
-		font-family: var(--font-ui);
+	.section-toggle:hover {
+		background: var(--bg-hover);
+	}
+
+	.section-chevron {
+		display: flex;
+		color: var(--text-tertiary);
+		flex-shrink: 0;
+	}
+
+	.section-toggle-label {
+		flex: 1;
+	}
+
+	.section-badge {
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		color: var(--text-tertiary);
+		background: var(--bg-base);
+		padding: 1px 6px;
+		border-radius: var(--radius-xs);
+		border: 1px solid var(--border-subtle);
+	}
+
+	.section-body {
+		padding: 4px;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.section-list {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.empty-hint {
+		font-size: var(--text-2xs);
+		color: var(--text-tertiary);
+		padding: 6px;
+		text-align: center;
+		font-style: italic;
+	}
+
+	.clip-item {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 6px;
+		padding: 4px 6px;
+		border-radius: var(--radius-xs);
+		border: 1px solid transparent;
+	}
+
+	.clip-item:hover {
+		background: var(--bg-hover);
+	}
+
+	.clip-item[draggable='true'] {
+		cursor: grab;
+	}
+
+	.clip-item[draggable='true']:active {
+		cursor: grabbing;
+	}
+
+	.clip-drag-hint {
+		display: flex;
+		color: var(--text-tertiary);
+		flex-shrink: 0;
+	}
+
+	.clip-info {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		min-width: 0;
+		flex: 1;
+	}
+
+	.clip-name {
+		font-size: var(--text-xs);
+		color: var(--text-primary);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.clip-meta {
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		color: var(--text-tertiary);
+		flex-shrink: 0;
+	}
+
+	.clip-actions {
+		display: flex;
+		align-items: center;
+		gap: 3px;
+		flex-shrink: 0;
+	}
+
+	.load-btn {
+		padding: 2px 6px;
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-xs);
+		background: var(--bg-base);
+		color: var(--text-secondary);
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		cursor: pointer;
+		line-height: 1.3;
+	}
+
+	.load-btn:hover {
+		background: var(--bg-hover);
+		border-color: var(--accent-blue);
+		color: var(--accent-blue);
+	}
+
+	.icon-btn {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 22px;
+		height: 22px;
+		padding: 0;
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-xs);
+		background: var(--bg-base);
+		color: var(--text-secondary);
+		cursor: pointer;
+	}
+
+	.icon-btn:hover {
+		background: var(--bg-hover);
+	}
+
+	.icon-btn.danger:hover {
+		border-color: var(--color-error);
+		color: var(--color-error);
+	}
+
+	.icon-btn.pin:hover {
+		border-color: var(--accent-yellow);
+		color: var(--accent-yellow);
+	}
+
+	.import-btn {
+		padding: 2px 8px;
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-xs);
+		background: var(--bg-base);
+		color: var(--text-secondary);
+		font-size: var(--text-2xs);
+		cursor: pointer;
+	}
+
+	.import-btn:hover {
+		border-color: var(--accent-orange);
+		color: var(--accent-orange);
+	}
+
+	.players-pane {
+		flex: 0 0 60%;
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
+		overflow: hidden;
+	}
+
+	.players-header {
+		flex-shrink: 0;
+		margin-bottom: 6px;
+	}
+
+	.players-title {
+		margin: 0;
+		padding: 0 2px;
+		font-size: var(--text-xs);
+		color: var(--text-secondary);
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+	}
+
+	.player-grid {
+		flex: 1;
+		min-height: 0;
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		grid-template-rows: 1fr 1fr;
+		gap: 6px;
+		overflow: hidden;
+	}
+
+	.player-card {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		min-height: 0;
+		padding: 6px 8px;
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		background: var(--bg-surface);
+		transition: border-color var(--transition-fast), background var(--transition-fast);
+	}
+
+	.player-card.drag-over {
+		border-color: var(--accent-blue);
+		background: var(--bg-elevated);
+		box-shadow: 0 0 0 1px var(--accent-blue);
+	}
+
+	.player-card.playing {
+		border-color: var(--color-error);
+	}
+
+	.player-card.paused {
+		border-color: var(--accent-yellow);
+	}
+
+	.player-card-top {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		min-width: 0;
+	}
+
+	.player-slot-id {
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		font-weight: 700;
+		color: var(--text-tertiary);
+		flex-shrink: 0;
+	}
+
+	.player-clip-title {
 		font-size: var(--text-xs);
 		color: var(--text-primary);
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		flex: 1;
+		min-width: 0;
 	}
 
-	.player-state-badge {
-		font-family: var(--font-ui);
-		font-size: 9px;
+	.state-pill {
+		flex-shrink: 0;
+		font-size: var(--text-2xs);
 		font-weight: 700;
 		text-transform: uppercase;
-		letter-spacing: 0.06em;
-		padding: 1px 4px;
-		border-radius: 2px;
-		flex-shrink: 0;
+		letter-spacing: 0.04em;
+		padding: 1px 5px;
+		border-radius: var(--radius-xs);
 	}
 
-	.playing-badge {
-		background: rgba(220, 38, 38, 0.2);
-		color: var(--tally-program);
+	.state-pill.playing {
+		background: color-mix(in srgb, var(--color-error) 18%, transparent);
+		color: var(--color-error);
 	}
 
-	.paused-badge {
-		background: rgba(245, 158, 11, 0.2);
-		color: var(--accent-amber, #f59e0b);
+	.state-pill.paused {
+		background: color-mix(in srgb, var(--accent-yellow) 20%, transparent);
+		color: var(--accent-orange);
 	}
 
-	.holding-badge {
-		background: rgba(139, 92, 246, 0.2);
-		color: var(--accent-purple, #8b5cf6);
-	}
-
-	.loaded-badge {
-		background: rgba(59, 130, 246, 0.15);
+	.state-pill.hold {
+		background: color-mix(in srgb, var(--accent-blue) 18%, transparent);
 		color: var(--accent-blue);
 	}
 
-	.player-empty {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		color: var(--text-tertiary);
-		text-align: center;
-		padding: 6px;
-		font-style: italic;
+	.state-pill.ready {
+		background: color-mix(in srgb, var(--color-success) 18%, transparent);
+		color: var(--color-success);
 	}
 
-	.player-controls-row {
+	.player-empty-drop {
+		flex: 1;
+		min-height: 36px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		border: 1px dashed var(--border-subtle);
+		border-radius: var(--radius-xs);
+		background: var(--bg-base);
+		font-size: var(--text-2xs);
+		font-style: italic;
+		color: var(--text-tertiary);
+		text-align: center;
+		padding: 4px;
+	}
+
+	.player-card.drag-over .player-empty-drop {
+		border-color: var(--accent-blue);
+		background: var(--bg-hover);
+	}
+
+	.mini-progress {
+		height: 4px;
+		background: var(--bg-base);
+		border-radius: var(--radius-xs);
+		cursor: pointer;
+		overflow: hidden;
+		flex-shrink: 0;
+	}
+
+	.mini-progress-fill {
+		height: 100%;
+		background: var(--accent-blue);
+		border-radius: var(--radius-xs);
+		transition: width 0.1s linear;
+	}
+
+	.player-card.playing .mini-progress-fill {
+		background: var(--color-error);
+	}
+
+	.player-toolbar {
 		display: flex;
 		align-items: center;
 		gap: 6px;
+		flex-wrap: wrap;
+		margin-top: auto;
+	}
+
+	.transport-icons {
+		display: flex;
+		align-items: center;
+		gap: 2px;
+	}
+
+	.transport-icon {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 26px;
+		height: 26px;
+		padding: 0;
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-xs);
+		background: var(--bg-control);
+		color: var(--text-primary);
+		cursor: pointer;
+		transition: background var(--transition-fast), border-color var(--transition-fast);
+	}
+
+	.transport-icon:hover:not(:disabled) {
+		background: var(--bg-hover);
+		border-color: var(--border-default);
+	}
+
+	.transport-icon:disabled {
+		opacity: 0.35;
+		cursor: default;
 	}
 
 	.speed-select {
 		background: var(--bg-base);
 		color: var(--text-primary);
 		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
+		border-radius: var(--radius-xs);
 		padding: 2px 4px;
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		margin-left: auto;
 	}
 
 	.speed-select:disabled {
 		opacity: 0.5;
 	}
 
-	.loop-label {
+	.loop-tick {
 		display: flex;
 		align-items: center;
-		gap: 3px;
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		gap: 4px;
+		font-size: var(--text-2xs);
 		color: var(--text-tertiary);
-		margin-left: auto;
-	}
-
-	.transport-row {
-		display: flex;
-		gap: 3px;
-	}
-
-	.transport-btn {
-		flex: 1;
-		padding: 3px 6px;
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
-		background: var(--bg-base);
-		color: var(--text-primary);
-		font-size: 12px;
 		cursor: pointer;
-		text-align: center;
-	}
-
-	.transport-btn:hover:not(:disabled) {
-		background: var(--bg-surface);
-	}
-
-	.transport-btn:disabled {
-		opacity: 0.4;
-		cursor: default;
-	}
-
-	.play-btn:hover:not(:disabled) {
-		background: rgba(59, 130, 246, 0.15);
-		color: var(--accent-blue);
-		border-color: var(--accent-blue-medium);
-	}
-
-	.pause-btn:hover:not(:disabled) {
-		background: rgba(245, 158, 11, 0.15);
-		color: var(--accent-amber, #f59e0b);
-	}
-
-	.stop-btn:hover:not(:disabled) {
-		background: rgba(220, 38, 38, 0.15);
-		color: var(--tally-program);
-		border-color: var(--tally-program-medium);
-	}
-
-	.eject-btn:hover:not(:disabled) {
-		color: var(--text-secondary);
-	}
-
-	.progress-bar {
-		height: 6px;
-		background: var(--bg-base);
-		border-radius: 3px;
-		cursor: pointer;
-		overflow: hidden;
-	}
-
-	.progress-fill {
-		height: 100%;
-		background: var(--accent-blue);
-		border-radius: 3px;
-		transition: width 0.1s linear;
-	}
-
-	.player-slot.playing .progress-fill {
-		background: var(--tally-program);
+		user-select: none;
 	}
 </style>

@@ -53,29 +53,35 @@ describe('MacroPanel', () => {
 		expect(container.textContent).toContain('MACROS');
 	});
 
-	it('shows getting started guide when no macros and not dismissed', () => {
+	it('shows macro help popover when help is clicked', async () => {
 		const { container } = render(MacroPanel, { props: { state: makeState() } });
-		expect(container.textContent).toContain('Getting Started');
-		expect(container.textContent).toContain('automate');
-	});
-
-	it('hides guide when Got it is clicked and persists to localStorage', async () => {
-		const { container } = render(MacroPanel, { props: { state: makeState() } });
-		const gotItBtn = container.querySelector('.guide-dismiss') as HTMLButtonElement;
-		expect(gotItBtn).toBeTruthy();
-		await fireEvent.click(gotItBtn);
-		expect(container.textContent).not.toContain('Getting Started');
-		expect(localStorage.getItem('switchframe-macro-guide-dismissed')).toBe('true');
-	});
-
-	it('shows help button that re-shows guide', async () => {
-		localStorage.setItem('switchframe-macro-guide-dismissed', 'true');
-		const { container } = render(MacroPanel, { props: { state: makeState() } });
-		expect(container.textContent).not.toContain('Getting Started');
+		expect(container.querySelector('.macro-help-popover')).toBeFalsy();
 		const helpBtn = container.querySelector('.help-btn') as HTMLButtonElement;
 		expect(helpBtn).toBeTruthy();
 		await fireEvent.click(helpBtn);
-		expect(container.textContent).toContain('Getting Started');
+		expect(container.querySelector('.macro-help-popover')).toBeTruthy();
+		expect(container.textContent).toContain('Automate');
+		expect(container.textContent).toContain('Ctrl+1');
+	});
+
+	it('closes help popover when close is clicked', async () => {
+		const { container } = render(MacroPanel, { props: { state: makeState() } });
+		const helpBtn = container.querySelector('.help-btn') as HTMLButtonElement;
+		await fireEvent.click(helpBtn);
+		expect(container.querySelector('.macro-help-popover')).toBeTruthy();
+		const closeBtn = container.querySelector('.help-popover-close') as HTMLButtonElement;
+		expect(closeBtn).toBeTruthy();
+		await fireEvent.click(closeBtn);
+		expect(container.querySelector('.macro-help-popover')).toBeFalsy();
+	});
+
+	it('toggles help popover when help is clicked again', async () => {
+		const { container } = render(MacroPanel, { props: { state: makeState() } });
+		const helpBtn = container.querySelector('.help-btn') as HTMLButtonElement;
+		await fireEvent.click(helpBtn);
+		expect(container.textContent).toContain('Automate');
+		await fireEvent.click(helpBtn);
+		expect(container.querySelector('.macro-help-popover')).toBeFalsy();
 	});
 
 	it('opens edit mode when + button is clicked', async () => {
@@ -232,6 +238,9 @@ describe('MacroPanel', () => {
 		});
 		const delBtn = container.querySelector('.del-btn') as HTMLButtonElement;
 		await fireEvent.click(delBtn);
+		const confirmBtn = container.querySelector('.del-confirm-btn') as HTMLButtonElement;
+		expect(confirmBtn).toBeTruthy();
+		await fireEvent.click(confirmBtn);
 		expect(deleteMacro).toHaveBeenCalledWith('Morning Show');
 	});
 
@@ -430,6 +439,8 @@ describe('MacroPanel', () => {
 		});
 		const delBtn = container.querySelector('.del-btn') as HTMLButtonElement;
 		await fireEvent.click(delBtn);
+		const confirmBtn = container.querySelector('.del-confirm-btn') as HTMLButtonElement;
+		await fireEvent.click(confirmBtn);
 		await vi.waitFor(() => {
 			expect(notify).toHaveBeenCalledWith('error', expect.stringContaining('Delete failed'));
 		});
@@ -492,10 +503,13 @@ describe('MacroPanel', () => {
 
 		it('shows correct status icons', () => {
 			const { container } = render(MacroPanel, { props: { state: runningState } });
-			const icons = container.querySelectorAll('.exec-step-icon');
-			expect(icons[0].textContent).toBe('\u2713');
-			expect(icons[1].textContent).toBe('\u25CF');
-			expect(icons[2].textContent).toBe('\u25CB');
+			const rows = container.querySelectorAll('.exec-step-row');
+			expect(rows[0].classList.contains('step-done')).toBe(true);
+			expect(rows[0].querySelector('.exec-step-icon svg')).toBeTruthy();
+			expect(rows[1].classList.contains('step-running')).toBe(true);
+			expect(rows[1].querySelector('.exec-dot')).toBeTruthy();
+			expect(rows[2].classList.contains('step-pending')).toBe(true);
+			expect(rows[2].querySelector('.exec-ring')).toBeTruthy();
 		});
 
 		it('shows cancel button when running', () => {
@@ -571,14 +585,15 @@ describe('MacroPanel', () => {
 			expect(container.textContent).toContain('2 / 3');
 		});
 
-		it('hides macro grid when execution view is shown', async () => {
+		it('shows execution view in main panel while macro runs', async () => {
 			const { listMacros } = await import('$lib/api/switch-api');
 			vi.mocked(listMacros).mockResolvedValueOnce([
 				{ name: 'Test', steps: [{ action: 'cut', params: { source: 'cam1' } }] },
 			]);
 			const { container } = render(MacroPanel, { props: { state: runningState } });
-			// Macro run buttons should not be visible
-			expect(container.querySelector('.macro-btn')).toBeNull();
+			const main = container.querySelector('.macro-main');
+			expect(main?.querySelector('.execution-view')).toBeTruthy();
+			expect(main?.textContent).toContain('Running: Test Macro');
 		});
 	});
 });

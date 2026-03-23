@@ -1,7 +1,19 @@
 <script lang="ts">
-	import type { ControlRoomState, SCTE35CueRequest, SCTE35Active, SCTE35Event, SCTE35DescriptorRequest, SCTE35DescriptorInfo } from '$lib/api/types';
+	import type { ControlRoomState, SCTE35CueRequest, SCTE35Active, SCTE35Event, SCTE35DescriptorRequest } from '$lib/api/types';
 	import { scte35Cue, scte35Return, scte35Hold, scte35Extend, scte35Cancel, apiCall } from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
+	import {
+		ICON_BROADCAST,
+		ICON_AD_BREAK,
+		ICON_RETURN,
+		ICON_HELP,
+		ICON_CLOSE,
+		ICON_CHEVRON_DOWN,
+		ICON_CHEVRON_RIGHT,
+		ICON_WARNING,
+		ICON_INFO,
+		renderIcon,
+	} from '$lib/icons';
 
 	interface Props {
 		state: ControlRoomState;
@@ -40,7 +52,6 @@
 	const activeEvents = $derived(scte35?.activeEvents ?? {});
 	const activeList = $derived(Object.values(activeEvents));
 	const hasActiveOut = $derived(activeList.some(e => e.isOut));
-	const hasAutoReturn = $derived(activeList.some(e => e.autoReturn && !e.held));
 	const hasHeld = $derived(activeList.some(e => e.held));
 	const eventLog = $derived(scte35?.eventLog ?? []);
 
@@ -222,15 +233,20 @@
 		return 'CUE OUT';
 	}
 
-	// --- Event Detail Flyout ---
-	let selectedEvent = $state<SCTE35Event | null>(null);
+	// --- Event log inline detail ---
+	let expandedLogKey = $state<string | null>(null);
 
-	function openEventDetail(evt: SCTE35Event) {
-		selectedEvent = evt;
+	function logEntryKey(evt: SCTE35Event): string {
+		return `${evt.eventId}-${evt.timestamp}`;
 	}
 
-	function closeEventDetail() {
-		selectedEvent = null;
+	function toggleLogDetail(evt: SCTE35Event) {
+		const k = logEntryKey(evt);
+		expandedLogKey = expandedLogKey === k ? null : k;
+	}
+
+	function isLogExpanded(evt: SCTE35Event): boolean {
+		return expandedLogKey === logEntryKey(evt);
 	}
 
 	// Lookup maps for human-readable labels
@@ -277,376 +293,532 @@
 </script>
 
 <div class="scte35-panel">
-	<!-- Getting Started Guide -->
 	{#if !guideDismissed}
-		<div class="guide-banner">
-			<div class="guide-header">
-				<span class="guide-title">Getting Started with SCTE-35</span>
-				<button class="guide-dismiss" onclick={toggleGuide} title="Dismiss guide">x</button>
-			</div>
-			<p class="guide-text">
-				SCTE-35 signals ad breaks in MPEG-TS streams. Downstream systems use these cues to insert ads or switch content.
+		<div class="tip-banner" role="status">
+			<span class="tip-banner__icon" aria-hidden="true">{@html renderIcon(ICON_INFO, 14)}</span>
+			<p class="tip-banner__text">
+				SCTE-35 cues ad breaks in MPEG-TS. Use <strong>AD BREAK</strong> / <strong>HOLD</strong> / <strong>EXTEND</strong> / <strong>RETURN</strong>; <strong>Cue Builder</strong> for time_signal and descriptors.
 			</p>
-			<ol class="guide-steps">
-				<li>Click <strong>AD BREAK</strong> to insert a 30s ad break &mdash; watch the countdown</li>
-				<li>Click <strong>HOLD</strong> to freeze a break in progress (prevents auto-return)</li>
-				<li>Click <strong>EXTEND</strong> to add more time to the break</li>
-				<li>Click <strong>RETURN</strong> to end the break early and return to program</li>
-				<li>Use the <strong>Cue Builder</strong> for advanced signals (time_signal, segmentation descriptors)</li>
-			</ol>
-			<button class="demo-btn" onclick={handleRunDemo}>
-				Run Demo (60s Ad Break)
+			<button type="button" class="tip-banner__demo" onclick={handleRunDemo}>
+				{@html renderIcon(ICON_BROADCAST, 12)}
+				<span>Demo 60s</span>
+			</button>
+			<button type="button" class="tip-banner__close" onclick={toggleGuide} title="Dismiss tip" aria-label="Dismiss tip">
+				{@html renderIcon(ICON_CLOSE, 14)}
 			</button>
 		</div>
 	{/if}
 
-	<!-- Zone 1: Quick Actions -->
-	<div class="zone zone-quick">
-		<div class="zone-header">
-			<span class="zone-title">QUICK ACTIONS</span>
-			<span class="status-badge {statusClass}">{statusLabel}</span>
-			{#if guideDismissed}
-				<button class="guide-show-btn" onclick={toggleGuide} title="Show getting started guide">?</button>
-			{/if}
-		</div>
-
-		<div class="duration-row">
-			{#each durationPresets as preset}
-				<button
-					class="dur-btn"
-					class:active={selectedDuration === preset.value && !customDurationSec}
-					onclick={() => { selectedDuration = preset.value; customDurationSec = ''; }}
-				>
-					{preset.label}
-				</button>
-			{/each}
-			<input
-				type="text"
-				class="dur-custom"
-				placeholder="Custom"
-				bind:value={customDurationSec}
-				title="Custom duration in seconds"
-			/>
-		</div>
-
-		<div class="options-row">
-			<label class="option-label">
-				<input type="checkbox" bind:checked={autoReturn} />
-				Auto-return
-			</label>
-			<div class="preroll-select">
-				<span class="option-text">Pre-roll:</span>
-				<select bind:value={preRollMs} class="preroll-dropdown">
-					{#each preRollPresets as p}
-						<option value={p.value}>{p.label}</option>
-					{/each}
-				</select>
-			</div>
-		</div>
-
-		<div class="action-row">
-			<button class="action-btn ad-break-btn" onclick={handleAdBreak}>
-				AD BREAK
-			</button>
-			{#if hasActiveOut}
-				<button class="action-btn return-btn" onclick={handleReturn}>
-					RETURN
-				</button>
-			{/if}
-		</div>
-
-		<!-- Active events -->
-		{#if activeList.length > 0}
-			<div class="active-events">
-				{#each activeList as evt (evt.eventId)}
-					<div class="active-event" class:held={evt.held}>
-						<div class="evt-header">
-							<span class="evt-type">{evt.commandType === 'time_signal' ? 'TIME SIG' : 'SPLICE'}</span>
-							<span class="evt-id">#{evt.eventId}</span>
-							<span class="evt-countdown">{formatCountdown(evt)}</span>
-						</div>
-						<div class="evt-actions">
-							{#if evt.autoReturn && !evt.held}
-								<button class="evt-btn hold-btn" onclick={() => handleHold(evt.eventId)} title="Hold (prevent auto-return)">
-									HOLD
-								</button>
-							{/if}
-							<div class="extend-group">
-								<input
-									type="text"
-									class="extend-input"
-									bind:value={extendDurationSec}
-									placeholder="30"
-									title="Extend duration in seconds"
-								/>
-								<button class="evt-btn extend-btn" onclick={() => handleExtend(evt.eventId)} title="Extend break duration">
-									EXTEND
-								</button>
-							</div>
-							<button class="evt-btn cancel-evt-btn" onclick={() => handleCancelEvent(evt.eventId)} title="Cancel event">
-								CANCEL
-							</button>
-						</div>
-					</div>
-				{/each}
-			</div>
-		{/if}
-	</div>
-
-	<!-- Zone 2: Advanced Cue Builder -->
-	<div class="zone zone-advanced">
-		<div class="zone-header">
-			<span class="zone-title">CUE BUILDER</span>
-		</div>
-
-		<div class="adv-tabs">
-			<button
-				class="adv-tab"
-				class:active={advancedTab === 'splice_insert'}
-				onclick={() => { advancedTab = 'splice_insert'; }}
-			>
-				Splice Insert
-			</button>
-			<button
-				class="adv-tab"
-				class:active={advancedTab === 'time_signal'}
-				onclick={() => { advancedTab = 'time_signal'; }}
-			>
-				Time Signal
-			</button>
-		</div>
-
-		{#if advancedTab === 'time_signal'}
-			<div class="adv-fields">
-				<div class="field-row">
-					<label class="field-label">Segmentation:
-					<select class="field-select" bind:value={segmentationType}>
-						{#each segmentationTypes as st}
-							<option value={st.value}>{st.label}</option>
-						{/each}
-					</select>
-					</label>
-				</div>
-				<div class="field-row">
-					<label class="field-label">UPID Type:
-					<select class="field-select" bind:value={upidType}>
-						{#each upidTypes as ut}
-							<option value={ut.value}>{ut.label}</option>
-						{/each}
-					</select>
-					</label>
-				</div>
-				<div class="field-row">
-					<label class="field-label">UPID:
-					<input type="text" class="field-input" bind:value={upidText} placeholder="e.g. ABCD0001000H" />
-					</label>
-				</div>
-			</div>
-		{/if}
-
-		<div class="adv-fields">
-			<div class="field-row">
-				<label class="field-label">Duration (s):
-				<input type="text" class="field-input field-narrow" bind:value={advancedDurationSec} placeholder="30" />
-				</label>
-			</div>
-			<div class="field-row">
-				<label class="field-label">Timing:
-				<select class="field-select field-narrow" bind:value={advancedTiming}>
-					<option value="immediate">Immediate</option>
-					<option value="scheduled">Scheduled</option>
-				</select>
-				</label>
-			</div>
-			{#if advancedTiming === 'scheduled'}
-				<div class="field-row">
-					<label class="field-label">Pre-roll (ms):
-					<input type="text" class="field-input field-narrow" bind:value={advancedPreRollMs} placeholder="2000" />
-					</label>
-				</div>
-			{/if}
-		</div>
-
-		<button class="action-btn send-cue-btn" onclick={handleSendAdvancedCue}>
-			SEND CUE
-		</button>
-	</div>
-
-	<!-- Zone 3: Event Log -->
-	<div class="zone zone-log">
-		<div class="zone-header">
-			<span class="zone-title">EVENT LOG</span>
-			<span class="log-count">{eventLog.length}</span>
-		</div>
-		<div class="log-list">
-			{#if eventLog.length === 0}
-				<div class="empty-state">No events</div>
-			{:else}
-				{#each eventLog.slice().reverse() as evt (evt.eventId + '-' + evt.timestamp)}
-					<button class="log-item log-item-btn {eventTypeClass(evt)}" onclick={() => openEventDetail(evt)}>
-						<span class="log-type-badge">{eventTypeLabel(evt)}</span>
-						<span class="log-id">#{evt.eventId}</span>
-						{#if evt.durationMs}
-							<span class="log-duration">{(evt.durationMs / 1000).toFixed(0)}s</span>
-						{/if}
-						<span class="log-time">{formatTimestamp(evt.timestamp)}</span>
-						<span class="log-status">{evt.status}</span>
+	<div class="scte35-columns">
+		<!-- Zone 1: Quick Actions -->
+		<div class="zone zone-quick">
+			<div class="zone-header">
+				<span class="zone-header__left">
+					<span class="zone-header__icon" aria-hidden="true">{@html renderIcon(ICON_BROADCAST, 12)}</span>
+					<span class="zone-title">QUICK ACTIONS</span>
+				</span>
+				<span class="status-badge {statusClass}">{statusLabel}</span>
+				{#if guideDismissed}
+					<button type="button" class="guide-help-btn" onclick={toggleGuide} title="Show SCTE-35 tip" aria-label="Show SCTE-35 tip">
+						{@html renderIcon(ICON_HELP, 12)}
 					</button>
-				{/each}
-			{/if}
-		</div>
-	</div>
-
-	<!-- Event Detail Flyout -->
-	{#if selectedEvent}
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<div class="detail-backdrop" onclick={closeEventDetail} onkeydown={(e) => e.key === 'Escape' && closeEventDetail()}></div>
-		<div class="detail-flyout">
-			<div class="detail-header">
-				<span class="detail-title">Event #{selectedEvent.eventId}</span>
-				<button class="detail-close" onclick={closeEventDetail}>x</button>
-			</div>
-			<div class="detail-body">
-				<div class="detail-section">
-					<div class="detail-section-title">Command</div>
-					<div class="detail-grid">
-						<span class="detail-label">Type</span>
-						<span class="detail-value">{selectedEvent.commandType}</span>
-						<span class="detail-label">Direction</span>
-						<span class="detail-value">{selectedEvent.isOut ? 'OUT (break start)' : 'IN (return)'}</span>
-						<span class="detail-label">Status</span>
-						<span class="detail-value">{selectedEvent.status}</span>
-						<span class="detail-label">Event ID</span>
-						<span class="detail-value detail-mono">{selectedEvent.eventId}</span>
-					</div>
-				</div>
-
-				<div class="detail-section">
-					<div class="detail-section-title">Timing</div>
-					<div class="detail-grid">
-						<span class="detail-label">Timestamp</span>
-						<span class="detail-value detail-mono">{formatFullTimestamp(selectedEvent.timestamp)}</span>
-						{#if selectedEvent.durationMs}
-							<span class="detail-label">Duration</span>
-							<span class="detail-value detail-mono">{(selectedEvent.durationMs / 1000).toFixed(1)}s ({selectedEvent.durationMs}ms)</span>
-						{/if}
-						<span class="detail-label">Auto-Return</span>
-						<span class="detail-value">{selectedEvent.autoReturn ? 'Yes' : 'No'}</span>
-						{#if selectedEvent.spliceTimePts}
-							<span class="detail-label">Splice Time</span>
-							<span class="detail-value detail-mono">{formatPts(selectedEvent.spliceTimePts)}</span>
-						{/if}
-					</div>
-				</div>
-
-				{#if selectedEvent.availNum !== undefined || selectedEvent.availsExpected !== undefined}
-					<div class="detail-section">
-						<div class="detail-section-title">Avail</div>
-						<div class="detail-grid">
-							{#if selectedEvent.availNum !== undefined}
-								<span class="detail-label">Avail Num</span>
-								<span class="detail-value detail-mono">{selectedEvent.availNum}</span>
-							{/if}
-							{#if selectedEvent.availsExpected !== undefined}
-								<span class="detail-label">Avails Expected</span>
-								<span class="detail-value detail-mono">{selectedEvent.availsExpected}</span>
-							{/if}
-						</div>
-					</div>
 				{/if}
+			</div>
 
-				{#if selectedEvent.descriptors && selectedEvent.descriptors.length > 0}
-					<div class="detail-section">
-						<div class="detail-section-title">Descriptors ({selectedEvent.descriptors.length})</div>
-						{#each selectedEvent.descriptors as desc, i}
-							<div class="detail-descriptor">
-								<div class="detail-descriptor-header">Descriptor {i + 1}</div>
-								<div class="detail-grid">
-									<span class="detail-label">Seg Type</span>
-									<span class="detail-value">0x{desc.segmentationType.toString(16).padStart(2, '0')} &mdash; {formatSegType(desc.segmentationType)}</span>
-									<span class="detail-label">Seg Event ID</span>
-									<span class="detail-value detail-mono">{desc.segEventId}</span>
-									<span class="detail-label">UPID Type</span>
-									<span class="detail-value">{desc.upidType} &mdash; {formatUpidType(desc.upidType)}</span>
-									<span class="detail-label">UPID</span>
-									<span class="detail-value detail-mono">{desc.upid || '—'}</span>
-									{#if desc.durationTicks}
-										<span class="detail-label">Duration</span>
-										<span class="detail-value detail-mono">{formatPts(desc.durationTicks)}</span>
+			<div class="zone-body">
+				<div class="chips-row">
+					{#each durationPresets as preset}
+						<button
+							type="button"
+					class="dur-chip dur-btn"
+					class:active={selectedDuration === preset.value && !customDurationSec}
+							onclick={() => { selectedDuration = preset.value; customDurationSec = ''; }}
+						>
+							{preset.label}
+						</button>
+					{/each}
+					<input
+						type="text"
+						class="dur-custom"
+						placeholder="Custom"
+						bind:value={customDurationSec}
+						title="Custom duration in seconds"
+					/>
+				</div>
+
+				<div class="inline-options">
+					<label class="inline-options__check">
+						<input type="checkbox" bind:checked={autoReturn} />
+						<span>Auto-return</span>
+					</label>
+					<label class="inline-options__preroll">
+						<span class="inline-options__label">Pre-roll:</span>
+						<select bind:value={preRollMs} class="preroll-dropdown">
+							{#each preRollPresets as p}
+								<option value={p.value}>{p.label}</option>
+							{/each}
+						</select>
+					</label>
+				</div>
+
+				<div class="action-row action-row--primary">
+					<button type="button" class="action-btn ad-break-btn" onclick={handleAdBreak}>
+						<span class="action-btn__icon" aria-hidden="true">{@html renderIcon(ICON_AD_BREAK, 15, 'fill')}</span>
+						AD BREAK
+					</button>
+					{#if hasActiveOut}
+						<button type="button" class="action-btn return-btn" onclick={handleReturn}>
+							<span class="action-btn__icon" aria-hidden="true">{@html renderIcon(ICON_RETURN, 15, 'fill')}</span>
+							RETURN
+						</button>
+					{/if}
+				</div>
+
+				{#if activeList.length > 0}
+					<div class="active-events">
+						{#each activeList as evt (evt.eventId)}
+							<div class="active-card" class:held={evt.held}>
+								<div class="active-card__main">
+									<span class="active-card__type">{evt.commandType === 'time_signal' ? 'TIME SIG' : 'SPLICE'}</span>
+									<span class="active-card__id">#{evt.eventId}</span>
+									<span class="active-card__cd evt-countdown">{formatCountdown(evt)}</span>
+								</div>
+								<div class="active-card__actions">
+									{#if evt.autoReturn && !evt.held}
+										<button type="button" class="evt-btn hold-btn" onclick={() => handleHold(evt.eventId)} title="Hold (prevent auto-return)">
+											HOLD
+										</button>
 									{/if}
-									{#if desc.subSegmentNum !== undefined}
-										<span class="detail-label">Sub-segment</span>
-										<span class="detail-value detail-mono">{desc.subSegmentNum} / {desc.subSegmentsExpected ?? '?'}</span>
-									{/if}
+									<span class="extend-inline">
+										<input
+											type="text"
+											class="extend-input"
+											bind:value={extendDurationSec}
+											placeholder="30"
+											title="Extend duration in seconds"
+										/>
+										<button type="button" class="evt-btn extend-btn" onclick={() => handleExtend(evt.eventId)} title="Extend break duration">
+											EXTEND
+										</button>
+									</span>
+									<button type="button" class="evt-btn cancel-evt-btn" onclick={() => handleCancelEvent(evt.eventId)} title="Cancel event">
+										CANCEL
+									</button>
 								</div>
 							</div>
 						{/each}
 					</div>
 				{/if}
+			</div>
+		</div>
 
-				{#if selectedEvent.source || selectedEvent.destinationId}
-					<div class="detail-section">
-						<div class="detail-section-title">Routing</div>
-						<div class="detail-grid">
-							{#if selectedEvent.source}
-								<span class="detail-label">Source</span>
-								<span class="detail-value">{selectedEvent.source}</span>
-							{/if}
-							{#if selectedEvent.destinationId}
-								<span class="detail-label">Destination</span>
-								<span class="detail-value detail-mono">{selectedEvent.destinationId}</span>
+		<!-- Zone 2: Cue Builder -->
+		<div class="zone zone-advanced">
+			<div class="zone-header">
+				<span class="zone-title">CUE BUILDER</span>
+			</div>
+
+			<div class="adv-tabs">
+				<button
+					type="button"
+					class="adv-tab"
+					class:active={advancedTab === 'splice_insert'}
+					onclick={() => { advancedTab = 'splice_insert'; }}
+				>
+					Splice Insert
+				</button>
+				<button
+					type="button"
+					class="adv-tab"
+					class:active={advancedTab === 'time_signal'}
+					onclick={() => { advancedTab = 'time_signal'; }}
+				>
+					Time Signal
+				</button>
+			</div>
+
+			<div class="zone-body zone-body--builder">
+				{#if advancedTab === 'time_signal'}
+					<div class="builder-grid builder-grid--2">
+						<label class="field-block field-label">
+							<span class="field-block__label">Segmentation:</span>
+							<select class="field-control" bind:value={segmentationType}>
+								{#each segmentationTypes as st}
+									<option value={st.value}>{st.label}</option>
+								{/each}
+							</select>
+						</label>
+						<label class="field-block field-label">
+							<span class="field-block__label">UPID Type:</span>
+							<select class="field-control" bind:value={upidType}>
+								{#each upidTypes as ut}
+									<option value={ut.value}>{ut.label}</option>
+								{/each}
+							</select>
+						</label>
+						<label class="field-block field-block--full field-label">
+							<span class="field-block__label">UPID:</span>
+							<input type="text" class="field-control" bind:value={upidText} placeholder="e.g. ABCD0001000H" />
+						</label>
+					</div>
+				{/if}
+
+				<div class="builder-grid builder-grid--2">
+					<label class="field-block field-label">
+						<span class="field-block__label">Duration (s):</span>
+						<input type="text" class="field-control" bind:value={advancedDurationSec} placeholder="30" />
+					</label>
+					<label class="field-block field-label">
+						<span class="field-block__label">Timing:</span>
+						<select class="field-control" bind:value={advancedTiming}>
+							<option value="immediate">Immediate</option>
+							<option value="scheduled">Scheduled</option>
+						</select>
+					</label>
+					{#if advancedTiming === 'scheduled'}
+						<label class="field-block field-block--full field-label">
+							<span class="field-block__label">Pre-roll (ms):</span>
+							<input type="text" class="field-control" bind:value={advancedPreRollMs} placeholder="2000" />
+						</label>
+					{/if}
+				</div>
+			</div>
+
+			<div class="zone-footer">
+				<button type="button" class="action-btn send-cue-btn" onclick={handleSendAdvancedCue}>
+					SEND CUE
+				</button>
+			</div>
+		</div>
+
+		<!-- Zone 3: Event Log -->
+		<div class="zone zone-log">
+			<div class="zone-header">
+				<span class="zone-title">EVENT LOG</span>
+				<span class="log-count">{eventLog.length}</span>
+			</div>
+			<div class="zone-body zone-body--log">
+				{#if eventLog.length === 0}
+					<div class="empty-state">No events</div>
+				{:else}
+					{#each eventLog.slice().reverse() as evt (logEntryKey(evt))}
+						<div class="log-entry {eventTypeClass(evt)}">
+							<button
+								type="button"
+								class="log-row"
+								onclick={() => toggleLogDetail(evt)}
+								aria-expanded={isLogExpanded(evt)}
+							>
+								<span class="log-time-badge">{formatTimestamp(evt.timestamp)}</span>
+								{#if evt.status === 'cancelled'}
+									<span class="log-warn-ic" aria-hidden="true">{@html renderIcon(ICON_WARNING, 11, 'fill')}</span>
+								{/if}
+								<span class="log-type-badge">{eventTypeLabel(evt)}</span>
+								{#if evt.durationMs}
+									<span class="log-dur-badge">{(evt.durationMs / 1000).toFixed(0)}s</span>
+								{/if}
+								<span class="log-id">#{evt.eventId}</span>
+								<span class="log-status-pill">{evt.status}</span>
+								<span class="log-chevron" aria-hidden="true">
+									{#if isLogExpanded(evt)}
+										{@html renderIcon(ICON_CHEVRON_DOWN, 12)}
+									{:else}
+										{@html renderIcon(ICON_CHEVRON_RIGHT, 12)}
+									{/if}
+								</span>
+							</button>
+							{#if isLogExpanded(evt)}
+								<div class="log-detail">
+									<div class="log-detail__title">Event #{evt.eventId}</div>
+									<div class="detail-section">
+										<div class="detail-section-title">Command</div>
+										<div class="detail-grid">
+											<span class="detail-label">Type</span>
+											<span class="detail-value">{evt.commandType}</span>
+											<span class="detail-label">Direction</span>
+											<span class="detail-value">{evt.isOut ? 'OUT (break start)' : 'IN (return)'}</span>
+											<span class="detail-label">Status</span>
+											<span class="detail-value">{evt.status}</span>
+											<span class="detail-label">Event ID</span>
+											<span class="detail-value detail-mono">{evt.eventId}</span>
+										</div>
+									</div>
+
+									<div class="detail-section">
+										<div class="detail-section-title">Timing</div>
+										<div class="detail-grid">
+											<span class="detail-label">Timestamp</span>
+											<span class="detail-value detail-mono">{formatFullTimestamp(evt.timestamp)}</span>
+											{#if evt.durationMs}
+												<span class="detail-label">Duration</span>
+												<span class="detail-value detail-mono">{(evt.durationMs / 1000).toFixed(1)}s ({evt.durationMs}ms)</span>
+											{/if}
+											<span class="detail-label">Auto-Return</span>
+											<span class="detail-value">{evt.autoReturn ? 'Yes' : 'No'}</span>
+											{#if evt.spliceTimePts}
+												<span class="detail-label">Splice Time</span>
+												<span class="detail-value detail-mono">{formatPts(evt.spliceTimePts)}</span>
+											{/if}
+										</div>
+									</div>
+
+									{#if evt.availNum !== undefined || evt.availsExpected !== undefined}
+										<div class="detail-section">
+											<div class="detail-section-title">Avail</div>
+											<div class="detail-grid">
+												{#if evt.availNum !== undefined}
+													<span class="detail-label">Avail Num</span>
+													<span class="detail-value detail-mono">{evt.availNum}</span>
+												{/if}
+												{#if evt.availsExpected !== undefined}
+													<span class="detail-label">Avails Expected</span>
+													<span class="detail-value detail-mono">{evt.availsExpected}</span>
+												{/if}
+											</div>
+										</div>
+									{/if}
+
+									{#if evt.descriptors && evt.descriptors.length > 0}
+										<div class="detail-section">
+											<div class="detail-section-title">Descriptors ({evt.descriptors.length})</div>
+											{#each evt.descriptors as desc, i}
+												<div class="detail-descriptor">
+													<div class="detail-descriptor-header">Descriptor {i + 1}</div>
+													<div class="detail-grid">
+														<span class="detail-label">Seg Type</span>
+														<span class="detail-value">0x{desc.segmentationType.toString(16).padStart(2, '0')} — {formatSegType(desc.segmentationType)}</span>
+														<span class="detail-label">Seg Event ID</span>
+														<span class="detail-value detail-mono">{desc.segEventId}</span>
+														<span class="detail-label">UPID Type</span>
+														<span class="detail-value">{desc.upidType} — {formatUpidType(desc.upidType)}</span>
+														<span class="detail-label">UPID</span>
+														<span class="detail-value detail-mono">{desc.upid || '—'}</span>
+														{#if desc.durationTicks}
+															<span class="detail-label">Duration</span>
+															<span class="detail-value detail-mono">{formatPts(desc.durationTicks)}</span>
+														{/if}
+														{#if desc.subSegmentNum !== undefined}
+															<span class="detail-label">Sub-segment</span>
+															<span class="detail-value detail-mono">{desc.subSegmentNum} / {desc.subSegmentsExpected ?? '?'}</span>
+														{/if}
+													</div>
+												</div>
+											{/each}
+										</div>
+									{/if}
+
+									{#if evt.source || evt.destinationId}
+										<div class="detail-section">
+											<div class="detail-section-title">Routing</div>
+											<div class="detail-grid">
+												{#if evt.source}
+													<span class="detail-label">Source</span>
+													<span class="detail-value">{evt.source}</span>
+												{/if}
+												{#if evt.destinationId}
+													<span class="detail-label">Destination</span>
+													<span class="detail-value detail-mono">{evt.destinationId}</span>
+												{/if}
+											</div>
+										</div>
+									{/if}
+								</div>
 							{/if}
 						</div>
-					</div>
+					{/each}
 				{/if}
 			</div>
 		</div>
-	{/if}
+	</div>
 </div>
 
 <style>
 	.scte35-panel {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+		min-height: 0;
+		overflow: hidden;
+		padding: 6px;
+		gap: 6px;
+		font-family: var(--font-ui);
+	}
+
+	.tip-banner {
+		flex-shrink: 0;
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 5px 8px;
+		background: var(--bg-elevated);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		min-height: 0;
+	}
+
+	.tip-banner__icon {
+		flex-shrink: 0;
+		display: flex;
+		color: var(--accent-blue);
+	}
+
+	.tip-banner__text {
+		flex: 1;
+		min-width: 0;
+		margin: 0;
+		font-size: var(--text-2xs);
+		line-height: 1.35;
+		color: var(--text-secondary);
+	}
+
+	.tip-banner__text strong {
+		color: var(--text-primary);
+		font-weight: 600;
+	}
+
+	.tip-banner__demo {
+		flex-shrink: 0;
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		padding: 3px 8px;
+		background: var(--bg-control);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-xs);
+		color: var(--accent-blue);
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		cursor: pointer;
+		transition: background var(--transition-fast), border-color var(--transition-fast);
+	}
+
+	.tip-banner__demo:hover {
+		background: var(--bg-hover);
+		border-color: var(--accent-blue);
+	}
+
+	.tip-banner__close {
+		flex-shrink: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 26px;
+		height: 26px;
+		padding: 0;
+		background: transparent;
+		border: 1px solid transparent;
+		border-radius: var(--radius-xs);
+		color: var(--text-tertiary);
+		cursor: pointer;
+		transition: color var(--transition-fast), background var(--transition-fast);
+	}
+
+	.tip-banner__close:hover {
+		color: var(--text-primary);
+		background: var(--bg-hover);
+	}
+
+	.scte35-columns {
+		flex: 1;
+		min-height: 0;
 		display: grid;
 		grid-template-columns: 1fr 1fr 1fr;
 		gap: 6px;
-		padding: 6px;
-		height: 100%;
-		overflow: hidden;
+		align-items: stretch;
 	}
 
 	.zone {
 		display: flex;
 		flex-direction: column;
-		gap: 6px;
+		min-height: 0;
+		overflow: hidden;
 		padding: 6px;
 		background: var(--bg-elevated);
+		border: 1px solid var(--border-subtle);
 		border-radius: var(--radius-sm);
-		overflow-y: auto;
 	}
 
 	.zone-header {
+		flex-shrink: 0;
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		padding: 0 2px;
+		gap: 6px;
+		padding-bottom: 6px;
+		margin-bottom: 2px;
+		border-bottom: 1px solid var(--border-subtle);
+	}
+
+	.zone-header__left {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
+		min-width: 0;
+	}
+
+	.zone-header__icon {
+		display: flex;
+		color: var(--text-tertiary);
+		flex-shrink: 0;
 	}
 
 	.zone-title {
-		font-family: var(--font-ui);
 		font-size: var(--text-xs);
 		font-weight: 700;
 		letter-spacing: 0.06em;
 		color: var(--text-secondary);
+		white-space: nowrap;
+	}
+
+	.guide-help-btn {
+		flex-shrink: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 22px;
+		height: 22px;
+		padding: 0;
+		background: var(--bg-control);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-xs);
+		color: var(--text-tertiary);
+		cursor: pointer;
+		transition: color var(--transition-fast), border-color var(--transition-fast);
+	}
+
+	.guide-help-btn:hover {
+		color: var(--accent-blue);
+		border-color: var(--accent-blue);
+	}
+
+	.zone-body {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+
+	.zone-body--builder {
+		gap: 8px;
+	}
+
+	.zone-footer {
+		flex-shrink: 0;
+		padding-top: 6px;
+		border-top: 1px solid var(--border-subtle);
+		margin-top: 4px;
 	}
 
 	/* Status badge */
 	.status-badge {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		font-weight: 700;
 		letter-spacing: 0.04em;
 		padding: 2px 6px;
-		border-radius: var(--radius-sm);
+		border-radius: var(--radius-xs);
+		white-space: nowrap;
 	}
 
 	.status-on-air {
@@ -670,50 +842,110 @@
 
 	@keyframes pulse-break {
 		0%, 100% { opacity: 1; }
-		50% { opacity: 0.6; }
+		50% { opacity: 0.65; }
 	}
 
-	/* Duration row */
-	.duration-row {
+	.action-row {
 		display: flex;
-		gap: 3px;
-		align-items: center;
+		gap: 4px;
 	}
 
-	.dur-btn {
+	.action-row--primary {
+		flex-shrink: 0;
+	}
+
+	.action-btn {
 		flex: 1;
-		padding: 4px 2px;
-		background: var(--bg-base);
-		border: 1px solid var(--border-default);
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 5px;
+		padding: 7px 6px;
 		border-radius: var(--radius-sm);
-		color: var(--text-secondary);
-		font-family: var(--font-ui);
 		font-size: var(--text-xs);
-		font-weight: 500;
+		font-weight: 700;
 		cursor: pointer;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
 		transition: background var(--transition-fast), border-color var(--transition-fast);
 	}
 
-	.dur-btn:hover {
+	.action-btn__icon {
+		display: flex;
+		flex-shrink: 0;
+	}
+
+	.ad-break-btn {
+		background: color-mix(in srgb, var(--color-error) 22%, var(--bg-surface));
+		color: var(--color-error);
+		border: 1px solid color-mix(in srgb, var(--color-error) 45%, var(--border-strong));
+	}
+
+	.ad-break-btn:hover {
+		background: color-mix(in srgb, var(--color-error) 32%, var(--bg-surface));
+	}
+
+	.return-btn {
+		background: color-mix(in srgb, var(--color-success) 22%, var(--bg-surface));
+		color: var(--color-success);
+		border: 1px solid color-mix(in srgb, var(--color-success) 45%, var(--border-strong));
+	}
+
+	.return-btn:hover {
+		background: color-mix(in srgb, var(--color-success) 32%, var(--bg-surface));
+	}
+
+	.send-cue-btn {
+		width: 100%;
+		background: var(--bg-control);
+		color: var(--accent-blue);
+		border: 1px solid var(--border-default);
+	}
+
+	.send-cue-btn:hover {
+		background: var(--bg-hover);
+		border-color: var(--accent-blue);
+	}
+
+	.chips-row {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 4px;
+	}
+
+	.dur-chip {
+		padding: 3px 8px;
+		background: var(--bg-control);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-xs);
+		color: var(--text-secondary);
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		cursor: pointer;
+		transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+	}
+
+	.dur-chip:hover {
 		background: var(--bg-hover);
 		color: var(--text-primary);
 	}
 
-	.dur-btn.active {
-		background: rgba(59, 130, 246, 0.15);
+	.dur-chip.active {
+		background: color-mix(in srgb, var(--accent-blue) 18%, var(--bg-surface));
 		border-color: var(--accent-blue);
 		color: var(--accent-blue);
 	}
 
 	.dur-custom {
-		width: 50px;
-		padding: 4px 4px;
-		background: var(--bg-base);
+		width: 36px;
+		padding: 3px 4px;
+		background: var(--bg-control);
 		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
+		border-radius: var(--radius-xs);
 		color: var(--text-primary);
 		font-family: var(--font-mono);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		text-align: center;
 	}
 
@@ -727,96 +959,44 @@
 		outline: none;
 	}
 
-	/* Options row */
-	.options-row {
+	.inline-options {
 		display: flex;
-		align-items: center;
-		gap: 8px;
 		flex-wrap: wrap;
+		align-items: center;
+		gap: 10px 14px;
+		font-size: var(--text-2xs);
+		color: var(--text-tertiary);
 	}
 
-	.option-label {
-		display: flex;
+	.inline-options__check {
+		display: inline-flex;
 		align-items: center;
-		gap: 3px;
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		color: var(--text-tertiary);
+		gap: 5px;
 		cursor: pointer;
+		white-space: nowrap;
 	}
 
-	.option-text {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		color: var(--text-tertiary);
-	}
-
-	.preroll-select {
-		display: flex;
+	.inline-options__preroll {
+		display: inline-flex;
 		align-items: center;
-		gap: 3px;
+		gap: 5px;
 		margin-left: auto;
 	}
 
+	.inline-options__label {
+		color: var(--text-tertiary);
+		white-space: nowrap;
+	}
+
 	.preroll-dropdown {
-		padding: 2px 4px;
-		background: var(--bg-base);
+		padding: 2px 6px;
+		min-width: 4.5rem;
+		background: var(--bg-control);
 		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
+		border-radius: var(--radius-xs);
 		color: var(--text-primary);
 		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-	}
-
-	/* Action buttons */
-	.action-row {
-		display: flex;
-		gap: 4px;
-	}
-
-	.action-btn {
-		flex: 1;
-		padding: 6px;
-		border: none;
-		border-radius: var(--radius-sm);
-		font-family: var(--font-ui);
-		font-size: var(--text-sm);
-		font-weight: 700;
-		cursor: pointer;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		transition: background var(--transition-fast);
-	}
-
-	.ad-break-btn {
-		background: rgba(220, 38, 38, 0.25);
-		color: var(--tally-program);
-		border: 1px solid rgba(220, 38, 38, 0.35);
-	}
-
-	.ad-break-btn:hover {
-		background: rgba(220, 38, 38, 0.4);
-	}
-
-	.return-btn {
-		background: rgba(22, 163, 74, 0.25);
-		color: var(--tally-preview);
-		border: 1px solid rgba(22, 163, 74, 0.35);
-	}
-
-	.return-btn:hover {
-		background: rgba(22, 163, 74, 0.4);
-	}
-
-	.send-cue-btn {
-		background: var(--accent-blue-light);
-		color: var(--accent-blue);
-		border: 1px solid var(--accent-blue-medium);
-		padding: 6px;
-	}
-
-	.send-cue-btn:hover {
-		background: rgba(59, 130, 246, 0.35);
+		font-size: var(--text-2xs);
 	}
 
 	/* Active events */
@@ -824,83 +1004,85 @@
 		display: flex;
 		flex-direction: column;
 		gap: 4px;
+		margin-top: 2px;
 	}
 
-	.active-event {
+	.active-card {
 		padding: 4px 6px;
-		background: rgba(220, 38, 38, 0.08);
-		border: 1px solid var(--tally-program-light);
-		border-radius: var(--radius-sm);
+		background: color-mix(in srgb, var(--color-error) 8%, var(--bg-surface));
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-xs);
 	}
 
-	.active-event.held {
-		background: rgba(245, 158, 11, 0.08);
-		border-color: var(--accent-orange-light);
+	.active-card.held {
+		background: color-mix(in srgb, var(--accent-orange) 10%, var(--bg-surface));
+		border-color: color-mix(in srgb, var(--accent-orange) 35%, var(--border-default));
 	}
 
-	.evt-header {
+	.active-card__main {
 		display: flex;
 		align-items: center;
 		gap: 6px;
-		margin-bottom: 3px;
+		margin-bottom: 4px;
+		font-size: var(--text-2xs);
 	}
 
-	.evt-type {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		font-weight: 600;
+	.active-card__type {
+		font-weight: 700;
 		color: var(--text-secondary);
 	}
 
-	.evt-id {
+	.active-card__id {
 		font-family: var(--font-mono);
-		font-size: var(--text-xs);
 		color: var(--text-tertiary);
 	}
 
-	.evt-countdown {
+	.active-card__cd {
 		margin-left: auto;
 		font-family: var(--font-mono);
-		font-size: var(--text-sm);
+		font-size: var(--text-xs);
 		font-weight: 700;
-		color: var(--tally-program);
+		color: var(--color-error);
 	}
 
-	.active-event.held .evt-countdown {
+	.active-card.held .active-card__cd {
 		color: var(--accent-orange);
 	}
 
-	.evt-actions {
+	.active-card__actions {
 		display: flex;
-		gap: 3px;
+		flex-wrap: wrap;
 		align-items: center;
+		gap: 4px;
 	}
 
 	.evt-btn {
 		padding: 2px 6px;
 		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		border-radius: var(--radius-xs);
+		font-size: var(--text-2xs);
 		font-weight: 600;
 		cursor: pointer;
 		text-transform: uppercase;
+		background: var(--bg-control);
+		color: var(--text-secondary);
+		transition: background var(--transition-fast), border-color var(--transition-fast);
 	}
 
 	.hold-btn {
-		background: rgba(245, 158, 11, 0.15);
+		background: color-mix(in srgb, var(--accent-orange) 14%, var(--bg-surface));
 		color: var(--accent-orange);
-		border-color: var(--accent-orange-medium);
+		border-color: color-mix(in srgb, var(--accent-orange) 40%, var(--border-default));
 	}
 
 	.hold-btn:hover {
-		background: var(--accent-orange-medium);
+		background: color-mix(in srgb, var(--accent-orange) 24%, var(--bg-surface));
 	}
 
-	.extend-group {
-		display: flex;
+	.extend-inline {
+		display: inline-flex;
 		align-items: center;
-		gap: 2px;
+		gap: 3px;
 	}
 
 	.extend-input {
@@ -908,27 +1090,26 @@
 		padding: 2px 3px;
 		background: var(--bg-base);
 		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
+		border-radius: var(--radius-xs);
 		color: var(--text-primary);
 		font-family: var(--font-mono);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		text-align: center;
 	}
 
 	.extend-btn {
-		background: rgba(59, 130, 246, 0.15);
+		background: color-mix(in srgb, var(--accent-blue) 14%, var(--bg-surface));
 		color: var(--accent-blue);
-		border-color: var(--accent-blue-medium);
+		border-color: color-mix(in srgb, var(--accent-blue) 35%, var(--border-default));
 	}
 
 	.extend-btn:hover {
-		background: var(--accent-blue-medium);
+		background: color-mix(in srgb, var(--accent-blue) 22%, var(--bg-surface));
 	}
 
 	.cancel-evt-btn {
-		background: var(--bg-base);
-		color: var(--text-tertiary);
 		margin-left: auto;
+		color: var(--text-tertiary);
 	}
 
 	.cancel-evt-btn:hover {
@@ -936,23 +1117,23 @@
 		background: var(--bg-hover);
 	}
 
-	/* Advanced Cue Builder */
+	/* Cue builder */
 	.adv-tabs {
+		flex-shrink: 0;
 		display: flex;
-		gap: 0;
 		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
+		border-radius: var(--radius-xs);
 		overflow: hidden;
+		margin-bottom: 4px;
 	}
 
 	.adv-tab {
 		flex: 1;
 		padding: 4px 6px;
-		background: var(--bg-base);
+		background: var(--bg-control);
 		border: none;
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		font-weight: 500;
+		font-size: var(--text-2xs);
+		font-weight: 600;
 		color: var(--text-tertiary);
 		cursor: pointer;
 		transition: background var(--transition-fast), color var(--transition-fast);
@@ -971,123 +1152,135 @@
 		color: var(--text-secondary);
 	}
 
-	.adv-fields {
+	.builder-grid {
+		display: grid;
+		gap: 6px 8px;
+	}
+
+	.builder-grid--2 {
+		grid-template-columns: 1fr 1fr;
+	}
+
+	.field-block {
 		display: flex;
 		flex-direction: column;
-		gap: 4px;
+		gap: 3px;
+		min-width: 0;
 	}
 
-	.field-row {
-		display: flex;
-		align-items: center;
-		gap: 4px;
+	.field-block--full {
+		grid-column: 1 / -1;
 	}
 
-	.field-label {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+	.field-block__label {
+		font-size: var(--text-2xs);
+		font-weight: 600;
 		color: var(--text-tertiary);
-		white-space: nowrap;
-		min-width: 65px;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
 	}
 
-	.field-select {
-		flex: 1;
-		padding: 3px 4px;
-		background: var(--bg-base);
+	.field-control {
+		width: 100%;
+		padding: 4px 6px;
+		background: var(--bg-control);
 		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
+		border-radius: var(--radius-xs);
 		color: var(--text-primary);
 		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		min-width: 0;
+		box-sizing: border-box;
 	}
 
-	.field-input {
-		flex: 1;
-		padding: 3px 4px;
-		background: var(--bg-base);
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
-		color: var(--text-primary);
+	.field-control:is(input) {
 		font-family: var(--font-mono);
-		font-size: var(--text-xs);
-		min-width: 0;
 	}
 
-	.field-input:focus,
-	.field-select:focus {
+	.field-control:focus {
 		border-color: var(--accent-blue);
 		outline: none;
 	}
 
-	.field-narrow {
-		max-width: 80px;
-	}
-
-	/* Event Log */
-	.zone-log {
-		overflow: hidden;
-		display: flex;
-		flex-direction: column;
-	}
-
+	/* Event log */
 	.log-count {
 		font-family: var(--font-mono);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		color: var(--text-tertiary);
-		padding: 1px 4px;
-		background: var(--bg-base);
-		border-radius: var(--radius-sm);
+		padding: 1px 5px;
+		background: var(--bg-control);
+		border-radius: var(--radius-xs);
+		border: 1px solid var(--border-subtle);
 	}
 
-	.log-list {
-		flex: 1;
-		overflow-y: auto;
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
+	.zone-body--log {
+		gap: 3px;
 	}
 
-	.log-item {
+	.log-entry {
+		border-radius: var(--radius-xs);
+		border: 1px solid var(--border-subtle);
+		overflow: hidden;
+		background: var(--bg-surface);
+	}
+
+	.log-row {
 		display: flex;
+		flex-wrap: wrap;
 		align-items: center;
-		gap: 4px;
-		padding: 3px 4px;
-		border-radius: var(--radius-sm);
-		font-family: var(--font-mono);
-		font-size: var(--text-xs);
+		gap: 4px 6px;
 		width: 100%;
-		border: 1px solid transparent;
+		padding: 4px 6px;
+		margin: 0;
+		background: transparent;
+		border: none;
 		cursor: pointer;
 		text-align: left;
-		transition: border-color var(--transition-fast), background var(--transition-fast);
+		font-family: var(--font-ui);
+		transition: background var(--transition-fast);
 	}
 
-	.log-item:hover {
-		border-color: var(--border-default);
+	.log-row:hover {
 		background: var(--bg-hover);
 	}
 
-	.log-cue-out {
-		background: var(--tally-program-subtle);
+	.log-cue-out .log-row {
+		background: color-mix(in srgb, var(--tally-program) 8%, transparent);
 	}
 
-	.log-return {
-		background: var(--tally-preview-subtle);
+	.log-return .log-row {
+		background: color-mix(in srgb, var(--tally-preview) 8%, transparent);
 	}
 
 	.log-cancelled {
-		background: rgba(255, 255, 255, 0.02);
-		opacity: 0.6;
+		opacity: 0.72;
+	}
+
+	.log-time-badge {
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		padding: 1px 4px;
+		background: var(--bg-control);
+		border-radius: var(--radius-xs);
+		color: var(--text-secondary);
+		border: 1px solid var(--border-subtle);
+		white-space: nowrap;
+	}
+
+	.log-warn-ic {
+		display: flex;
+		color: var(--accent-orange);
+		flex-shrink: 0;
 	}
 
 	.log-type-badge {
-		padding: 1px 4px;
+		display: inline-flex;
+		align-items: center;
+		padding: 1px 5px;
 		border-radius: var(--radius-xs);
 		font-size: var(--text-2xs);
 		font-weight: 700;
-		font-family: var(--font-ui);
 		white-space: nowrap;
 	}
 
@@ -1102,238 +1295,79 @@
 	}
 
 	.log-cancelled .log-type-badge {
-		background: rgba(255, 255, 255, 0.05);
+		background: var(--bg-control);
 		color: var(--text-tertiary);
+	}
+
+	.log-dur-badge {
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		color: var(--text-secondary);
+		white-space: nowrap;
 	}
 
 	.log-id {
-		color: var(--text-tertiary);
-	}
-
-	.log-duration {
-		color: var(--text-secondary);
-	}
-
-	.log-time {
-		margin-left: auto;
-		color: var(--text-tertiary);
-	}
-
-	.log-status {
-		color: var(--text-tertiary);
+		font-family: var(--font-mono);
 		font-size: var(--text-2xs);
-		min-width: 40px;
-		text-align: right;
+		color: var(--text-tertiary);
+	}
+
+	.log-status-pill {
+		margin-left: auto;
+		font-size: var(--text-2xs);
+		color: var(--text-tertiary);
+		text-transform: lowercase;
+		white-space: nowrap;
+	}
+
+	.log-chevron {
+		display: flex;
+		color: var(--text-tertiary);
+		flex-shrink: 0;
+	}
+
+	.log-detail {
+		padding: 6px 8px 8px;
+		border-top: 1px solid var(--border-subtle);
+		background: var(--bg-base);
+		max-height: 240px;
+		overflow-y: auto;
+	}
+
+	.log-detail__title {
+		font-size: var(--text-xs);
+		font-weight: 700;
+		color: var(--text-primary);
+		margin-bottom: 6px;
+		font-family: var(--font-ui);
 	}
 
 	.empty-state {
 		text-align: center;
 		color: var(--text-tertiary);
 		font-size: var(--text-xs);
-		font-family: var(--font-ui);
-		padding: 12px 4px;
-	}
-
-	/* Getting Started Guide */
-	.guide-banner {
-		grid-column: 1 / -1;
-		padding: 8px 10px;
-		background: rgba(59, 130, 246, 0.08);
-		border: 1px solid var(--accent-blue-light);
-		border-radius: var(--radius-sm);
-	}
-
-	.guide-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		margin-bottom: 4px;
-	}
-
-	.guide-title {
-		font-family: var(--font-ui);
-		font-size: var(--text-sm);
-		font-weight: 700;
-		color: var(--accent-blue);
-	}
-
-	.guide-dismiss {
-		background: none;
-		border: none;
-		color: var(--text-tertiary);
-		cursor: pointer;
-		font-size: var(--text-sm);
-		padding: 0 4px;
-		line-height: 1;
-	}
-
-	.guide-dismiss:hover {
-		color: var(--text-primary);
-	}
-
-	.guide-text {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		color: var(--text-secondary);
-		margin: 0 0 6px 0;
-		line-height: 1.4;
-	}
-
-	.guide-steps {
-		margin: 0 0 8px 0;
-		padding-left: 16px;
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		color: var(--text-secondary);
-		line-height: 1.6;
-	}
-
-	.guide-steps strong {
-		color: var(--text-primary);
-	}
-
-	.demo-btn {
-		padding: 5px 12px;
-		background: var(--accent-blue-light);
-		color: var(--accent-blue);
-		border: 1px solid var(--accent-blue-medium);
-		border-radius: var(--radius-sm);
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		font-weight: 600;
-		cursor: pointer;
-		transition: background var(--transition-fast);
-	}
-
-	.demo-btn:hover {
-		background: rgba(59, 130, 246, 0.35);
-	}
-
-	.guide-show-btn {
-		width: 16px;
-		height: 16px;
-		padding: 0;
-		background: var(--bg-base);
-		border: 1px solid var(--border-default);
-		border-radius: 50%;
-		color: var(--text-tertiary);
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		font-weight: 700;
-		cursor: pointer;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		line-height: 1;
-	}
-
-	.guide-show-btn:hover {
-		color: var(--accent-blue);
-		border-color: var(--accent-blue);
-	}
-
-	/* Responsive: stack zones vertically on narrow screens */
-	@media (max-width: 1024px) {
-		.scte35-panel {
-			grid-template-columns: 1fr 1fr;
-			grid-template-rows: auto auto;
-		}
-
-		.zone-log {
-			grid-column: 1 / -1;
-		}
-	}
-
-	@media (max-width: 768px) {
-		.scte35-panel {
-			grid-template-columns: 1fr;
-		}
-
-		.zone-log {
-			grid-column: auto;
-			max-height: 120px;
-		}
-	}
-
-	/* Event Detail Flyout */
-	.detail-backdrop {
-		position: fixed;
-		inset: 0;
-		background: var(--overlay-medium);
-		z-index: var(--z-overlay);
-	}
-
-	.detail-flyout {
-		position: fixed;
-		top: 0;
-		right: 0;
-		bottom: 0;
-		width: 360px;
-		max-width: 90vw;
-		background: var(--bg-elevated);
-		border-left: 1px solid var(--border-default);
-		z-index: var(--z-overlay);
-		display: flex;
-		flex-direction: column;
-		overflow: hidden;
-		box-shadow: -4px 0 24px rgba(0, 0, 0, 0.3);
-	}
-
-	.detail-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: 10px 12px;
-		border-bottom: 1px solid var(--border-default);
-		background: var(--bg-base);
-	}
-
-	.detail-title {
-		font-family: var(--font-ui);
-		font-size: var(--text-sm);
-		font-weight: 700;
-		color: var(--text-primary);
-	}
-
-	.detail-close {
-		background: none;
-		border: none;
-		color: var(--text-tertiary);
-		cursor: pointer;
-		font-size: var(--text-md);
-		padding: 2px 6px;
-		border-radius: var(--radius-sm);
-	}
-
-	.detail-close:hover {
-		color: var(--text-primary);
-		background: var(--bg-hover);
-	}
-
-	.detail-body {
-		flex: 1;
-		overflow-y: auto;
-		padding: 8px 12px;
-		display: flex;
-		flex-direction: column;
-		gap: 10px;
+		padding: 16px 8px;
 	}
 
 	.detail-section {
 		display: flex;
 		flex-direction: column;
 		gap: 4px;
+		margin-bottom: 8px;
+	}
+
+	.detail-section:last-child {
+		margin-bottom: 0;
 	}
 
 	.detail-section-title {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		font-weight: 700;
 		color: var(--text-tertiary);
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
 		padding-bottom: 2px;
-		border-bottom: 1px solid var(--border-default);
+		border-bottom: 1px solid var(--border-subtle);
 	}
 
 	.detail-grid {
@@ -1344,17 +1378,15 @@
 	}
 
 	.detail-label {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		color: var(--text-tertiary);
 		white-space: nowrap;
 	}
 
 	.detail-value {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		color: var(--text-primary);
-		word-break: break-all;
+		word-break: break-word;
 	}
 
 	.detail-mono {
@@ -1363,16 +1395,47 @@
 
 	.detail-descriptor {
 		padding: 4px 6px;
-		background: var(--bg-base);
-		border-radius: var(--radius-sm);
-		border: 1px solid var(--border-default);
+		background: var(--bg-surface);
+		border-radius: var(--radius-xs);
+		border: 1px solid var(--border-subtle);
+		margin-top: 4px;
 	}
 
 	.detail-descriptor-header {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		font-weight: 600;
 		color: var(--text-secondary);
 		margin-bottom: 3px;
+	}
+
+	@media (max-width: 1024px) {
+		.scte35-columns {
+			grid-template-columns: 1fr 1fr;
+		}
+
+		.zone-log {
+			grid-column: 1 / -1;
+			min-height: 140px;
+		}
+	}
+
+	@media (max-width: 768px) {
+		.scte35-columns {
+			grid-template-columns: 1fr;
+		}
+
+		.zone-log {
+			grid-column: auto;
+			min-height: 160px;
+		}
+
+		.tip-banner {
+			flex-wrap: wrap;
+		}
+
+		.tip-banner__text {
+			flex-basis: 100%;
+			order: 3;
+		}
 	}
 </style>

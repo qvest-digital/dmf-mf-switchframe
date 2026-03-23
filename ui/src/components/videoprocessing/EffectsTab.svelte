@@ -2,6 +2,7 @@
 	import type { ControlRoomState } from '$lib/api/types';
 	import STMapPanel from '../STMapPanel.svelte';
 	import AISegmentPanel from '../AISegmentPanel.svelte';
+	import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_INFO, renderIcon } from '$lib/icons';
 
 	let { state: crState }: { state: ControlRoomState } = $props();
 
@@ -14,9 +15,11 @@
 <div class="effects-tab">
 	<!-- ST Maps Section -->
 	<div class="section">
-		<button class="section-toggle" onclick={() => (stmapsOpen = !stmapsOpen)}>
-			<span class="toggle-arrow">{stmapsOpen ? '\u25BE' : '\u25B8'}</span>
-			<span class="section-title">ST MAPS</span>
+		<button type="button" class="section-toggle" onclick={() => (stmapsOpen = !stmapsOpen)}>
+			<span class="toggle-chevron" aria-hidden="true">
+				{@html renderIcon(stmapsOpen ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT, 12)}
+			</span>
+			<span class="section-title">ST maps</span>
 		</button>
 		{#if stmapsOpen}
 			<div class="section-content stmap-content">
@@ -27,21 +30,25 @@
 
 	<!-- AI Background Section -->
 	<div class="section">
-		<button class="section-toggle" onclick={() => (aiOpen = !aiOpen)}>
-			<span class="toggle-arrow">{aiOpen ? '\u25BE' : '\u25B8'}</span>
-			<span class="section-title">AI BACKGROUND</span>
+		<button type="button" class="section-toggle" onclick={() => (aiOpen = !aiOpen)}>
+			<span class="toggle-chevron" aria-hidden="true">
+				{@html renderIcon(aiOpen ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT, 12)}
+			</span>
+			<span class="section-title">AI background</span>
 			{#if aiAvailable}
-				<span class="ai-badge">Available</span>
+				<span class="section-badge section-badge--ai">Available</span>
 			{/if}
 		</button>
 		{#if aiOpen}
-			<div class="section-content">
+			<div class="section-content ai-section-content">
 				{#if aiAvailable}
 					<AISegmentPanel state={crState} />
 				{:else}
 					<div class="not-available">
-						<span class="not-available-icon">&#9432;</span>
-						<span>AI background removal is not available on this server. Requires GPU acceleration and a supported segmentation model.</span>
+						<span class="not-available-icon" aria-hidden="true">{@html renderIcon(ICON_INFO, 14)}</span>
+						<span
+							>AI background removal is not available on this server. Requires GPU acceleration and a supported segmentation model.</span
+						>
 					</div>
 				{/if}
 			</div>
@@ -56,12 +63,15 @@
 		height: 100%;
 		overflow-y: auto;
 		gap: 2px;
+		font-family: var(--font-ui, sans-serif);
+		min-height: 0;
 	}
 
 	.section {
 		display: flex;
 		flex-direction: column;
 		min-height: 0;
+		flex-shrink: 0;
 	}
 
 	.section-toggle {
@@ -76,56 +86,65 @@
 		user-select: none;
 		width: 100%;
 		text-align: left;
+		font-family: var(--font-ui, sans-serif);
+		transition: background var(--transition-fast, 0.12s ease);
 	}
 
 	.section-toggle:hover {
 		background: var(--bg-hover, #2a2a2a);
 	}
 
-	.toggle-arrow {
-		font-size: var(--text-xs, 11px);
-		color: var(--text-tertiary, #666);
-		width: 10px;
+	.toggle-chevron {
+		display: flex;
 		flex-shrink: 0;
+		color: var(--text-tertiary, #666);
+	}
+
+	.toggle-chevron :global(svg) {
+		display: block;
 	}
 
 	.section-title {
-		font-family: var(--font-ui, sans-serif);
 		font-size: var(--text-2xs, 10px);
 		font-weight: 600;
 		letter-spacing: 0.06em;
+		text-transform: uppercase;
 		color: var(--text-secondary, #999);
 	}
 
-	.ai-badge {
+	.section-badge {
+		margin-left: auto;
 		font-family: var(--font-mono, monospace);
 		font-size: var(--text-2xs, 10px);
-		background: rgba(168, 85, 247, 0.15);
-		color: #a855f7;
-		border: 1px solid rgba(168, 85, 247, 0.3);
 		border-radius: var(--radius-sm, 3px);
 		padding: 0 4px;
-		margin-left: auto;
+	}
+
+	.section-badge--ai {
+		background: color-mix(in srgb, var(--accent-purple, #a855f7) 15%, transparent);
+		color: var(--accent-purple, #a855f7);
+		border: 1px solid color-mix(in srgb, var(--accent-purple, #a855f7) 30%, transparent);
 	}
 
 	.section-content {
 		min-height: 0;
+		display: flex;
+		flex-direction: column;
 	}
 
-	/* STMapPanel uses height: 100% internally; give it a reasonable constraint */
 	.stmap-content {
-		max-height: 400px;
-		overflow-y: auto;
+		overflow: visible;
 	}
 
 	/* Override STMapPanel's own padding/height since it's nested */
 	.stmap-content :global(.stmap-panel) {
 		height: auto;
+		min-height: 0;
 	}
 
-	/* Override AISegmentPanel's own height since it's nested */
-	.section-content :global(.ai-panel) {
+	.ai-section-content :global(.ai-panel) {
 		height: auto;
+		min-height: 0;
 	}
 
 	.not-available {
@@ -134,14 +153,19 @@
 		gap: 6px;
 		padding: 8px;
 		color: var(--text-tertiary, #666);
-		font-family: var(--font-ui, sans-serif);
 		font-size: var(--text-xs, 11px);
 		line-height: 1.4;
 	}
 
 	.not-available-icon {
-		font-size: 14px;
+		display: flex;
 		flex-shrink: 0;
-		opacity: 0.6;
+		color: var(--text-tertiary, #666);
+		opacity: 0.75;
+		margin-top: 1px;
+	}
+
+	.not-available-icon :global(svg) {
+		display: block;
 	}
 </style>

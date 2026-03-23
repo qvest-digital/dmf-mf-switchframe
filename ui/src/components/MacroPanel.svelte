@@ -4,6 +4,20 @@
 	import { notify } from '$lib/state/notifications.svelte';
 	import MacroStepEditor from './MacroStepEditor.svelte';
 	import { ACTION_META, CATEGORIES } from './macro-actions';
+	import {
+		ICON_PLAY,
+		ICON_PENCIL,
+		ICON_TRASH,
+		ICON_GRIP,
+		ICON_PLUS,
+		ICON_CHECK,
+		ICON_CLOSE,
+		ICON_CHEVRON_DOWN,
+		ICON_CHEVRON_RIGHT,
+		ICON_HELP,
+		ICON_BOLT,
+		renderIcon,
+	} from '$lib/icons';
 
 	interface Props {
 		state: ControlRoomState;
@@ -19,10 +33,11 @@
 	let editorError = $state('');
 	let expandedStep = $state<number>(0);
 	let showPicker = $state(false);
-	let showGuide = $state(false);
-	let guideDismissed = $state(false);
+	let showHelpPopover = $state(false);
 	let stingerNames = $state<string[]>([]);
 	let presetList = $state<{ id: string; name: string }[]>([]);
+	let deleteConfirmName = $state<string | null>(null);
+	let dragStepIndex = $state<number | null>(null);
 
 	let sourceKeys = $derived(Object.keys(crState.sources).sort());
 
@@ -52,16 +67,6 @@
 		return `${(elapsed / 1000).toFixed(1)}s / ${(step.waitMs / 1000).toFixed(1)}s`;
 	}
 
-	function statusIcon(status: MacroStepStatus): string {
-		switch (status) {
-			case 'done': return '\u2713';
-			case 'running': return '\u25CF';
-			case 'failed': return '\u2717';
-			case 'skipped': return '\u2013';
-			default: return '\u25CB';
-		}
-	}
-
 	function statusClass(status: MacroStepStatus): string {
 		switch (status) {
 			case 'done': return 'step-done';
@@ -87,20 +92,12 @@
 		return warnings;
 	});
 
-	// --- Guide ---
-	function initGuide() {
-		guideDismissed = localStorage.getItem('switchframe-macro-guide-dismissed') === 'true';
-		showGuide = !guideDismissed;
+	function toggleHelpPopover() {
+		showHelpPopover = !showHelpPopover;
 	}
 
-	function dismissGuide() {
-		showGuide = false;
-		guideDismissed = true;
-		localStorage.setItem('switchframe-macro-guide-dismissed', 'true');
-	}
-
-	function toggleGuide() {
-		showGuide = !showGuide;
+	function closeHelpPopover() {
+		showHelpPopover = false;
 	}
 
 	// --- CRUD ---
@@ -143,6 +140,7 @@
 		editorError = '';
 		expandedStep = 0;
 		showPicker = false;
+		deleteConfirmName = null;
 		loadEditorData();
 	}
 
@@ -166,7 +164,16 @@
 		}
 	}
 
-	async function handleDelete(name: string) {
+	function requestDelete(name: string) {
+		deleteConfirmName = deleteConfirmName === name ? null : name;
+	}
+
+	function cancelDeleteConfirm() {
+		deleteConfirmName = null;
+	}
+
+	async function confirmDelete(name: string) {
+		deleteConfirmName = null;
 		try {
 			await deleteMacro(name);
 			await loadMacros();
@@ -179,12 +186,12 @@
 	function cancelEdit() {
 		editMode = false;
 		editorError = '';
+		showPicker = false;
 	}
 
 	// --- Step manipulation ---
 	function addStep(action: MacroAction) {
 		const params: Record<string, unknown> = {};
-		// Smart defaults: source for source-dependent actions
 		const sourceActions: MacroAction[] = [
 			'cut', 'preview', 'transition', 'set_audio',
 			'audio_mute', 'audio_afv', 'audio_trim',
@@ -227,13 +234,44 @@
 		}
 	}
 
-	function moveStep(index: number, direction: -1 | 1) {
-		const target = index + direction;
-		if (target < 0 || target >= editingSteps.length) return;
+	function reorderSteps(fromIndex: number, toIndex: number) {
+		if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0) return;
+		if (fromIndex >= editingSteps.length || toIndex >= editingSteps.length) return;
+		const expandedObj =
+			expandedStep >= 0 && expandedStep < editingSteps.length ? editingSteps[expandedStep] : null;
 		const copy = [...editingSteps];
-		[copy[index], copy[target]] = [copy[target], copy[index]];
+		const [removed] = copy.splice(fromIndex, 1);
+		copy.splice(toIndex, 0, removed);
 		editingSteps = copy;
-		expandedStep = target;
+		if (expandedObj != null) {
+			const ni = editingSteps.indexOf(expandedObj);
+			expandedStep = ni >= 0 ? ni : 0;
+		} else {
+			expandedStep = -1;
+		}
+	}
+
+	function onStepDragStart(index: number, e: DragEvent) {
+		dragStepIndex = index;
+		e.dataTransfer?.setData('text/plain', String(index));
+		e.dataTransfer!.effectAllowed = 'move';
+	}
+
+	function onStepDragOver(index: number, e: DragEvent) {
+		e.preventDefault();
+		e.dataTransfer!.dropEffect = 'move';
+	}
+
+	function onStepDrop(index: number, e: DragEvent) {
+		e.preventDefault();
+		const from = dragStepIndex ?? parseInt(e.dataTransfer?.getData('text/plain') || '-1', 10);
+		dragStepIndex = null;
+		if (Number.isNaN(from) || from < 0) return;
+		reorderSteps(from, index);
+	}
+
+	function onStepDragEnd() {
+		dragStepIndex = null;
 	}
 
 	function updateStepAction(index: number, action: MacroAction) {
@@ -369,413 +407,531 @@
 		}
 	}
 
-	// --- Init ---
 	$effect(() => {
 		loadMacros();
-		initGuide();
 	});
 </script>
 
 <div class="macro-panel">
-	<div class="macro-header">
-		<span class="macro-title">MACROS</span>
-		<div class="header-actions">
-			<button class="help-btn" onclick={toggleGuide} title="Help">?</button>
-			{#if !editMode}
-				<button class="add-btn" onclick={() => startEdit()} title="New macro">+</button>
-			{/if}
-		</div>
-	</div>
-
-	<!-- Getting Started Guide -->
-	{#if showGuide && !editMode}
-		<div class="guide">
-			<div class="guide-title">Getting Started</div>
-			<p class="guide-text">
-				Macros automate sequences of switcher operations — cuts, transitions, audio changes, graphics, replay, and ad breaks.
-			</p>
-			<div class="guide-example">
-				<div class="guide-example-title">Example:</div>
-				<ol class="guide-steps">
-					<li>Cut to Camera 1</li>
-					<li>Wait 500ms</li>
-					<li>Wipe to Camera 2 (left)</li>
-					<li>Fade to Black</li>
-				</ol>
-			</div>
-			<p class="guide-text">
-				Click <strong>+</strong> to create your first macro. Press <strong>Ctrl+1–9</strong> to run macros by number.
-			</p>
-			<button class="guide-dismiss" onclick={dismissGuide}>Got it</button>
-		</div>
-	{/if}
-
-	<!-- Execution Progress View -->
-	{#if crState.macro && !editMode}
-		{@const exec = crState.macro}
-		<div class="execution-view">
-			<div class="execution-header">
-				{#if exec.running}
-					<span class="execution-title">{'\u25B6'} Running: {exec.macroName}</span>
-				{:else if exec.error}
-					<span class="execution-title exec-failed">{'\u2717'} {exec.macroName}</span>
-				{:else}
-					<span class="execution-title exec-success">{'\u2713'} {exec.macroName}</span>
-				{/if}
-				<span class="exec-step-counter">
-					{exec.currentStep + 1} / {exec.steps.length}
-				</span>
-			</div>
-
-			<div class="exec-step-list">
-				{#each exec.steps as step, i}
-					<div class="exec-step-row {statusClass(step.status)}">
-						<span class="exec-step-icon">{statusIcon(step.status)}</span>
-						<span class="exec-step-summary">{step.summary}</span>
-						{#if step.status === 'failed' && step.error}
-							<div class="exec-step-error">{step.error}</div>
-						{/if}
-						{#if step.status === 'running' && step.action === 'wait' && step.waitMs}
-							<div class="exec-progress-container">
-								<div class="exec-progress-bar" style="width: {waitProgress(step) * 100}%"></div>
-							</div>
-							<div class="exec-progress-label">{waitElapsed(step)}</div>
-						{/if}
-						{#if step.status === 'running' && step.action === 'transition' && crState.inTransition}
-							<div class="exec-progress-container">
-								<div class="exec-progress-bar" style="width: {crState.transitionPosition * 100}%"></div>
-							</div>
-							<div class="exec-progress-label">{Math.round(crState.transitionPosition * 100)}%</div>
-						{/if}
-					</div>
-				{/each}
-			</div>
-
-			<div class="execution-footer">
-				{#if exec.running}
-					<button class="exec-btn exec-btn-cancel" onclick={() => cancelMacro()}>Cancel</button>
-				{:else if exec.error}
-					<span class="exec-result">Failed at step {exec.currentStep + 1}</span>
-					<button class="exec-btn exec-btn-dismiss" onclick={() => dismissMacro()}>Dismiss</button>
-				{:else}
-					<span class="exec-result exec-success">Complete!</span>
-					<button class="exec-btn exec-btn-dismiss" onclick={() => dismissMacro()}>Dismiss</button>
-				{/if}
-			</div>
-		</div>
-
-	<!-- Edit Mode -->
-	{:else if editMode}
-		<div class="macro-editor">
-			<input
-				class="macro-name-input"
-				type="text"
-				placeholder="Macro name"
-				bind:value={editingName}
-			/>
-
-			{#each editingSteps as step, i (i)}
-				<div class="step-card" class:expanded={expandedStep === i}>
+	<!-- Left rail: macro list -->
+	<aside class="macro-rail">
+		<div class="macro-rail-header">
+			<span class="macro-title" aria-hidden="true">{@html renderIcon(ICON_BOLT, 12, 'fill')}</span>
+			<span class="macro-title-text">MACROS</span>
+			<div class="rail-header-actions">
+				<div class="help-wrap">
 					<button
-						class="step-header"
-						onclick={() => { expandedStep = expandedStep === i ? -1 : i; }}
+						type="button"
+						class="icon-btn help-btn"
+						onclick={toggleHelpPopover}
+						title="Macro help"
+						aria-expanded={showHelpPopover}
+						aria-haspopup="true"
 					>
-						<span class="step-number">{i + 1}.</span>
-						<span class="step-summary">{stepSummary(step)}</span>
-						<span class="step-chevron">{expandedStep === i ? '\u25BC' : '\u25B6'}</span>
+						{@html renderIcon(ICON_HELP, 14, 'stroke')}
 					</button>
-					<div class="step-actions">
-						<button
-							class="step-move"
-							disabled={i === 0}
-							onclick={() => moveStep(i, -1)}
-							title="Move up"
-						>\u25B2</button>
-						<button
-							class="step-move"
-							disabled={i === editingSteps.length - 1}
-							onclick={() => moveStep(i, 1)}
-							title="Move down"
-						>\u25BC</button>
-						<button
-							class="step-delete"
-							onclick={() => removeStep(i)}
-							title="Remove step"
-						>\u00D7</button>
-					</div>
-
-					{#if expandedStep === i}
-						<div class="step-body">
-							<MacroStepEditor
-								{step}
-								index={i}
-								{sourceKeys}
-								{sourceLabel}
-								{stingerNames}
-								presetNames={presetList}
-								onupdate={(key, value) => updateStepParam(i, key, value)}
-								onchangeaction={(action) => updateStepAction(i, action)}
-							/>
+					{#if showHelpPopover}
+						<div class="macro-help-popover" role="tooltip">
+							<button type="button" class="help-popover-close" onclick={closeHelpPopover} aria-label="Close help">
+								{@html renderIcon(ICON_CLOSE, 12, 'stroke')}
+							</button>
+							<div class="help-popover-title">Macros</div>
+							<p class="help-popover-text">
+								Automate switcher sequences — cuts, transitions, audio, graphics, replay, and ad breaks.
+								Use <strong>Ctrl+1–9</strong> to run by slot. Click <strong>+</strong> to create a macro; use Run (play) from the list.
+							</p>
 						</div>
 					{/if}
 				</div>
-			{/each}
-
-			<!-- Add Step -->
-			<div class="add-step-area">
-				{#if showPicker}
-					<div class="step-picker">
-						{#each CATEGORIES as category}
-							<div class="picker-category">{category}</div>
-							{#each Object.entries(ACTION_META).filter(([, m]) => m.category === category) as [action, meta]}
-								<button
-									class="picker-item"
-									onclick={() => addStep(action as MacroAction)}
-									title={meta.description}
-								>
-									<span class="picker-label">{meta.label}</span>
-									<span class="picker-desc">{meta.description}</span>
-								</button>
-							{/each}
-						{/each}
-					</div>
-				{:else}
-					<button class="add-step-btn" onclick={() => { showPicker = true; }}>+ Add Step</button>
+				{#if !editMode}
+					<button type="button" class="icon-btn add-btn" onclick={() => startEdit()} title="New macro">
+						{@html renderIcon(ICON_PLUS, 14, 'stroke')}
+					</button>
 				{/if}
-			</div>
-
-			<!-- Validation warnings -->
-			{#if editorWarnings.length > 0}
-				<div class="editor-warnings">
-					{#each editorWarnings as w}
-						<div class="editor-warning">{w}</div>
-					{/each}
-				</div>
-			{/if}
-
-			{#if editorError}
-				<div class="editor-error">{editorError}</div>
-			{/if}
-
-			<div class="editor-buttons">
-				<button class="editor-btn save-btn" onclick={handleSave}>Save</button>
-				<button class="editor-btn cancel-btn" onclick={cancelEdit}>Cancel</button>
 			</div>
 		</div>
 
-	{:else}
-		<!-- List Mode -->
-		<div class="macro-grid">
+		<div class="macro-list">
 			{#each macros as m, i (m.name)}
-				<div class="macro-item">
+				<div class="macro-row">
 					<button
-						class="macro-btn"
+						type="button"
+						class="macro-btn macro-run-btn"
 						class:running={runningMacro === m.name}
 						disabled={runningMacro !== null || isRunning}
 						onclick={() => handleRun(m.name)}
-						title="Run macro: {m.name} (Ctrl+{i + 1})"
+						title="Run: {m.name} (Ctrl+{i + 1})"
 					>
 						{#if runningMacro === m.name}
-							<span class="spinner"></span>
+							<span class="spinner" aria-hidden="true"></span>
+						{:else}
+							<span class="macro-play-icon" aria-hidden="true">{@html renderIcon(ICON_PLAY, 12, 'fill')}</span>
 						{/if}
-						<span class="macro-name">{m.name}</span>
-						<span class="macro-step-count">{m.steps.length} step{m.steps.length !== 1 ? 's' : ''}</span>
 					</button>
-					<div class="macro-actions">
-						<button class="action-btn edit-btn" onclick={() => startEdit(m)} title="Edit">E</button>
-						<button class="action-btn del-btn" onclick={() => handleDelete(m.name)} title="Delete">X</button>
+					<span class="macro-row-name" title={m.name}>{m.name}</span>
+					<span class="step-badge" title="Steps">{m.steps.length}</span>
+					<button type="button" class="icon-btn edit-btn" onclick={() => startEdit(m)} title="Edit">
+						{@html renderIcon(ICON_PENCIL, 13, 'stroke')}
+					</button>
+					<div class="delete-wrap">
+						<button
+							type="button"
+							class="icon-btn del-btn"
+							onclick={() => requestDelete(m.name)}
+							title="Delete"
+						>
+							{@html renderIcon(ICON_TRASH, 13, 'stroke')}
+						</button>
+						{#if deleteConfirmName === m.name}
+							<div class="delete-popover">
+								<span class="delete-popover-text">Delete &ldquo;{m.name}&rdquo;?</span>
+								<div class="delete-popover-actions">
+									<button type="button" class="del-confirm-btn" onclick={() => confirmDelete(m.name)}>Delete</button>
+									<button type="button" class="del-cancel-btn" onclick={cancelDeleteConfirm}>Cancel</button>
+								</div>
+							</div>
+						{/if}
 					</div>
 				</div>
 			{/each}
+			{#if macros.length === 0}
+				<div class="rail-empty">No macros yet</div>
+			{/if}
 		</div>
 
 		{#if macros.length > 0}
-			<div class="shortcut-tip">Ctrl+1–{Math.min(macros.length, 9)} to run</div>
+			<div class="shortcut-tip">Ctrl+1–{Math.min(macros.length, 9)} run</div>
 		{/if}
+	</aside>
 
-		{#if macros.length === 0 && !showGuide}
-			<div class="empty-state">No macros. Click + to create one.</div>
+	<!-- Right: execution, editor, or placeholder -->
+	<main class="macro-main">
+		{#if crState.macro && !editMode}
+			{@const exec = crState.macro}
+			<div class="macro-main-scroll execution-view">
+				<div class="execution-header">
+					<div class="execution-title-row">
+						{#if exec.running}
+							<span class="exec-status-icon exec-running-icon" aria-hidden="true">{@html renderIcon(ICON_PLAY, 14, 'fill')}</span>
+							<span class="execution-title">Running: {exec.macroName}</span>
+						{:else if exec.error}
+							<span class="execution-title exec-failed">{exec.macroName}</span>
+						{:else}
+							<span class="exec-status-icon exec-success-icon" aria-hidden="true">{@html renderIcon(ICON_CHECK, 14, 'stroke')}</span>
+							<span class="execution-title exec-success">{exec.macroName}</span>
+						{/if}
+					</div>
+					<span class="exec-step-counter">{exec.currentStep + 1} / {exec.steps.length}</span>
+				</div>
+
+				<div class="exec-progress-track" aria-hidden="true">
+					<div
+						class="exec-progress-fill"
+						style="width: {exec.steps.length ? ((exec.currentStep + (exec.running ? 0.5 : 1)) / exec.steps.length) * 100 : 0}%"
+					></div>
+				</div>
+
+				<div class="exec-step-list">
+					{#each exec.steps as step, i}
+						<div class="exec-step-row {statusClass(step.status)}">
+							<span class="exec-step-icon" aria-label={step.status}>
+								{#if step.status === 'done'}
+									{@html renderIcon(ICON_CHECK, 12, 'stroke')}
+								{:else if step.status === 'running'}
+									<span class="exec-dot"></span>
+								{:else if step.status === 'failed'}
+									{@html renderIcon(ICON_CLOSE, 12, 'stroke')}
+								{:else if step.status === 'skipped'}
+									<span class="exec-dash">&ndash;</span>
+								{:else}
+									<span class="exec-ring"></span>
+								{/if}
+							</span>
+							<span class="exec-step-summary">{step.summary}</span>
+							{#if step.status === 'failed' && step.error}
+								<div class="exec-step-error">{step.error}</div>
+							{/if}
+							{#if step.status === 'running' && step.action === 'wait' && step.waitMs}
+								<div class="exec-progress-container">
+									<div class="exec-progress-bar" style="width: {waitProgress(step) * 100}%"></div>
+								</div>
+								<div class="exec-progress-label">{waitElapsed(step)}</div>
+							{/if}
+							{#if step.status === 'running' && step.action === 'transition' && crState.inTransition}
+								<div class="exec-progress-container">
+									<div class="exec-progress-bar" style="width: {crState.transitionPosition * 100}%"></div>
+								</div>
+								<div class="exec-progress-label">{Math.round(crState.transitionPosition * 100)}%</div>
+							{/if}
+						</div>
+					{/each}
+				</div>
+
+				<div class="execution-footer">
+					{#if exec.running}
+						<button type="button" class="exec-btn exec-btn-cancel" onclick={() => cancelMacro()}>Cancel</button>
+					{:else if exec.error}
+						<span class="exec-result">Failed at step {exec.currentStep + 1}</span>
+						<button type="button" class="exec-btn exec-btn-dismiss" onclick={() => dismissMacro()}>Dismiss</button>
+					{:else}
+						<span class="exec-result exec-success">Complete!</span>
+						<button type="button" class="exec-btn exec-btn-dismiss" onclick={() => dismissMacro()}>Dismiss</button>
+					{/if}
+				</div>
+			</div>
+		{:else if editMode}
+			<div class="macro-main-scroll macro-editor">
+				<input
+					class="macro-name-input"
+					type="text"
+					placeholder="Macro name"
+					bind:value={editingName}
+				/>
+
+				<div class="step-list" role="list">
+					{#each editingSteps as step, i (i)}
+						<div
+							class="step-card"
+							class:expanded={expandedStep === i}
+							class:dragging={dragStepIndex === i}
+							role="listitem"
+							ondragover={(e) => onStepDragOver(i, e)}
+							ondrop={(e) => onStepDrop(i, e)}
+						>
+							<div
+								class="step-grip"
+								draggable="true"
+								role="button"
+								tabindex="0"
+								title="Drag to reorder"
+								aria-label="Drag to reorder step {i + 1}"
+								ondragstart={(e) => onStepDragStart(i, e)}
+								ondragend={onStepDragEnd}
+							>
+								{@html renderIcon(ICON_GRIP, 14, 'stroke')}
+							</div>
+							<button
+								type="button"
+								class="step-header"
+								onclick={() => { expandedStep = expandedStep === i ? -1 : i; }}
+							>
+								<span class="step-number">{i + 1}</span>
+								<span class="action-badge">{ACTION_META[step.action]?.label ?? step.action}</span>
+								<span class="step-summary-text">{stepSummary(step)}</span>
+								<span class="step-chevron" aria-hidden="true">
+									{#if expandedStep === i}
+										{@html renderIcon(ICON_CHEVRON_DOWN, 12, 'stroke')}
+									{:else}
+										{@html renderIcon(ICON_CHEVRON_RIGHT, 12, 'stroke')}
+									{/if}
+								</span>
+							</button>
+							<button type="button" class="icon-btn step-delete" onclick={() => removeStep(i)} title="Remove step">
+								{@html renderIcon(ICON_TRASH, 12, 'stroke')}
+							</button>
+
+							{#if expandedStep === i}
+								<div class="step-body">
+									<MacroStepEditor
+										{step}
+										index={i}
+										{sourceKeys}
+										{sourceLabel}
+										{stingerNames}
+										presetNames={presetList}
+										onupdate={(key, value) => updateStepParam(i, key, value)}
+										onchangeaction={(action) => updateStepAction(i, action)}
+									/>
+								</div>
+							{/if}
+						</div>
+					{/each}
+				</div>
+
+				<div class="add-step-area">
+					<div class="add-step-flyout-wrap">
+						<button
+							type="button"
+							class="add-step-btn"
+							onclick={() => { showPicker = !showPicker; }}
+						>
+							<span class="add-step-icon" aria-hidden="true">{@html renderIcon(ICON_PLUS, 12, 'stroke')}</span>
+							Add step
+							<span class="add-step-chev" aria-hidden="true">{@html renderIcon(ICON_CHEVRON_DOWN, 10, 'stroke')}</span>
+						</button>
+						{#if showPicker}
+							<div class="step-picker">
+								{#each CATEGORIES as category}
+									<div class="picker-category">{category}</div>
+									{#each Object.entries(ACTION_META).filter(([, m]) => m.category === category) as [action, meta]}
+										<button
+											type="button"
+											class="picker-item"
+											onclick={() => addStep(action as MacroAction)}
+											title={meta.description}
+										>
+											<span class="picker-label">{meta.label}</span>
+											<span class="picker-desc">{meta.description}</span>
+										</button>
+									{/each}
+								{/each}
+							</div>
+						{/if}
+					</div>
+				</div>
+
+				{#if editorWarnings.length > 0}
+					<div class="editor-warnings">
+						{#each editorWarnings as w}
+							<div class="editor-warning">{w}</div>
+						{/each}
+					</div>
+				{/if}
+
+				{#if editorError}
+					<div class="editor-error">{editorError}</div>
+				{/if}
+
+				<div class="editor-buttons">
+					<button type="button" class="editor-btn save-btn" onclick={handleSave}>
+						<span aria-hidden="true">{@html renderIcon(ICON_CHECK, 14, 'stroke')}</span>
+						Save
+					</button>
+					<button type="button" class="editor-btn cancel-btn" onclick={cancelEdit}>
+						<span aria-hidden="true">{@html renderIcon(ICON_CLOSE, 14, 'stroke')}</span>
+						Cancel
+					</button>
+				</div>
+			</div>
+		{:else}
+			<div class="macro-main-placeholder">
+				<p class="placeholder-line">Run a macro from the list, or create one with <strong>+</strong>.</p>
+				{#if isExecuting}
+					<p class="placeholder-sub">Execution status appears here while a macro runs.</p>
+				{/if}
+			</div>
 		{/if}
-	{/if}
+	</main>
 </div>
 
 <style>
 	.macro-panel {
 		display: flex;
-		flex-direction: column;
-		gap: 4px;
-		padding: 6px;
+		flex-direction: row;
+		align-items: stretch;
 		height: 100%;
-		overflow-y: auto;
+		min-height: 0;
+		overflow: hidden;
+		font-family: var(--font-ui);
+		background: var(--bg-base);
 	}
 
-	.macro-header {
+	/* --- Left rail --- */
+	.macro-rail {
+		display: flex;
+		flex-direction: column;
+		width: 200px;
+		min-width: 200px;
+		max-width: 200px;
+		min-height: 0;
+		border-right: 1px solid var(--border-subtle);
+		background: var(--bg-surface);
+	}
+
+	.macro-rail-header {
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
-		padding: 0 2px;
+		gap: 4px;
+		padding: 6px 6px 6px 8px;
+		flex-shrink: 0;
+		border-bottom: 1px solid var(--border-subtle);
 	}
 
 	.macro-title {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		display: flex;
+		color: var(--accent-yellow);
+		flex-shrink: 0;
+	}
+
+	.macro-title-text {
+		font-size: var(--text-2xs);
 		font-weight: 700;
 		letter-spacing: 0.06em;
 		color: var(--text-secondary);
-	}
-
-	.header-actions {
-		display: flex;
-		gap: 4px;
-	}
-
-	.help-btn, .add-btn {
-		background: var(--bg-elevated);
-		border: 1px solid var(--border-default);
-		color: var(--text-secondary);
-		font-size: var(--text-sm);
-		cursor: pointer;
-		padding: 1px 6px;
-		border-radius: var(--radius-sm);
-		line-height: 1;
-		font-family: var(--font-ui);
-		font-weight: 600;
-		transition: background var(--transition-fast), color var(--transition-fast);
-	}
-
-	.help-btn:hover, .add-btn:hover {
-		background: var(--bg-hover);
-		color: var(--text-primary);
-	}
-
-	/* --- Guide --- */
-	.guide {
-		background: var(--bg-elevated);
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
-		padding: 8px;
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-	}
-
-	.guide-title {
-		font-family: var(--font-ui);
-		font-size: var(--text-sm);
-		font-weight: 600;
-		color: var(--text-primary);
-	}
-
-	.guide-text {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		color: var(--text-secondary);
-		margin: 0;
-		line-height: 1.4;
-	}
-
-	.guide-text strong {
-		color: var(--text-primary);
-	}
-
-	.guide-example {
-		background: var(--bg-base);
-		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-sm);
-		padding: 6px 8px;
-	}
-
-	.guide-example-title {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		font-weight: 600;
-		color: var(--text-tertiary);
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		margin-bottom: 2px;
-	}
-
-	.guide-steps {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		color: var(--text-primary);
-		margin: 0;
-		padding-left: 16px;
-		line-height: 1.6;
-	}
-
-	.guide-dismiss {
-		align-self: flex-end;
-		background: rgba(59, 130, 246, 0.15);
-		border: 1px solid var(--accent-blue-medium);
-		color: var(--accent-blue);
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		font-weight: 600;
-		padding: 3px 12px;
-		border-radius: var(--radius-sm);
-		cursor: pointer;
-		transition: background var(--transition-fast);
-	}
-
-	.guide-dismiss:hover {
-		background: rgba(59, 130, 246, 0.25);
-	}
-
-	/* --- List Mode --- */
-	.macro-grid {
-		display: flex;
-		flex-direction: column;
-		gap: 3px;
-	}
-
-	.macro-item {
-		display: flex;
-		align-items: stretch;
-		gap: 2px;
-	}
-
-	.macro-btn {
 		flex: 1;
-		padding: 6px 8px;
-		background: var(--bg-elevated);
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
-		color: var(--text-primary);
-		font-family: var(--font-ui);
-		font-size: var(--text-sm);
-		font-weight: 500;
-		cursor: pointer;
-		text-align: left;
-		transition: background var(--transition-fast), border-color var(--transition-fast);
+		min-width: 0;
+	}
+
+	.rail-header-actions {
 		display: flex;
 		align-items: center;
-		gap: 6px;
+		gap: 2px;
+		flex-shrink: 0;
 	}
 
-	.macro-btn:hover:not(:disabled) {
+	.help-wrap {
+		position: relative;
+	}
+
+	.icon-btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 26px;
+		height: 24px;
+		padding: 0;
+		background: var(--bg-control);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-xs);
+		color: var(--text-secondary);
+		cursor: pointer;
+		transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+	}
+
+	.icon-btn:hover {
 		background: var(--bg-hover);
+		color: var(--text-primary);
 		border-color: var(--border-strong);
 	}
 
-	.macro-btn:disabled {
-		opacity: 0.5;
+	.icon-btn :global(svg) {
+		display: block;
+	}
+
+	.macro-help-popover {
+		position: absolute;
+		top: 100%;
+		left: 0;
+		z-index: 50;
+		margin-top: 4px;
+		width: 220px;
+		padding: 8px 28px 8px 8px;
+		background: var(--bg-elevated);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+	}
+
+	.help-popover-close {
+		position: absolute;
+		top: 4px;
+		right: 4px;
+		width: 22px;
+		height: 22px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0;
+		background: transparent;
+		border: none;
+		border-radius: var(--radius-xs);
+		color: var(--text-tertiary);
+		cursor: pointer;
+	}
+
+	.help-popover-close:hover {
+		background: var(--bg-hover);
+		color: var(--text-primary);
+	}
+
+	.help-popover-title {
+		font-size: var(--text-xs);
+		font-weight: 600;
+		color: var(--text-primary);
+		margin-bottom: 4px;
+	}
+
+	.help-popover-text {
+		font-size: var(--text-2xs);
+		color: var(--text-secondary);
+		margin: 0;
+		line-height: 1.45;
+	}
+
+	.help-popover-text strong {
+		color: var(--text-primary);
+		font-weight: 600;
+	}
+
+	.macro-list {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+		overflow-x: hidden;
+		padding: 4px 4px 6px;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.macro-row {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		min-width: 0;
+		padding: 2px 2px 2px 4px;
+		background: var(--bg-elevated);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-xs);
+		position: relative;
+	}
+
+	.macro-run-btn {
+		flex-shrink: 0;
+		width: 26px;
+		height: 26px;
+		padding: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		background: var(--bg-control);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-xs);
+		color: var(--accent-blue);
+		cursor: pointer;
+		transition: background var(--transition-fast), border-color var(--transition-normal);
+	}
+
+	.macro-run-btn:hover:not(:disabled) {
+		background: var(--bg-hover);
+		border-color: var(--accent-blue);
+	}
+
+	.macro-run-btn:disabled {
+		opacity: 0.45;
 		cursor: not-allowed;
 	}
 
-	.macro-btn.running {
+	.macro-run-btn.running {
 		border-color: var(--accent-blue);
-		background: rgba(59, 130, 246, 0.15);
+		background: color-mix(in srgb, var(--accent-blue) 12%, var(--bg-control));
 	}
 
-	.macro-name {
+	.macro-play-icon :global(svg) {
+		display: block;
+	}
+
+	.macro-row-name {
 		flex: 1;
+		min-width: 0;
+		font-size: var(--text-2xs);
+		font-weight: 500;
+		color: var(--text-primary);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
 
-	.macro-step-count {
-		font-size: var(--text-xs);
-		color: var(--text-tertiary);
+	.step-badge {
+		flex-shrink: 0;
 		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		color: var(--text-tertiary);
+		background: var(--bg-base);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-xs);
+		padding: 0 4px;
+		line-height: 1.4;
 	}
 
 	.spinner {
@@ -792,59 +948,143 @@
 		to { transform: rotate(360deg); }
 	}
 
-	.macro-actions {
-		display: flex;
-		flex-direction: column;
-		gap: 1px;
+	.delete-wrap {
+		position: relative;
+		flex-shrink: 0;
 	}
 
-	.action-btn {
-		padding: 2px 4px;
+	.delete-popover {
+		position: absolute;
+		top: 100%;
+		right: 0;
+		z-index: 40;
+		margin-top: 4px;
+		width: 160px;
+		padding: 6px;
 		background: var(--bg-elevated);
-		border: 1px solid var(--border-default);
+		border: 1px solid var(--border-strong);
 		border-radius: var(--radius-sm);
-		color: var(--text-tertiary);
-		font-size: var(--text-xs);
-		font-weight: 600;
-		cursor: pointer;
-		transition: background var(--transition-fast), color var(--transition-fast);
+		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
 	}
 
-	.action-btn:hover {
+	.delete-popover-text {
+		display: block;
+		font-size: var(--text-2xs);
+		color: var(--text-primary);
+		margin-bottom: 6px;
+		line-height: 1.3;
+	}
+
+	.delete-popover-actions {
+		display: flex;
+		gap: 4px;
+		justify-content: flex-end;
+	}
+
+	.del-confirm-btn {
+		padding: 2px 8px;
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		font-family: var(--font-ui);
+		background: color-mix(in srgb, var(--color-error) 18%, transparent);
+		border: 1px solid color-mix(in srgb, var(--color-error) 40%, transparent);
+		color: var(--color-error);
+		border-radius: var(--radius-xs);
+		cursor: pointer;
+	}
+
+	.del-confirm-btn:hover {
+		background: color-mix(in srgb, var(--color-error) 28%, transparent);
+	}
+
+	.del-cancel-btn {
+		padding: 2px 8px;
+		font-size: var(--text-2xs);
+		font-family: var(--font-ui);
+		background: var(--bg-control);
+		border: 1px solid var(--border-default);
+		color: var(--text-secondary);
+		border-radius: var(--radius-xs);
+		cursor: pointer;
+	}
+
+	.del-cancel-btn:hover {
 		background: var(--bg-hover);
 		color: var(--text-primary);
 	}
 
-	.del-btn:hover {
-		color: var(--color-error);
+	.rail-empty {
+		font-size: var(--text-2xs);
+		color: var(--text-tertiary);
+		padding: 8px 6px;
+		text-align: center;
 	}
 
 	.shortcut-tip {
+		flex-shrink: 0;
 		text-align: center;
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		color: var(--text-tertiary);
-		padding: 4px;
+		padding: 4px 6px 6px;
+		border-top: 1px solid var(--border-subtle);
 	}
 
-	.empty-state {
+	/* --- Main panel --- */
+	.macro-main {
+		flex: 1;
+		min-width: 0;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+		background: var(--bg-base);
+	}
+
+	.macro-main-scroll {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+		overflow-x: hidden;
+		padding: 8px 10px 10px;
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+
+	.macro-main-placeholder {
+		flex: 1;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		padding: 16px;
 		text-align: center;
+	}
+
+	.placeholder-line {
+		font-size: var(--text-xs);
+		color: var(--text-secondary);
+		margin: 0 0 6px;
+		max-width: 280px;
+		line-height: 1.4;
+	}
+
+	.placeholder-sub {
+		font-size: var(--text-2xs);
 		color: var(--text-tertiary);
-		font-size: var(--text-sm);
-		padding: 12px 4px;
+		margin: 0;
 	}
 
 	/* --- Editor --- */
 	.macro-editor {
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
+		gap: 8px;
 	}
 
 	.macro-name-input {
 		width: 100%;
-		padding: 4px 6px;
-		background: var(--bg-base);
+		padding: 5px 8px;
+		background: var(--bg-surface);
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
 		color: var(--text-primary);
@@ -852,6 +1092,7 @@
 		font-size: var(--text-sm);
 		font-weight: 500;
 		box-sizing: border-box;
+		flex-shrink: 0;
 	}
 
 	.macro-name-input:focus {
@@ -863,143 +1104,197 @@
 		color: var(--text-tertiary);
 	}
 
-	/* --- Step Card --- */
+	.step-list {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
 	.step-card {
-		background: var(--bg-elevated);
+		display: flex;
+		flex-wrap: wrap;
+		align-items: flex-start;
+		background: var(--bg-surface);
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
 		overflow: hidden;
-		display: flex;
-		flex-wrap: wrap;
+		transition: border-color var(--transition-fast), opacity var(--transition-fast);
 	}
 
 	.step-card.expanded {
 		border-color: var(--border-strong);
 	}
 
-	.step-header {
-		flex: 1;
+	.step-card.dragging {
+		opacity: 0.55;
+	}
+
+	.step-grip {
+		flex-shrink: 0;
 		display: flex;
 		align-items: center;
-		gap: 4px;
-		padding: 4px 6px;
+		justify-content: center;
+		width: 22px;
+		min-height: 32px;
+		padding: 0 2px;
+		cursor: grab;
+		color: var(--text-tertiary);
+		background: var(--bg-control);
+		border-right: 1px solid var(--border-subtle);
+		user-select: none;
+	}
+
+	.step-grip:active {
+		cursor: grabbing;
+	}
+
+	.step-header {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 5px 6px;
 		background: transparent;
 		border: none;
 		color: var(--text-primary);
 		font-family: var(--font-ui);
-		font-size: var(--text-sm);
+		font-size: var(--text-xs);
 		cursor: pointer;
 		text-align: left;
-		min-width: 0;
 	}
 
 	.step-number {
-		color: var(--text-tertiary);
 		font-family: var(--font-mono);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
+		color: var(--text-tertiary);
 		flex-shrink: 0;
+		min-width: 1rem;
 	}
 
-	.step-summary {
+	.action-badge {
+		flex-shrink: 0;
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
+		color: var(--accent-orange);
+		background: color-mix(in srgb, var(--accent-orange) 12%, transparent);
+		border: 1px solid color-mix(in srgb, var(--accent-orange) 35%, transparent);
+		padding: 1px 5px;
+		border-radius: var(--radius-xs);
+		max-width: 88px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.step-summary-text {
 		flex: 1;
+		min-width: 0;
+		font-size: var(--text-2xs);
+		color: var(--text-secondary);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
 
 	.step-chevron {
-		font-size: var(--text-xs);
-		color: var(--text-tertiary);
 		flex-shrink: 0;
-	}
-
-	.step-actions {
 		display: flex;
-		align-items: center;
-		gap: 1px;
-		padding-right: 2px;
-	}
-
-	.step-move, .step-delete {
-		padding: 2px 4px;
-		background: transparent;
-		border: 1px solid transparent;
-		border-radius: var(--radius-sm);
 		color: var(--text-tertiary);
-		font-size: var(--text-xs);
-		cursor: pointer;
-		transition: background var(--transition-fast), color var(--transition-fast);
 	}
 
-	.step-move:hover:not(:disabled) {
-		background: var(--bg-hover);
-		color: var(--text-primary);
-	}
-
-	.step-move:disabled {
-		opacity: 0.3;
-		cursor: default;
+	.step-delete {
+		flex-shrink: 0;
+		margin: 3px 4px 3px 0;
+		align-self: flex-start;
 	}
 
 	.step-delete:hover {
-		background: rgba(239, 68, 68, 0.15);
 		color: var(--color-error);
+		border-color: color-mix(in srgb, var(--color-error) 35%, transparent);
 	}
 
 	.step-body {
 		width: 100%;
-		padding: 4px 6px 6px;
+		padding: 6px 8px 8px 10px;
 		border-top: 1px solid var(--border-subtle);
+		background: var(--bg-elevated);
+		box-sizing: border-box;
 	}
 
-	/* --- Add Step Picker --- */
 	.add-step-area {
-		margin-top: 2px;
+		position: relative;
+		flex-shrink: 0;
+	}
+
+	.add-step-flyout-wrap {
+		position: relative;
+		display: inline-block;
 	}
 
 	.add-step-btn {
-		width: 100%;
-		padding: 4px;
-		background: var(--bg-panel);
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		padding: 4px 10px;
+		background: var(--bg-control);
 		border: 1px dashed var(--border-default);
 		border-radius: var(--radius-sm);
 		color: var(--text-secondary);
 		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		font-weight: 500;
+		font-size: var(--text-2xs);
+		font-weight: 600;
 		cursor: pointer;
-		transition: background var(--transition-fast), color var(--transition-fast);
+		transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
 	}
 
 	.add-step-btn:hover {
 		background: var(--bg-hover);
 		color: var(--text-primary);
 		border-color: var(--border-strong);
+		border-style: solid;
+	}
+
+	.add-step-icon,
+	.add-step-chev {
+		display: flex;
+		color: var(--text-tertiary);
 	}
 
 	.step-picker {
+		position: absolute;
+		left: 0;
+		bottom: 100%;
+		margin-bottom: 4px;
+		min-width: 260px;
+		max-width: min(340px, 90vw);
+		max-height: min(320px, 45vh);
+		overflow-y: auto;
 		background: var(--bg-elevated);
 		border: 1px solid var(--border-strong);
 		border-radius: var(--radius-sm);
-		overflow: hidden;
-		max-height: 300px;
-		overflow-y: auto;
+		z-index: 30;
+		box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.35);
 	}
 
 	.picker-category {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		font-weight: 600;
 		text-transform: uppercase;
-		letter-spacing: 0.06em;
+		letter-spacing: 0.05em;
 		color: var(--text-tertiary);
-		padding: 4px 6px 2px;
-		background: var(--bg-panel);
+		padding: 5px 8px 2px;
+		background: var(--bg-surface);
+		position: sticky;
+		top: 0;
+		border-bottom: 1px solid var(--border-subtle);
 	}
 
 	.picker-item {
 		display: flex;
-		align-items: center;
+		align-items: flex-start;
 		gap: 8px;
 		width: 100%;
 		padding: 4px 8px;
@@ -1020,20 +1315,19 @@
 	}
 
 	.picker-label {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		font-weight: 500;
 		color: var(--text-primary);
-		min-width: 80px;
+		min-width: 72px;
+		flex-shrink: 0;
 	}
 
 	.picker-desc {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		color: var(--text-tertiary);
+		line-height: 1.3;
 	}
 
-	/* --- Warnings & Errors --- */
 	.editor-warnings {
 		display: flex;
 		flex-direction: column;
@@ -1041,79 +1335,117 @@
 	}
 
 	.editor-warning {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		color: #f59e0b;
-		padding: 2px 4px;
-		background: rgba(245, 158, 11, 0.1);
-		border-radius: var(--radius-sm);
+		font-size: var(--text-2xs);
+		color: var(--accent-yellow);
+		padding: 3px 6px;
+		background: color-mix(in srgb, var(--accent-yellow) 10%, transparent);
+		border-radius: var(--radius-xs);
+		border: 1px solid color-mix(in srgb, var(--accent-yellow) 25%, transparent);
 	}
 
 	.editor-error {
 		color: var(--color-error);
-		font-size: var(--text-xs);
-		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
 		padding: 0 2px;
 	}
 
 	.editor-buttons {
 		display: flex;
-		gap: 4px;
+		gap: 6px;
+		flex-shrink: 0;
+		padding-top: 2px;
 	}
 
 	.editor-btn {
 		flex: 1;
-		padding: 4px 6px;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 6px;
+		padding: 5px 8px;
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
 		font-family: var(--font-ui);
-		font-size: var(--text-sm);
+		font-size: var(--text-xs);
 		font-weight: 600;
 		cursor: pointer;
 		transition: background var(--transition-fast);
 	}
 
+	.editor-btn :global(svg) {
+		display: block;
+	}
+
 	.save-btn {
-		background: rgba(34, 197, 94, 0.2);
+		background: color-mix(in srgb, var(--color-success) 16%, transparent);
 		color: var(--color-success);
-		border-color: rgba(34, 197, 94, 0.4);
+		border-color: color-mix(in srgb, var(--color-success) 40%, transparent);
 	}
 
 	.save-btn:hover {
-		background: rgba(34, 197, 94, 0.3);
+		background: color-mix(in srgb, var(--color-success) 26%, transparent);
 	}
 
 	.cancel-btn {
-		background: var(--bg-elevated);
+		background: var(--bg-control);
 		color: var(--text-secondary);
 	}
 
 	.cancel-btn:hover {
 		background: var(--bg-hover);
+		color: var(--text-primary);
 	}
 
-	/* --- Execution View --- */
+	/* --- Execution --- */
 	.execution-view {
-		display: flex;
-		flex-direction: column;
-		gap: 6px;
+		gap: 8px;
 	}
 
 	.execution-header {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		padding: 4px 6px;
-		background: var(--bg-elevated);
+		gap: 8px;
+		padding: 6px 8px;
+		background: var(--bg-surface);
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
+		flex-shrink: 0;
+	}
+
+	.execution-title-row {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		min-width: 0;
+	}
+
+	.exec-status-icon {
+		flex-shrink: 0;
+		display: flex;
+	}
+
+	.exec-running-icon {
+		color: var(--accent-blue);
+		animation: pulse-op 1.2s ease-in-out infinite;
+	}
+
+	.exec-success-icon {
+		color: var(--color-success);
+	}
+
+	@keyframes pulse-op {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.45; }
 	}
 
 	.execution-title {
-		font-family: var(--font-ui);
-		font-size: var(--text-sm);
+		font-size: var(--text-xs);
 		font-weight: 600;
 		color: var(--text-primary);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.execution-title.exec-failed {
@@ -1126,14 +1458,30 @@
 
 	.exec-step-counter {
 		font-family: var(--font-mono);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		color: var(--text-tertiary);
+		flex-shrink: 0;
+	}
+
+	.exec-progress-track {
+		height: 3px;
+		background: var(--bg-control);
+		border-radius: var(--radius-xs);
+		overflow: hidden;
+		flex-shrink: 0;
+	}
+
+	.exec-progress-fill {
+		height: 100%;
+		background: var(--accent-blue);
+		border-radius: var(--radius-xs);
+		transition: width var(--transition-normal);
 	}
 
 	.exec-step-list {
 		display: flex;
 		flex-direction: column;
-		gap: 2px;
+		gap: 3px;
 	}
 
 	.exec-step-row {
@@ -1141,36 +1489,43 @@
 		flex-wrap: wrap;
 		align-items: center;
 		gap: 6px;
-		padding: 4px 6px;
-		background: var(--bg-elevated);
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
+		padding: 4px 8px;
+		background: var(--bg-surface);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-xs);
 		transition: border-color var(--transition-fast), background var(--transition-fast);
 	}
 
 	.exec-step-row.step-done {
-		border-color: rgba(34, 197, 94, 0.3);
+		border-color: color-mix(in srgb, var(--color-success) 35%, transparent);
 	}
 
 	.exec-step-row.step-running {
 		border-color: var(--accent-blue);
-		background: rgba(59, 130, 246, 0.08);
+		background: color-mix(in srgb, var(--accent-blue) 6%, var(--bg-surface));
 	}
 
 	.exec-step-row.step-failed {
-		border-color: rgba(239, 68, 68, 0.4);
-		background: rgba(239, 68, 68, 0.08);
+		border-color: color-mix(in srgb, var(--color-error) 40%, transparent);
+		background: color-mix(in srgb, var(--color-error) 6%, var(--bg-surface));
 	}
 
 	.exec-step-row.step-skipped {
-		opacity: 0.4;
+		opacity: 0.45;
 	}
 
 	.exec-step-icon {
-		font-size: var(--text-sm);
 		flex-shrink: 0;
-		width: 14px;
-		text-align: center;
+		width: 16px;
+		height: 16px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		color: var(--text-tertiary);
+	}
+
+	.exec-step-icon :global(svg) {
+		display: block;
 	}
 
 	.step-done .exec-step-icon {
@@ -1179,30 +1534,38 @@
 
 	.step-running .exec-step-icon {
 		color: var(--accent-blue);
-		animation: pulse 1.2s ease-in-out infinite;
 	}
 
 	.step-failed .exec-step-icon {
 		color: var(--color-error);
 	}
 
-	.step-skipped .exec-step-icon {
+	.exec-dot {
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		background: currentColor;
+		animation: pulse-op 1s ease-in-out infinite;
+	}
+
+	.exec-dash {
+		font-size: var(--text-sm);
+		line-height: 1;
 		color: var(--text-tertiary);
 	}
 
-	.step-pending .exec-step-icon {
-		color: var(--text-tertiary);
-	}
-
-	@keyframes pulse {
-		0%, 100% { opacity: 1; }
-		50% { opacity: 0.4; }
+	.exec-ring {
+		width: 8px;
+		height: 8px;
+		border: 1.5px solid currentColor;
+		border-radius: 50%;
+		opacity: 0.7;
 	}
 
 	.exec-step-summary {
 		flex: 1;
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		min-width: 0;
+		font-size: var(--text-2xs);
 		color: var(--text-primary);
 		overflow: hidden;
 		text-overflow: ellipsis;
@@ -1211,18 +1574,18 @@
 
 	.exec-step-error {
 		width: 100%;
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		color: var(--color-error);
-		padding: 2px 0 0 20px;
+		padding: 2px 0 0 22px;
+		line-height: 1.3;
 	}
 
 	.exec-progress-container {
 		width: 100%;
-		height: 4px;
-		background: var(--bg-base);
+		height: 3px;
+		background: var(--bg-control);
 		border-radius: var(--radius-xs);
-		margin: 2px 0 0 20px;
+		margin: 2px 0 0 22px;
 		overflow: hidden;
 	}
 
@@ -1236,9 +1599,9 @@
 	.exec-progress-label {
 		width: 100%;
 		font-family: var(--font-mono);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		color: var(--text-tertiary);
-		padding-left: 20px;
+		padding-left: 22px;
 	}
 
 	.execution-footer {
@@ -1246,42 +1609,45 @@
 		align-items: center;
 		justify-content: flex-end;
 		gap: 8px;
-		padding: 2px 0;
+		padding-top: 4px;
+		flex-shrink: 0;
+		flex-wrap: wrap;
 	}
 
 	.exec-result {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		color: var(--text-secondary);
+		margin-right: auto;
 	}
 
 	.exec-result.exec-success {
 		color: var(--color-success);
+		font-weight: 600;
 	}
 
 	.exec-btn {
-		padding: 3px 10px;
+		padding: 4px 12px;
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
 		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		font-weight: 600;
 		cursor: pointer;
 		transition: background var(--transition-fast);
 	}
 
 	.exec-btn-cancel {
-		background: rgba(239, 68, 68, 0.15);
+		background: color-mix(in srgb, var(--color-error) 14%, transparent);
 		color: var(--color-error);
-		border-color: rgba(239, 68, 68, 0.3);
+		border-color: color-mix(in srgb, var(--color-error) 35%, transparent);
 	}
 
 	.exec-btn-cancel:hover {
-		background: rgba(239, 68, 68, 0.25);
+		background: color-mix(in srgb, var(--color-error) 24%, transparent);
 	}
 
 	.exec-btn-dismiss {
-		background: var(--bg-elevated);
+		background: var(--bg-control);
 		color: var(--text-secondary);
 	}
 

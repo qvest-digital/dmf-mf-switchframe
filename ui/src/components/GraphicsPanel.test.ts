@@ -132,13 +132,13 @@ describe('GraphicsPanel', () => {
 		expect(inputs.length).toBe(2);
 	});
 
-	it('should have CUT ON/OFF, AUTO ON/OFF action buttons', () => {
+	it('should have CUT ON/OFF, AUTO ON/OFF action buttons in DSK footer', () => {
 		const state = {
 			...baseState,
 			graphics: { layers: [oneLayer] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
-		const buttons = container.querySelectorAll('.act-btn');
+		const buttons = container.querySelectorAll('.dsk-btn');
 		const labels = Array.from(buttons).map((b) => b.textContent?.trim());
 		expect(labels).toContain('CUT ON');
 		expect(labels).toContain('AUTO ON');
@@ -152,8 +152,8 @@ describe('GraphicsPanel', () => {
 			graphics: { layers: [oneLayer] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
-		const offBtn = container.querySelector('.act-btn.off') as HTMLButtonElement;
-		const autoOffBtn = container.querySelector('.act-btn.auto-off') as HTMLButtonElement;
+		const offBtn = container.querySelector('.dsk-btn.off') as HTMLButtonElement;
+		const autoOffBtn = container.querySelector('.dsk-btn.auto-off') as HTMLButtonElement;
 		expect(offBtn.disabled).toBe(true);
 		expect(autoOffBtn.disabled).toBe(true);
 	});
@@ -164,8 +164,8 @@ describe('GraphicsPanel', () => {
 			graphics: { layers: [oneLayerActive] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
-		const onBtn = container.querySelector('.act-btn.on') as HTMLButtonElement;
-		const autoOnBtn = container.querySelector('.act-btn.auto-on') as HTMLButtonElement;
+		const onBtn = container.querySelector('.dsk-btn.on') as HTMLButtonElement;
+		const autoOnBtn = container.querySelector('.dsk-btn.auto-on') as HTMLButtonElement;
 		expect(onBtn.disabled).toBe(true);
 		expect(autoOnBtn.disabled).toBe(true);
 	});
@@ -192,24 +192,13 @@ describe('GraphicsPanel', () => {
 		expect(container.textContent).toContain('z2');
 	});
 
-	it('should have z-order up/down buttons in rail', () => {
-		const state = {
-			...baseState,
-			graphics: { layers: [oneLayer] },
-		};
-		const { container } = render(GraphicsPanel, { props: { state } });
-		const microBtns = container.querySelectorAll('.micro-btn');
-		// 2 z-order buttons + 1 delete button per layer
-		expect(microBtns.length).toBe(3);
-	});
-
 	it('should have delete button in rail', () => {
 		const state = {
 			...baseState,
 			graphics: { layers: [oneLayer] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
-		const delBtn = container.querySelector('.micro-btn.del');
+		const delBtn = container.querySelector('.del-btn');
 		expect(delBtn).toBeTruthy();
 	});
 
@@ -217,7 +206,7 @@ describe('GraphicsPanel', () => {
 		const { container } = render(GraphicsPanel, { props: { state: baseState } });
 		const addBtn = container.querySelector('.add-btn');
 		expect(addBtn).toBeTruthy();
-		expect(addBtn?.textContent?.trim()).toBe('+ ADD');
+		expect(addBtn?.textContent?.trim()).toContain('ADD');
 	});
 
 	it('should highlight active layer in rail', () => {
@@ -331,42 +320,42 @@ describe('GraphicsPanel', () => {
 		expect(selected).toBeTruthy();
 	});
 
-	it('should have 4 source mode buttons (TEMPLATE, IMAGE, TICKER, HTML5)', () => {
+	it('should have 4 source mode buttons (TPL, IMG, TICK, H5)', () => {
 		const state = {
 			...baseState,
 			graphics: { layers: [oneLayer] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
-		const modeBtns = container.querySelectorAll('.mode-btn');
+		const modeBtns = container.querySelectorAll('.mode-seg');
 		expect(modeBtns.length).toBe(4);
 		const labels = Array.from(modeBtns).map(b => b.textContent?.trim());
-		expect(labels).toContain('TEMPLATE');
-		expect(labels).toContain('IMAGE');
-		expect(labels).toContain('TICKER');
-		expect(labels).toContain('HTML5');
+		expect(labels.some(l => l?.includes('TPL'))).toBe(true);
+		expect(labels.some(l => l?.includes('IMG'))).toBe(true);
+		expect(labels.some(l => l?.includes('TICK'))).toBe(true);
+		expect(labels.some(l => l?.includes('H5'))).toBe(true);
 	});
 
-	it('should show image upload button after clicking IMAGE mode', async () => {
+	it('should show image upload button after clicking IMG mode', async () => {
 		const state = {
 			...baseState,
 			graphics: { layers: [oneLayer] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
-		const modeBtns = container.querySelectorAll('.mode-btn');
-		const imageBtn = Array.from(modeBtns).find(b => b.textContent?.includes('IMAGE'));
+		const modeBtns = container.querySelectorAll('.mode-seg');
+		const imageBtn = Array.from(modeBtns).find(b => b.textContent?.includes('IMG'));
 		await fireEvent.click(imageBtn!);
 		const uploadBtn = Array.from(container.querySelectorAll('.act-btn')).find(b => b.textContent?.includes('UPLOAD'));
 		expect(uploadBtn).toBeTruthy();
 	});
 
-	it('should show ticker controls after clicking TICKER mode', async () => {
+	it('should show ticker controls after clicking TICK mode', async () => {
 		const state = {
 			...baseState,
 			graphics: { layers: [oneLayer] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
-		const modeBtns = container.querySelectorAll('.mode-btn');
-		const tickerBtn = Array.from(modeBtns).find(b => b.textContent?.includes('TICKER'));
+		const modeBtns = container.querySelectorAll('.mode-seg');
+		const tickerBtn = Array.from(modeBtns).find(b => b.textContent?.includes('TICK'));
 		await fireEvent.click(tickerBtn!);
 		const startBtn = Array.from(container.querySelectorAll('.act-btn')).find(b => b.textContent?.trim() === 'START');
 		expect(startBtn).toBeTruthy();
@@ -400,14 +389,14 @@ describe('GraphicsPanel', () => {
 		expect(badge?.textContent).toContain('pulse');
 	});
 
-	it('should default to TEMPLATE mode with selected mode button', () => {
+	it('should default to TPL mode with active mode segment', () => {
 		const state = {
 			...baseState,
 			graphics: { layers: [oneLayer] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
-		const selectedMode = container.querySelector('.mode-btn.selected');
+		const selectedMode = container.querySelector('.mode-seg.active');
 		expect(selectedMode).toBeTruthy();
-		expect(selectedMode?.textContent?.trim()).toBe('TEMPLATE');
+		expect(selectedMode?.textContent?.trim()).toContain('TPL');
 	});
 });

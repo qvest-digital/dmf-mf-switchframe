@@ -6,6 +6,13 @@
 	} from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
 	import { sortedSourceKeys } from '$lib/util/sort-sources';
+	import {
+		ICON_CHEVRON_DOWN,
+		ICON_CHEVRON_RIGHT,
+		ICON_SAVE,
+		ICON_CLOSE,
+		renderIcon,
+	} from '$lib/icons';
 	import { onDestroy } from 'svelte';
 	import ColorWheel from './ColorWheel.svelte';
 	import CurveEditor from './CurveEditor.svelte';
@@ -81,6 +88,10 @@
 	// Switch source selection
 	function selectSource(key: string) {
 		clearTimeout(sendTimeout);
+		if (key !== 'program') {
+			saveLookExpanded = false;
+			lookNameDraft = '';
+		}
 		selectedSource = key;
 		if (key === 'program') {
 			syncUIFromCorrector(crState.colorGrade?.corrector ?? defaultCorrector());
@@ -135,6 +146,11 @@
 	let highR = $derived(Math.round(corrector.highlights[0] * 100));
 	let highG = $derived(Math.round(corrector.highlights[1] * 100));
 	let highB = $derived(Math.round(corrector.highlights[2] * 100));
+
+	// ── Zones disclosure + save look panel ──
+	let zonesOpen = $state(false);
+	let saveLookExpanded = $state(false);
+	let lookNameDraft = $state('');
 
 	// ── Debounced send to server ──
 	let sendTimeout: ReturnType<typeof setTimeout>;
@@ -242,12 +258,24 @@
 		}
 	}
 
-	async function handleSave() {
-		const name = prompt('Look name:');
+	function openSaveLook() {
+		saveLookExpanded = true;
+		lookNameDraft = '';
+	}
+
+	function cancelSaveLook() {
+		saveLookExpanded = false;
+		lookNameDraft = '';
+	}
+
+	async function confirmSaveLook() {
+		const name = lookNameDraft.trim();
 		if (!name) return;
 		try {
 			await saveCustomLook(name);
 			notify('info', `Saved "${name}"`);
+			saveLookExpanded = false;
+			lookNameDraft = '';
 		} catch (err) {
 			notify('error', `Save failed: ${err instanceof Error ? err.message : 'unknown'}`);
 		}
@@ -255,6 +283,10 @@
 
 	function fmtSlider(v: number): string {
 		return v.toFixed(0);
+	}
+
+	function toggleZones() {
+		zonesOpen = !zonesOpen;
 	}
 </script>
 
@@ -286,13 +318,13 @@
 
 	<!-- Column 2: Controls (wheels, sliders, zones) -->
 	<div class="controls-col">
-		<div class="controls-top">
+		<div class="controls-fixed">
 			<div class="wheels-row">
-				<ColorWheel label="LIFT" size={62} value={corrector.lift} onchange={handleLiftChange} min={-1} max={1} />
-				<ColorWheel label="GAMMA" size={62} value={corrector.gamma} onchange={handleGammaChange} min={0.1} max={4} />
-				<ColorWheel label="GAIN" size={62} value={corrector.gain} onchange={handleGainChange} min={0} max={4} />
+				<ColorWheel label="LIFT" size={70} value={corrector.lift} onchange={handleLiftChange} min={-1} max={1} />
+				<ColorWheel label="GAMMA" size={70} value={corrector.gamma} onchange={handleGammaChange} min={0.1} max={4} />
+				<ColorWheel label="GAIN" size={70} value={corrector.gain} onchange={handleGainChange} min={0} max={4} />
 			</div>
-			<div class="sliders-col">
+			<div class="sliders-grid">
 				<div class="slider-row">
 					<span class="slider-label">Temp</span>
 					<input type="range" min="-100" max="100" step="1"
@@ -325,7 +357,7 @@
 					/>
 					<span class="slider-value">{fmtSlider(contrastUI)}</span>
 				</div>
-				<div class="slider-row">
+				<div class="slider-row slider-row-span">
 					<span class="slider-label">Sharp</span>
 					<input type="range" min="0" max="100" step="1"
 						bind:value={sharpnessUI}
@@ -336,93 +368,129 @@
 			</div>
 		</div>
 
-		<!-- Zone section: Shadows / Midtones / Highlights -->
-		<div class="zones-row">
-			<div class="zone">
-				<span class="zone-title">SHADOWS</span>
-				<div class="zone-sliders">
-					<div class="zone-slider">
-						<span class="ch-label ch-r">R</span>
-						<input type="range" min="-100" max="100" class="slider-r"
-							value={shadowR}
-							oninput={(e) => setShadow(0, Number((e.target as HTMLInputElement).value))}
-						/>
+		<div class="controls-scroll">
+			<div class="zones-disclosure">
+				<button
+					type="button"
+					class="zones-disclosure-trigger"
+					onclick={toggleZones}
+					aria-expanded={zonesOpen}
+				>
+					<span class="zones-chevron" aria-hidden="true">
+						{@html renderIcon(zonesOpen ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT, 12)}
+					</span>
+					<span class="zones-disclosure-title">COLOR ZONES</span>
+				</button>
+				{#if zonesOpen}
+					<div class="zones-panel">
+						<div class="zone-row">
+							<span class="zone-title">SHADOWS</span>
+							<div class="zone-ch-row">
+								<div class="zone-ch">
+									<span class="ch-label ch-r">R</span>
+									<input type="range" min="-100" max="100" class="slider-r"
+										value={shadowR}
+										oninput={(e) => setShadow(0, Number((e.target as HTMLInputElement).value))}
+									/>
+								</div>
+								<div class="zone-ch">
+									<span class="ch-label ch-g">G</span>
+									<input type="range" min="-100" max="100" class="slider-g"
+										value={shadowG}
+										oninput={(e) => setShadow(1, Number((e.target as HTMLInputElement).value))}
+									/>
+								</div>
+								<div class="zone-ch">
+									<span class="ch-label ch-b">B</span>
+									<input type="range" min="-100" max="100" class="slider-b"
+										value={shadowB}
+										oninput={(e) => setShadow(2, Number((e.target as HTMLInputElement).value))}
+									/>
+								</div>
+							</div>
+						</div>
+						<div class="zone-row">
+							<span class="zone-title">MIDTONES</span>
+							<div class="zone-ch-row">
+								<div class="zone-ch">
+									<span class="ch-label ch-r">R</span>
+									<input type="range" min="-100" max="100" class="slider-r"
+										value={midR}
+										oninput={(e) => setMidtone(0, Number((e.target as HTMLInputElement).value))}
+									/>
+								</div>
+								<div class="zone-ch">
+									<span class="ch-label ch-g">G</span>
+									<input type="range" min="-100" max="100" class="slider-g"
+										value={midG}
+										oninput={(e) => setMidtone(1, Number((e.target as HTMLInputElement).value))}
+									/>
+								</div>
+								<div class="zone-ch">
+									<span class="ch-label ch-b">B</span>
+									<input type="range" min="-100" max="100" class="slider-b"
+										value={midB}
+										oninput={(e) => setMidtone(2, Number((e.target as HTMLInputElement).value))}
+									/>
+								</div>
+							</div>
+						</div>
+						<div class="zone-row">
+							<span class="zone-title">HIGHLIGHTS</span>
+							<div class="zone-ch-row">
+								<div class="zone-ch">
+									<span class="ch-label ch-r">R</span>
+									<input type="range" min="-100" max="100" class="slider-r"
+										value={highR}
+										oninput={(e) => setHighlight(0, Number((e.target as HTMLInputElement).value))}
+									/>
+								</div>
+								<div class="zone-ch">
+									<span class="ch-label ch-g">G</span>
+									<input type="range" min="-100" max="100" class="slider-g"
+										value={highG}
+										oninput={(e) => setHighlight(1, Number((e.target as HTMLInputElement).value))}
+									/>
+								</div>
+								<div class="zone-ch">
+									<span class="ch-label ch-b">B</span>
+									<input type="range" min="-100" max="100" class="slider-b"
+										value={highB}
+										oninput={(e) => setHighlight(2, Number((e.target as HTMLInputElement).value))}
+									/>
+								</div>
+							</div>
+						</div>
 					</div>
-					<div class="zone-slider">
-						<span class="ch-label ch-g">G</span>
-						<input type="range" min="-100" max="100" class="slider-g"
-							value={shadowG}
-							oninput={(e) => setShadow(1, Number((e.target as HTMLInputElement).value))}
-						/>
-					</div>
-					<div class="zone-slider">
-						<span class="ch-label ch-b">B</span>
-						<input type="range" min="-100" max="100" class="slider-b"
-							value={shadowB}
-							oninput={(e) => setShadow(2, Number((e.target as HTMLInputElement).value))}
-						/>
-					</div>
-				</div>
-			</div>
-			<div class="zone">
-				<span class="zone-title">MIDTONES</span>
-				<div class="zone-sliders">
-					<div class="zone-slider">
-						<span class="ch-label ch-r">R</span>
-						<input type="range" min="-100" max="100" class="slider-r"
-							value={midR}
-							oninput={(e) => setMidtone(0, Number((e.target as HTMLInputElement).value))}
-						/>
-					</div>
-					<div class="zone-slider">
-						<span class="ch-label ch-g">G</span>
-						<input type="range" min="-100" max="100" class="slider-g"
-							value={midG}
-							oninput={(e) => setMidtone(1, Number((e.target as HTMLInputElement).value))}
-						/>
-					</div>
-					<div class="zone-slider">
-						<span class="ch-label ch-b">B</span>
-						<input type="range" min="-100" max="100" class="slider-b"
-							value={midB}
-							oninput={(e) => setMidtone(2, Number((e.target as HTMLInputElement).value))}
-						/>
-					</div>
-				</div>
-			</div>
-			<div class="zone">
-				<span class="zone-title">HIGHLIGHTS</span>
-				<div class="zone-sliders">
-					<div class="zone-slider">
-						<span class="ch-label ch-r">R</span>
-						<input type="range" min="-100" max="100" class="slider-r"
-							value={highR}
-							oninput={(e) => setHighlight(0, Number((e.target as HTMLInputElement).value))}
-						/>
-					</div>
-					<div class="zone-slider">
-						<span class="ch-label ch-g">G</span>
-						<input type="range" min="-100" max="100" class="slider-g"
-							value={highG}
-							oninput={(e) => setHighlight(1, Number((e.target as HTMLInputElement).value))}
-						/>
-					</div>
-					<div class="zone-slider">
-						<span class="ch-label ch-b">B</span>
-						<input type="range" min="-100" max="100" class="slider-b"
-							value={highB}
-							oninput={(e) => setHighlight(2, Number((e.target as HTMLInputElement).value))}
-						/>
-					</div>
-				</div>
+				{/if}
 			</div>
 		</div>
 
-		<!-- Footer: Reset + Save -->
 		<div class="controls-footer">
-			<button class="btn-reset" onclick={handleReset}>Reset</button>
-			{#if selectedSource === 'program'}
-				<button class="btn-save" onclick={handleSave}>Save as Look</button>
+			<div class="footer-row">
+				<button type="button" class="btn-reset" onclick={handleReset}>Reset</button>
+				{#if selectedSource === 'program'}
+					{#if !saveLookExpanded}
+						<button type="button" class="btn-save" onclick={openSaveLook}>Save as Look</button>
+					{/if}
+				{/if}
+			</div>
+			{#if selectedSource === 'program' && saveLookExpanded}
+				<div class="save-inline">
+					<input
+						class="save-name-input"
+						type="text"
+						placeholder="Look name"
+						bind:value={lookNameDraft}
+						onkeydown={(e) => e.key === 'Enter' && confirmSaveLook()}
+					/>
+					<button type="button" class="icon-btn icon-btn-save" onclick={confirmSaveLook} aria-label="Save look" title="Save">
+						{@html renderIcon(ICON_SAVE, 14, 'fill')}
+					</button>
+					<button type="button" class="icon-btn icon-btn-cancel" onclick={cancelSaveLook} aria-label="Cancel" title="Cancel">
+						{@html renderIcon(ICON_CLOSE, 14)}
+					</button>
+				</div>
 			{/if}
 		</div>
 	</div>
@@ -430,10 +498,10 @@
 	<!-- Column 3: Curves -->
 	<div class="curves-col">
 		<div class="curve-channel-tabs">
-			<button class="curve-tab" class:active={curveChannel === 'master'} onclick={() => curveChannel = 'master'}>M</button>
-			<button class="curve-tab curve-tab-r" class:active={curveChannel === 'r'} onclick={() => curveChannel = 'r'}>R</button>
-			<button class="curve-tab curve-tab-g" class:active={curveChannel === 'g'} onclick={() => curveChannel = 'g'}>G</button>
-			<button class="curve-tab curve-tab-b" class:active={curveChannel === 'b'} onclick={() => curveChannel = 'b'}>B</button>
+			<button type="button" class="curve-tab" class:active={curveChannel === 'master'} onclick={() => curveChannel = 'master'}>M</button>
+			<button type="button" class="curve-tab curve-tab-r" class:active={curveChannel === 'r'} onclick={() => curveChannel = 'r'}>R</button>
+			<button type="button" class="curve-tab curve-tab-g" class:active={curveChannel === 'g'} onclick={() => curveChannel = 'g'}>G</button>
+			<button type="button" class="curve-tab curve-tab-b" class:active={curveChannel === 'b'} onclick={() => curveChannel = 'b'}>B</button>
 		</div>
 		<CurveEditor
 			size={160}
@@ -453,6 +521,7 @@
 		gap: 4px;
 		padding: 6px;
 		overflow: hidden;
+		font-family: var(--font-ui, system-ui, sans-serif);
 	}
 
 	/* ── Column 1: Source List ── */
@@ -460,12 +529,14 @@
 		display: flex;
 		flex-direction: column;
 		height: 100%;
-		border-right: 1px solid var(--border-color, #333);
+		min-height: 0;
+		border-right: 1px solid var(--border-subtle, var(--border-default, #333));
 		padding-right: 4px;
 	}
 
 	.source-list-scroll {
 		flex: 1;
+		min-height: 0;
 		overflow-y: auto;
 		display: flex;
 		flex-direction: column;
@@ -483,21 +554,22 @@
 		border-left: 2px solid transparent;
 		color: var(--text-secondary, #999);
 		cursor: pointer;
-		font-size: 11px;
+		font-size: var(--text-xs, 11px);
 		text-align: left;
-		transition: background 0.1s, border-color 0.1s;
-		border-radius: 0 2px 2px 0;
+		transition: background var(--transition-fast, 0.1s), border-color var(--transition-fast, 0.1s), color var(--transition-fast, 0.1s);
+		border-radius: 0 var(--radius-xs, 2px) var(--radius-xs, 2px) 0;
 		flex-shrink: 0;
+		font-family: inherit;
 	}
 
 	.source-btn:hover {
-		background: var(--surface-hover, #333);
+		background: var(--bg-hover, var(--bg-surface, #333));
 		color: var(--text-primary, #eee);
 	}
 
 	.source-btn.active {
 		border-left-color: var(--accent-yellow, #d4a017);
-		background: var(--accent-yellow-bg, #3a3520);
+		background: var(--bg-elevated, #3a3520);
 		color: var(--text-primary, #eee);
 	}
 
@@ -525,7 +597,7 @@
 
 	.source-divider {
 		height: 1px;
-		background: var(--border-color, #333);
+		background: var(--border-subtle, var(--border-default, #333));
 		margin: 4px 0;
 		flex-shrink: 0;
 	}
@@ -540,110 +612,181 @@
 	.controls-col {
 		display: flex;
 		flex-direction: column;
-		gap: 6px;
 		min-width: 0;
+		min-height: 0;
 		overflow: hidden;
+		gap: 4px;
 	}
 
-	.controls-top {
-		display: flex;
-		gap: 10px;
+	.controls-fixed {
 		flex-shrink: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
 	}
 
 	.wheels-row {
 		display: flex;
+		flex-direction: row;
+		flex-wrap: nowrap;
 		gap: 6px;
 		align-items: flex-start;
-		flex-shrink: 0;
+		justify-content: flex-start;
 	}
 
-	.sliders-col {
-		flex: 1;
-		display: flex;
-		flex-direction: column;
-		gap: 3px;
+	.sliders-grid {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 2px 10px;
+		align-items: center;
 		min-width: 0;
-		justify-content: center;
 	}
 
 	.slider-row {
-		display: flex;
+		display: grid;
+		grid-template-columns: 32px 1fr 26px;
 		align-items: center;
 		gap: 4px;
-		height: 18px;
+		min-height: 18px;
+		min-width: 0;
+	}
+
+	.slider-row-span {
+		grid-column: 1 / -1;
 	}
 
 	.slider-label {
-		width: 36px;
-		font-size: 10px;
+		font-size: var(--text-2xs, 10px);
 		text-align: right;
 		color: var(--text-secondary, #999);
-		flex-shrink: 0;
+		font-variant-numeric: tabular-nums;
 	}
 
 	.slider-row input[type="range"] {
-		flex: 1;
-		max-width: 150px;
+		width: 100%;
+		min-width: 0;
 		height: 2px;
 		accent-color: var(--accent-yellow, #d4a017);
 	}
 
 	.slider-value {
-		width: 28px;
-		font-size: 10px;
+		font-size: var(--text-2xs, 10px);
 		text-align: right;
 		font-variant-numeric: tabular-nums;
+		font-family: var(--font-mono, ui-monospace, monospace);
 		color: var(--text-primary, #eee);
-		flex-shrink: 0;
 	}
 
-	/* ── Zones (Shadows / Midtones / Highlights) ── */
-	.zones-row {
-		display: flex;
-		gap: 10px;
-		flex-shrink: 0;
-	}
-
-	.zone {
+	.controls-scroll {
 		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+		overflow-x: hidden;
+	}
+
+	/* ── COLOR ZONES disclosure ── */
+	.zones-disclosure {
+		border: 1px solid var(--border-subtle, var(--border-default, #333));
+		border-radius: var(--radius-sm, 3px);
+		background: var(--bg-surface, var(--bg-base, #1a1a1a));
+		overflow: hidden;
+	}
+
+	.zones-disclosure-trigger {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		width: 100%;
+		padding: 4px 8px;
+		background: var(--bg-elevated, #252525);
+		border: none;
+		cursor: pointer;
+		font-family: inherit;
+		font-size: var(--text-2xs, 10px);
+		font-weight: 600;
+		letter-spacing: 0.06em;
+		color: var(--text-secondary, #999);
+		text-align: left;
+		transition: background var(--transition-fast, 0.1s), color var(--transition-fast, 0.1s);
+	}
+
+	.zones-disclosure-trigger:hover {
+		background: var(--bg-hover, #2e2e2e);
+		color: var(--text-primary, #eee);
+	}
+
+	.zones-chevron {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		color: var(--text-tertiary, #777);
+		flex-shrink: 0;
+	}
+
+	.zones-disclosure-trigger:hover .zones-chevron {
+		color: var(--text-secondary, #999);
+	}
+
+	.zones-disclosure-title {
+		flex: 1;
+	}
+
+	.zones-panel {
+		padding: 6px 8px 8px;
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		border-top: 1px solid var(--border-subtle, var(--border-default, #333));
+		background: var(--bg-base, #141414);
+	}
+
+	.zone-row {
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		gap: 8px;
 		min-width: 0;
 	}
 
 	.zone-title {
-		font-size: 9px;
+		flex-shrink: 0;
+		width: 4.5rem;
+		font-size: var(--text-2xs, 9px);
 		font-weight: 600;
 		text-transform: uppercase;
-		letter-spacing: 0.5px;
-		color: var(--text-secondary, #999);
-		display: block;
-		margin-bottom: 2px;
+		letter-spacing: 0.04em;
+		color: var(--text-tertiary, #888);
 	}
 
-	.zone-sliders {
-		display: flex;
-		flex-direction: column;
-		gap: 1px;
-	}
-
-	.zone-slider {
-		display: flex;
-		align-items: center;
-		gap: 2px;
-		height: 16px;
-	}
-
-	.zone-slider input[type="range"] {
+	.zone-ch-row {
 		flex: 1;
-		height: 2px;
+		display: flex;
+		flex-direction: row;
+		align-items: center;
+		gap: 6px;
 		min-width: 0;
 	}
 
+	.zone-ch {
+		flex: 1;
+		display: flex;
+		align-items: center;
+		gap: 3px;
+		min-width: 0;
+	}
+
+	.zone-ch input[type="range"] {
+		flex: 1;
+		min-width: 0;
+		height: 2px;
+	}
+
 	.ch-label {
-		font-size: 9px;
+		font-size: var(--text-2xs, 9px);
 		font-weight: 600;
 		width: 10px;
 		flex-shrink: 0;
+		font-variant-numeric: tabular-nums;
 	}
 
 	.ch-r { color: #e74c3c; }
@@ -656,28 +799,38 @@
 
 	/* ── Controls Footer ── */
 	.controls-footer {
+		flex-shrink: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		padding-top: 6px;
+		border-top: 1px solid var(--border-subtle, var(--border-default, #333));
+	}
+
+	.footer-row {
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
-		flex-shrink: 0;
-		padding-top: 4px;
-		border-top: 1px solid var(--border-color, #333);
-		margin-top: auto;
+		gap: 8px;
+		flex-wrap: wrap;
 	}
 
-	.btn-reset, .btn-save {
-		padding: 3px 10px;
-		background: var(--surface-secondary, #2a2a2a);
-		border: 1px solid var(--border-color, #444);
-		border-radius: 3px;
+	.btn-reset,
+	.btn-save {
+		padding: 4px 10px;
+		background: var(--bg-surface, #2a2a2a);
+		border: 1px solid var(--border-default, #444);
+		border-radius: var(--radius-sm, 3px);
 		color: var(--text-secondary, #999);
 		cursor: pointer;
-		font-size: 10px;
-		transition: background 0.15s, color 0.15s;
+		font-size: var(--text-2xs, 10px);
+		font-family: inherit;
+		transition: background var(--transition-fast, 0.15s), color var(--transition-fast, 0.15s), border-color var(--transition-fast, 0.15s);
 	}
 
-	.btn-reset:hover, .btn-save:hover {
-		background: var(--surface-hover, #333);
+	.btn-reset:hover,
+	.btn-save:hover {
+		background: var(--bg-hover, #333);
 		color: var(--text-primary, #eee);
 	}
 
@@ -687,7 +840,71 @@
 	}
 
 	.btn-save:hover {
-		background: var(--accent-yellow-bg, #3a3520);
+		background: var(--bg-elevated, #3a3520);
+	}
+
+	.save-inline {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		flex-shrink: 0;
+	}
+
+	.save-name-input {
+		flex: 1;
+		min-width: 0;
+		padding: 4px 8px;
+		font-size: var(--text-xs, 11px);
+		font-family: var(--font-ui, inherit);
+		color: var(--text-primary, #eee);
+		background: var(--bg-base, #1a1a1a);
+		border: 1px solid var(--border-default, #444);
+		border-radius: var(--radius-sm, 3px);
+		outline: none;
+		transition: border-color var(--transition-fast, 0.1s);
+	}
+
+	.save-name-input:focus {
+		border-color: var(--accent-blue, #4a9eff);
+	}
+
+	.save-name-input::placeholder {
+		color: var(--text-tertiary, #666);
+	}
+
+	.icon-btn {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 28px;
+		height: 28px;
+		padding: 0;
+		flex-shrink: 0;
+		border-radius: var(--radius-sm, 3px);
+		border: 1px solid var(--border-default, #444);
+		background: var(--bg-surface, #2a2a2a);
+		color: var(--text-secondary, #999);
+		cursor: pointer;
+		transition: background var(--transition-fast, 0.1s), color var(--transition-fast, 0.1s), border-color var(--transition-fast, 0.1s);
+	}
+
+	.icon-btn:hover {
+		background: var(--bg-hover, #333);
+		color: var(--text-primary, #eee);
+	}
+
+	.icon-btn-save {
+		color: var(--color-success, #5cb85c);
+		border-color: var(--color-success, #5cb85c);
+	}
+
+	.icon-btn-save:hover {
+		background: rgba(92, 184, 92, 0.15);
+		color: var(--color-success, #6fcf6f);
+	}
+
+	.icon-btn-cancel:hover {
+		border-color: var(--text-tertiary, #666);
 	}
 
 	/* ── Column 3: Curves ── */
@@ -696,34 +913,38 @@
 		flex-direction: column;
 		align-items: center;
 		gap: 4px;
-		border-left: 1px solid var(--border-color, #333);
+		min-height: 0;
+		overflow: hidden;
+		border-left: 1px solid var(--border-subtle, var(--border-default, #333));
 		padding-left: 4px;
 	}
 
 	.curve-channel-tabs {
 		display: flex;
 		gap: 2px;
+		flex-shrink: 0;
 	}
 
 	.curve-tab {
 		padding: 2px 8px;
-		background: var(--surface-secondary, #2a2a2a);
-		border: 1px solid var(--border-color, #444);
-		border-radius: 3px;
+		background: var(--bg-surface, #2a2a2a);
+		border: 1px solid var(--border-default, #444);
+		border-radius: var(--radius-sm, 3px);
 		color: var(--text-secondary, #999);
 		cursor: pointer;
-		font-size: 10px;
+		font-size: var(--text-2xs, 10px);
 		font-weight: 500;
-		transition: background 0.15s, border-color 0.15s, color 0.15s;
+		font-family: inherit;
+		transition: background var(--transition-fast, 0.15s), border-color var(--transition-fast, 0.15s), color var(--transition-fast, 0.15s);
 	}
 
 	.curve-tab:hover {
-		background: var(--surface-hover, #333);
+		background: var(--bg-hover, #333);
 		color: var(--text-primary, #eee);
 	}
 
 	.curve-tab.active {
-		background: var(--accent-yellow-bg, #3a3520);
+		background: var(--bg-elevated, #3a3520);
 		border-color: var(--accent-yellow, #d4a017);
 		color: var(--accent-yellow, #d4a017);
 	}

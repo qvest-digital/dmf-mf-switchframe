@@ -1,48 +1,80 @@
 <script lang="ts">
 	import type { GraphicsLayerState } from '$lib/api/types';
+	import {
+		ICON_GRIP, ICON_PLUS, ICON_TRASH, renderIcon,
+	} from '$lib/icons';
 
 	interface Props {
 		layers: GraphicsLayerState[];
 		selectedId: number | null;
-		/** Map of layer ID → template ID for display */
 		layerTemplateNames: Record<number, string>;
 		onSelect: (id: number) => void;
 		onAdd: () => void;
 		onRemove: (id: number) => void;
-		onZOrderUp: (id: number, currentZ: number) => void;
-		onZOrderDown: (id: number, currentZ: number) => void;
+		onZOrderChange: (id: number, newZ: number) => void;
 	}
 
 	let {
 		layers, selectedId, layerTemplateNames,
-		onSelect, onAdd, onRemove, onZOrderUp, onZOrderDown
+		onSelect, onAdd, onRemove, onZOrderChange,
 	}: Props = $props();
 
 	const tplAbbrev: Record<string, string> = {
-		'lower-third': 'LwrThd',
+		'lower-third': 'L3',
 		'news-lower-third': 'News',
-		'full-screen': 'FullScr',
-		'ticker': 'Ticker',
+		'full-screen': 'Full',
+		'ticker': 'Tick',
 		'network-bug': 'Bug',
 		'score-bug': 'Score',
 	};
 
 	function abbrev(id: number): string {
-		// Check for HTML5 mode first
 		const layer = layers.find(l => l.id === id);
 		if (layer?.html5Status) return 'H5';
-
 		const tplId = layerTemplateNames[id] ?? 'lower-third';
-		return tplAbbrev[tplId] ?? tplId.slice(0, 6);
+		return tplAbbrev[tplId] ?? tplId.slice(0, 5);
 	}
 
-	function isBusy(layer: GraphicsLayerState): boolean {
-		return !!layer.animationMode || (layer.active && layer.fadePosition != null && layer.fadePosition > 0 && layer.fadePosition < 1);
+	// ── Drag-and-drop reorder ──
+	let dragSourceId = $state<number | null>(null);
+	let dragOverId = $state<number | null>(null);
+
+	function handleDragStart(e: DragEvent, layer: GraphicsLayerState) {
+		dragSourceId = layer.id;
+		if (e.dataTransfer) {
+			e.dataTransfer.effectAllowed = 'move';
+			e.dataTransfer.setData('text/plain', String(layer.id));
+		}
+	}
+
+	function handleDragOver(e: DragEvent, layer: GraphicsLayerState) {
+		e.preventDefault();
+		if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+		dragOverId = layer.id;
+	}
+
+	function handleDragLeave() {
+		dragOverId = null;
+	}
+
+	function handleDrop(e: DragEvent, targetLayer: GraphicsLayerState) {
+		e.preventDefault();
+		if (dragSourceId !== null && dragSourceId !== targetLayer.id) {
+			onZOrderChange(dragSourceId, targetLayer.zOrder);
+		}
+		dragSourceId = null;
+		dragOverId = null;
+	}
+
+	function handleDragEnd() {
+		dragSourceId = null;
+		dragOverId = null;
 	}
 </script>
 
 <div class="layer-rail">
 	<div class="rail-header">LAYERS</div>
+
 	<div class="rail-list">
 		{#each layers as layer (layer.id)}
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -50,6 +82,14 @@
 				class="rail-item"
 				class:selected={selectedId === layer.id}
 				class:active={layer.active}
+				class:dragging={dragSourceId === layer.id}
+				class:drag-over={dragOverId === layer.id && dragSourceId !== layer.id}
+				draggable="true"
+				ondragstart={(e) => handleDragStart(e, layer)}
+				ondragover={(e) => handleDragOver(e, layer)}
+				ondragleave={handleDragLeave}
+				ondrop={(e) => handleDrop(e, layer)}
+				ondragend={handleDragEnd}
 				onclick={() => onSelect(layer.id)}
 				onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(layer.id); } }}
 				role="button"
@@ -57,44 +97,43 @@
 				aria-label="Layer {layer.id}"
 				aria-pressed={selectedId === layer.id}
 			>
+				<span class="drag-handle">{@html renderIcon(ICON_GRIP, 10, 'fill')}</span>
+
 				<span class="status-dot" class:on={layer.active} class:animating={!!layer.animationMode}></span>
-				<span class="layer-label">
+
+				<span class="layer-info">
 					<span class="layer-num">L{layer.id}</span>
-					<span class="layer-tpl">{abbrev(layer.id)}</span>
+					<span class="layer-type">{abbrev(layer.id)}</span>
 				</span>
+
 				{#if layer.active && layer.fadePosition != null && layer.fadePosition < 1}
 					<span class="mini-fade">
 						<span class="mini-fade-fill" style="width: {(layer.fadePosition ?? 1) * 100}%"></span>
 					</span>
 				{/if}
+
 				{#if layer.animationMode}
-					<span class="mini-anim-badge" title="{layer.animationMode}">A</span>
+					<span class="anim-badge" title="{layer.animationMode}">A</span>
 				{/if}
+
 				<span class="z-badge" title="z-order {layer.zOrder}">z{layer.zOrder}</span>
-				<div class="hover-controls">
-					<button
-						class="micro-btn"
-						onclick={(e) => { e.stopPropagation(); onZOrderUp(layer.id, layer.zOrder); }}
-						title="Move up"
-						aria-label="Z-order up"
-					>&#9650;</button>
-					<button
-						class="micro-btn"
-						onclick={(e) => { e.stopPropagation(); onZOrderDown(layer.id, layer.zOrder); }}
-						title="Move down"
-						aria-label="Z-order down"
-					>&#9660;</button>
-					<button
-						class="micro-btn del"
-						onclick={(e) => { e.stopPropagation(); onRemove(layer.id); }}
-						title="Delete layer"
-						aria-label="Delete layer"
-					>&times;</button>
-				</div>
+
+				<button
+					class="del-btn"
+					onclick={(e) => { e.stopPropagation(); onRemove(layer.id); }}
+					title="Delete layer"
+					aria-label="Delete layer"
+				>
+					{@html renderIcon(ICON_TRASH, 10, 'stroke')}
+				</button>
 			</div>
 		{/each}
 	</div>
-	<button class="add-btn" onclick={onAdd} aria-label="Add layer">+ ADD</button>
+
+	<button class="add-btn" onclick={onAdd} aria-label="Add layer">
+		<span class="add-icon">{@html renderIcon(ICON_PLUS, 10, 'stroke')}</span>
+		ADD
+	</button>
 </div>
 
 <style>
@@ -114,8 +153,9 @@
 		font-weight: 700;
 		letter-spacing: 0.1em;
 		color: var(--text-tertiary);
-		padding: 6px 8px 4px;
+		padding: 4px 8px 3px;
 		text-transform: uppercase;
+		flex-shrink: 0;
 	}
 
 	.rail-list {
@@ -124,15 +164,16 @@
 		display: flex;
 		flex-direction: column;
 		gap: 1px;
-		padding: 0 4px;
+		padding: 0 3px;
+		min-height: 0;
 	}
 
 	.rail-item {
 		position: relative;
 		display: flex;
 		align-items: center;
-		gap: 5px;
-		padding: 4px 6px;
+		gap: 3px;
+		padding: 3px 4px;
 		border: none;
 		border-left: 2px solid transparent;
 		border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
@@ -142,8 +183,9 @@
 		font-family: var(--font-ui);
 		font-size: var(--text-xs);
 		text-align: left;
-		min-height: 28px;
+		min-height: 26px;
 		transition: background var(--transition-fast), border-color var(--transition-fast);
+		user-select: none;
 	}
 
 	.rail-item:hover {
@@ -159,9 +201,31 @@
 		border-left-color: var(--tally-program);
 	}
 
+	.rail-item.dragging {
+		opacity: 0.4;
+	}
+
+	.rail-item.drag-over {
+		border-top: 2px solid var(--accent-blue);
+		border-radius: 0;
+	}
+
+	.drag-handle {
+		display: flex;
+		align-items: center;
+		color: var(--text-tertiary);
+		cursor: grab;
+		flex-shrink: 0;
+		padding: 0 1px;
+	}
+
+	.drag-handle:active {
+		cursor: grabbing;
+	}
+
 	.status-dot {
-		width: 6px;
-		height: 6px;
+		width: 5px;
+		height: 5px;
 		border-radius: 50%;
 		background: var(--bg-control);
 		flex-shrink: 0;
@@ -182,7 +246,7 @@
 		50% { opacity: 0.4; }
 	}
 
-	.layer-label {
+	.layer-info {
 		display: flex;
 		flex-direction: column;
 		gap: 0;
@@ -192,14 +256,14 @@
 
 	.layer-num {
 		font-family: var(--font-mono);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		font-weight: 600;
 		line-height: 1.1;
 	}
 
-	.layer-tpl {
-		font-size: var(--text-2xs);
-		color: var(--text-secondary);
+	.layer-type {
+		font-size: 0.55rem;
+		color: var(--text-tertiary);
 		line-height: 1.1;
 		white-space: nowrap;
 		overflow: hidden;
@@ -208,13 +272,13 @@
 
 	.z-badge {
 		font-family: var(--font-mono);
-		font-size: var(--text-2xs);
+		font-size: 0.5rem;
 		color: var(--text-tertiary);
 		flex-shrink: 0;
 	}
 
 	.mini-fade {
-		width: 16px;
+		width: 14px;
 		height: 3px;
 		background: var(--bg-base);
 		border-radius: 1px;
@@ -230,14 +294,14 @@
 		transition: width 0.1s linear;
 	}
 
-	.mini-anim-badge {
+	.anim-badge {
 		font-family: var(--font-mono);
-		font-size: 0.45rem;
+		font-size: 0.4rem;
 		font-weight: 700;
 		color: var(--accent-blue);
 		background: var(--accent-blue-dim);
-		width: 12px;
-		height: 12px;
+		width: 11px;
+		height: 11px;
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -245,50 +309,32 @@
 		flex-shrink: 0;
 	}
 
-	.hover-controls {
-		position: absolute;
-		right: 2px;
-		top: 50%;
-		transform: translateY(-50%);
-		display: none;
-		gap: 1px;
-		background: var(--bg-elevated);
-		border-radius: 2px;
-		padding: 1px;
-	}
-
-	.rail-item:hover .hover-controls,
-	.rail-item.selected .hover-controls {
-		display: flex;
-	}
-
-	.micro-btn {
-		width: 14px;
-		height: 14px;
+	.del-btn {
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		border: 1px solid var(--border-default);
-		border-radius: 2px;
-		background: var(--bg-base);
-		color: var(--text-secondary);
+		width: 16px;
+		height: 16px;
+		border: none;
+		border-radius: var(--radius-xs);
+		background: transparent;
+		color: var(--text-tertiary);
 		cursor: pointer;
 		padding: 0;
-		font-size: 0.45rem;
-		line-height: 1;
+		flex-shrink: 0;
+		transition: color var(--transition-fast), background var(--transition-fast);
 	}
 
-	.micro-btn:hover {
-		color: var(--text-primary);
+	.del-btn:hover {
+		color: var(--tally-program);
 		background: var(--bg-hover);
 	}
 
-	.micro-btn.del:hover {
-		border-color: var(--tally-program);
-		color: var(--tally-program);
-	}
-
 	.add-btn {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 4px;
 		font-family: var(--font-ui);
 		font-size: var(--text-2xs);
 		font-weight: 700;
@@ -297,14 +343,19 @@
 		background: transparent;
 		border: 1px dashed var(--border-default);
 		border-radius: var(--radius-sm);
-		padding: 4px 8px;
-		margin: 4px;
+		padding: 3px 8px;
+		margin: 3px;
 		cursor: pointer;
+		flex-shrink: 0;
 		transition: background var(--transition-fast), border-color var(--transition-fast);
 	}
 
 	.add-btn:hover {
 		background: var(--accent-blue-dim);
 		border-color: var(--accent-blue);
+	}
+
+	.add-icon {
+		display: flex;
 	}
 </style>

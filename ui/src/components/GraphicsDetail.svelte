@@ -4,13 +4,14 @@
 	import { templateList, builtinTemplates } from '$lib/graphics/templates';
 	import { graphicsListHTML5Templates, type HTML5TemplateInfo } from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
+	import {
+		ICON_LAYERS, ICON_TEXT, ICON_IMAGE, ICON_TICKER, ICON_CODE,
+		ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_UPLOAD, ICON_TRASH,
+		renderIcon,
+	} from '$lib/icons';
 
-	// Normalize schema fields from either CasparCG manifest or OGraf JSON Schema.
 	function normalizeSchemaFields(schema: any): any[] {
-		// CasparCG format: { fields: [{key, label, type, default}, ...] }
 		if (schema?.fields) return schema.fields as any[];
-		// OGraf format: { properties: { name: {type, title, default} } }
-		// (server extracts dataSchema from OGraf manifest, so properties is at top level)
 		const props = schema?.properties ?? schema?.dataSchema?.properties;
 		if (props) {
 			return Object.entries(props).map(([key, prop]: [string, any]) => {
@@ -19,7 +20,6 @@
 
 				if (prop.type === 'array' || prop.type === 'object') {
 					fieldType = 'textarea';
-					// Serialize complex defaults to JSON for display
 					if (typeof defaultVal === 'object' && defaultVal !== null) {
 						defaultVal = JSON.stringify(defaultVal, null, 2);
 					}
@@ -123,34 +123,26 @@
 	let flyOpen = $state(false);
 	let animOpen = $state(false);
 
-	// Ticker local config
 	let tickerText = $state('Breaking News: Welcome to Switchframe');
 	let tickerFontSize = $state(32);
 	let tickerSpeed = $state(100);
 	let tickerBold = $state(false);
 	let tickerLoop = $state(true);
 
-	// Text animation local config
-
 	let fileInput = $state<HTMLInputElement | null>(null);
 
-	// HTML5 local config
 	let html5Url = $state('');
 	let html5DataJson = $state('{}');
 	let html5Templates = $state<HTML5TemplateInfo[]>([]);
 	let html5TemplatesLoaded = $state(false);
 
-	// HTML5 dynamic form state
 	let html5FormValues = $state<Record<string, any>>({});
-	let html5LocalSchema = $state<any>(null); // set when template selected from picker
-	// Use local schema (from picker) or server-broadcast schema
+	let html5LocalSchema = $state<any>(null);
 	let html5Schema = $derived(html5LocalSchema ?? layer.html5DataSchema as any);
-	// Normalize both CasparCG (fields array) and OGraf (JSON Schema properties)
 	let html5Fields = $derived(normalizeSchemaFields(html5Schema));
 	let html5Actions = $derived((html5Schema?.actions as any[]) ?? []);
 	let hasSchema = $derived(html5Fields.length > 0);
 
-	// Fetch available HTML5 templates when mode switches to html5.
 	$effect(() => {
 		if (sourceMode === 'html5' && !html5TemplatesLoaded) {
 			graphicsListHTML5Templates().then((t) => {
@@ -162,8 +154,6 @@
 		}
 	});
 
-	// Initialize dynamic form values from schema field defaults.
-	// Uses a fingerprint to detect when the schema changes (e.g., different template loaded).
 	let html5SchemaFingerprint = $derived(
 		html5Fields.map((f: any) => f.key).join(',')
 	);
@@ -183,7 +173,6 @@
 				}
 			}
 			html5FormValues = defaults;
-			// Also pre-fill the JSON textarea so it's ready regardless of which view shows
 			html5DataJson = JSON.stringify(jsonDefaults, null, 2);
 			lastSchemaFingerprint = fp;
 		}
@@ -241,11 +230,11 @@
 		}
 	}
 
-	const modeLabels: { id: SourceMode; label: string }[] = [
-		{ id: 'template', label: 'TEMPLATE' },
-		{ id: 'image', label: 'IMAGE' },
-		{ id: 'ticker', label: 'TICKER' },
-		{ id: 'html5', label: 'HTML5' },
+	const modeItems: { id: SourceMode; label: string; icon: string }[] = [
+		{ id: 'template', label: 'TPL', icon: ICON_TEXT },
+		{ id: 'image', label: 'IMG', icon: ICON_IMAGE },
+		{ id: 'ticker', label: 'TICK', icon: ICON_TICKER },
+		{ id: 'html5', label: 'H5', icon: ICON_CODE },
 	];
 
 	function html5FormatColor(format?: string): string {
@@ -328,77 +317,85 @@
 </script>
 
 <div class="detail-pane">
-	<!-- Source mode selector -->
+	<!-- ═══ MODE TABS (segmented control) ═══ -->
 	<div class="mode-bar">
-		<span class="mode-bar-label">SOURCE</span>
-		{#each modeLabels as m}
+		{#each modeItems as m}
 			<button
-				class="mode-btn"
-				class:selected={sourceMode === m.id}
+				class="mode-seg"
+				class:active={sourceMode === m.id}
 				onclick={() => onModeChange(m.id)}
 				aria-pressed={sourceMode === m.id}
+				title={m.label}
 			>
-				{m.label}
+				<span class="mode-icon">{@html renderIcon(m.icon, 11, 'stroke')}</span>
+				<span class="mode-label">{m.label}</span>
 				{#if m.id === 'image' && layer.imageName}
-					<span class="mode-badge">&#10003;</span>
+					<span class="mode-dot loaded"></span>
 				{:else if m.id === 'ticker' && tickerActive}
-					<span class="mode-badge live">LIVE</span>
+					<span class="mode-dot live"></span>
 				{:else if m.id === 'html5' && layer.html5Status === 'playing'}
-					<span class="mode-badge live">LIVE</span>
+					<span class="mode-dot live"></span>
 				{:else if m.id === 'html5' && layer.html5Url}
-					<span class="mode-badge">&#10003;</span>
+					<span class="mode-dot loaded"></span>
 				{/if}
 			</button>
 		{/each}
 	</div>
 
-	<!-- Two-column body: controls left, preview right (template mode only) -->
-	<div class="detail-body">
-		<div class="controls-col">
-			<!-- ═══════════════ TEMPLATE MODE ═══════════════ -->
+	<!-- ═══ SCROLLABLE CONTENT AREA ═══ -->
+	<div class="content-scroll">
+		<div class="content-body">
+			<!-- Preview column for template mode -->
 			{#if sourceMode === 'template'}
-				<div class="tpl-strip">
-					{#each templateList as t}
-						<button
-							class="tpl-card"
-							class:selected={templateId === t.id}
-							onclick={() => onTemplateChange(t.id)}
-							title={t.name}
-							aria-label={t.name}
-							aria-pressed={templateId === t.id}
-							style="--tpl-accent: {tplAccent[t.id] ?? '#888'}"
-						>
-							<span class="tpl-accent-bar"></span>
-							<span class="tpl-card-name">{tplShortName[t.id] ?? t.name}</span>
-						</button>
-					{/each}
-				</div>
+				<div class="tpl-layout">
+					<div class="tpl-controls">
+						<div class="tpl-strip">
+							{#each templateList as t}
+								<button
+									class="tpl-card"
+									class:selected={templateId === t.id}
+									onclick={() => onTemplateChange(t.id)}
+									title={t.name}
+									aria-label={t.name}
+									aria-pressed={templateId === t.id}
+									style="--tpl-accent: {tplAccent[t.id] ?? '#888'}"
+								>
+									<span class="tpl-accent-bar"></span>
+									<span class="tpl-card-name">{tplShortName[t.id] ?? t.name}</span>
+								</button>
+							{/each}
+						</div>
 
-				{#if tpl}
-					<div class="fields-section" class:grid-2={fieldLayout === 'grid-2'} class:grid-3={fieldLayout === 'grid-3'}>
-						{#each tpl.fields as field}
-							<label class="field-item">
-								<span class="field-lbl">{field.label}</span>
-								<input
-									type="text"
-									class="field-inp"
-									value={fields[field.key] ?? ''}
-									maxlength={field.maxLength}
-									oninput={(e) => onFieldChange(field.key, (e.target as HTMLInputElement).value)}
-								/>
-							</label>
-						{/each}
+						{#if tpl}
+							<div class="fields-section" class:grid-2={fieldLayout === 'grid-2'} class:grid-3={fieldLayout === 'grid-3'}>
+								{#each tpl.fields as field}
+									<label class="field-item">
+										<span class="field-lbl">{field.label}</span>
+										<input
+											type="text"
+											class="field-inp"
+											value={fields[field.key] ?? ''}
+											maxlength={field.maxLength}
+											oninput={(e) => onFieldChange(field.key, (e.target as HTMLInputElement).value)}
+										/>
+									</label>
+								{/each}
+							</div>
+						{/if}
 					</div>
-				{/if}
 
-				<div class="action-grid">
-					<button class="act-btn on" onclick={onCutOn} disabled={layer.active || busy}>CUT ON</button>
-					<button class="act-btn auto-on" onclick={onAutoOn} disabled={layer.active || busy}>AUTO ON</button>
-					<button class="act-btn off" onclick={onCutOff} disabled={!layer.active || busy}>CUT OFF</button>
-					<button class="act-btn auto-off" onclick={onAutoOff} disabled={!layer.active || busy}>AUTO OFF</button>
+					<div class="preview-col">
+						<canvas
+							bind:this={previewCanvas}
+							class="detail-preview"
+							width={384}
+							height={216}
+							aria-label="Layer {layer.id} preview"
+						></canvas>
+					</div>
 				</div>
 
-			<!-- ═══════════════ IMAGE MODE ═══════════════ -->
+			<!-- ═══ IMAGE MODE ═══ -->
 			{:else if sourceMode === 'image'}
 				<input
 					bind:this={fileInput}
@@ -408,17 +405,23 @@
 					onchange={handleFileSelect}
 				/>
 				<div class="image-section">
-					<button class="act-btn upload" onclick={() => fileInput?.click()}>UPLOAD PNG</button>
+					<button class="act-btn upload" onclick={() => fileInput?.click()}>
+						<span class="btn-icon">{@html renderIcon(ICON_UPLOAD, 11, 'stroke')}</span>
+						UPLOAD PNG
+					</button>
 					{#if layer.imageName}
-						<span class="image-info">{layer.imageName} ({layer.imageWidth}×{layer.imageHeight})</span>
-						<button class="act-btn del" onclick={onImageDelete}>DELETE</button>
+						<span class="image-info">{layer.imageName} ({layer.imageWidth}&times;{layer.imageHeight})</span>
+						<button class="act-btn del" onclick={onImageDelete}>
+							<span class="btn-icon">{@html renderIcon(ICON_TRASH, 11, 'stroke')}</span>
+							DEL
+						</button>
 					{:else}
 						<span class="ctl-unit">No image uploaded</span>
 					{/if}
 				</div>
 
 				{#if layer.imageName}
-					<div class="rect-controls">
+					<div class="rect-row">
 						<label class="ctl-param" title="X position">
 							<span>X</span>
 							<input type="number" min="0" step="10"
@@ -448,20 +451,13 @@
 							/>
 						</label>
 					</div>
-
-					<div class="action-grid">
-						<button class="act-btn on" onclick={onCutOn} disabled={layer.active || busy}>CUT ON</button>
-						<button class="act-btn auto-on" onclick={onAutoOn} disabled={layer.active || busy}>AUTO ON</button>
-						<button class="act-btn off" onclick={onCutOff} disabled={!layer.active || busy}>CUT OFF</button>
-						<button class="act-btn auto-off" onclick={onAutoOff} disabled={!layer.active || busy}>AUTO OFF</button>
-					</div>
 				{/if}
 
-			<!-- ═══════════════ TICKER MODE ═══════════════ -->
+			<!-- ═══ TICKER MODE ═══ -->
 			{:else if sourceMode === 'ticker'}
 				<div class="ticker-section">
 					<input
-						class="field-inp ticker-text"
+						class="field-inp"
 						type="text"
 						placeholder="Ticker text..."
 						bind:value={tickerText}
@@ -484,8 +480,6 @@
 							<input type="checkbox" bind:checked={tickerLoop} />
 							<span>Loop</span>
 						</label>
-					</div>
-					<div class="action-grid">
 						{#if tickerActive}
 							<button class="act-btn anim-stop" onclick={onTickerStop}>STOP</button>
 							<button class="act-btn fly" onclick={() => onTickerUpdateText(tickerText)}>UPDATE</button>
@@ -495,48 +489,43 @@
 					</div>
 				</div>
 
-	
-			<!-- ═══════════════ HTML5 MODE ═══════════════ -->
+			<!-- ═══ HTML5 MODE ═══ -->
 			{:else if sourceMode === 'html5'}
 				<div class="html5-section">
 					{#if html5Templates.length > 0}
-						<div class="html5-template-picker">
-							<select
-								class="field-inp html5-select"
-								aria-label="Select HTML5 template"
-								onchange={(e) => {
-									const val = (e.target as HTMLSelectElement).value;
-									if (val && val !== '__custom__') {
-										html5Url = val;
-										const tmpl = html5Templates.find(t => t.url === val);
-										html5LocalSchema = tmpl?.dataSchema ?? null;
-										html5FormValues = {};
-										// Pre-fill JSON textarea with defaults from schema
-										const fields = normalizeSchemaFields(tmpl?.dataSchema);
-										if (fields.length > 0) {
-											const defaults: Record<string, any> = {};
-											for (const f of fields) defaults[f.key] = f.default ?? '';
-											html5DataJson = JSON.stringify(defaults, null, 2);
-										}
-									} else {
-										html5LocalSchema = null;
-										html5FormValues = {};
+						<select
+							class="field-inp"
+							aria-label="Select HTML5 template"
+							onchange={(e) => {
+								const val = (e.target as HTMLSelectElement).value;
+								if (val && val !== '__custom__') {
+									html5Url = val;
+									const tmpl = html5Templates.find(t => t.url === val);
+									html5LocalSchema = tmpl?.dataSchema ?? null;
+									html5FormValues = {};
+									const schemaFields = normalizeSchemaFields(tmpl?.dataSchema);
+									if (schemaFields.length > 0) {
+										const defaults: Record<string, any> = {};
+										for (const f of schemaFields) defaults[f.key] = f.default ?? '';
+										html5DataJson = JSON.stringify(defaults, null, 2);
 									}
-								}}
-							>
-								<option value="">— Select a template —</option>
-								{#each html5Templates as tmpl}
-									<option value={tmpl.url}>
-										{tmpl.name} ({tmpl.format})
-									</option>
-								{/each}
-								<option value="__custom__">Custom URL...</option>
-							</select>
-						</div>
+								} else {
+									html5LocalSchema = null;
+									html5FormValues = {};
+								}
+							}}
+						>
+							<option value="">-- Select template --</option>
+							{#each html5Templates as tmpl}
+								<option value={tmpl.url}>{tmpl.name} ({tmpl.format})</option>
+							{/each}
+							<option value="__custom__">Custom URL...</option>
+						</select>
 					{/if}
+
 					<div class="html5-url-row">
 						<input
-							class="field-inp html5-url"
+							class="field-inp"
 							type="text"
 							placeholder="file:///path/to/template.html or http://..."
 							bind:value={html5Url}
@@ -559,7 +548,6 @@
 
 						{#if layer.html5Status === 'ready' || layer.html5Status === 'playing'}
 							{#if hasSchema}
-								<!-- Dynamic form from manifest schema -->
 								<div class="html5-form">
 									<div class="html5-form-fields">
 										{#each html5Fields as field (field.key)}
@@ -618,7 +606,6 @@
 									<button class="act-btn upload" onclick={handleFormUpdate}>UPDATE</button>
 								</div>
 							{:else}
-								<!-- Fallback: raw JSON textarea -->
 								<div class="html5-data-section">
 									<textarea
 										class="html5-data-input"
@@ -631,31 +618,26 @@
 								</div>
 							{/if}
 
-							<div class="action-grid">
+							<div class="html5-transport">
 								<button class="act-btn anim-start" onclick={onHTML5Play} disabled={layer.html5Status === 'playing'}>PLAY</button>
 								<button class="act-btn anim-stop" onclick={onHTML5Stop} disabled={layer.html5Status !== 'playing'}>STOP</button>
 								<button class="act-btn fly" onclick={onHTML5Next}>NEXT</button>
 							</div>
 						{/if}
-
-						<div class="action-grid">
-							<button class="act-btn on" onclick={onCutOn} disabled={layer.active || busy}>CUT ON</button>
-							<button class="act-btn auto-on" onclick={onAutoOn} disabled={layer.active || busy}>AUTO ON</button>
-							<button class="act-btn off" onclick={onCutOff} disabled={!layer.active || busy}>CUT OFF</button>
-							<button class="act-btn auto-off" onclick={onAutoOff} disabled={!layer.active || busy}>AUTO OFF</button>
-						</div>
 					{/if}
 				</div>
 			{/if}
 
-			<!-- ═══════════════ EFFECTS (any mode, when active) ═══════════════ -->
+			<!-- ═══ EFFECTS (any mode, when active) ═══ -->
 			{#if layer.active}
 				<div class="effects-section">
 					<div class="effects-row">
 						<button class="disclosure" onclick={() => { flyOpen = !flyOpen; if (flyOpen) animOpen = false; }} aria-expanded={flyOpen} class:active-disc={flyOpen}>
+							<span class="disc-arrow">{@html renderIcon(flyOpen ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT, 10, 'stroke')}</span>
 							FLY
 						</button>
 						<button class="disclosure" onclick={() => { animOpen = !animOpen; if (animOpen) flyOpen = false; }} aria-expanded={animOpen} class:active-disc={animOpen}>
+							<span class="disc-arrow">{@html renderIcon(animOpen ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT, 10, 'stroke')}</span>
 							ANIM
 							{#if layer.animationMode}
 								<span class="disclosure-badge">{layer.animationMode}</span>
@@ -751,19 +733,14 @@
 				</div>
 			{/if}
 		</div>
+	</div>
 
-		<!-- Preview column: only in template mode -->
-		{#if sourceMode === 'template'}
-			<div class="preview-col">
-				<canvas
-					bind:this={previewCanvas}
-					class="detail-preview"
-					width={384}
-					height={216}
-					aria-label="Layer {layer.id} preview"
-				></canvas>
-			</div>
-		{/if}
+	<!-- ═══ FIXED DSK FOOTER ═══ -->
+	<div class="dsk-footer" class:active={layer.active}>
+		<button class="dsk-btn on" onclick={onCutOn} disabled={layer.active || busy}>CUT ON</button>
+		<button class="dsk-btn auto-on" onclick={onAutoOn} disabled={layer.active || busy}>AUTO ON</button>
+		<button class="dsk-btn off" onclick={onCutOff} disabled={!layer.active || busy}>CUT OFF</button>
+		<button class="dsk-btn auto-off" onclick={onAutoOff} disabled={!layer.active || busy}>AUTO OFF</button>
 	</div>
 </div>
 
@@ -773,106 +750,114 @@
 		min-width: 0;
 		display: flex;
 		flex-direction: column;
-		gap: 4px;
-		padding: 6px 8px;
 		overflow: hidden;
 	}
 
-	/* ── Mode selector bar ── */
+	/* ── Mode segmented control ── */
 	.mode-bar {
 		display: flex;
-		align-items: center;
-		gap: 3px;
+		gap: 1px;
+		padding: 4px 6px;
 		flex-shrink: 0;
+		background: var(--bg-base);
+		border-bottom: 1px solid var(--border-subtle);
 	}
 
-	.mode-bar-label {
-		font-family: var(--font-ui);
-		font-size: var(--text-2xs);
-		font-weight: 700;
-		letter-spacing: 0.1em;
-		color: var(--text-tertiary);
-		flex-shrink: 0;
-		margin-right: 3px;
-	}
-
-	.mode-btn {
+	.mode-seg {
 		display: flex;
 		align-items: center;
 		gap: 3px;
+		position: relative;
 		font-family: var(--font-ui);
 		font-size: var(--text-2xs);
 		font-weight: 700;
 		letter-spacing: 0.06em;
 		color: var(--text-tertiary);
-		background: var(--bg-base);
-		border: 1px solid var(--border-default);
+		background: transparent;
+		border: 1px solid transparent;
 		border-radius: var(--radius-sm);
-		padding: 4px 10px;
+		padding: 3px 8px;
 		cursor: pointer;
-		transition: border-color var(--transition-fast), color var(--transition-fast), background var(--transition-fast);
+		transition: all var(--transition-fast);
 	}
 
-	.mode-btn:hover {
+	.mode-seg:hover {
 		color: var(--text-primary);
-		border-color: var(--border-prominent, var(--border-default));
+		background: var(--bg-hover);
 	}
 
-	.mode-btn.selected {
+	.mode-seg.active {
 		color: var(--text-primary);
 		border-color: var(--accent-blue);
 		background: var(--accent-blue-dim);
 	}
 
-	.mode-badge {
-		font-family: var(--font-mono);
-		font-size: 0.45rem;
-		font-weight: 600;
-		color: var(--accent-blue);
-		background: var(--accent-blue-dim);
-		padding: 0 4px;
-		border-radius: 2px;
-	}
-
-	.mode-badge.live {
-		color: #fff;
-		background: var(--tally-program);
-		animation: badge-pulse 1.2s ease-in-out infinite;
-	}
-
-	@keyframes badge-pulse {
-		0%, 100% { opacity: 1; }
-		50% { opacity: 0.5; }
-	}
-
-	/* ── Two-column body ── */
-	.detail-body {
+	.mode-icon {
 		display: flex;
-		flex: 1;
-		gap: 8px;
-		min-height: 0;
-		overflow: hidden;
 	}
 
-	.controls-col {
+	.mode-label {
+		white-space: nowrap;
+	}
+
+	.mode-dot {
+		width: 5px;
+		height: 5px;
+		border-radius: 50%;
+		flex-shrink: 0;
+	}
+
+	.mode-dot.loaded {
+		background: var(--color-success);
+	}
+
+	.mode-dot.live {
+		background: var(--tally-program);
+		animation: dot-blink 1.2s ease-in-out infinite;
+	}
+
+	@keyframes dot-blink {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.3; }
+	}
+
+	/* ── Scrollable content area ── */
+	.content-scroll {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+		overflow-x: hidden;
+	}
+
+	.content-body {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		padding: 4px 6px;
+	}
+
+	/* ── Template layout: controls + preview side by side ── */
+	.tpl-layout {
+		display: flex;
+		gap: 6px;
+	}
+
+	.tpl-controls {
 		flex: 1;
 		min-width: 0;
 		display: flex;
 		flex-direction: column;
 		gap: 4px;
-		overflow-y: auto;
 	}
 
 	.preview-col {
 		flex-shrink: 0;
-		width: 220px;
+		width: 200px;
 		display: flex;
 		flex-direction: column;
 		align-items: center;
-		gap: 4px;
 	}
 
-	/* ── Preview ── */
 	.detail-preview {
 		width: 100%;
 		aspect-ratio: 16 / 9;
@@ -885,7 +870,7 @@
 	/* ── Template strip ── */
 	.tpl-strip {
 		display: flex;
-		gap: 3px;
+		gap: 2px;
 		overflow-x: auto;
 		flex-shrink: 0;
 	}
@@ -893,12 +878,11 @@
 	.tpl-card {
 		position: relative;
 		display: flex;
-		flex-direction: column;
 		align-items: center;
 		justify-content: center;
-		min-width: 52px;
-		height: 26px;
-		padding: 0 6px;
+		min-width: 46px;
+		height: 22px;
+		padding: 0 5px;
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
 		background: var(--bg-base);
@@ -946,19 +930,19 @@
 	.fields-section {
 		display: flex;
 		flex-direction: column;
-		gap: 3px;
+		gap: 2px;
 	}
 
 	.fields-section.grid-2 {
 		display: grid;
 		grid-template-columns: 1fr 1fr;
-		gap: 3px;
+		gap: 2px;
 	}
 
 	.fields-section.grid-3 {
 		display: grid;
 		grid-template-columns: 1fr 1fr 1fr;
-		gap: 3px;
+		gap: 2px;
 	}
 
 	.field-item {
@@ -978,12 +962,12 @@
 
 	.field-inp {
 		font-family: var(--font-ui);
-		font-size: var(--text-sm);
+		font-size: var(--text-xs);
 		background: var(--bg-base);
 		color: var(--text-primary);
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
-		padding: 3px 6px;
+		padding: 2px 5px;
 		width: 100%;
 	}
 
@@ -992,19 +976,27 @@
 		outline: none;
 	}
 
-	/* ── Action buttons ── */
-	.action-grid {
+	/* ── DSK footer (always visible) ── */
+	.dsk-footer {
 		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(60px, 1fr));
-		gap: 3px;
+		grid-template-columns: repeat(4, 1fr);
+		gap: 2px;
+		padding: 4px 6px;
+		flex-shrink: 0;
+		border-top: 1px solid var(--border-subtle);
+		background: var(--bg-base);
 	}
 
-	.act-btn {
+	.dsk-footer.active {
+		border-top-color: var(--color-success);
+	}
+
+	.dsk-btn {
 		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		font-weight: 600;
+		font-size: var(--text-2xs);
+		font-weight: 700;
 		letter-spacing: 0.03em;
-		padding: 5px 4px;
+		padding: 4px 2px;
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
 		background: var(--bg-elevated);
@@ -1014,25 +1006,59 @@
 		white-space: nowrap;
 	}
 
+	.dsk-btn:disabled {
+		opacity: 0.3;
+		cursor: not-allowed;
+	}
+
+	.dsk-footer.active .dsk-btn.off:not(:disabled),
+	.dsk-footer.active .dsk-btn.auto-off:not(:disabled) {
+		border-color: var(--color-success);
+		background: color-mix(in srgb, var(--color-success) 15%, var(--bg-elevated));
+	}
+
+	.dsk-btn.on:not(:disabled):hover,
+	.dsk-btn.auto-on:not(:disabled):hover {
+		border-color: var(--tally-program);
+		background: var(--tally-program-dim);
+	}
+
+	.dsk-btn.off:not(:disabled):hover,
+	.dsk-btn.auto-off:not(:disabled):hover {
+		border-color: var(--color-success);
+		background: color-mix(in srgb, var(--color-success) 25%, var(--bg-elevated));
+	}
+
+	/* ── Action buttons (shared) ── */
+	.act-btn {
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		letter-spacing: 0.03em;
+		padding: 3px 6px;
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		background: var(--bg-elevated);
+		color: var(--text-primary);
+		cursor: pointer;
+		transition: border-color var(--transition-fast), background var(--transition-fast);
+		white-space: nowrap;
+		display: inline-flex;
+		align-items: center;
+		gap: 3px;
+	}
+
 	.act-btn:disabled {
 		opacity: 0.3;
 		cursor: not-allowed;
 	}
 
-	.act-btn.on:not(:disabled):hover,
-	.act-btn.auto-on:not(:disabled):hover {
-		border-color: var(--tally-program);
-		background: var(--tally-program-dim);
+	.btn-icon {
+		display: flex;
 	}
 
-	.act-btn.off:not(:disabled):hover,
-	.act-btn.auto-off:not(:disabled):hover {
-		border-color: var(--tally-preview);
-		background: var(--tally-preview-dim);
-	}
-
-	.act-btn.fly:not(:disabled):hover,
-	.act-btn.upload:not(:disabled):hover {
+	.act-btn.upload:not(:disabled):hover,
+	.act-btn.fly:not(:disabled):hover {
 		border-color: var(--accent-blue);
 		background: var(--accent-blue-dim);
 	}
@@ -1061,13 +1087,13 @@
 	.image-section {
 		display: flex;
 		align-items: center;
-		gap: 6px;
+		gap: 4px;
 		flex-wrap: wrap;
 	}
 
 	.image-info {
 		font-family: var(--font-mono);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		color: var(--text-secondary);
 	}
 
@@ -1075,29 +1101,24 @@
 		display: none;
 	}
 
-	/* ── Rect controls ── */
-	.rect-controls {
+	/* ── Rect controls (compact horizontal row) ── */
+	.rect-row {
 		display: flex;
 		align-items: center;
-		gap: 6px;
-		flex-wrap: wrap;
+		gap: 4px;
 	}
 
 	/* ── Ticker section ── */
 	.ticker-section {
 		display: flex;
 		flex-direction: column;
-		gap: 4px;
-	}
-
-	.ticker-text {
-		width: 100%;
+		gap: 3px;
 	}
 
 	.ticker-params {
 		display: flex;
 		align-items: center;
-		gap: 6px;
+		gap: 4px;
 		flex-wrap: wrap;
 	}
 
@@ -1107,7 +1128,7 @@
 		padding-top: 4px;
 		display: flex;
 		flex-direction: column;
-		gap: 4px;
+		gap: 3px;
 	}
 
 	.effects-row {
@@ -1118,7 +1139,7 @@
 	.disclosure {
 		display: flex;
 		align-items: center;
-		gap: 3px;
+		gap: 2px;
 		font-family: var(--font-ui);
 		font-size: var(--text-2xs);
 		font-weight: 700;
@@ -1129,7 +1150,7 @@
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
 		cursor: pointer;
-		padding: 3px 8px;
+		padding: 2px 6px;
 		transition: border-color var(--transition-fast), color var(--transition-fast), background var(--transition-fast);
 	}
 
@@ -1144,21 +1165,24 @@
 		background: var(--accent-blue-dim);
 	}
 
+	.disc-arrow {
+		display: flex;
+	}
+
 	.disclosure-badge {
 		font-family: var(--font-mono);
-		font-size: 0.45rem;
+		font-size: 0.4rem;
 		font-weight: 600;
 		color: var(--accent-blue);
 		background: var(--accent-blue-dim);
-		padding: 0 4px;
+		padding: 0 3px;
 		border-radius: 2px;
 	}
 
-	/* ── Collapse content ── */
 	.collapse-content {
 		display: flex;
 		align-items: center;
-		gap: 4px;
+		gap: 3px;
 		flex-wrap: wrap;
 		padding: 2px 0;
 	}
@@ -1182,12 +1206,12 @@
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
 		padding: 2px 4px;
-		width: 48px;
+		width: 46px;
 	}
 
 	.ctl-unit {
 		font-family: var(--font-mono);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		color: var(--text-tertiary);
 	}
 
@@ -1208,7 +1232,7 @@
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
 		padding: 1px 3px;
-		width: 38px;
+		width: 36px;
 	}
 
 	.ctl-check {
@@ -1232,35 +1256,23 @@
 	.html5-section {
 		display: flex;
 		flex-direction: column;
-		gap: 4px;
-	}
-	.html5-template-picker {
-		margin-bottom: 2px;
-	}
-	.html5-select {
-		width: 100%;
-		background: var(--surface-2);
-		color: var(--text-primary);
-		border: 1px solid var(--border);
-		border-radius: 3px;
-		padding: 4px 6px;
-		font-size: var(--text-xs);
+		gap: 3px;
 	}
 
 	.html5-url-row {
 		display: flex;
-		gap: 4px;
+		gap: 3px;
 		align-items: center;
 	}
 
-	.html5-url {
+	.html5-url-row .field-inp {
 		flex: 1;
 	}
 
 	.html5-status-row {
 		display: flex;
 		align-items: center;
-		gap: 6px;
+		gap: 4px;
 		flex-wrap: wrap;
 	}
 
@@ -1269,21 +1281,21 @@
 		font-size: var(--text-2xs);
 		font-weight: 600;
 		color: #fff;
-		padding: 1px 6px;
+		padding: 1px 5px;
 		border-radius: 3px;
 		white-space: nowrap;
 	}
 
 	.html5-unload {
 		font-size: var(--text-2xs);
-		padding: 2px 6px;
+		padding: 1px 5px;
 		margin-left: auto;
 	}
 
 	.html5-data-section {
 		display: flex;
 		flex-direction: column;
-		gap: 3px;
+		gap: 2px;
 	}
 
 	.html5-data-input {
@@ -1293,10 +1305,10 @@
 		color: var(--text-primary);
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
-		padding: 4px 6px;
+		padding: 3px 5px;
 		width: 100%;
 		resize: vertical;
-		min-height: 48px;
+		min-height: 40px;
 	}
 
 	.html5-data-input:focus {
@@ -1304,23 +1316,22 @@
 		outline: none;
 	}
 
-	/* ── HTML5 dynamic form ── */
 	.html5-form {
 		display: flex;
 		flex-direction: column;
-		gap: 6px;
+		gap: 4px;
 	}
 
 	.html5-form-fields {
 		display: grid;
 		grid-template-columns: 1fr 1fr;
-		gap: 4px 8px;
+		gap: 3px 6px;
 	}
 
 	.html5-field {
 		display: flex;
 		flex-direction: column;
-		gap: 2px;
+		gap: 1px;
 	}
 
 	.html5-field-label {
@@ -1335,12 +1346,12 @@
 	.html5-color-row {
 		display: flex;
 		align-items: center;
-		gap: 6px;
+		gap: 4px;
 	}
 
 	.html5-color-row input[type="color"] {
-		width: 32px;
-		height: 24px;
+		width: 28px;
+		height: 20px;
 		padding: 0;
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
@@ -1350,7 +1361,7 @@
 
 	.html5-color-hex {
 		font-family: var(--font-mono);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		color: var(--text-secondary);
 	}
 
@@ -1363,6 +1374,11 @@
 	.html5-form-actions {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 4px;
+		gap: 3px;
+	}
+
+	.html5-transport {
+		display: flex;
+		gap: 3px;
 	}
 </style>

@@ -770,7 +770,7 @@
 								<ClipsPanel state={store.effectiveState} />
 							</div>
 						{:else if activeTab === 'Team'}
-							<div class="tab-panel">
+							<div class="tab-panel tab-panel--team">
 								<TeamPanel state={store.effectiveState} />
 							</div>
 						{:else if activeTab === 'Video'}
@@ -845,6 +845,13 @@
 	.tab-panel.audio-tab {
 		overflow-x: auto;
 		overflow-y: hidden;
+	}
+
+	.tab-panel--team {
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+		min-height: 0;
 	}
 
 	.header-row {

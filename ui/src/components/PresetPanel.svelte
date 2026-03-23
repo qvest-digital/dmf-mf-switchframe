@@ -1,7 +1,15 @@
 <script lang="ts">
 	import type { Preset } from '$lib/api/types';
-	import { listPresets, createPreset, recallPreset, deletePreset, apiCall } from '$lib/api/switch-api';
+	import { listPresets, createPreset, recallPreset, deletePreset } from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
+	import {
+		ICON_TRASH,
+		ICON_SAVE,
+		ICON_PLUS,
+		ICON_CHECK,
+		ICON_CLOSE,
+		renderIcon
+	} from '$lib/icons';
 
 	interface Props {
 		onStateUpdate?: () => void;
@@ -13,6 +21,9 @@
 	let saving = $state(false);
 	let presetName = $state('');
 	let deleteConfirmId = $state<string | null>(null);
+
+	const iconSm = 12;
+	const iconMd = 14;
 
 	async function loadPresets() {
 		try {
@@ -59,10 +70,21 @@
 		}
 	}
 
-	function formatDate(iso: string): string {
+	function formatRelativeTime(iso: string): string {
 		try {
 			const d = new Date(iso);
-			return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+			const now = Date.now();
+			const diffMs = d.getTime() - now;
+			const diffSec = Math.round(diffMs / 1000);
+			const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+			const abs = Math.abs(diffSec);
+			if (abs < 45) return rtf.format(diffSec, 'second');
+			if (abs < 3600) return rtf.format(Math.round(diffSec / 60), 'minute');
+			if (abs < 86400) return rtf.format(Math.round(diffSec / 3600), 'hour');
+			if (abs < 604800) return rtf.format(Math.round(diffSec / 86400), 'day');
+			if (abs < 2629800) return rtf.format(Math.round(diffSec / 604800), 'week');
+			if (abs < 31557600) return rtf.format(Math.round(diffSec / 2629800), 'month');
+			return rtf.format(Math.round(diffSec / 31557600), 'year');
 		} catch {
 			return iso;
 		}
@@ -73,110 +95,162 @@
 		presetName = '';
 	}
 
-	// Load presets on mount
 	$effect(() => {
 		loadPresets();
 	});
 </script>
 
 <div class="preset-panel">
-	<div class="preset-header">
-		<span class="preset-title">PRESETS</span>
-		{#if saving}
-			<div class="save-form">
-				<input
-					class="save-input"
-					type="text"
-					placeholder="Preset name"
-					bind:value={presetName}
-					onkeydown={(e) => { if (e.key === 'Enter') handleSave(); if (e.key === 'Escape') cancelSave(); }}
-				/>
-				<button class="form-btn confirm-btn" onclick={handleSave} aria-label="Confirm">Save</button>
-				<button class="form-btn cancel-btn" onclick={cancelSave} aria-label="Cancel">Cancel</button>
-			</div>
-		{:else}
-			<button class="save-btn" onclick={() => { saving = true; }} aria-label="Save Preset">Save Preset</button>
-		{/if}
-	</div>
-
-	<div class="preset-list">
-		{#each presets as preset (preset.id)}
-			<div class="preset-card">
-				{#if deleteConfirmId === preset.id}
-					<div class="delete-confirm">
-						<span class="delete-text">Delete "{preset.name}"?</span>
-						<button class="confirm-yes" onclick={() => handleDelete(preset.id)}>Yes</button>
-						<button class="confirm-no" onclick={() => { deleteConfirmId = null; }}>No</button>
-					</div>
-				{:else}
+	<div class="preset-save-bar">
+		<div class="preset-save-row">
+			<span class="preset-label">Presets</span>
+			{#if saving}
+				<div class="save-inline">
+					<input
+						class="save-input"
+						type="text"
+						placeholder="Name…"
+						bind:value={presetName}
+						onkeydown={(e) => {
+							if (e.key === 'Enter') handleSave();
+							if (e.key === 'Escape') cancelSave();
+						}}
+					/>
 					<button
-						class="preset-recall"
-						onclick={() => handleRecall(preset.id, preset.name)}
-						title="Recall preset: {preset.name}"
+						type="button"
+						class="icon-action save-submit"
+						onclick={handleSave}
+						aria-label="Save preset"
+						title="Save"
 					>
-						<span class="preset-name">{preset.name}</span>
-						<span class="preset-date">{formatDate(preset.createdAt)}</span>
+						{@html renderIcon(ICON_SAVE, iconMd)}
 					</button>
 					<button
-						class="delete-btn"
-						onclick={(e) => { e.stopPropagation(); deleteConfirmId = preset.id; }}
-						title="Delete preset"
-					>X</button>
-				{/if}
-			</div>
-		{/each}
+						type="button"
+						class="icon-action save-cancel"
+						onclick={cancelSave}
+						aria-label="Cancel"
+						title="Cancel"
+					>
+						{@html renderIcon(ICON_CLOSE, iconMd)}
+					</button>
+				</div>
+			{:else}
+				<button
+					type="button"
+					class="icon-action add-preset"
+					onclick={() => {
+						saving = true;
+					}}
+					aria-label="Save new preset"
+					title="Save current state as preset"
+				>
+					{@html renderIcon(ICON_PLUS, iconMd)}
+				</button>
+			{/if}
+		</div>
 	</div>
 
-	{#if presets.length === 0 && !saving}
-		<div class="empty-state">No presets saved</div>
-	{/if}
+	<div class="preset-scroll">
+		{#if presets.length === 0 && !saving}
+			<div class="empty-state">No presets saved</div>
+		{:else}
+			<div class="preset-grid">
+				{#each presets as preset (preset.id)}
+					<div class="preset-card">
+						{#if deleteConfirmId === preset.id}
+							<div class="delete-popover" role="dialog" aria-modal="true" aria-labelledby="del-{preset.id}">
+								<span class="delete-popover-text" id="del-{preset.id}">Delete “{preset.name}”?</span>
+								<div class="delete-popover-actions">
+									<button
+										type="button"
+										class="icon-action delete-confirm"
+										onclick={() => handleDelete(preset.id)}
+										aria-label="Confirm delete"
+										title="Delete"
+									>
+										{@html renderIcon(ICON_CHECK, iconMd)}
+									</button>
+									<button
+										type="button"
+										class="icon-action delete-dismiss"
+										onclick={() => {
+											deleteConfirmId = null;
+										}}
+										aria-label="Cancel delete"
+										title="Cancel"
+									>
+										{@html renderIcon(ICON_CLOSE, iconMd)}
+									</button>
+								</div>
+							</div>
+						{:else}
+							<button
+								type="button"
+								class="preset-recall"
+								onclick={() => handleRecall(preset.id, preset.name)}
+								title="Recall: {preset.name}"
+							>
+								<span class="preset-name">{preset.name}</span>
+								<span class="preset-time">{formatRelativeTime(preset.createdAt)}</span>
+							</button>
+							<button
+								type="button"
+								class="preset-trash icon-action"
+								onclick={(e) => {
+									e.stopPropagation();
+									deleteConfirmId = preset.id;
+								}}
+								aria-label="Delete preset"
+								title="Delete"
+							>
+								{@html renderIcon(ICON_TRASH, iconSm)}
+							</button>
+						{/if}
+					</div>
+				{/each}
+			</div>
+		{/if}
+	</div>
 </div>
 
 <style>
 	.preset-panel {
 		display: flex;
 		flex-direction: column;
-		gap: 6px;
-		padding: 6px;
 		height: 100%;
-		overflow-y: auto;
+		min-height: 0;
+		overflow: hidden;
+		padding: 4px 6px;
+		gap: 4px;
 	}
 
-	.preset-header {
+	.preset-save-bar {
+		flex-shrink: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.preset-save-row {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		padding: 0 2px;
 		gap: 6px;
+		min-height: 0;
 	}
 
-	.preset-title {
+	.preset-label {
 		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		font-weight: 700;
-		letter-spacing: 0.06em;
-		color: var(--text-secondary);
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--text-tertiary);
 		flex-shrink: 0;
 	}
 
-	.save-btn {
-		background: var(--bg-elevated);
-		border: 1px solid var(--border-default);
-		color: var(--text-secondary);
-		font-family: var(--font-ui);
-		font-size: var(--text-sm);
-		font-weight: 500;
-		cursor: pointer;
-		padding: 3px 8px;
-		border-radius: var(--radius-sm);
-	}
-
-	.save-btn:hover {
-		background: var(--bg-hover);
-		color: var(--text-primary);
-	}
-
-	.save-form {
+	.save-inline {
 		display: flex;
 		align-items: center;
 		gap: 4px;
@@ -189,163 +263,242 @@
 		min-width: 0;
 		padding: 3px 6px;
 		font-family: var(--font-ui);
-		font-size: var(--text-sm);
-		background: var(--bg-base);
+		font-size: var(--text-xs);
+		background: var(--bg-control);
 		color: var(--text-primary);
 		border: 1px solid var(--border-subtle);
-		border-radius: var(--radius-sm);
+		border-radius: var(--radius-xs);
 		outline: none;
+		transition: border-color var(--transition-fast);
 	}
 
 	.save-input:focus {
 		border-color: var(--accent-blue);
 	}
 
-	.form-btn {
-		padding: 3px 6px;
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		font-weight: 600;
+	.save-input::placeholder {
+		color: var(--text-tertiary);
+	}
+
+	.icon-action {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0;
+		border: none;
+		background: transparent;
+		color: var(--text-secondary);
 		cursor: pointer;
-		white-space: nowrap;
+		border-radius: var(--radius-xs);
+		line-height: 0;
+		transition:
+			background var(--transition-fast),
+			color var(--transition-fast);
 	}
 
-	.confirm-btn {
-		background: rgba(34, 197, 94, 0.2);
-		color: var(--color-success);
-		border-color: rgba(34, 197, 94, 0.4);
+	.icon-action:hover {
+		background: var(--bg-hover);
+		color: var(--text-primary);
 	}
 
-	.confirm-btn:hover {
-		background: rgba(34, 197, 94, 0.3);
+	.icon-action :global(svg) {
+		display: block;
 	}
 
-	.cancel-btn {
-		background: var(--bg-elevated);
+	.add-preset {
+		width: 26px;
+		height: 26px;
+		flex-shrink: 0;
+		border: 1px solid var(--border-subtle);
+		background: var(--bg-control);
 		color: var(--text-secondary);
 	}
 
-	.cancel-btn:hover {
+	.add-preset:hover {
+		border-color: var(--accent-blue);
+		color: var(--accent-blue);
 		background: var(--bg-hover);
 	}
 
-	.preset-list {
-		display: flex;
-		flex-direction: column;
-		gap: 3px;
+	.save-submit {
+		width: 26px;
+		height: 26px;
+		flex-shrink: 0;
+		border: 1px solid rgba(34, 197, 94, 0.35);
+		background: color-mix(in srgb, var(--color-success) 12%, transparent);
+		color: var(--color-success);
+	}
+
+	.save-submit:hover {
+		background: color-mix(in srgb, var(--color-success) 22%, transparent);
+	}
+
+	.save-cancel {
+		width: 26px;
+		height: 26px;
+		flex-shrink: 0;
+		border: 1px solid var(--border-subtle);
+		background: var(--bg-control);
+	}
+
+	.preset-scroll {
+		flex: 1;
+		min-height: 0;
+		overflow-x: hidden;
+		overflow-y: auto;
+	}
+
+	.preset-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+		gap: 4px;
+		align-content: start;
 	}
 
 	.preset-card {
-		display: flex;
-		align-items: stretch;
-		gap: 2px;
+		position: relative;
+		min-height: 52px;
+		border-radius: var(--radius-sm);
+		border: 1px solid var(--border-default);
+		background: var(--bg-elevated);
+		overflow: hidden;
+		transition:
+			border-color var(--transition-fast),
+			background var(--transition-fast);
+	}
+
+	.preset-card:hover {
+		border-color: var(--border-strong);
+		background: var(--bg-panel);
 	}
 
 	.preset-recall {
-		flex: 1;
+		width: 100%;
+		height: 100%;
+		min-height: 52px;
 		display: flex;
 		flex-direction: column;
-		gap: 1px;
-		padding: 6px 8px;
-		background: var(--bg-elevated);
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
+		align-items: flex-start;
+		justify-content: center;
+		gap: 2px;
+		padding: 6px 28px 6px 8px;
+		margin: 0;
+		border: none;
+		background: transparent;
 		cursor: pointer;
 		text-align: left;
-		transition:
-			background var(--transition-fast),
-			border-color var(--transition-fast);
+		font: inherit;
+		transition: background var(--transition-fast);
 	}
 
 	.preset-recall:hover {
 		background: var(--bg-hover);
-		border-color: var(--accent-blue);
+	}
+
+	.preset-recall:focus-visible {
+		outline: 2px solid var(--accent-blue);
+		outline-offset: -2px;
 	}
 
 	.preset-name {
 		font-family: var(--font-ui);
-		font-size: var(--text-sm);
-		font-weight: 500;
-		color: var(--text-primary);
-	}
-
-	.preset-date {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		color: var(--text-tertiary);
-	}
-
-	.delete-btn {
-		padding: 2px 6px;
-		background: var(--bg-elevated);
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
-		color: var(--text-tertiary);
 		font-size: var(--text-xs);
 		font-weight: 600;
-		cursor: pointer;
-		align-self: center;
+		color: var(--text-primary);
+		line-height: 1.2;
+		display: -webkit-box;
+		-webkit-line-clamp: 2;
+		line-clamp: 2;
+		-webkit-box-orient: vertical;
+		overflow: hidden;
+		word-break: break-word;
 	}
 
-	.delete-btn:hover {
+	.preset-time {
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		color: var(--text-tertiary);
+		line-height: 1.2;
+	}
+
+	.preset-trash {
+		position: absolute;
+		top: 3px;
+		right: 3px;
+		width: 24px;
+		height: 24px;
+		z-index: 1;
+		color: var(--text-tertiary);
+	}
+
+	.preset-trash:hover {
 		color: var(--color-error);
-		background: var(--bg-hover);
+		background: color-mix(in srgb, var(--color-error) 10%, transparent);
 	}
 
-	.delete-confirm {
-		flex: 1;
+	.delete-popover {
+		position: absolute;
+		inset: 0;
+		z-index: 2;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 6px;
+		padding: 6px;
+		background: color-mix(in srgb, var(--bg-panel) 92%, transparent);
+		backdrop-filter: blur(4px);
+		border-radius: inherit;
+	}
+
+	.delete-popover-text {
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		color: var(--text-primary);
+		text-align: center;
+		line-height: 1.25;
+		display: -webkit-box;
+		-webkit-line-clamp: 3;
+		line-clamp: 3;
+		-webkit-box-orient: vertical;
+		overflow: hidden;
+	}
+
+	.delete-popover-actions {
 		display: flex;
 		align-items: center;
 		gap: 6px;
-		padding: 6px 8px;
-		background: var(--bg-elevated);
-		border: 1px solid rgba(239, 68, 68, 0.4);
-		border-radius: var(--radius-sm);
 	}
 
-	.delete-text {
-		flex: 1;
-		font-family: var(--font-ui);
-		font-size: var(--text-sm);
-		color: var(--text-primary);
-	}
-
-	.confirm-yes,
-	.confirm-no {
-		padding: 2px 8px;
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		font-weight: 600;
-		cursor: pointer;
-	}
-
-	.confirm-yes {
-		background: rgba(239, 68, 68, 0.2);
+	.delete-confirm {
+		width: 28px;
+		height: 28px;
+		border: 1px solid rgba(239, 68, 68, 0.45);
+		background: color-mix(in srgb, var(--color-error) 14%, transparent);
 		color: var(--color-error);
-		border-color: rgba(239, 68, 68, 0.4);
 	}
 
-	.confirm-yes:hover {
-		background: rgba(239, 68, 68, 0.3);
+	.delete-confirm:hover {
+		background: color-mix(in srgb, var(--color-error) 24%, transparent);
 	}
 
-	.confirm-no {
-		background: var(--bg-elevated);
-		color: var(--text-secondary);
-	}
-
-	.confirm-no:hover {
-		background: var(--bg-hover);
+	.delete-dismiss {
+		width: 28px;
+		height: 28px;
+		border: 1px solid var(--border-subtle);
+		background: var(--bg-control);
 	}
 
 	.empty-state {
-		text-align: center;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		min-height: 48px;
+		padding: 8px;
+		font-family: var(--font-ui);
+		font-size: var(--text-xs);
 		color: var(--text-tertiary);
-		font-size: var(--text-sm);
-		padding: 12px 4px;
+		text-align: center;
 	}
 </style>

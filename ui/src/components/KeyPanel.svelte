@@ -3,6 +3,14 @@
 	import { setSourceKey, deleteSourceKey, getSourceKey, apiCall } from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
 	import { rgbToYCbCr, ycbcrToHex, hexToRgb, KEY_PRESETS } from '$lib/util/color';
+	import {
+		ICON_KEY,
+		ICON_CHEVRON_DOWN,
+		ICON_CHEVRON_RIGHT,
+		ICON_CHECK,
+		ICON_CLOSE,
+		renderIcon,
+	} from '$lib/icons';
 
 	interface Props {
 		state: ControlRoomState;
@@ -32,7 +40,7 @@
 
 	let advancedOpen = $state(false);
 
-	function applyPreset(preset: typeof KEY_PRESETS[0]) {
+	function applyPreset(preset: (typeof KEY_PRESETS)[0]) {
 		keyColorY = preset.y;
 		keyColorCb = preset.cb;
 		keyColorCr = preset.cr;
@@ -63,37 +71,39 @@
 		if (!source) return;
 		const gen = ++loadGeneration;
 
-		getSourceKey(source).then((config) => {
-			if (gen !== loadGeneration) return; // stale response
-			keyType = config.type ?? 'none';
-			enabled = config.enabled ?? true;
-			if (config.type === 'chroma') {
-				keyColorY = config.keyColorY ?? 173;
-				keyColorCb = config.keyColorCb ?? 42;
-				keyColorCr = config.keyColorCr ?? 26;
-				similarity = config.similarity ?? 0.4;
-				smoothness = config.smoothness ?? 0.1;
-				spillSuppress = config.spillSuppress ?? 0.5;
-			} else if (config.type === 'luma') {
-				lowClip = config.lowClip ?? 0.0;
-				highClip = config.highClip ?? 0.8;
-				softness = config.softness ?? 0.1;
-			}
-		}).catch(() => {
-			if (gen !== loadGeneration) return; // stale response
-			// No key config for this source (404) — reset to defaults
-			keyType = 'none';
-			enabled = true;
-			keyColorY = 173;
-			keyColorCb = 42;
-			keyColorCr = 26;
-			similarity = 0.4;
-			smoothness = 0.1;
-			spillSuppress = 0.5;
-			lowClip = 0.0;
-			highClip = 0.8;
-			softness = 0.1;
-		});
+		getSourceKey(source)
+			.then((config) => {
+				if (gen !== loadGeneration) return; // stale response
+				keyType = config.type ?? 'none';
+				enabled = config.enabled ?? true;
+				if (config.type === 'chroma') {
+					keyColorY = config.keyColorY ?? 173;
+					keyColorCb = config.keyColorCb ?? 42;
+					keyColorCr = config.keyColorCr ?? 26;
+					similarity = config.similarity ?? 0.4;
+					smoothness = config.smoothness ?? 0.1;
+					spillSuppress = config.spillSuppress ?? 0.5;
+				} else if (config.type === 'luma') {
+					lowClip = config.lowClip ?? 0.0;
+					highClip = config.highClip ?? 0.8;
+					softness = config.softness ?? 0.1;
+				}
+			})
+			.catch(() => {
+				if (gen !== loadGeneration) return; // stale response
+				// No key config for this source (404) — reset to defaults
+				keyType = 'none';
+				enabled = true;
+				keyColorY = 173;
+				keyColorCb = 42;
+				keyColorCr = 26;
+				similarity = 0.4;
+				smoothness = 0.1;
+				spillSuppress = 0.5;
+				lowClip = 0.0;
+				highClip = 0.8;
+				softness = 0.1;
+			});
 	});
 
 	function selectSource(key: string) {
@@ -135,354 +145,583 @@
 </script>
 
 <div class="key-panel">
-	<div class="panel-header">
-		<span class="panel-title">UPSTREAM KEY</span>
-	</div>
+	<header class="key-panel__header">
+		<span class="key-panel__header-icon" aria-hidden="true">{@html renderIcon(ICON_KEY, 14, 'fill')}</span>
+		<span class="key-panel__title">UPSTREAM KEY</span>
+	</header>
 
-	<div class="source-select">
-		<label class="field-label">Source
-		<select
-			class="key-select"
-			value={activeSource}
-			onchange={(e) => selectSource((e.target as HTMLSelectElement).value)}
-		>
-			{#each sourceKeys as key}
-				<option value={key}>{crState.sources[key]?.label || key}</option>
+	<div class="key-panel__body">
+		<nav class="key-panel__rail" aria-label="Sources">
+			{#each sourceKeys as key (key)}
+				<button
+					type="button"
+					class="source-pill"
+					class:source-pill--active={activeSource === key}
+					onclick={() => selectSource(key)}
+				>
+					{crState.sources[key]?.label || key}
+				</button>
 			{/each}
-		</select>
-		</label>
-	</div>
+		</nav>
 
-	<div class="key-type-select">
-		<span class="field-label">Type</span>
-		<div class="type-buttons">
-			<button class="type-btn" class:active={keyType === 'none'} onclick={() => keyType = 'none'}>None</button>
-			<button class="type-btn" class:active={keyType === 'chroma'} onclick={() => keyType = 'chroma'}>Chroma</button>
-			<button class="type-btn" class:active={keyType === 'luma'} onclick={() => keyType = 'luma'}>Luma</button>
-		</div>
-	</div>
-
-	{#if keyType !== 'none'}
-		<label class="enable-label">
-			<input type="checkbox" bind:checked={enabled} />
-			Enabled
-		</label>
-	{/if}
-
-	{#if keyType === 'chroma'}
-		<div class="key-controls">
-			<div class="color-presets">
-				<span class="field-label">Key Color</span>
-				<div class="preset-row">
-					{#each KEY_PRESETS as preset}
-						<button class="preset-btn" onclick={() => applyPreset(preset)}>
-							{preset.label}
-						</button>
-					{/each}
-					<input
-						type="color"
-						value={colorHex}
-						oninput={(e) => handleColorInput((e.target as HTMLInputElement).value)}
-						class="color-swatch"
-						title="Pick key color"
-					/>
-				</div>
-			</div>
-
-			<div class="slider-group">
-				<label class="slider-label">Similarity: {similarity.toFixed(2)}
-				<input type="range" min="0" max="1" step="0.01" bind:value={similarity} class="slider" />
-				</label>
-			</div>
-			<div class="slider-group">
-				<label class="slider-label">Smoothness: {smoothness.toFixed(2)}
-				<input type="range" min="0" max="1" step="0.01" bind:value={smoothness} class="slider" />
-				</label>
-			</div>
-			<div class="slider-group">
-				<label class="slider-label">Spill: {spillSuppress.toFixed(2)}
-				<input type="range" min="0" max="1" step="0.01" bind:value={spillSuppress} class="slider" />
-				</label>
-			</div>
-
-			<button class="advanced-toggle" onclick={() => advancedOpen = !advancedOpen}>
-				{advancedOpen ? '▾' : '▸'} Advanced (Y/Cb/Cr)
-			</button>
-			{#if advancedOpen}
-				<div class="color-group">
-					<div class="color-inputs">
-						<label class="num-label">Y<input type="number" min="0" max="255" bind:value={keyColorY} class="num-input" /></label>
-						<label class="num-label">Cb<input type="number" min="0" max="255" bind:value={keyColorCb} class="num-input" /></label>
-						<label class="num-label">Cr<input type="number" min="0" max="255" bind:value={keyColorCr} class="num-input" /></label>
+		<div class="key-panel__main">
+			<div class="key-panel__config">
+				{#if !sourceKeys.length}
+					<p class="key-panel__empty">No sources available</p>
+				{:else}
+					<div class="config-row config-row--type">
+						<span class="config-label">Type</span>
+						<div class="segmented" role="group" aria-label="Key type">
+							<button
+								type="button"
+								class="segmented__btn"
+								class:segmented__btn--active={keyType === 'none'}
+								onclick={() => (keyType = 'none')}
+							>
+								None
+							</button>
+							<button
+								type="button"
+								class="segmented__btn"
+								class:segmented__btn--active={keyType === 'chroma'}
+								onclick={() => (keyType = 'chroma')}
+							>
+								Chroma
+							</button>
+							<button
+								type="button"
+								class="segmented__btn"
+								class:segmented__btn--active={keyType === 'luma'}
+								onclick={() => (keyType = 'luma')}
+							>
+								Luma
+							</button>
+						</div>
 					</div>
-				</div>
-			{/if}
-		</div>
-	{/if}
 
-	{#if keyType === 'luma'}
-		<div class="key-controls">
-			<div class="slider-group">
-				<label class="slider-label">Low Clip: {lowClip.toFixed(2)}
-				<input type="range" min="0" max="1" step="0.01" bind:value={lowClip} class="slider" />
-				</label>
-			</div>
-			<div class="slider-group">
-				<label class="slider-label">High Clip: {highClip.toFixed(2)}
-				<input type="range" min="0" max="1" step="0.01" bind:value={highClip} class="slider" />
-				</label>
-			</div>
-			<div class="slider-group">
-				<label class="slider-label">Softness: {softness.toFixed(2)}
-				<input type="range" min="0" max="1" step="0.01" bind:value={softness} class="slider" />
-				</label>
-			</div>
-		</div>
-	{/if}
+					{#if keyType !== 'none'}
+						<label class="enable-row">
+							<input type="checkbox" bind:checked={enabled} />
+							<span>Enabled</span>
+						</label>
+					{/if}
 
-	{#if keyType !== 'none'}
-		<button class="apply-btn" onclick={applyKey}>Apply Key</button>
-	{:else if activeSource}
-		<button class="apply-btn remove-btn" onclick={applyKey}>Remove Key</button>
-	{/if}
+					{#if keyType === 'chroma'}
+						<div class="key-block">
+							<span class="config-label">Key color</span>
+							<div class="chroma-top-row">
+								<input
+									type="color"
+									value={colorHex}
+									oninput={(e) => handleColorInput((e.target as HTMLInputElement).value)}
+									class="color-swatch"
+									title="Pick key color"
+								/>
+								<div class="preset-pills">
+									{#each KEY_PRESETS as preset}
+										<button type="button" class="preset-pill" onclick={() => applyPreset(preset)}>
+											{preset.label}
+										</button>
+									{/each}
+								</div>
+							</div>
+
+							<div class="slider-grid slider-grid--3">
+								<label class="slider-cell">
+									<span class="slider-cell__head">
+										<span>Similarity</span>
+										<span class="slider-cell__val">{similarity.toFixed(2)}</span>
+									</span>
+									<input type="range" min="0" max="1" step="0.01" bind:value={similarity} class="slider" />
+								</label>
+								<label class="slider-cell">
+									<span class="slider-cell__head">
+										<span>Smooth</span>
+										<span class="slider-cell__val">{smoothness.toFixed(2)}</span>
+									</span>
+									<input type="range" min="0" max="1" step="0.01" bind:value={smoothness} class="slider" />
+								</label>
+								<label class="slider-cell">
+									<span class="slider-cell__head">
+										<span>Spill</span>
+										<span class="slider-cell__val">{spillSuppress.toFixed(2)}</span>
+									</span>
+									<input
+										type="range"
+										min="0"
+										max="1"
+										step="0.01"
+										bind:value={spillSuppress}
+										class="slider"
+									/>
+								</label>
+							</div>
+
+							<button
+								type="button"
+								class="advanced-disclosure"
+								aria-expanded={advancedOpen}
+								onclick={() => (advancedOpen = !advancedOpen)}
+							>
+								<span class="advanced-disclosure__chev" aria-hidden="true">
+									{#if advancedOpen}
+										{@html renderIcon(ICON_CHEVRON_DOWN, 12)}
+									{:else}
+										{@html renderIcon(ICON_CHEVRON_RIGHT, 12)}
+									{/if}
+								</span>
+								<span>Advanced (Y / Cb / Cr)</span>
+							</button>
+							{#if advancedOpen}
+								<div class="advanced-grid">
+									<label class="num-field">
+										<span>Y</span>
+										<input type="number" min="0" max="255" bind:value={keyColorY} class="num-input" />
+									</label>
+									<label class="num-field">
+										<span>Cb</span>
+										<input type="number" min="0" max="255" bind:value={keyColorCb} class="num-input" />
+									</label>
+									<label class="num-field">
+										<span>Cr</span>
+										<input type="number" min="0" max="255" bind:value={keyColorCr} class="num-input" />
+									</label>
+								</div>
+							{/if}
+						</div>
+					{/if}
+
+					{#if keyType === 'luma'}
+						<div class="key-block">
+							<div class="slider-grid slider-grid--3">
+								<label class="slider-cell">
+									<span class="slider-cell__head">
+										<span>Low clip</span>
+										<span class="slider-cell__val">{lowClip.toFixed(2)}</span>
+									</span>
+									<input type="range" min="0" max="1" step="0.01" bind:value={lowClip} class="slider" />
+								</label>
+								<label class="slider-cell">
+									<span class="slider-cell__head">
+										<span>High clip</span>
+										<span class="slider-cell__val">{highClip.toFixed(2)}</span>
+									</span>
+									<input type="range" min="0" max="1" step="0.01" bind:value={highClip} class="slider" />
+								</label>
+								<label class="slider-cell">
+									<span class="slider-cell__head">
+										<span>Softness</span>
+										<span class="slider-cell__val">{softness.toFixed(2)}</span>
+									</span>
+									<input type="range" min="0" max="1" step="0.01" bind:value={softness} class="slider" />
+								</label>
+							</div>
+						</div>
+					{/if}
+				{/if}
+			</div>
+
+			<footer class="key-panel__footer">
+				{#if keyType !== 'none'}
+					<button type="button" class="footer-btn footer-btn--apply" onclick={applyKey}>
+						<span class="footer-btn__icon" aria-hidden="true">{@html renderIcon(ICON_CHECK, 14)}</span>
+						Apply Key
+					</button>
+				{:else if activeSource}
+					<button type="button" class="footer-btn footer-btn--remove" onclick={applyKey}>
+						<span class="footer-btn__icon" aria-hidden="true">{@html renderIcon(ICON_CLOSE, 14)}</span>
+						Remove Key
+					</button>
+				{/if}
+			</footer>
+		</div>
+	</div>
 </div>
 
 <style>
 	.key-panel {
 		display: flex;
 		flex-direction: column;
-		gap: 6px;
-		padding: 6px;
 		height: 100%;
-		overflow-y: auto;
+		min-height: 0;
+		overflow: hidden;
+		padding: 6px;
+		font-family: var(--font-ui);
+		background: var(--bg-base);
+		box-sizing: border-box;
 	}
 
-	.panel-header {
+	.key-panel__header {
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
-		padding: 0 2px;
+		gap: 6px;
+		flex-shrink: 0;
+		padding: 0 2px 6px;
+		border-bottom: 1px solid var(--border-subtle);
 	}
 
-	.panel-title {
-		font-family: var(--font-ui);
+	.key-panel__header-icon {
+		display: flex;
+		color: var(--text-tertiary);
+	}
+
+	.key-panel__title {
 		font-size: var(--text-xs);
 		font-weight: 700;
 		letter-spacing: 0.06em;
 		color: var(--text-secondary);
 	}
 
-	.field-label {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		font-weight: 500;
-		color: var(--text-tertiary);
-		margin-bottom: 2px;
-		display: block;
-	}
-
-	.source-select {
+	.key-panel__body {
 		display: flex;
-		flex-direction: column;
-	}
-
-	.key-select {
-		width: 100%;
-		padding: 4px 6px;
-		background: var(--bg-base);
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
-		color: var(--text-primary);
-		font-family: var(--font-ui);
-		font-size: var(--text-sm);
-	}
-
-	.key-type-select {
-		display: flex;
-		flex-direction: column;
-	}
-
-	.type-buttons {
-		display: flex;
-		gap: 2px;
-	}
-
-	.type-btn {
 		flex: 1;
-		padding: 4px 6px;
-		background: var(--bg-elevated);
-		border: 1px solid var(--border-default);
+		min-height: 0;
+		gap: 8px;
+		margin-top: 6px;
+		overflow: hidden;
+	}
+
+	.key-panel__rail {
+		width: 100px;
+		min-width: 100px;
+		flex-shrink: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		padding: 4px;
+		overflow-y: auto;
+		overflow-x: hidden;
+		background: var(--bg-surface);
+		border: 1px solid var(--border-subtle);
 		border-radius: var(--radius-sm);
-		color: var(--text-tertiary);
+		box-sizing: border-box;
+	}
+
+	.source-pill {
+		width: 100%;
+		padding: 5px 6px;
+		text-align: left;
 		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		font-weight: 600;
+		line-height: 1.2;
+		color: var(--text-secondary);
+		background: var(--bg-control);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-xs);
+		cursor: pointer;
+		transition:
+			background var(--transition-fast),
+			color var(--transition-fast),
+			border-color var(--transition-fast);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.source-pill:hover {
+		background: var(--bg-hover);
+		color: var(--text-primary);
+	}
+
+	.source-pill--active {
+		background: var(--bg-elevated);
+		color: var(--tally-preview);
+		border-color: color-mix(in srgb, var(--tally-preview) 45%, var(--border-default));
+	}
+
+	.key-panel__main {
+		display: flex;
+		flex-direction: column;
+		flex: 1;
+		min-width: 0;
+		min-height: 0;
+		overflow: hidden;
+	}
+
+	.key-panel__config {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+		overflow-x: hidden;
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		padding-right: 2px;
+	}
+
+	.key-panel__empty {
+		margin: 0;
+		font-size: var(--text-xs);
+		color: var(--text-tertiary);
+	}
+
+	.config-label {
+		display: block;
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-tertiary);
+		margin-bottom: 4px;
+	}
+
+	.config-row {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.config-row--type .config-label {
+		margin-bottom: 0;
+	}
+
+	.segmented {
+		display: inline-flex;
+		align-self: flex-start;
+		border-radius: var(--radius-xs);
+		border: 1px solid var(--border-default);
+		overflow: hidden;
+		background: var(--bg-surface);
+	}
+
+	.segmented__btn {
+		padding: 4px 10px;
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		color: var(--text-tertiary);
+		background: transparent;
+		border: none;
+		border-right: 1px solid var(--border-subtle);
 		cursor: pointer;
 		transition:
 			background var(--transition-fast),
 			color var(--transition-fast);
 	}
 
-	.type-btn:hover {
+	.segmented__btn:last-child {
+		border-right: none;
+	}
+
+	.segmented__btn:hover {
 		background: var(--bg-hover);
 		color: var(--text-primary);
 	}
 
-	.type-btn.active {
-		background: var(--accent-blue-light);
+	.segmented__btn--active {
+		background: var(--bg-control);
 		color: var(--accent-blue);
-		border-color: rgba(59, 130, 246, 0.4);
 	}
 
-	.enable-label {
+	.enable-row {
 		display: flex;
 		align-items: center;
 		gap: 6px;
-		font-family: var(--font-ui);
-		font-size: var(--text-sm);
+		font-size: var(--text-xs);
 		color: var(--text-secondary);
 		cursor: pointer;
+		user-select: none;
 	}
 
-	.key-controls {
+	.key-block {
 		display: flex;
 		flex-direction: column;
 		gap: 6px;
 	}
 
-	.slider-group {
+	.chroma-top-row {
 		display: flex;
-		flex-direction: column;
-		gap: 1px;
-	}
-
-	.slider-label {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		color: var(--text-tertiary);
-	}
-
-	.slider {
-		width: 100%;
-		height: 14px;
-		accent-color: var(--accent-blue);
-	}
-
-	.color-group {
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-	}
-
-	.color-inputs {
-		display: flex;
-		gap: 4px;
-	}
-
-	.num-input {
-		flex: 1;
-		padding: 2px 4px;
-		background: var(--bg-base);
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
-		color: var(--text-primary);
-		font-family: var(--font-mono);
-		font-size: var(--text-xs);
-		width: 100%;
-		min-width: 0;
-	}
-
-	.apply-btn {
-		padding: 6px;
-		background: rgba(34, 197, 94, 0.2);
-		color: var(--color-success);
-		border: 1px solid rgba(34, 197, 94, 0.4);
-		border-radius: var(--radius-sm);
-		font-family: var(--font-ui);
-		font-size: var(--text-sm);
-		font-weight: 600;
-		cursor: pointer;
-		transition:
-			background var(--transition-fast);
-	}
-
-	.apply-btn:hover {
-		background: rgba(34, 197, 94, 0.3);
-	}
-
-	.remove-btn {
-		background: rgba(239, 68, 68, 0.15);
-		color: var(--color-error);
-		border-color: rgba(239, 68, 68, 0.3);
-	}
-
-	.remove-btn:hover {
-		background: rgba(239, 68, 68, 0.25);
-	}
-
-	.color-presets {
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-	}
-
-	.preset-row {
-		display: flex;
-		gap: 4px;
+		flex-direction: row;
 		align-items: center;
-	}
-
-	.preset-btn {
-		flex: 1;
-		padding: 4px 6px;
-		background: var(--bg-elevated);
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
-		color: var(--text-secondary);
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		font-weight: 600;
-		cursor: pointer;
-		transition: background var(--transition-fast), color var(--transition-fast);
-	}
-
-	.preset-btn:hover {
-		background: var(--bg-hover);
-		color: var(--text-primary);
+		gap: 8px;
+		flex-wrap: wrap;
 	}
 
 	.color-swatch {
 		width: 28px;
 		height: 28px;
+		flex-shrink: 0;
 		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
+		border-radius: var(--radius-xs);
 		padding: 0;
 		cursor: pointer;
 		background: none;
 	}
 
-	.advanced-toggle {
-		background: none;
-		border: none;
-		color: var(--text-tertiary);
+	.preset-pills {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 4px;
+		flex: 1;
+		min-width: 0;
+	}
+
+	.preset-pill {
+		padding: 3px 8px;
 		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		cursor: pointer;
-		text-align: left;
-		padding: 2px 0;
-	}
-
-	.advanced-toggle:hover {
+		font-size: var(--text-2xs);
+		font-weight: 600;
 		color: var(--text-secondary);
+		background: var(--bg-control);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-xs);
+		cursor: pointer;
+		transition:
+			background var(--transition-fast),
+			color var(--transition-fast);
+		white-space: nowrap;
 	}
 
-	.num-label {
+	.preset-pill:hover {
+		background: var(--bg-hover);
+		color: var(--text-primary);
+	}
+
+	.slider-grid {
+		display: grid;
+		gap: 6px 8px;
+	}
+
+	.slider-grid--3 {
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+	}
+
+	.slider-cell {
 		display: flex;
 		flex-direction: column;
-		gap: 1px;
+		gap: 2px;
+		min-width: 0;
+	}
+
+	.slider-cell__head {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 4px;
+		font-size: var(--text-2xs);
+		color: var(--text-tertiary);
+	}
+
+	.slider-cell__val {
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		color: var(--text-secondary);
+		font-variant-numeric: tabular-nums;
+	}
+
+	.slider {
+		width: 100%;
+		height: 12px;
+		margin: 0;
+		accent-color: var(--accent-blue);
+	}
+
+	.advanced-disclosure {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		margin-top: 2px;
+		padding: 4px 2px;
+		width: 100%;
+		text-align: left;
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		color: var(--text-tertiary);
+		background: none;
+		border: none;
+		border-radius: var(--radius-xs);
+		cursor: pointer;
+		transition:
+			color var(--transition-fast),
+			background var(--transition-fast);
+	}
+
+	.advanced-disclosure:hover {
+		color: var(--text-secondary);
+		background: var(--bg-hover);
+	}
+
+	.advanced-disclosure__chev {
+		display: flex;
+		flex-shrink: 0;
+		color: var(--text-tertiary);
+	}
+
+	.advanced-grid {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: 6px;
+	}
+
+	.num-field {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		font-size: var(--text-2xs);
+		color: var(--text-tertiary);
+		min-width: 0;
+	}
+
+	.num-input {
+		width: 100%;
+		min-width: 0;
+		padding: 3px 4px;
+		box-sizing: border-box;
+		background: var(--bg-control);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-xs);
+		color: var(--text-primary);
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+	}
+
+	.key-panel__footer {
+		flex-shrink: 0;
+		padding-top: 8px;
+		margin-top: auto;
+		border-top: 1px solid var(--border-subtle);
+	}
+
+	.footer-btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 6px;
+		width: 100%;
+		padding: 7px 10px;
 		font-family: var(--font-ui);
 		font-size: var(--text-xs);
-		color: var(--text-tertiary);
-		flex: 1;
+		font-weight: 600;
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+		transition: background var(--transition-fast);
+		border: 1px solid transparent;
+	}
+
+	.footer-btn__icon {
+		display: flex;
+		flex-shrink: 0;
+	}
+
+	.footer-btn--apply {
+		background: color-mix(in srgb, var(--color-success) 18%, transparent);
+		color: var(--color-success);
+		border-color: color-mix(in srgb, var(--color-success) 40%, transparent);
+	}
+
+	.footer-btn--apply:hover {
+		background: color-mix(in srgb, var(--color-success) 28%, transparent);
+	}
+
+	.footer-btn--remove {
+		background: color-mix(in srgb, var(--color-error) 14%, transparent);
+		color: var(--color-error);
+		border-color: color-mix(in srgb, var(--color-error) 32%, transparent);
+	}
+
+	.footer-btn--remove:hover {
+		background: color-mix(in srgb, var(--color-error) 24%, transparent);
 	}
 </style>

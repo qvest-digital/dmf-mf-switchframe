@@ -171,7 +171,7 @@ describe('SCTE35Panel', () => {
 		const { container } = render(SCTE35Panel, { props: { state: baseState } });
 		const btn = container.querySelector('.ad-break-btn') as HTMLButtonElement;
 		expect(btn).toBeTruthy();
-		expect(btn.textContent?.trim()).toBe('AD BREAK');
+		expect(btn.textContent?.replace(/\s+/g, ' ').trim()).toContain('AD BREAK');
 	});
 
 	it('does not show RETURN button when no active out events', () => {
@@ -207,7 +207,7 @@ describe('SCTE35Panel', () => {
 		const { container } = render(SCTE35Panel, { props: { state } });
 		const returnBtn = container.querySelector('.return-btn');
 		expect(returnBtn).toBeTruthy();
-		expect(returnBtn!.textContent?.trim()).toBe('RETURN');
+		expect(returnBtn!.textContent?.replace(/\s+/g, ' ').trim()).toContain('RETURN');
 	});
 
 	it('calls scte35Cue via apiCall when AD BREAK clicked', async () => {
@@ -713,83 +713,81 @@ describe('SCTE35Panel', () => {
 
 	it('renders three-column grid layout', () => {
 		const { container } = render(SCTE35Panel, { props: { state: baseState } });
-		const panel = container.querySelector('.scte35-panel');
-		expect(panel).toBeTruthy();
-		const zones = panel!.querySelectorAll('.zone');
+		const columns = container.querySelector('.scte35-columns');
+		expect(columns).toBeTruthy();
+		const zones = columns!.querySelectorAll('.zone');
 		expect(zones.length).toBe(3);
 	});
 
 	// --- Getting Started Guide ---
 
-	it('renders Getting Started guide by default', () => {
+	it('renders compact SCTE-35 tip banner by default', () => {
 		localStorage.removeItem('sf-scte35-guide-dismissed');
 		const { container } = render(SCTE35Panel, { props: { state: baseState } });
-		const guide = container.querySelector('.guide-banner');
-		expect(guide).toBeTruthy();
-		expect(container.textContent).toContain('Getting Started with SCTE-35');
+		const tip = container.querySelector('.tip-banner');
+		expect(tip).toBeTruthy();
+		expect(container.textContent).toContain('SCTE-35 cues ad breaks');
 		expect(container.textContent).toContain('AD BREAK');
 		expect(container.textContent).toContain('HOLD');
 		expect(container.textContent).toContain('Cue Builder');
 	});
 
-	it('dismisses guide when dismiss button clicked', async () => {
+	it('dismisses tip banner when dismiss button clicked', async () => {
 		localStorage.removeItem('sf-scte35-guide-dismissed');
 		const { container } = render(SCTE35Panel, { props: { state: baseState } });
-		const dismissBtn = container.querySelector('.guide-dismiss') as HTMLButtonElement;
+		const dismissBtn = container.querySelector('.tip-banner__close') as HTMLButtonElement;
 		expect(dismissBtn).toBeTruthy();
 		await fireEvent.click(dismissBtn);
-		const guide = container.querySelector('.guide-banner');
-		expect(guide).toBeFalsy();
+		const tip = container.querySelector('.tip-banner');
+		expect(tip).toBeFalsy();
 		expect(localStorage.getItem('sf-scte35-guide-dismissed')).toBe('true');
 	});
 
-	it('shows ? button to re-show guide after dismissal', async () => {
+	it('shows help button to re-show tip after dismissal', async () => {
 		localStorage.removeItem('sf-scte35-guide-dismissed');
 		const { container } = render(SCTE35Panel, { props: { state: baseState } });
-		const dismissBtn = container.querySelector('.guide-dismiss') as HTMLButtonElement;
+		const dismissBtn = container.querySelector('.tip-banner__close') as HTMLButtonElement;
 		await fireEvent.click(dismissBtn);
-		const showBtn = container.querySelector('.guide-show-btn');
+		const showBtn = container.querySelector('.guide-help-btn');
 		expect(showBtn).toBeTruthy();
-		expect(showBtn!.textContent?.trim()).toBe('?');
+		expect(showBtn!.getAttribute('title')).toContain('SCTE-35');
 	});
 
-	it('re-shows guide when ? button clicked', async () => {
+	it('re-shows tip when help button clicked', async () => {
 		localStorage.removeItem('sf-scte35-guide-dismissed');
 		const { container } = render(SCTE35Panel, { props: { state: baseState } });
-		// Dismiss first
-		const dismissBtn = container.querySelector('.guide-dismiss') as HTMLButtonElement;
+		const dismissBtn = container.querySelector('.tip-banner__close') as HTMLButtonElement;
 		await fireEvent.click(dismissBtn);
-		// Re-show
-		const showBtn = container.querySelector('.guide-show-btn') as HTMLButtonElement;
+		const showBtn = container.querySelector('.guide-help-btn') as HTMLButtonElement;
 		await fireEvent.click(showBtn);
-		const guide = container.querySelector('.guide-banner');
-		expect(guide).toBeTruthy();
+		const tip = container.querySelector('.tip-banner');
+		expect(tip).toBeTruthy();
 	});
 
 	it('respects localStorage dismissed state on mount', () => {
 		localStorage.setItem('sf-scte35-guide-dismissed', 'true');
 		const { container } = render(SCTE35Panel, { props: { state: baseState } });
-		const guide = container.querySelector('.guide-banner');
-		expect(guide).toBeFalsy();
-		const showBtn = container.querySelector('.guide-show-btn');
+		const tip = container.querySelector('.tip-banner');
+		expect(tip).toBeFalsy();
+		const showBtn = container.querySelector('.guide-help-btn');
 		expect(showBtn).toBeTruthy();
 	});
 
 	// --- Run Demo Button ---
 
-	it('renders Run Demo button in guide', () => {
+	it('renders Demo button in tip banner', () => {
 		localStorage.removeItem('sf-scte35-guide-dismissed');
 		const { container } = render(SCTE35Panel, { props: { state: baseState } });
-		const demoBtn = container.querySelector('.demo-btn') as HTMLButtonElement;
+		const demoBtn = container.querySelector('.tip-banner__demo') as HTMLButtonElement;
 		expect(demoBtn).toBeTruthy();
-		expect(demoBtn.textContent).toContain('Run Demo');
+		expect(demoBtn.textContent).toContain('Demo');
 	});
 
 	it('calls scte35Cue with 60s auto-return when Run Demo clicked', async () => {
 		localStorage.removeItem('sf-scte35-guide-dismissed');
 		const { apiCall, scte35Cue } = await import('$lib/api/switch-api');
 		const { container } = render(SCTE35Panel, { props: { state: baseState } });
-		const demoBtn = container.querySelector('.demo-btn') as HTMLButtonElement;
+		const demoBtn = container.querySelector('.tip-banner__demo') as HTMLButtonElement;
 		await fireEvent.click(demoBtn);
 		expect(apiCall).toHaveBeenCalled();
 		expect(scte35Cue).toHaveBeenCalledWith(expect.objectContaining({
@@ -804,14 +802,14 @@ describe('SCTE35Panel', () => {
 		localStorage.removeItem('sf-scte35-guide-dismissed');
 		const { notify } = await import('$lib/state/notifications.svelte');
 		const { container } = render(SCTE35Panel, { props: { state: baseState } });
-		const demoBtn = container.querySelector('.demo-btn') as HTMLButtonElement;
+		const demoBtn = container.querySelector('.tip-banner__demo') as HTMLButtonElement;
 		await fireEvent.click(demoBtn);
 		expect(notify).toHaveBeenCalledWith('info', expect.stringContaining('60s ad break'));
 	});
 
-	// --- Event Detail Flyout ---
+	// --- Event log inline detail ---
 
-	it('opens event detail flyout when log item clicked', async () => {
+	it('opens inline event detail when log row clicked', async () => {
 		const state = {
 			...baseState,
 			scte35: {
@@ -833,17 +831,17 @@ describe('SCTE35Panel', () => {
 			},
 		};
 		const { container } = render(SCTE35Panel, { props: { state } });
-		const logItem = container.querySelector('.log-item-btn') as HTMLButtonElement;
-		expect(logItem).toBeTruthy();
-		await fireEvent.click(logItem);
-		const flyout = container.querySelector('.detail-flyout');
-		expect(flyout).toBeTruthy();
-		expect(flyout!.textContent).toContain('Event #99');
-		expect(flyout!.textContent).toContain('splice_insert');
-		expect(flyout!.textContent).toContain('OUT (break start)');
+		const logRow = container.querySelector('.log-row') as HTMLButtonElement;
+		expect(logRow).toBeTruthy();
+		await fireEvent.click(logRow);
+		const detail = container.querySelector('.log-detail');
+		expect(detail).toBeTruthy();
+		expect(detail!.textContent).toContain('Event #99');
+		expect(detail!.textContent).toContain('splice_insert');
+		expect(detail!.textContent).toContain('OUT (break start)');
 	});
 
-	it('closes event detail flyout when close button clicked', async () => {
+	it('collapses inline event detail when same log row clicked again', async () => {
 		const state = {
 			...baseState,
 			scte35: {
@@ -865,44 +863,14 @@ describe('SCTE35Panel', () => {
 			},
 		};
 		const { container } = render(SCTE35Panel, { props: { state } });
-		const logItem = container.querySelector('.log-item-btn') as HTMLButtonElement;
-		await fireEvent.click(logItem);
-		expect(container.querySelector('.detail-flyout')).toBeTruthy();
-		const closeBtn = container.querySelector('.detail-close') as HTMLButtonElement;
-		await fireEvent.click(closeBtn);
-		expect(container.querySelector('.detail-flyout')).toBeFalsy();
+		const logRow = container.querySelector('.log-row') as HTMLButtonElement;
+		await fireEvent.click(logRow);
+		expect(container.querySelector('.log-detail')).toBeTruthy();
+		await fireEvent.click(logRow);
+		expect(container.querySelector('.log-detail')).toBeFalsy();
 	});
 
-	it('closes event detail flyout when backdrop clicked', async () => {
-		const state = {
-			...baseState,
-			scte35: {
-				enabled: true,
-				activeEvents: {},
-				eventLog: [
-					{
-						eventId: 1,
-						commandType: 'splice_insert',
-						isOut: true,
-						durationMs: 30000,
-						autoReturn: true,
-						timestamp: Date.now(),
-						status: 'completed',
-					},
-				],
-				heartbeatOk: true,
-				config: { heartbeatIntervalMs: 5000, defaultPreRollMs: 2000, pid: 500, verifyEncoding: false },
-			},
-		};
-		const { container } = render(SCTE35Panel, { props: { state } });
-		const logItem = container.querySelector('.log-item-btn') as HTMLButtonElement;
-		await fireEvent.click(logItem);
-		const backdrop = container.querySelector('.detail-backdrop') as HTMLDivElement;
-		await fireEvent.click(backdrop);
-		expect(container.querySelector('.detail-flyout')).toBeFalsy();
-	});
-
-	it('shows descriptors section in flyout when event has descriptors', async () => {
+	it('shows descriptors section in inline detail when event has descriptors', async () => {
 		const state = {
 			...baseState,
 			scte35: {
@@ -932,13 +900,13 @@ describe('SCTE35Panel', () => {
 			},
 		};
 		const { container } = render(SCTE35Panel, { props: { state } });
-		const logItem = container.querySelector('.log-item-btn') as HTMLButtonElement;
-		await fireEvent.click(logItem);
-		const flyout = container.querySelector('.detail-flyout');
-		expect(flyout!.textContent).toContain('Descriptors (1)');
-		expect(flyout!.textContent).toContain('Provider Ad Start');
-		expect(flyout!.textContent).toContain('ADI');
-		expect(flyout!.textContent).toContain('ABCD0001000H');
+		const logRow = container.querySelector('.log-row') as HTMLButtonElement;
+		await fireEvent.click(logRow);
+		const detail = container.querySelector('.log-detail');
+		expect(detail!.textContent).toContain('Descriptors (1)');
+		expect(detail!.textContent).toContain('Provider Ad Start');
+		expect(detail!.textContent).toContain('ADI');
+		expect(detail!.textContent).toContain('ABCD0001000H');
 	});
 
 	it('shows routing section when event has source/destination', async () => {
@@ -965,15 +933,15 @@ describe('SCTE35Panel', () => {
 			},
 		};
 		const { container } = render(SCTE35Panel, { props: { state } });
-		const logItem = container.querySelector('.log-item-btn') as HTMLButtonElement;
-		await fireEvent.click(logItem);
-		const flyout = container.querySelector('.detail-flyout');
-		expect(flyout!.textContent).toContain('Routing');
-		expect(flyout!.textContent).toContain('injector');
-		expect(flyout!.textContent).toContain('dest-001');
+		const logRow = container.querySelector('.log-row') as HTMLButtonElement;
+		await fireEvent.click(logRow);
+		const detail = container.querySelector('.log-detail');
+		expect(detail!.textContent).toContain('Routing');
+		expect(detail!.textContent).toContain('injector');
+		expect(detail!.textContent).toContain('dest-001');
 	});
 
-	it('log items are buttons with hover styling class', () => {
+	it('log rows are buttons', () => {
 		const state = {
 			...baseState,
 			scte35: {
@@ -995,8 +963,8 @@ describe('SCTE35Panel', () => {
 			},
 		};
 		const { container } = render(SCTE35Panel, { props: { state } });
-		const logItem = container.querySelector('.log-item-btn');
-		expect(logItem).toBeTruthy();
-		expect(logItem!.tagName).toBe('BUTTON');
+		const logRow = container.querySelector('.log-row');
+		expect(logRow).toBeTruthy();
+		expect(logRow!.tagName).toBe('BUTTON');
 	});
 });

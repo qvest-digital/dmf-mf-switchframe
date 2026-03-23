@@ -8,6 +8,9 @@
 		apiCall
 	} from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
+	import {
+		ICON_SAVE, ICON_CLOSE, ICON_TRASH, ICON_CHECK, ICON_GRID, ICON_PLUS, renderIcon
+	} from '$lib/icons';
 
 	interface Props {
 		state: ControlRoomState;
@@ -19,11 +22,15 @@
 	let saving = $state(false);
 	let presetName = $state('');
 	let deleteConfirmName = $state<string | null>(null);
+	let selectedSlotId = $state<number | null>(null);
 
 	let layoutState = $derived(crState.layout);
 	let slots = $derived(layoutState?.slots ?? []);
 	let sourceKeys = $derived(Object.keys(crState.sources).sort());
 	let activePreset = $derived(layoutState?.activePreset ?? '');
+	let selectedSlot = $derived(
+		selectedSlotId == null ? null : slots.find((s) => s.id === selectedSlotId) ?? null
+	);
 
 	// Built-in presets
 	const builtinPresets = [
@@ -34,6 +41,13 @@
 		{ id: 'side-by-side', label: 'SBS', desc: 'Side-by-side split' },
 		{ id: 'quad', label: 'QUAD', desc: '2x2 quad view' },
 	];
+
+	$effect(() => {
+		const ids = new Set(slots.map((s) => s.id));
+		if (selectedSlotId != null && !ids.has(selectedSlotId)) {
+			selectedSlotId = null;
+		}
+	});
 
 	function tallyClass(sourceKey: string): string {
 		if (crState.programSource === sourceKey) return 'tally-program';
@@ -153,38 +167,81 @@
 		presetName = '';
 	}
 
+	function selectSlotCard(slotId: number, e: MouseEvent) {
+		const t = e.target as HTMLElement;
+		if (t.closest('button, select, option')) return;
+		selectedSlotId = slotId;
+	}
+
 	onMount(() => {
 		loadPresets();
 	});
 </script>
 
 <div class="layout-panel">
-	<!-- Preset strip -->
+	<!-- Preset strip: built-ins + user presets (scroll) + save/clear -->
 	<div class="preset-strip">
-		<span class="section-title">LAYOUTS</span>
-		<div class="preset-buttons">
-			{#each builtinPresets as preset}
-				<button
-					class="preset-btn"
-					class:active={activePreset === preset.id}
-					onclick={() => applyBuiltinPreset(preset.id)}
-					title={preset.desc}
-				>
-					{preset.label}
-				</button>
-			{/each}
-			{#each presets as name}
-				<button
-					class="preset-btn user-preset"
-					class:active={activePreset === name}
-					onclick={() => applyUserPreset(name)}
-					title="User preset: {name}"
-				>
-					{name}
-				</button>
-			{/each}
+		<div class="preset-strip__label" title="Layout presets">
+			<span class="preset-strip__icon" aria-hidden="true">{@html renderIcon(ICON_GRID, 13, 'fill')}</span>
+			<span class="preset-strip__title">LAYOUT</span>
 		</div>
-		<div class="preset-actions">
+		<div class="preset-strip__scroll">
+			<div class="preset-strip__inner">
+				{#each builtinPresets as preset}
+					<button
+						type="button"
+						class="preset-btn preset-btn--builtin"
+						class:active={activePreset === preset.id}
+						onclick={() => applyBuiltinPreset(preset.id)}
+						title={preset.desc}
+					>
+						{preset.label}
+					</button>
+				{/each}
+				{#each presets as name}
+					<div class="user-preset-chip" class:active={activePreset === name}>
+						{#if deleteConfirmName === name}
+							<span class="user-preset-chip__confirm-label">Delete?</span>
+							<button
+								type="button"
+								class="icon-btn icon-btn--danger"
+								title="Confirm delete"
+								onclick={() => handleDelete(name)}
+							>
+								<span aria-hidden="true">{@html renderIcon(ICON_CHECK, 12)}</span>
+							</button>
+							<button
+								type="button"
+								class="icon-btn"
+								title="Cancel"
+								onclick={() => { deleteConfirmName = null; }}
+							>
+								<span aria-hidden="true">{@html renderIcon(ICON_CLOSE, 12)}</span>
+							</button>
+						{:else}
+							<button
+								type="button"
+								class="preset-btn preset-btn--user"
+								class:active={activePreset === name}
+								onclick={() => applyUserPreset(name)}
+								title="User preset: {name}"
+							>
+								{name}
+							</button>
+							<button
+								type="button"
+								class="icon-btn icon-btn--ghost"
+								title="Delete preset"
+								onclick={(e) => { e.stopPropagation(); deleteConfirmName = name; }}
+							>
+								<span aria-hidden="true">{@html renderIcon(ICON_TRASH, 11)}</span>
+							</button>
+						{/if}
+					</div>
+				{/each}
+			</div>
+		</div>
+		<div class="preset-strip__actions">
 			{#if saving}
 				<input
 					class="save-input"
@@ -193,115 +250,120 @@
 					bind:value={presetName}
 					onkeydown={(e) => { if (e.key === 'Enter') handleSave(); if (e.key === 'Escape') cancelSave(); }}
 				/>
-				<button class="action-btn save-confirm" onclick={handleSave}>Save</button>
-				<button class="action-btn" onclick={cancelSave}>Cancel</button>
+				<button type="button" class="action-btn action-btn--primary" onclick={handleSave} title="Save preset">
+					<span class="action-btn__ic" aria-hidden="true">{@html renderIcon(ICON_SAVE, 12, 'fill')}</span>
+					<span>Save</span>
+				</button>
+				<button type="button" class="action-btn" onclick={cancelSave} title="Cancel">
+					<span class="action-btn__ic" aria-hidden="true">{@html renderIcon(ICON_CLOSE, 12)}</span>
+				</button>
 			{:else}
-				<button class="action-btn" onclick={() => { saving = true; }}>Save</button>
+				<button type="button" class="action-btn" onclick={() => { saving = true; }} title="Save current layout">
+					<span class="action-btn__ic" aria-hidden="true">{@html renderIcon(ICON_PLUS, 12)}</span>
+					<span>Save</span>
+				</button>
 			{/if}
-			<button class="action-btn clear-btn" onclick={handleClear} title="Clear layout">Clear</button>
+			<button type="button" class="action-btn action-btn--clear" onclick={handleClear} title="Clear layout">
+				Clear
+			</button>
 		</div>
 	</div>
 
-	<!-- Slot controls -->
-	{#if slots.length > 0}
-		<div class="slot-grid">
-			{#each slots as slot (slot.id)}
-				<div class="slot-card" class:slot-enabled={slot.enabled} class:slot-animating={slot.animating}>
-					<div class="slot-header">
-						<span class="slot-id">Slot {slot.id}</span>
+	<!-- Slot strip -->
+	<div class="slot-strip-wrap">
+		{#if slots.length > 0}
+			<div class="slot-strip">
+				{#each slots as slot (slot.id)}
+					<!-- svelte-ignore a11y_no_static_element_interactions -->
+					<!-- svelte-ignore a11y_click_events_have_key_events -->
+					<div
+						class="slot-card"
+						class:slot-enabled={slot.enabled}
+						class:slot-animating={slot.animating}
+						class:slot-selected={selectedSlotId === slot.id}
+						onclick={(e) => selectSlotCard(slot.id, e)}
+					>
 						<button
+							type="button"
 							class="slot-toggle"
 							class:on={slot.enabled}
-							onclick={() => toggleSlot(slot)}
+							onclick={(e) => { e.stopPropagation(); toggleSlot(slot); }}
 						>
 							{slot.enabled ? 'ON' : 'OFF'}
 						</button>
-					</div>
-
-					<div class="slot-source">
+						<span class="slot-card__id">Slot {slot.id}</span>
+						<div class="slot-card__row slot-card__row--source">
+							<select
+								class="slot-select"
+								value={slot.sourceKey}
+								onchange={(e) => handleSourceChange(slot.id, (e.target as HTMLSelectElement).value)}
+								onclick={(e) => e.stopPropagation()}
+							>
+								<option value="">— none —</option>
+								{#each sourceKeys as key}
+									<option value={key} class={tallyClass(key)}>
+										{crState.sources[key]?.label || key}
+									</option>
+								{/each}
+							</select>
+							<span class="tally-dot {tallyClass(slot.sourceKey)}"></span>
+						</div>
+						<div class="slot-card__pos" title="Position, size, z-order">
+							<span class="pos-text">{slot.x},{slot.y} {slot.width}×{slot.height}</span>
+							<span class="z-text">z:{slot.zOrder}</span>
+						</div>
 						<select
-							class="source-select"
-							value={slot.sourceKey}
-							onchange={(e) => handleSourceChange(slot.id, (e.target as HTMLSelectElement).value)}
-						>
-							<option value="">— none —</option>
-							{#each sourceKeys as key}
-								<option value={key} class={tallyClass(key)}>
-									{crState.sources[key]?.label || key}
-								</option>
-							{/each}
-						</select>
-						<span class="tally-dot {tallyClass(slot.sourceKey)}"></span>
-					</div>
-
-					<div class="slot-position">
-						<span class="pos-label">{slot.x},{slot.y} {slot.width}x{slot.height}</span>
-						<span class="z-label">z:{slot.zOrder}</span>
-					</div>
-
-					<div class="slot-transition">
-						<select
-							class="transition-select"
+							class="slot-select slot-select--transition"
 							onchange={(e) => handleTransitionChange(slot.id, (e.target as HTMLSelectElement).value)}
+							onclick={(e) => e.stopPropagation()}
 						>
 							<option value="cut">Cut</option>
 							<option value="dissolve">Dissolve</option>
 							<option value="fly">Fly</option>
 						</select>
 					</div>
-
-					<div class="slot-scale">
-						<select
-							class="scale-select"
-							value={slot.scaleMode || 'stretch'}
-							onchange={(e) => handleScaleModeChange(slot.id, (e.target as HTMLSelectElement).value)}
-						>
-							<option value="stretch">Stretch</option>
-							<option value="fill">Fill (Crop)</option>
-						</select>
-						{#if (slot.scaleMode || 'stretch') === 'fill'}
-							<select
-								class="anchor-select"
-								value={anchorKey(slot.cropAnchor)}
-								onchange={(e) => handleCropAnchorChange(slot.id, (e.target as HTMLSelectElement).value)}
-							>
-								<option value="center">Center</option>
-								<option value="top">Top</option>
-								<option value="bottom">Bottom</option>
-								<option value="left">Left</option>
-								<option value="right">Right</option>
-								<option value="top-left">Top-Left</option>
-								<option value="top-right">Top-Right</option>
-								<option value="bottom-left">Bottom-Left</option>
-								<option value="bottom-right">Bottom-Right</option>
-							</select>
-						{/if}
-					</div>
-				</div>
-			{/each}
-		</div>
-	{:else}
-		<div class="empty-state">No active layout. Select a preset above.</div>
-	{/if}
-
-	<!-- User preset management -->
-	{#if presets.length > 0}
-		<div class="user-presets">
-			<span class="section-title">SAVED PRESETS</span>
-			<div class="preset-list">
-				{#each presets as name}
-					<div class="preset-item">
-						{#if deleteConfirmName === name}
-							<span class="delete-text">Delete "{name}"?</span>
-							<button class="confirm-yes" onclick={() => handleDelete(name)}>Yes</button>
-							<button class="confirm-no" onclick={() => { deleteConfirmName = null; }}>No</button>
-						{:else}
-							<span class="preset-item-name">{name}</span>
-							<button class="delete-btn" onclick={() => { deleteConfirmName = name; }}>X</button>
-						{/if}
-					</div>
 				{/each}
 			</div>
+		{:else}
+			<div class="empty-state">No active layout. Select a preset above.</div>
+		{/if}
+	</div>
+
+	<!-- Detail: scale + crop (selected slot only) -->
+	{#if selectedSlot}
+		<div class="detail-bar">
+			<span class="detail-bar__label">Slot {selectedSlot.id}</span>
+			<label class="detail-field">
+				<span class="detail-field__name">Scale</span>
+				<select
+					class="detail-select"
+					value={selectedSlot.scaleMode || 'stretch'}
+					onchange={(e) => handleScaleModeChange(selectedSlot!.id, (e.target as HTMLSelectElement).value)}
+				>
+					<option value="stretch">Stretch</option>
+					<option value="fill">Fill (crop)</option>
+				</select>
+			</label>
+			{#if (selectedSlot.scaleMode || 'stretch') === 'fill'}
+				<label class="detail-field">
+					<span class="detail-field__name">Crop</span>
+					<select
+						class="detail-select"
+						value={anchorKey(selectedSlot.cropAnchor)}
+						onchange={(e) => handleCropAnchorChange(selectedSlot!.id, (e.target as HTMLSelectElement).value)}
+					>
+						<option value="center">Center</option>
+						<option value="top">Top</option>
+						<option value="bottom">Bottom</option>
+						<option value="left">Left</option>
+						<option value="right">Right</option>
+						<option value="top-left">Top-left</option>
+						<option value="top-right">Top-right</option>
+						<option value="bottom-left">Bottom-left</option>
+						<option value="bottom-right">Bottom-right</option>
+					</select>
+				</label>
+			{/if}
 		</div>
 	{/if}
 </div>
@@ -310,46 +372,74 @@
 	.layout-panel {
 		display: flex;
 		flex-direction: column;
-		gap: 6px;
-		padding: 6px;
 		height: 100%;
-		overflow-y: auto;
-	}
-
-	.section-title {
+		min-height: 0;
+		overflow: hidden;
+		padding: 4px 6px;
+		gap: 0;
 		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		font-weight: 700;
-		letter-spacing: 0.06em;
-		color: var(--text-secondary);
-		flex-shrink: 0;
 	}
 
+	/* ── Preset strip ── */
 	.preset-strip {
+		flex-shrink: 0;
 		display: flex;
 		align-items: center;
 		gap: 8px;
-		padding: 2px 4px;
-		flex-wrap: wrap;
+		padding: 4px 0 6px;
+		border-bottom: 1px solid var(--border-subtle);
+		min-height: 0;
 	}
 
-	.preset-buttons {
+	.preset-strip__label {
 		display: flex;
-		gap: 3px;
-		flex-wrap: wrap;
+		align-items: center;
+		gap: 5px;
+		flex-shrink: 0;
+		color: var(--text-secondary);
+	}
+
+	.preset-strip__icon {
+		display: flex;
+		color: var(--text-tertiary);
+	}
+
+	.preset-strip__title {
+		font-size: var(--text-2xs);
+		font-weight: 700;
+		letter-spacing: 0.08em;
+		color: var(--text-secondary);
+	}
+
+	.preset-strip__scroll {
+		flex: 1;
+		min-width: 0;
+		overflow-x: auto;
+		overflow-y: hidden;
+		-webkit-overflow-scrolling: touch;
+	}
+
+	.preset-strip__inner {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		flex-wrap: nowrap;
+		width: max-content;
+		padding: 1px 0;
 	}
 
 	.preset-btn {
-		padding: 3px 8px;
-		background: var(--bg-elevated);
+		padding: 3px 7px;
+		background: var(--bg-control);
 		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
+		border-radius: var(--radius-xs);
 		color: var(--text-secondary);
 		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		font-weight: 600;
 		cursor: pointer;
-		transition: background var(--transition-fast), border-color var(--transition-fast);
+		transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+		white-space: nowrap;
 	}
 
 	.preset-btn:hover {
@@ -363,27 +453,54 @@
 		color: var(--accent-blue);
 	}
 
-	.preset-btn.user-preset {
+	.preset-btn--user {
 		border-style: dashed;
+		padding: 3px 6px;
 	}
 
-	.preset-actions {
-		display: flex;
-		gap: 3px;
+	.user-preset-chip {
+		display: inline-flex;
 		align-items: center;
-		margin-left: auto;
+		gap: 2px;
+		padding: 1px 2px 1px 1px;
+		background: var(--bg-surface);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-xs);
+		flex-shrink: 0;
+	}
+
+	.user-preset-chip.active {
+		border-color: rgba(59, 130, 246, 0.45);
+	}
+
+	.user-preset-chip__confirm-label {
+		font-size: var(--text-2xs);
+		color: var(--text-secondary);
+		padding: 0 4px 0 6px;
+		white-space: nowrap;
+	}
+
+	.preset-strip__actions {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		flex-shrink: 0;
 	}
 
 	.action-btn {
-		padding: 3px 6px;
-		background: var(--bg-elevated);
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		padding: 3px 7px;
+		background: var(--bg-control);
 		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
+		border-radius: var(--radius-xs);
 		color: var(--text-secondary);
 		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		font-weight: 600;
 		cursor: pointer;
+		transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
 	}
 
 	.action-btn:hover {
@@ -391,112 +508,179 @@
 		color: var(--text-primary);
 	}
 
-	.save-confirm {
-		background: rgba(34, 197, 94, 0.2);
-		color: var(--color-success);
-		border-color: rgba(34, 197, 94, 0.4);
+	.action-btn__ic {
+		display: flex;
+		color: currentColor;
 	}
 
-	.clear-btn:hover {
+	.action-btn--primary {
+		background: rgba(34, 197, 94, 0.15);
+		color: var(--color-success);
+		border-color: rgba(34, 197, 94, 0.35);
+	}
+
+	.action-btn--primary:hover {
+		background: rgba(34, 197, 94, 0.22);
+		color: var(--color-success);
+	}
+
+	.action-btn--clear:hover {
 		color: var(--color-error);
+		border-color: rgba(239, 68, 68, 0.35);
 	}
 
 	.save-input {
 		padding: 3px 6px;
+		width: 88px;
 		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		background: var(--bg-base);
 		color: var(--text-primary);
 		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
+		border-radius: var(--radius-xs);
 		outline: none;
-		width: 90px;
 	}
 
 	.save-input:focus {
-		border-color: var(--accent-blue);
+		border-color: var(--border-strong);
 	}
 
-	/* Slot grid */
-	.slot-grid {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-		gap: 4px;
-		padding: 0 4px;
-	}
-
-	.slot-card {
+	.icon-btn {
 		display: flex;
-		flex-direction: column;
-		gap: 4px;
-		padding: 6px 8px;
-		background: var(--bg-elevated);
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
-		transition: border-color var(--transition-fast);
-	}
-
-	.slot-card.slot-enabled {
-		border-color: rgba(212, 160, 23, 0.5);
-	}
-
-	.slot-card.slot-animating {
-		border-color: rgba(59, 130, 246, 0.5);
-	}
-
-	.slot-header {
-		display: flex;
-		justify-content: space-between;
 		align-items: center;
-	}
-
-	.slot-id {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		font-weight: 600;
-		color: var(--text-secondary);
-		letter-spacing: 0.04em;
-	}
-
-	.slot-toggle {
-		padding: 2px 8px;
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		font-weight: 700;
-		cursor: pointer;
-		background: var(--bg-base);
+		justify-content: center;
+		width: 22px;
+		height: 22px;
+		padding: 0;
+		border: 1px solid transparent;
+		border-radius: var(--radius-xs);
+		background: transparent;
 		color: var(--text-tertiary);
+		cursor: pointer;
 		transition: background var(--transition-fast), color var(--transition-fast);
 	}
 
-	.slot-toggle.on {
-		background: rgba(212, 160, 23, 0.25);
-		color: var(--accent-gold);
-		border-color: rgba(212, 160, 23, 0.5);
+	.icon-btn:hover {
+		background: var(--bg-hover);
+		color: var(--text-primary);
 	}
 
-	.slot-source {
+	.icon-btn--ghost {
+		color: var(--text-tertiary);
+	}
+
+	.icon-btn--danger:hover {
+		background: rgba(239, 68, 68, 0.15);
+		color: var(--color-error);
+		border-color: rgba(239, 68, 68, 0.25);
+	}
+
+	/* ── Slot strip ── */
+	.slot-strip-wrap {
+		flex: 1;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+		padding: 6px 0 4px;
+	}
+
+	.slot-strip {
+		flex: 1;
+		min-height: 0;
+		display: flex;
+		flex-direction: row;
+		align-items: stretch;
+		gap: 6px;
+		overflow-x: auto;
+		overflow-y: hidden;
+		-webkit-overflow-scrolling: touch;
+		padding-bottom: 2px;
+	}
+
+	.slot-card {
+		flex: 0 0 130px;
+		width: 130px;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		padding: 5px 6px 6px;
+		background: var(--bg-elevated);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+		cursor: default;
+	}
+
+	.slot-card.slot-selected {
+		border-color: rgba(59, 130, 246, 0.55);
+		box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.2);
+	}
+
+	.slot-card.slot-enabled {
+		border-color: rgba(212, 160, 23, 0.4);
+	}
+
+	.slot-card.slot-animating {
+		border-color: rgba(59, 130, 246, 0.45);
+	}
+
+	.slot-toggle {
+		width: 100%;
+		padding: 3px 4px;
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-xs);
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 700;
+		letter-spacing: 0.04em;
+		cursor: pointer;
+		background: var(--bg-base);
+		color: var(--text-tertiary);
+		transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+	}
+
+	.slot-toggle.on {
+		background: rgba(212, 160, 23, 0.22);
+		color: var(--accent-gold);
+		border-color: rgba(212, 160, 23, 0.45);
+	}
+
+	.slot-card__id {
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		color: var(--text-tertiary);
+		text-align: center;
+		letter-spacing: 0.03em;
+	}
+
+	.slot-card__row {
 		display: flex;
 		align-items: center;
 		gap: 4px;
+		min-width: 0;
 	}
 
-	.source-select {
+	.slot-select {
 		flex: 1;
-		padding: 2px 4px;
+		min-width: 0;
+		padding: 2px 3px;
 		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		background: var(--bg-base);
 		color: var(--text-primary);
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-xs);
+	}
+
+	.slot-select--transition {
+		flex: none;
+		width: 100%;
 	}
 
 	.tally-dot {
-		width: 6px;
-		height: 6px;
+		width: 5px;
+		height: 5px;
 		border-radius: 50%;
 		flex-shrink: 0;
 		background: transparent;
@@ -514,127 +698,90 @@
 		background: var(--accent-gold);
 	}
 
-	.slot-position {
+	.slot-card__pos {
 		display: flex;
 		justify-content: space-between;
-		align-items: center;
+		align-items: baseline;
+		gap: 4px;
+		padding: 3px 0;
+		border-top: 1px solid var(--border-subtle);
+		border-bottom: 1px solid var(--border-subtle);
+		min-width: 0;
 	}
 
-	.pos-label, .z-label {
+	.pos-text, .z-text {
 		font-family: var(--font-mono);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		color: var(--text-tertiary);
+		line-height: 1.2;
 	}
 
-	.slot-transition {
-		display: flex;
-		gap: 4px;
+	.pos-text {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
-	.transition-select {
-		flex: 1;
-		padding: 2px 4px;
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		background: var(--bg-base);
-		color: var(--text-primary);
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
-	}
-
-	.slot-scale {
-		display: flex;
-		gap: 4px;
-	}
-
-	.scale-select, .anchor-select {
-		flex: 1;
-		padding: 2px 4px;
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		background: var(--bg-base);
-		color: var(--text-primary);
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
+	.z-text {
+		flex-shrink: 0;
 	}
 
 	.empty-state {
-		text-align: center;
-		color: var(--text-tertiary);
-		font-size: var(--text-sm);
-		padding: 16px 4px;
-	}
-
-	/* User preset management */
-	.user-presets {
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-		padding: 0 4px;
-		border-top: 1px solid var(--border-default);
-		padding-top: 6px;
-	}
-
-	.preset-list {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 3px;
-	}
-
-	.preset-item {
+		flex: 1;
 		display: flex;
 		align-items: center;
-		gap: 4px;
-		padding: 3px 6px;
-		background: var(--bg-elevated);
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
-	}
-
-	.preset-item-name {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		color: var(--text-primary);
-	}
-
-	.delete-btn {
-		background: transparent;
-		border: none;
+		justify-content: center;
+		text-align: center;
 		color: var(--text-tertiary);
 		font-size: var(--text-xs);
-		font-weight: 700;
-		cursor: pointer;
-		padding: 0 2px;
+		padding: 8px;
 	}
 
-	.delete-btn:hover {
-		color: var(--color-error);
-	}
-
-	.delete-text {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		color: var(--text-primary);
-	}
-
-	.confirm-yes, .confirm-no {
-		padding: 1px 6px;
-		border: 1px solid var(--border-default);
+	/* ── Detail bar ── */
+	.detail-bar {
+		flex-shrink: 0;
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 10px 14px;
+		padding: 6px 8px;
+		margin-top: 2px;
+		background: var(--bg-surface);
+		border: 1px solid var(--border-subtle);
 		border-radius: var(--radius-sm);
+	}
+
+	.detail-bar__label {
+		font-size: var(--text-2xs);
+		font-weight: 700;
+		letter-spacing: 0.06em;
+		color: var(--text-secondary);
+		margin-right: 4px;
+	}
+
+	.detail-field {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		margin: 0;
+	}
+
+	.detail-field__name {
+		font-size: var(--text-2xs);
+		color: var(--text-tertiary);
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+	}
+
+	.detail-select {
+		padding: 3px 6px;
+		min-width: 120px;
 		font-family: var(--font-ui);
 		font-size: var(--text-xs);
-		font-weight: 600;
-		cursor: pointer;
-	}
-
-	.confirm-yes {
-		background: rgba(239, 68, 68, 0.2);
-		color: var(--color-error);
-		border-color: rgba(239, 68, 68, 0.4);
-	}
-
-	.confirm-no {
-		background: var(--bg-elevated);
-		color: var(--text-secondary);
+		background: var(--bg-control);
+		color: var(--text-primary);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-xs);
 	}
 </style>

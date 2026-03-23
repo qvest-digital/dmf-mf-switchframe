@@ -16,6 +16,7 @@
 	import { GraphicsPublisher } from '$lib/graphics/publisher';
 	import { notify } from '$lib/state/notifications.svelte';
 	import { builtinTemplates } from '$lib/graphics/templates';
+	import { ICON_LAYERS, renderIcon } from '$lib/icons';
 	import GraphicsLayerRail from './GraphicsLayerRail.svelte';
 	import GraphicsDetail from './GraphicsDetail.svelte';
 
@@ -93,7 +94,6 @@
 
 	function getLayerTemplate(id: number): string {
 		if (id in layerTemplates) return layerTemplates[id];
-		// Fall back to server state for existing layers (page reload, other operator)
 		const layer = layers.find(l => l.id === id);
 		if (layer?.template && layer.template in builtinTemplates) return layer.template;
 		return 'lower-third';
@@ -109,7 +109,6 @@
 
 	function getLayerMode(id: number): SourceMode {
 		if (id in layerModes) return layerModes[id];
-		// Fall back to server state for existing layers (page reload, other operator)
 		const layer = layers.find(l => l.id === id);
 		if (layer?.html5Url) return 'html5';
 		if (layer?.imageName) return 'image';
@@ -120,8 +119,6 @@
 		return layerFlyConfigs[id] ?? { direction: 'left', durationMs: 500 };
 	}
 
-	// Clean up local state only for layers that were actually removed from the server
-	// (not layers pending broadcast after handleAddLayer).
 	let prevLayerIdSet: Set<number> | null = null;
 	$effect(() => {
 		const currentIds = new Set(layers.map(l => l.id));
@@ -239,7 +236,6 @@
 				notify('error', 'Fly on failed');
 			}
 		} else {
-			// For non-template modes, use FlyIn if active, FlyOn if inactive
 			const layer = layers.find(l => l.id === id);
 			if (layer?.active) {
 				apiCall(graphicsFlyIn(id, cfg.direction, cfg.durationMs), 'Fly in failed');
@@ -254,12 +250,8 @@
 		apiCall(graphicsFlyOut(id, cfg.direction, cfg.durationMs), 'Fly out failed');
 	}
 
-	function handleZOrderUp(id: number, currentZ: number) {
-		apiCall(graphicsSetZOrder(id, currentZ + 1), 'Z-order failed');
-	}
-
-	function handleZOrderDown(id: number, currentZ: number) {
-		apiCall(graphicsSetZOrder(id, Math.max(0, currentZ - 1)), 'Z-order failed');
+	function handleZOrderChange(id: number, newZ: number) {
+		apiCall(graphicsSetZOrder(id, newZ), 'Z-order failed');
 	}
 
 	function handleModeChange(id: number, mode: SourceMode) {
@@ -390,15 +382,16 @@
 </script>
 
 <div class="graphics-panel">
-	<!-- Header -->
 	<div class="gfx-header">
-		<span class="gfx-title">DSK GRAPHICS</span>
+		<div class="gfx-title">
+			<span class="gfx-icon">{@html renderIcon(ICON_LAYERS, 12, 'stroke')}</span>
+			<span>DSK GRAPHICS</span>
+		</div>
 		<span class="gfx-status" class:on-air={anyActive}>
 			{anyActive ? 'ON AIR' : 'OFF'}
 		</span>
 	</div>
 
-	<!-- Two-column body -->
 	<div class="gfx-body">
 		<GraphicsLayerRail
 			{layers}
@@ -407,8 +400,7 @@
 			onSelect={(id) => selectedLayerId = id}
 			onAdd={handleAddLayer}
 			onRemove={handleRemoveLayer}
-			onZOrderUp={handleZOrderUp}
-			onZOrderDown={handleZOrderDown}
+			onZOrderChange={handleZOrderChange}
 		/>
 
 		{#if selectedLayer}
@@ -452,6 +444,7 @@
 			{/key}
 		{:else}
 			<div class="empty-detail">
+				<span class="empty-icon">{@html renderIcon(ICON_LAYERS, 24, 'stroke')}</span>
 				<span class="empty-msg">
 					{#if layers.length === 0}
 						Add a layer to get started
@@ -479,12 +472,16 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		padding: 4px 8px;
+		padding: 3px 8px;
 		border-bottom: 1px solid var(--border-subtle);
 		flex-shrink: 0;
+		background: var(--bg-base);
 	}
 
 	.gfx-title {
+		display: flex;
+		align-items: center;
+		gap: 5px;
 		font-family: var(--font-ui);
 		font-size: var(--text-xs);
 		font-weight: 700;
@@ -492,14 +489,19 @@
 		color: var(--text-secondary);
 	}
 
+	.gfx-icon {
+		display: flex;
+		color: var(--text-tertiary);
+	}
+
 	.gfx-status {
 		font-family: var(--font-mono);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		font-weight: 600;
 		color: var(--text-tertiary);
 		padding: 1px 6px;
 		border-radius: var(--radius-sm);
-		background: var(--bg-base);
+		background: var(--bg-surface);
 	}
 
 	.gfx-status.on-air {
@@ -523,13 +525,21 @@
 	.empty-detail {
 		flex: 1;
 		display: flex;
+		flex-direction: column;
 		align-items: center;
 		justify-content: center;
+		gap: 6px;
+	}
+
+	.empty-icon {
+		display: flex;
+		color: var(--text-tertiary);
+		opacity: 0.4;
 	}
 
 	.empty-msg {
 		font-family: var(--font-ui);
-		font-size: var(--text-sm);
+		font-size: var(--text-xs);
 		color: var(--text-tertiary);
 	}
 </style>

@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import type { ControlRoomState, CaptionMode } from '$lib/api/types';
 	import { setCaptionMode, sendCaptionText, sendCaptionNewline, clearCaptions, setASRConfig, getASRModels, apiCall } from '$lib/api/switch-api';
+	import { ICON_CAPTION, ICON_MIC, ICON_INFO, renderIcon } from '$lib/icons';
 
 	interface Props {
 		state: ControlRoomState;
@@ -202,19 +203,25 @@
 </script>
 
 <div class="captions-panel">
-	<!-- Mode bar -->
-	<div class="zone">
+	<!-- Mode + settings -->
+	<div class="zone zone--mode">
 		<div class="zone-header">
-			<span class="zone-title">MODE</span>
+			<span class="zone-header__title">
+				<span class="zone-header__icon" aria-hidden="true">{@html renderIcon(ICON_CAPTION, 12)}</span>
+				MODE
+			</span>
 			{#if isAuto}
 				<span class="ai-badge">AI</span>
 			{/if}
 		</div>
-		<div class="mode-bar">
+
+		<div class="mode-segmented" role="group" aria-label="Caption mode">
 			{#each modes as m}
 				<button
-					class="mode-btn"
-					class:active={mode === m.id}
+					type="button"
+					class="mode-segmented__btn"
+					class:mode-segmented__btn--active={mode === m.id}
+					title={m.label}
 					onclick={() => handleModeChange(m.id)}
 				>
 					{m.label}
@@ -222,167 +229,219 @@
 			{/each}
 			{#if asrAvailable}
 				<button
-					class="mode-btn auto-btn"
-					class:active={isAuto}
+					type="button"
+					class="mode-segmented__btn mode-segmented__btn--auto"
+					class:mode-segmented__btn--active-auto={isAuto}
 					onclick={() => handleModeChange('auto')}
 				>
 					Auto
 				</button>
 			{/if}
 		</div>
+
 		{#if isAuto}
-			<div class="language-row">
-				<label class="language-label" for="asr-translate">Translate</label>
-				<label class="translate-toggle">
-					<input
-						type="checkbox"
-						id="asr-translate"
-						checked={asrState?.translate ?? true}
-						onchange={handleTranslateChange}
-					/>
-					<span class="translate-label">to English</span>
-				</label>
-			</div>
-			<div class="language-row">
-				<label class="language-label" for="asr-lang">Source</label>
-				<select
-					id="asr-lang"
-					class="language-select"
-					value={asrState?.language ?? 'auto'}
-					onchange={handleLanguageChange}
-				>
-					{#each languages as lang}
-						<option value={lang.code}>{lang.label}</option>
-					{/each}
-				</select>
-			</div>
-			{#if availableModels.length > 0}
-				<div class="language-row">
-					<label class="language-label" for="asr-model">Model</label>
+			<div class="zone-scroll">
+				<div class="auto-grid">
+					<label class="auto-grid__label" for="asr-translate">Translate</label>
+					<label class="translate-inline" for="asr-translate">
+						<input
+							type="checkbox"
+							id="asr-translate"
+							class="translate-inline__input"
+							checked={asrState?.translate ?? true}
+							onchange={handleTranslateChange}
+						/>
+						<span class="translate-inline__text">to English</span>
+					</label>
+
+					<label class="auto-grid__label" for="asr-lang">Source</label>
 					<select
-						id="asr-model"
-						class="language-select model-select"
-						value={asrState?.modelName ?? ''}
-						onchange={handleModelChange}
+						id="asr-lang"
+						class="field-select"
+						value={asrState?.language ?? 'auto'}
+						onchange={handleLanguageChange}
 					>
-						{#each availableModels as model}
-							<option value={model}>{model}</option>
+						{#each languages as lang}
+							<option value={lang.code}>{lang.label}</option>
 						{/each}
 					</select>
+
+					{#if availableModels.length > 0}
+						<label class="auto-grid__label" for="asr-model">Model</label>
+						<select
+							id="asr-model"
+							class="field-select field-select--mono"
+							value={asrState?.modelName ?? ''}
+							onchange={handleModelChange}
+						>
+							{#each availableModels as model}
+								<option value={model}>{model}</option>
+							{/each}
+						</select>
+					{/if}
 				</div>
-			{/if}
-			<button class="tuning-toggle" class:open={tuningOpen} onclick={() => tuningOpen = !tuningOpen}>
-				<span class="tuning-icon">&#9881;</span> Tuning
-				<span class="tuning-chevron">{tuningOpen ? '\u25B2' : '\u25BC'}</span>
-			</button>
-			{#if tuningOpen}
-				<div class="tuning-section">
-					<div class="tuning-row">
-						<span class="tuning-label">Speed</span>
-						<div class="segment-toggle">
-							<button class:active={(asrState?.speed ?? 'balanced') === 'fast'} onclick={() => handleSpeedChange('fast')}>Fast</button>
-							<button class:active={(asrState?.speed ?? 'balanced') === 'balanced'} onclick={() => handleSpeedChange('balanced')}>Balanced</button>
-							<button class:active={(asrState?.speed ?? 'balanced') === 'accurate'} onclick={() => handleSpeedChange('accurate')}>Accurate</button>
+
+				<div class="inline-tuning">
+					<div class="inline-tuning__block">
+						<span class="inline-tuning__label">Speed</span>
+						<div class="segment-inline" role="group" aria-label="ASR speed">
+							<button
+								type="button"
+								class="segment-inline__btn"
+								class:segment-inline__btn--on={(asrState?.speed ?? 'balanced') === 'fast'}
+								onclick={() => handleSpeedChange('fast')}
+							>Fast</button>
+							<button
+								type="button"
+								class="segment-inline__btn"
+								class:segment-inline__btn--on={(asrState?.speed ?? 'balanced') === 'balanced'}
+								onclick={() => handleSpeedChange('balanced')}
+							>Bal</button>
+							<button
+								type="button"
+								class="segment-inline__btn"
+								class:segment-inline__btn--on={(asrState?.speed ?? 'balanced') === 'accurate'}
+								onclick={() => handleSpeedChange('accurate')}
+							>Acc</button>
 						</div>
 					</div>
-					<div class="tuning-row">
-						<span class="tuning-label">Confidence</span>
-						<div class="segment-toggle">
-							<button class:active={(asrState?.confidenceFilter ?? 'medium') === 'low'} onclick={() => handleConfidenceChange('low')}>Show More</button>
-							<button class:active={(asrState?.confidenceFilter ?? 'medium') === 'medium'} onclick={() => handleConfidenceChange('medium')}>Balanced</button>
-							<button class:active={(asrState?.confidenceFilter ?? 'medium') === 'high'} onclick={() => handleConfidenceChange('high')}>Fewer Errors</button>
+					<div class="inline-tuning__block">
+						<span class="inline-tuning__label">Conf</span>
+						<div class="segment-inline" role="group" aria-label="Confidence filter">
+							<button
+								type="button"
+								class="segment-inline__btn"
+								class:segment-inline__btn--on={(asrState?.confidenceFilter ?? 'medium') === 'low'}
+								onclick={() => handleConfidenceChange('low')}
+							>More</button>
+							<button
+								type="button"
+								class="segment-inline__btn"
+								class:segment-inline__btn--on={(asrState?.confidenceFilter ?? 'medium') === 'medium'}
+								onclick={() => handleConfidenceChange('medium')}
+							>Bal</button>
+							<button
+								type="button"
+								class="segment-inline__btn"
+								class:segment-inline__btn--on={(asrState?.confidenceFilter ?? 'medium') === 'high'}
+								onclick={() => handleConfidenceChange('high')}
+							>Strict</button>
 						</div>
 					</div>
-					<div class="tuning-row">
-						<span class="tuning-label">Noise Floor</span>
-						<select
-							class="language-select"
-							value={asrState?.noiseFloor ?? 'normal'}
-							onchange={handleNoiseFloorChange}
-						>
-							<option value="quiet">Quiet Studio</option>
-							<option value="normal">Normal</option>
-							<option value="noisy">Noisy Venue</option>
-						</select>
-					</div>
-					<div class="tuning-row">
-						<span class="tuning-label">Speaker Detection</span>
-						<select
-							class="language-select"
-							value={asrState?.speakerDetection ?? 'normal'}
-							onchange={handleSpeakerDetectionChange}
-						>
-							<option value="sensitive">Sensitive (200ms)</option>
-							<option value="normal">Normal (300ms)</option>
-							<option value="relaxed">Relaxed (500ms)</option>
-						</select>
-					</div>
 				</div>
-			{/if}
+
+				<button type="button" class="tuning-toggle" class:tuning-toggle--open={tuningOpen} onclick={() => tuningOpen = !tuningOpen}>
+					<span class="tuning-toggle__chev">{tuningOpen ? '▲' : '▼'}</span>
+					Advanced
+				</button>
+				{#if tuningOpen}
+					<div class="tuning-advanced">
+						<div class="tuning-advanced__row">
+							<span class="tuning-advanced__label">Noise</span>
+							<select
+								class="field-select"
+								value={asrState?.noiseFloor ?? 'normal'}
+								onchange={handleNoiseFloorChange}
+							>
+								<option value="quiet">Quiet studio</option>
+								<option value="normal">Normal</option>
+								<option value="noisy">Noisy venue</option>
+							</select>
+						</div>
+						<div class="tuning-advanced__row">
+							<span class="tuning-advanced__label">Spkr</span>
+							<select
+								class="field-select"
+								value={asrState?.speakerDetection ?? 'normal'}
+								onchange={handleSpeakerDetectionChange}
+							>
+								<option value="sensitive">Sensitive (200ms)</option>
+								<option value="normal">Normal (300ms)</option>
+								<option value="relaxed">Relaxed (500ms)</option>
+							</select>
+						</div>
+					</div>
+				{/if}
+			</div>
 		{/if}
 	</div>
 
 	<!-- Author input -->
-	<div class="zone">
+	<div class="zone zone--author">
 		<div class="zone-header">
-			<span class="zone-title">AUTHOR INPUT</span>
+			<span class="zone-header__title">
+				<span class="zone-header__icon" aria-hidden="true">{@html renderIcon(ICON_MIC, 12)}</span>
+				AUTHOR
+			</span>
 			<div class="zone-actions">
 				<button
-					class="test-btn"
-					class:active={testCaptionsActive}
+					type="button"
+					class="chip-btn"
+					class:chip-btn--active={testCaptionsActive}
 					onclick={toggleTestCaptions}
 				>
-					{testCaptionsActive ? 'Stop Test' : 'Test Captions'}
+					{testCaptionsActive ? 'Stop test' : 'Test'}
 				</button>
 				{#if isAuthor}
-					<button class="clear-btn" onclick={handleClear}>Clear Display</button>
+					<button type="button" class="chip-btn chip-btn--danger" onclick={handleClear}>Clear</button>
 				{/if}
 			</div>
 		</div>
-		{#if isAuthor}
-			<textarea
-				class="caption-input"
-				placeholder="Type captions here. Press Enter to send + new line."
-				bind:value={textInput}
-				onkeydown={handleKeydown}
-			></textarea>
-			{#if authorBuffer}
-				<div class="author-buffer">
-					<span class="buffer-label">On screen:</span>
-					<span class="buffer-text">{authorBuffer}</span>
+
+		<div class="author-body">
+			{#if isAuthor}
+				{#if authorBuffer}
+					<div class="author-buffer">
+						<span class="author-buffer__label">On air</span>
+						<span class="author-buffer__text">{authorBuffer}</span>
+					</div>
+				{/if}
+				<textarea
+					class="caption-input"
+					placeholder="Type captions. Enter = send line + newline."
+					bind:value={textInput}
+					onkeydown={handleKeydown}
+				></textarea>
+			{:else}
+				<div class="disabled-notice">
+					<span class="disabled-notice__icon" aria-hidden="true">{@html renderIcon(ICON_INFO, 14)}</span>
+					<div class="disabled-notice__text">
+						{#if mode === 'auto'}
+							<p>Auto captions from program audio.</p>
+							{#if asrState?.tentative}
+								<div class="tentative-text">{asrState.tentative}</div>
+							{/if}
+						{:else if mode === 'passthrough'}
+							<p>Captions follow the program source.</p>
+						{:else}
+							<p>Enable Author mode to type live captions.</p>
+						{/if}
+					</div>
 				</div>
 			{/if}
-		{:else}
-			<div class="disabled-notice">
-				{#if mode === 'auto'}
-					Captions generated automatically from program audio.
-					{#if asrState?.tentative}
-						<div class="tentative-text">{asrState.tentative}</div>
-					{/if}
-				{:else if mode === 'passthrough'}
-					Captions forwarded from program source.
-				{:else}
-					Enable Author mode to type live captions.
-				{/if}
-			</div>
-		{/if}
+		</div>
 	</div>
 
 	<!-- Source detection -->
-	<div class="zone">
+	<div class="zone zone--sources">
 		<div class="zone-header">
-			<span class="zone-title">SOURCE DETECTION</span>
+			<span class="zone-header__title">
+				<span class="zone-header__icon" aria-hidden="true">{@html renderIcon(ICON_INFO, 12)}</span>
+				SOURCES
+			</span>
 		</div>
-		<div class="source-list">
+		<div class="source-scroll">
 			{#if captionSources.length === 0}
-				<div class="no-sources">No sources with embedded captions detected.</div>
+				<div class="source-empty">No embedded caption tracks detected.</div>
 			{:else}
-				{#each captionSources as src}
-					<div class="source-badge">
-						<span class="cc-badge">CC</span>
-						<span class="source-name">{src.label}</span>
-					</div>
-				{/each}
+				<ul class="source-list">
+					{#each captionSources as src}
+						<li class="source-row">
+							<span class="source-row__dot" aria-hidden="true"></span>
+							<span class="source-row__name">{src.label}</span>
+						</li>
+					{/each}
+				</ul>
 			{/if}
 		</div>
 	</div>
@@ -395,163 +454,361 @@
 		gap: 6px;
 		padding: 6px;
 		height: 100%;
+		min-height: 0;
 		overflow: hidden;
+		box-sizing: border-box;
 	}
 
 	.zone {
 		display: flex;
 		flex-direction: column;
-		gap: 6px;
-		padding: 6px;
+		min-height: 0;
+		gap: 4px;
+		padding: 5px 6px;
 		background: var(--bg-elevated);
+		border: 1px solid var(--border-subtle);
 		border-radius: var(--radius-sm);
-		overflow-y: auto;
+		overflow: hidden;
 	}
 
 	.zone-header {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
+		flex-shrink: 0;
+		gap: 6px;
+		min-height: 22px;
 	}
 
-	.zone-title {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		font-weight: 700;
-		letter-spacing: 0.06em;
-		color: var(--text-secondary);
-	}
-
-	.mode-bar {
-		display: flex;
+	.zone-header__title {
+		display: inline-flex;
+		align-items: center;
 		gap: 4px;
-	}
-
-	.mode-btn {
-		flex: 1;
 		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		font-weight: 600;
-		padding: 6px 8px;
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
-		background: var(--bg-base);
+		font-size: var(--text-2xs);
+		font-weight: 700;
+		letter-spacing: 0.08em;
 		color: var(--text-secondary);
-		cursor: pointer;
-		transition: all var(--transition-fast);
 	}
 
-	.mode-btn:hover {
-		background: var(--bg-elevated);
-		color: var(--text-primary);
+	.zone-header__icon {
+		display: inline-flex;
+		color: var(--text-tertiary);
+		opacity: 0.9;
 	}
 
-	.mode-btn.active {
-		background: var(--accent-yellow);
-		color: var(--bg-base);
-		border-color: var(--accent-yellow);
-	}
-
-	.auto-btn.active {
-		background: #a855f7;
-		border-color: #a855f7;
-		color: white;
-	}
-
-	.auto-btn:not(.active):hover {
-		border-color: #a855f7;
-		color: #a855f7;
+	.zone-header__icon :global(svg) {
+		display: block;
 	}
 
 	.ai-badge {
 		font-family: var(--font-mono);
 		font-size: var(--text-2xs);
 		font-weight: 700;
-		background: #a855f7;
-		color: white;
-		padding: 1px 6px;
-		border-radius: 3px;
-		letter-spacing: 0.05em;
+		background: var(--accent-blue);
+		color: var(--bg-base);
+		padding: 1px 5px;
+		border-radius: var(--radius-xs);
+		letter-spacing: 0.04em;
 	}
 
-	.language-row {
+	/* Segmented mode control */
+	.mode-segmented {
 		display: flex;
-		align-items: center;
-		gap: 8px;
-		margin-top: 2px;
+		flex-shrink: 0;
+		border-radius: var(--radius-xs);
+		border: 1px solid var(--border-default);
+		overflow: hidden;
+		background: var(--bg-control);
 	}
 
-	.language-label {
+	.mode-segmented__btn {
+		flex: 1;
+		min-width: 0;
 		font-family: var(--font-ui);
 		font-size: var(--text-2xs);
 		font-weight: 600;
+		line-height: 1.15;
+		padding: 3px 3px;
+		border: none;
+		border-right: 1px solid var(--border-subtle);
+		background: transparent;
 		color: var(--text-secondary);
+		cursor: pointer;
+		transition: background var(--transition-fast), color var(--transition-fast);
+	}
+
+	.mode-segmented__btn:last-child {
+		border-right: none;
+	}
+
+	.mode-segmented__btn:hover {
+		background: var(--bg-hover);
+		color: var(--text-primary);
+	}
+
+	.mode-segmented__btn--active {
+		background: var(--accent-yellow);
+		color: var(--bg-base);
+	}
+
+	.mode-segmented__btn--active:hover {
+		background: var(--accent-yellow);
+		color: var(--bg-base);
+	}
+
+	.mode-segmented__btn--auto.mode-segmented__btn--active-auto {
+		background: var(--accent-blue);
+		color: var(--bg-base);
+	}
+
+	.mode-segmented__btn--auto:hover:not(.mode-segmented__btn--active-auto) {
+		color: var(--accent-blue);
+	}
+
+	.zone-scroll {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+		overflow-x: hidden;
+		display: flex;
+		flex-direction: column;
+		gap: 5px;
+		padding-top: 2px;
+	}
+
+	.auto-grid {
+		display: grid;
+		grid-template-columns: minmax(0, auto) 1fr;
+		gap: 3px 6px;
+		align-items: center;
+	}
+
+	.auto-grid__label {
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		color: var(--text-tertiary);
 		white-space: nowrap;
 	}
 
-	.language-select {
-		flex: 1;
+	.field-select {
+		width: 100%;
+		min-width: 0;
 		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		background: var(--bg-base);
+		font-size: var(--text-2xs);
+		background: var(--bg-control);
 		color: var(--text-primary);
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
-		padding: 3px 6px;
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-xs);
+		padding: 2px 4px;
 		outline: none;
 		cursor: pointer;
+		transition: border-color var(--transition-fast);
 	}
 
-	.language-select:focus {
-		border-color: #a855f7;
+	.field-select:focus {
+		border-color: var(--accent-blue);
 	}
 
-	.translate-toggle {
+	.field-select--mono {
+		font-family: var(--font-mono);
+		font-size: 10px;
+	}
+
+	.translate-inline {
 		display: flex;
 		align-items: center;
-		gap: 6px;
+		gap: 5px;
 		cursor: pointer;
+		min-height: 20px;
 	}
 
-	.translate-toggle input[type="checkbox"] {
-		accent-color: #a855f7;
+	.translate-inline__input {
+		accent-color: var(--accent-blue);
+		width: 12px;
+		height: 12px;
+		margin: 0;
+		flex-shrink: 0;
 	}
 
-	.translate-label {
+	.translate-inline__text {
 		font-family: var(--font-ui);
 		font-size: var(--text-2xs);
 		color: var(--text-secondary);
 	}
 
-	.model-select {
-		font-family: var(--font-mono);
+	.inline-tuning {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 4px 6px;
+		align-items: end;
 	}
 
-	.model-select:focus {
-		border-color: #a855f7;
+	.inline-tuning__block {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		min-width: 0;
 	}
 
-	.tentative-text {
-		margin-top: 6px;
+	.inline-tuning__label {
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		color: var(--text-tertiary);
+		letter-spacing: 0.02em;
+	}
+
+	.segment-inline {
+		display: flex;
+		border-radius: var(--radius-xs);
+		border: 1px solid var(--border-default);
+		overflow: hidden;
+		background: var(--bg-base);
+	}
+
+	.segment-inline__btn {
+		flex: 1;
+		min-width: 0;
+		padding: 2px 2px;
+		font-family: var(--font-ui);
+		font-size: 9px;
+		font-weight: 600;
+		border: none;
+		border-right: 1px solid var(--border-subtle);
+		background: var(--bg-control);
+		color: var(--text-secondary);
+		cursor: pointer;
+		transition: background var(--transition-fast), color var(--transition-fast);
+	}
+
+	.segment-inline__btn:last-child {
+		border-right: none;
+	}
+
+	.segment-inline__btn:hover:not(.segment-inline__btn--on) {
+		background: var(--bg-hover);
+		color: var(--text-primary);
+	}
+
+	.segment-inline__btn--on {
+		background: var(--accent-blue);
+		color: var(--bg-base);
+	}
+
+	.tuning-toggle {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		width: 100%;
+		justify-content: center;
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		padding: 3px 6px;
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-xs);
+		background: var(--bg-surface);
+		color: var(--text-tertiary);
+		cursor: pointer;
+		transition: border-color var(--transition-fast), color var(--transition-fast);
+	}
+
+	.tuning-toggle:hover {
+		border-color: var(--border-default);
+		color: var(--text-secondary);
+	}
+
+	.tuning-toggle--open {
+		border-color: var(--accent-blue);
+		color: var(--accent-blue);
+	}
+
+	.tuning-toggle__chev {
+		font-size: 8px;
+		opacity: 0.8;
+	}
+
+	.tuning-advanced {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		padding: 5px;
+		background: var(--bg-base);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-xs);
+	}
+
+	.tuning-advanced__row {
+		display: grid;
+		grid-template-columns: 36px 1fr;
+		gap: 4px;
+		align-items: center;
+	}
+
+	.tuning-advanced__label {
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		color: var(--text-tertiary);
+	}
+
+	.author-body {
+		flex: 1;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		overflow: hidden;
+	}
+
+	.author-buffer {
+		flex-shrink: 0;
 		font-family: var(--font-mono);
-		font-size: var(--text-xs);
-		color: #a855f7;
-		opacity: 0.7;
-		font-style: italic;
+		font-size: var(--text-2xs);
+		line-height: 1.35;
+		color: var(--text-secondary);
+		padding: 3px 5px;
+		background: var(--bg-base);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-xs);
+		max-height: 44px;
+		overflow-y: auto;
+		word-break: break-word;
+		white-space: pre-wrap;
+	}
+
+	.author-buffer__label {
+		display: block;
+		font-family: var(--font-ui);
+		font-size: 9px;
+		font-weight: 700;
+		letter-spacing: 0.06em;
+		color: var(--text-tertiary);
+		margin-bottom: 2px;
+	}
+
+	.author-buffer__text {
+		color: var(--color-success);
 	}
 
 	.caption-input {
 		flex: 1;
-		min-height: 60px;
+		min-height: 0;
+		width: 100%;
+		box-sizing: border-box;
 		resize: none;
 		font-family: var(--font-mono);
-		font-size: var(--text-sm);
+		font-size: var(--text-xs);
+		line-height: 1.4;
 		background: var(--bg-base);
 		color: var(--text-primary);
 		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
-		padding: 8px;
+		border-radius: var(--radius-xs);
+		padding: 5px 6px;
 		outline: none;
+		transition: border-color var(--transition-fast);
 	}
 
 	.caption-input:focus {
@@ -560,230 +817,152 @@
 
 	.caption-input::placeholder {
 		color: var(--text-tertiary);
-	}
-
-	.author-buffer {
-		font-family: var(--font-mono);
-		font-size: var(--text-xs);
-		color: var(--text-secondary);
-		padding: 4px 8px;
-		background: var(--bg-base);
-		border-radius: var(--radius-sm);
-		white-space: pre-wrap;
-		word-break: break-word;
-		max-height: 48px;
-		overflow-y: auto;
-	}
-
-	.buffer-label {
-		color: var(--text-tertiary);
-		margin-right: 4px;
-	}
-
-	.buffer-text {
-		color: var(--accent-green);
+		font-size: var(--text-2xs);
 	}
 
 	.zone-actions {
 		display: flex;
-		gap: 4px;
+		gap: 3px;
+		flex-shrink: 0;
 	}
 
-	.test-btn {
+	.chip-btn {
 		font-family: var(--font-ui);
 		font-size: var(--text-2xs);
 		font-weight: 600;
-		padding: 2px 8px;
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
-		background: var(--bg-base);
+		padding: 2px 6px;
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-xs);
+		background: var(--bg-control);
 		color: var(--text-secondary);
 		cursor: pointer;
+		transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+		white-space: nowrap;
 	}
 
-	.test-btn:hover {
-		background: var(--bg-elevated);
+	.chip-btn:hover {
+		background: var(--bg-hover);
 		color: var(--text-primary);
+		border-color: var(--border-default);
 	}
 
-	.test-btn.active {
+	.chip-btn--active {
 		background: var(--accent-yellow);
 		color: var(--bg-base);
 		border-color: var(--accent-yellow);
 	}
 
-	.clear-btn {
-		font-family: var(--font-ui);
-		font-size: var(--text-2xs);
-		font-weight: 600;
-		padding: 2px 8px;
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
-		background: var(--bg-base);
-		color: var(--text-secondary);
-		cursor: pointer;
-	}
-
-	.clear-btn:hover {
-		background: var(--status-error);
-		color: white;
-		border-color: var(--status-error);
+	.chip-btn--danger:hover {
+		background: var(--color-error-dim);
+		color: var(--color-error);
+		border-color: var(--color-error);
 	}
 
 	.disabled-notice {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+		display: flex;
+		gap: 6px;
+		align-items: flex-start;
+		padding: 6px 4px;
 		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		color: var(--text-tertiary);
-		padding: 12px;
-		text-align: center;
+		line-height: 1.4;
+	}
+
+	.disabled-notice__icon {
+		flex-shrink: 0;
+		color: var(--text-tertiary);
+		opacity: 0.75;
+		margin-top: 1px;
+	}
+
+	.disabled-notice__icon :global(svg) {
+		display: block;
+	}
+
+	.disabled-notice__text {
+		min-width: 0;
+	}
+
+	.disabled-notice__text p {
+		margin: 0 0 4px;
+	}
+
+	.disabled-notice__text p:last-child {
+		margin-bottom: 0;
+	}
+
+	.tentative-text {
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		color: var(--accent-blue);
+		opacity: 0.9;
+		font-style: italic;
+		word-break: break-word;
+	}
+
+	.source-scroll {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+		overflow-x: hidden;
+	}
+
+	.source-empty {
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		color: var(--text-tertiary);
+		line-height: 1.35;
+		padding: 4px 2px;
 	}
 
 	.source-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
 		display: flex;
 		flex-direction: column;
-		gap: 4px;
+		gap: 2px;
 	}
 
-	.no-sources {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		color: var(--text-tertiary);
-		padding: 8px;
-	}
-
-	.source-badge {
+	.source-row {
 		display: flex;
 		align-items: center;
 		gap: 6px;
-		padding: 4px 8px;
+		padding: 2px 4px;
+		border-radius: var(--radius-xs);
 		background: var(--bg-base);
-		border-radius: var(--radius-sm);
+		border: 1px solid transparent;
 	}
 
-	.cc-badge {
-		font-family: var(--font-mono);
-		font-size: var(--text-2xs);
-		font-weight: 700;
-		background: var(--accent-yellow);
-		color: var(--bg-base);
-		padding: 1px 4px;
-		border-radius: 2px;
+	.source-row__dot {
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		flex-shrink: 0;
+		background: var(--color-success);
+		box-shadow: 0 0 0 1px var(--color-success-dim);
 	}
 
-	.source-name {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		color: var(--text-primary);
-	}
-
-	.tuning-toggle {
-		display: flex;
-		align-items: center;
-		gap: 4px;
+	.source-row__name {
 		font-family: var(--font-ui);
 		font-size: var(--text-2xs);
-		font-weight: 600;
-		padding: 4px 8px;
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
-		background: var(--bg-base);
-		color: var(--text-secondary);
-		cursor: pointer;
-		margin-top: 2px;
-		transition: all var(--transition-fast);
-	}
-
-	.tuning-toggle:hover {
-		background: var(--bg-elevated);
 		color: var(--text-primary);
-	}
-
-	.tuning-toggle.open {
-		border-color: #a855f7;
-		color: #a855f7;
-	}
-
-	.tuning-icon {
-		font-size: 12px;
-	}
-
-	.tuning-chevron {
-		margin-left: auto;
-		font-size: 8px;
-	}
-
-	.tuning-section {
-		display: flex;
-		flex-direction: column;
-		gap: 6px;
-		padding: 6px;
-		background: var(--bg-base);
-		border-radius: var(--radius-sm);
-		border: 1px solid var(--border-default);
-	}
-
-	.tuning-row {
-		display: flex;
-		flex-direction: column;
-		gap: 3px;
-	}
-
-	.tuning-label {
-		font-family: var(--font-ui);
-		font-size: var(--text-2xs);
-		font-weight: 600;
-		color: var(--text-secondary);
-	}
-
-	.segment-toggle {
-		display: flex;
-		gap: 0;
-	}
-
-	.segment-toggle button {
-		flex: 1;
-		padding: 4px 8px;
-		font-family: var(--font-ui);
-		font-size: 11px;
-		border: 1px solid var(--border-default);
-		background: var(--bg-secondary);
-		color: var(--text-secondary);
-		cursor: pointer;
-		transition: all var(--transition-fast);
-	}
-
-	.segment-toggle button:first-child {
-		border-radius: 4px 0 0 4px;
-	}
-
-	.segment-toggle button:last-child {
-		border-radius: 0 4px 4px 0;
-	}
-
-	.segment-toggle button:not(:first-child) {
-		border-left: none;
-	}
-
-	.segment-toggle button:hover:not(.active) {
-		background: var(--bg-elevated);
-		color: var(--text-primary);
-	}
-
-	.segment-toggle button.active {
-		background: #a855f7;
-		color: white;
-		border-color: #a855f7;
-	}
-
-	.segment-toggle button.active + button {
-		border-left-color: #a855f7;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	@media (max-width: 1024px) {
 		.captions-panel {
 			grid-template-columns: 1fr 1fr;
 		}
-		.zone:last-child {
+
+		.zone--sources {
 			grid-column: span 2;
 		}
 	}
@@ -792,7 +971,8 @@
 		.captions-panel {
 			grid-template-columns: 1fr;
 		}
-		.zone:last-child {
+
+		.zone--sources {
 			grid-column: span 1;
 		}
 	}
