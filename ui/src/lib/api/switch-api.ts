@@ -1218,6 +1218,24 @@ export function resetCorrector(): Promise<ControlRoomState> {
 	return request('/api/colorgrade/corrector', { method: 'DELETE' });
 }
 
+// ── Per-Source Corrector ──
+
+export function getSourceCorrector(key: string): Promise<CorrectorState> {
+	return request(`/api/sources/${encodeURIComponent(key)}/corrector`);
+}
+
+export function setSourceCorrector(key: string, state: CorrectorState): Promise<ControlRoomState> {
+	return request(`/api/sources/${encodeURIComponent(key)}/corrector`, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(state),
+	});
+}
+
+export function resetSourceCorrector(key: string): Promise<ControlRoomState> {
+	return request(`/api/sources/${encodeURIComponent(key)}/corrector`, { method: 'DELETE' });
+}
+
 export function saveCustomLook(name: string): Promise<ColorGradeState> {
 	return post('/api/colorgrade/save', { name });
 }

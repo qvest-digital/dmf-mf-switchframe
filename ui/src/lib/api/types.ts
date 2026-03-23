@@ -35,6 +35,7 @@ export interface SourceInfo {
 	delayMs?: number;
 	isVirtual?: boolean;
 	hasCaptions?: boolean;
+	corrector?: CorrectorState;
 }
 
 export interface EQBand {
@@ -327,7 +328,9 @@ export type MacroAction =
 	| 'layout_preset' | 'layout_slot_on' | 'layout_slot_off' | 'layout_slot_source' | 'layout_clear'
 	// Color Grade
 	| 'colorgrade_set' | 'colorgrade_off'
-	| 'corrector_set' | 'corrector_reset' | 'colorgrade_save';
+	| 'corrector_set' | 'corrector_reset' | 'colorgrade_save'
+	// Per-Source Color Grade
+	| 'source_corrector_set' | 'source_corrector_reset';
 
 export interface MacroStep {
 	action: MacroAction;

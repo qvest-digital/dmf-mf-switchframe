@@ -97,6 +97,9 @@ export const ACTION_META: Record<MacroAction, ActionMeta> = {
 	colorgrade_save: { label: 'Save Look', category: 'Color Grade', description: 'Save current corrector + look as custom preset' },
 	corrector_set: { label: 'Corrector Set', category: 'Color Grade', description: 'Set color corrector parameters' },
 	corrector_reset: { label: 'Corrector Reset', category: 'Color Grade', description: 'Reset color corrector to defaults' },
+	// Per-Source Color Grade
+	source_corrector_set: { label: 'Source Corrector', category: 'Color Grade', description: 'Set per-source color corrector' },
+	source_corrector_reset: { label: 'Source Corrector Reset', category: 'Color Grade', description: 'Reset per-source corrector to defaults' },
 };
 
 export const CATEGORIES = ['Switching', 'Timing', 'Audio', 'Graphics', 'Output', 'Presets', 'Keys', 'Source', 'Replay', 'SCTE-35', 'Captions', 'Clips', 'ST Map', 'Layout', 'Color Grade'] as const;
@@ -111,6 +114,7 @@ export const SOURCE_ACTIONS: MacroAction[] = [
 	'replay_quick_clip', 'replay_play_clip',
 	'stmap_assign_source', 'stmap_remove_source',
 	'layout_slot_source',
+	'source_corrector_set', 'source_corrector_reset',
 ];
 
 /** Graphics actions that take a layerId parameter. */
