@@ -225,36 +225,41 @@ func (m *Manager) connectSockets(controlPath, framePath string) error {
 // Returns the browser ID or an error if the pool is full.
 func (m *Manager) AllocateBrowser(layerID int) (int, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
+	slotID := -1
 	for i, bs := range m.browsers {
 		if bs.Status == "empty" {
 			bs.Status = "allocated"
 			bs.LayerID = layerID
 			bs.Width = m.config.Width
 			bs.Height = m.config.Height
-
-			m.notifyStateChange()
-
-			// Send create command (under lock is fine since write is fast).
-			if err := m.sendCommand(ControlCommand{
-				Cmd:    "create",
-				ID:     intPtrHelper(i),
-				Width:  m.config.Width,
-				Height: m.config.Height,
-				FPS:    m.config.FPS,
-			}); err != nil {
-				// Roll back on send failure.
-				bs.Status = "empty"
-				bs.LayerID = -1
-				return 0, fmt.Errorf("send create command: %w", err)
-			}
-
-			return i, nil
+			slotID = i
+			break
 		}
 	}
+	m.mu.Unlock()
 
-	return 0, fmt.Errorf("browser pool exhausted (pool size: %d)", m.config.PoolSize)
+	if slotID < 0 {
+		return 0, fmt.Errorf("browser pool exhausted (pool size: %d)", m.config.PoolSize)
+	}
+
+	if err := m.sendCommand(ControlCommand{
+		Cmd:    "create",
+		ID:     intPtrHelper(slotID),
+		Width:  m.config.Width,
+		Height: m.config.Height,
+		FPS:    m.config.FPS,
+	}); err != nil {
+		// Roll back on send failure.
+		m.mu.Lock()
+		m.browsers[slotID].Status = "empty"
+		m.browsers[slotID].LayerID = -1
+		m.mu.Unlock()
+		return 0, fmt.Errorf("send create command: %w", err)
+	}
+
+	m.notifyStateChange()
+	return slotID, nil
 }
 
 // FreeBrowser sends a "destroy" command and resets the browser state to empty.
@@ -455,8 +460,8 @@ func (m *Manager) BrowserForLayer(layerID int) int {
 }
 
 // OnStateChange registers a callback that is invoked whenever browser
-// state changes. The callback is called with the lock held, so it must
-// not call back into the Manager.
+// state changes. The callback runs asynchronously in a goroutine and
+// may safely call Manager methods like BrowserStates().
 func (m *Manager) OnStateChange(fn func()) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -644,10 +649,13 @@ func (m *Manager) validateBrowserID(browserID int) error {
 }
 
 // notifyStateChange calls the onStateChange callback if set.
-// Must be called with m.mu held.
+// Safe to call with or without the lock held — the callback runs
+// asynchronously to avoid deadlocks (the callback may call BrowserStates
+// which acquires the lock).
 func (m *Manager) notifyStateChange() {
-	if m.onStateChange != nil {
-		m.onStateChange()
+	fn := m.onStateChange
+	if fn != nil {
+		go fn()
 	}
 }
 
