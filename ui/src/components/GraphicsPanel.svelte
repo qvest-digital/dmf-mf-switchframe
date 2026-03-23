@@ -8,7 +8,6 @@
 		graphicsFlyIn, graphicsFlyOut, graphicsFlyOn,
 		graphicsImageUpload, graphicsImageDelete, graphicsSetRect,
 		graphicsTickerStart, graphicsTickerStop, graphicsTickerUpdateText,
-		graphicsTextAnimStart, graphicsTextAnimStop,
 		graphicsLoadHTML5, graphicsUpdateHTML5Data,
 		graphicsHTML5Play, graphicsHTML5Stop, graphicsHTML5Next,
 		graphicsUnloadHTML5,
@@ -26,7 +25,7 @@
 	}
 	let { state: crState, externalSelectedLayerId = null }: Props = $props();
 
-	type SourceMode = 'template' | 'image' | 'ticker' | 'textfx' | 'html5';
+	type SourceMode = 'template' | 'image' | 'ticker' | 'html5';
 
 	// ── Per-layer state maps ──
 	let layerModes = $state<Record<number, SourceMode>>({});
@@ -342,27 +341,6 @@
 		}
 	}
 
-	// ── Text animation handlers ──
-	let textAnimRunning = $state<Record<number, boolean>>({});
-
-	async function handleTextAnimStart(id: number, config: { mode: string; text: string; fontSize: number; bold: boolean; charsPerSec?: number; wordDelayMs?: number; fadeDurationMs?: number }) {
-		try {
-			await graphicsTextAnimStart(id, config);
-			textAnimRunning = { ...textAnimRunning, [id]: true };
-		} catch {
-			notify('error', 'Text animation failed');
-		}
-	}
-
-	async function handleTextAnimStop(id: number) {
-		try {
-			await graphicsTextAnimStop(id);
-			textAnimRunning = { ...textAnimRunning, [id]: false };
-		} catch {
-			notify('error', 'Text animation stop failed');
-		}
-	}
-
 	// ── HTML5 handlers ──
 	async function handleHTML5Load(id: number, url: string) {
 		try {
@@ -455,9 +433,6 @@
 					onTickerStop={() => handleTickerStop(selectedLayer.id)}
 					onTickerUpdateText={(text) => handleTickerUpdateText(selectedLayer.id, text)}
 					tickerActive={tickerRunning[selectedLayer.id] ?? false}
-					onTextAnimStart={(cfg) => handleTextAnimStart(selectedLayer.id, cfg)}
-					onTextAnimStop={() => handleTextAnimStop(selectedLayer.id)}
-					textAnimActive={textAnimRunning[selectedLayer.id] ?? false}
 					onHTML5Load={(url) => handleHTML5Load(selectedLayer.id, url)}
 					onHTML5UpdateData={(data) => handleHTML5UpdateData(selectedLayer.id, data)}
 					onHTML5Play={() => handleHTML5Play(selectedLayer.id)}

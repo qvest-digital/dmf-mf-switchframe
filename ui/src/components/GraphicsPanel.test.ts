@@ -331,19 +331,18 @@ describe('GraphicsPanel', () => {
 		expect(selected).toBeTruthy();
 	});
 
-	it('should have 5 source mode buttons (TEMPLATE, IMAGE, TICKER, TEXT FX, HTML5)', () => {
+	it('should have 4 source mode buttons (TEMPLATE, IMAGE, TICKER, HTML5)', () => {
 		const state = {
 			...baseState,
 			graphics: { layers: [oneLayer] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
 		const modeBtns = container.querySelectorAll('.mode-btn');
-		expect(modeBtns.length).toBe(5);
+		expect(modeBtns.length).toBe(4);
 		const labels = Array.from(modeBtns).map(b => b.textContent?.trim());
 		expect(labels).toContain('TEMPLATE');
 		expect(labels).toContain('IMAGE');
 		expect(labels).toContain('TICKER');
-		expect(labels).toContain('TEXT FX');
 		expect(labels).toContain('HTML5');
 	});
 
@@ -373,21 +372,6 @@ describe('GraphicsPanel', () => {
 		expect(startBtn).toBeTruthy();
 	});
 
-	it('should show text animation controls after clicking TEXT FX mode', async () => {
-		const state = {
-			...baseState,
-			graphics: { layers: [oneLayer] },
-		};
-		const { container } = render(GraphicsPanel, { props: { state } });
-		const modeBtns = container.querySelectorAll('.mode-btn');
-		const textFxBtn = Array.from(modeBtns).find(b => b.textContent?.includes('TEXT FX'));
-		await fireEvent.click(textFxBtn!);
-		const modeSelect = container.querySelectorAll('.ctl-select');
-		const hasTypewriter = Array.from(modeSelect).some(sel =>
-			sel.textContent?.includes('Typewriter')
-		);
-		expect(hasTypewriter).toBe(true);
-	});
 
 	it('should not show effects section when layer is inactive', () => {
 		const state = {

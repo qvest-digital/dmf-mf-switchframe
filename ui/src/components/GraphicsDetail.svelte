@@ -27,17 +27,7 @@
 		loop: boolean;
 	}
 
-	interface TextAnimStartConfig {
-		mode: string;
-		text: string;
-		fontSize: number;
-		bold: boolean;
-		charsPerSec?: number;
-		wordDelayMs?: number;
-		fadeDurationMs?: number;
-	}
-
-	type SourceMode = 'template' | 'image' | 'ticker' | 'textfx' | 'html5';
+	type SourceMode = 'template' | 'image' | 'ticker' | 'html5';
 
 	interface Props {
 		layer: GraphicsLayerState;
@@ -67,9 +57,6 @@
 		onTickerStop: () => void;
 		onTickerUpdateText: (text: string) => void;
 		tickerActive: boolean;
-		onTextAnimStart: (config: TextAnimStartConfig) => void;
-		onTextAnimStop: () => void;
-		textAnimActive: boolean;
 		onHTML5Load: (url: string) => void;
 		onHTML5UpdateData: (data: Record<string, unknown>) => void;
 		onHTML5Play: () => void;
@@ -85,7 +72,6 @@
 		onFlyIn, onFlyOut, onAnimate, onAnimateStop,
 		onImageUpload, onImageDelete, onRectChange,
 		onTickerStart, onTickerStop, onTickerUpdateText, tickerActive,
-		onTextAnimStart, onTextAnimStop, textAnimActive,
 		onHTML5Load, onHTML5UpdateData, onHTML5Play, onHTML5Stop, onHTML5Next, onHTML5Unload,
 	}: Props = $props();
 
@@ -101,13 +87,6 @@
 	let tickerLoop = $state(true);
 
 	// Text animation local config
-	let textAnimMode = $state('typewriter');
-	let textAnimText = $state('Hello World');
-	let textAnimFontSize = $state(32);
-	let textAnimBold = $state(false);
-	let textAnimCharsPerSec = $state(15);
-	let textAnimWordDelayMs = $state(300);
-	let textAnimFadeDurationMs = $state(200);
 
 	let fileInput = $state<HTMLInputElement | null>(null);
 
@@ -185,7 +164,6 @@
 		{ id: 'template', label: 'TEMPLATE' },
 		{ id: 'image', label: 'IMAGE' },
 		{ id: 'ticker', label: 'TICKER' },
-		{ id: 'textfx', label: 'TEXT FX' },
 		{ id: 'html5', label: 'HTML5' },
 	];
 
@@ -247,8 +225,6 @@
 				{#if m.id === 'image' && layer.imageName}
 					<span class="mode-badge">&#10003;</span>
 				{:else if m.id === 'ticker' && tickerActive}
-					<span class="mode-badge live">LIVE</span>
-				{:else if m.id === 'textfx' && textAnimActive}
 					<span class="mode-badge live">LIVE</span>
 				{:else if m.id === 'html5' && layer.html5Status === 'playing'}
 					<span class="mode-badge live">LIVE</span>
@@ -402,66 +378,7 @@
 					</div>
 				</div>
 
-			<!-- ═══════════════ TEXT FX MODE ═══════════════ -->
-			{:else if sourceMode === 'textfx'}
-				<div class="textfx-section">
-					<select
-						class="ctl-select"
-						bind:value={textAnimMode}
-						aria-label="Text animation mode"
-					>
-						<option value="typewriter">Typewriter</option>
-						<option value="fade-word">Fade Word</option>
-					</select>
-					<input
-						class="field-inp"
-						type="text"
-						placeholder="Text to animate..."
-						bind:value={textAnimText}
-						aria-label="Animation text"
-					/>
-					<div class="textfx-params">
-						<label class="ctl-param" title="Font size">
-							<span>sz</span>
-							<input type="number" min="16" max="72" step="2" bind:value={textAnimFontSize} />
-						</label>
-						<label class="ctl-check" title="Bold">
-							<input type="checkbox" bind:checked={textAnimBold} />
-							<span>B</span>
-						</label>
-						{#if textAnimMode === 'typewriter'}
-							<label class="ctl-param" title="Chars/sec">
-								<span>cps</span>
-								<input type="number" min="1" max="60" step="1" bind:value={textAnimCharsPerSec} />
-							</label>
-						{:else}
-							<label class="ctl-param" title="Word delay (ms)">
-								<span>delay</span>
-								<input type="number" min="50" max="2000" step="50" bind:value={textAnimWordDelayMs} />
-							</label>
-							<label class="ctl-param" title="Fade duration (ms)">
-								<span>fade</span>
-								<input type="number" min="50" max="1000" step="50" bind:value={textAnimFadeDurationMs} />
-							</label>
-						{/if}
-					</div>
-					<div class="action-grid">
-						{#if textAnimActive}
-							<button class="act-btn anim-stop" onclick={onTextAnimStop}>STOP</button>
-						{:else}
-							<button class="act-btn anim-start" onclick={() => onTextAnimStart({
-								mode: textAnimMode,
-								text: textAnimText,
-								fontSize: textAnimFontSize,
-								bold: textAnimBold,
-								charsPerSec: textAnimCharsPerSec,
-								wordDelayMs: textAnimWordDelayMs,
-								fadeDurationMs: textAnimFadeDurationMs,
-							})}>START</button>
-						{/if}
-					</div>
-				</div>
-
+	
 			<!-- ═══════════════ HTML5 MODE ═══════════════ -->
 			{:else if sourceMode === 'html5'}
 				<div class="html5-section">
@@ -984,20 +901,6 @@
 	}
 
 	.ticker-params {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		flex-wrap: wrap;
-	}
-
-	/* ── Text FX section ── */
-	.textfx-section {
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-	}
-
-	.textfx-params {
 		display: flex;
 		align-items: center;
 		gap: 6px;
