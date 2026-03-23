@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 html, body {
     margin: 0; padding: 0;
@@ -18,23 +19,23 @@ html, body {
     position: absolute;
     bottom: 72px;
     right: 64px;
-    width: 460px;
+    width: 580px;
     font-family: 'DM Sans', sans-serif;
 }
 
 /* ---------- Card ---------- */
 #card {
-    background: rgba(10, 10, 18, 0.82);
+    background: rgba(10, 10, 18, 0.88);
     backdrop-filter: blur(24px) saturate(1.6);
     -webkit-backdrop-filter: blur(24px) saturate(1.6);
     border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 16px;
+    border-radius: 18px;
     box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6),
                 0 0 0 1px rgba(255, 255, 255, 0.04) inset;
-    padding: 24px;
+    padding: 32px;
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 20px;
     opacity: 0;
     transform: translateY(40px);
 }
@@ -42,15 +43,15 @@ html, body {
 /* ---------- Top row: art + info ---------- */
 #top-row {
     display: flex;
-    gap: 18px;
+    gap: 24px;
     align-items: flex-start;
 }
 
 /* ---------- Album art placeholder ---------- */
 #art-box {
-    width: 88px;
-    height: 88px;
-    border-radius: 10px;
+    width: 120px;
+    height: 120px;
+    border-radius: 12px;
     flex-shrink: 0;
     position: relative;
     overflow: hidden;
@@ -61,7 +62,7 @@ html, body {
 #art-gradient {
     width: 100%;
     height: 100%;
-    border-radius: 10px;
+    border-radius: 12px;
 }
 
 #art-icon {
@@ -69,8 +70,8 @@ html, body {
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    width: 32px;
-    height: 32px;
+    width: 44px;
+    height: 44px;
     opacity: 0.5;
 }
 
@@ -79,55 +80,58 @@ html, body {
     display: flex;
     flex-direction: column;
     justify-content: center;
-    gap: 4px;
+    gap: 6px;
     min-width: 0;
     flex: 1;
 }
 
 #label-now {
-    font-size: 11px;
-    font-weight: 500;
+    font-size: 32px;
+    font-weight: 600;
     letter-spacing: 2.5px;
     text-transform: uppercase;
     color: var(--accent-color, #00e5ff);
+    text-shadow: 0 2px 8px rgba(0,0,0,0.7);
     opacity: 0;
     transform: translateX(-10px);
 }
 
 #track-title {
-    font-size: 26px;
+    font-size: 52px;
     font-weight: 700;
     color: #ffffff;
     line-height: 1.2;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
     opacity: 0;
     transform: translateX(-14px);
 }
 
 #track-artist {
-    font-size: 17px;
+    font-size: 40px;
     font-weight: 400;
-    color: rgba(255, 255, 255, 0.65);
+    color: rgba(255, 255, 255, 0.75);
     line-height: 1.25;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    text-shadow: 0 2px 8px rgba(0,0,0,0.7);
     opacity: 0;
     transform: translateX(-10px);
 }
 
 #track-album {
-    font-size: 14px;
+    font-size: 36px;
     font-weight: 400;
     font-style: italic;
-    color: rgba(255, 255, 255, 0.35);
+    color: rgba(255, 255, 255, 0.55);
     line-height: 1.25;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    text-shadow: 0 2px 8px rgba(0,0,0,0.7);
     opacity: 0;
     transform: translateX(-8px);
 }
@@ -136,40 +140,41 @@ html, body {
 #visualizer {
     display: flex;
     align-items: flex-end;
-    gap: 3px;
-    height: 28px;
+    gap: 4px;
+    height: 36px;
     padding: 0 2px;
     opacity: 0;
 }
 
 .viz-bar {
-    width: 3px;
-    border-radius: 1.5px;
+    width: 4px;
+    border-radius: 2px;
     background: var(--accent-color, #00e5ff);
     height: 4px;
     animation: none;
 }
 
-@keyframes vizPulse1 { 0%,100%{height:4px} 50%{height:26px} }
-@keyframes vizPulse2 { 0%,100%{height:6px} 50%{height:22px} }
-@keyframes vizPulse3 { 0%,100%{height:3px} 50%{height:28px} }
-@keyframes vizPulse4 { 0%,100%{height:8px} 50%{height:18px} }
-@keyframes vizPulse5 { 0%,100%{height:5px} 50%{height:24px} }
+@keyframes vizPulse1 { 0%,100%{height:4px} 50%{height:34px} }
+@keyframes vizPulse2 { 0%,100%{height:6px} 50%{height:28px} }
+@keyframes vizPulse3 { 0%,100%{height:3px} 50%{height:36px} }
+@keyframes vizPulse4 { 0%,100%{height:8px} 50%{height:22px} }
+@keyframes vizPulse5 { 0%,100%{height:5px} 50%{height:30px} }
 
 /* ---------- Progress section ---------- */
 #progress-section {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 14px;
     opacity: 0;
 }
 
 #time-elapsed, #time-duration {
     font-family: 'JetBrains Mono', monospace;
-    font-size: 12px;
+    font-size: 36px;
     font-weight: 500;
-    color: rgba(255, 255, 255, 0.45);
-    min-width: 36px;
+    color: rgba(255, 255, 255, 0.55);
+    min-width: 70px;
+    text-shadow: 0 2px 8px rgba(0,0,0,0.7);
 }
 
 #time-duration {
@@ -178,7 +183,7 @@ html, body {
 
 #progress-track {
     flex: 1;
-    height: 3px;
+    height: 4px;
     background: rgba(255, 255, 255, 0.1);
     border-radius: 2px;
     overflow: hidden;
@@ -197,66 +202,69 @@ html, body {
 
 #progress-glow {
     position: absolute;
-    top: -2px;
-    right: -3px;
-    width: 6px;
-    height: 7px;
+    top: -3px;
+    right: -4px;
+    width: 8px;
+    height: 10px;
     border-radius: 50%;
-    filter: blur(2px);
+    filter: blur(3px);
 }
 
 /* ---------- Up Next row ---------- */
 #up-next-row {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding-top: 10px;
+    gap: 16px;
+    padding-top: 14px;
     border-top: 1px solid rgba(255, 255, 255, 0.06);
     opacity: 0;
     transform: translateY(8px);
 }
 
 #up-next-label {
-    font-size: 10px;
+    font-size: 32px;
     font-weight: 700;
     letter-spacing: 2px;
     text-transform: uppercase;
-    color: rgba(255, 255, 255, 0.3);
+    color: rgba(255, 255, 255, 0.45);
     white-space: nowrap;
+    text-shadow: 0 2px 8px rgba(0,0,0,0.7);
 }
 
 #up-next-info {
     display: flex;
     flex-direction: column;
-    gap: 1px;
+    gap: 2px;
     min-width: 0;
     flex: 1;
 }
 
 #up-next-title {
-    font-size: 14px;
+    font-size: 36px;
     font-weight: 500;
-    color: rgba(255, 255, 255, 0.55);
+    color: rgba(255, 255, 255, 0.65);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    text-shadow: 0 2px 8px rgba(0,0,0,0.7);
 }
 
 #up-next-artist {
-    font-size: 12px;
+    font-size: 32px;
     font-weight: 400;
-    color: rgba(255, 255, 255, 0.3);
+    color: rgba(255, 255, 255, 0.45);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    text-shadow: 0 2px 8px rgba(0,0,0,0.7);
 }
 
 /* ---------- Glow edge ---------- */
 #card-glow {
     position: absolute;
     bottom: -1px;
-    left: 24px;
-    right: 24px;
+    left: 32px;
+    right: 32px;
     height: 2px;
     border-radius: 1px;
     opacity: 0;
@@ -394,7 +402,6 @@ html, body {
 
     function applyArtColor(color) {
         artColor = color;
-        var lighter = color;
         els.artGradient.style.background = 'linear-gradient(135deg, ' + color + ' 0%, ' + shiftHue(color, 40) + ' 100%)';
     }
 

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=Manrope:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
 html, body {
     margin: 0; padding: 0;
@@ -11,6 +11,7 @@ html, body {
     overflow: hidden;
     width: 1920px; height: 1080px;
     -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
 }
 
 /* ---------- Full-screen overlay ---------- */
@@ -24,18 +25,33 @@ html, body {
     position: absolute;
     top: 0; left: 0; right: 0; bottom: 0;
     background: linear-gradient(135deg,
-        rgba(8, 6, 18, 0.7) 0%,
-        rgba(18, 12, 30, 0.6) 50%,
-        rgba(8, 6, 18, 0.7) 100%);
+        rgba(6, 4, 15, 0.88) 0%,
+        rgba(12, 8, 24, 0.85) 40%,
+        rgba(8, 6, 20, 0.87) 70%,
+        rgba(6, 4, 15, 0.88) 100%);
 }
 
-/* ---------- Animated shimmer ---------- */
-#bg-shimmer {
+/* ---------- Breathing gradient overlay ---------- */
+#bg-breathe {
     position: absolute;
     top: 0; left: 0; right: 0; bottom: 0;
-    background: radial-gradient(ellipse at 30% 40%,
-        rgba(212, 175, 55, 0.04) 0%,
-        transparent 60%);
+    opacity: 0;
+}
+
+@keyframes breatheShift {
+    0%   { background-position: 0% 50%; }
+    50%  { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+}
+
+/* ---------- Vignette ---------- */
+#vignette {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: radial-gradient(ellipse at center,
+        transparent 40%,
+        rgba(0, 0, 0, 0.35) 100%);
+    pointer-events: none;
     opacity: 0;
 }
 
@@ -47,118 +63,145 @@ html, body {
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    padding: 120px 200px;
+    padding: 140px 220px;
     box-sizing: border-box;
 }
 
 /* ---------- Decorative quote marks ---------- */
-#quote-mark-open, #quote-mark-close {
-    font-family: 'Playfair Display', serif;
-    font-weight: 700;
-    font-size: 240px;
+.quote-mark {
+    font-family: 'Cormorant Garamond', serif;
+    font-weight: 300;
+    font-style: italic;
+    font-size: 360px;
     line-height: 1;
-    color: var(--accent-color, #d4af37);
+    color: var(--accent-color, #c9a96e);
     opacity: 0;
     position: absolute;
     user-select: none;
     pointer-events: none;
+    filter: blur(0.5px);
 }
 
 #quote-mark-open {
-    top: 130px;
-    left: 140px;
-    transform: translateY(20px);
+    top: 80px;
+    left: 100px;
+    transform: translateY(30px);
 }
 
 #quote-mark-close {
-    bottom: 100px;
-    right: 140px;
-    transform: translateY(-20px) rotate(180deg);
+    bottom: 40px;
+    right: 100px;
+    transform: translateY(-30px) scaleX(-1);
+}
+
+/* ---------- Thin decorative lines flanking quote ---------- */
+.ornament-line {
+    position: absolute;
+    width: 1px;
+    height: 0;
+    opacity: 0;
+}
+
+#ornament-left {
+    left: 180px;
+    top: 50%;
+    transform: translateY(-50%);
+}
+
+#ornament-right {
+    right: 180px;
+    top: 50%;
+    transform: translateY(-50%);
 }
 
 /* ---------- Quote text ---------- */
 #quote-text {
-    font-family: 'Playfair Display', serif;
-    font-weight: 400;
+    font-family: 'Cormorant Garamond', serif;
+    font-weight: 300;
     font-style: italic;
     color: #ffffff;
-    line-height: 1.55;
+    line-height: 1.5;
     text-align: center;
-    text-shadow: 0 2px 16px rgba(0, 0, 0, 0.5),
-                 0 4px 32px rgba(0, 0, 0, 0.3);
-    max-width: 1200px;
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
+    max-width: 1100px;
     position: relative;
     z-index: 1;
 }
 
-#quote-text.size-small  { font-size: 38px; }
-#quote-text.size-medium { font-size: 52px; }
-#quote-text.size-large  { font-size: 68px; }
+#quote-text.size-small  { font-size: 54px; }
+#quote-text.size-medium { font-size: 72px; }
+#quote-text.size-large  { font-size: 86px; }
 
-/* ---------- Divider line ---------- */
+/* ---------- Divider ornament ---------- */
 #divider {
-    width: 0;
-    height: 2px;
-    margin: 36px auto 28px;
-    border-radius: 1px;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    margin: 48px auto 40px;
     opacity: 0;
     position: relative;
     z-index: 1;
+}
+
+#divider-line-left, #divider-line-right {
+    height: 1px;
+    width: 0;
+    opacity: 0.4;
+}
+
+#divider-diamond {
+    width: 8px;
+    height: 8px;
+    transform: rotate(45deg) scale(0);
+    flex-shrink: 0;
 }
 
 /* ---------- Attribution ---------- */
 #attribution {
-    font-family: 'Inter', sans-serif;
-    font-weight: 500;
-    font-size: 22px;
-    letter-spacing: 3px;
+    font-family: 'Manrope', sans-serif;
+    font-weight: 600;
+    font-size: 44px;
+    letter-spacing: 5px;
     text-transform: uppercase;
-    color: var(--accent-color, #d4af37);
+    color: var(--accent-color, #c9a96e);
     text-align: center;
     opacity: 0;
-    transform: translateY(12px);
+    transform: translateY(14px);
     position: relative;
     z-index: 1;
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7), 0 0 20px var(--accent-glow, rgba(201, 169, 110, 0.3));
 }
 
 /* ---------- Source ---------- */
 #source {
-    font-family: 'Inter', sans-serif;
-    font-weight: 300;
-    font-size: 16px;
-    letter-spacing: 1px;
-    color: rgba(255, 255, 255, 0.4);
+    font-family: 'Manrope', sans-serif;
+    font-weight: 400;
+    font-size: 40px;
+    letter-spacing: 2px;
+    color: rgba(255, 255, 255, 0.7);
     text-align: center;
-    margin-top: 8px;
+    margin-top: 14px;
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(10px);
     position: relative;
     z-index: 1;
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
 }
 
 /* ---------- Word spans for animation ---------- */
 #quote-text .word {
     display: inline-block;
     opacity: 0;
-    transform: translateY(12px);
-    margin-right: 0.28em;
+    transform: translateY(18px) scale(0.96);
+    filter: blur(4px);
+    margin-right: 0.3em;
 }
 
 #quote-text .line-group {
     display: block;
     opacity: 0;
-    transform: translateY(16px);
-}
-
-/* ---------- Vignette ---------- */
-#vignette {
-    position: absolute;
-    top: 0; left: 0; right: 0; bottom: 0;
-    background: radial-gradient(ellipse at center,
-        transparent 50%,
-        rgba(0, 0, 0, 0.3) 100%);
-    pointer-events: none;
-    opacity: 0;
+    transform: translateY(20px);
+    filter: blur(2px);
 }
 </style>
 </head>
@@ -166,15 +209,21 @@ html, body {
 
 <div id="overlay">
     <div id="bg-gradient"></div>
-    <div id="bg-shimmer"></div>
+    <div id="bg-breathe"></div>
     <div id="vignette"></div>
+    <div id="ornament-left" class="ornament-line"></div>
+    <div id="ornament-right" class="ornament-line"></div>
     <div id="content">
-        <div id="quote-mark-open">&ldquo;</div>
+        <div id="quote-mark-open" class="quote-mark">&ldquo;</div>
         <div id="quote-text" class="size-medium"></div>
-        <div id="divider"></div>
+        <div id="divider">
+            <div id="divider-line-left"></div>
+            <div id="divider-diamond"></div>
+            <div id="divider-line-right"></div>
+        </div>
         <div id="attribution"></div>
         <div id="source"></div>
-        <div id="quote-mark-close">&ldquo;</div>
+        <div id="quote-mark-close" class="quote-mark">&rdquo;</div>
     </div>
 </div>
 
@@ -187,30 +236,35 @@ html, body {
     var els = {
         overlay:        document.getElementById('overlay'),
         bgGradient:     document.getElementById('bg-gradient'),
-        bgShimmer:      document.getElementById('bg-shimmer'),
+        bgBreathe:      document.getElementById('bg-breathe'),
         vignette:       document.getElementById('vignette'),
         content:        document.getElementById('content'),
         quoteMarkOpen:  document.getElementById('quote-mark-open'),
         quoteMarkClose: document.getElementById('quote-mark-close'),
         quoteText:      document.getElementById('quote-text'),
         divider:        document.getElementById('divider'),
+        divLineL:       document.getElementById('divider-line-left'),
+        divLineR:       document.getElementById('divider-line-right'),
+        divDiamond:     document.getElementById('divider-diamond'),
         attribution:    document.getElementById('attribution'),
-        source:         document.getElementById('source')
+        source:         document.getElementById('source'),
+        ornamentL:      document.getElementById('ornament-left'),
+        ornamentR:      document.getElementById('ornament-right')
     };
 
     /* ---------- State ---------- */
     var isVisible = false;
     var playTL    = null;
     var stopTL    = null;
-    var shimmerTween = null;
+    var breatheTween = null;
 
     var data = {
         quote: 'The only way to do great work is to love what you do.',
         attribution: 'Steve Jobs',
         source: 'Stanford Commencement, 2005',
-        accentColor: '#d4af37',
+        accentColor: '#c9a96e',
         fontSize: 'medium',
-        overlayOpacity: 0.65,
+        overlayOpacity: 0.85,
         textAlign: 'center',
         showQuoteMarks: true,
         animationStyle: 'word',
@@ -220,10 +274,22 @@ html, body {
     gsap.defaults({ overwrite: 'auto' });
 
     /* ---------- Helpers ---------- */
+    function hexToRgba(hex, alpha) {
+        var r = parseInt(hex.slice(1,3), 16);
+        var g = parseInt(hex.slice(3,5), 16);
+        var b = parseInt(hex.slice(5,7), 16);
+        return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
+    }
+
     function applyAccent(color) {
         data.accentColor = color;
-        document.getElementById('overlay').style.setProperty('--accent-color', color);
-        els.divider.style.background = color;
+        els.overlay.style.setProperty('--accent-color', color);
+        els.overlay.style.setProperty('--accent-glow', hexToRgba(color, 0.3));
+        els.divLineL.style.background = 'linear-gradient(90deg, transparent, ' + color + ')';
+        els.divLineR.style.background = 'linear-gradient(90deg, ' + color + ', transparent)';
+        els.divDiamond.style.background = color;
+        els.ornamentL.style.background = 'linear-gradient(180deg, transparent, ' + hexToRgba(color, 0.15) + ', transparent)';
+        els.ornamentR.style.background = 'linear-gradient(180deg, transparent, ' + hexToRgba(color, 0.15) + ', transparent)';
     }
 
     function applyFontSize(size) {
@@ -232,16 +298,29 @@ html, body {
 
     function applyGradient() {
         var angle = data.gradientAngle || 135;
-        var op = data.overlayOpacity != null ? data.overlayOpacity : 0.65;
+        var op = data.overlayOpacity != null ? data.overlayOpacity : 0.85;
         var r1 = op;
-        var r2 = Math.max(0, op - 0.1);
+        var r2 = Math.max(0, op - 0.03);
+        var r3 = Math.max(0, op - 0.01);
         els.bgGradient.style.background =
-            'linear-gradient(' + angle + 'deg, rgba(8,6,18,' + r1 + ') 0%, rgba(18,12,30,' + r2 + ') 50%, rgba(8,6,18,' + r1 + ') 100%)';
+            'linear-gradient(' + angle + 'deg, rgba(6,4,15,' + r1 + ') 0%, rgba(12,8,24,' + r2 + ') 40%, rgba(8,6,20,' + r3 + ') 70%, rgba(6,4,15,' + r1 + ') 100%)';
+    }
+
+    function applyBreathe() {
+        var color = data.accentColor;
+        els.bgBreathe.style.background =
+            'linear-gradient(270deg, ' +
+            hexToRgba(color, 0.03) + ' 0%, ' +
+            'transparent 30%, ' +
+            hexToRgba(color, 0.04) + ' 50%, ' +
+            'transparent 70%, ' +
+            hexToRgba(color, 0.03) + ' 100%)';
+        els.bgBreathe.style.backgroundSize = '200% 200%';
+        els.bgBreathe.style.animation = 'breatheShift 8s ease-in-out infinite';
     }
 
     function buildQuoteHTML(text, style) {
         if (style === 'line') {
-            // Split by sentence-ish boundaries or newlines
             var lines = text.split(/(?<=[.!?\n])\s+/);
             return lines.map(function(line) {
                 return '<span class="line-group">' + escapeHtml(line) + '</span>';
@@ -252,7 +331,6 @@ html, body {
                 return '<span class="word">' + escapeHtml(word) + '</span>';
             }).join('');
         } else {
-            // fade — single block
             return '<span class="word" style="margin-right:0">' + escapeHtml(text) + '</span>';
         }
     }
@@ -271,6 +349,7 @@ html, body {
         applyAccent(data.accentColor);
         applyFontSize(data.fontSize);
         applyGradient();
+        applyBreathe();
 
         els.quoteMarkOpen.style.display = data.showQuoteMarks ? 'block' : 'none';
         els.quoteMarkClose.style.display = data.showQuoteMarks ? 'block' : 'none';
@@ -278,35 +357,25 @@ html, body {
 
     applyData();
 
-    /* ---------- Shimmer loop ---------- */
-    function startShimmer() {
-        shimmerTween = gsap.to(els.bgShimmer, {
-            background: 'radial-gradient(ellipse at 70% 60%, rgba(212,175,55,0.05) 0%, transparent 60%)',
-            duration: 6,
-            ease: 'sine.inOut',
-            yoyo: true,
-            repeat: -1
-        });
-    }
-
-    function stopShimmer() {
-        if (shimmerTween) { shimmerTween.kill(); shimmerTween = null; }
-    }
-
     /* ---------- Reset ---------- */
     function resetToHidden() {
         gsap.set(els.overlay, { opacity: 0 });
-        gsap.set(els.bgShimmer, { opacity: 0 });
+        gsap.set(els.bgBreathe, { opacity: 0 });
         gsap.set(els.vignette, { opacity: 0 });
-        gsap.set(els.quoteMarkOpen, { opacity: 0, y: 20 });
-        gsap.set(els.quoteMarkClose, { opacity: 0, y: -20 });
-        gsap.set(els.divider, { width: 0, opacity: 0 });
-        gsap.set(els.attribution, { opacity: 0, y: 12 });
-        gsap.set(els.source, { opacity: 0, y: 8 });
+        gsap.set(els.quoteMarkOpen, { opacity: 0, y: 30 });
+        gsap.set(els.quoteMarkClose, { opacity: 0, y: -30 });
+        gsap.set(els.divider, { opacity: 0 });
+        gsap.set(els.divLineL, { width: 0 });
+        gsap.set(els.divLineR, { width: 0 });
+        gsap.set(els.divDiamond, { transform: 'rotate(45deg) scale(0)' });
+        gsap.set(els.attribution, { opacity: 0, y: 14 });
+        gsap.set(els.source, { opacity: 0, y: 10 });
+        gsap.set(els.ornamentL, { height: 0, opacity: 0 });
+        gsap.set(els.ornamentR, { height: 0, opacity: 0 });
 
         var spans = els.quoteText.querySelectorAll('.word, .line-group');
         if (spans.length) {
-            gsap.set(spans, { opacity: 0, y: 12 });
+            gsap.set(spans, { opacity: 0, y: 18, scale: 0.96, filter: 'blur(4px)' });
         }
     }
 
@@ -320,90 +389,115 @@ html, body {
         if (stopTL) { stopTL.kill(); stopTL = null; }
         isVisible = true;
 
-        // Rebuild in case data changed while hidden
         applyData();
         resetToHidden();
 
         playTL = gsap.timeline({ onComplete: function() { playTL = null; } });
 
-        // 1. Overlay background fades in
+        // 1. Overlay background fades in slowly
         playTL.to(els.overlay, {
             opacity: 1,
-            duration: 0.8,
+            duration: 1.0,
             ease: 'power2.out'
         });
 
         // 2. Vignette
         playTL.to(els.vignette, {
             opacity: 1,
+            duration: 0.8,
+            ease: 'power1.out'
+        }, '-=0.8');
+
+        // 3. Breathing gradient starts
+        playTL.to(els.bgBreathe, {
+            opacity: 1,
             duration: 0.6,
             ease: 'power1.out'
         }, '-=0.6');
 
-        // 3. Shimmer starts
-        playTL.to(els.bgShimmer, {
+        // 4. Ornament lines grow
+        playTL.to([els.ornamentL, els.ornamentR], {
+            height: 200,
             opacity: 1,
-            duration: 0.5,
-            ease: 'power1.out',
-            onComplete: startShimmer
-        }, '-=0.4');
+            duration: 0.8,
+            ease: 'power2.out'
+        }, '-=0.5');
 
-        // 4. Decorative quote marks float in
+        // 5. Decorative quote marks drift in -- ethereal
         if (data.showQuoteMarks) {
             playTL.to(els.quoteMarkOpen, {
-                opacity: 0.1,
+                opacity: 0.06,
                 y: 0,
-                duration: 0.7,
+                duration: 1.0,
                 ease: 'power2.out'
-            }, '-=0.5');
+            }, '-=0.7');
 
             playTL.to(els.quoteMarkClose, {
-                opacity: 0.1,
+                opacity: 0.06,
                 y: 0,
-                duration: 0.7,
+                duration: 1.0,
                 ease: 'power2.out'
-            }, '-=0.6');
+            }, '-=0.9');
         }
 
-        // 5. Quote text — word-by-word, line-by-line, or simple fade
+        // 6. Quote text -- word-by-word with blur-deblur (the signature moment)
         var spans = els.quoteText.querySelectorAll('.word, .line-group');
         if (spans.length > 0) {
-            var staggerDelay = data.animationStyle === 'line' ? 0.25 :
-                               data.animationStyle === 'fade' ? 0 : 0.06;
-            var dur = data.animationStyle === 'fade' ? 0.8 : 0.35;
+            var isWord = data.animationStyle === 'word';
+            var isLine = data.animationStyle === 'line';
+            var staggerDelay = isLine ? 0.3 : isWord ? 0.07 : 0;
+            var dur = isWord ? 0.45 : isLine ? 0.5 : 0.8;
 
             playTL.to(spans, {
                 opacity: 1,
                 y: 0,
+                scale: 1,
+                filter: 'blur(0px)',
                 duration: dur,
                 ease: 'power2.out',
                 stagger: staggerDelay
-            }, '-=0.3');
+            }, '-=0.5');
         }
 
-        // 6. Divider draws across
+        // 7. Divider diamond and lines draw
         playTL.to(els.divider, {
-            width: 80,
-            opacity: 0.7,
-            duration: 0.5,
-            ease: 'power2.out'
+            opacity: 1,
+            duration: 0.1
+        }, '-=0.3');
+
+        playTL.to(els.divDiamond, {
+            transform: 'rotate(45deg) scale(1)',
+            duration: 0.3,
+            ease: 'back.out(2)'
         }, '-=0.2');
 
-        // 7. Attribution fades up
+        playTL.to(els.divLineL, {
+            width: 60,
+            duration: 0.5,
+            ease: 'power2.out'
+        }, '-=0.15');
+
+        playTL.to(els.divLineR, {
+            width: 60,
+            duration: 0.5,
+            ease: 'power2.out'
+        }, '-=0.45');
+
+        // 8. Attribution with glow
         playTL.to(els.attribution, {
+            opacity: 1,
+            y: 0,
+            duration: 0.5,
+            ease: 'power2.out'
+        }, '-=0.3');
+
+        // 9. Source
+        playTL.to(els.source, {
             opacity: 1,
             y: 0,
             duration: 0.4,
             ease: 'power2.out'
         }, '-=0.25');
-
-        // 8. Source
-        playTL.to(els.source, {
-            opacity: 1,
-            y: 0,
-            duration: 0.35,
-            ease: 'power2.out'
-        }, '-=0.2');
     };
 
     window.stop = function() {
@@ -413,36 +507,40 @@ html, body {
             onComplete: function() {
                 isVisible = false;
                 stopTL = null;
-                stopShimmer();
                 resetToHidden();
             }
         });
 
-        // 1. Source + attribution fade out
-        stopTL.to(els.source, { opacity: 0, y: 8, duration: 0.2, ease: 'power2.in' });
-        stopTL.to(els.attribution, { opacity: 0, y: 12, duration: 0.2, ease: 'power2.in' }, '-=0.15');
+        // 1. Source + attribution fade
+        stopTL.to(els.source, { opacity: 0, y: 10, duration: 0.25, ease: 'power2.in' });
+        stopTL.to(els.attribution, { opacity: 0, y: 14, duration: 0.25, ease: 'power2.in' }, '-=0.2');
 
         // 2. Divider retracts
-        stopTL.to(els.divider, { width: 0, opacity: 0, duration: 0.3, ease: 'power2.in' }, '-=0.1');
+        stopTL.to([els.divLineL, els.divLineR], { width: 0, duration: 0.3, ease: 'power2.in' }, '-=0.1');
+        stopTL.to(els.divDiamond, { transform: 'rotate(45deg) scale(0)', duration: 0.2, ease: 'power2.in' }, '-=0.25');
+        stopTL.to(els.divider, { opacity: 0, duration: 0.1 }, '-=0.05');
 
-        // 3. Text fades out (all at once for clean exit)
+        // 3. Text blurs away
         var spans = els.quoteText.querySelectorAll('.word, .line-group');
         if (spans.length > 0) {
             stopTL.to(spans, {
-                opacity: 0, y: -8,
-                duration: 0.35,
+                opacity: 0, y: -10, filter: 'blur(4px)',
+                duration: 0.4,
                 ease: 'power2.in',
                 stagger: 0.015
-            }, '-=0.15');
+            }, '-=0.2');
         }
 
         // 4. Quote marks
-        stopTL.to(els.quoteMarkOpen, { opacity: 0, y: 20, duration: 0.3, ease: 'power2.in' }, '-=0.2');
-        stopTL.to(els.quoteMarkClose, { opacity: 0, y: -20, duration: 0.3, ease: 'power2.in' }, '-=0.25');
+        stopTL.to(els.quoteMarkOpen, { opacity: 0, y: 30, duration: 0.4, ease: 'power2.in' }, '-=0.3');
+        stopTL.to(els.quoteMarkClose, { opacity: 0, y: -30, duration: 0.4, ease: 'power2.in' }, '-=0.35');
 
-        // 5. Overlay fades out
-        stopTL.to([els.vignette, els.bgShimmer], { opacity: 0, duration: 0.3, ease: 'power1.in' }, '-=0.15');
-        stopTL.to(els.overlay, { opacity: 0, duration: 0.5, ease: 'power2.in' }, '-=0.2');
+        // 5. Ornaments
+        stopTL.to([els.ornamentL, els.ornamentR], { height: 0, opacity: 0, duration: 0.3, ease: 'power2.in' }, '-=0.2');
+
+        // 6. Overlay
+        stopTL.to([els.vignette, els.bgBreathe], { opacity: 0, duration: 0.4, ease: 'power1.in' }, '-=0.2');
+        stopTL.to(els.overlay, { opacity: 0, duration: 0.6, ease: 'power2.in' }, '-=0.3');
     };
 
     window.update = function(input) {
@@ -457,7 +555,7 @@ html, body {
         }
         if (d.attribution != null)    { data.attribution = d.attribution; els.attribution.textContent = d.attribution; }
         if (d.source != null)         { data.source = d.source; els.source.textContent = d.source; }
-        if (d.accentColor != null)    { applyAccent(d.accentColor); }
+        if (d.accentColor != null)    { applyAccent(d.accentColor); applyBreathe(); }
         if (d.fontSize != null)       { data.fontSize = d.fontSize; applyFontSize(d.fontSize); }
         if (d.overlayOpacity != null) { data.overlayOpacity = d.overlayOpacity; applyGradient(); }
         if (d.textAlign != null)      { data.textAlign = d.textAlign; els.quoteText.style.textAlign = d.textAlign; }
@@ -469,31 +567,27 @@ html, body {
         if (d.animationStyle != null) { data.animationStyle = d.animationStyle; needsRebuild = true; }
         if (d.gradientAngle != null)  { data.gradientAngle = d.gradientAngle; applyGradient(); }
 
-        // If the quote text changed, rebuild and animate it in
         if (needsRebuild && isVisible) {
             var tl = gsap.timeline();
 
-            // Fade old text out
             var oldSpans = els.quoteText.querySelectorAll('.word, .line-group');
             if (oldSpans.length) {
-                tl.to(oldSpans, { opacity: 0, y: -6, duration: 0.25, ease: 'power2.in', stagger: 0.01 });
+                tl.to(oldSpans, { opacity: 0, y: -8, filter: 'blur(3px)', duration: 0.3, ease: 'power2.in', stagger: 0.01 });
             }
 
-            // Rebuild
             tl.call(function() {
                 els.quoteText.innerHTML = buildQuoteHTML(data.quote, data.animationStyle);
                 var newSpans = els.quoteText.querySelectorAll('.word, .line-group');
-                gsap.set(newSpans, { opacity: 0, y: 12 });
+                gsap.set(newSpans, { opacity: 0, y: 18, scale: 0.96, filter: 'blur(4px)' });
             });
 
-            // Fade new text in
             tl.call(function() {
                 var newSpans = els.quoteText.querySelectorAll('.word, .line-group');
-                var stagger = data.animationStyle === 'line' ? 0.2 :
-                              data.animationStyle === 'fade' ? 0 : 0.04;
+                var stagger = data.animationStyle === 'line' ? 0.25 :
+                              data.animationStyle === 'fade' ? 0 : 0.05;
                 gsap.to(newSpans, {
-                    opacity: 1, y: 0,
-                    duration: 0.3,
+                    opacity: 1, y: 0, scale: 1, filter: 'blur(0px)',
+                    duration: 0.35,
                     ease: 'power2.out',
                     stagger: stagger
                 });
@@ -503,9 +597,7 @@ html, body {
         }
     };
 
-    window.next = function() {
-        // No multi-step for quotation card
-    };
+    window.next = function() {};
 
 })();
 </script>

@@ -61,7 +61,7 @@ class DonationGoal extends HTMLElement {
         }
 
         .widget {
-          width: 820px;
+          width: 1100px;
           position: relative;
         }
 
@@ -70,8 +70,8 @@ class DonationGoal extends HTMLElement {
           background: rgba(8, 10, 18, 0.93);
           backdrop-filter: blur(20px);
           -webkit-backdrop-filter: blur(20px);
-          border: 1px solid rgba(255,255,255,0.06);
-          border-radius: 12px;
+          border: 1px solid rgba(255,255,255,0.08);
+          border-radius: 16px;
           overflow: hidden;
           box-shadow: 0 8px 40px rgba(0,0,0,0.5),
                       inset 0 1px 0 rgba(255,255,255,0.04);
@@ -92,14 +92,14 @@ class DonationGoal extends HTMLElement {
           opacity: 0;
         }
         .panel-top-line {
-          height: 2px;
+          height: 3px;
           background: linear-gradient(90deg, transparent, var(--accent, #10b981), transparent);
           transform: scaleX(0);
         }
 
         /* --- Header area --- */
         .header {
-          padding: 22px 28px 0;
+          padding: 32px 40px 0;
           display: flex;
           justify-content: space-between;
           align-items: flex-start;
@@ -109,17 +109,19 @@ class DonationGoal extends HTMLElement {
           transform: translateX(-15px);
         }
         .campaign-title {
-          font-size: 20px;
+          font-size: 56px;
           font-weight: 800;
           color: #ffffff;
-          line-height: 1.2;
+          line-height: 1.15;
+          text-shadow: 0 2px 8px rgba(0,0,0,0.7);
         }
         .campaign-subtitle {
-          font-size: 12px;
+          font-size: 36px;
           font-weight: 500;
-          color: rgba(255,255,255,0.4);
-          margin-top: 3px;
+          color: rgba(255,255,255,0.7);
+          margin-top: 6px;
           letter-spacing: 0.05em;
+          text-shadow: 0 2px 8px rgba(0,0,0,0.7);
         }
         .amount-display {
           text-align: right;
@@ -128,31 +130,33 @@ class DonationGoal extends HTMLElement {
         }
         .amount-current {
           font-family: 'JetBrains Mono', monospace;
-          font-size: 32px;
+          font-size: 72px;
           font-weight: 700;
           color: var(--accent, #10b981);
           line-height: 1;
+          text-shadow: 0 2px 8px rgba(0,0,0,0.7);
         }
         .amount-goal {
           font-family: 'JetBrains Mono', monospace;
-          font-size: 14px;
+          font-size: 48px;
           font-weight: 500;
-          color: rgba(255,255,255,0.35);
-          margin-top: 4px;
+          color: rgba(255,255,255,0.7);
+          margin-top: 8px;
+          text-shadow: 0 2px 8px rgba(0,0,0,0.7);
         }
 
         /* --- Progress bar area --- */
         .progress-area {
-          padding: 18px 28px 6px;
+          padding: 28px 40px 10px;
           position: relative;
         }
         .bar-track {
-          height: 24px;
+          height: 40px;
           background: rgba(255,255,255,0.04);
-          border-radius: 12px;
+          border-radius: 20px;
           overflow: visible;
           position: relative;
-          border: 1px solid rgba(255,255,255,0.04);
+          border: 1px solid rgba(255,255,255,0.06);
         }
         .bar-fill-container {
           position: absolute;
@@ -161,7 +165,7 @@ class DonationGoal extends HTMLElement {
           bottom: 0;
           width: 0;
           overflow: hidden;
-          border-radius: 12px;
+          border-radius: 20px;
         }
         .bar-fill {
           position: absolute;
@@ -170,7 +174,7 @@ class DonationGoal extends HTMLElement {
           right: 0;
           bottom: 0;
           background: linear-gradient(90deg, var(--accent, #10b981), var(--accent-light, #34d399));
-          border-radius: 12px;
+          border-radius: 20px;
         }
         .bar-fill-shimmer {
           position: absolute;
@@ -192,7 +196,7 @@ class DonationGoal extends HTMLElement {
           left: 0;
           width: 0;
           background: var(--accent, #10b981);
-          border-radius: 16px;
+          border-radius: 24px;
           filter: blur(10px);
           opacity: 0;
         }
@@ -211,12 +215,12 @@ class DonationGoal extends HTMLElement {
           position: absolute;
           top: 50%;
           transform: translateY(-50%);
-          right: 10px;
+          right: 16px;
           font-family: 'JetBrains Mono', monospace;
-          font-size: 11px;
+          font-size: 36px;
           font-weight: 700;
-          color: rgba(255,255,255,0.9);
-          text-shadow: 0 1px 3px rgba(0,0,0,0.5);
+          color: rgba(255,255,255,0.95);
+          text-shadow: 0 2px 8px rgba(0,0,0,0.7);
           opacity: 0;
           z-index: 5;
         }
@@ -224,8 +228,8 @@ class DonationGoal extends HTMLElement {
         /* --- Milestone markers --- */
         .milestones {
           position: relative;
-          height: 22px;
-          margin-top: 4px;
+          height: 40px;
+          margin-top: 6px;
         }
         .milestone {
           position: absolute;
@@ -238,47 +242,48 @@ class DonationGoal extends HTMLElement {
         }
         .milestone-tick {
           width: 1px;
-          height: 8px;
+          height: 10px;
           background: rgba(255,255,255,0.15);
         }
         .milestone-label {
           font-family: 'JetBrains Mono', monospace;
-          font-size: 9px;
+          font-size: 32px;
           font-weight: 500;
-          color: rgba(255,255,255,0.25);
+          color: rgba(255,255,255,0.7);
           margin-top: 2px;
           white-space: nowrap;
+          text-shadow: 0 2px 8px rgba(0,0,0,0.7);
         }
         .milestone.reached .milestone-tick {
           background: var(--accent, #10b981);
         }
         .milestone.reached .milestone-label {
           color: var(--accent, #10b981);
-          opacity: 0.7;
+          opacity: 0.9;
         }
 
         /* --- Recent donor --- */
         .donor-area {
-          padding: 12px 28px 18px;
+          padding: 20px 40px 28px;
           display: flex;
           align-items: center;
-          gap: 12px;
-          border-top: 1px solid rgba(255,255,255,0.04);
-          margin-top: 8px;
+          gap: 16px;
+          border-top: 1px solid rgba(255,255,255,0.06);
+          margin-top: 12px;
         }
         .donor-badge {
           display: flex;
           align-items: center;
-          gap: 10px;
+          gap: 16px;
           background: rgba(255,255,255,0.03);
-          border: 1px solid rgba(255,255,255,0.05);
-          border-radius: 8px;
-          padding: 8px 16px;
+          border: 1px solid rgba(255,255,255,0.08);
+          border-radius: 12px;
+          padding: 16px 24px;
           opacity: 0;
           transform: translateY(10px);
         }
         .donor-heart {
-          font-size: 18px;
+          font-size: 36px;
           color: var(--accent, #10b981);
           animation: heart-pulse 1.5s ease-in-out infinite;
         }
@@ -291,24 +296,27 @@ class DonationGoal extends HTMLElement {
           flex-direction: column;
         }
         .donor-label {
-          font-size: 10px;
+          font-size: 36px;
           font-weight: 600;
-          color: rgba(255,255,255,0.35);
+          color: rgba(255,255,255,0.7);
           text-transform: uppercase;
           letter-spacing: 0.1em;
+          text-shadow: 0 2px 8px rgba(0,0,0,0.7);
         }
         .donor-text {
-          font-size: 14px;
+          font-size: 40px;
           font-weight: 700;
           color: #ffffff;
-          margin-top: 1px;
+          margin-top: 2px;
+          text-shadow: 0 2px 8px rgba(0,0,0,0.7);
         }
         .donor-amount {
           font-family: 'JetBrains Mono', monospace;
-          font-size: 14px;
+          font-size: 40px;
           font-weight: 700;
           color: var(--accent, #10b981);
           margin-left: auto;
+          text-shadow: 0 2px 8px rgba(0,0,0,0.7);
         }
 
         /* --- Celebration particles --- */

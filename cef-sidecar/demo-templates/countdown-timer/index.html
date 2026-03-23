@@ -5,7 +5,7 @@
 <title>Countdown Timer (OGraf)</title>
 <link rel="ograf-manifest" href="manifest.ograf.json">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Outfit:wght@300;400;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Sora:wght@200;300;400;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 html, body {
     margin: 0; padding: 0;
@@ -13,6 +13,7 @@ html, body {
     overflow: hidden;
     width: 1920px; height: 1080px;
     -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
 }
 
 #container {
@@ -25,34 +26,45 @@ html, body {
     opacity: 0;
 }
 
+/* Background layers */
 #bg-overlay {
     position: absolute;
     inset: 0;
-    opacity: 0.85;
 }
 
-/* Subtle animated grid pattern */
-#grid-pattern {
+#noise-layer {
     position: absolute;
     inset: 0;
     opacity: 0;
-    background-image:
-        linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
-    background-size: 60px 60px;
+    mix-blend-mode: overlay;
+    background: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
 }
 
-/* Radial glow behind the timer */
+/* Radial glow behind the timer — the "hero light" */
 #radial-glow {
     position: absolute;
-    width: 700px;
-    height: 700px;
+    width: 900px;
+    height: 900px;
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
     border-radius: 50%;
     opacity: 0;
-    filter: blur(80px);
+    filter: blur(120px);
+}
+
+/* Secondary glow for depth */
+#secondary-glow {
+    position: absolute;
+    width: 500px;
+    height: 300px;
+    top: 38%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.02);
+    filter: blur(60px);
+    opacity: 0;
 }
 
 /* Progress ring SVG */
@@ -61,8 +73,8 @@ html, body {
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    width: 520px;
-    height: 520px;
+    width: 560px;
+    height: 560px;
     opacity: 0;
 }
 
@@ -74,20 +86,29 @@ html, body {
 
 #ring-track {
     fill: none;
-    stroke: rgba(255,255,255,0.06);
-    stroke-width: 3;
+    stroke: rgba(255, 255, 255, 0.04);
+    stroke-width: 2;
 }
 
 #ring-progress {
     fill: none;
-    stroke-width: 4;
+    stroke-width: 3;
     stroke-linecap: round;
-    stroke-dasharray: 1508;
+    stroke-dasharray: 1634;
     stroke-dashoffset: 0;
-    filter: drop-shadow(0 0 8px currentColor);
 }
 
-/* Tick marks around the ring */
+#ring-glow {
+    fill: none;
+    stroke-width: 8;
+    stroke-linecap: round;
+    stroke-dasharray: 1634;
+    stroke-dashoffset: 0;
+    opacity: 0.3;
+    filter: blur(6px);
+}
+
+/* Minimal tick marks — only major ones */
 #ring-ticks {
     position: absolute;
     inset: 0;
@@ -95,42 +116,81 @@ html, body {
 
 .tick {
     position: absolute;
-    width: 2px;
-    height: 12px;
-    top: 0;
+    width: 1px;
+    height: 8px;
+    top: 6px;
     left: 50%;
-    transform-origin: 0 260px;
-    background: rgba(255,255,255,0.15);
-    border-radius: 1px;
+    transform-origin: 0 274px;
+    background: rgba(255, 255, 255, 0.08);
 }
 
 .tick.major {
-    height: 20px;
-    background: rgba(255,255,255,0.35);
-    width: 2px;
+    height: 14px;
+    width: 1.5px;
+    background: rgba(255, 255, 255, 0.2);
 }
 
-/* Timer digits */
+/* Title + subtitle — above the timer */
+#title-area {
+    position: relative;
+    z-index: 2;
+    text-align: center;
+    margin-bottom: 80px;
+    opacity: 0;
+    transform: translateY(20px);
+}
+
+#title {
+    font-family: 'Sora', sans-serif;
+    font-size: 64px;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.9);
+    letter-spacing: 12px;
+    text-transform: uppercase;
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
+    margin-bottom: 0;
+}
+
+#subtitle {
+    font-family: 'Sora', sans-serif;
+    font-size: 44px;
+    font-weight: 300;
+    color: rgba(255, 255, 255, 0.7);
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
+    margin-top: 16px;
+}
+
+/* Accent line under title */
+#title-line {
+    width: 0;
+    height: 1px;
+    margin: 24px auto 0;
+    opacity: 0;
+}
+
+/* Timer digits — the hero */
 #timer-display {
     position: relative;
     z-index: 2;
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 0;
     opacity: 0;
-    transform: scale(0.8);
+    transform: scale(0.9);
 }
 
 .digit-group {
     display: flex;
     align-items: center;
-    gap: 2px;
+    gap: 0;
 }
 
 .digit {
     position: relative;
-    width: 110px;
-    height: 150px;
+    width: 120px;
+    height: 180px;
     overflow: hidden;
 }
 
@@ -141,89 +201,57 @@ html, body {
     align-items: center;
     justify-content: center;
     font-family: 'Bebas Neue', sans-serif;
-    font-size: 140px;
+    font-size: 160px;
     color: #ffffff;
     line-height: 1;
-    text-shadow: 0 0 40px rgba(255,255,255,0.2);
-    letter-spacing: -2px;
-}
-
-.digit-bg {
-    position: absolute;
-    inset: 4px;
-    background: rgba(255,255,255,0.04);
-    border-radius: 8px;
-    border: 1px solid rgba(255,255,255,0.06);
+    letter-spacing: -3px;
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
 }
 
 .colon {
     font-family: 'Bebas Neue', sans-serif;
-    font-size: 120px;
-    color: rgba(255,255,255,0.5);
-    margin: 0 6px;
+    font-size: 100px;
+    color: rgba(255, 255, 255, 0.3);
+    margin: 0 2px;
     line-height: 1;
-    transform: translateY(-8px);
+    transform: translateY(-10px);
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
 }
 
 /* Font style: mono */
 .font-mono .digit-inner {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 110px;
-    font-weight: 700;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 120px;
+    font-weight: 600;
+    letter-spacing: -4px;
 }
 .font-mono .colon {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 90px;
-    font-weight: 700;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 80px;
+    font-weight: 400;
 }
 
-/* Title + subtitle */
-#title-area {
-    position: relative;
-    z-index: 2;
-    text-align: center;
-    margin-bottom: 60px;
-    opacity: 0;
-    transform: translateY(30px);
-}
-
-#title {
-    font-family: 'Outfit', sans-serif;
-    font-size: 52px;
-    font-weight: 700;
-    color: #ffffff;
-    letter-spacing: 8px;
-    text-transform: uppercase;
-    text-shadow: 0 2px 20px rgba(0,0,0,0.5);
-    margin-bottom: 12px;
-}
-
-#subtitle {
-    font-family: 'Outfit', sans-serif;
-    font-size: 24px;
-    font-weight: 300;
-    color: rgba(255,255,255,0.5);
-    letter-spacing: 3px;
-    text-transform: uppercase;
-}
-
-/* Decorative line under title */
-#title-line {
-    width: 0;
-    height: 2px;
-    margin: 20px auto 0;
-    border-radius: 1px;
-    opacity: 0;
-}
-
-/* Particle dots */
-.particle {
+/* Digit glow — shadow layer behind each digit */
+.digit-glow {
     position: absolute;
-    width: 3px;
-    height: 3px;
-    border-radius: 50%;
-    background: rgba(255,255,255,0.15);
-    opacity: 0;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 160px;
+    line-height: 1;
+    letter-spacing: -3px;
+    filter: blur(20px);
+    opacity: 0.15;
+    pointer-events: none;
+}
+
+.font-mono .digit-glow {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 120px;
+    font-weight: 600;
+    letter-spacing: -4px;
 }
 
 /* Flash overlay */
@@ -237,32 +265,44 @@ html, body {
 }
 
 /* Completed state */
-#completed-title {
-    position: relative;
+#completed-wrap {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center;
     z-index: 2;
-    font-family: 'Outfit', sans-serif;
-    font-size: 90px;
-    font-weight: 700;
-    color: #ffffff;
-    letter-spacing: 12px;
-    text-transform: uppercase;
-    text-shadow: 0 0 60px rgba(0,212,255,0.4);
-    opacity: 0;
-    transform: scale(0.5);
     display: none;
 }
 
-#completed-subtitle {
-    position: relative;
-    z-index: 2;
-    font-family: 'Outfit', sans-serif;
-    font-size: 28px;
-    font-weight: 300;
-    color: rgba(255,255,255,0.6);
-    letter-spacing: 4px;
+#completed-title {
+    font-family: 'Sora', sans-serif;
+    font-size: 96px;
+    font-weight: 700;
+    color: #ffffff;
+    letter-spacing: 16px;
+    text-transform: uppercase;
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
     opacity: 0;
-    transform: translateY(20px);
-    display: none;
+    transform: scale(0.6);
+}
+
+#completed-subtitle {
+    font-family: 'Sora', sans-serif;
+    font-size: 44px;
+    font-weight: 300;
+    color: rgba(255, 255, 255, 0.7);
+    letter-spacing: 6px;
+    text-transform: uppercase;
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
+    margin-top: 28px;
+    opacity: 0;
+    transform: translateY(16px);
+}
+
+/* Urgency state — last 10 seconds */
+#timer-display.urgent .digit-inner {
+    transition: color 0.2s;
 }
 </style>
 </head>
@@ -270,37 +310,54 @@ html, body {
 
 <div id="container">
     <div id="bg-overlay"></div>
-    <div id="grid-pattern"></div>
+    <div id="noise-layer"></div>
     <div id="radial-glow"></div>
+    <div id="secondary-glow"></div>
 
     <div id="title-area">
         <div id="title">STARTING SOON</div>
-        <div id="subtitle">Please stand by</div>
         <div id="title-line"></div>
+        <div id="subtitle">Please stand by</div>
     </div>
 
     <div id="ring-wrap">
-        <svg id="ring-svg" viewBox="0 0 520 520">
-            <circle id="ring-track" cx="260" cy="260" r="240"/>
-            <circle id="ring-progress" cx="260" cy="260" r="240"/>
+        <svg id="ring-svg" viewBox="0 0 560 560">
+            <circle id="ring-track" cx="280" cy="280" r="260"/>
+            <circle id="ring-glow" cx="280" cy="280" r="260"/>
+            <circle id="ring-progress" cx="280" cy="280" r="260"/>
         </svg>
         <div id="ring-ticks"></div>
     </div>
 
     <div id="timer-display">
         <div class="digit-group" id="minutes-group">
-            <div class="digit"><div class="digit-bg"></div><div class="digit-inner" id="d-m0">0</div></div>
-            <div class="digit"><div class="digit-bg"></div><div class="digit-inner" id="d-m1">0</div></div>
+            <div class="digit">
+                <div class="digit-glow" id="g-m0">0</div>
+                <div class="digit-inner" id="d-m0">0</div>
+            </div>
+            <div class="digit">
+                <div class="digit-glow" id="g-m1">0</div>
+                <div class="digit-inner" id="d-m1">0</div>
+            </div>
         </div>
         <div class="colon" id="colon1">:</div>
         <div class="digit-group" id="seconds-group">
-            <div class="digit"><div class="digit-bg"></div><div class="digit-inner" id="d-s0">0</div></div>
-            <div class="digit"><div class="digit-bg"></div><div class="digit-inner" id="d-s1">0</div></div>
+            <div class="digit">
+                <div class="digit-glow" id="g-s0">0</div>
+                <div class="digit-inner" id="d-s0">0</div>
+            </div>
+            <div class="digit">
+                <div class="digit-glow" id="g-s1">0</div>
+                <div class="digit-inner" id="d-s1">0</div>
+            </div>
         </div>
     </div>
 
-    <div id="completed-title">WE'RE LIVE</div>
-    <div id="completed-subtitle"></div>
+    <div id="completed-wrap">
+        <div id="completed-title">WE'RE LIVE</div>
+        <div id="completed-subtitle"></div>
+    </div>
+
     <div id="flash-overlay"></div>
 </div>
 
@@ -309,29 +366,36 @@ html, body {
 (function() {
     'use strict';
 
-    var CIRCUMFERENCE = 2 * Math.PI * 240; // ~1508
+    var CIRCUMFERENCE = 2 * Math.PI * 260; // ~1634
 
     var els = {
         container:    document.getElementById('container'),
         bgOverlay:    document.getElementById('bg-overlay'),
-        gridPattern:  document.getElementById('grid-pattern'),
+        noiseLayer:   document.getElementById('noise-layer'),
         radialGlow:   document.getElementById('radial-glow'),
+        secondaryGlow:document.getElementById('secondary-glow'),
         title:        document.getElementById('title'),
         subtitle:     document.getElementById('subtitle'),
         titleArea:    document.getElementById('title-area'),
         titleLine:    document.getElementById('title-line'),
         ringWrap:     document.getElementById('ring-wrap'),
         ringProgress: document.getElementById('ring-progress'),
+        ringGlow:     document.getElementById('ring-glow'),
         timerDisplay: document.getElementById('timer-display'),
         colon1:       document.getElementById('colon1'),
         flash:        document.getElementById('flash-overlay'),
+        completedWrap:     document.getElementById('completed-wrap'),
         completedTitle:    document.getElementById('completed-title'),
         completedSubtitle: document.getElementById('completed-subtitle'),
         dm0: document.getElementById('d-m0'),
         dm1: document.getElementById('d-m1'),
         ds0: document.getElementById('d-s0'),
         ds1: document.getElementById('d-s1'),
-        ringTicks:    document.getElementById('ring-ticks')
+        gm0: document.getElementById('g-m0'),
+        gm1: document.getElementById('g-m1'),
+        gs0: document.getElementById('g-s0'),
+        gs1: document.getElementById('g-s1'),
+        ringTicks: document.getElementById('ring-ticks')
     };
 
     var isVisible = false;
@@ -339,6 +403,7 @@ html, body {
     var stopTL = null;
     var countdownInterval = null;
     var colonBlink = null;
+    var breatheAnim = null;
     var remainingSeconds = 300;
     var totalSeconds = 300;
     var isCompleted = false;
@@ -358,7 +423,6 @@ html, body {
 
     gsap.defaults({ overwrite: 'auto' });
 
-    // Generate tick marks around the ring
     function buildTicks() {
         els.ringTicks.innerHTML = '';
         for (var i = 0; i < 60; i++) {
@@ -369,36 +433,22 @@ html, body {
         }
     }
 
-    // Generate floating particles
-    function buildParticles() {
-        for (var i = 0; i < 20; i++) {
-            var p = document.createElement('div');
-            p.className = 'particle';
-            p.style.left = (Math.random() * 100) + '%';
-            p.style.top = (Math.random() * 100) + '%';
-            els.container.appendChild(p);
-
-            gsap.to(p, {
-                y: -200 - Math.random() * 300,
-                x: (Math.random() - 0.5) * 200,
-                opacity: 0.3,
-                duration: 8 + Math.random() * 12,
-                repeat: -1,
-                ease: 'none',
-                delay: Math.random() * 10
-            });
-        }
-    }
-
     function applyConfig() {
         els.title.textContent = config.title;
         els.subtitle.textContent = config.subtitle;
-        els.bgOverlay.style.background = 'linear-gradient(135deg, ' + config.bgGradientStart + ', ' + config.bgGradientEnd + ')';
-        els.radialGlow.style.background = 'radial-gradient(circle, ' + config.accentColor + '22, transparent 70%)';
+        els.bgOverlay.style.background = 'linear-gradient(160deg, ' + config.bgGradientStart + ' 0%, ' + config.bgGradientEnd + ' 100%)';
+        els.radialGlow.style.background = 'radial-gradient(circle, ' + config.accentColor + '18, transparent 65%)';
         els.ringProgress.style.stroke = config.accentColor;
-        els.titleLine.style.background = config.accentColor;
+        els.ringGlow.style.stroke = config.accentColor;
+        els.titleLine.style.background = 'linear-gradient(90deg, transparent, ' + config.accentColor + '66, transparent)';
         els.completedTitle.textContent = config.completedTitle;
         els.completedSubtitle.textContent = config.completedSubtitle;
+
+        // Set digit glow color
+        var glows = document.querySelectorAll('.digit-glow');
+        for (var i = 0; i < glows.length; i++) {
+            glows[i].style.color = config.accentColor;
+        }
 
         if (config.fontStyle === 'mono') {
             els.timerDisplay.classList.add('font-mono');
@@ -418,27 +468,29 @@ html, body {
         var s0 = Math.floor(s / 10);
         var s1 = s % 10;
 
-        animateDigit(els.dm0, m0);
-        animateDigit(els.dm1, m1);
-        animateDigit(els.ds0, s0);
-        animateDigit(els.ds1, s1);
+        animateDigit(els.dm0, els.gm0, m0);
+        animateDigit(els.dm1, els.gm1, m1);
+        animateDigit(els.ds0, els.gs0, s0);
+        animateDigit(els.ds1, els.gs1, s1);
     }
 
-    function animateDigit(el, newVal) {
+    function animateDigit(el, glowEl, newVal) {
         var newStr = String(newVal);
         if (el.textContent === newStr) return;
 
-        // Morph transition: slide old out, new in
+        // Flip-down with scale squash
         gsap.to(el, {
-            y: -20,
+            y: -30,
             opacity: 0,
-            duration: 0.15,
-            ease: 'power2.in',
+            scaleY: 0.8,
+            duration: 0.12,
+            ease: 'power3.in',
             onComplete: function() {
                 el.textContent = newStr;
+                glowEl.textContent = newStr;
                 gsap.fromTo(el,
-                    { y: 20, opacity: 0 },
-                    { y: 0, opacity: 1, duration: 0.2, ease: 'power2.out' }
+                    { y: 30, opacity: 0, scaleY: 0.8 },
+                    { y: 0, opacity: 1, scaleY: 1, duration: 0.22, ease: 'back.out(1.8)' }
                 );
             }
         });
@@ -448,9 +500,9 @@ html, body {
         if (!config.showProgressRing) return;
         var progress = 1 - (secs / totalSeconds);
         var offset = CIRCUMFERENCE * (1 - progress);
-        gsap.to(els.ringProgress, {
+        gsap.to([els.ringProgress, els.ringGlow], {
             strokeDashoffset: offset,
-            duration: 0.5,
+            duration: 0.6,
             ease: 'power1.out'
         });
     }
@@ -461,13 +513,22 @@ html, body {
         updateDigits(remainingSeconds);
         updateProgressRing(remainingSeconds);
 
-        // Colon blink
+        // Colon blink — gentle opacity breathe
         colonBlink = gsap.to(els.colon1, {
-            opacity: 0.2,
-            duration: 0.5,
+            opacity: 0.08,
+            duration: 0.6,
             repeat: -1,
             yoyo: true,
-            ease: 'power1.inOut'
+            ease: 'sine.inOut'
+        });
+
+        // Subtle glow breathe
+        breatheAnim = gsap.to(els.radialGlow, {
+            opacity: 0.35,
+            duration: 3,
+            repeat: -1,
+            yoyo: true,
+            ease: 'sine.inOut'
         });
 
         countdownInterval = setInterval(function() {
@@ -477,19 +538,29 @@ html, body {
             updateDigits(remainingSeconds);
             updateProgressRing(remainingSeconds);
 
-            // Urgency: last 10 seconds — pulse the digits red
+            // Urgency: last 10 seconds
             if (remainingSeconds <= 10 && remainingSeconds > 0) {
-                gsap.to(els.timerDisplay, {
-                    color: '#ff4444',
-                    textShadow: '0 0 40px rgba(255,68,68,0.5)',
-                    duration: 0.15,
-                    yoyo: true,
-                    repeat: 1
-                });
-                gsap.to(els.radialGlow, {
-                    opacity: 0.6 + (10 - remainingSeconds) * 0.04,
+                els.timerDisplay.classList.add('urgent');
+
+                // Each second gets a sharp scale pulse
+                gsap.fromTo(els.timerDisplay,
+                    { scale: 1.03 },
+                    { scale: 1, duration: 0.4, ease: 'elastic.out(1, 0.5)' }
+                );
+
+                // Ring glow intensifies
+                gsap.to(els.ringGlow, {
+                    opacity: 0.4 + (10 - remainingSeconds) * 0.06,
                     duration: 0.3
                 });
+
+                // Shift accent toward warm white
+                if (remainingSeconds <= 5) {
+                    gsap.to(els.radialGlow, {
+                        opacity: 0.5 + (5 - remainingSeconds) * 0.1,
+                        duration: 0.3
+                    });
+                }
             }
 
             if (remainingSeconds <= 0) {
@@ -504,54 +575,52 @@ html, body {
             clearInterval(countdownInterval);
             countdownInterval = null;
         }
-        if (colonBlink) {
-            colonBlink.kill();
-            colonBlink = null;
-        }
+        if (colonBlink) { colonBlink.kill(); colonBlink = null; }
+        if (breatheAnim) { breatheAnim.kill(); breatheAnim = null; }
     }
 
     function triggerComplete() {
         isCompleted = true;
+        els.timerDisplay.classList.remove('urgent');
 
         var tl = gsap.timeline();
 
-        // Flash
-        tl.to(els.flash, { opacity: 0.8, duration: 0.08 });
-        tl.to(els.flash, { opacity: 0, duration: 0.6, ease: 'power2.out' });
+        // 1. Quick white flash — the signature moment
+        tl.to(els.flash, { opacity: 0.9, duration: 0.06 });
+        tl.to(els.flash, { opacity: 0, duration: 0.8, ease: 'power3.out' });
 
-        // Hide timer
-        tl.to(els.timerDisplay, { opacity: 0, scale: 1.2, duration: 0.3, ease: 'power2.in' }, 0.05);
-        tl.to(els.ringWrap, { opacity: 0, scale: 1.1, duration: 0.4, ease: 'power2.in' }, 0.05);
-        tl.to(els.titleArea, { opacity: 0, y: -30, duration: 0.3, ease: 'power2.in' }, 0);
+        // 2. Hide timer and ring with a scale-up dissolve
+        tl.to(els.timerDisplay, { opacity: 0, scale: 1.4, filter: 'blur(8px)', duration: 0.4, ease: 'power2.in' }, 0.04);
+        tl.to(els.ringWrap, { opacity: 0, scale: 1.3, duration: 0.5, ease: 'power2.in' }, 0.04);
+        tl.to(els.titleArea, { opacity: 0, y: -40, duration: 0.3, ease: 'power2.in' }, 0);
 
-        // Show completed state
-        tl.set(els.completedTitle, { display: 'block' }, 0.4);
+        // 3. Show completed state — elastic pop
+        tl.set(els.completedWrap, { display: 'block' }, 0.35);
         tl.to(els.completedTitle, {
             opacity: 1, scale: 1,
-            duration: 0.6,
-            ease: 'back.out(1.4)'
-        }, 0.4);
+            duration: 0.8,
+            ease: 'elastic.out(1, 0.6)'
+        }, 0.35);
 
         if (config.completedSubtitle) {
-            tl.set(els.completedSubtitle, { display: 'block' }, 0.6);
             tl.to(els.completedSubtitle, {
                 opacity: 1, y: 0,
-                duration: 0.4,
-                ease: 'power2.out'
+                duration: 0.5,
+                ease: 'power3.out'
             }, 0.6);
         }
 
-        // Pulse glow
+        // 4. Glow blooms then settles
         tl.to(els.radialGlow, {
-            opacity: 0.8,
-            scale: 1.3,
-            duration: 0.5,
+            opacity: 0.7,
+            scale: 1.5,
+            duration: 0.4,
             ease: 'power2.out'
         }, 0.3);
         tl.to(els.radialGlow, {
-            opacity: 0.3,
+            opacity: 0.25,
             scale: 1,
-            duration: 1.5,
+            duration: 2,
             ease: 'power1.inOut'
         });
     }
@@ -560,24 +629,27 @@ html, body {
         stopCountdown();
         isCompleted = false;
         gsap.set(els.container, { opacity: 0 });
-        gsap.set(els.bgOverlay, { opacity: 0.85 });
-        gsap.set(els.gridPattern, { opacity: 0 });
+        gsap.set(els.noiseLayer, { opacity: 0 });
         gsap.set(els.radialGlow, { opacity: 0, scale: 1 });
-        gsap.set(els.titleArea, { opacity: 0, y: 30 });
+        gsap.set(els.secondaryGlow, { opacity: 0 });
+        gsap.set(els.titleArea, { opacity: 0, y: 20 });
         gsap.set(els.titleLine, { width: 0, opacity: 0 });
-        gsap.set(els.ringWrap, { opacity: 0, scale: 0.8, rotation: 0 });
-        gsap.set(els.timerDisplay, { opacity: 0, scale: 0.8, color: '#ffffff', textShadow: '0 0 40px rgba(255,255,255,0.2)' });
-        gsap.set(els.colon1, { opacity: 0.5 });
+        gsap.set(els.ringWrap, { opacity: 0, scale: 0.85 });
+        gsap.set(els.timerDisplay, { opacity: 0, scale: 0.9, filter: 'blur(0px)' });
+        gsap.set(els.colon1, { opacity: 0.3 });
         gsap.set(els.flash, { opacity: 0 });
-        gsap.set(els.completedTitle, { opacity: 0, scale: 0.5, display: 'none' });
-        gsap.set(els.completedSubtitle, { opacity: 0, y: 20, display: 'none' });
+        gsap.set(els.completedWrap, { display: 'none' });
+        gsap.set(els.completedTitle, { opacity: 0, scale: 0.6 });
+        gsap.set(els.completedSubtitle, { opacity: 0, y: 16 });
+        els.timerDisplay.classList.remove('urgent');
 
         els.ringProgress.style.strokeDasharray = CIRCUMFERENCE;
         els.ringProgress.style.strokeDashoffset = '0';
+        els.ringGlow.style.strokeDasharray = CIRCUMFERENCE;
+        els.ringGlow.style.strokeDashoffset = '0';
     }
 
     buildTicks();
-    buildParticles();
     applyConfig();
     resetState();
 
@@ -593,46 +665,46 @@ html, body {
 
         playTL = gsap.timeline({ onComplete: function() { playTL = null; } });
 
-        // 1. Container fades in
-        playTL.to(els.container, { opacity: 1, duration: 0.4, ease: 'power2.out' });
+        // 1. Container fades in with bg
+        playTL.to(els.container, { opacity: 1, duration: 0.6, ease: 'power2.out' });
 
-        // 2. Grid pattern fades in
-        playTL.to(els.gridPattern, { opacity: 1, duration: 0.8, ease: 'power1.out' }, '-=0.2');
+        // 2. Film grain fades in
+        playTL.to(els.noiseLayer, { opacity: 0.04, duration: 1 }, '-=0.4');
 
-        // 3. Radial glow blooms
-        playTL.to(els.radialGlow, { opacity: 0.4, duration: 0.8, ease: 'power2.out' }, '-=0.6');
+        // 3. Radial glow blooms from nothing
+        playTL.to(els.radialGlow, { opacity: 0.25, duration: 1.2, ease: 'power2.out' }, '-=0.8');
+        playTL.to(els.secondaryGlow, { opacity: 1, duration: 1, ease: 'power2.out' }, '-=1');
 
-        // 4. Title area slides up
+        // 4. Title materializes — letters first, then line draws beneath
         playTL.to(els.titleArea, {
             opacity: 1, y: 0,
-            duration: 0.5,
+            duration: 0.6,
             ease: 'power3.out'
-        }, '-=0.5');
+        }, '-=0.6');
 
-        // 5. Title underline draws
         playTL.to(els.titleLine, {
-            width: 120, opacity: 0.6,
-            duration: 0.4,
-            ease: 'power2.out'
-        }, '-=0.2');
-
-        // 6. Ring appears with rotation
-        if (config.showProgressRing) {
-            playTL.to(els.ringWrap, {
-                opacity: 1, scale: 1, rotation: 0,
-                duration: 0.6,
-                ease: 'back.out(1.2)'
-            }, '-=0.3');
-        }
-
-        // 7. Timer digits scale in
-        playTL.to(els.timerDisplay, {
-            opacity: 1, scale: 1,
+            width: 80, opacity: 0.5,
             duration: 0.5,
-            ease: 'back.out(1.5)'
+            ease: 'power2.inOut'
         }, '-=0.3');
 
-        // 8. Start the countdown
+        // 5. Ring scales in with subtle overshoot
+        if (config.showProgressRing) {
+            playTL.to(els.ringWrap, {
+                opacity: 1, scale: 1,
+                duration: 0.7,
+                ease: 'back.out(1.1)'
+            }, '-=0.4');
+        }
+
+        // 6. Timer digits scale in — the hero entrance
+        playTL.to(els.timerDisplay, {
+            opacity: 1, scale: 1,
+            duration: 0.6,
+            ease: 'back.out(1.3)'
+        }, '-=0.35');
+
+        // 7. Start counting
         playTL.call(function() {
             startCountdown();
         });
@@ -650,38 +722,31 @@ html, body {
             }
         });
 
-        // Completed title out (if showing)
-        stopTL.to(els.completedTitle, { opacity: 0, scale: 0.8, duration: 0.3, ease: 'power2.in' });
-        stopTL.to(els.completedSubtitle, { opacity: 0, y: 20, duration: 0.2, ease: 'power2.in' }, '-=0.2');
-
-        // Timer + ring out
-        stopTL.to(els.timerDisplay, { opacity: 0, scale: 0.8, duration: 0.3, ease: 'power2.in' }, '-=0.2');
-        stopTL.to(els.ringWrap, { opacity: 0, scale: 0.8, duration: 0.35, ease: 'power2.in' }, '-=0.2');
-
-        // Title out
-        stopTL.to(els.titleArea, { opacity: 0, y: -30, duration: 0.3, ease: 'power2.in' }, '-=0.2');
+        // Everything dissolves out with a gentle blur
+        stopTL.to(els.completedTitle, { opacity: 0, scale: 0.9, duration: 0.3, ease: 'power2.in' });
+        stopTL.to(els.completedSubtitle, { opacity: 0, y: 12, duration: 0.2, ease: 'power2.in' }, '-=0.2');
+        stopTL.to(els.timerDisplay, { opacity: 0, scale: 0.9, duration: 0.3, ease: 'power2.in' }, '-=0.2');
+        stopTL.to(els.ringWrap, { opacity: 0, scale: 0.9, duration: 0.35, ease: 'power2.in' }, '-=0.2');
+        stopTL.to(els.titleArea, { opacity: 0, y: -20, duration: 0.3, ease: 'power2.in' }, '-=0.2');
         stopTL.to(els.titleLine, { width: 0, opacity: 0, duration: 0.2, ease: 'power2.in' }, '-=0.2');
-
-        // Glow + grid + container out
-        stopTL.to(els.radialGlow, { opacity: 0, duration: 0.4, ease: 'power2.in' }, '-=0.3');
-        stopTL.to(els.gridPattern, { opacity: 0, duration: 0.3 }, '-=0.3');
-        stopTL.to(els.container, { opacity: 0, duration: 0.3, ease: 'power2.in' }, '-=0.1');
+        stopTL.to(els.radialGlow, { opacity: 0, duration: 0.5, ease: 'power2.in' }, '-=0.3');
+        stopTL.to(els.secondaryGlow, { opacity: 0, duration: 0.3 }, '-=0.4');
+        stopTL.to(els.noiseLayer, { opacity: 0, duration: 0.2 }, '-=0.3');
+        stopTL.to(els.container, { opacity: 0, duration: 0.4, ease: 'power2.in' }, '-=0.2');
     };
 
     window.update = function(data) {
         var d = (typeof data === 'string') ? JSON.parse(data) : data;
         if (!d) return;
 
-        var needsRestart = false;
-
         if (d.title != null) {
             config.title = d.title;
             if (isVisible && !isCompleted) {
                 gsap.to(els.title, {
-                    opacity: 0, y: -10, duration: 0.15,
+                    opacity: 0, duration: 0.15,
                     onComplete: function() {
                         els.title.textContent = config.title;
-                        gsap.to(els.title, { opacity: 1, y: 0, duration: 0.2 });
+                        gsap.to(els.title, { opacity: 1, duration: 0.25 });
                     }
                 });
             }
@@ -694,7 +759,7 @@ html, body {
                     opacity: 0, duration: 0.15,
                     onComplete: function() {
                         els.subtitle.textContent = config.subtitle;
-                        gsap.to(els.subtitle, { opacity: 1, duration: 0.2 });
+                        gsap.to(els.subtitle, { opacity: 1, duration: 0.25 });
                     }
                 });
             }
@@ -712,17 +777,20 @@ html, body {
 
         if (d.accentColor != null) {
             config.accentColor = d.accentColor;
-            gsap.to(els.ringProgress, { stroke: d.accentColor, duration: 0.4 });
-            gsap.to(els.titleLine, { background: d.accentColor, duration: 0.4 });
-            els.radialGlow.style.background = 'radial-gradient(circle, ' + d.accentColor + '22, transparent 70%)';
+            gsap.to(els.ringProgress, { stroke: d.accentColor, duration: 0.5 });
+            gsap.to(els.ringGlow, { stroke: d.accentColor, duration: 0.5 });
+            els.radialGlow.style.background = 'radial-gradient(circle, ' + d.accentColor + '18, transparent 65%)';
+            els.titleLine.style.background = 'linear-gradient(90deg, transparent, ' + d.accentColor + '66, transparent)';
+            var glows = document.querySelectorAll('.digit-glow');
+            for (var i = 0; i < glows.length; i++) glows[i].style.color = d.accentColor;
         }
 
         if (d.bgGradientStart != null) config.bgGradientStart = d.bgGradientStart;
         if (d.bgGradientEnd != null) config.bgGradientEnd = d.bgGradientEnd;
         if (d.bgGradientStart != null || d.bgGradientEnd != null) {
             gsap.to(els.bgOverlay, {
-                background: 'linear-gradient(135deg, ' + config.bgGradientStart + ', ' + config.bgGradientEnd + ')',
-                duration: 0.6
+                background: 'linear-gradient(160deg, ' + config.bgGradientStart + ' 0%, ' + config.bgGradientEnd + ' 100%)',
+                duration: 0.8
             });
         }
 
@@ -740,7 +808,6 @@ html, body {
     };
 
     window.next = function() {
-        // If counting down, jump to zero
         if (!isCompleted && isVisible) {
             remainingSeconds = 0;
             stopCountdown();

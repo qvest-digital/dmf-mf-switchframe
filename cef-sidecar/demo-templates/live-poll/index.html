@@ -17,20 +17,20 @@ html, body {
 
 #poll-container {
     position: absolute;
-    bottom: 100px;
+    bottom: 80px;
     left: 50%;
     transform: translateX(-50%);
-    width: 680px;
+    width: 960px;
     opacity: 0;
 }
 
 /* Glass panel */
 #poll-panel {
-    background: rgba(10, 10, 20, 0.88);
+    background: rgba(10, 10, 20, 0.90);
     backdrop-filter: blur(28px) saturate(1.3);
     -webkit-backdrop-filter: blur(28px) saturate(1.3);
     border-radius: 20px;
-    border: 1px solid rgba(255, 255, 255, 0.07);
+    border: 1px solid rgba(255, 255, 255, 0.08);
     box-shadow:
         0 24px 80px rgba(0, 0, 0, 0.5),
         0 4px 12px rgba(0, 0, 0, 0.3),
@@ -49,7 +49,7 @@ html, body {
 
 /* Header */
 #poll-header {
-    padding: 28px 32px 8px;
+    padding: 32px 40px 12px;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -59,21 +59,22 @@ html, body {
 
 #poll-badge {
     font-family: 'JetBrains Mono', monospace;
-    font-size: 11px;
+    font-size: 36px;
     font-weight: 700;
     letter-spacing: 2px;
     text-transform: uppercase;
-    padding: 4px 12px;
-    border-radius: 4px;
+    padding: 8px 20px;
+    border-radius: 8px;
     color: #fff;
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 10px;
+    text-shadow: 0 2px 8px rgba(0,0,0,0.7);
 }
 
 #poll-badge-dot {
-    width: 6px;
-    height: 6px;
+    width: 10px;
+    height: 10px;
     border-radius: 50%;
     background: #fff;
     animation: pulse-dot 1.5s ease-in-out infinite;
@@ -86,45 +87,46 @@ html, body {
 
 #vote-count {
     font-family: 'JetBrains Mono', monospace;
-    font-size: 13px;
+    font-size: 40px;
     font-weight: 500;
-    color: rgba(255, 255, 255, 0.35);
+    color: rgba(255, 255, 255, 0.7);
+    text-shadow: 0 2px 8px rgba(0,0,0,0.7);
 }
 
 #vote-count-num {
-    color: rgba(255, 255, 255, 0.6);
+    color: rgba(255, 255, 255, 0.9);
     font-weight: 700;
 }
 
 /* Question */
 #question {
     font-family: 'Space Grotesk', sans-serif;
-    font-size: 26px;
+    font-size: 52px;
     font-weight: 700;
     color: #ffffff;
-    line-height: 1.3;
-    padding: 12px 32px 20px;
-    text-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    line-height: 1.25;
+    padding: 16px 40px 28px;
+    text-shadow: 0 2px 8px rgba(0,0,0,0.7);
     opacity: 0;
     transform: translateX(-20px);
 }
 
 /* Options */
 #options {
-    padding: 0 32px 28px;
+    padding: 0 40px 36px;
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 16px;
 }
 
 .option {
     position: relative;
-    border-radius: 10px;
+    border-radius: 14px;
     overflow: hidden;
     opacity: 0;
     transform: translateX(-30px);
     background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.08);
     transition: border-color 0.3s;
 }
 
@@ -136,7 +138,7 @@ html, body {
     position: absolute;
     top: 0; left: 0; bottom: 0;
     width: 0;
-    border-radius: 10px;
+    border-radius: 14px;
     opacity: 0.2;
     transition: box-shadow 0.4s;
 }
@@ -152,35 +154,37 @@ html, body {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 14px 18px;
+    padding: 20px 28px;
 }
 
 .option-left {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 16px;
 }
 
 .option-letter {
     font-family: 'JetBrains Mono', monospace;
-    font-size: 13px;
+    font-size: 36px;
     font-weight: 700;
-    width: 28px;
-    height: 28px;
-    border-radius: 6px;
+    width: 52px;
+    height: 52px;
+    border-radius: 10px;
     display: flex;
     align-items: center;
     justify-content: center;
     color: #fff;
     flex-shrink: 0;
     opacity: 0.9;
+    text-shadow: 0 2px 8px rgba(0,0,0,0.7);
 }
 
 .option-label {
     font-family: 'Space Grotesk', sans-serif;
-    font-size: 17px;
-    font-weight: 500;
+    font-size: 42px;
+    font-weight: 600;
     color: rgba(255, 255, 255, 0.9);
+    text-shadow: 0 2px 8px rgba(0,0,0,0.7);
 }
 
 .option-right {
@@ -192,16 +196,17 @@ html, body {
 
 .option-percent {
     font-family: 'JetBrains Mono', monospace;
-    font-size: 20px;
+    font-size: 48px;
     font-weight: 700;
     color: #ffffff;
-    min-width: 48px;
+    min-width: 80px;
     text-align: right;
+    text-shadow: 0 2px 8px rgba(0,0,0,0.7);
 }
 
 .option-percent-sign {
-    font-size: 14px;
-    opacity: 0.5;
+    font-size: 36px;
+    opacity: 0.7;
     font-weight: 500;
 }
 
@@ -213,7 +218,7 @@ html, body {
 /* Bottom divider */
 #bottom-divider {
     height: 1px;
-    margin: 0 32px;
+    margin: 0 40px;
     background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
     opacity: 0;
 }
@@ -482,7 +487,7 @@ html, body {
     applyConfig();
     resetState();
 
-    // ── CasparCG lifecycle ──
+    // -- CasparCG lifecycle --
 
     window.play = function() {
         if (stopTL) { stopTL.kill(); stopTL = null; }

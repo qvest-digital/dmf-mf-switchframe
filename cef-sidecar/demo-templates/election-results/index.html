@@ -63,7 +63,7 @@ class ElectionResults extends HTMLElement {
         }
 
         .container {
-          width: 900px;
+          width: 1200px;
           position: relative;
         }
 
@@ -72,7 +72,7 @@ class ElectionResults extends HTMLElement {
           display: flex;
           justify-content: space-between;
           align-items: flex-end;
-          margin-bottom: 10px;
+          margin-bottom: 14px;
           opacity: 0;
           transform: translateY(-15px);
         }
@@ -81,35 +81,36 @@ class ElectionResults extends HTMLElement {
           flex-direction: column;
         }
         .election-title {
-          font-size: 16px;
+          font-size: 56px;
           font-weight: 700;
           color: #ffffff;
           text-transform: uppercase;
-          letter-spacing: 0.12em;
-          text-shadow: 0 2px 8px rgba(0,0,0,0.6);
+          letter-spacing: 0.08em;
+          text-shadow: 0 2px 8px rgba(0,0,0,0.7);
         }
         .election-subtitle {
-          font-size: 12px;
+          font-size: 36px;
           font-weight: 500;
-          color: rgba(255,255,255,0.55);
-          letter-spacing: 0.08em;
+          color: rgba(255,255,255,0.7);
+          letter-spacing: 0.06em;
           text-transform: uppercase;
-          margin-top: 2px;
+          margin-top: 4px;
+          text-shadow: 0 2px 8px rgba(0,0,0,0.7);
         }
         .reporting-badge {
           display: flex;
           align-items: center;
-          gap: 8px;
+          gap: 12px;
           background: rgba(255,255,255,0.08);
           backdrop-filter: blur(8px);
           -webkit-backdrop-filter: blur(8px);
           border: 1px solid rgba(255,255,255,0.1);
-          border-radius: 4px;
-          padding: 6px 14px;
+          border-radius: 8px;
+          padding: 12px 24px;
         }
         .reporting-dot {
-          width: 8px;
-          height: 8px;
+          width: 10px;
+          height: 10px;
           background: #22c55e;
           border-radius: 50%;
           animation: pulse-dot 2s ease-in-out infinite;
@@ -120,16 +121,18 @@ class ElectionResults extends HTMLElement {
         }
         .reporting-text {
           font-family: 'JetBrains Mono', monospace;
-          font-size: 13px;
+          font-size: 44px;
           font-weight: 700;
           color: #ffffff;
+          text-shadow: 0 2px 8px rgba(0,0,0,0.7);
         }
         .reporting-label {
-          font-size: 11px;
+          font-size: 36px;
           font-weight: 500;
-          color: rgba(255,255,255,0.5);
+          color: rgba(255,255,255,0.7);
           text-transform: uppercase;
           letter-spacing: 0.05em;
+          text-shadow: 0 2px 8px rgba(0,0,0,0.7);
         }
 
         /* --- Main panel --- */
@@ -137,8 +140,8 @@ class ElectionResults extends HTMLElement {
           background: rgba(10, 12, 20, 0.94);
           backdrop-filter: blur(20px);
           -webkit-backdrop-filter: blur(20px);
-          border: 1px solid rgba(255,255,255,0.06);
-          border-radius: 8px;
+          border: 1px solid rgba(255,255,255,0.08);
+          border-radius: 12px;
           overflow: hidden;
           box-shadow: 0 8px 40px rgba(0,0,0,0.6), 0 0 1px rgba(255,255,255,0.1);
           opacity: 0;
@@ -148,7 +151,7 @@ class ElectionResults extends HTMLElement {
 
         /* Top accent line */
         .panel-accent {
-          height: 2px;
+          height: 3px;
           background: linear-gradient(90deg,
             var(--c1-color, #3b82f6) 0%,
             var(--c1-color, #3b82f6) var(--c1-pct, 50%),
@@ -163,25 +166,25 @@ class ElectionResults extends HTMLElement {
 
         /* --- Candidate rows --- */
         .candidates {
-          padding: 16px 24px 20px;
+          padding: 24px 36px 28px;
         }
 
         .candidate-row {
           display: flex;
           align-items: center;
-          gap: 16px;
-          padding: 12px 0;
+          gap: 20px;
+          padding: 18px 0;
           opacity: 0;
           transform: translateX(-20px);
         }
         .candidate-row + .candidate-row {
-          border-top: 1px solid rgba(255,255,255,0.04);
+          border-top: 1px solid rgba(255,255,255,0.06);
         }
 
         .candidate-color {
-          width: 4px;
-          height: 40px;
-          border-radius: 2px;
+          width: 6px;
+          height: 56px;
+          border-radius: 3px;
           flex-shrink: 0;
           opacity: 0;
           transform: scaleY(0);
@@ -189,25 +192,27 @@ class ElectionResults extends HTMLElement {
         }
 
         .candidate-info {
-          width: 180px;
+          width: 260px;
           flex-shrink: 0;
         }
         .candidate-name {
-          font-size: 18px;
+          font-size: 48px;
           font-weight: 700;
           color: #ffffff;
-          line-height: 1.2;
+          line-height: 1.15;
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
+          text-shadow: 0 2px 8px rgba(0,0,0,0.7);
         }
         .candidate-party {
-          font-size: 11px;
+          font-size: 36px;
           font-weight: 500;
-          color: rgba(255,255,255,0.4);
+          color: rgba(255,255,255,0.7);
           text-transform: uppercase;
           letter-spacing: 0.1em;
-          margin-top: 2px;
+          margin-top: 4px;
+          text-shadow: 0 2px 8px rgba(0,0,0,0.7);
         }
 
         /* Percentage bar area */
@@ -216,15 +221,15 @@ class ElectionResults extends HTMLElement {
           min-width: 0;
         }
         .bar-track {
-          height: 28px;
+          height: 40px;
           background: rgba(255,255,255,0.04);
-          border-radius: 4px;
+          border-radius: 6px;
           overflow: hidden;
           position: relative;
         }
         .bar-fill {
           height: 100%;
-          border-radius: 4px;
+          border-radius: 6px;
           width: 0;
           position: relative;
           transition: none;
@@ -237,44 +242,46 @@ class ElectionResults extends HTMLElement {
           bottom: 0;
           width: 40px;
           background: linear-gradient(90deg, transparent, rgba(255,255,255,0.15));
-          border-radius: 0 4px 4px 0;
+          border-radius: 0 6px 6px 0;
         }
 
         /* Vote count + percentage */
         .candidate-numbers {
-          width: 140px;
+          width: 200px;
           text-align: right;
           flex-shrink: 0;
         }
         .candidate-pct {
           font-family: 'JetBrains Mono', monospace;
-          font-size: 22px;
+          font-size: 52px;
           font-weight: 700;
           color: #ffffff;
           line-height: 1;
+          text-shadow: 0 2px 8px rgba(0,0,0,0.7);
         }
         .candidate-votes {
           font-family: 'JetBrains Mono', monospace;
-          font-size: 11px;
+          font-size: 36px;
           font-weight: 500;
-          color: rgba(255,255,255,0.35);
-          margin-top: 3px;
+          color: rgba(255,255,255,0.7);
+          margin-top: 4px;
+          text-shadow: 0 2px 8px rgba(0,0,0,0.7);
         }
 
         /* Leading indicator */
         .leading-check {
-          width: 24px;
+          width: 36px;
           flex-shrink: 0;
           text-align: center;
           opacity: 0;
         }
         .check-icon {
           display: inline-block;
-          width: 20px;
-          height: 20px;
+          width: 36px;
+          height: 36px;
           border-radius: 50%;
-          line-height: 20px;
-          font-size: 12px;
+          line-height: 36px;
+          font-size: 32px;
           color: #ffffff;
           text-align: center;
           font-weight: 700;
@@ -282,38 +289,40 @@ class ElectionResults extends HTMLElement {
 
         /* --- Footer --- */
         .footer {
-          padding: 0 24px 14px;
+          padding: 0 36px 20px;
           display: flex;
           justify-content: space-between;
           align-items: center;
-          border-top: 1px solid rgba(255,255,255,0.04);
-          padding-top: 10px;
+          border-top: 1px solid rgba(255,255,255,0.06);
+          padding-top: 16px;
           opacity: 0;
         }
         .total-votes {
-          font-size: 11px;
+          font-size: 36px;
           font-weight: 500;
-          color: rgba(255,255,255,0.3);
+          color: rgba(255,255,255,0.7);
           letter-spacing: 0.05em;
+          text-shadow: 0 2px 8px rgba(0,0,0,0.7);
         }
         .total-votes span {
-          color: rgba(255,255,255,0.55);
+          color: rgba(255,255,255,0.9);
           font-family: 'JetBrains Mono', monospace;
           font-weight: 700;
         }
         .live-badge {
-          font-size: 10px;
+          font-size: 36px;
           font-weight: 700;
           color: #ef4444;
           text-transform: uppercase;
           letter-spacing: 0.15em;
           display: flex;
           align-items: center;
-          gap: 6px;
+          gap: 10px;
+          text-shadow: 0 2px 8px rgba(0,0,0,0.7);
         }
         .live-dot {
-          width: 6px;
-          height: 6px;
+          width: 10px;
+          height: 10px;
           background: #ef4444;
           border-radius: 50%;
           animation: pulse-dot 1.5s ease-in-out infinite;
@@ -327,61 +336,65 @@ class ElectionResults extends HTMLElement {
           background: rgba(10, 12, 20, 0.97);
           backdrop-filter: blur(24px);
           -webkit-backdrop-filter: blur(24px);
-          border-radius: 8px;
+          border-radius: 12px;
           flex-direction: column;
           align-items: center;
           justify-content: center;
           text-align: center;
-          padding: 32px;
+          padding: 48px;
           z-index: 10;
         }
         .winner-overlay.active {
           display: flex;
         }
         .winner-projected {
-          font-size: 12px;
+          font-size: 36px;
           font-weight: 700;
-          color: rgba(255,255,255,0.5);
+          color: rgba(255,255,255,0.7);
           text-transform: uppercase;
-          letter-spacing: 0.25em;
-          margin-bottom: 12px;
+          letter-spacing: 0.2em;
+          margin-bottom: 16px;
           opacity: 0;
           transform: translateY(10px);
+          text-shadow: 0 2px 8px rgba(0,0,0,0.7);
         }
         .winner-name {
-          font-size: 42px;
+          font-size: 76px;
           font-weight: 800;
           color: #ffffff;
           line-height: 1.1;
           opacity: 0;
           transform: scale(0.8);
+          text-shadow: 0 2px 8px rgba(0,0,0,0.7);
         }
         .winner-party-label {
-          font-size: 16px;
+          font-size: 44px;
           font-weight: 600;
-          margin-top: 8px;
+          margin-top: 12px;
           opacity: 0;
           transform: translateY(10px);
+          text-shadow: 0 2px 8px rgba(0,0,0,0.7);
         }
         .winner-pct-label {
           font-family: 'JetBrains Mono', monospace;
-          font-size: 28px;
+          font-size: 56px;
           font-weight: 700;
           color: #ffffff;
-          margin-top: 16px;
+          margin-top: 20px;
           opacity: 0;
           transform: translateY(10px);
+          text-shadow: 0 2px 8px rgba(0,0,0,0.7);
         }
         .winner-check-ring {
-          width: 60px;
-          height: 60px;
+          width: 80px;
+          height: 80px;
           border-radius: 50%;
           display: flex;
           align-items: center;
           justify-content: center;
-          font-size: 28px;
+          font-size: 40px;
           color: #ffffff;
-          margin-bottom: 16px;
+          margin-bottom: 20px;
           opacity: 0;
           transform: scale(0.5);
         }

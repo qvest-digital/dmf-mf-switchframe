@@ -18,12 +18,12 @@ html, body {
     position: absolute;
     top: 50px;
     right: 50px;
-    width: 340px;
-    background: rgba(12, 12, 20, 0.82);
+    width: 420px;
+    background: rgba(12, 12, 20, 0.88);
     border-radius: 18px;
-    padding: 22px 28px;
+    padding: 28px 34px;
     box-shadow: 0 6px 32px rgba(0, 0, 0, 0.5),
-                0 0 0 1px rgba(255, 255, 255, 0.06);
+                0 0 0 1px rgba(255, 255, 255, 0.08);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
     color: #fff;
@@ -36,50 +36,54 @@ html, body {
 .weather-top {
     display: flex;
     align-items: center;
-    gap: 14px;
+    gap: 18px;
 }
 
 .weather-icon {
-    font-size: 42px;
+    font-size: 52px;
     line-height: 1;
     flex-shrink: 0;
     filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
 }
 
 .weather-temp {
-    font-size: 48px;
+    font-size: 64px;
     font-weight: 700;
     letter-spacing: -0.5px;
     line-height: 1;
     color: #fff;
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
 }
 
 .weather-unit {
-    font-size: 22px;
+    font-size: 32px;
     font-weight: 400;
     opacity: 0.6;
     vertical-align: super;
     margin-left: 2px;
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
 }
 
 .weather-city {
-    font-size: 24px;
+    font-size: 40px;
     font-weight: 500;
-    color: rgba(255, 255, 255, 0.55);
+    color: rgba(255, 255, 255, 0.8);
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
     margin-left: auto;
     text-align: right;
     line-height: 1.2;
-    max-width: 140px;
+    max-width: 180px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
 .weather-condition {
-    font-size: 18px;
+    font-size: 36px;
     font-weight: 500;
-    color: rgba(255, 255, 255, 0.5);
-    margin-top: 8px;
+    color: rgba(255, 255, 255, 0.7);
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
+    margin-top: 12px;
     letter-spacing: 0.4px;
     text-transform: uppercase;
 }
@@ -90,28 +94,29 @@ html, body {
         rgba(255, 255, 255, 0.08),
         rgba(255, 255, 255, 0.15),
         rgba(255, 255, 255, 0.08));
-    margin-top: 12px;
-    margin-bottom: 10px;
+    margin-top: 14px;
+    margin-bottom: 12px;
 }
 
 .weather-wind {
-    font-size: 16px;
-    color: rgba(255, 255, 255, 0.4);
+    font-size: 36px;
+    color: rgba(255, 255, 255, 0.7);
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
 }
 
 .weather-wind-icon {
-    font-size: 18px;
+    font-size: 36px;
 }
 
 /* Flash animation for next() refresh */
 @keyframes flash-border {
-    0%   { box-shadow: 0 4px 24px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.06); }
+    0%   { box-shadow: 0 4px 24px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.08); }
     50%  { box-shadow: 0 4px 24px rgba(0,0,0,0.45), 0 0 0 2px rgba(100,180,255,0.5),
                        0 0 16px rgba(100,180,255,0.15); }
-    100% { box-shadow: 0 4px 24px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.06); }
+    100% { box-shadow: 0 4px 24px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.08); }
 }
 
 .weather-flash {

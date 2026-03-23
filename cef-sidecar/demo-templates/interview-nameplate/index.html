@@ -10,7 +10,7 @@
     margin: 0; padding: 0;
     background: transparent;
     overflow: hidden;
-    width: 100%; height: 100%;
+    width: 1920px; height: 1080px;
     font-family: 'DM Sans', sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -37,7 +37,7 @@
 
   /* ---------- Top accent bar ---------- */
   .nameplate .accent-bar {
-    height: 3px;
+    height: 4px;
     border-radius: 2px 2px 0 0;
     opacity: 0;
     transform: scaleX(0);
@@ -55,46 +55,48 @@
 
   /* ---------- Card panel ---------- */
   .nameplate .card {
-    background: rgba(8, 8, 14, 0.88);
+    background: rgba(8, 8, 14, 0.90);
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
-    padding: 18px 32px 16px;
-    min-width: 320px;
-    max-width: 480px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    padding: 28px 44px 24px;
+    min-width: 400px;
+    max-width: 600px;
     box-shadow: 0 8px 40px rgba(0, 0, 0, 0.4);
     opacity: 0;
   }
 
   .nameplate.left .card {
-    border-radius: 0 0 10px 0;
+    border-radius: 0 0 12px 0;
     clip-path: inset(0 100% 0 0);
   }
 
   .nameplate.right .card {
-    border-radius: 0 0 0 10px;
+    border-radius: 0 0 0 12px;
     clip-path: inset(0 0 0 100%);
   }
 
   /* ---------- Name ---------- */
   .nameplate .name {
-    font-size: 34px;
+    font-size: 56px;
     font-weight: 700;
     color: #ffffff;
     line-height: 1.15;
     white-space: nowrap;
-    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
     opacity: 0;
     transform: translateY(10px);
   }
 
   /* ---------- Title ---------- */
   .nameplate .person-title {
-    font-size: 17px;
+    font-size: 40px;
     font-weight: 400;
-    color: rgba(255, 255, 255, 0.65);
+    color: rgba(255, 255, 255, 0.75);
     line-height: 1.3;
     white-space: nowrap;
-    margin-top: 4px;
+    margin-top: 6px;
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
     opacity: 0;
     transform: translateY(8px);
   }
@@ -102,14 +104,15 @@
   /* ---------- Company ---------- */
   .nameplate .company {
     font-family: 'JetBrains Mono', monospace;
-    font-size: 12px;
+    font-size: 36px;
     font-weight: 500;
     letter-spacing: 1.5px;
     text-transform: uppercase;
-    margin-top: 8px;
-    padding-top: 8px;
+    margin-top: 12px;
+    padding-top: 12px;
     border-top: 1px solid rgba(255, 255, 255, 0.08);
     white-space: nowrap;
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
     opacity: 0;
     transform: translateY(6px);
   }
@@ -353,7 +356,7 @@
 
     // Center divider
     playTL.to(divider, {
-      height: 80, opacity: 1,
+      height: 120, opacity: 1,
       duration: 0.4, ease: 'power2.out'
     }, 0.3);
 
@@ -466,11 +469,11 @@
           animateIn(right, 'right', tl, 0.1);
           rightVisible = true;
         }
-        tl.to(divider, { height: 80, opacity: 1, duration: 0.3, ease: 'power2.out' }, 0.1);
+        tl.to(divider, { height: 120, opacity: 1, duration: 0.3, ease: 'power2.out' }, 0.1);
         break;
 
       case 1:
-        // Left only — hide right
+        // Left only -- hide right
         if (rightVisible) {
           animateOut(right, 'right', tl, 0);
           rightVisible = false;
@@ -483,7 +486,7 @@
         break;
 
       case 2:
-        // Right only — hide left, show right
+        // Right only -- hide left, show right
         if (leftVisible) {
           animateOut(left, 'left', tl, 0);
           leftVisible = false;
