@@ -129,8 +129,22 @@ int main(int argc, char* argv[]) {
                 bool ok = browser_pool->Create(cmd.id, w, h, fps);
 
                 if (ok) {
-                    // Wire load-end callback to inject adapter.js.
-                    // (BrowserClient callbacks are set per-slot.)
+                    // Wire OnLoadEnd callback to inject adapter.js on every page load.
+                    browser_pool->SetLoadEndCallback(cmd.id,
+                        [browser_pool, &adapter_js, cs](int browser_id, int http_status) {
+                            (void)http_status;
+                            browser_pool->Execute(browser_id, adapter_js);
+                            // Report format detection event after adapter has a
+                            // chance to run. The adapter.js sets up a load listener
+                            // that calls __switchframe.detect() asynchronously.
+                        });
+                    browser_pool->SetLoadErrorCallback(cmd.id,
+                        [cs](int browser_id, const std::string& error) {
+                            if (cs) {
+                                cs->SendResponse(protocol::MakeEventResponse(
+                                    browser_id, "load_error", "error", error));
+                            }
+                        });
                     if (cs) {
                         cs->SendResponse(protocol::MakeOkResponse(cmd.id));
                     }
@@ -149,13 +163,6 @@ int main(int argc, char* argv[]) {
                         cs->SendResponse(protocol::MakeErrorResponse(
                             cmd.id, "load failed"));
                     }
-                }
-                // Inject adapter.js after initiating the load.
-                // The actual injection will happen on OnLoadEnd via
-                // ExecuteJavaScript, but we also schedule it here as a
-                // belt-and-suspenders approach.
-                if (ok) {
-                    browser_pool->Execute(cmd.id, adapter_js);
                 }
             } else if (cmd.cmd == "play") {
                 bool ok = browser_pool->Execute(
@@ -182,10 +189,9 @@ int main(int argc, char* argv[]) {
                                               cmd.id, "next failed"));
                 }
             } else if (cmd.cmd == "update") {
-                // Escape the data for safe injection into JS.
                 std::string js = "window.__switchframe && "
                                  "window.__switchframe.update('" +
-                                 cmd.data + "')";
+                                 protocol::EscapeForJS(cmd.data) + "')";
                 bool ok = browser_pool->Execute(cmd.id, js);
                 if (cs) {
                     cs->SendResponse(ok ? protocol::MakeOkResponse(cmd.id)
@@ -196,7 +202,8 @@ int main(int argc, char* argv[]) {
                 std::string js =
                     "window.__switchframe && "
                     "window.__switchframe.custom('" +
-                    cmd.action + "', '" + cmd.payload + "')";
+                    protocol::EscapeForJS(cmd.action) + "', '" +
+                    protocol::EscapeForJS(cmd.payload) + "')";
                 bool ok = browser_pool->Execute(cmd.id, js);
                 if (cs) {
                     cs->SendResponse(ok ? protocol::MakeOkResponse(cmd.id)

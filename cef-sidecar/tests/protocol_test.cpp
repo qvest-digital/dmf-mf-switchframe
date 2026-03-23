@@ -324,6 +324,76 @@ TEST(MaxFramePixels_Fits4K) {
 }
 
 // ---------------------------------------------------------------------------
+// EscapeForJS Tests
+// ---------------------------------------------------------------------------
+
+TEST(EscapeForJS_NoEscape) {
+    ASSERT_EQ(protocol::EscapeForJS("hello world"), std::string("hello world"));
+}
+
+TEST(EscapeForJS_SingleQuote) {
+    ASSERT_EQ(protocol::EscapeForJS("O'Brien"), std::string("O\\'Brien"));
+}
+
+TEST(EscapeForJS_Backslash) {
+    ASSERT_EQ(protocol::EscapeForJS("path\\to"), std::string("path\\\\to"));
+}
+
+TEST(EscapeForJS_Newline) {
+    ASSERT_EQ(protocol::EscapeForJS("line1\nline2"), std::string("line1\\nline2"));
+}
+
+TEST(EscapeForJS_Tab) {
+    ASSERT_EQ(protocol::EscapeForJS("a\tb"), std::string("a\\tb"));
+}
+
+TEST(EscapeForJS_CarriageReturn) {
+    ASSERT_EQ(protocol::EscapeForJS("a\rb"), std::string("a\\rb"));
+}
+
+TEST(EscapeForJS_ScriptTag) {
+    ASSERT_EQ(protocol::EscapeForJS("</script>"), std::string("<\\/script>"));
+}
+
+TEST(EscapeForJS_ComplexString) {
+    // JSON with quotes: {"name":"O'Brien","title":"Sr. Engineer"}
+    std::string input = R"({"name":"O'Brien","title":"Sr. Engineer"})";
+    std::string escaped = protocol::EscapeForJS(input);
+    // Single quotes escaped, double quotes pass through (they're safe in single-quoted JS strings)
+    ASSERT_EQ(escaped, std::string(R"({"name":"O\'Brien","title":"Sr. Engineer"})"));
+}
+
+TEST(EscapeForJS_EmptyString) {
+    ASSERT_EQ(protocol::EscapeForJS(""), std::string(""));
+}
+
+// ---------------------------------------------------------------------------
+// EscapeForJSON Tests
+// ---------------------------------------------------------------------------
+
+TEST(EscapeForJSON_NoEscape) {
+    ASSERT_EQ(protocol::EscapeForJSON("hello"), std::string("hello"));
+}
+
+TEST(EscapeForJSON_DoubleQuote) {
+    ASSERT_EQ(protocol::EscapeForJSON("say \"hi\""), std::string("say \\\"hi\\\""));
+}
+
+TEST(EscapeForJSON_Backslash) {
+    ASSERT_EQ(protocol::EscapeForJSON("a\\b"), std::string("a\\\\b"));
+}
+
+TEST(EscapeForJSON_Newline) {
+    ASSERT_EQ(protocol::EscapeForJSON("a\nb"), std::string("a\\nb"));
+}
+
+TEST(EscapeForJSON_MakeErrorResponseEscapes) {
+    auto resp = protocol::MakeErrorResponse(1, "can't load \"foo\"");
+    // The error message should have double quotes escaped
+    ASSERT_EQ(resp, std::string("{\"id\":1,\"status\":\"error\",\"error\":\"can't load \\\"foo\\\"\"}\n"));
+}
+
+// ---------------------------------------------------------------------------
 // Entry Point
 // ---------------------------------------------------------------------------
 

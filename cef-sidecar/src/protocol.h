@@ -78,6 +78,53 @@ inline std::vector<uint8_t> SerializeFrame(uint8_t browser_id, uint16_t width,
     return buf;
 }
 
+// Escape a string for safe embedding in a JavaScript string literal (single-quoted).
+// Handles: backslash, single quote, newline, carriage return, tab, and </script>.
+inline std::string EscapeForJS(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + s.size() / 8);
+    for (size_t i = 0; i < s.size(); ++i) {
+        char c = s[i];
+        switch (c) {
+            case '\\': out += "\\\\"; break;
+            case '\'': out += "\\'";  break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            case '<':
+                // Prevent </script> injection
+                if (i + 7 < s.size() && s.substr(i, 8) == "</script") {
+                    out += "<\\/script";
+                    i += 7;
+                } else {
+                    out += c;
+                }
+                break;
+            default:
+                out += c;
+                break;
+        }
+    }
+    return out;
+}
+
+// Escape a string for safe embedding in a JSON string value (double-quoted).
+inline std::string EscapeForJSON(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + s.size() / 8);
+    for (char c : s) {
+        switch (c) {
+            case '\\': out += "\\\\"; break;
+            case '"':  out += "\\\""; break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:   out += c;      break;
+        }
+    }
+    return out;
+}
+
 // Serialize a JSON "ok" control response as a newline-delimited string.
 inline std::string MakeOkResponse(int id) {
     return "{\"id\":" + std::to_string(id) + ",\"status\":\"ok\"}\n";
@@ -86,7 +133,7 @@ inline std::string MakeOkResponse(int id) {
 // Serialize a JSON "error" control response as a newline-delimited string.
 inline std::string MakeErrorResponse(int id, const std::string& error) {
     return "{\"id\":" + std::to_string(id) +
-           ",\"status\":\"error\",\"error\":\"" + error + "\"}\n";
+           ",\"status\":\"error\",\"error\":\"" + EscapeForJSON(error) + "\"}\n";
 }
 
 // Serialize a JSON event response as a newline-delimited string.
@@ -96,7 +143,7 @@ inline std::string MakeEventResponse(int id, const std::string& event,
     std::string resp =
         "{\"id\":" + std::to_string(id) + ",\"event\":\"" + event + "\"";
     if (!extra_key.empty()) {
-        resp += ",\"" + extra_key + "\":\"" + extra_value + "\"";
+        resp += ",\"" + extra_key + "\":\"" + EscapeForJSON(extra_value) + "\"";
     }
     resp += "}\n";
     return resp;

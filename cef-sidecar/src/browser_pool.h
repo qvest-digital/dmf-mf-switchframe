@@ -82,6 +82,10 @@ public:
     // Returns -1 if not found.
     int GetID(CefRefPtr<CefBrowser> browser) const;
 
+    // Set per-slot load-end and load-error callbacks (forwarded to BrowserClient).
+    void SetLoadEndCallback(int id, BrowserClient::LoadEndCallback cb);
+    void SetLoadErrorCallback(int id, BrowserClient::LoadErrorCallback cb);
+
 private:
     struct BrowserSlot {
         CefRefPtr<CefBrowser> browser;

@@ -191,3 +191,21 @@ int BrowserPool::GetID(CefRefPtr<CefBrowser> browser) const {
 
     return -1;
 }
+
+void BrowserPool::SetLoadEndCallback(int id, BrowserClient::LoadEndCallback cb) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (id < 0 || id >= max_browsers_) return;
+    BrowserSlot& slot = slots_[static_cast<size_t>(id)];
+    if (slot.active && slot.client) {
+        slot.client->SetLoadEndCallback(std::move(cb));
+    }
+}
+
+void BrowserPool::SetLoadErrorCallback(int id, BrowserClient::LoadErrorCallback cb) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (id < 0 || id >= max_browsers_) return;
+    BrowserSlot& slot = slots_[static_cast<size_t>(id)];
+    if (slot.active && slot.client) {
+        slot.client->SetLoadErrorCallback(std::move(cb));
+    }
+}
