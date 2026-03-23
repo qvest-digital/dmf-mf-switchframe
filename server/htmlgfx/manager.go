@@ -59,7 +59,7 @@ func (m *Manager) connectSockets(controlPath, framePath string) error {
 
 	frameConn, err := net.Dial("unix", framePath)
 	if err != nil {
-		controlConn.Close()
+		_ = controlConn.Close()
 		return fmt.Errorf("connect frame socket: %w", err)
 	}
 

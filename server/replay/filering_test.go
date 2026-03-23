@@ -103,7 +103,7 @@ func TestFileRing_MultipleFrames(t *testing.T) {
 	frameData := make([][]byte, 10)
 	for i := range frameData {
 		frameData[i] = make([]byte, 100)
-		rand.Read(frameData[i])
+		_, _ = rand.Read(frameData[i])
 		isIDR := i == 0 || i == 5
 		if _, err := ring.Write(frameData[i], int64(i*3000), now.Add(time.Duration(i)*33*time.Millisecond), isIDR); err != nil {
 			t.Fatalf("Write frame %d: %v", i, err)
@@ -144,7 +144,7 @@ func TestFileRing_Wrap(t *testing.T) {
 	frameData := make([][]byte, 4)
 	for i := range frameData {
 		frameData[i] = make([]byte, 150)
-		rand.Read(frameData[i])
+		_, _ = rand.Read(frameData[i])
 		if _, err := ring.Write(frameData[i], int64(i*3000), now.Add(time.Duration(i)*33*time.Millisecond), i == 0); err != nil {
 			t.Fatalf("Write frame %d: %v", i, err)
 		}
@@ -240,7 +240,7 @@ func TestFileRing_FrameCount(t *testing.T) {
 
 	now := time.Now()
 	for i := 0; i < 5; i++ {
-		ring.Write([]byte("frame"), int64(i*3000), now.Add(time.Duration(i)*time.Millisecond), false)
+		_, _ = ring.Write([]byte("frame"), int64(i*3000), now.Add(time.Duration(i)*time.Millisecond), false)
 	}
 	if ring.FrameCount() != 5 {
 		t.Errorf("after 5 writes: FrameCount = %d, want 5", ring.FrameCount())
@@ -250,7 +250,7 @@ func TestFileRing_FrameCount(t *testing.T) {
 	// Buffer is 1024 bytes. 5 frames of 5 bytes = 25 bytes used.
 	// Write a 1020-byte frame — wraps to 0, invalidating all 5 small frames.
 	bigData := make([]byte, 1020)
-	ring.Write(bigData, 99000, now.Add(100*time.Millisecond), true)
+	_, _ = ring.Write(bigData, 99000, now.Add(100*time.Millisecond), true)
 
 	// The 1020-byte frame at offset 25 doesn't fit (25+1020=1045 > 1024),
 	// so it wraps to 0 and invalidates frames in [0, 1020) = all 5 small frames.
@@ -272,9 +272,9 @@ func TestFileRing_BytesUsed(t *testing.T) {
 	}
 
 	now := time.Now()
-	ring.Write(make([]byte, 100), 0, now, false)
-	ring.Write(make([]byte, 200), 3000, now.Add(time.Millisecond), false)
-	ring.Write(make([]byte, 300), 6000, now.Add(2*time.Millisecond), true)
+	_, _ = ring.Write(make([]byte, 100), 0, now, false)
+	_, _ = ring.Write(make([]byte, 200), 3000, now.Add(time.Millisecond), false)
+	_, _ = ring.Write(make([]byte, 300), 6000, now.Add(2*time.Millisecond), true)
 
 	if ring.BytesUsed() != 600 {
 		t.Errorf("BytesUsed = %d, want 600", ring.BytesUsed())
@@ -292,7 +292,7 @@ func TestFileRing_BytesUsedAfterWrap(t *testing.T) {
 	now := time.Now()
 	// Write 4 x 150 = 600 bytes into 500 byte ring.
 	for i := 0; i < 4; i++ {
-		ring.Write(make([]byte, 150), int64(i*3000), now.Add(time.Duration(i)*time.Millisecond), false)
+		_, _ = ring.Write(make([]byte, 150), int64(i*3000), now.Add(time.Duration(i)*time.Millisecond), false)
 	}
 
 	// Frame 0 (150 bytes) should be invalidated.
@@ -340,8 +340,8 @@ func TestFileRing_ConcurrentReadWrite(t *testing.T) {
 			default:
 			}
 			data := make([]byte, 100)
-			rand.Read(data)
-			ring.Write(data, int64(i*3000), now.Add(time.Duration(i)*time.Millisecond), i%30 == 0)
+			_, _ = rand.Read(data)
+			_, _ = ring.Write(data, int64(i*3000), now.Add(time.Duration(i)*time.Millisecond), i%30 == 0)
 		}
 	}()
 
@@ -358,7 +358,7 @@ func TestFileRing_ConcurrentReadWrite(t *testing.T) {
 			frames := ring.Frames()
 			if len(frames) > 0 {
 				f := frames[len(frames)-1]
-				ring.Read(f.offset, f.size)
+				_, _ = ring.Read(f.offset, f.size)
 			}
 			_ = ring.FrameCount()
 			_ = ring.BytesUsed()
@@ -389,7 +389,7 @@ func TestFileRing_IDRTracking(t *testing.T) {
 	idrFlags := []bool{true, false, false, false, true, false, false}
 	for i, isIDR := range idrFlags {
 		data := []byte(fmt.Sprintf("frame-%d", i))
-		ring.Write(data, int64(i*3000), now.Add(time.Duration(i)*33*time.Millisecond), isIDR)
+		_, _ = ring.Write(data, int64(i*3000), now.Add(time.Duration(i)*33*time.Millisecond), isIDR)
 	}
 
 	frames := ring.Frames()
@@ -416,7 +416,7 @@ func TestFileRing_WallTimeOrdering(t *testing.T) {
 	// Write frames with increasing wall times.
 	for i := 0; i < 20; i++ {
 		wt := base.Add(time.Duration(i) * 33 * time.Millisecond)
-		ring.Write([]byte("x"), int64(i*3000), wt, i%10 == 0)
+		_, _ = ring.Write([]byte("x"), int64(i*3000), wt, i%10 == 0)
 	}
 
 	frames := ring.Frames()
@@ -444,7 +444,7 @@ func TestFileRing_PTSPreserved(t *testing.T) {
 	now := time.Now()
 	ptsList := []int64{0, 3000, 6000, 9000, 12000}
 	for i, pts := range ptsList {
-		ring.Write([]byte("data"), pts, now.Add(time.Duration(i)*33*time.Millisecond), false)
+		_, _ = ring.Write([]byte("data"), pts, now.Add(time.Duration(i)*33*time.Millisecond), false)
 	}
 
 	frames := ring.Frames()
@@ -489,7 +489,7 @@ func TestFileRing_SequentialFill(t *testing.T) {
 	expectedOffset := int64(0)
 	for i, sz := range sizes {
 		data := make([]byte, sz)
-		ring.Write(data, int64(i*3000), now.Add(time.Duration(i)*time.Millisecond), false)
+		_, _ = ring.Write(data, int64(i*3000), now.Add(time.Duration(i)*time.Millisecond), false)
 	}
 
 	frames := ring.Frames()
