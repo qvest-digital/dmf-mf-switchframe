@@ -115,6 +115,19 @@ type SCTE35RulesAPI interface {
 	CreateFromTemplate(templateName string) (scte35.Rule, error)
 }
 
+// HTMLGfxManager is the interface for HTML5 graphics browser pool operations.
+type HTMLGfxManager interface {
+	AllocateBrowser(layerID int) (int, error)
+	FreeBrowser(browserID int)
+	BrowserForLayer(layerID int) int
+	LoadURL(browserID int, url string) error
+	Play(browserID int) error
+	Stop(browserID int) error
+	Next(browserID int) error
+	Update(browserID int, data string) error
+	CustomAction(browserID int, action, payload string) error
+}
+
 // ColorGradeManager is the interface for color grading operations.
 type ColorGradeManager interface {
 	IsEnabled() bool
@@ -354,6 +367,11 @@ func WithColorGradeManager(m ColorGradeManager) APIOption {
 	return func(a *API) { a.colorGradeMgr = m }
 }
 
+// SetHTMLGfxManager attaches an HTML5 graphics manager to the API.
+// This is a setter rather than an option because the manager may be
+// initialized after the API is constructed.
+func (a *API) SetHTMLGfxManager(mgr HTMLGfxManager) { a.htmlGfxMgr = mgr }
+
 // WithInviteTokens sets the invite token map (token -> role) for operator registration gating.
 func WithInviteTokens(tokens map[string]string) APIOption {
 	return func(a *API) { a.inviteTokens = tokens }
@@ -417,6 +435,7 @@ type API struct {
 	stmapStore         *stmap.Store
 	stmapCacheDir      string // base cache dir for mmap'd ST map LUTs (empty = disabled)
 	colorGradeMgr      ColorGradeManager
+	htmlGfxMgr         HTMLGfxManager
 	inviteTokens       map[string]string // token -> role; nil = no invite gating
 	sessionAPIToken    string            // used to bypass invite token requirement for session owner
 	allowedOutputPorts map[int]bool      // nil = unconstrained
@@ -569,6 +588,7 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	a.registerDebugRoutes(mux)
 	a.registerPresetRoutes(mux)
 	a.registerGraphicsRoutes(mux)
+	a.registerHTML5GraphicsRoutes(mux)
 	a.registerMacroRoutes(mux)
 	a.registerKeyRoutes(mux)
 	a.registerOperatorAPIRoutes(mux)
