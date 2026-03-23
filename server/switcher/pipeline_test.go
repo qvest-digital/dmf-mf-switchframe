@@ -800,7 +800,6 @@ func (m *mockGPUPipelineRunner) Snapshot() map[string]any {
 	}
 }
 
-
 func TestBuildPipeline_NilPipeCodecs(t *testing.T) {
 	// BuildPipeline with no encoder configured should be a no-op.
 	programRelay := newTestRelay()

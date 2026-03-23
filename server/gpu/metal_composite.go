@@ -50,7 +50,7 @@ func PIPCompositeWithCrop(ctx *Context, dst, src *GPUFrame, rect Rect, alpha flo
 		rectX: C.int32_t(rect.X), rectY: C.int32_t(rect.Y),
 		rectW: C.int32_t(rect.W), rectH: C.int32_t(rect.H),
 		alpha256: C.int32_t(alpha256),
-		cropX: C.int32_t(cropX), cropY: C.int32_t(cropY),
+		cropX:    C.int32_t(cropX), cropY: C.int32_t(cropY),
 		cropW: C.int32_t(cropW), cropH: C.int32_t(cropH),
 	}
 	rc := C.metal_pip_composite_y(mtl.queue, yPipeline, dst.MetalBuf, src.MetalBuf, &yParams)
@@ -87,7 +87,7 @@ func PIPCompositeWithCrop(ctx *Context, dst, src *GPUFrame, rect Rect, alpha flo
 		rectX: C.int32_t(rect.X), rectY: C.int32_t(rect.Y),
 		rectCW: C.int32_t(chromaRectW), rectCH: C.int32_t(chromaRectH),
 		alpha256: C.int32_t(alpha256),
-		cropX: C.int32_t(chromaCropX), cropY: C.int32_t(chromaCropY),
+		cropX:    C.int32_t(chromaCropX), cropY: C.int32_t(chromaCropY),
 		cropCW: C.int32_t(chromaCropW), cropCH: C.int32_t(chromaCropH),
 	}
 	uvBufs := [2]C.MetalBufferRef{dst.MetalBuf, src.MetalBuf}
@@ -127,7 +127,7 @@ func DrawBorder(ctx *Context, frame *GPUFrame, rect Rect, color YUVColor, thickn
 		outerX: C.int32_t(outerX), outerY: C.int32_t(outerY),
 		outerW: C.int32_t(outerW), outerH: C.int32_t(outerH),
 		thickness: C.int32_t(thickness),
-		colorY: C.uint8_t(color.Y), colorCb: C.uint8_t(color.Cb), colorCr: C.uint8_t(color.Cr),
+		colorY:    C.uint8_t(color.Y), colorCb: C.uint8_t(color.Cb), colorCr: C.uint8_t(color.Cr),
 	}
 
 	rc := C.metal_draw_border(mtl.queue, pipeline, frame.MetalBuf, &params)

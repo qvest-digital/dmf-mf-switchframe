@@ -121,7 +121,7 @@ type App struct {
 	stmapStore       *stmap.Store
 
 	// Color grading
-	colorGradeCtrl  *colorGradeController
+	colorGradeCtrl   *colorGradeController
 	sourceCorrectors *colorgrade.SourceCorrectorManager
 
 	// Text rendering engines
@@ -144,8 +144,8 @@ type App struct {
 	clipRelays [clip.MaxPlayers]*distribution.Relay
 
 	// GPU pipeline (Metal on macOS, CUDA on Linux)
-	gpuState          *gpuState
-	gpuRawVideoSink   *atomic.Pointer[gpu.RawSinkFunc]   // GPU raw sink for MXL output
+	gpuState        *gpuState
+	gpuRawVideoSink *atomic.Pointer[gpu.RawSinkFunc] // GPU raw sink for MXL output
 
 	// AI segmentation engine (CUDA + TensorRT, nil on other platforms)
 	segEngine  *gpu.SegmentationEngine
@@ -563,11 +563,12 @@ func (a *App) initSubsystems() error {
 
 	// HTML5 graphics sidecar manager.
 	a.htmlGfxMgr = htmlgfx.NewManager(a.compositor, htmlgfx.Config{
-		BinaryPath: "switchframe-cef",
-		PoolSize:   4,
-		Width:      pf.Width,
-		Height:     pf.Height,
-		FPS:        pf.FPSNum / pf.FPSDen,
+		BinaryPath:   "switchframe-cef",
+		TemplatesDir: "/opt/switchframe-cef/demo-templates",
+		PoolSize:     4,
+		Width:        pf.Width,
+		Height:       pf.Height,
+		FPS:          pf.FPSNum / pf.FPSDen,
 	})
 	if err := a.htmlGfxMgr.Start(); err != nil {
 		slog.Warn("HTML5 graphics sidecar failed to start", "error", err)

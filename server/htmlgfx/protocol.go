@@ -18,13 +18,13 @@ const FrameHeaderSize = 5
 type ControlCommand struct {
 	Cmd     string `json:"cmd"`
 	ID      *int   `json:"id,omitempty"`      // nil for shutdown
-	Width   int    `json:"width,omitempty"`    // create only
-	Height  int    `json:"height,omitempty"`   // create only
-	FPS     int    `json:"fps,omitempty"`      // create only
-	URL     string `json:"url,omitempty"`      // load only
-	Data    string `json:"data,omitempty"`     // update only
-	Action  string `json:"action,omitempty"`   // custom only
-	Payload string `json:"payload,omitempty"`  // custom only
+	Width   int    `json:"width,omitempty"`   // create only
+	Height  int    `json:"height,omitempty"`  // create only
+	FPS     int    `json:"fps,omitempty"`     // create only
+	URL     string `json:"url,omitempty"`     // load only
+	Data    string `json:"data,omitempty"`    // update only
+	Action  string `json:"action,omitempty"`  // custom only
+	Payload string `json:"payload,omitempty"` // custom only
 }
 
 // ControlResponse is a JSON response received from the CEF sidecar.

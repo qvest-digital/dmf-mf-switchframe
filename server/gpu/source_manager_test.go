@@ -182,8 +182,8 @@ func TestGPUSourceManager_STMapCorrection(t *testing.T) {
 
 	// Sample pixels from the center row.
 	midY := h / 2
-	leftPixel := out[midY*w+2]                // was bright (220), should now be dark (~30)
-	rightPixel := out[midY*w+(w-1-2)]          // was dark (30), should now be bright (~220)
+	leftPixel := out[midY*w+2]        // was bright (220), should now be dark (~30)
+	rightPixel := out[midY*w+(w-1-2)] // was dark (30), should now be bright (~220)
 
 	// The flip should have swapped the brightness.
 	assert.Less(t, leftPixel, uint8(100),

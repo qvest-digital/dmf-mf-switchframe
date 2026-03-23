@@ -123,12 +123,12 @@ func BlendWipe(ctx *Context, dst, a, b, maskBuf *GPUFrame, position float64, dir
 		return fmt.Errorf("gpu: wipe mask: %w", err)
 	}
 	maskParams := C.MetalWipeMaskParams{
-		width:    C.uint32_t(a.Width),
-		height:   C.uint32_t(a.Height),
-		pitch:    C.uint32_t(a.Pitch),
-		position: C.float(position),
+		width:     C.uint32_t(a.Width),
+		height:    C.uint32_t(a.Height),
+		pitch:     C.uint32_t(a.Pitch),
+		position:  C.float(position),
 		direction: C.int32_t(dir),
-		softEdge: C.int32_t(softEdge),
+		softEdge:  C.int32_t(softEdge),
 	}
 	rc := C.metal_wipe_mask_generate(mtl.queue, maskPipeline, maskBuf.MetalBuf, &maskParams)
 	if rc != C.METAL_SUCCESS {

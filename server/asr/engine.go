@@ -52,12 +52,12 @@ type Engine struct {
 	onTranscript func(words []TranscriptWord, isFinal bool)
 
 	// Inference state
-	speechStart    time.Time
-	lastInfer      time.Time
-	inferCount     int  // number of inferences in current speech segment
-	wasSpeaking    bool
-	lastWordCount  int  // words emitted from current speech segment (for dedup)
-	inferring      sync.Mutex // serializes whisper inference (one at a time)
+	speechStart   time.Time
+	lastInfer     time.Time
+	inferCount    int // number of inferences in current speech segment
+	wasSpeaking   bool
+	lastWordCount int        // words emitted from current speech segment (for dedup)
+	inferring     sync.Mutex // serializes whisper inference (one at a time)
 
 	// Lifecycle
 	doneCh chan struct{}

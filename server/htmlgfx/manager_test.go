@@ -422,8 +422,8 @@ func TestManagerFrameDelivery(t *testing.T) {
 	bgra := make([]byte, int(width)*int(height)*4)
 	// Opaque red in BGRA: B=0, G=0, R=255, A=255
 	for i := 0; i < len(bgra); i += 4 {
-		bgra[i] = 0   // B
-		bgra[i+1] = 0 // G
+		bgra[i] = 0     // B
+		bgra[i+1] = 0   // G
 		bgra[i+2] = 255 // R
 		bgra[i+3] = 255 // A
 	}

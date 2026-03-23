@@ -133,12 +133,12 @@ func (a *App) enrichASRState(state internal.ControlRoomState) internal.ControlRo
 		return state
 	}
 	asrState := &internal.ASRState{
-		Available: true,
-		Active:    a.captionMgr != nil && a.captionMgr.Mode() == caption.ModeAuto,
-		Translate: a.asrEngine.Translate(),
-		Language:  a.asrEngine.Language(),
-		ModelName: filepath.Base(a.cfg.ASRModelPath),
-		Speed:     a.asrEngine.InferSpeed(),
+		Available:  true,
+		Active:     a.captionMgr != nil && a.captionMgr.Mode() == caption.ModeAuto,
+		Translate:  a.asrEngine.Translate(),
+		Language:   a.asrEngine.Language(),
+		ModelName:  filepath.Base(a.cfg.ASRModelPath),
+		Speed:      a.asrEngine.InferSpeed(),
 		NoiseFloor: a.asrEngine.VADSensitivity(),
 	}
 	if a.captionPacer != nil {
@@ -328,8 +328,8 @@ type captionPacer struct {
 
 const (
 	pacerMaxLineChars   = 32
-	pacerWordsPerSecond = 3              // ~180 WPM
-	pacerMaxQueueWords  = 50             // cap to prevent unbounded growth
+	pacerWordsPerSecond = 3               // ~180 WPM
+	pacerMaxQueueWords  = 50              // cap to prevent unbounded growth
 	pacerClearTimeout   = 5 * time.Second // clear display after 5s of no new words
 )
 

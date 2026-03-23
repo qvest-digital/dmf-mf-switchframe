@@ -526,19 +526,19 @@ func (c *Compositor) Latency() time.Duration {
 // SlotSnap is a deep-copied snapshot of one layout slot's state.
 // Used by the GPU layout node to avoid holding locks during GPU dispatch.
 type SlotSnap struct {
-	Index        int
-	Enabled      bool
-	SourceKey    string
-	RectX, RectY int
-	RectW, RectH int
-	FillYUV      []byte // YUV420p source frame (deep copy, nil if no signal)
-	FillW, FillH int
-	FillPTS      int64
+	Index                                      int
+	Enabled                                    bool
+	SourceKey                                  string
+	RectX, RectY                               int
+	RectW, RectH                               int
+	FillYUV                                    []byte // YUV420p source frame (deep copy, nil if no signal)
+	FillW, FillH                               int
+	FillPTS                                    int64
 	BorderColorY, BorderColorCb, BorderColorCr uint8
-	BorderThickness int
-	Alpha        float32
-	ScaleMode    string     // "stretch" (default) or "fill"
-	CropAnchor   [2]float64 // [x,y] 0.0-1.0, anchor point for crop (0.5,0.5 = center)
+	BorderThickness                            int
+	Alpha                                      float32
+	ScaleMode                                  string     // "stretch" (default) or "fill"
+	CropAnchor                                 [2]float64 // [x,y] 0.0-1.0, anchor point for crop (0.5,0.5 = center)
 }
 
 // SnapshotSlots returns a deep-copied snapshot of all enabled layout slots

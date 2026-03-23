@@ -58,4 +58,3 @@ func CopyGPUFrameOn(dst, src *GPUFrame, q *GPUWorkQueue) error { return ErrGPUNo
 func CopyNV12FromDevice(_ *GPUFrame, _, _ uintptr, _, _, _ int) error {
 	return ErrGPUNotAvailable
 }
-

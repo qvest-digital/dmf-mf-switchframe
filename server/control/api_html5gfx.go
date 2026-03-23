@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/zsiec/switchframe/server/control/httperr"
+	"github.com/zsiec/switchframe/server/htmlgfx"
 )
 
 // html5LoadRequest is the JSON body for loading an HTML5 graphic on a layer.
@@ -27,6 +28,7 @@ type html5CustomRequest struct {
 
 // registerHTML5GraphicsRoutes registers HTML5 graphics API routes on the given mux.
 func (a *API) registerHTML5GraphicsRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/graphics/html5/templates", a.handleHTML5Templates)
 	mux.HandleFunc("POST /api/graphics/{id}/html5", a.handleHTML5Load)
 	mux.HandleFunc("PUT /api/graphics/{id}/html5/data", a.handleHTML5UpdateData)
 	mux.HandleFunc("POST /api/graphics/{id}/html5/play", a.handleHTML5Play)
@@ -34,6 +36,21 @@ func (a *API) registerHTML5GraphicsRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/graphics/{id}/html5/next", a.handleHTML5Next)
 	mux.HandleFunc("POST /api/graphics/{id}/html5/custom", a.handleHTML5Custom)
 	mux.HandleFunc("DELETE /api/graphics/{id}/html5", a.handleHTML5Unload)
+}
+
+// handleHTML5Templates returns the list of available HTML5 templates.
+func (a *API) handleHTML5Templates(w http.ResponseWriter, r *http.Request) {
+	if a.htmlGfxMgr == nil {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode([]struct{}{})
+		return
+	}
+	templates := a.htmlGfxMgr.DiscoverTemplates()
+	if templates == nil {
+		templates = []htmlgfx.TemplateInfo{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(templates)
 }
 
 // handleHTML5Load allocates a browser for the layer, loads the URL, and optionally sends initial data.

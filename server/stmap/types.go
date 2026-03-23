@@ -83,28 +83,28 @@ func Identity(width, height int) *STMap {
 // AnimatedSTMap holds a sequence of ST map frames for animated effects.
 type AnimatedSTMap struct {
 	Name       string
-	Width      int                // frame width (set by GenerateAnimated)
-	Height     int                // frame height (set by GenerateAnimated)
+	Width      int // frame width (set by GenerateAnimated)
+	Height     int // frame height (set by GenerateAnimated)
 	Frames     []*STMap
 	FPS        int
 	Generator  string             // generator name (for cache key computation)
 	GenParams  map[string]float64 // resolved params (for cache key computation)
 	index      atomic.Int64
-	frameCount atomic.Int32  // total frames, set at construction (race-free)
+	frameCount atomic.Int32 // total frames, set at construction (race-free)
 	processors []*Processor // pre-built per-frame processors (int32 LUTs, CPU warp)
 	buildOnce  sync.Once    // guards processors initialization
 
 	// Pre-built float32 S/T arrays for GPU upload path. Each entry is an mmap'd
 	// region containing [S: w*h*float32][T: w*h*float32]. Written at cache build
 	// time alongside .lut files. Zero runtime generation.
-	stArrays    []stArrayEntry
+	stArrays []stArrayEntry
 }
 
 // stArrayEntry holds mmap'd float32 S/T arrays for one animation frame.
 type stArrayEntry struct {
-	S    []float32 // sub-slice of backing
-	T    []float32 // sub-slice of backing
-	backing []byte // mmap region (for munmap)
+	S       []float32 // sub-slice of backing
+	T       []float32 // sub-slice of backing
+	backing []byte    // mmap region (for munmap)
 }
 
 // NewAnimatedSTMap creates a new animated ST map from a sequence of frames.

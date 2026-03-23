@@ -27,8 +27,8 @@ import (
 // Falls back to FFmpeg VideoToolbox or libx264 if native VT creation fails,
 // and to CPU download+encode if needed.
 type GPUEncoder struct {
-	vtEnc  C.VTEncoderRef        // native VideoToolbox encoder (preferred)
-	ffEnc  *codec.FFmpegEncoder  // FFmpeg fallback encoder (CPU path)
+	vtEnc  C.VTEncoderRef       // native VideoToolbox encoder (preferred)
+	ffEnc  *codec.FFmpegEncoder // FFmpeg fallback encoder (CPU path)
 	gpuCtx *Context
 	width  int
 	height int

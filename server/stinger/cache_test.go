@@ -21,7 +21,7 @@ func TestWriteAndLoadCache(t *testing.T) {
 		Frames: []Frame{
 			{
 				YUV:   make([]byte, 8*4*3/2), // 48 bytes
-				Alpha: make([]byte, 8*4),      // 32 bytes
+				Alpha: make([]byte, 8*4),     // 32 bytes
 			},
 			{
 				YUV:   make([]byte, 8*4*3/2),

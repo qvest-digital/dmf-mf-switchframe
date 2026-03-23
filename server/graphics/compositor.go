@@ -806,13 +806,13 @@ func (c *Compositor) HasActiveLayers() bool {
 // VisibleLayerSnap is a deep-copied snapshot of one visible layer's state.
 // Used by the GPU compositor node to avoid holding locks during GPU dispatch.
 type VisibleLayerSnap struct {
-	ID               int
-	RectX, RectY     int
-	RectW, RectH     int
-	Alpha            float32 // 0.0-1.0
-	Overlay          []byte  // RGBA pixel data (deep copy)
+	ID                 int
+	RectX, RectY       int
+	RectW, RectH       int
+	Alpha              float32 // 0.0-1.0
+	Overlay            []byte  // RGBA pixel data (deep copy)
 	OverlayW, OverlayH int
-	Gen              uint64  // generation counter for cache invalidation
+	Gen                uint64 // generation counter for cache invalidation
 }
 
 // SnapshotVisibleLayers returns a deep-copied snapshot of all visible layers

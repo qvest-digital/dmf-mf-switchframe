@@ -26,7 +26,7 @@ type mockCompositorState struct {
 	layers []VisibleLayerSnapshot
 }
 
-func (m *mockCompositorState) HasActiveLayers() bool                   { return m.active }
+func (m *mockCompositorState) HasActiveLayers() bool                         { return m.active }
 func (m *mockCompositorState) SnapshotVisibleLayers() []VisibleLayerSnapshot { return m.layers }
 
 type mockLayoutState struct {
@@ -34,8 +34,8 @@ type mockLayoutState struct {
 	slots  []SlotSnapshot
 }
 
-func (m *mockLayoutState) Active() bool                  { return m.active }
-func (m *mockLayoutState) SnapshotSlots() []SlotSnapshot { return m.slots }
+func (m *mockLayoutState) Active() bool                       { return m.active }
+func (m *mockLayoutState) SnapshotSlots() []SlotSnapshot      { return m.slots }
 func (m *mockLayoutState) GPUFill(sourceKey string) *GPUFrame { return nil }
 
 type mockSTMapState struct {
@@ -46,11 +46,11 @@ type mockSTMapState struct {
 	animIdx  int
 }
 
-func (m *mockSTMapState) HasProgramMap() bool                            { return m.hasMap }
-func (m *mockSTMapState) ProgramMapName() string                         { return m.name }
-func (m *mockSTMapState) ProgramSTArrays() ([]float32, []float32)        { return m.s, m.t }
-func (m *mockSTMapState) IsAnimated() bool                               { return m.animated }
-func (m *mockSTMapState) AdvanceAnimatedIndex() int                      { i := m.animIdx; m.animIdx++; return i }
+func (m *mockSTMapState) HasProgramMap() bool                               { return m.hasMap }
+func (m *mockSTMapState) ProgramMapName() string                            { return m.name }
+func (m *mockSTMapState) ProgramSTArrays() ([]float32, []float32)           { return m.s, m.t }
+func (m *mockSTMapState) IsAnimated() bool                                  { return m.animated }
+func (m *mockSTMapState) AdvanceAnimatedIndex() int                         { i := m.animIdx; m.animIdx++; return i }
 func (m *mockSTMapState) AnimatedSTArraysAt(idx int) ([]float32, []float32) { return m.s, m.t }
 func (m *mockSTMapState) ProgramGPUSnapshot() (string, bool, int, []float32, []float32, func()) {
 	if !m.hasMap {
@@ -227,7 +227,7 @@ func TestGPUPipelineIntegration_CompositorOverlay(t *testing.T) {
 
 	// The overlay region (top-left 4x4) should have changed from the gray input.
 	// Check that the overlay area's Y values differ from the untouched region.
-	overlayY := outputYUV[0] // top-left pixel Y
+	overlayY := outputYUV[0]             // top-left pixel Y
 	outsideY := outputYUV[w*(h-1)+(w-1)] // bottom-right pixel Y (outside overlay)
 
 	assert.Equal(t, byte(128), outsideY,
@@ -414,8 +414,8 @@ func TestGPUPipelineIntegration_FullPipeline(t *testing.T) {
 			{
 				SourceKey:      "cam1",
 				Type:           "chroma",
-				KeyCb:          54,   // green Cb
-				KeyCr:          34,   // green Cr
+				KeyCb:          54, // green Cb
+				KeyCr:          34, // green Cr
 				Similarity:     0.15,
 				Smoothness:     0.05,
 				SpillSuppress:  0.5,
@@ -685,7 +685,7 @@ func TestGPUPipelineIntegration_SourceManagerWithPipeline(t *testing.T) {
 	require.NoError(t, err)
 
 	// The slot region (top-left 32x32) should have the white fill from GPU cache.
-	insideY := outputYUV[16*w+16] // center of slot
+	insideY := outputYUV[16*w+16]        // center of slot
 	outsideY := outputYUV[(h-1)*w+(w-1)] // bottom-right corner
 
 	assert.Equal(t, byte(16), outsideY,

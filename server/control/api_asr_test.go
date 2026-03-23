@@ -27,23 +27,25 @@ type mockASRManager struct {
 	speakerDetection string
 }
 
-func (m *mockASRManager) IsASRAvailable() bool              { return m.available }
-func (m *mockASRManager) IsASRActive() bool                 { return m.active }
-func (m *mockASRManager) ASRLanguage() string               { return m.language }
-func (m *mockASRManager) ASRTranslate() bool                { return m.translate }
-func (m *mockASRManager) ASRModelName() string              { return m.modelName }
-func (m *mockASRManager) SetASRLanguage(lang string)        { m.language = lang }
-func (m *mockASRManager) SetASRTranslate(on bool)           { m.translate = on }
-func (m *mockASRManager) SetASRModel(name string) error     { m.modelName = name; return nil }
-func (m *mockASRManager) AvailableASRModels() []string      { return []string{"base", "medium.en", "large-v3"} }
-func (m *mockASRManager) SetASRSpeed(preset string)         { m.speed = preset }
-func (m *mockASRManager) ASRSpeed() string                  { return m.speed }
-func (m *mockASRManager) SetASRConfidence(preset string)    { m.confidenceFilter = preset }
-func (m *mockASRManager) ASRConfidence() string             { return m.confidenceFilter }
-func (m *mockASRManager) SetASRNoiseFloor(preset string)    { m.noiseFloor = preset }
-func (m *mockASRManager) ASRNoiseFloor() string             { return m.noiseFloor }
+func (m *mockASRManager) IsASRAvailable() bool          { return m.available }
+func (m *mockASRManager) IsASRActive() bool             { return m.active }
+func (m *mockASRManager) ASRLanguage() string           { return m.language }
+func (m *mockASRManager) ASRTranslate() bool            { return m.translate }
+func (m *mockASRManager) ASRModelName() string          { return m.modelName }
+func (m *mockASRManager) SetASRLanguage(lang string)    { m.language = lang }
+func (m *mockASRManager) SetASRTranslate(on bool)       { m.translate = on }
+func (m *mockASRManager) SetASRModel(name string) error { m.modelName = name; return nil }
+func (m *mockASRManager) AvailableASRModels() []string {
+	return []string{"base", "medium.en", "large-v3"}
+}
+func (m *mockASRManager) SetASRSpeed(preset string)            { m.speed = preset }
+func (m *mockASRManager) ASRSpeed() string                     { return m.speed }
+func (m *mockASRManager) SetASRConfidence(preset string)       { m.confidenceFilter = preset }
+func (m *mockASRManager) ASRConfidence() string                { return m.confidenceFilter }
+func (m *mockASRManager) SetASRNoiseFloor(preset string)       { m.noiseFloor = preset }
+func (m *mockASRManager) ASRNoiseFloor() string                { return m.noiseFloor }
 func (m *mockASRManager) SetASRSpeakerDetection(preset string) { m.speakerDetection = preset }
-func (m *mockASRManager) ASRSpeakerDetection() string       { return m.speakerDetection }
+func (m *mockASRManager) ASRSpeakerDetection() string          { return m.speakerDetection }
 func (m *mockASRManager) SetASRActive(active bool) error {
 	if m.lastErr != nil {
 		return m.lastErr

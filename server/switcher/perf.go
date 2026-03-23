@@ -25,11 +25,11 @@ type PerfSwitcherSample struct {
 	FrameSyncSourceCount int
 
 	// GPU pipeline stats (populated when GPU pipeline is active)
-	GPUActive          bool
-	GPUPipelineLastNs  int64
-	GPUNodeTimings     map[string]int64
-	GPUBackend         string
-	GPUDevice          string
+	GPUActive         bool
+	GPUPipelineLastNs int64
+	GPUNodeTimings    map[string]int64
+	GPUBackend        string
+	GPUDevice         string
 }
 
 // PerfSourceSample mirrors perf.SourceSample.

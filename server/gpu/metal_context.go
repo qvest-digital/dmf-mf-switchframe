@@ -27,7 +27,7 @@ type metalContext struct {
 	device  C.MetalDeviceRef
 	queue   C.MetalQueueRef
 	library C.MetalLibraryRef
-	pool *FramePool
+	pool    *FramePool
 	// mu protects operations that require exclusive GPU access.
 	mu     sync.Mutex
 	closed atomic.Bool
@@ -49,7 +49,6 @@ type metalContext struct {
 
 	// Temp file path for embedded metallib (cleaned up on Close).
 	tempMetallibPath string
-
 }
 
 // findMetallib searches for the compiled Metal shader library.

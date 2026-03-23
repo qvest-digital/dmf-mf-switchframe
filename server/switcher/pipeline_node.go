@@ -45,8 +45,8 @@ type GPUPipelineRunner interface {
 
 // GPUStingerFrame carries the stinger overlay and alpha for GPU transitions.
 type GPUStingerFrame struct {
-	YUV      []byte  // YUV420p overlay (stinger graphic)
-	Alpha    []byte  // per-luma-pixel alpha [0-255]
+	YUV      []byte // YUV420p overlay (stinger graphic)
+	Alpha    []byte // per-luma-pixel alpha [0-255]
 	Width    int
 	Height   int
 	CutPoint float64 // position where base switches from A to B

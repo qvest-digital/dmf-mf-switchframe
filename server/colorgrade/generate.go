@@ -122,8 +122,8 @@ func bt709OETF(l float32) float32 {
 // HLG constants (Rec. 2100).
 const (
 	hlgA = 0.17883277
-	hlgB = 0.28466892  // 1 - 4*a
-	hlgC = 0.55991073  // 0.5 - a * ln(4*a)
+	hlgB = 0.28466892 // 1 - 4*a
+	hlgC = 0.55991073 // 0.5 - a * ln(4*a)
 )
 
 // hlgOETF converts linear scene light to HLG signal.
@@ -144,11 +144,11 @@ func hlgInverseOETF(ep float32) float32 {
 
 // PQ (SMPTE ST 2084) constants.
 const (
-	pqM1 = 0.1593017578125   // 2610 / 16384
-	pqM2 = 78.84375          // 2523 / 32 * 128
-	pqC1 = 0.8359375         // 3424 / 4096
-	pqC2 = 18.8515625        // 2413 / 128
-	pqC3 = 18.6875           // 2392 / 128
+	pqM1 = 0.1593017578125 // 2610 / 16384
+	pqM2 = 78.84375        // 2523 / 32 * 128
+	pqC1 = 0.8359375       // 3424 / 4096
+	pqC2 = 18.8515625      // 2413 / 128
+	pqC3 = 18.6875         // 2392 / 128
 )
 
 // pqEOTF converts a PQ signal (N in [0,1]) to linear light (Y in [0,1],
@@ -211,14 +211,14 @@ func powf(base, exp float32) float32 {
 
 // LookParams defines the parameters for generating a color look.
 type LookParams struct {
-	Name                           string
-	Group                          string
-	Description                    string
-	SlopeR, SlopeG, SlopeB         float32
-	OffsetR, OffsetG, OffsetB      float32
-	PowerR, PowerG, PowerB         float32
-	Saturation                     float32
-	Contrast                       float32
+	Name                      string
+	Group                     string
+	Description               string
+	SlopeR, SlopeG, SlopeB    float32
+	OffsetR, OffsetG, OffsetB float32
+	PowerR, PowerG, PowerB    float32
+	Saturation                float32
+	Contrast                  float32
 
 	// HDRGen, when non-nil, overrides CDL generation. The function
 	// receives the look name and returns a fully-built LUT.
@@ -233,7 +233,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "golden-hour", Group: "Light",
 			Description: "Amber glow, soft lifted shadows",
-			SlopeR: 1.12, SlopeG: 1.02, SlopeB: 0.88,
+			SlopeR:      1.12, SlopeG: 1.02, SlopeB: 0.88,
 			OffsetR: 0.03, OffsetG: 0.01, OffsetB: -0.02,
 			PowerR: 0.90, PowerG: 0.95, PowerB: 1.08,
 			Saturation: 1.10, Contrast: 0.10,
@@ -241,7 +241,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "candlelight", Group: "Light",
 			Description: "Deep intimate warmth, low contrast",
-			SlopeR: 1.18, SlopeG: 0.95, SlopeB: 0.80,
+			SlopeR:      1.18, SlopeG: 0.95, SlopeB: 0.80,
 			OffsetR: 0.04, OffsetG: 0.02, OffsetB: 0.0,
 			PowerR: 0.85, PowerG: 0.95, PowerB: 1.15,
 			Saturation: 0.90, Contrast: 0.05,
@@ -249,7 +249,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "sahara", Group: "Light",
 			Description: "Sun-bleached, dusty warmth",
-			SlopeR: 1.10, SlopeG: 1.05, SlopeB: 0.90,
+			SlopeR:      1.10, SlopeG: 1.05, SlopeB: 0.90,
 			OffsetR: 0.02, OffsetG: 0.01, OffsetB: 0.01,
 			PowerR: 0.88, PowerG: 0.92, PowerB: 1.05,
 			Saturation: 0.85, Contrast: 0.08,
@@ -257,7 +257,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "ember", Group: "Light",
 			Description: "Smoldering orange, deep blacks",
-			SlopeR: 1.20, SlopeG: 0.92, SlopeB: 0.78,
+			SlopeR:      1.20, SlopeG: 0.92, SlopeB: 0.78,
 			OffsetR: 0.02, OffsetG: -0.01, OffsetB: -0.03,
 			PowerR: 0.88, PowerG: 1.05, PowerB: 1.20,
 			Saturation: 1.05, Contrast: 0.22,
@@ -265,7 +265,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "honey", Group: "Light",
 			Description: "Soft golden cast, gentle contrast",
-			SlopeR: 1.08, SlopeG: 1.04, SlopeB: 0.92,
+			SlopeR:      1.08, SlopeG: 1.04, SlopeB: 0.92,
 			OffsetR: 0.02, OffsetG: 0.01, OffsetB: -0.01,
 			PowerR: 0.92, PowerG: 0.96, PowerB: 1.04,
 			Saturation: 1.05, Contrast: 0.08,
@@ -273,7 +273,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "solstice", Group: "Light",
 			Description: "Long warm light, extended golden tones",
-			SlopeR: 1.14, SlopeG: 1.06, SlopeB: 0.86,
+			SlopeR:      1.14, SlopeG: 1.06, SlopeB: 0.86,
 			OffsetR: 0.02, OffsetG: 0.01, OffsetB: -0.01,
 			PowerR: 0.88, PowerG: 0.94, PowerB: 1.10,
 			Saturation: 1.08, Contrast: 0.12,
@@ -283,7 +283,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "glacier", Group: "Shadow",
 			Description: "Crisp blue highlights, clean whites",
-			SlopeR: 0.92, SlopeG: 0.98, SlopeB: 1.12,
+			SlopeR:      0.92, SlopeG: 0.98, SlopeB: 1.12,
 			OffsetR: -0.01, OffsetG: 0.0, OffsetB: 0.02,
 			PowerR: 1.04, PowerG: 1.0, PowerB: 0.92,
 			Saturation: 0.90, Contrast: 0.15,
@@ -291,7 +291,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "moonrise", Group: "Shadow",
 			Description: "Cool blue wash, soft dreamy contrast",
-			SlopeR: 0.90, SlopeG: 0.95, SlopeB: 1.10,
+			SlopeR:      0.90, SlopeG: 0.95, SlopeB: 1.10,
 			OffsetR: 0.0, OffsetG: 0.01, OffsetB: 0.03,
 			PowerR: 1.05, PowerG: 1.0, PowerB: 0.90,
 			Saturation: 0.85, Contrast: 0.08,
@@ -299,7 +299,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "slate", Group: "Shadow",
 			Description: "Desaturated gray, muted and controlled",
-			SlopeR: 0.98, SlopeG: 0.98, SlopeB: 1.02,
+			SlopeR:      0.98, SlopeG: 0.98, SlopeB: 1.02,
 			OffsetR: 0.0, OffsetG: 0.0, OffsetB: 0.01,
 			PowerR: 1.02, PowerG: 1.02, PowerB: 1.0,
 			Saturation: 0.55, Contrast: 0.12,
@@ -307,7 +307,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "cobalt", Group: "Shadow",
 			Description: "Deep blue-black shadows, rich",
-			SlopeR: 0.88, SlopeG: 0.94, SlopeB: 1.15,
+			SlopeR:      0.88, SlopeG: 0.94, SlopeB: 1.15,
 			OffsetR: -0.02, OffsetG: -0.01, OffsetB: 0.02,
 			PowerR: 1.10, PowerG: 1.05, PowerB: 0.88,
 			Saturation: 0.90, Contrast: 0.20,
@@ -315,7 +315,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "frost", Group: "Shadow",
 			Description: "Pale icy tones, ethereal",
-			SlopeR: 0.95, SlopeG: 1.0, SlopeB: 1.08,
+			SlopeR:      0.95, SlopeG: 1.0, SlopeB: 1.08,
 			OffsetR: 0.02, OffsetG: 0.02, OffsetB: 0.04,
 			PowerR: 0.90, PowerG: 0.92, PowerB: 0.88,
 			Saturation: 0.75, Contrast: 0.05,
@@ -323,7 +323,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "twilight", Group: "Shadow",
 			Description: "Purple-blue shift, deep shadows",
-			SlopeR: 0.94, SlopeG: 0.90, SlopeB: 1.12,
+			SlopeR:      0.94, SlopeG: 0.90, SlopeB: 1.12,
 			OffsetR: 0.01, OffsetG: -0.01, OffsetB: 0.03,
 			PowerR: 1.08, PowerG: 1.10, PowerB: 0.90,
 			Saturation: 0.88, Contrast: 0.18,
@@ -333,7 +333,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "kodachrome", Group: "Film",
 			Description: "Legendary warmth, rich reds, deep blacks",
-			SlopeR: 1.12, SlopeG: 1.0, SlopeB: 0.88,
+			SlopeR:      1.12, SlopeG: 1.0, SlopeB: 0.88,
 			OffsetR: 0.02, OffsetG: 0.0, OffsetB: -0.02,
 			PowerR: 0.90, PowerG: 0.98, PowerB: 1.10,
 			Saturation: 1.15, Contrast: 0.18,
@@ -341,7 +341,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "portra", Group: "Film",
 			Description: "Warm skin tones, soft pastels, lifted blacks",
-			SlopeR: 1.06, SlopeG: 1.02, SlopeB: 0.96,
+			SlopeR:      1.06, SlopeG: 1.02, SlopeB: 0.96,
 			OffsetR: 0.02, OffsetG: 0.01, OffsetB: 0.01,
 			PowerR: 0.92, PowerG: 0.95, PowerB: 1.02,
 			Saturation: 0.92, Contrast: 0.08,
@@ -349,7 +349,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "velvia", Group: "Film",
 			Description: "Vivid saturated landscape colors, punchy",
-			SlopeR: 1.10, SlopeG: 1.08, SlopeB: 1.05,
+			SlopeR:      1.10, SlopeG: 1.08, SlopeB: 1.05,
 			OffsetR: 0.0, OffsetG: 0.0, OffsetB: -0.01,
 			PowerR: 0.88, PowerG: 0.90, PowerB: 0.95,
 			Saturation: 1.35, Contrast: 0.22,
@@ -357,7 +357,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "tri-x", Group: "Film",
 			Description: "Classic black & white, gritty contrast",
-			SlopeR: 1.05, SlopeG: 1.05, SlopeB: 1.05,
+			SlopeR:      1.05, SlopeG: 1.05, SlopeB: 1.05,
 			OffsetR: 0.0, OffsetG: 0.0, OffsetB: 0.0,
 			PowerR: 0.92, PowerG: 0.92, PowerB: 0.92,
 			Saturation: 0.0, Contrast: 0.25,
@@ -365,7 +365,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "ektachrome", Group: "Film",
 			Description: "Cool slide film, vivid blues and greens",
-			SlopeR: 0.95, SlopeG: 1.06, SlopeB: 1.10,
+			SlopeR:      0.95, SlopeG: 1.06, SlopeB: 1.10,
 			OffsetR: -0.01, OffsetG: 0.01, OffsetB: 0.02,
 			PowerR: 1.02, PowerG: 0.94, PowerB: 0.92,
 			Saturation: 1.18, Contrast: 0.15,
@@ -373,7 +373,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "superia", Group: "Film",
 			Description: "Everyday film, subtle green cast",
-			SlopeR: 1.0, SlopeG: 1.04, SlopeB: 0.98,
+			SlopeR:      1.0, SlopeG: 1.04, SlopeB: 0.98,
 			OffsetR: 0.0, OffsetG: 0.01, OffsetB: 0.0,
 			PowerR: 0.98, PowerG: 0.95, PowerB: 1.02,
 			Saturation: 0.95, Contrast: 0.10,
@@ -381,7 +381,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "cinestill", Group: "Film",
 			Description: "Halation warmth, urban night feel",
-			SlopeR: 1.14, SlopeG: 0.98, SlopeB: 0.92,
+			SlopeR:      1.14, SlopeG: 0.98, SlopeB: 0.92,
 			OffsetR: 0.03, OffsetG: 0.01, OffsetB: 0.01,
 			PowerR: 0.88, PowerG: 0.98, PowerB: 1.05,
 			Saturation: 1.08, Contrast: 0.15,
@@ -391,7 +391,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "noir", Group: "Drama",
 			Description: "Deep shadows, high contrast monochrome",
-			SlopeR: 1.08, SlopeG: 1.08, SlopeB: 1.08,
+			SlopeR:      1.08, SlopeG: 1.08, SlopeB: 1.08,
 			OffsetR: -0.02, OffsetG: -0.02, OffsetB: -0.02,
 			PowerR: 1.15, PowerG: 1.15, PowerB: 1.15,
 			Saturation: 0.0, Contrast: 0.30,
@@ -399,7 +399,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "bleach-bypass", Group: "Drama",
 			Description: "Desaturated, gritty, raw",
-			SlopeR: 1.10, SlopeG: 1.05, SlopeB: 1.0,
+			SlopeR:      1.10, SlopeG: 1.05, SlopeB: 1.0,
 			OffsetR: 0.0, OffsetG: 0.0, OffsetB: 0.0,
 			PowerR: 0.95, PowerG: 0.98, PowerB: 1.02,
 			Saturation: 0.40, Contrast: 0.28,
@@ -407,7 +407,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "teal-and-orange", Group: "Drama",
 			Description: "The blockbuster split tone",
-			SlopeR: 1.12, SlopeG: 0.95, SlopeB: 0.85,
+			SlopeR:      1.12, SlopeG: 0.95, SlopeB: 0.85,
 			OffsetR: 0.02, OffsetG: 0.0, OffsetB: 0.02,
 			PowerR: 0.90, PowerG: 1.02, PowerB: 0.88,
 			Saturation: 1.10, Contrast: 0.18,
@@ -415,7 +415,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "matte", Group: "Drama",
 			Description: "Lifted blacks, modern editorial flat",
-			SlopeR: 0.95, SlopeG: 0.95, SlopeB: 0.95,
+			SlopeR:      0.95, SlopeG: 0.95, SlopeB: 0.95,
 			OffsetR: 0.04, OffsetG: 0.04, OffsetB: 0.04,
 			PowerR: 0.92, PowerG: 0.92, PowerB: 0.92,
 			Saturation: 0.85, Contrast: 0.05,
@@ -423,7 +423,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "cross-process", Group: "Drama",
 			Description: "Unexpected color shifts, experimental",
-			SlopeR: 1.15, SlopeG: 0.92, SlopeB: 1.08,
+			SlopeR:      1.15, SlopeG: 0.92, SlopeB: 1.08,
 			OffsetR: 0.02, OffsetG: -0.02, OffsetB: 0.03,
 			PowerR: 0.85, PowerG: 1.10, PowerB: 0.90,
 			Saturation: 1.15, Contrast: 0.15,
@@ -431,7 +431,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "anamorphic", Group: "Drama",
 			Description: "Warm highlights, cool shadows, wide cinema",
-			SlopeR: 1.08, SlopeG: 1.0, SlopeB: 0.92,
+			SlopeR:      1.08, SlopeG: 1.0, SlopeB: 0.92,
 			OffsetR: 0.01, OffsetG: 0.0, OffsetB: 0.02,
 			PowerR: 0.92, PowerG: 1.0, PowerB: 0.95,
 			Saturation: 0.90, Contrast: 0.18,
@@ -441,7 +441,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "neon", Group: "Vivid",
 			Description: "Electric hyper-saturation",
-			SlopeR: 1.12, SlopeG: 1.10, SlopeB: 1.15,
+			SlopeR:      1.12, SlopeG: 1.10, SlopeB: 1.15,
 			OffsetR: 0.01, OffsetG: 0.0, OffsetB: 0.02,
 			PowerR: 0.88, PowerG: 0.88, PowerB: 0.85,
 			Saturation: 1.50, Contrast: 0.20,
@@ -449,7 +449,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "punch", Group: "Vivid",
 			Description: "Strong contrast + saturation boost",
-			SlopeR: 1.10, SlopeG: 1.10, SlopeB: 1.10,
+			SlopeR:      1.10, SlopeG: 1.10, SlopeB: 1.10,
 			OffsetR: 0.0, OffsetG: 0.0, OffsetB: 0.0,
 			PowerR: 0.88, PowerG: 0.88, PowerB: 0.88,
 			Saturation: 1.30, Contrast: 0.25,
@@ -457,7 +457,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "prism", Group: "Vivid",
 			Description: "Enhanced color separation, rainbow",
-			SlopeR: 1.15, SlopeG: 1.08, SlopeB: 1.12,
+			SlopeR:      1.15, SlopeG: 1.08, SlopeB: 1.12,
 			OffsetR: 0.01, OffsetG: -0.01, OffsetB: 0.01,
 			PowerR: 0.90, PowerG: 0.92, PowerB: 0.88,
 			Saturation: 1.40, Contrast: 0.15,
@@ -465,7 +465,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "surge", Group: "Vivid",
 			Description: "Saturated warm push, energetic",
-			SlopeR: 1.18, SlopeG: 1.06, SlopeB: 0.95,
+			SlopeR:      1.18, SlopeG: 1.06, SlopeB: 0.95,
 			OffsetR: 0.02, OffsetG: 0.01, OffsetB: -0.01,
 			PowerR: 0.86, PowerG: 0.92, PowerB: 1.0,
 			Saturation: 1.35, Contrast: 0.18,
@@ -473,7 +473,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "radiant", Group: "Vivid",
 			Description: "Bright, clean, vivid",
-			SlopeR: 1.08, SlopeG: 1.08, SlopeB: 1.08,
+			SlopeR:      1.08, SlopeG: 1.08, SlopeB: 1.08,
 			OffsetR: 0.01, OffsetG: 0.01, OffsetB: 0.01,
 			PowerR: 0.85, PowerG: 0.85, PowerB: 0.85,
 			Saturation: 1.25, Contrast: 0.12,
@@ -481,7 +481,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "electric", Group: "Vivid",
 			Description: "Punchy blue-teal pop",
-			SlopeR: 0.95, SlopeG: 1.08, SlopeB: 1.18,
+			SlopeR:      0.95, SlopeG: 1.08, SlopeB: 1.18,
 			OffsetR: -0.01, OffsetG: 0.01, OffsetB: 0.02,
 			PowerR: 1.0, PowerG: 0.90, PowerB: 0.85,
 			Saturation: 1.30, Contrast: 0.20,
@@ -491,7 +491,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "sepia", Group: "Vintage",
 			Description: "Classic brown tone",
-			SlopeR: 1.10, SlopeG: 0.95, SlopeB: 0.78,
+			SlopeR:      1.10, SlopeG: 0.95, SlopeB: 0.78,
 			OffsetR: 0.03, OffsetG: 0.02, OffsetB: 0.0,
 			PowerR: 0.90, PowerG: 0.98, PowerB: 1.12,
 			Saturation: 0.30, Contrast: 0.10,
@@ -499,7 +499,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "polaroid", Group: "Vintage",
 			Description: "Faded instant film, yellow cast",
-			SlopeR: 1.05, SlopeG: 1.02, SlopeB: 0.88,
+			SlopeR:      1.05, SlopeG: 1.02, SlopeB: 0.88,
 			OffsetR: 0.03, OffsetG: 0.02, OffsetB: 0.01,
 			PowerR: 0.88, PowerG: 0.92, PowerB: 1.05,
 			Saturation: 0.80, Contrast: 0.08,
@@ -507,7 +507,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "faded", Group: "Vintage",
 			Description: "Washed-out nostalgia, lifted everything",
-			SlopeR: 0.92, SlopeG: 0.92, SlopeB: 0.92,
+			SlopeR:      0.92, SlopeG: 0.92, SlopeB: 0.92,
 			OffsetR: 0.05, OffsetG: 0.05, OffsetB: 0.05,
 			PowerR: 0.88, PowerG: 0.88, PowerB: 0.88,
 			Saturation: 0.70, Contrast: 0.0,
@@ -515,7 +515,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "technicolor", Group: "Vintage",
 			Description: "Early cinema two-strip color",
-			SlopeR: 1.15, SlopeG: 0.90, SlopeB: 0.95,
+			SlopeR:      1.15, SlopeG: 0.90, SlopeB: 0.95,
 			OffsetR: 0.02, OffsetG: 0.01, OffsetB: 0.01,
 			PowerR: 0.88, PowerG: 1.05, PowerB: 1.0,
 			Saturation: 1.20, Contrast: 0.15,
@@ -523,7 +523,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "daguerreotype", Group: "Vintage",
 			Description: "Antique silver, almost monochrome",
-			SlopeR: 1.02, SlopeG: 1.0, SlopeB: 0.98,
+			SlopeR:      1.02, SlopeG: 1.0, SlopeB: 0.98,
 			OffsetR: 0.01, OffsetG: 0.01, OffsetB: 0.01,
 			PowerR: 0.95, PowerG: 0.95, PowerB: 0.98,
 			Saturation: 0.08, Contrast: 0.18,
@@ -533,7 +533,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "broadcast", Group: "Clean",
 			Description: "Crisp, slightly cool, standard",
-			SlopeR: 1.02, SlopeG: 1.02, SlopeB: 1.05,
+			SlopeR:      1.02, SlopeG: 1.02, SlopeB: 1.05,
 			OffsetR: 0.0, OffsetG: 0.0, OffsetB: 0.01,
 			PowerR: 0.98, PowerG: 0.98, PowerB: 0.96,
 			Saturation: 0.95, Contrast: 0.12,
@@ -541,7 +541,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "natural", Group: "Clean",
 			Description: "True-to-life, minimal intervention",
-			SlopeR: 1.01, SlopeG: 1.01, SlopeB: 1.01,
+			SlopeR:      1.01, SlopeG: 1.01, SlopeB: 1.01,
 			OffsetR: 0.0, OffsetG: 0.0, OffsetB: 0.0,
 			PowerR: 0.99, PowerG: 0.99, PowerB: 0.99,
 			Saturation: 1.02, Contrast: 0.05,
@@ -549,7 +549,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "clarity", Group: "Clean",
 			Description: "Enhanced detail impression, clean",
-			SlopeR: 1.05, SlopeG: 1.05, SlopeB: 1.05,
+			SlopeR:      1.05, SlopeG: 1.05, SlopeB: 1.05,
 			OffsetR: 0.0, OffsetG: 0.0, OffsetB: 0.0,
 			PowerR: 0.92, PowerG: 0.92, PowerB: 0.92,
 			Saturation: 1.05, Contrast: 0.18,
@@ -557,7 +557,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "daylight", Group: "Clean",
 			Description: "Balanced outdoor, slight warmth",
-			SlopeR: 1.04, SlopeG: 1.02, SlopeB: 0.98,
+			SlopeR:      1.04, SlopeG: 1.02, SlopeB: 0.98,
 			OffsetR: 0.01, OffsetG: 0.0, OffsetB: 0.0,
 			PowerR: 0.96, PowerG: 0.98, PowerB: 1.01,
 			Saturation: 1.03, Contrast: 0.08,
@@ -565,7 +565,7 @@ func BuiltinLooks() []LookParams {
 		{
 			Name: "studio", Group: "Clean",
 			Description: "Controlled, even, neutral",
-			SlopeR: 1.02, SlopeG: 1.02, SlopeB: 1.02,
+			SlopeR:      1.02, SlopeG: 1.02, SlopeB: 1.02,
 			OffsetR: 0.0, OffsetG: 0.0, OffsetB: 0.0,
 			PowerR: 0.96, PowerG: 0.96, PowerB: 0.96,
 			Saturation: 0.98, Contrast: 0.10,

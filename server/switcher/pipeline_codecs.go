@@ -320,7 +320,6 @@ func (pc *pipelineCodecs) updateSourceStats(avgFrameSize float64, avgFPS float64
 	}
 }
 
-
 // close releases encoder resources.
 func (pc *pipelineCodecs) close() {
 	pc.mu.Lock()

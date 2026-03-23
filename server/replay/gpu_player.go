@@ -18,10 +18,10 @@ import (
 // motion-blur CUDA kernel → NVENC encode. No CPU-side YUV touching in the
 // hot path (except the optional RawVideoOutput callback which downloads to CPU).
 type GPUPlayerConfig struct {
-	Clip      []bufferedFrame
-	AudioClip []bufferedAudioFrame
-	Speed     float64
-	Loop      bool
+	Clip         []bufferedFrame
+	AudioClip    []bufferedAudioFrame
+	Speed        float64
+	Loop         bool
 	InitialPTS   int64
 	ShutterAngle float64 // 0.0-1.0 normalized (0.5 = 180°)
 

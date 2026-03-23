@@ -72,8 +72,8 @@ type Channel struct {
 	levelLinear      float32 // cached linear gain from level (avoids per-frame math.Pow)
 	trim             float64 // dB (-20 to +20), input gain/trim
 	trimLinear       float32 // cached linear gain from trim (avoids per-frame math.Pow)
-	hpf              *HPF           // high-pass filter (always initialized)
-	gate             *Gate          // noise gate (always initialized)
+	hpf              *HPF    // high-pass filter (always initialized)
+	gate             *Gate   // noise gate (always initialized)
 	phaseInvert      bool
 	muted            bool
 	afv              bool

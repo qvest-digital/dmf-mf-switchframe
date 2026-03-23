@@ -6,11 +6,22 @@ package htmlgfx
 
 // Config holds settings for the HTML graphics sidecar process.
 type Config struct {
-	BinaryPath string // path to the CEF sidecar binary
-	PoolSize   int    // number of browser instances (default 4)
-	Width      int    // render width in pixels
-	Height     int    // render height in pixels
-	FPS        int    // target frame rate
+	BinaryPath   string // path to the CEF sidecar binary
+	TemplatesDir string // path to directory containing template subdirectories
+	PoolSize     int    // number of browser instances (default 4)
+	Width        int    // render width in pixels
+	Height       int    // render height in pixels
+	FPS          int    // target frame rate
+}
+
+// TemplateInfo describes a discovered HTML5 graphics template.
+type TemplateInfo struct {
+	ID          string         `json:"id"`   // directory name
+	Name        string         `json:"name"` // display name (from manifest or directory)
+	Description string         `json:"description,omitempty"`
+	Format      string         `json:"format"`               // "ograf" or "casparcg"
+	URL         string         `json:"url"`                  // file:// URL for loading
+	DataSchema  map[string]any `json:"dataSchema,omitempty"` // OGraf manifest schema
 }
 
 // DefaultConfig returns a Config with sensible defaults.

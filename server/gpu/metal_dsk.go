@@ -103,9 +103,9 @@ func DSKCompositeRect(ctx *Context, frame *GPUFrame, overlay *GPUOverlay, rect R
 	params := C.MetalDSKRectParams{
 		frameW: C.uint32_t(frame.Width), frameH: C.uint32_t(frame.Height),
 		nv12Pitch: C.uint32_t(frame.Pitch),
-		overlayW: C.uint32_t(overlay.Width), overlayH: C.uint32_t(overlay.Height),
+		overlayW:  C.uint32_t(overlay.Width), overlayH: C.uint32_t(overlay.Height),
 		rgbaPitch: C.uint32_t(overlay.Pitch),
-		rectX: C.int32_t(rect.X), rectY: C.int32_t(rect.Y),
+		rectX:     C.int32_t(rect.X), rectY: C.int32_t(rect.Y),
 		rectW: C.int32_t(rect.W), rectH: C.int32_t(rect.H),
 		alphaScale256: C.int32_t(alphaScale256),
 	}

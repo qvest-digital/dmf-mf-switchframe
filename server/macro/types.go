@@ -112,10 +112,10 @@ const (
 	ActionColorGradeSave Action = "colorgrade_save"
 
 	// Corrector actions.
-	ActionCorrectorSet          Action = "corrector_set"
-	ActionCorrectorReset        Action = "corrector_reset"
-	ActionSourceCorrectorSet    Action = "source_corrector_set"
-	ActionSourceCorrectorReset  Action = "source_corrector_reset"
+	ActionCorrectorSet         Action = "corrector_set"
+	ActionCorrectorReset       Action = "corrector_reset"
+	ActionSourceCorrectorSet   Action = "source_corrector_set"
+	ActionSourceCorrectorReset Action = "source_corrector_reset"
 )
 
 // allActions is the set of all valid macro actions.

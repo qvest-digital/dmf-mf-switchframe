@@ -19,11 +19,11 @@ type mockColorGradeState struct {
 	intensity float32
 }
 
-func (m *mockColorGradeState) HasGradingEnabled() bool    { return m.enabled }
-func (m *mockColorGradeState) GradingLUTData() []float32  { return m.lutData }
-func (m *mockColorGradeState) GradingLUTSize() int        { return m.lutSize }
-func (m *mockColorGradeState) GradingLUTGen() uint64      { return m.lutGen }
-func (m *mockColorGradeState) GradingIntensity() float32  { return m.intensity }
+func (m *mockColorGradeState) HasGradingEnabled() bool   { return m.enabled }
+func (m *mockColorGradeState) GradingLUTData() []float32 { return m.lutData }
+func (m *mockColorGradeState) GradingLUTSize() int       { return m.lutSize }
+func (m *mockColorGradeState) GradingLUTGen() uint64     { return m.lutGen }
+func (m *mockColorGradeState) GradingIntensity() float32 { return m.intensity }
 
 func TestGPUColorGradeNode_Interface(t *testing.T) {
 	state := &mockColorGradeState{enabled: false}

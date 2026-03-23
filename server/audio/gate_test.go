@@ -77,7 +77,7 @@ func TestGate_AttenuatesBelowThreshold(t *testing.T) {
 
 	// Feed a quiet signal well below threshold (-40 dBFS)
 	level := float32(math.Pow(10, -40.0/20.0)) // ~0.01
-	samples := make([]float32, 48000)           // 1 second of stereo at 48kHz
+	samples := make([]float32, 48000)          // 1 second of stereo at 48kHz
 	for i := range samples {
 		samples[i] = level
 	}
@@ -303,8 +303,8 @@ func TestGate_StereoLinkedEnvelope(t *testing.T) {
 	// Gate should open based on peak of both channels
 	samples := make([]float32, 2048)
 	for i := 0; i < len(samples); i += 2 {
-		samples[i] = 0.5                                   // left: loud
-		samples[i+1] = float32(math.Pow(10, -40.0/20.0))  // right: quiet
+		samples[i] = 0.5                                 // left: loud
+		samples[i+1] = float32(math.Pow(10, -40.0/20.0)) // right: quiet
 	}
 	original := make([]float32, len(samples))
 	copy(original, samples)

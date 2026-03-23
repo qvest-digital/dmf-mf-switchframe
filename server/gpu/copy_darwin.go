@@ -46,4 +46,3 @@ func CopyGPUFrameOn(dst, src *GPUFrame, q *GPUWorkQueue) error {
 	C.memcpy(dst.contentsPtr(), src.contentsPtr(), size)
 	return nil
 }
-

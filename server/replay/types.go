@@ -104,7 +104,7 @@ type Status struct {
 	MarkIn         *time.Time         `json:"markIn,omitempty"`
 	MarkOut        *time.Time         `json:"markOut,omitempty"`
 	MarkSource     string             `json:"markSource,omitempty"`
-	ShutterAngle   float64            `json:"shutterAngle,omitempty"`   // 0-360 degrees
+	ShutterAngle   float64            `json:"shutterAngle,omitempty"` // 0-360 degrees
 	GPUAccelerated bool               `json:"gpuAccelerated,omitempty"`
 	Buffers        []SourceBufferInfo `json:"buffers,omitempty"`
 }

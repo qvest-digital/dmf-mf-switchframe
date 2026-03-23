@@ -15,6 +15,7 @@ import (
 	"github.com/zsiec/switchframe/server/colorgrade"
 	"github.com/zsiec/switchframe/server/control/httperr"
 	"github.com/zsiec/switchframe/server/graphics"
+	"github.com/zsiec/switchframe/server/htmlgfx"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/layout"
 	"github.com/zsiec/switchframe/server/macro"
@@ -126,6 +127,7 @@ type HTMLGfxManager interface {
 	Next(browserID int) error
 	Update(browserID int, data string) error
 	CustomAction(browserID int, action, payload string) error
+	DiscoverTemplates() []htmlgfx.TemplateInfo
 }
 
 // ColorGradeManager is the interface for color grading operations.
@@ -294,8 +296,8 @@ type ASRManager interface {
 	SetASRTranslate(on bool)
 	ASRTranslate() bool
 	ASRModelName() string
-	SetASRModel(name string) error  // runtime model swap
-	AvailableASRModels() []string   // list installed models
+	SetASRModel(name string) error // runtime model swap
+	AvailableASRModels() []string  // list installed models
 	SetASRSpeed(preset string)
 	ASRSpeed() string
 	SetASRConfidence(preset string)

@@ -868,9 +868,9 @@ func TestSamplerDoubleStopNoPanic(t *testing.T) {
 
 func TestSnapshotGPUPipeline(t *testing.T) {
 	sw := &mockSwitcherPerf{sample: SwitcherSample{
-		Sources:     map[string]SourceSample{},
-		NodeTimings: map[string]int64{},
-		GPUActive:   true,
+		Sources:           map[string]SourceSample{},
+		NodeTimings:       map[string]int64{},
+		GPUActive:         true,
 		GPUPipelineLastNs: 800_000,
 		GPUNodeTimings: map[string]int64{
 			"gpu_key":    100_000,
@@ -925,9 +925,9 @@ func TestSnapshotNoGPU(t *testing.T) {
 
 func TestSnapshotGPUPipelineViaHTTP(t *testing.T) {
 	sw := &mockSwitcherPerf{sample: SwitcherSample{
-		Sources:     map[string]SourceSample{},
-		NodeTimings: map[string]int64{},
-		GPUActive:   true,
+		Sources:           map[string]SourceSample{},
+		NodeTimings:       map[string]int64{},
+		GPUActive:         true,
 		GPUPipelineLastNs: 900_000,
 		GPUNodeTimings: map[string]int64{
 			"gpu_stmap": 400_000,

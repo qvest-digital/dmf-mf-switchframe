@@ -100,10 +100,10 @@ func (w *WhisperCpp) TranscribeWithConfidence(samples []float32, language string
 	params.print_realtime = false
 	params.print_timestamps = false
 	params.suppress_blank = true
-	params.suppress_nst = true      // suppress non-speech tokens
-	params.no_speech_thold = 0.5    // skip segments where P(no_speech) > 50%
-	params.logprob_thold = -1.5     // skip tokens with avg logprob below this
-	params.entropy_thold = 2.4      // skip segments with high entropy (hallucination)
+	params.suppress_nst = true   // suppress non-speech tokens
+	params.no_speech_thold = 0.5 // skip segments where P(no_speech) > 50%
+	params.logprob_thold = -1.5  // skip tokens with avg logprob below this
+	params.entropy_thold = 2.4   // skip segments with high entropy (hallucination)
 	params.beam_search.beam_size = 5
 	params.token_timestamps = true // needed for per-token data
 

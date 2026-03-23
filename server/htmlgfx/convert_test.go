@@ -27,7 +27,7 @@ func TestBGRAToRGBA(t *testing.T) {
 		},
 		{
 			name: "25% green premultiplied",
-			src:  []byte{0, 64, 0, 64}, // premul BGRA: B=0, G=64, R=0, A=64
+			src:  []byte{0, 64, 0, 64},  // premul BGRA: B=0, G=64, R=0, A=64
 			want: []byte{0, 255, 0, 64}, // straight RGBA: R=0, G=255, B=0, A=64
 		},
 		{

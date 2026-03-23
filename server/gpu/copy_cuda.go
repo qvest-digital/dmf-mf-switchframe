@@ -19,7 +19,6 @@ import (
 // stream) followed by cudaStreamSynchronize to ensure the copy completes
 // before returning. This replaces the old cudaMemcpy (null stream) approach
 // which could race with kernel launches on non-blocking streams.
-//
 func CopyGPUFrame(dst, src *GPUFrame) error {
 	if dst.Pitch != src.Pitch || dst.Height != src.Height {
 		return fmt.Errorf("CopyGPUFrame: dimension mismatch: dst=%dx%d p=%d src=%dx%d p=%d",
@@ -97,12 +96,12 @@ func CopyNV12FromDevice(dst *GPUFrame, yDevPtr, uvDevPtr uintptr, srcPitch, widt
 
 	// Y plane: width bytes per row, height rows.
 	rc := C.cudaMemcpy2DAsync(
-		unsafe.Pointer(uintptr(dst.DevPtr)),   // dst
-		C.size_t(dst.Pitch),                    // dpitch
-		unsafe.Pointer(yDevPtr),                // src
-		C.size_t(srcPitch),                     // spitch
-		C.size_t(width),                        // width (bytes to copy per row)
-		C.size_t(height),                       // height (number of rows)
+		unsafe.Pointer(uintptr(dst.DevPtr)), // dst
+		C.size_t(dst.Pitch),                 // dpitch
+		unsafe.Pointer(yDevPtr),             // src
+		C.size_t(srcPitch),                  // spitch
+		C.size_t(width),                     // width (bytes to copy per row)
+		C.size_t(height),                    // height (number of rows)
 		C.cudaMemcpyDeviceToDevice,
 		defaultCUDAStream,
 	)
@@ -116,12 +115,12 @@ func CopyNV12FromDevice(dst *GPUFrame, yDevPtr, uvDevPtr uintptr, srcPitch, widt
 	dstUV := uintptr(dst.DevPtr) + uintptr(dst.Pitch*height)
 
 	rc = C.cudaMemcpy2DAsync(
-		unsafe.Pointer(dstUV),                  // dst
-		C.size_t(dst.Pitch),                    // dpitch
-		unsafe.Pointer(uvDevPtr),               // src (from frame->data[1])
-		C.size_t(srcPitch),                     // spitch
-		C.size_t(width),                        // width (bytes to copy per row)
-		C.size_t(height/2),                     // height (number of rows)
+		unsafe.Pointer(dstUV),    // dst
+		C.size_t(dst.Pitch),      // dpitch
+		unsafe.Pointer(uvDevPtr), // src (from frame->data[1])
+		C.size_t(srcPitch),       // spitch
+		C.size_t(width),          // width (bytes to copy per row)
+		C.size_t(height/2),       // height (number of rows)
 		C.cudaMemcpyDeviceToDevice,
 		defaultCUDAStream,
 	)
@@ -138,4 +137,3 @@ func CopyNV12FromDevice(dst *GPUFrame, yDevPtr, uvDevPtr uintptr, srcPitch, widt
 	dst.Height = height
 	return nil
 }
-

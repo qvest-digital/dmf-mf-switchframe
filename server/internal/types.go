@@ -105,11 +105,11 @@ type AudioChannel struct {
 	Balance       float64            `json:"balance"`               // -1.0 (L) to +1.0 (R), 0 = center
 	HPFFrequency  float64            `json:"hpfFrequency,omitempty"`
 	HPFEnabled    bool               `json:"hpfEnabled,omitempty"`
-	PeakL         float64            `json:"peakL"`        // dBFS, updated per frame
-	PeakR         float64            `json:"peakR"`        // dBFS
+	PeakL         float64            `json:"peakL"` // dBFS, updated per frame
+	PeakR         float64            `json:"peakR"` // dBFS
 	EQ            [3]EQBand          `json:"eq"`
 	Compressor    CompressorSettings `json:"compressor"`
-	GainReduction float64            `json:"gainReduction"`          // compressor GR in dB
+	GainReduction float64            `json:"gainReduction"` // compressor GR in dB
 	Gate          GateSettings       `json:"gate"`
 	GateEnabled   bool               `json:"gateEnabled,omitempty"`
 	GateReduction float64            `json:"gateReduction,omitempty"` // gate GR in dB
@@ -159,18 +159,18 @@ type GraphicsState struct {
 
 // GraphicsLayerState is the JSON-serializable state for a single graphics layer.
 type GraphicsLayerState struct {
-	ID            int     `json:"id"`
-	Template      string  `json:"template,omitempty"`
-	Active        bool    `json:"active"`
-	FadePosition  float64 `json:"fadePosition,omitempty"`
-	AnimationMode string  `json:"animationMode,omitempty"`
-	AnimationHz   float64 `json:"animationHz,omitempty"`
-	ZOrder        int     `json:"zOrder"`
-	X             int     `json:"x"`
-	Y             int     `json:"y"`
-	Width         int     `json:"width"`
-	Height        int     `json:"height"`
-	ImageName     string  `json:"imageName,omitempty"`
+	ID              int            `json:"id"`
+	Template        string         `json:"template,omitempty"`
+	Active          bool           `json:"active"`
+	FadePosition    float64        `json:"fadePosition,omitempty"`
+	AnimationMode   string         `json:"animationMode,omitempty"`
+	AnimationHz     float64        `json:"animationHz,omitempty"`
+	ZOrder          int            `json:"zOrder"`
+	X               int            `json:"x"`
+	Y               int            `json:"y"`
+	Width           int            `json:"width"`
+	Height          int            `json:"height"`
+	ImageName       string         `json:"imageName,omitempty"`
 	ImageWidth      int            `json:"imageWidth,omitempty"`
 	ImageHeight     int            `json:"imageHeight,omitempty"`
 	HTML5URL        string         `json:"html5Url,omitempty"`
@@ -191,7 +191,7 @@ type ReplayState struct {
 	MarkOut        *int64             `json:"markOut,omitempty"` // Unix ms
 	MarkSource     string             `json:"markSource,omitempty"`
 	Buffers        []ReplayBufferInfo `json:"buffers,omitempty"`
-	ShutterAngle   float64            `json:"shutterAngle,omitempty"`   // 0-360 degrees
+	ShutterAngle   float64            `json:"shutterAngle,omitempty"` // 0-360 degrees
 	GPUAccelerated bool               `json:"gpuAccelerated,omitempty"`
 }
 
@@ -526,12 +526,12 @@ type CorrectorState = colorgrade.CorrectorState
 
 // ColorGradeState represents the color grading state in ControlRoomState.
 type ColorGradeState struct {
-	Enabled   bool             `json:"enabled"`
-	LookName  string           `json:"lookName"`
-	LookGroup string           `json:"lookGroup"`
-	Intensity float32          `json:"intensity"`
-	Available []LookMetadata   `json:"available"`
-	Corrector *CorrectorState  `json:"corrector,omitempty"`
+	Enabled   bool            `json:"enabled"`
+	LookName  string          `json:"lookName"`
+	LookGroup string          `json:"lookGroup"`
+	Intensity float32         `json:"intensity"`
+	Available []LookMetadata  `json:"available"`
+	Corrector *CorrectorState `json:"corrector,omitempty"`
 }
 
 // LayoutSlotState represents a single layout slot in the state broadcast.

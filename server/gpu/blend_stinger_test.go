@@ -40,7 +40,7 @@ func TestBlendStingerUV(t *testing.T) {
 		yuvBase[i] = 50
 	}
 	for i := 0; i < uvSize; i++ {
-		yuvBase[ySize+i] = 100       // Cb
+		yuvBase[ySize+i] = 100        // Cb
 		yuvBase[ySize+uvSize+i] = 200 // Cr
 	}
 
@@ -50,7 +50,7 @@ func TestBlendStingerUV(t *testing.T) {
 		yuvOverlay[i] = 200
 	}
 	for i := 0; i < uvSize; i++ {
-		yuvOverlay[ySize+i] = 200       // Cb
+		yuvOverlay[ySize+i] = 200        // Cb
 		yuvOverlay[ySize+uvSize+i] = 100 // Cr
 	}
 
@@ -82,7 +82,7 @@ func TestBlendStingerUV(t *testing.T) {
 	require.NoError(t, Download(ctx, result, dst, w, h))
 
 	// Check Y plane
-	topY := result[5*w+w/2]       // row 5, center — should be overlay Y=200
+	topY := result[5*w+w/2]        // row 5, center — should be overlay Y=200
 	bottomY := result[(h-5)*w+w/2] // row h-5, center — should be base Y=50
 	assert.InDelta(t, 200, int(topY), 3, "Y top half (opaque) should be overlay=200")
 	assert.InDelta(t, 50, int(bottomY), 3, "Y bottom half (transparent) should be base=50")
@@ -213,10 +213,10 @@ func TestBlendStingerSpatialUV(t *testing.T) {
 		for col := 0; col < chromaW; col++ {
 			idx := row*chromaW + col
 			if col < chromaW/2 {
-				yuvBase[ySize+idx] = 60        // left Cb
+				yuvBase[ySize+idx] = 60         // left Cb
 				yuvBase[ySize+uvSize+idx] = 180 // left Cr
 			} else {
-				yuvBase[ySize+idx] = 80        // right Cb
+				yuvBase[ySize+idx] = 80         // right Cb
 				yuvBase[ySize+uvSize+idx] = 160 // right Cr
 			}
 		}
@@ -258,13 +258,13 @@ func TestBlendStingerSpatialUV(t *testing.T) {
 	require.NoError(t, Download(ctx, result, dst, w, h))
 
 	// Check left side (opaque alpha → overlay Cb=200, Cr=100)
-	leftCb := result[ySize+chromaH/2*chromaW+chromaW/4]     // center-left
+	leftCb := result[ySize+chromaH/2*chromaW+chromaW/4] // center-left
 	leftCr := result[ySize+uvSize+chromaH/2*chromaW+chromaW/4]
 	assert.InDelta(t, 200, int(leftCb), 3, "left Cb should be overlay=200, got %d", leftCb)
 	assert.InDelta(t, 100, int(leftCr), 3, "left Cr should be overlay=100, got %d", leftCr)
 
 	// Check right side (transparent alpha → base right Cb=80, Cr=160)
-	rightCb := result[ySize+chromaH/2*chromaW+3*chromaW/4]     // center-right
+	rightCb := result[ySize+chromaH/2*chromaW+3*chromaW/4] // center-right
 	rightCr := result[ySize+uvSize+chromaH/2*chromaW+3*chromaW/4]
 	assert.InDelta(t, 80, int(rightCb), 3, "right Cb should be base=80, got %d", rightCb)
 	assert.InDelta(t, 160, int(rightCr), 3, "right Cr should be base=160, got %d", rightCr)

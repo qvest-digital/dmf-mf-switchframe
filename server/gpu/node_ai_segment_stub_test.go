@@ -22,7 +22,7 @@ type mockSegState struct {
 	configs    map[string]*AISegmentConfig
 }
 
-func (m *mockSegState) HasEnabledSources() bool { return m.enabled }
+func (m *mockSegState) HasEnabledSources() bool  { return m.enabled }
 func (m *mockSegState) ProgramSourceKey() string { return m.programKey }
 func (m *mockSegState) MaskForSource(key string) *GPUFrame {
 	return m.mask

@@ -36,8 +36,8 @@ type gpuSourceEntry struct {
 	// Preview encoder (nil if no preview configured).
 	prevEnc   *PreviewEncoder
 	onPreview func(data []byte, isIDR bool, pts int64)
-	prevCh    chan any // platform-specific frame type (capacity 1, newest-wins)
-	prevDone  chan struct{}  // closed when preview goroutine exits
+	prevCh    chan any      // platform-specific frame type (capacity 1, newest-wins)
+	prevDone  chan struct{} // closed when preview goroutine exits
 
 	// Per-source ST map state.
 	stmap     *GPUSTMap

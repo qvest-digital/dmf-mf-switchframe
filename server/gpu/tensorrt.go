@@ -64,8 +64,8 @@ var ErrTensorRTNotAvailable = errors.New("gpu: TensorRT not available")
 
 // TRTEngine holds a deserialized TensorRT engine (ICudaEngine).
 type TRTEngine struct {
-	handle    C.trt_engine_t
-	inputSize int
+	handle     C.trt_engine_t
+	inputSize  int
 	outputSize int
 }
 
@@ -284,8 +284,8 @@ func (e *TRTEngine) TensorInfoAt(index int) (TensorInfo, error) {
 // TRTEngineOptsV2 extends TRTEngineOpts with sequence length for decoder models.
 type TRTEngineOptsV2 struct {
 	MaxBatchSize  int
-	MaxSeqLen     int    // Max token sequence length for transformer models; 0 = not used
-	MaxEncSeqLen  int    // Max encoder sequence length for encoder-decoder models; 0 = use MaxSeqLen
+	MaxSeqLen     int // Max token sequence length for transformer models; 0 = not used
+	MaxEncSeqLen  int // Max encoder sequence length for encoder-decoder models; 0 = use MaxSeqLen
 	UseFP16       bool
 	UseINT8       bool
 	PlanCachePath string

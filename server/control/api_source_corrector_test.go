@@ -87,11 +87,11 @@ func TestHandleSourceCorrectorGet_WithExistingState(t *testing.T) {
 
 	// Pre-set a non-default state.
 	mgr.states["cam1"] = colorgrade.CorrectorState{
-		Lift:       [3]float32{0.1, 0.0, -0.1},
-		Gamma:      [3]float32{1.0, 1.0, 1.0},
-		Gain:       [3]float32{1.0, 1.0, 1.0},
+		Lift:        [3]float32{0.1, 0.0, -0.1},
+		Gamma:       [3]float32{1.0, 1.0, 1.0},
+		Gain:        [3]float32{1.0, 1.0, 1.0},
 		Temperature: 30,
-		Saturation: 1.3,
+		Saturation:  1.3,
 	}
 
 	req := httptest.NewRequest("GET", "/api/sources/cam1/corrector", nil)
@@ -207,11 +207,11 @@ func TestHandleSourceCorrectorReset(t *testing.T) {
 
 	// Set a non-default corrector state first.
 	mgr.states["cam1"] = colorgrade.CorrectorState{
-		Lift:       [3]float32{0, 0, 0},
-		Gamma:      [3]float32{1, 1, 1},
-		Gain:       [3]float32{1, 1, 1},
+		Lift:        [3]float32{0, 0, 0},
+		Gamma:       [3]float32{1, 1, 1},
+		Gain:        [3]float32{1, 1, 1},
 		Temperature: 50,
-		Saturation: 1.5,
+		Saturation:  1.5,
 	}
 
 	if !mgr.HasCorrection("cam1") {
