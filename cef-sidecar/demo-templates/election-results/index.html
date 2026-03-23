@@ -1,0 +1,913 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Election Results (OGraf)</title>
+<link rel="ograf-manifest" href="manifest.ograf.json">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    overflow: hidden;
+    width: 100%;
+    height: 100%;
+  }
+</style>
+</head>
+<body>
+
+<election-results></election-results>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+
+<script>
+class ElectionResults extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: 'open' });
+
+    this._isVisible = false;
+    this._currentStep = 0; // 0 = bar view, 1 = called/winner view
+    this._playTL = null;
+    this._stopTL = null;
+    this._data = {
+      title: 'Presidential Election 2026',
+      subtitle: 'National Results',
+      reporting: 67,
+      totalVotes: '48,291,037',
+      candidate1Name: 'Alexandra Torres', candidate1Party: 'Democratic',
+      candidate1Votes: '24,892,411', candidate1Pct: 51.5, candidate1Color: '#3b82f6',
+      candidate2Name: 'Robert Chen', candidate2Party: 'Republican',
+      candidate2Votes: '22,104,218', candidate2Pct: 45.8, candidate2Color: '#ef4444',
+      candidate3Name: 'Jordan Mills', candidate3Party: 'Independent',
+      candidate3Votes: '1,294,408', candidate3Pct: 2.7, candidate3Color: '#a855f7',
+      calledFor: '',
+    };
+
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host {
+          display: block;
+          position: absolute;
+          bottom: 60px;
+          left: 50%;
+          transform: translateX(-50%);
+          pointer-events: none;
+          font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+          -webkit-font-smoothing: antialiased;
+          -moz-osx-font-smoothing: grayscale;
+        }
+
+        .container {
+          width: 900px;
+          position: relative;
+        }
+
+        /* --- Header --- */
+        .header {
+          display: flex;
+          justify-content: space-between;
+          align-items: flex-end;
+          margin-bottom: 10px;
+          opacity: 0;
+          transform: translateY(-15px);
+        }
+        .header-left {
+          display: flex;
+          flex-direction: column;
+        }
+        .election-title {
+          font-size: 16px;
+          font-weight: 700;
+          color: #ffffff;
+          text-transform: uppercase;
+          letter-spacing: 0.12em;
+          text-shadow: 0 2px 8px rgba(0,0,0,0.6);
+        }
+        .election-subtitle {
+          font-size: 12px;
+          font-weight: 500;
+          color: rgba(255,255,255,0.55);
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          margin-top: 2px;
+        }
+        .reporting-badge {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          background: rgba(255,255,255,0.08);
+          backdrop-filter: blur(8px);
+          -webkit-backdrop-filter: blur(8px);
+          border: 1px solid rgba(255,255,255,0.1);
+          border-radius: 4px;
+          padding: 6px 14px;
+        }
+        .reporting-dot {
+          width: 8px;
+          height: 8px;
+          background: #22c55e;
+          border-radius: 50%;
+          animation: pulse-dot 2s ease-in-out infinite;
+        }
+        @keyframes pulse-dot {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.4; }
+        }
+        .reporting-text {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 13px;
+          font-weight: 700;
+          color: #ffffff;
+        }
+        .reporting-label {
+          font-size: 11px;
+          font-weight: 500;
+          color: rgba(255,255,255,0.5);
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+        }
+
+        /* --- Main panel --- */
+        .panel {
+          background: rgba(10, 12, 20, 0.94);
+          backdrop-filter: blur(20px);
+          -webkit-backdrop-filter: blur(20px);
+          border: 1px solid rgba(255,255,255,0.06);
+          border-radius: 8px;
+          overflow: hidden;
+          box-shadow: 0 8px 40px rgba(0,0,0,0.6), 0 0 1px rgba(255,255,255,0.1);
+          opacity: 0;
+          transform: translateY(20px) scaleY(0.95);
+          transform-origin: bottom center;
+        }
+
+        /* Top accent line */
+        .panel-accent {
+          height: 2px;
+          background: linear-gradient(90deg,
+            var(--c1-color, #3b82f6) 0%,
+            var(--c1-color, #3b82f6) var(--c1-pct, 50%),
+            var(--c2-color, #ef4444) var(--c1-pct, 50%),
+            var(--c2-color, #ef4444) var(--c12-pct, 95%),
+            var(--c3-color, #a855f7) var(--c12-pct, 95%),
+            var(--c3-color, #a855f7) 100%
+          );
+          transform: scaleX(0);
+          transform-origin: left;
+        }
+
+        /* --- Candidate rows --- */
+        .candidates {
+          padding: 16px 24px 20px;
+        }
+
+        .candidate-row {
+          display: flex;
+          align-items: center;
+          gap: 16px;
+          padding: 12px 0;
+          opacity: 0;
+          transform: translateX(-20px);
+        }
+        .candidate-row + .candidate-row {
+          border-top: 1px solid rgba(255,255,255,0.04);
+        }
+
+        .candidate-color {
+          width: 4px;
+          height: 40px;
+          border-radius: 2px;
+          flex-shrink: 0;
+          opacity: 0;
+          transform: scaleY(0);
+          transform-origin: bottom;
+        }
+
+        .candidate-info {
+          width: 180px;
+          flex-shrink: 0;
+        }
+        .candidate-name {
+          font-size: 18px;
+          font-weight: 700;
+          color: #ffffff;
+          line-height: 1.2;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .candidate-party {
+          font-size: 11px;
+          font-weight: 500;
+          color: rgba(255,255,255,0.4);
+          text-transform: uppercase;
+          letter-spacing: 0.1em;
+          margin-top: 2px;
+        }
+
+        /* Percentage bar area */
+        .bar-area {
+          flex: 1;
+          min-width: 0;
+        }
+        .bar-track {
+          height: 28px;
+          background: rgba(255,255,255,0.04);
+          border-radius: 4px;
+          overflow: hidden;
+          position: relative;
+        }
+        .bar-fill {
+          height: 100%;
+          border-radius: 4px;
+          width: 0;
+          position: relative;
+          transition: none;
+        }
+        .bar-fill::after {
+          content: '';
+          position: absolute;
+          top: 0;
+          right: 0;
+          bottom: 0;
+          width: 40px;
+          background: linear-gradient(90deg, transparent, rgba(255,255,255,0.15));
+          border-radius: 0 4px 4px 0;
+        }
+
+        /* Vote count + percentage */
+        .candidate-numbers {
+          width: 140px;
+          text-align: right;
+          flex-shrink: 0;
+        }
+        .candidate-pct {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 22px;
+          font-weight: 700;
+          color: #ffffff;
+          line-height: 1;
+        }
+        .candidate-votes {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 11px;
+          font-weight: 500;
+          color: rgba(255,255,255,0.35);
+          margin-top: 3px;
+        }
+
+        /* Leading indicator */
+        .leading-check {
+          width: 24px;
+          flex-shrink: 0;
+          text-align: center;
+          opacity: 0;
+        }
+        .check-icon {
+          display: inline-block;
+          width: 20px;
+          height: 20px;
+          border-radius: 50%;
+          line-height: 20px;
+          font-size: 12px;
+          color: #ffffff;
+          text-align: center;
+          font-weight: 700;
+        }
+
+        /* --- Footer --- */
+        .footer {
+          padding: 0 24px 14px;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          border-top: 1px solid rgba(255,255,255,0.04);
+          padding-top: 10px;
+          opacity: 0;
+        }
+        .total-votes {
+          font-size: 11px;
+          font-weight: 500;
+          color: rgba(255,255,255,0.3);
+          letter-spacing: 0.05em;
+        }
+        .total-votes span {
+          color: rgba(255,255,255,0.55);
+          font-family: 'JetBrains Mono', monospace;
+          font-weight: 700;
+        }
+        .live-badge {
+          font-size: 10px;
+          font-weight: 700;
+          color: #ef4444;
+          text-transform: uppercase;
+          letter-spacing: 0.15em;
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+        .live-dot {
+          width: 6px;
+          height: 6px;
+          background: #ef4444;
+          border-radius: 50%;
+          animation: pulse-dot 1.5s ease-in-out infinite;
+        }
+
+        /* --- Winner overlay (step 2) --- */
+        .winner-overlay {
+          display: none;
+          position: absolute;
+          inset: 0;
+          background: rgba(10, 12, 20, 0.97);
+          backdrop-filter: blur(24px);
+          -webkit-backdrop-filter: blur(24px);
+          border-radius: 8px;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          text-align: center;
+          padding: 32px;
+          z-index: 10;
+        }
+        .winner-overlay.active {
+          display: flex;
+        }
+        .winner-projected {
+          font-size: 12px;
+          font-weight: 700;
+          color: rgba(255,255,255,0.5);
+          text-transform: uppercase;
+          letter-spacing: 0.25em;
+          margin-bottom: 12px;
+          opacity: 0;
+          transform: translateY(10px);
+        }
+        .winner-name {
+          font-size: 42px;
+          font-weight: 800;
+          color: #ffffff;
+          line-height: 1.1;
+          opacity: 0;
+          transform: scale(0.8);
+        }
+        .winner-party-label {
+          font-size: 16px;
+          font-weight: 600;
+          margin-top: 8px;
+          opacity: 0;
+          transform: translateY(10px);
+        }
+        .winner-pct-label {
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 28px;
+          font-weight: 700;
+          color: #ffffff;
+          margin-top: 16px;
+          opacity: 0;
+          transform: translateY(10px);
+        }
+        .winner-check-ring {
+          width: 60px;
+          height: 60px;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 28px;
+          color: #ffffff;
+          margin-bottom: 16px;
+          opacity: 0;
+          transform: scale(0.5);
+        }
+        .winner-glow {
+          position: absolute;
+          width: 200px;
+          height: 200px;
+          border-radius: 50%;
+          filter: blur(60px);
+          opacity: 0;
+          z-index: -1;
+        }
+      </style>
+
+      <div class="container" id="container">
+        <!-- Header -->
+        <div class="header" id="header">
+          <div class="header-left">
+            <div class="election-title" id="election-title"></div>
+            <div class="election-subtitle" id="election-subtitle"></div>
+          </div>
+          <div class="reporting-badge">
+            <div class="reporting-dot"></div>
+            <span class="reporting-text" id="reporting-text">0%</span>
+            <span class="reporting-label">Reporting</span>
+          </div>
+        </div>
+
+        <!-- Panel -->
+        <div class="panel" id="panel">
+          <div class="panel-accent" id="panel-accent"></div>
+
+          <div class="candidates" id="candidates">
+            <!-- Candidate 1 -->
+            <div class="candidate-row" id="row-1">
+              <div class="candidate-color" id="color-1"></div>
+              <div class="candidate-info">
+                <div class="candidate-name" id="name-1"></div>
+                <div class="candidate-party" id="party-1"></div>
+              </div>
+              <div class="bar-area">
+                <div class="bar-track">
+                  <div class="bar-fill" id="bar-1"></div>
+                </div>
+              </div>
+              <div class="candidate-numbers">
+                <div class="candidate-pct" id="pct-1">0%</div>
+                <div class="candidate-votes" id="votes-1"></div>
+              </div>
+              <div class="leading-check" id="check-1">
+                <span class="check-icon" id="check-icon-1"></span>
+              </div>
+            </div>
+
+            <!-- Candidate 2 -->
+            <div class="candidate-row" id="row-2">
+              <div class="candidate-color" id="color-2"></div>
+              <div class="candidate-info">
+                <div class="candidate-name" id="name-2"></div>
+                <div class="candidate-party" id="party-2"></div>
+              </div>
+              <div class="bar-area">
+                <div class="bar-track">
+                  <div class="bar-fill" id="bar-2"></div>
+                </div>
+              </div>
+              <div class="candidate-numbers">
+                <div class="candidate-pct" id="pct-2">0%</div>
+                <div class="candidate-votes" id="votes-2"></div>
+              </div>
+              <div class="leading-check" id="check-2">
+                <span class="check-icon" id="check-icon-2"></span>
+              </div>
+            </div>
+
+            <!-- Candidate 3 -->
+            <div class="candidate-row" id="row-3">
+              <div class="candidate-color" id="color-3"></div>
+              <div class="candidate-info">
+                <div class="candidate-name" id="name-3"></div>
+                <div class="candidate-party" id="party-3"></div>
+              </div>
+              <div class="bar-area">
+                <div class="bar-track">
+                  <div class="bar-fill" id="bar-3"></div>
+                </div>
+              </div>
+              <div class="candidate-numbers">
+                <div class="candidate-pct" id="pct-3">0%</div>
+                <div class="candidate-votes" id="votes-3"></div>
+              </div>
+              <div class="leading-check" id="check-3">
+                <span class="check-icon" id="check-icon-3"></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="footer" id="footer">
+            <div class="total-votes">Total Votes: <span id="total-votes"></span></div>
+            <div class="live-badge"><div class="live-dot"></div>LIVE</div>
+          </div>
+
+          <!-- Winner overlay -->
+          <div class="winner-overlay" id="winner-overlay">
+            <div class="winner-glow" id="winner-glow"></div>
+            <div class="winner-check-ring" id="winner-check-ring">&#10003;</div>
+            <div class="winner-projected" id="winner-projected">Projected Winner</div>
+            <div class="winner-name" id="winner-name"></div>
+            <div class="winner-party-label" id="winner-party-label"></div>
+            <div class="winner-pct-label" id="winner-pct-label"></div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    this._els = {};
+    const ids = [
+      'container','header','election-title','election-subtitle','reporting-text',
+      'panel','panel-accent','candidates',
+      'row-1','color-1','name-1','party-1','bar-1','pct-1','votes-1','check-1','check-icon-1',
+      'row-2','color-2','name-2','party-2','bar-2','pct-2','votes-2','check-2','check-icon-2',
+      'row-3','color-3','name-3','party-3','bar-3','pct-3','votes-3','check-3','check-icon-3',
+      'footer','total-votes',
+      'winner-overlay','winner-glow','winner-check-ring','winner-projected',
+      'winner-name','winner-party-label','winner-pct-label',
+    ];
+    ids.forEach(id => {
+      this._els[id] = this.shadowRoot.getElementById(id);
+    });
+  }
+
+  _getCandidates() {
+    const d = this._data;
+    const candidates = [
+      { name: d.candidate1Name, party: d.candidate1Party, votes: d.candidate1Votes, pct: d.candidate1Pct, color: d.candidate1Color },
+      { name: d.candidate2Name, party: d.candidate2Party, votes: d.candidate2Votes, pct: d.candidate2Pct, color: d.candidate2Color },
+    ];
+    if (d.candidate3Name) {
+      candidates.push({ name: d.candidate3Name, party: d.candidate3Party, votes: d.candidate3Votes, pct: d.candidate3Pct, color: d.candidate3Color });
+    }
+    return candidates;
+  }
+
+  _populateData() {
+    const d = this._data;
+    const e = this._els;
+    e['election-title'].textContent = d.title;
+    e['election-subtitle'].textContent = d.subtitle || '';
+    e['total-votes'].textContent = d.totalVotes;
+
+    const cands = this._getCandidates();
+    const maxPct = Math.max(...cands.map(c => c.pct));
+
+    // Set CSS variables for accent bar
+    const c = this._els['container'];
+    c.style.setProperty('--c1-color', cands[0].color);
+    c.style.setProperty('--c2-color', cands[1].color);
+    c.style.setProperty('--c3-color', cands[2] ? cands[2].color : cands[1].color);
+    c.style.setProperty('--c1-pct', cands[0].pct + '%');
+    c.style.setProperty('--c12-pct', (cands[0].pct + cands[1].pct) + '%');
+
+    cands.forEach((cand, i) => {
+      const idx = i + 1;
+      e[`name-${idx}`].textContent = cand.name;
+      e[`party-${idx}`].textContent = cand.party;
+      e[`votes-${idx}`].textContent = cand.votes;
+      e[`color-${idx}`].style.background = cand.color;
+      e[`bar-${idx}`].style.background = `linear-gradient(90deg, ${cand.color}, ${cand.color}dd)`;
+
+      const isLeading = cand.pct === maxPct;
+      if (isLeading) {
+        e[`check-icon-${idx}`].textContent = '\u25B2';
+        e[`check-icon-${idx}`].style.background = cand.color;
+      } else {
+        e[`check-icon-${idx}`].textContent = '';
+        e[`check-icon-${idx}`].style.background = 'transparent';
+      }
+    });
+
+    // Hide candidate 3 if not present
+    if (!d.candidate3Name) {
+      e['row-3'].style.display = 'none';
+    } else {
+      e['row-3'].style.display = '';
+    }
+  }
+
+  async load(data) {
+    if (data) this._data = { ...this._data, ...data };
+    this._populateData();
+    this._currentStep = 0;
+    this._resetToHidden();
+    return { status: 200 };
+  }
+
+  async playAction(opts) {
+    if (this._stopTL) { this._stopTL.kill(); this._stopTL = null; }
+    this._isVisible = true;
+    this._currentStep = 0;
+    const e = this._els;
+    const cands = this._getCandidates();
+
+    return new Promise((resolve) => {
+      this._playTL = gsap.timeline({
+        defaults: { overwrite: 'auto' },
+        onComplete: () => { this._playTL = null; resolve({ status: 200 }); }
+      });
+
+      // Header slides down
+      this._playTL.to(e['header'], {
+        opacity: 1, y: 0,
+        duration: 0.35, ease: 'power2.out',
+      }, 0);
+
+      // Panel scales up
+      this._playTL.to(e['panel'], {
+        opacity: 1, y: 0, scaleY: 1,
+        duration: 0.4, ease: 'power3.out',
+      }, 0.1);
+
+      // Accent bar wipes
+      this._playTL.to(e['panel-accent'], {
+        scaleX: 1,
+        duration: 0.5, ease: 'power2.out',
+      }, 0.2);
+
+      // Reporting count-up
+      const reportProxy = { v: 0 };
+      this._playTL.to(reportProxy, {
+        v: this._data.reporting,
+        duration: 0.8, ease: 'power1.out',
+        onUpdate: () => {
+          e['reporting-text'].textContent = Math.round(reportProxy.v) + '%';
+        },
+      }, 0.3);
+
+      // Candidate rows stagger in
+      cands.forEach((cand, i) => {
+        const idx = i + 1;
+        const delay = 0.3 + i * 0.12;
+
+        // Row slides in
+        this._playTL.to(e[`row-${idx}`], {
+          opacity: 1, x: 0,
+          duration: 0.35, ease: 'power2.out',
+        }, delay);
+
+        // Color bar scales up
+        this._playTL.to(e[`color-${idx}`], {
+          opacity: 1, scaleY: 1,
+          duration: 0.3, ease: 'power2.out',
+        }, delay + 0.05);
+
+        // Percentage bar fills
+        this._playTL.to(e[`bar-${idx}`], {
+          width: cand.pct + '%',
+          duration: 0.7, ease: 'power2.out',
+        }, delay + 0.15);
+
+        // Percentage count-up
+        const pctProxy = { v: 0 };
+        this._playTL.to(pctProxy, {
+          v: cand.pct,
+          duration: 0.7, ease: 'power1.out',
+          onUpdate: () => {
+            e[`pct-${idx}`].textContent = pctProxy.v.toFixed(1) + '%';
+          },
+        }, delay + 0.15);
+
+        // Leading check
+        const maxPct = Math.max(...cands.map(c => c.pct));
+        if (cand.pct === maxPct) {
+          this._playTL.to(e[`check-${idx}`], {
+            opacity: 1, duration: 0.2,
+          }, delay + 0.5);
+        }
+      });
+
+      // Footer
+      this._playTL.to(e['footer'], {
+        opacity: 1, duration: 0.3,
+      }, 0.7);
+    });
+  }
+
+  async stopAction(opts) {
+    if (this._playTL) { this._playTL.kill(); this._playTL = null; }
+    const e = this._els;
+
+    return new Promise((resolve) => {
+      this._stopTL = gsap.timeline({
+        defaults: { overwrite: 'auto' },
+        onComplete: () => {
+          this._isVisible = false;
+          this._stopTL = null;
+          this._resetToHidden();
+          resolve({ status: 200 });
+        }
+      });
+
+      // Footer
+      this._stopTL.to(e['footer'], { opacity: 0, duration: 0.15 }, 0);
+
+      // Winner overlay if visible
+      if (this._currentStep === 1) {
+        this._stopTL.to([
+          e['winner-pct-label'], e['winner-party-label'],
+          e['winner-name'], e['winner-projected'], e['winner-check-ring'], e['winner-glow']
+        ], { opacity: 0, duration: 0.2 }, 0);
+      }
+
+      // Bars retract
+      for (let i = 3; i >= 1; i--) {
+        this._stopTL.to(e[`bar-${i}`], { width: 0, duration: 0.25, ease: 'power2.in' }, 0.05);
+        this._stopTL.to(e[`check-${i}`], { opacity: 0, duration: 0.1 }, 0);
+        this._stopTL.to(e[`row-${i}`], {
+          opacity: 0, x: -15, duration: 0.2, ease: 'power2.in',
+        }, 0.1 + (3 - i) * 0.04);
+        this._stopTL.to(e[`color-${i}`], { scaleY: 0, opacity: 0, duration: 0.15 }, 0.1);
+      }
+
+      // Panel
+      this._stopTL.to(e['panel-accent'], { scaleX: 0, duration: 0.2 }, 0.2);
+      this._stopTL.to(e['panel'], {
+        opacity: 0, y: 15, scaleY: 0.97,
+        duration: 0.3, ease: 'power2.in',
+      }, 0.25);
+
+      // Header
+      this._stopTL.to(e['header'], {
+        opacity: 0, y: -10,
+        duration: 0.2, ease: 'power2.in',
+      }, 0.25);
+    });
+  }
+
+  async updateAction(opts) {
+    if (!opts || !opts.data) return { status: 200 };
+    const data = opts.data;
+    let changed = false;
+
+    for (const key of Object.keys(data)) {
+      if (data[key] != null && data[key] !== this._data[key]) {
+        this._data[key] = data[key];
+        changed = true;
+      }
+    }
+    if (!changed) return { status: 200 };
+
+    this._populateData();
+
+    if (this._isVisible && this._currentStep === 0) {
+      const cands = this._getCandidates();
+      const e = this._els;
+
+      return new Promise((resolve) => {
+        const tl = gsap.timeline({ onComplete: () => resolve({ status: 200 }) });
+
+        // Animate reporting
+        const reportProxy = { v: parseFloat(e['reporting-text'].textContent) || 0 };
+        tl.to(reportProxy, {
+          v: this._data.reporting, duration: 0.5, ease: 'power1.out',
+          onUpdate: () => {
+            e['reporting-text'].textContent = Math.round(reportProxy.v) + '%';
+          },
+        }, 0);
+
+        // Animate bars and percentages
+        cands.forEach((cand, i) => {
+          const idx = i + 1;
+          tl.to(e[`bar-${idx}`], { width: cand.pct + '%', duration: 0.5, ease: 'power2.out' }, 0);
+
+          const curPct = parseFloat(e[`pct-${idx}`].textContent) || 0;
+          const pctProxy = { v: curPct };
+          tl.to(pctProxy, {
+            v: cand.pct, duration: 0.5, ease: 'power1.out',
+            onUpdate: () => {
+              e[`pct-${idx}`].textContent = pctProxy.v.toFixed(1) + '%';
+            },
+          }, 0);
+        });
+
+        // Flash panel border
+        tl.to(e['panel'], {
+          boxShadow: '0 8px 40px rgba(0,0,0,0.6), 0 0 20px rgba(255,255,255,0.08)',
+          duration: 0.15,
+        }, 0);
+        tl.to(e['panel'], {
+          boxShadow: '0 8px 40px rgba(0,0,0,0.6), 0 0 1px rgba(255,255,255,0.1)',
+          duration: 0.4,
+        }, 0.15);
+      });
+    }
+
+    return { status: 200 };
+  }
+
+  async customAction(opts) {
+    if (!opts || !opts.action) return { status: 200 };
+    if (opts.action === 'next') return this._toggleStep();
+    return { status: 200 };
+  }
+
+  async _toggleStep() {
+    if (!this._isVisible) return { status: 200 };
+    const e = this._els;
+
+    if (this._currentStep === 0) {
+      // Switch to winner / called view
+      this._currentStep = 1;
+      const cands = this._getCandidates();
+      const calledName = this._data.calledFor;
+      const winner = cands.find(c => c.name === calledName) || cands.reduce((a, b) => a.pct > b.pct ? a : b);
+
+      e['winner-name'].textContent = winner.name;
+      e['winner-party-label'].textContent = winner.party;
+      e['winner-party-label'].style.color = winner.color;
+      e['winner-pct-label'].textContent = winner.pct.toFixed(1) + '%';
+      e['winner-check-ring'].style.background = winner.color;
+      e['winner-glow'].style.background = winner.color;
+      e['winner-projected'].textContent = calledName ? 'Projected Winner' : 'Currently Leading';
+
+      return new Promise((resolve) => {
+        const tl = gsap.timeline({ onComplete: () => resolve({ status: 200 }) });
+
+        e['winner-overlay'].classList.add('active');
+
+        // Glow
+        tl.to(e['winner-glow'], {
+          opacity: 0.2, duration: 0.5, ease: 'power1.out',
+        }, 0);
+
+        // Check ring
+        tl.to(e['winner-check-ring'], {
+          opacity: 1, scale: 1,
+          duration: 0.4, ease: 'back.out(1.4)',
+        }, 0.1);
+
+        // Projected text
+        tl.to(e['winner-projected'], {
+          opacity: 1, y: 0,
+          duration: 0.3, ease: 'power2.out',
+        }, 0.2);
+
+        // Winner name
+        tl.to(e['winner-name'], {
+          opacity: 1, scale: 1,
+          duration: 0.4, ease: 'power3.out',
+        }, 0.25);
+
+        // Party
+        tl.to(e['winner-party-label'], {
+          opacity: 1, y: 0,
+          duration: 0.3, ease: 'power2.out',
+        }, 0.35);
+
+        // Percentage
+        tl.to(e['winner-pct-label'], {
+          opacity: 1, y: 0,
+          duration: 0.3, ease: 'power2.out',
+        }, 0.4);
+      });
+    } else {
+      // Back to bar view
+      this._currentStep = 0;
+      return new Promise((resolve) => {
+        const tl = gsap.timeline({ onComplete: () => resolve({ status: 200 }) });
+
+        tl.to([
+          e['winner-pct-label'], e['winner-party-label'],
+          e['winner-name'], e['winner-projected'],
+        ], {
+          opacity: 0, y: 10, duration: 0.2,
+        }, 0);
+        tl.to(e['winner-check-ring'], {
+          opacity: 0, scale: 0.5, duration: 0.2,
+        }, 0);
+        tl.to(e['winner-glow'], { opacity: 0, duration: 0.2 }, 0);
+
+        tl.call(() => {
+          e['winner-overlay'].classList.remove('active');
+          // Reset winner overlay elements
+          gsap.set(e['winner-check-ring'], { opacity: 0, scale: 0.5 });
+          gsap.set(e['winner-projected'], { opacity: 0, y: 10 });
+          gsap.set(e['winner-name'], { opacity: 0, scale: 0.8 });
+          gsap.set(e['winner-party-label'], { opacity: 0, y: 10 });
+          gsap.set(e['winner-pct-label'], { opacity: 0, y: 10 });
+          gsap.set(e['winner-glow'], { opacity: 0 });
+        });
+      });
+    }
+  }
+
+  dispose() {
+    if (this._playTL) { this._playTL.kill(); this._playTL = null; }
+    if (this._stopTL) { this._stopTL.kill(); this._stopTL = null; }
+    this._isVisible = false;
+  }
+
+  _resetToHidden() {
+    const e = this._els;
+    gsap.set(e['header'], { opacity: 0, y: -15 });
+    gsap.set(e['panel'], { opacity: 0, y: 20, scaleY: 0.95 });
+    gsap.set(e['panel-accent'], { scaleX: 0 });
+    gsap.set(e['footer'], { opacity: 0 });
+    e['reporting-text'].textContent = '0%';
+
+    for (let i = 1; i <= 3; i++) {
+      gsap.set(e[`row-${i}`], { opacity: 0, x: -20 });
+      gsap.set(e[`color-${i}`], { opacity: 0, scaleY: 0 });
+      gsap.set(e[`bar-${i}`], { width: 0 });
+      gsap.set(e[`check-${i}`], { opacity: 0 });
+      e[`pct-${i}`].textContent = '0%';
+    }
+
+    e['winner-overlay'].classList.remove('active');
+    gsap.set(e['winner-check-ring'], { opacity: 0, scale: 0.5 });
+    gsap.set(e['winner-projected'], { opacity: 0, y: 10 });
+    gsap.set(e['winner-name'], { opacity: 0, scale: 0.8 });
+    gsap.set(e['winner-party-label'], { opacity: 0, y: 10 });
+    gsap.set(e['winner-pct-label'], { opacity: 0, y: 10 });
+    gsap.set(e['winner-glow'], { opacity: 0 });
+  }
+}
+
+customElements.define('election-results', ElectionResults);
+</script>
+</body>
+</html>

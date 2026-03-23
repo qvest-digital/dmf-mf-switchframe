@@ -1,0 +1,68 @@
+{
+  "name": "interview-nameplate",
+  "description": "Dual interview nameplate showing two participants simultaneously with staggered entrance and per-person accent colors",
+  "version": "1.0.0",
+  "steps": 4,
+  "dataSchema": {
+    "type": "object",
+    "properties": {
+      "leftName": {
+        "type": "string",
+        "title": "Left Person Name",
+        "default": "Sarah Mitchell"
+      },
+      "leftTitle": {
+        "type": "string",
+        "title": "Left Person Title",
+        "default": "Senior Producer"
+      },
+      "leftCompany": {
+        "type": "string",
+        "title": "Left Person Company",
+        "default": "Meridian Studios"
+      },
+      "leftColor": {
+        "type": "string",
+        "title": "Left Accent Color",
+        "default": "#3b82f6"
+      },
+      "rightName": {
+        "type": "string",
+        "title": "Right Person Name",
+        "default": "David Park"
+      },
+      "rightTitle": {
+        "type": "string",
+        "title": "Right Person Title",
+        "default": "Creative Director"
+      },
+      "rightCompany": {
+        "type": "string",
+        "title": "Right Person Company",
+        "default": "Luminary Labs"
+      },
+      "rightColor": {
+        "type": "string",
+        "title": "Right Accent Color",
+        "default": "#f59e0b"
+      },
+      "panelStyle": {
+        "type": "string",
+        "title": "Panel Style",
+        "default": "glass",
+        "enum": ["glass", "solid", "minimal"]
+      },
+      "showCompany": {
+        "type": "boolean",
+        "title": "Show Company",
+        "default": true
+      }
+    },
+    "required": ["leftName", "leftTitle", "rightName", "rightTitle"]
+  },
+  "renderRequirements": {
+    "width": 1920,
+    "height": 1080,
+    "frameRate": 30
+  }
+}

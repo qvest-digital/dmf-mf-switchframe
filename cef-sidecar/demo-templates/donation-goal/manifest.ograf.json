@@ -1,0 +1,72 @@
+{
+  "name": "donation-goal",
+  "description": "Charity/fundraiser donation goal tracker with animated progress bar, milestone markers, and celebration effects",
+  "version": "1.0.0",
+  "steps": 2,
+  "dataSchema": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "title": "Campaign Title",
+        "default": "Building Hope Foundation"
+      },
+      "subtitle": {
+        "type": "string",
+        "title": "Subtitle",
+        "default": "2026 Annual Fundraiser"
+      },
+      "current": {
+        "type": "number",
+        "title": "Current Amount",
+        "default": 34750
+      },
+      "goal": {
+        "type": "number",
+        "title": "Goal Amount",
+        "default": 50000
+      },
+      "currency": {
+        "type": "string",
+        "title": "Currency Symbol",
+        "default": "$"
+      },
+      "recentDonor": {
+        "type": "string",
+        "title": "Recent Donor Name",
+        "default": "Sarah M."
+      },
+      "recentAmount": {
+        "type": "number",
+        "title": "Recent Donation Amount",
+        "default": 250
+      },
+      "accentColor": {
+        "type": "string",
+        "title": "Accent Color",
+        "default": "#10b981"
+      },
+      "milestone1": {
+        "type": "number",
+        "title": "Milestone 1 Amount",
+        "default": 10000
+      },
+      "milestone2": {
+        "type": "number",
+        "title": "Milestone 2 Amount",
+        "default": 25000
+      },
+      "milestone3": {
+        "type": "number",
+        "title": "Milestone 3 Amount",
+        "default": 50000
+      }
+    },
+    "required": ["title", "current", "goal"]
+  },
+  "renderRequirements": {
+    "width": 1920,
+    "height": 1080,
+    "frameRate": 30
+  }
+}

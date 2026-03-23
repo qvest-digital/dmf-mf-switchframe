@@ -1,0 +1,67 @@
+{
+  "name": "countdown-timer",
+  "description": "Dramatic full-screen countdown timer with morphing digits, animated progress ring, and configurable event messaging",
+  "version": "1.0.0",
+  "steps": 1,
+  "dataSchema": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "title": "Event Title",
+        "default": "STARTING SOON"
+      },
+      "subtitle": {
+        "type": "string",
+        "title": "Subtitle",
+        "default": "Please stand by"
+      },
+      "seconds": {
+        "type": "number",
+        "title": "Countdown Seconds",
+        "default": 300
+      },
+      "accentColor": {
+        "type": "string",
+        "title": "Accent Color",
+        "default": "#00d4ff"
+      },
+      "bgGradientStart": {
+        "type": "string",
+        "title": "Background Gradient Start",
+        "default": "#0a0a1a"
+      },
+      "bgGradientEnd": {
+        "type": "string",
+        "title": "Background Gradient End",
+        "default": "#1a0a2e"
+      },
+      "completedTitle": {
+        "type": "string",
+        "title": "Title When Complete",
+        "default": "WE'RE LIVE"
+      },
+      "completedSubtitle": {
+        "type": "string",
+        "title": "Subtitle When Complete",
+        "default": ""
+      },
+      "showProgressRing": {
+        "type": "boolean",
+        "title": "Show Progress Ring",
+        "default": true
+      },
+      "fontStyle": {
+        "type": "string",
+        "title": "Font Style (mono|display)",
+        "default": "display"
+      }
+    },
+    "required": ["title", "seconds"]
+  },
+  "renderRequirements": {
+    "width": 1920,
+    "height": 1080,
+    "frameRate": 30
+  }
+}

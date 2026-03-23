@@ -1,0 +1,97 @@
+{
+  "name": "live-poll",
+  "description": "Live audience poll with animated result bars, vote counting, and winner highlighting",
+  "version": "1.0.0",
+  "steps": 2,
+  "dataSchema": {
+    "type": "object",
+    "properties": {
+      "question": {
+        "type": "string",
+        "title": "Poll Question",
+        "default": "What topic should we cover next?"
+      },
+      "option1Label": {
+        "type": "string",
+        "title": "Option 1 Label",
+        "default": "Web Development"
+      },
+      "option1Percent": {
+        "type": "number",
+        "title": "Option 1 Percent",
+        "default": 42
+      },
+      "option1Color": {
+        "type": "string",
+        "title": "Option 1 Color",
+        "default": "#6366f1"
+      },
+      "option2Label": {
+        "type": "string",
+        "title": "Option 2 Label",
+        "default": "Game Design"
+      },
+      "option2Percent": {
+        "type": "number",
+        "title": "Option 2 Percent",
+        "default": 28
+      },
+      "option2Color": {
+        "type": "string",
+        "title": "Option 2 Color",
+        "default": "#ec4899"
+      },
+      "option3Label": {
+        "type": "string",
+        "title": "Option 3 Label",
+        "default": "Machine Learning"
+      },
+      "option3Percent": {
+        "type": "number",
+        "title": "Option 3 Percent",
+        "default": 18
+      },
+      "option3Color": {
+        "type": "string",
+        "title": "Option 3 Color",
+        "default": "#10b981"
+      },
+      "option4Label": {
+        "type": "string",
+        "title": "Option 4 Label",
+        "default": "DevOps"
+      },
+      "option4Percent": {
+        "type": "number",
+        "title": "Option 4 Percent",
+        "default": 12
+      },
+      "option4Color": {
+        "type": "string",
+        "title": "Option 4 Color",
+        "default": "#f59e0b"
+      },
+      "totalVotes": {
+        "type": "number",
+        "title": "Total Vote Count",
+        "default": 1247
+      },
+      "accentColor": {
+        "type": "string",
+        "title": "Accent Color",
+        "default": "#6366f1"
+      },
+      "showResults": {
+        "type": "boolean",
+        "title": "Show Results Initially",
+        "default": false
+      }
+    },
+    "required": ["question"]
+  },
+  "renderRequirements": {
+    "width": 1920,
+    "height": 1080,
+    "frameRate": 30
+  }
+}

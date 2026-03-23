@@ -1,0 +1,74 @@
+{
+  "name": "event-agenda",
+  "description": "Conference/event agenda card with current item highlight, upcoming schedule, animated time indicator, and editorial typography for live event production",
+  "version": "1.0.0",
+  "steps": 2,
+  "dataSchema": {
+    "type": "object",
+    "properties": {
+      "eventName": {
+        "type": "string",
+        "title": "Event Name",
+        "default": "DEVELOPER SUMMIT 2026"
+      },
+      "currentTitle": {
+        "type": "string",
+        "title": "Current Session Title",
+        "default": "Building Real-Time Video at Scale"
+      },
+      "currentSpeaker": {
+        "type": "string",
+        "title": "Current Speaker",
+        "default": "Sarah Chen"
+      },
+      "currentTime": {
+        "type": "string",
+        "title": "Current Session Time",
+        "default": "10:30 AM"
+      },
+      "currentDuration": {
+        "type": "string",
+        "title": "Current Session Duration",
+        "default": "45 min"
+      },
+      "accentColor": {
+        "type": "string",
+        "title": "Accent Color",
+        "default": "#ff4d6a"
+      },
+      "items": {
+        "type": "array",
+        "title": "Upcoming Items",
+        "default": [
+          { "time": "11:30 AM", "title": "Coffee Break & Networking", "speaker": "" },
+          { "time": "12:00 PM", "title": "Zero-Latency Encoding with NVENC", "speaker": "Marcus Webb" },
+          { "time": "1:00 PM", "title": "Panel: Future of Live Production", "speaker": "Multiple Speakers" }
+        ],
+        "items": {
+          "type": "object",
+          "properties": {
+            "time": { "type": "string", "title": "Time" },
+            "title": { "type": "string", "title": "Title" },
+            "speaker": { "type": "string", "title": "Speaker" }
+          }
+        }
+      },
+      "showLiveIndicator": {
+        "type": "boolean",
+        "title": "Show LIVE Indicator",
+        "default": true
+      },
+      "cardPosition": {
+        "type": "string",
+        "title": "Card Position (right / left)",
+        "default": "right"
+      }
+    },
+    "required": ["currentTitle", "currentSpeaker"]
+  },
+  "renderRequirements": {
+    "width": 1920,
+    "height": 1080,
+    "frameRate": 30
+  }
+}

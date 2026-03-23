@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+html, body {
+    margin: 0; padding: 0;
+    background: transparent;
+    overflow: hidden;
+    width: 1920px; height: 1080px;
+    -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- Full-screen overlay ---------- */
+#overlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    opacity: 0;
+}
+
+#bg-gradient {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: linear-gradient(135deg,
+        rgba(8, 6, 18, 0.7) 0%,
+        rgba(18, 12, 30, 0.6) 50%,
+        rgba(8, 6, 18, 0.7) 100%);
+}
+
+/* ---------- Animated shimmer ---------- */
+#bg-shimmer {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: radial-gradient(ellipse at 30% 40%,
+        rgba(212, 175, 55, 0.04) 0%,
+        transparent 60%);
+    opacity: 0;
+}
+
+/* ---------- Content container ---------- */
+#content {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 120px 200px;
+    box-sizing: border-box;
+}
+
+/* ---------- Decorative quote marks ---------- */
+#quote-mark-open, #quote-mark-close {
+    font-family: 'Playfair Display', serif;
+    font-weight: 700;
+    font-size: 240px;
+    line-height: 1;
+    color: var(--accent-color, #d4af37);
+    opacity: 0;
+    position: absolute;
+    user-select: none;
+    pointer-events: none;
+}
+
+#quote-mark-open {
+    top: 130px;
+    left: 140px;
+    transform: translateY(20px);
+}
+
+#quote-mark-close {
+    bottom: 100px;
+    right: 140px;
+    transform: translateY(-20px) rotate(180deg);
+}
+
+/* ---------- Quote text ---------- */
+#quote-text {
+    font-family: 'Playfair Display', serif;
+    font-weight: 400;
+    font-style: italic;
+    color: #ffffff;
+    line-height: 1.55;
+    text-align: center;
+    text-shadow: 0 2px 16px rgba(0, 0, 0, 0.5),
+                 0 4px 32px rgba(0, 0, 0, 0.3);
+    max-width: 1200px;
+    position: relative;
+    z-index: 1;
+}
+
+#quote-text.size-small  { font-size: 38px; }
+#quote-text.size-medium { font-size: 52px; }
+#quote-text.size-large  { font-size: 68px; }
+
+/* ---------- Divider line ---------- */
+#divider {
+    width: 0;
+    height: 2px;
+    margin: 36px auto 28px;
+    border-radius: 1px;
+    opacity: 0;
+    position: relative;
+    z-index: 1;
+}
+
+/* ---------- Attribution ---------- */
+#attribution {
+    font-family: 'Inter', sans-serif;
+    font-weight: 500;
+    font-size: 22px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: var(--accent-color, #d4af37);
+    text-align: center;
+    opacity: 0;
+    transform: translateY(12px);
+    position: relative;
+    z-index: 1;
+}
+
+/* ---------- Source ---------- */
+#source {
+    font-family: 'Inter', sans-serif;
+    font-weight: 300;
+    font-size: 16px;
+    letter-spacing: 1px;
+    color: rgba(255, 255, 255, 0.4);
+    text-align: center;
+    margin-top: 8px;
+    opacity: 0;
+    transform: translateY(8px);
+    position: relative;
+    z-index: 1;
+}
+
+/* ---------- Word spans for animation ---------- */
+#quote-text .word {
+    display: inline-block;
+    opacity: 0;
+    transform: translateY(12px);
+    margin-right: 0.28em;
+}
+
+#quote-text .line-group {
+    display: block;
+    opacity: 0;
+    transform: translateY(16px);
+}
+
+/* ---------- Vignette ---------- */
+#vignette {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: radial-gradient(ellipse at center,
+        transparent 50%,
+        rgba(0, 0, 0, 0.3) 100%);
+    pointer-events: none;
+    opacity: 0;
+}
+</style>
+</head>
+<body>
+
+<div id="overlay">
+    <div id="bg-gradient"></div>
+    <div id="bg-shimmer"></div>
+    <div id="vignette"></div>
+    <div id="content">
+        <div id="quote-mark-open">&ldquo;</div>
+        <div id="quote-text" class="size-medium"></div>
+        <div id="divider"></div>
+        <div id="attribution"></div>
+        <div id="source"></div>
+        <div id="quote-mark-close">&ldquo;</div>
+    </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script>
+(function() {
+    'use strict';
+
+    /* ---------- Element cache ---------- */
+    var els = {
+        overlay:        document.getElementById('overlay'),
+        bgGradient:     document.getElementById('bg-gradient'),
+        bgShimmer:      document.getElementById('bg-shimmer'),
+        vignette:       document.getElementById('vignette'),
+        content:        document.getElementById('content'),
+        quoteMarkOpen:  document.getElementById('quote-mark-open'),
+        quoteMarkClose: document.getElementById('quote-mark-close'),
+        quoteText:      document.getElementById('quote-text'),
+        divider:        document.getElementById('divider'),
+        attribution:    document.getElementById('attribution'),
+        source:         document.getElementById('source')
+    };
+
+    /* ---------- State ---------- */
+    var isVisible = false;
+    var playTL    = null;
+    var stopTL    = null;
+    var shimmerTween = null;
+
+    var data = {
+        quote: 'The only way to do great work is to love what you do.',
+        attribution: 'Steve Jobs',
+        source: 'Stanford Commencement, 2005',
+        accentColor: '#d4af37',
+        fontSize: 'medium',
+        overlayOpacity: 0.65,
+        textAlign: 'center',
+        showQuoteMarks: true,
+        animationStyle: 'word',
+        gradientAngle: 135
+    };
+
+    gsap.defaults({ overwrite: 'auto' });
+
+    /* ---------- Helpers ---------- */
+    function applyAccent(color) {
+        data.accentColor = color;
+        document.getElementById('overlay').style.setProperty('--accent-color', color);
+        els.divider.style.background = color;
+    }
+
+    function applyFontSize(size) {
+        els.quoteText.className = 'size-' + (size || 'medium');
+    }
+
+    function applyGradient() {
+        var angle = data.gradientAngle || 135;
+        var op = data.overlayOpacity != null ? data.overlayOpacity : 0.65;
+        var r1 = op;
+        var r2 = Math.max(0, op - 0.1);
+        els.bgGradient.style.background =
+            'linear-gradient(' + angle + 'deg, rgba(8,6,18,' + r1 + ') 0%, rgba(18,12,30,' + r2 + ') 50%, rgba(8,6,18,' + r1 + ') 100%)';
+    }
+
+    function buildQuoteHTML(text, style) {
+        if (style === 'line') {
+            // Split by sentence-ish boundaries or newlines
+            var lines = text.split(/(?<=[.!?\n])\s+/);
+            return lines.map(function(line) {
+                return '<span class="line-group">' + escapeHtml(line) + '</span>';
+            }).join(' ');
+        } else if (style === 'word') {
+            var words = text.split(/\s+/);
+            return words.map(function(word) {
+                return '<span class="word">' + escapeHtml(word) + '</span>';
+            }).join('');
+        } else {
+            // fade — single block
+            return '<span class="word" style="margin-right:0">' + escapeHtml(text) + '</span>';
+        }
+    }
+
+    function escapeHtml(str) {
+        var div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+
+    function applyData() {
+        els.quoteText.innerHTML = buildQuoteHTML(data.quote, data.animationStyle);
+        els.attribution.textContent = data.attribution || '';
+        els.source.textContent = data.source || '';
+        els.quoteText.style.textAlign = data.textAlign || 'center';
+        applyAccent(data.accentColor);
+        applyFontSize(data.fontSize);
+        applyGradient();
+
+        els.quoteMarkOpen.style.display = data.showQuoteMarks ? 'block' : 'none';
+        els.quoteMarkClose.style.display = data.showQuoteMarks ? 'block' : 'none';
+    }
+
+    applyData();
+
+    /* ---------- Shimmer loop ---------- */
+    function startShimmer() {
+        shimmerTween = gsap.to(els.bgShimmer, {
+            background: 'radial-gradient(ellipse at 70% 60%, rgba(212,175,55,0.05) 0%, transparent 60%)',
+            duration: 6,
+            ease: 'sine.inOut',
+            yoyo: true,
+            repeat: -1
+        });
+    }
+
+    function stopShimmer() {
+        if (shimmerTween) { shimmerTween.kill(); shimmerTween = null; }
+    }
+
+    /* ---------- Reset ---------- */
+    function resetToHidden() {
+        gsap.set(els.overlay, { opacity: 0 });
+        gsap.set(els.bgShimmer, { opacity: 0 });
+        gsap.set(els.vignette, { opacity: 0 });
+        gsap.set(els.quoteMarkOpen, { opacity: 0, y: 20 });
+        gsap.set(els.quoteMarkClose, { opacity: 0, y: -20 });
+        gsap.set(els.divider, { width: 0, opacity: 0 });
+        gsap.set(els.attribution, { opacity: 0, y: 12 });
+        gsap.set(els.source, { opacity: 0, y: 8 });
+
+        var spans = els.quoteText.querySelectorAll('.word, .line-group');
+        if (spans.length) {
+            gsap.set(spans, { opacity: 0, y: 12 });
+        }
+    }
+
+    resetToHidden();
+
+    /* ===================================================================
+       CasparCG Lifecycle
+       =================================================================== */
+
+    window.play = function() {
+        if (stopTL) { stopTL.kill(); stopTL = null; }
+        isVisible = true;
+
+        // Rebuild in case data changed while hidden
+        applyData();
+        resetToHidden();
+
+        playTL = gsap.timeline({ onComplete: function() { playTL = null; } });
+
+        // 1. Overlay background fades in
+        playTL.to(els.overlay, {
+            opacity: 1,
+            duration: 0.8,
+            ease: 'power2.out'
+        });
+
+        // 2. Vignette
+        playTL.to(els.vignette, {
+            opacity: 1,
+            duration: 0.6,
+            ease: 'power1.out'
+        }, '-=0.6');
+
+        // 3. Shimmer starts
+        playTL.to(els.bgShimmer, {
+            opacity: 1,
+            duration: 0.5,
+            ease: 'power1.out',
+            onComplete: startShimmer
+        }, '-=0.4');
+
+        // 4. Decorative quote marks float in
+        if (data.showQuoteMarks) {
+            playTL.to(els.quoteMarkOpen, {
+                opacity: 0.1,
+                y: 0,
+                duration: 0.7,
+                ease: 'power2.out'
+            }, '-=0.5');
+
+            playTL.to(els.quoteMarkClose, {
+                opacity: 0.1,
+                y: 0,
+                duration: 0.7,
+                ease: 'power2.out'
+            }, '-=0.6');
+        }
+
+        // 5. Quote text — word-by-word, line-by-line, or simple fade
+        var spans = els.quoteText.querySelectorAll('.word, .line-group');
+        if (spans.length > 0) {
+            var staggerDelay = data.animationStyle === 'line' ? 0.25 :
+                               data.animationStyle === 'fade' ? 0 : 0.06;
+            var dur = data.animationStyle === 'fade' ? 0.8 : 0.35;
+
+            playTL.to(spans, {
+                opacity: 1,
+                y: 0,
+                duration: dur,
+                ease: 'power2.out',
+                stagger: staggerDelay
+            }, '-=0.3');
+        }
+
+        // 6. Divider draws across
+        playTL.to(els.divider, {
+            width: 80,
+            opacity: 0.7,
+            duration: 0.5,
+            ease: 'power2.out'
+        }, '-=0.2');
+
+        // 7. Attribution fades up
+        playTL.to(els.attribution, {
+            opacity: 1,
+            y: 0,
+            duration: 0.4,
+            ease: 'power2.out'
+        }, '-=0.25');
+
+        // 8. Source
+        playTL.to(els.source, {
+            opacity: 1,
+            y: 0,
+            duration: 0.35,
+            ease: 'power2.out'
+        }, '-=0.2');
+    };
+
+    window.stop = function() {
+        if (playTL) { playTL.kill(); playTL = null; }
+
+        stopTL = gsap.timeline({
+            onComplete: function() {
+                isVisible = false;
+                stopTL = null;
+                stopShimmer();
+                resetToHidden();
+            }
+        });
+
+        // 1. Source + attribution fade out
+        stopTL.to(els.source, { opacity: 0, y: 8, duration: 0.2, ease: 'power2.in' });
+        stopTL.to(els.attribution, { opacity: 0, y: 12, duration: 0.2, ease: 'power2.in' }, '-=0.15');
+
+        // 2. Divider retracts
+        stopTL.to(els.divider, { width: 0, opacity: 0, duration: 0.3, ease: 'power2.in' }, '-=0.1');
+
+        // 3. Text fades out (all at once for clean exit)
+        var spans = els.quoteText.querySelectorAll('.word, .line-group');
+        if (spans.length > 0) {
+            stopTL.to(spans, {
+                opacity: 0, y: -8,
+                duration: 0.35,
+                ease: 'power2.in',
+                stagger: 0.015
+            }, '-=0.15');
+        }
+
+        // 4. Quote marks
+        stopTL.to(els.quoteMarkOpen, { opacity: 0, y: 20, duration: 0.3, ease: 'power2.in' }, '-=0.2');
+        stopTL.to(els.quoteMarkClose, { opacity: 0, y: -20, duration: 0.3, ease: 'power2.in' }, '-=0.25');
+
+        // 5. Overlay fades out
+        stopTL.to([els.vignette, els.bgShimmer], { opacity: 0, duration: 0.3, ease: 'power1.in' }, '-=0.15');
+        stopTL.to(els.overlay, { opacity: 0, duration: 0.5, ease: 'power2.in' }, '-=0.2');
+    };
+
+    window.update = function(input) {
+        var d = (typeof input === 'string') ? JSON.parse(input) : input;
+        if (!d) return;
+
+        var needsRebuild = false;
+
+        if (d.quote != null && d.quote !== data.quote) {
+            data.quote = d.quote;
+            needsRebuild = true;
+        }
+        if (d.attribution != null)    { data.attribution = d.attribution; els.attribution.textContent = d.attribution; }
+        if (d.source != null)         { data.source = d.source; els.source.textContent = d.source; }
+        if (d.accentColor != null)    { applyAccent(d.accentColor); }
+        if (d.fontSize != null)       { data.fontSize = d.fontSize; applyFontSize(d.fontSize); }
+        if (d.overlayOpacity != null) { data.overlayOpacity = d.overlayOpacity; applyGradient(); }
+        if (d.textAlign != null)      { data.textAlign = d.textAlign; els.quoteText.style.textAlign = d.textAlign; }
+        if (d.showQuoteMarks != null) {
+            data.showQuoteMarks = d.showQuoteMarks;
+            els.quoteMarkOpen.style.display = d.showQuoteMarks ? 'block' : 'none';
+            els.quoteMarkClose.style.display = d.showQuoteMarks ? 'block' : 'none';
+        }
+        if (d.animationStyle != null) { data.animationStyle = d.animationStyle; needsRebuild = true; }
+        if (d.gradientAngle != null)  { data.gradientAngle = d.gradientAngle; applyGradient(); }
+
+        // If the quote text changed, rebuild and animate it in
+        if (needsRebuild && isVisible) {
+            var tl = gsap.timeline();
+
+            // Fade old text out
+            var oldSpans = els.quoteText.querySelectorAll('.word, .line-group');
+            if (oldSpans.length) {
+                tl.to(oldSpans, { opacity: 0, y: -6, duration: 0.25, ease: 'power2.in', stagger: 0.01 });
+            }
+
+            // Rebuild
+            tl.call(function() {
+                els.quoteText.innerHTML = buildQuoteHTML(data.quote, data.animationStyle);
+                var newSpans = els.quoteText.querySelectorAll('.word, .line-group');
+                gsap.set(newSpans, { opacity: 0, y: 12 });
+            });
+
+            // Fade new text in
+            tl.call(function() {
+                var newSpans = els.quoteText.querySelectorAll('.word, .line-group');
+                var stagger = data.animationStyle === 'line' ? 0.2 :
+                              data.animationStyle === 'fade' ? 0 : 0.04;
+                gsap.to(newSpans, {
+                    opacity: 1, y: 0,
+                    duration: 0.3,
+                    ease: 'power2.out',
+                    stagger: stagger
+                });
+            }, null, null, '+=0.05');
+        } else if (needsRebuild) {
+            els.quoteText.innerHTML = buildQuoteHTML(data.quote, data.animationStyle);
+        }
+    };
+
+    window.next = function() {
+        // No multi-step for quotation card
+    };
+
+})();
+</script>
+</body>
+</html>

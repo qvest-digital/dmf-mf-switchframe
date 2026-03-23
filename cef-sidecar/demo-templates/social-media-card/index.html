@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Social Media Card (OGraf)</title>
+<link rel="ograf-manifest" href="manifest.ograf.json">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<style>
+html, body {
+    margin: 0; padding: 0;
+    background: transparent;
+    overflow: hidden;
+    width: 1920px; height: 1080px;
+    -webkit-font-smoothing: antialiased;
+}
+
+#card-anchor {
+    position: absolute;
+    display: flex;
+    align-items: flex-end;
+}
+/* Position variants */
+#card-anchor.bottom-right { bottom: 80px; right: 80px; justify-content: flex-end; }
+#card-anchor.bottom-left  { bottom: 80px; left: 80px; justify-content: flex-start; }
+#card-anchor.top-right    { top: 80px; right: 80px; justify-content: flex-end; align-items: flex-start; }
+#card-anchor.top-left     { top: 80px; left: 80px; justify-content: flex-start; align-items: flex-start; }
+
+#card {
+    width: 480px;
+    border-radius: 16px;
+    overflow: hidden;
+    opacity: 0;
+    transform: translateX(120px) scale(0.9);
+    transform-origin: right center;
+    /* Frosted glass */
+    background: rgba(18, 18, 28, 0.82);
+    backdrop-filter: blur(24px) saturate(1.4);
+    -webkit-backdrop-filter: blur(24px) saturate(1.4);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow:
+        0 20px 60px rgba(0, 0, 0, 0.5),
+        0 2px 8px rgba(0, 0, 0, 0.3),
+        inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+/* Accent glow line at top */
+#accent-glow {
+    height: 3px;
+    width: 0;
+    opacity: 0;
+}
+
+/* Platform header bar */
+#platform-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 22px 10px;
+    opacity: 0;
+    transform: translateY(-8px);
+}
+
+#platform-icon {
+    width: 22px;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+#platform-icon svg {
+    width: 100%;
+    height: 100%;
+}
+
+#platform-name {
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    opacity: 0.6;
+}
+
+#timestamp {
+    margin-left: auto;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    font-weight: 500;
+    color: rgba(255, 255, 255, 0.3);
+}
+
+/* User row */
+#user-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 6px 22px 12px;
+    opacity: 0;
+    transform: translateX(30px);
+}
+
+#avatar {
+    width: 46px;
+    height: 46px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Inter', sans-serif;
+    font-size: 17px;
+    font-weight: 700;
+    color: #ffffff;
+    flex-shrink: 0;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.3);
+    transform: scale(0);
+}
+
+#user-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+#display-name-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+#display-name {
+    font-family: 'Inter', sans-serif;
+    font-size: 18px;
+    font-weight: 700;
+    color: #ffffff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#verified-badge {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    display: none;
+}
+
+#verified-badge svg {
+    width: 100%;
+    height: 100%;
+}
+
+#username {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    font-weight: 500;
+    color: rgba(255, 255, 255, 0.4);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Message body */
+#message-body {
+    padding: 4px 22px 20px;
+    opacity: 0;
+    transform: translateY(12px);
+}
+
+#message {
+    font-family: 'Inter', sans-serif;
+    font-size: 17px;
+    font-weight: 400;
+    color: rgba(255, 255, 255, 0.88);
+    line-height: 1.55;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+}
+
+/* Bottom decorative line */
+#bottom-line {
+    height: 2px;
+    margin: 0 22px 16px;
+    border-radius: 1px;
+    opacity: 0;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.06), transparent);
+}
+
+/* Shimmer overlay */
+#shimmer {
+    position: absolute;
+    top: 0; left: -100%; right: 0; bottom: 0;
+    width: 100%;
+    background: linear-gradient(
+        90deg,
+        transparent 0%,
+        rgba(255,255,255,0.04) 45%,
+        rgba(255,255,255,0.08) 50%,
+        rgba(255,255,255,0.04) 55%,
+        transparent 100%
+    );
+    pointer-events: none;
+    opacity: 0;
+}
+</style>
+</head>
+<body>
+
+<div id="card-anchor" class="bottom-right">
+    <div id="card">
+        <div id="shimmer"></div>
+        <div id="accent-glow"></div>
+        <div id="platform-bar">
+            <div id="platform-icon"></div>
+            <div id="platform-name">Twitter</div>
+            <div id="timestamp">Just now</div>
+        </div>
+        <div id="user-row">
+            <div id="avatar">SF</div>
+            <div id="user-info">
+                <div id="display-name-row">
+                    <div id="display-name">SwitchFrame</div>
+                    <div id="verified-badge">
+                        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M22.5 12.5c0-1.58-.875-2.95-2.148-3.6.154-.435.238-.905.238-1.4 0-2.21-1.71-3.998-3.818-3.998-.47 0-.92.084-1.336.25C14.818 2.415 13.51 1.5 12 1.5s-2.816.917-3.437 2.25c-.415-.165-.866-.25-1.336-.25-2.11 0-3.818 1.79-3.818 4 0 .494.083.964.237 1.4-1.272.65-2.147 2.018-2.147 3.6 0 1.495.782 2.798 1.942 3.486-.02.17-.032.34-.032.514 0 2.21 1.708 4 3.818 4 .47 0 .92-.086 1.335-.25.62 1.334 1.926 2.25 3.437 2.25 1.512 0 2.818-.916 3.437-2.25.415.163.865.248 1.336.248 2.11 0 3.818-1.79 3.818-4 0-.174-.012-.344-.033-.513 1.158-.687 1.943-1.99 1.943-3.484zm-6.616-3.334l-4.334 6.5c-.145.217-.382.334-.625.334-.143 0-.288-.04-.416-.126l-.115-.094-2.415-2.415c-.293-.293-.293-.768 0-1.06s.768-.294 1.06 0l1.77 1.767 3.825-5.74c.23-.345.696-.436 1.04-.207.346.23.44.696.21 1.04z"/></svg>
+                    </div>
+                </div>
+                <div id="username">@switchframe</div>
+            </div>
+        </div>
+        <div id="message-body">
+            <div id="message">This is an amazing live stream! Can't wait for the next segment.</div>
+        </div>
+        <div id="bottom-line"></div>
+    </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script>
+(function() {
+    'use strict';
+
+    var els = {
+        anchor:       document.getElementById('card-anchor'),
+        card:         document.getElementById('card'),
+        shimmer:      document.getElementById('shimmer'),
+        accentGlow:   document.getElementById('accent-glow'),
+        platformBar:  document.getElementById('platform-bar'),
+        platformIcon: document.getElementById('platform-icon'),
+        platformName: document.getElementById('platform-name'),
+        timestamp:    document.getElementById('timestamp'),
+        userRow:      document.getElementById('user-row'),
+        avatar:       document.getElementById('avatar'),
+        displayName:  document.getElementById('display-name'),
+        verifiedBadge:document.getElementById('verified-badge'),
+        username:     document.getElementById('username'),
+        messageBody:  document.getElementById('message-body'),
+        message:      document.getElementById('message'),
+        bottomLine:   document.getElementById('bottom-line')
+    };
+
+    var isVisible = false;
+    var playTL = null;
+    var stopTL = null;
+
+    var PLATFORM_COLORS = {
+        twitter:   '#1d9bf0',
+        youtube:   '#ff0000',
+        instagram: '#e4405f',
+        tiktok:    '#00f2ea',
+        twitch:    '#9146ff'
+    };
+
+    var PLATFORM_NAMES = {
+        twitter: 'Twitter',
+        youtube: 'YouTube',
+        instagram: 'Instagram',
+        tiktok: 'TikTok',
+        twitch: 'Twitch'
+    };
+
+    // SVG icons for each platform
+    var PLATFORM_ICONS = {
+        twitter: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>',
+        youtube: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>',
+        instagram: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zM12 0C8.741 0 8.333.014 7.053.072 2.695.272.273 2.69.073 7.052.014 8.333 0 8.741 0 12c0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98C8.333 23.986 8.741 24 12 24c3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98C15.668.014 15.259 0 12 0zm0 5.838a6.162 6.162 0 1 0 0 12.324 6.162 6.162 0 0 0 0-12.324zM12 16a4 4 0 1 1 0-8 4 4 0 0 1 0 8zm6.406-11.845a1.44 1.44 0 1 0 0 2.881 1.44 1.44 0 0 0 0-2.881z"/></svg>',
+        tiktok: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12.525.02c1.31-.02 2.61-.01 3.91-.02.08 1.53.63 3.09 1.75 4.17 1.12 1.11 2.7 1.62 4.24 1.79v4.03c-1.44-.05-2.89-.35-4.2-.97-.57-.26-1.1-.59-1.62-.93-.01 2.92.01 5.84-.02 8.75-.08 1.4-.54 2.79-1.35 3.94-1.31 1.92-3.58 3.17-5.91 3.21-1.43.08-2.86-.31-4.08-1.03-2.02-1.19-3.44-3.37-3.65-5.71-.02-.5-.03-1-.01-1.49.18-1.9 1.12-3.72 2.58-4.96 1.66-1.44 3.98-2.13 6.15-1.72.02 1.48-.04 2.96-.04 4.44-.99-.32-2.15-.23-3.02.37-.63.41-1.11 1.04-1.36 1.75-.21.51-.15 1.07-.14 1.61.24 1.64 1.82 3.02 3.5 2.87 1.12-.01 2.19-.66 2.77-1.61.19-.33.4-.67.41-1.06.1-1.79.06-3.57.07-5.36.01-4.03-.01-8.05.02-12.07z"/></svg>',
+        twitch: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M11.571 4.714h1.715v5.143H11.57zm4.715 0H18v5.143h-1.714zM6 0L1.714 4.286v15.428h5.143V24l4.286-4.286h3.428L22.286 12V0zm14.571 11.143l-3.428 3.428h-3.429l-3 3v-3H6.857V1.714h13.714z"/></svg>'
+    };
+
+    var config = {
+        platform: 'twitter',
+        username: '@switchframe',
+        displayName: 'SwitchFrame',
+        message: "This is an amazing live stream! Can't wait for the next segment.",
+        accentColor: '',
+        avatarInitials: 'SF',
+        avatarColor: '#6366f1',
+        verified: false,
+        timestamp: 'Just now',
+        cardPosition: 'bottom-right'
+    };
+
+    gsap.defaults({ overwrite: 'auto' });
+
+    function getAccentColor() {
+        if (config.accentColor) return config.accentColor;
+        return PLATFORM_COLORS[config.platform] || PLATFORM_COLORS.twitter;
+    }
+
+    function applyConfig() {
+        var accent = getAccentColor();
+
+        // Position
+        els.anchor.className = config.cardPosition;
+
+        // Entrance direction based on position
+        var fromRight = config.cardPosition.indexOf('right') !== -1;
+        els.card.style.transformOrigin = fromRight ? 'right center' : 'left center';
+
+        // Platform
+        els.platformIcon.innerHTML = PLATFORM_ICONS[config.platform] || PLATFORM_ICONS.twitter;
+        els.platformIcon.style.color = accent;
+        els.platformName.textContent = PLATFORM_NAMES[config.platform] || config.platform;
+        els.platformName.style.color = accent;
+
+        // Accent glow
+        els.accentGlow.style.background = 'linear-gradient(90deg, ' + accent + ', ' + accent + '44)';
+
+        // User
+        els.avatar.textContent = config.avatarInitials;
+        els.avatar.style.background = 'linear-gradient(135deg, ' + config.avatarColor + ', ' + config.avatarColor + 'aa)';
+        els.displayName.textContent = config.displayName;
+        els.username.textContent = config.username;
+        els.timestamp.textContent = config.timestamp;
+        els.message.textContent = config.message;
+
+        // Verified
+        els.verifiedBadge.style.display = config.verified ? 'block' : 'none';
+        els.verifiedBadge.style.color = accent;
+
+        // Card border glow
+        els.card.style.borderColor = 'rgba(' + hexToRgb(accent) + ', 0.12)';
+    }
+
+    function hexToRgb(hex) {
+        hex = hex.replace('#', '');
+        if (hex.length === 3) hex = hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2];
+        var r = parseInt(hex.substring(0,2), 16);
+        var g = parseInt(hex.substring(2,4), 16);
+        var b = parseInt(hex.substring(4,6), 16);
+        return r + ',' + g + ',' + b;
+    }
+
+    function getEntranceX() {
+        return config.cardPosition.indexOf('right') !== -1 ? 120 : -120;
+    }
+
+    function resetState() {
+        var enterX = getEntranceX();
+        gsap.set(els.card, { opacity: 0, x: enterX, scale: 0.9 });
+        gsap.set(els.accentGlow, { width: 0, opacity: 0 });
+        gsap.set(els.platformBar, { opacity: 0, y: -8 });
+        gsap.set(els.userRow, { opacity: 0, x: 30 });
+        gsap.set(els.avatar, { scale: 0 });
+        gsap.set(els.messageBody, { opacity: 0, y: 12 });
+        gsap.set(els.bottomLine, { opacity: 0 });
+        gsap.set(els.shimmer, { left: '-100%', opacity: 0 });
+    }
+
+    applyConfig();
+    resetState();
+
+    // ── CasparCG lifecycle ──
+
+    window.play = function() {
+        if (stopTL) { stopTL.kill(); stopTL = null; }
+        isVisible = true;
+
+        applyConfig();
+        var enterX = getEntranceX();
+
+        playTL = gsap.timeline({ onComplete: function() { playTL = null; } });
+
+        // 1. Card slides in with spring physics
+        playTL.fromTo(els.card,
+            { opacity: 0, x: enterX, scale: 0.9 },
+            {
+                opacity: 1, x: 0, scale: 1,
+                duration: 0.7,
+                ease: 'back.out(1.2)'
+            }
+        );
+
+        // 2. Accent glow line draws across top
+        playTL.to(els.accentGlow, {
+            width: '100%', opacity: 1,
+            duration: 0.4,
+            ease: 'power3.out'
+        }, '-=0.45');
+
+        // 3. Platform bar drops in
+        playTL.to(els.platformBar, {
+            opacity: 1, y: 0,
+            duration: 0.3,
+            ease: 'power2.out'
+        }, '-=0.35');
+
+        // 4. User row slides in
+        playTL.to(els.userRow, {
+            opacity: 1, x: 0,
+            duration: 0.35,
+            ease: 'power2.out'
+        }, '-=0.2');
+
+        // 5. Avatar pops with spring
+        playTL.to(els.avatar, {
+            scale: 1,
+            duration: 0.4,
+            ease: 'back.out(3)'
+        }, '-=0.3');
+
+        // 6. Message fades up
+        playTL.to(els.messageBody, {
+            opacity: 1, y: 0,
+            duration: 0.35,
+            ease: 'power2.out'
+        }, '-=0.15');
+
+        // 7. Bottom line
+        playTL.to(els.bottomLine, { opacity: 1, duration: 0.3 }, '-=0.15');
+
+        // 8. Shimmer sweep
+        playTL.set(els.shimmer, { left: '-100%', opacity: 1 });
+        playTL.to(els.shimmer, {
+            left: '200%',
+            duration: 0.8,
+            ease: 'power1.inOut',
+            onComplete: function() { gsap.set(els.shimmer, { opacity: 0 }); }
+        }, '-=0.2');
+    };
+
+    window.stop = function() {
+        if (playTL) { playTL.kill(); playTL = null; }
+
+        var exitX = getEntranceX();
+
+        stopTL = gsap.timeline({
+            onComplete: function() {
+                isVisible = false;
+                stopTL = null;
+                resetState();
+            }
+        });
+
+        // 1. Message fades
+        stopTL.to(els.messageBody, { opacity: 0, y: 8, duration: 0.15, ease: 'power2.in' });
+
+        // 2. User row slides out
+        stopTL.to(els.userRow, { opacity: 0, x: 20, duration: 0.15, ease: 'power2.in' }, '-=0.08');
+        stopTL.to(els.avatar, { scale: 0, duration: 0.2, ease: 'power2.in' }, '-=0.15');
+
+        // 3. Platform bar
+        stopTL.to(els.platformBar, { opacity: 0, y: -6, duration: 0.12, ease: 'power2.in' }, '-=0.1');
+
+        // 4. Accent glow retracts
+        stopTL.to(els.accentGlow, { width: 0, opacity: 0, duration: 0.2, ease: 'power2.in' }, '-=0.08');
+
+        // 5. Card slides out
+        stopTL.to(els.card, {
+            opacity: 0, x: exitX * 0.6, scale: 0.92,
+            duration: 0.35,
+            ease: 'power3.in'
+        }, '-=0.15');
+
+        stopTL.to(els.bottomLine, { opacity: 0, duration: 0.1 }, '-=0.3');
+    };
+
+    window.update = function(data) {
+        var d = (typeof data === 'string') ? JSON.parse(data) : data;
+        if (!d) return;
+
+        var oldPlatform = config.platform;
+
+        if (d.platform != null) config.platform = d.platform;
+        if (d.username != null) config.username = d.username;
+        if (d.displayName != null) config.displayName = d.displayName;
+        if (d.message != null) config.message = d.message;
+        if (d.accentColor != null) config.accentColor = d.accentColor;
+        if (d.avatarInitials != null) config.avatarInitials = d.avatarInitials;
+        if (d.avatarColor != null) config.avatarColor = d.avatarColor;
+        if (d.verified != null) config.verified = d.verified;
+        if (d.timestamp != null) config.timestamp = d.timestamp;
+        if (d.cardPosition != null) config.cardPosition = d.cardPosition;
+
+        if (!isVisible) {
+            applyConfig();
+            return;
+        }
+
+        // Animated update: card does a subtle scale bounce + content crossfade
+        var tl = gsap.timeline();
+
+        tl.to(els.card, {
+            scale: 0.97,
+            duration: 0.12,
+            ease: 'power2.in'
+        });
+
+        tl.call(function() {
+            applyConfig();
+        });
+
+        tl.to(els.card, {
+            scale: 1,
+            duration: 0.25,
+            ease: 'back.out(2)'
+        });
+
+        // Shimmer on update
+        tl.set(els.shimmer, { left: '-100%', opacity: 1 }, '-=0.15');
+        tl.to(els.shimmer, {
+            left: '200%',
+            duration: 0.6,
+            ease: 'power1.inOut',
+            onComplete: function() { gsap.set(els.shimmer, { opacity: 0 }); }
+        });
+
+        // If platform changed, flash the accent glow
+        if (d.platform && d.platform !== oldPlatform) {
+            var accent = getAccentColor();
+            tl.to(els.accentGlow, {
+                boxShadow: '0 0 20px ' + accent,
+                duration: 0.15
+            }, 0);
+            tl.to(els.accentGlow, {
+                boxShadow: 'none',
+                duration: 0.4
+            });
+        }
+    };
+
+    window.next = function() {
+        // no-op for single-step template
+    };
+})();
+</script>
+</body>
+</html>

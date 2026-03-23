@@ -1,0 +1,67 @@
+{
+  "name": "esports-player-card",
+  "description": "Dramatic esports player showcase card with hexagonal design, staggered stat reveals, and team color accents",
+  "version": "1.0.0",
+  "steps": 2,
+  "dataSchema": {
+    "type": "object",
+    "properties": {
+      "playerName": {
+        "type": "string",
+        "title": "Player Name",
+        "default": "Faker"
+      },
+      "teamTag": {
+        "type": "string",
+        "title": "Team Tag",
+        "default": "T1"
+      },
+      "role": {
+        "type": "string",
+        "title": "Role / Position",
+        "default": "Mid Lane"
+      },
+      "kills": {
+        "type": "number",
+        "title": "Kills",
+        "default": 12
+      },
+      "deaths": {
+        "type": "number",
+        "title": "Deaths",
+        "default": 2
+      },
+      "assists": {
+        "type": "number",
+        "title": "Assists",
+        "default": 8
+      },
+      "winRate": {
+        "type": "string",
+        "title": "Win Rate",
+        "default": "73%"
+      },
+      "gamesPlayed": {
+        "type": "number",
+        "title": "Games Played",
+        "default": 142
+      },
+      "teamColor": {
+        "type": "string",
+        "title": "Team Primary Color",
+        "default": "#e2012d"
+      },
+      "accentColor": {
+        "type": "string",
+        "title": "Accent Color",
+        "default": "#ffd700"
+      }
+    },
+    "required": ["playerName", "teamTag", "role"]
+  },
+  "renderRequirements": {
+    "width": 1920,
+    "height": 1080,
+    "frameRate": 30
+  }
+}

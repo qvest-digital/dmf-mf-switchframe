@@ -1,0 +1,67 @@
+{
+  "name": "quotation-card",
+  "description": "Full-screen quotation overlay with elegant serif typography, decorative quotation marks, and word-by-word reveal animation for church lyrics, keynote quotes, and inspirational moments",
+  "version": "1.0.0",
+  "steps": 1,
+  "dataSchema": {
+    "type": "object",
+    "properties": {
+      "quote": {
+        "type": "string",
+        "title": "Quote Text",
+        "default": "The only way to do great work is to love what you do."
+      },
+      "attribution": {
+        "type": "string",
+        "title": "Attribution / Speaker",
+        "default": "Steve Jobs"
+      },
+      "source": {
+        "type": "string",
+        "title": "Source / Reference",
+        "default": "Stanford Commencement, 2005"
+      },
+      "accentColor": {
+        "type": "string",
+        "title": "Accent Color",
+        "default": "#d4af37"
+      },
+      "fontSize": {
+        "type": "string",
+        "title": "Font Size (small / medium / large)",
+        "default": "medium"
+      },
+      "overlayOpacity": {
+        "type": "number",
+        "title": "Background Overlay Opacity (0.0 - 1.0)",
+        "default": 0.65
+      },
+      "textAlign": {
+        "type": "string",
+        "title": "Text Alignment (center / left)",
+        "default": "center"
+      },
+      "showQuoteMarks": {
+        "type": "boolean",
+        "title": "Show Decorative Quote Marks",
+        "default": true
+      },
+      "animationStyle": {
+        "type": "string",
+        "title": "Reveal Style (word / line / fade)",
+        "default": "word"
+      },
+      "gradientAngle": {
+        "type": "number",
+        "title": "Background Gradient Angle (degrees)",
+        "default": 135
+      }
+    },
+    "required": ["quote"]
+  },
+  "renderRequirements": {
+    "width": 1920,
+    "height": 1080,
+    "frameRate": 30
+  }
+}

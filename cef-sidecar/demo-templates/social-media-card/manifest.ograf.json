@@ -1,0 +1,67 @@
+{
+  "name": "social-media-card",
+  "description": "Animated social media post card with platform branding, frosted glass design, and spring-physics entrance",
+  "version": "1.0.0",
+  "steps": 1,
+  "dataSchema": {
+    "type": "object",
+    "properties": {
+      "platform": {
+        "type": "string",
+        "title": "Platform (twitter|youtube|instagram|tiktok|twitch)",
+        "default": "twitter"
+      },
+      "username": {
+        "type": "string",
+        "title": "Username",
+        "default": "@switchframe"
+      },
+      "displayName": {
+        "type": "string",
+        "title": "Display Name",
+        "default": "SwitchFrame"
+      },
+      "message": {
+        "type": "string",
+        "title": "Message Text",
+        "default": "This is an amazing live stream! Can't wait for the next segment."
+      },
+      "accentColor": {
+        "type": "string",
+        "title": "Override Accent Color",
+        "default": ""
+      },
+      "avatarInitials": {
+        "type": "string",
+        "title": "Avatar Initials",
+        "default": "SF"
+      },
+      "avatarColor": {
+        "type": "string",
+        "title": "Avatar Background Color",
+        "default": "#6366f1"
+      },
+      "verified": {
+        "type": "boolean",
+        "title": "Show Verified Badge",
+        "default": false
+      },
+      "timestamp": {
+        "type": "string",
+        "title": "Timestamp Text",
+        "default": "Just now"
+      },
+      "cardPosition": {
+        "type": "string",
+        "title": "Position (bottom-right|bottom-left|top-right|top-left)",
+        "default": "bottom-right"
+      }
+    },
+    "required": ["platform", "username", "message"]
+  },
+  "renderRequirements": {
+    "width": 1920,
+    "height": 1080,
+    "frameRate": 30
+  }
+}

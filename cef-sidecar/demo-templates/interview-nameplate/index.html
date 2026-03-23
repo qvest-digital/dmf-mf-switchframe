@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Interview Nameplate</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    background: transparent;
+    overflow: hidden;
+    width: 100%; height: 100%;
+    font-family: 'DM Sans', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* ---------- Nameplate wrapper ---------- */
+  .nameplate {
+    position: absolute;
+    bottom: 64px;
+    display: flex;
+    flex-direction: column;
+    pointer-events: none;
+  }
+
+  .nameplate.left {
+    left: 56px;
+    align-items: flex-start;
+  }
+
+  .nameplate.right {
+    right: 56px;
+    align-items: flex-end;
+  }
+
+  /* ---------- Top accent bar ---------- */
+  .nameplate .accent-bar {
+    height: 3px;
+    border-radius: 2px 2px 0 0;
+    opacity: 0;
+    transform: scaleX(0);
+  }
+
+  .nameplate.left .accent-bar {
+    width: 100%;
+    transform-origin: left center;
+  }
+
+  .nameplate.right .accent-bar {
+    width: 100%;
+    transform-origin: right center;
+  }
+
+  /* ---------- Card panel ---------- */
+  .nameplate .card {
+    background: rgba(8, 8, 14, 0.88);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    padding: 18px 32px 16px;
+    min-width: 320px;
+    max-width: 480px;
+    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.4);
+    opacity: 0;
+  }
+
+  .nameplate.left .card {
+    border-radius: 0 0 10px 0;
+    clip-path: inset(0 100% 0 0);
+  }
+
+  .nameplate.right .card {
+    border-radius: 0 0 0 10px;
+    clip-path: inset(0 0 0 100%);
+  }
+
+  /* ---------- Name ---------- */
+  .nameplate .name {
+    font-size: 34px;
+    font-weight: 700;
+    color: #ffffff;
+    line-height: 1.15;
+    white-space: nowrap;
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  /* ---------- Title ---------- */
+  .nameplate .person-title {
+    font-size: 17px;
+    font-weight: 400;
+    color: rgba(255, 255, 255, 0.65);
+    line-height: 1.3;
+    white-space: nowrap;
+    margin-top: 4px;
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  /* ---------- Company ---------- */
+  .nameplate .company {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    white-space: nowrap;
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  /* ---------- Center divider ---------- */
+  #center-divider {
+    position: absolute;
+    bottom: 64px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 1px;
+    height: 0;
+    background: linear-gradient(
+      to bottom,
+      transparent,
+      rgba(255, 255, 255, 0.15) 30%,
+      rgba(255, 255, 255, 0.15) 70%,
+      transparent
+    );
+    opacity: 0;
+  }
+
+  /* ---------- Glow accents ---------- */
+  .nameplate .glow {
+    position: absolute;
+    bottom: -2px;
+    height: 2px;
+    border-radius: 1px;
+    opacity: 0;
+    filter: blur(2px);
+  }
+
+  .nameplate.left .glow {
+    left: 0;
+    width: 100%;
+    transform-origin: left center;
+    transform: scaleX(0);
+  }
+
+  .nameplate.right .glow {
+    right: 0;
+    width: 100%;
+    transform-origin: right center;
+    transform: scaleX(0);
+  }
+</style>
+</head>
+<body>
+
+<!-- Left nameplate -->
+<div class="nameplate left" id="left-plate">
+  <div class="accent-bar" id="left-accent"></div>
+  <div class="card" id="left-card">
+    <div class="name" id="left-name">Sarah Mitchell</div>
+    <div class="person-title" id="left-title">Senior Producer</div>
+    <div class="company" id="left-company">Meridian Studios</div>
+    <div class="glow" id="left-glow"></div>
+  </div>
+</div>
+
+<!-- Center divider -->
+<div id="center-divider"></div>
+
+<!-- Right nameplate -->
+<div class="nameplate right" id="right-plate">
+  <div class="accent-bar" id="right-accent"></div>
+  <div class="card" id="right-card">
+    <div class="name" id="right-name">David Park</div>
+    <div class="person-title" id="right-title">Creative Director</div>
+    <div class="company" id="right-company">Luminary Labs</div>
+    <div class="glow" id="right-glow"></div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script>
+(function() {
+  'use strict';
+
+  var left = {
+    accent:  document.getElementById('left-accent'),
+    card:    document.getElementById('left-card'),
+    name:    document.getElementById('left-name'),
+    title:   document.getElementById('left-title'),
+    company: document.getElementById('left-company'),
+    glow:    document.getElementById('left-glow')
+  };
+
+  var right = {
+    accent:  document.getElementById('right-accent'),
+    card:    document.getElementById('right-card'),
+    name:    document.getElementById('right-name'),
+    title:   document.getElementById('right-title'),
+    company: document.getElementById('right-company'),
+    glow:    document.getElementById('right-glow')
+  };
+
+  var divider = document.getElementById('center-divider');
+
+  var isVisible = false;
+  var playTL = null;
+  var stopTL = null;
+
+  // Visibility state: 0 = both, 1 = left only, 2 = right only, 3 = both (wraps)
+  var visState = 0;
+  var leftVisible = false;
+  var rightVisible = false;
+
+  var leftColor = '#3b82f6';
+  var rightColor = '#f59e0b';
+  var showCompany = true;
+
+  gsap.defaults({ overwrite: 'auto' });
+
+  function applyLeftColor(color) {
+    leftColor = color;
+    left.accent.style.background = color;
+    left.glow.style.background = color;
+    left.company.style.color = color;
+  }
+
+  function applyRightColor(color) {
+    rightColor = color;
+    right.accent.style.background = color;
+    right.glow.style.background = color;
+    right.company.style.color = color;
+  }
+
+  applyLeftColor(leftColor);
+  applyRightColor(rightColor);
+
+  // -------------------------------------------------------------------------
+  // Animate a single nameplate in
+  // -------------------------------------------------------------------------
+  function animateIn(plate, side, tl, offset) {
+    var clipIn  = side === 'left' ? 'inset(0 0% 0 0)' : 'inset(0 0 0 0%)';
+
+    // Accent bar
+    tl.to(plate.accent, {
+      scaleX: 1, opacity: 1,
+      duration: 0.35, ease: 'power3.out'
+    }, offset);
+
+    // Card reveals
+    tl.to(plate.card, {
+      clipPath: clipIn, opacity: 1,
+      duration: 0.4, ease: 'power3.out'
+    }, offset + 0.1);
+
+    // Name
+    tl.to(plate.name, {
+      opacity: 1, y: 0,
+      duration: 0.3, ease: 'power2.out'
+    }, offset + 0.25);
+
+    // Title
+    tl.to(plate.title, {
+      opacity: 1, y: 0,
+      duration: 0.25, ease: 'power2.out'
+    }, offset + 0.35);
+
+    // Company
+    if (showCompany) {
+      tl.to(plate.company, {
+        opacity: 1, y: 0,
+        duration: 0.25, ease: 'power2.out'
+      }, offset + 0.4);
+    }
+
+    // Glow
+    tl.to(plate.glow, {
+      scaleX: 1, opacity: 0.6,
+      duration: 0.4, ease: 'power2.out'
+    }, offset + 0.3);
+  }
+
+  // -------------------------------------------------------------------------
+  // Animate a single nameplate out
+  // -------------------------------------------------------------------------
+  function animateOut(plate, side, tl, offset) {
+    var clipOut = side === 'left' ? 'inset(0 100% 0 0)' : 'inset(0 0 0 100%)';
+
+    tl.to(plate.glow, {
+      scaleX: 0, opacity: 0,
+      duration: 0.2, ease: 'power2.in'
+    }, offset);
+
+    tl.to(plate.company, {
+      opacity: 0, y: 6,
+      duration: 0.15, ease: 'power2.in'
+    }, offset);
+
+    tl.to(plate.title, {
+      opacity: 0, y: 8,
+      duration: 0.15, ease: 'power2.in'
+    }, offset + 0.05);
+
+    tl.to(plate.name, {
+      opacity: 0, y: 10,
+      duration: 0.2, ease: 'power2.in'
+    }, offset + 0.08);
+
+    tl.to(plate.card, {
+      clipPath: clipOut, opacity: 0,
+      duration: 0.3, ease: 'power3.in'
+    }, offset + 0.12);
+
+    tl.to(plate.accent, {
+      scaleX: 0, opacity: 0,
+      duration: 0.2, ease: 'power2.in'
+    }, offset + 0.2);
+  }
+
+  // -------------------------------------------------------------------------
+  // Reset a nameplate to hidden state
+  // -------------------------------------------------------------------------
+  function resetPlate(plate, side) {
+    var clipHidden = side === 'left' ? 'inset(0 100% 0 0)' : 'inset(0 0 0 100%)';
+    gsap.set(plate.accent, { scaleX: 0, opacity: 0 });
+    gsap.set(plate.card,   { clipPath: clipHidden, opacity: 0 });
+    gsap.set(plate.name,   { opacity: 0, y: 10 });
+    gsap.set(plate.title,  { opacity: 0, y: 8 });
+    gsap.set(plate.company,{ opacity: 0, y: 6 });
+    gsap.set(plate.glow,   { scaleX: 0, opacity: 0 });
+  }
+
+  // -------------------------------------------------------------------------
+  // play() -- Staggered dual nameplate entrance
+  // -------------------------------------------------------------------------
+  window.play = function() {
+    if (stopTL) { stopTL.kill(); stopTL = null; }
+    isVisible = true;
+    leftVisible = true;
+    rightVisible = true;
+    visState = 0;
+
+    playTL = gsap.timeline({ onComplete: function() { playTL = null; } });
+
+    // Left nameplate first
+    animateIn(left, 'left', playTL, 0);
+
+    // Center divider
+    playTL.to(divider, {
+      height: 80, opacity: 1,
+      duration: 0.4, ease: 'power2.out'
+    }, 0.3);
+
+    // Right nameplate with stagger
+    animateIn(right, 'right', playTL, 0.25);
+  };
+
+  // -------------------------------------------------------------------------
+  // stop() -- Dual nameplate exit
+  // -------------------------------------------------------------------------
+  window.stop = function() {
+    if (playTL) { playTL.kill(); playTL = null; }
+
+    stopTL = gsap.timeline({
+      onComplete: function() {
+        isVisible = false;
+        leftVisible = false;
+        rightVisible = false;
+        visState = 0;
+        stopTL = null;
+        resetPlate(left, 'left');
+        resetPlate(right, 'right');
+        gsap.set(divider, { height: 0, opacity: 0 });
+      }
+    });
+
+    // Right exits first
+    if (rightVisible) {
+      animateOut(right, 'right', stopTL, 0);
+    }
+
+    // Divider collapses
+    stopTL.to(divider, {
+      height: 0, opacity: 0,
+      duration: 0.3, ease: 'power2.in'
+    }, 0.1);
+
+    // Left exits with stagger
+    if (leftVisible) {
+      animateOut(left, 'left', stopTL, 0.15);
+    }
+  };
+
+  // -------------------------------------------------------------------------
+  // update(data) -- Update nameplate content
+  // -------------------------------------------------------------------------
+  window.update = function(data) {
+    var d = (typeof data === 'string') ? JSON.parse(data) : data;
+    if (!d) return;
+
+    if (d.leftName != null)    left.name.textContent = d.leftName;
+    if (d.leftTitle != null)   left.title.textContent = d.leftTitle;
+    if (d.leftCompany != null) left.company.textContent = d.leftCompany;
+    if (d.leftColor != null)   applyLeftColor(d.leftColor);
+
+    if (d.rightName != null)    right.name.textContent = d.rightName;
+    if (d.rightTitle != null)   right.title.textContent = d.rightTitle;
+    if (d.rightCompany != null) right.company.textContent = d.rightCompany;
+    if (d.rightColor != null)   applyRightColor(d.rightColor);
+
+    if (d.showCompany != null) {
+      showCompany = d.showCompany;
+      left.company.style.display = showCompany ? 'block' : 'none';
+      right.company.style.display = showCompany ? 'block' : 'none';
+    }
+
+    // Flash both cards on update
+    if (isVisible) {
+      var flashTL = gsap.timeline();
+      if (leftVisible) {
+        flashTL.to(left.card, {
+          boxShadow: '0 0 25px rgba(59, 130, 246, 0.3)',
+          duration: 0.15, ease: 'power1.in'
+        }, 0);
+        flashTL.to(left.card, {
+          boxShadow: '0 8px 40px rgba(0, 0, 0, 0.4)',
+          duration: 0.4, ease: 'power1.out'
+        }, 0.15);
+      }
+      if (rightVisible) {
+        flashTL.to(right.card, {
+          boxShadow: '0 0 25px rgba(245, 158, 11, 0.3)',
+          duration: 0.15, ease: 'power1.in'
+        }, 0);
+        flashTL.to(right.card, {
+          boxShadow: '0 8px 40px rgba(0, 0, 0, 0.4)',
+          duration: 0.4, ease: 'power1.out'
+        }, 0.15);
+      }
+    }
+  };
+
+  // -------------------------------------------------------------------------
+  // next() -- Toggle visibility: both -> left only -> right only -> both
+  // -------------------------------------------------------------------------
+  window.next = function() {
+    if (!isVisible) return;
+
+    visState = (visState + 1) % 3;
+    var tl = gsap.timeline();
+
+    switch (visState) {
+      case 0:
+        // Show both
+        if (!leftVisible) {
+          animateIn(left, 'left', tl, 0);
+          leftVisible = true;
+        }
+        if (!rightVisible) {
+          animateIn(right, 'right', tl, 0.1);
+          rightVisible = true;
+        }
+        tl.to(divider, { height: 80, opacity: 1, duration: 0.3, ease: 'power2.out' }, 0.1);
+        break;
+
+      case 1:
+        // Left only — hide right
+        if (rightVisible) {
+          animateOut(right, 'right', tl, 0);
+          rightVisible = false;
+        }
+        tl.to(divider, { height: 0, opacity: 0, duration: 0.25, ease: 'power2.in' }, 0);
+        if (!leftVisible) {
+          animateIn(left, 'left', tl, 0.15);
+          leftVisible = true;
+        }
+        break;
+
+      case 2:
+        // Right only — hide left, show right
+        if (leftVisible) {
+          animateOut(left, 'left', tl, 0);
+          leftVisible = false;
+        }
+        tl.to(divider, { height: 0, opacity: 0, duration: 0.25, ease: 'power2.in' }, 0);
+        if (!rightVisible) {
+          animateIn(right, 'right', tl, 0.15);
+          rightVisible = true;
+        }
+        break;
+    }
+  };
+
+})();
+</script>
+</body>
+</html>

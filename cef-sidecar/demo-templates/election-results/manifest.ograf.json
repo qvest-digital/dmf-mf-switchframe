@@ -1,0 +1,117 @@
+{
+  "name": "election-results",
+  "description": "Professional election/voting results display with animated percentage bars, candidate rows, and reporting indicator",
+  "version": "1.0.0",
+  "steps": 2,
+  "dataSchema": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "title": "Election Title",
+        "default": "Presidential Election 2026"
+      },
+      "subtitle": {
+        "type": "string",
+        "title": "Subtitle / District",
+        "default": "National Results"
+      },
+      "reporting": {
+        "type": "number",
+        "title": "Percent Reporting",
+        "default": 67
+      },
+      "totalVotes": {
+        "type": "string",
+        "title": "Total Votes Cast",
+        "default": "48,291,037"
+      },
+      "candidate1Name": {
+        "type": "string",
+        "title": "Candidate 1 Name",
+        "default": "Alexandra Torres"
+      },
+      "candidate1Party": {
+        "type": "string",
+        "title": "Candidate 1 Party",
+        "default": "Democratic"
+      },
+      "candidate1Votes": {
+        "type": "string",
+        "title": "Candidate 1 Votes",
+        "default": "24,892,411"
+      },
+      "candidate1Pct": {
+        "type": "number",
+        "title": "Candidate 1 Percentage",
+        "default": 51.5
+      },
+      "candidate1Color": {
+        "type": "string",
+        "title": "Candidate 1 Color",
+        "default": "#3b82f6"
+      },
+      "candidate2Name": {
+        "type": "string",
+        "title": "Candidate 2 Name",
+        "default": "Robert Chen"
+      },
+      "candidate2Party": {
+        "type": "string",
+        "title": "Candidate 2 Party",
+        "default": "Republican"
+      },
+      "candidate2Votes": {
+        "type": "string",
+        "title": "Candidate 2 Votes",
+        "default": "22,104,218"
+      },
+      "candidate2Pct": {
+        "type": "number",
+        "title": "Candidate 2 Percentage",
+        "default": 45.8
+      },
+      "candidate2Color": {
+        "type": "string",
+        "title": "Candidate 2 Color",
+        "default": "#ef4444"
+      },
+      "candidate3Name": {
+        "type": "string",
+        "title": "Candidate 3 Name",
+        "default": "Jordan Mills"
+      },
+      "candidate3Party": {
+        "type": "string",
+        "title": "Candidate 3 Party",
+        "default": "Independent"
+      },
+      "candidate3Votes": {
+        "type": "string",
+        "title": "Candidate 3 Votes",
+        "default": "1,294,408"
+      },
+      "candidate3Pct": {
+        "type": "number",
+        "title": "Candidate 3 Percentage",
+        "default": 2.7
+      },
+      "candidate3Color": {
+        "type": "string",
+        "title": "Candidate 3 Color",
+        "default": "#a855f7"
+      },
+      "calledFor": {
+        "type": "string",
+        "title": "Called For (candidate name, blank if not called)",
+        "default": ""
+      }
+    },
+    "required": ["title", "candidate1Name", "candidate2Name"]
+  },
+  "renderRequirements": {
+    "width": 1920,
+    "height": 1080,
+    "frameRate": 30
+  }
+}

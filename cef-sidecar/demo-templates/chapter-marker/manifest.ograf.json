@@ -1,0 +1,69 @@
+{
+  "name": "chapter-marker",
+  "description": "Compact chapter marker notification with frosted glass pill, progress indicator, and slide-down entrance for long-form content segment indicators",
+  "version": "1.0.0",
+  "steps": 1,
+  "dataSchema": {
+    "type": "object",
+    "properties": {
+      "chapter": {
+        "type": "number",
+        "title": "Chapter Number",
+        "default": 3
+      },
+      "title": {
+        "type": "string",
+        "title": "Chapter Title",
+        "default": "Deep Dive: Architecture"
+      },
+      "timestamp": {
+        "type": "string",
+        "title": "Timestamp",
+        "default": "14:32"
+      },
+      "totalChapters": {
+        "type": "number",
+        "title": "Total Chapters",
+        "default": 8
+      },
+      "accentColor": {
+        "type": "string",
+        "title": "Accent Color",
+        "default": "#8b5cf6"
+      },
+      "holdDuration": {
+        "type": "number",
+        "title": "Hold Duration (seconds)",
+        "default": 5
+      },
+      "showTimestamp": {
+        "type": "boolean",
+        "title": "Show Timestamp",
+        "default": true
+      },
+      "showProgress": {
+        "type": "boolean",
+        "title": "Show Chapter Progress",
+        "default": true
+      },
+      "position": {
+        "type": "string",
+        "title": "Position",
+        "default": "top-left",
+        "enum": ["top-left", "top-right", "bottom-left", "bottom-right"]
+      },
+      "size": {
+        "type": "string",
+        "title": "Size",
+        "default": "normal",
+        "enum": ["compact", "normal", "large"]
+      }
+    },
+    "required": ["chapter", "title"]
+  },
+  "renderRequirements": {
+    "width": 1920,
+    "height": 1080,
+    "frameRate": 30
+  }
+}

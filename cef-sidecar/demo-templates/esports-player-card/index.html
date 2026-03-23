@@ -1,0 +1,907 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Esports Player Card (OGraf)</title>
+<link rel="ograf-manifest" href="manifest.ograf.json">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Orbitron:wght@500;700;900&display=swap" rel="stylesheet">
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    overflow: hidden;
+    width: 100%;
+    height: 100%;
+  }
+</style>
+</head>
+<body>
+
+<esports-player-card></esports-player-card>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+
+<script>
+class EsportsPlayerCard extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: 'open' });
+
+    this._isVisible = false;
+    this._currentStep = 0;
+    this._playTL = null;
+    this._stopTL = null;
+    this._data = {
+      playerName: 'Faker', teamTag: 'T1', role: 'Mid Lane',
+      kills: 12, deaths: 2, assists: 8,
+      winRate: '73%', gamesPlayed: 142,
+      teamColor: '#e2012d', accentColor: '#ffd700'
+    };
+
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host {
+          display: block;
+          position: absolute;
+          bottom: 80px;
+          left: 60px;
+          pointer-events: none;
+          -webkit-font-smoothing: antialiased;
+          -moz-osx-font-smoothing: grayscale;
+        }
+
+        .card {
+          position: relative;
+          width: 680px;
+          overflow: visible;
+        }
+
+        /* --- Decorative grid lines --- */
+        .deco-lines {
+          position: absolute;
+          top: -20px;
+          left: -20px;
+          right: -20px;
+          bottom: -20px;
+          pointer-events: none;
+          opacity: 0;
+        }
+        .deco-lines .h-line {
+          position: absolute;
+          left: 0;
+          right: 0;
+          height: 1px;
+          background: var(--team-color);
+          opacity: 0.15;
+        }
+        .deco-lines .h-line:nth-child(1) { top: 0; }
+        .deco-lines .h-line:nth-child(2) { bottom: 0; }
+        .deco-lines .v-line {
+          position: absolute;
+          top: 0;
+          bottom: 0;
+          width: 1px;
+          background: var(--team-color);
+          opacity: 0.15;
+        }
+        .deco-lines .v-line:nth-child(3) { left: 0; }
+        .deco-lines .v-line:nth-child(4) { right: 0; }
+        .deco-dot {
+          position: absolute;
+          width: 4px;
+          height: 4px;
+          background: var(--team-color);
+          opacity: 0;
+        }
+        .deco-dot:nth-child(5) { top: -2px; left: -2px; }
+        .deco-dot:nth-child(6) { top: -2px; right: -2px; }
+        .deco-dot:nth-child(7) { bottom: -2px; left: -2px; }
+        .deco-dot:nth-child(8) { bottom: -2px; right: -2px; }
+
+        /* --- Main panel --- */
+        .main-panel {
+          position: relative;
+          background: rgba(8, 8, 16, 0.92);
+          backdrop-filter: blur(16px);
+          -webkit-backdrop-filter: blur(16px);
+          clip-path: polygon(0 0, calc(100% - 24px) 0, 100% 24px, 100% 100%, 24px 100%, 0 calc(100% - 24px));
+          padding: 0;
+          overflow: hidden;
+          opacity: 0;
+          transform: translateX(-60px);
+        }
+
+        /* Angled top-right corner accent */
+        .corner-accent {
+          position: absolute;
+          top: 0;
+          right: 0;
+          width: 48px;
+          height: 48px;
+          overflow: hidden;
+          opacity: 0;
+        }
+        .corner-accent::after {
+          content: '';
+          position: absolute;
+          top: -24px;
+          right: -24px;
+          width: 48px;
+          height: 48px;
+          background: var(--team-color);
+          transform: rotate(45deg);
+        }
+
+        /* Team color top edge */
+        .top-edge {
+          height: 3px;
+          background: linear-gradient(90deg, var(--team-color), var(--accent-color));
+          transform: scaleX(0);
+          transform-origin: left;
+        }
+
+        /* --- Content area --- */
+        .content {
+          padding: 28px 32px 24px;
+          display: flex;
+          gap: 24px;
+          align-items: flex-start;
+        }
+
+        /* --- Avatar ring --- */
+        .avatar-area {
+          flex-shrink: 0;
+          width: 100px;
+          height: 100px;
+          position: relative;
+          opacity: 0;
+          transform: scale(0.5);
+        }
+        .avatar-ring {
+          width: 100px;
+          height: 100px;
+          border: 3px solid var(--team-color);
+          clip-path: polygon(50% 0%, 93% 25%, 93% 75%, 50% 100%, 7% 75%, 7% 25%);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          position: relative;
+        }
+        .avatar-inner {
+          width: 82px;
+          height: 82px;
+          clip-path: polygon(50% 0%, 93% 25%, 93% 75%, 50% 100%, 7% 75%, 7% 25%);
+          background: linear-gradient(135deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02));
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .avatar-icon {
+          font-size: 36px;
+          color: var(--team-color);
+          font-family: 'Orbitron', monospace;
+          font-weight: 900;
+          text-transform: uppercase;
+          opacity: 0.8;
+        }
+        .avatar-glow {
+          position: absolute;
+          inset: -6px;
+          clip-path: polygon(50% 0%, 93% 25%, 93% 75%, 50% 100%, 7% 75%, 7% 25%);
+          background: var(--team-color);
+          opacity: 0;
+          filter: blur(12px);
+          z-index: -1;
+        }
+
+        /* --- Info block --- */
+        .info {
+          flex: 1;
+          min-width: 0;
+        }
+
+        .team-tag {
+          font-family: 'Orbitron', monospace;
+          font-size: 14px;
+          font-weight: 700;
+          color: var(--team-color);
+          letter-spacing: 0.2em;
+          text-transform: uppercase;
+          margin-bottom: 4px;
+          opacity: 0;
+          transform: translateX(-20px);
+        }
+
+        .player-name {
+          font-family: 'Orbitron', monospace;
+          font-size: 48px;
+          font-weight: 900;
+          color: #ffffff;
+          line-height: 1.05;
+          letter-spacing: 0.02em;
+          text-transform: uppercase;
+          text-shadow: 0 0 30px rgba(255,255,255,0.15);
+          white-space: nowrap;
+          opacity: 0;
+          transform: translateX(-30px);
+        }
+
+        .role-badge {
+          display: inline-block;
+          font-family: 'Rajdhani', sans-serif;
+          font-size: 16px;
+          font-weight: 600;
+          color: rgba(255,255,255,0.9);
+          background: linear-gradient(135deg, var(--team-color), transparent);
+          padding: 3px 16px 3px 12px;
+          clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 100%, 0 100%);
+          margin-top: 8px;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          opacity: 0;
+          transform: translateX(-20px);
+        }
+
+        /* --- Stats row (overview) --- */
+        .stats-row {
+          display: flex;
+          gap: 0;
+          margin-top: 16px;
+          padding-top: 14px;
+          border-top: 1px solid rgba(255,255,255,0.06);
+        }
+
+        .stat-block {
+          flex: 1;
+          text-align: center;
+          position: relative;
+          opacity: 0;
+          transform: translateY(15px);
+        }
+        .stat-block + .stat-block::before {
+          content: '';
+          position: absolute;
+          left: 0;
+          top: 4px;
+          bottom: 4px;
+          width: 1px;
+          background: rgba(255,255,255,0.08);
+        }
+        .stat-value {
+          font-family: 'Orbitron', monospace;
+          font-size: 28px;
+          font-weight: 700;
+          color: var(--accent-color);
+          line-height: 1;
+        }
+        .stat-label {
+          font-family: 'Rajdhani', sans-serif;
+          font-size: 12px;
+          font-weight: 500;
+          color: rgba(255,255,255,0.45);
+          text-transform: uppercase;
+          letter-spacing: 0.15em;
+          margin-top: 4px;
+        }
+
+        /* --- Detailed stats (step 2) --- */
+        .detail-stats {
+          display: none;
+          margin-top: 16px;
+          padding-top: 14px;
+          border-top: 1px solid rgba(255,255,255,0.06);
+        }
+        .detail-stats.active {
+          display: block;
+        }
+        .detail-row {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 6px 0;
+          opacity: 0;
+          transform: translateX(-15px);
+        }
+        .detail-row + .detail-row {
+          border-top: 1px solid rgba(255,255,255,0.04);
+        }
+        .detail-label {
+          font-family: 'Rajdhani', sans-serif;
+          font-size: 16px;
+          font-weight: 500;
+          color: rgba(255,255,255,0.5);
+          text-transform: uppercase;
+          letter-spacing: 0.1em;
+        }
+        .detail-value {
+          font-family: 'Orbitron', monospace;
+          font-size: 20px;
+          font-weight: 700;
+          color: #ffffff;
+        }
+        .detail-bar {
+          flex: 1;
+          margin: 0 16px;
+          height: 3px;
+          background: rgba(255,255,255,0.06);
+          position: relative;
+          overflow: hidden;
+        }
+        .detail-bar-fill {
+          position: absolute;
+          top: 0;
+          left: 0;
+          height: 100%;
+          background: var(--team-color);
+          width: 0;
+        }
+
+        /* --- Scanline effect --- */
+        .scanline {
+          position: absolute;
+          top: 0;
+          left: 0;
+          right: 0;
+          height: 2px;
+          background: linear-gradient(90deg, transparent, var(--team-color), transparent);
+          opacity: 0;
+          z-index: 10;
+        }
+
+        /* --- Particle dots --- */
+        .particles {
+          position: absolute;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          pointer-events: none;
+          overflow: hidden;
+        }
+        .particle {
+          position: absolute;
+          width: 2px;
+          height: 2px;
+          background: var(--team-color);
+          opacity: 0;
+        }
+      </style>
+
+      <div class="card" id="card">
+        <!-- Decorative lines -->
+        <div class="deco-lines" id="deco-lines">
+          <div class="h-line"></div>
+          <div class="h-line"></div>
+          <div class="v-line"></div>
+          <div class="v-line"></div>
+          <div class="deco-dot"></div>
+          <div class="deco-dot"></div>
+          <div class="deco-dot"></div>
+          <div class="deco-dot"></div>
+        </div>
+
+        <!-- Main panel -->
+        <div class="main-panel" id="main-panel">
+          <!-- Scanline -->
+          <div class="scanline" id="scanline"></div>
+          <!-- Particles -->
+          <div class="particles" id="particles"></div>
+          <!-- Corner accent -->
+          <div class="corner-accent" id="corner-accent"></div>
+          <!-- Top edge -->
+          <div class="top-edge" id="top-edge"></div>
+
+          <div class="content">
+            <!-- Avatar -->
+            <div class="avatar-area" id="avatar-area">
+              <div class="avatar-glow" id="avatar-glow"></div>
+              <div class="avatar-ring">
+                <div class="avatar-inner">
+                  <span class="avatar-icon" id="avatar-icon"></span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Info -->
+            <div class="info">
+              <div class="team-tag" id="team-tag"></div>
+              <div class="player-name" id="player-name"></div>
+              <div class="role-badge" id="role-badge"></div>
+
+              <!-- Overview stats (step 1) -->
+              <div class="stats-row" id="stats-row">
+                <div class="stat-block" id="stat-k">
+                  <div class="stat-value" id="val-k">0</div>
+                  <div class="stat-label">Kills</div>
+                </div>
+                <div class="stat-block" id="stat-d">
+                  <div class="stat-value" id="val-d">0</div>
+                  <div class="stat-label">Deaths</div>
+                </div>
+                <div class="stat-block" id="stat-a">
+                  <div class="stat-value" id="val-a">0</div>
+                  <div class="stat-label">Assists</div>
+                </div>
+                <div class="stat-block" id="stat-kda">
+                  <div class="stat-value" id="val-kda">0.0</div>
+                  <div class="stat-label">KDA</div>
+                </div>
+              </div>
+
+              <!-- Detail stats (step 2) -->
+              <div class="detail-stats" id="detail-stats">
+                <div class="detail-row" id="dr-kills">
+                  <span class="detail-label">Kills</span>
+                  <div class="detail-bar"><div class="detail-bar-fill" id="bar-kills"></div></div>
+                  <span class="detail-value" id="dv-kills">0</span>
+                </div>
+                <div class="detail-row" id="dr-deaths">
+                  <span class="detail-label">Deaths</span>
+                  <div class="detail-bar"><div class="detail-bar-fill" id="bar-deaths"></div></div>
+                  <span class="detail-value" id="dv-deaths">0</span>
+                </div>
+                <div class="detail-row" id="dr-assists">
+                  <span class="detail-label">Assists</span>
+                  <div class="detail-bar"><div class="detail-bar-fill" id="bar-assists"></div></div>
+                  <span class="detail-value" id="dv-assists">0</span>
+                </div>
+                <div class="detail-row" id="dr-winrate">
+                  <span class="detail-label">Win Rate</span>
+                  <div class="detail-bar"><div class="detail-bar-fill" id="bar-winrate"></div></div>
+                  <span class="detail-value" id="dv-winrate">0%</span>
+                </div>
+                <div class="detail-row" id="dr-games">
+                  <span class="detail-label">Games</span>
+                  <div class="detail-bar"><div class="detail-bar-fill" id="bar-games"></div></div>
+                  <span class="detail-value" id="dv-games">0</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    this._els = {
+      card: this.shadowRoot.getElementById('card'),
+      decoLines: this.shadowRoot.getElementById('deco-lines'),
+      mainPanel: this.shadowRoot.getElementById('main-panel'),
+      scanline: this.shadowRoot.getElementById('scanline'),
+      particles: this.shadowRoot.getElementById('particles'),
+      cornerAccent: this.shadowRoot.getElementById('corner-accent'),
+      topEdge: this.shadowRoot.getElementById('top-edge'),
+      avatarArea: this.shadowRoot.getElementById('avatar-area'),
+      avatarGlow: this.shadowRoot.getElementById('avatar-glow'),
+      avatarIcon: this.shadowRoot.getElementById('avatar-icon'),
+      teamTag: this.shadowRoot.getElementById('team-tag'),
+      playerName: this.shadowRoot.getElementById('player-name'),
+      roleBadge: this.shadowRoot.getElementById('role-badge'),
+      statsRow: this.shadowRoot.getElementById('stats-row'),
+      detailStats: this.shadowRoot.getElementById('detail-stats'),
+      valK: this.shadowRoot.getElementById('val-k'),
+      valD: this.shadowRoot.getElementById('val-d'),
+      valA: this.shadowRoot.getElementById('val-a'),
+      valKda: this.shadowRoot.getElementById('val-kda'),
+      statBlocks: this.shadowRoot.querySelectorAll('.stat-block'),
+      detailRows: this.shadowRoot.querySelectorAll('.detail-row'),
+    };
+
+    // Create particle elements
+    this._particleEls = [];
+    for (let i = 0; i < 16; i++) {
+      const p = document.createElement('div');
+      p.className = 'particle';
+      p.style.left = Math.random() * 100 + '%';
+      p.style.top = Math.random() * 100 + '%';
+      this._els.particles.appendChild(p);
+      this._particleEls.push(p);
+    }
+  }
+
+  _applyColors() {
+    this._els.card.style.setProperty('--team-color', this._data.teamColor);
+    this._els.card.style.setProperty('--accent-color', this._data.accentColor);
+  }
+
+  _populateData() {
+    const d = this._data;
+    this._els.teamTag.textContent = d.teamTag;
+    this._els.playerName.textContent = d.playerName;
+    this._els.roleBadge.textContent = d.role;
+    this._els.avatarIcon.textContent = d.playerName.charAt(0);
+    this._els.valK.textContent = d.kills;
+    this._els.valD.textContent = d.deaths;
+    this._els.valA.textContent = d.assists;
+    const kda = d.deaths > 0 ? ((d.kills + d.assists) / d.deaths).toFixed(1) : (d.kills + d.assists).toFixed(1);
+    this._els.valKda.textContent = kda;
+
+    // Detail values
+    this.shadowRoot.getElementById('dv-kills').textContent = d.kills;
+    this.shadowRoot.getElementById('dv-deaths').textContent = d.deaths;
+    this.shadowRoot.getElementById('dv-assists').textContent = d.assists;
+    this.shadowRoot.getElementById('dv-winrate').textContent = d.winRate;
+    this.shadowRoot.getElementById('dv-games').textContent = d.gamesPlayed;
+  }
+
+  _calcKDA() {
+    const d = this._data;
+    return d.deaths > 0 ? ((d.kills + d.assists) / d.deaths).toFixed(1) : (d.kills + d.assists).toFixed(1);
+  }
+
+  async load(data) {
+    if (data) this._data = { ...this._data, ...data };
+    this._applyColors();
+    this._populateData();
+    this._currentStep = 0;
+    this._resetToHidden();
+    return { status: 200 };
+  }
+
+  async playAction(opts) {
+    if (this._stopTL) { this._stopTL.kill(); this._stopTL = null; }
+    this._isVisible = true;
+    this._currentStep = 0;
+    const els = this._els;
+
+    return new Promise((resolve) => {
+      this._playTL = gsap.timeline({
+        defaults: { overwrite: 'auto' },
+        onComplete: () => { this._playTL = null; resolve({ status: 200 }); }
+      });
+
+      // Scanline sweep
+      this._playTL.to(els.scanline, {
+        opacity: 0.6,
+        duration: 0.05,
+      }, 0);
+      this._playTL.to(els.scanline, {
+        top: '100%',
+        duration: 0.4,
+        ease: 'power2.in',
+      }, 0);
+      this._playTL.to(els.scanline, { opacity: 0, duration: 0.1 }, 0.35);
+
+      // Panel slides in
+      this._playTL.to(els.mainPanel, {
+        opacity: 1, x: 0,
+        duration: 0.45,
+        ease: 'power3.out',
+      }, 0.05);
+
+      // Top edge wipes
+      this._playTL.to(els.topEdge, {
+        scaleX: 1,
+        duration: 0.35,
+        ease: 'power2.out',
+      }, 0.15);
+
+      // Corner accent
+      this._playTL.to(els.cornerAccent, {
+        opacity: 1,
+        duration: 0.2,
+        ease: 'power1.out',
+      }, 0.3);
+
+      // Deco lines
+      this._playTL.to(els.decoLines, {
+        opacity: 1,
+        duration: 0.3,
+      }, 0.2);
+      // Deco dots
+      this._playTL.to(this.shadowRoot.querySelectorAll('.deco-dot'), {
+        opacity: 0.4,
+        duration: 0.2,
+        stagger: 0.05,
+      }, 0.25);
+
+      // Avatar pops in
+      this._playTL.to(els.avatarArea, {
+        opacity: 1, scale: 1,
+        duration: 0.4,
+        ease: 'back.out(1.5)',
+      }, 0.2);
+      // Avatar glow pulse
+      this._playTL.to(els.avatarGlow, {
+        opacity: 0.3,
+        duration: 0.3,
+        ease: 'power1.out',
+      }, 0.4);
+      this._playTL.to(els.avatarGlow, {
+        opacity: 0.12,
+        duration: 0.5,
+        ease: 'power1.inOut',
+      }, 0.7);
+
+      // Team tag
+      this._playTL.to(els.teamTag, {
+        opacity: 1, x: 0,
+        duration: 0.3,
+        ease: 'power2.out',
+      }, 0.25);
+
+      // Player name (dramatic slide)
+      this._playTL.to(els.playerName, {
+        opacity: 1, x: 0,
+        duration: 0.4,
+        ease: 'power3.out',
+      }, 0.3);
+
+      // Role badge
+      this._playTL.to(els.roleBadge, {
+        opacity: 1, x: 0,
+        duration: 0.3,
+        ease: 'power2.out',
+      }, 0.4);
+
+      // Stat blocks stagger
+      els.statBlocks.forEach((block, i) => {
+        this._playTL.to(block, {
+          opacity: 1, y: 0,
+          duration: 0.3,
+          ease: 'power2.out',
+        }, 0.5 + i * 0.08);
+      });
+
+      // Animated stat counting
+      const d = this._data;
+      const countTargets = [
+        { el: els.valK, val: d.kills, dec: 0 },
+        { el: els.valD, val: d.deaths, dec: 0 },
+        { el: els.valA, val: d.assists, dec: 0 },
+        { el: els.valKda, val: parseFloat(this._calcKDA()), dec: 1 },
+      ];
+      countTargets.forEach((t, i) => {
+        const proxy = { v: 0 };
+        this._playTL.to(proxy, {
+          v: t.val,
+          duration: 0.6,
+          ease: 'power1.out',
+          onUpdate: () => { t.el.textContent = proxy.v.toFixed(t.dec); },
+        }, 0.55 + i * 0.08);
+      });
+
+      // Particle float
+      this._particleEls.forEach((p, i) => {
+        this._playTL.to(p, {
+          opacity: 0.25 + Math.random() * 0.25,
+          y: -(20 + Math.random() * 40),
+          duration: 0.8 + Math.random() * 0.6,
+          ease: 'power1.out',
+        }, 0.3 + i * 0.04);
+      });
+    });
+  }
+
+  async stopAction(opts) {
+    if (this._playTL) { this._playTL.kill(); this._playTL = null; }
+    const els = this._els;
+
+    return new Promise((resolve) => {
+      this._stopTL = gsap.timeline({
+        defaults: { overwrite: 'auto' },
+        onComplete: () => {
+          this._isVisible = false;
+          this._stopTL = null;
+          this._resetToHidden();
+          resolve({ status: 200 });
+        }
+      });
+
+      // Particles fade
+      this._stopTL.to(this._particleEls, {
+        opacity: 0, duration: 0.2,
+      }, 0);
+
+      // Stats collapse
+      this._stopTL.to(els.statBlocks, {
+        opacity: 0, y: 10,
+        duration: 0.2, stagger: 0.03,
+      }, 0);
+      this._stopTL.to(this.shadowRoot.querySelectorAll('.detail-row'), {
+        opacity: 0, x: -10,
+        duration: 0.2, stagger: 0.02,
+      }, 0);
+
+      // Text out
+      this._stopTL.to([els.roleBadge, els.teamTag], {
+        opacity: 0, x: -15,
+        duration: 0.2,
+      }, 0.1);
+      this._stopTL.to(els.playerName, {
+        opacity: 0, x: -25,
+        duration: 0.25,
+        ease: 'power2.in',
+      }, 0.12);
+
+      // Avatar
+      this._stopTL.to(els.avatarGlow, { opacity: 0, duration: 0.15 }, 0.15);
+      this._stopTL.to(els.avatarArea, {
+        opacity: 0, scale: 0.7,
+        duration: 0.25, ease: 'power2.in',
+      }, 0.15);
+
+      // Panel slides out
+      this._stopTL.to(els.topEdge, { scaleX: 0, duration: 0.2 }, 0.2);
+      this._stopTL.to(els.cornerAccent, { opacity: 0, duration: 0.15 }, 0.2);
+      this._stopTL.to(els.mainPanel, {
+        opacity: 0, x: -40,
+        duration: 0.35, ease: 'power3.in',
+      }, 0.25);
+
+      // Deco
+      this._stopTL.to(this.shadowRoot.querySelectorAll('.deco-dot'), {
+        opacity: 0, duration: 0.15,
+      }, 0.2);
+      this._stopTL.to(els.decoLines, { opacity: 0, duration: 0.2 }, 0.25);
+    });
+  }
+
+  async updateAction(opts) {
+    if (!opts || !opts.data) return { status: 200 };
+    const data = opts.data;
+    let changed = false;
+
+    for (const key of Object.keys(data)) {
+      if (data[key] != null && data[key] !== this._data[key]) {
+        this._data[key] = data[key];
+        changed = true;
+      }
+    }
+
+    if (!changed) return { status: 200 };
+
+    this._applyColors();
+    this._populateData();
+
+    if (this._isVisible) {
+      // Flash accent on update
+      return new Promise((resolve) => {
+        const tl = gsap.timeline({ onComplete: () => resolve({ status: 200 }) });
+        tl.to(this._els.topEdge, { opacity: 0.5, duration: 0.1 });
+        tl.to(this._els.topEdge, { opacity: 1, duration: 0.3 });
+
+        // Re-count stats if visible
+        if (this._currentStep === 0) {
+          const d = this._data;
+          const countTargets = [
+            { el: this._els.valK, val: d.kills, dec: 0 },
+            { el: this._els.valD, val: d.deaths, dec: 0 },
+            { el: this._els.valA, val: d.assists, dec: 0 },
+            { el: this._els.valKda, val: parseFloat(this._calcKDA()), dec: 1 },
+          ];
+          countTargets.forEach((t) => {
+            const cur = parseFloat(t.el.textContent) || 0;
+            const proxy = { v: cur };
+            tl.to(proxy, {
+              v: t.val, duration: 0.4, ease: 'power1.out',
+              onUpdate: () => { t.el.textContent = proxy.v.toFixed(t.dec); },
+            }, 0);
+          });
+        }
+      });
+    }
+    return { status: 200 };
+  }
+
+  async customAction(opts) {
+    if (!opts || !opts.action) return { status: 200 };
+
+    if (opts.action === 'next') {
+      return this._toggleStep();
+    }
+    return { status: 200 };
+  }
+
+  async _toggleStep() {
+    if (!this._isVisible) return { status: 200 };
+    const els = this._els;
+
+    if (this._currentStep === 0) {
+      // Transition to detailed stats
+      this._currentStep = 1;
+      return new Promise((resolve) => {
+        const tl = gsap.timeline({ onComplete: () => resolve({ status: 200 }) });
+
+        // Fade out overview stats
+        tl.to(els.statBlocks, {
+          opacity: 0, y: -10,
+          duration: 0.2, stagger: 0.03,
+        });
+        tl.call(() => {
+          els.statsRow.style.display = 'none';
+          els.detailStats.classList.add('active');
+        });
+
+        // Animate detail rows in
+        const d = this._data;
+        const maxStat = Math.max(d.kills, d.deaths, d.assists, 1);
+        const wrPct = parseInt(d.winRate) || 0;
+        const barData = [
+          { id: 'bar-kills', pct: (d.kills / maxStat) * 100 },
+          { id: 'bar-deaths', pct: (d.deaths / maxStat) * 100 },
+          { id: 'bar-assists', pct: (d.assists / maxStat) * 100 },
+          { id: 'bar-winrate', pct: wrPct },
+          { id: 'bar-games', pct: Math.min((d.gamesPlayed / 200) * 100, 100) },
+        ];
+
+        const rows = this.shadowRoot.querySelectorAll('.detail-row');
+        rows.forEach((row, i) => {
+          tl.to(row, {
+            opacity: 1, x: 0,
+            duration: 0.3, ease: 'power2.out',
+          }, 0.35 + i * 0.07);
+          tl.to(this.shadowRoot.getElementById(barData[i].id), {
+            width: barData[i].pct + '%',
+            duration: 0.5, ease: 'power2.out',
+          }, 0.4 + i * 0.07);
+        });
+      });
+    } else {
+      // Transition back to overview
+      this._currentStep = 0;
+      return new Promise((resolve) => {
+        const tl = gsap.timeline({ onComplete: () => resolve({ status: 200 }) });
+
+        const rows = this.shadowRoot.querySelectorAll('.detail-row');
+        tl.to(rows, {
+          opacity: 0, x: -10,
+          duration: 0.2, stagger: 0.02,
+        });
+        // Reset bar fills
+        tl.call(() => {
+          this.shadowRoot.querySelectorAll('.detail-bar-fill').forEach(b => { b.style.width = '0'; });
+          els.detailStats.classList.remove('active');
+          els.statsRow.style.display = '';
+        });
+
+        els.statBlocks.forEach((block, i) => {
+          tl.to(block, {
+            opacity: 1, y: 0,
+            duration: 0.3, ease: 'power2.out',
+          }, 0.3 + i * 0.06);
+        });
+      });
+    }
+  }
+
+  dispose() {
+    if (this._playTL) { this._playTL.kill(); this._playTL = null; }
+    if (this._stopTL) { this._stopTL.kill(); this._stopTL = null; }
+    gsap.killTweensOf(Object.values(this._els));
+    this._isVisible = false;
+  }
+
+  _resetToHidden() {
+    const els = this._els;
+    gsap.set(els.mainPanel, { opacity: 0, x: -60 });
+    gsap.set(els.topEdge, { scaleX: 0 });
+    gsap.set(els.cornerAccent, { opacity: 0 });
+    gsap.set(els.decoLines, { opacity: 0 });
+    gsap.set(this.shadowRoot.querySelectorAll('.deco-dot'), { opacity: 0 });
+    gsap.set(els.avatarArea, { opacity: 0, scale: 0.5 });
+    gsap.set(els.avatarGlow, { opacity: 0 });
+    gsap.set(els.teamTag, { opacity: 0, x: -20 });
+    gsap.set(els.playerName, { opacity: 0, x: -30 });
+    gsap.set(els.roleBadge, { opacity: 0, x: -20 });
+    gsap.set(els.statBlocks, { opacity: 0, y: 15 });
+    gsap.set(this.shadowRoot.querySelectorAll('.detail-row'), { opacity: 0, x: -15 });
+    gsap.set(this.shadowRoot.querySelectorAll('.detail-bar-fill'), { width: 0 });
+    gsap.set(els.scanline, { top: 0, opacity: 0 });
+    gsap.set(this._particleEls, { opacity: 0, y: 0 });
+    els.statsRow.style.display = '';
+    els.detailStats.classList.remove('active');
+
+    this._els.valK.textContent = '0';
+    this._els.valD.textContent = '0';
+    this._els.valA.textContent = '0';
+    this._els.valKda.textContent = '0.0';
+  }
+}
+
+customElements.define('esports-player-card', EsportsPlayerCard);
+</script>
+</body>
+</html>

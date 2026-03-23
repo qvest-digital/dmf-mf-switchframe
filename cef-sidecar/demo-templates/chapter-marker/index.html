@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Chapter Marker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    background: transparent;
+    overflow: hidden;
+    width: 100%; height: 100%;
+    font-family: 'Outfit', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* ---------- Marker container ---------- */
+  #marker {
+    position: absolute;
+    top: 48px;
+    left: 48px;
+    display: flex;
+    align-items: stretch;
+    border-radius: 14px;
+    overflow: hidden;
+    pointer-events: none;
+    opacity: 0;
+    transform: translateY(-24px);
+    box-shadow:
+      0 12px 48px rgba(0, 0, 0, 0.5),
+      0 0 0 1px rgba(255, 255, 255, 0.06);
+  }
+
+  /* Position variants */
+  #marker.pos-top-right {
+    left: auto;
+    right: 48px;
+  }
+
+  #marker.pos-bottom-left {
+    top: auto;
+    bottom: 48px;
+    transform: translateY(24px);
+  }
+
+  #marker.pos-bottom-right {
+    top: auto;
+    left: auto;
+    bottom: 48px;
+    right: 48px;
+    transform: translateY(24px);
+  }
+
+  /* ---------- Chapter badge (left section) ---------- */
+  #badge {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 56px;
+    min-height: 56px;
+    flex-shrink: 0;
+    position: relative;
+    overflow: hidden;
+  }
+
+  #badge-number {
+    font-size: 22px;
+    font-weight: 700;
+    color: #ffffff;
+    position: relative;
+    z-index: 2;
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  }
+
+  /* Animated ring around badge number */
+  #badge-ring {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 38px;
+    height: 38px;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-radius: 50%;
+    transform: translate(-50%, -50%) scale(0);
+    opacity: 0;
+  }
+
+  /* ---------- Content section ---------- */
+  #content {
+    background: rgba(10, 10, 16, 0.85);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    padding: 14px 22px 14px 18px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 2px;
+    min-width: 200px;
+  }
+
+  /* ---------- Top row: title + timestamp ---------- */
+  #top-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  #chapter-title {
+    font-size: 17px;
+    font-weight: 600;
+    color: #ffffff;
+    white-space: nowrap;
+    line-height: 1.2;
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+
+  #timestamp {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    font-weight: 500;
+    color: rgba(255, 255, 255, 0.4);
+    white-space: nowrap;
+    opacity: 0;
+    transform: translateX(8px);
+  }
+
+  /* ---------- Bottom row: chapter progress ---------- */
+  #progress-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+  }
+
+  #progress-label {
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.5px;
+    color: rgba(255, 255, 255, 0.35);
+    white-space: nowrap;
+    opacity: 0;
+  }
+
+  /* ---------- Hold progress bar ---------- */
+  #progress-track {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 0 0 14px 14px;
+    overflow: hidden;
+    opacity: 0;
+  }
+
+  #progress-fill {
+    height: 100%;
+    width: 0%;
+    border-radius: 0 0 14px 14px;
+    transform-origin: left center;
+  }
+
+  /* ---------- Size variants ---------- */
+  #marker.size-compact #badge { width: 44px; min-height: 44px; }
+  #marker.size-compact #badge-number { font-size: 18px; }
+  #marker.size-compact #badge-ring { width: 30px; height: 30px; }
+  #marker.size-compact #content { padding: 10px 18px 10px 14px; }
+  #marker.size-compact #chapter-title { font-size: 15px; }
+  #marker.size-compact #timestamp { font-size: 11px; }
+
+  #marker.size-large #badge { width: 68px; min-height: 68px; }
+  #marker.size-large #badge-number { font-size: 28px; }
+  #marker.size-large #badge-ring { width: 48px; height: 48px; }
+  #marker.size-large #content { padding: 18px 28px 18px 22px; }
+  #marker.size-large #chapter-title { font-size: 21px; }
+  #marker.size-large #timestamp { font-size: 14px; }
+</style>
+</head>
+<body>
+
+<div id="marker" class="size-normal">
+  <div id="badge">
+    <div id="badge-ring"></div>
+    <div id="badge-number">3</div>
+  </div>
+  <div id="content">
+    <div id="top-row">
+      <div id="chapter-title">Deep Dive: Architecture</div>
+      <div id="timestamp">14:32</div>
+    </div>
+    <div id="progress-row">
+      <div id="progress-label">Chapter 3 of 8</div>
+    </div>
+  </div>
+  <div id="progress-track">
+    <div id="progress-fill"></div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script>
+(function() {
+  'use strict';
+
+  var els = {
+    marker:       document.getElementById('marker'),
+    badge:        document.getElementById('badge'),
+    badgeNumber:  document.getElementById('badge-number'),
+    badgeRing:    document.getElementById('badge-ring'),
+    content:      document.getElementById('content'),
+    title:        document.getElementById('chapter-title'),
+    timestamp:    document.getElementById('timestamp'),
+    progressRow:  document.getElementById('progress-row'),
+    progressLabel:document.getElementById('progress-label'),
+    progressTrack:document.getElementById('progress-track'),
+    progressFill: document.getElementById('progress-fill')
+  };
+
+  var isVisible = false;
+  var playTL = null;
+  var stopTL = null;
+  var holdTL = null;
+
+  var currentData = {
+    chapter: 3,
+    title: 'Deep Dive: Architecture',
+    timestamp: '14:32',
+    totalChapters: 8,
+    accentColor: '#8b5cf6',
+    holdDuration: 5,
+    showTimestamp: true,
+    showProgress: true,
+    position: 'top-left',
+    size: 'normal'
+  };
+
+  gsap.defaults({ overwrite: 'auto' });
+
+  function applyColor(color) {
+    currentData.accentColor = color;
+    els.badge.style.background = color;
+    els.progressFill.style.background = color;
+    els.badgeRing.style.borderColor = 'rgba(255, 255, 255, 0.3)';
+  }
+
+  function applyPosition(pos) {
+    els.marker.className = 'size-' + currentData.size;
+    if (pos === 'top-right')    els.marker.classList.add('pos-top-right');
+    if (pos === 'bottom-left')  els.marker.classList.add('pos-bottom-left');
+    if (pos === 'bottom-right') els.marker.classList.add('pos-bottom-right');
+  }
+
+  function applyContent() {
+    els.badgeNumber.textContent = currentData.chapter;
+    els.title.textContent = currentData.title;
+    els.timestamp.textContent = currentData.timestamp;
+    els.timestamp.style.display = currentData.showTimestamp ? 'block' : 'none';
+    els.progressRow.style.display = currentData.showProgress ? 'flex' : 'none';
+    els.progressLabel.textContent = 'Chapter ' + currentData.chapter + ' of ' + currentData.totalChapters;
+    applyColor(currentData.accentColor);
+    applyPosition(currentData.position);
+  }
+
+  applyContent();
+
+  // -------------------------------------------------------------------------
+  // play() -- Slide-down entrance with staggered content reveal
+  // -------------------------------------------------------------------------
+  window.play = function() {
+    if (stopTL) { stopTL.kill(); stopTL = null; }
+    if (holdTL) { holdTL.kill(); holdTL = null; }
+    isVisible = true;
+
+    // Reset progress bar
+    gsap.set(els.progressFill, { width: '0%' });
+
+    var isBottom = currentData.position.indexOf('bottom') === 0;
+    var slideFrom = isBottom ? 24 : -24;
+
+    playTL = gsap.timeline({ onComplete: function() { playTL = null; startHold(); } });
+
+    // 1. Container slides in + fades
+    playTL.fromTo(els.marker, {
+      y: slideFrom,
+      opacity: 0
+    }, {
+      y: 0,
+      opacity: 1,
+      duration: 0.45,
+      ease: 'power3.out'
+    });
+
+    // 2. Badge ring pops
+    playTL.to(els.badgeRing, {
+      scale: 1,
+      opacity: 1,
+      duration: 0.35,
+      ease: 'back.out(2.5)'
+    }, 0.15);
+
+    // 3. Title slides in
+    playTL.to(els.title, {
+      opacity: 1,
+      x: 0,
+      duration: 0.3,
+      ease: 'power2.out'
+    }, 0.2);
+
+    // 4. Timestamp fades in
+    if (currentData.showTimestamp) {
+      playTL.to(els.timestamp, {
+        opacity: 1,
+        x: 0,
+        duration: 0.25,
+        ease: 'power2.out'
+      }, 0.3);
+    }
+
+    // 5. Progress label fades in
+    if (currentData.showProgress) {
+      playTL.to(els.progressLabel, {
+        opacity: 1,
+        duration: 0.25,
+        ease: 'power2.out'
+      }, 0.35);
+    }
+
+    // 6. Progress track appears
+    playTL.to(els.progressTrack, {
+      opacity: 1,
+      duration: 0.2,
+      ease: 'power1.out'
+    }, 0.35);
+  };
+
+  // -------------------------------------------------------------------------
+  // Hold animation -- progress bar fills during hold duration
+  // -------------------------------------------------------------------------
+  function startHold() {
+    holdTL = gsap.timeline();
+    holdTL.to(els.progressFill, {
+      width: '100%',
+      duration: currentData.holdDuration,
+      ease: 'none'
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // stop() -- Slide-out exit
+  // -------------------------------------------------------------------------
+  window.stop = function() {
+    if (playTL) { playTL.kill(); playTL = null; }
+    if (holdTL) { holdTL.kill(); holdTL = null; }
+
+    var isBottom = currentData.position.indexOf('bottom') === 0;
+    var slideTo = isBottom ? 24 : -24;
+
+    stopTL = gsap.timeline({
+      onComplete: function() {
+        isVisible = false;
+        stopTL = null;
+
+        // Reset all elements
+        gsap.set(els.marker,        { y: slideTo, opacity: 0 });
+        gsap.set(els.badgeRing,     { scale: 0, opacity: 0 });
+        gsap.set(els.title,         { opacity: 0, x: -12 });
+        gsap.set(els.timestamp,     { opacity: 0, x: 8 });
+        gsap.set(els.progressLabel, { opacity: 0 });
+        gsap.set(els.progressTrack, { opacity: 0 });
+        gsap.set(els.progressFill,  { width: '0%' });
+      }
+    });
+
+    // 1. Progress track fades
+    stopTL.to(els.progressTrack, {
+      opacity: 0,
+      duration: 0.15,
+      ease: 'power1.in'
+    });
+
+    // 2. Content fades
+    stopTL.to([els.title, els.timestamp, els.progressLabel], {
+      opacity: 0,
+      duration: 0.15,
+      ease: 'power2.in'
+    }, 0);
+
+    // 3. Badge ring shrinks
+    stopTL.to(els.badgeRing, {
+      scale: 0,
+      opacity: 0,
+      duration: 0.2,
+      ease: 'power2.in'
+    }, 0.05);
+
+    // 4. Container slides out
+    stopTL.to(els.marker, {
+      y: slideTo,
+      opacity: 0,
+      duration: 0.35,
+      ease: 'power3.in'
+    }, 0.08);
+  };
+
+  // -------------------------------------------------------------------------
+  // update(data) -- Update chapter marker content
+  // -------------------------------------------------------------------------
+  window.update = function(data) {
+    var d = (typeof data === 'string') ? JSON.parse(data) : data;
+    if (!d) return;
+
+    if (d.chapter != null)       currentData.chapter = d.chapter;
+    if (d.title != null)         currentData.title = d.title;
+    if (d.timestamp != null)     currentData.timestamp = d.timestamp;
+    if (d.totalChapters != null) currentData.totalChapters = d.totalChapters;
+    if (d.accentColor != null)   currentData.accentColor = d.accentColor;
+    if (d.holdDuration != null)  currentData.holdDuration = d.holdDuration;
+    if (d.showTimestamp != null)  currentData.showTimestamp = d.showTimestamp;
+    if (d.showProgress != null)  currentData.showProgress = d.showProgress;
+    if (d.position != null)      currentData.position = d.position;
+    if (d.size != null)          currentData.size = d.size;
+
+    applyContent();
+
+    // If visible, flash the badge to indicate update
+    if (isVisible) {
+      gsap.timeline()
+        .to(els.badge, {
+          boxShadow: '0 0 20px ' + currentData.accentColor,
+          duration: 0.15,
+          ease: 'power1.in'
+        })
+        .to(els.badge, {
+          boxShadow: 'none',
+          duration: 0.4,
+          ease: 'power1.out'
+        });
+
+      // Restart hold progress if visible
+      if (holdTL) { holdTL.kill(); }
+      gsap.set(els.progressFill, { width: '0%' });
+      startHold();
+    }
+  };
+
+  // -------------------------------------------------------------------------
+  // next() -- No-op for single-step template
+  // -------------------------------------------------------------------------
+  window.next = function() {};
+
+})();
+</script>
+</body>
+</html>

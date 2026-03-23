@@ -1,0 +1,67 @@
+{
+  "name": "now-playing",
+  "description": "Frosted glass now-playing card with animated audio visualizer bars, progress indicator, and up-next variant for music, podcasts, and worship",
+  "version": "1.0.0",
+  "steps": 2,
+  "dataSchema": {
+    "type": "object",
+    "properties": {
+      "title": {
+        "type": "string",
+        "title": "Song / Track Title",
+        "default": "Midnight City"
+      },
+      "artist": {
+        "type": "string",
+        "title": "Artist",
+        "default": "M83"
+      },
+      "album": {
+        "type": "string",
+        "title": "Album",
+        "default": "Hurry Up, We're Dreaming"
+      },
+      "elapsed": {
+        "type": "string",
+        "title": "Elapsed Time",
+        "default": "1:24"
+      },
+      "duration": {
+        "type": "string",
+        "title": "Total Duration",
+        "default": "4:03"
+      },
+      "artColor": {
+        "type": "string",
+        "title": "Album Art Gradient Color",
+        "default": "#6c3ce0"
+      },
+      "accentColor": {
+        "type": "string",
+        "title": "Accent Color",
+        "default": "#00e5ff"
+      },
+      "nextTitle": {
+        "type": "string",
+        "title": "Up Next — Title",
+        "default": "Intro"
+      },
+      "nextArtist": {
+        "type": "string",
+        "title": "Up Next — Artist",
+        "default": "The xx"
+      },
+      "nextAlbum": {
+        "type": "string",
+        "title": "Up Next — Album",
+        "default": "xx"
+      }
+    },
+    "required": ["title", "artist"]
+  },
+  "renderRequirements": {
+    "width": 1920,
+    "height": 1080,
+    "frameRate": 30
+  }
+}

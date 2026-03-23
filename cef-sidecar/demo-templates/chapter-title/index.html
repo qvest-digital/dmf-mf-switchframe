@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Chapter Title</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@300;400;500&family=Playfair+Display:wght@700;800&family=Barlow+Condensed:wght@600;700&display=swap" rel="stylesheet">
+<style>
+  html, body {
+    margin: 0; padding: 0;
+    background: transparent;
+    overflow: hidden;
+    width: 100%; height: 100%;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* ---------- Container: center-left positioning ---------- */
+  #chapter-container {
+    position: absolute;
+    top: 50%;
+    left: 120px;
+    transform: translateY(-50%);
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    pointer-events: none;
+  }
+
+  /* ---------- Oversized background number ---------- */
+  #bg-number {
+    position: absolute;
+    top: 50%;
+    left: -30px;
+    transform: translateY(-50%) scale(3);
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 320px;
+    font-weight: 400;
+    color: #ffffff;
+    opacity: 0;
+    line-height: 0.8;
+    letter-spacing: -8px;
+    pointer-events: none;
+    user-select: none;
+    filter: blur(0px);
+  }
+
+  /* ---------- Content layer (above bg number) ---------- */
+  #content {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0;
+  }
+
+  /* ---------- Chapter label ---------- */
+  #chapter-label {
+    font-family: 'Inter', sans-serif;
+    font-size: 16px;
+    font-weight: 500;
+    letter-spacing: 6px;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.6);
+    margin-bottom: 12px;
+    opacity: 0;
+    transform: translateX(-30px);
+  }
+
+  /* ---------- Title ---------- */
+  #title {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 96px;
+    font-weight: 400;
+    color: #ffffff;
+    line-height: 1.0;
+    letter-spacing: 2px;
+    text-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+    max-width: 900px;
+    opacity: 0;
+    transform: translateY(30px);
+  }
+
+  #title.size-medium { font-size: 72px; }
+  #title.size-large { font-size: 96px; }
+  #title.size-xlarge { font-size: 120px; }
+
+  /* Font style variants */
+  #title.font-serif { font-family: 'Playfair Display', serif; letter-spacing: -1px; }
+  #title.font-condensed { font-family: 'Barlow Condensed', sans-serif; font-weight: 700; letter-spacing: 4px; text-transform: uppercase; }
+
+  /* ---------- Decorative rule ---------- */
+  #rule {
+    height: 4px;
+    width: 120px;
+    border-radius: 2px;
+    margin-top: 24px;
+    margin-bottom: 24px;
+    opacity: 0;
+    transform: scaleX(0);
+    transform-origin: left center;
+  }
+
+  /* ---------- Subtitle ---------- */
+  #subtitle {
+    font-family: 'Inter', sans-serif;
+    font-size: 26px;
+    font-weight: 300;
+    color: rgba(255, 255, 255, 0.7);
+    line-height: 1.4;
+    max-width: 700px;
+    text-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+    opacity: 0;
+    transform: translateY(15px);
+  }
+
+  /* ---------- Ambient glow behind content ---------- */
+  #ambient-glow {
+    position: absolute;
+    top: 50%;
+    left: -60px;
+    width: 600px;
+    height: 300px;
+    transform: translateY(-50%);
+    border-radius: 50%;
+    opacity: 0;
+    filter: blur(80px);
+    pointer-events: none;
+    z-index: 0;
+  }
+</style>
+</head>
+<body>
+
+<div id="chapter-container">
+  <div id="ambient-glow"></div>
+  <div id="bg-number">01</div>
+  <div id="content">
+    <div id="chapter-label">CHAPTER 01</div>
+    <div id="title" class="size-large font-modern">The Beginning</div>
+    <div id="rule"></div>
+    <div id="subtitle">Setting the stage for what comes next</div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/TextPlugin.min.js"></script>
+<script>
+(function() {
+  'use strict';
+
+  var els = {
+    bgNumber:     document.getElementById('bg-number'),
+    chapterLabel: document.getElementById('chapter-label'),
+    title:        document.getElementById('title'),
+    rule:         document.getElementById('rule'),
+    subtitle:     document.getElementById('subtitle'),
+    ambientGlow:  document.getElementById('ambient-glow')
+  };
+
+  var isVisible = false;
+  var playTL = null;
+  var stopTL = null;
+  var currentData = {
+    number: '01',
+    title: 'The Beginning',
+    subtitle: 'Setting the stage for what comes next',
+    accentColor: '#e63946',
+    numberColor: '#ffffff',
+    titleSize: 'large',
+    showSubtitle: true,
+    ruleWidth: 120,
+    numberOpacity: 0.08,
+    fontStyle: 'modern'
+  };
+
+  gsap.registerPlugin(TextPlugin);
+  gsap.defaults({ overwrite: 'auto' });
+
+  function applyColors() {
+    els.rule.style.background = currentData.accentColor;
+    els.ambientGlow.style.background = currentData.accentColor;
+    els.bgNumber.style.color = currentData.numberColor;
+  }
+
+  function applySize() {
+    els.title.className = 'size-' + currentData.titleSize + ' font-' + currentData.fontStyle;
+  }
+
+  function applyContent() {
+    els.bgNumber.textContent = currentData.number;
+    els.chapterLabel.textContent = 'CHAPTER ' + currentData.number;
+    els.title.textContent = currentData.title;
+    els.subtitle.textContent = currentData.subtitle;
+    els.subtitle.style.display = currentData.showSubtitle ? 'block' : 'none';
+    els.rule.style.width = currentData.ruleWidth + 'px';
+    applyColors();
+    applySize();
+  }
+
+  applyContent();
+
+  // -------------------------------------------------------------------------
+  // play() -- Cinematic chapter entrance
+  // -------------------------------------------------------------------------
+  window.play = function() {
+    if (stopTL) { stopTL.kill(); stopTL = null; }
+    isVisible = true;
+
+    playTL = gsap.timeline({ onComplete: function() { playTL = null; } });
+
+    // 1. Ambient glow fades in
+    playTL.to(els.ambientGlow, {
+      opacity: 0.15,
+      duration: 0.8,
+      ease: 'power2.out'
+    });
+
+    // 2. Background number scales down from massive + fades in
+    playTL.fromTo(els.bgNumber, {
+      scale: 5,
+      opacity: 0,
+      filter: 'blur(20px)'
+    }, {
+      scale: 1,
+      opacity: currentData.numberOpacity,
+      filter: 'blur(0px)',
+      duration: 1.2,
+      ease: 'power3.out'
+    }, 0);
+
+    // 3. Chapter label slides in
+    playTL.to(els.chapterLabel, {
+      opacity: 1,
+      x: 0,
+      duration: 0.5,
+      ease: 'power2.out'
+    }, 0.3);
+
+    // 4. Title types in with slide-up
+    playTL.to(els.title, {
+      opacity: 1,
+      y: 0,
+      duration: 0.6,
+      ease: 'power3.out'
+    }, 0.5);
+
+    // 5. Decorative rule stretches in
+    playTL.to(els.rule, {
+      opacity: 1,
+      scaleX: 1,
+      duration: 0.5,
+      ease: 'power2.out'
+    }, 0.8);
+
+    // 6. Subtitle fades up
+    if (currentData.showSubtitle) {
+      playTL.to(els.subtitle, {
+        opacity: 1,
+        y: 0,
+        duration: 0.5,
+        ease: 'power2.out'
+      }, 0.95);
+    }
+
+    // 7. Gentle background number pulse
+    playTL.to(els.bgNumber, {
+      opacity: currentData.numberOpacity * 1.5,
+      duration: 0.8,
+      ease: 'power1.inOut',
+      yoyo: true,
+      repeat: 1
+    }, 1.2);
+  };
+
+  // -------------------------------------------------------------------------
+  // stop() -- Cinematic chapter exit
+  // -------------------------------------------------------------------------
+  window.stop = function() {
+    if (playTL) { playTL.kill(); playTL = null; }
+
+    stopTL = gsap.timeline({
+      onComplete: function() {
+        isVisible = false;
+        stopTL = null;
+        gsap.set(els.bgNumber,     { scale: 3, opacity: 0, filter: 'blur(20px)' });
+        gsap.set(els.chapterLabel,  { opacity: 0, x: -30 });
+        gsap.set(els.title,         { opacity: 0, y: 30 });
+        gsap.set(els.rule,          { opacity: 0, scaleX: 0 });
+        gsap.set(els.subtitle,      { opacity: 0, y: 15 });
+        gsap.set(els.ambientGlow,   { opacity: 0 });
+      }
+    });
+
+    // 1. Subtitle fades down
+    stopTL.to(els.subtitle, {
+      opacity: 0,
+      y: 15,
+      duration: 0.3,
+      ease: 'power2.in'
+    });
+
+    // 2. Rule collapses
+    stopTL.to(els.rule, {
+      scaleX: 0,
+      opacity: 0,
+      duration: 0.3,
+      ease: 'power2.in'
+    }, '-=0.15');
+
+    // 3. Title fades down
+    stopTL.to(els.title, {
+      opacity: 0,
+      y: 30,
+      duration: 0.35,
+      ease: 'power2.in'
+    }, '-=0.15');
+
+    // 4. Chapter label slides out
+    stopTL.to(els.chapterLabel, {
+      opacity: 0,
+      x: -30,
+      duration: 0.25,
+      ease: 'power2.in'
+    }, '-=0.2');
+
+    // 5. Background number scales up + blurs away
+    stopTL.to(els.bgNumber, {
+      scale: 2,
+      opacity: 0,
+      filter: 'blur(15px)',
+      duration: 0.6,
+      ease: 'power2.in'
+    }, '-=0.3');
+
+    // 6. Ambient glow fades
+    stopTL.to(els.ambientGlow, {
+      opacity: 0,
+      duration: 0.4,
+      ease: 'power1.in'
+    }, '-=0.4');
+  };
+
+  // -------------------------------------------------------------------------
+  // update(data) -- Update content and styling
+  // -------------------------------------------------------------------------
+  window.update = function(data) {
+    var d = (typeof data === 'string') ? JSON.parse(data) : data;
+    if (!d) return;
+
+    if (d.number != null)        currentData.number = String(d.number);
+    if (d.title != null)         currentData.title = d.title;
+    if (d.subtitle != null)      currentData.subtitle = d.subtitle;
+    if (d.accentColor != null)   currentData.accentColor = d.accentColor;
+    if (d.numberColor != null)   currentData.numberColor = d.numberColor;
+    if (d.titleSize != null)     currentData.titleSize = d.titleSize;
+    if (d.showSubtitle != null)  currentData.showSubtitle = d.showSubtitle;
+    if (d.ruleWidth != null)     currentData.ruleWidth = d.ruleWidth;
+    if (d.numberOpacity != null) currentData.numberOpacity = d.numberOpacity;
+    if (d.fontStyle != null)     currentData.fontStyle = d.fontStyle;
+
+    applyContent();
+
+    // If visible, animate a brief color pulse on the rule
+    if (isVisible) {
+      gsap.timeline()
+        .to(els.rule, {
+          boxShadow: '0 0 20px ' + currentData.accentColor,
+          duration: 0.2,
+          ease: 'power1.in'
+        })
+        .to(els.rule, {
+          boxShadow: '0 0 0px transparent',
+          duration: 0.5,
+          ease: 'power1.out'
+        });
+    }
+  };
+
+  // -------------------------------------------------------------------------
+  // next() -- No-op for single-step template
+  // -------------------------------------------------------------------------
+  window.next = function() {};
+
+})();
+</script>
+</body>
+</html>
