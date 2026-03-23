@@ -46,6 +46,22 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // Resolve the directory containing the binary for resource paths.
+    std::string exe_dir;
+    {
+        char buf[4096] = {};
+#if defined(__APPLE__)
+        uint32_t size = sizeof(buf);
+        _NSGetExecutablePath(buf, &size);
+#else
+        ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+        if (len > 0) buf[len] = '\0';
+#endif
+        exe_dir = std::string(buf);
+        auto pos = exe_dir.rfind('/');
+        if (pos != std::string::npos) exe_dir = exe_dir.substr(0, pos);
+    }
+
     // Configure CEF
     CefSettings settings;
     settings.windowless_rendering_enabled = true;
@@ -54,10 +70,12 @@ int main(int argc, char* argv[]) {
     settings.log_severity = LOGSEVERITY_WARNING;
 
 #if defined(__APPLE__)
-    // macOS requires the framework path
     CefString(&settings.framework_dir_path) =
-        CefString(argv[0]).ToString() +
-        "/../Frameworks/Chromium Embedded Framework.framework";
+        exe_dir + "/../Frameworks/Chromium Embedded Framework.framework";
+#else
+    // Linux: CEF resources must be alongside the binary.
+    CefString(&settings.resources_dir_path) = exe_dir;
+    CefString(&settings.locales_dir_path) = exe_dir + "/locales";
 #endif
 
     if (!CefInitialize(main_args, settings, app, nullptr)) {
