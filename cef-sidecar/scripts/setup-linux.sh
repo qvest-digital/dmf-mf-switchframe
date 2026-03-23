@@ -81,13 +81,17 @@ fi
 
 # 4. Build switchframe-cef
 echo "--- Building switchframe-cef ---"
-SIDECAR_SRC="$(dirname "$(dirname "$(readlink -f "$0")")")"
+# Resolve the cef-sidecar source directory (parent of scripts/).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SIDECAR_SRC="$(cd "${SCRIPT_DIR}/.." && pwd)"
+echo "Sidecar source: ${SIDECAR_SRC}"
+
 mkdir -p "${BUILD_DIR}"
 cd "${BUILD_DIR}"
 
 cmake -DCEF_ROOT="${CEF_DIR}" \
       -DCMAKE_BUILD_TYPE=Release \
-      "${SIDECAR_SRC}"
+      -S "${SIDECAR_SRC}" -B "${BUILD_DIR}"
 make -j$(nproc) switchframe-cef
 
 # Install
