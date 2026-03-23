@@ -324,48 +324,48 @@
 				<ColorWheel label="GAMMA" size={70} value={corrector.gamma} onchange={handleGammaChange} min={0.1} max={4} />
 				<ColorWheel label="GAIN" size={70} value={corrector.gain} onchange={handleGainChange} min={0} max={4} />
 			</div>
-			<div class="sliders-grid">
-				<div class="slider-row">
-					<span class="slider-label">Temp</span>
-					<input type="range" min="-100" max="100" step="1"
-						bind:value={corrector.temperature}
-						oninput={handleSliderInput}
-					/>
-					<span class="slider-value">{fmtSlider(corrector.temperature)}</span>
-				</div>
-				<div class="slider-row">
-					<span class="slider-label">Tint</span>
-					<input type="range" min="-100" max="100" step="1"
-						bind:value={corrector.tint}
-						oninput={handleSliderInput}
-					/>
-					<span class="slider-value">{fmtSlider(corrector.tint)}</span>
-				</div>
-				<div class="slider-row">
-					<span class="slider-label">Sat</span>
-					<input type="range" min="0" max="200" step="1"
-						bind:value={satUI}
-						oninput={handleSatInput}
-					/>
-					<span class="slider-value">{fmtSlider(satUI)}</span>
-				</div>
-				<div class="slider-row">
-					<span class="slider-label">Cont</span>
-					<input type="range" min="-100" max="100" step="1"
-						bind:value={contrastUI}
-						oninput={handleContrastInput}
-					/>
-					<span class="slider-value">{fmtSlider(contrastUI)}</span>
-				</div>
-				<div class="slider-row slider-row-span">
-					<span class="slider-label">Sharp</span>
-					<input type="range" min="0" max="100" step="1"
-						bind:value={sharpnessUI}
-						oninput={handleSharpnessInput}
-					/>
-					<span class="slider-value">{fmtSlider(sharpnessUI)}</span>
-				</div>
+		<div class="sliders-grid">
+			<div class="slider-row">
+				<span class="slider-label">Temp</span>
+				<input type="range" min="-100" max="100" step="1"
+					bind:value={corrector.temperature}
+					oninput={handleSliderInput}
+				/>
+				<span class="slider-value">{fmtSlider(corrector.temperature)}</span>
 			</div>
+			<div class="slider-row">
+				<span class="slider-label">Sat</span>
+				<input type="range" min="0" max="200" step="1"
+					bind:value={satUI}
+					oninput={handleSatInput}
+				/>
+				<span class="slider-value">{fmtSlider(satUI)}</span>
+			</div>
+			<div class="slider-row">
+				<span class="slider-label">Tint</span>
+				<input type="range" min="-100" max="100" step="1"
+					bind:value={corrector.tint}
+					oninput={handleSliderInput}
+				/>
+				<span class="slider-value">{fmtSlider(corrector.tint)}</span>
+			</div>
+			<div class="slider-row">
+				<span class="slider-label">Cont</span>
+				<input type="range" min="-100" max="100" step="1"
+					bind:value={contrastUI}
+					oninput={handleContrastInput}
+				/>
+				<span class="slider-value">{fmtSlider(contrastUI)}</span>
+			</div>
+			<div class="slider-row">
+				<span class="slider-label">Sharp</span>
+				<input type="range" min="0" max="100" step="1"
+					bind:value={sharpnessUI}
+					oninput={handleSharpnessInput}
+				/>
+				<span class="slider-value">{fmtSlider(sharpnessUI)}</span>
+			</div>
+		</div>
 		</div>
 
 		<div class="controls-scroll">
@@ -383,83 +383,23 @@
 				</button>
 				{#if zonesOpen}
 					<div class="zones-panel">
-						<div class="zone-row">
-							<span class="zone-title">SHADOWS</span>
-							<div class="zone-ch-row">
-								<div class="zone-ch">
-									<span class="ch-label ch-r">R</span>
-									<input type="range" min="-100" max="100" class="slider-r"
-										value={shadowR}
-										oninput={(e) => setShadow(0, Number((e.target as HTMLInputElement).value))}
-									/>
-								</div>
-								<div class="zone-ch">
-									<span class="ch-label ch-g">G</span>
-									<input type="range" min="-100" max="100" class="slider-g"
-										value={shadowG}
-										oninput={(e) => setShadow(1, Number((e.target as HTMLInputElement).value))}
-									/>
-								</div>
-								<div class="zone-ch">
-									<span class="ch-label ch-b">B</span>
-									<input type="range" min="-100" max="100" class="slider-b"
-										value={shadowB}
-										oninput={(e) => setShadow(2, Number((e.target as HTMLInputElement).value))}
-									/>
-								</div>
-							</div>
+						<div class="zone-col">
+							<span class="zone-title">SHD</span>
+							<div class="zone-ch"><span class="ch-label ch-r">R</span><input type="range" min="-100" max="100" class="slider-r" value={shadowR} oninput={(e) => setShadow(0, Number((e.target as HTMLInputElement).value))} /></div>
+							<div class="zone-ch"><span class="ch-label ch-g">G</span><input type="range" min="-100" max="100" class="slider-g" value={shadowG} oninput={(e) => setShadow(1, Number((e.target as HTMLInputElement).value))} /></div>
+							<div class="zone-ch"><span class="ch-label ch-b">B</span><input type="range" min="-100" max="100" class="slider-b" value={shadowB} oninput={(e) => setShadow(2, Number((e.target as HTMLInputElement).value))} /></div>
 						</div>
-						<div class="zone-row">
-							<span class="zone-title">MIDTONES</span>
-							<div class="zone-ch-row">
-								<div class="zone-ch">
-									<span class="ch-label ch-r">R</span>
-									<input type="range" min="-100" max="100" class="slider-r"
-										value={midR}
-										oninput={(e) => setMidtone(0, Number((e.target as HTMLInputElement).value))}
-									/>
-								</div>
-								<div class="zone-ch">
-									<span class="ch-label ch-g">G</span>
-									<input type="range" min="-100" max="100" class="slider-g"
-										value={midG}
-										oninput={(e) => setMidtone(1, Number((e.target as HTMLInputElement).value))}
-									/>
-								</div>
-								<div class="zone-ch">
-									<span class="ch-label ch-b">B</span>
-									<input type="range" min="-100" max="100" class="slider-b"
-										value={midB}
-										oninput={(e) => setMidtone(2, Number((e.target as HTMLInputElement).value))}
-									/>
-								</div>
-							</div>
+						<div class="zone-col">
+							<span class="zone-title">MID</span>
+							<div class="zone-ch"><span class="ch-label ch-r">R</span><input type="range" min="-100" max="100" class="slider-r" value={midR} oninput={(e) => setMidtone(0, Number((e.target as HTMLInputElement).value))} /></div>
+							<div class="zone-ch"><span class="ch-label ch-g">G</span><input type="range" min="-100" max="100" class="slider-g" value={midG} oninput={(e) => setMidtone(1, Number((e.target as HTMLInputElement).value))} /></div>
+							<div class="zone-ch"><span class="ch-label ch-b">B</span><input type="range" min="-100" max="100" class="slider-b" value={midB} oninput={(e) => setMidtone(2, Number((e.target as HTMLInputElement).value))} /></div>
 						</div>
-						<div class="zone-row">
-							<span class="zone-title">HIGHLIGHTS</span>
-							<div class="zone-ch-row">
-								<div class="zone-ch">
-									<span class="ch-label ch-r">R</span>
-									<input type="range" min="-100" max="100" class="slider-r"
-										value={highR}
-										oninput={(e) => setHighlight(0, Number((e.target as HTMLInputElement).value))}
-									/>
-								</div>
-								<div class="zone-ch">
-									<span class="ch-label ch-g">G</span>
-									<input type="range" min="-100" max="100" class="slider-g"
-										value={highG}
-										oninput={(e) => setHighlight(1, Number((e.target as HTMLInputElement).value))}
-									/>
-								</div>
-								<div class="zone-ch">
-									<span class="ch-label ch-b">B</span>
-									<input type="range" min="-100" max="100" class="slider-b"
-										value={highB}
-										oninput={(e) => setHighlight(2, Number((e.target as HTMLInputElement).value))}
-									/>
-								</div>
-							</div>
+						<div class="zone-col">
+							<span class="zone-title">HI</span>
+							<div class="zone-ch"><span class="ch-label ch-r">R</span><input type="range" min="-100" max="100" class="slider-r" value={highR} oninput={(e) => setHighlight(0, Number((e.target as HTMLInputElement).value))} /></div>
+							<div class="zone-ch"><span class="ch-label ch-g">G</span><input type="range" min="-100" max="100" class="slider-g" value={highG} oninput={(e) => setHighlight(1, Number((e.target as HTMLInputElement).value))} /></div>
+							<div class="zone-ch"><span class="ch-label ch-b">B</span><input type="range" min="-100" max="100" class="slider-b" value={highB} oninput={(e) => setHighlight(2, Number((e.target as HTMLInputElement).value))} /></div>
 						</div>
 					</div>
 				{/if}
@@ -636,23 +576,19 @@
 
 	.sliders-grid {
 		display: grid;
-		grid-template-columns: 1fr 1fr;
-		gap: 2px 10px;
+		grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+		gap: 2px 8px;
 		align-items: center;
 		min-width: 0;
 	}
 
 	.slider-row {
 		display: grid;
-		grid-template-columns: 32px 1fr 26px;
+		grid-template-columns: 30px 1fr 24px;
 		align-items: center;
-		gap: 4px;
+		gap: 3px;
 		min-height: 18px;
 		min-width: 0;
-	}
-
-	.slider-row-span {
-		grid-column: 1 / -1;
 	}
 
 	.slider-label {
@@ -732,43 +668,31 @@
 	}
 
 	.zones-panel {
-		padding: 6px 8px 8px;
-		display: flex;
-		flex-direction: column;
+		padding: 4px 6px 6px;
+		display: grid;
+		grid-template-columns: repeat(3, 1fr);
 		gap: 6px;
 		border-top: 1px solid var(--border-subtle, var(--border-default, #333));
 		background: var(--bg-base, #141414);
 	}
 
-	.zone-row {
+	.zone-col {
 		display: flex;
-		flex-direction: row;
-		align-items: center;
-		gap: 8px;
+		flex-direction: column;
+		gap: 2px;
 		min-width: 0;
 	}
 
 	.zone-title {
-		flex-shrink: 0;
-		width: 4.5rem;
 		font-size: var(--text-2xs, 9px);
 		font-weight: 600;
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
 		color: var(--text-tertiary, #888);
-	}
-
-	.zone-ch-row {
-		flex: 1;
-		display: flex;
-		flex-direction: row;
-		align-items: center;
-		gap: 6px;
-		min-width: 0;
+		margin-bottom: 1px;
 	}
 
 	.zone-ch {
-		flex: 1;
 		display: flex;
 		align-items: center;
 		gap: 3px;

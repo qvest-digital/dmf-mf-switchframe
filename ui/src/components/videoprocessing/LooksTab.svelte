@@ -18,10 +18,9 @@
 	let intensity = $state(100);
 	let selectedGroup = $state<string>('All');
 	let uploading = $state(false);
-	let lutOpen = $state(true);
+	let lutOpen = $state(false);
 	let fileInput = $state<HTMLInputElement | undefined>(undefined);
 
-	// Get unique groups from available looks, preserving a stable order
 	let groups = $derived.by(() => {
 		if (!colorGrade?.available) return ['All'];
 		const seen = new Set<string>();
@@ -31,24 +30,20 @@
 		return ['All', ...Array.from(seen)];
 	});
 
-	// Filter looks by selected group
 	let filteredLooks = $derived.by(() => {
 		if (!colorGrade?.available) return [];
 		if (selectedGroup === 'All') return colorGrade.available;
 		return colorGrade.available.filter(l => l.group === selectedGroup);
 	});
 
-	// Custom (non-builtin) looks for the upload section
 	let customLooks = $derived.by(() => {
 		if (!colorGrade?.available) return [];
 		return colorGrade.available.filter(l => !l.builtin);
 	});
 
-	// Guard against server state overwriting in-progress user edits.
 	let lastUserEdit = 0;
 	const SYNC_GUARD_MS = 1000;
 
-	// Sync intensity from server state (skipped while user is editing)
 	$effect(() => {
 		if (colorGrade) {
 			if (Date.now() - lastUserEdit < SYNC_GUARD_MS) return;
@@ -57,9 +52,60 @@
 	});
 
 	function formatLookName(name: string): string {
-		return name
-			.replace(/-/g, ' ')
-			.replace(/\b\w/g, c => c.toUpperCase());
+		return name.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+	}
+
+	const groupHues: Record<string, string> = {
+		'Drama':     '20',
+		'Film':      '35',
+		'Clear':     '190',
+		'Light':     '50',
+		'Shadow':    '260',
+		'Violet':    '280',
+		'Vintage':   '30',
+		'Technical': '0',
+	};
+
+	const nameHints: Record<string, string> = {
+		'anamorphic':    'hsl(35, 50%, 55%)',
+		'bleach-bypass': 'hsl(40, 10%, 65%)',
+		'broadcast':     'hsl(210, 30%, 55%)',
+		'candlelight':   'hsl(35, 70%, 55%)',
+		'chestnut':      'hsl(20, 45%, 45%)',
+		'clarity':       'hsl(200, 40%, 60%)',
+		'cobalt':        'hsl(220, 55%, 50%)',
+		'cross-process': 'hsl(130, 35%, 50%)',
+		'daguerreotype': 'hsl(40, 15%, 55%)',
+		'daylight':      'hsl(45, 55%, 60%)',
+		'ektachrome':    'hsl(210, 40%, 55%)',
+		'electric':      'hsl(270, 50%, 55%)',
+		'ember':         'hsl(15, 60%, 50%)',
+		'faded':         'hsl(30, 20%, 60%)',
+		'frost':         'hsl(200, 50%, 70%)',
+		'glacier':       'hsl(195, 55%, 55%)',
+		'golden-hour':   'hsl(35, 65%, 55%)',
+		'honey':         'hsl(40, 55%, 50%)',
+		'kodachrome':    'hsl(25, 50%, 50%)',
+		'matte':         'hsl(30, 15%, 55%)',
+		'moonstone':     'hsl(220, 30%, 65%)',
+		'natural':       'hsl(80, 30%, 50%)',
+		'neon':          'hsl(310, 60%, 55%)',
+		'noir':          'hsl(0, 0%, 45%)',
+		'polaroid':      'hsl(45, 35%, 60%)',
+		'portra':        'hsl(25, 40%, 55%)',
+		'prism':         'hsl(290, 45%, 55%)',
+		'punch':         'hsl(350, 55%, 50%)',
+		'radiant':       'hsl(45, 60%, 55%)',
+		'sahara':        'hsl(35, 50%, 50%)',
+	};
+
+	function lookAccent(name: string, group: string): string {
+		if (nameHints[name]) return nameHints[name];
+		const hue = groupHues[group] ?? '200';
+		const hash = name.split('').reduce((a, c) => a + c.charCodeAt(0), 0);
+		const satShift = (hash % 20) - 10;
+		const lightShift = (hash % 10) - 5;
+		return `hsl(${hue}, ${40 + satShift}%, ${50 + lightShift}%)`;
 	}
 
 	async function applyLook(name: string) {
@@ -91,13 +137,8 @@
 	async function handleUpload() {
 		const file = fileInput?.files?.[0];
 		if (!file) return;
-
 		const name = file.name.replace(/\.cube$/i, '').replace(/[^a-zA-Z0-9_-]/g, '-');
-		if (!name) {
-			notify('error', 'Invalid file name');
-			return;
-		}
-
+		if (!name) { notify('error', 'Invalid file name'); return; }
 		uploading = true;
 		try {
 			await uploadColorGradeLUT(name, file);
@@ -121,62 +162,43 @@
 </script>
 
 <div class="looks-tab">
-	<!-- Filter row: Off first, then group pills -->
-	<div class="group-bar">
-		{#if colorGrade?.enabled}
-			<button type="button" class="pill pill-off" onclick={disable}>Off</button>
+	<div class="top-bar">
+		<div class="group-bar">
+			{#if colorGrade?.enabled}
+				<button type="button" class="pill pill-off" onclick={disable}>Off</button>
+			{/if}
+			{#each groups as group}
+				<button type="button" class="pill" class:pill-active={selectedGroup === group} onclick={() => (selectedGroup = group)}>{group}</button>
+			{/each}
+		</div>
+		{#if colorGrade?.enabled && activeLook}
+			<div class="intensity-ctrl">
+				<span class="active-name" title={formatLookName(activeLook)}>{formatLookName(activeLook)}</span>
+				<input type="range" min="0" max="100" step="1" bind:value={intensity} onchange={updateIntensity} class="intensity-slider" aria-label="Look intensity" />
+				<span class="intensity-val">{intensity}%</span>
+			</div>
 		{/if}
-		{#each groups as group}
-			<button
-				type="button"
-				class="pill"
-				class:pill-active={selectedGroup === group}
-				onclick={() => (selectedGroup = group)}
-			>{group}</button>
-		{/each}
 	</div>
 
-	<!-- Intensity + active look name (only when a look is on-air) -->
-	{#if colorGrade?.enabled && activeLook}
-		<div class="intensity-row">
-			<span class="active-look-label" title={formatLookName(activeLook)}>{formatLookName(activeLook)}</span>
-			<div class="intensity-inline">
-				<span class="intensity-pct">{intensity}%</span>
-				<input
-					type="range"
-					min="0"
-					max="100"
-					step="1"
-					bind:value={intensity}
-					onchange={updateIntensity}
-					class="intensity-slider"
-					aria-label="Look intensity"
-				/>
-			</div>
-		</div>
-	{/if}
-
-	<div class="looks-grid-scroll">
+	<div class="looks-scroll">
 		<div class="looks-grid">
 			{#if filteredLooks.length > 0}
 				{#each filteredLooks as look}
+					{@const isActive = colorGrade?.enabled && activeLook === look.name}
+					{@const accent = lookAccent(look.name, look.group)}
 					<button
 						type="button"
-						class="look-card"
-						class:look-card-active={colorGrade?.enabled && activeLook === look.name}
+						class="look-chip"
+						class:active={isActive}
+						style="--look-accent: {accent};"
 						onclick={() => applyLook(look.name)}
+						title={look.description || formatLookName(look.name)}
 					>
-						{#if colorGrade?.enabled && activeLook === look.name}
-							<span class="look-check-badge" aria-hidden="true">
-								{@html renderIcon(ICON_CHECK, 10)}
-							</span>
+						<span class="look-swatch" aria-hidden="true"></span>
+						<span class="look-name">{formatLookName(look.name)}</span>
+						{#if isActive}
+							<span class="look-check">{@html renderIcon(ICON_CHECK, 9)}</span>
 						{/if}
-						<div class="look-info">
-							<span class="look-name">{formatLookName(look.name)}</span>
-							{#if look.description}
-								<span class="look-desc">{look.description}</span>
-							{/if}
-						</div>
 					</button>
 				{/each}
 			{:else}
@@ -185,52 +207,30 @@
 		</div>
 	</div>
 
-	<!-- Custom LUT: collapsible -->
 	<div class="lut-section">
-		<button type="button" class="lut-toggle" onclick={() => (lutOpen = !lutOpen)}>
-			<span class="lut-chevron" aria-hidden="true">
-				{@html renderIcon(lutOpen ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT, 12)}
-			</span>
-			<span class="lut-toggle-title">Custom LUT</span>
-			{#if customLooks.length > 0}
-				<span class="lut-badge">{customLooks.length}</span>
-			{/if}
-		</button>
-		{#if lutOpen}
-			<div class="lut-body">
-				<div class="upload-row">
-					<span class="upload-icon" aria-hidden="true">{@html renderIcon(ICON_UPLOAD, 14)}</span>
-					<input
-						type="file"
-						accept=".cube"
-						bind:this={fileInput}
-						onchange={handleUpload}
-						class="file-input"
-						disabled={uploading}
-					/>
-					{#if uploading}
-						<span class="uploading-label">Uploading…</span>
-					{/if}
-				</div>
-
+		<div class="lut-row">
+			<button type="button" class="lut-toggle" onclick={() => (lutOpen = !lutOpen)}>
+				<span class="lut-chevron" aria-hidden="true">{@html renderIcon(lutOpen ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT, 11)}</span>
+				<span class="lut-label">Custom LUT</span>
 				{#if customLooks.length > 0}
-					<div class="custom-looks">
-						{#each customLooks as look}
-							<div class="custom-look-item">
-								<span class="custom-look-name">{formatLookName(look.name)}</span>
-								<button
-									type="button"
-									class="btn-delete"
-									onclick={() => handleDelete(look.name)}
-									title="Delete"
-									aria-label="Delete {formatLookName(look.name)}"
-								>
-									{@html renderIcon(ICON_CLOSE, 12)}
-								</button>
-							</div>
-						{/each}
-					</div>
+					<span class="lut-count">{customLooks.length}</span>
 				{/if}
+			</button>
+			<button type="button" class="upload-btn" onclick={() => fileInput?.click()} disabled={uploading} aria-label="Upload .cube">
+				{@html renderIcon(ICON_UPLOAD, 11)}
+			</button>
+		</div>
+		<input bind:this={fileInput} type="file" accept=".cube" onchange={handleUpload} style="display:none" />
+		{#if lutOpen && customLooks.length > 0}
+			<div class="custom-list">
+				{#each customLooks as look}
+					<div class="custom-item">
+						<span class="custom-name">{formatLookName(look.name)}</span>
+						<button type="button" class="del-btn" onclick={() => handleDelete(look.name)} title="Delete" aria-label="Delete {look.name}">
+							{@html renderIcon(ICON_CLOSE, 10)}
+						</button>
+					</div>
+				{/each}
 			</div>
 		{/if}
 	</div>
@@ -242,350 +242,263 @@
 		flex-direction: column;
 		height: 100%;
 		overflow: hidden;
-		padding: 6px 8px;
-		gap: 6px;
 		font-family: var(--font-ui, sans-serif);
+	}
+
+	.top-bar {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		padding: 4px 8px;
+		flex-shrink: 0;
+		border-bottom: 1px solid var(--border-subtle);
 	}
 
 	.group-bar {
 		display: flex;
-		flex-direction: row;
 		align-items: center;
-		gap: 4px;
-		flex-shrink: 0;
+		gap: 3px;
 		overflow-x: auto;
+		flex-shrink: 0;
 	}
+
+	.group-bar::-webkit-scrollbar { height: 0; }
 
 	.pill {
 		padding: 2px 7px;
-		background: var(--bg-control, var(--bg-surface, #2a2a2a));
-		border: 1px solid var(--border-default, var(--border-subtle, #444));
-		border-radius: var(--radius-sm, 4px);
-		color: var(--text-secondary, #999);
+		background: transparent;
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-md);
+		color: var(--text-tertiary);
 		cursor: pointer;
-		font-family: var(--font-ui, sans-serif);
-		font-size: var(--text-2xs, 10px);
+		font-size: var(--text-2xs);
 		font-weight: 500;
 		white-space: nowrap;
-		transition:
-			background var(--transition-fast, 0.12s ease),
-			border-color var(--transition-fast, 0.12s ease),
-			color var(--transition-fast, 0.12s ease);
+		transition: all var(--transition-fast);
 		flex-shrink: 0;
 	}
 
-	.pill:hover {
-		background: var(--bg-hover, #333);
-		color: var(--text-primary, #eee);
-	}
+	.pill:hover { color: var(--text-secondary); border-color: var(--border-default); }
 
 	.pill-active {
-		background: color-mix(in srgb, var(--accent-yellow, #d4a017) 12%, var(--bg-elevated, #222));
-		border-color: var(--accent-yellow, #d4a017);
-		color: var(--accent-yellow, #d4a017);
+		background: color-mix(in srgb, var(--accent-yellow) 12%, transparent);
+		border-color: var(--accent-yellow);
+		color: var(--accent-yellow);
 	}
 
-	.pill-off {
-		color: var(--text-tertiary, #888);
-	}
+	.pill-off { color: var(--text-tertiary); border-color: var(--border-default); }
+	.pill-off:hover { color: var(--text-primary); }
 
-	.intensity-row {
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		flex-shrink: 0;
-		min-width: 0;
-	}
-
-	.active-look-label {
-		font-size: var(--text-xs, 11px);
-		font-weight: 600;
-		color: var(--text-primary, #eee);
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		max-width: 42%;
-		flex-shrink: 0;
-	}
-
-	.intensity-inline {
+	.intensity-ctrl {
 		display: flex;
 		align-items: center;
 		gap: 6px;
-		flex: 1;
-		min-width: 0;
+		margin-left: auto;
+		flex-shrink: 0;
 	}
 
-	.intensity-pct {
-		font-size: var(--text-2xs, 10px);
-		font-variant-numeric: tabular-nums;
-		color: var(--text-secondary, #999);
-		width: 2.25rem;
-		flex-shrink: 0;
-		text-align: right;
+	.active-name {
+		font-size: var(--text-xs);
+		font-weight: 600;
+		color: var(--accent-yellow);
+		max-width: 90px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.intensity-slider {
-		flex: 1;
-		min-width: 0;
-		height: 4px;
-		accent-color: var(--accent-yellow, #d4a017);
+		width: 60px;
+		height: 3px;
+		accent-color: var(--accent-yellow);
 	}
 
-	.looks-grid-scroll {
+	.intensity-val {
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		color: var(--text-secondary);
+		width: 2rem;
+		text-align: right;
+	}
+
+	.looks-scroll {
 		flex: 1;
 		min-height: 0;
 		overflow-y: auto;
 		overflow-x: hidden;
+		padding: 6px 8px;
 	}
 
+	.looks-scroll::-webkit-scrollbar { width: 3px; }
+	.looks-scroll::-webkit-scrollbar-thumb { background: var(--border-subtle); border-radius: 2px; }
+
 	.looks-grid {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+		display: flex;
+		flex-wrap: wrap;
 		gap: 4px;
 		align-content: start;
 	}
 
-	.look-card {
-		position: relative;
-		display: flex;
-		flex-direction: column;
-		align-items: stretch;
-		padding: 5px 8px;
-		min-height: 2.75rem;
-		background: var(--bg-surface, #2a2a2a);
-		border: 1px solid var(--border-default, var(--border-subtle, #444));
-		border-radius: var(--radius-sm, 4px);
-		color: var(--text-primary, #eee);
-		cursor: pointer;
-		font-family: var(--font-ui, sans-serif);
-		text-align: left;
-		transition:
-			background var(--transition-fast, 0.12s ease),
-			border-color var(--transition-fast, 0.12s ease);
-	}
-
-	.look-card:hover {
-		background: var(--bg-hover, #333);
-		border-color: var(--border-default, #666);
-	}
-
-	.look-card-active {
-		border-color: var(--accent-yellow, #d4a017);
-		box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-yellow, #d4a017) 35%, transparent);
-		background: color-mix(in srgb, var(--accent-yellow, #d4a017) 8%, var(--bg-surface, #2a2a2a));
-	}
-
-	.look-check-badge {
-		position: absolute;
-		top: 3px;
-		right: 3px;
+	.look-chip {
 		display: flex;
 		align-items: center;
-		justify-content: center;
-		width: 16px;
-		height: 16px;
-		border-radius: var(--radius-xs, 2px);
-		background: color-mix(in srgb, var(--accent-yellow, #d4a017) 22%, var(--bg-base, #111));
-		color: var(--accent-yellow, #d4a017);
-		pointer-events: none;
+		gap: 5px;
+		padding: 3px 8px 3px 4px;
+		background: var(--bg-elevated);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-md);
+		cursor: pointer;
+		font-family: var(--font-ui);
+		transition: all var(--transition-fast);
+		position: relative;
 	}
 
-	.look-check-badge :global(svg) {
-		display: block;
+	.look-chip:hover {
+		background: var(--bg-hover);
+		border-color: var(--border-default);
 	}
 
-	.look-info {
-		display: flex;
-		flex-direction: column;
-		gap: 1px;
-		min-width: 0;
-		padding-right: 14px;
+	.look-chip.active {
+		border-color: var(--look-accent);
+		box-shadow: 0 0 0 1px color-mix(in srgb, var(--look-accent) 30%, transparent);
+		background: color-mix(in srgb, var(--look-accent) 8%, var(--bg-elevated));
+	}
+
+	.look-swatch {
+		width: 14px;
+		height: 14px;
+		border-radius: 3px;
+		background: linear-gradient(135deg, var(--look-accent), color-mix(in srgb, var(--look-accent) 40%, #111));
+		flex-shrink: 0;
+		border: 1px solid color-mix(in srgb, var(--look-accent) 25%, transparent);
+	}
+
+	.look-chip.active .look-swatch {
+		border-color: var(--look-accent);
+		box-shadow: 0 0 4px color-mix(in srgb, var(--look-accent) 40%, transparent);
 	}
 
 	.look-name {
-		overflow: hidden;
-		text-overflow: ellipsis;
+		font-size: var(--text-xs);
+		font-weight: 500;
+		color: var(--text-primary);
 		white-space: nowrap;
-		font-size: var(--text-xs, 11px);
-		font-weight: 600;
 		line-height: 1.2;
 	}
 
-	.look-desc {
-		font-size: var(--text-2xs, 10px);
-		color: var(--text-tertiary, #888);
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		line-height: 1.25;
+	.look-chip.active .look-name {
+		color: var(--look-accent);
+		font-weight: 600;
 	}
 
-	.look-card-active .look-desc {
-		color: var(--text-secondary, #aaa);
+	.look-check {
+		display: flex;
+		color: var(--look-accent);
+		margin-left: -2px;
 	}
 
 	.no-looks {
-		grid-column: 1 / -1;
-		color: var(--text-tertiary, #666);
-		font-size: var(--text-xs, 11px);
+		color: var(--text-tertiary);
+		font-size: var(--text-xs);
 		font-style: italic;
-		padding: 4px 2px;
+		padding: 4px;
 	}
 
 	.lut-section {
 		flex-shrink: 0;
-		border: 1px solid var(--border-subtle, #333);
-		border-radius: var(--radius-sm, 4px);
-		background: var(--bg-elevated, #222);
-		overflow: hidden;
+		border-top: 1px solid var(--border-subtle);
+	}
+
+	.lut-row {
+		display: flex;
+		align-items: center;
+		padding: 3px 8px;
+		gap: 0;
 	}
 
 	.lut-toggle {
 		display: flex;
 		align-items: center;
-		gap: 6px;
-		width: 100%;
-		padding: 4px 8px;
+		gap: 5px;
+		flex: 1;
+		padding: 0;
 		background: transparent;
 		border: none;
 		cursor: pointer;
-		user-select: none;
-		text-align: left;
-		font-family: var(--font-ui, sans-serif);
-		transition: background var(--transition-fast, 0.12s ease);
+		font-family: var(--font-ui);
 	}
 
-	.lut-toggle:hover {
-		background: var(--bg-hover, #2a2a2a);
-	}
+	.lut-row:hover { background: var(--bg-hover); }
 
 	.lut-chevron {
 		display: flex;
-		color: var(--text-tertiary, #666);
+		color: var(--text-tertiary);
 		flex-shrink: 0;
 	}
 
-	.lut-chevron :global(svg) {
-		display: block;
-	}
-
-	.lut-toggle-title {
-		font-size: var(--text-2xs, 10px);
+	.lut-label {
+		font-size: var(--text-2xs);
 		font-weight: 600;
 		letter-spacing: 0.04em;
 		text-transform: uppercase;
-		color: var(--text-secondary, #999);
+		color: var(--text-tertiary);
 	}
 
-	.lut-badge {
+	.lut-count {
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		color: var(--text-tertiary);
+		background: var(--bg-control);
+		padding: 0 3px;
+		border-radius: var(--radius-xs);
+	}
+
+	.upload-btn {
+		display: flex;
+		align-items: center;
 		margin-left: auto;
-		font-family: var(--font-mono, monospace);
-		font-size: var(--text-2xs, 10px);
-		padding: 0 4px;
-		border-radius: var(--radius-xs, 2px);
-		background: var(--bg-control, #2a2a2a);
-		border: 1px solid var(--border-subtle, #444);
-		color: var(--text-secondary, #999);
-	}
-
-	.lut-body {
-		padding: 0 8px 6px;
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-		border-top: 1px solid var(--border-subtle, #2a2a2a);
-	}
-
-	.upload-row {
-		display: flex;
-		align-items: center;
-		gap: 6px;
-		padding-top: 4px;
-	}
-
-	.upload-icon {
-		display: flex;
-		color: var(--text-tertiary, #666);
-		flex-shrink: 0;
-	}
-
-	.upload-icon :global(svg) {
-		display: block;
-	}
-
-	.file-input {
-		flex: 1;
-		min-width: 0;
-		font-size: var(--text-2xs, 10px);
-		color: var(--text-secondary, #999);
-	}
-
-	.file-input::file-selector-button {
-		padding: 2px 6px;
-		background: var(--bg-control, #2a2a2a);
-		border: 1px solid var(--border-default, #444);
-		border-radius: var(--radius-xs, 2px);
-		color: var(--text-primary, #eee);
+		padding: 2px 4px;
+		background: transparent;
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-sm);
+		color: var(--text-tertiary);
 		cursor: pointer;
-		font-family: var(--font-ui, sans-serif);
-		font-size: var(--text-2xs, 10px);
-		margin-right: 6px;
+		transition: all var(--transition-fast);
 	}
 
-	.uploading-label {
-		font-size: var(--text-2xs, 10px);
-		color: var(--accent-yellow, #d4a017);
-		flex-shrink: 0;
-	}
+	.upload-btn:hover { color: var(--text-primary); border-color: var(--border-default); }
 
-	.custom-looks {
+	.custom-list {
 		display: flex;
-		flex-direction: column;
-		gap: 2px;
+		gap: 3px;
+		flex-wrap: wrap;
+		padding: 3px 8px 4px;
 	}
 
-	.custom-look-item {
+	.custom-item {
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
-		gap: 6px;
-		padding: 3px 6px;
-		font-size: var(--text-2xs, 10px);
-		color: var(--text-secondary, #999);
-		background: var(--bg-base, #1a1a1a);
-		border-radius: var(--radius-xs, 2px);
+		gap: 3px;
+		padding: 1px 5px;
+		background: var(--bg-control);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-sm);
 	}
 
-	.custom-look-name {
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		min-width: 0;
+	.custom-name {
+		font-size: var(--text-2xs);
+		color: var(--text-secondary);
 	}
 
-	.btn-delete {
+	.del-btn {
 		display: flex;
-		align-items: center;
-		justify-content: center;
 		background: none;
 		border: none;
-		color: var(--text-tertiary, #666);
+		color: var(--text-tertiary);
 		cursor: pointer;
-		padding: 2px;
-		flex-shrink: 0;
-		border-radius: var(--radius-xs, 2px);
-		transition:
-			color var(--transition-fast, 0.12s ease),
-			background var(--transition-fast, 0.12s ease);
+		padding: 0;
+		transition: color var(--transition-fast);
 	}
 
-	.btn-delete :global(svg) {
-		display: block;
-	}
-
-	.btn-delete:hover {
-		color: var(--error, #e74c3c);
-		background: var(--bg-hover, #333);
-	}
+	.del-btn:hover { color: var(--color-error); }
 </style>

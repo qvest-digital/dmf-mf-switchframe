@@ -146,138 +146,55 @@
 		{#if crState.aiSegmentation?.modelName}
 			<span class="model-badge">{crState.aiSegmentation.modelName}</span>
 		{/if}
-		{#if inferenceMs !== undefined}
-			<span class="latency-badge">{inferenceMs}ms</span>
-		{/if}
 	</div>
 
-	<div class="source-select">
-		<label class="field-label"
-			>Source
-			<select
-				class="ai-select"
-				value={activeSource}
-				onchange={(e) => selectSource((e.target as HTMLSelectElement).value)}
-			>
-				{#each sourceKeys as key}
-					<option value={key}>{crState.sources[key]?.label || key}</option>
-				{/each}
-			</select>
+	<div class="top-row">
+		<select class="ai-select" value={activeSource} onchange={(e) => selectSource((e.target as HTMLSelectElement).value)}>
+			{#each sourceKeys as key}
+				<option value={key}>{crState.sources[key]?.label || key}</option>
+			{/each}
+		</select>
+		<label class="enable-toggle">
+			<input type="checkbox" bind:checked={enabled} />
+			<span class="enable-text">{enabled ? 'ON' : 'OFF'}</span>
 		</label>
 	</div>
 
-	<label class="enable-label">
-		<input type="checkbox" bind:checked={enabled} />
-		Enable AI Background Removal
-	</label>
-
 	{#if enabled}
 		<div class="controls">
-			<div class="slider-group">
-				<label class="slider-label"
-					>Sensitivity: {sensitivity}%
-					<input
-						type="range"
-						min="0"
-						max="100"
-						step="1"
-						bind:value={sensitivity}
-						class="slider slider--purple"
-					/>
-				</label>
-			</div>
-
-			<div class="slider-group">
-				<label class="slider-label"
-					>Edge Smoothing: {edgeSmooth}%
-					<input
-						type="range"
-						min="0"
-						max="100"
-						step="1"
-						bind:value={edgeSmooth}
-						class="slider slider--purple"
-					/>
-				</label>
-			</div>
-
-			<div class="bg-mode-group">
-				<span class="field-label">Background</span>
-				<div class="mode-buttons">
-					<button
-						class="mode-btn"
-						class:active={bgMode === 'transparent'}
-						onclick={() => (bgMode = 'transparent')}
-					>
-						Transparent
-					</button>
-					<button
-						class="mode-btn"
-						class:active={bgMode === 'blur'}
-						onclick={() => (bgMode = 'blur')}
-					>
-						Blur
-					</button>
-					<button
-						class="mode-btn"
-						class:active={bgMode === 'color'}
-						onclick={() => (bgMode = 'color')}
-					>
-						Color
-					</button>
+			<div class="sliders-row">
+				<div class="param-row">
+					<span class="param-label">Sens</span>
+					<input type="range" min="0" max="100" step="1" bind:value={sensitivity} class="param-slider" />
+					<span class="param-val">{sensitivity}</span>
+				</div>
+				<div class="param-row">
+					<span class="param-label">Edge</span>
+					<input type="range" min="0" max="100" step="1" bind:value={edgeSmooth} class="param-slider" />
+					<span class="param-val">{edgeSmooth}</span>
 				</div>
 			</div>
 
-			{#if bgMode === 'blur'}
-				<div class="slider-group">
-					<label class="slider-label"
-						>Blur Radius: {blurRadius}
-						<input
-							type="range"
-							min="1"
-							max="50"
-							step="1"
-							bind:value={blurRadius}
-							class="slider slider--purple"
-						/>
-					</label>
+			<div class="bg-row">
+				<span class="param-label">BG</span>
+				<div class="mode-seg">
+					<button class="seg-btn" class:active={bgMode === 'transparent'} onclick={() => (bgMode = 'transparent')}>None</button>
+					<button class="seg-btn" class:active={bgMode === 'blur'} onclick={() => (bgMode = 'blur')}>Blur</button>
+					<button class="seg-btn" class:active={bgMode === 'color'} onclick={() => (bgMode = 'color')}>Color</button>
 				</div>
-			{/if}
-
-			{#if bgMode === 'color'}
-				<div class="color-group">
-					<span class="field-label">Background Color</span>
-					<div class="color-row">
-						<button
-							class="preset-btn"
-							onclick={() => (bgColor = '#00ff00')}
-							style="background: #00ff00; color: #000;"
-						>
-							Green
-						</button>
-						<button
-							class="preset-btn"
-							onclick={() => (bgColor = '#0000ff')}
-							style="background: #0000ff; color: #fff;"
-						>
-							Blue
-						</button>
-						<input
-							type="color"
-							bind:value={bgColor}
-							class="color-swatch"
-							title="Pick background color"
-						/>
-					</div>
-				</div>
-			{/if}
+				{#if bgMode === 'blur'}
+					<input type="range" min="1" max="50" step="1" bind:value={blurRadius} class="param-slider bg-slider" />
+					<span class="param-val">{blurRadius}</span>
+				{/if}
+				{#if bgMode === 'color'}
+					<input type="color" bind:value={bgColor} class="color-swatch" title="Pick color" />
+				{/if}
+			</div>
 		</div>
 	{/if}
 
 	<div class="action-row">
-		<button class="apply-btn" onclick={applySegment}>
-			{enabled ? 'Apply' : 'Apply (disabled)'}
-		</button>
+		<button class="apply-btn" onclick={applySegment}>{enabled ? 'Apply' : 'Disable'}</button>
 		{#if activeSource}
 			<button class="remove-btn" onclick={removeSegment}>Remove</button>
 		{/if}
@@ -288,22 +205,20 @@
 	.ai-panel {
 		display: flex;
 		flex-direction: column;
-		gap: 6px;
+		gap: 5px;
 		padding: 6px;
 		height: 100%;
-		overflow-y: auto;
 	}
 
 	.panel-header {
 		display: flex;
 		align-items: center;
 		gap: 6px;
-		padding: 0 2px;
 	}
 
 	.panel-title {
 		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		font-weight: 700;
 		letter-spacing: 0.06em;
 		color: var(--text-secondary);
@@ -316,146 +231,121 @@
 		color: #a855f7;
 		border: 1px solid rgba(168, 85, 247, 0.3);
 		border-radius: var(--radius-sm);
-		padding: 1px 5px;
+		padding: 0 4px;
 	}
 
-	.latency-badge {
-		font-family: var(--font-mono);
-		font-size: var(--text-2xs);
-		color: var(--text-tertiary);
-		margin-left: auto;
-	}
-
-	.field-label {
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		font-weight: 500;
-		color: var(--text-tertiary);
-		margin-bottom: 2px;
-		display: block;
-	}
-
-	.source-select {
+	.top-row {
 		display: flex;
-		flex-direction: column;
+		align-items: center;
+		gap: 6px;
 	}
 
 	.ai-select {
-		width: 100%;
-		padding: 4px 6px;
+		flex: 1;
+		padding: 2px 4px;
 		background: var(--bg-base);
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
 		color: var(--text-primary);
 		font-family: var(--font-ui);
-		font-size: var(--text-sm);
+		font-size: var(--text-xs);
 	}
 
-	.enable-label {
+	.enable-toggle {
 		display: flex;
 		align-items: center;
-		gap: 6px;
-		font-family: var(--font-ui);
-		font-size: var(--text-sm);
-		color: var(--text-secondary);
+		gap: 4px;
 		cursor: pointer;
+		flex-shrink: 0;
+	}
+
+	.enable-toggle input { accent-color: #a855f7; width: 12px; height: 12px; }
+
+	.enable-text {
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 700;
+		letter-spacing: 0.04em;
+		color: var(--text-secondary);
 	}
 
 	.controls {
 		display: flex;
 		flex-direction: column;
-		gap: 6px;
+		gap: 4px;
 	}
 
-	.slider-group {
-		display: flex;
-		flex-direction: column;
-		gap: 1px;
+	.sliders-row {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 3px 8px;
 	}
 
-	.slider-label {
+	.param-row {
+		display: grid;
+		grid-template-columns: 28px 1fr 22px;
+		align-items: center;
+		gap: 3px;
+	}
+
+	.param-label {
 		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		color: var(--text-tertiary);
+		font-size: var(--text-2xs);
+		color: var(--text-secondary);
+		text-align: right;
 	}
 
-	.slider {
+	.param-slider {
 		width: 100%;
-		height: 14px;
-	}
-
-	.slider--purple {
+		min-width: 0;
+		height: 2px;
 		accent-color: #a855f7;
 	}
 
-	.bg-mode-group {
-		display: flex;
-		flex-direction: column;
-		gap: 3px;
-	}
-
-	.mode-buttons {
-		display: flex;
-		gap: 2px;
-	}
-
-	.mode-btn {
-		flex: 1;
-		padding: 4px 6px;
-		background: var(--bg-elevated);
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
+	.param-val {
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
 		color: var(--text-tertiary);
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		font-weight: 600;
-		cursor: pointer;
-		transition:
-			background var(--transition-fast),
-			color var(--transition-fast);
+		text-align: right;
 	}
 
-	.mode-btn:hover {
-		background: var(--bg-hover);
-		color: var(--text-primary);
-	}
-
-	.mode-btn.active {
-		background: rgba(168, 85, 247, 0.15);
-		color: #a855f7;
-		border-color: rgba(168, 85, 247, 0.4);
-	}
-
-	.color-group {
+	.bg-row {
 		display: flex;
-		flex-direction: column;
-		gap: 3px;
-	}
-
-	.color-row {
-		display: flex;
-		gap: 4px;
 		align-items: center;
+		gap: 4px;
+		flex-wrap: wrap;
 	}
 
-	.preset-btn {
-		padding: 4px 8px;
+	.mode-seg {
+		display: flex;
+	}
+
+	.seg-btn {
+		padding: 2px 6px;
+		background: var(--bg-surface);
 		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
+		color: var(--text-secondary);
 		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		font-size: var(--text-2xs);
 		font-weight: 600;
 		cursor: pointer;
-		transition: opacity var(--transition-fast);
+		transition: background var(--transition-fast), color var(--transition-fast);
 	}
+	.seg-btn:first-child { border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
+	.seg-btn:last-child { border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
+	.seg-btn:not(:first-child) { border-left: none; }
+	.seg-btn:hover:not(.active) { background: var(--bg-hover); color: var(--text-primary); }
+	.seg-btn.active { background: rgba(168, 85, 247, 0.15); color: #a855f7; border-color: rgba(168, 85, 247, 0.4); }
 
-	.preset-btn:hover {
-		opacity: 0.85;
+	.bg-slider {
+		flex: 1;
+		min-width: 40px;
+		max-width: 80px;
 	}
 
 	.color-swatch {
-		width: 28px;
-		height: 28px;
+		width: 20px;
+		height: 20px;
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
 		padding: 0;
@@ -465,42 +355,41 @@
 
 	.action-row {
 		display: flex;
-		gap: 4px;
-		margin-top: 2px;
+		gap: 3px;
 	}
 
 	.apply-btn {
 		flex: 1;
-		padding: 6px;
-		background: rgba(168, 85, 247, 0.15);
+		padding: 3px 8px;
+		background: rgba(168, 85, 247, 0.12);
 		color: #a855f7;
-		border: 1px solid rgba(168, 85, 247, 0.4);
+		border: 1px solid rgba(168, 85, 247, 0.35);
 		border-radius: var(--radius-sm);
 		font-family: var(--font-ui);
-		font-size: var(--text-sm);
+		font-size: var(--text-xs);
 		font-weight: 600;
 		cursor: pointer;
 		transition: background var(--transition-fast);
 	}
 
 	.apply-btn:hover {
-		background: rgba(168, 85, 247, 0.25);
+		background: rgba(168, 85, 247, 0.22);
 	}
 
 	.remove-btn {
-		padding: 6px 10px;
-		background: rgba(239, 68, 68, 0.15);
+		padding: 3px 8px;
+		background: rgba(239, 68, 68, 0.1);
 		color: var(--color-error);
-		border: 1px solid rgba(239, 68, 68, 0.3);
+		border: 1px solid rgba(239, 68, 68, 0.25);
 		border-radius: var(--radius-sm);
 		font-family: var(--font-ui);
-		font-size: var(--text-sm);
+		font-size: var(--text-xs);
 		font-weight: 600;
 		cursor: pointer;
 		transition: background var(--transition-fast);
 	}
 
 	.remove-btn:hover {
-		background: rgba(239, 68, 68, 0.25);
+		background: rgba(239, 68, 68, 0.2);
 	}
 </style>
