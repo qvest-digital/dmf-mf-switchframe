@@ -309,6 +309,12 @@ const (
 	rtmpInitialBackoff = 1 * time.Second
 	rtmpMaxBackoff     = 30 * time.Second
 	rtmpDrainBatch     = 64
+	// rtmpMinDrainBytes is the minimum ring buffer level before the drain
+	// loop will call av_read_frame. The AVIO buffer is 32KB; if we have
+	// at least this much data, the demuxer can fill its internal buffer
+	// without the read callback returning EOF and triggering a partial
+	// PES flush (which corrupts audio frames spanning multiple TS packets).
+	rtmpMinDrainBytes = 32 * 1024
 )
 
 // rtmpMaskURL masks the stream key portion of an RTMP URL for safe logging.
@@ -518,8 +524,27 @@ func (c *RTMPCaller) drainLoop() {
 			}
 		}
 
+		// Gate reads on having enough data in the ring buffer.
+		// av_read_frame internally reads TS packets via the AVIO
+		// callback. If the ring runs dry mid-PES-reassembly, the
+		// callback returns EOF, causing the mpegts demuxer to flush
+		// partial PES data as truncated packets — corrupting audio.
+		// Requiring at least one AVIO buffer's worth of data ensures
+		// the demuxer can fill its internal buffer without hitting EOF.
+		avail := C.rtmp_ring_available(c.ring)
+		if int(avail) < rtmpMinDrainBytes {
+			c.mu.Unlock()
+			time.Sleep(5 * time.Millisecond)
+			continue
+		}
+
 		wrote := false
 		for i := 0; i < rtmpDrainBatch; i++ {
+			// Stop draining before the ring gets too low to prevent
+			// the AVIO callback from returning EOF mid-PES.
+			if C.rtmp_ring_available(c.ring) < C.int(tsPacketSize) {
+				break
+			}
 			rc := C.rtmp_read_write_packet(&c.ctx)
 			if rc == 1 {
 				break
@@ -683,6 +708,19 @@ func (c *RTMPCaller) resetBackoff() {
 
 func (c *RTMPCaller) resetBackoffLocked() {
 	c.backoff = rtmpInitialBackoff
+}
+
+// ringAvailable returns the number of bytes currently readable in the ring buffer.
+func (c *RTMPCaller) ringAvailable() int {
+	return int(C.rtmp_ring_available(c.ring))
+}
+
+// ringWrite writes data into the ring buffer. Returns the number of bytes written.
+func (c *RTMPCaller) ringWrite(data []byte) int {
+	if len(data) == 0 {
+		return 0
+	}
+	return int(C.rtmp_ring_write(c.ring, (*C.uchar)(unsafe.Pointer(&data[0])), C.int(len(data))))
 }
 
 // Compile-time check that RTMPCaller satisfies the Adapter interface.

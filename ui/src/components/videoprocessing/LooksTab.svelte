@@ -265,13 +265,13 @@
 	.group-bar::-webkit-scrollbar { height: 0; }
 
 	.pill {
-		padding: 2px 7px;
+		padding: 3px 9px;
 		background: transparent;
 		border: 1px solid var(--border-subtle);
 		border-radius: var(--radius-md);
 		color: var(--text-tertiary);
 		cursor: pointer;
-		font-size: var(--text-2xs);
+		font-size: var(--text-xs);
 		font-weight: 500;
 		white-space: nowrap;
 		transition: all var(--transition-fast);
@@ -298,10 +298,10 @@
 	}
 
 	.active-name {
-		font-size: var(--text-xs);
+		font-size: var(--text-sm);
 		font-weight: 600;
 		color: var(--accent-yellow);
-		max-width: 90px;
+		max-width: 110px;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
@@ -315,9 +315,9 @@
 
 	.intensity-val {
 		font-family: var(--font-mono);
-		font-size: var(--text-2xs);
+		font-size: var(--text-xs);
 		color: var(--text-secondary);
-		width: 2rem;
+		width: 2.5rem;
 		text-align: right;
 	}
 
@@ -342,8 +342,8 @@
 	.look-chip {
 		display: flex;
 		align-items: center;
-		gap: 5px;
-		padding: 3px 8px 3px 4px;
+		gap: 6px;
+		padding: 4px 10px 4px 5px;
 		background: var(--bg-elevated);
 		border: 1px solid var(--border-subtle);
 		border-radius: var(--radius-md);
@@ -365,8 +365,8 @@
 	}
 
 	.look-swatch {
-		width: 14px;
-		height: 14px;
+		width: 16px;
+		height: 16px;
 		border-radius: 3px;
 		background: linear-gradient(135deg, var(--look-accent), color-mix(in srgb, var(--look-accent) 40%, #111));
 		flex-shrink: 0;
@@ -379,7 +379,7 @@
 	}
 
 	.look-name {
-		font-size: var(--text-xs);
+		font-size: var(--text-sm);
 		font-weight: 500;
 		color: var(--text-primary);
 		white-space: nowrap;
