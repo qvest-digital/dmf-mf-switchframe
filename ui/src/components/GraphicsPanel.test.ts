@@ -331,19 +331,20 @@ describe('GraphicsPanel', () => {
 		expect(selected).toBeTruthy();
 	});
 
-	it('should have 4 source mode buttons (TEMPLATE, IMAGE, TICKER, TEXT FX)', () => {
+	it('should have 5 source mode buttons (TEMPLATE, IMAGE, TICKER, TEXT FX, HTML5)', () => {
 		const state = {
 			...baseState,
 			graphics: { layers: [oneLayer] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
 		const modeBtns = container.querySelectorAll('.mode-btn');
-		expect(modeBtns.length).toBe(4);
+		expect(modeBtns.length).toBe(5);
 		const labels = Array.from(modeBtns).map(b => b.textContent?.trim());
 		expect(labels).toContain('TEMPLATE');
 		expect(labels).toContain('IMAGE');
 		expect(labels).toContain('TICKER');
 		expect(labels).toContain('TEXT FX');
+		expect(labels).toContain('HTML5');
 	});
 
 	it('should show image upload button after clicking IMAGE mode', async () => {
