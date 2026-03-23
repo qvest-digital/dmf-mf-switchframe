@@ -101,6 +101,100 @@ func ApplyContrast(lut *LUT3D, amount float32) {
 	}
 }
 
+// ── ITU transfer functions ─────────────────────────────────────────
+
+// bt709EOTF converts a BT.709 signal value to linear light.
+func bt709EOTF(v float32) float32 {
+	if v < 0.081 {
+		return v / 4.5
+	}
+	return float32(math.Pow(float64(v+0.099)/1.099, 1.0/0.45))
+}
+
+// bt709OETF converts linear light to a BT.709 signal value.
+func bt709OETF(l float32) float32 {
+	if l < 0.018 {
+		return 4.5 * l
+	}
+	return float32(1.099*math.Pow(float64(l), 0.45) - 0.099)
+}
+
+// HLG constants (Rec. 2100).
+const (
+	hlgA = 0.17883277
+	hlgB = 0.28466892  // 1 - 4*a
+	hlgC = 0.55991073  // 0.5 - a * ln(4*a)
+)
+
+// hlgOETF converts linear scene light to HLG signal.
+func hlgOETF(e float32) float32 {
+	if e <= 1.0/12.0 {
+		return float32(math.Sqrt(3.0 * float64(e)))
+	}
+	return float32(hlgA*math.Log(12.0*float64(e)-hlgB) + hlgC)
+}
+
+// hlgInverseOETF converts HLG signal to linear scene light.
+func hlgInverseOETF(ep float32) float32 {
+	if ep <= 0.5 {
+		return float32(float64(ep) * float64(ep) / 3.0)
+	}
+	return float32((math.Exp((float64(ep)-hlgC)/hlgA) + hlgB) / 12.0)
+}
+
+// PQ (SMPTE ST 2084) constants.
+const (
+	pqM1 = 0.1593017578125   // 2610 / 16384
+	pqM2 = 78.84375          // 2523 / 32 * 128
+	pqC1 = 0.8359375         // 3424 / 4096
+	pqC2 = 18.8515625        // 2413 / 128
+	pqC3 = 18.6875           // 2392 / 128
+)
+
+// pqEOTF converts a PQ signal (N in [0,1]) to linear light (Y in [0,1],
+// normalized to 10000 nits).
+func pqEOTF(n float32) float32 {
+	np := math.Pow(float64(n), 1.0/pqM2)
+	num := math.Max(np-pqC1, 0)
+	den := pqC2 - pqC3*np
+	if den <= 0 {
+		return 0
+	}
+	return float32(math.Pow(num/den, 1.0/pqM1))
+}
+
+// pqOETF converts linear light (Y in [0,1]) to a PQ signal.
+func pqOETF(y float32) float32 {
+	yp := math.Pow(float64(y), pqM1)
+	num := pqC1 + pqC2*yp
+	den := 1.0 + pqC3*yp
+	return float32(math.Pow(num/den, pqM2))
+}
+
+// reinhardToneMap compresses HDR linear light for SDR display using
+// Reinhard tone mapping: L' = L / (1 + L).
+func reinhardToneMap(l float32) float32 {
+	return l / (1.0 + l)
+}
+
+// GenerateHDRLook creates a 3D LUT that converts between color spaces by
+// applying a source EOTF (signal → linear), optional tone mapping, and a
+// destination OETF (linear → signal) to every entry of an identity LUT.
+func GenerateHDRLook(name string, sourceEOTF, destOETF func(float32) float32, toneMap func(float32) float32) *LUT3D {
+	lut := GenerateIdentityLUT()
+	lut.Title = name
+	for i := 0; i < len(lut.Data); i += 3 {
+		for c := 0; c < 3; c++ {
+			lin := sourceEOTF(lut.Data[i+c])
+			if toneMap != nil {
+				lin = toneMap(lin)
+			}
+			lut.Data[i+c] = clampf(destOETF(lin), 0, 1)
+		}
+	}
+	return lut
+}
+
 func clampf(v, lo, hi float32) float32 {
 	if v < lo {
 		return lo
@@ -125,10 +219,14 @@ type LookParams struct {
 	PowerR, PowerG, PowerB         float32
 	Saturation                     float32
 	Contrast                       float32
+
+	// HDRGen, when non-nil, overrides CDL generation. The function
+	// receives the look name and returns a fully-built LUT.
+	HDRGen func(name string) *LUT3D `json:"-"`
 }
 
-// BuiltinLooks returns the parameters for all 41 built-in color looks
-// organized into 7 aesthetic groups.
+// BuiltinLooks returns the parameters for all 47 built-in color looks
+// organized into 8 groups (7 aesthetic + 1 technical).
 func BuiltinLooks() []LookParams {
 	return []LookParams{
 		// ── Light (6) — warm, luminous, golden ──────────────────────────
@@ -472,11 +570,60 @@ func BuiltinLooks() []LookParams {
 			PowerR: 0.96, PowerG: 0.96, PowerB: 0.96,
 			Saturation: 0.98, Contrast: 0.10,
 		},
+
+		// ── Technical (6) — SDR/HDR/HLG/PQ conversion ─────────────────
+		{
+			Name: "sdr-to-hlg", Group: "Technical",
+			Description: "BT.709 to BT.2100 HLG expansion",
+			HDRGen: func(name string) *LUT3D {
+				return GenerateHDRLook(name, bt709EOTF, hlgOETF, nil)
+			},
+		},
+		{
+			Name: "sdr-to-pq", Group: "Technical",
+			Description: "BT.709 to BT.2100 PQ expansion",
+			HDRGen: func(name string) *LUT3D {
+				return GenerateHDRLook(name, bt709EOTF, pqOETF, nil)
+			},
+		},
+		{
+			Name: "hlg-to-sdr", Group: "Technical",
+			Description: "BT.2100 HLG to BT.709 compression",
+			HDRGen: func(name string) *LUT3D {
+				return GenerateHDRLook(name, hlgInverseOETF, bt709OETF, nil)
+			},
+		},
+		{
+			Name: "pq-to-sdr", Group: "Technical",
+			Description: "BT.2100 PQ to BT.709 compression",
+			HDRGen: func(name string) *LUT3D {
+				return GenerateHDRLook(name, pqEOTF, bt709OETF, reinhardToneMap)
+			},
+		},
+		{
+			Name: "hlg-to-pq", Group: "Technical",
+			Description: "BT.2100 HLG to PQ transfer",
+			HDRGen: func(name string) *LUT3D {
+				return GenerateHDRLook(name, hlgInverseOETF, pqOETF, nil)
+			},
+		},
+		{
+			Name: "pq-to-hlg", Group: "Technical",
+			Description: "BT.2100 PQ to HLG transfer",
+			HDRGen: func(name string) *LUT3D {
+				return GenerateHDRLook(name, pqEOTF, hlgOETF, reinhardToneMap)
+			},
+		},
 	}
 }
 
 // GenerateLook creates a 33x33x33 LUT with the given look parameters applied.
 func GenerateLook(params LookParams) *LUT3D {
+	// HDR/technical looks use a custom generation function.
+	if params.HDRGen != nil {
+		return params.HDRGen(params.Name)
+	}
+
 	lut := GenerateIdentityLUT()
 	lut.Title = params.Name
 

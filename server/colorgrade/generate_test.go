@@ -99,8 +99,8 @@ func TestGenerateLook_DiffersFromIdentity(t *testing.T) {
 
 func TestAllBuiltinLooks_Count(t *testing.T) {
 	looks := BuiltinLooks()
-	if len(looks) != 41 {
-		t.Fatalf("expected 41 built-in looks, got %d", len(looks))
+	if len(looks) != 47 {
+		t.Fatalf("expected 47 built-in looks, got %d", len(looks))
 	}
 }
 
@@ -123,13 +123,14 @@ func TestAllBuiltinLooks_GroupsPresent(t *testing.T) {
 	}
 
 	expected := map[string]int{
-		"Light":   6,
-		"Shadow":  6,
-		"Film":    7,
-		"Drama":   6,
-		"Vivid":   6,
-		"Vintage": 5,
-		"Clean":   5,
+		"Light":     6,
+		"Shadow":    6,
+		"Film":      7,
+		"Drama":     6,
+		"Vivid":     6,
+		"Vintage":   5,
+		"Clean":     5,
+		"Technical": 6,
 	}
 
 	if len(groupCounts) != len(expected) {
@@ -276,5 +277,131 @@ func TestGenerateLookFiles(t *testing.T) {
 		if parsed.Size != 33 {
 			t.Errorf("%s: size = %d, want 33", params.Name, parsed.Size)
 		}
+	}
+}
+
+func TestHDRLooks_DifferFromIdentity(t *testing.T) {
+	identity := GenerateIdentityLUT()
+
+	hdrNames := []string{
+		"sdr-to-hlg", "sdr-to-pq",
+		"hlg-to-sdr", "pq-to-sdr",
+		"hlg-to-pq", "pq-to-hlg",
+	}
+
+	lookMap := make(map[string]LookParams)
+	for _, p := range BuiltinLooks() {
+		lookMap[p.Name] = p
+	}
+
+	for _, name := range hdrNames {
+		t.Run(name, func(t *testing.T) {
+			params, ok := lookMap[name]
+			if !ok {
+				t.Fatalf("HDR look %q not found in BuiltinLooks()", name)
+			}
+			lut := GenerateLook(params)
+
+			differences := 0
+			for i := range identity.Data {
+				if math.Abs(float64(lut.Data[i]-identity.Data[i])) > 1e-5 {
+					differences++
+				}
+			}
+			if differences == 0 {
+				t.Errorf("HDR look %q is identical to identity", name)
+			}
+
+			// All values must be in [0,1].
+			for i, v := range lut.Data {
+				if v < 0 || v > 1 {
+					t.Errorf("data[%d] = %f, out of [0,1] range", i, v)
+					break
+				}
+			}
+		})
+	}
+}
+
+func TestHDRRoundtrip_SDR_HLG_SDR(t *testing.T) {
+	// SDR → HLG → SDR should be close to identity.
+	identity := GenerateIdentityLUT()
+
+	sdrToHLG := GenerateHDRLook("fwd", bt709EOTF, hlgOETF, nil)
+	hlgToSDR := GenerateHDRLook("rev", hlgInverseOETF, bt709OETF, nil)
+
+	// Apply the forward transform, then the reverse.
+	roundtrip := GenerateIdentityLUT()
+	for i := 0; i < len(roundtrip.Data); i += 3 {
+		for c := 0; c < 3; c++ {
+			// Forward: SDR signal → linear → HLG signal
+			hlgVal := sdrToHLG.Data[i+c]
+			// Reverse: HLG signal → linear → SDR signal
+			lin := hlgInverseOETF(hlgVal)
+			roundtrip.Data[i+c] = clampf(bt709OETF(lin), 0, 1)
+		}
+	}
+
+	maxErr := float32(0)
+	for i := range identity.Data {
+		diff := float32(math.Abs(float64(roundtrip.Data[i] - identity.Data[i])))
+		if diff > maxErr {
+			maxErr = diff
+		}
+	}
+
+	// The SDR→HLG→SDR roundtrip should be nearly lossless (HLG fully
+	// contains the SDR range). Allow a small tolerance for floating-point
+	// and LUT quantization.
+	_ = hlgToSDR // used conceptually; we did manual roundtrip above
+	if maxErr > 0.01 {
+		t.Errorf("SDR→HLG→SDR roundtrip max error = %f, want < 0.01", maxErr)
+	}
+}
+
+func TestTransferFunctions_Boundaries(t *testing.T) {
+	// Black stays black, white stays white for all transfer functions.
+	tol := float32(1e-5)
+
+	// BT.709
+	if v := bt709EOTF(0); v > tol {
+		t.Errorf("bt709EOTF(0) = %f, want 0", v)
+	}
+	if v := bt709EOTF(1); math.Abs(float64(v-1)) > float64(tol) {
+		t.Errorf("bt709EOTF(1) = %f, want 1", v)
+	}
+	if v := bt709OETF(0); v > tol {
+		t.Errorf("bt709OETF(0) = %f, want 0", v)
+	}
+	if v := bt709OETF(1); math.Abs(float64(v-1)) > float64(tol) {
+		t.Errorf("bt709OETF(1) = %f, want 1", v)
+	}
+
+	// HLG
+	if v := hlgOETF(0); v > tol {
+		t.Errorf("hlgOETF(0) = %f, want 0", v)
+	}
+	if v := hlgOETF(1); math.Abs(float64(v-1)) > float64(tol) {
+		t.Errorf("hlgOETF(1) = %f, want 1", v)
+	}
+	if v := hlgInverseOETF(0); v > tol {
+		t.Errorf("hlgInverseOETF(0) = %f, want 0", v)
+	}
+	if v := hlgInverseOETF(1); math.Abs(float64(v-1)) > float64(tol) {
+		t.Errorf("hlgInverseOETF(1) = %f, want 1", v)
+	}
+
+	// PQ
+	if v := pqEOTF(0); v > tol {
+		t.Errorf("pqEOTF(0) = %f, want 0", v)
+	}
+	if v := pqEOTF(1); math.Abs(float64(v-1)) > float64(tol) {
+		t.Errorf("pqEOTF(1) = %f, want 1", v)
+	}
+	if v := pqOETF(0); v > tol {
+		t.Errorf("pqOETF(0) = %f, want 0", v)
+	}
+	if v := pqOETF(1); math.Abs(float64(v-1)) > float64(tol) {
+		t.Errorf("pqOETF(1) = %f, want 1", v)
 	}
 }

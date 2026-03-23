@@ -20,8 +20,8 @@ func TestStore_List(t *testing.T) {
 	store := setupTestStore(t)
 
 	looks := store.List()
-	if len(looks) < 41 {
-		t.Fatalf("expected at least 41 built-in looks, got %d", len(looks))
+	if len(looks) < 47 {
+		t.Fatalf("expected at least 47 built-in looks, got %d", len(looks))
 	}
 	// Verify all are builtin with non-empty Group and Description.
 	for _, l := range looks {
