@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(switchframe-cef LANGUAGES CXX)
+project(switchframe-cef LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
