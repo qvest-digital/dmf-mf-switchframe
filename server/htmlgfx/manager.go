@@ -556,6 +556,9 @@ func (m *Manager) frameReadLoop() {
 		}
 
 		frame, err := ReadFrame(m.frameConn)
+		if err == nil {
+			slog.Info("htmlgfx: frame received", "browser", frame.BrowserID, "size", fmt.Sprintf("%dx%d", frame.Width, frame.Height))
+		}
 		if err != nil {
 			select {
 			case <-m.done:
