@@ -2,6 +2,7 @@ package control
 
 import (
 	"encoding/json"
+	"image"
 	"net/http"
 	"strings"
 
@@ -94,6 +95,14 @@ func (a *API) handleHTML5Load(w http.ResponseWriter, r *http.Request) {
 		}
 		httperr.Write(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+
+	// Set the layer rect to full-frame so the HTML5 overlay covers the entire
+	// program output. The template renders at full resolution (1920x1080).
+	status := a.compositor.Status()
+	if status.ProgramWidth > 0 && status.ProgramHeight > 0 {
+		_ = a.compositor.SetLayerRect(layerID, image.Rect(
+			0, 0, status.ProgramWidth, status.ProgramHeight))
 	}
 
 	if err := a.htmlGfxMgr.LoadURL(browserID, req.URL); err != nil {
