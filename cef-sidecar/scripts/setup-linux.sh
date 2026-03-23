@@ -6,7 +6,7 @@ set -euo pipefail
 CEF_VERSION="138.0.60+gd8bc8bd+chromium-138.0.7204.307"
 CEF_PLATFORM="linux64_minimal"
 CEF_DIR="/opt/cef"
-BUILD_DIR="${HOME}/switchframe-cef-build"
+BUILD_DIR="/opt/switchframe-cef/build"
 INSTALL_DIR="/opt/switchframe-cef"
 
 echo "=== SwitchFrame CEF Sidecar Setup ==="
