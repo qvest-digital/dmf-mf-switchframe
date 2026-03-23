@@ -5,14 +5,16 @@
 		onchange: (rgb: [number, number, number]) => void;
 		min?: number;
 		max?: number;
+		size?: number;
 	}
 
-	let { label, value, onchange, min = -1, max = 1 }: Props = $props();
+	let { label, value, onchange, min = -1, max = 1, size = 80 }: Props = $props();
 
-	const SIZE = 80;
-	const RADIUS = 34;
-	const CENTER = SIZE / 2;
-	const DOT_RADIUS = 5;
+	// Scale all dimensions proportionally to the size prop
+	const SIZE = $derived(size);
+	const RADIUS = $derived(Math.round(size * 34 / 80));
+	const CENTER = $derived(size / 2);
+	const DOT_RADIUS = $derived(Math.max(3, Math.round(size * 5 / 80)));
 
 	let dragging = $state(false);
 	let svgEl: SVGSVGElement;

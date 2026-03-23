@@ -5,15 +5,17 @@
 		points: CurvePoint[];
 		onchange: (points: CurvePoint[]) => void;
 		color?: string;
+		size?: number;
 	}
 
-	let { points, onchange, color = '#ccc' }: Props = $props();
+	let { points, onchange, color = '#ccc', size = 200 }: Props = $props();
 
-	const SIZE = 200;
-	const PAD = 4;
-	const INNER = SIZE - PAD * 2;
+	// Scale all dimensions proportionally to the size prop
+	const SIZE = $derived(size);
+	const PAD = $derived(Math.round(size * 4 / 200));
+	const INNER = $derived(SIZE - PAD * 2);
 	const GRID_LINES = 4;
-	const DOT_RADIUS = 5;
+	const DOT_RADIUS = $derived(Math.max(3, Math.round(size * 5 / 200)));
 	const MAX_POINTS = 10;
 
 	let draggingIndex = $state<number | null>(null);
