@@ -477,7 +477,7 @@
 							<div class="html5-data-section">
 								<textarea
 									class="html5-data-input"
-									placeholder='{"key": "value"}'
+									placeholder={'{"key": "value"}'}
 									bind:value={html5DataJson}
 									aria-label="HTML5 template data (JSON)"
 									rows="3"
