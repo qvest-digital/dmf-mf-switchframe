@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html, body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    overflow: hidden;
+    width: 100%;
+    height: 100%;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 Helvetica, Arial, sans-serif;
+}
+
+#weather-bug {
+    position: absolute;
+    top: 40px;
+    right: 40px;
+    width: 220px;
+    background: rgba(12, 12, 20, 0.82);
+    border-radius: 14px;
+    padding: 14px 18px;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.45),
+                0 0 0 1px rgba(255, 255, 255, 0.06);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    color: #fff;
+    opacity: 0;
+    transform: scale(0);
+    transform-origin: top right;
+    pointer-events: none;
+}
+
+.weather-top {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.weather-icon {
+    font-size: 30px;
+    line-height: 1;
+    flex-shrink: 0;
+    filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.3));
+}
+
+.weather-temp {
+    font-size: 32px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    line-height: 1;
+    color: #fff;
+}
+
+.weather-unit {
+    font-size: 16px;
+    font-weight: 400;
+    opacity: 0.6;
+    vertical-align: super;
+    margin-left: 1px;
+}
+
+.weather-city {
+    font-size: 13px;
+    font-weight: 500;
+    color: rgba(255, 255, 255, 0.55);
+    margin-left: auto;
+    text-align: right;
+    line-height: 1.2;
+    max-width: 80px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.weather-condition {
+    font-size: 12px;
+    font-weight: 500;
+    color: rgba(255, 255, 255, 0.45);
+    margin-top: 6px;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+}
+
+.weather-divider {
+    height: 1px;
+    background: linear-gradient(90deg,
+        rgba(255, 255, 255, 0.08),
+        rgba(255, 255, 255, 0.15),
+        rgba(255, 255, 255, 0.08));
+    margin-top: 8px;
+    margin-bottom: 6px;
+}
+
+.weather-wind {
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.35);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.weather-wind-icon {
+    font-size: 12px;
+}
+
+/* Flash animation for next() refresh */
+@keyframes flash-border {
+    0%   { box-shadow: 0 4px 24px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.06); }
+    50%  { box-shadow: 0 4px 24px rgba(0,0,0,0.45), 0 0 0 2px rgba(100,180,255,0.5),
+                       0 0 16px rgba(100,180,255,0.15); }
+    100% { box-shadow: 0 4px 24px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.06); }
+}
+
+.weather-flash {
+    animation: flash-border 0.6s ease;
+}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+</head>
+<body>
+
+<div id="weather-bug">
+    <div class="weather-top">
+        <span class="weather-icon" id="w-icon"></span>
+        <span class="weather-temp">
+            <span id="w-temp">--</span><span class="weather-unit" id="w-unit"></span>
+        </span>
+        <span class="weather-city" id="w-city"></span>
+    </div>
+    <div class="weather-condition" id="w-condition">Loading...</div>
+    <div class="weather-divider"></div>
+    <div class="weather-wind">
+        <span class="weather-wind-icon">&#x1F4A8;</span>
+        <span id="w-wind">--</span>
+    </div>
+</div>
+
+<script>
+(function() {
+    'use strict';
+
+    // --- State ---
+    var config = {
+        lat: 40.71,
+        lon: -74.01,
+        city: 'New York',
+        units: 'fahrenheit'
+    };
+
+    var currentTemp = null;
+    var refreshInterval = null;
+    var isPlaying = false;
+    var bug = document.getElementById('weather-bug');
+
+    // --- Weather code mapping ---
+    var weatherMap = {
+        0:  { icon: '\u2600\uFE0F', label: 'Clear Sky' },
+        1:  { icon: '\u26C5',       label: 'Mainly Clear' },
+        2:  { icon: '\u26C5',       label: 'Partly Cloudy' },
+        3:  { icon: '\u2601\uFE0F', label: 'Overcast' },
+        45: { icon: '\uD83C\uDF2B\uFE0F', label: 'Fog' },
+        48: { icon: '\uD83C\uDF2B\uFE0F', label: 'Depositing Rime Fog' },
+        51: { icon: '\uD83C\uDF27\uFE0F', label: 'Light Drizzle' },
+        53: { icon: '\uD83C\uDF27\uFE0F', label: 'Moderate Drizzle' },
+        55: { icon: '\uD83C\uDF27\uFE0F', label: 'Dense Drizzle' },
+        56: { icon: '\uD83C\uDF27\uFE0F', label: 'Freezing Drizzle' },
+        57: { icon: '\uD83C\uDF27\uFE0F', label: 'Heavy Freezing Drizzle' },
+        61: { icon: '\uD83C\uDF27\uFE0F', label: 'Slight Rain' },
+        63: { icon: '\uD83C\uDF27\uFE0F', label: 'Moderate Rain' },
+        65: { icon: '\uD83C\uDF27\uFE0F', label: 'Heavy Rain' },
+        66: { icon: '\uD83C\uDF27\uFE0F', label: 'Freezing Rain' },
+        67: { icon: '\uD83C\uDF27\uFE0F', label: 'Heavy Freezing Rain' },
+        71: { icon: '\u2744\uFE0F', label: 'Slight Snow' },
+        73: { icon: '\u2744\uFE0F', label: 'Moderate Snow' },
+        75: { icon: '\u2744\uFE0F', label: 'Heavy Snow' },
+        77: { icon: '\u2744\uFE0F', label: 'Snow Grains' },
+        80: { icon: '\uD83C\uDF26\uFE0F', label: 'Slight Showers' },
+        81: { icon: '\uD83C\uDF26\uFE0F', label: 'Moderate Showers' },
+        82: { icon: '\uD83C\uDF26\uFE0F', label: 'Violent Showers' },
+        85: { icon: '\u2744\uFE0F', label: 'Slight Snow Showers' },
+        86: { icon: '\u2744\uFE0F', label: 'Heavy Snow Showers' },
+        95: { icon: '\u26C8\uFE0F', label: 'Thunderstorm' },
+        96: { icon: '\u26C8\uFE0F', label: 'Thunderstorm w/ Hail' },
+        99: { icon: '\u26C8\uFE0F', label: 'Thunderstorm w/ Heavy Hail' }
+    };
+
+    function getWeatherInfo(code) {
+        if (weatherMap[code]) return weatherMap[code];
+        // Fallback range matching
+        if (code >= 1 && code <= 3)   return { icon: '\u26C5', label: 'Cloudy' };
+        if (code >= 45 && code <= 48) return { icon: '\uD83C\uDF2B\uFE0F', label: 'Fog' };
+        if (code >= 51 && code <= 67) return { icon: '\uD83C\uDF27\uFE0F', label: 'Rain' };
+        if (code >= 71 && code <= 77) return { icon: '\u2744\uFE0F', label: 'Snow' };
+        if (code >= 80 && code <= 82) return { icon: '\uD83C\uDF26\uFE0F', label: 'Showers' };
+        if (code >= 95 && code <= 99) return { icon: '\u26C8\uFE0F', label: 'Thunderstorm' };
+        return { icon: '\u2600\uFE0F', label: 'Unknown' };
+    }
+
+    function buildURL() {
+        var unit = (config.units === 'celsius') ? 'celsius' : 'fahrenheit';
+        return 'https://api.open-meteo.com/v1/forecast' +
+               '?latitude=' + config.lat +
+               '&longitude=' + config.lon +
+               '&current_weather=true' +
+               '&temperature_unit=' + unit +
+               '&windspeed_unit=mph';
+    }
+
+    // --- Animated temperature counter ---
+    function animateTemp(fromVal, toVal, duration) {
+        var tempEl = document.getElementById('w-temp');
+        if (fromVal === null || isNaN(fromVal)) {
+            tempEl.textContent = Math.round(toVal);
+            return;
+        }
+        var obj = { val: fromVal };
+        gsap.to(obj, {
+            val: toVal,
+            duration: duration || 0.8,
+            ease: 'power2.out',
+            onUpdate: function() {
+                tempEl.textContent = Math.round(obj.val);
+            }
+        });
+    }
+
+    // --- Update DOM with weather data (animated) ---
+    function applyWeather(data) {
+        if (!data || !data.current_weather) return;
+
+        var cw = data.current_weather;
+        var info = getWeatherInfo(cw.weathercode);
+        var unitLabel = (config.units === 'celsius') ? '\u00B0C' : '\u00B0F';
+
+        // Icon
+        var iconEl = document.getElementById('w-icon');
+        gsap.to(iconEl, {
+            opacity: 0,
+            duration: 0.15,
+            onComplete: function() {
+                iconEl.textContent = info.icon;
+                gsap.to(iconEl, { opacity: 1, duration: 0.2 });
+            }
+        });
+
+        // Temperature (animated count)
+        var newTemp = cw.temperature;
+        animateTemp(currentTemp, newTemp, 0.8);
+        currentTemp = newTemp;
+
+        // Unit
+        document.getElementById('w-unit').textContent = unitLabel;
+
+        // City
+        document.getElementById('w-city').textContent = config.city;
+
+        // Condition (crossfade)
+        var condEl = document.getElementById('w-condition');
+        gsap.to(condEl, {
+            opacity: 0,
+            duration: 0.15,
+            onComplete: function() {
+                condEl.textContent = info.label;
+                gsap.to(condEl, { opacity: 1, duration: 0.2 });
+            }
+        });
+
+        // Wind
+        var windEl = document.getElementById('w-wind');
+        windEl.textContent = Math.round(cw.windspeed) + ' mph';
+    }
+
+    // --- Fetch weather data ---
+    function fetchWeather(onDone) {
+        var url = buildURL();
+        fetch(url)
+            .then(function(res) { return res.json(); })
+            .then(function(data) {
+                applyWeather(data);
+                if (typeof onDone === 'function') onDone(true);
+            })
+            .catch(function(err) {
+                console.warn('[weather-bug] fetch error:', err);
+                if (typeof onDone === 'function') onDone(false);
+            });
+    }
+
+    function startRefreshLoop() {
+        stopRefreshLoop();
+        refreshInterval = setInterval(function() {
+            fetchWeather();
+        }, 60000);
+    }
+
+    function stopRefreshLoop() {
+        if (refreshInterval) {
+            clearInterval(refreshInterval);
+            refreshInterval = null;
+        }
+    }
+
+    // --- CasparCG global functions ---
+
+    window.play = function() {
+        if (isPlaying) return;
+        isPlaying = true;
+
+        // Reset initial state
+        gsap.set(bug, { opacity: 0, scale: 0 });
+
+        // Fetch data then animate in
+        fetchWeather(function() {
+            gsap.to(bug, {
+                opacity: 1,
+                scale: 1,
+                duration: 0.5,
+                ease: 'back.out(1.4)',
+                onComplete: function() {
+                    bug.style.pointerEvents = 'auto';
+                }
+            });
+        });
+
+        // Start the 60s refresh loop
+        startRefreshLoop();
+    };
+
+    window.stop = function() {
+        if (!isPlaying) return;
+        isPlaying = false;
+
+        stopRefreshLoop();
+
+        gsap.to(bug, {
+            opacity: 0,
+            scale: 0,
+            duration: 0.35,
+            ease: 'back.in(1.8)',
+            onComplete: function() {
+                bug.style.pointerEvents = 'none';
+                currentTemp = null;
+            }
+        });
+    };
+
+    window.update = function(dataStr) {
+        var data;
+        try {
+            data = (typeof dataStr === 'string') ? JSON.parse(dataStr) : dataStr;
+        } catch (e) {
+            console.warn('[weather-bug] invalid update JSON:', e);
+            return;
+        }
+
+        if (data.lat !== undefined)   config.lat   = parseFloat(data.lat);
+        if (data.lon !== undefined)   config.lon   = parseFloat(data.lon);
+        if (data.city !== undefined)  config.city  = String(data.city);
+        if (data.units !== undefined) config.units = String(data.units);
+
+        // Fetch immediately with new config
+        fetchWeather();
+
+        // Restart the refresh loop so the next tick is 60s from now
+        if (isPlaying) {
+            startRefreshLoop();
+        }
+    };
+
+    window.next = function() {
+        // Flash animation
+        bug.classList.remove('weather-flash');
+        // Force reflow to restart animation
+        void bug.offsetWidth;
+        bug.classList.add('weather-flash');
+
+        // Force immediate refresh
+        fetchWeather();
+    };
+
+})();
+</script>
+</body>
+</html>

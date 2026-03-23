@@ -1,0 +1,32 @@
+{
+  "name": "switchframe-lower-third",
+  "description": "Professional GSAP-animated lower third with accent bar",
+  "version": "1.0.0",
+  "steps": 1,
+  "dataSchema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "title": "Name",
+        "default": "Jane Smith"
+      },
+      "title": {
+        "type": "string",
+        "title": "Title",
+        "default": "Executive Producer"
+      },
+      "accentColor": {
+        "type": "string",
+        "title": "Accent Color",
+        "default": "#e63946"
+      }
+    },
+    "required": ["name", "title"]
+  },
+  "renderRequirements": {
+    "width": 1920,
+    "height": 1080,
+    "frameRate": 30
+  }
+}

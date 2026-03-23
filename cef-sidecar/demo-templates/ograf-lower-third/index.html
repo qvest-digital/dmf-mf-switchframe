@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Switchframe Lower Third (OGraf)</title>
+<link rel="ograf-manifest" href="manifest.ograf.json">
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    overflow: hidden;
+    width: 100%;
+    height: 100%;
+  }
+</style>
+</head>
+<body>
+
+<switchframe-lower-third></switchframe-lower-third>
+
+<!-- GSAP animation library -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+
+<script>
+class SwitchframeLowerThird extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: 'open' });
+
+    // State
+    this._isVisible = false;
+    this._playTL = null;
+    this._stopTL = null;
+    this._data = { name: '', title: '', accentColor: '#e63946' };
+
+    this.shadowRoot.innerHTML = `
+      <style>
+        /* ---------- Host positioning ---------- */
+        :host {
+          display: block;
+          position: absolute;
+          bottom: 80px;
+          left: 60px;
+          pointer-events: none;
+          font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+                       Roboto, Helvetica, Arial, sans-serif;
+          -webkit-font-smoothing: antialiased;
+          -moz-osx-font-smoothing: grayscale;
+        }
+
+        /* ---------- Root container ---------- */
+        .lower-third {
+          display: flex;
+          align-items: stretch;
+        }
+
+        /* ---------- Accent bar (left edge) ---------- */
+        .accent-bar {
+          width: 5px;
+          background: var(--accent-color, #e63946);
+          border-radius: 2.5px 0 0 2.5px;
+          flex-shrink: 0;
+          transform-origin: bottom center;
+          transform: scaleY(0);
+          opacity: 0;
+        }
+
+        /* ---------- Background panel ---------- */
+        .panel {
+          background: rgba(12, 12, 18, 0.88);
+          backdrop-filter: blur(10px);
+          -webkit-backdrop-filter: blur(10px);
+          box-shadow: 0 4px 24px rgba(0, 0, 0, 0.45),
+                      0 1px 3px rgba(0, 0, 0, 0.3);
+          border-radius: 0 6px 6px 0;
+          padding: 18px 32px 16px 22px;
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
+          min-width: 300px;
+          clip-path: inset(0 100% 0 0);
+          opacity: 0;
+        }
+
+        /* ---------- Name ---------- */
+        .name {
+          font-size: 38px;
+          font-weight: 700;
+          color: #ffffff;
+          line-height: 1.15;
+          letter-spacing: -0.01em;
+          text-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+          white-space: nowrap;
+          opacity: 0;
+          clip-path: inset(0 100% 0 0);
+        }
+
+        /* ---------- Title ---------- */
+        .title {
+          font-size: 26px;
+          font-weight: 400;
+          color: rgba(210, 212, 220, 0.92);
+          line-height: 1.25;
+          letter-spacing: 0.01em;
+          text-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+          white-space: nowrap;
+          margin-top: 3px;
+          opacity: 0;
+          transform: translateY(8px);
+        }
+
+        /* ---------- Accent underline on name ---------- */
+        .name-wrapper {
+          position: relative;
+          display: inline-block;
+        }
+
+        .name-underline {
+          position: absolute;
+          bottom: -2px;
+          left: 0;
+          height: 2px;
+          background: var(--accent-color, #e63946);
+          width: 0;
+          opacity: 0.7;
+          border-radius: 1px;
+        }
+      </style>
+
+      <div class="lower-third">
+        <div class="accent-bar" id="accent-bar"></div>
+        <div class="panel" id="panel">
+          <div class="name-wrapper">
+            <div class="name" id="name"></div>
+            <div class="name-underline" id="name-underline"></div>
+          </div>
+          <div class="title" id="title"></div>
+        </div>
+      </div>
+    `;
+
+    // Cache element references
+    this._els = {
+      accentBar: this.shadowRoot.getElementById('accent-bar'),
+      panel: this.shadowRoot.getElementById('panel'),
+      name: this.shadowRoot.getElementById('name'),
+      title: this.shadowRoot.getElementById('title'),
+      nameUnderline: this.shadowRoot.getElementById('name-underline'),
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // load(data) -- Initialize the template with data
+  // ---------------------------------------------------------------------------
+  async load(data) {
+    if (data) {
+      this._data = { ...this._data, ...data };
+    }
+
+    this._els.name.textContent = this._data.name || '';
+    this._els.title.textContent = this._data.title || '';
+
+    if (this._data.accentColor) {
+      this.style.setProperty('--accent-color', this._data.accentColor);
+    }
+
+    // Ensure starting state is fully hidden
+    this._resetToHidden();
+
+    return { status: 200 };
+  }
+
+  // ---------------------------------------------------------------------------
+  // playAction(opts) -- Animate the lower third on screen
+  // ---------------------------------------------------------------------------
+  async playAction(opts) {
+    // Kill any running stop animation
+    if (this._stopTL) {
+      this._stopTL.kill();
+      this._stopTL = null;
+    }
+
+    this._isVisible = true;
+    const els = this._els;
+
+    return new Promise((resolve) => {
+      this._playTL = gsap.timeline({
+        defaults: { overwrite: 'auto' },
+        onComplete: () => {
+          this._playTL = null;
+          resolve({ status: 200 });
+        }
+      });
+
+      // 1. Accent bar grows from bottom to top (0.35s)
+      this._playTL.to(els.accentBar, {
+        scaleY: 1,
+        opacity: 1,
+        duration: 0.35,
+        ease: 'power3.out'
+      });
+
+      // 2. Panel slides in via clip-path reveal (0.4s, overlapped)
+      this._playTL.to(els.panel, {
+        clipPath: 'inset(0 0% 0 0)',
+        opacity: 1,
+        duration: 0.4,
+        ease: 'power3.out'
+      }, '-=0.18');
+
+      // 3. Name reveals with clip-path wipe from left (0.3s)
+      this._playTL.to(els.name, {
+        opacity: 1,
+        clipPath: 'inset(0 0% 0 0)',
+        duration: 0.3,
+        ease: 'power2.out'
+      }, '-=0.22');
+
+      // 4. Name underline draws across (0.35s)
+      this._playTL.to(els.nameUnderline, {
+        width: '100%',
+        opacity: 0.7,
+        duration: 0.35,
+        ease: 'power2.out'
+      }, '-=0.15');
+
+      // 5. Title fades up (0.25s)
+      this._playTL.to(els.title, {
+        opacity: 1,
+        y: 0,
+        duration: 0.25,
+        ease: 'power2.out'
+      }, '-=0.18');
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // stopAction(opts) -- Animate the lower third off screen
+  // ---------------------------------------------------------------------------
+  async stopAction(opts) {
+    // Kill any running play animation
+    if (this._playTL) {
+      this._playTL.kill();
+      this._playTL = null;
+    }
+
+    const els = this._els;
+
+    return new Promise((resolve) => {
+      this._stopTL = gsap.timeline({
+        defaults: { overwrite: 'auto' },
+        onComplete: () => {
+          this._isVisible = false;
+          this._stopTL = null;
+          this._resetToHidden();
+          resolve({ status: 200 });
+        }
+      });
+
+      // 1. Title fades and slides down
+      this._stopTL.to(els.title, {
+        opacity: 0,
+        y: 8,
+        duration: 0.2,
+        ease: 'power2.in'
+      });
+
+      // 2. Name underline retracts
+      this._stopTL.to(els.nameUnderline, {
+        width: 0,
+        opacity: 0,
+        duration: 0.2,
+        ease: 'power2.in'
+      }, '-=0.12');
+
+      // 3. Name hides with clip-path wipe to left
+      this._stopTL.to(els.name, {
+        opacity: 0,
+        clipPath: 'inset(0 100% 0 0)',
+        duration: 0.25,
+        ease: 'power2.in'
+      }, '-=0.1');
+
+      // 4. Panel slides out to left
+      this._stopTL.to(els.panel, {
+        clipPath: 'inset(0 100% 0 0)',
+        opacity: 0,
+        duration: 0.35,
+        ease: 'power3.in'
+      }, '-=0.1');
+
+      // 5. Accent bar scales down
+      this._stopTL.to(els.accentBar, {
+        scaleY: 0,
+        opacity: 0,
+        duration: 0.25,
+        ease: 'power2.in'
+      }, '-=0.15');
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // updateAction(opts) -- Update data fields with highlight animation
+  // ---------------------------------------------------------------------------
+  async updateAction(opts) {
+    if (!opts || !opts.data) {
+      return { status: 200 };
+    }
+
+    const data = opts.data;
+    const els = this._els;
+    const changed = [];
+
+    // Track which fields changed
+    if (data.name != null && data.name !== this._data.name) {
+      this._data.name = data.name;
+      els.name.textContent = data.name;
+      changed.push(els.name);
+    }
+
+    if (data.title != null && data.title !== this._data.title) {
+      this._data.title = data.title;
+      els.title.textContent = data.title;
+      changed.push(els.title);
+    }
+
+    if (data.accentColor != null && data.accentColor !== this._data.accentColor) {
+      this._data.accentColor = data.accentColor;
+      this.style.setProperty('--accent-color', data.accentColor);
+
+      // Animate accent bar color change
+      gsap.to(els.accentBar, {
+        backgroundColor: data.accentColor,
+        duration: 0.3,
+        ease: 'power1.inOut'
+      });
+      gsap.to(els.nameUnderline, {
+        backgroundColor: data.accentColor,
+        duration: 0.3,
+        ease: 'power1.inOut'
+      });
+    }
+
+    // Highlight animation on changed text fields
+    if (this._isVisible && changed.length > 0) {
+      return new Promise((resolve) => {
+        const tl = gsap.timeline({
+          onComplete: () => resolve({ status: 200 })
+        });
+
+        // Brief flash on panel border to signal update
+        tl.to(els.panel, {
+          boxShadow: '0 4px 30px rgba(230, 57, 70, 0.45), 0 1px 3px rgba(0, 0, 0, 0.3)',
+          duration: 0.15,
+          ease: 'power1.in'
+        });
+        tl.to(els.panel, {
+          boxShadow: '0 4px 24px rgba(0, 0, 0, 0.45), 0 1px 3px rgba(0, 0, 0, 0.3)',
+          duration: 0.4,
+          ease: 'power1.out'
+        });
+
+        // Subtle text highlight for each changed field
+        changed.forEach((el) => {
+          tl.fromTo(el, {
+            color: '#ffffff',
+          }, {
+            color: '#ffffff',
+            keyframes: [
+              { color: '#fca5ab', duration: 0.12 },
+              { color: '#ffffff', duration: 0.35 }
+            ],
+            ease: 'power1.out'
+          }, 0);
+        });
+      });
+    }
+
+    return { status: 200 };
+  }
+
+  // ---------------------------------------------------------------------------
+  // customAction(opts) -- Handle custom actions
+  // ---------------------------------------------------------------------------
+  async customAction(opts) {
+    if (!opts || !opts.action) {
+      return { status: 200 };
+    }
+
+    const els = this._els;
+
+    switch (opts.action) {
+      // Flash the accent bar (useful for emphasis cue)
+      case 'flash': {
+        return new Promise((resolve) => {
+          gsap.timeline({ onComplete: () => resolve({ status: 200 }) })
+            .to(els.accentBar, {
+              scaleX: 3,
+              opacity: 0.5,
+              duration: 0.1,
+              ease: 'power2.out'
+            })
+            .to(els.accentBar, {
+              scaleX: 1,
+              opacity: 1,
+              duration: 0.3,
+              ease: 'elastic.out(1, 0.4)'
+            });
+        });
+      }
+
+      default:
+        return { status: 200 };
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // dispose() -- Cleanup
+  // ---------------------------------------------------------------------------
+  dispose() {
+    if (this._playTL) {
+      this._playTL.kill();
+      this._playTL = null;
+    }
+    if (this._stopTL) {
+      this._stopTL.kill();
+      this._stopTL = null;
+    }
+    gsap.killTweensOf(Object.values(this._els));
+    this._isVisible = false;
+  }
+
+  // ---------------------------------------------------------------------------
+  // _resetToHidden() -- Reset all elements to their initial hidden state
+  // ---------------------------------------------------------------------------
+  _resetToHidden() {
+    const els = this._els;
+    gsap.set(els.accentBar, { scaleY: 0, opacity: 0 });
+    gsap.set(els.panel, { clipPath: 'inset(0 100% 0 0)', opacity: 0 });
+    gsap.set(els.name, { opacity: 0, clipPath: 'inset(0 100% 0 0)' });
+    gsap.set(els.title, { opacity: 0, y: 8 });
+    gsap.set(els.nameUnderline, { width: 0, opacity: 0 });
+  }
+}
+
+customElements.define('switchframe-lower-third', SwitchframeLowerThird);
+</script>
+</body>
+</html>

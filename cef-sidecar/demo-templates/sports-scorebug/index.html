@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html, body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    overflow: hidden;
+    width: 100%;
+    height: 100%;
+    font-family: 'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+#scorebug {
+    position: absolute;
+    top: 30px;
+    left: 40px;
+    width: 480px;
+    overflow: hidden;
+    visibility: hidden;
+}
+
+.bug-outer {
+    background: rgba(8, 8, 12, 0.92);
+    border-radius: 6px;
+    overflow: hidden;
+    box-shadow:
+        0 4px 24px rgba(0, 0, 0, 0.5),
+        0 1px 0 rgba(255, 255, 255, 0.04) inset;
+    position: relative;
+}
+
+/* Subtle bottom glow */
+.bug-outer::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg,
+        transparent 0%,
+        rgba(255, 255, 255, 0.12) 20%,
+        rgba(255, 255, 255, 0.18) 50%,
+        rgba(255, 255, 255, 0.12) 80%,
+        transparent 100%
+    );
+}
+
+.bug-inner {
+    display: flex;
+    align-items: stretch;
+    height: 68px;
+}
+
+/* ── Team panel (home or away) ── */
+.team-panel {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    width: 120px;
+    position: relative;
+    overflow: hidden;
+}
+
+.team-panel .accent-bar {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    transition: background-color 0.4s ease;
+}
+
+.team-name {
+    font-size: 15px;
+    font-weight: 700;
+    color: rgba(255, 255, 255, 0.88);
+    text-transform: uppercase;
+    letter-spacing: 1.8px;
+    line-height: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100px;
+    text-align: center;
+}
+
+/* ── Score area ── */
+.score-area {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-width: 110px;
+    padding: 0 4px;
+}
+
+.score-num {
+    font-size: 42px;
+    font-weight: 800;
+    color: #ffffff;
+    line-height: 1;
+    min-width: 38px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.5px;
+}
+
+.score-sep {
+    font-size: 22px;
+    font-weight: 300;
+    color: rgba(255, 255, 255, 0.3);
+    line-height: 1;
+    margin: 0 2px;
+    padding-bottom: 2px;
+}
+
+/* ── Divider ── */
+.divider {
+    width: 1px;
+    background: rgba(255, 255, 255, 0.1);
+    align-self: stretch;
+    margin: 10px 0;
+}
+
+/* ── Info panel (period + clock) ── */
+.info-panel {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    flex: 1;
+    min-width: 100px;
+    padding: 0 14px;
+    gap: 4px;
+}
+
+.period-badge {
+    font-size: 11px;
+    font-weight: 700;
+    color: rgba(255, 255, 255, 0.7);
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    line-height: 1;
+    background: rgba(255, 255, 255, 0.06);
+    padding: 3px 10px;
+    border-radius: 3px;
+}
+
+.clock {
+    font-size: 24px;
+    font-weight: 700;
+    color: #ffffff;
+    font-family: 'JetBrains Mono', 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+    line-height: 1;
+    letter-spacing: 0.5px;
+    font-variant-numeric: tabular-nums;
+}
+
+/* ── Compact mode ── */
+.bug-inner.compact .team-panel {
+    width: 0;
+    padding: 0;
+    overflow: hidden;
+}
+
+.bug-inner.compact .info-panel {
+    min-width: 60px;
+    padding: 0 10px;
+}
+
+.bug-inner.compact .divider {
+    display: none;
+}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+</head>
+<body>
+
+<div id="scorebug">
+    <div class="bug-outer">
+        <div class="bug-inner" id="bugInner">
+            <div class="team-panel" id="homePanel">
+                <span class="team-name" id="homeName">HOME</span>
+                <div class="accent-bar" id="homeAccent"></div>
+            </div>
+
+            <div class="score-area" id="scoreArea">
+                <span class="score-num" id="homeScore">0</span>
+                <span class="score-sep">&ndash;</span>
+                <span class="score-num" id="awayScore">0</span>
+            </div>
+
+            <div class="team-panel" id="awayPanel">
+                <span class="team-name" id="awayName">AWAY</span>
+                <div class="accent-bar" id="awayAccent"></div>
+            </div>
+
+            <div class="divider"></div>
+
+            <div class="info-panel" id="infoPanel">
+                <span class="period-badge" id="period">Q1</span>
+                <span class="clock" id="clock">00:00</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+(function () {
+    'use strict';
+
+    // ── State ──
+    var state = {
+        home: 'HOME',
+        away: 'AWAY',
+        homeScore: 0,
+        awayScore: 0,
+        period: 'Q1',
+        clock: '00:00',
+        homeColor: '#c41e3a',
+        awayColor: '#003087',
+        clockRunning: false
+    };
+
+    var isPlaying = false;
+    var isCompact = false;
+    var clockInterval = null;
+    var playTimeline = null;
+
+    // ── DOM refs ──
+    var $bug        = document.getElementById('scorebug');
+    var $bugInner   = document.getElementById('bugInner');
+    var $homeName   = document.getElementById('homeName');
+    var $awayName   = document.getElementById('awayName');
+    var $homeScore  = document.getElementById('homeScore');
+    var $awayScore  = document.getElementById('awayScore');
+    var $homeAccent = document.getElementById('homeAccent');
+    var $awayAccent = document.getElementById('awayAccent');
+    var $homePanel  = document.getElementById('homePanel');
+    var $awayPanel  = document.getElementById('awayPanel');
+    var $period     = document.getElementById('period');
+    var $clock      = document.getElementById('clock');
+    var $infoPanel  = document.getElementById('infoPanel');
+    var $scoreArea  = document.getElementById('scoreArea');
+
+    // ── Helpers ──
+
+    function applyColors() {
+        $homeAccent.style.background = state.homeColor;
+        $awayAccent.style.background = state.awayColor;
+    }
+
+    function applyStaticData() {
+        $homeName.textContent = state.home;
+        $awayName.textContent = state.away;
+        $period.textContent = state.period;
+        $clock.textContent = state.clock;
+        applyColors();
+    }
+
+    function parseClockSeconds(clockStr) {
+        var parts = clockStr.split(':');
+        if (parts.length === 2) {
+            return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
+        }
+        if (parts.length === 3) {
+            return parseInt(parts[0], 10) * 3600 +
+                   parseInt(parts[1], 10) * 60 +
+                   parseInt(parts[2], 10);
+        }
+        return 0;
+    }
+
+    function formatClock(totalSeconds) {
+        if (totalSeconds < 0) totalSeconds = 0;
+        var m = Math.floor(totalSeconds / 60);
+        var s = totalSeconds % 60;
+        return (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+    }
+
+    function startClockTick() {
+        stopClockTick();
+        var seconds = parseClockSeconds(state.clock);
+        clockInterval = setInterval(function () {
+            seconds++;
+            state.clock = formatClock(seconds);
+            $clock.textContent = state.clock;
+        }, 1000);
+    }
+
+    function stopClockTick() {
+        if (clockInterval !== null) {
+            clearInterval(clockInterval);
+            clockInterval = null;
+        }
+    }
+
+    function animateScoreChange($el, newValue) {
+        var tl = gsap.timeline();
+        tl.to($el, {
+            scale: 1.25,
+            color: '#ffdd44',
+            duration: 0.15,
+            ease: 'power2.out'
+        });
+        tl.call(function () {
+            $el.textContent = newValue;
+        });
+        tl.to($el, {
+            scale: 1.0,
+            color: '#ffffff',
+            duration: 0.3,
+            ease: 'elastic.out(1, 0.5)'
+        });
+        return tl;
+    }
+
+    function animateNameChange($el, newText) {
+        var tl = gsap.timeline();
+        tl.to($el, { opacity: 0, duration: 0.15, ease: 'power2.in' });
+        tl.call(function () { $el.textContent = newText; });
+        tl.to($el, { opacity: 1, duration: 0.15, ease: 'power2.out' });
+        return tl;
+    }
+
+    function countUpScore($el, target) {
+        var obj = { val: 0 };
+        return gsap.to(obj, {
+            val: target,
+            duration: 0.4,
+            ease: 'power2.out',
+            snap: { val: 1 },
+            onUpdate: function () {
+                $el.textContent = Math.round(obj.val);
+            }
+        });
+    }
+
+    // ── CasparCG Global Functions ──
+
+    window.play = function () {
+        if (isPlaying) return;
+        isPlaying = true;
+
+        // Reset state for clean entry
+        gsap.set($bug, { visibility: 'visible' });
+        gsap.set('.bug-outer', { y: -80, opacity: 0 });
+        gsap.set([$homeName, $awayName], { opacity: 0 });
+        gsap.set($homePanel, { x: -20 });
+        gsap.set($awayPanel, { x: 20 });
+        gsap.set([$homeScore, $awayScore], { opacity: 0, scale: 0.5 });
+        gsap.set($infoPanel, { opacity: 0 });
+        gsap.set('.score-sep', { opacity: 0 });
+
+        $homeScore.textContent = '0';
+        $awayScore.textContent = '0';
+        applyStaticData();
+
+        playTimeline = gsap.timeline();
+
+        // 1. Background slides down
+        playTimeline.to('.bug-outer', {
+            y: 0,
+            opacity: 1,
+            duration: 0.35,
+            ease: 'power3.out'
+        });
+
+        // 2. Team names fade in from sides
+        playTimeline.to($homePanel, {
+            x: 0,
+            duration: 0.25,
+            ease: 'power2.out'
+        }, '-=0.1');
+        playTimeline.to($homeName, {
+            opacity: 1,
+            duration: 0.2,
+            ease: 'power2.out'
+        }, '-=0.15');
+
+        playTimeline.to($awayPanel, {
+            x: 0,
+            duration: 0.25,
+            ease: 'power2.out'
+        }, '-=0.25');
+        playTimeline.to($awayName, {
+            opacity: 1,
+            duration: 0.2,
+            ease: 'power2.out'
+        }, '-=0.15');
+
+        // 3. Separator appears
+        playTimeline.to('.score-sep', {
+            opacity: 1,
+            duration: 0.15,
+            ease: 'power2.out'
+        }, '-=0.1');
+
+        // 4. Scores count up
+        playTimeline.to([$homeScore, $awayScore], {
+            opacity: 1,
+            scale: 1,
+            duration: 0.2,
+            ease: 'back.out(1.4)',
+            stagger: 0.05
+        }, '-=0.05');
+
+        playTimeline.add(countUpScore($homeScore, state.homeScore), '-=0.15');
+        playTimeline.add(countUpScore($awayScore, state.awayScore), '-=0.35');
+
+        // 5. Info panel fades in
+        playTimeline.to($infoPanel, {
+            opacity: 1,
+            duration: 0.25,
+            ease: 'power2.out'
+        }, '-=0.15');
+
+        // 6. Start clock if requested
+        playTimeline.call(function () {
+            if (state.clockRunning) {
+                startClockTick();
+            }
+        });
+    };
+
+    window.stop = function () {
+        if (!isPlaying) return;
+
+        stopClockTick();
+
+        if (playTimeline) {
+            playTimeline.kill();
+            playTimeline = null;
+        }
+
+        var tl = gsap.timeline({
+            onComplete: function () {
+                isPlaying = false;
+                gsap.set($bug, { visibility: 'hidden' });
+            }
+        });
+
+        // 1. Content fades out
+        tl.to([$homeName, $awayName, $homeScore, $awayScore, $infoPanel, '.score-sep'], {
+            opacity: 0,
+            duration: 0.2,
+            ease: 'power2.in'
+        });
+
+        // 2. Background slides up
+        tl.to('.bug-outer', {
+            y: -80,
+            opacity: 0,
+            duration: 0.3,
+            ease: 'power3.in'
+        }, '-=0.05');
+    };
+
+    window.update = function (dataStr) {
+        var data;
+        if (typeof dataStr === 'string') {
+            try { data = JSON.parse(dataStr); } catch (e) { return; }
+        } else {
+            data = dataStr;
+        }
+
+        if (!data) return;
+
+        // Team names (crossfade if changed)
+        if (data.home !== undefined && data.home !== state.home) {
+            state.home = data.home;
+            if (isPlaying) {
+                animateNameChange($homeName, state.home);
+            } else {
+                $homeName.textContent = state.home;
+            }
+        }
+        if (data.away !== undefined && data.away !== state.away) {
+            state.away = data.away;
+            if (isPlaying) {
+                animateNameChange($awayName, state.away);
+            } else {
+                $awayName.textContent = state.away;
+            }
+        }
+
+        // Scores (pulse if changed while visible)
+        if (data.homeScore !== undefined && data.homeScore !== state.homeScore) {
+            state.homeScore = data.homeScore;
+            if (isPlaying) {
+                animateScoreChange($homeScore, state.homeScore);
+            } else {
+                $homeScore.textContent = state.homeScore;
+            }
+        }
+        if (data.awayScore !== undefined && data.awayScore !== state.awayScore) {
+            state.awayScore = data.awayScore;
+            if (isPlaying) {
+                animateScoreChange($awayScore, state.awayScore);
+            } else {
+                $awayScore.textContent = state.awayScore;
+            }
+        }
+
+        // Period
+        if (data.period !== undefined && data.period !== state.period) {
+            state.period = data.period;
+            $period.textContent = state.period;
+        }
+
+        // Clock
+        if (data.clock !== undefined) {
+            state.clock = data.clock;
+            $clock.textContent = state.clock;
+        }
+
+        // Colors
+        if (data.homeColor !== undefined) {
+            state.homeColor = data.homeColor;
+            $homeAccent.style.background = state.homeColor;
+        }
+        if (data.awayColor !== undefined) {
+            state.awayColor = data.awayColor;
+            $awayAccent.style.background = state.awayColor;
+        }
+
+        // Clock running state
+        if (data.clockRunning !== undefined) {
+            state.clockRunning = data.clockRunning;
+            if (isPlaying) {
+                if (state.clockRunning) {
+                    startClockTick();
+                } else {
+                    stopClockTick();
+                }
+            }
+        }
+    };
+
+    window.next = function () {
+        if (!isPlaying) return;
+
+        isCompact = !isCompact;
+
+        var tl = gsap.timeline();
+
+        if (isCompact) {
+            // Transition to compact: hide team names and period/clock area shrinks
+            tl.to([$homeName, $awayName], {
+                opacity: 0,
+                duration: 0.15,
+                ease: 'power2.in'
+            });
+            tl.to([$homePanel, $awayPanel], {
+                width: 0,
+                padding: 0,
+                duration: 0.3,
+                ease: 'power3.inOut'
+            }, '-=0.05');
+            tl.to('.accent-bar', {
+                opacity: 0,
+                duration: 0.15
+            }, '-=0.3');
+            tl.to('.divider', {
+                opacity: 0,
+                width: 0,
+                margin: 0,
+                duration: 0.2,
+                ease: 'power2.inOut'
+            }, '-=0.25');
+            tl.to($infoPanel, {
+                minWidth: 50,
+                padding: '0 8px',
+                duration: 0.3,
+                ease: 'power3.inOut'
+            }, '-=0.25');
+        } else {
+            // Transition to expanded: restore team names
+            tl.to([$homePanel, $awayPanel], {
+                width: 120,
+                duration: 0.3,
+                ease: 'power3.inOut'
+            });
+            tl.to('.divider', {
+                opacity: 1,
+                width: 1,
+                margin: '10px 0',
+                duration: 0.2,
+                ease: 'power2.inOut'
+            }, '-=0.15');
+            tl.to('.accent-bar', {
+                opacity: 1,
+                duration: 0.15
+            }, '-=0.1');
+            tl.to([$homeName, $awayName], {
+                opacity: 1,
+                duration: 0.2,
+                ease: 'power2.out'
+            }, '-=0.1');
+            tl.to($infoPanel, {
+                minWidth: 100,
+                padding: '0 14px',
+                duration: 0.3,
+                ease: 'power3.inOut'
+            }, '-=0.3');
+        }
+    };
+
+    // Set initial accent colors
+    applyColors();
+
+})();
+</script>
+</body>
+</html>
