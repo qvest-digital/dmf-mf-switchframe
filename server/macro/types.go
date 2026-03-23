@@ -112,8 +112,10 @@ const (
 	ActionColorGradeSave Action = "colorgrade_save"
 
 	// Corrector actions.
-	ActionCorrectorSet   Action = "corrector_set"
-	ActionCorrectorReset Action = "corrector_reset"
+	ActionCorrectorSet          Action = "corrector_set"
+	ActionCorrectorReset        Action = "corrector_reset"
+	ActionSourceCorrectorSet    Action = "source_corrector_set"
+	ActionSourceCorrectorReset  Action = "source_corrector_reset"
 )
 
 // allActions is the set of all valid macro actions.
@@ -195,6 +197,8 @@ var allActions = map[Action]bool{
 	ActionColorGradeSave:          true,
 	ActionCorrectorSet:            true,
 	ActionCorrectorReset:          true,
+	ActionSourceCorrectorSet:      true,
+	ActionSourceCorrectorReset:    true,
 }
 
 // IsValidAction reports whether a is a recognized macro action.
@@ -417,6 +421,16 @@ var stepSummaryMap = map[Action]stepSummaryFunc{
 		return "Corrector: set parameters"
 	},
 	ActionCorrectorReset: staticSummary("Corrector: reset"),
+
+	// Per-source corrector actions.
+	ActionSourceCorrectorSet: func(s Step) string {
+		source, _ := s.Params["source"].(string)
+		return fmt.Sprintf("Source Corrector: %s", source)
+	},
+	ActionSourceCorrectorReset: func(s Step) string {
+		source, _ := s.Params["source"].(string)
+		return fmt.Sprintf("Source Corrector Reset: %s", source)
+	},
 }
 
 // paramStr extracts a string parameter from a step.
