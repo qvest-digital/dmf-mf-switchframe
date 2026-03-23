@@ -13,18 +13,36 @@
 		// (server extracts dataSchema from OGraf manifest, so properties is at top level)
 		const props = schema?.properties ?? schema?.dataSchema?.properties;
 		if (props) {
-			return Object.entries(props).map(([key, prop]: [string, any]) => ({
-				key,
-				label: prop.title || key,
-				type: prop.type === 'string'
-					? (key.toLowerCase().includes('color') ? 'color' : 'text')
-					: prop.type === 'number' || prop.type === 'integer' ? 'number'
-					: prop.type === 'boolean' ? 'boolean'
-					: prop.enum ? 'select'
-					: 'text',
-				default: prop.default ?? (prop.type === 'number' ? 0 : ''),
-				options: prop.enum,
-			}));
+			return Object.entries(props).map(([key, prop]: [string, any]) => {
+				let fieldType = 'text';
+				let defaultVal: any = prop.default ?? '';
+
+				if (prop.type === 'array' || prop.type === 'object') {
+					fieldType = 'textarea';
+					// Serialize complex defaults to JSON for display
+					if (typeof defaultVal === 'object' && defaultVal !== null) {
+						defaultVal = JSON.stringify(defaultVal, null, 2);
+					}
+				} else if (prop.type === 'boolean') {
+					fieldType = 'boolean';
+					defaultVal = prop.default ?? false;
+				} else if (prop.type === 'number' || prop.type === 'integer') {
+					fieldType = 'number';
+					defaultVal = prop.default ?? 0;
+				} else if (prop.enum) {
+					fieldType = 'select';
+				} else if (prop.type === 'string') {
+					fieldType = key.toLowerCase().includes('color') ? 'color' : 'text';
+				}
+
+				return {
+					key,
+					label: prop.title || key,
+					type: fieldType,
+					default: defaultVal,
+					options: prop.enum,
+				};
+			});
 		}
 		return [];
 	}
