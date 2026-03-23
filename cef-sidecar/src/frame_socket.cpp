@@ -13,24 +13,28 @@ FrameSocket::FrameSocket(int listen_fd) : listen_fd_(listen_fd) {}
 FrameSocket::~FrameSocket() { Close(); }
 
 bool FrameSocket::Accept() {
+    std::cerr << "[frame-socket] Waiting for connection..." << std::endl;
     conn_fd_ = accept(listen_fd_, nullptr, nullptr);
     if (conn_fd_ < 0) {
-        std::cerr << "FrameSocket: accept() failed: " << strerror(errno)
+        std::cerr << "[frame-socket] accept() failed: " << strerror(errno)
                   << std::endl;
         return false;
     }
     connected_ = true;
+    std::cerr << "[frame-socket] Connected (fd=" << conn_fd_ << ")" << std::endl;
     return true;
 }
 
 bool FrameSocket::SendFrame(int browser_id, int width, int height,
                              const void* bgra, size_t size) {
     if (!connected_) {
+        std::cerr << "[frame-socket] SendFrame: not connected" << std::endl;
         return false;
     }
 
     std::lock_guard<std::mutex> lock(write_mutex_);
     if (conn_fd_ < 0) {
+        std::cerr << "[frame-socket] SendFrame: fd closed" << std::endl;
         return false;
     }
 
