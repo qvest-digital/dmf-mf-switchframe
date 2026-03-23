@@ -10,7 +10,7 @@
 		graphicsTickerStart, graphicsTickerStop, graphicsTickerUpdateText,
 		graphicsLoadHTML5, graphicsUpdateHTML5Data,
 		graphicsHTML5Play, graphicsHTML5Stop, graphicsHTML5Next,
-		graphicsUnloadHTML5,
+		graphicsUnloadHTML5, graphicsHTML5Custom,
 		apiCall,
 	} from '$lib/api/switch-api';
 	import { GraphicsPublisher } from '$lib/graphics/publisher';
@@ -379,6 +379,14 @@
 			notify('error', 'HTML5 unload failed');
 		}
 	}
+
+	async function handleHTML5Custom(id: number, action: string, payload: Record<string, unknown>) {
+		try {
+			await graphicsHTML5Custom(id, action, payload);
+		} catch {
+			notify('error', 'HTML5 custom action failed');
+		}
+	}
 </script>
 
 <div class="graphics-panel">
@@ -439,6 +447,7 @@
 					onHTML5Stop={() => handleHTML5Stop(selectedLayer.id)}
 					onHTML5Next={() => handleHTML5Next(selectedLayer.id)}
 					onHTML5Unload={() => handleHTML5Unload(selectedLayer.id)}
+					onHTML5Custom={(action, payload) => handleHTML5Custom(selectedLayer.id, action, payload)}
 				/>
 			{/key}
 		{:else}

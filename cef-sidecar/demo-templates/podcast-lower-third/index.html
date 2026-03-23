@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+html, body {
+    margin: 0; padding: 0;
+    background: transparent;
+    overflow: hidden;
+    width: 100%; height: 100%;
+    -webkit-font-smoothing: antialiased;
+}
+
+#lower-third {
+    position: absolute;
+    bottom: 90px;
+    left: 72px;
+    display: flex;
+    align-items: stretch;
+    font-family: 'Instrument Sans', sans-serif;
+}
+
+/* Accent line — thin vertical bar */
+#accent-line {
+    width: 4px;
+    border-radius: 2px;
+    transform-origin: bottom center;
+    transform: scaleY(0);
+    opacity: 0;
+    flex-shrink: 0;
+}
+
+/* Main card */
+#card {
+    margin-left: 0;
+    display: flex;
+    flex-direction: column;
+    min-width: 520px;
+    max-width: 800px;
+    clip-path: inset(0 100% 0 0);
+    opacity: 0;
+}
+
+/* Top section: badge + name */
+#top-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 20px 36px 8px 28px;
+    background: rgba(8, 8, 14, 0.92);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border-radius: 0 8px 0 0;
+}
+
+#badge {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 2.5px;
+    text-transform: uppercase;
+    padding: 4px 12px;
+    border-radius: 3px;
+    color: #fff;
+    white-space: nowrap;
+    opacity: 0;
+    transform: scale(0.8);
+}
+
+#name {
+    font-size: 44px;
+    font-weight: 700;
+    color: #ffffff;
+    line-height: 1.15;
+    white-space: nowrap;
+    text-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    opacity: 0;
+    transform: translateX(-20px);
+}
+
+/* Bottom section: title + handle */
+#bottom-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    padding: 8px 36px 18px 28px;
+    background: rgba(8, 8, 14, 0.85);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border-radius: 0 0 8px 0;
+    border-top: 1px solid rgba(255,255,255,0.06);
+}
+
+#title {
+    font-size: 22px;
+    font-weight: 400;
+    color: rgba(255, 255, 255, 0.7);
+    line-height: 1.3;
+    white-space: nowrap;
+    opacity: 0;
+    transform: translateY(8px);
+}
+
+#handle {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 15px;
+    font-weight: 500;
+    color: rgba(255, 255, 255, 0.4);
+    white-space: nowrap;
+    opacity: 0;
+    transform: translateX(12px);
+}
+
+/* Decorative glow line along bottom */
+#glow-line {
+    position: absolute;
+    bottom: -1px;
+    left: 28px;
+    right: 0;
+    height: 2px;
+    border-radius: 1px;
+    opacity: 0;
+    filter: blur(1px);
+}
+</style>
+</head>
+<body>
+
+<div id="lower-third">
+    <div id="accent-line"></div>
+    <div id="card">
+        <div id="top-row">
+            <div id="badge">GUEST</div>
+            <div id="name">Sarah Chen</div>
+        </div>
+        <div id="bottom-row">
+            <div id="title">AI Research Lead, DeepMind</div>
+            <div id="handle">@sarahchen_ai</div>
+            <div id="glow-line"></div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<script>
+(function() {
+    'use strict';
+
+    var els = {
+        accentLine: document.getElementById('accent-line'),
+        card:       document.getElementById('card'),
+        badge:      document.getElementById('badge'),
+        name:       document.getElementById('name'),
+        title:      document.getElementById('title'),
+        handle:     document.getElementById('handle'),
+        glowLine:   document.getElementById('glow-line'),
+        topRow:     document.getElementById('top-row'),
+        bottomRow:  document.getElementById('bottom-row')
+    };
+
+    var isVisible = false;
+    var playTL = null;
+    var stopTL = null;
+    var accentColor = '#ff6b35';
+
+    gsap.defaults({ overwrite: 'auto' });
+
+    function applyAccent(color) {
+        accentColor = color;
+        els.accentLine.style.background = color;
+        els.glowLine.style.background = color;
+        els.badge.style.background = color;
+    }
+
+    applyAccent(accentColor);
+
+    window.play = function() {
+        if (stopTL) { stopTL.kill(); stopTL = null; }
+        isVisible = true;
+
+        playTL = gsap.timeline({ onComplete: function() { playTL = null; } });
+
+        // 1. Accent line grows from bottom
+        playTL.to(els.accentLine, { scaleY: 1, opacity: 1, duration: 0.35, ease: 'power3.out' });
+
+        // 2. Card reveals via clip-path
+        playTL.to(els.card, { clipPath: 'inset(0 0% 0 0)', opacity: 1, duration: 0.45, ease: 'power3.out' }, '-=0.2');
+
+        // 3. Badge pops in
+        playTL.to(els.badge, { opacity: 1, scale: 1, duration: 0.25, ease: 'back.out(2)' }, '-=0.25');
+
+        // 4. Name slides in
+        playTL.to(els.name, { opacity: 1, x: 0, duration: 0.35, ease: 'power2.out' }, '-=0.2');
+
+        // 5. Title fades up
+        playTL.to(els.title, { opacity: 1, y: 0, duration: 0.3, ease: 'power2.out' }, '-=0.2');
+
+        // 6. Handle slides in
+        playTL.to(els.handle, { opacity: 1, x: 0, duration: 0.25, ease: 'power2.out' }, '-=0.15');
+
+        // 7. Glow line sweeps in
+        playTL.to(els.glowLine, { opacity: 0.8, duration: 0.4, ease: 'power1.out' }, '-=0.2');
+    };
+
+    window.stop = function() {
+        if (playTL) { playTL.kill(); playTL = null; }
+
+        stopTL = gsap.timeline({
+            onComplete: function() {
+                isVisible = false;
+                stopTL = null;
+                gsap.set(els.name,       { opacity: 0, x: -20 });
+                gsap.set(els.title,      { opacity: 0, y: 8 });
+                gsap.set(els.handle,     { opacity: 0, x: 12 });
+                gsap.set(els.badge,      { opacity: 0, scale: 0.8 });
+                gsap.set(els.glowLine,   { opacity: 0 });
+                gsap.set(els.card,       { clipPath: 'inset(0 100% 0 0)', opacity: 0 });
+                gsap.set(els.accentLine, { scaleY: 0, opacity: 0 });
+            }
+        });
+
+        stopTL.to(els.glowLine, { opacity: 0, duration: 0.15 });
+        stopTL.to(els.handle, { opacity: 0, x: 12, duration: 0.15, ease: 'power2.in' }, '-=0.1');
+        stopTL.to(els.title, { opacity: 0, y: 8, duration: 0.15, ease: 'power2.in' }, '-=0.1');
+        stopTL.to(els.name, { opacity: 0, x: -20, duration: 0.2, ease: 'power2.in' }, '-=0.1');
+        stopTL.to(els.badge, { opacity: 0, scale: 0.8, duration: 0.15, ease: 'power2.in' }, '-=0.1');
+        stopTL.to(els.card, { clipPath: 'inset(0 100% 0 0)', opacity: 0, duration: 0.3, ease: 'power3.in' }, '-=0.1');
+        stopTL.to(els.accentLine, { scaleY: 0, opacity: 0, duration: 0.2, ease: 'power2.in' }, '-=0.15');
+    };
+
+    window.update = function(data) {
+        var d = (typeof data === 'string') ? JSON.parse(data) : data;
+        if (!d) return;
+
+        if (d.name != null) els.name.textContent = d.name;
+        if (d.title != null) els.title.textContent = d.title;
+        if (d.handle != null) els.handle.textContent = d.handle;
+        if (d.badge != null) els.badge.textContent = d.badge;
+        if (d.accentColor != null) applyAccent(d.accentColor);
+        if (d.badgeColor != null) els.badge.style.background = d.badgeColor;
+
+        if (isVisible) {
+            gsap.timeline()
+                .to(els.card, { boxShadow: '0 0 30px rgba(255,107,53,0.3)', duration: 0.15 })
+                .to(els.card, { boxShadow: 'none', duration: 0.4 });
+        }
+    };
+
+    window.next = function() {};
+})();
+</script>
+</body>
+</html>

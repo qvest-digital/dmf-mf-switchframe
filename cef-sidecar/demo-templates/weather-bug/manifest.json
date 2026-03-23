@@ -1,0 +1,11 @@
+{
+  "name": "Live Weather",
+  "description": "Live weather from Open-Meteo API (auto-refresh)",
+  "format": "casparcg",
+  "fields": [
+    {"key": "city", "label": "City", "type": "text", "default": "New York"},
+    {"key": "lat", "label": "Latitude", "type": "number", "default": 40.71},
+    {"key": "lon", "label": "Longitude", "type": "number", "default": -74.01},
+    {"key": "units", "label": "Units", "type": "select", "options": ["fahrenheit", "celsius"], "default": "fahrenheit"}
+  ]
+}

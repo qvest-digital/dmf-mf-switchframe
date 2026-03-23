@@ -1,0 +1,20 @@
+{
+  "name": "podcast-lower-third",
+  "description": "Cinematic podcast guest intro with role badge, social handle, and animated accent line",
+  "version": "1.0.0",
+  "steps": 1,
+  "dataSchema": {
+    "type": "object",
+    "properties": {
+      "name": { "type": "string", "title": "Guest Name", "default": "Sarah Chen" },
+      "title": { "type": "string", "title": "Title / Role", "default": "AI Research Lead, DeepMind" },
+      "handle": { "type": "string", "title": "Social Handle", "default": "@sarahchen_ai" },
+      "badge": { "type": "string", "title": "Badge Text", "default": "GUEST" },
+      "accentColor": { "type": "string", "title": "Accent Color", "default": "#ff6b35" },
+      "badgeColor": { "type": "string", "title": "Badge Color", "default": "#ff6b35" },
+      "style": { "type": "string", "title": "Style (modern|minimal|bold)", "default": "modern" }
+    },
+    "required": ["name", "title"]
+  },
+  "renderRequirements": { "width": 1920, "height": 1080, "frameRate": 30 }
+}

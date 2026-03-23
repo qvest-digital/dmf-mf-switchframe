@@ -40,8 +40,8 @@ class SwitchframeLowerThird extends HTMLElement {
         :host {
           display: block;
           position: absolute;
-          bottom: 80px;
-          left: 60px;
+          bottom: 100px;
+          left: 80px;
           pointer-events: none;
           font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
                        Roboto, Helvetica, Arial, sans-serif;
@@ -57,9 +57,9 @@ class SwitchframeLowerThird extends HTMLElement {
 
         /* ---------- Accent bar (left edge) ---------- */
         .accent-bar {
-          width: 5px;
+          width: 6px;
           background: var(--accent-color, #e63946);
-          border-radius: 2.5px 0 0 2.5px;
+          border-radius: 3px 0 0 3px;
           flex-shrink: 0;
           transform-origin: bottom center;
           transform: scaleY(0);
@@ -71,26 +71,26 @@ class SwitchframeLowerThird extends HTMLElement {
           background: rgba(12, 12, 18, 0.88);
           backdrop-filter: blur(10px);
           -webkit-backdrop-filter: blur(10px);
-          box-shadow: 0 4px 24px rgba(0, 0, 0, 0.45),
+          box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5),
                       0 1px 3px rgba(0, 0, 0, 0.3);
           border-radius: 0 6px 6px 0;
-          padding: 18px 32px 16px 22px;
+          padding: 26px 40px 24px 32px;
           display: flex;
           flex-direction: column;
           justify-content: center;
-          min-width: 300px;
+          min-width: 600px;
           clip-path: inset(0 100% 0 0);
           opacity: 0;
         }
 
         /* ---------- Name ---------- */
         .name {
-          font-size: 38px;
+          font-size: 56px;
           font-weight: 700;
           color: #ffffff;
           line-height: 1.15;
           letter-spacing: -0.01em;
-          text-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+          text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
           white-space: nowrap;
           opacity: 0;
           clip-path: inset(0 100% 0 0);
@@ -98,16 +98,16 @@ class SwitchframeLowerThird extends HTMLElement {
 
         /* ---------- Title ---------- */
         .title {
-          font-size: 26px;
+          font-size: 36px;
           font-weight: 400;
           color: rgba(210, 212, 220, 0.92);
           line-height: 1.25;
           letter-spacing: 0.01em;
-          text-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+          text-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
           white-space: nowrap;
-          margin-top: 3px;
+          margin-top: 4px;
           opacity: 0;
-          transform: translateY(8px);
+          transform: translateY(10px);
         }
 
         /* ---------- Accent underline on name ---------- */
@@ -118,13 +118,13 @@ class SwitchframeLowerThird extends HTMLElement {
 
         .name-underline {
           position: absolute;
-          bottom: -2px;
+          bottom: -3px;
           left: 0;
-          height: 2px;
+          height: 3px;
           background: var(--accent-color, #e63946);
           width: 0;
           opacity: 0.7;
-          border-radius: 1px;
+          border-radius: 1.5px;
         }
       </style>
 

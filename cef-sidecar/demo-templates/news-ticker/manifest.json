@@ -1,0 +1,11 @@
+{
+  "name": "News Ticker",
+  "description": "Scrolling news headline ticker bar",
+  "format": "casparcg",
+  "fields": [
+    {"key": "headlines", "label": "Headlines", "type": "textarea", "default": ["Global markets reach new high as tech sector leads gains", "Weather alert: Major storm system approaching East Coast", "Sports: Championship finals set for Saturday evening"]},
+    {"key": "label", "label": "Label", "type": "text", "default": "BREAKING"},
+    {"key": "speed", "label": "Speed (px/s)", "type": "number", "default": 80},
+    {"key": "bgColor", "label": "Background Color", "type": "color", "default": "#b41414"}
+  ]
+}

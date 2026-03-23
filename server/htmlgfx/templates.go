@@ -59,6 +59,30 @@ func (m *Manager) DiscoverTemplates() []TemplateInfo {
 			}
 		}
 
+		// Check for CasparCG manifest (with fields/actions schema).
+		casparManifest := filepath.Join(tmplDir, "manifest.json")
+		if data, err := os.ReadFile(casparManifest); err == nil {
+			var manifest struct {
+				Name        string `json:"name"`
+				Description string `json:"description"`
+				Fields      []any  `json:"fields"`
+				Actions     []any  `json:"actions"`
+			}
+			if json.Unmarshal(data, &manifest) == nil {
+				if manifest.Name != "" {
+					info.Name = manifest.Name
+				}
+				if manifest.Description != "" {
+					info.Description = manifest.Description
+				}
+				// Store entire manifest as DataSchema for the UI.
+				var fullSchema map[string]any
+				if json.Unmarshal(data, &fullSchema) == nil {
+					info.DataSchema = fullSchema
+				}
+			}
+		}
+
 		templates = append(templates, info)
 	}
 

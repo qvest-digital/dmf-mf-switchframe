@@ -1,0 +1,10 @@
+{
+  "name": "GSAP Lower Third",
+  "description": "Animated lower third with accent bar",
+  "format": "casparcg",
+  "fields": [
+    {"key": "name", "label": "Name", "type": "text", "default": "Jane Smith"},
+    {"key": "title", "label": "Title", "type": "text", "default": "Executive Producer"},
+    {"key": "color", "label": "Accent Color", "type": "color", "default": "#00a0ff"}
+  ]
+}

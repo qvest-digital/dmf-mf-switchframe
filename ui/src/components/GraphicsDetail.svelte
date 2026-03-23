@@ -5,6 +5,29 @@
 	import { graphicsListHTML5Templates, type HTML5TemplateInfo } from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
 
+	// Normalize schema fields from either CasparCG manifest or OGraf JSON Schema.
+	function normalizeSchemaFields(schema: any): any[] {
+		// CasparCG format: { fields: [{key, label, type, default}, ...] }
+		if (schema?.fields) return schema.fields as any[];
+		// OGraf format: { dataSchema: { properties: { name: {type, title, default} } } }
+		const props = schema?.dataSchema?.properties;
+		if (props) {
+			return Object.entries(props).map(([key, prop]: [string, any]) => ({
+				key,
+				label: prop.title || key,
+				type: prop.type === 'string'
+					? (key.toLowerCase().includes('color') ? 'color' : 'text')
+					: prop.type === 'number' || prop.type === 'integer' ? 'number'
+					: prop.type === 'boolean' ? 'boolean'
+					: prop.enum ? 'select'
+					: 'text',
+				default: prop.default ?? (prop.type === 'number' ? 0 : ''),
+				options: prop.enum,
+			}));
+		}
+		return [];
+	}
+
 	interface AnimConfig {
 		mode: string;
 		minAlpha: number;
@@ -63,6 +86,7 @@
 		onHTML5Stop: () => void;
 		onHTML5Next: () => void;
 		onHTML5Unload: () => void;
+		onHTML5Custom?: (action: string, payload: Record<string, unknown>) => void;
 	}
 
 	let {
@@ -73,6 +97,7 @@
 		onImageUpload, onImageDelete, onRectChange,
 		onTickerStart, onTickerStop, onTickerUpdateText, tickerActive,
 		onHTML5Load, onHTML5UpdateData, onHTML5Play, onHTML5Stop, onHTML5Next, onHTML5Unload,
+		onHTML5Custom,
 	}: Props = $props();
 
 	let previewCanvas = $state<HTMLCanvasElement | null>(null);
@@ -96,6 +121,14 @@
 	let html5Templates = $state<HTML5TemplateInfo[]>([]);
 	let html5TemplatesLoaded = $state(false);
 
+	// HTML5 dynamic form state
+	let html5FormValues = $state<Record<string, any>>({});
+	let html5Schema = $derived(layer.html5DataSchema as any);
+	// Normalize both CasparCG (fields array) and OGraf (JSON Schema properties)
+	let html5Fields = $derived(normalizeSchemaFields(html5Schema));
+	let html5Actions = $derived((html5Schema?.actions as any[]) ?? []);
+	let hasSchema = $derived(html5Fields.length > 0);
+
 	// Fetch available HTML5 templates when mode switches to html5.
 	$effect(() => {
 		if (sourceMode === 'html5' && !html5TemplatesLoaded) {
@@ -105,6 +138,28 @@
 			}).catch(() => {
 				html5TemplatesLoaded = true;
 			});
+		}
+	});
+
+	// Initialize dynamic form values from schema field defaults.
+	// Uses a fingerprint to detect when the schema changes (e.g., different template loaded).
+	let html5SchemaFingerprint = $derived(
+		html5Fields.map((f: any) => f.key).join(',')
+	);
+	let lastSchemaFingerprint = '';
+	$effect(() => {
+		const fp = html5SchemaFingerprint;
+		if (html5Fields.length > 0 && fp !== lastSchemaFingerprint) {
+			const defaults: Record<string, any> = {};
+			for (const field of html5Fields) {
+				if (field.type === 'textarea' && Array.isArray(field.default)) {
+					defaults[field.key] = JSON.stringify(field.default, null, 2);
+				} else {
+					defaults[field.key] = field.default ?? '';
+				}
+			}
+			html5FormValues = defaults;
+			lastSchemaFingerprint = fp;
 		}
 	});
 
@@ -206,6 +261,42 @@
 			onHTML5UpdateData(data);
 		} catch {
 			notify('error', 'Invalid JSON data');
+		}
+	}
+
+	function handleFormUpdate() {
+		const data = { ...html5FormValues };
+		for (const field of html5Fields) {
+			if (field.type === 'textarea' && typeof data[field.key] === 'string') {
+				try {
+					data[field.key] = JSON.parse(data[field.key]);
+				} catch {
+					// Keep as string if not valid JSON
+				}
+			}
+		}
+		onHTML5UpdateData(data);
+	}
+
+	function handleFormAction(action: any) {
+		if (action.update) {
+			for (const [key, val] of Object.entries(action.update)) {
+				if (val === '+1') {
+					html5FormValues[key] = (Number(html5FormValues[key]) || 0) + 1;
+				} else if (val === '-1') {
+					html5FormValues[key] = (Number(html5FormValues[key]) || 0) - 1;
+				} else if (typeof val === 'string' && /^[+-]\d+$/.test(val)) {
+					html5FormValues[key] = (Number(html5FormValues[key]) || 0) + Number(val);
+				} else if (val === 'toggle') {
+					html5FormValues[key] = !html5FormValues[key];
+				} else {
+					html5FormValues[key] = val;
+				}
+			}
+			handleFormUpdate();
+		}
+		if (action.action) {
+			onHTML5Custom?.(action.action, { ...html5FormValues });
 		}
 	}
 </script>
@@ -426,16 +517,78 @@
 						</div>
 
 						{#if layer.html5Status === 'ready' || layer.html5Status === 'playing'}
-							<div class="html5-data-section">
-								<textarea
-									class="html5-data-input"
-									placeholder={'{"key": "value"}'}
-									bind:value={html5DataJson}
-									aria-label="HTML5 template data (JSON)"
-									rows="3"
-								></textarea>
-								<button class="act-btn upload" onclick={handleHTML5UpdateData}>UPDATE</button>
-							</div>
+							{#if hasSchema}
+								<!-- Dynamic form from manifest schema -->
+								<div class="html5-form">
+									<div class="html5-form-fields">
+										{#each html5Fields as field (field.key)}
+											<label class="html5-field">
+												<span class="html5-field-label">{field.label}</span>
+												{#if field.type === 'text'}
+													<input type="text" class="field-inp"
+														bind:value={html5FormValues[field.key]}
+													/>
+												{:else if field.type === 'number'}
+													<input type="number" class="field-inp"
+														value={html5FormValues[field.key] ?? 0}
+														oninput={(e) => { html5FormValues[field.key] = Number((e.target as HTMLInputElement).value) || 0; }}
+													/>
+												{:else if field.type === 'color'}
+													<div class="html5-color-row">
+														<input type="color"
+															bind:value={html5FormValues[field.key]}
+														/>
+														<span class="html5-color-hex">{html5FormValues[field.key]}</span>
+													</div>
+												{:else if field.type === 'select'}
+													<select class="field-inp"
+														bind:value={html5FormValues[field.key]}>
+														{#each (field.options ?? []) as opt}
+															<option value={opt}>{opt}</option>
+														{/each}
+													</select>
+												{:else if field.type === 'boolean'}
+													<input type="checkbox"
+														class="html5-checkbox"
+														bind:checked={html5FormValues[field.key]}
+													/>
+												{:else if field.type === 'textarea'}
+													<textarea class="field-inp html5-data-input"
+														bind:value={html5FormValues[field.key]}
+														rows="2"
+													></textarea>
+												{:else}
+													<input type="text" class="field-inp"
+														bind:value={html5FormValues[field.key]}
+													/>
+												{/if}
+											</label>
+										{/each}
+									</div>
+									{#if html5Actions.length > 0}
+										<div class="html5-form-actions">
+											{#each html5Actions as action (action.id)}
+												<button class="act-btn fly" onclick={() => handleFormAction(action)}>
+													{action.label}
+												</button>
+											{/each}
+										</div>
+									{/if}
+									<button class="act-btn upload" onclick={handleFormUpdate}>UPDATE</button>
+								</div>
+							{:else}
+								<!-- Fallback: raw JSON textarea -->
+								<div class="html5-data-section">
+									<textarea
+										class="html5-data-input"
+										placeholder={'{"key": "value"}'}
+										bind:value={html5DataJson}
+										aria-label="HTML5 template data (JSON)"
+										rows="3"
+									></textarea>
+									<button class="act-btn upload" onclick={handleHTML5UpdateData}>UPDATE</button>
+								</div>
+							{/if}
 
 							<div class="action-grid">
 								<button class="act-btn anim-start" onclick={onHTML5Play} disabled={layer.html5Status === 'playing'}>PLAY</button>
@@ -1108,5 +1261,67 @@
 	.html5-data-input:focus {
 		border-color: var(--accent-blue);
 		outline: none;
+	}
+
+	/* ── HTML5 dynamic form ── */
+	.html5-form {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+
+	.html5-form-fields {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 4px 8px;
+	}
+
+	.html5-field {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.html5-field-label {
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		color: var(--text-tertiary);
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+	}
+
+	.html5-color-row {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+
+	.html5-color-row input[type="color"] {
+		width: 32px;
+		height: 24px;
+		padding: 0;
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		background: none;
+		cursor: pointer;
+	}
+
+	.html5-color-hex {
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		color: var(--text-secondary);
+	}
+
+	.html5-checkbox {
+		width: 14px;
+		height: 14px;
+		accent-color: var(--accent-blue);
+	}
+
+	.html5-form-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 4px;
 	}
 </style>

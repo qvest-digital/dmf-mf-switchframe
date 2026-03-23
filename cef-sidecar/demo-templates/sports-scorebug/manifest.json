@@ -1,0 +1,25 @@
+{
+  "name": "Sports Scorebug",
+  "description": "Live scorebug with team names, scores, and game clock",
+  "format": "casparcg",
+  "fields": [
+    {"key": "home", "label": "Home Team", "type": "text", "default": "EAGLES"},
+    {"key": "away", "label": "Away Team", "type": "text", "default": "GIANTS"},
+    {"key": "homeScore", "label": "Home Score", "type": "number", "default": 0},
+    {"key": "awayScore", "label": "Away Score", "type": "number", "default": 0},
+    {"key": "period", "label": "Period", "type": "select", "options": ["Q1","Q2","Q3","Q4","OT","1st","2nd","3rd","H1","H2"], "default": "Q1"},
+    {"key": "clock", "label": "Clock", "type": "text", "default": "15:00"},
+    {"key": "homeColor", "label": "Home Color", "type": "color", "default": "#004C54"},
+    {"key": "awayColor", "label": "Away Color", "type": "color", "default": "#0B2265"},
+    {"key": "clockRunning", "label": "Clock Running", "type": "boolean", "default": false}
+  ],
+  "actions": [
+    {"id": "homeScoreUp", "label": "+1 Home", "update": {"homeScore": "+1"}},
+    {"id": "awayScoreUp", "label": "+1 Away", "update": {"awayScore": "+1"}},
+    {"id": "homeScoreDown", "label": "-1 Home", "update": {"homeScore": "-1"}},
+    {"id": "awayScoreDown", "label": "-1 Away", "update": {"awayScore": "-1"}},
+    {"id": "nextPeriod", "label": "Next Period", "action": "nextPeriod"},
+    {"id": "resetClock", "label": "Reset Clock", "update": {"clock": "15:00"}},
+    {"id": "toggleClock", "label": "Start/Stop Clock", "update": {"clockRunning": "toggle"}}
+  ]
+}
