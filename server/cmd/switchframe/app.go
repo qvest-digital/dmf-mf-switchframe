@@ -1654,7 +1654,7 @@ func (a *App) closeSubsystems() {
 		a.clipMgr.Close()
 	}
 	if a.htmlGfxMgr != nil {
-		a.htmlGfxMgr.Close()
+		_ = a.htmlGfxMgr.Close()
 	}
 	if a.tickerEngine != nil {
 		a.tickerEngine.Close()

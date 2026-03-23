@@ -66,7 +66,7 @@ func TestFileRing_WriteAndRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newFileRing: %v", err)
 	}
-	defer ring.CloseAndRemove()
+	defer func() { _ = ring.CloseAndRemove() }()
 
 	data := []byte("hello replay world")
 	now := time.Now()
@@ -97,7 +97,7 @@ func TestFileRing_MultipleFrames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newFileRing: %v", err)
 	}
-	defer ring.CloseAndRemove()
+	defer func() { _ = ring.CloseAndRemove() }()
 
 	now := time.Now()
 	frameData := make([][]byte, 10)
@@ -134,7 +134,7 @@ func TestFileRing_Wrap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newFileRing: %v", err)
 	}
-	defer ring.CloseAndRemove()
+	defer func() { _ = ring.CloseAndRemove() }()
 
 	now := time.Now()
 
@@ -189,7 +189,7 @@ func TestFileRing_WrapInvalidatesMultiple(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newFileRing: %v", err)
 	}
-	defer ring.CloseAndRemove()
+	defer func() { _ = ring.CloseAndRemove() }()
 
 	now := time.Now()
 
@@ -232,7 +232,7 @@ func TestFileRing_FrameCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newFileRing: %v", err)
 	}
-	defer ring.CloseAndRemove()
+	defer func() { _ = ring.CloseAndRemove() }()
 
 	if ring.FrameCount() != 0 {
 		t.Errorf("initial FrameCount = %d, want 0", ring.FrameCount())
@@ -265,7 +265,7 @@ func TestFileRing_BytesUsed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newFileRing: %v", err)
 	}
-	defer ring.CloseAndRemove()
+	defer func() { _ = ring.CloseAndRemove() }()
 
 	if ring.BytesUsed() != 0 {
 		t.Errorf("initial BytesUsed = %d, want 0", ring.BytesUsed())
@@ -287,7 +287,7 @@ func TestFileRing_BytesUsedAfterWrap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newFileRing: %v", err)
 	}
-	defer ring.CloseAndRemove()
+	defer func() { _ = ring.CloseAndRemove() }()
 
 	now := time.Now()
 	// Write 4 x 150 = 600 bytes into 500 byte ring.
@@ -308,7 +308,7 @@ func TestFileRing_FrameTooLarge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newFileRing: %v", err)
 	}
-	defer ring.CloseAndRemove()
+	defer func() { _ = ring.CloseAndRemove() }()
 
 	data := make([]byte, 101)
 	_, err = ring.Write(data, 0, time.Now(), false)
@@ -323,7 +323,7 @@ func TestFileRing_ConcurrentReadWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newFileRing: %v", err)
 	}
-	defer ring.CloseAndRemove()
+	defer func() { _ = ring.CloseAndRemove() }()
 
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
@@ -382,7 +382,7 @@ func TestFileRing_IDRTracking(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newFileRing: %v", err)
 	}
-	defer ring.CloseAndRemove()
+	defer func() { _ = ring.CloseAndRemove() }()
 
 	now := time.Now()
 	// Write a mix of IDR and non-IDR frames.
@@ -410,7 +410,7 @@ func TestFileRing_WallTimeOrdering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newFileRing: %v", err)
 	}
-	defer ring.CloseAndRemove()
+	defer func() { _ = ring.CloseAndRemove() }()
 
 	base := time.Now()
 	// Write frames with increasing wall times.
@@ -439,7 +439,7 @@ func TestFileRing_PTSPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newFileRing: %v", err)
 	}
-	defer ring.CloseAndRemove()
+	defer func() { _ = ring.CloseAndRemove() }()
 
 	now := time.Now()
 	ptsList := []int64{0, 3000, 6000, 9000, 12000}
@@ -461,7 +461,7 @@ func TestFileRing_EmptyRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newFileRing: %v", err)
 	}
-	defer ring.CloseAndRemove()
+	defer func() { _ = ring.CloseAndRemove() }()
 
 	frames := ring.Frames()
 	if len(frames) != 0 {
@@ -482,7 +482,7 @@ func TestFileRing_SequentialFill(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newFileRing: %v", err)
 	}
-	defer ring.CloseAndRemove()
+	defer func() { _ = ring.CloseAndRemove() }()
 
 	now := time.Now()
 	sizes := []int{50, 75, 100, 25, 200}

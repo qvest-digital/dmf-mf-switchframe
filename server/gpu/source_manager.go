@@ -435,7 +435,7 @@ func (m *GPUSourceManager) applySourceColorGrade(sourceKey string, entry *gpuSou
 		}
 
 		data := provider.SourceLUTData(sourceKey)
-		if data == nil || len(data) == 0 {
+		if len(data) == 0 {
 			return
 		}
 
