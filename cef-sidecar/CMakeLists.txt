@@ -33,3 +33,11 @@ target_link_libraries(switchframe-cef PRIVATE libcef_dll_wrapper ${CEF_BINARY_DI
 if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/resources")
   file(COPY resources/ DESTINATION ${CMAKE_BINARY_DIR}/resources)
 endif()
+
+# Test target (no CEF dependency — tests protocol logic only)
+add_executable(switchframe-cef-tests tests/protocol_test.cpp)
+target_include_directories(switchframe-cef-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+set_target_properties(switchframe-cef-tests PROPERTIES
+  CXX_STANDARD 17
+  CXX_STANDARD_REQUIRED ON
+)
