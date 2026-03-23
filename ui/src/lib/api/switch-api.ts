@@ -565,6 +565,51 @@ export function graphicsTickerUpdateText(layerId: number, text: string): Promise
 	});
 }
 
+// --- HTML5 Graphics API ---
+
+export function graphicsLoadHTML5(
+	layerId: number,
+	url: string,
+	data?: Record<string, unknown>,
+): Promise<GraphicsState> {
+	return post(`/api/graphics/${layerId}/html5`, { url, data });
+}
+
+export function graphicsUpdateHTML5Data(
+	layerId: number,
+	data: Record<string, unknown>,
+): Promise<GraphicsState> {
+	return request(`/api/graphics/${layerId}/html5/data`, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ data }),
+	});
+}
+
+export function graphicsHTML5Play(layerId: number): Promise<GraphicsState> {
+	return post(`/api/graphics/${layerId}/html5/play`, {});
+}
+
+export function graphicsHTML5Stop(layerId: number): Promise<GraphicsState> {
+	return post(`/api/graphics/${layerId}/html5/stop`, {});
+}
+
+export function graphicsHTML5Next(layerId: number): Promise<GraphicsState> {
+	return post(`/api/graphics/${layerId}/html5/next`, {});
+}
+
+export function graphicsHTML5Custom(
+	layerId: number,
+	action: string,
+	payload: unknown,
+): Promise<GraphicsState> {
+	return post(`/api/graphics/${layerId}/html5/custom`, { action, payload });
+}
+
+export function graphicsUnloadHTML5(layerId: number): Promise<void> {
+	return request(`/api/graphics/${layerId}/html5`, { method: 'DELETE' });
+}
+
 // --- Macro API ---
 
 export function listMacros(): Promise<Macro[]> {
