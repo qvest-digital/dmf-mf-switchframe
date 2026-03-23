@@ -35,9 +35,14 @@
 		return colorGrade.available.filter(l => !l.builtin);
 	});
 
-	// Sync intensity from server state
+	// Guard against server state overwriting in-progress user edits.
+	let lastUserEdit = 0;
+	const SYNC_GUARD_MS = 1000;
+
+	// Sync intensity from server state (skipped while user is editing)
 	$effect(() => {
 		if (colorGrade) {
+			if (Date.now() - lastUserEdit < SYNC_GUARD_MS) return;
 			intensity = Math.round(colorGrade.intensity * 100);
 		}
 	});
@@ -65,6 +70,7 @@
 	}
 
 	async function updateIntensity() {
+		lastUserEdit = Date.now();
 		if (!colorGrade?.enabled || !activeLook) return;
 		try {
 			await setColorGrade({ lookName: activeLook, intensity: intensity / 100 });

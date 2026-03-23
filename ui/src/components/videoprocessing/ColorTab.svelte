@@ -32,10 +32,21 @@
 	let contrastUI = $state(0);
 	let sharpnessUI = $state(0);
 
-	// Sync from server state
+	// Guard against server state overwriting in-progress user edits.
+	// After any user interaction, ignore server syncs for 1s to let the
+	// debounced API call (200ms) complete and the server echo back.
+	let lastUserEdit = 0;
+	const SYNC_GUARD_MS = 1000;
+
+	function markDirty() {
+		lastUserEdit = Date.now();
+	}
+
+	// Sync from server state (skipped while user is actively editing)
 	$effect(() => {
 		const sc = crState.colorGrade?.corrector;
 		if (sc) {
+			if (Date.now() - lastUserEdit < SYNC_GUARD_MS) return;
 			corrector = {
 				...sc,
 				curveMaster: sc.curveMaster ?? [{ x: 0, y: 0 }, { x: 1, y: 1 }],
@@ -96,58 +107,69 @@
 	onDestroy(() => clearTimeout(sendTimeout));
 
 	function handleLiftChange(rgb: [number, number, number]) {
+		markDirty();
 		corrector.lift = rgb;
 		sendCorrector();
 	}
 
 	function handleGammaChange(rgb: [number, number, number]) {
+		markDirty();
 		corrector.gamma = rgb;
 		sendCorrector();
 	}
 
 	function handleGainChange(rgb: [number, number, number]) {
+		markDirty();
 		corrector.gain = rgb;
 		sendCorrector();
 	}
 
 	// Slider handlers for temperature, tint, etc.
 	function handleSliderInput() {
+		markDirty();
 		sendCorrector();
 	}
 
 	// Handlers for scaled sliders (UI integer range -> server float range)
 	function handleSatInput() {
+		markDirty();
 		corrector.saturation = satUI / 100;
 		sendCorrector();
 	}
 
 	function handleContrastInput() {
+		markDirty();
 		corrector.contrast = contrastUI / 100;
 		sendCorrector();
 	}
 
 	function handleSharpnessInput() {
+		markDirty();
 		corrector.sharpness = sharpnessUI / 100;
 		sendCorrector();
 	}
 
 	// Zone (shadows/midtones/highlights) handlers
 	function setShadow(channel: 0 | 1 | 2, uiVal: number) {
+		markDirty();
 		corrector.shadows[channel] = uiVal / 100;
 		sendCorrector();
 	}
 
 	function setMidtone(channel: 0 | 1 | 2, uiVal: number) {
+		markDirty();
 		corrector.midtones[channel] = uiVal / 100;
 		sendCorrector();
 	}
 
 	function setHighlight(channel: 0 | 1 | 2, uiVal: number) {
+		markDirty();
 		corrector.highlights[channel] = uiVal / 100;
 		sendCorrector();
 	}
 
 	function handleCurveChange(pts: CurvePoint[]) {
+		markDirty();
 		switch (curveChannel) {
 			case 'master': corrector.curveMaster = pts; break;
 			case 'r': corrector.curveR = pts; break;
