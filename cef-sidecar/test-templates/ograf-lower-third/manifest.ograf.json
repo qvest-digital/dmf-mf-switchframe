@@ -1,0 +1,17 @@
+{
+    "name": "test-lower-third",
+    "description": "Test OGraf lower-third graphic",
+    "version": "1.0.0",
+    "steps": 1,
+    "dataSchema": {
+        "type": "object",
+        "properties": {
+            "name": { "type": "string", "title": "Name" },
+            "title": { "type": "string", "title": "Title" }
+        }
+    },
+    "renderRequirements": {
+        "width": 1920,
+        "height": 1080
+    }
+}
