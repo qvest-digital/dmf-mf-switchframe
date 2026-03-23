@@ -15,6 +15,7 @@
 13. [AI & Machine Learning](#13-ai--machine-learning)
 14. [Resource Management](#14-resource-management)
 15. [Performance & Design Philosophy](#15-performance--design-philosophy)
+16. [Media Clips](#16-media-clips)
 
 ---
 
@@ -648,7 +649,7 @@ All keyboard shortcuts use capture-phase `keydown` listeners with `event.code` f
 
 ### Layout Modes
 
-Two layout modes serve different operator skill levels. Traditional mode provides the full control surface -- multiview grid, preview/program monitors, audio mixer, transition controls, tabbed panels for graphics, macros, replay, presets, SCTE-35, keying, and layouts, plus a CommsBar for operator voice communication and a ReplayPanel with seek bar, speed buttons, and JKL shuttle controls. Simple mode is a volunteer-friendly layout with just preview/program windows, source buttons, CUT/DISSOLVE/FTB, and basic health indicators. Layout mode is detected from URL parameter (`?mode=simple`), falling back to localStorage, then defaulting to traditional. The URL parameter auto-persists to localStorage so bookmarked URLs are sticky.
+Two layout modes serve different operator skill levels. Traditional mode provides the full control surface -- multiview grid, preview/program monitors, audio mixer, transition controls, and ten bottom tabs: Audio, Compose, Video, Replay, Captions, SCTE, Macros, Presets, Clips, and Team. The Compose tab contains layout, graphics, and keys sub-tabs. The Video tab contains looks, color corrector, and effects (ST map + AI segment) sub-tabs. A CommsBar provides operator voice communication and a ReplayPanel offers seek bar, speed buttons, and JKL shuttle controls. Simple mode is a volunteer-friendly layout with just preview/program windows, source buttons, CUT/DISSOLVE/FTB, and basic health indicators. Layout mode is detected from URL parameter (`?mode=simple`), falling back to localStorage, then defaulting to traditional. The URL parameter auto-persists to localStorage so bookmarked URLs are sticky.
 
 ### Rendering
 
@@ -1085,6 +1086,40 @@ Several cross-cutting design decisions shape the system's architecture. These ch
 | :8081 | TCP/HTTP | REST fallback (opt-in via --http-fallback) |
 | :9090 | TCP/HTTP | Admin (Prometheus /metrics, pprof) |
 
+## 16. Media Clips
+
+The clip system provides a file-based media library with 4 independent player slots for pre-produced content playback during live production (VTs, bumpers, pre-recorded segments). Clips are stored as MPEG-TS files on disk with JSON metadata, and each player slot operates as an independent decode → re-encode pipeline that feeds a dedicated MoQ relay for browser monitoring.
+
+```mermaid
+flowchart TD
+    subgraph upload ["Upload Pipeline"]
+        FILE["File Upload<br/>(POST /api/clips)"] --> VAL["Validator<br/>(extension, codec probe)"]
+        VAL -->|"H.264 TS"| STORE["Clip Store<br/>(~/.switchframe/clips/)"]
+        VAL -->|"MP4/MOV/other"| TRANSCODE["FFmpeg Transcode<br/>(→ H.264 TS, progress callback)"]
+        TRANSCODE --> STORE
+    end
+
+    subgraph playback ["Player Slot (×4)"]
+        STORE --> DEMUX["DemuxFile<br/>(.ts or .mp4/.mov)"]
+        DEMUX --> DEC["Decode<br/>(H.264 → YUV420)"]
+        DEC --> ENC["Re-encode<br/>(H.264)"]
+        ENC --> RELAY["Per-Player<br/>MoQ Relay"]
+        RELAY --> BROWSER["Browser Monitor"]
+    end
+
+    subgraph state ["Integration"]
+        MGR["clip.Manager"] -->|"state callback"| SP["StatePublisher<br/>(ControlRoomState.clips)"]
+    end
+```
+
+### Upload and Validation
+
+Uploaded files are validated for accepted extensions (`.ts`, `.mp4`, `.mov`, `.mkv`, `.avi`, `.webm`) and probed with FFmpeg to detect codecs. Files already in H.264 MPEG-TS format are stored directly. Other formats are transcoded to H.264 TS via `codec.Transcode()`, with progress reported through a callback so the UI can display an upload progress bar. Path traversal prevention ensures clip filenames cannot escape the storage directory.
+
+### Player Architecture
+
+Each of the 4 player slots runs an independent pipeline: `DemuxFile` dispatches to format-specific demuxers (TS path via go-astits, MP4/MOV via go-mp4 box-tree parser with SPS/PPS injection on keyframes), decoded frames flow through a re-encode stage, and output is broadcast to a per-player MoQ relay registered as `clip-player-0` through `clip-player-3`. Players support pause, seek, speed control (0.25x–2.0x), loop mode, and hold-last-frame on stop. The `clip.Manager` coordinates slot assignment, source registration lifecycle, and broadcasts player state changes through the `ControlRoomState`.
+
 ---
 
 ## Further Reading
@@ -1097,3 +1132,7 @@ Several cross-cutting design decisions shape the system's architecture. These ch
 | **[SCTE-35 Guide](scte35.md)** | Ad insertion, rules engine, SCTE-104 integration |
 | **[MXL Guide](mxl.md)** | Shared-memory transport, V210 format, NMOS discovery |
 | **[Deployment Guide](deployment.md)** | Configuration, CLI flags, GPU setup, production tuning |
+| **[Clips Guide](clips.md)** | Media clip library, upload, 4-player slots, playback |
+| **[ST Maps Guide](stmap.md)** | Per-pixel coordinate remapping, generators, mmap cache |
+| **[HTML5 Graphics](html5-graphics.md)** | CEF sidecar, browser-rendered overlays, OGraf |
+| **[Fast Control](fast-control.md)** | WebTransport datagram binary protocol |

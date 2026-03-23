@@ -33,6 +33,9 @@ Base URL: `https://localhost:8080` (HTTP/3, primary) or `http://localhost:8081` 
   - [PUT /api/sources/{key}/key](#put-apisourceskeykey)
   - [GET /api/sources/{key}/key](#get-apisourceskeykey)
   - [DELETE /api/sources/{key}/key](#delete-apisourceskeykey)
+  - [GET /api/sources/{key}/corrector](#get-apisourceskeycorrector)
+  - [PUT /api/sources/{key}/corrector](#put-apisourceskeycorrector)
+  - [DELETE /api/sources/{key}/corrector](#delete-apisourceskeycorrector)
 - [Audio](#audio)
   - [POST /api/audio/level](#post-apiaudiolevel)
   - [POST /api/audio/mute](#post-apiaudiomute)
@@ -44,6 +47,14 @@ Base URL: `https://localhost:8080` (HTTP/3, primary) or `http://localhost:8081` 
   - [PUT /api/audio/{source}/compressor](#put-apiaudiosourcecompressor)
   - [GET /api/audio/{source}/compressor](#get-apiaudiosourcecompressor)
   - [PUT /api/audio/{source}/audio-delay](#put-apiaudiosourceaudio-delay)
+  - [POST /api/audio/phase](#post-apiaudiophase)
+  - [POST /api/audio/balance](#post-apiaudiobalance)
+  - [PUT /api/audio/{source}/hpf](#put-apiaudiosourcehpf)
+  - [GET /api/audio/{source}/hpf](#get-apiaudiosourcehpf)
+  - [PUT /api/audio/{source}/gate](#put-apiaudiosourcegate)
+  - [GET /api/audio/{source}/gate](#get-apiaudiosourcegate)
+  - [PUT /api/audio/limiter](#put-apiaudiolimiter)
+  - [GET /api/audio/limiter](#get-apiaudiolimiter)
 - [Recording](#recording)
   - [POST /api/recording/start](#post-apirecordingstart)
   - [POST /api/recording/stop](#post-apirecordingstop)
@@ -75,6 +86,24 @@ Base URL: `https://localhost:8080` (HTTP/3, primary) or `http://localhost:8081` 
   - [POST /api/graphics/{id}/fly-in](#post-apigraphicsidfly-in)
   - [POST /api/graphics/{id}/fly-out](#post-apigraphicsidfly-out)
   - [POST /api/graphics/{id}/slide](#post-apigraphicsidslide)
+  - [POST /api/graphics/{id}/fly-on](#post-apigraphicsidfly-on)
+  - [POST /api/graphics/{id}/image](#post-apigraphicsidimage)
+  - [GET /api/graphics/{id}/image](#get-apigraphicsidimage)
+  - [DELETE /api/graphics/{id}/image](#delete-apigraphicsidimage)
+  - [POST /api/graphics/{id}/text-animate](#post-apigraphicsidtext-animate)
+  - [POST /api/graphics/{id}/text-animate/stop](#post-apigraphicsidtext-animatestop)
+  - [POST /api/graphics/{id}/ticker](#post-apigraphicsidticker)
+  - [POST /api/graphics/{id}/ticker/stop](#post-apigraphicsidtickerstop)
+  - [PUT /api/graphics/{id}/ticker/text](#put-apigraphicsidtickertext)
+- [HTML5 Graphics](#html5-graphics)
+  - [GET /api/graphics/html5/templates](#get-apigraphicshtml5templates)
+  - [POST /api/graphics/{id}/html5](#post-apigraphicsidhtml5)
+  - [PUT /api/graphics/{id}/html5/data](#put-apigraphicsidhtml5data)
+  - [POST /api/graphics/{id}/html5/play](#post-apigraphicsidhtml5play)
+  - [POST /api/graphics/{id}/html5/stop](#post-apigraphicsidhtml5stop)
+  - [POST /api/graphics/{id}/html5/next](#post-apigraphicsidhtml5next)
+  - [POST /api/graphics/{id}/html5/custom](#post-apigraphicsidhtml5custom)
+  - [DELETE /api/graphics/{id}/html5](#delete-apigraphicsidhtml5)
 - [Layout / PIP](#layout--pip)
   - [GET /api/layout](#get-apilayout)
   - [PUT /api/layout](#put-apilayout)
@@ -95,6 +124,7 @@ Base URL: `https://localhost:8080` (HTTP/3, primary) or `http://localhost:8081` 
   - [POST /api/presets/{id}/recall](#post-apipresetsidrecall)
 - [Confidence Monitor](#confidence-monitor)
   - [GET /api/output/confidence](#get-apioutputconfidence)
+  - [GET /api/output/cbr](#get-apioutputcbr)
 - [Stinger Transitions](#stinger-transitions)
   - [GET /api/stinger/list](#get-apistingerlist)
   - [POST /api/stinger/{name}/upload](#post-apistingernameupload)
@@ -114,6 +144,8 @@ Base URL: `https://localhost:8080` (HTTP/3, primary) or `http://localhost:8081` 
   - [PATCH /api/replay/speed](#patch-apireplayspeed)
   - [PATCH /api/replay/marks](#patch-apireplaymarks)
   - [GET /api/replay/peek](#get-apireplaypeek)
+  - [PUT /api/replay/shutter-angle](#put-apireplayshutter-angle)
+  - [GET /api/replay/shutter-angle](#get-apireplayshutter-angle)
 - [Macros](#macros)
   - [GET /api/macros](#get-apimacros)
   - [GET /api/macros/{name}](#get-apimacrosname)
@@ -131,6 +163,7 @@ Base URL: `https://localhost:8080` (HTTP/3, primary) or `http://localhost:8081` 
   - [POST /api/operator/unlock](#post-apioperatorunlock)
   - [POST /api/operator/force-unlock](#post-apioperatorforceunlock)
   - [DELETE /api/operator/{id}](#delete-apioperatorid)
+  - [GET /api/operator/invite-tokens](#get-apioperatorinvite-tokens)
 - [Operator Comms](#operator-comms)
   - [POST /api/comms/join](#post-apicommsjoin)
   - [POST /api/comms/leave](#post-apicommsleave)
@@ -159,9 +192,43 @@ Base URL: `https://localhost:8080` (HTTP/3, primary) or `http://localhost:8081` 
   - [POST /api/captions/mode](#post-apicaptionsmode)
   - [POST /api/captions/text](#post-apicaptionstext)
   - [GET /api/captions/state](#get-apicaptionsstate)
+- [Clips](#clips)
+  - [GET /api/clips](#get-apiclips)
+  - [GET /api/clips/{id}](#get-apiclipsid)
+  - [POST /api/clips/upload](#post-apiclipsupload)
+  - [PUT /api/clips/{id}](#put-apiclipsid)
+  - [DELETE /api/clips/{id}](#delete-apiclipsid)
+  - [POST /api/clips/{id}/pin](#post-apiclipsidpin)
+  - [GET /api/clips/recordings](#get-apiclipsrecordings)
+  - [POST /api/clips/from-recording](#post-apiclipsfrom-recording)
+  - [GET /api/clips/players](#get-apiclipsplayers)
+  - [POST /api/clips/players/{n}/load](#post-apiclipsplayersnload)
+  - [POST /api/clips/players/{n}/eject](#post-apiclipsplayersneject)
+  - [POST /api/clips/players/{n}/play](#post-apiclipsplayersnplay)
+  - [POST /api/clips/players/{n}/pause](#post-apiclipsplayersnpause)
+  - [POST /api/clips/players/{n}/stop](#post-apiclipsplayersnstop)
+  - [POST /api/clips/players/{n}/seek](#post-apiclipsplayersnseek)
+  - [POST /api/clips/players/{n}/speed](#post-apiclipsplayersnspeed)
+  - [POST /api/clips/players/{n}/loop](#post-apiclipsplayersnloop)
+- [ST Maps](#st-maps)
+  - [GET /api/stmap](#get-apistmap)
+  - [GET /api/stmap/state](#get-apistmapstate)
+  - [GET /api/stmap/generators](#get-apistmapgenerators)
+  - [POST /api/stmap/generate](#post-apistmapgenerate)
+  - [POST /api/stmap/upload/{name}](#post-apistmapuploadname)
+  - [GET /api/stmap/{name}](#get-apistmapname)
+  - [DELETE /api/stmap/{name}](#delete-apistmapname)
+  - [GET /api/stmap/{name}/download](#get-apistmapnamedownload)
+  - [PUT /api/stmap/source/{sourceKey}](#put-apistmapsourcesourcekey)
+  - [DELETE /api/stmap/source/{sourceKey}](#delete-apistmapsourcesourcekey)
+  - [PUT /api/stmap/program](#put-apistmapprogram)
+  - [DELETE /api/stmap/program](#delete-apistmapprogram)
 - [Format](#format)
   - [GET /api/format](#get-apiformat)
   - [PUT /api/format](#put-apiformat)
+- [Encoder](#encoder)
+  - [GET /api/encoder](#get-apiencoder)
+  - [PUT /api/encoder](#put-apiencoder)
 - [ASR (Automatic Speech Recognition)](#asr-automatic-speech-recognition)
   - [GET /api/asr/status](#get-apiasrstatus)
   - [PUT /api/asr/config](#put-apiasrconfig)
@@ -171,6 +238,11 @@ Base URL: `https://localhost:8080` (HTTP/3, primary) or `http://localhost:8081` 
   - [PUT /api/colorgrade](#put-apicolorgrade)
   - [POST /api/colorgrade/upload](#post-apicolorgradeupload)
   - [DELETE /api/colorgrade/{name}](#delete-apicolorgradename)
+  - [GET /api/colorgrade/corrector](#get-apicolorgradecorrector)
+  - [PUT /api/colorgrade/corrector](#put-apicolorgradecorrector)
+  - [DELETE /api/colorgrade/corrector](#delete-apicolorgradecorrector)
+  - [POST /api/colorgrade/save](#post-apicolorgradesave)
+  - [GET /api/colorgrade/looks/{name}/settings](#get-apicolorgradelooksnamesettings)
 - [AI Background Segmentation](#ai-background-segmentation)
   - [GET /api/ai-segment/status](#get-apiai-segmentstatus)
   - [PUT /api/sources/{source}/ai-segment](#put-apisourcessourceai-segment)
@@ -178,6 +250,10 @@ Base URL: `https://localhost:8080` (HTTP/3, primary) or `http://localhost:8081` 
   - [DELETE /api/sources/{source}/ai-segment](#delete-apisourcessourceai-segment)
 - [Debug](#debug)
   - [GET /api/debug/snapshot](#get-apidebugsnapshot)
+- [Performance](#performance)
+  - [GET /api/perf](#get-apiperf)
+  - [POST /api/perf/baseline](#post-apiperfbaseline)
+  - [DELETE /api/perf/baseline/{name}](#delete-apiperfbaselinename)
 - [Admin Endpoints](#admin-endpoints)
   - [GET /health](#get-health)
   - [GET /ready](#get-ready)
@@ -1370,6 +1446,117 @@ curl -X DELETE http://localhost:8081/api/sources/cam1/key \
 
 ---
 
+### GET /api/sources/{key}/corrector
+
+Get the per-source color corrector state. Each source can have an independent color corrector applied before the mix point, allowing per-camera color matching.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `key` | Source key (e.g., `cam1`) |
+
+**Request Body:** None
+
+**Response:** `200 OK`
+
+```json
+{
+  "lift": [0, 0, 0],
+  "gamma": [1, 1, 1],
+  "gain": [1, 1, 1],
+  "temperature": 0,
+  "tint": 0,
+  "saturation": 1,
+  "contrast": 0,
+  "shadows": [0, 0, 0],
+  "midtones": [0, 0, 0],
+  "highlights": [0, 0, 0],
+  "sharpness": 0
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `lift` | `[3]float` | RGB lift (shadows), -1 to +1 |
+| `gamma` | `[3]float` | RGB gamma (midtones), 0.1 to 4.0 |
+| `gain` | `[3]float` | RGB gain (highlights), 0 to 4.0 |
+| `temperature` | `float` | Color temperature shift, -100 to +100 |
+| `tint` | `float` | Green-magenta tint, -100 to +100 |
+| `saturation` | `float` | Saturation, 0 to 2.0 |
+| `contrast` | `float` | Contrast, -1 to +1 |
+| `shadows` | `[3]float` | RGB shadow adjustments, -1 to +1 |
+| `midtones` | `[3]float` | RGB midtone adjustments, -1 to +1 |
+| `highlights` | `[3]float` | RGB highlight adjustments, -1 to +1 |
+| `curveMaster` | `array` | Master tone curve points (optional) |
+| `curveR` | `array` | Red channel curve points (optional) |
+| `curveG` | `array` | Green channel curve points (optional) |
+| `curveB` | `array` | Blue channel curve points (optional) |
+| `sharpness` | `float` | Sharpness, 0 to 1.0 |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/sources/cam1/corrector \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### PUT /api/sources/{key}/corrector
+
+Set the per-source color corrector state. Replaces the full corrector state (partial updates are not supported).
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `key` | Source key (e.g., `cam1`) |
+
+**Request Body:** Full `CorrectorState` object (see GET response for field descriptions).
+
+**Response:** `200 OK` with full `ControlRoomState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid JSON or corrector values out of range |
+
+**Example:**
+
+```bash
+curl -X PUT http://localhost:8081/api/sources/cam1/corrector \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"lift": [0, 0, 0], "gamma": [1.1, 1.0, 0.9], "gain": [1, 1, 1], "temperature": 10, "tint": 0, "saturation": 1.1, "contrast": 0.05, "shadows": [0, 0, 0], "midtones": [0, 0, 0], "highlights": [0, 0, 0], "sharpness": 0.3}'
+```
+
+---
+
+### DELETE /api/sources/{key}/corrector
+
+Reset the per-source color corrector to defaults (neutral, no color change).
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `key` | Source key (e.g., `cam1`) |
+
+**Request Body:** None
+
+**Response:** `200 OK` with full `ControlRoomState`.
+
+**Example:**
+
+```bash
+curl -X DELETE http://localhost:8081/api/sources/cam1/corrector \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
 ## Audio
 
 The audio API controls the server-side FDK AAC mixer. Each source has an independent audio channel with level, mute, and AFV controls. A master level controls the final program output. When only a single source is active at 0 dB with no AFV changes pending, the mixer operates in passthrough mode with zero CPU overhead.
@@ -1804,6 +1991,292 @@ curl -X PUT http://localhost:8081/api/audio/cam1/audio-delay \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"delayMs": 80}'
+```
+
+---
+
+### POST /api/audio/phase
+
+Invert the phase (polarity) of a source's audio channel. Phase inversion is useful for correcting microphone wiring issues or cancelling bleed between closely-placed microphones.
+
+**Request Body:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `source` | `string` | Source key (e.g., `cam1`) |
+| `invert` | `bool` | `true` to invert phase, `false` for normal polarity |
+
+**Response:** `200 OK` with full `ControlRoomState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Missing source or invalid JSON |
+| `404` | Source audio channel not found |
+| `501` | Audio mixer not configured |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/audio/phase \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"source": "cam1", "invert": true}'
+```
+
+---
+
+### POST /api/audio/balance
+
+Set the stereo balance for a source's audio channel. Balance pans the signal between left and right output channels.
+
+**Request Body:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `source` | `string` | Source key (e.g., `cam1`) |
+| `balance` | `float` | Stereo balance from `-1.0` (full left) to `1.0` (full right). `0.0` is center. |
+
+**Response:** `200 OK` with full `ControlRoomState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Missing source, invalid JSON, or balance out of range |
+| `404` | Source audio channel not found |
+| `501` | Audio mixer not configured |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/audio/balance \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"source": "cam1", "balance": -0.5}'
+```
+
+---
+
+### PUT /api/audio/{source}/hpf
+
+Configure the high-pass filter (HPF) for a source channel. The HPF removes low-frequency rumble, handling noise, and HVAC hum from microphone inputs.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `source` | Source key (e.g., `cam1`) |
+
+**Request Body:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `frequency` | `float` | Cutoff frequency in Hz |
+| `enabled` | `bool` | Whether the HPF is active |
+
+**Response:** `200 OK` with full `ControlRoomState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Missing source, invalid JSON, or frequency out of range |
+| `404` | Source audio channel not found |
+| `501` | Audio mixer not configured |
+
+**Example:**
+
+```bash
+curl -X PUT http://localhost:8081/api/audio/cam1/hpf \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"frequency": 80, "enabled": true}'
+```
+
+---
+
+### GET /api/audio/{source}/hpf
+
+Get the current high-pass filter settings for a source channel.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `source` | Source key (e.g., `cam1`) |
+
+**Request Body:** None
+
+**Response:** `200 OK`
+
+```json
+{
+  "frequency": 80,
+  "enabled": true
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `frequency` | `float` | Cutoff frequency in Hz |
+| `enabled` | `bool` | Whether the HPF is active |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/audio/cam1/hpf \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### PUT /api/audio/{source}/gate
+
+Configure the noise gate for a source channel. The gate attenuates audio below a threshold, reducing background noise during pauses in speech.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `source` | Source key (e.g., `cam1`) |
+
+**Request Body:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `threshold` | `float` | Gate open threshold in dBFS |
+| `range` | `float` | Attenuation depth in dB when gate is closed |
+| `attack` | `float` | Attack time in milliseconds |
+| `release` | `float` | Release time in milliseconds |
+| `hold` | `float` | Hold time in milliseconds (keeps gate open after signal drops below threshold) |
+| `enabled` | `bool` | Whether the gate is active |
+
+**Response:** `200 OK` with full `ControlRoomState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Missing source, invalid JSON, or parameters out of range |
+| `404` | Source audio channel not found |
+| `501` | Audio mixer not configured |
+
+**Example:**
+
+```bash
+curl -X PUT http://localhost:8081/api/audio/cam1/gate \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"threshold": -40, "range": -80, "attack": 0.5, "release": 50, "hold": 10, "enabled": true}'
+```
+
+---
+
+### GET /api/audio/{source}/gate
+
+Get the current noise gate settings and gain reduction for a source channel.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `source` | Source key (e.g., `cam1`) |
+
+**Request Body:** None
+
+**Response:** `200 OK`
+
+```json
+{
+  "threshold": -40,
+  "range": -80,
+  "attack": 0.5,
+  "release": 50,
+  "hold": 10,
+  "enabled": true,
+  "gainReduction": -12.5
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `threshold` | `float` | Gate open threshold in dBFS |
+| `range` | `float` | Attenuation depth in dB |
+| `attack` | `float` | Attack time in ms |
+| `release` | `float` | Release time in ms |
+| `hold` | `float` | Hold time in ms |
+| `enabled` | `bool` | Whether the gate is active |
+| `gainReduction` | `float` | Current gain reduction in dB (live metering value) |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/audio/cam1/gate \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### PUT /api/audio/limiter
+
+Configure the master output limiter. The limiter prevents program audio from exceeding a ceiling level, protecting downstream equipment and broadcast compliance.
+
+**Request Body:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `threshold` | `float` | Limiter threshold in dBFS |
+| `ceiling` | `float` | Output ceiling in dBFS |
+
+**Response:** `200 OK` with full `ControlRoomState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid JSON or parameters out of range |
+| `501` | Audio mixer not configured |
+
+**Example:**
+
+```bash
+curl -X PUT http://localhost:8081/api/audio/limiter \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"threshold": -3, "ceiling": -1}'
+```
+
+---
+
+### GET /api/audio/limiter
+
+Get the current master limiter settings and gain reduction.
+
+**Request Body:** None
+
+**Response:** `200 OK`
+
+```json
+{
+  "threshold": -3,
+  "ceiling": -1,
+  "gainReduction": -1.2
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `threshold` | `float` | Limiter threshold in dBFS |
+| `ceiling` | `float` | Output ceiling in dBFS |
+| `gainReduction` | `float` | Current gain reduction in dB (live metering value) |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/audio/limiter \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 ---
@@ -2872,6 +3345,322 @@ curl -X POST http://localhost:8081/api/graphics/0/slide \
 
 ---
 
+### POST /api/graphics/{id}/fly-on
+
+Atomically activate a layer and animate it from off-screen to its current position. Combines the `on` and `fly-in` operations into a single call to avoid a flash of content at the target position before the animation starts.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `id` | Layer ID (integer) |
+
+**Request Body:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `direction` | `string` | Direction to fly from: `"left"`, `"right"`, `"top"`, or `"bottom"` |
+| `durationMs` | `int` | Animation duration in milliseconds (default: 500) |
+
+**Response:** `200 OK` with `GraphicsState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid layer ID or invalid direction |
+| `404` | Layer not found |
+| `409` | Layer already active, or an animation is in progress |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/graphics/0/fly-on \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"direction": "bottom", "durationMs": 600}'
+```
+
+---
+
+### POST /api/graphics/{id}/image
+
+Upload a PNG image to a graphics layer. The image is stored server-side and decoded to RGBA for compositing. Images persist until explicitly deleted or the layer is removed.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `id` | Layer ID (integer) |
+
+**Request Body:** Multipart form data with an `image` field containing the PNG file (max 16MB).
+
+**Response:** `201 Created` with `GraphicsState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid layer ID, missing `image` field, or invalid multipart form |
+| `404` | Layer not found |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/graphics/0/image \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "image=@logo.png"
+```
+
+---
+
+### GET /api/graphics/{id}/image
+
+Retrieve the stored PNG image from a graphics layer.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `id` | Layer ID (integer) |
+
+**Request Body:** None
+
+**Response:** `200 OK` with `Content-Type: image/png` and the PNG data as the response body.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid layer ID |
+| `404` | Layer not found or no image stored |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/graphics/0/image \
+  -H "Authorization: Bearer $TOKEN" \
+  -o layer0.png
+```
+
+---
+
+### DELETE /api/graphics/{id}/image
+
+Remove the stored image from a graphics layer.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `id` | Layer ID (integer) |
+
+**Request Body:** None
+
+**Response:** `204 No Content` (empty body)
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid layer ID |
+| `404` | Layer not found or no image stored |
+
+**Example:**
+
+```bash
+curl -X DELETE http://localhost:8081/api/graphics/0/image \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### POST /api/graphics/{id}/text-animate
+
+Start a text animation on a graphics layer. Renders animated text overlays using the embedded Inter font. Supports typewriter (character-by-character reveal) and fade-word (word-by-word fade-in) modes.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `id` | Layer ID (integer) |
+
+**Request Body:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `mode` | `string` | Animation mode: `"typewriter"` or `"fade-word"` |
+| `text` | `string` | Text to animate (required) |
+| `fontSize` | `float` | Font size in pixels |
+| `bold` | `bool` | Whether to use bold weight |
+| `charsPerSec` | `float` | Characters per second (typewriter mode) |
+| `wordDelayMs` | `int` | Delay between words in ms (fade-word mode) |
+| `fadeDurationMs` | `int` | Fade duration per word in ms (fade-word mode) |
+| `width` | `int` | Render width in pixels |
+| `height` | `int` | Render height in pixels |
+
+**Response:** `200 OK` with `GraphicsState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid layer ID, missing text, or invalid mode |
+| `404` | Layer not found |
+| `501` | Text animation engine not available |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/graphics/0/text-animate \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"mode": "typewriter", "text": "Breaking News", "fontSize": 48, "bold": true, "charsPerSec": 15, "width": 800, "height": 60}'
+```
+
+---
+
+### POST /api/graphics/{id}/text-animate/stop
+
+Stop the text animation on a graphics layer.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `id` | Layer ID (integer) |
+
+**Request Body:** None
+
+**Response:** `200 OK` with `GraphicsState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid layer ID |
+| `404` | Layer not found |
+| `501` | Text animation engine not available |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/graphics/0/text-animate/stop \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### POST /api/graphics/{id}/ticker
+
+Start a scrolling news ticker on a graphics layer. The ticker renders text that scrolls horizontally across the layer at a configurable speed. Text can optionally loop.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `id` | Layer ID (integer) |
+
+**Request Body:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `text` | `string` | Ticker text content (required) |
+| `fontSize` | `float` | Font size in pixels (default: 24) |
+| `speed` | `float` | Scroll speed in pixels per second (default: 100) |
+| `bold` | `bool` | Whether to use bold weight |
+| `loop` | `bool` | Whether the ticker loops after completing |
+| `height` | `int` | Render height in pixels |
+
+**Response:** `200 OK` with `GraphicsState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid layer ID or missing text |
+| `404` | Layer not found |
+| `501` | Ticker engine not available |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/graphics/0/ticker \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"text": "BREAKING: Live coverage continues...", "fontSize": 28, "speed": 120, "bold": true, "loop": true, "height": 40}'
+```
+
+---
+
+### POST /api/graphics/{id}/ticker/stop
+
+Stop the scrolling ticker on a graphics layer.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `id` | Layer ID (integer) |
+
+**Request Body:** None
+
+**Response:** `200 OK` with `GraphicsState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid layer ID |
+| `404` | Layer not found |
+| `501` | Ticker engine not available |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/graphics/0/ticker/stop \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### PUT /api/graphics/{id}/ticker/text
+
+Update the text content of a running ticker without stopping it. The new text takes effect on the next scroll cycle.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `id` | Layer ID (integer) |
+
+**Request Body:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `text` | `string` | New ticker text (required) |
+
+**Response:** `200 OK` with `GraphicsState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid layer ID or missing text |
+| `404` | Layer not found or no ticker running |
+| `501` | Ticker engine not available |
+
+**Example:**
+
+```bash
+curl -X PUT http://localhost:8081/api/graphics/0/ticker/text \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"text": "UPDATED: New information available..."}'
+```
+
+---
+
 ### GraphicsState Fields
 
 The `GraphicsState` object is returned by all graphics endpoints. The `ControlRoomState` broadcast uses a flattened variant (see note below).
@@ -2915,6 +3704,288 @@ The `GraphicsState` object is returned by all graphics endpoints. The `ControlRo
 | `rect` | `object` | Layer position and size `{x, y, width, height}` in pixels |
 
 > **Note:** In the `ControlRoomState` broadcast, graphics layers use flat fields (`x`, `y`, `width`, `height`) instead of a nested `rect` object, and the `programWidth`/`programHeight` fields are omitted. See the [ControlRoomState](#controlroomstate) example.
+
+---
+
+## HTML5 Graphics
+
+The HTML5 graphics system uses a CEF (Chromium Embedded Framework) sidecar process to render browser-based overlays. Each graphics layer can load an HTML5 template URL, receive data updates, and respond to play/stop/next lifecycle commands. The sidecar manages a pool of browser instances. Templates are auto-discovered from the configured template directories (OGraf and CasparCG formats are supported).
+
+All HTML5 endpoints (except template listing) return `503 Service Unavailable` if the CEF sidecar is not running.
+
+### GET /api/graphics/html5/templates
+
+List available HTML5 graphics templates. Returns templates discovered from the configured template directories. Works even if the sidecar is not running (returns an empty array).
+
+**Request Body:** None
+
+**Response:** `200 OK`
+
+```json
+[
+  {
+    "id": "lower-third",
+    "name": "Lower Third",
+    "description": "Animated lower-third with name and title",
+    "format": "ograf",
+    "url": "file:///templates/lower-third/index.html",
+    "dataSchema": {"name": "string", "title": "string"}
+  }
+]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `string` | Template directory name |
+| `name` | `string` | Display name (from manifest or directory name) |
+| `description` | `string` | Template description (optional) |
+| `format` | `string` | Template format: `"ograf"` or `"casparcg"` |
+| `url` | `string` | File URL for loading the template |
+| `dataSchema` | `object` | OGraf manifest data schema (optional) |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/graphics/html5/templates \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### POST /api/graphics/{id}/html5
+
+Load an HTML5 graphic onto a layer. Allocates a browser from the CEF sidecar pool, navigates it to the given URL, and optionally sends initial data.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `id` | Layer ID (integer) |
+
+**Request Body:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `url` | `string` | URL to load in the browser (required) |
+| `data` | `object` | Initial data payload to send after loading (optional) |
+
+**Response:** `200 OK` with `GraphicsState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid layer ID, missing URL, or invalid JSON |
+| `409` | Browser pool exhausted (all browser slots in use) |
+| `503` | HTML5 graphics sidecar not running |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/graphics/0/html5 \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "file:///templates/lower-third/index.html", "data": {"name": "John Smith", "title": "Reporter"}}'
+```
+
+---
+
+### PUT /api/graphics/{id}/html5/data
+
+Send updated data to the HTML5 graphic on a layer. The data is forwarded to the browser via the adapter JavaScript bridge.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `id` | Layer ID (integer) |
+
+**Request Body:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `data` | `object` | Data payload to send to the graphic |
+
+**Response:** `200 OK` with `GraphicsState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid layer ID or invalid JSON |
+| `404` | No HTML5 graphic loaded on this layer |
+| `503` | HTML5 graphics sidecar not running |
+
+**Example:**
+
+```bash
+curl -X PUT http://localhost:8081/api/graphics/0/html5/data \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"data": {"name": "Jane Doe", "title": "Anchor"}}'
+```
+
+---
+
+### POST /api/graphics/{id}/html5/play
+
+Send a play command to the HTML5 graphic on a layer. Triggers the template's play/animate-in behavior.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `id` | Layer ID (integer) |
+
+**Request Body:** None
+
+**Response:** `200 OK` with `GraphicsState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid layer ID |
+| `404` | No HTML5 graphic loaded on this layer |
+| `503` | HTML5 graphics sidecar not running |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/graphics/0/html5/play \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### POST /api/graphics/{id}/html5/stop
+
+Send a stop command to the HTML5 graphic on a layer. Triggers the template's stop/animate-out behavior.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `id` | Layer ID (integer) |
+
+**Request Body:** None
+
+**Response:** `200 OK` with `GraphicsState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid layer ID |
+| `404` | No HTML5 graphic loaded on this layer |
+| `503` | HTML5 graphics sidecar not running |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/graphics/0/html5/stop \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### POST /api/graphics/{id}/html5/next
+
+Send a next command to the HTML5 graphic on a layer. Advances the template to its next state (e.g., next slide, next data item). Behavior is template-specific.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `id` | Layer ID (integer) |
+
+**Request Body:** None
+
+**Response:** `200 OK` with `GraphicsState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid layer ID |
+| `404` | No HTML5 graphic loaded on this layer |
+| `503` | HTML5 graphics sidecar not running |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/graphics/0/html5/next \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### POST /api/graphics/{id}/html5/custom
+
+Send a custom action to the HTML5 graphic on a layer. Dispatches an arbitrary action name with an optional JSON payload to the template.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `id` | Layer ID (integer) |
+
+**Request Body:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `action` | `string` | Custom action name (required) |
+| `payload` | `object` | Action payload (optional) |
+
+**Response:** `200 OK` with `GraphicsState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid layer ID, missing action, or invalid JSON |
+| `404` | No HTML5 graphic loaded on this layer |
+| `503` | HTML5 graphics sidecar not running |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/graphics/0/html5/custom \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"action": "highlight", "payload": {"team": "home"}}'
+```
+
+---
+
+### DELETE /api/graphics/{id}/html5
+
+Unload the HTML5 graphic from a layer and return the browser to the pool.
+
+**URL Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `id` | Layer ID (integer) |
+
+**Request Body:** None
+
+**Response:** `204 No Content` (empty body)
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid layer ID |
+| `404` | No HTML5 graphic loaded on this layer |
+| `503` | HTML5 graphics sidecar not running |
+
+**Example:**
+
+```bash
+curl -X DELETE http://localhost:8081/api/graphics/0/html5 \
+  -H "Authorization: Bearer $TOKEN"
+```
 
 ---
 
@@ -3619,6 +4690,49 @@ curl -o confidence.jpg http://localhost:8081/api/output/confidence \
 
 ---
 
+### GET /api/output/cbr
+
+Get the current CBR (Constant Bit Rate) pacer status. The CBR pacer inserts null MPEG-TS packets to maintain a constant bitrate for SRT output, ensuring stable transport over bandwidth-constrained links. Returns `{"enabled": false}` if CBR pacing is not active.
+
+**Request Body:** None
+
+**Response:** `200 OK`
+
+```json
+{
+  "enabled": true,
+  "muxrateBps": 10000000,
+  "nullPacketsTotal": 524288,
+  "realBytesTotal": 1048576,
+  "padBytesTotal": 786432,
+  "burstTicksTotal": 12345
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `enabled` | `bool` | Whether CBR pacing is active |
+| `muxrateBps` | `int` | Target mux rate in bits per second |
+| `nullPacketsTotal` | `int` | Total null TS packets inserted |
+| `realBytesTotal` | `int` | Total real (content) bytes transmitted |
+| `padBytesTotal` | `int` | Total padding bytes transmitted |
+| `burstTicksTotal` | `int` | Total burst ticks (pacing events) |
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `501` | Output manager not configured |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/output/cbr \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
 ## Stinger Transitions
 
 Stinger transitions use pre-loaded PNG image sequences with per-pixel alpha blending to create branded transition effects (e.g., animated logos, sports wipes). Clips are stored in memory as pre-decoded YUV420 + alpha planes for zero-latency playback. Upload clips as zip files containing numbered PNG frames.
@@ -4224,6 +5338,69 @@ Get a keyframe thumbnail from a source's replay buffer. Returns the most recent 
 curl http://localhost:8081/api/replay/peek?source=cam1 \
   -H "Authorization: Bearer $TOKEN" \
   -o keyframe.h264
+```
+
+---
+
+### PUT /api/replay/shutter-angle
+
+Set the shutter angle for slow-motion replay playback. Shutter angle controls the amount of motion blur applied during frame interpolation. A shutter angle of 180° (the cinematic standard) applies moderate blur; 360° applies maximum blur; 0° disables motion blur entirely.
+
+**Request Body:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `angle` | `float` | Shutter angle in degrees (0–360) |
+
+**Response:** `200 OK` with full `ControlRoomState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid JSON or angle out of 0–360 range |
+| `501` | Replay not enabled |
+
+**Example:**
+
+```bash
+curl -X PUT http://localhost:8081/api/replay/shutter-angle \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"angle": 180}'
+```
+
+---
+
+### GET /api/replay/shutter-angle
+
+Get the current shutter angle setting for replay playback.
+
+**Request Body:** None
+
+**Response:** `200 OK`
+
+```json
+{
+  "angle": 180
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `angle` | `float` | Current shutter angle in degrees (0–360) |
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `501` | Replay not enabled |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/replay/shutter-angle \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 ---
@@ -4909,6 +6086,43 @@ Remove a registered operator. The operator's session is disconnected and any loc
 
 ```bash
 curl -X DELETE http://localhost:8081/api/operator/op_abc123 \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### GET /api/operator/invite-tokens
+
+Retrieve the invite token map for building shareable invite links. Returns a mapping of role names to their invite tokens. Only accessible to operators with the `director` role. If no invite tokens are configured on the server, returns an empty object.
+
+**Request Body:** None
+
+**Response:** `200 OK`
+
+```json
+{
+  "director": "tok_abc123",
+  "td": "tok_def456",
+  "operator": "tok_ghi789",
+  "observer": "tok_jkl012"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| *(role name)* | `string` | Invite token for the given role |
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `401` | Missing or invalid bearer token |
+| `403` | Caller is not a director |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/operator/invite-tokens \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -6041,6 +7255,1059 @@ curl http://localhost:8081/api/captions/state \
 
 ---
 
+## Clips
+
+Media clip storage and 4-slot clip player for pre-recorded content playback. Clips can be uploaded as media files (MP4, MOV, TS, MKV, AVI, WebM) or imported from recordings. Non-H.264 files are automatically transcoded. Each clip player slot can independently load, play, pause, seek, and loop clips. Clip player sources appear as switchable sources alongside cameras. Clip endpoints are only registered when a `ClipManager` and `ClipStore` are configured.
+
+### GET /api/clips
+
+List all clips in the library, sorted by creation time.
+
+**Request Body:** None
+
+**Response:** `200 OK` with a JSON array of clip objects:
+
+```json
+[
+  {
+    "id": "abc123",
+    "name": "Intro Video",
+    "filename": "abc123.ts",
+    "source": "upload",
+    "codec": "h264",
+    "audioCodec": "aac",
+    "width": 1920,
+    "height": 1080,
+    "fpsNum": 30000,
+    "fpsDen": 1001,
+    "durationMs": 15000,
+    "sampleRate": 48000,
+    "channels": 2,
+    "byteSize": 5242880,
+    "loop": false,
+    "createdAt": "2026-03-20T10:30:00Z",
+    "ephemeral": false
+  }
+]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `string` | Unique clip identifier |
+| `name` | `string` | Display name |
+| `filename` | `string` | Storage filename |
+| `source` | `string` | How the clip was ingested: `"upload"`, `"replay"`, or `"recording"` |
+| `codec` | `string` | Video codec (e.g., `"h264"`) |
+| `audioCodec` | `string` | Audio codec (e.g., `"aac"`), empty if no audio |
+| `width` | `int` | Video width in pixels |
+| `height` | `int` | Video height in pixels |
+| `fpsNum` | `int` | Frame rate numerator |
+| `fpsDen` | `int` | Frame rate denominator |
+| `durationMs` | `int` | Duration in milliseconds |
+| `sampleRate` | `int` | Audio sample rate in Hz |
+| `channels` | `int` | Audio channel count |
+| `byteSize` | `int` | File size in bytes |
+| `loop` | `bool` | Whether the clip is set to loop |
+| `createdAt` | `string` | ISO 8601 creation timestamp |
+| `ephemeral` | `bool` | If `true`, clip may be auto-cleaned (e.g., replay captures) |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/clips \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### GET /api/clips/{id}
+
+Return metadata for a single clip.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `id` | Clip ID |
+
+**Request Body:** None
+
+**Response:** `200 OK` with a clip object (same schema as list items above).
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `404` | Clip not found |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/clips/abc123 \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### POST /api/clips/upload
+
+Upload a media file as a new clip. Accepts multipart form data with a maximum file size of 2 GB. Non-H.264 files are automatically transcoded to H.264+AAC MPEG-TS. Upload progress is broadcast to connected clients via state updates. Only one upload can be in progress at a time.
+
+**Request:** Multipart form data.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `file` | file | Yes | Media file to upload. Accepted extensions: `.ts`, `.mp4`, `.mov`, `.mkv`, `.avi`, `.webm` |
+
+**Response:** `201 Created` with the new clip object.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Missing `file` field, unsupported file type, invalid format, or corrupt file |
+| `409` | Another upload is already in progress |
+| `500` | Internal error writing or transcoding file |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/clips/upload \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "file=@/path/to/video.mp4"
+```
+
+---
+
+### PUT /api/clips/{id}
+
+Update mutable fields on a clip (name and/or loop setting).
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `id` | Clip ID |
+
+**Request Body:**
+
+```json
+{
+  "name": "New Name",
+  "loop": true
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | `string` | No | New display name for the clip |
+| `loop` | `bool` | No | Set the default loop behavior |
+
+**Response:** `200 OK` with the updated clip object.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid JSON |
+| `404` | Clip not found |
+
+**Example:**
+
+```bash
+curl -X PUT http://localhost:8081/api/clips/abc123 \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Intro v2", "loop": true}'
+```
+
+---
+
+### DELETE /api/clips/{id}
+
+Delete a clip from the library and remove its media file from disk.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `id` | Clip ID |
+
+**Request Body:** None
+
+**Response:** `204 No Content`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `404` | Clip not found |
+
+**Example:**
+
+```bash
+curl -X DELETE http://localhost:8081/api/clips/abc123 \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### POST /api/clips/{id}/pin
+
+Pin an ephemeral clip (e.g., a replay capture) to make it permanent, preventing auto-cleanup.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `id` | Clip ID |
+
+**Request Body:** None
+
+**Response:** `200 OK` with the updated clip object (ephemeral will be `false`).
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `404` | Clip not found |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/clips/abc123/pin \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### GET /api/clips/recordings
+
+List recording files available for import as clips. Returns `.ts` files from the recording directory, excluding the currently active recording (if any).
+
+**Request Body:** None
+
+**Response:** `200 OK` with a JSON array of recording file info:
+
+```json
+[
+  {
+    "filename": "switchframe-2026-03-20T14-30-00.ts",
+    "path": "/recordings/switchframe-2026-03-20T14-30-00.ts",
+    "byteSize": 104857600,
+    "modTime": "2026-03-20T14:45:00Z"
+  }
+]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `filename` | `string` | Recording filename |
+| `path` | `string` | Full filesystem path |
+| `byteSize` | `int` | File size in bytes |
+| `modTime` | `string` | Last modification time (ISO 8601) |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/clips/recordings \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### POST /api/clips/from-recording
+
+Import a recording file as a clip. The recording file is copied (not moved) into the clip store, validated, and added to the library.
+
+**Request Body:**
+
+```json
+{
+  "path": "/recordings/switchframe-2026-03-20T14-30-00.ts"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `path` | `string` | Yes | Full filesystem path to the recording file. Must be within the configured recording directory. |
+
+**Response:** `201 Created` with the new clip object.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Missing path, path outside recording directory, recording directory not configured, or invalid file |
+| `500` | Internal error copying or validating file |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/clips/from-recording \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"path": "/recordings/switchframe-2026-03-20T14-30-00.ts"}'
+```
+
+---
+
+### GET /api/clips/players
+
+Return the state of all 4 clip player slots.
+
+**Request Body:** None
+
+**Response:** `200 OK` with a JSON array of player states:
+
+```json
+[
+  {
+    "id": 1,
+    "clipId": "abc123",
+    "clipName": "Intro Video",
+    "state": "playing",
+    "speed": 1.0,
+    "position": 0.45,
+    "loop": false
+  },
+  {
+    "id": 2,
+    "state": "empty"
+  },
+  {
+    "id": 3,
+    "state": "empty"
+  },
+  {
+    "id": 4,
+    "state": "empty"
+  }
+]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `int` | Player slot number (1-4) |
+| `clipId` | `string` | ID of the loaded clip (empty when slot is empty) |
+| `clipName` | `string` | Name of the loaded clip |
+| `state` | `string` | One of: `"empty"`, `"loaded"`, `"playing"`, `"paused"`, `"holding"` |
+| `speed` | `float` | Current playback speed |
+| `position` | `float` | Current position (0.0 to 1.0) |
+| `loop` | `bool` | Whether looping is enabled |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/clips/players \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### POST /api/clips/players/{n}/load
+
+Load a clip into a player slot. The player must be empty or stopped.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `n` | Player slot number (1-4) |
+
+**Request Body:**
+
+```json
+{
+  "clipId": "abc123"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `clipId` | `string` | Yes | ID of the clip to load |
+
+**Response:** `200 OK` with full `ControlRoomState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid player ID, missing `clipId`, or invalid JSON |
+| `404` | Clip not found |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/clips/players/1/load \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"clipId": "abc123"}'
+```
+
+---
+
+### POST /api/clips/players/{n}/eject
+
+Eject the clip from a player slot, returning it to the empty state.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `n` | Player slot number (1-4) |
+
+**Request Body:** None
+
+**Response:** `200 OK` with full `ControlRoomState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid player ID or player slot is empty |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/clips/players/1/eject \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### POST /api/clips/players/{n}/play
+
+Start or resume clip playback. Optionally set speed and loop mode.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `n` | Player slot number (1-4) |
+
+**Request Body:**
+
+```json
+{
+  "speed": 1.0,
+  "loop": false
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `speed` | `float` | No | Playback speed (0.25 to 2.0). Defaults to `1.0`. |
+| `loop` | `bool` | No | Enable looping. Defaults to `false`. |
+
+**Response:** `200 OK` with full `ControlRoomState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid player ID, invalid JSON, or player slot is empty |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/clips/players/1/play \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"speed": 0.5, "loop": true}'
+```
+
+---
+
+### POST /api/clips/players/{n}/pause
+
+Pause clip playback. The clip remains at its current position.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `n` | Player slot number (1-4) |
+
+**Request Body:** None
+
+**Response:** `200 OK` with full `ControlRoomState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid player ID or player is not playing |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/clips/players/1/pause \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### POST /api/clips/players/{n}/stop
+
+Stop clip playback. The clip remains loaded but resets to the beginning.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `n` | Player slot number (1-4) |
+
+**Request Body:** None
+
+**Response:** `200 OK` with full `ControlRoomState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid player ID or player slot is empty |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/clips/players/1/stop \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### POST /api/clips/players/{n}/seek
+
+Seek to a normalized position within the clip.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `n` | Player slot number (1-4) |
+
+**Request Body:**
+
+```json
+{
+  "position": 0.5
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `position` | `float` | Yes | Seek position from `0.0` (start) to `1.0` (end) |
+
+**Response:** `200 OK` with full `ControlRoomState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid player ID, invalid JSON, or position out of range |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/clips/players/1/seek \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"position": 0.75}'
+```
+
+---
+
+### POST /api/clips/players/{n}/speed
+
+Change the playback speed of a playing clip.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `n` | Player slot number (1-4) |
+
+**Request Body:**
+
+```json
+{
+  "speed": 0.5
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `speed` | `float` | Yes | Playback speed from `0.25` to `2.0` |
+
+**Response:** `200 OK` with full `ControlRoomState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid player ID, invalid JSON, or speed out of range |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/clips/players/1/speed \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"speed": 2.0}'
+```
+
+---
+
+### POST /api/clips/players/{n}/loop
+
+Change the loop setting of a playing or loaded clip.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `n` | Player slot number (1-4) |
+
+**Request Body:**
+
+```json
+{
+  "loop": true
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `loop` | `bool` | Yes | Enable or disable looping |
+
+**Response:** `200 OK` with full `ControlRoomState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid player ID or invalid JSON |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/clips/players/1/loop \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"loop": true}'
+```
+
+---
+
+## ST Maps
+
+ST maps (per-pixel coordinate remapping) apply spatial warping effects to individual sources or the program output. Maps can be generated from built-in generators (lens correction, creative effects) or uploaded as EXR, PNG, or raw binary files. Animated ST maps support multi-frame looping effects. ST map endpoints are only registered when an `STMapRegistry` is configured.
+
+### GET /api/stmap
+
+List all stored ST map names.
+
+**Request Body:** None
+
+**Response:** `200 OK`
+
+```json
+{
+  "maps": ["barrel-correction", "fisheye-fix", "heat-shimmer"]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `maps` | `array` | List of stored map names |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/stmap \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### GET /api/stmap/state
+
+Return the current ST map assignment state, showing which maps are assigned to sources and the program output.
+
+**Request Body:** None
+
+**Response:** `200 OK` with the assignment state object.
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/stmap/state \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### GET /api/stmap/generators
+
+List all available ST map generators with their parameter schemas.
+
+**Request Body:** None
+
+**Response:** `200 OK`
+
+```json
+{
+  "generators": [
+    {
+      "name": "barrel",
+      "displayName": "Barrel Distortion",
+      "params": {
+        "strength": {"min": 0, "max": 1, "default": 0.5}
+      },
+      "animated": false
+    }
+  ]
+}
+```
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/stmap/generators \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### POST /api/stmap/generate
+
+Generate a new ST map using a built-in generator and store it. Supports both static and animated (multi-frame) generators. Optionally assigns the generated map to a source or the program output in the same request.
+
+**Request Body:**
+
+```json
+{
+  "type": "barrel",
+  "name": "my-barrel-fix",
+  "params": {"strength": 0.3},
+  "width": 1920,
+  "height": 1080,
+  "frame_count": 90,
+  "assign_source": "cam1",
+  "assign_program": false
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `string` | Yes | Generator type name |
+| `name` | `string` | Yes | Name to store the map under |
+| `params` | `object` | No | Generator parameters (key-value pairs of float values) |
+| `width` | `int` | No | Map width in pixels. Defaults to pipeline format width. |
+| `height` | `int` | No | Map height in pixels. Defaults to pipeline format height. |
+| `frame_count` | `int` | No | Number of frames for animated generators (1-300). Defaults to 90. |
+| `assign_source` | `string` | No | Source key to assign the map to immediately |
+| `assign_program` | `bool` | No | If `true`, assign the map to program output immediately |
+
+**Response:** `201 Created`
+
+```json
+{
+  "name": "my-barrel-fix",
+  "width": 1920,
+  "height": 1080,
+  "type": "static"
+}
+```
+
+For animated maps, the response also includes `"frame_count"`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Missing `type` or `name`, unknown generator, invalid parameters, or `frame_count` > 300 |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/stmap/generate \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"type": "barrel", "name": "cam1-fix", "params": {"strength": 0.3}, "assign_source": "cam1"}'
+```
+
+---
+
+### POST /api/stmap/upload/{name}
+
+Upload an ST map file (EXR, PNG, or raw binary). The format is auto-detected from the Content-Type header, file extension, or magic bytes. Maximum upload size is 64 MB.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `name` | Name to store the map under (may include extension: `.exr`, `.png`, `.stmap`) |
+
+**Request Body:** Raw file bytes. Set `Content-Type` to `image/x-exr`, `image/png`, or `application/octet-stream`.
+
+**Response:** `201 Created`
+
+```json
+{
+  "name": "my-custom-map",
+  "width": 1920,
+  "height": 1080,
+  "type": "static"
+}
+```
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid name or failed to parse upload |
+| `413` | Upload exceeds 64 MB size limit |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/stmap/upload/lens-fix.exr \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: image/x-exr" \
+  --data-binary @/path/to/lens-correction.exr
+```
+
+---
+
+### GET /api/stmap/{name}
+
+Return metadata about a stored ST map.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `name` | Map name |
+
+**Request Body:** None
+
+**Response:** `200 OK`
+
+```json
+{
+  "name": "barrel-correction",
+  "width": 1920,
+  "height": 1080,
+  "type": "static"
+}
+```
+
+For animated maps:
+
+```json
+{
+  "name": "heat-shimmer",
+  "width": 1920,
+  "height": 1080,
+  "type": "animated",
+  "frame_count": 90
+}
+```
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `404` | Map not found |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/stmap/barrel-correction \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### DELETE /api/stmap/{name}
+
+Delete a stored ST map. If the map is currently assigned to any source or the program, the assignment is removed.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `name` | Map name |
+
+**Request Body:** None
+
+**Response:** `204 No Content`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `404` | Map not found |
+
+**Example:**
+
+```bash
+curl -X DELETE http://localhost:8081/api/stmap/barrel-correction \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### GET /api/stmap/{name}/download
+
+Download a static ST map as raw binary data.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `name` | Map name |
+
+**Request Body:** None
+
+**Response:** `200 OK` with `Content-Type: application/octet-stream` and `Content-Disposition: attachment; filename="<name>.stmap"`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `404` | Map not found |
+| `500` | Internal error serializing map |
+
+**Example:**
+
+```bash
+curl -O http://localhost:8081/api/stmap/barrel-correction/download \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### PUT /api/stmap/source/{sourceKey}
+
+Assign an ST map to a specific source. The map must already be stored.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `sourceKey` | Source key (e.g., `"cam1"`) |
+
+**Request Body:**
+
+```json
+{
+  "map": "barrel-correction"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `map` | `string` | Yes | Name of the map to assign |
+
+**Response:** `200 OK` with the updated assignment state.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Missing `map` name or invalid JSON |
+| `404` | Map not found |
+
+**Example:**
+
+```bash
+curl -X PUT http://localhost:8081/api/stmap/source/cam1 \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"map": "barrel-correction"}'
+```
+
+---
+
+### DELETE /api/stmap/source/{sourceKey}
+
+Remove the ST map assignment from a source.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `sourceKey` | Source key (e.g., `"cam1"`) |
+
+**Request Body:** None
+
+**Response:** `204 No Content`
+
+**Example:**
+
+```bash
+curl -X DELETE http://localhost:8081/api/stmap/source/cam1 \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### PUT /api/stmap/program
+
+Assign an ST map to the program output.
+
+**Request Body:**
+
+```json
+{
+  "map": "heat-shimmer"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `map` | `string` | Yes | Name of the map to assign |
+
+**Response:** `200 OK` with the updated assignment state.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Missing `map` name or invalid JSON |
+| `404` | Map not found |
+
+**Example:**
+
+```bash
+curl -X PUT http://localhost:8081/api/stmap/program \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"map": "heat-shimmer"}'
+```
+
+---
+
+### DELETE /api/stmap/program
+
+Remove the ST map assignment from the program output.
+
+**Request Body:** None
+
+**Response:** `204 No Content`
+
+**Example:**
+
+```bash
+curl -X DELETE http://localhost:8081/api/stmap/program \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
 ## Format
 
 The format API allows querying and changing the pipeline video format (resolution and frame rate). Changes take effect on the next keyframe.
@@ -6132,6 +8399,81 @@ curl -X PUT https://localhost:8080/api/format \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"format": "1080p25"}'
+```
+
+---
+
+## Encoder
+
+Runtime video encoder selection. The server auto-detects available hardware encoders at startup (NVENC, VA-API, VideoToolbox) and falls back to software x264. These endpoints allow querying and switching the active encoder without restarting.
+
+### GET /api/encoder
+
+Return the currently active video encoder and the list of all available encoders.
+
+**Request Body:** None
+
+**Response:** `200 OK`
+
+```json
+{
+  "current": "videotoolbox",
+  "available": [
+    {"name": "videotoolbox", "displayName": "VideoToolbox (Apple)", "isDefault": true},
+    {"name": "x264", "displayName": "x264 (Software)", "isDefault": false}
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `current` | `string` | Name of the currently active encoder |
+| `available` | `array` | List of available encoders |
+| `available[].name` | `string` | Encoder identifier used in `PUT` requests |
+| `available[].displayName` | `string` | Human-readable encoder name |
+| `available[].isDefault` | `bool` | Whether this is the auto-detected default encoder |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/encoder \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### PUT /api/encoder
+
+Switch the active video encoder at runtime. The pipeline rebuilds with the new encoder. Active transitions or recordings continue uninterrupted.
+
+**Request Body:**
+
+```json
+{
+  "encoder": "x264"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `encoder` | `string` | Yes | Encoder name from the `available` list |
+
+**Response:** `200 OK` with full `ControlRoomState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid JSON or missing encoder name |
+| `404` | Encoder not found in available list |
+
+**Example:**
+
+```bash
+curl -X PUT http://localhost:8081/api/encoder \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"encoder": "x264"}'
 ```
 
 ---
@@ -6464,6 +8806,185 @@ curl -X DELETE http://localhost:8081/api/colorgrade/my-custom-lut \
 
 ---
 
+### GET /api/colorgrade/corrector
+
+Return the current color corrector state. The corrector provides real-time color adjustments (lift/gamma/gain, temperature, tint, saturation, contrast, shadows/midtones/highlights, tone curves, and sharpness) that are applied on top of the active LUT look.
+
+**Request Body:** None
+
+**Response:** `200 OK`
+
+```json
+{
+  "lift": [0.0, 0.0, 0.0],
+  "gamma": [1.0, 1.0, 1.0],
+  "gain": [1.0, 1.0, 1.0],
+  "temperature": 0,
+  "tint": 0,
+  "saturation": 1.0,
+  "contrast": 0,
+  "shadows": [0.0, 0.0, 0.0],
+  "midtones": [0.0, 0.0, 0.0],
+  "highlights": [0.0, 0.0, 0.0],
+  "curveMaster": [{"x": 0, "y": 0}, {"x": 1, "y": 1}],
+  "curveR": [],
+  "curveG": [],
+  "curveB": [],
+  "sharpness": 0
+}
+```
+
+| Field | Type | Range | Description |
+|-------|------|-------|-------------|
+| `lift` | `[R,G,B]` | -1 to +1 | Shadow lift (RGB offsets) |
+| `gamma` | `[R,G,B]` | 0.1 to 4.0 | Midtone gamma (RGB multipliers) |
+| `gain` | `[R,G,B]` | 0 to 4.0 | Highlight gain (RGB multipliers) |
+| `temperature` | `float` | -100 to +100 | Color temperature shift (warm/cool) |
+| `tint` | `float` | -100 to +100 | Green/magenta tint shift |
+| `saturation` | `float` | 0 to 2.0 | Color saturation multiplier |
+| `contrast` | `float` | -1 to +1 | Contrast adjustment |
+| `shadows` | `[R,G,B]` | -1 to +1 | Shadow zone RGB adjustments |
+| `midtones` | `[R,G,B]` | -1 to +1 | Midtone zone RGB adjustments |
+| `highlights` | `[R,G,B]` | -1 to +1 | Highlight zone RGB adjustments |
+| `curveMaster` | `array` | x,y: 0-1 | Master tone curve control points |
+| `curveR` | `array` | x,y: 0-1 | Red channel curve control points |
+| `curveG` | `array` | x,y: 0-1 | Green channel curve control points |
+| `curveB` | `array` | x,y: 0-1 | Blue channel curve control points |
+| `sharpness` | `float` | 0 to 1.0 | Output sharpening amount |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/colorgrade/corrector \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### PUT /api/colorgrade/corrector
+
+Set the color corrector state. The full `CorrectorState` object must be provided (partial updates are not supported). All parameter values are validated against their allowed ranges.
+
+**Request Body:** Full corrector state object (same schema as the GET response).
+
+```json
+{
+  "lift": [0.0, 0.0, 0.0],
+  "gamma": [1.0, 1.0, 1.0],
+  "gain": [1.0, 1.0, 1.0],
+  "temperature": 15,
+  "tint": -5,
+  "saturation": 1.1,
+  "contrast": 0.1,
+  "shadows": [0.0, 0.0, 0.0],
+  "midtones": [0.0, 0.0, 0.0],
+  "highlights": [0.0, 0.0, 0.0],
+  "sharpness": 0.3
+}
+```
+
+**Response:** `200 OK` with full `ControlRoomState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Invalid JSON or parameter out of range (e.g., gamma below 0.1, saturation above 2.0, curve point x/y outside 0-1) |
+
+**Example:**
+
+```bash
+curl -X PUT http://localhost:8081/api/colorgrade/corrector \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"lift":[0,0,0],"gamma":[1,1,1],"gain":[1,1,1],"temperature":15,"tint":0,"saturation":1.1,"contrast":0,"shadows":[0,0,0],"midtones":[0,0,0],"highlights":[0,0,0],"sharpness":0.3}'
+```
+
+---
+
+### DELETE /api/colorgrade/corrector
+
+Reset the color corrector to its neutral default (no color change). Equivalent to setting all values to their identity/zero state.
+
+**Request Body:** None
+
+**Response:** `200 OK` with full `ControlRoomState`.
+
+**Example:**
+
+```bash
+curl -X DELETE http://localhost:8081/api/colorgrade/corrector \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### POST /api/colorgrade/save
+
+Bake the current corrector adjustments combined with the active look into a new custom `.cube` LUT file. The resulting look appears in the available looks list and can be recalled independently of corrector state.
+
+**Request Body:**
+
+```json
+{
+  "name": "my-graded-look"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | `string` | Yes | Name for the saved look (max 64 characters) |
+
+**Response:** `201 Created` with full `ControlRoomState`.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Missing or invalid name |
+| `500` | Internal error saving the LUT file |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/colorgrade/save \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "my-graded-look"}'
+```
+
+---
+
+### GET /api/colorgrade/looks/{name}/settings
+
+Return the saved corrector settings for a custom look. When a look is saved via `POST /api/colorgrade/save`, the corrector state at the time of saving is recorded. This endpoint retrieves those settings so they can be restored in the corrector UI.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `name` | Look name |
+
+**Request Body:** None
+
+**Response:** `200 OK` with the saved `CorrectorState` (same schema as `GET /api/colorgrade/corrector`).
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Missing name |
+| `404` | No corrector settings saved for this look (built-in looks have no saved settings) |
+
+**Example:**
+
+```bash
+curl http://localhost:8081/api/colorgrade/looks/my-graded-look/settings \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
 ## AI Background Segmentation
 
 GPU-accelerated AI background segmentation for per-source background removal or replacement. Requires a GPU with TensorRT support. AI segmentation endpoints are only registered when an `AISegmentManager` is configured; otherwise these routes return `404 Not Found` (unregistered).
@@ -6680,6 +9201,215 @@ The exact structure of each subsystem's snapshot depends on its implementation o
 
 ```bash
 curl http://localhost:8081/api/debug/snapshot \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+## Performance
+
+Live performance sampling and statistics. The performance endpoint provides windowed timing statistics (1s, 10s, 60s) for all major subsystems: per-source decode, video pipeline, end-to-end latency, audio mixing, broadcast delivery, and output. Baselines can be saved and compared against to track performance regressions.
+
+### GET /api/perf
+
+Return a comprehensive performance snapshot with windowed statistics for all subsystems. Optionally compare against a saved baseline.
+
+**Query Parameters:**
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `baseline` | No | Name of a saved baseline to compare against. If provided and the baseline exists, the response includes a `baseline` diff object. |
+
+**Request Body:** None
+
+**Response:** `200 OK` (with `Cache-Control: no-store`)
+
+```json
+{
+  "timestamp": "2026-03-23T10:30:00.123456789Z",
+  "uptime_ms": 3600000,
+  "frame_budget_ns": 33333333,
+  "sources": {
+    "cam1": {
+      "health": "healthy",
+      "decode": {
+        "current": {
+          "last_ns": 1500000,
+          "drops": 0,
+          "avg_fps": 29.97,
+          "avg_frame_bytes": 45000,
+          "ingest_fps": 29.97
+        },
+        "windows": {
+          "1s":  {"min_ns": 1200000, "max_ns": 2100000, "mean_ns": 1500000, "p95_ns": 1900000},
+          "10s": {"min_ns": 1100000, "max_ns": 2500000, "mean_ns": 1450000, "p95_ns": 2000000},
+          "60s": {"min_ns": 1000000, "max_ns": 3000000, "mean_ns": 1400000, "p95_ns": 2100000}
+        }
+      },
+      "srt": {
+        "rtt_ms": 12.5,
+        "loss_rate_pct": 0.01,
+        "recv_buf_ms": 120.0
+      }
+    }
+  },
+  "pipeline": {
+    "current": {"last_ns": 5000000, "queue_len": 0},
+    "windows": {
+      "1s":  {"min_ns": 4000000, "max_ns": 7000000, "mean_ns": 5000000, "p95_ns": 6500000},
+      "10s": {"min_ns": 3500000, "max_ns": 8000000, "mean_ns": 4800000, "p95_ns": 6800000},
+      "60s": {"min_ns": 3000000, "max_ns": 9000000, "mean_ns": 4600000, "p95_ns": 7000000}
+    },
+    "nodes": {
+      "encode": {
+        "current": {"last_ns": 2000000},
+        "windows": {
+          "1s":  {"min_ns": 1500000, "max_ns": 3000000, "mean_ns": 2000000, "p95_ns": 2800000},
+          "10s": {"min_ns": 1400000, "max_ns": 3500000, "mean_ns": 1900000, "p95_ns": 2900000},
+          "60s": {"min_ns": 1300000, "max_ns": 4000000, "mean_ns": 1850000, "p95_ns": 3000000}
+        }
+      }
+    },
+    "deadline_violations": 0,
+    "proc_dropped": 0,
+    "budget_pct": 21.0,
+    "gpu": null
+  },
+  "e2e": {
+    "current": {"last_ns": 12000000},
+    "windows": {
+      "1s":  {"min_ns": 10000000, "max_ns": 15000000, "mean_ns": 12000000, "p95_ns": 14000000},
+      "10s": {"min_ns": 9000000, "max_ns": 16000000, "mean_ns": 11500000, "p95_ns": 14500000},
+      "60s": {"min_ns": 8000000, "max_ns": 18000000, "mean_ns": 11000000, "p95_ns": 15000000}
+    },
+    "stages": {
+      "decode_queue": {"current": {"last_ns": 500000}, "windows": {"1s": {}, "10s": {}, "60s": {}}},
+      "decode":       {"current": {"last_ns": 1500000}, "windows": {"1s": {}, "10s": {}, "60s": {}}},
+      "sync_wait":    {"current": {"last_ns": 8000000}, "windows": {"1s": {}, "10s": {}, "60s": {}}},
+      "proc_queue":   {"current": {"last_ns": 200000}, "windows": {"1s": {}, "10s": {}, "60s": {}}}
+    }
+  },
+  "audio": {
+    "mode": "passthrough",
+    "mix_cycle": {
+      "current": {"last_ns": 150000},
+      "windows": {
+        "1s":  {"min_ns": 100000, "max_ns": 200000, "mean_ns": 150000, "p95_ns": 180000},
+        "10s": {"min_ns": 90000, "max_ns": 250000, "mean_ns": 145000, "p95_ns": 200000},
+        "60s": {"min_ns": 80000, "max_ns": 300000, "mean_ns": 140000, "p95_ns": 220000}
+      }
+    },
+    "counters": {"output": 168000, "mixed": 168000, "decode_errors": 0, "encode_errors": 0},
+    "loudness": {"momentary_lufs": -23.5, "short_term_lufs": -24.0, "integrated_lufs": -24.0}
+  },
+  "broadcast": {
+    "frames": 108000,
+    "output_fps": 29.97,
+    "gap": {
+      "current": {"max_ns": 33400000},
+      "windows": {"1s": {}, "10s": {}, "60s": {}}
+    }
+  },
+  "output": {
+    "muxer_pts": 3240000000,
+    "srt": {"bytes_written": 0, "overflow_count": 0},
+    "recording": {"active": false}
+  },
+  "frame_sync": {
+    "source_count": 4,
+    "release_fps": 29.97
+  },
+  "baseline": null
+}
+```
+
+When a `baseline` query parameter is provided and matches a saved baseline, the `baseline` field contains a diff:
+
+```json
+{
+  "baseline": {
+    "name": "before-optimization",
+    "saved_at": "2026-03-23T09:00:00Z",
+    "pipeline": {"mean_ns_delta": -500000, "p95_ns_delta": -800000, "pct_change": -10.5},
+    "e2e":      {"mean_ns_delta": -200000, "p95_ns_delta": -400000, "pct_change": -1.8},
+    "mix_cycle": {"mean_ns_delta": -10000, "p95_ns_delta": -20000, "pct_change": -6.7}
+  }
+}
+```
+
+**Example:**
+
+```bash
+# Basic performance snapshot
+curl http://localhost:8081/api/perf \
+  -H "Authorization: Bearer $TOKEN"
+
+# Compare against a saved baseline
+curl "http://localhost:8081/api/perf?baseline=before-optimization" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+---
+
+### POST /api/perf/baseline
+
+Save the current 60-second performance window as a named baseline for future comparison.
+
+**Request Body:**
+
+```json
+{
+  "name": "before-optimization"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | `string` | Yes | Unique name for the baseline snapshot |
+
+**Response:** `204 No Content`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Missing or empty `name` |
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8081/api/perf/baseline \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "before-optimization"}'
+```
+
+---
+
+### DELETE /api/perf/baseline/{name}
+
+Delete a saved performance baseline.
+
+**Path Parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `name` | Baseline name to delete |
+
+**Request Body:** None
+
+**Response:** `204 No Content`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Missing name |
+
+**Example:**
+
+```bash
+curl -X DELETE http://localhost:8081/api/perf/baseline/before-optimization \
   -H "Authorization: Bearer $TOKEN"
 ```
 
