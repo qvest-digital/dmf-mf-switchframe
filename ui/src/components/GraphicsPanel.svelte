@@ -9,6 +9,9 @@
 		graphicsImageUpload, graphicsImageDelete, graphicsSetRect,
 		graphicsTickerStart, graphicsTickerStop, graphicsTickerUpdateText,
 		graphicsTextAnimStart, graphicsTextAnimStop,
+		graphicsLoadHTML5, graphicsUpdateHTML5Data,
+		graphicsHTML5Play, graphicsHTML5Stop, graphicsHTML5Next,
+		graphicsUnloadHTML5,
 		apiCall,
 	} from '$lib/api/switch-api';
 	import { GraphicsPublisher } from '$lib/graphics/publisher';
@@ -23,7 +26,7 @@
 	}
 	let { state: crState, externalSelectedLayerId = null }: Props = $props();
 
-	type SourceMode = 'template' | 'image' | 'ticker' | 'textfx';
+	type SourceMode = 'template' | 'image' | 'ticker' | 'textfx' | 'html5';
 
 	// ── Per-layer state maps ──
 	let layerModes = $state<Record<number, SourceMode>>({});
@@ -109,6 +112,7 @@
 		if (id in layerModes) return layerModes[id];
 		// Fall back to server state for existing layers (page reload, other operator)
 		const layer = layers.find(l => l.id === id);
+		if (layer?.html5Url) return 'html5';
 		if (layer?.imageName) return 'image';
 		return 'template';
 	}
@@ -358,6 +362,45 @@
 			notify('error', 'Text animation stop failed');
 		}
 	}
+
+	// ── HTML5 handlers ──
+	async function handleHTML5Load(id: number, url: string) {
+		try {
+			await graphicsLoadHTML5(id, url);
+			layerModes = { ...layerModes, [id]: 'html5' };
+		} catch {
+			notify('error', 'HTML5 template load failed');
+		}
+	}
+
+	async function handleHTML5UpdateData(id: number, data: Record<string, unknown>) {
+		try {
+			await graphicsUpdateHTML5Data(id, data);
+		} catch {
+			notify('error', 'HTML5 data update failed');
+		}
+	}
+
+	function handleHTML5Play(id: number) {
+		apiCall(graphicsHTML5Play(id), 'HTML5 play failed');
+	}
+
+	function handleHTML5Stop(id: number) {
+		apiCall(graphicsHTML5Stop(id), 'HTML5 stop failed');
+	}
+
+	function handleHTML5Next(id: number) {
+		apiCall(graphicsHTML5Next(id), 'HTML5 next failed');
+	}
+
+	async function handleHTML5Unload(id: number) {
+		try {
+			await graphicsUnloadHTML5(id);
+			layerModes = { ...layerModes, [id]: 'template' };
+		} catch {
+			notify('error', 'HTML5 unload failed');
+		}
+	}
 </script>
 
 <div class="graphics-panel">
@@ -415,6 +458,12 @@
 					onTextAnimStart={(cfg) => handleTextAnimStart(selectedLayer.id, cfg)}
 					onTextAnimStop={() => handleTextAnimStop(selectedLayer.id)}
 					textAnimActive={textAnimRunning[selectedLayer.id] ?? false}
+					onHTML5Load={(url) => handleHTML5Load(selectedLayer.id, url)}
+					onHTML5UpdateData={(data) => handleHTML5UpdateData(selectedLayer.id, data)}
+					onHTML5Play={() => handleHTML5Play(selectedLayer.id)}
+					onHTML5Stop={() => handleHTML5Stop(selectedLayer.id)}
+					onHTML5Next={() => handleHTML5Next(selectedLayer.id)}
+					onHTML5Unload={() => handleHTML5Unload(selectedLayer.id)}
 				/>
 			{/key}
 		{:else}

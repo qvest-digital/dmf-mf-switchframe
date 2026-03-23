@@ -35,7 +35,7 @@
 		fadeDurationMs?: number;
 	}
 
-	type SourceMode = 'template' | 'image' | 'ticker' | 'textfx';
+	type SourceMode = 'template' | 'image' | 'ticker' | 'textfx' | 'html5';
 
 	interface Props {
 		layer: GraphicsLayerState;
@@ -68,6 +68,12 @@
 		onTextAnimStart: (config: TextAnimStartConfig) => void;
 		onTextAnimStop: () => void;
 		textAnimActive: boolean;
+		onHTML5Load: (url: string) => void;
+		onHTML5UpdateData: (data: Record<string, unknown>) => void;
+		onHTML5Play: () => void;
+		onHTML5Stop: () => void;
+		onHTML5Next: () => void;
+		onHTML5Unload: () => void;
 	}
 
 	let {
@@ -78,6 +84,7 @@
 		onImageUpload, onImageDelete, onRectChange,
 		onTickerStart, onTickerStop, onTickerUpdateText, tickerActive,
 		onTextAnimStart, onTextAnimStop, textAnimActive,
+		onHTML5Load, onHTML5UpdateData, onHTML5Play, onHTML5Stop, onHTML5Next, onHTML5Unload,
 	}: Props = $props();
 
 	let previewCanvas = $state<HTMLCanvasElement | null>(null);
@@ -101,6 +108,10 @@
 	let textAnimFadeDurationMs = $state(200);
 
 	let fileInput = $state<HTMLInputElement | null>(null);
+
+	// HTML5 local config
+	let html5Url = $state('');
+	let html5DataJson = $state('{}');
 
 	const tpl = $derived(builtinTemplates[templateId]);
 	const busy = $derived(
@@ -159,7 +170,50 @@
 		{ id: 'image', label: 'IMAGE' },
 		{ id: 'ticker', label: 'TICKER' },
 		{ id: 'textfx', label: 'TEXT FX' },
+		{ id: 'html5', label: 'HTML5' },
 	];
+
+	function html5FormatColor(format?: string): string {
+		switch (format) {
+			case 'ograf': return '#16a34a';
+			case 'casparcg': return '#3b82f6';
+			default: return '#6b7280';
+		}
+	}
+
+	function html5FormatLabel(format?: string): string {
+		switch (format) {
+			case 'ograf': return 'OGraf';
+			case 'casparcg': return 'CasparCG';
+			default: return 'Unknown';
+		}
+	}
+
+	function html5StatusColor(status?: string): string {
+		switch (status) {
+			case 'loading': return '#eab308';
+			case 'ready': return '#16a34a';
+			case 'playing': return '#06b6d4';
+			case 'stopped': return '#6b7280';
+			case 'error': return '#dc2626';
+			default: return '#6b7280';
+		}
+	}
+
+	function handleHTML5Load() {
+		if (html5Url.trim()) {
+			onHTML5Load(html5Url.trim());
+		}
+	}
+
+	function handleHTML5UpdateData() {
+		try {
+			const data = JSON.parse(html5DataJson);
+			onHTML5UpdateData(data);
+		} catch {
+			// Invalid JSON - ignore
+		}
+	}
 </script>
 
 <div class="detail-pane">
@@ -180,6 +234,10 @@
 					<span class="mode-badge live">LIVE</span>
 				{:else if m.id === 'textfx' && textAnimActive}
 					<span class="mode-badge live">LIVE</span>
+				{:else if m.id === 'html5' && layer.html5Status === 'playing'}
+					<span class="mode-badge live">LIVE</span>
+				{:else if m.id === 'html5' && layer.html5Url}
+					<span class="mode-badge">&#10003;</span>
 				{/if}
 			</button>
 		{/each}
@@ -329,7 +387,7 @@
 				</div>
 
 			<!-- ═══════════════ TEXT FX MODE ═══════════════ -->
-			{:else}
+			{:else if sourceMode === 'textfx'}
 				<div class="textfx-section">
 					<select
 						class="ctl-select"
@@ -386,6 +444,60 @@
 							})}>START</button>
 						{/if}
 					</div>
+				</div>
+
+			<!-- ═══════════════ HTML5 MODE ═══════════════ -->
+			{:else if sourceMode === 'html5'}
+				<div class="html5-section">
+					<div class="html5-url-row">
+						<input
+							class="field-inp html5-url"
+							type="text"
+							placeholder="file:///path/to/template.html or http://..."
+							bind:value={html5Url}
+							aria-label="HTML5 template URL"
+							onkeydown={(e) => { if (e.key === 'Enter') handleHTML5Load(); }}
+						/>
+						<button class="act-btn upload" onclick={handleHTML5Load}>LOAD</button>
+					</div>
+
+					{#if layer.html5Url}
+						<div class="html5-status-row">
+							<span class="html5-badge" style="background: {html5FormatColor(layer.html5Format)}">
+								{html5FormatLabel(layer.html5Format)}
+							</span>
+							<span class="html5-badge" style="background: {html5StatusColor(layer.html5Status)}">
+								{layer.html5Status ?? 'unknown'}
+							</span>
+							<button class="act-btn del html5-unload" onclick={onHTML5Unload}>UNLOAD</button>
+						</div>
+
+						{#if layer.html5Status === 'ready' || layer.html5Status === 'playing'}
+							<div class="html5-data-section">
+								<textarea
+									class="html5-data-input"
+									placeholder='{"key": "value"}'
+									bind:value={html5DataJson}
+									aria-label="HTML5 template data (JSON)"
+									rows="3"
+								></textarea>
+								<button class="act-btn upload" onclick={handleHTML5UpdateData}>UPDATE</button>
+							</div>
+
+							<div class="action-grid">
+								<button class="act-btn anim-start" onclick={onHTML5Play} disabled={layer.html5Status === 'playing'}>PLAY</button>
+								<button class="act-btn anim-stop" onclick={onHTML5Stop} disabled={layer.html5Status !== 'playing'}>STOP</button>
+								<button class="act-btn fly" onclick={onHTML5Next}>NEXT</button>
+							</div>
+						{/if}
+
+						<div class="action-grid">
+							<button class="act-btn on" onclick={onCutOn} disabled={layer.active || busy}>CUT ON</button>
+							<button class="act-btn auto-on" onclick={onAutoOn} disabled={layer.active || busy}>AUTO ON</button>
+							<button class="act-btn off" onclick={onCutOff} disabled={!layer.active || busy}>CUT OFF</button>
+							<button class="act-btn auto-off" onclick={onAutoOff} disabled={!layer.active || busy}>AUTO OFF</button>
+						</div>
+					{/if}
 				</div>
 			{/if}
 
@@ -981,5 +1093,69 @@
 		width: 12px;
 		height: 12px;
 		accent-color: var(--accent-blue);
+	}
+
+	/* ── HTML5 section ── */
+	.html5-section {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.html5-url-row {
+		display: flex;
+		gap: 4px;
+		align-items: center;
+	}
+
+	.html5-url {
+		flex: 1;
+	}
+
+	.html5-status-row {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		flex-wrap: wrap;
+	}
+
+	.html5-badge {
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		color: #fff;
+		padding: 1px 6px;
+		border-radius: 3px;
+		white-space: nowrap;
+	}
+
+	.html5-unload {
+		font-size: var(--text-2xs);
+		padding: 2px 6px;
+		margin-left: auto;
+	}
+
+	.html5-data-section {
+		display: flex;
+		flex-direction: column;
+		gap: 3px;
+	}
+
+	.html5-data-input {
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		background: var(--bg-base);
+		color: var(--text-primary);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		padding: 4px 6px;
+		width: 100%;
+		resize: vertical;
+		min-height: 48px;
+	}
+
+	.html5-data-input:focus {
+		border-color: var(--accent-blue);
+		outline: none;
 	}
 </style>

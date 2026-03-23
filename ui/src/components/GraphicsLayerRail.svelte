@@ -28,6 +28,10 @@
 	};
 
 	function abbrev(id: number): string {
+		// Check for HTML5 mode first
+		const layer = layers.find(l => l.id === id);
+		if (layer?.html5Status) return 'H5';
+
 		const tplId = layerTemplateNames[id] ?? 'lower-third';
 		return tplAbbrev[tplId] ?? tplId.slice(0, 6);
 	}
