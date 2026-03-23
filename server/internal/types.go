@@ -210,7 +210,8 @@ type DestinationInfo struct {
 	Name           string `json:"name,omitempty"`
 	Type           string `json:"type"`
 	Address        string `json:"address,omitempty"`
-	Port           int    `json:"port"`
+	Port           int    `json:"port,omitempty"`
+	URL            string `json:"url,omitempty"` // RTMP destinations
 	State          string `json:"state"`
 	BytesWritten   int64  `json:"bytesWritten,omitempty"`
 	DroppedPackets int64  `json:"droppedPackets,omitempty"`

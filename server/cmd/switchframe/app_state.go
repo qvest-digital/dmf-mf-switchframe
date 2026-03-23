@@ -92,6 +92,7 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 				Type:           d.Config.Type,
 				Address:        d.Config.Address,
 				Port:           d.Config.Port,
+				URL:            d.Config.URL,
 				State:          d.State,
 				BytesWritten:   d.BytesWritten,
 				DroppedPackets: d.DroppedPackets,

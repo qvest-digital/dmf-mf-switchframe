@@ -294,22 +294,12 @@
 </script>
 
 <div class="transition-controls">
-	<div class="transition-buttons">
-		<button class="btn cut" class:confirming={pendingConfirm === 'cut'} onclick={() => apiCall(cut(crState.previewSource), 'Cut failed')} disabled={!crState.previewSource}>
-			CUT
-			<span class="shortcut">Space</span>
-		</button>
-		<button class="btn auto" onclick={handleAuto} disabled={autoDisabled}>
-			AUTO
-			<span class="shortcut">Enter</span>
-		</button>
-		<button class="btn ftb" class:active={crState.ftbActive} onclick={handleFTB} disabled={ftbDisabled}>
-			FTB
-			<span class="shortcut">F1</span>
-		</button>
-	</div>
-
-	<div class="transition-options">
+	<div class="tc-left">
+		<div class="transition-buttons">
+			<button class="btn cut" class:confirming={pendingConfirm === 'cut'} onclick={() => apiCall(cut(crState.previewSource), 'Cut failed')} disabled={!crState.previewSource}>CUT</button>
+			<button class="btn auto" onclick={handleAuto} disabled={autoDisabled}>AUTO</button>
+			<button class="btn ftb" class:active={crState.ftbActive} onclick={handleFTB} disabled={ftbDisabled}>FTB</button>
+		</div>
 		<div class="type-selector" role="radiogroup" aria-label="Transition type">
 			<label class="type-option" class:selected={transType === 'mix'}>
 				<input type="radio" name="transType" value="mix" bind:group={transType} />
@@ -328,7 +318,6 @@
 				Sting
 			</label>
 		</div>
-
 		<div class="type-specific">
 			{#if transType === 'stinger'}
 				<div class="stinger-controls">
@@ -345,32 +334,14 @@
 								<option value="" disabled>None</option>
 							{/if}
 						</select>
-						<button
-							class="stinger-action-btn"
-							onclick={() => fileInput?.click()}
-							disabled={uploading}
-							title="Upload stinger (.zip)"
-							aria-label="Upload stinger"
-						>{uploading ? '…' : '↑'}</button>
+						<button class="stinger-action-btn" onclick={() => fileInput?.click()} disabled={uploading} title="Upload stinger (.zip)" aria-label="Upload stinger">{uploading ? '…' : '↑'}</button>
 						{#if stingerName}
-							<button
-								class="stinger-action-btn stinger-delete-btn"
-								onclick={() => showDeleteConfirm = stingerName}
-								title="Delete {stingerName}"
-								aria-label="Delete stinger"
-							>✕</button>
+							<button class="stinger-action-btn stinger-delete-btn" onclick={() => showDeleteConfirm = stingerName} title="Delete {stingerName}" aria-label="Delete stinger">✕</button>
 						{/if}
 					{/if}
-					<input
-						bind:this={fileInput}
-						type="file"
-						accept=".zip"
-						onchange={handleUpload}
-						style="display:none"
-					/>
+					<input bind:this={fileInput} type="file" accept=".zip" onchange={handleUpload} style="display:none" />
 				</div>
 			{/if}
-
 			{#if transType === 'wipe'}
 				<div class="wipe-directions" role="radiogroup" aria-label="Wipe direction">
 					<button class="wipe-dir-btn" class:selected={wipeDirection === 'h-left'} onclick={() => wipeDirection = 'h-left'} title="Horizontal left-to-right">&#8594;</button>
@@ -382,7 +353,8 @@
 				</div>
 			{/if}
 		</div>
-
+	</div>
+	<div class="tc-right">
 		<div class="timing-row">
 			<select class="duration-select" aria-label="Transition duration" bind:value={durationMs}>
 				<option value={500}>0.5s</option>
@@ -391,7 +363,6 @@
 				<option value={2000}>2.0s</option>
 				<option value={3000}>3.0s</option>
 			</select>
-
 			<select class="easing-select" aria-label="Easing curve" bind:value={easingPreset}>
 				<option value="smoothstep">Smooth</option>
 				<option value="linear">Linear</option>
@@ -402,45 +373,31 @@
 				<option value="custom">Custom</option>
 			</select>
 		</div>
-
 		{#if easingPreset === 'custom'}
 			<div class="custom-bezier">
-				<label class="bezier-input">
-					x1
-					<input type="number" min="0" max="1" step="0.01" bind:value={customBezier.x1} />
-				</label>
-				<label class="bezier-input">
-					y1
-					<input type="number" min="-2" max="2" step="0.01" bind:value={customBezier.y1} />
-				</label>
-				<label class="bezier-input">
-					x2
-					<input type="number" min="0" max="1" step="0.01" bind:value={customBezier.x2} />
-				</label>
-				<label class="bezier-input">
-					y2
-					<input type="number" min="-2" max="2" step="0.01" bind:value={customBezier.y2} />
-				</label>
+				<label class="bezier-input">x1 <input type="number" min="0" max="1" step="0.01" bind:value={customBezier.x1} /></label>
+				<label class="bezier-input">y1 <input type="number" min="-2" max="2" step="0.01" bind:value={customBezier.y1} /></label>
+				<label class="bezier-input">x2 <input type="number" min="0" max="1" step="0.01" bind:value={customBezier.x2} /></label>
+				<label class="bezier-input">y2 <input type="number" min="-2" max="2" step="0.01" bind:value={customBezier.y2} /></label>
 			</div>
 		{/if}
-	</div>
-
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div
-		class="scrubber"
-		role="slider"
-		aria-label="Transition position"
-		aria-valuemin={0}
-		aria-valuemax={1}
-		aria-valuenow={tbarValue}
-		tabindex="0"
-		onpointerdown={handleScrubberPointerDown}
-		onkeydown={handleScrubberKeydown}
-		onwheel={handleWheel}
-	>
-		<div class="scrubber-track" bind:this={scrubberTrack}>
-			<div class="scrubber-fill" style="width: {tbarValue * 100}%"></div>
-			<div class="scrubber-thumb" style="left: {tbarValue * 100}%"></div>
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div
+			class="scrubber"
+			role="slider"
+			aria-label="Transition position"
+			aria-valuemin={0}
+			aria-valuemax={1}
+			aria-valuenow={tbarValue}
+			tabindex="0"
+			onpointerdown={handleScrubberPointerDown}
+			onkeydown={handleScrubberKeydown}
+			onwheel={handleWheel}
+		>
+			<div class="scrubber-track" bind:this={scrubberTrack}>
+				<div class="scrubber-fill" style="width: {tbarValue * 100}%"></div>
+				<div class="scrubber-thumb" style="left: {tbarValue * 100}%"></div>
+			</div>
 		</div>
 	</div>
 </div>
@@ -448,13 +405,27 @@
 <style>
 	.transition-controls {
 		display: flex;
-		flex-direction: column;
-		gap: 3px;
+		gap: 6px;
 		padding: 0 6px;
 		border-left: 1px solid var(--border-default);
 		margin-left: auto;
-		width: 220px;
 		flex-shrink: 0;
+		align-items: stretch;
+	}
+
+	.tc-left {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		justify-content: center;
+	}
+
+	.tc-right {
+		display: flex;
+		flex-direction: column;
+		gap: 3px;
+		justify-content: center;
+		min-width: 110px;
 	}
 
 	.transition-buttons {
@@ -463,7 +434,7 @@
 	}
 
 	.btn {
-		padding: 4px 12px;
+		padding: 6px 14px;
 		border: 1.5px solid var(--border-default);
 		border-radius: var(--radius-sm);
 		background: var(--bg-elevated);
@@ -474,6 +445,7 @@
 		font-size: var(--text-sm);
 		letter-spacing: 0.04em;
 		position: relative;
+		line-height: 1.2;
 		transition:
 			border-color var(--transition-fast),
 			background var(--transition-fast),
@@ -524,22 +496,6 @@
 		color: #000;
 		border-color: var(--accent-orange);
 		box-shadow: 0 0 12px rgba(245, 158, 11, 0.4);
-	}
-
-	.shortcut {
-		display: block;
-		font-size: var(--text-2xs);
-		font-family: var(--font-mono);
-		font-weight: 400;
-		opacity: 0.3;
-		margin-top: 1px;
-		letter-spacing: 0;
-	}
-
-	.transition-options {
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
 	}
 
 	.type-specific:empty {
@@ -810,17 +766,17 @@
 	.scrubber {
 		cursor: grab;
 		touch-action: none;
-		padding: 6px 8px;
+		padding: 4px 0;
 	}
 
 	.scrubber:active { cursor: grabbing; }
 
 	.scrubber-track {
-		height: 10px;
+		height: 8px;
 		width: 100%;
 		background: var(--bg-control);
 		border: 1px solid var(--border-subtle);
-		border-radius: 5px;
+		border-radius: 4px;
 		position: relative;
 	}
 
@@ -830,15 +786,15 @@
 		left: 0;
 		bottom: 0;
 		background: var(--accent-yellow);
-		border-radius: 5px 0 0 5px;
+		border-radius: 4px 0 0 4px;
 		transition: none;
 	}
 
 	.scrubber-thumb {
 		position: absolute;
-		top: -5px;
-		width: 20px;
-		height: 20px;
+		top: -4px;
+		width: 16px;
+		height: 16px;
 		background: var(--text-primary);
 		border: 2px solid var(--bg-surface);
 		border-radius: 50%;

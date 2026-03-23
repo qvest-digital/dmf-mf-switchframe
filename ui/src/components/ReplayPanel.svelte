@@ -451,11 +451,17 @@
 	.right-col {
 		display: flex;
 		flex-direction: column;
-		gap: 5px;
+		gap: 4px;
 		flex: 1;
 		min-width: 0;
+		min-height: 0;
 		justify-content: center;
+		overflow-y: auto;
+		overflow-x: hidden;
 	}
+
+	.right-col::-webkit-scrollbar { width: 3px; }
+	.right-col::-webkit-scrollbar-thumb { background: var(--border-subtle); border-radius: 2px; }
 
 	/* ── Transport ── */
 	.transport-row { display: flex; gap: 3px; align-items: center; }

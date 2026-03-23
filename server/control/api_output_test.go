@@ -613,13 +613,41 @@ func TestAddDestination(t *testing.T) {
 func TestAddDestination_InvalidType(t *testing.T) {
 	api, _ := setupOutputTestAPI(t)
 
-	body := `{"type":"rtmp","port":9000}`
+	body := `{"type":"hls","port":9000}`
 	req := httptest.NewRequest("POST", "/api/output/destinations", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestAddDestination_RTMP(t *testing.T) {
+	api, mock := setupOutputTestAPI(t)
+
+	body := `{"type":"rtmp","url":"rtmp://a.rtmp.youtube.com/live2/test-key","name":"YouTube Live"}`
+	req := httptest.NewRequest("POST", "/api/output/destinations", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
+	require.Equal(t, "rtmp", mock.lastDestConfig.Type)
+	require.Equal(t, "rtmp://a.rtmp.youtube.com/live2/test-key", mock.lastDestConfig.URL)
+	require.Equal(t, "YouTube Live", mock.lastDestConfig.Name)
+}
+
+func TestAddDestination_RTMP_MissingURL(t *testing.T) {
+	api, _ := setupOutputTestAPI(t)
+
+	body := `{"type":"rtmp","name":"YouTube"}`
+	req := httptest.NewRequest("POST", "/api/output/destinations", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Contains(t, rec.Body.String(), "url is required")
 }
 
 func TestAddDestination_MissingPort(t *testing.T) {

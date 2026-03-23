@@ -828,10 +828,10 @@
 		display: flex;
 		align-items: stretch;
 		gap: 4px;
-		padding: 3px 8px;
+		padding: 4px 8px;
 		border-top: 1px solid var(--border-default);
 		background: var(--bg-surface);
-		height: 68px;
+		height: 82px;
 		flex-shrink: 0;
 	}
 
@@ -857,6 +857,7 @@
 		border-top: 1px solid var(--border-default);
 		background: var(--bg-surface);
 		height: clamp(220px, 30vh, 380px);
+		overflow: hidden;
 	}
 
 	.tab-panel {

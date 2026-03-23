@@ -14,6 +14,7 @@ var (
 	ErrRecorderNotActive = errors.New("output: recorder not active")
 	ErrSRTActive         = errors.New("output: SRT already active")
 	ErrSRTNotActive      = errors.New("output: SRT not active")
+	ErrRTMPNotAvailable  = errors.New("output: RTMP not available (built without FFmpeg support)")
 )
 
 // AdapterState represents the lifecycle state of an output adapter.
@@ -68,4 +69,9 @@ type SRTConfig struct {
 	Port     int    `json:"port"`
 	Latency  int    `json:"latency,omitempty"`
 	StreamID string `json:"streamID,omitempty"`
+}
+
+// RTMPCallerConfig holds configuration for RTMP caller (push mode).
+type RTMPCallerConfig struct {
+	URL string // full RTMP URL, e.g. rtmp://a.rtmp.youtube.com/live2/stream-key
 }

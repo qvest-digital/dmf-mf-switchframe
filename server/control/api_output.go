@@ -201,22 +201,34 @@ func (a *API) handleAddDestination(w http.ResponseWriter, r *http.Request) {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if config.Type != "srt-caller" && config.Type != "srt-listener" {
-		httperr.Write(w, http.StatusBadRequest, "type must be 'srt-caller' or 'srt-listener'")
-		return
-	}
-	if config.Port <= 0 {
-		httperr.Write(w, http.StatusBadRequest, "port is required")
-		return
-	}
-	if config.Type == "srt-listener" && a.allowedOutputPorts != nil {
-		if !a.allowedOutputPorts[config.Port] {
-			httperr.Write(w, http.StatusBadRequest, fmt.Sprintf("port %d is not in the allowed output port range", config.Port))
+	switch config.Type {
+	case "srt-caller":
+		if config.Address == "" {
+			httperr.Write(w, http.StatusBadRequest, "address is required for srt-caller")
 			return
 		}
-	}
-	if config.Type == "srt-caller" && config.Address == "" {
-		httperr.Write(w, http.StatusBadRequest, "address is required for srt-caller")
+		if config.Port <= 0 {
+			httperr.Write(w, http.StatusBadRequest, "port is required")
+			return
+		}
+	case "srt-listener":
+		if config.Port <= 0 {
+			httperr.Write(w, http.StatusBadRequest, "port is required")
+			return
+		}
+		if a.allowedOutputPorts != nil {
+			if !a.allowedOutputPorts[config.Port] {
+				httperr.Write(w, http.StatusBadRequest, fmt.Sprintf("port %d is not in the allowed output port range", config.Port))
+				return
+			}
+		}
+	case "rtmp":
+		if config.URL == "" {
+			httperr.Write(w, http.StatusBadRequest, "url is required for rtmp")
+			return
+		}
+	default:
+		httperr.Write(w, http.StatusBadRequest, "type must be 'srt-caller', 'srt-listener', or 'rtmp'")
 		return
 	}
 	id, err := a.outputMgr.AddDestination(config)

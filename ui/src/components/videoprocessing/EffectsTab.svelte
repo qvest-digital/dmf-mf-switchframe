@@ -71,7 +71,6 @@
 		display: flex;
 		flex-direction: column;
 		min-height: 0;
-		flex-shrink: 0;
 	}
 
 	.section-toggle {
@@ -133,7 +132,7 @@
 	}
 
 	.stmap-content {
-		overflow: visible;
+		overflow: auto;
 	}
 
 	/* Override STMapPanel's own padding/height since it's nested */

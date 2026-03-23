@@ -328,7 +328,103 @@ describe('IOPanel', () => {
 		const { container } = render(IOPanel, {
 			props: { state: makeState(), visible: true },
 		});
-		// The SRT source should show bitrate
 		expect(container.textContent).toContain('5.1 Mbps');
+	});
+
+	it('shows RTMP destination with correct badge and hostname', () => {
+		const state = makeState({
+			destinations: [
+				{
+					id: 'rtmp-1',
+					name: '',
+					type: 'rtmp',
+					url: 'rtmp://a.rtmp.youtube.com/live2/xxxx-xxxx',
+					state: 'connected',
+					bytesWritten: 500000000,
+				},
+			],
+		});
+		const { container } = render(IOPanel, {
+			props: { state, visible: true },
+		});
+		expect(container.textContent).toContain('RTMP');
+		expect(container.textContent).toContain('a.rtmp.youtube.com');
+		expect(container.textContent).toContain('500.0 MB');
+	});
+
+	it('shows RTMP destination name when provided', () => {
+		const state = makeState({
+			destinations: [
+				{
+					id: 'rtmp-2',
+					name: 'YouTube Live',
+					type: 'rtmp',
+					url: 'rtmp://a.rtmp.youtube.com/live2/xxxx-xxxx',
+					state: 'active',
+					bytesWritten: 0,
+				},
+			],
+		});
+		const { container } = render(IOPanel, {
+			props: { state, visible: true },
+		});
+		expect(container.textContent).toContain('YouTube Live');
+	});
+
+	it('masks RTMP stream key in expanded detail panel with reveal toggle', async () => {
+		const state = makeState({
+			destinations: [
+				{
+					id: 'rtmp-3',
+					type: 'rtmp',
+					url: 'rtmp://live.twitch.tv/app/live_12345',
+					state: 'connected',
+					bytesWritten: 100000,
+				},
+			],
+		});
+		const { container } = render(IOPanel, {
+			props: { state, visible: true },
+		});
+		const destRow = container.querySelector('.dest-row');
+		expect(destRow).toBeTruthy();
+		const rowHeader = destRow!.querySelector('.row-header');
+		await fireEvent.click(rowHeader!);
+		expect(destRow!.textContent).toContain('RTMP (push)');
+		// Stream key should be masked by default
+		expect(destRow!.textContent).toContain('rtmp://live.twitch.tv/app/****');
+		expect(destRow!.textContent).not.toContain('live_12345');
+		// Click "Show" to reveal
+		const showBtn = destRow!.querySelector('.reveal-btn');
+		expect(showBtn).toBeTruthy();
+		expect(showBtn!.textContent).toContain('Show');
+		await fireEvent.click(showBtn!);
+		expect(destRow!.textContent).toContain('rtmp://live.twitch.tv/app/live_12345');
+		expect(showBtn!.textContent).toContain('Hide');
+	});
+
+	it('shows RTMP connection guide', () => {
+		const { container } = render(IOPanel, {
+			props: { state: makeState(), visible: true },
+		});
+		expect(container.textContent).toContain('RTMP Output');
+		expect(container.textContent).toContain('rtmp://a.rtmp.youtube.com/live2/YOUR-STREAM-KEY');
+	});
+
+	it('shows RTMP option in destination type dropdown', async () => {
+		const { container } = render(IOPanel, {
+			props: { state: makeState(), visible: true },
+		});
+		const addBtn = container.querySelector('.add-btn');
+		const addDestBtn = Array.from(container.querySelectorAll('.add-btn')).find(
+			(b) => b.textContent?.includes('Add Destination')
+		);
+		expect(addDestBtn).toBeTruthy();
+		await fireEvent.click(addDestBtn!);
+		const select = container.querySelector('.add-form select');
+		expect(select).toBeTruthy();
+		const options = select!.querySelectorAll('option');
+		const optionValues = Array.from(options).map((o) => o.value);
+		expect(optionValues).toContain('rtmp');
 	});
 });

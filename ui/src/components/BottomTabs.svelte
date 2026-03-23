@@ -101,37 +101,39 @@
 	.tab-bar {
 		display: flex;
 		gap: 0;
-		background: var(--bg-base);
+		background: var(--bg-surface);
 		border-bottom: 1px solid var(--border-default);
 		flex-shrink: 0;
-		height: 25px;
+		height: 30px;
 	}
 
 	.tab {
 		font-family: var(--font-ui);
-		font-size: var(--text-xs);
+		font-size: var(--text-sm);
 		font-weight: 500;
-		color: var(--text-tertiary);
+		color: var(--text-secondary);
 		background: transparent;
 		border: none;
 		border-bottom: 2px solid transparent;
-		padding: 0 12px;
+		padding: 0 14px;
 		cursor: pointer;
 		transition: color var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast);
 		display: flex;
 		align-items: center;
 		gap: 4px;
+		letter-spacing: 0.01em;
 	}
 
 	.tab:hover {
-		color: var(--text-secondary);
-		background: rgba(255, 255, 255, 0.02);
+		color: var(--text-primary);
+		background: rgba(255, 255, 255, 0.04);
 	}
 
 	.tab.active {
 		color: var(--text-primary);
+		font-weight: 600;
 		border-bottom-color: var(--accent-yellow);
-		background: rgba(255, 255, 255, 0.02);
+		background: rgba(255, 255, 255, 0.03);
 	}
 
 	.replay-dot {

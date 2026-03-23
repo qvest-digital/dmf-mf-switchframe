@@ -220,7 +220,7 @@
 	}
 
 	.thumb-wrap {
-		width: 80px;
+		width: 100px;
 		aspect-ratio: 16 / 9;
 		border-radius: var(--radius-xs);
 		overflow: hidden;
@@ -296,7 +296,7 @@
 		gap: 2px;
 		padding: 0 1px;
 		min-width: 0;
-		width: 80px;
+		width: 100px;
 	}
 
 	.tile-num {

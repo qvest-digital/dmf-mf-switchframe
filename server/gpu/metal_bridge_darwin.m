@@ -780,6 +780,14 @@ VTEncoderRef metal_vt_encoder_create(int width, int height, int fps_num, int fps
     }
     VTSessionSetProperty(session, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse);
 
+    // Force immediate output — no internal frame buffering for rate-control
+    // lookahead. Without this, VT may hold frames and introduce variable
+    // latency (7ms–238ms observed), stalling the GPU pipeline.
+    int maxDelay = 0;
+    CFNumberRef delayRef = CFNumberCreate(NULL, kCFNumberIntType, &maxDelay);
+    VTSessionSetProperty(session, kVTCompressionPropertyKey_MaxFrameDelayCount, delayRef);
+    CFRelease(delayRef);
+
     // BT.709 colorspace signaling
     VTSessionSetProperty(session, kVTCompressionPropertyKey_ColorPrimaries, kCVImageBufferColorPrimaries_ITU_R_709_2);
     VTSessionSetProperty(session, kVTCompressionPropertyKey_TransferFunction, kCVImageBufferTransferFunction_ITU_R_709_2);

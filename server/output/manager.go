@@ -391,13 +391,22 @@ func (m *Manager) AddDestination(config DestinationConfig) (string, error) {
 		if config.Address == "" {
 			return "", errors.New("address is required for srt-caller")
 		}
+		if config.Port <= 0 {
+			return "", errors.New("port is required")
+		}
 	case "srt-listener":
-		// No address needed.
+		if config.Port <= 0 {
+			return "", errors.New("port is required")
+		}
+	case "rtmp":
+		if config.URL == "" {
+			return "", errors.New("url is required for rtmp")
+		}
+		if len(config.URL) < 8 || (config.URL[:7] != "rtmp://" && config.URL[:8] != "rtmps://") {
+			return "", errors.New("url must start with rtmp:// or rtmps://")
+		}
 	default:
 		return "", fmt.Errorf("unsupported destination type: %s", config.Type)
-	}
-	if config.Port <= 0 {
-		return "", errors.New("port is required")
 	}
 
 	id := generateDestinationID()
@@ -559,6 +568,25 @@ func (m *Manager) StartDestination(id string) error {
 			listener.OnConnect(m.onMuxStart)
 		}
 		adapter = listener
+
+	case "rtmp":
+		rtmpCaller, err := NewRTMPCaller(RTMPCallerConfig{
+			URL: dest.config.URL,
+		})
+		if err != nil {
+			dest.mu.Unlock()
+			m.mu.Unlock()
+			return fmt.Errorf("create RTMP adapter: %w", err)
+		}
+		rtmpCaller.onReconnect = func() {
+			m.mu.Lock()
+			fn := m.onState
+			m.mu.Unlock()
+			if fn != nil {
+				fn()
+			}
+		}
+		adapter = rtmpCaller
 	}
 
 	if err := adapter.Start(m.ctx); err != nil {
@@ -834,7 +862,10 @@ func (m *Manager) rebuildAdaptersLocked() []*AsyncAdapter {
 			// Use destination ID as key to avoid collisions with legacy adapter IDs.
 			key := "dest:" + id
 			raw[key] = adapter
-			srtIDs[key] = true
+			// Only SRT destinations use CBR pacing; RTMP uses TCP flow control.
+			if dest.config.Type == "srt-caller" || dest.config.Type == "srt-listener" {
+				srtIDs[key] = true
+			}
 		}
 		dest.mu.Unlock()
 	}

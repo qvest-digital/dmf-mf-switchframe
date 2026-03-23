@@ -57,9 +57,10 @@
 
 	// --- Add Destination form state ---
 	let newDestName = $state('');
-	let newDestType = $state<'srt-caller' | 'srt-listener'>('srt-caller');
+	let newDestType = $state<'srt-caller' | 'srt-listener' | 'rtmp'>('srt-caller');
 	let newDestAddress = $state('');
 	let newDestPort = $state(0);
+	let newDestURL = $state('');
 	let newDestStreamID = $state('');
 	let newDestLatency = $state(120);
 	let newDestSCTE35 = $state(true);
@@ -67,6 +68,27 @@
 	// --- Inline confirmation ---
 	let confirmingDeleteSource = $state<string | null>(null);
 	let confirmingDeleteDest = $state<string | null>(null);
+
+	// --- RTMP URL reveal toggle ---
+	let revealedURLs = $state<Set<string>>(new Set());
+
+	function maskRTMPUrl(url: string): string {
+		const parts = url.split('/');
+		if (parts.length >= 4) {
+			return parts.slice(0, -1).join('/') + '/****';
+		}
+		return url;
+	}
+
+	function toggleRevealURL(destId: string) {
+		const next = new Set(revealedURLs);
+		if (next.has(destId)) {
+			next.delete(destId);
+		} else {
+			next.add(destId);
+		}
+		revealedURLs = next;
+	}
 
 	// --- Editable fields ---
 	let editLatency = $state<Record<string, number>>({});
@@ -203,7 +225,28 @@
 	function destTypeBadge(dest: DestinationInfo): string {
 		if (dest.type === 'srt-caller') return 'SRT\u2192';
 		if (dest.type === 'srt-listener') return 'SRT\u2190';
+		if (dest.type === 'rtmp') return 'RTMP';
 		return dest.type;
+	}
+
+	// --- Destination type badge CSS class ---
+	function destTypeBadgeClass(dest: DestinationInfo): string {
+		if (dest.type === 'rtmp') return 'type-rtmp';
+		return 'type-srt';
+	}
+
+	// --- Destination display label (row header) ---
+	function destDisplayLabel(dest: DestinationInfo): string {
+		if (dest.name) return dest.name;
+		if (dest.type === 'rtmp' && dest.url) {
+			try {
+				const u = new URL(dest.url);
+				return u.hostname;
+			} catch {
+				return dest.url;
+			}
+		}
+		return `${dest.address ?? ''}:${dest.port ?? ''}`;
 	}
 
 	// --- Destination state class ---
@@ -247,21 +290,30 @@
 	}
 
 	async function handleCreateDest() {
-		const config: DestinationConfig = {
-			type: newDestType,
-			address: newDestType === 'srt-caller' ? newDestAddress : undefined,
-			port: newDestPort,
-			streamID: newDestStreamID || undefined,
-			latency: newDestLatency,
-			name: newDestName || undefined,
-			scte35Enabled: newDestSCTE35,
-		};
+		let config: DestinationConfig;
+		if (newDestType === 'rtmp') {
+			config = {
+				type: 'rtmp',
+				url: newDestURL,
+				name: newDestName || undefined,
+			};
+		} else {
+			config = {
+				type: newDestType,
+				address: newDestType === 'srt-caller' ? newDestAddress : undefined,
+				port: newDestPort,
+				streamID: newDestStreamID || undefined,
+				latency: newDestLatency,
+				name: newDestName || undefined,
+				scte35Enabled: newDestSCTE35,
+			};
+		}
 		apiCall(addDestination(config), 'Add destination');
-		// Reset form
 		newDestName = '';
 		newDestType = 'srt-caller';
 		newDestAddress = '';
 		newDestPort = 0;
+		newDestURL = '';
 		newDestStreamID = '';
 		newDestLatency = 120;
 		newDestSCTE35 = true;
@@ -346,6 +398,8 @@
 	let hasPortConstraint = $derived(
 		(crState.connectionInfo?.srtOutputPorts?.length ?? 0) > 0
 	);
+	let ci = $derived(crState.connectionInfo);
+	let ingestHost = $derived(ci?.domain ? `ingest.${ci.domain}` : 'localhost');
 </script>
 
 <div class="io-panel" class:visible>
@@ -359,10 +413,7 @@
 
 	<div class="panel-body">
 		<!-- CONNECTION GUIDE Section -->
-		{#if crState.connectionInfo?.srtIngestPort || crState.connectionInfo?.srtOutputPorts?.length}
-			{@const ci = crState.connectionInfo}
-			{@const ingestHost = ci?.domain ? `ingest.${ci.domain}` : 'localhost'}
-			<div class="section">
+		<div class="section">
 				<button
 					class="section-header"
 					onclick={() => (guideExpanded = !guideExpanded)}
@@ -371,7 +422,7 @@
 					<span class="section-label">CONNECTION GUIDE</span>
 				</button>
 
-				{#if guideExpanded}
+					{#if guideExpanded}
 					<div class="guide-content">
 						{#if ci?.srtIngestPort}
 							<div class="guide-block">
@@ -398,10 +449,18 @@
 								</div>
 							</div>
 						{/if}
+						<div class="guide-block">
+							<div class="guide-heading">RTMP Output</div>
+							<div class="guide-hint">
+								Add an RTMP destination below with the full ingest URL from your streaming platform.<br/><br/>
+								<strong>YouTube:</strong> <code>rtmp://a.rtmp.youtube.com/live2/YOUR-STREAM-KEY</code><br/>
+								<strong>Twitch:</strong> <code>rtmp://live.twitch.tv/app/YOUR-STREAM-KEY</code><br/>
+								<strong>Custom:</strong> Any <code>rtmp://</code> or <code>rtmps://</code> endpoint
+							</div>
+						</div>
 					</div>
 				{/if}
 			</div>
-		{/if}
 
 		<!-- INPUTS Section -->
 		<div class="section">
@@ -620,16 +679,16 @@
 					{#each destinations as dest (dest.id)}
 						<div class="dest-row">
 							<div class="row-header-group">
-								<button
-									class="row-header"
-									onclick={() => toggleDest(dest.id)}
-								>
-									<span class="type-badge type-srt">{destTypeBadge(dest)}</span>
-									<span class="row-label">{dest.name || `${dest.address ?? ''}:${dest.port}`}</span>
-									<SRTHealthDot level={destHealthLevel(dest)} />
-									<span class="row-detail">{dest.bytesWritten != null ? formatBytes(dest.bytesWritten) : ''}</span>
-									<span class="row-chevron">{expandedDests.has(dest.id) ? '\u25BE' : '\u25B8'}</span>
-								</button>
+							<button
+								class="row-header"
+								onclick={() => toggleDest(dest.id)}
+							>
+								<span class="type-badge {destTypeBadgeClass(dest)}">{destTypeBadge(dest)}</span>
+								<span class="row-label">{destDisplayLabel(dest)}</span>
+								<SRTHealthDot level={destHealthLevel(dest)} />
+								<span class="row-detail">{dest.bytesWritten != null ? formatBytes(dest.bytesWritten) : ''}</span>
+								<span class="row-chevron">{expandedDests.has(dest.id) ? '\u25BE' : '\u25B8'}</span>
+							</button>
 								<button
 									class="action-btn"
 									class:stop={dest.state === 'connected' || dest.state === 'active' || dest.state === 'listening' || dest.state === 'reconnecting'}
@@ -651,87 +710,112 @@
 							</div>
 
 							{#if expandedDests.has(dest.id)}
-								<div class="row-detail-panel">
-									<div class="detail-row">
-										<span class="detail-label">Type</span>
-										<span class="detail-value">{dest.type}</span>
-									</div>
-									<div class="detail-row">
-										<span class="detail-label">State</span>
-										<span class="detail-value {destStateClass(dest.state)}">{dest.state}</span>
-									</div>
-									{#if dest.address}
-										<div class="detail-row">
-											<span class="detail-label">Address</span>
-											<span class="detail-value mono">{dest.address}:{dest.port}</span>
-										</div>
-									{:else}
-										<div class="detail-row">
-											<span class="detail-label">Port</span>
-											<span class="detail-value mono">{dest.port}</span>
-										</div>
-									{/if}
-									{#if dest.connections != null}
-										<div class="detail-row">
-											<span class="detail-label">Connections</span>
-											<span class="detail-value mono">{dest.connections}</span>
-										</div>
-									{/if}
-									{#if dest.bytesWritten != null}
-										<div class="detail-row">
-											<span class="detail-label">Written</span>
-											<span class="detail-value mono">{formatBytes(dest.bytesWritten)}</span>
-										</div>
-									{/if}
-									{#if dest.droppedPackets != null}
-										<div class="detail-row">
-											<span class="detail-label">Dropped</span>
-											<span class="detail-value mono {dest.droppedPackets > 100 ? 'val-red' : dest.droppedPackets > 0 ? 'val-yellow' : ''}">{dest.droppedPackets.toLocaleString()} packets</span>
-										</div>
-									{/if}
-									{#if dest.error}
-										<div class="detail-row">
-											<span class="detail-label">Error</span>
-											<span class="detail-value error">{dest.error}</span>
-										</div>
-									{/if}
-									<!-- TODO: show SCTE-35 status when DestinationInfo includes it -->
-									<div class="detail-actions">
-										{#if confirmingDeleteDest === dest.id}
-											<span class="confirm-text">Are you sure?</span>
-											<button class="confirm-btn danger" onclick={() => handleDeleteDest(dest.id)}>Confirm</button>
-											<button class="confirm-btn" onclick={() => (confirmingDeleteDest = null)}>Cancel</button>
-										{:else}
-											<button class="delete-btn" onclick={() => handleDeleteDest(dest.id)}>Delete</button>
-										{/if}
-									</div>
+							<div class="row-detail-panel">
+								<div class="detail-row">
+									<span class="detail-label">Type</span>
+									<span class="detail-value">{dest.type === 'srt-caller' ? 'SRT Caller (push)' : dest.type === 'srt-listener' ? 'SRT Listener (pull)' : dest.type === 'rtmp' ? 'RTMP (push)' : dest.type}</span>
 								</div>
+								<div class="detail-row">
+									<span class="detail-label">State</span>
+									<span class="detail-value {destStateClass(dest.state)}">{dest.state}</span>
+								</div>
+								{#if dest.type === 'rtmp' && dest.url}
+									<div class="detail-row">
+										<span class="detail-label">URL</span>
+										<span class="detail-value mono url-value">{revealedURLs.has(dest.id) ? dest.url : maskRTMPUrl(dest.url)}</span>
+										<button class="reveal-btn" onclick={() => toggleRevealURL(dest.id)}>
+											{revealedURLs.has(dest.id) ? 'Hide' : 'Show'}
+										</button>
+									</div>
+								{:else if dest.address}
+									<div class="detail-row">
+										<span class="detail-label">Address</span>
+										<span class="detail-value mono">{dest.address}:{dest.port}</span>
+									</div>
+								{:else if dest.port}
+									<div class="detail-row">
+										<span class="detail-label">Port</span>
+										<span class="detail-value mono">{dest.port}</span>
+									</div>
+								{/if}
+								{#if dest.connections != null}
+									<div class="detail-row">
+										<span class="detail-label">Connections</span>
+										<span class="detail-value mono">{dest.connections}</span>
+									</div>
+								{/if}
+								{#if dest.bytesWritten != null}
+									<div class="detail-row">
+										<span class="detail-label">Written</span>
+										<span class="detail-value mono">{formatBytes(dest.bytesWritten)}</span>
+									</div>
+								{/if}
+								{#if dest.droppedPackets != null}
+									<div class="detail-row">
+										<span class="detail-label">Dropped</span>
+										<span class="detail-value mono {dest.droppedPackets > 100 ? 'val-red' : dest.droppedPackets > 0 ? 'val-yellow' : ''}">{dest.droppedPackets.toLocaleString()} packets</span>
+									</div>
+								{/if}
+								{#if dest.error}
+									<div class="detail-row">
+										<span class="detail-label">Error</span>
+										<span class="detail-value error">{dest.error}</span>
+									</div>
+								{/if}
+								<div class="detail-actions">
+									{#if confirmingDeleteDest === dest.id}
+										<span class="confirm-text">Are you sure?</span>
+										<button class="confirm-btn danger" onclick={() => handleDeleteDest(dest.id)}>Confirm</button>
+										<button class="confirm-btn" onclick={() => (confirmingDeleteDest = null)}>Cancel</button>
+									{:else}
+										<button class="delete-btn" onclick={() => handleDeleteDest(dest.id)}>Delete</button>
+									{/if}
+								</div>
+							</div>
 							{/if}
 						</div>
 					{/each}
 
 					<!-- Add Destination -->
-					{#if !showAddDest}
-						<button class="add-btn" onclick={() => (showAddDest = true)}>+ Add Destination</button>
-					{:else}
-						<div class="add-form">
-							<div class="form-title">New Destination</div>
+				{#if !showAddDest}
+					<button class="add-btn" onclick={() => (showAddDest = true)}>+ Add Destination</button>
+				{:else}
+					<div class="add-form">
+						<div class="form-title">New Destination</div>
+						<div class="form-row">
+							<span class="form-label">Name</span>
+							<input
+								type="text"
+								class="form-input"
+								placeholder="(optional)"
+								bind:value={newDestName}
+							/>
+						</div>
+						<div class="form-row">
+							<span class="form-label">Type</span>
+							<select class="form-input" bind:value={newDestType}>
+								<option value="srt-caller">SRT Caller</option>
+								<option value="srt-listener">SRT Listener</option>
+								<option value="rtmp">RTMP</option>
+							</select>
+						</div>
+
+						{#if newDestType === 'rtmp'}
+							<!-- RTMP-specific fields -->
 							<div class="form-row">
-								<span class="form-label">Name</span>
+								<span class="form-label">URL</span>
 								<input
 									type="text"
 									class="form-input"
-									placeholder="(optional)"
-									bind:value={newDestName}
+									placeholder="rtmp://a.rtmp.youtube.com/live2/xxxx-xxxx"
+									bind:value={newDestURL}
 								/>
 							</div>
-							<div class="form-row">
-								<span class="form-label">Type</span>
-								<select class="form-input" bind:value={newDestType}>
-									<option value="srt-caller">SRT Caller</option>
-									<option value="srt-listener">SRT Listener</option>
-								</select>
+							<div class="form-hint-block">
+								Full RTMP ingest URL including stream key. Supports <code>rtmp://</code> and <code>rtmps://</code>.
 							</div>
+						{:else}
+							<!-- SRT-specific fields -->
 							{#if newDestType === 'srt-caller'}
 								<div class="form-row">
 									<span class="form-label">Address</span>
@@ -789,16 +873,17 @@
 									SCTE-35 enabled
 								</label>
 							</div>
-							<div class="form-actions">
-								<button
-									class="form-btn primary"
-									onclick={handleCreateDest}
-									disabled={hasPortConstraint && newDestType === 'srt-listener' && availableOutputPorts.length === 0}
-								>Create</button>
-								<button class="form-btn" onclick={() => (showAddDest = false)}>Cancel</button>
-							</div>
+						{/if}
+						<div class="form-actions">
+							<button
+								class="form-btn primary"
+								onclick={handleCreateDest}
+								disabled={(newDestType === 'rtmp' && !newDestURL) || (hasPortConstraint && newDestType === 'srt-listener' && availableOutputPorts.length === 0)}
+							>Create</button>
+							<button class="form-btn" onclick={() => (showAddDest = false)}>Cancel</button>
 						</div>
-					{/if}
+					</div>
+				{/if}
 
 					<!-- Recording Status -->
 					<div class="recording-status">
@@ -1028,6 +1113,11 @@
 	.type-replay {
 		background: var(--accent-orange-dim);
 		color: var(--accent-orange);
+	}
+
+	.type-rtmp {
+		background: var(--accent-red-dim);
+		color: var(--accent-red);
 	}
 
 	/* --- Row elements --- */
@@ -1541,5 +1631,45 @@
 		font-size: var(--text-2xs);
 		color: var(--color-warning);
 		flex: 1;
+	}
+
+	.form-hint-block {
+		font-size: var(--text-2xs);
+		color: var(--text-secondary);
+		padding: 0 0 6px 72px;
+		line-height: 1.5;
+	}
+
+	.form-hint-block code {
+		font-family: var(--font-mono);
+		color: var(--text-primary);
+		background: var(--bg-surface);
+		padding: 1px 4px;
+		border-radius: 2px;
+	}
+
+	.url-value {
+		max-width: 220px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.reveal-btn {
+		padding: 1px 6px;
+		background: var(--bg-control);
+		border: var(--btn-border);
+		border-radius: var(--radius-xs);
+		color: var(--text-tertiary);
+		cursor: pointer;
+		font-size: 9px;
+		font-family: var(--font-ui);
+		flex-shrink: 0;
+		transition: var(--btn-transition);
+	}
+
+	.reveal-btn:hover {
+		color: var(--text-secondary);
+		background: var(--bg-hover);
 	}
 </style>

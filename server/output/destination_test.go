@@ -38,13 +38,57 @@ func TestOutputManager_AddDestination_InvalidType(t *testing.T) {
 	defer func() { _ = mgr.Close() }()
 
 	config := DestinationConfig{
-		Type: "rtmp",
+		Type: "hls",
 		Port: 9000,
 	}
 
 	_, err := mgr.AddDestination(config)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "unsupported destination type")
+}
+
+func TestOutputManager_AddDestination_RTMP(t *testing.T) {
+	mgr := NewManager()
+	defer func() { _ = mgr.Close() }()
+
+	config := DestinationConfig{
+		Type: "rtmp",
+		URL:  "rtmp://a.rtmp.youtube.com/live2/test-key",
+		Name: "YouTube Live",
+	}
+
+	id, err := mgr.AddDestination(config)
+	require.NoError(t, err)
+	require.NotEmpty(t, id)
+
+	status, err := mgr.GetDestination(id)
+	require.NoError(t, err)
+	require.Equal(t, "rtmp", status.Config.Type)
+	require.Equal(t, "rtmp://a.rtmp.youtube.com/live2/test-key", status.Config.URL)
+	require.Equal(t, "YouTube Live", status.Config.Name)
+}
+
+func TestOutputManager_AddDestination_RTMP_MissingURL(t *testing.T) {
+	mgr := NewManager()
+	defer func() { _ = mgr.Close() }()
+
+	_, err := mgr.AddDestination(DestinationConfig{
+		Type: "rtmp",
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "url is required")
+}
+
+func TestOutputManager_AddDestination_RTMP_InvalidScheme(t *testing.T) {
+	mgr := NewManager()
+	defer func() { _ = mgr.Close() }()
+
+	_, err := mgr.AddDestination(DestinationConfig{
+		Type: "rtmp",
+		URL:  "http://example.com/live",
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "rtmp://")
 }
 
 func TestOutputManager_AddDestination_MissingPort(t *testing.T) {

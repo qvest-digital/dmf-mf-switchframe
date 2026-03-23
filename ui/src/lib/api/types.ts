@@ -151,9 +151,10 @@ export interface SRTSourceStats {
 }
 
 export interface DestinationConfig {
-	type: 'srt-caller' | 'srt-listener';
+	type: 'srt-caller' | 'srt-listener' | 'rtmp';
 	address?: string;
-	port: number;
+	port?: number;
+	url?: string;
 	latency?: number;
 	streamID?: string;
 	encryption?: string;
@@ -169,7 +170,8 @@ export interface DestinationInfo {
 	name?: string;
 	type: string;
 	address?: string;
-	port: number;
+	port?: number;
+	url?: string;
 	state: string;
 	bytesWritten?: number;
 	droppedPackets?: number;
