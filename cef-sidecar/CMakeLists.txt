@@ -31,7 +31,26 @@ target_include_directories(switchframe-cef PRIVATE
   ${CEF_ROOT}
   ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
-target_link_libraries(switchframe-cef PRIVATE libcef_dll_wrapper ${CEF_BINARY_DIR}/libcef.dylib)
+# Link against libcef (platform-specific)
+if(APPLE)
+  set(CEF_LIB "${CEF_ROOT}/Release/Chromium Embedded Framework.framework/Chromium Embedded Framework")
+elseif(UNIX)
+  set(CEF_LIB "${CEF_ROOT}/Release/libcef.so")
+else()
+  set(CEF_LIB "${CEF_ROOT}/Release/libcef.lib")
+endif()
+
+target_link_libraries(switchframe-cef PRIVATE libcef_dll_wrapper "${CEF_LIB}")
+
+if(UNIX AND NOT APPLE)
+  # Linux needs pthread and dl
+  target_link_libraries(switchframe-cef PRIVATE pthread dl)
+  # Set rpath so libcef.so is found at runtime
+  set_target_properties(switchframe-cef PROPERTIES
+    BUILD_RPATH "${CEF_ROOT}/Release"
+    INSTALL_RPATH "$ORIGIN"
+  )
+endif()
 
 # Copy resources to build output
 if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/resources")

@@ -8,7 +8,27 @@
 #include <unistd.h>
 
 #include "include/cef_task.h"
+#include "include/wrapper/cef_closure_task.h"
+#include "include/wrapper/cef_helpers.h"
 #include "json_parse.h"
+
+namespace {
+
+// CefTask subclass that invokes a CommandHandler with a captured command.
+class CommandTask : public CefTask {
+public:
+    CommandTask(CommandHandler handler, ControlCommand cmd)
+        : handler_(std::move(handler)), cmd_(std::move(cmd)) {}
+
+    void Execute() override { handler_(cmd_); }
+
+private:
+    CommandHandler handler_;
+    ControlCommand cmd_;
+    IMPLEMENT_REFCOUNTING(CommandTask);
+};
+
+}  // namespace
 
 ControlSocket::ControlSocket(int listen_fd, CommandHandler handler)
     : listen_fd_(listen_fd), handler_(std::move(handler)) {}
@@ -106,12 +126,8 @@ void ControlSocket::readLoop() {
             }
 
             // Post the command to the CEF UI thread.
-            ControlCommand captured = std::move(cmd);
-            CommandHandler handler = handler_;
             CefPostTask(TID_UI,
-                        CefCreateClosureTask(base::BindOnce(
-                            [](CommandHandler h, ControlCommand c) { h(c); },
-                            handler, captured)));
+                        new CommandTask(handler_, std::move(cmd)));
         }
     }
 }
