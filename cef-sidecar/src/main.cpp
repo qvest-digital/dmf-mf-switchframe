@@ -1,4 +1,5 @@
 #include <iostream>
+#include <memory>
 #include <string>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -7,8 +8,12 @@
 
 #include "include/cef_app.h"
 #include "include/cef_command_line.h"
+#include "adapter.h"
 #include "app.h"
 #include "browser_pool.h"
+#include "control_socket.h"
+#include "frame_socket.h"
+#include "protocol.h"
 
 int main(int argc, char* argv[]) {
     // CEF subprocess support (required for multi-process architecture)
@@ -61,7 +66,6 @@ int main(int argc, char* argv[]) {
     }
 
     // Create Unix domain socket listeners
-    // (actual accept + read/write loops added in Tasks 10-11)
     auto create_listener = [](const std::string& path) -> int {
         unlink(path.c_str());  // Remove stale socket
 
@@ -99,22 +103,148 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Create browser pool with stub frame callback.
-    // The frame socket writer will be wired here in Task 11.
+    // Create frame socket and accept connection (blocks until Go connects).
+    auto frame_socket = std::make_shared<FrameSocket>(frame_fd);
+
+    // Create browser pool wired to the frame socket.
     auto browser_pool = std::make_shared<BrowserPool>(
-        4, [](int id, int w, int h, const void* /*buf*/, size_t sz) {
-            std::cerr << "frame: browser=" << id << " " << w << "x" << h
-                      << " size=" << sz << std::endl;
+        4, [frame_socket](int id, int w, int h, const void* buf, size_t sz) {
+            frame_socket->SendFrame(id, w, h, buf, sz);
         });
 
-    // Signal ready to the Go server
+    // Get adapter.js source for injection on page load.
+    const std::string& adapter_js = adapter::GetAdapterJS();
+
+    // Create control socket with command dispatch handler.
+    auto control_socket = std::make_shared<ControlSocket>(
+        control_fd,
+        [browser_pool, &adapter_js,
+         ctrl = std::weak_ptr<ControlSocket>()](const ControlCommand& cmd) {
+            auto cs = ctrl.lock();
+
+            if (cmd.cmd == "create") {
+                int w = cmd.width > 0 ? cmd.width : 1920;
+                int h = cmd.height > 0 ? cmd.height : 1080;
+                int fps = cmd.fps > 0 ? cmd.fps : 60;
+                bool ok = browser_pool->Create(cmd.id, w, h, fps);
+
+                if (ok) {
+                    // Wire load-end callback to inject adapter.js.
+                    // (BrowserClient callbacks are set per-slot.)
+                    if (cs) {
+                        cs->SendResponse(protocol::MakeOkResponse(cmd.id));
+                    }
+                } else {
+                    if (cs) {
+                        cs->SendResponse(protocol::MakeErrorResponse(
+                            cmd.id, "create failed"));
+                    }
+                }
+            } else if (cmd.cmd == "load") {
+                bool ok = browser_pool->LoadURL(cmd.id, cmd.url);
+                if (cs) {
+                    if (ok) {
+                        cs->SendResponse(protocol::MakeOkResponse(cmd.id));
+                    } else {
+                        cs->SendResponse(protocol::MakeErrorResponse(
+                            cmd.id, "load failed"));
+                    }
+                }
+                // Inject adapter.js after initiating the load.
+                // The actual injection will happen on OnLoadEnd via
+                // ExecuteJavaScript, but we also schedule it here as a
+                // belt-and-suspenders approach.
+                if (ok) {
+                    browser_pool->Execute(cmd.id, adapter_js);
+                }
+            } else if (cmd.cmd == "play") {
+                bool ok = browser_pool->Execute(
+                    cmd.id, "window.__switchframe && window.__switchframe.play()");
+                if (cs) {
+                    cs->SendResponse(ok ? protocol::MakeOkResponse(cmd.id)
+                                        : protocol::MakeErrorResponse(
+                                              cmd.id, "play failed"));
+                }
+            } else if (cmd.cmd == "stop") {
+                bool ok = browser_pool->Execute(
+                    cmd.id, "window.__switchframe && window.__switchframe.stop()");
+                if (cs) {
+                    cs->SendResponse(ok ? protocol::MakeOkResponse(cmd.id)
+                                        : protocol::MakeErrorResponse(
+                                              cmd.id, "stop failed"));
+                }
+            } else if (cmd.cmd == "next") {
+                bool ok = browser_pool->Execute(
+                    cmd.id, "window.__switchframe && window.__switchframe.next()");
+                if (cs) {
+                    cs->SendResponse(ok ? protocol::MakeOkResponse(cmd.id)
+                                        : protocol::MakeErrorResponse(
+                                              cmd.id, "next failed"));
+                }
+            } else if (cmd.cmd == "update") {
+                // Escape the data for safe injection into JS.
+                std::string js = "window.__switchframe && "
+                                 "window.__switchframe.update('" +
+                                 cmd.data + "')";
+                bool ok = browser_pool->Execute(cmd.id, js);
+                if (cs) {
+                    cs->SendResponse(ok ? protocol::MakeOkResponse(cmd.id)
+                                        : protocol::MakeErrorResponse(
+                                              cmd.id, "update failed"));
+                }
+            } else if (cmd.cmd == "custom") {
+                std::string js =
+                    "window.__switchframe && "
+                    "window.__switchframe.custom('" +
+                    cmd.action + "', '" + cmd.payload + "')";
+                bool ok = browser_pool->Execute(cmd.id, js);
+                if (cs) {
+                    cs->SendResponse(ok ? protocol::MakeOkResponse(cmd.id)
+                                        : protocol::MakeErrorResponse(
+                                              cmd.id, "custom failed"));
+                }
+            } else if (cmd.cmd == "destroy") {
+                browser_pool->Destroy(cmd.id);
+                if (cs) {
+                    cs->SendResponse(protocol::MakeOkResponse(cmd.id));
+                }
+            } else if (cmd.cmd == "shutdown") {
+                if (cs) {
+                    cs->SendResponse(protocol::MakeOkResponse(cmd.id));
+                }
+                CefQuitMessageLoop();
+            } else {
+                if (cs) {
+                    cs->SendResponse(protocol::MakeErrorResponse(
+                        cmd.id, "unknown command: " + cmd.cmd));
+                }
+            }
+        });
+
+    // Signal ready to the Go server (before accepting connections so the Go
+    // server knows the socket files exist and can connect).
     std::cout << "READY" << std::endl;
     std::cout.flush();
+
+    // Accept frame socket connection in a background thread (blocks until Go
+    // connects).
+    std::thread frame_accept([&frame_socket]() { frame_socket->Accept(); });
+
+    // Start the control socket reader (spawns its own thread with accept).
+    control_socket->Start();
 
     // Run CEF message loop (blocks until CefQuitMessageLoop is called)
     CefRunMessageLoop();
 
     // Cleanup
+    control_socket->Stop();
+    frame_socket->Close();
+
+    // Wait for the frame accept thread if it hasn't finished.
+    if (frame_accept.joinable()) {
+        frame_accept.join();
+    }
+
     close(control_fd);
     close(frame_fd);
     unlink(control_socket_path.c_str());
