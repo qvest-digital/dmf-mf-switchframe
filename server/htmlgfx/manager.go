@@ -94,10 +94,15 @@ func (m *Manager) spawn(binPath string) error {
 	controlPath := filepath.Join(socketDir, "control.sock")
 	framePath := filepath.Join(socketDir, "frames.sock")
 
+	// Use the socket dir as CEF's user data dir (unique per instance,
+	// prevents singleton lock conflicts between concurrent sessions).
+	userDataDir := filepath.Join(socketDir, "cef-data")
+
 	// Spawn the sidecar.
 	cmd := exec.Command(binPath,
 		"--control-socket", controlPath,
 		"--frame-socket", framePath,
+		"--user-data-dir", userDataDir,
 	)
 	cmd.Stderr = &sidecarLogger{prefix: "cef-sidecar"}
 

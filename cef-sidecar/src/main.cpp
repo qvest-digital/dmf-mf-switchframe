@@ -30,6 +30,7 @@ int main(int argc, char* argv[]) {
     // Parse command line for socket paths
     std::string control_socket_path;
     std::string frame_socket_path;
+    std::string user_data_dir;
 
     for (int i = 1; i < argc; i++) {
         std::string arg(argv[i]);
@@ -37,13 +38,20 @@ int main(int argc, char* argv[]) {
             control_socket_path = argv[++i];
         } else if (arg == "--frame-socket" && i + 1 < argc) {
             frame_socket_path = argv[++i];
+        } else if (arg == "--user-data-dir" && i + 1 < argc) {
+            user_data_dir = argv[++i];
         }
     }
 
     if (control_socket_path.empty() || frame_socket_path.empty()) {
-        std::cerr << "Usage: switchframe-cef --control-socket <path> --frame-socket <path>"
+        std::cerr << "Usage: switchframe-cef --control-socket <path> --frame-socket <path> [--user-data-dir <path>]"
                   << std::endl;
         return 1;
+    }
+
+    // Default user data dir to a unique temp directory if not specified.
+    if (user_data_dir.empty()) {
+        user_data_dir = "/tmp/switchframe-cef-data-" + std::to_string(getpid());
     }
 
     // Resolve the directory containing the binary for resource paths.
@@ -68,6 +76,8 @@ int main(int argc, char* argv[]) {
     settings.no_sandbox = true;
     settings.background_color = CefColorSetARGB(0, 0, 0, 0);
     settings.log_severity = LOGSEVERITY_WARNING;
+    CefString(&settings.root_cache_path) = user_data_dir;
+    CefString(&settings.cache_path) = user_data_dir + "/cache";
 
 #if defined(__APPLE__)
     CefString(&settings.framework_dir_path) =
