@@ -560,6 +560,14 @@ func (a *App) initSubsystems() error {
 	a.compositor.SetPipelineFPS(pf.FPSNum, pf.FPSDen)
 	a.sw.SetCompositor(a.compositor)
 
+	// HTML5 graphics sidecar manager.
+	a.htmlGfxMgr = htmlgfx.NewManager(a.compositor, htmlgfx.Config{
+		PoolSize: 4,
+		Width:    pf.Width,
+		Height:   pf.Height,
+		FPS:      pf.FPSNum / pf.FPSDen,
+	})
+
 	// Layout compositor (PIP / multi-layout).
 	format := a.sw.PipelineFormat()
 	a.layoutCompositor = layout.NewCompositor(format.Width, format.Height)
@@ -1328,6 +1336,11 @@ func (a *App) initAPI() error {
 
 	a.api = control.NewAPI(a.sw, apiOpts...)
 
+	// Late-bind HTML5 graphics manager to the API.
+	if a.htmlGfxMgr != nil {
+		a.api.SetHTMLGfxManager(a.htmlGfxMgr)
+	}
+
 	// Wire all state callbacks (enrichState, broadcastState, etc.).
 	a.wireStateCallbacks()
 
@@ -1632,6 +1645,9 @@ func (a *App) closeSubsystems() {
 	}
 	if a.clipMgr != nil {
 		a.clipMgr.Close()
+	}
+	if a.htmlGfxMgr != nil {
+		a.htmlGfxMgr.Close()
 	}
 	if a.tickerEngine != nil {
 		a.tickerEngine.Close()

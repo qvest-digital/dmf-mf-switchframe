@@ -428,6 +428,14 @@ func (a *App) wireStateCallbacks() {
 		a.broadcastState(&gfxState)
 	})
 
+	// HTML5 graphics sidecar state changes.
+	if a.htmlGfxMgr != nil {
+		a.htmlGfxMgr.OnStateChange(func() {
+			a.clearLastOperator()
+			a.broadcastState(nil)
+		})
+	}
+
 	// Replay state changes.
 	if a.replayMgr != nil {
 		a.replayMgr.OnStateChange(func() {
