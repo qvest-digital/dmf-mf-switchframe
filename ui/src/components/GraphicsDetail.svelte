@@ -9,8 +9,9 @@
 	function normalizeSchemaFields(schema: any): any[] {
 		// CasparCG format: { fields: [{key, label, type, default}, ...] }
 		if (schema?.fields) return schema.fields as any[];
-		// OGraf format: { dataSchema: { properties: { name: {type, title, default} } } }
-		const props = schema?.dataSchema?.properties;
+		// OGraf format: { properties: { name: {type, title, default} } }
+		// (server extracts dataSchema from OGraf manifest, so properties is at top level)
+		const props = schema?.properties ?? schema?.dataSchema?.properties;
 		if (props) {
 			return Object.entries(props).map(([key, prop]: [string, any]) => ({
 				key,
@@ -153,14 +154,19 @@
 		const fp = html5SchemaFingerprint;
 		if (html5Fields.length > 0 && fp !== lastSchemaFingerprint) {
 			const defaults: Record<string, any> = {};
+			const jsonDefaults: Record<string, any> = {};
 			for (const field of html5Fields) {
 				if (field.type === 'textarea' && Array.isArray(field.default)) {
 					defaults[field.key] = JSON.stringify(field.default, null, 2);
+					jsonDefaults[field.key] = field.default;
 				} else {
 					defaults[field.key] = field.default ?? '';
+					jsonDefaults[field.key] = field.default ?? '';
 				}
 			}
 			html5FormValues = defaults;
+			// Also pre-fill the JSON textarea so it's ready regardless of which view shows
+			html5DataJson = JSON.stringify(jsonDefaults, null, 2);
 			lastSchemaFingerprint = fp;
 		}
 	});
