@@ -6,7 +6,7 @@ set -euo pipefail
 CEF_VERSION="138.0.60+gd8bc8bd+chromium-138.0.7204.307"
 CEF_PLATFORM="linux64_minimal"
 CEF_DIR="/opt/cef"
-BUILD_DIR="/opt/switchframe-cef/build"
+BUILD_DIR="${HOME}/switchframe-cef-build"
 INSTALL_DIR="/opt/switchframe-cef"
 
 echo "=== SwitchFrame CEF Sidecar Setup ==="
@@ -65,10 +65,11 @@ else
 fi
 
 # 3. Build libcef_dll_wrapper (required by CEF, only needs to be done once)
-if [ ! -f "${CEF_DIR}/build/libcef_dll_wrapper/libcef_dll_wrapper.a" ]; then
+CEF_WRAPPER_BUILD="${BUILD_DIR}/cef_wrapper"
+if [ ! -f "${CEF_WRAPPER_BUILD}/libcef_dll_wrapper/libcef_dll_wrapper.a" ]; then
     echo "--- Building libcef_dll_wrapper ---"
-    mkdir -p "${CEF_DIR}/build"
-    cd "${CEF_DIR}/build"
+    mkdir -p "${CEF_WRAPPER_BUILD}"
+    cd "${CEF_WRAPPER_BUILD}"
     cmake -DCEF_ROOT="${CEF_DIR}" \
           -DCMAKE_BUILD_TYPE=Release \
           "${CEF_DIR}"
