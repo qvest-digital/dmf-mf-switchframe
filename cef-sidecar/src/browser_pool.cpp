@@ -58,6 +58,16 @@ void BrowserClient::OnLoadError(CefRefPtr<CefBrowser> browser,
     }
 }
 
+void BrowserClient::OnTitleChange(CefRefPtr<CefBrowser> browser,
+                                   const CefString& title) {
+    std::string t = title.ToString();
+    std::cerr << "[browser] OnTitleChange: id=" << browser->GetIdentifier()
+              << " title=" << t << std::endl;
+    if (on_title_change_) {
+        on_title_change_(browser->GetIdentifier(), t);
+    }
+}
+
 // ---------- BrowserPool ----------
 
 BrowserPool::BrowserPool(int max_browsers, FrameCallback on_frame)
@@ -225,5 +235,14 @@ void BrowserPool::SetLoadErrorCallback(int id, BrowserClient::LoadErrorCallback 
     BrowserSlot& slot = slots_[static_cast<size_t>(id)];
     if (slot.active && slot.client) {
         slot.client->SetLoadErrorCallback(std::move(cb));
+    }
+}
+
+void BrowserPool::SetTitleChangeCallback(int id, BrowserClient::TitleChangeCallback cb) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (id < 0 || id >= max_browsers_) return;
+    BrowserSlot& slot = slots_[static_cast<size_t>(id)];
+    if (slot.active && slot.client) {
+        slot.client->SetTitleChangeCallback(std::move(cb));
     }
 }

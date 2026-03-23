@@ -144,11 +144,11 @@ int main(int argc, char* argv[]) {
     const std::string& adapter_js = adapter::GetAdapterJS();
 
     // Create control socket with command dispatch handler.
-    auto control_socket = std::make_shared<ControlSocket>(
-        control_fd,
-        [browser_pool, &adapter_js,
-         ctrl = std::weak_ptr<ControlSocket>()](const ControlCommand& cmd) {
-            auto cs = ctrl.lock();
+    // We use a raw ControlSocket pointer in the lambda since the handler
+    // is set after construction via SetHandler.
+    std::shared_ptr<ControlSocket> control_socket;
+    auto command_handler = [browser_pool, &adapter_js, &control_socket](const ControlCommand& cmd) {
+            auto* cs = control_socket.get();
 
             if (cmd.cmd == "create") {
                 int w = cmd.width > 0 ? cmd.width : 1920;
@@ -157,19 +157,43 @@ int main(int argc, char* argv[]) {
                 bool ok = browser_pool->Create(cmd.id, w, h, fps);
 
                 if (ok) {
-                    // Wire OnLoadEnd callback to inject adapter.js on every page load.
+                    // Wire OnLoadEnd callback to inject adapter.js on every page load
+                    // and poll for detected format.
+                    auto& ctrl_for_cb = control_socket;
                     browser_pool->SetLoadEndCallback(cmd.id,
-                        [browser_pool, &adapter_js, cs](int browser_id, int http_status) {
+                        [browser_pool, &adapter_js, ctrl_for_cb](int browser_id, int http_status) {
                             (void)http_status;
+                            // Inject adapter.js
                             browser_pool->Execute(browser_id, adapter_js);
-                            // Report format detection event after adapter has a
-                            // chance to run. The adapter.js sets up a load listener
-                            // that calls __switchframe.detect() asynchronously.
+                            // After a short delay, read the detected format and report it.
+                            // The adapter.js detect() runs synchronously after injection.
+                            std::string format_check =
+                                "setTimeout(function() {"
+                                "  var fmt = window.__switchframe ? window.__switchframe.format : 'unknown';"
+                                "  document.title = 'switchframe-format:' + fmt;"
+                                "}, 200);";
+                            browser_pool->Execute(browser_id, format_check);
+                        });
+                    // Wire title change callback to detect format.
+                    // adapter.js sets document.title = "switchframe-format:<fmt>"
+                    browser_pool->SetTitleChangeCallback(cmd.id,
+                        [ctrl_for_cb](int browser_id, const std::string& title) {
+                            const std::string prefix = "switchframe-format:";
+                            if (title.substr(0, prefix.size()) == prefix) {
+                                std::string fmt = title.substr(prefix.size());
+                                std::cerr << "[main] Format detected: browser="
+                                          << browser_id << " format=" << fmt << std::endl;
+                                if (ctrl_for_cb) {
+                                    ctrl_for_cb->SendResponse(
+                                        protocol::MakeEventResponse(
+                                            browser_id, "format_detected", "format", fmt));
+                                }
+                            }
                         });
                     browser_pool->SetLoadErrorCallback(cmd.id,
-                        [cs](int browser_id, const std::string& error) {
-                            if (cs) {
-                                cs->SendResponse(protocol::MakeEventResponse(
+                        [ctrl_for_cb](int browser_id, const std::string& error) {
+                            if (ctrl_for_cb) {
+                                ctrl_for_cb->SendResponse(protocol::MakeEventResponse(
                                     browser_id, "load_error", "error", error));
                             }
                         });
@@ -254,7 +278,8 @@ int main(int argc, char* argv[]) {
                         cmd.id, "unknown command: " + cmd.cmd));
                 }
             }
-        });
+        };
+    control_socket = std::make_shared<ControlSocket>(control_fd, command_handler);
 
     // Signal ready to the Go server (before accepting connections so the Go
     // server knows the socket files exist and can connect).

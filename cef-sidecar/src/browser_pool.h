@@ -9,6 +9,7 @@
 #include "include/cef_browser.h"
 #include "include/cef_client.h"
 #include "include/cef_life_span_handler.h"
+#include "include/cef_display_handler.h"
 #include "include/cef_load_handler.h"
 
 #include "render_handler.h"
@@ -17,11 +18,14 @@
 // lifecycle/load event callbacks for the control protocol.
 class BrowserClient : public CefClient,
                       public CefLifeSpanHandler,
-                      public CefLoadHandler {
+                      public CefLoadHandler,
+                      public CefDisplayHandler {
 public:
     using LoadEndCallback = std::function<void(int browser_id, int http_status)>;
     using LoadErrorCallback =
         std::function<void(int browser_id, const std::string& error)>;
+    using TitleChangeCallback =
+        std::function<void(int browser_id, const std::string& title)>;
 
     explicit BrowserClient(CefRefPtr<OffscreenRenderHandler> handler);
 
@@ -29,6 +33,7 @@ public:
     CefRefPtr<CefRenderHandler> GetRenderHandler() override { return handler_; }
     CefRefPtr<CefLifeSpanHandler> GetLifeSpanHandler() override { return this; }
     CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
+    CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
 
     // CefLifeSpanHandler overrides
     void OnAfterCreated(CefRefPtr<CefBrowser> browser) override;
@@ -41,15 +46,23 @@ public:
                      ErrorCode errorCode, const CefString& errorText,
                      const CefString& failingUrl) override;
 
+    // CefDisplayHandler overrides
+    void OnTitleChange(CefRefPtr<CefBrowser> browser,
+                       const CefString& title) override;
+
     void SetLoadEndCallback(LoadEndCallback cb) { on_load_end_ = std::move(cb); }
     void SetLoadErrorCallback(LoadErrorCallback cb) {
         on_load_error_ = std::move(cb);
+    }
+    void SetTitleChangeCallback(TitleChangeCallback cb) {
+        on_title_change_ = std::move(cb);
     }
 
 private:
     CefRefPtr<OffscreenRenderHandler> handler_;
     LoadEndCallback on_load_end_;
     LoadErrorCallback on_load_error_;
+    TitleChangeCallback on_title_change_;
 
     IMPLEMENT_REFCOUNTING(BrowserClient);
     DISALLOW_COPY_AND_ASSIGN(BrowserClient);
@@ -82,9 +95,10 @@ public:
     // Returns -1 if not found.
     int GetID(CefRefPtr<CefBrowser> browser) const;
 
-    // Set per-slot load-end and load-error callbacks (forwarded to BrowserClient).
+    // Set per-slot callbacks (forwarded to BrowserClient).
     void SetLoadEndCallback(int id, BrowserClient::LoadEndCallback cb);
     void SetLoadErrorCallback(int id, BrowserClient::LoadErrorCallback cb);
+    void SetTitleChangeCallback(int id, BrowserClient::TitleChangeCallback cb);
 
 private:
     struct BrowserSlot {
