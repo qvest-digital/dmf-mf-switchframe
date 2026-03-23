@@ -132,6 +132,19 @@ type ColorGradeState interface {
 	GradingIntensity() float32 // 0.0-1.0
 }
 
+// SourceColorGradeProvider supplies per-source 3D LUT data for color correction.
+// Implemented by the corrector state manager (or any adapter that maps source
+// keys to LUT data). The source manager checks each frame and uploads/caches
+// the LUT on GPU memory, using the generation counter to avoid redundant uploads.
+type SourceColorGradeProvider interface {
+	// SourceLUTData returns the LUT float32 data for a source, or nil if no correction.
+	SourceLUTData(sourceKey string) []float32
+	// SourceLUTSize returns the cube dimension (e.g., 33).
+	SourceLUTSize(sourceKey string) int
+	// SourceLUTGen returns a generation counter for cache invalidation.
+	SourceLUTGen(sourceKey string) uint64
+}
+
 // PreviewConfig configures per-source GPU preview encoding.
 type PreviewConfig struct {
 	Width, Height  int
