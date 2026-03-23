@@ -31,6 +31,11 @@
                         }
                     }
                 }
+                // If manifest exists but no OGraf element found, fall back to CasparCG
+                // globals if available (template has manifest but uses CasparCG API).
+                if (!this.element && typeof window.play === 'function') {
+                    this.format = 'casparcg';
+                }
             } else if (typeof window.play === 'function') {
                 this.format = 'casparcg';
             }
