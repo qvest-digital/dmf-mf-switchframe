@@ -23,9 +23,10 @@ type GPUSourceManager struct {
 	pool   *FramePool
 	stmaps SourceSTMapProvider
 
-	mu        sync.RWMutex
-	sources   map[string]*gpuSourceEntry
-	segEngine *SegmentationEngine // nil when AI segmentation is not configured
+	mu               sync.RWMutex
+	sources          map[string]*gpuSourceEntry
+	segEngine        *SegmentationEngine      // nil when AI segmentation is not configured
+	sourceColorGrade SourceColorGradeProvider // nil when per-source color grading is not configured
 }
 
 // gpuSourceEntry holds the GPU state for a single source.
@@ -42,6 +43,11 @@ type gpuSourceEntry struct {
 	stmap     *GPUSTMap
 	stmapName string
 	stmapTmp  *GPUFrame // temp buffer for ST map warp
+
+	// Per-source color grade LUT (cached on GPU device memory).
+	colorLUTDev  uintptr // CUDA device pointer for the uploaded 3D LUT
+	colorLUTGen  uint64  // last-seen generation counter (0 = no LUT uploaded)
+	colorLUTSize int     // cube dimension (e.g., 33)
 
 	// GPU scaling for resolution-mismatched sources (e.g., 720p → 1080p).
 	scalePool *FramePool // per-source pool at source resolution
@@ -71,6 +77,15 @@ func NewGPUSourceManager(ctx *Context, pool *FramePool, stmaps SourceSTMapProvid
 func (m *GPUSourceManager) SetSegmentationEngine(engine *SegmentationEngine) {
 	m.mu.Lock()
 	m.segEngine = engine
+	m.mu.Unlock()
+}
+
+// SetSourceColorGrade wires a per-source color grade provider into the source
+// manager. When set (non-nil), IngestYUV and IngestGPUFrame will apply per-source
+// 3D LUT color grading after ST map correction. Pass nil to disable.
+func (m *GPUSourceManager) SetSourceColorGrade(provider SourceColorGradeProvider) {
+	m.mu.Lock()
+	m.sourceColorGrade = provider
 	m.mu.Unlock()
 }
 
@@ -174,6 +189,14 @@ func (m *GPUSourceManager) cleanupEntryLocked(entry *gpuSourceEntry) {
 		entry.stmapTmp.Release()
 		entry.stmapTmp = nil
 	}
+
+	// Free per-source color grade LUT.
+	if entry.colorLUTDev != 0 {
+		FreeLUT3D(entry.colorLUTDev)
+		entry.colorLUTDev = 0
+		entry.colorLUTGen = 0
+		entry.colorLUTSize = 0
+	}
 }
 
 // IngestYUV uploads a CPU YUV420p frame to GPU, optionally applies per-source
@@ -223,6 +246,14 @@ func (m *GPUSourceManager) IngestYUV(sourceKey string, yuv []byte, w, h int, pts
 	// Apply per-source ST map correction if configured.
 	if m.stmaps != nil {
 		m.applySourceSTMap(sourceKey, entry, frame)
+	}
+
+	// Apply per-source color grade LUT if configured.
+	m.mu.RLock()
+	colorGrade := m.sourceColorGrade
+	m.mu.RUnlock()
+	if colorGrade != nil {
+		m.applySourceColorGrade(sourceKey, entry, frame, colorGrade)
 	}
 
 	// Atomic swap: store new frame, release old.
@@ -379,6 +410,53 @@ func (m *GPUSourceManager) applySourceSTMap(sourceKey string, entry *gpuSourceEn
 	}
 }
 
+// applySourceColorGrade checks if a per-source color grade LUT is assigned and
+// applies it to the frame in-place. Uses a generation counter to avoid redundant
+// GPU LUT uploads — the LUT is only re-uploaded when the generation changes.
+func (m *GPUSourceManager) applySourceColorGrade(sourceKey string, entry *gpuSourceEntry, frame *GPUFrame, provider SourceColorGradeProvider) {
+	gen := provider.SourceLUTGen(sourceKey)
+	if gen == 0 {
+		// No LUT assigned. Free any cached one.
+		if entry.colorLUTDev != 0 {
+			FreeLUT3D(entry.colorLUTDev)
+			entry.colorLUTDev = 0
+			entry.colorLUTGen = 0
+			entry.colorLUTSize = 0
+		}
+		return
+	}
+
+	// Check if we need to upload a new LUT (generation changed or first time).
+	if entry.colorLUTDev == 0 || gen != entry.colorLUTGen {
+		// Free old LUT.
+		if entry.colorLUTDev != 0 {
+			FreeLUT3D(entry.colorLUTDev)
+			entry.colorLUTDev = 0
+		}
+
+		data := provider.SourceLUTData(sourceKey)
+		if len(data) == 0 {
+			return
+		}
+
+		devPtr, err := UploadLUT3D(data)
+		if err != nil {
+			slog.Warn("gpu: source manager: color grade LUT upload failed",
+				"source", sourceKey, "error", err)
+			return
+		}
+		entry.colorLUTDev = devPtr
+		entry.colorLUTGen = gen
+		entry.colorLUTSize = provider.SourceLUTSize(sourceKey)
+	}
+
+	// Apply the LUT at full intensity (per-source correction, no slider).
+	if err := ColorGradeLUT3D(m.ctx, frame, entry.colorLUTDev, entry.colorLUTSize, 1.0); err != nil {
+		slog.Warn("gpu: source manager: color grade kernel failed",
+			"source", sourceKey, "error", err)
+	}
+}
+
 // autoRegister creates a new source entry with no preview encoder. Called
 // from IngestYUV when the source has not been explicitly registered. This
 // ensures GPU cache is populated for GPUFill reads from key/layout nodes.
@@ -482,11 +560,12 @@ func (m *GPUSourceManager) Snapshot() map[string]any {
 	sources := make(map[string]any, len(m.sources))
 	for key, entry := range m.sources {
 		s := map[string]any{
-			"width":       entry.width,
-			"height":      entry.height,
-			"has_frame":   entry.current.Load() != nil,
-			"has_preview": entry.prevEnc != nil,
-			"has_stmap":   entry.stmap != nil,
+			"width":          entry.width,
+			"height":         entry.height,
+			"has_frame":      entry.current.Load() != nil,
+			"has_preview":    entry.prevEnc != nil,
+			"has_stmap":      entry.stmap != nil,
+			"has_colorgrade": entry.colorLUTDev != 0,
 		}
 		if entry.stmapName != "" {
 			s["stmap_name"] = entry.stmapName
@@ -528,6 +607,14 @@ func (m *GPUSourceManager) IngestGPUFrame(sourceKey string, frame *GPUFrame, pts
 	// Apply per-source ST map correction if configured.
 	if m.stmaps != nil {
 		m.applySourceSTMap(sourceKey, entry, frame)
+	}
+
+	// Apply per-source color grade LUT if configured.
+	m.mu.RLock()
+	colorGradeGPU := m.sourceColorGrade
+	m.mu.RUnlock()
+	if colorGradeGPU != nil {
+		m.applySourceColorGrade(sourceKey, entry, frame, colorGradeGPU)
 	}
 
 	// Atomic swap: store new frame, release old.

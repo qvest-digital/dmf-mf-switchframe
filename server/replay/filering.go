@@ -41,8 +41,8 @@ func newFileRing(path string, maxBytes int64) (*fileRing, error) {
 	}
 	// Pre-allocate to avoid fragmentation.
 	if err := f.Truncate(maxBytes); err != nil {
-		f.Close()
-		os.Remove(path)
+		_ = f.Close()
+		_ = os.Remove(path)
 		return nil, fmt.Errorf("filering: truncate: %w", err)
 	}
 	return &fileRing{
@@ -156,6 +156,6 @@ func (r *fileRing) Close() error {
 // CloseAndRemove closes and deletes the backing file.
 func (r *fileRing) CloseAndRemove() error {
 	err := r.f.Close()
-	os.Remove(r.path)
+	_ = os.Remove(r.path)
 	return err
 }

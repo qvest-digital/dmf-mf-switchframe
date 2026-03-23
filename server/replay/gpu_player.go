@@ -57,7 +57,6 @@ type gpuReplayPlayer struct {
 	// Audio tracking.
 	audioIdx          int
 	outputAudioPTS    int64
-	audioPreStretched bool
 	totalOutputFrames int
 	audioCallCount    int
 
@@ -349,7 +348,7 @@ func (p *gpuReplayPlayer) run(ctx context.Context) {
 		dupCount = 1
 	}
 	frameDuration := time.Second / 30 // 30fps output
-	ptsIncrement := int64(3003.0 / speed)
+	var ptsIncrement int64
 	totalFrames := (len(decoded) - 1) * dupCount // pairs × dups
 	if totalFrames <= 0 {
 		totalFrames = 1

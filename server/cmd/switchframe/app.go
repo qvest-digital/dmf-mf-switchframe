@@ -121,7 +121,8 @@ type App struct {
 	stmapStore       *stmap.Store
 
 	// Color grading
-	colorGradeCtrl *colorGradeController
+	colorGradeCtrl  *colorGradeController
+	sourceCorrectors *colorgrade.SourceCorrectorManager
 
 	// Text rendering engines
 	textRenderer   *textrender.Renderer
@@ -646,6 +647,9 @@ func (a *App) initSubsystems() error {
 			"looks", len(colorGradeStore.List()),
 		)
 	}
+
+	// Per-source color corrector manager (GPU per-source color grading).
+	a.sourceCorrectors = colorgrade.NewSourceCorrectorManager()
 
 	// Upstream key processor (chroma/luma keying).
 	a.keyProcessor = graphics.NewKeyProcessor()
@@ -1260,6 +1264,9 @@ func (a *App) initAPI() error {
 	if a.colorGradeCtrl != nil {
 		apiOpts = append(apiOpts, control.WithColorGradeManager(a.colorGradeCtrl))
 	}
+	if a.sourceCorrectors != nil {
+		apiOpts = append(apiOpts, control.WithSourceCorrectorManager(a.sourceCorrectors))
+	}
 	if a.replayMgr != nil {
 		apiOpts = append(apiOpts, control.WithReplayManager(a.replayMgr))
 	}
@@ -1647,7 +1654,7 @@ func (a *App) closeSubsystems() {
 		a.clipMgr.Close()
 	}
 	if a.htmlGfxMgr != nil {
-		a.htmlGfxMgr.Close()
+		_ = a.htmlGfxMgr.Close()
 	}
 	if a.tickerEngine != nil {
 		a.tickerEngine.Close()

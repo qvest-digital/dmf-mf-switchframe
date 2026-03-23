@@ -1,40 +1,62 @@
 <script lang="ts">
 	import type { ControlRoomState, CorrectorState, CurvePoint } from '$lib/api/types';
-	import { setCorrector, resetCorrector, saveCustomLook } from '$lib/api/switch-api';
+	import {
+		setCorrector, resetCorrector, saveCustomLook,
+		setSourceCorrector, resetSourceCorrector,
+	} from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
+	import { sortedSourceKeys } from '$lib/util/sort-sources';
 	import { onDestroy } from 'svelte';
 	import ColorWheel from './ColorWheel.svelte';
 	import CurveEditor from './CurveEditor.svelte';
 
 	let { state: crState }: { state: ControlRoomState } = $props();
 
-	// Local corrector state, synced from server
-	let corrector = $state<CorrectorState>({
-		lift: [0, 0, 0],
-		gamma: [1, 1, 1],
-		gain: [1, 1, 1],
-		temperature: 0,
-		tint: 0,
-		saturation: 1,
-		contrast: 0,
-		shadows: [0, 0, 0],
-		midtones: [0, 0, 0],
-		highlights: [0, 0, 0],
-		curveMaster: [{ x: 0, y: 0 }, { x: 1, y: 1 }],
-		curveR: [{ x: 0, y: 0 }, { x: 1, y: 1 }],
-		curveG: [{ x: 0, y: 0 }, { x: 1, y: 1 }],
-		curveB: [{ x: 0, y: 0 }, { x: 1, y: 1 }],
-		sharpness: 0,
+	// ── Source selection ──
+	let selectedSource = $state<string>('program');
+
+	// Derive sorted source list (non-virtual only)
+	let sourceEntries = $derived.by(() => {
+		const keys = sortedSourceKeys(crState.sources);
+		return keys
+			.filter(k => !crState.sources[k]?.isVirtual)
+			.map(k => ({ key: k, label: crState.sources[k]?.label || k }));
 	});
 
-	// Local UI values for sliders that need scaling (server uses 0-2, -1..+1, 0-1)
+	function hasCorrectionForSource(key: string): boolean {
+		return crState.sources[key]?.corrector != null;
+	}
+
+	// ── Default corrector factory ──
+	function defaultCorrector(): CorrectorState {
+		return {
+			lift: [0, 0, 0],
+			gamma: [1, 1, 1],
+			gain: [1, 1, 1],
+			temperature: 0,
+			tint: 0,
+			saturation: 1,
+			contrast: 0,
+			shadows: [0, 0, 0],
+			midtones: [0, 0, 0],
+			highlights: [0, 0, 0],
+			curveMaster: [{ x: 0, y: 0 }, { x: 1, y: 1 }],
+			curveR: [{ x: 0, y: 0 }, { x: 1, y: 1 }],
+			curveG: [{ x: 0, y: 0 }, { x: 1, y: 1 }],
+			curveB: [{ x: 0, y: 0 }, { x: 1, y: 1 }],
+			sharpness: 0,
+		};
+	}
+
+	// ── Local corrector state ──
+	let corrector = $state<CorrectorState>(defaultCorrector());
+
+	// Local UI values for sliders that need scaling
 	let satUI = $state(100);
 	let contrastUI = $state(0);
 	let sharpnessUI = $state(0);
 
-	// Guard against server state overwriting in-progress user edits.
-	// After any user interaction, ignore server syncs for 1s to let the
-	// debounced API call (200ms) complete and the server echo back.
+	// Guard against server state overwriting in-progress user edits
 	let lastUserEdit = 0;
 	const SYNC_GUARD_MS = 1000;
 
@@ -42,25 +64,48 @@
 		lastUserEdit = Date.now();
 	}
 
+	// Sync corrector UI values from a corrector state
+	function syncUIFromCorrector(c: CorrectorState) {
+		corrector = {
+			...c,
+			curveMaster: c.curveMaster ?? [{ x: 0, y: 0 }, { x: 1, y: 1 }],
+			curveR: c.curveR ?? [{ x: 0, y: 0 }, { x: 1, y: 1 }],
+			curveG: c.curveG ?? [{ x: 0, y: 0 }, { x: 1, y: 1 }],
+			curveB: c.curveB ?? [{ x: 0, y: 0 }, { x: 1, y: 1 }],
+		};
+		satUI = Math.round(c.saturation * 100);
+		contrastUI = Math.round(c.contrast * 100);
+		sharpnessUI = Math.round(c.sharpness * 100);
+	}
+
+	// Switch source selection
+	function selectSource(key: string) {
+		clearTimeout(sendTimeout);
+		selectedSource = key;
+		if (key === 'program') {
+			syncUIFromCorrector(crState.colorGrade?.corrector ?? defaultCorrector());
+		} else {
+			const src = crState.sources[key];
+			syncUIFromCorrector(src?.corrector ?? defaultCorrector());
+		}
+	}
+
 	// Sync from server state (skipped while user is actively editing)
 	$effect(() => {
-		const sc = crState.colorGrade?.corrector;
-		if (sc) {
-			if (Date.now() - lastUserEdit < SYNC_GUARD_MS) return;
-			corrector = {
-				...sc,
-				curveMaster: sc.curveMaster ?? [{ x: 0, y: 0 }, { x: 1, y: 1 }],
-				curveR: sc.curveR ?? [{ x: 0, y: 0 }, { x: 1, y: 1 }],
-				curveG: sc.curveG ?? [{ x: 0, y: 0 }, { x: 1, y: 1 }],
-				curveB: sc.curveB ?? [{ x: 0, y: 0 }, { x: 1, y: 1 }],
-			};
-			satUI = Math.round(sc.saturation * 100);
-			contrastUI = Math.round(sc.contrast * 100);
-			sharpnessUI = Math.round(sc.sharpness * 100);
+		if (Date.now() - lastUserEdit < SYNC_GUARD_MS) return;
+		if (selectedSource === 'program') {
+			const sc = crState.colorGrade?.corrector;
+			if (sc) syncUIFromCorrector(sc);
+		} else {
+			const src = crState.sources[selectedSource];
+			const sc = src?.corrector;
+			if (sc) syncUIFromCorrector(sc);
+			// If source corrector was reset (deleted), revert to defaults
+			else if (src && !sc) syncUIFromCorrector(defaultCorrector());
 		}
 	});
 
-	// Curve channel tabs
+	// ── Curve channel tabs ──
 	type CurveChannel = 'master' | 'r' | 'g' | 'b';
 	let curveChannel = $state<CurveChannel>('master');
 
@@ -80,7 +125,7 @@
 		}
 	});
 
-	// UI display values for sliders (mapped -100..100 range for shadows/midtones/highlights)
+	// ── UI display values for zone sliders ──
 	let shadowR = $derived(Math.round(corrector.shadows[0] * 100));
 	let shadowG = $derived(Math.round(corrector.shadows[1] * 100));
 	let shadowB = $derived(Math.round(corrector.shadows[2] * 100));
@@ -91,13 +136,17 @@
 	let highG = $derived(Math.round(corrector.highlights[1] * 100));
 	let highB = $derived(Math.round(corrector.highlights[2] * 100));
 
-	// Debounced send to server
+	// ── Debounced send to server ──
 	let sendTimeout: ReturnType<typeof setTimeout>;
 	function sendCorrector() {
 		clearTimeout(sendTimeout);
 		sendTimeout = setTimeout(async () => {
 			try {
-				await setCorrector(corrector);
+				if (selectedSource === 'program') {
+					await setCorrector(corrector);
+				} else {
+					await setSourceCorrector(selectedSource, corrector);
+				}
 			} catch (err) {
 				notify('error', `Corrector update failed: ${err instanceof Error ? err.message : 'unknown'}`);
 			}
@@ -106,6 +155,7 @@
 
 	onDestroy(() => clearTimeout(sendTimeout));
 
+	// ── Wheel handlers ──
 	function handleLiftChange(rgb: [number, number, number]) {
 		markDirty();
 		corrector.lift = rgb;
@@ -124,13 +174,12 @@
 		sendCorrector();
 	}
 
-	// Slider handlers for temperature, tint, etc.
+	// ── Slider handlers ──
 	function handleSliderInput() {
 		markDirty();
 		sendCorrector();
 	}
 
-	// Handlers for scaled sliders (UI integer range -> server float range)
 	function handleSatInput() {
 		markDirty();
 		corrector.saturation = satUI / 100;
@@ -149,7 +198,7 @@
 		sendCorrector();
 	}
 
-	// Zone (shadows/midtones/highlights) handlers
+	// ── Zone handlers ──
 	function setShadow(channel: 0 | 1 | 2, uiVal: number) {
 		markDirty();
 		corrector.shadows[channel] = uiVal / 100;
@@ -179,9 +228,15 @@
 		sendCorrector();
 	}
 
+	// ── Reset / Save ──
 	async function handleReset() {
 		try {
-			await resetCorrector();
+			if (selectedSource === 'program') {
+				await resetCorrector();
+			} else {
+				await resetSourceCorrector(selectedSource);
+			}
+			syncUIFromCorrector(defaultCorrector());
 		} catch (err) {
 			notify('error', `Reset failed: ${err instanceof Error ? err.message : 'unknown'}`);
 		}
@@ -198,193 +253,307 @@
 		}
 	}
 
-	// Display helpers
-	function fmtSlider(v: number, decimals: number = 0): string {
-		return v.toFixed(decimals);
+	function fmtSlider(v: number): string {
+		return v.toFixed(0);
 	}
 </script>
 
 <div class="color-tab">
-	<!-- Top section: Wheels + Parameter sliders -->
-	<div class="top-section">
-		<div class="wheels-col">
-			<ColorWheel label="Lift" value={corrector.lift} onchange={handleLiftChange} min={-1} max={1} />
-			<ColorWheel label="Gamma" value={corrector.gamma} onchange={handleGammaChange} min={0.1} max={4} />
-			<ColorWheel label="Gain" value={corrector.gain} onchange={handleGainChange} min={0} max={4} />
+	<!-- Column 1: Source List -->
+	<div class="source-list">
+		<div class="source-list-scroll">
+			{#each sourceEntries as src}
+				<button
+					class="source-btn"
+					class:active={selectedSource === src.key}
+					class:corrected={hasCorrectionForSource(src.key)}
+					onclick={() => selectSource(src.key)}
+				>
+					{#if hasCorrectionForSource(src.key)}
+						<span class="correction-dot"></span>
+					{/if}
+					<span class="source-label">{src.label}</span>
+				</button>
+			{/each}
 		</div>
-		<div class="sliders-col">
-			<label class="slider-row">
-				<span class="slider-label">Temperature</span>
-				<input type="range" min="-100" max="100" step="1"
-					bind:value={corrector.temperature}
-					oninput={handleSliderInput}
-				/>
-				<span class="slider-value">{fmtSlider(corrector.temperature)}</span>
-			</label>
-			<label class="slider-row">
-				<span class="slider-label">Tint</span>
-				<input type="range" min="-100" max="100" step="1"
-					bind:value={corrector.tint}
-					oninput={handleSliderInput}
-				/>
-				<span class="slider-value">{fmtSlider(corrector.tint)}</span>
-			</label>
-			<label class="slider-row">
-				<span class="slider-label">Saturation</span>
-				<input type="range" min="0" max="200" step="1"
-					bind:value={satUI}
-					oninput={handleSatInput}
-				/>
-				<span class="slider-value">{fmtSlider(satUI)}</span>
-			</label>
-			<label class="slider-row">
-				<span class="slider-label">Contrast</span>
-				<input type="range" min="-100" max="100" step="1"
-					bind:value={contrastUI}
-					oninput={handleContrastInput}
-				/>
-				<span class="slider-value">{fmtSlider(contrastUI)}</span>
-			</label>
-			<label class="slider-row">
-				<span class="slider-label">Sharpness</span>
-				<input type="range" min="0" max="100" step="1"
-					bind:value={sharpnessUI}
-					oninput={handleSharpnessInput}
-				/>
-				<span class="slider-value">{fmtSlider(sharpnessUI)}</span>
-			</label>
+		<div class="source-divider"></div>
+		<button
+			class="source-btn pgm-btn"
+			class:active={selectedSource === 'program'}
+			onclick={() => selectSource('program')}
+		>PGM</button>
+	</div>
+
+	<!-- Column 2: Controls (wheels, sliders, zones) -->
+	<div class="controls-col">
+		<div class="controls-top">
+			<div class="wheels-row">
+				<ColorWheel label="LIFT" size={62} value={corrector.lift} onchange={handleLiftChange} min={-1} max={1} />
+				<ColorWheel label="GAMMA" size={62} value={corrector.gamma} onchange={handleGammaChange} min={0.1} max={4} />
+				<ColorWheel label="GAIN" size={62} value={corrector.gain} onchange={handleGainChange} min={0} max={4} />
+			</div>
+			<div class="sliders-col">
+				<div class="slider-row">
+					<span class="slider-label">Temp</span>
+					<input type="range" min="-100" max="100" step="1"
+						bind:value={corrector.temperature}
+						oninput={handleSliderInput}
+					/>
+					<span class="slider-value">{fmtSlider(corrector.temperature)}</span>
+				</div>
+				<div class="slider-row">
+					<span class="slider-label">Tint</span>
+					<input type="range" min="-100" max="100" step="1"
+						bind:value={corrector.tint}
+						oninput={handleSliderInput}
+					/>
+					<span class="slider-value">{fmtSlider(corrector.tint)}</span>
+				</div>
+				<div class="slider-row">
+					<span class="slider-label">Sat</span>
+					<input type="range" min="0" max="200" step="1"
+						bind:value={satUI}
+						oninput={handleSatInput}
+					/>
+					<span class="slider-value">{fmtSlider(satUI)}</span>
+				</div>
+				<div class="slider-row">
+					<span class="slider-label">Cont</span>
+					<input type="range" min="-100" max="100" step="1"
+						bind:value={contrastUI}
+						oninput={handleContrastInput}
+					/>
+					<span class="slider-value">{fmtSlider(contrastUI)}</span>
+				</div>
+				<div class="slider-row">
+					<span class="slider-label">Sharp</span>
+					<input type="range" min="0" max="100" step="1"
+						bind:value={sharpnessUI}
+						oninput={handleSharpnessInput}
+					/>
+					<span class="slider-value">{fmtSlider(sharpnessUI)}</span>
+				</div>
+			</div>
+		</div>
+
+		<!-- Zone section: Shadows / Midtones / Highlights -->
+		<div class="zones-row">
+			<div class="zone">
+				<span class="zone-title">SHADOWS</span>
+				<div class="zone-sliders">
+					<div class="zone-slider">
+						<span class="ch-label ch-r">R</span>
+						<input type="range" min="-100" max="100" class="slider-r"
+							value={shadowR}
+							oninput={(e) => setShadow(0, Number((e.target as HTMLInputElement).value))}
+						/>
+					</div>
+					<div class="zone-slider">
+						<span class="ch-label ch-g">G</span>
+						<input type="range" min="-100" max="100" class="slider-g"
+							value={shadowG}
+							oninput={(e) => setShadow(1, Number((e.target as HTMLInputElement).value))}
+						/>
+					</div>
+					<div class="zone-slider">
+						<span class="ch-label ch-b">B</span>
+						<input type="range" min="-100" max="100" class="slider-b"
+							value={shadowB}
+							oninput={(e) => setShadow(2, Number((e.target as HTMLInputElement).value))}
+						/>
+					</div>
+				</div>
+			</div>
+			<div class="zone">
+				<span class="zone-title">MIDTONES</span>
+				<div class="zone-sliders">
+					<div class="zone-slider">
+						<span class="ch-label ch-r">R</span>
+						<input type="range" min="-100" max="100" class="slider-r"
+							value={midR}
+							oninput={(e) => setMidtone(0, Number((e.target as HTMLInputElement).value))}
+						/>
+					</div>
+					<div class="zone-slider">
+						<span class="ch-label ch-g">G</span>
+						<input type="range" min="-100" max="100" class="slider-g"
+							value={midG}
+							oninput={(e) => setMidtone(1, Number((e.target as HTMLInputElement).value))}
+						/>
+					</div>
+					<div class="zone-slider">
+						<span class="ch-label ch-b">B</span>
+						<input type="range" min="-100" max="100" class="slider-b"
+							value={midB}
+							oninput={(e) => setMidtone(2, Number((e.target as HTMLInputElement).value))}
+						/>
+					</div>
+				</div>
+			</div>
+			<div class="zone">
+				<span class="zone-title">HIGHLIGHTS</span>
+				<div class="zone-sliders">
+					<div class="zone-slider">
+						<span class="ch-label ch-r">R</span>
+						<input type="range" min="-100" max="100" class="slider-r"
+							value={highR}
+							oninput={(e) => setHighlight(0, Number((e.target as HTMLInputElement).value))}
+						/>
+					</div>
+					<div class="zone-slider">
+						<span class="ch-label ch-g">G</span>
+						<input type="range" min="-100" max="100" class="slider-g"
+							value={highG}
+							oninput={(e) => setHighlight(1, Number((e.target as HTMLInputElement).value))}
+						/>
+					</div>
+					<div class="zone-slider">
+						<span class="ch-label ch-b">B</span>
+						<input type="range" min="-100" max="100" class="slider-b"
+							value={highB}
+							oninput={(e) => setHighlight(2, Number((e.target as HTMLInputElement).value))}
+						/>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<!-- Footer: Reset + Save -->
+		<div class="controls-footer">
+			<button class="btn-reset" onclick={handleReset}>Reset</button>
+			{#if selectedSource === 'program'}
+				<button class="btn-save" onclick={handleSave}>Save as Look</button>
+			{/if}
 		</div>
 	</div>
 
-	<!-- Zone section: Shadows / Midtones / Highlights RGB sliders -->
-	<div class="zone-section">
-		<div class="zone-group">
-			<span class="zone-label">Shadows</span>
-			<div class="zone-sliders">
-				<div class="zone-ch">
-					<span class="ch-label ch-r">R</span>
-					<input type="range" min="-100" max="100" class="slider-r"
-						value={shadowR}
-						oninput={(e) => setShadow(0, Number((e.target as HTMLInputElement).value))}
-					/>
-				</div>
-				<div class="zone-ch">
-					<span class="ch-label ch-g">G</span>
-					<input type="range" min="-100" max="100" class="slider-g"
-						value={shadowG}
-						oninput={(e) => setShadow(1, Number((e.target as HTMLInputElement).value))}
-					/>
-				</div>
-				<div class="zone-ch">
-					<span class="ch-label ch-b">B</span>
-					<input type="range" min="-100" max="100" class="slider-b"
-						value={shadowB}
-						oninput={(e) => setShadow(2, Number((e.target as HTMLInputElement).value))}
-					/>
-				</div>
-			</div>
+	<!-- Column 3: Curves -->
+	<div class="curves-col">
+		<div class="curve-channel-tabs">
+			<button class="curve-tab" class:active={curveChannel === 'master'} onclick={() => curveChannel = 'master'}>M</button>
+			<button class="curve-tab curve-tab-r" class:active={curveChannel === 'r'} onclick={() => curveChannel = 'r'}>R</button>
+			<button class="curve-tab curve-tab-g" class:active={curveChannel === 'g'} onclick={() => curveChannel = 'g'}>G</button>
+			<button class="curve-tab curve-tab-b" class:active={curveChannel === 'b'} onclick={() => curveChannel = 'b'}>B</button>
 		</div>
-		<div class="zone-group">
-			<span class="zone-label">Midtones</span>
-			<div class="zone-sliders">
-				<div class="zone-ch">
-					<span class="ch-label ch-r">R</span>
-					<input type="range" min="-100" max="100" class="slider-r"
-						value={midR}
-						oninput={(e) => setMidtone(0, Number((e.target as HTMLInputElement).value))}
-					/>
-				</div>
-				<div class="zone-ch">
-					<span class="ch-label ch-g">G</span>
-					<input type="range" min="-100" max="100" class="slider-g"
-						value={midG}
-						oninput={(e) => setMidtone(1, Number((e.target as HTMLInputElement).value))}
-					/>
-				</div>
-				<div class="zone-ch">
-					<span class="ch-label ch-b">B</span>
-					<input type="range" min="-100" max="100" class="slider-b"
-						value={midB}
-						oninput={(e) => setMidtone(2, Number((e.target as HTMLInputElement).value))}
-					/>
-				</div>
-			</div>
-		</div>
-		<div class="zone-group">
-			<span class="zone-label">Highlights</span>
-			<div class="zone-sliders">
-				<div class="zone-ch">
-					<span class="ch-label ch-r">R</span>
-					<input type="range" min="-100" max="100" class="slider-r"
-						value={highR}
-						oninput={(e) => setHighlight(0, Number((e.target as HTMLInputElement).value))}
-					/>
-				</div>
-				<div class="zone-ch">
-					<span class="ch-label ch-g">G</span>
-					<input type="range" min="-100" max="100" class="slider-g"
-						value={highG}
-						oninput={(e) => setHighlight(1, Number((e.target as HTMLInputElement).value))}
-					/>
-				</div>
-				<div class="zone-ch">
-					<span class="ch-label ch-b">B</span>
-					<input type="range" min="-100" max="100" class="slider-b"
-						value={highB}
-						oninput={(e) => setHighlight(2, Number((e.target as HTMLInputElement).value))}
-					/>
-				</div>
-			</div>
-		</div>
-	</div>
-
-	<!-- Curves section -->
-	<div class="curves-section">
-		<div class="curves-header">
-			<span class="section-title">Curves</span>
-			<div class="curve-tabs">
-				<button class="curve-tab" class:active={curveChannel === 'master'} onclick={() => curveChannel = 'master'}>Master</button>
-				<button class="curve-tab curve-tab-r" class:active={curveChannel === 'r'} onclick={() => curveChannel = 'r'}>R</button>
-				<button class="curve-tab curve-tab-g" class:active={curveChannel === 'g'} onclick={() => curveChannel = 'g'}>G</button>
-				<button class="curve-tab curve-tab-b" class:active={curveChannel === 'b'} onclick={() => curveChannel = 'b'}>B</button>
-			</div>
-		</div>
-		<div class="curve-canvas">
-			<CurveEditor
-				points={activeCurvePoints}
-				onchange={handleCurveChange}
-				color={curveColors[curveChannel]}
-			/>
-		</div>
-	</div>
-
-	<!-- Footer: Reset + Save -->
-	<div class="footer">
-		<button class="btn-action" onclick={handleReset}>Reset All</button>
-		<button class="btn-action btn-save" onclick={handleSave}>Save as Look</button>
+		<CurveEditor
+			size={160}
+			points={activeCurvePoints}
+			onchange={handleCurveChange}
+			color={curveColors[curveChannel]}
+		/>
 	</div>
 </div>
 
 <style>
+	/* ── 3-Column Grid Layout ── */
 	.color-tab {
-		display: flex;
-		flex-direction: column;
-		gap: 8px;
-		padding: 8px;
+		display: grid;
+		grid-template-columns: 100px 1fr 180px;
 		height: 100%;
-		overflow-y: auto;
+		gap: 4px;
+		padding: 6px;
+		overflow: hidden;
 	}
 
-	/* Top section: wheels + sliders */
-	.top-section {
+	/* ── Column 1: Source List ── */
+	.source-list {
 		display: flex;
-		gap: 12px;
+		flex-direction: column;
+		height: 100%;
+		border-right: 1px solid var(--border-color, #333);
+		padding-right: 4px;
+	}
+
+	.source-list-scroll {
+		flex: 1;
+		overflow-y: auto;
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
+	}
+
+	.source-btn {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		width: 100%;
+		padding: 4px 8px;
+		background: transparent;
+		border: none;
+		border-left: 2px solid transparent;
+		color: var(--text-secondary, #999);
+		cursor: pointer;
+		font-size: 11px;
+		text-align: left;
+		transition: background 0.1s, border-color 0.1s;
+		border-radius: 0 2px 2px 0;
 		flex-shrink: 0;
 	}
 
-	.wheels-col {
+	.source-btn:hover {
+		background: var(--surface-hover, #333);
+		color: var(--text-primary, #eee);
+	}
+
+	.source-btn.active {
+		border-left-color: var(--accent-yellow, #d4a017);
+		background: var(--accent-yellow-bg, #3a3520);
+		color: var(--text-primary, #eee);
+	}
+
+	.source-btn.corrected .source-label {
+		color: var(--accent-yellow, #d4a017);
+	}
+
+	.source-btn.active.corrected .source-label {
+		color: var(--text-primary, #eee);
+	}
+
+	.correction-dot {
+		width: 5px;
+		height: 5px;
+		border-radius: 50%;
+		background: var(--accent-yellow, #d4a017);
+		flex-shrink: 0;
+	}
+
+	.source-label {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.source-divider {
+		height: 1px;
+		background: var(--border-color, #333);
+		margin: 4px 0;
+		flex-shrink: 0;
+	}
+
+	.pgm-btn {
+		font-weight: 600;
+		letter-spacing: 0.5px;
+		flex-shrink: 0;
+	}
+
+	/* ── Column 2: Controls ── */
+	.controls-col {
 		display: flex;
-		gap: 8px;
+		flex-direction: column;
+		gap: 6px;
+		min-width: 0;
+		overflow: hidden;
+	}
+
+	.controls-top {
+		display: flex;
+		gap: 10px;
+		flex-shrink: 0;
+	}
+
+	.wheels-row {
+		display: flex;
+		gap: 6px;
 		align-items: flex-start;
 		flex-shrink: 0;
 	}
@@ -393,7 +562,7 @@
 		flex: 1;
 		display: flex;
 		flex-direction: column;
-		gap: 4px;
+		gap: 3px;
 		min-width: 0;
 		justify-content: center;
 	}
@@ -401,64 +570,73 @@
 	.slider-row {
 		display: flex;
 		align-items: center;
-		gap: 6px;
+		gap: 4px;
+		height: 18px;
 	}
 
 	.slider-label {
-		font-size: 11px;
+		width: 36px;
+		font-size: 10px;
+		text-align: right;
 		color: var(--text-secondary, #999);
-		width: 72px;
 		flex-shrink: 0;
 	}
 
 	.slider-row input[type="range"] {
 		flex: 1;
-		min-width: 0;
+		max-width: 150px;
+		height: 2px;
 		accent-color: var(--accent-yellow, #d4a017);
-		height: 14px;
 	}
 
 	.slider-value {
+		width: 28px;
 		font-size: 10px;
+		text-align: right;
 		font-variant-numeric: tabular-nums;
 		color: var(--text-primary, #eee);
-		width: 32px;
-		text-align: right;
 		flex-shrink: 0;
 	}
 
-	/* Zone section: Shadows/Midtones/Highlights */
-	.zone-section {
+	/* ── Zones (Shadows / Midtones / Highlights) ── */
+	.zones-row {
 		display: flex;
-		gap: 12px;
+		gap: 10px;
 		flex-shrink: 0;
 	}
 
-	.zone-group {
+	.zone {
 		flex: 1;
 		min-width: 0;
 	}
 
-	.zone-label {
-		font-size: 11px;
+	.zone-title {
+		font-size: 9px;
 		font-weight: 600;
 		text-transform: uppercase;
 		letter-spacing: 0.5px;
 		color: var(--text-secondary, #999);
 		display: block;
-		margin-bottom: 4px;
+		margin-bottom: 2px;
 	}
 
 	.zone-sliders {
 		display: flex;
 		flex-direction: column;
-		gap: 2px;
+		gap: 1px;
 	}
 
-	.zone-ch {
+	.zone-slider {
 		display: flex;
 		align-items: center;
-		gap: 4px;
+		gap: 2px;
+		height: 16px;
+	}
+
+	.zone-slider input[type="range"] {
+		flex: 1;
+		height: 2px;
+		min-width: 0;
 	}
 
 	.ch-label {
@@ -468,41 +646,61 @@
 		flex-shrink: 0;
 	}
 
-	.ch-r { color: #c66; }
-	.ch-g { color: #6c6; }
-	.ch-b { color: #66c; }
+	.ch-r { color: #e74c3c; }
+	.ch-g { color: #2ecc71; }
+	.ch-b { color: #3498db; }
 
-	.zone-ch input[type="range"] {
-		flex: 1;
-		min-width: 0;
-		height: 12px;
-	}
+	.slider-r { accent-color: #e74c3c; }
+	.slider-g { accent-color: #2ecc71; }
+	.slider-b { accent-color: #3498db; }
 
-	.slider-r { accent-color: #c66; }
-	.slider-g { accent-color: #6c6; }
-	.slider-b { accent-color: #66c; }
-
-	/* Curves section */
-	.curves-section {
-		flex-shrink: 0;
-	}
-
-	.curves-header {
+	/* ── Controls Footer ── */
+	.controls-footer {
 		display: flex;
-		align-items: center;
 		justify-content: space-between;
-		margin-bottom: 4px;
+		align-items: center;
+		flex-shrink: 0;
+		padding-top: 4px;
+		border-top: 1px solid var(--border-color, #333);
+		margin-top: auto;
 	}
 
-	.section-title {
-		font-size: 11px;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.5px;
+	.btn-reset, .btn-save {
+		padding: 3px 10px;
+		background: var(--surface-secondary, #2a2a2a);
+		border: 1px solid var(--border-color, #444);
+		border-radius: 3px;
 		color: var(--text-secondary, #999);
+		cursor: pointer;
+		font-size: 10px;
+		transition: background 0.15s, color 0.15s;
 	}
 
-	.curve-tabs {
+	.btn-reset:hover, .btn-save:hover {
+		background: var(--surface-hover, #333);
+		color: var(--text-primary, #eee);
+	}
+
+	.btn-save {
+		color: var(--accent-yellow, #d4a017);
+		border-color: var(--accent-yellow, #d4a017);
+	}
+
+	.btn-save:hover {
+		background: var(--accent-yellow-bg, #3a3520);
+	}
+
+	/* ── Column 3: Curves ── */
+	.curves-col {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 4px;
+		border-left: 1px solid var(--border-color, #333);
+		padding-left: 4px;
+	}
+
+	.curve-channel-tabs {
 		display: flex;
 		gap: 2px;
 	}
@@ -546,44 +744,5 @@
 		background: #20203a;
 		border-color: #55e;
 		color: #55e;
-	}
-
-	.curve-canvas {
-		display: flex;
-		justify-content: center;
-	}
-
-	/* Footer */
-	.footer {
-		display: flex;
-		justify-content: space-between;
-		flex-shrink: 0;
-		padding-top: 4px;
-		border-top: 1px solid var(--border-color, #333);
-	}
-
-	.btn-action {
-		padding: 4px 12px;
-		background: var(--surface-secondary, #2a2a2a);
-		border: 1px solid var(--border-color, #444);
-		border-radius: 3px;
-		color: var(--text-secondary, #999);
-		cursor: pointer;
-		font-size: 11px;
-		transition: background 0.15s, color 0.15s;
-	}
-
-	.btn-action:hover {
-		background: var(--surface-hover, #333);
-		color: var(--text-primary, #eee);
-	}
-
-	.btn-save {
-		color: var(--accent-yellow, #d4a017);
-		border-color: var(--accent-yellow, #d4a017);
-	}
-
-	.btn-save:hover {
-		background: var(--accent-yellow-bg, #3a3520);
 	}
 </style>

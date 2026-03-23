@@ -176,7 +176,8 @@ func TestHTML5Load_WithInitialData(t *testing.T) {
 	api, _ := setupHTML5GfxTestAPI(t, mgr)
 	layerID := addLayerViaAPI(t, api)
 
-	body := `{"url":"https://example.com/scoreboard.html","data":"{\"home\":0,\"away\":0}"}`
+	// Data is sent as a JSON object (not a string), matching how the UI sends it.
+	body := `{"url":"https://example.com/scoreboard.html","data":{"home":0,"away":0}}`
 	req := httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/html5", layerID), strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -253,8 +254,8 @@ func TestHTML5UpdateData_Success(t *testing.T) {
 	api.Mux().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
 
-	// Update data
-	updateBody := `{"data":"{\"score\":42}"}`
+	// Update data — sent as a JSON object (not a string), matching how the UI sends it.
+	updateBody := `{"data":{"score":42}}`
 	req = httptest.NewRequest("PUT", fmt.Sprintf("/api/graphics/%d/html5/data", layerID), strings.NewReader(updateBody))
 	req.Header.Set("Content-Type", "application/json")
 	rec = httptest.NewRecorder()
@@ -361,8 +362,8 @@ func TestHTML5Custom_Success(t *testing.T) {
 	api.Mux().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code)
 
-	// Custom action
-	customBody := `{"action":"highlight","payload":"{\"player\":\"Smith\"}"}`
+	// Custom action — payload is sent as a JSON object (not a string), matching how the UI sends it.
+	customBody := `{"action":"highlight","payload":{"player":"Smith"}}`
 	req = httptest.NewRequest("POST", fmt.Sprintf("/api/graphics/%d/html5/custom", layerID), strings.NewReader(customBody))
 	req.Header.Set("Content-Type", "application/json")
 	rec = httptest.NewRecorder()

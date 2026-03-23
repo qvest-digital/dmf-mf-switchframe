@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+html, body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    overflow: hidden;
+    width: 100%;
+    height: 100%;
+}
+.box {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 200px;
+    height: 200px;
+    background: rgba(255, 0, 0, 1.0);
+    opacity: 0;
+    transition: opacity 0.3s ease;
+}
+</style>
+</head>
+<body>
+<div class="box" id="box"></div>
+<script>
+function play() {
+    document.getElementById('box').style.opacity = '1';
+}
+function stop() {
+    document.getElementById('box').style.opacity = '0';
+}
+function update(data) {
+    // Accept JSON string with optional color
+    try {
+        var d = typeof data === 'string' ? JSON.parse(data) : data;
+        if (d.color) {
+            document.getElementById('box').style.background = d.color;
+        }
+    } catch(e) {}
+}
+function next() {}
+</script>
+</body>
+</html>

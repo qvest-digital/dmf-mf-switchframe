@@ -13,6 +13,9 @@ func NewGPUSourceManager(ctx *Context, pool *FramePool, stmaps SourceSTMapProvid
 // SetSegmentationEngine is a no-op on non-GPU builds.
 func (m *GPUSourceManager) SetSegmentationEngine(engine *SegmentationEngine) {}
 
+// SetSourceColorGrade is a no-op on non-GPU builds.
+func (m *GPUSourceManager) SetSourceColorGrade(provider SourceColorGradeProvider) {}
+
 // RegisterSource is a no-op on non-GPU builds.
 func (m *GPUSourceManager) RegisterSource(sourceKey string, w, h int, preview *PreviewConfig) {}
 

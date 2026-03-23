@@ -14,7 +14,7 @@ func TestReplayBufferWithRing_StoresDataInRing(t *testing.T) {
 	dir := t.TempDir()
 	ring, err := newFileRing(filepath.Join(dir, "test.buf"), 1024*1024)
 	require.NoError(t, err)
-	defer ring.CloseAndRemove()
+	defer func() { _ = ring.CloseAndRemove() }()
 
 	buf := newReplayBufferWithRing(60, ring)
 
@@ -43,7 +43,7 @@ func TestReplayBufferWithRing_ExtractClipReadsFromRing(t *testing.T) {
 	dir := t.TempDir()
 	ring, err := newFileRing(filepath.Join(dir, "test.buf"), 1024*1024)
 	require.NoError(t, err)
-	defer ring.CloseAndRemove()
+	defer func() { _ = ring.CloseAndRemove() }()
 
 	buf := newReplayBufferWithRing(60, ring)
 	now := time.Now()
@@ -86,7 +86,7 @@ func TestReplayBufferWithRing_MultipleGOPs(t *testing.T) {
 	dir := t.TempDir()
 	ring, err := newFileRing(filepath.Join(dir, "test.buf"), 1024*1024)
 	require.NoError(t, err)
-	defer ring.CloseAndRemove()
+	defer func() { _ = ring.CloseAndRemove() }()
 
 	buf := newReplayBufferWithRing(60, ring)
 	now := time.Now()
@@ -111,7 +111,7 @@ func TestReplayBufferWithRing_TimeTrimming(t *testing.T) {
 	dir := t.TempDir()
 	ring, err := newFileRing(filepath.Join(dir, "test.buf"), 1024*1024)
 	require.NoError(t, err)
-	defer ring.CloseAndRemove()
+	defer func() { _ = ring.CloseAndRemove() }()
 
 	// 1 second buffer to force trimming.
 	buf := newReplayBufferWithRing(1, ring)
@@ -144,7 +144,7 @@ func TestReplayBufferWithRing_AudioUnchanged(t *testing.T) {
 	dir := t.TempDir()
 	ring, err := newFileRing(filepath.Join(dir, "test.buf"), 1024*1024)
 	require.NoError(t, err)
-	defer ring.CloseAndRemove()
+	defer func() { _ = ring.CloseAndRemove() }()
 
 	buf := newReplayBufferWithRing(60, ring)
 	now := time.Now()
@@ -194,7 +194,7 @@ func TestReplayBufferWithRing_DeepCopyOnExtract(t *testing.T) {
 	dir := t.TempDir()
 	ring, err := newFileRing(filepath.Join(dir, "test.buf"), 1024*1024)
 	require.NoError(t, err)
-	defer ring.CloseAndRemove()
+	defer func() { _ = ring.CloseAndRemove() }()
 
 	buf := newReplayBufferWithRing(60, ring)
 	now := time.Now()

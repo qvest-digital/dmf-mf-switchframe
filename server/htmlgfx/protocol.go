@@ -49,9 +49,9 @@ func WriteControlCommand(w io.Writer, cmd ControlCommand) error {
 	return err
 }
 
-// ReadControlResponse reads a single newline-delimited JSON response
+// readControlResponse reads a single newline-delimited JSON response
 // from r and parses it into a ControlResponse.
-func ReadControlResponse(r io.Reader) (ControlResponse, error) {
+func readControlResponse(r io.Reader) (ControlResponse, error) {
 	scanner := bufio.NewScanner(r)
 	if !scanner.Scan() {
 		if err := scanner.Err(); err != nil {
@@ -110,6 +110,9 @@ func WriteFrame(w io.Writer, f Frame) error {
 	return nil
 }
 
+// maxFramePixels is the maximum pixel data size in bytes (8K UHD limit: 7680x4320x4).
+const maxFramePixels = 7680 * 4320 * 4
+
 // ReadFrame reads a single length-prefixed binary frame from r.
 // Returns io.EOF if there is no more data to read.
 func ReadFrame(r io.Reader) (Frame, error) {
@@ -139,6 +142,15 @@ func ReadFrame(r io.Reader) (Frame, error) {
 
 	pixelLen := totalLen - uint32(FrameHeaderSize)
 	expectedPixelLen := uint32(width) * uint32(height) * 4
+
+	// Reject frames exceeding the maximum supported resolution.
+	if pixelLen > maxFramePixels {
+		if pixelLen > 0 {
+			_, _ = io.CopyN(io.Discard, r, int64(pixelLen))
+		}
+		return Frame{}, fmt.Errorf("frame too large: %d bytes exceeds max %d (width=%d height=%d)",
+			pixelLen, maxFramePixels, width, height)
+	}
 
 	if pixelLen != expectedPixelLen {
 		// Drain remaining bytes to keep the stream in sync.

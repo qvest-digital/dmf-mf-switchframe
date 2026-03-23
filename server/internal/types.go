@@ -32,6 +32,7 @@ type SourceInfo struct {
 	DelayMs     int              `json:"delayMs,omitempty"`
 	KeyConfig   *SourceKeyConfig `json:"keyConfig,omitempty"`
 	SRTInfo     *SRTSourceInfo   `json:"srt,omitempty"` // non-nil for SRT sources
+	Corrector   *CorrectorState  `json:"corrector,omitempty"`
 	IsVirtual   bool             `json:"isVirtual,omitempty"`
 	HasCaptions bool             `json:"hasCaptions,omitempty"`
 }

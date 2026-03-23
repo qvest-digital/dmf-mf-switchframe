@@ -71,7 +71,7 @@ func newMockSidecar(t *testing.T) *mockSidecar {
 	if err != nil {
 		t.Fatalf("mkdirtemp: %v", err)
 	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
 	controlPath := filepath.Join(dir, "c.sock")
 	framePath := filepath.Join(dir, "f.sock")
@@ -83,7 +83,7 @@ func newMockSidecar(t *testing.T) *mockSidecar {
 
 	frameLn, err := net.Listen("unix", framePath)
 	if err != nil {
-		controlLn.Close()
+		_ = controlLn.Close()
 		t.Fatalf("listen frame: %v", err)
 	}
 
@@ -189,15 +189,15 @@ func (ms *mockSidecar) sendFrame(f Frame) error {
 }
 
 func (ms *mockSidecar) close() {
-	ms.controlListener.Close()
-	ms.frameListener.Close()
+	_ = ms.controlListener.Close()
+	_ = ms.frameListener.Close()
 
 	ms.mu.Lock()
 	if ms.controlConn != nil {
-		ms.controlConn.Close()
+		_ = ms.controlConn.Close()
 	}
 	if ms.frameConn != nil {
-		ms.frameConn.Close()
+		_ = ms.frameConn.Close()
 	}
 	ms.mu.Unlock()
 }
@@ -267,7 +267,7 @@ func TestManagerConnect(t *testing.T) {
 	if err := <-connectDone; err != nil {
 		t.Fatalf("connectSockets: %v", err)
 	}
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	// Verify the manager has connections by checking that BrowserStates
 	// returns the expected pool size.
@@ -292,7 +292,7 @@ func TestManagerConnect(t *testing.T) {
 func TestManagerAllocateBrowser(t *testing.T) {
 	mgr, mock, _ := setupManagerWithMock(t)
 	defer mock.close()
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	// Allocate first browser for layer 0.
 	id, err := mgr.AllocateBrowser(0)
@@ -355,7 +355,7 @@ func TestManagerAllocateBrowser(t *testing.T) {
 func TestManagerFreeBrowser(t *testing.T) {
 	mgr, mock, _ := setupManagerWithMock(t)
 	defer mock.close()
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	// Allocate browser.
 	id, err := mgr.AllocateBrowser(5)
@@ -408,7 +408,7 @@ func TestManagerFreeBrowser(t *testing.T) {
 func TestManagerFrameDelivery(t *testing.T) {
 	mgr, mock, comp := setupManagerWithMock(t)
 	defer mock.close()
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	// Allocate browser 0 for layer 3.
 	_, err := mgr.AllocateBrowser(3)
@@ -482,7 +482,7 @@ func TestManagerFrameDelivery(t *testing.T) {
 func TestManagerLoadAndPlay(t *testing.T) {
 	mgr, mock, _ := setupManagerWithMock(t)
 	defer mock.close()
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	id, err := mgr.AllocateBrowser(0)
 	if err != nil {
@@ -538,7 +538,7 @@ func TestManagerLoadAndPlay(t *testing.T) {
 func TestManagerBrowserForLayer(t *testing.T) {
 	mgr, mock, _ := setupManagerWithMock(t)
 	defer mock.close()
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	// No browsers allocated yet.
 	if id := mgr.BrowserForLayer(5); id != -1 {
@@ -589,7 +589,7 @@ func TestManagerPoolExhaustion(t *testing.T) {
 	if err := <-connectDone; err != nil {
 		t.Fatalf("connectSockets: %v", err)
 	}
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	go mock.readCommands()
 
@@ -611,7 +611,7 @@ func TestManagerPoolExhaustion(t *testing.T) {
 func TestManagerControlResponseFormatDetected(t *testing.T) {
 	mgr, mock, _ := setupManagerWithMock(t)
 	defer mock.close()
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	// Allocate a browser.
 	id, err := mgr.AllocateBrowser(0)
@@ -646,7 +646,7 @@ func TestManagerControlResponseFormatDetected(t *testing.T) {
 func TestManagerControlResponseLoadError(t *testing.T) {
 	mgr, mock, _ := setupManagerWithMock(t)
 	defer mock.close()
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	id, err := mgr.AllocateBrowser(0)
 	if err != nil {
@@ -679,7 +679,7 @@ func TestManagerControlResponseLoadError(t *testing.T) {
 func TestManagerControlResponseStopped(t *testing.T) {
 	mgr, mock, _ := setupManagerWithMock(t)
 	defer mock.close()
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	id, err := mgr.AllocateBrowser(0)
 	if err != nil {
@@ -711,7 +711,7 @@ func TestManagerControlResponseStopped(t *testing.T) {
 func TestManagerStopCommand(t *testing.T) {
 	mgr, mock, _ := setupManagerWithMock(t)
 	defer mock.close()
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	id, err := mgr.AllocateBrowser(0)
 	if err != nil {
@@ -740,7 +740,7 @@ func TestManagerStopCommand(t *testing.T) {
 func TestManagerNextCommand(t *testing.T) {
 	mgr, mock, _ := setupManagerWithMock(t)
 	defer mock.close()
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	id, err := mgr.AllocateBrowser(0)
 	if err != nil {
@@ -766,7 +766,7 @@ func TestManagerNextCommand(t *testing.T) {
 func TestManagerUpdateCommand(t *testing.T) {
 	mgr, mock, _ := setupManagerWithMock(t)
 	defer mock.close()
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	id, err := mgr.AllocateBrowser(0)
 	if err != nil {
@@ -801,7 +801,7 @@ func TestManagerUpdateCommand(t *testing.T) {
 func TestManagerCustomActionCommand(t *testing.T) {
 	mgr, mock, _ := setupManagerWithMock(t)
 	defer mock.close()
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	id, err := mgr.AllocateBrowser(0)
 	if err != nil {
@@ -861,7 +861,7 @@ func TestManagerClose(t *testing.T) {
 func TestManagerOnStateChange(t *testing.T) {
 	mgr, mock, _ := setupManagerWithMock(t)
 	defer mock.close()
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	callCount := 0
 	var callMu sync.Mutex
@@ -896,7 +896,7 @@ func TestManagerOnStateChange(t *testing.T) {
 func TestManagerInvalidBrowserID(t *testing.T) {
 	mgr, mock, _ := setupManagerWithMock(t)
 	defer mock.close()
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	// Operations on invalid IDs should return errors.
 	if err := mgr.LoadURL(-1, "http://example.com"); err == nil {
@@ -935,6 +935,6 @@ func TestManagerConnectBadPath(t *testing.T) {
 	err := mgr.connectSockets("/tmp/nonexistent-"+fmt.Sprintf("%d", os.Getpid())+"-ctrl.sock", "/tmp/nonexistent-frame.sock")
 	if err == nil {
 		t.Fatal("expected error connecting to nonexistent sockets")
-		mgr.Close()
+		_ = mgr.Close()
 	}
 }

@@ -255,6 +255,95 @@ func TestValidateSteps_ColorGradeSave_EmptyName(t *testing.T) {
 	require.Contains(t, result.Errors[0].Message, "name")
 }
 
+// --- source_corrector_set validation ---
+
+func TestValidateSteps_SourceCorrectorSet_Valid(t *testing.T) {
+	t.Parallel()
+	steps := []Step{{Action: ActionSourceCorrectorSet, Params: map[string]any{
+		"source": "cam1", "temperature": 50.0,
+	}}}
+	result := ValidateSteps(steps)
+	require.Empty(t, result.Errors)
+}
+
+func TestValidateSteps_SourceCorrectorSet_MissingSource(t *testing.T) {
+	t.Parallel()
+	steps := []Step{{Action: ActionSourceCorrectorSet, Params: map[string]any{
+		"temperature": 50.0,
+	}}}
+	result := ValidateSteps(steps)
+	require.NotEmpty(t, result.Errors)
+	require.Contains(t, result.Errors[0].Message, "source")
+}
+
+func TestValidateSteps_SourceCorrectorSet_InvalidRange(t *testing.T) {
+	t.Parallel()
+	steps := []Step{{Action: ActionSourceCorrectorSet, Params: map[string]any{
+		"source": "cam1", "temperature": 200.0,
+	}}}
+	result := ValidateSteps(steps)
+	require.NotEmpty(t, result.Errors)
+	require.Contains(t, result.Errors[0].Message, "temperature")
+}
+
+func TestValidateSteps_SourceCorrectorSet_MultipleFields(t *testing.T) {
+	t.Parallel()
+	steps := []Step{{Action: ActionSourceCorrectorSet, Params: map[string]any{
+		"source":      "cam1",
+		"temperature": 50.0,
+		"tint":        -30.0,
+		"saturation":  1.5,
+		"contrast":    0.5,
+		"sharpness":   0.8,
+	}}}
+	result := ValidateSteps(steps)
+	require.Empty(t, result.Errors)
+}
+
+func TestValidateSteps_SourceCorrectorSet_TripletFields(t *testing.T) {
+	t.Parallel()
+	steps := []Step{{Action: ActionSourceCorrectorSet, Params: map[string]any{
+		"source": "cam1",
+		"lift0":  0.5,
+		"lift1":  -0.5,
+		"lift2":  0.0,
+		"gamma0": 1.0,
+		"gain0":  2.0,
+	}}}
+	result := ValidateSteps(steps)
+	require.Empty(t, result.Errors)
+}
+
+func TestValidateSteps_SourceCorrectorSet_TripletOutOfRange(t *testing.T) {
+	t.Parallel()
+	steps := []Step{{Action: ActionSourceCorrectorSet, Params: map[string]any{
+		"source": "cam1",
+		"lift0":  5.0, // out of range: [-1, 1]
+	}}}
+	result := ValidateSteps(steps)
+	require.NotEmpty(t, result.Errors)
+	require.Contains(t, result.Errors[0].Message, "lift0")
+}
+
+// --- source_corrector_reset validation ---
+
+func TestValidateSteps_SourceCorrectorReset_Valid(t *testing.T) {
+	t.Parallel()
+	steps := []Step{{Action: ActionSourceCorrectorReset, Params: map[string]any{
+		"source": "cam1",
+	}}}
+	result := ValidateSteps(steps)
+	require.Empty(t, result.Errors)
+}
+
+func TestValidateSteps_SourceCorrectorReset_MissingSource(t *testing.T) {
+	t.Parallel()
+	steps := []Step{{Action: ActionSourceCorrectorReset, Params: map[string]any{}}}
+	result := ValidateSteps(steps)
+	require.NotEmpty(t, result.Errors)
+	require.Contains(t, result.Errors[0].Message, "source")
+}
+
 // --- Action registration ---
 
 func TestValidateSteps_CorrectorActionsAreValid(t *testing.T) {
@@ -262,19 +351,22 @@ func TestValidateSteps_CorrectorActionsAreValid(t *testing.T) {
 	require.True(t, IsValidAction(ActionCorrectorSet))
 	require.True(t, IsValidAction(ActionCorrectorReset))
 	require.True(t, IsValidAction(ActionColorGradeSave))
+	require.True(t, IsValidAction(ActionSourceCorrectorSet))
+	require.True(t, IsValidAction(ActionSourceCorrectorReset))
 }
 
 // --- Runner dispatch ---
 
 func TestRunner_CorrectorActionsDispatchViaExecute(t *testing.T) {
 	t.Parallel()
-	actions := []Action{ActionCorrectorSet, ActionCorrectorReset, ActionColorGradeSave}
+	actions := []Action{ActionCorrectorSet, ActionCorrectorReset, ActionColorGradeSave,
+		ActionSourceCorrectorSet, ActionSourceCorrectorReset}
 	for _, action := range actions {
 		t.Run(string(action), func(t *testing.T) {
 			target := &mockTarget{}
 			m := Macro{
 				Name:  "corrector-" + string(action),
-				Steps: []Step{{Action: action, Params: map[string]any{"name": "test-look", "temperature": 50.0}}},
+				Steps: []Step{{Action: action, Params: map[string]any{"name": "test-look", "temperature": 50.0, "source": "cam1"}}},
 			}
 			err := Run(t.Context(), m, target, nil)
 			require.NoError(t, err)
@@ -310,4 +402,22 @@ func TestStepSummary_ColorGradeSave(t *testing.T) {
 		Params: map[string]any{"name": "golden-hour"},
 	})
 	require.Equal(t, "Save Look: golden-hour", s)
+}
+
+func TestStepSummary_SourceCorrectorSet(t *testing.T) {
+	t.Parallel()
+	s := StepSummary(Step{
+		Action: ActionSourceCorrectorSet,
+		Params: map[string]any{"source": "cam2", "temperature": 25.0},
+	})
+	require.Equal(t, "Source Corrector: cam2", s)
+}
+
+func TestStepSummary_SourceCorrectorReset(t *testing.T) {
+	t.Parallel()
+	s := StepSummary(Step{
+		Action: ActionSourceCorrectorReset,
+		Params: map[string]any{"source": "cam3"},
+	})
+	require.Equal(t, "Source Corrector Reset: cam3", s)
 }

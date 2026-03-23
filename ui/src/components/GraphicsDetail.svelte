@@ -2,6 +2,7 @@
 	import type { GraphicsLayerState } from '$lib/api/types';
 	import type { GraphicsPublisher } from '$lib/graphics/publisher';
 	import { templateList, builtinTemplates } from '$lib/graphics/templates';
+	import { notify } from '$lib/state/notifications.svelte';
 
 	interface AnimConfig {
 		mode: string;
@@ -211,7 +212,7 @@
 			const data = JSON.parse(html5DataJson);
 			onHTML5UpdateData(data);
 		} catch {
-			// Invalid JSON - ignore
+			notify('error', 'Invalid JSON data');
 		}
 	}
 </script>
@@ -476,7 +477,7 @@
 							<div class="html5-data-section">
 								<textarea
 									class="html5-data-input"
-									placeholder='{"key": "value"}'
+									placeholder={'{"key": "value"}'}
 									bind:value={html5DataJson}
 									aria-label="HTML5 template data (JSON)"
 									rows="3"

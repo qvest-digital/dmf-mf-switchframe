@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="ograf-manifest" href="manifest.ograf.json">
+<style>
+html, body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    overflow: hidden;
+    width: 100%;
+    height: 100%;
+}
+</style>
+</head>
+<body>
+<test-lower-third></test-lower-third>
+<script>
+class TestLowerThird extends HTMLElement {
+    constructor() {
+        super();
+        this.attachShadow({ mode: 'open' });
+        this.shadowRoot.innerHTML = `
+            <style>
+                :host { display: block; position: absolute; bottom: 80px; left: 60px; }
+                .container { opacity: 0; transition: opacity 0.5s; }
+                .container.visible { opacity: 1; }
+                .name { font: bold 42px sans-serif; color: white;
+                         text-shadow: 0 2px 4px rgba(0,0,0,0.8); }
+                .title { font: 28px sans-serif; color: #ccc;
+                          text-shadow: 0 1px 3px rgba(0,0,0,0.6); margin-top: 4px; }
+                .bar { width: 4px; height: 100%; background: #00a0ff;
+                        position: absolute; left: -16px; top: 0; }
+            </style>
+            <div class="container" id="container">
+                <div class="bar"></div>
+                <div class="name" id="name"></div>
+                <div class="title" id="title"></div>
+            </div>
+        `;
+    }
+
+    async load(data) {
+        if (data) {
+            this.shadowRoot.getElementById('name').textContent = data.name || '';
+            this.shadowRoot.getElementById('title').textContent = data.title || '';
+        }
+        return { status: 200 };
+    }
+
+    async playAction(opts) {
+        this.shadowRoot.getElementById('container').classList.add('visible');
+        return { status: 200 };
+    }
+
+    async stopAction(opts) {
+        this.shadowRoot.getElementById('container').classList.remove('visible');
+        return { status: 200 };
+    }
+
+    async updateAction(opts) {
+        if (opts && opts.data) {
+            this.shadowRoot.getElementById('name').textContent = opts.data.name || '';
+            this.shadowRoot.getElementById('title').textContent = opts.data.title || '';
+        }
+        return { status: 200 };
+    }
+
+    async customAction(opts) {
+        return { status: 200 };
+    }
+
+    dispose() {}
+}
+
+customElements.define('test-lower-third', TestLowerThird);
+</script>
+</body>
+</html>

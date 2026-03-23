@@ -59,8 +59,10 @@ var actionsRequiringSource = map[Action]bool{
 	ActionReplayMarkOut:     true,
 	ActionReplayPlay:        true,
 	ActionReplayQuickClip:   true,
-	ActionSTMapAssignSource: true,
-	ActionSTMapRemoveSource: true,
+	ActionSTMapAssignSource:      true,
+	ActionSTMapRemoveSource:      true,
+	ActionSourceCorrectorSet:     true,
+	ActionSourceCorrectorReset:   true,
 }
 
 // ValidateSteps validates the steps of a macro and returns errors and warnings.
@@ -166,6 +168,8 @@ func validateStep(i int, step Step, result *ValidationResult) {
 
 	// Corrector actions.
 	case ActionCorrectorSet:
+		validateCorrectorSet(i, step, result)
+	case ActionSourceCorrectorSet:
 		validateCorrectorSet(i, step, result)
 
 	// Clip player actions that require player (1-4).
