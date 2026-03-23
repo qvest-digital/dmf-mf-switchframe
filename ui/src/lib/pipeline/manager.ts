@@ -11,7 +11,7 @@ export interface PeakLevels {
  *
  * Responsibilities:
  * - Source sync: adds/removes pipeline sources when control room state changes
- * - Canvas management: attaches multiview tile, program, and preview canvases
+ * - Canvas management: attaches source tile, program, and preview canvases
  * - Audio metering: rAF loop that samples per-source and program audio levels
  *
  * Program and preview canvases are passed in via syncProgramPreviewCanvases()
@@ -83,7 +83,7 @@ export class PipelineManager {
 			}
 		}
 
-		// Attach multiview tile canvases
+		// Attach source tile canvases
 		for (const key of stateSourceKeys) {
 			if (!this.attachedCanvases.has(key)) {
 				const canvas = document.getElementById(`tile-${key}`) as HTMLCanvasElement | null;

@@ -1,9 +1,8 @@
 <script lang="ts">
 	import { onMount, onDestroy, tick } from 'svelte';
 	import ProgramPreview from '../components/ProgramPreview.svelte';
-	import Multiview from '../components/Multiview.svelte';
-	import PreviewBus from '../components/PreviewBus.svelte';
-	import ProgramBus from '../components/ProgramBus.svelte';
+	import SourceButton from '../components/SourceButton.svelte';
+	import ContextualActions from '../components/ContextualActions.svelte';
 	import TransitionControls from '../components/TransitionControls.svelte';
 	import AudioMixer from '../components/AudioMixer.svelte';
 	import OutputControls from '../components/OutputControls.svelte';
@@ -46,6 +45,7 @@
 	import { createPFLToggle, type PFLToggleResult } from '$lib/audio/pfl-toggle';
 	import { getLayoutMode, setLayoutMode, type LayoutMode } from '$lib/layout/preferences';
 	import { createFastControl, type FastControl } from '$lib/transport/fast-control';
+	import { sortedSourceKeys } from '$lib/util/sort-sources';
 	import { CaptionRenderer } from '$lib/prism/captions';
 	import type { ControlRoomState, Macro } from '$lib/api/types';
 
@@ -696,14 +696,23 @@
 				<ProgramPreview state={store.effectiveState} {onCanvasReady} {onCaptionElReady} showLayoutOverlay={layoutTabActive} showGraphicsOverlay={graphicsTabActive} {fastControl} onGraphicsLayerSelect={(id) => { graphicsSelectedLayerId = id; }} />
 			</section>
 
-			<section class="multiview-section">
-				<Multiview state={store.effectiveState} onLabelChange={handleLabelChange} />
-			</section>
-
 			<section class="control-strip">
 				<LockIndicator state={store.effectiveState} subsystem="switching" />
-				<PreviewBus state={store.effectiveState} onPreview={(key) => { store.optimisticPreview(key); apiCall(setPreview(key), 'Preview failed'); }} />
-				<ProgramBus state={store.effectiveState} onCut={(key) => { store.optimisticCut(key); apiCall(cut(key), 'Cut failed'); }} />
+				<div class="source-buttons">
+					{#each sortedSourceKeys(store.effectiveState.sources) as key, i}
+						<SourceButton
+							source={store.effectiveState.sources[key]}
+							tally={store.effectiveState.tallyState[key] || 'idle'}
+							index={i}
+							audioLevelDb={store.effectiveState.audioChannels?.[key] ? Math.max(store.effectiveState.audioChannels[key].peakL, store.effectiveState.audioChannels[key].peakR) : undefined}
+							layoutSlots={store.effectiveState.layout?.slots}
+							onPreview={() => { store.optimisticPreview(key); apiCall(setPreview(key), 'Preview failed'); }}
+							onCut={() => { store.optimisticCut(key); apiCall(cut(key), 'Cut failed'); }}
+							onLabelChange={handleLabelChange}
+						/>
+					{/each}
+				</div>
+				<ContextualActions state={store.effectiveState} />
 				<TransitionControls state={store.effectiveState} pendingConfirm={keyboard.pendingConfirmAction} {fastControl} />
 			</section>
 
@@ -799,7 +808,7 @@
 
 	.control-room {
 		display: grid;
-		grid-template-rows: auto 1fr auto auto auto;
+		grid-template-rows: auto 1fr auto auto;
 		height: 100vh;
 		background: var(--bg-base);
 	}
@@ -815,20 +824,33 @@
 		overflow: hidden;
 	}
 
-	.multiview-section {
-		overflow: hidden;
-		background: var(--bg-base);
-		min-height: 0;
-		max-height: clamp(70px, 14vh, 160px);
-	}
-
 	.control-strip {
 		display: flex;
-		align-items: center;
+		align-items: stretch;
 		gap: 4px;
 		padding: 3px 8px;
 		border-top: 1px solid var(--border-default);
 		background: var(--bg-surface);
+		height: 68px;
+		flex-shrink: 0;
+	}
+
+	.source-buttons {
+		display: flex;
+		gap: 3px;
+		overflow-x: auto;
+		overflow-y: hidden;
+		flex-shrink: 0;
+		align-items: stretch;
+	}
+
+	.source-buttons::-webkit-scrollbar {
+		height: 2px;
+	}
+
+	.source-buttons::-webkit-scrollbar-thumb {
+		background: var(--border-subtle);
+		border-radius: 1px;
 	}
 
 	.bottom-panel {
