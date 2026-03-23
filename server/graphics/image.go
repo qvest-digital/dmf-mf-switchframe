@@ -85,6 +85,7 @@ func (c *Compositor) SetImage(id int, name string, pngData []byte) error {
 	// Activate the layer so ProcessYUV renders it.
 	layer.active = true
 	layer.fadePosition = 1.0
+	layer.overlayGen++
 
 	state := c.buildStateLocked()
 	cb := c.onStateChange
@@ -148,6 +149,7 @@ func (c *Compositor) DeleteImage(id int) error {
 	layer.overlay = nil
 	layer.overlayWidth = 0
 	layer.overlayHeight = 0
+	layer.overlayGen++
 
 	state := c.buildStateLocked()
 	cb := c.onStateChange
