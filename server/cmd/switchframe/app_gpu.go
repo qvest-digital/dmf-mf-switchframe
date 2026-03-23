@@ -110,6 +110,12 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 		}
 	}
 
+	// Wire per-source color corrector into GPU source manager.
+	if app.sourceCorrectors != nil {
+		sourceMgr.SetSourceColorGrade(app.sourceCorrectors)
+		slog.Info("per-source color grading wired to GPU source manager")
+	}
+
 	// Create adapter types for state interfaces.
 	keyAdapter := &keyBridgeAdapter{bridge: app.keyBridge, sourceMgr: sourceMgr}
 	compositorAdapter := &compositorStateAdapter{compositor: app.compositor}

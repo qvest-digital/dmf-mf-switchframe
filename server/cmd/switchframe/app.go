@@ -121,7 +121,8 @@ type App struct {
 	stmapStore       *stmap.Store
 
 	// Color grading
-	colorGradeCtrl *colorGradeController
+	colorGradeCtrl  *colorGradeController
+	sourceCorrectors *colorgrade.SourceCorrectorManager
 
 	// Text rendering engines
 	textRenderer   *textrender.Renderer
@@ -646,6 +647,9 @@ func (a *App) initSubsystems() error {
 			"looks", len(colorGradeStore.List()),
 		)
 	}
+
+	// Per-source color corrector manager (GPU per-source color grading).
+	a.sourceCorrectors = colorgrade.NewSourceCorrectorManager()
 
 	// Upstream key processor (chroma/luma keying).
 	a.keyProcessor = graphics.NewKeyProcessor()
