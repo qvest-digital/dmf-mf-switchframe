@@ -10,22 +10,29 @@ BrowserClient::BrowserClient(CefRefPtr<OffscreenRenderHandler> handler)
     : handler_(handler) {}
 
 void BrowserClient::OnAfterCreated(CefRefPtr<CefBrowser> browser) {
-    // Browser is fully created and ready for navigation.
+    std::cerr << "[browser] OnAfterCreated: id=" << browser->GetIdentifier() << std::endl;
 }
 
-void BrowserClient::OnBeforeClose(CefRefPtr<CefBrowser> /*browser*/) {
-    // Browser is about to be destroyed.
+void BrowserClient::OnBeforeClose(CefRefPtr<CefBrowser> browser) {
+    std::cerr << "[browser] OnBeforeClose: id=" << browser->GetIdentifier() << std::endl;
 }
 
 void BrowserClient::OnLoadEnd(CefRefPtr<CefBrowser> browser,
                               CefRefPtr<CefFrame> frame, int httpStatusCode) {
-    // Only fire for the main frame, not sub-frames.
+    std::cerr << "[browser] OnLoadEnd: id=" << browser->GetIdentifier()
+              << " url=" << frame->GetURL().ToString()
+              << " status=" << httpStatusCode
+              << " main=" << frame->IsMain() << std::endl;
+
     if (!frame->IsMain()) {
         return;
     }
 
     if (on_load_end_) {
+        std::cerr << "[browser] Firing on_load_end callback" << std::endl;
         on_load_end_(browser->GetIdentifier(), httpStatusCode);
+    } else {
+        std::cerr << "[browser] No on_load_end callback set!" << std::endl;
     }
 }
 
@@ -34,6 +41,11 @@ void BrowserClient::OnLoadError(CefRefPtr<CefBrowser> browser,
                                 ErrorCode errorCode,
                                 const CefString& errorText,
                                 const CefString& failingUrl) {
+    std::cerr << "[browser] OnLoadError: id=" << browser->GetIdentifier()
+              << " error=" << errorCode
+              << " text=" << errorText.ToString()
+              << " url=" << failingUrl.ToString() << std::endl;
+
     if (!frame->IsMain()) {
         return;
     }
@@ -110,6 +122,10 @@ bool BrowserPool::Create(int id, int width, int height, int fps) {
     slot.client = client;
     slot.active = true;
 
+    std::cerr << "[pool] Created browser slot " << id
+              << " (" << width << "x" << height << " @" << fps << "fps)"
+              << " cef_id=" << browser->GetIdentifier() << std::endl;
+
     return true;
 }
 
@@ -130,6 +146,7 @@ bool BrowserPool::LoadURL(int id, const std::string& url) {
         return false;
     }
 
+    std::cerr << "[pool] LoadURL: slot=" << id << " url=" << url << std::endl;
     frame->LoadURL(url);
     return true;
 }
@@ -151,6 +168,7 @@ bool BrowserPool::Execute(int id, const std::string& js) {
         return false;
     }
 
+    std::cerr << "[pool] Execute: slot=" << id << " js_len=" << js.size() << std::endl;
     frame->ExecuteJavaScript(js, "", 0);
     return true;
 }

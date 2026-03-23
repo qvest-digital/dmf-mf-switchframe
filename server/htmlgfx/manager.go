@@ -539,7 +539,7 @@ func (l *sidecarLogger) Write(p []byte) (int, error) {
 		line := strings.TrimSpace(string(l.buf[:idx]))
 		l.buf = l.buf[idx+1:]
 		if line != "" {
-			slog.Debug(l.prefix, "msg", line)
+			slog.Info(l.prefix, "msg", line)
 		}
 	}
 	return len(p), nil

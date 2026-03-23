@@ -1,4 +1,5 @@
 #include "render_handler.h"
+#include <iostream>
 
 OffscreenRenderHandler::OffscreenRenderHandler(int browser_id, int width,
                                                int height,
@@ -25,10 +26,14 @@ void OffscreenRenderHandler::OnPaint(CefRefPtr<CefBrowser> /*browser*/,
     }
 
     if (!on_frame_) {
+        std::cerr << "[render] OnPaint: no callback for browser " << browser_id_ << std::endl;
         return;
     }
 
     // BGRA: 4 bytes per pixel.
     size_t buffer_size = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+    std::cerr << "[render] OnPaint: browser=" << browser_id_
+              << " size=" << width << "x" << height
+              << " bytes=" << buffer_size << std::endl;
     on_frame_(browser_id_, width, height, buffer, buffer_size);
 }
