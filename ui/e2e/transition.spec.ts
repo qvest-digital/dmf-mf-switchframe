@@ -39,10 +39,10 @@ test.describe('Transition Controls', () => {
 		await expect(select).toBeVisible();
 	});
 
-	test('keyboard shortcut labels are shown', async ({ page }) => {
+	test('CUT AUTO FTB button text is visible', async ({ page }) => {
 		await page.goto('/');
-		await expect(page.getByText('Space')).toBeVisible();
-		await expect(page.getByText('Enter')).toBeVisible();
-		await expect(page.getByText('F1')).toBeVisible();
+		await expect(page.getByText('CUT')).toBeVisible();
+		await expect(page.getByText('AUTO')).toBeVisible();
+		await expect(page.getByText('FTB')).toBeVisible();
 	});
 });

@@ -27,7 +27,6 @@
 	import OperatorBadge from '../components/OperatorBadge.svelte';
 	import TeamPanel from '../components/TeamPanel.svelte';
 	import VideoProcessingPanel from '../components/VideoProcessingPanel.svelte';
-	import LockIndicator from '../components/LockIndicator.svelte';
 	import CommsBar from '../components/CommsBar.svelte';
 	import BottomTabs from '../components/BottomTabs.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
@@ -669,7 +668,6 @@
 					commsActive={store.effectiveState.comms?.active ?? false}
 				/>
 					<div class="header-right">
-						<LockIndicator state={store.effectiveState} subsystem="output" />
 						<OperatorBadge state={store.effectiveState} />
 						{#if !operatorState.isRegistered() && (store.effectiveState.operators?.length ?? 0) > 0}
 							<button class="register-btn" onclick={() => { showOperatorRegistration = true; }}>Register</button>
@@ -697,7 +695,6 @@
 			</section>
 
 			<section class="control-strip">
-				<LockIndicator state={store.effectiveState} subsystem="switching" />
 				<div class="source-buttons">
 					{#each sortedSourceKeys(store.effectiveState.sources) as key, i}
 						<SourceButton
@@ -724,20 +721,10 @@
 					{#snippet children(activeTab)}
 						{#if activeTab === 'Audio'}
 							<div class="tab-panel audio-tab">
-								{#if (store.effectiveState.operators?.length ?? 0) > 0}
-									<div class="panel-header">
-										<LockIndicator state={store.effectiveState} subsystem="audio" />
-									</div>
-								{/if}
 								<AudioMixer state={store.effectiveState} {sourceLevels} {programLevels} {pflActiveSource} pflMode={pflActiveMode} {pflManager} selectedChannel={selectedAudioChannel} onPFLToggle={handlePFLToggle} onStateUpdate={store.applyUpdate} onChannelSelect={(key) => { selectedAudioChannel = key; }} />
 							</div>
 						{:else if activeTab === 'Compose'}
 							<div class="tab-panel">
-								{#if (store.effectiveState.operators?.length ?? 0) > 0}
-									<div class="panel-header">
-										<LockIndicator state={store.effectiveState} subsystem="graphics" />
-									</div>
-								{/if}
 								<CompositionPanel state={store.effectiveState} bind:activeSubTab={composeSubTab} externalSelectedLayerId={graphicsSelectedLayerId} />
 							</div>
 						{:else if activeTab === 'Macros'}
@@ -746,11 +733,6 @@
 							</div>
 						{:else if activeTab === 'Replay'}
 							<div class="tab-panel">
-								{#if (store.effectiveState.operators?.length ?? 0) > 0}
-									<div class="panel-header">
-										<LockIndicator state={store.effectiveState} subsystem="replay" />
-									</div>
-								{/if}
 								<ReplayPanel state={store.effectiveState} {pipeline} />
 							</div>
 						{:else if activeTab === 'Presets'}
@@ -767,11 +749,6 @@
 							</div>
 						{:else if activeTab === 'Captions'}
 							<div class="tab-panel">
-								{#if (store.effectiveState.operators?.length ?? 0) > 0}
-									<div class="panel-header">
-										<LockIndicator state={store.effectiveState} subsystem="captions" />
-									</div>
-								{/if}
 								<CaptionsPanel state={store.effectiveState} />
 							</div>
 						{:else if activeTab === 'Clips'}
@@ -862,7 +839,7 @@
 
 	.tab-panel {
 		height: 100%;
-		overflow-y: auto;
+		overflow: hidden;
 	}
 
 	.tab-panel.audio-tab {
@@ -905,12 +882,6 @@
 		color: var(--text-primary, #eee);
 	}
 
-	.panel-header {
-		display: flex;
-		justify-content: flex-end;
-		padding: 1px 4px 0;
-		min-height: 0;
-	}
 
 	.token-prompt {
 		position: fixed;
