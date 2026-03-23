@@ -3,7 +3,7 @@
 # Run on the target server (Debian/Ubuntu).
 set -euo pipefail
 
-CEF_VERSION="131.3.5+gdd9de12+chromium-131.0.6778.264"
+CEF_VERSION="138.0.60+gd8bc8bd+chromium-138.0.7204.307"
 CEF_PLATFORM="linux64_minimal"
 CEF_DIR="/opt/cef"
 BUILD_DIR="/opt/switchframe-cef/build"
@@ -42,9 +42,17 @@ if [ ! -d "${CEF_DIR}" ]; then
     TEMP_DIR=$(mktemp -d)
 
     echo "Downloading from: ${CEF_URL}"
-    curl -L --progress-bar -o "${TEMP_DIR}/cef.tar.bz2" "${CEF_URL}"
+    curl -fL --progress-bar -o "${TEMP_DIR}/cef.tar.bz2" "${CEF_URL}"
 
-    echo "Extracting..."
+    # Validate the download is actually a bzip2 file
+    if ! file "${TEMP_DIR}/cef.tar.bz2" | grep -q "bzip2"; then
+        echo "ERROR: Downloaded file is not a valid bzip2 archive."
+        echo "The CEF version may not exist. Check https://cef-builds.spotifycdn.com/index.html"
+        rm -rf "${TEMP_DIR}"
+        exit 1
+    fi
+
+    echo "Extracting (this may take a minute)..."
     tar -xjf "${TEMP_DIR}/cef.tar.bz2" -C "${TEMP_DIR}"
 
     sudo mkdir -p "${CEF_DIR}"
