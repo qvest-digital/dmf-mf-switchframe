@@ -8,6 +8,7 @@
 #include "include/cef_app.h"
 #include "include/cef_command_line.h"
 #include "app.h"
+#include "browser_pool.h"
 
 int main(int argc, char* argv[]) {
     // CEF subprocess support (required for multi-process architecture)
@@ -97,6 +98,14 @@ int main(int argc, char* argv[]) {
         CefShutdown();
         return 1;
     }
+
+    // Create browser pool with stub frame callback.
+    // The frame socket writer will be wired here in Task 11.
+    auto browser_pool = std::make_shared<BrowserPool>(
+        4, [](int id, int w, int h, const void* /*buf*/, size_t sz) {
+            std::cerr << "frame: browser=" << id << " " << w << "x" << h
+                      << " size=" << sz << std::endl;
+        });
 
     // Signal ready to the Go server
     std::cout << "READY" << std::endl;

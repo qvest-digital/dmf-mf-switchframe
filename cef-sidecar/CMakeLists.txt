@@ -18,6 +18,8 @@ add_subdirectory(${CEF_ROOT}/libcef_dll ${CMAKE_BINARY_DIR}/libcef_dll_wrapper)
 set(SOURCES
   src/main.cpp
   src/app.cpp
+  src/render_handler.cpp
+  src/browser_pool.cpp
 )
 
 add_executable(switchframe-cef ${SOURCES})
