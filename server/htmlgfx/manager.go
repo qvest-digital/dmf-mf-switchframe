@@ -104,12 +104,12 @@ func (m *Manager) spawn(binPath string) error {
 	// Capture stdout to wait for READY signal.
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		os.RemoveAll(socketDir)
+		_ = os.RemoveAll(socketDir)
 		return fmt.Errorf("stdout pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		os.RemoveAll(socketDir)
+		_ = os.RemoveAll(socketDir)
 		return fmt.Errorf("start sidecar: %w", err)
 	}
 	m.process = cmd.Process
@@ -182,7 +182,7 @@ func (m *Manager) killProcess() {
 		m.process = nil
 	}
 	if m.socketDir != "" {
-		os.RemoveAll(m.socketDir)
+		_ = os.RemoveAll(m.socketDir)
 		m.socketDir = ""
 	}
 }
@@ -499,7 +499,7 @@ func (m *Manager) Close() error {
 		}
 
 		if m.socketDir != "" {
-			os.RemoveAll(m.socketDir)
+			_ = os.RemoveAll(m.socketDir)
 			m.socketDir = ""
 		}
 	})
