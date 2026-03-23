@@ -5,27 +5,20 @@
 		children: import('svelte').Snippet<[string]>;
 		onTabChange?: (tab: string) => void;
 		replayActive?: boolean;
-		aiAvailable?: boolean;
 	}
-	let { children, onTabChange, replayActive = false, aiAvailable = false }: Props = $props();
+	let { children, onTabChange, replayActive = false }: Props = $props();
 
 	const staticTabs = ['Audio', 'Compose', 'Video', 'Replay', 'Captions', 'SCTE', 'Macros', 'Presets', 'Clips', 'Team'] as const;
-	type StaticTabId = typeof staticTabs[number];
-	type TabId = StaticTabId | 'AI';
+	type TabId = typeof staticTabs[number];
 
-	let tabs = $derived(
-		aiAvailable
-			? ([...staticTabs, 'AI'] as TabId[])
-			: ([...staticTabs] as TabId[]),
-	);
-
-	const allValidTabs: readonly string[] = [...staticTabs, 'AI'];
+	const tabs = staticTabs;
+	const allValidTabs: readonly string[] = [...staticTabs];
 
 	function loadSavedTab(): TabId {
 		if (typeof localStorage === 'undefined') return 'Audio';
 		const saved = localStorage.getItem('sf-active-tab');
 		// Migrate old tab names to new Video tab
-		if (saved === 'Color' || saved === 'STMap') {
+		if (saved === 'Color' || saved === 'STMap' || saved === 'AI') {
 			localStorage.setItem('sf-active-tab', 'Video');
 			return 'Video';
 		}
@@ -75,8 +68,7 @@
 				id="tab-{tab.toLowerCase().replace(' ', '-')}"
 				class="tab"
 				class:active={activeTab === tab}
-				class:tab--ai={tab === 'AI'}
-				role="tab"
+		role="tab"
 				aria-selected={activeTab === tab}
 				aria-controls="tabpanel-{tab.toLowerCase().replace(' ', '-')}"
 				onclick={() => setTab(tab)}
@@ -84,9 +76,6 @@
 				{tab}
 				{#if tab === 'Replay' && replayActive}
 					<span class="replay-dot"></span>
-				{/if}
-				{#if tab === 'AI'}
-					<span class="ai-dot"></span>
 				{/if}
 				<span class="tab-shortcut">^{(i + 1) % 10}</span>
 			</button>
@@ -164,20 +153,6 @@
 		font-family: var(--font-mono);
 		font-size: var(--text-2xs);
 		opacity: 0.2;
-	}
-
-	.tab--ai.active {
-		border-bottom-color: #a855f7;
-	}
-
-	.ai-dot {
-		display: inline-block;
-		width: 5px;
-		height: 5px;
-		background: #a855f7;
-		border-radius: 50%;
-		margin-left: 1px;
-		opacity: 0.7;
 	}
 
 	.tab-content {

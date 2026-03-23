@@ -28,7 +28,6 @@
 	import OperatorBadge from '../components/OperatorBadge.svelte';
 	import TeamPanel from '../components/TeamPanel.svelte';
 	import VideoProcessingPanel from '../components/VideoProcessingPanel.svelte';
-	import AISegmentPanel from '../components/AISegmentPanel.svelte';
 	import LockIndicator from '../components/LockIndicator.svelte';
 	import CommsBar from '../components/CommsBar.svelte';
 	import BottomTabs from '../components/BottomTabs.svelte';
@@ -711,8 +710,7 @@
 			<section class="bottom-panel">
 					<BottomTabs
 					replayActive={store.effectiveState.replay?.state === 'playing' || store.effectiveState.replay?.state === 'paused'}
-					aiAvailable={store.effectiveState.aiSegmentation?.available === true}
-					onTabChange={(tab) => { layoutTabActive = tab === 'Compose' && composeSubTab === 'layout'; graphicsTabActive = tab === 'Compose' && composeSubTab === 'graphics'; activeBottomTab = tab; }}
+	onTabChange={(tab) => { layoutTabActive = tab === 'Compose' && composeSubTab === 'layout'; graphicsTabActive = tab === 'Compose' && composeSubTab === 'graphics'; activeBottomTab = tab; }}
 				>
 					{#snippet children(activeTab)}
 						{#if activeTab === 'Audio'}
@@ -778,14 +776,6 @@
 						{:else if activeTab === 'Video'}
 							<div class="tab-panel">
 								<VideoProcessingPanel state={store.effectiveState} />
-							</div>
-						{:else if activeTab === 'AI'}
-							<div class="tab-panel">
-								{#if store.effectiveState.aiSegmentation?.available}
-									<AISegmentPanel state={store.effectiveState} />
-								{:else}
-									<div class="panel-disabled">AI features not available on this server</div>
-								{/if}
 							</div>
 						{/if}
 					{/snippet}

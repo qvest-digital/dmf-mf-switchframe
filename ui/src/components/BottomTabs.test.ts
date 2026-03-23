@@ -93,6 +93,14 @@ describe('BottomTabs', () => {
 		expect(localStorage.getItem('sf-active-tab')).toBe('Video');
 	});
 
+	it('migrates old AI tab to Video', () => {
+		localStorage.setItem('sf-active-tab', 'AI');
+		const { container } = render(BottomTabs);
+		const videoTab = container.querySelector('#tab-video');
+		expect(videoTab?.getAttribute('aria-selected')).toBe('true');
+		expect(localStorage.getItem('sf-active-tab')).toBe('Video');
+	});
+
 	it('migrates old Layout tab to Compose', () => {
 		localStorage.setItem('sf-active-tab', 'Layout');
 		const { container } = render(BottomTabs);
