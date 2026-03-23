@@ -5,6 +5,7 @@ package stmap
 // float32 ST map coordinates so the per-pixel hot path is integer-only.
 type Processor struct {
 	stmap *STMap
+	name  string // cached from stmap.Name so stmap can be niled after LUT build
 	// LUTs for the Y plane (full resolution).
 	// int32 is sufficient for resolutions up to 32767px (32767*65536 < 2^31).
 	// Halves LUT memory vs int64: 16.6MB vs 33.2MB at 1080p, improving cache hit rate.
@@ -24,6 +25,7 @@ type Processor struct {
 func NewProcessor(stmap *STMap) *Processor {
 	p := &Processor{stmap: stmap}
 	if stmap != nil {
+		p.name = stmap.Name
 		p.buildLUT()
 	}
 	return p
@@ -38,10 +40,7 @@ func (p *Processor) Active() bool {
 
 // Name returns the name of the underlying ST map, or "" if inactive.
 func (p *Processor) Name() string {
-	if p.stmap == nil {
-		return ""
-	}
-	return p.stmap.Name
+	return p.name
 }
 
 // STArrays returns the raw S and T float32 arrays from the underlying ST map.

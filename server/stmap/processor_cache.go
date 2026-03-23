@@ -41,7 +41,7 @@ func NewProcessorCached(stmap *STMap, cachePath string) (*Processor, error) {
 	}
 
 	// Compute LUTs from stmap and write to cache.
-	p := &Processor{stmap: stmap}
+	p := &Processor{stmap: stmap, name: stmap.Name}
 	p.buildLUT()
 
 	data := serializeLUTs(p.lutSX, p.lutSY, p.lutCSX, p.lutCSY)

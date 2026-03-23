@@ -223,6 +223,13 @@ func (a *AnimatedSTMap) BuildProcessorsCached(cacheDir string) {
 		}
 
 		// Free heap-allocated float32 source data — now served from mmap.
+		// Nil the stmap pointer on each Processor so the STMap's S/T slices
+		// become unreachable. STArraysAt() uses the mmap'd stArrays instead.
+		for _, p := range a.processors {
+			if p != nil {
+				p.stmap = nil
+			}
+		}
 		a.Frames = nil
 	})
 }
