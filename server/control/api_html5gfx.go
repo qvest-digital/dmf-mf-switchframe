@@ -53,11 +53,19 @@ func (a *API) handleHTML5Templates(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(templates)
 }
 
+// html5Available checks that the HTML5 manager is connected to a running sidecar.
+func (a *API) html5Available(w http.ResponseWriter) bool {
+	if a.htmlGfxMgr == nil || !a.htmlGfxMgr.Started() {
+		httperr.Write(w, http.StatusServiceUnavailable, "HTML5 graphics sidecar not running")
+		return false
+	}
+	return true
+}
+
 // handleHTML5Load allocates a browser for the layer, loads the URL, and optionally sends initial data.
 func (a *API) handleHTML5Load(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)
-	if a.htmlGfxMgr == nil {
-		httperr.Write(w, http.StatusNotImplemented, "HTML5 graphics not available")
+	if !a.html5Available(w) {
 		return
 	}
 
@@ -112,8 +120,7 @@ func (a *API) handleHTML5Load(w http.ResponseWriter, r *http.Request) {
 // handleHTML5UpdateData sends updated data to the HTML5 graphic on a layer.
 func (a *API) handleHTML5UpdateData(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)
-	if a.htmlGfxMgr == nil {
-		httperr.Write(w, http.StatusNotImplemented, "HTML5 graphics not available")
+	if !a.html5Available(w) {
 		return
 	}
 
@@ -148,8 +155,7 @@ func (a *API) handleHTML5UpdateData(w http.ResponseWriter, r *http.Request) {
 // handleHTML5Play sends a play command to the HTML5 graphic on a layer.
 func (a *API) handleHTML5Play(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)
-	if a.htmlGfxMgr == nil {
-		httperr.Write(w, http.StatusNotImplemented, "HTML5 graphics not available")
+	if !a.html5Available(w) {
 		return
 	}
 
@@ -178,8 +184,7 @@ func (a *API) handleHTML5Play(w http.ResponseWriter, r *http.Request) {
 // handleHTML5Stop sends a stop command to the HTML5 graphic on a layer.
 func (a *API) handleHTML5Stop(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)
-	if a.htmlGfxMgr == nil {
-		httperr.Write(w, http.StatusNotImplemented, "HTML5 graphics not available")
+	if !a.html5Available(w) {
 		return
 	}
 
@@ -208,8 +213,7 @@ func (a *API) handleHTML5Stop(w http.ResponseWriter, r *http.Request) {
 // handleHTML5Next sends a next command to the HTML5 graphic on a layer.
 func (a *API) handleHTML5Next(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)
-	if a.htmlGfxMgr == nil {
-		httperr.Write(w, http.StatusNotImplemented, "HTML5 graphics not available")
+	if !a.html5Available(w) {
 		return
 	}
 
@@ -238,8 +242,7 @@ func (a *API) handleHTML5Next(w http.ResponseWriter, r *http.Request) {
 // handleHTML5Custom sends a custom action to the HTML5 graphic on a layer.
 func (a *API) handleHTML5Custom(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)
-	if a.htmlGfxMgr == nil {
-		httperr.Write(w, http.StatusNotImplemented, "HTML5 graphics not available")
+	if !a.html5Available(w) {
 		return
 	}
 
@@ -279,8 +282,7 @@ func (a *API) handleHTML5Custom(w http.ResponseWriter, r *http.Request) {
 // handleHTML5Unload frees the browser associated with the layer.
 func (a *API) handleHTML5Unload(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)
-	if a.htmlGfxMgr == nil {
-		httperr.Write(w, http.StatusNotImplemented, "HTML5 graphics not available")
+	if !a.html5Available(w) {
 		return
 	}
 

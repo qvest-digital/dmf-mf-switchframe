@@ -134,6 +134,10 @@ func (m *mockHTMLGfxManager) DiscoverTemplates() []htmlgfx.TemplateInfo {
 	return nil
 }
 
+func (m *mockHTMLGfxManager) Started() bool {
+	return true
+}
+
 // setupHTML5GfxTestAPI creates a test API with a compositor and optional HTML5 manager.
 func setupHTML5GfxTestAPI(t *testing.T, mgr HTMLGfxManager) (*API, *graphics.Compositor) {
 	t.Helper()
@@ -219,7 +223,7 @@ func TestHTML5Load_NoManager(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	require.Equal(t, http.StatusNotImplemented, rec.Code)
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
 }
 
 func TestHTML5Load_PoolExhausted(t *testing.T) {
@@ -515,7 +519,7 @@ func TestHTML5UpdateData_NoManager(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	require.Equal(t, http.StatusNotImplemented, rec.Code)
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
 }
 
 func TestHTML5Play_NoManager(t *testing.T) {
@@ -526,5 +530,5 @@ func TestHTML5Play_NoManager(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
-	require.Equal(t, http.StatusNotImplemented, rec.Code)
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
 }

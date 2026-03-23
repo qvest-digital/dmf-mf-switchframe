@@ -118,6 +118,7 @@ type SCTE35RulesAPI interface {
 
 // HTMLGfxManager is the interface for HTML5 graphics browser pool operations.
 type HTMLGfxManager interface {
+	Started() bool
 	AllocateBrowser(layerID int) (int, error)
 	FreeBrowser(browserID int)
 	BrowserForLayer(layerID int) int
