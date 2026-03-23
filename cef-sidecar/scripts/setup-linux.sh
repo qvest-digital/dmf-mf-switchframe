@@ -1,7 +1,11 @@
 #!/bin/bash
 # Setup script for building the CEF sidecar on Linux x86_64.
-# Run on the target server (Debian/Ubuntu).
+# Run on the target server (Debian/Ubuntu) with sudo.
 set -euo pipefail
+
+# Resolve paths before any cd changes the working directory.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SIDECAR_SRC="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 CEF_VERSION="138.0.60+gd8bc8bd+chromium-138.0.7204.307"
 CEF_PLATFORM="linux64_minimal"
@@ -81,9 +85,6 @@ fi
 
 # 4. Build switchframe-cef
 echo "--- Building switchframe-cef ---"
-# Resolve the cef-sidecar source directory (parent of scripts/).
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SIDECAR_SRC="$(cd "${SCRIPT_DIR}/.." && pwd)"
 echo "Sidecar source: ${SIDECAR_SRC}"
 
 mkdir -p "${BUILD_DIR}"
