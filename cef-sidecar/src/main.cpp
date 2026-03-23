@@ -160,41 +160,41 @@ int main(int argc, char* argv[]) {
                     // Wire OnLoadEnd callback to inject adapter.js on every page load
                     // and poll for detected format.
                     auto& ctrl_for_cb = control_socket;
+                    int slot_id = cmd.id;  // capture slot ID for callbacks
                     browser_pool->SetLoadEndCallback(cmd.id,
-                        [browser_pool, &adapter_js, ctrl_for_cb](int browser_id, int http_status) {
+                        [browser_pool, &adapter_js, ctrl_for_cb, slot_id](int /*cef_browser_id*/, int http_status) {
                             (void)http_status;
-                            // Inject adapter.js
-                            browser_pool->Execute(browser_id, adapter_js);
+                            // Inject adapter.js (use slot_id, not CEF browser ID)
+                            browser_pool->Execute(slot_id, adapter_js);
                             // After a short delay, read the detected format and report it.
-                            // The adapter.js detect() runs synchronously after injection.
                             std::string format_check =
                                 "setTimeout(function() {"
                                 "  var fmt = window.__switchframe ? window.__switchframe.format : 'unknown';"
                                 "  document.title = 'switchframe-format:' + fmt;"
                                 "}, 200);";
-                            browser_pool->Execute(browser_id, format_check);
+                            browser_pool->Execute(slot_id, format_check);
                         });
                     // Wire title change callback to detect format.
                     // adapter.js sets document.title = "switchframe-format:<fmt>"
                     browser_pool->SetTitleChangeCallback(cmd.id,
-                        [ctrl_for_cb](int browser_id, const std::string& title) {
+                        [ctrl_for_cb, slot_id](int /*cef_browser_id*/, const std::string& title) {
                             const std::string prefix = "switchframe-format:";
                             if (title.substr(0, prefix.size()) == prefix) {
                                 std::string fmt = title.substr(prefix.size());
-                                std::cerr << "[main] Format detected: browser="
-                                          << browser_id << " format=" << fmt << std::endl;
+                                std::cerr << "[main] Format detected: slot="
+                                          << slot_id << " format=" << fmt << std::endl;
                                 if (ctrl_for_cb) {
                                     ctrl_for_cb->SendResponse(
                                         protocol::MakeEventResponse(
-                                            browser_id, "format_detected", "format", fmt));
+                                            slot_id, "format_detected", "format", fmt));
                                 }
                             }
                         });
                     browser_pool->SetLoadErrorCallback(cmd.id,
-                        [ctrl_for_cb](int browser_id, const std::string& error) {
+                        [ctrl_for_cb, slot_id](int /*cef_browser_id*/, const std::string& error) {
                             if (ctrl_for_cb) {
                                 ctrl_for_cb->SendResponse(protocol::MakeEventResponse(
-                                    browser_id, "load_error", "error", error));
+                                    slot_id, "load_error", "error", error));
                             }
                         });
                     if (cs) {
