@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/zsiec/switchframe/server/colorgrade"
 	"github.com/zsiec/switchframe/server/control/httperr"
 )
 
@@ -47,6 +48,13 @@ func (a *API) registerSourceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/sources/{key}", a.handleDeleteSource)
 	mux.HandleFunc("GET /api/sources/{key}/srt/stats", a.handleGetSourceSRTStats)
 	mux.HandleFunc("PUT /api/sources/{key}/srt", a.handleUpdateSourceSRT)
+
+	// Per-source color corrector.
+	if a.sourceCorrectorMgr != nil {
+		mux.HandleFunc("GET /api/sources/{key}/corrector", a.handleSourceCorrectorGet)
+		mux.HandleFunc("PUT /api/sources/{key}/corrector", a.handleSourceCorrectorSet)
+		mux.HandleFunc("DELETE /api/sources/{key}/corrector", a.handleSourceCorrectorReset)
+	}
 }
 
 // handleSetLabel sets a human-readable label on a source.
@@ -272,4 +280,53 @@ func (a *API) handleUpdateSourceSRT(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// ─── Per-Source Corrector Endpoints ─────────────────────────────────────────
+
+// handleSourceCorrectorGet returns the color corrector state for a source.
+// GET /api/sources/{key}/corrector
+func (a *API) handleSourceCorrectorGet(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("key")
+	state := a.sourceCorrectorMgr.Get(key)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(state)
+}
+
+// handleSourceCorrectorSet updates the color corrector state for a source.
+// The client sends the full CorrectorState; partial updates are not supported.
+// PUT /api/sources/{key}/corrector
+func (a *API) handleSourceCorrectorSet(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	key := r.PathValue("key")
+
+	var state colorgrade.CorrectorState
+	if err := json.NewDecoder(r.Body).Decode(&state); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+
+	if err := validateCorrectorState(state); err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	a.sourceCorrectorMgr.Set(key, state)
+	a.broadcast()
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
+}
+
+// handleSourceCorrectorReset resets the color corrector for a source to defaults.
+// DELETE /api/sources/{key}/corrector
+func (a *API) handleSourceCorrectorReset(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	key := r.PathValue("key")
+
+	a.sourceCorrectorMgr.Reset(key)
+	a.broadcast()
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }

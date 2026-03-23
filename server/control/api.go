@@ -143,6 +143,14 @@ type ColorGradeManager interface {
 	LoadLookSettings(name string) *colorgrade.CorrectorState
 }
 
+// SourceCorrectorManager is the interface for per-source color corrector operations.
+type SourceCorrectorManager interface {
+	Get(key string) colorgrade.CorrectorState
+	Set(key string, state colorgrade.CorrectorState)
+	Reset(key string)
+	HasCorrection(key string) bool
+}
+
 // APIOption configures optional API dependencies.
 type APIOption func(*API)
 
@@ -367,6 +375,11 @@ func WithColorGradeManager(m ColorGradeManager) APIOption {
 	return func(a *API) { a.colorGradeMgr = m }
 }
 
+// WithSourceCorrectorManager attaches a per-source color corrector manager to the API.
+func WithSourceCorrectorManager(m SourceCorrectorManager) APIOption {
+	return func(a *API) { a.sourceCorrectorMgr = m }
+}
+
 // SetHTMLGfxManager attaches an HTML5 graphics manager to the API.
 // This is a setter rather than an option because the manager may be
 // initialized after the API is constructed.
@@ -435,6 +448,7 @@ type API struct {
 	stmapStore         *stmap.Store
 	stmapCacheDir      string // base cache dir for mmap'd ST map LUTs (empty = disabled)
 	colorGradeMgr      ColorGradeManager
+	sourceCorrectorMgr SourceCorrectorManager
 	htmlGfxMgr         HTMLGfxManager
 	inviteTokens       map[string]string // token -> role; nil = no invite gating
 	sessionAPIToken    string            // used to bypass invite token requirement for session owner

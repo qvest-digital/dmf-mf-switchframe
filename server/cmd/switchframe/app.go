@@ -1264,6 +1264,9 @@ func (a *App) initAPI() error {
 	if a.colorGradeCtrl != nil {
 		apiOpts = append(apiOpts, control.WithColorGradeManager(a.colorGradeCtrl))
 	}
+	if a.sourceCorrectors != nil {
+		apiOpts = append(apiOpts, control.WithSourceCorrectorManager(a.sourceCorrectors))
+	}
 	if a.replayMgr != nil {
 		apiOpts = append(apiOpts, control.WithReplayManager(a.replayMgr))
 	}

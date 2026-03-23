@@ -33,7 +33,7 @@ func sourceType(key string) string {
 // calling compositor.Status() (which would deadlock when called from the
 // compositor's own callback).
 func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics.State) internal.ControlRoomState {
-	// Enrich sources with type field and SRT info.
+	// Enrich sources with type field, SRT info, and per-source corrector.
 	for key, info := range state.Sources {
 		info.Type = sourceType(key)
 		if info.Type == "srt" && a.srtStats != nil {
@@ -65,6 +65,11 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 				PacketsBelated:       srtInfo.PacketsBelated,
 				ReconnectCount:       srtInfo.ReconnectCount,
 			}
+		}
+		// Per-source color corrector state.
+		if a.sourceCorrectors != nil && a.sourceCorrectors.HasCorrection(key) {
+			cs := a.sourceCorrectors.Get(key)
+			info.Corrector = &cs
 		}
 		state.Sources[key] = info
 	}
