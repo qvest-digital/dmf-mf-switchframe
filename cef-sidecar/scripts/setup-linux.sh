@@ -23,7 +23,7 @@ sudo apt-get install -y -qq \
     libx11-dev libxcomposite-dev libxdamage-dev libxext-dev libxfixes-dev libxrandr-dev \
     libnss3-dev libnspr4-dev \
     libatk1.0-dev libatk-bridge2.0-dev \
-    libglib2.0-dev libgio-cil-dev \
+    libglib2.0-dev \
     libdrm-dev libgbm-dev \
     libasound2-dev \
     libpango1.0-dev libcairo2-dev \
