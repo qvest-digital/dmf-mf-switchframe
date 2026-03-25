@@ -522,3 +522,275 @@ func TestLoadPersistedState_UnsupportedVersion(t *testing.T) {
 		t.Errorf("error = %q, want %q", err.Error(), want)
 	}
 }
+
+func TestManager_Recover_FromCued(t *testing.T) {
+	provider := fakeProvider(5)
+
+	// Step 1: Create a manager, load a playlist, snapshot, write to disk.
+	m1 := NewManager(ManagerConfig{AssetProvider: provider})
+	pl := testPlaylist(clipItem("a"), clipItem("b"), clipItem("c"))
+	if err := m1.LoadPlaylist(1, pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+
+	snap := m1.Snapshot()
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "playout-state.json")
+	if err := atomicWriteJSON(statePath, &snap); err != nil {
+		t.Fatalf("atomicWriteJSON: %v", err)
+	}
+
+	// Step 2: Create a fresh manager and recover.
+	m2 := NewManager(ManagerConfig{AssetProvider: provider})
+	if err := m2.Recover(statePath); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+
+	// Step 3: Verify state.
+	states := m2.ChannelStates()
+	if states[0].State != "cued" {
+		t.Errorf("state = %q, want %q", states[0].State, "cued")
+	}
+	if states[0].PlaylistName != "Test Playlist" {
+		t.Errorf("playlistName = %q, want %q", states[0].PlaylistName, "Test Playlist")
+	}
+	if states[0].ItemCount != 3 {
+		t.Errorf("itemCount = %d, want 3", states[0].ItemCount)
+	}
+}
+
+func TestManager_Recover_FromOnAir_RecuesAtCurrentItem(t *testing.T) {
+	provider := fakeProvider(5)
+
+	// Manually build a PersistedState with ch1 OnAir at cursor=1 with 3 items.
+	state := PersistedState{
+		Version:   1,
+		Timestamp: time.Now().UTC(),
+		Channels: []PersistedChannel{
+			{
+				ID:     1,
+				State:  StateOnAir,
+				Mode:   ModeAutomated,
+				Cursor: 1,
+				Playlist: &Playlist{
+					ID:   "test-pl",
+					Name: "Test Playlist",
+					Items: []PlaylistItem{
+						clipItem("a"),
+						clipItem("b"),
+						clipItem("c"),
+					},
+				},
+			},
+			{
+				ID:    2,
+				State: StateStopped,
+			},
+		},
+	}
+
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "playout-state.json")
+	if err := atomicWriteJSON(statePath, &state); err != nil {
+		t.Fatalf("atomicWriteJSON: %v", err)
+	}
+
+	m := NewManager(ManagerConfig{AssetProvider: provider})
+	if err := m.Recover(statePath); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+
+	// OnAir channels should be re-cued (not started).
+	states := m.ChannelStates()
+	if states[0].State != "cued" {
+		t.Errorf("state = %q, want %q", states[0].State, "cued")
+	}
+	if states[0].ItemIndex != 1 {
+		t.Errorf("itemIndex = %d, want 1", states[0].ItemIndex)
+	}
+	if states[0].CurrentItemID != "b" {
+		t.Errorf("currentItemID = %q, want %q", states[0].CurrentItemID, "b")
+	}
+}
+
+func TestManager_Recover_PodElapsedAdjustment(t *testing.T) {
+	provider := fakeProvider(5)
+
+	// Build state with snapshot 10s ago, pod fired 15s ago with 5000ms elapsed.
+	now := time.Now().UTC()
+	snapshotTime := now.Add(-10 * time.Second)
+	firedAt := now.Add(-15 * time.Second)
+
+	state := PersistedState{
+		Version:   1,
+		Timestamp: snapshotTime,
+		Channels: []PersistedChannel{
+			{
+				ID:    1,
+				State: StateOnAir,
+				Mode:  ModeAutomated,
+				Playlist: &Playlist{
+					ID:    "test-pl",
+					Name:  "Test Playlist",
+					Items: []PlaylistItem{clipItem("a")},
+				},
+				Pods: []PersistedPod{
+					{
+						ID: "pod-adj-1",
+						Config: PodConfig{
+							Type:       "commercial",
+							DurationMs: 60000,
+							AutoReturn: true,
+						},
+						State:     PodBreakActive,
+						Armed:     true,
+						ElapsedMs: 5000,
+						FiredAt:   firedAt.UnixMilli(),
+					},
+				},
+			},
+			{
+				ID:    2,
+				State: StateStopped,
+			},
+		},
+	}
+
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "playout-state.json")
+	if err := atomicWriteJSON(statePath, &state); err != nil {
+		t.Fatalf("atomicWriteJSON: %v", err)
+	}
+
+	m := NewManager(ManagerConfig{AssetProvider: provider})
+	if err := m.Recover(statePath); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+
+	// Pod elapsed should be adjusted: ~15000ms (time since fired).
+	pb, _ := m.PodBoard(1)
+	pod, err := pb.GetPod("pod-adj-1")
+	if err != nil {
+		t.Fatalf("GetPod: %v", err)
+	}
+
+	// Allow +/- 5 seconds tolerance for timing.
+	if pod.ElapsedMs < 10000 || pod.ElapsedMs > 20000 {
+		t.Errorf("pod.ElapsedMs = %d, want ~15000 (±5000)", pod.ElapsedMs)
+	}
+}
+
+func TestManager_Recover_EmitsAsRunError(t *testing.T) {
+	provider := fakeProvider(5)
+
+	state := PersistedState{
+		Version:   1,
+		Timestamp: time.Now().UTC().Add(-5 * time.Second),
+		Channels: []PersistedChannel{
+			{
+				ID:    1,
+				State: StateOnAir,
+				Mode:  ModeAutomated,
+				Playlist: &Playlist{
+					ID:    "test-pl",
+					Name:  "Test Playlist",
+					Items: []PlaylistItem{clipItem("a")},
+				},
+			},
+			{
+				ID:    2,
+				State: StateStopped,
+			},
+		},
+	}
+
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "playout-state.json")
+	if err := atomicWriteJSON(statePath, &state); err != nil {
+		t.Fatalf("atomicWriteJSON: %v", err)
+	}
+
+	m := NewManager(ManagerConfig{AssetProvider: provider})
+
+	asRunDir := t.TempDir()
+	logger, err := NewAsRunLogger(AsRunLoggerConfig{Dir: asRunDir})
+	if err != nil {
+		t.Fatalf("NewAsRunLogger: %v", err)
+	}
+	defer logger.Close()
+	m.SetAsRunLogger(logger)
+
+	if err := m.Recover(statePath); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+
+	// Verify an AsRunError event was emitted.
+	events := logger.Query(AsRunQuery{Type: AsRunError})
+	if len(events) == 0 {
+		t.Fatal("expected at least 1 AsRunError event, got 0")
+	}
+	if events[0].Message == "" {
+		t.Error("AsRunError event has empty message")
+	}
+}
+
+func TestManager_Recover_SkipsTerminalPods(t *testing.T) {
+	provider := fakeProvider(5)
+
+	state := PersistedState{
+		Version:   1,
+		Timestamp: time.Now().UTC(),
+		Channels: []PersistedChannel{
+			{
+				ID:    1,
+				State: StateCued,
+				Playlist: &Playlist{
+					ID:    "test-pl",
+					Name:  "Test Playlist",
+					Items: []PlaylistItem{clipItem("a")},
+				},
+				Pods: []PersistedPod{
+					{
+						ID:     "pod-terminal",
+						Config: PodConfig{Type: "commercial", DurationMs: 30000},
+						State:  PodRejoined, // terminal
+					},
+					{
+						ID:     "pod-active",
+						Config: PodConfig{Type: "promo", DurationMs: 15000},
+						State:  PodScheduled, // non-terminal
+						Armed:  true,
+					},
+				},
+			},
+			{
+				ID:    2,
+				State: StateStopped,
+			},
+		},
+	}
+
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "playout-state.json")
+	if err := atomicWriteJSON(statePath, &state); err != nil {
+		t.Fatalf("atomicWriteJSON: %v", err)
+	}
+
+	m := NewManager(ManagerConfig{AssetProvider: provider})
+	if err := m.Recover(statePath); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+
+	// Only the non-terminal pod should be restored.
+	pb, _ := m.PodBoard(1)
+	pods := pb.ListPods()
+	if len(pods) != 1 {
+		t.Fatalf("pod count = %d, want 1", len(pods))
+	}
+	if pods[0].ID != "pod-active" {
+		t.Errorf("pod.ID = %q, want %q", pods[0].ID, "pod-active")
+	}
+	if !pods[0].Armed {
+		t.Error("pod.Armed = false, want true")
+	}
+}

@@ -1,6 +1,7 @@
 package playout
 
 import (
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -278,6 +279,96 @@ func (m *Manager) Snapshot() PersistedState {
 		}
 	}
 	return state
+}
+
+// Recover loads persisted state from disk and restores channel playlists,
+// cursors, and non-terminal pods. Channels that were OnAir or Cued are
+// re-cued at their saved cursor position; Start must be called separately
+// to resume playback. Active pods have their ElapsedMs adjusted by the
+// wall-clock delta since the snapshot was taken.
+func (m *Manager) Recover(statePath string) error {
+	state, err := loadPersistedState(statePath)
+	if err != nil {
+		return fmt.Errorf("recover: %w", err)
+	}
+
+	wallDelta := time.Since(state.Timestamp)
+
+	m.mu.Lock()
+	asRunLogger := m.asRunLogger
+	m.mu.Unlock()
+
+	for _, pch := range state.Channels {
+		if err := m.validateChannelID(pch.ID); err != nil {
+			continue
+		}
+
+		m.mu.Lock()
+		ch := m.channels[pch.ID-1]
+		pb := m.podBoards[pch.ID-1]
+		m.mu.Unlock()
+
+		// Restore playlist and cursor.
+		if pch.Playlist != nil {
+			if err := ch.LoadPlaylist(pch.Playlist); err != nil {
+				m.log.Warn("recover: LoadPlaylist failed",
+					"channel", pch.ID, "error", err)
+				continue
+			}
+			// Override cursor under lock to the saved position.
+			ch.mu.Lock()
+			ch.cursor = pch.Cursor
+			ch.mu.Unlock()
+		}
+
+		// Restore non-terminal pods.
+		for _, pp := range pch.Pods {
+			if PodState(pp.State).IsTerminal() {
+				continue
+			}
+
+			pod := &Pod{
+				ID:            pp.ID,
+				Config:        pp.Config,
+				State:         pp.State,
+				Armed:         pp.Armed,
+				ElapsedMs:     pp.ElapsedMs,
+				FiredAt:       pp.FiredAt,
+				SCTE35EventID: pp.SCTE35EventID,
+			}
+
+			// Adjust elapsed time for active pods based on wall-clock delta.
+			if pod.State == PodBreakActive || pod.State == PodPreRoll {
+				pod.ElapsedMs += wallDelta.Milliseconds()
+				if pod.Config.DurationMs > 0 {
+					remain := pod.Config.DurationMs - pod.ElapsedMs
+					if remain < 0 {
+						remain = 0
+					}
+					pod.RemainingMs = remain
+				}
+			}
+
+			pb.restorePod(pod)
+		}
+
+		// Emit as-run error for channels that were OnAir or Cued.
+		if pch.State == StateOnAir || pch.State == StateCued {
+			if asRunLogger != nil {
+				asRunLogger.Log(AsRunEvent{
+					Timestamp: time.Now().UTC(),
+					Type:      AsRunError,
+					ChannelID: pch.ID,
+					Message: fmt.Sprintf(
+						"crash recovery: channel %d restored from state %q (wall-clock delta: %s)",
+						pch.ID, pch.State.String(), wallDelta.Truncate(time.Millisecond)),
+				})
+			}
+		}
+	}
+
+	m.notifyStateChange()
+	return nil
 }
 
 // SetOnStateChange registers a callback invoked when any channel state changes.

@@ -874,6 +874,16 @@ func (pb *PodBoard) HighestPriorityArmed() *Pod {
 	return best
 }
 
+// restorePod adds a pod directly to the board, used by crash recovery.
+func (pb *PodBoard) restorePod(pod *Pod) {
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+	pb.pods[pod.ID] = pod
+	if pod.State == PodBreakActive || pod.State == PodPreRoll {
+		pb.activePodID = pod.ID
+	}
+}
+
 // generatePodID creates a short random hex ID.
 func generatePodID() string {
 	b := make([]byte, 4)
