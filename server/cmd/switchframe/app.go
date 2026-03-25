@@ -181,6 +181,9 @@ type App struct {
 	mxlSources  []*mxl.Source
 	mxlOutput   *mxl.Output
 
+	// ST 2110 integration
+	st2110State *st2110State
+
 	// Performance monitoring
 	perfSampler *perf.Sampler
 
@@ -1627,6 +1630,9 @@ func (a *App) closeWithContext(ctx context.Context) {
 func (a *App) closeSubsystems() {
 	// Wait for background goroutines (metering ticker) to exit.
 	a.bgWG.Wait()
+
+	// ST 2110 cleanup (before core engine).
+	a.closeST2110()
 
 	// MXL cleanup first (before core engine).
 	if a.mxlOutput != nil {
