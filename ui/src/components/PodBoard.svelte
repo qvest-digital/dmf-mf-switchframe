@@ -8,8 +8,9 @@
 		pods?: PodStatusBroadcast[];
 		podsArmed?: number;
 		podTemplates?: PodTemplateDef[];
+		showWarning?: boolean;
 	}
-	let { channel, activePod, pods = [], podsArmed = 0, podTemplates }: Props = $props();
+	let { channel, activePod, pods = [], podsArmed = 0, podTemplates, showWarning = false }: Props = $props();
 
 	const armedPods = $derived(
 		pods.filter(p => p.armed && p.state !== 'break_active').sort((a, b) => a.id.localeCompare(b.id))
@@ -56,11 +57,13 @@
 	}
 </script>
 
-<div class="pod-board">
+<div class="pod-board" class:break-active={hasActive}>
 	<div class="pod-header">
-		<span class="pod-title">POD BOARD</span>
+		<span class="pod-title">{hasActive ? 'BREAK ACTIVE' : 'POD BOARD'}</span>
 		{#if podsArmed > 0}
 			<span class="armed-badge">{podsArmed} armed</span>
+		{:else if showWarning}
+			<span class="no-pods-warning">NO PODS ARMED</span>
 		{/if}
 	</div>
 
@@ -121,10 +124,22 @@
 		display: flex;
 		flex-direction: column;
 		gap: 4px;
-		border: 1px solid color-mix(in srgb, orange 30%, var(--border-default));
+		border: 2px solid color-mix(in srgb, orange 30%, var(--border-default));
 		border-radius: var(--radius-sm);
 		padding: 4px 6px;
 		background: color-mix(in srgb, orange 3%, var(--bg-surface));
+		transition: border-color 0.3s, background 0.3s, border-width 0.2s;
+	}
+
+	.pod-board.break-active {
+		border: 3px solid color-mix(in srgb, orange 60%, var(--border-default));
+		background: color-mix(in srgb, orange 6%, var(--bg-surface));
+		animation: break-border-pulse 2s ease-in-out infinite;
+	}
+
+	@keyframes break-border-pulse {
+		0%, 100% { border-color: color-mix(in srgb, orange 60%, var(--border-default)); }
+		50% { border-color: color-mix(in srgb, orange 80%, var(--border-default)); }
 	}
 
 	.pod-header {
@@ -144,10 +159,19 @@
 	.armed-badge {
 		font-family: var(--font-mono);
 		font-size: 9px;
-		color: var(--text-tertiary);
-		background: var(--bg-base);
+		color: orange;
+		background: color-mix(in srgb, orange 20%, var(--bg-base));
 		padding: 1px 4px;
 		border-radius: 2px;
+		font-weight: 700;
+	}
+
+	.no-pods-warning {
+		font-family: var(--font-ui);
+		font-size: 9px;
+		color: color-mix(in srgb, orange 60%, var(--text-tertiary));
+		font-weight: 600;
+		letter-spacing: 0.04em;
 	}
 
 	/* -- Active pod -- */
@@ -280,12 +304,16 @@
 	}
 
 	.action-btn.dump {
+		background: rgba(220, 38, 38, 0.1);
 		color: var(--tally-program);
-		border-color: color-mix(in srgb, var(--tally-program) 40%, transparent);
+		border-color: rgba(220, 38, 38, 0.4);
+		font-size: var(--text-xs);
+		padding: 3px 10px;
+		font-weight: 700;
 	}
 
 	.action-btn.dump:hover {
-		background: color-mix(in srgb, var(--tally-program) 10%, var(--bg-surface));
+		background: color-mix(in srgb, var(--tally-program) 15%, var(--bg-surface));
 	}
 
 	.action-btn.hold {
@@ -313,32 +341,49 @@
 	}
 
 	.icon-btn.fire {
+		width: 22px;
+		height: 22px;
 		color: orange;
-		border-color: color-mix(in srgb, orange 40%, transparent);
+		border-color: orange;
+		font-size: 10px;
 	}
 
 	.icon-btn.fire:hover {
-		background: color-mix(in srgb, orange 15%, var(--bg-surface));
+		background: color-mix(in srgb, orange 25%, var(--bg-surface));
+		transform: scale(1.1);
 	}
 
 	/* -- Template buttons -- */
 	.template-buttons {
 		display: flex;
-		gap: 3px;
-		padding-top: 2px;
-		border-top: 1px solid var(--border-default);
+		gap: 4px;
+		padding-top: 4px;
+		border-top: 1px solid color-mix(in srgb, orange 15%, var(--border-default));
 	}
 
 	.action-btn.tmpl {
 		flex: 1;
 		text-align: center;
-		font-size: 9px;
-		padding: 3px 2px;
+		font-size: 10px;
+		padding: 4px 4px;
 		color: orange;
 		border-color: color-mix(in srgb, orange 25%, var(--border-default));
 	}
 
 	.action-btn.tmpl:hover {
 		background: color-mix(in srgb, orange 8%, var(--bg-surface));
+	}
+
+	/* -- Break-active overrides -- */
+	.break-active .countdown {
+		font-size: 22px;
+	}
+
+	.break-active .elapsed {
+		font-size: 12px;
+	}
+
+	.break-active .active-progress .progress-track {
+		height: 6px;
 	}
 </style>

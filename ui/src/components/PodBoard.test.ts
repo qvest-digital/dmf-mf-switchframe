@@ -168,4 +168,74 @@ describe('PodBoard', () => {
 		// 40000 / 100000 = 40%
 		expect(fill.style.width).toBe('40%');
 	});
+
+	it('applies break-active class when hasActive is true', () => {
+		const activePod = makePod({
+			state: 'break_active',
+			remainingMs: 30000,
+			elapsedMs: 30000,
+		});
+		const { container } = render(PodBoard, {
+			props: { channel: 1, activePod },
+		});
+		const board = container.querySelector('.pod-board');
+		expect(board).not.toBeNull();
+		expect(board!.classList.contains('break-active')).toBe(true);
+	});
+
+	it('does NOT apply break-active class when no active pod', () => {
+		const { container } = render(PodBoard, { props: { channel: 1 } });
+		const board = container.querySelector('.pod-board');
+		expect(board).not.toBeNull();
+		expect(board!.classList.contains('break-active')).toBe(false);
+	});
+
+	it('shows "BREAK ACTIVE" header during active break', () => {
+		const activePod = makePod({
+			state: 'break_active',
+			remainingMs: 30000,
+			elapsedMs: 30000,
+		});
+		const { container } = render(PodBoard, {
+			props: { channel: 1, activePod },
+		});
+		const title = container.querySelector('.pod-title');
+		expect(title).not.toBeNull();
+		expect(title!.textContent).toBe('BREAK ACTIVE');
+	});
+
+	it('shows "POD BOARD" header when no active break', () => {
+		const { container } = render(PodBoard, { props: { channel: 1 } });
+		const title = container.querySelector('.pod-title');
+		expect(title).not.toBeNull();
+		expect(title!.textContent).toBe('POD BOARD');
+	});
+
+	it('shows "NO PODS ARMED" warning when showWarning=true and podsArmed=0', () => {
+		const { container } = render(PodBoard, {
+			props: { channel: 1, showWarning: true, podsArmed: 0 },
+		});
+		const warning = container.querySelector('.no-pods-warning');
+		expect(warning).not.toBeNull();
+		expect(warning!.textContent).toBe('NO PODS ARMED');
+	});
+
+	it('does NOT show "NO PODS ARMED" when showWarning=false', () => {
+		const { container } = render(PodBoard, {
+			props: { channel: 1, showWarning: false, podsArmed: 0 },
+		});
+		const warning = container.querySelector('.no-pods-warning');
+		expect(warning).toBeNull();
+	});
+
+	it('shows armed badge instead of warning when podsArmed > 0 even with showWarning=true', () => {
+		const { container } = render(PodBoard, {
+			props: { channel: 1, showWarning: true, podsArmed: 2 },
+		});
+		const badge = container.querySelector('.armed-badge');
+		expect(badge).not.toBeNull();
+		expect(badge!.textContent).toContain('2 armed');
+		const warning = container.querySelector('.no-pods-warning');
+		expect(warning).toBeNull();
+	});
 });
