@@ -144,10 +144,25 @@ func generateClip(c demoClip, outPath string) error {
 	return cmd.Run()
 }
 
-// GenerateDemoPlaylist creates a realistic broadcast channel lineup in tmpDir
-// using ffmpeg and returns a playout.Playlist ready to load. Includes SCTE-35
-// secondary events on ad break boundaries. If ffmpeg is not available, returns nil.
-func GenerateDemoPlaylist(tmpDir string) (*playout.Playlist, error) {
+// GenerateDemoPlaylist creates a playout playlist for demo mode.
+// If sample clips are available (generated during playout init), it returns
+// a V2 template playlist ("Live Event with Breaks") with idle loop, pod
+// templates, and transitions. If no samples are available (ffmpeg missing at
+// playout init time), it falls back to generating its own synthetic clips
+// in tmpDir and building a V2 playlist from those.
+func GenerateDemoPlaylist(tmpDir string, samples []playout.SampleClip) (*playout.Playlist, error) {
+	// Prefer the template playlist populated with pre-generated samples.
+	if len(samples) > 0 {
+		pl := playout.TemplatePlaylist("Live Event with Breaks", samples)
+		if pl != nil {
+			pl.ID = "demo"
+			slog.Info("demo: using V2 template playlist", "items", len(pl.Items),
+				"idleAsset", pl.IdleAssetURI, "podTemplates", len(pl.PodTemplates))
+			return pl, nil
+		}
+	}
+
+	// Fallback: generate synthetic clips via ffmpeg in tmpDir.
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		slog.Warn("demo: ffmpeg not found, skipping playout demo playlist")
 		return nil, nil
@@ -174,10 +189,12 @@ func GenerateDemoPlaylist(tmpDir string) (*playout.Playlist, error) {
 		return nil, nil
 	}
 
-	// Build the playlist. Insert ad breaks after news segments using SCTE-35
-	// secondary events — just like a real broadcast schedule.
+	// Build a V2 playlist from the synthetic clips.
 	var items []playout.PlaylistItem
 	itemNum := 0
+
+	// Use the first clip as idle asset.
+	idleAsset := clips[0].path
 
 	for _, g := range clips {
 		itemNum++
@@ -212,12 +229,20 @@ func GenerateDemoPlaylist(tmpDir string) (*playout.Playlist, error) {
 			Type:       "dissolve",
 			DurationMs: 500,
 		},
-		Items: items,
+		IdleAssetURI: idleAsset,
+		IdleLoop:     true,
+		Items:        items,
+		PodTemplates: []playout.PodTemplateDef{
+			{Label: "Commercial", DurationMs: 120000, AutoReturn: true},
+			{Label: "Sponsor", DurationMs: 30000, AutoReturn: true},
+		},
 	}, nil
 }
 
 // SetupDemoPods creates pre-armed ad break pods on a channel's pod board
-// to demonstrate the pod management workflow.
+// to demonstrate the pod management workflow. It uses templates from the
+// pod template store (populated from the playlist manifest's PodTemplateDef
+// entries) rather than hardcoded names.
 func SetupDemoPods(mgr *playout.Manager, channelID int) {
 	pb, err := mgr.PodBoard(channelID)
 	if err != nil {
@@ -225,29 +250,26 @@ func SetupDemoPods(mgr *playout.Manager, channelID int) {
 		return
 	}
 
-	// Create and arm a "quarter break" pod (typical 2-minute commercial pod).
-	pod1, err := pb.CreateFromTemplate("quarter")
-	if err != nil {
-		slog.Warn("demo: failed to create quarter pod", "error", err)
-	} else {
-		if err := pb.Arm(pod1.ID); err != nil {
-			slog.Warn("demo: failed to arm quarter pod", "error", err)
-		} else {
-			slog.Info("demo: armed quarter break pod", "id", pod1.ID)
+	// Use templates from the store — these come from the playlist manifest's
+	// PodTemplateDef entries (e.g., "Commercial", "Sponsor") or the builtins.
+	templates := mgr.TemplateStore().List()
+	armed := 0
+	for i, tmpl := range templates {
+		if i >= 2 {
+			break // arm at most 2 demo pods
 		}
+		pod, err := pb.CreateFromTemplate(tmpl.Type)
+		if err != nil {
+			slog.Warn("demo: failed to create pod from template", "type", tmpl.Type, "error", err)
+			continue
+		}
+		if err := pb.Arm(pod.ID); err != nil {
+			slog.Warn("demo: failed to arm pod", "type", tmpl.Type, "error", err)
+			continue
+		}
+		slog.Info("demo: armed pod", "type", tmpl.Type, "id", pod.ID)
+		armed++
 	}
 
-	// Create and arm a "timeout" pod (30s quick break).
-	pod2, err := pb.CreateFromTemplate("timeout")
-	if err != nil {
-		slog.Warn("demo: failed to create timeout pod", "error", err)
-	} else {
-		if err := pb.Arm(pod2.ID); err != nil {
-			slog.Warn("demo: failed to arm timeout pod", "error", err)
-		} else {
-			slog.Info("demo: armed timeout pod", "id", pod2.ID)
-		}
-	}
-
-	slog.Info("demo: pod board configured", "channel", channelID, "armed", 2)
+	slog.Info("demo: pod board configured", "channel", channelID, "armed", armed)
 }

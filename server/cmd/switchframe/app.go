@@ -1506,7 +1506,7 @@ func (a *App) Run(ctx context.Context) error {
 			if err != nil {
 				slog.Warn("demo: failed to create temp dir for playout clips", "error", err)
 			} else {
-				playlist, err := demo.GenerateDemoPlaylist(tmpDir)
+				playlist, err := demo.GenerateDemoPlaylist(tmpDir, a.playoutSamples)
 				if err != nil {
 					slog.Warn("demo: failed to generate playout playlist", "error", err)
 				} else if playlist != nil {
