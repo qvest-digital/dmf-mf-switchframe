@@ -10,8 +10,13 @@
 		onDelete: (index: number) => void;
 		onAddItem: (atIndex: number) => void;
 		progress?: number;
+		lockedIndices?: number[];
 	}
-	let { items, currentIndex, selectedIndex, onSelect, onReorder, onDelete, onAddItem, progress = 0 }: Props = $props();
+	let { items, currentIndex, selectedIndex, onSelect, onReorder, onDelete, onAddItem, progress = 0, lockedIndices = [] }: Props = $props();
+
+	function isLocked(index: number): boolean {
+		return lockedIndices.includes(index);
+	}
 
 	// ── Drag state ──
 	let dragIndex = $state<number | null>(null);
@@ -81,6 +86,7 @@
 	// ── Drag handlers ──
 
 	function handleDragStart(e: DragEvent, index: number) {
+		if (isLocked(index)) { e.preventDefault(); return; }
 		dragIndex = index;
 		if (e.dataTransfer) {
 			e.dataTransfer.effectAllowed = 'move';
@@ -146,7 +152,7 @@
 	}
 
 	function ctxDelete() {
-		if (contextMenu) {
+		if (contextMenu && !isLocked(contextMenu.index)) {
 			onDelete(contextMenu.index);
 			closeContextMenu();
 		}
