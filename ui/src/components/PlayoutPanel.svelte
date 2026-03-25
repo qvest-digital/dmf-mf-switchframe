@@ -481,6 +481,7 @@
 					pods={channel.pods ?? []}
 					podsArmed={channel.podsArmed ?? 0}
 					podTemplates={workingPlaylist.pods}
+					showWarning={isOnAir}
 				/>
 
 				<PlayoutSettings
@@ -571,6 +572,7 @@
 						pods={channel.pods ?? []}
 						podsArmed={channel.podsArmed ?? 0}
 						podTemplates={workingPlaylist.pods}
+						showWarning={isOnAir}
 					/>
 				</div>
 			</div>

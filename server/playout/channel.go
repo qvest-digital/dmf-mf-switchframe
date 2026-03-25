@@ -667,7 +667,18 @@ func (c *Channel) tick(now time.Time) bool {
 	if decision.Transition != nil {
 		outFrame := c.frameForItem(decision.Transition.Outgoing)
 		inFrame := c.frameForItem(decision.Transition.Incoming)
-		if outFrame != nil && inFrame != nil {
+		// GPU-aliased sentinels have nil YUV and cannot be blended.
+		// Force hard cut when either frame is a sentinel.
+		outIsAlias := outFrame == &c.gpuAliasedSentinel
+		inIsAlias := inFrame == &c.gpuAliasedSentinel
+		if outIsAlias || inIsAlias {
+			// Hard cut to incoming (or outgoing if incoming unavailable).
+			if inFrame != nil {
+				frame = inFrame
+			} else {
+				frame = outFrame
+			}
+		} else if outFrame != nil && inFrame != nil {
 			frame = c.compositor.Blend(outFrame, inFrame, decision.Transition.Progress, decision.Transition.Config)
 		} else if inFrame != nil {
 			frame = inFrame
