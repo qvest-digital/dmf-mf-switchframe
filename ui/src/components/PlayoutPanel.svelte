@@ -3,6 +3,7 @@
 	import PlayoutItem from './PlayoutItem.svelte';
 	import PlayoutTransport from './PlayoutTransport.svelte';
 	import CacheStatus from './CacheStatus.svelte';
+	import PodBoard from './PodBoard.svelte';
 
 	interface Props {
 		state: ControlRoomState;
@@ -119,6 +120,13 @@
 					{channel.state === 'completed' ? 'Playlist complete' : 'Playout stopped'}
 				</div>
 			{/if}
+
+			<PodBoard
+				channel={selectedChannel}
+				activePod={channel.activePod}
+				pods={[]}
+				podsArmed={channel.podsArmed ?? 0}
+			/>
 		</div>
 	</div>
 </div>

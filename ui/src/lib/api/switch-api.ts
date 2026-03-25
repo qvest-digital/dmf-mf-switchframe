@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, GateSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig, ColorGradeState, CorrectorState, PlayoutChannelState, Playlist, CacheStatus } from './types';
+import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, GateSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig, ColorGradeState, CorrectorState, PlayoutChannelState, Playlist, CacheStatus, PodInfo, PodConfig, PodTemplate } from './types';
 import { notify } from '$lib/state/notifications.svelte';
 import { resolveApiUrl } from './base-url';
 
@@ -1348,4 +1348,48 @@ export function playoutLookupCachedAsset(assetUri: string): Promise<void> {
 
 export function playoutEvictCachedAsset(assetUri: string): Promise<void> {
 	return post('/api/playout/cache/evict', { asset_uri: assetUri });
+}
+
+// --- Playout Pods ---
+
+export function podList(channelId: number): Promise<PodInfo[]> {
+	return request<PodInfo[]>(`/api/playout/channels/${channelId}/pods`);
+}
+
+export function podCreate(channelId: number, body: { template?: string; config?: PodConfig }): Promise<PodInfo> {
+	return post(`/api/playout/channels/${channelId}/pods`, body);
+}
+
+export function podArm(channelId: number, podId: string): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/pods/${podId}/arm`, {});
+}
+
+export function podDisarm(channelId: number, podId: string): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/pods/${podId}/disarm`, {});
+}
+
+export function podFire(channelId: number, podId: string): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/pods/${podId}/fire`, {});
+}
+
+export function podDump(channelId: number, podId: string): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/pods/${podId}/dump`, {});
+}
+
+export function podHold(channelId: number, podId: string): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/pods/${podId}/hold`, {});
+}
+
+export function podExtend(channelId: number, podId: string, additionalMs: number): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/pods/${podId}/extend`, { additional_ms: additionalMs });
+}
+
+export function podDelete(channelId: number, podId: string): Promise<void> {
+	return request(`/api/playout/channels/${channelId}/pods/${podId}`, {
+		method: 'DELETE',
+	});
+}
+
+export function podTemplates(): Promise<PodTemplate[]> {
+	return request<PodTemplate[]>('/api/playout/pods/templates');
 }

@@ -831,6 +831,9 @@ export interface PlayoutChannelState {
 	itemCount: number;
 	itemProgress?: number;
 	itemRemainMs?: number;
+	activePod?: PodStatusBroadcast;
+	podsArmed?: number;
+	podsCompleted?: number;
 }
 
 export interface PlayoutState {
@@ -885,4 +888,60 @@ export interface CacheStatus {
 	itemCount: number;
 	fetchingCount: number;
 	errorCount: number;
+}
+
+// ── Pod Types ──
+
+export interface PodConfig {
+	type: string;
+	duration_ms: number;
+	auto_return: boolean;
+	allow_dump_out: boolean;
+	priority: 'normal' | 'high' | 'mandatory';
+	contractual?: boolean;
+	ephemeral?: boolean;
+	hold_until_manual_return?: boolean;
+	position?: string;
+}
+
+export interface PodInfo {
+	id: string;
+	config: PodConfig;
+	state: 'scheduled' | 'pre_roll' | 'splice_pending' | 'break_active' | 'return_pending' | 'rejoined' | 'dumped_out';
+	armed: boolean;
+	elapsed_ms: number;
+	remaining_ms: number;
+	fired_at?: number;
+	completed_at?: number;
+	scte35_event_id?: number;
+}
+
+export interface PodStatusBroadcast {
+	id: string;
+	type: string;
+	state: string;
+	armed: boolean;
+	elapsedMs?: number;
+	remainingMs?: number;
+	durationMs: number;
+	priority: string;
+	position?: string;
+}
+
+export interface PodBoardStatus {
+	activePod?: PodStatusBroadcast;
+	podsArmed: number;
+	podsCompleted: number;
+	pods: PodStatusBroadcast[];
+}
+
+export interface PodTemplate {
+	type: string;
+	default_duration_ms: number;
+	auto_return: boolean;
+	allow_dump_out: boolean;
+	priority: 'normal' | 'high' | 'mandatory';
+	contractual?: boolean;
+	ephemeral?: boolean;
+	hold_until_manual_return?: boolean;
 }
