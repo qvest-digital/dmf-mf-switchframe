@@ -18,6 +18,8 @@ type Manager struct {
 	podBoards     [MaxChannels]*PodBoard
 	templateStore *PodTemplateStore
 
+	asRunLogger *AsRunLogger
+
 	onStateChange     func()
 	onStart           func(channelID int, key string)
 	onStop            func(channelID int, key string)
@@ -319,6 +321,28 @@ func (m *Manager) SetSpliceCoordinator(sc *SpliceCoordinator) {
 			m.podBoards[i].SetPTSProvider(m.ptsProvider)
 		}
 	}
+	if m.asRunLogger != nil && sc != nil {
+		sc.SetAsRunLog(func(ev AsRunEvent) { m.asRunLogger.Log(ev) })
+	}
+}
+
+// SetAsRunLogger sets the as-run logger and propagates to channels and pod boards.
+func (m *Manager) SetAsRunLogger(logger *AsRunLogger) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.asRunLogger = logger
+	logFn := func(ev AsRunEvent) { logger.Log(ev) }
+	for i := 0; i < MaxChannels; i++ {
+		m.channels[i].SetAsRunLog(logFn)
+		m.podBoards[i].SetAsRunLog(logFn)
+	}
+}
+
+// AsRunLogger returns the current as-run logger (may be nil).
+func (m *Manager) AsRunLogger() *AsRunLogger {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.asRunLogger
 }
 
 // PodBoard returns the pod board for the given channel.

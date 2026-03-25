@@ -937,3 +937,52 @@ func TestSpliceCoordinatorEmitsAsRunEvent(t *testing.T) {
 		t.Fatal("expected black_detect info")
 	}
 }
+
+// --- Task 7: Manager AsRunLogger Wiring ---
+
+func TestManagerPropagatesAsRunLogger(t *testing.T) {
+	dir := t.TempDir()
+	logger, err := NewAsRunLogger(AsRunLoggerConfig{Dir: dir, RingCapacity: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+
+	provider := fakeProvider(5)
+	mgr := NewManager(ManagerConfig{AssetProvider: provider})
+	mgr.SetAsRunLogger(logger)
+
+	pl := testPlaylist(clipItem("clip-1"))
+	if err := mgr.LoadPlaylist(1, pl); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Start(1); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 5*time.Second, func() bool {
+		states := mgr.ChannelStates()
+		return states[0].State == "completed"
+	})
+
+	events := logger.Query(AsRunQuery{ChannelID: intPtr(1)})
+	hasStart := false
+	hasEnd := false
+	for _, ev := range events {
+		if ev.Type == AsRunItemStart {
+			hasStart = true
+		}
+		if ev.Type == AsRunItemEnd {
+			hasEnd = true
+		}
+	}
+	if !hasStart {
+		t.Error("expected item_start event")
+	}
+	if !hasEnd {
+		t.Error("expected item_end event")
+	}
+}
+
+// intPtr is a helper to create *int for query filters.
+func intPtr(i int) *int { return &i }
