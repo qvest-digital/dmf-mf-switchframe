@@ -986,3 +986,32 @@ func TestManagerPropagatesAsRunLogger(t *testing.T) {
 
 // intPtr is a helper to create *int for query filters.
 func intPtr(i int) *int { return &i }
+
+// --- Task 14: SecondaryEventScheduler As-Run Emission ---
+
+func TestSecondaryEventFireAsRun(t *testing.T) {
+	dir := t.TempDir()
+	logger, err := NewAsRunLogger(AsRunLoggerConfig{Dir: dir, RingCapacity: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+
+	handler := &mockHandler{}
+	sched := NewSecondaryEventScheduler(handler)
+	sched.SetAsRunLog(func(ev AsRunEvent) { logger.Log(ev) })
+
+	events := []SecondaryEvent{
+		{Type: "graphics_on", Layer: 1, Template: "lower_third", OffsetMs: 0, Anchor: "start"},
+	}
+	sched.BeginItem(events, 10000)
+	sched.Tick(0)
+
+	asrunEvents := logger.Query(AsRunQuery{Type: AsRunSecondaryFire})
+	if len(asrunEvents) != 1 {
+		t.Fatalf("got %d secondary_event_fire events, want 1", len(asrunEvents))
+	}
+	if asrunEvents[0].EventName != "graphics_on" {
+		t.Errorf("event = %q, want %q", asrunEvents[0].EventName, "graphics_on")
+	}
+}

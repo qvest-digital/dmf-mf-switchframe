@@ -433,6 +433,9 @@ func (c *Channel) SetSecondaryHandler(h SecondaryEventHandler) {
 	c.secondaryHandler = h
 	if h != nil {
 		c.secondaryScheduler = NewSecondaryEventScheduler(h)
+		if c.asRunLog != nil {
+			c.secondaryScheduler.SetAsRunLog(c.asRunLog)
+		}
 	} else {
 		c.secondaryScheduler = nil
 	}
@@ -450,6 +453,9 @@ func (c *Channel) SetAsRunLog(fn func(AsRunEvent)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.asRunLog = fn
+	if c.secondaryScheduler != nil {
+		c.secondaryScheduler.SetAsRunLog(fn)
+	}
 }
 
 // run is the main playback goroutine. It iterates through playlist items.

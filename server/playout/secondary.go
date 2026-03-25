@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"time"
 )
 
 // SecondaryEventHandler dispatches secondary events to the appropriate subsystem.
@@ -31,6 +32,7 @@ type SecondaryEventScheduler struct {
 	handler    SecondaryEventHandler
 	events     []scheduledEvent
 	durationMs int64
+	asRunLog   func(AsRunEvent)
 }
 
 // NewSecondaryEventScheduler creates a scheduler that dispatches to the given handler.
@@ -38,6 +40,11 @@ func NewSecondaryEventScheduler(handler SecondaryEventHandler) *SecondaryEventSc
 	return &SecondaryEventScheduler{
 		handler: handler,
 	}
+}
+
+// SetAsRunLog registers a callback for emitting as-run events when secondary events fire.
+func (s *SecondaryEventScheduler) SetAsRunLog(fn func(AsRunEvent)) {
+	s.asRunLog = fn
 }
 
 // BeginItem loads secondary events for a new playlist item, computing absolute
@@ -75,6 +82,13 @@ func (s *SecondaryEventScheduler) Tick(elapsedMs int64) {
 		s.events[i].fired = true
 		if err := s.dispatch(&s.events[i].event); err != nil {
 			slog.Warn("playout: secondary event dispatch failed", "type", s.events[i].event.Type, "error", err)
+		}
+		if s.asRunLog != nil {
+			s.asRunLog(AsRunEvent{
+				Timestamp: time.Now().UTC(),
+				Type:      AsRunSecondaryFire,
+				EventName: s.events[i].event.Type,
+			})
 		}
 	}
 }
