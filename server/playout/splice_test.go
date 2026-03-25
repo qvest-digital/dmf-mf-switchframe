@@ -502,3 +502,49 @@ func TestSpliceCoordinator_CancelStopsTimeout(t *testing.T) {
 		t.Errorf("expected 0 calls after cancel, got %d", len(calls))
 	}
 }
+
+func TestSpliceCoordinator_ReturnSplice(t *testing.T) {
+	inj := &fakeSpliceInjector{}
+	bd := NewBlackDetector(BlackDetectorConfig{})
+	sc := NewSpliceCoordinator(SpliceCoordinatorConfig{
+		Injector:      inj,
+		BlackDetector: bd,
+		PreRollMs:     5000,
+		WindowMs:      500,
+		TimeoutMs:     2000,
+	})
+
+	// Start a return splice (cue-in).
+	err := sc.BeginSplice("pod-1", false, false, 0, 0)
+	if err != nil {
+		t.Fatalf("BeginSplice for return: %v", err)
+	}
+
+	// Send frames with a black frame in the window.
+	w, h := 320, 240
+	ySize := w * h * 3 / 2
+	// Target PTS = 450000, window = [405000, 495000]
+	for pts := int64(400000); pts <= 500000; pts += 3000 {
+		frame := make([]byte, ySize)
+		luma := byte(128)
+		if pts == 450000 {
+			luma = 0
+		}
+		for j := 0; j < w*h; j++ {
+			frame[j] = luma
+		}
+		sc.IngestFrame(frame, w, h, pts)
+	}
+
+	waitFor(t, time.Second, func() bool {
+		return !sc.Active()
+	})
+
+	calls := inj.getCalls()
+	if len(calls) == 0 {
+		t.Fatal("expected return cue injection")
+	}
+	if calls[0].IsOut {
+		t.Error("return splice should inject cue-in (isOut=false)")
+	}
+}
