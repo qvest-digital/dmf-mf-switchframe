@@ -7,10 +7,13 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/caption"
+	"github.com/zsiec/switchframe/server/codec"
+	"github.com/zsiec/switchframe/server/gpu"
 	"github.com/zsiec/switchframe/server/playout"
 	"github.com/zsiec/switchframe/server/scte35"
 	"github.com/zsiec/switchframe/server/switcher"
@@ -60,32 +63,129 @@ func (a *App) initPlayout() error {
 		AssetProvider: provider,
 	})
 
+	// Set pipeline format on manager so channels get correct dimensions/FPS.
+	mgr.SetPipelineFormat(pf.Width, pf.Height, pf.FPS())
+
 	// PTS anchoring.
 	mgr.SetPTSProvider(a.sw.LastBroadcastVideoPTS)
 
+	// Register MoQ relays for playout channels (same pattern as clips).
+	for i := 0; i < playout.MaxChannels; i++ {
+		key := fmt.Sprintf("playout:%d", i+1)
+		a.playoutRelays[i] = a.server.RegisterStream(key)
+		slog.Info("playout relay registered", "key", key)
+	}
+
+	// Per-slot flag: true when GPU preview encoding handles relay, so the
+	// full-quality SetVideoOutput callback should skip relay broadcast.
+	var playoutGPUPreview [playout.MaxChannels]bool
+	// Per-slot MoQ group ID counter for GPU preview frames.
+	var playoutPreviewGroupID [playout.MaxChannels]atomic.Uint32
+
 	// Channel lifecycle: register/unregister as switcher sources.
 	mgr.OnChannelLifecycle(
+		// onStart: register playout channel as a raw YUV switcher source + mixer channel.
 		func(channelID int, key string) {
 			a.sw.RegisterReplaySource(key)
 			a.mixer.AddChannel(key)
 			_ = a.mixer.SetAFV(key, true)
 			a.mixer.OnProgramChange(a.sw.ProgramSource())
+
+			// Register playout source with GPU preview encoder when available.
+			// This replaces the full-quality relay encode with low-bitrate preview,
+			// matching the clip/SRT source preview proxy path.
+			idx := channelID - 1
+			if idx >= 0 && idx < playout.MaxChannels && a.cfg.PreviewProxy && a.gpuState != nil && a.gpuState.sourceManager != nil {
+				pw, ph := parsePreviewResolution(a.cfg.PreviewResolution)
+				curPF := a.sw.PipelineFormat()
+				relay := a.playoutRelays[idx]
+				a.gpuState.sourceManager.RegisterSource(key, curPF.Width, curPF.Height, &gpu.PreviewConfig{
+					Width:   pw,
+					Height:  ph,
+					Bitrate: a.cfg.PreviewBitrate,
+					FPSNum:  curPF.FPSNum,
+					FPSDen:  curPF.FPSDen,
+					OnPreview: func(data []byte, isIDR bool, pts int64) {
+						avc1 := codec.AnnexBToAVC1(data)
+						if isIDR {
+							playoutPreviewGroupID[idx].Add(1)
+						}
+						frame := &media.VideoFrame{
+							PTS: pts, DTS: pts, IsKeyframe: isIDR,
+							WireData: avc1, Codec: "h264",
+							GroupID: playoutPreviewGroupID[idx].Load(),
+						}
+						if isIDR {
+							for _, nalu := range codec.ExtractNALUs(avc1) {
+								if len(nalu) == 0 {
+									continue
+								}
+								switch nalu[0] & 0x1F {
+								case 7:
+									frame.SPS = nalu
+								case 8:
+									frame.PPS = nalu
+								}
+							}
+							if frame.SPS != nil && frame.PPS != nil {
+								avcC := a.buildAVCConfig(frame.SPS, frame.PPS)
+								if avcC != nil {
+									relay.SetVideoInfo(a.buildVideoInfo(frame.SPS, avcC, pw, ph))
+								}
+							}
+						}
+						relay.BroadcastVideo(frame)
+					},
+				})
+				playoutGPUPreview[idx] = true
+				slog.Info("playout: GPU preview encoder registered", "key", key)
+			}
 		},
+		// onStop: unregister playout channel source.
 		func(channelID int, key string) {
+			idx := channelID - 1
+			if idx >= 0 && idx < playout.MaxChannels {
+				playoutGPUPreview[idx] = false
+				playoutPreviewGroupID[idx].Store(0)
+			}
+			// Release GPU preview encoder and cached frames.
+			if a.gpuState != nil && a.gpuState.sourceManager != nil {
+				a.gpuState.sourceManager.RemoveSource(key)
+			}
 			a.sw.UnregisterSource(key)
 			a.mixer.RemoveChannel(key)
 		},
 	)
 
+	// Wire GPU source tap for live playlist items. When a playout channel
+	// encounters a "live" item, it calls this tap to read the latest decoded
+	// frame from the GPU source manager's CPU frame cache.
+	mgr.SetGPUSourceTap(func(channelKey, sourceKey string) *playout.DecodedFrame {
+		if a.gpuState == nil || a.gpuState.sourceManager == nil {
+			return nil
+		}
+		yuv, w, h, pts := a.gpuState.sourceManager.ReadCachedFrame(sourceKey)
+		if yuv == nil {
+			return nil
+		}
+		return &playout.DecodedFrame{
+			YUV: yuv, Width: w, Height: h, PTS: pts, IsKeyframe: true,
+		}
+	})
+
 	// Raw video output: playout sends decoded YUV to switcher pipeline.
+	var playoutScaleBuf []byte // persistent scale buffer, reused across frames
 	mgr.SetRawVideoOutput(func(key string, yuv []byte, w, h int, pts int64, isKeyframe bool) {
-		pf := a.sw.PipelineFormat()
+		curPF := a.sw.PipelineFormat()
 		outYUV, outW, outH := yuv, w, h
-		if w != pf.Width || h != pf.Height {
-			targetSize := pf.Width * pf.Height * 3 / 2
-			scaled := make([]byte, targetSize)
-			transition.ScaleYUV420(yuv, w, h, scaled, pf.Width, pf.Height)
-			outYUV, outW, outH = scaled, pf.Width, pf.Height
+		if w != curPF.Width || h != curPF.Height {
+			targetSize := curPF.Width * curPF.Height * 3 / 2
+			if cap(playoutScaleBuf) < targetSize {
+				playoutScaleBuf = make([]byte, targetSize)
+			}
+			playoutScaleBuf = playoutScaleBuf[:targetSize]
+			transition.ScaleYUV420(yuv, w, h, playoutScaleBuf, curPF.Width, curPF.Height)
+			outYUV, outW, outH = playoutScaleBuf, curPF.Width, curPF.Height
 		}
 
 		frame := &switcher.ProcessingFrame{

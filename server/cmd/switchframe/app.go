@@ -148,6 +148,7 @@ type App struct {
 	playoutMgr        *playout.Manager
 	playoutCache      *playout.Cache
 	playoutPrefetcher *playout.Prefetcher
+	playoutRelays     [playout.MaxChannels]*distribution.Relay
 
 	// GPU pipeline (Metal on macOS, CUDA on Linux)
 	gpuState        *gpuState
