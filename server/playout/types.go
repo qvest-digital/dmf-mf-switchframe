@@ -107,6 +107,7 @@ type PlaylistItem struct {
 	OutPointMs      int64             `json:"out_point_ms,omitempty"`
 	DurationMs      int64             `json:"duration_ms,omitempty"`
 	Hold            bool              `json:"hold,omitempty"`
+	Loop            bool              `json:"loop,omitempty"`
 	Transition      *TransitionConfig `json:"transition,omitempty"`
 	ScheduledTime   *time.Time        `json:"scheduled_time,omitempty"`
 	SecondaryEvents []SecondaryEvent  `json:"secondary_events,omitempty"`
