@@ -85,3 +85,95 @@ func (d *BlackDetector) SceneChangeScore(yuvA, yuvB []byte, w, h int) float64 {
 
 	return float64(sad) / float64(ySize) / 255.0
 }
+
+// CandidateFrame represents a single frame being considered for a splice point.
+type CandidateFrame struct {
+	YUV    []byte
+	PTS    int64
+	Index  int
+	Width  int
+	Height int
+}
+
+// SpliceReason describes why a particular frame was chosen as a splice point.
+type SpliceReason string
+
+const (
+	SpliceReasonBlack       SpliceReason = "black"
+	SpliceReasonSceneChange SpliceReason = "scene_change"
+	SpliceReasonScheduled   SpliceReason = "scheduled"
+)
+
+// SpliceFrameResult is the chosen splice frame and the reason it was selected.
+type SpliceFrameResult struct {
+	Index  int
+	PTS    int64
+	Reason SpliceReason
+	Score  float64
+}
+
+// FindBestSpliceFrame selects the best splice point from a window of candidate frames.
+//
+// Priority order:
+//  1. Black frame — the blackest frame among all candidates where IsBlack==true (lowest Score).
+//  2. Scene change — the largest scene-change score above 0.15 between consecutive candidates.
+//  3. Scheduled — fallback to the middle frame (len/2).
+//
+// Returns Index=-1 for empty candidates.
+func (d *BlackDetector) FindBestSpliceFrame(candidates []CandidateFrame) SpliceFrameResult {
+	if len(candidates) == 0 {
+		return SpliceFrameResult{Index: -1}
+	}
+
+	// Priority 1: find the blackest frame among those that are actually black.
+	bestBlackIdx := -1
+	bestBlackScore := 2.0 // higher than any real score
+	for i, c := range candidates {
+		bs := d.AnalyzeFrame(c.YUV, c.Width, c.Height)
+		if bs.IsBlack && bs.Score < bestBlackScore {
+			bestBlackScore = bs.Score
+			bestBlackIdx = i
+		}
+	}
+	if bestBlackIdx >= 0 {
+		c := candidates[bestBlackIdx]
+		return SpliceFrameResult{
+			Index:  c.Index,
+			PTS:    c.PTS,
+			Reason: SpliceReasonBlack,
+			Score:  bestBlackScore,
+		}
+	}
+
+	// Priority 2: largest scene change above threshold.
+	const sceneChangeThreshold = 0.15
+	bestSceneIdx := -1
+	bestSceneScore := 0.0
+	for i := 1; i < len(candidates); i++ {
+		prev := candidates[i-1]
+		cur := candidates[i]
+		sc := d.SceneChangeScore(prev.YUV, cur.YUV, cur.Width, cur.Height)
+		if sc > sceneChangeThreshold && sc > bestSceneScore {
+			bestSceneScore = sc
+			bestSceneIdx = i
+		}
+	}
+	if bestSceneIdx >= 0 {
+		c := candidates[bestSceneIdx]
+		return SpliceFrameResult{
+			Index:  c.Index,
+			PTS:    c.PTS,
+			Reason: SpliceReasonSceneChange,
+			Score:  bestSceneScore,
+		}
+	}
+
+	// Priority 3: fallback to middle frame.
+	mid := len(candidates) / 2
+	c := candidates[mid]
+	return SpliceFrameResult{
+		Index:  c.Index,
+		PTS:    c.PTS,
+		Reason: SpliceReasonScheduled,
+	}
+}

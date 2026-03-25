@@ -167,3 +167,132 @@ func TestBlackDetector_SceneChangeScore_PartialChange(t *testing.T) {
 	}
 }
 
+// --- Task 3: FindBestSpliceFrame tests ---
+
+func TestBlackDetector_FindBestSpliceFrame_PicksBlack(t *testing.T) {
+	det := NewBlackDetector(BlackDetectorConfig{})
+
+	w, h := 64, 48
+	ySize := w * h
+
+	candidates := make([]CandidateFrame, 10)
+	for i := range candidates {
+		yuv := make([]byte, ySize+ySize/2)
+		// All frames bright (luma=200) except index 4
+		lumaVal := byte(200)
+		if i == 4 {
+			lumaVal = 0 // black
+		}
+		for j := 0; j < ySize; j++ {
+			yuv[j] = lumaVal
+		}
+		candidates[i] = CandidateFrame{
+			YUV:    yuv,
+			PTS:    int64(i * 3000),
+			Index:  i,
+			Width:  w,
+			Height: h,
+		}
+	}
+
+	result := det.FindBestSpliceFrame(candidates)
+
+	if result.Index != 4 {
+		t.Errorf("expected Index=4, got %d", result.Index)
+	}
+	if result.Reason != SpliceReasonBlack {
+		t.Errorf("expected Reason=%q, got %q", SpliceReasonBlack, result.Reason)
+	}
+	if result.PTS != 12000 {
+		t.Errorf("expected PTS=12000, got %d", result.PTS)
+	}
+}
+
+func TestBlackDetector_FindBestSpliceFrame_FallbackSceneChange(t *testing.T) {
+	det := NewBlackDetector(BlackDetectorConfig{})
+
+	w, h := 64, 48
+	ySize := w * h
+
+	candidates := make([]CandidateFrame, 10)
+	for i := range candidates {
+		yuv := make([]byte, ySize+ySize/2)
+		// All frames at luma=100 except frame 6 jumps to 200
+		lumaVal := byte(100)
+		if i >= 6 {
+			lumaVal = 200
+		}
+		for j := 0; j < ySize; j++ {
+			yuv[j] = lumaVal
+		}
+		candidates[i] = CandidateFrame{
+			YUV:    yuv,
+			PTS:    int64(i * 3000),
+			Index:  i,
+			Width:  w,
+			Height: h,
+		}
+	}
+
+	result := det.FindBestSpliceFrame(candidates)
+
+	if result.Index != 6 {
+		t.Errorf("expected Index=6, got %d", result.Index)
+	}
+	if result.Reason != SpliceReasonSceneChange {
+		t.Errorf("expected Reason=%q, got %q", SpliceReasonSceneChange, result.Reason)
+	}
+	if result.PTS != 18000 {
+		t.Errorf("expected PTS=18000, got %d", result.PTS)
+	}
+	// Score should be 100/255 ≈ 0.392
+	expectedScore := 100.0 / 255.0
+	if result.Score < expectedScore-0.01 || result.Score > expectedScore+0.01 {
+		t.Errorf("expected Score≈%f, got %f", expectedScore, result.Score)
+	}
+}
+
+func TestBlackDetector_FindBestSpliceFrame_FallbackMiddle(t *testing.T) {
+	det := NewBlackDetector(BlackDetectorConfig{})
+
+	w, h := 64, 48
+	ySize := w * h
+
+	candidates := make([]CandidateFrame, 10)
+	for i := range candidates {
+		yuv := make([]byte, ySize+ySize/2)
+		// All frames identical bright
+		for j := 0; j < ySize; j++ {
+			yuv[j] = 200
+		}
+		candidates[i] = CandidateFrame{
+			YUV:    yuv,
+			PTS:    int64(i * 3000),
+			Index:  i,
+			Width:  w,
+			Height: h,
+		}
+	}
+
+	result := det.FindBestSpliceFrame(candidates)
+
+	if result.Index != 5 {
+		t.Errorf("expected Index=5 (middle of 10), got %d", result.Index)
+	}
+	if result.Reason != SpliceReasonScheduled {
+		t.Errorf("expected Reason=%q, got %q", SpliceReasonScheduled, result.Reason)
+	}
+	if result.PTS != 15000 {
+		t.Errorf("expected PTS=15000, got %d", result.PTS)
+	}
+}
+
+func TestBlackDetector_FindBestSpliceFrame_Empty(t *testing.T) {
+	det := NewBlackDetector(BlackDetectorConfig{})
+
+	result := det.FindBestSpliceFrame(nil)
+
+	if result.Index != -1 {
+		t.Errorf("expected Index=-1 for empty candidates, got %d", result.Index)
+	}
+}
