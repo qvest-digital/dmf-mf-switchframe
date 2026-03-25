@@ -320,6 +320,146 @@ func TestGPUSourceManager_PreviewEncode(t *testing.T) {
 	t.Logf("Preview encode: %d frames produced", count)
 }
 
+func TestGPUSourceManager_ReadCachedFrame(t *testing.T) {
+	const w, h = 32, 32
+	ctx, pool := setupGPU(t, w, h, 8)
+	defer func() { _ = ctx.Close() }()
+	defer pool.Close()
+
+	mgr := NewGPUSourceManager(ctx, pool, nil)
+	defer mgr.Close()
+
+	// ReadCachedFrame returns nil for unknown source.
+	yuv, rw, rh, rpts := mgr.ReadCachedFrame("nonexistent")
+	assert.Nil(t, yuv, "ReadCachedFrame for unknown source should return nil")
+	assert.Equal(t, 0, rw)
+	assert.Equal(t, 0, rh)
+	assert.Equal(t, int64(0), rpts)
+
+	// Ingest a frame.
+	inputYUV := createTestYUV420p(w, h, 200, 100, 150)
+	mgr.IngestYUV("cam1", inputYUV, w, h, 42000)
+
+	// ReadCachedFrame should now return the cached CPU copy.
+	yuv, rw, rh, rpts = mgr.ReadCachedFrame("cam1")
+	require.NotNil(t, yuv, "ReadCachedFrame after ingest should return data")
+	assert.Equal(t, w, rw)
+	assert.Equal(t, h, rh)
+	assert.Equal(t, int64(42000), rpts)
+	assert.Equal(t, len(inputYUV), len(yuv))
+
+	// Verify the Y plane content matches the input.
+	centerIdx := (h/2)*w + w/2
+	assert.Equal(t, byte(200), yuv[centerIdx],
+		"cached Y center pixel should match input")
+
+	// Verify it's a deep copy: modifying the returned slice does not affect the cache.
+	yuv[centerIdx] = 0
+	yuv2, _, _, _ := mgr.ReadCachedFrame("cam1")
+	assert.Equal(t, byte(200), yuv2[centerIdx],
+		"ReadCachedFrame should return independent copies")
+
+	// Ingest a second frame — ReadCachedFrame should return updated data.
+	inputYUV2 := createTestYUV420p(w, h, 50, 120, 130)
+	mgr.IngestYUV("cam1", inputYUV2, w, h, 84000)
+
+	yuv, rw, rh, rpts = mgr.ReadCachedFrame("cam1")
+	require.NotNil(t, yuv)
+	assert.Equal(t, int64(84000), rpts, "PTS should update on second ingest")
+	assert.Equal(t, byte(50), yuv[centerIdx],
+		"cached Y should reflect second ingest")
+}
+
+func TestGPUSourceManager_ReadCachedFrame_NilYUV(t *testing.T) {
+	const w, h = 32, 32
+	ctx, pool := setupGPU(t, w, h, 8)
+	defer func() { _ = ctx.Close() }()
+	defer pool.Close()
+
+	mgr := NewGPUSourceManager(ctx, pool, nil)
+	defer mgr.Close()
+
+	// Ingest a real frame first.
+	inputYUV := createTestYUV420p(w, h, 200, 100, 150)
+	mgr.IngestYUV("cam1", inputYUV, w, h, 42000)
+
+	// Ingest nil YUV (no-op path) — cache should remain from previous ingest.
+	mgr.IngestYUV("cam1", nil, w, h, 84000)
+
+	yuv, _, _, pts := mgr.ReadCachedFrame("cam1")
+	require.NotNil(t, yuv, "nil YUV ingest should not clear the cache")
+	assert.Equal(t, int64(42000), pts, "PTS should remain from the first ingest")
+}
+
+func TestGPUSourceManager_ReadCachedFrame_ConcurrentAccess(t *testing.T) {
+	const w, h = 32, 32
+	ctx, pool := setupGPU(t, w, h, 32)
+	defer func() { _ = ctx.Close() }()
+	defer pool.Close()
+
+	mgr := NewGPUSourceManager(ctx, pool, nil)
+	defer mgr.Close()
+
+	// Seed with an initial frame.
+	inputYUV := createTestYUV420p(w, h, 128, 128, 128)
+	mgr.IngestYUV("cam1", inputYUV, w, h, 1000)
+
+	var wg sync.WaitGroup
+	const iterations = 100
+
+	// Writer goroutine: continuous ingest.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		localYUV := createTestYUV420p(w, h, 180, 100, 200)
+		for i := 0; i < iterations; i++ {
+			mgr.IngestYUV("cam1", localYUV, w, h, int64((i+1)*3000))
+		}
+	}()
+
+	// Reader goroutine: continuous ReadCachedFrame.
+	var reads atomic.Int64
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < iterations; i++ {
+			yuv, rw, rh, _ := mgr.ReadCachedFrame("cam1")
+			if yuv != nil {
+				reads.Add(1)
+				// Verify basic consistency: dimensions match YUV buffer size.
+				expected := rw * rh * 3 / 2
+				assert.Equal(t, expected, len(yuv),
+					"YUV buffer size should match dimensions")
+			}
+		}
+	}()
+
+	wg.Wait()
+
+	assert.Greater(t, reads.Load(), int64(0),
+		"concurrent reader should get at least some cached frames")
+	t.Logf("ReadCachedFrame concurrent: %d successful reads out of %d", reads.Load(), iterations)
+}
+
+func TestGPUSourceManager_ReadCachedFrame_AfterRemove(t *testing.T) {
+	const w, h = 32, 32
+	ctx, pool := setupGPU(t, w, h, 8)
+	defer func() { _ = ctx.Close() }()
+	defer pool.Close()
+
+	mgr := NewGPUSourceManager(ctx, pool, nil)
+	defer mgr.Close()
+
+	// Ingest, then remove.
+	inputYUV := createTestYUV420p(w, h, 200, 100, 150)
+	mgr.IngestYUV("cam1", inputYUV, w, h, 42000)
+	mgr.RemoveSource("cam1")
+
+	// ReadCachedFrame should return nil after removal.
+	yuv, _, _, _ := mgr.ReadCachedFrame("cam1")
+	assert.Nil(t, yuv, "ReadCachedFrame after RemoveSource should return nil")
+}
+
 // --- Mock SourceSTMapProvider ---
 
 type mockSourceSTMapProvider struct {

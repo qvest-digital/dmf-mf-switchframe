@@ -29,9 +29,18 @@ type GPUSourceManager struct {
 	sourceColorGrade SourceColorGradeProvider // nil when per-source color grading is not configured
 }
 
+// cpuFrameCache holds a cached CPU YUV420 frame for lock-free reads
+// by the playout live source tap (ReadCachedFrame).
+type cpuFrameCache struct {
+	yuv  []byte
+	w, h int
+	pts  int64
+}
+
 // gpuSourceEntry holds the GPU state for a single source.
 type gpuSourceEntry struct {
-	current atomic.Pointer[GPUFrame] // latest frame for readers
+	current atomic.Pointer[GPUFrame]        // latest frame for readers
+	lastCPU atomic.Pointer[cpuFrameCache]   // cached CPU YUV for playout tap
 
 	// Preview encoder (nil if no preview configured).
 	prevEnc   *PreviewEncoder
@@ -225,6 +234,19 @@ func (m *GPUSourceManager) IngestYUV(sourceKey string, yuv []byte, w, h int, pts
 			return
 		}
 	}
+
+	// Cache CPU YUV for ReadCachedFrame (playout live source tap).
+	// Done before GPU upload to avoid copying GPU-modified data back.
+	// Always allocate a fresh cpuFrameCache because the previous one may
+	// still be referenced by a concurrent ReadCachedFrame caller.
+	cached := &cpuFrameCache{
+		yuv: make([]byte, len(yuv)),
+		w:   w,
+		h:   h,
+		pts: pts,
+	}
+	copy(cached.yuv, yuv)
+	entry.lastCPU.Store(cached)
 
 	// Acquire a GPU frame from the pool.
 	frame, err := m.pool.Acquire()
@@ -506,6 +528,29 @@ func (m *GPUSourceManager) CurrentFrame(sourceKey string) *GPUFrame {
 		return nil
 	}
 	return entry.current.Load()
+}
+
+// ReadCachedFrame returns a deep copy of the latest CPU YUV420 frame for a
+// source. Used by the playout live source tap to read frames without GPU
+// download. Returns nil values if the source is not found or has no cached
+// frame. The returned []byte is a fresh copy safe for the caller to own.
+func (m *GPUSourceManager) ReadCachedFrame(sourceKey string) (yuv []byte, w, h int, pts int64) {
+	m.mu.RLock()
+	entry, exists := m.sources[sourceKey]
+	m.mu.RUnlock()
+	if !exists || entry == nil {
+		return nil, 0, 0, 0
+	}
+
+	cached := entry.lastCPU.Load()
+	if cached == nil {
+		return nil, 0, 0, 0
+	}
+
+	// Return a deep copy to prevent data races with the next IngestYUV.
+	yuvCopy := make([]byte, len(cached.yuv))
+	copy(yuvCopy, cached.yuv)
+	return yuvCopy, cached.w, cached.h, cached.pts
 }
 
 // GetFrame returns the latest GPU frame for a source, incrementing its

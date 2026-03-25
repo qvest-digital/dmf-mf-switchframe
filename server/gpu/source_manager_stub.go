@@ -37,6 +37,11 @@ func (m *GPUSourceManager) CurrentFrame(sourceKey string) *GPUFrame { return nil
 // GetFrame returns nil on non-GPU builds.
 func (m *GPUSourceManager) GetFrame(sourceKey string) *GPUFrame { return nil }
 
+// ReadCachedFrame returns nil on non-GPU builds.
+func (m *GPUSourceManager) ReadCachedFrame(sourceKey string) (yuv []byte, w, h int, pts int64) {
+	return nil, 0, 0, 0
+}
+
 // Close is a no-op on non-GPU builds.
 func (m *GPUSourceManager) Close() {}
 
