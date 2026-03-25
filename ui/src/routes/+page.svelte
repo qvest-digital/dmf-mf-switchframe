@@ -838,7 +838,7 @@
 	.bottom-panel {
 		border-top: 1px solid var(--border-default);
 		background: var(--bg-surface);
-		height: clamp(220px, 30vh, 380px);
+		height: clamp(260px, 38vh, 520px);
 		overflow: hidden;
 	}
 

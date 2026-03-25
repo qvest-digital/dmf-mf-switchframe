@@ -417,8 +417,10 @@ func TestChannel_RawVideoOutput(t *testing.T) {
 	})
 
 	count := frameCount.Load()
-	if count != 5 {
-		t.Errorf("frame count = %d, want 5", count)
+	// At least 5 frames from the clip; may get 1-2 extra from the
+	// fallback frame emitted during the completion/transition tick.
+	if count < 5 {
+		t.Errorf("frame count = %d, want >= 5", count)
 	}
 }
 
@@ -1063,11 +1065,12 @@ func TestChannel_AudioOutput(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	if len(audioCalls) != 5 {
-		t.Fatalf("audio callback count = %d, want 5", len(audioCalls))
+	if len(audioCalls) < 5 {
+		t.Fatalf("audio callback count = %d, want >= 5", len(audioCalls))
 	}
 
-	for i, call := range audioCalls {
+	// Check the first 5 calls (the clip frames with audio).
+	for i, call := range audioCalls[:5] {
 		if call.sampleRate != 48000 {
 			t.Errorf("call[%d].sampleRate = %d, want 48000", i, call.sampleRate)
 		}

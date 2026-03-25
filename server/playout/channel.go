@@ -663,6 +663,14 @@ func (c *Channel) tick(now time.Time) bool {
 		frame = c.frameForItem(decision.Item)
 	}
 
+	// Always emit a frame — never let the output go dark.
+	// If the source returned nil, emit idle or slate as fallback.
+	if frame == nil {
+		frame = c.idleLoop.NextFrame()
+	}
+	if frame == nil {
+		frame = c.slateFrame
+	}
 	if frame != nil {
 		c.emitFrame(frame, outputFn, audioFn, sc)
 	}
@@ -888,7 +896,14 @@ func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
 			})
 		}
 		c.scheduler.SignalItemComplete()
-		return nil
+		// Return last good frame to avoid output gap.
+		c.mu.Lock()
+		lf := c.clipLastFrame
+		c.mu.Unlock()
+		if lf != nil {
+			return lf
+		}
+		return c.slateFrame
 	}
 
 	if frame == nil {
@@ -904,12 +919,33 @@ func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
 			return lastFrame
 		}
 
+		// If loop mode, rewind — close the iterator so it re-opens on the
+		// next tick with the same item ID forced to mismatch.
+		if item.Loop {
+			c.mu.Lock()
+			if c.clipIter != nil {
+				c.clipIter.Close()
+			}
+			c.clipIter = nil
+			c.clipItemID = "" // force re-open on next tick
+			c.clipFrame = 0
+			c.clipLastFrame = nil
+			c.mu.Unlock()
+			// Return last frame to avoid gap during rewind.
+			if lastFrame != nil {
+				return lastFrame
+			}
+			return c.slateFrame
+		}
+
 		c.scheduler.SignalItemComplete()
 
-		// Note: item_end as-run event is emitted by handleItemChange when the
-		// scheduler advances to the next item, avoiding duplicate emissions.
-
-		return nil
+		// Return the last frame to avoid a gap while the scheduler advances
+		// and the next item opens on the following tick.
+		if lastFrame != nil {
+			return lastFrame
+		}
+		return c.slateFrame
 	}
 
 	// Update progress.
