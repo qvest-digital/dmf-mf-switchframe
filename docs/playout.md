@@ -2,20 +2,26 @@
 
 1. [What Playout Does](#1-what-playout-does)
 2. [Quick Start](#2-quick-start)
-3. [Channels](#3-channels)
-4. [Playlist Format](#4-playlist-format)
-5. [Channel Lifecycle](#5-channel-lifecycle)
-6. [Pod Management](#6-pod-management)
-7. [Secondary Events](#7-secondary-events)
-8. [Asset Cache](#8-asset-cache)
-9. [Splice Coordination](#9-splice-coordination)
-10. [As-Run Logging](#10-as-run-logging)
-11. [BXF Import & Export](#11-bxf-import--export)
-12. [Health & Recovery](#12-health--recovery)
-13. [State Broadcast](#13-state-broadcast)
-14. [REST API Reference](#14-rest-api-reference)
-15. [Configuration](#15-configuration)
-16. [File Reference](#16-file-reference)
+3. [Architecture](#3-architecture)
+4. [Channels](#4-channels)
+5. [Playlist Format](#5-playlist-format)
+6. [Channel Lifecycle](#6-channel-lifecycle)
+7. [Transitions](#7-transitions)
+8. [Live Source Tap](#8-live-source-tap)
+9. [Idle Loop](#9-idle-loop)
+10. [Pod Management](#10-pod-management)
+11. [Secondary Events](#11-secondary-events)
+12. [Sample Content](#12-sample-content)
+13. [Asset Cache](#13-asset-cache)
+14. [Splice Coordination](#14-splice-coordination)
+15. [As-Run Logging](#15-as-run-logging)
+16. [BXF Import & Export](#16-bxf-import--export)
+17. [Health & Recovery](#17-health--recovery)
+18. [State Broadcast](#18-state-broadcast)
+19. [REST API Reference](#19-rest-api-reference)
+20. [UI](#20-ui)
+21. [Configuration](#21-configuration)
+22. [File Reference](#22-file-reference)
 
 ---
 
@@ -23,14 +29,18 @@
 
 Playout is SwitchFrame's schedule-driven automated playback engine. It turns the production switcher into a **production-playout hybrid** — live switching and automated playout coexist in the same system, sharing the video pipeline, audio mixer, graphics compositor, and SCTE-35 signaling.
 
-Each playout channel plays through a JSON playlist sequentially, outputting decoded YUV frames into the switcher pipeline at the correct frame rate. Channels register as virtual sources (`playout:1`, `playout:2`) that can be cut or dissolved to program, mixed through the audio engine, and viewed in the browser multiview alongside live cameras.
+Each playout channel is a **virtual compositor** — a self-contained frame source that internally muxes between clip playback, live source pass-through, slate, and idle loops. From the switcher's perspective, `playout:1` is always a single source that continuously emits frames. Channels register as virtual sources that can be cut or dissolved to program, mixed through the audio engine, and viewed in the browser multiview alongside live cameras.
 
 ### Key capabilities
 
 - **2 playout channels** — Independent playlists, cursors, and transport controls per channel
+- **Virtual compositor model** — Tick-driven frame router with internal transitions, GPU source tap, idle loop
 - **3 item types** — Clip (media file playback), live (camera hold), slate (timed black)
-- **Pod management** — Commercial break scheduling with SCTE-35 integration, templates, and priority
+- **Internal transitions** — Dissolve, dip, wipe between items (GPU-first, CPU SIMD fallback)
+- **Idle loop** — Configurable idle asset loops between items and during pre/post-show
+- **Pod management** — Commercial break scheduling with SCTE-35 integration and manifest-defined templates
 - **Secondary events** — Timed graphics, audio, caption, and SCTE-35 events anchored to item start or end
+- **Sample content** — Built-in sample clips and template playlists for out-of-the-box demos
 - **Asset cache** — LRU disk cache with schedule-aware prefetch and automatic transcode
 - **Splice coordination** — Frame-accurate break entry using black detection
 - **As-run logging** — JSONL persistence with query API and BXF export
@@ -60,7 +70,13 @@ curl -X POST https://localhost:8080/api/playout/channels/1/load \
   -d '{
     "id": "morning-block",
     "name": "Morning Block",
-    "default_transition": {"type": "cut"},
+    "idle_asset": "/media/holding-slate.ts",
+    "idle_loop": true,
+    "default_transition": {"type": "dissolve", "duration_ms": 500},
+    "pods": [
+      {"label": "Halftime", "duration_ms": 180000, "auto_return": true},
+      {"label": "Commercial", "duration_ms": 120000, "auto_return": true}
+    ],
     "items": [
       {
         "id": "opener",
@@ -91,18 +107,79 @@ curl -X POST https://localhost:8080/api/playout/channels/1/load \
 curl -X POST https://localhost:8080/api/playout/channels/1/start
 ```
 
-The channel transitions from `cued` to `on_air` and begins playing through the playlist automatically.
+The channel transitions from `cued` to `on_air` and begins playing through the playlist automatically. Between items and before the first item, the idle asset loops continuously.
+
+### Use a template playlist
+
+```bash
+# List available template playlists
+curl https://localhost:8080/api/playout/templates
+
+# Get a pre-built playlist from a template
+curl https://localhost:8080/api/playout/templates/live-event
+```
 
 ---
 
-## 3. Channels
+## 3. Architecture
+
+Each playout channel is a virtual compositor with three layers: a playlist scheduler that drives the state machine, a frame router with internal compositor that selects and blends frame sources per tick, and an output stage that delivers a single stream of frames.
+
+```
+┌─────────────────────────────────────────┐
+│          Playlist Scheduler             │  manifest-driven state machine
+│   (idle loop, scheduled items, pods)    │  wall-clock advancement
+├─────────────────────────────────────────┤
+│        Frame Router + Compositor        │  selects frame source per tick
+│   (clip decoder, GPU cache tap, slate,  │  blends transitions internally
+│    idle loop, transition blender)       │  GPU-first, CPU fallback
+├─────────────────────────────────────────┤
+│           Output Stage                  │  single stream of frames
+│   (→ GPU source manager as playout:1)   │  preview encoding + MoQ relay
+└─────────────────────────────────────────┘
+```
+
+### Frame Sources
+
+The frame router picks one source per tick based on the current playlist item:
+
+| Item Type | Frame Source | Mechanism |
+|-----------|-------------|-----------|
+| `clip` | FileFrameIterator | Streaming decode to YUV (existing) |
+| `live` | GPU source manager cache | Read latest cached GPU frame for `item.source` — zero-copy VRAM pointer swap |
+| `slate` | Pre-allocated black frame or decoded slate asset | Generated once, reused |
+| Idle | IdleLoop iterator | Same as clip but auto-rewinds on EOF |
+
+### Tick-Driven Model
+
+The scheduler runs a tick loop at the channel's frame rate. Each tick:
+
+1. The scheduler evaluates the current state (idle, playing, transitioning)
+2. Checks for wall-clock scheduled time advancement
+3. The frame router selects the appropriate frame source
+4. If transitioning, the compositor blends outgoing and incoming frames
+5. The resulting frame is emitted to the switcher pipeline
+
+### GPU Preview & Browser Relay
+
+On channel start, `playout:N` registers with the GPU source manager via `RegisterSource()` with `PreviewConfig`. This creates a dedicated preview encoder (480p NVENC/VideoToolbox) and MoQ relay, the same pattern used by clip players and SRT sources.
+
+Frame flow:
+- Clip/slate playback: decoded YUV uploaded to GPU via `gpuSourceMgr.IngestYUV()`
+- Live tap: GPU source manager aliases `playout:1`'s cached frame to live source's frame (no upload)
+- Transitions: blended result (already in VRAM on GPU path) stored as `playout:1`'s cached frame
+
+---
+
+## 4. Channels
 
 SwitchFrame supports **2 playout channels** (`MaxChannels = 2`). Each channel:
 
 - Registers as a virtual switcher source with key `playout:1` or `playout:2`
 - Has its own playlist, cursor, transport state, and on-air mode
 - Has an independent pod board for commercial break management
-- Outputs decoded YUV frames to `Switcher.IngestReplayVideo()` and audio to the mixer
+- Runs its own tick-driven scheduler and frame router
+- Outputs frames to the GPU source manager and audio to the mixer
 
 Channels are pre-created at Manager startup. A channel must have a playlist loaded before it can start.
 
@@ -116,19 +193,26 @@ Channels are pre-created at Manager startup. A channel must have a playlist load
 
 ---
 
-## 4. Playlist Format
+## 5. Playlist Format
 
-A playlist is a JSON object containing an ordered list of items:
+A playlist is a JSON object containing an ordered list of items plus playlist-level settings for idle assets, transitions, and pod templates.
 
 ```json
 {
   "id": "evening-show-2026-03-25",
   "name": "Evening Show",
   "channel": "playout:1",
+  "idle_asset": "/media/holding-slate.ts",
+  "idle_loop": true,
   "default_transition": {
     "type": "dissolve",
     "duration_ms": 500
   },
+  "pods": [
+    {"label": "Halftime", "duration_ms": 180000, "auto_return": true},
+    {"label": "Commercial", "duration_ms": 120000, "auto_return": true},
+    {"label": "Sponsor", "duration_ms": 30000, "auto_return": true}
+  ],
   "items": [
     {
       "id": "item-001",
@@ -138,6 +222,7 @@ A playlist is a JSON object containing an ordered list of items:
       "duration_ms": 45000,
       "in_point_ms": 0,
       "out_point_ms": 45000,
+      "loop": false,
       "secondary_events": [
         {
           "type": "graphics_on",
@@ -159,6 +244,7 @@ A playlist is a JSON object containing an ordered list of items:
       "type": "live",
       "title": "Host Desk",
       "source": "camera:1",
+      "transition": {"type": "dissolve", "duration_ms": 1000},
       "secondary_events": [
         {
           "type": "scte35_cue",
@@ -184,6 +270,7 @@ A playlist is a JSON object containing an ordered list of items:
       "asset_uri": "s3://bucket/interview.mp4",
       "duration_ms": 180000,
       "hold": true,
+      "loop": false,
       "transition": {
         "type": "dissolve",
         "duration_ms": 1000
@@ -200,7 +287,10 @@ A playlist is a JSON object containing an ordered list of items:
 | `id` | string | Unique playlist identifier |
 | `name` | string | Display name |
 | `channel` | string | Target channel key (e.g., `"playout:1"`) |
+| `idle_asset` | string | URI of clip that loops when no item is active (pre-show, post-show, gaps). Omit for black. |
+| `idle_loop` | bool | Whether idle asset loops (default `true`) |
 | `default_transition` | object | Transition used between items unless overridden |
+| `pods` | array | Pod template definitions with user-defined labels (see [Pod Management](#10-pod-management)) |
 | `items` | array | Ordered list of playlist items |
 
 ### Item Types
@@ -224,8 +314,9 @@ A playlist is a JSON object containing an ordered list of items:
 | `in_point_ms` | int | Trim in point (clip items only, default 0) |
 | `out_point_ms` | int | Trim out point (clip items only, 0 = play to end) |
 | `hold` | bool | Hold last frame after clip completes instead of advancing |
-| `transition` | object | Per-item transition override (`type` and `duration_ms`) |
-| `scheduled_time` | string | ISO 8601 timestamp for as-run delta tracking |
+| `loop` | bool | Replay clip until operator advances or next scheduled item arrives |
+| `transition` | object | Per-item transition override (`type`, `duration_ms`, `easing`, `direction`). Omit = use playlist default. `{"type": "cut"}` = force hard cut. |
+| `scheduled_time` | string | ISO 8601 timestamp for wall-clock scheduled advancement |
 | `secondary_events` | array | Timed events attached to this item |
 
 ### Validation Rules
@@ -239,7 +330,7 @@ A playlist is a JSON object containing an ordered list of items:
 
 ---
 
-## 5. Channel Lifecycle
+## 6. Channel Lifecycle
 
 ```mermaid
 stateDiagram-v2
@@ -256,14 +347,47 @@ stateDiagram-v2
     completed --> stopped : Stop()
 ```
 
-### States
+### Channel States
 
 | State | Description |
 |-------|-------------|
 | `stopped` | No playlist or playback inactive |
-| `cued` | Playlist loaded, ready to start |
-| `on_air` | Background goroutine playing through items |
-| `completed` | All items played, channel idle |
+| `cued` | Playlist loaded, ready to start. Idle asset can play. |
+| `on_air` | Tick-driven scheduler running through items |
+| `completed` | All items played, channel returns to idle loop |
+
+### Scheduler States (internal to on_air)
+
+Within the `on_air` channel state, the scheduler maintains its own state machine:
+
+| State | Description |
+|-------|-------------|
+| `idle` | No active item. Idle asset loops. Waiting for scheduled time or operator advance. |
+| `playing` | An item is active (clip, live, or slate) |
+| `transitioning` | Blending between outgoing and incoming items |
+
+```
+Idle ──→ Playing ──→ Idle
+            ↕
+       Transitioning
+```
+
+### Item Advancement
+
+| Item Configuration | Behavior |
+|---|---|
+| `clip` with `duration_ms` | Auto-advance on completion |
+| `clip` with `loop: true` | Replay until advance or next scheduled item |
+| `clip` with `hold: true` | Hold last frame until advance |
+| `live` | Hold indefinitely until advance or next scheduled item |
+| `slate` with `duration_ms` | Auto-advance on timer expiry |
+| Any item with `scheduled_time` | Scheduler auto-advances when wall clock reaches time |
+
+### Scheduled Time Behavior
+
+- If a scheduled item's time arrives while a previous item is playing, the scheduler interrupts and transitions to the scheduled item
+- Gaps between items (previous completed, next not yet scheduled) are filled by the idle asset
+- Enables the workflow: idle loop, countdown, auto-transition to live at scheduled time
 
 ### Clip Playback
 
@@ -272,16 +396,16 @@ When a clip item plays:
 1. The `AssetProvider` opens the asset URI and returns a streaming `FrameIterator`
 2. If in/out points are set, a `TrimIterator` wraps the base iterator
 3. FPS is estimated from PTS spacing; frame pacing uses absolute time to prevent drift
-4. Each decoded YUV frame is output via the raw video callback to the switcher pipeline
+4. Each decoded YUV frame is output via the frame router to the switcher pipeline
 5. Audio frames are distributed alongside video at their original PTS
 6. Secondary events are ticked at each frame's elapsed time
 7. The splice coordinator receives each frame for black detection
 
-If `hold` is true, the last frame is output at 1fps indefinitely until Next is signaled.
+If `hold` is true, the last frame is output at 1fps indefinitely until Next is signaled. If `loop` is true, the iterator rewinds and replays from the beginning.
 
 ### Live Items
 
-Live items block until Next is called. They represent a point where the operator should cut to a live camera. Start-anchored secondary events fire immediately.
+Live items read from the GPU source manager's cached frame for the named source. Start-anchored secondary events fire immediately. The item holds until Next is called or a scheduled item preempts it.
 
 ### Slate Items
 
@@ -289,9 +413,114 @@ Slate items output BT.709 black frames (Y=16, U=V=128) at 30fps for the configur
 
 ---
 
-## 6. Pod Management
+## 7. Transitions
+
+Transitions between playlist items are handled internally by the playout compositor. Transitions are **opt-in** — hard cut is the default. A transition only occurs when explicitly configured on the item or as a playlist default.
+
+### How Transitions Work
+
+When a transition is active:
+
+1. The frame router maintains two slots: `currentSource` and `nextSource`
+2. Both sources produce frames simultaneously for the transition duration
+3. Each tick: read from both, blend via compositor, emit result
+4. After completion: `currentSource` = `nextSource`, old source closed
+
+### Supported Types
+
+| Type | Description |
+|------|-------------|
+| `cut` | Instant switch, no blend (default) |
+| `dissolve` | Linear crossfade |
+| `dip_black` | Fade out to black, fade in from black |
+| `dip_white` | Same with white |
+| `wipe` | Directional (horizontal, vertical, diagonal) |
+
+All transition parameters are configurable: `type`, `duration_ms`, `easing`, `direction`.
+
+No stinger support inside playout — stingers are a switcher-level feature. Stinger-like effects can be achieved with a clip item containing the stinger content.
+
+### GPU Path (Metal/CUDA)
+
+When GPU acceleration is available:
+
+- Both frames are already in VRAM
+- Uses existing `blend.metal` / `cuda/blend.cu` compute kernels (uniform mix, fade, wipe)
+- Blend via GPU compute dispatch, result stays in VRAM
+- Zero CPU involvement
+
+### CPU Fallback
+
+When no GPU is available:
+
+- Uses existing `transition.BlendYUV420` SIMD kernels from `server/transition/blend.go`
+- Both frames in CPU memory, blend in-place
+
+---
+
+## 8. Live Source Tap
+
+During live items, the playout channel reads directly from the GPU source manager's cached VRAM frame for the named source (e.g., `srt:nflx`). This is a pointer swap — no CPU copy, no upload. The GPU pipeline processes it as `playout:1`'s frame (keying, layout, DSK, encode all apply).
+
+The playout channel does **not** switch the program source. It reads the live source's frame and emits it as its own output. The main switcher program bus is unaffected.
+
+### Fallback Behavior
+
+- If the named source has no frame yet (offline), the idle asset or last good frame is held
+- **CPU fallback (no GPU):** a raw frame hook on the switcher's `handleRawVideoFrame` path receives decoded YUV from the live source and re-emits through `IngestReplayVideo("playout:1", ...)`
+
+---
+
+## 9. Idle Loop
+
+The `IdleLoop` wraps an `AssetProvider` with auto-rewind capability. When it reaches the end of the clip, it re-opens and starts from the beginning. If no idle asset is configured or the asset fails to open, it returns a pre-allocated BT.709 black frame.
+
+### Configuration
+
+The idle asset is set at the playlist level via `idle_asset`:
+
+```json
+{
+  "idle_asset": "/media/holding-slate.ts",
+  "idle_loop": true
+}
+```
+
+- Omit `idle_asset` for black frames during idle
+- Set `idle_loop` to `false` for a single-play idle asset (holds last frame after completion)
+
+### When Idle Plays
+
+- Before the first item starts
+- Between items when the previous item completes and the next item has a future `scheduled_time`
+- After all items complete (channel returns to idle)
+- During pre-show and post-show gaps
+
+### Implementation
+
+`IdleLoop` does not run its own goroutine. It is called synchronously per tick by the scheduler. It is safe for concurrent use. The idle asset is decoded through the same `FileFrameIterator` pipeline used by clip items.
+
+---
+
+## 10. Pod Management
 
 Pods represent commercial breaks. Each channel has an independent **pod board** that manages break scheduling, activation, and completion. Pods integrate with the SCTE-35 injector for downstream ad signaling.
+
+### Pod Templates from Manifest
+
+Pod templates are defined at the playlist level in the `pods` array with user-defined labels:
+
+```json
+{
+  "pods": [
+    {"label": "Halftime", "duration_ms": 180000, "auto_return": true},
+    {"label": "Commercial", "duration_ms": 120000, "auto_return": true},
+    {"label": "Sponsor", "duration_ms": 30000, "auto_return": true}
+  ]
+}
+```
+
+These drive the pod board UI buttons. Default labels ("Break 1", "Break 2") are used if the manifest does not specify templates.
 
 ### Pod Lifecycle
 
@@ -340,19 +569,6 @@ stateDiagram-v2
 | **Promote** | Increase priority (normal -> high -> mandatory) |
 | **Demote** | Decrease priority (mandatory -> high -> normal) |
 
-### Pod Templates
-
-Four built-in templates provide common break patterns:
-
-| Template | Duration | Auto-Return | Dump Out | Priority |
-|----------|:--------:|:-----------:|:--------:|:--------:|
-| `quarter` | 3 min | Yes | Yes | Normal |
-| `timeout` | 1 min | Yes | Yes | Normal |
-| `injury` | Indefinite | No (hold) | Yes | High |
-| `mandatory_sponsor` | 2 min | Yes | No | Mandatory |
-
-Custom templates can be created, updated, and deleted via the REST API. Pods created from templates inherit all default values.
-
 ### Priority
 
 | Level | Behavior |
@@ -363,7 +579,7 @@ Custom templates can be created, updated, and deleted via the REST API. Pods cre
 
 ---
 
-## 7. Secondary Events
+## 11. Secondary Events
 
 Secondary events are timed actions attached to playlist items. They fire at a computed time relative to the item's start or end.
 
@@ -394,7 +610,36 @@ Events are sorted by computed fire time and evaluated on each frame tick. Each e
 
 ---
 
-## 8. Asset Cache
+## 12. Sample Content
+
+### Built-In Sample Clips
+
+Generated at startup via ffmpeg (graceful skip if unavailable). Stored in playout cache, available in all modes (not just demo):
+
+- **"Holding Slate"** — 10s looping gradient, default idle asset
+- **"Bumper In"** — 3s lead-in transition clip
+- **"Bumper Out"** — 3s return-from-break clip
+- **"Sample Ad A"** — 15s synthetic commercial
+- **"Sample Ad B"** — 30s synthetic commercial
+- **"Countdown"** — 10s countdown pattern
+
+Sample clips double as ad content for pod breaks, making the pod workflow demonstrable out of the box.
+
+### Template Playlists
+
+Available in the UI via "New Playlist" dropdown, and via the REST API:
+
+| Template | Description |
+|----------|-------------|
+| **"Live Event with Breaks"** | Idle slate, live hit, bumper, SCTE-35 ad pod, bumper, live hit, postgame. Demonstrates idle asset, live items, transitions, SCTE-35, pods. |
+| **"VOD Playlist"** | Back-to-back clips with dissolves, loop on last item. Demonstrates clip sequencing, per-item transitions, loop. |
+| **"Scheduled Broadcast"** | Items with `scheduled_time` over 30 minutes, idle fill between. Demonstrates wall-clock automation, idle fill. |
+
+Templates pre-populate the timeline editor. Users can modify everything — templates are starting points.
+
+---
+
+## 13. Asset Cache
 
 The asset cache is an LRU disk cache that stores encoded media files locally for fast access during playback. It sits between cold storage (network, S3, etc.) and the hot streaming decoder.
 
@@ -468,7 +713,7 @@ When total cached bytes exceed `--playout-cache-max`, the oldest-accessed entrie
 
 ---
 
-## 9. Splice Coordination
+## 14. Splice Coordination
 
 The `SpliceCoordinator` enables frame-accurate break entry by scanning the playout video stream for clean splice points (black frames) before injecting the SCTE-35 cue.
 
@@ -487,7 +732,7 @@ The black detector computes mean luma over a configurable window and threshold, 
 
 ---
 
-## 10. As-Run Logging
+## 15. As-Run Logging
 
 The as-run logger provides a durable record of everything that happened during playout for traffic reconciliation, compliance, and debugging.
 
@@ -526,7 +771,7 @@ The `GET /api/playout/channels/{n}/asrun` endpoint supports filters:
 
 ---
 
-## 11. BXF Import & Export
+## 16. BXF Import & Export
 
 [BXF (Broadcast Exchange Format)](https://www.smpte.org/standards/st2021) is the SMPTE standard XML format for schedule exchange between traffic and automation systems.
 
@@ -546,7 +791,7 @@ The `GET /api/playout/channels/{n}/asrun` endpoint supports filters:
 
 ---
 
-## 12. Health & Recovery
+## 17. Health & Recovery
 
 ### Watchdog
 
@@ -576,7 +821,7 @@ The `StatePersister` writes periodic atomic snapshots of all channel and pod sta
 
 ---
 
-## 13. State Broadcast
+## 18. State Broadcast
 
 Playout state is included in `ControlRoomState.playout` and pushed to browsers via the MoQ control track on every state change.
 
@@ -589,6 +834,7 @@ interface PlayoutChannelInfo {
   id: number;             // 1-2
   state: "stopped" | "cued" | "on_air" | "completed";
   mode?: "automated" | "manual" | "break";
+  schedulerState?: "idle" | "playing" | "transitioning";
   playlistName?: string;
   currentItemId?: string;
   currentTitle?: string;
@@ -620,7 +866,7 @@ The `channels` array always contains exactly 2 elements (one per channel). Progr
 
 ---
 
-## 14. REST API Reference
+## 19. REST API Reference
 
 All endpoints require `--playout`. Returns `501 Not Implemented` when disabled.
 
@@ -671,6 +917,14 @@ All endpoints require `--playout`. Returns `501 Not Implemented` when disabled.
 | PUT | `/api/playout/pods/templates/{type}` | Update template |
 | DELETE | `/api/playout/pods/templates/{type}` | Delete template |
 
+### Sample Content & Templates
+
+| Method | Path | Description |
+|:------:|------|-------------|
+| GET | `/api/playout/samples` | List built-in sample clips (name, title, path, duration) |
+| GET | `/api/playout/templates` | List available template playlist names |
+| GET | `/api/playout/templates/{name}` | Get a pre-built playlist for the named template |
+
 ### Cache
 
 | Method | Path | Description |
@@ -700,7 +954,64 @@ All endpoints require `--playout`. Returns `501 Not Implemented` when disabled.
 
 ---
 
-## 15. Configuration
+## 20. UI
+
+The playout UI is organized into three main components accessible from the Playout tab.
+
+### Timeline Editor (`PlayoutTimeline.svelte`)
+
+Full drag-and-drop timeline editor for building and editing playlists.
+
+```
+┌─────────────────────────────────────────────────────┐
+│ Toolbar: [+ Add Item] [Templates v] [Import BXF]    │
+│          [Save] [Load from File] [Clear]             │
+├─────────────────────────────────────────────────────┤
+│ Timeline Track:                                      │
+│ ┌──────┐┌────────────┐┌───┐┌──────────┐┌───┐┌────┐ │
+│ │Slate ││ Live: nflx  ││Bmp││ Ad Break  ││Bmp││Live│ │
+│ │ 10s  ││  (manual)   ││ 3s││ SCTE 120s ││ 3s││    │ │
+│ └──────┘└────────────┘└───┘└──────────┘└───┘└────┘ │
+│ v Secondary events track                             │
+│   *GFX     *SCTE          *SCTE         *GFX        │
+└─────────────────────────────────────────────────────┘
+```
+
+Interactions:
+- **Drag items** to reorder on the timeline
+- **Resize item blocks** to change duration (clip/slate)
+- **Click item** to open the item editor panel
+- **Right-click** for context menu (duplicate, delete, insert before/after)
+- **Drag from clip library** onto timeline to add
+- **Secondary event markers** visible on sub-track, click to edit
+- **Transition indicators** between items show type/duration
+- **Live items** render as flexible-width blocks (no fixed duration)
+- **Scheduled items** show absolute time markers on the timeline ruler
+
+### Item Editor (`PlayoutItemEditor.svelte`)
+
+Full property editor for the selected playlist item:
+
+- Item type selector (clip/live/slate)
+- Source/asset URI field
+- Duration, in/out points
+- Transition type, duration, easing, direction
+- Loop and hold toggles
+- Scheduled time picker
+- Secondary events list with add/edit/delete
+
+### Settings Panel (`PlayoutSettings.svelte`)
+
+Playlist-level settings:
+
+- Idle asset selector (from clip library + samples)
+- Default transition configuration
+- Pod label editor (add/remove/rename labels from manifest `pods` array)
+- Playlist name and ID
+
+---
+
+## 21. Configuration
 
 ### CLI Flags
 
@@ -729,28 +1040,40 @@ Each `Channel` uses a `sync.Mutex` for state and cursor, with `atomic.Int64` for
 
 Each `PodBoard` uses its own `sync.Mutex` protecting the pod map and active pod ID. Auto-return timers and elapsed trackers run as cancellable goroutines.
 
+The `Scheduler` uses a `sync.Mutex` for state transitions, with atomic loads for the current scheduler state on the read path.
+
 The `Cache` uses a `sync.Mutex` with atomic persistence (temp file, fsync, rename).
 
 The `AsRunLogger` uses a `sync.Mutex` protecting both the ring buffer and the JSONL encoder.
 
 ---
 
-## 16. File Reference
+## 22. File Reference
 
 ```
 server/playout/
   types.go              ChannelState, OnAirMode, ItemType, Playlist, PlaylistItem,
                         TransitionConfig, SecondaryEvent, ChannelStatus, Pod, PodState,
-                        PodConfig, PodPriority, CacheEntry, CacheStatus, AsRunEvent,
-                        AsRunEventType, sentinel errors
-  channel.go            Channel: run goroutine, playClipItem/playLiveItem/playSlateItem,
+                        PodConfig, PodPriority, PodTemplateDef, CacheEntry, CacheStatus,
+                        AsRunEvent, AsRunEventType, sentinel errors
+  channel.go            Channel: tick-driven frame router with dual-source compositor,
+                        idle loop, scheduled advancement, GPU source manager integration,
                         LoadPlaylist, Start/Stop/Next/Previous/JumpTo, TakeManual/ReturnToAuto,
                         TakeBreak/ReturnFromBreak, hold-last-frame, progress atomics
+  scheduler.go          Scheduler: tick-driven playlist state machine (Idle/Playing/Transitioning),
+                        wall-clock scheduled time advancement, item completion detection
+  idle.go               IdleLoop: auto-rewinding asset iterator for idle periods,
+                        black frame fallback, SetAsset for runtime changes
+  compositor.go         Compositor: internal transition blender (GPU-first via GPUBlendFunc,
+                        CPU SIMD fallback via transition.FrameBlender)
+  samples.go            SampleClip generation via ffmpeg, TemplatePlaylist factory,
+                        AvailableTemplates, built-in sample clip definitions
   manager.go            Manager: 2 channels, pod boards, lifecycle callbacks, state aggregation,
+                        GPU tap, compositor, idle asset, preview registration,
                         Recover(), RecoverChannel(), Close()
   pod_board.go          PodBoard: CRUD, Arm/Disarm/Fire, Hold/Extend/DumpOut, Move/Swap/Resize,
                         Promote/Demote, auto-return timer, elapsed tracker, splice integration
-  pod_template.go       PodTemplate, PodTemplateStore, 4 builtin templates
+  pod_template.go       PodTemplate, PodTemplateStore, generic default templates
   secondary.go          SecondaryEventScheduler: BeginItem, Tick, Reanchor, dispatch
   iterator.go           FrameIterator interface, SliceIterator, TrimIterator,
                         AssetProvider, CacheAssetProvider, FakeAssetProvider
@@ -770,13 +1093,15 @@ server/playout/
     asrun.go            ExportAsRun: as-run events to BXF AsRunLog XML
 
 server/control/
-  api_playout.go        Channel control, cache, as-run, BXF import, health REST handlers
+  api_playout.go        Channel control, cache, as-run, BXF import, health,
+                        sample clips, template playlists REST handlers
   api_playout_pods.go   Pod CRUD, lifecycle, template REST handlers
 
 server/cmd/switchframe/
   app_playout.go        Application wiring: cache, prefetcher, provider, manager,
                         lifecycle callbacks, secondary handler, SCTE-35 adapter,
-                        as-run logger, watchdog, splice coordinator
+                        as-run logger, watchdog, splice coordinator, GPU source manager
+                        registration, live tap, transition GPU dispatch, sample clips
   main.go              --playout, --playout-cache-max, --playout-asrun-retention flags
 ```
 
