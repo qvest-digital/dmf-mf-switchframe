@@ -339,6 +339,29 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 		state.ClipUpload = up
 	}
 
+	// Playout channel state.
+	if a.playoutMgr != nil {
+		states := a.playoutMgr.ChannelStates()
+		channels := make([]internal.PlayoutChannelInfo, len(states))
+		for i, s := range states {
+			channels[i] = internal.PlayoutChannelInfo{
+				ID:            s.ID,
+				State:         s.State,
+				Mode:          s.Mode,
+				PlaylistName:  s.PlaylistName,
+				CurrentItemID: s.CurrentItemID,
+				CurrentTitle:  s.CurrentTitle,
+				NextItemID:    s.NextItemID,
+				NextTitle:     s.NextTitle,
+				ItemIndex:     s.ItemIndex,
+				ItemCount:     s.ItemCount,
+				ItemProgress:  s.ItemProgress,
+				ItemRemainMs:  s.ItemRemainMs,
+			}
+		}
+		state.Playout = &internal.PlayoutState{Channels: channels}
+	}
+
 	// Encoder state (current + available backends).
 	// Uses pre-computed internal.EncoderInfo slice to avoid per-broadcast allocations.
 	if avail := a.sw.AvailableEncodersInternal(); len(avail) > 0 {
