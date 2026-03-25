@@ -69,6 +69,16 @@ func (inst *Instance) CreateAudioTx(cfg TxAudioConfig) (*AudioTx, error) {
 	}
 	ops.framebuff_cnt = C.uint16_t(frameBufs)
 
+	// Calculate frame buffer size (mandatory for TX, must be multiple of packet size).
+	// Use 10ms as the desired frame time (typical for audio processing).
+	var fps C.double
+	fbSize := C.st30_calculate_framebuff_size(ops.fmt, ops.ptime, ops.sampling,
+		ops.channel, 10_000_000, &fps) // 10ms = 10,000,000 ns
+	if fbSize <= 0 {
+		return nil, fmt.Errorf("st2110: st30_calculate_framebuff_size returned %d", int(fbSize))
+	}
+	ops.framebuff_size = C.uint32_t(fbSize)
+
 	handle := C.st30p_tx_create(inst.handle, &ops)
 	if handle == nil {
 		return nil, fmt.Errorf("st2110: st30p_tx_create failed for %s:%d", cfg.MulticastIP, cfg.Port)

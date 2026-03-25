@@ -78,6 +78,14 @@ func (inst *Instance) CreateAudioRx(cfg RxAudioConfig) (*AudioRx, error) {
 	}
 	ops.framebuff_cnt = C.uint16_t(frameBufs)
 
+	// Calculate frame buffer size (must be multiple of packet size).
+	var fps C.double
+	fbSize := C.st30_calculate_framebuff_size(ops.fmt, ops.ptime, ops.sampling,
+		ops.channel, 10_000_000, &fps)
+	if fbSize > 0 {
+		ops.framebuff_size = C.uint32_t(fbSize)
+	}
+
 	handle := C.st30p_rx_create(inst.handle, &ops)
 	if handle == nil {
 		return nil, fmt.Errorf("st2110: st30p_rx_create failed for %s:%d", cfg.MulticastIP, cfg.Port)
