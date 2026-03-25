@@ -8,8 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // mockCompositor records SetOverlay calls.
@@ -246,6 +250,9 @@ func setupManagerWithMock(t *testing.T) (*Manager, *mockSidecar, *mockCompositor
 
 	// Start reading commands in the background.
 	go mock.readCommands()
+
+	// Start the restart loop so tests can exercise restart behavior.
+	go mgr.restartLoop()
 
 	return mgr, mock, comp
 }
@@ -937,4 +944,211 @@ func TestManagerConnectBadPath(t *testing.T) {
 		t.Fatal("expected error connecting to nonexistent sockets")
 		_ = mgr.Close()
 	}
+}
+
+func TestManager_AliveReflectsProcessState(t *testing.T) {
+	mgr, mock, _ := setupManagerWithMock(t)
+	defer mock.close()
+
+	require.True(t, mgr.Alive(), "should be alive after start")
+
+	mgr.Close()
+	require.False(t, mgr.Alive(), "should not be alive after close")
+}
+
+func TestManager_DetectsFrameSocketDrop(t *testing.T) {
+	mgr, mock, _ := setupManagerWithMock(t)
+	defer mgr.Close()
+	require.True(t, mgr.Alive())
+
+	mock.frameConn.Close()
+
+	require.Eventually(t, func() bool {
+		return !mgr.Alive()
+	}, 2*time.Second, 50*time.Millisecond,
+		"manager should detect frame socket drop")
+}
+
+func TestManager_DetectsControlSocketDrop(t *testing.T) {
+	mgr, mock, _ := setupManagerWithMock(t)
+	defer mgr.Close()
+	require.True(t, mgr.Alive())
+
+	mock.controlConn.Close()
+
+	require.Eventually(t, func() bool {
+		return !mgr.Alive()
+	}, 2*time.Second, 50*time.Millisecond,
+		"manager should detect control socket drop")
+}
+
+func TestManager_ResetsBrowserPoolOnRestart(t *testing.T) {
+	mgr, mock, _ := setupManagerWithMock(t)
+	defer mgr.Close()
+
+	browserID, err := mgr.AllocateBrowser(1)
+	require.NoError(t, err)
+	mock.waitForCommands(1, time.Second)
+
+	states := mgr.BrowserStates()
+	require.Equal(t, "allocated", states[browserID].Status)
+
+	mgr.resetBrowserPool()
+
+	states = mgr.BrowserStates()
+	for i, bs := range states {
+		assert.Equal(t, "empty", bs.Status, "slot %d should be empty", i)
+		assert.Equal(t, -1, bs.LayerID, "slot %d layerID should be -1", i)
+	}
+}
+
+func TestManager_RestartCountIncrementsOnSocketDrop(t *testing.T) {
+	mgr, mock, _ := setupManagerWithMock(t)
+	defer mgr.Close()
+	defer mock.close()
+
+	require.True(t, mgr.Alive())
+
+	// Simulate process exit by closing both sockets (triggers read loop exits).
+	mock.close()
+
+	require.Eventually(t, func() bool {
+		return !mgr.Alive()
+	}, 2*time.Second, 50*time.Millisecond)
+
+	// Restart count should eventually increment (restart loop fires).
+	require.Eventually(t, func() bool {
+		return mgr.RestartCount() > 0
+	}, 5*time.Second, 100*time.Millisecond,
+		"restart should have been attempted")
+}
+
+func TestManager_ConcurrentSocketDropsDoNotRace(t *testing.T) {
+	mgr, mock, _ := setupManagerWithMock(t)
+	defer mgr.Close()
+
+	// Close both sockets simultaneously.
+	mock.frameConn.Close()
+	mock.controlConn.Close()
+
+	// Should not panic or deadlock.
+	time.Sleep(500 * time.Millisecond)
+	require.False(t, mgr.Alive())
+}
+
+func TestManager_StaleReadLoopDoesNotTriggerRestart(t *testing.T) {
+	mgr, mock, _ := setupManagerWithMock(t)
+	defer mgr.Close()
+
+	require.True(t, mgr.Alive())
+
+	// Manually bump generation to simulate a restart having occurred.
+	// This makes the current read loops "stale".
+	mgr.spawnGen.Add(1)
+
+	// Close the sockets — the old read loops will exit.
+	mock.close()
+
+	// The read loops should see a generation mismatch and NOT trigger restart.
+	time.Sleep(500 * time.Millisecond)
+
+	// alive should be false because sockets are closed, but restartCh should
+	// NOT have been signaled since the generation doesn't match.
+	// We verify by checking restart count stays 0 (no restart loop firing).
+	require.Equal(t, int64(0), mgr.RestartCount(),
+		"stale read loops should not trigger restart")
+}
+
+func TestManager_RestartCountAccessor(t *testing.T) {
+	comp := &mockCompositor{}
+	cfg := DefaultConfig()
+	mgr := NewManager(comp, cfg)
+	defer mgr.Close()
+
+	require.Equal(t, int64(0), mgr.RestartCount())
+	mgr.restartCount.Add(1)
+	require.Equal(t, int64(1), mgr.RestartCount())
+}
+
+func TestManager_CleansUpOldSocketDirOnRestart(t *testing.T) {
+	mgr, mock, _ := setupManagerWithMock(t)
+	defer mgr.Close()
+
+	// setupManagerWithMock uses connectSockets (not spawn), so socketDir is
+	// not set. Create a temp dir and inject it to simulate a real sidecar dir.
+	oldDir, err := os.MkdirTemp("", "hgfx-cleanup-*")
+	require.NoError(t, err)
+
+	mgr.mu.Lock()
+	mgr.socketDir = oldDir
+	mgr.mu.Unlock()
+
+	require.DirExists(t, oldDir)
+
+	// Trigger restart by closing sockets.
+	mock.close()
+
+	// Wait for restart to fire — the restart loop removes the old dir
+	// before attempting to respawn (which will fail with mock sockets).
+	require.Eventually(t, func() bool {
+		return mgr.RestartCount() > 0
+	}, 5*time.Second, 100*time.Millisecond,
+		"restart should have been attempted")
+
+	// Old directory should be cleaned up.
+	require.NoDirExists(t, oldDir, "old socket dir should be removed on restart")
+}
+
+func TestManager_NotifiesStateChangeOnPoolReset(t *testing.T) {
+	mgr, mock, _ := setupManagerWithMock(t)
+	defer mock.close()
+	defer mgr.Close()
+
+	var called atomic.Int32
+	mgr.OnStateChange(func() {
+		called.Add(1)
+	})
+
+	before := called.Load()
+	mgr.resetBrowserPool()
+
+	require.Eventually(t, func() bool {
+		return called.Load() > before
+	}, time.Second, 50*time.Millisecond,
+		"state change should fire on pool reset")
+}
+
+func TestManager_FullCrashRestartCycle(t *testing.T) {
+	mgr, mock, _ := setupManagerWithMock(t)
+	defer mgr.Close()
+
+	// Step 1: Allocate and verify.
+	browserID, err := mgr.AllocateBrowser(1)
+	require.NoError(t, err)
+	mock.waitForCommands(1, time.Second)
+
+	states := mgr.BrowserStates()
+	require.Equal(t, "allocated", states[browserID].Status)
+
+	// Step 2: Kill sidecar.
+	mock.close()
+
+	// Step 3: Wait for detection.
+	require.Eventually(t, func() bool {
+		return !mgr.Alive()
+	}, 2*time.Second, 50*time.Millisecond,
+		"manager should detect sidecar death")
+
+	// Step 4: Verify pool reset.
+	states = mgr.BrowserStates()
+	for i, bs := range states {
+		assert.Equal(t, "empty", bs.Status,
+			"slot %d should be empty after crash", i)
+	}
+
+	// Step 5: Verify restart was attempted.
+	require.Eventually(t, func() bool {
+		return mgr.RestartCount() > 0
+	}, 5*time.Second, 100*time.Millisecond,
+		"restart should have been attempted")
 }

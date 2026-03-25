@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -31,11 +32,15 @@ type Manager struct {
 	process     *os.Process
 	socketDir   string // temp directory for Unix sockets
 
-	mu       sync.Mutex
-	browsers []*BrowserState
-	done     chan struct{}
-	stopOnce sync.Once
-	started  bool
+	mu        sync.Mutex
+	browsers  []*BrowserState
+	done      chan struct{}
+	restartCh chan struct{} // buffered(1), signals restart loop
+	stopOnce  sync.Once
+	alive     atomic.Bool
+
+	restartCount atomic.Int64
+	spawnGen     atomic.Int64
 
 	onStateChange func()
 }
@@ -54,6 +59,7 @@ func NewManager(compositor compositorSetter, cfg Config) *Manager {
 		config:     cfg,
 		browsers:   browsers,
 		done:       make(chan struct{}),
+		restartCh:  make(chan struct{}, 1),
 	}
 }
 
@@ -79,17 +85,26 @@ func (m *Manager) Start() error {
 		return nil
 	}
 
-	return m.spawn(binPath)
+	if err := m.spawn(binPath); err != nil {
+		return err
+	}
+
+	go m.restartLoop()
+	return nil
 }
 
 // spawn starts the sidecar process and connects sockets.
 func (m *Manager) spawn(binPath string) error {
+	gen := m.spawnGen.Add(1)
+
 	// Create temp directory for Unix sockets.
 	socketDir, err := os.MkdirTemp("", "switchframe-cef-*")
 	if err != nil {
 		return fmt.Errorf("create socket dir: %w", err)
 	}
+	m.mu.Lock()
 	m.socketDir = socketDir
+	m.mu.Unlock()
 
 	controlPath := filepath.Join(socketDir, "control.sock")
 	framePath := filepath.Join(socketDir, "frames.sock")
@@ -109,15 +124,23 @@ func (m *Manager) spawn(binPath string) error {
 	// Capture stdout to wait for READY signal.
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		m.mu.Lock()
+		m.socketDir = ""
+		m.mu.Unlock()
 		_ = os.RemoveAll(socketDir)
 		return fmt.Errorf("stdout pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
+		m.mu.Lock()
+		m.socketDir = ""
+		m.mu.Unlock()
 		_ = os.RemoveAll(socketDir)
 		return fmt.Errorf("start sidecar: %w", err)
 	}
+	m.mu.Lock()
 	m.process = cmd.Process
+	m.mu.Unlock()
 
 	slog.Info("htmlgfx: sidecar started", "pid", cmd.Process.Pid, "binary", binPath)
 
@@ -151,12 +174,11 @@ func (m *Manager) spawn(binPath string) error {
 	}
 
 	// Connect to the sidecar's sockets.
-	if err := m.connectSockets(controlPath, framePath); err != nil {
+	if err := m.connectSockets(controlPath, framePath, gen); err != nil {
 		m.killProcess()
 		return fmt.Errorf("connect to sidecar: %w", err)
 	}
 
-	m.started = true
 	slog.Info("htmlgfx: sidecar connected", "control", controlPath, "frames", framePath)
 
 	// Monitor for unexpected exit.
@@ -165,7 +187,7 @@ func (m *Manager) spawn(binPath string) error {
 	return nil
 }
 
-// watchProcess waits for the sidecar to exit and attempts restart if unexpected.
+// watchProcess waits for the sidecar to exit and triggers restart if unexpected.
 func (m *Manager) watchProcess(cmd *exec.Cmd) {
 	err := cmd.Wait()
 
@@ -176,30 +198,148 @@ func (m *Manager) watchProcess(cmd *exec.Cmd) {
 	}
 
 	slog.Error("htmlgfx: sidecar exited unexpectedly", "error", err)
-	// Future: could implement auto-restart with backoff here.
+	m.triggerRestart("process exited")
 }
 
 // killProcess terminates the sidecar and cleans up.
+// It grabs m.mu to snapshot and nil-out process/socketDir, then
+// performs blocking cleanup outside the lock.
 func (m *Manager) killProcess() {
-	if m.process != nil {
-		_ = m.process.Kill()
-		_, _ = m.process.Wait() // reap zombie
-		m.process = nil
+	m.mu.Lock()
+	proc := m.process
+	m.process = nil
+	dir := m.socketDir
+	m.socketDir = ""
+	m.mu.Unlock()
+
+	if proc != nil {
+		_ = proc.Kill()
+		_, _ = proc.Wait() // reap zombie
 	}
-	if m.socketDir != "" {
-		_ = os.RemoveAll(m.socketDir)
-		m.socketDir = ""
+	if dir != "" {
+		_ = os.RemoveAll(dir)
 	}
 }
 
-// Started returns whether the sidecar was successfully started.
+// Alive returns whether the sidecar process is currently alive and connected.
+// Unlike the old Started() flag, Alive becomes false when Close() is called
+// or the sidecar process exits.
+func (m *Manager) Alive() bool {
+	return m.alive.Load()
+}
+
+// Started returns whether the sidecar is alive (backward-compatible wrapper).
 func (m *Manager) Started() bool {
-	return m.started
+	return m.Alive()
+}
+
+// RestartCount returns the number of restart attempts made by the restart loop.
+func (m *Manager) RestartCount() int64 {
+	return m.restartCount.Load()
+}
+
+// SocketDir returns the current socket directory path. Returns "" if no
+// sidecar is running.
+func (m *Manager) SocketDir() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.socketDir
+}
+
+// triggerRestart signals that the sidecar needs restarting due to an
+// unexpected socket closure or error. It sets alive to false and sends
+// on restartCh (non-blocking). If the manager is already shutting down
+// (done closed), this is a no-op.
+func (m *Manager) triggerRestart(reason string) {
+	select {
+	case <-m.done:
+		return // intentional shutdown
+	default:
+	}
+	slog.Warn("htmlgfx: triggering restart", "reason", reason)
+	m.alive.Store(false)
+	select {
+	case m.restartCh <- struct{}{}:
+	default: // already pending
+	}
+}
+
+// restartLoop watches restartCh and respawns the sidecar with exponential backoff.
+func (m *Manager) restartLoop() {
+	backoff := time.Second
+	maxBackoff := 30 * time.Second
+
+	for {
+		select {
+		case <-m.done:
+			return
+		case <-m.restartCh:
+		}
+
+		// Kill existing process and clean up connections.
+		m.killProcess()
+		m.resetBrowserPool()
+
+		m.mu.Lock()
+		if m.controlConn != nil {
+			m.controlConn.Close()
+			m.controlConn = nil
+		}
+		if m.frameConn != nil {
+			m.frameConn.Close()
+			m.frameConn = nil
+		}
+		// Clean up old socket directory.
+		oldDir := m.socketDir
+		m.socketDir = ""
+		m.mu.Unlock()
+
+		if oldDir != "" {
+			os.RemoveAll(oldDir)
+		}
+
+		slog.Info("htmlgfx: restarting sidecar", "backoff", backoff)
+
+		select {
+		case <-m.done:
+			return
+		case <-time.After(backoff):
+		}
+
+		if err := m.spawn(m.config.BinaryPath); err != nil {
+			slog.Error("htmlgfx: restart failed", "error", err)
+			backoff = min(backoff*2, maxBackoff)
+		} else {
+			slog.Info("htmlgfx: sidecar restarted successfully",
+				"restart_count", m.restartCount.Load())
+			backoff = time.Second // reset on success
+		}
+		m.restartCount.Add(1)
+	}
+}
+
+// resetBrowserPool resets all browser slots to empty and clears any
+// compositor overlays they were driving. Called before restarting the sidecar.
+func (m *Manager) resetBrowserPool() {
+	m.mu.Lock()
+	for i := range m.browsers {
+		if m.browsers[i].Status != "empty" {
+			if m.browsers[i].LayerID >= 0 && m.compositor != nil {
+				_ = m.compositor.SetOverlay(m.browsers[i].LayerID, nil, 0, 0, "")
+			}
+			*m.browsers[i] = NewBrowserState(i)
+		}
+	}
+	m.mu.Unlock()
+	m.notifyStateChange()
+	slog.Info("htmlgfx: browser pool reset (all slots empty)")
 }
 
 // connectSockets connects the manager to the sidecar's Unix domain sockets
-// and starts the read loop goroutines.
-func (m *Manager) connectSockets(controlPath, framePath string) error {
+// and starts the read loop goroutines. The gen parameter is the spawn
+// generation — read loops use it to avoid triggering restarts for stale
+// connections after a new sidecar has already been spawned.
+func (m *Manager) connectSockets(controlPath, framePath string, gen ...int64) error {
 	controlConn, err := net.Dial("unix", controlPath)
 	if err != nil {
 		return fmt.Errorf("connect control socket: %w", err)
@@ -211,11 +351,20 @@ func (m *Manager) connectSockets(controlPath, framePath string) error {
 		return fmt.Errorf("connect frame socket: %w", err)
 	}
 
+	m.mu.Lock()
 	m.controlConn = controlConn
 	m.frameConn = frameConn
+	m.mu.Unlock()
+	m.alive.Store(true)
 
-	go m.frameReadLoop()
-	go m.controlReadLoop()
+	// Use the provided generation or read current.
+	g := m.spawnGen.Load()
+	if len(gen) > 0 {
+		g = gen[0]
+	}
+
+	go m.frameReadLoop(g)
+	go m.controlReadLoop(g)
 
 	return nil
 }
@@ -225,6 +374,7 @@ func (m *Manager) connectSockets(controlPath, framePath string) error {
 // Returns the browser ID or an error if the pool is full.
 func (m *Manager) AllocateBrowser(layerID int) (int, error) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	slotID := -1
 	for i, bs := range m.browsers {
@@ -237,7 +387,6 @@ func (m *Manager) AllocateBrowser(layerID int) (int, error) {
 			break
 		}
 	}
-	m.mu.Unlock()
 
 	if slotID < 0 {
 		return 0, fmt.Errorf("browser pool exhausted (pool size: %d)", m.config.PoolSize)
@@ -251,10 +400,8 @@ func (m *Manager) AllocateBrowser(layerID int) (int, error) {
 		FPS:    m.config.FPS,
 	}); err != nil {
 		// Roll back on send failure.
-		m.mu.Lock()
 		m.browsers[slotID].Status = "empty"
 		m.browsers[slotID].LayerID = -1
-		m.mu.Unlock()
 		return 0, fmt.Errorf("send create command: %w", err)
 	}
 
@@ -474,43 +621,54 @@ func (m *Manager) Close() error {
 	var closeErr error
 
 	m.stopOnce.Do(func() {
+		m.alive.Store(false)
 		close(m.done)
 
+		// Snapshot and nil-out connection state under the lock.
+		m.mu.Lock()
+		cc := m.controlConn
+		m.controlConn = nil
+		fc := m.frameConn
+		m.frameConn = nil
+		proc := m.process
+		m.process = nil
+		dir := m.socketDir
+		m.socketDir = ""
+		m.mu.Unlock()
+
 		// Send shutdown best-effort.
-		if m.controlConn != nil {
-			_ = m.sendCommand(ControlCommand{Cmd: "shutdown"})
+		if cc != nil {
+			_ = WriteControlCommand(cc, ControlCommand{Cmd: "shutdown"})
 		}
 
-		if m.controlConn != nil {
-			if err := m.controlConn.Close(); err != nil {
+		if cc != nil {
+			if err := cc.Close(); err != nil {
 				closeErr = err
 			}
 		}
-		if m.frameConn != nil {
-			if err := m.frameConn.Close(); err != nil && closeErr == nil {
+		if fc != nil {
+			if err := fc.Close(); err != nil && closeErr == nil {
 				closeErr = err
 			}
 		}
 
 		// Give the sidecar 2s to exit gracefully, then kill.
-		if m.process != nil {
+		if proc != nil {
 			done := make(chan struct{})
 			go func() {
-				_, _ = m.process.Wait()
+				_, _ = proc.Wait()
 				close(done)
 			}()
 			select {
 			case <-done:
 			case <-time.After(2 * time.Second):
-				_ = m.process.Kill()
+				_ = proc.Kill()
 				<-done
 			}
-			m.process = nil
 		}
 
-		if m.socketDir != "" {
-			_ = os.RemoveAll(m.socketDir)
-			m.socketDir = ""
+		if dir != "" {
+			_ = os.RemoveAll(dir)
 		}
 	})
 
@@ -546,8 +704,22 @@ func (l *sidecarLogger) Write(p []byte) (int, error) {
 }
 
 // frameReadLoop reads frames from the frame connection and delivers them
-// to the compositor.
-func (m *Manager) frameReadLoop() {
+// to the compositor. The gen parameter ties this loop to a specific spawn
+// generation so that stale loops don't trigger restarts for a new sidecar.
+func (m *Manager) frameReadLoop(gen int64) {
+	defer func() {
+		if m.spawnGen.Load() == gen {
+			m.triggerRestart("frame socket closed")
+		}
+	}()
+
+	m.mu.Lock()
+	conn := m.frameConn
+	m.mu.Unlock()
+	if conn == nil {
+		return
+	}
+
 	for {
 		select {
 		case <-m.done:
@@ -555,7 +727,7 @@ func (m *Manager) frameReadLoop() {
 		default:
 		}
 
-		frame, err := ReadFrame(m.frameConn)
+		frame, err := ReadFrame(conn)
 		if err == nil {
 			slog.Info("htmlgfx: frame received", "browser", frame.BrowserID, "size", fmt.Sprintf("%dx%d", frame.Width, frame.Height))
 		}
@@ -565,12 +737,12 @@ func (m *Manager) frameReadLoop() {
 				return
 			default:
 			}
-			if err == io.EOF {
-				return
+			// Any read error (EOF, closed conn, protocol error) means
+			// this connection is dead. Exit and let the defer handle restart.
+			if err != io.EOF {
+				slog.Warn("htmlgfx: frame read error", "error", err)
 			}
-			// Log and continue on transient errors.
-			slog.Warn("htmlgfx: frame read error", "error", err)
-			continue
+			return
 		}
 
 		// Look up the layer ID for this browser.
@@ -600,9 +772,22 @@ func (m *Manager) frameReadLoop() {
 // controlReadLoop reads control responses from the sidecar and updates
 // browser state accordingly. It uses a single bufio.Scanner to avoid
 // the data-loss issue with ReadControlResponse creating a new scanner
-// per call.
-func (m *Manager) controlReadLoop() {
-	scanner := bufio.NewScanner(m.controlConn)
+// per call. The gen parameter ties this loop to a specific spawn generation.
+func (m *Manager) controlReadLoop(gen int64) {
+	defer func() {
+		if m.spawnGen.Load() == gen {
+			m.triggerRestart("control socket closed")
+		}
+	}()
+
+	m.mu.Lock()
+	conn := m.controlConn
+	m.mu.Unlock()
+	if conn == nil {
+		return
+	}
+
+	scanner := bufio.NewScanner(conn)
 	for scanner.Scan() {
 		select {
 		case <-m.done:
@@ -635,7 +820,7 @@ func (m *Manager) controlReadLoop() {
 }
 
 // sendCommand writes a control command to the control connection.
-// The caller must hold m.mu or ensure thread safety.
+// The caller must hold m.mu.
 func (m *Manager) sendCommand(cmd ControlCommand) error {
 	if m.controlConn == nil {
 		return fmt.Errorf("control connection not established")
