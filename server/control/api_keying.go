@@ -26,8 +26,8 @@ func (a *API) handleSetSourceKey(w http.ResponseWriter, r *http.Request) {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if cfg.Type != graphics.KeyTypeChroma && cfg.Type != graphics.KeyTypeLuma {
-		httperr.Write(w, http.StatusBadRequest, "type must be 'chroma' or 'luma'")
+	if cfg.Type != graphics.KeyTypeChroma && cfg.Type != graphics.KeyTypeLuma && cfg.Type != graphics.KeyTypeNeural {
+		httperr.Write(w, http.StatusBadRequest, "type must be 'chroma', 'luma', or 'neural'")
 		return
 	}
 	a.keyer.SetKey(source, cfg)
