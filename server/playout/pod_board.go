@@ -25,6 +25,8 @@ type PodBoard struct {
 	spliceCoordinator *SpliceCoordinator
 	ptsProvider       func() int64
 
+	asRunLog func(AsRunEvent)
+
 	activePodID       string
 	autoReturnCancels map[string]context.CancelFunc
 	trackCancels      map[string]context.CancelFunc
@@ -92,6 +94,13 @@ func (pb *PodBoard) SetPTSProvider(fn func() int64) {
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
 	pb.ptsProvider = fn
+}
+
+// SetAsRunLog registers a callback for emitting as-run events.
+func (pb *PodBoard) SetAsRunLog(fn func(AsRunEvent)) {
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+	pb.asRunLog = fn
 }
 
 // CreatePod creates a new pod with the given config.
@@ -431,7 +440,9 @@ func (pb *PodBoard) Fire(id string) error {
 	inj := pb.scte35Injector
 	breakStartFn := pb.onBreakStart
 	stateChangeFn := pb.onStateChange
+	asRunFn := pb.asRunLog
 	config := pod.Config
+	channelID := pb.channelID
 
 	if sc != nil && ptsProvider != nil {
 		// Splice coordinator path: PreRoll first, break later.
@@ -439,6 +450,19 @@ func (pb *PodBoard) Fire(id string) error {
 		pod.FiredAt = time.Now().UnixMilli()
 		pb.activePodID = id
 		pb.mu.Unlock()
+
+		// Emit fire as-run event.
+		if asRunFn != nil {
+			asRunFn(AsRunEvent{
+				Timestamp:           time.Now().UTC(),
+				Type:                AsRunPodOperation,
+				ChannelID:           channelID,
+				PodID:               id,
+				PodType:             config.Type,
+				Operation:           "fire",
+				ScheduledDurationMs: config.DurationMs,
+			})
+		}
 
 		// Wire the onSpliceReady callback to transition pod to break_active.
 		sc.SetOnSpliceReady(func(podID string, pts int64) {
@@ -480,6 +504,19 @@ func (pb *PodBoard) Fire(id string) error {
 	pod.FiredAt = time.Now().UnixMilli()
 	pb.activePodID = id
 	pb.mu.Unlock()
+
+	// Emit fire as-run event.
+	if asRunFn != nil {
+		asRunFn(AsRunEvent{
+			Timestamp:           time.Now().UTC(),
+			Type:                AsRunPodOperation,
+			ChannelID:           channelID,
+			PodID:               id,
+			PodType:             config.Type,
+			Operation:           "fire",
+			ScheduledDurationMs: config.DurationMs,
+		})
+	}
 
 	pb.fireImmediate(id, inj, config)
 
@@ -643,7 +680,34 @@ func (pb *PodBoard) completePod(id string, finalState PodState) {
 	inj := pb.scte35Injector
 	breakEndFn := pb.onBreakEnd
 	stateChangeFn := pb.onStateChange
+	asRunFn := pb.asRunLog
+	channelID := pb.channelID
+	podType := pod.Config.Type
+	elapsedMs := pod.ElapsedMs
+	scheduledDurationMs := pod.Config.DurationMs
 	pb.mu.Unlock()
+
+	// Emit as-run event for pod completion.
+	if asRunFn != nil {
+		var operation string
+		if finalState == PodRejoined {
+			operation = "return"
+		} else if finalState == PodDumpedOut {
+			operation = "dump_out"
+		}
+		if operation != "" {
+			asRunFn(AsRunEvent{
+				Timestamp:           time.Now().UTC(),
+				Type:                AsRunPodOperation,
+				ChannelID:           channelID,
+				PodID:               id,
+				PodType:             podType,
+				Operation:           operation,
+				ScheduledDurationMs: scheduledDurationMs,
+				ActualDurationMs:    elapsedMs,
+			})
+		}
+	}
 
 	// Inject SCTE-35 cue-in (return to program).
 	if inj != nil {
@@ -709,7 +773,23 @@ func (pb *PodBoard) Hold(id string) error {
 	pod.Config.AutoReturn = false
 	pod.Config.HoldUntilManualReturn = true
 	fn := pb.onStateChange
+	asRunFn := pb.asRunLog
+	channelID := pb.channelID
+	podType := pod.Config.Type
+	scheduledDurationMs := pod.Config.DurationMs
 	pb.mu.Unlock()
+
+	if asRunFn != nil {
+		asRunFn(AsRunEvent{
+			Timestamp:           time.Now().UTC(),
+			Type:                AsRunPodOperation,
+			ChannelID:           channelID,
+			PodID:               id,
+			PodType:             podType,
+			Operation:           "hold",
+			ScheduledDurationMs: scheduledDurationMs,
+		})
+	}
 
 	if fn != nil {
 		fn()
@@ -752,7 +832,23 @@ func (pb *PodBoard) Extend(id string, additionalMs int64) error {
 	}
 
 	fn := pb.onStateChange
+	asRunFn := pb.asRunLog
+	channelID := pb.channelID
+	podType := pod.Config.Type
+	scheduledDurationMs := pod.Config.DurationMs
 	pb.mu.Unlock()
+
+	if asRunFn != nil {
+		asRunFn(AsRunEvent{
+			Timestamp:           time.Now().UTC(),
+			Type:                AsRunPodOperation,
+			ChannelID:           channelID,
+			PodID:               id,
+			PodType:             podType,
+			Operation:           "extend",
+			ScheduledDurationMs: scheduledDurationMs,
+		})
+	}
 
 	if fn != nil {
 		fn()

@@ -787,3 +787,104 @@ func TestChannelEmitsAsRunEvents(t *testing.T) {
 		t.Errorf("item_end events = %d, want 2", ends)
 	}
 }
+
+// --- Task 5: PodBoard As-Run Event Emission ---
+
+func TestPodBoardEmitsAsRunEvents(t *testing.T) {
+	dir := t.TempDir()
+	logger, err := NewAsRunLogger(AsRunLoggerConfig{Dir: dir, RingCapacity: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+
+	pb := NewPodBoard(1)
+	pb.SetAsRunLog(func(ev AsRunEvent) { logger.Log(ev) })
+
+	pod, err := pb.CreatePod(PodConfig{
+		Type:       "commercial",
+		DurationMs: 100,
+		AutoReturn: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pb.Arm(pod.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pb.Fire(pod.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait for auto-return to complete.
+	waitFor(t, 2*time.Second, func() bool {
+		p, _ := pb.GetPod(pod.ID)
+		return p.State.IsTerminal()
+	})
+
+	events := logger.Query(AsRunQuery{Type: AsRunPodOperation})
+	fireCount := 0
+	returnCount := 0
+	for _, ev := range events {
+		switch ev.Operation {
+		case "fire":
+			fireCount++
+		case "return":
+			returnCount++
+		}
+	}
+	if fireCount != 1 {
+		t.Errorf("fire events = %d, want 1", fireCount)
+	}
+	if returnCount != 1 {
+		t.Errorf("return events = %d, want 1", returnCount)
+	}
+}
+
+func TestPodBoardDumpOutAsRunEvent(t *testing.T) {
+	dir := t.TempDir()
+	logger, err := NewAsRunLogger(AsRunLoggerConfig{Dir: dir, RingCapacity: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+
+	pb := NewPodBoard(1)
+	pb.SetAsRunLog(func(ev AsRunEvent) { logger.Log(ev) })
+
+	pod, err := pb.CreatePod(PodConfig{
+		Type:         "commercial",
+		DurationMs:   60000,
+		AutoReturn:   true,
+		AllowDumpOut: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pb.Arm(pod.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pb.Fire(pod.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	if err := pb.DumpOut(pod.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	events := logger.Query(AsRunQuery{Type: AsRunPodOperation})
+	dumpOutCount := 0
+	for _, ev := range events {
+		if ev.Operation == "dump_out" {
+			dumpOutCount++
+			if ev.ActualDurationMs <= 0 {
+				t.Errorf("dump_out ActualDurationMs = %d, want > 0", ev.ActualDurationMs)
+			}
+		}
+	}
+	if dumpOutCount != 1 {
+		t.Errorf("dump_out events = %d, want 1", dumpOutCount)
+	}
+}
