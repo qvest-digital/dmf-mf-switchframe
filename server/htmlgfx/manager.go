@@ -232,6 +232,14 @@ func (m *Manager) RestartCount() int64 {
 	return m.restartCount.Load()
 }
 
+// SocketDir returns the current socket directory path. Returns "" if no
+// sidecar is running.
+func (m *Manager) SocketDir() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.socketDir
+}
+
 // triggerRestart signals that the sidecar needs restarting due to an
 // unexpected socket closure or error. It sets alive to false and sends
 // on restartCh (non-blocking). If the manager is already shutting down
