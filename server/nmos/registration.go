@@ -69,10 +69,11 @@ func (c *RegistrationClient) RegisterResource(ctx context.Context, resourceType 
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return fmt.Errorf("nmos: register %s: status %d: %s", resourceType, resp.StatusCode, string(respBody))
 	}
 
+	io.Copy(io.Discard, resp.Body)
 	return nil
 }
 
@@ -126,11 +127,13 @@ func (c *RegistrationClient) Heartbeat(ctx context.Context) error {
 
 	switch {
 	case resp.StatusCode == http.StatusOK:
+		io.Copy(io.Discard, resp.Body)
 		return nil
 	case resp.StatusCode == http.StatusNotFound:
+		io.Copy(io.Discard, resp.Body)
 		return ErrNodeNotFound
 	default:
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return fmt.Errorf("nmos: heartbeat: status %d: %s", resp.StatusCode, string(respBody))
 	}
 }
@@ -200,10 +203,12 @@ func (c *RegistrationClient) UnregisterAll(ctx context.Context, node *Node, devi
 		defer resp.Body.Close()
 
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			respBody, _ := io.ReadAll(resp.Body)
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 			if firstErr == nil {
 				firstErr = fmt.Errorf("nmos: delete %s/%s: status %d: %s", resourceType, id, resp.StatusCode, string(respBody))
 			}
+		} else {
+			io.Copy(io.Discard, resp.Body)
 		}
 	}
 
