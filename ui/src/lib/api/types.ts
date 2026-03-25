@@ -946,3 +946,59 @@ export interface PodTemplate {
 	ephemeral?: boolean;
 	hold_until_manual_return?: boolean;
 }
+
+// ── As-Run Types ──
+
+export type AsRunEventType =
+	| 'item_start'
+	| 'item_end'
+	| 'secondary_event_fire'
+	| 'splice_active'
+	| 'pod_operation'
+	| 'manual_override'
+	| 'cache_event'
+	| 'error';
+
+export interface BlackDetectInfo {
+	found: boolean;
+	luma_mean: number;
+	offset_ms: number;
+}
+
+export interface AsRunEvent {
+	ts: string;
+	type: AsRunEventType;
+	channel_id: number;
+	item_id?: string;
+	title?: string;
+	scheduled_ts?: string;
+	delta_ms?: number;
+	source?: string;
+
+	// Secondary event fields.
+	event?: string;
+	target_pts?: number;
+	actual_pts?: number;
+
+	// Splice/pod fields.
+	pod_id?: string;
+	pod_type?: string;
+	operation?: string;
+	operator?: string;
+	scheduled_duration_ms?: number;
+	actual_duration_ms?: number;
+	reason?: string;
+	black_detect?: BlackDetectInfo;
+
+	// Error/cache fields.
+	message?: string;
+}
+
+// ── Health Types ──
+
+export interface ChannelHealth {
+	channel_id: number;
+	healthy: boolean;
+	last_frame_ms: number;
+	stalled: boolean;
+}

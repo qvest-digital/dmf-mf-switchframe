@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, GateSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig, ColorGradeState, CorrectorState, PlayoutChannelState, Playlist, CacheStatus, PodInfo, PodConfig, PodTemplate } from './types';
+import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, GateSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig, ColorGradeState, CorrectorState, PlayoutChannelState, Playlist, PlaylistItem, CacheStatus, PodInfo, PodConfig, PodTemplate, AsRunEvent, ChannelHealth } from './types';
 import { notify } from '$lib/state/notifications.svelte';
 import { resolveApiUrl } from './base-url';
 
@@ -1392,4 +1392,62 @@ export function podDelete(channelId: number, podId: string): Promise<void> {
 
 export function podTemplates(): Promise<PodTemplate[]> {
 	return request<PodTemplate[]>('/api/playout/pods/templates');
+}
+
+// --- Playout: Jump, Recover, Health, As-Run, BXF Import, Playlist ---
+
+export function playoutJump(channelId: number, itemId: string): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/jump`, { itemId });
+}
+
+export function playoutRecover(channelId: number): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/recover`, {});
+}
+
+export function playoutHealth(): Promise<ChannelHealth[]> {
+	return request<ChannelHealth[]>('/api/playout/health');
+}
+
+export function playoutAsRun(
+	channelId: number,
+	params?: { type?: string; since?: string; until?: string; limit?: number },
+): Promise<AsRunEvent[]> {
+	const query = new URLSearchParams();
+	if (params?.type) query.set('type', params.type);
+	if (params?.since) query.set('since', params.since);
+	if (params?.until) query.set('until', params.until);
+	if (params?.limit) query.set('limit', String(params.limit));
+	const qs = query.toString();
+	return request<AsRunEvent[]>(`/api/playout/channels/${channelId}/asrun${qs ? `?${qs}` : ''}`);
+}
+
+export function playoutAsRunExport(channelId: number, format: 'json' | 'bxf'): Promise<Response> {
+	return fetch(resolveApiUrl(`/api/playout/channels/${channelId}/asrun/export?format=${format}`), {
+		headers: authHeaders(),
+	});
+}
+
+export async function playoutImportBxf(
+	bxfXml: string,
+	channel?: number,
+	name?: string,
+): Promise<PlayoutChannelState> {
+	const query = new URLSearchParams();
+	if (channel != null) query.set('channel', String(channel));
+	if (name) query.set('name', name);
+	const qs = query.toString();
+	const res = await fetch(resolveApiUrl(`/api/playout/import/bxf${qs ? `?${qs}` : ''}`), {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/xml', ...authHeaders() },
+		body: bxfXml,
+	});
+	if (!res.ok) {
+		const body = await res.json().catch(() => ({ error: 'unknown error' }));
+		throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
+	}
+	return res.json();
+}
+
+export function playoutPlaylist(channelId: number): Promise<PlaylistItem[]> {
+	return request<PlaylistItem[]>(`/api/playout/channels/${channelId}/playlist`);
 }
