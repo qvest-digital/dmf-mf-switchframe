@@ -615,7 +615,7 @@ func (pb *PodBoard) completePod(id string, finalState PodState) {
 		pb.mu.Unlock()
 		return
 	}
-	if pod.State != PodBreakActive {
+	if pod.State != PodBreakActive && pod.State != PodPreRoll {
 		pb.mu.Unlock()
 		return
 	}
@@ -669,7 +669,7 @@ func (pb *PodBoard) DumpOut(id string) error {
 		pb.mu.Unlock()
 		return ErrPodNotFound
 	}
-	if pod.State != PodBreakActive {
+	if pod.State != PodBreakActive && pod.State != PodPreRoll {
 		pb.mu.Unlock()
 		return ErrPodNotActive
 	}
@@ -677,7 +677,13 @@ func (pb *PodBoard) DumpOut(id string) error {
 		pb.mu.Unlock()
 		return ErrPodNoDumpOut
 	}
+	sc := pb.spliceCoordinator
 	pb.mu.Unlock()
+
+	// Cancel any active splice scan.
+	if sc != nil {
+		sc.Cancel()
+	}
 
 	pb.completePod(id, PodDumpedOut)
 	return nil

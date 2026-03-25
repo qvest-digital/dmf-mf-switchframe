@@ -788,6 +788,54 @@ func TestPodBoard_SpliceReady_TransitionsToBreakActive(t *testing.T) {
 	})
 }
 
+func TestPodBoard_DumpOut_CancelsSplice(t *testing.T) {
+	inj := &fakeSpliceInjector{}
+	bd := NewBlackDetector(BlackDetectorConfig{})
+	sc := NewSpliceCoordinator(SpliceCoordinatorConfig{
+		Injector:      inj,
+		BlackDetector: bd,
+		PreRollMs:     5000,
+		WindowMs:      500,
+		TimeoutMs:     5000, // long timeout so it doesn't auto-fire
+	})
+
+	pb := NewPodBoard(1)
+	pb.SetSCTE35Injector(inj)
+	pb.SetSpliceCoordinator(sc)
+	pb.SetPTSProvider(func() int64 { return 0 })
+
+	pod, _ := pb.CreatePod(PodConfig{
+		Type:         "quarter",
+		DurationMs:   180000,
+		AutoReturn:   true,
+		AllowDumpOut: true,
+	})
+	pb.Arm(pod.ID)
+	pb.Fire(pod.ID)
+
+	// Pod should be in PodPreRoll with splice active.
+	if !sc.Active() {
+		t.Fatal("splice should be active")
+	}
+
+	// Dump out while still in pre-roll.
+	err := pb.DumpOut(pod.ID)
+	if err != nil {
+		t.Fatalf("DumpOut: %v", err)
+	}
+
+	// Splice coordinator should be cancelled.
+	if sc.Active() {
+		t.Error("splice should be cancelled after dump-out")
+	}
+
+	// Pod should be dumped out.
+	p, _ := pb.GetPod(pod.ID)
+	if p.State != PodDumpedOut {
+		t.Errorf("state = %v, want dumped_out", p.State)
+	}
+}
+
 func TestManager_ChannelStatesIncludePods(t *testing.T) {
 	mgr := NewManager(ManagerConfig{AssetProvider: fakeProvider(30)})
 	defer mgr.Close()
