@@ -123,3 +123,273 @@ func TestSpliceCoordinator_SetOnSpliceReady(t *testing.T) {
 		t.Error("onSpliceReady should be set after SetOnSpliceReady")
 	}
 }
+
+func TestSpliceCoordinator_BeginSplice(t *testing.T) {
+	inj := &fakeSpliceInjector{}
+	bd := NewBlackDetector(BlackDetectorConfig{})
+	sc := NewSpliceCoordinator(SpliceCoordinatorConfig{
+		Injector:      inj,
+		BlackDetector: bd,
+		PreRollMs:     5000,
+		WindowMs:      500,
+	})
+
+	err := sc.BeginSplice("pod-1", true, true, 180000, 0)
+	if err != nil {
+		t.Fatalf("BeginSplice: %v", err)
+	}
+	if !sc.Active() {
+		t.Error("should be active after BeginSplice")
+	}
+
+	// Second call should fail.
+	err = sc.BeginSplice("pod-2", true, false, 60000, 0)
+	if err != ErrSpliceAlreadyActive {
+		t.Fatalf("expected ErrSpliceAlreadyActive, got %v", err)
+	}
+
+	// Verify PTS math: preRollMs=5000, at 90kHz that's 450000 ticks.
+	// currentPTS=0, so targetPTS=450000, window=[405000, 495000].
+	sc.mu.Lock()
+	op := sc.active
+	sc.mu.Unlock()
+
+	if op.TargetPTS != 450000 {
+		t.Errorf("TargetPTS = %d, want 450000", op.TargetPTS)
+	}
+	if op.WindowStartPTS != 405000 {
+		t.Errorf("WindowStartPTS = %d, want 405000", op.WindowStartPTS)
+	}
+	if op.WindowEndPTS != 495000 {
+		t.Errorf("WindowEndPTS = %d, want 495000", op.WindowEndPTS)
+	}
+	if op.State != SpliceScanning {
+		t.Errorf("State = %v, want SpliceScanning", op.State)
+	}
+
+	// Cleanup.
+	sc.Cancel()
+}
+
+func TestSpliceCoordinator_IngestFrame_CollectsInWindow(t *testing.T) {
+	inj := &fakeSpliceInjector{}
+	bd := NewBlackDetector(BlackDetectorConfig{})
+	sc := NewSpliceCoordinator(SpliceCoordinatorConfig{
+		Injector:      inj,
+		BlackDetector: bd,
+		PreRollMs:     5000,
+		WindowMs:      500,
+	})
+
+	// Begin splice at PTS 0. Window = [405000, 495000].
+	sc.BeginSplice("pod-1", true, true, 180000, 0)
+
+	// Frame before window: should be ignored.
+	sc.IngestFrame(make([]byte, 100*100*3/2), 100, 100, 400000)
+
+	sc.mu.Lock()
+	candCount := len(sc.active.candidates)
+	sc.mu.Unlock()
+	if candCount != 0 {
+		t.Errorf("candidates before window = %d, want 0", candCount)
+	}
+
+	// Frame inside window: should be collected.
+	sc.IngestFrame(make([]byte, 100*100*3/2), 100, 100, 410000)
+	sc.IngestFrame(make([]byte, 100*100*3/2), 100, 100, 450000)
+	sc.IngestFrame(make([]byte, 100*100*3/2), 100, 100, 490000)
+
+	sc.mu.Lock()
+	candCount = len(sc.active.candidates)
+	sc.mu.Unlock()
+	if candCount != 3 {
+		t.Errorf("candidates in window = %d, want 3", candCount)
+	}
+
+	// Cleanup.
+	sc.Cancel()
+}
+
+func TestSpliceCoordinator_IngestFrame_TriggersAnalysis(t *testing.T) {
+	inj := &fakeSpliceInjector{}
+	bd := NewBlackDetector(BlackDetectorConfig{})
+	sc := NewSpliceCoordinator(SpliceCoordinatorConfig{
+		Injector:      inj,
+		BlackDetector: bd,
+		PreRollMs:     5000,
+		WindowMs:      500,
+	})
+
+	var readyPodID string
+	var readyPTS int64
+	sc.SetOnSpliceReady(func(podID string, pts int64) {
+		readyPodID = podID
+		readyPTS = pts
+	})
+
+	// Begin splice at PTS 0. Window = [405000, 495000].
+	sc.BeginSplice("pod-test", true, true, 180000, 0)
+
+	// Create a black frame (all zeros) inside the window.
+	blackFrame := make([]byte, 100*100*3/2) // all zeros = black
+	sc.IngestFrame(blackFrame, 100, 100, 420000)
+
+	// Create a non-black frame inside the window.
+	nonBlack := make([]byte, 100*100*3/2)
+	for i := range nonBlack[:100*100] { // fill Y plane with 200
+		nonBlack[i] = 200
+	}
+	sc.IngestFrame(nonBlack, 100, 100, 450000)
+
+	// Send a frame past the window end to trigger finalization.
+	sc.IngestFrame(make([]byte, 100*100*3/2), 100, 100, 500000)
+
+	// Verify SchedulePodCue was called.
+	calls := inj.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 SchedulePodCue call, got %d", len(calls))
+	}
+	if !calls[0].IsOut {
+		t.Error("expected isOut=true")
+	}
+	if !calls[0].AutoReturn {
+		t.Error("expected autoReturn=true")
+	}
+	if calls[0].DurationMs != 180000 {
+		t.Errorf("DurationMs = %d, want 180000", calls[0].DurationMs)
+	}
+
+	// Black frame at PTS 420000 should be chosen.
+	if calls[0].PreRollMs < 0 {
+		t.Errorf("PreRollMs = %d, should be >= 0", calls[0].PreRollMs)
+	}
+
+	// Verify callback was called.
+	if readyPodID != "pod-test" {
+		t.Errorf("readyPodID = %q, want pod-test", readyPodID)
+	}
+	if readyPTS != 420000 {
+		t.Errorf("readyPTS = %d, want 420000 (black frame)", readyPTS)
+	}
+
+	// Should no longer be active.
+	if sc.Active() {
+		t.Error("should not be active after finalization")
+	}
+}
+
+func TestSpliceCoordinator_Cancel(t *testing.T) {
+	inj := &fakeSpliceInjector{}
+	bd := NewBlackDetector(BlackDetectorConfig{})
+	sc := NewSpliceCoordinator(SpliceCoordinatorConfig{
+		Injector:      inj,
+		BlackDetector: bd,
+	})
+
+	sc.BeginSplice("pod-1", true, true, 180000, 0)
+	if !sc.Active() {
+		t.Fatal("should be active")
+	}
+
+	sc.Cancel()
+	if sc.Active() {
+		t.Error("should not be active after Cancel")
+	}
+
+	// Should be able to start a new splice after cancel.
+	err := sc.BeginSplice("pod-2", true, false, 60000, 0)
+	if err != nil {
+		t.Fatalf("BeginSplice after cancel: %v", err)
+	}
+	sc.Cancel()
+}
+
+func TestSpliceCoordinator_Reset(t *testing.T) {
+	inj := &fakeSpliceInjector{}
+	bd := NewBlackDetector(BlackDetectorConfig{})
+	sc := NewSpliceCoordinator(SpliceCoordinatorConfig{
+		Injector:      inj,
+		BlackDetector: bd,
+	})
+
+	sc.BeginSplice("pod-1", true, true, 180000, 0)
+	sc.Reset()
+
+	if sc.Active() {
+		t.Error("should not be active after Reset")
+	}
+}
+
+func TestSpliceCoordinator_FinalizeTriggersSceneChange(t *testing.T) {
+	inj := &fakeSpliceInjector{}
+	bd := NewBlackDetector(BlackDetectorConfig{})
+	sc := NewSpliceCoordinator(SpliceCoordinatorConfig{
+		Injector:      inj,
+		BlackDetector: bd,
+		PreRollMs:     5000,
+		WindowMs:      500,
+	})
+
+	var readyPTS int64
+	sc.SetOnSpliceReady(func(podID string, pts int64) {
+		readyPTS = pts
+	})
+
+	sc.BeginSplice("pod-scene", true, true, 180000, 0)
+
+	// Two very different frames: should detect scene change.
+	darkFrame := make([]byte, 100*100*3/2)
+	for i := 0; i < 100*100; i++ {
+		darkFrame[i] = 50 // not black (above threshold), but dark
+	}
+	sc.IngestFrame(darkFrame, 100, 100, 420000)
+
+	brightFrame := make([]byte, 100*100*3/2)
+	for i := 0; i < 100*100; i++ {
+		brightFrame[i] = 250 // bright
+	}
+	sc.IngestFrame(brightFrame, 100, 100, 450000)
+
+	// Close the window.
+	sc.IngestFrame(make([]byte, 100*100*3/2), 100, 100, 500000)
+
+	// Scene change should pick the second frame (index 1).
+	if readyPTS != 450000 {
+		t.Errorf("readyPTS = %d, want 450000 (scene change at bright frame)", readyPTS)
+	}
+}
+
+func TestSpliceCoordinator_FallbackToScheduled(t *testing.T) {
+	inj := &fakeSpliceInjector{}
+	bd := NewBlackDetector(BlackDetectorConfig{})
+	sc := NewSpliceCoordinator(SpliceCoordinatorConfig{
+		Injector:      inj,
+		BlackDetector: bd,
+		PreRollMs:     5000,
+		WindowMs:      500,
+	})
+
+	var readyPTS int64
+	sc.SetOnSpliceReady(func(podID string, pts int64) {
+		readyPTS = pts
+	})
+
+	sc.BeginSplice("pod-sched", true, true, 180000, 0)
+
+	// All similar frames: no black, no scene change -> fallback to middle.
+	for pts := int64(410000); pts <= 490000; pts += 10000 {
+		frame := make([]byte, 100*100*3/2)
+		for i := 0; i < 100*100; i++ {
+			frame[i] = 128 // uniform mid-gray
+		}
+		sc.IngestFrame(frame, 100, 100, pts)
+	}
+
+	// Close window.
+	sc.IngestFrame(make([]byte, 100*100*3/2), 100, 100, 500000)
+
+	// Middle of 9 frames (indices 0-8) is index 4, which is PTS 450000.
+	if readyPTS != 450000 {
+		t.Errorf("readyPTS = %d, want 450000 (scheduled middle frame)", readyPTS)
+	}
+}
