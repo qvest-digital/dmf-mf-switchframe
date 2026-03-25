@@ -819,6 +819,13 @@ export interface GPUPipelineDebugSnapshot {
 	total_latency_us: number;
 }
 
+export interface SampleClip {
+	name: string;
+	title: string;
+	path: string;
+	duration: number;
+}
+
 // ── Playout Types ──
 
 export interface PlayoutChannelState {
