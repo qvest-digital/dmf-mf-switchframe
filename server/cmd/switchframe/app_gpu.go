@@ -110,6 +110,17 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 		}
 	}
 
+	// Initialize neural key adapter if model path is configured.
+	var neuralKeyAdapter gpu.NeuralKeyState
+	if app.cfg.NeuralKeyModelPath != "" {
+		nkAdapter := &neuralKeyStateAdapter{
+			keyer:    app.keyProcessor,
+			switcher: sw,
+		}
+		neuralKeyAdapter = nkAdapter
+		slog.Info("Neural key model configured", "model", app.cfg.NeuralKeyModelPath)
+	}
+
 	// Wire per-source color corrector into GPU source manager.
 	if app.sourceCorrectors != nil {
 		sourceMgr.SetSourceColorGrade(app.sourceCorrectors)
@@ -271,10 +282,11 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 	}
 
 	// Build GPU pipeline node chain:
-	//   gpu_key → gpu_layout → gpu_compositor → [gpu_ai_segment] → gpu_colorgrade → gpu_stmap → raw_sink → gpu_preview_encode → gpu_encode
+	//   gpu_key → [gpu_neural_key] → gpu_layout → gpu_compositor → [gpu_ai_segment] → gpu_colorgrade → gpu_stmap → raw_sink → gpu_preview_encode → gpu_encode
 	// Some nodes return nil on unsupported builds (e.g. AI segment on non-TensorRT).
 	candidateNodes := []gpu.GPUPipelineNode{
 		gpu.NewGPUKeyNode(gs.ctx, gs.pool, keyAdapter),
+		gpu.NewGPUNeuralKeyNode(gs.ctx, gs.pool, neuralKeyAdapter, app.cfg.NeuralKeyModelPath),
 		gpu.NewGPULayoutNode(gs.ctx, gs.pool, layoutAdapter),
 		gpu.NewGPUCompositorNode(gs.ctx, compositorAdapter),
 		gpu.NewGPUAISegmentNode(gs.ctx, gs.pool, segAdapter),
@@ -859,6 +871,46 @@ func (a *segmentationStateAdapter) DeleteConfig(key string) {
 	defer a.mu.Unlock()
 	if a.configs != nil {
 		delete(a.configs, key)
+	}
+}
+
+// --- Neural Key State Adapter ---
+
+// neuralKeyStateAdapter bridges KeyProcessor + Switcher to gpu.NeuralKeyState.
+type neuralKeyStateAdapter struct {
+	keyer    *graphics.KeyProcessor
+	switcher *switcher.Switcher
+}
+
+func (a *neuralKeyStateAdapter) HasNeuralKey() bool {
+	progKey := a.switcher.ProgramSource()
+	if progKey == "" {
+		return false
+	}
+	cfg, ok := a.keyer.GetKey(progKey)
+	return ok && cfg.Enabled && cfg.Type == graphics.KeyTypeNeural
+}
+
+func (a *neuralKeyStateAdapter) ProgramSourceKey() string {
+	return a.switcher.ProgramSource()
+}
+
+func (a *neuralKeyStateAdapter) NeuralKeySnapshot() *gpu.NeuralKeySnapshot {
+	progKey := a.switcher.ProgramSource()
+	if progKey == "" {
+		return nil
+	}
+	cfg, ok := a.keyer.GetKey(progKey)
+	if !ok || !cfg.Enabled || cfg.Type != graphics.KeyTypeNeural {
+		return nil
+	}
+	return &gpu.NeuralKeySnapshot{
+		SourceKey:  progKey,
+		KeyColorY:  cfg.KeyColorY,
+		KeyColorCb: cfg.KeyColorCb,
+		KeyColorCr: cfg.KeyColorCr,
+		Similarity: cfg.Similarity,
+		Smoothness: cfg.Smoothness,
 	}
 }
 

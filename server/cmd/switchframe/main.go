@@ -101,6 +101,9 @@ type AppConfig struct {
 	// AI segmentation.
 	AIModelPath string // Path to ONNX segmentation model (empty = disabled)
 
+	// Neural key (CorridorKey).
+	NeuralKeyModelPath string // Path to CorridorKey ONNX model (empty = disabled)
+
 	// ASR (Whisper speech-to-text).
 	ASRModelPath string // Path to Whisper ONNX model directory (empty = disabled)
 
@@ -254,6 +257,9 @@ func parseConfig() (AppConfig, error) {
 	// AI segmentation flags.
 	aiModelFlag := flag.String("ai-model", "", "Path to ONNX segmentation model for AI background replacement (requires CUDA + TensorRT)")
 
+	// Neural key flags.
+	neuralKeyModelFlag := flag.String("neural-key-model", "", "Path to CorridorKey ONNX model for neural green screen keying (requires CUDA + TensorRT)")
+
 	// ASR (Whisper speech-to-text) flags.
 	asrModelFlag := flag.String("asr-model", "", "Path to Whisper GGML model file for speech-to-text (e.g., ggml-medium.en.bin)")
 
@@ -391,6 +397,7 @@ func parseConfig() (AppConfig, error) {
 		MXLDiscover:          *mxlDiscover,
 		StateDir:             stateDir,
 		AIModelPath:          *aiModelFlag,
+		NeuralKeyModelPath:   *neuralKeyModelFlag,
 		ASRModelPath:         *asrModelFlag,
 		CacheDir:             *cacheDirFlag,
 	}, nil
