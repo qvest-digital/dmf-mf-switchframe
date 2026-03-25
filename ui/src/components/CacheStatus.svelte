@@ -33,9 +33,14 @@
 	);
 	const isCritical = $derived(usedPercent > 90);
 
-	// Auto-refresh when expanded
+	// Auto-refresh every 5s while expanded; stop when collapsed
 	$effect(() => {
-		if (expanded && !status && !loading) refresh();
+		if (!expanded) return;
+		// Initial fetch
+		refresh();
+		// Periodic refresh while expanded
+		const interval = setInterval(refresh, 5000);
+		return () => clearInterval(interval);
 	});
 </script>
 
