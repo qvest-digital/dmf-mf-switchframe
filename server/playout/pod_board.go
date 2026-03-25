@@ -3,6 +3,7 @@ package playout
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"sync"
 )
@@ -239,6 +240,130 @@ func (pb *PodBoard) Status() PodBoardStatus {
 	}
 
 	return status
+}
+
+// Move reassigns a pod to a new playlist position.
+func (pb *PodBoard) Move(id, newPosition string) error {
+	pb.mu.Lock()
+	pod, ok := pb.pods[id]
+	if !ok {
+		pb.mu.Unlock()
+		return ErrPodNotFound
+	}
+	if pod.State.IsTerminal() {
+		pb.mu.Unlock()
+		return ErrPodTerminal
+	}
+	pod.Config.Position = newPosition
+	fn := pb.onStateChange
+	pb.mu.Unlock()
+
+	if fn != nil {
+		fn()
+	}
+	return nil
+}
+
+// Swap exchanges positions of two pods.
+func (pb *PodBoard) Swap(id1, id2 string) error {
+	pb.mu.Lock()
+	p1, ok1 := pb.pods[id1]
+	p2, ok2 := pb.pods[id2]
+	if !ok1 || !ok2 {
+		pb.mu.Unlock()
+		return ErrPodNotFound
+	}
+	if p1.State.IsTerminal() || p2.State.IsTerminal() {
+		pb.mu.Unlock()
+		return ErrPodTerminal
+	}
+	p1.Config.Position, p2.Config.Position = p2.Config.Position, p1.Config.Position
+	fn := pb.onStateChange
+	pb.mu.Unlock()
+
+	if fn != nil {
+		fn()
+	}
+	return nil
+}
+
+// Resize changes the duration of a pod.
+func (pb *PodBoard) Resize(id string, newDurationMs int64) error {
+	if newDurationMs < 0 {
+		return fmt.Errorf("playout: pod duration must be non-negative")
+	}
+
+	pb.mu.Lock()
+	pod, ok := pb.pods[id]
+	if !ok {
+		pb.mu.Unlock()
+		return ErrPodNotFound
+	}
+	if pod.State.IsTerminal() {
+		pb.mu.Unlock()
+		return ErrPodTerminal
+	}
+	pod.Config.DurationMs = newDurationMs
+	fn := pb.onStateChange
+	pb.mu.Unlock()
+
+	if fn != nil {
+		fn()
+	}
+	return nil
+}
+
+// Defer pushes a pod to a new position.
+func (pb *PodBoard) Defer(id, newPosition string) error {
+	return pb.Move(id, newPosition)
+}
+
+// Promote increases a pod's priority by one level.
+func (pb *PodBoard) Promote(id string) error {
+	pb.mu.Lock()
+	pod, ok := pb.pods[id]
+	if !ok {
+		pb.mu.Unlock()
+		return ErrPodNotFound
+	}
+	if pod.State.IsTerminal() {
+		pb.mu.Unlock()
+		return ErrPodTerminal
+	}
+	if pod.Config.Priority < PriorityMandatory {
+		pod.Config.Priority++
+	}
+	fn := pb.onStateChange
+	pb.mu.Unlock()
+
+	if fn != nil {
+		fn()
+	}
+	return nil
+}
+
+// Demote decreases a pod's priority by one level.
+func (pb *PodBoard) Demote(id string) error {
+	pb.mu.Lock()
+	pod, ok := pb.pods[id]
+	if !ok {
+		pb.mu.Unlock()
+		return ErrPodNotFound
+	}
+	if pod.State.IsTerminal() {
+		pb.mu.Unlock()
+		return ErrPodTerminal
+	}
+	if pod.Config.Priority > PriorityNormal {
+		pod.Config.Priority--
+	}
+	fn := pb.onStateChange
+	pb.mu.Unlock()
+
+	if fn != nil {
+		fn()
+	}
+	return nil
 }
 
 // generatePodID creates a short random hex ID.

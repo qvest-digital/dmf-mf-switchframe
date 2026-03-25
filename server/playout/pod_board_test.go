@@ -137,6 +137,122 @@ func TestPodBoard_GetPod(t *testing.T) {
 	}
 }
 
+func TestPodBoard_Move(t *testing.T) {
+	pb := NewPodBoard(1)
+	pod, _ := pb.CreatePod(PodConfig{Type: "quarter", DurationMs: 180000, Position: "item-1"})
+
+	if err := pb.Move(pod.ID, "item-5"); err != nil {
+		t.Fatalf("Move: %v", err)
+	}
+	got, _ := pb.GetPod(pod.ID)
+	if got.Config.Position != "item-5" {
+		t.Errorf("position = %q, want %q", got.Config.Position, "item-5")
+	}
+}
+
+func TestPodBoard_MoveTerminalFails(t *testing.T) {
+	pb := NewPodBoard(1)
+	pod, _ := pb.CreatePod(PodConfig{Type: "quarter", DurationMs: 180000})
+	pb.mu.Lock()
+	pb.pods[pod.ID].State = PodRejoined
+	pb.mu.Unlock()
+
+	if err := pb.Move(pod.ID, "item-5"); err != ErrPodTerminal {
+		t.Fatalf("expected ErrPodTerminal, got %v", err)
+	}
+}
+
+func TestPodBoard_Swap(t *testing.T) {
+	pb := NewPodBoard(1)
+	p1, _ := pb.CreatePod(PodConfig{Type: "quarter", DurationMs: 180000, Position: "item-1"})
+	p2, _ := pb.CreatePod(PodConfig{Type: "timeout", DurationMs: 60000, Position: "item-5"})
+
+	if err := pb.Swap(p1.ID, p2.ID); err != nil {
+		t.Fatalf("Swap: %v", err)
+	}
+	got1, _ := pb.GetPod(p1.ID)
+	got2, _ := pb.GetPod(p2.ID)
+	if got1.Config.Position != "item-5" {
+		t.Errorf("p1 position = %q, want item-5", got1.Config.Position)
+	}
+	if got2.Config.Position != "item-1" {
+		t.Errorf("p2 position = %q, want item-1", got2.Config.Position)
+	}
+}
+
+func TestPodBoard_Resize(t *testing.T) {
+	pb := NewPodBoard(1)
+	pod, _ := pb.CreatePod(PodConfig{Type: "quarter", DurationMs: 180000})
+
+	if err := pb.Resize(pod.ID, 240000); err != nil {
+		t.Fatalf("Resize: %v", err)
+	}
+	got, _ := pb.GetPod(pod.ID)
+	if got.Config.DurationMs != 240000 {
+		t.Errorf("duration = %d, want 240000", got.Config.DurationMs)
+	}
+}
+
+func TestPodBoard_ResizeNegativeFails(t *testing.T) {
+	pb := NewPodBoard(1)
+	pod, _ := pb.CreatePod(PodConfig{Type: "quarter", DurationMs: 180000})
+
+	if err := pb.Resize(pod.ID, -1); err == nil {
+		t.Fatal("expected error for negative duration")
+	}
+}
+
+func TestPodBoard_Defer(t *testing.T) {
+	pb := NewPodBoard(1)
+	pod, _ := pb.CreatePod(PodConfig{Type: "quarter", DurationMs: 180000, Position: "item-3"})
+
+	if err := pb.Defer(pod.ID, "item-7"); err != nil {
+		t.Fatalf("Defer: %v", err)
+	}
+	got, _ := pb.GetPod(pod.ID)
+	if got.Config.Position != "item-7" {
+		t.Errorf("position = %q, want item-7", got.Config.Position)
+	}
+}
+
+func TestPodBoard_PromoteDemote(t *testing.T) {
+	pb := NewPodBoard(1)
+	pod, _ := pb.CreatePod(PodConfig{Type: "quarter", DurationMs: 180000, Priority: PriorityNormal})
+
+	if err := pb.Promote(pod.ID); err != nil {
+		t.Fatalf("Promote: %v", err)
+	}
+	got, _ := pb.GetPod(pod.ID)
+	if got.Config.Priority != PriorityHigh {
+		t.Errorf("priority = %v, want high", got.Config.Priority)
+	}
+
+	if err := pb.Promote(pod.ID); err != nil {
+		t.Fatalf("Promote again: %v", err)
+	}
+	got, _ = pb.GetPod(pod.ID)
+	if got.Config.Priority != PriorityMandatory {
+		t.Errorf("priority = %v, want mandatory", got.Config.Priority)
+	}
+
+	// Promote at max is no-op.
+	if err := pb.Promote(pod.ID); err != nil {
+		t.Fatalf("Promote at max: %v", err)
+	}
+	got, _ = pb.GetPod(pod.ID)
+	if got.Config.Priority != PriorityMandatory {
+		t.Errorf("priority should stay mandatory")
+	}
+
+	if err := pb.Demote(pod.ID); err != nil {
+		t.Fatalf("Demote: %v", err)
+	}
+	got, _ = pb.GetPod(pod.ID)
+	if got.Config.Priority != PriorityHigh {
+		t.Errorf("priority = %v, want high", got.Config.Priority)
+	}
+}
+
 func TestPodBoard_Status(t *testing.T) {
 	pb := NewPodBoard(1)
 	pb.CreatePod(PodConfig{Type: "quarter", DurationMs: 180000})
