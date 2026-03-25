@@ -75,6 +75,7 @@ type SpliceCoordinator struct {
 	config        SpliceCoordinatorConfig
 	active        *SpliceOperation
 	onSpliceReady func(podID string, pts int64)
+	asRunLog      func(AsRunEvent)
 	preRollMs     int64
 	windowMs      int64
 	timeoutMs     int64
@@ -116,6 +117,13 @@ func (sc *SpliceCoordinator) SetOnSpliceReady(fn func(podID string, pts int64)) 
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 	sc.onSpliceReady = fn
+}
+
+// SetAsRunLog registers a callback for emitting as-run events.
+func (sc *SpliceCoordinator) SetAsRunLog(fn func(AsRunEvent)) {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	sc.asRunLog = fn
 }
 
 // BeginSplice starts a splice-point search for the given pod.
@@ -223,6 +231,7 @@ func (sc *SpliceCoordinator) finalizeSplice() {
 	autoReturn := op.AutoReturn
 	durationMs := op.DurationMs
 	callbackFn := sc.onSpliceReady
+	asRunFn := sc.asRunLog
 	preRollTicks := sc.preRollMs * 90
 
 	sc.mu.Unlock()
@@ -262,6 +271,22 @@ func (sc *SpliceCoordinator) finalizeSplice() {
 		sc.active.SpliceReason = reason
 	}
 	sc.mu.Unlock()
+
+	// Emit as-run splice_active event.
+	if asRunFn != nil {
+		offsetMs := float64(lockedPTS-targetPTS) / 90.0
+		asRunFn(AsRunEvent{
+			Timestamp:           time.Now().UTC(),
+			Type:                AsRunSpliceActive,
+			PodID:               podID,
+			ScheduledDurationMs: durationMs,
+			Reason:              string(reason),
+			BlackDetect: &BlackDetectInfo{
+				Found:    reason == SpliceReasonBlack,
+				OffsetMs: offsetMs,
+			},
+		})
+	}
 
 	// Call injector outside the lock.
 	if inj != nil {

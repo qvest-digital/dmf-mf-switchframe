@@ -888,3 +888,52 @@ func TestPodBoardDumpOutAsRunEvent(t *testing.T) {
 		t.Errorf("dump_out events = %d, want 1", dumpOutCount)
 	}
 }
+
+// --- Task 6: SpliceCoordinator As-Run Emission ---
+
+func TestSpliceCoordinatorEmitsAsRunEvent(t *testing.T) {
+	dir := t.TempDir()
+	logger, err := NewAsRunLogger(AsRunLoggerConfig{Dir: dir, RingCapacity: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+
+	inj := &fakeSpliceInjector{}
+	bd := NewBlackDetector(BlackDetectorConfig{})
+
+	sc := NewSpliceCoordinator(SpliceCoordinatorConfig{
+		Injector:      inj,
+		BlackDetector: bd,
+		PreRollMs:     100,
+		WindowMs:      100,
+		TimeoutMs:     5000,
+	})
+	sc.SetAsRunLog(func(ev AsRunEvent) { logger.Log(ev) })
+
+	// currentPTS=0, preRoll=100ms=9000 ticks, window=100ms=9000 ticks.
+	// targetPTS = 9000, window = [0, 18000].
+	err = sc.BeginSplice("pod-test", true, true, 180000, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blackFrame := make([]byte, 320*240*3/2) // all zeros = black
+	sc.IngestFrame(blackFrame, 320, 240, 5000)  // inside window
+	sc.IngestFrame(blackFrame, 320, 240, 20000) // past window, triggers finalization
+
+	waitFor(t, 2*time.Second, func() bool {
+		return !sc.Active()
+	})
+
+	events := logger.Query(AsRunQuery{Type: AsRunSpliceActive})
+	if len(events) != 1 {
+		t.Fatalf("got %d splice_active events, want 1", len(events))
+	}
+	if events[0].PodID != "pod-test" {
+		t.Errorf("pod_id = %q, want %q", events[0].PodID, "pod-test")
+	}
+	if events[0].BlackDetect == nil {
+		t.Fatal("expected black_detect info")
+	}
+}
