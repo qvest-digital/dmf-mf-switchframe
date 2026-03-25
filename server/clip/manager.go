@@ -31,7 +31,7 @@ type Manager struct {
 // ManagerConfig configures the clip Manager.
 type ManagerConfig struct {
 	// DemuxFunc overrides DemuxFile for testing. If nil, uses DemuxFile.
-	DemuxFunc func(path string) ([]bufferedFrame, []bufferedAudioFrame, error)
+	DemuxFunc func(path string) ([]BufferedFrame, []BufferedAudioFrame, error)
 	// DecoderFactory creates an H.264 decoder for each clip player.
 	// If nil, wireData is passed through without decoding (for testing).
 	DecoderFactory func() (VideoDecoder, error)
@@ -48,8 +48,8 @@ type playerSlot struct {
 	clipID        string
 	clipName      string
 	clip          *Clip // metadata
-	frames        []bufferedFrame
-	audio         []bufferedAudioFrame
+	frames        []BufferedFrame
+	audio         []BufferedAudioFrame
 	speed         float64
 	loop          bool
 	cancel        context.CancelFunc

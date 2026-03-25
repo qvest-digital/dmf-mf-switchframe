@@ -201,13 +201,13 @@ func Validate(path string) (*ProbeResult, error) {
 // dimensions, it returns ErrCorruptFile. If decoding fails entirely
 // (e.g., synthetic test data), it returns zero dimensions with a
 // warning rather than a hard error.
-func testDecodeFirstGOP(frames []bufferedFrame, spsWidth, spsHeight int) (width, height int, warnings []string, err error) {
+func testDecodeFirstGOP(frames []BufferedFrame, spsWidth, spsHeight int) (width, height int, warnings []string, err error) {
 	if len(frames) == 0 {
 		return 0, 0, nil, nil
 	}
 
 	// Find first GOP: frames from first keyframe to second keyframe (or end).
-	var gop []bufferedFrame
+	var gop []BufferedFrame
 	started := false
 	for _, f := range frames {
 		if f.isKeyframe {
@@ -304,7 +304,7 @@ func testDecodeFirstGOP(frames []bufferedFrame, spsWidth, spsHeight int) (width,
 
 // estimateFPS estimates the source FPS from buffered frame PTS values.
 // This mirrors the logic in replay/player.go estimateFPSFromClip.
-func estimateFPS(frames []bufferedFrame) float64 {
+func estimateFPS(frames []BufferedFrame) float64 {
 	if len(frames) < 2 {
 		return 30.0
 	}

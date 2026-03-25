@@ -237,7 +237,7 @@ func TestTestDecodeFirstGOP_DimensionMismatchReturnsCorrupt(t *testing.T) {
 		idrBody[i] = byte(i)
 	}
 
-	frames := []bufferedFrame{
+	frames := []BufferedFrame{
 		{
 			wireData:   makeTestAVC1(idrBody),
 			sps:        sps,
@@ -271,7 +271,7 @@ func TestTestDecodeFirstGOP_MatchingDimensionsNoError(t *testing.T) {
 	idrBody := make([]byte, 64)
 	idrBody[0] = 0x65
 
-	frames := []bufferedFrame{
+	frames := []BufferedFrame{
 		{
 			wireData:   makeTestAVC1(idrBody),
 			sps:        sps,
@@ -301,7 +301,7 @@ func TestTestDecodeFirstGOP_ZeroSPSDimensionsSkipsMismatchCheck(t *testing.T) {
 	idrBody := make([]byte, 64)
 	idrBody[0] = 0x65
 
-	frames := []bufferedFrame{
+	frames := []BufferedFrame{
 		{
 			wireData:   makeTestAVC1(idrBody),
 			sps:        sps,

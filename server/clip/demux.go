@@ -19,7 +19,7 @@ import (
 // in decode order (not display/PTS order) so that the H.264 decoder receives
 // reference frames before B-frames that depend on them.
 // Audio frames contain raw AAC payloads (ADTS headers stripped), sorted by PTS.
-func DemuxFile(path string) ([]bufferedFrame, []bufferedAudioFrame, error) {
+func DemuxFile(path string) ([]BufferedFrame, []BufferedAudioFrame, error) {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
 	case ".ts", ".mts", ".m2ts":
@@ -32,7 +32,7 @@ func DemuxFile(path string) ([]bufferedFrame, []bufferedAudioFrame, error) {
 }
 
 // demuxTSFile opens an MPEG-TS file and demuxes it into video and audio frames.
-func demuxTSFile(path string) ([]bufferedFrame, []bufferedAudioFrame, error) {
+func demuxTSFile(path string) ([]BufferedFrame, []BufferedAudioFrame, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open %s: %w", path, err)
@@ -52,12 +52,12 @@ func demuxTSFile(path string) ([]bufferedFrame, []bufferedAudioFrame, error) {
 }
 
 // demuxTS reads MPEG-TS data from a reader and extracts video and audio frames.
-func demuxTS(r io.Reader) ([]bufferedFrame, []bufferedAudioFrame, error) {
+func demuxTS(r io.Reader) ([]BufferedFrame, []BufferedAudioFrame, error) {
 	dmx := astits.NewDemuxer(context.Background(), r)
 
 	var (
-		videoFrames []bufferedFrame
-		audioFrames []bufferedAudioFrame
+		videoFrames []BufferedFrame
+		audioFrames []BufferedAudioFrame
 		lastSPS     []byte
 		lastPPS     []byte
 		packetCount int
@@ -133,10 +133,10 @@ func demuxTS(r io.Reader) ([]bufferedFrame, []bufferedAudioFrame, error) {
 	return videoFrames, audioFrames, nil
 }
 
-// parseVideoFrameForClip converts a PES video packet into a bufferedFrame.
+// parseVideoFrameForClip converts a PES video packet into a BufferedFrame.
 // Returns updated SPS/PPS if found in this frame's NALUs. Returns nil frame
 // if the packet contains only parameter sets or is empty.
-func parseVideoFrameForClip(d *astits.DemuxerData, oh *astits.PESOptionalHeader, lastSPS, lastPPS []byte) (*bufferedFrame, []byte, []byte) {
+func parseVideoFrameForClip(d *astits.DemuxerData, oh *astits.PESOptionalHeader, lastSPS, lastPPS []byte) (*BufferedFrame, []byte, []byte) {
 	if len(d.PES.Data) == 0 {
 		return nil, nil, nil
 	}
@@ -208,7 +208,7 @@ func parseVideoFrameForClip(d *astits.DemuxerData, oh *astits.PESOptionalHeader,
 		}
 	}
 
-	frame := &bufferedFrame{
+	frame := &BufferedFrame{
 		wireData:   wireData,
 		pts:        pts,
 		isKeyframe: isKeyframe,
@@ -222,9 +222,9 @@ func parseVideoFrameForClip(d *astits.DemuxerData, oh *astits.PESOptionalHeader,
 }
 
 // parseAudioFramesForClip splits a PES audio packet into individual
-// bufferedAudioFrame entries. PES packets often contain multiple
+// BufferedAudioFrame entries. PES packets often contain multiple
 // concatenated ADTS frames; each is returned separately with correct PTS.
-func parseAudioFramesForClip(d *astits.DemuxerData, oh *astits.PESOptionalHeader) []bufferedAudioFrame {
+func parseAudioFramesForClip(d *astits.DemuxerData, oh *astits.PESOptionalHeader) []BufferedAudioFrame {
 	if len(d.PES.Data) == 0 {
 		return nil
 	}
@@ -246,11 +246,11 @@ func parseAudioFramesForClip(d *astits.DemuxerData, oh *astits.PESOptionalHeader
 	// Split concatenated ADTS frames into individual raw AAC payloads.
 	payloads := codec.SplitADTSFrames(d.PES.Data)
 
-	frames := make([]bufferedAudioFrame, len(payloads))
+	frames := make([]BufferedAudioFrame, len(payloads))
 	for i, payload := range payloads {
 		// Each AAC-LC frame is 1024 samples. PTS ticks at 90kHz.
 		pts := basePTS + int64(i)*1024*90000/int64(sampleRate)
-		frames[i] = bufferedAudioFrame{
+		frames[i] = BufferedAudioFrame{
 			data:       payload,
 			pts:        pts,
 			sampleRate: sampleRate,
