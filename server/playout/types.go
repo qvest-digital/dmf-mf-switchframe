@@ -113,6 +113,15 @@ type PlaylistItem struct {
 	SecondaryEvents []SecondaryEvent  `json:"secondary_events,omitempty"`
 }
 
+// PodTemplateDef defines a pod template in the playlist manifest.
+// These drive the pod board UI buttons with user-defined labels.
+type PodTemplateDef struct {
+	Label      string      `json:"label"`
+	DurationMs int64       `json:"duration_ms"`
+	AutoReturn bool        `json:"auto_return"`
+	Priority   PodPriority `json:"priority,omitempty"`
+}
+
 // Playlist is an ordered list of items for playout.
 type Playlist struct {
 	ID                string           `json:"id"`
@@ -121,7 +130,9 @@ type Playlist struct {
 	Mode              string           `json:"mode,omitempty"`
 	DefaultTransition TransitionConfig `json:"default_transition"`
 	Items             []PlaylistItem   `json:"items"`
-	IdleAssetURI      string           `json:"idle_asset_uri,omitempty"`
+	IdleAssetURI      string           `json:"idle_asset,omitempty"`
+	IdleLoop          bool             `json:"idle_loop,omitempty"`
+	PodTemplates      []PodTemplateDef `json:"pods,omitempty"`
 }
 
 // ChannelStatus is the broadcast state of a playout channel.

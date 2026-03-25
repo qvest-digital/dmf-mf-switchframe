@@ -874,8 +874,16 @@ export interface PlaylistItem {
 	in_point_ms?: number;
 	out_point_ms?: number;
 	hold?: boolean;
+	loop?: boolean;
 	transition?: { type: string; duration_ms?: number };
 	secondary_events?: SecondaryEvent[];
+}
+
+export interface PodTemplateDef {
+	label: string;
+	duration_ms: number;
+	auto_return: boolean;
+	priority?: 'normal' | 'high' | 'mandatory';
 }
 
 export interface Playlist {
@@ -883,6 +891,9 @@ export interface Playlist {
 	name: string;
 	default_transition: { type: string; duration_ms?: number };
 	items: PlaylistItem[];
+	idle_asset?: string;
+	idle_loop?: boolean;
+	pods?: PodTemplateDef[];
 }
 
 export interface CacheStatus {

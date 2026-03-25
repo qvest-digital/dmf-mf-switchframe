@@ -363,3 +363,115 @@ func TestValidatePlaylist_ValidSecondaryEvents(t *testing.T) {
 		t.Fatalf("expected valid playlist, got: %v", err)
 	}
 }
+
+func TestValidatePlaylist_IdleAsset_Valid(t *testing.T) {
+	pl := validPlaylist()
+	pl.IdleAssetURI = "file:///slates/idle.ts"
+	pl.IdleLoop = true
+	if err := ValidatePlaylist(pl); err != nil {
+		t.Fatalf("expected valid playlist with idle_asset, got: %v", err)
+	}
+}
+
+func TestValidatePlaylist_PodTemplates_Valid(t *testing.T) {
+	pl := validPlaylist()
+	pl.PodTemplates = []PodTemplateDef{
+		{Label: "60s Local", DurationMs: 60000, AutoReturn: true, Priority: PriorityNormal},
+		{Label: "90s National", DurationMs: 90000, AutoReturn: false, Priority: PriorityHigh},
+	}
+	if err := ValidatePlaylist(pl); err != nil {
+		t.Fatalf("expected valid playlist with pod templates, got: %v", err)
+	}
+}
+
+func TestValidatePlaylist_PodTemplates_DuplicateLabel(t *testing.T) {
+	pl := validPlaylist()
+	pl.PodTemplates = []PodTemplateDef{
+		{Label: "60s Local", DurationMs: 60000, AutoReturn: true},
+		{Label: "60s Local", DurationMs: 30000, AutoReturn: false},
+	}
+	err := ValidatePlaylist(pl)
+	if err == nil {
+		t.Fatal("expected error for duplicate pod template label")
+	}
+}
+
+func TestValidatePlaylist_PodTemplates_EmptyLabel(t *testing.T) {
+	pl := validPlaylist()
+	pl.PodTemplates = []PodTemplateDef{
+		{Label: "", DurationMs: 60000, AutoReturn: true},
+	}
+	err := ValidatePlaylist(pl)
+	if err == nil {
+		t.Fatal("expected error for empty pod template label")
+	}
+}
+
+func TestValidatePlaylist_PodTemplates_NegativeDuration(t *testing.T) {
+	pl := validPlaylist()
+	pl.PodTemplates = []PodTemplateDef{
+		{Label: "Bad Duration", DurationMs: -1000},
+	}
+	err := ValidatePlaylist(pl)
+	if err == nil {
+		t.Fatal("expected error for negative pod template duration")
+	}
+}
+
+func TestValidatePlaylist_LoopOnLive_Error(t *testing.T) {
+	pl := &Playlist{
+		ID:   "pl-1",
+		Name: "Loop Live",
+		Items: []PlaylistItem{
+			{ID: "item-1", Type: ItemLive, Source: "camera-1", Title: "Live", Loop: true},
+		},
+	}
+	err := ValidatePlaylist(pl)
+	if err == nil {
+		t.Fatal("expected error for loop on live item")
+	}
+}
+
+func TestValidatePlaylist_LoopOnSlate_Error(t *testing.T) {
+	pl := &Playlist{
+		ID:   "pl-1",
+		Name: "Loop Slate",
+		Items: []PlaylistItem{
+			{ID: "item-1", Type: ItemSlate, Title: "Slate", Loop: true},
+		},
+	}
+	err := ValidatePlaylist(pl)
+	if err == nil {
+		t.Fatal("expected error for loop on slate item")
+	}
+}
+
+func TestValidatePlaylist_LoopOnClip_Valid(t *testing.T) {
+	pl := &Playlist{
+		ID:   "pl-1",
+		Name: "Loop Clip",
+		Items: []PlaylistItem{
+			{ID: "item-1", Type: ItemClip, AssetURI: "file:///clips/loop.ts", Title: "Loop Clip", Loop: true},
+		},
+	}
+	if err := ValidatePlaylist(pl); err != nil {
+		t.Fatalf("expected valid playlist with loop on clip, got: %v", err)
+	}
+}
+
+func TestValidatePodTemplates_Empty(t *testing.T) {
+	// Empty slice is valid (no templates defined).
+	if err := ValidatePodTemplates(nil); err != nil {
+		t.Fatalf("expected nil templates to be valid, got: %v", err)
+	}
+}
+
+func TestValidatePodTemplates_ZeroDuration(t *testing.T) {
+	// Zero duration means "manual return only".
+	defs := []PodTemplateDef{
+		{Label: "Manual", DurationMs: 0, AutoReturn: false},
+	}
+	if err := ValidatePodTemplates(defs); err != nil {
+		t.Fatalf("expected zero duration to be valid, got: %v", err)
+	}
+}

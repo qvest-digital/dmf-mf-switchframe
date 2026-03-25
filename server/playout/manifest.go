@@ -51,6 +51,27 @@ func ValidateSecondaryEvent(ev *SecondaryEvent) error {
 	return nil
 }
 
+// ValidatePodTemplates checks that pod template definitions are well-formed:
+//   - each must have a non-empty label
+//   - labels must be unique
+//   - duration_ms must be >= 0
+func ValidatePodTemplates(defs []PodTemplateDef) error {
+	seen := make(map[string]bool)
+	for i, d := range defs {
+		if d.Label == "" {
+			return fmt.Errorf("pod[%d]: label required", i)
+		}
+		if seen[d.Label] {
+			return fmt.Errorf("pod[%d]: duplicate label %q", i, d.Label)
+		}
+		seen[d.Label] = true
+		if d.DurationMs < 0 {
+			return fmt.Errorf("pod[%d] (%s): duration_ms must be >= 0", i, d.Label)
+		}
+	}
+	return nil
+}
+
 // ValidatePlaylist checks that a playlist is well-formed:
 //   - at least one item
 //   - every item has a non-empty ID
@@ -58,6 +79,8 @@ func ValidateSecondaryEvent(ev *SecondaryEvent) error {
 //   - clip items require AssetURI
 //   - live items require Source
 //   - only known item types are accepted
+//   - loop is only valid on clip items
+//   - pod templates (if present) are valid
 func ValidatePlaylist(pl *Playlist) error {
 	if len(pl.Items) == 0 {
 		return ErrEmptyPlaylist
@@ -80,9 +103,15 @@ func ValidatePlaylist(pl *Playlist) error {
 			}
 		case ItemSlate:
 			// Slate items generate black frames — asset_uri is optional.
+			if item.Loop {
+				return fmt.Errorf("item[%d] (%s): loop is only valid on clip items", i, item.ID)
+			}
 		case ItemLive:
 			if item.Source == "" {
 				return fmt.Errorf("item[%d] (%s): live item requires source", i, item.ID)
+			}
+			if item.Loop {
+				return fmt.Errorf("item[%d] (%s): loop is only valid on clip items", i, item.ID)
 			}
 		default:
 			return fmt.Errorf("item[%d] (%s): unknown item type %q", i, item.ID, item.Type)
@@ -92,6 +121,12 @@ func ValidatePlaylist(pl *Playlist) error {
 			if err := ValidateSecondaryEvent(&item.SecondaryEvents[j]); err != nil {
 				return fmt.Errorf("item[%d] (%s): secondary_events[%d]: %w", i, item.ID, j, err)
 			}
+		}
+	}
+
+	if len(pl.PodTemplates) > 0 {
+		if err := ValidatePodTemplates(pl.PodTemplates); err != nil {
+			return fmt.Errorf("pod_templates: %w", err)
 		}
 	}
 
