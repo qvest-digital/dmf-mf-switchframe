@@ -103,7 +103,13 @@ func (m *Manager) Start(channelID int) error {
 	ptsFn := m.ptsProvider
 	secondaryH := m.secondaryHandler
 	sc := m.spliceCoordinator
+	wd := m.watchdog
 	m.mu.Unlock()
+
+	// Register with watchdog.
+	if wd != nil {
+		wd.RegisterChannel(channelID)
+	}
 
 	ch.SetOnStateChange(func(s ChannelState) {
 		if stateChangeFn != nil {
@@ -116,6 +122,9 @@ func (m *Manager) Start(channelID int) error {
 		}
 	})
 	ch.SetOnStop(func(key string) {
+		if wd != nil {
+			wd.UnregisterChannel(channelID)
+		}
 		if onStopFn != nil {
 			onStopFn(channelID, key)
 		}
@@ -123,6 +132,13 @@ func (m *Manager) Start(channelID int) error {
 	if rawVideoFn != nil {
 		ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
 			rawVideoFn(ch.Key(), yuv, w, h, pts, isKeyframe)
+			if wd != nil {
+				wd.ReportFrame(channelID)
+			}
+		})
+	} else if wd != nil {
+		ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
+			wd.ReportFrame(channelID)
 		})
 	}
 	if ptsFn != nil {
