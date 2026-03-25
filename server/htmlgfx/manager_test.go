@@ -250,6 +250,9 @@ func setupManagerWithMock(t *testing.T) (*Manager, *mockSidecar, *mockCompositor
 	// Start reading commands in the background.
 	go mock.readCommands()
 
+	// Start the restart loop so tests can exercise restart behavior.
+	go mgr.restartLoop()
+
 	return mgr, mock, comp
 }
 
@@ -996,4 +999,72 @@ func TestManager_ResetsBrowserPoolOnRestart(t *testing.T) {
 		assert.Equal(t, "empty", bs.Status, "slot %d should be empty", i)
 		assert.Equal(t, -1, bs.LayerID, "slot %d layerID should be -1", i)
 	}
+}
+
+func TestManager_WatchProcessTriggersRestart(t *testing.T) {
+	mgr, mock, _ := setupManagerWithMock(t)
+	defer mgr.Close()
+	defer mock.close()
+
+	require.True(t, mgr.Alive())
+
+	// Simulate process exit by closing both sockets (triggers read loop exits).
+	mock.close()
+
+	require.Eventually(t, func() bool {
+		return !mgr.Alive()
+	}, 2*time.Second, 50*time.Millisecond)
+
+	// Restart count should eventually increment (restart loop fires).
+	require.Eventually(t, func() bool {
+		return mgr.RestartCount() > 0
+	}, 5*time.Second, 100*time.Millisecond,
+		"restart should have been attempted")
+}
+
+func TestManager_ConcurrentSocketDropsDoNotRace(t *testing.T) {
+	mgr, mock, _ := setupManagerWithMock(t)
+	defer mgr.Close()
+
+	// Close both sockets simultaneously.
+	mock.frameConn.Close()
+	mock.controlConn.Close()
+
+	// Should not panic or deadlock.
+	time.Sleep(500 * time.Millisecond)
+	require.False(t, mgr.Alive())
+}
+
+func TestManager_StaleReadLoopDoesNotTriggerRestart(t *testing.T) {
+	mgr, mock, _ := setupManagerWithMock(t)
+	defer mgr.Close()
+
+	require.True(t, mgr.Alive())
+
+	// Manually bump generation to simulate a restart having occurred.
+	// This makes the current read loops "stale".
+	mgr.spawnGen.Add(1)
+
+	// Close the sockets — the old read loops will exit.
+	mock.close()
+
+	// The read loops should see a generation mismatch and NOT trigger restart.
+	time.Sleep(500 * time.Millisecond)
+
+	// alive should be false because sockets are closed, but restartCh should
+	// NOT have been signaled since the generation doesn't match.
+	// We verify by checking restart count stays 0 (no restart loop firing).
+	require.Equal(t, int64(0), mgr.RestartCount(),
+		"stale read loops should not trigger restart")
+}
+
+func TestManager_RestartCountAccessor(t *testing.T) {
+	comp := &mockCompositor{}
+	cfg := DefaultConfig()
+	mgr := NewManager(comp, cfg)
+	defer mgr.Close()
+
+	require.Equal(t, int64(0), mgr.RestartCount())
+	mgr.restartCount.Add(1)
+	require.Equal(t, int64(1), mgr.RestartCount())
 }
