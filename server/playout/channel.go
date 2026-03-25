@@ -624,6 +624,16 @@ func (c *Channel) playClipItem(ctx context.Context, item *PlaylistItem) bool {
 	iter, err := provider.Open(item.AssetURI)
 	if err != nil {
 		slog.Warn("playout: asset open failed", "item", item.ID, "error", err)
+		if asRunFn != nil {
+			asRunFn(AsRunEvent{
+				Timestamp: time.Now().UTC(),
+				Type:      AsRunError,
+				ChannelID: channelID,
+				ItemID:    item.ID,
+				Title:     item.Title,
+				Message:   fmt.Sprintf("asset open failed: %v", err),
+			})
+		}
 		return false
 	}
 	defer iter.Close()
@@ -674,6 +684,7 @@ func (c *Channel) playClipItem(ctx context.Context, item *PlaylistItem) bool {
 	}
 
 	var lastFrame *DecodedFrame
+	var consecutiveErrors int
 	i := 0
 
 	for {
@@ -688,9 +699,24 @@ func (c *Channel) playClipItem(ctx context.Context, item *PlaylistItem) bool {
 
 		frame, err := frameSource.Next()
 		if err != nil {
-			slog.Warn("playout: frame read error", "item", item.ID, "error", err)
-			return false
+			consecutiveErrors++
+			slog.Warn("playout: frame read error", "item", item.ID, "frame", i, "error", err, "consecutive", consecutiveErrors)
+			if consecutiveErrors >= 3 {
+				if asRunFn != nil {
+					asRunFn(AsRunEvent{
+						Timestamp: time.Now().UTC(),
+						Type:      AsRunError,
+						ChannelID: channelID,
+						ItemID:    item.ID,
+						Title:     item.Title,
+						Message:   fmt.Sprintf("persistent frame error after %d frames: %v", i, err),
+					})
+				}
+				break // skip to next item
+			}
+			continue
 		}
+		consecutiveErrors = 0
 		if frame == nil {
 			break // end of stream
 		}

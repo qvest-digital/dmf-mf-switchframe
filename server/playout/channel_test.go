@@ -1,6 +1,8 @@
 package playout
 
 import (
+	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -822,5 +824,134 @@ func TestChannel_SecondaryEventsOnSlateItem(t *testing.T) {
 	}
 	if calls[1].Method != "OnGraphicsOff" {
 		t.Errorf("call[1] = %q, want OnGraphicsOff", calls[1].Method)
+	}
+}
+
+// --- Graceful degradation test helpers ---
+
+// errorProvider always returns an error from Open.
+type errorProvider struct{}
+
+func (e *errorProvider) Open(uri string) (FrameIterator, error) {
+	return nil, fmt.Errorf("media not found: %s", uri)
+}
+
+// errorAfterNIterator returns N good frames then persistent errors.
+type errorAfterNIterator struct {
+	good int
+	pos  int
+}
+
+func (e *errorAfterNIterator) Next() (*DecodedFrame, error) {
+	if e.pos >= e.good {
+		return nil, fmt.Errorf("decode error at frame %d", e.pos)
+	}
+	f := &DecodedFrame{
+		YUV:    make([]byte, 320*240*3/2),
+		PTS:    int64(e.pos) * 3000,
+		Width:  320,
+		Height: 240,
+	}
+	e.pos++
+	return f, nil
+}
+
+func (e *errorAfterNIterator) EstimateFPS() float64 { return 30.0 }
+func (e *errorAfterNIterator) TotalFrames() int      { return -1 }
+func (e *errorAfterNIterator) Close()                {}
+
+type errorAfterNProvider struct {
+	goodFrames int
+}
+
+func (p *errorAfterNProvider) Open(uri string) (FrameIterator, error) {
+	return &errorAfterNIterator{good: p.goodFrames}, nil
+}
+
+func filterEvents(events []AsRunEvent, typ AsRunEventType) []AsRunEvent {
+	var out []AsRunEvent
+	for _, e := range events {
+		if e.Type == typ {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func TestChannel_SkipBadAsset_EmitsAsRunError(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{
+		AssetProvider: &errorProvider{},
+	})
+
+	var mu sync.Mutex
+	var events []AsRunEvent
+	ch.SetAsRunLog(func(ev AsRunEvent) {
+		mu.Lock()
+		events = append(events, ev)
+		mu.Unlock()
+	})
+
+	pl := testPlaylist(clipItem("bad-1"), clipItem("bad-2"))
+	if err := ch.LoadPlaylist(pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	if err := ch.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	waitFor(t, 5*time.Second, func() bool {
+		return ch.State() == StateCompleted
+	})
+
+	mu.Lock()
+	errs := filterEvents(events, AsRunError)
+	mu.Unlock()
+
+	if len(errs) < 2 {
+		t.Fatalf("expected at least 2 AsRunError events, got %d: %+v", len(errs), errs)
+	}
+	for _, e := range errs {
+		if e.Message == "" {
+			t.Error("AsRunError event has empty message")
+		}
+	}
+}
+
+func TestChannel_FrameErrorSkipsItem(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{
+		AssetProvider: &errorAfterNProvider{goodFrames: 2},
+	})
+
+	var mu sync.Mutex
+	var events []AsRunEvent
+	ch.SetAsRunLog(func(ev AsRunEvent) {
+		mu.Lock()
+		events = append(events, ev)
+		mu.Unlock()
+	})
+
+	pl := testPlaylist(clipItem("err-1"), clipItem("err-2"))
+	if err := ch.LoadPlaylist(pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	if err := ch.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	waitFor(t, 5*time.Second, func() bool {
+		return ch.State() == StateCompleted
+	})
+
+	mu.Lock()
+	errs := filterEvents(events, AsRunError)
+	mu.Unlock()
+
+	if len(errs) < 2 {
+		t.Fatalf("expected at least 2 AsRunError events for frame decode failures, got %d: %+v", len(errs), errs)
+	}
+	for _, e := range errs {
+		if e.Message == "" {
+			t.Error("AsRunError event has empty message")
+		}
 	}
 }
