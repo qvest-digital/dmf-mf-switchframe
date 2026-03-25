@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 )
 
 const connectionAPIBase = "/x-nmos/connection/v1.1/"
@@ -376,6 +375,28 @@ func (cs *ConnectionServer) handleSenderStaged(w http.ResponseWriter, r *http.Re
 			return
 		}
 
+		// Reject unsupported or unknown activation modes before mutating state.
+		if patch.Activation != nil && patch.Activation.Mode != nil {
+			switch *patch.Activation.Mode {
+			case "activate_immediate":
+				// supported — handled below
+			case "activate_scheduled_absolute", "activate_scheduled_relative":
+				writeJSON(w, http.StatusNotImplemented, map[string]interface{}{
+					"code":  501,
+					"error": "Not Implemented",
+					"debug": fmt.Sprintf("activation mode %q is not implemented", *patch.Activation.Mode),
+				})
+				return
+			default:
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+					"code":  400,
+					"error": "Bad Request",
+					"debug": fmt.Sprintf("unknown activation mode %q", *patch.Activation.Mode),
+				})
+				return
+			}
+		}
+
 		cs.mu.Lock()
 		state, ok := cs.senderStates[id]
 		if !ok {
@@ -391,11 +412,13 @@ func (cs *ConnectionServer) handleSenderStaged(w http.ResponseWriter, r *http.Re
 			doActivate   bool
 			doDeactivate bool
 			activeCopy   StagedParams
+			prevActive   StagedParams
 		)
 
 		if patch.Activation != nil && patch.Activation.Mode != nil && *patch.Activation.Mode == "activate_immediate" {
+			prevActive = copyStagedParams(state.Active)
 			state.Active = copyStagedParams(state.Staged)
-			taiTime := taiTimestamp()
+			taiTime := string(NewVersion())
 			state.Active.Activation = &Activation{
 				Mode:           patch.Activation.Mode,
 				RequestedTime:  patch.Activation.RequestedTime,
@@ -421,11 +444,35 @@ func (cs *ConnectionServer) handleSenderStaged(w http.ResponseWriter, r *http.Re
 		// Fire callbacks outside the lock.
 		if doDeactivate {
 			if cs.onDeactivateSender != nil {
-				cs.onDeactivateSender(id)
+				if err := cs.onDeactivateSender(id); err != nil {
+					cs.mu.Lock()
+					if s, ok := cs.senderStates[id]; ok {
+						s.Active = prevActive
+					}
+					cs.mu.Unlock()
+					writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
+						"code":  500,
+						"error": "Internal Server Error",
+						"debug": err.Error(),
+					})
+					return
+				}
 			}
 		} else if doActivate {
 			if cs.onActivateSender != nil {
-				cs.onActivateSender(id, activeCopy)
+				if err := cs.onActivateSender(id, activeCopy); err != nil {
+					cs.mu.Lock()
+					if s, ok := cs.senderStates[id]; ok {
+						s.Active = prevActive
+					}
+					cs.mu.Unlock()
+					writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
+						"code":  500,
+						"error": "Internal Server Error",
+						"debug": err.Error(),
+					})
+					return
+				}
 			}
 		}
 
@@ -462,6 +509,28 @@ func (cs *ConnectionServer) handleReceiverStaged(w http.ResponseWriter, r *http.
 			return
 		}
 
+		// Reject unsupported or unknown activation modes before mutating state.
+		if patch.Activation != nil && patch.Activation.Mode != nil {
+			switch *patch.Activation.Mode {
+			case "activate_immediate":
+				// supported — handled below
+			case "activate_scheduled_absolute", "activate_scheduled_relative":
+				writeJSON(w, http.StatusNotImplemented, map[string]interface{}{
+					"code":  501,
+					"error": "Not Implemented",
+					"debug": fmt.Sprintf("activation mode %q is not implemented", *patch.Activation.Mode),
+				})
+				return
+			default:
+				writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+					"code":  400,
+					"error": "Bad Request",
+					"debug": fmt.Sprintf("unknown activation mode %q", *patch.Activation.Mode),
+				})
+				return
+			}
+		}
+
 		cs.mu.Lock()
 		state, ok := cs.receiverStates[id]
 		if !ok {
@@ -477,11 +546,13 @@ func (cs *ConnectionServer) handleReceiverStaged(w http.ResponseWriter, r *http.
 			doActivate   bool
 			doDeactivate bool
 			activeCopy   StagedParams
+			prevActive   StagedParams
 		)
 
 		if patch.Activation != nil && patch.Activation.Mode != nil && *patch.Activation.Mode == "activate_immediate" {
+			prevActive = copyStagedParams(state.Active)
 			state.Active = copyStagedParams(state.Staged)
-			taiTime := taiTimestamp()
+			taiTime := string(NewVersion())
 			state.Active.Activation = &Activation{
 				Mode:           patch.Activation.Mode,
 				RequestedTime:  patch.Activation.RequestedTime,
@@ -507,11 +578,35 @@ func (cs *ConnectionServer) handleReceiverStaged(w http.ResponseWriter, r *http.
 		// Fire callbacks outside the lock.
 		if doDeactivate {
 			if cs.onDeactivateReceiver != nil {
-				cs.onDeactivateReceiver(id)
+				if err := cs.onDeactivateReceiver(id); err != nil {
+					cs.mu.Lock()
+					if s, ok := cs.receiverStates[id]; ok {
+						s.Active = prevActive
+					}
+					cs.mu.Unlock()
+					writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
+						"code":  500,
+						"error": "Internal Server Error",
+						"debug": err.Error(),
+					})
+					return
+				}
 			}
 		} else if doActivate {
 			if cs.onActivateReceiver != nil {
-				cs.onActivateReceiver(id, activeCopy)
+				if err := cs.onActivateReceiver(id, activeCopy); err != nil {
+					cs.mu.Lock()
+					if s, ok := cs.receiverStates[id]; ok {
+						s.Active = prevActive
+					}
+					cs.mu.Unlock()
+					writeJSON(w, http.StatusInternalServerError, map[string]interface{}{
+						"code":  500,
+						"error": "Internal Server Error",
+						"debug": err.Error(),
+					})
+					return
+				}
 			}
 		}
 
@@ -647,10 +742,3 @@ func copyTransportParams(src TransportParams) TransportParams {
 	return dst
 }
 
-// taiTimestamp returns the current time as a TAI timestamp string.
-func taiTimestamp() string {
-	now := time.Now()
-	taiSec := now.Unix() + TAILeapSeconds
-	ns := int64(now.Nanosecond())
-	return fmt.Sprintf("%d:%09d", taiSec, ns)
-}

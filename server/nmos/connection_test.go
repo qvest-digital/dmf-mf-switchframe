@@ -3,6 +3,7 @@ package nmos
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -1018,4 +1019,277 @@ func TestConnectionThreadSafety(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+func TestConnectionActivateCallbackError(t *testing.T) {
+	callbackErr := errors.New("activation failed: device busy")
+
+	cs := NewConnectionServer(ConnectionServerOpts{
+		OnActivateReceiver: func(id string, params StagedParams) error {
+			return callbackErr
+		},
+	})
+	cs.AddReceiver("recv-001")
+	ts := httptest.NewServer(cs.Handler())
+	defer ts.Close()
+
+	// Get the initial active state before any activation attempt.
+	resp0, err := http.Get(ts.URL + "/x-nmos/connection/v1.1/single/receivers/recv-001/active")
+	if err != nil {
+		t.Fatalf("GET active: %v", err)
+	}
+	var initialActive StagedParams
+	json.NewDecoder(resp0.Body).Decode(&initialActive)
+	resp0.Body.Close()
+
+	// Attempt activate_immediate with a callback that returns an error.
+	destIP := "239.1.1.1"
+	destPort := 5004
+	rtpEnabled := true
+	masterEnable := true
+	mode := "activate_immediate"
+	patch := StagedParams{
+		MasterEnable: &masterEnable,
+		TransportParams: []TransportParams{
+			{
+				DestinationIP:   &destIP,
+				DestinationPort: &destPort,
+				RTPEnabled:      &rtpEnabled,
+			},
+		},
+		Activation: &Activation{
+			Mode: &mode,
+		},
+	}
+
+	body, _ := json.Marshal(patch)
+	req, _ := http.NewRequest(http.MethodPatch, ts.URL+"/x-nmos/connection/v1.1/single/receivers/recv-001/staged", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PATCH: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status: got %d, want 500", resp.StatusCode)
+	}
+
+	var errResp map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&errResp); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if errResp["debug"] != callbackErr.Error() {
+		t.Errorf("error message: got %q, want %q", errResp["debug"], callbackErr.Error())
+	}
+
+	// Verify active state was rolled back (should match initial state).
+	resp2, err := http.Get(ts.URL + "/x-nmos/connection/v1.1/single/receivers/recv-001/active")
+	if err != nil {
+		t.Fatalf("GET active: %v", err)
+	}
+	defer resp2.Body.Close()
+
+	var active StagedParams
+	if err := json.NewDecoder(resp2.Body).Decode(&active); err != nil {
+		t.Fatalf("decode active: %v", err)
+	}
+
+	// Active should not have the destination_ip we tried to set.
+	if len(active.TransportParams) > 0 && active.TransportParams[0].DestinationIP != nil {
+		t.Errorf("active destination_ip should be nil after rollback, got %q", *active.TransportParams[0].DestinationIP)
+	}
+}
+
+func TestConnectionActivateCallbackErrorSender(t *testing.T) {
+	callbackErr := errors.New("sender activation failed")
+
+	cs := NewConnectionServer(ConnectionServerOpts{
+		OnActivateSender: func(id string, params StagedParams) error {
+			return callbackErr
+		},
+	})
+	cs.AddSender("sender-001", "v=0\r\n")
+	ts := httptest.NewServer(cs.Handler())
+	defer ts.Close()
+
+	masterEnable := true
+	mode := "activate_immediate"
+	srcIP := "192.168.1.100"
+	destIP := "239.1.1.1"
+	destPort := 5004
+	rtpEnabled := true
+
+	patch := StagedParams{
+		MasterEnable: &masterEnable,
+		TransportParams: []TransportParams{
+			{
+				SourceIP:        &srcIP,
+				DestinationIP:   &destIP,
+				DestinationPort: &destPort,
+				RTPEnabled:      &rtpEnabled,
+			},
+		},
+		Activation: &Activation{
+			Mode: &mode,
+		},
+	}
+
+	body, _ := json.Marshal(patch)
+	req, _ := http.NewRequest(http.MethodPatch, ts.URL+"/x-nmos/connection/v1.1/single/senders/sender-001/staged", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PATCH: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status: got %d, want 500", resp.StatusCode)
+	}
+
+	// Verify active state was rolled back.
+	resp2, err := http.Get(ts.URL + "/x-nmos/connection/v1.1/single/senders/sender-001/active")
+	if err != nil {
+		t.Fatalf("GET active: %v", err)
+	}
+	defer resp2.Body.Close()
+
+	var active StagedParams
+	json.NewDecoder(resp2.Body).Decode(&active)
+
+	if len(active.TransportParams) > 0 && active.TransportParams[0].DestinationIP != nil {
+		t.Errorf("active destination_ip should be nil after rollback, got %q", *active.TransportParams[0].DestinationIP)
+	}
+}
+
+func TestConnectionDeactivateCallbackError(t *testing.T) {
+	// First activate successfully, then fail deactivation.
+	cs := NewConnectionServer(ConnectionServerOpts{
+		OnActivateReceiver: func(id string, params StagedParams) error {
+			return nil
+		},
+		OnDeactivateReceiver: func(id string) error {
+			return errors.New("deactivation failed")
+		},
+	})
+	cs.AddReceiver("recv-001")
+	ts := httptest.NewServer(cs.Handler())
+	defer ts.Close()
+
+	// First, activate successfully.
+	destIP := "239.1.1.1"
+	masterEnable := true
+	rtpEnabled := true
+	mode := "activate_immediate"
+	patch := StagedParams{
+		MasterEnable:    &masterEnable,
+		TransportParams: []TransportParams{{DestinationIP: &destIP, RTPEnabled: &rtpEnabled}},
+		Activation:      &Activation{Mode: &mode},
+	}
+	body, _ := json.Marshal(patch)
+	req, _ := http.NewRequest(http.MethodPatch, ts.URL+"/x-nmos/connection/v1.1/single/receivers/recv-001/staged", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, _ := http.DefaultClient.Do(req)
+	resp.Body.Close()
+
+	// Now attempt deactivation, which should fail.
+	masterEnable = false
+	patch2 := StagedParams{
+		MasterEnable:    &masterEnable,
+		TransportParams: []TransportParams{{}},
+		Activation:      &Activation{Mode: &mode},
+	}
+	body2, _ := json.Marshal(patch2)
+	req2, _ := http.NewRequest(http.MethodPatch, ts.URL+"/x-nmos/connection/v1.1/single/receivers/recv-001/staged", bytes.NewReader(body2))
+	req2.Header.Set("Content-Type", "application/json")
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("PATCH: %v", err)
+	}
+	defer resp2.Body.Close()
+
+	if resp2.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status: got %d, want 500", resp2.StatusCode)
+	}
+
+	// Active should still have the destination_ip from the first activation.
+	resp3, _ := http.Get(ts.URL + "/x-nmos/connection/v1.1/single/receivers/recv-001/active")
+	defer resp3.Body.Close()
+	var active StagedParams
+	json.NewDecoder(resp3.Body).Decode(&active)
+	if len(active.TransportParams) == 0 || active.TransportParams[0].DestinationIP == nil || *active.TransportParams[0].DestinationIP != destIP {
+		t.Errorf("active should still have destination_ip %q after failed deactivation", destIP)
+	}
+}
+
+func TestConnectionUnsupportedActivationMode(t *testing.T) {
+	cs := NewConnectionServer(ConnectionServerOpts{})
+	cs.AddReceiver("recv-001")
+	cs.AddSender("sender-001", "v=0\r\n")
+	ts := httptest.NewServer(cs.Handler())
+	defer ts.Close()
+
+	tests := []struct {
+		name       string
+		endpoint   string
+		mode       string
+		wantStatus int
+	}{
+		{
+			name:       "receiver scheduled absolute",
+			endpoint:   "/x-nmos/connection/v1.1/single/receivers/recv-001/staged",
+			mode:       "activate_scheduled_absolute",
+			wantStatus: http.StatusNotImplemented,
+		},
+		{
+			name:       "receiver scheduled relative",
+			endpoint:   "/x-nmos/connection/v1.1/single/receivers/recv-001/staged",
+			mode:       "activate_scheduled_relative",
+			wantStatus: http.StatusNotImplemented,
+		},
+		{
+			name:       "sender scheduled absolute",
+			endpoint:   "/x-nmos/connection/v1.1/single/senders/sender-001/staged",
+			mode:       "activate_scheduled_absolute",
+			wantStatus: http.StatusNotImplemented,
+		},
+		{
+			name:       "receiver unknown mode",
+			endpoint:   "/x-nmos/connection/v1.1/single/receivers/recv-001/staged",
+			mode:       "activate_bogus",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "sender unknown mode",
+			endpoint:   "/x-nmos/connection/v1.1/single/senders/sender-001/staged",
+			mode:       "activate_bogus",
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			patch := StagedParams{
+				TransportParams: []TransportParams{{}},
+				Activation:      &Activation{Mode: &tt.mode},
+			}
+			body, _ := json.Marshal(patch)
+			req, _ := http.NewRequest(http.MethodPatch, ts.URL+tt.endpoint, bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("PATCH: %v", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != tt.wantStatus {
+				bodyBytes, _ := io.ReadAll(resp.Body)
+				t.Fatalf("status: got %d, want %d; body: %s", resp.StatusCode, tt.wantStatus, string(bodyBytes))
+			}
+		})
+	}
 }
