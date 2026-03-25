@@ -364,7 +364,7 @@ export interface MacroExecutionState {
 }
 
 export interface KeyConfig {
-	type: 'chroma' | 'luma';
+	type: 'chroma' | 'luma' | 'neural';
 	enabled: boolean;
 	keyColorY?: number;
 	keyColorCb?: number;
@@ -656,6 +656,9 @@ export interface ControlRoomState {
 	stmap?: STMapState;
 	colorGrade?: ColorGradeState;
 	aiSegmentation?: AISegmentationState;
+	neuralKey?: {
+		available: boolean;
+	};
 	lastChangedBy?: string;
 	seq: number;
 	timestamp: number;

@@ -19,7 +19,7 @@
 	let { state: crState }: Props = $props();
 
 	let selectedSource = $derived(Object.keys(crState.sources).sort()[0] ?? '');
-	let keyType = $state<'none' | 'chroma' | 'luma'>('none');
+	let keyType = $state<'none' | 'chroma' | 'luma' | 'neural'>('none');
 	let enabled = $state(true);
 
 	// Chroma params (defaults match Green Screen preset)
@@ -76,7 +76,7 @@
 				if (gen !== loadGeneration) return; // stale response
 				keyType = config.type ?? 'none';
 				enabled = config.enabled ?? true;
-				if (config.type === 'chroma') {
+				if (config.type === 'chroma' || config.type === 'neural') {
 					keyColorY = config.keyColorY ?? 173;
 					keyColorCb = config.keyColorCb ?? 42;
 					keyColorCr = config.keyColorCr ?? 26;
@@ -120,15 +120,16 @@
 			return;
 		}
 
+		const hasChromaParams = keyType === 'chroma' || keyType === 'neural';
 		const config: KeyConfig = {
 			type: keyType,
 			enabled,
-			keyColorY: keyType === 'chroma' ? keyColorY : undefined,
-			keyColorCb: keyType === 'chroma' ? keyColorCb : undefined,
-			keyColorCr: keyType === 'chroma' ? keyColorCr : undefined,
-			similarity: keyType === 'chroma' ? similarity : undefined,
-			smoothness: keyType === 'chroma' ? smoothness : undefined,
-			spillSuppress: keyType === 'chroma' ? spillSuppress : undefined,
+			keyColorY: hasChromaParams ? keyColorY : undefined,
+			keyColorCb: hasChromaParams ? keyColorCb : undefined,
+			keyColorCr: hasChromaParams ? keyColorCr : undefined,
+			similarity: hasChromaParams ? similarity : undefined,
+			smoothness: hasChromaParams ? smoothness : undefined,
+			spillSuppress: hasChromaParams ? spillSuppress : undefined,
 			lowClip: keyType === 'luma' ? lowClip : undefined,
 			highClip: keyType === 'luma' ? highClip : undefined,
 			softness: keyType === 'luma' ? softness : undefined,
@@ -196,6 +197,16 @@
 							>
 								Luma
 							</button>
+							{#if crState.neuralKey?.available}
+								<button
+									type="button"
+									class="segmented__btn"
+									class:segmented__btn--active={keyType === 'neural'}
+									onclick={() => (keyType = 'neural')}
+								>
+									Neural
+								</button>
+							{/if}
 						</div>
 					</div>
 
@@ -206,7 +217,7 @@
 						</label>
 					{/if}
 
-					{#if keyType === 'chroma'}
+					{#if keyType === 'chroma' || keyType === 'neural'}
 						<div class="key-block">
 							<span class="config-label">Key color</span>
 							<div class="chroma-top-row">
