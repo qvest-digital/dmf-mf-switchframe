@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 )
 
 // PodBoard manages all pods for a single playout channel.
@@ -364,6 +365,155 @@ func (pb *PodBoard) Demote(id string) error {
 		fn()
 	}
 	return nil
+}
+
+// Fire activates an armed pod: transitions to BREAK-ACTIVE, injects SCTE-35
+// cue-out, starts the auto-return timer if configured.
+func (pb *PodBoard) Fire(id string) error {
+	pb.mu.Lock()
+	pod, ok := pb.pods[id]
+	if !ok {
+		pb.mu.Unlock()
+		return ErrPodNotFound
+	}
+	if !pod.Armed {
+		pb.mu.Unlock()
+		return ErrPodNotArmed
+	}
+	if pod.State.IsTerminal() {
+		pb.mu.Unlock()
+		return ErrPodTerminal
+	}
+	if pb.activePodID != "" {
+		pb.mu.Unlock()
+		return ErrPodAlreadyActive
+	}
+
+	pod.State = PodBreakActive
+	pod.FiredAt = time.Now().UnixMilli()
+	pb.activePodID = id
+
+	inj := pb.scte35Injector
+	breakStartFn := pb.onBreakStart
+	stateChangeFn := pb.onStateChange
+	config := pod.Config
+	pb.mu.Unlock()
+
+	// Inject SCTE-35 cue-out.
+	if inj != nil {
+		eventID, err := inj.InjectPodCue(true, config.AutoReturn, config.DurationMs)
+		if err != nil {
+			slog.Warn("playout: pod SCTE-35 cue-out failed", "pod", id, "error", err)
+		} else {
+			pb.mu.Lock()
+			if p, ok := pb.pods[id]; ok {
+				p.SCTE35EventID = eventID
+			}
+			pb.mu.Unlock()
+		}
+	}
+
+	if breakStartFn != nil {
+		breakStartFn()
+	}
+	if stateChangeFn != nil {
+		stateChangeFn()
+	}
+
+	// Start auto-return goroutine if configured.
+	if config.AutoReturn && config.DurationMs > 0 {
+		go pb.runAutoReturn(id, config.DurationMs)
+	}
+
+	// Start elapsed time tracker.
+	go pb.trackElapsed(id)
+
+	return nil
+}
+
+// trackElapsed updates ElapsedMs and RemainingMs every 50ms while a pod is active.
+func (pb *PodBoard) trackElapsed(id string) {
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		pb.mu.Lock()
+		pod, ok := pb.pods[id]
+		if !ok || pod.State != PodBreakActive {
+			pb.mu.Unlock()
+			return
+		}
+		elapsed := time.Now().UnixMilli() - pod.FiredAt
+		pod.ElapsedMs = elapsed
+		if pod.Config.DurationMs > 0 {
+			remain := pod.Config.DurationMs - elapsed
+			if remain < 0 {
+				remain = 0
+			}
+			pod.RemainingMs = remain
+		}
+		pb.mu.Unlock()
+	}
+}
+
+// runAutoReturn waits for the pod duration, then completes the break.
+func (pb *PodBoard) runAutoReturn(id string, durationMs int64) {
+	timer := time.NewTimer(time.Duration(durationMs) * time.Millisecond)
+	defer timer.Stop()
+
+	<-timer.C
+
+	pb.mu.Lock()
+	pod, ok := pb.pods[id]
+	if !ok || pod.State != PodBreakActive {
+		pb.mu.Unlock()
+		return
+	}
+	pb.mu.Unlock()
+
+	pb.completePod(id, PodRejoined)
+}
+
+// completePod transitions a pod to a terminal state, injects cue-in, calls callbacks.
+func (pb *PodBoard) completePod(id string, finalState PodState) {
+	pb.mu.Lock()
+	pod, ok := pb.pods[id]
+	if !ok {
+		pb.mu.Unlock()
+		return
+	}
+	if pod.State != PodBreakActive {
+		pb.mu.Unlock()
+		return
+	}
+
+	pod.State = finalState
+	pod.CompletedAt = time.Now().UnixMilli()
+	pod.ElapsedMs = pod.CompletedAt - pod.FiredAt
+	if pod.Config.DurationMs > 0 {
+		pod.RemainingMs = 0
+	}
+	pb.activePodID = ""
+
+	inj := pb.scte35Injector
+	breakEndFn := pb.onBreakEnd
+	stateChangeFn := pb.onStateChange
+	pb.mu.Unlock()
+
+	// Inject SCTE-35 cue-in (return to program).
+	if inj != nil {
+		_, err := inj.InjectPodCue(false, false, 0)
+		if err != nil {
+			slog.Warn("playout: pod SCTE-35 cue-in failed", "pod", id, "error", err)
+		}
+	}
+
+	if breakEndFn != nil {
+		breakEndFn()
+	}
+	if stateChangeFn != nil {
+		stateChangeFn()
+	}
 }
 
 // generatePodID creates a short random hex ID.

@@ -1,9 +1,40 @@
 package playout
 
 import (
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
+
+// fakeSCTE35Injector records pod cue injections.
+type fakeSCTE35Injector struct {
+	mu     sync.Mutex
+	calls  []fakeCueCall
+	nextID uint32
+}
+
+type fakeCueCall struct {
+	IsOut      bool
+	AutoReturn bool
+	DurationMs int64
+}
+
+func (f *fakeSCTE35Injector) InjectPodCue(isOut bool, autoReturn bool, durationMs int64) (uint32, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nextID++
+	f.calls = append(f.calls, fakeCueCall{isOut, autoReturn, durationMs})
+	return f.nextID, nil
+}
+
+func (f *fakeSCTE35Injector) getCalls() []fakeCueCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cp := make([]fakeCueCall, len(f.calls))
+	copy(cp, f.calls)
+	return cp
+}
 
 func TestPodBoard_CreatePod(t *testing.T) {
 	pb := NewPodBoard(1)
@@ -269,4 +300,140 @@ func TestPodBoard_Status(t *testing.T) {
 	if status.ActivePod != nil {
 		t.Error("no pod should be active")
 	}
+}
+
+func TestPodBoard_Fire(t *testing.T) {
+	pb := NewPodBoard(1)
+	inj := &fakeSCTE35Injector{}
+	pb.SetSCTE35Injector(inj)
+
+	var breakStarted atomic.Int32
+	var breakEnded atomic.Int32
+	pb.SetOnBreakStart(func() { breakStarted.Add(1) })
+	pb.SetOnBreakEnd(func() { breakEnded.Add(1) })
+
+	pod, _ := pb.CreatePod(PodConfig{
+		Type:         "timeout",
+		DurationMs:   100, // 100ms for fast test
+		AutoReturn:   true,
+		AllowDumpOut: true,
+		Priority:     PriorityNormal,
+	})
+	pb.Arm(pod.ID)
+
+	if err := pb.Fire(pod.ID); err != nil {
+		t.Fatalf("Fire: %v", err)
+	}
+
+	// Should have SCTE-35 cue-out.
+	waitFor(t, time.Second, func() bool {
+		return len(inj.getCalls()) >= 1
+	})
+	calls := inj.getCalls()
+	if !calls[0].IsOut {
+		t.Error("first cue should be out")
+	}
+	if !calls[0].AutoReturn {
+		t.Error("cue should have auto_return")
+	}
+
+	// Should be in break_active.
+	got, _ := pb.GetPod(pod.ID)
+	if got.State != PodBreakActive {
+		t.Errorf("state = %v, want break_active", got.State)
+	}
+
+	// onBreakStart should have been called.
+	if breakStarted.Load() < 1 {
+		t.Error("onBreakStart should have been called")
+	}
+
+	// Wait for auto-return (100ms duration + margin).
+	waitFor(t, 2*time.Second, func() bool {
+		p, _ := pb.GetPod(pod.ID)
+		return p.State == PodRejoined
+	})
+
+	// onBreakEnd should have been called.
+	if breakEnded.Load() < 1 {
+		t.Error("onBreakEnd should have been called")
+	}
+
+	// Should have SCTE-35 cue-in.
+	waitFor(t, time.Second, func() bool {
+		return len(inj.getCalls()) >= 2
+	})
+	calls = inj.getCalls()
+	if calls[1].IsOut {
+		t.Error("second cue should be in (return)")
+	}
+}
+
+func TestPodBoard_FireNotArmed(t *testing.T) {
+	pb := NewPodBoard(1)
+	pod, _ := pb.CreatePod(PodConfig{Type: "quarter", DurationMs: 180000})
+
+	err := pb.Fire(pod.ID)
+	if err != ErrPodNotArmed {
+		t.Fatalf("expected ErrPodNotArmed, got %v", err)
+	}
+}
+
+func TestPodBoard_FireAlreadyActive(t *testing.T) {
+	pb := NewPodBoard(1)
+	inj := &fakeSCTE35Injector{}
+	pb.SetSCTE35Injector(inj)
+
+	p1, _ := pb.CreatePod(PodConfig{Type: "injury", DurationMs: 0, HoldUntilManualReturn: true})
+	pb.Arm(p1.ID)
+	pb.Fire(p1.ID)
+
+	p2, _ := pb.CreatePod(PodConfig{Type: "quarter", DurationMs: 180000})
+	pb.Arm(p2.ID)
+
+	err := pb.Fire(p2.ID)
+	if err != ErrPodAlreadyActive {
+		t.Fatalf("expected ErrPodAlreadyActive, got %v", err)
+	}
+
+	// Cleanup: force terminal so goroutine stops.
+	pb.mu.Lock()
+	if p, ok := pb.pods[p1.ID]; ok {
+		p.State = PodDumpedOut
+		p.CompletedAt = time.Now().UnixMilli()
+	}
+	pb.activePodID = ""
+	pb.mu.Unlock()
+}
+
+func TestPodBoard_InjuryPodNoAutoReturn(t *testing.T) {
+	pb := NewPodBoard(1)
+	inj := &fakeSCTE35Injector{}
+	pb.SetSCTE35Injector(inj)
+
+	pod, _ := pb.CreatePod(PodConfig{
+		Type:                  "injury",
+		DurationMs:            0,
+		AutoReturn:            false,
+		AllowDumpOut:          true,
+		HoldUntilManualReturn: true,
+	})
+	pb.Arm(pod.ID)
+	pb.Fire(pod.ID)
+
+	// Should stay in break_active (no auto-return timer).
+	time.Sleep(50 * time.Millisecond)
+	got, _ := pb.GetPod(pod.ID)
+	if got.State != PodBreakActive {
+		t.Errorf("injury pod state = %v, want break_active (should hold)", got.State)
+	}
+
+	// Cleanup: force terminal.
+	pb.mu.Lock()
+	if p, ok := pb.pods[pod.ID]; ok {
+		p.State = PodDumpedOut
+		p.CompletedAt = time.Now().UnixMilli()
+	}
+	pb.activePodID = ""
+	pb.mu.Unlock()
 }
