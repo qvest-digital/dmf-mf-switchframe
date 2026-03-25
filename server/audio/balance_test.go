@@ -231,6 +231,52 @@ func TestBalance_DebugSnapshotIncludesBalance(t *testing.T) {
 	require.Equal(t, -0.3, cam1["balance"])
 }
 
+// Balance should use the mixer's numChannels stride, not hardcoded 2.
+// With numChannels=1 (mono), applying balance is a no-op (balance is
+// a stereo concept). The balance loop must not apply L/R gains to
+// alternating mono samples.
+func TestBalance_IngestPCM_MonoIgnoresBalance(t *testing.T) {
+	t.Parallel()
+
+	m := NewMixer(MixerConfig{
+		SampleRate: 48000,
+		Channels:   1,
+		Output:     func(f *media.AudioFrame) {},
+	})
+	defer func() { _ = m.Close() }()
+
+	m.AddChannel("cam1")
+	m.SetActive("cam1", true)
+
+	// Set balance hard left — for mono, this should be a no-op since
+	// there are no separate L/R channels to rebalance.
+	require.NoError(t, m.SetBalance("cam1", -1.0))
+
+	// Mono PCM: all samples at 0.5
+	pcm := make([]float32, 1024)
+	for i := range pcm {
+		pcm[i] = 0.5
+	}
+
+	m.IngestPCM("cam1", pcm, 0, 1)
+
+	// Read from ring buffer
+	m.mu.RLock()
+	ch := m.channels["cam1"]
+	got := ch.ringBuf.Pop(1024)
+	m.mu.RUnlock()
+
+	require.NotEmpty(t, got, "ring buffer should have samples")
+
+	// All mono samples should be unchanged (balance has no effect on mono).
+	// Bug: with hardcoded stride=2, odd samples get R gain (≈0.0 for hard
+	// left), silencing every other sample.
+	for i := 0; i < len(got); i++ {
+		require.InDelta(t, 0.5, float64(got[i]), 1e-6,
+			"mono sample %d should be unaffected by balance", i)
+	}
+}
+
 func BenchmarkBalanceGains(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		BalanceGains(float64(i%200-100) / 100.0)

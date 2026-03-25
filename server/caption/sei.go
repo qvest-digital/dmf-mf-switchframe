@@ -154,12 +154,24 @@ func insertEPB(buf []byte, startOffset int) []byte {
 		scanStart = startOffset
 	}
 
-	// Count needed insertions first to allocate once.
+	// State-machine approach: track consecutive zeros in the OUTPUT stream.
+	// When two output zeros are followed by an input byte ≤ 0x03, insert
+	// 0x03 before it. This correctly handles cascading patterns like
+	// 00 00 00 00 00 → 00 00 03 00 00 03 00.
+	//
+	// First pass: count insertions needed (for single allocation).
 	insertions := 0
-	for i := scanStart; i < len(buf)-2; i++ {
-		if buf[i] == 0x00 && buf[i+1] == 0x00 && buf[i+2] <= 0x03 {
+	zeros := 0
+	for i := scanStart; i < len(buf); i++ {
+		b := buf[i]
+		if zeros >= 2 && b <= 0x03 {
 			insertions++
-			i += 2 // skip past the pattern
+			zeros = 0 // the inserted 0x03 resets the zero run
+		}
+		if b == 0x00 {
+			zeros++
+		} else {
+			zeros = 0
 		}
 	}
 
@@ -167,16 +179,22 @@ func insertEPB(buf []byte, startOffset int) []byte {
 		return buf
 	}
 
-	// Rebuild with EPB bytes inserted.
+	// Second pass: rebuild with EPB bytes inserted.
 	result := make([]byte, 0, len(buf)+insertions)
 	result = append(result, buf[:scanStart]...)
 
+	zeros = 0
 	for i := scanStart; i < len(buf); i++ {
-		if i < len(buf)-2 && buf[i] == 0x00 && buf[i+1] == 0x00 && buf[i+2] <= 0x03 {
-			result = append(result, 0x00, 0x00, 0x03, buf[i+2])
-			i += 2
+		b := buf[i]
+		if zeros >= 2 && b <= 0x03 {
+			result = append(result, 0x03)
+			zeros = 0 // 0x03 resets the zero run in the output
+		}
+		result = append(result, b)
+		if b == 0x00 {
+			zeros++
 		} else {
-			result = append(result, buf[i])
+			zeros = 0
 		}
 	}
 

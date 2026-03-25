@@ -114,6 +114,52 @@ func TestBuildSEINALU_MultiplePairs(t *testing.T) {
 	}
 }
 
+// insertEPB must handle cascading zero-byte patterns. When consecutive zeros
+// span more than one EPB pattern (e.g., 00 00 00 00 00), the insertion of the
+// first 03 must not create a new unescaped 00 00 {00-03} pattern in the output.
+func TestInsertEPB_CascadingZeros(t *testing.T) {
+	tests := []struct {
+		name  string
+		input []byte // raw NALU body (after start code + header at bytes 0-4)
+	}{
+		{
+			name: "five_consecutive_zeros",
+			// Bytes 0-4: start code + NALU header (not scanned).
+			// Bytes 5+: payload with 00 00 00 00 00.
+			input: []byte{0x00, 0x00, 0x00, 0x01, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80},
+		},
+		{
+			name: "six_consecutive_zeros",
+			input: []byte{0x00, 0x00, 0x00, 0x01, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80},
+		},
+		{
+			name: "three_zeros_twice",
+			input: []byte{0x00, 0x00, 0x00, 0x01, 0x06, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x80},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := insertEPB(tt.input, 5)
+
+			// Verify no unescaped 00 00 {00,01,02,03} patterns exist in the
+			// NALU body (bytes 5 onward) of the result.
+			for i := 5; i < len(result)-2; i++ {
+				if result[i] == 0x00 && result[i+1] == 0x00 && result[i+2] <= 0x03 {
+					// Check this isn't already an EPB (00 00 03 XX).
+					if result[i+2] == 0x03 {
+						// This IS an EPB — skip past it.
+						i += 2
+						continue
+					}
+					t.Errorf("unescaped pattern at offset %d: %02X %02X %02X",
+						i, result[i], result[i+1], result[i+2])
+				}
+			}
+		})
+	}
+}
+
 func TestInsertSEIBeforeVCLInto_NoSEI(t *testing.T) {
 	annexB := []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0xAA, 0xBB} // IDR slice
 	dst := make([]byte, 0, 100)

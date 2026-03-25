@@ -108,12 +108,6 @@ func (pf *ProcessingFrame) Ref() {
 // Also releases GPUData if it implements GPURefCounter (decrements GPU
 // frame reference count, freeing GPU memory when the last reference drops).
 func (pf *ProcessingFrame) ReleaseYUV() {
-	// Release GPU data reference if present
-	if rc, ok := pf.GPUData.(GPURefCounter); ok {
-		rc.Release()
-		pf.GPUData = nil
-	}
-
 	if pf.YUV == nil {
 		return
 	}
@@ -129,6 +123,12 @@ func (pf *ProcessingFrame) ReleaseYUV() {
 				"refs", new)
 			return
 		}
+	}
+	// Release GPU data only when the last reference drops, so concurrent
+	// consumers (e.g., async encode goroutine) aren't racing on GPUData.
+	if rc, ok := pf.GPUData.(GPURefCounter); ok {
+		rc.Release()
+		pf.GPUData = nil
 	}
 	if pf.pool != nil {
 		pf.pool.Release(pf.YUV)

@@ -259,6 +259,32 @@ type mockGPURefCounter struct {
 func (m *mockGPURefCounter) Ref()     { m.refs++ }
 func (m *mockGPURefCounter) Release() { m.refs-- }
 
+// GPUData must only be released when the LAST reference drops (refs→0),
+// not on every ReleaseYUV call. With refcounted frames shared across
+// goroutines (e.g., async encode), premature GPU release corrupts state.
+func TestProcessingFrame_GPUData_OnlyReleasedOnFinalRef(t *testing.T) {
+	fakeRC := &mockGPURefCounter{refs: 1}
+
+	pf := &ProcessingFrame{
+		Width:   4,
+		Height:  4,
+		YUV:     make([]byte, 4*4*3/2),
+		GPUData: fakeRC,
+	}
+	pf.SetRefs(2) // simulate pipeline ref + async encode ref
+
+	// First release (e.g., pipeline done): refs 2→1.
+	// GPUData must NOT be released yet — async encode still needs it.
+	pf.ReleaseYUV()
+	require.Equal(t, 1, fakeRC.refs, "GPU ref should NOT be released when YUV refs > 0")
+	require.Equal(t, int32(1), pf.Refs(), "YUV refs should be 1")
+
+	// Second release (e.g., encode goroutine done): refs 1→0.
+	// NOW GPUData should be released.
+	pf.ReleaseYUV()
+	require.Equal(t, 0, fakeRC.refs, "GPU ref should be released when YUV refs reach 0")
+}
+
 func TestProcessingFrameNilPoolFallback(t *testing.T) {
 	// No pool — DeepCopy falls back to make()
 	original := &ProcessingFrame{

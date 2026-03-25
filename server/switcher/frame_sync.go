@@ -60,15 +60,16 @@ func audioFramePTSForRate(sampleRate int) int64 {
 // rawVideo is stored by value (not pointer) to prevent races with
 // frcSource.ingest() which may concurrently modify the original struct.
 type pendingRelease struct {
-	sourceKey   string
-	ss          *syncSource // for PTS tracking during delivery
-	video       *media.VideoFrame
-	rawVideo    ProcessingFrame     // value copy — safe from concurrent modification
-	hasRawVideo bool                // true when rawVideo is set
-	freshVideo  bool                // true when a new frame was popped from ring (not repeated)
-	audio       *media.AudioFrame   // single audio frame (freeze/repeat or sole queued frame)
-	audioQueue  []*media.AudioFrame // FIFO-drained audio frames (all fresh)
-	freshAudio  bool                // true when audio frame(s) are fresh (not repeated)
+	sourceKey    string
+	ss           *syncSource // for PTS tracking during delivery
+	video        *media.VideoFrame
+	rawVideo     ProcessingFrame     // value copy — safe from concurrent modification
+	hasRawVideo  bool                // true when rawVideo is set
+	freshVideo   bool                // true when a new frame was popped from ring (not repeated)
+	frcAllocated bool                // true when rawVideo's buffer was allocated by runFRCEmit
+	audio        *media.AudioFrame   // single audio frame (freeze/repeat or sole queued frame)
+	audioQueue   []*media.AudioFrame // FIFO-drained audio frames (all fresh)
+	freshAudio   bool                // true when audio frame(s) are fresh (not repeated)
 }
 
 // frcTask holds parameters for a deferred FRC computation that will be
@@ -187,11 +188,13 @@ func (ss *syncSource) popNewestVideo() *media.VideoFrame {
 }
 
 // pushRawVideo adds a decoded YUV frame to the ring buffer.
-// When no FRC is active and the ring is full, the overwritten frame's
-// pool buffer is released. With FRC, frame releases are handled by
-// frcSource.ingest/reset instead.
+// When the ring is full, the overwritten frame's ring ref is released.
+// With FRC active, the frame survives this release because frc.ingest()
+// took an independent reference via Ref(). The ring release simply
+// decrements the "creation" ref; FRC's ref keeps the buffer alive until
+// FRC shifts it out in a subsequent ingest() call.
 func (ss *syncSource) pushRawVideo(pf *ProcessingFrame) {
-	if ss.frc == nil && ss.rawVideoCount >= syncRingSize {
+	if ss.rawVideoCount >= syncRingSize {
 		if old := ss.pendingRawVideo[ss.rawVideoHead]; old != nil {
 			old.ReleaseYUV()
 		}
@@ -204,8 +207,8 @@ func (ss *syncSource) pushRawVideo(pf *ProcessingFrame) {
 }
 
 // popNewestRawVideo returns the most recently pushed raw video frame.
-// When no FRC is active, non-newest frames' pool buffers are released.
-// With FRC, frame releases are handled by frcSource.ingest/reset instead.
+// Non-newest frames' ring refs are released. With FRC active, the frames
+// survive because frc.ingest() holds independent refs via Ref().
 func (ss *syncSource) popNewestRawVideo() *ProcessingFrame {
 	if ss.rawVideoCount == 0 {
 		return nil
@@ -213,7 +216,7 @@ func (ss *syncSource) popNewestRawVideo() *ProcessingFrame {
 	newest := (ss.rawVideoHead - 1 + syncRingSize) % syncRingSize
 	frame := ss.pendingRawVideo[newest]
 	for i := range ss.pendingRawVideo {
-		if ss.frc == nil && i != newest && ss.pendingRawVideo[i] != nil {
+		if i != newest && ss.pendingRawVideo[i] != nil {
 			ss.pendingRawVideo[i].ReleaseYUV()
 		}
 		ss.pendingRawVideo[i] = nil
@@ -940,7 +943,12 @@ func runFRCEmit(task *frcTask, r *pendingRelease, framePool *FramePool) {
 	}
 
 	// Deep-copy YUV to avoid aliasing FRC scratch buffers (nearestOut/blendOut).
+	// The result is initialized as a managed frame (SetRefs(1)) so downstream
+	// consumers (broadcastProcessedFromPF) can take the shallow-copy + Ref()
+	// path instead of DeepCopy. This avoids leaking the pool buffer — without
+	// refs, DeepCopy allocates a second buffer and the first is never released.
 	result := *emitted
+	result.refs = nil // detach from emitted's refcount (if any)
 	if framePool != nil && len(emitted.YUV) <= framePool.bufSize {
 		yuvCopy := framePool.Acquire()[:len(emitted.YUV)]
 		copy(yuvCopy, emitted.YUV)
@@ -950,11 +958,14 @@ func runFRCEmit(task *frcTask, r *pendingRelease, framePool *FramePool) {
 		yuvCopy := make([]byte, len(emitted.YUV))
 		copy(yuvCopy, emitted.YUV)
 		result.YUV = yuvCopy
+		result.pool = nil
 	}
+	result.SetRefs(1)
 
 	r.rawVideo = result
 	r.hasRawVideo = true
 	r.freshVideo = true // FRC frames have unique PTS, treat as fresh
+	r.frcAllocated = true // delivery must release after onRawVideo callback
 }
 
 // releaseTick releases one frame per source using a three-phase approach:
@@ -1224,12 +1235,26 @@ func (fs *FrameSynchronizer) deliverRelease(r *pendingRelease, tickIntervalPTS, 
 			}
 			// Store correction delta atomically for audio PTS alignment.
 			// Delta = how far frame sync has shifted video PTS beyond source PTS.
-			// Mask to 33 bits since the values may be from different wrap epochs.
-			r.ss.ptsCorrectionDelta.Store((r.ss.lastReleasedPTS - r.ss.lastSourcePTS) & ptsMask33)
+			// Computed as a signed value in 33-bit PTS space so that values in
+			// the upper half of the range (> 2^32) are correctly interpreted as
+			// negative deltas, preventing A/V desync at the 33-bit wraparound.
+			delta := (r.ss.lastReleasedPTS - r.ss.lastSourcePTS) & ptsMask33
+			if delta >= (1 << 32) {
+				delta -= (int64(1) << 33)
+			}
+			r.ss.ptsCorrectionDelta.Store(delta)
 		}
 		pf.SyncReleaseNano = time.Now().UnixNano()
 		if fs.onRawVideo != nil {
 			fs.onRawVideo(r.sourceKey, &pf)
+		}
+		// Release FRC-allocated frames after delivery. These frames own their
+		// own pool buffer (not shared with lastRawVideo), so the delivery ref
+		// must be explicitly dropped. The downstream consumer (broadcastProcessedFromPF)
+		// already called Ref() for the pipeline copy, so this just drops the
+		// delivery ref (refs: 2→1). The pipeline releases the last ref when done.
+		if r.frcAllocated {
+			pf.ReleaseYUV()
 		}
 	} else if r.video != nil {
 		vf := *r.video
@@ -1249,7 +1274,11 @@ func (fs *FrameSynchronizer) deliverRelease(r *pendingRelease, tickIntervalPTS, 
 				r.ss.lastReleasedPTS &= ptsMask33
 				vf.PTS = r.ss.lastReleasedPTS
 			}
-			r.ss.ptsCorrectionDelta.Store((r.ss.lastReleasedPTS - r.ss.lastSourcePTS) & ptsMask33)
+			delta := (r.ss.lastReleasedPTS - r.ss.lastSourcePTS) & ptsMask33
+			if delta >= (1 << 32) {
+				delta -= (int64(1) << 33)
+			}
+			r.ss.ptsCorrectionDelta.Store(delta)
 		}
 		fs.onVideo(r.sourceKey, vf)
 	}

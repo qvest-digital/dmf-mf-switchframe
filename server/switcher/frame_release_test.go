@@ -146,9 +146,66 @@ func TestSyncSource_PopNewestRawVideo_ReleasesNonNewest(t *testing.T) {
 	}
 }
 
-// With FRC active, ring buffer does not release frames (FRC owns lifecycle).
-func TestSyncSource_PushRawVideo_NoReleaseWithFRC(t *testing.T) {
-	pool := NewFramePool(4, 320, 240)
+// With FRC active, ring buffer overflow must release the ring's ref on the
+// overwritten frame. FRC holds its own independent ref (via Ref() in ingest),
+// so this is safe. Without this release, the "creation" ref leaks and the
+// pool buffer is never returned.
+//
+// This test simulates the real IngestRawVideo path: pushRawVideo + frc.ingest
+// are called together. After a 3rd push overwrites the 1st frame in the ring,
+// the ring's ref is released (refs 2→1). FRC still holds the frame (refs=1).
+// When FRC later ingests a 4th frame, it releases the old prevFrame (refs 1→0),
+// returning the buffer to the pool.
+func TestSyncSource_PushRawVideo_WithFRC_ReleasesRingRef(t *testing.T) {
+	pool := NewFramePool(8, 320, 240)
+	yuvSize := 320 * 240 * 3 / 2
+
+	ss := &syncSource{
+		frc: newFRCSource(FRCNearest, 3003),
+	}
+
+	// Create refcounted frames (matching real sourceDecoder behavior).
+	f1 := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 1000, pool: pool}
+	f1.SetRefs(1)
+	f2 := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 2000, pool: pool}
+	f2.SetRefs(1)
+
+	// Simulate IngestRawVideo: push + frc.ingest together.
+	ss.pushRawVideo(f1)
+	ss.frc.ingest(f1) // FRC calls Ref() → f1.refs=2
+
+	ss.pushRawVideo(f2)
+	ss.frc.ingest(f2) // FRC calls Ref() → f2.refs=2; FRC: prev=f1, curr=f2
+
+	// Push a 3rd frame — overwrites f1's ring slot.
+	// The ring should release its ref on f1 (refs 2→1).
+	// FRC still holds f1 via prevFrame (refs=1), so f1 stays alive.
+	f3 := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 3000, pool: pool}
+	f3.SetRefs(1)
+	ss.pushRawVideo(f3)
+	ss.frc.ingest(f3) // FRC releases old prev (f1): refs 1→0, buffer returned to pool.
+
+	// f1's buffer should now be fully released (refs=0, returned to pool).
+	if f1.YUV != nil {
+		t.Error("f1.YUV should be nil: ring ref released on overwrite, FRC ref released on ingest(f3)")
+	}
+	if f1.Refs() != 0 {
+		t.Errorf("f1.Refs() = %d, want 0", f1.Refs())
+	}
+
+	// f2 should still be alive — FRC holds it as prevFrame (refs=2: ring + FRC).
+	// Actually after f3 overwrites f2's slot too (ring wraps), refs depends on
+	// ring size. With syncRingSize=2, f3 overwrites slot 0 (was f1). f2 is at
+	// slot 1 and hasn't been overwritten yet. So f2.refs is still 2.
+	if f2.YUV == nil {
+		t.Error("f2.YUV should still be alive (FRC prevFrame + ring slot)")
+	}
+}
+
+// popNewestRawVideo must release non-newest frames' ring refs even with FRC active.
+// FRC holds its own refs via Ref() in ingest, so the ring ref release is safe.
+func TestSyncSource_PopNewestRawVideo_WithFRC_ReleasesNonNewest(t *testing.T) {
+	pool := NewFramePool(8, 320, 240)
 	yuvSize := 320 * 240 * 3 / 2
 
 	ss := &syncSource{
@@ -156,17 +213,35 @@ func TestSyncSource_PushRawVideo_NoReleaseWithFRC(t *testing.T) {
 	}
 
 	f1 := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 1000, pool: pool}
+	f1.SetRefs(1)
 	f2 := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 2000, pool: pool}
+	f2.SetRefs(1)
+
 	ss.pushRawVideo(f1)
+	ss.frc.ingest(f1) // f1.refs = 2
+
 	ss.pushRawVideo(f2)
+	ss.frc.ingest(f2) // f2.refs = 2; FRC: prev=f1, curr=f2
 
-	// Push a 3rd frame — should NOT release F1 (FRC manages releases).
-	f3 := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 3000, pool: pool}
-	ss.pushRawVideo(f3)
+	// Pop newest (f2) — should release f1's ring ref (refs 2→1).
+	newest := ss.popNewestRawVideo()
+	if newest != f2 {
+		t.Fatal("popNewest should return f2")
+	}
 
-	// F1 should still have its buffer (FRC owns it, not the ring).
-	if f1.YUV == nil {
-		t.Error("f1.YUV should NOT be nil when FRC is active (FRC owns frame releases)")
+	// f1's ring ref should be released. FRC still holds it (refs=1).
+	if f1.Refs() != 1 {
+		t.Errorf("f1.Refs() = %d, want 1 (ring ref released, FRC ref remains)", f1.Refs())
+	}
+
+	// f2 is the returned frame — ring ref released (set to nil in ring),
+	// but the caller now owns the pointer. FRC also holds a ref. refs=1
+	// (ring decremented, FRC still holds).
+	// Actually: popNewestRawVideo sets all ring entries to nil but does NOT
+	// call ReleaseYUV on the newest. So f2.refs stays at 2 (FRC ref only
+	// decremented when FRC ingests a replacement). The caller gets the pointer.
+	if f2.YUV == nil {
+		t.Error("f2.YUV should still be alive (it's the returned newest)")
 	}
 }
 

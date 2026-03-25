@@ -1216,3 +1216,107 @@ func TestFRCMCFI_SkipsME_EdgeCases(t *testing.T) {
 			"ME should run when tickIntervalPTS is 0 (cannot determine ratio)")
 	})
 }
+
+// runFRCEmit must produce managed frames (refs != nil) so downstream consumers
+// (broadcastProcessedFromPF) can take the shallow-copy + Ref() path instead of
+// DeepCopy. Without SetRefs, the frame has refs=nil, causing DeepCopy to
+// allocate a second pool buffer while the first leaks (never released).
+func TestFRC_RunFRCEmit_ProducesRefcountedFrame(t *testing.T) {
+	pool := NewFramePool(8, 64, 64)
+	yuvSize := 64 * 64 * 3 / 2
+
+	ss := &syncSource{
+		frc: newFRCSource(FRCNearest, 3000),
+	}
+
+	// Ingest two refcounted frames so FRC can interpolate.
+	f1 := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 64, Height: 64, PTS: 0, pool: pool}
+	f1.SetRefs(1)
+	f2 := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 64, Height: 64, PTS: 3000, pool: pool}
+	f2.SetRefs(1)
+
+	ss.pushRawVideo(f1)
+	ss.frc.ingest(f1)
+	ss.pushRawVideo(f2)
+	ss.frc.ingest(f2)
+
+	// Pop fresh frames (simulates Phase 1).
+	ss.popNewestRawVideo()
+
+	// Simulate Phase 2: run FRC emit.
+	r := &pendingRelease{ss: ss}
+	task := &frcTask{ss: ss, frcPTS: 4500} // midpoint between frames
+	runFRCEmit(task, r, pool)
+
+	require.True(t, r.hasRawVideo, "FRC should have produced a frame")
+	require.True(t, r.freshVideo, "FRC frame should be marked fresh")
+
+	// The critical assertion: FRC result must be refcounted (refs != nil)
+	// so broadcastProcessedFromPF can Ref() it instead of DeepCopy.
+	require.NotNil(t, r.rawVideo.refs, "FRC result must have refs set (not nil)")
+	require.Equal(t, int32(1), r.rawVideo.Refs(), "FRC result refs should be 1")
+	require.NotNil(t, r.rawVideo.pool, "FRC result should track its pool")
+
+	// Verify the buffer can be properly released.
+	r.rawVideo.ReleaseYUV()
+	require.Nil(t, r.rawVideo.YUV, "buffer should be released")
+
+	// Cleanup
+	ss.frc.reset()
+	f1.ReleaseYUV()
+	f2.ReleaseYUV()
+}
+
+// After delivery, FRC-allocated frames must be releasable without leaking
+// pool buffers. This tests the full lifecycle: emit → deliver → release.
+func TestFRC_RunFRCEmit_PoolBufferNotLeaked(t *testing.T) {
+	pool := NewFramePool(8, 64, 64)
+	yuvSize := 64 * 64 * 3 / 2
+
+	ss := &syncSource{
+		frc: newFRCSource(FRCNearest, 3000),
+	}
+
+	f1 := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 64, Height: 64, PTS: 0, pool: pool}
+	f1.SetRefs(1)
+	f2 := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 64, Height: 64, PTS: 3000, pool: pool}
+	f2.SetRefs(1)
+
+	ss.pushRawVideo(f1)
+	ss.frc.ingest(f1)
+	ss.pushRawVideo(f2)
+	ss.frc.ingest(f2)
+	ss.popNewestRawVideo()
+
+	// Record pool state before FRC emit.
+	hitsBefore, _ := pool.Stats()
+
+	r := &pendingRelease{ss: ss}
+	task := &frcTask{ss: ss, frcPTS: 4500}
+	runFRCEmit(task, r, pool)
+
+	require.True(t, r.hasRawVideo)
+
+	// Simulate broadcastProcessedFromPF shallow-copy path:
+	// Ref() for pipeline, then release original after delivery.
+	r.rawVideo.Ref() // pipeline takes ref → refs=2
+
+	// Release the "delivery" ref (what deliverRelease should do for FRC frames).
+	r.rawVideo.ReleaseYUV() // refs: 2→1
+
+	// Simulate pipeline completing.
+	// Create a shallow copy like broadcastProcessedFromPF does.
+	cp := r.rawVideo // value copy shares refs
+	cp.ReleaseYUV()  // refs: 1→0 → buffer returned to pool
+
+	hitsAfter, _ := pool.Stats()
+	// The pool should have received the buffer back (one more hit available).
+	// At minimum, verify the acquire+release cycle didn't leak.
+	require.Greater(t, hitsAfter-hitsBefore, uint64(0),
+		"pool buffer from FRC should be returned after all refs released")
+
+	// Cleanup
+	ss.frc.reset()
+	f1.ReleaseYUV()
+	f2.ReleaseYUV()
+}

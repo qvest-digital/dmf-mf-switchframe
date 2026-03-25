@@ -2769,3 +2769,77 @@ func TestFrameSync_AudioQueueCapped(t *testing.T) {
 	require.Equal(t, byte(maxAudioQueueSize+10-1), lastFrame.Data[0],
 		"newest frame should be preserved")
 }
+
+// PTS correction delta must be a signed value so that audio PTS alignment
+// works correctly across the 33-bit PTS wraparound boundary (~26.5 hours).
+// A delta in the upper half of the 33-bit range should be interpreted as
+// negative, not as a huge positive offset.
+func TestFrameSync_PTSCorrectionDelta_SignedAcrossWrap(t *testing.T) {
+	syncHandler := &syncTestHandler{}
+	fs := NewFrameSynchronizer(
+		33*time.Millisecond, // ~30fps
+		syncHandler.onVideo,
+		syncHandler.onAudio,
+	)
+	fs.onRawVideo = func(string, *ProcessingFrame) {}
+	fs.AddSource("cam1")
+
+	fs.mu.Lock()
+	ss := fs.sources["cam1"]
+	fs.mu.Unlock()
+
+	// Simulate: video PTS was rewritten forward past the source PTS.
+	// Normal case: lastReleasedPTS > lastSourcePTS, delta is small positive.
+	ss.mu.Lock()
+	ss.lastReleasedPTS = 100000
+	ss.lastSourcePTS = 99000
+	ss.ptsInitialized = true
+	ss.mu.Unlock()
+
+	// Manually compute what deliverRelease would store:
+	delta := (ss.lastReleasedPTS - ss.lastSourcePTS) & ptsMask33
+	ss.ptsCorrectionDelta.Store(delta)
+	require.Equal(t, int64(1000), fs.GetSourcePTSCorrection("cam1"),
+		"normal case: small positive delta")
+
+	// Wraparound case: lastReleasedPTS wrapped past 0, lastSourcePTS near max.
+	// E.g., released=1000 (just past wrap), source=ptsMask33-500 (just before wrap).
+	// True forward distance: 1000 + 501 = 1501 ticks.
+	ss.mu.Lock()
+	ss.lastReleasedPTS = 1000
+	ss.lastSourcePTS = ptsMask33 - 500 // near top of 33-bit range
+	ss.mu.Unlock()
+
+	// Simulate what deliverRelease computes (signed delta).
+	delta = (ss.lastReleasedPTS - ss.lastSourcePTS) & ptsMask33
+	if delta >= (1 << 32) {
+		delta -= (int64(1) << 33)
+	}
+	ss.ptsCorrectionDelta.Store(delta)
+	got := fs.GetSourcePTSCorrection("cam1")
+
+	// The delta should be 1501 (small forward distance across the wrap).
+	require.Equal(t, int64(1501), got,
+		"wraparound: delta should be small forward distance (1501), not huge value")
+
+	// Reverse case: source PTS is AHEAD of released PTS (shouldn't happen
+	// normally, but during source switch with lower PTS the clamping may lag).
+	// lastSourcePTS=5000, lastReleasedPTS=3000 → raw delta = -2000.
+	// Masked to 33 bits: ptsMask33 - 2000 + 1 = a huge positive value.
+	// deliverRelease now converts this to signed: -2000.
+	ss.mu.Lock()
+	ss.lastReleasedPTS = 3000
+	ss.lastSourcePTS = 5000
+	ss.mu.Unlock()
+
+	delta = (ss.lastReleasedPTS - ss.lastSourcePTS) & ptsMask33
+	if delta >= (1 << 32) {
+		delta -= (int64(1) << 33)
+	}
+	ss.ptsCorrectionDelta.Store(delta)
+	got = fs.GetSourcePTSCorrection("cam1")
+
+	// -2000: source PTS was ahead of released PTS.
+	require.Equal(t, int64(-2000), got,
+		"negative delta should be returned as negative, got %d", got)
+}

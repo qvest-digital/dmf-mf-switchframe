@@ -109,8 +109,10 @@ func (m *Mixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 
 	// Apply stereo balance (after compressor, before ring buffer push).
 	// At center (0.0) both gains are 1.0, so this is a no-op.
-	if ch.balL != 1.0 || ch.balR != 1.0 {
-		for i := 0; i < len(trimmedPCM)-1; i += 2 {
+	// Only apply when numChannels >= 2 — balance is a stereo concept.
+	if m.numChannels >= 2 && (ch.balL != 1.0 || ch.balR != 1.0) {
+		stride := m.numChannels
+		for i := 0; i+1 < len(trimmedPCM); i += stride {
 			trimmedPCM[i] *= ch.balL
 			trimmedPCM[i+1] *= ch.balR
 		}
@@ -205,8 +207,10 @@ func (m *Mixer) IngestPCM(sourceKey string, pcm []float32, pts int64, channels i
 
 	// Apply stereo balance (after compressor, before ring buffer push).
 	// At center (0.0) both gains are 1.0, so this is a no-op.
-	if ch.balL != 1.0 || ch.balR != 1.0 {
-		for i := 0; i < len(trimmedPCM)-1; i += 2 {
+	// Only apply when numChannels >= 2 — balance is a stereo concept.
+	if m.numChannels >= 2 && (ch.balL != 1.0 || ch.balR != 1.0) {
+		stride := m.numChannels
+		for i := 0; i+1 < len(trimmedPCM); i += stride {
 			trimmedPCM[i] *= ch.balL
 			trimmedPCM[i+1] *= ch.balR
 		}
