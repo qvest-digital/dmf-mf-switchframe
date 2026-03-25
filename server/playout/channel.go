@@ -348,6 +348,42 @@ func (c *Channel) ReturnToAuto() {
 	}
 }
 
+// TakeBreak sets the channel mode to ModeBreak (called by PodBoard when a pod fires).
+func (c *Channel) TakeBreak() {
+	c.mu.Lock()
+	if c.state != StateOnAir {
+		c.mu.Unlock()
+		return
+	}
+	c.mode = ModeBreak
+	fn := c.onStateChange
+	c.mu.Unlock()
+	if fn != nil {
+		fn(StateOnAir)
+	}
+}
+
+// ReturnFromBreak sets the channel mode back to ModeAutomated after a pod completes.
+func (c *Channel) ReturnFromBreak() {
+	c.mu.Lock()
+	if c.state != StateOnAir {
+		c.mu.Unlock()
+		return
+	}
+	c.mode = ModeAutomated
+	fn := c.onStateChange
+	c.mu.Unlock()
+	if fn != nil {
+		fn(StateOnAir)
+	}
+
+	// Signal advance in case the channel was waiting.
+	select {
+	case c.advanceCh <- struct{}{}:
+	default:
+	}
+}
+
 // SetOnStateChange registers a callback invoked on state transitions.
 func (c *Channel) SetOnStateChange(fn func(ChannelState)) {
 	c.mu.Lock()
@@ -418,8 +454,8 @@ func (c *Channel) run(ctx context.Context) {
 			c.mu.Unlock()
 		}
 
-		// In manual mode, wait for advance signal before playing.
-		if mode == ModeManual {
+		// In manual or break mode, wait for advance signal before playing.
+		if mode == ModeManual || mode == ModeBreak {
 			select {
 			case <-ctx.Done():
 				return

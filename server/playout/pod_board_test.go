@@ -549,6 +549,40 @@ func TestPodBoard_DumpOutNoActivePod(t *testing.T) {
 	}
 }
 
+func TestPodBoard_ChannelModeBreakIntegration(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{AssetProvider: fakeProvider(90)})
+	pb := NewPodBoard(1)
+	inj := &fakeSCTE35Injector{}
+	pb.SetSCTE35Injector(inj)
+
+	// Wire break callbacks to channel.
+	pb.SetOnBreakStart(func() { ch.TakeBreak() })
+	pb.SetOnBreakEnd(func() { ch.ReturnFromBreak() })
+
+	ch.LoadPlaylist(testPlaylist(clipItem("a"), clipItem("b")))
+	ch.Start()
+	defer ch.Stop()
+
+	// Wait for on-air.
+	waitFor(t, time.Second, func() bool { return ch.State() == StateOnAir })
+
+	// Fire a pod.
+	pod, _ := pb.CreatePod(PodConfig{
+		Type:         "timeout",
+		DurationMs:   100,
+		AutoReturn:   true,
+		AllowDumpOut: true,
+	})
+	pb.Arm(pod.ID)
+	pb.Fire(pod.ID)
+
+	// Channel should be in ModeBreak.
+	waitFor(t, time.Second, func() bool { return ch.Mode() == ModeBreak })
+
+	// After auto-return, should go back to ModeAutomated.
+	waitFor(t, 2*time.Second, func() bool { return ch.Mode() == ModeAutomated })
+}
+
 func TestPodBoard_InjuryPodNoAutoReturn(t *testing.T) {
 	pb := NewPodBoard(1)
 	inj := &fakeSCTE35Injector{}

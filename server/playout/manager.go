@@ -15,6 +15,9 @@ type Manager struct {
 	config   ManagerConfig
 	log      *slog.Logger
 
+	podBoards     [MaxChannels]*PodBoard
+	templateStore *PodTemplateStore
+
 	onStateChange    func()
 	onStart          func(channelID int, key string)
 	onStop           func(channelID int, key string)
@@ -43,7 +46,10 @@ func NewManager(config ManagerConfig) *Manager {
 		m.channels[i] = NewChannel(i+1, ChannelConfig{
 			AssetProvider: config.AssetProvider,
 		})
+		m.podBoards[i] = NewPodBoard(i + 1)
 	}
+
+	m.templateStore = NewPodTemplateStore()
 
 	return m
 }
@@ -118,6 +124,19 @@ func (m *Manager) Start(channelID int) error {
 	if secondaryH != nil {
 		ch.SetSecondaryHandler(secondaryH)
 	}
+
+	// Wire pod board callbacks.
+	m.mu.Lock()
+	pb := m.podBoards[channelID-1]
+	m.mu.Unlock()
+
+	pb.SetOnBreakStart(func() { ch.TakeBreak() })
+	pb.SetOnBreakEnd(func() { ch.ReturnFromBreak() })
+	pb.SetOnStateChange(func() {
+		if stateChangeFn != nil {
+			stateChangeFn()
+		}
+	})
 
 	if err := ch.Start(); err != nil {
 		return err
@@ -274,6 +293,33 @@ func (m *Manager) SetSecondaryHandler(h SecondaryEventHandler) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.secondaryHandler = h
+}
+
+// PodBoard returns the pod board for the given channel.
+func (m *Manager) PodBoard(channelID int) (*PodBoard, error) {
+	if err := m.validateChannelID(channelID); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.podBoards[channelID-1], nil
+}
+
+// TemplateStore returns the shared pod template store.
+func (m *Manager) TemplateStore() *PodTemplateStore {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.templateStore
+}
+
+// SetSCTE35Injector sets the SCTE-35 injection interface on all pod boards.
+func (m *Manager) SetSCTE35Injector(inj podSCTE35Injector) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := 0; i < MaxChannels; i++ {
+		m.podBoards[i].SetSCTE35Injector(inj)
+		m.podBoards[i].SetTemplateStore(m.templateStore)
+	}
 }
 
 // Close stops all active channels.
