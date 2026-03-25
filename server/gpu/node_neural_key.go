@@ -98,7 +98,16 @@ func (n *gpuNeuralKeyNode) ProcessGPU(frame *GPUFrame) error {
 		return nil
 	}
 
-	slog.Info("gpu_neural_key: running inference", "source", snap.SourceKey)
+	// DEBUG: Write red to first 64 rows of the NV12 frame directly from Go
+	// to verify we can modify the pipeline frame.
+	nv12Ptr := unsafe.Pointer(uintptr(frame.DevPtr))
+	redY := make([]byte, frame.Pitch*64)
+	for i := range redY {
+		redY[i] = 81 // BT.709 red Y value
+	}
+	C.cudaMemcpy(nv12Ptr, unsafe.Pointer(&redY[0]),
+		C.size_t(len(redY)), C.cudaMemcpyHostToDevice)
+	slog.Info("gpu_neural_key: wrote debug red band", "pitch", frame.Pitch, "height", 64)
 
 	// Run the full neural key pipeline on the default CUDA stream.
 	err := n.engine.Infer(
