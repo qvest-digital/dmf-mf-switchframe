@@ -98,3 +98,72 @@ func TestBlackDetector_CustomThresholds(t *testing.T) {
 		t.Errorf("expected IsBlack=false for luma=10 with MeanThreshold=5/MaxThreshold=10, got true")
 	}
 }
+
+// --- Task 2: SceneChangeScore tests ---
+
+func TestBlackDetector_SceneChangeScore_IdenticalFrames(t *testing.T) {
+	det := NewBlackDetector(BlackDetectorConfig{})
+
+	w, h := 320, 240
+	ySize := w * h
+	frameA := make([]byte, ySize+ySize/2)
+	frameB := make([]byte, ySize+ySize/2)
+	for i := 0; i < ySize; i++ {
+		frameA[i] = 128
+		frameB[i] = 128
+	}
+
+	score := det.SceneChangeScore(frameA, frameB, w, h)
+
+	if score != 0.0 {
+		t.Errorf("expected score=0.0 for identical frames, got %f", score)
+	}
+}
+
+func TestBlackDetector_SceneChangeScore_TotalChange(t *testing.T) {
+	det := NewBlackDetector(BlackDetectorConfig{})
+
+	w, h := 320, 240
+	ySize := w * h
+	frameA := make([]byte, ySize+ySize/2)
+	frameB := make([]byte, ySize+ySize/2)
+	// frameA all-0 (default), frameB all-255
+	for i := 0; i < ySize; i++ {
+		frameB[i] = 255
+	}
+
+	score := det.SceneChangeScore(frameA, frameB, w, h)
+
+	if score != 1.0 {
+		t.Errorf("expected score=1.0 for max difference, got %f", score)
+	}
+}
+
+func TestBlackDetector_SceneChangeScore_PartialChange(t *testing.T) {
+	det := NewBlackDetector(BlackDetectorConfig{})
+
+	w, h := 320, 240
+	ySize := w * h
+	frameA := make([]byte, ySize+ySize/2)
+	frameB := make([]byte, ySize+ySize/2)
+	// Half the pixels differ by 128
+	for i := 0; i < ySize/2; i++ {
+		frameA[i] = 0
+		frameB[i] = 128
+	}
+	// Other half identical
+	for i := ySize / 2; i < ySize; i++ {
+		frameA[i] = 100
+		frameB[i] = 100
+	}
+
+	score := det.SceneChangeScore(frameA, frameB, w, h)
+
+	// Expected: (half * 128) / (total * 255) = (ySize/2 * 128) / (ySize * 255)
+	// = 128 / (2*255) = 128/510 ≈ 0.25098
+	expected := 128.0 / 510.0
+	if score < expected-0.01 || score > expected+0.01 {
+		t.Errorf("expected score≈%f, got %f", expected, score)
+	}
+}
+

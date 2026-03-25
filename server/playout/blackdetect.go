@@ -61,3 +61,27 @@ func (d *BlackDetector) AnalyzeFrame(yuv []byte, w, h int) BlackScore {
 		Score:    score,
 	}
 }
+
+// SceneChangeScore computes a normalized frame-to-frame Y-plane difference.
+// It returns SAD / (pixelCount * 255), giving 0.0 for identical frames and 1.0
+// for maximum difference. Only the Y plane (first w*h bytes) is examined.
+func (d *BlackDetector) SceneChangeScore(yuvA, yuvB []byte, w, h int) float64 {
+	ySize := w * h
+	if ySize == 0 {
+		return 0.0
+	}
+
+	yA := yuvA[:ySize]
+	yB := yuvB[:ySize]
+
+	var sad uint64
+	for i := 0; i < ySize; i++ {
+		diff := int(yA[i]) - int(yB[i])
+		if diff < 0 {
+			diff = -diff
+		}
+		sad += uint64(diff)
+	}
+
+	return float64(sad) / float64(ySize) / 255.0
+}
