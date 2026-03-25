@@ -21,8 +21,9 @@ describe('BottomTabs', () => {
 		expect(tabLabels).toContain('Macros');
 		expect(tabLabels).toContain('Presets');
 		expect(tabLabels).toContain('Clips');
+		expect(tabLabels).toContain('Playout');
 		expect(tabLabels).toContain('Team');
-		expect(tabs.length).toBe(10);
+		expect(tabs.length).toBe(11);
 	});
 
 	it('does not render old Layout, Graphics, or Keys tabs', () => {

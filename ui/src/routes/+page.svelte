@@ -23,6 +23,7 @@
 	import SCTE35Panel from '../components/SCTE35Panel.svelte';
 	import CaptionsPanel from '../components/CaptionsPanel.svelte';
 	import ClipsPanel from '../components/ClipsPanel.svelte';
+	import PlayoutPanel from '../components/PlayoutPanel.svelte';
 	import OperatorRegistration from '../components/OperatorRegistration.svelte';
 	import OperatorBadge from '../components/OperatorBadge.svelte';
 	import TeamPanel from '../components/TeamPanel.svelte';
@@ -754,6 +755,10 @@
 						{:else if activeTab === 'Clips'}
 							<div class="tab-panel">
 								<ClipsPanel state={store.effectiveState} />
+							</div>
+						{:else if activeTab === 'Playout'}
+							<div class="tab-panel">
+								<PlayoutPanel state={store.effectiveState} />
 							</div>
 						{:else if activeTab === 'Team'}
 							<div class="tab-panel tab-panel--team">

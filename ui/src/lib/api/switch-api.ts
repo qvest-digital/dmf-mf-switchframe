@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, GateSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig, ColorGradeState, CorrectorState } from './types';
+import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, GateSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig, ColorGradeState, CorrectorState, PlayoutChannelState, Playlist } from './types';
 import { notify } from '$lib/state/notifications.svelte';
 import { resolveApiUrl } from './base-url';
 
@@ -1302,4 +1302,38 @@ export function deleteAISegment(source: string): Promise<Response> {
 		method: 'DELETE',
 		headers: authHeaders(),
 	});
+}
+
+// --- Playout ---
+
+export function playoutChannels(): Promise<PlayoutChannelState[]> {
+	return request<PlayoutChannelState[]>('/api/playout/channels');
+}
+
+export function playoutLoadPlaylist(channelId: number, playlist: Playlist): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/load`, playlist);
+}
+
+export function playoutStart(channelId: number): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/start`, {});
+}
+
+export function playoutStop(channelId: number): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/stop`, {});
+}
+
+export function playoutNext(channelId: number): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/next`, {});
+}
+
+export function playoutPrevious(channelId: number): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/previous`, {});
+}
+
+export function playoutTakeManual(channelId: number): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/manual`, {});
+}
+
+export function playoutReturnToAuto(channelId: number): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/auto`, {});
 }

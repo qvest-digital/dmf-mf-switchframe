@@ -656,6 +656,7 @@ export interface ControlRoomState {
 	stmap?: STMapState;
 	colorGrade?: ColorGradeState;
 	aiSegmentation?: AISegmentationState;
+	playout?: PlayoutState;
 	lastChangedBy?: string;
 	seq: number;
 	timestamp: number;
@@ -813,4 +814,43 @@ export interface GPUPipelineDebugSnapshot {
 	last_run_ns: number;
 	max_run_ns: number;
 	total_latency_us: number;
+}
+
+// ── Playout Types ──
+
+export interface PlayoutChannelState {
+	id: number;
+	state: 'stopped' | 'cued' | 'on_air' | 'completed';
+	mode?: 'automated' | 'manual' | 'break';
+	playlistName?: string;
+	currentItemId?: string;
+	currentTitle?: string;
+	nextItemId?: string;
+	nextTitle?: string;
+	itemIndex: number;
+	itemCount: number;
+	itemProgress?: number;
+	itemRemainMs?: number;
+}
+
+export interface PlayoutState {
+	channels: PlayoutChannelState[];
+}
+
+export interface PlaylistItem {
+	id: string;
+	type: 'clip' | 'live' | 'slate';
+	asset_uri?: string;
+	source?: string;
+	title: string;
+	duration_ms?: number;
+	hold?: boolean;
+	transition?: { type: string; duration_ms?: number };
+}
+
+export interface Playlist {
+	id: string;
+	name: string;
+	default_transition: { type: string; duration_ms?: number };
+	items: PlaylistItem[];
 }
