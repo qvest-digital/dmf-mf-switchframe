@@ -112,6 +112,9 @@ func (a *App) initPlayout() error {
 		scte35Injector: a.scte35Injector,
 	})
 
+	// Wire SCTE-35 injector to pod boards.
+	mgr.SetSCTE35Injector(&podSCTE35Adapter{injector: a.scte35Injector})
+
 	a.playoutMgr = mgr
 	a.playoutCache = cache
 	a.playoutPrefetcher = prefetcher
@@ -238,4 +241,27 @@ func (h *playoutSecondaryHandler) OnSCTE35Cue(data *playout.SCTE35EventData) err
 	}
 	_, err := h.scte35Injector.InjectCue(msg)
 	return err
+}
+
+// podSCTE35Adapter adapts the real scte35.Injector to the narrow podSCTE35Injector interface
+// used by PodBoard for pod lifecycle cue injection.
+type podSCTE35Adapter struct {
+	injector scte35Cuer
+}
+
+func (a *podSCTE35Adapter) InjectPodCue(isOut bool, autoReturn bool, durationMs int64) (uint32, error) {
+	if a.injector == nil {
+		return 0, nil
+	}
+	msg := &scte35.CueMessage{
+		CommandType: 0x05, // splice_insert
+		IsOut:       isOut,
+		AutoReturn:  autoReturn,
+		Source:      "playout-pod",
+	}
+	if durationMs > 0 {
+		d := time.Duration(durationMs) * time.Millisecond
+		msg.BreakDuration = &d
+	}
+	return a.injector.InjectCue(msg)
 }
