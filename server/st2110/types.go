@@ -95,7 +95,7 @@ type TxAncillaryConfig struct {
 
 // InstanceConfig configures the MTL library instance.
 type InstanceConfig struct {
-	Port     string // DPDK port identifier (e.g. "0000:31:00.0")
+	Port     string // DPDK port identifier (e.g. "0000:31:00.0" or "kernel:ens4")
 	SourceIP string // local IP address for TX sessions
 	Netmask  string // subnet mask
 	Gateway  string // default gateway
@@ -104,6 +104,7 @@ type InstanceConfig struct {
 	PTPMode  string // PTP clock mode (e.g. "auto", "l2", "l4")
 	LogLevel int    // MTL log level (0=error, 7=debug)
 	LCores   string // DPDK lcore list (e.g. "2,3,4,5")
+	PMDType  string // PMD type: "dpdk" (default), "kernel", "af_xdp"
 }
 
 // PTPStatus reports the current PTP synchronization state.

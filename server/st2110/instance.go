@@ -41,7 +41,14 @@ func NewInstance(cfg InstanceConfig) (*Instance, error) {
 	C.mtl_para_port_set(&params, C.MTL_PORT_P, cPort)
 
 	params.num_ports = 1
-	C.mtl_para_pmd_set(&params, C.MTL_PORT_P, C.MTL_PMD_DPDK_USER)
+	switch cfg.PMDType {
+	case "kernel":
+		C.mtl_para_pmd_set(&params, C.MTL_PORT_P, C.MTL_PMD_KERNEL_SOCKET)
+	case "af_xdp":
+		C.mtl_para_pmd_set(&params, C.MTL_PORT_P, C.MTL_PMD_NATIVE_AF_XDP)
+	default:
+		C.mtl_para_pmd_set(&params, C.MTL_PORT_P, C.MTL_PMD_DPDK_USER)
+	}
 	C.mtl_para_tx_queues_cnt_set(&params, C.MTL_PORT_P, C.uint16_t(cfg.TxQueues))
 	C.mtl_para_rx_queues_cnt_set(&params, C.MTL_PORT_P, C.uint16_t(cfg.RxQueues))
 	params.flags = C.MTL_FLAG_BIND_NUMA | C.MTL_FLAG_TX_VIDEO_MIGRATE

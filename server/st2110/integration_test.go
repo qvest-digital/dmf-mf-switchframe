@@ -8,13 +8,15 @@ import (
 	"time"
 )
 
-// createTestInstance creates an MTL instance using kernel socket loopback.
-// This requires MTL to be installed on the host (dev server only).
+// createTestInstance creates an MTL instance using kernel socket mode on ens4.
+// This requires MTL to be installed and hugepages configured (dev server only).
+// Must run with sudo for hugepage access.
 func createTestInstance(t *testing.T) *Instance {
 	t.Helper()
 	inst, err := NewInstance(InstanceConfig{
-		Port:     "kernel:lo",
-		SourceIP: "127.0.0.1",
+		Port:     "kernel:ens4",
+		SourceIP: "10.128.0.2",
+		PMDType:  "kernel",
 		TxQueues: 4,
 		RxQueues: 4,
 		LogLevel: 4,
