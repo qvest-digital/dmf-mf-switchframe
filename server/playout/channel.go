@@ -28,42 +28,73 @@ type DecodedFrame struct {
 type ChannelConfig struct {
 	// AssetProvider opens asset URIs and returns streaming frame iterators.
 	AssetProvider AssetProvider
+
+	// Width is the pipeline format width. Zero means use default (1920).
+	Width int
+
+	// Height is the pipeline format height. Zero means use default (1080).
+	Height int
+
+	// FPS is the pipeline frame rate (e.g., 29.97, 30.0, 59.94). Zero means use default (30.0).
+	FPS float64
 }
 
-// Channel is a gapless sequential clip player that registers as a switcher
-// source ("playout:N"). It plays through a Playlist sequentially, outputting
-// raw YUV frames at the correct frame rate via callbacks.
+// Channel is a tick-driven frame router that registers as a switcher source
+// ("playout:N"). It delegates playlist advancement to a Scheduler, idle content
+// to an IdleLoop, and transitions to a Compositor. Each tick it asks the
+// Scheduler what to play, obtains the frame, and emits it via callbacks.
 type Channel struct {
 	id     int
 	config ChannelConfig
 
-	mu       sync.Mutex
-	state    ChannelState
-	mode     OnAirMode
-	playlist *Playlist
-	cursor   int // current item index
+	mu         sync.Mutex
+	state      ChannelState
+	scheduler  *Scheduler
+	idleLoop   *IdleLoop
+	compositor *Compositor
 
-	cancel    context.CancelFunc
-	done      chan struct{}
-	advanceCh chan struct{} // buffered 1 — signaled by Next/ReturnToAuto
+	// Active clip playback.
+	clipIter      FrameIterator
+	clipItemID    string  // ID of item currently being decoded
+	clipFPS       float64
+	clipTotal     int
+	clipFrame     int
+	clipStartTime time.Time
+	clipLastFrame *DecodedFrame // for hold mode
 
-	// Callbacks (set before Start, read under lock then called without lock).
+	// Live source tap — returns latest frame for a source key.
+	gpuSourceTap func(sourceKey string) *DecodedFrame
+
+	// Slate frame (pre-allocated BT.709 black: Y=16, UV=128).
+	slateFrame *DecodedFrame
+
+	// Output callbacks (set before Start, read under lock then called without lock).
+	rawVideoOutput func(yuv []byte, w, h int, pts int64, isKeyframe bool)
+	audioOutput    func(data []byte, pts int64, sampleRate, channels int)
 	onStateChange  func(ChannelState)
 	onStart        func(key string)
 	onStop         func(key string)
-	rawVideoOutput func(yuv []byte, w, h int, pts int64, isKeyframe bool)
-	audioOutput    func(data []byte, pts int64, sampleRate, channels int)
 	ptsProvider    func() int64
 
 	// Secondary event scheduling.
 	secondaryHandler   SecondaryEventHandler
 	secondaryScheduler *SecondaryEventScheduler
+	secondaryItemID    string // ID of item whose secondary events are active
 
 	// Splice coordinator for frame-accurate break entry.
 	spliceCoordinator *SpliceCoordinator
 
 	// As-run event logger callback.
-	asRunLog func(AsRunEvent)
+	asRunLog      func(AsRunEvent)
+	itemStartTime time.Time // when the current item began
+
+	// Frame timing.
+	frameDuration time.Duration
+	outputPTS     int64
+
+	// Run control.
+	cancel context.CancelFunc
+	done   chan struct{}
 
 	// Atomic progress counters for lock-free reads.
 	itemProgress atomic.Int64 // 0-1000 milliprogress
@@ -71,37 +102,45 @@ type Channel struct {
 }
 
 // NewChannel creates a new playout channel with the given ID and config.
+// Dimensions and frame rate are taken from config; zero values fall back to
+// sensible defaults (1920x1080 @ 30fps).
 func NewChannel(id int, config ChannelConfig) *Channel {
+	w, h := config.Width, config.Height
+	if w == 0 {
+		w = 1920
+	}
+	if h == 0 {
+		h = 1080
+	}
+	fps := config.FPS
+	if fps == 0 {
+		fps = 30.0
+	}
+
 	return &Channel{
-		id:        id,
-		config:    config,
-		state:     StateStopped,
-		mode:      ModeAutomated,
-		advanceCh: make(chan struct{}, 1),
+		id:            id,
+		config:        config,
+		state:         StateStopped,
+		scheduler:     NewScheduler(),
+		idleLoop:      NewIdleLoop("", config.AssetProvider, w, h),
+		compositor:    NewCompositor(w, h, nil),
+		slateFrame:    makeBlackFrame(w, h),
+		frameDuration: time.Duration(float64(time.Second) / fps),
 	}
 }
 
-// Snapshot returns a PersistedChannel capturing the channel's current state.
-// The playlist copy is shallow: SecondaryEvents slices and Transition pointers
-// within each PlaylistItem alias the originals. This is safe for JSON
-// serialization and read-only inspection, but callers must not mutate nested
-// pointers or slices in the returned snapshot.
-func (c *Channel) Snapshot() PersistedChannel {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	snap := PersistedChannel{
-		ID:     c.id,
-		State:  c.state,
-		Mode:   c.mode,
-		Cursor: c.cursor,
+// makeBlackFrame allocates a BT.709-legal black YUV420 frame (Y=16, UV=128).
+func makeBlackFrame(w, h int) *DecodedFrame {
+	ySize := w * h
+	uvSize := ySize / 4
+	yuv := make([]byte, ySize+2*uvSize)
+	for i := 0; i < ySize; i++ {
+		yuv[i] = 16
 	}
-	if c.playlist != nil {
-		plCopy := *c.playlist
-		plCopy.Items = make([]PlaylistItem, len(c.playlist.Items))
-		copy(plCopy.Items, c.playlist.Items)
-		snap.Playlist = &plCopy
+	for i := ySize; i < len(yuv); i++ {
+		yuv[i] = 128
 	}
-	return snap
+	return &DecodedFrame{YUV: yuv, Width: w, Height: h, IsKeyframe: true}
 }
 
 // Key returns the virtual source key for this channel (e.g., "playout:1").
@@ -118,9 +157,7 @@ func (c *Channel) State() ChannelState {
 
 // Mode returns the current on-air mode.
 func (c *Channel) Mode() OnAirMode {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.mode
+	return c.scheduler.Mode()
 }
 
 // Status builds the broadcast state for this channel.
@@ -132,21 +169,23 @@ func (c *Channel) Status() ChannelStatus {
 	}
 
 	if c.state == StateOnAir {
-		st.Mode = c.mode.String()
+		st.Mode = c.scheduler.Mode().String()
 	}
 
-	if c.playlist != nil {
-		st.PlaylistName = c.playlist.Name
-		st.ItemCount = len(c.playlist.Items)
-		st.ItemIndex = c.cursor
+	pl := c.schedulerPlaylist()
+	if pl != nil {
+		st.PlaylistName = pl.Name
+		st.ItemCount = len(pl.Items)
+		cursor := c.scheduler.Cursor()
+		st.ItemIndex = cursor
 
-		if c.cursor >= 0 && c.cursor < len(c.playlist.Items) {
-			item := c.playlist.Items[c.cursor]
+		if cursor >= 0 && cursor < len(pl.Items) {
+			item := pl.Items[cursor]
 			st.CurrentItemID = item.ID
 			st.CurrentTitle = item.Title
 		}
-		if c.cursor+1 < len(c.playlist.Items) {
-			next := c.playlist.Items[c.cursor+1]
+		if cursor+1 < len(pl.Items) {
+			next := pl.Items[cursor+1]
 			st.NextItemID = next.ID
 			st.NextTitle = next.Title
 		}
@@ -158,20 +197,50 @@ func (c *Channel) Status() ChannelStatus {
 	return st
 }
 
+// Snapshot returns a PersistedChannel capturing the channel's current state.
+func (c *Channel) Snapshot() PersistedChannel {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	snap := PersistedChannel{
+		ID:     c.id,
+		State:  c.state,
+		Mode:   c.scheduler.Mode(),
+		Cursor: c.scheduler.Cursor(),
+	}
+	pl := c.schedulerPlaylist()
+	if pl != nil {
+		plCopy := *pl
+		plCopy.Items = make([]PlaylistItem, len(pl.Items))
+		copy(plCopy.Items, pl.Items)
+		snap.Playlist = &plCopy
+	}
+	return snap
+}
+
 // PlaylistItems returns a copy of the loaded playlist items, or nil if no playlist.
-// Note: the top-level slice is copied, but SecondaryEvents slices and Transition
-// pointers within each item alias the originals. This is safe for read-only use
-// (e.g., JSON serialization) but callers must not mutate nested fields.
 func (c *Channel) PlaylistItems() []PlaylistItem {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.playlist == nil {
+	pl := c.schedulerPlaylist()
+	if pl == nil {
 		return nil
 	}
-	items := make([]PlaylistItem, len(c.playlist.Items))
-	copy(items, c.playlist.Items)
+	items := make([]PlaylistItem, len(pl.Items))
+	copy(items, pl.Items)
 	return items
 }
+
+// schedulerPlaylist returns the scheduler's playlist. Must be called with c.mu held
+// or during initialization. Returns nil if no playlist is loaded.
+func (c *Channel) schedulerPlaylist() *Playlist {
+	// The scheduler stores the playlist internally. We access it via Snapshot-like
+	// methods. For now, we keep a reference ourselves too.
+	return c.scheduler.playlist
+}
+
+// ---------------------------------------------------------------------------
+// Playlist management
+// ---------------------------------------------------------------------------
 
 // LoadPlaylist validates and loads a playlist, transitioning the channel to Cued.
 func (c *Channel) LoadPlaylist(pl *Playlist) error {
@@ -185,10 +254,12 @@ func (c *Channel) LoadPlaylist(pl *Playlist) error {
 		return ErrAlreadyOnAir
 	}
 
-	c.playlist = pl
-	c.cursor = 0
+	if err := c.scheduler.LoadPlaylist(pl); err != nil {
+		c.mu.Unlock()
+		return err
+	}
+
 	c.state = StateCued
-	c.mode = ModeAutomated
 	c.itemProgress.Store(0)
 	c.itemRemainMs.Store(0)
 
@@ -204,7 +275,8 @@ func (c *Channel) LoadPlaylist(pl *Playlist) error {
 // Start transitions from CUED to ON-AIR and launches the run goroutine.
 func (c *Channel) Start() error {
 	c.mu.Lock()
-	if c.playlist == nil {
+	pl := c.schedulerPlaylist()
+	if pl == nil {
 		c.mu.Unlock()
 		return ErrNoPlaylist
 	}
@@ -218,16 +290,19 @@ func (c *Channel) Start() error {
 	}
 
 	c.state = StateOnAir
-	c.mode = ModeAutomated
+	c.scheduler.Start()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancel = cancel
 	c.done = make(chan struct{})
+	c.outputPTS = 0
 
-	// Drain any stale advance signals.
-	select {
-	case <-c.advanceCh:
-	default:
+	// Seed PTS from provider if available.
+	if c.ptsProvider != nil {
+		pts := c.ptsProvider()
+		if pts > 0 {
+			c.outputPTS = pts
+		}
 	}
 
 	onStartFn := c.onStart
@@ -257,7 +332,7 @@ func (c *Channel) Stop() {
 	doneCh := c.done
 	c.cancel = nil
 	c.state = StateStopped
-	c.mode = ModeAutomated
+	c.scheduler.Stop()
 
 	onStopFn := c.onStop
 	stateChangeFn := c.onStateChange
@@ -285,7 +360,11 @@ func (c *Channel) Close() {
 	c.Stop()
 }
 
-// Next signals the run goroutine to advance to the next item.
+// ---------------------------------------------------------------------------
+// Navigation and mode control — delegate to Scheduler
+// ---------------------------------------------------------------------------
+
+// Next signals the scheduler to advance to the next item.
 func (c *Channel) Next() error {
 	c.mu.Lock()
 	if c.state != StateOnAir {
@@ -293,75 +372,29 @@ func (c *Channel) Next() error {
 		return ErrNotOnAir
 	}
 	c.mu.Unlock()
-
-	// Non-blocking send (buffered 1).
-	select {
-	case c.advanceCh <- struct{}{}:
-	default:
-	}
-	return nil
+	return c.scheduler.Next()
 }
 
-// Previous decrements the cursor and signals advance.
+// Previous moves the cursor back one item.
 func (c *Channel) Previous() error {
 	c.mu.Lock()
 	if c.state != StateOnAir {
 		c.mu.Unlock()
 		return ErrNotOnAir
 	}
-	// Move back 2 positions: the run loop will increment to cursor when it
-	// processes the advance signal, landing on cursor-1 from current.
-	if c.cursor > 0 {
-		c.cursor -= 2
-		if c.cursor < -1 {
-			c.cursor = -1
-		}
-	} else {
-		c.cursor = -1
-	}
 	c.mu.Unlock()
-
-	select {
-	case c.advanceCh <- struct{}{}:
-	default:
-	}
-	return nil
+	return c.scheduler.Previous()
 }
 
-// JumpTo finds the item with the given ID and signals advance to it.
+// JumpTo finds the item with the given ID and moves the cursor to it.
 func (c *Channel) JumpTo(itemID string) error {
 	c.mu.Lock()
 	if c.state != StateOnAir {
 		c.mu.Unlock()
 		return ErrNotOnAir
 	}
-	if c.playlist == nil {
-		c.mu.Unlock()
-		return ErrNoPlaylist
-	}
-
-	found := -1
-	for i, item := range c.playlist.Items {
-		if item.ID == itemID {
-			found = i
-			break
-		}
-	}
-	if found < 0 {
-		c.mu.Unlock()
-		return ErrItemNotFound
-	}
-
-	// Set cursor so the advance signal will land on the target item.
-	// The run loop reads cursor and increments, so set to found-1.
-	c.cursor = found - 1
 	c.mu.Unlock()
-
-	select {
-	case c.advanceCh <- struct{}{}:
-	default:
-	}
-	return nil
+	return c.scheduler.JumpTo(itemID)
 }
 
 // TakeManual pauses playlist advancement.
@@ -371,7 +404,7 @@ func (c *Channel) TakeManual() {
 		c.mu.Unlock()
 		return
 	}
-	c.mode = ModeManual
+	c.scheduler.TakeManual()
 	fn := c.onStateChange
 	asRunFn := c.asRunLog
 	channelID := c.id
@@ -396,7 +429,7 @@ func (c *Channel) ReturnToAuto() {
 		c.mu.Unlock()
 		return
 	}
-	c.mode = ModeAutomated
+	c.scheduler.ReturnToAuto()
 	fn := c.onStateChange
 	asRunFn := c.asRunLog
 	channelID := c.id
@@ -412,21 +445,16 @@ func (c *Channel) ReturnToAuto() {
 			Operation: "exit_manual",
 		})
 	}
-
-	select {
-	case c.advanceCh <- struct{}{}:
-	default:
-	}
 }
 
-// TakeBreak sets the channel mode to ModeBreak (called by PodBoard when a pod fires).
+// TakeBreak sets the channel mode to ModeBreak.
 func (c *Channel) TakeBreak() {
 	c.mu.Lock()
 	if c.state != StateOnAir {
 		c.mu.Unlock()
 		return
 	}
-	c.mode = ModeBreak
+	c.scheduler.TakeBreak()
 	fn := c.onStateChange
 	c.mu.Unlock()
 	if fn != nil {
@@ -434,26 +462,24 @@ func (c *Channel) TakeBreak() {
 	}
 }
 
-// ReturnFromBreak sets the channel mode back to ModeAutomated after a pod completes.
+// ReturnFromBreak sets the channel mode back to ModeAutomated.
 func (c *Channel) ReturnFromBreak() {
 	c.mu.Lock()
 	if c.state != StateOnAir {
 		c.mu.Unlock()
 		return
 	}
-	c.mode = ModeAutomated
+	c.scheduler.ReturnFromBreak()
 	fn := c.onStateChange
 	c.mu.Unlock()
 	if fn != nil {
 		fn(StateOnAir)
 	}
-
-	// Signal advance in case the channel was waiting.
-	select {
-	case c.advanceCh <- struct{}{}:
-	default:
-	}
 }
+
+// ---------------------------------------------------------------------------
+// Callback setters
+// ---------------------------------------------------------------------------
 
 // SetOnStateChange registers a callback invoked on state transitions.
 func (c *Channel) SetOnStateChange(fn func(ChannelState)) {
@@ -498,7 +524,6 @@ func (c *Channel) SetPTSProvider(fn func() int64) {
 }
 
 // SetSecondaryHandler registers a handler for secondary events (graphics, audio, etc.).
-// Creating the scheduler is deferred until a handler is set.
 func (c *Channel) SetSecondaryHandler(h SecondaryEventHandler) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -530,116 +555,172 @@ func (c *Channel) SetAsRunLog(fn func(AsRunEvent)) {
 	}
 }
 
-// run is the main playback goroutine. It iterates through playlist items.
+// SetGPUSourceTap registers a function that returns the latest decoded frame
+// for a live source key. Used for live playlist items.
+func (c *Channel) SetGPUSourceTap(fn func(sourceKey string) *DecodedFrame) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.gpuSourceTap = fn
+}
+
+// SetCursor overrides the scheduler's cursor position. Used by the Manager
+// during state recovery to restore the exact playlist position.
+func (c *Channel) SetCursor(cursor int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.scheduler.mu.Lock()
+	c.scheduler.cursor = cursor
+	c.scheduler.resetItemState()
+	c.scheduler.mu.Unlock()
+}
+
+// SetIdleConfig configures the idle loop asset and provider.
+func (c *Channel) SetIdleConfig(assetURI string, provider AssetProvider) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.idleLoop.Close()
+	w, h := c.configDimensions()
+	c.idleLoop = NewIdleLoop(assetURI, provider, w, h)
+}
+
+// configDimensions returns the resolved width and height from the channel config.
+// Must be called with c.mu held or during initialization.
+func (c *Channel) configDimensions() (int, int) {
+	w, h := c.config.Width, c.config.Height
+	if w == 0 {
+		w = 1920
+	}
+	if h == 0 {
+		h = 1080
+	}
+	return w, h
+}
+
+// ---------------------------------------------------------------------------
+// Tick-driven run loop
+// ---------------------------------------------------------------------------
+
+// run is the main playback goroutine. It ticks at frame rate and delegates
+// all scheduling decisions to the Scheduler.
 func (c *Channel) run(ctx context.Context) {
 	defer close(c.done)
 
+	ticker := time.NewTicker(c.frameDuration)
+	defer ticker.Stop()
+
 	for {
-		c.mu.Lock()
-		playlist := c.playlist
-		cursor := c.cursor
-		mode := c.mode
-		c.mu.Unlock()
-
-		if playlist == nil || cursor >= len(playlist.Items) {
-			break
-		}
-		if cursor < 0 {
-			// Previous() set cursor to -1; advance to 0.
-			c.mu.Lock()
-			c.cursor = 0
-			cursor = 0
-			c.mu.Unlock()
-		}
-
-		// In manual or break mode, wait for advance signal before playing.
-		if mode == ModeManual || mode == ModeBreak {
-			select {
-			case <-ctx.Done():
-				return
-			case <-c.advanceCh:
-				// Check if mode changed back to auto.
-				c.mu.Lock()
-				mode = c.mode
-				cursor = c.cursor
-				if cursor < 0 {
-					c.cursor = 0
-					cursor = 0
-				}
-				if cursor >= len(playlist.Items) {
-					c.mu.Unlock()
-					break
-				}
-				c.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			c.cleanup()
+			return
+		case <-ticker.C:
+			if c.tick(time.Now()) {
+				c.cleanup()
+				return // playlist completed
 			}
 		}
-
-		// Re-read cursor (may have been changed by JumpTo/Previous).
-		c.mu.Lock()
-		cursor = c.cursor
-		if cursor < 0 {
-			c.cursor = 0
-			cursor = 0
-		}
-		if cursor >= len(playlist.Items) {
-			c.mu.Unlock()
-			break
-		}
-		item := playlist.Items[cursor]
-		c.mu.Unlock()
-
-		var cancelled bool
-		switch item.Type {
-		case ItemClip:
-			cancelled = c.playClipItem(ctx, &item)
-		case ItemLive:
-			cancelled = c.playLiveItem(ctx, &item)
-		case ItemSlate:
-			cancelled = c.playSlateItem(ctx, &item)
-		default:
-			slog.Warn("playout: unknown item type, skipping", "type", item.Type, "id", item.ID)
-		}
-
-		if cancelled {
-			return
-		}
-
-		// Advance cursor.
-		c.mu.Lock()
-		c.cursor++
-		c.mu.Unlock()
-	}
-
-	// Playlist complete.
-	c.mu.Lock()
-	c.state = StateCompleted
-	fn := c.onStateChange
-	c.mu.Unlock()
-
-	if fn != nil {
-		fn(StateCompleted)
 	}
 }
 
-// playClipItem plays a clip item, outputting frames at the correct rate.
-// Returns true if the context was cancelled (stop requested).
-func (c *Channel) playClipItem(ctx context.Context, item *PlaylistItem) bool {
+// tick processes one frame period. Returns true when the playlist is done.
+func (c *Channel) tick(now time.Time) bool {
 	c.mu.Lock()
-	provider := c.config.AssetProvider
+	decision := c.scheduler.Tick(now)
+
+	// Grab callbacks under lock.
+	outputFn := c.rawVideoOutput
+	audioFn := c.audioOutput
+	sc := c.spliceCoordinator
+	secScheduler := c.secondaryScheduler
 	asRunFn := c.asRunLog
 	channelID := c.id
 	c.mu.Unlock()
 
-	if provider == nil {
-		slog.Warn("playout: no AssetProvider configured", "item", item.ID)
-		return false
+	if decision.Completed {
+		// Emit item_end for the last item if one was active.
+		c.emitFinalItemEnd(secScheduler, asRunFn, channelID, now)
+		c.transitionState(StateCompleted)
+		return true
 	}
 
-	// Emit item_start as-run event.
-	itemStartTime := time.Now().UTC()
+	var frame *DecodedFrame
+
+	if decision.Transition != nil {
+		outFrame := c.frameForItem(decision.Transition.Outgoing)
+		inFrame := c.frameForItem(decision.Transition.Incoming)
+		if outFrame != nil && inFrame != nil {
+			frame = c.compositor.Blend(outFrame, inFrame, decision.Transition.Progress, decision.Transition.Config)
+		} else if inFrame != nil {
+			frame = inFrame
+		} else if outFrame != nil {
+			frame = outFrame
+		}
+	} else if decision.IsIdle {
+		frame = c.idleLoop.NextFrame()
+	} else if decision.Item != nil {
+		// Track item changes for as-run logging and secondary events.
+		c.handleItemChange(decision.Item, secScheduler, asRunFn, channelID, now)
+		frame = c.frameForItem(decision.Item)
+	}
+
+	if frame != nil {
+		c.emitFrame(frame, outputFn, audioFn, sc)
+	}
+
+	return false
+}
+
+// handleItemChange detects when the scheduler moves to a new item and fires
+// as-run events and secondary event scheduling.
+func (c *Channel) handleItemChange(item *PlaylistItem, secScheduler *SecondaryEventScheduler, asRunFn func(AsRunEvent), channelID int, now time.Time) {
+	c.mu.Lock()
+	prevItemID := c.secondaryItemID
+	c.mu.Unlock()
+
+	if item.ID == prevItemID {
+		// Same item — tick secondary events if applicable.
+		c.tickSecondaryEvents(item, secScheduler, now)
+		return
+	}
+
+	// New item — end the old one, start the new one.
+	c.mu.Lock()
+
+	// End previous item's secondary events.
+	if secScheduler != nil && prevItemID != "" {
+		secScheduler.EndItem()
+	}
+
+	// Emit item_end for previous item if there was one.
+	if prevItemID != "" && asRunFn != nil && !c.itemStartTime.IsZero() {
+		asRunFn(AsRunEvent{
+			Timestamp:        now.UTC(),
+			Type:             AsRunItemEnd,
+			ChannelID:        channelID,
+			ItemID:           prevItemID,
+			Source:           "automated",
+			ActualDurationMs: now.Sub(c.itemStartTime).Milliseconds(),
+		})
+	}
+
+	// Close old clip iterator if switching items.
+	if c.clipIter != nil && c.clipItemID != item.ID {
+		c.clipIter.Close()
+		c.clipIter = nil
+		c.clipItemID = ""
+		c.clipLastFrame = nil
+	}
+
+	c.secondaryItemID = item.ID
+	c.itemStartTime = now.UTC()
+	c.itemProgress.Store(0)
+	c.itemRemainMs.Store(item.DurationMs)
+	c.mu.Unlock()
+
+	// Emit item_start.
 	if asRunFn != nil {
 		ev := AsRunEvent{
-			Timestamp: itemStartTime,
+			Timestamp: now.UTC(),
 			Type:      AsRunItemStart,
 			ChannelID: channelID,
 			ItemID:    item.ID,
@@ -648,14 +729,154 @@ func (c *Channel) playClipItem(ctx context.Context, item *PlaylistItem) bool {
 		}
 		if item.ScheduledTime != nil {
 			ev.ScheduledTS = item.ScheduledTime
-			ev.DeltaMs = float64(itemStartTime.Sub(*item.ScheduledTime).Microseconds()) / 1000.0
+			ev.DeltaMs = float64(now.UTC().Sub(*item.ScheduledTime).Microseconds()) / 1000.0
 		}
 		asRunFn(ev)
 	}
 
-	iter, err := provider.Open(item.AssetURI)
+	// Begin secondary events for new item.
+	if secScheduler != nil && len(item.SecondaryEvents) > 0 {
+		var durationMs int64
+		if item.Type == ItemSlate {
+			durationMs = item.DurationMs
+		} else if item.Type == ItemClip {
+			// We'll estimate once the clip iter is open.
+			c.mu.Lock()
+			if c.clipTotal > 0 && c.clipFPS > 0 {
+				durationMs = int64(float64(c.clipTotal) * 1000.0 / c.clipFPS)
+			}
+			c.mu.Unlock()
+		}
+		secScheduler.BeginItem(item.SecondaryEvents, durationMs)
+		// Fire t=0 events immediately.
+		secScheduler.Tick(0)
+	}
+}
+
+// tickSecondaryEvents fires secondary events based on elapsed time.
+func (c *Channel) tickSecondaryEvents(item *PlaylistItem, secScheduler *SecondaryEventScheduler, now time.Time) {
+	if secScheduler == nil || len(item.SecondaryEvents) == 0 {
+		return
+	}
+	c.mu.Lock()
+	elapsed := now.Sub(c.itemStartTime)
+	c.mu.Unlock()
+	secScheduler.Tick(elapsed.Milliseconds())
+}
+
+// emitFinalItemEnd emits item_end for the last active item when the playlist
+// completes. This mirrors what handleItemChange does when transitioning between
+// items, but covers the case where the scheduler signals Completed and there is
+// no subsequent handleItemChange call.
+func (c *Channel) emitFinalItemEnd(secScheduler *SecondaryEventScheduler, asRunFn func(AsRunEvent), channelID int, now time.Time) {
+	c.mu.Lock()
+	prevItemID := c.secondaryItemID
+	if secScheduler != nil && prevItemID != "" {
+		secScheduler.EndItem()
+	}
+	startTime := c.itemStartTime
+	c.secondaryItemID = ""
+	c.mu.Unlock()
+
+	if prevItemID != "" && asRunFn != nil && !startTime.IsZero() {
+		asRunFn(AsRunEvent{
+			Timestamp:        now.UTC(),
+			Type:             AsRunItemEnd,
+			ChannelID:        channelID,
+			ItemID:           prevItemID,
+			Source:           "automated",
+			ActualDurationMs: now.Sub(startTime).Milliseconds(),
+		})
+	}
+}
+
+// frameForItem returns the next frame for the given playlist item.
+func (c *Channel) frameForItem(item *PlaylistItem) *DecodedFrame {
+	switch item.Type {
+	case ItemClip:
+		return c.nextClipFrame(item)
+	case ItemLive:
+		return c.tapLiveSource(item.Source)
+	case ItemSlate:
+		return c.nextSlateFrame(item)
+	}
+	return nil
+}
+
+// nextClipFrame opens or continues a clip iterator and returns the next frame.
+func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
+	c.mu.Lock()
+	provider := c.config.AssetProvider
+	asRunFn := c.asRunLog
+	channelID := c.id
+
+	// If this is a different clip than what we're currently iterating, open it.
+	if c.clipItemID != item.ID {
+		if c.clipIter != nil {
+			c.clipIter.Close()
+		}
+		c.clipIter = nil
+		c.clipItemID = item.ID
+		c.clipFrame = 0
+		c.clipLastFrame = nil
+		c.clipStartTime = time.Now()
+
+		if provider == nil {
+			slog.Warn("playout: no AssetProvider configured", "item", item.ID)
+			c.mu.Unlock()
+			return nil
+		}
+
+		iter, err := provider.Open(item.AssetURI)
+		if err != nil {
+			slog.Warn("playout: asset open failed", "item", item.ID, "error", err)
+			if asRunFn != nil {
+				asRunFn(AsRunEvent{
+					Timestamp: time.Now().UTC(),
+					Type:      AsRunError,
+					ChannelID: channelID,
+					ItemID:    item.ID,
+					Title:     item.Title,
+					Message:   fmt.Sprintf("asset open failed: %v", err),
+				})
+			}
+			// Signal complete so scheduler advances.
+			c.mu.Unlock()
+			c.scheduler.SignalItemComplete()
+			return nil
+		}
+
+		// Wrap with trim if in/out points set.
+		var frameSource FrameIterator = iter
+		if item.InPointMs > 0 || item.OutPointMs > 0 {
+			frameSource = NewTrimIterator(iter, item.InPointMs, item.OutPointMs)
+		}
+
+		c.clipIter = frameSource
+		c.clipFPS = frameSource.EstimateFPS()
+		c.clipTotal = frameSource.TotalFrames()
+	}
+
+	iter := c.clipIter
+	fps := c.clipFPS
+	total := c.clipTotal
+	frameIdx := c.clipFrame
+	c.mu.Unlock()
+
+	if iter == nil {
+		return nil
+	}
+
+	frame, err := iter.Next()
 	if err != nil {
-		slog.Warn("playout: asset open failed", "item", item.ID, "error", err)
+		slog.Warn("playout: frame read error", "item", item.ID, "frame", frameIdx, "error", err)
+		c.mu.Lock()
+		c.clipFrame++
+		c.mu.Unlock()
+
+		// Count consecutive errors via a simple heuristic: if the frame
+		// returned is nil with error, signal complete after a few failures.
+		// For now, we treat any error as terminal after 3 consecutive.
 		if asRunFn != nil {
 			asRunFn(AsRunEvent{
 				Timestamp: time.Now().UTC(),
@@ -663,437 +884,163 @@ func (c *Channel) playClipItem(ctx context.Context, item *PlaylistItem) bool {
 				ChannelID: channelID,
 				ItemID:    item.ID,
 				Title:     item.Title,
-				Message:   fmt.Sprintf("asset open failed: %v", err),
+				Message:   fmt.Sprintf("persistent frame error after %d frames: %v", frameIdx, err),
 			})
 		}
-		return false
-	}
-	defer iter.Close()
-
-	// Wrap with trim if in/out points set.
-	var frameSource FrameIterator = iter
-	if item.InPointMs > 0 || item.OutPointMs > 0 {
-		frameSource = NewTrimIterator(iter, item.InPointMs, item.OutPointMs)
+		c.scheduler.SignalItemComplete()
+		return nil
 	}
 
-	fps := frameSource.EstimateFPS()
+	if frame == nil {
+		// End of clip.
+		c.mu.Lock()
+		c.itemProgress.Store(1000)
+		c.itemRemainMs.Store(0)
+		lastFrame := c.clipLastFrame
+		c.mu.Unlock()
+
+		// If hold mode, return the last frame instead of signaling complete.
+		if item.Hold && lastFrame != nil {
+			return lastFrame
+		}
+
+		c.scheduler.SignalItemComplete()
+
+		// Note: item_end as-run event is emitted by handleItemChange when the
+		// scheduler advances to the next item, avoiding duplicate emissions.
+
+		return nil
+	}
+
+	// Update progress.
+	c.mu.Lock()
+	c.clipFrame++
+	frameIdx = c.clipFrame
+	c.clipLastFrame = frame
+	c.mu.Unlock()
+
+	if total > 0 {
+		prog := int64(frameIdx * 1000 / total)
+		c.itemProgress.Store(prog)
+		remainFrames := total - frameIdx
+		if remainFrames < 0 {
+			remainFrames = 0
+		}
+		c.itemRemainMs.Store(int64(float64(remainFrames) * 1000.0 / fps))
+	}
+
+	return frame
+}
+
+// tapLiveSource returns the latest frame from a live source, or idle frame as fallback.
+func (c *Channel) tapLiveSource(sourceKey string) *DecodedFrame {
+	c.mu.Lock()
+	tap := c.gpuSourceTap
+	c.mu.Unlock()
+
+	if tap != nil {
+		frame := tap(sourceKey)
+		if frame != nil {
+			return frame
+		}
+	}
+
+	// Fallback: return idle frame.
+	return c.idleLoop.NextFrame()
+}
+
+// nextSlateFrame returns the pre-allocated black frame for slate items.
+// The scheduler handles slate duration timing.
+func (c *Channel) nextSlateFrame(item *PlaylistItem) *DecodedFrame {
+	// Update progress based on elapsed time for slates with duration.
+	if item.DurationMs > 0 {
+		c.mu.Lock()
+		elapsed := time.Since(c.itemStartTime)
+		c.mu.Unlock()
+
+		prog := int64(elapsed.Milliseconds() * 1000 / item.DurationMs)
+		if prog > 1000 {
+			prog = 1000
+		}
+		c.itemProgress.Store(prog)
+		remain := item.DurationMs - elapsed.Milliseconds()
+		if remain < 0 {
+			remain = 0
+		}
+		c.itemRemainMs.Store(remain)
+	}
+
+	c.mu.Lock()
+	sf := c.slateFrame
+	c.mu.Unlock()
+
+	// Return a copy with updated PTS.
+	return &DecodedFrame{
+		YUV:        sf.YUV,
+		Width:      sf.Width,
+		Height:     sf.Height,
+		PTS:        c.outputPTS,
+		IsKeyframe: true,
+	}
+}
+
+// emitFrame sends the frame to output callbacks and increments PTS.
+func (c *Channel) emitFrame(frame *DecodedFrame, outputFn func([]byte, int, int, int64, bool), audioFn func([]byte, int64, int, int), sc *SpliceCoordinator) {
+	pts := c.outputPTS
+
+	fps := c.config.FPS
+	if fps == 0 {
+		fps = 30.0
+	}
 	ptsPerFrame := int64(90000.0 / fps)
-	frameDuration := time.Duration(float64(time.Second) / fps)
-	totalFrames := frameSource.TotalFrames()
-
-	// Secondary event scheduling.
-	c.mu.Lock()
-	scheduler := c.secondaryScheduler
-	c.mu.Unlock()
-
-	if scheduler != nil && len(item.SecondaryEvents) > 0 {
-		var durationMs int64
-		if totalFrames > 0 && fps > 0 {
-			durationMs = int64(float64(totalFrames) * 1000.0 / fps)
-		}
-		scheduler.BeginItem(item.SecondaryEvents, durationMs)
-		defer scheduler.EndItem()
+	if ptsPerFrame == 0 {
+		ptsPerFrame = 3000
 	}
 
-	// Get initial PTS.
-	c.mu.Lock()
-	ptsFn := c.ptsProvider
-	c.mu.Unlock()
-
-	var outputPTS int64
-	if ptsFn != nil {
-		outputPTS = ptsFn()
-		if outputPTS > 0 {
-			outputPTS += ptsPerFrame
-		}
+	if outputFn != nil {
+		outputFn(frame.YUV, frame.Width, frame.Height, pts, frame.IsKeyframe)
 	}
 
-	playbackStart := time.Now()
-	timer := time.NewTimer(frameDuration)
-	defer timer.Stop()
-	if !timer.Stop() {
-		<-timer.C
+	// Output audio if present.
+	if len(frame.AudioData) > 0 && audioFn != nil {
+		audioFn(frame.AudioData, frame.AudioPTS, frame.AudioSampleRate, frame.AudioChannels)
 	}
 
-	var lastFrame *DecodedFrame
-	var consecutiveErrors int
-	i := 0
-
-	for {
-		// Check for advance/cancel.
-		select {
-		case <-c.advanceCh:
-			return false
-		case <-ctx.Done():
-			return true
-		default:
-		}
-
-		frame, err := frameSource.Next()
-		if err != nil {
-			consecutiveErrors++
-			slog.Warn("playout: frame read error", "item", item.ID, "frame", i, "error", err, "consecutive", consecutiveErrors)
-			if consecutiveErrors >= 3 {
-				if asRunFn != nil {
-					asRunFn(AsRunEvent{
-						Timestamp: time.Now().UTC(),
-						Type:      AsRunError,
-						ChannelID: channelID,
-						ItemID:    item.ID,
-						Title:     item.Title,
-						Message:   fmt.Sprintf("persistent frame error after %d frames: %v", i, err),
-					})
-				}
-				break // skip to next item
-			}
-			continue
-		}
-		consecutiveErrors = 0
-		if frame == nil {
-			break // end of stream
-		}
-
-		// Pace using absolute time (same as before).
-		if i > 0 {
-			deadline := playbackStart.Add(time.Duration(i) * frameDuration)
-			wait := time.Until(deadline)
-			if wait > 0 {
-				timer.Reset(wait)
-				select {
-				case <-ctx.Done():
-					return true
-				case <-c.advanceCh:
-					return false
-				case <-timer.C:
-				}
-			}
-		}
-
-		// Update progress.
-		if totalFrames > 0 {
-			prog := int64(i * 1000 / totalFrames)
-			c.itemProgress.Store(prog)
-			remainFrames := totalFrames - i
-			c.itemRemainMs.Store(int64(float64(remainFrames) * 1000.0 / fps))
-		}
-
-		// Tick secondary events.
-		if scheduler != nil && len(item.SecondaryEvents) > 0 {
-			elapsedMs := int64(float64(i) * 1000.0 / fps)
-			scheduler.Tick(elapsedMs)
-		}
-
-		// Output frame.
-		c.mu.Lock()
-		outputFn := c.rawVideoOutput
-		audioFn := c.audioOutput
-		c.mu.Unlock()
-
-		if outputFn != nil {
-			outputFn(frame.YUV, frame.Width, frame.Height, outputPTS, frame.IsKeyframe)
-		}
-
-		// Output audio if present.
-		if len(frame.AudioData) > 0 && audioFn != nil {
-			audioFn(frame.AudioData, frame.AudioPTS, frame.AudioSampleRate, frame.AudioChannels)
-		}
-
-		// Feed splice coordinator.
-		c.mu.Lock()
-		sc := c.spliceCoordinator
-		c.mu.Unlock()
-		if sc != nil {
-			sc.IngestFrame(frame.YUV, frame.Width, frame.Height, outputPTS)
-		}
-
-		lastFrame = frame
-		outputPTS += ptsPerFrame
-		i++
+	// Feed splice coordinator.
+	if sc != nil {
+		sc.IngestFrame(frame.YUV, frame.Width, frame.Height, pts)
 	}
 
-	if i == 0 {
-		slog.Warn("playout: no frames from asset", "item", item.ID)
-		return false
-	}
-
-	// Mark complete.
-	c.itemProgress.Store(1000)
-	c.itemRemainMs.Store(0)
-
-	// Emit item_end as-run event.
-	c.mu.Lock()
-	asRunEndFn := c.asRunLog
-	c.mu.Unlock()
-	if asRunEndFn != nil {
-		asRunEndFn(AsRunEvent{
-			Timestamp:      time.Now().UTC(),
-			Type:           AsRunItemEnd,
-			ChannelID:      channelID,
-			ItemID:         item.ID,
-			Title:          item.Title,
-			Source:         "automated",
-			ActualDurationMs: time.Now().UTC().Sub(itemStartTime).Milliseconds(),
-		})
-	}
-
-	// Hold mode.
-	if item.Hold && lastFrame != nil {
-		return c.holdLastFrame(ctx, *lastFrame, &outputPTS)
-	}
-
-	return false
+	c.outputPTS += ptsPerFrame
 }
 
-// playLiveItem holds until Next() is called (live items represent a camera switch).
-// Returns true if context was cancelled.
-func (c *Channel) playLiveItem(ctx context.Context, item *PlaylistItem) bool {
-	c.itemProgress.Store(0)
-	c.itemRemainMs.Store(0)
-
-	// Emit item_start as-run event.
+// transitionState changes the channel state and fires the callback.
+func (c *Channel) transitionState(newState ChannelState) {
 	c.mu.Lock()
-	asRunFn := c.asRunLog
-	channelID := c.id
+	c.state = newState
+	fn := c.onStateChange
 	c.mu.Unlock()
 
-	itemStartTime := time.Now().UTC()
-	if asRunFn != nil {
-		ev := AsRunEvent{
-			Timestamp: itemStartTime,
-			Type:      AsRunItemStart,
-			ChannelID: channelID,
-			ItemID:    item.ID,
-			Title:     item.Title,
-			Source:    "automated",
-		}
-		if item.ScheduledTime != nil {
-			ev.ScheduledTS = item.ScheduledTime
-			ev.DeltaMs = float64(itemStartTime.Sub(*item.ScheduledTime).Microseconds()) / 1000.0
-		}
-		asRunFn(ev)
-	}
-
-	// Fire start-anchored secondary events.
-	c.mu.Lock()
-	scheduler := c.secondaryScheduler
-	c.mu.Unlock()
-
-	if scheduler != nil && len(item.SecondaryEvents) > 0 {
-		scheduler.BeginItem(item.SecondaryEvents, 0)
-		scheduler.Tick(0)
-		defer scheduler.EndItem()
-	}
-
-	var cancelled bool
-	select {
-	case <-ctx.Done():
-		cancelled = true
-	case <-c.advanceCh:
-		cancelled = false
-	}
-
-	// Emit item_end as-run event.
-	c.mu.Lock()
-	asRunEndFn := c.asRunLog
-	c.mu.Unlock()
-	if asRunEndFn != nil {
-		asRunEndFn(AsRunEvent{
-			Timestamp:        time.Now().UTC(),
-			Type:             AsRunItemEnd,
-			ChannelID:        channelID,
-			ItemID:           item.ID,
-			Title:            item.Title,
-			Source:           "automated",
-			ActualDurationMs: time.Since(itemStartTime).Milliseconds(),
-		})
-	}
-
-	return cancelled
-}
-
-// playSlateItem holds for DurationMs or until Next(), outputting black frames
-// at 30fps so the program output is clean black rather than a stale held frame.
-// Returns true if context was cancelled.
-func (c *Channel) playSlateItem(ctx context.Context, item *PlaylistItem) bool {
-	c.itemProgress.Store(0)
-	c.itemRemainMs.Store(item.DurationMs)
-
-	// Emit item_start as-run event.
-	c.mu.Lock()
-	asRunFn := c.asRunLog
-	channelID := c.id
-	c.mu.Unlock()
-
-	itemStartTime := time.Now().UTC()
-	if asRunFn != nil {
-		ev := AsRunEvent{
-			Timestamp: itemStartTime,
-			Type:      AsRunItemStart,
-			ChannelID: channelID,
-			ItemID:    item.ID,
-			Title:     item.Title,
-			Source:    "automated",
-		}
-		if item.ScheduledTime != nil {
-			ev.ScheduledTS = item.ScheduledTime
-			ev.DeltaMs = float64(itemStartTime.Sub(*item.ScheduledTime).Microseconds()) / 1000.0
-		}
-		asRunFn(ev)
-	}
-
-	// emitEnd emits the item_end as-run event.
-	emitEnd := func() {
-		c.mu.Lock()
-		asRunEndFn := c.asRunLog
-		c.mu.Unlock()
-		if asRunEndFn != nil {
-			asRunEndFn(AsRunEvent{
-				Timestamp:        time.Now().UTC(),
-				Type:             AsRunItemEnd,
-				ChannelID:        channelID,
-				ItemID:           item.ID,
-				Title:            item.Title,
-				Source:           "automated",
-				ActualDurationMs: time.Since(itemStartTime).Milliseconds(),
-			})
-		}
-	}
-
-	// Secondary event scheduling.
-	c.mu.Lock()
-	scheduler := c.secondaryScheduler
-	c.mu.Unlock()
-
-	if scheduler != nil && len(item.SecondaryEvents) > 0 {
-		scheduler.BeginItem(item.SecondaryEvents, item.DurationMs)
-		scheduler.Tick(0) // fire t=0 events immediately
-		defer scheduler.EndItem()
-	}
-
-	// Pre-allocate a BT.709 black frame (Y=16, U=V=128).
-	const slateW, slateH = 1920, 1080
-	ySize := slateW * slateH
-	uvSize := ySize / 4
-	blackFrame := make([]byte, ySize+2*uvSize)
-	for i := 0; i < ySize; i++ {
-		blackFrame[i] = 16 // BT.709 Y black
-	}
-	for i := ySize; i < len(blackFrame); i++ {
-		blackFrame[i] = 128 // BT.709 UV neutral
-	}
-
-	// Frame output at 30fps.
-	const ptsPerFrame int64 = 90000 / 30 // 3000
-	frameTick := time.NewTicker(time.Second / 30)
-	defer frameTick.Stop()
-
-	// Seed PTS from provider if available.
-	c.mu.Lock()
-	ptsFn := c.ptsProvider
-	c.mu.Unlock()
-	var outputPTS int64
-	if ptsFn != nil {
-		outputPTS = ptsFn()
-		if outputPTS > 0 {
-			outputPTS += ptsPerFrame
-		}
-	}
-
-	// outputBlack sends one black frame via the raw video output callback.
-	outputBlack := func() {
-		c.mu.Lock()
-		outputFn := c.rawVideoOutput
-		c.mu.Unlock()
-		if outputFn != nil {
-			outputFn(blackFrame, slateW, slateH, outputPTS, true)
-			outputPTS += ptsPerFrame
-		}
-	}
-
-	if item.DurationMs <= 0 {
-		// No duration: hold until advance (like a live item), outputting black.
-		for {
-			select {
-			case <-ctx.Done():
-				emitEnd()
-				return true
-			case <-c.advanceCh:
-				emitEnd()
-				return false
-			case <-frameTick.C:
-				outputBlack()
-			}
-		}
-	}
-
-	duration := time.Duration(item.DurationMs) * time.Millisecond
-	timer := time.NewTimer(duration)
-	defer timer.Stop()
-
-	// Update progress periodically.
-	tick := time.NewTicker(100 * time.Millisecond)
-	defer tick.Stop()
-
-	startTime := time.Now()
-
-	for {
-		select {
-		case <-ctx.Done():
-			emitEnd()
-			return true
-		case <-c.advanceCh:
-			emitEnd()
-			return false
-		case <-timer.C:
-			c.itemProgress.Store(1000)
-			c.itemRemainMs.Store(0)
-			emitEnd()
-			return false
-		case <-frameTick.C:
-			outputBlack()
-		case <-tick.C:
-			elapsed := time.Since(startTime)
-			prog := int64(elapsed.Milliseconds() * 1000 / item.DurationMs)
-			if prog > 1000 {
-				prog = 1000
-			}
-			c.itemProgress.Store(prog)
-			remain := item.DurationMs - elapsed.Milliseconds()
-			if remain < 0 {
-				remain = 0
-			}
-			c.itemRemainMs.Store(remain)
-
-			if scheduler != nil && len(item.SecondaryEvents) > 0 {
-				scheduler.Tick(elapsed.Milliseconds())
-			}
-		}
+	if fn != nil {
+		fn(newState)
 	}
 }
 
-// holdLastFrame outputs the last frame at 1fps until advance signal or context cancel.
-// Returns true if context was cancelled.
-func (c *Channel) holdLastFrame(ctx context.Context, frame DecodedFrame, outputPTS *int64) bool {
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return true
-		case <-c.advanceCh:
-			return false
-		case <-ticker.C:
-			c.mu.Lock()
-			outputFn := c.rawVideoOutput
-			c.mu.Unlock()
-
-			if outputFn != nil {
-				outputFn(frame.YUV, frame.Width, frame.Height, *outputPTS, true)
-			}
-			*outputPTS += 90000 // 1 second in 90kHz PTS
-		}
+// cleanup closes the active clip iterator and idle loop.
+func (c *Channel) cleanup() {
+	c.mu.Lock()
+	if c.clipIter != nil {
+		c.clipIter.Close()
+		c.clipIter = nil
+		c.clipItemID = ""
 	}
+
+	// End secondary events.
+	if c.secondaryScheduler != nil && c.secondaryItemID != "" {
+		c.secondaryScheduler.EndItem()
+		c.secondaryItemID = ""
+	}
+	c.mu.Unlock()
 }
 
 // estimateFPS estimates frames per second from PTS values.

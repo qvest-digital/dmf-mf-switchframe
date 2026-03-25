@@ -352,10 +352,8 @@ func (m *Manager) Recover(statePath string) error {
 					"channel", pch.ID, "error", err)
 				continue
 			}
-			// Override cursor under lock to the saved position.
-			ch.mu.Lock()
-			ch.cursor = pch.Cursor
-			ch.mu.Unlock()
+			// Override cursor to the saved position.
+			ch.SetCursor(pch.Cursor)
 		}
 
 		// Restore non-terminal pods.
@@ -578,11 +576,9 @@ func (m *Manager) RecoverChannel(channelID int) error {
 		if err := ch.LoadPlaylist(snap.Playlist); err != nil {
 			return fmt.Errorf("recover: reload playlist: %w", err)
 		}
-		ch.mu.Lock()
 		if snap.Cursor >= 0 && snap.Cursor < len(snap.Playlist.Items) {
-			ch.cursor = snap.Cursor
+			ch.SetCursor(snap.Cursor)
 		}
-		ch.mu.Unlock()
 	}
 
 	// Emit recovery as-run event.

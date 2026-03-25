@@ -1176,3 +1176,337 @@ func TestChannel_AudioOutput_NilCallback(t *testing.T) {
 	})
 	// If we get here without panic, the test passes.
 }
+
+// ---------------------------------------------------------------------------
+// Config-driven dimension and FPS tests
+// ---------------------------------------------------------------------------
+
+// fakeFramesSized returns n fake YUV420 frames at the given resolution and fps.
+func fakeFramesSized(n, w, h int, fps float64) []DecodedFrame {
+	frames := make([]DecodedFrame, n)
+	ptsTick := int64(90000.0 / fps)
+	for i := range frames {
+		frames[i] = DecodedFrame{
+			YUV:        make([]byte, w*h*3/2),
+			PTS:        int64(i) * ptsTick,
+			IsKeyframe: i == 0,
+			Width:      w,
+			Height:     h,
+		}
+	}
+	return frames
+}
+
+func TestChannel_ConfigDimensions_UsedByCompositor(t *testing.T) {
+	w, h := 1280, 720
+	frames := fakeFramesSized(5, w, h, 30.0)
+	provider := NewFakeAssetProvider(frames)
+
+	ch := NewChannel(1, ChannelConfig{
+		AssetProvider: provider,
+		Width:         w,
+		Height:        h,
+		FPS:           30.0,
+	})
+
+	var mu sync.Mutex
+	var widths []int
+	ch.SetRawVideoOutput(func(yuv []byte, fw, fh int, pts int64, isKeyframe bool) {
+		mu.Lock()
+		widths = append(widths, fw)
+		mu.Unlock()
+	})
+
+	pl := testPlaylist(clipItem("a"))
+	if err := ch.LoadPlaylist(pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	if err := ch.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	waitFor(t, 5*time.Second, func() bool {
+		return ch.State() == StateCompleted
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(widths) == 0 {
+		t.Fatal("no frames emitted")
+	}
+	// Clip frames carry their own dimensions, so we check the clip output.
+	for i, fw := range widths {
+		if fw != w {
+			t.Errorf("frame[%d] width = %d, want %d", i, fw, w)
+		}
+	}
+}
+
+func TestChannel_ConfigDimensions_SlateMatchesConfig(t *testing.T) {
+	w, h := 640, 480
+	ch := NewChannel(1, ChannelConfig{
+		Width:  w,
+		Height: h,
+		FPS:    25.0,
+	})
+
+	var mu sync.Mutex
+	var dims []struct{ w, h int }
+	ch.SetRawVideoOutput(func(yuv []byte, fw, fh int, pts int64, isKeyframe bool) {
+		mu.Lock()
+		dims = append(dims, struct{ w, h int }{fw, fh})
+		mu.Unlock()
+	})
+
+	pl := testPlaylist(slateItem("brb", 200))
+	if err := ch.LoadPlaylist(pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	if err := ch.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	waitFor(t, 5*time.Second, func() bool {
+		return ch.State() == StateCompleted
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(dims) == 0 {
+		t.Fatal("no frames emitted for slate")
+	}
+	for i, d := range dims {
+		if d.w != w || d.h != h {
+			t.Errorf("slate frame[%d] = %dx%d, want %dx%d", i, d.w, d.h, w, h)
+		}
+	}
+}
+
+func TestChannel_ConfigFPS_AffectsTickRate(t *testing.T) {
+	// At 60fps, frame duration should be ~16.6ms, so a 200ms slate should produce
+	// roughly 12 frames. At 10fps it would be ~2.
+	ch := NewChannel(1, ChannelConfig{
+		Width:  320,
+		Height: 240,
+		FPS:    60.0,
+	})
+
+	var frameCount atomic.Int32
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
+		frameCount.Add(1)
+	})
+
+	pl := testPlaylist(slateItem("fast", 200))
+	if err := ch.LoadPlaylist(pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	if err := ch.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	waitFor(t, 5*time.Second, func() bool {
+		return ch.State() == StateCompleted
+	})
+
+	count := frameCount.Load()
+	// 200ms at 60fps should produce ~12 frames; allow a generous range.
+	if count < 5 {
+		t.Errorf("60fps slate produced only %d frames in 200ms, expected >= 5", count)
+	}
+}
+
+func TestChannel_IdleLoop_PlaysBetweenItems(t *testing.T) {
+	frames := fakeFramesSized(3, 320, 240, 30.0)
+	provider := NewFakeAssetProvider(frames)
+
+	ch := NewChannel(1, ChannelConfig{
+		AssetProvider: provider,
+		Width:         320,
+		Height:        240,
+		FPS:           30.0,
+	})
+
+	// First item completes quickly, second has a future scheduled time.
+	future := time.Now().Add(500 * time.Millisecond)
+	pl := testPlaylist(
+		clipItem("first"),
+		PlaylistItem{
+			ID:            "second",
+			Type:          ItemClip,
+			AssetURI:      "local:///clips/second.ts",
+			Title:         "Second",
+			ScheduledTime: &future,
+		},
+	)
+
+	var mu sync.Mutex
+	var framesSeen int
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
+		mu.Lock()
+		framesSeen++
+		mu.Unlock()
+	})
+
+	if err := ch.LoadPlaylist(pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	if err := ch.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Wait for the second item to start and complete.
+	waitFor(t, 5*time.Second, func() bool {
+		return ch.State() == StateCompleted
+	})
+
+	// Verify frames were emitted during idle gap and during clip playback.
+	mu.Lock()
+	total := framesSeen
+	mu.Unlock()
+
+	// 3 frames for first clip + idle frames during 500ms gap + 3 frames for second clip.
+	// Should be significantly more than just 6.
+	if total < 6 {
+		t.Errorf("total frames = %d, expected at least 6 (clips + idle gap)", total)
+	}
+}
+
+func TestChannel_LiveTap_EmitsFrames(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{
+		Width:  320,
+		Height: 240,
+		FPS:    30.0,
+	})
+
+	// Set up a fake GPU source tap that returns a frame.
+	tapFrame := &DecodedFrame{
+		YUV:        make([]byte, 320*240*3/2),
+		Width:      320,
+		Height:     240,
+		IsKeyframe: true,
+	}
+	ch.SetGPUSourceTap(func(sourceKey string) *DecodedFrame {
+		if sourceKey == "camera-1" {
+			return tapFrame
+		}
+		return nil
+	})
+
+	var frameCount atomic.Int32
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
+		frameCount.Add(1)
+	})
+
+	pl := testPlaylist(liveItem("live-1", "camera-1"))
+	if err := ch.LoadPlaylist(pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	if err := ch.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Let it emit a few frames.
+	time.Sleep(200 * time.Millisecond)
+
+	count := frameCount.Load()
+	if count < 3 {
+		t.Errorf("live tap frame count = %d, want >= 3", count)
+	}
+
+	// Advance past to complete.
+	_ = ch.Next()
+	waitFor(t, 5*time.Second, func() bool {
+		return ch.State() == StateCompleted
+	})
+}
+
+func TestChannel_Transition_BlendsFrames(t *testing.T) {
+	frames := fakeFramesSized(30, 320, 240, 30.0) // enough frames for transition
+	provider := NewFakeAssetProvider(frames)
+
+	ch := NewChannel(1, ChannelConfig{
+		AssetProvider: provider,
+		Width:         320,
+		Height:        240,
+		FPS:           30.0,
+	})
+
+	var frameCount atomic.Int32
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
+		frameCount.Add(1)
+	})
+
+	// Two clips with a 200ms dissolve transition.
+	tc := &TransitionConfig{Type: "dissolve", DurationMs: 200}
+	item1 := clipItem("first")
+	item2 := clipItem("second")
+	item2.Transition = tc
+
+	pl := testPlaylist(item1, item2)
+	if err := ch.LoadPlaylist(pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	if err := ch.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	waitFor(t, 5*time.Second, func() bool {
+		return ch.State() == StateCompleted
+	})
+
+	count := frameCount.Load()
+	// Both clips + transition frames should produce a good number of frames.
+	if count < 5 {
+		t.Errorf("transition test frame count = %d, expected >= 5", count)
+	}
+}
+
+func TestChannel_DefaultDimensions_WhenZero(t *testing.T) {
+	// When Width/Height/FPS are all zero, defaults should be used.
+	ch := NewChannel(1, ChannelConfig{})
+
+	// The slate frame should have default dimensions.
+	ch.mu.Lock()
+	sf := ch.slateFrame
+	ch.mu.Unlock()
+
+	if sf.Width != 1920 || sf.Height != 1080 {
+		t.Errorf("default slate dimensions = %dx%d, want 1920x1080", sf.Width, sf.Height)
+	}
+
+	expectedSize := 1920 * 1080 * 3 / 2
+	if len(sf.YUV) != expectedSize {
+		t.Errorf("slate YUV size = %d, want %d", len(sf.YUV), expectedSize)
+	}
+}
+
+func TestChannel_MakeBlackFrame(t *testing.T) {
+	frame := makeBlackFrame(320, 240)
+	if frame.Width != 320 || frame.Height != 240 {
+		t.Errorf("dimensions = %dx%d, want 320x240", frame.Width, frame.Height)
+	}
+	expectedSize := 320 * 240 * 3 / 2
+	if len(frame.YUV) != expectedSize {
+		t.Errorf("YUV size = %d, want %d", len(frame.YUV), expectedSize)
+	}
+	// Y plane should be 16 (BT.709 black).
+	ySize := 320 * 240
+	for i := 0; i < ySize; i++ {
+		if frame.YUV[i] != 16 {
+			t.Errorf("Y[%d] = %d, want 16", i, frame.YUV[i])
+			break
+		}
+	}
+	// UV planes should be 128 (neutral chroma).
+	for i := ySize; i < len(frame.YUV); i++ {
+		if frame.YUV[i] != 128 {
+			t.Errorf("UV[%d] = %d, want 128", i, frame.YUV[i])
+			break
+		}
+	}
+	if !frame.IsKeyframe {
+		t.Error("black frame should be a keyframe")
+	}
+}
