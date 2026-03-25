@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+const serverIP = "10.128.0.2"
+
 // createTestInstance creates an MTL instance using kernel socket mode on ens4.
 // This requires MTL to be installed and hugepages configured (dev server only).
 // Must run with sudo for hugepage access.
@@ -51,7 +53,7 @@ func TestIntegration_VideoRoundTrip(t *testing.T) {
 	// Create TX first, then RX.
 	vtx, err := inst.CreateVideoTx(TxVideoConfig{
 		MulticastIP:  mcastIP,
-		SourceIP:     "127.0.0.1",
+		SourceIP:     serverIP,
 		Port:         port,
 		Format:       vfmt,
 		FrameBuffers: 3,
@@ -63,7 +65,7 @@ func TestIntegration_VideoRoundTrip(t *testing.T) {
 
 	vrx, err := inst.CreateVideoRx(RxVideoConfig{
 		MulticastIP:  mcastIP,
-		SourceIP:     "127.0.0.1",
+		SourceIP:     serverIP,
 		Port:         port,
 		Format:       vfmt,
 		FrameBuffers: 3,
@@ -131,7 +133,7 @@ func TestIntegration_AudioRoundTrip(t *testing.T) {
 
 	atx, err := inst.CreateAudioTx(TxAudioConfig{
 		MulticastIP:  mcastIP,
-		SourceIP:     "127.0.0.1",
+		SourceIP:     serverIP,
 		Port:         port,
 		Format:       afmt,
 		FrameBuffers: 3,
@@ -143,7 +145,7 @@ func TestIntegration_AudioRoundTrip(t *testing.T) {
 
 	arx, err := inst.CreateAudioRx(RxAudioConfig{
 		MulticastIP:  mcastIP,
-		SourceIP:     "127.0.0.1",
+		SourceIP:     serverIP,
 		Port:         port,
 		Format:       afmt,
 		FrameBuffers: 3,
