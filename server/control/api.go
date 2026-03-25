@@ -228,6 +228,12 @@ func WithPlayoutCache(c *playout.Cache) APIOption {
 	return func(a *API) { a.playoutCache = c }
 }
 
+// WithPlayoutPrefetcher attaches a playout prefetcher to the API so
+// playlist loads can trigger asset pre-fetching.
+func WithPlayoutPrefetcher(pf *playout.Prefetcher) APIOption {
+	return func(a *API) { a.playoutPrefetcher = pf }
+}
+
 // WithSCTE35 attaches an SCTE-35 injector and rules store to the API.
 func WithSCTE35(s SCTE35API, r SCTE35RulesAPI) APIOption {
 	return func(a *API) { a.scte35 = s; a.scte35Rules = r }
@@ -445,6 +451,7 @@ type API struct {
 	clipStore          *clip.Store
 	playoutMgr         *playout.Manager
 	playoutCache       *playout.Cache
+	playoutPrefetcher  *playout.Prefetcher
 	recordingDir       atomic.Pointer[string]
 	operatorStore      *operator.Store
 	sessionMgr         *operator.SessionManager

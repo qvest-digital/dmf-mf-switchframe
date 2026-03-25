@@ -1303,6 +1303,9 @@ func (a *App) initAPI() error {
 	if a.playoutCache != nil {
 		apiOpts = append(apiOpts, control.WithPlayoutCache(a.playoutCache))
 	}
+	if a.playoutPrefetcher != nil {
+		apiOpts = append(apiOpts, control.WithPlayoutPrefetcher(a.playoutPrefetcher))
+	}
 	if a.commsMgr != nil {
 		apiOpts = append(apiOpts, control.WithCommsManager(a.commsMgr))
 	}

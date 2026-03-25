@@ -98,6 +98,11 @@ func (a *API) handlePlayoutLoad(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Trigger prefetch so clip assets are cached before playback.
+	if a.playoutPrefetcher != nil {
+		a.playoutPrefetcher.UpdatePlaylist(&pl, 0)
+	}
+
 	a.broadcast()
 	states := a.playoutMgr.ChannelStates()
 	w.Header().Set("Content-Type", "application/json")
