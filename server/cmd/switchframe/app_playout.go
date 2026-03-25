@@ -112,8 +112,20 @@ func (a *App) initPlayout() error {
 		scte35Injector: a.scte35Injector,
 	})
 
-	// Wire SCTE-35 injector to pod boards.
-	mgr.SetSCTE35Injector(&podSCTE35Adapter{injector: a.scte35Injector})
+	// Wire SCTE-35 injector to pod boards (spliceSCTE35Adapter satisfies both
+	// podSCTE35Injector and spliceScheduleInjector).
+	spliceAdapter := &spliceSCTE35Adapter{injector: a.scte35Injector}
+	mgr.SetSCTE35Injector(spliceAdapter)
+
+	// Create black detector and splice coordinator for frame-accurate break entry.
+	blackDetector := playout.NewBlackDetector(playout.BlackDetectorConfig{})
+	spliceCoord := playout.NewSpliceCoordinator(playout.SpliceCoordinatorConfig{
+		Injector:      spliceAdapter,
+		BlackDetector: blackDetector,
+		PreRollMs:     5000,
+		WindowMs:      500,
+	})
+	mgr.SetSpliceCoordinator(spliceCoord)
 
 	a.playoutMgr = mgr
 	a.playoutCache = cache
@@ -157,6 +169,13 @@ type captionController interface {
 
 type scte35Cuer interface {
 	InjectCue(msg *scte35.CueMessage) (uint32, error)
+}
+
+// scte35Scheduler is the narrow interface for scheduled SCTE-35 injection.
+// *scte35.Injector satisfies this via InjectCue + ScheduleCue.
+type scte35Scheduler interface {
+	InjectCue(msg *scte35.CueMessage) (uint32, error)
+	ScheduleCue(msg *scte35.CueMessage, preRollMs int64) (uint32, error)
 }
 
 func (h *playoutSecondaryHandler) OnGraphicsOn(layer int, template string) error {
@@ -243,16 +262,31 @@ func (h *playoutSecondaryHandler) OnSCTE35Cue(data *playout.SCTE35EventData) err
 	return err
 }
 
-// podSCTE35Adapter adapts the real scte35.Injector to the narrow podSCTE35Injector interface
-// used by PodBoard for pod lifecycle cue injection.
-type podSCTE35Adapter struct {
-	injector scte35Cuer
+// spliceSCTE35Adapter wraps scte35.Injector for splice-aligned pod cue injection.
+// It implements both playout.podSCTE35Injector (InjectPodCue) and
+// playout.spliceScheduleInjector (InjectPodCue + SchedulePodCue).
+type spliceSCTE35Adapter struct {
+	injector scte35Scheduler
 }
 
-func (a *podSCTE35Adapter) InjectPodCue(isOut bool, autoReturn bool, durationMs int64) (uint32, error) {
+func (a *spliceSCTE35Adapter) InjectPodCue(isOut, autoReturn bool, durationMs int64) (uint32, error) {
 	if a.injector == nil {
 		return 0, nil
 	}
+	msg := buildPodCueMessage(isOut, autoReturn, durationMs)
+	return a.injector.InjectCue(msg)
+}
+
+func (a *spliceSCTE35Adapter) SchedulePodCue(isOut, autoReturn bool, durationMs, preRollMs int64) (uint32, error) {
+	if a.injector == nil {
+		return 0, nil
+	}
+	msg := buildPodCueMessage(isOut, autoReturn, durationMs)
+	return a.injector.ScheduleCue(msg, preRollMs)
+}
+
+// buildPodCueMessage is a shared helper for constructing the CueMessage.
+func buildPodCueMessage(isOut, autoReturn bool, durationMs int64) *scte35.CueMessage {
 	msg := &scte35.CueMessage{
 		CommandType: 0x05, // splice_insert
 		IsOut:       isOut,
@@ -263,5 +297,5 @@ func (a *podSCTE35Adapter) InjectPodCue(isOut bool, autoReturn bool, durationMs 
 		d := time.Duration(durationMs) * time.Millisecond
 		msg.BreakDuration = &d
 	}
-	return a.injector.InjectCue(msg)
+	return msg
 }

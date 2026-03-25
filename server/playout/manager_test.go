@@ -315,3 +315,134 @@ func TestManager_InvalidChannelID(t *testing.T) {
 		t.Errorf("LoadPlaylist(%d): got %v, want ErrInvalidChannel", MaxChannels+1, err)
 	}
 }
+
+func TestManager_SetSpliceCoordinator(t *testing.T) {
+	m := NewManager(ManagerConfig{
+		AssetProvider: fakeProvider(3),
+	})
+
+	inj := &fakeSpliceInjector{}
+	bd := NewBlackDetector(BlackDetectorConfig{})
+	sc := NewSpliceCoordinator(SpliceCoordinatorConfig{
+		Injector:      inj,
+		BlackDetector: bd,
+		PreRollMs:     5000,
+		WindowMs:      500,
+	})
+
+	m.SetSpliceCoordinator(sc)
+
+	// Verify splice coordinator was stored on the manager.
+	m.mu.Lock()
+	if m.spliceCoordinator != sc {
+		t.Error("splice coordinator not stored on manager")
+	}
+	m.mu.Unlock()
+
+	// Verify it was propagated to all pod boards.
+	for i := 0; i < MaxChannels; i++ {
+		m.mu.Lock()
+		pb := m.podBoards[i]
+		m.mu.Unlock()
+
+		pb.mu.Lock()
+		if pb.spliceCoordinator != sc {
+			t.Errorf("podBoard[%d] splice coordinator not set", i)
+		}
+		pb.mu.Unlock()
+	}
+}
+
+func TestManager_SetPTSProvider_PropagatesToPodBoards(t *testing.T) {
+	m := NewManager(ManagerConfig{
+		AssetProvider: fakeProvider(3),
+	})
+
+	ptsFn := func() int64 { return 42 }
+	m.SetPTSProvider(ptsFn)
+
+	// Verify PTS provider was propagated to all pod boards.
+	for i := 0; i < MaxChannels; i++ {
+		m.mu.Lock()
+		pb := m.podBoards[i]
+		m.mu.Unlock()
+
+		pb.mu.Lock()
+		if pb.ptsProvider == nil {
+			t.Errorf("podBoard[%d] PTS provider is nil", i)
+		} else if pb.ptsProvider() != 42 {
+			t.Errorf("podBoard[%d] PTS provider returned %d, want 42", i, pb.ptsProvider())
+		}
+		pb.mu.Unlock()
+	}
+}
+
+func TestManager_SetSpliceCoordinator_PropagatesPTSProvider(t *testing.T) {
+	m := NewManager(ManagerConfig{
+		AssetProvider: fakeProvider(3),
+	})
+
+	// Set PTS provider first.
+	ptsFn := func() int64 { return 99 }
+	m.SetPTSProvider(ptsFn)
+
+	// Now set splice coordinator — it should also propagate PTS provider.
+	inj := &fakeSpliceInjector{}
+	bd := NewBlackDetector(BlackDetectorConfig{})
+	sc := NewSpliceCoordinator(SpliceCoordinatorConfig{
+		Injector:      inj,
+		BlackDetector: bd,
+	})
+	m.SetSpliceCoordinator(sc)
+
+	// Verify both splice coordinator and PTS provider are set on pod boards.
+	for i := 0; i < MaxChannels; i++ {
+		m.mu.Lock()
+		pb := m.podBoards[i]
+		m.mu.Unlock()
+
+		pb.mu.Lock()
+		if pb.spliceCoordinator != sc {
+			t.Errorf("podBoard[%d] splice coordinator not set", i)
+		}
+		if pb.ptsProvider == nil {
+			t.Errorf("podBoard[%d] PTS provider not propagated", i)
+		}
+		pb.mu.Unlock()
+	}
+}
+
+func TestManager_Start_WiresSpliceCoordinator(t *testing.T) {
+	m := NewManager(ManagerConfig{
+		AssetProvider: fakeProvider(3),
+	})
+	defer m.Close()
+
+	inj := &fakeSpliceInjector{}
+	bd := NewBlackDetector(BlackDetectorConfig{})
+	sc := NewSpliceCoordinator(SpliceCoordinatorConfig{
+		Injector:      inj,
+		BlackDetector: bd,
+	})
+	m.SetSpliceCoordinator(sc)
+
+	// Load and start a channel.
+	pl := testPlaylist(liveItem("live", "cam"))
+	if err := m.LoadPlaylist(1, pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	if err := m.Start(1); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Verify the channel got the splice coordinator.
+	m.mu.Lock()
+	ch := m.channels[0]
+	m.mu.Unlock()
+
+	ch.mu.Lock()
+	if ch.spliceCoordinator != sc {
+		t.Error("channel splice coordinator not set after Start")
+	}
+	ch.mu.Unlock()
+}

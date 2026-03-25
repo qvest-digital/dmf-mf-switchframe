@@ -18,14 +18,15 @@ type Manager struct {
 	podBoards     [MaxChannels]*PodBoard
 	templateStore *PodTemplateStore
 
-	onStateChange    func()
-	onStart          func(channelID int, key string)
-	onStop           func(channelID int, key string)
-	rawVideoOutput   func(key string, yuv []byte, w, h int, pts int64, isKeyframe bool)
-	videoOutput      func(key string, wireData []byte, pts int64, isKeyframe bool, sps, pps []byte)
-	audioOutput      func(key string, data []byte, pts int64, sampleRate, channels int)
-	ptsProvider      func() int64
-	secondaryHandler SecondaryEventHandler
+	onStateChange     func()
+	onStart           func(channelID int, key string)
+	onStop            func(channelID int, key string)
+	rawVideoOutput    func(key string, yuv []byte, w, h int, pts int64, isKeyframe bool)
+	videoOutput       func(key string, wireData []byte, pts int64, isKeyframe bool, sps, pps []byte)
+	audioOutput       func(key string, data []byte, pts int64, sampleRate, channels int)
+	ptsProvider       func() int64
+	secondaryHandler  SecondaryEventHandler
+	spliceCoordinator *SpliceCoordinator
 }
 
 // ManagerConfig configures the playout Manager.
@@ -96,6 +97,7 @@ func (m *Manager) Start(channelID int) error {
 	rawVideoFn := m.rawVideoOutput
 	ptsFn := m.ptsProvider
 	secondaryH := m.secondaryHandler
+	sc := m.spliceCoordinator
 	m.mu.Unlock()
 
 	ch.SetOnStateChange(func(s ChannelState) {
@@ -123,6 +125,9 @@ func (m *Manager) Start(channelID int) error {
 	}
 	if secondaryH != nil {
 		ch.SetSecondaryHandler(secondaryH)
+	}
+	if sc != nil {
+		ch.SetSpliceCoordinator(sc)
 	}
 
 	// Wire pod board callbacks.
@@ -283,10 +288,14 @@ func (m *Manager) SetAudioOutput(fn func(key string, data []byte, pts int64, sam
 }
 
 // SetPTSProvider registers a function that returns the current program PTS.
+// It also propagates the provider to all pod boards for splice window calculation.
 func (m *Manager) SetPTSProvider(fn func() int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.ptsProvider = fn
+	for i := 0; i < MaxChannels; i++ {
+		m.podBoards[i].SetPTSProvider(fn)
+	}
 }
 
 // SetSecondaryHandler registers a handler for secondary events dispatched
@@ -295,6 +304,21 @@ func (m *Manager) SetSecondaryHandler(h SecondaryEventHandler) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.secondaryHandler = h
+}
+
+// SetSpliceCoordinator registers a splice coordinator and propagates it to all
+// pod boards and (on Start) to channels. It also propagates the current PTS
+// provider to pod boards if one is already set.
+func (m *Manager) SetSpliceCoordinator(sc *SpliceCoordinator) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.spliceCoordinator = sc
+	for i := 0; i < MaxChannels; i++ {
+		m.podBoards[i].SetSpliceCoordinator(sc)
+		if m.ptsProvider != nil {
+			m.podBoards[i].SetPTSProvider(m.ptsProvider)
+		}
+	}
 }
 
 // PodBoard returns the pod board for the given channel.
