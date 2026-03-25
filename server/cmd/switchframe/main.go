@@ -109,6 +109,13 @@ type AppConfig struct {
 
 	// Persistent cache directory for mmap'd LUTs and decoded assets.
 	CacheDir string
+
+	// ST 2110 integration.
+	ST2110Port     string // DPDK port identifier (e.g. "0000:31:00.0")
+	ST2110IP       string // local IP for TX
+	ST2110Inputs   int    // number of ST 2110 inputs (default 4)
+	ST2110PTP      string // PTP mode (default "auto")
+	ST2110NMOSPort int    // NMOS API HTTP port (default 8090)
 }
 
 func main() {
@@ -152,6 +159,9 @@ func run() error {
 		if err == errDiscoverExit {
 			return nil // clean exit after --mxl-discover
 		}
+		return err
+	}
+	if err := app.initST2110(context.Background()); err != nil {
 		return err
 	}
 	if err := app.initSCTE35(); err != nil {
@@ -265,6 +275,13 @@ func parseConfig() (AppConfig, error) {
 
 	// Persistent cache directory.
 	cacheDirFlag := flag.String("cache-dir", defaultCacheDir(), "persistent cache directory for mmap'd LUTs and decoded assets")
+
+	// ST 2110 integration flags.
+	st2110PortFlag := flag.String("st2110-port", "", "DPDK port identifier for ST 2110 (e.g. 0000:31:00.0)")
+	st2110IPFlag := flag.String("st2110-ip", "", "Local IP address for ST 2110 TX sessions")
+	st2110InputsFlag := flag.Int("st2110-inputs", 4, "Number of ST 2110 input receivers")
+	st2110PTPFlag := flag.String("st2110-ptp", "auto", "PTP mode for ST 2110 (auto, l2, l4, none)")
+	st2110NMOSPortFlag := flag.Int("st2110-nmos-port", 8090, "NMOS API HTTP port for IS-04/IS-05")
 
 	flag.Parse()
 
@@ -400,6 +417,11 @@ func parseConfig() (AppConfig, error) {
 		NeuralKeyModelPath:   *neuralKeyModelFlag,
 		ASRModelPath:         *asrModelFlag,
 		CacheDir:             *cacheDirFlag,
+		ST2110Port:           *st2110PortFlag,
+		ST2110IP:             *st2110IPFlag,
+		ST2110Inputs:         *st2110InputsFlag,
+		ST2110PTP:            *st2110PTPFlag,
+		ST2110NMOSPort:       *st2110NMOSPortFlag,
 	}, nil
 }
 
