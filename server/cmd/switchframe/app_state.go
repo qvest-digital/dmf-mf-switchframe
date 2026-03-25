@@ -23,6 +23,10 @@ func sourceType(key string) string {
 		return "clip"
 	case key == "replay":
 		return "replay"
+	case strings.HasPrefix(key, "playout:"):
+		return "playout"
+	case strings.HasPrefix(key, "clip:"):
+		return "clip"
 	default:
 		return "demo"
 	}

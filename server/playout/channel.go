@@ -22,7 +22,9 @@ type DecodedFrame struct {
 // ChannelConfig configures a playout channel.
 type ChannelConfig struct {
 	// DemuxFunc loads a media file and returns decoded YUV frames.
-	// For Phase 1 testing, this is a fake; production uses clip demuxer + decoder.
+	// Phase 1 limitation: returns all frames in memory at once. A 30s 1080p
+	// clip at 30fps requires ~2.8 GB. Phase 2 replaces this with streaming
+	// decode via the asset cache's pre-decode ring (next 2-3 items only).
 	DemuxFunc func(path string) ([]DecodedFrame, error)
 }
 
@@ -314,19 +316,31 @@ func (c *Channel) JumpTo(itemID string) error {
 // TakeManual pauses playlist advancement.
 func (c *Channel) TakeManual() {
 	c.mu.Lock()
-	if c.state == StateOnAir {
-		c.mode = ModeManual
+	if c.state != StateOnAir {
+		c.mu.Unlock()
+		return
 	}
+	c.mode = ModeManual
+	fn := c.onStateChange
 	c.mu.Unlock()
+	if fn != nil {
+		fn(StateOnAir)
+	}
 }
 
 // ReturnToAuto resumes automated playlist advancement.
 func (c *Channel) ReturnToAuto() {
 	c.mu.Lock()
-	if c.state == StateOnAir {
-		c.mode = ModeAutomated
+	if c.state != StateOnAir {
+		c.mu.Unlock()
+		return
 	}
+	c.mode = ModeAutomated
+	fn := c.onStateChange
 	c.mu.Unlock()
+	if fn != nil {
+		fn(StateOnAir)
+	}
 
 	select {
 	case c.advanceCh <- struct{}{}:
@@ -593,6 +607,9 @@ func (c *Channel) playLiveItem(ctx context.Context, item *PlaylistItem) bool {
 
 // playSlateItem holds for DurationMs or until Next().
 // Returns true if context was cancelled.
+// Phase 1 limitation: slate items are timing markers only — no frames are
+// rendered. The switcher source will hold its last frame. Phase 2 will add
+// color bar / black / slate asset rendering.
 func (c *Channel) playSlateItem(ctx context.Context, item *PlaylistItem) bool {
 	c.itemProgress.Store(0)
 	c.itemRemainMs.Store(item.DurationMs)

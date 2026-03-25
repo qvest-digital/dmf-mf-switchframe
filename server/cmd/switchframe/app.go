@@ -1292,6 +1292,9 @@ func (a *App) initAPI() error {
 	if a.clipStore != nil {
 		apiOpts = append(apiOpts, control.WithClipStore(a.clipStore))
 	}
+	if a.playoutMgr != nil {
+		apiOpts = append(apiOpts, control.WithPlayoutManager(a.playoutMgr))
+	}
 	if a.commsMgr != nil {
 		apiOpts = append(apiOpts, control.WithCommsManager(a.commsMgr))
 	}

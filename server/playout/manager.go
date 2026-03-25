@@ -1,7 +1,6 @@
 package playout
 
 import (
-	"fmt"
 	"log/slog"
 	"sync"
 )
@@ -286,10 +285,4 @@ func (m *Manager) notifyStateChange() {
 	if fn != nil {
 		fn()
 	}
-}
-
-// channelKey returns the virtual source key for a playout channel.
-// Format: "playout:N" where N is the 1-based channel ID.
-func channelKey(channelID int) string {
-	return fmt.Sprintf("playout:%d", channelID)
 }
