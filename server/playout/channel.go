@@ -328,9 +328,19 @@ func (c *Channel) TakeManual() {
 	}
 	c.mode = ModeManual
 	fn := c.onStateChange
+	asRunFn := c.asRunLog
+	channelID := c.id
 	c.mu.Unlock()
 	if fn != nil {
 		fn(StateOnAir)
+	}
+	if asRunFn != nil {
+		asRunFn(AsRunEvent{
+			Timestamp: time.Now().UTC(),
+			Type:      AsRunManualOverride,
+			ChannelID: channelID,
+			Operation: "enter_manual",
+		})
 	}
 }
 
@@ -343,9 +353,19 @@ func (c *Channel) ReturnToAuto() {
 	}
 	c.mode = ModeAutomated
 	fn := c.onStateChange
+	asRunFn := c.asRunLog
+	channelID := c.id
 	c.mu.Unlock()
 	if fn != nil {
 		fn(StateOnAir)
+	}
+	if asRunFn != nil {
+		asRunFn(AsRunEvent{
+			Timestamp: time.Now().UTC(),
+			Type:      AsRunManualOverride,
+			ChannelID: channelID,
+			Operation: "exit_manual",
+		})
 	}
 
 	select {

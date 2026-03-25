@@ -1015,3 +1015,40 @@ func TestSecondaryEventFireAsRun(t *testing.T) {
 		t.Errorf("event = %q, want %q", asrunEvents[0].EventName, "graphics_on")
 	}
 }
+
+// --- Task 15: Manual Override As-Run Events ---
+
+func TestManualOverrideAsRunEvents(t *testing.T) {
+	provider := fakeProvider(90) // ~3 seconds at 30fps
+	ch := NewChannel(1, ChannelConfig{AssetProvider: provider})
+
+	dir := t.TempDir()
+	logger, err := NewAsRunLogger(AsRunLoggerConfig{Dir: dir, RingCapacity: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+
+	ch.SetAsRunLog(func(ev AsRunEvent) { logger.Log(ev) })
+
+	pl := testPlaylist(clipItem("clip-1"))
+	_ = ch.LoadPlaylist(pl)
+	_ = ch.Start()
+
+	time.Sleep(50 * time.Millisecond)
+	ch.TakeManual()
+	time.Sleep(50 * time.Millisecond)
+	ch.ReturnToAuto()
+
+	waitFor(t, 5*time.Second, func() bool {
+		return ch.State() == StateCompleted
+	})
+
+	events := logger.Query(AsRunQuery{Type: AsRunManualOverride})
+	if len(events) < 2 {
+		t.Fatalf("got %d manual_override events, want >= 2", len(events))
+	}
+	if events[0].Operation != "enter_manual" {
+		t.Errorf("first op = %q, want enter_manual", events[0].Operation)
+	}
+}
