@@ -7,6 +7,7 @@ package st2110
 #include <mtl/st_pipeline_api.h>
 #include <stdlib.h>
 #include <string.h>
+#include "mtl_helpers.h"
 */
 import "C"
 
