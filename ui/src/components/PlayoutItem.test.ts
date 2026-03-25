@@ -22,6 +22,7 @@ function makeEvent(overrides: Partial<SecondaryEvent> = {}): SecondaryEvent {
 		type: 'graphics_on',
 		layer: 1,
 		offset_ms: 0,
+		anchor: 'start',
 		...overrides,
 	};
 }
