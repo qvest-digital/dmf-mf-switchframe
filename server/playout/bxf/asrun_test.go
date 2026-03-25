@@ -180,8 +180,11 @@ func TestExportAsRunStartWithoutEnd(t *testing.T) {
 	if len(details) != 1 {
 		t.Fatalf("expected 1 detail for start-without-end, got %d", len(details))
 	}
-	if details[0].Status != "Aired" {
-		t.Errorf("Status = %q, want %q", details[0].Status, "Aired")
+	if details[0].Status != "DidNotAir" {
+		t.Errorf("Status = %q, want %q", details[0].Status, "DidNotAir")
+	}
+	if details[0].Comment == "" {
+		t.Error("expected Comment to be set for DidNotAir item")
 	}
 	if details[0].ActualStartTime != "2026-03-25T10:00:00.000" {
 		t.Errorf("ActualStartTime = %q, want %q", details[0].ActualStartTime, "2026-03-25T10:00:00.000")
@@ -189,5 +192,28 @@ func TestExportAsRunStartWithoutEnd(t *testing.T) {
 	// No end time or duration for orphan start.
 	if details[0].ActualEndTime != "" {
 		t.Errorf("ActualEndTime = %q, want empty", details[0].ActualEndTime)
+	}
+}
+
+func TestExportAsRunDidNotAir(t *testing.T) {
+	events := []playout.AsRunEvent{
+		{Type: playout.AsRunItemStart, ItemID: "aired-1", Title: "Completed"},
+		{Type: playout.AsRunItemEnd, ItemID: "aired-1", ActualDurationMs: 30000},
+		{Type: playout.AsRunItemStart, ItemID: "skipped-1", Title: "Skipped"},
+		// No item_end for skipped-1
+	}
+
+	msg := ExportAsRun(events)
+	if len(msg.BxfData.AsRun.Details) != 2 {
+		t.Fatalf("got %d details, want 2", len(msg.BxfData.AsRun.Details))
+	}
+
+	// First should be Aired.
+	if msg.BxfData.AsRun.Details[0].Status != "Aired" {
+		t.Errorf("detail[0] status = %q, want Aired", msg.BxfData.AsRun.Details[0].Status)
+	}
+	// Second should be DidNotAir.
+	if msg.BxfData.AsRun.Details[1].Status != "DidNotAir" {
+		t.Errorf("detail[1] status = %q, want DidNotAir", msg.BxfData.AsRun.Details[1].Status)
 	}
 }

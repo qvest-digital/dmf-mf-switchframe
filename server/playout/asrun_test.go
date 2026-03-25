@@ -1177,3 +1177,123 @@ func TestAsRunFullIntegration(t *testing.T) {
 		t.Errorf("JSONL has %d lines, want >= 6", len(lines))
 	}
 }
+
+// --- Gap 1: Live/Slate items emit as-run events ---
+
+func TestLiveItemEmitsAsRunEvents(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{AssetProvider: fakeProvider(10)})
+
+	dir := t.TempDir()
+	logger, err := NewAsRunLogger(AsRunLoggerConfig{Dir: dir, RingCapacity: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+
+	ch.SetAsRunLog(func(ev AsRunEvent) { logger.Log(ev) })
+
+	pl := testPlaylist(liveItem("live-1", "cam1"))
+	_ = ch.LoadPlaylist(pl)
+	_ = ch.Start()
+
+	time.Sleep(50 * time.Millisecond)
+	_ = ch.Next() // advance past live item
+
+	waitFor(t, 5*time.Second, func() bool {
+		return ch.State() == StateCompleted
+	})
+
+	starts := 0
+	ends := 0
+	for _, ev := range logger.Query(AsRunQuery{}) {
+		if ev.Type == AsRunItemStart && ev.ItemID == "live-1" {
+			starts++
+		}
+		if ev.Type == AsRunItemEnd && ev.ItemID == "live-1" {
+			ends++
+		}
+	}
+	if starts != 1 {
+		t.Errorf("live item_start = %d, want 1", starts)
+	}
+	if ends != 1 {
+		t.Errorf("live item_end = %d, want 1", ends)
+	}
+}
+
+func TestSlateItemEmitsAsRunEvents(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{AssetProvider: fakeProvider(10)})
+
+	dir := t.TempDir()
+	logger, err := NewAsRunLogger(AsRunLoggerConfig{Dir: dir, RingCapacity: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+
+	ch.SetAsRunLog(func(ev AsRunEvent) { logger.Log(ev) })
+
+	pl := testPlaylist(slateItem("slate-1", 200)) // 200ms slate
+	_ = ch.LoadPlaylist(pl)
+	_ = ch.Start()
+
+	waitFor(t, 5*time.Second, func() bool {
+		return ch.State() == StateCompleted
+	})
+
+	starts := 0
+	ends := 0
+	for _, ev := range logger.Query(AsRunQuery{}) {
+		if ev.Type == AsRunItemStart && ev.ItemID == "slate-1" {
+			starts++
+		}
+		if ev.Type == AsRunItemEnd && ev.ItemID == "slate-1" {
+			ends++
+		}
+	}
+	if starts != 1 {
+		t.Errorf("slate item_start = %d, want 1", starts)
+	}
+	if ends != 1 {
+		t.Errorf("slate item_end = %d, want 1", ends)
+	}
+}
+
+// --- Gap 2: ScheduledTS and DeltaMs populated ---
+
+func TestAsRunScheduledTSPopulated(t *testing.T) {
+	provider := fakeProvider(10)
+	ch := NewChannel(1, ChannelConfig{AssetProvider: provider})
+
+	dir := t.TempDir()
+	logger, err := NewAsRunLogger(AsRunLoggerConfig{Dir: dir, RingCapacity: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+
+	ch.SetAsRunLog(func(ev AsRunEvent) { logger.Log(ev) })
+
+	scheduled := time.Now().UTC().Add(-100 * time.Millisecond) // 100ms ago = will be ~100ms late
+	item := clipItem("scheduled-1")
+	item.ScheduledTime = &scheduled
+
+	pl := testPlaylist(item)
+	_ = ch.LoadPlaylist(pl)
+	_ = ch.Start()
+
+	waitFor(t, 5*time.Second, func() bool {
+		return ch.State() == StateCompleted
+	})
+
+	events := logger.Query(AsRunQuery{Type: AsRunItemStart})
+	if len(events) != 1 {
+		t.Fatalf("got %d events, want 1", len(events))
+	}
+	if events[0].ScheduledTS == nil {
+		t.Fatal("expected ScheduledTS to be set")
+	}
+	if events[0].DeltaMs < 50 { // should be roughly 100ms late
+		t.Errorf("delta_ms = %f, expected > 50 (item was scheduled 100ms ago)", events[0].DeltaMs)
+	}
+}

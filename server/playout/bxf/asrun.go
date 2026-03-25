@@ -49,8 +49,16 @@ func ExportAsRun(events []playout.AsRunEvent) BxfMessage {
 	details := make([]AsRunDetail, 0, len(order))
 	for _, id := range order {
 		pair := pairs[id]
-		detail := AsRunDetail{
-			Status: "Aired",
+		detail := AsRunDetail{}
+
+		// Determine status based on start/end pairing.
+		if pair.start != nil && pair.end != nil {
+			detail.Status = "Aired"
+		} else if pair.start != nil && pair.end == nil {
+			detail.Status = "DidNotAir"
+			detail.Comment = "Item started but did not complete"
+		} else {
+			detail.Status = "Aired"
 		}
 
 		// Use start event for content info and start time.

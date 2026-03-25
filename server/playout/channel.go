@@ -586,14 +586,19 @@ func (c *Channel) playClipItem(ctx context.Context, item *PlaylistItem) bool {
 	// Emit item_start as-run event.
 	itemStartTime := time.Now().UTC()
 	if asRunFn != nil {
-		asRunFn(AsRunEvent{
+		ev := AsRunEvent{
 			Timestamp: itemStartTime,
 			Type:      AsRunItemStart,
 			ChannelID: channelID,
 			ItemID:    item.ID,
 			Title:     item.Title,
 			Source:    "automated",
-		})
+		}
+		if item.ScheduledTime != nil {
+			ev.ScheduledTS = item.ScheduledTime
+			ev.DeltaMs = float64(itemStartTime.Sub(*item.ScheduledTime).Microseconds()) / 1000.0
+		}
+		asRunFn(ev)
 	}
 
 	iter, err := provider.Open(item.AssetURI)
@@ -761,6 +766,29 @@ func (c *Channel) playLiveItem(ctx context.Context, item *PlaylistItem) bool {
 	c.itemProgress.Store(0)
 	c.itemRemainMs.Store(0)
 
+	// Emit item_start as-run event.
+	c.mu.Lock()
+	asRunFn := c.asRunLog
+	channelID := c.id
+	c.mu.Unlock()
+
+	itemStartTime := time.Now().UTC()
+	if asRunFn != nil {
+		ev := AsRunEvent{
+			Timestamp: itemStartTime,
+			Type:      AsRunItemStart,
+			ChannelID: channelID,
+			ItemID:    item.ID,
+			Title:     item.Title,
+			Source:    "automated",
+		}
+		if item.ScheduledTime != nil {
+			ev.ScheduledTS = item.ScheduledTime
+			ev.DeltaMs = float64(itemStartTime.Sub(*item.ScheduledTime).Microseconds()) / 1000.0
+		}
+		asRunFn(ev)
+	}
+
 	// Fire start-anchored secondary events.
 	c.mu.Lock()
 	scheduler := c.secondaryScheduler
@@ -772,12 +800,31 @@ func (c *Channel) playLiveItem(ctx context.Context, item *PlaylistItem) bool {
 		defer scheduler.EndItem()
 	}
 
+	var cancelled bool
 	select {
 	case <-ctx.Done():
-		return true
+		cancelled = true
 	case <-c.advanceCh:
-		return false
+		cancelled = false
 	}
+
+	// Emit item_end as-run event.
+	c.mu.Lock()
+	asRunEndFn := c.asRunLog
+	c.mu.Unlock()
+	if asRunEndFn != nil {
+		asRunEndFn(AsRunEvent{
+			Timestamp:        time.Now().UTC(),
+			Type:             AsRunItemEnd,
+			ChannelID:        channelID,
+			ItemID:           item.ID,
+			Title:            item.Title,
+			Source:           "automated",
+			ActualDurationMs: time.Since(itemStartTime).Milliseconds(),
+		})
+	}
+
+	return cancelled
 }
 
 // playSlateItem holds for DurationMs or until Next().
@@ -788,6 +835,47 @@ func (c *Channel) playLiveItem(ctx context.Context, item *PlaylistItem) bool {
 func (c *Channel) playSlateItem(ctx context.Context, item *PlaylistItem) bool {
 	c.itemProgress.Store(0)
 	c.itemRemainMs.Store(item.DurationMs)
+
+	// Emit item_start as-run event.
+	c.mu.Lock()
+	asRunFn := c.asRunLog
+	channelID := c.id
+	c.mu.Unlock()
+
+	itemStartTime := time.Now().UTC()
+	if asRunFn != nil {
+		ev := AsRunEvent{
+			Timestamp: itemStartTime,
+			Type:      AsRunItemStart,
+			ChannelID: channelID,
+			ItemID:    item.ID,
+			Title:     item.Title,
+			Source:    "automated",
+		}
+		if item.ScheduledTime != nil {
+			ev.ScheduledTS = item.ScheduledTime
+			ev.DeltaMs = float64(itemStartTime.Sub(*item.ScheduledTime).Microseconds()) / 1000.0
+		}
+		asRunFn(ev)
+	}
+
+	// emitEnd emits the item_end as-run event.
+	emitEnd := func() {
+		c.mu.Lock()
+		asRunEndFn := c.asRunLog
+		c.mu.Unlock()
+		if asRunEndFn != nil {
+			asRunEndFn(AsRunEvent{
+				Timestamp:        time.Now().UTC(),
+				Type:             AsRunItemEnd,
+				ChannelID:        channelID,
+				ItemID:           item.ID,
+				Title:            item.Title,
+				Source:           "automated",
+				ActualDurationMs: time.Since(itemStartTime).Milliseconds(),
+			})
+		}
+	}
 
 	// Secondary event scheduling.
 	c.mu.Lock()
@@ -804,8 +892,10 @@ func (c *Channel) playSlateItem(ctx context.Context, item *PlaylistItem) bool {
 		// No duration: hold until advance (like a live item).
 		select {
 		case <-ctx.Done():
+			emitEnd()
 			return true
 		case <-c.advanceCh:
+			emitEnd()
 			return false
 		}
 	}
@@ -823,12 +913,15 @@ func (c *Channel) playSlateItem(ctx context.Context, item *PlaylistItem) bool {
 	for {
 		select {
 		case <-ctx.Done():
+			emitEnd()
 			return true
 		case <-c.advanceCh:
+			emitEnd()
 			return false
 		case <-timer.C:
 			c.itemProgress.Store(1000)
 			c.itemRemainMs.Store(0)
+			emitEnd()
 			return false
 		case <-tick.C:
 			elapsed := time.Since(startTime)
