@@ -1116,3 +1116,64 @@ func TestAsRunItemDuration(t *testing.T) {
 		t.Errorf("actual_duration_ms = %d, want between 500-5000", dur)
 	}
 }
+
+// --- Task 17: Full Integration Test ---
+
+func TestAsRunFullIntegration(t *testing.T) {
+	dir := t.TempDir()
+	logger, err := NewAsRunLogger(AsRunLoggerConfig{Dir: dir, RingCapacity: 1000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+
+	provider := fakeProvider(10)
+	mgr := NewManager(ManagerConfig{AssetProvider: provider})
+	mgr.SetAsRunLogger(logger)
+
+	pl := testPlaylist(
+		clipItem("opener"),
+		clipItem("segment-1"),
+		clipItem("closer"),
+	)
+	if err := mgr.LoadPlaylist(1, pl); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Start(1); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 15*time.Second, func() bool {
+		states := mgr.ChannelStates()
+		return states[0].State == "completed"
+	})
+
+	allEvents := logger.Query(AsRunQuery{ChannelID: intPtr(1)})
+	starts := 0
+	ends := 0
+	for _, ev := range allEvents {
+		switch ev.Type {
+		case AsRunItemStart:
+			starts++
+		case AsRunItemEnd:
+			ends++
+		}
+	}
+	if starts != 3 {
+		t.Errorf("item_start events = %d, want 3", starts)
+	}
+	if ends != 3 {
+		t.Errorf("item_end events = %d, want 3", ends)
+	}
+
+	// Verify JSONL file was written.
+	files, _ := filepath.Glob(filepath.Join(dir, "*.jsonl"))
+	if len(files) != 1 {
+		t.Fatalf("expected 1 JSONL file, got %d", len(files))
+	}
+	data, _ := os.ReadFile(files[0])
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) < 6 {
+		t.Errorf("JSONL has %d lines, want >= 6", len(lines))
+	}
+}
