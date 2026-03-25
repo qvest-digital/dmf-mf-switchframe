@@ -1491,6 +1491,31 @@ func (a *App) Run(ctx context.Context) error {
 				}
 			}
 		}
+
+		// Load demo playout playlist with synthetic clips.
+		if a.playoutMgr != nil {
+			tmpDir, err := os.MkdirTemp("", "switchframe-demo-playout-*")
+			if err != nil {
+				slog.Warn("demo: failed to create temp dir for playout clips", "error", err)
+			} else {
+				playlist, err := demo.GenerateDemoPlaylist(tmpDir)
+				if err != nil {
+					slog.Warn("demo: failed to generate playout playlist", "error", err)
+				} else if playlist != nil {
+					if err := a.playoutMgr.LoadPlaylist(1, playlist); err != nil {
+						slog.Warn("demo: failed to load playout playlist", "error", err)
+					} else {
+						slog.Info("demo: playout playlist loaded", "items", len(playlist.Items), "channel", 1)
+						// Notify prefetcher so it can start caching assets.
+						if a.playoutPrefetcher != nil {
+							a.playoutPrefetcher.UpdatePlaylist(playlist, 0)
+						}
+						// Set up demo pods (armed ad break pods).
+						demo.SetupDemoPods(a.playoutMgr, 1)
+					}
+				}
+			}
+		}
 	}
 	a.debugCollector.Register("demo", demoStats)
 
