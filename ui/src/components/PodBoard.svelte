@@ -10,7 +10,9 @@
 	}
 	let { channel, activePod, pods = [], podsArmed = 0 }: Props = $props();
 
-	const armedPods = $derived(pods.filter(p => p.armed && p.state !== 'break_active'));
+	const armedPods = $derived(
+		pods.filter(p => p.armed && p.state !== 'break_active').sort((a, b) => a.id.localeCompare(b.id))
+	);
 	const hasActive = $derived(!!activePod && activePod.state === 'break_active');
 
 	function formatDuration(ms: number): string {
