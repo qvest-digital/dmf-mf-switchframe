@@ -121,6 +121,7 @@ type Playlist struct {
 	Mode              string           `json:"mode,omitempty"`
 	DefaultTransition TransitionConfig `json:"default_transition"`
 	Items             []PlaylistItem   `json:"items"`
+	IdleAssetURI      string           `json:"idle_asset_uri,omitempty"`
 }
 
 // ChannelStatus is the broadcast state of a playout channel.

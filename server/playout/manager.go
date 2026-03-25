@@ -32,6 +32,14 @@ type Manager struct {
 	secondaryHandler  SecondaryEventHandler
 	spliceCoordinator *SpliceCoordinator
 	watchdog          *Watchdog
+
+	// GPU source tap for live source pass-through.
+	gpuSourceTap func(channelKey, sourceKey string) *DecodedFrame
+
+	// Pipeline format for all channels.
+	pipelineWidth  int
+	pipelineHeight int
+	pipelineFPS    float64
 }
 
 // ManagerConfig configures the playout Manager.
@@ -82,6 +90,14 @@ func (m *Manager) LoadPlaylist(channelID int, pl *Playlist) error {
 		return err
 	}
 
+	// Configure idle loop if the playlist specifies an idle asset.
+	if pl.IdleAssetURI != "" {
+		m.mu.Lock()
+		provider := m.config.AssetProvider
+		m.mu.Unlock()
+		ch.SetIdleConfig(pl.IdleAssetURI, provider)
+	}
+
 	m.notifyStateChange()
 	return nil
 }
@@ -105,6 +121,7 @@ func (m *Manager) Start(channelID int) error {
 	secondaryH := m.secondaryHandler
 	sc := m.spliceCoordinator
 	wd := m.watchdog
+	gpuTap := m.gpuSourceTap
 	m.mu.Unlock()
 
 	// Register with watchdog.
@@ -155,6 +172,15 @@ func (m *Manager) Start(channelID int) error {
 	}
 	if sc != nil {
 		ch.SetSpliceCoordinator(sc)
+	}
+
+	// Wire GPU source tap — wrap the Manager-level tap with the channel key
+	// so the channel only needs to pass the source key.
+	if gpuTap != nil {
+		channelKey := ch.Key()
+		ch.SetGPUSourceTap(func(sourceKey string) *DecodedFrame {
+			return gpuTap(channelKey, sourceKey)
+		})
 	}
 
 	// Wire pod board callbacks.
@@ -532,6 +558,39 @@ func (m *Manager) SetSCTE35Injector(inj podSCTE35Injector) {
 	for i := 0; i < MaxChannels; i++ {
 		m.podBoards[i].SetSCTE35Injector(inj)
 		m.podBoards[i].SetTemplateStore(m.templateStore)
+	}
+}
+
+// SetGPUSourceTap registers a function that reads cached GPU frames for live
+// source pass-through. The function receives the channel key (e.g., "playout:1")
+// and source key (e.g., "cam-1") and returns the latest decoded frame or nil.
+func (m *Manager) SetGPUSourceTap(fn func(channelKey, sourceKey string) *DecodedFrame) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.gpuSourceTap = fn
+}
+
+// SetPipelineFormat configures the video dimensions and frame rate for all channels.
+// Channels are recreated with the new format on next Start(). This should be called
+// before loading playlists or starting channels.
+func (m *Manager) SetPipelineFormat(width, height int, fps float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pipelineWidth = width
+	m.pipelineHeight = height
+	m.pipelineFPS = fps
+
+	// Recreate all stopped channels with the new format so that subsequent
+	// LoadPlaylist + Start picks up the dimensions immediately.
+	for i := 0; i < MaxChannels; i++ {
+		if m.channels[i].State() == StateStopped {
+			m.channels[i] = NewChannel(i+1, ChannelConfig{
+				AssetProvider: m.config.AssetProvider,
+				Width:         width,
+				Height:        height,
+				FPS:           fps,
+			})
+		}
 	}
 }
 

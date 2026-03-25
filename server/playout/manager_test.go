@@ -549,3 +549,127 @@ func TestManager_SetAudioOutput_PropagatesToChannels(t *testing.T) {
 		}
 	}
 }
+
+func TestManager_SetGPUSourceTap_PropagatesToChannels(t *testing.T) {
+	m := NewManager(ManagerConfig{
+		AssetProvider: fakeProvider(3),
+	})
+	defer m.Close()
+
+	// Register a GPU source tap.
+	called := atomic.Int32{}
+	m.SetGPUSourceTap(func(channelKey, sourceKey string) *DecodedFrame {
+		called.Add(1)
+		return &DecodedFrame{
+			YUV:    make([]byte, 1920*1080*3/2),
+			Width:  1920,
+			Height: 1080,
+		}
+	})
+
+	// Start a channel with a live item so the tap gets wired during Start().
+	pl := testPlaylist(liveItem("live-tap", "cam-1"))
+	if err := m.LoadPlaylist(1, pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	if err := m.Start(1); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Wait for some frames to be emitted (live item uses the tap).
+	time.Sleep(200 * time.Millisecond)
+
+	if called.Load() == 0 {
+		t.Error("GPU source tap was never called for live item")
+	}
+}
+
+func TestManager_SetPipelineFormat(t *testing.T) {
+	m := NewManager(ManagerConfig{
+		AssetProvider: fakeProvider(3),
+	})
+
+	m.SetPipelineFormat(1280, 720, 59.94)
+
+	m.mu.Lock()
+	w := m.pipelineWidth
+	h := m.pipelineHeight
+	fps := m.pipelineFPS
+	m.mu.Unlock()
+
+	if w != 1280 {
+		t.Errorf("pipelineWidth = %d, want 1280", w)
+	}
+	if h != 720 {
+		t.Errorf("pipelineHeight = %d, want 720", h)
+	}
+	if fps != 59.94 {
+		t.Errorf("pipelineFPS = %f, want 59.94", fps)
+	}
+}
+
+func TestManager_SetPipelineFormat_AffectsNewChannels(t *testing.T) {
+	m := NewManager(ManagerConfig{
+		AssetProvider: fakeProvider(3),
+	})
+	defer m.Close()
+
+	m.SetPipelineFormat(1280, 720, 59.94)
+
+	// Load and start a channel — it should use the pipeline format.
+	pl := testPlaylist(liveItem("live-fmt", "cam"))
+	if err := m.LoadPlaylist(1, pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	if err := m.Start(1); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// The channel's config should reflect the pipeline format.
+	m.mu.Lock()
+	ch := m.channels[0]
+	m.mu.Unlock()
+
+	ch.mu.Lock()
+	chW := ch.config.Width
+	chH := ch.config.Height
+	chFPS := ch.config.FPS
+	ch.mu.Unlock()
+
+	if chW != 1280 {
+		t.Errorf("channel width = %d, want 1280", chW)
+	}
+	if chH != 720 {
+		t.Errorf("channel height = %d, want 720", chH)
+	}
+	if chFPS != 59.94 {
+		t.Errorf("channel FPS = %f, want 59.94", chFPS)
+	}
+}
+
+func TestManager_LoadPlaylist_IdleAsset(t *testing.T) {
+	m := NewManager(ManagerConfig{
+		AssetProvider: fakeProvider(3),
+	})
+
+	// Load a playlist with an idle asset URI.
+	pl := testPlaylist(clipItem("a"))
+	pl.IdleAssetURI = "local:///idle/bars.ts"
+
+	if err := m.LoadPlaylist(1, pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+
+	// Verify idle loop was reconfigured on the channel.
+	m.mu.Lock()
+	ch := m.channels[0]
+	m.mu.Unlock()
+
+	ch.mu.Lock()
+	idleURI := ch.idleLoop.assetURI
+	ch.mu.Unlock()
+
+	if idleURI != "local:///idle/bars.ts" {
+		t.Errorf("idle asset URI = %q, want %q", idleURI, "local:///idle/bars.ts")
+	}
+}
