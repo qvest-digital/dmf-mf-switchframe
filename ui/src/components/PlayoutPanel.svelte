@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { ControlRoomState, PlayoutChannelState, PlaylistItem } from '$lib/api/types';
+	import { playoutPlaylist, playoutJump, apiCall } from '$lib/api/switch-api';
 	import PlayoutItem from './PlayoutItem.svelte';
 	import PlayoutTransport from './PlayoutTransport.svelte';
 	import CacheStatus from './CacheStatus.svelte';
@@ -25,8 +26,38 @@
 	const isOnAir = $derived(channel.state === 'on_air');
 	const isCued = $derived(channel.state === 'cued');
 
-	// Demo playlist items for UI scaffolding — replaced by real data from state when available
-	const playlistItems = $derived<PlaylistItem[]>([]);
+	let playlistItems = $state<PlaylistItem[]>([]);
+	let playlistLoading = $state(false);
+
+	$effect(() => {
+		const ch = selectedChannel;
+		const count = channel.itemCount;
+		if (count <= 0) {
+			playlistItems = [];
+			return;
+		}
+		playlistLoading = true;
+		playoutPlaylist(ch).then(items => {
+			playlistItems = items;
+		}).catch(() => {
+			playlistItems = [];
+		}).finally(() => {
+			playlistLoading = false;
+		});
+	});
+
+	$effect(() => {
+		if (channel.currentItemId) {
+			setTimeout(() => {
+				const el = document.getElementById(`playout-item-${channel.currentItemId}`);
+				el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+			}, 50);
+		}
+	});
+
+	function handleJump(itemId: string) {
+		apiCall(playoutJump(selectedChannel, itemId), 'Jump to item');
+	}
 
 	function formatCountdown(ms: number | undefined): string {
 		if (!ms || ms <= 0) return '--:--';
@@ -65,13 +96,21 @@
 					<div class="empty-state">No playlist loaded</div>
 				{:else}
 					{#each playlistItems as item, i}
-						<PlayoutItem
-							{item}
-							index={i}
-							isOnAir={getItemState(i) === 'on-air'}
-							isNext={getItemState(i) === 'next'}
-							isCompleted={getItemState(i) === 'completed'}
-						/>
+						<button
+							id="playout-item-{item.id}"
+							class="playlist-item-row"
+							class:on-air-row={getItemState(i) === 'on-air'}
+							onclick={() => handleJump(item.id)}
+							type="button"
+						>
+							<PlayoutItem
+								{item}
+								index={i}
+								isOnAir={getItemState(i) === 'on-air'}
+								isNext={getItemState(i) === 'next'}
+								isCompleted={getItemState(i) === 'completed'}
+							/>
+						</button>
 					{/each}
 				{/if}
 			</div>
@@ -215,6 +254,25 @@
 		font-size: var(--text-xs);
 		color: var(--text-tertiary);
 		opacity: 0.5;
+	}
+
+	.playlist-item-row {
+		display: block;
+		width: 100%;
+		padding: 0;
+		margin: 0;
+		background: none;
+		border: none;
+		cursor: pointer;
+		text-align: left;
+		color: inherit;
+		font: inherit;
+	}
+
+	.playlist-item-row:focus-visible {
+		outline: 1px solid var(--accent-blue);
+		outline-offset: -1px;
+		border-radius: var(--radius-sm);
 	}
 
 	/* -- Right: controls column -- */
