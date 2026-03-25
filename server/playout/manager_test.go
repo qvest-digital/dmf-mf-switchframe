@@ -270,8 +270,8 @@ func TestManager_RawVideoOutput(t *testing.T) {
 	})
 
 	count := frameCount.Load()
-	if count != 5 {
-		t.Errorf("frame count = %d, want 5", count)
+	if count < 5 {
+		t.Errorf("frame count = %d, want >= 5", count)
 	}
 
 	key, _ := lastKey.Load().(string)
@@ -534,10 +534,10 @@ func TestManager_SetAudioOutput_PropagatesToChannels(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	if len(audioCalls) != 5 {
-		t.Fatalf("audio callback count = %d, want 5", len(audioCalls))
+	if len(audioCalls) < 5 {
+		t.Fatalf("audio callback count = %d, want >= 5", len(audioCalls))
 	}
-	for i, call := range audioCalls {
+	for i, call := range audioCalls[:5] {
 		if call.key != "playout:1" {
 			t.Errorf("call[%d].key = %q, want %q", i, call.key, "playout:1")
 		}

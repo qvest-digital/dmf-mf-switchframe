@@ -174,18 +174,16 @@ func (a *App) initPlayout() error {
 	})
 
 	// Raw video output: playout sends decoded YUV to switcher pipeline.
-	var playoutScaleBuf []byte // persistent scale buffer, reused across frames
+	// Note: allocates per-frame when scaling is needed (rare — only on resolution mismatch).
+	// Cannot use a shared buffer because multiple channels may call concurrently.
 	mgr.SetRawVideoOutput(func(key string, yuv []byte, w, h int, pts int64, isKeyframe bool) {
 		curPF := a.sw.PipelineFormat()
 		outYUV, outW, outH := yuv, w, h
 		if w != curPF.Width || h != curPF.Height {
 			targetSize := curPF.Width * curPF.Height * 3 / 2
-			if cap(playoutScaleBuf) < targetSize {
-				playoutScaleBuf = make([]byte, targetSize)
-			}
-			playoutScaleBuf = playoutScaleBuf[:targetSize]
-			transition.ScaleYUV420(yuv, w, h, playoutScaleBuf, curPF.Width, curPF.Height)
-			outYUV, outW, outH = playoutScaleBuf, curPF.Width, curPF.Height
+			scaled := make([]byte, targetSize)
+			transition.ScaleYUV420(yuv, w, h, scaled, curPF.Width, curPF.Height)
+			outYUV, outW, outH = scaled, curPF.Width, curPF.Height
 		}
 
 		frame := &switcher.ProcessingFrame{

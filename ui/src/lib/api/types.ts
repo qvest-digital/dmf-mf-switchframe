@@ -883,6 +883,7 @@ export interface PlaylistItem {
 	hold?: boolean;
 	loop?: boolean;
 	transition?: { type: string; duration_ms?: number };
+	scheduled_time?: string;
 	secondary_events?: SecondaryEvent[];
 }
 

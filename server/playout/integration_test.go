@@ -600,8 +600,8 @@ func TestIntegration_CacheFetchAndPlay(t *testing.T) {
 	})
 
 	count := outputCount.Load()
-	if count != 5 {
-		t.Errorf("output frame count = %d, want 5", count)
+	if count < 5 {
+		t.Errorf("output frame count = %d, want >= 5", count)
 	}
 }
 

@@ -374,31 +374,8 @@ func estimateFPSFromEncodedFrames(frames []encodedFrame) float64 {
 	return fps
 }
 
-// estimateFPSFromDecoded estimates FPS from decoded frame PTS values.
-// Kept for backward compatibility with existing tests.
+// estimateFPSFromDecoded is an alias for estimateFPS in channel.go.
+// Kept for test compatibility.
 func estimateFPSFromDecoded(frames []DecodedFrame) float64 {
-	if len(frames) < 2 {
-		return 30.0
-	}
-	minPTS, maxPTS := frames[0].PTS, frames[0].PTS
-	for _, f := range frames[1:] {
-		if f.PTS < minPTS {
-			minPTS = f.PTS
-		}
-		if f.PTS > maxPTS {
-			maxPTS = f.PTS
-		}
-	}
-	ptsSpan := maxPTS - minPTS
-	if ptsSpan <= 0 {
-		return 30.0
-	}
-	fps := float64(len(frames)-1) * 90000.0 / float64(ptsSpan)
-	if fps < 10 {
-		fps = 10
-	}
-	if fps > 120 {
-		fps = 120
-	}
-	return fps
+	return estimateFPS(frames)
 }
