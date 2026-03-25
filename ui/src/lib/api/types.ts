@@ -659,6 +659,7 @@ export interface ControlRoomState {
 	neuralKey?: {
 		available: boolean;
 	};
+	playout?: PlayoutState;
 	lastChangedBy?: string;
 	seq: number;
 	timestamp: number;
@@ -816,4 +817,191 @@ export interface GPUPipelineDebugSnapshot {
 	last_run_ns: number;
 	max_run_ns: number;
 	total_latency_us: number;
+}
+
+// ── Playout Types ──
+
+export interface PlayoutChannelState {
+	id: number;
+	state: 'stopped' | 'cued' | 'on_air' | 'completed';
+	mode?: 'automated' | 'manual' | 'break';
+	playlistName?: string;
+	currentItemId?: string;
+	currentTitle?: string;
+	nextItemId?: string;
+	nextTitle?: string;
+	itemIndex: number;
+	itemCount: number;
+	itemProgress?: number;
+	itemRemainMs?: number;
+	activePod?: PodStatusBroadcast;
+	pods?: PodStatusBroadcast[];
+	podsArmed?: number;
+	podsCompleted?: number;
+}
+
+export interface PlayoutState {
+	channels: PlayoutChannelState[];
+}
+
+export interface SCTE35EventData {
+	break_duration_ms?: number;
+	auto_return?: boolean;
+}
+
+export interface SecondaryEvent {
+	type: 'graphics_on' | 'graphics_off' | 'graphics_update' | 'audio_level' | 'audio_mute' | 'audio_afv' | 'caption_mode' | 'caption_text' | 'scte35_cue';
+	layer?: number;
+	template?: string;
+	offset_ms: number;
+	anchor: 'start' | 'end';
+	source_key?: string;
+	level_db?: number;
+	muted?: boolean;
+	afv?: boolean;
+	caption_mode?: string;
+	caption_text?: string;
+	scte35?: SCTE35EventData;
+}
+
+export interface PlaylistItem {
+	id: string;
+	type: 'clip' | 'live' | 'slate';
+	asset_uri?: string;
+	source?: string;
+	title: string;
+	duration_ms?: number;
+	in_point_ms?: number;
+	out_point_ms?: number;
+	hold?: boolean;
+	transition?: { type: string; duration_ms?: number };
+	secondary_events?: SecondaryEvent[];
+}
+
+export interface Playlist {
+	id: string;
+	name: string;
+	default_transition: { type: string; duration_ms?: number };
+	items: PlaylistItem[];
+}
+
+export interface CacheStatus {
+	cacheDir: string;
+	maxBytes: number;
+	usedBytes: number;
+	itemCount: number;
+	fetchingCount: number;
+	errorCount: number;
+}
+
+// ── Pod Types ──
+
+export interface PodConfig {
+	type: string;
+	duration_ms: number;
+	auto_return: boolean;
+	allow_dump_out: boolean;
+	priority: 'normal' | 'high' | 'mandatory';
+	contractual?: boolean;
+	ephemeral?: boolean;
+	hold_until_manual_return?: boolean;
+	position?: string;
+}
+
+export interface PodInfo {
+	id: string;
+	config: PodConfig;
+	state: 'scheduled' | 'pre_roll' | 'splice_pending' | 'break_active' | 'return_pending' | 'rejoined' | 'dumped_out';
+	armed: boolean;
+	elapsed_ms: number;
+	remaining_ms: number;
+	fired_at?: number;
+	completed_at?: number;
+	scte35_event_id?: number;
+}
+
+export interface PodStatusBroadcast {
+	id: string;
+	type: string;
+	state: string;
+	armed: boolean;
+	elapsedMs?: number;
+	remainingMs?: number;
+	durationMs: number;
+	priority: string;
+	position?: string;
+}
+
+export interface PodBoardStatus {
+	activePod?: PodStatusBroadcast;
+	podsArmed: number;
+	podsCompleted: number;
+	pods: PodStatusBroadcast[];
+}
+
+export interface PodTemplate {
+	type: string;
+	default_duration_ms: number;
+	auto_return: boolean;
+	allow_dump_out: boolean;
+	priority: 'normal' | 'high' | 'mandatory';
+	contractual?: boolean;
+	ephemeral?: boolean;
+	hold_until_manual_return?: boolean;
+}
+
+// ── As-Run Types ──
+
+export type AsRunEventType =
+	| 'item_start'
+	| 'item_end'
+	| 'secondary_event_fire'
+	| 'splice_active'
+	| 'pod_operation'
+	| 'manual_override'
+	| 'cache_event'
+	| 'error';
+
+export interface BlackDetectInfo {
+	found: boolean;
+	luma_mean: number;
+	offset_ms: number;
+}
+
+export interface AsRunEvent {
+	ts: string;
+	type: AsRunEventType;
+	channel_id: number;
+	item_id?: string;
+	title?: string;
+	scheduled_ts?: string;
+	delta_ms?: number;
+	source?: string;
+
+	// Secondary event fields.
+	event?: string;
+	target_pts?: number;
+	actual_pts?: number;
+
+	// Splice/pod fields.
+	pod_id?: string;
+	pod_type?: string;
+	operation?: string;
+	operator?: string;
+	scheduled_duration_ms?: number;
+	actual_duration_ms?: number;
+	reason?: string;
+	black_detect?: BlackDetectInfo;
+
+	// Error/cache fields.
+	message?: string;
+}
+
+// ── Health Types ──
+
+export interface ChannelHealth {
+	channel_id: number;
+	healthy: boolean;
+	last_frame_ms: number;
+	stalled: boolean;
 }

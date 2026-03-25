@@ -46,6 +46,7 @@ import (
 	"github.com/zsiec/switchframe/server/operator"
 	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/perf"
+	"github.com/zsiec/switchframe/server/playout"
 	"github.com/zsiec/switchframe/server/preset"
 	"github.com/zsiec/switchframe/server/preview"
 	"github.com/zsiec/switchframe/server/replay"
@@ -142,6 +143,11 @@ type App struct {
 	clipMgr    *clip.Manager
 	clipStore  *clip.Store
 	clipRelays [clip.MaxPlayers]*distribution.Relay
+
+	// Playout channels
+	playoutMgr        *playout.Manager
+	playoutCache      *playout.Cache
+	playoutPrefetcher *playout.Prefetcher
 
 	// GPU pipeline (Metal on macOS, CUDA on Linux)
 	gpuState        *gpuState
@@ -1291,6 +1297,12 @@ func (a *App) initAPI() error {
 	if a.clipStore != nil {
 		apiOpts = append(apiOpts, control.WithClipStore(a.clipStore))
 	}
+	if a.playoutMgr != nil {
+		apiOpts = append(apiOpts, control.WithPlayoutManager(a.playoutMgr))
+	}
+	if a.playoutCache != nil {
+		apiOpts = append(apiOpts, control.WithPlayoutCache(a.playoutCache))
+	}
 	if a.commsMgr != nil {
 		apiOpts = append(apiOpts, control.WithCommsManager(a.commsMgr))
 	}
@@ -1664,6 +1676,15 @@ func (a *App) closeSubsystems() {
 	}
 	if a.clipMgr != nil {
 		a.clipMgr.Close()
+	}
+	if a.playoutMgr != nil {
+		a.playoutMgr.Close()
+	}
+	if a.playoutPrefetcher != nil {
+		a.playoutPrefetcher.Stop()
+	}
+	if a.playoutCache != nil {
+		a.playoutCache.Close()
 	}
 	if a.htmlGfxMgr != nil {
 		_ = a.htmlGfxMgr.Close()

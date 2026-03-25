@@ -15,7 +15,7 @@ import (
 // generateTestFrames creates test video and audio frames by generating a test
 // TS file and demuxing it. This produces realistic frame data with proper
 // SPS/PPS, PTS ordering, and AVC1 wire format.
-func generateTestFrames(t *testing.T, numFrames int) ([]bufferedFrame, []bufferedAudioFrame) {
+func generateTestFrames(t *testing.T, numFrames int) ([]BufferedFrame, []BufferedAudioFrame) {
 	t.Helper()
 	data := generateTestTS(t, numFrames)
 	tmpFile := writeTemp(t, data, ".ts")
@@ -838,7 +838,7 @@ func TestEstimateFPSFromClipFramesBFrameOrder(t *testing.T) {
 	// Decode order: I(0), P(6000), B(3000), P(9000), B(6000+3000=9000)...
 	// Use a more realistic pattern:
 	// I PTS=0, P PTS=9000, B PTS=3000, B PTS=6000, P PTS=12000
-	frames := []bufferedFrame{
+	frames := []BufferedFrame{
 		{pts: 0, isKeyframe: true},
 		{pts: 9000},
 		{pts: 3000},
@@ -852,13 +852,13 @@ func TestEstimateFPSFromClipFramesBFrameOrder(t *testing.T) {
 }
 
 func TestEstimateFPSSingleFrame(t *testing.T) {
-	frames := []bufferedFrame{{pts: 90000, isKeyframe: true}}
+	frames := []BufferedFrame{{pts: 90000, isKeyframe: true}}
 	fps := estimateFPSFromClipFrames(frames)
 	assert.Equal(t, 30.0, fps, "single frame should default to 30fps")
 }
 
 func TestEstimateFPSZeroPTSSpan(t *testing.T) {
-	frames := []bufferedFrame{
+	frames := []BufferedFrame{
 		{pts: 90000},
 		{pts: 90000},
 		{pts: 90000},
@@ -869,7 +869,7 @@ func TestEstimateFPSZeroPTSSpan(t *testing.T) {
 
 func TestEstimateFPSClampRange(t *testing.T) {
 	// Very high FPS (small PTS span).
-	highFPS := []bufferedFrame{
+	highFPS := []BufferedFrame{
 		{pts: 0},
 		{pts: 100}, // 90000/100 = 900fps
 	}
@@ -877,7 +877,7 @@ func TestEstimateFPSClampRange(t *testing.T) {
 	assert.Equal(t, 120.0, fps, "should clamp to 120fps max")
 
 	// Very low FPS (large PTS span).
-	lowFPS := []bufferedFrame{
+	lowFPS := []BufferedFrame{
 		{pts: 0},
 		{pts: 900000}, // 90000/900000 = 0.1fps
 	}
@@ -889,8 +889,8 @@ func TestPlayerEncoderFactoryReceivesRationalFPS(t *testing.T) {
 	// Test that a ~29.97fps clip passes (30000, 1001) to the encoder factory.
 	// Create frames with PTS values that yield ~29.97fps.
 	// 29.97fps -> PTS increment = 90000/29.97 ≈ 3003
-	ntscFrames := make([]bufferedFrame, 10)
-	ntscFrames[0] = bufferedFrame{
+	ntscFrames := make([]BufferedFrame, 10)
+	ntscFrames[0] = BufferedFrame{
 		wireData:   []byte{0, 0, 0, 1, 0x65, 1, 2, 3},
 		pts:        0,
 		isKeyframe: true,
@@ -898,7 +898,7 @@ func TestPlayerEncoderFactoryReceivesRationalFPS(t *testing.T) {
 		pps:        []byte{0x68, 0xCE},
 	}
 	for i := 1; i < 10; i++ {
-		ntscFrames[i] = bufferedFrame{
+		ntscFrames[i] = BufferedFrame{
 			wireData: []byte{0, 0, 0, 1, 0x41, byte(i)},
 			pts:      int64(i) * 3003, // 29.97fps: 90000 * 1001/30000 ≈ 3003
 		}
@@ -950,8 +950,8 @@ func TestPlayerEncoderFactoryReceivesRationalFPS(t *testing.T) {
 func TestPlayerEncoderFactoryPAL25fps(t *testing.T) {
 	// Test that a 25fps clip passes (25, 1) to the encoder factory.
 	// 25fps -> PTS increment = 90000/25 = 3600
-	palFrames := make([]bufferedFrame, 10)
-	palFrames[0] = bufferedFrame{
+	palFrames := make([]BufferedFrame, 10)
+	palFrames[0] = BufferedFrame{
 		wireData:   []byte{0, 0, 0, 1, 0x65, 1, 2, 3},
 		pts:        0,
 		isKeyframe: true,
@@ -959,7 +959,7 @@ func TestPlayerEncoderFactoryPAL25fps(t *testing.T) {
 		pps:        []byte{0x68, 0xCE},
 	}
 	for i := 1; i < 10; i++ {
-		palFrames[i] = bufferedFrame{
+		palFrames[i] = BufferedFrame{
 			wireData: []byte{0, 0, 0, 1, 0x41, byte(i)},
 			pts:      int64(i) * 3600, // 25fps: 90000/25 = 3600
 		}
@@ -1066,7 +1066,7 @@ func TestPlayerDrainBFrameBufferedFrames(t *testing.T) {
 	// Simulate 5 frames where the decoder buffers the last 2 (B-frame reordering).
 	// The decoder returns real output for frames 1-3 but EAGAIN for 4-5.
 	// After SendEOS, it produces the 2 buffered frames.
-	clip := []bufferedFrame{
+	clip := []BufferedFrame{
 		{wireData: []byte{0, 0, 0, 1, 0x65, 1, 2, 3}, pts: 0, isKeyframe: true, sps: []byte{0x67, 0x42}, pps: []byte{0x68, 0xCE}},
 		{wireData: []byte{0, 0, 0, 1, 0x41, 4, 5, 6}, pts: 3000},
 		{wireData: []byte{0, 0, 0, 1, 0x41, 7, 8, 9}, pts: 6000},
@@ -1212,7 +1212,7 @@ func TestPlayerReencodeReturnsCopy(t *testing.T) {
 // (from the decoder drain phase after playback) are also sent to VideoOutput
 // for the browser relay, not just to RawVideoOutput.
 func TestPlayerDrainBFramesSentToBrowserRelay(t *testing.T) {
-	clip := []bufferedFrame{
+	clip := []BufferedFrame{
 		{wireData: []byte{0, 0, 0, 1, 0x65, 1, 2, 3}, pts: 0, isKeyframe: true, sps: []byte{0x67, 0x42}, pps: []byte{0x68, 0xCE}},
 		{wireData: []byte{0, 0, 0, 1, 0x41, 4, 5, 6}, pts: 3000},
 		{wireData: []byte{0, 0, 0, 1, 0x41, 7, 8, 9}, pts: 6000},

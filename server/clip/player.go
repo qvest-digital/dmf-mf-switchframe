@@ -14,8 +14,8 @@ import (
 
 // PlayerConfig configures a clip player instance.
 type PlayerConfig struct {
-	Clip       []bufferedFrame
-	AudioClip  []bufferedAudioFrame
+	Clip       []BufferedFrame
+	AudioClip  []BufferedAudioFrame
 	Speed      float64
 	Loop       bool
 	InitialPTS int64
@@ -349,7 +349,7 @@ func (p *Player) run(ctx context.Context) {
 }
 
 // playClip plays through all frames once. Returns true if context was cancelled.
-func (p *Player) playClip(ctx context.Context, clip []bufferedFrame, sourceFPS float64, outputPTS *int64) bool {
+func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS float64, outputPTS *int64) bool {
 	totalClipFrames := len(clip)
 
 	speed := p.speed.Load().(float64)
@@ -764,7 +764,7 @@ func (p *Player) reencodeForBrowser(yuv []byte, w, h int, pts int64, isKeyframe 
 // estimateFPSFromClipFrames estimates FPS from buffered frame PTS values.
 // Frames may be in decode order (not PTS order) due to B-frames, so we
 // find the actual min/max PTS rather than assuming first/last ordering.
-func estimateFPSFromClipFrames(clip []bufferedFrame) float64 {
+func estimateFPSFromClipFrames(clip []BufferedFrame) float64 {
 	if len(clip) < 2 {
 		return 30.0
 	}

@@ -13,7 +13,7 @@ import (
 // demuxMP4 reads an MP4/M4V/MOV file and extracts H.264 video frames and AAC
 // audio frames. Video frames are returned in AVC1 format with SPS/PPS set on
 // keyframes. Audio frames contain raw AAC payloads (no ADTS headers).
-func demuxMP4(path string) ([]bufferedFrame, []bufferedAudioFrame, error) {
+func demuxMP4(path string) ([]BufferedFrame, []BufferedAudioFrame, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open %s: %w", path, err)
@@ -59,7 +59,7 @@ func demuxMP4(path string) ([]bufferedFrame, []bufferedAudioFrame, error) {
 		return nil, nil, fmt.Errorf("read video samples: %w", err)
 	}
 
-	var audioFrames []bufferedAudioFrame
+	var audioFrames []BufferedAudioFrame
 	if audioTrack != nil {
 		audioFrames, err = readAudioSamples(f, audioTrack)
 		if err != nil {
@@ -509,8 +509,8 @@ func isSyncSample(sampleNum uint32, stss []uint32) bool {
 }
 
 // readVideoSamples reads all video samples from the file, constructing
-// bufferedFrame entries with proper PTS and keyframe markers.
-func readVideoSamples(r io.ReadSeeker, track *mp4Track) ([]bufferedFrame, error) {
+// BufferedFrame entries with proper PTS and keyframe markers.
+func readVideoSamples(r io.ReadSeeker, track *mp4Track) ([]BufferedFrame, error) {
 	sampleTable, err := buildSampleTable(track)
 	if err != nil {
 		return nil, fmt.Errorf("build sample table: %w", err)
@@ -523,7 +523,7 @@ func readVideoSamples(r io.ReadSeeker, track *mp4Track) ([]bufferedFrame, error)
 	dts := buildDTSTable(track.stts, numSamples)
 	ctsOffsets := buildCTSOffsets(track.ctts, track.cttsVersion, numSamples)
 
-	frames := make([]bufferedFrame, 0, numSamples)
+	frames := make([]BufferedFrame, 0, numSamples)
 
 	for i, sample := range sampleTable {
 		// Read sample data from file.
@@ -557,7 +557,7 @@ func readVideoSamples(r io.ReadSeeker, track *mp4Track) ([]bufferedFrame, error)
 		sampleNum := uint32(i + 1) // 1-based
 		isKey := isSyncSample(sampleNum, track.stss)
 
-		frame := bufferedFrame{
+		frame := BufferedFrame{
 			wireData:   wireData,
 			pts:        pts90k,
 			isKeyframe: isKey,
@@ -578,10 +578,10 @@ func readVideoSamples(r io.ReadSeeker, track *mp4Track) ([]bufferedFrame, error)
 }
 
 // readAudioSamples reads all audio samples from the file, constructing
-// bufferedAudioFrame entries with proper PTS. MP4 stores raw AAC payloads
-// (no ADTS headers), and bufferedAudioFrame.data expects raw AAC, so we
+// BufferedAudioFrame entries with proper PTS. MP4 stores raw AAC payloads
+// (no ADTS headers), and BufferedAudioFrame.data expects raw AAC, so we
 // use the sample data directly without any ADTS round-trip.
-func readAudioSamples(r io.ReadSeeker, track *mp4Track) ([]bufferedAudioFrame, error) {
+func readAudioSamples(r io.ReadSeeker, track *mp4Track) ([]BufferedAudioFrame, error) {
 	sampleTable, err := buildSampleTable(track)
 	if err != nil {
 		return nil, fmt.Errorf("build sample table: %w", err)
@@ -602,7 +602,7 @@ func readAudioSamples(r io.ReadSeeker, track *mp4Track) ([]bufferedAudioFrame, e
 		channels = 2
 	}
 
-	frames := make([]bufferedAudioFrame, 0, numSamples)
+	frames := make([]BufferedAudioFrame, 0, numSamples)
 
 	for i, sample := range sampleTable {
 		// Read raw AAC frame from file.
@@ -618,7 +618,7 @@ func readAudioSamples(r io.ReadSeeker, track *mp4Track) ([]bufferedAudioFrame, e
 		// PTS in 90kHz.
 		pts90k := dts[i] * 90000 / int64(track.timescale)
 
-		frames = append(frames, bufferedAudioFrame{
+		frames = append(frames, BufferedAudioFrame{
 			data:       rawAAC,
 			pts:        pts90k,
 			sampleRate: sampleRate,

@@ -23,6 +23,10 @@ func sourceType(key string) string {
 		return "clip"
 	case key == "replay":
 		return "replay"
+	case strings.HasPrefix(key, "playout:"):
+		return "playout"
+	case strings.HasPrefix(key, "clip:"):
+		return "clip"
 	default:
 		return "demo"
 	}
@@ -342,6 +346,56 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 	}
 	if up := a.api.UploadProgress(); up != nil {
 		state.ClipUpload = up
+	}
+
+	// Playout channel state.
+	if a.playoutMgr != nil {
+		states := a.playoutMgr.ChannelStates()
+		channels := make([]internal.PlayoutChannelInfo, len(states))
+		for i, s := range states {
+			ch := internal.PlayoutChannelInfo{
+				ID:            s.ID,
+				State:         s.State,
+				Mode:          s.Mode,
+				PlaylistName:  s.PlaylistName,
+				CurrentItemID: s.CurrentItemID,
+				CurrentTitle:  s.CurrentTitle,
+				NextItemID:    s.NextItemID,
+				NextTitle:     s.NextTitle,
+				ItemIndex:     s.ItemIndex,
+				ItemCount:     s.ItemCount,
+				ItemProgress:  s.ItemProgress,
+				ItemRemainMs:  s.ItemRemainMs,
+			}
+			if s.Pods != nil {
+				ch.PodsArmed = s.Pods.PodsArmed
+				ch.PodsCompleted = s.Pods.PodsCompleted
+				if s.Pods.ActivePod != nil {
+					ch.ActivePod = &internal.PodStatusInfo{
+						ID:          s.Pods.ActivePod.ID,
+						Type:        s.Pods.ActivePod.Type,
+						State:       s.Pods.ActivePod.State,
+						ElapsedMs:   s.Pods.ActivePod.ElapsedMs,
+						RemainingMs: s.Pods.ActivePod.RemainingMs,
+						DurationMs:  s.Pods.ActivePod.DurationMs,
+						Armed:       s.Pods.ActivePod.Armed,
+					}
+				}
+				for _, ps := range s.Pods.Pods {
+					ch.Pods = append(ch.Pods, internal.PodStatusInfo{
+						ID:          ps.ID,
+						Type:        ps.Type,
+						State:       ps.State,
+						ElapsedMs:   ps.ElapsedMs,
+						RemainingMs: ps.RemainingMs,
+						DurationMs:  ps.DurationMs,
+						Armed:       ps.Armed,
+					})
+				}
+			}
+			channels[i] = ch
+		}
+		state.Playout = &internal.PlayoutState{Channels: channels}
 	}
 
 	// Encoder state (current + available backends).

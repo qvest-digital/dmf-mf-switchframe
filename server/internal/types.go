@@ -273,6 +273,42 @@ type ConnectionInfo struct {
 	SRTOutputPorts []int  `json:"srtOutputPorts,omitempty"`
 }
 
+// PodStatusInfo is the broadcast state for an active pod.
+type PodStatusInfo struct {
+	ID          string `json:"id"`
+	Type        string `json:"type"`
+	State       string `json:"state"`
+	ElapsedMs   int64  `json:"elapsedMs,omitempty"`
+	RemainingMs int64  `json:"remainingMs,omitempty"`
+	DurationMs  int64  `json:"durationMs"`
+	Armed       bool   `json:"armed"`
+}
+
+// PlayoutChannelInfo is the broadcast state for a playout channel.
+type PlayoutChannelInfo struct {
+	ID            int            `json:"id"`
+	State         string         `json:"state"`
+	Mode          string         `json:"mode,omitempty"`
+	PlaylistName  string         `json:"playlistName,omitempty"`
+	CurrentItemID string         `json:"currentItemId,omitempty"`
+	CurrentTitle  string         `json:"currentTitle,omitempty"`
+	NextItemID    string         `json:"nextItemId,omitempty"`
+	NextTitle     string         `json:"nextTitle,omitempty"`
+	ItemIndex     int            `json:"itemIndex"`
+	ItemCount     int            `json:"itemCount"`
+	ItemProgress  float64        `json:"itemProgress,omitempty"`
+	ItemRemainMs  int64          `json:"itemRemainMs,omitempty"`
+	ActivePod     *PodStatusInfo `json:"activePod,omitempty"`
+	Pods          []PodStatusInfo `json:"pods,omitempty"`
+	PodsArmed     int            `json:"podsArmed,omitempty"`
+	PodsCompleted int            `json:"podsCompleted,omitempty"`
+}
+
+// PlayoutState holds the broadcast state for all playout channels.
+type PlayoutState struct {
+	Channels []PlayoutChannelInfo `json:"channels"`
+}
+
 // ControlRoomState is the full state of the switcher control room,
 // broadcast to all connected browsers via the MoQ "control" track.
 type ControlRoomState struct {
@@ -319,6 +355,7 @@ type ControlRoomState struct {
 	ASR                  *ASRState               `json:"asr,omitempty"`
 	Macro                *MacroExecutionState    `json:"macro,omitempty"`
 	ColorGrade           *ColorGradeState        `json:"colorGrade,omitempty"`
+	Playout              *PlayoutState           `json:"playout,omitempty"`
 	LastChangedBy        string                  `json:"lastChangedBy,omitempty"`
 	Seq                  uint64                  `json:"seq"`
 	Timestamp            int64                   `json:"timestamp"`

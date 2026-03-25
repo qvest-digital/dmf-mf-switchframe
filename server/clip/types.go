@@ -112,8 +112,9 @@ type VideoEncoder interface {
 	Close()
 }
 
-// bufferedFrame mirrors replay's internal frame format for code reuse.
-type bufferedFrame struct {
+// BufferedFrame mirrors replay's internal frame format for code reuse.
+// Fields are unexported for encapsulation; use accessor methods.
+type BufferedFrame struct {
 	wireData   []byte
 	sps        []byte
 	pps        []byte
@@ -121,13 +122,41 @@ type bufferedFrame struct {
 	isKeyframe bool
 }
 
-// bufferedAudioFrame mirrors replay's internal audio frame format.
-type bufferedAudioFrame struct {
+// WireData returns the AVC1-format H.264 frame data (excluding SPS/PPS).
+func (f BufferedFrame) WireData() []byte { return f.wireData }
+
+// SPS returns the SPS NALU bytes (set on keyframes, nil otherwise).
+func (f BufferedFrame) SPS() []byte { return f.sps }
+
+// PPS returns the PPS NALU bytes (set on keyframes, nil otherwise).
+func (f BufferedFrame) PPS() []byte { return f.pps }
+
+// PTS returns the presentation timestamp in 90kHz clock units.
+func (f BufferedFrame) PTS() int64 { return f.pts }
+
+// IsKeyframe returns true if this frame is an IDR/keyframe.
+func (f BufferedFrame) IsKeyframe() bool { return f.isKeyframe }
+
+// BufferedAudioFrame mirrors replay's internal audio frame format.
+// Fields are unexported for encapsulation; use accessor methods.
+type BufferedAudioFrame struct {
 	data       []byte // raw AAC payload (no ADTS header)
 	pts        int64
 	sampleRate int
 	channels   int
 }
+
+// Data returns the raw AAC payload (no ADTS header).
+func (f BufferedAudioFrame) Data() []byte { return f.data }
+
+// PTS returns the presentation timestamp in 90kHz clock units.
+func (f BufferedAudioFrame) PTS() int64 { return f.pts }
+
+// SampleRate returns the audio sample rate in Hz.
+func (f BufferedAudioFrame) SampleRate() int { return f.sampleRate }
+
+// Channels returns the number of audio channels.
+func (f BufferedAudioFrame) Channels() int { return f.channels }
 
 // ProbeResult holds metadata extracted during validation.
 type ProbeResult struct {

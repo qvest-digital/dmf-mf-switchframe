@@ -14,11 +14,11 @@ import (
 
 // mockDemuxFunc returns a DemuxFunc that returns synthetic frames.
 // It avoids needing real TS/MP4 files for manager tests.
-func mockDemuxFunc(numFrames int) func(string) ([]bufferedFrame, []bufferedAudioFrame, error) {
-	return func(path string) ([]bufferedFrame, []bufferedAudioFrame, error) {
-		frames := make([]bufferedFrame, numFrames)
+func mockDemuxFunc(numFrames int) func(string) ([]BufferedFrame, []BufferedAudioFrame, error) {
+	return func(path string) ([]BufferedFrame, []BufferedAudioFrame, error) {
+		frames := make([]BufferedFrame, numFrames)
 		for i := range frames {
-			frames[i] = bufferedFrame{
+			frames[i] = BufferedFrame{
 				wireData:   make([]byte, 100),
 				pts:        int64(i) * 3000,
 				isKeyframe: i == 0,
@@ -28,9 +28,9 @@ func mockDemuxFunc(numFrames int) func(string) ([]bufferedFrame, []bufferedAudio
 				frames[i].pps = []byte{0x68, 0xCE, 0x38, 0x80}
 			}
 		}
-		audio := make([]bufferedAudioFrame, numFrames/3+1)
+		audio := make([]BufferedAudioFrame, numFrames/3+1)
 		for i := range audio {
-			audio[i] = bufferedAudioFrame{
+			audio[i] = BufferedAudioFrame{
 				data:       make([]byte, 50),
 				pts:        int64(i) * 9000,
 				sampleRate: 48000,

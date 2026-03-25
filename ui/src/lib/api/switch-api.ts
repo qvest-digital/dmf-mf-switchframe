@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, GateSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig, ColorGradeState, CorrectorState } from './types';
+import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, GateSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig, ColorGradeState, CorrectorState, PlayoutChannelState, Playlist, PlaylistItem, CacheStatus, PodInfo, PodConfig, PodTemplate, AsRunEvent, ChannelHealth } from './types';
 import { notify } from '$lib/state/notifications.svelte';
 import { resolveApiUrl } from './base-url';
 
@@ -1302,4 +1302,152 @@ export function deleteAISegment(source: string): Promise<Response> {
 		method: 'DELETE',
 		headers: authHeaders(),
 	});
+}
+
+// --- Playout ---
+
+export function playoutChannels(): Promise<PlayoutChannelState[]> {
+	return request<PlayoutChannelState[]>('/api/playout/channels');
+}
+
+export function playoutLoadPlaylist(channelId: number, playlist: Playlist): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/load`, playlist);
+}
+
+export function playoutStart(channelId: number): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/start`, {});
+}
+
+export function playoutStop(channelId: number): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/stop`, {});
+}
+
+export function playoutNext(channelId: number): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/next`, {});
+}
+
+export function playoutPrevious(channelId: number): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/previous`, {});
+}
+
+export function playoutTakeManual(channelId: number): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/manual`, {});
+}
+
+export function playoutReturnToAuto(channelId: number): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/auto`, {});
+}
+
+export function playoutCacheStatus(): Promise<CacheStatus> {
+	return request<CacheStatus>('/api/playout/cache/status');
+}
+
+export function playoutLookupCachedAsset(assetUri: string): Promise<void> {
+	return post('/api/playout/cache/lookup', { asset_uri: assetUri });
+}
+
+export function playoutEvictCachedAsset(assetUri: string): Promise<void> {
+	return post('/api/playout/cache/evict', { asset_uri: assetUri });
+}
+
+// --- Playout Pods ---
+
+export function podList(channelId: number): Promise<PodInfo[]> {
+	return request<PodInfo[]>(`/api/playout/channels/${channelId}/pods`);
+}
+
+export function podCreate(channelId: number, body: { template?: string; config?: PodConfig }): Promise<PodInfo> {
+	return post(`/api/playout/channels/${channelId}/pods`, body);
+}
+
+export function podArm(channelId: number, podId: string): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/pods/${podId}/arm`, {});
+}
+
+export function podDisarm(channelId: number, podId: string): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/pods/${podId}/disarm`, {});
+}
+
+export function podFire(channelId: number, podId: string): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/pods/${podId}/fire`, {});
+}
+
+export function podDump(channelId: number, podId: string): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/pods/${podId}/dump`, {});
+}
+
+export function podHold(channelId: number, podId: string): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/pods/${podId}/hold`, {});
+}
+
+export function podExtend(channelId: number, podId: string, additionalMs: number): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/pods/${podId}/extend`, { additional_ms: additionalMs });
+}
+
+export function podDelete(channelId: number, podId: string): Promise<void> {
+	return request(`/api/playout/channels/${channelId}/pods/${podId}`, {
+		method: 'DELETE',
+	});
+}
+
+export function podTemplates(): Promise<PodTemplate[]> {
+	return request<PodTemplate[]>('/api/playout/pods/templates');
+}
+
+// --- Playout: Jump, Recover, Health, As-Run, BXF Import, Playlist ---
+
+export function playoutJump(channelId: number, itemId: string): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/jump`, { itemId });
+}
+
+export function playoutRecover(channelId: number): Promise<void> {
+	return post(`/api/playout/channels/${channelId}/recover`, {});
+}
+
+export function playoutHealth(): Promise<ChannelHealth[]> {
+	return request<ChannelHealth[]>('/api/playout/health');
+}
+
+export function playoutAsRun(
+	channelId: number,
+	params?: { type?: string; since?: string; until?: string; limit?: number },
+): Promise<AsRunEvent[]> {
+	const query = new URLSearchParams();
+	if (params?.type) query.set('type', params.type);
+	if (params?.since) query.set('since', params.since);
+	if (params?.until) query.set('until', params.until);
+	if (params?.limit) query.set('limit', String(params.limit));
+	const qs = query.toString();
+	return request<AsRunEvent[]>(`/api/playout/channels/${channelId}/asrun${qs ? `?${qs}` : ''}`);
+}
+
+export function playoutAsRunExport(channelId: number, format: 'json' | 'bxf'): Promise<Response> {
+	return fetch(resolveApiUrl(`/api/playout/channels/${channelId}/asrun/export?format=${format}`), {
+		headers: authHeaders(),
+	});
+}
+
+export async function playoutImportBxf(
+	bxfXml: string,
+	channel?: number,
+	name?: string,
+): Promise<PlayoutChannelState> {
+	const query = new URLSearchParams();
+	if (channel != null) query.set('channel', String(channel));
+	if (name) query.set('name', name);
+	const qs = query.toString();
+	const res = await fetch(resolveApiUrl(`/api/playout/import/bxf${qs ? `?${qs}` : ''}`), {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/xml', ...authHeaders() },
+		body: bxfXml,
+	});
+	if (!res.ok) {
+		const body = await res.json().catch(() => ({ error: 'unknown error' }));
+		throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
+	}
+	return res.json();
+}
+
+export function playoutPlaylist(channelId: number): Promise<PlaylistItem[]> {
+	return request<PlaylistItem[]>(`/api/playout/channels/${channelId}/playlist`);
 }

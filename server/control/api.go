@@ -21,6 +21,7 @@ import (
 	"github.com/zsiec/switchframe/server/macro"
 	"github.com/zsiec/switchframe/server/operator"
 	"github.com/zsiec/switchframe/server/output"
+	"github.com/zsiec/switchframe/server/playout"
 	"github.com/zsiec/switchframe/server/preset"
 	"github.com/zsiec/switchframe/server/replay"
 	"github.com/zsiec/switchframe/server/scte35"
@@ -215,6 +216,16 @@ func WithClipManager(cm *clip.Manager) APIOption {
 // WithClipStore attaches a clip store to the API.
 func WithClipStore(cs *clip.Store) APIOption {
 	return func(a *API) { a.clipStore = cs }
+}
+
+// WithPlayoutManager attaches a playout manager to the API.
+func WithPlayoutManager(pm *playout.Manager) APIOption {
+	return func(a *API) { a.playoutMgr = pm }
+}
+
+// WithPlayoutCache attaches a playout asset cache to the API.
+func WithPlayoutCache(c *playout.Cache) APIOption {
+	return func(a *API) { a.playoutCache = c }
 }
 
 // WithSCTE35 attaches an SCTE-35 injector and rules store to the API.
@@ -432,6 +443,8 @@ type API struct {
 	replayMgr          *replay.Manager
 	clipMgr            *clip.Manager
 	clipStore          *clip.Store
+	playoutMgr         *playout.Manager
+	playoutCache       *playout.Cache
 	recordingDir       atomic.Pointer[string]
 	operatorStore      *operator.Store
 	sessionMgr         *operator.SessionManager
@@ -614,6 +627,8 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	a.registerCaptionRoutes(mux)
 	a.registerLayoutRoutes(mux)
 	a.registerClipRoutes(mux)
+	a.registerPlayoutRoutes(mux)
+	a.registerPlayoutPodRoutes(mux)
 	a.registerCommsRoutes(mux)
 	a.registerSTMapRoutes(mux)
 	a.registerColorGradeRoutes(mux)
