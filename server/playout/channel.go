@@ -55,6 +55,9 @@ type Channel struct {
 	// Splice coordinator for frame-accurate break entry.
 	spliceCoordinator *SpliceCoordinator
 
+	// As-run event logger callback.
+	asRunLog func(AsRunEvent)
+
 	// Atomic progress counters for lock-free reads.
 	itemProgress atomic.Int64 // 0-1000 milliprogress
 	itemRemainMs atomic.Int64
@@ -442,6 +445,13 @@ func (c *Channel) SetSpliceCoordinator(sc *SpliceCoordinator) {
 	c.spliceCoordinator = sc
 }
 
+// SetAsRunLog registers a callback for emitting as-run events.
+func (c *Channel) SetAsRunLog(fn func(AsRunEvent)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.asRunLog = fn
+}
+
 // run is the main playback goroutine. It iterates through playlist items.
 func (c *Channel) run(ctx context.Context) {
 	defer close(c.done)
@@ -538,11 +548,26 @@ func (c *Channel) run(ctx context.Context) {
 func (c *Channel) playClipItem(ctx context.Context, item *PlaylistItem) bool {
 	c.mu.Lock()
 	provider := c.config.AssetProvider
+	asRunFn := c.asRunLog
+	channelID := c.id
 	c.mu.Unlock()
 
 	if provider == nil {
 		slog.Warn("playout: no AssetProvider configured", "item", item.ID)
 		return false
+	}
+
+	// Emit item_start as-run event.
+	itemStartTime := time.Now().UTC()
+	if asRunFn != nil {
+		asRunFn(AsRunEvent{
+			Timestamp: itemStartTime,
+			Type:      AsRunItemStart,
+			ChannelID: channelID,
+			ItemID:    item.ID,
+			Title:     item.Title,
+			Source:    "automated",
+		})
 	}
 
 	iter, err := provider.Open(item.AssetURI)
@@ -679,6 +704,22 @@ func (c *Channel) playClipItem(ctx context.Context, item *PlaylistItem) bool {
 	// Mark complete.
 	c.itemProgress.Store(1000)
 	c.itemRemainMs.Store(0)
+
+	// Emit item_end as-run event.
+	c.mu.Lock()
+	asRunEndFn := c.asRunLog
+	c.mu.Unlock()
+	if asRunEndFn != nil {
+		asRunEndFn(AsRunEvent{
+			Timestamp:      time.Now().UTC(),
+			Type:           AsRunItemEnd,
+			ChannelID:      channelID,
+			ItemID:         item.ID,
+			Title:          item.Title,
+			Source:         "automated",
+			ActualDurationMs: time.Now().UTC().Sub(itemStartTime).Milliseconds(),
+		})
+	}
 
 	// Hold mode.
 	if item.Hold && lastFrame != nil {

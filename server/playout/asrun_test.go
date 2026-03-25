@@ -741,3 +741,49 @@ func TestAsRunQuery_LimitZeroMeansUnlimited(t *testing.T) {
 		t.Errorf("Query(Limit=0) len = %d, want 10 (unlimited)", len(events))
 	}
 }
+
+// --- Task 4: Channel As-Run Event Emission ---
+
+func TestChannelEmitsAsRunEvents(t *testing.T) {
+	provider := fakeProvider(10)
+	ch := NewChannel(1, ChannelConfig{AssetProvider: provider})
+
+	dir := t.TempDir()
+	logger, err := NewAsRunLogger(AsRunLoggerConfig{Dir: dir, RingCapacity: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+
+	ch.SetAsRunLog(func(ev AsRunEvent) { logger.Log(ev) })
+
+	pl := testPlaylist(clipItem("clip-1"), clipItem("clip-2"))
+	if err := ch.LoadPlaylist(pl); err != nil {
+		t.Fatal(err)
+	}
+	if err := ch.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 5*time.Second, func() bool {
+		return ch.State() == StateCompleted
+	})
+
+	events := logger.Query(AsRunQuery{})
+	starts := 0
+	ends := 0
+	for _, ev := range events {
+		switch ev.Type {
+		case AsRunItemStart:
+			starts++
+		case AsRunItemEnd:
+			ends++
+		}
+	}
+	if starts != 2 {
+		t.Errorf("item_start events = %d, want 2", starts)
+	}
+	if ends != 2 {
+		t.Errorf("item_end events = %d, want 2", ends)
+	}
+}
