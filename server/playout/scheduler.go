@@ -187,8 +187,8 @@ func (s *Scheduler) Tick(now time.Time) SchedulerDecision {
 		return s.playingDecision(item)
 	}
 
-	// Loop items never advance via complete signal.
-	if item.Loop {
+	// Loop items never auto-advance, but explicit Next() overrides.
+	if item.Loop && !shouldAdvance {
 		s.itemComplete = false
 		return s.playingDecision(item)
 	}

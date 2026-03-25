@@ -226,6 +226,41 @@ func TestScheduler_LoopItem_DoesNotAdvance(t *testing.T) {
 	}
 }
 
+func TestScheduler_LoopItem_NextOverridesLoop(t *testing.T) {
+	s := NewScheduler()
+
+	loopItem := schedClipItem("loop-a", 1000)
+	loopItem.Loop = true
+
+	pl := schedPlaylist(
+		loopItem,
+		schedClipItem("b", 5000),
+	)
+	if err := s.LoadPlaylist(pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	s.Start()
+
+	now := time.Now()
+	d := s.Tick(now)
+	if d.Item.ID != "loop-a" {
+		t.Fatalf("expected loop-a, got %q", d.Item.ID)
+	}
+
+	// Explicit Next() should override Loop and advance.
+	if err := s.Next(); err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	d = s.Tick(now.Add(100 * time.Millisecond))
+	if d.Item == nil || d.Item.ID != "b" {
+		got := "nil"
+		if d.Item != nil {
+			got = d.Item.ID
+		}
+		t.Errorf("Next() should advance past loop item, got %q", got)
+	}
+}
+
 func TestScheduler_HoldItem_WaitsForNext(t *testing.T) {
 	s := NewScheduler()
 
