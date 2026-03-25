@@ -60,9 +60,10 @@ func (inst *Instance) CreateVideoTx(cfg TxVideoConfig) (*VideoTx, error) {
 	ops.width = C.uint32_t(cfg.Format.Width)
 	ops.height = C.uint32_t(cfg.Format.Height)
 	ops.fps = fpsToMTL(cfg.Format.FPSNum, cfg.Format.FPSDen)
-	// Use YUV422PLANAR8 as input — MTL converts to ST 2110-20 wire format
-	// (RFC4175 YUV422 10-bit). Callers must convert YUV420→422 before PutFrame.
-	ops.input_fmt = C.ST_FRAME_FMT_YUV422PLANAR8
+	// Use YUV422PLANAR10LE as input — MTL has a built-in converter to
+	// the ST 2110-20 wire format (RFC4175 YUV422 10-bit BE).
+	// PutFrame converts YUV420p 8-bit → YUV422 planar 10-bit LE internally.
+	ops.input_fmt = C.ST_FRAME_FMT_YUV422PLANAR10LE
 	ops.transport_fmt = C.ST20_FMT_YUV_422_10BIT
 	ops.transport_pacing = C.ST21_PACING_NARROW
 	ops.transport_packing = C.ST20_PACKING_BPM
@@ -104,15 +105,16 @@ func (tx *VideoTx) PutFrame(yuv []byte) error {
 	w := tx.cfg.Format.Width
 	h := tx.cfg.Format.Height
 
-	// Convert YUV420p → YUV422 planar.
-	// YUV420: Y=w*h, U=w/2*h/2, V=w/2*h/2 → total = w*h*3/2
-	// YUV422: Y=w*h, U=w/2*h,   V=w/2*h   → total = w*h*2
-	yuv422Size := w * h * 2
+	// Convert YUV420p 8-bit → YUV422 planar 10-bit LE.
+	// YUV422 10-bit planar: Y=w*h*2, U=w/2*h*2, V=w/2*h*2 → total = w*h*4
+	// (each sample is uint16 LE, 10-bit value left-shifted by 6 for 16-bit alignment,
+	//  or stored as raw 10-bit value — MTL expects raw 10-bit in uint16 LE)
+	yuv422Size := w * h * 4 // 3 planes, all 16-bit samples
 	if cap(tx.yuv422) < yuv422Size {
 		tx.yuv422 = make([]byte, yuv422Size)
 	}
 	tx.yuv422 = tx.yuv422[:yuv422Size]
-	yuv420To422Planar(yuv, tx.yuv422, w, h)
+	yuv420p8ToYUV422Planar10LE(yuv, tx.yuv422, w, h)
 
 	copySize := yuv422Size
 	if int(frame.data_size) < copySize {
@@ -127,32 +129,59 @@ func (tx *VideoTx) PutFrame(yuv []byte) error {
 	return nil
 }
 
-// yuv420To422Planar converts YUV420 planar to YUV422 planar by duplicating
-// each chroma row (nearest-neighbor upsampling in the vertical direction).
-func yuv420To422Planar(src, dst []byte, w, h int) {
-	ySize := w * h
+// yuv420p8ToYUV422Planar10LE converts YUV420p 8-bit to YUV422 planar 10-bit LE.
+// Each 8-bit sample is scaled to 10-bit (val << 2) and stored as uint16 LE.
+// Chroma is vertically upsampled by row duplication (nearest-neighbor).
+//
+// Input layout (YUV420p 8-bit):
+//   Y: w*h bytes, U: w/2*h/2 bytes, V: w/2*h/2 bytes
+//
+// Output layout (YUV422 planar 10-bit LE):
+//   Y: w*h*2 bytes (uint16 LE), U: w/2*h*2 bytes, V: w/2*h*2 bytes
+func yuv420p8ToYUV422Planar10LE(src, dst []byte, w, h int) {
+	ySize8 := w * h
 	chromaW := w / 2
 	chromaH420 := h / 2
 
-	// Y plane: direct copy.
-	copy(dst[:ySize], src[:ySize])
+	ySize16 := ySize8 * 2
+	chromaPlane16 := chromaW * h * 2
 
-	// U plane: duplicate each row.
-	srcU := src[ySize:]
-	dstU := dst[ySize:]
-	for row := 0; row < chromaH420; row++ {
-		srcRow := srcU[row*chromaW : row*chromaW+chromaW]
-		copy(dstU[(row*2)*chromaW:], srcRow)
-		copy(dstU[(row*2+1)*chromaW:], srcRow)
+	// Y plane: 8-bit → 10-bit LE.
+	for i := 0; i < ySize8; i++ {
+		val := uint16(src[i]) << 2
+		dst[i*2] = byte(val)
+		dst[i*2+1] = byte(val >> 8)
 	}
 
-	// V plane: duplicate each row.
-	srcV := src[ySize+chromaW*chromaH420:]
-	dstV := dst[ySize+chromaW*h:]
+	// U plane: 8-bit → 10-bit LE with vertical row duplication.
+	srcU := src[ySize8:]
+	dstU := dst[ySize16:]
 	for row := 0; row < chromaH420; row++ {
-		srcRow := srcV[row*chromaW : row*chromaW+chromaW]
-		copy(dstV[(row*2)*chromaW:], srcRow)
-		copy(dstV[(row*2+1)*chromaW:], srcRow)
+		for col := 0; col < chromaW; col++ {
+			val := uint16(srcU[row*chromaW+col]) << 2
+			lo := byte(val)
+			hi := byte(val >> 8)
+			// Write to two output rows (row*2 and row*2+1).
+			dstU[(row*2)*chromaW*2+col*2] = lo
+			dstU[(row*2)*chromaW*2+col*2+1] = hi
+			dstU[(row*2+1)*chromaW*2+col*2] = lo
+			dstU[(row*2+1)*chromaW*2+col*2+1] = hi
+		}
+	}
+
+	// V plane: same as U.
+	srcV := src[ySize8+chromaW*chromaH420:]
+	dstV := dst[ySize16+chromaPlane16:]
+	for row := 0; row < chromaH420; row++ {
+		for col := 0; col < chromaW; col++ {
+			val := uint16(srcV[row*chromaW+col]) << 2
+			lo := byte(val)
+			hi := byte(val >> 8)
+			dstV[(row*2)*chromaW*2+col*2] = lo
+			dstV[(row*2)*chromaW*2+col*2+1] = hi
+			dstV[(row*2+1)*chromaW*2+col*2] = lo
+			dstV[(row*2+1)*chromaW*2+col*2+1] = hi
+		}
 	}
 }
 
