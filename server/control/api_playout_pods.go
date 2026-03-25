@@ -26,6 +26,8 @@ func (a *API) registerPlayoutPodRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/playout/channels/{n}/pods/{podId}/dump", a.handlePodDump)
 	mux.HandleFunc("POST /api/playout/channels/{n}/pods/{podId}/hold", a.handlePodHold)
 	mux.HandleFunc("POST /api/playout/channels/{n}/pods/{podId}/extend", a.handlePodExtend)
+	mux.HandleFunc("POST /api/playout/channels/{n}/pods/{podId}/promote", a.handlePodPromote)
+	mux.HandleFunc("POST /api/playout/channels/{n}/pods/{podId}/demote", a.handlePodDemote)
 
 	mux.HandleFunc("GET /api/playout/pods/templates", a.handlePodTemplateList)
 	mux.HandleFunc("POST /api/playout/pods/templates", a.handlePodTemplateCreate)
@@ -277,6 +279,32 @@ func (a *API) handlePodExtend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := pb.Extend(r.PathValue("podId"), req.AdditionalMs); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	a.broadcast()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *API) handlePodPromote(w http.ResponseWriter, r *http.Request) {
+	pb, ok := a.getPodBoard(w, r)
+	if !ok {
+		return
+	}
+	if err := pb.Promote(r.PathValue("podId")); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	a.broadcast()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *API) handlePodDemote(w http.ResponseWriter, r *http.Request) {
+	pb, ok := a.getPodBoard(w, r)
+	if !ok {
+		return
+	}
+	if err := pb.Demote(r.PathValue("podId")); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}

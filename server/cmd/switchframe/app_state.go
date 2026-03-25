@@ -376,6 +376,17 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 						Armed:       s.Pods.ActivePod.Armed,
 					}
 				}
+				for _, ps := range s.Pods.Pods {
+					ch.Pods = append(ch.Pods, internal.PodStatusInfo{
+						ID:          ps.ID,
+						Type:        ps.Type,
+						State:       ps.State,
+						ElapsedMs:   ps.ElapsedMs,
+						RemainingMs: ps.RemainingMs,
+						DurationMs:  ps.DurationMs,
+						Armed:       ps.Armed,
+					})
+				}
 			}
 			channels[i] = ch
 		}

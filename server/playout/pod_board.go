@@ -25,6 +25,7 @@ type PodBoard struct {
 
 	activePodID       string
 	autoReturnCancels map[string]context.CancelFunc
+	trackCancels      map[string]context.CancelFunc
 }
 
 // podSCTE35Injector is the narrow interface for SCTE-35 injection.
@@ -38,6 +39,7 @@ func NewPodBoard(channelID int) *PodBoard {
 		channelID:         channelID,
 		pods:              make(map[string]*Pod),
 		autoReturnCancels: make(map[string]context.CancelFunc),
+		trackCancels:      make(map[string]context.CancelFunc),
 	}
 }
 
@@ -78,14 +80,17 @@ func (pb *PodBoard) SetSCTE35Injector(inj podSCTE35Injector) {
 
 // CreatePod creates a new pod with the given config.
 func (pb *PodBoard) CreatePod(config PodConfig) (*Pod, error) {
+	pb.mu.Lock()
 	id := generatePodID()
+	for _, exists := pb.pods[id]; exists; _, exists = pb.pods[id] {
+		id = generatePodID()
+	}
+
 	pod := &Pod{
 		ID:     id,
 		Config: config,
 		State:  PodScheduled,
 	}
-
-	pb.mu.Lock()
 	pb.pods[id] = pod
 	fn := pb.onStateChange
 	pb.mu.Unlock()
@@ -111,16 +116,24 @@ func (pb *PodBoard) CreateFromTemplate(typeName string) (*Pod, error) {
 		return nil, err
 	}
 
-	return pb.CreatePod(PodConfig{
-		Type:                  tmpl.Type,
-		DurationMs:            tmpl.DefaultDurationMs,
-		AutoReturn:            tmpl.AutoReturn,
-		AllowDumpOut:          tmpl.AllowDumpOut,
-		Priority:              tmpl.Priority,
-		Contractual:           tmpl.Contractual,
-		Ephemeral:             tmpl.Ephemeral,
-		HoldUntilManualReturn: tmpl.HoldUntilManualReturn,
-	})
+	// Generate ID and use template's Instantiate.
+	id := generatePodID()
+	pod := tmpl.Instantiate(id)
+
+	pb.mu.Lock()
+	// Check for ID collision.
+	for _, exists := pb.pods[id]; exists; _, exists = pb.pods[id] {
+		id = generatePodID()
+		pod.ID = id
+	}
+	pb.pods[id] = pod
+	fn := pb.onStateChange
+	pb.mu.Unlock()
+
+	if fn != nil {
+		fn()
+	}
+	return pod, nil
 }
 
 // GetPod returns a snapshot of the pod with the given ID.
@@ -433,17 +446,26 @@ func (pb *PodBoard) Fire(id string) error {
 	}
 
 	// Start elapsed time tracker.
-	go pb.trackElapsed(id)
+	trackCtx, trackCancel := context.WithCancel(context.Background())
+	pb.mu.Lock()
+	pb.trackCancels[id] = trackCancel
+	pb.mu.Unlock()
+	go pb.trackElapsed(trackCtx, id)
 
 	return nil
 }
 
 // trackElapsed updates ElapsedMs and RemainingMs every 50ms while a pod is active.
-func (pb *PodBoard) trackElapsed(id string) {
+func (pb *PodBoard) trackElapsed(ctx context.Context, id string) {
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 
-	for range ticker.C {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 		pb.mu.Lock()
 		pod, ok := pb.pods[id]
 		if !ok || pod.State != PodBreakActive {
@@ -511,6 +533,12 @@ func (pb *PodBoard) completePod(id string, finalState PodState) {
 	if cancelFn, ok := pb.autoReturnCancels[id]; ok {
 		cancelFn()
 		delete(pb.autoReturnCancels, id)
+	}
+
+	// Cancel elapsed tracker goroutine.
+	if cancelFn, ok := pb.trackCancels[id]; ok {
+		cancelFn()
+		delete(pb.trackCancels, id)
 	}
 
 	inj := pb.scte35Injector
@@ -586,6 +614,10 @@ func (pb *PodBoard) Hold(id string) error {
 
 // Extend adds additional time to an active pod's duration and restarts the auto-return timer.
 func (pb *PodBoard) Extend(id string, additionalMs int64) error {
+	if additionalMs < 0 {
+		return fmt.Errorf("playout: extend duration must be non-negative")
+	}
+
 	pb.mu.Lock()
 	pod, ok := pb.pods[id]
 	if !ok {
@@ -605,20 +637,17 @@ func (pb *PodBoard) Extend(id string, additionalMs int64) error {
 
 	pod.Config.DurationMs += additionalMs
 
-	// Restart auto-return with remaining time.
+	// Restart auto-return with remaining time (launched under lock to prevent TOCTOU).
 	elapsed := time.Now().UnixMilli() - pod.FiredAt
 	remaining := pod.Config.DurationMs - elapsed
-	config := pod.Config
-	fn := pb.onStateChange
-	pb.mu.Unlock()
-
-	if remaining > 0 && config.AutoReturn {
+	if remaining > 0 && pod.Config.AutoReturn {
 		ctx, cancel := context.WithCancel(context.Background())
-		pb.mu.Lock()
 		pb.autoReturnCancels[id] = cancel
-		pb.mu.Unlock()
 		go pb.runAutoReturn(ctx, id, remaining)
 	}
+
+	fn := pb.onStateChange
+	pb.mu.Unlock()
 
 	if fn != nil {
 		fn()

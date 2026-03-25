@@ -124,7 +124,7 @@
 			<PodBoard
 				channel={selectedChannel}
 				activePod={channel.activePod}
-				pods={[]}
+				pods={channel.pods ?? []}
 				podsArmed={channel.podsArmed ?? 0}
 			/>
 		</div>

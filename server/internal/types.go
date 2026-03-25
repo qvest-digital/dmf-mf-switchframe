@@ -299,6 +299,7 @@ type PlayoutChannelInfo struct {
 	ItemProgress  float64        `json:"itemProgress,omitempty"`
 	ItemRemainMs  int64          `json:"itemRemainMs,omitempty"`
 	ActivePod     *PodStatusInfo `json:"activePod,omitempty"`
+	Pods          []PodStatusInfo `json:"pods,omitempty"`
 	PodsArmed     int            `json:"podsArmed,omitempty"`
 	PodsCompleted int            `json:"podsCompleted,omitempty"`
 }

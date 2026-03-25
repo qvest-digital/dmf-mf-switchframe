@@ -403,6 +403,10 @@ func TestPodBoard_FireAlreadyActive(t *testing.T) {
 		p.CompletedAt = time.Now().UnixMilli()
 	}
 	pb.activePodID = ""
+	if cancel, ok := pb.trackCancels[p1.ID]; ok {
+		cancel()
+		delete(pb.trackCancels, p1.ID)
+	}
 	pb.mu.Unlock()
 }
 
@@ -464,6 +468,10 @@ func TestPodBoard_DumpOutDisallowed(t *testing.T) {
 	if cancel, ok := pb.autoReturnCancels[pod.ID]; ok {
 		cancel()
 		delete(pb.autoReturnCancels, pod.ID)
+	}
+	if cancel, ok := pb.trackCancels[pod.ID]; ok {
+		cancel()
+		delete(pb.trackCancels, pod.ID)
 	}
 	pb.mu.Unlock()
 }
@@ -612,6 +620,10 @@ func TestPodBoard_InjuryPodNoAutoReturn(t *testing.T) {
 		p.CompletedAt = time.Now().UnixMilli()
 	}
 	pb.activePodID = ""
+	if cancel, ok := pb.trackCancels[pod.ID]; ok {
+		cancel()
+		delete(pb.trackCancels, pod.ID)
+	}
 	pb.mu.Unlock()
 }
 

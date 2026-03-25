@@ -832,6 +832,7 @@ export interface PlayoutChannelState {
 	itemProgress?: number;
 	itemRemainMs?: number;
 	activePod?: PodStatusBroadcast;
+	pods?: PodStatusBroadcast[];
 	podsArmed?: number;
 	podsCompleted?: number;
 }
