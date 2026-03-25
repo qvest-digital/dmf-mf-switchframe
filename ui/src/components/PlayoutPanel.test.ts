@@ -14,6 +14,10 @@ vi.mock('$lib/api/switch-api', () => ({
 	playoutReturnToAuto: vi.fn().mockResolvedValue(undefined),
 	playoutJump: vi.fn().mockResolvedValue(undefined),
 	playoutPlaylist: vi.fn().mockResolvedValue([]),
+	playoutLoadPlaylist: vi.fn().mockResolvedValue(undefined),
+	playoutSamples: vi.fn().mockResolvedValue([]),
+	playoutTemplateNames: vi.fn().mockResolvedValue([]),
+	playoutTemplate: vi.fn().mockResolvedValue(null),
 	playoutCacheStatus: vi.fn().mockResolvedValue({
 		cacheDir: '/tmp',
 		maxBytes: 1e9,
@@ -61,6 +65,9 @@ function makeChannel(overrides: Partial<PlayoutChannelState> = {}): PlayoutChann
 describe('PlayoutPanel', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		vi.mocked(api.playoutPlaylist).mockResolvedValue([]);
+		vi.mocked(api.playoutSamples).mockResolvedValue([]);
+		vi.mocked(api.playoutTemplateNames).mockResolvedValue([]);
 	});
 
 	it('renders "No playlist loaded" when no playlist', () => {
@@ -235,7 +242,46 @@ describe('PlayoutPanel', () => {
 		expect(container.textContent).toContain('Cache Status');
 	});
 
-	it('fetches and renders playlist items when itemCount > 0', async () => {
+	it('renders timeline component', () => {
+		const state = makeState();
+		const { container } = render(PlayoutPanel, { props: { state } });
+		const timeline = container.querySelector('.timeline-zone');
+		expect(timeline).toBeTruthy();
+	});
+
+	it('renders settings section', () => {
+		const state = makeState();
+		const { container } = render(PlayoutPanel, { props: { state } });
+		expect(container.textContent).toContain('Playlist Settings');
+	});
+
+	it('renders template selector when templates available', async () => {
+		vi.mocked(api.playoutTemplateNames).mockResolvedValue(['News Show', 'Sports Event']);
+		const state = makeState();
+		const { container } = render(PlayoutPanel, { props: { state } });
+		await vi.waitFor(() => {
+			const select = container.querySelector('.template-select');
+			expect(select).toBeTruthy();
+			expect(container.textContent).toContain('News Show');
+			expect(container.textContent).toContain('Sports Event');
+		});
+	});
+
+	it('renders save button', () => {
+		const state = makeState();
+		const { container } = render(PlayoutPanel, { props: { state } });
+		const btn = container.querySelector('.save-btn');
+		expect(btn).toBeTruthy();
+		expect(btn!.textContent).toContain('Save');
+	});
+
+	it('shows item editor placeholder when no item selected', () => {
+		const state = makeState();
+		const { container } = render(PlayoutPanel, { props: { state } });
+		expect(container.textContent).toContain('Select an item');
+	});
+
+	it('fetches playlist items and displays them in timeline when itemCount > 0', async () => {
 		vi.mocked(api.playoutPlaylist).mockResolvedValue([
 			{ id: 'a', type: 'clip', title: 'Intro Bumper', duration_ms: 5000 },
 			{ id: 'b', type: 'live', title: 'Camera 1', duration_ms: 60000 },

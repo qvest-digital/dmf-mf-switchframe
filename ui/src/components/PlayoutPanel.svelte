@@ -1,7 +1,12 @@
 <script lang="ts">
-	import type { ControlRoomState, PlayoutChannelState, PlaylistItem } from '$lib/api/types';
-	import { playoutPlaylist, playoutJump, apiCall } from '$lib/api/switch-api';
-	import PlayoutItem from './PlayoutItem.svelte';
+	import type { ControlRoomState, PlayoutChannelState, Playlist, PlaylistItem, SampleClip } from '$lib/api/types';
+	import {
+		playoutPlaylist, playoutLoadPlaylist, playoutTemplateNames,
+		playoutTemplate, playoutSamples, apiCall,
+	} from '$lib/api/switch-api';
+	import PlayoutTimeline from './PlayoutTimeline.svelte';
+	import PlayoutItemEditor from './PlayoutItemEditor.svelte';
+	import PlayoutSettings from './PlayoutSettings.svelte';
 	import PlayoutTransport from './PlayoutTransport.svelte';
 	import CacheStatus from './CacheStatus.svelte';
 	import PodBoard from './PodBoard.svelte';
@@ -11,6 +16,7 @@
 	}
 	let { state: crState }: Props = $props();
 
+	// ── Channel state ──
 	let selectedChannel = $state(1);
 
 	const channels = $derived(crState.playout?.channels ?? []);
@@ -26,43 +32,113 @@
 	const isOnAir = $derived(channel.state === 'on_air');
 	const isCued = $derived(channel.state === 'cued');
 
-	let playlistItems = $state<PlaylistItem[]>([]);
-	let playlistLoading = $state(false);
+	// ── Working playlist (local editable copy) ──
+	let workingPlaylist = $state<Playlist>({
+		id: '', name: '', default_transition: { type: 'cut' }, items: [],
+	});
+	let selectedIndex = $state(-1);
+	let sampleClips = $state<SampleClip[]>([]);
+	let templateNames = $state<string[]>([]);
+	let dirty = $state(false);
 
-	// Fetch playlist items when channel or itemCount changes.
-	// Uses cancelled flag to ignore stale responses on rapid channel switching.
+	// ── Source names for the item editor ──
+	const sourceNames = $derived(Object.keys(crState.sources ?? {}));
+
+	// ── Fetch playlist items on mount / channel change ──
 	$effect(() => {
 		const ch = selectedChannel;
 		const count = channel.itemCount;
 		let cancelled = false;
 		if (count <= 0) {
-			playlistItems = [];
+			workingPlaylist = { id: '', name: channel.playlistName ?? '', default_transition: { type: 'cut' }, items: [] };
 			return;
 		}
-		playlistLoading = true;
 		playoutPlaylist(ch).then(items => {
-			if (!cancelled) playlistItems = items;
+			if (!cancelled) {
+				workingPlaylist = {
+					...workingPlaylist,
+					name: channel.playlistName ?? workingPlaylist.name,
+					items,
+				};
+				dirty = false;
+			}
 		}).catch(() => {
-			if (!cancelled) playlistItems = [];
-		}).finally(() => {
-			if (!cancelled) playlistLoading = false;
+			if (!cancelled) workingPlaylist = { ...workingPlaylist, items: [] };
 		});
 		return () => { cancelled = true; };
 	});
 
-	// Auto-scroll the on-air item into view when it changes.
+	// ── Fetch template names + sample clips on mount ──
 	$effect(() => {
-		if (channel.currentItemId) {
-			const id = setTimeout(() => {
-				const el = document.getElementById(`playout-item-${channel.currentItemId}`);
-				el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-			}, 50);
-			return () => clearTimeout(id);
-		}
+		playoutTemplateNames().then(names => { templateNames = names; }).catch(() => { templateNames = []; });
+		playoutSamples().then(clips => { sampleClips = clips; }).catch(() => { sampleClips = []; });
 	});
 
-	function handleJump(itemId: string) {
-		apiCall(playoutJump(selectedChannel, itemId), 'Jump to item');
+	// ── Helper functions ──
+
+	function reorderItem(from: number, to: number) {
+		const items = [...workingPlaylist.items];
+		const [moved] = items.splice(from, 1);
+		items.splice(to, 0, moved);
+		workingPlaylist = { ...workingPlaylist, items };
+		if (selectedIndex === from) selectedIndex = to;
+		dirty = true;
+	}
+
+	function deleteItem(index: number) {
+		workingPlaylist = {
+			...workingPlaylist,
+			items: workingPlaylist.items.filter((_, i) => i !== index),
+		};
+		if (selectedIndex === index) selectedIndex = -1;
+		else if (selectedIndex > index) selectedIndex--;
+		dirty = true;
+	}
+
+	function addItem(atIndex: number) {
+		const newItem: PlaylistItem = {
+			id: `item-${Date.now()}`,
+			type: 'clip',
+			title: 'New Item',
+		};
+		const items = [...workingPlaylist.items];
+		items.splice(atIndex, 0, newItem);
+		workingPlaylist = { ...workingPlaylist, items };
+		selectedIndex = atIndex;
+		dirty = true;
+	}
+
+	function updateItem(updated: PlaylistItem) {
+		workingPlaylist = {
+			...workingPlaylist,
+			items: workingPlaylist.items.map((item, i) =>
+				i === selectedIndex ? updated : item
+			),
+		};
+		dirty = true;
+	}
+
+	function updatePlaylistSettings(updated: Playlist) {
+		workingPlaylist = updated;
+		dirty = true;
+	}
+
+	async function savePlaylist() {
+		await apiCall(playoutLoadPlaylist(selectedChannel, workingPlaylist), 'Save playlist');
+		dirty = false;
+	}
+
+	async function loadTemplate(name: string) {
+		try {
+			const pl = await playoutTemplate(name);
+			if (pl) {
+				workingPlaylist = pl;
+				selectedIndex = -1;
+				dirty = true;
+			}
+		} catch (e) {
+			console.error('Failed to load template:', e);
+		}
 	}
 
 	function formatCountdown(ms: number | undefined): string {
@@ -72,59 +148,83 @@
 		const s = totalSecs % 60;
 		return `${m}:${s.toString().padStart(2, '0')}`;
 	}
-
-	function getItemState(index: number): 'on-air' | 'next' | 'completed' | 'upcoming' {
-		if (channel.itemIndex < 0) return 'upcoming';
-		if (index < channel.itemIndex) return 'completed';
-		if (index === channel.itemIndex && (isOnAir || isCued)) return 'on-air';
-		if (index === channel.itemIndex + 1) return 'next';
-		return 'upcoming';
-	}
 </script>
 
 <div class="playout-panel">
-	<div class="playout-columns">
-		<!-- Left: Playlist -->
+	<!-- ═══ Header ═══ -->
+	<div class="header-row">
+		<select bind:value={selectedChannel} class="channel-select">
+			<option value={1}>CH 1</option>
+			<option value={2}>CH 2</option>
+		</select>
+		<span class="playlist-name">{workingPlaylist.name || channel.playlistName || 'No playlist loaded'}</span>
+		<span class="item-counter">
+			{channel.itemIndex >= 0 ? channel.itemIndex + 1 : 0}/{channel.itemCount}
+		</span>
+
+		{#if templateNames.length > 0}
+			<select
+				class="template-select"
+				value=""
+				onchange={(e) => {
+					const name = (e.target as HTMLSelectElement).value;
+					if (name) { loadTemplate(name); (e.target as HTMLSelectElement).value = ''; }
+				}}
+			>
+				<option value="" disabled>Templates</option>
+				{#each templateNames as name}
+					<option value={name}>{name}</option>
+				{/each}
+			</select>
+		{/if}
+
+		<button
+			class="save-btn"
+			class:dirty
+			onclick={savePlaylist}
+			disabled={!dirty && workingPlaylist.items.length === 0}
+			title="Save playlist to server"
+		>
+			Save
+		</button>
+	</div>
+
+	<!-- ═══ Timeline (full width) ═══ -->
+	<div class="timeline-zone">
+		<PlayoutTimeline
+			items={workingPlaylist.items}
+			currentIndex={channel.itemIndex}
+			{selectedIndex}
+			progress={channel.itemProgress ?? 0}
+			onSelect={(i) => selectedIndex = i}
+			onReorder={reorderItem}
+			onDelete={deleteItem}
+			onAddItem={addItem}
+		/>
+	</div>
+
+	<!-- ═══ Bottom: Editor + Transport ═══ -->
+	<div class="bottom-columns">
+		<!-- Left: Item Editor -->
 		<div class="left-col">
-			<div class="header-row">
-				<select bind:value={selectedChannel} class="channel-select">
-					<option value={1}>CH 1</option>
-					<option value={2}>CH 2</option>
-				</select>
-				<span class="playlist-name">{channel.playlistName ?? 'No playlist loaded'}</span>
-				<span class="item-counter">
-					{channel.itemIndex >= 0 ? channel.itemIndex + 1 : 0}/{channel.itemCount}
-				</span>
-			</div>
-
-			<div class="playlist-list">
-				{#if playlistItems.length === 0 && channel.itemCount === 0}
-					<div class="empty-state">No playlist loaded</div>
-				{:else}
-					{#each playlistItems as item, i}
-						<button
-							id="playout-item-{item.id}"
-							class="playlist-item-row"
-							class:on-air-row={getItemState(i) === 'on-air'}
-							onclick={() => handleJump(item.id)}
-							type="button"
-						>
-							<PlayoutItem
-								{item}
-								index={i}
-								isOnAir={getItemState(i) === 'on-air'}
-								isNext={getItemState(i) === 'next'}
-								isCompleted={getItemState(i) === 'completed'}
-							/>
-						</button>
-					{/each}
-				{/if}
-			</div>
-
-			<CacheStatus />
+			{#if selectedIndex >= 0 && selectedIndex < workingPlaylist.items.length}
+				<div class="editor-wrap">
+					<div class="editor-header">
+						<span class="editor-title">Item {selectedIndex + 1}</span>
+						<button class="editor-close" onclick={() => selectedIndex = -1} title="Close editor">&times;</button>
+					</div>
+					<PlayoutItemEditor
+						item={workingPlaylist.items[selectedIndex]}
+						onChange={updateItem}
+						sources={sourceNames}
+					/>
+				</div>
+			{:else}
+				<div class="no-selection">Select an item in the timeline to edit</div>
+			{/if}
 		</div>
 
-		<!-- Right: Transport + Info -->
+		<!-- Right: Transport + Status -->
 		<div class="right-col">
 			<div class="state-row">
 				<span class="state-pill" class:on-air={isOnAir} class:cued={isCued} class:stopped={channel.state === 'stopped'} class:completed={channel.state === 'completed'}>
@@ -171,7 +271,16 @@
 				activePod={channel.activePod}
 				pods={channel.pods ?? []}
 				podsArmed={channel.podsArmed ?? 0}
+				podTemplates={workingPlaylist.pods}
 			/>
+
+			<PlayoutSettings
+				playlist={workingPlaylist}
+				onChange={updatePlaylistSettings}
+				{sampleClips}
+			/>
+
+			<CacheStatus />
 		</div>
 	</div>
 </div>
@@ -183,25 +292,10 @@
 		padding: 6px;
 		height: 100%;
 		overflow: hidden;
+		gap: 4px;
 	}
 
-	.playout-columns {
-		display: flex;
-		gap: 10px;
-		flex: 1;
-		min-height: 0;
-	}
-
-	/* -- Left: playlist column -- */
-	.left-col {
-		display: flex;
-		flex-direction: column;
-		gap: 3px;
-		width: 40%;
-		min-width: 180px;
-		flex-shrink: 0;
-	}
-
+	/* ── Header ── */
 	.header-row {
 		display: flex;
 		gap: 4px;
@@ -238,20 +332,129 @@
 		flex-shrink: 0;
 	}
 
-	.playlist-list {
-		flex: 1;
-		overflow-y: auto;
-		overflow-x: hidden;
+	.template-select {
+		background: var(--bg-base);
+		color: var(--text-secondary);
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
-		background: var(--bg-base);
-		padding: 2px;
+		padding: 2px 4px;
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		flex-shrink: 0;
+		max-width: 100px;
 	}
 
-	.playlist-list::-webkit-scrollbar { width: 3px; }
-	.playlist-list::-webkit-scrollbar-thumb { background: var(--border-subtle); border-radius: 2px; }
+	.save-btn {
+		padding: 2px 8px;
+		background: var(--bg-surface);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 700;
+		color: var(--text-secondary);
+		letter-spacing: 0.04em;
+		cursor: pointer;
+		flex-shrink: 0;
+		transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+	}
 
-	.empty-state {
+	.save-btn:hover:not(:disabled) {
+		background: var(--bg-hover);
+		border-color: var(--border-strong);
+		color: var(--text-primary);
+	}
+
+	.save-btn:disabled {
+		opacity: 0.3;
+		cursor: default;
+	}
+
+	.save-btn.dirty {
+		color: var(--accent-blue, #3b82f6);
+		border-color: rgba(59, 130, 246, 0.5);
+		background: rgba(59, 130, 246, 0.08);
+	}
+
+	.save-btn.dirty:hover {
+		background: rgba(59, 130, 246, 0.15);
+	}
+
+	/* ── Timeline zone ── */
+	.timeline-zone {
+		flex-shrink: 0;
+	}
+
+	/* ── Bottom columns ── */
+	.bottom-columns {
+		display: flex;
+		gap: 10px;
+		flex: 1;
+		min-height: 0;
+	}
+
+	/* ── Left: Item Editor ── */
+	.left-col {
+		display: flex;
+		flex-direction: column;
+		width: 40%;
+		min-width: 180px;
+		flex-shrink: 0;
+		overflow-y: auto;
+		overflow-x: hidden;
+	}
+
+	.left-col::-webkit-scrollbar { width: 3px; }
+	.left-col::-webkit-scrollbar-thumb { background: var(--border-subtle); border-radius: 2px; }
+
+	.editor-wrap {
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		background: var(--bg-surface);
+		overflow: hidden;
+	}
+
+	.editor-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 4px 8px;
+		background: var(--bg-control);
+		border-bottom: 1px solid var(--border-default);
+	}
+
+	.editor-title {
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 700;
+		color: var(--text-secondary);
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+	}
+
+	.editor-close {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 18px;
+		height: 18px;
+		border: none;
+		background: none;
+		color: var(--text-tertiary);
+		cursor: pointer;
+		font-size: 14px;
+		line-height: 1;
+		border-radius: var(--radius-sm);
+		padding: 0;
+		transition: color var(--transition-fast), background var(--transition-fast);
+	}
+
+	.editor-close:hover {
+		color: var(--text-primary);
+		background: var(--bg-hover);
+	}
+
+	.no-selection {
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -262,26 +465,7 @@
 		opacity: 0.5;
 	}
 
-	.playlist-item-row {
-		display: block;
-		width: 100%;
-		padding: 0;
-		margin: 0;
-		background: none;
-		border: none;
-		cursor: pointer;
-		text-align: left;
-		color: inherit;
-		font: inherit;
-	}
-
-	.playlist-item-row:focus-visible {
-		outline: 1px solid var(--accent-blue);
-		outline-offset: -1px;
-		border-radius: var(--radius-sm);
-	}
-
-	/* -- Right: controls column -- */
+	/* ── Right: controls column ── */
 	.right-col {
 		display: flex;
 		flex-direction: column;
@@ -289,7 +473,6 @@
 		flex: 1;
 		min-width: 0;
 		min-height: 0;
-		justify-content: center;
 		overflow-y: auto;
 		overflow-x: hidden;
 	}
@@ -297,7 +480,7 @@
 	.right-col::-webkit-scrollbar { width: 3px; }
 	.right-col::-webkit-scrollbar-thumb { background: var(--border-subtle); border-radius: 2px; }
 
-	/* -- State pill -- */
+	/* ── State pill ── */
 	.state-row {
 		display: flex;
 		align-items: center;
@@ -343,7 +526,7 @@
 		50% { opacity: 0.7; }
 	}
 
-	/* -- Now playing -- */
+	/* ── Now playing ── */
 	.now-playing {
 		display: flex;
 		align-items: center;
@@ -369,7 +552,7 @@
 		white-space: nowrap;
 	}
 
-	/* -- Progress -- */
+	/* ── Progress ── */
 	.progress-bar {
 		padding: 2px 0;
 	}
@@ -390,7 +573,7 @@
 		transition: width 0.25s linear;
 	}
 
-	/* -- Time -- */
+	/* ── Time ── */
 	.time-row {
 		display: flex;
 		align-items: center;
@@ -414,7 +597,7 @@
 		50% { opacity: 0.5; }
 	}
 
-	/* -- Next -- */
+	/* ── Next ── */
 	.next-row {
 		display: flex;
 		align-items: center;
