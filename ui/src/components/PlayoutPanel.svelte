@@ -44,10 +44,18 @@
 	// ── Source names for the item editor ──
 	const sourceNames = $derived(Object.keys(crState.sources ?? {}));
 
-	// ── Fetch playlist items on mount / channel change ──
+	// ── Fetch playlist items on channel switch only (not on every broadcast tick) ──
+	// Track the last channel+count we fetched for to avoid re-fetching when the
+	// broadcast state updates (which would overwrite local edits like loop/hold toggles).
+	let lastFetchKey = $state('');
 	$effect(() => {
 		const ch = selectedChannel;
 		const count = channel.itemCount;
+		const fetchKey = `${ch}:${count}`;
+		// Only fetch when the channel or playlist changes, not on every tick.
+		// Also skip if we have local dirty edits.
+		if (fetchKey === lastFetchKey || dirty) return;
+		lastFetchKey = fetchKey;
 		let cancelled = false;
 		if (count <= 0) {
 			workingPlaylist = { id: '', name: channel.playlistName ?? '', default_transition: { type: 'cut' }, items: [] };
@@ -291,9 +299,12 @@
 		flex-direction: column;
 		padding: 6px;
 		height: 100%;
-		overflow: hidden;
+		overflow-y: auto;
+		overflow-x: hidden;
 		gap: 4px;
 	}
+	.playout-panel::-webkit-scrollbar { width: 3px; }
+	.playout-panel::-webkit-scrollbar-thumb { background: var(--border-subtle); border-radius: 2px; }
 
 	/* ── Header ── */
 	.header-row {
