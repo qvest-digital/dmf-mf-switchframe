@@ -350,6 +350,41 @@ func (nke *NeuralKeyEngine) Infer(
 		C.cudaMemcpy(unsafe.Pointer(&sample[0]),
 			unsafe.Pointer(uintptr(nke.alphaBuf)+midOffset),
 			C.size_t(16*4), C.cudaMemcpyDeviceToHost)
+		// Sample at 25% and 75% of the alpha buffer for broader view
+		q1Offset := uintptr(ckModelW*ckModelH/4) * 4
+		C.cudaMemcpy(unsafe.Pointer(&sample[0]),
+			unsafe.Pointer(uintptr(nke.alphaBuf)+q1Offset),
+			C.size_t(16*4), C.cudaMemcpyDeviceToHost)
+		slog.Info("gpu: neural_key: alpha sample (25% pixels)",
+			"values", fmt.Sprintf("%.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f",
+				sample[0], sample[1], sample[2], sample[3],
+				sample[4], sample[5], sample[6], sample[7]))
+		q3Offset := uintptr(ckModelW*ckModelH*3/4) * 4
+		C.cudaMemcpy(unsafe.Pointer(&sample[0]),
+			unsafe.Pointer(uintptr(nke.alphaBuf)+q3Offset),
+			C.size_t(16*4), C.cudaMemcpyDeviceToHost)
+		slog.Info("gpu: neural_key: alpha sample (75% pixels)",
+			"values", fmt.Sprintf("%.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f",
+				sample[0], sample[1], sample[2], sample[3],
+				sample[4], sample[5], sample[6], sample[7]))
+		// Also find max alpha across entire buffer
+		allAlpha := make([]float32, ckModelW*ckModelH)
+		C.cudaMemcpy(unsafe.Pointer(&allAlpha[0]), nke.alphaBuf,
+			C.size_t(ckModelW*ckModelH*4), C.cudaMemcpyDeviceToHost)
+		maxA := float32(0)
+		minA := float32(1)
+		sumA := float32(0)
+		for _, v := range allAlpha {
+			if v > maxA { maxA = v }
+			if v < minA { minA = v }
+			sumA += v
+		}
+		meanA := sumA / float32(len(allAlpha))
+		slog.Info("gpu: neural_key: alpha stats",
+			"min", fmt.Sprintf("%.4f", minA),
+			"max", fmt.Sprintf("%.4f", maxA),
+			"mean", fmt.Sprintf("%.4f", meanA))
+
 		slog.Info("gpu: neural_key: alpha sample (middle 16 pixels)",
 			"values", fmt.Sprintf("%.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f",
 				sample[0], sample[1], sample[2], sample[3],
