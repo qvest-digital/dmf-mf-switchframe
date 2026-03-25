@@ -70,6 +70,33 @@ func TestPodState_IsTerminal(t *testing.T) {
 	}
 }
 
+func TestPodBoard_HighestPriorityArmed(t *testing.T) {
+	pb := NewPodBoard(1)
+
+	p1, _ := pb.CreatePod(PodConfig{Type: "quarter", DurationMs: 180000, Priority: PriorityNormal})
+	p2, _ := pb.CreatePod(PodConfig{Type: "mandatory_sponsor", DurationMs: 120000, Priority: PriorityMandatory})
+	pb.Arm(p1.ID)
+	pb.Arm(p2.ID)
+
+	highest := pb.HighestPriorityArmed()
+	if highest == nil {
+		t.Fatal("expected a highest priority pod")
+	}
+	if highest.ID != p2.ID {
+		t.Errorf("expected mandatory pod %s, got %s", p2.ID, highest.ID)
+	}
+}
+
+func TestPodBoard_HighestPriorityArmed_NoneArmed(t *testing.T) {
+	pb := NewPodBoard(1)
+	pb.CreatePod(PodConfig{Type: "quarter", DurationMs: 180000, Priority: PriorityNormal})
+
+	highest := pb.HighestPriorityArmed()
+	if highest != nil {
+		t.Error("expected nil when no pods are armed")
+	}
+}
+
 func TestPodBoard_FullScenario_NFLInjuryDuringTimeout(t *testing.T) {
 	pb := NewPodBoard(1)
 	store := NewPodTemplateStore()

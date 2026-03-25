@@ -626,6 +626,24 @@ func (pb *PodBoard) Extend(id string, additionalMs int64) error {
 	return nil
 }
 
+// HighestPriorityArmed returns the armed pod with the highest priority, or nil.
+func (pb *PodBoard) HighestPriorityArmed() *Pod {
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+
+	var best *Pod
+	for _, p := range pb.pods {
+		if !p.Armed || p.State.IsTerminal() || p.State == PodBreakActive {
+			continue
+		}
+		if best == nil || best.Config.Priority.Less(p.Config.Priority) {
+			cp := *p
+			best = &cp
+		}
+	}
+	return best
+}
+
 // generatePodID creates a short random hex ID.
 func generatePodID() string {
 	b := make([]byte, 4)
