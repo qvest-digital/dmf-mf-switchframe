@@ -476,15 +476,10 @@ func TestChannel_InOutPoints(t *testing.T) {
 	})
 
 	t.Run("empty_result", func(t *testing.T) {
-		// In point past end of clip.
+		// In point past end of clip — no playable content.
 		result := applyInOutPoints(frames, 10000, 0)
-		// Should return frames starting from last frame (since all frames have PTS < inPTS
-		// except potentially the last iteration). Actually, the loop finds the first frame
-		// with PTS >= inPTS. If none found, startIdx stays 0. Let's verify behavior.
-		// With inMs=10000, inPTS = 900000. No frame has PTS >= 900000, so startIdx stays 0.
-		// This is correct behavior — if no frame matches the in point, return all frames.
-		if len(result) != 10 {
-			t.Errorf("in point past end: got %d frames, want 10", len(result))
+		if result != nil {
+			t.Errorf("in point past end: got %d frames, want nil", len(result))
 		}
 	})
 }

@@ -528,6 +528,23 @@ func (c *Channel) playClipItem(ctx context.Context, item *PlaylistItem) bool {
 		default:
 		}
 
+		// Pace using absolute time to prevent drift.
+		// Wait BEFORE output (except frame 0) to avoid burst pairs.
+		if i > 0 {
+			deadline := playbackStart.Add(time.Duration(i) * frameDuration)
+			wait := time.Until(deadline)
+			if wait > 0 {
+				timer.Reset(wait)
+				select {
+				case <-ctx.Done():
+					return true
+				case <-c.advanceCh:
+					return false
+				case <-timer.C:
+				}
+			}
+		}
+
 		// Update progress.
 		if totalFrames > 0 {
 			prog := int64(i * 1000 / totalFrames)
@@ -543,20 +560,6 @@ func (c *Channel) playClipItem(ctx context.Context, item *PlaylistItem) bool {
 
 		if outputFn != nil {
 			outputFn(frame.YUV, frame.Width, frame.Height, outputPTS, frame.IsKeyframe)
-		}
-
-		// Pace using absolute time to prevent drift.
-		deadline := playbackStart.Add(time.Duration(i) * frameDuration)
-		wait := time.Until(deadline)
-		if wait > 0 {
-			timer.Reset(wait)
-			select {
-			case <-ctx.Done():
-				return true
-			case <-c.advanceCh:
-				return false
-			case <-timer.C:
-			}
 		}
 
 		outputPTS += ptsPerFrame
@@ -693,11 +696,16 @@ func applyInOutPoints(frames []DecodedFrame, inMs, outMs int64) []DecodedFrame {
 	endIdx := len(frames)
 
 	if inMs > 0 {
+		found := false
 		for i, f := range frames {
 			if f.PTS-basePTS >= inPTS {
 				startIdx = i
+				found = true
 				break
 			}
+		}
+		if !found {
+			return nil // in-point is past the end of the clip
 		}
 	}
 
