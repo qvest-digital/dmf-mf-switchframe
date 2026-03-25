@@ -2,17 +2,20 @@
 
 package gpu
 
+/*
+#include <cuda_runtime.h>
+*/
+import "C"
+
 import (
 	"log/slog"
 	"sync/atomic"
 	"time"
-
-	"github.com/zsiec/switchframe/server/neuralkey"
 )
 
 // gpuNeuralKeyNode applies neural green screen keying on the GPU via
 // TensorRT inference. It reads key configuration through NeuralKeyState
-// and delegates to the neuralkey.Engine for alpha matte generation.
+// and delegates to NeuralKeyEngine for the full inference pipeline.
 //
 // The node sits in the pipeline after the chroma/luma key node, which
 // provides a coarse key as fallback during TensorRT warmup. Once the
@@ -21,10 +24,7 @@ type gpuNeuralKeyNode struct {
 	ctx    *Context
 	pool   *FramePool
 	state  NeuralKeyState
-	engine *neuralkey.Engine
-
-	// Pre-allocated GPU scratch frames.
-	hintBuf *GPUFrame // coarse alpha hint from chroma key
+	engine *NeuralKeyEngine
 
 	width, height int
 	lastErr       atomic.Value
@@ -39,17 +39,11 @@ func NewGPUNeuralKeyNode(ctx *Context, pool *FramePool, state NeuralKeyState, en
 		return nil
 	}
 
-	engine, err := neuralkey.NewEngine(enginePath, 1920, 1080)
-	if err != nil {
-		slog.Warn("neural key engine unavailable", "error", err)
-		return nil
-	}
-
+	// Engine creation is deferred until Configure() when we know program dimensions.
 	return &gpuNeuralKeyNode{
-		ctx:    ctx,
-		pool:   pool,
-		state:  state,
-		engine: engine,
+		ctx:   ctx,
+		pool:  pool,
+		state: state,
 	}
 }
 
@@ -58,17 +52,8 @@ func (n *gpuNeuralKeyNode) Name() string { return "gpu_neural_key" }
 func (n *gpuNeuralKeyNode) Configure(width, height, pitch int) error {
 	n.width = width
 	n.height = height
-
-	// Allocate or reallocate scratch buffer for the chroma hint mask.
-	if n.hintBuf != nil {
-		n.hintBuf.Release()
-		n.hintBuf = nil
-	}
-	buf, err := n.pool.Acquire()
-	if err != nil {
-		return err
-	}
-	n.hintBuf = buf
+	// Engine will be created lazily on first ProcessGPU call when the model path
+	// is available via the app config. For now, dimensions are stored.
 	return nil
 }
 
@@ -87,14 +72,22 @@ func (n *gpuNeuralKeyNode) Err() error {
 	return nil
 }
 
+// SetEngine attaches the TensorRT neural key engine to this node.
+// Called from wireGPUPipeline after engine initialization.
+func (n *gpuNeuralKeyNode) SetEngine(engine *NeuralKeyEngine) {
+	n.engine = engine
+}
+
 // ProcessGPU runs neural keying inference on the program frame.
 //
-//  1. If neural keying is not active, return immediately (fast path).
+//  1. If neural keying is not active or engine not ready, return immediately.
 //  2. Read the current key configuration snapshot.
-//  3. During TensorRT warmup, pass through (chroma key node provides fallback).
-//  4. Run inference: generate chroma hint, infer alpha matte, composite.
+//  3. Run inference: generate chroma hint, TRT infer, composite.
 func (n *gpuNeuralKeyNode) ProcessGPU(frame *GPUFrame) error {
 	if n.state == nil || !n.state.HasNeuralKey() {
+		return nil
+	}
+	if n.engine == nil {
 		return nil
 	}
 
@@ -103,30 +96,28 @@ func (n *gpuNeuralKeyNode) ProcessGPU(frame *GPUFrame) error {
 		return nil
 	}
 
-	// During TensorRT warmup, skip neural keying (pass through).
-	// The chroma key node before us provides basic keying as fallback.
-	if !n.engine.WarmupDone() {
+	// Run the full neural key pipeline on the default CUDA stream.
+	err := n.engine.Infer(
+		frame,
+		snap.KeyColorCb, snap.KeyColorCr,
+		snap.Similarity, snap.Smoothness,
+		defaultCUDAStream,
+	)
+	if err != nil {
+		slog.Warn("gpu_neural_key: inference failed",
+			"source", snap.SourceKey, "error", err)
+		n.lastErr.Store(err)
+		// Don't fail the pipeline — pass through the unmodified frame.
 		return nil
 	}
-
-	// Phase 2 inference pipeline:
-	// 1. Generate chroma hint into hintBuf via ChromaKey CUDA kernel
-	// 2. Call engine.Infer(frame.NV12, hintBuf.Y, w, h, pitch, alphaOut, fgOut, stream)
-	// 3. Composite foreground onto program using alpha
-	//
-	// The C library (corridorkey.c) needs to be written first before
-	// inference can run. This node is wired and ready for integration.
 
 	return nil
 }
 
 func (n *gpuNeuralKeyNode) Close() error {
-	if n.hintBuf != nil {
-		n.hintBuf.Release()
-		n.hintBuf = nil
-	}
 	if n.engine != nil {
 		n.engine.Close()
+		n.engine = nil
 	}
 	return nil
 }

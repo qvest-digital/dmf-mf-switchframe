@@ -110,15 +110,23 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 		}
 	}
 
-	// Initialize neural key adapter if model path is configured.
+	// Initialize neural key adapter and engine if model path is configured.
 	var neuralKeyAdapter gpu.NeuralKeyState
-	if app.cfg.NeuralKeyModelPath != "" {
+	var neuralKeyEngine *gpu.NeuralKeyEngine
+	if app.cfg.NeuralKeyModelPath != "" && gs.ctx.Backend() == "cuda" {
 		nkAdapter := &neuralKeyStateAdapter{
 			keyer:    app.keyProcessor,
 			switcher: sw,
 		}
 		neuralKeyAdapter = nkAdapter
-		slog.Info("Neural key model configured", "model", app.cfg.NeuralKeyModelPath)
+
+		nkEngine, nkErr := gpu.NewNeuralKeyEngine(gs.ctx, app.cfg.NeuralKeyModelPath, pf.Width, pf.Height)
+		if nkErr != nil {
+			slog.Warn("Neural key engine unavailable", "error", nkErr)
+		} else {
+			neuralKeyEngine = nkEngine
+			slog.Info("Neural key engine initialized", "model", app.cfg.NeuralKeyModelPath)
+		}
 	}
 
 	// Wire per-source color corrector into GPU source manager.
@@ -284,9 +292,17 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 	// Build GPU pipeline node chain:
 	//   gpu_key → [gpu_neural_key] → gpu_layout → gpu_compositor → [gpu_ai_segment] → gpu_colorgrade → gpu_stmap → raw_sink → gpu_preview_encode → gpu_encode
 	// Some nodes return nil on unsupported builds (e.g. AI segment on non-TensorRT).
+	neuralKeyNode := gpu.NewGPUNeuralKeyNode(gs.ctx, gs.pool, neuralKeyAdapter, app.cfg.NeuralKeyModelPath)
+	// Inject TensorRT engine into the neural key node if available.
+	if neuralKeyEngine != nil && neuralKeyNode != nil {
+		if nkn, ok := neuralKeyNode.(interface{ SetEngine(*gpu.NeuralKeyEngine) }); ok {
+			nkn.SetEngine(neuralKeyEngine)
+		}
+	}
+
 	candidateNodes := []gpu.GPUPipelineNode{
 		gpu.NewGPUKeyNode(gs.ctx, gs.pool, keyAdapter),
-		gpu.NewGPUNeuralKeyNode(gs.ctx, gs.pool, neuralKeyAdapter, app.cfg.NeuralKeyModelPath),
+		neuralKeyNode,
 		gpu.NewGPULayoutNode(gs.ctx, gs.pool, layoutAdapter),
 		gpu.NewGPUCompositorNode(gs.ctx, compositorAdapter),
 		gpu.NewGPUAISegmentNode(gs.ctx, gs.pool, segAdapter),
