@@ -566,6 +566,9 @@ func TestResourceStoreThreadSafety(t *testing.T) {
 				store.ListReceivers()
 
 				// Removals.
+				store.RemoveDevice("dev-001")
+				store.RemoveSource("src-001")
+				store.RemoveFlow("flow-001")
 				store.RemoveSender("sender-001")
 				store.RemoveReceiver("recv-001")
 
@@ -577,6 +580,113 @@ func TestResourceStoreThreadSafety(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+func TestNodeAPIMethodNotAllowed(t *testing.T) {
+	store := testStore()
+	srv := NewNodeServer(store)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	endpoints := []string{
+		"/x-nmos/node/v1.3/",
+		"/x-nmos/node/v1.3/self",
+		"/x-nmos/node/v1.3/devices",
+		"/x-nmos/node/v1.3/devices/dev-001",
+		"/x-nmos/node/v1.3/sources",
+		"/x-nmos/node/v1.3/flows",
+		"/x-nmos/node/v1.3/senders",
+		"/x-nmos/node/v1.3/receivers",
+	}
+
+	methods := []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch}
+
+	for _, ep := range endpoints {
+		for _, method := range methods {
+			req, err := http.NewRequest(method, ts.URL+ep, nil)
+			if err != nil {
+				t.Fatalf("new request %s %s: %v", method, ep, err)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("%s %s: %v", method, ep, err)
+			}
+			resp.Body.Close()
+
+			if resp.StatusCode != http.StatusMethodNotAllowed {
+				t.Errorf("%s %s: got %d, want 405", method, ep, resp.StatusCode)
+			}
+			if allow := resp.Header.Get("Allow"); allow != "GET" {
+				t.Errorf("%s %s Allow header: got %q, want %q", method, ep, allow, "GET")
+			}
+		}
+	}
+}
+
+func TestResourceStoreGetReturnsShallowCopy(t *testing.T) {
+	store := NewResourceStore()
+
+	store.AddDevice(&Device{ID: "dev-001", Label: "Original"})
+	got := store.GetDevice("dev-001")
+	got.Label = "Mutated"
+
+	got2 := store.GetDevice("dev-001")
+	if got2.Label != "Original" {
+		t.Errorf("GetDevice returned shared pointer: mutation leaked (got %q, want %q)", got2.Label, "Original")
+	}
+}
+
+func TestResourceStoreListReturnsShallowCopies(t *testing.T) {
+	store := NewResourceStore()
+
+	store.AddDevice(&Device{ID: "dev-001", Label: "Original"})
+	list := store.ListDevices()
+	if len(list) != 1 {
+		t.Fatalf("expected 1 device, got %d", len(list))
+	}
+	list[0].Label = "Mutated"
+
+	list2 := store.ListDevices()
+	if list2[0].Label != "Original" {
+		t.Errorf("ListDevices returned shared pointer: mutation leaked (got %q, want %q)", list2[0].Label, "Original")
+	}
+}
+
+func TestResourceStoreRemoveDeviceSourceFlow(t *testing.T) {
+	store := NewResourceStore()
+
+	store.AddDevice(&Device{ID: "dev-001"})
+	store.AddSource(&Source{ID: "src-001"})
+	store.AddFlow(&Flow{ID: "flow-001"})
+
+	if store.GetDevice("dev-001") == nil {
+		t.Fatal("device should exist")
+	}
+	if store.GetSource("src-001") == nil {
+		t.Fatal("source should exist")
+	}
+	if store.GetFlow("flow-001") == nil {
+		t.Fatal("flow should exist")
+	}
+
+	store.RemoveDevice("dev-001")
+	store.RemoveSource("src-001")
+	store.RemoveFlow("flow-001")
+
+	if store.GetDevice("dev-001") != nil {
+		t.Error("device should be removed")
+	}
+	if store.GetSource("src-001") != nil {
+		t.Error("source should be removed")
+	}
+	if store.GetFlow("flow-001") != nil {
+		t.Error("flow should be removed")
+	}
+
+	// No-op on non-existent IDs (should not panic).
+	store.RemoveDevice("nonexistent")
+	store.RemoveSource("nonexistent")
+	store.RemoveFlow("nonexistent")
 }
 
 func TestResourceStoreAddBumpsVersion(t *testing.T) {

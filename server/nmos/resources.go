@@ -33,11 +33,15 @@ func (s *ResourceStore) SetNode(n *Node) {
 	s.node = n
 }
 
-// GetNode returns the node resource, or nil if unset.
+// GetNode returns a shallow copy of the node resource, or nil if unset.
 func (s *ResourceStore) GetNode() *Node {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.node
+	if s.node == nil {
+		return nil
+	}
+	copy := *s.node
+	return &copy
 }
 
 // AddDevice adds or replaces a device, bumping its version.
@@ -48,22 +52,35 @@ func (s *ResourceStore) AddDevice(d *Device) {
 	s.devices[d.ID] = d
 }
 
-// GetDevice returns a device by ID, or nil if not found.
+// GetDevice returns a shallow copy of a device by ID, or nil if not found.
 func (s *ResourceStore) GetDevice(id string) *Device {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.devices[id]
+	d := s.devices[id]
+	if d == nil {
+		return nil
+	}
+	copy := *d
+	return &copy
 }
 
-// ListDevices returns all devices.
+// ListDevices returns shallow copies of all devices.
 func (s *ResourceStore) ListDevices() []*Device {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	result := make([]*Device, 0, len(s.devices))
 	for _, d := range s.devices {
-		result = append(result, d)
+		copy := *d
+		result = append(result, &copy)
 	}
 	return result
+}
+
+// RemoveDevice removes a device by ID. No-op if not found.
+func (s *ResourceStore) RemoveDevice(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.devices, id)
 }
 
 // AddSource adds or replaces a source, bumping its version.
@@ -74,22 +91,35 @@ func (s *ResourceStore) AddSource(src *Source) {
 	s.sources[src.ID] = src
 }
 
-// GetSource returns a source by ID, or nil if not found.
+// GetSource returns a shallow copy of a source by ID, or nil if not found.
 func (s *ResourceStore) GetSource(id string) *Source {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.sources[id]
+	src := s.sources[id]
+	if src == nil {
+		return nil
+	}
+	copy := *src
+	return &copy
 }
 
-// ListSources returns all sources.
+// ListSources returns shallow copies of all sources.
 func (s *ResourceStore) ListSources() []*Source {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	result := make([]*Source, 0, len(s.sources))
 	for _, src := range s.sources {
-		result = append(result, src)
+		copy := *src
+		result = append(result, &copy)
 	}
 	return result
+}
+
+// RemoveSource removes a source by ID. No-op if not found.
+func (s *ResourceStore) RemoveSource(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.sources, id)
 }
 
 // AddFlow adds or replaces a flow, bumping its version.
@@ -100,22 +130,35 @@ func (s *ResourceStore) AddFlow(f *Flow) {
 	s.flows[f.ID] = f
 }
 
-// GetFlow returns a flow by ID, or nil if not found.
+// GetFlow returns a shallow copy of a flow by ID, or nil if not found.
 func (s *ResourceStore) GetFlow(id string) *Flow {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.flows[id]
+	f := s.flows[id]
+	if f == nil {
+		return nil
+	}
+	copy := *f
+	return &copy
 }
 
-// ListFlows returns all flows.
+// ListFlows returns shallow copies of all flows.
 func (s *ResourceStore) ListFlows() []*Flow {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	result := make([]*Flow, 0, len(s.flows))
 	for _, f := range s.flows {
-		result = append(result, f)
+		copy := *f
+		result = append(result, &copy)
 	}
 	return result
+}
+
+// RemoveFlow removes a flow by ID. No-op if not found.
+func (s *ResourceStore) RemoveFlow(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.flows, id)
 }
 
 // AddSender adds or replaces a sender, bumping its version.
@@ -126,20 +169,26 @@ func (s *ResourceStore) AddSender(snd *Sender) {
 	s.senders[snd.ID] = snd
 }
 
-// GetSender returns a sender by ID, or nil if not found.
+// GetSender returns a shallow copy of a sender by ID, or nil if not found.
 func (s *ResourceStore) GetSender(id string) *Sender {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.senders[id]
+	snd := s.senders[id]
+	if snd == nil {
+		return nil
+	}
+	copy := *snd
+	return &copy
 }
 
-// ListSenders returns all senders.
+// ListSenders returns shallow copies of all senders.
 func (s *ResourceStore) ListSenders() []*Sender {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	result := make([]*Sender, 0, len(s.senders))
 	for _, snd := range s.senders {
-		result = append(result, snd)
+		copy := *snd
+		result = append(result, &copy)
 	}
 	return result
 }
@@ -159,20 +208,26 @@ func (s *ResourceStore) AddReceiver(r *Receiver) {
 	s.receivers[r.ID] = r
 }
 
-// GetReceiver returns a receiver by ID, or nil if not found.
+// GetReceiver returns a shallow copy of a receiver by ID, or nil if not found.
 func (s *ResourceStore) GetReceiver(id string) *Receiver {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.receivers[id]
+	r := s.receivers[id]
+	if r == nil {
+		return nil
+	}
+	copy := *r
+	return &copy
 }
 
-// ListReceivers returns all receivers.
+// ListReceivers returns shallow copies of all receivers.
 func (s *ResourceStore) ListReceivers() []*Receiver {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	result := make([]*Receiver, 0, len(s.receivers))
 	for _, r := range s.receivers {
-		result = append(result, r)
+		copy := *r
+		result = append(result, &copy)
 	}
 	return result
 }

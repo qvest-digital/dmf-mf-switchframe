@@ -20,19 +20,31 @@ func NewNodeServer(store *ResourceStore) *NodeServer {
 		store: store,
 		mux:   http.NewServeMux(),
 	}
-	s.mux.HandleFunc(nodeAPIBase, s.handleRoot)
-	s.mux.HandleFunc(nodeAPIBase+"self", s.handleSelf)
-	s.mux.HandleFunc(nodeAPIBase+"devices/", s.handleDevices)
-	s.mux.HandleFunc(nodeAPIBase+"devices", s.handleDevices)
-	s.mux.HandleFunc(nodeAPIBase+"sources/", s.handleSources)
-	s.mux.HandleFunc(nodeAPIBase+"sources", s.handleSources)
-	s.mux.HandleFunc(nodeAPIBase+"flows/", s.handleFlows)
-	s.mux.HandleFunc(nodeAPIBase+"flows", s.handleFlows)
-	s.mux.HandleFunc(nodeAPIBase+"senders/", s.handleSenders)
-	s.mux.HandleFunc(nodeAPIBase+"senders", s.handleSenders)
-	s.mux.HandleFunc(nodeAPIBase+"receivers/", s.handleReceivers)
-	s.mux.HandleFunc(nodeAPIBase+"receivers", s.handleReceivers)
+	s.mux.HandleFunc(nodeAPIBase, methodGET(s.handleRoot))
+	s.mux.HandleFunc(nodeAPIBase+"self", methodGET(s.handleSelf))
+	s.mux.HandleFunc(nodeAPIBase+"devices/", methodGET(s.handleDevices))
+	s.mux.HandleFunc(nodeAPIBase+"devices", methodGET(s.handleDevices))
+	s.mux.HandleFunc(nodeAPIBase+"sources/", methodGET(s.handleSources))
+	s.mux.HandleFunc(nodeAPIBase+"sources", methodGET(s.handleSources))
+	s.mux.HandleFunc(nodeAPIBase+"flows/", methodGET(s.handleFlows))
+	s.mux.HandleFunc(nodeAPIBase+"flows", methodGET(s.handleFlows))
+	s.mux.HandleFunc(nodeAPIBase+"senders/", methodGET(s.handleSenders))
+	s.mux.HandleFunc(nodeAPIBase+"senders", methodGET(s.handleSenders))
+	s.mux.HandleFunc(nodeAPIBase+"receivers/", methodGET(s.handleReceivers))
+	s.mux.HandleFunc(nodeAPIBase+"receivers", methodGET(s.handleReceivers))
 	return s
+}
+
+// methodGET wraps an HTTP handler to reject non-GET methods with 405.
+func methodGET(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			http.Error(w, `{"code":405,"error":"Method Not Allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		next(w, r)
+	}
 }
 
 // Handler returns the HTTP handler for the Node API.
