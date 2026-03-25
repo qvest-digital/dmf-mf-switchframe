@@ -107,7 +107,7 @@ func TestNodeAPIRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET root: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status: got %d, want 200", resp.StatusCode)
@@ -143,7 +143,7 @@ func TestNodeAPISelf(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET self: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status: got %d, want 200", resp.StatusCode)
@@ -175,7 +175,7 @@ func TestNodeAPISelfNotSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET self: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status: got %d, want 404", resp.StatusCode)
@@ -193,7 +193,7 @@ func TestNodeAPIDevices(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET devices: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status: got %d, want 200", resp.StatusCode)
@@ -215,7 +215,7 @@ func TestNodeAPIDevices(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET devices/dev-001: %v", err)
 	}
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 
 	if resp2.StatusCode != http.StatusOK {
 		t.Fatalf("status: got %d, want 200", resp2.StatusCode)
@@ -234,7 +234,7 @@ func TestNodeAPIDevices(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET devices/unknown: %v", err)
 	}
-	defer resp3.Body.Close()
+	defer func() { _ = resp3.Body.Close() }()
 	if resp3.StatusCode != http.StatusNotFound {
 		t.Fatalf("status: got %d, want 404", resp3.StatusCode)
 	}
@@ -251,7 +251,7 @@ func TestNodeAPISources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET sources: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var sources []Source
 	if err := json.NewDecoder(resp.Body).Decode(&sources); err != nil {
@@ -269,7 +269,7 @@ func TestNodeAPISources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET sources/src-001: %v", err)
 	}
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 	if resp2.StatusCode != http.StatusOK {
 		t.Fatalf("status: got %d, want 200", resp2.StatusCode)
 	}
@@ -287,7 +287,7 @@ func TestNodeAPISources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET sources/unknown: %v", err)
 	}
-	defer resp3.Body.Close()
+	defer func() { _ = resp3.Body.Close() }()
 	if resp3.StatusCode != http.StatusNotFound {
 		t.Fatalf("status: got %d, want 404", resp3.StatusCode)
 	}
@@ -304,7 +304,7 @@ func TestNodeAPIFlows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET flows: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var flows []Flow
 	if err := json.NewDecoder(resp.Body).Decode(&flows); err != nil {
@@ -322,7 +322,7 @@ func TestNodeAPIFlows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET flows/flow-001: %v", err)
 	}
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 	if resp2.StatusCode != http.StatusOK {
 		t.Fatalf("status: got %d, want 200", resp2.StatusCode)
 	}
@@ -340,7 +340,7 @@ func TestNodeAPIFlows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET flows/unknown: %v", err)
 	}
-	defer resp3.Body.Close()
+	defer func() { _ = resp3.Body.Close() }()
 	if resp3.StatusCode != http.StatusNotFound {
 		t.Fatalf("status: got %d, want 404", resp3.StatusCode)
 	}
@@ -357,7 +357,7 @@ func TestNodeAPIReceivers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET receivers: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var receivers []Receiver
 	if err := json.NewDecoder(resp.Body).Decode(&receivers); err != nil {
@@ -375,7 +375,7 @@ func TestNodeAPIReceivers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET receivers/recv-001: %v", err)
 	}
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 	if resp2.StatusCode != http.StatusOK {
 		t.Fatalf("status: got %d, want 200", resp2.StatusCode)
 	}
@@ -393,7 +393,7 @@ func TestNodeAPIReceivers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET receivers/unknown-id: %v", err)
 	}
-	defer resp3.Body.Close()
+	defer func() { _ = resp3.Body.Close() }()
 	if resp3.StatusCode != http.StatusNotFound {
 		t.Fatalf("status: got %d, want 404", resp3.StatusCode)
 	}
@@ -422,7 +422,7 @@ func TestNodeAPISenders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET senders: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var senders []Sender
 	if err := json.NewDecoder(resp.Body).Decode(&senders); err != nil {
@@ -440,7 +440,7 @@ func TestNodeAPISenders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET senders/sender-001: %v", err)
 	}
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 	if resp2.StatusCode != http.StatusOK {
 		t.Fatalf("status: got %d, want 200", resp2.StatusCode)
 	}
@@ -458,7 +458,7 @@ func TestNodeAPISenders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET senders/unknown: %v", err)
 	}
-	defer resp3.Body.Close()
+	defer func() { _ = resp3.Body.Close() }()
 	if resp3.StatusCode != http.StatusNotFound {
 		t.Fatalf("status: got %d, want 404", resp3.StatusCode)
 	}
@@ -486,7 +486,7 @@ func TestNodeAPIContentType(t *testing.T) {
 			t.Fatalf("GET %s: %v", ep, err)
 		}
 		ct := resp.Header.Get("Content-Type")
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if ct != "application/json" {
 			t.Errorf("%s Content-Type: got %q, want %q", ep, ct, "application/json")
 		}
@@ -521,7 +521,7 @@ func TestNodeAPIEmptyCollections(t *testing.T) {
 		if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 			t.Fatalf("%s decode: %v", ep, err)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		// Must be a JSON array "[]", not null.
 		s := string(raw)
@@ -611,7 +611,7 @@ func TestNodeAPIMethodNotAllowed(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s %s: %v", method, ep, err)
 			}
-			resp.Body.Close()
+			_ = resp.Body.Close()
 
 			if resp.StatusCode != http.StatusMethodNotAllowed {
 				t.Errorf("%s %s: got %d, want 405", method, ep, resp.StatusCode)

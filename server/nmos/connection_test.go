@@ -20,7 +20,7 @@ func TestConnectionRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status: got %d, want 200", resp.StatusCode)
@@ -45,7 +45,7 @@ func TestConnectionSingleRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /single/: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status: got %d, want 200", resp.StatusCode)
@@ -78,7 +78,7 @@ func TestConnectionListSenders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET senders: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status: got %d, want 200", resp.StatusCode)
@@ -113,7 +113,7 @@ func TestConnectionListReceivers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET receivers: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status: got %d, want 200", resp.StatusCode)
@@ -147,7 +147,7 @@ func TestConnectionSenderStaged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET staged: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status: got %d, want 200", resp.StatusCode)
@@ -174,7 +174,7 @@ func TestConnectionReceiverStaged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET staged: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status: got %d, want 200", resp.StatusCode)
@@ -218,7 +218,7 @@ func TestConnectionPatchReceiverStaged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PATCH: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status: got %d, want 200", resp.StatusCode)
@@ -246,7 +246,7 @@ func TestConnectionPatchReceiverStaged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET staged: %v", err)
 	}
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 
 	var staged2 StagedParams
 	if err := json.NewDecoder(resp2.Body).Decode(&staged2); err != nil {
@@ -309,7 +309,7 @@ func TestConnectionActivateImmediate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PATCH: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("status: got %d, want 200 or 202", resp.StatusCode)
@@ -330,7 +330,7 @@ func TestConnectionActivateImmediate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET active: %v", err)
 	}
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 
 	var active StagedParams
 	if err := json.NewDecoder(resp2.Body).Decode(&active); err != nil {
@@ -386,7 +386,7 @@ func TestConnectionActivateImmediateDeactivate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PATCH: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if deactivatedID != "recv-001" {
 		t.Errorf("deactivated ID: got %q, want %q", deactivatedID, "recv-001")
@@ -404,7 +404,7 @@ func TestConnectionSenderTransportFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET transportfile: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status: got %d, want 200", resp.StatusCode)
@@ -434,7 +434,7 @@ func TestConnectionSenderTransportType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET transporttype: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status: got %d, want 200", resp.StatusCode)
@@ -471,7 +471,7 @@ func TestConnection404(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GET %s: %v", ep, err)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		if resp.StatusCode != http.StatusNotFound {
 			t.Errorf("%s: got %d, want 404", ep, resp.StatusCode)
@@ -503,7 +503,7 @@ func TestConnectionMethodNotAllowed(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s %s: %v", method, ep, err)
 			}
-			resp.Body.Close()
+			_ = resp.Body.Close()
 
 			if resp.StatusCode != http.StatusMethodNotAllowed {
 				t.Errorf("%s %s: got %d, want 405", method, ep, resp.StatusCode)
@@ -522,7 +522,7 @@ func TestConnectionSenderSubresources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET sender root: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status: got %d, want 200", resp.StatusCode)
@@ -560,7 +560,7 @@ func TestConnectionReceiverSubresources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET receiver root: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status: got %d, want 200", resp.StatusCode)
@@ -597,7 +597,7 @@ func TestConnectionSenderConstraints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET constraints: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status: got %d, want 200", resp.StatusCode)
@@ -622,7 +622,7 @@ func TestConnectionReceiverConstraints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET constraints: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status: got %d, want 200", resp.StatusCode)
@@ -647,7 +647,7 @@ func TestConnectionReceiverTransportType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET transporttype: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status: got %d, want 200", resp.StatusCode)
@@ -707,7 +707,7 @@ func TestConnectionSenderActivateImmediate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PATCH: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("status: got %d, want 200 or 202", resp.StatusCode)
@@ -754,7 +754,7 @@ func TestConnectionSenderDeactivate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PATCH: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if deactivatedID != "sender-001" {
 		t.Errorf("deactivated ID: got %q, want %q", deactivatedID, "sender-001")
@@ -774,7 +774,7 @@ func TestConnectionPatchInvalidJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PATCH: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status: got %d, want 400", resp.StatusCode)
@@ -792,7 +792,7 @@ func TestConnectionRemoveSender(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("before remove: got %d, want 200", resp.StatusCode)
 	}
@@ -804,7 +804,7 @@ func TestConnectionRemoveSender(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
-	resp2.Body.Close()
+	_ = resp2.Body.Close()
 	if resp2.StatusCode != http.StatusNotFound {
 		t.Errorf("after remove: got %d, want 404", resp2.StatusCode)
 	}
@@ -821,7 +821,7 @@ func TestConnectionRemoveReceiver(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("before remove: got %d, want 200", resp.StatusCode)
 	}
@@ -833,7 +833,7 @@ func TestConnectionRemoveReceiver(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
-	resp2.Body.Close()
+	_ = resp2.Body.Close()
 	if resp2.StatusCode != http.StatusNotFound {
 		t.Errorf("after remove: got %d, want 404", resp2.StatusCode)
 	}
@@ -859,7 +859,7 @@ func TestConnectionPatchMerge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PATCH 1: %v", err)
 	}
-	resp1.Body.Close()
+	_ = resp1.Body.Close()
 
 	// Second PATCH: set destination_port only.
 	destPort := 5004
@@ -875,7 +875,7 @@ func TestConnectionPatchMerge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PATCH 2: %v", err)
 	}
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 
 	var staged StagedParams
 	if err := json.NewDecoder(resp2.Body).Decode(&staged); err != nil {
@@ -931,7 +931,7 @@ func TestConnectionDeactivateViaRTPDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PATCH: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if deactivatedID != "recv-001" {
 		t.Errorf("deactivated ID: got %q, want %q", deactivatedID, "recv-001")
@@ -948,7 +948,7 @@ func TestConnectionSenderActive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET active: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status: got %d, want 200", resp.StatusCode)
@@ -992,8 +992,14 @@ func TestConnectionThreadSafety(t *testing.T) {
 				cs.AddReceiver(recvID)
 
 				// Concurrent reads.
-				http.Get(ts.URL + "/x-nmos/connection/v1.1/single/senders/" + senderID + "/staged")
-				http.Get(ts.URL + "/x-nmos/connection/v1.1/single/receivers/" + recvID + "/active")
+				resp1, err1 := http.Get(ts.URL + "/x-nmos/connection/v1.1/single/senders/" + senderID + "/staged")
+				if err1 == nil {
+					_ = resp1.Body.Close()
+				}
+				resp2, err2 := http.Get(ts.URL + "/x-nmos/connection/v1.1/single/receivers/" + recvID + "/active")
+				if err2 == nil {
+					_ = resp2.Body.Close()
+				}
 
 				// Concurrent writes.
 				destIP := "239.1.1.1"
@@ -1009,7 +1015,7 @@ func TestConnectionThreadSafety(t *testing.T) {
 				req.Header.Set("Content-Type", "application/json")
 				resp, err := http.DefaultClient.Do(req)
 				if err == nil {
-					resp.Body.Close()
+					_ = resp.Body.Close()
 				}
 
 				cs.RemoveSender(senderID)
@@ -1039,8 +1045,10 @@ func TestConnectionActivateCallbackError(t *testing.T) {
 		t.Fatalf("GET active: %v", err)
 	}
 	var initialActive StagedParams
-	json.NewDecoder(resp0.Body).Decode(&initialActive)
-	resp0.Body.Close()
+	if err := json.NewDecoder(resp0.Body).Decode(&initialActive); err != nil {
+		t.Fatalf("decode initial active: %v", err)
+	}
+	_ = resp0.Body.Close()
 
 	// Attempt activate_immediate with a callback that returns an error.
 	destIP := "239.1.1.1"
@@ -1070,7 +1078,7 @@ func TestConnectionActivateCallbackError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PATCH: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("status: got %d, want 500", resp.StatusCode)
@@ -1089,7 +1097,7 @@ func TestConnectionActivateCallbackError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET active: %v", err)
 	}
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 
 	var active StagedParams
 	if err := json.NewDecoder(resp2.Body).Decode(&active); err != nil {
@@ -1144,7 +1152,7 @@ func TestConnectionActivateCallbackErrorSender(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PATCH: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("status: got %d, want 500", resp.StatusCode)
@@ -1155,10 +1163,12 @@ func TestConnectionActivateCallbackErrorSender(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET active: %v", err)
 	}
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 
 	var active StagedParams
-	json.NewDecoder(resp2.Body).Decode(&active)
+	if err := json.NewDecoder(resp2.Body).Decode(&active); err != nil {
+		t.Fatalf("decode active: %v", err)
+	}
 
 	if len(active.TransportParams) > 0 && active.TransportParams[0].DestinationIP != nil {
 		t.Errorf("active destination_ip should be nil after rollback, got %q", *active.TransportParams[0].DestinationIP)
@@ -1193,7 +1203,7 @@ func TestConnectionDeactivateCallbackError(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPatch, ts.URL+"/x-nmos/connection/v1.1/single/receivers/recv-001/staged", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, _ := http.DefaultClient.Do(req)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	// Now attempt deactivation, which should fail.
 	masterEnable = false
@@ -1209,7 +1219,7 @@ func TestConnectionDeactivateCallbackError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PATCH: %v", err)
 	}
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 
 	if resp2.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("status: got %d, want 500", resp2.StatusCode)
@@ -1220,9 +1230,11 @@ func TestConnectionDeactivateCallbackError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET active: %v", err)
 	}
-	defer resp3.Body.Close()
+	defer func() { _ = resp3.Body.Close() }()
 	var active StagedParams
-	json.NewDecoder(resp3.Body).Decode(&active)
+	if err := json.NewDecoder(resp3.Body).Decode(&active); err != nil {
+		t.Fatalf("decode active: %v", err)
+	}
 	if len(active.TransportParams) == 0 || active.TransportParams[0].DestinationIP == nil || *active.TransportParams[0].DestinationIP != destIP {
 		t.Errorf("active should still have destination_ip %q after failed deactivation", destIP)
 	}
@@ -1287,7 +1299,7 @@ func TestConnectionUnsupportedActivationMode(t *testing.T) {
 			if err != nil {
 				t.Fatalf("PATCH: %v", err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			if resp.StatusCode != tt.wantStatus {
 				bodyBytes, _ := io.ReadAll(resp.Body)

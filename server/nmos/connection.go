@@ -244,7 +244,7 @@ func (cs *ConnectionServer) handleSenders(w http.ResponseWriter, r *http.Request
 		cs.mu.RUnlock()
 		w.Header().Set("Content-Type", "application/sdp")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(sdp))
+		_, _ = w.Write([]byte(sdp))
 	case "transporttype":
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", "GET")

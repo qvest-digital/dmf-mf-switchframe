@@ -73,7 +73,7 @@ func TestRegisterResource(t *testing.T) {
 func TestRegisterResourceError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprint(w, "registry unavailable")
+		_, _ = fmt.Fprint(w, "registry unavailable")
 	}))
 	defer srv.Close()
 
@@ -154,7 +154,7 @@ func TestRegisterAllStopsOnError(t *testing.T) {
 		if callCount == 2 {
 			// Fail on the device registration.
 			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprint(w, "device error")
+			_, _ = fmt.Fprint(w, "device error")
 			return
 		}
 		w.WriteHeader(http.StatusCreated)
@@ -221,7 +221,7 @@ func TestHeartbeatNodeNotFound(t *testing.T) {
 func TestHeartbeatOtherError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprint(w, "server error")
+		_, _ = fmt.Fprint(w, "server error")
 	}))
 	defer srv.Close()
 
@@ -310,11 +310,8 @@ func TestStartHeartbeatCancellation(t *testing.T) {
 
 	// Channel should be closed eventually.
 	select {
-	case _, ok := <-errCh:
-		if ok {
-			// got a value, that's fine
-		}
-		// closed, that's fine too
+	case <-errCh:
+		// got a value or channel closed, both are fine
 	case <-time.After(500 * time.Millisecond):
 		t.Error("error channel was not closed after context cancellation")
 	}
@@ -402,7 +399,7 @@ func TestUnregisterAllContinuesOnError(t *testing.T) {
 		if callCount == 1 {
 			// First deletion fails.
 			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprint(w, "delete failed")
+			_, _ = fmt.Fprint(w, "delete failed")
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
