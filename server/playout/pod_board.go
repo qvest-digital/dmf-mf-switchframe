@@ -1,6 +1,7 @@
 package playout
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -22,7 +23,8 @@ type PodBoard struct {
 
 	scte35Injector podSCTE35Injector
 
-	activePodID string
+	activePodID       string
+	autoReturnCancels map[string]context.CancelFunc
 }
 
 // podSCTE35Injector is the narrow interface for SCTE-35 injection.
@@ -33,8 +35,9 @@ type podSCTE35Injector interface {
 // NewPodBoard creates a pod board for the given channel.
 func NewPodBoard(channelID int) *PodBoard {
 	return &PodBoard{
-		channelID: channelID,
-		pods:      make(map[string]*Pod),
+		channelID:         channelID,
+		pods:              make(map[string]*Pod),
+		autoReturnCancels: make(map[string]context.CancelFunc),
 	}
 }
 
@@ -422,7 +425,11 @@ func (pb *PodBoard) Fire(id string) error {
 
 	// Start auto-return goroutine if configured.
 	if config.AutoReturn && config.DurationMs > 0 {
-		go pb.runAutoReturn(id, config.DurationMs)
+		ctx, cancel := context.WithCancel(context.Background())
+		pb.mu.Lock()
+		pb.autoReturnCancels[id] = cancel
+		pb.mu.Unlock()
+		go pb.runAutoReturn(ctx, id, config.DurationMs)
 	}
 
 	// Start elapsed time tracker.
@@ -457,11 +464,15 @@ func (pb *PodBoard) trackElapsed(id string) {
 }
 
 // runAutoReturn waits for the pod duration, then completes the break.
-func (pb *PodBoard) runAutoReturn(id string, durationMs int64) {
+func (pb *PodBoard) runAutoReturn(ctx context.Context, id string, durationMs int64) {
 	timer := time.NewTimer(time.Duration(durationMs) * time.Millisecond)
 	defer timer.Stop()
 
-	<-timer.C
+	select {
+	case <-ctx.Done():
+		return
+	case <-timer.C:
+	}
 
 	pb.mu.Lock()
 	pod, ok := pb.pods[id]
@@ -469,6 +480,7 @@ func (pb *PodBoard) runAutoReturn(id string, durationMs int64) {
 		pb.mu.Unlock()
 		return
 	}
+	delete(pb.autoReturnCancels, id)
 	pb.mu.Unlock()
 
 	pb.completePod(id, PodRejoined)
@@ -495,6 +507,12 @@ func (pb *PodBoard) completePod(id string, finalState PodState) {
 	}
 	pb.activePodID = ""
 
+	// Cancel auto-return timer if still running.
+	if cancelFn, ok := pb.autoReturnCancels[id]; ok {
+		cancelFn()
+		delete(pb.autoReturnCancels, id)
+	}
+
 	inj := pb.scte35Injector
 	breakEndFn := pb.onBreakEnd
 	stateChangeFn := pb.onStateChange
@@ -514,6 +532,98 @@ func (pb *PodBoard) completePod(id string, finalState PodState) {
 	if stateChangeFn != nil {
 		stateChangeFn()
 	}
+}
+
+// DumpOut performs an early return from break.
+func (pb *PodBoard) DumpOut(id string) error {
+	pb.mu.Lock()
+	pod, ok := pb.pods[id]
+	if !ok {
+		pb.mu.Unlock()
+		return ErrPodNotFound
+	}
+	if pod.State != PodBreakActive {
+		pb.mu.Unlock()
+		return ErrPodNotActive
+	}
+	if !pod.Config.AllowDumpOut {
+		pb.mu.Unlock()
+		return ErrPodNoDumpOut
+	}
+	pb.mu.Unlock()
+
+	pb.completePod(id, PodDumpedOut)
+	return nil
+}
+
+// Hold cancels the auto-return timer, keeping the break active indefinitely.
+func (pb *PodBoard) Hold(id string) error {
+	pb.mu.Lock()
+	pod, ok := pb.pods[id]
+	if !ok {
+		pb.mu.Unlock()
+		return ErrPodNotFound
+	}
+	if pod.State != PodBreakActive {
+		pb.mu.Unlock()
+		return ErrPodNotActive
+	}
+
+	if cancelFn, ok := pb.autoReturnCancels[id]; ok {
+		cancelFn()
+		delete(pb.autoReturnCancels, id)
+	}
+	pod.Config.AutoReturn = false
+	pod.Config.HoldUntilManualReturn = true
+	fn := pb.onStateChange
+	pb.mu.Unlock()
+
+	if fn != nil {
+		fn()
+	}
+	return nil
+}
+
+// Extend adds additional time to an active pod's duration and restarts the auto-return timer.
+func (pb *PodBoard) Extend(id string, additionalMs int64) error {
+	pb.mu.Lock()
+	pod, ok := pb.pods[id]
+	if !ok {
+		pb.mu.Unlock()
+		return ErrPodNotFound
+	}
+	if pod.State != PodBreakActive {
+		pb.mu.Unlock()
+		return ErrPodNotActive
+	}
+
+	// Cancel existing auto-return.
+	if cancelFn, ok := pb.autoReturnCancels[id]; ok {
+		cancelFn()
+		delete(pb.autoReturnCancels, id)
+	}
+
+	pod.Config.DurationMs += additionalMs
+
+	// Restart auto-return with remaining time.
+	elapsed := time.Now().UnixMilli() - pod.FiredAt
+	remaining := pod.Config.DurationMs - elapsed
+	config := pod.Config
+	fn := pb.onStateChange
+	pb.mu.Unlock()
+
+	if remaining > 0 && config.AutoReturn {
+		ctx, cancel := context.WithCancel(context.Background())
+		pb.mu.Lock()
+		pb.autoReturnCancels[id] = cancel
+		pb.mu.Unlock()
+		go pb.runAutoReturn(ctx, id, remaining)
+	}
+
+	if fn != nil {
+		fn()
+	}
+	return nil
 }
 
 // generatePodID creates a short random hex ID.

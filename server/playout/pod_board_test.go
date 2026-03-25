@@ -406,6 +406,149 @@ func TestPodBoard_FireAlreadyActive(t *testing.T) {
 	pb.mu.Unlock()
 }
 
+func TestPodBoard_DumpOut(t *testing.T) {
+	pb := NewPodBoard(1)
+	inj := &fakeSCTE35Injector{}
+	pb.SetSCTE35Injector(inj)
+
+	pod, _ := pb.CreatePod(PodConfig{
+		Type:         "quarter",
+		DurationMs:   60000,
+		AutoReturn:   true,
+		AllowDumpOut: true,
+	})
+	pb.Arm(pod.ID)
+	pb.Fire(pod.ID)
+
+	time.Sleep(20 * time.Millisecond)
+
+	if err := pb.DumpOut(pod.ID); err != nil {
+		t.Fatalf("DumpOut: %v", err)
+	}
+
+	waitFor(t, time.Second, func() bool {
+		p, _ := pb.GetPod(pod.ID)
+		return p.State == PodDumpedOut
+	})
+}
+
+func TestPodBoard_DumpOutDisallowed(t *testing.T) {
+	pb := NewPodBoard(1)
+	inj := &fakeSCTE35Injector{}
+	pb.SetSCTE35Injector(inj)
+
+	pod, _ := pb.CreatePod(PodConfig{
+		Type:         "mandatory_sponsor",
+		DurationMs:   60000,
+		AutoReturn:   true,
+		AllowDumpOut: false,
+		Priority:     PriorityMandatory,
+	})
+	pb.Arm(pod.ID)
+	pb.Fire(pod.ID)
+
+	time.Sleep(20 * time.Millisecond)
+
+	err := pb.DumpOut(pod.ID)
+	if err != ErrPodNoDumpOut {
+		t.Fatalf("expected ErrPodNoDumpOut, got %v", err)
+	}
+
+	// Cleanup.
+	pb.mu.Lock()
+	if p, ok := pb.pods[pod.ID]; ok {
+		p.State = PodRejoined
+		p.CompletedAt = time.Now().UnixMilli()
+	}
+	pb.activePodID = ""
+	if cancel, ok := pb.autoReturnCancels[pod.ID]; ok {
+		cancel()
+		delete(pb.autoReturnCancels, pod.ID)
+	}
+	pb.mu.Unlock()
+}
+
+func TestPodBoard_Hold(t *testing.T) {
+	pb := NewPodBoard(1)
+	inj := &fakeSCTE35Injector{}
+	pb.SetSCTE35Injector(inj)
+
+	pod, _ := pb.CreatePod(PodConfig{
+		Type:         "quarter",
+		DurationMs:   100,
+		AutoReturn:   true,
+		AllowDumpOut: true,
+	})
+	pb.Arm(pod.ID)
+	pb.Fire(pod.ID)
+
+	// Hold before auto-return fires.
+	if err := pb.Hold(pod.ID); err != nil {
+		t.Fatalf("Hold: %v", err)
+	}
+
+	// Wait past auto-return time — should NOT return.
+	time.Sleep(200 * time.Millisecond)
+	got, _ := pb.GetPod(pod.ID)
+	if got.State != PodBreakActive {
+		t.Errorf("state = %v, want break_active (held)", got.State)
+	}
+
+	// Manual dump to clean up.
+	pb.DumpOut(pod.ID)
+	waitFor(t, time.Second, func() bool {
+		p, _ := pb.GetPod(pod.ID)
+		return p.State.IsTerminal()
+	})
+}
+
+func TestPodBoard_Extend(t *testing.T) {
+	pb := NewPodBoard(1)
+	inj := &fakeSCTE35Injector{}
+	pb.SetSCTE35Injector(inj)
+
+	pod, _ := pb.CreatePod(PodConfig{
+		Type:         "quarter",
+		DurationMs:   100,
+		AutoReturn:   true,
+		AllowDumpOut: true,
+	})
+	pb.Arm(pod.ID)
+	pb.Fire(pod.ID)
+
+	// Extend by 5 seconds.
+	if err := pb.Extend(pod.ID, 5000); err != nil {
+		t.Fatalf("Extend: %v", err)
+	}
+
+	got, _ := pb.GetPod(pod.ID)
+	if got.Config.DurationMs != 5100 {
+		t.Errorf("duration = %d, want 5100", got.Config.DurationMs)
+	}
+
+	// Should not auto-return at 100ms since we extended.
+	time.Sleep(200 * time.Millisecond)
+	got, _ = pb.GetPod(pod.ID)
+	if got.State != PodBreakActive {
+		t.Errorf("state = %v, want break_active (extended)", got.State)
+	}
+
+	// Dump to clean up.
+	pb.DumpOut(pod.ID)
+	waitFor(t, time.Second, func() bool {
+		p, _ := pb.GetPod(pod.ID)
+		return p.State.IsTerminal()
+	})
+}
+
+func TestPodBoard_DumpOutNoActivePod(t *testing.T) {
+	pb := NewPodBoard(1)
+	err := pb.DumpOut("nonexistent")
+	if err != ErrPodNotFound {
+		t.Fatalf("expected ErrPodNotFound, got %v", err)
+	}
+}
+
 func TestPodBoard_InjuryPodNoAutoReturn(t *testing.T) {
 	pb := NewPodBoard(1)
 	inj := &fakeSCTE35Injector{}
