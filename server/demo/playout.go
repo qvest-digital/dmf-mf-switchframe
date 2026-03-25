@@ -191,7 +191,6 @@ func GenerateDemoPlaylist(tmpDir string) (*playout.Playlist, error) {
 
 		// Add SCTE-35 cue-out at end of news segments (triggers ad pod).
 		if strings.HasPrefix(g.clip.name, "news_") {
-			boolTrue := true
 			item.SecondaryEvents = append(item.SecondaryEvents, playout.SecondaryEvent{
 				Type:     "scte35_cue",
 				OffsetMs: -500, // 500ms before segment end
@@ -200,13 +199,6 @@ func GenerateDemoPlaylist(tmpDir string) (*playout.Playlist, error) {
 					BreakDurationMs: 15000, // 15s ad break
 					AutoReturn:      true,
 				},
-			})
-			// Mute audio going into break.
-			item.SecondaryEvents = append(item.SecondaryEvents, playout.SecondaryEvent{
-				Type:     "audio_afv",
-				OffsetMs: -100,
-				Anchor:   "end",
-				AFV:      &boolTrue,
 			})
 		}
 
