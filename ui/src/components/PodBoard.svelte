@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { PodStatusBroadcast } from '$lib/api/types';
+	import type { PodStatusBroadcast, PodTemplateDef } from '$lib/api/types';
 	import { podCreate, podArm, podFire, podDump, podHold, podExtend } from '$lib/api/switch-api';
 
 	interface Props {
@@ -7,8 +7,9 @@
 		activePod?: PodStatusBroadcast;
 		pods?: PodStatusBroadcast[];
 		podsArmed?: number;
+		podTemplates?: PodTemplateDef[];
 	}
-	let { channel, activePod, pods = [], podsArmed = 0 }: Props = $props();
+	let { channel, activePod, pods = [], podsArmed = 0, podTemplates }: Props = $props();
 
 	const armedPods = $derived(
 		pods.filter(p => p.armed && p.state !== 'break_active').sort((a, b) => a.id.localeCompare(b.id))
@@ -103,9 +104,15 @@
 	{/if}
 
 	<div class="template-buttons">
-		<button class="action-btn tmpl" onclick={() => handleCreate('quarter')}>+Quarter</button>
-		<button class="action-btn tmpl" onclick={() => handleCreate('timeout')}>+Timeout</button>
-		<button class="action-btn tmpl" onclick={() => handleCreate('injury')}>+Injury</button>
+		{#if podTemplates && podTemplates.length > 0}
+			{#each podTemplates as tmpl}
+				<button class="action-btn tmpl" onclick={() => handleCreate(tmpl.label)}>+{tmpl.label}</button>
+			{/each}
+		{:else}
+			<button class="action-btn tmpl" onclick={() => handleCreate('short')}>+Short</button>
+			<button class="action-btn tmpl" onclick={() => handleCreate('standard')}>+Standard</button>
+			<button class="action-btn tmpl" onclick={() => handleCreate('long')}>+Long</button>
+		{/if}
 	</div>
 </div>
 

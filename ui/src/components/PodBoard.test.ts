@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import PodBoard from './PodBoard.svelte';
-import type { PodStatusBroadcast } from '$lib/api/types';
+import type { PodStatusBroadcast, PodTemplateDef } from '$lib/api/types';
 import * as api from '$lib/api/switch-api';
 
 vi.mock('$lib/api/switch-api', () => ({
@@ -99,23 +99,55 @@ describe('PodBoard', () => {
 		expect(armedPods[0].textContent).toContain('timeout');
 	});
 
-	it('shows template buttons (+Quarter, +Timeout, +Injury)', () => {
+	it('renders default generic buttons when no podTemplates provided', () => {
 		const { container } = render(PodBoard, { props: { channel: 1 } });
 		const tmplButtons = container.querySelectorAll('.template-buttons .action-btn');
 		const labels = Array.from(tmplButtons).map((b) => b.textContent);
-		expect(labels).toContain('+Quarter');
-		expect(labels).toContain('+Timeout');
-		expect(labels).toContain('+Injury');
+		expect(labels).toContain('+Short');
+		expect(labels).toContain('+Standard');
+		expect(labels).toContain('+Long');
+		expect(labels).toHaveLength(3);
 	});
 
-	it('calls podCreate when template button clicked', async () => {
-		const { container } = render(PodBoard, { props: { channel: 1 } });
+	it('renders manifest-driven template buttons when podTemplates prop provided', () => {
+		const podTemplates: PodTemplateDef[] = [
+			{ label: 'Quarter', duration_ms: 120000, auto_return: true },
+			{ label: 'Timeout', duration_ms: 60000, auto_return: true },
+			{ label: 'Injury', duration_ms: 180000, auto_return: false, priority: 'high' },
+		];
+		const { container } = render(PodBoard, {
+			props: { channel: 1, podTemplates },
+		});
+		const tmplButtons = container.querySelectorAll('.template-buttons .action-btn');
+		const labels = Array.from(tmplButtons).map((b) => b.textContent);
+		expect(labels).toEqual(['+Quarter', '+Timeout', '+Injury']);
+	});
+
+	it('calls podCreate with manifest template label when clicked', async () => {
+		const podTemplates: PodTemplateDef[] = [
+			{ label: 'Quarter', duration_ms: 120000, auto_return: true },
+		];
+		const { container } = render(PodBoard, {
+			props: { channel: 1, podTemplates },
+		});
 		const tmplButtons = container.querySelectorAll('.template-buttons .action-btn');
 		const quarterBtn = Array.from(tmplButtons).find((b) => b.textContent === '+Quarter')!;
 		expect(quarterBtn).toBeDefined();
 		await fireEvent.click(quarterBtn);
-		expect(api.podCreate).toHaveBeenCalledWith(1, { template: 'quarter' });
+		expect(api.podCreate).toHaveBeenCalledWith(1, { template: 'Quarter' });
 		// After create, it should auto-arm the new pod
+		await vi.waitFor(() => {
+			expect(api.podArm).toHaveBeenCalledWith(1, 'new-pod');
+		});
+	});
+
+	it('calls podCreate with default template label when no manifest', async () => {
+		const { container } = render(PodBoard, { props: { channel: 1 } });
+		const tmplButtons = container.querySelectorAll('.template-buttons .action-btn');
+		const shortBtn = Array.from(tmplButtons).find((b) => b.textContent === '+Short')!;
+		expect(shortBtn).toBeDefined();
+		await fireEvent.click(shortBtn);
+		expect(api.podCreate).toHaveBeenCalledWith(1, { template: 'short' });
 		await vi.waitFor(() => {
 			expect(api.podArm).toHaveBeenCalledWith(1, 'new-pod');
 		});
