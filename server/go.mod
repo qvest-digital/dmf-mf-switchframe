@@ -7,6 +7,7 @@ require (
 	github.com/abema/go-mp4 v1.5.0
 	github.com/asticode/go-astits v1.15.0
 	github.com/google/uuid v1.6.0
+	github.com/grandcat/zeroconf v1.0.0
 	github.com/prometheus/client_golang v1.19.1
 	github.com/prometheus/client_model v0.5.0
 	github.com/stretchr/testify v1.11.1
@@ -27,7 +28,6 @@ require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dunglas/httpsfv v1.1.0 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
-	github.com/grandcat/zeroconf v1.0.0 // indirect
 	github.com/miekg/dns v1.1.27 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/prometheus/common v0.48.0 // indirect

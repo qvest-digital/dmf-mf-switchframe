@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/grandcat/zeroconf"
@@ -165,13 +166,17 @@ func AdvertiseNode(ctx context.Context, instanceName string, port int, versions 
 		return nil, fmt.Errorf("nmos: advertise node: %w", err)
 	}
 
-	// Shut down the server when context is cancelled.
+	// Wrap shutdown in sync.Once to prevent double-close panic
+	// if both the returned StopFunc and the context goroutine fire.
+	var once sync.Once
+	stop := func() {
+		once.Do(func() { server.Shutdown() })
+	}
+
 	go func() {
 		<-ctx.Done()
-		server.Shutdown()
+		stop()
 	}()
 
-	return func() {
-		server.Shutdown()
-	}, nil
+	return stop, nil
 }
