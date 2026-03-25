@@ -309,6 +309,31 @@ func (nke *NeuralKeyEngine) Infer(
 		return fmt.Errorf("gpu: neural_key: TRT inference failed: %w", err)
 	}
 
+	// Diagnostic: sync stream and read back a few alpha values to verify model output.
+	if !nke.warmupDone.Load() {
+		C.cudaStreamSynchronize(stream)
+		var sample [16]float32
+		C.cudaMemcpy(unsafe.Pointer(&sample[0]), nke.alphaBuf,
+			C.size_t(16*4), C.cudaMemcpyDeviceToHost)
+		slog.Info("gpu: neural_key: alpha sample (first 16 pixels)",
+			"values", fmt.Sprintf("%.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f",
+				sample[0], sample[1], sample[2], sample[3],
+				sample[4], sample[5], sample[6], sample[7],
+				sample[8], sample[9], sample[10], sample[11],
+				sample[12], sample[13], sample[14], sample[15]))
+		// Also sample from middle of alpha buffer
+		midOffset := uintptr(ckModelW*ckModelH/2) * 4
+		C.cudaMemcpy(unsafe.Pointer(&sample[0]),
+			unsafe.Pointer(uintptr(nke.alphaBuf)+midOffset),
+			C.size_t(16*4), C.cudaMemcpyDeviceToHost)
+		slog.Info("gpu: neural_key: alpha sample (middle 16 pixels)",
+			"values", fmt.Sprintf("%.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f",
+				sample[0], sample[1], sample[2], sample[3],
+				sample[4], sample[5], sample[6], sample[7],
+				sample[8], sample[9], sample[10], sample[11],
+				sample[12], sample[13], sample[14], sample[15]))
+	}
+
 	// Step 6: Composite — upscale alpha+fg from 512 to program res, despill, blend.
 	rc = C.ck_composite_neural(
 		(*C.uint8_t)(nv12),
