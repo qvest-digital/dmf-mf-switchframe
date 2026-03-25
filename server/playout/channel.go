@@ -52,6 +52,9 @@ type Channel struct {
 	secondaryHandler   SecondaryEventHandler
 	secondaryScheduler *SecondaryEventScheduler
 
+	// Splice coordinator for frame-accurate break entry.
+	spliceCoordinator *SpliceCoordinator
+
 	// Atomic progress counters for lock-free reads.
 	itemProgress atomic.Int64 // 0-1000 milliprogress
 	itemRemainMs atomic.Int64
@@ -432,6 +435,13 @@ func (c *Channel) SetSecondaryHandler(h SecondaryEventHandler) {
 	}
 }
 
+// SetSpliceCoordinator registers a splice coordinator for frame-accurate break entry.
+func (c *Channel) SetSpliceCoordinator(sc *SpliceCoordinator) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.spliceCoordinator = sc
+}
+
 // run is the main playback goroutine. It iterates through playlist items.
 func (c *Channel) run(ctx context.Context) {
 	defer close(c.done)
@@ -646,6 +656,14 @@ func (c *Channel) playClipItem(ctx context.Context, item *PlaylistItem) bool {
 
 		if outputFn != nil {
 			outputFn(frame.YUV, frame.Width, frame.Height, outputPTS, frame.IsKeyframe)
+		}
+
+		// Feed splice coordinator.
+		c.mu.Lock()
+		sc := c.spliceCoordinator
+		c.mu.Unlock()
+		if sc != nil {
+			sc.IngestFrame(frame.YUV, frame.Width, frame.Height, outputPTS)
 		}
 
 		lastFrame = frame

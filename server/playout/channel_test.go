@@ -742,6 +742,45 @@ func TestChannel_SecondaryEventsOnLiveItem(t *testing.T) {
 	})
 }
 
+func TestChannel_FeedsSpliceCoordinator(t *testing.T) {
+	provider := fakeProvider(30) // 1 second at 30fps
+	ch := NewChannel(1, ChannelConfig{AssetProvider: provider})
+
+	inj := &fakeSpliceInjector{}
+	bd := NewBlackDetector(BlackDetectorConfig{})
+	sc := NewSpliceCoordinator(SpliceCoordinatorConfig{
+		Injector:      inj,
+		BlackDetector: bd,
+		PreRollMs:     100, // short for test
+		WindowMs:      50,
+		TimeoutMs:     500,
+	})
+	ch.SetSpliceCoordinator(sc)
+
+	var frameCount atomic.Int64
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
+		frameCount.Add(1)
+	})
+
+	pl := testPlaylist(clipItem("test"))
+	ch.LoadPlaylist(pl)
+	ch.Start()
+
+	// Start a splice to verify frames are fed.
+	time.Sleep(50 * time.Millisecond)
+	sc.BeginSplice("pod-1", true, true, 180000, 0)
+
+	// Wait for channel to finish playing.
+	waitFor(t, 3*time.Second, func() bool {
+		return ch.State() == StateCompleted
+	})
+
+	// The splice coordinator should have finalized (timeout or window close).
+	waitFor(t, time.Second, func() bool {
+		return !sc.Active()
+	})
+}
+
 func TestChannel_SecondaryEventsOnSlateItem(t *testing.T) {
 	h := &mockHandler{}
 	ch := NewChannel(1, ChannelConfig{
