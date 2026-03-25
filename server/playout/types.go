@@ -68,6 +68,12 @@ type TransitionConfig struct {
 	DurationMs int    `json:"duration_ms,omitempty"`
 }
 
+// SCTE35EventData holds parameters for a SCTE-35 cue secondary event.
+type SCTE35EventData struct {
+	BreakDurationMs int64 `json:"break_duration_ms,omitempty"`
+	AutoReturn      bool  `json:"auto_return,omitempty"`
+}
+
 // SecondaryEvent is a timed event attached to a playlist item (e.g., graphic on/off).
 type SecondaryEvent struct {
 	Type     string `json:"type"`
@@ -75,6 +81,19 @@ type SecondaryEvent struct {
 	Template string `json:"template,omitempty"`
 	OffsetMs int    `json:"offset_ms"`
 	Anchor   string `json:"anchor"`
+
+	// Audio event fields.
+	SourceKey string  `json:"source_key,omitempty"`
+	LevelDB   float64 `json:"level_db,omitempty"`
+	Muted     *bool   `json:"muted,omitempty"`
+	AFV       *bool   `json:"afv,omitempty"`
+
+	// Caption event fields.
+	CaptionMode string `json:"caption_mode,omitempty"`
+	CaptionText string `json:"caption_text,omitempty"`
+
+	// SCTE-35 event data.
+	SCTE35 *SCTE35EventData `json:"scte35,omitempty"`
 }
 
 // PlaylistItem is a single entry in a playout playlist.

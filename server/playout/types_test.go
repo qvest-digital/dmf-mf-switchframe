@@ -451,6 +451,166 @@ func TestCacheConfigDefaults(t *testing.T) {
 	}
 }
 
+func boolPtr(b bool) *bool { return &b }
+
+func TestSecondaryEvent_ExtendedJSONRoundTrip(t *testing.T) {
+	events := []SecondaryEvent{
+		{
+			Type:     "graphics_on",
+			Layer:    2,
+			Template: "lower-third",
+			OffsetMs: 1000,
+			Anchor:   "start",
+		},
+		{
+			Type:      "audio_level",
+			SourceKey: "camera-1",
+			LevelDB:   -6.5,
+			OffsetMs:  500,
+			Anchor:    "start",
+		},
+		{
+			Type:      "audio_mute",
+			SourceKey: "mic-1",
+			Muted:     boolPtr(true),
+			OffsetMs:  0,
+			Anchor:    "start",
+		},
+		{
+			Type:      "audio_afv",
+			SourceKey: "mic-2",
+			AFV:       boolPtr(false),
+			OffsetMs:  -1000,
+			Anchor:    "end",
+		},
+		{
+			Type:        "caption_mode",
+			CaptionMode: "passthrough",
+			OffsetMs:    0,
+			Anchor:      "start",
+		},
+		{
+			Type:        "caption_text",
+			CaptionText: "Hello, world!",
+			OffsetMs:    2000,
+			Anchor:      "start",
+		},
+		{
+			Type:     "scte35_cue",
+			OffsetMs: -5000,
+			Anchor:   "end",
+			SCTE35: &SCTE35EventData{
+				BreakDurationMs: 30000,
+				AutoReturn:      true,
+			},
+		},
+	}
+
+	for i, ev := range events {
+		data, err := json.Marshal(ev)
+		if err != nil {
+			t.Fatalf("event[%d] Marshal: %v", i, err)
+		}
+
+		var got SecondaryEvent
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("event[%d] Unmarshal: %v", i, err)
+		}
+
+		if got.Type != ev.Type {
+			t.Errorf("event[%d] Type = %q, want %q", i, got.Type, ev.Type)
+		}
+		if got.Layer != ev.Layer {
+			t.Errorf("event[%d] Layer = %d, want %d", i, got.Layer, ev.Layer)
+		}
+		if got.Template != ev.Template {
+			t.Errorf("event[%d] Template = %q, want %q", i, got.Template, ev.Template)
+		}
+		if got.OffsetMs != ev.OffsetMs {
+			t.Errorf("event[%d] OffsetMs = %d, want %d", i, got.OffsetMs, ev.OffsetMs)
+		}
+		if got.Anchor != ev.Anchor {
+			t.Errorf("event[%d] Anchor = %q, want %q", i, got.Anchor, ev.Anchor)
+		}
+		if got.SourceKey != ev.SourceKey {
+			t.Errorf("event[%d] SourceKey = %q, want %q", i, got.SourceKey, ev.SourceKey)
+		}
+		if got.LevelDB != ev.LevelDB {
+			t.Errorf("event[%d] LevelDB = %f, want %f", i, got.LevelDB, ev.LevelDB)
+		}
+		if got.CaptionMode != ev.CaptionMode {
+			t.Errorf("event[%d] CaptionMode = %q, want %q", i, got.CaptionMode, ev.CaptionMode)
+		}
+		if got.CaptionText != ev.CaptionText {
+			t.Errorf("event[%d] CaptionText = %q, want %q", i, got.CaptionText, ev.CaptionText)
+		}
+
+		// Check *bool pointer fields.
+		if ev.Muted != nil {
+			if got.Muted == nil {
+				t.Errorf("event[%d] Muted = nil, want %v", i, *ev.Muted)
+			} else if *got.Muted != *ev.Muted {
+				t.Errorf("event[%d] Muted = %v, want %v", i, *got.Muted, *ev.Muted)
+			}
+		} else if got.Muted != nil {
+			t.Errorf("event[%d] Muted = %v, want nil", i, *got.Muted)
+		}
+
+		if ev.AFV != nil {
+			if got.AFV == nil {
+				t.Errorf("event[%d] AFV = nil, want %v", i, *ev.AFV)
+			} else if *got.AFV != *ev.AFV {
+				t.Errorf("event[%d] AFV = %v, want %v", i, *got.AFV, *ev.AFV)
+			}
+		} else if got.AFV != nil {
+			t.Errorf("event[%d] AFV = %v, want nil", i, *got.AFV)
+		}
+
+		// Check nested SCTE35 data.
+		if ev.SCTE35 != nil {
+			if got.SCTE35 == nil {
+				t.Errorf("event[%d] SCTE35 = nil, want non-nil", i)
+			} else {
+				if got.SCTE35.BreakDurationMs != ev.SCTE35.BreakDurationMs {
+					t.Errorf("event[%d] SCTE35.BreakDurationMs = %d, want %d", i, got.SCTE35.BreakDurationMs, ev.SCTE35.BreakDurationMs)
+				}
+				if got.SCTE35.AutoReturn != ev.SCTE35.AutoReturn {
+					t.Errorf("event[%d] SCTE35.AutoReturn = %v, want %v", i, got.SCTE35.AutoReturn, ev.SCTE35.AutoReturn)
+				}
+			}
+		} else if got.SCTE35 != nil {
+			t.Errorf("event[%d] SCTE35 = non-nil, want nil", i)
+		}
+	}
+}
+
+func TestSecondaryEvent_OmitsEmptyFields(t *testing.T) {
+	// A minimal graphics event should not include audio/caption/scte35 fields.
+	ev := SecondaryEvent{
+		Type:     "graphics_on",
+		Layer:    1,
+		Template: "lower-third",
+		OffsetMs: 0,
+		Anchor:   "start",
+	}
+
+	data, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("Unmarshal to map: %v", err)
+	}
+
+	for _, key := range []string{"source_key", "level_db", "muted", "afv", "caption_mode", "caption_text", "scte35"} {
+		if _, ok := raw[key]; ok {
+			t.Errorf("expected key %q to be omitted for graphics event, but it was present", key)
+		}
+	}
+}
+
 func TestAssetPipelineSentinelErrors(t *testing.T) {
 	errs := []error{
 		ErrAssetNotFound,
