@@ -355,6 +355,13 @@ func TestAssetURIParse(t *testing.T) {
 		{"https://cdn.example.com/clip.ts", "https", "cdn.example.com/clip.ts"},
 		{"/absolute/path.ts", "local", "/absolute/path.ts"},
 		{"file:///path.ts", "local", "/path.ts"},
+
+		// Edge cases.
+		{"", "local", ""},                                                              // empty string
+		{"clip.ts", "local", "clip.ts"},                                                // relative path (no scheme)
+		{"file://path.ts", "file", "path.ts"},                                          // file:// with 2 slashes (not 3) — falls to generic ://
+		{"http://cdn.example.com/clip.ts?token=abc", "http", "cdn.example.com/clip.ts?token=abc"}, // URI with query params
+		{"local://path.ts", "local", "path.ts"},                                        // local:// with 2 slashes (not 3) — falls to generic ://
 	}
 	for _, tt := range tests {
 		scheme, path := ParseAssetURI(tt.uri)

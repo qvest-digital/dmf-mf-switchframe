@@ -691,51 +691,6 @@ func (c *Channel) holdLastFrame(ctx context.Context, frame DecodedFrame, outputP
 	}
 }
 
-// applyInOutPoints trims frames based on in/out point milliseconds.
-// Uses PTS values to determine frame timing relative to the first frame.
-func applyInOutPoints(frames []DecodedFrame, inMs, outMs int64) []DecodedFrame {
-	if len(frames) == 0 || (inMs == 0 && outMs == 0) {
-		return frames
-	}
-
-	basePTS := frames[0].PTS
-	// Convert ms to 90kHz PTS ticks.
-	inPTS := inMs * 90
-	outPTS := outMs * 90
-
-	startIdx := 0
-	endIdx := len(frames)
-
-	if inMs > 0 {
-		found := false
-		for i, f := range frames {
-			if f.PTS-basePTS >= inPTS {
-				startIdx = i
-				found = true
-				break
-			}
-		}
-		if !found {
-			return nil // in-point is past the end of the clip
-		}
-	}
-
-	if outMs > 0 {
-		for i, f := range frames {
-			if f.PTS-basePTS >= outPTS {
-				endIdx = i
-				break
-			}
-		}
-	}
-
-	if startIdx >= endIdx {
-		return nil
-	}
-
-	return frames[startIdx:endIdx]
-}
-
 // estimateFPS estimates frames per second from PTS values.
 func estimateFPS(frames []DecodedFrame) float64 {
 	if len(frames) < 2 {

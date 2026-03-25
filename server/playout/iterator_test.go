@@ -216,9 +216,9 @@ func TestCacheAssetProvider_Open(t *testing.T) {
 		LastAccessed: time.Now(),
 	})
 
-	// Create provider with a mock demux that returns 3 frames.
-	demuxFn := func(path string) ([]DecodedFrame, error) {
-		return fakeFrames(3), nil
+	// Create provider with a mock demux that returns 3 frames as a FrameIterator.
+	demuxFn := func(path string) (FrameIterator, error) {
+		return NewSliceIterator(fakeFrames(3)), nil
 	}
 	provider := NewCacheAssetProvider(cache, demuxFn)
 

@@ -445,7 +445,7 @@ func TestPlayoutCacheStatus_NilCache(t *testing.T) {
 	require.Equal(t, http.StatusNotImplemented, rec.Code)
 }
 
-func TestPlayoutCachePrefetch(t *testing.T) {
+func TestPlayoutCacheLookup(t *testing.T) {
 	api, cache, dir := setupTestPlayoutAPIWithCache(t)
 
 	// Put a cached entry with local path under the cache directory.
@@ -462,7 +462,7 @@ func TestPlayoutCachePrefetch(t *testing.T) {
 	require.NoError(t, err)
 
 	body := `{"asset_uri": "local:///media/test.ts"}`
-	req := httptest.NewRequest("POST", "/api/playout/cache/prefetch", strings.NewReader(body))
+	req := httptest.NewRequest("POST", "/api/playout/cache/lookup", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
@@ -475,11 +475,11 @@ func TestPlayoutCachePrefetch(t *testing.T) {
 	require.Equal(t, "local:///media/test.ts", entry.AssetURI)
 }
 
-func TestPlayoutCachePrefetch_NotFound(t *testing.T) {
+func TestPlayoutCacheLookup_NotFound(t *testing.T) {
 	api, _, _ := setupTestPlayoutAPIWithCache(t)
 
 	body := `{"asset_uri": "local:///nonexistent.ts"}`
-	req := httptest.NewRequest("POST", "/api/playout/cache/prefetch", strings.NewReader(body))
+	req := httptest.NewRequest("POST", "/api/playout/cache/lookup", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
@@ -487,10 +487,10 @@ func TestPlayoutCachePrefetch_NotFound(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, rec.Code)
 }
 
-func TestPlayoutCachePrefetch_BadJSON(t *testing.T) {
+func TestPlayoutCacheLookup_BadJSON(t *testing.T) {
 	api, _, _ := setupTestPlayoutAPIWithCache(t)
 
-	req := httptest.NewRequest("POST", "/api/playout/cache/prefetch", strings.NewReader("bad"))
+	req := httptest.NewRequest("POST", "/api/playout/cache/lookup", strings.NewReader("bad"))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
@@ -498,10 +498,10 @@ func TestPlayoutCachePrefetch_BadJSON(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
-func TestPlayoutCachePrefetch_MissingURI(t *testing.T) {
+func TestPlayoutCacheLookup_MissingURI(t *testing.T) {
 	api, _, _ := setupTestPlayoutAPIWithCache(t)
 
-	req := httptest.NewRequest("POST", "/api/playout/cache/prefetch", strings.NewReader(`{}`))
+	req := httptest.NewRequest("POST", "/api/playout/cache/lookup", strings.NewReader(`{}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
@@ -524,7 +524,9 @@ func TestPlayoutCacheEvict(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	req := httptest.NewRequest("DELETE", "/api/playout/cache/test-asset", nil)
+	body := `{"asset_uri": "test-asset"}`
+	req := httptest.NewRequest("POST", "/api/playout/cache/evict", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 
@@ -538,7 +540,9 @@ func TestPlayoutCacheEvict(t *testing.T) {
 func TestPlayoutCacheEvict_NotFound(t *testing.T) {
 	api, _, _ := setupTestPlayoutAPIWithCache(t)
 
-	req := httptest.NewRequest("DELETE", "/api/playout/cache/nonexistent", nil)
+	body := `{"asset_uri": "nonexistent"}`
+	req := httptest.NewRequest("POST", "/api/playout/cache/evict", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 

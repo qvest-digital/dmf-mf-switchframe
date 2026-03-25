@@ -575,9 +575,9 @@ func TestIntegration_CacheFetchAndPlay(t *testing.T) {
 		t.Fatalf("cache entry state = %s, want cached", entry.State)
 	}
 
-	// 7. Create CacheAssetProvider with a fake demux.
-	provider := NewCacheAssetProvider(cache, func(path string) ([]DecodedFrame, error) {
-		return fakeFrames(5), nil
+	// 7. Create CacheAssetProvider with a fake demux that returns a FrameIterator.
+	provider := NewCacheAssetProvider(cache, func(path string) (FrameIterator, error) {
+		return NewSliceIterator(fakeFrames(5)), nil
 	})
 
 	// 8. Create channel with provider, load playlist, play.
@@ -808,10 +808,11 @@ func TestIntegration_CacheEvictionDuringPrefetch(t *testing.T) {
 	prefetcher.UpdatePlaylist(pl, 0)
 	wg.Wait()
 
-	// Only 2 should fit in cache (200 bytes, each ~80 bytes).
+	// Only 2 items fit in cache (200 bytes, each ~80 bytes). LRU eviction
+	// keeps the total at or below MaxBytes.
 	status := cache.Status()
-	if status.ItemCount > 3 {
-		t.Errorf("cache ItemCount = %d, expected <= 3", status.ItemCount)
+	if status.ItemCount > 2 {
+		t.Errorf("cache ItemCount = %d, expected <= 2 (cache is 200 bytes, items are 80 bytes)", status.ItemCount)
 	}
 	if status.UsedBytes > 200 {
 		t.Errorf("cache UsedBytes = %d, expected <= 200", status.UsedBytes)

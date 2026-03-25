@@ -3,6 +3,7 @@ package playout
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -49,7 +50,7 @@ type Transcoder struct {
 	// TranscodeFunc is the actual transcode implementation.
 	// In production, wire this to codec.TranscodeFile or similar.
 	// Nil means no transcode backend is available.
-	TranscodeFunc func(input, output string, width, height, fps, bitrate int, progress func(float64)) error
+	TranscodeFunc func(ctx context.Context, input, output string, width, height, fps, bitrate int, progress func(float64)) error
 }
 
 // NewTranscoder creates a Transcoder with the given configuration.
@@ -93,6 +94,7 @@ func (t *Transcoder) Transcode(ctx context.Context, inputPath string, progress P
 	}
 
 	err := t.TranscodeFunc(
+		ctx,
 		inputPath,
 		outputPath,
 		t.config.TargetWidth,
@@ -102,6 +104,8 @@ func (t *Transcoder) Transcode(ctx context.Context, inputPath string, progress P
 		progressCb,
 	)
 	if err != nil {
+		// Clean up partial output file on failure.
+		_ = os.Remove(outputPath)
 		return "", fmt.Errorf("%w: %v", ErrTranscodeFailed, err)
 	}
 

@@ -3,6 +3,7 @@ package playout
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -469,5 +470,64 @@ func isUnderDir(path, dir string) bool {
 	if err != nil {
 		return false
 	}
-	return rel != ".." && !filepath.IsAbs(rel) && rel[:2] != ".."
+	return !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel)
+}
+
+func TestCachePeekDoesNotTouchLRU(t *testing.T) {
+	dir := t.TempDir()
+	cfg := CacheConfig{Dir: dir, MaxBytes: 1 << 20}
+
+	c, err := NewCache(cfg)
+	if err != nil {
+		t.Fatalf("NewCache: %v", err)
+	}
+	defer c.Close()
+
+	pathA, _ := c.Reserve("asset://A")
+	_ = os.WriteFile(pathA, make([]byte, 100), 0o644)
+	tOld := time.Now().Add(-10 * time.Second)
+	_ = c.Put(&CacheEntry{
+		AssetURI:     "asset://A",
+		LocalPath:    pathA,
+		State:        AssetCached,
+		ByteSize:     100,
+		LastAccessed: tOld,
+	})
+
+	pathB, _ := c.Reserve("asset://B")
+	_ = os.WriteFile(pathB, make([]byte, 100), 0o644)
+	_ = c.Put(&CacheEntry{
+		AssetURI:     "asset://B",
+		LocalPath:    pathB,
+		State:        AssetCached,
+		ByteSize:     100,
+		LastAccessed: time.Now(),
+	})
+
+	// Peek should not update LastAccessed.
+	peekEntry, err := c.Peek("asset://A")
+	if err != nil {
+		t.Fatalf("Peek: %v", err)
+	}
+	if peekEntry.AssetURI != "asset://A" {
+		t.Errorf("Peek AssetURI = %q, want %q", peekEntry.AssetURI, "asset://A")
+	}
+
+	// Get should update LastAccessed (touching LRU).
+	getEntry, err := c.Get("asset://A")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	// After Get, LastAccessed should be more recent than what Peek returned.
+	if !getEntry.LastAccessed.After(peekEntry.LastAccessed) {
+		t.Errorf("Get LastAccessed (%v) should be after Peek LastAccessed (%v)",
+			getEntry.LastAccessed, peekEntry.LastAccessed)
+	}
+
+	// Verify that Peek returns the entry without error for an existing URI.
+	_, err = c.Peek("nonexistent")
+	if err != ErrAssetNotFound {
+		t.Errorf("Peek nonexistent = %v, want ErrAssetNotFound", err)
+	}
 }

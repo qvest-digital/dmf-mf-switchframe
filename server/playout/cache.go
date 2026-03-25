@@ -20,6 +20,7 @@ type Cache struct {
 	mu           sync.Mutex
 	entries      map[string]*CacheEntry
 	accessOrder  []string // oldest-accessed first
+	usedBytes    int64    // running total of ByteSize across all entries
 	config       CacheConfig
 	metadataPath string
 }
@@ -74,7 +75,13 @@ func (c *Cache) Put(entry *CacheEntry) error {
 
 	// Store a copy to prevent caller mutation.
 	cp := *entry
+
+	// Update running total: subtract old size if replacing an existing entry.
+	if old, ok := c.entries[cp.AssetURI]; ok {
+		c.usedBytes -= old.ByteSize
+	}
 	c.entries[cp.AssetURI] = &cp
+	c.usedBytes += cp.ByteSize
 
 	// Update access order: remove old position, append to end.
 	c.removeFromAccessOrder(cp.AssetURI)
@@ -107,6 +114,23 @@ func (c *Cache) Get(uri string) (*CacheEntry, error) {
 	return &cp, nil
 }
 
+// Peek returns a copy of the cache entry without updating LRU order or
+// LastAccessed time. Used for read-without-touch operations like prefetch scans.
+// Returns ErrAssetNotFound if the URI is not in the cache.
+func (c *Cache) Peek(uri string) (*CacheEntry, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	e, ok := c.entries[uri]
+	if !ok {
+		return nil, ErrAssetNotFound
+	}
+
+	// Return a copy without touching LRU state.
+	cp := *e
+	return &cp, nil
+}
+
 // Evict removes an entry from the cache and deletes its file on disk.
 // Returns ErrAssetNotFound if the URI is not in the cache.
 func (c *Cache) Evict(uri string) error {
@@ -123,6 +147,7 @@ func (c *Cache) Evict(uri string) error {
 		_ = os.Remove(e.LocalPath)
 	}
 
+	c.usedBytes -= e.ByteSize
 	delete(c.entries, uri)
 	c.removeFromAccessOrder(uri)
 
@@ -134,11 +159,9 @@ func (c *Cache) Status() CacheStatus {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	var used int64
 	var fetching, errCount int
 
 	for _, e := range c.entries {
-		used += e.ByteSize
 		switch e.State {
 		case AssetFetching, AssetTranscoding:
 			fetching++
@@ -150,7 +173,7 @@ func (c *Cache) Status() CacheStatus {
 	return CacheStatus{
 		CacheDir:      c.config.Dir,
 		MaxBytes:      c.config.MaxBytes,
-		UsedBytes:     used,
+		UsedBytes:     c.usedBytes,
 		ItemCount:     len(c.entries),
 		FetchingCount: fetching,
 		ErrorCount:    errCount,
@@ -207,7 +230,7 @@ func (c *Cache) validatePath(path string) error {
 // are under MaxBytes. Entries in Fetching or Transcoding state are skipped.
 // Must be called with c.mu held.
 func (c *Cache) evictLRU() {
-	for c.totalBytes() > c.config.MaxBytes && len(c.accessOrder) > 0 {
+	for c.usedBytes > c.config.MaxBytes && len(c.accessOrder) > 0 {
 		evicted := false
 		for i, uri := range c.accessOrder {
 			e, ok := c.entries[uri]
@@ -225,6 +248,7 @@ func (c *Cache) evictLRU() {
 			if e.LocalPath != "" {
 				_ = os.Remove(e.LocalPath)
 			}
+			c.usedBytes -= e.ByteSize
 			delete(c.entries, uri)
 			c.accessOrder = append(c.accessOrder[:i], c.accessOrder[i+1:]...)
 			evicted = true
@@ -235,16 +259,6 @@ func (c *Cache) evictLRU() {
 			break
 		}
 	}
-}
-
-// totalBytes returns the sum of ByteSize for all entries.
-// Must be called with c.mu held.
-func (c *Cache) totalBytes() int64 {
-	var total int64
-	for _, e := range c.entries {
-		total += e.ByteSize
-	}
-	return total
 }
 
 // removeFromAccessOrder removes the given URI from the access order slice.
@@ -259,11 +273,14 @@ func (c *Cache) removeFromAccessOrder(uri string) {
 }
 
 // rebuildAccessOrder rebuilds the accessOrder slice from loaded entries,
-// sorted by LastAccessed (oldest first).
+// sorted by LastAccessed (oldest first). Also recomputes usedBytes from
+// loaded entries.
 func (c *Cache) rebuildAccessOrder() {
 	c.accessOrder = make([]string, 0, len(c.entries))
-	for uri := range c.entries {
+	c.usedBytes = 0
+	for uri, e := range c.entries {
 		c.accessOrder = append(c.accessOrder, uri)
+		c.usedBytes += e.ByteSize
 	}
 	sort.Slice(c.accessOrder, func(i, j int) bool {
 		ei := c.entries[c.accessOrder[i]]

@@ -1342,12 +1342,10 @@ export function playoutCacheStatus(): Promise<CacheStatus> {
 	return request<CacheStatus>('/api/playout/cache/status');
 }
 
-export function playoutPrefetchAsset(assetUri: string): Promise<void> {
-	return post('/api/playout/cache/prefetch', { asset_uri: assetUri });
+export function playoutLookupCachedAsset(assetUri: string): Promise<void> {
+	return post('/api/playout/cache/lookup', { asset_uri: assetUri });
 }
 
 export function playoutEvictCachedAsset(assetUri: string): Promise<void> {
-	return request(`/api/playout/cache/${encodeURIComponent(assetUri)}`, {
-		method: 'DELETE',
-	});
+	return post('/api/playout/cache/evict', { asset_uri: assetUri });
 }

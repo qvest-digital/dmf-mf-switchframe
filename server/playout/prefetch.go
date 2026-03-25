@@ -11,11 +11,12 @@ import (
 
 // PrefetcherConfig configures the schedule-aware prefetch scheduler.
 type PrefetcherConfig struct {
-	Cache          *Cache
-	Resolver       *AssetResolver
-	Transcoder     *Transcoder // optional: nil = skip transcode
-	LookaheadItems int         // how many items ahead to pre-fetch (default 5)
-	OnFetched      func(uri string, err error)
+	Cache               *Cache
+	Resolver            *AssetResolver
+	Transcoder          *Transcoder // optional: nil = skip transcode
+	LookaheadItems      int         // how many items ahead to pre-fetch (default 5)
+	MaxConcurrentFetches int        // max parallel fetches (default 2)
+	OnFetched           func(uri string, err error)
 }
 
 // Prefetcher watches the playlist lookahead window and queues cache fetches
@@ -34,9 +35,13 @@ type Prefetcher struct {
 }
 
 // NewPrefetcher creates a prefetcher. LookaheadItems defaults to 5 if zero.
+// MaxConcurrentFetches defaults to 2 if zero.
 func NewPrefetcher(config PrefetcherConfig) *Prefetcher {
 	if config.LookaheadItems <= 0 {
 		config.LookaheadItems = 5
+	}
+	if config.MaxConcurrentFetches <= 0 {
+		config.MaxConcurrentFetches = 2
 	}
 	return &Prefetcher{
 		config:    config,
@@ -46,20 +51,34 @@ func NewPrefetcher(config PrefetcherConfig) *Prefetcher {
 }
 
 // Start launches the background prefetch goroutine.
+// Panics if called while already running (double-start).
 func (p *Prefetcher) Start(ctx context.Context) {
+	p.mu.Lock()
+	if p.done != nil {
+		p.mu.Unlock()
+		panic("playout: Prefetcher.Start called while already running")
+	}
 	ctx, p.cancel = context.WithCancel(ctx)
 	p.done = make(chan struct{})
+	p.mu.Unlock()
 
 	go p.run(ctx)
 }
 
 // Stop cancels the background goroutine and waits for it to exit.
 func (p *Prefetcher) Stop() {
-	if p.cancel != nil {
-		p.cancel()
+	p.mu.Lock()
+	cancelFn := p.cancel
+	doneCh := p.done
+	p.cancel = nil
+	p.done = nil
+	p.mu.Unlock()
+
+	if cancelFn != nil {
+		cancelFn()
 	}
-	if p.done != nil {
-		<-p.done
+	if doneCh != nil {
+		<-doneCh
 	}
 }
 
@@ -118,7 +137,8 @@ func (p *Prefetcher) scanNeeded(pl *Playlist, cursor int) []string {
 		}
 
 		// Skip if already cached (and not in error state).
-		entry, err := p.config.Cache.Get(item.AssetURI)
+		// Use Peek to avoid touching the LRU order during scan.
+		entry, err := p.config.Cache.Peek(item.AssetURI)
 		if err == nil && entry.State == AssetCached {
 			continue
 		}
@@ -137,8 +157,8 @@ func (p *Prefetcher) run(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
-	// Semaphore for max 2 concurrent fetches.
-	sem := make(chan struct{}, 2)
+	// Semaphore for max concurrent fetches.
+	sem := make(chan struct{}, p.config.MaxConcurrentFetches)
 
 	var wg sync.WaitGroup
 

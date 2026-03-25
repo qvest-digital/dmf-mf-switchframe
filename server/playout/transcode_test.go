@@ -103,7 +103,7 @@ func TestTranscoderOutputPath(t *testing.T) {
 func TestTranscoderCancellation(t *testing.T) {
 	tr := NewTranscoder(TranscoderConfig{})
 	called := false
-	tr.TranscodeFunc = func(input, output string, width, height, fps, bitrate int, progress func(float64)) error {
+	tr.TranscodeFunc = func(ctx context.Context, input, output string, width, height, fps, bitrate int, progress func(float64)) error {
 		called = true
 		return nil
 	}
@@ -139,7 +139,7 @@ func TestTranscoderSuccess(t *testing.T) {
 
 	var gotInput, gotOutput string
 	var gotWidth, gotHeight, gotFPS, gotBitrate int
-	tr.TranscodeFunc = func(input, output string, width, height, fps, bitrate int, progress func(float64)) error {
+	tr.TranscodeFunc = func(ctx context.Context, input, output string, width, height, fps, bitrate int, progress func(float64)) error {
 		gotInput = input
 		gotOutput = output
 		gotWidth = width
@@ -181,7 +181,7 @@ func TestTranscoderSuccess(t *testing.T) {
 
 func TestTranscoderFailure(t *testing.T) {
 	tr := NewTranscoder(TranscoderConfig{})
-	tr.TranscodeFunc = func(input, output string, width, height, fps, bitrate int, progress func(float64)) error {
+	tr.TranscodeFunc = func(ctx context.Context, input, output string, width, height, fps, bitrate int, progress func(float64)) error {
 		return errors.New("codec exploded")
 	}
 
@@ -218,7 +218,7 @@ func TestTranscoderProgress(t *testing.T) {
 	tr := NewTranscoder(TranscoderConfig{})
 
 	var progressValues []float64
-	tr.TranscodeFunc = func(input, output string, width, height, fps, bitrate int, progress func(float64)) error {
+	tr.TranscodeFunc = func(ctx context.Context, input, output string, width, height, fps, bitrate int, progress func(float64)) error {
 		if progress != nil {
 			progress(0.0)
 			progress(0.5)
@@ -261,7 +261,7 @@ func TestTranscoderDefaultBitrate(t *testing.T) {
 	})
 
 	var gotBitrate int
-	tr.TranscodeFunc = func(input, output string, width, height, fps, bitrate int, progress func(float64)) error {
+	tr.TranscodeFunc = func(ctx context.Context, input, output string, width, height, fps, bitrate int, progress func(float64)) error {
 		gotBitrate = bitrate
 		return os.WriteFile(output, []byte("data"), 0644)
 	}
@@ -278,6 +278,32 @@ func TestTranscoderDefaultBitrate(t *testing.T) {
 	}
 	if gotBitrate != 0 {
 		t.Errorf("expected bitrate=0 (auto), got %d", gotBitrate)
+	}
+}
+
+func TestTranscoderCleansUpOnFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	inputPath := filepath.Join(tmpDir, "test.mkv")
+	if err := os.WriteFile(inputPath, []byte("fake video"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tr := NewTranscoder(TranscoderConfig{})
+	tr.TranscodeFunc = func(ctx context.Context, input, output string, width, height, fps, bitrate int, progress func(float64)) error {
+		// Write partial data to the output file, then fail.
+		_ = os.WriteFile(output, []byte("partial"), 0644)
+		return errors.New("transcode interrupted")
+	}
+
+	_, err := tr.Transcode(context.Background(), inputPath, nil)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	// Verify the output file was cleaned up.
+	outputPath := tr.OutputPath(inputPath)
+	if _, statErr := os.Stat(outputPath); !os.IsNotExist(statErr) {
+		t.Errorf("partial output file should have been removed, stat returned: %v", statErr)
 	}
 }
 

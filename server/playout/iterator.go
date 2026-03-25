@@ -158,19 +158,20 @@ func (f *FakeAssetProvider) Open(assetURI string) (FrameIterator, error) {
 // ---------------------------------------------------------------------------
 
 // CacheAssetProvider opens assets from the local disk cache.
-// It looks up the cached file by URI, then uses a demux function to get frames.
+// It looks up the cached file by URI, then uses a demux function to get a FrameIterator.
 type CacheAssetProvider struct {
 	cache   *Cache
-	demuxFn func(path string) ([]DecodedFrame, error)
+	demuxFn func(path string) (FrameIterator, error)
 }
 
 // NewCacheAssetProvider creates an AssetProvider backed by the disk cache.
-// demuxFn decodes a local file path into frames. May be nil (will error on Open).
-func NewCacheAssetProvider(cache *Cache, demuxFn func(path string) ([]DecodedFrame, error)) *CacheAssetProvider {
+// demuxFn opens a local file path and returns a streaming FrameIterator.
+// May be nil (will error on Open).
+func NewCacheAssetProvider(cache *Cache, demuxFn func(path string) (FrameIterator, error)) *CacheAssetProvider {
 	return &CacheAssetProvider{cache: cache, demuxFn: demuxFn}
 }
 
-// Open looks up the asset in the cache and decodes it via demuxFn.
+// Open looks up the asset in the cache and opens it via demuxFn.
 func (p *CacheAssetProvider) Open(assetURI string) (FrameIterator, error) {
 	entry, err := p.cache.Get(assetURI)
 	if err != nil {
@@ -182,9 +183,5 @@ func (p *CacheAssetProvider) Open(assetURI string) (FrameIterator, error) {
 	if p.demuxFn == nil {
 		return nil, fmt.Errorf("no demux function configured")
 	}
-	frames, err := p.demuxFn(entry.LocalPath)
-	if err != nil {
-		return nil, fmt.Errorf("demux %s: %w", entry.LocalPath, err)
-	}
-	return NewSliceIterator(frames), nil
+	return p.demuxFn(entry.LocalPath)
 }

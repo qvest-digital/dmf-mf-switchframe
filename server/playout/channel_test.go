@@ -432,61 +432,6 @@ func TestChannel_Key(t *testing.T) {
 	}
 }
 
-func TestChannel_InOutPoints(t *testing.T) {
-	// 10 frames at 30fps: PTS = 0, 3000, 6000, ..., 27000
-	// 3000 PTS ticks = 33.33ms
-	frames := make([]DecodedFrame, 10)
-	for i := range frames {
-		frames[i] = DecodedFrame{
-			PTS:    int64(i) * 3000,
-			Width:  1920,
-			Height: 1080,
-		}
-	}
-
-	t.Run("no_trim", func(t *testing.T) {
-		result := applyInOutPoints(frames, 0, 0)
-		if len(result) != 10 {
-			t.Errorf("no trim: got %d frames, want 10", len(result))
-		}
-	})
-
-	t.Run("in_point", func(t *testing.T) {
-		// InPointMs = 100ms = 9000 PTS ticks. First frame at PTS >= 9000 is frame 3 (PTS=9000).
-		result := applyInOutPoints(frames, 100, 0)
-		if len(result) != 7 {
-			t.Errorf("in point 100ms: got %d frames, want 7", len(result))
-		}
-		if result[0].PTS != 9000 {
-			t.Errorf("first frame PTS = %d, want 9000", result[0].PTS)
-		}
-	})
-
-	t.Run("out_point", func(t *testing.T) {
-		// OutPointMs = 200ms = 18000 PTS ticks. First frame at PTS >= 18000 is frame 6 (PTS=18000).
-		result := applyInOutPoints(frames, 0, 200)
-		if len(result) != 6 {
-			t.Errorf("out point 200ms: got %d frames, want 6", len(result))
-		}
-	})
-
-	t.Run("in_and_out", func(t *testing.T) {
-		// In=100ms (frame 3), Out=200ms (frame 6). Expect frames 3,4,5 = 3 frames.
-		result := applyInOutPoints(frames, 100, 200)
-		if len(result) != 3 {
-			t.Errorf("in+out: got %d frames, want 3", len(result))
-		}
-	})
-
-	t.Run("empty_result", func(t *testing.T) {
-		// In point past end of clip — no playable content.
-		result := applyInOutPoints(frames, 10000, 0)
-		if result != nil {
-			t.Errorf("in point past end: got %d frames, want nil", len(result))
-		}
-	})
-}
-
 func TestChannel_Status(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
 		AssetProvider: fakeProvider(3),

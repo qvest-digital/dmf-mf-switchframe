@@ -27,8 +27,8 @@ func (a *API) registerPlayoutRoutes(mux *http.ServeMux) {
 
 	// Cache endpoints (available even without playout manager, guarded by nil checks).
 	mux.HandleFunc("GET /api/playout/cache/status", a.handlePlayoutCacheStatus)
-	mux.HandleFunc("POST /api/playout/cache/prefetch", a.handlePlayoutCachePrefetch)
-	mux.HandleFunc("DELETE /api/playout/cache/{uri}", a.handlePlayoutCacheEvict)
+	mux.HandleFunc("POST /api/playout/cache/lookup", a.handlePlayoutCacheLookup)
+	mux.HandleFunc("POST /api/playout/cache/evict", a.handlePlayoutCacheEvict)
 }
 
 // parseChannelID extracts and validates the channel ID from the request path.
@@ -243,8 +243,8 @@ func (a *API) handlePlayoutCacheStatus(w http.ResponseWriter, _ *http.Request) {
 	_ = json.NewEncoder(w).Encode(a.playoutCache.Status())
 }
 
-// handlePlayoutCachePrefetch manually triggers a cache lookup for the given asset URI.
-func (a *API) handlePlayoutCachePrefetch(w http.ResponseWriter, r *http.Request) {
+// handlePlayoutCacheLookup looks up cache status for an asset by URI.
+func (a *API) handlePlayoutCacheLookup(w http.ResponseWriter, r *http.Request) {
 	if a.playoutCache == nil {
 		httperr.Write(w, http.StatusNotImplemented, "cache not configured")
 		return
@@ -262,7 +262,7 @@ func (a *API) handlePlayoutCachePrefetch(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	entry, err := a.playoutCache.Get(req.AssetURI)
+	entry, err := a.playoutCache.Peek(req.AssetURI)
 	if err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
@@ -279,13 +279,19 @@ func (a *API) handlePlayoutCacheEvict(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	uri := r.PathValue("uri")
-	if uri == "" {
-		httperr.Write(w, http.StatusBadRequest, "uri required")
+	var req struct {
+		AssetURI string `json:"asset_uri"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.AssetURI == "" {
+		httperr.Write(w, http.StatusBadRequest, "asset_uri required")
 		return
 	}
 
-	if err := a.playoutCache.Evict(uri); err != nil {
+	if err := a.playoutCache.Evict(req.AssetURI); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}
