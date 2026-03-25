@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"net"
 	"sync"
-	"unsafe"
 )
 
 // Instance wraps an MTL library handle.
@@ -28,18 +27,21 @@ type Instance struct {
 func NewInstance(cfg InstanceConfig) (*Instance, error) {
 	var params C.struct_mtl_init_params
 
-	if err := parseIPv4(cfg.SourceIP, &params.sip_addr[0][0]); err != nil {
-		return nil, fmt.Errorf("st2110: invalid source IP %q: %w", cfg.SourceIP, err)
+	// Use MTL helper functions to set port/IP (avoids cgo anonymous union issues).
+	cIP := C.CString(cfg.SourceIP)
+	defer C.free(unsafe.Pointer(cIP))
+	if ret := C.mtl_para_sip_set(&params, C.MTL_PORT_P, cIP); ret != 0 {
+		return nil, fmt.Errorf("st2110: invalid source IP %q", cfg.SourceIP)
 	}
 
 	cPort := C.CString(cfg.Port)
 	defer C.free(unsafe.Pointer(cPort))
-	C.strncpy(&params.port[0][0], cPort, C.MTL_PORT_MAX_LEN-1)
+	C.mtl_para_port_set(&params, C.MTL_PORT_P, cPort)
 
 	params.num_ports = 1
-	params.pmd[0] = C.MTL_PMD_DPDK_USER
-	params.tx_queues_cnt[0] = C.uint16_t(cfg.TxQueues)
-	params.rx_queues_cnt[0] = C.uint16_t(cfg.RxQueues)
+	C.mtl_para_pmd_set(&params, C.MTL_PORT_P, C.MTL_PMD_DPDK_USER)
+	C.mtl_para_tx_queues_cnt_set(&params, C.MTL_PORT_P, C.uint16_t(cfg.TxQueues))
+	C.mtl_para_rx_queues_cnt_set(&params, C.MTL_PORT_P, C.uint16_t(cfg.RxQueues))
 	params.flags = C.MTL_FLAG_BIND_NUMA | C.MTL_FLAG_TX_VIDEO_MIGRATE
 	params.log_level = C.enum_mtl_log_level(cfg.LogLevel)
 
@@ -87,22 +89,17 @@ func (inst *Instance) PTPStatus() (PTPStatus, error) {
 	}, nil
 }
 
-// parseIPv4 parses a dotted-quad IPv4 string into a C uint8_t[4] array.
-func parseIPv4(s string, out *C.uint8_t) error {
+// parseIPv4 parses a dotted-quad IPv4 string and returns the 4 bytes.
+func parseIPv4(s string) (a, b, c, d C.uint8_t, err error) {
 	ip := net.ParseIP(s)
 	if ip == nil {
-		return fmt.Errorf("invalid IP: %s", s)
+		return 0, 0, 0, 0, fmt.Errorf("invalid IP: %s", s)
 	}
 	ip4 := ip.To4()
 	if ip4 == nil {
-		return fmt.Errorf("not IPv4: %s", s)
+		return 0, 0, 0, 0, fmt.Errorf("not IPv4: %s", s)
 	}
-	arr := (*[4]C.uint8_t)(unsafe.Pointer(out))
-	arr[0] = C.uint8_t(ip4[0])
-	arr[1] = C.uint8_t(ip4[1])
-	arr[2] = C.uint8_t(ip4[2])
-	arr[3] = C.uint8_t(ip4[3])
-	return nil
+	return C.uint8_t(ip4[0]), C.uint8_t(ip4[1]), C.uint8_t(ip4[2]), C.uint8_t(ip4[3]), nil
 }
 
 // fpsToMTL converts a rational frame rate to the MTL fps enum.

@@ -40,13 +40,17 @@ func (inst *Instance) CreateAncillaryRx(cfg RxAncillaryConfig) (*AncillaryRx, er
 	defer C.free(unsafe.Pointer(cName))
 	ops.name = cName
 
-	if err := parseIPv4(cfg.MulticastIP, &ops.ip_addr[0][0]); err != nil {
+	a, b, c, d, err := parseIPv4(cfg.MulticastIP)
+	if err != nil {
 		return nil, fmt.Errorf("st2110: invalid multicast IP: %w", err)
 	}
+	C.st2110_st40_rx_set_ip(&ops, 0, a, b, c, d)
 	if cfg.SourceIP != "" {
-		if err := parseIPv4(cfg.SourceIP, &ops.mcast_sip_addr[0][0]); err != nil {
-			return nil, fmt.Errorf("st2110: invalid source IP filter: %w", err)
+		a2, b2, c2, d2, err2 := parseIPv4(cfg.SourceIP)
+		if err2 != nil {
+			return nil, fmt.Errorf("st2110: invalid source IP filter: %w", err2)
 		}
+		C.st2110_st40_rx_set_mcast_sip(&ops, 0, a2, b2, c2, d2)
 	}
 	ops.udp_port[0] = C.uint16_t(cfg.Port)
 	pt := cfg.PayloadType

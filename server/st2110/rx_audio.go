@@ -39,15 +39,19 @@ func (inst *Instance) CreateAudioRx(cfg RxAudioConfig) (*AudioRx, error) {
 	defer C.free(unsafe.Pointer(cName))
 	ops.name = cName
 
-	if err := parseIPv4(cfg.MulticastIP, &ops.port.ip_addr[0][0]); err != nil {
-		return nil, fmt.Errorf("st2110: invalid multicast IP: %w", err)
+	cMcast := C.CString(cfg.MulticastIP)
+	defer C.free(unsafe.Pointer(cMcast))
+	if ret := C.st_rxp_para_ip_set(&ops.port, C.MTL_PORT_P, cMcast); ret != 0 {
+		return nil, fmt.Errorf("st2110: invalid multicast IP %q", cfg.MulticastIP)
 	}
 	if cfg.SourceIP != "" {
-		if err := parseIPv4(cfg.SourceIP, &ops.port.mcast_sip_addr[0][0]); err != nil {
+		a, b, c, d, err := parseIPv4(cfg.SourceIP)
+		if err != nil {
 			return nil, fmt.Errorf("st2110: invalid source IP filter: %w", err)
 		}
+		C.st2110_rx_port_set_mcast_sip(&ops.port, 0, a, b, c, d)
 	}
-	ops.port.udp_port[0] = C.uint16_t(cfg.Port)
+	C.st_rxp_para_udp_port_set(&ops.port, C.MTL_PORT_P, C.uint16_t(cfg.Port))
 	pt := cfg.PayloadType
 	if pt == 0 {
 		pt = 111 // default dynamic PT for ST 2110-30

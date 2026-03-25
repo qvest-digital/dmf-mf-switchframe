@@ -37,10 +37,12 @@ func (inst *Instance) CreateVideoTx(cfg TxVideoConfig) (*VideoTx, error) {
 	defer C.free(unsafe.Pointer(cName))
 	ops.name = cName
 
-	if err := parseIPv4(cfg.MulticastIP, &ops.port.dip_addr[0][0]); err != nil {
-		return nil, fmt.Errorf("st2110: invalid multicast IP: %w", err)
+	cDest := C.CString(cfg.MulticastIP)
+	defer C.free(unsafe.Pointer(cDest))
+	if ret := C.st_txp_para_dip_set(&ops.port, C.MTL_PORT_P, cDest); ret != 0 {
+		return nil, fmt.Errorf("st2110: invalid multicast IP %q", cfg.MulticastIP)
 	}
-	ops.port.udp_port[0] = C.uint16_t(cfg.Port)
+	C.st_txp_para_udp_port_set(&ops.port, C.MTL_PORT_P, C.uint16_t(cfg.Port))
 	pt := cfg.PayloadType
 	if pt == 0 {
 		pt = 112 // default dynamic PT for ST 2110-20
