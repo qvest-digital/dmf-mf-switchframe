@@ -119,7 +119,11 @@ func (s *SecondaryEventScheduler) dispatch(ev *SecondaryEvent) error {
 	case "graphics_update":
 		return s.handler.OnGraphicsUpdate(ev.Layer, ev.Template)
 	case "audio_level":
-		return s.handler.OnAudioLevel(ev.SourceKey, ev.LevelDB)
+		levelDB := 0.0
+		if ev.LevelDB != nil {
+			levelDB = *ev.LevelDB
+		}
+		return s.handler.OnAudioLevel(ev.SourceKey, levelDB)
 	case "audio_mute":
 		muted := false
 		if ev.Muted != nil {

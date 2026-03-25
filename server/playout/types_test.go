@@ -451,7 +451,8 @@ func TestCacheConfigDefaults(t *testing.T) {
 	}
 }
 
-func boolPtr(b bool) *bool { return &b }
+func boolPtr(b bool) *bool         { return &b }
+func float64Ptr(f float64) *float64 { return &f }
 
 func TestSecondaryEvent_ExtendedJSONRoundTrip(t *testing.T) {
 	events := []SecondaryEvent{
@@ -465,7 +466,7 @@ func TestSecondaryEvent_ExtendedJSONRoundTrip(t *testing.T) {
 		{
 			Type:      "audio_level",
 			SourceKey: "camera-1",
-			LevelDB:   -6.5,
+			LevelDB:   float64Ptr(-6.5),
 			OffsetMs:  500,
 			Anchor:    "start",
 		},
@@ -535,8 +536,10 @@ func TestSecondaryEvent_ExtendedJSONRoundTrip(t *testing.T) {
 		if got.SourceKey != ev.SourceKey {
 			t.Errorf("event[%d] SourceKey = %q, want %q", i, got.SourceKey, ev.SourceKey)
 		}
-		if got.LevelDB != ev.LevelDB {
-			t.Errorf("event[%d] LevelDB = %f, want %f", i, got.LevelDB, ev.LevelDB)
+		if (got.LevelDB == nil) != (ev.LevelDB == nil) {
+			t.Errorf("event[%d] LevelDB nil mismatch", i)
+		} else if got.LevelDB != nil && *got.LevelDB != *ev.LevelDB {
+			t.Errorf("event[%d] LevelDB = %f, want %f", i, *got.LevelDB, *ev.LevelDB)
 		}
 		if got.CaptionMode != ev.CaptionMode {
 			t.Errorf("event[%d] CaptionMode = %q, want %q", i, got.CaptionMode, ev.CaptionMode)

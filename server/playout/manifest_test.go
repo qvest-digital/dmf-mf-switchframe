@@ -208,7 +208,7 @@ func TestValidateSecondaryEvent_ValidTypes(t *testing.T) {
 		{
 			name: "audio_level",
 			event: SecondaryEvent{
-				Type: "audio_level", SourceKey: "camera-1", LevelDB: -6.0, Anchor: "start",
+				Type: "audio_level", SourceKey: "camera-1", LevelDB: float64Ptr(-6.0), Anchor: "start",
 			},
 		},
 		{
@@ -238,7 +238,7 @@ func TestValidateSecondaryEvent_ValidTypes(t *testing.T) {
 		{
 			name: "scte35_cue",
 			event: SecondaryEvent{
-				Type: "scte35_cue", Anchor: "end",
+				Type: "scte35_cue", Anchor: "end", SCTE35: &SCTE35EventData{BreakDurationMs: 30000},
 			},
 		},
 	}
@@ -296,6 +296,13 @@ func TestValidateSecondaryEvent_CaptionTextMissingField(t *testing.T) {
 	ev := SecondaryEvent{Type: "caption_text", Anchor: "start"}
 	if err := ValidateSecondaryEvent(&ev); err == nil {
 		t.Error("expected error for caption_text without caption_text field")
+	}
+}
+
+func TestValidateSecondaryEvent_SCTE35MissingData(t *testing.T) {
+	ev := SecondaryEvent{Type: "scte35_cue", Anchor: "end"}
+	if err := ValidateSecondaryEvent(&ev); err == nil {
+		t.Error("expected error for scte35_cue without scte35 data")
 	}
 }
 

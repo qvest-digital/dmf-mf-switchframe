@@ -84,7 +84,7 @@ func TestScheduler_StartAnchoredEvents(t *testing.T) {
 
 	events := []SecondaryEvent{
 		{Type: "graphics_on", Layer: 1, Template: "lower-third", OffsetMs: 0, Anchor: "start"},
-		{Type: "audio_level", SourceKey: "cam-1", LevelDB: -3.0, OffsetMs: 500, Anchor: "start"},
+		{Type: "audio_level", SourceKey: "cam-1", LevelDB: float64Ptr(-3.0), OffsetMs: 500, Anchor: "start"},
 		{Type: "graphics_off", Layer: 1, OffsetMs: 2000, Anchor: "start"},
 	}
 

@@ -42,6 +42,10 @@ func ValidateSecondaryEvent(ev *SecondaryEvent) error {
 		if ev.CaptionText == "" {
 			return fmt.Errorf("secondary event caption_text: caption_text field required")
 		}
+	case "scte35_cue":
+		if ev.SCTE35 == nil {
+			return fmt.Errorf("secondary event scte35_cue: scte35 data required")
+		}
 	}
 
 	return nil

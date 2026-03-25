@@ -84,7 +84,7 @@ type SecondaryEvent struct {
 
 	// Audio event fields.
 	SourceKey string  `json:"source_key,omitempty"`
-	LevelDB   float64 `json:"level_db,omitempty"`
+	LevelDB   *float64 `json:"level_db,omitempty"`
 	Muted     *bool   `json:"muted,omitempty"`
 	AFV       *bool   `json:"afv,omitempty"`
 
