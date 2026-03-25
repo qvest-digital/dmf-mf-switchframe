@@ -2,6 +2,8 @@
 
 package st2110
 
+import "context"
+
 // Instance is a stub for builds without the st2110 build tag.
 type Instance struct{}
 
@@ -67,3 +69,57 @@ func (i *Instance) CreateAncillaryRx(cfg RxAncillaryConfig) (*AncillaryRx, error
 func (i *Instance) CreateAncillaryTx(cfg TxAncillaryConfig) (*AncillaryTx, error) {
 	return nil, ErrST2110NotAvailable
 }
+
+// --- VideoRx stub methods ---
+
+// GetFrame returns ErrST2110NotAvailable.
+func (rx *VideoRx) GetFrame(ctx context.Context) ([]byte, int, int, int64, error) {
+	return nil, 0, 0, 0, ErrST2110NotAvailable
+}
+
+// Close is a no-op stub.
+func (rx *VideoRx) Close() error { return nil }
+
+// --- AudioRx stub methods ---
+
+// GetFrame returns ErrST2110NotAvailable.
+func (rx *AudioRx) GetFrame(ctx context.Context) ([]float32, int, error) {
+	return nil, 0, ErrST2110NotAvailable
+}
+
+// Close is a no-op stub.
+func (rx *AudioRx) Close() error { return nil }
+
+// --- AncillaryRx stub methods ---
+
+// GetFrame returns ErrST2110NotAvailable.
+func (rx *AncillaryRx) GetFrame(ctx context.Context) ([]byte, error) {
+	return nil, ErrST2110NotAvailable
+}
+
+// Close is a no-op stub.
+func (rx *AncillaryRx) Close() error { return nil }
+
+// --- VideoTx stub methods ---
+
+// PutFrame returns ErrST2110NotAvailable.
+func (tx *VideoTx) PutFrame(yuv []byte) error { return ErrST2110NotAvailable }
+
+// Close is a no-op stub.
+func (tx *VideoTx) Close() error { return nil }
+
+// --- AudioTx stub methods ---
+
+// PutFrame returns ErrST2110NotAvailable.
+func (tx *AudioTx) PutFrame(pcm []float32) error { return ErrST2110NotAvailable }
+
+// Close is a no-op stub.
+func (tx *AudioTx) Close() error { return nil }
+
+// --- AncillaryTx stub methods ---
+
+// PutFrame returns ErrST2110NotAvailable.
+func (tx *AncillaryTx) PutFrame(data []byte) error { return ErrST2110NotAvailable }
+
+// Close is a no-op stub.
+func (tx *AncillaryTx) Close() error { return nil }
