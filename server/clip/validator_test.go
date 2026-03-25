@@ -221,6 +221,22 @@ func TestParseSPSDimensionsNil(t *testing.T) {
 	assert.Equal(t, 0, h)
 }
 
+func TestParseSPSDimensions_HighProfile1280x720_WithEmulationPrevention(t *testing.T) {
+	// Real SPS from DaVinci Resolve / NVIDIA NVENC, H.264 High profile, 1280x720.
+	// This SPS contains emulation prevention bytes (0x00 0x00 0x03) that must
+	// be stripped before parsing. Without stripping, the bit reader gets out of
+	// sync and returns wrong dimensions (e.g. 916x466 instead of 1280x720).
+	sps := []byte{
+		0x67, 0x64, 0x00, 0x1f, 0xac, 0xd9, 0x40, 0x50,
+		0x05, 0xbb, 0x01, 0x10, 0x00, 0x00, 0x03, 0x00,
+		0x10, 0x00, 0x00, 0x03, 0x03, 0xc0, 0xf1, 0x83,
+		0x19, 0x60,
+	}
+	w, h := ParseSPSDimensions(sps)
+	assert.Equal(t, 1280, w, "width should be 1280")
+	assert.Equal(t, 720, h, "height should be 720")
+}
+
 func TestTestDecodeFirstGOP_DimensionMismatchReturnsCorrupt(t *testing.T) {
 	// If decoder produces frames whose dimensions differ from SPS by more
 	// than one macroblock (16px), testDecodeFirstGOP returns ErrCorruptFile.

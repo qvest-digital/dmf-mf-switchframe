@@ -370,7 +370,22 @@ func ParseSPSDimensions(sps []byte) (width, height int) {
 		return 0, 0
 	}
 
-	r := &bitReader{data: sps, pos: 0}
+	// Strip emulation prevention bytes (0x00 0x00 0x03 → 0x00 0x00) to get
+	// the raw RBSP. H.264 NALUs escape 0x00 0x00 {0x00,0x01,0x02,0x03} by
+	// inserting 0x03 before the last byte. Parsing the raw NALU without
+	// stripping causes the bit reader to desync on any SPS that contains
+	// these sequences (common in High profile from NVIDIA encoders).
+	rbsp := make([]byte, 0, len(sps))
+	for i := 0; i < len(sps); i++ {
+		if i+2 < len(sps) && sps[i] == 0x00 && sps[i+1] == 0x00 && sps[i+2] == 0x03 {
+			rbsp = append(rbsp, 0x00, 0x00)
+			i += 2 // skip the 0x03 emulation prevention byte
+		} else {
+			rbsp = append(rbsp, sps[i])
+		}
+	}
+
+	r := &bitReader{data: rbsp, pos: 0}
 
 	// Skip forbidden_zero_bit (1) + nal_ref_idc (2) + nal_unit_type (5)
 	r.skip(8)
@@ -443,6 +458,8 @@ func ParseSPSDimensions(sps []byte) (width, height int) {
 		r.skip(1) // mb_adaptive_frame_field_flag
 		mbHeight = picHeightMapUnits * 2
 	}
+
+	r.skip(1) // direct_8x8_inference_flag
 
 	width = int((picWidthMbs + 1) * 16)
 	height = int((mbHeight + 1) * 16)
