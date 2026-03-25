@@ -3,6 +3,7 @@ package playout
 import (
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeSpliceInjector records SchedulePodCue and InjectPodCue calls.
@@ -391,5 +392,113 @@ func TestSpliceCoordinator_FallbackToScheduled(t *testing.T) {
 	// Middle of 9 frames (indices 0-8) is index 4, which is PTS 450000.
 	if readyPTS != 450000 {
 		t.Errorf("readyPTS = %d, want 450000 (scheduled middle frame)", readyPTS)
+	}
+}
+
+func TestSpliceCoordinator_Timeout(t *testing.T) {
+	inj := &fakeSpliceInjector{}
+	bd := NewBlackDetector(BlackDetectorConfig{})
+	sc := NewSpliceCoordinator(SpliceCoordinatorConfig{
+		Injector:      inj,
+		BlackDetector: bd,
+		PreRollMs:     5000,
+		WindowMs:      500,
+		TimeoutMs:     200, // short timeout
+	})
+
+	readyCh := make(chan struct{}, 1)
+	sc.SetOnSpliceReady(func(podID string, pts int64) {
+		readyCh <- struct{}{}
+	})
+
+	// Begin splice and send one frame inside the window but never close it.
+	sc.BeginSplice("pod-timeout", true, true, 180000, 0)
+
+	// Send one candidate frame inside the window.
+	sc.IngestFrame(make([]byte, 100*100*3/2), 100, 100, 450000)
+
+	// Wait for timeout to trigger finalization.
+	select {
+	case <-readyCh:
+		// Good, timeout triggered.
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout did not trigger finalization")
+	}
+
+	// Verify cue was injected.
+	calls := inj.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call after timeout, got %d", len(calls))
+	}
+	if !calls[0].IsOut {
+		t.Error("expected isOut=true")
+	}
+
+	// Should no longer be active.
+	if sc.Active() {
+		t.Error("should not be active after timeout finalization")
+	}
+}
+
+func TestSpliceCoordinator_TimeoutNoCandidates(t *testing.T) {
+	inj := &fakeSpliceInjector{}
+	bd := NewBlackDetector(BlackDetectorConfig{})
+	sc := NewSpliceCoordinator(SpliceCoordinatorConfig{
+		Injector:      inj,
+		BlackDetector: bd,
+		PreRollMs:     5000,
+		WindowMs:      500,
+		TimeoutMs:     200, // short timeout
+	})
+
+	readyCh := make(chan struct{}, 1)
+	sc.SetOnSpliceReady(func(podID string, pts int64) {
+		readyCh <- struct{}{}
+	})
+
+	// Begin splice but send NO frames -- timeout should still finalize with fallback.
+	sc.BeginSplice("pod-empty", true, true, 180000, 0)
+
+	select {
+	case <-readyCh:
+		// Good.
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout did not trigger finalization with no candidates")
+	}
+
+	// Should have used target PTS as fallback.
+	calls := inj.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+
+	if sc.Active() {
+		t.Error("should not be active after timeout")
+	}
+}
+
+func TestSpliceCoordinator_CancelStopsTimeout(t *testing.T) {
+	inj := &fakeSpliceInjector{}
+	bd := NewBlackDetector(BlackDetectorConfig{})
+	sc := NewSpliceCoordinator(SpliceCoordinatorConfig{
+		Injector:      inj,
+		BlackDetector: bd,
+		PreRollMs:     5000,
+		WindowMs:      500,
+		TimeoutMs:     200,
+	})
+
+	sc.BeginSplice("pod-cancel", true, true, 180000, 0)
+
+	// Cancel immediately before timeout fires.
+	sc.Cancel()
+
+	// Wait past the timeout period.
+	time.Sleep(400 * time.Millisecond)
+
+	// No cue should have been injected.
+	calls := inj.getCalls()
+	if len(calls) != 0 {
+		t.Errorf("expected 0 calls after cancel, got %d", len(calls))
 	}
 }

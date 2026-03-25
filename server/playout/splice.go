@@ -1,9 +1,11 @@
 package playout
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"sync"
+	"time"
 )
 
 // ErrSpliceAlreadyActive is returned when BeginSplice is called while a splice is in progress.
@@ -76,6 +78,7 @@ type SpliceCoordinator struct {
 	preRollMs     int64
 	windowMs      int64
 	timeoutMs     int64
+	timeoutCancel context.CancelFunc
 }
 
 // NewSpliceCoordinator creates a SpliceCoordinator with the given config.
@@ -142,6 +145,11 @@ func (sc *SpliceCoordinator) BeginSplice(podID string, isOut, autoReturn bool, d
 		State:          SpliceScanning,
 	}
 
+	// Start timeout goroutine.
+	ctx, cancel := context.WithCancel(context.Background())
+	sc.timeoutCancel = cancel
+	go sc.runTimeout(ctx)
+
 	return nil
 }
 
@@ -192,6 +200,12 @@ func (sc *SpliceCoordinator) finalizeSplice() {
 	if op == nil || op.State != SpliceScanning {
 		sc.mu.Unlock()
 		return
+	}
+
+	// Cancel timeout since we're finalizing.
+	if sc.timeoutCancel != nil {
+		sc.timeoutCancel()
+		sc.timeoutCancel = nil
 	}
 
 	bd := sc.config.BlackDetector
@@ -269,10 +283,38 @@ func (sc *SpliceCoordinator) finalizeSplice() {
 	}
 }
 
+// runTimeout waits for the configured timeout duration, then finalizes the splice
+// with whatever candidates have been collected. This prevents indefinite scanning
+// if no frame past the window end ever arrives.
+func (sc *SpliceCoordinator) runTimeout(ctx context.Context) {
+	timer := time.NewTimer(time.Duration(sc.timeoutMs) * time.Millisecond)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return
+	case <-timer.C:
+	}
+
+	sc.mu.Lock()
+	if sc.active == nil || sc.active.State != SpliceScanning {
+		sc.mu.Unlock()
+		return
+	}
+	sc.mu.Unlock()
+
+	sc.finalizeSplice()
+}
+
 // Cancel aborts the current splice operation without injecting a cue.
 func (sc *SpliceCoordinator) Cancel() {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
+
+	if sc.timeoutCancel != nil {
+		sc.timeoutCancel()
+		sc.timeoutCancel = nil
+	}
 
 	if sc.active != nil {
 		sc.active.candidates = nil
