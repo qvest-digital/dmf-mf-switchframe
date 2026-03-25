@@ -1,5 +1,6 @@
 <script lang="ts">
-	import type { PlaylistItem } from '$lib/api/types';
+	import type { PlaylistItem, SecondaryEvent } from '$lib/api/types';
+	import SecondaryEventEditor from './SecondaryEventEditor.svelte';
 
 	interface Props {
 		item: PlaylistItem;
@@ -7,8 +8,9 @@
 		isOnAir?: boolean;
 		isNext?: boolean;
 		isCompleted?: boolean;
+		onUpdateEvents?: (events: SecondaryEvent[]) => void;
 	}
-	let { item, index, isOnAir = false, isNext = false, isCompleted = false }: Props = $props();
+	let { item, index, isOnAir = false, isNext = false, isCompleted = false, onUpdateEvents }: Props = $props();
 
 	function formatDuration(ms: number | undefined): string {
 		if (!ms || ms <= 0) return '--:--';
@@ -35,6 +37,14 @@
 	{/if}
 	<span class="item-duration">{formatDuration(item.duration_ms)}</span>
 </div>
+
+{#if item.secondary_events && item.secondary_events.length > 0}
+	<SecondaryEventEditor
+		events={item.secondary_events}
+		onUpdate={onUpdateEvents ?? (() => {})}
+		itemDurationMs={item.duration_ms}
+	/>
+{/if}
 
 <style>
 	.playout-item {
