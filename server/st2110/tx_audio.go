@@ -36,7 +36,7 @@ func (inst *Instance) CreateAudioTx(cfg TxAudioConfig) (*AudioTx, error) {
 
 	cName := C.CString(fmt.Sprintf("atx_%s_%d", cfg.MulticastIP, cfg.Port))
 	defer C.free(unsafe.Pointer(cName))
-	C.strncpy(&ops.name[0], cName, 32-1)
+	ops.name = cName
 
 	if err := parseIPv4(cfg.MulticastIP, &ops.port.dip_addr[0][0]); err != nil {
 		return nil, fmt.Errorf("st2110: invalid multicast IP: %w", err)
@@ -46,7 +46,7 @@ func (inst *Instance) CreateAudioTx(cfg TxAudioConfig) (*AudioTx, error) {
 	if pt == 0 {
 		pt = 111 // default dynamic PT for ST 2110-30
 	}
-	ops.port.payload_type = C.uint16_t(pt)
+	ops.port.payload_type = C.uint8_t(pt)
 	ops.port.num_port = 1
 
 	ops.fmt = C.ST30_FMT_PCM24
@@ -100,7 +100,7 @@ func (tx *AudioTx) PutFrame(pcm []float32) error {
 	if int(frame.data_size) < copySize {
 		copySize = int(frame.data_size)
 	}
-	C.memcpy(frame.addr[0], unsafe.Pointer(&tx.l24Buf[0]), C.size_t(copySize))
+	C.memcpy(frame.addr, unsafe.Pointer(&tx.l24Buf[0]), C.size_t(copySize))
 
 	ret := C.st30p_tx_put_frame(tx.handle, frame)
 	if ret != 0 {

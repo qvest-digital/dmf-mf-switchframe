@@ -80,14 +80,10 @@ func (inst *Instance) PTPStatus() (PTPStatus, error) {
 	if inst.handle == nil {
 		return PTPStatus{}, ErrST2110NotAvailable
 	}
-	var spec C.struct_timespec
-	ret := C.mtl_ptp_read_time(inst.handle, &spec)
-	if ret != 0 {
-		return PTPStatus{Locked: false}, nil
-	}
+	ptpNs := C.mtl_ptp_read_time(inst.handle)
 	return PTPStatus{
-		Locked:   spec.tv_sec > 0 || spec.tv_nsec > 0,
-		OffsetNs: int64(spec.tv_nsec),
+		Locked:   ptpNs > 0,
+		OffsetNs: int64(ptpNs),
 	}, nil
 }
 

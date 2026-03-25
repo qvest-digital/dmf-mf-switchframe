@@ -37,7 +37,7 @@ func (inst *Instance) CreateVideoRx(cfg RxVideoConfig) (*VideoRx, error) {
 
 	cName := C.CString(fmt.Sprintf("vrx_%s_%d", cfg.MulticastIP, cfg.Port))
 	defer C.free(unsafe.Pointer(cName))
-	C.strncpy(&ops.name[0], cName, 32-1)
+	ops.name = cName
 
 	if err := parseIPv4(cfg.MulticastIP, &ops.port.ip_addr[0][0]); err != nil {
 		return nil, fmt.Errorf("st2110: invalid multicast IP: %w", err)
@@ -52,7 +52,7 @@ func (inst *Instance) CreateVideoRx(cfg RxVideoConfig) (*VideoRx, error) {
 	if pt == 0 {
 		pt = 112 // default dynamic PT for ST 2110-20
 	}
-	ops.port.payload_type = C.uint16_t(pt)
+	ops.port.payload_type = C.uint8_t(pt)
 	ops.port.num_port = 1
 
 	ops.width = C.uint32_t(cfg.Format.Width)

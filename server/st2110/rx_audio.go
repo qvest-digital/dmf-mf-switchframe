@@ -37,7 +37,7 @@ func (inst *Instance) CreateAudioRx(cfg RxAudioConfig) (*AudioRx, error) {
 
 	cName := C.CString(fmt.Sprintf("arx_%s_%d", cfg.MulticastIP, cfg.Port))
 	defer C.free(unsafe.Pointer(cName))
-	C.strncpy(&ops.name[0], cName, 32-1)
+	ops.name = cName
 
 	if err := parseIPv4(cfg.MulticastIP, &ops.port.ip_addr[0][0]); err != nil {
 		return nil, fmt.Errorf("st2110: invalid multicast IP: %w", err)
@@ -52,7 +52,7 @@ func (inst *Instance) CreateAudioRx(cfg RxAudioConfig) (*AudioRx, error) {
 	if pt == 0 {
 		pt = 111 // default dynamic PT for ST 2110-30
 	}
-	ops.port.payload_type = C.uint16_t(pt)
+	ops.port.payload_type = C.uint8_t(pt)
 	ops.port.num_port = 1
 
 	ops.fmt = C.ST30_FMT_PCM24
@@ -104,20 +104,13 @@ func (rx *AudioRx) GetFrame(ctx context.Context) ([]float32, int, error) {
 			continue
 		}
 
-		// Skip corrupted frames (same check as video RX).
-		if frame.status == C.ST_FRAME_STATUS_CORRUPTED {
-			C.st30p_rx_put_frame(rx.handle, frame)
-			rx.mu.Unlock()
-			continue
-		}
-
 		channels := rx.cfg.Format.Channels
 		dataSize := int(frame.data_size)
 		totalSamples := dataSize / 3
 		samplesPerCh := totalSamples / channels
 
 		rawL24 := make([]byte, dataSize)
-		C.memcpy(unsafe.Pointer(&rawL24[0]), frame.addr[0], C.size_t(dataSize))
+		C.memcpy(unsafe.Pointer(&rawL24[0]), frame.addr, C.size_t(dataSize))
 
 		C.st30p_rx_put_frame(rx.handle, frame)
 		rx.mu.Unlock()

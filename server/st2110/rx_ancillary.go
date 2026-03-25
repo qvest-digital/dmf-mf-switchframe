@@ -4,7 +4,7 @@ package st2110
 
 /*
 #include <mtl/mtl_api.h>
-#include <mtl/st40_pipeline_api.h>
+#include <mtl/st40_api.h>
 #include <stdlib.h>
 #include <string.h>
 */
@@ -18,9 +18,10 @@ import (
 	"unsafe"
 )
 
-// AncillaryRx receives ST 2110-40 ancillary data via MTL pipeline API.
+// AncillaryRx receives ST 2110-40 ancillary data via MTL raw RTP API.
+// Unlike video/audio which use pipeline APIs, ST 2110-40 only has RTP-level access.
 type AncillaryRx struct {
-	handle C.st40p_rx_handle
+	handle C.st40_rx_handle
 	inst   *Instance
 	cfg    RxAncillaryConfig
 	mu     sync.Mutex
@@ -33,33 +34,34 @@ func (inst *Instance) CreateAncillaryRx(cfg RxAncillaryConfig) (*AncillaryRx, er
 		return nil, ErrST2110NotAvailable
 	}
 
-	var ops C.struct_st40p_rx_ops
+	var ops C.struct_st40_rx_ops
 
 	cName := C.CString(fmt.Sprintf("drx_%s_%d", cfg.MulticastIP, cfg.Port))
 	defer C.free(unsafe.Pointer(cName))
-	C.strncpy(&ops.name[0], cName, 32-1)
+	ops.name = cName
 
-	if err := parseIPv4(cfg.MulticastIP, &ops.port.ip_addr[0][0]); err != nil {
+	if err := parseIPv4(cfg.MulticastIP, &ops.ip_addr[0][0]); err != nil {
 		return nil, fmt.Errorf("st2110: invalid multicast IP: %w", err)
 	}
 	if cfg.SourceIP != "" {
-		if err := parseIPv4(cfg.SourceIP, &ops.port.mcast_sip_addr[0][0]); err != nil {
+		if err := parseIPv4(cfg.SourceIP, &ops.mcast_sip_addr[0][0]); err != nil {
 			return nil, fmt.Errorf("st2110: invalid source IP filter: %w", err)
 		}
 	}
-	ops.port.udp_port[0] = C.uint16_t(cfg.Port)
+	ops.udp_port[0] = C.uint16_t(cfg.Port)
 	pt := cfg.PayloadType
 	if pt == 0 {
 		pt = 113 // default dynamic PT for ST 2110-40
 	}
-	ops.port.payload_type = C.uint16_t(pt)
-	ops.port.num_port = 1
+	ops.payload_type = C.uint8_t(pt)
+	ops.num_port = 1
 
-	ops.fps = fpsToMTL(cfg.Format.FPSNum, cfg.Format.FPSDen)
+	// RTP ring must be power of 2
+	ops.rtp_ring_size = 128
 
-	handle := C.st40p_rx_create(inst.handle, &ops)
+	handle := C.st40_rx_create(inst.handle, &ops)
 	if handle == nil {
-		return nil, fmt.Errorf("st2110: st40p_rx_create failed for %s:%d", cfg.MulticastIP, cfg.Port)
+		return nil, fmt.Errorf("st2110: st40_rx_create failed for %s:%d", cfg.MulticastIP, cfg.Port)
 	}
 
 	return &AncillaryRx{
@@ -69,8 +71,8 @@ func (inst *Instance) CreateAncillaryRx(cfg RxAncillaryConfig) (*AncillaryRx, er
 	}, nil
 }
 
-// GetFrame blocks until an ancillary frame is available or ctx is cancelled.
-// Returns raw ST 291 VANC bytes (suitable for scte104.ParseST291).
+// GetFrame blocks until an ancillary RTP packet is available or ctx is cancelled.
+// Returns raw RTP payload bytes containing RFC 8331 ancillary data.
 func (rx *AncillaryRx) GetFrame(ctx context.Context) ([]byte, error) {
 	for {
 		select {
@@ -85,31 +87,26 @@ func (rx *AncillaryRx) GetFrame(ctx context.Context) ([]byte, error) {
 			return nil, fmt.Errorf("st2110: ancillary rx closed")
 		}
 
-		frame := C.st40p_rx_get_frame(rx.handle)
-		if frame == nil {
+		var usrptr unsafe.Pointer
+		var pktLen C.uint16_t
+		mbuf := C.st40_rx_get_mbuf(rx.handle, &usrptr, &pktLen)
+		if mbuf == nil {
 			rx.mu.Unlock()
 			time.Sleep(1 * time.Millisecond)
 			continue
 		}
 
-		// Skip corrupted frames (same check as video RX).
-		if frame.status == C.ST_FRAME_STATUS_CORRUPTED {
-			C.st40p_rx_put_frame(rx.handle, frame)
-			rx.mu.Unlock()
-			continue
-		}
-
-		dataSize := int(frame.data_size)
+		dataSize := int(pktLen)
 		if dataSize == 0 {
-			C.st40p_rx_put_frame(rx.handle, frame)
+			C.st40_rx_put_mbuf(rx.handle, mbuf)
 			rx.mu.Unlock()
 			continue
 		}
 
 		data := make([]byte, dataSize)
-		C.memcpy(unsafe.Pointer(&data[0]), frame.addr[0], C.size_t(dataSize))
+		C.memcpy(unsafe.Pointer(&data[0]), usrptr, C.size_t(dataSize))
 
-		C.st40p_rx_put_frame(rx.handle, frame)
+		C.st40_rx_put_mbuf(rx.handle, mbuf)
 		rx.mu.Unlock()
 
 		return data, nil
@@ -124,9 +121,9 @@ func (rx *AncillaryRx) Close() error {
 		return nil
 	}
 	rx.closed = true
-	ret := C.st40p_rx_free(rx.handle)
+	ret := C.st40_rx_free(rx.handle)
 	if ret != 0 {
-		return fmt.Errorf("st2110: st40p_rx_free returned %d", int(ret))
+		return fmt.Errorf("st2110: st40_rx_free returned %d", int(ret))
 	}
 	return nil
 }
