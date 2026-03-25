@@ -14,20 +14,18 @@ import (
 )
 
 func newTestPlayoutManager() *playout.Manager {
+	frames := make([]playout.DecodedFrame, 10)
+	for i := range frames {
+		frames[i] = playout.DecodedFrame{
+			YUV:        make([]byte, 1920*1080*3/2),
+			PTS:        int64(i) * 3003,
+			IsKeyframe: i == 0,
+			Width:      1920,
+			Height:     1080,
+		}
+	}
 	return playout.NewManager(playout.ManagerConfig{
-		DemuxFunc: func(path string) ([]playout.DecodedFrame, error) {
-			frames := make([]playout.DecodedFrame, 10)
-			for i := range frames {
-				frames[i] = playout.DecodedFrame{
-					YUV:        make([]byte, 1920*1080*3/2),
-					PTS:        int64(i) * 3003,
-					IsKeyframe: i == 0,
-					Width:      1920,
-					Height:     1080,
-				}
-			}
-			return frames, nil
-		},
+		AssetProvider: playout.NewFakeAssetProvider(frames),
 	})
 }
 

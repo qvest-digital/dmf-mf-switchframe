@@ -11,7 +11,7 @@ func TestIntegration_PlaylistExecution(t *testing.T) {
 	var frameCount atomic.Int64
 
 	m := NewManager(ManagerConfig{
-		DemuxFunc: fakeDemux(10),
+		AssetProvider: fakeProvider(10),
 	})
 	defer m.Close()
 
@@ -45,7 +45,7 @@ func TestIntegration_PlaylistExecution(t *testing.T) {
 
 func TestIntegration_ManualOverrideAndReturn(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		DemuxFunc: fakeDemux(10),
+		AssetProvider: fakeProvider(10),
 	})
 	defer m.Close()
 
@@ -102,7 +102,7 @@ func TestIntegration_ManualOverrideAndReturn(t *testing.T) {
 
 func TestIntegration_NextSkipsItem(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		DemuxFunc: fakeDemux(200), // long clip: 200 frames at 30fps ~ 6.6s
+		AssetProvider: fakeProvider(200), // long clip: 200 frames at 30fps ~ 6.6s
 	})
 	defer m.Close()
 
@@ -143,7 +143,7 @@ func TestIntegration_NextSkipsItem(t *testing.T) {
 
 func TestIntegration_JumpToItem(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		DemuxFunc: fakeDemux(5),
+		AssetProvider: fakeProvider(5),
 	})
 	defer m.Close()
 
@@ -200,7 +200,7 @@ func TestIntegration_JumpToItem(t *testing.T) {
 
 func TestIntegration_PreviousItem(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		DemuxFunc: fakeDemux(5),
+		AssetProvider: fakeProvider(5),
 	})
 	defer m.Close()
 
@@ -268,7 +268,7 @@ func TestIntegration_PreviousItem(t *testing.T) {
 
 func TestIntegration_LiveItemHold(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		DemuxFunc: fakeDemux(5),
+		AssetProvider: fakeProvider(5),
 	})
 	defer m.Close()
 
@@ -314,7 +314,7 @@ func TestIntegration_LiveItemHold(t *testing.T) {
 
 func TestIntegration_LifecycleCallbacks(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		DemuxFunc: fakeDemux(5),
+		AssetProvider: fakeProvider(5),
 	})
 
 	var startCalled atomic.Int32
@@ -379,7 +379,7 @@ func TestIntegration_LifecycleCallbacks(t *testing.T) {
 
 func TestIntegration_StopMidPlayback(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		DemuxFunc: fakeDemux(5),
+		AssetProvider: fakeProvider(5),
 	})
 	defer m.Close()
 
@@ -425,7 +425,7 @@ func TestIntegration_StopMidPlayback(t *testing.T) {
 
 func TestIntegration_TwoChannels(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		DemuxFunc: fakeDemux(10),
+		AssetProvider: fakeProvider(10),
 	})
 	defer m.Close()
 

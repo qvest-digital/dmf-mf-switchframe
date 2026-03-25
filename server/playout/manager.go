@@ -26,9 +26,9 @@ type Manager struct {
 
 // ManagerConfig configures the playout Manager.
 type ManagerConfig struct {
-	// DemuxFunc overrides the default demuxer for testing.
-	// If nil, channels will have no DemuxFunc configured.
-	DemuxFunc func(path string) ([]DecodedFrame, error)
+	// AssetProvider opens asset URIs and returns streaming frame iterators.
+	// If nil, channels will have no AssetProvider configured.
+	AssetProvider AssetProvider
 }
 
 // NewManager creates a playout Manager and pre-creates all channels.
@@ -40,7 +40,7 @@ func NewManager(config ManagerConfig) *Manager {
 
 	for i := 0; i < MaxChannels; i++ {
 		m.channels[i] = NewChannel(i+1, ChannelConfig{
-			DemuxFunc: config.DemuxFunc,
+			AssetProvider: config.AssetProvider,
 		})
 	}
 

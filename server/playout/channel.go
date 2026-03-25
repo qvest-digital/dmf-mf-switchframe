@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,11 +20,8 @@ type DecodedFrame struct {
 
 // ChannelConfig configures a playout channel.
 type ChannelConfig struct {
-	// DemuxFunc loads a media file and returns decoded YUV frames.
-	// Phase 1 limitation: returns all frames in memory at once. A 30s 1080p
-	// clip at 30fps requires ~2.8 GB. Phase 2 replaces this with streaming
-	// decode via the asset cache's pre-decode ring (next 2-3 items only).
-	DemuxFunc func(path string) ([]DecodedFrame, error)
+	// AssetProvider opens asset URIs and returns streaming frame iterators.
+	AssetProvider AssetProvider
 }
 
 // Channel is a gapless sequential clip player that registers as a switcher
@@ -477,37 +473,32 @@ func (c *Channel) run(ctx context.Context) {
 // playClipItem plays a clip item, outputting frames at the correct rate.
 // Returns true if the context was cancelled (stop requested).
 func (c *Channel) playClipItem(ctx context.Context, item *PlaylistItem) bool {
-	path := resolveAssetURI(item.AssetURI)
-
 	c.mu.Lock()
-	demuxFn := c.config.DemuxFunc
+	provider := c.config.AssetProvider
 	c.mu.Unlock()
 
-	if demuxFn == nil {
-		slog.Warn("playout: no DemuxFunc configured", "item", item.ID)
+	if provider == nil {
+		slog.Warn("playout: no AssetProvider configured", "item", item.ID)
 		return false
 	}
 
-	frames, err := demuxFn(path)
+	iter, err := provider.Open(item.AssetURI)
 	if err != nil {
-		slog.Warn("playout: demux failed", "item", item.ID, "path", path, "error", err)
+		slog.Warn("playout: asset open failed", "item", item.ID, "error", err)
 		return false
 	}
-	if len(frames) == 0 {
-		slog.Warn("playout: no frames from demux", "item", item.ID)
-		return false
+	defer iter.Close()
+
+	// Wrap with trim if in/out points set.
+	var frameSource FrameIterator = iter
+	if item.InPointMs > 0 || item.OutPointMs > 0 {
+		frameSource = NewTrimIterator(iter, item.InPointMs, item.OutPointMs)
 	}
 
-	// Apply in/out points.
-	frames = applyInOutPoints(frames, item.InPointMs, item.OutPointMs)
-	if len(frames) == 0 {
-		return false
-	}
-
-	// Estimate FPS.
-	fps := estimateFPS(frames)
+	fps := frameSource.EstimateFPS()
 	ptsPerFrame := int64(90000.0 / fps)
 	frameDuration := time.Duration(float64(time.Second) / fps)
+	totalFrames := frameSource.TotalFrames()
 
 	// Get initial PTS.
 	c.mu.Lock()
@@ -518,13 +509,10 @@ func (c *Channel) playClipItem(ctx context.Context, item *PlaylistItem) bool {
 	if ptsFn != nil {
 		outputPTS = ptsFn()
 		if outputPTS > 0 {
-			outputPTS += ptsPerFrame // one frame ahead
+			outputPTS += ptsPerFrame
 		}
 	}
 
-	totalFrames := len(frames)
-
-	// Absolute-time pacing (same pattern as clip.Player).
 	playbackStart := time.Now()
 	timer := time.NewTimer(frameDuration)
 	defer timer.Stop()
@@ -532,8 +520,11 @@ func (c *Channel) playClipItem(ctx context.Context, item *PlaylistItem) bool {
 		<-timer.C
 	}
 
-	for i, frame := range frames {
-		// Check for advance signal.
+	var lastFrame *DecodedFrame
+	i := 0
+
+	for {
+		// Check for advance/cancel.
 		select {
 		case <-c.advanceCh:
 			return false
@@ -542,8 +533,16 @@ func (c *Channel) playClipItem(ctx context.Context, item *PlaylistItem) bool {
 		default:
 		}
 
-		// Pace using absolute time to prevent drift.
-		// Wait BEFORE output (except frame 0) to avoid burst pairs.
+		frame, err := frameSource.Next()
+		if err != nil {
+			slog.Warn("playout: frame read error", "item", item.ID, "error", err)
+			return false
+		}
+		if frame == nil {
+			break // end of stream
+		}
+
+		// Pace using absolute time (same as before).
 		if i > 0 {
 			deadline := playbackStart.Add(time.Duration(i) * frameDuration)
 			wait := time.Until(deadline)
@@ -576,16 +575,23 @@ func (c *Channel) playClipItem(ctx context.Context, item *PlaylistItem) bool {
 			outputFn(frame.YUV, frame.Width, frame.Height, outputPTS, frame.IsKeyframe)
 		}
 
+		lastFrame = frame
 		outputPTS += ptsPerFrame
+		i++
+	}
+
+	if i == 0 {
+		slog.Warn("playout: no frames from asset", "item", item.ID)
+		return false
 	}
 
 	// Mark complete.
 	c.itemProgress.Store(1000)
 	c.itemRemainMs.Store(0)
 
-	// Hold mode: output last frame at 1fps until advance.
-	if item.Hold {
-		return c.holdLastFrame(ctx, frames[len(frames)-1], &outputPTS)
+	// Hold mode.
+	if item.Hold && lastFrame != nil {
+		return c.holdLastFrame(ctx, *lastFrame, &outputPTS)
 	}
 
 	return false
@@ -683,18 +689,6 @@ func (c *Channel) holdLastFrame(ctx context.Context, frame DecodedFrame, outputP
 			*outputPTS += 90000 // 1 second in 90kHz PTS
 		}
 	}
-}
-
-// resolveAssetURI strips the "local://" prefix from an asset URI to get a file path.
-func resolveAssetURI(uri string) string {
-	if strings.HasPrefix(uri, "local://") {
-		return strings.TrimPrefix(uri, "local://")
-	}
-	// Also handle file:// for backward compat.
-	if strings.HasPrefix(uri, "file://") {
-		return strings.TrimPrefix(uri, "file://")
-	}
-	return uri
 }
 
 // applyInOutPoints trims frames based on in/out point milliseconds.

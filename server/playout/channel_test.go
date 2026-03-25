@@ -6,22 +6,25 @@ import (
 	"time"
 )
 
-// fakeDemux returns a DemuxFunc that produces n fake YUV420 frames at 30fps.
-func fakeDemux(n int) func(string) ([]DecodedFrame, error) {
-	return func(path string) ([]DecodedFrame, error) {
-		frames := make([]DecodedFrame, n)
-		// 30fps = 3000 PTS ticks per frame (90kHz / 30)
-		for i := range frames {
-			frames[i] = DecodedFrame{
-				YUV:        make([]byte, 1920*1080*3/2),
-				PTS:        int64(i) * 3000,
-				IsKeyframe: i == 0,
-				Width:      1920,
-				Height:     1080,
-			}
+// fakeFrames returns n fake YUV420 frames at 30fps.
+func fakeFrames(n int) []DecodedFrame {
+	frames := make([]DecodedFrame, n)
+	// 30fps = 3000 PTS ticks per frame (90kHz / 30)
+	for i := range frames {
+		frames[i] = DecodedFrame{
+			YUV:        make([]byte, 1920*1080*3/2),
+			PTS:        int64(i) * 3000,
+			IsKeyframe: i == 0,
+			Width:      1920,
+			Height:     1080,
 		}
-		return frames, nil
 	}
+	return frames
+}
+
+// fakeProvider returns a FakeAssetProvider with n frames (replaces old fakeDemux pattern).
+func fakeProvider(n int) *FakeAssetProvider {
+	return NewFakeAssetProvider(fakeFrames(n))
 }
 
 // waitFor polls condition at 5ms intervals until it returns true or timeout expires.
@@ -148,7 +151,7 @@ func TestChannel_Stop_FromStopped(t *testing.T) {
 
 func TestChannel_Start_TransitionsToOnAir(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		DemuxFunc: fakeDemux(5),
+		AssetProvider: fakeProvider(5),
 	})
 
 	var startKey string
@@ -175,7 +178,7 @@ func TestChannel_Start_TransitionsToOnAir(t *testing.T) {
 
 func TestChannel_PlaysThroughToCompleted(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		DemuxFunc: fakeDemux(3), // 3 frames = very fast
+		AssetProvider: fakeProvider(3), // 3 frames = very fast
 	})
 
 	pl := testPlaylist(clipItem("a"), clipItem("b"))
@@ -193,7 +196,7 @@ func TestChannel_PlaysThroughToCompleted(t *testing.T) {
 
 func TestChannel_Next_AdvancesItem(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		DemuxFunc: fakeDemux(3),
+		AssetProvider: fakeProvider(3),
 	})
 
 	// First item holds, second completes quickly.
@@ -220,7 +223,7 @@ func TestChannel_Next_AdvancesItem(t *testing.T) {
 
 func TestChannel_ManualOverride(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		DemuxFunc: fakeDemux(3),
+		AssetProvider: fakeProvider(3),
 	})
 
 	// Use a live item that blocks, so we have time to TakeManual.
@@ -267,7 +270,7 @@ func TestChannel_ManualOverride(t *testing.T) {
 
 func TestChannel_JumpTo(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		DemuxFunc: fakeDemux(3),
+		AssetProvider: fakeProvider(3),
 	})
 
 	// 3 live items; jump from first to third.
@@ -303,7 +306,7 @@ func TestChannel_JumpTo(t *testing.T) {
 
 func TestChannel_Previous(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		DemuxFunc: fakeDemux(3),
+		AssetProvider: fakeProvider(3),
 	})
 
 	// Two live items.
@@ -344,7 +347,7 @@ func TestChannel_Previous(t *testing.T) {
 
 func TestChannel_LiveItem_HoldsUntilAdvance(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		DemuxFunc: fakeDemux(3),
+		AssetProvider: fakeProvider(3),
 	})
 
 	pl := testPlaylist(liveItem("live-1", "camera-1"))
@@ -371,7 +374,7 @@ func TestChannel_LiveItem_HoldsUntilAdvance(t *testing.T) {
 
 func TestChannel_SlateItem_Duration(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		DemuxFunc: fakeDemux(3),
+		AssetProvider: fakeProvider(3),
 	})
 
 	// Slate with 200ms duration.
@@ -393,7 +396,7 @@ func TestChannel_RawVideoOutput(t *testing.T) {
 	var frameCount atomic.Int32
 
 	ch := NewChannel(1, ChannelConfig{
-		DemuxFunc: fakeDemux(5),
+		AssetProvider: fakeProvider(5),
 	})
 	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
 		frameCount.Add(1)
@@ -486,7 +489,7 @@ func TestChannel_InOutPoints(t *testing.T) {
 
 func TestChannel_Status(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		DemuxFunc: fakeDemux(3),
+		AssetProvider: fakeProvider(3),
 	})
 
 	// Status when stopped.
@@ -516,7 +519,7 @@ func TestChannel_Status(t *testing.T) {
 
 func TestChannel_StopCallback(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		DemuxFunc: fakeDemux(3),
+		AssetProvider: fakeProvider(3),
 	})
 
 	var stopKey string
@@ -536,23 +539,6 @@ func TestChannel_StopCallback(t *testing.T) {
 	}
 	if ch.State() != StateStopped {
 		t.Errorf("state after stop = %v, want StateStopped", ch.State())
-	}
-}
-
-func TestChannel_ResolveAssetURI(t *testing.T) {
-	tests := []struct {
-		uri  string
-		want string
-	}{
-		{"local:///clips/intro.ts", "/clips/intro.ts"},
-		{"file:///clips/intro.ts", "/clips/intro.ts"},
-		{"/absolute/path.ts", "/absolute/path.ts"},
-	}
-	for _, tt := range tests {
-		got := resolveAssetURI(tt.uri)
-		if got != tt.want {
-			t.Errorf("resolveAssetURI(%q) = %q, want %q", tt.uri, got, tt.want)
-		}
 	}
 }
 
@@ -590,7 +576,7 @@ func TestChannel_EstimateFPS(t *testing.T) {
 
 func TestChannel_DoubleStop(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		DemuxFunc: fakeDemux(3),
+		AssetProvider: fakeProvider(3),
 	})
 
 	pl := testPlaylist(liveItem("live-1", "cam"))
@@ -610,7 +596,7 @@ func TestChannel_DoubleStop(t *testing.T) {
 
 func TestChannel_Close(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		DemuxFunc: fakeDemux(3),
+		AssetProvider: fakeProvider(3),
 	})
 
 	pl := testPlaylist(liveItem("live-1", "cam"))
@@ -628,7 +614,7 @@ func TestChannel_Close(t *testing.T) {
 
 func TestChannel_StartRequiresCued(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		DemuxFunc: fakeDemux(3),
+		AssetProvider: fakeProvider(3),
 	})
 
 	// Start without loading should return ErrNoPlaylist.
@@ -651,7 +637,7 @@ func TestChannel_StartRequiresCued(t *testing.T) {
 
 func TestChannel_JumpTo_NotFound(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
-		DemuxFunc: fakeDemux(3),
+		AssetProvider: fakeProvider(3),
 	})
 
 	pl := testPlaylist(liveItem("live-1", "cam"))

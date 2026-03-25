@@ -8,7 +8,7 @@ import (
 
 func TestManager_NewManager(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		DemuxFunc: fakeDemux(3),
+		AssetProvider: fakeProvider(3),
 	})
 	if m == nil {
 		t.Fatal("NewManager returned nil")
@@ -50,7 +50,7 @@ func TestManager_ValidateChannelID(t *testing.T) {
 
 func TestManager_LoadAndStart(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		DemuxFunc: fakeDemux(3),
+		AssetProvider: fakeProvider(3),
 	})
 	defer m.Close()
 
@@ -72,7 +72,7 @@ func TestManager_LoadAndStart(t *testing.T) {
 
 func TestManager_ChannelStates(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		DemuxFunc: fakeDemux(3),
+		AssetProvider: fakeProvider(3),
 	})
 
 	states := m.ChannelStates()
@@ -92,7 +92,7 @@ func TestManager_ChannelStates(t *testing.T) {
 
 func TestManager_Close(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		DemuxFunc: fakeDemux(3),
+		AssetProvider: fakeProvider(3),
 	})
 
 	// Load and start a channel with a live item (blocks until advance).
@@ -118,7 +118,7 @@ func TestManager_Close(t *testing.T) {
 
 func TestManager_Next(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		DemuxFunc: fakeDemux(3),
+		AssetProvider: fakeProvider(3),
 	})
 	defer m.Close()
 
@@ -147,7 +147,7 @@ func TestManager_Next(t *testing.T) {
 
 func TestManager_TakeManualAndReturnToAuto(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		DemuxFunc: fakeDemux(3),
+		AssetProvider: fakeProvider(3),
 	})
 	defer m.Close()
 
@@ -194,7 +194,7 @@ func TestManager_TakeManualAndReturnToAuto(t *testing.T) {
 
 func TestManager_LifecycleCallbacks(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		DemuxFunc: fakeDemux(3),
+		AssetProvider: fakeProvider(3),
 	})
 
 	var startCalled atomic.Int32
@@ -243,7 +243,7 @@ func TestManager_LifecycleCallbacks(t *testing.T) {
 
 func TestManager_RawVideoOutput(t *testing.T) {
 	m := NewManager(ManagerConfig{
-		DemuxFunc: fakeDemux(5),
+		AssetProvider: fakeProvider(5),
 	})
 	defer m.Close()
 

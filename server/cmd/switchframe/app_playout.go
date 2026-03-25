@@ -14,10 +14,8 @@ import (
 // so playout channels register as switcher sources. Follows the initClips pattern.
 func (a *App) initPlayout() error {
 	mgr := playout.NewManager(playout.ManagerConfig{
-		// Phase 1: no real demux — playout channels will use
-		// the clip store + demuxer once the asset cache is implemented.
-		// For now, the DemuxFunc is nil (channels can only be tested via API
-		// with test fixtures or by extending this in Phase 2).
+		// AssetProvider is nil until the asset cache is wired in.
+		// Channels will use the cache's streaming frame iterator once configured.
 	})
 
 	// PTS anchoring.
