@@ -63,7 +63,8 @@ type Channel struct {
 	clipLastFrame *DecodedFrame // for hold mode
 
 	// Live source tap — returns latest frame for a source key.
-	gpuSourceTap func(sourceKey string) *DecodedFrame
+	gpuSourceTap    func(sourceKey string) *DecodedFrame
+	lastLiveTapMiss string // for once-per-item logging of tap failures
 
 	// Slate frame (pre-allocated BT.709 black: Y=16, UV=128).
 	slateFrame *DecodedFrame
@@ -720,6 +721,7 @@ func (c *Channel) handleItemChange(item *PlaylistItem, secScheduler *SecondaryEv
 	}
 
 	c.secondaryItemID = item.ID
+	c.lastLiveTapMiss = "" // reset so new item gets a fresh warning
 	c.itemStartTime = now.UTC()
 	c.itemProgress.Store(0)
 	c.itemRemainMs.Store(item.DurationMs)
@@ -981,8 +983,26 @@ func (c *Channel) tapLiveSource(sourceKey string) *DecodedFrame {
 		}
 	}
 
+	// Log once when the tap fails so operators know the source is misconfigured.
+	c.logLiveTapMissOnce(sourceKey)
+
 	// Fallback: return idle frame.
 	return c.idleLoop.NextFrame()
+}
+
+// logLiveTapMissOnce logs a warning the first time a live source tap fails per item.
+// Prevents log spam (one warning per source per item change).
+func (c *Channel) logLiveTapMissOnce(sourceKey string) {
+	c.mu.Lock()
+	if c.lastLiveTapMiss == sourceKey {
+		c.mu.Unlock()
+		return
+	}
+	c.lastLiveTapMiss = sourceKey
+	c.mu.Unlock()
+	slog.Warn("playout: live source not available, showing idle/slate fallback",
+		"source", sourceKey, "channel", c.id,
+		"hint", "check that the source exists and is connected")
 }
 
 // nextSlateFrame returns the pre-allocated black frame for slate items.
