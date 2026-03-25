@@ -35,8 +35,8 @@ func NewBlackDetector(config BlackDetectorConfig) *BlackDetector {
 // The Y plane is the first w*h bytes of yuv. The buffer must be at least w*h bytes.
 func (d *BlackDetector) AnalyzeFrame(yuv []byte, w, h int) BlackScore {
 	ySize := w * h
-	if ySize == 0 {
-		return BlackScore{IsBlack: true}
+	if ySize == 0 || len(yuv) < ySize {
+		return BlackScore{Score: 1.0}
 	}
 
 	yPlane := yuv[:ySize]
@@ -67,7 +67,7 @@ func (d *BlackDetector) AnalyzeFrame(yuv []byte, w, h int) BlackScore {
 // for maximum difference. Only the Y plane (first w*h bytes) is examined.
 func (d *BlackDetector) SceneChangeScore(yuvA, yuvB []byte, w, h int) float64 {
 	ySize := w * h
-	if ySize == 0 {
+	if ySize == 0 || len(yuvA) < ySize || len(yuvB) < ySize {
 		return 0.0
 	}
 

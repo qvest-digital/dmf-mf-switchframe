@@ -208,11 +208,26 @@ func (sc *SpliceCoordinator) finalizeSplice() {
 		sc.timeoutCancel = nil
 	}
 
+	// Transition to SpliceLocked to prevent double-finalization, then extract
+	// what we need and release the lock before the CPU-intensive analysis.
+	op.State = SpliceLocked
+
 	bd := sc.config.BlackDetector
 	inj := sc.config.Injector
 	candidates := op.candidates
+	op.candidates = nil // free candidate refs under lock
 
-	// Find best splice point.
+	targetPTS := op.TargetPTS
+	podID := op.PodID
+	isOut := op.IsOut
+	autoReturn := op.AutoReturn
+	durationMs := op.DurationMs
+	callbackFn := sc.onSpliceReady
+	preRollTicks := sc.preRollMs * 90
+
+	sc.mu.Unlock()
+
+	// Run black detection / scene-change analysis outside the lock.
 	var lockedPTS int64
 	var reason SpliceReason
 
@@ -222,38 +237,30 @@ func (sc *SpliceCoordinator) finalizeSplice() {
 			lockedPTS = result.PTS
 			reason = result.Reason
 		} else {
-			lockedPTS = op.TargetPTS
+			lockedPTS = targetPTS
 			reason = SpliceReasonScheduled
 		}
 	} else {
-		// No candidates or no detector: fall back to target PTS.
-		lockedPTS = op.TargetPTS
+		lockedPTS = targetPTS
 		reason = SpliceReasonScheduled
 	}
 
-	op.LockedPTS = lockedPTS
-	op.SpliceReason = reason
-	op.State = SpliceLocked
-
 	// Calculate remaining pre-roll in ms from locked PTS.
-	// originPTS is the PTS at which BeginSplice was called.
-	// remainingPreRollMs is how far ahead the locked splice point is from originPTS.
-	preRollTicks := sc.preRollMs * 90
-	originPTS := op.TargetPTS - preRollTicks
+	// originPTS is the PTS at which BeginSplice was called;
+	// remainingPreRollMs may differ from configured pre-roll when the locked
+	// splice point is offset from the target (window start vs window end).
+	originPTS := targetPTS - preRollTicks
 	remainingPreRollMs := (lockedPTS - originPTS) / 90
 	if remainingPreRollMs < 0 {
 		remainingPreRollMs = 0
 	}
 
-	podID := op.PodID
-	isOut := op.IsOut
-	autoReturn := op.AutoReturn
-	durationMs := op.DurationMs
-	callbackFn := sc.onSpliceReady
-
-	// Free candidate buffers.
-	op.candidates = nil
-
+	// Store analysis results.
+	sc.mu.Lock()
+	if sc.active != nil {
+		sc.active.LockedPTS = lockedPTS
+		sc.active.SpliceReason = reason
+	}
 	sc.mu.Unlock()
 
 	// Call injector outside the lock.
