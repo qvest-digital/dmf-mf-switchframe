@@ -393,18 +393,25 @@ func (nke *NeuralKeyEngine) Infer(
 				sample[12], sample[13], sample[14], sample[15]))
 	}
 
+	// Sync stream before composite — ensure TRT inference is complete.
+	C.cudaStreamSynchronize(stream)
+
 	// Step 6: Composite — upscale alpha+fg from 512 to program res, despill, blend.
+	// Launch on the DEFAULT stream (stream 0) which is synchronous, ensuring
+	// the kernel completes before the encoder reads the frame.
 	rc = C.ck_composite_neural(
 		(*C.uint8_t)(nv12),
 		(*C.float)(nke.alphaBuf),
 		(*C.float)(nke.fgBuf),
 		C.int(w), C.int(h), C.int(pitch),
 		C.int(ckModelW), C.int(ckModelH),
-		stream,
+		nil, // default stream — synchronous
 	)
 	if rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: neural_key: composite failed: cuda %d", rc)
 	}
+	// Sync to ensure composite is visible before encoder reads.
+	C.cudaDeviceSynchronize()
 
 	nke.warmupDone.Store(true)
 	return nil
