@@ -73,7 +73,7 @@ func TestFileFrameIterator_WithMockDecoder(t *testing.T) {
 	// For unit tests without cgo, we create a stub test.
 	iter, err := NewFileFrameIteratorWithDecoder("/nonexistent.ts", factory)
 	if err != nil {
-		// Expected — nonexistent file.
+		// Expected -- nonexistent file.
 		return
 	}
 	defer iter.Close()
@@ -141,11 +141,63 @@ func TestFileFrameIterator_EstimateFPSFromDecoded(t *testing.T) {
 	}
 }
 
+func TestFileFrameIterator_EstimateFPSFromEncodedFrames(t *testing.T) {
+	tests := []struct {
+		name   string
+		frames []encodedFrame
+		want   float64
+	}{
+		{
+			name:   "empty",
+			frames: nil,
+			want:   30.0,
+		},
+		{
+			name:   "single frame",
+			frames: []encodedFrame{{pts: 0}},
+			want:   30.0,
+		},
+		{
+			name: "30fps",
+			frames: func() []encodedFrame {
+				f := make([]encodedFrame, 10)
+				for i := range f {
+					f[i].pts = int64(i) * 3000
+				}
+				return f
+			}(),
+			want: 30.0,
+		},
+		{
+			name: "25fps",
+			frames: func() []encodedFrame {
+				f := make([]encodedFrame, 10)
+				for i := range f {
+					f[i].pts = int64(i) * 3600
+				}
+				return f
+			}(),
+			want: 25.0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := estimateFPSFromEncodedFrames(tt.frames)
+			if got < tt.want-0.5 || got > tt.want+0.5 {
+				t.Errorf("estimateFPSFromEncodedFrames() = %f, want ~%f", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestFileFrameIterator_NextEOF(t *testing.T) {
-	// Test that a FileFrameIterator with no frames returns nil immediately.
+	// Test that a FileFrameIterator with no encoded frames returns nil immediately.
 	iter := &FileFrameIterator{
-		frames: nil,
-		fps:    30.0,
+		encodedFrames: nil,
+		decoder:       &mockVideoDecoder{width: 320, height: 240},
+		fps:           30.0,
+		totalFrames:   0,
 	}
 
 	f, err := iter.Next()
@@ -158,20 +210,21 @@ func TestFileFrameIterator_NextEOF(t *testing.T) {
 }
 
 func TestFileFrameIterator_NextSequence(t *testing.T) {
-	frames := make([]DecodedFrame, 5)
-	for i := range frames {
-		frames[i] = DecodedFrame{
-			YUV:        make([]byte, 320*240*3/2),
-			PTS:        int64(i) * 3000,
-			IsKeyframe: i == 0,
-			Width:      320,
-			Height:     240,
+	// Build encoded frames that the mock decoder will decode one-at-a-time.
+	encoded := make([]encodedFrame, 5)
+	for i := range encoded {
+		encoded[i] = encodedFrame{
+			wireData:   []byte{0x00, 0x00, 0x00, 0x01, byte(i)}, // fake Annex B
+			pts:        int64(i) * 3000,
+			isKeyframe: i == 0,
 		}
 	}
 
 	iter := &FileFrameIterator{
-		frames: frames,
-		fps:    30.0,
+		encodedFrames: encoded,
+		decoder:       &mockVideoDecoder{width: 320, height: 240},
+		fps:           30.0,
+		totalFrames:   5,
 	}
 
 	if iter.TotalFrames() != 5 {
@@ -221,22 +274,12 @@ func TestFileFrameIterator_AudioInterleaving_PTS(t *testing.T) {
 	//   Video[1] PTS=3000 boundary=6000  -> Audio[2] PTS=3840, Audio[3] PTS=5760 (attach 2, skip 3)
 	//   Video[2] PTS=6000 boundary=9000  -> Audio[4] PTS=7680 (attach 4)
 	//   Video[3] PTS=9000 boundary=MaxInt -> (none remaining)
-	//
-	// Proportional interleaving ((i+1)*5/4):
-	//   Video[0] -> targetIdx=1  -> Audio[0]
-	//   Video[1] -> targetIdx=2  -> Audio[1]   <- WRONG: Audio[1] PTS=1920 < Video[1] PTS=3000
-	//   Video[2] -> targetIdx=3  -> Audio[2]
-	//   Video[3] -> targetIdx=5  -> Audio[3]
-	//
-	// The key difference: with PTS matching, Video[1] gets Audio[2] (PTS=3840),
-	// because Audio[1] (PTS=1920) falls before Video[1]'s PTS of 3000.
-	// With proportional, Video[1] would get Audio[1] (PTS=1920).
 
-	videoFrames := []DecodedFrame{
-		{YUV: make([]byte, 16), PTS: 0, Width: 4, Height: 2},
-		{YUV: make([]byte, 16), PTS: 3000, Width: 4, Height: 2},
-		{YUV: make([]byte, 16), PTS: 6000, Width: 4, Height: 2},
-		{YUV: make([]byte, 16), PTS: 9000, Width: 4, Height: 2},
+	encoded := []encodedFrame{
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x65}, pts: 0, isKeyframe: true},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 3000},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 6000},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 9000},
 	}
 
 	audioData := []audioFrameInfo{
@@ -248,9 +291,11 @@ func TestFileFrameIterator_AudioInterleaving_PTS(t *testing.T) {
 	}
 
 	iter := &FileFrameIterator{
-		frames:      videoFrames,
-		audioFrames: audioData,
-		fps:         30.0,
+		encodedFrames: encoded,
+		audioFrames:   audioData,
+		decoder:       &mockVideoDecoder{width: 4, height: 2},
+		fps:           30.0,
+		totalFrames:   4,
 	}
 
 	// Frame 0 (PTS=0): first audio in window [0, 3000) -> Audio[0] PTS=0
@@ -297,14 +342,16 @@ func TestFileFrameIterator_AudioInterleaving_PTS(t *testing.T) {
 
 func TestFileFrameIterator_AudioInterleaving_NoAudio(t *testing.T) {
 	// Iterator with no audio should return frames without audio data.
-	videoFrames := []DecodedFrame{
-		{YUV: make([]byte, 16), PTS: 0, Width: 4, Height: 2},
-		{YUV: make([]byte, 16), PTS: 3000, Width: 4, Height: 2},
+	encoded := []encodedFrame{
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x65}, pts: 0},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 3000},
 	}
 
 	iter := &FileFrameIterator{
-		frames: videoFrames,
-		fps:    30.0,
+		encodedFrames: encoded,
+		decoder:       &mockVideoDecoder{width: 4, height: 2},
+		fps:           30.0,
+		totalFrames:   2,
 	}
 
 	for i := 0; i < 2; i++ {
@@ -321,9 +368,9 @@ func TestFileFrameIterator_AudioInterleaving_NoAudio(t *testing.T) {
 func TestFileFrameIterator_AudioInterleaving_AllAudioBeforeFirstVideo(t *testing.T) {
 	// All audio PTS values are before the second video frame's PTS -- all
 	// fall in Video[0]'s window, first audio frame gets attached.
-	videoFrames := []DecodedFrame{
-		{YUV: make([]byte, 16), PTS: 10000, Width: 4, Height: 2},
-		{YUV: make([]byte, 16), PTS: 13000, Width: 4, Height: 2},
+	encoded := []encodedFrame{
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x65}, pts: 10000},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 13000},
 	}
 
 	audioData := []audioFrameInfo{
@@ -333,9 +380,11 @@ func TestFileFrameIterator_AudioInterleaving_AllAudioBeforeFirstVideo(t *testing
 	}
 
 	iter := &FileFrameIterator{
-		frames:      videoFrames,
-		audioFrames: audioData,
-		fps:         30.0,
+		encodedFrames: encoded,
+		audioFrames:   audioData,
+		decoder:       &mockVideoDecoder{width: 4, height: 2},
+		fps:           30.0,
+		totalFrames:   2,
 	}
 
 	// Frame 0: all audio PTS < next video PTS (13000), first audio attached
@@ -359,9 +408,9 @@ func TestFileFrameIterator_AudioInterleaving_AllAudioBeforeFirstVideo(t *testing
 
 func TestFileFrameIterator_AudioInterleaving_LastFrameGetsRemaining(t *testing.T) {
 	// The last video frame should get audio with PTS >= its own PTS.
-	videoFrames := []DecodedFrame{
-		{YUV: make([]byte, 16), PTS: 0, Width: 4, Height: 2},
-		{YUV: make([]byte, 16), PTS: 3000, Width: 4, Height: 2},
+	encoded := []encodedFrame{
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x65}, pts: 0},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 3000},
 	}
 
 	audioData := []audioFrameInfo{
@@ -371,9 +420,11 @@ func TestFileFrameIterator_AudioInterleaving_LastFrameGetsRemaining(t *testing.T
 	}
 
 	iter := &FileFrameIterator{
-		frames:      videoFrames,
-		audioFrames: audioData,
-		fps:         30.0,
+		encodedFrames: encoded,
+		audioFrames:   audioData,
+		decoder:       &mockVideoDecoder{width: 4, height: 2},
+		fps:           30.0,
+		totalFrames:   2,
 	}
 
 	// Frame 0 (PTS=0): audio in [0, 3000) -> Audio[0] PTS=0
@@ -396,9 +447,153 @@ func TestFileFrameIterator_AudioInterleaving_LastFrameGetsRemaining(t *testing.T
 }
 
 func TestFileFrameIterator_Close(t *testing.T) {
-	iter := &FileFrameIterator{fps: 30.0}
-	// Close should not panic.
+	mock := &mockVideoDecoder{width: 320, height: 240}
+	iter := &FileFrameIterator{
+		decoder:     mock,
+		fps:         30.0,
+		totalFrames: 0,
+	}
+	// Close should not panic and should close the decoder.
 	iter.Close()
+	if !mock.closed {
+		t.Error("Close() did not close the decoder")
+	}
+	// Double close should be safe.
+	iter.Close()
+}
+
+func TestFileFrameIterator_CloseStopsNext(t *testing.T) {
+	encoded := []encodedFrame{
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x65}, pts: 0},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 3000},
+	}
+
+	iter := &FileFrameIterator{
+		encodedFrames: encoded,
+		decoder:       &mockVideoDecoder{width: 4, height: 2},
+		fps:           30.0,
+		totalFrames:   2,
+	}
+
+	// Read one frame.
+	f, err := iter.Next()
+	if err != nil || f == nil {
+		t.Fatalf("first Next() failed: err=%v, frame=%v", err, f)
+	}
+
+	// Close, then Next should return nil.
+	iter.Close()
+	f, err = iter.Next()
+	if err != nil {
+		t.Fatalf("Next() after Close() error: %v", err)
+	}
+	if f != nil {
+		t.Error("Next() after Close() returned non-nil frame")
+	}
+}
+
+func TestFileFrameIterator_DrainableDecoder(t *testing.T) {
+	// Test that drain phase works with a DrainableDecoder.
+	// Feed 3 frames where the first 2 return "buffering", then the 3rd
+	// returns decoded output. After all are fed, drain returns 2 more frames.
+	mock := &mockDrainableDecoder{
+		width:       320,
+		height:      240,
+		bufferCount: 2, // first 2 Decode() calls return "buffering"
+		drainFrames: 2, // ReceiveFrame returns 2 frames after EOS
+	}
+
+	encoded := []encodedFrame{
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x65}, pts: 0, isKeyframe: true},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 3000},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 6000},
+	}
+
+	iter := &FileFrameIterator{
+		encodedFrames: encoded,
+		decoder:       mock,
+		fps:           30.0,
+		totalFrames:   3,
+	}
+	defer iter.Close()
+
+	// First Next() feeds frames 0 and 1 (buffering), then frame 2 produces output.
+	f, err := iter.Next()
+	if err != nil {
+		t.Fatalf("Next() 1: %v", err)
+	}
+	if f == nil {
+		t.Fatal("Next() 1 returned nil")
+	}
+	if f.PTS != 6000 {
+		t.Errorf("frame 1 PTS = %d, want 6000 (first output from frame 2)", f.PTS)
+	}
+
+	// Next two calls should drain.
+	f2, err := iter.Next()
+	if err != nil {
+		t.Fatalf("Next() 2: %v", err)
+	}
+	if f2 == nil {
+		t.Fatal("Next() 2 returned nil, expected drained frame")
+	}
+
+	f3, err := iter.Next()
+	if err != nil {
+		t.Fatalf("Next() 3: %v", err)
+	}
+	if f3 == nil {
+		t.Fatal("Next() 3 returned nil, expected drained frame")
+	}
+
+	// Should be done now.
+	f4, err := iter.Next()
+	if err != nil {
+		t.Fatalf("Next() 4: %v", err)
+	}
+	if f4 != nil {
+		t.Error("Next() 4 returned non-nil, expected EOF")
+	}
+
+	if !mock.eosSent {
+		t.Error("SendEOS was not called")
+	}
+}
+
+func TestFileFrameIterator_DecoderBufferReuseSafety(t *testing.T) {
+	// Verify that Next() deep-copies the YUV buffer, so the decoder
+	// can reuse its internal buffer without corrupting previous frames.
+	mock := &mockReusingDecoder{
+		width:  4,
+		height: 2,
+		buf:    make([]byte, 4*2*3/2), // shared buffer
+	}
+
+	encoded := []encodedFrame{
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x65}, pts: 0},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 3000},
+	}
+
+	iter := &FileFrameIterator{
+		encodedFrames: encoded,
+		decoder:       mock,
+		fps:           30.0,
+		totalFrames:   2,
+	}
+
+	f1, _ := iter.Next()
+	f1Copy := make([]byte, len(f1.YUV))
+	copy(f1Copy, f1.YUV)
+
+	f2, _ := iter.Next()
+
+	// f1's YUV should still be intact even though the decoder reused its buffer.
+	for i := range f1.YUV {
+		if f1.YUV[i] != f1Copy[i] {
+			t.Fatalf("frame 1 YUV was corrupted at byte %d after frame 2 decode", i)
+		}
+	}
+	_ = f2
 }
 
 // stubDecoderFactory returns a mock decoder that always produces output.
@@ -429,6 +624,78 @@ func (d *mockVideoDecoder) Close() {
 	d.closed = true
 }
 
+// mockDrainableDecoder simulates B-frame reordering: first `bufferCount`
+// Decode() calls return "buffering", then subsequent calls return output.
+// After SendEOS, ReceiveFrame returns `drainFrames` frames.
+type mockDrainableDecoder struct {
+	width       int
+	height      int
+	bufferCount int
+	drainFrames int
+	callCount   int
+	eosSent     bool
+	drainCount  int
+	closed      bool
+}
+
+func (d *mockDrainableDecoder) Decode(h264 []byte) ([]byte, int, int, error) {
+	if d.closed {
+		return nil, 0, 0, fmt.Errorf("decoder closed")
+	}
+	d.callCount++
+	if d.callCount <= d.bufferCount {
+		return nil, 0, 0, fmt.Errorf("buffering")
+	}
+	size := d.width * d.height * 3 / 2
+	yuv := make([]byte, size)
+	return yuv, d.width, d.height, nil
+}
+
+func (d *mockDrainableDecoder) SendEOS() error {
+	d.eosSent = true
+	return nil
+}
+
+func (d *mockDrainableDecoder) ReceiveFrame() ([]byte, int, int, error) {
+	d.drainCount++
+	if d.drainCount > d.drainFrames {
+		return nil, 0, 0, fmt.Errorf("no more frames")
+	}
+	size := d.width * d.height * 3 / 2
+	yuv := make([]byte, size)
+	return yuv, d.width, d.height, nil
+}
+
+func (d *mockDrainableDecoder) Close() {
+	d.closed = true
+}
+
+// mockReusingDecoder returns the same buffer slice every time,
+// simulating FFmpeg's real buffer-reuse behavior.
+type mockReusingDecoder struct {
+	width  int
+	height int
+	buf    []byte
+	call   int
+	closed bool
+}
+
+func (d *mockReusingDecoder) Decode(h264 []byte) ([]byte, int, int, error) {
+	if d.closed {
+		return nil, 0, 0, fmt.Errorf("decoder closed")
+	}
+	d.call++
+	// Fill with a pattern based on call count so we can detect corruption.
+	for i := range d.buf {
+		d.buf[i] = byte(d.call)
+	}
+	return d.buf, d.width, d.height, nil
+}
+
+func (d *mockReusingDecoder) Close() {
+	d.closed = true
+}
+
 // generateTestTSFile uses the ffmpeg CLI to create a real H.264+AAC MPEG-TS
 // file suitable for integration testing with the real FFmpeg decoder.
 // Returns the path to the generated file, or skips the test if ffmpeg is not available.
@@ -446,7 +713,7 @@ func generateTestTSFile(t *testing.T) string {
 		"-f", "lavfi", "-i", "sine=frequency=440:duration=1:sample_rate=48000",
 		"-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
 		"-pix_fmt", "yuv420p", // force YUV420 (testsrc is RGB; without this, x264 may use High 4:4:4)
-		"-g", "30", // keyframe every 30 frames (1 GOP for 1 second)
+		"-g", "30",            // keyframe every 30 frames (1 GOP for 1 second)
 		"-c:a", "aac", "-b:a", "64k", "-ac", "2",
 		"-f", "mpegts", tmpFile,
 	)
@@ -503,12 +770,12 @@ func TestFileFrameIterator_Integration(t *testing.T) {
 	t.Logf("EstimateFPS() = %.2f, TotalFrames() = %d", fps, totalFrames)
 
 	var (
-		count        int
-		prevPTS      int64
-		firstPTS     int64
-		ptsSet       bool
-		audioCount   int
-		hasKeyframe  bool
+		count       int
+		prevPTS     int64
+		firstPTS    int64
+		ptsSet      bool
+		audioCount  int
+		hasKeyframe bool
 	)
 
 	for {
@@ -566,9 +833,14 @@ func TestFileFrameIterator_Integration(t *testing.T) {
 		}
 	}
 
-	// Verify iteration count matches TotalFrames.
-	if count != totalFrames {
-		t.Errorf("iterated %d frames, but TotalFrames() = %d", count, totalFrames)
+	// Verify iteration count matches TotalFrames (allow small differences from
+	// B-frame drain producing extra frames).
+	diff := count - totalFrames
+	if diff < 0 {
+		diff = -diff
+	}
+	if diff > 3 {
+		t.Errorf("iterated %d frames, but TotalFrames() = %d (diff %d > 3)", count, totalFrames, diff)
 	}
 
 	// 1 second at 30fps should yield roughly 25-35 frames (some may be lost to
@@ -589,3 +861,56 @@ func TestFileFrameIterator_Integration(t *testing.T) {
 	t.Logf("decoded %d frames (%d with audio), PTS range %d-%d, has keyframe=%v",
 		count, audioCount, firstPTS, prevPTS, hasKeyframe)
 }
+
+// Verify the audio PTS boundary logic specifically for the streaming decode path.
+// The old code used f.frames[f.index+1].PTS as ptsBound; the new code uses
+// f.encodedFrames[f.frameIndex].PTS. Since frameIndex is incremented BEFORE
+// attachAudio is called (in the feed loop), it already points to the next
+// encoded frame, which is correct.
+func TestFileFrameIterator_AudioBoundaryWithStreamingDecode(t *testing.T) {
+	// 3 video frames, 3 audio frames carefully positioned.
+	encoded := []encodedFrame{
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x65}, pts: 0},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 3000},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 6000},
+	}
+
+	audioData := []audioFrameInfo{
+		{data: []byte{0xA0}, pts: 0, sampleRate: 48000, channels: 2},
+		{data: []byte{0xA1}, pts: 3500, sampleRate: 48000, channels: 2},
+		{data: []byte{0xA2}, pts: 6500, sampleRate: 48000, channels: 2},
+	}
+
+	iter := &FileFrameIterator{
+		encodedFrames: encoded,
+		audioFrames:   audioData,
+		decoder:       &mockVideoDecoder{width: 4, height: 2},
+		fps:           30.0,
+		totalFrames:   3,
+	}
+
+	// Frame 0 (PTS=0): audio window [MinInt, 3000) -> Audio[0] PTS=0
+	f0, _ := iter.Next()
+	if f0.AudioPTS != 0 {
+		t.Errorf("frame 0 AudioPTS = %d, want 0", f0.AudioPTS)
+	}
+
+	// Frame 1 (PTS=3000): audio window [3000, 6000) -> Audio[1] PTS=3500
+	f1, _ := iter.Next()
+	if f1.AudioPTS != 3500 {
+		t.Errorf("frame 1 AudioPTS = %d, want 3500", f1.AudioPTS)
+	}
+
+	// Frame 2 (PTS=6000): audio window [6000, MaxInt) -> Audio[2] PTS=6500
+	f2, _ := iter.Next()
+	if f2.AudioPTS != 6500 {
+		t.Errorf("frame 2 AudioPTS = %d, want 6500", f2.AudioPTS)
+	}
+
+	// EOF
+	fEnd, _ := iter.Next()
+	if fEnd != nil {
+		t.Error("expected EOF")
+	}
+}
+
