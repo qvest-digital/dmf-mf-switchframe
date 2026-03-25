@@ -142,9 +142,11 @@ func run() error {
 		cfg.SRTListen = srt.DefaultPort
 	}
 
-	// Auto-enable playout in demo mode so `make demo` includes it.
+	// Auto-enable playout and SCTE-35 in demo mode so the demo playlist
+	// can demonstrate ad break insertion via secondary events.
 	if cfg.Demo {
 		cfg.PlayoutEnabled = true
+		cfg.SCTE35 = true
 	}
 
 	app := &App{cfg: cfg}
