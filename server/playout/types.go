@@ -134,8 +134,9 @@ type ChannelStatus struct {
 	NextTitle     string  `json:"nextTitle,omitempty"`
 	ItemIndex     int     `json:"itemIndex"`
 	ItemCount     int     `json:"itemCount"`
-	ItemProgress  float64 `json:"itemProgress,omitempty"`
-	ItemRemainMs  int64   `json:"itemRemainMs,omitempty"`
+	ItemProgress  float64          `json:"itemProgress,omitempty"`
+	ItemRemainMs  int64            `json:"itemRemainMs,omitempty"`
+	Pods          *PodBoardStatus  `json:"pods,omitempty"`
 }
 
 // MaxChannels is the maximum number of playout channels.

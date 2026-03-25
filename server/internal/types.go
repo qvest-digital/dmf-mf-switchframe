@@ -273,20 +273,34 @@ type ConnectionInfo struct {
 	SRTOutputPorts []int  `json:"srtOutputPorts,omitempty"`
 }
 
+// PodStatusInfo is the broadcast state for an active pod.
+type PodStatusInfo struct {
+	ID          string `json:"id"`
+	Type        string `json:"type"`
+	State       string `json:"state"`
+	ElapsedMs   int64  `json:"elapsedMs,omitempty"`
+	RemainingMs int64  `json:"remainingMs,omitempty"`
+	DurationMs  int64  `json:"durationMs"`
+	Armed       bool   `json:"armed"`
+}
+
 // PlayoutChannelInfo is the broadcast state for a playout channel.
 type PlayoutChannelInfo struct {
-	ID            int     `json:"id"`
-	State         string  `json:"state"`
-	Mode          string  `json:"mode,omitempty"`
-	PlaylistName  string  `json:"playlistName,omitempty"`
-	CurrentItemID string  `json:"currentItemId,omitempty"`
-	CurrentTitle  string  `json:"currentTitle,omitempty"`
-	NextItemID    string  `json:"nextItemId,omitempty"`
-	NextTitle     string  `json:"nextTitle,omitempty"`
-	ItemIndex     int     `json:"itemIndex"`
-	ItemCount     int     `json:"itemCount"`
-	ItemProgress  float64 `json:"itemProgress,omitempty"`
-	ItemRemainMs  int64   `json:"itemRemainMs,omitempty"`
+	ID            int            `json:"id"`
+	State         string         `json:"state"`
+	Mode          string         `json:"mode,omitempty"`
+	PlaylistName  string         `json:"playlistName,omitempty"`
+	CurrentItemID string         `json:"currentItemId,omitempty"`
+	CurrentTitle  string         `json:"currentTitle,omitempty"`
+	NextItemID    string         `json:"nextItemId,omitempty"`
+	NextTitle     string         `json:"nextTitle,omitempty"`
+	ItemIndex     int            `json:"itemIndex"`
+	ItemCount     int            `json:"itemCount"`
+	ItemProgress  float64        `json:"itemProgress,omitempty"`
+	ItemRemainMs  int64          `json:"itemRemainMs,omitempty"`
+	ActivePod     *PodStatusInfo `json:"activePod,omitempty"`
+	PodsArmed     int            `json:"podsArmed,omitempty"`
+	PodsCompleted int            `json:"podsCompleted,omitempty"`
 }
 
 // PlayoutState holds the broadcast state for all playout channels.

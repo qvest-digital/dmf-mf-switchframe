@@ -238,6 +238,8 @@ func (m *Manager) ChannelStates() []ChannelStatus {
 	states := make([]ChannelStatus, MaxChannels)
 	for i := 0; i < MaxChannels; i++ {
 		states[i] = m.channels[i].Status()
+		pbStatus := m.podBoards[i].Status()
+		states[i].Pods = &pbStatus
 	}
 	return states
 }

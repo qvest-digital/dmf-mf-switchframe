@@ -348,7 +348,7 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 		states := a.playoutMgr.ChannelStates()
 		channels := make([]internal.PlayoutChannelInfo, len(states))
 		for i, s := range states {
-			channels[i] = internal.PlayoutChannelInfo{
+			ch := internal.PlayoutChannelInfo{
 				ID:            s.ID,
 				State:         s.State,
 				Mode:          s.Mode,
@@ -362,6 +362,22 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 				ItemProgress:  s.ItemProgress,
 				ItemRemainMs:  s.ItemRemainMs,
 			}
+			if s.Pods != nil {
+				ch.PodsArmed = s.Pods.PodsArmed
+				ch.PodsCompleted = s.Pods.PodsCompleted
+				if s.Pods.ActivePod != nil {
+					ch.ActivePod = &internal.PodStatusInfo{
+						ID:          s.Pods.ActivePod.ID,
+						Type:        s.Pods.ActivePod.Type,
+						State:       s.Pods.ActivePod.State,
+						ElapsedMs:   s.Pods.ActivePod.ElapsedMs,
+						RemainingMs: s.Pods.ActivePod.RemainingMs,
+						DurationMs:  s.Pods.ActivePod.DurationMs,
+						Armed:       s.Pods.ActivePod.Armed,
+					}
+				}
+			}
+			channels[i] = ch
 		}
 		state.Playout = &internal.PlayoutState{Channels: channels}
 	}

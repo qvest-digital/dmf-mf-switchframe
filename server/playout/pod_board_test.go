@@ -614,3 +614,20 @@ func TestPodBoard_InjuryPodNoAutoReturn(t *testing.T) {
 	pb.activePodID = ""
 	pb.mu.Unlock()
 }
+
+func TestManager_ChannelStatesIncludePods(t *testing.T) {
+	mgr := NewManager(ManagerConfig{AssetProvider: fakeProvider(30)})
+	defer mgr.Close()
+
+	pb, _ := mgr.PodBoard(1)
+	pod, _ := pb.CreatePod(PodConfig{Type: "quarter", DurationMs: 180000})
+	pb.Arm(pod.ID)
+
+	states := mgr.ChannelStates()
+	if states[0].Pods == nil {
+		t.Fatal("expected non-nil Pods in channel status")
+	}
+	if states[0].Pods.PodsArmed != 1 {
+		t.Errorf("podsArmed = %d, want 1", states[0].Pods.PodsArmed)
+	}
+}
