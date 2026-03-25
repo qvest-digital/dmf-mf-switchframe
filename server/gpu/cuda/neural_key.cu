@@ -125,9 +125,6 @@ __global__ void ck_composite_neural_kernel(
             + (alpha[iy1 * modelW + ix] * (1.0f - fx) + alpha[iy1 * modelW + ix1] * fx) * fy;
     a = fminf(fmaxf(a, 0.0f), 1.0f);
 
-    // Fast path: fully transparent pixel — leave program frame unchanged.
-    if (a < 1.0f / 255.0f) return;
-
     // Bilinear sample foreground RGB (CHW layout: R plane, G plane, B plane).
     auto sample_plane = [&](const float* plane) -> float {
         return (plane[iy * modelW + ix] * (1.0f - fx) + plane[iy * modelW + ix1] * fx) * (1.0f - fy)
@@ -162,11 +159,9 @@ __global__ void ck_composite_neural_kernel(
     float fgCb = 128.0f - 0.1146f * r8 - 0.3854f * g8 + 0.5000f * b8;
     float fgCr = 128.0f + 0.5000f * r8 - 0.4542f * g8 - 0.0458f * b8;
 
-    // Read existing program Y.
-    float progY = (float)nv12[py * progPitch + px];
-
-    // Alpha blend Y.
-    float outY = a * fgY + (1.0f - a) * progY;
+    // Premultiplied output: fg * alpha. Background (alpha=0) becomes black.
+    // BT.709 black: Y=16, Cb=128, Cr=128 (limited range).
+    float outY = a * fgY + (1.0f - a) * 16.0f;
     nv12[py * progPitch + px] = (uint8_t)fminf(fmaxf(outY + 0.5f, 0.0f), 255.0f);
 
     // UV: process once per 2x2 block (top-left pixel of each block).
@@ -176,11 +171,8 @@ __global__ void ck_composite_neural_kernel(
         int cy = py / 2;
         int uvIdx = uvOffset + cy * progPitch + cx * 2;
 
-        float progCb = (float)nv12[uvIdx];
-        float progCr = (float)nv12[uvIdx + 1];
-
-        float outCb = a * fgCb + (1.0f - a) * progCb;
-        float outCr = a * fgCr + (1.0f - a) * progCr;
+        float outCb = a * fgCb + (1.0f - a) * 128.0f;
+        float outCr = a * fgCr + (1.0f - a) * 128.0f;
 
         nv12[uvIdx]     = (uint8_t)fminf(fmaxf(outCb + 0.5f, 0.0f), 255.0f);
         nv12[uvIdx + 1] = (uint8_t)fminf(fmaxf(outCr + 0.5f, 0.0f), 255.0f);
