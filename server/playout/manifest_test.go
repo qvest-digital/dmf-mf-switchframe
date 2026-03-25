@@ -91,6 +91,20 @@ func TestValidatePlaylist_LiveWithoutSource(t *testing.T) {
 	}
 }
 
+func TestValidatePlaylist_SlateWithoutAssetURI(t *testing.T) {
+	pl := &Playlist{
+		ID:   "pl-1",
+		Name: "Slate No URI",
+		Items: []PlaylistItem{
+			{ID: "item-1", Type: ItemSlate, Title: "Black Slate", DurationMs: 3000},
+		},
+	}
+	err := ValidatePlaylist(pl)
+	if err != nil {
+		t.Fatalf("slate without asset_uri should be valid, got: %v", err)
+	}
+}
+
 func TestValidatePlaylist_MissingID(t *testing.T) {
 	pl := &Playlist{
 		ID:   "pl-1",

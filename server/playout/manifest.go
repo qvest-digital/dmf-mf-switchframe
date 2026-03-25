@@ -74,10 +74,12 @@ func ValidatePlaylist(pl *Playlist) error {
 		seen[item.ID] = true
 
 		switch item.Type {
-		case ItemClip, ItemSlate:
+		case ItemClip:
 			if item.AssetURI == "" {
-				return fmt.Errorf("item[%d] (%s): clip/slate requires asset_uri", i, item.ID)
+				return fmt.Errorf("item[%d] (%s): clip requires asset_uri", i, item.ID)
 			}
+		case ItemSlate:
+			// Slate items generate black frames — asset_uri is optional.
 		case ItemLive:
 			if item.Source == "" {
 				return fmt.Errorf("item[%d] (%s): live item requires source", i, item.ID)
