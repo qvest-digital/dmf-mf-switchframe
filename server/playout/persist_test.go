@@ -734,6 +734,26 @@ func TestManager_Recover_EmitsAsRunError(t *testing.T) {
 	}
 }
 
+func TestManager_HealthSummary(t *testing.T) {
+	mgr := NewManager(ManagerConfig{AssetProvider: fakeProvider(5)})
+
+	// Without watchdog, returns nil.
+	if health := mgr.HealthSummary(); health != nil {
+		t.Error("expected nil health without watchdog")
+	}
+
+	wd := NewWatchdog(WatchdogConfig{
+		StallThreshold: 5 * time.Second,
+		CheckInterval:  1 * time.Second,
+	})
+	mgr.SetWatchdog(wd)
+
+	health := mgr.HealthSummary()
+	if health == nil {
+		t.Fatal("health should not be nil when watchdog is set")
+	}
+}
+
 func TestManager_Recover_SkipsTerminalPods(t *testing.T) {
 	provider := fakeProvider(5)
 

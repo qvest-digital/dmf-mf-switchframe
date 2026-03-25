@@ -36,6 +36,10 @@ func (a *API) registerPlayoutRoutes(mux *http.ServeMux) {
 	// BXF import endpoint.
 	mux.HandleFunc("POST /api/playout/import/bxf", a.handlePlayoutBXFImport)
 
+	// Health and recovery endpoints.
+	mux.HandleFunc("GET /api/playout/health", a.handlePlayoutHealth)
+	mux.HandleFunc("POST /api/playout/channels/{n}/recover", a.handlePlayoutRecover)
+
 	// Cache endpoints (available even without playout manager, guarded by nil checks).
 	mux.HandleFunc("GET /api/playout/cache/status", a.handlePlayoutCacheStatus)
 	mux.HandleFunc("POST /api/playout/cache/lookup", a.handlePlayoutCacheLookup)
@@ -422,4 +426,35 @@ func (a *API) handlePlayoutBXFImport(w http.ResponseWriter, r *http.Request) {
 	states := a.playoutMgr.ChannelStates()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(states[channelID-1])
+}
+
+// handlePlayoutHealth returns the watchdog health summary.
+func (a *API) handlePlayoutHealth(w http.ResponseWriter, _ *http.Request) {
+	health := a.playoutMgr.HealthSummary()
+	if health == nil {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "no watchdog configured"})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(health)
+}
+
+// handlePlayoutRecover triggers manual recovery for a playout channel.
+func (a *API) handlePlayoutRecover(w http.ResponseWriter, r *http.Request) {
+	n, err := parseChannelID(r)
+	if err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+
+	if err := a.playoutMgr.RecoverChannel(n); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+
+	a.broadcast()
+	states := a.playoutMgr.ChannelStates()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(states[n-1])
 }

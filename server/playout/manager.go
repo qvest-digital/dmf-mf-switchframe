@@ -31,6 +31,7 @@ type Manager struct {
 	ptsProvider       func() int64
 	secondaryHandler  SecondaryEventHandler
 	spliceCoordinator *SpliceCoordinator
+	watchdog          *Watchdog
 }
 
 // ManagerConfig configures the playout Manager.
@@ -490,6 +491,67 @@ func (m *Manager) SetSCTE35Injector(inj podSCTE35Injector) {
 		m.podBoards[i].SetSCTE35Injector(inj)
 		m.podBoards[i].SetTemplateStore(m.templateStore)
 	}
+}
+
+// SetWatchdog sets the watchdog health monitor.
+func (m *Manager) SetWatchdog(wd *Watchdog) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.watchdog = wd
+}
+
+// HealthSummary returns the watchdog health status, or nil if no watchdog.
+func (m *Manager) HealthSummary() []ChannelHealth {
+	m.mu.Lock()
+	wd := m.watchdog
+	m.mu.Unlock()
+	if wd == nil {
+		return nil
+	}
+	return wd.Health()
+}
+
+// RecoverChannel stops a channel, re-cues it at its current position, and restarts.
+func (m *Manager) RecoverChannel(channelID int) error {
+	if err := m.validateChannelID(channelID); err != nil {
+		return err
+	}
+
+	m.mu.Lock()
+	ch := m.channels[channelID-1]
+	asRunLogger := m.asRunLogger
+	m.mu.Unlock()
+
+	// Snapshot current state before stopping.
+	snap := ch.Snapshot()
+
+	// Stop the channel.
+	ch.Stop()
+
+	// Re-load playlist at the current cursor position.
+	if snap.Playlist != nil && len(snap.Playlist.Items) > 0 {
+		if err := ch.LoadPlaylist(snap.Playlist); err != nil {
+			return fmt.Errorf("recover: reload playlist: %w", err)
+		}
+		ch.mu.Lock()
+		if snap.Cursor >= 0 && snap.Cursor < len(snap.Playlist.Items) {
+			ch.cursor = snap.Cursor
+		}
+		ch.mu.Unlock()
+	}
+
+	// Emit recovery as-run event.
+	if asRunLogger != nil {
+		asRunLogger.Log(AsRunEvent{
+			Timestamp: time.Now().UTC(),
+			Type:      AsRunError,
+			ChannelID: channelID,
+			Message:   fmt.Sprintf("manual recovery triggered at cursor %d", snap.Cursor),
+		})
+	}
+
+	// Restart.
+	return m.Start(channelID)
 }
 
 // Close stops all active channels.
