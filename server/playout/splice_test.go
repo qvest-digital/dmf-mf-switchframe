@@ -2,6 +2,7 @@ package playout
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -500,6 +501,161 @@ func TestSpliceCoordinator_CancelStopsTimeout(t *testing.T) {
 	calls := inj.getCalls()
 	if len(calls) != 0 {
 		t.Errorf("expected 0 calls after cancel, got %d", len(calls))
+	}
+}
+
+func TestSpliceCoordinator_Integration_FireToReturn(t *testing.T) {
+	inj := &fakeSpliceInjector{}
+	bd := NewBlackDetector(BlackDetectorConfig{})
+	sc := NewSpliceCoordinator(SpliceCoordinatorConfig{
+		Injector:      inj,
+		BlackDetector: bd,
+		PreRollMs:     300,  // short for test (27000 PTS ticks)
+		WindowMs:      100,  // ±100ms = ±9000 ticks
+		TimeoutMs:     500,
+	})
+
+	pb := NewPodBoard(1)
+	pb.SetSCTE35Injector(inj)
+	pb.SetSpliceCoordinator(sc)
+
+	currentPTS := int64(0)
+	pb.SetPTSProvider(func() int64 { return currentPTS })
+
+	var breakStarted, breakEnded atomic.Bool
+	pb.SetOnBreakStart(func() { breakStarted.Store(true) })
+	pb.SetOnBreakEnd(func() { breakEnded.Store(true) })
+
+	// Create and fire pod.
+	pod, _ := pb.CreatePod(PodConfig{
+		Type:         "quarter",
+		DurationMs:   500, // 500ms for fast auto-return
+		AutoReturn:   true,
+		AllowDumpOut: true,
+	})
+	pb.Arm(pod.ID)
+
+	err := pb.Fire(pod.ID)
+	if err != nil {
+		t.Fatalf("Fire: %v", err)
+	}
+
+	// Verify pod is in pre-roll.
+	p, _ := pb.GetPod(pod.ID)
+	if p.State != PodPreRoll {
+		t.Fatalf("state after Fire = %v, want pre_roll", p.State)
+	}
+
+	// Feed frames through the window.
+	// Target PTS = 0 + 300*90 = 27000. Window: [18000, 36000].
+	w, h := 320, 240
+	ySize := w * h * 3 / 2
+
+	for pts := int64(0); pts <= 40000; pts += 3000 {
+		frame := make([]byte, ySize)
+		luma := byte(128)
+		if pts == 27000 {
+			luma = 0 // black at target
+		}
+		for j := 0; j < w*h; j++ {
+			frame[j] = luma
+		}
+		sc.IngestFrame(frame, w, h, pts)
+		currentPTS = pts
+	}
+
+	// Wait for splice to finalize and pod to transition to break_active.
+	waitFor(t, 2*time.Second, func() bool {
+		p, _ := pb.GetPod(pod.ID)
+		return p.State == PodBreakActive
+	})
+
+	// Verify cue-out was injected.
+	calls := inj.getCalls()
+	if len(calls) == 0 {
+		t.Fatal("expected cue-out injection after splice")
+	}
+	if !calls[0].IsOut {
+		t.Error("first cue should be cue-out")
+	}
+	if calls[0].DurationMs != 500 {
+		t.Errorf("duration = %d, want 500", calls[0].DurationMs)
+	}
+
+	// Verify break started.
+	if !breakStarted.Load() {
+		t.Error("onBreakStart should have fired")
+	}
+
+	// Wait for auto-return (500ms pod duration).
+	waitFor(t, 2*time.Second, func() bool {
+		return breakEnded.Load()
+	})
+
+	// Verify cue-in was injected.
+	calls = inj.getCalls()
+	cueInFound := false
+	for _, c := range calls {
+		if !c.IsOut {
+			cueInFound = true
+		}
+	}
+	if !cueInFound {
+		t.Error("expected cue-in after auto-return")
+	}
+
+	// Pod should be in terminal state.
+	p, _ = pb.GetPod(pod.ID)
+	if !p.State.IsTerminal() {
+		t.Errorf("pod state = %v, want terminal", p.State)
+	}
+}
+
+func TestSpliceCoordinator_Integration_FireAndDumpOut(t *testing.T) {
+	inj := &fakeSpliceInjector{}
+	bd := NewBlackDetector(BlackDetectorConfig{})
+	sc := NewSpliceCoordinator(SpliceCoordinatorConfig{
+		Injector:      inj,
+		BlackDetector: bd,
+		PreRollMs:     5000,
+		WindowMs:      500,
+		TimeoutMs:     5000, // long timeout
+	})
+
+	pb := NewPodBoard(1)
+	pb.SetSCTE35Injector(inj)
+	pb.SetSpliceCoordinator(sc)
+	pb.SetPTSProvider(func() int64 { return 0 })
+
+	pod, _ := pb.CreatePod(PodConfig{
+		Type:         "quarter",
+		DurationMs:   180000,
+		AutoReturn:   true,
+		AllowDumpOut: true,
+	})
+	pb.Arm(pod.ID)
+	pb.Fire(pod.ID)
+
+	// Pod is in pre-roll, splice is scanning.
+	if !sc.Active() {
+		t.Fatal("splice should be active")
+	}
+
+	// Dump out immediately.
+	err := pb.DumpOut(pod.ID)
+	if err != nil {
+		t.Fatalf("DumpOut: %v", err)
+	}
+
+	// Splice should be cancelled.
+	if sc.Active() {
+		t.Error("splice should be cancelled")
+	}
+
+	// Pod should be dumped out.
+	p, _ := pb.GetPod(pod.ID)
+	if p.State != PodDumpedOut {
+		t.Errorf("state = %v, want dumped_out", p.State)
 	}
 }
 
