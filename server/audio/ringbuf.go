@@ -5,8 +5,8 @@ package audio
 //
 // Sources push variable-length PCM chunks as they arrive (bursty).
 // The output ticker pulls exactly N samples per tick (fixed cadence).
-// When the buffer has fewer than N samples, the last N samples are
-// returned (freeze-repeat) to avoid silence gaps.
+// When the buffer has fewer than N samples, silence (zeros) is
+// returned — less audible than freeze-repeat with bursty SRT delivery.
 type PCMRingBuffer struct {
 	buf       []float32 // circular sample buffer
 	rd        int       // read position
@@ -63,8 +63,8 @@ func (rb *PCMRingBuffer) Push(pcm []float32) {
 }
 
 // Pop removes and returns exactly n samples from the buffer. If fewer
-// than n samples are available, returns a copy of the last popped frame
-// (freeze-repeat). Returns nil if no samples have ever been pushed.
+// than n samples are available, returns silence (zeros). Returns nil
+// if n <= 0.
 func (rb *PCMRingBuffer) Pop(n int) []float32 {
 	if n <= 0 {
 		return nil

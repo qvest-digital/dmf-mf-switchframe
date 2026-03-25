@@ -82,21 +82,33 @@ func NewCBRPacer(muxrateBps int64, tickInterval time.Duration) *CBRPacer {
 
 	bytesPerSec := float64(muxrateBps) / 8.0
 
-	// Pre-allocate null slab: one tick's worth of null packets.
+	// Pre-allocate null slab: one tick's worth of null packets, capped to
+	// avoid huge allocations when tickInterval is very large (e.g. tests
+	// that use 1h to prevent ticking). The tick loop re-uses the slab in
+	// chunks, so a smaller slab works correctly.
 	bytesPerTick := int(bytesPerSec * tickInterval.Seconds())
-	nullPktsPerTick := (bytesPerTick + tsPacketSize - 1) / tsPacketSize
-	if nullPktsPerTick < 1 {
-		nullPktsPerTick = 1
+
+	const maxSlabBytes = 1 << 20 // 1 MiB cap
+	slabBytes := bytesPerTick
+	if slabBytes > maxSlabBytes {
+		slabBytes = maxSlabBytes
+	}
+	nullPktsForSlab := (slabBytes + tsPacketSize - 1) / tsPacketSize
+	if nullPktsForSlab < 1 {
+		nullPktsForSlab = 1
 	}
 
 	nullPkt := nullTSPacket()
-	nullSlab := make([]byte, nullPktsPerTick*tsPacketSize)
-	for i := 0; i < nullPktsPerTick; i++ {
+	nullSlab := make([]byte, nullPktsForSlab*tsPacketSize)
+	for i := 0; i < nullPktsForSlab; i++ {
 		copy(nullSlab[i*tsPacketSize:], nullPkt[:])
 	}
 
-	// Pre-allocate buffers with generous capacity.
+	// Pre-allocate buffers with generous capacity, capped to avoid OOM.
 	initialCap := bytesPerTick * 2
+	if initialCap > maxSlabBytes*2 {
+		initialCap = maxSlabBytes * 2
+	}
 	if initialCap < 4096 {
 		initialCap = 4096
 	}
