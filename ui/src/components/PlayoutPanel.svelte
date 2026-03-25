@@ -29,29 +29,35 @@
 	let playlistItems = $state<PlaylistItem[]>([]);
 	let playlistLoading = $state(false);
 
+	// Fetch playlist items when channel or itemCount changes.
+	// Uses cancelled flag to ignore stale responses on rapid channel switching.
 	$effect(() => {
 		const ch = selectedChannel;
 		const count = channel.itemCount;
+		let cancelled = false;
 		if (count <= 0) {
 			playlistItems = [];
 			return;
 		}
 		playlistLoading = true;
 		playoutPlaylist(ch).then(items => {
-			playlistItems = items;
+			if (!cancelled) playlistItems = items;
 		}).catch(() => {
-			playlistItems = [];
+			if (!cancelled) playlistItems = [];
 		}).finally(() => {
-			playlistLoading = false;
+			if (!cancelled) playlistLoading = false;
 		});
+		return () => { cancelled = true; };
 	});
 
+	// Auto-scroll the on-air item into view when it changes.
 	$effect(() => {
 		if (channel.currentItemId) {
-			setTimeout(() => {
+			const id = setTimeout(() => {
 				const el = document.getElementById(`playout-item-${channel.currentItemId}`);
 				el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 			}, 50);
+			return () => clearTimeout(id);
 		}
 	});
 

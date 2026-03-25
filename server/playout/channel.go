@@ -152,6 +152,9 @@ func (c *Channel) Status() ChannelStatus {
 }
 
 // PlaylistItems returns a copy of the loaded playlist items, or nil if no playlist.
+// Note: the top-level slice is copied, but SecondaryEvents slices and Transition
+// pointers within each item alias the originals. This is safe for read-only use
+// (e.g., JSON serialization) but callers must not mutate nested fields.
 func (c *Channel) PlaylistItems() []PlaylistItem {
 	c.mu.Lock()
 	defer c.mu.Unlock()

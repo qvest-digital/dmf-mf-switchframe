@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render } from '@testing-library/svelte';
 import PlayoutPanel from './PlayoutPanel.svelte';
 import type { ControlRoomState, PlayoutChannelState } from '$lib/api/types';
+import * as api from '$lib/api/switch-api';
 
 // Mock ALL switch-api functions that PlayoutPanel and its child components import
 vi.mock('$lib/api/switch-api', () => ({
@@ -232,5 +233,30 @@ describe('PlayoutPanel', () => {
 		const state = makeState();
 		const { container } = render(PlayoutPanel, { props: { state } });
 		expect(container.textContent).toContain('Cache Status');
+	});
+
+	it('fetches and renders playlist items when itemCount > 0', async () => {
+		vi.mocked(api.playoutPlaylist).mockResolvedValue([
+			{ id: 'a', type: 'clip', title: 'Intro Bumper', duration_ms: 5000 },
+			{ id: 'b', type: 'live', title: 'Camera 1', duration_ms: 60000 },
+			{ id: 'c', type: 'slate', title: 'Slate Card', duration_ms: 10000 },
+		]);
+		const state = makeState({
+			playout: {
+				channels: [makeChannel({
+					state: 'on_air',
+					itemIndex: 0,
+					itemCount: 3,
+					currentTitle: 'Intro Bumper',
+				})],
+			},
+		});
+		const { container } = render(PlayoutPanel, { props: { state } });
+		await vi.waitFor(() => {
+			expect(api.playoutPlaylist).toHaveBeenCalledWith(1);
+			expect(container.textContent).toContain('Intro Bumper');
+			expect(container.textContent).toContain('Camera 1');
+			expect(container.textContent).toContain('Slate Card');
+		});
 	});
 });
