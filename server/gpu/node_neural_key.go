@@ -88,13 +88,17 @@ func (n *gpuNeuralKeyNode) ProcessGPU(frame *GPUFrame) error {
 		return nil
 	}
 	if n.engine == nil {
+		slog.Warn("gpu_neural_key: engine is nil, skipping")
 		return nil
 	}
 
 	snap := n.state.NeuralKeySnapshot()
 	if snap == nil {
+		slog.Warn("gpu_neural_key: snapshot is nil, skipping")
 		return nil
 	}
+
+	slog.Info("gpu_neural_key: running inference", "source", snap.SourceKey)
 
 	// Run the full neural key pipeline on the default CUDA stream.
 	err := n.engine.Infer(
