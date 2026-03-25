@@ -11,6 +11,7 @@ import (
 	"github.com/zsiec/switchframe/server/macro"
 	"github.com/zsiec/switchframe/server/operator"
 	"github.com/zsiec/switchframe/server/output"
+	"github.com/zsiec/switchframe/server/playout"
 	"github.com/zsiec/switchframe/server/preset"
 	"github.com/zsiec/switchframe/server/replay"
 	"github.com/zsiec/switchframe/server/scte35"
@@ -131,6 +132,17 @@ var errorMappings = []errorMapping{
 	{srt.ErrInvalidConfig, http.StatusBadRequest},
 	{stmap.ErrInvalidDimensions, http.StatusBadRequest},
 	{stmap.ErrInvalidName, http.StatusBadRequest},
+
+	// Playout
+	{playout.ErrInvalidChannel, http.StatusBadRequest},
+	{playout.ErrNoPlaylist, http.StatusBadRequest},
+	{playout.ErrAlreadyOnAir, http.StatusConflict},
+	{playout.ErrNotOnAir, http.StatusBadRequest},
+	{playout.ErrEmptyPlaylist, http.StatusBadRequest},
+	{playout.ErrItemNotFound, http.StatusNotFound},
+	{playout.ErrAlreadyCued, http.StatusConflict},
+	{playout.ErrInvalidState, http.StatusBadRequest},
+	{playout.ErrInvalidItem, http.StatusBadRequest},
 
 	// Comms
 	{comms.ErrNotInComms, http.StatusNotFound},
