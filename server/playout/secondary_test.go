@@ -212,6 +212,40 @@ func TestScheduler_DuplicateTickDoesNotRefire(t *testing.T) {
 	}
 }
 
+func TestScheduler_AllEventTypes(t *testing.T) {
+	tests := []struct {
+		name       string
+		event      SecondaryEvent
+		wantMethod string
+	}{
+		{"graphics_on", SecondaryEvent{Type: "graphics_on", Layer: 1, Template: "bug", OffsetMs: 0, Anchor: "start"}, "OnGraphicsOn"},
+		{"graphics_off", SecondaryEvent{Type: "graphics_off", Layer: 1, OffsetMs: 0, Anchor: "start"}, "OnGraphicsOff"},
+		{"graphics_update", SecondaryEvent{Type: "graphics_update", Layer: 2, Template: "new-bug", OffsetMs: 0, Anchor: "start"}, "OnGraphicsUpdate"},
+		{"audio_level", SecondaryEvent{Type: "audio_level", SourceKey: "cam-1", LevelDB: float64Ptr(-12.0), OffsetMs: 0, Anchor: "start"}, "OnAudioLevel"},
+		{"audio_mute", SecondaryEvent{Type: "audio_mute", SourceKey: "cam-1", Muted: boolPtr(true), OffsetMs: 0, Anchor: "start"}, "OnAudioMute"},
+		{"audio_afv", SecondaryEvent{Type: "audio_afv", SourceKey: "cam-1", AFV: boolPtr(false), OffsetMs: 0, Anchor: "start"}, "OnAudioAFV"},
+		{"caption_mode", SecondaryEvent{Type: "caption_mode", CaptionMode: "author", OffsetMs: 0, Anchor: "start"}, "OnCaptionMode"},
+		{"caption_text", SecondaryEvent{Type: "caption_text", CaptionText: "Hello world", OffsetMs: 0, Anchor: "start"}, "OnCaptionText"},
+		{"scte35_cue", SecondaryEvent{Type: "scte35_cue", SCTE35: &SCTE35EventData{BreakDurationMs: 30000, AutoReturn: true}, OffsetMs: 0, Anchor: "start"}, "OnSCTE35Cue"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := &mockHandler{}
+			s := NewSecondaryEventScheduler(h)
+			s.BeginItem([]SecondaryEvent{tt.event}, 10000)
+			s.Tick(0)
+
+			if len(h.calls) != 1 {
+				t.Fatalf("calls = %d, want 1", len(h.calls))
+			}
+			if h.calls[0].Method != tt.wantMethod {
+				t.Errorf("method = %q, want %q", h.calls[0].Method, tt.wantMethod)
+			}
+		})
+	}
+}
+
 func TestScheduler_Reanchor(t *testing.T) {
 	h := &mockHandler{}
 	s := NewSecondaryEventScheduler(h)

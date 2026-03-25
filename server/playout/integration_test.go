@@ -818,3 +818,111 @@ func TestIntegration_CacheEvictionDuringPrefetch(t *testing.T) {
 		t.Errorf("cache UsedBytes = %d, expected <= 200", status.UsedBytes)
 	}
 }
+
+func TestIntegration_SecondaryEventsFireInOrder(t *testing.T) {
+	h := &mockHandler{}
+
+	m := NewManager(ManagerConfig{
+		AssetProvider: fakeProvider(60), // 2 seconds at 30fps
+	})
+	defer m.Close()
+	m.SetSecondaryHandler(h)
+
+	pl := testPlaylist(PlaylistItem{
+		ID:       "clip-1",
+		Type:     ItemClip,
+		AssetURI: "local:///test.ts",
+		Title:    "Test Clip",
+		SecondaryEvents: []SecondaryEvent{
+			{Type: "graphics_on", Layer: 1, Template: "bug", OffsetMs: 0, Anchor: "start"},
+			{Type: "audio_level", SourceKey: "cam-1", LevelDB: float64Ptr(-6), OffsetMs: 200, Anchor: "start"},
+			{Type: "graphics_off", Layer: 1, OffsetMs: -100, Anchor: "end"},
+		},
+	})
+
+	if err := m.LoadPlaylist(1, pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	if err := m.Start(1); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	waitFor(t, 10*time.Second, func() bool {
+		states := m.ChannelStates()
+		return states[0].State == "completed"
+	})
+
+	if len(h.calls) < 3 {
+		t.Fatalf("handler calls = %d, want >= 3, got: %+v", len(h.calls), h.calls)
+	}
+
+	// First event should be graphics_on (t=0).
+	if h.calls[0].Method != "OnGraphicsOn" {
+		t.Errorf("call[0] = %q, want OnGraphicsOn", h.calls[0].Method)
+	}
+
+	// Verify all expected methods were called.
+	methods := make(map[string]bool)
+	for _, c := range h.calls {
+		methods[c.Method] = true
+	}
+	for _, want := range []string{"OnGraphicsOn", "OnAudioLevel", "OnGraphicsOff"} {
+		if !methods[want] {
+			t.Errorf("missing call to %s", want)
+		}
+	}
+}
+
+func TestIntegration_SecondaryEventsMultipleItems(t *testing.T) {
+	h := &mockHandler{}
+
+	m := NewManager(ManagerConfig{
+		AssetProvider: fakeProvider(30), // 1 second at 30fps
+	})
+	defer m.Close()
+	m.SetSecondaryHandler(h)
+
+	pl := testPlaylist(
+		PlaylistItem{
+			ID:       "item-1",
+			Type:     ItemClip,
+			AssetURI: "local:///test1.ts",
+			Title:    "Item 1",
+			SecondaryEvents: []SecondaryEvent{
+				{Type: "graphics_on", Layer: 1, Template: "bug", OffsetMs: 0, Anchor: "start"},
+			},
+		},
+		PlaylistItem{
+			ID:       "item-2",
+			Type:     ItemClip,
+			AssetURI: "local:///test2.ts",
+			Title:    "Item 2",
+			SecondaryEvents: []SecondaryEvent{
+				{Type: "graphics_off", Layer: 1, OffsetMs: 0, Anchor: "start"},
+			},
+		},
+	)
+
+	if err := m.LoadPlaylist(1, pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	if err := m.Start(1); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	waitFor(t, 10*time.Second, func() bool {
+		states := m.ChannelStates()
+		return states[0].State == "completed"
+	})
+
+	if len(h.calls) < 2 {
+		t.Fatalf("handler calls = %d, want >= 2", len(h.calls))
+	}
+
+	if h.calls[0].Method != "OnGraphicsOn" {
+		t.Errorf("call[0] = %q, want OnGraphicsOn", h.calls[0].Method)
+	}
+	if h.calls[1].Method != "OnGraphicsOff" {
+		t.Errorf("call[1] = %q, want OnGraphicsOff", h.calls[1].Method)
+	}
+}
