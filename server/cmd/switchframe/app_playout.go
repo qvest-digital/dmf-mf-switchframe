@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/playout"
 	"github.com/zsiec/switchframe/server/scte35"
@@ -49,11 +50,11 @@ func (a *App) initPlayout() error {
 	})
 	prefetcher.Start(context.Background())
 
-	// Create asset provider backed by cache.
-	// demuxFn is nil until a real clip.DemuxFile + codec.NewVideoDecoder pipeline
-	// is wired in a follow-up task. Channels with cached assets will use the
-	// cache provider once a real demux function is configured.
-	provider := playout.NewCacheAssetProvider(cache, nil)
+	// Create asset provider backed by cache. demuxFn uses FileFrameIterator
+	// which demuxes and decodes cached media files to raw YUV+audio frames.
+	provider := playout.NewCacheAssetProvider(cache, func(path string) (playout.FrameIterator, error) {
+		return playout.NewFileFrameIterator(path)
+	})
 
 	mgr := playout.NewManager(playout.ManagerConfig{
 		AssetProvider: provider,
@@ -96,6 +97,16 @@ func (a *App) initPlayout() error {
 			IsKeyframe: isKeyframe,
 		}
 		a.sw.IngestReplayVideo(key, frame)
+	})
+
+	// Audio output: playout sends decoded audio to the mixer (same pattern as clips).
+	mgr.SetAudioOutput(func(key string, data []byte, pts int64, sampleRate, channels int) {
+		a.mixer.IngestFrame(key, &media.AudioFrame{
+			Data:       data,
+			PTS:        pts,
+			SampleRate: sampleRate,
+			Channels:   channels,
+		})
 	})
 
 	// State change broadcasts.
