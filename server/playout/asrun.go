@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -14,8 +15,9 @@ const defaultRingCapacity = 10000
 
 // AsRunLoggerConfig configures the as-run event logger.
 type AsRunLoggerConfig struct {
-	Dir          string
-	RingCapacity int
+	Dir           string
+	RingCapacity  int
+	RetentionDays int
 }
 
 // AsRunQuery filters as-run events for retrieval.
@@ -30,12 +32,14 @@ type AsRunQuery struct {
 // AsRunLogger writes as-run events to an in-memory ring buffer and
 // append-only JSONL files for durable storage.
 type AsRunLogger struct {
-	mu   sync.Mutex
-	ring []AsRunEvent
-	head int // next write position
-	count int // number of valid entries (up to cap)
-	file *os.File
-	enc  *json.Encoder
+	mu            sync.Mutex
+	config        AsRunLoggerConfig
+	ring          []AsRunEvent
+	head          int // next write position
+	count         int // number of valid entries (up to cap)
+	file          *os.File
+	enc           *json.Encoder
+	stopRetention chan struct{}
 }
 
 // NewAsRunLogger creates a new as-run logger. It creates the output
@@ -58,9 +62,10 @@ func NewAsRunLogger(cfg AsRunLoggerConfig) (*AsRunLogger, error) {
 	}
 
 	l := &AsRunLogger{
-		ring: make([]AsRunEvent, cfg.RingCapacity),
-		file: f,
-		enc:  json.NewEncoder(f),
+		config: cfg,
+		ring:   make([]AsRunEvent, cfg.RingCapacity),
+		file:   f,
+		enc:    json.NewEncoder(f),
 	}
 	return l, nil
 }
@@ -136,10 +141,94 @@ func (l *AsRunLogger) All() []AsRunEvent {
 	return l.Query(AsRunQuery{})
 }
 
-// Close flushes and closes the JSONL file.
+// CleanupOldFiles removes as-run JSONL files older than RetentionDays.
+// Returns the number of files deleted. Returns 0 immediately if retention
+// is disabled (RetentionDays <= 0).
+func (l *AsRunLogger) CleanupOldFiles() int {
+	if l.config.RetentionDays <= 0 {
+		return 0
+	}
+
+	cutoff := time.Now().UTC().AddDate(0, 0, -l.config.RetentionDays)
+	entries, err := os.ReadDir(l.config.Dir)
+	if err != nil {
+		slog.Error("asrun: read dir for cleanup", "error", err)
+		return 0
+	}
+
+	deleted := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+
+		// Match pattern: asrun-YYYY-MM-DD.jsonl
+		if !strings.HasPrefix(name, "asrun-") || !strings.HasSuffix(name, ".jsonl") {
+			continue
+		}
+
+		dateStr := strings.TrimPrefix(name, "asrun-")
+		dateStr = strings.TrimSuffix(dateStr, ".jsonl")
+
+		fileDate, err := time.Parse("2006-01-02", dateStr)
+		if err != nil {
+			continue // not a valid date, skip
+		}
+
+		if fileDate.Before(cutoff) {
+			path := filepath.Join(l.config.Dir, name)
+			if err := os.Remove(path); err != nil {
+				slog.Error("asrun: remove old file", "path", path, "error", err)
+				continue
+			}
+			deleted++
+		}
+	}
+
+	return deleted
+}
+
+// StartRetention launches a background goroutine that periodically runs
+// CleanupOldFiles. It runs cleanup immediately once, then on the given
+// interval. If RetentionDays <= 0 or interval <= 0, defaults to 24 hours.
+func (l *AsRunLogger) StartRetention(interval time.Duration) {
+	if l.config.RetentionDays <= 0 {
+		return
+	}
+	if interval <= 0 {
+		interval = 24 * time.Hour
+	}
+
+	l.stopRetention = make(chan struct{})
+	stop := l.stopRetention
+
+	// Run once immediately.
+	l.CleanupOldFiles()
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				l.CleanupOldFiles()
+			}
+		}
+	}()
+}
+
+// Close flushes and closes the JSONL file and stops the retention goroutine.
 func (l *AsRunLogger) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	if l.stopRetention != nil {
+		close(l.stopRetention)
+		l.stopRetention = nil
+	}
 
 	if l.file != nil {
 		err := l.file.Close()

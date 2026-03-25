@@ -1297,3 +1297,107 @@ func TestAsRunScheduledTSPopulated(t *testing.T) {
 		t.Errorf("delta_ms = %f, expected > 50 (item was scheduled 100ms ago)", events[0].DeltaMs)
 	}
 }
+
+// --- Task 6: JSONL Retention Tests ---
+
+func TestAsRunLogger_RetentionCleanup(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create an old file (45 days ago) and a recent file (5 days ago).
+	oldDate := time.Now().UTC().AddDate(0, 0, -45).Format("2006-01-02")
+	recentDate := time.Now().UTC().AddDate(0, 0, -5).Format("2006-01-02")
+
+	oldFile := filepath.Join(dir, "asrun-"+oldDate+".jsonl")
+	recentFile := filepath.Join(dir, "asrun-"+recentDate+".jsonl")
+
+	if err := os.WriteFile(oldFile, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(recentFile, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	logger, err := NewAsRunLogger(AsRunLoggerConfig{
+		Dir:           dir,
+		RingCapacity:  100,
+		RetentionDays: 30,
+	})
+	if err != nil {
+		t.Fatalf("NewAsRunLogger: %v", err)
+	}
+	defer logger.Close()
+
+	deleted := logger.CleanupOldFiles()
+	if deleted != 1 {
+		t.Errorf("CleanupOldFiles() = %d, want 1", deleted)
+	}
+
+	// Old file should be deleted.
+	if _, err := os.Stat(oldFile); !os.IsNotExist(err) {
+		t.Errorf("expected old file %q to be deleted", oldFile)
+	}
+
+	// Recent file should still exist.
+	if _, err := os.Stat(recentFile); err != nil {
+		t.Errorf("expected recent file %q to still exist: %v", recentFile, err)
+	}
+}
+
+func TestAsRunLogger_RetentionZeroDisabled(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a very old file (100 days ago).
+	oldDate := time.Now().UTC().AddDate(0, 0, -100).Format("2006-01-02")
+	oldFile := filepath.Join(dir, "asrun-"+oldDate+".jsonl")
+	if err := os.WriteFile(oldFile, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	logger, err := NewAsRunLogger(AsRunLoggerConfig{
+		Dir:           dir,
+		RingCapacity:  100,
+		RetentionDays: 0,
+	})
+	if err != nil {
+		t.Fatalf("NewAsRunLogger: %v", err)
+	}
+	defer logger.Close()
+
+	deleted := logger.CleanupOldFiles()
+	if deleted != 0 {
+		t.Errorf("CleanupOldFiles() = %d, want 0 (retention disabled)", deleted)
+	}
+
+	// File should still exist.
+	if _, err := os.Stat(oldFile); err != nil {
+		t.Errorf("expected old file %q to still exist: %v", oldFile, err)
+	}
+}
+
+func TestAsRunLogger_RetentionGoroutine(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create an old file (45 days ago).
+	oldDate := time.Now().UTC().AddDate(0, 0, -45).Format("2006-01-02")
+	oldFile := filepath.Join(dir, "asrun-"+oldDate+".jsonl")
+	if err := os.WriteFile(oldFile, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	logger, err := NewAsRunLogger(AsRunLoggerConfig{
+		Dir:           dir,
+		RingCapacity:  100,
+		RetentionDays: 30,
+	})
+	if err != nil {
+		t.Fatalf("NewAsRunLogger: %v", err)
+	}
+	defer logger.Close()
+
+	logger.StartRetention(50 * time.Millisecond)
+
+	waitFor(t, 2*time.Second, func() bool {
+		_, err := os.Stat(oldFile)
+		return os.IsNotExist(err)
+	})
+}
