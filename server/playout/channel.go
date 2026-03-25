@@ -16,6 +16,12 @@ type DecodedFrame struct {
 	IsKeyframe bool
 	Width      int
 	Height     int
+
+	// Optional audio data associated with this video frame's time position.
+	AudioData       []byte // raw AAC payload or PCM samples
+	AudioPTS        int64
+	AudioSampleRate int
+	AudioChannels   int
 }
 
 // ChannelConfig configures a playout channel.
@@ -46,6 +52,7 @@ type Channel struct {
 	onStart        func(key string)
 	onStop         func(key string)
 	rawVideoOutput func(yuv []byte, w, h int, pts int64, isKeyframe bool)
+	audioOutput    func(data []byte, pts int64, sampleRate, channels int)
 	ptsProvider    func() int64
 
 	// Secondary event scheduling.
@@ -476,6 +483,13 @@ func (c *Channel) SetRawVideoOutput(fn func(yuv []byte, w, h int, pts int64, isK
 	c.rawVideoOutput = fn
 }
 
+// SetAudioOutput registers a callback for audio output from clip playback.
+func (c *Channel) SetAudioOutput(fn func(data []byte, pts int64, sampleRate, channels int)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.audioOutput = fn
+}
+
 // SetPTSProvider registers a function that returns the current program PTS.
 func (c *Channel) SetPTSProvider(fn func() int64) {
 	c.mu.Lock()
@@ -772,10 +786,16 @@ func (c *Channel) playClipItem(ctx context.Context, item *PlaylistItem) bool {
 		// Output frame.
 		c.mu.Lock()
 		outputFn := c.rawVideoOutput
+		audioFn := c.audioOutput
 		c.mu.Unlock()
 
 		if outputFn != nil {
 			outputFn(frame.YUV, frame.Width, frame.Height, outputPTS, frame.IsKeyframe)
+		}
+
+		// Output audio if present.
+		if len(frame.AudioData) > 0 && audioFn != nil {
+			audioFn(frame.AudioData, frame.AudioPTS, frame.AudioSampleRate, frame.AudioChannels)
 		}
 
 		// Feed splice coordinator.

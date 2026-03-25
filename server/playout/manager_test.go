@@ -1,6 +1,7 @@
 package playout
 
 import (
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -489,5 +490,62 @@ func TestManager_PlaylistItems(t *testing.T) {
 	}
 	if items[1].ID != "b" {
 		t.Errorf("items[1].ID = %q, want %q", items[1].ID, "b")
+	}
+}
+
+func TestManager_SetAudioOutput_PropagatesToChannels(t *testing.T) {
+	frames := fakeFramesWithAudio(5)
+	provider := NewFakeAssetProvider(frames)
+
+	m := NewManager(ManagerConfig{
+		AssetProvider: provider,
+	})
+
+	var mu sync.Mutex
+	var audioCalls []struct {
+		key        string
+		sampleRate int
+		channels   int
+	}
+
+	m.SetAudioOutput(func(key string, data []byte, pts int64, sampleRate, channels int) {
+		mu.Lock()
+		audioCalls = append(audioCalls, struct {
+			key        string
+			sampleRate int
+			channels   int
+		}{key: key, sampleRate: sampleRate, channels: channels})
+		mu.Unlock()
+	})
+
+	pl := testPlaylist(clipItem("audio-mgr"))
+	if err := m.LoadPlaylist(1, pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	if err := m.Start(1); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	waitFor(t, 5*time.Second, func() bool {
+		states := m.ChannelStates()
+		return states[0].State == "completed"
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(audioCalls) != 5 {
+		t.Fatalf("audio callback count = %d, want 5", len(audioCalls))
+	}
+	for i, call := range audioCalls {
+		if call.key != "playout:1" {
+			t.Errorf("call[%d].key = %q, want %q", i, call.key, "playout:1")
+		}
+		if call.sampleRate != 48000 {
+			t.Errorf("call[%d].sampleRate = %d, want 48000", i, call.sampleRate)
+		}
+		if call.channels != 2 {
+			t.Errorf("call[%d].channels = %d, want 2", i, call.channels)
+		}
 	}
 }

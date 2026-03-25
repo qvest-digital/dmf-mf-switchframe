@@ -100,6 +100,7 @@ func (m *Manager) Start(channelID int) error {
 	onStartFn := m.onStart
 	onStopFn := m.onStop
 	rawVideoFn := m.rawVideoOutput
+	audioFn := m.audioOutput
 	ptsFn := m.ptsProvider
 	secondaryH := m.secondaryHandler
 	sc := m.spliceCoordinator
@@ -139,6 +140,11 @@ func (m *Manager) Start(channelID int) error {
 	} else if wd != nil {
 		ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
 			wd.ReportFrame(channelID)
+		})
+	}
+	if audioFn != nil {
+		ch.SetAudioOutput(func(data []byte, pts int64, sampleRate, channels int) {
+			audioFn(ch.Key(), data, pts, sampleRate, channels)
 		})
 	}
 	if ptsFn != nil {
@@ -434,10 +440,18 @@ func (m *Manager) SetVideoOutput(fn func(key string, wireData []byte, pts int64,
 }
 
 // SetAudioOutput registers a callback for audio output from channels.
+// Propagates per-channel wrappers so that audio is emitted during playback.
 func (m *Manager) SetAudioOutput(fn func(key string, data []byte, pts int64, sampleRate, channels int)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.audioOutput = fn
+	// Propagate to all channels.
+	for i := 0; i < MaxChannels; i++ {
+		capturedKey := fmt.Sprintf("playout:%d", i+1)
+		m.channels[i].SetAudioOutput(func(data []byte, pts int64, sampleRate, channels int) {
+			fn(capturedKey, data, pts, sampleRate, channels)
+		})
+	}
 }
 
 // SetPTSProvider registers a function that returns the current program PTS.

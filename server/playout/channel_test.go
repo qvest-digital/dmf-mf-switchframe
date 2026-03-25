@@ -996,3 +996,140 @@ func TestChannel_PlaylistItems(t *testing.T) {
 		t.Errorf("PlaylistItems returned shared slice: fresh[0].Title = %q, want %q", fresh[0].Title, "Clip A")
 	}
 }
+
+// fakeFramesWithAudio returns n fake YUV420 frames with audio data at 30fps.
+func fakeFramesWithAudio(n int) []DecodedFrame {
+	frames := make([]DecodedFrame, n)
+	for i := range frames {
+		frames[i] = DecodedFrame{
+			YUV:             make([]byte, 320*240*3/2),
+			PTS:             int64(i) * 3000,
+			IsKeyframe:      i == 0,
+			Width:           320,
+			Height:          240,
+			AudioData:       []byte{0xAA, 0xBB, byte(i)}, // synthetic audio payload
+			AudioPTS:        int64(i) * 3000,
+			AudioSampleRate: 48000,
+			AudioChannels:   2,
+		}
+	}
+	return frames
+}
+
+func TestChannel_AudioOutput(t *testing.T) {
+	frames := fakeFramesWithAudio(5)
+	provider := NewFakeAssetProvider(frames)
+
+	ch := NewChannel(1, ChannelConfig{
+		AssetProvider: provider,
+	})
+
+	var mu sync.Mutex
+	var audioCalls []struct {
+		data       []byte
+		pts        int64
+		sampleRate int
+		channels   int
+	}
+
+	ch.SetAudioOutput(func(data []byte, pts int64, sampleRate, channels int) {
+		mu.Lock()
+		audioCalls = append(audioCalls, struct {
+			data       []byte
+			pts        int64
+			sampleRate int
+			channels   int
+		}{
+			data:       append([]byte(nil), data...),
+			pts:        pts,
+			sampleRate: sampleRate,
+			channels:   channels,
+		})
+		mu.Unlock()
+	})
+
+	pl := testPlaylist(clipItem("audio-test"))
+	if err := ch.LoadPlaylist(pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	if err := ch.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	waitFor(t, 5*time.Second, func() bool {
+		return ch.State() == StateCompleted
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(audioCalls) != 5 {
+		t.Fatalf("audio callback count = %d, want 5", len(audioCalls))
+	}
+
+	for i, call := range audioCalls {
+		if call.sampleRate != 48000 {
+			t.Errorf("call[%d].sampleRate = %d, want 48000", i, call.sampleRate)
+		}
+		if call.channels != 2 {
+			t.Errorf("call[%d].channels = %d, want 2", i, call.channels)
+		}
+		if len(call.data) != 3 {
+			t.Errorf("call[%d].data len = %d, want 3", i, len(call.data))
+		}
+	}
+}
+
+func TestChannel_AudioOutput_NoAudioData(t *testing.T) {
+	// Frames without audio data should not trigger audio callback.
+	provider := fakeProvider(5)
+
+	ch := NewChannel(1, ChannelConfig{
+		AssetProvider: provider,
+	})
+
+	var audioCount atomic.Int32
+	ch.SetAudioOutput(func(data []byte, pts int64, sampleRate, channels int) {
+		audioCount.Add(1)
+	})
+
+	pl := testPlaylist(clipItem("no-audio"))
+	if err := ch.LoadPlaylist(pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	if err := ch.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	waitFor(t, 5*time.Second, func() bool {
+		return ch.State() == StateCompleted
+	})
+
+	if count := audioCount.Load(); count != 0 {
+		t.Errorf("audio callback called %d times for frames with no audio, want 0", count)
+	}
+}
+
+func TestChannel_AudioOutput_NilCallback(t *testing.T) {
+	// Frames with audio but no callback set should not panic.
+	frames := fakeFramesWithAudio(3)
+	provider := NewFakeAssetProvider(frames)
+
+	ch := NewChannel(1, ChannelConfig{
+		AssetProvider: provider,
+	})
+	// Do NOT set audio output callback.
+
+	pl := testPlaylist(clipItem("no-callback"))
+	if err := ch.LoadPlaylist(pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	if err := ch.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	waitFor(t, 5*time.Second, func() bool {
+		return ch.State() == StateCompleted
+	})
+	// If we get here without panic, the test passes.
+}
