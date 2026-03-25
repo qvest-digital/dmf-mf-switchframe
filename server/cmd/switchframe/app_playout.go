@@ -24,7 +24,7 @@ func (a *App) initPlayout() error {
 	cacheDir := filepath.Join(a.cfg.StateDir, "playout-cache")
 	cache, err := playout.NewCache(playout.CacheConfig{
 		Dir:      cacheDir,
-		MaxBytes: 200 * 1024 * 1024 * 1024, // 200 GB default
+		MaxBytes: int64(a.cfg.PlayoutCacheMaxGB) * 1024 * 1024 * 1024,
 	})
 	if err != nil {
 		return fmt.Errorf("playout cache: %w", err)
@@ -123,6 +123,33 @@ func (a *App) initPlayout() error {
 		scte35Injector: a.scte35Injector,
 	})
 
+	// As-run logger: persistent event log for traffic reconciliation.
+	// Must be wired before SetSpliceCoordinator, which propagates the
+	// logger to the splice coordinator.
+	asRunDir := filepath.Join(a.cfg.StateDir, "playout-asrun")
+	asRunLogger, err := playout.NewAsRunLogger(playout.AsRunLoggerConfig{
+		Dir:           asRunDir,
+		RetentionDays: a.cfg.PlayoutAsRunRetDays,
+	})
+	if err != nil {
+		return fmt.Errorf("playout as-run logger: %w", err)
+	}
+	mgr.SetAsRunLogger(asRunLogger)
+
+	// Watchdog: detect stalled channels and auto-recover.
+	watchdog := playout.NewWatchdog(playout.WatchdogConfig{
+		OnStall: func(channelID int) {
+			slog.Warn("playout: watchdog detected stall, attempting recovery",
+				"channel", channelID)
+			if err := mgr.RecoverChannel(channelID); err != nil {
+				slog.Error("playout: watchdog recovery failed",
+					"channel", channelID, "error", err)
+			}
+		},
+	})
+	watchdog.Start()
+	mgr.SetWatchdog(watchdog)
+
 	// Wire SCTE-35 injector to pod boards (spliceSCTE35Adapter satisfies both
 	// podSCTE35Injector and spliceScheduleInjector).
 	spliceAdapter := &spliceSCTE35Adapter{injector: a.scte35Injector}
@@ -141,7 +168,7 @@ func (a *App) initPlayout() error {
 	a.playoutMgr = mgr
 	a.playoutCache = cache
 	a.playoutPrefetcher = prefetcher
-	slog.Info("playout manager initialized", "cacheDir", cacheDir)
+	slog.Info("playout manager initialized", "cacheDir", cacheDir, "asRunDir", asRunDir)
 	return nil
 }
 
