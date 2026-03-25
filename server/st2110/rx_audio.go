@@ -100,6 +100,13 @@ func (rx *AudioRx) GetFrame(ctx context.Context) ([]float32, int, error) {
 			continue
 		}
 
+		// Skip corrupted frames (same check as video RX).
+		if frame.status == C.ST_FRAME_STATUS_CORRUPTED {
+			C.st30p_rx_put_frame(rx.handle, frame)
+			rx.mu.Unlock()
+			continue
+		}
+
 		channels := rx.cfg.Format.Channels
 		dataSize := int(frame.data_size)
 		totalSamples := dataSize / 3

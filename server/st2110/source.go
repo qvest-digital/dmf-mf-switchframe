@@ -59,6 +59,9 @@ type SourceConfig struct {
 	// key is the source identifier, data is the raw payload, pts is monotonic.
 	OnDataGrain func(key string, data []byte, pts int64)
 
+	// Snapshot, if set, receives per-session stats for debug reporting.
+	Snapshot *ST2110Snapshot
+
 	// Logger for diagnostic output.
 	Logger *slog.Logger
 }
@@ -83,6 +86,11 @@ type Source struct {
 	// computed as offset from this shared reference.
 	startTime time.Time
 	startOnce sync.Once
+
+	// Frame counters for debug snapshot (updated from single-goroutine fan-outs).
+	videoFrames uint64
+	audioFrames uint64
+	ancFrames   uint64
 }
 
 // NewSource creates an ST 2110 source with the given configuration.
@@ -175,6 +183,7 @@ func (s *Source) videoFanOut(ctx context.Context) {
 			pts = int64(now.Sub(s.startTime).Seconds() * 90000)
 		}
 
+		s.videoFrames++
 		if s.config.OnRawVideo != nil {
 			s.config.OnRawVideo(s.config.Key, yuv, w, h, pts)
 		}
@@ -200,6 +209,7 @@ func (s *Source) audioFanOut(ctx context.Context) {
 		s.startOnce.Do(func() { s.startTime = now })
 		pts := int64(now.Sub(s.startTime).Seconds() * 90000)
 
+		s.audioFrames++
 		if s.config.OnRawAudio != nil {
 			s.config.OnRawAudio(s.config.Key, pcm, pts, s.config.Channels)
 		}
@@ -225,8 +235,16 @@ func (s *Source) dataFanOut(ctx context.Context) {
 		s.startOnce.Do(func() { s.startTime = now })
 		pts := int64(now.Sub(s.startTime).Seconds() * 90000)
 
+		s.ancFrames++
 		if s.config.OnDataGrain != nil {
 			s.config.OnDataGrain(s.config.Key, data, pts)
 		}
+	}
+}
+
+// Stats returns the current frame counters for debug reporting.
+func (s *Source) Stats() SessionStats {
+	return SessionStats{
+		FramesReceived: s.videoFrames + s.audioFrames + s.ancFrames,
 	}
 }

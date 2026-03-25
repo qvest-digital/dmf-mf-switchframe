@@ -206,7 +206,7 @@ func (a *App) initST2110(ctx context.Context) error {
 			DeviceID:    state.deviceID,
 			Tags:        map[string][]string{},
 			Caps: nmos.ReceiverCaps{
-				MediaTypes: []string{"audio/L16", "audio/L24"},
+				MediaTypes: []string{"audio/L24"},
 			},
 			InterfaceBindings: []string{},
 			Subscription:      nmos.ReceiverSubscription{},
@@ -255,12 +255,13 @@ func (a *App) initST2110(ctx context.Context) error {
 	})
 
 	store.AddSender(&nmos.Sender{
-		ID:                pgmVideoSenderID,
-		Label:             "Program Video",
-		Description:       "ST 2110-20 program video output",
-		FlowID:            pgmVideoFlowID,
-		Transport:         nmos.TransportRTPMcast,
-		DeviceID:          state.deviceID,
+		ID:           pgmVideoSenderID,
+		Label:        "Program Video",
+		Description:  "ST 2110-20 program video output",
+		FlowID:       pgmVideoFlowID,
+		Transport:    nmos.TransportRTPMcast,
+		DeviceID:     state.deviceID,
+		ManifestHref: fmt.Sprintf("http://%s:%d/x-nmos/connection/v1.1/single/senders/%s/transportfile", a.cfg.ST2110IP, a.cfg.ST2110NMOSPort, pgmVideoSenderID),
 		Tags:              map[string][]string{},
 		InterfaceBindings: []string{},
 		Subscription:      nmos.SenderSubscription{},
@@ -299,12 +300,13 @@ func (a *App) initST2110(ctx context.Context) error {
 	})
 
 	store.AddSender(&nmos.Sender{
-		ID:                pgmAudioSenderID,
-		Label:             "Program Audio",
-		Description:       "ST 2110-30 program audio output",
-		FlowID:            pgmAudioFlowID,
-		Transport:         nmos.TransportRTPMcast,
-		DeviceID:          state.deviceID,
+		ID:           pgmAudioSenderID,
+		Label:        "Program Audio",
+		Description:  "ST 2110-30 program audio output",
+		FlowID:       pgmAudioFlowID,
+		Transport:    nmos.TransportRTPMcast,
+		DeviceID:     state.deviceID,
+		ManifestHref: fmt.Sprintf("http://%s:%d/x-nmos/connection/v1.1/single/senders/%s/transportfile", a.cfg.ST2110IP, a.cfg.ST2110NMOSPort, pgmAudioSenderID),
 		Tags:              map[string][]string{},
 		InterfaceBindings: []string{},
 		Subscription:      nmos.SenderSubscription{},
@@ -528,9 +530,9 @@ func (a *App) activateST2110Receiver(id string, params nmos.StagedParams) error 
 		}
 
 		// Register as MXL source (uses IngestRawVideo path, not relay viewer).
+		// Note: mixer channel is NOT added here — only audio receivers register
+		// with the mixer. Video-only receivers don't produce audio.
 		a.sw.RegisterMXLSource(sourceKey)
-		a.mixer.AddChannel(sourceKey)
-		_ = a.mixer.SetAFV(sourceKey, true)
 
 		// Create ST 2110 source with callbacks matching app_mxl_demo.go pattern.
 		src := st2110.NewSource(st2110.SourceConfig{
@@ -656,6 +658,10 @@ func (a *App) deactivateST2110Receiver(id string) error {
 	if found != nil {
 		found.Stop()
 	}
+
+	// Clean up switcher and mixer registrations.
+	a.sw.UnregisterSource(sourceKey)
+	a.mixer.RemoveChannel(sourceKey)
 
 	// Clear receiver subscription in IS-04 model.
 	state.store.UpdateReceiverSubscription(id, nil, false)

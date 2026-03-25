@@ -88,6 +88,13 @@ func (rx *AncillaryRx) GetFrame(ctx context.Context) ([]byte, error) {
 			continue
 		}
 
+		// Skip corrupted frames (same check as video RX).
+		if frame.status == C.ST_FRAME_STATUS_CORRUPTED {
+			C.st40p_rx_put_frame(rx.handle, frame)
+			rx.mu.Unlock()
+			continue
+		}
+
 		dataSize := int(frame.data_size)
 		if dataSize == 0 {
 			C.st40p_rx_put_frame(rx.handle, frame)
