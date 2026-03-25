@@ -15,13 +15,14 @@ type Manager struct {
 	config   ManagerConfig
 	log      *slog.Logger
 
-	onStateChange  func()
-	onStart        func(channelID int, key string)
-	onStop         func(channelID int, key string)
-	rawVideoOutput func(key string, yuv []byte, w, h int, pts int64, isKeyframe bool)
-	videoOutput    func(key string, wireData []byte, pts int64, isKeyframe bool, sps, pps []byte)
-	audioOutput    func(key string, data []byte, pts int64, sampleRate, channels int)
-	ptsProvider    func() int64
+	onStateChange    func()
+	onStart          func(channelID int, key string)
+	onStop           func(channelID int, key string)
+	rawVideoOutput   func(key string, yuv []byte, w, h int, pts int64, isKeyframe bool)
+	videoOutput      func(key string, wireData []byte, pts int64, isKeyframe bool, sps, pps []byte)
+	audioOutput      func(key string, data []byte, pts int64, sampleRate, channels int)
+	ptsProvider      func() int64
+	secondaryHandler SecondaryEventHandler
 }
 
 // ManagerConfig configures the playout Manager.
@@ -88,6 +89,7 @@ func (m *Manager) Start(channelID int) error {
 	onStopFn := m.onStop
 	rawVideoFn := m.rawVideoOutput
 	ptsFn := m.ptsProvider
+	secondaryH := m.secondaryHandler
 	m.mu.Unlock()
 
 	ch.SetOnStateChange(func(s ChannelState) {
@@ -112,6 +114,9 @@ func (m *Manager) Start(channelID int) error {
 	}
 	if ptsFn != nil {
 		ch.SetPTSProvider(ptsFn)
+	}
+	if secondaryH != nil {
+		ch.SetSecondaryHandler(secondaryH)
 	}
 
 	if err := ch.Start(); err != nil {
@@ -261,6 +266,14 @@ func (m *Manager) SetPTSProvider(fn func() int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.ptsProvider = fn
+}
+
+// SetSecondaryHandler registers a handler for secondary events dispatched
+// during playlist item playback (graphics, audio, captions, SCTE-35).
+func (m *Manager) SetSecondaryHandler(h SecondaryEventHandler) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.secondaryHandler = h
 }
 
 // Close stops all active channels.

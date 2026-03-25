@@ -48,6 +48,10 @@ type Channel struct {
 	rawVideoOutput func(yuv []byte, w, h int, pts int64, isKeyframe bool)
 	ptsProvider    func() int64
 
+	// Secondary event scheduling.
+	secondaryHandler   SecondaryEventHandler
+	secondaryScheduler *SecondaryEventScheduler
+
 	// Atomic progress counters for lock-free reads.
 	itemProgress atomic.Int64 // 0-1000 milliprogress
 	itemRemainMs atomic.Int64
@@ -379,6 +383,19 @@ func (c *Channel) SetPTSProvider(fn func() int64) {
 	c.ptsProvider = fn
 }
 
+// SetSecondaryHandler registers a handler for secondary events (graphics, audio, etc.).
+// Creating the scheduler is deferred until a handler is set.
+func (c *Channel) SetSecondaryHandler(h SecondaryEventHandler) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.secondaryHandler = h
+	if h != nil {
+		c.secondaryScheduler = NewSecondaryEventScheduler(h)
+	} else {
+		c.secondaryScheduler = nil
+	}
+}
+
 // run is the main playback goroutine. It iterates through playlist items.
 func (c *Channel) run(ctx context.Context) {
 	defer close(c.done)
@@ -500,6 +517,20 @@ func (c *Channel) playClipItem(ctx context.Context, item *PlaylistItem) bool {
 	frameDuration := time.Duration(float64(time.Second) / fps)
 	totalFrames := frameSource.TotalFrames()
 
+	// Secondary event scheduling.
+	c.mu.Lock()
+	scheduler := c.secondaryScheduler
+	c.mu.Unlock()
+
+	if scheduler != nil && len(item.SecondaryEvents) > 0 {
+		var durationMs int64
+		if totalFrames > 0 && fps > 0 {
+			durationMs = int64(float64(totalFrames) * 1000.0 / fps)
+		}
+		scheduler.BeginItem(item.SecondaryEvents, durationMs)
+		defer scheduler.EndItem()
+	}
+
 	// Get initial PTS.
 	c.mu.Lock()
 	ptsFn := c.ptsProvider
@@ -564,6 +595,12 @@ func (c *Channel) playClipItem(ctx context.Context, item *PlaylistItem) bool {
 			c.itemProgress.Store(prog)
 			remainFrames := totalFrames - i
 			c.itemRemainMs.Store(int64(float64(remainFrames) * 1000.0 / fps))
+		}
+
+		// Tick secondary events.
+		if scheduler != nil && len(item.SecondaryEvents) > 0 {
+			elapsedMs := int64(float64(i) * 1000.0 / fps)
+			scheduler.Tick(elapsedMs)
 		}
 
 		// Output frame.
