@@ -42,7 +42,11 @@ func (inst *Instance) CreateAudioTx(cfg TxAudioConfig) (*AudioTx, error) {
 		return nil, fmt.Errorf("st2110: invalid multicast IP: %w", err)
 	}
 	ops.port.udp_port[0] = C.uint16_t(cfg.Port)
-	ops.port.payload_type = 111
+	pt := cfg.PayloadType
+	if pt == 0 {
+		pt = 111 // default dynamic PT for ST 2110-30
+	}
+	ops.port.payload_type = C.uint16_t(pt)
 	ops.port.num_port = 1
 
 	ops.fmt = C.ST30_FMT_PCM24

@@ -48,7 +48,11 @@ func (inst *Instance) CreateVideoRx(cfg RxVideoConfig) (*VideoRx, error) {
 		}
 	}
 	ops.port.udp_port[0] = C.uint16_t(cfg.Port)
-	ops.port.payload_type = 112
+	pt := cfg.PayloadType
+	if pt == 0 {
+		pt = 112 // default dynamic PT for ST 2110-20
+	}
+	ops.port.payload_type = C.uint16_t(pt)
 	ops.port.num_port = 1
 
 	ops.width = C.uint32_t(cfg.Format.Width)

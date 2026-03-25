@@ -40,6 +40,7 @@ type RxVideoConfig struct {
 	MulticastIP  string
 	SourceIP     string
 	Port         int
+	PayloadType  int // RTP payload type (dynamic, negotiated via SDP; default 112)
 	Format       VideoFormat
 	FrameBuffers int
 }
@@ -49,6 +50,7 @@ type TxVideoConfig struct {
 	MulticastIP  string
 	SourceIP     string
 	Port         int
+	PayloadType  int // RTP payload type (dynamic, negotiated via SDP; default 112)
 	Format       VideoFormat
 	FrameBuffers int
 }
@@ -58,6 +60,7 @@ type RxAudioConfig struct {
 	MulticastIP  string
 	SourceIP     string
 	Port         int
+	PayloadType  int // RTP payload type (dynamic, negotiated via SDP; default 111)
 	Format       AudioFormat
 	FrameBuffers int
 }
@@ -67,6 +70,7 @@ type TxAudioConfig struct {
 	MulticastIP  string
 	SourceIP     string
 	Port         int
+	PayloadType  int // RTP payload type (dynamic, negotiated via SDP; default 111)
 	Format       AudioFormat
 	FrameBuffers int
 }
@@ -76,6 +80,7 @@ type RxAncillaryConfig struct {
 	MulticastIP string
 	SourceIP    string
 	Port        int
+	PayloadType int // RTP payload type (dynamic, negotiated via SDP; default 113)
 	Format      AncillaryFormat
 }
 
@@ -84,6 +89,7 @@ type TxAncillaryConfig struct {
 	MulticastIP string
 	SourceIP    string
 	Port        int
+	PayloadType int // RTP payload type (dynamic, negotiated via SDP; default 113)
 	Format      AncillaryFormat
 }
 

@@ -48,7 +48,11 @@ func (inst *Instance) CreateAncillaryRx(cfg RxAncillaryConfig) (*AncillaryRx, er
 		}
 	}
 	ops.port.udp_port[0] = C.uint16_t(cfg.Port)
-	ops.port.payload_type = 113
+	pt := cfg.PayloadType
+	if pt == 0 {
+		pt = 113 // default dynamic PT for ST 2110-40
+	}
+	ops.port.payload_type = C.uint16_t(pt)
 	ops.port.num_port = 1
 
 	ops.fps = fpsToMTL(cfg.Format.FPSNum, cfg.Format.FPSDen)

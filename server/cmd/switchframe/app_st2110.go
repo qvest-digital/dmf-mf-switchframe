@@ -27,6 +27,15 @@ type st2110State struct {
 	output     *st2110.Output
 	dnsSDStop  nmos.StopFunc
 
+	// TX handles for program output. Tracked separately so we can
+	// recreate the Output when the second sender (video or audio) activates.
+	videoTx *st2110.VideoTx
+	audioTx *st2110.AudioTx
+
+	// Sender ID tracking for cleanup.
+	videoSenderID string
+	audioSenderID string
+
 	// NMOS resource IDs for cleanup.
 	nodeID   string
 	deviceID string
@@ -469,7 +478,7 @@ func (a *App) activateST2110Receiver(id string, params nmos.StagedParams) error 
 	tp := params.TransportParams[0]
 
 	var multicastIP, sourceIP string
-	var port int
+	var port, payloadType int
 
 	if tp.DestinationIP != nil {
 		multicastIP = *tp.DestinationIP
@@ -497,6 +506,9 @@ func (a *App) activateST2110Receiver(id string, params nmos.StagedParams) error 
 			if sdpParams.Port != 0 {
 				port = sdpParams.Port
 			}
+			if sdpParams.PayloadType != 0 {
+				payloadType = sdpParams.PayloadType
+			}
 		}
 	}
 
@@ -514,6 +526,7 @@ func (a *App) activateST2110Receiver(id string, params nmos.StagedParams) error 
 			MulticastIP: multicastIP,
 			SourceIP:    sourceIP,
 			Port:        port,
+			PayloadType: payloadType,
 			Format: st2110.VideoFormat{
 				Width:       pf.Width,
 				Height:      pf.Height,
@@ -576,6 +589,7 @@ func (a *App) activateST2110Receiver(id string, params nmos.StagedParams) error 
 			MulticastIP: multicastIP,
 			SourceIP:    sourceIP,
 			Port:        port,
+			PayloadType: payloadType,
 			Format: st2110.AudioFormat{
 				SampleRate:   48000,
 				Channels:     2,
@@ -675,38 +689,185 @@ func (a *App) deactivateST2110Receiver(id string) error {
 }
 
 // activateST2110Sender is called by the IS-05 Connection API when a sender
-// connection is activated. This is a placeholder for program output TX.
+// connection is activated. It creates MTL TX sessions and wires program video
+// or audio output through an st2110.Output orchestrator.
 func (a *App) activateST2110Sender(id string, params nmos.StagedParams) error {
 	state := a.st2110State
 	if state == nil {
 		return fmt.Errorf("ST 2110 not initialized")
 	}
 
-	slog.Info("ST 2110: sender activation requested (placeholder)",
-		"id", id,
-	)
+	if len(params.TransportParams) == 0 {
+		return fmt.Errorf("no transport params for sender %s", id)
+	}
+	tp := params.TransportParams[0]
 
-	// TODO: Create TX sessions and wire program output via switcher.SetRawVideoSink.
-	// This will be implemented when TX session support is complete.
+	var destIP string
+	var port int
+	if tp.DestinationIP != nil {
+		destIP = *tp.DestinationIP
+	}
+	if tp.DestinationPort != nil {
+		port = *tp.DestinationPort
+	}
+	if destIP == "" || port == 0 {
+		return fmt.Errorf("incomplete transport params for sender %s: dest=%q port=%d", id, destIP, port)
+	}
+
+	pf := a.sw.PipelineFormat()
+
+	// Look up the sender and its flow to determine media type.
+	sender := state.store.GetSender(id)
+	if sender == nil {
+		return fmt.Errorf("sender %s not found", id)
+	}
+
+	flow := state.store.GetFlow(sender.FlowID)
+	if flow == nil {
+		return fmt.Errorf("flow %s not found for sender %s", sender.FlowID, id)
+	}
+
+	switch flow.Format {
+	case nmos.FormatVideo:
+		videoTx, err := state.instance.CreateVideoTx(st2110.TxVideoConfig{
+			MulticastIP: destIP,
+			SourceIP:    a.cfg.ST2110IP,
+			Port:        port,
+			Format: st2110.VideoFormat{
+				Width:  pf.Width,
+				Height: pf.Height,
+				FPSNum: pf.FPSNum,
+				FPSDen: pf.FPSDen,
+			},
+			FrameBuffers: 3,
+		})
+		if err != nil {
+			return fmt.Errorf("create video TX for %s: %w", id, err)
+		}
+
+		state.videoTx = videoTx
+		state.videoSenderID = id
+		a.startOrRestartST2110Output()
+
+		slog.Info("ST 2110: video sender activated",
+			"id", id,
+			"dest", destIP,
+			"port", port,
+			"resolution", fmt.Sprintf("%dx%d", pf.Width, pf.Height),
+		)
+
+	case nmos.FormatAudio:
+		audioTx, err := state.instance.CreateAudioTx(st2110.TxAudioConfig{
+			MulticastIP: destIP,
+			SourceIP:    a.cfg.ST2110IP,
+			Port:        port,
+			Format: st2110.AudioFormat{
+				SampleRate:   48000,
+				Channels:     2,
+				BitDepth:     24,
+				PacketTimeUs: 1000,
+			},
+			FrameBuffers: 3,
+		})
+		if err != nil {
+			return fmt.Errorf("create audio TX for %s: %w", id, err)
+		}
+
+		state.audioTx = audioTx
+		state.audioSenderID = id
+		a.startOrRestartST2110Output()
+
+		slog.Info("ST 2110: audio sender activated",
+			"id", id,
+			"dest", destIP,
+			"port", port,
+		)
+
+	default:
+		return fmt.Errorf("unsupported format %q for sender %s", flow.Format, id)
+	}
 
 	return nil
 }
 
-// deactivateST2110Sender stops the program output for a sender.
+// startOrRestartST2110Output creates (or recreates) the st2110.Output and wires
+// the switcher raw video sink and mixer raw audio sink. Called when either the
+// video or audio sender is activated. If an output already exists it is stopped
+// first so the new one picks up both TX handles.
+func (a *App) startOrRestartST2110Output() {
+	state := a.st2110State
+
+	// Stop existing output if any.
+	if state.output != nil {
+		state.output.Stop()
+		state.output = nil
+	}
+
+	pf := a.sw.PipelineFormat()
+	state.output = st2110.NewOutput(st2110.OutputConfig{
+		FPSNum: pf.FPSNum,
+		FPSDen: pf.FPSDen,
+	})
+	state.output.Start(state.videoTx, state.audioTx, nil)
+
+	// Wire switcher raw video sink to the output.
+	if state.videoTx != nil {
+		out := state.output
+		a.sw.SetRawVideoSink(switcher.RawVideoSink(func(pf *switcher.ProcessingFrame) {
+			out.WriteVideo(pf.YUV, pf.Width, pf.Height, pf.PTS)
+		}))
+		a.updateGPURawVideoSink()
+	}
+
+	// Wire mixer raw audio sink to the output.
+	if state.audioTx != nil {
+		out := state.output
+		a.mixer.SetRawAudioSink(func(pcm []float32, pts int64, sampleRate, channels int) {
+			out.WriteAudio(pcm, pts, sampleRate, channels)
+		})
+	}
+}
+
+// deactivateST2110Sender stops the program output for a sender and clears
+// the corresponding TX handle. If the other sender is still active, the
+// output is recreated with just that sender.
 func (a *App) deactivateST2110Sender(id string) error {
 	state := a.st2110State
 	if state == nil {
 		return fmt.Errorf("ST 2110 not initialized")
 	}
 
-	slog.Info("ST 2110: sender deactivation requested",
-		"id", id,
-	)
+	slog.Info("ST 2110: sender deactivation requested", "id", id)
 
+	// Stop the current output (closes TX handles inside).
 	if state.output != nil {
 		state.output.Stop()
 		state.output = nil
 	}
 
+	// Clear the TX handle for the deactivated sender.
+	switch {
+	case id == state.videoSenderID:
+		state.videoTx = nil
+		state.videoSenderID = ""
+		// Clear the raw video sink.
+		a.sw.SetRawVideoSink(nil)
+		a.updateGPURawVideoSink()
+	case id == state.audioSenderID:
+		state.audioTx = nil
+		state.audioSenderID = ""
+		// Clear the raw audio sink.
+		a.mixer.SetRawAudioSink(nil)
+	default:
+		slog.Warn("ST 2110: deactivate sender: unknown sender ID", "id", id)
+		return nil
+	}
+
+	// If the other sender is still active, restart the output with it.
+	if state.videoTx != nil || state.audioTx != nil {
+		a.startOrRestartST2110Output()
+	}
+
+	slog.Info("ST 2110: sender deactivated", "id", id)
 	return nil
 }
