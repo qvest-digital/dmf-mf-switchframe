@@ -62,9 +62,18 @@ type Channel struct {
 	clipStartTime time.Time
 	clipLastFrame *DecodedFrame // for hold mode
 
-	// Live source tap — returns latest frame for a source key.
+	// GPU-native live source aliasing — zero-copy frame routing in VRAM.
+	// When set, live items alias the playout channel's GPU frame to the
+	// source's GPU frame without any CPU involvement.
+	gpuAlias func(liveSourceKey string) bool
+
+	// CPU fallback: returns latest decoded frame for a source key.
 	gpuSourceTap    func(sourceKey string) *DecodedFrame
 	lastLiveTapMiss string // for once-per-item logging of tap failures
+
+	// Sentinel frame returned by tapLiveSource when GPU alias succeeded.
+	// emitFrame skips CPU output for this frame (GPU pipeline already has it).
+	gpuAliasedSentinel DecodedFrame
 
 	// Slate frame (pre-allocated BT.709 black: Y=16, UV=128).
 	slateFrame *DecodedFrame
@@ -556,8 +565,17 @@ func (c *Channel) SetAsRunLog(fn func(AsRunEvent)) {
 	}
 }
 
+// SetGPUAlias registers a function that aliases the playout channel's GPU
+// frame to a live source's GPU frame. Zero-copy, GPU-native. Returns true
+// if the alias was applied (source exists and has a frame).
+func (c *Channel) SetGPUAlias(fn func(liveSourceKey string) bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.gpuAlias = fn
+}
+
 // SetGPUSourceTap registers a function that returns the latest decoded frame
-// for a live source key. Used for live playlist items.
+// for a live source key. Used as CPU fallback for live playlist items.
 func (c *Channel) SetGPUSourceTap(fn func(sourceKey string) *DecodedFrame) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -971,7 +989,19 @@ func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
 }
 
 // tapLiveSource returns the latest frame from a live source, or idle frame as fallback.
+// Prefers GPU-native aliasing (zero-copy in VRAM) over CPU frame reads.
 func (c *Channel) tapLiveSource(sourceKey string) *DecodedFrame {
+	// Try GPU-native alias first — zero-copy, no CPU involvement.
+	c.mu.Lock()
+	alias := c.gpuAlias
+	c.mu.Unlock()
+
+	if alias != nil && alias(sourceKey) {
+		// GPU frame aliased — return sentinel so emitFrame skips CPU output.
+		return &c.gpuAliasedSentinel
+	}
+
+	// CPU fallback path.
 	c.mu.Lock()
 	tap := c.gpuSourceTap
 	c.mu.Unlock()
@@ -1041,9 +1071,11 @@ func (c *Channel) nextSlateFrame(item *PlaylistItem) *DecodedFrame {
 }
 
 // emitFrame sends the frame to output callbacks and increments PTS.
+// When frame is the GPU-aliased sentinel, the GPU pipeline already has the
+// correct frame — skip CPU video output and splice coordinator (both need
+// CPU YUV data we don't have). Audio from live sources is handled by the
+// mixer's direct source path, not the playout channel.
 func (c *Channel) emitFrame(frame *DecodedFrame, outputFn func([]byte, int, int, int64, bool), audioFn func([]byte, int64, int, int), sc *SpliceCoordinator) {
-	pts := c.outputPTS
-
 	fps := c.config.FPS
 	if fps == 0 {
 		fps = 30.0
@@ -1052,6 +1084,15 @@ func (c *Channel) emitFrame(frame *DecodedFrame, outputFn func([]byte, int, int,
 	if ptsPerFrame == 0 {
 		ptsPerFrame = 3000
 	}
+
+	// GPU-aliased frame: the GPU source manager already has the correct frame
+	// for this channel's source key. No CPU work needed — just advance PTS.
+	if frame == &c.gpuAliasedSentinel {
+		c.outputPTS += ptsPerFrame
+		return
+	}
+
+	pts := c.outputPTS
 
 	if outputFn != nil {
 		outputFn(frame.YUV, frame.Width, frame.Height, pts, frame.IsKeyframe)

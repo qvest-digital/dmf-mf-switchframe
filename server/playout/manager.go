@@ -33,7 +33,10 @@ type Manager struct {
 	spliceCoordinator *SpliceCoordinator
 	watchdog          *Watchdog
 
-	// GPU source tap for live source pass-through.
+	// GPU-native live source aliasing (zero-copy frame routing in VRAM).
+	gpuAlias func(channelKey, liveSourceKey string) bool
+
+	// GPU source tap for live source pass-through (CPU fallback).
 	gpuSourceTap func(channelKey, sourceKey string) *DecodedFrame
 
 	// Pipeline format for all channels.
@@ -129,6 +132,7 @@ func (m *Manager) Start(channelID int) error {
 	secondaryH := m.secondaryHandler
 	sc := m.spliceCoordinator
 	wd := m.watchdog
+	gpuAliasFn := m.gpuAlias
 	gpuTap := m.gpuSourceTap
 	m.mu.Unlock()
 
@@ -182,8 +186,16 @@ func (m *Manager) Start(channelID int) error {
 		ch.SetSpliceCoordinator(sc)
 	}
 
-	// Wire GPU source tap — wrap the Manager-level tap with the channel key
-	// so the channel only needs to pass the source key.
+	// Wire GPU-native alias — zero-copy frame routing in VRAM.
+	if gpuAliasFn != nil {
+		channelKey := ch.Key()
+		ch.SetGPUAlias(func(liveSourceKey string) bool {
+			return gpuAliasFn(channelKey, liveSourceKey)
+		})
+	}
+
+	// Wire GPU source tap (CPU fallback) — wrap the Manager-level tap with
+	// the channel key so the channel only needs to pass the source key.
 	if gpuTap != nil {
 		channelKey := ch.Key()
 		ch.SetGPUSourceTap(func(sourceKey string) *DecodedFrame {
@@ -569,9 +581,21 @@ func (m *Manager) SetSCTE35Injector(inj podSCTE35Injector) {
 	}
 }
 
+// SetGPUAlias registers a function for GPU-native live source aliasing.
+// The function receives the channel key (e.g., "playout:1") and the live
+// source key (e.g., "cam-1"), and aliases the channel's GPU frame to the
+// source's GPU frame. Zero-copy — no CPU involvement. Returns true if
+// the alias was applied.
+func (m *Manager) SetGPUAlias(fn func(channelKey, liveSourceKey string) bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.gpuAlias = fn
+}
+
 // SetGPUSourceTap registers a function that reads cached GPU frames for live
-// source pass-through. The function receives the channel key (e.g., "playout:1")
-// and source key (e.g., "cam-1") and returns the latest decoded frame or nil.
+// source pass-through (CPU fallback). The function receives the channel key
+// (e.g., "playout:1") and source key (e.g., "cam-1") and returns the latest
+// decoded frame or nil.
 func (m *Manager) SetGPUSourceTap(fn func(channelKey, sourceKey string) *DecodedFrame) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

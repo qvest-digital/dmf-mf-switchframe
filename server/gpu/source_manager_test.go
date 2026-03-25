@@ -460,6 +460,125 @@ func TestGPUSourceManager_ReadCachedFrame_AfterRemove(t *testing.T) {
 	assert.Nil(t, yuv, "ReadCachedFrame after RemoveSource should return nil")
 }
 
+func TestGPUSourceManager_AliasSource(t *testing.T) {
+	const w, h = 32, 32
+	ctx, pool := setupGPU(t, w, h, 8)
+	defer func() { _ = ctx.Close() }()
+	defer pool.Close()
+
+	mgr := NewGPUSourceManager(ctx, pool, nil)
+	defer mgr.Close()
+
+	// Register both sources.
+	mgr.RegisterSource("cam1", w, h, nil)
+	mgr.RegisterSource("playout:1", w, h, nil)
+
+	// Ingest a frame into cam1.
+	yuv := createTestYUV420p(w, h, 200, 100, 150)
+	mgr.IngestYUV("cam1", yuv, w, h, 42000)
+
+	// Before alias, playout:1 should have no frame.
+	frame := mgr.CurrentFrame("playout:1")
+	assert.Nil(t, frame, "playout:1 should have no frame before alias")
+
+	// Alias playout:1 → cam1.
+	ok := mgr.AliasSource("playout:1", "cam1")
+	assert.True(t, ok, "AliasSource should succeed")
+
+	// After alias, playout:1 should have cam1's frame.
+	frame = mgr.CurrentFrame("playout:1")
+	require.NotNil(t, frame, "playout:1 should have cam1's frame after alias")
+	assert.Equal(t, int64(42000), frame.PTS, "aliased frame should have cam1's PTS")
+
+	// The CPU cache should also be aliased.
+	yuv2, rw, rh, rpts := mgr.ReadCachedFrame("playout:1")
+	assert.NotNil(t, yuv2, "playout:1 should have CPU cache after alias")
+	assert.Equal(t, w, rw)
+	assert.Equal(t, h, rh)
+	assert.Equal(t, int64(42000), rpts)
+}
+
+func TestGPUSourceManager_AliasSource_MissingSrc(t *testing.T) {
+	const w, h = 32, 32
+	ctx, pool := setupGPU(t, w, h, 8)
+	defer func() { _ = ctx.Close() }()
+	defer pool.Close()
+
+	mgr := NewGPUSourceManager(ctx, pool, nil)
+	defer mgr.Close()
+
+	// Register only destination.
+	mgr.RegisterSource("playout:1", w, h, nil)
+
+	// Alias to non-existent source should return false.
+	ok := mgr.AliasSource("playout:1", "nonexistent")
+	assert.False(t, ok, "AliasSource with missing src should return false")
+
+	// Alias from non-existent destination should also return false.
+	ok = mgr.AliasSource("nonexistent", "playout:1")
+	assert.False(t, ok, "AliasSource with missing dst should return false")
+}
+
+func TestGPUSourceManager_AliasSource_NoFrame(t *testing.T) {
+	const w, h = 32, 32
+	ctx, pool := setupGPU(t, w, h, 8)
+	defer func() { _ = ctx.Close() }()
+	defer pool.Close()
+
+	mgr := NewGPUSourceManager(ctx, pool, nil)
+	defer mgr.Close()
+
+	// Register both but don't ingest any frames.
+	mgr.RegisterSource("cam1", w, h, nil)
+	mgr.RegisterSource("playout:1", w, h, nil)
+
+	ok := mgr.AliasSource("playout:1", "cam1")
+	assert.False(t, ok, "AliasSource should fail when src has no frame")
+}
+
+func TestGPUSourceManager_AliasSource_RefCounting(t *testing.T) {
+	const w, h = 32, 32
+	ctx, pool := setupGPU(t, w, h, 8)
+	defer func() { _ = ctx.Close() }()
+	defer pool.Close()
+
+	mgr := NewGPUSourceManager(ctx, pool, nil)
+	defer mgr.Close()
+
+	mgr.RegisterSource("cam1", w, h, nil)
+	mgr.RegisterSource("playout:1", w, h, nil)
+
+	// Ingest a frame.
+	yuv := createTestYUV420p(w, h, 200, 100, 150)
+	mgr.IngestYUV("cam1", yuv, w, h, 42000)
+
+	// Get a ref to cam1's frame.
+	srcFrame := mgr.GetFrame("cam1")
+	require.NotNil(t, srcFrame)
+
+	// Alias playout:1 → cam1.
+	ok := mgr.AliasSource("playout:1", "cam1")
+	require.True(t, ok)
+
+	// Get a ref to playout:1's frame (same underlying GPU frame).
+	dstFrame := mgr.GetFrame("playout:1")
+	require.NotNil(t, dstFrame)
+
+	// Both should point to the same GPU frame.
+	assert.Equal(t, srcFrame.PTS, dstFrame.PTS)
+
+	// Release both refs — should not panic or double-free.
+	srcFrame.Release()
+	dstFrame.Release()
+
+	// Ingest a new frame into cam1 — should replace without issues.
+	mgr.IngestYUV("cam1", yuv, w, h, 84000)
+	f := mgr.GetFrame("cam1")
+	require.NotNil(t, f)
+	assert.Equal(t, int64(84000), f.PTS)
+	f.Release()
+}
+
 // --- Mock SourceSTMapProvider ---
 
 type mockSourceSTMapProvider struct {

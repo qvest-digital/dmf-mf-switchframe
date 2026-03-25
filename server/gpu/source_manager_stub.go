@@ -42,6 +42,9 @@ func (m *GPUSourceManager) ReadCachedFrame(sourceKey string) (yuv []byte, w, h i
 	return nil, 0, 0, 0
 }
 
+// AliasSource is a no-op on non-GPU builds.
+func (m *GPUSourceManager) AliasSource(dstKey, srcKey string) bool { return false }
+
 // Close is a no-op on non-GPU builds.
 func (m *GPUSourceManager) Close() {}
 

@@ -698,5 +698,55 @@ func (m *GPUSourceManager) IngestGPUFrame(sourceKey string, frame *GPUFrame, pts
 	m.queuePreviewFrame(entry, nil, frame.Width, frame.Height, pts)
 }
 
+// AliasSource makes dstKey use srcKey's latest GPU frame for this tick.
+// Zero-copy — swaps the atomic GPU frame pointer. The pipeline will read
+// dstKey's frame from srcKey's cache. Returns true if the alias was applied
+// (both sources exist and src has a frame).
+//
+// Reference counting: the source frame is Ref()'d before storing into dst's
+// current pointer, and the old dst frame is Released. This is safe because
+// the pipeline reads dstKey's current pointer via GetFrame (which also Refs),
+// so the aliased frame cannot be freed while in use.
+func (m *GPUSourceManager) AliasSource(dstKey, srcKey string) bool {
+	m.mu.RLock()
+	dstEntry, dstOK := m.sources[dstKey]
+	srcEntry, srcOK := m.sources[srcKey]
+	m.mu.RUnlock()
+
+	if !dstOK || !srcOK {
+		return false
+	}
+
+	// Load the source's current GPU frame.
+	srcFrame := srcEntry.current.Load()
+	if srcFrame == nil {
+		return false
+	}
+
+	// Ref the source frame before storing it as dst's current.
+	// This prevents the frame from being released if src ingests a new frame
+	// between our Load and the pipeline's read.
+	srcFrame.Ref()
+
+	// Atomic swap into dst's current pointer.
+	old := dstEntry.current.Swap(srcFrame)
+	if old != nil {
+		old.Release()
+	}
+
+	// Also alias the CPU frame cache so preview encoding picks up the frame.
+	srcCPU := srcEntry.lastCPU.Load()
+	if srcCPU != nil {
+		dstEntry.lastCPU.Store(srcCPU)
+	}
+
+	// Queue frame for preview encoding so the browser multiview stays current.
+	if srcCPU != nil {
+		m.queuePreviewFrame(dstEntry, srcCPU.yuv, srcCPU.w, srcCPU.h, srcCPU.pts)
+	}
+
+	return true
+}
+
 // previewLoop, queuePreviewFrame, and scaleYUV420pCPU are defined in
 // source_manager_preview.go (unified GPU frame copy + ScaleBilinearOn + encode).

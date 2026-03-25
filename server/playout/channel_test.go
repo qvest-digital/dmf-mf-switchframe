@@ -1513,3 +1513,124 @@ func TestChannel_MakeBlackFrame(t *testing.T) {
 		t.Error("black frame should be a keyframe")
 	}
 }
+
+func TestChannel_LiveTap_GPUAlias(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{
+		Width:  320,
+		Height: 240,
+		FPS:    30.0,
+	})
+
+	// Track alias calls and video output calls.
+	var aliasCalls atomic.Int32
+	var videoOutputCalls atomic.Int32
+
+	// Set GPU alias that always succeeds.
+	ch.SetGPUAlias(func(sourceKey string) bool {
+		if sourceKey == "camera-1" {
+			aliasCalls.Add(1)
+			return true
+		}
+		return false
+	})
+
+	// Also set CPU fallback tap — should NOT be called when alias succeeds.
+	ch.SetGPUSourceTap(func(sourceKey string) *DecodedFrame {
+		t.Error("CPU fallback tap should not be called when GPU alias succeeds")
+		return nil
+	})
+
+	// Track video output calls — should NOT be called for aliased frames.
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
+		videoOutputCalls.Add(1)
+	})
+
+	pl := testPlaylist(liveItem("live-1", "camera-1"))
+	if err := ch.LoadPlaylist(pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	if err := ch.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Let it emit a few frames.
+	time.Sleep(200 * time.Millisecond)
+
+	aliases := aliasCalls.Load()
+	if aliases < 3 {
+		t.Errorf("GPU alias calls = %d, want >= 3", aliases)
+	}
+
+	// Video output should NOT have been called — GPU alias skips CPU path.
+	outputs := videoOutputCalls.Load()
+	if outputs != 0 {
+		t.Errorf("video output calls = %d, want 0 (GPU alias should skip CPU output)", outputs)
+	}
+
+	// Advance past to complete.
+	_ = ch.Next()
+	waitFor(t, 5*time.Second, func() bool {
+		return ch.State() == StateCompleted
+	})
+}
+
+func TestChannel_LiveTap_GPUAlias_FallbackToCPU(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{
+		Width:  320,
+		Height: 240,
+		FPS:    30.0,
+	})
+
+	var cpuTapCalls atomic.Int32
+
+	// GPU alias that always fails — source not available.
+	ch.SetGPUAlias(func(sourceKey string) bool {
+		return false
+	})
+
+	// CPU fallback should be called.
+	tapFrame := &DecodedFrame{
+		YUV:        make([]byte, 320*240*3/2),
+		Width:      320,
+		Height:     240,
+		IsKeyframe: true,
+	}
+	ch.SetGPUSourceTap(func(sourceKey string) *DecodedFrame {
+		if sourceKey == "camera-1" {
+			cpuTapCalls.Add(1)
+			return tapFrame
+		}
+		return nil
+	})
+
+	var frameCount atomic.Int32
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
+		frameCount.Add(1)
+	})
+
+	pl := testPlaylist(liveItem("live-1", "camera-1"))
+	if err := ch.LoadPlaylist(pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	if err := ch.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	cpuCalls := cpuTapCalls.Load()
+	if cpuCalls < 3 {
+		t.Errorf("CPU tap calls = %d, want >= 3 (fallback when GPU alias fails)", cpuCalls)
+	}
+
+	// Video output SHOULD have been called for CPU frames.
+	outputs := frameCount.Load()
+	if outputs < 3 {
+		t.Errorf("video output calls = %d, want >= 3", outputs)
+	}
+
+	_ = ch.Next()
+	waitFor(t, 5*time.Second, func() bool {
+		return ch.State() == StateCompleted
+	})
+}

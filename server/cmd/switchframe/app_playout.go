@@ -157,9 +157,19 @@ func (a *App) initPlayout() error {
 		},
 	)
 
-	// Wire GPU source tap for live playlist items. When a playout channel
-	// encounters a "live" item, it calls this tap to read the latest decoded
-	// frame from the GPU source manager's CPU frame cache.
+	// GPU-native live source aliasing: zero-copy frame routing in VRAM.
+	// When a playout channel encounters a "live" item, this aliases the
+	// channel's GPU frame to the live source's GPU frame — no CPU download
+	// or re-upload needed (saves ~3MB/frame round-trip at 30fps).
+	mgr.SetGPUAlias(func(channelKey, liveSourceKey string) bool {
+		if a.gpuState == nil || a.gpuState.sourceManager == nil {
+			return false
+		}
+		return a.gpuState.sourceManager.AliasSource(channelKey, liveSourceKey)
+	})
+
+	// CPU fallback tap for live playlist items. Used when GPU aliasing is
+	// unavailable (non-GPU builds or when the source has no GPU frame yet).
 	mgr.SetGPUSourceTap(func(channelKey, sourceKey string) *playout.DecodedFrame {
 		if a.gpuState == nil || a.gpuState.sourceManager == nil {
 			return nil
