@@ -2,12 +2,14 @@ package control
 
 import (
 	"encoding/json"
+	"encoding/xml"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/zsiec/switchframe/server/control/httperr"
 	"github.com/zsiec/switchframe/server/playout"
+	"github.com/zsiec/switchframe/server/playout/bxf"
 )
 
 // registerPlayoutRoutes registers playout channel control routes on the given mux.
@@ -28,6 +30,7 @@ func (a *API) registerPlayoutRoutes(mux *http.ServeMux) {
 
 	// As-run endpoints.
 	mux.HandleFunc("GET /api/playout/channels/{n}/asrun", a.handlePlayoutAsRunQuery)
+	mux.HandleFunc("GET /api/playout/channels/{n}/asrun/export", a.handlePlayoutAsRunExport)
 
 	// Cache endpoints (available even without playout manager, guarded by nil checks).
 	mux.HandleFunc("GET /api/playout/cache/status", a.handlePlayoutCacheStatus)
@@ -340,6 +343,37 @@ func (a *API) handlePlayoutAsRunQuery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	events := logger.Query(q)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(events)
+}
+
+// handlePlayoutAsRunExport exports as-run events in JSON or BXF format.
+func (a *API) handlePlayoutAsRunExport(w http.ResponseWriter, r *http.Request) {
+	n, err := parseChannelID(r)
+	if err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+
+	logger := a.playoutMgr.AsRunLogger()
+	if logger == nil {
+		httperr.Write(w, http.StatusNotImplemented, "as-run logging not configured")
+		return
+	}
+
+	q := playout.AsRunQuery{ChannelID: &n}
+	events := logger.Query(q)
+
+	format := r.URL.Query().Get("format")
+	if format == "bxf" {
+		msg := bxf.ExportAsRun(events)
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = w.Write([]byte(xml.Header))
+		_ = xml.NewEncoder(w).Encode(msg)
+		return
+	}
+
+	// Default: JSON export.
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(events)
 }
