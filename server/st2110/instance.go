@@ -20,6 +20,7 @@ import (
 // Instance wraps an MTL library handle.
 type Instance struct {
 	handle    C.mtl_handle
+	dpdkPort  string // stored for per-session port config
 	closeOnce sync.Once
 	closeErr  error
 }
@@ -61,7 +62,7 @@ func NewInstance(cfg InstanceConfig) (*Instance, error) {
 		return nil, fmt.Errorf("st2110: mtl_init failed for port %q ip %q", cfg.Port, cfg.SourceIP)
 	}
 
-	return &Instance{handle: handle}, nil
+	return &Instance{handle: handle, dpdkPort: cfg.Port}, nil
 }
 
 // Close releases the MTL instance. Safe to call concurrently or multiple times.

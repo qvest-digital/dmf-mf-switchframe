@@ -38,6 +38,10 @@ func (inst *Instance) CreateAudioTx(cfg TxAudioConfig) (*AudioTx, error) {
 	defer C.free(unsafe.Pointer(cName))
 	ops.name = cName
 
+	cPort := C.CString(inst.dpdkPort)
+	defer C.free(unsafe.Pointer(cPort))
+	C.st_txp_para_port_set(&ops.port, C.MTL_SESSION_PORT_P, cPort)
+
 	cDest := C.CString(cfg.MulticastIP)
 	defer C.free(unsafe.Pointer(cDest))
 	if ret := C.st_txp_para_dip_set(&ops.port, C.MTL_PORT_P, cDest); ret != 0 {

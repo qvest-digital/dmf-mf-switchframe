@@ -37,6 +37,10 @@ func (inst *Instance) CreateVideoTx(cfg TxVideoConfig) (*VideoTx, error) {
 	defer C.free(unsafe.Pointer(cName))
 	ops.name = cName
 
+	cPort := C.CString(inst.dpdkPort)
+	defer C.free(unsafe.Pointer(cPort))
+	C.st_txp_para_port_set(&ops.port, C.MTL_SESSION_PORT_P, cPort)
+
 	cDest := C.CString(cfg.MulticastIP)
 	defer C.free(unsafe.Pointer(cDest))
 	if ret := C.st_txp_para_dip_set(&ops.port, C.MTL_PORT_P, cDest); ret != 0 {
@@ -55,6 +59,9 @@ func (inst *Instance) CreateVideoTx(cfg TxVideoConfig) (*VideoTx, error) {
 	ops.fps = fpsToMTL(cfg.Format.FPSNum, cfg.Format.FPSDen)
 	ops.input_fmt = C.ST_FRAME_FMT_YUV420PLANAR8
 	ops.transport_fmt = C.ST20_FMT_YUV_422_10BIT
+	ops.transport_pacing = C.ST21_PACING_NARROW
+	ops.transport_packing = C.ST20_PACKING_BPM
+	ops.device = C.ST_PLUGIN_DEVICE_AUTO
 
 	frameBufs := cfg.FrameBuffers
 	if frameBufs == 0 {

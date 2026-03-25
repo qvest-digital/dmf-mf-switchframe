@@ -39,6 +39,10 @@ func (inst *Instance) CreateAncillaryTx(cfg TxAncillaryConfig) (*AncillaryTx, er
 	defer C.free(unsafe.Pointer(cName))
 	ops.name = cName
 
+	cPort := C.CString(inst.dpdkPort)
+	defer C.free(unsafe.Pointer(cPort))
+	C.st2110_st40_tx_set_port(&ops, 0, cPort)
+
 	a, b, c, d, err := parseIPv4(cfg.MulticastIP)
 	if err != nil {
 		return nil, fmt.Errorf("st2110: invalid multicast IP: %w", err)

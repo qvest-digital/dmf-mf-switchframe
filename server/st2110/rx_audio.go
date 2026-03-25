@@ -40,6 +40,10 @@ func (inst *Instance) CreateAudioRx(cfg RxAudioConfig) (*AudioRx, error) {
 	defer C.free(unsafe.Pointer(cName))
 	ops.name = cName
 
+	cPort := C.CString(inst.dpdkPort)
+	defer C.free(unsafe.Pointer(cPort))
+	C.st_rxp_para_port_set(&ops.port, C.MTL_SESSION_PORT_P, cPort)
+
 	cMcast := C.CString(cfg.MulticastIP)
 	defer C.free(unsafe.Pointer(cMcast))
 	if ret := C.st_rxp_para_ip_set(&ops.port, C.MTL_PORT_P, cMcast); ret != 0 {

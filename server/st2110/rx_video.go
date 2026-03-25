@@ -40,6 +40,11 @@ func (inst *Instance) CreateVideoRx(cfg RxVideoConfig) (*VideoRx, error) {
 	defer C.free(unsafe.Pointer(cName))
 	ops.name = cName
 
+	// Set DPDK port BDF (mandatory, must match mtl_init).
+	cPort := C.CString(inst.dpdkPort)
+	defer C.free(unsafe.Pointer(cPort))
+	C.st_rxp_para_port_set(&ops.port, C.MTL_SESSION_PORT_P, cPort)
+
 	// Use MTL helper functions to set port IP (avoids cgo anonymous union issues).
 	cMcast := C.CString(cfg.MulticastIP)
 	defer C.free(unsafe.Pointer(cMcast))
@@ -66,6 +71,7 @@ func (inst *Instance) CreateVideoRx(cfg RxVideoConfig) (*VideoRx, error) {
 	ops.fps = fpsToMTL(cfg.Format.FPSNum, cfg.Format.FPSDen)
 	ops.transport_fmt = C.ST20_FMT_YUV_422_10BIT
 	ops.output_fmt = C.ST_FRAME_FMT_YUV420PLANAR8
+	ops.device = C.ST_PLUGIN_DEVICE_AUTO
 
 	frameBufs := cfg.FrameBuffers
 	if frameBufs == 0 {
