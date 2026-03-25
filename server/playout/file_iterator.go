@@ -2,11 +2,22 @@ package playout
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/codec"
 )
+
+// audioFrameInfo holds extracted audio frame data for PTS-matched interleaving.
+// This decouples the iterator from the clip.BufferedAudioFrame type so audio
+// matching can happen lazily in Next().
+type audioFrameInfo struct {
+	data       []byte
+	pts        int64
+	sampleRate int
+	channels   int
+}
 
 // VideoDecoder decodes H.264 Annex B data to raw YUV420 planar.
 // Matches transition.VideoDecoder via structural typing.
@@ -35,11 +46,13 @@ func DefaultDecoderFactory() (VideoDecoder, error) {
 
 // FileFrameIterator demuxes and decodes a media file to raw YUV+audio frames.
 // It loads ALL frames into memory upfront (suitable for playout clips, not
-// multi-hour streams).
+// multi-hour streams). Audio is interleaved lazily in Next() using PTS matching.
 type FileFrameIterator struct {
-	frames []DecodedFrame
-	index  int
-	fps    float64
+	frames      []DecodedFrame
+	audioFrames []audioFrameInfo
+	index       int
+	audioIndex  int
+	fps         float64
 }
 
 // NewFileFrameIterator demuxes and decodes a media file, returning an iterator
@@ -153,48 +166,67 @@ func NewFileFrameIteratorWithDecoder(path string, factory DecoderFactory) (*File
 		return nil, fmt.Errorf("no frames decoded from %s", path)
 	}
 
-	// Step 5: Interleave audio — for each video frame, attach the nearest
-	// audio frame by PTS. Each audio frame is used at most once.
-	if len(audioFrames) > 0 {
-		audioIdx := 0
-		totalAudio := len(audioFrames)
-		totalVideo := len(decoded)
-
-		for i := range decoded {
-			// Distribute audio proportionally: target audio index = i * totalAudio / totalVideo
-			targetIdx := (i + 1) * totalAudio / totalVideo
-			if targetIdx > totalAudio {
-				targetIdx = totalAudio
-			}
-
-			// Attach the next audio frame in sequence if we haven't reached the target.
-			if audioIdx < targetIdx && audioIdx < totalAudio {
-				af := audioFrames[audioIdx]
-				decoded[i].AudioData = af.Data()
-				decoded[i].AudioPTS = af.PTS()
-				decoded[i].AudioSampleRate = af.SampleRate()
-				decoded[i].AudioChannels = af.Channels()
-				audioIdx++
-			}
-		}
+	// Step 5: Extract audio frame info for PTS-matched interleaving in Next().
+	var audio []audioFrameInfo
+	for _, af := range audioFrames {
+		audio = append(audio, audioFrameInfo{
+			data:       af.Data(),
+			pts:        af.PTS(),
+			sampleRate: af.SampleRate(),
+			channels:   af.Channels(),
+		})
 	}
 
 	// Step 6: Estimate FPS from decoded frame PTS values.
 	fps := estimateFPSFromDecoded(decoded)
 
 	return &FileFrameIterator{
-		frames: decoded,
-		index:  0,
-		fps:    fps,
+		frames:      decoded,
+		audioFrames: audio,
+		index:       0,
+		fps:         fps,
 	}, nil
 }
 
 // Next returns the next decoded frame, or (nil, nil) at end of stream.
+// Audio frames are matched by PTS: each video frame gets the first available
+// audio frame whose PTS falls within the video frame's time window
+// [currentPTS, nextVideoPTS). The last video frame's window extends to MaxInt64.
 func (f *FileFrameIterator) Next() (*DecodedFrame, error) {
 	if f.index >= len(f.frames) {
 		return nil, nil
 	}
 	frame := &f.frames[f.index]
+
+	// Determine the PTS upper bound for this video frame's audio window.
+	var ptsBound int64
+	if f.index+1 < len(f.frames) {
+		ptsBound = f.frames[f.index+1].PTS
+	} else {
+		ptsBound = math.MaxInt64
+	}
+
+	// Determine the lower bound: for the first video frame, accept all audio
+	// from the beginning (lower bound = MinInt64). For subsequent frames, skip
+	// audio that falls before this video frame's PTS.
+	if f.index > 0 {
+		for f.audioIndex < len(f.audioFrames) && f.audioFrames[f.audioIndex].pts < frame.PTS {
+			f.audioIndex++
+		}
+	}
+
+	// Attach the first audio frame in [lowerBound, nextVideoPTS).
+	if f.audioIndex < len(f.audioFrames) {
+		af := f.audioFrames[f.audioIndex]
+		if af.pts < ptsBound {
+			frame.AudioData = af.data
+			frame.AudioPTS = af.pts
+			frame.AudioSampleRate = af.sampleRate
+			frame.AudioChannels = af.channels
+			f.audioIndex++
+		}
+	}
+
 	f.index++
 	return frame, nil
 }
