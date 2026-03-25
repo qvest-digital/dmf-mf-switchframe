@@ -100,6 +100,9 @@ func (n *gpuNeuralKeyNode) ProcessGPU(frame *GPUFrame) error {
 			snap.Similarity, snap.Smoothness,
 			defaultCUDAStream,
 		)
+		// Release the ref acquired by GetFrame in SnapshotNeuralKeys.
+		snap.FillFrame.Release()
+
 		if err != nil {
 			slog.Warn("gpu_neural_key: inference failed",
 				"source", snap.SourceKey, "error", err)
