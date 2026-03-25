@@ -3,6 +3,7 @@ package playout
 import (
 	"log/slog"
 	"sync"
+	"time"
 )
 
 // Manager orchestrates multiple playout channels (up to MaxChannels).
@@ -249,6 +250,34 @@ func (m *Manager) ChannelStates() []ChannelStatus {
 		states[i].Pods = &pbStatus
 	}
 	return states
+}
+
+// Snapshot captures the full manager state (all channels + pods) for persistence.
+// The returned PersistedState is a deep copy safe for serialization.
+func (m *Manager) Snapshot() PersistedState {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state := PersistedState{
+		Version:   1,
+		Timestamp: time.Now().UTC(),
+		Channels:  make([]PersistedChannel, MaxChannels),
+	}
+	for i := 0; i < MaxChannels; i++ {
+		state.Channels[i] = m.channels[i].Snapshot()
+		pods := m.podBoards[i].ListPods()
+		for _, p := range pods {
+			state.Channels[i].Pods = append(state.Channels[i].Pods, PersistedPod{
+				ID:            p.ID,
+				Config:        p.Config,
+				State:         p.State,
+				Armed:         p.Armed,
+				ElapsedMs:     p.ElapsedMs,
+				FiredAt:       p.FiredAt,
+				SCTE35EventID: p.SCTE35EventID,
+			})
+		}
+	}
+	return state
 }
 
 // SetOnStateChange registers a callback invoked when any channel state changes.

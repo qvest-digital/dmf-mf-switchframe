@@ -74,6 +74,26 @@ func NewChannel(id int, config ChannelConfig) *Channel {
 	}
 }
 
+// Snapshot returns a PersistedChannel capturing the channel's current state.
+// The returned value is a deep copy safe for serialization without holding the lock.
+func (c *Channel) Snapshot() PersistedChannel {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	snap := PersistedChannel{
+		ID:     c.id,
+		State:  c.state,
+		Mode:   c.mode,
+		Cursor: c.cursor,
+	}
+	if c.playlist != nil {
+		plCopy := *c.playlist
+		plCopy.Items = make([]PlaylistItem, len(c.playlist.Items))
+		copy(plCopy.Items, c.playlist.Items)
+		snap.Playlist = &plCopy
+	}
+	return snap
+}
+
 // Key returns the virtual source key for this channel (e.g., "playout:1").
 func (c *Channel) Key() string {
 	return fmt.Sprintf("playout:%d", c.id)

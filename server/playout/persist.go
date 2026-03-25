@@ -1,8 +1,10 @@
 package playout
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -96,4 +98,92 @@ func loadPersistedState(path string) (*PersistedState, error) {
 	}
 
 	return &state, nil
+}
+
+// StatePersisterConfig configures the background state persister.
+type StatePersisterConfig struct {
+	Dir      string
+	Interval time.Duration
+}
+
+// stateSnapshotter is the interface needed by StatePersister.
+type stateSnapshotter interface {
+	Snapshot() PersistedState
+}
+
+// StatePersister periodically snapshots the manager state and writes it to disk.
+// It performs a final save on Stop to minimize data loss on graceful shutdown.
+type StatePersister struct {
+	snapshotter stateSnapshotter
+	config      StatePersisterConfig
+	cancel      context.CancelFunc
+	done        chan struct{}
+}
+
+// NewStatePersister creates a StatePersister. Call Start to begin periodic saves.
+func NewStatePersister(s stateSnapshotter, config StatePersisterConfig) *StatePersister {
+	if config.Interval <= 0 {
+		config.Interval = 5 * time.Second
+	}
+	return &StatePersister{
+		snapshotter: s,
+		config:      config,
+	}
+}
+
+// Path returns the full file path of the persisted state file.
+func (p *StatePersister) Path() string {
+	return filepath.Join(p.config.Dir, "playout-state.json")
+}
+
+// Start launches the background save goroutine.
+func (p *StatePersister) Start() {
+	ctx, cancel := context.WithCancel(context.Background())
+	p.cancel = cancel
+	p.done = make(chan struct{})
+	go p.run(ctx)
+}
+
+// Stop cancels the background goroutine, waits for it to finish, and performs
+// a final save to ensure the most recent state is on disk.
+func (p *StatePersister) Stop() {
+	if p.cancel != nil {
+		p.cancel()
+	}
+	if p.done != nil {
+		<-p.done
+	}
+	// Final save on shutdown.
+	p.save()
+}
+
+// run is the background goroutine that periodically snapshots and saves.
+func (p *StatePersister) run(ctx context.Context) {
+	defer close(p.done)
+
+	ticker := time.NewTicker(p.config.Interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			p.save()
+		}
+	}
+}
+
+// save takes a snapshot and writes it atomically to disk.
+func (p *StatePersister) save() {
+	// Ensure directory exists.
+	if err := os.MkdirAll(p.config.Dir, 0755); err != nil {
+		slog.Warn("playout: persist dir creation failed", "dir", p.config.Dir, "error", err)
+		return
+	}
+
+	snap := p.snapshotter.Snapshot()
+	if err := atomicWriteJSON(p.Path(), &snap); err != nil {
+		slog.Warn("playout: state persist failed", "error", err)
+	}
 }
