@@ -146,6 +146,15 @@ var errorMappings = []errorMapping{
 	{playout.ErrInvalidState, http.StatusBadRequest},
 	{playout.ErrInvalidItem, http.StatusBadRequest},
 
+	// Playout pods
+	{playout.ErrPodNotFound, http.StatusNotFound},
+	{playout.ErrPodAlreadyActive, http.StatusConflict},
+	{playout.ErrPodNotArmed, http.StatusBadRequest},
+	{playout.ErrPodTerminal, http.StatusBadRequest},
+	{playout.ErrPodNoDumpOut, http.StatusForbidden},
+	{playout.ErrPodNotActive, http.StatusBadRequest},
+	{playout.ErrNoPodBoard, http.StatusNotImplemented},
+
 	// Comms
 	{comms.ErrNotInComms, http.StatusNotFound},
 	{comms.ErrCommsFull, http.StatusConflict},

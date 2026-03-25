@@ -628,6 +628,7 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	a.registerLayoutRoutes(mux)
 	a.registerClipRoutes(mux)
 	a.registerPlayoutRoutes(mux)
+	a.registerPlayoutPodRoutes(mux)
 	a.registerCommsRoutes(mux)
 	a.registerSTMapRoutes(mux)
 	a.registerColorGradeRoutes(mux)
