@@ -87,13 +87,16 @@ func (inst *Instance) Close() error {
 }
 
 // PTPStatus returns the current PTP synchronization state.
+// Note: MTL's kernel socket mode does not provide true PTP sync status.
+// Locked is set to false since we cannot determine grandmaster sync state
+// from mtl_ptp_read_time alone (it returns wall clock time, not offset).
 func (inst *Instance) PTPStatus() (PTPStatus, error) {
 	if inst.handle == nil {
 		return PTPStatus{}, ErrST2110NotAvailable
 	}
 	ptpNs := C.mtl_ptp_read_time(inst.handle)
 	return PTPStatus{
-		Locked:   ptpNs > 0,
+		Locked:   false, // cannot determine sync state from timestamp alone
 		OffsetNs: int64(ptpNs),
 	}, nil
 }
@@ -112,29 +115,38 @@ func parseIPv4(s string) (a, b, c, d C.uint8_t, err error) {
 }
 
 // fpsToMTL converts a rational frame rate to the MTL fps enum.
+// Uses exact rational matching to avoid float comparison ambiguity.
+// Panics on unsupported frame rates to prevent silent misconfiguration.
 func fpsToMTL(num, den int) C.enum_st_fps {
-	fps := float64(num) / float64(den)
-	switch {
-	case fps > 59.9 && fps <= 60.0:
-		if den == 1 {
-			return C.ST_FPS_P60
-		}
-		return C.ST_FPS_P59_94
-	case fps > 49.9 && fps <= 50.0:
-		return C.ST_FPS_P50
-	case fps > 29.9 && fps <= 30.0:
-		if den == 1 {
-			return C.ST_FPS_P30
-		}
-		return C.ST_FPS_P29_97
-	case fps > 24.9 && fps <= 25.0:
-		return C.ST_FPS_P25
-	case fps > 23.9 && fps <= 24.0:
-		if den == 1 {
-			return C.ST_FPS_P24
-		}
-		return C.ST_FPS_P23_98
-	default:
-		return C.ST_FPS_P29_97
+	if den == 0 {
+		panic(fmt.Sprintf("st2110: fpsToMTL: zero denominator (num=%d)", num))
 	}
+
+	// Match by exact rational value (num/den) to avoid float ambiguity.
+	// Normalize: 30000/1001 and 60000/2002 should both match.
+	// Use cross-multiplication: a/b == c/d iff a*d == b*c.
+	type rate struct{ num, den int }
+	table := []struct {
+		r   rate
+		fps C.enum_st_fps
+	}{
+		{rate{24000, 1001}, C.ST_FPS_P23_98},
+		{rate{24, 1}, C.ST_FPS_P24},
+		{rate{25, 1}, C.ST_FPS_P25},
+		{rate{30000, 1001}, C.ST_FPS_P29_97},
+		{rate{30, 1}, C.ST_FPS_P30},
+		{rate{50, 1}, C.ST_FPS_P50},
+		{rate{60000, 1001}, C.ST_FPS_P59_94},
+		{rate{60, 1}, C.ST_FPS_P60},
+		{rate{120000, 1001}, C.ST_FPS_P119_88},
+		{rate{120, 1}, C.ST_FPS_P120},
+	}
+
+	for _, entry := range table {
+		if num*entry.r.den == den*entry.r.num {
+			return entry.fps
+		}
+	}
+
+	panic(fmt.Sprintf("st2110: fpsToMTL: unsupported frame rate %d/%d", num, den))
 }

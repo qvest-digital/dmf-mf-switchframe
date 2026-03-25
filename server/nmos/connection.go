@@ -94,9 +94,10 @@ func (cs *ConnectionServer) Handler() http.Handler {
 func (cs *ConnectionServer) AddSender(id string, sdp string) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
+	masterTrue := true
 	cs.senderStates[id] = &ConnectionState{
-		Staged: StagedParams{TransportParams: []TransportParams{{}}},
-		Active: StagedParams{TransportParams: []TransportParams{{}}},
+		Staged: StagedParams{TransportParams: []TransportParams{{}}, MasterEnable: &masterTrue},
+		Active: StagedParams{TransportParams: []TransportParams{{}}, MasterEnable: &masterTrue},
 	}
 	cs.senderSDP[id] = sdp
 }
@@ -105,9 +106,10 @@ func (cs *ConnectionServer) AddSender(id string, sdp string) {
 func (cs *ConnectionServer) AddReceiver(id string) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
+	masterTrue := true
 	cs.receiverStates[id] = &ConnectionState{
-		Staged: StagedParams{TransportParams: []TransportParams{{}}},
-		Active: StagedParams{TransportParams: []TransportParams{{}}},
+		Staged: StagedParams{TransportParams: []TransportParams{{}}, MasterEnable: &masterTrue},
+		Active: StagedParams{TransportParams: []TransportParams{{}}, MasterEnable: &masterTrue},
 	}
 }
 

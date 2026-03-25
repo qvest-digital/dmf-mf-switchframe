@@ -169,7 +169,7 @@ type Sender struct {
 	DeviceID          string              `json:"device_id"`
 	ManifestHref      string              `json:"manifest_href"`
 	InterfaceBindings []string            `json:"interface_bindings"`
-	Caps              map[string]interface{} `json:"caps,omitempty"`
+	Caps              map[string]interface{} `json:"caps"`
 	Subscription      SenderSubscription  `json:"subscription"`
 }
 

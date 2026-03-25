@@ -78,6 +78,7 @@ func GenerateSDP(params SDPParams) (string, error) {
 	fmt.Fprintf(&b, "m=%s %d RTP/AVP %d\r\n", mediaType, params.Port, params.PayloadType)
 	fmt.Fprintf(&b, "c=IN IP4 %s/64\r\n", params.MulticastIP)
 	fmt.Fprintf(&b, "a=source-filter: incl IN IP4 %s %s\r\n", params.MulticastIP, params.SourceIP)
+	fmt.Fprintf(&b, "a=sendonly\r\n")
 
 	pt := params.PayloadType
 

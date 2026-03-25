@@ -112,7 +112,7 @@ func (a *App) initST2110(ctx context.Context) error {
 		Clocks: []nmos.Clock{
 			{
 				Name:    "clk0",
-				RefType: "internal",
+				RefType: clockRefType(a.cfg.ST2110PTP),
 			},
 		},
 		Interfaces: []nmos.Interface{},
@@ -558,7 +558,7 @@ func (a *App) activateST2110Receiver(id string, params nmos.StagedParams) error 
 					Height: h,
 					PTS:    pts,
 					DTS:    pts,
-					Codec:  "h264",
+					Codec:  "raw",
 				}
 				a.sw.IngestRawVideo(key, pf)
 			},
@@ -888,4 +888,12 @@ func (a *App) deactivateST2110Sender(id string) error {
 
 	slog.Info("ST 2110: sender deactivated", "id", id)
 	return nil
+}
+
+// clockRefType returns the IS-04 clock ref_type based on PTP configuration.
+func clockRefType(ptpMode string) string {
+	if ptpMode != "" && ptpMode != "none" {
+		return "ptp"
+	}
+	return "internal"
 }
