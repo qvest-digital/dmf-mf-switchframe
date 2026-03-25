@@ -78,6 +78,11 @@ type AppConfig struct {
 	ClipStorageMax   int64         // --clip-storage-max (bytes, default 10GB)
 	ClipEphemeralTTL time.Duration // --clip-ephemeral-ttl (default 24h)
 
+	// Playout.
+	PlayoutEnabled      bool // --playout (enable playout subsystem)
+	PlayoutCacheMaxGB   int  // --playout-cache-max (GB, default 200)
+	PlayoutAsRunRetDays int  // --playout-asrun-retention (days, default 30)
+
 	// SRT input.
 	SRTListen    string // SRT listener address (e.g., ":6464")
 	SRTLatencyMs int    // Default SRT latency in milliseconds
@@ -127,6 +132,11 @@ func run() error {
 		cfg.SRTListen = srt.DefaultPort
 	}
 
+	// Auto-enable playout in demo mode so `make demo` includes it.
+	if cfg.Demo {
+		cfg.PlayoutEnabled = true
+	}
+
 	app := &App{cfg: cfg}
 	defer app.Close()
 
@@ -166,8 +176,10 @@ func run() error {
 	if err := app.initClips(); err != nil {
 		return err
 	}
-	if err := app.initPlayout(); err != nil {
-		return err
+	if cfg.PlayoutEnabled {
+		if err := app.initPlayout(); err != nil {
+			return err
+		}
 	}
 	if err := app.initSRT(); err != nil {
 		return err
@@ -237,6 +249,11 @@ func parseConfig() (AppConfig, error) {
 	// Clip storage flags.
 	clipStorageMaxFlag := flag.Int64("clip-storage-max", 10<<30, "Maximum clip storage in bytes (default 10GB)")
 	clipEphemeralTTLFlag := flag.Duration("clip-ephemeral-ttl", 24*time.Hour, "TTL for ephemeral clips (default 24h)")
+
+	// Playout flags.
+	playoutFlag := flag.Bool("playout", false, "Enable playout subsystem")
+	playoutCacheMaxFlag := flag.Int("playout-cache-max", 200, "Playout cache max size in GB")
+	playoutAsRunRetFlag := flag.Int("playout-asrun-retention", 30, "As-run log retention in days")
 
 	// SRT input flags.
 	srtListenFlag := flag.String("srt-listen", "", "SRT listener address for incoming push connections (e.g., :6464)")
@@ -380,6 +397,9 @@ func parseConfig() (AppConfig, error) {
 		Captions:             *captionsFlag,
 		ClipStorageMax:       *clipStorageMaxFlag,
 		ClipEphemeralTTL:     *clipEphemeralTTLFlag,
+		PlayoutEnabled:       *playoutFlag,
+		PlayoutCacheMaxGB:    *playoutCacheMaxFlag,
+		PlayoutAsRunRetDays:  *playoutAsRunRetFlag,
 		SRTListen:            *srtListenFlag,
 		SRTLatencyMs:         *srtLatencyFlag,
 		SRTOutputPortBase:    srtOutputBase,
