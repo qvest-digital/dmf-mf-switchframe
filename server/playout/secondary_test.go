@@ -211,3 +211,54 @@ func TestScheduler_DuplicateTickDoesNotRefire(t *testing.T) {
 		t.Errorf("expected 1 call, got %d (event refired)", len(h.calls))
 	}
 }
+
+func TestScheduler_Reanchor(t *testing.T) {
+	h := &mockHandler{}
+	s := NewSecondaryEventScheduler(h)
+
+	events := []SecondaryEvent{
+		{Type: "graphics_on", Layer: 1, Template: "lower-third", OffsetMs: 500, Anchor: "start"},
+		{Type: "graphics_off", Layer: 1, OffsetMs: -2000, Anchor: "end"},
+	}
+
+	// 10s item: start-anchored fires at 500ms, end-anchored at 10000-2000=8000ms.
+	s.BeginItem(events, 10000)
+
+	// Tick to 500 — start-anchored fires.
+	s.Tick(500)
+	if len(h.calls) != 1 {
+		t.Fatalf("at t=500: expected 1 call, got %d", len(h.calls))
+	}
+	if h.calls[0].Method != "OnGraphicsOn" {
+		t.Errorf("at t=500: expected OnGraphicsOn, got %s", h.calls[0].Method)
+	}
+
+	// Reanchor to 6000ms — end-anchored now fires at 6000-2000=4000ms.
+	s.Reanchor(6000)
+
+	// Tick to 3999 — end-anchored should not have fired yet.
+	s.Tick(3999)
+	if len(h.calls) != 1 {
+		t.Fatalf("at t=3999 after reanchor: expected 1 call, got %d", len(h.calls))
+	}
+
+	// Tick to 4000 — end-anchored fires.
+	s.Tick(4000)
+	if len(h.calls) != 2 {
+		t.Fatalf("at t=4000 after reanchor: expected 2 calls, got %d", len(h.calls))
+	}
+	if h.calls[1].Method != "OnGraphicsOff" {
+		t.Errorf("at t=4000: expected OnGraphicsOff, got %s", h.calls[1].Method)
+	}
+
+	// Verify the start-anchored event was NOT re-fired by the reanchor.
+	graphicsOnCount := 0
+	for _, c := range h.calls {
+		if c.Method == "OnGraphicsOn" {
+			graphicsOnCount++
+		}
+	}
+	if graphicsOnCount != 1 {
+		t.Errorf("OnGraphicsOn fired %d times, want exactly 1", graphicsOnCount)
+	}
+}
