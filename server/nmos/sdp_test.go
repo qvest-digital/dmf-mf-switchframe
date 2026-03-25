@@ -27,7 +27,10 @@ func TestGenerateVideoSDP(t *testing.T) {
 		},
 	}
 
-	sdp := GenerateSDP(params)
+	sdp, err := GenerateSDP(params)
+	if err != nil {
+		t.Fatalf("GenerateSDP failed: %v", err)
+	}
 
 	// Check version line
 	if !strings.HasPrefix(sdp, "v=0\r\n") {
@@ -133,7 +136,10 @@ func TestGenerateVideoSDP_Interlaced(t *testing.T) {
 		},
 	}
 
-	sdp := GenerateSDP(params)
+	sdp, err := GenerateSDP(params)
+	if err != nil {
+		t.Fatalf("GenerateSDP failed: %v", err)
+	}
 
 	fmtpLine := ""
 	for _, line := range strings.Split(sdp, "\r\n") {
@@ -168,7 +174,10 @@ func TestGenerateAudioSDP(t *testing.T) {
 		},
 	}
 
-	sdp := GenerateSDP(params)
+	sdp, err := GenerateSDP(params)
+	if err != nil {
+		t.Fatalf("GenerateSDP failed: %v", err)
+	}
 
 	// Check media line for audio
 	if !strings.Contains(sdp, "m=audio 5006 RTP/AVP 97\r\n") {
@@ -218,7 +227,10 @@ func TestGenerateAudioSDP_NoChannelOrder(t *testing.T) {
 		},
 	}
 
-	sdp := GenerateSDP(params)
+	sdp, err := GenerateSDP(params)
+	if err != nil {
+		t.Fatalf("GenerateSDP failed: %v", err)
+	}
 
 	// Should not have fmtp line when no channel order
 	for _, line := range strings.Split(sdp, "\r\n") {
@@ -247,7 +259,10 @@ func TestGenerateAncillarySDP(t *testing.T) {
 		},
 	}
 
-	sdp := GenerateSDP(params)
+	sdp, err := GenerateSDP(params)
+	if err != nil {
+		t.Fatalf("GenerateSDP failed: %v", err)
+	}
 
 	// Ancillary uses "video" as media type per RFC 8331
 	if !strings.Contains(sdp, "m=video 5010 RTP/AVP 100\r\n") {
@@ -508,7 +523,10 @@ func TestSDPRoundTrip(t *testing.T) {
 		},
 	}
 
-	sdp := GenerateSDP(original)
+	sdp, err := GenerateSDP(original)
+	if err != nil {
+		t.Fatalf("GenerateSDP failed: %v", err)
+	}
 	parsed, err := ParseSDP(sdp)
 	if err != nil {
 		t.Fatalf("ParseSDP round-trip failed: %v", err)
@@ -587,7 +605,10 @@ func TestSDPRoundTrip_Audio(t *testing.T) {
 		},
 	}
 
-	sdp := GenerateSDP(original)
+	sdp, err := GenerateSDP(original)
+	if err != nil {
+		t.Fatalf("GenerateSDP failed: %v", err)
+	}
 	parsed, err := ParseSDP(sdp)
 	if err != nil {
 		t.Fatalf("ParseSDP round-trip failed: %v", err)
@@ -627,7 +648,10 @@ func TestSDPRoundTrip_Ancillary(t *testing.T) {
 		},
 	}
 
-	sdp := GenerateSDP(original)
+	sdp, err := GenerateSDP(original)
+	if err != nil {
+		t.Fatalf("GenerateSDP failed: %v", err)
+	}
 	parsed, err := ParseSDP(sdp)
 	if err != nil {
 		t.Fatalf("ParseSDP round-trip failed: %v", err)
@@ -652,6 +676,29 @@ func TestParseSDP_InvalidInput(t *testing.T) {
 		{"empty", ""},
 		{"no media line", "v=0\r\ns=Test\r\nt=0 0\r\n"},
 		{"no rtpmap", "v=0\r\ns=Test\r\nt=0 0\r\nm=video 5004 RTP/AVP 96\r\nc=IN IP4 239.1.0.1/64\r\n"},
+		{"invalid port", "v=0\r\n" +
+			"o=- 1700000000 1700000000 IN IP4 192.168.1.10\r\n" +
+			"s=Test\r\n" +
+			"t=0 0\r\n" +
+			"m=video abc RTP/AVP 96\r\n" +
+			"c=IN IP4 239.1.0.1/64\r\n" +
+			"a=rtpmap:96 raw/90000\r\n"},
+		{"invalid payload type", "v=0\r\n" +
+			"o=- 1700000000 1700000000 IN IP4 192.168.1.10\r\n" +
+			"s=Test\r\n" +
+			"t=0 0\r\n" +
+			"m=video 5004 RTP/AVP xyz\r\n" +
+			"c=IN IP4 239.1.0.1/64\r\n" +
+			"a=rtpmap:96 raw/90000\r\n"},
+		{"invalid PTP domain", "v=0\r\n" +
+			"o=- 1700000000 1700000000 IN IP4 192.168.1.10\r\n" +
+			"s=Test\r\n" +
+			"t=0 0\r\n" +
+			"m=video 5004 RTP/AVP 96\r\n" +
+			"c=IN IP4 239.1.0.1/64\r\n" +
+			"a=rtpmap:96 raw/90000\r\n" +
+			"a=fmtp:96 sampling=YCbCr-4:2:2; width=1920; height=1080; depth=10; exactframerate=25\r\n" +
+			"a=ts-refclk:ptp=IEEE1588-2008:08-00-11-ff-fe-21-e1-b0:notanumber\r\n"},
 	}
 
 	for _, tt := range tests {
@@ -661,6 +708,22 @@ func TestParseSDP_InvalidInput(t *testing.T) {
 				t.Error("expected error for invalid SDP")
 			}
 		})
+	}
+}
+
+func TestGenerateSDP_NoMediaType(t *testing.T) {
+	_, err := GenerateSDP(SDPParams{
+		SessionName: "Empty",
+		SourceIP:    "192.168.1.10",
+		MulticastIP: "239.1.0.1",
+		Port:        5004,
+		PayloadType: 96,
+	})
+	if err == nil {
+		t.Error("expected error when no media type (Video/Audio/Ancillary) is set")
+	}
+	if err != nil && !strings.Contains(err.Error(), "at least one of") {
+		t.Errorf("unexpected error message: %v", err)
 	}
 }
 

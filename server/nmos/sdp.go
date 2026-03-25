@@ -53,7 +53,12 @@ type SDPAncillaryParams struct {
 }
 
 // GenerateSDP produces an RFC 4566 SDP string for ST 2110 streams.
-func GenerateSDP(params SDPParams) string {
+// Returns an error if none of Video, Audio, or Ancillary params are set.
+func GenerateSDP(params SDPParams) (string, error) {
+	if params.Video == nil && params.Audio == nil && params.Ancillary == nil {
+		return "", fmt.Errorf("at least one of Video, Audio, or Ancillary must be set")
+	}
+
 	ts := time.Now().Unix()
 	var b strings.Builder
 
@@ -90,7 +95,7 @@ func GenerateSDP(params SDPParams) string {
 		fmt.Fprintf(&b, "a=ts-refclk:ptp=IEEE1588-2008:%s:%d\r\n", params.PTPGrandmaster, params.PTPDomain)
 	}
 
-	return b.String()
+	return b.String(), nil
 }
 
 func generateVideoSDP(b *strings.Builder, pt int, params SDPParams) {
@@ -199,8 +204,15 @@ func ParseSDP(raw string) (SDPParams, error) {
 			// m={type} {port} RTP/AVP {pt}
 			parts := strings.Fields(line[2:])
 			if len(parts) >= 4 {
-				params.Port, _ = strconv.Atoi(parts[1])
-				params.PayloadType, _ = strconv.Atoi(parts[3])
+				var err error
+				params.Port, err = strconv.Atoi(parts[1])
+				if err != nil {
+					return params, fmt.Errorf("invalid port %q in media line: %w", parts[1], err)
+				}
+				params.PayloadType, err = strconv.Atoi(parts[3])
+				if err != nil {
+					return params, fmt.Errorf("invalid payload type %q in media line: %w", parts[3], err)
+				}
 			}
 
 		case strings.HasPrefix(line, "c=IN IP4 "):
@@ -259,7 +271,11 @@ func ParseSDP(raw string) (SDPParams, error) {
 			lastColon := strings.LastIndex(rest, ":")
 			if lastColon >= 0 {
 				params.PTPGrandmaster = rest[:lastColon]
-				params.PTPDomain, _ = strconv.Atoi(rest[lastColon+1:])
+				var err error
+				params.PTPDomain, err = strconv.Atoi(rest[lastColon+1:])
+				if err != nil {
+					return params, fmt.Errorf("invalid PTP domain %q: %w", rest[lastColon+1:], err)
+				}
 			}
 		}
 	}
