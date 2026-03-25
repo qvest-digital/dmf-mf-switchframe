@@ -7,8 +7,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/playout"
+	"github.com/zsiec/switchframe/server/scte35"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -101,6 +104,14 @@ func (a *App) initPlayout() error {
 		a.broadcastState(nil)
 	})
 
+	// Wire secondary event handler.
+	mgr.SetSecondaryHandler(&playoutSecondaryHandler{
+		compositor:     a.compositor,
+		mixer:          a.mixer,
+		captionMgr:     a.captionMgr,
+		scte35Injector: a.scte35Injector,
+	})
+
 	a.playoutMgr = mgr
 	a.playoutCache = cache
 	a.playoutPrefetcher = prefetcher
@@ -113,4 +124,118 @@ func playoutChannelIDFromKey(key string) int {
 	s := strings.TrimPrefix(key, "playout:")
 	n, _ := strconv.Atoi(s)
 	return n
+}
+
+// playoutSecondaryHandler implements playout.SecondaryEventHandler by
+// delegating to real subsystems (graphics, audio, captions, SCTE-35).
+// Nil subsystem pointers are safe — each method checks before calling.
+type playoutSecondaryHandler struct {
+	compositor     graphicsDeleter
+	mixer          audioController
+	captionMgr     captionController
+	scte35Injector scte35Cuer
+}
+
+// Narrow interfaces — depend only on methods we actually call.
+type graphicsDeleter interface {
+	DeleteImage(id int) error
+}
+
+type audioController interface {
+	SetLevel(sourceKey string, levelDB float64) error
+	SetMuted(sourceKey string, muted bool) error
+	SetAFV(sourceKey string, afv bool) error
+}
+
+type captionController interface {
+	SetMode(mode caption.Mode)
+	IngestText(text string)
+}
+
+type scte35Cuer interface {
+	InjectCue(msg *scte35.CueMessage) (uint32, error)
+}
+
+func (h *playoutSecondaryHandler) OnGraphicsOn(layer int, template string) error {
+	// Graphics on with template: Phase 3 logs the event. Full template-based
+	// image loading will be added when the graphics template registry exists.
+	slog.Info("playout: secondary graphics_on", "layer", layer, "template", template)
+	return nil
+}
+
+func (h *playoutSecondaryHandler) OnGraphicsOff(layer int) error {
+	if h.compositor == nil {
+		return nil
+	}
+	return h.compositor.DeleteImage(layer)
+}
+
+func (h *playoutSecondaryHandler) OnGraphicsUpdate(layer int, template string) error {
+	slog.Info("playout: secondary graphics_update", "layer", layer, "template", template)
+	return nil
+}
+
+func (h *playoutSecondaryHandler) OnAudioLevel(sourceKey string, levelDB float64) error {
+	if h.mixer == nil {
+		return nil
+	}
+	return h.mixer.SetLevel(sourceKey, levelDB)
+}
+
+func (h *playoutSecondaryHandler) OnAudioMute(sourceKey string, muted bool) error {
+	if h.mixer == nil {
+		return nil
+	}
+	return h.mixer.SetMuted(sourceKey, muted)
+}
+
+func (h *playoutSecondaryHandler) OnAudioAFV(sourceKey string, afv bool) error {
+	if h.mixer == nil {
+		return nil
+	}
+	return h.mixer.SetAFV(sourceKey, afv)
+}
+
+func (h *playoutSecondaryHandler) OnCaptionMode(mode string) error {
+	if h.captionMgr == nil {
+		return nil
+	}
+	modeMap := map[string]caption.Mode{
+		"off":         caption.ModeOff,
+		"passthrough": caption.ModePassThrough,
+		"author":      caption.ModeAuthor,
+		"auto":        caption.ModeAuto,
+	}
+	m, ok := modeMap[mode]
+	if !ok {
+		return fmt.Errorf("playout: unknown caption mode %q", mode)
+	}
+	h.captionMgr.SetMode(m)
+	return nil
+}
+
+func (h *playoutSecondaryHandler) OnCaptionText(text string) error {
+	if h.captionMgr == nil {
+		return nil
+	}
+	h.captionMgr.IngestText(text)
+	return nil
+}
+
+func (h *playoutSecondaryHandler) OnSCTE35Cue(data *playout.SCTE35EventData) error {
+	if h.scte35Injector == nil || data == nil {
+		return nil
+	}
+	msg := &scte35.CueMessage{
+		CommandType: 0x05, // splice_insert
+		IsOut:       true,
+		AutoReturn:  data.AutoReturn,
+		Source:      "playout",
+	}
+	if data.BreakDurationMs > 0 {
+		d := time.Duration(data.BreakDurationMs) * time.Millisecond
+		msg.BreakDuration = &d
+	}
+	_, err := h.scte35Injector.InjectCue(msg)
+	return err
 }
