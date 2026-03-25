@@ -2,6 +2,7 @@ package playout
 
 import (
 	"fmt"
+	"log/slog"
 	"sort"
 )
 
@@ -72,7 +73,9 @@ func (s *SecondaryEventScheduler) Tick(elapsedMs int64) {
 			break // events are sorted, no more can fire
 		}
 		s.events[i].fired = true
-		_ = s.dispatch(&s.events[i].event)
+		if err := s.dispatch(&s.events[i].event); err != nil {
+			slog.Warn("playout: secondary event dispatch failed", "type", s.events[i].event.Type, "error", err)
+		}
 	}
 }
 

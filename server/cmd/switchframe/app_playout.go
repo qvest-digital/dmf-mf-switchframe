@@ -130,14 +130,14 @@ func playoutChannelIDFromKey(key string) int {
 // delegating to real subsystems (graphics, audio, captions, SCTE-35).
 // Nil subsystem pointers are safe — each method checks before calling.
 type playoutSecondaryHandler struct {
-	compositor     graphicsDeleter
+	compositor     graphicsController
 	mixer          audioController
 	captionMgr     captionController
 	scte35Injector scte35Cuer
 }
 
 // Narrow interfaces — depend only on methods we actually call.
-type graphicsDeleter interface {
+type graphicsController interface {
 	DeleteImage(id int) error
 }
 
