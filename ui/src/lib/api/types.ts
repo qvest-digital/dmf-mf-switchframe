@@ -837,6 +837,26 @@ export interface PlayoutState {
 	channels: PlayoutChannelState[];
 }
 
+export interface SCTE35EventData {
+	break_duration_ms?: number;
+	auto_return?: boolean;
+}
+
+export interface SecondaryEvent {
+	type: 'graphics_on' | 'graphics_off' | 'graphics_update' | 'audio_level' | 'audio_mute' | 'audio_afv' | 'caption_mode' | 'caption_text' | 'scte35_cue';
+	layer?: number;
+	template?: string;
+	offset_ms: number;
+	anchor: 'start' | 'end';
+	source_key?: string;
+	level_db?: number;
+	muted?: boolean;
+	afv?: boolean;
+	caption_mode?: string;
+	caption_text?: string;
+	scte35?: SCTE35EventData;
+}
+
 export interface PlaylistItem {
 	id: string;
 	type: 'clip' | 'live' | 'slate';
@@ -844,8 +864,11 @@ export interface PlaylistItem {
 	source?: string;
 	title: string;
 	duration_ms?: number;
+	in_point_ms?: number;
+	out_point_ms?: number;
 	hold?: boolean;
 	transition?: { type: string; duration_ms?: number };
+	secondary_events?: SecondaryEvent[];
 }
 
 export interface Playlist {
