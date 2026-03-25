@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"unsafe"
 )
 
 // Instance wraps an MTL library handle.
