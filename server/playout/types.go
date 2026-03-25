@@ -368,3 +368,54 @@ var (
 	ErrPodNotActive     = errors.New("playout: no active pod")
 	ErrNoPodBoard       = errors.New("playout: pod board not initialized")
 )
+
+// AsRunEventType classifies as-run log entries.
+type AsRunEventType string
+
+const (
+	AsRunItemStart      AsRunEventType = "item_start"
+	AsRunItemEnd        AsRunEventType = "item_end"
+	AsRunSecondaryFire  AsRunEventType = "secondary_event_fire"
+	AsRunSpliceActive   AsRunEventType = "splice_active"
+	AsRunPodOperation   AsRunEventType = "pod_operation"
+	AsRunManualOverride AsRunEventType = "manual_override"
+	AsRunCacheEvent     AsRunEventType = "cache_event"
+	AsRunError          AsRunEventType = "error"
+)
+
+// BlackDetectInfo holds black detection results for splice events.
+type BlackDetectInfo struct {
+	Found    bool    `json:"found"`
+	LumaMean float64 `json:"luma_mean"`
+	OffsetMs float64 `json:"offset_ms"`
+}
+
+// AsRunEvent is a single entry in the as-run event log.
+type AsRunEvent struct {
+	Timestamp    time.Time      `json:"ts"`
+	Type         AsRunEventType `json:"type"`
+	ChannelID    int            `json:"channel_id"`
+	ItemID       string         `json:"item_id,omitempty"`
+	Title        string         `json:"title,omitempty"`
+	ScheduledTS  *time.Time     `json:"scheduled_ts,omitempty"`
+	DeltaMs      float64        `json:"delta_ms,omitempty"`
+	Source       string         `json:"source,omitempty"`
+
+	// Secondary event fields.
+	EventName string `json:"event,omitempty"`
+	TargetPTS int64  `json:"target_pts,omitempty"`
+	ActualPTS int64  `json:"actual_pts,omitempty"`
+
+	// Splice/pod fields.
+	PodID               string           `json:"pod_id,omitempty"`
+	PodType             string           `json:"pod_type,omitempty"`
+	Operation           string           `json:"operation,omitempty"`
+	Operator            string           `json:"operator,omitempty"`
+	ScheduledDurationMs int64            `json:"scheduled_duration_ms,omitempty"`
+	ActualDurationMs    int64            `json:"actual_duration_ms,omitempty"`
+	Reason              string           `json:"reason,omitempty"`
+	BlackDetect         *BlackDetectInfo `json:"black_detect,omitempty"`
+
+	// Error/cache fields.
+	Message string `json:"message,omitempty"`
+}
