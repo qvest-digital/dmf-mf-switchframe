@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"sync/atomic"
 	"time"
+	"unsafe"
 )
 
 // gpuNeuralKeyNode applies neural green screen keying on the GPU via
