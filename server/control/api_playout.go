@@ -45,6 +45,11 @@ func (a *API) registerPlayoutRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/playout/cache/status", a.handlePlayoutCacheStatus)
 	mux.HandleFunc("POST /api/playout/cache/lookup", a.handlePlayoutCacheLookup)
 	mux.HandleFunc("POST /api/playout/cache/evict", a.handlePlayoutCacheEvict)
+
+	// Sample clips and template playlist endpoints.
+	mux.HandleFunc("GET /api/playout/samples", a.handlePlayoutSamples)
+	mux.HandleFunc("GET /api/playout/templates", a.handlePlayoutTemplates)
+	mux.HandleFunc("GET /api/playout/templates/{name}", a.handlePlayoutTemplate)
 }
 
 // parseChannelID extracts and validates the channel ID from the request path.
@@ -482,4 +487,32 @@ func (a *API) handlePlayoutRecover(w http.ResponseWriter, r *http.Request) {
 	states := a.playoutMgr.ChannelStates()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(states[n-1])
+}
+
+// handlePlayoutSamples returns the list of available sample clips.
+func (a *API) handlePlayoutSamples(w http.ResponseWriter, _ *http.Request) {
+	samples := a.playoutSamples
+	if samples == nil {
+		samples = []playout.SampleClip{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(samples)
+}
+
+// handlePlayoutTemplates returns the names of available template playlists.
+func (a *API) handlePlayoutTemplates(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(playout.AvailableTemplates())
+}
+
+// handlePlayoutTemplate returns a template playlist by name, populated with sample clip paths.
+func (a *API) handlePlayoutTemplate(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	pl := playout.TemplatePlaylist(name, a.playoutSamples)
+	if pl == nil {
+		httperr.Write(w, http.StatusNotFound, fmt.Sprintf("unknown template: %s", name))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(pl)
 }

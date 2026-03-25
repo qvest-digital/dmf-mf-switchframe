@@ -148,6 +148,7 @@ type App struct {
 	playoutMgr        *playout.Manager
 	playoutCache      *playout.Cache
 	playoutPrefetcher *playout.Prefetcher
+	playoutSamples    []playout.SampleClip
 	playoutRelays     [playout.MaxChannels]*distribution.Relay
 
 	// GPU pipeline (Metal on macOS, CUDA on Linux)
@@ -1306,6 +1307,9 @@ func (a *App) initAPI() error {
 	}
 	if a.playoutPrefetcher != nil {
 		apiOpts = append(apiOpts, control.WithPlayoutPrefetcher(a.playoutPrefetcher))
+	}
+	if len(a.playoutSamples) > 0 {
+		apiOpts = append(apiOpts, control.WithPlayoutSamples(a.playoutSamples))
 	}
 	if a.commsMgr != nil {
 		apiOpts = append(apiOpts, control.WithCommsManager(a.commsMgr))

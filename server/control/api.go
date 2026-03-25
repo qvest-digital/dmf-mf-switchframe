@@ -234,6 +234,12 @@ func WithPlayoutPrefetcher(pf *playout.Prefetcher) APIOption {
 	return func(a *API) { a.playoutPrefetcher = pf }
 }
 
+// WithPlayoutSamples attaches pre-generated sample clips to the API
+// for the sample/template endpoints.
+func WithPlayoutSamples(samples []playout.SampleClip) APIOption {
+	return func(a *API) { a.playoutSamples = samples }
+}
+
 // WithSCTE35 attaches an SCTE-35 injector and rules store to the API.
 func WithSCTE35(s SCTE35API, r SCTE35RulesAPI) APIOption {
 	return func(a *API) { a.scte35 = s; a.scte35Rules = r }
@@ -452,6 +458,7 @@ type API struct {
 	playoutMgr         *playout.Manager
 	playoutCache       *playout.Cache
 	playoutPrefetcher  *playout.Prefetcher
+	playoutSamples     []playout.SampleClip
 	recordingDir       atomic.Pointer[string]
 	operatorStore      *operator.Store
 	sessionMgr         *operator.SessionManager

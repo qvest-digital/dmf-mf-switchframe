@@ -268,7 +268,13 @@ func (a *App) initPlayout() error {
 	a.playoutMgr = mgr
 	a.playoutCache = cache
 	a.playoutPrefetcher = prefetcher
-	slog.Info("playout manager initialized", "cacheDir", cacheDir, "asRunDir", asRunDir)
+
+	// Generate sample clips for template playlists.
+	sampleDir := filepath.Join(cacheDir, "samples")
+	a.playoutSamples = playout.GenerateSampleClips(sampleDir)
+
+	slog.Info("playout manager initialized", "cacheDir", cacheDir, "asRunDir", asRunDir,
+		"sampleClips", len(a.playoutSamples))
 	return nil
 }
 
