@@ -10,6 +10,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // mockCompositor records SetOverlay calls.
@@ -936,5 +939,61 @@ func TestManagerConnectBadPath(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error connecting to nonexistent sockets")
 		_ = mgr.Close()
+	}
+}
+
+func TestManager_AliveReflectsProcessState(t *testing.T) {
+	mgr, mock, _ := setupManagerWithMock(t)
+	defer mock.close()
+
+	require.True(t, mgr.Alive(), "should be alive after start")
+
+	mgr.Close()
+	require.False(t, mgr.Alive(), "should not be alive after close")
+}
+
+func TestManager_DetectsFrameSocketDrop(t *testing.T) {
+	mgr, mock, _ := setupManagerWithMock(t)
+	defer mgr.Close()
+	require.True(t, mgr.Alive())
+
+	mock.frameConn.Close()
+
+	require.Eventually(t, func() bool {
+		return !mgr.Alive()
+	}, 2*time.Second, 50*time.Millisecond,
+		"manager should detect frame socket drop")
+}
+
+func TestManager_DetectsControlSocketDrop(t *testing.T) {
+	mgr, mock, _ := setupManagerWithMock(t)
+	defer mgr.Close()
+	require.True(t, mgr.Alive())
+
+	mock.controlConn.Close()
+
+	require.Eventually(t, func() bool {
+		return !mgr.Alive()
+	}, 2*time.Second, 50*time.Millisecond,
+		"manager should detect control socket drop")
+}
+
+func TestManager_ResetsBrowserPoolOnRestart(t *testing.T) {
+	mgr, mock, _ := setupManagerWithMock(t)
+	defer mgr.Close()
+
+	browserID, err := mgr.AllocateBrowser(1)
+	require.NoError(t, err)
+	mock.waitForCommands(1, time.Second)
+
+	states := mgr.BrowserStates()
+	require.Equal(t, "allocated", states[browserID].Status)
+
+	mgr.resetBrowserPool()
+
+	states = mgr.BrowserStates()
+	for i, bs := range states {
+		assert.Equal(t, "empty", bs.Status, "slot %d should be empty", i)
+		assert.Equal(t, -1, bs.LayerID, "slot %d layerID should be -1", i)
 	}
 }

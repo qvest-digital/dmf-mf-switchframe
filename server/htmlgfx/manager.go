@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -31,11 +32,12 @@ type Manager struct {
 	process     *os.Process
 	socketDir   string // temp directory for Unix sockets
 
-	mu       sync.Mutex
-	browsers []*BrowserState
-	done     chan struct{}
-	stopOnce sync.Once
-	started  bool
+	mu        sync.Mutex
+	browsers  []*BrowserState
+	done      chan struct{}
+	restartCh chan struct{} // buffered(1), signals restart loop
+	stopOnce  sync.Once
+	alive     atomic.Bool
 
 	onStateChange func()
 }
@@ -54,6 +56,7 @@ func NewManager(compositor compositorSetter, cfg Config) *Manager {
 		config:     cfg,
 		browsers:   browsers,
 		done:       make(chan struct{}),
+		restartCh:  make(chan struct{}, 1),
 	}
 }
 
@@ -156,7 +159,6 @@ func (m *Manager) spawn(binPath string) error {
 		return fmt.Errorf("connect to sidecar: %w", err)
 	}
 
-	m.started = true
 	slog.Info("htmlgfx: sidecar connected", "control", controlPath, "frames", framePath)
 
 	// Monitor for unexpected exit.
@@ -192,9 +194,51 @@ func (m *Manager) killProcess() {
 	}
 }
 
-// Started returns whether the sidecar was successfully started.
+// Alive returns whether the sidecar process is currently alive and connected.
+// Unlike the old Started() flag, Alive becomes false when Close() is called
+// or the sidecar process exits.
+func (m *Manager) Alive() bool {
+	return m.alive.Load()
+}
+
+// Started returns whether the sidecar is alive (backward-compatible wrapper).
 func (m *Manager) Started() bool {
-	return m.started
+	return m.Alive()
+}
+
+// triggerRestart signals that the sidecar needs restarting due to an
+// unexpected socket closure or error. It sets alive to false and sends
+// on restartCh (non-blocking). If the manager is already shutting down
+// (done closed), this is a no-op.
+func (m *Manager) triggerRestart(reason string) {
+	select {
+	case <-m.done:
+		return // intentional shutdown
+	default:
+	}
+	slog.Warn("htmlgfx: triggering restart", "reason", reason)
+	m.alive.Store(false)
+	select {
+	case m.restartCh <- struct{}{}:
+	default: // already pending
+	}
+}
+
+// resetBrowserPool resets all browser slots to empty and clears any
+// compositor overlays they were driving. Called before restarting the sidecar.
+func (m *Manager) resetBrowserPool() {
+	m.mu.Lock()
+	for i := range m.browsers {
+		if m.browsers[i].Status != "empty" {
+			if m.browsers[i].LayerID >= 0 && m.compositor != nil {
+				_ = m.compositor.SetOverlay(m.browsers[i].LayerID, nil, 0, 0, "")
+			}
+			*m.browsers[i] = NewBrowserState(i)
+		}
+	}
+	m.mu.Unlock()
+	m.notifyStateChange()
+	slog.Info("htmlgfx: browser pool reset (all slots empty)")
 }
 
 // connectSockets connects the manager to the sidecar's Unix domain sockets
@@ -213,6 +257,7 @@ func (m *Manager) connectSockets(controlPath, framePath string) error {
 
 	m.controlConn = controlConn
 	m.frameConn = frameConn
+	m.alive.Store(true)
 
 	go m.frameReadLoop()
 	go m.controlReadLoop()
@@ -474,6 +519,7 @@ func (m *Manager) Close() error {
 	var closeErr error
 
 	m.stopOnce.Do(func() {
+		m.alive.Store(false)
 		close(m.done)
 
 		// Send shutdown best-effort.
@@ -548,6 +594,8 @@ func (l *sidecarLogger) Write(p []byte) (int, error) {
 // frameReadLoop reads frames from the frame connection and delivers them
 // to the compositor.
 func (m *Manager) frameReadLoop() {
+	defer m.triggerRestart("frame socket closed")
+
 	for {
 		select {
 		case <-m.done:
@@ -602,6 +650,8 @@ func (m *Manager) frameReadLoop() {
 // the data-loss issue with ReadControlResponse creating a new scanner
 // per call.
 func (m *Manager) controlReadLoop() {
+	defer m.triggerRestart("control socket closed")
+
 	scanner := bufio.NewScanner(m.controlConn)
 	for scanner.Scan() {
 		select {
