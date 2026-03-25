@@ -223,6 +223,11 @@ func WithPlayoutManager(pm *playout.Manager) APIOption {
 	return func(a *API) { a.playoutMgr = pm }
 }
 
+// WithPlayoutCache attaches a playout asset cache to the API.
+func WithPlayoutCache(c *playout.Cache) APIOption {
+	return func(a *API) { a.playoutCache = c }
+}
+
 // WithSCTE35 attaches an SCTE-35 injector and rules store to the API.
 func WithSCTE35(s SCTE35API, r SCTE35RulesAPI) APIOption {
 	return func(a *API) { a.scte35 = s; a.scte35Rules = r }
@@ -439,6 +444,7 @@ type API struct {
 	clipMgr            *clip.Manager
 	clipStore          *clip.Store
 	playoutMgr         *playout.Manager
+	playoutCache       *playout.Cache
 	recordingDir       atomic.Pointer[string]
 	operatorStore      *operator.Store
 	sessionMgr         *operator.SessionManager

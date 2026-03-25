@@ -1,7 +1,11 @@
 package playout
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestSliceIteratorBasic(t *testing.T) {
@@ -184,5 +188,118 @@ func TestFakeAssetProvider(t *testing.T) {
 
 	if count != 4 {
 		t.Errorf("iterated %d frames, want 4", count)
+	}
+}
+
+func TestCacheAssetProvider_Open(t *testing.T) {
+	dir := t.TempDir()
+	cache, err := NewCache(CacheConfig{Dir: dir, MaxBytes: 1 << 30})
+	if err != nil {
+		t.Fatalf("NewCache: %v", err)
+	}
+
+	// Write a fake file to simulate cached content.
+	assetPath := filepath.Join(dir, "assets", "test.ts")
+	if err := os.MkdirAll(filepath.Dir(assetPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(assetPath, []byte("fake"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Put a cached entry.
+	_ = cache.Put(&CacheEntry{
+		AssetURI:     "local:///media/test.ts",
+		LocalPath:    assetPath,
+		State:        AssetCached,
+		ByteSize:     4,
+		LastAccessed: time.Now(),
+	})
+
+	// Create provider with a mock demux that returns 3 frames.
+	demuxFn := func(path string) ([]DecodedFrame, error) {
+		return fakeFrames(3), nil
+	}
+	provider := NewCacheAssetProvider(cache, demuxFn)
+
+	iter, err := provider.Open("local:///media/test.ts")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer iter.Close()
+
+	if iter.TotalFrames() != 3 {
+		t.Errorf("TotalFrames() = %d, want 3", iter.TotalFrames())
+	}
+}
+
+func TestCacheAssetProvider_NotFound(t *testing.T) {
+	dir := t.TempDir()
+	cache, err := NewCache(CacheConfig{Dir: dir, MaxBytes: 1 << 30})
+	if err != nil {
+		t.Fatalf("NewCache: %v", err)
+	}
+
+	provider := NewCacheAssetProvider(cache, nil)
+	_, err = provider.Open("local:///nonexistent.ts")
+	if !errors.Is(err, ErrAssetNotFound) {
+		t.Errorf("expected ErrAssetNotFound, got: %v", err)
+	}
+}
+
+func TestCacheAssetProvider_NotReady(t *testing.T) {
+	dir := t.TempDir()
+	cache, err := NewCache(CacheConfig{Dir: dir, MaxBytes: 1 << 30})
+	if err != nil {
+		t.Fatalf("NewCache: %v", err)
+	}
+
+	assetPath := filepath.Join(dir, "assets", "test.ts")
+	if err := os.MkdirAll(filepath.Dir(assetPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Put entry in fetching state (not yet cached).
+	_ = cache.Put(&CacheEntry{
+		AssetURI:     "local:///media/test.ts",
+		LocalPath:    assetPath,
+		State:        AssetFetching,
+		LastAccessed: time.Now(),
+	})
+
+	provider := NewCacheAssetProvider(cache, nil)
+	_, err = provider.Open("local:///media/test.ts")
+	if !errors.Is(err, ErrAssetNotReady) {
+		t.Errorf("expected ErrAssetNotReady, got: %v", err)
+	}
+}
+
+func TestCacheAssetProvider_NilDemuxFn(t *testing.T) {
+	dir := t.TempDir()
+	cache, err := NewCache(CacheConfig{Dir: dir, MaxBytes: 1 << 30})
+	if err != nil {
+		t.Fatalf("NewCache: %v", err)
+	}
+
+	assetPath := filepath.Join(dir, "assets", "test.ts")
+	if err := os.MkdirAll(filepath.Dir(assetPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(assetPath, []byte("fake"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = cache.Put(&CacheEntry{
+		AssetURI:     "local:///media/test.ts",
+		LocalPath:    assetPath,
+		State:        AssetCached,
+		ByteSize:     4,
+		LastAccessed: time.Now(),
+	})
+
+	provider := NewCacheAssetProvider(cache, nil)
+	_, err = provider.Open("local:///media/test.ts")
+	if err == nil {
+		t.Fatal("expected error for nil demuxFn, got nil")
 	}
 }

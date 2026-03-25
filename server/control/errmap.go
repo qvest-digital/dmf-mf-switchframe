@@ -134,6 +134,8 @@ var errorMappings = []errorMapping{
 	{stmap.ErrInvalidName, http.StatusBadRequest},
 
 	// Playout
+	{playout.ErrAssetNotFound, http.StatusNotFound},
+	{playout.ErrAssetNotReady, http.StatusConflict},
 	{playout.ErrInvalidChannel, http.StatusBadRequest},
 	{playout.ErrNoPlaylist, http.StatusBadRequest},
 	{playout.ErrAlreadyOnAir, http.StatusConflict},

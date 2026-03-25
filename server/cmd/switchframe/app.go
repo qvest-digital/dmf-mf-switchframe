@@ -145,7 +145,9 @@ type App struct {
 	clipRelays [clip.MaxPlayers]*distribution.Relay
 
 	// Playout channels
-	playoutMgr *playout.Manager
+	playoutMgr        *playout.Manager
+	playoutCache      *playout.Cache
+	playoutPrefetcher *playout.Prefetcher
 
 	// GPU pipeline (Metal on macOS, CUDA on Linux)
 	gpuState        *gpuState
@@ -1295,6 +1297,9 @@ func (a *App) initAPI() error {
 	if a.playoutMgr != nil {
 		apiOpts = append(apiOpts, control.WithPlayoutManager(a.playoutMgr))
 	}
+	if a.playoutCache != nil {
+		apiOpts = append(apiOpts, control.WithPlayoutCache(a.playoutCache))
+	}
 	if a.commsMgr != nil {
 		apiOpts = append(apiOpts, control.WithCommsManager(a.commsMgr))
 	}
@@ -1668,6 +1673,12 @@ func (a *App) closeSubsystems() {
 	}
 	if a.playoutMgr != nil {
 		a.playoutMgr.Close()
+	}
+	if a.playoutPrefetcher != nil {
+		a.playoutPrefetcher.Stop()
+	}
+	if a.playoutCache != nil {
+		a.playoutCache.Close()
 	}
 	if a.htmlGfxMgr != nil {
 		_ = a.htmlGfxMgr.Close()

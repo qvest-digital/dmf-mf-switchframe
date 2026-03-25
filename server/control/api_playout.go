@@ -24,6 +24,11 @@ func (a *API) registerPlayoutRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/playout/channels/{n}/jump", a.handlePlayoutJump)
 	mux.HandleFunc("POST /api/playout/channels/{n}/manual", a.handlePlayoutTakeManual)
 	mux.HandleFunc("POST /api/playout/channels/{n}/auto", a.handlePlayoutReturnToAuto)
+
+	// Cache endpoints (available even without playout manager, guarded by nil checks).
+	mux.HandleFunc("GET /api/playout/cache/status", a.handlePlayoutCacheStatus)
+	mux.HandleFunc("POST /api/playout/cache/prefetch", a.handlePlayoutCachePrefetch)
+	mux.HandleFunc("DELETE /api/playout/cache/{uri}", a.handlePlayoutCacheEvict)
 }
 
 // parseChannelID extracts and validates the channel ID from the request path.
@@ -226,4 +231,65 @@ func (a *API) handlePlayoutReturnToAuto(w http.ResponseWriter, r *http.Request) 
 	states := a.playoutMgr.ChannelStates()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(states[n-1])
+}
+
+// handlePlayoutCacheStatus returns the aggregate cache status as JSON.
+func (a *API) handlePlayoutCacheStatus(w http.ResponseWriter, _ *http.Request) {
+	if a.playoutCache == nil {
+		httperr.Write(w, http.StatusNotImplemented, "cache not configured")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.playoutCache.Status())
+}
+
+// handlePlayoutCachePrefetch manually triggers a cache lookup for the given asset URI.
+func (a *API) handlePlayoutCachePrefetch(w http.ResponseWriter, r *http.Request) {
+	if a.playoutCache == nil {
+		httperr.Write(w, http.StatusNotImplemented, "cache not configured")
+		return
+	}
+
+	var req struct {
+		AssetURI string `json:"asset_uri"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.AssetURI == "" {
+		httperr.Write(w, http.StatusBadRequest, "asset_uri required")
+		return
+	}
+
+	entry, err := a.playoutCache.Get(req.AssetURI)
+	if err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(entry)
+}
+
+// handlePlayoutCacheEvict removes an asset from the cache by URI.
+func (a *API) handlePlayoutCacheEvict(w http.ResponseWriter, r *http.Request) {
+	if a.playoutCache == nil {
+		httperr.Write(w, http.StatusNotImplemented, "cache not configured")
+		return
+	}
+
+	uri := r.PathValue("uri")
+	if uri == "" {
+		httperr.Write(w, http.StatusBadRequest, "uri required")
+		return
+	}
+
+	if err := a.playoutCache.Evict(uri); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "evicted"})
 }

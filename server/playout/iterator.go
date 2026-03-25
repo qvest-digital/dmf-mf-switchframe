@@ -1,5 +1,7 @@
 package playout
 
+import "fmt"
+
 // FrameIterator provides streaming access to decoded frames.
 type FrameIterator interface {
 	// Next returns the next frame, or (nil, nil) at end of stream.
@@ -149,4 +151,40 @@ func NewFakeAssetProvider(frames []DecodedFrame) *FakeAssetProvider {
 // Open returns a new SliceIterator over the provider's frames.
 func (f *FakeAssetProvider) Open(assetURI string) (FrameIterator, error) {
 	return NewSliceIterator(f.frames), nil
+}
+
+// ---------------------------------------------------------------------------
+// CacheAssetProvider — opens assets from the local disk cache.
+// ---------------------------------------------------------------------------
+
+// CacheAssetProvider opens assets from the local disk cache.
+// It looks up the cached file by URI, then uses a demux function to get frames.
+type CacheAssetProvider struct {
+	cache   *Cache
+	demuxFn func(path string) ([]DecodedFrame, error)
+}
+
+// NewCacheAssetProvider creates an AssetProvider backed by the disk cache.
+// demuxFn decodes a local file path into frames. May be nil (will error on Open).
+func NewCacheAssetProvider(cache *Cache, demuxFn func(path string) ([]DecodedFrame, error)) *CacheAssetProvider {
+	return &CacheAssetProvider{cache: cache, demuxFn: demuxFn}
+}
+
+// Open looks up the asset in the cache and decodes it via demuxFn.
+func (p *CacheAssetProvider) Open(assetURI string) (FrameIterator, error) {
+	entry, err := p.cache.Get(assetURI)
+	if err != nil {
+		return nil, fmt.Errorf("cache lookup: %w", err)
+	}
+	if entry.State != AssetCached {
+		return nil, ErrAssetNotReady
+	}
+	if p.demuxFn == nil {
+		return nil, fmt.Errorf("no demux function configured")
+	}
+	frames, err := p.demuxFn(entry.LocalPath)
+	if err != nil {
+		return nil, fmt.Errorf("demux %s: %w", entry.LocalPath, err)
+	}
+	return NewSliceIterator(frames), nil
 }

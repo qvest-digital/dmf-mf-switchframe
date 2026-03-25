@@ -397,3 +397,150 @@ func TestPlayoutRoutes_NoManager(t *testing.T) {
 	// Without playout manager, routes aren't registered — expect 405 or 404.
 	require.NotEqual(t, http.StatusOK, rec.Code)
 }
+
+// ---------------------------------------------------------------------------
+// Cache endpoint tests
+// ---------------------------------------------------------------------------
+
+func setupTestPlayoutAPIWithCache(t *testing.T) (*API, *playout.Cache, string) {
+	t.Helper()
+	dir := t.TempDir()
+	cache, err := playout.NewCache(playout.CacheConfig{Dir: dir, MaxBytes: 1 << 30})
+	require.NoError(t, err)
+
+	programRelay := distribution.NewRelay()
+	sw := switcher.NewTestSwitcher(programRelay)
+	mgr := newTestPlayoutManager()
+	api := NewAPI(sw, WithPlayoutManager(mgr), WithPlayoutCache(cache))
+	return api, cache, dir
+}
+
+func TestPlayoutCacheStatus(t *testing.T) {
+	api, _, _ := setupTestPlayoutAPIWithCache(t)
+
+	req := httptest.NewRequest("GET", "/api/playout/cache/status", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var status playout.CacheStatus
+	err := json.NewDecoder(rec.Body).Decode(&status)
+	require.NoError(t, err)
+	require.Equal(t, int64(1<<30), status.MaxBytes)
+	require.Equal(t, 0, status.ItemCount)
+}
+
+func TestPlayoutCacheStatus_NilCache(t *testing.T) {
+	// API without cache should return 501.
+	programRelay := distribution.NewRelay()
+	sw := switcher.NewTestSwitcher(programRelay)
+	mgr := newTestPlayoutManager()
+	api := NewAPI(sw, WithPlayoutManager(mgr))
+
+	req := httptest.NewRequest("GET", "/api/playout/cache/status", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotImplemented, rec.Code)
+}
+
+func TestPlayoutCachePrefetch(t *testing.T) {
+	api, cache, dir := setupTestPlayoutAPIWithCache(t)
+
+	// Put a cached entry with local path under the cache directory.
+	localPath, err := cache.Reserve("local:///media/test.ts")
+	require.NoError(t, err)
+	_ = dir // dir is the cache root
+
+	err = cache.Put(&playout.CacheEntry{
+		AssetURI:  "local:///media/test.ts",
+		LocalPath: localPath,
+		State:     playout.AssetCached,
+		ByteSize:  1024,
+	})
+	require.NoError(t, err)
+
+	body := `{"asset_uri": "local:///media/test.ts"}`
+	req := httptest.NewRequest("POST", "/api/playout/cache/prefetch", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var entry playout.CacheEntry
+	err = json.NewDecoder(rec.Body).Decode(&entry)
+	require.NoError(t, err)
+	require.Equal(t, "local:///media/test.ts", entry.AssetURI)
+}
+
+func TestPlayoutCachePrefetch_NotFound(t *testing.T) {
+	api, _, _ := setupTestPlayoutAPIWithCache(t)
+
+	body := `{"asset_uri": "local:///nonexistent.ts"}`
+	req := httptest.NewRequest("POST", "/api/playout/cache/prefetch", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestPlayoutCachePrefetch_BadJSON(t *testing.T) {
+	api, _, _ := setupTestPlayoutAPIWithCache(t)
+
+	req := httptest.NewRequest("POST", "/api/playout/cache/prefetch", strings.NewReader("bad"))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestPlayoutCachePrefetch_MissingURI(t *testing.T) {
+	api, _, _ := setupTestPlayoutAPIWithCache(t)
+
+	req := httptest.NewRequest("POST", "/api/playout/cache/prefetch", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestPlayoutCacheEvict(t *testing.T) {
+	api, cache, _ := setupTestPlayoutAPIWithCache(t)
+
+	// Put an entry with local path under the cache directory.
+	localPath, err := cache.Reserve("test-asset")
+	require.NoError(t, err)
+
+	err = cache.Put(&playout.CacheEntry{
+		AssetURI:  "test-asset",
+		LocalPath: localPath,
+		State:     playout.AssetCached,
+		ByteSize:  1024,
+	})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest("DELETE", "/api/playout/cache/test-asset", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	// Verify it's gone.
+	status := cache.Status()
+	require.Equal(t, 0, status.ItemCount)
+}
+
+func TestPlayoutCacheEvict_NotFound(t *testing.T) {
+	api, _, _ := setupTestPlayoutAPIWithCache(t)
+
+	req := httptest.NewRequest("DELETE", "/api/playout/cache/nonexistent", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}

@@ -1,7 +1,10 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -13,9 +16,44 @@ import (
 // initPlayout creates the playout Manager and wires lifecycle callbacks
 // so playout channels register as switcher sources. Follows the initClips pattern.
 func (a *App) initPlayout() error {
+	// Create asset cache.
+	cacheDir := filepath.Join(a.cfg.StateDir, "playout-cache")
+	cache, err := playout.NewCache(playout.CacheConfig{
+		Dir:      cacheDir,
+		MaxBytes: 200 * 1024 * 1024 * 1024, // 200 GB default
+	})
+	if err != nil {
+		return fmt.Errorf("playout cache: %w", err)
+	}
+
+	// Create asset resolver (no path restrictions for now).
+	resolver := playout.NewAssetResolver(nil)
+
+	// Create transcoder using pipeline format for target dimensions.
+	pf := a.sw.PipelineFormat()
+	transcoder := playout.NewTranscoder(playout.TranscoderConfig{
+		TargetWidth:  pf.Width,
+		TargetHeight: pf.Height,
+		TargetFPS:    int(pf.FPS()),
+	})
+
+	// Create prefetcher.
+	prefetcher := playout.NewPrefetcher(playout.PrefetcherConfig{
+		Cache:          cache,
+		Resolver:       resolver,
+		Transcoder:     transcoder,
+		LookaheadItems: 5,
+	})
+	prefetcher.Start(context.Background())
+
+	// Create asset provider backed by cache.
+	// demuxFn is nil until a real clip.DemuxFile + codec.NewVideoDecoder pipeline
+	// is wired in a follow-up task. Channels with cached assets will use the
+	// cache provider once a real demux function is configured.
+	provider := playout.NewCacheAssetProvider(cache, nil)
+
 	mgr := playout.NewManager(playout.ManagerConfig{
-		// AssetProvider is nil until the asset cache is wired in.
-		// Channels will use the cache's streaming frame iterator once configured.
+		AssetProvider: provider,
 	})
 
 	// PTS anchoring.
@@ -64,7 +102,9 @@ func (a *App) initPlayout() error {
 	})
 
 	a.playoutMgr = mgr
-	slog.Info("playout manager initialized")
+	a.playoutCache = cache
+	a.playoutPrefetcher = prefetcher
+	slog.Info("playout manager initialized", "cacheDir", cacheDir)
 	return nil
 }
 
