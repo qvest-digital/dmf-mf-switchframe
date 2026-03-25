@@ -124,11 +124,17 @@ func (m *Manager) spawn(binPath string) error {
 	// Capture stdout to wait for READY signal.
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		m.mu.Lock()
+		m.socketDir = ""
+		m.mu.Unlock()
 		_ = os.RemoveAll(socketDir)
 		return fmt.Errorf("stdout pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
+		m.mu.Lock()
+		m.socketDir = ""
+		m.mu.Unlock()
 		_ = os.RemoveAll(socketDir)
 		return fmt.Errorf("start sidecar: %w", err)
 	}
@@ -731,12 +737,12 @@ func (m *Manager) frameReadLoop(gen int64) {
 				return
 			default:
 			}
-			if err == io.EOF {
-				return
+			// Any read error (EOF, closed conn, protocol error) means
+			// this connection is dead. Exit and let the defer handle restart.
+			if err != io.EOF {
+				slog.Warn("htmlgfx: frame read error", "error", err)
 			}
-			// Log and continue on transient errors.
-			slog.Warn("htmlgfx: frame read error", "error", err)
-			continue
+			return
 		}
 
 		// Look up the layer ID for this browser.

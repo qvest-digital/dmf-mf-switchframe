@@ -1002,7 +1002,7 @@ func TestManager_ResetsBrowserPoolOnRestart(t *testing.T) {
 	}
 }
 
-func TestManager_WatchProcessTriggersRestart(t *testing.T) {
+func TestManager_RestartCountIncrementsOnSocketDrop(t *testing.T) {
 	mgr, mock, _ := setupManagerWithMock(t)
 	defer mgr.Close()
 	defer mock.close()
