@@ -1,6 +1,8 @@
 package playout
 
 import (
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -169,4 +171,90 @@ func TestManager_Watchdog_UnregistersOnStop(t *testing.T) {
 	if len(health) != 0 {
 		t.Errorf("Health() returned %d entries after stop, want 0", len(health))
 	}
+}
+
+func TestPhase7_FullRecoveryFlow(t *testing.T) {
+	dir := t.TempDir()
+	asRunDir := filepath.Join(dir, "asrun")
+	persistDir := filepath.Join(dir, "persist")
+
+	// --- Phase A: Run channel, persist state ---
+	provider := fakeProvider(90) // 3 seconds of 30fps content
+	mgr1 := NewManager(ManagerConfig{AssetProvider: provider})
+
+	logger1, err := NewAsRunLogger(AsRunLoggerConfig{Dir: asRunDir, RetentionDays: 30})
+	if err != nil {
+		t.Fatalf("asrun logger: %v", err)
+	}
+	mgr1.SetAsRunLogger(logger1)
+
+	pl := testPlaylist(
+		clipItem("intro"),
+		clipItem("main"),
+		clipItem("outro"),
+	)
+	if err := mgr1.LoadPlaylist(1, pl); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if err := mgr1.Start(1); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	// Wait a bit for playback to start.
+	time.Sleep(50 * time.Millisecond)
+
+	// Take a snapshot.
+	persister := NewStatePersister(mgr1, StatePersisterConfig{
+		Dir:      persistDir,
+		Interval: 50 * time.Millisecond,
+	})
+	persister.Start()
+	waitFor(t, 500*time.Millisecond, func() bool {
+		_, err := os.Stat(persister.Path())
+		return err == nil
+	})
+	persister.Stop()
+	mgr1.Close()
+	logger1.Close()
+
+	// --- Phase B: Simulate crash recovery ---
+	mgr2 := NewManager(ManagerConfig{AssetProvider: provider})
+
+	logger2, err := NewAsRunLogger(AsRunLoggerConfig{Dir: asRunDir, RetentionDays: 30})
+	if err != nil {
+		t.Fatalf("asrun logger 2: %v", err)
+	}
+	defer logger2.Close()
+	mgr2.SetAsRunLogger(logger2)
+
+	if err := mgr2.Recover(persister.Path()); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+
+	// Channel should be re-cued.
+	states := mgr2.ChannelStates()
+	if states[0].State != "cued" {
+		t.Errorf("post-recovery state = %q, want cued", states[0].State)
+	}
+	if states[0].PlaylistName == "" {
+		t.Error("post-recovery playlist name should not be empty")
+	}
+
+	// Verify recovery as-run event.
+	errorEvents := logger2.Query(AsRunQuery{Type: AsRunError})
+	if len(errorEvents) == 0 {
+		t.Error("expected recovery as-run error event")
+	}
+
+	// --- Phase C: Resume and complete ---
+	if err := mgr2.Start(1); err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+
+	waitFor(t, 10*time.Second, func() bool {
+		s := mgr2.ChannelStates()
+		return s[0].State == "completed"
+	})
+
+	mgr2.Close()
 }
