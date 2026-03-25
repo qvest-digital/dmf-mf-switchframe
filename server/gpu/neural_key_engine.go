@@ -309,7 +309,31 @@ func (nke *NeuralKeyEngine) Infer(
 		return fmt.Errorf("gpu: neural_key: TRT inference failed: %w", err)
 	}
 
-	// Diagnostic: sync stream and read back a few alpha values to verify model output.
+	// Diagnostic: sync stream and read back input + alpha values to verify pipeline.
+	if !nke.warmupDone.Load() {
+		C.cudaStreamSynchronize(stream)
+		// Sample input tensor: first 4 values of each channel (R,G,B,Hint at pixel 0-3)
+		var inputSample [16]float32
+		// Channel 0 (R) first 4 pixels
+		C.cudaMemcpy(unsafe.Pointer(&inputSample[0]), nke.inputBuf,
+			C.size_t(4*4), C.cudaMemcpyDeviceToHost)
+		// Channel 3 (Hint) first 4 pixels
+		ch3Offset := uintptr(3*ckModelW*ckModelH) * 4
+		C.cudaMemcpy(unsafe.Pointer(&inputSample[4]),
+			unsafe.Pointer(uintptr(nke.inputBuf)+ch3Offset),
+			C.size_t(4*4), C.cudaMemcpyDeviceToHost)
+		// Middle of hint channel
+		ch3MidOffset := ch3Offset + uintptr(ckModelW*ckModelH/2)*4
+		C.cudaMemcpy(unsafe.Pointer(&inputSample[8]),
+			unsafe.Pointer(uintptr(nke.inputBuf)+ch3MidOffset),
+			C.size_t(4*4), C.cudaMemcpyDeviceToHost)
+		slog.Info("gpu: neural_key: INPUT sample",
+			"R[0:4]", fmt.Sprintf("%.3f %.3f %.3f %.3f", inputSample[0], inputSample[1], inputSample[2], inputSample[3]),
+			"Hint[0:4]", fmt.Sprintf("%.3f %.3f %.3f %.3f", inputSample[4], inputSample[5], inputSample[6], inputSample[7]),
+			"HintMid[0:4]", fmt.Sprintf("%.3f %.3f %.3f %.3f", inputSample[8], inputSample[9], inputSample[10], inputSample[11]))
+	}
+
+	// Diagnostic: sync stream and read back alpha values to verify model output.
 	if !nke.warmupDone.Load() {
 		C.cudaStreamSynchronize(stream)
 		var sample [16]float32
