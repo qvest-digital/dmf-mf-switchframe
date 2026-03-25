@@ -1110,6 +1110,49 @@ func TestChannel_AudioOutput_NoAudioData(t *testing.T) {
 	}
 }
 
+func TestChannel_SlateOutputsBlackFrames(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{})
+	// No AssetProvider needed — slate doesn't use it.
+
+	var frameCount atomic.Int32
+	var firstY atomic.Int32
+	firstY.Store(-1)
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
+		n := frameCount.Add(1)
+		if n == 1 && len(yuv) > 0 {
+			firstY.Store(int32(yuv[0]))
+		}
+	})
+
+	pl := testPlaylist(PlaylistItem{
+		ID:         "s1",
+		Type:       ItemSlate,
+		AssetURI:   "local:///slates/black.ts",
+		Title:      "Black Slate",
+		DurationMs: 200,
+	})
+	if err := ch.LoadPlaylist(pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	if err := ch.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	waitFor(t, 3*time.Second, func() bool {
+		return ch.State() == StateCompleted
+	})
+
+	count := frameCount.Load()
+	if count <= 0 {
+		t.Fatalf("slate should output black frames, got %d", count)
+	}
+	// BT.709 black: Y=16
+	y := firstY.Load()
+	if y != 16 {
+		t.Errorf("Y plane should be 16 (BT.709 black), got %d", y)
+	}
+}
+
 func TestChannel_AudioOutput_NilCallback(t *testing.T) {
 	// Frames with audio but no callback set should not panic.
 	frames := fakeFramesWithAudio(3)

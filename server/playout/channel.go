@@ -911,11 +911,9 @@ func (c *Channel) playLiveItem(ctx context.Context, item *PlaylistItem) bool {
 	return cancelled
 }
 
-// playSlateItem holds for DurationMs or until Next().
+// playSlateItem holds for DurationMs or until Next(), outputting black frames
+// at 30fps so the program output is clean black rather than a stale held frame.
 // Returns true if context was cancelled.
-// Phase 1 limitation: slate items are timing markers only — no frames are
-// rendered. The switcher source will hold its last frame. Phase 2 will add
-// color bar / black / slate asset rendering.
 func (c *Channel) playSlateItem(ctx context.Context, item *PlaylistItem) bool {
 	c.itemProgress.Store(0)
 	c.itemRemainMs.Store(item.DurationMs)
@@ -972,15 +970,59 @@ func (c *Channel) playSlateItem(ctx context.Context, item *PlaylistItem) bool {
 		defer scheduler.EndItem()
 	}
 
+	// Pre-allocate a BT.709 black frame (Y=16, U=V=128).
+	const slateW, slateH = 1920, 1080
+	ySize := slateW * slateH
+	uvSize := ySize / 4
+	blackFrame := make([]byte, ySize+2*uvSize)
+	for i := 0; i < ySize; i++ {
+		blackFrame[i] = 16 // BT.709 Y black
+	}
+	for i := ySize; i < len(blackFrame); i++ {
+		blackFrame[i] = 128 // BT.709 UV neutral
+	}
+
+	// Frame output at 30fps.
+	const ptsPerFrame int64 = 90000 / 30 // 3000
+	frameTick := time.NewTicker(time.Second / 30)
+	defer frameTick.Stop()
+
+	// Seed PTS from provider if available.
+	c.mu.Lock()
+	ptsFn := c.ptsProvider
+	c.mu.Unlock()
+	var outputPTS int64
+	if ptsFn != nil {
+		outputPTS = ptsFn()
+		if outputPTS > 0 {
+			outputPTS += ptsPerFrame
+		}
+	}
+
+	// outputBlack sends one black frame via the raw video output callback.
+	outputBlack := func() {
+		c.mu.Lock()
+		outputFn := c.rawVideoOutput
+		c.mu.Unlock()
+		if outputFn != nil {
+			outputFn(blackFrame, slateW, slateH, outputPTS, true)
+			outputPTS += ptsPerFrame
+		}
+	}
+
 	if item.DurationMs <= 0 {
-		// No duration: hold until advance (like a live item).
-		select {
-		case <-ctx.Done():
-			emitEnd()
-			return true
-		case <-c.advanceCh:
-			emitEnd()
-			return false
+		// No duration: hold until advance (like a live item), outputting black.
+		for {
+			select {
+			case <-ctx.Done():
+				emitEnd()
+				return true
+			case <-c.advanceCh:
+				emitEnd()
+				return false
+			case <-frameTick.C:
+				outputBlack()
+			}
 		}
 	}
 
@@ -1007,6 +1049,8 @@ func (c *Channel) playSlateItem(ctx context.Context, item *PlaylistItem) bool {
 			c.itemRemainMs.Store(0)
 			emitEnd()
 			return false
+		case <-frameTick.C:
+			outputBlack()
 		case <-tick.C:
 			elapsed := time.Since(startTime)
 			prog := int64(elapsed.Milliseconds() * 1000 / item.DurationMs)
