@@ -1719,6 +1719,9 @@ func (s *Switcher) broadcastProcessedFromPF(sourceKey string, pf *ProcessingFram
 // Skips scaling when the frame pool can't accommodate the target resolution
 // (e.g., test environments with small pools).
 func (s *Switcher) normalizeResolution(pf *ProcessingFrame) *ProcessingFrame {
+	if len(pf.YUV) == 0 {
+		return pf
+	}
 	fmt := s.pipelineFormat.Load()
 	if fmt == nil || (pf.Width == fmt.Width && pf.Height == fmt.Height) {
 		return pf
