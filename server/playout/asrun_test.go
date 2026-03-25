@@ -1052,3 +1052,67 @@ func TestManualOverrideAsRunEvents(t *testing.T) {
 		t.Errorf("first op = %q, want enter_manual", events[0].Operation)
 	}
 }
+
+// --- Task 16: Timing Accuracy Tests ---
+
+func TestAsRunTimingDelta(t *testing.T) {
+	dir := t.TempDir()
+	logger, err := NewAsRunLogger(AsRunLoggerConfig{Dir: dir, RingCapacity: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+
+	scheduled := time.Date(2026, 3, 24, 19, 0, 0, 0, time.UTC)
+	actual := time.Date(2026, 3, 24, 19, 0, 0, 500000, time.UTC) // 0.5ms late
+
+	ev := AsRunEvent{
+		Timestamp:   actual,
+		Type:        AsRunItemStart,
+		ChannelID:   1,
+		ItemID:      "item-001",
+		ScheduledTS: &scheduled,
+		DeltaMs:     float64(actual.Sub(scheduled).Microseconds()) / 1000.0,
+	}
+	logger.Log(ev)
+
+	events := logger.Query(AsRunQuery{})
+	if len(events) != 1 {
+		t.Fatal("expected 1 event")
+	}
+	if events[0].DeltaMs < 0.4 || events[0].DeltaMs > 0.6 {
+		t.Errorf("delta_ms = %f, want ~0.5", events[0].DeltaMs)
+	}
+}
+
+func TestAsRunItemDuration(t *testing.T) {
+	provider := fakeProvider(30) // 30 frames = ~1 second at 30fps
+	ch := NewChannel(1, ChannelConfig{AssetProvider: provider})
+
+	dir := t.TempDir()
+	logger, err := NewAsRunLogger(AsRunLoggerConfig{Dir: dir, RingCapacity: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+
+	ch.SetAsRunLog(func(ev AsRunEvent) { logger.Log(ev) })
+
+	pl := testPlaylist(clipItem("clip-1"))
+	_ = ch.LoadPlaylist(pl)
+	_ = ch.Start()
+
+	waitFor(t, 5*time.Second, func() bool {
+		return ch.State() == StateCompleted
+	})
+
+	events := logger.Query(AsRunQuery{Type: AsRunItemEnd})
+	if len(events) != 1 {
+		t.Fatalf("got %d item_end events, want 1", len(events))
+	}
+
+	dur := events[0].ActualDurationMs
+	if dur < 500 || dur > 5000 {
+		t.Errorf("actual_duration_ms = %d, want between 500-5000", dur)
+	}
+}
