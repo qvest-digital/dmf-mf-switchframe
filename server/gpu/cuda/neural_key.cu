@@ -109,6 +109,18 @@ __global__ void ck_composite_neural_kernel(
     int py = blockIdx.y * blockDim.y + threadIdx.y;
     if (px >= progW || py >= progH) return;
 
+    // DEBUG: Draw a 64x64 red square in top-left to confirm kernel executes.
+    if (px < 64 && py < 64) {
+        // BT.709 red: Y=81, Cb=90, Cr=240
+        nv12[py * progPitch + px] = 81;
+        if ((px & 1) == 0 && (py & 1) == 0) {
+            int uvOff = progPitch * progH + (py/2) * progPitch + (px/2) * 2;
+            nv12[uvOff]     = 90;   // Cb
+            nv12[uvOff + 1] = 240;  // Cr
+        }
+        return;
+    }
+
     // Map program pixel to model coordinates (bilinear).
     float mx = (float)px * (float)(modelW - 1) / (float)(progW - 1);
     float my = (float)py * (float)(modelH - 1) / (float)(progH - 1);
