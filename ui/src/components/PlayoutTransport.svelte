@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onDestroy } from 'svelte';
 	import type { PlayoutChannelState } from '$lib/api/types';
 	import {
 		playoutStart, playoutStop, playoutNext, playoutPrevious,
@@ -6,6 +7,7 @@
 	} from '$lib/api/switch-api';
 	import {
 		ICON_PLAY, ICON_STOP, ICON_FRAME_BACK, ICON_FRAME_FORWARD,
+		ICON_RECORD,
 		renderIcon,
 	} from '$lib/icons';
 
@@ -21,11 +23,29 @@
 	const isManual = $derived(channel.mode === 'manual');
 	const isBreak = $derived(channel.mode === 'break');
 
+	// ── Two-stage stop confirmation ──
+	let confirmingStop = $state(false);
+	let confirmTimer: ReturnType<typeof setTimeout> | null = null;
+
+	function clearConfirmTimer() {
+		if (confirmTimer) {
+			clearTimeout(confirmTimer);
+			confirmTimer = null;
+		}
+		confirmingStop = false;
+	}
+
 	function handlePlay() {
 		apiCall(playoutStart(channel.id), 'Playout start');
 	}
 
 	function handleStop() {
+		if (isOnAir && !confirmingStop) {
+			confirmingStop = true;
+			confirmTimer = setTimeout(() => { confirmingStop = false; }, 3000);
+			return;
+		}
+		clearConfirmTimer();
 		apiCall(playoutStop(channel.id), 'Playout stop');
 	}
 
@@ -44,6 +64,41 @@
 	function handleReturnToAuto() {
 		apiCall(playoutReturnToAuto(channel.id), 'Return to auto');
 	}
+
+	// ── Elapsed time display ──
+	let onAirSince = $state(0);
+	let elapsed = $state('0:00');
+
+	function formatElapsed(ms: number): string {
+		const totalSec = Math.max(0, Math.floor(ms / 1000));
+		const h = Math.floor(totalSec / 3600);
+		const m = Math.floor((totalSec % 3600) / 60);
+		const s = totalSec % 60;
+		if (h > 0) {
+			return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+		}
+		return `${m}:${String(s).padStart(2, '0')}`;
+	}
+
+	$effect(() => {
+		if (!isOnAir) {
+			elapsed = '0:00';
+			onAirSince = 0;
+			return;
+		}
+		if (onAirSince === 0) {
+			onAirSince = Date.now();
+		}
+		const interval = setInterval(() => {
+			elapsed = formatElapsed(Date.now() - onAirSince);
+		}, 1000);
+		return () => clearInterval(interval);
+	});
+
+	// ── Cleanup on unmount ──
+	onDestroy(() => {
+		clearConfirmTimer();
+	});
 </script>
 
 <div class="transport">
@@ -60,19 +115,31 @@
 			disabled={isOnAir && isAuto}
 			title={isOnAir ? 'On Air' : 'Start playout'}
 		>
-			{@html renderIcon(ICON_PLAY, 16, 'fill')}
+			{#if isOnAir}
+				{@html renderIcon(ICON_RECORD, 16, 'fill')}
+			{:else}
+				{@html renderIcon(ICON_PLAY, 16, 'fill')}
+			{/if}
 		</button>
 		<button
 			class="t-btn t-stop"
+			class:confirming={confirmingStop}
 			onclick={handleStop}
 			disabled={isStopped}
-			title="Stop playout"
+			title={confirmingStop ? 'Click again to confirm stop' : 'Stop playout'}
 		>
-			{@html renderIcon(ICON_STOP, 13, 'fill')}
+			{#if confirmingStop}
+				CONFIRM STOP
+			{:else}
+				{@html renderIcon(ICON_STOP, 13, 'fill')}
+			{/if}
 		</button>
-		<button class="t-btn" onclick={handleNext} disabled={isStopped} title="Next item">
-			{@html renderIcon(ICON_FRAME_FORWARD, 13)}
+		<button class="t-btn t-next" onclick={handleNext} disabled={isStopped} title="Next item">
+			{@html renderIcon(ICON_FRAME_FORWARD, 15)}
 		</button>
+		{#if isOnAir}
+			<span class="elapsed" title="Elapsed time since on-air">{elapsed}</span>
+		{/if}
 	</div>
 
 	<div class="mode-row">
@@ -128,7 +195,40 @@
 	.t-main.cued { background: rgba(59, 130, 246, 0.1); border-color: rgba(59, 130, 246, 0.5); color: rgba(96, 165, 250, 1); }
 	.t-main.on-air { background: rgba(220, 38, 38, 0.15); border-color: var(--tally-program); color: var(--tally-program); }
 
-	.t-stop:hover:not(:disabled) { color: var(--tally-program); border-color: rgba(220, 38, 38, 0.3); background: rgba(220, 38, 38, 0.1); }
+	.t-next {
+		min-width: 34px;
+		height: 30px;
+	}
+
+	.t-stop:hover:not(:disabled):not(.confirming) { color: var(--tally-program); border-color: rgba(220, 38, 38, 0.3); background: rgba(220, 38, 38, 0.1); }
+
+	.t-stop.confirming {
+		min-width: auto;
+		padding: 0 8px;
+		background: rgba(220, 38, 38, 0.25);
+		border-color: var(--tally-program);
+		color: var(--tally-program);
+		font-family: var(--font-ui);
+		font-size: 9px;
+		font-weight: 800;
+		letter-spacing: 0.06em;
+		animation: confirm-pulse 0.6s ease-in-out infinite;
+	}
+
+	@keyframes confirm-pulse {
+		0%, 100% { background: rgba(220, 38, 38, 0.25); }
+		50% { background: rgba(220, 38, 38, 0.45); }
+	}
+
+	.elapsed {
+		font-family: var(--font-mono, monospace);
+		font-size: 11px;
+		font-weight: 600;
+		color: var(--tally-program);
+		margin-left: 4px;
+		letter-spacing: 0.04em;
+		white-space: nowrap;
+	}
 
 	.mode-row {
 		display: flex;
@@ -147,27 +247,37 @@
 	}
 
 	.mode-pill {
-		padding: 1px 6px;
+		padding: 2px 8px;
 		border-radius: var(--radius-sm);
 		font-family: var(--font-ui);
-		font-size: 9px;
+		font-size: 11px;
 		font-weight: 700;
-		letter-spacing: 0.06em;
+		letter-spacing: 0.08em;
 	}
 
 	.mode-pill.auto {
-		background: rgba(22, 163, 74, 0.12);
+		background: rgba(22, 163, 74, 0.15);
 		color: var(--tally-preview);
+		border: 1px solid rgba(22, 163, 74, 0.3);
 	}
 
 	.mode-pill.manual {
-		background: var(--accent-orange-dim);
+		background: rgba(234, 168, 23, 0.15);
 		color: var(--accent-orange);
+		border: 1px solid rgba(234, 168, 23, 0.4);
+		animation: mode-pulse 1.5s ease-in-out infinite;
 	}
 
 	.mode-pill.break-mode {
-		background: rgba(220, 38, 38, 0.12);
+		background: rgba(220, 38, 38, 0.15);
 		color: var(--tally-program);
+		border: 1px solid rgba(220, 38, 38, 0.4);
+		animation: mode-pulse 1.5s ease-in-out infinite;
+	}
+
+	@keyframes mode-pulse {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.7; }
 	}
 
 	.mode-btn {

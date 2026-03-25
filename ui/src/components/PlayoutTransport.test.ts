@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import PlayoutTransport from './PlayoutTransport.svelte';
@@ -32,6 +32,11 @@ function makeChannel(overrides: Partial<PlayoutChannelState> = {}): PlayoutChann
 describe('PlayoutTransport', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		vi.useFakeTimers();
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
 	});
 
 	it('renders transport buttons (at least 4 .t-btn elements)', () => {
@@ -120,5 +125,156 @@ describe('PlayoutTransport', () => {
 		});
 		const mainBtn = container.querySelector('.t-main.on-air');
 		expect(mainBtn).toBeTruthy();
+	});
+
+	// ── Stop confirmation tests ──
+
+	it('first stop click shows CONFIRM STOP when on-air', async () => {
+		const { container } = render(PlayoutTransport, {
+			props: { channel: makeChannel({ state: 'on_air', mode: 'automated' }) },
+		});
+		const stopBtn = container.querySelector('.t-stop') as HTMLButtonElement;
+		expect(stopBtn).toBeTruthy();
+
+		await fireEvent.click(stopBtn);
+		await tick();
+
+		// Should NOT have called stop yet
+		expect(api.playoutStop).not.toHaveBeenCalled();
+		expect(api.apiCall).not.toHaveBeenCalled();
+
+		// Button should show confirm text and have confirming class
+		expect(stopBtn.textContent?.trim()).toBe('CONFIRM STOP');
+		expect(stopBtn.classList.contains('confirming')).toBe(true);
+	});
+
+	it('second stop click within 3s executes stop', async () => {
+		const { container } = render(PlayoutTransport, {
+			props: { channel: makeChannel({ state: 'on_air', mode: 'automated' }) },
+		});
+		const stopBtn = container.querySelector('.t-stop') as HTMLButtonElement;
+
+		// First click - enter confirm mode
+		await fireEvent.click(stopBtn);
+		await tick();
+		expect(api.apiCall).not.toHaveBeenCalled();
+
+		// Second click - should execute stop
+		await fireEvent.click(stopBtn);
+		await tick();
+
+		expect(api.apiCall).toHaveBeenCalled();
+		expect(api.playoutStop).toHaveBeenCalledWith(1);
+	});
+
+	it('confirm stop reverts after 3s timeout', async () => {
+		const { container } = render(PlayoutTransport, {
+			props: { channel: makeChannel({ state: 'on_air', mode: 'automated' }) },
+		});
+		const stopBtn = container.querySelector('.t-stop') as HTMLButtonElement;
+
+		// First click - enter confirm mode
+		await fireEvent.click(stopBtn);
+		await tick();
+		expect(stopBtn.textContent?.trim()).toBe('CONFIRM STOP');
+
+		// Advance past the 3s timeout
+		vi.advanceTimersByTime(3100);
+		await tick();
+
+		// Should revert - no longer showing CONFIRM STOP
+		expect(stopBtn.classList.contains('confirming')).toBe(false);
+		expect(stopBtn.textContent?.trim()).not.toBe('CONFIRM STOP');
+	});
+
+	it('single click stop works when not on-air', async () => {
+		const { container } = render(PlayoutTransport, {
+			props: { channel: makeChannel({ state: 'cued' }) },
+		});
+		const stopBtn = container.querySelector('.t-stop') as HTMLButtonElement;
+		expect(stopBtn).toBeTruthy();
+
+		await fireEvent.click(stopBtn);
+		await tick();
+
+		// Should execute stop directly without confirmation
+		expect(api.apiCall).toHaveBeenCalled();
+		expect(api.playoutStop).toHaveBeenCalledWith(1);
+	});
+
+	// ── Mode pill styling tests ──
+
+	it('auto mode pill has green styling with border', () => {
+		const { container } = render(PlayoutTransport, {
+			props: { channel: makeChannel({ state: 'on_air', mode: 'automated' }) },
+		});
+		const pill = container.querySelector('.mode-pill.auto') as HTMLElement;
+		expect(pill).toBeTruthy();
+		// Verify the class is applied (CSS will handle the visual styling)
+		expect(pill.classList.contains('auto')).toBe(true);
+	});
+
+	it('manual mode pill has animation class', () => {
+		const { container } = render(PlayoutTransport, {
+			props: { channel: makeChannel({ state: 'on_air', mode: 'manual' }) },
+		});
+		const pill = container.querySelector('.mode-pill.manual') as HTMLElement;
+		expect(pill).toBeTruthy();
+		// The manual class applies the mode-pulse animation via CSS
+		expect(pill.classList.contains('manual')).toBe(true);
+	});
+
+	it('break mode pill has animation class', () => {
+		const { container } = render(PlayoutTransport, {
+			props: { channel: makeChannel({ state: 'on_air', mode: 'break' }) },
+		});
+		const pill = container.querySelector('.mode-pill.break-mode') as HTMLElement;
+		expect(pill).toBeTruthy();
+		expect(pill.classList.contains('break-mode')).toBe(true);
+	});
+
+	// ── Elapsed time tests ──
+
+	it('shows elapsed time when on-air', async () => {
+		const { container } = render(PlayoutTransport, {
+			props: { channel: makeChannel({ state: 'on_air', mode: 'automated' }) },
+		});
+		await tick();
+
+		const elapsedEl = container.querySelector('.elapsed');
+		expect(elapsedEl).toBeTruthy();
+		expect(elapsedEl!.textContent).toBe('0:00');
+	});
+
+	it('does not show elapsed time when stopped', () => {
+		const { container } = render(PlayoutTransport, {
+			props: { channel: makeChannel({ state: 'stopped' }) },
+		});
+		const elapsedEl = container.querySelector('.elapsed');
+		expect(elapsedEl).toBeFalsy();
+	});
+
+	// ── Next button styling ──
+
+	it('next button has t-next class for larger sizing', () => {
+		const { container } = render(PlayoutTransport, {
+			props: { channel: makeChannel({ state: 'on_air', mode: 'automated' }) },
+		});
+		const nextBtn = container.querySelector('.t-next');
+		expect(nextBtn).toBeTruthy();
+	});
+
+	// ── Tooltip tests ──
+
+	it('stop button shows confirm tooltip when confirming', async () => {
+		const { container } = render(PlayoutTransport, {
+			props: { channel: makeChannel({ state: 'on_air', mode: 'automated' }) },
+		});
+		const stopBtn = container.querySelector('.t-stop') as HTMLButtonElement;
+
+		await fireEvent.click(stopBtn);
+		await tick();
+
+		expect(stopBtn.title).toBe('Click again to confirm stop');
 	});
 });
