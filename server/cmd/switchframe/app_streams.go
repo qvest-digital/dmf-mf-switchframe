@@ -25,6 +25,9 @@ func (a *App) onStreamRegistered(key string, relay *distribution.Relay) {
 	if strings.HasPrefix(key, "clip:") {
 		return // Clip sources are manually wired in initClips()
 	}
+	if strings.HasPrefix(key, "playout:") {
+		return // Playout sources are manually wired in initPlayout()
+	}
 	if a.sw == nil || a.mixer == nil {
 		slog.Error("BUG: stream registered before switcher/mixer initialized", "key", key)
 		return
@@ -54,6 +57,9 @@ func (a *App) onStreamUnregistered(key string) {
 	}
 	if strings.HasPrefix(key, "clip:") {
 		return // Clip sources are managed by clipMgr lifecycle callbacks
+	}
+	if strings.HasPrefix(key, "playout:") {
+		return // Playout sources are managed by playoutMgr lifecycle callbacks
 	}
 	if strings.HasPrefix(key, "srt:") {
 		return // SRT sources are managed by app_srt.go lifecycle

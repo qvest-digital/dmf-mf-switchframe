@@ -46,6 +46,7 @@ import (
 	"github.com/zsiec/switchframe/server/operator"
 	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/perf"
+	"github.com/zsiec/switchframe/server/playout"
 	"github.com/zsiec/switchframe/server/preset"
 	"github.com/zsiec/switchframe/server/preview"
 	"github.com/zsiec/switchframe/server/replay"
@@ -142,6 +143,9 @@ type App struct {
 	clipMgr    *clip.Manager
 	clipStore  *clip.Store
 	clipRelays [clip.MaxPlayers]*distribution.Relay
+
+	// Playout channels
+	playoutMgr *playout.Manager
 
 	// GPU pipeline (Metal on macOS, CUDA on Linux)
 	gpuState        *gpuState
@@ -1658,6 +1662,9 @@ func (a *App) closeSubsystems() {
 	}
 	if a.clipMgr != nil {
 		a.clipMgr.Close()
+	}
+	if a.playoutMgr != nil {
+		a.playoutMgr.Close()
 	}
 	if a.htmlGfxMgr != nil {
 		_ = a.htmlGfxMgr.Close()

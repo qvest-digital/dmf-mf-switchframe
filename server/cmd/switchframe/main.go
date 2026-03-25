@@ -166,6 +166,9 @@ func run() error {
 	if err := app.initClips(); err != nil {
 		return err
 	}
+	if err := app.initPlayout(); err != nil {
+		return err
+	}
 	if err := app.initSRT(); err != nil {
 		return err
 	}
