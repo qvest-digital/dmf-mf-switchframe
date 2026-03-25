@@ -2,6 +2,7 @@ package playout
 
 import (
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -132,4 +133,94 @@ var (
 	ErrItemNotFound   = errors.New("playout: item not found")
 	ErrAlreadyCued    = errors.New("playout: channel already cued")
 	ErrInvalidState   = errors.New("playout: invalid state transition")
+
+	// Asset pipeline errors.
+	ErrAssetNotFound   = errors.New("playout: asset not found in cache")
+	ErrAssetNotReady   = errors.New("playout: asset not yet cached")
+	ErrCacheFull       = errors.New("playout: cache full, eviction failed")
+	ErrUnsupportedURI  = errors.New("playout: unsupported asset URI scheme")
+	ErrPathTraversal   = errors.New("playout: path traversal detected")
+	ErrFetchFailed     = errors.New("playout: asset fetch failed")
+	ErrTranscodeFailed = errors.New("playout: asset transcode failed")
 )
+
+// AssetState represents the state of an asset in the cache pipeline.
+type AssetState int
+
+const (
+	AssetPending     AssetState = 0
+	AssetFetching    AssetState = 1
+	AssetTranscoding AssetState = 2
+	AssetCached      AssetState = 3
+	AssetError       AssetState = 4
+)
+
+func (s AssetState) String() string {
+	switch s {
+	case AssetPending:
+		return "pending"
+	case AssetFetching:
+		return "fetching"
+	case AssetTranscoding:
+		return "transcoding"
+	case AssetCached:
+		return "cached"
+	case AssetError:
+		return "error"
+	default:
+		return "unknown"
+	}
+}
+
+// ParseAssetURI splits an asset URI into scheme and path.
+// Bare absolute paths are treated as local.
+func ParseAssetURI(uri string) (scheme, path string) {
+	// Bare absolute path.
+	if strings.HasPrefix(uri, "/") {
+		return "local", uri
+	}
+	// file:// is an alias for local.
+	if strings.HasPrefix(uri, "file:///") {
+		return "local", uri[len("file://"):]
+	}
+	// local:// scheme.
+	if strings.HasPrefix(uri, "local:///") {
+		return "local", uri[len("local://"):]
+	}
+	// Generic scheme://rest.
+	if idx := strings.Index(uri, "://"); idx > 0 {
+		return uri[:idx], uri[idx+3:]
+	}
+	return "local", uri
+}
+
+// CacheEntry tracks one cached asset.
+type CacheEntry struct {
+	AssetURI     string     `json:"asset_uri"`
+	LocalPath    string     `json:"local_path"`
+	State        AssetState `json:"state"`
+	ByteSize     int64      `json:"byte_size"`
+	Checksum     string     `json:"checksum,omitempty"`
+	Transcoded   bool       `json:"transcoded"`
+	LastAccessed time.Time  `json:"last_accessed"`
+	FetchedAt    time.Time  `json:"fetched_at,omitempty"`
+	ErrorMsg     string     `json:"error_msg,omitempty"`
+}
+
+// CacheStatus is the summary status of the asset cache.
+type CacheStatus struct {
+	CacheDir      string `json:"cacheDir"`
+	MaxBytes      int64  `json:"maxBytes"`
+	UsedBytes     int64  `json:"usedBytes"`
+	ItemCount     int    `json:"itemCount"`
+	FetchingCount int    `json:"fetchingCount"`
+	ErrorCount    int    `json:"errorCount"`
+}
+
+// CacheConfig holds configuration for the asset cache.
+type CacheConfig struct {
+	Dir              string `json:"cache_dir"`
+	MaxBytes         int64  `json:"cache_size_bytes"`
+	LookaheadMinutes int    `json:"lookahead_minutes"`
+	PreDecodeItems   int    `json:"pre_decode_items"`
+}

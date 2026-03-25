@@ -323,3 +323,143 @@ func TestChannelStatus_JSON(t *testing.T) {
 		t.Errorf("ItemRemainMs = %d, want %d", got.ItemRemainMs, 5500)
 	}
 }
+
+func TestAssetStateString(t *testing.T) {
+	tests := []struct {
+		state AssetState
+		want  string
+	}{
+		{AssetPending, "pending"},
+		{AssetFetching, "fetching"},
+		{AssetTranscoding, "transcoding"},
+		{AssetCached, "cached"},
+		{AssetError, "error"},
+		{AssetState(99), "unknown"},
+	}
+	for _, tt := range tests {
+		if got := tt.state.String(); got != tt.want {
+			t.Errorf("AssetState(%d).String() = %q, want %q", tt.state, got, tt.want)
+		}
+	}
+}
+
+func TestAssetURIParse(t *testing.T) {
+	tests := []struct {
+		uri    string
+		scheme string
+		path   string
+	}{
+		{"local:///mnt/media/clip.ts", "local", "/mnt/media/clip.ts"},
+		{"s3://bucket/key.ts", "s3", "bucket/key.ts"},
+		{"http://cdn.example.com/clip.ts", "http", "cdn.example.com/clip.ts"},
+		{"https://cdn.example.com/clip.ts", "https", "cdn.example.com/clip.ts"},
+		{"/absolute/path.ts", "local", "/absolute/path.ts"},
+		{"file:///path.ts", "local", "/path.ts"},
+	}
+	for _, tt := range tests {
+		scheme, path := ParseAssetURI(tt.uri)
+		if scheme != tt.scheme {
+			t.Errorf("ParseAssetURI(%q) scheme = %q, want %q", tt.uri, scheme, tt.scheme)
+		}
+		if path != tt.path {
+			t.Errorf("ParseAssetURI(%q) path = %q, want %q", tt.uri, path, tt.path)
+		}
+	}
+}
+
+func TestCacheStatusJSON(t *testing.T) {
+	cs := CacheStatus{
+		CacheDir:      "/data/cache",
+		MaxBytes:      100 * 1024 * 1024 * 1024,
+		UsedBytes:     50 * 1024 * 1024 * 1024,
+		ItemCount:     42,
+		FetchingCount: 2,
+		ErrorCount:    1,
+	}
+	data, err := json.Marshal(cs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded CacheStatus
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.ItemCount != 42 {
+		t.Errorf("ItemCount = %d, want 42", decoded.ItemCount)
+	}
+}
+
+func TestCacheEntryJSON(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	entry := CacheEntry{
+		AssetURI:     "s3://bucket/clip.ts",
+		LocalPath:    "/data/cache/clip.ts",
+		State:        AssetCached,
+		ByteSize:     1024 * 1024 * 50,
+		Checksum:     "sha256:abc123",
+		Transcoded:   true,
+		LastAccessed: now,
+		FetchedAt:    now,
+	}
+	data, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got CacheEntry
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.AssetURI != entry.AssetURI {
+		t.Errorf("AssetURI = %q, want %q", got.AssetURI, entry.AssetURI)
+	}
+	if got.State != AssetCached {
+		t.Errorf("State = %d, want %d", got.State, AssetCached)
+	}
+	if got.ByteSize != entry.ByteSize {
+		t.Errorf("ByteSize = %d, want %d", got.ByteSize, entry.ByteSize)
+	}
+	if !got.Transcoded {
+		t.Error("Transcoded = false, want true")
+	}
+	if got.Checksum != "sha256:abc123" {
+		t.Errorf("Checksum = %q, want %q", got.Checksum, "sha256:abc123")
+	}
+}
+
+func TestCacheConfigDefaults(t *testing.T) {
+	cfg := CacheConfig{
+		Dir:              "/data/cache",
+		MaxBytes:         100 * 1024 * 1024 * 1024,
+		LookaheadMinutes: 30,
+		PreDecodeItems:   3,
+	}
+	if cfg.Dir != "/data/cache" {
+		t.Errorf("Dir = %q, want %q", cfg.Dir, "/data/cache")
+	}
+	if cfg.LookaheadMinutes != 30 {
+		t.Errorf("LookaheadMinutes = %d, want 30", cfg.LookaheadMinutes)
+	}
+	if cfg.PreDecodeItems != 3 {
+		t.Errorf("PreDecodeItems = %d, want 3", cfg.PreDecodeItems)
+	}
+}
+
+func TestAssetPipelineSentinelErrors(t *testing.T) {
+	errs := []error{
+		ErrAssetNotFound,
+		ErrAssetNotReady,
+		ErrCacheFull,
+		ErrUnsupportedURI,
+		ErrPathTraversal,
+		ErrFetchFailed,
+		ErrTranscodeFailed,
+	}
+	for _, err := range errs {
+		if err == nil {
+			t.Error("sentinel error is nil")
+		}
+		if err.Error() == "" {
+			t.Error("sentinel error has empty message")
+		}
+	}
+}
