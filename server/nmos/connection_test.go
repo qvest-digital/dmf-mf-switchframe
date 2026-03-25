@@ -1216,7 +1216,10 @@ func TestConnectionDeactivateCallbackError(t *testing.T) {
 	}
 
 	// Active should still have the destination_ip from the first activation.
-	resp3, _ := http.Get(ts.URL + "/x-nmos/connection/v1.1/single/receivers/recv-001/active")
+	resp3, err := http.Get(ts.URL + "/x-nmos/connection/v1.1/single/receivers/recv-001/active")
+	if err != nil {
+		t.Fatalf("GET active: %v", err)
+	}
 	defer resp3.Body.Close()
 	var active StagedParams
 	json.NewDecoder(resp3.Body).Decode(&active)
