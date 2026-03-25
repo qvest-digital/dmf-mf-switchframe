@@ -315,6 +315,7 @@ type ControlRoomState struct {
 	Comms                *CommsState             `json:"comms,omitempty"`
 	STMap                *STMapState             `json:"stmap,omitempty"`
 	AISegmentation       *AISegmentationState    `json:"aiSegmentation,omitempty"`
+	NeuralKey            *NeuralKeyState         `json:"neuralKey,omitempty"`
 	ASR                  *ASRState               `json:"asr,omitempty"`
 	Macro                *MacroExecutionState    `json:"macro,omitempty"`
 	ColorGrade           *ColorGradeState        `json:"colorGrade,omitempty"`
@@ -486,6 +487,12 @@ type AISegmentConfig struct {
 	Sensitivity float32 `json:"sensitivity"`
 	EdgeSmooth  float32 `json:"edgeSmooth"`
 	Background  string  `json:"background"`
+}
+
+// NeuralKeyState is broadcast in ControlRoomState when the neural key
+// engine is available (GPU + TensorRT + model loaded). Omitted on non-GPU builds.
+type NeuralKeyState struct {
+	Available bool `json:"available"`
 }
 
 // AISegmentationState is broadcast in ControlRoomState when AI segmentation

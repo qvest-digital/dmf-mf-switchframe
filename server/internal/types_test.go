@@ -97,3 +97,40 @@ func TestControlRoomStateAudioFields(t *testing.T) {
 	require.Equal(t, state.MasterLevel, decoded.MasterLevel)
 	require.Equal(t, state.ProgramPeak, decoded.ProgramPeak)
 }
+
+func TestNeuralKeyStateJSON(t *testing.T) {
+	t.Parallel()
+	nk := internal.NeuralKeyState{Available: true}
+
+	data, err := json.Marshal(nk)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"available":true}`, string(data))
+
+	var decoded internal.NeuralKeyState
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	require.True(t, decoded.Available)
+}
+
+func TestControlRoomStateNeuralKeyField(t *testing.T) {
+	t.Parallel()
+	state := internal.ControlRoomState{
+		ProgramSource: "cam1",
+		Sources:       map[string]internal.SourceInfo{},
+		NeuralKey:     &internal.NeuralKeyState{Available: true},
+		Seq:           42,
+	}
+
+	data, err := json.Marshal(state)
+	require.NoError(t, err)
+
+	var decoded internal.ControlRoomState
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	require.NotNil(t, decoded.NeuralKey)
+	require.True(t, decoded.NeuralKey.Available)
+
+	// Verify omitempty: nil NeuralKey should not appear in JSON.
+	stateNoKey := internal.ControlRoomState{ProgramSource: "cam2"}
+	data2, err := json.Marshal(stateNoKey)
+	require.NoError(t, err)
+	require.NotContains(t, string(data2), "neuralKey")
+}

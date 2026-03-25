@@ -72,6 +72,64 @@ func TestKeyProcessor_LumaKeyComposites(t *testing.T) {
 	require.Len(t, result, len(bg))
 }
 
+func TestKeyProcessor_NeuralType_SkippedOnCPU(t *testing.T) {
+	kp := NewKeyProcessor()
+	kp.SetKey("cam1", KeyConfig{
+		Type:    KeyTypeNeural,
+		Enabled: true,
+	})
+
+	// Create a background frame and a distinct fill frame.
+	bg := makeYUV420Frame(4, 4, 100, 128, 128)
+	fill := makeYUV420Frame(4, 4, 200, 50, 200)
+
+	original := make([]byte, len(bg))
+	copy(original, bg)
+
+	result := kp.Process(bg, map[string][]byte{"cam1": fill}, 4, 4)
+
+	// Neural key should be skipped on CPU — output identical to input.
+	require.Equal(t, original, result, "neural key should be skipped on CPU path, background must be unchanged")
+}
+
+func TestKeyProcessor_NeuralKeyAmongOthers_OnlyNeuralSkipped(t *testing.T) {
+	kp := NewKeyProcessor()
+
+	// "alpha" is a luma key (should be applied)
+	kp.SetKey("alpha", KeyConfig{
+		Type:     KeyTypeLuma,
+		Enabled:  true,
+		LowClip:  0.0,
+		HighClip: 1.0,
+		Softness: 0.0,
+	})
+
+	// "bravo" is a neural key (should be skipped)
+	kp.SetKey("bravo", KeyConfig{
+		Type:    KeyTypeNeural,
+		Enabled: true,
+	})
+
+	bg := makeYUV420Frame(4, 4, 0, 128, 128)
+	lumaFill := makeYUV420Frame(4, 4, 200, 80, 200)
+	neuralFill := makeYUV420Frame(4, 4, 255, 30, 30)
+
+	fills := map[string][]byte{
+		"alpha": lumaFill,
+		"bravo": neuralFill,
+	}
+
+	result := kp.Process(bg, fills, 4, 4)
+
+	// The luma key should have composited (Y values changed from 0 toward 200).
+	// The neural key should have been skipped entirely.
+	ySize := 4 * 4
+	for i := 0; i < ySize; i++ {
+		require.NotEqual(t, byte(0), result[i],
+			"Y[%d] should be changed by luma key", i)
+	}
+}
+
 func TestKeyProcessor_DisabledKeySkipped(t *testing.T) {
 	kp := NewKeyProcessor()
 	kp.SetKey("cam1", KeyConfig{
@@ -453,4 +511,12 @@ func TestKeyProcessor_OddDimensionsReturnsUnmodified(t *testing.T) {
 	// Both odd
 	result = kp.Process(bg, map[string][]byte{"cam1": bg}, 3, 3)
 	require.Equal(t, original, result, "both odd should return bg unmodified")
+}
+
+func TestKeyTypeNeural(t *testing.T) {
+	t.Parallel()
+	require.Equal(t, KeyType("neural"), KeyTypeNeural)
+	// Verify it is distinct from existing key types.
+	require.NotEqual(t, KeyTypeChroma, KeyTypeNeural)
+	require.NotEqual(t, KeyTypeLuma, KeyTypeNeural)
 }

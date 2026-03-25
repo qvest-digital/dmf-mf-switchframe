@@ -12,6 +12,7 @@ type KeyType string
 const (
 	KeyTypeChroma KeyType = "chroma"
 	KeyTypeLuma   KeyType = "luma"
+	KeyTypeNeural KeyType = "neural"
 )
 
 // KeyConfig describes the key configuration for a source.
@@ -174,6 +175,11 @@ func (kp *KeyProcessor) Process(bg []byte, fills map[string][]byte, width, heigh
 	for _, source := range kp.sortedKeys {
 		cfg := kp.keys[source]
 		if !cfg.Enabled {
+			continue
+		}
+
+		// Neural keys are GPU-only; skip on the CPU path (graceful degradation).
+		if cfg.Type == KeyTypeNeural {
 			continue
 		}
 

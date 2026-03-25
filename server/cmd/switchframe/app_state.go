@@ -282,6 +282,11 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 		}
 	}
 
+	// Neural key state (GPU/TensorRT builds only).
+	if a.cfg.NeuralKeyModelPath != "" {
+		state.NeuralKey = &internal.NeuralKeyState{Available: true}
+	}
+
 	// AI segmentation state (GPU/TensorRT builds only).
 	if a.segEngine != nil && a.segAdapter != nil {
 		mgr := &aiSegmentManagerAdapter{engine: a.segEngine, adapter: a.segAdapter}
