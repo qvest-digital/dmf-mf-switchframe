@@ -43,4 +43,17 @@ static inline void st2110_rx_port_set_mcast_sip(struct st_rx_port* p, int port_i
     p->mcast_sip_addr[port_idx][3] = d;
 }
 
+// st40 port BDF setters (raw API has no st_rxp_para_port_set equivalent).
+static inline void st2110_st40_rx_set_port(struct st40_rx_ops* ops, int port_idx,
+    const char* name) {
+    strncpy(ops->port[port_idx], name, MTL_PORT_MAX_LEN - 1);
+    ops->port[port_idx][MTL_PORT_MAX_LEN - 1] = '\0';
+}
+
+static inline void st2110_st40_tx_set_port(struct st40_tx_ops* ops, int port_idx,
+    const char* name) {
+    strncpy(ops->port[port_idx], name, MTL_PORT_MAX_LEN - 1);
+    ops->port[port_idx][MTL_PORT_MAX_LEN - 1] = '\0';
+}
+
 #endif // ST2110_MTL_HELPERS_H
