@@ -17,9 +17,16 @@ func Int24BEToFloat32(b []byte) float32 {
 }
 
 // Float32ToInt24BE converts a float32 in [-1.0, 1.0] to a big-endian 24-bit
-// signed integer. Values outside the range are clamped. The output slice must
-// be at least 3 bytes.
+// signed integer. Values outside the range are clamped. NaN and Inf inputs
+// are handled gracefully (NaN → silence, Inf → clamped). The output slice
+// must be at least 3 bytes.
 func Float32ToInt24BE(f float32, b []byte) {
+	// NaN check: f != f is true only for NaN.
+	if f != f {
+		b[0], b[1], b[2] = 0, 0, 0
+		return
+	}
+
 	// Scale and clamp.
 	scaled := f * float32(0x7FFFFF)
 
@@ -45,8 +52,12 @@ func Float32ToInt24BE(f float32, b []byte) {
 // PCM samples to float32. The input must contain channels*samplesPerCh*3 bytes.
 // The output must have room for channels*samplesPerCh float32 values.
 // Sample ordering is preserved (interleaved in, interleaved out).
+// If the input buffer is too short, conversion stops at the available data.
 func ConvertInt24BEToFloat32(input []byte, output []float32, channels, samplesPerCh int) {
 	total := channels * samplesPerCh
+	if len(input) < total*3 {
+		return
+	}
 	for i := 0; i < total; i++ {
 		offset := i * 3
 		output[i] = Int24BEToFloat32(input[offset : offset+3])

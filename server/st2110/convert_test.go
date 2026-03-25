@@ -156,6 +156,52 @@ func TestConvertFloat32ToInt24BE(t *testing.T) {
 	}
 }
 
+func TestFloat32ToInt24NaN(t *testing.T) {
+	var buf [3]byte
+	nan := float32(math.NaN())
+	Float32ToInt24BE(nan, buf[:])
+	if buf[0] != 0 || buf[1] != 0 || buf[2] != 0 {
+		t.Errorf("NaN should produce silence: got %02X %02X %02X, want 00 00 00", buf[0], buf[1], buf[2])
+	}
+}
+
+func TestFloat32ToInt24Inf(t *testing.T) {
+	var buf [3]byte
+
+	// Positive infinity should clamp to max positive.
+	Float32ToInt24BE(float32(math.Inf(1)), buf[:])
+	if buf[0] != 0x7F || buf[1] != 0xFF || buf[2] != 0xFF {
+		t.Errorf("positive Inf: got %02X %02X %02X, want 7F FF FF", buf[0], buf[1], buf[2])
+	}
+
+	// Negative infinity should clamp to max negative.
+	Float32ToInt24BE(float32(math.Inf(-1)), buf[:])
+	if buf[0] != 0x80 || buf[1] != 0x00 || buf[2] != 0x00 {
+		t.Errorf("negative Inf: got %02X %02X %02X, want 80 00 00", buf[0], buf[1], buf[2])
+	}
+}
+
+func TestConvertInt24BEToFloat32ShortInput(t *testing.T) {
+	// Input too short: should return without panicking, output unchanged.
+	channels := 2
+	samplesPerCh := 4
+	totalSamples := channels * samplesPerCh
+	input := make([]byte, totalSamples*3-1) // one byte short
+	output := make([]float32, totalSamples)
+	for i := range output {
+		output[i] = 42.0 // sentinel value
+	}
+
+	ConvertInt24BEToFloat32(input, output, channels, samplesPerCh)
+
+	// Output should be unchanged since input was too short.
+	for i, v := range output {
+		if v != 42.0 {
+			t.Errorf("output[%d] = %f, want 42.0 (unchanged)", i, v)
+		}
+	}
+}
+
 func BenchmarkInt24BEToFloat32(b *testing.B) {
 	buf := []byte{0x40, 0x00, 0x00}
 	b.ResetTimer()

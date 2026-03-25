@@ -332,6 +332,125 @@ func TestReceiverJSON(t *testing.T) {
 	}
 }
 
+func TestFlowAudioJSON(t *testing.T) {
+	flow := Flow{
+		ID:          "a1b2c3d4-5678-4abc-9def-0123456789ab",
+		Version:     NewVersion(),
+		Label:       "Audio Flow",
+		Description: "48kHz 24-bit audio",
+		Tags:        map[string][]string{},
+		Format:      FormatAudio,
+		SourceID:    "src-audio-001",
+		DeviceID:    "dev-001",
+		Parents:     []string{},
+		MediaType:   "audio/L24",
+		SampleRate:  &Rational{Numerator: 48000, Denominator: 1},
+		BitDepth:    24,
+	}
+
+	data, err := json.Marshal(flow)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var got Flow
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if got.Format != FormatAudio {
+		t.Errorf("Format: got %q, want %q", got.Format, FormatAudio)
+	}
+	if got.SampleRate == nil || got.SampleRate.Numerator != 48000 || got.SampleRate.Denominator != 1 {
+		t.Errorf("SampleRate mismatch: %+v", got.SampleRate)
+	}
+	if got.BitDepth != 24 {
+		t.Errorf("BitDepth: got %d, want 24", got.BitDepth)
+	}
+	if got.MediaType != "audio/L24" {
+		t.Errorf("MediaType: got %q, want %q", got.MediaType, "audio/L24")
+	}
+
+	// Verify snake_case and omitempty: audio fields present, video fields absent.
+	raw := make(map[string]json.RawMessage)
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal raw: %v", err)
+	}
+	for _, key := range []string{"sample_rate", "bit_depth", "source_id", "device_id", "media_type"} {
+		if _, ok := raw[key]; !ok {
+			t.Errorf("missing expected key %q in JSON", key)
+		}
+	}
+	// Video-specific fields should be omitted (omitempty with zero values).
+	for _, key := range []string{"frame_width", "frame_height", "interlace_mode", "colorspace", "components", "grain_rate"} {
+		if _, ok := raw[key]; ok {
+			t.Errorf("video-specific key %q should be omitted for audio flow", key)
+		}
+	}
+}
+
+func TestSourceJSON(t *testing.T) {
+	src := Source{
+		ID:          "s1a2b3c4-d5e6-4f78-9012-abcdef012345",
+		Version:     NewVersion(),
+		Label:       "Audio Source",
+		Description: "A stereo audio source",
+		Tags:        map[string][]string{"studio": {"main"}},
+		Caps:        map[string]interface{}{},
+		Format:      FormatAudio,
+		Parents:     []string{},
+		DeviceID:    "dev-001",
+		ClockName:   "clk0",
+		Channels: []SourceChannel{
+			{Label: "Left", Symbol: "L"},
+			{Label: "Right", Symbol: "R"},
+		},
+	}
+
+	data, err := json.Marshal(src)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var got Source
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if got.ID != src.ID {
+		t.Errorf("ID mismatch")
+	}
+	if got.ClockName != "clk0" {
+		t.Errorf("ClockName: got %q, want %q", got.ClockName, "clk0")
+	}
+	if got.Format != FormatAudio {
+		t.Errorf("Format: got %q, want %q", got.Format, FormatAudio)
+	}
+	if got.DeviceID != "dev-001" {
+		t.Errorf("DeviceID: got %q, want %q", got.DeviceID, "dev-001")
+	}
+	if len(got.Channels) != 2 {
+		t.Fatalf("Channels: got %d, want 2", len(got.Channels))
+	}
+	if got.Channels[0].Label != "Left" || got.Channels[0].Symbol != "L" {
+		t.Errorf("Channels[0]: got %+v", got.Channels[0])
+	}
+	if got.Channels[1].Label != "Right" || got.Channels[1].Symbol != "R" {
+		t.Errorf("Channels[1]: got %+v", got.Channels[1])
+	}
+
+	// Verify snake_case in raw JSON.
+	raw := make(map[string]json.RawMessage)
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal raw: %v", err)
+	}
+	for _, key := range []string{"id", "version", "label", "description", "tags", "caps", "format", "parents", "device_id", "clock_name", "channels"} {
+		if _, ok := raw[key]; !ok {
+			t.Errorf("missing snake_case key %q in JSON", key)
+		}
+	}
+}
+
 // helper
 func boolPtr(b bool) *bool    { return &b }
 func strPtr(s string) *string { return &s }
