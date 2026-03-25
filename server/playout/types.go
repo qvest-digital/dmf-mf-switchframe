@@ -243,3 +243,127 @@ type CacheConfig struct {
 	LookaheadMinutes int    `json:"lookahead_minutes"`
 	PreDecodeItems   int    `json:"pre_decode_items"`
 }
+
+// PodState represents the lifecycle state of a pod.
+type PodState int
+
+const (
+	PodScheduled     PodState = 0
+	PodPreRoll       PodState = 1
+	PodSplicePending PodState = 2
+	PodBreakActive   PodState = 3
+	PodReturnPending PodState = 4
+	PodRejoined      PodState = 5
+	PodDumpedOut     PodState = 6
+)
+
+func (s PodState) String() string {
+	switch s {
+	case PodScheduled:
+		return "scheduled"
+	case PodPreRoll:
+		return "pre_roll"
+	case PodSplicePending:
+		return "splice_pending"
+	case PodBreakActive:
+		return "break_active"
+	case PodReturnPending:
+		return "return_pending"
+	case PodRejoined:
+		return "rejoined"
+	case PodDumpedOut:
+		return "dumped_out"
+	default:
+		return "unknown"
+	}
+}
+
+// IsTerminal returns true if the pod has reached a final state.
+func (s PodState) IsTerminal() bool {
+	return s == PodRejoined || s == PodDumpedOut
+}
+
+// PodPriority determines which pod wins in contention.
+type PodPriority int
+
+const (
+	PriorityNormal    PodPriority = 0
+	PriorityHigh      PodPriority = 1
+	PriorityMandatory PodPriority = 2
+)
+
+func (p PodPriority) String() string {
+	switch p {
+	case PriorityNormal:
+		return "normal"
+	case PriorityHigh:
+		return "high"
+	case PriorityMandatory:
+		return "mandatory"
+	default:
+		return "unknown"
+	}
+}
+
+// Less returns true if p has lower priority than other.
+func (p PodPriority) Less(other PodPriority) bool {
+	return p < other
+}
+
+// PodConfig defines the parameters for creating a pod instance.
+type PodConfig struct {
+	Type                  string      `json:"type"`
+	DurationMs            int64       `json:"duration_ms"`
+	AutoReturn            bool        `json:"auto_return"`
+	AllowDumpOut          bool        `json:"allow_dump_out"`
+	Priority              PodPriority `json:"priority"`
+	Contractual           bool        `json:"contractual,omitempty"`
+	Ephemeral             bool        `json:"ephemeral,omitempty"`
+	HoldUntilManualReturn bool        `json:"hold_until_manual_return,omitempty"`
+	Position              string      `json:"position,omitempty"`
+}
+
+// Pod is a runtime pod instance tracking a break lifecycle.
+type Pod struct {
+	ID            string    `json:"id"`
+	Config        PodConfig `json:"config"`
+	State         PodState  `json:"state"`
+	Armed         bool      `json:"armed"`
+	ElapsedMs     int64     `json:"elapsed_ms"`
+	RemainingMs   int64     `json:"remaining_ms,omitempty"`
+	FiredAt       int64     `json:"fired_at,omitempty"`
+	CompletedAt   int64     `json:"completed_at,omitempty"`
+	SCTE35EventID uint32    `json:"scte35_event_id,omitempty"`
+}
+
+// PodBoardStatus is the broadcast state for the pod board.
+type PodBoardStatus struct {
+	ActivePod     *PodStatus  `json:"activePod,omitempty"`
+	PodsArmed     int         `json:"podsArmed"`
+	PodsCompleted int         `json:"podsCompleted"`
+	Pods          []PodStatus `json:"pods"`
+}
+
+// PodStatus is the broadcast-safe snapshot of a single pod.
+type PodStatus struct {
+	ID          string `json:"id"`
+	Type        string `json:"type"`
+	State       string `json:"state"`
+	Armed       bool   `json:"armed"`
+	ElapsedMs   int64  `json:"elapsedMs,omitempty"`
+	RemainingMs int64  `json:"remainingMs,omitempty"`
+	DurationMs  int64  `json:"durationMs"`
+	Priority    string `json:"priority"`
+	Position    string `json:"position,omitempty"`
+}
+
+// Pod sentinel errors.
+var (
+	ErrPodNotFound      = errors.New("playout: pod not found")
+	ErrPodAlreadyActive = errors.New("playout: pod already active")
+	ErrPodNotArmed      = errors.New("playout: pod not armed")
+	ErrPodTerminal      = errors.New("playout: pod in terminal state")
+	ErrPodNoDumpOut     = errors.New("playout: dump out not allowed for this pod")
+	ErrPodNotActive     = errors.New("playout: no active pod")
+	ErrNoPodBoard       = errors.New("playout: pod board not initialized")
+)
