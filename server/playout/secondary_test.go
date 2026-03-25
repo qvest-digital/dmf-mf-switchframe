@@ -2,6 +2,7 @@ package playout
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 )
 
@@ -11,54 +12,82 @@ type mockCall struct {
 	Args   string
 }
 
-// mockHandler records calls for verification.
+// mockHandler records calls for verification. Thread-safe for concurrent use.
 type mockHandler struct {
+	mu    sync.Mutex
 	calls []mockCall
+}
+
+// getCalls returns a snapshot of recorded calls (thread-safe).
+func (m *mockHandler) getCalls() []mockCall {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make([]mockCall, len(m.calls))
+	copy(cp, m.calls)
+	return cp
 }
 
 var _ SecondaryEventHandler = (*mockHandler)(nil)
 
 func (m *mockHandler) OnGraphicsOn(layer int, template string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.calls = append(m.calls, mockCall{"OnGraphicsOn", fmt.Sprintf("layer=%d template=%s", layer, template)})
 	return nil
 }
 
 func (m *mockHandler) OnGraphicsOff(layer int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.calls = append(m.calls, mockCall{"OnGraphicsOff", fmt.Sprintf("layer=%d", layer)})
 	return nil
 }
 
 func (m *mockHandler) OnGraphicsUpdate(layer int, template string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.calls = append(m.calls, mockCall{"OnGraphicsUpdate", fmt.Sprintf("layer=%d template=%s", layer, template)})
 	return nil
 }
 
 func (m *mockHandler) OnAudioLevel(sourceKey string, levelDB float64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.calls = append(m.calls, mockCall{"OnAudioLevel", fmt.Sprintf("source=%s level=%.1f", sourceKey, levelDB)})
 	return nil
 }
 
 func (m *mockHandler) OnAudioMute(sourceKey string, muted bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.calls = append(m.calls, mockCall{"OnAudioMute", fmt.Sprintf("source=%s muted=%v", sourceKey, muted)})
 	return nil
 }
 
 func (m *mockHandler) OnAudioAFV(sourceKey string, afv bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.calls = append(m.calls, mockCall{"OnAudioAFV", fmt.Sprintf("source=%s afv=%v", sourceKey, afv)})
 	return nil
 }
 
 func (m *mockHandler) OnCaptionMode(mode string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.calls = append(m.calls, mockCall{"OnCaptionMode", fmt.Sprintf("mode=%s", mode)})
 	return nil
 }
 
 func (m *mockHandler) OnCaptionText(text string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.calls = append(m.calls, mockCall{"OnCaptionText", fmt.Sprintf("text=%s", text)})
 	return nil
 }
 
 func (m *mockHandler) OnSCTE35Cue(data *SCTE35EventData) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if data != nil {
 		m.calls = append(m.calls, mockCall{"OnSCTE35Cue", fmt.Sprintf("break=%dms auto_return=%v", data.BreakDurationMs, data.AutoReturn)})
 	} else {

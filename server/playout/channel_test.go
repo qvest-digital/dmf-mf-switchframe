@@ -694,3 +694,94 @@ func TestChannel_EndAnchoredSecondaryEvents(t *testing.T) {
 		t.Errorf("call[0] = %q, want OnGraphicsOff", h.calls[0].Method)
 	}
 }
+
+func TestChannel_SecondaryEventsOnLiveItem(t *testing.T) {
+	h := &mockHandler{}
+	ch := NewChannel(1, ChannelConfig{
+		AssetProvider: fakeProvider(10),
+	})
+	ch.SetSecondaryHandler(h)
+
+	pl := testPlaylist(
+		PlaylistItem{
+			ID:     "live-1",
+			Type:   ItemLive,
+			Source: "camera-1",
+			Title:  "Live",
+			SecondaryEvents: []SecondaryEvent{
+				{Type: "graphics_on", Layer: 1, Template: "lower-third", OffsetMs: 0, Anchor: "start"},
+			},
+		},
+		clipItem("outro"),
+	)
+
+	if err := ch.LoadPlaylist(pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	if err := ch.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Wait briefly for the live item to start and fire its event.
+	time.Sleep(200 * time.Millisecond)
+
+	calls := h.getCalls()
+	if len(calls) < 1 {
+		t.Fatal("expected at least 1 secondary event call on live item start")
+	}
+	if calls[0].Method != "OnGraphicsOn" {
+		t.Errorf("call[0] = %q, want OnGraphicsOn", calls[0].Method)
+	}
+
+	// Advance past the live item.
+	if err := ch.Next(); err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	waitFor(t, 5*time.Second, func() bool {
+		return ch.State() == StateCompleted
+	})
+}
+
+func TestChannel_SecondaryEventsOnSlateItem(t *testing.T) {
+	h := &mockHandler{}
+	ch := NewChannel(1, ChannelConfig{
+		AssetProvider: fakeProvider(10),
+	})
+	ch.SetSecondaryHandler(h)
+
+	pl := testPlaylist(
+		PlaylistItem{
+			ID:         "slate-1",
+			Type:       ItemSlate,
+			AssetURI:   "local:///slates/black.ts",
+			Title:      "Slate",
+			DurationMs: 2000, // 2 seconds
+			SecondaryEvents: []SecondaryEvent{
+				{Type: "graphics_on", Layer: 1, Template: "coming-up", OffsetMs: 0, Anchor: "start"},
+				{Type: "graphics_off", Layer: 1, OffsetMs: -500, Anchor: "end"}, // fires at 1500ms
+			},
+		},
+	)
+
+	if err := ch.LoadPlaylist(pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	if err := ch.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	waitFor(t, 5*time.Second, func() bool {
+		return ch.State() == StateCompleted
+	})
+
+	calls := h.getCalls()
+	if len(calls) < 2 {
+		t.Fatalf("handler calls = %d, want >= 2, got: %+v", len(calls), calls)
+	}
+	if calls[0].Method != "OnGraphicsOn" {
+		t.Errorf("call[0] = %q, want OnGraphicsOn", calls[0].Method)
+	}
+	if calls[1].Method != "OnGraphicsOff" {
+		t.Errorf("call[1] = %q, want OnGraphicsOff", calls[1].Method)
+	}
+}

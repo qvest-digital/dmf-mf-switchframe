@@ -640,6 +640,17 @@ func (c *Channel) playLiveItem(ctx context.Context, item *PlaylistItem) bool {
 	c.itemProgress.Store(0)
 	c.itemRemainMs.Store(0)
 
+	// Fire start-anchored secondary events.
+	c.mu.Lock()
+	scheduler := c.secondaryScheduler
+	c.mu.Unlock()
+
+	if scheduler != nil && len(item.SecondaryEvents) > 0 {
+		scheduler.BeginItem(item.SecondaryEvents, 0)
+		scheduler.Tick(0)
+		defer scheduler.EndItem()
+	}
+
 	select {
 	case <-ctx.Done():
 		return true
@@ -656,6 +667,17 @@ func (c *Channel) playLiveItem(ctx context.Context, item *PlaylistItem) bool {
 func (c *Channel) playSlateItem(ctx context.Context, item *PlaylistItem) bool {
 	c.itemProgress.Store(0)
 	c.itemRemainMs.Store(item.DurationMs)
+
+	// Secondary event scheduling.
+	c.mu.Lock()
+	scheduler := c.secondaryScheduler
+	c.mu.Unlock()
+
+	if scheduler != nil && len(item.SecondaryEvents) > 0 {
+		scheduler.BeginItem(item.SecondaryEvents, item.DurationMs)
+		scheduler.Tick(0) // fire t=0 events immediately
+		defer scheduler.EndItem()
+	}
 
 	if item.DurationMs <= 0 {
 		// No duration: hold until advance (like a live item).
@@ -699,6 +721,10 @@ func (c *Channel) playSlateItem(ctx context.Context, item *PlaylistItem) bool {
 				remain = 0
 			}
 			c.itemRemainMs.Store(remain)
+
+			if scheduler != nil && len(item.SecondaryEvents) > 0 {
+				scheduler.Tick(elapsed.Milliseconds())
+			}
 		}
 	}
 }
