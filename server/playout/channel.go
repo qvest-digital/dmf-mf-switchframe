@@ -151,6 +151,18 @@ func (c *Channel) Status() ChannelStatus {
 	return st
 }
 
+// PlaylistItems returns a copy of the loaded playlist items, or nil if no playlist.
+func (c *Channel) PlaylistItems() []PlaylistItem {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.playlist == nil {
+		return nil
+	}
+	items := make([]PlaylistItem, len(c.playlist.Items))
+	copy(items, c.playlist.Items)
+	return items
+}
+
 // LoadPlaylist validates and loads a playlist, transitioning the channel to Cued.
 func (c *Channel) LoadPlaylist(pl *Playlist) error {
 	if err := ValidatePlaylist(pl); err != nil {

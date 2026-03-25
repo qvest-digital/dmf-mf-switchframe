@@ -955,3 +955,44 @@ func TestChannel_FrameErrorSkipsItem(t *testing.T) {
 		}
 	}
 }
+
+func TestChannel_PlaylistItems(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{})
+
+	// No playlist → nil.
+	items := ch.PlaylistItems()
+	if items != nil {
+		t.Fatalf("expected nil items when no playlist, got %v", items)
+	}
+
+	// Load a playlist.
+	pl := &Playlist{
+		ID:   "test",
+		Name: "Test",
+		Items: []PlaylistItem{
+			{ID: "a", Type: ItemClip, Title: "Clip A", DurationMs: 5000, AssetURI: "local:///a.ts"},
+			{ID: "b", Type: ItemLive, Title: "Live B", Source: "camera-1"},
+		},
+	}
+	if err := ch.LoadPlaylist(pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+
+	items = ch.PlaylistItems()
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(items))
+	}
+	if items[0].ID != "a" {
+		t.Errorf("items[0].ID = %q, want %q", items[0].ID, "a")
+	}
+	if items[1].ID != "b" {
+		t.Errorf("items[1].ID = %q, want %q", items[1].ID, "b")
+	}
+
+	// Returned slice is a copy — mutating it should not affect the channel.
+	items[0].Title = "MUTATED"
+	fresh := ch.PlaylistItems()
+	if fresh[0].Title != "Clip A" {
+		t.Errorf("PlaylistItems returned shared slice: fresh[0].Title = %q, want %q", fresh[0].Title, "Clip A")
+	}
+}

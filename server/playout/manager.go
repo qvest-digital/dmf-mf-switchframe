@@ -256,6 +256,17 @@ func (m *Manager) ReturnToAuto(channelID int) error {
 	return nil
 }
 
+// PlaylistItems returns the playlist items for a channel, or nil if not loaded.
+func (m *Manager) PlaylistItems(channelID int) ([]PlaylistItem, error) {
+	if err := m.validateChannelID(channelID); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	ch := m.channels[channelID-1]
+	m.mu.Unlock()
+	return ch.PlaylistItems(), nil
+}
+
 // ChannelStates returns the status of all playout channels.
 func (m *Manager) ChannelStates() []ChannelStatus {
 	m.mu.Lock()

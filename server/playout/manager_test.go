@@ -446,3 +446,48 @@ func TestManager_Start_WiresSpliceCoordinator(t *testing.T) {
 	}
 	ch.mu.Unlock()
 }
+
+func TestManager_PlaylistItems(t *testing.T) {
+	m := NewManager(ManagerConfig{
+		AssetProvider: fakeProvider(3),
+	})
+
+	// No playlist loaded → nil items, no error.
+	items, err := m.PlaylistItems(1)
+	if err != nil {
+		t.Fatalf("PlaylistItems(1): unexpected error: %v", err)
+	}
+	if items != nil {
+		t.Fatalf("expected nil items, got %v", items)
+	}
+
+	// Invalid channel ID → error.
+	_, err = m.PlaylistItems(0)
+	if err != ErrInvalidChannel {
+		t.Errorf("PlaylistItems(0): got %v, want ErrInvalidChannel", err)
+	}
+	_, err = m.PlaylistItems(MaxChannels + 1)
+	if err != ErrInvalidChannel {
+		t.Errorf("PlaylistItems(%d): got %v, want ErrInvalidChannel", MaxChannels+1, err)
+	}
+
+	// Load playlist then retrieve.
+	pl := testPlaylist(clipItem("a"), liveItem("b", "cam-1"))
+	if err := m.LoadPlaylist(1, pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+
+	items, err = m.PlaylistItems(1)
+	if err != nil {
+		t.Fatalf("PlaylistItems(1): %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items, got %d", len(items))
+	}
+	if items[0].ID != "a" {
+		t.Errorf("items[0].ID = %q, want %q", items[0].ID, "a")
+	}
+	if items[1].ID != "b" {
+		t.Errorf("items[1].ID = %q, want %q", items[1].ID, "b")
+	}
+}

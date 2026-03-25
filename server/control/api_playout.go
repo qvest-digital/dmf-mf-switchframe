@@ -28,6 +28,7 @@ func (a *API) registerPlayoutRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/playout/channels/{n}/jump", a.handlePlayoutJump)
 	mux.HandleFunc("POST /api/playout/channels/{n}/manual", a.handlePlayoutTakeManual)
 	mux.HandleFunc("POST /api/playout/channels/{n}/auto", a.handlePlayoutReturnToAuto)
+	mux.HandleFunc("GET /api/playout/channels/{n}/playlist", a.handlePlayoutPlaylist)
 
 	// As-run endpoints.
 	mux.HandleFunc("GET /api/playout/channels/{n}/asrun", a.handlePlayoutAsRunQuery)
@@ -246,6 +247,25 @@ func (a *API) handlePlayoutReturnToAuto(w http.ResponseWriter, r *http.Request) 
 	states := a.playoutMgr.ChannelStates()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(states[n-1])
+}
+
+// handlePlayoutPlaylist returns the playlist items for a playout channel.
+func (a *API) handlePlayoutPlaylist(w http.ResponseWriter, r *http.Request) {
+	n, err := parseChannelID(r)
+	if err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	items, err := a.playoutMgr.PlaylistItems(n)
+	if err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	if items == nil {
+		items = []playout.PlaylistItem{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(items)
 }
 
 // handlePlayoutCacheStatus returns the aggregate cache status as JSON.
