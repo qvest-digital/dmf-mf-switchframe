@@ -627,6 +627,167 @@ func TestPodBoard_InjuryPodNoAutoReturn(t *testing.T) {
 	pb.mu.Unlock()
 }
 
+func TestPodBoard_Fire_UsesSpliceCoordinator(t *testing.T) {
+	inj := &fakeSpliceInjector{}
+	bd := NewBlackDetector(BlackDetectorConfig{})
+	sc := NewSpliceCoordinator(SpliceCoordinatorConfig{
+		Injector:      inj,
+		BlackDetector: bd,
+		PreRollMs:     5000,
+		WindowMs:      500,
+		TimeoutMs:     200,
+	})
+
+	pb := NewPodBoard(1)
+	pb.SetSCTE35Injector(inj)
+	pb.SetSpliceCoordinator(sc)
+	pb.SetPTSProvider(func() int64 { return 1000000 })
+
+	var breakStarted atomic.Bool
+	pb.SetOnBreakStart(func() { breakStarted.Store(true) })
+
+	pod, _ := pb.CreatePod(PodConfig{
+		Type:         "quarter",
+		DurationMs:   180000,
+		AutoReturn:   true,
+		AllowDumpOut: true,
+	})
+	pb.Arm(pod.ID)
+	pb.Fire(pod.ID)
+
+	// With splice coordinator, cue should NOT be injected immediately.
+	if !sc.Active() {
+		t.Fatal("splice coordinator should be active after Fire")
+	}
+
+	// No immediate injection.
+	time.Sleep(50 * time.Millisecond)
+	calls := inj.getCalls()
+	if len(calls) > 0 {
+		t.Error("should not have injected cue immediately when using splice coordinator")
+	}
+
+	// Break start callback should still fire.
+	if !breakStarted.Load() {
+		t.Error("onBreakStart should have been called")
+	}
+
+	// Pod state should be PodPreRoll.
+	p, _ := pb.GetPod(pod.ID)
+	if p.State != PodPreRoll {
+		t.Errorf("state = %v, want pre_roll", p.State)
+	}
+
+	// Cleanup: cancel splice and force terminal.
+	sc.Cancel()
+	pb.mu.Lock()
+	if pp, ok := pb.pods[pod.ID]; ok {
+		pp.State = PodDumpedOut
+		pp.CompletedAt = time.Now().UnixMilli()
+	}
+	pb.activePodID = ""
+	if cancel, ok := pb.trackCancels[pod.ID]; ok {
+		cancel()
+		delete(pb.trackCancels, pod.ID)
+	}
+	pb.mu.Unlock()
+}
+
+func TestPodBoard_Fire_FallbackWithoutCoordinator(t *testing.T) {
+	inj := &fakeSCTE35Injector{}
+	pb := NewPodBoard(1)
+	pb.SetSCTE35Injector(inj)
+	// Do NOT set splice coordinator.
+
+	pod, _ := pb.CreatePod(PodConfig{
+		Type:       "quarter",
+		DurationMs: 180000,
+		AutoReturn: true,
+	})
+	pb.Arm(pod.ID)
+	pb.Fire(pod.ID)
+
+	// Should inject immediately.
+	calls := inj.getCalls()
+	if len(calls) != 1 {
+		t.Errorf("expected 1 immediate cue call, got %d", len(calls))
+	}
+
+	p, _ := pb.GetPod(pod.ID)
+	if p.State != PodBreakActive {
+		t.Errorf("state = %v, want break_active", p.State)
+	}
+
+	// Cleanup.
+	pb.mu.Lock()
+	if pp, ok := pb.pods[pod.ID]; ok {
+		pp.State = PodRejoined
+		pp.CompletedAt = time.Now().UnixMilli()
+	}
+	pb.activePodID = ""
+	if cancel, ok := pb.autoReturnCancels[pod.ID]; ok {
+		cancel()
+		delete(pb.autoReturnCancels, pod.ID)
+	}
+	if cancel, ok := pb.trackCancels[pod.ID]; ok {
+		cancel()
+		delete(pb.trackCancels, pod.ID)
+	}
+	pb.mu.Unlock()
+}
+
+func TestPodBoard_SpliceReady_TransitionsToBreakActive(t *testing.T) {
+	inj := &fakeSpliceInjector{}
+	bd := NewBlackDetector(BlackDetectorConfig{})
+	sc := NewSpliceCoordinator(SpliceCoordinatorConfig{
+		Injector:      inj,
+		BlackDetector: bd,
+		PreRollMs:     100, // short pre-roll
+		WindowMs:      50,
+		TimeoutMs:     500,
+	})
+
+	pb := NewPodBoard(1)
+	pb.SetSCTE35Injector(inj)
+	pb.SetSpliceCoordinator(sc)
+	pb.SetPTSProvider(func() int64 { return 0 })
+
+	pod, _ := pb.CreatePod(PodConfig{
+		Type:       "quarter",
+		DurationMs: 500,
+		AutoReturn: true,
+	})
+	pb.Arm(pod.ID)
+	pb.Fire(pod.ID)
+
+	// Pod is in PreRoll. Feed frames through window to trigger finalization.
+	w, h := 320, 240
+	ySize := w * h * 3 / 2
+	// Window: target=9000, window=[4500, 13500] at 90kHz
+	for pts := int64(0); pts <= 15000; pts += 3000 {
+		frame := make([]byte, ySize)
+		sc.IngestFrame(frame, w, h, pts)
+	}
+
+	// Wait for splice ready callback to fire and transition pod.
+	waitFor(t, time.Second, func() bool {
+		p, _ := pb.GetPod(pod.ID)
+		return p.State == PodBreakActive
+	})
+
+	p, _ := pb.GetPod(pod.ID)
+	if p.State != PodBreakActive {
+		t.Errorf("state = %v, want break_active after splice ready", p.State)
+	}
+
+	// Cleanup: dump out.
+	pb.DumpOut(pod.ID)
+	waitFor(t, time.Second, func() bool {
+		pp, _ := pb.GetPod(pod.ID)
+		return pp.State.IsTerminal()
+	})
+}
+
 func TestManager_ChannelStatesIncludePods(t *testing.T) {
 	mgr := NewManager(ManagerConfig{AssetProvider: fakeProvider(30)})
 	defer mgr.Close()

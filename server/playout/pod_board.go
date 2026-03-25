@@ -21,7 +21,9 @@ type PodBoard struct {
 	onBreakStart  func()
 	onBreakEnd    func()
 
-	scte35Injector podSCTE35Injector
+	scte35Injector    podSCTE35Injector
+	spliceCoordinator *SpliceCoordinator
+	ptsProvider       func() int64
 
 	activePodID       string
 	autoReturnCancels map[string]context.CancelFunc
@@ -76,6 +78,20 @@ func (pb *PodBoard) SetSCTE35Injector(inj podSCTE35Injector) {
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
 	pb.scte35Injector = inj
+}
+
+// SetSpliceCoordinator sets the splice coordinator for frame-accurate break entry.
+func (pb *PodBoard) SetSpliceCoordinator(sc *SpliceCoordinator) {
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+	pb.spliceCoordinator = sc
+}
+
+// SetPTSProvider sets the function that returns the current program PTS.
+func (pb *PodBoard) SetPTSProvider(fn func() int64) {
+	pb.mu.Lock()
+	defer pb.mu.Unlock()
+	pb.ptsProvider = fn
 }
 
 // CreatePod creates a new pod with the given config.
@@ -156,7 +172,7 @@ func (pb *PodBoard) DeletePod(id string) error {
 		pb.mu.Unlock()
 		return ErrPodNotFound
 	}
-	if pb.activePodID == id && pod.State == PodBreakActive {
+	if pb.activePodID == id && (pod.State == PodBreakActive || pod.State == PodPreRoll) {
 		pb.mu.Unlock()
 		return ErrPodAlreadyActive
 	}
@@ -385,6 +401,11 @@ func (pb *PodBoard) Demote(id string) error {
 
 // Fire activates an armed pod: transitions to BREAK-ACTIVE, injects SCTE-35
 // cue-out, starts the auto-return timer if configured.
+//
+// When a SpliceCoordinator is configured, Fire transitions to PodPreRoll instead
+// of PodBreakActive and delegates splice-point detection to the coordinator. The
+// onSpliceReady callback transitions the pod to PodBreakActive and starts the
+// auto-return timer.
 func (pb *PodBoard) Fire(id string) error {
 	pb.mu.Lock()
 	pod, ok := pb.pods[id]
@@ -405,29 +426,62 @@ func (pb *PodBoard) Fire(id string) error {
 		return ErrPodAlreadyActive
 	}
 
-	pod.State = PodBreakActive
-	pod.FiredAt = time.Now().UnixMilli()
-	pb.activePodID = id
-
+	sc := pb.spliceCoordinator
+	ptsProvider := pb.ptsProvider
 	inj := pb.scte35Injector
 	breakStartFn := pb.onBreakStart
 	stateChangeFn := pb.onStateChange
 	config := pod.Config
-	pb.mu.Unlock()
 
-	// Inject SCTE-35 cue-out.
-	if inj != nil {
-		eventID, err := inj.InjectPodCue(true, config.AutoReturn, config.DurationMs)
+	if sc != nil && ptsProvider != nil {
+		// Splice coordinator path: PreRoll first, break later.
+		pod.State = PodPreRoll
+		pod.FiredAt = time.Now().UnixMilli()
+		pb.activePodID = id
+		pb.mu.Unlock()
+
+		// Wire the onSpliceReady callback to transition pod to break_active.
+		sc.SetOnSpliceReady(func(podID string, pts int64) {
+			pb.onSpliceReady(podID, pts)
+		})
+
+		currentPTS := ptsProvider()
+		err := sc.BeginSplice(id, true, config.AutoReturn, config.DurationMs, currentPTS)
 		if err != nil {
-			slog.Warn("playout: pod SCTE-35 cue-out failed", "pod", id, "error", err)
-		} else {
+			slog.Warn("playout: splice BeginSplice failed, falling back to immediate", "pod", id, "error", err)
+			// Fall back: transition directly to break_active.
 			pb.mu.Lock()
 			if p, ok := pb.pods[id]; ok {
-				p.SCTE35EventID = eventID
+				p.State = PodBreakActive
 			}
 			pb.mu.Unlock()
+			pb.fireImmediate(id, inj, config)
 		}
+
+		if breakStartFn != nil {
+			breakStartFn()
+		}
+		if stateChangeFn != nil {
+			stateChangeFn()
+		}
+
+		// Start elapsed time tracker.
+		trackCtx, trackCancel := context.WithCancel(context.Background())
+		pb.mu.Lock()
+		pb.trackCancels[id] = trackCancel
+		pb.mu.Unlock()
+		go pb.trackElapsed(trackCtx, id)
+
+		return nil
 	}
+
+	// Legacy path: immediate break activation.
+	pod.State = PodBreakActive
+	pod.FiredAt = time.Now().UnixMilli()
+	pb.activePodID = id
+	pb.mu.Unlock()
+
+	pb.fireImmediate(id, inj, config)
 
 	if breakStartFn != nil {
 		breakStartFn()
@@ -455,6 +509,51 @@ func (pb *PodBoard) Fire(id string) error {
 	return nil
 }
 
+// fireImmediate injects the SCTE-35 cue-out immediately (legacy path / fallback).
+func (pb *PodBoard) fireImmediate(id string, inj podSCTE35Injector, config PodConfig) {
+	if inj != nil {
+		eventID, err := inj.InjectPodCue(true, config.AutoReturn, config.DurationMs)
+		if err != nil {
+			slog.Warn("playout: pod SCTE-35 cue-out failed", "pod", id, "error", err)
+		} else {
+			pb.mu.Lock()
+			if p, ok := pb.pods[id]; ok {
+				p.SCTE35EventID = eventID
+			}
+			pb.mu.Unlock()
+		}
+	}
+}
+
+// onSpliceReady is called by the SpliceCoordinator when a splice point is locked.
+// It transitions the pod from PodPreRoll to PodBreakActive and starts the auto-return timer.
+func (pb *PodBoard) onSpliceReady(podID string, pts int64) {
+	pb.mu.Lock()
+	pod, ok := pb.pods[podID]
+	if !ok || pod.State != PodPreRoll {
+		pb.mu.Unlock()
+		return
+	}
+
+	pod.State = PodBreakActive
+	config := pod.Config
+	stateChangeFn := pb.onStateChange
+	pb.mu.Unlock()
+
+	// Start auto-return goroutine if configured.
+	if config.AutoReturn && config.DurationMs > 0 {
+		ctx, cancel := context.WithCancel(context.Background())
+		pb.mu.Lock()
+		pb.autoReturnCancels[podID] = cancel
+		pb.mu.Unlock()
+		go pb.runAutoReturn(ctx, podID, config.DurationMs)
+	}
+
+	if stateChangeFn != nil {
+		stateChangeFn()
+	}
+}
+
 // trackElapsed updates ElapsedMs and RemainingMs every 50ms while a pod is active.
 func (pb *PodBoard) trackElapsed(ctx context.Context, id string) {
 	ticker := time.NewTicker(50 * time.Millisecond)
@@ -468,7 +567,7 @@ func (pb *PodBoard) trackElapsed(ctx context.Context, id string) {
 		}
 		pb.mu.Lock()
 		pod, ok := pb.pods[id]
-		if !ok || pod.State != PodBreakActive {
+		if !ok || (pod.State != PodBreakActive && pod.State != PodPreRoll) {
 			pb.mu.Unlock()
 			return
 		}
