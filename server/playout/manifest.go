@@ -6,6 +6,47 @@ import (
 	"os"
 )
 
+// validSecondaryEventTypes is the set of allowed secondary event type strings.
+var validSecondaryEventTypes = map[string]bool{
+	"graphics_on":     true,
+	"graphics_off":    true,
+	"graphics_update": true,
+	"audio_level":     true,
+	"audio_mute":      true,
+	"audio_afv":       true,
+	"caption_mode":    true,
+	"caption_text":    true,
+	"scte35_cue":      true,
+}
+
+// ValidateSecondaryEvent checks that a secondary event is well-formed.
+func ValidateSecondaryEvent(ev *SecondaryEvent) error {
+	if !validSecondaryEventTypes[ev.Type] {
+		return fmt.Errorf("secondary event: unknown type %q", ev.Type)
+	}
+
+	if ev.Anchor != "start" && ev.Anchor != "end" {
+		return fmt.Errorf("secondary event: anchor must be \"start\" or \"end\", got %q", ev.Anchor)
+	}
+
+	switch ev.Type {
+	case "audio_level", "audio_mute", "audio_afv":
+		if ev.SourceKey == "" {
+			return fmt.Errorf("secondary event %q: source_key required", ev.Type)
+		}
+	case "caption_mode":
+		if ev.CaptionMode == "" {
+			return fmt.Errorf("secondary event caption_mode: caption_mode field required")
+		}
+	case "caption_text":
+		if ev.CaptionText == "" {
+			return fmt.Errorf("secondary event caption_text: caption_text field required")
+		}
+	}
+
+	return nil
+}
+
 // ValidatePlaylist checks that a playlist is well-formed:
 //   - at least one item
 //   - every item has a non-empty ID
@@ -39,6 +80,12 @@ func ValidatePlaylist(pl *Playlist) error {
 			}
 		default:
 			return fmt.Errorf("item[%d] (%s): unknown item type %q", i, item.ID, item.Type)
+		}
+
+		for j := range item.SecondaryEvents {
+			if err := ValidateSecondaryEvent(&item.SecondaryEvents[j]); err != nil {
+				return fmt.Errorf("item[%d] (%s): secondary_events[%d]: %w", i, item.ID, j, err)
+			}
 		}
 	}
 
