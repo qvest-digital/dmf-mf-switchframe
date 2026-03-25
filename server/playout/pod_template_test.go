@@ -2,76 +2,160 @@ package playout
 
 import "testing"
 
-func TestBuiltinTemplates(t *testing.T) {
-	templates := BuiltinPodTemplates()
-	if len(templates) != 4 {
-		t.Fatalf("expected 4 builtin templates, got %d", len(templates))
+func TestPodTemplateStore_Builtins_AreGeneric(t *testing.T) {
+	store := NewPodTemplateStore()
+	all := store.List()
+	if len(all) != 3 {
+		t.Fatalf("expected 3 builtin templates, got %d", len(all))
 	}
 
-	q, ok := templates["quarter"]
-	if !ok {
-		t.Fatal("missing quarter template")
-	}
-	if q.DefaultDurationMs != 180000 {
-		t.Errorf("quarter duration = %d, want 180000", q.DefaultDurationMs)
-	}
-	if !q.AutoReturn {
-		t.Error("quarter should have auto_return")
-	}
-	if !q.AllowDumpOut {
-		t.Error("quarter should allow dump out")
-	}
-	if q.Priority != PriorityNormal {
-		t.Errorf("quarter priority = %v, want normal", q.Priority)
-	}
-
-	inj, ok := templates["injury"]
-	if !ok {
-		t.Fatal("missing injury template")
-	}
-	if inj.DefaultDurationMs != 0 {
-		t.Errorf("injury duration = %d, want 0 (open-ended)", inj.DefaultDurationMs)
-	}
-	if inj.AutoReturn {
-		t.Error("injury should not auto_return")
-	}
-	if !inj.HoldUntilManualReturn {
-		t.Error("injury should hold until manual return")
-	}
-	if inj.Priority != PriorityHigh {
-		t.Errorf("injury priority = %v, want high", inj.Priority)
+	// Verify generic builtins exist.
+	for _, name := range []string{"short", "standard", "long"} {
+		tmpl, err := store.Get(name)
+		if err != nil {
+			t.Fatalf("Get(%q): %v", name, err)
+		}
+		if tmpl.Type != name {
+			t.Errorf("template %q: Type = %q, want %q", name, tmpl.Type, name)
+		}
+		if !tmpl.AutoReturn {
+			t.Errorf("template %q: expected auto_return", name)
+		}
+		if !tmpl.AllowDumpOut {
+			t.Errorf("template %q: expected allow_dump_out", name)
+		}
+		if tmpl.Priority != PriorityNormal {
+			t.Errorf("template %q: Priority = %v, want normal", name, tmpl.Priority)
+		}
 	}
 
-	ms, ok := templates["mandatory_sponsor"]
-	if !ok {
-		t.Fatal("missing mandatory_sponsor template")
+	// Verify specific durations.
+	short, _ := store.Get("short")
+	if short.DefaultDurationMs != 30000 {
+		t.Errorf("short duration = %d, want 30000", short.DefaultDurationMs)
 	}
-	if ms.AllowDumpOut {
-		t.Error("mandatory_sponsor should not allow dump out")
+	standard, _ := store.Get("standard")
+	if standard.DefaultDurationMs != 120000 {
+		t.Errorf("standard duration = %d, want 120000", standard.DefaultDurationMs)
 	}
-	if !ms.Contractual {
-		t.Error("mandatory_sponsor should be contractual")
-	}
-	if ms.Priority != PriorityMandatory {
-		t.Errorf("mandatory_sponsor priority = %v, want mandatory", ms.Priority)
+	long, _ := store.Get("long")
+	if long.DefaultDurationMs != 300000 {
+		t.Errorf("long duration = %d, want 300000", long.DefaultDurationMs)
 	}
 
-	to, ok := templates["timeout"]
-	if !ok {
-		t.Fatal("missing timeout template")
+	// Verify sport-specific templates are gone.
+	for _, name := range []string{"quarter", "timeout", "injury", "mandatory_sponsor"} {
+		_, err := store.Get(name)
+		if err == nil {
+			t.Errorf("expected sport-specific template %q to not exist", name)
+		}
 	}
-	if !to.Ephemeral {
-		t.Error("timeout should be ephemeral")
+}
+
+func TestPodTemplateStore_LoadFromPlaylist(t *testing.T) {
+	store := NewPodTemplateStore()
+
+	defs := []PodTemplateDef{
+		{Label: "halftime", DurationMs: 600000, AutoReturn: true, Priority: PriorityNormal},
+		{Label: "injury_timeout", DurationMs: 0, AutoReturn: false, Priority: PriorityHigh},
 	}
-	if to.DefaultDurationMs != 60000 {
-		t.Errorf("timeout duration = %d, want 60000", to.DefaultDurationMs)
+	store.LoadFromPlaylist(defs)
+
+	// Manifest templates should be available.
+	ht, err := store.Get("halftime")
+	if err != nil {
+		t.Fatalf("Get(halftime): %v", err)
+	}
+	if ht.DefaultDurationMs != 600000 {
+		t.Errorf("halftime duration = %d, want 600000", ht.DefaultDurationMs)
+	}
+	if !ht.AutoReturn {
+		t.Error("halftime should have auto_return")
+	}
+	if !ht.AllowDumpOut {
+		t.Error("halftime should allow dump out")
+	}
+
+	it, err := store.Get("injury_timeout")
+	if err != nil {
+		t.Fatalf("Get(injury_timeout): %v", err)
+	}
+	if it.DefaultDurationMs != 0 {
+		t.Errorf("injury_timeout duration = %d, want 0", it.DefaultDurationMs)
+	}
+	if it.AutoReturn {
+		t.Error("injury_timeout should not have auto_return")
+	}
+	if it.Priority != PriorityHigh {
+		t.Errorf("injury_timeout priority = %v, want high", it.Priority)
+	}
+
+	// Builtins should still be present.
+	for _, name := range []string{"short", "standard", "long"} {
+		if _, err := store.Get(name); err != nil {
+			t.Errorf("builtin %q should still exist after LoadFromPlaylist: %v", name, err)
+		}
+	}
+}
+
+func TestPodTemplateStore_LoadFromPlaylist_OverridesBuiltin(t *testing.T) {
+	store := NewPodTemplateStore()
+
+	// Override the "short" builtin with a manifest definition.
+	defs := []PodTemplateDef{
+		{Label: "short", DurationMs: 15000, AutoReturn: false, Priority: PriorityHigh},
+	}
+	store.LoadFromPlaylist(defs)
+
+	tmpl, err := store.Get("short")
+	if err != nil {
+		t.Fatalf("Get(short): %v", err)
+	}
+	if tmpl.DefaultDurationMs != 15000 {
+		t.Errorf("overridden short duration = %d, want 15000", tmpl.DefaultDurationMs)
+	}
+	if tmpl.AutoReturn {
+		t.Error("overridden short should not auto_return")
+	}
+	if tmpl.Priority != PriorityHigh {
+		t.Errorf("overridden short priority = %v, want high", tmpl.Priority)
+	}
+}
+
+func TestPodTemplateStore_LoadFromPlaylist_ClearsOld(t *testing.T) {
+	store := NewPodTemplateStore()
+
+	// First load: add "halftime".
+	store.LoadFromPlaylist([]PodTemplateDef{
+		{Label: "halftime", DurationMs: 600000, AutoReturn: true},
+	})
+	if _, err := store.Get("halftime"); err != nil {
+		t.Fatalf("halftime should exist after first load: %v", err)
+	}
+
+	// Second load: different set, "halftime" should be gone.
+	store.LoadFromPlaylist([]PodTemplateDef{
+		{Label: "postgame", DurationMs: 300000, AutoReturn: true},
+	})
+	if _, err := store.Get("halftime"); err == nil {
+		t.Error("halftime should be cleared after second LoadFromPlaylist")
+	}
+	if _, err := store.Get("postgame"); err != nil {
+		t.Fatalf("postgame should exist after second load: %v", err)
+	}
+
+	// Builtins should survive.
+	for _, name := range []string{"short", "standard", "long"} {
+		if _, err := store.Get(name); err != nil {
+			t.Errorf("builtin %q should survive LoadFromPlaylist: %v", name, err)
+		}
 	}
 }
 
 func TestPodTemplate_Instantiate(t *testing.T) {
 	tmpl := PodTemplate{
-		Type:              "quarter",
-		DefaultDurationMs: 180000,
+		Type:              "standard",
+		DefaultDurationMs: 120000,
 		AutoReturn:        true,
 		AllowDumpOut:      true,
 		Priority:          PriorityNormal,
@@ -81,11 +165,11 @@ func TestPodTemplate_Instantiate(t *testing.T) {
 	if pod.ID != "pod-123" {
 		t.Errorf("pod ID = %q, want %q", pod.ID, "pod-123")
 	}
-	if pod.Config.Type != "quarter" {
-		t.Errorf("pod type = %q, want %q", pod.Config.Type, "quarter")
+	if pod.Config.Type != "standard" {
+		t.Errorf("pod type = %q, want %q", pod.Config.Type, "standard")
 	}
-	if pod.Config.DurationMs != 180000 {
-		t.Errorf("pod duration = %d, want 180000", pod.Config.DurationMs)
+	if pod.Config.DurationMs != 120000 {
+		t.Errorf("pod duration = %d, want 120000", pod.Config.DurationMs)
 	}
 	if pod.State != PodScheduled {
 		t.Errorf("pod state = %v, want scheduled", pod.State)
@@ -100,17 +184,17 @@ func TestPodTemplateStore_CRUD(t *testing.T) {
 
 	// List builtins.
 	all := store.List()
-	if len(all) != 4 {
-		t.Fatalf("expected 4 templates, got %d", len(all))
+	if len(all) != 3 {
+		t.Fatalf("expected 3 templates, got %d", len(all))
 	}
 
 	// Get existing.
-	tmpl, err := store.Get("quarter")
+	tmpl, err := store.Get("standard")
 	if err != nil {
-		t.Fatalf("Get(quarter): %v", err)
+		t.Fatalf("Get(standard): %v", err)
 	}
-	if tmpl.DefaultDurationMs != 180000 {
-		t.Errorf("quarter duration = %d, want 180000", tmpl.DefaultDurationMs)
+	if tmpl.DefaultDurationMs != 120000 {
+		t.Errorf("standard duration = %d, want 120000", tmpl.DefaultDurationMs)
 	}
 
 	// Create custom.
@@ -125,8 +209,8 @@ func TestPodTemplateStore_CRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	if len(store.List()) != 5 {
-		t.Fatalf("expected 5 templates after Put, got %d", len(store.List()))
+	if len(store.List()) != 4 {
+		t.Fatalf("expected 4 templates after Put, got %d", len(store.List()))
 	}
 
 	// Update existing.
@@ -145,8 +229,8 @@ func TestPodTemplateStore_CRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if len(store.List()) != 4 {
-		t.Fatalf("expected 4 templates after Delete, got %d", len(store.List()))
+	if len(store.List()) != 3 {
+		t.Fatalf("expected 3 templates after Delete, got %d", len(store.List()))
 	}
 
 	// Delete nonexistent.

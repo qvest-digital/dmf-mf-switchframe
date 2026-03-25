@@ -90,6 +90,14 @@ func (m *Manager) LoadPlaylist(channelID int, pl *Playlist) error {
 		return err
 	}
 
+	// Load manifest-defined pod templates into the shared template store.
+	if len(pl.PodTemplates) > 0 {
+		m.mu.Lock()
+		ts := m.templateStore
+		m.mu.Unlock()
+		ts.LoadFromPlaylist(pl.PodTemplates)
+	}
+
 	// Configure idle loop if the playlist specifies an idle asset.
 	if pl.IdleAssetURI != "" {
 		m.mu.Lock()

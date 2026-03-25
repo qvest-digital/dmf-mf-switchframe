@@ -97,54 +97,57 @@ func TestPodBoard_HighestPriorityArmed_NoneArmed(t *testing.T) {
 	}
 }
 
-func TestPodBoard_FullScenario_NFLInjuryDuringTimeout(t *testing.T) {
+func TestPodBoard_FullScenario_ShortBreakThenHoldBreak(t *testing.T) {
 	pb := NewPodBoard(1)
 	store := NewPodTemplateStore()
+
+	// Load manifest-defined templates (replaces old sport-specific builtins).
+	store.LoadFromPlaylist([]PodTemplateDef{
+		{Label: "short_break", DurationMs: 100, AutoReturn: true, Priority: PriorityNormal},
+		{Label: "hold_break", DurationMs: 0, AutoReturn: false, Priority: PriorityHigh},
+	})
 	pb.SetTemplateStore(store)
 	inj := &fakeSCTE35Injector{}
 	pb.SetSCTE35Injector(inj)
 
-	// Create timeout pod.
-	timeout, _ := pb.CreateFromTemplate("timeout")
-	pb.mu.Lock()
-	pb.pods[timeout.ID].Config.DurationMs = 100
-	pb.mu.Unlock()
-	pb.Arm(timeout.ID)
+	// Create short break pod.
+	shortPod, _ := pb.CreateFromTemplate("short_break")
+	pb.Arm(shortPod.ID)
 
-	// Fire timeout.
-	pb.Fire(timeout.ID)
+	// Fire short break.
+	pb.Fire(shortPod.ID)
 	waitFor(t, time.Second, func() bool {
-		p, _ := pb.GetPod(timeout.ID)
+		p, _ := pb.GetPod(shortPod.ID)
 		return p.State == PodBreakActive
 	})
 
-	// Timeout auto-returns.
+	// Short break auto-returns.
 	waitFor(t, 2*time.Second, func() bool {
-		p, _ := pb.GetPod(timeout.ID)
+		p, _ := pb.GetPod(shortPod.ID)
 		return p.State == PodRejoined
 	})
 
-	// Now fire an injury pod.
-	injury, _ := pb.CreateFromTemplate("injury")
-	pb.Arm(injury.ID)
-	pb.Fire(injury.ID)
+	// Now fire a hold break pod.
+	holdPod, _ := pb.CreateFromTemplate("hold_break")
+	pb.Arm(holdPod.ID)
+	pb.Fire(holdPod.ID)
 
 	waitFor(t, time.Second, func() bool {
-		p, _ := pb.GetPod(injury.ID)
+		p, _ := pb.GetPod(holdPod.ID)
 		return p.State == PodBreakActive
 	})
 
-	// Injury holds.
+	// Hold break stays active (no auto-return, open-ended).
 	time.Sleep(100 * time.Millisecond)
-	got, _ := pb.GetPod(injury.ID)
+	got, _ := pb.GetPod(holdPod.ID)
 	if got.State != PodBreakActive {
-		t.Errorf("injury should still be active, got %v", got.State)
+		t.Errorf("hold_break should still be active, got %v", got.State)
 	}
 
-	// Dump out of injury.
-	pb.DumpOut(injury.ID)
+	// Dump out of hold break.
+	pb.DumpOut(holdPod.ID)
 	waitFor(t, time.Second, func() bool {
-		p, _ := pb.GetPod(injury.ID)
+		p, _ := pb.GetPod(holdPod.ID)
 		return p.State == PodDumpedOut
 	})
 }

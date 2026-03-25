@@ -69,15 +69,15 @@ func TestPodBoard_CreateFromTemplate(t *testing.T) {
 	pb := NewPodBoard(1)
 	pb.SetTemplateStore(store)
 
-	pod, err := pb.CreateFromTemplate("quarter")
+	pod, err := pb.CreateFromTemplate("standard")
 	if err != nil {
 		t.Fatalf("CreateFromTemplate: %v", err)
 	}
-	if pod.Config.Type != "quarter" {
-		t.Errorf("type = %q, want quarter", pod.Config.Type)
+	if pod.Config.Type != "standard" {
+		t.Errorf("type = %q, want standard", pod.Config.Type)
 	}
-	if pod.Config.DurationMs != 180000 {
-		t.Errorf("duration = %d, want 180000", pod.Config.DurationMs)
+	if pod.Config.DurationMs != 120000 {
+		t.Errorf("duration = %d, want 120000", pod.Config.DurationMs)
 	}
 }
 

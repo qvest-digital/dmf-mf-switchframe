@@ -35,41 +35,39 @@ func (t *PodTemplate) Instantiate(id string) *Pod {
 	}
 }
 
-// BuiltinPodTemplates returns the 4 standard pod templates.
+// builtinTemplates are the generic pod templates that ship by default.
+// Playlist manifests can override or extend these via PodTemplateDef entries.
+var builtinTemplates = map[string]PodTemplate{
+	"short": {
+		Type:              "short",
+		DefaultDurationMs: 30000,
+		AutoReturn:        true,
+		AllowDumpOut:      true,
+		Priority:          PriorityNormal,
+	},
+	"standard": {
+		Type:              "standard",
+		DefaultDurationMs: 120000,
+		AutoReturn:        true,
+		AllowDumpOut:      true,
+		Priority:          PriorityNormal,
+	},
+	"long": {
+		Type:              "long",
+		DefaultDurationMs: 300000,
+		AutoReturn:        true,
+		AllowDumpOut:      true,
+		Priority:          PriorityNormal,
+	},
+}
+
+// BuiltinPodTemplates returns the generic default pod templates.
 func BuiltinPodTemplates() map[string]PodTemplate {
-	return map[string]PodTemplate{
-		"quarter": {
-			Type:              "quarter",
-			DefaultDurationMs: 180000,
-			AutoReturn:        true,
-			AllowDumpOut:      true,
-			Priority:          PriorityNormal,
-		},
-		"timeout": {
-			Type:              "timeout",
-			DefaultDurationMs: 60000,
-			AutoReturn:        true,
-			AllowDumpOut:      true,
-			Priority:          PriorityNormal,
-			Ephemeral:         true,
-		},
-		"injury": {
-			Type:                  "injury",
-			DefaultDurationMs:     0,
-			AutoReturn:            false,
-			AllowDumpOut:          true,
-			Priority:              PriorityHigh,
-			HoldUntilManualReturn: true,
-		},
-		"mandatory_sponsor": {
-			Type:              "mandatory_sponsor",
-			DefaultDurationMs: 120000,
-			AutoReturn:        true,
-			AllowDumpOut:      false,
-			Priority:          PriorityMandatory,
-			Contractual:       true,
-		},
+	out := make(map[string]PodTemplate, len(builtinTemplates))
+	for k, v := range builtinTemplates {
+		out[k] = v
 	}
+	return out
 }
 
 // PodTemplateStore manages pod templates (builtins + custom).
@@ -116,6 +114,33 @@ func (s *PodTemplateStore) Put(t PodTemplate) error {
 	defer s.mu.Unlock()
 	s.templates[t.Type] = t
 	return nil
+}
+
+// LoadFromPlaylist replaces the template store contents with templates
+// derived from the playlist's PodTemplateDef entries. Builtins are
+// re-seeded first; manifest definitions can override them.
+func (s *PodTemplateStore) LoadFromPlaylist(defs []PodTemplateDef) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Clear existing non-builtin templates.
+	s.templates = make(map[string]PodTemplate)
+
+	// Load builtins first.
+	for k, v := range builtinTemplates {
+		s.templates[k] = v
+	}
+
+	// Override/add from playlist.
+	for _, d := range defs {
+		s.templates[d.Label] = PodTemplate{
+			Type:              d.Label,
+			DefaultDurationMs: d.DurationMs,
+			AutoReturn:        d.AutoReturn,
+			Priority:          d.Priority,
+			AllowDumpOut:      true,
+		}
+	}
 }
 
 // Delete removes a template by type name.
