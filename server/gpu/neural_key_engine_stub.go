@@ -15,6 +15,11 @@ func (nke *NeuralKeyEngine) Infer(frame *GPUFrame, keyCb, keyCr uint8, similarit
 	return ErrTensorRTNotAvailable
 }
 
+// InferAndComposite is a no-op on non-TensorRT builds.
+func (nke *NeuralKeyEngine) InferAndComposite(programFrame, fillFrame *GPUFrame, keyCb, keyCr uint8, similarity, smoothness float32) error {
+	return ErrTensorRTNotAvailable
+}
+
 // WarmupDone returns false on non-TensorRT builds.
 func (nke *NeuralKeyEngine) WarmupDone() bool { return false }
 

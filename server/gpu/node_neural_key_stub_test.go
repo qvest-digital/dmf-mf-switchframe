@@ -14,26 +14,16 @@ func TestNeuralKeyNodeStubReturnsNil(t *testing.T) {
 	assert.Nil(t, node, "stub should return nil")
 }
 
-// mockNeuralKeyState implements NeuralKeyState for testing.
-type mockNeuralKeyState struct {
-	hasKey     bool
-	programKey string
-	snapshot   *NeuralKeySnapshot
-}
-
-func (m *mockNeuralKeyState) HasNeuralKey() bool                { return m.hasKey }
-func (m *mockNeuralKeyState) ProgramSourceKey() string          { return m.programKey }
-func (m *mockNeuralKeyState) NeuralKeySnapshot() *NeuralKeySnapshot { return m.snapshot }
-
 func TestNeuralKeyNodeStubReturnsNilEvenWithState(t *testing.T) {
-	state := &mockNeuralKeyState{hasKey: true, programKey: "cam1"}
+	state := &mockNeuralKeyStateV2{
+		keys: []NeuralKeySnapshot{{SourceKey: "cam1"}},
+	}
 	node := NewGPUNeuralKeyNode(nil, nil, state, "/model.onnx")
 	assert.Nil(t, node, "stub should return nil even with state")
 }
 
 func TestNeuralKeyStateInterfaceConformance(t *testing.T) {
-	// Verify mockNeuralKeyState satisfies NeuralKeyState.
-	var _ NeuralKeyState = (*mockNeuralKeyState)(nil)
+	var _ NeuralKeyState = (*mockNeuralKeyStateV2)(nil)
 }
 
 func TestNeuralKeySnapshotFields(t *testing.T) {
@@ -44,6 +34,7 @@ func TestNeuralKeySnapshotFields(t *testing.T) {
 		KeyColorCr: 128,
 		Similarity: 0.4,
 		Smoothness: 0.08,
+		FillFrame:  &GPUFrame{Width: 1920, Height: 1080},
 	}
 	assert.Equal(t, "cam1", snap.SourceKey)
 	assert.Equal(t, uint8(16), snap.KeyColorY)
@@ -51,35 +42,31 @@ func TestNeuralKeySnapshotFields(t *testing.T) {
 	assert.Equal(t, uint8(128), snap.KeyColorCr)
 	assert.InDelta(t, 0.4, float64(snap.Similarity), 0.001)
 	assert.InDelta(t, 0.08, float64(snap.Smoothness), 0.001)
+	require.NotNil(t, snap.FillFrame)
 }
 
-func TestMockNeuralKeyStateNoKey(t *testing.T) {
-	state := &mockNeuralKeyState{hasKey: false}
-	assert.False(t, state.HasNeuralKey())
-	assert.Empty(t, state.ProgramSourceKey())
-	assert.Nil(t, state.NeuralKeySnapshot())
+func TestMockNeuralKeyStateNoKeys(t *testing.T) {
+	state := &mockNeuralKeyStateV2{}
+	assert.False(t, state.HasNeuralKeys())
+	assert.Empty(t, state.SnapshotNeuralKeys())
 }
 
-func TestMockNeuralKeyStateWithSnapshot(t *testing.T) {
-	snap := &NeuralKeySnapshot{
-		SourceKey:  "cam2",
-		KeyColorY:  82,
-		KeyColorCb: 90,
-		KeyColorCr: 240,
-		Similarity: 0.35,
-		Smoothness: 0.1,
+func TestMockNeuralKeyStateWithKeys(t *testing.T) {
+	state := &mockNeuralKeyStateV2{
+		keys: []NeuralKeySnapshot{
+			{
+				SourceKey:  "clip:1",
+				KeyColorCb: 42,
+				KeyColorCr: 26,
+				Similarity: 0.4,
+				Smoothness: 0.1,
+				FillFrame:  &GPUFrame{Width: 1280, Height: 720},
+			},
+		},
 	}
-	state := &mockNeuralKeyState{
-		hasKey:     true,
-		programKey: "cam2",
-		snapshot:   snap,
-	}
-	assert.True(t, state.HasNeuralKey())
-	assert.Equal(t, "cam2", state.ProgramSourceKey())
-
-	got := state.NeuralKeySnapshot()
-	require.NotNil(t, got)
-	assert.Equal(t, "cam2", got.SourceKey)
-	assert.Equal(t, uint8(82), got.KeyColorY)
-	assert.InDelta(t, 0.35, float64(got.Similarity), 0.001)
+	assert.True(t, state.HasNeuralKeys())
+	snaps := state.SnapshotNeuralKeys()
+	require.Len(t, snaps, 1)
+	assert.Equal(t, "clip:1", snaps[0].SourceKey)
+	assert.NotNil(t, snaps[0].FillFrame)
 }

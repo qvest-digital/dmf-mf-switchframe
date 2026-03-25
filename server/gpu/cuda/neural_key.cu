@@ -4,7 +4,7 @@
 //
 // Pipeline: NV12 → RGB CHW (reuse nv12_to_rgb_chw from preprocess.cu)
 //           → ImageNet normalize → concat hint → TRT infer
-//           → composite alpha+fg onto NV12 program frame
+//           → composite alpha+fg onto program NV12 frame
 
 // ImageNet normalization constants (sRGB domain).
 #define IMGNET_MEAN_R 0.485f
@@ -16,7 +16,6 @@
 
 // ---------------------------------------------------------------------------
 // ck_imagenet_normalize: in-place ImageNet normalization on CHW float32 RGB.
-//   rgb: [3, H, W] float32, values in [0,1] → normalized to ImageNet stats
 // ---------------------------------------------------------------------------
 __global__ void ck_imagenet_normalize_kernel(
     float* __restrict__ rgb,
@@ -26,11 +25,8 @@ __global__ void ck_imagenet_normalize_kernel(
     int total = H * W;
     if (idx >= total) return;
 
-    // R plane
     rgb[0 * total + idx] = (rgb[0 * total + idx] - IMGNET_MEAN_R) / IMGNET_STD_R;
-    // G plane
     rgb[1 * total + idx] = (rgb[1 * total + idx] - IMGNET_MEAN_G) / IMGNET_STD_G;
-    // B plane
     rgb[2 * total + idx] = (rgb[2 * total + idx] - IMGNET_MEAN_B) / IMGNET_STD_B;
 }
 
@@ -49,7 +45,6 @@ cudaError_t ck_imagenet_normalize(
 
 // ---------------------------------------------------------------------------
 // ck_resize_mask_u8_f32: bilinear resize uint8 [srcH, srcW] → float32 [dstH, dstW]
-//   Produces a single-channel mask in [0,1] range for the model's 4th input channel.
 // ---------------------------------------------------------------------------
 __global__ void ck_resize_mask_u8_f32_kernel(
     float* __restrict__ dst,
@@ -90,16 +85,15 @@ cudaError_t ck_resize_mask_u8_f32(
 }
 
 // ---------------------------------------------------------------------------
-// ck_composite_neural: composite neural key result onto NV12 program frame.
+// ck_composite_neural: composite neural key result onto a SEPARATE program frame.
 //
-// Reads model outputs (alpha [1,1,modelH,modelW] and fg [1,3,modelH,modelW])
-// at model resolution, bilinear-upscales to program resolution, applies green
-// despill on the foreground, and alpha-blends onto the NV12 frame.
-//
-// All in one fused kernel to avoid intermediate full-resolution buffers.
+// Reads model outputs (alpha + fg at model resolution), upscales to program
+// resolution, applies despill, and alpha-blends onto the program NV12 frame.
+// The program frame is the background; foreground pixels (alpha>0) from the
+// model replace/blend over it.
 // ---------------------------------------------------------------------------
 __global__ void ck_composite_neural_kernel(
-    uint8_t* __restrict__ nv12,     // program NV12 frame (in-place)
+    uint8_t* __restrict__ progNV12,  // program NV12 frame (destination, modified in-place)
     const float* __restrict__ alpha, // [1, 1, modelH, modelW]
     const float* __restrict__ fg,    // [1, 3, modelH, modelW] sRGB [0,1]
     int progW, int progH, int progPitch,
@@ -125,32 +119,26 @@ __global__ void ck_composite_neural_kernel(
             + (alpha[iy1 * modelW + ix] * (1.0f - fx) + alpha[iy1 * modelW + ix1] * fx) * fy;
     a = fminf(fmaxf(a, 0.0f), 1.0f);
 
-    // Bilinear sample foreground RGB (CHW layout: R plane, G plane, B plane).
+    // Fast path: fully transparent — leave program pixel unchanged.
+    if (a < 1.0f / 255.0f) return;
+
+    // Bilinear sample foreground RGB (CHW layout).
     auto sample_plane = [&](const float* plane) -> float {
         return (plane[iy * modelW + ix] * (1.0f - fx) + plane[iy * modelW + ix1] * fx) * (1.0f - fy)
              + (plane[iy1 * modelW + ix] * (1.0f - fx) + plane[iy1 * modelW + ix1] * fx) * fy;
     };
 
-    float r = sample_plane(fg + 0 * modelPixels);
-    float g = sample_plane(fg + 1 * modelPixels);
-    float b = sample_plane(fg + 2 * modelPixels);
+    float r = fminf(fmaxf(sample_plane(fg + 0 * modelPixels), 0.0f), 1.0f);
+    float g = fminf(fmaxf(sample_plane(fg + 1 * modelPixels), 0.0f), 1.0f);
+    float b = fminf(fmaxf(sample_plane(fg + 2 * modelPixels), 0.0f), 1.0f);
 
-    // Clamp to [0,1].
-    r = fminf(fmaxf(r, 0.0f), 1.0f);
-    g = fminf(fmaxf(g, 0.0f), 1.0f);
-    b = fminf(fmaxf(b, 0.0f), 1.0f);
-
-    // Green despill: if green exceeds average of R and B, redistribute.
+    // Green despill: redistribute excess green to R and B.
     float rb_avg = (r + b) * 0.5f;
     if (g > rb_avg) {
         float excess = (g - rb_avg) * 0.5f;
         g -= excess;
-        r += excess * 0.5f;
-        b += excess * 0.5f;
-        // Re-clamp after redistribution.
-        r = fminf(r, 1.0f);
-        g = fminf(g, 1.0f);
-        b = fminf(b, 1.0f);
+        r = fminf(r + excess * 0.5f, 1.0f);
+        b = fminf(b + excess * 0.5f, 1.0f);
     }
 
     // Convert foreground sRGB [0,1] → BT.709 limited-range YCbCr.
@@ -159,29 +147,34 @@ __global__ void ck_composite_neural_kernel(
     float fgCb = 128.0f - 0.1146f * r8 - 0.3854f * g8 + 0.5000f * b8;
     float fgCr = 128.0f + 0.5000f * r8 - 0.4542f * g8 - 0.0458f * b8;
 
-    // Premultiplied output: fg * alpha. Background (alpha=0) becomes black.
-    // BT.709 black: Y=16, Cb=128, Cr=128 (limited range).
-    float outY = a * fgY + (1.0f - a) * 16.0f;
-    nv12[py * progPitch + px] = (uint8_t)fminf(fmaxf(outY + 0.5f, 0.0f), 255.0f);
+    // Read existing program pixel (background).
+    float progY = (float)progNV12[py * progPitch + px];
 
-    // UV: process once per 2x2 block (top-left pixel of each block).
+    // Alpha blend: foreground over program background.
+    float outY = a * fgY + (1.0f - a) * progY;
+    progNV12[py * progPitch + px] = (uint8_t)fminf(fmaxf(outY + 0.5f, 0.0f), 255.0f);
+
+    // UV: process once per 2x2 block.
     if ((px & 1) == 0 && (py & 1) == 0) {
         int uvOffset = progPitch * progH;
         int cx = px / 2;
         int cy = py / 2;
         int uvIdx = uvOffset + cy * progPitch + cx * 2;
 
-        float outCb = a * fgCb + (1.0f - a) * 128.0f;
-        float outCr = a * fgCr + (1.0f - a) * 128.0f;
+        float progCb = (float)progNV12[uvIdx];
+        float progCr = (float)progNV12[uvIdx + 1];
 
-        nv12[uvIdx]     = (uint8_t)fminf(fmaxf(outCb + 0.5f, 0.0f), 255.0f);
-        nv12[uvIdx + 1] = (uint8_t)fminf(fmaxf(outCr + 0.5f, 0.0f), 255.0f);
+        float outCb = a * fgCb + (1.0f - a) * progCb;
+        float outCr = a * fgCr + (1.0f - a) * progCr;
+
+        progNV12[uvIdx]     = (uint8_t)fminf(fmaxf(outCb + 0.5f, 0.0f), 255.0f);
+        progNV12[uvIdx + 1] = (uint8_t)fminf(fmaxf(outCr + 0.5f, 0.0f), 255.0f);
     }
 }
 
 extern "C"
 cudaError_t ck_composite_neural(
-    uint8_t* nv12,
+    uint8_t* progNV12,
     const float* alpha, const float* fg,
     int progW, int progH, int progPitch,
     int modelW, int modelH,
@@ -190,6 +183,6 @@ cudaError_t ck_composite_neural(
     dim3 block(16, 16);
     dim3 grid((progW + block.x - 1) / block.x, (progH + block.y - 1) / block.y);
     ck_composite_neural_kernel<<<grid, block, 0, stream>>>(
-        nv12, alpha, fg, progW, progH, progPitch, modelW, modelH);
+        progNV12, alpha, fg, progW, progH, progPitch, modelW, modelH);
     return cudaGetLastError();
 }

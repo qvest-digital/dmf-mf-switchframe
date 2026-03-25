@@ -1,17 +1,20 @@
 package gpu
 
 // NeuralKeyState provides neural key configuration to the GPU pipeline node.
+// Unlike the original design which only checked the program source, this
+// interface returns ALL sources with neural keys enabled — matching the
+// upstream key pattern where keyed sources are composited onto program.
+//
 // Implementations must be safe for concurrent reads from the pipeline goroutine.
 type NeuralKeyState interface {
-	// HasNeuralKey returns true when the program source has type:"neural" key enabled.
-	HasNeuralKey() bool
-	// ProgramSourceKey returns the current program source key.
-	ProgramSourceKey() string
-	// NeuralKeySnapshot returns a deep copy of the current neural key config.
-	NeuralKeySnapshot() *NeuralKeySnapshot
+	// HasNeuralKeys returns true when any source has type:"neural" key enabled.
+	HasNeuralKeys() bool
+	// SnapshotNeuralKeys returns a deep copy of all neural key configs,
+	// each with a reference to the source's GPU cached fill frame.
+	SnapshotNeuralKeys() []NeuralKeySnapshot
 }
 
-// NeuralKeySnapshot holds a deep copy of neural key parameters for one frame.
+// NeuralKeySnapshot holds a deep copy of neural key parameters for one source.
 type NeuralKeySnapshot struct {
 	SourceKey  string
 	KeyColorY  uint8
@@ -19,4 +22,9 @@ type NeuralKeySnapshot struct {
 	KeyColorCr uint8
 	Similarity float32
 	Smoothness float32
+
+	// FillFrame is the source's GPU-cached NV12 frame (from GPU source manager).
+	// The neural key node runs inference on this frame and composites the result
+	// onto the program frame. Nil if the source has no cached frame yet.
+	FillFrame *GPUFrame
 }

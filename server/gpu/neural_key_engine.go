@@ -417,6 +417,131 @@ func (nke *NeuralKeyEngine) Infer(
 	return nil
 }
 
+// InferAndComposite runs inference on the fill frame (green screen source) and
+// composites the result onto the program frame (background). This is the upstream
+// key pattern: the fill source is keyed and blended over program.
+//
+// Steps:
+//  1. Generate chroma hint from the fill frame
+//  2. NV12→RGB at 512×512 from the fill frame
+//  3. ImageNet normalize + hint concat
+//  4. TRT inference → alpha + foreground
+//  5. Composite foreground onto program frame using alpha
+func (nke *NeuralKeyEngine) InferAndComposite(
+	programFrame *GPUFrame,
+	fillFrame *GPUFrame,
+	keyCb, keyCr uint8,
+	similarity, smoothness float32,
+	stream C.cudaStream_t,
+) error {
+	fillW := fillFrame.Width
+	fillH := fillFrame.Height
+	fillPitch := fillFrame.Pitch
+	fillNV12 := unsafe.Pointer(uintptr(fillFrame.DevPtr))
+
+	progW := programFrame.Width
+	progH := programFrame.Height
+	progPitch := programFrame.Pitch
+	progNV12 := unsafe.Pointer(uintptr(programFrame.DevPtr))
+
+	// Step 1: Generate chroma hint from the FILL frame (not program).
+	simDist := similarity * 255.0
+	totalDist := (similarity + smoothness) * 255.0
+	simDistSq := int(simDist * simDist)
+	totalDistSq := int(totalDist * totalDist)
+	if totalDistSq <= simDistSq {
+		totalDistSq = simDistSq + 1
+	}
+	rc := C.chroma_key_nv12(
+		(*C.uint8_t)(fillNV12),
+		(*C.uint8_t)(nke.chromaHint),
+		C.int(fillW), C.int(fillH), C.int(fillPitch),
+		C.uint8_t(keyCb), C.uint8_t(keyCr),
+		C.int(simDistSq), C.int(totalDistSq),
+		C.float(0),
+		C.uint8_t(128), C.uint8_t(128),
+		stream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: neural_key: chroma hint failed: cuda %d", rc)
+	}
+
+	// Step 2: NV12→RGB from the FILL frame at model resolution.
+	rgbPtr := nke.inputBuf
+	rc = C.nv12_to_rgb_chw(
+		(*C.float)(rgbPtr),
+		(*C.uint8_t)(fillNV12),
+		C.int(fillW), C.int(fillH), C.int(fillPitch),
+		C.int(ckModelW), C.int(ckModelH),
+		stream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: neural_key: nv12_to_rgb failed: cuda %d", rc)
+	}
+
+	// Step 3: ImageNet normalize.
+	rc = C.ck_imagenet_normalize(
+		(*C.float)(rgbPtr),
+		C.int(ckModelH), C.int(ckModelW),
+		stream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: neural_key: normalize failed: cuda %d", rc)
+	}
+
+	// Step 4: Resize hint and copy to channel 3.
+	rc = C.ck_resize_mask_u8_f32(
+		(*C.float)(nke.hintBuf),
+		(*C.uint8_t)(nke.chromaHint), C.int(fillW), C.int(fillH), C.int(fillW),
+		C.int(ckModelW), C.int(ckModelH),
+		stream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: neural_key: hint resize failed: cuda %d", rc)
+	}
+	hintDstOffset := uintptr(3 * ckModelW * ckModelH * 4)
+	rc = C.cudaMemcpyAsync(
+		unsafe.Pointer(uintptr(nke.inputBuf)+hintDstOffset),
+		nke.hintBuf,
+		C.size_t(ckModelW*ckModelH*4),
+		C.cudaMemcpyDeviceToDevice,
+		stream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: neural_key: hint copy failed: cuda %d", rc)
+	}
+
+	// Step 5: TRT inference.
+	bindings := []TRTBinding{
+		{Name: "input", DevPtr: nke.inputBuf, Dims: []int{1, 4, ckModelH, ckModelW}},
+		{Name: "alpha", DevPtr: nke.alphaBuf, Dims: []int{1, 1, ckModelH, ckModelW}},
+		{Name: "fg", DevPtr: nke.fgBuf, Dims: []int{1, 3, ckModelH, ckModelW}},
+	}
+	if err := nke.trtCtx.InferMulti(bindings, unsafe.Pointer(stream)); err != nil {
+		return fmt.Errorf("gpu: neural_key: TRT inference failed: %w", err)
+	}
+
+	// Sync before composite.
+	C.cudaStreamSynchronize(stream)
+
+	// Step 6: Composite onto the PROGRAM frame.
+	rc = C.ck_composite_neural(
+		(*C.uint8_t)(progNV12),
+		(*C.float)(nke.alphaBuf),
+		(*C.float)(nke.fgBuf),
+		C.int(progW), C.int(progH), C.int(progPitch),
+		C.int(ckModelW), C.int(ckModelH),
+		nil, // default stream
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: neural_key: composite failed: cuda %d", rc)
+	}
+	C.cudaDeviceSynchronize()
+
+	nke.warmupDone.Store(true)
+	return nil
+}
+
 // WarmupDone returns true after the first successful inference.
 func (nke *NeuralKeyEngine) WarmupDone() bool {
 	return nke.warmupDone.Load()

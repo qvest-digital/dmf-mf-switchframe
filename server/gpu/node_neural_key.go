@@ -15,12 +15,10 @@ import (
 )
 
 // gpuNeuralKeyNode applies neural green screen keying on the GPU via
-// TensorRT inference. It reads key configuration through NeuralKeyState
-// and delegates to NeuralKeyEngine for the full inference pipeline.
-//
-// The node sits in the pipeline after the chroma/luma key node, which
-// provides a coarse key as fallback during TensorRT warmup. Once the
-// engine is warm, this node produces a high-quality neural matte.
+// TensorRT inference. It iterates all sources with type:"neural" keys,
+// runs inference on each source's GPU-cached fill frame, and composites
+// the keyed result onto the program frame — matching the upstream key
+// pattern used by gpuKeyNode.
 type gpuNeuralKeyNode struct {
 	ctx    *Context
 	pool   *FramePool
@@ -31,16 +29,12 @@ type gpuNeuralKeyNode struct {
 	lastErr       atomic.Value
 }
 
-// NewGPUNeuralKeyNode creates a GPU neural key pipeline node backed by
-// a TensorRT inference engine loaded from the given ONNX model path.
-// Returns nil if state is nil, enginePath is empty, or the engine fails
-// to initialize (e.g., no GPU available).
+// NewGPUNeuralKeyNode creates a GPU neural key pipeline node.
 func NewGPUNeuralKeyNode(ctx *Context, pool *FramePool, state NeuralKeyState, enginePath string) GPUPipelineNode {
 	if state == nil || enginePath == "" {
 		return nil
 	}
 
-	// Engine creation is deferred until Configure() when we know program dimensions.
 	return &gpuNeuralKeyNode{
 		ctx:   ctx,
 		pool:  pool,
@@ -53,15 +47,11 @@ func (n *gpuNeuralKeyNode) Name() string { return "gpu_neural_key" }
 func (n *gpuNeuralKeyNode) Configure(width, height, pitch int) error {
 	n.width = width
 	n.height = height
-	// Engine will be created lazily on first ProcessGPU call when the model path
-	// is available via the app config. For now, dimensions are stored.
 	return nil
 }
 
-// Active returns true when a neural key state provider is attached and
-// the current program source has neural keying enabled.
 func (n *gpuNeuralKeyNode) Active() bool {
-	return n.state != nil && n.state.HasNeuralKey()
+	return n.state != nil && n.state.HasNeuralKeys()
 }
 
 func (n *gpuNeuralKeyNode) Latency() time.Duration { return 15 * time.Millisecond }
@@ -74,42 +64,48 @@ func (n *gpuNeuralKeyNode) Err() error {
 }
 
 // SetEngine attaches the TensorRT neural key engine to this node.
-// Called from wireGPUPipeline after engine initialization.
 func (n *gpuNeuralKeyNode) SetEngine(engine *NeuralKeyEngine) {
 	n.engine = engine
 }
 
-// ProcessGPU runs neural keying inference on the program frame.
-//
-//  1. If neural keying is not active or engine not ready, return immediately.
-//  2. Read the current key configuration snapshot.
-//  3. Run inference: generate chroma hint, TRT infer, composite.
+// ProcessGPU runs neural keying for all sources with type:"neural" keys.
+// For each keyed source:
+//  1. Get the source's GPU cached fill frame from the snapshot.
+//  2. Run TRT inference on the fill frame (generates alpha + foreground).
+//  3. Composite the result onto the program frame.
 func (n *gpuNeuralKeyNode) ProcessGPU(frame *GPUFrame) error {
-	if n.state == nil || !n.state.HasNeuralKey() {
+	if n.state == nil || !n.state.HasNeuralKeys() {
 		return nil
 	}
 	if n.engine == nil {
 		return nil
 	}
 
-	snap := n.state.NeuralKeySnapshot()
-	if snap == nil {
+	keys := n.state.SnapshotNeuralKeys()
+	if len(keys) == 0 {
 		return nil
 	}
 
-	// Run the full neural key pipeline on the default CUDA stream.
-	err := n.engine.Infer(
-		frame,
-		snap.KeyColorCb, snap.KeyColorCr,
-		snap.Similarity, snap.Smoothness,
-		defaultCUDAStream,
-	)
-	if err != nil {
-		slog.Warn("gpu_neural_key: inference failed",
-			"source", snap.SourceKey, "error", err)
-		n.lastErr.Store(err)
-		// Don't fail the pipeline — pass through the unmodified frame.
-		return nil
+	for i := range keys {
+		snap := &keys[i]
+		if snap.FillFrame == nil {
+			continue // source has no cached GPU frame yet
+		}
+
+		// Run inference on the fill frame and composite onto program.
+		err := n.engine.InferAndComposite(
+			frame,
+			snap.FillFrame,
+			snap.KeyColorCb, snap.KeyColorCr,
+			snap.Similarity, snap.Smoothness,
+			defaultCUDAStream,
+		)
+		if err != nil {
+			slog.Warn("gpu_neural_key: inference failed",
+				"source", snap.SourceKey, "error", err)
+			n.lastErr.Store(err)
+			// Continue with remaining keys.
+		}
 	}
 
 	return nil
@@ -122,3 +118,9 @@ func (n *gpuNeuralKeyNode) Close() error {
 	}
 	return nil
 }
+
+// Ensure interface compliance for SetEngine type assertion.
+var _ interface{ SetEngine(*NeuralKeyEngine) } = (*gpuNeuralKeyNode)(nil)
+
+// unused import guard
+var _ = unsafe.Pointer(nil)

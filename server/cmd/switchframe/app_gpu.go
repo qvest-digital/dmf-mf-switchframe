@@ -115,8 +115,8 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 	var neuralKeyEngine *gpu.NeuralKeyEngine
 	if app.cfg.NeuralKeyModelPath != "" && gs.ctx.Backend() == "cuda" {
 		nkAdapter := &neuralKeyStateAdapter{
-			keyer:    app.keyProcessor,
-			switcher: sw,
+			keyer:     app.keyProcessor,
+			sourceMgr: sourceMgr,
 		}
 		neuralKeyAdapter = nkAdapter
 
@@ -892,42 +892,44 @@ func (a *segmentationStateAdapter) DeleteConfig(key string) {
 
 // --- Neural Key State Adapter ---
 
-// neuralKeyStateAdapter bridges KeyProcessor + Switcher to gpu.NeuralKeyState.
+// neuralKeyStateAdapter bridges KeyProcessor + Switcher + GPUSourceManager
+// to gpu.NeuralKeyState. Returns all sources with type:"neural" keys, each
+// with a reference to the source's GPU cached fill frame.
 type neuralKeyStateAdapter struct {
-	keyer    *graphics.KeyProcessor
-	switcher *switcher.Switcher
+	keyer     *graphics.KeyProcessor
+	sourceMgr *gpu.GPUSourceManager
 }
 
-func (a *neuralKeyStateAdapter) HasNeuralKey() bool {
-	progKey := a.switcher.ProgramSource()
-	if progKey == "" {
-		return false
+func (a *neuralKeyStateAdapter) HasNeuralKeys() bool {
+	for _, cfg := range a.keyer.EnabledSources() {
+		if cfg.Type == graphics.KeyTypeNeural {
+			return true
+		}
 	}
-	cfg, ok := a.keyer.GetKey(progKey)
-	return ok && cfg.Enabled && cfg.Type == graphics.KeyTypeNeural
+	return false
 }
 
-func (a *neuralKeyStateAdapter) ProgramSourceKey() string {
-	return a.switcher.ProgramSource()
-}
-
-func (a *neuralKeyStateAdapter) NeuralKeySnapshot() *gpu.NeuralKeySnapshot {
-	progKey := a.switcher.ProgramSource()
-	if progKey == "" {
-		return nil
+func (a *neuralKeyStateAdapter) SnapshotNeuralKeys() []gpu.NeuralKeySnapshot {
+	var result []gpu.NeuralKeySnapshot
+	for key, cfg := range a.keyer.EnabledSources() {
+		if cfg.Type != graphics.KeyTypeNeural {
+			continue
+		}
+		var fill *gpu.GPUFrame
+		if a.sourceMgr != nil {
+			fill = a.sourceMgr.GetFrame(key)
+		}
+		result = append(result, gpu.NeuralKeySnapshot{
+			SourceKey:  key,
+			KeyColorY:  cfg.KeyColorY,
+			KeyColorCb: cfg.KeyColorCb,
+			KeyColorCr: cfg.KeyColorCr,
+			Similarity: cfg.Similarity,
+			Smoothness: cfg.Smoothness,
+			FillFrame:  fill,
+		})
 	}
-	cfg, ok := a.keyer.GetKey(progKey)
-	if !ok || !cfg.Enabled || cfg.Type != graphics.KeyTypeNeural {
-		return nil
-	}
-	return &gpu.NeuralKeySnapshot{
-		SourceKey:  progKey,
-		KeyColorY:  cfg.KeyColorY,
-		KeyColorCb: cfg.KeyColorCb,
-		KeyColorCr: cfg.KeyColorCr,
-		Similarity: cfg.Similarity,
-		Smoothness: cfg.Smoothness,
-	}
+	return result
 }
 
 // --- AI Segment Manager Adapter ---
