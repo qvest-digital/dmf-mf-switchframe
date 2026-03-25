@@ -75,7 +75,10 @@ func NewChannel(id int, config ChannelConfig) *Channel {
 }
 
 // Snapshot returns a PersistedChannel capturing the channel's current state.
-// The returned value is a deep copy safe for serialization without holding the lock.
+// The playlist copy is shallow: SecondaryEvents slices and Transition pointers
+// within each PlaylistItem alias the originals. This is safe for JSON
+// serialization and read-only inspection, but callers must not mutate nested
+// pointers or slices in the returned snapshot.
 func (c *Channel) Snapshot() PersistedChannel {
 	c.mu.Lock()
 	defer c.mu.Unlock()

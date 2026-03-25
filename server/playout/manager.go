@@ -303,6 +303,9 @@ func (m *Manager) Snapshot() PersistedState {
 // re-cued at their saved cursor position; Start must be called separately
 // to resume playback. Active pods have their ElapsedMs adjusted by the
 // wall-clock delta since the snapshot was taken.
+//
+// Recover must be called on a fresh Manager before Start(), not on a running
+// system. Calling Recover while channels are on-air leads to undefined behavior.
 func (m *Manager) Recover(statePath string) error {
 	state, err := loadPersistedState(statePath)
 	if err != nil {
@@ -528,6 +531,7 @@ func (m *Manager) HealthSummary() []ChannelHealth {
 }
 
 // RecoverChannel stops a channel, re-cues it at its current position, and restarts.
+// Pod board state is not preserved during recovery; active pods are lost.
 func (m *Manager) RecoverChannel(channelID int) error {
 	if err := m.validateChannelID(channelID); err != nil {
 		return err

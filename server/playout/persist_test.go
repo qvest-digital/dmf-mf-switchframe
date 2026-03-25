@@ -814,3 +814,69 @@ func TestManager_Recover_SkipsTerminalPods(t *testing.T) {
 		t.Error("pod.Armed = false, want true")
 	}
 }
+
+func TestManager_RecoverChannel(t *testing.T) {
+	mgr := NewManager(ManagerConfig{AssetProvider: fakeProvider(90)})
+
+	asRunDir := filepath.Join(t.TempDir(), "asrun")
+	logger, err := NewAsRunLogger(AsRunLoggerConfig{Dir: asRunDir})
+	if err != nil {
+		t.Fatalf("asrun: %v", err)
+	}
+	defer logger.Close()
+	mgr.SetAsRunLogger(logger)
+
+	pl := testPlaylist(clipItem("a"), clipItem("b"), clipItem("c"))
+	if err := mgr.LoadPlaylist(1, pl); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if err := mgr.Start(1); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	// Let it play briefly.
+	time.Sleep(50 * time.Millisecond)
+
+	// Recover the channel.
+	if err := mgr.RecoverChannel(1); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+
+	// Channel should be on-air again (RecoverChannel calls Start).
+	states := mgr.ChannelStates()
+	if states[0].State != "on_air" && states[0].State != "completed" {
+		t.Errorf("post-recovery state = %q, want on_air or completed", states[0].State)
+	}
+
+	// As-run error event should be logged.
+	errorEvents := logger.Query(AsRunQuery{Type: AsRunError})
+	if len(errorEvents) == 0 {
+		t.Error("expected recovery as-run error event")
+	}
+
+	// Wait for completion.
+	waitFor(t, 10*time.Second, func() bool {
+		s := mgr.ChannelStates()
+		return s[0].State == "completed"
+	})
+
+	mgr.Close()
+}
+
+func TestManager_RecoverChannel_InvalidID(t *testing.T) {
+	mgr := NewManager(ManagerConfig{})
+	err := mgr.RecoverChannel(99)
+	if err == nil {
+		t.Error("expected error for invalid channel ID")
+	}
+}
+
+func TestManager_RecoverChannel_NoPlaylist(t *testing.T) {
+	mgr := NewManager(ManagerConfig{AssetProvider: fakeProvider(5)})
+	// Channel has no playlist loaded.
+	err := mgr.RecoverChannel(1)
+	// Should fail because there's nothing to recover — Start will fail with ErrInvalidState.
+	if err == nil {
+		t.Error("expected error for channel with no playlist")
+	}
+}
