@@ -20,10 +20,17 @@ func ImportPlaylist(msg BxfMessage, name string) (*playout.Playlist, error) {
 	items := make([]playout.PlaylistItem, 0, len(msg.BxfData.Schedule.Details))
 
 	for _, detail := range msg.BxfData.Schedule.Details {
+		itemType := mapBxfType(detail.Type)
 		item := playout.PlaylistItem{
 			ID:    detail.Content.ContentId.HouseNumber,
 			Title: detail.Content.Name,
-			Type:  mapBxfType(detail.Type),
+			Type:  itemType,
+		}
+
+		// Clip/slate items require an AssetURI. Use the HouseNumber as a
+		// reference identifier that the asset pipeline can resolve.
+		if itemType == playout.ItemClip || itemType == playout.ItemSlate {
+			item.AssetURI = "bxf://" + detail.Content.ContentId.HouseNumber
 		}
 
 		// Parse duration from ScheduledDuration first, fall back to Content.Duration.

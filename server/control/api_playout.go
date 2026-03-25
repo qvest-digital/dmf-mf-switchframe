@@ -3,6 +3,7 @@ package control
 import (
 	"encoding/json"
 	"encoding/xml"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -31,6 +32,9 @@ func (a *API) registerPlayoutRoutes(mux *http.ServeMux) {
 	// As-run endpoints.
 	mux.HandleFunc("GET /api/playout/channels/{n}/asrun", a.handlePlayoutAsRunQuery)
 	mux.HandleFunc("GET /api/playout/channels/{n}/asrun/export", a.handlePlayoutAsRunExport)
+
+	// BXF import endpoint.
+	mux.HandleFunc("POST /api/playout/import/bxf", a.handlePlayoutBXFImport)
 
 	// Cache endpoints (available even without playout manager, guarded by nil checks).
 	mux.HandleFunc("GET /api/playout/cache/status", a.handlePlayoutCacheStatus)
@@ -376,4 +380,46 @@ func (a *API) handlePlayoutAsRunExport(w http.ResponseWriter, r *http.Request) {
 	// Default: JSON export.
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(events)
+}
+
+// handlePlayoutBXFImport imports a BXF schedule as a playlist.
+func (a *API) handlePlayoutBXFImport(w http.ResponseWriter, r *http.Request) {
+	channelStr := r.URL.Query().Get("channel")
+	if channelStr == "" {
+		channelStr = "1"
+	}
+	channelID, err := strconv.Atoi(channelStr)
+	if err != nil || channelID < 1 || channelID > playout.MaxChannels {
+		httperr.Write(w, http.StatusBadRequest, "invalid channel")
+		return
+	}
+
+	var msg bxf.BxfMessage
+	if err := xml.NewDecoder(r.Body).Decode(&msg); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid BXF XML")
+		return
+	}
+
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		name = "bxf-import"
+	}
+
+	pl, err := bxf.ImportPlaylist(msg, name)
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	pl.Channel = fmt.Sprintf("playout:%d", channelID)
+
+	if err := a.playoutMgr.LoadPlaylist(channelID, pl); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+
+	a.broadcast()
+	states := a.playoutMgr.ChannelStates()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(states[channelID-1])
 }

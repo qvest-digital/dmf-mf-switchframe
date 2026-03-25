@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -249,4 +250,115 @@ func TestHandleAsRunExport_NoLogger(t *testing.T) {
 	api.Mux().ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusNotImplemented, w.Code)
+}
+
+// ---------------------------------------------------------------------------
+// Task 13: POST /api/playout/import/bxf
+// ---------------------------------------------------------------------------
+
+func TestHandleBXFImport(t *testing.T) {
+	api, _ := setupTestPlayoutAPIWithAsRun(t)
+
+	bxfXML := `<?xml version="1.0" encoding="UTF-8"?>
+<BxfMessage>
+  <BxfData>
+    <Schedule>
+      <ScheduleDetail>
+        <Content>
+          <ContentId><HouseNumber>CLIP001</HouseNumber></ContentId>
+          <Name>Morning News</Name>
+          <Duration>PT30.000S</Duration>
+        </Content>
+        <ScheduledDuration>PT30.000S</ScheduledDuration>
+        <Type>program</Type>
+      </ScheduleDetail>
+      <ScheduleDetail>
+        <Content>
+          <ContentId><HouseNumber>CLIP002</HouseNumber></ContentId>
+          <Name>Weather Update</Name>
+          <Duration>PT10.000S</Duration>
+        </Content>
+        <ScheduledDuration>PT10.000S</ScheduledDuration>
+        <Type>program</Type>
+      </ScheduleDetail>
+    </Schedule>
+  </BxfData>
+</BxfMessage>`
+
+	req := httptest.NewRequest("POST", "/api/playout/import/bxf?channel=1&name=morning-block",
+		strings.NewReader(bxfXML))
+	req.Header.Set("Content-Type", "application/xml")
+	w := httptest.NewRecorder()
+	api.Mux().ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+
+	var ch playout.ChannelStatus
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &ch))
+	require.Equal(t, "cued", ch.State)
+	require.Equal(t, "morning-block", ch.PlaylistName)
+	require.Equal(t, 2, ch.ItemCount)
+}
+
+func TestHandleBXFImport_DefaultChannelAndName(t *testing.T) {
+	api, _ := setupTestPlayoutAPIWithAsRun(t)
+
+	bxfXML := `<BxfMessage><BxfData><Schedule><ScheduleDetail>
+		<Content><ContentId><HouseNumber>C1</HouseNumber></ContentId><Name>Test</Name>
+		<Duration>PT5.000S</Duration></Content>
+		<ScheduledDuration>PT5.000S</ScheduledDuration>
+	</ScheduleDetail></Schedule></BxfData></BxfMessage>`
+
+	req := httptest.NewRequest("POST", "/api/playout/import/bxf", strings.NewReader(bxfXML))
+	req.Header.Set("Content-Type", "application/xml")
+	w := httptest.NewRecorder()
+	api.Mux().ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+
+	var ch playout.ChannelStatus
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &ch))
+	require.Equal(t, "cued", ch.State)
+	require.Equal(t, "bxf-import", ch.PlaylistName)
+}
+
+func TestHandleBXFImportInvalidXML(t *testing.T) {
+	api, _ := setupTestPlayoutAPIWithAsRun(t)
+
+	req := httptest.NewRequest("POST", "/api/playout/import/bxf", strings.NewReader("not xml at all"))
+	req.Header.Set("Content-Type", "application/xml")
+	w := httptest.NewRecorder()
+	api.Mux().ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestHandleBXFImport_InvalidChannel(t *testing.T) {
+	api, _ := setupTestPlayoutAPIWithAsRun(t)
+
+	bxfXML := `<BxfMessage><BxfData><Schedule><ScheduleDetail>
+		<Content><ContentId><HouseNumber>C1</HouseNumber></ContentId><Name>Test</Name>
+		<Duration>PT5.000S</Duration></Content>
+		<ScheduledDuration>PT5.000S</ScheduledDuration>
+	</ScheduleDetail></Schedule></BxfData></BxfMessage>`
+
+	req := httptest.NewRequest("POST", "/api/playout/import/bxf?channel=99", strings.NewReader(bxfXML))
+	req.Header.Set("Content-Type", "application/xml")
+	w := httptest.NewRecorder()
+	api.Mux().ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestHandleBXFImport_EmptySchedule(t *testing.T) {
+	api, _ := setupTestPlayoutAPIWithAsRun(t)
+
+	bxfXML := `<BxfMessage><BxfData><Schedule></Schedule></BxfData></BxfMessage>`
+
+	req := httptest.NewRequest("POST", "/api/playout/import/bxf", strings.NewReader(bxfXML))
+	req.Header.Set("Content-Type", "application/xml")
+	w := httptest.NewRecorder()
+	api.Mux().ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusBadRequest, w.Code)
 }
