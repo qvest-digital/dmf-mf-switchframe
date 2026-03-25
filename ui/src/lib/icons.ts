@@ -85,6 +85,9 @@ export const ICON_LINK = 'M7 9l2-2M6 12l-2 2a2 2 0 0 1-3-3l2-2M10 4l2-2a2 2 0 0 
 export const ICON_PRESET = 'M3 2h4v4H3zM9 2h4v4H9zM3 8h4v4H3zM10 9l1.5 2.5L14 9';
 export const ICON_BOLT = 'M9 1L4 9h4l-1 6 5-8H8z';
 
+// ── Misc ──
+export const ICON_REFRESH = 'M13 3l-1 4-4-1M3 13l1-4 4 1M12.5 6.5A5.5 5.5 0 0 0 4 4M3.5 9.5A5.5 5.5 0 0 0 12 12';
+
 // ── Rendering helper ──
 export type IconStyle = 'fill' | 'stroke';
 

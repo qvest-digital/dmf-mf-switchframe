@@ -2,6 +2,7 @@
 	import type { ControlRoomState, PlayoutChannelState, PlaylistItem } from '$lib/api/types';
 	import PlayoutItem from './PlayoutItem.svelte';
 	import PlayoutTransport from './PlayoutTransport.svelte';
+	import CacheStatus from './CacheStatus.svelte';
 
 	interface Props {
 		state: ControlRoomState;
@@ -73,6 +74,8 @@
 					{/each}
 				{/if}
 			</div>
+
+			<CacheStatus />
 		</div>
 
 		<!-- Right: Transport + Info -->

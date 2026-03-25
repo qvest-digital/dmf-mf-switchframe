@@ -854,3 +854,12 @@ export interface Playlist {
 	default_transition: { type: string; duration_ms?: number };
 	items: PlaylistItem[];
 }
+
+export interface CacheStatus {
+	cacheDir: string;
+	maxBytes: number;
+	usedBytes: number;
+	itemCount: number;
+	fetchingCount: number;
+	errorCount: number;
+}
