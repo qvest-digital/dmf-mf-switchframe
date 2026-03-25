@@ -12,6 +12,33 @@ import (
 
 // PersistedState captures everything needed to resume playback after a crash.
 // This is a JSON-serializable snapshot, not the full runtime objects.
+//
+// 1+1 Sync Protocol Design (future implementation):
+//
+// The active/standby pair uses this same PersistedState format for state
+// replication. The active node broadcasts its state to the standby at the
+// configured persist interval. The standby continuously applies incoming
+// state to its own Manager via Recover().
+//
+// Heartbeat protocol:
+//   - Active sends PersistedState every persist interval (default: 5s)
+//   - Standby expects heartbeat within 3x the interval (15s default)
+//   - If standby misses 3 consecutive heartbeats, it promotes itself
+//   - On promotion: standby loads last received state, starts channels
+//   - Fencing: promoted standby acquires a distributed lock before going
+//     on-air to prevent split-brain (e.g., etcd lease or file lock on
+//     shared storage)
+//
+// State format is sufficient for replication because it captures:
+//   - Full playlist (not just a reference — standby may not share storage)
+//   - Exact cursor position and channel state
+//   - All pod states with wall-clock timestamps for elapsed adjustment
+//   - Version field for forward-compatible schema evolution
+//
+// Transport options (not yet chosen):
+//   - UDP multicast (LAN only, lowest latency)
+//   - TCP with length-prefixed JSON (simple, reliable)
+//   - Shared file on NFS/CIFS (operational simplicity, higher latency)
 type PersistedState struct {
 	Version   int                `json:"version"`
 	Timestamp time.Time          `json:"timestamp"`
