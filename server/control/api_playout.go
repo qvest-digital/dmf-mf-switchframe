@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/zsiec/switchframe/server/control/httperr"
 	"github.com/zsiec/switchframe/server/playout"
@@ -24,6 +25,9 @@ func (a *API) registerPlayoutRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/playout/channels/{n}/jump", a.handlePlayoutJump)
 	mux.HandleFunc("POST /api/playout/channels/{n}/manual", a.handlePlayoutTakeManual)
 	mux.HandleFunc("POST /api/playout/channels/{n}/auto", a.handlePlayoutReturnToAuto)
+
+	// As-run endpoints.
+	mux.HandleFunc("GET /api/playout/channels/{n}/asrun", a.handlePlayoutAsRunQuery)
 
 	// Cache endpoints (available even without playout manager, guarded by nil checks).
 	mux.HandleFunc("GET /api/playout/cache/status", a.handlePlayoutCacheStatus)
@@ -298,4 +302,44 @@ func (a *API) handlePlayoutCacheEvict(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "evicted"})
+}
+
+// handlePlayoutAsRunQuery returns as-run events for a channel, with optional filters.
+func (a *API) handlePlayoutAsRunQuery(w http.ResponseWriter, r *http.Request) {
+	n, err := parseChannelID(r)
+	if err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+
+	logger := a.playoutMgr.AsRunLogger()
+	if logger == nil {
+		httperr.Write(w, http.StatusNotImplemented, "as-run logging not configured")
+		return
+	}
+
+	q := playout.AsRunQuery{ChannelID: &n}
+
+	if typ := r.URL.Query().Get("type"); typ != "" {
+		q.Type = playout.AsRunEventType(typ)
+	}
+	if since := r.URL.Query().Get("since"); since != "" {
+		if t, err := time.Parse(time.RFC3339, since); err == nil {
+			q.Since = &t
+		}
+	}
+	if until := r.URL.Query().Get("until"); until != "" {
+		if t, err := time.Parse(time.RFC3339, until); err == nil {
+			q.Until = &t
+		}
+	}
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if limit, err := strconv.Atoi(limitStr); err == nil && limit > 0 {
+			q.Limit = limit
+		}
+	}
+
+	events := logger.Query(q)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(events)
 }
