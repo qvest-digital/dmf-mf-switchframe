@@ -28,7 +28,7 @@ type Instance struct {
 func NewInstance(cfg InstanceConfig) (*Instance, error) {
 	var params C.struct_mtl_init_params
 
-	if err := parseIPv4(cfg.SourceIP, &params.sip_addr[0]); err != nil {
+	if err := parseIPv4(cfg.SourceIP, &params.sip_addr[0][0]); err != nil {
 		return nil, fmt.Errorf("st2110: invalid source IP %q: %w", cfg.SourceIP, err)
 	}
 
