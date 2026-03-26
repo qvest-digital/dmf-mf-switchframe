@@ -462,20 +462,10 @@ func (h *playoutSecondaryHandler) OnSCTE35Cue(data *playout.SCTE35EventData) err
 		}
 	}
 
-	// Use the SpliceCoordinator for frame-accurate PTS-based insertion.
-	// The coordinator collects candidate frames, runs black detection,
-	// and schedules the cue at the optimal splice point with IDR alignment.
-	if h.spliceCoordinator != nil && h.ptsProvider != nil {
-		return h.spliceCoordinator.BeginSplice(
-			"",                  // no pod ID for secondary events
-			isOut,               //
-			data.AutoReturn,     //
-			durationMs,
-			h.ptsProvider(),     // current program PTS
-		)
-	}
-
-	// Fallback: direct injection (no splice coordinator available).
+	// Direct injection for secondary events — no splice coordinator pre-roll.
+	// Pod-initiated breaks use the splice coordinator (via Fire()), but
+	// secondary events fire at a known point in the playlist so pre-roll
+	// scanning is unnecessary and adds confusing delay.
 	if h.scte35Injector == nil {
 		return nil
 	}

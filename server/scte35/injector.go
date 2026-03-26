@@ -1100,17 +1100,23 @@ func (inj *Injector) State() InjectorState {
 			Descriptors:   ae.Descriptors,
 		}
 
-		elapsedMs := now.Sub(ae.StartedAt).Milliseconds()
-		if elapsedMs < 0 {
-			elapsedMs = 0
+		totalElapsedMs := now.Sub(ae.StartedAt).Milliseconds()
+		if totalElapsedMs < 0 {
+			totalElapsedMs = 0
 		}
-		state.ElapsedMs = elapsedMs
+		// Break elapsed excludes pre-roll: the break hasn't started until
+		// pre-roll completes, so elapsed into the break = total - preRoll.
+		breakElapsedMs := totalElapsedMs - ae.PreRollMs
+		if breakElapsedMs < 0 {
+			breakElapsedMs = 0
+		}
+		state.ElapsedMs = breakElapsedMs
 
 		if ae.Duration > 0 {
 			durMs := ae.Duration.Milliseconds()
 			state.DurationMs = &durMs
 
-			remainMs := durMs - elapsedMs
+			remainMs := durMs - breakElapsedMs
 			if remainMs < 0 {
 				remainMs = 0
 			}

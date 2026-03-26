@@ -38,28 +38,14 @@
 	const breakEvent = $derived(scte35Active.length > 0 ? scte35Active[0] : null);
 	const isHeld = $derived(breakEvent?.held ?? false);
 
-	let breakNow = $state(Date.now());
-	$effect(() => {
-		if (!breakEvent) return;
-		const iv = setInterval(() => { breakNow = Date.now(); }, 250);
-		return () => clearInterval(iv);
-	});
-
-	// Use $derived so Svelte explicitly tracks breakNow + breakEvent dependencies.
+	// Use server-computed remainingMs directly. State broadcasts from the
+	// playout tick loop arrive frequently enough for smooth countdown updates.
 	const breakCountdownText = $derived.by(() => {
 		const evt = breakEvent;
 		if (!evt) return '';
 		if (evt.held) return 'HELD';
-		if (!evt.durationMs || !evt.startedAt) return '';
-		const preRoll = evt.preRollMs ?? 0;
-		const breakStart = evt.startedAt + preRoll;
-		const elapsed = breakNow - breakStart;
-		let remaining: number;
-		if (elapsed < 0) {
-			remaining = evt.durationMs; // pre-roll: show full duration
-		} else {
-			remaining = evt.durationMs - elapsed;
-		}
+		if (evt.remainingMs == null) return '';
+		const remaining = evt.remainingMs;
 		if (remaining <= 0) return '0:00';
 		const totalSec = Math.ceil(remaining / 1000);
 		const min = Math.floor(totalSec / 60);
