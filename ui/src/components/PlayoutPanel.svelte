@@ -100,21 +100,27 @@
 	let templatePending = $state<string | null>(null);
 	let templateTimer: ReturnType<typeof setTimeout> | null = null;
 
-	// ── Fetch playlist items on channel switch only (not on every broadcast tick) ──
+	// ── Fetch playlist items on channel switch or item count change ──
+	// Uses a fetch-key staleness check instead of Svelte cleanup to avoid a
+	// race: MoQ state updates re-trigger the effect (new object references),
+	// the cleanup cancels the in-flight fetch, but the re-run sees the same
+	// fetchKey and skips. Result: items never populate after browser refresh.
 	let lastFetchKey = $state('');
+	let activeFetchKey = '';
 	$effect(() => {
 		const ch = selectedChannel;
 		const count = channel.itemCount;
 		const fetchKey = `${ch}:${count}`;
 		if (fetchKey === lastFetchKey || dirty) return;
 		lastFetchKey = fetchKey;
-		let cancelled = false;
+		activeFetchKey = fetchKey;
 		if (count <= 0) {
 			workingPlaylist = { id: '', name: channel.playlistName ?? '', default_transition: { type: 'cut' }, items: [] };
 			return;
 		}
+		const myFetchKey = fetchKey;
 		playoutPlaylist(ch).then(items => {
-			if (!cancelled) {
+			if (activeFetchKey === myFetchKey) {
 				workingPlaylist = {
 					...workingPlaylist,
 					name: channel.playlistName ?? workingPlaylist.name,
@@ -123,9 +129,8 @@
 				dirty = false;
 			}
 		}).catch(() => {
-			if (!cancelled) workingPlaylist = { ...workingPlaylist, items: [] };
+			if (activeFetchKey === myFetchKey) workingPlaylist = { ...workingPlaylist, items: [] };
 		});
-		return () => { cancelled = true; };
 	});
 
 	// ── Fetch template names + sample clips + available clips + saved playlists on mount ──

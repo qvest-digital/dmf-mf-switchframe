@@ -45,28 +45,27 @@
 		return () => clearInterval(iv);
 	});
 
-	function breakCountdown(evt: SCTE35Active): string {
+	// Use $derived so Svelte explicitly tracks breakNow + breakEvent dependencies.
+	const breakCountdownText = $derived.by(() => {
+		const evt = breakEvent;
+		if (!evt) return '';
 		if (evt.held) return 'HELD';
 		if (!evt.durationMs || !evt.startedAt) return '';
-		// Account for pre-roll: the break starts at startedAt + preRollMs.
-		// During pre-roll, show the full break duration (not yet counting down).
-		// After pre-roll, count down from durationMs to 0.
-		const breakStart = evt.startedAt + (evt.preRollMs ?? 0);
+		const preRoll = evt.preRollMs ?? 0;
+		const breakStart = evt.startedAt + preRoll;
 		const elapsed = breakNow - breakStart;
+		let remaining: number;
 		if (elapsed < 0) {
-			// Still in pre-roll — show full duration (not counting yet).
-			const totalSec = Math.ceil(evt.durationMs / 1000);
-			const min = Math.floor(totalSec / 60);
-			const sec = totalSec % 60;
-			return `${min}:${sec.toString().padStart(2, '0')}`;
+			remaining = evt.durationMs; // pre-roll: show full duration
+		} else {
+			remaining = evt.durationMs - elapsed;
 		}
-		const remaining = evt.durationMs - elapsed;
 		if (remaining <= 0) return '0:00';
 		const totalSec = Math.ceil(remaining / 1000);
 		const min = Math.floor(totalSec / 60);
 		const sec = totalSec % 60;
 		return `${min}:${sec.toString().padStart(2, '0')}`;
-	}
+	});
 
 	$effect(() => {
 		if (previewCanvas && programCanvas && onCanvasReady) {
@@ -139,7 +138,7 @@
 			<div class="break-status" class:break-held={isHeld}>
 				<span class="break-icon">{isHeld ? '||' : breakEvent.autoReturn ? 'AR' : 'BR'}</span>
 				<span class="break-label">{isHeld ? 'HELD' : 'AD BREAK'}</span>
-				<span class="break-countdown">{breakCountdown(breakEvent)}</span>
+				<span class="break-countdown">{breakCountdownText}</span>
 			</div>
 		{/if}
 		<div class="monitor-viewport" bind:this={programViewport}>
