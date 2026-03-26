@@ -260,9 +260,10 @@
 			const pl = await playoutSavedGet(name);
 			workingPlaylist = pl;
 			selectedIndex = -1;
+			// Auto-load to server so it's immediately playable.
+			await apiCall(playoutLoadPlaylist(selectedChannel, pl), 'Load saved playlist');
 			dirty = false;
 			notify('info', `Loaded "${pl.name}"`);
-			// Refresh saved list in case new playlists were added server-side.
 			playoutSavedList().then(names => savedPlaylists = names).catch(() => {});
 		} catch (e) {
 			notify('error', `Failed to load playlist "${name}"`);
@@ -322,8 +323,17 @@
 				if (!pl.default_transition) pl.default_transition = { type: 'cut' };
 				workingPlaylist = pl as Playlist;
 				selectedIndex = -1;
-				dirty = true;
-				notify('info', `Imported "${pl.name}" (${pl.items.length} items)`);
+				// Auto-save imported playlist to server so it's immediately playable.
+				try {
+					await playoutSave(pl as Playlist);
+					await apiCall(playoutLoadPlaylist(selectedChannel, pl as Playlist), 'Load imported playlist');
+					dirty = false;
+					playoutSavedList().then(names => savedPlaylists = names).catch(() => {});
+					notify('info', `Imported and loaded "${pl.name}" (${pl.items.length} items)`);
+				} catch {
+					dirty = true;
+					notify('warning', `Imported "${pl.name}" locally — click Save to load on server`);
+				}
 			} catch (err) {
 				notify('error', 'Failed to parse JSON file');
 			}
@@ -347,7 +357,10 @@
 			if (pl) {
 				workingPlaylist = pl;
 				selectedIndex = -1;
-				dirty = true;
+				// Auto-load template to server so it's immediately playable.
+				await apiCall(playoutLoadPlaylist(selectedChannel, pl), 'Load template');
+				dirty = false;
+				notify('info', `Loaded template "${name}"`);
 			}
 		} catch (e) {
 			console.error('Failed to load template:', e);
