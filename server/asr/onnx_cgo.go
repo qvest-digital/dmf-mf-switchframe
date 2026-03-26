@@ -392,10 +392,14 @@ func (s *OnnxSession) NewOnnxValueInt64(data []int64, shape []int64) (*OnnxValue
 		return nil, fmt.Errorf("onnxruntime: data length %d != shape product %d", len(data), totalElements)
 	}
 
+	var shapePtr *C.int64_t
+	if len(shape) > 0 {
+		shapePtr = (*C.int64_t)(unsafe.Pointer(&shape[0]))
+	}
 	status := C.createTensorInt64(s.api, s.memInfo,
 		(*C.int64_t)(unsafe.Pointer(&data[0])),
 		C.size_t(len(data)),
-		(*C.int64_t)(unsafe.Pointer(&shape[0])),
+		shapePtr,
 		C.size_t(len(shape)),
 		&value,
 	)

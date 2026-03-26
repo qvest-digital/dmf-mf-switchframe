@@ -136,9 +136,9 @@ func (v *SileroVAD) infer(chunk []float32) (float64, error) {
 	}
 	defer stateValue.Close()
 
-	// Sample rate: scalar int64 = 16000.
+	// Sample rate: scalar int64 = 16000 (shape [] — zero-dim tensor).
 	srData := []int64{sileroSampleRate}
-	srShape := []int64{1}
+	var srShape []int64 // empty = scalar
 	srValue, err := v.session.NewOnnxValueInt64(srData, srShape)
 	if err != nil {
 		return 0, fmt.Errorf("create sr tensor: %w", err)
