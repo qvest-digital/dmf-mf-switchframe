@@ -184,12 +184,16 @@ func (a *App) initPlayout() error {
 	})
 
 	// Raw video output: playout sends decoded YUV to switcher pipeline.
-	// Note: allocates per-frame when scaling is needed (rare — only on resolution mismatch).
-	// Cannot use a shared buffer because multiple channels may call concurrently.
+	// nil YUV = GPU-aliased signal frame (triggers RunFromCache, no CPU upload).
 	mgr.SetRawVideoOutput(func(key string, yuv []byte, w, h int, pts int64, isKeyframe bool) {
 		curPF := a.sw.PipelineFormat()
 		outYUV, outW, outH := yuv, w, h
-		if w != curPF.Width || h != curPF.Height {
+		if len(yuv) == 0 {
+			// GPU-aliased frame: pass through with nil YUV. The switcher's
+			// handleRawVideoFrame → IngestYUV no-ops on nil, then the GPU
+			// pipeline uses RunFromCache to read the aliased VRAM frame.
+			outW, outH = curPF.Width, curPF.Height
+		} else if w != curPF.Width || h != curPF.Height {
 			targetSize := curPF.Width * curPF.Height * 3 / 2
 			scaled := make([]byte, targetSize)
 			transition.ScaleYUV420(yuv, w, h, scaled, curPF.Width, curPF.Height)

@@ -999,20 +999,24 @@ func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
 	return frame
 }
 
-// tapLiveSource returns the latest frame from a live source, or idle frame as fallback.
-// Prefers GPU-native aliasing (zero-copy in VRAM) over CPU frame reads.
+// tapLiveSource routes live frames through the playout channel.
+// GPU alias swaps the VRAM frame pointer (zero-copy), then returns a
+// signal frame (empty YUV) that triggers the switcher pipeline to process
+// the already-cached GPU frame via RunFromCache.
 func (c *Channel) tapLiveSource(sourceKey string) *DecodedFrame {
-	// Try GPU-native alias first — zero-copy, no CPU involvement.
+	// GPU alias — zero-copy VRAM pointer swap.
 	c.mu.Lock()
 	alias := c.gpuAlias
 	c.mu.Unlock()
 
 	if alias != nil && alias(sourceKey) {
-		// GPU frame aliased — return sentinel so emitFrame skips CPU output.
+		// Return a signal frame with empty YUV. The switcher's handleRawVideoFrame
+		// will call IngestYUV (which no-ops on empty YUV), then route to the
+		// GPU pipeline which calls RunFromCache — reading the aliased VRAM frame.
 		return &c.gpuAliasedSentinel
 	}
 
-	// CPU fallback path.
+	// CPU fallback — only used when GPU is not available.
 	c.mu.Lock()
 	tap := c.gpuSourceTap
 	c.mu.Unlock()
@@ -1096,14 +1100,18 @@ func (c *Channel) emitFrame(frame *DecodedFrame, outputFn func([]byte, int, int,
 		ptsPerFrame = 3000
 	}
 
-	// GPU-aliased frame: the GPU source manager already has the correct frame
-	// for this channel's source key. No CPU work needed — just advance PTS.
+	pts := c.outputPTS
+
 	if frame == &c.gpuAliasedSentinel {
+		// GPU-aliased signal frame: emit with nil YUV to trigger the switcher
+		// pipeline's RunFromCache path. IngestYUV no-ops on nil, then the GPU
+		// pipeline reads the already-aliased VRAM frame.
+		if outputFn != nil {
+			outputFn(nil, c.config.Width, c.config.Height, pts, true)
+		}
 		c.outputPTS += ptsPerFrame
 		return
 	}
-
-	pts := c.outputPTS
 
 	if outputFn != nil {
 		outputFn(frame.YUV, frame.Width, frame.Height, pts, frame.IsKeyframe)

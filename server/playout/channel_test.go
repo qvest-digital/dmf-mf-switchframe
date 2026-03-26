@@ -1540,9 +1540,13 @@ func TestChannel_LiveTap_GPUAlias(t *testing.T) {
 		return nil
 	})
 
-	// Track video output calls — should NOT be called for aliased frames.
+	// Track video output calls — should be called with nil YUV as pipeline signal.
+	var nilYUVCalls atomic.Int32
 	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
 		videoOutputCalls.Add(1)
+		if len(yuv) == 0 {
+			nilYUVCalls.Add(1)
+		}
 	})
 
 	pl := testPlaylist(liveItem("live-1", "camera-1"))
@@ -1561,10 +1565,14 @@ func TestChannel_LiveTap_GPUAlias(t *testing.T) {
 		t.Errorf("GPU alias calls = %d, want >= 3", aliases)
 	}
 
-	// Video output should NOT have been called — GPU alias skips CPU path.
+	// Video output IS called (signal frames for pipeline routing), but with nil YUV.
 	outputs := videoOutputCalls.Load()
-	if outputs != 0 {
-		t.Errorf("video output calls = %d, want 0 (GPU alias should skip CPU output)", outputs)
+	if outputs < 3 {
+		t.Errorf("video output calls = %d, want >= 3 (signal frames for pipeline)", outputs)
+	}
+	nilCalls := nilYUVCalls.Load()
+	if nilCalls != outputs {
+		t.Errorf("nil YUV calls = %d, total calls = %d — all should be nil (GPU alias)", nilCalls, outputs)
 	}
 
 	// Advance past to complete.
