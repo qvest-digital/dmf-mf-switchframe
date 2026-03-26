@@ -26,22 +26,58 @@
 	// ── Context menu state ──
 	let contextMenu = $state<{ x: number; y: number; index: number } | null>(null);
 
+	// ── Container measurement & zoom ──
+	let containerEl = $state<HTMLDivElement | null>(null);
+	let containerWidth = $state(600);
+	let zoomMode = $state<'auto' | 'manual'>('auto');
+	let manualPxPerSec = $state(4);
+
+	$effect(() => {
+		if (!containerEl) return;
+		const ro = new ResizeObserver(entries => {
+			for (const entry of entries) {
+				containerWidth = entry.contentRect.width - 8; // subtract padding
+			}
+		});
+		ro.observe(containerEl);
+		return () => ro.disconnect();
+	});
+
 	// ── Constants ──
-	const MIN_BLOCK_WIDTH = 48;
-	const LIVE_BLOCK_WIDTH = 80;
-	const PIXELS_PER_SECOND = 4;
+	const MIN_ITEM_WIDTH = 32;
+	const LIVE_EQUIV_SECONDS = 20;
 
 	// ── Derived ──
 	const totalDuration = $derived(
 		items.reduce((sum, it) => sum + (it.type === 'live' ? 0 : (it.duration_ms ?? 0)), 0)
 	);
 
+	const totalSeconds = $derived(
+		items.reduce((sum, it) => {
+			if (it.type === 'live') return sum + LIVE_EQUIV_SECONDS;
+			return sum + Math.max(1, (it.duration_ms ?? 0) / 1000);
+		}, 0)
+	);
+
+	const gapWidth = $derived(
+		Math.max(0, items.length - 1) * 2 +
+		items.filter((_, i) => i + 1 < items.length && items[i + 1]?.transition?.type && items[i + 1].transition!.type !== 'cut').length * 18
+	);
+
+	const autoPxPerSec = $derived(
+		totalSeconds > 0 && items.length > 0
+			? Math.max(0.5, (containerWidth - gapWidth) / totalSeconds)
+			: 4
+	);
+
+	const effectivePxPerSec = $derived(zoomMode === 'auto' ? autoPxPerSec : manualPxPerSec);
+
 	// ── Helpers ──
 
 	function blockWidth(item: PlaylistItem): number {
-		if (item.type === 'live') return LIVE_BLOCK_WIDTH;
-		const durSec = (item.duration_ms ?? 0) / 1000;
-		return Math.max(MIN_BLOCK_WIDTH, durSec * PIXELS_PER_SECOND);
+		if (item.type === 'live') return Math.max(MIN_ITEM_WIDTH, LIVE_EQUIV_SECONDS * effectivePxPerSec);
+		const durSec = Math.max(1, (item.duration_ms ?? 0) / 1000);
+		return Math.max(MIN_ITEM_WIDTH, durSec * effectivePxPerSec);
 	}
 
 	function formatDuration(ms: number | undefined): string {
@@ -162,7 +198,25 @@
 
 <svelte:window onclick={closeContextMenu} />
 
-<div class="timeline-container" role="list" aria-label="Playlist timeline">
+<div class="timeline-container" bind:this={containerEl} role="list" aria-label="Playlist timeline">
+	<div class="zoom-bar">
+		<input
+			type="range"
+			class="zoom-slider"
+			min="0.5"
+			max="12"
+			step="0.1"
+			value={effectivePxPerSec}
+			oninput={(e) => {
+				zoomMode = 'manual';
+				manualPxPerSec = parseFloat((e.target as HTMLInputElement).value);
+			}}
+			title="Zoom: {effectivePxPerSec.toFixed(1)}px/s"
+		/>
+		{#if zoomMode === 'manual'}
+			<button class="zoom-fit-btn" onclick={() => zoomMode = 'auto'} title="Fit all items">Fit</button>
+		{/if}
+	</div>
 	{#if items.length === 0}
 		<div class="timeline-empty">No items in playlist</div>
 	{:else}
@@ -270,6 +324,58 @@
 
 	.timeline-container::-webkit-scrollbar { height: 3px; }
 	.timeline-container::-webkit-scrollbar-thumb { background: var(--border-subtle); border-radius: 2px; }
+
+	.zoom-bar {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		margin-bottom: 3px;
+		padding: 0 2px;
+	}
+
+	.zoom-slider {
+		flex: 1;
+		height: 2px;
+		appearance: none;
+		-webkit-appearance: none;
+		background: var(--border-default);
+		border-radius: 1px;
+		outline: none;
+		max-width: 120px;
+	}
+
+	.zoom-slider::-webkit-slider-thumb {
+		-webkit-appearance: none;
+		appearance: none;
+		width: 10px;
+		height: 10px;
+		border-radius: 50%;
+		background: var(--text-tertiary);
+		cursor: pointer;
+		border: 1px solid var(--border-strong);
+	}
+
+	.zoom-slider::-webkit-slider-thumb:hover {
+		background: var(--text-secondary);
+	}
+
+	.zoom-fit-btn {
+		padding: 1px 5px;
+		background: var(--bg-surface);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		font-family: var(--font-ui);
+		font-size: 7px;
+		font-weight: 700;
+		color: var(--text-tertiary);
+		cursor: pointer;
+		letter-spacing: 0.04em;
+	}
+
+	.zoom-fit-btn:hover {
+		background: var(--bg-hover);
+		color: var(--text-secondary);
+	}
 
 	.timeline-empty {
 		display: flex;
