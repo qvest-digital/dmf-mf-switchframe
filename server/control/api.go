@@ -505,6 +505,7 @@ type API struct {
 	uploadMu           sync.Mutex
 	uploadProgress     *internal.ClipUploadProgress
 	uploadStartTime    time.Time
+	asrConfigMu        sync.Mutex // serializes ASR config changes (prevents pile-up)
 }
 
 // enrichFunc is the type for the state enrichment callback.

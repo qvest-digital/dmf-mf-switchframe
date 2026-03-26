@@ -40,12 +40,24 @@ func (a *API) handleASRStatus(w http.ResponseWriter, r *http.Request) {
 // handleASRConfig updates top-level ASR configuration: active state, backend,
 // model, confidence filter, and speaker detection.
 //
+// Serialized with asrConfigMu to prevent concurrent config changes from
+// piling up and deadlocking (e.g., rapid UI retries during backend switch).
+//
 // PUT /api/asr/config
 func (a *API) handleASRConfig(w http.ResponseWriter, r *http.Request) {
 	if a.asrManager == nil || !a.asrManager.IsASRAvailable() {
 		httperr.Write(w, http.StatusNotImplemented, "ASR not available")
 		return
 	}
+
+	// Serialize ASR config changes. If another config request is in progress
+	// (e.g., slow backend switch), reject this one immediately instead of
+	// piling up and deadlocking.
+	if !a.asrConfigMu.TryLock() {
+		httperr.Write(w, http.StatusConflict, "ASR configuration change in progress")
+		return
+	}
+	defer a.asrConfigMu.Unlock()
 
 	var req struct {
 		Active           *bool  `json:"active,omitempty"`
@@ -59,9 +71,8 @@ func (a *API) handleASRConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Backend switch must happen before model swap (new backend may have
-	// different model inventory).
-	if req.Backend != "" {
+	// Skip no-op backend switch (already on requested backend).
+	if req.Backend != "" && req.Backend != a.asrManager.ActiveBackend() {
 		if err := a.asrManager.SwitchBackend(req.Backend); err != nil {
 			httperr.WriteErr(w, http.StatusBadRequest, err)
 			return
@@ -73,7 +84,8 @@ func (a *API) handleASRConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if req.Active != nil {
+	// Skip no-op active toggle.
+	if req.Active != nil && *req.Active != a.asrManager.IsASRActive() {
 		if err := a.asrManager.SetASRActive(*req.Active); err != nil {
 			httperr.Write(w, http.StatusInternalServerError, err.Error())
 			return
