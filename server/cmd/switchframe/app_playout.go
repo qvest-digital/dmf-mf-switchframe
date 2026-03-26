@@ -322,6 +322,8 @@ type playoutSecondaryHandler struct {
 
 // Narrow interfaces — depend only on methods we actually call.
 type graphicsController interface {
+	On(id int) error
+	Off(id int) error
 	DeleteImage(id int) error
 }
 
@@ -348,20 +350,28 @@ type scte35Scheduler interface {
 }
 
 func (h *playoutSecondaryHandler) OnGraphicsOn(layer int, template string) error {
-	// Graphics on with template: Phase 3 logs the event. Full template-based
-	// image loading will be added when the graphics template registry exists.
-	slog.Info("playout: secondary graphics_on", "layer", layer, "template", template)
-	return nil
+	if h.compositor == nil {
+		return nil
+	}
+	// Turn on the graphics layer. The image must be pre-loaded via the
+	// graphics REST API (POST /api/graphics/:id/image). The template field
+	// is logged for debugging but not used for image selection yet.
+	if template != "" {
+		slog.Info("playout: secondary graphics_on", "layer", layer, "template", template)
+	}
+	return h.compositor.On(layer)
 }
 
 func (h *playoutSecondaryHandler) OnGraphicsOff(layer int) error {
 	if h.compositor == nil {
 		return nil
 	}
-	return h.compositor.DeleteImage(layer)
+	return h.compositor.Off(layer)
 }
 
 func (h *playoutSecondaryHandler) OnGraphicsUpdate(layer int, template string) error {
+	// Update is a re-render hint — currently a no-op since template-based
+	// rendering is not yet implemented. Log for visibility.
 	slog.Info("playout: secondary graphics_update", "layer", layer, "template", template)
 	return nil
 }
