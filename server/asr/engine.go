@@ -261,9 +261,13 @@ func (e *Engine) SwitchBackend(name string) error {
 			return fmt.Errorf("asr: initialize %s backend: %w", name, err)
 		}
 		slog.Info("ASR: lazy-initialized backend", "name", name)
+		// Store the new backend. Brief lock — don't hold through stop/start below.
 		e.mu.Lock()
 		e.backends[name] = newBackend
 		delete(e.lazyConfigs, name)
+		e.mu.Unlock()
+	} else {
+		e.mu.Unlock()
 	}
 
 	// Build callback wrapper that reads onTranscript through the Engine mutex.
@@ -276,9 +280,8 @@ func (e *Engine) SwitchBackend(name string) error {
 		}
 	}
 
-	// Get current active backend.
+	// Get current active backend (lock-free).
 	bp := e.active.Load()
-	e.mu.Unlock()
 
 	// Stop old backend.
 	if bp != nil {
