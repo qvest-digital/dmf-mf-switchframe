@@ -102,6 +102,7 @@ func (a *App) initASR() error {
 		"model", engine.ModelName(),
 		"availableBackends", strings.Join(engine.AvailableBackends(), ","),
 	)
+	a.updateASRStateCache()
 	return nil
 }
 
@@ -148,9 +149,24 @@ func (a *App) wireASRAudioSink() {
 }
 
 // enrichASRState adds ASR state to a ControlRoomState snapshot.
+// Uses cached values to avoid taking any locks — this function is called
+// from broadcastState which may be invoked while ASR engine locks are held.
 func (a *App) enrichASRState(state internal.ControlRoomState) internal.ControlRoomState {
 	if a.asrEngine == nil {
 		return state
+	}
+	cached := a.cachedASRState.Load()
+	if cached != nil {
+		state.ASR = cached
+	}
+	return state
+}
+
+// updateASRStateCache rebuilds the cached ASR state. Called after ASR config
+// changes, outside of any lock critical sections.
+func (a *App) updateASRStateCache() {
+	if a.asrEngine == nil {
+		return
 	}
 	asrState := &internal.ASRState{
 		Available:         true,
@@ -164,16 +180,16 @@ func (a *App) enrichASRState(state internal.ControlRoomState) internal.ControlRo
 		asrState.ConfidenceFilter = a.captionPacer.ConfidencePreset()
 		asrState.SpeakerDetection = a.captionPacer.SpeakerDetectionPreset()
 	}
-	state.ASR = asrState
-	return state
+	a.cachedASRState.Store(asrState)
 }
 
 // asrManagerAdapter implements control.ASRManager, bridging the multi-backend
 // asr.Engine to the control package's REST API interface.
 type asrManagerAdapter struct {
-	engine     *asr.Engine
-	captionMgr *caption.Manager
-	pacer      *captionPacer
+	engine       *asr.Engine
+	captionMgr   *caption.Manager
+	pacer        *captionPacer
+	onCacheUpdate func() // called after state-changing operations to update cached ASR state
 }
 
 var _ control.ASRManager = (*asrManagerAdapter)(nil)
@@ -195,6 +211,9 @@ func (m *asrManagerAdapter) SetASRActive(active bool) error {
 		m.captionMgr.SetMode(caption.ModeAuto)
 	} else {
 		m.captionMgr.SetMode(caption.ModeOff)
+	}
+	if m.onCacheUpdate != nil {
+		m.onCacheUpdate()
 	}
 	return nil
 }
@@ -219,7 +238,11 @@ func (m *asrManagerAdapter) SwitchBackend(name string) error {
 	if m.engine == nil {
 		return nil
 	}
-	return m.engine.SwitchBackend(name)
+	err := m.engine.SwitchBackend(name)
+	if err == nil && m.onCacheUpdate != nil {
+		m.onCacheUpdate()
+	}
+	return err
 }
 
 // Per-backend model management — delegated to asr.Engine.

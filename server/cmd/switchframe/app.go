@@ -161,8 +161,9 @@ type App struct {
 	segAdapter *segmentationStateAdapter // non-nil when segEngine is active
 
 	// ASR engine (Whisper speech-to-text, nil when unavailable)
-	asrEngine    *asr.Engine
-	captionPacer *captionPacer
+	asrEngine      *asr.Engine
+	captionPacer   *captionPacer
+	cachedASRState atomic.Pointer[internal.ASRState]
 
 	// SCTE-35 signaling
 	scte35Injector *scte35.Injector
@@ -1334,9 +1335,10 @@ func (a *App) initAPI() error {
 	}
 	if a.asrEngine != nil {
 		apiOpts = append(apiOpts, control.WithASRManager(&asrManagerAdapter{
-			engine:     a.asrEngine,
-			captionMgr: a.captionMgr,
-			pacer:      a.captionPacer,
+			engine:        a.asrEngine,
+			captionMgr:    a.captionMgr,
+			pacer:         a.captionPacer,
+			onCacheUpdate: a.updateASRStateCache,
 		}))
 	}
 
