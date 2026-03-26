@@ -33,9 +33,10 @@ type SileroVAD struct {
 	buf       []float32 // accumulates samples until 512
 	threshold float64   // speech probability threshold (default 0.5)
 
-	speaking  bool
-	hangover  int // remaining hangover in milliseconds
+	speaking   bool
+	hangover   int // remaining hangover in milliseconds
 	hangoverMs int // configured hangover duration
+	debugCount int // for periodic debug logging
 }
 
 // NewSileroVAD creates a new Silero VAD instance.
@@ -76,6 +77,13 @@ func (v *SileroVAD) Process(samples []float32) {
 		if err != nil {
 			slog.Warn("ASR silero VAD: inference failed", "error", err)
 			continue
+		}
+
+		// Log every ~1 second (31 chunks * 32ms ≈ 1s) when prob > 0.01
+		// to diagnose VAD sensitivity on broadcast audio.
+		v.debugCount++
+		if v.debugCount%31 == 0 && prob > 0.01 {
+			slog.Info("ASR silero VAD probe", "prob", fmt.Sprintf("%.4f", prob), "threshold", v.threshold, "speaking", v.speaking)
 		}
 
 		if prob > v.threshold {
