@@ -264,7 +264,11 @@ func (m *asrManagerAdapter) SetASRModel(name string) error {
 	if m.engine == nil {
 		return nil
 	}
-	return m.engine.SetModel(name)
+	err := m.engine.SetModel(name)
+	if err == nil && m.onCacheUpdate != nil {
+		m.onCacheUpdate()
+	}
+	return err
 }
 
 func (m *asrManagerAdapter) AvailableASRModels() []string {
@@ -287,7 +291,11 @@ func (m *asrManagerAdapter) SetBackendConfig(raw json.RawMessage) error {
 	if m.engine == nil {
 		return nil
 	}
-	return m.engine.SetBackendConfig(raw)
+	err := m.engine.SetBackendConfig(raw)
+	if err == nil && m.onCacheUpdate != nil {
+		m.onCacheUpdate()
+	}
+	return err
 }
 
 // Pacer settings (backend-agnostic).
@@ -295,6 +303,9 @@ func (m *asrManagerAdapter) SetBackendConfig(raw json.RawMessage) error {
 func (m *asrManagerAdapter) SetASRConfidence(preset string) {
 	if m.pacer != nil {
 		m.pacer.SetConfidencePreset(preset)
+	}
+	if m.onCacheUpdate != nil {
+		m.onCacheUpdate()
 	}
 }
 
@@ -308,6 +319,9 @@ func (m *asrManagerAdapter) ASRConfidence() string {
 func (m *asrManagerAdapter) SetASRSpeakerDetection(preset string) {
 	if m.pacer != nil {
 		m.pacer.SetSpeakerDetectionPreset(preset)
+	}
+	if m.onCacheUpdate != nil {
+		m.onCacheUpdate()
 	}
 }
 
