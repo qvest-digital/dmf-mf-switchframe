@@ -94,8 +94,6 @@ type NemotronBackend struct {
 	inferCount     int
 	wasSpeaking    bool
 	wasSpeakingPrev bool // tracks previous SileroVAD.IsSpeaking() for edge detection
-	lastWordCount  int
-	emittedWords   []string // texts of words emitted so far (for text-based dedup)
 
 	onTranscript func([]TranscriptWord, bool)
 	inferring    sync.Mutex // serializes inference (one at a time)
@@ -262,26 +260,13 @@ func (b *NemotronBackend) IngestAudio(pcm []float32, pts int64, sampleRate, chan
 		b.lastInfer = now
 		b.wasSpeaking = true
 		b.inferCount = 0
-		b.lastWordCount = 0
 		b.resetDecoderState()
 
 	case nowSpeaking:
-		// During speech: periodic inference at adaptive intervals using FULL buffer.
-		var inferInterval time.Duration
-		switch b.inferCount {
-		case 0:
-			inferInterval = 1000 * time.Millisecond
-		case 1:
-			inferInterval = 2000 * time.Millisecond
-		default:
-			inferInterval = time.Duration(b.cfg.ChunkMs) * time.Millisecond
-		}
-
-		if b.wasSpeaking && now.Sub(b.lastInfer) >= inferInterval {
-			b.lastInfer = now
-			b.inferCount++
-			go b.runInference(false)
-		}
+		// During speech: just accumulate audio. The TDT offline model is
+		// non-deterministic across growing buffer sizes — partial inferences
+		// produce unstable word counts that cause duplicate text. Only
+		// transcribe when the full speech segment is available (isFinal).
 
 	case prevSpeaking && !nowSpeaking:
 		// Speech ended: final inference with full buffer.
@@ -296,7 +281,7 @@ func (b *NemotronBackend) IngestAudio(pcm []float32, pts int64, sampleRate, chan
 // TDT decoder pipeline on the FULL audio segment.
 //
 // Non-final: the buffer is NOT drained. The model re-transcribes the growing
-// speech segment each time. Only NEW words (beyond lastWordCount) are emitted.
+// Transcribes only on isFinal (speech ended) to avoid duplicates.
 //
 // Final: the buffer is cleared and all remaining words are emitted.
 func (b *NemotronBackend) runInference(isFinal bool) {
@@ -312,7 +297,6 @@ func (b *NemotronBackend) runInference(isFinal bool) {
 	}
 	audio := b.ringBuf.Snapshot()
 	audioLen := len(audio)
-	prevWordCount := b.lastWordCount
 	b.mu.Unlock()
 
 	if audioLen < 1600 {
@@ -347,9 +331,6 @@ func (b *NemotronBackend) runInference(isFinal bool) {
 	}
 
 	// Step 3: Run TDT greedy decode with fresh decoder state.
-	// For an offline model, we re-transcribe the entire buffer each time
-	// with a clean decoder state. The growing-window dedup handles
-	// emitting only new words.
 	stateSize := lstmNumLayers * 1 * lstmHiddenSize
 	freshState1 := make([]float32, stateSize)
 	freshState2 := make([]float32, stateSize)
@@ -362,50 +343,25 @@ func (b *NemotronBackend) runInference(isFinal bool) {
 		"audioSamples", audioLen,
 		"melFrames", numFrames,
 		"encodedFrames", encodedLen,
-		"totalWords", len(words),
-		"newWords", max(0, len(words)-prevWordCount),
+		"words", len(words),
 		"isFinal", isFinal,
 	)
 
-	// Text-based dedup: find where the new transcription diverges from
-	// what we already emitted. This handles the case where the model
-	// re-tokenizes earlier audio differently as the buffer grows.
+	// Only emit on isFinal (speech segment complete). No partial results —
+	// the TDT offline model is non-deterministic across growing buffer sizes,
+	// so partial inferences cause duplicate text.
+	if !isFinal {
+		return
+	}
+
 	b.mu.Lock()
-	prevEmitted := b.emittedWords
+	b.ringBuf.Clear()
+	b.resetDecoderState()
 	cb := b.onTranscript
-
-	// Find the longest common prefix between previous and current words.
-	matchLen := 0
-	for matchLen < len(prevEmitted) && matchLen < len(words) {
-		if words[matchLen].Text != prevEmitted[matchLen] {
-			break
-		}
-		matchLen++
-	}
-
-	var newWords []TranscriptWord
-	if matchLen < len(words) {
-		newWords = words[matchLen:]
-	}
-
-	if isFinal {
-		b.ringBuf.Clear()
-		b.lastWordCount = 0
-		b.emittedWords = nil
-		b.resetDecoderState()
-	} else {
-		b.lastWordCount = len(words)
-		// Track emitted word texts for next dedup.
-		all := make([]string, len(words))
-		for i, w := range words {
-			all[i] = w.Text
-		}
-		b.emittedWords = all
-	}
 	b.mu.Unlock()
 
-	if cb != nil && len(newWords) > 0 {
-		cb(newWords, isFinal)
+	if cb != nil && len(words) > 0 {
+		cb(words, true)
 	}
 }
 
@@ -904,8 +860,6 @@ func (b *NemotronBackend) Reset() {
 	b.resampler.Reset()
 	b.resetDecoderState()
 	b.wasSpeaking = false
-	b.lastWordCount = 0
-	b.emittedWords = nil
 }
 
 // Stop halts inference but keeps the model loaded.
