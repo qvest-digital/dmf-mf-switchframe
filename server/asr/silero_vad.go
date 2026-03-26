@@ -82,8 +82,8 @@ func (v *SileroVAD) Process(samples []float32) {
 		// Log every ~1 second (31 chunks * 32ms ≈ 1s) when prob > 0.01
 		// to diagnose VAD sensitivity on broadcast audio.
 		v.debugCount++
-		if v.debugCount%31 == 0 && prob > 0.01 {
-			slog.Info("ASR silero VAD probe", "prob", fmt.Sprintf("%.4f", prob), "threshold", v.threshold, "speaking", v.speaking)
+		if v.debugCount%31 == 0 {
+			slog.Info("ASR silero VAD probe", "prob", fmt.Sprintf("%.6f", prob), "threshold", v.threshold, "speaking", v.speaking)
 		}
 
 		if prob > v.threshold {
