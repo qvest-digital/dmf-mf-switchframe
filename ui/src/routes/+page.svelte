@@ -756,10 +756,6 @@
 							<div class="tab-panel">
 								<ClipsPanel state={store.effectiveState} />
 							</div>
-						{:else if activeTab === 'Playout'}
-							<div class="tab-panel">
-								<PlayoutPanel state={store.effectiveState} />
-							</div>
 						{:else if activeTab === 'Team'}
 							<div class="tab-panel tab-panel--team">
 								<TeamPanel state={store.effectiveState} />
@@ -769,6 +765,10 @@
 								<VideoProcessingPanel state={store.effectiveState} />
 							</div>
 						{/if}
+						<!-- PlayoutPanel always mounted to preserve state across tab switches -->
+						<div class="tab-panel" style:display={activeTab === 'Playout' ? '' : 'none'}>
+							<PlayoutPanel state={store.effectiveState} />
+						</div>
 					{/snippet}
 				</BottomTabs>
 			</section>
