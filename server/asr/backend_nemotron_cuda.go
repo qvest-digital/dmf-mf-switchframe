@@ -95,6 +95,7 @@ type NemotronBackend struct {
 	wasSpeaking    bool
 	wasSpeakingPrev bool // tracks previous SileroVAD.IsSpeaking() for edge detection
 	lastWordCount  int
+	emittedWords   []string // texts of words emitted so far (for text-based dedup)
 
 	onTranscript func([]TranscriptWord, bool)
 	inferring    sync.Mutex // serializes inference (one at a time)
@@ -366,33 +367,45 @@ func (b *NemotronBackend) runInference(isFinal bool) {
 		"isFinal", isFinal,
 	)
 
+	// Text-based dedup: find where the new transcription diverges from
+	// what we already emitted. This handles the case where the model
+	// re-tokenizes earlier audio differently as the buffer grows.
+	b.mu.Lock()
+	prevEmitted := b.emittedWords
+	cb := b.onTranscript
+
+	// Find the longest common prefix between previous and current words.
+	matchLen := 0
+	for matchLen < len(prevEmitted) && matchLen < len(words) {
+		if words[matchLen].Text != prevEmitted[matchLen] {
+			break
+		}
+		matchLen++
+	}
+
+	var newWords []TranscriptWord
+	if matchLen < len(words) {
+		newWords = words[matchLen:]
+	}
+
 	if isFinal {
-		b.mu.Lock()
 		b.ringBuf.Clear()
 		b.lastWordCount = 0
+		b.emittedWords = nil
 		b.resetDecoderState()
-		cb := b.onTranscript
-		b.mu.Unlock()
-
-		var newWords []TranscriptWord
-		if prevWordCount < len(words) {
-			newWords = words[prevWordCount:]
-		}
-		if cb != nil && len(newWords) > 0 {
-			cb(newWords, true)
-		}
 	} else {
-		b.mu.Lock()
 		b.lastWordCount = len(words)
-		cb := b.onTranscript
-		b.mu.Unlock()
-
-		if len(words) > prevWordCount {
-			newWords := words[prevWordCount:]
-			if cb != nil && len(newWords) > 0 {
-				cb(newWords, false)
-			}
+		// Track emitted word texts for next dedup.
+		all := make([]string, len(words))
+		for i, w := range words {
+			all[i] = w.Text
 		}
+		b.emittedWords = all
+	}
+	b.mu.Unlock()
+
+	if cb != nil && len(newWords) > 0 {
+		cb(newWords, isFinal)
 	}
 }
 
@@ -892,6 +905,7 @@ func (b *NemotronBackend) Reset() {
 	b.resetDecoderState()
 	b.wasSpeaking = false
 	b.lastWordCount = 0
+	b.emittedWords = nil
 }
 
 // Stop halts inference but keeps the model loaded.
