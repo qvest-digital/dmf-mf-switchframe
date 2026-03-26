@@ -101,7 +101,9 @@ func newEngineWithBackends(backends map[string]Backend, defaultName string) *Eng
 		}
 	}
 
-	e.active.Store(&b)
+	// Store via map lookup for a stable heap pointer.
+	stable := e.backends[b.Name()]
+	e.active.Store(&stable)
 	return e
 }
 
@@ -287,8 +289,11 @@ func (e *Engine) SwitchBackend(name string) error {
 		return fmt.Errorf("asr: failed to start backend %q: %w", name, err)
 	}
 
-	// Atomic swap.
-	e.active.Store(&newBackend)
+	// Atomic swap — load from map for a stable heap pointer.
+	e.mu.Lock()
+	stable := e.backends[name]
+	e.mu.Unlock()
+	e.active.Store(&stable)
 	return nil
 }
 
@@ -342,7 +347,12 @@ func (e *Engine) lazyInitAndSwitch(name string, lazyCfg interface{}) {
 		}
 		return
 	}
-	e.active.Store(&newBackend)
+	// Load from the map to get a stable pointer — don't store a pointer to
+	// the local variable which goes out of scope when this goroutine returns.
+	e.mu.Lock()
+	stable := e.backends[name]
+	e.mu.Unlock()
+	e.active.Store(&stable)
 	slog.Info("ASR: switched to backend", "name", name)
 
 	// Notify cache update if wired (via onBackendSwitch callback).

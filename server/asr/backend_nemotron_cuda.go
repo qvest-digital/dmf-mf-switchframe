@@ -191,7 +191,7 @@ func NewNemotronBackend(cfg NemotronConfig) (Backend, error) {
 		vadSession: vadSession,
 		resampler:  NewResampler(48000, 2, 16000),
 		ringBuf:    NewAudioRingBuf(16000, 30),
-		sileroVAD:  NewSileroVAD(vadSession, 0.5, 500),
+		sileroVAD:  NewSileroVAD(vadSession, 0.3, 500), // lower threshold for broadcast audio
 		vocab:      vocab,
 		cfg:        cfg,
 		doneCh:     make(chan struct{}),
@@ -223,6 +223,12 @@ func (b *NemotronBackend) IngestAudio(pcm []float32, pts int64, sampleRate, chan
 		return
 	}
 
+	// Run Silero VAD outside b.mu — it has its own internal state and runs
+	// ONNX inference that shouldn't block the audio path or contend with
+	// runInference's lock usage.
+	b.sileroVAD.Process(mono16k)
+	nowSpeaking := b.sileroVAD.IsSpeaking()
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -233,8 +239,6 @@ func (b *NemotronBackend) IngestAudio(pcm []float32, pts int64, sampleRate, chan
 	b.ringBuf.Write(mono16k)
 
 	prevSpeaking := b.sileroSpeaking
-	b.sileroVAD.Process(mono16k)
-	nowSpeaking := b.sileroVAD.IsSpeaking()
 	b.sileroSpeaking = nowSpeaking
 
 	now := time.Now()
