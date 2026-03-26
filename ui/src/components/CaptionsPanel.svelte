@@ -143,23 +143,23 @@
 
 	function handleBackendChange(e: Event) {
 		const backend = (e.target as HTMLSelectElement).value;
-		asrConfigCall(setASRConfig({ backend }), 'Set ASR backend');
+		asrConfigCall(setASRConfig({ backend }));
 		// Re-fetch models since they are backend-scoped.
 		getASRModels().then((models) => { availableModels = models; }).catch(() => {});
 	}
 
 	function handleModelChange(e: Event) {
 		const model = (e.target as HTMLSelectElement).value;
-		asrConfigCall(setASRConfig({ model }), 'Set ASR model');
+		asrConfigCall(setASRConfig({ model }));
 	}
 
 	function handleConfidenceChange(value: string) {
-		asrConfigCall(setASRConfig({ confidenceFilter: value }), 'Set ASR confidence filter');
+		asrConfigCall(setASRConfig({ confidenceFilter: value }));
 	}
 
 	function handleSpeakerDetectionChange(e: Event) {
 		const value = (e.target as HTMLSelectElement).value;
-		asrConfigCall(setASRConfig({ speakerDetection: value }), 'Set ASR speaker detection');
+		asrConfigCall(setASRConfig({ speakerDetection: value }));
 	}
 
 	let tuningOpen = $state(false);
