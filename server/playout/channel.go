@@ -117,6 +117,11 @@ type Channel struct {
 	outputPTS      int64
 	outputAudioPTS int64 // independent audio PTS counter (AAC frame cadence)
 
+	// Audio queue: video tick pushes audio frames here, audio ticker drains
+	// at steady AAC cadence (~21.3ms). This decouples audio delivery from
+	// the video tick to prevent bursty/uneven audio output.
+	audioQueue chan AudioFrameData
+
 	// Run control.
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -151,6 +156,7 @@ func NewChannel(id int, config ChannelConfig) *Channel {
 		compositor:    NewCompositor(w, h, nil),
 		slateFrame:    makeBlackFrame(w, h),
 		frameDuration: time.Duration(float64(time.Second) / fps),
+		audioQueue:    make(chan AudioFrameData, 64), // ~1.3s of buffered AAC frames
 	}
 }
 
@@ -638,9 +644,13 @@ func (c *Channel) configDimensions() (int, int) {
 // ---------------------------------------------------------------------------
 
 // run is the main playback goroutine. It ticks at frame rate and delegates
-// all scheduling decisions to the Scheduler.
+// all scheduling decisions to the Scheduler. Audio is delivered on a separate
+// steady-cadence ticker to prevent bursty delivery.
 func (c *Channel) run(ctx context.Context) {
 	defer close(c.done)
+
+	// Start audio drain goroutine — delivers audio to mixer at steady AAC cadence.
+	go c.audioTicker(ctx)
 
 	ticker := time.NewTicker(c.frameDuration)
 	defer ticker.Stop()
@@ -1134,26 +1144,24 @@ func (c *Channel) emitFrame(frame *DecodedFrame, outputFn func([]byte, int, int,
 		outputFn(frame.YUV, frame.Width, frame.Height, pts, frame.IsKeyframe)
 	}
 
-	// Output audio with channel-managed PTS (not source file PTS).
-	// The output audio PTS must be in the same domain as the video PTS
-	// for the mixer to maintain correct A/V sync. Each AAC frame advances
-	// PTS by 1024 samples in 90kHz clock: 1024 * 90000 / sampleRate.
-	// This matches the pattern used by clip/player.go.
-	if audioFn != nil {
-		if len(frame.AudioFrames) > 0 {
-			for i := range frame.AudioFrames {
-				af := &frame.AudioFrames[i]
-				audioFn(af.Data, c.outputAudioPTS, af.SampleRate, af.Channels)
-				if af.SampleRate > 0 {
-					c.outputAudioPTS += int64(1024) * 90000 / int64(af.SampleRate)
-				}
+	// Push audio frames to the audio queue. The audioTicker goroutine
+	// drains these at steady AAC cadence (~21.3ms), preventing the bursty
+	// delivery pattern that causes stuttering/robotic audio.
+	if len(frame.AudioFrames) > 0 {
+		for i := range frame.AudioFrames {
+			select {
+			case c.audioQueue <- frame.AudioFrames[i]:
+			default:
+				// Queue full — drop oldest to prevent backpressure on video tick.
 			}
-		} else if len(frame.AudioData) > 0 {
-			sr := frame.AudioSampleRate
-			audioFn(frame.AudioData, c.outputAudioPTS, sr, frame.AudioChannels)
-			if sr > 0 {
-				c.outputAudioPTS += int64(1024) * 90000 / int64(sr)
-			}
+		}
+	} else if len(frame.AudioData) > 0 {
+		select {
+		case c.audioQueue <- AudioFrameData{
+			Data: frame.AudioData, PTS: frame.AudioPTS,
+			SampleRate: frame.AudioSampleRate, Channels: frame.AudioChannels,
+		}:
+		default:
 		}
 	}
 
@@ -1178,6 +1186,39 @@ func (c *Channel) transitionState(newState ChannelState) {
 }
 
 // cleanup closes the active clip iterator and idle loop.
+// audioTicker drains the audio queue at steady AAC cadence (~21.3ms per frame
+// at 48kHz). This decouples audio delivery from the video tick, preventing
+// the bursty 1-or-2-frames-per-tick pattern that causes robotic audio.
+func (c *Channel) audioTicker(ctx context.Context) {
+	// AAC frame duration: 1024 samples / 48000 Hz = 21.333ms
+	aacDuration := time.Duration(float64(time.Second.Nanoseconds()) * 1024.0 / 48000.0)
+	ticker := time.NewTicker(aacDuration)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// Drain one audio frame from the queue per tick.
+			select {
+			case af := <-c.audioQueue:
+				c.mu.Lock()
+				audioFn := c.audioOutput
+				c.mu.Unlock()
+				if audioFn != nil {
+					audioFn(af.Data, c.outputAudioPTS, af.SampleRate, af.Channels)
+					if af.SampleRate > 0 {
+						c.outputAudioPTS += int64(1024) * 90000 / int64(af.SampleRate)
+					}
+				}
+			default:
+				// No audio frame available — skip this tick (silence).
+			}
+		}
+	}
+}
+
 func (c *Channel) cleanup() {
 	c.mu.Lock()
 	if c.clipIter != nil {
