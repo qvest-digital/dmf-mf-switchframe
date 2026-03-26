@@ -122,15 +122,20 @@
 		};
 	});
 
+	// ASR config calls may return 409 (config change in progress) — suppress those.
+	function asrConfigCall(promise: Promise<unknown>) {
+		promise.catch(() => {}); // silently ignore — state broadcast will sync UI
+	}
+
 	function handleModeChange(newMode: CaptionMode | 'auto') {
 		// Auto mode is controlled via ASR active flag, not the caption mode endpoint.
 		// SetASRActive(true) internally sets caption mode to ModeAuto.
 		if (newMode === 'auto') {
-			apiCall(setASRConfig({ active: true }), 'Enable ASR');
+			asrConfigCall(setASRConfig({ active: true }));
 		} else {
 			// Leaving auto mode: disable ASR first, then set the new caption mode.
 			if ((mode as string) === 'auto') {
-				apiCall(setASRConfig({ active: false }), 'Disable ASR');
+				asrConfigCall(setASRConfig({ active: false }));
 			}
 			apiCall(setCaptionMode(newMode as CaptionMode), 'Set caption mode');
 		}
@@ -138,23 +143,23 @@
 
 	function handleBackendChange(e: Event) {
 		const backend = (e.target as HTMLSelectElement).value;
-		apiCall(setASRConfig({ backend }), 'Set ASR backend');
+		asrConfigCall(setASRConfig({ backend }), 'Set ASR backend');
 		// Re-fetch models since they are backend-scoped.
 		getASRModels().then((models) => { availableModels = models; }).catch(() => {});
 	}
 
 	function handleModelChange(e: Event) {
 		const model = (e.target as HTMLSelectElement).value;
-		apiCall(setASRConfig({ model }), 'Set ASR model');
+		asrConfigCall(setASRConfig({ model }), 'Set ASR model');
 	}
 
 	function handleConfidenceChange(value: string) {
-		apiCall(setASRConfig({ confidenceFilter: value }), 'Set ASR confidence filter');
+		asrConfigCall(setASRConfig({ confidenceFilter: value }), 'Set ASR confidence filter');
 	}
 
 	function handleSpeakerDetectionChange(e: Event) {
 		const value = (e.target as HTMLSelectElement).value;
-		apiCall(setASRConfig({ speakerDetection: value }), 'Set ASR speaker detection');
+		asrConfigCall(setASRConfig({ speakerDetection: value }), 'Set ASR speaker detection');
 	}
 
 	let tuningOpen = $state(false);
