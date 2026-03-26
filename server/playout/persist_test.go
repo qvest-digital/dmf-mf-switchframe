@@ -44,7 +44,7 @@ func TestChannel_Snapshot(t *testing.T) {
 
 	// Verify deep copy: mutating snapshot must not affect original.
 	snap.Playlist.Items[0].Title = "MUTATED"
-	if ch.scheduler.playlist.Items[0].Title == "MUTATED" {
+	if ch.scheduler.Playlist().Items[0].Title == "MUTATED" {
 		t.Error("Snapshot playlist shares Items slice with channel")
 	}
 }

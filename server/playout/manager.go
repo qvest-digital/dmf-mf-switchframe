@@ -26,7 +26,6 @@ type Manager struct {
 	onStart           func(channelID int, key string)
 	onStop            func(channelID int, key string)
 	rawVideoOutput    func(key string, yuv []byte, w, h int, pts int64, isKeyframe bool)
-	videoOutput       func(key string, wireData []byte, pts int64, isKeyframe bool, sps, pps []byte)
 	audioOutput       func(key string, data []byte, pts int64, sampleRate, channels int)
 	ptsProvider       func() int64
 	secondaryHandler  SecondaryEventHandler
@@ -474,13 +473,6 @@ func (m *Manager) SetRawVideoOutput(fn func(key string, yuv []byte, w, h int, pt
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.rawVideoOutput = fn
-}
-
-// SetVideoOutput registers a callback for encoded video output from channels.
-func (m *Manager) SetVideoOutput(fn func(key string, wireData []byte, pts int64, isKeyframe bool, sps, pps []byte)) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.videoOutput = fn
 }
 
 // SetAudioOutput registers a callback for audio output from channels.

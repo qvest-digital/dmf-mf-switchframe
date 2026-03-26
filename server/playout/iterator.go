@@ -3,6 +3,7 @@ package playout
 import (
 	"fmt"
 	"os"
+	"strings"
 )
 
 // FrameIterator provides streaming access to decoded frames.
@@ -189,6 +190,9 @@ func (p *CacheAssetProvider) Open(assetURI string) (FrameIterator, error) {
 
 	// Fallback: try as a direct local file path.
 	_, path := ParseAssetURI(assetURI)
+	if strings.Contains(path, "..") {
+		return nil, fmt.Errorf("path traversal rejected: %s", assetURI)
+	}
 	if p.demuxFn != nil && fileExists(path) {
 		return p.demuxFn(path)
 	}

@@ -141,15 +141,20 @@ func (l *IdleLoop) SetAsset(assetURI string) {
 	l.dirty = true
 }
 
-// blackFrame returns a DecodedFrame backed by the pre-allocated black buffer.
+// blackFrame returns a DecodedFrame with a fresh copy of the pre-allocated
+// black buffer. Each caller gets its own copy so downstream consumers can
+// mutate the YUV data without corrupting the shared template.
 // Must be called with l.mu held.
 func (l *IdleLoop) blackFrame() *DecodedFrame {
+	yuvCopy := make([]byte, len(l.black))
+	copy(yuvCopy, l.black)
 	pts := l.pts
 	l.pts += int64(90000.0 / l.fps)
 	return &DecodedFrame{
-		YUV:    l.black,
-		PTS:    pts,
-		Width:  l.width,
-		Height: l.height,
+		YUV:        yuvCopy,
+		PTS:        pts,
+		Width:      l.width,
+		Height:     l.height,
+		IsKeyframe: true,
 	}
 }

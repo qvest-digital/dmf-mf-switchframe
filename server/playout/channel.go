@@ -178,24 +178,26 @@ func (c *Channel) Status() ChannelStatus {
 		State: c.state.String(),
 	}
 
+	// Take a consistent snapshot of scheduler state under one lock.
+	snap := c.scheduler.StatusSnapshot()
+
 	if c.state == StateOnAir {
-		st.Mode = c.scheduler.Mode().String()
+		st.Mode = snap.Mode.String()
 	}
 
 	pl := c.schedulerPlaylist()
 	if pl != nil {
 		st.PlaylistName = pl.Name
 		st.ItemCount = len(pl.Items)
-		cursor := c.scheduler.Cursor()
-		st.ItemIndex = cursor
+		st.ItemIndex = snap.Cursor
 
-		if cursor >= 0 && cursor < len(pl.Items) {
-			item := pl.Items[cursor]
+		if snap.Cursor >= 0 && snap.Cursor < len(pl.Items) {
+			item := pl.Items[snap.Cursor]
 			st.CurrentItemID = item.ID
 			st.CurrentTitle = item.Title
 		}
-		if cursor+1 < len(pl.Items) {
-			next := pl.Items[cursor+1]
+		if snap.Cursor+1 < len(pl.Items) {
+			next := pl.Items[snap.Cursor+1]
 			st.NextItemID = next.ID
 			st.NextTitle = next.Title
 		}
@@ -240,12 +242,11 @@ func (c *Channel) PlaylistItems() []PlaylistItem {
 	return items
 }
 
-// schedulerPlaylist returns the scheduler's playlist. Must be called with c.mu held
-// or during initialization. Returns nil if no playlist is loaded.
+// schedulerPlaylist returns the scheduler's playlist. Returns nil if no
+// playlist is loaded. Safe to call with or without c.mu held (the scheduler
+// acquires its own lock internally).
 func (c *Channel) schedulerPlaylist() *Playlist {
-	// The scheduler stores the playlist internally. We access it via Snapshot-like
-	// methods. For now, we keep a reference ourselves too.
-	return c.scheduler.playlist
+	return c.scheduler.Playlist()
 }
 
 // ---------------------------------------------------------------------------
@@ -913,9 +914,8 @@ func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
 		c.clipFrame++
 		c.mu.Unlock()
 
-		// Count consecutive errors via a simple heuristic: if the frame
-		// returned is nil with error, signal complete after a few failures.
-		// For now, we treat any error as terminal after 3 consecutive.
+		// Any frame read error is treated as terminal — signal complete so
+		// the scheduler advances to the next item.
 		if asRunFn != nil {
 			asRunFn(AsRunEvent{
 				Timestamp: time.Now().UTC(),

@@ -76,9 +76,6 @@ func (a *App) initPlayout() error {
 		slog.Info("playout relay registered", "key", key)
 	}
 
-	// Per-slot flag: true when GPU preview encoding handles relay, so the
-	// full-quality SetVideoOutput callback should skip relay broadcast.
-	var playoutGPUPreview [playout.MaxChannels]bool
 	// Per-slot MoQ group ID counter for GPU preview frames.
 	var playoutPreviewGroupID [playout.MaxChannels]atomic.Uint32
 
@@ -137,7 +134,6 @@ func (a *App) initPlayout() error {
 						relay.BroadcastVideo(frame)
 					},
 				})
-				playoutGPUPreview[idx] = true
 				slog.Info("playout: GPU preview encoder registered", "key", key)
 			}
 		},
@@ -145,7 +141,6 @@ func (a *App) initPlayout() error {
 		func(channelID int, key string) {
 			idx := channelID - 1
 			if idx >= 0 && idx < playout.MaxChannels {
-				playoutGPUPreview[idx] = false
 				playoutPreviewGroupID[idx].Store(0)
 			}
 			// Release GPU preview encoder and cached frames.

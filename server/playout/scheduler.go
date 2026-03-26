@@ -339,6 +339,32 @@ func (s *Scheduler) Cursor() int {
 	return s.cursor
 }
 
+// SchedulerSnapshot captures mode, cursor, and state under one lock.
+type SchedulerSnapshot struct {
+	State  SchedulerState
+	Mode   OnAirMode
+	Cursor int
+}
+
+// StatusSnapshot returns mode, cursor, and state under a single lock acquisition.
+func (s *Scheduler) StatusSnapshot() SchedulerSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return SchedulerSnapshot{
+		State:  s.state,
+		Mode:   s.mode,
+		Cursor: s.cursor,
+	}
+}
+
+// Playlist returns the loaded playlist, or nil. The returned pointer is
+// the scheduler's internal reference; the caller must not mutate it.
+func (s *Scheduler) Playlist() *Playlist {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.playlist
+}
+
 // CurrentItem returns a pointer to the current playlist item, or nil.
 func (s *Scheduler) CurrentItem() *PlaylistItem {
 	s.mu.Lock()
