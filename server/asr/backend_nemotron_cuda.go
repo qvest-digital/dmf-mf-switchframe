@@ -74,10 +74,11 @@ type NemotronBackend struct {
 	melSession *OnnxSession // nemo128.onnx mel spectrogram frontend
 	encoder    *OnnxSession // encoder ONNX session
 	decoder    *OnnxSession // decoder-joint ONNX session
-	vadSession *OnnxSession // silero_vad.onnx session (CPU)
+	vadSession *OnnxSession // silero_vad.onnx session (CPU) — kept for future use
 	resampler  *Resampler   // 48kHz stereo -> 16kHz mono
 	ringBuf    *AudioRingBuf
-	sileroVAD  *SileroVAD
+	sileroVAD  *SileroVAD   // neural VAD — too conservative for broadcast, kept for future
+	vad        *VAD          // energy-based VAD — reliable on broadcast audio
 	vocab      []string // token vocabulary from vocab.txt
 
 	cfg NemotronConfig
@@ -92,7 +93,7 @@ type NemotronBackend struct {
 	lastInfer      time.Time
 	inferCount     int
 	wasSpeaking    bool
-	sileroSpeaking bool // tracks previous SileroVAD.IsSpeaking() for edge detection
+	wasSpeakingPrev bool // tracks previous SileroVAD.IsSpeaking() for edge detection
 	lastWordCount  int
 
 	onTranscript func([]TranscriptWord, bool)
@@ -192,10 +193,15 @@ func NewNemotronBackend(cfg NemotronConfig) (Backend, error) {
 		vadSession: vadSession,
 		resampler:  NewResampler(48000, 2, 16000),
 		ringBuf:    NewAudioRingBuf(16000, 30),
-		sileroVAD:  NewSileroVAD(vadSession, 0.3, 500), // lower threshold for broadcast audio
-		vocab:      vocab,
-		cfg:        cfg,
-		doneCh:     make(chan struct{}),
+		sileroVAD:  NewSileroVAD(vadSession, 0.3, 500),
+		vad: NewVAD(VADConfig{
+			ThresholdDB: -26,
+			HangoverMs:  500,
+			SampleRate:  16000,
+		}),
+		vocab:  vocab,
+		cfg:    cfg,
+		doneCh: make(chan struct{}),
 	}
 	b.resetDecoderState()
 
@@ -228,11 +234,11 @@ func (b *NemotronBackend) IngestAudio(pcm []float32, pts int64, sampleRate, chan
 		slog.Info("ASR nemotron: first audio received", "samples", len(mono16k))
 	})
 
-	// Run Silero VAD outside b.mu — it has its own internal state and runs
-	// ONNX inference that shouldn't block the audio path or contend with
-	// runInference's lock usage.
-	b.sileroVAD.Process(mono16k)
-	nowSpeaking := b.sileroVAD.IsSpeaking()
+	// Use energy-based VAD (same as WhisperBackend) for reliable speech
+	// detection on broadcast audio. Silero ONNX VAD was too conservative
+	// for compressed broadcast audio with background music.
+	b.vad.Process(mono16k)
+	nowSpeaking := b.vad.State() == VADSpeaking || b.vad.State() == VADTrailing
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -243,8 +249,8 @@ func (b *NemotronBackend) IngestAudio(pcm []float32, pts int64, sampleRate, chan
 
 	b.ringBuf.Write(mono16k)
 
-	prevSpeaking := b.sileroSpeaking
-	b.sileroSpeaking = nowSpeaking
+	prevSpeaking := b.wasSpeakingPrev
+	b.wasSpeakingPrev = nowSpeaking
 
 	now := time.Now()
 
@@ -880,11 +886,11 @@ func (b *NemotronBackend) Reset() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.ringBuf.Clear()
+	b.vad.Reset()
 	b.sileroVAD.Reset()
 	b.resampler.Reset()
 	b.resetDecoderState()
 	b.wasSpeaking = false
-	b.sileroSpeaking = false
 	b.lastWordCount = 0
 }
 
