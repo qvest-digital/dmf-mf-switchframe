@@ -1,14 +1,15 @@
 <script lang="ts">
-	import type { PlaylistItem, SecondaryEvent } from '$lib/api/types';
+	import type { PlaylistItem, PlayoutClip, SecondaryEvent } from '$lib/api/types';
 	import SecondaryEventEditor from './SecondaryEventEditor.svelte';
 
 	interface Props {
 		item: PlaylistItem;
 		onChange: (updated: PlaylistItem) => void;
 		sources?: string[];
+		clips?: PlayoutClip[];
 	}
 
-	let { item, onChange, sources = [] }: Props = $props();
+	let { item, onChange, sources = [], clips = [] }: Props = $props();
 
 	const transitionTypes = ['cut', 'dissolve', 'dip_black', 'dip_white', 'wipe'] as const;
 
@@ -83,7 +84,31 @@
 	<div class="editor-section">
 		{#if item.type === 'clip'}
 			<label class="editor-field editor-field-full">
-				<span class="editor-label">Asset URI</span>
+				<span class="editor-label">Asset</span>
+				{#if clips.length > 0}
+					<select
+						class="editor-select field-asset-select"
+						value={item.asset_uri ?? ''}
+						onchange={(e) => {
+							const val = (e.target as HTMLSelectElement).value;
+							if (val) {
+								const match = clips.find(c => c.path === val);
+								if (match) {
+									emit({ asset_uri: val, title: item.title === 'New Item' ? match.name : item.title, duration_ms: match.duration * 1000 });
+								} else {
+									emit({ asset_uri: val });
+								}
+							} else {
+								emit({ asset_uri: undefined });
+							}
+						}}
+					>
+						<option value="">Custom URI...</option>
+						{#each clips as clip}
+							<option value={clip.path}>{clip.name} ({Math.floor(clip.duration / 60)}:{String(clip.duration % 60).padStart(2, '0')})</option>
+						{/each}
+					</select>
+				{/if}
 				<input
 					class="editor-input field-asset-uri"
 					type="text"

@@ -826,6 +826,13 @@ export interface SampleClip {
 	duration: number;
 }
 
+export interface PlayoutClip {
+	name: string;
+	path: string;
+	duration: number;
+	source: 'clip-store' | 'sample' | 'recording';
+}
+
 // ── Playout Types ──
 
 export interface PlayoutChannelState {

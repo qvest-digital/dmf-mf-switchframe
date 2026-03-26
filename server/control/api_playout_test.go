@@ -4,11 +4,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/distribution"
+	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/playout"
 	"github.com/zsiec/switchframe/server/switcher"
 )
@@ -547,4 +551,128 @@ func TestPlayoutCacheEvict_NotFound(t *testing.T) {
 	api.Mux().ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// ---------------------------------------------------------------------------
+// Clip library endpoint tests
+// ---------------------------------------------------------------------------
+
+func TestPlayoutClips_BothSources(t *testing.T) {
+	// Create a clip store with one clip.
+	clipDir := t.TempDir()
+	cs, err := clip.NewStore(clipDir, 1<<30)
+	require.NoError(t, err)
+
+	c := &clip.Clip{
+		Name:       "Intro Bumper",
+		Filename:   "intro.ts",
+		Source:     clip.SourceUpload,
+		DurationMs: 15000,
+		ByteSize:   1024,
+		CreatedAt:  time.Now(),
+	}
+	require.NoError(t, cs.Add(c))
+
+	// Write the file so the path is valid.
+	require.NoError(t, os.WriteFile(filepath.Join(clipDir, "intro.ts"), []byte("data"), 0o644))
+
+	// Create sample clips.
+	samples := []playout.SampleClip{
+		{Name: "holding_slate", Title: "Holding Slate", Path: "/tmp/samples/holding.ts", Duration: 10},
+		{Name: "bumper_in", Title: "Bumper In", Path: "/tmp/samples/bumper.ts", Duration: 3},
+	}
+
+	// Create API with both clip store and samples.
+	programRelay := distribution.NewRelay()
+	sw := switcher.NewTestSwitcher(programRelay)
+	mgr := newTestPlayoutManager()
+	api := NewAPI(sw, WithPlayoutManager(mgr), WithClipStore(cs), WithPlayoutSamples(samples))
+
+	req := httptest.NewRequest("GET", "/api/playout/clips", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	type playoutClip struct {
+		Name     string `json:"name"`
+		Path     string `json:"path"`
+		Duration int    `json:"duration"`
+		Source   string `json:"source"`
+	}
+	var clips []playoutClip
+	err = json.NewDecoder(rec.Body).Decode(&clips)
+	require.NoError(t, err)
+	require.Len(t, clips, 3) // 1 clip store + 2 samples
+
+	// Verify clip store entry.
+	require.Equal(t, "Intro Bumper", clips[0].Name)
+	require.Equal(t, filepath.Join(clipDir, "intro.ts"), clips[0].Path)
+	require.Equal(t, 15, clips[0].Duration)
+	require.Equal(t, "clip-store", clips[0].Source)
+
+	// Verify sample entries.
+	require.Equal(t, "Holding Slate", clips[1].Name)
+	require.Equal(t, "sample", clips[1].Source)
+	require.Equal(t, "Bumper In", clips[2].Name)
+	require.Equal(t, "sample", clips[2].Source)
+}
+
+func TestPlayoutClips_NoClipStoreNoSamples(t *testing.T) {
+	// API with neither clip store nor samples should return empty array.
+	programRelay := distribution.NewRelay()
+	sw := switcher.NewTestSwitcher(programRelay)
+	mgr := newTestPlayoutManager()
+	api := NewAPI(sw, WithPlayoutManager(mgr))
+
+	req := httptest.NewRequest("GET", "/api/playout/clips", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var clips []json.RawMessage
+	err := json.NewDecoder(rec.Body).Decode(&clips)
+	require.NoError(t, err)
+	require.Len(t, clips, 0)
+}
+
+func TestPlayoutClips_RecordingSource(t *testing.T) {
+	// A clip with source "recording" should be tagged accordingly.
+	clipDir := t.TempDir()
+	cs, err := clip.NewStore(clipDir, 1<<30)
+	require.NoError(t, err)
+
+	c := &clip.Clip{
+		Name:       "Recording Clip",
+		Filename:   "rec.ts",
+		Source:     clip.SourceRecording,
+		DurationMs: 60000,
+		ByteSize:   2048,
+		CreatedAt:  time.Now(),
+	}
+	require.NoError(t, cs.Add(c))
+
+	programRelay := distribution.NewRelay()
+	sw := switcher.NewTestSwitcher(programRelay)
+	mgr := newTestPlayoutManager()
+	api := NewAPI(sw, WithPlayoutManager(mgr), WithClipStore(cs))
+
+	req := httptest.NewRequest("GET", "/api/playout/clips", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	type playoutClip struct {
+		Name     string `json:"name"`
+		Path     string `json:"path"`
+		Duration int    `json:"duration"`
+		Source   string `json:"source"`
+	}
+	var clips []playoutClip
+	err = json.NewDecoder(rec.Body).Decode(&clips)
+	require.NoError(t, err)
+	require.Len(t, clips, 1)
+	require.Equal(t, "recording", clips[0].Source)
 }

@@ -16,6 +16,7 @@ vi.mock('$lib/api/switch-api', () => ({
 	playoutPlaylist: vi.fn().mockResolvedValue([]),
 	playoutLoadPlaylist: vi.fn().mockResolvedValue(undefined),
 	playoutSamples: vi.fn().mockResolvedValue([]),
+	playoutClips: vi.fn().mockResolvedValue([]),
 	playoutTemplateNames: vi.fn().mockResolvedValue([]),
 	playoutTemplate: vi.fn().mockResolvedValue(null),
 	playoutCacheStatus: vi.fn().mockResolvedValue({

@@ -1,6 +1,9 @@
 package playout
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+)
 
 // FrameIterator provides streaming access to decoded frames.
 type FrameIterator interface {
@@ -172,16 +175,33 @@ func NewCacheAssetProvider(cache *Cache, demuxFn func(path string) (FrameIterato
 }
 
 // Open looks up the asset in the cache and opens it via demuxFn.
+// If the asset is not in the cache, it falls back to opening the file
+// directly if the resolved path exists on disk (e.g., clip store files).
 func (p *CacheAssetProvider) Open(assetURI string) (FrameIterator, error) {
+	// Try cache first.
 	entry, err := p.cache.Get(assetURI)
+	if err == nil && entry.State == AssetCached {
+		if p.demuxFn == nil {
+			return nil, fmt.Errorf("no demux function configured")
+		}
+		return p.demuxFn(entry.LocalPath)
+	}
+
+	// Fallback: try as a direct local file path.
+	_, path := ParseAssetURI(assetURI)
+	if p.demuxFn != nil && fileExists(path) {
+		return p.demuxFn(path)
+	}
+
+	// Original error if cache lookup failed for a reason other than "not found".
 	if err != nil {
 		return nil, fmt.Errorf("cache lookup: %w", err)
 	}
-	if entry.State != AssetCached {
-		return nil, ErrAssetNotReady
-	}
-	if p.demuxFn == nil {
-		return nil, fmt.Errorf("no demux function configured")
-	}
-	return p.demuxFn(entry.LocalPath)
+	return nil, ErrAssetNotReady
+}
+
+// fileExists returns true if the path exists on disk.
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }

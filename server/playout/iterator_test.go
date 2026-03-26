@@ -274,6 +274,115 @@ func TestCacheAssetProvider_NotReady(t *testing.T) {
 	}
 }
 
+func TestCacheAssetProvider_DirectFileFallback(t *testing.T) {
+	dir := t.TempDir()
+	cache, err := NewCache(CacheConfig{Dir: dir, MaxBytes: 1 << 30})
+	if err != nil {
+		t.Fatalf("NewCache: %v", err)
+	}
+
+	// Write a real file that is NOT in the cache.
+	clipDir := t.TempDir()
+	clipPath := filepath.Join(clipDir, "uploaded.ts")
+	if err := os.WriteFile(clipPath, []byte("clip-data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	demuxCalled := false
+	demuxFn := func(path string) (FrameIterator, error) {
+		demuxCalled = true
+		if path != clipPath {
+			t.Errorf("demuxFn called with path %q, want %q", path, clipPath)
+		}
+		return NewSliceIterator(fakeFrames(5)), nil
+	}
+
+	provider := NewCacheAssetProvider(cache, demuxFn)
+
+	// Open with the direct file path as asset URI — not in cache, but file exists.
+	iter, err := provider.Open(clipPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer iter.Close()
+
+	if !demuxCalled {
+		t.Error("expected demuxFn to be called for direct file fallback")
+	}
+	if iter.TotalFrames() != 5 {
+		t.Errorf("TotalFrames() = %d, want 5", iter.TotalFrames())
+	}
+}
+
+func TestCacheAssetProvider_CachePreferred(t *testing.T) {
+	dir := t.TempDir()
+	cache, err := NewCache(CacheConfig{Dir: dir, MaxBytes: 1 << 30})
+	if err != nil {
+		t.Fatalf("NewCache: %v", err)
+	}
+
+	// Create a file that also happens to exist on disk.
+	clipDir := t.TempDir()
+	clipPath := filepath.Join(clipDir, "test.ts")
+	if err := os.WriteFile(clipPath, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Also create a cached version at a different path.
+	cachedPath := filepath.Join(dir, "assets", "cached-test.ts")
+	if err := os.MkdirAll(filepath.Dir(cachedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cachedPath, []byte("cached-version"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = cache.Put(&CacheEntry{
+		AssetURI:     clipPath,
+		LocalPath:    cachedPath,
+		State:        AssetCached,
+		ByteSize:     14,
+		LastAccessed: time.Now(),
+	})
+
+	var demuxedPath string
+	demuxFn := func(path string) (FrameIterator, error) {
+		demuxedPath = path
+		return NewSliceIterator(fakeFrames(2)), nil
+	}
+
+	provider := NewCacheAssetProvider(cache, demuxFn)
+
+	// Open — should use the cached path, not the original file path.
+	iter, err := provider.Open(clipPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer iter.Close()
+
+	if demuxedPath != cachedPath {
+		t.Errorf("demuxFn received path %q, want cached path %q", demuxedPath, cachedPath)
+	}
+}
+
+func TestCacheAssetProvider_DirectFileFallback_NoFile(t *testing.T) {
+	dir := t.TempDir()
+	cache, err := NewCache(CacheConfig{Dir: dir, MaxBytes: 1 << 30})
+	if err != nil {
+		t.Fatalf("NewCache: %v", err)
+	}
+
+	provider := NewCacheAssetProvider(cache, func(path string) (FrameIterator, error) {
+		return NewSliceIterator(fakeFrames(1)), nil
+	})
+
+	// Open with a path that doesn't exist on disk and isn't in the cache.
+	_, err = provider.Open("/nonexistent/path/clip.ts")
+	if !errors.Is(err, ErrAssetNotFound) {
+		t.Errorf("expected ErrAssetNotFound, got: %v", err)
+	}
+}
+
 func TestCacheAssetProvider_NilDemuxFn(t *testing.T) {
 	dir := t.TempDir()
 	cache, err := NewCache(CacheConfig{Dir: dir, MaxBytes: 1 << 30})

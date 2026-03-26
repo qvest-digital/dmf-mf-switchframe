@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -46,8 +47,9 @@ func (a *API) registerPlayoutRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/playout/cache/lookup", a.handlePlayoutCacheLookup)
 	mux.HandleFunc("POST /api/playout/cache/evict", a.handlePlayoutCacheEvict)
 
-	// Sample clips and template playlist endpoints.
+	// Sample clips, clip library, and template playlist endpoints.
 	mux.HandleFunc("GET /api/playout/samples", a.handlePlayoutSamples)
+	mux.HandleFunc("GET /api/playout/clips", a.handlePlayoutClips)
 	mux.HandleFunc("GET /api/playout/templates", a.handlePlayoutTemplates)
 	mux.HandleFunc("GET /api/playout/templates/{name}", a.handlePlayoutTemplate)
 }
@@ -497,6 +499,51 @@ func (a *API) handlePlayoutSamples(w http.ResponseWriter, _ *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(samples)
+}
+
+// handlePlayoutClips returns clips from both the clip store and playout samples,
+// formatted as a unified list for the playout clip browser.
+func (a *API) handlePlayoutClips(w http.ResponseWriter, _ *http.Request) {
+	type playoutClip struct {
+		Name     string `json:"name"`
+		Path     string `json:"path"`
+		Duration int    `json:"duration"` // seconds
+		Source   string `json:"source"`   // "clip-store", "sample", "recording"
+	}
+
+	var clips []playoutClip
+
+	// Add clips from clip store.
+	if a.clipStore != nil {
+		for _, c := range a.clipStore.List() {
+			source := "clip-store"
+			if c.Source == "recording" {
+				source = "recording"
+			}
+			clips = append(clips, playoutClip{
+				Name:     c.Name,
+				Path:     filepath.Join(a.clipStore.Dir(), c.Filename),
+				Duration: int(c.DurationMs / 1000),
+				Source:   source,
+			})
+		}
+	}
+
+	// Add playout sample clips.
+	for _, s := range a.playoutSamples {
+		clips = append(clips, playoutClip{
+			Name:     s.Title,
+			Path:     s.Path,
+			Duration: s.Duration,
+			Source:   "sample",
+		})
+	}
+
+	if clips == nil {
+		clips = []playoutClip{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(clips)
 }
 
 // handlePlayoutTemplates returns the names of available template playlists.

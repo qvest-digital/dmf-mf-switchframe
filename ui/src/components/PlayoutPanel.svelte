@@ -1,9 +1,9 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import type { ControlRoomState, PlayoutChannelState, Playlist, PlaylistItem, SampleClip } from '$lib/api/types';
+	import type { ControlRoomState, PlayoutChannelState, Playlist, PlaylistItem, PlayoutClip, SampleClip } from '$lib/api/types';
 	import {
 		playoutPlaylist, playoutLoadPlaylist, playoutTemplateNames,
-		playoutTemplate, playoutSamples,
+		playoutTemplate, playoutSamples, playoutClips,
 		playoutStart, playoutStop, playoutNext,
 		playoutTakeManual, playoutReturnToAuto, playoutJump,
 		apiCall,
@@ -14,6 +14,7 @@
 	import PlayoutTransport from './PlayoutTransport.svelte';
 	import PlayoutRundown from './PlayoutRundown.svelte';
 	import PlayoutOutputBadge from './PlayoutOutputBadge.svelte';
+	import PlayoutClipBrowser from './PlayoutClipBrowser.svelte';
 	import CacheStatus from './CacheStatus.svelte';
 	import PodBoard from './PodBoard.svelte';
 
@@ -57,6 +58,7 @@
 	});
 	let selectedIndex = $state(-1);
 	let sampleClips = $state<SampleClip[]>([]);
+	let availableClips = $state<PlayoutClip[]>([]);
 	let templateNames = $state<string[]>([]);
 	let dirty = $state(false);
 
@@ -122,10 +124,11 @@
 		return () => { cancelled = true; };
 	});
 
-	// ── Fetch template names + sample clips on mount ──
+	// ── Fetch template names + sample clips + available clips on mount ──
 	$effect(() => {
 		playoutTemplateNames().then(names => { templateNames = names; }).catch(() => { templateNames = []; });
 		playoutSamples().then(clips => { sampleClips = clips; }).catch(() => { sampleClips = []; });
+		playoutClips().then(clips => { availableClips = clips; }).catch(() => { availableClips = []; });
 	});
 
 	// ── Helper functions ──
@@ -170,6 +173,32 @@
 			),
 		};
 		dirty = true;
+	}
+
+	function handleClipSelect(clip: { name: string; path: string; duration: number }) {
+		if (selectedIndex >= 0 && selectedIndex < workingPlaylist.items.length) {
+			// Update the selected item.
+			updateItem({
+				...workingPlaylist.items[selectedIndex],
+				type: 'clip',
+				asset_uri: clip.path,
+				title: clip.name,
+				duration_ms: clip.duration * 1000,
+			});
+		} else {
+			// Insert a new item at the end.
+			const newItem: PlaylistItem = {
+				id: `item-${Date.now()}`,
+				type: 'clip',
+				title: clip.name,
+				asset_uri: clip.path,
+				duration_ms: clip.duration * 1000,
+			};
+			const items = [...workingPlaylist.items, newItem];
+			workingPlaylist = { ...workingPlaylist, items };
+			selectedIndex = items.length - 1;
+			dirty = true;
+		}
 	}
 
 	function updatePlaylistSettings(updated: Playlist) {
@@ -414,7 +443,7 @@
 
 		<!-- Bottom: Editor + Transport/Settings -->
 		<div class="bottom-columns">
-			<!-- Left: Item Editor -->
+			<!-- Left: Item Editor + Clip Browser -->
 			<div class="left-col">
 				{#if selectedIndex >= 0 && selectedIndex < workingPlaylist.items.length}
 					<div class="editor-wrap">
@@ -426,11 +455,14 @@
 							item={workingPlaylist.items[selectedIndex]}
 							onChange={updateItem}
 							sources={sourceNames}
+							clips={availableClips}
 						/>
 					</div>
 				{:else}
 					<div class="no-selection">Select an item in the timeline to edit</div>
 				{/if}
+
+				<PlayoutClipBrowser onSelect={handleClipSelect} />
 			</div>
 
 			<!-- Right: Transport + Status -->
