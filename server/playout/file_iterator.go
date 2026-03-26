@@ -275,14 +275,15 @@ func (f *FileFrameIterator) makeDecodedFrame(yuv []byte, w, h int, pts int64, is
 	return frame
 }
 
-// attachAudio attaches the first available audio frame whose PTS falls within
-// the current video frame's time window. The window is [currentPTS, nextPTS)
-// where nextPTS is the PTS of the next encoded frame (or MaxInt64 for the last).
+// attachAudio attaches ALL audio frames whose PTS falls within the current
+// video frame's time window [currentPTS, nextVideoPTS). AAC audio runs at
+// ~47fps vs video at 24-30fps, so each video frame typically carries 1-2
+// audio frames. The mixer's ring buffer absorbs the burst and outputs at
+// steady audio rate. PTS on each frame maintains A/V sync.
+//
+// This follows the same pattern as clip/player.go's emitAudioForVideoFrame.
 func (f *FileFrameIterator) attachAudio(frame *DecodedFrame) {
 	// Determine the PTS upper bound for this video frame's audio window.
-	// We use the encoded frame PTS values to define windows, since that's
-	// what we have. For frames during the feed phase, use the next encoded
-	// frame's PTS. During drain, use MaxInt64.
 	var ptsBound int64
 	if f.frameIndex < len(f.encodedFrames) {
 		ptsBound = f.encodedFrames[f.frameIndex].pts
@@ -291,23 +292,36 @@ func (f *FileFrameIterator) attachAudio(frame *DecodedFrame) {
 	}
 
 	// Skip audio frames that fall before this video frame's PTS
-	// (but not for the very first output frame).
+	// (but not for the very first output frame — deliver all early audio).
 	if f.outputCount > 0 {
 		for f.audioIndex < len(f.audioFrames) && f.audioFrames[f.audioIndex].pts < frame.PTS {
 			f.audioIndex++
 		}
 	}
 
-	// Attach the first audio frame in [lowerBound, nextVideoPTS).
-	if f.audioIndex < len(f.audioFrames) {
+	// Collect ALL audio frames in [currentPTS, nextVideoPTS).
+	var batch []AudioFrameData
+	for f.audioIndex < len(f.audioFrames) {
 		af := f.audioFrames[f.audioIndex]
-		if af.pts < ptsBound {
-			frame.AudioData = af.data
-			frame.AudioPTS = af.pts
-			frame.AudioSampleRate = af.sampleRate
-			frame.AudioChannels = af.channels
-			f.audioIndex++
+		if af.pts >= ptsBound {
+			break // belongs to the next video frame
 		}
+		batch = append(batch, AudioFrameData{
+			Data:       af.data,
+			PTS:        af.pts,
+			SampleRate: af.sampleRate,
+			Channels:   af.channels,
+		})
+		f.audioIndex++
+	}
+
+	if len(batch) > 0 {
+		frame.AudioFrames = batch
+		// Also set single-frame fields for backward compatibility.
+		frame.AudioData = batch[0].Data
+		frame.AudioPTS = batch[0].PTS
+		frame.AudioSampleRate = batch[0].SampleRate
+		frame.AudioChannels = batch[0].Channels
 	}
 }
 

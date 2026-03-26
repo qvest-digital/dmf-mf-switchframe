@@ -9,6 +9,14 @@ import (
 	"time"
 )
 
+// AudioFrameData holds one audio frame (typically AAC) for playout.
+type AudioFrameData struct {
+	Data       []byte
+	PTS        int64
+	SampleRate int
+	Channels   int
+}
+
 // DecodedFrame is a pre-decoded YUV420 frame for the playout decode ring.
 type DecodedFrame struct {
 	YUV        []byte
@@ -17,11 +25,17 @@ type DecodedFrame struct {
 	Width      int
 	Height     int
 
-	// Optional audio data associated with this video frame's time position.
-	AudioData       []byte // raw AAC payload or PCM samples
+	// Single audio frame (used by simple paths like idle loop).
+	AudioData       []byte
 	AudioPTS        int64
 	AudioSampleRate int
 	AudioChannels   int
+
+	// Multiple audio frames for this video tick. When populated, emitFrame
+	// sends ALL of these (required for correct A/V sync since AAC runs at
+	// ~47fps vs video at 24-30fps). The single-frame fields above are ignored
+	// when AudioFrames is non-empty.
+	AudioFrames []AudioFrameData
 }
 
 // ChannelConfig configures a playout channel.
@@ -1117,9 +1131,19 @@ func (c *Channel) emitFrame(frame *DecodedFrame, outputFn func([]byte, int, int,
 		outputFn(frame.YUV, frame.Width, frame.Height, pts, frame.IsKeyframe)
 	}
 
-	// Output audio if present.
-	if len(frame.AudioData) > 0 && audioFn != nil {
-		audioFn(frame.AudioData, frame.AudioPTS, frame.AudioSampleRate, frame.AudioChannels)
+	// Output audio. Multiple audio frames per video tick is normal —
+	// AAC runs at ~47fps vs video at 24-30fps. The mixer's ring buffer
+	// absorbs the burst and outputs at steady audio rate. PTS on each
+	// frame maintains A/V sync.
+	if audioFn != nil {
+		if len(frame.AudioFrames) > 0 {
+			for i := range frame.AudioFrames {
+				af := &frame.AudioFrames[i]
+				audioFn(af.Data, af.PTS, af.SampleRate, af.Channels)
+			}
+		} else if len(frame.AudioData) > 0 {
+			audioFn(frame.AudioData, frame.AudioPTS, frame.AudioSampleRate, frame.AudioChannels)
+		}
 	}
 
 	// Feed splice coordinator.
