@@ -48,7 +48,11 @@
 	function breakCountdown(evt: SCTE35Active): string {
 		if (evt.held) return 'HELD';
 		if (!evt.durationMs || !evt.startedAt) return '';
-		const remaining = evt.durationMs - (breakNow - evt.startedAt);
+		// Clamp elapsed to non-negative: during pre-roll, startedAt is in the
+		// future (shifted forward by pre-roll duration) so the countdown stays
+		// at the full break duration until the break actually begins.
+		const elapsed = Math.max(0, breakNow - evt.startedAt);
+		const remaining = evt.durationMs - elapsed;
 		if (remaining <= 0) return '0:00';
 		const totalSec = Math.ceil(remaining / 1000);
 		const min = Math.floor(totalSec / 60);

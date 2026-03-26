@@ -390,6 +390,11 @@ func WithSTMapStore(s *stmap.Store) APIOption {
 	return func(a *API) { a.stmapStore = s }
 }
 
+// WithPlayoutSaveDir sets the directory for saving/loading playlists.
+func WithPlayoutSaveDir(dir string) APIOption {
+	return func(a *API) { a.playoutSaveDir = dir }
+}
+
 // WithSTMapCacheDir sets the base cache directory for mmap-backed ST map LUTs.
 // When set, animated ST maps use BuildProcessorsCached instead of BuildProcessors.
 func WithSTMapCacheDir(dir string) APIOption {
@@ -476,6 +481,7 @@ type API struct {
 	asrManager         ASRManager
 	stmapRegistry      *stmap.Registry
 	stmapStore         *stmap.Store
+	playoutSaveDir     string // directory for saved playlists
 	stmapCacheDir      string // base cache dir for mmap'd ST map LUTs (empty = disabled)
 	colorGradeMgr      ColorGradeManager
 	sourceCorrectorMgr SourceCorrectorManager

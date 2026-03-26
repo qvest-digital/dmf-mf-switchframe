@@ -1467,3 +1467,19 @@ export function playoutTemplateNames(): Promise<string[]> {
 export function playoutTemplate(name: string): Promise<Playlist> {
 	return request<Playlist>(`/api/playout/templates/${encodeURIComponent(name)}`);
 }
+
+export function playoutSavedList(): Promise<string[]> {
+	return request<string[]>('/api/playout/saved');
+}
+
+export function playoutSave(playlist: Playlist): Promise<void> {
+	return post('/api/playout/saved', playlist);
+}
+
+export function playoutSavedGet(name: string): Promise<Playlist> {
+	return request<Playlist>(`/api/playout/saved/${encodeURIComponent(name)}`);
+}
+
+export function playoutSavedDelete(name: string): Promise<void> {
+	return request(`/api/playout/saved/${encodeURIComponent(name)}`, { method: 'DELETE' }) as Promise<void>;
+}

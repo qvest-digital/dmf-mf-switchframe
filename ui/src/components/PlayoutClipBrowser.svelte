@@ -11,6 +11,7 @@
 	let clips = $state<PlayoutClip[]>([]);
 	let loading = $state(false);
 	let error = $state('');
+	let collapsed = $state(false);
 
 	const uploaded = $derived(clips.filter(c => c.source === 'clip-store' || c.source === 'recording'));
 	const samples = $derived(clips.filter(c => c.source === 'sample'));
@@ -41,17 +42,23 @@
 </script>
 
 <div class="clip-browser" data-testid="playout-clip-browser">
-	<div class="browser-header">
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div class="browser-header" onclick={() => collapsed = !collapsed}>
+		<span class="collapse-chevron" class:collapsed>{collapsed ? '\u25B6' : '\u25BC'}</span>
 		<span class="browser-title">CLIP LIBRARY</span>
+		<span class="clip-count">{clips.length}</span>
 		<button
 			class="refresh-btn"
-			onclick={fetchClips}
+			onclick={(e) => { e.stopPropagation(); fetchClips(); }}
 			disabled={loading}
 			title="Refresh clip list"
 		>&#x21bb;</button>
 	</div>
 
-	{#if loading && clips.length === 0}
+	{#if collapsed}
+		<!-- collapsed: show nothing -->
+	{:else if loading && clips.length === 0}
 		<div class="browser-empty">Loading...</div>
 	{:else if error && clips.length === 0}
 		<div class="browser-empty">{error}</div>
@@ -96,6 +103,7 @@
 		background: var(--bg-surface);
 		overflow: hidden;
 		flex-shrink: 0;
+		margin-top: 6px;
 	}
 
 	.browser-header {
@@ -105,6 +113,31 @@
 		padding: 5px 8px;
 		background: var(--bg-control);
 		border-bottom: 1px solid var(--border-subtle);
+		border: none;
+		width: 100%;
+		cursor: pointer;
+		text-align: left;
+		transition: background var(--transition-fast);
+	}
+
+	.browser-header:hover {
+		background: var(--bg-hover);
+	}
+
+	.collapse-chevron {
+		font-size: 8px;
+		color: var(--text-tertiary);
+		flex-shrink: 0;
+		width: 10px;
+	}
+
+	.clip-count {
+		font-family: var(--font-mono);
+		font-size: 8px;
+		color: var(--text-tertiary);
+		background: rgba(255,255,255,0.06);
+		padding: 1px 4px;
+		border-radius: 3px;
 	}
 
 	.browser-title {

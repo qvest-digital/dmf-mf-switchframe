@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -284,12 +285,19 @@ func (a *App) initPlayout() error {
 	a.playoutCache = cache
 	a.playoutPrefetcher = prefetcher
 
+	// Create playlist save directory for persistence.
+	playlistDir := filepath.Join(a.cfg.StateDir, "playout-playlists")
+	if err := os.MkdirAll(playlistDir, 0o755); err != nil {
+		return fmt.Errorf("playout playlist dir: %w", err)
+	}
+	a.playoutPlaylistDir = playlistDir
+
 	// Generate sample clips for template playlists.
 	sampleDir := filepath.Join(cacheDir, "samples")
 	a.playoutSamples = playout.GenerateSampleClips(sampleDir)
 
 	slog.Info("playout manager initialized", "cacheDir", cacheDir, "asRunDir", asRunDir,
-		"sampleClips", len(a.playoutSamples))
+		"playlistDir", playlistDir, "sampleClips", len(a.playoutSamples))
 	return nil
 }
 
@@ -410,15 +418,20 @@ func (h *playoutSecondaryHandler) OnSCTE35Cue(data *playout.SCTE35EventData) err
 		return nil
 	}
 
+	var durationMs int64
+	if data.BreakDurationMs != nil {
+		durationMs = *data.BreakDurationMs
+	}
+
 	// Use the SpliceCoordinator for frame-accurate PTS-based insertion.
 	// The coordinator collects candidate frames, runs black detection,
 	// and schedules the cue at the optimal splice point with IDR alignment.
 	if h.spliceCoordinator != nil && h.ptsProvider != nil {
 		return h.spliceCoordinator.BeginSplice(
 			"",                  // no pod ID for secondary events
-			true,                // isOut
+			data.IsOut,          //
 			data.AutoReturn,     //
-			data.BreakDurationMs,
+			durationMs,
 			h.ptsProvider(),     // current program PTS
 		)
 	}
@@ -428,14 +441,51 @@ func (h *playoutSecondaryHandler) OnSCTE35Cue(data *playout.SCTE35EventData) err
 		return nil
 	}
 	msg := &scte35.CueMessage{
-		CommandType: 0x05, // splice_insert
-		IsOut:       true,
-		AutoReturn:  data.AutoReturn,
-		Source:      "playout",
+		CommandType:     data.CommandType,
+		IsOut:           data.IsOut,
+		AutoReturn:      data.AutoReturn,
+		Source:          "playout",
+		UniqueProgramID: data.UniqueProgramID,
+		AvailNum:        data.AvailNum,
+		AvailsExpected:  data.AvailsExpected,
+		Tier:            data.Tier,
+		PTSAdjustment:   uint64(data.PTSAdjustment),
 	}
-	if data.BreakDurationMs > 0 {
-		d := time.Duration(data.BreakDurationMs) * time.Millisecond
+	if msg.CommandType == 0 {
+		msg.CommandType = 0x05 // default to splice_insert
+	}
+	if data.EventID != nil {
+		msg.EventID = *data.EventID
+	}
+	if durationMs > 0 {
+		d := time.Duration(durationMs) * time.Millisecond
 		msg.BreakDuration = &d
+	}
+	if data.SpliceTimePTS != nil {
+		pts := *data.SpliceTimePTS
+		msg.SpliceTimePTS = &pts
+		msg.Timing = "scheduled"
+	}
+	// Map segmentation descriptors for time_signal commands.
+	for _, sd := range data.Descriptors {
+		desc := scte35.SegmentationDescriptor{
+			SegmentationType:                 sd.SegmentationType,
+			SegEventID:                       sd.SegEventID,
+			SegmentationEventCancelIndicator: sd.Cancel,
+			UPIDType:                         sd.UPIDType,
+			UPID:                             []byte(sd.UPID),
+		}
+		if sd.DurationMs != nil {
+			ticks := uint64(*sd.DurationMs) * 90 // ms to 90kHz
+			desc.DurationTicks = &ticks
+		}
+		desc.DeliveryRestrictions = &scte35.DeliveryRestrictions{
+			WebDeliveryAllowed: sd.WebDeliveryAllowed,
+			NoRegionalBlackout: sd.NoRegionalBlackout,
+			ArchiveAllowed:     sd.ArchiveAllowed,
+			DeviceRestrictions: sd.DeviceRestrictions,
+		}
+		msg.Descriptors = append(msg.Descriptors, desc)
 	}
 	_, err := h.scte35Injector.InjectCue(msg)
 	return err

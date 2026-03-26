@@ -213,7 +213,7 @@ func GenerateDemoPlaylist(tmpDir string, samples []playout.SampleClip) (*playout
 				OffsetMs: -500, // 500ms before segment end
 				Anchor:   "end",
 				SCTE35: &playout.SCTE35EventData{
-					BreakDurationMs: 15000, // 15s ad break
+					BreakDurationMs: func() *int64 { v := int64(15000); return &v }(), // 15s ad break
 					AutoReturn:      true,
 				},
 			})

@@ -676,3 +676,187 @@ func TestPlayoutClips_RecordingSource(t *testing.T) {
 	require.Len(t, clips, 1)
 	require.Equal(t, "recording", clips[0].Source)
 }
+
+// ---------------------------------------------------------------------------
+// Saved playlist CRUD tests
+// ---------------------------------------------------------------------------
+
+func setupTestPlayoutAPIWithSaveDir(t *testing.T) (*API, string) {
+	t.Helper()
+	saveDir := t.TempDir()
+	programRelay := distribution.NewRelay()
+	sw := switcher.NewTestSwitcher(programRelay)
+	mgr := newTestPlayoutManager()
+	api := NewAPI(sw, WithPlayoutManager(mgr), WithPlayoutSaveDir(saveDir))
+	return api, saveDir
+}
+
+func TestPlayoutSaved_ListEmpty(t *testing.T) {
+	api, _ := setupTestPlayoutAPIWithSaveDir(t)
+
+	req := httptest.NewRequest("GET", "/api/playout/saved", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var names []string
+	err := json.NewDecoder(rec.Body).Decode(&names)
+	require.NoError(t, err)
+	require.Len(t, names, 0)
+}
+
+func TestPlayoutSaved_SaveAndList(t *testing.T) {
+	api, _ := setupTestPlayoutAPIWithSaveDir(t)
+
+	// Save a playlist.
+	body := validPlaylistJSON()
+	req := httptest.NewRequest("POST", "/api/playout/saved", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	// List should now contain it.
+	listReq := httptest.NewRequest("GET", "/api/playout/saved", nil)
+	listRec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(listRec, listReq)
+
+	require.Equal(t, http.StatusOK, listRec.Code)
+
+	var names []string
+	err := json.NewDecoder(listRec.Body).Decode(&names)
+	require.NoError(t, err)
+	require.Len(t, names, 1)
+	require.Equal(t, "Test Playlist", names[0])
+}
+
+func TestPlayoutSaved_SaveAndGet(t *testing.T) {
+	api, _ := setupTestPlayoutAPIWithSaveDir(t)
+
+	// Save.
+	body := validPlaylistJSON()
+	req := httptest.NewRequest("POST", "/api/playout/saved", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	// Get.
+	getReq := httptest.NewRequest("GET", "/api/playout/saved/Test%20Playlist", nil)
+	getRec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(getRec, getReq)
+
+	require.Equal(t, http.StatusOK, getRec.Code)
+
+	var pl playout.Playlist
+	err := json.NewDecoder(getRec.Body).Decode(&pl)
+	require.NoError(t, err)
+	require.Equal(t, "Test Playlist", pl.Name)
+	require.Len(t, pl.Items, 2)
+}
+
+func TestPlayoutSaved_GetNotFound(t *testing.T) {
+	api, _ := setupTestPlayoutAPIWithSaveDir(t)
+
+	req := httptest.NewRequest("GET", "/api/playout/saved/nonexistent", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestPlayoutSaved_Delete(t *testing.T) {
+	api, _ := setupTestPlayoutAPIWithSaveDir(t)
+
+	// Save first.
+	body := validPlaylistJSON()
+	req := httptest.NewRequest("POST", "/api/playout/saved", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	// Delete.
+	delReq := httptest.NewRequest("DELETE", "/api/playout/saved/Test%20Playlist", nil)
+	delRec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(delRec, delReq)
+	require.Equal(t, http.StatusOK, delRec.Code)
+
+	// List should be empty now.
+	listReq := httptest.NewRequest("GET", "/api/playout/saved", nil)
+	listRec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(listRec, listReq)
+
+	var names []string
+	err := json.NewDecoder(listRec.Body).Decode(&names)
+	require.NoError(t, err)
+	require.Len(t, names, 0)
+}
+
+func TestPlayoutSaved_DeleteNotFound(t *testing.T) {
+	api, _ := setupTestPlayoutAPIWithSaveDir(t)
+
+	req := httptest.NewRequest("DELETE", "/api/playout/saved/nonexistent", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestPlayoutSaved_InvalidName(t *testing.T) {
+	api, _ := setupTestPlayoutAPIWithSaveDir(t)
+
+	// Name with path traversal.
+	body := `{"id":"pl-1","name":"../evil","default_transition":{"type":"cut"},"items":[{"id":"i1","type":"clip","title":"x","asset_uri":"/tmp/x.ts"}]}`
+	req := httptest.NewRequest("POST", "/api/playout/saved", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestPlayoutSaved_NotConfigured(t *testing.T) {
+	// API without save dir should return 501.
+	programRelay := distribution.NewRelay()
+	sw := switcher.NewTestSwitcher(programRelay)
+	mgr := newTestPlayoutManager()
+	api := NewAPI(sw, WithPlayoutManager(mgr))
+
+	req := httptest.NewRequest("GET", "/api/playout/saved", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotImplemented, rec.Code)
+}
+
+func TestSanitizePlaylistName(t *testing.T) {
+	tests := []struct {
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{"My Playlist", "My Playlist", false},
+		{"  spaces  ", "spaces", false},
+		{"", "untitled", false},
+		{"hello-world_123", "hello-world_123", false},
+		{"../evil", "", true},
+		{"has/slash", "", true},
+		{"has@symbol", "", true},
+		{strings.Repeat("a", 101), "", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got, err := sanitizePlaylistName(tt.input)
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, tt.want, got)
+			}
+		})
+	}
+}

@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+func ptrInt64(v int64) *int64 { return &v }
+
 // SampleClip describes a generated sample clip.
 type SampleClip struct {
 	Name     string `json:"name"`
@@ -224,7 +226,7 @@ func templateLiveEvent(byName map[string]SampleClip) *Playlist {
 						OffsetMs: 0,
 						Anchor:   "start",
 						SCTE35: &SCTE35EventData{
-							BreakDurationMs: 120000,
+							BreakDurationMs: ptrInt64(120000),
 							AutoReturn:      true,
 						},
 					},
@@ -270,7 +272,7 @@ func templateLiveEvent(byName map[string]SampleClip) *Playlist {
 						OffsetMs: 0,
 						Anchor:   "start",
 						SCTE35: &SCTE35EventData{
-							BreakDurationMs: 60000,
+							BreakDurationMs: ptrInt64(60000),
 							AutoReturn:      true,
 						},
 					},

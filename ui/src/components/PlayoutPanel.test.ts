@@ -19,6 +19,9 @@ vi.mock('$lib/api/switch-api', () => ({
 	playoutClips: vi.fn().mockResolvedValue([]),
 	playoutTemplateNames: vi.fn().mockResolvedValue([]),
 	playoutTemplate: vi.fn().mockResolvedValue(null),
+	playoutSavedList: vi.fn().mockResolvedValue([]),
+	playoutSave: vi.fn().mockResolvedValue(undefined),
+	playoutSavedGet: vi.fn().mockResolvedValue({ id: 'test', name: 'Test', default_transition: { type: 'cut' }, items: [] }),
 	playoutCacheStatus: vi.fn().mockResolvedValue({
 		cacheDir: '/tmp',
 		maxBytes: 1e9,
@@ -68,7 +71,9 @@ describe('PlayoutPanel', () => {
 		vi.clearAllMocks();
 		vi.mocked(api.playoutPlaylist).mockResolvedValue([]);
 		vi.mocked(api.playoutSamples).mockResolvedValue([]);
+		vi.mocked(api.playoutClips).mockResolvedValue([]);
 		vi.mocked(api.playoutTemplateNames).mockResolvedValue([]);
+		vi.mocked(api.playoutSavedList).mockResolvedValue([]);
 	});
 
 	afterEach(() => {
@@ -77,10 +82,10 @@ describe('PlayoutPanel', () => {
 
 	// ── Basic rendering ──
 
-	it('renders "No playlist loaded" when no playlist', () => {
+	it('renders empty state when no playlist loaded', () => {
 		const state = makeState();
 		const { container } = render(PlayoutPanel, { props: { state } });
-		expect(container.textContent).toContain('No playlist loaded');
+		expect(container.textContent).toContain('No items in playlist');
 	});
 
 	it('shows channel tab buttons', () => {
@@ -551,6 +556,39 @@ describe('PlayoutPanel', () => {
 		await vi.waitFor(() => {
 			const timelineZone = container.querySelector('[data-testid="timeline-zone"]');
 			expect(timelineZone).toBeTruthy();
+		});
+	});
+
+	// ── New/Load/Import/Export ──
+
+	it('shows New button', () => {
+		const state = makeState();
+		const { container } = render(PlayoutPanel, { props: { state } });
+		const btn = container.querySelector('[data-testid="new-playlist-btn"]');
+		expect(btn).toBeTruthy();
+		expect(btn!.textContent).toContain('New');
+	});
+
+	it('shows Import and Export buttons', () => {
+		const state = makeState();
+		const { container } = render(PlayoutPanel, { props: { state } });
+		const importBtn = container.querySelector('[data-testid="import-btn"]');
+		const exportBtn = container.querySelector('[data-testid="export-btn"]');
+		expect(importBtn).toBeTruthy();
+		expect(exportBtn).toBeTruthy();
+		expect(importBtn!.textContent).toContain('Import');
+		expect(exportBtn!.textContent).toContain('Export');
+	});
+
+	it('shows Load dropdown when saved playlists exist', async () => {
+		vi.mocked(api.playoutSavedList).mockResolvedValue(['Morning Show', 'Evening News']);
+		const state = makeState();
+		const { container } = render(PlayoutPanel, { props: { state } });
+		await vi.waitFor(() => {
+			const select = container.querySelector('[data-testid="load-playlist-select"]');
+			expect(select).toBeTruthy();
+			expect(container.textContent).toContain('Morning Show');
+			expect(container.textContent).toContain('Evening News');
 		});
 	});
 

@@ -89,7 +89,11 @@ func (m *mockHandler) OnSCTE35Cue(data *SCTE35EventData) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if data != nil {
-		m.calls = append(m.calls, mockCall{"OnSCTE35Cue", fmt.Sprintf("break=%dms auto_return=%v", data.BreakDurationMs, data.AutoReturn)})
+		dur := int64(0)
+		if data.BreakDurationMs != nil {
+			dur = *data.BreakDurationMs
+		}
+		m.calls = append(m.calls, mockCall{"OnSCTE35Cue", fmt.Sprintf("break=%dms auto_return=%v", dur, data.AutoReturn)})
 	} else {
 		m.calls = append(m.calls, mockCall{"OnSCTE35Cue", "nil"})
 	}
@@ -255,7 +259,7 @@ func TestScheduler_AllEventTypes(t *testing.T) {
 		{"audio_afv", SecondaryEvent{Type: "audio_afv", SourceKey: "cam-1", AFV: boolPtr(false), OffsetMs: 0, Anchor: "start"}, "OnAudioAFV"},
 		{"caption_mode", SecondaryEvent{Type: "caption_mode", CaptionMode: "author", OffsetMs: 0, Anchor: "start"}, "OnCaptionMode"},
 		{"caption_text", SecondaryEvent{Type: "caption_text", CaptionText: "Hello world", OffsetMs: 0, Anchor: "start"}, "OnCaptionText"},
-		{"scte35_cue", SecondaryEvent{Type: "scte35_cue", SCTE35: &SCTE35EventData{BreakDurationMs: 30000, AutoReturn: true}, OffsetMs: 0, Anchor: "start"}, "OnSCTE35Cue"},
+		{"scte35_cue", SecondaryEvent{Type: "scte35_cue", SCTE35: &SCTE35EventData{BreakDurationMs: int64Ptr(30000), AutoReturn: true}, OffsetMs: 0, Anchor: "start"}, "OnSCTE35Cue"},
 	}
 
 	for _, tt := range tests {

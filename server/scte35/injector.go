@@ -552,6 +552,19 @@ func (inj *Injector) ScheduleCue(msg *CueMessage, preRollMs int64) (uint32, erro
 		return eventID, err
 	}
 
+	// Adjust StartedAt forward by the pre-roll duration so that the UI
+	// countdown (durationMs - (now - startedAt)) reflects when the break
+	// actually begins, not when the cue was injected. Without this,
+	// the countdown ticks during pre-roll and reaches 0 before the
+	// break ends (off by preRollMs).
+	if preRollMs > 0 {
+		inj.mu.Lock()
+		if ae, ok := inj.activeEvents[eventID]; ok {
+			ae.StartedAt = ae.StartedAt.Add(time.Duration(preRollMs) * time.Millisecond)
+		}
+		inj.mu.Unlock()
+	}
+
 	// Start pre-roll repetition goroutine (SCTE-67 recommends ~1s repeat).
 	// Only launch if the event was tracked (otherwise there's no way to cancel).
 	if preRollMs > 1000 {
@@ -1088,6 +1101,9 @@ func (inj *Injector) State() InjectorState {
 		}
 
 		elapsedMs := now.Sub(ae.StartedAt).Milliseconds()
+		if elapsedMs < 0 {
+			elapsedMs = 0 // pre-roll phase: break hasn't started yet
+		}
 		state.ElapsedMs = elapsedMs
 
 		if ae.Duration > 0 {

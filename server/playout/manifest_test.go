@@ -252,7 +252,7 @@ func TestValidateSecondaryEvent_ValidTypes(t *testing.T) {
 		{
 			name: "scte35_cue",
 			event: SecondaryEvent{
-				Type: "scte35_cue", Anchor: "end", SCTE35: &SCTE35EventData{BreakDurationMs: 30000},
+				Type: "scte35_cue", Anchor: "end", SCTE35: &SCTE35EventData{BreakDurationMs: int64Ptr(30000)},
 			},
 		},
 	}

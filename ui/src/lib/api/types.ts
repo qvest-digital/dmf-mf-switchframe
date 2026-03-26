@@ -858,9 +858,41 @@ export interface PlayoutState {
 	channels: PlayoutChannelState[];
 }
 
+export interface SCTE35UPID {
+	type: number;
+	value: string;
+}
+
+export interface SCTE35SegDescriptor {
+	segmentation_type: number;
+	seg_event_id?: number;
+	duration_ms?: number;
+	upid_type?: number;
+	upid?: string;
+	additional_upids?: SCTE35UPID[];
+	delivery_not_restricted?: boolean;
+	web_delivery_allowed?: boolean;
+	no_regional_blackout?: boolean;
+	archive_allowed?: boolean;
+	device_restrictions?: number;
+	cancel?: boolean;
+}
+
 export interface SCTE35EventData {
+	preset?: string;
+	command_type?: number;
+	event_id?: number;
+	is_out?: boolean;
 	break_duration_ms?: number;
 	auto_return?: boolean;
+	timing?: string;
+	splice_time_pts?: number;
+	pts_adjustment?: number;
+	unique_program_id?: number;
+	avail_num?: number;
+	avails_expected?: number;
+	tier?: number;
+	descriptors?: SCTE35SegDescriptor[];
 }
 
 export interface SecondaryEvent {

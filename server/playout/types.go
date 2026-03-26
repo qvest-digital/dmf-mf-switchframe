@@ -68,10 +68,46 @@ type TransitionConfig struct {
 	DurationMs int    `json:"duration_ms,omitempty"`
 }
 
-// SCTE35EventData holds parameters for a SCTE-35 cue secondary event.
+// SCTE35EventData holds full SCTE-35 parameters for a cue secondary event.
+// The same structure is used in Go, TypeScript, and the playlist manifest JSON.
+// Omitted fields get defaults: timing="immediate", tier=0, preset="custom".
 type SCTE35EventData struct {
-	BreakDurationMs int64 `json:"break_duration_ms,omitempty"`
-	AutoReturn      bool  `json:"auto_return,omitempty"`
+	Preset          string           `json:"preset,omitempty"`           // UI hint: "program_start", "cue_out", "custom", etc.
+	CommandType     uint8            `json:"command_type,omitempty"`     // 0x00=splice_null, 0x05=splice_insert, 0x06=time_signal
+	EventID         *uint32          `json:"event_id,omitempty"`         // nil = auto-assign by injector
+	IsOut           bool             `json:"is_out,omitempty"`           // cue direction
+	BreakDurationMs *int64           `json:"break_duration_ms,omitempty"`
+	AutoReturn      bool             `json:"auto_return,omitempty"`
+	Timing          string           `json:"timing,omitempty"`           // "immediate" | "scheduled"
+	SpliceTimePTS   *int64           `json:"splice_time_pts,omitempty"`  // 90kHz ticks for scheduled mode
+	PTSAdjustment   int64            `json:"pts_adjustment,omitempty"`
+	UniqueProgramID uint16           `json:"unique_program_id,omitempty"`
+	AvailNum        uint8            `json:"avail_num,omitempty"`
+	AvailsExpected  uint8            `json:"avails_expected,omitempty"`
+	Tier            uint16           `json:"tier,omitempty"`             // 0-4095, 0=unrestricted
+	Descriptors     []SegDescriptor  `json:"descriptors,omitempty"`
+}
+
+// SegDescriptor holds a segmentation descriptor for time_signal commands.
+type SegDescriptor struct {
+	SegmentationType       uint8  `json:"segmentation_type"`
+	SegEventID             uint32 `json:"seg_event_id,omitempty"`
+	DurationMs             *int64 `json:"duration_ms,omitempty"`
+	UPIDType               uint8  `json:"upid_type,omitempty"`
+	UPID                   string `json:"upid,omitempty"`                   // hex-encoded or ASCII depending on type
+	AdditionalUPIDs        []UPID `json:"additional_upids,omitempty"`
+	DeliveryNotRestricted  bool   `json:"delivery_not_restricted,omitempty"`
+	WebDeliveryAllowed     bool   `json:"web_delivery_allowed,omitempty"`
+	NoRegionalBlackout     bool   `json:"no_regional_blackout,omitempty"`
+	ArchiveAllowed         bool   `json:"archive_allowed,omitempty"`
+	DeviceRestrictions     uint8  `json:"device_restrictions,omitempty"`    // 0x00-0x03
+	Cancel                 bool   `json:"cancel,omitempty"`
+}
+
+// UPID holds a Unique Program Identifier (SCTE-35 UPID).
+type UPID struct {
+	Type  uint8  `json:"type"`
+	Value string `json:"value"`
 }
 
 // SecondaryEvent is a timed event attached to a playlist item (e.g., graphic on/off).

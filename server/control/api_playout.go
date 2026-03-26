@@ -5,8 +5,11 @@ import (
 	"encoding/xml"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/zsiec/switchframe/server/control/httperr"
@@ -52,6 +55,12 @@ func (a *API) registerPlayoutRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/playout/clips", a.handlePlayoutClips)
 	mux.HandleFunc("GET /api/playout/templates", a.handlePlayoutTemplates)
 	mux.HandleFunc("GET /api/playout/templates/{name}", a.handlePlayoutTemplate)
+
+	// Saved playlist CRUD endpoints.
+	mux.HandleFunc("GET /api/playout/saved", a.handlePlayoutSavedList)
+	mux.HandleFunc("POST /api/playout/saved", a.handlePlayoutSave)
+	mux.HandleFunc("GET /api/playout/saved/{name}", a.handlePlayoutSavedGet)
+	mux.HandleFunc("DELETE /api/playout/saved/{name}", a.handlePlayoutSavedDelete)
 }
 
 // parseChannelID extracts and validates the channel ID from the request path.
@@ -562,4 +571,147 @@ func (a *API) handlePlayoutTemplate(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(pl)
+}
+
+// sanitizePlaylistName validates and sanitizes a playlist name for use as a filename.
+// Only allows [a-zA-Z0-9 _-], max 100 chars, rejects path traversal.
+var validPlaylistName = regexp.MustCompile(`^[a-zA-Z0-9 _-]+$`)
+
+func sanitizePlaylistName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "untitled", nil
+	}
+	if len(name) > 100 {
+		return "", fmt.Errorf("playlist name too long (max 100 chars)")
+	}
+	if strings.Contains(name, "..") {
+		return "", fmt.Errorf("playlist name contains path traversal")
+	}
+	if !validPlaylistName.MatchString(name) {
+		return "", fmt.Errorf("playlist name contains invalid characters (only letters, digits, spaces, hyphens, underscores)")
+	}
+	return name, nil
+}
+
+// handlePlayoutSavedList returns a list of saved playlist names.
+func (a *API) handlePlayoutSavedList(w http.ResponseWriter, _ *http.Request) {
+	if a.playoutSaveDir == "" {
+		httperr.Write(w, http.StatusNotImplemented, "playlist persistence not configured")
+		return
+	}
+
+	entries, err := os.ReadDir(a.playoutSaveDir)
+	if err != nil {
+		// If directory doesn't exist yet, return empty list.
+		if os.IsNotExist(err) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode([]string{})
+			return
+		}
+		httperr.Write(w, http.StatusInternalServerError, "failed to list saved playlists")
+		return
+	}
+
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if strings.HasSuffix(name, ".json") {
+			names = append(names, strings.TrimSuffix(name, ".json"))
+		}
+	}
+	if names == nil {
+		names = []string{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(names)
+}
+
+// handlePlayoutSave saves a playlist to disk.
+func (a *API) handlePlayoutSave(w http.ResponseWriter, r *http.Request) {
+	if a.playoutSaveDir == "" {
+		httperr.Write(w, http.StatusNotImplemented, "playlist persistence not configured")
+		return
+	}
+
+	var pl playout.Playlist
+	if err := json.NewDecoder(r.Body).Decode(&pl); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+
+	name, err := sanitizePlaylistName(pl.Name)
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	pl.Name = name
+
+	path := filepath.Join(a.playoutSaveDir, name+".json")
+	if err := playout.SavePlaylist(path, &pl); err != nil {
+		httperr.Write(w, http.StatusInternalServerError, fmt.Sprintf("failed to save playlist: %v", err))
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "saved", "name": name})
+}
+
+// handlePlayoutSavedGet returns a saved playlist by name.
+func (a *API) handlePlayoutSavedGet(w http.ResponseWriter, r *http.Request) {
+	if a.playoutSaveDir == "" {
+		httperr.Write(w, http.StatusNotImplemented, "playlist persistence not configured")
+		return
+	}
+
+	name, err := sanitizePlaylistName(r.PathValue("name"))
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	path := filepath.Join(a.playoutSaveDir, name+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			httperr.Write(w, http.StatusNotFound, fmt.Sprintf("playlist %q not found", name))
+			return
+		}
+		httperr.Write(w, http.StatusInternalServerError, "failed to read playlist")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(data)
+}
+
+// handlePlayoutSavedDelete deletes a saved playlist by name.
+func (a *API) handlePlayoutSavedDelete(w http.ResponseWriter, r *http.Request) {
+	if a.playoutSaveDir == "" {
+		httperr.Write(w, http.StatusNotImplemented, "playlist persistence not configured")
+		return
+	}
+
+	name, err := sanitizePlaylistName(r.PathValue("name"))
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	path := filepath.Join(a.playoutSaveDir, name+".json")
+	if err := os.Remove(path); err != nil {
+		if os.IsNotExist(err) {
+			httperr.Write(w, http.StatusNotFound, fmt.Sprintf("playlist %q not found", name))
+			return
+		}
+		httperr.Write(w, http.StatusInternalServerError, "failed to delete playlist")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted", "name": name})
 }

@@ -6,6 +6,7 @@
 		playoutTemplate, playoutSamples, playoutClips,
 		playoutStart, playoutStop, playoutNext,
 		playoutTakeManual, playoutReturnToAuto, playoutJump,
+		playoutSavedList, playoutSave, playoutSavedGet,
 		apiCall,
 	} from '$lib/api/switch-api';
 	import PlayoutTimeline from './PlayoutTimeline.svelte';
@@ -60,6 +61,8 @@
 	let sampleClips = $state<SampleClip[]>([]);
 	let availableClips = $state<PlayoutClip[]>([]);
 	let templateNames = $state<string[]>([]);
+	let savedPlaylists = $state<string[]>([]);
+	let editingName = $state(false);
 	let dirty = $state(false);
 
 	// ── Source names for the item editor ──
@@ -124,11 +127,12 @@
 		return () => { cancelled = true; };
 	});
 
-	// ── Fetch template names + sample clips + available clips on mount ──
+	// ── Fetch template names + sample clips + available clips + saved playlists on mount ──
 	$effect(() => {
 		playoutTemplateNames().then(names => { templateNames = names; }).catch(() => { templateNames = []; });
 		playoutSamples().then(clips => { sampleClips = clips; }).catch(() => { sampleClips = []; });
 		playoutClips().then(clips => { availableClips = clips; }).catch(() => { availableClips = []; });
+		playoutSavedList().then(names => { savedPlaylists = names; }).catch(() => { savedPlaylists = []; });
 	});
 
 	// ── Helper functions ──
@@ -206,6 +210,18 @@
 		dirty = true;
 	}
 
+	function newPlaylist() {
+		workingPlaylist = {
+			id: `pl-${Date.now()}`,
+			name: '',
+			default_transition: { type: 'cut' },
+			items: [],
+		};
+		selectedIndex = -1;
+		dirty = true;
+		editingName = true;
+	}
+
 	async function savePlaylist() {
 		if (isOnAir && !savePending) {
 			savePending = true;
@@ -216,8 +232,77 @@
 			savePending = false;
 			if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
 		}
-		await apiCall(playoutLoadPlaylist(selectedChannel, workingPlaylist), 'Save playlist');
+
+		if (!workingPlaylist.name) {
+			editingName = true;
+			return;
+		}
+
+		// Persist to disk.
+		try {
+			await playoutSave(workingPlaylist);
+		} catch (e) {
+			console.error('Failed to save playlist:', e);
+		}
+
+		// Also load into active channel.
+		await apiCall(playoutLoadPlaylist(selectedChannel, workingPlaylist), 'Load playlist');
 		dirty = false;
+
+		// Refresh saved list.
+		playoutSavedList().then(names => savedPlaylists = names).catch(() => {});
+	}
+
+	async function loadSaved(name: string) {
+		if (!name) return;
+		try {
+			const pl = await playoutSavedGet(name);
+			workingPlaylist = pl;
+			selectedIndex = -1;
+			dirty = false;
+		} catch (e) {
+			console.error('Failed to load saved playlist:', e);
+		}
+	}
+
+	function exportJSON() {
+		const json = JSON.stringify(workingPlaylist, null, 2);
+		const blob = new Blob([json], { type: 'application/json' });
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement('a');
+		a.href = url;
+		a.download = `${workingPlaylist.name || 'playlist'}.json`;
+		document.body.appendChild(a);
+		a.click();
+		document.body.removeChild(a);
+		URL.revokeObjectURL(url);
+	}
+
+	function importJSON() {
+		const input = document.createElement('input');
+		input.type = 'file';
+		input.accept = '.json,application/json';
+		input.onchange = async (e) => {
+			const file = (e.target as HTMLInputElement).files?.[0];
+			if (!file) return;
+			try {
+				const text = await file.text();
+				const pl = JSON.parse(text) as Playlist;
+				if (!pl.items || !Array.isArray(pl.items)) {
+					alert('Invalid playlist file: missing items array');
+					return;
+				}
+				if (!pl.name) pl.name = file.name.replace(/\.json$/i, '');
+				if (!pl.id) pl.id = `imported-${Date.now()}`;
+				if (!pl.default_transition) pl.default_transition = { type: 'cut' };
+				workingPlaylist = pl;
+				selectedIndex = -1;
+				dirty = true;
+			} catch (err) {
+				alert('Failed to parse JSON file');
+			}
+		};
+		input.click();
 	}
 
 	async function loadTemplate(name: string) {
@@ -361,7 +446,20 @@
 		</div>
 
 		{#if panelMode === 'edit'}
-			<span class="playlist-name">{workingPlaylist.name || channel.playlistName || 'No playlist loaded'}</span>
+			{#if editingName}
+				<input
+					class="playlist-name-input"
+					type="text"
+					bind:value={workingPlaylist.name}
+					onblur={() => { editingName = false; dirty = true; }}
+					onkeydown={(e) => { if (e.key === 'Enter') { editingName = false; dirty = true; } }}
+					autofocus
+				/>
+			{:else}
+				<span class="playlist-name" onclick={() => editingName = true} title="Click to rename">
+					{workingPlaylist.name || 'Untitled Playlist'}
+				</span>
+			{/if}
 		{/if}
 
 		<PlayoutOutputBadge {channel} {currentItem} {isIdle} />
@@ -370,6 +468,23 @@
 			<span class="item-counter">
 				{channel.itemIndex >= 0 ? channel.itemIndex + 1 : 0}/{channel.itemCount}
 			</span>
+
+			<button class="toolbar-btn" onclick={newPlaylist} title="New empty playlist" data-testid="new-playlist-btn">New</button>
+
+			<select
+				class="template-select"
+				value=""
+				onchange={(e) => {
+					const name = (e.target as HTMLSelectElement).value;
+					if (name) { loadSaved(name); (e.target as HTMLSelectElement).value = ''; }
+				}}
+				data-testid="load-playlist-select"
+			>
+				<option value="" disabled>Load</option>
+				{#each savedPlaylists as name}
+					<option value={name}>{name}</option>
+				{/each}
+			</select>
 
 			{#if templateNames.length > 0}
 				<select
@@ -393,6 +508,9 @@
 				</button>
 			{/if}
 
+			<button class="toolbar-btn" onclick={importJSON} title="Import playlist from JSON file" data-testid="import-btn">Import</button>
+			<button class="toolbar-btn" onclick={exportJSON} title="Export playlist as JSON file" data-testid="export-btn">Export</button>
+
 			<button
 				class="save-btn"
 				class:dirty
@@ -400,6 +518,7 @@
 				onclick={savePlaylist}
 				disabled={!dirty && workingPlaylist.items.length === 0 && !savePending}
 				title={savePending ? 'Click again to confirm save while on-air' : 'Save playlist to server'}
+				data-testid="save-btn"
 			>
 				{#if savePending}SAVE (ON AIR){:else}Save{/if}
 			</button>
@@ -451,12 +570,14 @@
 							<span class="editor-title">Item {selectedIndex + 1}</span>
 							<button class="editor-close" onclick={() => selectedIndex = -1} title="Close editor">&times;</button>
 						</div>
-						<PlayoutItemEditor
-							item={workingPlaylist.items[selectedIndex]}
-							onChange={updateItem}
-							sources={sourceNames}
-							clips={availableClips}
-						/>
+						<div class="editor-scroll">
+							<PlayoutItemEditor
+								item={workingPlaylist.items[selectedIndex]}
+								onChange={updateItem}
+								sources={sourceNames}
+								clips={availableClips}
+							/>
+						</div>
 					</div>
 				{:else}
 					<div class="no-selection">Select an item in the timeline to edit</div>
@@ -684,6 +805,13 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		min-width: 40px;
+		cursor: text;
+		border-bottom: 1px dashed transparent;
+		transition: border-color var(--transition-fast);
+	}
+
+	.playlist-name:hover {
+		border-bottom-color: var(--text-tertiary);
 	}
 
 	.item-counter {
@@ -753,6 +881,40 @@
 		50% { background: rgba(249, 115, 22, 0.25); }
 	}
 
+	.toolbar-btn {
+		padding: 2px 6px;
+		background: var(--bg-surface);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		color: var(--text-secondary);
+		letter-spacing: 0.03em;
+		cursor: pointer;
+		flex-shrink: 0;
+		transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+	}
+
+	.toolbar-btn:hover {
+		background: var(--bg-hover);
+		border-color: var(--border-strong);
+		color: var(--text-primary);
+	}
+
+	.playlist-name-input {
+		flex: 1;
+		font-family: var(--font-ui);
+		font-size: var(--text-xs);
+		color: var(--text-primary);
+		background: var(--bg-base);
+		border: 1px solid var(--accent-blue, #3b82f6);
+		border-radius: var(--radius-sm);
+		padding: 1px 4px;
+		min-width: 40px;
+		outline: none;
+	}
+
 	/* ── Mode toggle ── */
 	.mode-toggle {
 		display: flex;
@@ -801,26 +963,36 @@
 		min-height: 0;
 	}
 
-	/* ── Left: Item Editor ── */
+	/* ── Left: Item Editor + Clip Browser ── */
 	.left-col {
 		display: flex;
 		flex-direction: column;
 		width: 40%;
 		min-width: 180px;
 		flex-shrink: 0;
-		overflow-y: auto;
-		overflow-x: hidden;
+		overflow: hidden;
 	}
-
-	.left-col::-webkit-scrollbar { width: 3px; }
-	.left-col::-webkit-scrollbar-thumb { background: var(--border-subtle); border-radius: 2px; }
 
 	.editor-wrap {
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-sm);
 		background: var(--bg-surface);
 		overflow: hidden;
+		flex: 1;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
 	}
+
+	.editor-scroll {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+		overflow-x: hidden;
+	}
+
+	.editor-scroll::-webkit-scrollbar { width: 3px; }
+	.editor-scroll::-webkit-scrollbar-thumb { background: var(--border-subtle); border-radius: 2px; }
 
 	.editor-header {
 		display: flex;

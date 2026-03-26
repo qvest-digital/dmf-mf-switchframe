@@ -453,6 +453,7 @@ func TestCacheConfigDefaults(t *testing.T) {
 
 func boolPtr(b bool) *bool         { return &b }
 func float64Ptr(f float64) *float64 { return &f }
+func int64Ptr(v int64) *int64      { return &v }
 
 func TestSecondaryEvent_ExtendedJSONRoundTrip(t *testing.T) {
 	events := []SecondaryEvent{
@@ -501,7 +502,7 @@ func TestSecondaryEvent_ExtendedJSONRoundTrip(t *testing.T) {
 			OffsetMs: -5000,
 			Anchor:   "end",
 			SCTE35: &SCTE35EventData{
-				BreakDurationMs: 30000,
+				BreakDurationMs: int64Ptr(30000),
 				AutoReturn:      true,
 			},
 		},
@@ -574,8 +575,16 @@ func TestSecondaryEvent_ExtendedJSONRoundTrip(t *testing.T) {
 			if got.SCTE35 == nil {
 				t.Errorf("event[%d] SCTE35 = nil, want non-nil", i)
 			} else {
-				if got.SCTE35.BreakDurationMs != ev.SCTE35.BreakDurationMs {
-					t.Errorf("event[%d] SCTE35.BreakDurationMs = %d, want %d", i, got.SCTE35.BreakDurationMs, ev.SCTE35.BreakDurationMs)
+				gotDur := int64(0)
+				wantDur := int64(0)
+				if got.SCTE35.BreakDurationMs != nil {
+					gotDur = *got.SCTE35.BreakDurationMs
+				}
+				if ev.SCTE35.BreakDurationMs != nil {
+					wantDur = *ev.SCTE35.BreakDurationMs
+				}
+				if gotDur != wantDur {
+					t.Errorf("event[%d] SCTE35.BreakDurationMs = %d, want %d", i, gotDur, wantDur)
 				}
 				if got.SCTE35.AutoReturn != ev.SCTE35.AutoReturn {
 					t.Errorf("event[%d] SCTE35.AutoReturn = %v, want %v", i, got.SCTE35.AutoReturn, ev.SCTE35.AutoReturn)
