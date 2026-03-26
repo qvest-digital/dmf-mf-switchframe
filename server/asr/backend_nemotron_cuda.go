@@ -68,7 +68,8 @@ type decodedToken struct {
 // audio accumulates in a ring buffer, and inference runs on the full speech segment
 // when speech ends or at periodic intervals during long speech.
 type NemotronBackend struct {
-	mu sync.Mutex
+	mu      sync.Mutex
+	logOnce sync.Once
 
 	melSession *OnnxSession // nemo128.onnx mel spectrogram frontend
 	encoder    *OnnxSession // encoder ONNX session
@@ -222,6 +223,10 @@ func (b *NemotronBackend) IngestAudio(pcm []float32, pts int64, sampleRate, chan
 	if len(mono16k) == 0 {
 		return
 	}
+
+	b.logOnce.Do(func() {
+		slog.Info("ASR nemotron: first audio received", "samples", len(mono16k))
+	})
 
 	// Run Silero VAD outside b.mu — it has its own internal state and runs
 	// ONNX inference that shouldn't block the audio path or contend with
