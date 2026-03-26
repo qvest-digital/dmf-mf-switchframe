@@ -262,18 +262,10 @@ func TestFileFrameIterator_NextSequence(t *testing.T) {
 	}
 }
 
-func TestFileFrameIterator_AudioInterleaving_PTS(t *testing.T) {
-	// Verify that audio frames are attached to video frames by PTS proximity,
-	// not proportionally spread.
-	//
-	// Video: 4 frames at 30fps -> PTS 0, 3000, 6000, 9000 (90kHz clock)
-	// Audio: 5 frames at ~21.3ms -> PTS 0, 1920, 3840, 5760, 7680
-	//
-	// PTS-matched interleaving (audio PTS < next video PTS boundary):
-	//   Video[0] PTS=0    boundary=3000  -> Audio[0] PTS=0, Audio[1] PTS=1920 (attach 0, skip 1)
-	//   Video[1] PTS=3000 boundary=6000  -> Audio[2] PTS=3840, Audio[3] PTS=5760 (attach 2, skip 3)
-	//   Video[2] PTS=6000 boundary=9000  -> Audio[4] PTS=7680 (attach 4)
-	//   Video[3] PTS=9000 boundary=MaxInt -> (none remaining)
+func TestFileFrameIterator_AudioInterleaving_Proportional(t *testing.T) {
+	// Verify proportional distribution: 5 audio frames across 4 video frames.
+	// Expected: [1, 1, 1, 2] or [2, 1, 1, 1] audio frames per video frame.
+	// Total must be exactly 5 — every audio frame delivered once.
 
 	encoded := []encodedFrame{
 		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x65}, pts: 0, isKeyframe: true},
@@ -298,45 +290,22 @@ func TestFileFrameIterator_AudioInterleaving_PTS(t *testing.T) {
 		totalFrames:   4,
 	}
 
-	// Frame 0 (PTS=0): first audio in window [0, 3000) -> Audio[0] PTS=0
-	f0, err := iter.Next()
-	if err != nil {
-		t.Fatalf("Next() frame 0: %v", err)
-	}
-	if f0.AudioPTS != 0 {
-		t.Errorf("frame 0 AudioPTS = %d, want 0", f0.AudioPTS)
-	}
-	if f0.AudioData == nil {
-		t.Fatal("frame 0 AudioData is nil, want non-nil")
-	}
-
-	// Frame 1 (PTS=3000): first audio in window [3000, 6000) -> Audio[2] PTS=3840
-	// NOT Audio[1] PTS=1920 (which proportional would give)
-	f1, err := iter.Next()
-	if err != nil {
-		t.Fatalf("Next() frame 1: %v", err)
-	}
-	if f1.AudioPTS != 3840 {
-		t.Errorf("frame 1 AudioPTS = %d, want 3840 (PTS-matched); "+
-			"1920 would indicate proportional interleaving", f1.AudioPTS)
+	totalAudioDelivered := 0
+	for i := 0; i < 4; i++ {
+		f, err := iter.Next()
+		if err != nil {
+			t.Fatalf("Next() frame %d: %v", i, err)
+		}
+		count := len(f.AudioFrames)
+		totalAudioDelivered += count
+		if count == 0 && i < 3 {
+			// At least one audio frame per video frame (except possibly last)
+			t.Errorf("frame %d: no audio frames attached", i)
+		}
 	}
 
-	// Frame 2 (PTS=6000): first audio in window [6000, 9000) -> Audio[4] PTS=7680
-	f2, err := iter.Next()
-	if err != nil {
-		t.Fatalf("Next() frame 2: %v", err)
-	}
-	if f2.AudioPTS != 7680 {
-		t.Errorf("frame 2 AudioPTS = %d, want 7680", f2.AudioPTS)
-	}
-
-	// Frame 3 (PTS=9000): no remaining audio -> AudioData=nil
-	f3, err := iter.Next()
-	if err != nil {
-		t.Fatalf("Next() frame 3: %v", err)
-	}
-	if f3.AudioData != nil {
-		t.Errorf("frame 3 should have no audio, got AudioPTS=%d", f3.AudioPTS)
+	if totalAudioDelivered != 5 {
+		t.Errorf("total audio frames delivered = %d, want 5 (every frame delivered once)", totalAudioDelivered)
 	}
 }
 
@@ -387,27 +356,25 @@ func TestFileFrameIterator_AudioInterleaving_AllAudioBeforeFirstVideo(t *testing
 		totalFrames:   2,
 	}
 
-	// Frame 0: all audio PTS < next video PTS (13000), first audio attached
-	f0, err := iter.Next()
-	if err != nil {
-		t.Fatalf("Next() frame 0: %v", err)
+	// With proportional distribution, 3 audio frames / 2 video frames:
+	// Frame 0 gets floor(1*3/2)=1 audio frame, Frame 1 gets remaining 2.
+	// Or Frame 0 gets 2, Frame 1 gets 1. Total must be 3.
+	totalAudio := 0
+	for i := 0; i < 2; i++ {
+		f, err := iter.Next()
+		if err != nil {
+			t.Fatalf("Next() frame %d: %v", i, err)
+		}
+		totalAudio += len(f.AudioFrames)
 	}
-	if f0.AudioPTS != 100 {
-		t.Errorf("frame 0 AudioPTS = %d, want 100", f0.AudioPTS)
-	}
-
-	// Frame 1: no audio remaining (all consumed by frame 0's window)
-	f1, err := iter.Next()
-	if err != nil {
-		t.Fatalf("Next() frame 1: %v", err)
-	}
-	if f1.AudioData != nil {
-		t.Errorf("frame 1 should have no audio, got AudioPTS=%d", f1.AudioPTS)
+	if totalAudio != 3 {
+		t.Errorf("total audio delivered = %d, want 3", totalAudio)
 	}
 }
 
 func TestFileFrameIterator_AudioInterleaving_LastFrameGetsRemaining(t *testing.T) {
-	// The last video frame should get audio with PTS >= its own PTS.
+	// With proportional distribution, the last video frame gets all remaining
+	// audio frames. 3 audio / 2 video = frame 0 gets 1, frame 1 gets 2.
 	encoded := []encodedFrame{
 		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x65}, pts: 0},
 		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 3000},
@@ -427,22 +394,22 @@ func TestFileFrameIterator_AudioInterleaving_LastFrameGetsRemaining(t *testing.T
 		totalFrames:   2,
 	}
 
-	// Frame 0 (PTS=0): audio in [0, 3000) -> Audio[0] PTS=0
 	f0, err := iter.Next()
 	if err != nil {
 		t.Fatalf("Next() frame 0: %v", err)
 	}
-	if f0.AudioPTS != 0 {
-		t.Errorf("frame 0 AudioPTS = %d, want 0", f0.AudioPTS)
-	}
-
-	// Frame 1 (PTS=3000, last): audio in [3000, MaxInt) -> Audio[1] PTS=4000
 	f1, err := iter.Next()
 	if err != nil {
 		t.Fatalf("Next() frame 1: %v", err)
 	}
-	if f1.AudioPTS != 4000 {
-		t.Errorf("frame 1 AudioPTS = %d, want 4000", f1.AudioPTS)
+
+	total := len(f0.AudioFrames) + len(f1.AudioFrames)
+	if total != 3 {
+		t.Errorf("total audio = %d (f0=%d, f1=%d), want 3", total, len(f0.AudioFrames), len(f1.AudioFrames))
+	}
+	// Last frame should have at least 1 audio frame (the remaining ones).
+	if len(f1.AudioFrames) == 0 {
+		t.Error("last frame should have remaining audio frames")
 	}
 }
 

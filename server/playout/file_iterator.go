@@ -2,7 +2,6 @@ package playout
 
 import (
 	"fmt"
-	"math"
 	"strings"
 
 	"github.com/zsiec/switchframe/server/clip"
@@ -275,37 +274,29 @@ func (f *FileFrameIterator) makeDecodedFrame(yuv []byte, w, h int, pts int64, is
 	return frame
 }
 
-// attachAudio attaches ALL audio frames whose PTS falls within the current
-// video frame's time window [currentPTS, nextVideoPTS). AAC audio runs at
-// ~47fps vs video at 24-30fps, so each video frame typically carries 1-2
-// audio frames. The mixer's ring buffer absorbs the burst and outputs at
-// steady audio rate. PTS on each frame maintains A/V sync.
-//
-// This follows the same pattern as clip/player.go's emitAudioForVideoFrame.
+// attachAudio distributes audio frames proportionally across video frames,
+// following the same pattern as clip/player.go's emitAudioForVideoFrame.
+// This ensures every audio frame is delivered exactly once, regardless of
+// PTS ordering (which can differ between decode order and display order
+// due to B-frame reordering).
 func (f *FileFrameIterator) attachAudio(frame *DecodedFrame) {
-	// Determine the PTS upper bound for this video frame's audio window.
-	var ptsBound int64
-	if f.frameIndex < len(f.encodedFrames) {
-		ptsBound = f.encodedFrames[f.frameIndex].pts
-	} else {
-		ptsBound = math.MaxInt64
+	totalAudio := len(f.audioFrames)
+	totalVideo := len(f.encodedFrames)
+	if totalAudio == 0 || totalVideo == 0 {
+		return
 	}
 
-	// Skip audio frames that fall before this video frame's PTS
-	// (but not for the very first output frame — deliver all early audio).
-	if f.outputCount > 0 {
-		for f.audioIndex < len(f.audioFrames) && f.audioFrames[f.audioIndex].pts < frame.PTS {
-			f.audioIndex++
-		}
+	// Calculate how many audio frames should have been emitted by this
+	// video frame (proportional distribution).
+	targetAudioIdx := (f.outputCount + 1) * totalAudio / totalVideo
+	if targetAudioIdx > totalAudio {
+		targetAudioIdx = totalAudio
 	}
 
-	// Collect ALL audio frames in [currentPTS, nextVideoPTS).
+	// Collect all audio frames from current index up to target.
 	var batch []AudioFrameData
-	for f.audioIndex < len(f.audioFrames) {
+	for f.audioIndex < targetAudioIdx {
 		af := f.audioFrames[f.audioIndex]
-		if af.pts >= ptsBound {
-			break // belongs to the next video frame
-		}
 		batch = append(batch, AudioFrameData{
 			Data:       af.data,
 			PTS:        af.pts,
