@@ -724,11 +724,14 @@ func TestTSMuxer_WriteSCTE35_AfterInit_ProducesPackets(t *testing.T) {
 	require.NoError(t, m.WriteVideo(makeTestKeyframe2(90000)))
 	output = nil // clear init output
 
-	// Write SCTE-35 section after initialization.
+	// Write SCTE-35 section after initialization — now IDR-aligned (buffered).
 	section := makeTestSCTE35Section()
 	err := m.WriteSCTE35(section)
 	require.NoError(t, err)
-	require.NotEmpty(t, output, "WriteSCTE35 after init should produce TS packets")
+
+	// Flush the buffered SCTE-35 by writing a keyframe.
+	require.NoError(t, m.WriteVideo(makeTestKeyframe2(93000)))
+	require.NotEmpty(t, output, "WriteSCTE35 + keyframe flush should produce TS packets")
 	require.Equal(t, 0, len(output)%188, "output must be multiple of 188 bytes")
 
 	// Verify output contains packets with the SCTE-35 PID and PUSI=1.
@@ -794,27 +797,21 @@ func TestTSMuxer_WriteSCTE35_ContinuityCounter_Increments(t *testing.T) {
 	require.NoError(t, m.WriteVideo(makeTestKeyframe2(90000)))
 	output = nil
 
-	// Write first SCTE-35 section.
+	// Write two SCTE-35 sections (both buffered for IDR alignment).
 	section := makeTestSCTE35Section()
 	require.NoError(t, m.WriteSCTE35(section))
-	firstOutput := make([]byte, len(output))
-	copy(firstOutput, output)
-	output = nil
-
-	// Write second SCTE-35 section.
 	require.NoError(t, m.WriteSCTE35(section))
-	secondOutput := make([]byte, len(output))
-	copy(secondOutput, output)
 
-	// Extract continuity counters from SCTE-35 PID packets across both writes.
+	// Flush both by writing a keyframe.
+	require.NoError(t, m.WriteVideo(makeTestKeyframe2(93000)))
+
+	// Extract continuity counters from SCTE-35 PID packets.
 	var ccValues []uint8
-	for _, chunk := range [][]byte{firstOutput, secondOutput} {
-		for i := 0; i+188 <= len(chunk); i += 188 {
-			pid := uint16(chunk[i+1]&0x1F)<<8 | uint16(chunk[i+2])
-			if pid == defaultSCTE35PID {
-				cc := chunk[i+3] & 0x0F
-				ccValues = append(ccValues, cc)
-			}
+	for i := 0; i+188 <= len(output); i += 188 {
+		pid := uint16(output[i+1]&0x1F)<<8 | uint16(output[i+2])
+		if pid == defaultSCTE35PID {
+			cc := output[i+3] & 0x0F
+			ccValues = append(ccValues, cc)
 		}
 	}
 

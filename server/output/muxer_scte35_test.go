@@ -42,8 +42,19 @@ func TestTSMuxer_WriteSCTE35_AfterInit(t *testing.T) {
 		t.Fatalf("WriteSCTE35 after init: %v", err)
 	}
 
+	// SCTE-35 is now IDR-aligned: buffered until next keyframe.
+	// Write a keyframe to flush it.
+	idr := &media.VideoFrame{
+		PTS: 96000, DTS: 96000, IsKeyframe: true,
+		SPS:      []byte{0x67, 0x42, 0xC0, 0x1E, 0xD9, 0x00, 0xA0, 0x47, 0xFE, 0x88},
+		PPS:      []byte{0x68, 0xCE, 0x38, 0x80},
+		WireData: []byte{0x00, 0x00, 0x00, 0x05, 0x65, 0x88, 0x80, 0x40, 0x00},
+		Codec:    "h264",
+	}
+	_ = m.WriteVideo(idr)
+
 	if len(output) == 0 {
-		t.Fatal("expected TS output after WriteSCTE35")
+		t.Fatal("expected TS output after WriteSCTE35 + keyframe flush")
 	}
 }
 
@@ -61,6 +72,16 @@ func TestTSMuxer_WriteSCTE35_PID(t *testing.T) {
 
 	data := encodeSpliceNull(t)
 	_ = m.WriteSCTE35(data)
+
+	// SCTE-35 is IDR-aligned: write a keyframe to flush.
+	idr := &media.VideoFrame{
+		PTS: 96000, DTS: 96000, IsKeyframe: true,
+		SPS:      []byte{0x67, 0x42, 0xC0, 0x1E, 0xD9, 0x00, 0xA0, 0x47, 0xFE, 0x88},
+		PPS:      []byte{0x68, 0xCE, 0x38, 0x80},
+		WireData: []byte{0x00, 0x00, 0x00, 0x05, 0x65, 0x88, 0x80, 0x40, 0x00},
+		Codec:    "h264",
+	}
+	_ = m.WriteVideo(idr)
 
 	// Scan TS packets for PID 0x102
 	found := false
@@ -133,12 +154,23 @@ func TestTSMuxer_WriteSCTE35_ContinuityCounter(t *testing.T) {
 
 	data := encodeSpliceNull(t)
 
-	// Write two SCTE-35 sections — CC should increment
+	// Write two SCTE-35 sections — CC should increment.
 	_ = m.WriteSCTE35(data)
-	output = nil
 	_ = m.WriteSCTE35(data)
 
-	// Find the SCTE-35 packet and check CC
+	// Flush both by writing a keyframe.
+	output = nil
+	idr := &media.VideoFrame{
+		PTS: 96000, DTS: 96000, IsKeyframe: true,
+		SPS:      []byte{0x67, 0x42, 0xC0, 0x1E, 0xD9, 0x00, 0xA0, 0x47, 0xFE, 0x88},
+		PPS:      []byte{0x68, 0xCE, 0x38, 0x80},
+		WireData: []byte{0x00, 0x00, 0x00, 0x05, 0x65, 0x88, 0x80, 0x40, 0x00},
+		Codec:    "h264",
+	}
+	_ = m.WriteVideo(idr)
+
+	// Find the second SCTE-35 packet and check CC = 1.
+	scte35Count := 0
 	for i := 0; i+188 <= len(output); i += 188 {
 		pkt := output[i : i+188]
 		if pkt[0] != 0x47 {
@@ -146,14 +178,17 @@ func TestTSMuxer_WriteSCTE35_ContinuityCounter(t *testing.T) {
 		}
 		pid := uint16(pkt[1]&0x1F)<<8 | uint16(pkt[2])
 		if pid == 0x102 {
-			cc := pkt[3] & 0x0F
-			if cc != 1 {
-				t.Fatalf("expected continuity counter 1, got %d", cc)
+			scte35Count++
+			if scte35Count == 2 {
+				cc := pkt[3] & 0x0F
+				if cc != 1 {
+					t.Fatalf("expected continuity counter 1, got %d", cc)
+				}
+				return
 			}
-			return
 		}
 	}
-	t.Fatal("no SCTE-35 packet found for continuity counter check")
+	t.Fatalf("expected at least 2 SCTE-35 packets, got %d", scte35Count)
 }
 
 func TestTSMuxer_WriteSCTE35_PendingFlushed(t *testing.T) {
@@ -204,6 +239,16 @@ func TestTSMuxer_WriteSCTE35_CustomPID(t *testing.T) {
 	data := encodeSpliceNull(t)
 	_ = m.WriteSCTE35(data)
 
+	// SCTE-35 is IDR-aligned: write a keyframe to flush.
+	idr := &media.VideoFrame{
+		PTS: 96000, DTS: 96000, IsKeyframe: true,
+		SPS:      []byte{0x67, 0x42, 0xC0, 0x1E, 0xD9, 0x00, 0xA0, 0x47, 0xFE, 0x88},
+		PPS:      []byte{0x68, 0xCE, 0x38, 0x80},
+		WireData: []byte{0x00, 0x00, 0x00, 0x05, 0x65, 0x88, 0x80, 0x40, 0x00},
+		Codec:    "h264",
+	}
+	_ = m.WriteVideo(idr)
+
 	// Scan TS packets for the custom PID
 	found := false
 	for i := 0; i+188 <= len(output); i += 188 {
@@ -220,6 +265,188 @@ func TestTSMuxer_WriteSCTE35_CustomPID(t *testing.T) {
 	if !found {
 		t.Fatalf("no TS packet with custom PID 0x%X found", customPID)
 	}
+}
+
+func TestTSMuxer_WriteSCTE35_IDRAligned_FlushedOnKeyframe(t *testing.T) {
+	m := NewTSMuxer()
+	m.SetSCTE35PID(defaultSCTE35PID)
+	var output []byte
+	m.SetOutput(func(data []byte) {
+		output = append(output, data...)
+	})
+
+	// Init with a keyframe.
+	writeInitKeyframe(t, m)
+	output = nil
+
+	// Write a SCTE-35 section — it should be buffered, not flushed.
+	data := encodeSpliceNull(t)
+	if err := m.WriteSCTE35(data); err != nil {
+		t.Fatalf("WriteSCTE35: %v", err)
+	}
+	if len(output) > 0 {
+		t.Fatal("expected SCTE-35 to be buffered, not flushed immediately")
+	}
+
+	// Write a non-keyframe — SCTE-35 should still be buffered.
+	nonIDR := &media.VideoFrame{
+		PTS: 93000, DTS: 93000, IsKeyframe: false,
+		WireData: []byte{0x00, 0x00, 0x00, 0x04, 0x61, 0x88, 0x80, 0x40},
+		Codec:    "h264",
+	}
+	_ = m.WriteVideo(nonIDR)
+	// Check there are no SCTE-35 PID packets in the output.
+	if countSCTE35Packets(output, defaultSCTE35PID) > 0 {
+		t.Fatal("SCTE-35 should not flush on non-keyframe")
+	}
+
+	// Write a keyframe — SCTE-35 should be flushed.
+	output = nil
+	idr := &media.VideoFrame{
+		PTS: 96000, DTS: 96000, IsKeyframe: true,
+		SPS:      []byte{0x67, 0x42, 0xC0, 0x1E, 0xD9, 0x00, 0xA0, 0x47, 0xFE, 0x88},
+		PPS:      []byte{0x68, 0xCE, 0x38, 0x80},
+		WireData: []byte{0x00, 0x00, 0x00, 0x05, 0x65, 0x88, 0x80, 0x40, 0x00},
+		Codec:    "h264",
+	}
+	_ = m.WriteVideo(idr)
+	if countSCTE35Packets(output, defaultSCTE35PID) == 0 {
+		t.Fatal("SCTE-35 should flush on keyframe")
+	}
+
+	// Verify SCTE-35 packets appear before video packets in the output.
+	firstSCTE35 := -1
+	firstVideo := -1
+	for i := 0; i+tsPacketSize <= len(output); i += tsPacketSize {
+		pkt := output[i : i+tsPacketSize]
+		if pkt[0] != 0x47 {
+			continue
+		}
+		pid := uint16(pkt[1]&0x1F)<<8 | uint16(pkt[2])
+		if pid == defaultSCTE35PID && firstSCTE35 < 0 {
+			firstSCTE35 = i
+		}
+		if pid == videoPID && firstVideo < 0 {
+			firstVideo = i
+		}
+	}
+	if firstSCTE35 < 0 {
+		t.Fatal("no SCTE-35 packet found in output")
+	}
+	if firstVideo < 0 {
+		t.Fatal("no video packet found in output")
+	}
+	if firstSCTE35 >= firstVideo {
+		t.Fatalf("SCTE-35 packet (offset %d) should appear before video (offset %d)", firstSCTE35, firstVideo)
+	}
+}
+
+func TestTSMuxer_WriteSCTE35_IDRAligned_TimeoutFlush(t *testing.T) {
+	m := NewTSMuxer()
+	m.SetSCTE35PID(defaultSCTE35PID)
+	var output []byte
+	m.SetOutput(func(data []byte) {
+		output = append(output, data...)
+	})
+
+	// Init with a keyframe.
+	writeInitKeyframe(t, m)
+	output = nil
+
+	// Write a SCTE-35 section.
+	data := encodeSpliceNull(t)
+	_ = m.WriteSCTE35(data)
+
+	// Write enough non-keyframes to trigger the timeout (idrAlignTimeoutFrames).
+	for i := 0; i < idrAlignTimeoutFrames; i++ {
+		nonIDR := &media.VideoFrame{
+			PTS: int64(93000 + i*3000), DTS: int64(93000 + i*3000), IsKeyframe: false,
+			WireData: []byte{0x00, 0x00, 0x00, 0x04, 0x61, 0x88, 0x80, 0x40},
+			Codec:    "h264",
+		}
+		_ = m.WriteVideo(nonIDR)
+	}
+
+	// The SCTE-35 section should have been flushed by the timeout.
+	if countSCTE35Packets(output, defaultSCTE35PID) == 0 {
+		t.Fatal("SCTE-35 should flush after timeout frames even without keyframe")
+	}
+}
+
+func TestTSMuxer_WriteSCTE35_IDRAligned_NoPendingNoFlush(t *testing.T) {
+	m := NewTSMuxer()
+	m.SetSCTE35PID(defaultSCTE35PID)
+	var output []byte
+	m.SetOutput(func(data []byte) {
+		output = append(output, data...)
+	})
+
+	// Init with a keyframe.
+	writeInitKeyframe(t, m)
+	output = nil
+
+	// Write a keyframe without any pending SCTE-35 — no SCTE-35 packets.
+	idr := &media.VideoFrame{
+		PTS: 96000, DTS: 96000, IsKeyframe: true,
+		SPS:      []byte{0x67, 0x42, 0xC0, 0x1E, 0xD9, 0x00, 0xA0, 0x47, 0xFE, 0x88},
+		PPS:      []byte{0x68, 0xCE, 0x38, 0x80},
+		WireData: []byte{0x00, 0x00, 0x00, 0x05, 0x65, 0x88, 0x80, 0x40, 0x00},
+		Codec:    "h264",
+	}
+	_ = m.WriteVideo(idr)
+
+	if countSCTE35Packets(output, defaultSCTE35PID) > 0 {
+		t.Fatal("no SCTE-35 packets expected when none are pending")
+	}
+}
+
+func TestTSMuxer_WriteSCTE35_IDRAligned_MultipleSections(t *testing.T) {
+	m := NewTSMuxer()
+	m.SetSCTE35PID(defaultSCTE35PID)
+	var output []byte
+	m.SetOutput(func(data []byte) {
+		output = append(output, data...)
+	})
+
+	// Init with a keyframe.
+	writeInitKeyframe(t, m)
+	output = nil
+
+	// Write two SCTE-35 sections.
+	data := encodeSpliceNull(t)
+	_ = m.WriteSCTE35(data)
+	_ = m.WriteSCTE35(data)
+
+	// Write a keyframe — both should flush.
+	idr := &media.VideoFrame{
+		PTS: 96000, DTS: 96000, IsKeyframe: true,
+		SPS:      []byte{0x67, 0x42, 0xC0, 0x1E, 0xD9, 0x00, 0xA0, 0x47, 0xFE, 0x88},
+		PPS:      []byte{0x68, 0xCE, 0x38, 0x80},
+		WireData: []byte{0x00, 0x00, 0x00, 0x05, 0x65, 0x88, 0x80, 0x40, 0x00},
+		Codec:    "h264",
+	}
+	_ = m.WriteVideo(idr)
+
+	count := countSCTE35Packets(output, defaultSCTE35PID)
+	if count < 2 {
+		t.Fatalf("expected at least 2 SCTE-35 packets (one per section), got %d", count)
+	}
+}
+
+// countSCTE35Packets counts TS packets with the given SCTE-35 PID.
+func countSCTE35Packets(output []byte, pid uint16) int {
+	count := 0
+	for i := 0; i+tsPacketSize <= len(output); i += tsPacketSize {
+		pkt := output[i : i+tsPacketSize]
+		if pkt[0] != 0x47 {
+			continue
+		}
+		pktPID := uint16(pkt[1]&0x1F)<<8 | uint16(pkt[2])
+		if pktPID == pid {
+			count++
+		}
+	}
+	return count
 }
 
 // helpers

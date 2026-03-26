@@ -227,13 +227,15 @@ func (a *App) initPlayout() error {
 		a.broadcastState(nil)
 	})
 
-	// Wire secondary event handler.
-	mgr.SetSecondaryHandler(&playoutSecondaryHandler{
+	// Wire secondary event handler. The splice coordinator and PTS provider
+	// are set below after the coordinator is created.
+	secHandler := &playoutSecondaryHandler{
 		compositor:     a.compositor,
 		mixer:          a.mixer,
 		captionMgr:     a.captionMgr,
 		scte35Injector: a.scte35Injector,
-	})
+	}
+	mgr.SetSecondaryHandler(secHandler)
 
 	// As-run logger: persistent event log for traffic reconciliation.
 	// Must be wired before SetSpliceCoordinator, which propagates the
@@ -277,6 +279,12 @@ func (a *App) initPlayout() error {
 	})
 	mgr.SetSpliceCoordinator(spliceCoord)
 
+	// Wire splice coordinator into the secondary handler so playlist
+	// scte35_cue events route through PTS-based frame-accurate insertion
+	// instead of wall-clock-based direct injection.
+	secHandler.spliceCoordinator = spliceCoord
+	secHandler.ptsProvider = a.sw.LastBroadcastVideoPTS
+
 	a.playoutMgr = mgr
 	a.playoutCache = cache
 	a.playoutPrefetcher = prefetcher
@@ -301,10 +309,12 @@ func playoutChannelIDFromKey(key string) int {
 // delegating to real subsystems (graphics, audio, captions, SCTE-35).
 // Nil subsystem pointers are safe — each method checks before calling.
 type playoutSecondaryHandler struct {
-	compositor     graphicsController
-	mixer          audioController
-	captionMgr     captionController
-	scte35Injector scte35Cuer
+	compositor        graphicsController
+	mixer             audioController
+	captionMgr        captionController
+	scte35Injector    scte35Cuer
+	spliceCoordinator *playout.SpliceCoordinator
+	ptsProvider       func() int64
 }
 
 // Narrow interfaces — depend only on methods we actually call.
@@ -401,7 +411,25 @@ func (h *playoutSecondaryHandler) OnCaptionText(text string) error {
 }
 
 func (h *playoutSecondaryHandler) OnSCTE35Cue(data *playout.SCTE35EventData) error {
-	if h.scte35Injector == nil || data == nil {
+	if data == nil {
+		return nil
+	}
+
+	// Use the SpliceCoordinator for frame-accurate PTS-based insertion.
+	// The coordinator collects candidate frames, runs black detection,
+	// and schedules the cue at the optimal splice point with IDR alignment.
+	if h.spliceCoordinator != nil && h.ptsProvider != nil {
+		return h.spliceCoordinator.BeginSplice(
+			"",                  // no pod ID for secondary events
+			true,                // isOut
+			data.AutoReturn,     //
+			data.BreakDurationMs,
+			h.ptsProvider(),     // current program PTS
+		)
+	}
+
+	// Fallback: direct injection (no splice coordinator available).
+	if h.scte35Injector == nil {
 		return nil
 	}
 	msg := &scte35.CueMessage{

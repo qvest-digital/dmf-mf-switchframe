@@ -30,6 +30,16 @@ const (
 	// maxPendingSCTE35 is the maximum number of SCTE-35 sections buffered
 	// before the muxer is initialized (first keyframe).
 	maxPendingSCTE35 = 10
+
+	// maxPendingIDRSCTE35 is the maximum number of SCTE-35 sections that
+	// can be buffered waiting for an IDR-aligned flush after initialization.
+	maxPendingIDRSCTE35 = 4
+
+	// idrAlignTimeoutFrames is the number of video frames to wait for an
+	// IDR before flushing pending SCTE-35 sections regardless. At 30fps
+	// with a 2s GOP, this covers ~2 GOPs to ensure sections are not delayed
+	// indefinitely.
+	idrAlignTimeoutFrames = 120
 )
 
 // TSMuxer wraps go-astits to produce 188-byte MPEG-TS packets from
@@ -47,9 +57,17 @@ type TSMuxer struct {
 	prependBuf    []byte
 	scte35PID     uint16 // 0 = disabled; non-zero = enabled with this PID
 	pendingSCTE35 [][]byte
-	lastVideoPTS  int64
-	lastPCRPTS    int64
-	scte35CC      uint8 // continuity counter for SCTE-35 PID
+
+	// IDR-aligned SCTE-35 buffering: after initialization, WriteSCTE35
+	// buffers sections here and WriteVideo flushes them on the next keyframe.
+	// This ensures SCTE-35 cues appear immediately before the IDR they
+	// reference, which is required for clean splice points.
+	pendingIDRSCTE35   [][]byte
+	idrAlignFrameCount int // frames since last IDR-aligned SCTE-35 was buffered
+
+	lastVideoPTS int64
+	lastPCRPTS   int64
+	scte35CC     uint8 // continuity counter for SCTE-35 PID
 
 	// PTS rebasing: upstream wall-clock PTS is rebased to near-zero for
 	// SRT TSBPD compatibility. Both video and audio use the same base.
@@ -138,10 +156,11 @@ func (m *TSMuxer) WriteSCTE35(data []byte) error {
 		return nil
 	}
 
+	dataCopy := make([]byte, len(data))
+	copy(dataCopy, data)
+
 	if !m.initialized {
 		// Buffer SCTE-35 sections until the muxer is initialized.
-		dataCopy := make([]byte, len(data))
-		copy(dataCopy, data)
 		m.pendingSCTE35 = append(m.pendingSCTE35, dataCopy)
 		if len(m.pendingSCTE35) > maxPendingSCTE35 {
 			m.pendingSCTE35 = m.pendingSCTE35[len(m.pendingSCTE35)-maxPendingSCTE35:]
@@ -149,7 +168,15 @@ func (m *TSMuxer) WriteSCTE35(data []byte) error {
 		return nil
 	}
 
-	return m.writeSCTE35Locked(data)
+	// Buffer for IDR-aligned insertion. The section will be flushed
+	// immediately before the next keyframe in WriteVideo, ensuring
+	// SCTE-35 cues are co-located with the IDR they reference.
+	m.pendingIDRSCTE35 = append(m.pendingIDRSCTE35, dataCopy)
+	if len(m.pendingIDRSCTE35) > maxPendingIDRSCTE35 {
+		m.pendingIDRSCTE35 = m.pendingIDRSCTE35[len(m.pendingIDRSCTE35)-maxPendingIDRSCTE35:]
+	}
+	m.idrAlignFrameCount = 0
+	return nil
 }
 
 // writeSCTE35Locked constructs raw 188-byte TS packets for a SCTE-35
@@ -295,6 +322,23 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 		)
 	}
 
+	// Flush pending IDR-aligned SCTE-35 sections. On keyframes, flush
+	// immediately before the IDR so the cue and keyframe are co-located
+	// in the TS stream. If no keyframe arrives within idrAlignTimeoutFrames,
+	// flush anyway to avoid indefinite delay.
+	if len(m.pendingIDRSCTE35) > 0 {
+		m.idrAlignFrameCount++
+		if frame.IsKeyframe || m.idrAlignFrameCount >= idrAlignTimeoutFrames {
+			for _, section := range m.pendingIDRSCTE35 {
+				if err := m.writeSCTE35Locked(section); err != nil {
+					return err
+				}
+			}
+			m.pendingIDRSCTE35 = m.pendingIDRSCTE35[:0]
+			m.idrAlignFrameCount = 0
+		}
+	}
+
 	// Convert AVC1 wire data to Annex B format, reusing the buffer.
 	m.annexBBuf = codec.AVC1ToAnnexBInto(frame.WireData, m.annexBBuf[:0])
 	if len(m.annexBBuf) == 0 {
@@ -412,6 +456,8 @@ func (m *TSMuxer) Close() error {
 	m.initialized = false
 	m.pendingAudio = nil
 	m.pendingSCTE35 = nil
+	m.pendingIDRSCTE35 = nil
+	m.idrAlignFrameCount = 0
 	m.lastPCRPTS = 0
 	m.ptsBase = 0
 	m.ptsBaseSet = false
