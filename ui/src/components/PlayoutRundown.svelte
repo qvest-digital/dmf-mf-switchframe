@@ -55,9 +55,6 @@
 	}
 
 	function handleRowClick(index: number) {
-		// Can't skip backwards
-		if (index <= currentIndex) return;
-
 		if (pendingSkip && pendingSkip.index === index) {
 			// Second click — execute skip
 			clearTimeout(pendingSkip.timer);
@@ -156,7 +153,7 @@
 
 				<!-- Skip-to confirmation tooltip -->
 				{#if pendingSkip?.index === i}
-					<span class="skip-tooltip">Skip to {item.title}?</span>
+					<span class="skip-tooltip">{i <= currentIndex ? 'Restart from' : 'Skip to'} "{item.title}"?</span>
 				{/if}
 
 				<!-- Secondary event dots -->
@@ -247,7 +244,7 @@
 		background: rgba(59, 130, 246, 0.06);
 	}
 
-	.rundown-row.future:not(.is-next) {
+	.rundown-row:not(.completed) {
 		cursor: pointer;
 	}
 

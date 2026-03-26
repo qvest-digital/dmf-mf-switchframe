@@ -401,11 +401,14 @@
 		apiCall(playoutNext(selectedChannel), 'Next');
 	}
 
-	function handleRundownSkipTo(index: number) {
+	async function handleJumpTo(index: number) {
 		const item = workingPlaylist.items[index];
-		if (item?.id) {
-			apiCall(playoutJump(selectedChannel, item.id), 'Jump');
-		}
+		if (!item?.id) return;
+		await apiCall(playoutJump(selectedChannel, item.id), 'Jump');
+	}
+
+	function handleRundownSkipTo(index: number) {
+		handleJumpTo(index);
 	}
 
 	async function handleCueTop() {
@@ -607,6 +610,7 @@
 				onReorder={reorderItem}
 				onDelete={deleteItem}
 				onAddItem={addItem}
+				onJumpTo={handleJumpTo}
 			/>
 		</div>
 

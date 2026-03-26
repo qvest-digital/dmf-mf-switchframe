@@ -214,7 +214,7 @@ describe('PlayoutRundown', () => {
 		vi.useRealTimers();
 	});
 
-	it('disables skip on completed items', async () => {
+	it('allows skip to completed items (backward jump)', async () => {
 		vi.useFakeTimers();
 		const items = makeItems();
 		const onSkipTo = vi.fn();
@@ -228,10 +228,10 @@ describe('PlayoutRundown', () => {
 		});
 
 		const listItems = screen.getAllByRole('listitem');
-		// Try to skip to a completed item (index 0, before currentIndex=2)
+		// Double-click to skip to a completed item (index 0, before currentIndex=2)
 		await fireEvent.dblClick(listItems[0]);
 		await fireEvent.dblClick(listItems[0]);
-		expect(onSkipTo).not.toHaveBeenCalled();
+		expect(onSkipTo).toHaveBeenCalledWith(0);
 
 		vi.useRealTimers();
 	});

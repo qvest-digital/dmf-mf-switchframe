@@ -11,8 +11,9 @@
 		onAddItem: (atIndex: number) => void;
 		progress?: number;
 		lockedIndices?: number[];
+		onJumpTo?: (index: number) => void;
 	}
-	let { items, currentIndex, selectedIndex, onSelect, onReorder, onDelete, onAddItem, progress = 0, lockedIndices = [] }: Props = $props();
+	let { items, currentIndex, selectedIndex, onSelect, onReorder, onDelete, onAddItem, progress = 0, lockedIndices = [], onJumpTo }: Props = $props();
 
 	function isLocked(index: number): boolean {
 		return lockedIndices.includes(index);
@@ -186,6 +187,7 @@
 					role="listitem"
 					tabindex="0"
 					aria-label="{item.type} {item.title}"
+					ondblclick={(e) => { e.stopPropagation(); onJumpTo?.(i); }}
 					onclick={() => onSelect(i)}
 					onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(i); } }}
 					oncontextmenu={(e) => handleContextMenu(e, i)}
