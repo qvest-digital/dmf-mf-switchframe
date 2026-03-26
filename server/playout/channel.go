@@ -84,10 +84,15 @@ type Channel struct {
 	// CPU fallback: returns latest decoded frame for a source key.
 	gpuSourceTap    func(sourceKey string) *DecodedFrame
 	lastLiveTapMiss string // for once-per-item logging of tap failures
+	activeLiveSource string // current live source key (for audio routing)
 
 	// Sentinel frame returned by tapLiveSource when GPU alias succeeded.
 	// emitFrame skips CPU output for this frame (GPU pipeline already has it).
 	gpuAliasedSentinel DecodedFrame
+
+	// Live audio routing: called when entering/leaving a live item to redirect
+	// the live source's audio to/from the playout mixer channel.
+	onLiveAudio func(liveSourceKey string, active bool)
 
 	// Slate frame (pre-allocated BT.709 black: Y=16, UV=128).
 	slateFrame *DecodedFrame
@@ -593,6 +598,15 @@ func (c *Channel) SetGPUAlias(fn func(liveSourceKey string) bool) {
 	c.gpuAlias = fn
 }
 
+// SetOnLiveAudio registers a callback for live audio routing. Called when
+// entering a live item (active=true) and leaving (active=false). The app
+// layer uses this to forward the live source's audio to the playout mixer channel.
+func (c *Channel) SetOnLiveAudio(fn func(liveSourceKey string, active bool)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onLiveAudio = fn
+}
+
 // SetGPUSourceTap registers a function that returns the latest decoded frame
 // for a live source key. Used as CPU fallback for live playlist items.
 func (c *Channel) SetGPUSourceTap(fn func(sourceKey string) *DecodedFrame) {
@@ -786,12 +800,33 @@ func (c *Channel) handleItemChange(item *PlaylistItem, secScheduler *SecondaryEv
 		c.clipLastFrame = nil
 	}
 
+	// Track previous item for live audio routing.
+	prevLiveSource := c.activeLiveSource
 	c.secondaryItemID = item.ID
 	c.lastLiveTapMiss = "" // reset so new item gets a fresh warning
 	c.itemStartTime = now.UTC()
 	c.itemProgress.Store(0)
 	c.itemRemainMs.Store(item.DurationMs)
+
+	// Update live audio routing.
+	liveAudioFn := c.onLiveAudio
+	if item.Type == ItemLive && item.Source != "" {
+		c.activeLiveSource = item.Source
+	} else {
+		c.activeLiveSource = ""
+	}
+	newLiveSource := c.activeLiveSource
 	c.mu.Unlock()
+
+	// Deactivate old live audio, activate new.
+	if liveAudioFn != nil {
+		if prevLiveSource != "" && prevLiveSource != newLiveSource {
+			liveAudioFn(prevLiveSource, false)
+		}
+		if newLiveSource != "" && newLiveSource != prevLiveSource {
+			liveAudioFn(newLiveSource, true)
+		}
+	}
 
 	// Emit item_start.
 	if asRunFn != nil {

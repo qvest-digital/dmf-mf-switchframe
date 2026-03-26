@@ -11,6 +11,21 @@ import (
 // output. No immediate output is produced -- the outputTicker reads from ring
 // buffers at a fixed cadence.
 func (m *Mixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
+	// Audio forwarding: if this source is being forwarded to another channel
+	// (e.g., live source → playout channel), ingest for the destination too.
+	// Use ingestFrameInner to avoid infinite recursion (forwards don't chain).
+	m.mu.RLock()
+	fwdDst := m.audioForwards[sourceKey]
+	m.mu.RUnlock()
+	if fwdDst != "" {
+		fwdFrame := *frame
+		m.ingestFrameInner(fwdDst, &fwdFrame)
+	}
+
+	m.ingestFrameInner(sourceKey, frame)
+}
+
+func (m *Mixer) ingestFrameInner(sourceKey string, frame *media.AudioFrame) {
 	// Apply per-source audio delay for lip-sync correction.
 	// Done before all processing so PFL monitoring reflects corrected timing.
 	m.mu.RLock()

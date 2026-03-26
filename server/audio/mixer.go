@@ -114,6 +114,11 @@ type Mixer struct {
 	output       func(*media.AudioFrame)
 	config       MixerConfig
 
+	// Audio forwarding: when set, audio ingested for srcKey is also
+	// ingested for dstKey. Used by playout to route live source audio
+	// through the playout mixer channel.
+	audioForwards map[string]string // srcKey → dstKey
+
 	// Reusable accumulator for mix output (used by tick())
 	mixAccum []float32
 
@@ -250,6 +255,25 @@ func (m *Mixer) SetRawAudioSink(sink RawAudioSink) {
 	} else {
 		m.rawAudioSink.Store(nil)
 	}
+}
+
+// AddAudioForward sets up forwarding: audio ingested for srcKey will also be
+// ingested for dstKey. Used by playout to route live source audio through
+// the playout mixer channel during live playlist items.
+func (m *Mixer) AddAudioForward(srcKey, dstKey string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.audioForwards == nil {
+		m.audioForwards = make(map[string]string)
+	}
+	m.audioForwards[srcKey] = dstKey
+}
+
+// RemoveAudioForward removes a previously set audio forward.
+func (m *Mixer) RemoveAudioForward(srcKey string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.audioForwards, srcKey)
 }
 
 // Close releases all codec resources and stops the background ticker.

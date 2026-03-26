@@ -35,6 +35,9 @@ type Manager struct {
 	// GPU-native live source aliasing (zero-copy frame routing in VRAM).
 	gpuAlias func(channelKey, liveSourceKey string) bool
 
+	// Live audio routing callback.
+	onLiveAudio func(channelKey, liveSourceKey string, active bool)
+
 	// GPU source tap for live source pass-through (CPU fallback).
 	gpuSourceTap func(channelKey, sourceKey string) *DecodedFrame
 
@@ -133,6 +136,7 @@ func (m *Manager) Start(channelID int) error {
 	wd := m.watchdog
 	gpuAliasFn := m.gpuAlias
 	gpuTap := m.gpuSourceTap
+	liveAudioFn := m.onLiveAudio
 	m.mu.Unlock()
 
 	// Register with watchdog.
@@ -190,6 +194,14 @@ func (m *Manager) Start(channelID int) error {
 		channelKey := ch.Key()
 		ch.SetGPUAlias(func(liveSourceKey string) bool {
 			return gpuAliasFn(channelKey, liveSourceKey)
+		})
+	}
+
+	// Wire live audio routing.
+	if liveAudioFn != nil {
+		channelKey := ch.Key()
+		ch.SetOnLiveAudio(func(liveSourceKey string, active bool) {
+			liveAudioFn(channelKey, liveSourceKey, active)
 		})
 	}
 
@@ -582,6 +594,15 @@ func (m *Manager) SetGPUAlias(fn func(channelKey, liveSourceKey string) bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.gpuAlias = fn
+}
+
+// SetOnLiveAudio registers a callback for live audio routing. Called when a
+// playout channel enters/leaves a live item. The app layer uses this to
+// forward the live source's audio to the playout mixer channel.
+func (m *Manager) SetOnLiveAudio(fn func(channelKey, liveSourceKey string, active bool)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onLiveAudio = fn
 }
 
 // SetGPUSourceTap registers a function that reads cached GPU frames for live

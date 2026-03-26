@@ -179,6 +179,17 @@ func (a *App) initPlayout() error {
 		}
 	})
 
+	// Live audio routing: forward live source's audio to playout mixer channel.
+	mgr.SetOnLiveAudio(func(channelKey, liveSourceKey string, active bool) {
+		if active {
+			slog.Info("playout: routing live audio", "from", liveSourceKey, "to", channelKey)
+			a.mixer.AddAudioForward(liveSourceKey, channelKey)
+		} else {
+			slog.Info("playout: stopping live audio route", "from", liveSourceKey, "to", channelKey)
+			a.mixer.RemoveAudioForward(liveSourceKey)
+		}
+	})
+
 	// Raw video output: playout sends decoded YUV to switcher pipeline.
 	// nil YUV = GPU-aliased signal frame (triggers RunFromCache, no CPU upload).
 	mgr.SetRawVideoOutput(func(key string, yuv []byte, w, h int, pts int64, isKeyframe bool) {
