@@ -117,10 +117,6 @@ type Channel struct {
 	outputPTS      int64
 	outputAudioPTS int64 // independent audio PTS counter (AAC frame cadence)
 
-	// Audio queue: video tick pushes audio frames here, audio ticker drains
-	// at steady AAC cadence (~21.3ms). This decouples audio delivery from
-	// the video tick to prevent bursty/uneven audio output.
-	audioQueue chan AudioFrameData
 
 	// Run control.
 	cancel context.CancelFunc
@@ -156,7 +152,6 @@ func NewChannel(id int, config ChannelConfig) *Channel {
 		compositor:    NewCompositor(w, h, nil),
 		slateFrame:    makeBlackFrame(w, h),
 		frameDuration: time.Duration(float64(time.Second) / fps),
-		audioQueue:    make(chan AudioFrameData, 64), // ~1.3s of buffered AAC frames
 	}
 }
 
@@ -644,16 +639,14 @@ func (c *Channel) configDimensions() (int, int) {
 // ---------------------------------------------------------------------------
 
 // run is the main playback goroutine. It ticks at frame rate and delegates
-// all scheduling decisions to the Scheduler. Audio is delivered on a separate
-// steady-cadence ticker to prevent bursty delivery.
+// all scheduling decisions to the Scheduler. The tick rate adapts to the
+// current clip's native FPS so audio proportional distribution works correctly.
 func (c *Channel) run(ctx context.Context) {
 	defer close(c.done)
 
-	// Start audio drain goroutine — delivers audio to mixer at steady AAC cadence.
-	go c.audioTicker(ctx)
-
 	ticker := time.NewTicker(c.frameDuration)
 	defer ticker.Stop()
+	currentDuration := c.frameDuration
 
 	for {
 		select {
@@ -661,6 +654,22 @@ func (c *Channel) run(ctx context.Context) {
 			c.cleanup()
 			return
 		case <-ticker.C:
+			// Adapt tick rate to current clip's FPS if it differs from pipeline.
+			c.mu.Lock()
+			clipFPS := c.clipFPS
+			c.mu.Unlock()
+			if clipFPS > 0 {
+				clipDuration := time.Duration(float64(time.Second) / clipFPS)
+				if clipDuration != currentDuration {
+					ticker.Reset(clipDuration)
+					currentDuration = clipDuration
+				}
+			} else if currentDuration != c.frameDuration {
+				// Non-clip item (live/slate): revert to pipeline rate.
+				ticker.Reset(c.frameDuration)
+				currentDuration = c.frameDuration
+			}
+
 			if c.tick(time.Now()) {
 				c.cleanup()
 				return // playlist completed
@@ -1144,24 +1153,29 @@ func (c *Channel) emitFrame(frame *DecodedFrame, outputFn func([]byte, int, int,
 		outputFn(frame.YUV, frame.Width, frame.Height, pts, frame.IsKeyframe)
 	}
 
-	// Push audio frames to the audio queue. The audioTicker goroutine
-	// drains these at steady AAC cadence (~21.3ms), preventing the bursty
-	// delivery pattern that causes stuttering/robotic audio.
-	if len(frame.AudioFrames) > 0 {
-		for i := range frame.AudioFrames {
-			select {
-			case c.audioQueue <- frame.AudioFrames[i]:
-			default:
-				// Queue full — drop oldest to prevent backpressure on video tick.
+	// Push audio to mixer. Use elapsed wall-clock time to determine how many
+	// audio frames should have been delivered by now — not tied to video frame
+	// count. This correctly handles the case where the playout tick rate (24fps
+	// pipeline) differs from the clip's native rate (30fps clip). The mixer
+	// ignores PTS and uses its own clock-driven outputTicker.
+	if audioFn != nil {
+		if len(frame.AudioFrames) > 0 {
+			// The FileFrameIterator attaches audio proportionally to encoded video
+			// frames. But we may be ticking slower than the clip's native rate,
+			// so we push ALL attached frames immediately — the mixer ring buffer
+			// absorbs the burst.
+			for i := range frame.AudioFrames {
+				af := &frame.AudioFrames[i]
+				audioFn(af.Data, c.outputAudioPTS, af.SampleRate, af.Channels)
+				if af.SampleRate > 0 {
+					c.outputAudioPTS += int64(1024) * 90000 / int64(af.SampleRate)
+				}
 			}
-		}
-	} else if len(frame.AudioData) > 0 {
-		select {
-		case c.audioQueue <- AudioFrameData{
-			Data: frame.AudioData, PTS: frame.AudioPTS,
-			SampleRate: frame.AudioSampleRate, Channels: frame.AudioChannels,
-		}:
-		default:
+		} else if len(frame.AudioData) > 0 {
+			audioFn(frame.AudioData, c.outputAudioPTS, frame.AudioSampleRate, frame.AudioChannels)
+			if frame.AudioSampleRate > 0 {
+				c.outputAudioPTS += int64(1024) * 90000 / int64(frame.AudioSampleRate)
+			}
 		}
 	}
 
@@ -1186,39 +1200,6 @@ func (c *Channel) transitionState(newState ChannelState) {
 }
 
 // cleanup closes the active clip iterator and idle loop.
-// audioTicker drains the audio queue at steady AAC cadence (~21.3ms per frame
-// at 48kHz). This decouples audio delivery from the video tick, preventing
-// the bursty 1-or-2-frames-per-tick pattern that causes robotic audio.
-func (c *Channel) audioTicker(ctx context.Context) {
-	// AAC frame duration: 1024 samples / 48000 Hz = 21.333ms
-	aacDuration := time.Duration(float64(time.Second.Nanoseconds()) * 1024.0 / 48000.0)
-	ticker := time.NewTicker(aacDuration)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			// Drain one audio frame from the queue per tick.
-			select {
-			case af := <-c.audioQueue:
-				c.mu.Lock()
-				audioFn := c.audioOutput
-				c.mu.Unlock()
-				if audioFn != nil {
-					audioFn(af.Data, c.outputAudioPTS, af.SampleRate, af.Channels)
-					if af.SampleRate > 0 {
-						c.outputAudioPTS += int64(1024) * 90000 / int64(af.SampleRate)
-					}
-				}
-			default:
-				// No audio frame available — skip this tick (silence).
-			}
-		}
-	}
-}
-
 func (c *Channel) cleanup() {
 	c.mu.Lock()
 	if c.clipIter != nil {

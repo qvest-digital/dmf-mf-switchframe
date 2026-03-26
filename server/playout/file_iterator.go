@@ -274,11 +274,10 @@ func (f *FileFrameIterator) makeDecodedFrame(yuv []byte, w, h int, pts int64, is
 	return frame
 }
 
-// attachAudio distributes audio frames proportionally across video frames,
-// following the same pattern as clip/player.go's emitAudioForVideoFrame.
-// This ensures every audio frame is delivered exactly once, regardless of
-// PTS ordering (which can differ between decode order and display order
-// due to B-frame reordering).
+// attachAudio distributes audio frames proportionally across decoded video
+// frames. Uses the same formula as clip/player.go:emitAudioForVideoFrame.
+// The proportional approach guarantees all audio frames are delivered exactly
+// once regardless of B-frame reordering or tick rate differences.
 func (f *FileFrameIterator) attachAudio(frame *DecodedFrame) {
 	totalAudio := len(f.audioFrames)
 	totalVideo := len(f.encodedFrames)
@@ -286,8 +285,7 @@ func (f *FileFrameIterator) attachAudio(frame *DecodedFrame) {
 		return
 	}
 
-	// Calculate how many audio frames should have been emitted by this
-	// video frame (proportional distribution).
+	// 1-based index matching clip/player.go (outputIdx incremented before call).
 	targetAudioIdx := (f.outputCount + 1) * totalAudio / totalVideo
 	if targetAudioIdx > totalAudio {
 		targetAudioIdx = totalAudio
