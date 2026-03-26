@@ -34,9 +34,10 @@ type Engine struct {
 	backends    map[string]Backend
 	lazyConfigs map[string]interface{} // configs for backends not yet initialized
 
-	onTranscript func(words []TranscriptWord, isFinal bool)
-	closed       bool
-	doneCh       chan struct{}
+	onTranscript    func(words []TranscriptWord, isFinal bool)
+	onBackendSwitch atomic.Pointer[func()] // called after async backend switch
+	closed          bool
+	doneCh          chan struct{}
 }
 
 // newEngineWithBackends creates an Engine from pre-built backends.
@@ -238,37 +239,26 @@ func (e *Engine) SwitchBackend(name string) error {
 		return fmt.Errorf("asr: engine closed")
 	}
 
+	// Already on requested backend — no-op.
+	if bp := e.active.Load(); bp != nil && (*bp).Name() == name {
+		e.mu.Unlock()
+		return nil
+	}
+
 	newBackend, ok := e.backends[name]
 	if !ok {
-		// Try lazy initialization from stored config.
+		// Lazy initialization needed — kick it off in the background so the
+		// HTTP handler returns immediately. The old backend keeps running
+		// until the new one is ready.
 		lazyCfg, hasLazy := e.lazyConfigs[name]
 		e.mu.Unlock()
 		if !hasLazy {
 			return fmt.Errorf("asr: unknown backend %q", name)
 		}
-		var err error
-		switch name {
-		case "whisper":
-			cfg := lazyCfg.(*WhisperBackendConfig)
-			newBackend, err = NewWhisperBackend(*cfg)
-		case "nemotron":
-			cfg := lazyCfg.(*NemotronConfig)
-			newBackend, err = NewNemotronBackend(*cfg)
-		default:
-			return fmt.Errorf("asr: unknown backend %q", name)
-		}
-		if err != nil {
-			return fmt.Errorf("asr: initialize %s backend: %w", name, err)
-		}
-		slog.Info("ASR: lazy-initialized backend", "name", name)
-		// Store the new backend. Brief lock — don't hold through stop/start below.
-		e.mu.Lock()
-		e.backends[name] = newBackend
-		delete(e.lazyConfigs, name)
-		e.mu.Unlock()
-	} else {
-		e.mu.Unlock()
+		go e.lazyInitAndSwitch(name, lazyCfg)
+		return nil // return immediately — switch happens asynchronously
 	}
+	e.mu.Unlock()
 
 	// Build callback wrapper that reads onTranscript through the Engine mutex.
 	cb := func(words []TranscriptWord, isFinal bool) {
@@ -300,6 +290,70 @@ func (e *Engine) SwitchBackend(name string) error {
 	// Atomic swap.
 	e.active.Store(&newBackend)
 	return nil
+}
+
+// lazyInitAndSwitch initializes a backend from its stored config and swaps
+// to it. Runs in a background goroutine so the caller doesn't block.
+func (e *Engine) lazyInitAndSwitch(name string, lazyCfg interface{}) {
+	var newBackend Backend
+	var err error
+
+	switch name {
+	case "whisper":
+		cfg := lazyCfg.(*WhisperBackendConfig)
+		newBackend, err = NewWhisperBackend(*cfg)
+	case "nemotron":
+		cfg := lazyCfg.(*NemotronConfig)
+		newBackend, err = NewNemotronBackend(*cfg)
+	default:
+		slog.Error("ASR: lazy-init unknown backend", "name", name)
+		return
+	}
+	if err != nil {
+		slog.Error("ASR: lazy-init backend failed", "name", name, "error", err)
+		return
+	}
+	slog.Info("ASR: lazy-initialized backend", "name", name)
+
+	// Store the backend.
+	e.mu.Lock()
+	e.backends[name] = newBackend
+	delete(e.lazyConfigs, name)
+	e.mu.Unlock()
+
+	// Now do the actual swap.
+	cb := func(words []TranscriptWord, isFinal bool) {
+		e.mu.Lock()
+		fn := e.onTranscript
+		e.mu.Unlock()
+		if fn != nil {
+			fn(words, isFinal)
+		}
+	}
+
+	bp := e.active.Load()
+	if bp != nil {
+		(*bp).Stop()
+	}
+	if err := newBackend.Start(cb); err != nil {
+		slog.Error("ASR: start lazy-loaded backend failed", "name", name, "error", err)
+		if bp != nil {
+			_ = (*bp).Start(cb)
+		}
+		return
+	}
+	e.active.Store(&newBackend)
+	slog.Info("ASR: switched to backend", "name", name)
+
+	// Notify cache update if wired (via onBackendSwitch callback).
+	if fn := e.onBackendSwitch.Load(); fn != nil {
+		(*fn)()
+	}
+}
+
+// OnBackendSwitch registers a callback invoked after an async backend switch completes.
+func (e *Engine) OnBackendSwitch(fn func()) {
+	e.onBackendSwitch.Store(&fn)
 }
 
 // Models returns the available models for the active backend.

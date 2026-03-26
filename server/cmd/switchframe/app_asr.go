@@ -93,6 +93,12 @@ func (a *App) initASR() error {
 	// Wire audio input — fan-out with existing sink if present.
 	a.wireASRAudioSink()
 
+	// Update cached state + broadcast after async backend switches complete.
+	engine.OnBackendSwitch(func() {
+		a.updateASRStateCache()
+		a.broadcastState(nil)
+	})
+
 	// Note: caption mode is set to ModeAuto later in run() after the API is
 	// initialized, because SetMode triggers broadcastState which requires
 	// a.api to be non-nil.
