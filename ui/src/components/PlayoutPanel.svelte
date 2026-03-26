@@ -18,6 +18,7 @@
 	import PlayoutOutputBadge from './PlayoutOutputBadge.svelte';
 	import PlayoutClipBrowser from './PlayoutClipBrowser.svelte';
 	import CacheStatus from './CacheStatus.svelte';
+	import PlayoutStatusDashboard from './PlayoutStatusDashboard.svelte';
 
 
 	interface Props {
@@ -764,7 +765,12 @@
 					/>
 				</div>
 				<div class="status-zone" data-testid="status-zone">
-					<!-- Status dashboard will be added in Task 5 -->
+					<PlayoutStatusDashboard
+						{channel}
+						{currentItem}
+						{nextItem}
+						items={workingPlaylist.items}
+					/>
 				</div>
 			</div>
 		</div>
