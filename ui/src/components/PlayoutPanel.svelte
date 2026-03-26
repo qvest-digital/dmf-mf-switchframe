@@ -408,6 +408,12 @@
 		}
 	}
 
+	async function handleCueTop() {
+		const firstItem = workingPlaylist.items[0];
+		if (!firstItem) return;
+		await apiCall(playoutJump(selectedChannel, firstItem.id), 'Cue top');
+	}
+
 	// ── Next item info for monitor mode ──
 	const nextItem = $derived<PlaylistItem | undefined>(
 		channel.itemIndex >= 0 && channel.itemIndex + 1 < workingPlaylist.items.length
@@ -568,7 +574,7 @@
 			</button>
 		{:else}
 			<!-- Monitor mode: inline transport in header -->
-			<PlayoutTransport {channel} />
+			<PlayoutTransport {channel} onCueTop={workingPlaylist.items.length > 0 ? handleCueTop : undefined} />
 		{/if}
 
 		<!-- Mode toggle -->
@@ -638,7 +644,7 @@
 					</span>
 				</div>
 
-				<PlayoutTransport {channel} />
+				<PlayoutTransport {channel} onCueTop={workingPlaylist.items.length > 0 ? handleCueTop : undefined} />
 
 				{#if isOnAir || isCued}
 					<div class="now-playing">

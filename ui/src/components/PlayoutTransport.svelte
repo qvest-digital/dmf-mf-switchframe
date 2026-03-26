@@ -13,8 +13,9 @@
 
 	interface Props {
 		channel: PlayoutChannelState;
+		onCueTop?: () => void;
 	}
-	let { channel }: Props = $props();
+	let { channel, onCueTop }: Props = $props();
 
 	const isOnAir = $derived(channel.state === 'on_air');
 	const isCued = $derived(channel.state === 'cued');
@@ -137,6 +138,11 @@
 		<button class="t-btn t-next" onclick={handleNext} disabled={isStopped} title="Next item">
 			{@html renderIcon(ICON_FRAME_FORWARD, 15)}
 		</button>
+		{#if (isStopped || channel.state === 'completed') && onCueTop}
+			<button class="t-btn t-cue-top" onclick={onCueTop} title="Cue to first item">
+				CUE TOP
+			</button>
+		{/if}
 		{#if isOnAir}
 			<span class="elapsed" title="Elapsed time since on-air">{elapsed}</span>
 		{/if}
@@ -198,6 +204,21 @@
 	.t-next {
 		min-width: 34px;
 		height: 30px;
+	}
+
+	.t-cue-top {
+		padding: 0 8px;
+		font-family: var(--font-ui);
+		font-size: 8px;
+		font-weight: 700;
+		letter-spacing: 0.06em;
+		color: rgba(96, 165, 250, 1);
+		border-color: rgba(59, 130, 246, 0.4);
+		background: rgba(59, 130, 246, 0.08);
+	}
+	.t-cue-top:hover:not(:disabled) {
+		background: rgba(59, 130, 246, 0.15);
+		border-color: rgba(59, 130, 246, 0.6);
 	}
 
 	.t-stop:hover:not(:disabled):not(.confirming) { color: var(--tally-program); border-color: rgba(220, 38, 38, 0.3); background: rgba(220, 38, 38, 0.1); }
