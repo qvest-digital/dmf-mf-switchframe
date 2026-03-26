@@ -29,9 +29,10 @@ type EngineConfig struct {
 // The IngestAudio hot path uses atomic.Pointer for lock-free dispatch.
 // All other methods take the mutex.
 type Engine struct {
-	mu       sync.Mutex
-	active   atomic.Pointer[Backend]
-	backends map[string]Backend
+	mu          sync.Mutex
+	active      atomic.Pointer[Backend]
+	backends    map[string]Backend
+	lazyConfigs map[string]interface{} // configs for backends not yet initialized
 
 	onTranscript func(words []TranscriptWord, isFinal bool)
 	closed       bool
@@ -103,27 +104,47 @@ func newEngineWithBackends(backends map[string]Backend, defaultName string) *Eng
 	return e
 }
 
-// NewEngine creates a new ASR engine. It attempts to register each configured
-// backend, skipping those that fail to initialize. Returns an error if no
-// backends are available.
+// NewEngine creates a new ASR engine. It eagerly initializes only the default
+// backend to conserve GPU memory. Non-default backends are lazy-loaded on
+// first SwitchBackend call.
 func NewEngine(cfg EngineConfig) (*Engine, error) {
 	backends := make(map[string]Backend)
+	configs := make(map[string]interface{})
 
+	// Determine default backend name.
+	defaultName := cfg.DefaultBackend
+	if defaultName == "" {
+		if cfg.Whisper != nil {
+			defaultName = "whisper"
+		} else if cfg.Nemotron != nil {
+			defaultName = "nemotron"
+		}
+	}
+
+	// Eagerly initialize the default backend. Store configs for lazy init of others.
 	if cfg.Whisper != nil {
-		b, err := NewWhisperBackend(*cfg.Whisper)
-		if err != nil {
-			slog.Warn("ASR: whisper backend unavailable", "error", err)
+		if defaultName == "whisper" {
+			b, err := NewWhisperBackend(*cfg.Whisper)
+			if err != nil {
+				slog.Warn("ASR: whisper backend unavailable", "error", err)
+			} else {
+				backends["whisper"] = b
+			}
 		} else {
-			backends["whisper"] = b
+			configs["whisper"] = cfg.Whisper
 		}
 	}
 
 	if cfg.Nemotron != nil {
-		b, err := NewNemotronBackend(*cfg.Nemotron)
-		if err != nil {
-			slog.Warn("ASR: nemotron backend unavailable", "error", err)
+		if defaultName == "nemotron" {
+			b, err := NewNemotronBackend(*cfg.Nemotron)
+			if err != nil {
+				slog.Warn("ASR: nemotron backend unavailable", "error", err)
+			} else {
+				backends["nemotron"] = b
+			}
 		} else {
-			backends["nemotron"] = b
+			configs["nemotron"] = cfg.Nemotron
 		}
 	}
 
@@ -131,7 +152,15 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		return nil, fmt.Errorf("asr: no backends available")
 	}
 
-	defaultName := cfg.DefaultBackend
+	// Track available backend names (including lazy ones).
+	available := make(map[string]bool)
+	for name := range backends {
+		available[name] = true
+	}
+	for name := range configs {
+		available[name] = true
+	}
+
 	if defaultName == "" {
 		// Pick first available, preferring whisper.
 		if _, ok := backends["whisper"]; ok {
@@ -146,7 +175,9 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 		}
 	}
 
-	return newEngineWithBackends(backends, defaultName), nil
+	e := newEngineWithBackends(backends, defaultName)
+	e.lazyConfigs = configs
+	return e, nil
 }
 
 // OnTranscript sets the callback for transcript updates. The backend's
@@ -178,12 +209,20 @@ func (e *Engine) ActiveBackend() string {
 	return (*bp).Name()
 }
 
-// AvailableBackends returns a sorted list of registered backend names.
+// AvailableBackends returns a sorted list of registered backend names,
+// including backends that haven't been initialized yet (lazy-loaded).
 func (e *Engine) AvailableBackends() []string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	names := make([]string, 0, len(e.backends))
+	seen := make(map[string]bool)
 	for name := range e.backends {
+		seen[name] = true
+	}
+	for name := range e.lazyConfigs {
+		seen[name] = true
+	}
+	names := make([]string, 0, len(seen))
+	for name := range seen {
 		names = append(names, name)
 	}
 	sort.Strings(names)
@@ -201,8 +240,30 @@ func (e *Engine) SwitchBackend(name string) error {
 
 	newBackend, ok := e.backends[name]
 	if !ok {
+		// Try lazy initialization from stored config.
+		lazyCfg, hasLazy := e.lazyConfigs[name]
 		e.mu.Unlock()
-		return fmt.Errorf("asr: unknown backend %q", name)
+		if !hasLazy {
+			return fmt.Errorf("asr: unknown backend %q", name)
+		}
+		var err error
+		switch name {
+		case "whisper":
+			cfg := lazyCfg.(*WhisperBackendConfig)
+			newBackend, err = NewWhisperBackend(*cfg)
+		case "nemotron":
+			cfg := lazyCfg.(*NemotronConfig)
+			newBackend, err = NewNemotronBackend(*cfg)
+		default:
+			return fmt.Errorf("asr: unknown backend %q", name)
+		}
+		if err != nil {
+			return fmt.Errorf("asr: initialize %s backend: %w", name, err)
+		}
+		slog.Info("ASR: lazy-initialized backend", "name", name)
+		e.mu.Lock()
+		e.backends[name] = newBackend
+		delete(e.lazyConfigs, name)
 	}
 
 	// Build callback wrapper that reads onTranscript through the Engine mutex.
