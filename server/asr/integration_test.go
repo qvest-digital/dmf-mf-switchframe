@@ -6,8 +6,25 @@ import (
 	"testing"
 )
 
+// newTestWhisperEngine creates an Engine backed by a test WhisperBackend
+// (nil whisper, for testing non-inference paths).
+func newTestWhisperEngine() *Engine {
+	b := newTestWhisperBackend()
+	return newEngineWithBackends(map[string]Backend{
+		"whisper": b,
+	}, "whisper")
+}
+
+// testWhisperBackend returns the WhisperBackend from a test engine.
+func testWhisperBackend(e *Engine) *WhisperBackend {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	b := e.backends["whisper"]
+	return b.(*WhisperBackend)
+}
+
 func TestIntegration_FullPipeline(t *testing.T) {
-	e := newTestEngine()
+	e := newTestWhisperEngine()
 	defer e.Close()
 
 	sampleRate := 48000
@@ -25,12 +42,15 @@ func TestIntegration_FullPipeline(t *testing.T) {
 		e.IngestAudio(chunk, pts, sampleRate, 2)
 	}
 
-	if e.vad.State() != VADSpeaking {
-		t.Fatalf("expected speaking after 5s of tone, got %v", e.vad.State())
+	wb := testWhisperBackend(e)
+	if wb.vad.State() != VADSpeaking {
+		t.Fatalf("expected speaking after 5s of tone, got %v", wb.vad.State())
 	}
 
 	expected := 5 * 16000
-	actual := e.ringBuf.SampleCount()
+	wb.mu.Lock()
+	actual := wb.ringBuf.SampleCount()
+	wb.mu.Unlock()
 	tolerance := 500
 	if actual < expected-tolerance || actual > expected+tolerance {
 		t.Fatalf("expected ~%d samples in ring buffer, got %d", expected, actual)
@@ -38,7 +58,7 @@ func TestIntegration_FullPipeline(t *testing.T) {
 }
 
 func TestIntegration_SilenceSuppression(t *testing.T) {
-	e := newTestEngine()
+	e := newTestWhisperEngine()
 	defer e.Close()
 
 	sampleRate := 48000
@@ -51,20 +71,21 @@ func TestIntegration_SilenceSuppression(t *testing.T) {
 		e.IngestAudio(silence, pts, sampleRate, 2)
 	}
 
-	if e.vad.State() != VADIdle {
-		t.Fatalf("expected idle after silence, got %v", e.vad.State())
+	wb := testWhisperBackend(e)
+	if wb.vad.State() != VADIdle {
+		t.Fatalf("expected idle after silence, got %v", wb.vad.State())
 	}
 
-	e.mu.Lock()
-	ws := e.wasSpeaking
-	e.mu.Unlock()
+	wb.mu.Lock()
+	ws := wb.wasSpeaking
+	wb.mu.Unlock()
 	if ws {
 		t.Fatal("wasSpeaking should be false after only silence")
 	}
 }
 
 func TestIntegration_SpeechThenSilence(t *testing.T) {
-	e := newTestEngine()
+	e := newTestWhisperEngine()
 	defer e.Close()
 
 	sampleRate := 48000
@@ -80,8 +101,9 @@ func TestIntegration_SpeechThenSilence(t *testing.T) {
 		e.IngestAudio(chunk, 0, sampleRate, 2)
 	}
 
-	if e.vad.State() != VADSpeaking {
-		t.Fatalf("expected speaking after tone, got %v", e.vad.State())
+	wb := testWhisperBackend(e)
+	if wb.vad.State() != VADSpeaking {
+		t.Fatalf("expected speaking after tone, got %v", wb.vad.State())
 	}
 
 	for i := 0; i < sampleRate; i += chunkSize {
@@ -89,8 +111,8 @@ func TestIntegration_SpeechThenSilence(t *testing.T) {
 		e.IngestAudio(silence, 0, sampleRate, 2)
 	}
 
-	if e.vad.State() != VADIdle {
-		t.Fatalf("expected idle after 1s silence (500ms hangover), got %v", e.vad.State())
+	if wb.vad.State() != VADIdle {
+		t.Fatalf("expected idle after 1s silence (500ms hangover), got %v", wb.vad.State())
 	}
 }
 
@@ -101,7 +123,7 @@ func TestIntegration_TranscriptCallback(t *testing.T) {
 		isFinal bool
 	}
 
-	e := newTestEngine()
+	e := newTestWhisperEngine()
 	e.OnTranscript(func(words []TranscriptWord, isFinal bool) {
 		mu.Lock()
 		results = append(results, struct {
@@ -112,10 +134,11 @@ func TestIntegration_TranscriptCallback(t *testing.T) {
 	})
 	defer e.Close()
 
-	// Simulate callback invocations (normally called from runInference).
-	e.mu.Lock()
-	cb := e.onTranscript
-	e.mu.Unlock()
+	// Get the backend's callback (set by OnTranscript -> Start).
+	wb := testWhisperBackend(e)
+	wb.mu.Lock()
+	cb := wb.onTranscript
+	wb.mu.Unlock()
 
 	cb([]TranscriptWord{{Text: "hello", Confidence: 0.9}}, false)
 	cb([]TranscriptWord{{Text: "world", Confidence: 0.95}}, false)

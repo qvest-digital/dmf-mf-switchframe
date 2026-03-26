@@ -1,7 +1,11 @@
 // Package internal provides shared types for the Switchframe server.
 package internal
 
-import "github.com/zsiec/switchframe/server/colorgrade"
+import (
+	"encoding/json"
+
+	"github.com/zsiec/switchframe/server/colorgrade"
+)
 
 // SourceKeyConfig describes the upstream key configuration for a source,
 // included in SourceInfo so the browser knows the current key state.
@@ -543,17 +547,14 @@ type AISegmentationState struct {
 
 // ASRState represents the ASR system state for ControlRoomState broadcast.
 type ASRState struct {
-	Available        bool    `json:"available"`
-	Active           bool    `json:"active"`
-	Translate        bool    `json:"translate"`
-	ModelName        string  `json:"modelName,omitempty"`
-	Language         string  `json:"language,omitempty"`
-	Tentative        string  `json:"tentative,omitempty"`
-	Confidence       float64 `json:"confidence,omitempty"`
-	Speed            string  `json:"speed,omitempty"`
-	ConfidenceFilter string  `json:"confidenceFilter,omitempty"`
-	NoiseFloor       string  `json:"noiseFloor,omitempty"`
-	SpeakerDetection string  `json:"speakerDetection,omitempty"`
+	Available         bool            `json:"available"`
+	Active            bool            `json:"active"`
+	Backend           string          `json:"backend"`
+	AvailableBackends []string        `json:"availableBackends"`
+	ModelName         string          `json:"modelName,omitempty"`
+	BackendConfig     json.RawMessage `json:"backendConfig,omitempty"`
+	ConfidenceFilter  string          `json:"confidenceFilter,omitempty"`
+	SpeakerDetection  string          `json:"speakerDetection,omitempty"`
 }
 
 // LookMetadata describes a single available color look with group/description.

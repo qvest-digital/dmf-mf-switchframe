@@ -15,37 +15,27 @@ import (
 
 // mockASRManager is a test double for ASRManager.
 type mockASRManager struct {
-	available        bool
-	active           bool
-	translate        bool
-	language         string
-	modelName        string
-	lastErr          error
-	speed            string
-	confidenceFilter string
-	noiseFloor       string
-	speakerDetection string
+	available         bool
+	active            bool
+	backend           string
+	availableBackends []string
+	modelName         string
+	models            []string
+	backendConfig     json.RawMessage
+	confidenceFilter  string
+	speakerDetection  string
+	lastErr           error
+	switchBackendErr  error
+	setConfigErr      error
 }
 
 func (m *mockASRManager) IsASRAvailable() bool          { return m.available }
 func (m *mockASRManager) IsASRActive() bool             { return m.active }
-func (m *mockASRManager) ASRLanguage() string           { return m.language }
-func (m *mockASRManager) ASRTranslate() bool            { return m.translate }
-func (m *mockASRManager) ASRModelName() string          { return m.modelName }
-func (m *mockASRManager) SetASRLanguage(lang string)    { m.language = lang }
-func (m *mockASRManager) SetASRTranslate(on bool)       { m.translate = on }
-func (m *mockASRManager) SetASRModel(name string) error { m.modelName = name; return nil }
-func (m *mockASRManager) AvailableASRModels() []string {
-	return []string{"base", "medium.en", "large-v3"}
-}
-func (m *mockASRManager) SetASRSpeed(preset string)            { m.speed = preset }
-func (m *mockASRManager) ASRSpeed() string                     { return m.speed }
-func (m *mockASRManager) SetASRConfidence(preset string)       { m.confidenceFilter = preset }
-func (m *mockASRManager) ASRConfidence() string                { return m.confidenceFilter }
-func (m *mockASRManager) SetASRNoiseFloor(preset string)       { m.noiseFloor = preset }
-func (m *mockASRManager) ASRNoiseFloor() string                { return m.noiseFloor }
-func (m *mockASRManager) SetASRSpeakerDetection(preset string) { m.speakerDetection = preset }
-func (m *mockASRManager) ASRSpeakerDetection() string          { return m.speakerDetection }
+func (m *mockASRManager) ActiveBackend() string          { return m.backend }
+func (m *mockASRManager) AvailableBackends() []string    { return m.availableBackends }
+func (m *mockASRManager) ASRModelName() string           { return m.modelName }
+func (m *mockASRManager) BackendConfig() json.RawMessage { return m.backendConfig }
+
 func (m *mockASRManager) SetASRActive(active bool) error {
 	if m.lastErr != nil {
 		return m.lastErr
@@ -53,6 +43,39 @@ func (m *mockASRManager) SetASRActive(active bool) error {
 	m.active = active
 	return nil
 }
+
+func (m *mockASRManager) SwitchBackend(name string) error {
+	if m.switchBackendErr != nil {
+		return m.switchBackendErr
+	}
+	m.backend = name
+	return nil
+}
+
+func (m *mockASRManager) SetASRModel(name string) error {
+	m.modelName = name
+	return nil
+}
+
+func (m *mockASRManager) AvailableASRModels() []string {
+	if m.models != nil {
+		return m.models
+	}
+	return []string{"base", "medium.en", "large-v3"}
+}
+
+func (m *mockASRManager) SetBackendConfig(raw json.RawMessage) error {
+	if m.setConfigErr != nil {
+		return m.setConfigErr
+	}
+	m.backendConfig = raw
+	return nil
+}
+
+func (m *mockASRManager) SetASRConfidence(preset string)       { m.confidenceFilter = preset }
+func (m *mockASRManager) ASRConfidence() string                { return m.confidenceFilter }
+func (m *mockASRManager) SetASRSpeakerDetection(preset string) { m.speakerDetection = preset }
+func (m *mockASRManager) ASRSpeakerDetection() string          { return m.speakerDetection }
 
 // setupASRAPI builds a test API with an optional ASR manager attached.
 func setupASRAPI(t *testing.T, mgr ASRManager) *API {
@@ -83,15 +106,18 @@ func TestASRStatusEndpoint_NotAvailable(t *testing.T) {
 	require.False(t, state.Available)
 	require.False(t, state.Active)
 	require.Empty(t, state.ModelName)
-	require.Empty(t, state.Language)
+	require.Empty(t, state.Backend)
 }
 
 func TestASRStatusEndpoint_Available(t *testing.T) {
 	mgr := &mockASRManager{
-		available: true,
-		active:    true,
-		language:  "en",
-		modelName: "large-v3-turbo",
+		available:         true,
+		active:            true,
+		backend:           "whisper",
+		availableBackends: []string{"whisper", "nemotron"},
+		modelName:         "large-v3-turbo",
+		confidenceFilter:  "medium",
+		speakerDetection:  "normal",
 	}
 	api := setupASRAPI(t, mgr)
 
@@ -105,7 +131,10 @@ func TestASRStatusEndpoint_Available(t *testing.T) {
 	require.True(t, state.Available)
 	require.True(t, state.Active)
 	require.Equal(t, "large-v3-turbo", state.ModelName)
-	require.Equal(t, "en", state.Language)
+	require.Equal(t, "whisper", state.Backend)
+	require.Equal(t, []string{"whisper", "nemotron"}, state.AvailableBackends)
+	require.Equal(t, "medium", state.ConfidenceFilter)
+	require.Equal(t, "normal", state.SpeakerDetection)
 }
 
 // --- Config ---
@@ -135,10 +164,11 @@ func TestASRConfigEndpoint_ManagerNotAvailable(t *testing.T) {
 
 func TestASRConfigEndpoint_SetActive(t *testing.T) {
 	mgr := &mockASRManager{
-		available: true,
-		active:    false,
-		language:  "en",
-		modelName: "large-v3-turbo",
+		available:         true,
+		active:            false,
+		backend:           "whisper",
+		availableBackends: []string{"whisper"},
+		modelName:         "large-v3-turbo",
 	}
 	api := setupASRAPI(t, mgr)
 
@@ -155,16 +185,17 @@ func TestASRConfigEndpoint_SetActive(t *testing.T) {
 	require.True(t, mgr.active)
 }
 
-func TestASRConfigEndpoint_SetLanguage(t *testing.T) {
+func TestASRConfigEndpoint_SwitchBackend(t *testing.T) {
 	mgr := &mockASRManager{
-		available: true,
-		active:    true,
-		language:  "en",
-		modelName: "large-v3-turbo",
+		available:         true,
+		active:            true,
+		backend:           "whisper",
+		availableBackends: []string{"whisper", "nemotron"},
+		modelName:         "large-v3-turbo",
 	}
 	api := setupASRAPI(t, mgr)
 
-	body := `{"language":"fr"}`
+	body := `{"backend":"nemotron"}`
 	req := httptest.NewRequest("PUT", "/api/asr/config", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -173,8 +204,24 @@ func TestASRConfigEndpoint_SetLanguage(t *testing.T) {
 
 	var state internal.ASRState
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&state))
-	require.Equal(t, "fr", state.Language)
-	require.Equal(t, "fr", mgr.language)
+	require.Equal(t, "nemotron", state.Backend)
+	require.Equal(t, "nemotron", mgr.backend)
+}
+
+func TestASRConfigEndpoint_SwitchBackendError(t *testing.T) {
+	mgr := &mockASRManager{
+		available:        true,
+		backend:          "whisper",
+		switchBackendErr: errTest("unknown backend"),
+	}
+	api := setupASRAPI(t, mgr)
+
+	body := `{"backend":"invalid"}`
+	req := httptest.NewRequest("PUT", "/api/asr/config", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
 func TestASRConfigEndpoint_InvalidJSON(t *testing.T) {
@@ -203,21 +250,19 @@ func TestASRConfigEndpoint_SetActiveError(t *testing.T) {
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
 }
 
-func TestASRConfigTuning(t *testing.T) {
+func TestASRConfigEndpoint_PacerSettings(t *testing.T) {
 	mgr := &mockASRManager{
-		available:        true,
-		active:           true,
-		language:         "en",
-		modelName:        "large-v3-turbo",
-		speed:            "balanced",
-		confidenceFilter: "medium",
-		noiseFloor:       "normal",
-		speakerDetection: "normal",
+		available:         true,
+		active:            true,
+		backend:           "whisper",
+		availableBackends: []string{"whisper"},
+		modelName:         "large-v3-turbo",
+		confidenceFilter:  "medium",
+		speakerDetection:  "normal",
 	}
 	api := setupASRAPI(t, mgr)
 
-	// PUT all 4 tuning fields.
-	body := `{"speed":"fast","confidenceFilter":"high","noiseFloor":"aggressive","speakerDetection":"sensitive"}`
+	body := `{"confidenceFilter":"high","speakerDetection":"sensitive"}`
 	req := httptest.NewRequest("PUT", "/api/asr/config", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -226,20 +271,12 @@ func TestASRConfigTuning(t *testing.T) {
 
 	var state internal.ASRState
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&state))
-
-	// Verify tuning fields in the response.
-	require.Equal(t, "fast", state.Speed)
 	require.Equal(t, "high", state.ConfidenceFilter)
-	require.Equal(t, "aggressive", state.NoiseFloor)
 	require.Equal(t, "sensitive", state.SpeakerDetection)
-
-	// Verify mock received them.
-	require.Equal(t, "fast", mgr.speed)
 	require.Equal(t, "high", mgr.confidenceFilter)
-	require.Equal(t, "aggressive", mgr.noiseFloor)
 	require.Equal(t, "sensitive", mgr.speakerDetection)
 
-	// GET /api/asr/status should also include tuning fields.
+	// GET /api/asr/status should also reflect the update.
 	req2 := httptest.NewRequest("GET", "/api/asr/status", nil)
 	rec2 := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec2, req2)
@@ -247,10 +284,130 @@ func TestASRConfigTuning(t *testing.T) {
 
 	var status internal.ASRState
 	require.NoError(t, json.NewDecoder(rec2.Body).Decode(&status))
-	require.Equal(t, "fast", status.Speed)
 	require.Equal(t, "high", status.ConfidenceFilter)
-	require.Equal(t, "aggressive", status.NoiseFloor)
 	require.Equal(t, "sensitive", status.SpeakerDetection)
+}
+
+// --- Models ---
+
+func TestASRModelsEndpoint(t *testing.T) {
+	mgr := &mockASRManager{
+		available: true,
+		models:    []string{"base", "medium.en", "large-v3"},
+	}
+	api := setupASRAPI(t, mgr)
+
+	req := httptest.NewRequest("GET", "/api/asr/models", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var models []string
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&models))
+	require.Equal(t, []string{"base", "medium.en", "large-v3"}, models)
+}
+
+func TestASRModelsEndpoint_NoManager(t *testing.T) {
+	api := setupASRAPI(t, nil)
+
+	req := httptest.NewRequest("GET", "/api/asr/models", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNotImplemented, rec.Code)
+}
+
+// --- Backend Config ---
+
+func TestASRBackendConfigGet(t *testing.T) {
+	mgr := &mockASRManager{
+		available:     true,
+		backendConfig: json.RawMessage(`{"language":"en","translate":false}`),
+	}
+	api := setupASRAPI(t, mgr)
+
+	req := httptest.NewRequest("GET", "/api/asr/backend/config", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{"language":"en","translate":false}`, rec.Body.String())
+}
+
+func TestASRBackendConfigGet_NilConfig(t *testing.T) {
+	mgr := &mockASRManager{
+		available:     true,
+		backendConfig: nil,
+	}
+	api := setupASRAPI(t, mgr)
+
+	req := httptest.NewRequest("GET", "/api/asr/backend/config", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{}`, rec.Body.String())
+}
+
+func TestASRBackendConfigGet_NotAvailable(t *testing.T) {
+	api := setupASRAPI(t, nil)
+
+	req := httptest.NewRequest("GET", "/api/asr/backend/config", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNotImplemented, rec.Code)
+}
+
+func TestASRBackendConfigPut(t *testing.T) {
+	mgr := &mockASRManager{
+		available:     true,
+		backendConfig: json.RawMessage(`{}`),
+	}
+	api := setupASRAPI(t, mgr)
+
+	body := `{"language":"fr","translate":true,"speed":"fast"}`
+	req := httptest.NewRequest("PUT", "/api/asr/backend/config", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	// Verify the config was stored.
+	require.JSONEq(t, body, string(mgr.backendConfig))
+}
+
+func TestASRBackendConfigPut_InvalidJSON(t *testing.T) {
+	mgr := &mockASRManager{available: true}
+	api := setupASRAPI(t, mgr)
+
+	req := httptest.NewRequest("PUT", "/api/asr/backend/config", strings.NewReader("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestASRBackendConfigPut_SetConfigError(t *testing.T) {
+	mgr := &mockASRManager{
+		available:    true,
+		setConfigErr: errTest("invalid config field"),
+	}
+	api := setupASRAPI(t, mgr)
+
+	body := `{"badField":"x"}`
+	req := httptest.NewRequest("PUT", "/api/asr/backend/config", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestASRBackendConfigPut_NotAvailable(t *testing.T) {
+	api := setupASRAPI(t, nil)
+
+	body := `{"language":"en"}`
+	req := httptest.NewRequest("PUT", "/api/asr/backend/config", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNotImplemented, rec.Code)
 }
 
 var errTestASR = errTest("asr test error")

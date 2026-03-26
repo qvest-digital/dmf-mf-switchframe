@@ -3,6 +3,8 @@
 	import type { ControlRoomState, CaptionMode } from '$lib/api/types';
 	import { setCaptionMode, sendCaptionText, sendCaptionNewline, clearCaptions, setASRConfig, getASRModels, apiCall } from '$lib/api/switch-api';
 	import { ICON_CAPTION, ICON_MIC, ICON_INFO, renderIcon } from '$lib/icons';
+	import WhisperConfig from './WhisperConfig.svelte';
+	import NemotronConfig from './NemotronConfig.svelte';
 
 	interface Props {
 		state: ControlRoomState;
@@ -19,6 +21,9 @@
 	let isAuto = $derived((mode as string) === 'auto');
 	let asrState = $derived(crState.asr);
 	let asrAvailable = $derived(asrState?.available ?? false);
+	let asrBackend = $derived(asrState?.backend ?? '');
+	let availableBackends = $derived(asrState?.availableBackends ?? []);
+	let backendConfig = $derived(asrState?.backendConfig ?? {});
 	let availableModels = $state<string[]>([]);
 
 	// Fetch available models when ASR is available.
@@ -37,22 +42,6 @@
 		{ id: 'off', label: 'Off' },
 		{ id: 'passthrough', label: 'Pass-through' },
 		{ id: 'author', label: 'Author' },
-	];
-
-	const languages = [
-		{ code: 'auto', label: 'Auto-detect' },
-		{ code: 'en', label: 'English' },
-		{ code: 'es', label: 'Spanish' },
-		{ code: 'fr', label: 'French' },
-		{ code: 'de', label: 'German' },
-		{ code: 'zh', label: 'Chinese' },
-		{ code: 'ja', label: 'Japanese' },
-		{ code: 'ko', label: 'Korean' },
-		{ code: 'pt', label: 'Portuguese' },
-		{ code: 'ru', label: 'Russian' },
-		{ code: 'ar', label: 'Arabic' },
-		{ code: 'hi', label: 'Hindi' },
-		{ code: 'it', label: 'Italian' },
 	];
 
 	// -- Test Captions --
@@ -143,40 +132,28 @@
 		}
 	}
 
+	function handleBackendChange(e: Event) {
+		const backend = (e.target as HTMLSelectElement).value;
+		apiCall(setASRConfig({ backend }), 'Set ASR backend');
+		// Re-fetch models since they are backend-scoped.
+		getASRModels().then((models) => { availableModels = models; }).catch(() => {});
+	}
+
 	function handleModelChange(e: Event) {
 		const model = (e.target as HTMLSelectElement).value;
 		apiCall(setASRConfig({ model }), 'Set ASR model');
-	}
-
-	function handleLanguageChange(e: Event) {
-		const lang = (e.target as HTMLSelectElement).value;
-		apiCall(setASRConfig({ language: lang }), 'Set ASR language');
-	}
-
-	function handleTranslateChange(e: Event) {
-		const on = (e.target as HTMLInputElement).checked;
-		apiCall(setASRConfig({ translate: on }), 'Set ASR translate');
-	}
-
-	let tuningOpen = $state(false);
-
-	function handleSpeedChange(value: string) {
-		apiCall(setASRConfig({ speed: value }), 'Set ASR speed');
 	}
 
 	function handleConfidenceChange(value: string) {
 		apiCall(setASRConfig({ confidenceFilter: value }), 'Set ASR confidence filter');
 	}
 
-	function handleNoiseFloorChange(e: Event) {
-		const value = (e.target as HTMLSelectElement).value;
-		apiCall(setASRConfig({ noiseFloor: value }), 'Set ASR noise floor');
-	}
-
 	function handleSpeakerDetectionChange(e: Event) {
 		const value = (e.target as HTMLSelectElement).value;
 		apiCall(setASRConfig({ speakerDetection: value }), 'Set ASR speaker detection');
 	}
+
+	let tuningOpen = $state(false);
 
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.key === 'Enter' && !e.shiftKey) {
@@ -242,29 +219,19 @@
 		{#if isAuto}
 			<div class="zone-scroll">
 				<div class="auto-grid">
-					<label class="auto-grid__label" for="asr-translate">Translate</label>
-					<label class="translate-inline" for="asr-translate">
-						<input
-							type="checkbox"
-							id="asr-translate"
-							class="translate-inline__input"
-							checked={asrState?.translate ?? true}
-							onchange={handleTranslateChange}
-						/>
-						<span class="translate-inline__text">to English</span>
-					</label>
-
-					<label class="auto-grid__label" for="asr-lang">Source</label>
-					<select
-						id="asr-lang"
-						class="field-select"
-						value={asrState?.language ?? 'auto'}
-						onchange={handleLanguageChange}
-					>
-						{#each languages as lang}
-							<option value={lang.code}>{lang.label}</option>
-						{/each}
-					</select>
+					{#if availableBackends.length > 1}
+						<label class="auto-grid__label" for="asr-backend">Backend</label>
+						<select
+							id="asr-backend"
+							class="field-select"
+							value={asrBackend}
+							onchange={handleBackendChange}
+						>
+							{#each availableBackends as b}
+								<option value={b}>{b}</option>
+							{/each}
+						</select>
+					{/if}
 
 					{#if availableModels.length > 0}
 						<label class="auto-grid__label" for="asr-model">Model</label>
@@ -281,30 +248,13 @@
 					{/if}
 				</div>
 
+				{#if asrBackend === 'whisper'}
+					<WhisperConfig config={backendConfig} />
+				{:else if asrBackend === 'nemotron'}
+					<NemotronConfig config={backendConfig} />
+				{/if}
+
 				<div class="inline-tuning">
-					<div class="inline-tuning__block">
-						<span class="inline-tuning__label">Speed</span>
-						<div class="segment-inline" role="group" aria-label="ASR speed">
-							<button
-								type="button"
-								class="segment-inline__btn"
-								class:segment-inline__btn--on={(asrState?.speed ?? 'balanced') === 'fast'}
-								onclick={() => handleSpeedChange('fast')}
-							>Fast</button>
-							<button
-								type="button"
-								class="segment-inline__btn"
-								class:segment-inline__btn--on={(asrState?.speed ?? 'balanced') === 'balanced'}
-								onclick={() => handleSpeedChange('balanced')}
-							>Bal</button>
-							<button
-								type="button"
-								class="segment-inline__btn"
-								class:segment-inline__btn--on={(asrState?.speed ?? 'balanced') === 'accurate'}
-								onclick={() => handleSpeedChange('accurate')}
-							>Acc</button>
-						</div>
-					</div>
 					<div class="inline-tuning__block">
 						<span class="inline-tuning__label">Conf</span>
 						<div class="segment-inline" role="group" aria-label="Confidence filter">
@@ -336,18 +286,6 @@
 				</button>
 				{#if tuningOpen}
 					<div class="tuning-advanced">
-						<div class="tuning-advanced__row">
-							<span class="tuning-advanced__label">Noise</span>
-							<select
-								class="field-select"
-								value={asrState?.noiseFloor ?? 'normal'}
-								onchange={handleNoiseFloorChange}
-							>
-								<option value="quiet">Quiet studio</option>
-								<option value="normal">Normal</option>
-								<option value="noisy">Noisy venue</option>
-							</select>
-						</div>
 						<div class="tuning-advanced__row">
 							<span class="tuning-advanced__label">Spkr</span>
 							<select
@@ -407,10 +345,7 @@
 					<span class="disabled-notice__icon" aria-hidden="true">{@html renderIcon(ICON_INFO, 14)}</span>
 					<div class="disabled-notice__text">
 						{#if mode === 'auto'}
-							<p>Auto captions from program audio.</p>
-							{#if asrState?.tentative}
-								<div class="tentative-text">{asrState.tentative}</div>
-							{/if}
+							<p>Auto captions from program audio{asrBackend ? ` (${asrBackend})` : ''}.</p>
 						{:else if mode === 'passthrough'}
 							<p>Captions follow the program source.</p>
 						{:else}
@@ -616,27 +551,6 @@
 		font-size: 10px;
 	}
 
-	.translate-inline {
-		display: flex;
-		align-items: center;
-		gap: 5px;
-		cursor: pointer;
-		min-height: 20px;
-	}
-
-	.translate-inline__input {
-		accent-color: var(--accent-blue);
-		width: 12px;
-		height: 12px;
-		margin: 0;
-		flex-shrink: 0;
-	}
-
-	.translate-inline__text {
-		font-family: var(--font-ui);
-		font-size: var(--text-2xs);
-		color: var(--text-secondary);
-	}
 
 	.inline-tuning {
 		display: grid;
@@ -893,15 +807,6 @@
 
 	.disabled-notice__text p:last-child {
 		margin-bottom: 0;
-	}
-
-	.tentative-text {
-		font-family: var(--font-mono);
-		font-size: var(--text-2xs);
-		color: var(--accent-blue);
-		opacity: 0.9;
-		font-style: italic;
-		word-break: break-word;
 	}
 
 	.source-scroll {

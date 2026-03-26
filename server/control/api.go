@@ -310,24 +310,29 @@ type AISegmentManager interface {
 	IsAISegmentAvailable() bool
 }
 
-// ASRManager is the interface for ASR engine control.
+// ASRManager is the interface for ASR operations.
 type ASRManager interface {
 	IsASRAvailable() bool
 	IsASRActive() bool
 	SetASRActive(active bool) error
-	SetASRLanguage(lang string)
-	ASRLanguage() string
-	SetASRTranslate(on bool)
-	ASRTranslate() bool
+
+	// Backend selection
+	ActiveBackend() string
+	AvailableBackends() []string
+	SwitchBackend(name string) error
+
+	// Per-backend model management
 	ASRModelName() string
-	SetASRModel(name string) error // runtime model swap
-	AvailableASRModels() []string  // list installed models
-	SetASRSpeed(preset string)
-	ASRSpeed() string
+	SetASRModel(name string) error
+	AvailableASRModels() []string
+
+	// Backend-specific config (JSON pass-through)
+	BackendConfig() json.RawMessage
+	SetBackendConfig(raw json.RawMessage) error
+
+	// Pacer settings (backend-agnostic)
 	SetASRConfidence(preset string)
 	ASRConfidence() string
-	SetASRNoiseFloor(preset string)
-	ASRNoiseFloor() string
 	SetASRSpeakerDetection(preset string)
 	ASRSpeakerDetection() string
 }

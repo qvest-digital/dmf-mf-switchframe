@@ -445,15 +445,12 @@ export interface CaptionState {
 export interface ASRState {
 	available: boolean;
 	active: boolean;
-	translate: boolean;
+	backend: string;
+	availableBackends: string[];
 	modelName?: string;
-	language?: string;
-	tentative?: string;
-	confidence?: number;
-	speed?: 'fast' | 'balanced' | 'accurate';
-	confidenceFilter?: 'low' | 'medium' | 'high';
-	noiseFloor?: 'quiet' | 'normal' | 'noisy';
-	speakerDetection?: 'sensitive' | 'normal' | 'relaxed';
+	backendConfig?: Record<string, unknown>;
+	confidenceFilter?: string;
+	speakerDetection?: string;
 }
 
 export type ClipUploadStage = 'uploading' | 'analyzing' | 'transcoding' | 'validating';

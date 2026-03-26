@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, GateSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig, ColorGradeState, CorrectorState, PlayoutChannelState, Playlist, PlaylistItem, CacheStatus, PodInfo, PodConfig, PodTemplate, AsRunEvent, ChannelHealth, SampleClip, PlayoutClip } from './types';
+import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, GateSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig, ColorGradeState, CorrectorState, PlayoutChannelState, Playlist, PlaylistItem, CacheStatus, PodInfo, PodConfig, PodTemplate, AsRunEvent, ChannelHealth, SampleClip, PlayoutClip, ASRState } from './types';
 import { notify } from '$lib/state/notifications.svelte';
 import { resolveApiUrl } from './base-url';
 
@@ -1267,12 +1267,18 @@ export async function getLookSettings(name: string): Promise<CorrectorState | nu
 
 // ── ASR (Automatic Speech Recognition) ──
 
-export function getASRStatus(): Promise<any> {
-	return request('/api/asr/status');
+export function getASRStatus(): Promise<ASRState> {
+	return request<ASRState>('/api/asr/status');
 }
 
-export function setASRConfig(config: { active?: boolean; language?: string; translate?: boolean; model?: string; speed?: string; confidenceFilter?: string; noiseFloor?: string; speakerDetection?: string }): Promise<any> {
-	return request('/api/asr/config', {
+export function setASRConfig(config: {
+	active?: boolean;
+	backend?: string;
+	model?: string;
+	confidenceFilter?: string;
+	speakerDetection?: string;
+}): Promise<ASRState> {
+	return request<ASRState>('/api/asr/config', {
 		method: 'PUT',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(config),
@@ -1281,6 +1287,18 @@ export function setASRConfig(config: { active?: boolean; language?: string; tran
 
 export function getASRModels(): Promise<string[]> {
 	return request<string[]>('/api/asr/models');
+}
+
+export function getASRBackendConfig(): Promise<Record<string, unknown>> {
+	return request<Record<string, unknown>>('/api/asr/backend/config');
+}
+
+export function setASRBackendConfig(config: Record<string, unknown>): Promise<void> {
+	return request('/api/asr/backend/config', {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(config),
+	});
 }
 
 // ── AI Background Segmentation ──

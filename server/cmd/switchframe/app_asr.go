@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -15,11 +16,12 @@ import (
 	"github.com/zsiec/switchframe/server/internal"
 )
 
-// initASR sets up the ASR engine when --asr-model is provided.
-// Requires --captions to be enabled (needs caption manager for output).
-// Non-fatal: if the engine fails to initialize, ASR is simply unavailable.
+// initASR sets up the multi-backend ASR engine when --asr-whisper-model or
+// --asr-nemotron-model is provided. Requires --captions to be enabled (needs
+// caption manager for output). Non-fatal: if no backend initializes, ASR is
+// simply unavailable.
 func (a *App) initASR() error {
-	if a.cfg.ASRModelPath == "" {
+	if a.cfg.ASRWhisperModel == "" && a.cfg.ASRNemotronModel == "" {
 		return nil
 	}
 	if a.captionMgr == nil {
@@ -27,36 +29,53 @@ func (a *App) initASR() error {
 		return nil
 	}
 
-	// Auto-detect Silero VAD model in the same directory as the whisper model.
-	// Silero VAD is a neural-network speech detector that filters background
-	// noise/music before Whisper processes the audio — far more accurate than
-	// RMS energy thresholds.
-	vadModelPath := ""
-	modelsDir := filepath.Dir(a.cfg.ASRModelPath)
-	vadCandidates := []string{
-		filepath.Join(modelsDir, "ggml-silero-v6.2.0.bin"),
-		filepath.Join(modelsDir, "ggml-silero-v5.1.2.bin"),
+	cfg := asr.EngineConfig{
+		DefaultBackend: a.cfg.ASRDefaultBackend,
 	}
-	for _, p := range vadCandidates {
-		if _, err := os.Stat(p); err == nil {
-			vadModelPath = p
-			break
+
+	// Configure Whisper backend if model path is set.
+	if a.cfg.ASRWhisperModel != "" {
+		modelsDir := filepath.Dir(a.cfg.ASRWhisperModel)
+
+		// Auto-detect Silero VAD model in the same directory as the whisper model.
+		vadModelPath := ""
+		vadCandidates := []string{
+			filepath.Join(modelsDir, "ggml-silero-v6.2.0.bin"),
+			filepath.Join(modelsDir, "ggml-silero-v5.1.2.bin"),
+		}
+		for _, p := range vadCandidates {
+			if _, err := os.Stat(p); err == nil {
+				vadModelPath = p
+				break
+			}
+		}
+		if vadModelPath != "" {
+			slog.Info("ASR: Silero VAD enabled", "model", filepath.Base(vadModelPath))
+		} else {
+			slog.Info("ASR: using energy-based VAD (no Silero model found)")
+		}
+
+		cfg.Whisper = &asr.WhisperBackendConfig{
+			ModelPath:    a.cfg.ASRWhisperModel,
+			VADModelPath: vadModelPath,
+			ModelsDir:    modelsDir,
+			Translate:    true,
+			UseGPU:       true,
 		}
 	}
 
-	engine, err := asr.NewEngine(asr.EngineConfig{
-		ModelPath:    a.cfg.ASRModelPath,
-		VADModelPath: vadModelPath,
-		UseGPU:       true,
-	})
+	// Configure Nemotron backend if model directory is set.
+	if a.cfg.ASRNemotronModel != "" {
+		cfg.Nemotron = &asr.NemotronConfig{
+			ModelDir: a.cfg.ASRNemotronModel,
+			UseGPU:   true,
+		}
+	}
+
+	engine, err := asr.NewEngine(cfg)
 	if err != nil {
 		slog.Warn("ASR engine unavailable", "error", err)
 		return nil // Non-fatal
-	}
-	if vadModelPath != "" {
-		slog.Info("ASR: Silero VAD enabled", "model", filepath.Base(vadModelPath))
-	} else {
-		slog.Info("ASR: using energy-based VAD (no Silero model found)")
 	}
 
 	a.asrEngine = engine
@@ -79,8 +98,9 @@ func (a *App) initASR() error {
 	// a.api to be non-nil.
 
 	slog.Info("ASR engine initialized",
-		"model", filepath.Base(a.cfg.ASRModelPath),
-		"language", engine.Language(),
+		"backend", engine.ActiveBackend(),
+		"model", engine.ModelName(),
+		"availableBackends", strings.Join(engine.AvailableBackends(), ","),
 	)
 	return nil
 }
@@ -133,13 +153,12 @@ func (a *App) enrichASRState(state internal.ControlRoomState) internal.ControlRo
 		return state
 	}
 	asrState := &internal.ASRState{
-		Available:  true,
-		Active:     a.captionMgr != nil && a.captionMgr.Mode() == caption.ModeAuto,
-		Translate:  a.asrEngine.Translate(),
-		Language:   a.asrEngine.Language(),
-		ModelName:  filepath.Base(a.cfg.ASRModelPath),
-		Speed:      a.asrEngine.InferSpeed(),
-		NoiseFloor: a.asrEngine.VADSensitivity(),
+		Available:         true,
+		Active:            a.captionMgr != nil && a.captionMgr.Mode() == caption.ModeAuto,
+		Backend:           a.asrEngine.ActiveBackend(),
+		AvailableBackends: a.asrEngine.AvailableBackends(),
+		ModelName:         a.asrEngine.ModelName(),
+		BackendConfig:     a.asrEngine.BackendConfig(),
 	}
 	if a.captionPacer != nil {
 		asrState.ConfidenceFilter = a.captionPacer.ConfidencePreset()
@@ -149,13 +168,12 @@ func (a *App) enrichASRState(state internal.ControlRoomState) internal.ControlRo
 	return state
 }
 
-// asrManagerAdapter implements control.ASRManager.
+// asrManagerAdapter implements control.ASRManager, bridging the multi-backend
+// asr.Engine to the control package's REST API interface.
 type asrManagerAdapter struct {
 	engine     *asr.Engine
 	captionMgr *caption.Manager
 	pacer      *captionPacer
-	modelPath  string
-	modelsDir  string // directory containing ggml-*.bin files
 }
 
 var _ control.ASRManager = (*asrManagerAdapter)(nil)
@@ -181,80 +199,69 @@ func (m *asrManagerAdapter) SetASRActive(active bool) error {
 	return nil
 }
 
-func (m *asrManagerAdapter) SetASRLanguage(lang string) {
-	if m.engine != nil {
-		m.engine.SetLanguage(lang)
+// Backend selection — delegated to asr.Engine.
+
+func (m *asrManagerAdapter) ActiveBackend() string {
+	if m.engine == nil {
+		return ""
 	}
+	return m.engine.ActiveBackend()
 }
 
-func (m *asrManagerAdapter) ASRLanguage() string {
-	if m.engine != nil {
-		return m.engine.Language()
+func (m *asrManagerAdapter) AvailableBackends() []string {
+	if m.engine == nil {
+		return nil
 	}
-	return ""
+	return m.engine.AvailableBackends()
 }
 
-func (m *asrManagerAdapter) SetASRTranslate(on bool) {
-	if m.engine != nil {
-		m.engine.SetTranslate(on)
+func (m *asrManagerAdapter) SwitchBackend(name string) error {
+	if m.engine == nil {
+		return nil
 	}
+	return m.engine.SwitchBackend(name)
 }
 
-func (m *asrManagerAdapter) ASRTranslate() bool {
-	if m.engine != nil {
-		return m.engine.Translate()
-	}
-	return true
-}
+// Per-backend model management — delegated to asr.Engine.
 
 func (m *asrManagerAdapter) ASRModelName() string {
-	return filepath.Base(m.modelPath)
+	if m.engine == nil {
+		return ""
+	}
+	return m.engine.ModelName()
 }
 
 func (m *asrManagerAdapter) SetASRModel(name string) error {
 	if m.engine == nil {
 		return nil
 	}
-	path := filepath.Join(m.modelsDir, "ggml-"+name+".bin")
-	if err := m.engine.SetModel(path); err != nil {
-		return err
-	}
-	m.modelPath = path
-	return nil
+	return m.engine.SetModel(name)
 }
 
 func (m *asrManagerAdapter) AvailableASRModels() []string {
-	entries, err := os.ReadDir(m.modelsDir)
-	if err != nil {
+	if m.engine == nil {
 		return nil
 	}
-	var models []string
-	for _, e := range entries {
-		name := e.Name()
-		if strings.HasPrefix(name, "ggml-") && strings.HasSuffix(name, ".bin") &&
-			!strings.HasPrefix(name, "for-tests-") &&
-			!strings.Contains(name, "silero") {
-			// "ggml-medium.en.bin" → "medium.en"
-			model := strings.TrimPrefix(name, "ggml-")
-			model = strings.TrimSuffix(model, ".bin")
-			models = append(models, model)
-		}
-	}
-	return models
+	return m.engine.Models()
 }
 
-func (m *asrManagerAdapter) SetASRSpeed(preset string) {
-	if m.engine != nil {
-		m.engine.SetInferSpeed(preset)
+// Backend-specific config (JSON pass-through) — delegated to asr.Engine.
+
+func (m *asrManagerAdapter) BackendConfig() json.RawMessage {
+	if m.engine == nil {
+		return nil
 	}
+	return m.engine.BackendConfig()
 }
 
-func (m *asrManagerAdapter) ASRSpeed() string {
-	if m.engine != nil {
-		return m.engine.InferSpeed()
+func (m *asrManagerAdapter) SetBackendConfig(raw json.RawMessage) error {
+	if m.engine == nil {
+		return nil
 	}
-	return "balanced"
+	return m.engine.SetBackendConfig(raw)
 }
+
+// Pacer settings (backend-agnostic).
 
 func (m *asrManagerAdapter) SetASRConfidence(preset string) {
 	if m.pacer != nil {
@@ -267,19 +274,6 @@ func (m *asrManagerAdapter) ASRConfidence() string {
 		return m.pacer.ConfidencePreset()
 	}
 	return "medium"
-}
-
-func (m *asrManagerAdapter) SetASRNoiseFloor(preset string) {
-	if m.engine != nil {
-		m.engine.SetVADSensitivity(preset)
-	}
-}
-
-func (m *asrManagerAdapter) ASRNoiseFloor() string {
-	if m.engine != nil {
-		return m.engine.VADSensitivity()
-	}
-	return "normal"
 }
 
 func (m *asrManagerAdapter) SetASRSpeakerDetection(preset string) {
@@ -499,12 +493,10 @@ func (p *captionPacer) emitNextWord() {
 
 	word := p.queue[0]
 	p.queue = p.queue[1:]
+	thresh := p.confidenceThresh
 	p.mu.Unlock()
 
 	// Confidence holdback: low-confidence words wait one tick.
-	p.mu.Lock()
-	thresh := p.confidenceThresh
-	p.mu.Unlock()
 	if word.confidence > 0 && word.confidence < thresh && !word.isFinal {
 		p.mu.Lock()
 		p.held = &word
@@ -517,16 +509,19 @@ func (p *captionPacer) emitNextWord() {
 
 // emitWord sends a word to the caption manager with speaker-change
 // detection and line wrapping. Updates lastEmitTime for auto-clear.
+//
+// Holds p.mu for the entire call to protect linePos from concurrent Flush().
+// Lock ordering: p.mu → captionMgr.mu is safe (caption.Manager never calls
+// back into captionPacer).
 func (p *captionPacer) emitWord(word pacerWord) {
 	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	p.lastEmitTime = time.Now()
 	p.cleared = false
-	p.mu.Unlock()
-	// Speaker change: Whisper segment gap exceeds threshold → new line with >> prefix.
-	p.mu.Lock()
-	gap := p.speakerChangeGap
-	p.mu.Unlock()
-	if word.gapBefore >= gap {
+
+	// Speaker change: segment gap exceeds threshold → new line with >> prefix.
+	if word.gapBefore >= p.speakerChangeGap {
 		p.mgr.IngestNewline()
 		p.mgr.IngestText(">> ")
 		p.linePos = 3
