@@ -113,8 +113,9 @@ type Channel struct {
 	itemStartTime time.Time // when the current item began
 
 	// Frame timing.
-	frameDuration time.Duration
-	outputPTS     int64
+	frameDuration  time.Duration
+	outputPTS      int64
+	outputAudioPTS int64 // independent audio PTS counter (AAC frame cadence)
 
 	// Run control.
 	cancel context.CancelFunc
@@ -321,12 +322,14 @@ func (c *Channel) Start() error {
 	c.cancel = cancel
 	c.done = make(chan struct{})
 	c.outputPTS = 0
+	c.outputAudioPTS = 0
 
 	// Seed PTS from provider if available.
 	if c.ptsProvider != nil {
 		pts := c.ptsProvider()
 		if pts > 0 {
 			c.outputPTS = pts
+			c.outputAudioPTS = pts
 		}
 	}
 
@@ -1131,18 +1134,26 @@ func (c *Channel) emitFrame(frame *DecodedFrame, outputFn func([]byte, int, int,
 		outputFn(frame.YUV, frame.Width, frame.Height, pts, frame.IsKeyframe)
 	}
 
-	// Output audio. Multiple audio frames per video tick is normal —
-	// AAC runs at ~47fps vs video at 24-30fps. The mixer's ring buffer
-	// absorbs the burst and outputs at steady audio rate. PTS on each
-	// frame maintains A/V sync.
+	// Output audio with channel-managed PTS (not source file PTS).
+	// The output audio PTS must be in the same domain as the video PTS
+	// for the mixer to maintain correct A/V sync. Each AAC frame advances
+	// PTS by 1024 samples in 90kHz clock: 1024 * 90000 / sampleRate.
+	// This matches the pattern used by clip/player.go.
 	if audioFn != nil {
 		if len(frame.AudioFrames) > 0 {
 			for i := range frame.AudioFrames {
 				af := &frame.AudioFrames[i]
-				audioFn(af.Data, af.PTS, af.SampleRate, af.Channels)
+				audioFn(af.Data, c.outputAudioPTS, af.SampleRate, af.Channels)
+				if af.SampleRate > 0 {
+					c.outputAudioPTS += int64(1024) * 90000 / int64(af.SampleRate)
+				}
 			}
 		} else if len(frame.AudioData) > 0 {
-			audioFn(frame.AudioData, frame.AudioPTS, frame.AudioSampleRate, frame.AudioChannels)
+			sr := frame.AudioSampleRate
+			audioFn(frame.AudioData, c.outputAudioPTS, sr, frame.AudioChannels)
+			if sr > 0 {
+				c.outputAudioPTS += int64(1024) * 90000 / int64(sr)
+			}
 		}
 	}
 
