@@ -324,6 +324,8 @@ type playoutSecondaryHandler struct {
 type graphicsController interface {
 	On(id int) error
 	Off(id int) error
+	AutoOn(id int, duration time.Duration) error
+	AutoOff(id int, duration time.Duration) error
 	DeleteImage(id int) error
 }
 
@@ -353,20 +355,19 @@ func (h *playoutSecondaryHandler) OnGraphicsOn(layer int, template string) error
 	if h.compositor == nil {
 		return nil
 	}
-	// Turn on the graphics layer. The image must be pre-loaded via the
-	// graphics REST API (POST /api/graphics/:id/image). The template field
-	// is logged for debugging but not used for image selection yet.
-	if template != "" {
-		slog.Info("playout: secondary graphics_on", "layer", layer, "template", template)
-	}
-	return h.compositor.On(layer)
+	// Turn on whatever is on this layer — static image, CEF/HTML5 template,
+	// ticker, bug, etc. Uses AutoOn with a short transition for smooth appearance,
+	// matching what the "AUTO ON" button does in the graphics panel.
+	slog.Info("playout: graphics_on", "layer", layer, "template", template)
+	return h.compositor.AutoOn(layer, 500*time.Millisecond)
 }
 
 func (h *playoutSecondaryHandler) OnGraphicsOff(layer int) error {
 	if h.compositor == nil {
 		return nil
 	}
-	return h.compositor.Off(layer)
+	slog.Info("playout: graphics_off", "layer", layer)
+	return h.compositor.AutoOff(layer, 500*time.Millisecond)
 }
 
 func (h *playoutSecondaryHandler) OnGraphicsUpdate(layer int, template string) error {
