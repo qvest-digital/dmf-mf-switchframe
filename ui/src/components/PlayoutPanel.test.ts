@@ -303,14 +303,14 @@ describe('PlayoutPanel', () => {
 		expect(container.textContent).toContain('Playlist complete');
 	});
 
-	it('renders pod board section', () => {
+	it('does not render pod board section', () => {
 		const state = makeState({
 			playout: {
 				channels: [makeChannel()],
 			},
 		});
 		const { container } = render(PlayoutPanel, { props: { state } });
-		expect(container.textContent).toContain('POD BOARD');
+		expect(container.textContent).not.toContain('POD BOARD');
 	});
 
 	it('renders cache status section in edit mode', () => {
@@ -458,7 +458,7 @@ describe('PlayoutPanel', () => {
 		});
 	});
 
-	it('monitor mode shows pod board', async () => {
+	it('monitor mode shows status zone instead of pod board', async () => {
 		const state = makeState({
 			playout: {
 				channels: [makeChannel({
@@ -472,7 +472,8 @@ describe('PlayoutPanel', () => {
 		const { container } = render(PlayoutPanel, { props: { state } });
 		await vi.waitFor(() => {
 			expect(container.querySelector('[data-testid="monitor-layout"]')).toBeTruthy();
-			expect(container.textContent).toContain('POD BOARD');
+			expect(container.querySelector('[data-testid="status-zone"]')).toBeTruthy();
+			expect(container.textContent).not.toContain('POD BOARD');
 		});
 	});
 

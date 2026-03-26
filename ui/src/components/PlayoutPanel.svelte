@@ -18,7 +18,7 @@
 	import PlayoutOutputBadge from './PlayoutOutputBadge.svelte';
 	import PlayoutClipBrowser from './PlayoutClipBrowser.svelte';
 	import CacheStatus from './CacheStatus.svelte';
-	import PodBoard from './PodBoard.svelte';
+
 
 	interface Props {
 		state: ControlRoomState;
@@ -682,15 +682,6 @@
 					</div>
 				{/if}
 
-				<PodBoard
-					channel={selectedChannel}
-					activePod={channel.activePod}
-					pods={channel.pods ?? []}
-					podsArmed={channel.podsArmed ?? 0}
-					podTemplates={workingPlaylist.pods}
-					showWarning={isOnAir}
-				/>
-
 				<PlayoutSettings
 					playlist={workingPlaylist}
 					onChange={updatePlaylistSettings}
@@ -760,7 +751,7 @@
 				{/if}
 			</div>
 
-			<!-- Bottom split: rundown + pod board -->
+			<!-- Bottom split: rundown + status -->
 			<div class="monitor-bottom">
 				<div class="rundown-zone" data-testid="rundown-zone">
 					<PlayoutRundown
@@ -772,15 +763,8 @@
 						onSkipTo={handleRundownSkipTo}
 					/>
 				</div>
-				<div class="pod-zone">
-					<PodBoard
-						channel={selectedChannel}
-						activePod={channel.activePod}
-						pods={channel.pods ?? []}
-						podsArmed={channel.podsArmed ?? 0}
-						podTemplates={workingPlaylist.pods}
-						showWarning={isOnAir}
-					/>
+				<div class="status-zone" data-testid="status-zone">
+					<!-- Status dashboard will be added in Task 5 -->
 				</div>
 			</div>
 		</div>
@@ -1479,13 +1463,12 @@
 		overflow: hidden;
 	}
 
-	.pod-zone {
+	.status-zone {
 		flex: 2;
 		min-width: 0;
 		min-height: 0;
-		overflow-y: auto;
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
 	}
-
-	.pod-zone::-webkit-scrollbar { width: 3px; }
-	.pod-zone::-webkit-scrollbar-thumb { background: var(--border-subtle); border-radius: 2px; }
 </style>
