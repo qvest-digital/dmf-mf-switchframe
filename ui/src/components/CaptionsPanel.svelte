@@ -123,12 +123,16 @@
 	});
 
 	function handleModeChange(newMode: CaptionMode | 'auto') {
-		apiCall(setCaptionMode(newMode as CaptionMode), 'Set caption mode');
-		// Auto mode enables ASR; leaving auto disables it.
+		// Auto mode is controlled via ASR active flag, not the caption mode endpoint.
+		// SetASRActive(true) internally sets caption mode to ModeAuto.
 		if (newMode === 'auto') {
 			apiCall(setASRConfig({ active: true }), 'Enable ASR');
-		} else if ((mode as string) === 'auto') {
-			apiCall(setASRConfig({ active: false }), 'Disable ASR');
+		} else {
+			// Leaving auto mode: disable ASR first, then set the new caption mode.
+			if ((mode as string) === 'auto') {
+				apiCall(setASRConfig({ active: false }), 'Disable ASR');
+			}
+			apiCall(setCaptionMode(newMode as CaptionMode), 'Set caption mode');
 		}
 	}
 
