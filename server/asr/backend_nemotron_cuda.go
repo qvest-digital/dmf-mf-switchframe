@@ -263,10 +263,18 @@ func (b *NemotronBackend) IngestAudio(pcm []float32, pts int64, sampleRate, chan
 		b.resetDecoderState()
 
 	case nowSpeaking:
-		// During speech: just accumulate audio. The TDT offline model is
-		// non-deterministic across growing buffer sizes — partial inferences
-		// produce unstable word counts that cause duplicate text. Only
-		// transcribe when the full speech segment is available (isFinal).
+		// During speech: accumulate audio but force a transcription if we've
+		// been accumulating too long. Broadcast audio often has continuous
+		// speech with no clean pauses, so the VAD may never transition to idle.
+		// ChunkMs controls the max accumulation time before forced transcription.
+		maxAccum := time.Duration(b.cfg.ChunkMs) * time.Millisecond
+		if maxAccum < 3*time.Second {
+			maxAccum = 3 * time.Second
+		}
+		if b.wasSpeaking && now.Sub(b.lastInfer) >= maxAccum {
+			b.lastInfer = now
+			go b.runInference(true) // treat as final — clear buffer, no dedup
+		}
 
 	case prevSpeaking && !nowSpeaking:
 		// Speech ended: final inference with full buffer.
