@@ -1248,7 +1248,16 @@ func (c *Channel) cleanup() {
 		c.secondaryScheduler.EndItem()
 		c.secondaryItemID = ""
 	}
+
+	// Clean up live audio forwarding if a live item was active.
+	liveAudioFn := c.onLiveAudio
+	liveSource := c.activeLiveSource
+	c.activeLiveSource = ""
 	c.mu.Unlock()
+
+	if liveAudioFn != nil && liveSource != "" {
+		liveAudioFn(liveSource, false)
+	}
 }
 
 // estimateFPS estimates frames per second from PTS values.

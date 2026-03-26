@@ -19,6 +19,8 @@ func (m *Mixer) IngestFrame(sourceKey string, frame *media.AudioFrame) {
 	m.mu.RUnlock()
 	if fwdDst != "" {
 		fwdFrame := *frame
+		// Deep-copy Data to prevent aliasing — both paths decode/modify the slice.
+		fwdFrame.Data = append([]byte(nil), frame.Data...)
 		m.ingestFrameInner(fwdDst, &fwdFrame)
 	}
 
@@ -148,6 +150,20 @@ func (m *Mixer) ingestFrameInner(sourceKey string, frame *media.AudioFrame) {
 // The channels parameter is the source's actual channel count (1=mono, 2=stereo).
 // If channels < mixer's numChannels, mono samples are upmixed to stereo.
 func (m *Mixer) IngestPCM(sourceKey string, pcm []float32, pts int64, channels int) {
+	// Audio forwarding (same pattern as IngestFrame).
+	m.mu.RLock()
+	fwdDst := m.audioForwards[sourceKey]
+	m.mu.RUnlock()
+	if fwdDst != "" {
+		// Deep-copy PCM to prevent aliasing.
+		fwdPCM := make([]float32, len(pcm))
+		copy(fwdPCM, pcm)
+		m.ingestPCMInner(fwdDst, fwdPCM, pts, channels)
+	}
+	m.ingestPCMInner(sourceKey, pcm, pts, channels)
+}
+
+func (m *Mixer) ingestPCMInner(sourceKey string, pcm []float32, pts int64, channels int) {
 	m.mu.Lock()
 
 	ch, ok := m.channels[sourceKey]
