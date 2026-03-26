@@ -9,6 +9,7 @@
 		playoutSavedList, playoutSave, playoutSavedGet,
 		apiCall,
 	} from '$lib/api/switch-api';
+	import { notify } from '$lib/state/notifications.svelte';
 	import PlayoutTimeline from './PlayoutTimeline.svelte';
 	import PlayoutItemEditor from './PlayoutItemEditor.svelte';
 	import PlayoutSettings from './PlayoutSettings.svelte';
@@ -260,9 +261,16 @@
 			workingPlaylist = pl;
 			selectedIndex = -1;
 			dirty = false;
+			notify('info', `Loaded "${pl.name}"`);
+			// Refresh saved list in case new playlists were added server-side.
+			playoutSavedList().then(names => savedPlaylists = names).catch(() => {});
 		} catch (e) {
-			console.error('Failed to load saved playlist:', e);
+			notify('error', `Failed to load playlist "${name}"`);
 		}
+	}
+
+	function sanitizeFilename(name: string): string {
+		return name.replace(/[^a-zA-Z0-9 _-]/g, '_').substring(0, 100) || 'playlist';
 	}
 
 	function exportJSON() {
@@ -271,7 +279,7 @@
 		const url = URL.createObjectURL(blob);
 		const a = document.createElement('a');
 		a.href = url;
-		a.download = `${workingPlaylist.name || 'playlist'}.json`;
+		a.download = `${sanitizeFilename(workingPlaylist.name || 'playlist')}.json`;
 		document.body.appendChild(a);
 		a.click();
 		document.body.removeChild(a);
@@ -287,19 +295,37 @@
 			if (!file) return;
 			try {
 				const text = await file.text();
-				const pl = JSON.parse(text) as Playlist;
-				if (!pl.items || !Array.isArray(pl.items)) {
-					alert('Invalid playlist file: missing items array');
+				const pl = JSON.parse(text);
+				// Validate structure
+				if (typeof pl !== 'object' || pl === null) {
+					notify('error', 'Invalid file: not a JSON object');
 					return;
 				}
-				if (!pl.name) pl.name = file.name.replace(/\.json$/i, '');
+				if (!Array.isArray(pl.items)) {
+					notify('error', 'Invalid playlist: missing items array');
+					return;
+				}
+				// Validate each item has at minimum an id and type
+				for (const item of pl.items) {
+					if (!item.id || !item.type) {
+						notify('error', 'Invalid playlist: items must have id and type');
+						return;
+					}
+					if (!['clip', 'live', 'slate'].includes(item.type)) {
+						notify('error', `Invalid item type: ${item.type}`);
+						return;
+					}
+				}
+				// Set defaults for missing fields
+				if (!pl.name) pl.name = sanitizeFilename(file.name.replace(/\.json$/i, ''));
 				if (!pl.id) pl.id = `imported-${Date.now()}`;
 				if (!pl.default_transition) pl.default_transition = { type: 'cut' };
-				workingPlaylist = pl;
+				workingPlaylist = pl as Playlist;
 				selectedIndex = -1;
 				dirty = true;
+				notify('info', `Imported "${pl.name}" (${pl.items.length} items)`);
 			} catch (err) {
-				alert('Failed to parse JSON file');
+				notify('error', 'Failed to parse JSON file');
 			}
 		};
 		input.click();

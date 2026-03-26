@@ -580,13 +580,13 @@ var validPlaylistName = regexp.MustCompile(`^[a-zA-Z0-9 _-]+$`)
 func sanitizePlaylistName(name string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return "untitled", nil
+		return "", fmt.Errorf("playlist name is required")
 	}
 	if len(name) > 100 {
 		return "", fmt.Errorf("playlist name too long (max 100 chars)")
 	}
-	if strings.Contains(name, "..") {
-		return "", fmt.Errorf("playlist name contains path traversal")
+	if strings.Contains(name, "..") || strings.Contains(name, "/") || strings.Contains(name, "\\") {
+		return "", fmt.Errorf("playlist name contains path traversal characters")
 	}
 	if !validPlaylistName.MatchString(name) {
 		return "", fmt.Errorf("playlist name contains invalid characters (only letters, digits, spaces, hyphens, underscores)")
@@ -642,6 +642,11 @@ func (a *API) handlePlayoutSave(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&pl); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
+	}
+
+	// Validate playlist structure before saving.
+	if pl.Items == nil {
+		pl.Items = []playout.PlaylistItem{}
 	}
 
 	name, err := sanitizePlaylistName(pl.Name)
