@@ -423,13 +423,30 @@ func (h *playoutSecondaryHandler) OnSCTE35Cue(data *playout.SCTE35EventData) err
 		durationMs = *data.BreakDurationMs
 	}
 
+	// Determine isOut from the data. If not explicitly set, infer from preset
+	// and segmentation descriptors (break_start / segmentation_type 34 = cue-out).
+	isOut := data.IsOut
+	if !isOut {
+		if data.Preset == "break_start" || data.Preset == "cue_out" {
+			isOut = true
+		}
+		for _, d := range data.Descriptors {
+			// Segmentation types 34 (break start), 48 (provider ad start),
+			// 50 (distributor ad start) are all cue-out signals.
+			if d.SegmentationType == 34 || d.SegmentationType == 48 || d.SegmentationType == 50 {
+				isOut = true
+				break
+			}
+		}
+	}
+
 	// Use the SpliceCoordinator for frame-accurate PTS-based insertion.
 	// The coordinator collects candidate frames, runs black detection,
 	// and schedules the cue at the optimal splice point with IDR alignment.
 	if h.spliceCoordinator != nil && h.ptsProvider != nil {
 		return h.spliceCoordinator.BeginSplice(
 			"",                  // no pod ID for secondary events
-			data.IsOut,          //
+			isOut,               //
 			data.AutoReturn,     //
 			durationMs,
 			h.ptsProvider(),     // current program PTS
@@ -442,7 +459,7 @@ func (h *playoutSecondaryHandler) OnSCTE35Cue(data *playout.SCTE35EventData) err
 	}
 	msg := &scte35.CueMessage{
 		CommandType:     data.CommandType,
-		IsOut:           data.IsOut,
+		IsOut:           isOut,
 		AutoReturn:      data.AutoReturn,
 		Source:          "playout",
 		UniqueProgramID: data.UniqueProgramID,
