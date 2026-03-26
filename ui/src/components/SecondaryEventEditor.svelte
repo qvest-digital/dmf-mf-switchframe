@@ -357,7 +357,7 @@
 									<div class="scte-row">
 										<label class="sec-field">
 											<span class="sec-field-label">Command</span>
-											<select class="sec-select" value={evt.scte35.command_type ?? 5}
+											<select class="sec-select" value={String(evt.scte35.command_type ?? 5)}
 												onchange={(e) => updateScte35(idx, evt, { command_type: parseInt((e.target as HTMLSelectElement).value) })}>
 												{#each Object.entries(commandTypeNames) as [val, name]}
 													<option value={val}>{name}</option>
@@ -388,25 +388,23 @@
 										</label>
 									</div>
 
-									<!-- Break fields (splice_insert) -->
-									{#if (evt.scte35.command_type ?? 5) === 5}
-										<div class="scte-row">
-											<label class="sec-field">
-												<span class="sec-field-label">Break Duration (ms)</span>
-												<input class="sec-input" type="number"
-													value={evt.scte35.break_duration_ms ?? ''}
-													onchange={(e) => {
-														const v = parseInt((e.target as HTMLInputElement).value);
-														updateScte35(idx, evt, { break_duration_ms: Number.isNaN(v) ? undefined : v });
-													}} />
-											</label>
-											<label class="sec-field sec-field-row">
-												<input type="checkbox" checked={evt.scte35.auto_return ?? false}
-													onchange={(e) => updateScte35(idx, evt, { auto_return: (e.target as HTMLInputElement).checked })} />
-												<span class="sec-field-label">Auto Return</span>
-											</label>
-										</div>
-									{/if}
+									<!-- Duration + Auto Return (always visible) -->
+									<div class="scte-row">
+										<label class="sec-field">
+											<span class="sec-field-label">Duration (ms)</span>
+											<input class="sec-input" type="number"
+												value={evt.scte35.break_duration_ms ?? ''}
+												onchange={(e) => {
+													const v = parseInt((e.target as HTMLInputElement).value);
+													updateScte35(idx, evt, { break_duration_ms: Number.isNaN(v) ? undefined : v });
+												}} />
+										</label>
+										<label class="sec-field sec-field-row">
+											<input type="checkbox" checked={evt.scte35.auto_return ?? false}
+												onchange={(e) => updateScte35(idx, evt, { auto_return: (e.target as HTMLInputElement).checked })} />
+											<span class="sec-field-label">Auto Return</span>
+										</label>
+									</div>
 
 									<!-- Avail fields -->
 									<div class="scte-row">

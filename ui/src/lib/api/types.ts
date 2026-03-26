@@ -522,6 +522,7 @@ export interface SCTE35Active {
 	held: boolean;
 	spliceTimePts: number;
 	startedAt: number;
+	preRollMs?: number;
 	descriptors?: SCTE35DescriptorInfo[];
 }
 

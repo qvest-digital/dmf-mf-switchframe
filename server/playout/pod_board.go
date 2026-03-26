@@ -465,8 +465,8 @@ func (pb *PodBoard) Fire(id string) error {
 		}
 
 		// Wire the onSpliceReady callback to transition pod to break_active.
-		sc.SetOnSpliceReady(func(podID string, pts int64) {
-			pb.onSpliceReady(podID, pts)
+		sc.SetOnSpliceReady(func(podID string, pts int64, preRollMs int64) {
+			pb.onSpliceReady(podID, pts, preRollMs)
 		})
 
 		currentPTS := ptsProvider()
@@ -564,7 +564,9 @@ func (pb *PodBoard) fireImmediate(id string, inj podSCTE35Injector, config PodCo
 
 // onSpliceReady is called by the SpliceCoordinator when a splice point is locked.
 // It transitions the pod from PodPreRoll to PodBreakActive and starts the auto-return timer.
-func (pb *PodBoard) onSpliceReady(podID string, pts int64) {
+// preRollMs is the remaining pre-roll duration — added to the auto-return timer so
+// the return fires after the break actually ends (not preRollMs early).
+func (pb *PodBoard) onSpliceReady(podID string, pts int64, preRollMs int64) {
 	pb.mu.Lock()
 	pod, ok := pb.pods[podID]
 	if !ok || pod.State != PodPreRoll {
@@ -577,13 +579,16 @@ func (pb *PodBoard) onSpliceReady(podID string, pts int64) {
 	stateChangeFn := pb.onStateChange
 	pb.mu.Unlock()
 
-	// Start auto-return goroutine if configured.
+	// Start auto-return goroutine if configured. The timer includes
+	// the remaining pre-roll so return fires after the break ends,
+	// not preRollMs early (onSpliceReady runs before pre-roll completes).
 	if config.AutoReturn && config.DurationMs > 0 {
+		totalMs := config.DurationMs + preRollMs
 		ctx, cancel := context.WithCancel(context.Background())
 		pb.mu.Lock()
 		pb.autoReturnCancels[podID] = cancel
 		pb.mu.Unlock()
-		go pb.runAutoReturn(ctx, podID, config.DurationMs)
+		go pb.runAutoReturn(ctx, podID, totalMs)
 	}
 
 	if stateChangeFn != nil {

@@ -119,7 +119,7 @@ func TestSpliceCoordinator_SetOnSpliceReady(t *testing.T) {
 		BlackDetector: bd,
 	})
 
-	sc.SetOnSpliceReady(func(podID string, pts int64) {})
+	sc.SetOnSpliceReady(func(podID string, pts int64, preRollMs int64) {})
 
 	if sc.onSpliceReady == nil {
 		t.Error("onSpliceReady should be set after SetOnSpliceReady")
@@ -224,7 +224,7 @@ func TestSpliceCoordinator_IngestFrame_TriggersAnalysis(t *testing.T) {
 
 	var readyPodID string
 	var readyPTS int64
-	sc.SetOnSpliceReady(func(podID string, pts int64) {
+	sc.SetOnSpliceReady(func(podID string, pts int64, preRollMs int64) {
 		readyPodID = podID
 		readyPTS = pts
 	})
@@ -333,7 +333,7 @@ func TestSpliceCoordinator_FinalizeTriggersSceneChange(t *testing.T) {
 	})
 
 	var readyPTS int64
-	sc.SetOnSpliceReady(func(podID string, pts int64) {
+	sc.SetOnSpliceReady(func(podID string, pts int64, preRollMs int64) {
 		readyPTS = pts
 	})
 
@@ -372,7 +372,7 @@ func TestSpliceCoordinator_FallbackToScheduled(t *testing.T) {
 	})
 
 	var readyPTS int64
-	sc.SetOnSpliceReady(func(podID string, pts int64) {
+	sc.SetOnSpliceReady(func(podID string, pts int64, preRollMs int64) {
 		readyPTS = pts
 	})
 
@@ -408,7 +408,7 @@ func TestSpliceCoordinator_Timeout(t *testing.T) {
 	})
 
 	readyCh := make(chan struct{}, 1)
-	sc.SetOnSpliceReady(func(podID string, pts int64) {
+	sc.SetOnSpliceReady(func(podID string, pts int64, preRollMs int64) {
 		readyCh <- struct{}{}
 	})
 
@@ -453,7 +453,7 @@ func TestSpliceCoordinator_TimeoutNoCandidates(t *testing.T) {
 	})
 
 	readyCh := make(chan struct{}, 1)
-	sc.SetOnSpliceReady(func(podID string, pts int64) {
+	sc.SetOnSpliceReady(func(podID string, pts int64, preRollMs int64) {
 		readyCh <- struct{}{}
 	})
 

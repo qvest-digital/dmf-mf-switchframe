@@ -77,6 +77,7 @@ type activeEvent struct {
 	SpliceTimePTS   int64
 	Descriptors     []SegmentationDescriptor
 	Source          string // origin of this cue ("api", "macro", "scte104", etc.)
+	PreRollMs       int64  // pre-roll duration in ms (0 for immediate cues)
 	returnTimer     *time.Timer
 	preRollCancel   context.CancelFunc // cancels pre-roll repetition goroutine
 	lastEncodedData []byte             // encoded SCTE-35 data (for pre-roll repetition)
@@ -94,7 +95,8 @@ type ActiveEventState struct {
 	AutoReturn    bool                     `json:"autoReturn"`
 	Held          bool                     `json:"held"`
 	SpliceTimePTS int64                    `json:"spliceTimePts"`
-	StartedAt     int64                    `json:"startedAt"` // unix ms
+	StartedAt     int64                    `json:"startedAt"`              // unix ms
+	PreRollMs     int64                    `json:"preRollMs,omitempty"`    // pre-roll duration in ms
 	Descriptors   []SegmentationDescriptor `json:"descriptors,omitempty"`
 }
 
@@ -552,15 +554,12 @@ func (inj *Injector) ScheduleCue(msg *CueMessage, preRollMs int64) (uint32, erro
 		return eventID, err
 	}
 
-	// Adjust StartedAt forward by the pre-roll duration so that the UI
-	// countdown (durationMs - (now - startedAt)) reflects when the break
-	// actually begins, not when the cue was injected. Without this,
-	// the countdown ticks during pre-roll and reaches 0 before the
-	// break ends (off by preRollMs).
+	// Record pre-roll on the active event so the UI can compute the
+	// correct countdown: break starts at startedAt + preRollMs.
 	if preRollMs > 0 {
 		inj.mu.Lock()
 		if ae, ok := inj.activeEvents[eventID]; ok {
-			ae.StartedAt = ae.StartedAt.Add(time.Duration(preRollMs) * time.Millisecond)
+			ae.PreRollMs = preRollMs
 		}
 		inj.mu.Unlock()
 	}
@@ -1097,12 +1096,13 @@ func (inj *Injector) State() InjectorState {
 			Held:          ae.Held,
 			SpliceTimePTS: ae.SpliceTimePTS,
 			StartedAt:     ae.StartedAt.UnixMilli(),
+			PreRollMs:     ae.PreRollMs,
 			Descriptors:   ae.Descriptors,
 		}
 
 		elapsedMs := now.Sub(ae.StartedAt).Milliseconds()
 		if elapsedMs < 0 {
-			elapsedMs = 0 // pre-roll phase: break hasn't started yet
+			elapsedMs = 0
 		}
 		state.ElapsedMs = elapsedMs
 

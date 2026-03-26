@@ -437,6 +437,7 @@ type SCTE35Active struct {
 	Held          bool                   `json:"held"`
 	SpliceTimePTS int64                  `json:"spliceTimePts"`
 	StartedAt     int64                  `json:"startedAt"`
+	PreRollMs     int64                  `json:"preRollMs,omitempty"`
 	Descriptors   []SCTE35DescriptorInfo `json:"descriptors,omitempty"`
 }
 

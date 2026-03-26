@@ -74,7 +74,7 @@ type SpliceCoordinator struct {
 	mu            sync.Mutex
 	config        SpliceCoordinatorConfig
 	active        *SpliceOperation
-	onSpliceReady func(podID string, pts int64)
+	onSpliceReady func(podID string, pts int64, preRollMs int64)
 	asRunLog      func(AsRunEvent)
 	preRollMs     int64
 	windowMs      int64
@@ -113,7 +113,8 @@ func (sc *SpliceCoordinator) Active() bool {
 }
 
 // SetOnSpliceReady registers a callback that fires when a splice point is finalized.
-func (sc *SpliceCoordinator) SetOnSpliceReady(fn func(podID string, pts int64)) {
+// preRollMs is the remaining pre-roll from finalization to the actual splice point.
+func (sc *SpliceCoordinator) SetOnSpliceReady(fn func(podID string, pts int64, preRollMs int64)) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 	sc.onSpliceReady = fn
@@ -309,9 +310,10 @@ func (sc *SpliceCoordinator) finalizeSplice() {
 	}
 	sc.mu.Unlock()
 
-	// Fire callback.
+	// Fire callback with remaining pre-roll so the pod board can set
+	// its auto-return timer to breakDuration + preRoll (not just breakDuration).
 	if callbackFn != nil {
-		callbackFn(podID, lockedPTS)
+		callbackFn(podID, lockedPTS, remainingPreRollMs)
 	}
 }
 

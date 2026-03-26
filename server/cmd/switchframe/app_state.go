@@ -562,6 +562,7 @@ func convertActiveEvents(src map[uint32]scte35.ActiveEventState) map[uint32]inte
 			Held:          ae.Held,
 			SpliceTimePTS: ae.SpliceTimePTS,
 			StartedAt:     ae.StartedAt,
+			PreRollMs:     ae.PreRollMs,
 		}
 		if len(ae.Descriptors) > 0 {
 			active.Descriptors = make([]internal.SCTE35DescriptorInfo, len(ae.Descriptors))
