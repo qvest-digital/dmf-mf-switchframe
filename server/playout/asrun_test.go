@@ -321,6 +321,53 @@ func TestAsRunLogger_RingOverflow(t *testing.T) {
 	}
 }
 
+func TestAsRunLogger_Reset(t *testing.T) {
+	dir := t.TempDir()
+	logger, err := NewAsRunLogger(AsRunLoggerConfig{
+		Dir:          dir,
+		RingCapacity: 10,
+	})
+	if err != nil {
+		t.Fatalf("NewAsRunLogger: %v", err)
+	}
+	defer logger.Close()
+
+	// Log some events.
+	for i := 0; i < 5; i++ {
+		logger.Log(AsRunEvent{
+			Timestamp: time.Now().UTC(),
+			Type:      AsRunItemStart,
+			ChannelID: 1,
+			ItemID:    "item-" + string(rune('A'+i)),
+		})
+	}
+
+	if len(logger.All()) != 5 {
+		t.Fatalf("All() len = %d, want 5", len(logger.All()))
+	}
+
+	// Reset clears the ring buffer.
+	logger.Reset()
+	if len(logger.All()) != 0 {
+		t.Fatalf("All() len = %d after Reset, want 0", len(logger.All()))
+	}
+
+	// Can log again after reset.
+	logger.Log(AsRunEvent{
+		Timestamp: time.Now().UTC(),
+		Type:      AsRunItemStart,
+		ChannelID: 1,
+		ItemID:    "post-reset",
+	})
+	events := logger.All()
+	if len(events) != 1 {
+		t.Fatalf("All() len = %d after re-log, want 1", len(events))
+	}
+	if events[0].ItemID != "post-reset" {
+		t.Errorf("events[0].ItemID = %q, want %q", events[0].ItemID, "post-reset")
+	}
+}
+
 func TestAsRunLogger_JSONLPersistence(t *testing.T) {
 	dir := t.TempDir()
 	logger, err := NewAsRunLogger(AsRunLoggerConfig{

@@ -37,6 +37,7 @@ func (a *API) registerPlayoutRoutes(mux *http.ServeMux) {
 	// As-run endpoints.
 	mux.HandleFunc("GET /api/playout/channels/{n}/asrun", a.handlePlayoutAsRunQuery)
 	mux.HandleFunc("GET /api/playout/channels/{n}/asrun/export", a.handlePlayoutAsRunExport)
+	mux.HandleFunc("POST /api/playout/channels/{n}/asrun/reset", a.handlePlayoutAsRunReset)
 
 	// BXF import endpoint.
 	mux.HandleFunc("POST /api/playout/import/bxf", a.handlePlayoutBXFImport)
@@ -425,6 +426,23 @@ func (a *API) handlePlayoutAsRunExport(w http.ResponseWriter, r *http.Request) {
 	// Default: JSON export.
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(events)
+}
+
+// handlePlayoutAsRunReset clears the in-memory as-run ring buffer.
+func (a *API) handlePlayoutAsRunReset(w http.ResponseWriter, r *http.Request) {
+	if _, err := parseChannelID(r); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+
+	logger := a.playoutMgr.AsRunLogger()
+	if logger == nil {
+		httperr.Write(w, http.StatusNotImplemented, "as-run logging not configured")
+		return
+	}
+
+	logger.Reset()
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handlePlayoutBXFImport imports a BXF schedule as a playlist.

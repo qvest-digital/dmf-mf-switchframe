@@ -1,5 +1,7 @@
 <script lang="ts">
 	import type { PlayoutChannelState, PlaylistItem } from '$lib/api/types';
+	import { playoutAsRunExport, playoutAsRunReset, apiCall } from '$lib/api/switch-api';
+	import { notify } from '$lib/state/notifications.svelte';
 
 	interface Props {
 		channel: PlayoutChannelState;
@@ -98,6 +100,40 @@
 			? `${nextItem.transition.type} ${nextItem.transition.duration_ms ? (nextItem.transition.duration_ms / 1000).toFixed(1) + 's' : ''}`
 			: 'cut'
 	);
+
+	// ── As-run log actions ──
+	async function downloadAsRun() {
+		try {
+			const res = await playoutAsRunExport(channel.id, 'json');
+			if (!res.ok) { notify('error', 'Failed to download as-run log'); return; }
+			const blob = await res.blob();
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = `asrun-ch${channel.id}-${new Date().toISOString().slice(0, 10)}.json`;
+			document.body.appendChild(a);
+			a.click();
+			document.body.removeChild(a);
+			URL.revokeObjectURL(url);
+		} catch {
+			notify('error', 'Failed to download as-run log');
+		}
+	}
+
+	let confirmingReset = $state(false);
+	let resetTimer: ReturnType<typeof setTimeout> | null = null;
+
+	function handleResetAsRun() {
+		if (!confirmingReset) {
+			confirmingReset = true;
+			resetTimer = setTimeout(() => { confirmingReset = false; }, 3000);
+			return;
+		}
+		if (resetTimer) { clearTimeout(resetTimer); resetTimer = null; }
+		confirmingReset = false;
+		apiCall(playoutAsRunReset(channel.id), 'Reset as-run');
+		notify('info', 'As-run log cleared');
+	}
 </script>
 
 <div class="status-dashboard" data-testid="status-dashboard">
@@ -139,6 +175,21 @@
 				</span>
 			</div>
 		{/if}
+	</div>
+
+	<!-- As-run actions -->
+	<div class="asrun-actions">
+		<button class="asrun-btn" onclick={downloadAsRun} title="Download as-run log (JSON)">
+			As-Run ↓
+		</button>
+		<button
+			class="asrun-btn"
+			class:confirming={confirmingReset}
+			onclick={handleResetAsRun}
+			title={confirmingReset ? 'Click again to confirm' : 'Clear as-run log'}
+		>
+			{confirmingReset ? 'Confirm Clear?' : 'Clear Log'}
+		</button>
 	</div>
 
 	<!-- Wall clock -->
@@ -220,6 +271,46 @@
 
 	.mode-value.auto { color: var(--tally-preview); }
 	.mode-value.manual { color: var(--accent-orange); }
+
+	.asrun-actions {
+		display: flex;
+		gap: 4px;
+		width: 100%;
+		max-width: 200px;
+	}
+
+	.asrun-btn {
+		flex: 1;
+		padding: 3px 6px;
+		background: var(--bg-base);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		font-family: var(--font-ui);
+		font-size: 8px;
+		font-weight: 600;
+		color: var(--text-tertiary);
+		cursor: pointer;
+		letter-spacing: 0.03em;
+		transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+	}
+
+	.asrun-btn:hover {
+		background: var(--bg-hover);
+		color: var(--text-secondary);
+		border-color: var(--border-strong);
+	}
+
+	.asrun-btn.confirming {
+		color: var(--tally-program);
+		border-color: rgba(220, 38, 38, 0.4);
+		background: rgba(220, 38, 38, 0.08);
+		animation: confirm-pulse 0.8s ease-in-out infinite;
+	}
+
+	@keyframes confirm-pulse {
+		0%, 100% { background: rgba(220, 38, 38, 0.08); }
+		50% { background: rgba(220, 38, 38, 0.2); }
+	}
 
 	.wall-clock {
 		font-family: var(--font-mono);

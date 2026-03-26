@@ -1427,6 +1427,10 @@ export function playoutAsRunExport(channelId: number, format: 'json' | 'bxf'): P
 	});
 }
 
+export function playoutAsRunReset(channelId: number): Promise<void> {
+	return request<void>(`/api/playout/channels/${channelId}/asrun/reset`, { method: 'POST' });
+}
+
 export async function playoutImportBxf(
 	bxfXml: string,
 	channel?: number,

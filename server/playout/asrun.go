@@ -141,6 +141,18 @@ func (l *AsRunLogger) All() []AsRunEvent {
 	return l.Query(AsRunQuery{})
 }
 
+// Reset clears the in-memory ring buffer. The on-disk JSONL file is
+// unaffected (it is an append-only historical record).
+func (l *AsRunLogger) Reset() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.head = 0
+	l.count = 0
+	for i := range l.ring {
+		l.ring[i] = AsRunEvent{}
+	}
+}
+
 // CleanupOldFiles removes as-run JSONL files older than RetentionDays.
 // Returns the number of files deleted. Returns 0 immediately if retention
 // is disabled (RetentionDays <= 0).
