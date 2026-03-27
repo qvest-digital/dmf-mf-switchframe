@@ -153,6 +153,16 @@ func MaskFloatToU8Upscale(dstPtr unsafe.Pointer, dstW, dstH int, srcPtr unsafe.P
 	return nil
 }
 
+// SyncDefaultStream synchronizes the CUDA NULL/default stream, blocking until
+// all previously queued operations on any stream complete. This is useful for
+// catching asynchronous kernel errors after OptiX launches.
+func SyncDefaultStream() error {
+	if rc := C.cudaDeviceSynchronize(); rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: cudaDeviceSynchronize failed: %d", rc)
+	}
+	return nil
+}
+
 // AllocDeviceBytes allocates size bytes of GPU device memory.
 func AllocDeviceBytes(size int) (unsafe.Pointer, error) {
 	var ptr unsafe.Pointer
@@ -176,6 +186,17 @@ func UploadBytes(devPtr unsafe.Pointer, data []byte) error {
 	}
 	if rc := C.cudaMemcpy(devPtr, unsafe.Pointer(&data[0]), C.size_t(len(data)), C.cudaMemcpyHostToDevice); rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: UploadBytes: cudaMemcpy failed: %d", rc)
+	}
+	return nil
+}
+
+// CopyHostToDevice copies size bytes from host memory to device memory.
+func CopyHostToDevice(devPtr, hostPtr unsafe.Pointer, size int) error {
+	if devPtr == nil || hostPtr == nil || size <= 0 {
+		return fmt.Errorf("gpu: CopyHostToDevice: invalid arguments")
+	}
+	if rc := C.cudaMemcpy(devPtr, hostPtr, C.size_t(size), C.cudaMemcpyHostToDevice); rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: CopyHostToDevice: cudaMemcpy failed: %d", rc)
 	}
 	return nil
 }

@@ -32,6 +32,9 @@ func DownloadMaskU8(dst []byte, devPtr unsafe.Pointer, size int) error {
 	return ErrGPUNotAvailable
 }
 
+// SyncDefaultStream returns ErrGPUNotAvailable on non-GPU builds.
+func SyncDefaultStream() error { return ErrGPUNotAvailable }
+
 // AllocDeviceBytes returns ErrGPUNotAvailable on non-GPU builds.
 func AllocDeviceBytes(size int) (unsafe.Pointer, error) {
 	return nil, ErrGPUNotAvailable
@@ -42,6 +45,11 @@ func FreeDeviceBytes(ptr unsafe.Pointer) {}
 
 // UploadBytes returns ErrGPUNotAvailable on non-GPU builds.
 func UploadBytes(devPtr unsafe.Pointer, data []byte) error {
+	return ErrGPUNotAvailable
+}
+
+// CopyHostToDevice returns ErrGPUNotAvailable on non-GPU builds.
+func CopyHostToDevice(devPtr, hostPtr unsafe.Pointer, size int) error {
 	return ErrGPUNotAvailable
 }
 

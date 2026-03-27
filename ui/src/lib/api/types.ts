@@ -657,6 +657,9 @@ export interface ControlRoomState {
 	neuralKey?: {
 		available: boolean;
 	};
+	arOcclusion?: AROcclusionState;
+	arTracking?: ARTrackingState;
+	arScene?: ARSceneState;
 	playout?: PlayoutState;
 	lastChangedBy?: string;
 	seq: number;
@@ -676,6 +679,78 @@ export interface AISegmentationState {
 	available: boolean;
 	modelName?: string;
 	sources?: Record<string, AISegmentConfig>;
+}
+
+// ── AR (Augmented Reality) ──
+
+export interface AROcclusionState {
+	enabled: boolean;
+	depthReady: boolean;
+	samReady: boolean;
+	prompts: ARPromptInfo[];
+	depthLatencyMs: number;
+	samLatencyMs: number;
+	framesProcessed: number;
+	framesSkipped: number;
+}
+
+export interface ARPromptInfo {
+	id: string;
+	label: string;
+	type: string;
+}
+
+export interface ARTrackingSourceInfo {
+	name: string;
+	type: string;
+	running: boolean;
+	confidence: number;
+}
+
+export interface ARTrackingState {
+	sources: Record<string, ARTrackingSourceInfo[]>;
+}
+
+export interface ARSceneObject {
+	id: string;
+	assetId: string;
+	position: [number, number, number];
+	rotation: [number, number, number];
+	scale: [number, number, number];
+	visible: boolean;
+}
+
+export interface ARSceneLight {
+	id: string;
+	type: string;
+	position: [number, number, number];
+	direction: [number, number, number];
+	color: [number, number, number];
+	intensity: number;
+}
+
+export interface ARRenderSettings {
+	width: number;
+	height: number;
+	spp: number;
+	denoise: boolean;
+}
+
+export interface ARSceneState {
+	objects: ARSceneObject[];
+	lights: ARSceneLight[];
+	settings: ARRenderSettings;
+	hasEnvMap: boolean;
+	assetCount: number;
+}
+
+export interface ARAssetInfo {
+	id: string;
+	name: string;
+	filename: string;
+	format: string;
+	byteSize: number;
+	createdAt: number;
 }
 
 // ── ST Map Types ──

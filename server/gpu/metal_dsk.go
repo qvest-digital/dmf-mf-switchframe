@@ -81,6 +81,20 @@ func DSKCompositeFullFrame(ctx *Context, frame *GPUFrame, overlay *GPUOverlay, a
 	return nil
 }
 
+// DSKCompositeFullFrameOcc composites with occlusion masking. On Metal builds,
+// AR occlusion is not supported — falls back to standard compositing.
+func DSKCompositeFullFrameOcc(ctx *Context, frame *GPUFrame, overlay *GPUOverlay, alphaScale float64, occPtr uintptr, occW, occH int) error {
+	// Metal doesn't support AR occlusion yet — ignore the occlusion mask.
+	return DSKCompositeFullFrame(ctx, frame, overlay, alphaScale)
+}
+
+// DSKCompositeRectOcc composites with occlusion masking. On Metal builds,
+// AR occlusion is not supported — falls back to standard compositing.
+func DSKCompositeRectOcc(ctx *Context, frame *GPUFrame, overlay *GPUOverlay, rect Rect, alphaScale float64, occPtr uintptr, occW, occH int) error {
+	// Metal doesn't support AR occlusion yet — ignore the occlusion mask.
+	return DSKCompositeRect(ctx, frame, overlay, rect, alphaScale)
+}
+
 // DSKCompositeRect composites an RGBA overlay into a rectangular region.
 func DSKCompositeRect(ctx *Context, frame *GPUFrame, overlay *GPUOverlay, rect Rect, alphaScale float64) error {
 	if ctx == nil || ctx.mtl == nil || frame == nil || overlay == nil {

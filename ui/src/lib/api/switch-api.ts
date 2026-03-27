@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, GateSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig, ColorGradeState, CorrectorState, PlayoutChannelState, Playlist, PlaylistItem, CacheStatus, PodInfo, PodConfig, PodTemplate, AsRunEvent, ChannelHealth, SampleClip, PlayoutClip, ASRState } from './types';
+import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, GateSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig, ColorGradeState, CorrectorState, PlayoutChannelState, Playlist, PlaylistItem, CacheStatus, PodInfo, PodConfig, PodTemplate, AsRunEvent, ChannelHealth, SampleClip, PlayoutClip, ASRState, AROcclusionState, ARPromptInfo, ARSceneState, ARSceneObject, ARSceneLight, ARRenderSettings, ARAssetInfo, ARTrackingSourceInfo } from './types';
 import { notify } from '$lib/state/notifications.svelte';
 import { resolveApiUrl } from './base-url';
 
@@ -1504,4 +1504,151 @@ export function playoutSavedGet(name: string): Promise<Playlist> {
 
 export function playoutSavedDelete(name: string): Promise<void> {
 	return request(`/api/playout/saved/${encodeURIComponent(name)}`, { method: 'DELETE' }) as Promise<void>;
+}
+
+// ── AR (Augmented Reality) ──
+
+// Occlusion
+export function arOcclusionEnable(mode: 'depth' | 'sam' | 'both' = 'both'): Promise<AROcclusionState> {
+	return post('/api/ar/occlusion/enable', { mode });
+}
+
+export function arOcclusionDisable(): Promise<AROcclusionState> {
+	return post('/api/ar/occlusion/disable', {});
+}
+
+export function arOcclusionStatus(): Promise<AROcclusionState> {
+	return request<AROcclusionState>('/api/ar/occlusion/status');
+}
+
+export function arOcclusionAddPrompt(prompt: { id?: string; label: string; type: string; points?: [number, number][]; box?: [number, number, number, number] }): Promise<AROcclusionState> {
+	const body = { ...prompt, id: prompt.id || crypto.randomUUID() };
+	return post('/api/ar/occlusion/prompt', body);
+}
+
+export function arOcclusionDeletePrompt(promptId: string): Promise<AROcclusionState> {
+	return request<AROcclusionState>(`/api/ar/occlusion/prompts/${encodeURIComponent(promptId)}`, { method: 'DELETE' });
+}
+
+// Scene
+export function arSceneGet(): Promise<ARSceneState> {
+	return request<ARSceneState>('/api/ar/scene');
+}
+
+export function arSceneAddObject(obj: { id?: string; assetId: string; position?: [number, number, number]; rotation?: [number, number, number]; scale?: [number, number, number]; visible?: boolean }): Promise<ARSceneObject> {
+	const body = {
+		...obj,
+		id: obj.id || crypto.randomUUID(),
+		scale: obj.scale || [1, 1, 1],
+		visible: obj.visible ?? true,
+		position: obj.position || [0, 0, 0],
+		rotation: obj.rotation || [0, 0, 0],
+	};
+	return post('/api/ar/scene/objects', body);
+}
+
+export function arSceneUpdateObject(objectId: string, updates: Partial<ARSceneObject>): Promise<ARSceneObject> {
+	return request<ARSceneObject>(`/api/ar/scene/objects/${encodeURIComponent(objectId)}`, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(updates),
+	});
+}
+
+export function arSceneDeleteObject(objectId: string): Promise<void> {
+	return request(`/api/ar/scene/objects/${encodeURIComponent(objectId)}`, { method: 'DELETE' }) as Promise<void>;
+}
+
+export function arSceneAddLight(light: { id?: string; type: string; position?: [number, number, number]; color?: [number, number, number]; direction?: [number, number, number]; intensity?: number }): Promise<ARSceneLight> {
+	const body = {
+		...light,
+		id: light.id || crypto.randomUUID(),
+		color: light.color || [1, 1, 1],
+		direction: light.direction || [0, -1, 0],
+		position: light.position || [0, 2, 0],
+	};
+	return post('/api/ar/scene/lights', body);
+}
+
+export function arSceneUpdateLight(lightId: string, updates: Partial<ARSceneLight>): Promise<ARSceneLight> {
+	return request<ARSceneLight>(`/api/ar/scene/lights/${encodeURIComponent(lightId)}`, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(updates),
+	});
+}
+
+export function arSceneDeleteLight(lightId: string): Promise<void> {
+	return request(`/api/ar/scene/lights/${encodeURIComponent(lightId)}`, { method: 'DELETE' }) as Promise<void>;
+}
+
+// Assets
+export async function arAssetUpload(file: File, name?: string): Promise<ARAssetInfo> {
+	const formData = new FormData();
+	formData.append('asset', file);
+	if (name) formData.append('name', name);
+	const res = await fetch(resolveApiUrl('/api/ar/assets'), {
+		method: 'POST',
+		headers: authHeaders(),
+		body: formData,
+	});
+	if (!res.ok) {
+		const body = await res.json().catch(() => ({ error: 'unknown error' }));
+		throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
+	}
+	return res.json();
+}
+
+export function arAssetList(): Promise<ARAssetInfo[]> {
+	return request<ARAssetInfo[]>('/api/ar/assets');
+}
+
+export function arAssetDelete(assetId: string): Promise<void> {
+	return request(`/api/ar/assets/${encodeURIComponent(assetId)}`, { method: 'DELETE' }) as Promise<void>;
+}
+
+// Tracking
+export function arTrackingAddFreeD(source: string, config: { addr: string; cameraID: number }): Promise<void> {
+	return post(`/api/ar/tracking/sources/${encodeURIComponent(source)}/freed`, config);
+}
+
+export function arTrackingRemoveSource(source: string, tracker: string): Promise<void> {
+	return request(`/api/ar/tracking/sources/${encodeURIComponent(source)}/${encodeURIComponent(tracker)}`, { method: 'DELETE' }) as Promise<void>;
+}
+
+export function arTrackingGetPose(source: string): Promise<{ position: [number, number, number]; orientation: [number, number, number]; focalLength: number; focusDistance: number; confidence: number; timestamp: number; source: string }> {
+	return request(`/api/ar/tracking/sources/${encodeURIComponent(source)}/pose`);
+}
+
+export function arTrackingSources(): Promise<Record<string, ARTrackingSourceInfo[]>> {
+	return request('/api/ar/tracking/sources');
+}
+
+export function arTrackingSetCalibration(source: string, calibration: { focalLengthCurve: [number, number][]; sensorWidth: number; principalPoint: [number, number]; distortion?: [number, number, number, number, number] }): Promise<void> {
+	return request(`/api/ar/tracking/calibration/${encodeURIComponent(source)}`, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(calibration),
+	}) as Promise<void>;
+}
+
+export function arTrackingSetAruco(markers: Record<string, [number, number, number]>): Promise<void> {
+	return request('/api/ar/tracking/aruco', {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ markers }),
+	}) as Promise<void>;
+}
+
+// Render settings
+export function arRenderGetSettings(): Promise<ARRenderSettings> {
+	return request<ARRenderSettings>('/api/ar/render/settings');
+}
+
+export function arRenderUpdateSettings(settings: Partial<ARRenderSettings>): Promise<ARRenderSettings> {
+	return request<ARRenderSettings>('/api/ar/render/settings', {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(settings),
+	});
 }

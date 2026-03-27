@@ -22,8 +22,9 @@ describe('BottomTabs', () => {
 		expect(tabLabels).toContain('Presets');
 		expect(tabLabels).toContain('Clips');
 		expect(tabLabels).toContain('Playout');
+		expect(tabLabels).toContain('AR');
 		expect(tabLabels).toContain('Team');
-		expect(tabs.length).toBe(11);
+		expect(tabs.length).toBe(12);
 	});
 
 	it('does not render old Layout, Graphics, or Keys tabs', () => {
@@ -42,12 +43,12 @@ describe('BottomTabs', () => {
 		expect(presetsTab!.textContent).toContain('Presets');
 	});
 
-	it('responds to Ctrl+Shift+8 for Presets tab', async () => {
+	it('responds to Ctrl+Shift+9 for Presets tab', async () => {
 		const { container } = render(BottomTabs);
 
-		// Presets is the 8th tab, triggered by Ctrl+Shift+8
+		// Presets is the 9th tab (after AR was added), triggered by Ctrl+Shift+9
 		const event = new KeyboardEvent('keydown', {
-			code: 'Digit8',
+			code: 'Digit9',
 			ctrlKey: true,
 			shiftKey: true,
 			altKey: false,

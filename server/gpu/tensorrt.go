@@ -14,14 +14,15 @@ package gpu
 
 // TensorRT is a C++ API, so we use extern "C" wrapper functions compiled
 // separately in cuda/tensorrt_wrapper.cpp → libswitchframe_tensorrt.a.
-// This preamble declares the C-linkage function signatures that the Go
-// code calls through cgo.
+// See cuda/tensorrt_wrapper.h for the full C-linkage API declaration.
+// This preamble re-declares the signatures that the Go code calls through cgo.
 typedef void* trt_engine_t;
 typedef void* trt_context_t;
 
 extern int trt_build_engine(const char* onnxPath, const char* planPath,
                             int maxBatch, int useFP16, int useINT8);
 extern trt_engine_t trt_load_engine(const char* planPath);
+extern trt_engine_t trt_load_engine_from_memory(const void* data, int size);
 extern trt_context_t trt_create_context(trt_engine_t engine);
 extern int trt_infer(trt_context_t context, void* inputDevPtr, void* outputDevPtr,
                      int batchSize, void* stream);
@@ -38,6 +39,7 @@ extern int trt_get_num_io(void* engineHandle);
 extern int trt_get_tensor_info(void* engineHandle, int index,
                                char* name_buf, int name_buf_size,
                                int* is_input, int* dtype, int* ndims, int* dims);
+extern int trt_dtype_size(int dtype);
 
 typedef struct {
     const char* name;
@@ -389,4 +391,69 @@ func (c *TRTContext) InferMulti(bindings []TRTBinding, stream unsafe.Pointer) er
 		return fmt.Errorf("gpu: tensorrt: infer_multi failed: %s", errMsg)
 	}
 	return nil
+}
+
+// LoadTRTPlan loads a serialized TensorRT engine plan directly from a file path.
+// Unlike NewTRTEngine, this skips ONNX parsing and expects a pre-built .plan file.
+func LoadTRTPlan(planPath string) (*TRTEngine, error) {
+	if _, err := os.Stat(planPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("gpu: tensorrt: plan file not found: %s", planPath)
+	}
+	return loadPlan(planPath)
+}
+
+// LoadTRTPlanFromMemory deserializes a TensorRT engine from a memory buffer.
+// This is useful for engines embedded in the binary or fetched from a network.
+func LoadTRTPlanFromMemory(data []byte) (*TRTEngine, error) {
+	if len(data) == 0 {
+		return nil, fmt.Errorf("gpu: tensorrt: empty plan data")
+	}
+
+	handle := C.trt_load_engine_from_memory(unsafe.Pointer(&data[0]), C.int(len(data)))
+	if handle == nil {
+		errMsg := C.GoString(C.trt_get_last_error())
+		return nil, fmt.Errorf("gpu: tensorrt: load plan from memory failed: %s", errMsg)
+	}
+
+	inputSize := int(C.trt_get_input_size(handle))
+	outputSize := int(C.trt_get_output_size(handle))
+
+	return &TRTEngine{
+		handle:     handle,
+		inputSize:  inputSize,
+		outputSize: outputSize,
+	}, nil
+}
+
+// TRTDTypeSize returns the byte size of a single element for a TensorRT DataType.
+// dtype values: 0=float32(4), 1=half(2), 2=int8(1), 3=int32(4), 4=bool(1), 6=int64(8).
+// Returns 0 for unknown types.
+func TRTDTypeSize(dtype int) int {
+	return int(C.trt_dtype_size(C.int(dtype)))
+}
+
+// TensorBufferSize computes the total byte size needed for a tensor buffer
+// given its shape and data type. Dynamic dimensions (-1) are treated as 1.
+// This is a convenience function for allocating device memory for inference.
+func TensorBufferSize(info TensorInfo) int {
+	elemSize := TRTDTypeSize(info.DType)
+	if elemSize == 0 {
+		return 0
+	}
+	vol := 1
+	for _, d := range info.Dims {
+		if d > 0 {
+			vol *= d
+		}
+	}
+	return vol * elemSize
+}
+
+// Handle returns the underlying C engine handle for advanced use cases.
+// Most callers should use the typed methods instead.
+func (e *TRTEngine) Handle() unsafe.Pointer {
+	if e == nil || e.handle == nil {
+		return nil
+	}
+	return unsafe.Pointer(e.handle)
 }

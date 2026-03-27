@@ -618,7 +618,7 @@
 	}
 
 	.sec-label {
-		/* inherits from header */
+		display: contents; /* inherits from header */
 	}
 
 	.sec-list {

@@ -16,8 +16,8 @@ __global__ void nv12_to_rgb_chw_kernel(
     if (ox >= outW || oy >= outH) return;
 
     // Map output to source coords (bilinear)
-    float sx = (float)ox * (float)(srcW - 1) / (float)(outW - 1);
-    float sy = (float)oy * (float)(srcH - 1) / (float)(outH - 1);
+    float sx = (outW > 1) ? (float)ox * (float)(srcW - 1) / (float)(outW - 1) : 0.0f;
+    float sy = (outH > 1) ? (float)oy * (float)(srcH - 1) / (float)(outH - 1) : 0.0f;
 
     // Bilinear sample Y from Y plane
     int ix = (int)sx, iy = (int)sy;
@@ -67,8 +67,8 @@ __global__ void nv12_to_rgb_nhwc_kernel(
     int oy = blockIdx.y * blockDim.y + threadIdx.y;
     if (ox >= outW || oy >= outH) return;
 
-    float sx = (float)ox * (float)(srcW - 1) / (float)(outW - 1);
-    float sy = (float)oy * (float)(srcH - 1) / (float)(outH - 1);
+    float sx = (outW > 1) ? (float)ox * (float)(srcW - 1) / (float)(outW - 1) : 0.0f;
+    float sy = (outH > 1) ? (float)oy * (float)(srcH - 1) / (float)(outH - 1) : 0.0f;
 
     int ix = (int)sx, iy = (int)sy;
     float fx = sx - ix, fy = sy - iy;
@@ -172,6 +172,34 @@ cudaError_t mask_to_u8_upscale(
     dim3 grid((dstW + block.x - 1) / block.x, (dstH + block.y - 1) / block.y);
     mask_float_to_u8_scale_kernel<<<grid, block, 0, stream>>>(
         dst, dstW, dstH, src, srcW, srcH);
+    return cudaGetLastError();
+}
+// Threshold float32 logits to uint8 binary mask.
+// output = (logits[i] > threshold) ? 255 : 0
+__global__ void sam_threshold_mask_kernel(
+    uint8_t* __restrict__ maskOut,
+    const float* __restrict__ logits,
+    int width, int height,
+    float threshold)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) return;
+    int idx = y * width + x;
+    maskOut[idx] = (logits[idx] > threshold) ? 255 : 0;
+}
+
+cudaError_t sam_threshold_mask(
+    uint8_t* maskOut,
+    const float* logits,
+    int width, int height,
+    float threshold,
+    cudaStream_t stream)
+{
+    dim3 block(16, 16);
+    dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
+    sam_threshold_mask_kernel<<<grid, block, 0, stream>>>(
+        maskOut, logits, width, height, threshold);
     return cudaGetLastError();
 }
 } // extern "C"

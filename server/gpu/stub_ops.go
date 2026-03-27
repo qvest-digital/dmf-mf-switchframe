@@ -140,6 +140,16 @@ func DSKCompositeRect(ctx *Context, frame *GPUFrame, overlay *GPUOverlay, rect R
 	return ErrGPUNotAvailable
 }
 
+// DSKCompositeFullFrameOcc returns ErrGPUNotAvailable on non-GPU builds.
+func DSKCompositeFullFrameOcc(ctx *Context, frame *GPUFrame, overlay *GPUOverlay, alphaScale float64, occPtr uintptr, occW, occH int) error {
+	return ErrGPUNotAvailable
+}
+
+// DSKCompositeRectOcc returns ErrGPUNotAvailable on non-GPU builds.
+func DSKCompositeRectOcc(ctx *Context, frame *GPUFrame, overlay *GPUOverlay, rect Rect, alphaScale float64, occPtr uintptr, occW, occH int) error {
+	return ErrGPUNotAvailable
+}
+
 // GPUSTMap is a stub for non-GPU builds.
 type GPUSTMap struct{ Width, Height int }
 
