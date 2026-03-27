@@ -26,14 +26,11 @@
 	let backendConfig = $derived(asrState?.backendConfig ?? {});
 	let availableModels = $state<string[]>([]);
 
-	// Fetch available models when ASR is available.
-	onMount(() => {
-		if (asrAvailable) {
-			getASRModels().then((models) => { availableModels = models ?? []; }).catch(() => {});
-		}
-	});
+	// Fetch available models when ASR is available or backend changes.
+	let lastFetchedBackend = $state('');
 	$effect(() => {
-		if (asrAvailable && availableModels.length === 0) {
+		if (asrAvailable && asrBackend !== lastFetchedBackend) {
+			lastFetchedBackend = asrBackend;
 			getASRModels().then((models) => { availableModels = models ?? []; }).catch(() => {});
 		}
 	});

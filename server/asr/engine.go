@@ -251,6 +251,17 @@ func (e *Engine) SwitchBackend(name string) error {
 	return fmt.Errorf("asr: unknown backend %q", name)
 }
 
+// SidecarBackend returns the underlying SidecarBackend if the active backend
+// is one, or nil otherwise. Used by the app to register status callbacks.
+func (e *Engine) SidecarBackend() *SidecarBackend {
+	bp := e.active.Load()
+	if bp == nil || *bp == nil {
+		return nil
+	}
+	sb, _ := (*bp).(*SidecarBackend)
+	return sb
+}
+
 // OnBackendSwitch registers a callback invoked after an async backend switch completes.
 func (e *Engine) OnBackendSwitch(fn func()) {
 	e.onBackendSwitch.Store(&fn)

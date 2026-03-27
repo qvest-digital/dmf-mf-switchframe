@@ -66,6 +66,16 @@ func (a *App) initASR() error {
 		a.broadcastState(nil)
 	})
 
+	// Also update when the sidecar reports status changes (backend/model/config).
+	// This handles the async timing: SwitchBackend returns immediately,
+	// but the sidecar processes the switch and reports back via IPC later.
+	if sb := engine.SidecarBackend(); sb != nil {
+		sb.OnStatusUpdate(func() {
+			a.updateASRStateCache()
+			a.broadcastState(nil)
+		})
+	}
+
 	// Note: caption mode is set to ModeAuto later in run() after the API is
 	// initialized, because SetMode triggers broadcastState which requires
 	// a.api to be non-nil.

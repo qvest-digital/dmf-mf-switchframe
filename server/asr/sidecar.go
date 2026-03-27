@@ -63,6 +63,11 @@ type SidecarBackend struct {
 	cachedAvailableBackends atomic.Pointer[[]string]
 	cachedModels            atomic.Pointer[[]string]
 	cachedBackendConfig     atomic.Pointer[json.RawMessage]
+
+	// onStatusUpdate is called when the sidecar reports a status change
+	// (backend switch, model change, config update). Used to refresh the
+	// app-level ASR state cache and broadcast to the UI.
+	onStatusUpdate atomic.Pointer[func()]
 }
 
 // NewSidecarBackend creates a new SidecarBackend but does not start it.
@@ -99,6 +104,13 @@ func (s *SidecarBackend) ActiveBackendName() string {
 		return *p
 	}
 	return "parakeet"
+}
+
+// OnStatusUpdate registers a callback invoked when the sidecar reports a
+// status change (backend/model/config updates). Used by the app to refresh
+// the ASR state cache and broadcast to the UI.
+func (s *SidecarBackend) OnStatusUpdate(fn func()) {
+	s.onStatusUpdate.Store(&fn)
 }
 
 // Start begins the sidecar process and IPC communication.
@@ -445,6 +457,10 @@ func (s *SidecarBackend) readLoop(gen int64) {
 			}
 			slog.Debug("asr-sidecar: status", "state", msg.State, "model", msg.Model,
 				"backend", msg.Backend, "available", msg.AvailableBackends, "latency_ms", msg.LatencyMs)
+			// Notify app to refresh state cache + broadcast to UI.
+			if fn := s.onStatusUpdate.Load(); fn != nil {
+				(*fn)()
+			}
 
 		case "error":
 			slog.Warn("asr-sidecar: error from sidecar", "error", msg.Error)
