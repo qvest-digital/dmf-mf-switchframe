@@ -110,6 +110,11 @@ func (se *SequenceEngine) AutoOn(layerID int) error {
 		se.compositor.mu.Unlock()
 		return ErrLayerNotFound
 	}
+	// Guard against concurrent Upload replacing layer.seq between lock acquisitions.
+	if layer.seq != seq {
+		se.compositor.mu.Unlock()
+		return ErrSequenceNotFound
+	}
 
 	seq.startIn()
 
@@ -153,6 +158,10 @@ func (se *SequenceEngine) CutOn(layerID int) error {
 	if !ok {
 		se.compositor.mu.Unlock()
 		return ErrLayerNotFound
+	}
+	if layer.seq != seq {
+		se.compositor.mu.Unlock()
+		return ErrSequenceNotFound
 	}
 
 	seq.startLoop()
@@ -198,6 +207,10 @@ func (se *SequenceEngine) AutoOff(layerID int) error {
 	if !ok {
 		se.compositor.mu.Unlock()
 		return ErrLayerNotFound
+	}
+	if layer.seq != seq {
+		se.compositor.mu.Unlock()
+		return ErrSequenceNotFound
 	}
 
 	seq.startOut()
@@ -246,6 +259,10 @@ func (se *SequenceEngine) CutOff(layerID int) error {
 	if !ok {
 		se.compositor.mu.Unlock()
 		return ErrLayerNotFound
+	}
+	if layer.seq != seq {
+		se.compositor.mu.Unlock()
+		return ErrSequenceNotFound
 	}
 
 	seq.phase = seqPhaseIdle
