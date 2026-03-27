@@ -1,6 +1,12 @@
 package graphics
 
 import (
+	"archive/zip"
+	"bytes"
+	"errors"
+	"image"
+	"image/color"
+	"image/png"
 	"testing"
 )
 
@@ -270,5 +276,191 @@ func TestSequenceState_CurrentFramePerPhase(t *testing.T) {
 	s.advance()
 	if f := s.currentFrame(); f != nil {
 		t.Fatal("done: expected nil")
+	}
+}
+
+// --- ZIP loading tests ---
+
+// makePNG creates a small PNG image with a single non-transparent pixel at (px, py).
+func makePNG(t *testing.T, w, h, px, py int, c color.NRGBA) []byte {
+	t.Helper()
+	img := image.NewNRGBA(image.Rect(0, 0, w, h))
+	// all pixels start as transparent (zero value)
+	img.SetNRGBA(px, py, c)
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("png.Encode: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// buildZIP creates a ZIP archive from a map of filename→content.
+func buildZIP(t *testing.T, files map[string][]byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, data := range files {
+		fw, err := zw.Create(name)
+		if err != nil {
+			t.Fatalf("zip create %s: %v", name, err)
+		}
+		if _, err := fw.Write(data); err != nil {
+			t.Fatalf("zip write %s: %v", name, err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zip close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func TestLoadSequenceZIP(t *testing.T) {
+	white := color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+
+	// All 4x4 images with a non-transparent pixel at (1,1).
+	pngData := makePNG(t, 4, 4, 1, 1, white)
+
+	files := map[string][]byte{
+		"in/001.png":  pngData,
+		"in/002.png":  pngData,
+		"loop001.png": pngData,
+		"loop002.png": pngData,
+		"loop003.png": pngData,
+		"out/001.png": pngData,
+	}
+	zipData := buildZIP(t, files)
+
+	seq, err := LoadSequenceZIP(zipData)
+	if err != nil {
+		t.Fatalf("LoadSequenceZIP: %v", err)
+	}
+
+	// frame counts
+	if len(seq.inFrames) != 2 {
+		t.Errorf("in frames: got %d, want 2", len(seq.inFrames))
+	}
+	if len(seq.loopFrames) != 3 {
+		t.Errorf("loop frames: got %d, want 3", len(seq.loopFrames))
+	}
+	if len(seq.outFrames) != 1 {
+		t.Errorf("out frames: got %d, want 1", len(seq.outFrames))
+	}
+
+	// crop position should be even-aligned
+	if seq.cropX%2 != 0 {
+		t.Errorf("cropX %d not even", seq.cropX)
+	}
+	if seq.cropY%2 != 0 {
+		t.Errorf("cropY %d not even", seq.cropY)
+	}
+	if seq.cropW%2 != 0 {
+		t.Errorf("cropW %d not even", seq.cropW)
+	}
+	if seq.cropH%2 != 0 {
+		t.Errorf("cropH %d not even", seq.cropH)
+	}
+
+	// crop must contain pixel (1,1) — at least cropX <= 1, cropY <= 1
+	if seq.cropX > 1 || seq.cropY > 1 {
+		t.Errorf("crop origin (%d,%d) does not contain pixel (1,1)", seq.cropX, seq.cropY)
+	}
+
+	// minimum 2x2
+	if seq.cropW < 2 || seq.cropH < 2 {
+		t.Errorf("crop size %dx%d less than 2x2", seq.cropW, seq.cropH)
+	}
+
+	// frame data size matches crop
+	expectedSize := seq.cropW * seq.cropH * 4
+	for i, f := range seq.loopFrames {
+		if len(f) != expectedSize {
+			t.Errorf("loop frame %d: size %d, want %d", i, len(f), expectedSize)
+		}
+	}
+
+	// phase should be idle
+	if seq.phase != seqPhaseIdle {
+		t.Errorf("expected idle phase, got %d", seq.phase)
+	}
+}
+
+func TestLoadSequenceZIPNoLoop(t *testing.T) {
+	white := color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+	pngData := makePNG(t, 4, 4, 1, 1, white)
+
+	files := map[string][]byte{
+		"in/001.png": pngData,
+		"in/002.png": pngData,
+	}
+	zipData := buildZIP(t, files)
+
+	_, err := LoadSequenceZIP(zipData)
+	if !errors.Is(err, ErrSequenceNoLoopFrames) {
+		t.Fatalf("expected ErrSequenceNoLoopFrames, got: %v", err)
+	}
+}
+
+func TestLoadSequenceZIPEmpty(t *testing.T) {
+	// ZIP with no PNG files at all
+	files := map[string][]byte{
+		"readme.txt": []byte("not a png"),
+	}
+	zipData := buildZIP(t, files)
+
+	_, err := LoadSequenceZIP(zipData)
+	if !errors.Is(err, ErrSequenceEmpty) {
+		t.Fatalf("expected ErrSequenceEmpty, got: %v", err)
+	}
+}
+
+func TestLoadSequenceZIPSizeMismatch(t *testing.T) {
+	white := color.NRGBA{R: 255, G: 255, B: 255, A: 255}
+	png4 := makePNG(t, 4, 4, 1, 1, white)
+	png8 := makePNG(t, 8, 8, 1, 1, white)
+
+	files := map[string][]byte{
+		"loop001.png": png4,
+		"loop002.png": png8,
+	}
+	zipData := buildZIP(t, files)
+
+	_, err := LoadSequenceZIP(zipData)
+	if !errors.Is(err, ErrSequenceSizeMismatch) {
+		t.Fatalf("expected ErrSequenceSizeMismatch, got: %v", err)
+	}
+}
+
+func TestLoadSequenceZIPMemoryLimit(t *testing.T) {
+	// Just verify the constant is reasonable (512 MB)
+	if maxSequenceMemory != 512<<20 {
+		t.Fatalf("maxSequenceMemory: got %d, want %d", maxSequenceMemory, 512<<20)
+	}
+	if maxSequenceFrames != 7200 {
+		t.Fatalf("maxSequenceFrames: got %d, want %d", maxSequenceFrames, 7200)
+	}
+}
+
+func TestFrameBBox(t *testing.T) {
+	// 8x8 image with non-transparent pixels at (2,3) and (5,6)
+	img := image.NewNRGBA(image.Rect(0, 0, 8, 8))
+	img.SetNRGBA(2, 3, color.NRGBA{R: 255, A: 255})
+	img.SetNRGBA(5, 6, color.NRGBA{G: 255, A: 128})
+
+	r := frameBBox(img)
+	if r.Min.X != 2 || r.Min.Y != 3 {
+		t.Errorf("bbox min: got (%d,%d), want (2,3)", r.Min.X, r.Min.Y)
+	}
+	// Max is exclusive: (5+1, 6+1)
+	if r.Max.X != 6 || r.Max.Y != 7 {
+		t.Errorf("bbox max: got (%d,%d), want (6,7)", r.Max.X, r.Max.Y)
+	}
+}
+
+func TestFrameBBoxEmpty(t *testing.T) {
+	// Fully transparent image
+	img := image.NewNRGBA(image.Rect(0, 0, 4, 4))
+	r := frameBBox(img)
+	if !r.Empty() {
+		t.Errorf("expected empty rect for fully transparent image, got %v", r)
 	}
 }
