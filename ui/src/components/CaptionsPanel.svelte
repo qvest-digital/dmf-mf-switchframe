@@ -29,12 +29,12 @@
 	// Fetch available models when ASR is available.
 	onMount(() => {
 		if (asrAvailable) {
-			getASRModels().then((models) => { availableModels = models; }).catch(() => {});
+			getASRModels().then((models) => { availableModels = models ?? []; }).catch(() => {});
 		}
 	});
 	$effect(() => {
 		if (asrAvailable && availableModels.length === 0) {
-			getASRModels().then((models) => { availableModels = models; }).catch(() => {});
+			getASRModels().then((models) => { availableModels = models ?? []; }).catch(() => {});
 		}
 	});
 

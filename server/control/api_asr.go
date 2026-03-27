@@ -124,6 +124,9 @@ func (a *API) handleASRModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	models := a.asrManager.AvailableASRModels()
+	if models == nil {
+		models = []string{}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(models)
 }
