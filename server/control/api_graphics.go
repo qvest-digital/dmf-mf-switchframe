@@ -58,6 +58,10 @@ func (a *API) registerGraphicsRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/graphics/{id}/ticker", a.handleGraphicsTickerStart)
 	mux.HandleFunc("POST /api/graphics/{id}/ticker/stop", a.handleGraphicsTickerStop)
 	mux.HandleFunc("PUT /api/graphics/{id}/ticker/text", a.handleGraphicsTickerText)
+	if a.sequenceEngine != nil {
+		mux.HandleFunc("POST /api/graphics/{id}/sequence", a.handleGraphicsSequenceUpload)
+		mux.HandleFunc("DELETE /api/graphics/{id}/sequence", a.handleGraphicsSequenceDelete)
+	}
 }
 
 // parseLayerID extracts the layer ID from the URL path parameter.
@@ -800,6 +804,51 @@ func (a *API) handleStingerUpload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// handleGraphicsSequenceUpload uploads a ZIP of PNGs as an animated sequence on a layer.
+func (a *API) handleGraphicsSequenceUpload(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	id, err := parseLayerID(r)
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid layer id")
+		return
+	}
+
+	// Read ZIP body (max 256MB).
+	data, err := io.ReadAll(io.LimitReader(r.Body, 256<<20))
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, "failed to read body")
+		return
+	}
+	if len(data) == 0 {
+		httperr.Write(w, http.StatusBadRequest, "empty body")
+		return
+	}
+
+	if err := a.sequenceEngine.Upload(id, data); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(a.compositor.Status())
+}
+
+// handleGraphicsSequenceDelete removes an animated sequence from a layer.
+func (a *API) handleGraphicsSequenceDelete(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	id, err := parseLayerID(r)
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid layer id")
+		return
+	}
+	if err := a.sequenceEngine.Delete(id); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.compositor.Status())
 }
 
 // clipToStingerData converts a stinger.Clip to transition.StingerData.

@@ -430,6 +430,11 @@ func WithTickerEngine(te *graphics.TickerEngine) APIOption {
 	return func(a *API) { a.tickerEngine = te }
 }
 
+// WithSequenceEngine attaches a sequence engine to the API.
+func WithSequenceEngine(se *graphics.SequenceEngine) APIOption {
+	return func(a *API) { a.sequenceEngine = se }
+}
+
 // WithSRTManager attaches an SRT source manager to the API.
 func WithSRTManager(m SRTManager) APIOption {
 	return func(a *API) { a.srtMgr = m }
@@ -545,6 +550,7 @@ type API struct {
 	perf               PerfAPI
 	textAnimEngine     *graphics.TextAnimationEngine
 	tickerEngine       *graphics.TickerEngine
+	sequenceEngine     *graphics.SequenceEngine
 	srtMgr             SRTManager
 	commsMgr           CommsManagerAPI
 	aiSegmentMgr       AISegmentManager

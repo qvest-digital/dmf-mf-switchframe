@@ -53,9 +53,11 @@ type LayerState struct {
 	AnimationHz   float64   `json:"animationHz,omitempty"`
 	ZOrder        int       `json:"zOrder"`
 	Rect          RectState `json:"rect"`
-	ImageName     string    `json:"imageName,omitempty"`
-	ImageWidth    int       `json:"imageWidth,omitempty"`
-	ImageHeight   int       `json:"imageHeight,omitempty"`
+	ImageName      string    `json:"imageName,omitempty"`
+	ImageWidth     int       `json:"imageWidth,omitempty"`
+	ImageHeight    int       `json:"imageHeight,omitempty"`
+	SequenceLoaded bool      `json:"sequenceLoaded,omitempty"`
+	SequencePhase  string    `json:"sequencePhase,omitempty"`
 }
 
 // RectState describes a layer's position and size for serialization.
@@ -1561,6 +1563,21 @@ func (c *Compositor) buildStateLocked() State {
 		if layer.animConfig != nil {
 			ls.AnimationMode = layer.animConfig.Mode
 			ls.AnimationHz = layer.animConfig.SpeedHz
+		}
+		if layer.seq != nil {
+			ls.SequenceLoaded = true
+			switch layer.seq.phase {
+			case seqPhaseIn:
+				ls.SequencePhase = "in"
+			case seqPhaseLoop:
+				ls.SequencePhase = "loop"
+			case seqPhaseOut:
+				ls.SequencePhase = "out"
+			case seqPhaseDone:
+				ls.SequencePhase = "done"
+			default:
+				ls.SequencePhase = "idle"
+			}
 		}
 		s.Layers = append(s.Layers, ls)
 	}

@@ -133,6 +133,9 @@ type App struct {
 	tickerEngine   *graphics.TickerEngine
 	textAnimEngine *graphics.TextAnimationEngine
 
+	// Animated PNG sequence engine
+	sequenceEngine *graphics.SequenceEngine
+
 	// HTML5 graphics sidecar
 	htmlGfxMgr *htmlgfx.Manager
 
@@ -1389,6 +1392,14 @@ func (a *App) initAPI() error {
 		}
 	}
 
+	// Create animated sequence engine for graphics layers.
+	if a.compositor != nil {
+		a.sequenceEngine = graphics.NewSequenceEngine(a.compositor)
+		a.compositor.SetSequenceEngine(a.sequenceEngine)
+		apiOpts = append(apiOpts, control.WithSequenceEngine(a.sequenceEngine))
+		slog.Info("sequence engine initialized")
+	}
+
 	// Pass invite tokens if cloud provided them.
 	if len(a.cfg.InviteTokens) > 0 {
 		apiOpts = append(apiOpts, control.WithInviteTokens(a.cfg.InviteTokens))
@@ -1761,6 +1772,9 @@ func (a *App) closeSubsystems() {
 	}
 	if a.textAnimEngine != nil {
 		a.textAnimEngine.Close()
+	}
+	if a.sequenceEngine != nil {
+		a.sequenceEngine.Close()
 	}
 	if a.textRenderer != nil {
 		_ = a.textRenderer.Close()
