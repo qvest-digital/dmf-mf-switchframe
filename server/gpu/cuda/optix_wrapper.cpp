@@ -157,6 +157,14 @@ optix_ctx_t optix_create_context(void* cuda_context) {
     }
 
     CUcontext cu_ctx = static_cast<CUcontext>(cuda_context);
+    if (!cu_ctx) {
+        // OptiX 9.0+ requires an explicit CUDA context (NULL no longer works).
+        CUresult cu_err = cuCtxGetCurrent(&cu_ctx);
+        if (cu_err != CUDA_SUCCESS || !cu_ctx) {
+            set_error("no current CUDA context (cuCtxGetCurrent: %d)", (int)cu_err);
+            return nullptr;
+        }
+    }
 
     OptixDeviceContextOptions options = {};
     options.logCallbackFunction = optix_log_callback;
