@@ -464,3 +464,96 @@ func TestFrameBBoxEmpty(t *testing.T) {
 		t.Errorf("expected empty rect for fully transparent image, got %v", r)
 	}
 }
+
+func TestSequenceProcessYUVAdvancement(t *testing.T) {
+	c := NewCompositor()
+	defer c.Close()
+	c.SetPipelineFPS(30000, 1001)
+
+	id, _ := c.AddLayer()
+
+	// Install a sequence with 2 loop frames (2x2 RGBA)
+	frame1 := make([]byte, 2*2*4)
+	frame1[3] = 255 // pixel at (0,0) opaque
+	frame2 := make([]byte, 2*2*4)
+	frame2[7] = 255 // pixel at (1,0) opaque
+
+	c.mu.Lock()
+	layer := c.layers[id]
+	layer.seq = &sequenceState{
+		loopFrames: [][]byte{frame1, frame2},
+		cropX: 0, cropY: 0, cropW: 2, cropH: 2,
+		phase: seqPhaseLoop, frameIdx: 0,
+	}
+	layer.overlay = frame1
+	layer.overlayWidth = 2
+	layer.overlayHeight = 2
+	layer.rect = image.Rect(0, 0, 2, 2)
+	layer.active = true
+	layer.fadePosition = 1.0
+	c.mu.Unlock()
+
+	yuv := make([]byte, 4*4*3/2) // 4x4 min for YUV420
+
+	// First ProcessYUV: renders frame 0, advances to 1
+	c.ProcessYUV(yuv, 4, 4, nil, nil)
+
+	c.mu.RLock()
+	idx := layer.seq.frameIdx
+	c.mu.RUnlock()
+	if idx != 1 {
+		t.Fatalf("expected frameIdx 1, got %d", idx)
+	}
+
+	// Second ProcessYUV: renders frame 1, wraps to 0
+	c.ProcessYUV(yuv, 4, 4, nil, nil)
+
+	c.mu.RLock()
+	idx = layer.seq.frameIdx
+	c.mu.RUnlock()
+	if idx != 0 {
+		t.Fatalf("expected frameIdx 0 after wrap, got %d", idx)
+	}
+}
+
+func TestSequenceOutDeactivatesLayer(t *testing.T) {
+	c := NewCompositor()
+	defer c.Close()
+	c.SetPipelineFPS(30000, 1001)
+
+	id, _ := c.AddLayer()
+
+	outFrame := make([]byte, 2*2*4)
+	outFrame[3] = 255
+
+	c.mu.Lock()
+	layer := c.layers[id]
+	layer.seq = &sequenceState{
+		loopFrames: [][]byte{outFrame},
+		outFrames:  [][]byte{outFrame},
+		cropX: 0, cropY: 0, cropW: 2, cropH: 2,
+		phase: seqPhaseOut, frameIdx: 0,
+	}
+	layer.overlay = outFrame
+	layer.overlayWidth = 2
+	layer.overlayHeight = 2
+	layer.rect = image.Rect(0, 0, 2, 2)
+	layer.active = true
+	layer.fadePosition = 1.0
+	c.mu.Unlock()
+
+	yuv := make([]byte, 4*4*3/2)
+	c.ProcessYUV(yuv, 4, 4, nil, nil)
+
+	c.mu.RLock()
+	active := layer.active
+	phase := layer.seq.phase
+	c.mu.RUnlock()
+
+	if active {
+		t.Fatal("layer should be deactivated after out phase completes")
+	}
+	if phase != seqPhaseDone {
+		t.Fatalf("expected done, got %v", phase)
+	}
+}

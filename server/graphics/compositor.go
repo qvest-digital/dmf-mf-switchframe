@@ -671,7 +671,7 @@ func (c *Compositor) ProcessYUV(yuv []byte, width, height int, blendScratch *[]b
 	// tickers need advancement. Avoids write lock (ticker) + read lock
 	// (compositing) + layer iteration on every frame.
 	c.mu.RLock()
-	hasWork := c.hasVisibleLayersLocked() || c.hasActiveTickersLocked()
+	hasWork := c.hasVisibleLayersLocked() || c.hasActiveTickersLocked() || c.hasActiveSequencesLocked()
 	c.mu.RUnlock()
 	if !hasWork {
 		return yuv
@@ -720,6 +720,36 @@ func (c *Compositor) ProcessYUV(yuv []byte, width, height int, blendScratch *[]b
 				layer.overlayHeight = ts.viewH
 				layer.overlayGen++ // GPU cache invalidation
 			}
+		}
+	}
+
+	// Advance frame-locked animated sequences.
+	for _, id := range c.sortedIDs {
+		layer := c.layers[id]
+		if layer.seq == nil || !layer.active {
+			continue
+		}
+		ss := layer.seq
+		if ss.phase == seqPhaseIdle || ss.phase == seqPhaseDone {
+			continue
+		}
+
+		// Get current frame RGBA and update overlay.
+		frame := ss.currentFrame()
+		if frame != nil {
+			layer.overlay = frame
+			layer.overlayWidth = ss.cropW
+			layer.overlayHeight = ss.cropH
+			layer.overlayGen++
+		}
+
+		// Advance to next frame.
+		ss.advance()
+
+		// If out phase completed, deactivate the layer.
+		if ss.phase == seqPhaseDone {
+			layer.active = false
+			layer.fadePosition = 0.0
 		}
 	}
 
@@ -865,6 +895,37 @@ func (c *Compositor) SnapshotVisibleLayers() []VisibleLayerSnap {
 			}
 		}
 	}
+
+	// Advance frame-locked animated sequences.
+	for _, id := range c.sortedIDs {
+		layer := c.layers[id]
+		if layer.seq == nil || !layer.active {
+			continue
+		}
+		ss := layer.seq
+		if ss.phase == seqPhaseIdle || ss.phase == seqPhaseDone {
+			continue
+		}
+
+		// Get current frame RGBA and update overlay.
+		frame := ss.currentFrame()
+		if frame != nil {
+			layer.overlay = frame
+			layer.overlayWidth = ss.cropW
+			layer.overlayHeight = ss.cropH
+			layer.overlayGen++
+		}
+
+		// Advance to next frame.
+		ss.advance()
+
+		// If out phase completed, deactivate the layer.
+		if ss.phase == seqPhaseDone {
+			layer.active = false
+			layer.fadePosition = 0.0
+		}
+	}
+
 	c.mu.Unlock()
 
 	c.mu.RLock()
@@ -933,6 +994,17 @@ func (c *Compositor) SnapshotVisibleLayers() []VisibleLayerSnap {
 func (c *Compositor) hasActiveTickersLocked() bool {
 	for _, layer := range c.layers {
 		if layer.active && layer.ticker != nil && !layer.ticker.done {
+			return true
+		}
+	}
+	return false
+}
+
+// hasActiveSequencesLocked returns true if any layer has an actively playing
+// animated PNG sequence. Must be called with c.mu held (read or write).
+func (c *Compositor) hasActiveSequencesLocked() bool {
+	for _, layer := range c.layers {
+		if layer.active && layer.seq != nil && layer.seq.phase != seqPhaseIdle && layer.seq.phase != seqPhaseDone {
 			return true
 		}
 	}
