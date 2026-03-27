@@ -619,6 +619,10 @@ static void srtdec_process_audio(srtdec_t *h, AVFrame *frame, int64_t pts) {
 // Returns 0 on EOF, negative on error.
 static int srtdec_run(srtdec_t *h) {
     int ret;
+    int video_send_errors = 0;
+    int video_recv_errors = 0;
+    int video_frames_decoded = 0;
+    int video_packets_sent = 0;
 
     while (!h->interrupted) {
         ret = av_read_frame(h->fmt_ctx, h->pkt);
@@ -630,9 +634,16 @@ static int srtdec_run(srtdec_t *h) {
             // Decode video packet.
             ret = avcodec_send_packet(h->video_dec_ctx, h->pkt);
             if (ret < 0) {
+                if (video_send_errors < 3) {
+                    char errbuf[128];
+                    av_strerror(ret, errbuf, sizeof(errbuf));
+                    srtdec_log(h->decoder_id, "avcodec_send_packet error #%d: %d (%s)", video_send_errors+1, ret, errbuf);
+                }
+                video_send_errors++;
                 av_packet_unref(h->pkt);
                 continue; // Skip bad packets.
             }
+            video_packets_sent++;
 
             while (!h->interrupted) {
                 ret = avcodec_receive_frame(h->video_dec_ctx, h->dec_frame);
@@ -640,7 +651,28 @@ static int srtdec_run(srtdec_t *h) {
                     break;
                 }
                 if (ret < 0) {
+                    if (video_recv_errors < 3) {
+                        char errbuf[128];
+                        av_strerror(ret, errbuf, sizeof(errbuf));
+                        srtdec_log(h->decoder_id, "avcodec_receive_frame error #%d: %d (%s)", video_recv_errors+1, ret, errbuf);
+                    }
+                    video_recv_errors++;
                     break;
+                }
+
+                video_frames_decoded++;
+                if (video_frames_decoded == 1) {
+                    srtdec_log(h->decoder_id, "first video frame decoded: format=%d (%s), %dx%d, hw=%d",
+                        h->dec_frame->format,
+                        av_get_pix_fmt_name(h->dec_frame->format) ? av_get_pix_fmt_name(h->dec_frame->format) : "unknown",
+                        h->dec_frame->width, h->dec_frame->height,
+                        h->dec_frame->format == AV_PIX_FMT_CUDA ? 1 : 0);
+                    if (h->dec_frame->hw_frames_ctx) {
+                        AVHWFramesContext *hwctx = (AVHWFramesContext*)((AVBufferRef*)h->dec_frame->hw_frames_ctx)->data;
+                        srtdec_log(h->decoder_id, "hw_frames: sw_format=%d (%s)",
+                            hwctx->sw_format,
+                            av_get_pix_fmt_name(hwctx->sw_format) ? av_get_pix_fmt_name(hwctx->sw_format) : "unknown");
+                    }
                 }
 
                 int64_t pts = h->dec_frame->pts;
