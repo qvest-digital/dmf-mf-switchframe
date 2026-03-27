@@ -301,22 +301,24 @@ func (a *App) ensureAllMeshesLoaded() {
 // to ensure the renderer has geometry data for all scene objects.
 func (a *App) ensureAssetMeshesLoaded(assetID string) {
 	if a.arRenderer == nil || a.arAssetStore == nil {
+		slog.Info("AR ensureAssetMeshesLoaded: nil renderer or store", "renderer", a.arRenderer != nil, "store", a.arAssetStore != nil)
 		return
 	}
 	// Already loaded — skip.
 	if _, ok := a.arRenderer.MeshesForAsset(assetID); ok {
 		return
 	}
+	slog.Info("AR loading mesh for asset", "assetID", assetID)
 	// Get file path from asset store.
 	path, err := a.arAssetStore.FilePath(assetID)
 	if err != nil {
-		slog.Debug("AR asset not found for mesh loading", "assetID", assetID, "err", err)
+		slog.Info("AR asset not found for mesh loading", "assetID", assetID, "err", err)
 		return
 	}
 	// Parse the glTF/GLB file.
 	meshes, err := arrender.ParseGLTF(path)
 	if err != nil {
-		slog.Warn("AR asset mesh parse failed", "assetID", assetID, "path", path, "err", err)
+		slog.Info("AR asset mesh parse failed", "assetID", assetID, "path", path, "err", err)
 		return
 	}
 	if len(meshes) == 0 {
