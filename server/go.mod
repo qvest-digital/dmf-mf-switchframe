@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/Comcast/scte35-go v1.7.1
 	github.com/abema/go-mp4 v1.5.0
+	github.com/as/scte v0.0.2
 	github.com/asticode/go-astits v1.15.0
 	github.com/google/uuid v1.6.0
 	github.com/grandcat/zeroconf v1.0.0
@@ -12,6 +13,7 @@ require (
 	github.com/prometheus/client_model v0.5.0
 	github.com/qmuntal/gltf v0.28.0
 	github.com/stretchr/testify v1.11.1
+	github.com/untangledco/streaming v0.0.4
 	github.com/zsiec/ccx v0.2.0
 	github.com/zsiec/prism v0.1.6-0.20260319030549-427bb7ae9b9d
 	github.com/zsiec/srtgo v0.2.5-0.20260320141915-f0f3efc9a40e

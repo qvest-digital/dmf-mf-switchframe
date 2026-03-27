@@ -2,6 +2,8 @@ github.com/Comcast/scte35-go v1.7.1 h1:ttkianIeKkk5WpyGE7UVyimGa0uDwRUemYYFnh7U9
 github.com/Comcast/scte35-go v1.7.1/go.mod h1:8054TyYzENSLTncCdQTxxUVQs/rAevi+CfpIi7h69L8=
 github.com/abema/go-mp4 v1.5.0 h1:aJnu723gFuNswIiM08h4kO28pUZr0QXNAJGoZWT96AU=
 github.com/abema/go-mp4 v1.5.0/go.mod h1:vPl9t5ZK7K0x68jh12/+ECWBCXoWuIDtNgPtU2f04ws=
+github.com/as/scte v0.0.2 h1:flRMSIBSbFczBwI+XnQprCQ6SFiPe0NYJC8zwxUhwNI=
+github.com/as/scte v0.0.2/go.mod h1:9YNHCb/MraFhqsQ5krFSjA5WJe9xFuZQNm4gByT5NwE=
 github.com/asticode/go-astikit v0.30.0 h1:DkBkRQRIxYcknlaU7W7ksNfn4gMFsB0tqMJflxkRsZA=
 github.com/asticode/go-astikit v0.30.0/go.mod h1:h4ly7idim1tNhaVkdVBeXQZEE3L0xblP7fCWbgwipF0=
 github.com/asticode/go-astits v1.15.0 h1:yRyCiUc8Jj4F7clt2GDxHghMpWuFL5rkaLuGUd2/0J4=
@@ -69,6 +71,8 @@ github.com/stretchr/testify v1.4.0/go.mod h1:j7eGeouHqKxXV5pUuKE4zz7dFj8WfuZ+81P
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 github.com/sunfish-shogi/bufseekio v0.0.0-20210207115823-a4185644b365/go.mod h1:dEzdXgvImkQ3WLI+0KQpmEx8T/C/ma9KeS3AfmU899I=
+github.com/untangledco/streaming v0.0.4 h1:Fiy/ETGeKx5NqO7ve93QHDAEKkAQ1LaLRd1CN0eJnhA=
+github.com/untangledco/streaming v0.0.4/go.mod h1:6JLR+oAI3xOuUL3YUzfHUSU2gWPibK4ZU4sipziSCJQ=
 github.com/zsiec/ccx v0.2.0 h1:RaCC4a0ng9wa6AUvT9Kg9kfiEy9svfXL5mmRbi6Ykmo=
 github.com/zsiec/ccx v0.2.0/go.mod h1:Y30W1TCZX7HAXM0miCzG18kSyKtJvqbOk7zrFcTGpU4=
 github.com/zsiec/prism v0.1.6-0.20260319030549-427bb7ae9b9d h1:c4I20lxZEUzQyEw9xJSLf6XPwgf6Zv7oObUfKBTzaJA=
