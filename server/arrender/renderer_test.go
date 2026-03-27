@@ -82,6 +82,52 @@ func TestRenderer_Stub_Render_ReturnsNotReady(t *testing.T) {
 	}
 }
 
+func TestDefaultCameraPose(t *testing.T) {
+	pose := DefaultCameraPose()
+	if pose == nil {
+		t.Fatal("DefaultCameraPose returned nil")
+	}
+	if pose.Position != [3]float64{0, 0, 0} {
+		t.Errorf("position = %v, want origin", pose.Position)
+	}
+	if pose.Orientation != [3]float64{0, 0, 0} {
+		t.Errorf("orientation = %v, want zero", pose.Orientation)
+	}
+	if pose.FocalLength != 50 {
+		t.Errorf("focalLength = %v, want 50", pose.FocalLength)
+	}
+	if pose.Confidence != 1.0 {
+		t.Errorf("confidence = %v, want 1.0", pose.Confidence)
+	}
+	if pose.Source != "default" {
+		t.Errorf("source = %q, want %q", pose.Source, "default")
+	}
+}
+
+func TestRenderer_Stub_MeshesForAsset_NilSafe(t *testing.T) {
+	var r *Renderer
+	meshes, ok := r.MeshesForAsset("test-id")
+	if ok {
+		t.Error("MeshesForAsset on nil renderer should return false")
+	}
+	if meshes != nil {
+		t.Error("MeshesForAsset on nil renderer should return nil")
+	}
+}
+
+func TestRenderer_Stub_LoadAssetMeshes_NilSafe(t *testing.T) {
+	var r *Renderer
+	// Should not panic.
+	r.LoadAssetMeshes("test-id", []GLTFMesh{{Name: "test"}})
+}
+
+func TestRenderer_Stub_PipelineReady(t *testing.T) {
+	var r *Renderer
+	if r.PipelineReady() {
+		t.Error("PipelineReady on nil renderer should return false")
+	}
+}
+
 // TestDenoiser_Stub_ReturnsError tests the denoiser stub.
 func TestDenoiser_Stub_ReturnsError(t *testing.T) {
 	_, err := NewDenoiser(nil, 1280, 720, false)

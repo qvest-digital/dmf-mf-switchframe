@@ -8,6 +8,7 @@ type ARCompositorState interface {
 	OcclusionMap() *ARCompositorOcclusion
 	RenderedFrame() *ARRenderedFrame
 	ProcessFrame(framePtr uintptr, w, h, pitch int)
+	TriggerRender()
 }
 
 // ARCompositorOcclusion holds occlusion data on GPU.

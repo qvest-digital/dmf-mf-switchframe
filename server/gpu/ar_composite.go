@@ -42,6 +42,10 @@ type ARCompositorState interface {
 	// node at the start of ProcessGPU so occlusion data is refreshed
 	// each frame. Implementations that don't support inference should no-op.
 	ProcessFrame(framePtr uintptr, w, h, pitch int)
+	// TriggerRender is called every frame. If the scene has changed,
+	// it re-renders the 3D scene via OptiX. This is a no-op if the
+	// scene is clean or no renderer is available.
+	TriggerRender()
 }
 
 // ARCompositorOcclusion holds occlusion data on GPU.
@@ -174,6 +178,11 @@ func (n *gpuARCompositorNode) ProcessGPU(frame *GPUFrame) error {
 	// inside the engine — the cost is amortized across frames (previous
 	// frame's results are used if inference hasn't completed yet).
 	n.arState.ProcessFrame(uintptr(frame.DevPtr), frame.Width, frame.Height, frame.Pitch)
+
+	// Trigger an OptiX render if the scene has changed (object placed/moved).
+	// This is a no-op when the scene is clean (~1ns atomic load). When dirty,
+	// it renders once and clears the flag, so cost is amortized.
+	n.arState.TriggerRender()
 
 	// Fast path: no AR features active — clear stored occlusion.
 	if !n.arState.HasActiveAR() {

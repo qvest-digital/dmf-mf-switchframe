@@ -14,10 +14,11 @@ type mockARCompositorState struct {
 	rendered  *ARRenderedFrame
 }
 
-func (m *mockARCompositorState) HasActiveAR() bool                     { return m.active }
-func (m *mockARCompositorState) OcclusionMap() *ARCompositorOcclusion  { return m.occlusion }
-func (m *mockARCompositorState) RenderedFrame() *ARRenderedFrame       { return m.rendered }
-func (m *mockARCompositorState) ProcessFrame(uintptr, int, int, int)   {} // no-op for tests
+func (m *mockARCompositorState) HasActiveAR() bool                    { return m.active }
+func (m *mockARCompositorState) OcclusionMap() *ARCompositorOcclusion { return m.occlusion }
+func (m *mockARCompositorState) RenderedFrame() *ARRenderedFrame      { return m.rendered }
+func (m *mockARCompositorState) ProcessFrame(uintptr, int, int, int)  {} // no-op for tests
+func (m *mockARCompositorState) TriggerRender()                       {} // no-op for tests
 
 func TestARCompositorNode_NilStateReturnsNil(t *testing.T) {
 	node := NewGPUARCompositorNode(nil, nil, nil)
@@ -193,6 +194,29 @@ type processFrameRecordingState struct {
 func (p *processFrameRecordingState) ProcessFrame(framePtr uintptr, w, h, pitch int) {
 	if p.onProcess != nil {
 		p.onProcess()
+	}
+}
+
+func TestARCompositorState_TriggerRenderInterface(t *testing.T) {
+	// Verify TriggerRender is callable on the mock.
+	var triggered bool
+	state := &triggerRenderRecordingState{
+		mockARCompositorState: mockARCompositorState{active: true},
+		onTrigger:             func() { triggered = true },
+	}
+	state.TriggerRender()
+	assert.True(t, triggered, "TriggerRender should have been called")
+}
+
+// triggerRenderRecordingState extends mockARCompositorState to record TriggerRender calls.
+type triggerRenderRecordingState struct {
+	mockARCompositorState
+	onTrigger func()
+}
+
+func (tr *triggerRenderRecordingState) TriggerRender() {
+	if tr.onTrigger != nil {
+		tr.onTrigger()
 	}
 }
 

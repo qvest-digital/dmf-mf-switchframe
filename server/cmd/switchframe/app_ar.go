@@ -67,6 +67,36 @@ func (a *App) initARRenderer() {
 	}
 	a.arRenderer = renderer
 	slog.Info("AR renderer initialized")
+
+	// Load PTX shaders and initialize the OptiX pipeline.
+	ptx, err := loadPTXShaders()
+	if err != nil {
+		slog.Info("AR renderer: PTX shaders not found, 3D rendering disabled", "err", err)
+		return
+	}
+	if err := a.arRenderer.InitPipeline(ptx); err != nil {
+		slog.Warn("AR renderer: pipeline init failed", "err", err)
+		return
+	}
+	slog.Info("AR renderer: OptiX pipeline initialized", "ptxBytes", len(ptx))
+}
+
+// loadPTXShaders searches for the compiled OptiX PTX shader file in
+// well-known locations. Returns the PTX source bytes or an error if
+// not found.
+func loadPTXShaders() ([]byte, error) {
+	paths := []string{
+		"server/arrender/shaders/ar_shaders.ptx",
+		"/opt/switchframe/server/arrender/shaders/ar_shaders.ptx",
+		"/data/switchframe/ar_shaders.ptx",
+	}
+	for _, p := range paths {
+		data, err := os.ReadFile(p)
+		if err == nil && len(data) > 0 {
+			return data, nil
+		}
+	}
+	return nil, fmt.Errorf("ar_shaders.ptx not found in any search path")
 }
 
 // initARAssetStore initializes the 3D asset store. Returns an error if
@@ -201,6 +231,82 @@ func (a *arCompositorStateAdapter) RenderedFrame() *gpu.ARRenderedFrame {
 		Width:  a.app.arRenderer.Settings().Width,
 		Height: a.app.arRenderer.Settings().Height,
 	}
+}
+
+// TriggerRender is called every frame by the GPU pipeline. If the scene
+// has changed (object placed/moved/removed), it triggers an OptiX render
+// with a default camera pose (or real tracking data when available).
+// When the scene is clean, this is a no-op (~1ns atomic load).
+func (a *arCompositorStateAdapter) TriggerRender() {
+	if a.app.arRenderer == nil || !a.app.arRenderer.PipelineReady() {
+		return
+	}
+	scene := a.app.arRenderer.Scene()
+	if scene == nil || !scene.IsDirty() {
+		return
+	}
+
+	// Ensure mesh data is loaded for all scene objects.
+	a.app.ensureAllMeshesLoaded()
+
+	// Use default camera if no tracking is available.
+	pose := arrender.DefaultCameraPose()
+
+	if err := a.app.arRenderer.Render(pose); err != nil {
+		slog.Debug("AR render skipped", "err", err)
+		return
+	}
+	// ClearDirty is called inside Render() after rebuilding the IAS.
+}
+
+// ensureAllMeshesLoaded checks all scene objects and loads any missing
+// mesh data from the asset store into the renderer. This bridges the
+// gap between the REST API (which adds SceneObjects to the scene graph)
+// and the renderer (which needs parsed GLTFMesh data for GAS building).
+func (a *App) ensureAllMeshesLoaded() {
+	if a.arRenderer == nil || a.arAssetStore == nil {
+		return
+	}
+	scene := a.arRenderer.Scene()
+	if scene == nil {
+		return
+	}
+	for _, obj := range scene.Objects() {
+		if obj.AssetID == "" {
+			continue
+		}
+		a.ensureAssetMeshesLoaded(obj.AssetID)
+	}
+}
+
+// ensureAssetMeshesLoaded loads glTF mesh data for an asset into the
+// renderer if it hasn't been loaded yet. This is called before rendering
+// to ensure the renderer has geometry data for all scene objects.
+func (a *App) ensureAssetMeshesLoaded(assetID string) {
+	if a.arRenderer == nil || a.arAssetStore == nil {
+		return
+	}
+	// Already loaded — skip.
+	if _, ok := a.arRenderer.MeshesForAsset(assetID); ok {
+		return
+	}
+	// Get file path from asset store.
+	path, err := a.arAssetStore.FilePath(assetID)
+	if err != nil {
+		slog.Debug("AR asset not found for mesh loading", "assetID", assetID, "err", err)
+		return
+	}
+	// Parse the glTF/GLB file.
+	meshes, err := arrender.ParseGLTF(path)
+	if err != nil {
+		slog.Warn("AR asset mesh parse failed", "assetID", assetID, "path", path, "err", err)
+		return
+	}
+	if len(meshes) == 0 {
+		return
+	}
+	a.arRenderer.LoadAssetMeshes(assetID, meshes)
+	slog.Debug("AR asset meshes loaded", "assetID", assetID, "meshCount", len(meshes))
 }
 
 // arRendererAdapter bridges arrender.Renderer to control.ARRenderer.

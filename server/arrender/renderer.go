@@ -576,6 +576,59 @@ func (r *Renderer) SceneState() SceneState {
 	return state
 }
 
+// defaultCameraPose returns a static camera suitable for rendering objects
+// placed via depth-based placement (no tracking required).
+// Camera is at origin, looking along +Z, with a standard 50mm lens on 36mm sensor.
+func defaultCameraPose() *tracking.CameraPose {
+	return &tracking.CameraPose{
+		Position:    [3]float64{0, 0, 0},
+		Orientation: [3]float64{0, 0, 0}, // looking along +Z
+		FocalLength: 50,
+		Confidence:  1.0,
+		Source:      "default",
+	}
+}
+
+// DefaultCameraPose returns a static camera suitable for rendering objects
+// placed via depth-based placement (no tracking required). Exported for
+// use by the compositor state adapter.
+func DefaultCameraPose() *tracking.CameraPose {
+	return defaultCameraPose()
+}
+
+// MeshesForAsset returns the loaded mesh data for the given asset ID
+// and whether any data was found. Returns false if the asset has no
+// meshes loaded.
+func (r *Renderer) MeshesForAsset(assetID string) ([]GLTFMesh, bool) {
+	if r == nil {
+		return nil, false
+	}
+	m, ok := r.meshes[assetID]
+	return m, ok
+}
+
+// LoadAssetMeshes stores parsed mesh data for an asset ID so that
+// rebuildIAS can build geometry acceleration structures. Marks the
+// scene dirty so the next render picks up the new geometry.
+func (r *Renderer) LoadAssetMeshes(assetID string, meshes []GLTFMesh) {
+	if r == nil {
+		return
+	}
+	r.meshes[assetID] = meshes
+	if r.scene != nil {
+		r.scene.MarkDirty()
+	}
+}
+
+// PipelineReady reports whether the OptiX pipeline has been initialized
+// and the renderer is ready to produce frames.
+func (r *Renderer) PipelineReady() bool {
+	if r == nil {
+		return false
+	}
+	return r.pipeline != nil
+}
+
 // Close releases all GPU resources held by the renderer.
 func (r *Renderer) Close() error {
 	if r == nil {
