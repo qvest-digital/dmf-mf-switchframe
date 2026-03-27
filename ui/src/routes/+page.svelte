@@ -28,7 +28,6 @@
 	import OperatorBadge from '../components/OperatorBadge.svelte';
 	import TeamPanel from '../components/TeamPanel.svelte';
 	import VideoProcessingPanel from '../components/VideoProcessingPanel.svelte';
-	import ARPanel from '../components/ARPanel.svelte';
 	import CommsBar from '../components/CommsBar.svelte';
 	import BottomTabs from '../components/BottomTabs.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
@@ -764,10 +763,6 @@
 						{:else if activeTab === 'Video'}
 							<div class="tab-panel">
 								<VideoProcessingPanel state={store.effectiveState} />
-							</div>
-						{:else if activeTab === 'AR'}
-							<div class="tab-panel">
-								<ARPanel state={store.effectiveState} />
 							</div>
 						{/if}
 						<!-- PlayoutPanel always mounted to preserve state across tab switches -->
