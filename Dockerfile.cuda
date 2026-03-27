@@ -1,0 +1,206 @@
+# Dockerfile.cuda — GPU build (CUDA + TensorRT + ASR)
+#
+# Target: NVIDIA Ada Lovelace (RTX 4060, L4, RTX 4090) — sm_89
+# Override GPU_ARCH build arg for other architectures.
+#
+# OptiX (AR ray tracing) is not included — requires manual SDK download from
+# developer.nvidia.com. To add OptiX support later, see docs/deployment.md.
+#
+# Build:
+#   docker build -f Dockerfile.cuda -t switchframe:cuda .
+#
+# Run:
+#   docker run -d --gpus all \
+#     -p 8080:8080/udp -p 8080:8080/tcp \
+#     -p 9090:9090/tcp -p 6464:6464/udp \
+#     switchframe:cuda --demo --srt-listen :6464
+
+# ---------- Stage 1: Build UI ----------
+FROM node:22-bookworm-slim AS ui-builder
+WORKDIR /app/ui
+COPY ui/package.json ui/package-lock.json ./
+RUN npm ci
+COPY ui/ ./
+RUN npm run build
+
+# ---------- Stage 2: Build everything ----------
+FROM nvidia/cuda:12.6.3-cudnn-devel-ubuntu24.04 AS builder
+
+ARG GPU_ARCH=sm_89
+ARG GO_VERSION=1.25.0
+ARG WHISPER_CPP_VERSION=v1.7.5
+ARG ONNXRUNTIME_VERSION=1.21.1
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# System packages + TensorRT dev
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential pkg-config nasm cmake git curl wget python3 \
+        autoconf automake libtool \
+        libssl-dev zlib1g-dev \
+        libopus-dev libopusfile-dev \
+        libnvinfer-dev libnvinfer-plugin-dev libnvonnxparsers-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Go
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
+    | tar -C /usr/local -xz
+ENV PATH=/usr/local/go/bin:$PATH
+
+# ---- From-source libraries (Debian ships versions too old) ----
+
+# libsrt 1.5.4
+RUN git clone --depth 1 --branch v1.5.4 https://github.com/Haivision/srt.git /tmp/srt \
+    && cd /tmp/srt && mkdir build && cd build \
+    && cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local \
+       -DENABLE_SHARED=ON -DENABLE_STATIC=OFF \
+       -DENABLE_APPS=OFF -DENABLE_TESTING=OFF \
+    && make -j"$(nproc)" && make install && ldconfig \
+    && rm -rf /tmp/srt
+
+# libfdk-aac 2.0.3
+RUN git clone --depth 1 --branch v2.0.3 https://github.com/mstorsjo/fdk-aac.git /tmp/fdk-aac \
+    && cd /tmp/fdk-aac && autoreconf -fiv \
+    && ./configure --prefix=/usr/local --enable-shared --disable-static \
+    && make -j"$(nproc)" && make install && ldconfig \
+    && rm -rf /tmp/fdk-aac
+
+# libx264
+RUN git clone --depth 1 https://code.videolan.org/videolan/x264.git /tmp/x264 \
+    && cd /tmp/x264 \
+    && ./configure --prefix=/usr/local --enable-shared --disable-static \
+       --enable-pic --disable-cli \
+    && make -j"$(nproc)" && make install && ldconfig \
+    && rm -rf /tmp/x264
+
+# nv-codec-headers (NVENC API)
+RUN git clone --depth 1 --branch n12.2.72.0 \
+        https://github.com/FFmpeg/nv-codec-headers.git /tmp/nv-codec \
+    && cd /tmp/nv-codec && make install PREFIX=/usr/local \
+    && rm -rf /tmp/nv-codec
+
+# FFmpeg 7.1 with NVENC + CUDA
+RUN git clone --depth 1 --branch n7.1 https://github.com/FFmpeg/FFmpeg.git /tmp/FFmpeg \
+    && cd /tmp/FFmpeg \
+    && ./configure --prefix=/usr/local \
+       --enable-gpl --enable-nonfree \
+       --enable-libx264 --enable-libfdk-aac --enable-libopus --enable-libsrt \
+       --enable-swresample --enable-swscale \
+       --enable-shared --disable-static --disable-doc \
+       --enable-nvenc --enable-cuda \
+       --extra-cflags="-I/usr/local/cuda/include" \
+       --extra-ldflags="-L/usr/local/cuda/lib64" \
+    && make -j"$(nproc)" && make install && ldconfig \
+    && rm -rf /tmp/FFmpeg
+
+# ---- AI / ASR dependencies ----
+
+# ONNX Runtime with CUDA EP (for Silero VAD)
+RUN cd /opt \
+    && wget -q "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-linux-x64-gpu-${ONNXRUNTIME_VERSION}.tgz" \
+    && tar xzf onnxruntime-linux-x64-gpu-${ONNXRUNTIME_VERSION}.tgz \
+    && rm onnxruntime-linux-x64-gpu-${ONNXRUNTIME_VERSION}.tgz \
+    && mv onnxruntime-linux-x64-gpu-${ONNXRUNTIME_VERSION} onnxruntime
+
+# whisper.cpp with CUDA
+# The CUDA driver stub is needed at link time (real libcuda.so comes from host at runtime)
+RUN ln -s /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/libcuda.so \
+    && git clone --depth 1 --branch "${WHISPER_CPP_VERSION}" \
+        https://github.com/ggerganov/whisper.cpp.git /opt/whisper.cpp \
+    && cd /opt/whisper.cpp && mkdir build && cd build \
+    && cmake .. -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON \
+       -DWHISPER_BUILD_EXAMPLES=OFF -DWHISPER_BUILD_TESTS=OFF \
+    && make -j"$(nproc)"
+
+# ---- Build SwitchFrame ----
+
+WORKDIR /app
+
+# Go module cache (changes less often than source)
+COPY server/go.mod server/go.sum ./server/
+RUN cd server && go mod download
+
+# Copy source + embedded UI
+COPY server/ ./server/
+COPY --from=ui-builder /app/ui/build ./server/cmd/switchframe/ui
+
+# CUDA kernels + TensorRT wrapper (no OptiX — SDK not available)
+RUN cd server/gpu/cuda \
+    && make ARCH="-arch=${GPU_ARCH}" clean all \
+    && make tensorrt
+
+# Main binary
+RUN cd server \
+    && CGO_CFLAGS="-I/usr/local/cuda/include \
+       -I/opt/whisper.cpp/include -I/opt/whisper.cpp/ggml/include \
+       -I/opt/onnxruntime/include" \
+    CGO_LDFLAGS="-L/usr/local/lib -L/usr/local/cuda/lib64 \
+       -L/opt/whisper.cpp/build/src \
+       -L/opt/whisper.cpp/build/ggml/src \
+       -L/opt/whisper.cpp/build/ggml/src/ggml-cuda \
+       -L/opt/onnxruntime/lib" \
+    go build -tags "embed_ui cuda tensorrt" \
+       -o /switchframe ./cmd/switchframe
+
+# ASR sidecar
+RUN cd server \
+    && CGO_CFLAGS="-I/usr/local/cuda/include \
+       -I/opt/whisper.cpp/include -I/opt/whisper.cpp/ggml/include \
+       -I/opt/onnxruntime/include" \
+    CGO_LDFLAGS="-L/usr/local/lib -L/usr/local/cuda/lib64 \
+       -L/opt/whisper.cpp/build/src \
+       -L/opt/whisper.cpp/build/ggml/src \
+       -L/opt/whisper.cpp/build/ggml/src/ggml-cuda \
+       -L/opt/onnxruntime/lib" \
+    go build -tags "cuda tensorrt" \
+       -o /switchframe-asr ./cmd/switchframe-asr
+
+# ---------- Stage 3: Runtime ----------
+FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libnvinfer10 libnvinfer-plugin10 libnvonnxparsers10 \
+        libcublas-12-6 \
+        libnpp-12-6 \
+        libopus0 libopusfile0 \
+        libssl3t64 zlib1g libgomp1 \
+        ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# From-source shared libraries (FFmpeg, SRT, FDK-AAC, x264)
+COPY --from=builder /usr/local/lib/libav*.so* /usr/local/lib/
+COPY --from=builder /usr/local/lib/libsw*.so* /usr/local/lib/
+COPY --from=builder /usr/local/lib/libpostproc*.so* /usr/local/lib/
+COPY --from=builder /usr/local/lib/libx264*.so* /usr/local/lib/
+COPY --from=builder /usr/local/lib/libfdk-aac*.so* /usr/local/lib/
+COPY --from=builder /usr/local/lib/libsrt*.so* /usr/local/lib/
+
+# ONNX Runtime
+COPY --from=builder /opt/onnxruntime/lib/libonnxruntime*.so* /usr/local/lib/
+
+# whisper.cpp + GGML
+COPY --from=builder /opt/whisper.cpp/build/src/libwhisper.so* /usr/local/lib/
+COPY --from=builder /opt/whisper.cpp/build/ggml/src/libggml*.so* /usr/local/lib/
+COPY --from=builder /opt/whisper.cpp/build/ggml/src/ggml-cuda/libggml-cuda.so* /usr/local/lib/
+
+RUN echo "/usr/local/lib" > /etc/ld.so.conf.d/local.conf && ldconfig
+
+# Binaries
+COPY --from=builder /switchframe /usr/local/bin/switchframe
+COPY --from=builder /switchframe-asr /usr/local/bin/switchframe-asr
+
+RUN useradd --system --create-home switchframe \
+    && mkdir -p /home/switchframe/.switchframe \
+    && chown -R switchframe:switchframe /home/switchframe/.switchframe
+VOLUME /home/switchframe/.switchframe
+USER switchframe
+
+EXPOSE 8080 9090
+EXPOSE 6464/udp 9000/udp
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD curl -f http://localhost:9090/health || exit 1
+
+ENTRYPOINT ["switchframe", "--admin-addr=0.0.0.0:9090"]

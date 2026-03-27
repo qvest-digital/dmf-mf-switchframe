@@ -18,6 +18,9 @@ func NewRenderer(_ *gpu.Context, _ RenderSettings) (*Renderer, error) {
 	return nil, ErrRendererNotReady
 }
 
+// SetScene is a no-op on stub builds.
+func (r *Renderer) SetScene(_ *Scene) {}
+
 // SetIntrinsics is a no-op on stub builds.
 func (r *Renderer) SetIntrinsics(_ *tracking.CameraIntrinsics) {}
 
