@@ -11,6 +11,7 @@
 		graphicsLoadHTML5, graphicsUpdateHTML5Data,
 		graphicsHTML5Play, graphicsHTML5Stop, graphicsHTML5Next,
 		graphicsUnloadHTML5, graphicsHTML5Custom,
+		graphicsSequenceUpload, graphicsSequenceDelete,
 		apiCall,
 	} from '$lib/api/switch-api';
 	import { GraphicsPublisher } from '$lib/graphics/publisher';
@@ -26,7 +27,7 @@
 	}
 	let { state: crState, externalSelectedLayerId = null }: Props = $props();
 
-	type SourceMode = 'template' | 'image' | 'ticker' | 'html5';
+	type SourceMode = 'template' | 'image' | 'ticker' | 'html5' | 'sequence';
 
 	// ── Per-layer state maps ──
 	let layerModes = $state<Record<number, SourceMode>>({});
@@ -110,6 +111,7 @@
 	function getLayerMode(id: number): SourceMode {
 		if (id in layerModes) return layerModes[id];
 		const layer = layers.find(l => l.id === id);
+		if (layer?.sequenceLoaded || layer?.sequenceProcessing) return 'sequence';
 		if (layer?.html5Url) return 'html5';
 		if (layer?.imageName) return 'image';
 		return 'template';
@@ -379,6 +381,26 @@
 			notify('error', 'HTML5 custom action failed');
 		}
 	}
+
+	// ── Sequence handlers ──
+	async function handleSequenceUpload(id: number, file: File) {
+		try {
+			await graphicsSequenceUpload(id, file);
+			layerModes = { ...layerModes, [id]: 'sequence' };
+			notify('info', 'Sequence uploading...');
+		} catch {
+			notify('error', 'Sequence upload failed');
+		}
+	}
+
+	async function handleSequenceDelete(id: number) {
+		try {
+			await graphicsSequenceDelete(id);
+			notify('info', 'Sequence removed');
+		} catch {
+			notify('error', 'Failed to remove sequence');
+		}
+	}
 </script>
 
 <div class="graphics-panel">
@@ -440,6 +462,8 @@
 					onHTML5Next={() => handleHTML5Next(selectedLayer.id)}
 					onHTML5Unload={() => handleHTML5Unload(selectedLayer.id)}
 					onHTML5Custom={(action, payload) => handleHTML5Custom(selectedLayer.id, action, payload)}
+				onSequenceUpload={(file) => handleSequenceUpload(selectedLayer.id, file)}
+				onSequenceDelete={() => handleSequenceDelete(selectedLayer.id)}
 				/>
 			{/key}
 		{:else}

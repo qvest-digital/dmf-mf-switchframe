@@ -219,6 +219,9 @@ export interface GraphicsLayerState {
 	html5Format?: 'ograf' | 'casparcg' | 'unknown';
 	html5Status?: 'allocated' | 'loading' | 'ready' | 'playing' | 'stopped' | 'error';
 	html5DataSchema?: Record<string, unknown>;
+	sequenceLoaded?: boolean;
+	sequencePhase?: string;        // 'idle' | 'in' | 'loop' | 'out' | 'done'
+	sequenceProcessing?: boolean;
 }
 
 export interface GraphicsState {

@@ -5,7 +5,7 @@
 	import { graphicsListHTML5Templates, type HTML5TemplateInfo } from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
 	import {
-		ICON_LAYERS, ICON_TEXT, ICON_IMAGE, ICON_TICKER, ICON_CODE,
+		ICON_LAYERS, ICON_TEXT, ICON_IMAGE, ICON_TICKER, ICON_CODE, ICON_FILM,
 		ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_UPLOAD, ICON_TRASH,
 		renderIcon,
 	} from '$lib/icons';
@@ -69,7 +69,7 @@
 		loop: boolean;
 	}
 
-	type SourceMode = 'template' | 'image' | 'ticker' | 'html5';
+	type SourceMode = 'template' | 'image' | 'ticker' | 'html5' | 'sequence';
 
 	interface Props {
 		layer: GraphicsLayerState;
@@ -106,6 +106,8 @@
 		onHTML5Next: () => void;
 		onHTML5Unload: () => void;
 		onHTML5Custom?: (action: string, payload: Record<string, unknown>) => void;
+		onSequenceUpload?: (file: File) => void;
+		onSequenceDelete?: () => void;
 	}
 
 	let {
@@ -117,6 +119,7 @@
 		onTickerStart, onTickerStop, onTickerUpdateText, tickerActive,
 		onHTML5Load, onHTML5UpdateData, onHTML5Play, onHTML5Stop, onHTML5Next, onHTML5Unload,
 		onHTML5Custom,
+		onSequenceUpload, onSequenceDelete,
 	}: Props = $props();
 
 	let previewCanvas = $state<HTMLCanvasElement | null>(null);
@@ -130,6 +133,7 @@
 	let tickerLoop = $state(true);
 
 	let fileInput = $state<HTMLInputElement | null>(null);
+	let seqFileInput = $state<HTMLInputElement | null>(null);
 
 	let html5Url = $state('');
 	let html5DataJson = $state('{}');
@@ -230,11 +234,21 @@
 		}
 	}
 
+	function handleSeqFileSelect(e: Event) {
+		const input = e.target as HTMLInputElement;
+		const file = input.files?.[0];
+		if (file) {
+			onSequenceUpload?.(file);
+			input.value = '';
+		}
+	}
+
 	const modeItems: { id: SourceMode; label: string; icon: string }[] = [
 		{ id: 'template', label: 'TPL', icon: ICON_TEXT },
 		{ id: 'image', label: 'IMG', icon: ICON_IMAGE },
 		{ id: 'ticker', label: 'TICK', icon: ICON_TICKER },
 		{ id: 'html5', label: 'H5', icon: ICON_CODE },
+		{ id: 'sequence', label: 'SEQ', icon: ICON_FILM },
 	];
 
 	function html5FormatColor(format?: string): string {
@@ -336,6 +350,10 @@
 				{:else if m.id === 'html5' && layer.html5Status === 'playing'}
 					<span class="mode-dot live"></span>
 				{:else if m.id === 'html5' && layer.html5Url}
+					<span class="mode-dot loaded"></span>
+				{:else if m.id === 'sequence' && layer.sequenceProcessing}
+					<span class="mode-dot processing"></span>
+				{:else if m.id === 'sequence' && layer.sequenceLoaded}
 					<span class="mode-dot loaded"></span>
 				{/if}
 			</button>
@@ -487,6 +505,44 @@
 							<button class="act-btn anim-start" onclick={() => onTickerStart({ text: tickerText, fontSize: tickerFontSize, speed: tickerSpeed, bold: tickerBold, loop: tickerLoop })}>START</button>
 						{/if}
 					</div>
+				</div>
+
+			<!-- ═══ SEQUENCE MODE ═══ -->
+			{:else if sourceMode === 'sequence'}
+				<div class="seq-section">
+					{#if layer.sequenceProcessing}
+						<div class="seq-status processing">
+							<span class="seq-spinner"></span>
+							<span>Processing sequence...</span>
+						</div>
+					{:else if layer.sequenceLoaded}
+						<div class="seq-status loaded">
+							<span class="seq-badge">SEQ</span>
+							<span>Sequence loaded</span>
+							{#if layer.sequencePhase && layer.sequencePhase !== 'idle'}
+								<span class="seq-phase-badge">{layer.sequencePhase.toUpperCase()}</span>
+							{/if}
+						</div>
+						<button class="act-btn del" onclick={() => onSequenceDelete?.()}>
+							<span class="btn-icon">{@html renderIcon(ICON_TRASH, 11, 'stroke')}</span>
+							DELETE SEQUENCE
+						</button>
+					{:else}
+						<input
+							type="file"
+							accept=".zip"
+							bind:this={seqFileInput}
+							onchange={handleSeqFileSelect}
+							style="display:none"
+						/>
+						<button class="act-btn upload" onclick={() => seqFileInput?.click()}>
+							<span class="btn-icon">{@html renderIcon(ICON_UPLOAD, 11, 'stroke')}</span>
+							UPLOAD ZIP
+						</button>
+						<p class="help-text">
+							ZIP with PNG frames: root PNGs loop, optional in/ and out/ folders for animate on/off.
+						</p>
+					{/if}
 				</div>
 
 			<!-- ═══ HTML5 MODE ═══ -->
@@ -1380,5 +1436,69 @@
 	.html5-transport {
 		display: flex;
 		gap: 3px;
+	}
+
+	/* ── Sequence section ── */
+	.seq-section {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
+	.seq-status {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		font-family: var(--font-ui);
+		font-size: var(--text-xs);
+		color: var(--text-secondary);
+	}
+
+	.seq-badge {
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		color: #fff;
+		background: var(--color-success);
+		padding: 1px 5px;
+		border-radius: 3px;
+		white-space: nowrap;
+	}
+
+	.seq-phase-badge {
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		color: var(--accent-blue);
+		background: var(--accent-blue-dim);
+		padding: 1px 5px;
+		border-radius: 3px;
+		white-space: nowrap;
+	}
+
+	.seq-spinner {
+		width: 12px;
+		height: 12px;
+		border: 2px solid var(--border-default);
+		border-top-color: var(--accent-blue);
+		border-radius: 50%;
+		animation: seq-spin 0.8s linear infinite;
+	}
+
+	@keyframes seq-spin {
+		to { transform: rotate(360deg); }
+	}
+
+	.help-text {
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		color: var(--text-tertiary);
+		line-height: 1.4;
+		margin: 0;
+	}
+
+	.mode-dot.processing {
+		background: var(--accent-blue);
+		animation: dot-blink 0.8s ease-in-out infinite;
 	}
 </style>

@@ -522,6 +522,33 @@ export async function graphicsImageDelete(layerId: number): Promise<void> {
 	}
 }
 
+// --- Sequence API ---
+
+export async function graphicsSequenceUpload(layerId: number, file: File): Promise<void> {
+	const res = await fetch(resolveApiUrl(`/api/graphics/${layerId}/sequence`), {
+		method: 'POST',
+		headers: { ...authHeaders() },
+		body: file,
+	});
+	if (!res.ok) {
+		const body = await res.json().catch(() => ({ error: 'unknown error' }));
+		throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
+	}
+	// 202 Accepted — processing happens async, state broadcast will update UI
+}
+
+export async function graphicsSequenceDelete(layerId: number): Promise<GraphicsState> {
+	const res = await fetch(resolveApiUrl(`/api/graphics/${layerId}/sequence`), {
+		method: 'DELETE',
+		headers: authHeaders(),
+	});
+	if (!res.ok) {
+		const body = await res.json().catch(() => ({ error: 'unknown error' }));
+		throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
+	}
+	return res.json();
+}
+
 // --- Text Animation API ---
 
 export function graphicsTextAnimStart(layerId: number, config: {
