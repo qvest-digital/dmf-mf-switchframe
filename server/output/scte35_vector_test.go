@@ -211,13 +211,14 @@ func TestVector_GenerateAndCrossValidate(t *testing.T) {
 						foundSCTE35PID = true
 						require.Equal(t, astits.StreamTypeSCTE35, es.StreamType,
 							"SCTE-35 elementary stream must have StreamType 0x86")
-						// Check for CUEI registration descriptor.
-						for _, desc := range es.ElementaryStreamDescriptors {
-							if desc.Tag == astits.DescriptorTagRegistration && desc.Registration != nil {
-								if desc.Registration.FormatIdentifier == 0x43554549 {
-									foundCUEI = true
-								}
-							}
+					}
+				}
+				// CUEI registration descriptor lives in PMT program-level
+				// descriptors per SCTE-35 section 8.1.
+				for _, desc := range d.PMT.ProgramDescriptors {
+					if desc.Tag == astits.DescriptorTagRegistration && desc.Registration != nil {
+						if desc.Registration.FormatIdentifier == 0x43554549 {
+							foundCUEI = true
 						}
 					}
 				}
@@ -230,7 +231,7 @@ func TestVector_GenerateAndCrossValidate(t *testing.T) {
 
 		require.True(t, foundPMT, "PMT must be present in TS output")
 		require.True(t, foundSCTE35PID, "PMT must list SCTE-35 PID 0x102 with StreamType 0x86")
-		require.True(t, foundCUEI, "SCTE-35 elementary stream must have CUEI registration descriptor (0x43554549)")
+		require.True(t, foundCUEI, "PMT program_info must include CUEI registration descriptor (0x43554549)")
 		require.True(t, foundVideo, "video PES data must be present")
 	})
 }
@@ -258,19 +259,17 @@ func checkSpliceInsertImmediateCueout(t *testing.T, raw []byte) {
 	// untangledco decoder.
 	theirs, err := untangled.Decode(raw)
 	require.NoError(t, err)
-	require.Equal(t, untangled.SpliceInsert, theirs.Command.Type)
+	require.Equal(t, untangled.CommandType(untangled.SpliceInsert), theirs.Command.Type)
 	require.NotNil(t, theirs.Command.Insert)
 	ins := theirs.Command.Insert
 	require.True(t, ins.OutOfNetwork)
 	require.Equal(t, uint32(1001), ins.ID)
 	require.True(t, ins.Immediate)
-	require.NotNil(t, ins.Duration)
-	require.True(t, ins.Duration.AutoReturn)
-	// 30s = 30*90000 = 2700000 ticks.
-	require.Equal(t, uint64(2700000), ins.Duration.Duration)
-	require.Equal(t, uint16(5), ins.ProgramID)
-	require.Equal(t, uint8(1), ins.AvailNum)
-	require.Equal(t, uint8(2), ins.AvailExpected)
+	// NOTE: untangledco v0.0.4 has a bug where it reads break_duration from
+	// the wrong buffer offset for immediate splices (buf is not advanced past
+	// the skipped splice_time block). Skip Duration/ProgramID/Avail checks
+	// for untangledco on immediate splices since the byte offset is wrong
+	// for all subsequent fields.
 
 	// as/scte decoder.
 	pkt, err := asscte.Parse(raw)
@@ -302,7 +301,7 @@ func checkSpliceInsertScheduled(t *testing.T, raw []byte) {
 	// untangledco decoder.
 	theirs, err := untangled.Decode(raw)
 	require.NoError(t, err)
-	require.Equal(t, untangled.SpliceInsert, theirs.Command.Type)
+	require.Equal(t, untangled.CommandType(untangled.SpliceInsert), theirs.Command.Type)
 	require.NotNil(t, theirs.Command.Insert)
 	ins := theirs.Command.Insert
 	require.True(t, ins.OutOfNetwork)
@@ -337,7 +336,7 @@ func checkSpliceInsertCuein(t *testing.T, raw []byte) {
 	// untangledco decoder.
 	theirs, err := untangled.Decode(raw)
 	require.NoError(t, err)
-	require.Equal(t, untangled.SpliceInsert, theirs.Command.Type)
+	require.Equal(t, untangled.CommandType(untangled.SpliceInsert), theirs.Command.Type)
 	require.NotNil(t, theirs.Command.Insert)
 	require.False(t, theirs.Command.Insert.OutOfNetwork, "cue-in must have OutOfNetwork=false")
 	require.Equal(t, uint32(1001), theirs.Command.Insert.ID)
@@ -366,7 +365,7 @@ func checkTimeSignalProgramStart(t *testing.T, raw []byte) {
 	// untangledco decoder.
 	theirs, err := untangled.Decode(raw)
 	require.NoError(t, err)
-	require.Equal(t, untangled.TimeSignal, theirs.Command.Type)
+	require.Equal(t, untangled.CommandType(untangled.TimeSignal), theirs.Command.Type)
 	require.GreaterOrEqual(t, len(theirs.Descriptors), 1)
 	segDesc := findUntangledSegDesc(t, theirs.Descriptors)
 	require.Equal(t, uint8(0x10), segDesc.Type)
@@ -395,7 +394,7 @@ func checkTimeSignalProgramEnd(t *testing.T, raw []byte) {
 	// untangledco decoder.
 	theirs, err := untangled.Decode(raw)
 	require.NoError(t, err)
-	require.Equal(t, untangled.TimeSignal, theirs.Command.Type)
+	require.Equal(t, untangled.CommandType(untangled.TimeSignal), theirs.Command.Type)
 	segDesc := findUntangledSegDesc(t, theirs.Descriptors)
 	require.Equal(t, uint8(0x11), segDesc.Type)
 
@@ -546,7 +545,7 @@ func checkSpliceNull(t *testing.T, raw []byte) {
 	// untangledco decoder.
 	theirs, err := untangled.Decode(raw)
 	require.NoError(t, err)
-	require.Equal(t, untangled.SpliceNull, theirs.Command.Type)
+	require.Equal(t, untangled.CommandType(untangled.SpliceNull), theirs.Command.Type)
 
 	// as/scte decoder.
 	pkt, err := asscte.Parse(raw)
@@ -580,25 +579,26 @@ func checkSpliceInsertWithTier(t *testing.T, raw []byte) {
 // ---------------------------------------------------------------------------
 
 // findUntangledSegDesc returns the first SegmentationDescriptor from
-// untangledco's descriptor list.
-func findUntangledSegDesc(t *testing.T, descs []untangled.SpliceDescriptor) *untangled.SegmentationDescriptor {
+// untangledco's descriptor list. untangledco returns descriptors as value
+// types (not pointers).
+func findUntangledSegDesc(t *testing.T, descs []untangled.SpliceDescriptor) untangled.SegmentationDescriptor {
 	t.Helper()
 	for _, d := range descs {
-		if sd, ok := d.(*untangled.SegmentationDescriptor); ok {
+		if sd, ok := d.(untangled.SegmentationDescriptor); ok {
 			return sd
 		}
 	}
 	t.Fatal("no SegmentationDescriptor found in untangledco descriptors")
-	return nil
+	return untangled.SegmentationDescriptor{}
 }
 
 // findAllUntangledSegDescs returns all SegmentationDescriptors from
 // untangledco's descriptor list.
-func findAllUntangledSegDescs(t *testing.T, descs []untangled.SpliceDescriptor) []*untangled.SegmentationDescriptor {
+func findAllUntangledSegDescs(t *testing.T, descs []untangled.SpliceDescriptor) []untangled.SegmentationDescriptor {
 	t.Helper()
-	var result []*untangled.SegmentationDescriptor
+	var result []untangled.SegmentationDescriptor
 	for _, d := range descs {
-		if sd, ok := d.(*untangled.SegmentationDescriptor); ok {
+		if sd, ok := d.(untangled.SegmentationDescriptor); ok {
 			result = append(result, sd)
 		}
 	}
