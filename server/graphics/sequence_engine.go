@@ -77,10 +77,10 @@ func (se *SequenceEngine) upload(layerID int, zipData []byte) error {
 }
 
 // UploadAsync starts background processing of a ZIP archive of PNG frames.
-// It returns immediately after validating the layer exists. The processing
-// state is broadcast so the UI can show a loading indicator. When done, the
-// sequence is installed on the layer and a final state broadcast fires.
-func (se *SequenceEngine) UploadAsync(layerID int, zipData []byte) error {
+// sourceFPS is the frame rate of the source material. If it differs from the
+// pipeline fps, frames are resampled (nearest-neighbor) to match the pipeline
+// rate so playback is always 1:1 and butter smooth.
+func (se *SequenceEngine) UploadAsync(layerID int, zipData []byte, sourceFPS float64) error {
 	// Validate layer exists before spawning goroutine.
 	se.compositor.mu.Lock()
 	layer, ok := se.compositor.layers[layerID]
@@ -97,13 +97,13 @@ func (se *SequenceEngine) UploadAsync(layerID int, zipData []byte) error {
 		cb(state)
 	}
 
-	go se.processUpload(layerID, zipData)
+	go se.processUpload(layerID, zipData, sourceFPS)
 	return nil
 }
 
 // processUpload decodes the ZIP and installs the sequence on the layer.
 // Called in a background goroutine by UploadAsync.
-func (se *SequenceEngine) processUpload(layerID int, zipData []byte) {
+func (se *SequenceEngine) processUpload(layerID int, zipData []byte, sourceFPS float64) {
 	// Progress callback: update layer state and broadcast on each frame.
 	// Throttle to every 2% to avoid flooding the state broadcast.
 	lastBroadcast := 0.0
@@ -126,6 +126,29 @@ func (se *SequenceEngine) processUpload(layerID int, zipData []byte) {
 	}
 
 	seq, err := LoadSequenceZIPWithProgress(zipData, onProgress)
+
+	if err == nil {
+		// Resample to pipeline fps if source fps differs.
+		se.compositor.mu.RLock()
+		pipelineFPSNum := se.compositor.pipelineFPSNum
+		pipelineFPSDen := se.compositor.pipelineFPSDen
+		se.compositor.mu.RUnlock()
+
+		if pipelineFPSNum > 0 && pipelineFPSDen > 0 && sourceFPS > 0 {
+			pipelineFPS := float64(pipelineFPSNum) / float64(pipelineFPSDen)
+			if pipelineFPS != sourceFPS {
+				seq.inFrames = resampleFrames(seq.inFrames, sourceFPS, pipelineFPS)
+				seq.loopFrames = resampleFrames(seq.loopFrames, sourceFPS, pipelineFPS)
+				seq.outFrames = resampleFrames(seq.outFrames, sourceFPS, pipelineFPS)
+				se.log.Info("sequence resampled",
+					"layer", layerID,
+					"sourceFPS", sourceFPS,
+					"pipelineFPS", pipelineFPS,
+					"inFrames", len(seq.inFrames),
+					"outFrames", len(seq.outFrames))
+			}
+		}
+	}
 
 	se.compositor.mu.Lock()
 	layer, ok := se.compositor.layers[layerID]
@@ -403,6 +426,36 @@ func (se *SequenceEngine) SetSpeed(layerID int, speed float64) error {
 		cb(state)
 	}
 	return nil
+}
+
+// resampleFrames converts a frame sequence from sourceFPS to targetFPS using
+// nearest-neighbor frame selection. Returns the original slice unchanged if
+// no resampling is needed (same fps or empty input).
+func resampleFrames(frames [][]byte, sourceFPS, targetFPS float64) [][]byte {
+	if len(frames) == 0 || sourceFPS <= 0 || targetFPS <= 0 {
+		return frames
+	}
+	// Duration of the original sequence in seconds.
+	duration := float64(len(frames)) / sourceFPS
+	// Number of frames needed at the target rate.
+	targetCount := int(duration*targetFPS + 0.5)
+	if targetCount <= 0 {
+		targetCount = 1
+	}
+	if targetCount == len(frames) {
+		return frames
+	}
+
+	resampled := make([][]byte, targetCount)
+	for i := 0; i < targetCount; i++ {
+		// Map target frame index to source frame index (nearest-neighbor).
+		srcIdx := int(float64(i) * sourceFPS / targetFPS + 0.5)
+		if srcIdx >= len(frames) {
+			srcIdx = len(frames) - 1
+		}
+		resampled[i] = frames[srcIdx]
+	}
+	return resampled
 }
 
 // Delete removes the sequence from the layer and deactivates it.

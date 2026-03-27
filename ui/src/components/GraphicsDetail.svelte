@@ -106,7 +106,7 @@
 		onHTML5Next: () => void;
 		onHTML5Unload: () => void;
 		onHTML5Custom?: (action: string, payload: Record<string, unknown>) => void;
-		onSequenceUpload?: (file: File) => void;
+		onSequenceUpload?: (file: File, fps: number) => void;
 		onSequenceDelete?: () => void;
 		onSequenceSpeed?: (speed: number) => void;
 	}
@@ -135,6 +135,7 @@
 
 	let fileInput = $state<HTMLInputElement | null>(null);
 	let seqFileInput = $state<HTMLInputElement | null>(null);
+	let seqFPS = $state(59.94);
 
 	let html5Url = $state('');
 	let html5DataJson = $state('{}');
@@ -240,7 +241,7 @@
 		const input = e.target as HTMLInputElement;
 		const file = input.files?.[0];
 		if (file) {
-			onSequenceUpload?.(file);
+			onSequenceUpload?.(file, seqFPS);
 			input.value = '';
 		}
 	}
@@ -544,6 +545,19 @@
 							DELETE SEQUENCE
 						</button>
 					{:else}
+						<div class="seq-fps-row">
+							<label class="ctl-label">Source FPS</label>
+							<select class="ctl-select" bind:value={seqFPS}>
+								<option value={23.976}>23.976</option>
+								<option value={24}>24</option>
+								<option value={25}>25</option>
+								<option value={29.97}>29.97</option>
+								<option value={30}>30</option>
+								<option value={50}>50</option>
+								<option value={59.94}>59.94</option>
+								<option value={60}>60</option>
+							</select>
+						</div>
 						<input
 							type="file"
 							accept=".zip"
@@ -556,7 +570,7 @@
 							UPLOAD ZIP
 						</button>
 						<p class="help-text">
-							ZIP with PNG frames: root PNGs loop, optional in/ and out/ folders for animate on/off.
+							ZIP with PNG frames. Use in/ and out/ folders for animate on/off.
 						</p>
 					{/if}
 				</div>
@@ -1503,6 +1517,12 @@
 
 	@keyframes seq-spin {
 		to { transform: rotate(360deg); }
+	}
+
+	.seq-fps-row {
+		display: flex;
+		align-items: center;
+		gap: 6px;
 	}
 
 	.seq-progress-bar {

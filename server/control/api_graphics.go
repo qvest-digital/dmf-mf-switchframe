@@ -827,7 +827,19 @@ func (a *API) handleGraphicsSequenceUpload(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if err := a.sequenceEngine.UploadAsync(id, data); err != nil {
+	// Source fps is required so we can resample to pipeline fps.
+	fpsStr := r.URL.Query().Get("fps")
+	if fpsStr == "" {
+		httperr.Write(w, http.StatusBadRequest, "fps query parameter required (e.g. ?fps=59.94)")
+		return
+	}
+	sourceFPS, err := strconv.ParseFloat(fpsStr, 64)
+	if err != nil || sourceFPS <= 0 || sourceFPS > 240 {
+		httperr.Write(w, http.StatusBadRequest, "fps must be a positive number (e.g. 29.97, 59.94)")
+		return
+	}
+
+	if err := a.sequenceEngine.UploadAsync(id, data, sourceFPS); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}

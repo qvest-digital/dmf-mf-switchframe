@@ -524,8 +524,8 @@ export async function graphicsImageDelete(layerId: number): Promise<void> {
 
 // --- Sequence API ---
 
-export async function graphicsSequenceUpload(layerId: number, file: File): Promise<void> {
-	const res = await fetch(resolveApiUrl(`/api/graphics/${layerId}/sequence`), {
+export async function graphicsSequenceUpload(layerId: number, file: File, fps: number): Promise<void> {
+	const res = await fetch(resolveApiUrl(`/api/graphics/${layerId}/sequence?fps=${fps}`), {
 		method: 'POST',
 		headers: { ...authHeaders() },
 		body: file,

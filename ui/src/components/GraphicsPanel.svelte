@@ -383,9 +383,9 @@
 	}
 
 	// ── Sequence handlers ──
-	async function handleSequenceUpload(id: number, file: File) {
+	async function handleSequenceUpload(id: number, file: File, fps: number) {
 		try {
-			await graphicsSequenceUpload(id, file);
+			await graphicsSequenceUpload(id, file, fps);
 			layerModes = { ...layerModes, [id]: 'sequence' };
 			notify('info', 'Sequence uploading...');
 		} catch {
@@ -470,7 +470,7 @@
 					onHTML5Next={() => handleHTML5Next(selectedLayer.id)}
 					onHTML5Unload={() => handleHTML5Unload(selectedLayer.id)}
 					onHTML5Custom={(action, payload) => handleHTML5Custom(selectedLayer.id, action, payload)}
-				onSequenceUpload={(file) => handleSequenceUpload(selectedLayer.id, file)}
+				onSequenceUpload={(file, fps) => handleSequenceUpload(selectedLayer.id, file, fps)}
 				onSequenceDelete={() => handleSequenceDelete(selectedLayer.id)}
 				onSequenceSpeed={(speed) => handleSequenceSpeed(selectedLayer.id, speed)}
 				/>
