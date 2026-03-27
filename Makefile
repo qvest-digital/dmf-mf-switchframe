@@ -1,4 +1,4 @@
-.PHONY: build build-server build-server-mxl build-asr-sidecar dev demo mxl-demo ui-install ui-build ui-test ui-e2e test test-mxl test-all docker clean sync-prism-ts lint format setup-mkcert metal-shaders
+.PHONY: build build-server build-server-mxl build-asr-sidecar dev demo mxl-demo ui-install ui-build ui-test ui-e2e test test-mxl test-all docker docker-cuda clean sync-prism-ts lint format setup-mkcert metal-shaders
 
 EMBED_LINK := server/cmd/switchframe/ui
 
@@ -104,6 +104,9 @@ test-all: test ui-test ui-e2e
 # Docker
 docker:
 	docker build -t switchframe .
+
+docker-cuda:
+	docker build -f Dockerfile.cuda -t switchframe:cuda .
 
 # Prism TS vendor sync
 PRISM_TS_SRC ?= ../prism/web/src
