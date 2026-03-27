@@ -192,7 +192,7 @@ func NewNemotronBackend(cfg NemotronConfig) (Backend, error) {
 		vadSession: vadSession,
 		resampler:  NewResampler(48000, 2, 16000),
 		ringBuf:    NewAudioRingBuf(16000, 30),
-		sileroVAD:  NewSileroVAD(vadSession, 0.35, 500),
+		sileroVAD:  NewSileroVAD(vadSession, 0.5, 750),
 		vad: NewVAD(VADConfig{
 			ThresholdDB: -26,
 			HangoverMs:  500,
@@ -267,8 +267,8 @@ func (b *NemotronBackend) IngestAudio(pcm []float32, pts int64, sampleRate, chan
 		// speech with no clean pauses, so the VAD may never transition to idle.
 		// ChunkMs controls the max accumulation time before forced transcription.
 		maxAccum := time.Duration(b.cfg.ChunkMs) * time.Millisecond
-		if maxAccum < 3*time.Second {
-			maxAccum = 3 * time.Second
+		if maxAccum < 5*time.Second {
+			maxAccum = 5 * time.Second
 		}
 		if b.wasSpeaking && now.Sub(b.lastInfer) >= maxAccum {
 			b.lastInfer = now
@@ -306,7 +306,7 @@ func (b *NemotronBackend) runInference(isFinal bool) {
 	audioLen := len(audio)
 	b.mu.Unlock()
 
-	if audioLen < 1600 {
+	if audioLen < 8000 { // 500ms — below this, false positive rate is too high
 		return
 	}
 
@@ -361,6 +361,9 @@ func (b *NemotronBackend) runInference(isFinal bool) {
 		return
 	}
 
+	// Filter out hallucination artifacts before emitting.
+	words = filterWords(words)
+
 	b.mu.Lock()
 	b.ringBuf.Clear()
 	b.resetDecoderState()
@@ -370,6 +373,54 @@ func (b *NemotronBackend) runInference(isFinal bool) {
 	if cb != nil && len(words) > 0 {
 		cb(words, true)
 	}
+}
+
+// filterWords removes noise/hallucination artifacts from TDT decoder output.
+func filterWords(words []TranscriptWord) []TranscriptWord {
+	if len(words) == 0 {
+		return nil
+	}
+
+	var filtered []TranscriptWord
+	var prevText string
+	repeatCount := 0
+
+	for _, w := range words {
+		text := w.Text
+
+		// Skip single-character non-words (common TDT hallucination).
+		if len(text) == 1 {
+			lower := strings.ToLower(text)
+			if lower != "i" && lower != "a" {
+				continue
+			}
+		}
+
+		// Skip very low confidence words.
+		if w.Confidence > 0 && w.Confidence < 0.3 {
+			continue
+		}
+
+		// Deloop: skip consecutive repeats (keep first occurrence).
+		if text == prevText {
+			repeatCount++
+			if repeatCount >= 2 { // allow 1 repeat (e.g. "no no"), skip 3+
+				continue
+			}
+		} else {
+			repeatCount = 0
+		}
+		prevText = text
+
+		filtered = append(filtered, w)
+	}
+
+	// Discard entire segment if only 1 low-confidence word remains.
+	if len(filtered) == 1 && filtered[0].Confidence > 0 && filtered[0].Confidence < 0.5 {
+		return nil
+	}
+
+	return filtered
 }
 
 // runInferenceOnAudio runs inference directly on provided 16kHz mono audio.

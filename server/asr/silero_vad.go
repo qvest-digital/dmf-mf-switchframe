@@ -5,6 +5,7 @@ package asr
 import (
 	"fmt"
 	"log/slog"
+	"math"
 )
 
 const (
@@ -35,16 +36,16 @@ const (
 //
 // The detector is not goroutine-safe; callers must synchronize access.
 type SileroVAD struct {
-	session   *OnnxSession
-	state     []float32 // [2, 1, 128] recurrent state
-	context   []float32 // last 64 samples from previous chunk (prepended to next input)
-	buf       []float32 // accumulates samples until 512
-	threshold float64   // speech probability threshold (default 0.5)
+	session      *OnnxSession
+	state        []float32 // [2, 1, 128] recurrent state
+	context      []float32 // last 64 samples from previous chunk (prepended to next input)
+	buf          []float32 // accumulates samples until 512
+	threshold    float64   // speech probability threshold (enter speech when prob > threshold)
+	negThreshold float64   // exit threshold (exit speech when prob < negThreshold for hangoverMs)
 
 	speaking   bool
 	hangover   int // remaining hangover in milliseconds
 	hangoverMs int // configured hangover duration
-	debugCount int // for periodic debug logging
 }
 
 // NewSileroVAD creates a new Silero VAD instance.
@@ -59,11 +60,12 @@ func NewSileroVAD(session *OnnxSession, threshold float64, hangoverMs int) *Sile
 		hangoverMs = 500
 	}
 	return &SileroVAD{
-		session:    session,
-		state:      make([]float32, sileroStateSize),
-		context:    make([]float32, sileroContextSize),
-		threshold:  threshold,
-		hangoverMs: hangoverMs,
+		session:      session,
+		state:        make([]float32, sileroStateSize),
+		context:      make([]float32, sileroContextSize),
+		threshold:    threshold,
+		negThreshold: math.Max(threshold-0.15, 0.01),
+		hangoverMs:   hangoverMs,
 	}
 }
 
@@ -88,22 +90,19 @@ func (v *SileroVAD) Process(samples []float32) {
 			continue
 		}
 
-		// Log every ~1 second (31 chunks * 32ms ≈ 1s) when prob > 0.01
-		// to diagnose VAD sensitivity on broadcast audio.
-		v.debugCount++
-		if v.debugCount%31 == 0 && prob > 0.05 {
-			slog.Info("ASR silero VAD probe", "prob", fmt.Sprintf("%.4f", prob), "threshold", v.threshold, "speaking", v.speaking)
-		}
-
 		if prob > v.threshold {
 			v.speaking = true
 			v.hangover = v.hangoverMs
-		} else if v.speaking {
+		} else if v.speaking && prob < v.negThreshold {
 			v.hangover -= sileroChunkDurationMs
 			if v.hangover <= 0 {
 				v.speaking = false
 				v.hangover = 0
 			}
+		} else if v.speaking {
+			// Between negThreshold and threshold — maintain speech state,
+			// don't decrement hangover (hysteresis zone).
+			v.hangover = v.hangoverMs
 		}
 	}
 }
