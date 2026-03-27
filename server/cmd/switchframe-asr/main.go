@@ -63,15 +63,11 @@ func emitWords(conn net.Conn, words []asr.TranscriptWord) {
 }
 
 // sendStatus sends a status message with backend/model info over IPC.
-func sendStatus(conn net.Conn, active asrBackend, backends []asrBackend, eVAD *energyVAD) {
-	names := make([]string, len(backends))
-	for i, b := range backends {
-		names[i] = b.Name()
-	}
+func sendStatus(conn net.Conn, active asrBackend, availableNames []string, eVAD *energyVAD) {
 	msg := &asripc.Message{
 		Type:              "status",
 		State:             "ready",
-		AvailableBackends: names,
+		AvailableBackends: availableNames,
 	}
 	if active != nil {
 		msg.Backend = active.Name()
@@ -133,77 +129,91 @@ func main() {
 	// Create audio processor (48kHz stereo -> 16kHz mono).
 	audioProc := newAudioProcessor(48000, 2)
 
-	// Initialize backend registry.
-	var backends []asrBackend
+	// Backend registry: track which backends are available and which is active.
+	// Only the default backend is loaded eagerly; others load on demand to
+	// conserve GPU VRAM (~1.5-2GB per model).
+	availableBackendNames := []string{}
 	var activeBackend asrBackend
 
-	// Init TRT backend (if model-dir provided).
-	if *modelDir != "" {
-		trt, err := newTRTASRBackend(*modelDir, *device)
-		if err != nil {
-			slog.Warn("parakeet backend unavailable", "error", err)
-		} else {
-			backends = append(backends, trt)
-			defer trt.Close()
+	// Track configs for lazy loading.
+	trtModelDir := *modelDir
+	whisperDir := *whisperModelsDir
+	deviceID := *device
+
+	if trtModelDir != "" {
+		availableBackendNames = append(availableBackendNames, "parakeet")
+	}
+	if whisperDir != "" {
+		availableBackendNames = append(availableBackendNames, "whisper")
+	}
+
+	// loadBackend initializes a backend by name, closing the previous one.
+	loadBackend := func(name string) (asrBackend, error) {
+		switch name {
+		case "parakeet":
+			if trtModelDir == "" {
+				return nil, fmt.Errorf("parakeet: --model-dir not set")
+			}
+			return newTRTASRBackend(trtModelDir, deviceID)
+		case "whisper":
+			if whisperDir == "" {
+				return nil, fmt.Errorf("whisper: --whisper-models-dir not set")
+			}
+			return newWhisperASRBackend(whisperDir, true)
+		default:
+			return nil, fmt.Errorf("unknown backend %q", name)
 		}
 	}
 
-	// Init Whisper backend (if whisper-models-dir provided).
-	if *whisperModelsDir != "" {
-		whisper, err := newWhisperASRBackend(*whisperModelsDir, true)
-		if err != nil {
-			slog.Warn("whisper backend unavailable", "error", err)
-		} else {
-			backends = append(backends, whisper)
-			defer whisper.Close()
-		}
+	// Load only the default backend.
+	defaultName := *defaultBackend
+	if defaultName == "" && len(availableBackendNames) > 0 {
+		defaultName = availableBackendNames[0]
 	}
-
-	// Select default backend.
-	for _, b := range backends {
-		if b.Name() == *defaultBackend {
+	if defaultName != "" {
+		b, err := loadBackend(defaultName)
+		if err != nil {
+			slog.Warn("default backend unavailable, trying others", "backend", defaultName, "error", err)
+			// Try the other available backend.
+			for _, name := range availableBackendNames {
+				if name != defaultName {
+					b, err = loadBackend(name)
+					if err == nil {
+						break
+					}
+				}
+			}
+		}
+		if b != nil {
 			activeBackend = b
-			break
-		}
-	}
-	if activeBackend == nil && len(backends) > 0 {
-		activeBackend = backends[0]
-	}
-
-	if activeBackend != nil {
-		slog.Info("active backend selected", "backend", activeBackend.Name(), "model", activeBackend.ModelName())
-	} else {
-		slog.Warn("no ASR backends available, running as pass-through")
-	}
-
-	// Find GPU stream for Silero VAD from TRT backend.
-	var gpuStream unsafe.Pointer
-	for _, b := range backends {
-		if tb, ok := b.(*trtASRBackend); ok {
-			gpuStream = tb.engine.backend.gpuStream()
-			break
+			defer activeBackend.Close()
+			slog.Info("active backend selected", "backend", activeBackend.Name(), "model", activeBackend.ModelName())
+		} else {
+			slog.Warn("no ASR backends available, running as pass-through")
 		}
 	}
 
-	// Initialize Silero VAD if GPU stream is available.
+	// Initialize Silero VAD (ONNX Runtime, CPU — no GPU stream needed).
 	var sVAD *sileroVAD
-	if gpuStream != nil {
-		vadPath := *vadModelPath
-		if vadPath == "" && *modelDir != "" {
-			candidate := filepath.Join(*modelDir, "silero_vad.onnx")
-			if _, err := os.Stat(candidate); err == nil {
-				vadPath = candidate
-			}
+	vadPath := *vadModelPath
+	if vadPath == "" && trtModelDir != "" {
+		candidate := filepath.Join(trtModelDir, "silero_vad.onnx")
+		if _, err := os.Stat(candidate); err == nil {
+			vadPath = candidate
 		}
-		if vadPath != "" {
-			var err error
-			sVAD, err = newSileroVAD(vadPath, gpuStream, 0.5, 750)
-			if err != nil {
-				slog.Warn("silero VAD unavailable, using energy-only", "error", err)
-			} else {
-				defer sVAD.close()
-				slog.Info("silero VAD initialized", "model", vadPath)
-			}
+	}
+	if vadPath != "" {
+		var gpuStream unsafe.Pointer
+		if tb, ok := activeBackend.(*trtASRBackend); ok {
+			gpuStream = tb.engine.backend.gpuStream()
+		}
+		var err error
+		sVAD, err = newSileroVAD(vadPath, gpuStream, 0.5, 750)
+		if err != nil {
+			slog.Warn("silero VAD unavailable, using energy-only", "error", err)
+		} else {
+			defer sVAD.close()
+			slog.Info("silero VAD initialized", "model", vadPath)
 		}
 	}
 
@@ -214,7 +224,7 @@ func main() {
 	fmt.Println("READY")
 
 	// Send initial status over IPC socket with backend info.
-	sendStatus(conn, activeBackend, backends, eVAD)
+	sendStatus(conn, activeBackend, availableBackendNames, eVAD)
 
 	// Setup signal handling.
 	sigCh := make(chan os.Signal, 1)
@@ -327,12 +337,16 @@ func main() {
 				}
 				if backend, ok := cfg["backend"].(string); ok && backend != "" {
 					if activeBackend == nil || backend != activeBackend.Name() {
-						for _, b := range backends {
-							if b.Name() == backend {
-								activeBackend = b
-								slog.Info("switched backend", "backend", backend)
-								break
+						newBackend, err := loadBackend(backend)
+						if err != nil {
+							slog.Warn("failed to load backend", "backend", backend, "error", err)
+						} else {
+							// Close old backend to free GPU VRAM.
+							if activeBackend != nil {
+								activeBackend.Close()
 							}
+							activeBackend = newBackend
+							slog.Info("switched backend", "backend", backend)
 						}
 					}
 				}
@@ -349,7 +363,7 @@ func main() {
 				if activeBackend != nil {
 					activeBackend.SetConfig(cfg)
 				}
-				sendStatus(conn, activeBackend, backends, eVAD)
+				sendStatus(conn, activeBackend, availableBackendNames, eVAD)
 			}
 
 		case <-sigCh:
