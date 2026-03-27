@@ -9,17 +9,10 @@ import (
 	"sync/atomic"
 )
 
-// EngineConfig configures the ASR engine with one or more backends.
+// EngineConfig configures the ASR engine.
 type EngineConfig struct {
-	// DefaultBackend is the name of the backend to activate on startup.
-	// If not available, the first available backend is used.
-	DefaultBackend string
-
-	// Whisper configures the whisper.cpp backend. nil = don't register.
-	Whisper *WhisperBackendConfig
-
-	// Nemotron configures the Nemotron backend. nil = don't register.
-	Nemotron *NemotronConfig
+	// Sidecar configures the ASR sidecar subprocess backend.
+	Sidecar *SidecarConfig
 }
 
 // Engine is the ASR orchestrator. It dispatches audio to the active Backend
@@ -29,10 +22,9 @@ type EngineConfig struct {
 // The IngestAudio hot path uses atomic.Pointer for lock-free dispatch.
 // All other methods take the mutex.
 type Engine struct {
-	mu          sync.Mutex
-	active      atomic.Pointer[Backend]
-	backends    map[string]Backend
-	lazyConfigs map[string]interface{} // configs for backends not yet initialized
+	mu       sync.Mutex
+	active   atomic.Pointer[Backend]
+	backends map[string]Backend
 
 	onTranscript    func(words []TranscriptWord, isFinal bool)
 	onBackendSwitch atomic.Pointer[func()] // called after async backend switch
@@ -97,7 +89,7 @@ func newEngineWithBackends(backends map[string]Backend, defaultName string) *Eng
 			}
 		}
 		if !started {
-			panic("asr: no backend could be started")
+			slog.Warn("ASR: no backend could be started, captions unavailable")
 		}
 	}
 
@@ -107,80 +99,20 @@ func newEngineWithBackends(backends map[string]Backend, defaultName string) *Eng
 	return e
 }
 
-// NewEngine creates a new ASR engine. It eagerly initializes only the default
-// backend to conserve GPU memory. Non-default backends are lazy-loaded on
-// first SwitchBackend call.
+// NewEngine creates a new ASR engine with the sidecar backend.
 func NewEngine(cfg EngineConfig) (*Engine, error) {
-	backends := make(map[string]Backend)
-	configs := make(map[string]interface{})
-
-	// Determine default backend name.
-	defaultName := cfg.DefaultBackend
-	if defaultName == "" {
-		if cfg.Whisper != nil {
-			defaultName = "whisper"
-		} else if cfg.Nemotron != nil {
-			defaultName = "nemotron"
-		}
+	if cfg.Sidecar == nil {
+		return nil, fmt.Errorf("asr: sidecar config is required")
 	}
 
-	// Eagerly initialize the default backend. Store configs for lazy init of others.
-	if cfg.Whisper != nil {
-		if defaultName == "whisper" {
-			b, err := NewWhisperBackend(*cfg.Whisper)
-			if err != nil {
-				slog.Warn("ASR: whisper backend unavailable", "error", err)
-			} else {
-				backends["whisper"] = b
-			}
-		} else {
-			configs["whisper"] = cfg.Whisper
-		}
+	b, err := NewSidecarBackend(*cfg.Sidecar)
+	if err != nil {
+		return nil, fmt.Errorf("asr: sidecar backend: %w", err)
 	}
 
-	if cfg.Nemotron != nil {
-		if defaultName == "nemotron" {
-			b, err := NewNemotronBackend(*cfg.Nemotron)
-			if err != nil {
-				slog.Warn("ASR: nemotron backend unavailable", "error", err)
-			} else {
-				backends["nemotron"] = b
-			}
-		} else {
-			configs["nemotron"] = cfg.Nemotron
-		}
-	}
-
-	if len(backends) == 0 {
-		return nil, fmt.Errorf("asr: no backends available")
-	}
-
-	// Track available backend names (including lazy ones).
-	available := make(map[string]bool)
-	for name := range backends {
-		available[name] = true
-	}
-	for name := range configs {
-		available[name] = true
-	}
-
-	if defaultName == "" {
-		// Pick first available, preferring whisper.
-		if _, ok := backends["whisper"]; ok {
-			defaultName = "whisper"
-		} else {
-			names := make([]string, 0, len(backends))
-			for name := range backends {
-				names = append(names, name)
-			}
-			sort.Strings(names)
-			defaultName = names[0]
-		}
-	}
-
-	e := newEngineWithBackends(backends, defaultName)
-	e.lazyConfigs = configs
-	return e, nil
+	return newEngineWithBackends(map[string]Backend{
+		"sidecar": b,
+	}, "sidecar"), nil
 }
 
 // OnTranscript sets the callback for transcript updates. The backend's
@@ -212,20 +144,12 @@ func (e *Engine) ActiveBackend() string {
 	return (*bp).Name()
 }
 
-// AvailableBackends returns a sorted list of registered backend names,
-// including backends that haven't been initialized yet (lazy-loaded).
+// AvailableBackends returns a sorted list of registered backend names.
 func (e *Engine) AvailableBackends() []string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	seen := make(map[string]bool)
+	names := make([]string, 0, len(e.backends))
 	for name := range e.backends {
-		seen[name] = true
-	}
-	for name := range e.lazyConfigs {
-		seen[name] = true
-	}
-	names := make([]string, 0, len(seen))
-	for name := range seen {
 		names = append(names, name)
 	}
 	sort.Strings(names)
@@ -249,16 +173,8 @@ func (e *Engine) SwitchBackend(name string) error {
 
 	newBackend, ok := e.backends[name]
 	if !ok {
-		// Lazy initialization needed — kick it off in the background so the
-		// HTTP handler returns immediately. The old backend keeps running
-		// until the new one is ready.
-		lazyCfg, hasLazy := e.lazyConfigs[name]
 		e.mu.Unlock()
-		if !hasLazy {
-			return fmt.Errorf("asr: unknown backend %q", name)
-		}
-		go e.lazyInitAndSwitch(name, lazyCfg)
-		return nil // return immediately — switch happens asynchronously
+		return fmt.Errorf("asr: unknown backend %q", name)
 	}
 	e.mu.Unlock()
 
@@ -295,70 +211,6 @@ func (e *Engine) SwitchBackend(name string) error {
 	e.mu.Unlock()
 	e.active.Store(&stable)
 	return nil
-}
-
-// lazyInitAndSwitch initializes a backend from its stored config and swaps
-// to it. Runs in a background goroutine so the caller doesn't block.
-func (e *Engine) lazyInitAndSwitch(name string, lazyCfg interface{}) {
-	var newBackend Backend
-	var err error
-
-	switch name {
-	case "whisper":
-		cfg := lazyCfg.(*WhisperBackendConfig)
-		newBackend, err = NewWhisperBackend(*cfg)
-	case "nemotron":
-		cfg := lazyCfg.(*NemotronConfig)
-		newBackend, err = NewNemotronBackend(*cfg)
-	default:
-		slog.Error("ASR: lazy-init unknown backend", "name", name)
-		return
-	}
-	if err != nil {
-		slog.Error("ASR: lazy-init backend failed", "name", name, "error", err)
-		return
-	}
-	slog.Info("ASR: lazy-initialized backend", "name", name)
-
-	// Store the backend.
-	e.mu.Lock()
-	e.backends[name] = newBackend
-	delete(e.lazyConfigs, name)
-	e.mu.Unlock()
-
-	// Now do the actual swap.
-	cb := func(words []TranscriptWord, isFinal bool) {
-		e.mu.Lock()
-		fn := e.onTranscript
-		e.mu.Unlock()
-		if fn != nil {
-			fn(words, isFinal)
-		}
-	}
-
-	bp := e.active.Load()
-	if bp != nil {
-		(*bp).Stop()
-	}
-	if err := newBackend.Start(cb); err != nil {
-		slog.Error("ASR: start lazy-loaded backend failed", "name", name, "error", err)
-		if bp != nil {
-			_ = (*bp).Start(cb)
-		}
-		return
-	}
-	// Load from the map to get a stable pointer — don't store a pointer to
-	// the local variable which goes out of scope when this goroutine returns.
-	e.mu.Lock()
-	stable := e.backends[name]
-	e.mu.Unlock()
-	e.active.Store(&stable)
-	slog.Info("ASR: switched to backend", "name", name)
-
-	// Notify cache update if wired (via onBackendSwitch callback).
-	if fn := e.onBackendSwitch.Load(); fn != nil {
-		(*fn)()
-	}
 }
 
 // OnBackendSwitch registers a callback invoked after an async backend switch completes.
@@ -444,10 +296,4 @@ func (e *Engine) Close() {
 	for _, b := range backends {
 		b.Close()
 	}
-}
-
-// ModelPath returns the path to a model file given a model name.
-// Searches the standard whisper.cpp models directory.
-func ModelPath(modelsDir, name string) string {
-	return modelsDir + "/ggml-" + name + ".bin"
 }

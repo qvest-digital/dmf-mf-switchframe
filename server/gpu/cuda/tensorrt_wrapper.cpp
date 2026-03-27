@@ -473,8 +473,9 @@ int trt_build_engine_v2(const char* onnxPath, const char* planPath,
         return -1;
     }
 
-    // 512 MB workspace (larger than v1 to accommodate multi-input models).
-    config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, 512ULL << 20);
+    // 4 GB workspace — large models (e.g., Parakeet-TDT decoder joint network)
+    // need 2+ GB for tactic selection during engine build.
+    config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, 4ULL << 30);
 
     if (useFP16 && builder->platformHasFastFp16()) {
         config->setFlag(nvinfer1::BuilderFlag::kFP16);

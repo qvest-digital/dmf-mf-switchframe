@@ -2,9 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -16,12 +16,11 @@ import (
 	"github.com/zsiec/switchframe/server/internal"
 )
 
-// initASR sets up the multi-backend ASR engine when --asr-whisper-model or
-// --asr-nemotron-model is provided. Requires --captions to be enabled (needs
-// caption manager for output). Non-fatal: if no backend initializes, ASR is
-// simply unavailable.
+// initASR sets up the ASR sidecar engine when --asr-sidecar is provided.
+// Requires --captions to be enabled (needs caption manager for output).
+// Non-fatal: if the sidecar fails to initialize, ASR is simply unavailable.
 func (a *App) initASR() error {
-	if a.cfg.ASRWhisperModel == "" && a.cfg.ASRNemotronModel == "" {
+	if a.cfg.ASRSidecarBin == "" {
 		return nil
 	}
 	if a.captionMgr == nil {
@@ -30,46 +29,12 @@ func (a *App) initASR() error {
 	}
 
 	cfg := asr.EngineConfig{
-		DefaultBackend: a.cfg.ASRDefaultBackend,
-	}
-
-	// Configure Whisper backend if model path is set.
-	if a.cfg.ASRWhisperModel != "" {
-		modelsDir := filepath.Dir(a.cfg.ASRWhisperModel)
-
-		// Auto-detect Silero VAD model in the same directory as the whisper model.
-		vadModelPath := ""
-		vadCandidates := []string{
-			filepath.Join(modelsDir, "ggml-silero-v6.2.0.bin"),
-			filepath.Join(modelsDir, "ggml-silero-v5.1.2.bin"),
-		}
-		for _, p := range vadCandidates {
-			if _, err := os.Stat(p); err == nil {
-				vadModelPath = p
-				break
-			}
-		}
-		if vadModelPath != "" {
-			slog.Info("ASR: Silero VAD enabled", "model", filepath.Base(vadModelPath))
-		} else {
-			slog.Info("ASR: using energy-based VAD (no Silero model found)")
-		}
-
-		cfg.Whisper = &asr.WhisperBackendConfig{
-			ModelPath:    a.cfg.ASRWhisperModel,
-			VADModelPath: vadModelPath,
-			ModelsDir:    modelsDir,
-			Translate:    true,
-			UseGPU:       true,
-		}
-	}
-
-	// Configure Nemotron backend if model directory is set.
-	if a.cfg.ASRNemotronModel != "" {
-		cfg.Nemotron = &asr.NemotronConfig{
-			ModelDir: a.cfg.ASRNemotronModel,
-			UseGPU:   true,
-		}
+		Sidecar: &asr.SidecarConfig{
+			BinPath:  a.cfg.ASRSidecarBin,
+			ShmName:  fmt.Sprintf("/switchframe-asr-%d", os.Getpid()),
+			ModelDir: a.cfg.ASRSidecarModelDir,
+			Device:   0,
+		},
 	}
 
 	engine, err := asr.NewEngine(cfg)

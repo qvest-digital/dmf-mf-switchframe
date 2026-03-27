@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// mockBackend implements Backend for testing Engine dispatch without real whisper.
+// mockBackend implements Backend for testing Engine dispatch without real backends.
 type mockBackend struct {
 	name        string
 	started     bool
@@ -105,65 +105,65 @@ func (m *mockBackend) SetConfig(raw json.RawMessage) error {
 // --- Tests ---
 
 func TestEngine_ActiveBackend(t *testing.T) {
-	wb := newMockBackend("whisper")
-	nb := newMockBackend("nemotron")
+	a := newMockBackend("alpha")
+	b := newMockBackend("beta")
 
 	e := newEngineWithBackends(map[string]Backend{
-		"whisper":  wb,
-		"nemotron": nb,
-	}, "whisper")
+		"alpha": a,
+		"beta":  b,
+	}, "alpha")
 
-	if got := e.ActiveBackend(); got != "whisper" {
-		t.Fatalf("expected active backend 'whisper', got %q", got)
+	if got := e.ActiveBackend(); got != "alpha" {
+		t.Fatalf("expected active backend 'alpha', got %q", got)
 	}
 }
 
 func TestEngine_SwitchBackend(t *testing.T) {
-	wb := newMockBackend("whisper")
-	nb := newMockBackend("nemotron")
+	a := newMockBackend("alpha")
+	b := newMockBackend("beta")
 
 	e := newEngineWithBackends(map[string]Backend{
-		"whisper":  wb,
-		"nemotron": nb,
-	}, "whisper")
+		"alpha": a,
+		"beta":  b,
+	}, "alpha")
 	defer e.Close()
 
-	// whisper should be started.
-	wb.mu.Lock()
-	if !wb.started {
-		t.Fatal("expected whisper to be started")
+	// alpha should be started.
+	a.mu.Lock()
+	if !a.started {
+		t.Fatal("expected alpha to be started")
 	}
-	wb.mu.Unlock()
+	a.mu.Unlock()
 
-	// Switch to nemotron.
-	if err := e.SwitchBackend("nemotron"); err != nil {
+	// Switch to beta.
+	if err := e.SwitchBackend("beta"); err != nil {
 		t.Fatalf("SwitchBackend failed: %v", err)
 	}
 
-	// whisper should be stopped, nemotron started.
-	wb.mu.Lock()
-	if !wb.stopped {
-		t.Fatal("expected whisper to be stopped after switch")
+	// alpha should be stopped, beta started.
+	a.mu.Lock()
+	if !a.stopped {
+		t.Fatal("expected alpha to be stopped after switch")
 	}
-	wb.mu.Unlock()
+	a.mu.Unlock()
 
-	nb.mu.Lock()
-	if !nb.started {
-		t.Fatal("expected nemotron to be started after switch")
+	b.mu.Lock()
+	if !b.started {
+		t.Fatal("expected beta to be started after switch")
 	}
-	nb.mu.Unlock()
+	b.mu.Unlock()
 
-	if got := e.ActiveBackend(); got != "nemotron" {
-		t.Fatalf("expected active backend 'nemotron', got %q", got)
+	if got := e.ActiveBackend(); got != "beta" {
+		t.Fatalf("expected active backend 'beta', got %q", got)
 	}
 }
 
 func TestEngine_SwitchBackendUnknown(t *testing.T) {
-	wb := newMockBackend("whisper")
+	a := newMockBackend("alpha")
 
 	e := newEngineWithBackends(map[string]Backend{
-		"whisper": wb,
-	}, "whisper")
+		"alpha": a,
+	}, "alpha")
 	defer e.Close()
 
 	err := e.SwitchBackend("nonexistent")
@@ -173,109 +173,109 @@ func TestEngine_SwitchBackendUnknown(t *testing.T) {
 }
 
 func TestEngine_IngestAudioDispatches(t *testing.T) {
-	wb := newMockBackend("whisper")
-	nb := newMockBackend("nemotron")
+	a := newMockBackend("alpha")
+	b := newMockBackend("beta")
 
 	e := newEngineWithBackends(map[string]Backend{
-		"whisper":  wb,
-		"nemotron": nb,
-	}, "whisper")
+		"alpha": a,
+		"beta":  b,
+	}, "alpha")
 	defer e.Close()
 
 	pcm := make([]float32, 1024)
 	e.IngestAudio(pcm, 0, 48000, 2)
 	e.IngestAudio(pcm, 90000, 48000, 2)
 
-	if got := wb.ingestCount.Load(); got != 2 {
-		t.Fatalf("expected 2 ingest calls to whisper, got %d", got)
+	if got := a.ingestCount.Load(); got != 2 {
+		t.Fatalf("expected 2 ingest calls to alpha, got %d", got)
 	}
-	if got := nb.ingestCount.Load(); got != 0 {
-		t.Fatalf("expected 0 ingest calls to nemotron, got %d", got)
+	if got := b.ingestCount.Load(); got != 0 {
+		t.Fatalf("expected 0 ingest calls to beta, got %d", got)
 	}
 
 	// Switch and ingest again.
-	if err := e.SwitchBackend("nemotron"); err != nil {
+	if err := e.SwitchBackend("beta"); err != nil {
 		t.Fatalf("SwitchBackend failed: %v", err)
 	}
 
 	e.IngestAudio(pcm, 180000, 48000, 2)
 
-	if got := wb.ingestCount.Load(); got != 2 {
-		t.Fatalf("expected whisper still at 2, got %d", got)
+	if got := a.ingestCount.Load(); got != 2 {
+		t.Fatalf("expected alpha still at 2, got %d", got)
 	}
-	if got := nb.ingestCount.Load(); got != 1 {
-		t.Fatalf("expected 1 ingest call to nemotron, got %d", got)
+	if got := b.ingestCount.Load(); got != 1 {
+		t.Fatalf("expected 1 ingest call to beta, got %d", got)
 	}
 }
 
 func TestEngine_ResetDispatches(t *testing.T) {
-	wb := newMockBackend("whisper")
+	a := newMockBackend("alpha")
 
 	e := newEngineWithBackends(map[string]Backend{
-		"whisper": wb,
-	}, "whisper")
+		"alpha": a,
+	}, "alpha")
 	defer e.Close()
 
 	e.Reset()
 
-	wb.mu.Lock()
-	if !wb.resetCalled {
+	a.mu.Lock()
+	if !a.resetCalled {
 		t.Fatal("expected Reset to be forwarded to active backend")
 	}
-	wb.mu.Unlock()
+	a.mu.Unlock()
 }
 
 func TestEngine_CloseAll(t *testing.T) {
-	wb := newMockBackend("whisper")
-	nb := newMockBackend("nemotron")
+	a := newMockBackend("alpha")
+	b := newMockBackend("beta")
 
 	e := newEngineWithBackends(map[string]Backend{
-		"whisper":  wb,
-		"nemotron": nb,
-	}, "whisper")
+		"alpha": a,
+		"beta":  b,
+	}, "alpha")
 
 	e.Close()
 
-	wb.mu.Lock()
-	if !wb.closedFlag {
-		t.Fatal("expected whisper to be closed")
+	a.mu.Lock()
+	if !a.closedFlag {
+		t.Fatal("expected alpha to be closed")
 	}
-	wb.mu.Unlock()
+	a.mu.Unlock()
 
-	nb.mu.Lock()
-	if !nb.closedFlag {
-		t.Fatal("expected nemotron to be closed")
+	b.mu.Lock()
+	if !b.closedFlag {
+		t.Fatal("expected beta to be closed")
 	}
-	nb.mu.Unlock()
+	b.mu.Unlock()
 
 	// Idempotent.
 	e.Close()
 }
 
 func TestEngine_AvailableBackends(t *testing.T) {
-	wb := newMockBackend("whisper")
-	nb := newMockBackend("nemotron")
+	a := newMockBackend("alpha")
+	b := newMockBackend("beta")
 
 	e := newEngineWithBackends(map[string]Backend{
-		"whisper":  wb,
-		"nemotron": nb,
-	}, "whisper")
+		"alpha": a,
+		"beta":  b,
+	}, "alpha")
 	defer e.Close()
 
 	got := e.AvailableBackends()
 	sort.Strings(got)
-	if len(got) != 2 || got[0] != "nemotron" || got[1] != "whisper" {
-		t.Fatalf("expected [nemotron whisper], got %v", got)
+	if len(got) != 2 || got[0] != "alpha" || got[1] != "beta" {
+		t.Fatalf("expected [alpha beta], got %v", got)
 	}
 }
 
 func TestEngine_ModelsDelegate(t *testing.T) {
-	wb := newMockBackend("whisper")
-	wb.models = []string{"base", "medium", "large"}
+	a := newMockBackend("alpha")
+	a.models = []string{"base", "medium", "large"}
 
 	e := newEngineWithBackends(map[string]Backend{
-		"whisper": wb,
-	}, "whisper")
+		"alpha": a,
+	}, "alpha")
 	defer e.Close()
 
 	models := e.Models()
@@ -288,11 +288,11 @@ func TestEngine_ModelsDelegate(t *testing.T) {
 }
 
 func TestEngine_SetModelDelegate(t *testing.T) {
-	wb := newMockBackend("whisper")
+	a := newMockBackend("alpha")
 
 	e := newEngineWithBackends(map[string]Backend{
-		"whisper": wb,
-	}, "whisper")
+		"alpha": a,
+	}, "alpha")
 	defer e.Close()
 
 	if err := e.SetModel("medium"); err != nil {
@@ -305,11 +305,11 @@ func TestEngine_SetModelDelegate(t *testing.T) {
 }
 
 func TestEngine_BackendConfigDelegate(t *testing.T) {
-	wb := newMockBackend("whisper")
+	a := newMockBackend("alpha")
 
 	e := newEngineWithBackends(map[string]Backend{
-		"whisper": wb,
-	}, "whisper")
+		"alpha": a,
+	}, "alpha")
 	defer e.Close()
 
 	raw := e.BackendConfig()
@@ -329,11 +329,11 @@ func TestEngine_BackendConfigDelegate(t *testing.T) {
 }
 
 func TestEngine_OnTranscriptWired(t *testing.T) {
-	wb := newMockBackend("whisper")
+	a := newMockBackend("alpha")
 
 	e := newEngineWithBackends(map[string]Backend{
-		"whisper": wb,
-	}, "whisper")
+		"alpha": a,
+	}, "alpha")
 	defer e.Close()
 
 	var mu sync.Mutex
@@ -348,9 +348,9 @@ func TestEngine_OnTranscriptWired(t *testing.T) {
 	})
 
 	// Simulate the backend calling the transcript callback.
-	wb.mu.Lock()
-	cb := wb.onTranscript
-	wb.mu.Unlock()
+	a.mu.Lock()
+	cb := a.onTranscript
+	a.mu.Unlock()
 
 	if cb == nil {
 		t.Fatal("expected backend to have onTranscript set after Engine.OnTranscript")
@@ -377,13 +377,13 @@ func TestEngine_OnTranscriptWired(t *testing.T) {
 }
 
 func TestEngine_OnTranscriptSurvivesSwitchBackend(t *testing.T) {
-	wb := newMockBackend("whisper")
-	nb := newMockBackend("nemotron")
+	a := newMockBackend("alpha")
+	b := newMockBackend("beta")
 
 	e := newEngineWithBackends(map[string]Backend{
-		"whisper":  wb,
-		"nemotron": nb,
-	}, "whisper")
+		"alpha": a,
+		"beta":  b,
+	}, "alpha")
 	defer e.Close()
 
 	var mu sync.Mutex
@@ -397,17 +397,17 @@ func TestEngine_OnTranscriptSurvivesSwitchBackend(t *testing.T) {
 		mu.Unlock()
 	})
 
-	// Switch to nemotron — callback should survive.
-	if err := e.SwitchBackend("nemotron"); err != nil {
+	// Switch to beta — callback should survive.
+	if err := e.SwitchBackend("beta"); err != nil {
 		t.Fatalf("SwitchBackend failed: %v", err)
 	}
 
-	nb.mu.Lock()
-	cb := nb.onTranscript
-	nb.mu.Unlock()
+	b.mu.Lock()
+	cb := b.onTranscript
+	b.mu.Unlock()
 
 	if cb == nil {
-		t.Fatal("expected nemotron to have onTranscript after switch")
+		t.Fatal("expected beta to have onTranscript after switch")
 	}
 
 	cb([]TranscriptWord{{Text: "bonjour"}}, true)
@@ -421,11 +421,11 @@ func TestEngine_OnTranscriptSurvivesSwitchBackend(t *testing.T) {
 }
 
 func TestEngine_IngestAfterClose(t *testing.T) {
-	wb := newMockBackend("whisper")
+	a := newMockBackend("alpha")
 
 	e := newEngineWithBackends(map[string]Backend{
-		"whisper": wb,
-	}, "whisper")
+		"alpha": a,
+	}, "alpha")
 
 	e.Close()
 
@@ -433,39 +433,39 @@ func TestEngine_IngestAfterClose(t *testing.T) {
 	pcm := make([]float32, 1024)
 	e.IngestAudio(pcm, 0, 48000, 2)
 
-	if got := wb.ingestCount.Load(); got != 0 {
+	if got := a.ingestCount.Load(); got != 0 {
 		t.Fatalf("expected 0 ingests after close, got %d", got)
 	}
 }
 
 func TestEngine_NewEngineWithBackendsDefault(t *testing.T) {
-	wb := newMockBackend("whisper")
-	nb := newMockBackend("nemotron")
+	a := newMockBackend("alpha")
+	b := newMockBackend("beta")
 
-	// Default "nemotron" should be the active backend.
+	// Default "beta" should be the active backend.
 	e := newEngineWithBackends(map[string]Backend{
-		"whisper":  wb,
-		"nemotron": nb,
-	}, "nemotron")
+		"alpha": a,
+		"beta":  b,
+	}, "beta")
 	defer e.Close()
 
-	if got := e.ActiveBackend(); got != "nemotron" {
-		t.Fatalf("expected active backend 'nemotron', got %q", got)
+	if got := e.ActiveBackend(); got != "beta" {
+		t.Fatalf("expected active backend 'beta', got %q", got)
 	}
 }
 
 func TestEngine_NewEngineWithBackendsFallsBackIfDefaultMissing(t *testing.T) {
-	wb := newMockBackend("whisper")
+	a := newMockBackend("alpha")
 
-	// Request "nemotron" as default, but only whisper is available.
+	// Request "beta" as default, but only alpha is available.
 	e := newEngineWithBackends(map[string]Backend{
-		"whisper": wb,
-	}, "nemotron")
+		"alpha": a,
+	}, "beta")
 	defer e.Close()
 
 	// Should fall back to the only available backend.
-	if got := e.ActiveBackend(); got != "whisper" {
-		t.Fatalf("expected fallback to 'whisper', got %q", got)
+	if got := e.ActiveBackend(); got != "alpha" {
+		t.Fatalf("expected fallback to 'alpha', got %q", got)
 	}
 }
 
@@ -477,39 +477,39 @@ func TestEngine_NewEngineNoBackendsPanics(t *testing.T) {
 		}
 	}()
 
-	newEngineWithBackends(map[string]Backend{}, "whisper")
+	newEngineWithBackends(map[string]Backend{}, "alpha")
 }
 
 func TestEngine_SwitchBackendAfterClose(t *testing.T) {
-	wb := newMockBackend("whisper")
-	nb := newMockBackend("nemotron")
+	a := newMockBackend("alpha")
+	b := newMockBackend("beta")
 
 	e := newEngineWithBackends(map[string]Backend{
-		"whisper":  wb,
-		"nemotron": nb,
-	}, "whisper")
+		"alpha": a,
+		"beta":  b,
+	}, "alpha")
 
 	e.Close()
 
-	err := e.SwitchBackend("nemotron")
+	err := e.SwitchBackend("beta")
 	if err == nil {
 		t.Fatal("expected error switching backend after close")
 	}
 }
 
 func TestEngine_ModelNameDelegate(t *testing.T) {
-	wb := newMockBackend("whisper")
-	wb.mu.Lock()
-	wb.modelName = "ggml-base.bin"
-	wb.mu.Unlock()
+	a := newMockBackend("alpha")
+	a.mu.Lock()
+	a.modelName = "parakeet-tdt-1.1b"
+	a.mu.Unlock()
 
 	e := newEngineWithBackends(map[string]Backend{
-		"whisper": wb,
-	}, "whisper")
+		"alpha": a,
+	}, "alpha")
 	defer e.Close()
 
-	if got := e.ModelName(); got != "ggml-base.bin" {
-		t.Fatalf("expected 'ggml-base.bin', got %q", got)
+	if got := e.ModelName(); got != "parakeet-tdt-1.1b" {
+		t.Fatalf("expected 'parakeet-tdt-1.1b', got %q", got)
 	}
 }
 
@@ -523,13 +523,13 @@ func (m *errMockBackend) Start(onTranscript func([]TranscriptWord, bool)) error 
 }
 
 func TestEngine_SwitchBackendStartError(t *testing.T) {
-	wb := newMockBackend("whisper")
+	a := newMockBackend("alpha")
 	eb := &errMockBackend{mockBackend: mockBackend{name: "failing"}}
 
 	e := newEngineWithBackends(map[string]Backend{
-		"whisper": wb,
+		"alpha":   a,
 		"failing": eb,
-	}, "whisper")
+	}, "alpha")
 	defer e.Close()
 
 	err := e.SwitchBackend("failing")
@@ -537,8 +537,69 @@ func TestEngine_SwitchBackendStartError(t *testing.T) {
 		t.Fatal("expected error from SwitchBackend when Start fails")
 	}
 
-	// Active backend should still be whisper after failed switch.
-	if got := e.ActiveBackend(); got != "whisper" {
-		t.Fatalf("expected active backend still 'whisper' after failed switch, got %q", got)
+	// Active backend should still be alpha after failed switch.
+	if got := e.ActiveBackend(); got != "alpha" {
+		t.Fatalf("expected active backend still 'alpha' after failed switch, got %q", got)
+	}
+}
+
+func TestEngine_SwitchToSidecar(t *testing.T) {
+	a := newMockBackend("alpha")
+	sb := newMockBackend("sidecar")
+
+	e := newEngineWithBackends(map[string]Backend{
+		"alpha":   a,
+		"sidecar": sb,
+	}, "alpha")
+	defer e.Close()
+
+	if err := e.SwitchBackend("sidecar"); err != nil {
+		t.Fatalf("SwitchBackend: %v", err)
+	}
+	if e.ActiveBackend() != "sidecar" {
+		t.Fatalf("active = %q, want sidecar", e.ActiveBackend())
+	}
+
+	// Verify alpha was stopped and sidecar was started.
+	a.mu.Lock()
+	if !a.stopped {
+		t.Fatal("expected alpha to be stopped after switch")
+	}
+	a.mu.Unlock()
+
+	sb.mu.Lock()
+	if !sb.started {
+		t.Fatal("expected sidecar to be started after switch")
+	}
+	sb.mu.Unlock()
+}
+
+func TestEngine_SidecarInAvailableBackends(t *testing.T) {
+	a := newMockBackend("alpha")
+	sb := newMockBackend("sidecar")
+
+	e := newEngineWithBackends(map[string]Backend{
+		"alpha":   a,
+		"sidecar": sb,
+	}, "alpha")
+	defer e.Close()
+
+	got := e.AvailableBackends()
+	sort.Strings(got)
+	if len(got) != 2 || got[0] != "alpha" || got[1] != "sidecar" {
+		t.Fatalf("expected [alpha sidecar], got %v", got)
+	}
+}
+
+func TestEngine_SidecarDefaultBackend(t *testing.T) {
+	sb := newMockBackend("sidecar")
+
+	e := newEngineWithBackends(map[string]Backend{
+		"sidecar": sb,
+	}, "sidecar")
+	defer e.Close()
+
+	if got := e.ActiveBackend(); got != "sidecar" {
+		t.Fatalf("expected active backend 'sidecar', got %q", got)
 	}
 }

@@ -10,7 +10,7 @@ const (
 	ModePassThrough
 	// ModeAuthor enables live caption authoring from keyboard input.
 	ModeAuthor
-	// ModeAuto enables AI-powered captioning (e.g., Whisper ASR).
+	// ModeAuto enables AI-powered captioning via the ASR sidecar.
 	ModeAuto
 )
 

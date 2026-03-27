@@ -3,6 +3,7 @@ bin/
 dist/
 *.o
 server/switchframe
+server/switchframe-asr
 node_modules/
 
 # OS files

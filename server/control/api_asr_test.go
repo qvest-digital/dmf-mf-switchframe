@@ -113,9 +113,9 @@ func TestASRStatusEndpoint_Available(t *testing.T) {
 	mgr := &mockASRManager{
 		available:         true,
 		active:            true,
-		backend:           "whisper",
-		availableBackends: []string{"whisper", "nemotron"},
-		modelName:         "large-v3-turbo",
+		backend:           "sidecar",
+		availableBackends: []string{"sidecar"},
+		modelName:         "parakeet-tdt-1.1b",
 		confidenceFilter:  "medium",
 		speakerDetection:  "normal",
 	}
@@ -130,9 +130,9 @@ func TestASRStatusEndpoint_Available(t *testing.T) {
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&state))
 	require.True(t, state.Available)
 	require.True(t, state.Active)
-	require.Equal(t, "large-v3-turbo", state.ModelName)
-	require.Equal(t, "whisper", state.Backend)
-	require.Equal(t, []string{"whisper", "nemotron"}, state.AvailableBackends)
+	require.Equal(t, "parakeet-tdt-1.1b", state.ModelName)
+	require.Equal(t, "sidecar", state.Backend)
+	require.Equal(t, []string{"sidecar"}, state.AvailableBackends)
 	require.Equal(t, "medium", state.ConfidenceFilter)
 	require.Equal(t, "normal", state.SpeakerDetection)
 }
@@ -166,9 +166,9 @@ func TestASRConfigEndpoint_SetActive(t *testing.T) {
 	mgr := &mockASRManager{
 		available:         true,
 		active:            false,
-		backend:           "whisper",
-		availableBackends: []string{"whisper"},
-		modelName:         "large-v3-turbo",
+		backend:           "sidecar",
+		availableBackends: []string{"sidecar"},
+		modelName:         "parakeet-tdt-1.1b",
 	}
 	api := setupASRAPI(t, mgr)
 
@@ -189,13 +189,13 @@ func TestASRConfigEndpoint_SwitchBackend(t *testing.T) {
 	mgr := &mockASRManager{
 		available:         true,
 		active:            true,
-		backend:           "whisper",
-		availableBackends: []string{"whisper", "nemotron"},
-		modelName:         "large-v3-turbo",
+		backend:           "sidecar",
+		availableBackends: []string{"sidecar", "other"},
+		modelName:         "parakeet-tdt-1.1b",
 	}
 	api := setupASRAPI(t, mgr)
 
-	body := `{"backend":"nemotron"}`
+	body := `{"backend":"other"}`
 	req := httptest.NewRequest("PUT", "/api/asr/config", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -204,14 +204,14 @@ func TestASRConfigEndpoint_SwitchBackend(t *testing.T) {
 
 	var state internal.ASRState
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&state))
-	require.Equal(t, "nemotron", state.Backend)
-	require.Equal(t, "nemotron", mgr.backend)
+	require.Equal(t, "other", state.Backend)
+	require.Equal(t, "other", mgr.backend)
 }
 
 func TestASRConfigEndpoint_SwitchBackendError(t *testing.T) {
 	mgr := &mockASRManager{
 		available:        true,
-		backend:          "whisper",
+		backend:          "sidecar",
 		switchBackendErr: errTest("unknown backend"),
 	}
 	api := setupASRAPI(t, mgr)
@@ -254,9 +254,9 @@ func TestASRConfigEndpoint_PacerSettings(t *testing.T) {
 	mgr := &mockASRManager{
 		available:         true,
 		active:            true,
-		backend:           "whisper",
-		availableBackends: []string{"whisper"},
-		modelName:         "large-v3-turbo",
+		backend:           "sidecar",
+		availableBackends: []string{"sidecar"},
+		modelName:         "parakeet-tdt-1.1b",
 		confidenceFilter:  "medium",
 		speakerDetection:  "normal",
 	}

@@ -3,10 +3,9 @@ package asr
 import "encoding/json"
 
 // Backend is the interface that all ASR backends must implement.
-// Each backend owns its entire inference loop — Whisper uses batch
-// grow-and-deduplicate, Nemotron uses continuous chunk streaming.
+// Each backend owns its entire inference loop.
 type Backend interface {
-	// Name returns the backend identifier (e.g., "whisper", "nemotron").
+	// Name returns the backend identifier (e.g., "sidecar").
 	Name() string
 
 	// Start begins the inference loop. The backend calls onTranscript
