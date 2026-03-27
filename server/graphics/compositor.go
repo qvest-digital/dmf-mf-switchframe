@@ -13,13 +13,14 @@ import (
 
 // Errors returned by Compositor methods.
 var (
-	ErrAlreadyActive    = errors.New("graphics: overlay already active")
-	ErrNotActive        = errors.New("graphics: overlay not active")
-	ErrNoOverlay        = errors.New("graphics: no overlay frame uploaded")
-	ErrFadeActive       = errors.New("graphics: fade transition in progress")
-	ErrCompositorClosed = errors.New("compositor: closed")
-	ErrLayerNotFound    = errors.New("graphics: layer not found")
-	ErrTooManyLayers    = errors.New("graphics: maximum layers reached")
+	ErrAlreadyActive       = errors.New("graphics: overlay already active")
+	ErrNotActive           = errors.New("graphics: overlay not active")
+	ErrNoOverlay           = errors.New("graphics: no overlay frame uploaded")
+	ErrFadeActive          = errors.New("graphics: fade transition in progress")
+	ErrCompositorClosed    = errors.New("compositor: closed")
+	ErrLayerNotFound       = errors.New("graphics: layer not found")
+	ErrTooManyLayers       = errors.New("graphics: maximum layers reached")
+	ErrSequenceProcessing  = errors.New("graphics: sequence still processing")
 )
 
 // DefaultMaxLayers is the maximum number of graphics layers.
@@ -377,6 +378,10 @@ func (c *Compositor) On(id int) error {
 		c.mu.Unlock()
 		return c.sequenceEngine.CutOn(id)
 	}
+	if layer.seqProcessing {
+		c.mu.Unlock()
+		return ErrSequenceProcessing
+	}
 
 	if layer.overlay == nil {
 		c.mu.Unlock()
@@ -497,6 +502,10 @@ func (c *Compositor) AutoOn(id int, duration time.Duration) error {
 	if layer.seq != nil && c.sequenceEngine != nil {
 		c.mu.Unlock()
 		return c.sequenceEngine.AutoOn(id)
+	}
+	if layer.seqProcessing {
+		c.mu.Unlock()
+		return ErrSequenceProcessing
 	}
 
 	if layer.overlay == nil {

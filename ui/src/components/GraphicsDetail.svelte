@@ -185,6 +185,7 @@
 	const tpl = $derived(builtinTemplates[templateId]);
 	const busy = $derived(
 		!!layer.animationMode ||
+		!!layer.sequenceProcessing ||
 		(layer.active && layer.fadePosition != null && layer.fadePosition > 0 && layer.fadePosition < 1)
 	);
 

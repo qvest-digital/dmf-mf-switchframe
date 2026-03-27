@@ -74,6 +74,7 @@ var errorMappings = []errorMapping{
 	{graphics.ErrTooManyLayers, http.StatusConflict},
 	{graphics.ErrTextAnimActive, http.StatusConflict},
 	{graphics.ErrTickerActive, http.StatusConflict},
+	{graphics.ErrSequenceProcessing, http.StatusConflict},
 	{graphics.ErrSequenceNoLoopFrames, http.StatusBadRequest},
 	{graphics.ErrSequenceTooLarge, http.StatusBadRequest},
 	{graphics.ErrSequenceEmpty, http.StatusBadRequest},
