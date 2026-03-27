@@ -271,7 +271,11 @@ func (r *Renderer) Render(pose *tracking.CameraPose) error {
 	// Get IAS traversable handle for ray tracing.
 	var iasHandle unsafe.Pointer
 	if r.ias != nil {
-		iasHandle = unsafe.Pointer(r.ias.TraversableHandle())
+		th := r.ias.TraversableHandle()
+		iasHandle = unsafe.Pointer(th)
+		slog.Info("AR render: IAS handle", "handle", fmt.Sprintf("0x%x", th), "gasList", len(r.gasList))
+	} else {
+		slog.Info("AR render: no IAS (empty scene or rebuild failed)")
 	}
 
 	params := gpu.OptixLaunchParams{
