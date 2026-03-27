@@ -386,11 +386,15 @@ func (r *Renderer) computeCameraVectors(pose *tracking.CameraPose) (
 		float32(view[9] * tanHalfFov),
 	}
 
-	// Camera forward vector (negative of view Z axis).
+	// Camera forward vector. The view matrix Z axis points backward
+	// (OpenGL convention: camera looks along -Z). For ray tracing,
+	// we need the look direction (into the scene), which is +Z in
+	// our world convention. Use the view Z axis directly (not negated)
+	// since the view matrix already encodes the camera orientation.
 	w = [3]float32{
-		float32(-view[2]),
-		float32(-view[6]),
-		float32(-view[10]),
+		float32(view[2]),
+		float32(view[6]),
+		float32(view[10]),
 	}
 
 	return pos, u, v, w
