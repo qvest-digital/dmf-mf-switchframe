@@ -99,6 +99,44 @@ typedef struct {
     int                hw_decode_active; // 1 if NVDEC is producing CUDA frames
 } srtdec_t;
 
+// srtdec_reopen_video_software reopens the video decoder in software-only mode
+// after NVDEC hwaccel fails. Preserves the stream index and codec parameters.
+// Returns 0 on success, negative on error.
+static int srtdec_reopen_video_software(srtdec_t *h) {
+    if (h->video_stream_idx < 0) return -1;
+
+    AVStream *vstream = h->fmt_ctx->streams[h->video_stream_idx];
+    const AVCodec *vdec = avcodec_find_decoder(vstream->codecpar->codec_id);
+    if (!vdec) return -2;
+
+    // Close the failed hwaccel decoder.
+    if (h->video_dec_ctx) {
+        avcodec_free_context(&h->video_dec_ctx);
+        h->video_dec_ctx = NULL;
+    }
+
+    // Reopen without hw_device_ctx.
+    h->video_dec_ctx = avcodec_alloc_context3(vdec);
+    if (!h->video_dec_ctx) return -3;
+
+    avcodec_parameters_to_context(h->video_dec_ctx, vstream->codecpar);
+    h->video_dec_ctx->thread_count = 2;
+    h->video_dec_ctx->thread_type = FF_THREAD_SLICE;
+    h->video_dec_ctx->error_concealment = FF_EC_GUESS_MVS | FF_EC_DEBLOCK;
+    // No hw_device_ctx, no get_format — pure software decode.
+    h->hw_device_ctx = NULL;
+    h->hw_decode_active = 0;
+
+    int ret = avcodec_open2(h->video_dec_ctx, vdec, NULL);
+    if (ret < 0) {
+        avcodec_free_context(&h->video_dec_ctx);
+        h->video_dec_ctx = NULL;
+        h->video_stream_idx = -1;
+        return ret;
+    }
+    return 0;
+}
+
 // srtdec_is_nvdec_supported returns 1 if the codec can be decoded by NVDEC.
 static int srtdec_is_nvdec_supported(enum AVCodecID codec_id) {
     switch (codec_id) {
@@ -641,11 +679,34 @@ static int srtdec_run(srtdec_t *h) {
                     srtdec_log(h->decoder_id, "avcodec_send_packet error #%d: %d (%s)", video_send_errors+1, ret, errbuf);
                 }
                 video_send_errors++;
+
+                // If NVDEC fails persistently (10+ consecutive errors with no
+                // successful frames), fall back to software decode. This handles
+                // HEVC profiles/levels that NVDEC rejects (e.g., Main 10 on
+                // some FFmpeg builds that don't negotiate hwaccel properly).
+                if (video_send_errors >= 10 && video_frames_decoded == 0 && h->hw_device_ctx) {
+                    srtdec_log(h->decoder_id, "NVDEC failed persistently (%d errors, 0 frames), falling back to software decode",
+                        video_send_errors);
+                    if (srtdec_reopen_video_software(h) == 0) {
+                        srtdec_log(h->decoder_id, "software decode fallback OK, pix_fmt=%d", h->video_dec_ctx->pix_fmt);
+                        video_send_errors = 0;
+                        // Retry this packet with the new decoder.
+                        ret = avcodec_send_packet(h->video_dec_ctx, h->pkt);
+                        if (ret >= 0) {
+                            video_packets_sent++;
+                            goto receive_frames;
+                        }
+                    } else {
+                        srtdec_log(h->decoder_id, "software decode fallback FAILED, disabling video");
+                    }
+                }
+
                 av_packet_unref(h->pkt);
                 continue; // Skip bad packets.
             }
             video_packets_sent++;
 
+            receive_frames:
             while (!h->interrupted) {
                 ret = avcodec_receive_frame(h->video_dec_ctx, h->dec_frame);
                 if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
