@@ -72,7 +72,11 @@ func (a *App) initASR() error {
 	if sb := engine.SidecarBackend(); sb != nil {
 		sb.OnStatusUpdate(func() {
 			a.updateASRStateCache()
-			a.broadcastState(nil)
+			// Only broadcast if API is initialized — the first status
+			// arrives during initASR before the API is wired up.
+			if a.api != nil {
+				a.broadcastState(nil)
+			}
 		})
 	}
 
