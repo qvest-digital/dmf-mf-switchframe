@@ -141,11 +141,15 @@ func (a *App) updateASRStateCache() {
 	if a.asrEngine == nil {
 		return
 	}
+	backends := a.asrEngine.AvailableBackends()
+	if backends == nil {
+		backends = []string{}
+	}
 	asrState := &internal.ASRState{
 		Available:         true,
 		Active:            a.captionMgr != nil && a.captionMgr.Mode() == caption.ModeAuto,
 		Backend:           a.asrEngine.ActiveBackend(),
-		AvailableBackends: a.asrEngine.AvailableBackends(),
+		AvailableBackends: backends,
 		ModelName:         a.asrEngine.ModelName(),
 		BackendConfig:     a.asrEngine.BackendConfig(),
 	}

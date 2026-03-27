@@ -553,7 +553,7 @@ type ASRState struct {
 	Available         bool            `json:"available"`
 	Active            bool            `json:"active"`
 	Backend           string          `json:"backend"`
-	AvailableBackends []string        `json:"availableBackends"`
+	AvailableBackends []string        `json:"availableBackends,omitempty"`
 	ModelName         string          `json:"modelName,omitempty"`
 	BackendConfig     json.RawMessage `json:"backendConfig,omitempty"`
 	ConfidenceFilter  string          `json:"confidenceFilter,omitempty"`
