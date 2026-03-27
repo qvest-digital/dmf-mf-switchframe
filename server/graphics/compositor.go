@@ -59,7 +59,8 @@ type LayerState struct {
 	ImageHeight    int       `json:"imageHeight,omitempty"`
 	SequenceLoaded     bool    `json:"sequenceLoaded,omitempty"`
 	SequencePhase      string  `json:"sequencePhase,omitempty"`
-	SequenceProcessing bool    `json:"sequenceProcessing,omitempty"`
+	SequenceProcessing  bool    `json:"sequenceProcessing,omitempty"`
+	SequenceProgress    float64 `json:"sequenceProgress,omitempty"`
 	SequenceSpeed      float64 `json:"sequenceSpeed,omitempty"`
 }
 
@@ -117,8 +118,9 @@ type graphicsLayer struct {
 	ticker *tickerState
 
 	// Frame-locked animated sequence state. Set by SequenceEngine, advanced by ProcessYUV.
-	seq           *sequenceState
-	seqProcessing bool // true while background ZIP decode is in progress
+	seq                  *sequenceState
+	seqProcessing        bool    // true while background ZIP decode is in progress
+	seqProcessingProgress float64 // 0.0-1.0 progress during processing
 }
 
 // tickerState holds the pre-rendered strip and scroll state for a
@@ -1576,6 +1578,7 @@ func (c *Compositor) buildStateLocked() State {
 		}
 		if layer.seqProcessing {
 			ls.SequenceProcessing = true
+			ls.SequenceProgress = layer.seqProcessingProgress
 		}
 		if layer.seq != nil {
 			ls.SequenceLoaded = true

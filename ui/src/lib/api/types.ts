@@ -222,6 +222,7 @@ export interface GraphicsLayerState {
 	sequenceLoaded?: boolean;
 	sequencePhase?: string;        // 'idle' | 'in' | 'loop' | 'out' | 'done'
 	sequenceProcessing?: boolean;
+	sequenceProgress?: number;     // 0.0-1.0 processing progress
 	sequenceSpeed?: number;        // playback rate: 1.0 = normal, 0.5 = half, 2.0 = double
 }
 

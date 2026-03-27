@@ -515,7 +515,10 @@
 					{#if layer.sequenceProcessing}
 						<div class="seq-status processing">
 							<span class="seq-spinner"></span>
-							<span>Processing sequence...</span>
+							<span>Processing... {Math.round((layer.sequenceProgress ?? 0) * 100)}%</span>
+						</div>
+						<div class="seq-progress-bar">
+							<div class="seq-progress-fill" style="width: {(layer.sequenceProgress ?? 0) * 100}%"></div>
 						</div>
 					{:else if layer.sequenceLoaded}
 						<div class="seq-status loaded">
@@ -1500,6 +1503,20 @@
 
 	@keyframes seq-spin {
 		to { transform: rotate(360deg); }
+	}
+
+	.seq-progress-bar {
+		height: 4px;
+		background: var(--bg-tertiary);
+		border-radius: 2px;
+		overflow: hidden;
+	}
+
+	.seq-progress-fill {
+		height: 100%;
+		background: var(--accent-blue);
+		border-radius: 2px;
+		transition: width 0.3s ease-out;
 	}
 
 	.help-text {

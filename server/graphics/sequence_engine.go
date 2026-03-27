@@ -104,7 +104,28 @@ func (se *SequenceEngine) UploadAsync(layerID int, zipData []byte) error {
 // processUpload decodes the ZIP and installs the sequence on the layer.
 // Called in a background goroutine by UploadAsync.
 func (se *SequenceEngine) processUpload(layerID int, zipData []byte) {
-	seq, err := LoadSequenceZIP(zipData)
+	// Progress callback: update layer state and broadcast on each frame.
+	// Throttle to every 2% to avoid flooding the state broadcast.
+	lastBroadcast := 0.0
+	onProgress := func(progress float64) {
+		if progress-lastBroadcast < 0.02 && progress < 1.0 {
+			return
+		}
+		lastBroadcast = progress
+		se.compositor.mu.Lock()
+		layer, ok := se.compositor.layers[layerID]
+		if ok {
+			layer.seqProcessingProgress = progress
+		}
+		state := se.compositor.buildStateLocked()
+		cb := se.compositor.onStateChange
+		se.compositor.mu.Unlock()
+		if cb != nil {
+			cb(state)
+		}
+	}
+
+	seq, err := LoadSequenceZIPWithProgress(zipData, onProgress)
 
 	se.compositor.mu.Lock()
 	layer, ok := se.compositor.layers[layerID]

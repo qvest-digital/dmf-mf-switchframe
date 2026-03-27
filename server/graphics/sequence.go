@@ -181,7 +181,14 @@ func (s *sequenceState) holdFrame() []byte {
 //
 // This means a 1322-frame 1080p sequence uses ~8MB peak (one frame) + final
 // cropped storage, rather than ~11GB (all frames decoded simultaneously).
+// ProgressFunc is called during ZIP processing with a value from 0.0 to 1.0.
+type ProgressFunc func(progress float64)
+
 func LoadSequenceZIP(zipData []byte) (*sequenceState, error) {
+	return LoadSequenceZIPWithProgress(zipData, nil)
+}
+
+func LoadSequenceZIPWithProgress(zipData []byte, onProgress ProgressFunc) (*sequenceState, error) {
 	zr, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
 	if err != nil {
 		return nil, fmt.Errorf("graphics: open ZIP: %w", err)
@@ -250,6 +257,14 @@ func LoadSequenceZIP(zipData []byte) (*sequenceState, error) {
 	var refW, refH int
 	unionBBox := image.Rectangle{}
 
+	totalWork := float64(totalCount * 2) // two passes
+	done := 0
+	report := func() {
+		if onProgress != nil {
+			onProgress(float64(done) / totalWork)
+		}
+	}
+
 	for i, e := range allEntries {
 		nrgba, err := decodeZipPNG(e.file)
 		if err != nil {
@@ -271,6 +286,8 @@ func LoadSequenceZIP(zipData []byte) (*sequenceState, error) {
 			}
 		}
 		// nrgba is discarded here — only one frame in memory at a time.
+		done++
+		report()
 	}
 
 	// If all frames are fully transparent, use a minimal 2x2 region.
@@ -323,6 +340,8 @@ func LoadSequenceZIP(zipData []byte) (*sequenceState, error) {
 		if err != nil {
 			return nil, err
 		}
+		done++
+		report()
 	}
 	loopFrames := make([][]byte, loopCount)
 	for i := 0; i < loopCount; i++ {
@@ -330,6 +349,8 @@ func LoadSequenceZIP(zipData []byte) (*sequenceState, error) {
 		if err != nil {
 			return nil, err
 		}
+		done++
+		report()
 	}
 	outFrames := make([][]byte, len(outEntries))
 	for i := 0; i < len(outEntries); i++ {
@@ -337,6 +358,8 @@ func LoadSequenceZIP(zipData []byte) (*sequenceState, error) {
 		if err != nil {
 			return nil, err
 		}
+		done++
+		report()
 	}
 
 	return &sequenceState{
