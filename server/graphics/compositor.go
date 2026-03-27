@@ -177,6 +177,9 @@ type Compositor struct {
 	// layers. The buffer is reused across gen changes to eliminate
 	// per-frame allocation for tickers (~8.3MB/frame at 1080p).
 	lastSnapshotCache map[int]*snapshotCache
+
+	// Sequence engine for animated PNG sequence delegation.
+	sequenceEngine *SequenceEngine
 }
 
 // NewCompositor creates a new multi-layer graphics compositor.
@@ -364,6 +367,13 @@ func (c *Compositor) On(id int) error {
 		c.mu.Unlock()
 		return ErrLayerNotFound
 	}
+
+	// If a sequence is loaded, delegate to sequence engine (Cut On = straight to loop).
+	if layer.seq != nil && c.sequenceEngine != nil {
+		c.mu.Unlock()
+		return c.sequenceEngine.CutOn(id)
+	}
+
 	if layer.overlay == nil {
 		c.mu.Unlock()
 		return ErrNoOverlay
@@ -443,6 +453,12 @@ func (c *Compositor) Off(id int) error {
 		return ErrLayerNotFound
 	}
 
+	// If a sequence is loaded, delegate to sequence engine (Cut Off = immediate stop).
+	if layer.seq != nil && c.sequenceEngine != nil {
+		c.mu.Unlock()
+		return c.sequenceEngine.CutOff(id)
+	}
+
 	c.cancelLayerFadeLocked(layer)
 	c.cancelLayerAnimationLocked(layer)
 
@@ -472,6 +488,13 @@ func (c *Compositor) AutoOn(id int, duration time.Duration) error {
 		c.mu.Unlock()
 		return ErrLayerNotFound
 	}
+
+	// If a sequence is loaded, delegate to sequence engine (Auto On = animate in).
+	if layer.seq != nil && c.sequenceEngine != nil {
+		c.mu.Unlock()
+		return c.sequenceEngine.AutoOn(id)
+	}
+
 	if layer.overlay == nil {
 		c.mu.Unlock()
 		return ErrNoOverlay
@@ -513,6 +536,13 @@ func (c *Compositor) AutoOff(id int, duration time.Duration) error {
 		c.mu.Unlock()
 		return ErrLayerNotFound
 	}
+
+	// If a sequence is loaded, delegate to sequence engine (Auto Off = animate out).
+	if layer.seq != nil && c.sequenceEngine != nil {
+		c.mu.Unlock()
+		return c.sequenceEngine.AutoOff(id)
+	}
+
 	if !layer.active {
 		c.mu.Unlock()
 		return ErrNotActive
@@ -631,6 +661,13 @@ func (c *Compositor) SetPipelineFPS(fpsNum, fpsDen int) {
 	defer c.mu.Unlock()
 	c.pipelineFPSNum = fpsNum
 	c.pipelineFPSDen = fpsDen
+}
+
+// SetSequenceEngine sets the sequence engine for On/Off delegation.
+func (c *Compositor) SetSequenceEngine(se *SequenceEngine) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.sequenceEngine = se
 }
 
 // OnStateChange registers a callback invoked when the overlay state changes.

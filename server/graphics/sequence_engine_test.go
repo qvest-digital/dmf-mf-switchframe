@@ -4,6 +4,7 @@ import (
 	"image"
 	"image/color"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -355,4 +356,97 @@ func TestSequenceEngineReupload(t *testing.T) {
 	phase := c.layers[id].seq.phase
 	c.mu.RUnlock()
 	require.Equal(t, seqPhaseLoop, phase)
+}
+
+// --- Compositor delegation tests (On/Off/AutoOn/AutoOff → SequenceEngine) ---
+
+func TestCompositorOnDelegatesToSequence(t *testing.T) {
+	c := NewCompositor()
+	defer c.Close()
+	c.SetPipelineFPS(30000, 1001)
+
+	se := NewSequenceEngine(c)
+	defer se.Close()
+	c.SetSequenceEngine(se)
+
+	id, _ := c.AddLayer()
+	require.NoError(t, se.Upload(id, makeTestSequenceZIP(t)))
+
+	// On() should delegate to CutOn → loop phase.
+	require.NoError(t, c.On(id))
+
+	c.mu.RLock()
+	phase := c.layers[id].seq.phase
+	active := c.layers[id].active
+	c.mu.RUnlock()
+
+	require.Equal(t, seqPhaseLoop, phase, "On() should delegate to CutOn → loop phase")
+	require.True(t, active, "On() should activate the layer")
+}
+
+func TestCompositorOffDelegatesToSequence(t *testing.T) {
+	c := NewCompositor()
+	defer c.Close()
+	c.SetPipelineFPS(30000, 1001)
+
+	se := NewSequenceEngine(c)
+	defer se.Close()
+	c.SetSequenceEngine(se)
+
+	id, _ := c.AddLayer()
+	require.NoError(t, se.Upload(id, makeTestSequenceZIP(t)))
+	require.NoError(t, se.CutOn(id)) // activate first
+
+	require.NoError(t, c.Off(id))
+
+	c.mu.RLock()
+	phase := c.layers[id].seq.phase
+	active := c.layers[id].active
+	c.mu.RUnlock()
+
+	require.Equal(t, seqPhaseIdle, phase, "Off() should delegate to CutOff → idle phase")
+	require.False(t, active, "Off() should deactivate the layer")
+}
+
+func TestCompositorAutoOnDelegatesToSequence(t *testing.T) {
+	c := NewCompositor()
+	defer c.Close()
+	c.SetPipelineFPS(30000, 1001)
+
+	se := NewSequenceEngine(c)
+	defer se.Close()
+	c.SetSequenceEngine(se)
+
+	id, _ := c.AddLayer()
+	require.NoError(t, se.Upload(id, makeTestSequenceZIP(t)))
+
+	require.NoError(t, c.AutoOn(id, 500*time.Millisecond))
+
+	c.mu.RLock()
+	phase := c.layers[id].seq.phase
+	c.mu.RUnlock()
+
+	require.Equal(t, seqPhaseIn, phase, "AutoOn() should delegate to SequenceEngine.AutoOn → in phase")
+}
+
+func TestCompositorAutoOffDelegatesToSequence(t *testing.T) {
+	c := NewCompositor()
+	defer c.Close()
+	c.SetPipelineFPS(30000, 1001)
+
+	se := NewSequenceEngine(c)
+	defer se.Close()
+	c.SetSequenceEngine(se)
+
+	id, _ := c.AddLayer()
+	require.NoError(t, se.Upload(id, makeTestSequenceZIP(t)))
+	require.NoError(t, se.CutOn(id)) // activate
+
+	require.NoError(t, c.AutoOff(id, 500*time.Millisecond))
+
+	c.mu.RLock()
+	phase := c.layers[id].seq.phase
+	c.mu.RUnlock()
+
+	require.Equal(t, seqPhaseOut, phase, "AutoOff() should delegate to SequenceEngine.AutoOff → out phase")
 }
