@@ -9,5 +9,7 @@ type asrBackend interface {
 	Models() []string
 	ModelName() string
 	SetModel(name string) error
+	Config() map[string]interface{}
+	SetConfig(cfg map[string]interface{})
 	Close()
 }

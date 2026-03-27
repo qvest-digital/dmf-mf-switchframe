@@ -27,6 +27,8 @@ type whisperASRBackend struct {
 	modelName string
 	models    []string
 	useGPU    bool
+	language  string // recognition language (default "en")
+	translate bool   // translate non-English to English (default true)
 }
 
 func newWhisperASRBackend(modelsDir string, useGPU bool) (*whisperASRBackend, error) {
@@ -42,6 +44,8 @@ func newWhisperASRBackend(modelsDir string, useGPU bool) (*whisperASRBackend, er
 		modelsDir: modelsDir,
 		models:    models,
 		useGPU:    useGPU,
+		language:  "en",
+		translate: true,
 	}
 
 	defaultModel := defaultWhisperModel(models)
@@ -88,10 +92,11 @@ func (b *whisperASRBackend) Transcribe(audio []float32) []asr.TranscriptWord {
 
 	params := C.whisper_full_default_params(C.WHISPER_SAMPLING_GREEDY)
 
-	lang := C.CString("en")
+	lang := C.CString(b.language)
 	defer C.free(unsafe.Pointer(lang))
 
 	params.language = lang
+	params.translate = C.bool(b.translate)
 	params.n_threads = 4
 	params.token_timestamps = C.bool(true)
 	params.print_progress = C.bool(false)
@@ -155,6 +160,22 @@ func (b *whisperASRBackend) SetModel(name string) error {
 		return fmt.Errorf("whisper: model %q not found", name)
 	}
 	return b.loadModel(name)
+}
+
+func (b *whisperASRBackend) Config() map[string]interface{} {
+	return map[string]interface{}{
+		"language":  b.language,
+		"translate": b.translate,
+	}
+}
+
+func (b *whisperASRBackend) SetConfig(cfg map[string]interface{}) {
+	if v, ok := cfg["language"].(string); ok && v != "" {
+		b.language = v
+	}
+	if v, ok := cfg["translate"].(bool); ok {
+		b.translate = v
+	}
 }
 
 func (b *whisperASRBackend) Close() {

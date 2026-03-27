@@ -21,4 +21,6 @@ func (b *whisperASRBackend) ModelName() string                          { return
 func (b *whisperASRBackend) SetModel(string) error {
 	return fmt.Errorf("whisper not available")
 }
-func (b *whisperASRBackend) Close() {}
+func (b *whisperASRBackend) Config() map[string]interface{} { return nil }
+func (b *whisperASRBackend) SetConfig(map[string]interface{})                {}
+func (b *whisperASRBackend) Close()                                          {}

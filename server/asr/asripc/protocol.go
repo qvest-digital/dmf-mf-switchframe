@@ -28,9 +28,11 @@ type Message struct {
 	Error     string `json:"error,omitempty"`        // for type=error
 
 	// Additional status fields for multi-backend support (sidecar -> server).
-	Backend           string   `json:"backend,omitempty"`            // active backend name
-	AvailableBackends []string `json:"available_backends,omitempty"` // all backend names
-	Models            []string `json:"models,omitempty"`             // models for active backend
+	Backend           string                 `json:"backend,omitempty"`            // active backend name
+	AvailableBackends []string               `json:"available_backends,omitempty"` // all backend names
+	Models            []string               `json:"models,omitempty"`             // models for active backend
+	BackendConfig     map[string]interface{} `json:"backend_config,omitempty"`     // per-backend config
+	NoiseFloor        string                 `json:"noise_floor,omitempty"`        // global noise floor preset
 
 	// Direction: switchframe -> sidecar
 	Cmd    string          `json:"cmd,omitempty"`    // "start", "stop", "reset", "set_config", "shutdown"

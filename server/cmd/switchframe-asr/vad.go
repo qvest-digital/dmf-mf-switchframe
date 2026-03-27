@@ -70,6 +70,14 @@ func (v *energyVAD) isSpeaking() bool {
 	return v.currentState == vadSpeaking || v.currentState == vadTrailing
 }
 
+func (v *energyVAD) setThresholdDB(db float64) {
+	v.thresholdLinear = math.Pow(10, db/20.0)
+}
+
+func (v *energyVAD) thresholdDB() float64 {
+	return 20.0 * math.Log10(v.thresholdLinear)
+}
+
 func (v *energyVAD) reset() {
 	v.currentState = vadIdle
 	v.silentSamples = 0

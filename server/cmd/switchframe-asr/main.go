@@ -18,6 +18,29 @@ import (
 	"github.com/zsiec/switchframe/server/asr/shmring"
 )
 
+func noiseFloorToDB(preset string) (float64, bool) {
+	switch preset {
+	case "quiet":
+		return -35, true
+	case "normal":
+		return -26, true
+	case "noisy":
+		return -20, true
+	default:
+		return 0, false
+	}
+}
+
+func dbToNoiseFloor(db float64) string {
+	if db <= -30 {
+		return "quiet"
+	}
+	if db <= -23 {
+		return "normal"
+	}
+	return "noisy"
+}
+
 func emitWords(conn net.Conn, words []asr.TranscriptWord) {
 	if len(words) == 0 {
 		return
@@ -40,7 +63,7 @@ func emitWords(conn net.Conn, words []asr.TranscriptWord) {
 }
 
 // sendStatus sends a status message with backend/model info over IPC.
-func sendStatus(conn net.Conn, active asrBackend, backends []asrBackend) {
+func sendStatus(conn net.Conn, active asrBackend, backends []asrBackend, eVAD *energyVAD) {
 	names := make([]string, len(backends))
 	for i, b := range backends {
 		names[i] = b.Name()
@@ -54,7 +77,9 @@ func sendStatus(conn net.Conn, active asrBackend, backends []asrBackend) {
 		msg.Backend = active.Name()
 		msg.Model = active.ModelName()
 		msg.Models = active.Models()
+		msg.BackendConfig = active.Config()
 	}
+	msg.NoiseFloor = dbToNoiseFloor(eVAD.thresholdDB())
 	if err := asripc.WriteMessage(conn, msg); err != nil {
 		slog.Warn("failed to send status", "error", err)
 	}
@@ -189,7 +214,7 @@ func main() {
 	fmt.Println("READY")
 
 	// Send initial status over IPC socket with backend info.
-	sendStatus(conn, activeBackend, backends)
+	sendStatus(conn, activeBackend, backends, eVAD)
 
 	// Setup signal handling.
 	sigCh := make(chan os.Signal, 1)
@@ -295,29 +320,36 @@ func main() {
 				speechBuf = speechBuf[:0]
 				wasSpeaking = false
 			case "set_config":
-				var cfg struct {
-					Backend string `json:"backend"`
-					Model   string `json:"model"`
-				}
+				var cfg map[string]interface{}
 				if err := json.Unmarshal(msg.Config, &cfg); err != nil {
 					slog.Warn("invalid set_config", "error", err)
 					break
 				}
-				if cfg.Backend != "" && (activeBackend == nil || cfg.Backend != activeBackend.Name()) {
-					for _, b := range backends {
-						if b.Name() == cfg.Backend {
-							activeBackend = b
-							slog.Info("switched backend", "backend", cfg.Backend)
-							break
+				if backend, ok := cfg["backend"].(string); ok && backend != "" {
+					if activeBackend == nil || backend != activeBackend.Name() {
+						for _, b := range backends {
+							if b.Name() == backend {
+								activeBackend = b
+								slog.Info("switched backend", "backend", backend)
+								break
+							}
 						}
 					}
 				}
-				if cfg.Model != "" && activeBackend != nil {
-					if err := activeBackend.SetModel(cfg.Model); err != nil {
+				if model, ok := cfg["model"].(string); ok && model != "" && activeBackend != nil {
+					if err := activeBackend.SetModel(model); err != nil {
 						slog.Warn("set model failed", "error", err)
 					}
 				}
-				sendStatus(conn, activeBackend, backends)
+				if nf, ok := cfg["noiseFloor"].(string); ok {
+					if db, valid := noiseFloorToDB(nf); valid {
+						eVAD.setThresholdDB(db)
+					}
+				}
+				if activeBackend != nil {
+					activeBackend.SetConfig(cfg)
+				}
+				sendStatus(conn, activeBackend, backends, eVAD)
 			}
 
 		case <-sigCh:

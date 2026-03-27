@@ -62,6 +62,7 @@ type SidecarBackend struct {
 	cachedBackend           atomic.Pointer[string]
 	cachedAvailableBackends atomic.Pointer[[]string]
 	cachedModels            atomic.Pointer[[]string]
+	cachedBackendConfig     atomic.Pointer[json.RawMessage]
 }
 
 // NewSidecarBackend creates a new SidecarBackend but does not start it.
@@ -188,6 +189,9 @@ func (s *SidecarBackend) ModelName() string {
 
 // Config returns the backend-specific configuration as JSON.
 func (s *SidecarBackend) Config() json.RawMessage {
+	if p := s.cachedBackendConfig.Load(); p != nil {
+		return *p
+	}
 	return json.RawMessage(`{}`)
 }
 
@@ -418,6 +422,18 @@ func (s *SidecarBackend) readLoop(gen int64) {
 			if len(msg.Models) > 0 {
 				models := msg.Models
 				s.cachedModels.Store(&models)
+			}
+			if msg.BackendConfig != nil || msg.NoiseFloor != "" {
+				cfgMap := make(map[string]interface{})
+				for k, v := range msg.BackendConfig {
+					cfgMap[k] = v
+				}
+				if msg.NoiseFloor != "" {
+					cfgMap["noiseFloor"] = msg.NoiseFloor
+				}
+				raw, _ := json.Marshal(cfgMap)
+				rawMsg := json.RawMessage(raw)
+				s.cachedBackendConfig.Store(&rawMsg)
 			}
 			slog.Debug("asr-sidecar: status", "state", msg.State, "model", msg.Model,
 				"backend", msg.Backend, "available", msg.AvailableBackends, "latency_ms", msg.LatencyMs)
