@@ -246,17 +246,26 @@ func (a *arCompositorStateAdapter) TriggerRender() {
 		return
 	}
 
+	objects := scene.Objects()
+	slog.Info("AR TriggerRender: scene dirty", "objects", len(objects))
+
 	// Ensure mesh data is loaded for all scene objects.
 	a.app.ensureAllMeshesLoaded()
+
+	// Log mesh status for each object.
+	for _, obj := range objects {
+		_, hasMesh := a.app.arRenderer.MeshesForAsset(obj.AssetID)
+		slog.Info("AR object mesh status", "id", obj.ID, "assetId", obj.AssetID, "hasMesh", hasMesh, "visible", obj.Visible, "pos", obj.Position)
+	}
 
 	// Use default camera if no tracking is available.
 	pose := arrender.DefaultCameraPose()
 
 	if err := a.app.arRenderer.Render(pose); err != nil {
-		slog.Debug("AR render skipped", "err", err)
+		slog.Info("AR render failed", "err", err)
 		return
 	}
-	// ClearDirty is called inside Render() after rebuilding the IAS.
+	slog.Info("AR render complete", "renderedFrame", a.app.arRenderer.RenderedFrame())
 }
 
 // ensureAllMeshesLoaded checks all scene objects and loads any missing
