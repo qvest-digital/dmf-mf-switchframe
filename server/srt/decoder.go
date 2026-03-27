@@ -11,6 +11,7 @@ package srt
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
 #include <libavutil/channel_layout.h>
+#include <libavutil/hwcontext.h>
 #include <libswscale/swscale.h>
 #include <libswresample/swresample.h>
 #include <stdint.h>
@@ -20,7 +21,7 @@ package srt
 // Forward declarations for Go callback functions.
 extern int goSRTRead(void *opaque, uint8_t *buf, int buf_size);
 extern void goOnVideoFrame(int id, uint8_t *data, int len, int width, int height, int64_t pts);
-extern void goOnVideoFrameGPU(int id, uint64_t yDevPtr, uint64_t uvDevPtr, int pitch, int width, int height, int64_t pts);
+extern void goOnVideoFrameGPU(int id, uint64_t yDevPtr, uint64_t uvDevPtr, int pitch, int width, int height, int64_t pts, int bitDepth);
 extern void goOnAudioFrame(int id, float *data, int samples, int channels, int64_t pts);
 extern void goOnCaptionData(int id, uint8_t *data, int size, int64_t pts);
 extern void goOnSCTE35Data(int id, uint8_t *data, int size, int64_t pts);
@@ -424,7 +425,7 @@ static void srtdec_process_video(srtdec_t *h, AVFrame *frame, int64_t pts) {
     h_val = h_val & ~1;
     if (w <= 0 || h_val <= 0) return;
 
-    // NVDEC path: frame is NV12 on CUDA device memory.
+    // NVDEC path: frame is on CUDA device memory.
     // data[0] = Y plane device pointer, data[1] = UV plane device pointer.
     // NVDEC pads height to alignment boundaries (16/32 pixels), so the UV
     // plane is NOT at data[0] + pitch*height — we must pass data[1] directly.
@@ -432,7 +433,21 @@ static void srtdec_process_video(srtdec_t *h, AVFrame *frame, int64_t pts) {
         h->hw_decode_active = 1;
         uint64_t yDevPtr  = (uint64_t)(uintptr_t)frame->data[0];
         uint64_t uvDevPtr = (uint64_t)(uintptr_t)frame->data[1];
-        goOnVideoFrameGPU(h->decoder_id, yDevPtr, uvDevPtr, frame->linesize[0], w, h_val, pts);
+
+        // Detect bit depth from hardware frames context.
+        // P010/P016 = 10-bit HEVC, NV12 = 8-bit H.264/HEVC.
+        int bitDepth = 8;
+        if (frame->hw_frames_ctx) {
+            AVHWFramesContext *hwctx = (AVHWFramesContext*)((AVBufferRef*)frame->hw_frames_ctx)->data;
+            if (hwctx->sw_format == AV_PIX_FMT_P010LE ||
+                hwctx->sw_format == AV_PIX_FMT_P016LE ||
+                hwctx->sw_format == AV_PIX_FMT_P010BE ||
+                hwctx->sw_format == AV_PIX_FMT_P016BE) {
+                bitDepth = 10;
+            }
+        }
+
+        goOnVideoFrameGPU(h->decoder_id, yDevPtr, uvDevPtr, frame->linesize[0], w, h_val, pts, bitDepth);
         return;
     }
 
@@ -737,7 +752,7 @@ type StreamDecoderConfig struct {
 	Reader     io.Reader
 	MaxThreads int // default 4
 	OnVideo    func(yuv []byte, width, height int, pts int64)
-	OnVideoGPU func(yDevPtr, uvDevPtr uintptr, pitch, width, height int, pts int64) // NVDEC zero-copy CUDA frames
+	OnVideoGPU func(yDevPtr, uvDevPtr uintptr, pitch, width, height int, pts int64, bitDepth int) // NVDEC zero-copy CUDA frames
 	OnAudio    func(pcm []float32, pts int64, sampleRate, channels int)
 	// OnCaptions is called when CEA-608/708 closed caption data is extracted
 	// from H.264 SEI NALUs (A53 CC side data) during video decode.
@@ -899,12 +914,12 @@ func goOnVideoFrame(id C.int, data *C.uint8_t, length C.int, width C.int, height
 }
 
 //export goOnVideoFrameGPU
-func goOnVideoFrameGPU(id C.int, yDevPtr C.uint64_t, uvDevPtr C.uint64_t, pitch C.int, width C.int, height C.int, pts C.int64_t) {
+func goOnVideoFrameGPU(id C.int, yDevPtr C.uint64_t, uvDevPtr C.uint64_t, pitch C.int, width C.int, height C.int, pts C.int64_t, bitDepth C.int) {
 	d := lookupDecoder(int(id))
 	if d == nil || d.cfg.OnVideoGPU == nil {
 		return
 	}
-	d.cfg.OnVideoGPU(uintptr(yDevPtr), uintptr(uvDevPtr), int(pitch), int(width), int(height), int64(pts))
+	d.cfg.OnVideoGPU(uintptr(yDevPtr), uintptr(uvDevPtr), int(pitch), int(width), int(height), int64(pts), int(bitDepth))
 }
 
 //export goOnAudioFrame

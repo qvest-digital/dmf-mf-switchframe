@@ -839,7 +839,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		srcMgr := a.gpuState.sourceManager
 		pool := srcMgr.Pool()
 
-		src.OnRawVideoGPU = func(sourceKey string, yDevPtr, uvDevPtr uintptr, pitch, w, h int, pts int64) {
+		src.OnRawVideoGPU = func(sourceKey string, yDevPtr, uvDevPtr uintptr, pitch, w, h int, pts int64, bitDepth int) {
 			pts = ptsLin.Linearize(pts, srt.StreamVideo)
 
 			// Track source video PTS for A/V gap measurement.
@@ -854,11 +854,17 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 				return // pool exhausted, drop frame
 			}
 
-			// Copy NVDEC NV12 Y+UV planes to pool frame (separate pointers
-			// because NVDEC pads height to alignment boundaries).
-			if err := gpu.CopyNV12FromDevice(frame, yDevPtr, uvDevPtr, pitch, w, h); err != nil {
-				frame.Release()
-				return
+			// P016 (10-bit HEVC) needs conversion; NV12 (8-bit) is a direct copy.
+			if bitDepth > 8 {
+				if err := gpu.CopyP016ToNV12FromDevice(frame, yDevPtr, uvDevPtr, pitch, w, h); err != nil {
+					frame.Release()
+					return
+				}
+			} else {
+				if err := gpu.CopyNV12FromDevice(frame, yDevPtr, uvDevPtr, pitch, w, h); err != nil {
+					frame.Release()
+					return
+				}
 			}
 
 			srcMgr.IngestGPUFrame(sourceKey, frame, pts)

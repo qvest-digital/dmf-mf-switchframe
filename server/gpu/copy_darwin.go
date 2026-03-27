@@ -32,6 +32,11 @@ func CopyNV12FromDevice(_ *GPUFrame, _, _ uintptr, _, _, _ int) error {
 	return errors.New("CopyNV12FromDevice: not supported on darwin (CUDA-only)")
 }
 
+// CopyP016ToNV12FromDevice is a no-op on darwin (NVDEC 10-bit decode is CUDA-only).
+func CopyP016ToNV12FromDevice(_ *GPUFrame, _, _ uintptr, _, _, _ int) error {
+	return errors.New("CopyP016ToNV12FromDevice: not supported on darwin (CUDA-only)")
+}
+
 // CopyGPUFrameOn copies NV12 data from src to dst. On Apple Silicon, unified
 // memory means a simple memcpy suffices — the work queue is irrelevant.
 func CopyGPUFrameOn(dst, src *GPUFrame, q *GPUWorkQueue) error {

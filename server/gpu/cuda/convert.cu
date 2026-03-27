@@ -83,6 +83,42 @@ __global__ void nv12_fill_kernel(
     }
 }
 
+// Convert P016/P010 (16-bit per sample) to NV12 (8-bit per sample).
+// P016: Y plane has uint16 samples, UV plane has interleaved uint16 pairs.
+// NV12: Y plane has uint8 samples, UV plane has interleaved uint8 pairs.
+// Conversion: right-shift by 8 (P016 stores 10-bit left-justified in 16-bit).
+__global__ void p016_to_nv12_kernel(
+    uint8_t* __restrict__ nv12_dst,
+    const uint16_t* __restrict__ p016_y_src,
+    const uint16_t* __restrict__ p016_uv_src,
+    int width, int height,
+    int dst_pitch, int src_pitch_bytes)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    int src_pitch_samples = src_pitch_bytes / 2;
+
+    // Y plane: convert each uint16 → uint8 (top 8 bits)
+    if (x < width && y < height) {
+        uint16_t val = p016_y_src[y * src_pitch_samples + x];
+        nv12_dst[y * dst_pitch + x] = (uint8_t)(val >> 8);
+    }
+
+    // UV plane: convert interleaved uint16 pairs → uint8 pairs
+    int chromaW = width / 2;
+    int chromaH = height / 2;
+    if (x < chromaW && y < chromaH) {
+        int uv_dst_offset = dst_pitch * height;
+        int src_idx = y * src_pitch_samples + x * 2;
+        uint16_t u_val = p016_uv_src[src_idx];
+        uint16_t v_val = p016_uv_src[src_idx + 1];
+        int dst_idx = uv_dst_offset + y * dst_pitch + x * 2;
+        nv12_dst[dst_idx]     = (uint8_t)(u_val >> 8);
+        nv12_dst[dst_idx + 1] = (uint8_t)(v_val >> 8);
+    }
+}
+
 // C wrapper functions for cgo
 extern "C" {
 
@@ -116,6 +152,20 @@ cudaError_t nv12_fill(
     dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
     nv12_fill_kernel<<<grid, block, 0, stream>>>(
         nv12, width, height, pitch, yVal, cbVal, crVal);
+    return cudaGetLastError();
+}
+
+cudaError_t p016_to_nv12(
+    uint8_t* nv12_dst,
+    const uint16_t* p016_y_src, const uint16_t* p016_uv_src,
+    int width, int height,
+    int dst_pitch, int src_pitch_bytes, cudaStream_t stream)
+{
+    dim3 block(BLOCK_DIM_X, BLOCK_DIM_Y);
+    dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
+    p016_to_nv12_kernel<<<grid, block, 0, stream>>>(
+        nv12_dst, p016_y_src, p016_uv_src,
+        width, height, dst_pitch, src_pitch_bytes);
     return cudaGetLastError();
 }
 

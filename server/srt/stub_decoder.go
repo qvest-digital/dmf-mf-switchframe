@@ -17,7 +17,7 @@ type StreamDecoderConfig struct {
 	Reader     io.Reader
 	MaxThreads int // default 4
 	OnVideo    func(yuv []byte, width, height int, pts int64)
-	OnVideoGPU func(yDevPtr, uvDevPtr uintptr, pitch, width, height int, pts int64) // NVDEC zero-copy CUDA frames
+	OnVideoGPU func(yDevPtr, uvDevPtr uintptr, pitch, width, height int, pts int64, bitDepth int) // NVDEC zero-copy CUDA frames
 	OnAudio    func(pcm []float32, pts int64, sampleRate, channels int)
 	// OnCaptions is called when CEA-608/708 closed caption data is extracted
 	// from H.264 SEI NALUs (A53 CC side data) during video decode.

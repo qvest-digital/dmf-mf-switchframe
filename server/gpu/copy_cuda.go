@@ -137,3 +137,40 @@ func CopyNV12FromDevice(dst *GPUFrame, yDevPtr, uvDevPtr uintptr, srcPitch, widt
 	dst.Height = height
 	return nil
 }
+
+// CopyP016ToNV12FromDevice converts P016 (16-bit, from 10-bit HEVC NVDEC)
+// to NV12 (8-bit) and writes the result into the destination GPUFrame.
+//
+// P016 stores 10-bit samples left-justified in 16-bit: value = sample << 6.
+// The conversion right-shifts by 8 to get 8-bit NV12.
+//
+// yDevPtr/uvDevPtr are device pointers from NVDEC (frame->data[0]/data[1]).
+// srcPitch is the source pitch in BYTES (P016 pitch = 2*width aligned).
+func CopyP016ToNV12FromDevice(dst *GPUFrame, yDevPtr, uvDevPtr uintptr, srcPitch, width, height int) error {
+	if dst == nil {
+		return fmt.Errorf("CopyP016ToNV12FromDevice: nil destination frame")
+	}
+	if yDevPtr == 0 {
+		return fmt.Errorf("CopyP016ToNV12FromDevice: nil source device pointer")
+	}
+
+	rc := C.p016_to_nv12(
+		(*C.uint8_t)(unsafe.Pointer(uintptr(dst.DevPtr))),
+		(*C.uint16_t)(unsafe.Pointer(yDevPtr)),
+		(*C.uint16_t)(unsafe.Pointer(uvDevPtr)),
+		C.int(width), C.int(height),
+		C.int(dst.Pitch), C.int(srcPitch),
+		defaultCUDAStream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("CopyP016ToNV12FromDevice: kernel failed: %d", rc)
+	}
+
+	if rc := C.cudaStreamSynchronize(defaultCUDAStream); rc != C.cudaSuccess {
+		return fmt.Errorf("CopyP016ToNV12FromDevice: stream sync failed: %d", rc)
+	}
+
+	dst.Width = width
+	dst.Height = height
+	return nil
+}

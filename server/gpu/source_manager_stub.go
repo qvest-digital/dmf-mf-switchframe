@@ -66,3 +66,8 @@ func CopyGPUFrameOn(dst, src *GPUFrame, q *GPUWorkQueue) error { return ErrGPUNo
 func CopyNV12FromDevice(_ *GPUFrame, _, _ uintptr, _, _, _ int) error {
 	return ErrGPUNotAvailable
 }
+
+// CopyP016ToNV12FromDevice is a no-op on non-GPU builds (NVDEC not available).
+func CopyP016ToNV12FromDevice(_ *GPUFrame, _, _ uintptr, _, _, _ int) error {
+	return ErrGPUNotAvailable
+}
