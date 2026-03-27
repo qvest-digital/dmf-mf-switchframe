@@ -8,9 +8,16 @@ import (
 )
 
 const (
-	// sileroChunkSize is the fixed input size for the Silero VAD model.
-	// The model expects exactly 512 samples (32ms at 16kHz).
+	// sileroChunkSize is the audio chunk size for the Silero VAD model (32ms at 16kHz).
 	sileroChunkSize = 512
+
+	// sileroContextSize is the context prepend size for 16kHz audio.
+	// The ONNX model expects input shape [1, 576] = 64 context + 512 audio.
+	// Without this context, the model produces near-zero probabilities.
+	sileroContextSize = 64
+
+	// sileroInputSize is the total input tensor size (context + chunk).
+	sileroInputSize = sileroContextSize + sileroChunkSize
 
 	// sileroStateSize is the recurrent hidden state size: [2, 1, 128].
 	sileroStateSize = 2 * 1 * 128
@@ -30,6 +37,7 @@ const (
 type SileroVAD struct {
 	session   *OnnxSession
 	state     []float32 // [2, 1, 128] recurrent state
+	context   []float32 // last 64 samples from previous chunk (prepended to next input)
 	buf       []float32 // accumulates samples until 512
 	threshold float64   // speech probability threshold (default 0.5)
 
@@ -53,6 +61,7 @@ func NewSileroVAD(session *OnnxSession, threshold float64, hangoverMs int) *Sile
 	return &SileroVAD{
 		session:    session,
 		state:      make([]float32, sileroStateSize),
+		context:    make([]float32, sileroContextSize),
 		threshold:  threshold,
 		hangoverMs: hangoverMs,
 	}
@@ -82,8 +91,8 @@ func (v *SileroVAD) Process(samples []float32) {
 		// Log every ~1 second (31 chunks * 32ms ≈ 1s) when prob > 0.01
 		// to diagnose VAD sensitivity on broadcast audio.
 		v.debugCount++
-		if v.debugCount%31 == 0 {
-			slog.Info("ASR silero VAD probe", "prob", fmt.Sprintf("%.6f", prob), "threshold", v.threshold, "speaking", v.speaking)
+		if v.debugCount%31 == 0 && prob > 0.05 {
+			slog.Info("ASR silero VAD probe", "prob", fmt.Sprintf("%.4f", prob), "threshold", v.threshold, "speaking", v.speaking)
 		}
 
 		if prob > v.threshold {
@@ -108,6 +117,7 @@ func (v *SileroVAD) IsSpeaking() bool {
 // Reset clears the recurrent state, sample buffer, and speech state.
 func (v *SileroVAD) Reset() {
 	v.state = make([]float32, sileroStateSize)
+	v.context = make([]float32, sileroContextSize)
 	v.buf = v.buf[:0]
 	v.speaking = false
 	v.hangover = 0
@@ -120,9 +130,18 @@ func (v *SileroVAD) infer(chunk []float32) (float64, error) {
 		return 0, fmt.Errorf("silero VAD: expected %d samples, got %d", sileroChunkSize, len(chunk))
 	}
 
-	// Input: [1, 512] float32.
-	inputShape := []int64{1, sileroChunkSize}
-	inputValue, err := v.session.NewOnnxValueFloat32(chunk, inputShape)
+	// Build input: prepend 64-sample context to 512-sample chunk → [1, 576].
+	// The context provides temporal continuity between chunks. Without it,
+	// the model produces near-zero probabilities for all audio.
+	input := make([]float32, sileroInputSize)
+	copy(input[:sileroContextSize], v.context)
+	copy(input[sileroContextSize:], chunk)
+
+	// Save last 64 samples of this chunk as context for next call.
+	copy(v.context, chunk[sileroChunkSize-sileroContextSize:])
+
+	inputShape := []int64{1, sileroInputSize}
+	inputValue, err := v.session.NewOnnxValueFloat32(input, inputShape)
 	if err != nil {
 		return 0, fmt.Errorf("create input tensor: %w", err)
 	}

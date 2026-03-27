@@ -192,7 +192,7 @@ func NewNemotronBackend(cfg NemotronConfig) (Backend, error) {
 		vadSession: vadSession,
 		resampler:  NewResampler(48000, 2, 16000),
 		ringBuf:    NewAudioRingBuf(16000, 30),
-		sileroVAD:  NewSileroVAD(vadSession, 0.15, 800),
+		sileroVAD:  NewSileroVAD(vadSession, 0.35, 500),
 		vad: NewVAD(VADConfig{
 			ThresholdDB: -26,
 			HangoverMs:  500,
@@ -233,15 +233,10 @@ func (b *NemotronBackend) IngestAudio(pcm []float32, pts int64, sampleRate, chan
 		slog.Info("ASR nemotron: first audio received", "samples", len(mono16k))
 	})
 
-	// Use both VADs: Silero (neural, speech-specific) AND energy-based.
-	// Both must agree that speech is present. This filters out music/SFX
-	// that have high energy but aren't speech (energy VAD alone triggers
-	// on noise), while also catching speech that Silero is unsure about.
+	// Silero neural VAD for speech-specific detection. Filters out music,
+	// SFX, and background noise that energy-based VAD would trigger on.
 	b.sileroVAD.Process(mono16k)
-	b.vad.Process(mono16k)
-	sileroSpeaking := b.sileroVAD.IsSpeaking()
-	energySpeaking := b.vad.State() == VADSpeaking || b.vad.State() == VADTrailing
-	nowSpeaking := sileroSpeaking && energySpeaking
+	nowSpeaking := b.sileroVAD.IsSpeaking()
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
