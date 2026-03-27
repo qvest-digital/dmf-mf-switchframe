@@ -86,7 +86,15 @@ func NewSidecarBackend(cfg SidecarConfig) (*SidecarBackend, error) {
 
 // Name returns the active backend name from the sidecar.
 // Falls back to "parakeet" if no status has been received yet.
+// Name returns "sidecar" — the engine-level backend identifier.
+// Use ActiveBackendName() for the sidecar's internal active backend name.
 func (s *SidecarBackend) Name() string {
+	return "sidecar"
+}
+
+// ActiveBackendName returns the sidecar's internal active backend name
+// (e.g., "parakeet" or "whisper").
+func (s *SidecarBackend) ActiveBackendName() string {
 	if p := s.cachedBackend.Load(); p != nil {
 		return *p
 	}
@@ -404,7 +412,6 @@ func (s *SidecarBackend) readLoop(gen int64) {
 			}
 
 		case "status":
-			slog.Info("asr-sidecar: received status", "backend", msg.Backend, "model", msg.Model, "availableBackends", msg.AvailableBackends, "models", msg.Models)
 			if msg.Model != "" {
 				model := msg.Model
 				s.cachedModel.Store(&model)

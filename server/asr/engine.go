@@ -141,6 +141,11 @@ func (e *Engine) ActiveBackend() string {
 	if bp == nil || *bp == nil {
 		return ""
 	}
+	// If the active backend is a SidecarBackend, return its internal
+	// active backend name (e.g., "parakeet") instead of "sidecar".
+	if sb, ok := (*bp).(*SidecarBackend); ok {
+		return sb.ActiveBackendName()
+	}
 	return (*bp).Name()
 }
 
