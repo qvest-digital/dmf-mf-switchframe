@@ -8,60 +8,31 @@ afterEach(() => {
 });
 
 describe('BottomTabs', () => {
-	it('renders all tabs including Compose', () => {
+	it('renders all tabs in correct order', () => {
 		const { container } = render(BottomTabs);
 		const tabs = container.querySelectorAll('[role="tab"]');
 		const tabLabels = Array.from(tabs).map((t) => t.textContent?.replace(/\^[0-9]/, '').trim());
 		expect(tabLabels).toContain('Audio');
-		expect(tabLabels).toContain('Compose');
 		expect(tabLabels).toContain('Video');
+		expect(tabLabels).toContain('Compose');
+		expect(tabLabels).toContain('Playout');
 		expect(tabLabels).toContain('Replay');
+		expect(tabLabels).toContain('Clips');
 		expect(tabLabels).toContain('Captions');
 		expect(tabLabels).toContain('SCTE');
 		expect(tabLabels).toContain('Macros');
-		expect(tabLabels).toContain('Presets');
-		expect(tabLabels).toContain('Clips');
-		expect(tabLabels).toContain('Playout');
 		expect(tabLabels).toContain('Team');
-		expect(tabs.length).toBe(11);
+		expect(tabs.length).toBe(10);
 	});
 
-	it('does not render old Layout, Graphics, or Keys tabs', () => {
+	it('does not render removed tabs', () => {
 		const { container } = render(BottomTabs);
 		const tabs = container.querySelectorAll('[role="tab"]');
 		const tabLabels = Array.from(tabs).map((t) => t.textContent?.replace(/\^[0-9]/, '').trim());
 		expect(tabLabels).not.toContain('Layout');
 		expect(tabLabels).not.toContain('Graphics');
 		expect(tabLabels).not.toContain('Keys');
-	});
-
-	it('renders Presets tab', () => {
-		const { container } = render(BottomTabs);
-		const presetsTab = container.querySelector('#tab-presets');
-		expect(presetsTab).toBeTruthy();
-		expect(presetsTab!.textContent).toContain('Presets');
-	});
-
-	it('responds to Ctrl+Shift+8 for Presets tab', async () => {
-		const { container } = render(BottomTabs);
-
-		// Presets is the 8th tab, triggered by Ctrl+Shift+8
-		const event = new KeyboardEvent('keydown', {
-			code: 'Digit8',
-			ctrlKey: true,
-			shiftKey: true,
-			altKey: false,
-			metaKey: false,
-			bubbles: true,
-			cancelable: true,
-		});
-		document.dispatchEvent(event);
-
-		// Wait for Svelte to update DOM
-		await vi.dynamicImportSettled();
-
-		const presetsTab = container.querySelector('#tab-presets');
-		expect(presetsTab?.getAttribute('aria-selected')).toBe('true');
+		expect(tabLabels).not.toContain('Presets');
 	});
 
 	it('selects Audio tab by default', () => {
@@ -71,10 +42,10 @@ describe('BottomTabs', () => {
 	});
 
 	it('saves and restores active tab from localStorage', () => {
-		localStorage.setItem('sf-active-tab', 'Presets');
+		localStorage.setItem('sf-active-tab', 'Clips');
 		const { container } = render(BottomTabs);
-		const presetsTab = container.querySelector('#tab-presets');
-		expect(presetsTab?.getAttribute('aria-selected')).toBe('true');
+		const clipsTab = container.querySelector('#tab-clips');
+		expect(clipsTab?.getAttribute('aria-selected')).toBe('true');
 		localStorage.removeItem('sf-active-tab');
 	});
 

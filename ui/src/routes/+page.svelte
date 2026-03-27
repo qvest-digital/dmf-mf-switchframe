@@ -19,7 +19,6 @@
 	import CompositionPanel from '../components/CompositionPanel.svelte';
 	import MacroPanel from '../components/MacroPanel.svelte';
 	import ReplayPanel from '../components/ReplayPanel.svelte';
-	import PresetPanel from '../components/PresetPanel.svelte';
 	import SCTE35Panel from '../components/SCTE35Panel.svelte';
 	import CaptionsPanel from '../components/CaptionsPanel.svelte';
 	import ClipsPanel from '../components/ClipsPanel.svelte';
@@ -735,10 +734,6 @@
 						{:else if activeTab === 'Replay'}
 							<div class="tab-panel">
 								<ReplayPanel state={store.effectiveState} {pipeline} />
-							</div>
-						{:else if activeTab === 'Presets'}
-							<div class="tab-panel">
-								<PresetPanel />
 							</div>
 						{:else if activeTab === 'SCTE'}
 							<div class="tab-panel">

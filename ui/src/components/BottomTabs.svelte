@@ -8,7 +8,7 @@
 	}
 	let { children, onTabChange, replayActive = false }: Props = $props();
 
-	const staticTabs = ['Audio', 'Compose', 'Video', 'Replay', 'Captions', 'SCTE', 'Macros', 'Presets', 'Clips', 'Playout', 'Team'] as const;
+	const staticTabs = ['Audio', 'Video', 'Compose', 'Playout', 'Replay', 'Clips', 'Captions', 'SCTE', 'Macros', 'Team'] as const;
 	type TabId = typeof staticTabs[number];
 
 	const tabs = staticTabs;
