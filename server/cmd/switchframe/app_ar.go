@@ -273,7 +273,21 @@ func (a *arCompositorStateAdapter) TriggerRender() {
 		slog.Info("AR render failed", "err", err)
 		return
 	}
-	slog.Info("AR render complete", "renderedFrame", a.app.arRenderer.RenderedFrame())
+	// Diagnostic: sample a few pixels from the uint8 render output to verify non-zero
+	framePtr := a.app.arRenderer.RenderedFrame()
+	w := a.app.arRenderer.Settings().Width
+	h := a.app.arRenderer.Settings().Height
+	sample := make([]byte, 64) // first 16 pixels
+	if framePtr != 0 {
+		gpu.DownloadMaskU8(sample, unsafe.Pointer(framePtr), 64)
+	}
+	nonZero := 0
+	for _, b := range sample {
+		if b != 0 {
+			nonZero++
+		}
+	}
+	slog.Info("AR render complete", "renderedFrame", framePtr, "width", w, "height", h, "sampleNonZero", nonZero, "firstBytes", fmt.Sprintf("%v", sample[:16]))
 }
 
 // ensureAllMeshesLoaded checks all scene objects and loads any missing
