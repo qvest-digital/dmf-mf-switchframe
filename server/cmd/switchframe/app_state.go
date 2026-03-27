@@ -2,14 +2,16 @@ package main
 
 import (
 	"encoding/hex"
-	"github.com/zsiec/switchframe/server/graphics"
-	"github.com/zsiec/switchframe/server/internal"
-	"github.com/zsiec/switchframe/server/scte35"
-	"github.com/zsiec/switchframe/server/stmap"
 	"log/slog"
 	"net"
 	"strconv"
 	"strings"
+
+	"github.com/zsiec/switchframe/server/graphics"
+	"github.com/zsiec/switchframe/server/internal"
+	"github.com/zsiec/switchframe/server/scte35"
+	"github.com/zsiec/switchframe/server/stmap"
+	"github.com/zsiec/switchframe/server/tracking"
 )
 
 // sourceType derives the source type string from a source key prefix.
@@ -319,6 +321,101 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 	// ASR state.
 	state = a.enrichASRState(state)
 
+	// AR occlusion state.
+	if a.arInferEngine != nil {
+		status := a.arInferEngine.Status()
+		prompts := a.arInferEngine.Prompts()
+		promptInfos := make([]internal.ARPromptInfo, 0, len(prompts))
+		for _, p := range prompts {
+			promptInfos = append(promptInfos, internal.ARPromptInfo{
+				ID:    p.ID,
+				Label: p.Label,
+				Type:  p.Type,
+			})
+		}
+		state.AROcclusion = &internal.AROcclusionState{
+			Enabled:         status.DepthReady || status.SAMReady,
+			DepthReady:      status.DepthReady,
+			SAMReady:        status.SAMReady,
+			Prompts:         promptInfos,
+			DepthLatencyMs:  status.DepthLatencyMs,
+			SAMLatencyMs:    status.SAMLatencyMs,
+			FramesProcessed: status.FramesProcessed,
+			FramesSkipped:   status.FramesSkipped,
+		}
+	}
+
+	// AR scene state.
+	if a.arScene != nil {
+		sceneState := a.arScene.State()
+		arSceneState := &internal.ARSceneState{
+			Settings: internal.ARRenderSettings{
+				Width:   sceneState.Settings.Width,
+				Height:  sceneState.Settings.Height,
+				SPP:     sceneState.Settings.SPP,
+				Denoise: sceneState.Settings.Denoise,
+			},
+			HasEnvMap: sceneState.HasEnvMap,
+		}
+		// Override settings from renderer if available.
+		if a.arRenderer != nil {
+			rs := a.arRenderer.Settings()
+			arSceneState.Settings = internal.ARRenderSettings{
+				Width:   rs.Width,
+				Height:  rs.Height,
+				SPP:     rs.SPP,
+				Denoise: rs.Denoise,
+			}
+		}
+		for _, obj := range sceneState.Objects {
+			arSceneState.Objects = append(arSceneState.Objects, internal.ARSceneObject{
+				ID:       obj.ID,
+				AssetID:  obj.AssetID,
+				Position: obj.Position,
+				Rotation: obj.Rotation,
+				Scale:    obj.Scale,
+				Visible:  obj.Visible,
+			})
+		}
+		for _, l := range sceneState.Lights {
+			arSceneState.Lights = append(arSceneState.Lights, internal.ARSceneLight{
+				ID:        l.ID,
+				Type:      l.Type,
+				Position:  l.Position,
+				Direction: l.Direction,
+				Color:     l.Color,
+				Intensity: l.Intensity,
+			})
+		}
+		if a.arAssetStore != nil {
+			arSceneState.AssetCount = len(a.arAssetStore.List())
+		}
+		state.ARScene = arSceneState
+	}
+
+	// Camera tracking state.
+	if a.trackingMgr != nil {
+		sources := a.trackingMgr.Sources()
+		if len(sources) > 0 {
+			trackingSources := make(map[string][]internal.ARTrackingSourceInfo, len(sources))
+			for key, infos := range sources {
+				tInfos := make([]internal.ARTrackingSourceInfo, len(infos))
+				for i, info := range infos {
+					tInfos[i] = internal.ARTrackingSourceInfo{
+						Name:       info.Name,
+						Type:       info.Type,
+						Running:    info.Running,
+						Confidence: info.Confidence,
+					}
+				}
+				trackingSources[key] = tInfos
+			}
+			state.ARTracking = &internal.ARTrackingState{
+				Sources: trackingSources,
+			}
+		}
+	}
+
 	// Operator comms state.
 	if a.commsMgr != nil {
 		state.Comms = a.commsMgr.State()
@@ -532,6 +629,20 @@ func (a *App) wireStateCallbacks() {
 				a.sw.RebuildPipeline()
 			}
 			a.clearLastOperator()
+			a.broadcastState(nil)
+		})
+	}
+
+	// Camera tracking pose updates → state broadcast.
+	if a.trackingMgr != nil {
+		a.trackingMgr.SetOnPose(func(_ string, _ tracking.CameraPose) {
+			a.broadcastState(nil)
+		})
+	}
+
+	// AR scene changes (objects/lights added/removed/updated) → state broadcast.
+	if a.arScene != nil {
+		a.arScene.SetOnChange(func() {
 			a.broadcastState(nil)
 		})
 	}

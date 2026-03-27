@@ -10,6 +10,7 @@ require (
 	github.com/grandcat/zeroconf v1.0.0
 	github.com/prometheus/client_golang v1.19.1
 	github.com/prometheus/client_model v0.5.0
+	github.com/qmuntal/gltf v0.28.0
 	github.com/stretchr/testify v1.11.1
 	github.com/zsiec/ccx v0.2.0
 	github.com/zsiec/prism v0.1.6-0.20260319030549-427bb7ae9b9d

@@ -93,3 +93,22 @@ type TRTBinding struct {
 func (c *TRTContext) InferMulti(bindings []TRTBinding, stream unsafe.Pointer) error {
 	return ErrTensorRTNotAvailable
 }
+
+// LoadTRTPlan returns ErrTensorRTNotAvailable on non-TensorRT builds.
+func LoadTRTPlan(planPath string) (*TRTEngine, error) {
+	return nil, ErrTensorRTNotAvailable
+}
+
+// LoadTRTPlanFromMemory returns ErrTensorRTNotAvailable on non-TensorRT builds.
+func LoadTRTPlanFromMemory(data []byte) (*TRTEngine, error) {
+	return nil, ErrTensorRTNotAvailable
+}
+
+// TRTDTypeSize returns 0 on non-TensorRT builds.
+func TRTDTypeSize(dtype int) int { return 0 }
+
+// TensorBufferSize returns 0 on non-TensorRT builds.
+func TensorBufferSize(info TensorInfo) int { return 0 }
+
+// Handle returns nil on non-TensorRT builds.
+func (e *TRTEngine) Handle() unsafe.Pointer { return nil }

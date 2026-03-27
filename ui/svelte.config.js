@@ -3,6 +3,9 @@ import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
 
 /** @type {import('@sveltejs/kit').Config} */
 const config = {
+	compilerOptions: {
+		warningFilter: (warning) => !warning.code.startsWith('a11y'),
+	},
 	preprocess: vitePreprocess(),
 	kit: {
 		adapter: adapter({

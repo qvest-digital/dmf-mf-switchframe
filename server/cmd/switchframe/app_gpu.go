@@ -289,8 +289,16 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 		colorGradeAdapter = newColorGradeStateAdapter(app.colorGradeCtrl)
 	}
 
+	// AR compositor state adapter (bridges arinfer.Engine + arrender.Renderer → gpu.ARCompositorState).
+	// Always created: the adapter lazily resolves app.arInferEngine and
+	// app.arRenderer, which may be nil now but are populated later by
+	// initAR/initARRenderer (called after wireGPUPipeline).
+	arAdapter := gpu.ARCompositorState(&arCompositorStateAdapter{app: app})
+
 	// Build GPU pipeline node chain:
-	//   gpu_key → [gpu_neural_key] → gpu_layout → gpu_compositor → [gpu_ai_segment] → gpu_colorgrade → gpu_stmap → raw_sink → gpu_preview_encode → gpu_encode
+	//   gpu_key → [gpu_neural_key] → gpu_layout → [gpu_ar_composite] → gpu_compositor → [gpu_ai_segment] → gpu_colorgrade → gpu_stmap → raw_sink → gpu_preview_encode → gpu_encode
+	// AR compositor renders BEHIND 2D DSK graphics (lower z-order), so it
+	// must come before the DSK compositor node in the pipeline.
 	// Some nodes return nil on unsupported builds (e.g. AI segment on non-TensorRT).
 	neuralKeyNode := gpu.NewGPUNeuralKeyNode(gs.ctx, gs.pool, neuralKeyAdapter, app.cfg.NeuralKeyModelPath)
 	// Inject TensorRT engine into the neural key node if available.
@@ -300,11 +308,25 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 		}
 	}
 
+	arNode := gpu.NewGPUARCompositorNode(gs.ctx, gs.pool, arAdapter)
+	dskNode := gpu.NewGPUCompositorNode(gs.ctx, compositorAdapter)
+
+	// Wire the AR compositor's occlusion mask into the DSK compositor so 2D
+	// overlays appear behind real-world foreground objects when occlusion is active.
+	if arNode != nil && dskNode != nil {
+		if occProvider, ok := arNode.(gpu.OcclusionMaskProvider); ok {
+			if setter, ok := dskNode.(interface{ SetOcclusionProvider(gpu.OcclusionMaskProvider) }); ok {
+				setter.SetOcclusionProvider(occProvider)
+			}
+		}
+	}
+
 	candidateNodes := []gpu.GPUPipelineNode{
 		gpu.NewGPUKeyNode(gs.ctx, gs.pool, keyAdapter),
 		neuralKeyNode,
 		gpu.NewGPULayoutNode(gs.ctx, gs.pool, layoutAdapter),
-		gpu.NewGPUCompositorNode(gs.ctx, compositorAdapter),
+		arNode,
+		dskNode,
 		gpu.NewGPUAISegmentNode(gs.ctx, gs.pool, segAdapter),
 		gpu.NewGPUColorGradeNode(gs.ctx, colorGradeAdapter),
 		gpu.NewGPUSTMapNode(gs.ctx, gs.pool, app.stmapRegistry),

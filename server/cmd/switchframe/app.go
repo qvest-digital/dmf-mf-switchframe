@@ -23,6 +23,8 @@ import (
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/prism/moq"
+	"github.com/zsiec/switchframe/server/arinfer"
+	"github.com/zsiec/switchframe/server/arrender"
 	"github.com/zsiec/switchframe/server/asr"
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/caption"
@@ -56,6 +58,7 @@ import (
 	"github.com/zsiec/switchframe/server/stinger"
 	"github.com/zsiec/switchframe/server/stmap"
 	"github.com/zsiec/switchframe/server/switcher"
+	"github.com/zsiec/switchframe/server/tracking"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -159,6 +162,17 @@ type App struct {
 	// AI segmentation engine (CUDA + TensorRT, nil on other platforms)
 	segEngine  *gpu.SegmentationEngine
 	segAdapter *segmentationStateAdapter // non-nil when segEngine is active
+
+	// AR inference engine (depth estimation + SAM segmentation, nil when unavailable)
+	arInferEngine *arinfer.Engine
+
+	// Camera tracking manager (Free-D, visual, ArUco; always initialized)
+	trackingMgr *tracking.Manager
+
+	// AR 3D rendering (OptiX renderer + scene + asset store)
+	arRenderer   *arrender.Renderer
+	arScene      *arrender.Scene
+	arAssetStore *arrender.AssetStore
 
 	// ASR engine (Whisper speech-to-text, nil when unavailable)
 	asrEngine    *asr.Engine
@@ -1341,6 +1355,22 @@ func (a *App) initAPI() error {
 			modelsDir:  filepath.Dir(a.cfg.ASRModelPath),
 		}))
 	}
+	if a.arInferEngine != nil {
+		apiOpts = append(apiOpts, control.WithARInference(a.arInferEngine))
+	}
+	if a.trackingMgr != nil {
+		apiOpts = append(apiOpts, control.WithARTracking(&trackingManagerAdapter{mgr: a.trackingMgr}))
+	}
+	// AR scene is always available (even without OptiX renderer).
+	if a.arScene != nil {
+		apiOpts = append(apiOpts, control.WithARRenderer(&arRendererAdapter{
+			renderer: a.arRenderer,
+			scene:    a.arScene,
+		}))
+	}
+	if a.arAssetStore != nil {
+		apiOpts = append(apiOpts, control.WithARAssetStore(a.arAssetStore))
+	}
 
 	// Create text rendering engines for ticker and text animation.
 	if a.compositor != nil {
@@ -1762,6 +1792,22 @@ func (a *App) closeSubsystems() {
 	}
 	if a.asrEngine != nil {
 		a.asrEngine.Close()
+	}
+	// Camera tracking cleanup (close all receivers).
+	if a.trackingMgr != nil {
+		a.trackingMgr.Close()
+	}
+	// AR renderer cleanup before GPU (holds GPU resources).
+	if a.arRenderer != nil {
+		a.arRenderer.Close()
+	}
+	// AR asset store cleanup.
+	if a.arAssetStore != nil {
+		a.arAssetStore.Close()
+	}
+	// AR inference engine cleanup before GPU (holds GPU/TensorRT resources).
+	if a.arInferEngine != nil {
+		a.arInferEngine.Close()
 	}
 	// AI segmentation engine cleanup before GPU (holds GPU resources).
 	if a.segEngine != nil {

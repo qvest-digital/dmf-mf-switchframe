@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zsiec/switchframe/server/arrender"
 	"github.com/zsiec/switchframe/server/comms"
 	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/srt"
@@ -188,6 +189,14 @@ func run() error {
 	if err := app.initASR(); err != nil {
 		return err
 	}
+	app.initAR()
+	app.initTracking()
+	app.initARRenderer()
+	if err := app.initARAssetStore(); err != nil {
+		return err
+	}
+	// Scene is always initialized (data structure only).
+	app.arScene = arrender.NewScene()
 	if err := app.initClips(); err != nil {
 		return err
 	}

@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/zsiec/switchframe/server/arinfer"
+	"github.com/zsiec/switchframe/server/arrender"
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/clip"
@@ -28,6 +30,7 @@ import (
 	"github.com/zsiec/switchframe/server/stinger"
 	"github.com/zsiec/switchframe/server/stmap"
 	"github.com/zsiec/switchframe/server/switcher"
+	"github.com/zsiec/switchframe/server/tracking"
 )
 
 // switchRequest is the JSON body for cut and preview commands.
@@ -340,6 +343,67 @@ type CommsManagerAPI interface {
 	State() *internal.CommsState
 }
 
+// ARTrackingManager provides camera tracking management for AR graphics.
+type ARTrackingManager interface {
+	AddFreeDSource(sourceKey, udpAddr string, cameraID byte) error
+	RemoveSource(sourceKey, trackerName string) error
+	LatestPose(sourceKey string) *tracking.CameraPose
+	Sources() map[string][]tracking.TrackingSourceInfo
+	SetCalibration(sourceKey string, cal tracking.CameraIntrinsics) error
+	GetCalibration(sourceKey string) *tracking.CameraIntrinsics
+	SetArucoPositions(positions map[int][3]float64) error
+	StudioMapStatus() (ready bool, dir string)
+	Close() error
+}
+
+// ARRenderer provides 3D scene rendering capabilities.
+type ARRenderer interface {
+	Scene() *arrender.Scene
+	Settings() arrender.RenderSettings
+	SetSettings(s arrender.RenderSettings) error
+	SceneState() arrender.SceneState
+}
+
+// ARAssetStore manages 3D asset storage and retrieval.
+type ARAssetStore interface {
+	Upload(name, filename string, data []byte) (*arrender.AssetInfo, error)
+	Get(id string) (*arrender.AssetInfo, error)
+	List() []*arrender.AssetInfo
+	Delete(id string) error
+}
+
+// ARInferenceEngine provides AI occlusion capabilities.
+type ARInferenceEngine interface {
+	EnableDepth(planPath string) error
+	DisableDepth()
+	EnableSAM(encoderPath, decoderPath string) error
+	DisableSAM()
+	AddPrompt(arinfer.SAMPrompt) error
+	RemovePrompt(id string) error
+	Prompts() []arinfer.SAMPrompt
+	Status() arinfer.Status
+}
+
+// WithARInference attaches an AR inference engine to the API.
+func WithARInference(e ARInferenceEngine) APIOption {
+	return func(a *API) { a.arInference = e }
+}
+
+// WithARTracking attaches a camera tracking manager to the API.
+func WithARTracking(m ARTrackingManager) APIOption {
+	return func(a *API) { a.arTracking = m }
+}
+
+// WithARRenderer attaches an AR 3D renderer to the API.
+func WithARRenderer(r ARRenderer) APIOption {
+	return func(a *API) { a.arRenderer = r }
+}
+
+// WithARAssetStore attaches an AR asset store to the API.
+func WithARAssetStore(s ARAssetStore) APIOption {
+	return func(a *API) { a.arAssetStore = s }
+}
+
 // WithCaptionManager attaches a caption manager to the API.
 func WithCaptionManager(cm CaptionManagerAPI) APIOption {
 	return func(a *API) { a.captionMgr = cm }
@@ -479,6 +543,10 @@ type API struct {
 	commsMgr           CommsManagerAPI
 	aiSegmentMgr       AISegmentManager
 	asrManager         ASRManager
+	arInference        ARInferenceEngine
+	arTracking         ARTrackingManager
+	arRenderer         ARRenderer
+	arAssetStore       ARAssetStore
 	stmapRegistry      *stmap.Registry
 	stmapStore         *stmap.Store
 	playoutSaveDir     string // directory for saved playlists
@@ -653,6 +721,7 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	a.registerSTMapRoutes(mux)
 	a.registerColorGradeRoutes(mux)
 	a.registerAISegmentRoutes(mux)
+	a.registerARRoutes(mux)
 	a.registerASRRoutes(mux)
 }
 

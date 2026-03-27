@@ -17,6 +17,18 @@ cudaError_t alpha_blend_rgba_rect_nv12(
     int nv12Pitch, int frameW, int frameH,
     int rectX, int rectY, int rectW, int rectH,
     int alphaScale256, cudaStream_t stream);
+cudaError_t alpha_blend_rgba_nv12_occ(
+    uint8_t* nv12, const uint8_t* rgba,
+    const uint8_t* occlusion, int occ_w, int occ_h,
+    int width, int height, int nv12Pitch, int rgbaPitch,
+    int alphaScale256, cudaStream_t stream);
+cudaError_t alpha_blend_rgba_rect_nv12_occ(
+    uint8_t* nv12,
+    const uint8_t* rgba, int overlayW, int overlayH, int rgbaPitch,
+    const uint8_t* occlusion, int occ_w, int occ_h,
+    int nv12Pitch, int frameW, int frameH,
+    int rectX, int rectY, int rectW, int rectH,
+    int alphaScale256, cudaStream_t stream);
 */
 import "C"
 
@@ -113,6 +125,69 @@ func DSKCompositeFullFrame(ctx *Context, frame *GPUFrame, overlay *GPUOverlay, a
 	)
 	if rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: DSK full-frame composite failed: %d", rc)
+	}
+	return ctx.Sync()
+}
+
+// DSKCompositeFullFrameOcc composites a full-frame RGBA overlay onto an NV12 GPU
+// frame with occlusion masking. Where the occlusion mask indicates foreground
+// (person/desk), the overlay alpha is reduced to zero so the overlay appears
+// BEHIND real-world objects. occPtr may be 0 (no occlusion — same as DSKCompositeFullFrame).
+func DSKCompositeFullFrameOcc(ctx *Context, frame *GPUFrame, overlay *GPUOverlay, alphaScale float64, occPtr uintptr, occW, occH int) error {
+	if ctx == nil || frame == nil || overlay == nil {
+		return ErrGPUNotAvailable
+	}
+
+	alphaScale256 := int(alphaScale * 256.0)
+	if alphaScale256 < 0 {
+		alphaScale256 = 0
+	} else if alphaScale256 > 256 {
+		alphaScale256 = 256
+	}
+
+	rc := C.alpha_blend_rgba_nv12_occ(
+		(*C.uint8_t)(unsafe.Pointer(uintptr(frame.DevPtr))),
+		(*C.uint8_t)(overlay.DevPtr),
+		(*C.uint8_t)(unsafe.Pointer(occPtr)),
+		C.int(occW), C.int(occH),
+		C.int(frame.Width), C.int(frame.Height),
+		C.int(frame.Pitch), C.int(overlay.Pitch),
+		C.int(alphaScale256),
+		ctx.stream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: DSK full-frame occ composite failed: %d", rc)
+	}
+	return ctx.Sync()
+}
+
+// DSKCompositeRectOcc composites an RGBA overlay into a rectangular region of
+// an NV12 GPU frame with occlusion masking. occPtr may be 0 for no occlusion.
+func DSKCompositeRectOcc(ctx *Context, frame *GPUFrame, overlay *GPUOverlay, rect Rect, alphaScale float64, occPtr uintptr, occW, occH int) error {
+	if ctx == nil || frame == nil || overlay == nil {
+		return ErrGPUNotAvailable
+	}
+
+	alphaScale256 := int(alphaScale * 256.0)
+	if alphaScale256 < 0 {
+		alphaScale256 = 0
+	} else if alphaScale256 > 256 {
+		alphaScale256 = 256
+	}
+
+	rc := C.alpha_blend_rgba_rect_nv12_occ(
+		(*C.uint8_t)(unsafe.Pointer(uintptr(frame.DevPtr))),
+		(*C.uint8_t)(overlay.DevPtr),
+		C.int(overlay.Width), C.int(overlay.Height), C.int(overlay.Pitch),
+		(*C.uint8_t)(unsafe.Pointer(occPtr)),
+		C.int(occW), C.int(occH),
+		C.int(frame.Pitch), C.int(frame.Width), C.int(frame.Height),
+		C.int(rect.X), C.int(rect.Y), C.int(rect.W), C.int(rect.H),
+		C.int(alphaScale256),
+		ctx.stream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: DSK rect occ composite failed: %d", rc)
 	}
 	return ctx.Sync()
 }

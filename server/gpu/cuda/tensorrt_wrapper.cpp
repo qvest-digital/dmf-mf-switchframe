@@ -1,6 +1,8 @@
 // tensorrt_wrapper.cpp — C-linkage wrappers around the TensorRT C++ API.
 // Compiled separately and linked into the Go binary via cgo LDFLAGS.
 // Build: g++ -O2 -fPIC -std=c++17 -c tensorrt_wrapper.cpp -I/usr/local/cuda/include -I/usr/include/x86_64-linux-gnu
+//
+// C-linkage API is declared in tensorrt_wrapper.h.
 
 #include <NvInfer.h>
 #include <NvOnnxParser.h>
@@ -646,6 +648,47 @@ int trt_infer_multi(void* contextHandle,
     }
 
     return 0;
+}
+
+// trt_load_engine_from_memory deserializes a TensorRT engine from a memory buffer.
+// Returns engine handle (opaque pointer) or NULL on failure.
+void* trt_load_engine_from_memory(const void* data, int size) {
+    if (!data || size <= 0) {
+        set_error("null or empty engine data");
+        return nullptr;
+    }
+
+    auto wrapper = new TRTEngineWrapper();
+    wrapper->runtime.reset(nvinfer1::createInferRuntime(getTRTLogger()));
+    if (!wrapper->runtime) {
+        set_error("createInferRuntime failed");
+        delete wrapper;
+        return nullptr;
+    }
+
+    wrapper->engine.reset(
+        wrapper->runtime->deserializeCudaEngine(data, static_cast<size_t>(size)));
+    if (!wrapper->engine) {
+        set_error("deserializeCudaEngine from memory failed");
+        delete wrapper;
+        return nullptr;
+    }
+
+    return static_cast<void*>(wrapper);
+}
+
+// trt_dtype_size returns the element byte size for a TensorRT DataType value.
+// Returns 0 for unknown types.
+int trt_dtype_size(int dtype) {
+    switch (static_cast<nvinfer1::DataType>(dtype)) {
+        case nvinfer1::DataType::kFLOAT: return 4;
+        case nvinfer1::DataType::kHALF:  return 2;
+        case nvinfer1::DataType::kINT8:  return 1;
+        case nvinfer1::DataType::kINT32: return 4;
+        case nvinfer1::DataType::kBOOL:  return 1;
+        case nvinfer1::DataType::kINT64: return 8;
+        default: return 0;
+    }
 }
 
 } // extern "C"

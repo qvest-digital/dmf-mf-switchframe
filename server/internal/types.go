@@ -353,6 +353,9 @@ type ControlRoomState struct {
 	AISegmentation       *AISegmentationState    `json:"aiSegmentation,omitempty"`
 	NeuralKey            *NeuralKeyState         `json:"neuralKey,omitempty"`
 	ASR                  *ASRState               `json:"asr,omitempty"`
+	AROcclusion          *AROcclusionState       `json:"arOcclusion,omitempty"`
+	ARTracking           *ARTrackingState         `json:"arTracking,omitempty"`
+	ARScene              *ARSceneState            `json:"arScene,omitempty"`
 	Macro                *MacroExecutionState    `json:"macro,omitempty"`
 	ColorGrade           *ColorGradeState        `json:"colorGrade,omitempty"`
 	Playout              *PlayoutState           `json:"playout,omitempty"`
@@ -578,6 +581,75 @@ type ColorGradeState struct {
 	Intensity float32         `json:"intensity"`
 	Available []LookMetadata  `json:"available"`
 	Corrector *CorrectorState `json:"corrector,omitempty"`
+}
+
+// ARTrackingState reports camera tracking status for all sources.
+type ARTrackingState struct {
+	Sources map[string][]ARTrackingSourceInfo `json:"sources"`
+}
+
+// ARTrackingSourceInfo describes a registered tracking source in the broadcast state.
+type ARTrackingSourceInfo struct {
+	Name       string  `json:"name"`
+	Type       string  `json:"type"`
+	Running    bool    `json:"running"`
+	Confidence float32 `json:"confidence"`
+}
+
+// ARSceneState reports the 3D scene state for ControlRoomState broadcast.
+type ARSceneState struct {
+	Objects    []ARSceneObject  `json:"objects"`
+	Lights     []ARSceneLight   `json:"lights"`
+	Settings   ARRenderSettings `json:"settings"`
+	HasEnvMap  bool             `json:"hasEnvMap"`
+	AssetCount int              `json:"assetCount"`
+}
+
+// ARSceneObject is a broadcast-friendly 3D scene object.
+type ARSceneObject struct {
+	ID       string     `json:"id"`
+	AssetID  string     `json:"assetId"`
+	Position [3]float64 `json:"position"`
+	Rotation [3]float64 `json:"rotation"`
+	Scale    [3]float64 `json:"scale"`
+	Visible  bool       `json:"visible"`
+}
+
+// ARSceneLight is a broadcast-friendly 3D scene light.
+type ARSceneLight struct {
+	ID        string     `json:"id"`
+	Type      string     `json:"type"`
+	Position  [3]float64 `json:"position"`
+	Direction [3]float64 `json:"direction"`
+	Color     [3]float64 `json:"color"`
+	Intensity float64    `json:"intensity"`
+}
+
+// ARRenderSettings is the broadcast-friendly render settings.
+type ARRenderSettings struct {
+	Width   int  `json:"width"`
+	Height  int  `json:"height"`
+	SPP     int  `json:"spp"`
+	Denoise bool `json:"denoise"`
+}
+
+// AROcclusionState reports AI occlusion inference status.
+type AROcclusionState struct {
+	Enabled         bool           `json:"enabled"`
+	DepthReady      bool           `json:"depthReady"`
+	SAMReady        bool           `json:"samReady"`
+	Prompts         []ARPromptInfo `json:"prompts"`
+	DepthLatencyMs  float64        `json:"depthLatencyMs"`
+	SAMLatencyMs    float64        `json:"samLatencyMs"`
+	FramesProcessed int64          `json:"framesProcessed"`
+	FramesSkipped   int64          `json:"framesSkipped"`
+}
+
+// ARPromptInfo describes a SAM segmentation prompt in the broadcast state.
+type ARPromptInfo struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	Type  string `json:"type"`
 }
 
 // LayoutSlotState represents a single layout slot in the state broadcast.
