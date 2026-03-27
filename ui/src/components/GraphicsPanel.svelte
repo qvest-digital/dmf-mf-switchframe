@@ -11,7 +11,7 @@
 		graphicsLoadHTML5, graphicsUpdateHTML5Data,
 		graphicsHTML5Play, graphicsHTML5Stop, graphicsHTML5Next,
 		graphicsUnloadHTML5, graphicsHTML5Custom,
-		graphicsSequenceUpload, graphicsSequenceDelete,
+		graphicsSequenceUpload, graphicsSequenceDelete, graphicsSequenceSetSpeed,
 		apiCall,
 	} from '$lib/api/switch-api';
 	import { GraphicsPublisher } from '$lib/graphics/publisher';
@@ -401,6 +401,14 @@
 			notify('error', 'Failed to remove sequence');
 		}
 	}
+
+	async function handleSequenceSpeed(id: number, speed: number) {
+		try {
+			await graphicsSequenceSetSpeed(id, speed);
+		} catch {
+			notify('error', 'Failed to set speed');
+		}
+	}
 </script>
 
 <div class="graphics-panel">
@@ -464,6 +472,7 @@
 					onHTML5Custom={(action, payload) => handleHTML5Custom(selectedLayer.id, action, payload)}
 				onSequenceUpload={(file) => handleSequenceUpload(selectedLayer.id, file)}
 				onSequenceDelete={() => handleSequenceDelete(selectedLayer.id)}
+				onSequenceSpeed={(speed) => handleSequenceSpeed(selectedLayer.id, speed)}
 				/>
 			{/key}
 		{:else}

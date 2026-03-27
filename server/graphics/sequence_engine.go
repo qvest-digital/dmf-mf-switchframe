@@ -350,6 +350,37 @@ func (se *SequenceEngine) CutOff(layerID int) error {
 	return nil
 }
 
+// SetSpeed changes the playback speed of a loaded sequence.
+// Speed 1.0 = normal, 0.5 = half, 2.0 = double. Clamped to [0.1, 4.0].
+func (se *SequenceEngine) SetSpeed(layerID int, speed float64) error {
+	if speed < 0.1 {
+		speed = 0.1
+	}
+	if speed > 4.0 {
+		speed = 4.0
+	}
+
+	se.compositor.mu.Lock()
+	layer, ok := se.compositor.layers[layerID]
+	if !ok {
+		se.compositor.mu.Unlock()
+		return ErrLayerNotFound
+	}
+	if layer.seq == nil {
+		se.compositor.mu.Unlock()
+		return ErrSequenceNotFound
+	}
+	layer.seq.speed = speed
+	state := se.compositor.buildStateLocked()
+	cb := se.compositor.onStateChange
+	se.compositor.mu.Unlock()
+
+	if cb != nil {
+		cb(state)
+	}
+	return nil
+}
+
 // Delete removes the sequence from the layer and deactivates it.
 func (se *SequenceEngine) Delete(layerID int) error {
 	se.mu.Lock()

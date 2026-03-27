@@ -61,6 +61,7 @@ func (a *API) registerGraphicsRoutes(mux *http.ServeMux) {
 	if a.sequenceEngine != nil {
 		mux.HandleFunc("POST /api/graphics/{id}/sequence", a.handleGraphicsSequenceUpload)
 		mux.HandleFunc("DELETE /api/graphics/{id}/sequence", a.handleGraphicsSequenceDelete)
+		mux.HandleFunc("PUT /api/graphics/{id}/sequence/speed", a.handleGraphicsSequenceSpeed)
 	}
 }
 
@@ -844,6 +845,29 @@ func (a *API) handleGraphicsSequenceDelete(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err := a.sequenceEngine.Delete(id); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.compositor.Status())
+}
+
+// handleGraphicsSequenceSpeed sets the playback speed for an animated sequence.
+func (a *API) handleGraphicsSequenceSpeed(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	id, err := parseLayerID(r)
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid layer id")
+		return
+	}
+	var req struct {
+		Speed float64 `json:"speed"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := a.sequenceEngine.SetSpeed(id, req.Speed); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}

@@ -47,8 +47,10 @@ type sequenceState struct {
 	cropX, cropY int // offset within program frame
 	cropW, cropH int // cropped frame dimensions
 
-	phase    seqPhase
-	frameIdx int
+	phase      seqPhase
+	frameIdx   int
+	speed      float64 // playback rate: 1.0 = normal, 0.5 = half, 2.0 = double
+	frameAccum float64 // fractional frame accumulator for sub-1x speeds
 }
 
 // startIn begins playback from the animate-in segment. If there are no in
@@ -78,6 +80,26 @@ func (s *sequenceState) startOut() {
 		return
 	}
 	s.phase = seqPhaseDone
+}
+
+// tick accumulates one pipeline frame's worth of playback at the current speed.
+// Returns true if the frame changed (ProcessYUV should update the overlay).
+func (s *sequenceState) tick() bool {
+	if s.phase == seqPhaseIdle || s.phase == seqPhaseDone {
+		return false
+	}
+	spd := s.speed
+	if spd <= 0 {
+		spd = 1.0
+	}
+	s.frameAccum += spd
+	changed := false
+	for s.frameAccum >= 1.0 {
+		s.frameAccum -= 1.0
+		s.advance()
+		changed = true
+	}
+	return changed
 }
 
 // advance moves to the next frame within the current phase. Phase transitions
@@ -300,6 +322,7 @@ func LoadSequenceZIP(zipData []byte) (*sequenceState, error) {
 		cropY:      cropY,
 		cropW:      cropW,
 		cropH:      cropH,
+		speed:      1.0,
 	}, nil
 }
 

@@ -57,9 +57,10 @@ type LayerState struct {
 	ImageName      string    `json:"imageName,omitempty"`
 	ImageWidth     int       `json:"imageWidth,omitempty"`
 	ImageHeight    int       `json:"imageHeight,omitempty"`
-	SequenceLoaded     bool   `json:"sequenceLoaded,omitempty"`
-	SequencePhase      string `json:"sequencePhase,omitempty"`
-	SequenceProcessing bool   `json:"sequenceProcessing,omitempty"`
+	SequenceLoaded     bool    `json:"sequenceLoaded,omitempty"`
+	SequencePhase      string  `json:"sequencePhase,omitempty"`
+	SequenceProcessing bool    `json:"sequenceProcessing,omitempty"`
+	SequenceSpeed      float64 `json:"sequenceSpeed,omitempty"`
 }
 
 // RectState describes a layer's position and size for serialization.
@@ -784,17 +785,16 @@ func (c *Compositor) ProcessYUV(yuv []byte, width, height int, blendScratch *[]b
 			continue
 		}
 
-		// Get current frame RGBA and update overlay.
-		frame := ss.currentFrame()
-		if frame != nil {
-			layer.overlay = frame
-			layer.overlayWidth = ss.cropW
-			layer.overlayHeight = ss.cropH
-			layer.overlayGen++
+		// Tick the speed accumulator; update overlay if frame changed.
+		if ss.tick() {
+			frame := ss.currentFrame()
+			if frame != nil {
+				layer.overlay = frame
+				layer.overlayWidth = ss.cropW
+				layer.overlayHeight = ss.cropH
+				layer.overlayGen++
+			}
 		}
-
-		// Advance to next frame.
-		ss.advance()
 
 		// If out phase completed, deactivate the layer.
 		if ss.phase == seqPhaseDone {
@@ -957,17 +957,16 @@ func (c *Compositor) SnapshotVisibleLayers() []VisibleLayerSnap {
 			continue
 		}
 
-		// Get current frame RGBA and update overlay.
-		frame := ss.currentFrame()
-		if frame != nil {
-			layer.overlay = frame
-			layer.overlayWidth = ss.cropW
-			layer.overlayHeight = ss.cropH
-			layer.overlayGen++
+		// Tick the speed accumulator; update overlay if frame changed.
+		if ss.tick() {
+			frame := ss.currentFrame()
+			if frame != nil {
+				layer.overlay = frame
+				layer.overlayWidth = ss.cropW
+				layer.overlayHeight = ss.cropH
+				layer.overlayGen++
+			}
 		}
-
-		// Advance to next frame.
-		ss.advance()
 
 		// If out phase completed, deactivate the layer.
 		if ss.phase == seqPhaseDone {
@@ -1580,6 +1579,7 @@ func (c *Compositor) buildStateLocked() State {
 		}
 		if layer.seq != nil {
 			ls.SequenceLoaded = true
+			ls.SequenceSpeed = layer.seq.speed
 			switch layer.seq.phase {
 			case seqPhaseIn:
 				ls.SequencePhase = "in"

@@ -549,6 +549,19 @@ export async function graphicsSequenceDelete(layerId: number): Promise<GraphicsS
 	return res.json();
 }
 
+export async function graphicsSequenceSetSpeed(layerId: number, speed: number): Promise<GraphicsState> {
+	const res = await fetch(resolveApiUrl(`/api/graphics/${layerId}/sequence/speed`), {
+		method: 'PUT',
+		headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+		body: JSON.stringify({ speed }),
+	});
+	if (!res.ok) {
+		const body = await res.json().catch(() => ({ error: 'unknown error' }));
+		throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
+	}
+	return res.json();
+}
+
 // --- Text Animation API ---
 
 export function graphicsTextAnimStart(layerId: number, config: {

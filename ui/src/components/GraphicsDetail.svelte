@@ -108,6 +108,7 @@
 		onHTML5Custom?: (action: string, payload: Record<string, unknown>) => void;
 		onSequenceUpload?: (file: File) => void;
 		onSequenceDelete?: () => void;
+		onSequenceSpeed?: (speed: number) => void;
 	}
 
 	let {
@@ -119,7 +120,7 @@
 		onTickerStart, onTickerStop, onTickerUpdateText, tickerActive,
 		onHTML5Load, onHTML5UpdateData, onHTML5Play, onHTML5Stop, onHTML5Next, onHTML5Unload,
 		onHTML5Custom,
-		onSequenceUpload, onSequenceDelete,
+		onSequenceUpload, onSequenceDelete, onSequenceSpeed,
 	}: Props = $props();
 
 	let previewCanvas = $state<HTMLCanvasElement | null>(null);
@@ -523,6 +524,17 @@
 							{#if layer.sequencePhase && layer.sequencePhase !== 'idle'}
 								<span class="seq-phase-badge">{layer.sequencePhase.toUpperCase()}</span>
 							{/if}
+						</div>
+						<div class="seq-speed">
+							<label class="ctl-label">Speed</label>
+							<input
+								type="range"
+								min="0.1" max="4" step="0.1"
+								value={layer.sequenceSpeed ?? 1}
+								oninput={(e) => onSequenceSpeed?.(parseFloat(e.currentTarget.value))}
+								class="ctl-range"
+							/>
+							<span class="ctl-unit">{(layer.sequenceSpeed ?? 1).toFixed(1)}x</span>
 						</div>
 						<button class="act-btn del" onclick={() => onSequenceDelete?.()}>
 							<span class="btn-icon">{@html renderIcon(ICON_TRASH, 11, 'stroke')}</span>
