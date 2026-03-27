@@ -128,16 +128,21 @@ func (s *sequenceState) currentFrame() []byte {
 // LoadSequenceZIP decodes a ZIP archive containing PNG frames for an animated
 // graphics sequence. PNGs in "in/" become animate-in frames, PNGs in "out/"
 // become animate-out frames, and root-level PNGs become loop frames. All PNGs
-// must share the same dimensions. The function computes a union bounding box of
-// all non-transparent pixels, even-aligns it for YUV420, and crops every frame
-// to that region, storing raw RGBA bytes.
+// must share the same dimensions.
+//
+// Uses a two-pass approach to keep peak memory low:
+//   - Pass 1: decode each PNG one at a time, compute union bounding box, discard.
+//   - Pass 2: re-decode each PNG, crop to the union bbox, store cropped RGBA.
+//
+// This means a 1322-frame 1080p sequence uses ~8MB peak (one frame) + final
+// cropped storage, rather than ~11GB (all frames decoded simultaneously).
 func LoadSequenceZIP(zipData []byte) (*sequenceState, error) {
 	zr, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
 	if err != nil {
 		return nil, fmt.Errorf("graphics: open ZIP: %w", err)
 	}
 
-	// Categorize PNG files by folder.
+	// Categorize PNG files by folder, skipping macOS resource forks.
 	type entry struct {
 		name string
 		file *zip.File
@@ -146,6 +151,10 @@ func LoadSequenceZIP(zipData []byte) (*sequenceState, error) {
 
 	for _, f := range zr.File {
 		if f.FileInfo().IsDir() {
+			continue
+		}
+		// Skip macOS resource forks and metadata.
+		if strings.HasPrefix(f.Name, "__MACOSX") || strings.HasPrefix(filepath.Base(f.Name), "._") {
 			continue
 		}
 		if !strings.HasSuffix(strings.ToLower(f.Name), ".png") {
@@ -184,58 +193,37 @@ func LoadSequenceZIP(zipData []byte) (*sequenceState, error) {
 	sortEntries(loopEntries)
 	sortEntries(outEntries)
 
-	// Decode all PNGs to NRGBA. Validate dimensions match.
+	// Build ordered list of all entries (in, loop, out).
 	allEntries := make([]entry, 0, totalCount)
 	allEntries = append(allEntries, inEntries...)
 	allEntries = append(allEntries, loopEntries...)
 	allEntries = append(allEntries, outEntries...)
 
-	decoded := make([]*image.NRGBA, 0, totalCount)
+	// --- Pass 1: compute union bounding box (one frame in memory at a time) ---
 	var refW, refH int
+	unionBBox := image.Rectangle{}
 
 	for i, e := range allEntries {
-		rc, err := e.file.Open()
+		nrgba, err := decodeZipPNG(e.file)
 		if err != nil {
-			return nil, fmt.Errorf("graphics: open %s: %w", e.file.Name, err)
+			return nil, err
 		}
-		img, _, err := image.Decode(rc)
-		rc.Close()
-		if err != nil {
-			return nil, fmt.Errorf("graphics: decode %s: %w", e.file.Name, err)
-		}
-
-		bounds := img.Bounds()
-		w, h := bounds.Dx(), bounds.Dy()
+		w, h := nrgba.Bounds().Dx(), nrgba.Bounds().Dy()
 		if i == 0 {
 			refW, refH = w, h
 		} else if w != refW || h != refH {
 			return nil, ErrSequenceSizeMismatch
 		}
 
-		// Convert to NRGBA if needed.
-		nrgba := toNRGBA(img)
-		decoded = append(decoded, nrgba)
-	}
-
-	// Check memory limit based on source dimensions.
-	memPerFrame := int64(refW) * int64(refH) * 4
-	totalMem := memPerFrame * int64(totalCount)
-	if totalMem > maxSequenceMemory {
-		return nil, ErrSequenceTooLarge
-	}
-
-	// Compute union bounding box across all frames.
-	unionBBox := image.Rectangle{}
-	for _, img := range decoded {
-		r := frameBBox(img)
-		if r.Empty() {
-			continue
+		r := frameBBox(nrgba)
+		if !r.Empty() {
+			if unionBBox.Empty() {
+				unionBBox = r
+			} else {
+				unionBBox = unionBBox.Union(r)
+			}
 		}
-		if unionBBox.Empty() {
-			unionBBox = r
-		} else {
-			unionBBox = unionBBox.Union(r)
-		}
+		// nrgba is discarded here — only one frame in memory at a time.
 	}
 
 	// If all frames are fully transparent, use a minimal 2x2 region.
@@ -244,13 +232,100 @@ func LoadSequenceZIP(zipData []byte) (*sequenceState, error) {
 	}
 
 	// Even-align the bounding box for YUV420.
-	cropX := unionBBox.Min.X &^ 1
-	cropY := unionBBox.Min.Y &^ 1
-	cropW := unionBBox.Dx()
-	cropH := unionBBox.Dy()
-	// Adjust width/height for the expanded origin.
-	cropW += unionBBox.Min.X - cropX
-	cropH += unionBBox.Min.Y - cropY
+	cropX, cropY, cropW, cropH := evenAlignBBox(unionBBox, refW, refH)
+
+	// Check memory limit using CROPPED dimensions (the actual storage cost).
+	frameBytes := int64(cropW) * int64(cropH) * 4
+	totalMem := frameBytes * int64(totalCount)
+	if totalMem > maxSequenceMemory {
+		return nil, fmt.Errorf("%w: cropped %dx%d × %d frames = %dMB exceeds %dMB limit",
+			ErrSequenceTooLarge, cropW, cropH, totalCount,
+			totalMem/(1<<20), maxSequenceMemory/(1<<20))
+	}
+
+	// --- Pass 2: re-decode each PNG, crop to bbox, store cropped RGBA ---
+	cropFrame := func(e entry) ([]byte, error) {
+		nrgba, err := decodeZipPNG(e.file)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]byte, cropW*cropH*4)
+		for y := 0; y < cropH; y++ {
+			srcY := cropY + y
+			for x := 0; x < cropW; x++ {
+				srcX := cropX + x
+				off := (y*cropW + x) * 4
+				if srcX >= 0 && srcX < refW && srcY >= 0 && srcY < refH {
+					c := nrgba.NRGBAAt(srcX, srcY)
+					out[off+0] = c.R
+					out[off+1] = c.G
+					out[off+2] = c.B
+					out[off+3] = c.A
+				}
+			}
+		}
+		return out, nil
+	}
+
+	inCount := len(inEntries)
+	loopCount := len(loopEntries)
+
+	inFrames := make([][]byte, inCount)
+	for i := 0; i < inCount; i++ {
+		inFrames[i], err = cropFrame(allEntries[i])
+		if err != nil {
+			return nil, err
+		}
+	}
+	loopFrames := make([][]byte, loopCount)
+	for i := 0; i < loopCount; i++ {
+		loopFrames[i], err = cropFrame(allEntries[inCount+i])
+		if err != nil {
+			return nil, err
+		}
+	}
+	outFrames := make([][]byte, len(outEntries))
+	for i := 0; i < len(outEntries); i++ {
+		outFrames[i], err = cropFrame(allEntries[inCount+loopCount+i])
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return &sequenceState{
+		inFrames:   inFrames,
+		loopFrames: loopFrames,
+		outFrames:  outFrames,
+		cropX:      cropX,
+		cropY:      cropY,
+		cropW:      cropW,
+		cropH:      cropH,
+	}, nil
+}
+
+// decodeZipPNG opens a zip entry, decodes the PNG, and returns an NRGBA image.
+func decodeZipPNG(f *zip.File) (*image.NRGBA, error) {
+	rc, err := f.Open()
+	if err != nil {
+		return nil, fmt.Errorf("graphics: open %s: %w", f.Name, err)
+	}
+	defer rc.Close()
+
+	img, _, err := image.Decode(rc)
+	if err != nil {
+		return nil, fmt.Errorf("graphics: decode %s: %w", f.Name, err)
+	}
+	return toNRGBA(img), nil
+}
+
+// evenAlignBBox even-aligns a bounding box for YUV420 compatibility and clamps
+// to source dimensions. Returns cropX, cropY, cropW, cropH.
+func evenAlignBBox(bbox image.Rectangle, srcW, srcH int) (cropX, cropY, cropW, cropH int) {
+	cropX = bbox.Min.X &^ 1
+	cropY = bbox.Min.Y &^ 1
+	cropW = bbox.Dx() + (bbox.Min.X - cropX)
+	cropH = bbox.Dy() + (bbox.Min.Y - cropY)
+
 	// Round up to even.
 	if cropW%2 != 0 {
 		cropW++
@@ -266,70 +341,13 @@ func LoadSequenceZIP(zipData []byte) (*sequenceState, error) {
 		cropH = 2
 	}
 	// Clamp to source dimensions.
-	if cropX+cropW > refW {
-		cropW = refW - cropX
-		if cropW%2 != 0 {
-			cropW--
-			if cropX >= 2 {
-				cropX -= 2 - (cropW % 2)
-			}
-		}
+	if cropX+cropW > srcW {
+		cropW = (srcW - cropX) &^ 1
 	}
-	if cropY+cropH > refH {
-		cropH = refH - cropY
-		if cropH%2 != 0 {
-			cropH--
-			if cropY >= 2 {
-				cropY -= 2 - (cropH % 2)
-			}
-		}
+	if cropY+cropH > srcH {
+		cropH = (srcH - cropY) &^ 1
 	}
-
-	// Crop each frame and extract raw RGBA bytes.
-	cropFrame := func(img *image.NRGBA) []byte {
-		out := make([]byte, cropW*cropH*4)
-		for y := 0; y < cropH; y++ {
-			srcY := cropY + y
-			for x := 0; x < cropW; x++ {
-				srcX := cropX + x
-				off := (y*cropW + x) * 4
-				if srcX >= 0 && srcX < refW && srcY >= 0 && srcY < refH {
-					c := img.NRGBAAt(srcX, srcY)
-					out[off+0] = c.R
-					out[off+1] = c.G
-					out[off+2] = c.B
-					out[off+3] = c.A
-				}
-			}
-		}
-		return out
-	}
-
-	inCount := len(inEntries)
-	loopCount := len(loopEntries)
-
-	inFrames := make([][]byte, inCount)
-	for i := 0; i < inCount; i++ {
-		inFrames[i] = cropFrame(decoded[i])
-	}
-	loopFrames := make([][]byte, loopCount)
-	for i := 0; i < loopCount; i++ {
-		loopFrames[i] = cropFrame(decoded[inCount+i])
-	}
-	outFrames := make([][]byte, len(outEntries))
-	for i := 0; i < len(outEntries); i++ {
-		outFrames[i] = cropFrame(decoded[inCount+loopCount+i])
-	}
-
-	return &sequenceState{
-		inFrames:   inFrames,
-		loopFrames: loopFrames,
-		outFrames:  outFrames,
-		cropX:      cropX,
-		cropY:      cropY,
-		cropW:      cropW,
-		cropH:      cropH,
-	}, nil
+	return
 }
 
 // frameBBox computes the bounding box of all non-transparent pixels in img.

@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -437,6 +438,76 @@ func TestLoadSequenceZIPMemoryLimit(t *testing.T) {
 	}
 	if maxSequenceFrames != 7200 {
 		t.Fatalf("maxSequenceFrames: got %d, want %d", maxSequenceFrames, 7200)
+	}
+}
+
+func TestLoadSequenceZIPLargeFrameSmallCrop(t *testing.T) {
+	// Simulates a network bug: large source (128x128) but tiny visible region.
+	// At source dimensions, 200 frames × 128×128×4 = 12.5MB (under limit).
+	// But the key point is the memory check uses CROPPED dimensions, not source.
+	// A 1920x1080 source with 1322 frames would be 10.2GB at source dims but
+	// only ~62MB cropped. This test verifies that works.
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+
+	// Create 50 "large" frames with a tiny visible region at (100,100).
+	for i := 0; i < 50; i++ {
+		img := image.NewNRGBA(image.Rect(0, 0, 128, 128))
+		img.SetNRGBA(100, 100, color.NRGBA{R: 255, G: uint8(i), A: 255})
+		name := fmt.Sprintf("frame_%04d.png", i+1)
+		w, _ := zw.Create(name)
+		png.Encode(w, img)
+	}
+	zw.Close()
+
+	seq, err := LoadSequenceZIP(buf.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Crop should be around (100,100), NOT the full 128x128.
+	if seq.cropW >= 128 || seq.cropH >= 128 {
+		t.Fatalf("expected small crop, got %dx%d", seq.cropW, seq.cropH)
+	}
+	if seq.cropX != 100 || seq.cropY != 100 {
+		t.Fatalf("expected crop at (100,100), got (%d,%d)", seq.cropX, seq.cropY)
+	}
+
+	// Each frame should be tiny (cropW * cropH * 4).
+	expectedSize := seq.cropW * seq.cropH * 4
+	if len(seq.loopFrames[0]) != expectedSize {
+		t.Fatalf("frame size %d, expected %d", len(seq.loopFrames[0]), expectedSize)
+	}
+}
+
+func TestLoadSequenceZIPMacOSResourceForks(t *testing.T) {
+	// macOS Finder adds __MACOSX/._foo.png entries to ZIPs.
+	// These should be silently skipped.
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+
+	// Real PNG
+	img := image.NewNRGBA(image.Rect(0, 0, 4, 4))
+	img.SetNRGBA(1, 1, color.NRGBA{R: 255, A: 255})
+	w, _ := zw.Create("frame_0001.png")
+	png.Encode(w, img)
+
+	// macOS resource fork (would fail PNG decode)
+	w2, _ := zw.Create("__MACOSX/._frame_0001.png")
+	w2.Write([]byte("not a valid png"))
+
+	// Another resource fork pattern
+	w3, _ := zw.Create("__MACOSX/in/._frame_0001.png")
+	w3.Write([]byte("also not valid"))
+
+	zw.Close()
+
+	seq, err := LoadSequenceZIP(buf.Bytes())
+	if err != nil {
+		t.Fatalf("expected success (skip resource forks), got: %v", err)
+	}
+	if len(seq.loopFrames) != 1 {
+		t.Fatalf("expected 1 loop frame, got %d", len(seq.loopFrames))
 	}
 }
 
