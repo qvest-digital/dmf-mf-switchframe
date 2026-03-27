@@ -110,6 +110,9 @@ type graphicsLayer struct {
 
 	// Frame-locked ticker state. Set by ticker engine, advanced by ProcessYUV.
 	ticker *tickerState
+
+	// Frame-locked animated sequence state. Set by SequenceEngine, advanced by ProcessYUV.
+	seq *sequenceState
 }
 
 // tickerState holds the pre-rendered strip and scroll state for a
