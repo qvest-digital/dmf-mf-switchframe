@@ -198,6 +198,31 @@ func TestOptixStubInstanceFields(t *testing.T) {
 	assert.Equal(t, uint32(0xFF), inst.VisibilityMask)
 }
 
+func TestOptixStubCreateCUDATexture(t *testing.T) {
+	rgba := make([]byte, 4*4*4) // 4x4 RGBA
+	tex, err := CreateCUDATexture(rgba, 4, 4)
+	require.ErrorIs(t, err, ErrOptiXNotAvailable)
+	assert.Nil(t, tex)
+}
+
+func TestOptixStubCUDATextureNilOps(t *testing.T) {
+	var tex *CUDATexture
+	assert.Equal(t, uint64(0), tex.Handle())
+	tex.Close() // should not panic
+
+	tex2 := &CUDATexture{}
+	assert.Equal(t, uint64(0), tex2.Handle())
+	tex2.Close() // should not panic
+}
+
+func TestOptixStubSetHitGroupData(t *testing.T) {
+	p := &OptixPipeline{}
+	err := p.SetHitGroupData(0, nil, nil, nil, nil,
+		[3]float32{0.8, 0.8, 0.8}, 0.0, 0.5,
+		[3]float32{0, 0, 0}, 0, nil)
+	require.ErrorIs(t, err, ErrOptiXNotAvailable)
+}
+
 func TestOptixStubLaunchParamsFields(t *testing.T) {
 	params := OptixLaunchParams{
 		Width:           1920,

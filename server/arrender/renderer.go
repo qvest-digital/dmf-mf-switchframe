@@ -27,6 +27,8 @@ type Renderer struct {
 	ias         *gpu.OptixIAS
 	gasList    []*gpu.OptixGAS            // per-object GAS (parallel to scene objects snapshot)
 	normalBufs []uintptr                  // per-GAS normal device pointers (freed on rebuild)
+	texBufs    []*gpu.CUDATexture         // per-GAS texture objects (freed on rebuild)
+	tcBufs     []uintptr                  // per-GAS texcoord device pointers (freed on rebuild)
 	meshes     map[string][]GLTFMesh      // loaded mesh data keyed by asset ID (CPU-side, for GAS building)
 	frameNum   int                        // monotonically increasing frame counter
 	intrinsics *tracking.CameraIntrinsics
@@ -420,6 +422,22 @@ func (r *Renderer) rebuildIAS() error {
 	}
 	r.normalBufs = nil
 
+	// Release old texture objects.
+	for _, tex := range r.texBufs {
+		if tex != nil {
+			tex.Close()
+		}
+	}
+	r.texBufs = nil
+
+	// Release old texcoord device buffers.
+	for _, tcPtr := range r.tcBufs {
+		if tcPtr != 0 {
+			gpu.FreeDeviceBytes(unsafe.Pointer(tcPtr))
+		}
+	}
+	r.tcBufs = nil
+
 	if r.ias != nil {
 		r.ias.Close()
 		r.ias = nil
@@ -438,6 +456,8 @@ func (r *Renderer) rebuildIAS() error {
 	var instances []gpu.OptixInstance
 	var gasList []*gpu.OptixGAS
 	var normalBufs []uintptr
+	var texBufs []*gpu.CUDATexture
+	var tcBufs []uintptr
 	var meshRefs []meshRef
 
 	for _, obj := range objects {
@@ -475,6 +495,16 @@ func (r *Renderer) rebuildIAS() error {
 						gpu.FreeDeviceBytes(unsafe.Pointer(nPtr))
 					}
 				}
+				for _, tex := range texBufs {
+					if tex != nil {
+						tex.Close()
+					}
+				}
+				for _, tcPtr := range tcBufs {
+					if tcPtr != 0 {
+						gpu.FreeDeviceBytes(unsafe.Pointer(tcPtr))
+					}
+				}
 				return fmt.Errorf("build GAS for object %q: %w", obj.ID, err)
 			}
 			gasList = append(gasList, gas)
@@ -501,6 +531,38 @@ func (r *Renderer) rebuildIAS() error {
 			}
 			normalBufs = append(normalBufs, normPtr)
 
+			// Upload texcoords to GPU if available.
+			var tcPtr uintptr
+			if len(mesh.TexCoords) > 0 {
+				tcData := make([]float32, len(mesh.TexCoords)*2)
+				for j, tc := range mesh.TexCoords {
+					tcData[j*2] = tc[0]
+					tcData[j*2+1] = tc[1]
+				}
+				tcBytes := len(tcData) * 4
+				devTC, allocErr := gpu.AllocDeviceBytes(tcBytes)
+				if allocErr == nil {
+					if copyErr := gpu.CopyHostToDevice(devTC, unsafe.Pointer(&tcData[0]), tcBytes); copyErr == nil {
+						tcPtr = uintptr(devTC)
+					} else {
+						gpu.FreeDeviceBytes(devTC)
+					}
+				}
+			}
+			tcBufs = append(tcBufs, tcPtr)
+
+			// Upload base color texture to GPU if available.
+			var cudaTex *gpu.CUDATexture
+			if len(mesh.BaseColorTexture) > 0 && mesh.BaseColorTextureW > 0 && mesh.BaseColorTextureH > 0 {
+				tex, texErr := gpu.CreateCUDATexture(mesh.BaseColorTexture, mesh.BaseColorTextureW, mesh.BaseColorTextureH)
+				if texErr == nil {
+					cudaTex = tex
+				} else {
+					slog.Warn("failed to create CUDA texture", "mesh", mesh.Name, "err", texErr)
+				}
+			}
+			texBufs = append(texBufs, cudaTex)
+
 			// Build 3x4 row-major affine transform from position/rotation/scale.
 			transform := objectTransform(obj)
 
@@ -515,6 +577,8 @@ func (r *Renderer) rebuildIAS() error {
 
 	r.gasList = gasList
 	r.normalBufs = normalBufs
+	r.texBufs = texBufs
+	r.tcBufs = tcBufs
 
 	if len(instances) == 0 {
 		return nil // no visible geometry
@@ -526,12 +590,13 @@ func (r *Renderer) rebuildIAS() error {
 	}
 	r.ias = ias
 
-	// Populate SBT hitgroup data per instance with vertex/index/normal/material.
+	// Populate SBT hitgroup data per instance with vertex/index/normal/texcoord/texture/material.
 	if r.pipeline != nil {
 		for i, gas := range gasList {
 			vertPtr, _ := gas.DeviceVertices()
 			idxPtr, _ := gas.DeviceIndices()
 			normPtr := normalBufs[i]
+			tcPtr := tcBufs[i]
 			mat := meshRefs[i].mesh.Material
 			baseColor := [3]float32{
 				float32(mat.BaseColor[0]),
@@ -544,16 +609,23 @@ func (r *Renderer) rebuildIAS() error {
 				float32(mat.Emission[2]),
 			}
 
+			// Get texture object handle (0 if no texture).
+			var texHandle uint64
+			if texBufs[i] != nil {
+				texHandle = texBufs[i].Handle()
+			}
+
 			if err := r.pipeline.SetHitGroupData(
 				i,
 				unsafe.Pointer(vertPtr),
 				unsafe.Pointer(normPtr),
-				nil, // texcoords (not yet supported)
+				unsafe.Pointer(tcPtr),
 				unsafe.Pointer(idxPtr),
 				baseColor,
 				float32(mat.Metallic),
 				float32(mat.Roughness),
 				emission,
+				texHandle,
 				nil, // default stream
 			); err != nil {
 				return fmt.Errorf("set hitgroup data for instance %d: %w", i, err)
@@ -702,6 +774,18 @@ func (r *Renderer) Close() error {
 		}
 	}
 	r.normalBufs = nil
+	for _, tex := range r.texBufs {
+		if tex != nil {
+			tex.Close()
+		}
+	}
+	r.texBufs = nil
+	for _, tcPtr := range r.tcBufs {
+		if tcPtr != 0 {
+			gpu.FreeDeviceBytes(unsafe.Pointer(tcPtr))
+		}
+	}
+	r.tcBufs = nil
 	if r.ias != nil {
 		r.ias.Close()
 	}

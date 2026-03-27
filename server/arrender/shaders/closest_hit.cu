@@ -120,6 +120,21 @@ extern "C" __global__ void __closesthit__pbr() {
     // Material properties.
     const Material& mat = data->material;
     float3 albedo = mat.base_color;
+
+    // If base color texture is available, sample it and multiply with base color factor.
+    if (data->base_color_tex != 0 && data->texcoords != NULL) {
+        float2 uv0 = data->texcoords[tri.x];
+        float2 uv1 = data->texcoords[tri.y];
+        float2 uv2 = data->texcoords[tri.z];
+        float2 uv = make_float2(
+            b0 * uv0.x + b1 * uv1.x + b2 * uv2.x,
+            b0 * uv0.y + b1 * uv1.y + b2 * uv2.y);
+        float4 tex_color = tex2D<float4>(data->base_color_tex, uv.x, uv.y);
+        albedo.x *= tex_color.x;
+        albedo.y *= tex_color.y;
+        albedo.z *= tex_color.z;
+    }
+
     float metallic = mat.metallic;
     float roughness = fmaxf(mat.roughness, 0.04f); // clamp to avoid singularity
 

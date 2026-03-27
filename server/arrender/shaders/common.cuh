@@ -81,6 +81,7 @@ struct HitGroupData {
     float2* texcoords;              // device pointer to UVs (nullable)
     uint3* indices;                 // device pointer to triangle indices
     Material material;              // material parameters
+    unsigned long long base_color_tex; // cudaTextureObject_t (0 = no texture)
 };
 
 // ---------- float3 vector math ----------

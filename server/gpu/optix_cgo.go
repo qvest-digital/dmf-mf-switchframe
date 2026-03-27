@@ -52,7 +52,14 @@ typedef struct {
     float metallic;
     float roughness;
     float emission[3];
+    uint64_t base_color_tex;
 } optix_hitgroup_data_t;
+
+// CUDA texture objects.
+typedef void* cuda_texture_t;
+extern cuda_texture_t cuda_create_texture(const uint8_t* rgba, int width, int height);
+extern void cuda_destroy_texture(cuda_texture_t tex);
+extern uint64_t cuda_texture_get_handle(cuda_texture_t tex);
 
 extern int optix_set_hitgroup_data(optix_pipeline_t pipeline,
     int instance_index,
@@ -374,19 +381,22 @@ func (g *OptixGAS) DeviceIndices() (uintptr, int) {
 // SetHitGroupData updates the hitgroup SBT record for a given instance.
 // This populates per-instance vertex/index/normal/material data so the
 // closest-hit shader can access geometry and material properties.
+// baseColorTex is the cudaTextureObject_t handle (0 = no texture).
 func (p *OptixPipeline) SetHitGroupData(index int, vertices, normals, texcoords, indices unsafe.Pointer,
-	mat [3]float32, metallic, roughness float32, emission [3]float32, stream unsafe.Pointer) error {
+	mat [3]float32, metallic, roughness float32, emission [3]float32,
+	baseColorTex uint64, stream unsafe.Pointer) error {
 	if p == nil || p.handle == nil {
 		return fmt.Errorf("gpu: optix: nil pipeline")
 	}
 
 	data := C.optix_hitgroup_data_t{
-		vertices:  vertices,
-		normals:   normals,
-		texcoords: texcoords,
-		indices:   indices,
-		metallic:  C.float(metallic),
-		roughness: C.float(roughness),
+		vertices:       vertices,
+		normals:        normals,
+		texcoords:      texcoords,
+		indices:        indices,
+		metallic:       C.float(metallic),
+		roughness:      C.float(roughness),
+		base_color_tex: C.uint64_t(baseColorTex),
 	}
 	data.base_color[0] = C.float(mat[0])
 	data.base_color[1] = C.float(mat[1])
@@ -401,6 +411,49 @@ func (p *OptixPipeline) SetHitGroupData(index int, vertices, normals, texcoords,
 		return fmt.Errorf("gpu: optix: set hitgroup data failed: %s", errMsg)
 	}
 	return nil
+}
+
+// CUDATexture wraps a CUDA texture object (cudaArray + cudaTextureObject_t).
+type CUDATexture struct {
+	handle C.cuda_texture_t
+}
+
+// CreateCUDATexture uploads RGBA pixel data to GPU memory and creates a
+// CUDA texture object with bilinear filtering. The returned texture must
+// be freed with Close() when no longer needed.
+func CreateCUDATexture(rgba []byte, width, height int) (*CUDATexture, error) {
+	if len(rgba) == 0 || width <= 0 || height <= 0 {
+		return nil, fmt.Errorf("gpu: cuda texture: invalid arguments (len=%d, %dx%d)", len(rgba), width, height)
+	}
+	expected := width * height * 4
+	if len(rgba) < expected {
+		return nil, fmt.Errorf("gpu: cuda texture: rgba buffer too small (%d < %d)", len(rgba), expected)
+	}
+
+	handle := C.cuda_create_texture((*C.uint8_t)(unsafe.Pointer(&rgba[0])), C.int(width), C.int(height))
+	if handle == nil {
+		errMsg := C.GoString(C.optix_get_last_error())
+		return nil, fmt.Errorf("gpu: cuda texture: create failed: %s", errMsg)
+	}
+	return &CUDATexture{handle: handle}, nil
+}
+
+// Handle returns the raw cudaTextureObject_t as a uint64 for use in SBT data.
+// Returns 0 if the texture is nil.
+func (t *CUDATexture) Handle() uint64 {
+	if t == nil || t.handle == nil {
+		return 0
+	}
+	return uint64(C.cuda_texture_get_handle(t.handle))
+}
+
+// Close releases the CUDA array and texture object.
+func (t *CUDATexture) Close() {
+	if t == nil || t.handle == nil {
+		return
+	}
+	C.cuda_destroy_texture(t.handle)
+	t.handle = nil
 }
 
 // BuildIAS builds a top-level acceleration structure from instances.

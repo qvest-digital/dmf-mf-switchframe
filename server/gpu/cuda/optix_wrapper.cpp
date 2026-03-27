@@ -125,7 +125,7 @@ struct alignas(OPTIX_SBT_RECORD_ALIGNMENT) SBTRecord {
 
 // SBT record with HitGroupData appended after the 32-byte header.
 // Must match HitGroupData in arrender/shaders/common.cuh:
-//   float3* vertices, float3* normals, float2* texcoords, uint3* indices, Material
+//   float3* vertices, float3* normals, float2* texcoords, uint3* indices, Material, base_color_tex
 struct alignas(OPTIX_SBT_RECORD_ALIGNMENT) HitGroupSBTRecord {
     char header[OPTIX_SBT_RECORD_HEADER_SIZE];
     // HitGroupData fields (must match common.cuh HitGroupData layout):
@@ -138,6 +138,16 @@ struct alignas(OPTIX_SBT_RECORD_ALIGNMENT) HitGroupSBTRecord {
     float metallic;
     float roughness;
     float emission[3];
+    // Texture object handle (0 = no texture).
+    unsigned long long base_color_tex;
+};
+
+// CUDA texture wrapper: holds cudaArray + cudaTextureObject for lifetime management.
+struct CUDATextureWrapper {
+    cudaArray_t array;
+    cudaTextureObject_t tex_obj;
+    int width;
+    int height;
 };
 
 extern "C" {
@@ -544,6 +554,7 @@ int optix_set_hitgroup_data(optix_pipeline_t pipeline,
     record.emission[0] = data->emission[0];
     record.emission[1] = data->emission[1];
     record.emission[2] = data->emission[2];
+    record.base_color_tex = data->base_color_tex;
 
     // Upload to the correct slot.
     CUdeviceptr dest = pw->d_hitgroup_record + sizeof(HitGroupSBTRecord) * instance_index;
@@ -1048,6 +1059,79 @@ void optix_destroy_denoiser(optix_denoiser_t denoiser) {
     delete dw;
 }
 
+// ---------- CUDA texture objects ----------
+
+cuda_texture_t cuda_create_texture(const uint8_t* rgba, int width, int height) {
+    if (!rgba || width <= 0 || height <= 0) {
+        set_error("cuda_create_texture: invalid arguments");
+        return nullptr;
+    }
+
+    // Allocate a CUDA array for the RGBA texture.
+    cudaChannelFormatDesc channel_desc = cudaCreateChannelDesc(8, 8, 8, 8, cudaChannelFormatKindUnsigned);
+    cudaArray_t cuda_array = nullptr;
+    cudaError_t err = cudaMallocArray(&cuda_array, &channel_desc, width, height);
+    if (err != cudaSuccess) {
+        set_error("cuda_create_texture: cudaMallocArray(%dx%d) failed: %s",
+                  width, height, cudaGetErrorString(err));
+        return nullptr;
+    }
+
+    // Copy RGBA pixel data to the CUDA array.
+    err = cudaMemcpy2DToArray(cuda_array, 0, 0,
+                              rgba, width * 4,      // src, src pitch
+                              width * 4, height,    // width in bytes, height
+                              cudaMemcpyHostToDevice);
+    if (err != cudaSuccess) {
+        set_error("cuda_create_texture: cudaMemcpy2DToArray failed: %s",
+                  cudaGetErrorString(err));
+        cudaFreeArray(cuda_array);
+        return nullptr;
+    }
+
+    // Create texture object with bilinear filtering and normalized coordinates.
+    cudaResourceDesc res_desc = {};
+    res_desc.resType = cudaResourceTypeArray;
+    res_desc.res.array.array = cuda_array;
+
+    cudaTextureDesc tex_desc = {};
+    tex_desc.addressMode[0] = cudaAddressModeWrap;
+    tex_desc.addressMode[1] = cudaAddressModeWrap;
+    tex_desc.filterMode = cudaFilterModeLinear;
+    tex_desc.readMode = cudaReadModeNormalizedFloat; // return [0,1] floats
+    tex_desc.normalizedCoords = 1;                    // UVs in [0,1]
+
+    cudaTextureObject_t tex_obj = 0;
+    err = cudaCreateTextureObject(&tex_obj, &res_desc, &tex_desc, nullptr);
+    if (err != cudaSuccess) {
+        set_error("cuda_create_texture: cudaCreateTextureObject failed: %s",
+                  cudaGetErrorString(err));
+        cudaFreeArray(cuda_array);
+        return nullptr;
+    }
+
+    auto* wrapper = new CUDATextureWrapper();
+    wrapper->array = cuda_array;
+    wrapper->tex_obj = tex_obj;
+    wrapper->width = width;
+    wrapper->height = height;
+    return static_cast<void*>(wrapper);
+}
+
+void cuda_destroy_texture(cuda_texture_t tex) {
+    if (!tex) return;
+    auto* wrapper = static_cast<CUDATextureWrapper*>(tex);
+    if (wrapper->tex_obj) cudaDestroyTextureObject(wrapper->tex_obj);
+    if (wrapper->array) cudaFreeArray(wrapper->array);
+    delete wrapper;
+}
+
+uint64_t cuda_texture_get_handle(cuda_texture_t tex) {
+    if (!tex) return 0;
+    auto* wrapper = static_cast<CUDATextureWrapper*>(tex);
+    return static_cast<uint64_t>(wrapper->tex_obj);
+}
+
 // ---------- Error handling ----------
 
 const char* optix_get_last_error(void) {
@@ -1149,6 +1233,15 @@ int optix_denoise(optix_denoiser_t /*denoiser*/,
 }
 
 void optix_destroy_denoiser(optix_denoiser_t /*denoiser*/) {}
+
+cuda_texture_t cuda_create_texture(const uint8_t* /*rgba*/, int /*width*/, int /*height*/) {
+    set_error("OptiX SDK not installed");
+    return nullptr;
+}
+
+void cuda_destroy_texture(cuda_texture_t /*tex*/) {}
+
+uint64_t cuda_texture_get_handle(cuda_texture_t /*tex*/) { return 0; }
 
 const char* optix_get_last_error(void) {
     return optix_error_buf;

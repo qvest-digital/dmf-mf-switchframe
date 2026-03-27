@@ -86,6 +86,7 @@ typedef struct {
     float metallic;
     float roughness;
     float emission[3];
+    uint64_t base_color_tex; // cudaTextureObject_t (0 = no texture)
 } optix_hitgroup_data_t;
 
 // optix_set_hitgroup_data updates the hitgroup SBT record with per-instance data.
@@ -205,6 +206,23 @@ int optix_denoise(optix_denoiser_t denoiser,
 
 // optix_destroy_denoiser releases the denoiser and its scratch buffers.
 void optix_destroy_denoiser(optix_denoiser_t denoiser);
+
+// ---------- CUDA texture objects ----------
+
+// Opaque handle for a CUDA texture object (wraps cudaTextureObject_t).
+typedef void* cuda_texture_t;
+
+// cuda_create_texture uploads RGBA pixel data to a CUDA array and wraps it
+// in a cudaTextureObject_t with bilinear filtering and normalized coordinates.
+// Returns NULL on failure. The returned handle must be freed with cuda_destroy_texture.
+cuda_texture_t cuda_create_texture(const uint8_t* rgba, int width, int height);
+
+// cuda_destroy_texture releases the CUDA array and texture object.
+void cuda_destroy_texture(cuda_texture_t tex);
+
+// cuda_texture_get_handle returns the raw cudaTextureObject_t (uint64_t) for
+// use in SBT hitgroup data. Returns 0 if tex is NULL.
+uint64_t cuda_texture_get_handle(cuda_texture_t tex);
 
 // ---------- Error handling ----------
 

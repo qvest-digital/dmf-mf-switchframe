@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"image"
+	"image/draw"
+	_ "image/jpeg" // register JPEG decoder
+	_ "image/png"  // register PNG decoder
 	"math"
 
 	"github.com/qmuntal/gltf"
@@ -35,6 +39,10 @@ type GLTFMesh struct {
 	TexCoords [][2]float32 // per-vertex UVs (may be empty)
 	Indices   []uint32     // triangle indices
 	Material  Material     // PBR material
+	// Texture data (decoded RGBA pixels, nil if no texture).
+	BaseColorTexture  []byte // RGBA pixels (width * height * 4 bytes)
+	BaseColorTextureW int    // texture width in pixels
+	BaseColorTextureH int    // texture height in pixels
 }
 
 // ParseGLTF parses a glTF or GLB file and returns mesh data.
@@ -174,7 +182,20 @@ func extractMeshes(doc *gltf.Document) ([]GLTFMesh, error) {
 
 			// Extract material (optional).
 			if prim.Material != nil && *prim.Material < len(doc.Materials) {
-				gm.Material = extractMaterial(doc.Materials[*prim.Material])
+				mat := doc.Materials[*prim.Material]
+				gm.Material = extractMaterial(mat)
+
+				// Extract base color texture if available.
+				if pbr := mat.PBRMetallicRoughness; pbr != nil {
+					if tex := pbr.BaseColorTexture; tex != nil {
+						rgba, w, h, texErr := extractTextureRGBA(doc, int(tex.Index))
+						if texErr == nil && rgba != nil {
+							gm.BaseColorTexture = rgba
+							gm.BaseColorTextureW = w
+							gm.BaseColorTextureH = h
+						}
+					}
+				}
 			}
 
 			results = append(results, gm)
@@ -362,6 +383,79 @@ func accessorBytes(doc *gltf.Document, acc *gltf.Accessor) ([]byte, int, error) 
 	}
 
 	return buf.Data[start:end], bv.ByteStride, nil
+}
+
+// extractTextureRGBA extracts a texture from the glTF document and decodes it
+// to raw RGBA pixels. The texture index references doc.Textures, which points
+// to an image, which points to a buffer view containing the raw PNG/JPEG bytes.
+func extractTextureRGBA(doc *gltf.Document, texIdx int) ([]byte, int, int, error) {
+	if texIdx < 0 || texIdx >= len(doc.Textures) {
+		return nil, 0, 0, fmt.Errorf("texture index %d out of range", texIdx)
+	}
+
+	tex := doc.Textures[texIdx]
+	if tex.Source == nil {
+		return nil, 0, 0, fmt.Errorf("texture %d has no source image", texIdx)
+	}
+
+	imgIdx := *tex.Source
+	if imgIdx >= len(doc.Images) {
+		return nil, 0, 0, fmt.Errorf("image index %d out of range", imgIdx)
+	}
+
+	gltfImg := doc.Images[imgIdx]
+
+	// Get the image bytes: either from a buffer view (embedded) or URI (external).
+	var imgData []byte
+	if gltfImg.BufferView != nil {
+		bvIdx := *gltfImg.BufferView
+		if bvIdx >= len(doc.BufferViews) {
+			return nil, 0, 0, fmt.Errorf("image buffer view index %d out of range", bvIdx)
+		}
+		bv := doc.BufferViews[bvIdx]
+		if bv.Buffer >= len(doc.Buffers) {
+			return nil, 0, 0, fmt.Errorf("image buffer index %d out of range", bv.Buffer)
+		}
+		buf := doc.Buffers[bv.Buffer]
+		if buf.Data == nil {
+			return nil, 0, 0, fmt.Errorf("image buffer %d has no data", bv.Buffer)
+		}
+		start := bv.ByteOffset
+		end := bv.ByteOffset + bv.ByteLength
+		if start >= len(buf.Data) || end > len(buf.Data) {
+			return nil, 0, 0, fmt.Errorf("image buffer view out of range")
+		}
+		imgData = buf.Data[start:end]
+	} else {
+		// External URI — not supported for embedded GLB parsing.
+		return nil, 0, 0, fmt.Errorf("external image URIs not supported")
+	}
+
+	// Decode the PNG/JPEG image.
+	img, _, err := image.Decode(bytes.NewReader(imgData))
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("decode image: %w", err)
+	}
+
+	// Convert to NRGBA for consistent RGBA byte layout.
+	bounds := img.Bounds()
+	w := bounds.Dx()
+	h := bounds.Dy()
+	nrgba := image.NewNRGBA(bounds)
+	draw.Draw(nrgba, bounds, img, bounds.Min, draw.Src)
+
+	// The NRGBA pixel data is already in the right layout: R, G, B, A as
+	// sequential bytes. The Pix slice has stride RowStride = 4 * width,
+	// so we can use it directly if the image bounds start at (0,0).
+	// For safety, copy row-by-row to ensure packed layout.
+	rgba := make([]byte, w*h*4)
+	for y := 0; y < h; y++ {
+		srcOff := nrgba.PixOffset(bounds.Min.X, bounds.Min.Y+y)
+		dstOff := y * w * 4
+		copy(rgba[dstOff:dstOff+w*4], nrgba.Pix[srcOff:srcOff+w*4])
+	}
+
+	return rgba, w, h, nil
 }
 
 // decodeGLB decodes a GLB binary container from a byte slice using the gltf library.

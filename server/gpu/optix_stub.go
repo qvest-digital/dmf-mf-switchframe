@@ -113,9 +113,24 @@ func (g *OptixGAS) DeviceIndices() (uintptr, int) { return 0, 0 }
 
 // SetHitGroupData returns ErrOptiXNotAvailable on non-OptiX builds.
 func (p *OptixPipeline) SetHitGroupData(index int, vertices, normals, texcoords, indices unsafe.Pointer,
-	mat [3]float32, metallic, roughness float32, emission [3]float32, stream unsafe.Pointer) error {
+	mat [3]float32, metallic, roughness float32, emission [3]float32,
+	baseColorTex uint64, stream unsafe.Pointer) error {
 	return ErrOptiXNotAvailable
 }
+
+// CUDATexture is a stub for non-OptiX builds.
+type CUDATexture struct{}
+
+// CreateCUDATexture returns ErrOptiXNotAvailable on non-OptiX builds.
+func CreateCUDATexture(rgba []byte, width, height int) (*CUDATexture, error) {
+	return nil, ErrOptiXNotAvailable
+}
+
+// Handle returns 0 on non-OptiX builds.
+func (t *CUDATexture) Handle() uint64 { return 0 }
+
+// Close is a no-op on non-OptiX builds.
+func (t *CUDATexture) Close() {}
 
 // Update returns ErrOptiXNotAvailable on non-OptiX builds.
 func (ias *OptixIAS) Update(instances []OptixInstance, stream unsafe.Pointer) error {
