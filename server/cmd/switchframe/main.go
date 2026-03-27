@@ -194,12 +194,12 @@ func run() error {
 	}
 	app.initAR()
 	app.initTracking()
+	// Scene must be created before renderer so SetScene can share it.
+	app.arScene = arrender.NewScene()
 	app.initARRenderer()
 	if err := app.initARAssetStore(); err != nil {
 		return err
 	}
-	// Scene is always initialized (data structure only).
-	app.arScene = arrender.NewScene()
 	if err := app.initClips(); err != nil {
 		return err
 	}
