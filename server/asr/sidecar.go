@@ -404,6 +404,7 @@ func (s *SidecarBackend) readLoop(gen int64) {
 			}
 
 		case "status":
+			slog.Info("asr-sidecar: received status", "backend", msg.Backend, "model", msg.Model, "availableBackends", msg.AvailableBackends, "models", msg.Models)
 			if msg.Model != "" {
 				model := msg.Model
 				s.cachedModel.Store(&model)
