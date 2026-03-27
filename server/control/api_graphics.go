@@ -826,12 +826,12 @@ func (a *API) handleGraphicsSequenceUpload(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if err := a.sequenceEngine.Upload(id, data); err != nil {
+	if err := a.sequenceEngine.UploadAsync(id, data); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
+	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(a.compositor.Status())
 }
 

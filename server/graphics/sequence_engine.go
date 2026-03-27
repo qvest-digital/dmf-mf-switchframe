@@ -32,27 +32,22 @@ func NewSequenceEngine(c *Compositor) *SequenceEngine {
 	}
 }
 
-// Upload decodes a ZIP archive of PNG frames and installs the sequence on the
-// given layer. The layer is NOT activated — call AutoOn or CutOn to start
-// playback. The first loop frame is set as the initial overlay so that On()
-// will work without additional setup.
-func (se *SequenceEngine) Upload(layerID int, zipData []byte) error {
+// upload decodes a ZIP synchronously and installs the sequence on the layer.
+// Used by tests. Production code should use UploadAsync.
+func (se *SequenceEngine) upload(layerID int, zipData []byte) error {
 	seq, err := LoadSequenceZIP(zipData)
 	if err != nil {
 		return err
 	}
 
 	se.mu.Lock()
-	// If there was a previous sequence on this layer, it will be replaced.
 	se.sequences[layerID] = seq
 	se.mu.Unlock()
 
-	// Install on the compositor layer.
 	se.compositor.mu.Lock()
 	layer, ok := se.compositor.layers[layerID]
 	if !ok {
 		se.compositor.mu.Unlock()
-		// Roll back the engine map entry.
 		se.mu.Lock()
 		delete(se.sequences, layerID)
 		se.mu.Unlock()
@@ -62,7 +57,81 @@ func (se *SequenceEngine) Upload(layerID int, zipData []byte) error {
 	layer.seq = seq
 	layer.rect = image.Rect(seq.cropX, seq.cropY, seq.cropX+seq.cropW, seq.cropY+seq.cropH)
 
-	// Set initial overlay to first loop frame so On() works.
+	if len(seq.loopFrames) > 0 {
+		layer.overlay = seq.loopFrames[0]
+		layer.overlayWidth = seq.cropW
+		layer.overlayHeight = seq.cropH
+		layer.overlayGen++
+	}
+
+	state := se.compositor.buildStateLocked()
+	cb := se.compositor.onStateChange
+	se.compositor.mu.Unlock()
+
+	if cb != nil {
+		cb(state)
+	}
+	return nil
+}
+
+// UploadAsync starts background processing of a ZIP archive of PNG frames.
+// It returns immediately after validating the layer exists. The processing
+// state is broadcast so the UI can show a loading indicator. When done, the
+// sequence is installed on the layer and a final state broadcast fires.
+func (se *SequenceEngine) UploadAsync(layerID int, zipData []byte) error {
+	// Validate layer exists before spawning goroutine.
+	se.compositor.mu.Lock()
+	layer, ok := se.compositor.layers[layerID]
+	if !ok {
+		se.compositor.mu.Unlock()
+		return ErrLayerNotFound
+	}
+	layer.seqProcessing = true
+	state := se.compositor.buildStateLocked()
+	cb := se.compositor.onStateChange
+	se.compositor.mu.Unlock()
+
+	if cb != nil {
+		cb(state)
+	}
+
+	go se.processUpload(layerID, zipData)
+	return nil
+}
+
+// processUpload decodes the ZIP and installs the sequence on the layer.
+// Called in a background goroutine by UploadAsync.
+func (se *SequenceEngine) processUpload(layerID int, zipData []byte) {
+	seq, err := LoadSequenceZIP(zipData)
+
+	se.compositor.mu.Lock()
+	layer, ok := se.compositor.layers[layerID]
+	if !ok {
+		se.compositor.mu.Unlock()
+		se.log.Error("sequence upload: layer gone", "layer", layerID)
+		return
+	}
+	layer.seqProcessing = false
+
+	if err != nil {
+		se.log.Error("sequence upload failed", "layer", layerID, "error", err)
+		state := se.compositor.buildStateLocked()
+		cb := se.compositor.onStateChange
+		se.compositor.mu.Unlock()
+		if cb != nil {
+			cb(state)
+		}
+		return
+	}
+
+	// Install the decoded sequence.
+	se.mu.Lock()
+	se.sequences[layerID] = seq
+	se.mu.Unlock()
+
+	layer.seq = seq
+	layer.rect = image.Rect(seq.cropX, seq.cropY, seq.cropX+seq.cropW, seq.cropY+seq.cropH)
+
 	if len(seq.loopFrames) > 0 {
 		layer.overlay = seq.loopFrames[0]
 		layer.overlayWidth = seq.cropW
@@ -78,10 +147,9 @@ func (se *SequenceEngine) Upload(layerID int, zipData []byte) error {
 		cb(state)
 	}
 
-	se.log.Debug("sequence uploaded", "layer", layerID,
+	se.log.Info("sequence uploaded", "layer", layerID,
 		"in", len(seq.inFrames), "loop", len(seq.loopFrames), "out", len(seq.outFrames),
 		"crop", image.Rect(seq.cropX, seq.cropY, seq.cropX+seq.cropW, seq.cropY+seq.cropH))
-	return nil
 }
 
 // HasSequence returns true if a sequence is loaded on the given layer.

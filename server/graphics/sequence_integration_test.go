@@ -67,7 +67,7 @@ func TestSequenceEndToEnd(t *testing.T) {
 	zipData := buildZIP(t, files)
 
 	// 3. Upload via engine.
-	err = se.Upload(id, zipData)
+	err = se.upload(id, zipData)
 	require.NoError(t, err)
 	require.True(t, se.HasSequence(id), "HasSequence should return true after upload")
 
@@ -223,7 +223,7 @@ func TestSequenceEndToEndNoInFrames(t *testing.T) {
 		"loop_0002.png":      loopPNG,
 		"out/frame_0001.png": outPNG,
 	}
-	require.NoError(t, se.Upload(id, buildZIP(t, files)))
+	require.NoError(t, se.upload(id, buildZIP(t, files)))
 
 	// AutoOn with no in frames should jump directly to loop.
 	require.NoError(t, c.AutoOn(id, 0))
@@ -278,7 +278,7 @@ func TestSequenceEndToEndNoOutFrames(t *testing.T) {
 		"loop_0001.png": loopPNG,
 		"loop_0002.png": loopPNG,
 	}
-	require.NoError(t, se.Upload(id, buildZIP(t, files)))
+	require.NoError(t, se.upload(id, buildZIP(t, files)))
 	require.NoError(t, c.AutoOn(id, 0))
 
 	// Process some loop frames.
@@ -321,7 +321,7 @@ func TestSequenceEndToEndStateBroadcast(t *testing.T) {
 		"loop_0001.png":      loopPNG,
 		"out/frame_0001.png": loopPNG,
 	}
-	require.NoError(t, se.Upload(id, buildZIP(t, files)))
+	require.NoError(t, se.upload(id, buildZIP(t, files)))
 	assert.GreaterOrEqual(t, len(broadcasts), 1, "Upload should broadcast")
 
 	uploadIdx := len(broadcasts) - 1
@@ -385,7 +385,7 @@ func TestSequenceSnapshotVisibleLayers(t *testing.T) {
 		"out/frame_0001.png": outPNG,
 		"out/frame_0002.png": outPNG,
 	}
-	require.NoError(t, se.Upload(id, buildZIP(t, files)))
+	require.NoError(t, se.upload(id, buildZIP(t, files)))
 
 	// Before activation, snapshot should be empty.
 	snaps := c.SnapshotVisibleLayers()
@@ -485,7 +485,7 @@ func TestSequenceSnapshotCacheReuse(t *testing.T) {
 	files := map[string][]byte{
 		"loop_0001.png": loopPNG,
 	}
-	require.NoError(t, se.Upload(id, buildZIP(t, files)))
+	require.NoError(t, se.upload(id, buildZIP(t, files)))
 	require.NoError(t, c.AutoOn(id, 0))
 
 	// First snapshot: gets overlay data (new generation).
@@ -538,8 +538,8 @@ func TestSequenceEndToEndMultiLayer(t *testing.T) {
 		"loop_0002.png": greenPNG,
 	}
 
-	require.NoError(t, se.Upload(id1, buildZIP(t, files1)))
-	require.NoError(t, se.Upload(id2, buildZIP(t, files2)))
+	require.NoError(t, se.upload(id1, buildZIP(t, files1)))
+	require.NoError(t, se.upload(id2, buildZIP(t, files2)))
 
 	// Start both layers.
 	require.NoError(t, c.AutoOn(id1, 0)) // starts in "in" phase
@@ -606,7 +606,7 @@ func TestSequenceEndToEndProcessYUVModifiesBuffer(t *testing.T) {
 	files := map[string][]byte{
 		"loop_0001.png": loopPNG,
 	}
-	require.NoError(t, se.Upload(id, buildZIP(t, files)))
+	require.NoError(t, se.upload(id, buildZIP(t, files)))
 	require.NoError(t, c.AutoOn(id, 0))
 
 	// Create a black YUV frame.
@@ -657,7 +657,7 @@ func TestSequenceEndToEndReuploadWhilePlaying(t *testing.T) {
 		"loop_0001.png": loopPNG,
 		"loop_0002.png": loopPNG,
 	}
-	require.NoError(t, se.Upload(id, buildZIP(t, files)))
+	require.NoError(t, se.upload(id, buildZIP(t, files)))
 	require.NoError(t, c.AutoOn(id, 0))
 
 	// Process a frame.
@@ -672,7 +672,7 @@ func TestSequenceEndToEndReuploadWhilePlaying(t *testing.T) {
 		"loop_0002.png": redPNG,
 		"loop_0003.png": redPNG,
 	}
-	require.NoError(t, se.Upload(id, buildZIP(t, files2)))
+	require.NoError(t, se.upload(id, buildZIP(t, files2)))
 
 	// After re-upload, the new sequence should be idle, layer not active (upload doesn't activate).
 	c.mu.RLock()
@@ -709,7 +709,7 @@ func TestSequenceEndToEndRapidOnOff(t *testing.T) {
 		"loop_0002.png":      loopPNG,
 		"out/frame_0001.png": loopPNG,
 	}
-	require.NoError(t, se.Upload(id, buildZIP(t, files)))
+	require.NoError(t, se.upload(id, buildZIP(t, files)))
 
 	yuv := make([]byte, 8*8*3/2)
 
@@ -751,7 +751,7 @@ func TestSequenceEndToEndAutoOnAutoOffCycle(t *testing.T) {
 		"out/frame_0001.png": loopPNG,
 		"out/frame_0002.png": loopPNG,
 	}
-	require.NoError(t, se.Upload(id, buildZIP(t, files)))
+	require.NoError(t, se.upload(id, buildZIP(t, files)))
 
 	// AutoOn
 	require.NoError(t, c.AutoOn(id, 0))
@@ -819,7 +819,7 @@ func TestSequenceEndToEndTimingNotAffectedByDuration(t *testing.T) {
 		"loop_0001.png":      loopPNG,
 		"out/frame_0001.png": loopPNG,
 	}
-	require.NoError(t, se.Upload(id, buildZIP(t, files)))
+	require.NoError(t, se.upload(id, buildZIP(t, files)))
 
 	// Pass a large duration — should still use frame-locked timing.
 	require.NoError(t, c.AutoOn(id, 5*time.Second))

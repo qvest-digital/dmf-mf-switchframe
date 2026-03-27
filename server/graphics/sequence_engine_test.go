@@ -52,7 +52,7 @@ func TestSequenceEngineUploadAndAutoOn(t *testing.T) {
 	zipData := makeTestSequenceZIP(t)
 
 	// Upload
-	err = se.Upload(id, zipData)
+	err = se.upload(id, zipData)
 	require.NoError(t, err)
 	require.True(t, se.HasSequence(id))
 
@@ -90,7 +90,7 @@ func TestSequenceEngineCutOn(t *testing.T) {
 	require.NoError(t, err)
 
 	zipData := makeTestSequenceZIP(t)
-	require.NoError(t, se.Upload(id, zipData))
+	require.NoError(t, se.upload(id, zipData))
 
 	// CutOn should jump directly to loop phase.
 	err = se.CutOn(id)
@@ -117,7 +117,7 @@ func TestSequenceEngineAutoOff(t *testing.T) {
 	require.NoError(t, err)
 
 	zipData := makeTestSequenceZIP(t)
-	require.NoError(t, se.Upload(id, zipData))
+	require.NoError(t, se.upload(id, zipData))
 	require.NoError(t, se.CutOn(id))
 
 	// AutoOff should start the out phase.
@@ -143,7 +143,7 @@ func TestSequenceEngineAutoOffNoOutFrames(t *testing.T) {
 	require.NoError(t, err)
 
 	zipData := makeTestSequenceZIPNoOut(t)
-	require.NoError(t, se.Upload(id, zipData))
+	require.NoError(t, se.upload(id, zipData))
 	require.NoError(t, se.CutOn(id))
 
 	// AutoOff with no out frames should deactivate immediately.
@@ -171,7 +171,7 @@ func TestSequenceEngineCutOff(t *testing.T) {
 	require.NoError(t, err)
 
 	zipData := makeTestSequenceZIP(t)
-	require.NoError(t, se.Upload(id, zipData))
+	require.NoError(t, se.upload(id, zipData))
 	require.NoError(t, se.CutOn(id))
 
 	// CutOff should immediately deactivate.
@@ -199,7 +199,7 @@ func TestSequenceEngineDelete(t *testing.T) {
 	require.NoError(t, err)
 
 	zipData := makeTestSequenceZIP(t)
-	require.NoError(t, se.Upload(id, zipData))
+	require.NoError(t, se.upload(id, zipData))
 	require.True(t, se.HasSequence(id))
 
 	// Delete should remove the sequence and deactivate.
@@ -227,7 +227,7 @@ func TestSequenceEngineUploadSetsRect(t *testing.T) {
 	require.NoError(t, err)
 
 	zipData := makeTestSequenceZIP(t)
-	require.NoError(t, se.Upload(id, zipData))
+	require.NoError(t, se.upload(id, zipData))
 
 	// Rect should be set to the crop region.
 	c.mu.RLock()
@@ -249,8 +249,8 @@ func TestSequenceEngineClose(t *testing.T) {
 	id2, _ := c.AddLayer()
 
 	zipData := makeTestSequenceZIP(t)
-	require.NoError(t, se.Upload(id1, zipData))
-	require.NoError(t, se.Upload(id2, zipData))
+	require.NoError(t, se.upload(id1, zipData))
+	require.NoError(t, se.upload(id2, zipData))
 	require.NoError(t, se.CutOn(id1))
 	require.NoError(t, se.CutOn(id2))
 
@@ -277,7 +277,7 @@ func TestSequenceEngineCloseIdempotent(t *testing.T) {
 
 	id, _ := c.AddLayer()
 	zipData := makeTestSequenceZIP(t)
-	require.NoError(t, se.Upload(id, zipData))
+	require.NoError(t, se.upload(id, zipData))
 
 	// Calling Close multiple times must not panic.
 	se.Close()
@@ -293,7 +293,7 @@ func TestSequenceEngineUploadLayerNotFound(t *testing.T) {
 	defer se.Close()
 
 	zipData := makeTestSequenceZIP(t)
-	err := se.Upload(999, zipData)
+	err := se.upload(999, zipData)
 	require.ErrorIs(t, err, ErrLayerNotFound)
 }
 
@@ -326,7 +326,7 @@ func TestSequenceEngineStateCallback(t *testing.T) {
 	callCount = 0 // reset after AddLayer
 
 	zipData := makeTestSequenceZIP(t)
-	require.NoError(t, se.Upload(id, zipData))
+	require.NoError(t, se.upload(id, zipData))
 
 	// Upload should have triggered at least one state broadcast.
 	// (It sets rect, overlay, etc. under compositor lock and broadcasts.)
@@ -343,10 +343,10 @@ func TestSequenceEngineReupload(t *testing.T) {
 	id, _ := c.AddLayer()
 
 	zipData := makeTestSequenceZIP(t)
-	require.NoError(t, se.Upload(id, zipData))
+	require.NoError(t, se.upload(id, zipData))
 
 	// Re-uploading should replace the sequence.
-	require.NoError(t, se.Upload(id, zipData))
+	require.NoError(t, se.upload(id, zipData))
 	require.True(t, se.HasSequence(id))
 
 	// Should still work after re-upload.
@@ -370,7 +370,7 @@ func TestCompositorOnDelegatesToSequence(t *testing.T) {
 	c.SetSequenceEngine(se)
 
 	id, _ := c.AddLayer()
-	require.NoError(t, se.Upload(id, makeTestSequenceZIP(t)))
+	require.NoError(t, se.upload(id, makeTestSequenceZIP(t)))
 
 	// On() should delegate to CutOn → loop phase.
 	require.NoError(t, c.On(id))
@@ -394,7 +394,7 @@ func TestCompositorOffDelegatesToSequence(t *testing.T) {
 	c.SetSequenceEngine(se)
 
 	id, _ := c.AddLayer()
-	require.NoError(t, se.Upload(id, makeTestSequenceZIP(t)))
+	require.NoError(t, se.upload(id, makeTestSequenceZIP(t)))
 	require.NoError(t, se.CutOn(id)) // activate first
 
 	require.NoError(t, c.Off(id))
@@ -418,7 +418,7 @@ func TestCompositorAutoOnDelegatesToSequence(t *testing.T) {
 	c.SetSequenceEngine(se)
 
 	id, _ := c.AddLayer()
-	require.NoError(t, se.Upload(id, makeTestSequenceZIP(t)))
+	require.NoError(t, se.upload(id, makeTestSequenceZIP(t)))
 
 	require.NoError(t, c.AutoOn(id, 500*time.Millisecond))
 
@@ -439,7 +439,7 @@ func TestCompositorAutoOffDelegatesToSequence(t *testing.T) {
 	c.SetSequenceEngine(se)
 
 	id, _ := c.AddLayer()
-	require.NoError(t, se.Upload(id, makeTestSequenceZIP(t)))
+	require.NoError(t, se.upload(id, makeTestSequenceZIP(t)))
 	require.NoError(t, se.CutOn(id)) // activate
 
 	require.NoError(t, c.AutoOff(id, 500*time.Millisecond))
