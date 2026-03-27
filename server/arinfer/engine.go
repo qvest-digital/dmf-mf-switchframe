@@ -256,7 +256,7 @@ func (e *Engine) EnableDepth(planPath string) error {
 
 	// Auto-discover model path from ModelsDir when not explicitly provided.
 	if planPath == "" && e.cfg.ModelsDir != "" {
-		planPath = filepath.Join(e.cfg.ModelsDir, "depth_anything_v2.plan")
+		planPath = filepath.Join(e.cfg.ModelsDir, "depth_anything_v2_vits.plan")
 	}
 
 	const depthW, depthH = 518, 294

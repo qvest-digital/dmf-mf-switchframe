@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/zsiec/switchframe/server/asr"
 	"github.com/zsiec/switchframe/server/asr/asripc"
@@ -37,10 +39,33 @@ func emitWords(conn net.Conn, words []asr.TranscriptWord) {
 	}
 }
 
+// sendStatus sends a status message with backend/model info over IPC.
+func sendStatus(conn net.Conn, active asrBackend, backends []asrBackend) {
+	names := make([]string, len(backends))
+	for i, b := range backends {
+		names[i] = b.Name()
+	}
+	msg := &asripc.Message{
+		Type:              "status",
+		State:             "ready",
+		AvailableBackends: names,
+	}
+	if active != nil {
+		msg.Backend = active.Name()
+		msg.Model = active.ModelName()
+		msg.Models = active.Models()
+	}
+	if err := asripc.WriteMessage(conn, msg); err != nil {
+		slog.Warn("failed to send status", "error", err)
+	}
+}
+
 func main() {
 	shmName := flag.String("shm-name", "", "POSIX shared memory name")
 	socketPath := flag.String("socket", "", "Unix socket path")
-	modelDir := flag.String("model-dir", "", "model directory path")
+	modelDir := flag.String("model-dir", "", "Parakeet TRT model directory path")
+	whisperModelsDir := flag.String("whisper-models-dir", "", "directory containing ggml-*.bin Whisper models")
+	defaultBackend := flag.String("default-backend", "parakeet", "default ASR backend")
 	device := flag.Int("device", 0, "GPU device ID")
 	energyThreshold := flag.Float64("energy-threshold", 0.005, "RMS energy gate threshold")
 	vadModelPath := flag.String("vad-model", "", "Silero VAD ONNX model path (auto-detected from model-dir)")
@@ -83,22 +108,61 @@ func main() {
 	// Create audio processor (48kHz stereo -> 16kHz mono).
 	audioProc := newAudioProcessor(48000, 2)
 
-	// Create inference engine if model directory is provided.
-	var engine *inferenceEngine
+	// Initialize backend registry.
+	var backends []asrBackend
+	var activeBackend asrBackend
+
+	// Init TRT backend (if model-dir provided).
 	if *modelDir != "" {
-		var err error
-		engine, err = newInferenceEngine(*modelDir, *device)
+		trt, err := newTRTASRBackend(*modelDir, *device)
 		if err != nil {
-			slog.Warn("failed to load model, running as pass-through", "error", err)
+			slog.Warn("parakeet backend unavailable", "error", err)
 		} else {
-			slog.Info("inference engine loaded", "model-dir", *modelDir, "device", *device)
-			defer engine.backend.close()
+			backends = append(backends, trt)
+			defer trt.Close()
 		}
 	}
 
-	// Initialize Silero VAD if inference engine is available.
+	// Init Whisper backend (if whisper-models-dir provided).
+	if *whisperModelsDir != "" {
+		whisper, err := newWhisperASRBackend(*whisperModelsDir, true)
+		if err != nil {
+			slog.Warn("whisper backend unavailable", "error", err)
+		} else {
+			backends = append(backends, whisper)
+			defer whisper.Close()
+		}
+	}
+
+	// Select default backend.
+	for _, b := range backends {
+		if b.Name() == *defaultBackend {
+			activeBackend = b
+			break
+		}
+	}
+	if activeBackend == nil && len(backends) > 0 {
+		activeBackend = backends[0]
+	}
+
+	if activeBackend != nil {
+		slog.Info("active backend selected", "backend", activeBackend.Name(), "model", activeBackend.ModelName())
+	} else {
+		slog.Warn("no ASR backends available, running as pass-through")
+	}
+
+	// Find GPU stream for Silero VAD from TRT backend.
+	var gpuStream unsafe.Pointer
+	for _, b := range backends {
+		if tb, ok := b.(*trtASRBackend); ok {
+			gpuStream = tb.engine.backend.gpuStream()
+			break
+		}
+	}
+
+	// Initialize Silero VAD if GPU stream is available.
 	var sVAD *sileroVAD
-	if engine != nil {
+	if gpuStream != nil {
 		vadPath := *vadModelPath
 		if vadPath == "" && *modelDir != "" {
 			candidate := filepath.Join(*modelDir, "silero_vad.onnx")
@@ -108,7 +172,7 @@ func main() {
 		}
 		if vadPath != "" {
 			var err error
-			sVAD, err = newSileroVAD(vadPath, engine.backend.gpuStream(), 0.5, 750)
+			sVAD, err = newSileroVAD(vadPath, gpuStream, 0.5, 750)
 			if err != nil {
 				slog.Warn("silero VAD unavailable, using energy-only", "error", err)
 			} else {
@@ -124,15 +188,8 @@ func main() {
 	// Signal READY to parent process.
 	fmt.Println("READY")
 
-	// Send initial status over IPC socket.
-	if err := asripc.WriteMessage(conn, &asripc.Message{
-		Type:  "status",
-		State: "ready",
-		Model: "parakeet-tdt-1.1b", // will come from model config later
-	}); err != nil {
-		slog.Error("failed to send ready status", "error", err)
-		os.Exit(1)
-	}
+	// Send initial status over IPC socket with backend info.
+	sendStatus(conn, activeBackend, backends)
 
 	// Setup signal handling.
 	sigCh := make(chan os.Signal, 1)
@@ -190,7 +247,6 @@ func main() {
 			sileroSpeaking := sVAD == nil || sVAD.isSpeaking()
 			nowSpeaking := energySpeaking && sileroSpeaking
 
-
 			switch {
 			case nowSpeaking && !wasSpeaking:
 				// Speech started.
@@ -203,8 +259,8 @@ func main() {
 				// Speech continues.
 				speechBuf = append(speechBuf, mono16k...)
 				// Max accumulation: forced transcription.
-				if time.Since(speechStart) >= maxAccum && engine != nil {
-					words := engine.Transcribe(speechBuf)
+				if time.Since(speechStart) >= maxAccum && activeBackend != nil {
+					words := activeBackend.Transcribe(speechBuf)
 					emitWords(conn, words)
 					speechBuf = speechBuf[:0]
 					speechStart = time.Now()
@@ -214,8 +270,8 @@ func main() {
 				// Speech ended.
 				speechBuf = append(speechBuf, mono16k...)
 				wasSpeaking = false
-				if engine != nil {
-					words := engine.Transcribe(speechBuf)
+				if activeBackend != nil {
+					words := activeBackend.Transcribe(speechBuf)
 					emitWords(conn, words)
 				}
 				speechBuf = speechBuf[:0]
@@ -238,11 +294,30 @@ func main() {
 				}
 				speechBuf = speechBuf[:0]
 				wasSpeaking = false
-				if engine != nil {
-					engine.resetState()
-				}
 			case "set_config":
-				slog.Info("config update", "config", string(msg.Config))
+				var cfg struct {
+					Backend string `json:"backend"`
+					Model   string `json:"model"`
+				}
+				if err := json.Unmarshal(msg.Config, &cfg); err != nil {
+					slog.Warn("invalid set_config", "error", err)
+					break
+				}
+				if cfg.Backend != "" && (activeBackend == nil || cfg.Backend != activeBackend.Name()) {
+					for _, b := range backends {
+						if b.Name() == cfg.Backend {
+							activeBackend = b
+							slog.Info("switched backend", "backend", cfg.Backend)
+							break
+						}
+					}
+				}
+				if cfg.Model != "" && activeBackend != nil {
+					if err := activeBackend.SetModel(cfg.Model); err != nil {
+						slog.Warn("set model failed", "error", err)
+					}
+				}
+				sendStatus(conn, activeBackend, backends)
 			}
 
 		case <-sigCh:

@@ -30,10 +30,12 @@ func (a *App) initASR() error {
 
 	cfg := asr.EngineConfig{
 		Sidecar: &asr.SidecarConfig{
-			BinPath:  a.cfg.ASRSidecarBin,
-			ShmName:  fmt.Sprintf("/switchframe-asr-%d", os.Getpid()),
-			ModelDir: a.cfg.ASRSidecarModelDir,
-			Device:   0,
+			BinPath:          a.cfg.ASRSidecarBin,
+			ShmName:          fmt.Sprintf("/switchframe-asr-%d", os.Getpid()),
+			ModelDir:         a.cfg.ASRSidecarModelDir,
+			WhisperModelsDir: a.cfg.ASRWhisperModelsDir,
+			DefaultBackend:   a.cfg.ASRDefaultBackend,
+			Device:           0,
 		},
 	}
 

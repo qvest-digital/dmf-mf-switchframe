@@ -39,8 +39,16 @@ func TestMain(m *testing.M) {
 
 func TestSidecarBackendName(t *testing.T) {
 	sb := &SidecarBackend{}
-	if got := sb.Name(); got != "sidecar" {
-		t.Errorf("Name() = %q, want %q", got, "sidecar")
+	// Default name when no status has been received from sidecar.
+	if got := sb.Name(); got != "parakeet" {
+		t.Errorf("Name() = %q, want %q (default)", got, "parakeet")
+	}
+
+	// After receiving a status with Backend field, Name() should reflect it.
+	backend := "whisper"
+	sb.cachedBackend.Store(&backend)
+	if got := sb.Name(); got != "whisper" {
+		t.Errorf("Name() = %q, want %q (cached)", got, "whisper")
 	}
 }
 
@@ -113,11 +121,18 @@ func TestSidecarBackendStartStop(t *testing.T) {
 		t.Errorf("confidence = %f, want >= 0.98", received[0].Confidence)
 	}
 
-	// Verify ModelName was set from status message.
+	// Verify status fields were set from status message.
 	// Give a moment for the status message to be processed.
 	time.Sleep(100 * time.Millisecond)
 	if name := sb.ModelName(); name != "echo-test-model" {
 		t.Errorf("ModelName() = %q, want %q", name, "echo-test-model")
+	}
+	// Verify multi-backend fields from echo-sidecar status.
+	if name := sb.Name(); name != "echo" {
+		t.Errorf("Name() = %q, want %q", name, "echo")
+	}
+	if models := sb.Models(); len(models) != 1 || models[0] != "echo-test-model" {
+		t.Errorf("Models() = %v, want [echo-test-model]", models)
 	}
 
 	sb.Close()

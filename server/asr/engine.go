@@ -129,7 +129,7 @@ func (e *Engine) OnTranscript(fn func([]TranscriptWord, bool)) {
 // via atomic pointer read.
 func (e *Engine) IngestAudio(pcm []float32, pts int64, sampleRate, channels int) {
 	bp := e.active.Load()
-	if bp == nil {
+	if bp == nil || *bp == nil {
 		return
 	}
 	(*bp).IngestAudio(pcm, pts, sampleRate, channels)
@@ -144,8 +144,20 @@ func (e *Engine) ActiveBackend() string {
 	return (*bp).Name()
 }
 
-// AvailableBackends returns a sorted list of registered backend names.
+// AvailableBackends returns the list of available backend names.
+// If the active backend is a SidecarBackend, returns the sidecar's internal
+// backend list (e.g., ["parakeet", "whisper"]) instead of engine-level names.
 func (e *Engine) AvailableBackends() []string {
+	bp := e.active.Load()
+	if bp != nil {
+		// Check if the active backend exposes available sub-backends.
+		if sb, ok := (*bp).(*SidecarBackend); ok {
+			if p := sb.cachedAvailableBackends.Load(); p != nil {
+				return *p
+			}
+		}
+	}
+	// Fallback: engine-level backends.
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	names := make([]string, 0, len(e.backends))
@@ -158,6 +170,11 @@ func (e *Engine) AvailableBackends() []string {
 
 // SwitchBackend stops the current backend and starts the named one.
 // The onTranscript callback is preserved across the switch.
+//
+// If the name matches a direct engine-level backend, a full stop/start swap
+// is performed. Otherwise, the switch is proxied through the active backend's
+// SetConfig — this handles sidecar-internal backend switching (e.g., "whisper"
+// to "parakeet") without restarting the sidecar process.
 func (e *Engine) SwitchBackend(name string) error {
 	e.mu.Lock()
 	if e.closed {
@@ -166,51 +183,67 @@ func (e *Engine) SwitchBackend(name string) error {
 	}
 
 	// Already on requested backend — no-op.
-	if bp := e.active.Load(); bp != nil && (*bp).Name() == name {
+	bp := e.active.Load()
+	if bp != nil && (*bp).Name() == name {
 		e.mu.Unlock()
 		return nil
 	}
 
+	// Try direct engine backend first.
 	newBackend, ok := e.backends[name]
-	if !ok {
+	if ok {
 		e.mu.Unlock()
-		return fmt.Errorf("asr: unknown backend %q", name)
-	}
-	e.mu.Unlock()
 
-	// Build callback wrapper that reads onTranscript through the Engine mutex.
-	cb := func(words []TranscriptWord, isFinal bool) {
-		e.mu.Lock()
-		fn := e.onTranscript
-		e.mu.Unlock()
-		if fn != nil {
-			fn(words, isFinal)
+		// Build callback wrapper that reads onTranscript through the Engine mutex.
+		cb := func(words []TranscriptWord, isFinal bool) {
+			e.mu.Lock()
+			fn := e.onTranscript
+			e.mu.Unlock()
+			if fn != nil {
+				fn(words, isFinal)
+			}
 		}
-	}
 
-	// Get current active backend (lock-free).
-	bp := e.active.Load()
-
-	// Stop old backend.
-	if bp != nil {
-		(*bp).Stop()
-	}
-
-	// Start new backend.
-	if err := newBackend.Start(cb); err != nil {
-		// Re-start old backend on failure.
+		// Stop old backend.
 		if bp != nil {
-			_ = (*bp).Start(cb)
+			(*bp).Stop()
 		}
-		return fmt.Errorf("asr: failed to start backend %q: %w", name, err)
-	}
 
-	// Atomic swap — load from map for a stable heap pointer.
-	e.mu.Lock()
-	stable := e.backends[name]
+		// Start new backend.
+		if err := newBackend.Start(cb); err != nil {
+			// Re-start old backend on failure.
+			if bp != nil {
+				_ = (*bp).Start(cb)
+			}
+			return fmt.Errorf("asr: failed to start backend %q: %w", name, err)
+		}
+
+		// Atomic swap — load from map for a stable heap pointer.
+		e.mu.Lock()
+		stable := e.backends[name]
+		e.mu.Unlock()
+		e.active.Store(&stable)
+
+		if fn := e.onBackendSwitch.Load(); fn != nil {
+			(*fn)()
+		}
+		return nil
+	}
 	e.mu.Unlock()
-	e.active.Store(&stable)
-	return nil
+
+	// Not a direct backend — proxy through active backend's SetConfig.
+	// This handles sidecar-internal backend switching (e.g., "whisper" <-> "parakeet").
+	if bp != nil {
+		cfg, _ := json.Marshal(map[string]string{"backend": name})
+		if err := (*bp).SetConfig(json.RawMessage(cfg)); err != nil {
+			return fmt.Errorf("asr: switch backend %q: %w", name, err)
+		}
+		if fn := e.onBackendSwitch.Load(); fn != nil {
+			(*fn)()
+		}
+		return nil
+	}
+	return fmt.Errorf("asr: unknown backend %q", name)
 }
 
 // OnBackendSwitch registers a callback invoked after an async backend switch completes.

@@ -169,6 +169,44 @@ func TestRoundtripStatus(t *testing.T) {
 	}
 }
 
+func TestRoundtripStatusMultiBackend(t *testing.T) {
+	var buf bytes.Buffer
+
+	msg := &Message{
+		Type:              "status",
+		State:             "ready",
+		Model:             "medium.en",
+		Backend:           "whisper",
+		AvailableBackends: []string{"parakeet", "whisper"},
+		Models:            []string{"base", "medium.en", "large-v3"},
+	}
+
+	if err := WriteMessage(&buf, msg); err != nil {
+		t.Fatalf("WriteMessage: %v", err)
+	}
+
+	got, err := ReadMessage(&buf)
+	if err != nil {
+		t.Fatalf("ReadMessage: %v", err)
+	}
+
+	if got.Backend != "whisper" {
+		t.Errorf("Backend = %q, want %q", got.Backend, "whisper")
+	}
+	if len(got.AvailableBackends) != 2 {
+		t.Fatalf("len(AvailableBackends) = %d, want 2", len(got.AvailableBackends))
+	}
+	if got.AvailableBackends[0] != "parakeet" || got.AvailableBackends[1] != "whisper" {
+		t.Errorf("AvailableBackends = %v, want [parakeet whisper]", got.AvailableBackends)
+	}
+	if len(got.Models) != 3 {
+		t.Fatalf("len(Models) = %d, want 3", len(got.Models))
+	}
+	if got.Models[0] != "base" || got.Models[1] != "medium.en" || got.Models[2] != "large-v3" {
+		t.Errorf("Models = %v, want [base medium.en large-v3]", got.Models)
+	}
+}
+
 func TestRoundtripError(t *testing.T) {
 	var buf bytes.Buffer
 

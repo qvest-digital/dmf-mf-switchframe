@@ -24,10 +24,12 @@ import (
 
 // SidecarConfig configures the ASR sidecar subprocess.
 type SidecarConfig struct {
-	BinPath  string // path to switchframe-asr binary
-	ShmName  string // POSIX shm name (e.g., "/switchframe-asr-session123")
-	ModelDir string // path to model directory
-	Device   int    // GPU device ID
+	BinPath          string // path to switchframe-asr binary
+	ShmName          string // POSIX shm name (e.g., "/switchframe-asr-session123")
+	ModelDir         string // path to Parakeet TRT model directory
+	WhisperModelsDir string // directory containing ggml-*.bin Whisper models
+	DefaultBackend   string // default ASR backend (parakeet or whisper)
+	Device           int    // GPU device ID
 }
 
 // SidecarBackend implements the Backend interface by spawning an ASR sidecar
@@ -55,8 +57,11 @@ type SidecarBackend struct {
 	closeOnce sync.Once
 
 	// Cached status from sidecar.
-	cachedModel   atomic.Pointer[string]
-	cachedLatency atomic.Int64
+	cachedModel             atomic.Pointer[string]
+	cachedLatency           atomic.Int64
+	cachedBackend           atomic.Pointer[string]
+	cachedAvailableBackends atomic.Pointer[[]string]
+	cachedModels            atomic.Pointer[[]string]
 }
 
 // NewSidecarBackend creates a new SidecarBackend but does not start it.
@@ -78,9 +83,13 @@ func NewSidecarBackend(cfg SidecarConfig) (*SidecarBackend, error) {
 	}, nil
 }
 
-// Name returns the backend identifier.
+// Name returns the active backend name from the sidecar.
+// Falls back to "parakeet" if no status has been received yet.
 func (s *SidecarBackend) Name() string {
-	return "sidecar"
+	if p := s.cachedBackend.Load(); p != nil {
+		return *p
+	}
+	return "parakeet"
 }
 
 // Start begins the sidecar process and IPC communication.
@@ -154,13 +163,18 @@ func (s *SidecarBackend) Close() {
 	})
 }
 
-// Models lists available models for this backend.
+// Models lists available models for the active backend in the sidecar.
 func (s *SidecarBackend) Models() []string {
+	if p := s.cachedModels.Load(); p != nil {
+		return *p
+	}
 	return []string{"parakeet-tdt-1.1b"}
 }
 
-// SetModel swaps the model at runtime.
+// SetModel swaps the model at runtime via IPC to the sidecar.
 func (s *SidecarBackend) SetModel(name string) error {
+	cfg, _ := json.Marshal(map[string]string{"model": name})
+	s.sendCommand("set_config", json.RawMessage(cfg))
 	return nil
 }
 
@@ -212,14 +226,24 @@ func (s *SidecarBackend) spawnLocked() error {
 	}
 	s.listener = listener
 
-	// Spawn sidecar process.
-	cmd := exec.Command(
-		s.cfg.BinPath,
+	// Build sidecar args. Only pass optional flags when non-empty.
+	args := []string{
 		"--shm-name", s.cfg.ShmName,
 		"--socket", s.socketPath,
-		"--model-dir", s.cfg.ModelDir,
 		"--device", strconv.Itoa(s.cfg.Device),
-	)
+	}
+	if s.cfg.ModelDir != "" {
+		args = append(args, "--model-dir", s.cfg.ModelDir)
+	}
+	if s.cfg.WhisperModelsDir != "" {
+		args = append(args, "--whisper-models-dir", s.cfg.WhisperModelsDir)
+	}
+	if s.cfg.DefaultBackend != "" {
+		args = append(args, "--default-backend", s.cfg.DefaultBackend)
+	}
+
+	// Spawn sidecar process.
+	cmd := exec.Command(s.cfg.BinPath, args...)
 
 	// Capture stderr with a prefixed logger.
 	stderr, err := cmd.StderrPipe()
@@ -383,7 +407,20 @@ func (s *SidecarBackend) readLoop(gen int64) {
 			if msg.LatencyMs > 0 {
 				s.cachedLatency.Store(int64(msg.LatencyMs))
 			}
-			slog.Debug("asr-sidecar: status", "state", msg.State, "model", msg.Model, "latency_ms", msg.LatencyMs)
+			if msg.Backend != "" {
+				backend := msg.Backend
+				s.cachedBackend.Store(&backend)
+			}
+			if len(msg.AvailableBackends) > 0 {
+				ab := msg.AvailableBackends
+				s.cachedAvailableBackends.Store(&ab)
+			}
+			if len(msg.Models) > 0 {
+				models := msg.Models
+				s.cachedModels.Store(&models)
+			}
+			slog.Debug("asr-sidecar: status", "state", msg.State, "model", msg.Model,
+				"backend", msg.Backend, "available", msg.AvailableBackends, "latency_ms", msg.LatencyMs)
 
 		case "error":
 			slog.Warn("asr-sidecar: error from sidecar", "error", msg.Error)

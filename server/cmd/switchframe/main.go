@@ -111,8 +111,10 @@ type AppConfig struct {
 	NeuralKeyModelPath string // Path to CorridorKey ONNX model (empty = disabled)
 
 	// ASR (speech-to-text).
-	ASRSidecarBin      string // path to switchframe-asr binary
-	ASRSidecarModelDir string // path to streaming model directory
+	ASRSidecarBin       string // path to switchframe-asr binary
+	ASRSidecarModelDir  string // path to streaming model directory
+	ASRWhisperModelsDir string // Whisper GGML models directory for ASR sidecar
+	ASRDefaultBackend   string // default ASR backend (parakeet or whisper)
 
 	// Persistent cache directory for mmap'd LUTs and decoded assets.
 	CacheDir string
@@ -305,6 +307,8 @@ func parseConfig() (AppConfig, error) {
 	// ASR (speech-to-text) flags.
 	asrSidecarFlag := flag.String("asr-sidecar", "", "Path to switchframe-asr sidecar binary")
 	asrSidecarModelDirFlag := flag.String("asr-sidecar-model-dir", "", "Path to streaming ASR model directory")
+	asrWhisperModelsDirFlag := flag.String("asr-whisper-models-dir", "", "Whisper GGML models directory for ASR sidecar")
+	asrDefaultBackendFlag := flag.String("asr-default-backend", "parakeet", "Default ASR backend (parakeet or whisper)")
 
 	// Persistent cache directory.
 	cacheDirFlag := flag.String("cache-dir", defaultCacheDir(), "persistent cache directory for mmap'd LUTs and decoded assets")
@@ -451,8 +455,10 @@ func parseConfig() (AppConfig, error) {
 		StateDir:             stateDir,
 		AIModelPath:          *aiModelFlag,
 		NeuralKeyModelPath:   *neuralKeyModelFlag,
-		ASRSidecarBin:      *asrSidecarFlag,
-		ASRSidecarModelDir: *asrSidecarModelDirFlag,
+		ASRSidecarBin:       *asrSidecarFlag,
+		ASRSidecarModelDir:  *asrSidecarModelDirFlag,
+		ASRWhisperModelsDir: *asrWhisperModelsDirFlag,
+		ASRDefaultBackend:   *asrDefaultBackendFlag,
 		CacheDir:             *cacheDirFlag,
 		ST2110Port:           *st2110PortFlag,
 		ST2110IP:             *st2110IPFlag,

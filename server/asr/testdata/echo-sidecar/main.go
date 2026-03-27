@@ -45,11 +45,14 @@ func main() {
 	}
 	defer conn.Close()
 
-	// Send initial status.
+	// Send initial status with multi-backend info.
 	_ = asripc.WriteMessage(conn, &asripc.Message{
-		Type:  "status",
-		State: "ready",
-		Model: "echo-test-model",
+		Type:              "status",
+		State:             "ready",
+		Model:             "echo-test-model",
+		Backend:           "echo",
+		AvailableBackends: []string{"echo"},
+		Models:            []string{"echo-test-model"},
 	})
 
 	// Start command reader goroutine.

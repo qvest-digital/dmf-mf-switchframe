@@ -158,7 +158,7 @@ func TestEngine_SwitchBackend(t *testing.T) {
 	}
 }
 
-func TestEngine_SwitchBackendUnknown(t *testing.T) {
+func TestEngine_SwitchBackendUnknownProxy(t *testing.T) {
 	a := newMockBackend("alpha")
 
 	e := newEngineWithBackends(map[string]Backend{
@@ -166,11 +166,29 @@ func TestEngine_SwitchBackendUnknown(t *testing.T) {
 	}, "alpha")
 	defer e.Close()
 
+	// Unknown backend names are proxied through the active backend's SetConfig.
+	// The mock backend accepts any config, so this should succeed.
 	err := e.SwitchBackend("nonexistent")
-	if err == nil {
-		t.Fatal("expected error for unknown backend")
+	if err != nil {
+		t.Fatalf("expected proxy to succeed, got: %v", err)
+	}
+
+	// Verify SetConfig was called with the backend switch payload.
+	a.mu.Lock()
+	cfg := a.configJSON
+	a.mu.Unlock()
+	if cfg == nil {
+		t.Fatal("expected SetConfig to be called on active backend")
+	}
+	var parsed map[string]string
+	if err := json.Unmarshal(cfg, &parsed); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+	if parsed["backend"] != "nonexistent" {
+		t.Errorf("expected backend='nonexistent' in config, got %q", parsed["backend"])
 	}
 }
+
 
 func TestEngine_IngestAudioDispatches(t *testing.T) {
 	a := newMockBackend("alpha")

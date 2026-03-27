@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -17,7 +18,21 @@ import (
 // depth estimation and SAM segmentation are enabled on demand via the REST API.
 // Always succeeds; the engine is lightweight until models are loaded.
 func (a *App) initAR() {
+	// Look for models in the per-session state dir first, then fall back
+	// to a shared system-wide location. This allows a single set of TRT
+	// engine files to serve all sessions on the machine.
 	modelsDir := a.statePath("ar_models")
+	if _, err := os.Stat(filepath.Join(modelsDir, "depth_anything_v2_vits.plan")); err != nil {
+		for _, fallback := range []string{
+			"/data/switchframe/ar_models",
+			"/opt/switchframe/ar_models",
+		} {
+			if _, err := os.Stat(filepath.Join(fallback, "depth_anything_v2_vits.plan")); err == nil {
+				modelsDir = fallback
+				break
+			}
+		}
+	}
 
 	cfg := arinfer.Config{
 		ModelsDir:      modelsDir,

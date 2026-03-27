@@ -27,6 +27,11 @@ type Message struct {
 	LatencyMs int    `json:"latency_ms,omitempty"`  // for type=status
 	Error     string `json:"error,omitempty"`        // for type=error
 
+	// Additional status fields for multi-backend support (sidecar -> server).
+	Backend           string   `json:"backend,omitempty"`            // active backend name
+	AvailableBackends []string `json:"available_backends,omitempty"` // all backend names
+	Models            []string `json:"models,omitempty"`             // models for active backend
+
 	// Direction: switchframe -> sidecar
 	Cmd    string          `json:"cmd,omitempty"`    // "start", "stop", "reset", "set_config", "shutdown"
 	Config json.RawMessage `json:"config,omitempty"` // for cmd=set_config
