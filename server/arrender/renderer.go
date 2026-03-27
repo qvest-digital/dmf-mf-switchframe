@@ -142,6 +142,16 @@ func (r *Renderer) Scene() *Scene {
 	return r.scene
 }
 
+// SetScene replaces the renderer's scene graph with an external one.
+// This allows the REST API and the renderer to share the same scene instance.
+func (r *Renderer) SetScene(s *Scene) {
+	if r == nil || s == nil {
+		return
+	}
+	r.scene = s
+	s.MarkDirty() // force re-render with the new scene
+}
+
 // Settings returns the current render settings.
 func (r *Renderer) Settings() RenderSettings {
 	if r == nil {

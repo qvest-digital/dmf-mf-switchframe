@@ -66,6 +66,12 @@ func (a *App) initARRenderer() {
 		return
 	}
 	a.arRenderer = renderer
+
+	// Share the app's scene graph with the renderer so the REST API
+	// and the render pipeline operate on the same scene instance.
+	if a.arScene != nil {
+		a.arRenderer.SetScene(a.arScene)
+	}
 	slog.Info("AR renderer initialized")
 
 	// Load PTX shaders and initialize the OptiX pipeline.
@@ -241,7 +247,9 @@ func (a *arCompositorStateAdapter) TriggerRender() {
 	if a.app.arRenderer == nil || !a.app.arRenderer.PipelineReady() {
 		return
 	}
-	scene := a.app.arRenderer.Scene()
+	// Use the app's shared scene (same instance the REST API writes to),
+	// not the renderer's internal scene which is a separate instance.
+	scene := a.app.arScene
 	if scene == nil || !scene.IsDirty() {
 		return
 	}
