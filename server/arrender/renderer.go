@@ -20,9 +20,10 @@ type Renderer struct {
 	scene      *Scene
 	settings   RenderSettings
 	denoiser   *gpu.OptixDenoiser
-	outputBuf  uintptr // float4 RGBA render output (device pointer)
-	denoiseBuf uintptr // float4 denoised output (device pointer)
-	ias        *gpu.OptixIAS
+	outputBuf   uintptr // float4 RGBA render output (device pointer)
+	denoiseBuf  uintptr // float4 denoised output (device pointer)
+	outputU8Buf uintptr // uint8 RGBA converted output (device pointer, W*H*4 bytes)
+	ias         *gpu.OptixIAS
 	gasList    []*gpu.OptixGAS            // per-object GAS (parallel to scene objects snapshot)
 	normalBufs []uintptr                  // per-GAS normal device pointers (freed on rebuild)
 	meshes     map[string][]GLTFMesh      // loaded mesh data keyed by asset ID (CPU-side, for GAS building)
@@ -63,10 +64,22 @@ func NewRenderer(gpuCtx *gpu.Context, settings RenderSettings) (*Renderer, error
 	}
 	r.outputBuf = uintptr(outPtr)
 
+	// Allocate uint8 RGBA output buffer (4 bytes per pixel) for the
+	// AR compositor kernel which expects packed uint8 RGBA, not float4.
+	u8Size := settings.Width * settings.Height * 4
+	u8Ptr, err := gpu.AllocDeviceBytes(u8Size)
+	if err != nil {
+		gpu.FreeDeviceBytes(outPtr)
+		optixCtx.Close()
+		return nil, fmt.Errorf("allocate uint8 output buffer: %w", err)
+	}
+	r.outputU8Buf = uintptr(u8Ptr)
+
 	// Create denoiser if requested.
 	if settings.Denoise {
 		d, err := gpu.NewOptixDenoiser(optixCtx, settings.Width, settings.Height, false)
 		if err != nil {
+			gpu.FreeDeviceBytes(u8Ptr)
 			gpu.FreeDeviceBytes(outPtr)
 			optixCtx.Close()
 			return nil, fmt.Errorf("create denoiser: %w", err)
@@ -77,6 +90,7 @@ func NewRenderer(gpuCtx *gpu.Context, settings RenderSettings) (*Renderer, error
 		denoisePtr, err := gpu.AllocDeviceBytes(bufSize)
 		if err != nil {
 			d.Close()
+			gpu.FreeDeviceBytes(u8Ptr)
 			gpu.FreeDeviceBytes(outPtr)
 			optixCtx.Close()
 			return nil, fmt.Errorf("allocate denoise buffer: %w", err)
@@ -185,6 +199,18 @@ func (r *Renderer) SetSettings(s RenderSettings) error {
 		}
 		r.outputBuf = uintptr(outPtr)
 
+		// Reallocate uint8 RGBA output buffer.
+		u8Size := s.Width * s.Height * 4
+		if r.outputU8Buf != 0 {
+			gpu.FreeDeviceBytes(unsafe.Pointer(r.outputU8Buf))
+			r.outputU8Buf = 0
+		}
+		u8Ptr, err := gpu.AllocDeviceBytes(u8Size)
+		if err != nil {
+			return fmt.Errorf("reallocate uint8 output buffer (%dx%d): %w", s.Width, s.Height, err)
+		}
+		r.outputU8Buf = uintptr(u8Ptr)
+
 		// Reallocate denoise buffer if denoiser is active.
 		if r.denoiser != nil {
 			if r.denoiseBuf != 0 {
@@ -278,6 +304,16 @@ func (r *Renderer) Render(pose *tracking.CameraPose) error {
 		if err != nil {
 			return fmt.Errorf("denoise: %w", err)
 		}
+	}
+
+	// Step 6: Convert float4 RGBA to uint8 RGBA for the AR compositor kernel.
+	// The compositor expects packed uint8 RGBA but OptiX outputs float4.
+	srcBuf := r.outputBuf
+	if r.denoiser != nil && r.denoiseBuf != 0 {
+		srcBuf = r.denoiseBuf
+	}
+	if err := gpu.Float4ToRGBA8(unsafe.Pointer(r.outputU8Buf), unsafe.Pointer(srcBuf), r.settings.Width, r.settings.Height); err != nil {
+		return fmt.Errorf("float4 to rgba8 conversion: %w", err)
 	}
 
 	return nil
@@ -565,15 +601,16 @@ func objectTransform(obj SceneObject) [12]float32 {
 }
 
 // RenderedFrame returns the device pointer to the most recent RGBA
-// render output. Returns 0 if no frame has been rendered yet.
+// render output as packed uint8 (R,G,B,A per pixel, Width*Height*4
+// bytes). Returns 0 if no frame has been rendered yet.
+//
+// The returned buffer is the uint8 conversion of the float4 OptiX
+// output, performed at the end of each Render() call.
 func (r *Renderer) RenderedFrame() uintptr {
 	if r == nil {
 		return 0
 	}
-	if r.denoiser != nil && r.denoiseBuf != 0 {
-		return r.denoiseBuf
-	}
-	return r.outputBuf
+	return r.outputU8Buf
 }
 
 // SceneState returns a snapshot of the scene for state broadcast.
@@ -667,6 +704,10 @@ func (r *Renderer) Close() error {
 	if r.outputBuf != 0 {
 		gpu.FreeDeviceBytes(unsafe.Pointer(r.outputBuf))
 		r.outputBuf = 0
+	}
+	if r.outputU8Buf != 0 {
+		gpu.FreeDeviceBytes(unsafe.Pointer(r.outputU8Buf))
+		r.outputU8Buf = 0
 	}
 	if r.denoiseBuf != 0 {
 		gpu.FreeDeviceBytes(unsafe.Pointer(r.denoiseBuf))

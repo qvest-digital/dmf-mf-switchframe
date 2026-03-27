@@ -82,7 +82,38 @@ __global__ void ar_composite_kernel(
     }
 }
 
+// Convert float4 RGBA render output (OptiX) to packed uint8 RGBA.
+// Each channel is clamped to [0,1] then scaled to [0,255].
+__global__ void float4_to_rgba8_kernel(
+    uint8_t* __restrict__ output,     // packed RGBA (W*H*4 bytes)
+    const float4* __restrict__ input, // float4 per pixel
+    int width, int height)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) return;
+
+    int idx = y * width + x;
+    float4 px = input[idx];
+
+    // Clamp [0,1] and convert to uint8
+    output[idx * 4 + 0] = (uint8_t)(fminf(fmaxf(px.x, 0.0f), 1.0f) * 255.0f + 0.5f);
+    output[idx * 4 + 1] = (uint8_t)(fminf(fmaxf(px.y, 0.0f), 1.0f) * 255.0f + 0.5f);
+    output[idx * 4 + 2] = (uint8_t)(fminf(fmaxf(px.z, 0.0f), 1.0f) * 255.0f + 0.5f);
+    output[idx * 4 + 3] = (uint8_t)(fminf(fmaxf(px.w, 0.0f), 1.0f) * 255.0f + 0.5f);
+}
+
 extern "C" {
+
+cudaError_t launch_float4_to_rgba8(
+    uint8_t* output, const float4* input,
+    int width, int height, cudaStream_t stream)
+{
+    dim3 block(BLOCK_DIM_X, BLOCK_DIM_Y);
+    dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
+    float4_to_rgba8_kernel<<<grid, block, 0, stream>>>(output, input, width, height);
+    return cudaGetLastError();
+}
 
 cudaError_t launch_ar_composite(
     uint8_t* nv12,

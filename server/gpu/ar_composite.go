@@ -15,6 +15,10 @@ cudaError_t launch_ar_composite(
     int width, int height, int pitch,
     int threshold,
     cudaStream_t stream);
+
+cudaError_t launch_float4_to_rgba8(
+    uint8_t* output, const float4* input,
+    int width, int height, cudaStream_t stream);
 */
 import "C"
 
@@ -280,4 +284,37 @@ func ARComposite(ctx *Context, nv12DevPtr uintptr,
 		return fmt.Errorf("gpu: ARComposite: kernel failed: %d", rc)
 	}
 	return ctx.Sync()
+}
+
+// Float4ToRGBA8 converts a float4 RGBA buffer (OptiX render output) to
+// packed uint8 RGBA on GPU. Each channel is clamped [0,1] and scaled to
+// [0,255]. Uses the default CUDA stream.
+//
+// Parameters:
+//   - output: uint8 RGBA device pointer (width * height * 4 bytes)
+//   - input: float4 RGBA device pointer (width * height * 16 bytes)
+//   - width, height: image dimensions
+func Float4ToRGBA8(output, input unsafe.Pointer, width, height int) error {
+	if output == nil || input == nil {
+		return fmt.Errorf("gpu: Float4ToRGBA8: nil pointer")
+	}
+	if width <= 0 || height <= 0 {
+		return fmt.Errorf("gpu: Float4ToRGBA8: invalid dimensions %dx%d", width, height)
+	}
+
+	rc := C.launch_float4_to_rgba8(
+		(*C.uint8_t)(output),
+		(*C.float4)(input),
+		C.int(width), C.int(height),
+		defaultCUDAStream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: Float4ToRGBA8: kernel failed: %d", rc)
+	}
+
+	// Synchronize to ensure conversion is complete before the caller reads.
+	if rc := C.cudaStreamSynchronize(defaultCUDAStream); rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: Float4ToRGBA8: stream sync failed: %d", rc)
+	}
+	return nil
 }

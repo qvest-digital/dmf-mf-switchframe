@@ -2,6 +2,8 @@
 
 package gpu
 
+import "unsafe"
+
 // ARCompositorState provides AR data to the pipeline node.
 type ARCompositorState interface {
 	HasActiveAR() bool
@@ -49,5 +51,10 @@ func ARComposite(ctx *Context, nv12DevPtr uintptr,
 	render uintptr, renderW, renderH int,
 	occlusion uintptr,
 	width, height, pitch, threshold int) error {
+	return ErrGPUNotAvailable
+}
+
+// Float4ToRGBA8 returns ErrGPUNotAvailable on non-GPU builds.
+func Float4ToRGBA8(output, input unsafe.Pointer, width, height int) error {
 	return ErrGPUNotAvailable
 }
