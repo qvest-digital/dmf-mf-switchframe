@@ -14,6 +14,7 @@ package srt
 #include <libavutil/hwcontext.h>
 #include <libswscale/swscale.h>
 #include <libswresample/swresample.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,6 +26,17 @@ extern void goOnVideoFrameGPU(int id, uint64_t yDevPtr, uint64_t uvDevPtr, int p
 extern void goOnAudioFrame(int id, float *data, int samples, int channels, int64_t pts);
 extern void goOnCaptionData(int id, uint8_t *data, int size, int64_t pts);
 extern void goOnSCTE35Data(int id, uint8_t *data, int size, int64_t pts);
+extern void goLogDecoder(int id, char *msg);
+
+// srtdec_log is a helper to send diagnostic messages from C to Go's slog.
+static void srtdec_log(int decoder_id, const char *fmt_str, ...) {
+    char buf[256];
+    va_list args;
+    va_start(args, fmt_str);
+    vsnprintf(buf, sizeof(buf), fmt_str, args);
+    va_end(args);
+    goLogDecoder(decoder_id, buf);
+}
 
 // srtdec_interrupt_cb is called by FFmpeg to check if the operation should be aborted.
 // The opaque pointer is an int* pointing to the interrupt flag.
@@ -232,11 +244,18 @@ static int srtdec_open(srtdec_t *h, int decoder_id, int max_threads, void *hw_de
     // Open video decoder.
     if (h->video_stream_idx >= 0) {
         AVStream *vstream = h->fmt_ctx->streams[h->video_stream_idx];
+        srtdec_log(decoder_id, "video stream found: codec_id=%d (%s), %dx%d, profile=%d",
+            vstream->codecpar->codec_id,
+            avcodec_get_name(vstream->codecpar->codec_id),
+            vstream->codecpar->width, vstream->codecpar->height,
+            vstream->codecpar->profile);
         const AVCodec *vdec = avcodec_find_decoder(vstream->codecpar->codec_id);
         if (!vdec) {
+            srtdec_log(decoder_id, "no decoder found for codec_id=%d", vstream->codecpar->codec_id);
             // No decoder for this codec; disable video.
             h->video_stream_idx = -1;
         } else {
+            srtdec_log(decoder_id, "using decoder: %s", vdec->name);
             h->video_dec_ctx = avcodec_alloc_context3(vdec);
             if (!h->video_dec_ctx) {
                 ret = -6;
@@ -256,6 +275,7 @@ static int srtdec_open(srtdec_t *h, int decoder_id, int max_threads, void *hw_de
             // enable hardware decode. NVDEC does its own parallelism so
             // we disable CPU threading.
             if (hw_device_ctx && srtdec_is_nvdec_supported(vstream->codecpar->codec_id)) {
+                srtdec_log(decoder_id, "enabling NVDEC hwaccel for %s", vdec->name);
                 h->video_dec_ctx->hw_device_ctx = av_buffer_ref((AVBufferRef*)hw_device_ctx);
                 h->video_dec_ctx->get_format = srtdec_get_hw_format;
                 h->hw_device_ctx = hw_device_ctx;
@@ -266,12 +286,22 @@ static int srtdec_open(srtdec_t *h, int decoder_id, int max_threads, void *hw_de
 
             ret = avcodec_open2(h->video_dec_ctx, vdec, NULL);
             if (ret < 0) {
+                char errbuf[128];
+                av_strerror(ret, errbuf, sizeof(errbuf));
+                srtdec_log(decoder_id, "avcodec_open2 FAILED for %s: %d (%s)", vdec->name, ret, errbuf);
                 avcodec_free_context(&h->video_dec_ctx);
                 h->video_dec_ctx = NULL;
                 h->video_stream_idx = -1;
+            } else {
+                srtdec_log(decoder_id, "avcodec_open2 OK for %s, pix_fmt=%d, hw_device=%s",
+                    vdec->name, h->video_dec_ctx->pix_fmt,
+                    h->video_dec_ctx->hw_device_ctx ? "yes" : "no");
             }
         }
     }
+
+    srtdec_log(decoder_id, "stream setup: video_idx=%d audio_idx=%d data_idx=%d",
+        h->video_stream_idx, h->audio_stream_idx, h->data_stream_idx);
 
     // Open audio decoder.
     if (h->audio_stream_idx >= 0) {
@@ -705,6 +735,7 @@ import "C"
 import (
 	"errors"
 	"io"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -962,4 +993,9 @@ func goOnSCTE35Data(id C.int, data *C.uint8_t, size C.int, pts C.int64_t) {
 	}
 	goData := C.GoBytes(unsafe.Pointer(data), size)
 	d.cfg.OnSCTE35(goData, int64(pts))
+}
+
+//export goLogDecoder
+func goLogDecoder(id C.int, msg *C.char) {
+	slog.Info("srt-decoder", "id", int(id), "msg", C.GoString(msg))
 }
