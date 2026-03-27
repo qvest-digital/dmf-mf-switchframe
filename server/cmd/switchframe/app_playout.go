@@ -303,12 +303,8 @@ func (a *App) initPlayout() error {
 	}
 	a.playoutPlaylistDir = playlistDir
 
-	// Generate sample clips for template playlists.
-	sampleDir := filepath.Join(cacheDir, "samples")
-	a.playoutSamples = playout.GenerateSampleClips(sampleDir)
-
 	slog.Info("playout manager initialized", "cacheDir", cacheDir, "asRunDir", asRunDir,
-		"playlistDir", playlistDir, "sampleClips", len(a.playoutSamples))
+		"playlistDir", playlistDir)
 	return nil
 }
 
