@@ -930,6 +930,89 @@ func TestClose_ReleasesModels(t *testing.T) {
 	}
 }
 
+// --- DepthAtPixel tests ---
+
+func TestDepthAtPixel_NoOcclusion(t *testing.T) {
+	e := New(Config{})
+	defer e.Close()
+
+	// No occlusion data — should return default depth of 2.0.
+	depth, err := e.DepthAtPixel(960, 540, 1920, 1080)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if depth != 2.0 {
+		t.Errorf("depth = %f, want 2.0 (default)", depth)
+	}
+}
+
+func TestDepthAtPixel_OutOfBounds(t *testing.T) {
+	e := New(Config{})
+	defer e.Close()
+
+	// Set up an occlusion map so we don't hit the nil early return.
+	e.lastOcclusion.Store(&OcclusionMap{
+		DepthPtr: 0x1000,
+		Width:    1920,
+		Height:   1080,
+		DepthW:   518,
+		DepthH:   294,
+	})
+
+	_, err := e.DepthAtPixel(2000, 540, 1920, 1080)
+	if err == nil {
+		t.Fatal("expected error for out-of-bounds pixel")
+	}
+
+	_, err = e.DepthAtPixel(960, -1, 1920, 1080)
+	if err == nil {
+		t.Fatal("expected error for negative Y")
+	}
+}
+
+func TestDepthAtPixel_WithOcclusion(t *testing.T) {
+	e := New(Config{})
+	defer e.Close()
+
+	// Occlusion map with a depth pointer set.
+	e.lastOcclusion.Store(&OcclusionMap{
+		DepthPtr: 0x1000,
+		Width:    1920,
+		Height:   1080,
+		DepthW:   518,
+		DepthH:   294,
+	})
+
+	// Valid pixel coordinates — returns default 2.0 until GPU download is wired.
+	depth, err := e.DepthAtPixel(960, 540, 1920, 1080)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if depth != 2.0 {
+		t.Errorf("depth = %f, want 2.0 (stub default)", depth)
+	}
+}
+
+func TestDepthAtPixel_ZeroDepthPtr(t *testing.T) {
+	e := New(Config{})
+	defer e.Close()
+
+	// Occlusion map exists but DepthPtr is zero — should fall through to default.
+	e.lastOcclusion.Store(&OcclusionMap{
+		DepthPtr: 0,
+		Width:    1920,
+		Height:   1080,
+	})
+
+	depth, err := e.DepthAtPixel(960, 540, 1920, 1080)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if depth != 2.0 {
+		t.Errorf("depth = %f, want 2.0 (default, zero DepthPtr)", depth)
+	}
+}
+
 func TestStatus_LatencyUpdatedByProcessFrame(t *testing.T) {
 	e := New(Config{})
 	defer e.Close()

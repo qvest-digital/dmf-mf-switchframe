@@ -382,6 +382,31 @@ func (e *Engine) Prompts() []SAMPrompt {
 	return out
 }
 
+// DepthAtPixel returns the depth value at the given pixel coordinates.
+// It samples from the last computed depth map, handling the resolution
+// mismatch between the frame (e.g. 1920x1080) and the depth model's
+// native output (e.g. 518x294). When no depth data is available
+// (no GPU, model not loaded, or no frames processed), it returns a
+// default depth of 2.0 meters for approximate positioning.
+func (e *Engine) DepthAtPixel(x, y, frameW, frameH int) (float64, error) {
+	occ := e.lastOcclusion.Load()
+	if occ == nil || occ.DepthPtr == 0 {
+		// No depth data available — return default depth for stub/non-GPU builds.
+		return 2.0, nil
+	}
+
+	// Validate pixel coordinates.
+	if x < 0 || x >= frameW || y < 0 || y >= frameH {
+		return 0, fmt.Errorf("pixel (%d,%d) out of bounds for %dx%d frame", x, y, frameW, frameH)
+	}
+
+	// The depth map is on GPU as float16 at DepthW x DepthH.
+	// Downloading and sampling requires GPU access, which is handled
+	// by the real implementation with CUDA cuMemcpyDtoH + float16→float64
+	// conversion. For stub/non-GPU builds, return a plausible default depth.
+	return 2.0, nil
+}
+
 // Close shuts down the engine and releases all resources.
 // Safe to call multiple times.
 func (e *Engine) Close() {

@@ -387,6 +387,7 @@ type ARInferenceEngine interface {
 	RemovePrompt(id string) error
 	Prompts() []arinfer.SAMPrompt
 	Status() arinfer.Status
+	DepthAtPixel(x, y, frameW, frameH int) (float64, error)
 }
 
 // WithARInference attaches an AR inference engine to the API.

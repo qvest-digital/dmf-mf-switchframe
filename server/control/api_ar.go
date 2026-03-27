@@ -25,6 +25,8 @@ func (a *API) registerARRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("GET /api/ar/occlusion/prompts", a.handleARPromptList)
 		mux.HandleFunc("DELETE /api/ar/occlusion/prompts/{id}", a.handleARPromptDelete)
 		mux.HandleFunc("GET /api/ar/occlusion/status", a.handleAROcclusionStatus)
+		mux.HandleFunc("GET /api/ar/occlusion/depth-preview", a.handleARDepthPreview)
+		mux.HandleFunc("GET /api/ar/occlusion/mask-preview", a.handleARMaskPreview)
 	}
 
 	if a.arTracking != nil {
@@ -38,6 +40,11 @@ func (a *API) registerARRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("PUT /api/ar/tracking/aruco", a.handleARTrackingSetAruco)
 		mux.HandleFunc("POST /api/ar/tracking/studio-map", a.handleARTrackingStudioMapUpload)
 		mux.HandleFunc("GET /api/ar/tracking/studio-map", a.handleARTrackingStudioMapStatus)
+	}
+
+	// Place endpoint requires both inference (depth) and renderer (scene graph).
+	if a.arInference != nil && a.arRenderer != nil {
+		mux.HandleFunc("POST /api/ar/scene/place", a.handleARScenePlace)
 	}
 
 	// Scene routes require an ARRenderer (scene is always available, renderer may be nil).
@@ -870,4 +877,138 @@ func (a *API) handleARSceneLoad(w http.ResponseWriter, r *http.Request) {
 // PUT /api/ar/scene/environment
 func (a *API) handleARSceneEnvironment(w http.ResponseWriter, r *http.Request) {
 	httperr.Write(w, http.StatusNotImplemented, "HDR environment map requires OptiX IBL support (not yet available)")
+}
+
+// =============================================================================
+// Depth/Mask Preview Thumbnails
+// =============================================================================
+
+// handleARDepthPreview returns the latest depth map as a colorized JPEG thumbnail.
+// Returns 204 No Content when no depth data is available.
+//
+// GET /api/ar/occlusion/depth-preview
+func (a *API) handleARDepthPreview(w http.ResponseWriter, r *http.Request) {
+	status := a.arInference.Status()
+	if !status.DepthReady {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	// Depth preview generation requires GPU download + colorization.
+	// This will be wired when the GPU download helper is available.
+	// For now, return 204 to signal no preview data.
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleARMaskPreview returns the latest SAM segmentation mask as a JPEG thumbnail.
+// Returns 204 No Content when no mask data is available.
+//
+// GET /api/ar/occlusion/mask-preview
+func (a *API) handleARMaskPreview(w http.ResponseWriter, r *http.Request) {
+	status := a.arInference.Status()
+	if !status.SAMReady {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	// Mask preview generation requires GPU download + downscale + JPEG encode.
+	// This will be wired when the GPU download helper is available.
+	// For now, return 204 to signal no preview data.
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// =============================================================================
+// Depth-Based 3D Placement
+// =============================================================================
+
+// arScenePlaceRequest is the JSON body for POST /api/ar/scene/place.
+type arScenePlaceRequest struct {
+	AssetID string     `json:"assetId"`
+	PixelX  int        `json:"pixelX"`
+	PixelY  int        `json:"pixelY"`
+	Scale   [3]float64 `json:"scale"`
+}
+
+// arScenePlaceResponse is the JSON response for POST /api/ar/scene/place.
+type arScenePlaceResponse struct {
+	Object    arrender.SceneObject    `json:"object"`
+	Placement arinfer.PlacementResult `json:"placement"`
+}
+
+// handleARScenePlace computes a 3D world position from a pixel click + depth,
+// creates a new scene object at that position, and returns both the object
+// and the placement computation.
+//
+// POST /api/ar/scene/place
+func (a *API) handleARScenePlace(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+
+	var req arScenePlaceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+
+	if req.AssetID == "" {
+		httperr.Write(w, http.StatusBadRequest, "assetId is required")
+		return
+	}
+
+	// Default frame dimensions (1080p). In production these would come
+	// from the active format, but 1920x1080 is the standard output.
+	const frameW, frameH = 1920, 1080
+
+	if req.PixelX < 0 || req.PixelX >= frameW || req.PixelY < 0 || req.PixelY >= frameH {
+		httperr.Write(w, http.StatusBadRequest,
+			fmt.Sprintf("pixel coordinates (%d,%d) out of bounds for %dx%d frame", req.PixelX, req.PixelY, frameW, frameH))
+		return
+	}
+
+	// Get depth at the clicked pixel.
+	depthValue, err := a.arInference.DepthAtPixel(req.PixelX, req.PixelY, frameW, frameH)
+	if err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+
+	// Compute 3D world position from pixel + depth.
+	placement := arinfer.ComputePlacement(req.PixelX, req.PixelY, frameW, frameH, depthValue, 0, 0)
+
+	// Default scale to (1,1,1) if not specified.
+	scale := req.Scale
+	if scale == [3]float64{} {
+		scale = [3]float64{1, 1, 1}
+	}
+
+	// Generate a unique ID for the placed object.
+	objID := fmt.Sprintf("placed-%s-%d-%d", req.AssetID, req.PixelX, req.PixelY)
+
+	obj := arrender.SceneObject{
+		ID:       objID,
+		AssetID:  req.AssetID,
+		Position: placement.Position,
+		Rotation: [3]float64{0, 0, 0},
+		Scale:    scale,
+		Visible:  true,
+	}
+
+	scene := a.arRenderer.Scene()
+	if scene == nil {
+		httperr.WriteErr(w, http.StatusServiceUnavailable, arrender.ErrRendererNotReady)
+		return
+	}
+
+	if err := scene.AddObject(obj); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+
+	a.broadcast()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(arScenePlaceResponse{
+		Object:    obj,
+		Placement: placement,
+	})
 }

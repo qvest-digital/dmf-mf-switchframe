@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/switchframe/server/arinfer"
+	"github.com/zsiec/switchframe/server/arrender"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/tracking"
 )
@@ -87,6 +88,13 @@ func (m *mockARInferenceEngine) Status() arinfer.Status {
 		DepthReady: m.depthEnabled,
 		SAMReady:   m.samEnabled,
 	}
+}
+
+func (m *mockARInferenceEngine) DepthAtPixel(x, y, frameW, frameH int) (float64, error) {
+	if x < 0 || x >= frameW || y < 0 || y >= frameH {
+		return 0, arinfer.ErrNotReady
+	}
+	return 2.0, nil // default stub depth
 }
 
 // setupARAPI builds a test API with an AR inference engine attached.
@@ -772,4 +780,207 @@ func TestARTracking_ErrorMappings(t *testing.T) {
 	require.Equal(t, http.StatusConflict, errorStatus(tracking.ErrSourceExists))
 	require.Equal(t, http.StatusNotFound, errorStatus(tracking.ErrSourceNotFound))
 	require.Equal(t, http.StatusConflict, errorStatus(tracking.ErrMapNotReady))
+}
+
+// =============================================================================
+// Depth/Mask Preview Tests
+// =============================================================================
+
+func TestAR_DepthPreview_NoDepth(t *testing.T) {
+	api, _ := setupARAPI(t)
+
+	req := httptest.NewRequest("GET", "/api/ar/occlusion/depth-preview", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestAR_DepthPreview_DepthEnabled(t *testing.T) {
+	api, engine := setupARAPI(t)
+	engine.depthEnabled = true
+
+	req := httptest.NewRequest("GET", "/api/ar/occlusion/depth-preview", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	// Returns 204 until GPU download is wired, even with depth enabled.
+	require.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestAR_MaskPreview_NoSAM(t *testing.T) {
+	api, _ := setupARAPI(t)
+
+	req := httptest.NewRequest("GET", "/api/ar/occlusion/mask-preview", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+func TestAR_MaskPreview_SAMEnabled(t *testing.T) {
+	api, engine := setupARAPI(t)
+	engine.samEnabled = true
+
+	req := httptest.NewRequest("GET", "/api/ar/occlusion/mask-preview", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	// Returns 204 until GPU download is wired, even with SAM enabled.
+	require.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+// =============================================================================
+// Depth-Based Placement Tests
+// =============================================================================
+
+// setupPlaceAPI builds a test API with both AR inference and renderer attached.
+func setupPlaceAPI(t *testing.T) (*API, *mockARInferenceEngine, *mockARRenderer) {
+	t.Helper()
+	programRelay := distribution.NewRelay()
+	sw := switcher.NewTestSwitcher(programRelay)
+	engine := newMockARInferenceEngine()
+	renderer := newMockARRenderer()
+	api := NewAPI(sw, WithARInference(engine), WithARRenderer(renderer))
+	return api, engine, renderer
+}
+
+func TestAR_Place_Success(t *testing.T) {
+	api, _, _ := setupPlaceAPI(t)
+
+	body := `{"assetId":"model-1","pixelX":960,"pixelY":540,"scale":[1,1,1]}`
+	req := httptest.NewRequest("POST", "/api/ar/scene/place", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	var resp arScenePlaceResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	require.Equal(t, "model-1", resp.Object.AssetID)
+	require.True(t, resp.Object.Visible)
+	require.Greater(t, resp.Placement.Depth, 0.0)
+	// Center pixel should produce X≈0, Y≈0.
+	require.InDelta(t, 0, resp.Object.Position[0], 0.5)
+	require.InDelta(t, 0, resp.Object.Position[1], 0.5)
+}
+
+func TestAR_Place_DefaultScale(t *testing.T) {
+	api, _, _ := setupPlaceAPI(t)
+
+	// Omit scale — should default to (1,1,1).
+	body := `{"assetId":"model-1","pixelX":100,"pixelY":100}`
+	req := httptest.NewRequest("POST", "/api/ar/scene/place", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	var resp arScenePlaceResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	require.Equal(t, [3]float64{1, 1, 1}, resp.Object.Scale)
+}
+
+func TestAR_Place_MissingAssetID(t *testing.T) {
+	api, _, _ := setupPlaceAPI(t)
+
+	body := `{"pixelX":960,"pixelY":540}`
+	req := httptest.NewRequest("POST", "/api/ar/scene/place", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestAR_Place_InvalidJSON(t *testing.T) {
+	api, _, _ := setupPlaceAPI(t)
+
+	req := httptest.NewRequest("POST", "/api/ar/scene/place", strings.NewReader("not json"))
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestAR_Place_OutOfBounds(t *testing.T) {
+	api, _, _ := setupPlaceAPI(t)
+
+	body := `{"assetId":"model-1","pixelX":2000,"pixelY":540}`
+	req := httptest.NewRequest("POST", "/api/ar/scene/place", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestAR_Place_NegativeCoords(t *testing.T) {
+	api, _, _ := setupPlaceAPI(t)
+
+	body := `{"assetId":"model-1","pixelX":-1,"pixelY":540}`
+	req := httptest.NewRequest("POST", "/api/ar/scene/place", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestAR_Place_RequiresBothInferenceAndRenderer(t *testing.T) {
+	// Only inference, no renderer — place route should not be registered.
+	programRelay := distribution.NewRelay()
+	sw := switcher.NewTestSwitcher(programRelay)
+	engine := newMockARInferenceEngine()
+	api := NewAPI(sw, WithARInference(engine))
+
+	body := `{"assetId":"model-1","pixelX":960,"pixelY":540}`
+	req := httptest.NewRequest("POST", "/api/ar/scene/place", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	// Route not registered — mux returns 404 or 405.
+	require.NotEqual(t, http.StatusCreated, rec.Code)
+}
+
+func TestAR_Place_NilScene(t *testing.T) {
+	// Renderer with nil scene.
+	programRelay := distribution.NewRelay()
+	sw := switcher.NewTestSwitcher(programRelay)
+	engine := newMockARInferenceEngine()
+	renderer := &mockARRenderer{
+		scene:    nil, // nil scene
+		settings: arrender.DefaultRenderSettings(),
+	}
+	api := NewAPI(sw, WithARInference(engine), WithARRenderer(renderer))
+
+	body := `{"assetId":"model-1","pixelX":960,"pixelY":540}`
+	req := httptest.NewRequest("POST", "/api/ar/scene/place", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+}
+
+func TestAR_Place_CornerPositions(t *testing.T) {
+	api, _, _ := setupPlaceAPI(t)
+
+	// Top-left: X should be negative, Y should be positive (flipped).
+	body := `{"assetId":"model-1","pixelX":0,"pixelY":0}`
+	req := httptest.NewRequest("POST", "/api/ar/scene/place", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	var resp arScenePlaceResponse
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	require.Less(t, resp.Object.Position[0], 0.0, "top-left X should be negative")
+	require.Greater(t, resp.Object.Position[1], 0.0, "top-left Y should be positive (flipped)")
+}
+
+func TestAR_PreviewRoutes_NilEngine_NotRegistered(t *testing.T) {
+	programRelay := distribution.NewRelay()
+	sw := switcher.NewTestSwitcher(programRelay)
+	api := NewAPI(sw) // no WithARInference
+
+	endpoints := []struct {
+		method string
+		path   string
+	}{
+		{"GET", "/api/ar/occlusion/depth-preview"},
+		{"GET", "/api/ar/occlusion/mask-preview"},
+	}
+
+	for _, ep := range endpoints {
+		req := httptest.NewRequest(ep.method, ep.path, nil)
+		rec := httptest.NewRecorder()
+		api.Mux().ServeHTTP(rec, req)
+		require.NotEqual(t, http.StatusOK, rec.Code, "%s %s should not be routed", ep.method, ep.path)
+		require.NotEqual(t, http.StatusNoContent, rec.Code, "%s %s should not be routed", ep.method, ep.path)
+	}
 }
