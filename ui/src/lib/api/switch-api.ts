@@ -1559,6 +1559,10 @@ export function arSceneDeleteObject(objectId: string): Promise<void> {
 	return request(`/api/ar/scene/objects/${encodeURIComponent(objectId)}`, { method: 'DELETE' }) as Promise<void>;
 }
 
+export function arScenePlace(assetId: string, pixelX: number, pixelY: number, scale?: [number, number, number]): Promise<{ object: ARSceneObject; placement: { position: [number, number, number]; depth: number } }> {
+	return post('/api/ar/scene/place', { assetId, pixelX, pixelY, scale: scale || [1, 1, 1] });
+}
+
 export function arSceneAddLight(light: { id?: string; type: string; position?: [number, number, number]; color?: [number, number, number]; direction?: [number, number, number]; intensity?: number }): Promise<ARSceneLight> {
 	const body = {
 		...light,

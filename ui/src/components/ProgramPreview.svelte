@@ -112,6 +112,7 @@
 	// ── AR Prompt overlay ──
 	const arPrompt = getArPromptState();
 	const arPromptActive = $derived(arPrompt.mode !== 'off');
+	const arPlaceMode = $derived(arPrompt.mode === 'place');
 
 	// Box drag state for shift+drag
 	let arBoxDrag = $state<{ startX: number; startY: number; curX: number; curY: number } | null>(null);
@@ -121,14 +122,23 @@
 	const pipeH = $derived(crState.pipelineFormat?.height ?? 1080);
 
 	function arPromptClick(e: MouseEvent) {
-		if (!arPrompt.callback || !programViewport) return;
-		// Shift+click starts/continues box mode — handled by pointer events
-		if (e.shiftKey) return;
+		if (!programViewport) return;
 		const rect = programViewport.getBoundingClientRect();
 		const nx = (e.clientX - rect.left) / rect.width;
 		const ny = (e.clientY - rect.top) / rect.height;
 		const px = Math.round(nx * pipeW);
 		const py = Math.round(ny * pipeH);
+
+		// Place mode: call place callback with pixel coords
+		if (arPrompt.mode === 'place' && arPrompt.placeCallback) {
+			arPrompt.placeCallback(px, py);
+			return;
+		}
+
+		// Prompt mode: call prompt callback
+		if (!arPrompt.callback) return;
+		// Shift+click starts/continues box mode — handled by pointer events
+		if (e.shiftKey) return;
 		arPrompt.callback('point', [[px, py]]);
 	}
 
@@ -198,6 +208,7 @@
 				<!-- svelte-ignore a11y_no_static_element_interactions a11y_no_noninteractive_element_interactions -->
 				<div
 					class="ar-prompt-overlay"
+					class:place-mode={arPlaceMode}
 					role="application"
 					tabindex="-1"
 					onclick={arPromptClick}
@@ -223,7 +234,13 @@
 							style="left:{left}%;top:{top}%;width:{width}%;height:{height}%"
 						></div>
 					{/if}
-					<div class="ar-prompt-hint">Click to place point. Shift+drag for box.</div>
+					<div class="ar-prompt-hint">
+						{#if arPlaceMode}
+							Click to place object in scene.
+						{:else}
+							Click to place point. Shift+drag for box.
+						{/if}
+					</div>
 				</div>
 			{/if}
 		</div>
@@ -419,6 +436,10 @@
 		cursor: crosshair;
 		z-index: calc(var(--z-above) + 1);
 		pointer-events: auto;
+	}
+
+	.ar-prompt-overlay.place-mode {
+		cursor: cell;
 	}
 
 	.ar-prompt-marker {
