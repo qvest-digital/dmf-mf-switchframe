@@ -251,3 +251,358 @@ func TestSpec_SpliceNull(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, uint8(CommandSpliceNull), decoded.CommandType)
 }
+
+// ---------------------------------------------------------------------------
+// time_signal tests
+// ---------------------------------------------------------------------------
+
+func TestSpec_TimeSignal_ProgramStart(t *testing.T) {
+	t.Parallel()
+
+	msg := NewTimeSignal(0x10, 0, 0x01, []byte("PROG001"))
+
+	data, err := msg.Encode(true)
+	require.NoError(t, err)
+	require.NotEmpty(t, data)
+
+	decoded, err := Decode(data)
+	require.NoError(t, err)
+
+	require.Equal(t, uint8(CommandTimeSignal), decoded.CommandType)
+	require.Equal(t, "immediate", decoded.Timing)
+	require.Nil(t, decoded.SpliceTimePTS)
+	require.Len(t, decoded.Descriptors, 1)
+
+	d := decoded.Descriptors[0]
+	require.Equal(t, uint8(0x10), d.SegmentationType)
+	require.Equal(t, uint8(0x01), d.UPIDType)
+	require.Equal(t, []byte("PROG001"), d.UPID)
+	require.Nil(t, d.DurationTicks, "program_start must have no duration")
+}
+
+func TestSpec_TimeSignal_ProgramEnd(t *testing.T) {
+	t.Parallel()
+
+	msg := NewTimeSignal(0x11, 0, 0x01, []byte("PROG001"))
+
+	data, err := msg.Encode(true)
+	require.NoError(t, err)
+
+	decoded, err := Decode(data)
+	require.NoError(t, err)
+
+	require.Equal(t, uint8(CommandTimeSignal), decoded.CommandType)
+	require.Len(t, decoded.Descriptors, 1)
+	require.Equal(t, uint8(0x11), decoded.Descriptors[0].SegmentationType)
+}
+
+func TestSpec_TimeSignal_BreakStartWithDuration(t *testing.T) {
+	t.Parallel()
+
+	msg := NewTimeSignal(0x22, 120*time.Second, 0x01, []byte("BREAK01"))
+
+	data, err := msg.Encode(true)
+	require.NoError(t, err)
+
+	decoded, err := Decode(data)
+	require.NoError(t, err)
+
+	require.Equal(t, uint8(CommandTimeSignal), decoded.CommandType)
+	require.Len(t, decoded.Descriptors, 1)
+
+	d := decoded.Descriptors[0]
+	require.Equal(t, uint8(0x22), d.SegmentationType)
+	require.NotNil(t, d.DurationTicks)
+	require.Equal(t, uint64(10800000), *d.DurationTicks, "120s * 90000 = 10800000 ticks")
+	require.Equal(t, uint8(0x01), d.UPIDType)
+	require.Equal(t, []byte("BREAK01"), d.UPID)
+}
+
+func TestSpec_TimeSignal_BreakEnd(t *testing.T) {
+	t.Parallel()
+
+	msg := NewTimeSignal(0x23, 0, 0x01, []byte("BREAK01"))
+
+	data, err := msg.Encode(true)
+	require.NoError(t, err)
+
+	decoded, err := Decode(data)
+	require.NoError(t, err)
+
+	require.Equal(t, uint8(CommandTimeSignal), decoded.CommandType)
+	require.Len(t, decoded.Descriptors, 1)
+
+	d := decoded.Descriptors[0]
+	require.Equal(t, uint8(0x23), d.SegmentationType)
+	require.Nil(t, d.DurationTicks, "break_end must have no duration")
+}
+
+func TestSpec_TimeSignal_ProviderAdStart(t *testing.T) {
+	t.Parallel()
+
+	msg := NewTimeSignal(0x30, 30*time.Second, 0x09, []byte("AD00001"))
+	// Set seg_num and seg_expected on the descriptor.
+	msg.Descriptors[0].SegNum = 1
+	msg.Descriptors[0].SegExpected = 4
+
+	data, err := msg.Encode(true)
+	require.NoError(t, err)
+
+	decoded, err := Decode(data)
+	require.NoError(t, err)
+
+	require.Equal(t, uint8(CommandTimeSignal), decoded.CommandType)
+	require.Len(t, decoded.Descriptors, 1)
+
+	d := decoded.Descriptors[0]
+	require.Equal(t, uint8(0x30), d.SegmentationType)
+	require.Equal(t, uint8(0x09), d.UPIDType)
+	require.Equal(t, []byte("AD00001"), d.UPID)
+	require.NotNil(t, d.DurationTicks)
+	require.Equal(t, uint64(2700000), *d.DurationTicks, "30s * 90000 = 2700000 ticks")
+	require.Equal(t, uint8(1), d.SegNum)
+	require.Equal(t, uint8(4), d.SegExpected)
+}
+
+func TestSpec_TimeSignal_DistributorAdStart(t *testing.T) {
+	t.Parallel()
+
+	msg := NewTimeSignal(0x34, 30*time.Second, 0x09, []byte("AD00002"))
+
+	data, err := msg.Encode(true)
+	require.NoError(t, err)
+
+	decoded, err := Decode(data)
+	require.NoError(t, err)
+
+	require.Equal(t, uint8(CommandTimeSignal), decoded.CommandType)
+	require.Len(t, decoded.Descriptors, 1)
+	require.Equal(t, uint8(0x34), decoded.Descriptors[0].SegmentationType)
+}
+
+func TestSpec_TimeSignal_Scheduled(t *testing.T) {
+	t.Parallel()
+
+	msg := NewTimeSignal(0x10, 0, 0x01, []byte("SCH001"))
+	pts := int64(540000)
+	msg.SpliceTimePTS = &pts
+
+	data, err := msg.Encode(true)
+	require.NoError(t, err)
+
+	decoded, err := Decode(data)
+	require.NoError(t, err)
+
+	require.Equal(t, uint8(CommandTimeSignal), decoded.CommandType)
+	require.Equal(t, "scheduled", decoded.Timing)
+	require.NotNil(t, decoded.SpliceTimePTS)
+	require.Equal(t, int64(540000), *decoded.SpliceTimePTS)
+}
+
+func TestSpec_TimeSignal_MultipleDescriptors(t *testing.T) {
+	t.Parallel()
+
+	dur1 := uint64(2700000)
+	dur2 := uint64(2700000)
+	descriptors := []SegmentationDescriptor{
+		{
+			SegmentationType: 0x22,
+			SegEventID:       100,
+			UPIDType:         0x01,
+			UPID:             []byte("BRK01"),
+			DurationTicks:    &dur1,
+		},
+		{
+			SegmentationType: 0x30,
+			SegEventID:       101,
+			UPIDType:         0x09,
+			UPID:             []byte("AD001"),
+			SegNum:           1,
+			SegExpected:      3,
+			DurationTicks:    &dur2,
+		},
+	}
+
+	msg := NewTimeSignalMulti(descriptors)
+
+	data, err := msg.Encode(true)
+	require.NoError(t, err)
+
+	decoded, err := Decode(data)
+	require.NoError(t, err)
+
+	require.Equal(t, uint8(CommandTimeSignal), decoded.CommandType)
+	require.Len(t, decoded.Descriptors, 2)
+
+	// First descriptor: break_start.
+	d0 := decoded.Descriptors[0]
+	require.Equal(t, uint8(0x22), d0.SegmentationType)
+	require.Equal(t, uint32(100), d0.SegEventID)
+	require.Equal(t, uint8(0x01), d0.UPIDType)
+	require.Equal(t, []byte("BRK01"), d0.UPID)
+	require.NotNil(t, d0.DurationTicks)
+	require.Equal(t, uint64(2700000), *d0.DurationTicks)
+
+	// Second descriptor: provider_ad_start.
+	d1 := decoded.Descriptors[1]
+	require.Equal(t, uint8(0x30), d1.SegmentationType)
+	require.Equal(t, uint32(101), d1.SegEventID)
+	require.Equal(t, uint8(0x09), d1.UPIDType)
+	require.Equal(t, []byte("AD001"), d1.UPID)
+	require.NotNil(t, d1.DurationTicks)
+	require.Equal(t, uint64(2700000), *d1.DurationTicks)
+	require.Equal(t, uint8(1), d1.SegNum)
+	require.Equal(t, uint8(3), d1.SegExpected)
+}
+
+func TestSpec_TimeSignal_MultipleUPIDs(t *testing.T) {
+	t.Parallel()
+
+	descriptors := []SegmentationDescriptor{
+		{
+			SegmentationType: 0x30,
+			SegEventID:       200,
+			UPIDType:         0x01,
+			UPID:             []byte("PRIMARY"),
+			AdditionalUPIDs: []AdditionalUPID{
+				{Type: 0x09, Value: []byte("EXTRA1")},
+				{Type: 0x01, Value: []byte("EXTRA2")},
+			},
+		},
+	}
+
+	msg := NewTimeSignalMulti(descriptors)
+
+	data, err := msg.Encode(true)
+	require.NoError(t, err)
+
+	decoded, err := Decode(data)
+	require.NoError(t, err)
+
+	require.Len(t, decoded.Descriptors, 1)
+	d := decoded.Descriptors[0]
+	require.Equal(t, uint8(0x01), d.UPIDType)
+	require.Equal(t, []byte("PRIMARY"), d.UPID)
+	require.Len(t, d.AdditionalUPIDs, 2)
+	require.Equal(t, uint8(0x09), d.AdditionalUPIDs[0].Type)
+	require.Equal(t, []byte("EXTRA1"), d.AdditionalUPIDs[0].Value)
+	require.Equal(t, uint8(0x01), d.AdditionalUPIDs[1].Type)
+	require.Equal(t, []byte("EXTRA2"), d.AdditionalUPIDs[1].Value)
+}
+
+func TestSpec_TimeSignal_DeliveryRestrictions(t *testing.T) {
+	t.Parallel()
+
+	descriptors := []SegmentationDescriptor{
+		{
+			SegmentationType: 0x30,
+			SegEventID:       300,
+			UPIDType:         0x01,
+			UPID:             []byte("RESTR1"),
+			DeliveryRestrictions: &DeliveryRestrictions{
+				WebDeliveryAllowed: true,
+				NoRegionalBlackout: true,
+				ArchiveAllowed:     false,
+				DeviceRestrictions: 2,
+			},
+		},
+	}
+
+	msg := NewTimeSignalMulti(descriptors)
+
+	data, err := msg.Encode(true)
+	require.NoError(t, err)
+
+	decoded, err := Decode(data)
+	require.NoError(t, err)
+
+	require.Len(t, decoded.Descriptors, 1)
+	d := decoded.Descriptors[0]
+	require.NotNil(t, d.DeliveryRestrictions)
+	require.True(t, d.DeliveryRestrictions.WebDeliveryAllowed)
+	require.True(t, d.DeliveryRestrictions.NoRegionalBlackout)
+	require.False(t, d.DeliveryRestrictions.ArchiveAllowed)
+	require.Equal(t, uint8(2), d.DeliveryRestrictions.DeviceRestrictions)
+}
+
+func TestSpec_TimeSignal_SubSegments(t *testing.T) {
+	t.Parallel()
+
+	descriptors := []SegmentationDescriptor{
+		{
+			SegmentationType:    0x30,
+			SegEventID:          400,
+			UPIDType:            0x01,
+			UPID:                []byte("SUBSEG"),
+			SegNum:              2,
+			SegExpected:         4,
+			SubSegmentNum:       1,
+			SubSegmentsExpected: 3,
+		},
+	}
+
+	msg := NewTimeSignalMulti(descriptors)
+
+	data, err := msg.Encode(true)
+	require.NoError(t, err)
+
+	decoded, err := Decode(data)
+	require.NoError(t, err)
+
+	require.Len(t, decoded.Descriptors, 1)
+	d := decoded.Descriptors[0]
+	require.Equal(t, uint8(2), d.SegNum)
+	require.Equal(t, uint8(4), d.SegExpected)
+	require.Equal(t, uint8(1), d.SubSegmentNum)
+	require.Equal(t, uint8(3), d.SubSegmentsExpected)
+}
+
+// ---------------------------------------------------------------------------
+// CRC-32 validation test
+// ---------------------------------------------------------------------------
+
+func TestSpec_CRC32_Validation(t *testing.T) {
+	t.Parallel()
+
+	msg := NewSpliceInsert(9999, 10*time.Second, true, true)
+
+	data, err := msg.Encode(true)
+	require.NoError(t, err)
+	require.True(t, len(data) >= 4, "encoded data must be at least 4 bytes")
+
+	// Corrupt the last byte (part of the CRC-32).
+	corrupted := make([]byte, len(data))
+	copy(corrupted, data)
+	corrupted[len(corrupted)-1] ^= 0xFF
+
+	_, err = Decode(corrupted)
+	require.Error(t, err, "decoding with corrupted CRC must fail")
+}
+
+// ---------------------------------------------------------------------------
+// table_id verification test
+// ---------------------------------------------------------------------------
+
+func TestSpec_TableID_0xFC(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		msg  *CueMessage
+	}{
+		{"splice_null", &CueMessage{CommandType: CommandSpliceNull}},
+		{"splice_insert", NewSpliceInsert(1, 10*time.Second, true, true)},
+		{"time_signal", NewTimeSignal(0x10, 0, 0x01, []byte("TBL01"))},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			data, err := tt.msg.Encode(true)
+			require.NoError(t, err)
+			require.NotEmpty(t, data)
+			require.Equal(t, byte(0xFC), data[0], "table_id must be 0xFC for %s", tt.name)
+		})
+	}
+}
