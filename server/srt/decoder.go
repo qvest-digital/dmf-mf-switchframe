@@ -199,11 +199,12 @@ static int srtdec_open(srtdec_t *h, int decoder_id, int max_threads, void *hw_de
 
     // Limit probe to avoid consuming too much data from the live SRT
     // stream. Default probesize (5MB) causes avformat to read far ahead
-    // of real-time. 500 TS packets (~94KB) is enough to find PAT/PMT +
-    // video and audio PES headers. 1.5 seconds analyze duration gives
-    // enough time to detect both streams reliably.
-    h->fmt_ctx->probesize = 188 * 500;
-    h->fmt_ctx->max_analyze_duration = 1500000; // 1.5 seconds (µs)
+    // of real-time. 5000 TS packets (~940KB) is enough to find PAT/PMT +
+    // video and audio PES headers including HEVC VPS/SPS/PPS which only
+    // appear at keyframes. 5 seconds analyze duration handles HEVC streams
+    // with 2-4 second GOPs where the first keyframe may be delayed.
+    h->fmt_ctx->probesize = 188 * 5000;
+    h->fmt_ctx->max_analyze_duration = 5000000; // 5 seconds (µs)
 
     // Find stream info (probes the stream for codec parameters).
     ret = avformat_find_stream_info(h->fmt_ctx, NULL);
