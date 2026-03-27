@@ -26,6 +26,16 @@
 	let backendConfig = $derived(asrState?.backendConfig ?? {});
 	let availableModels = $state<string[]>([]);
 
+	// Backend switching loading state.
+	let requestedBackend = $state('');
+	let backendSwitching = $derived(requestedBackend !== '');
+
+	$effect(() => {
+		if (requestedBackend && asrBackend === requestedBackend) {
+			requestedBackend = '';
+		}
+	});
+
 	// Fetch available models when ASR is available or backend changes.
 	let lastFetchedBackend = $state('');
 	$effect(() => {
@@ -140,9 +150,8 @@
 
 	function handleBackendChange(e: Event) {
 		const backend = (e.target as HTMLSelectElement).value;
+		requestedBackend = backend;
 		asrConfigCall(setASRConfig({ backend }));
-		// Re-fetch models since they are backend-scoped.
-		getASRModels().then((models) => { availableModels = models; }).catch(() => {});
 	}
 
 	function handleModelChange(e: Event) {
@@ -227,34 +236,46 @@
 				<div class="auto-grid">
 					{#if availableBackends.length > 1}
 						<label class="auto-grid__label" for="asr-backend">Backend</label>
-						<select
-							id="asr-backend"
-							class="field-select"
-							value={asrBackend}
-							onchange={handleBackendChange}
-						>
-							{#each availableBackends as b}
-								<option value={b}>{b}</option>
-							{/each}
-						</select>
+						<div class="backend-select-wrapper">
+							<select
+								id="asr-backend"
+								class="field-select"
+								value={asrBackend}
+								onchange={handleBackendChange}
+								disabled={backendSwitching}
+							>
+								{#each availableBackends as b}
+									<option value={b}>{b}</option>
+								{/each}
+							</select>
+							{#if backendSwitching}
+								<span class="backend-loading">loading…</span>
+							{/if}
+						</div>
 					{/if}
 
-					{#if availableModels.length > 0}
-						<label class="auto-grid__label" for="asr-model">Model</label>
-						<select
-							id="asr-model"
-							class="field-select field-select--mono"
-							value={asrState?.modelName ?? ''}
-							onchange={handleModelChange}
-						>
-							{#each availableModels as model}
-								<option value={model}>{model}</option>
-							{/each}
-						</select>
+					{#if backendSwitching}
+						<span class="backend-loading-msg">Loading {requestedBackend}…</span>
+					{:else}
+						{#if availableModels.length > 0}
+							<label class="auto-grid__label" for="asr-model">Model</label>
+							<select
+								id="asr-model"
+								class="field-select field-select--mono"
+								value={asrState?.modelName ?? ''}
+								onchange={handleModelChange}
+							>
+								{#each availableModels as model}
+									<option value={model}>{model}</option>
+								{/each}
+							</select>
+						{/if}
 					{/if}
 				</div>
 
-				{#if asrBackend === 'whisper'}
+				{#if backendSwitching}
+					<!-- Hide backend config while switching -->
+				{:else if asrBackend === 'whisper'}
 					<WhisperConfig config={backendConfig} />
 				{:else if asrBackend === 'nemotron'}
 					<NemotronConfig config={backendConfig} />
@@ -557,6 +578,38 @@
 		font-size: 10px;
 	}
 
+	.field-select:disabled {
+		opacity: 0.5;
+		cursor: wait;
+	}
+
+	.backend-select-wrapper {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+
+	.backend-loading {
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		color: var(--accent-blue);
+		white-space: nowrap;
+		animation: pulse 1.5s ease-in-out infinite;
+	}
+
+	.backend-loading-msg {
+		grid-column: 1 / -1;
+		font-family: var(--font-ui);
+		font-size: var(--text-2xs);
+		color: var(--accent-blue);
+		padding: 2px 0;
+		animation: pulse 1.5s ease-in-out infinite;
+	}
+
+	@keyframes pulse {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.4; }
+	}
 
 	.inline-tuning {
 		display: grid;
