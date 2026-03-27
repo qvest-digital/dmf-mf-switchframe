@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+	"unsafe"
 
 	"github.com/zsiec/switchframe/server/arinfer"
 	"github.com/zsiec/switchframe/server/arrender"
