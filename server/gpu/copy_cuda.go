@@ -4,6 +4,14 @@ package gpu
 
 /*
 #include <cuda_runtime.h>
+#include <stdint.h>
+
+// Forward declaration (implemented in cuda/convert.cu, linked via libswitchframe_cuda.a)
+cudaError_t p016_to_nv12(
+    uint8_t* nv12_dst,
+    const uint16_t* p016_y_src, const uint16_t* p016_uv_src,
+    int width, int height,
+    int dst_pitch, int src_pitch_bytes, cudaStream_t stream);
 */
 import "C"
 
