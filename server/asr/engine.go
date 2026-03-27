@@ -138,7 +138,7 @@ func (e *Engine) IngestAudio(pcm []float32, pts int64, sampleRate, channels int)
 // ActiveBackend returns the name of the currently active backend.
 func (e *Engine) ActiveBackend() string {
 	bp := e.active.Load()
-	if bp == nil {
+	if bp == nil || *bp == nil {
 		return ""
 	}
 	return (*bp).Name()
@@ -254,7 +254,7 @@ func (e *Engine) OnBackendSwitch(fn func()) {
 // Models returns the available models for the active backend.
 func (e *Engine) Models() []string {
 	bp := e.active.Load()
-	if bp == nil {
+	if bp == nil || *bp == nil {
 		return nil
 	}
 	return (*bp).Models()
@@ -263,7 +263,7 @@ func (e *Engine) Models() []string {
 // SetModel swaps the model within the active backend.
 func (e *Engine) SetModel(name string) error {
 	bp := e.active.Load()
-	if bp == nil {
+	if bp == nil || *bp == nil {
 		return fmt.Errorf("asr: no active backend")
 	}
 	return (*bp).SetModel(name)
@@ -272,7 +272,7 @@ func (e *Engine) SetModel(name string) error {
 // ModelName returns the display name of the current model.
 func (e *Engine) ModelName() string {
 	bp := e.active.Load()
-	if bp == nil {
+	if bp == nil || *bp == nil {
 		return ""
 	}
 	return (*bp).ModelName()
@@ -281,7 +281,7 @@ func (e *Engine) ModelName() string {
 // BackendConfig returns the active backend's configuration as JSON.
 func (e *Engine) BackendConfig() json.RawMessage {
 	bp := e.active.Load()
-	if bp == nil {
+	if bp == nil || *bp == nil {
 		return nil
 	}
 	return (*bp).Config()
@@ -290,7 +290,7 @@ func (e *Engine) BackendConfig() json.RawMessage {
 // SetBackendConfig applies configuration to the active backend.
 func (e *Engine) SetBackendConfig(raw json.RawMessage) error {
 	bp := e.active.Load()
-	if bp == nil {
+	if bp == nil || *bp == nil {
 		return fmt.Errorf("asr: no active backend")
 	}
 	return (*bp).SetConfig(raw)
@@ -299,7 +299,7 @@ func (e *Engine) SetBackendConfig(raw json.RawMessage) error {
 // Reset clears the active backend's audio buffer and inference state.
 func (e *Engine) Reset() {
 	bp := e.active.Load()
-	if bp == nil {
+	if bp == nil || *bp == nil {
 		return
 	}
 	(*bp).Reset()
