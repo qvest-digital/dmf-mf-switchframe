@@ -159,9 +159,13 @@ optix_ctx_t optix_create_context(void* cuda_context) {
     CUcontext cu_ctx = static_cast<CUcontext>(cuda_context);
     if (!cu_ctx) {
         // OptiX 9.0+ requires an explicit CUDA context (NULL no longer works).
+        // Ensure CUDA Runtime API primary context is active on this thread,
+        // then retrieve it via the Driver API.
+        cudaSetDevice(0);
+        cudaFree(0); // force primary context initialization
         CUresult cu_err = cuCtxGetCurrent(&cu_ctx);
         if (cu_err != CUDA_SUCCESS || !cu_ctx) {
-            set_error("no current CUDA context (cuCtxGetCurrent: %d)", (int)cu_err);
+            set_error("no current CUDA context after cudaSetDevice (cuCtxGetCurrent: %d)", (int)cu_err);
             return nullptr;
         }
     }
