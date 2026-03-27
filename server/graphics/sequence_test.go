@@ -386,6 +386,7 @@ func TestLoadSequenceZIP(t *testing.T) {
 }
 
 func TestLoadSequenceZIPNoLoop(t *testing.T) {
+	// Without loop frames, sequence should hold last in-frame (static bug).
 	white := color.NRGBA{R: 255, G: 255, B: 255, A: 255}
 	pngData := makePNG(t, 4, 4, 1, 1, white)
 
@@ -395,9 +396,29 @@ func TestLoadSequenceZIPNoLoop(t *testing.T) {
 	}
 	zipData := buildZIP(t, files)
 
-	_, err := LoadSequenceZIP(zipData)
-	if !errors.Is(err, ErrSequenceNoLoopFrames) {
-		t.Fatalf("expected ErrSequenceNoLoopFrames, got: %v", err)
+	seq, err := LoadSequenceZIP(zipData)
+	if err != nil {
+		t.Fatalf("expected success for in-only sequence, got: %v", err)
+	}
+	if len(seq.inFrames) != 2 {
+		t.Fatalf("expected 2 in frames, got %d", len(seq.inFrames))
+	}
+	if len(seq.loopFrames) != 0 {
+		t.Fatalf("expected 0 loop frames, got %d", len(seq.loopFrames))
+	}
+
+	// Verify hold behaviour
+	seq.startIn()
+	seq.advance()
+	seq.advance()
+	if seq.phase != seqPhaseHold {
+		t.Fatalf("expected hold phase, got %v", seq.phase)
+	}
+	if seq.holdFrame() == nil {
+		t.Fatal("holdFrame should return last in-frame")
+	}
+	if seq.currentFrame() == nil {
+		t.Fatal("currentFrame during hold should return last in-frame")
 	}
 }
 

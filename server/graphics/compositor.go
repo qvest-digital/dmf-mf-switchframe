@@ -1585,6 +1585,8 @@ func (c *Compositor) buildStateLocked() State {
 				ls.SequencePhase = "in"
 			case seqPhaseLoop:
 				ls.SequencePhase = "loop"
+			case seqPhaseHold:
+				ls.SequencePhase = "hold"
 			case seqPhaseOut:
 				ls.SequencePhase = "out"
 			case seqPhaseDone:

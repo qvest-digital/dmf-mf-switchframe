@@ -57,8 +57,10 @@ func (se *SequenceEngine) upload(layerID int, zipData []byte) error {
 	layer.seq = seq
 	layer.rect = image.Rect(seq.cropX, seq.cropY, seq.cropX+seq.cropW, seq.cropY+seq.cropH)
 
-	if len(seq.loopFrames) > 0 {
-		layer.overlay = seq.loopFrames[0]
+	// Set initial overlay so On() works. Prefer first loop frame, fall back to last in-frame.
+	initFrame := seq.holdFrame()
+	if initFrame != nil {
+		layer.overlay = initFrame
 		layer.overlayWidth = seq.cropW
 		layer.overlayHeight = seq.cropH
 		layer.overlayGen++
@@ -132,8 +134,9 @@ func (se *SequenceEngine) processUpload(layerID int, zipData []byte) {
 	layer.seq = seq
 	layer.rect = image.Rect(seq.cropX, seq.cropY, seq.cropX+seq.cropW, seq.cropY+seq.cropH)
 
-	if len(seq.loopFrames) > 0 {
-		layer.overlay = seq.loopFrames[0]
+	initFrame := seq.holdFrame()
+	if initFrame != nil {
+		layer.overlay = initFrame
 		layer.overlayWidth = seq.cropW
 		layer.overlayHeight = seq.cropH
 		layer.overlayGen++

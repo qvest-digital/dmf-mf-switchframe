@@ -32,6 +32,7 @@ const (
 	seqPhaseIdle seqPhase = iota // not playing
 	seqPhaseIn                   // playing animate-in segment
 	seqPhaseLoop                 // playing loop segment (wraps)
+	seqPhaseHold                 // holding last in-frame (no loop frames)
 	seqPhaseOut                  // playing animate-out segment
 	seqPhaseDone                 // finished playing
 )
@@ -64,11 +65,16 @@ func (s *sequenceState) startIn() {
 	s.startLoop()
 }
 
-// startLoop begins playback from the loop segment directly, skipping any
-// animate-in. This is used for "cut on" behaviour.
+// startLoop begins the loop or hold phase. If there are loop frames, they
+// cycle. If not, holds the last frame of the in segment (static bug).
+// Also used for "cut on" behaviour.
 func (s *sequenceState) startLoop() {
-	s.phase = seqPhaseLoop
-	s.frameIdx = 0
+	if len(s.loopFrames) > 0 {
+		s.phase = seqPhaseLoop
+		s.frameIdx = 0
+	} else {
+		s.phase = seqPhaseHold
+	}
 }
 
 // startOut begins playback of the animate-out segment. If there are no out
@@ -85,7 +91,7 @@ func (s *sequenceState) startOut() {
 // tick accumulates one pipeline frame's worth of playback at the current speed.
 // Returns true if the frame changed (ProcessYUV should update the overlay).
 func (s *sequenceState) tick() bool {
-	if s.phase == seqPhaseIdle || s.phase == seqPhaseDone {
+	if s.phase == seqPhaseIdle || s.phase == seqPhaseDone || s.phase == seqPhaseHold {
 		return false
 	}
 	spd := s.speed
@@ -139,10 +145,27 @@ func (s *sequenceState) currentFrame() []byte {
 		if s.frameIdx < len(s.loopFrames) {
 			return s.loopFrames[s.frameIdx]
 		}
+	case seqPhaseHold:
+		// Hold the last frame of the in segment.
+		if len(s.inFrames) > 0 {
+			return s.inFrames[len(s.inFrames)-1]
+		}
 	case seqPhaseOut:
 		if s.frameIdx < len(s.outFrames) {
 			return s.outFrames[s.frameIdx]
 		}
+	}
+	return nil
+}
+
+// holdFrame returns the frame to display during hold or as initial overlay.
+// Prefers first loop frame; falls back to last in-frame.
+func (s *sequenceState) holdFrame() []byte {
+	if len(s.loopFrames) > 0 {
+		return s.loopFrames[0]
+	}
+	if len(s.inFrames) > 0 {
+		return s.inFrames[len(s.inFrames)-1]
 	}
 	return nil
 }
@@ -200,8 +223,10 @@ func LoadSequenceZIP(zipData []byte) (*sequenceState, error) {
 	if totalCount == 0 {
 		return nil, ErrSequenceEmpty
 	}
-	if len(loopEntries) == 0 {
-		return nil, ErrSequenceNoLoopFrames
+	// Loop frames are optional. Without them, the sequence holds the last
+	// in-frame during the steady state (static bug/watermark behaviour).
+	if len(loopEntries) == 0 && len(inEntries) == 0 {
+		return nil, ErrSequenceEmpty
 	}
 	if totalCount > maxSequenceFrames {
 		return nil, ErrSequenceTooLarge
