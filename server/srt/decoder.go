@@ -680,11 +680,11 @@ static int srtdec_run(srtdec_t *h) {
                 }
                 video_send_errors++;
 
-                // If NVDEC fails persistently (10+ consecutive errors with no
-                // successful frames), fall back to software decode. This handles
-                // HEVC profiles/levels that NVDEC rejects (e.g., Main 10 on
-                // some FFmpeg builds that don't negotiate hwaccel properly).
-                if (video_send_errors >= 10 && video_frames_decoded == 0 && h->hw_device_ctx) {
+                // If NVDEC returns EPERM (-1) persistently, fall back to software
+                // decode. EPERM means NVDEC rejected the stream (unsupported
+                // profile/level). Don't trigger on AVERROR_INVALIDDATA (-1094995529)
+                // which is normal before the first keyframe.
+                if (ret == -1 && video_send_errors >= 10 && video_frames_decoded == 0 && h->hw_device_ctx) {
                     srtdec_log(h->decoder_id, "NVDEC failed persistently (%d errors, 0 frames), falling back to software decode",
                         video_send_errors);
                     if (srtdec_reopen_video_software(h) == 0) {
