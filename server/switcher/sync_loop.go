@@ -277,17 +277,72 @@ func (s *Switcher) processTransitionTick(tick clock.Tick, fs *FrameSynchronizer,
 
 // runPipelineAndBroadcast runs the processing pipeline on a frame and broadcasts
 // the result. Shared between normal and transition tick paths.
+//
+// Routes through the GPU pipeline when available, falling back to the CPU
+// pipeline. This mirrors the videoProcessingLoop's GPU routing logic:
+//   - RunFromCache (zero-upload from GPU source manager cache)
+//   - RunWithUpload (CPU→GPU upload fallback)
+//   - CPU pipeline.Run (final fallback)
+//
+// When the GPU pipeline succeeds, its encode node handles broadcasting
+// internally via its own callback — the CPU pipeline is skipped entirely.
 func (s *Switcher) runPipelineAndBroadcast(pf *ProcessingFrame, tick clock.Tick) {
 	start := time.Now()
 
-	// Run the CPU pipeline (key → layout → compositor → encode).
-	// When the pipeline includes an encode node, it handles broadcasting
-	// via the onEncoded callback. When no pipeline is configured, we
-	// broadcast the raw YUV data as a video frame directly.
-	hasPipeline := false
-	if p := s.pipeline.Load(); p != nil {
-		hasPipeline = true
-		pf = p.Run(pf)
+	// Route through GPU pipeline if available, fall back to CPU.
+	gpuUsed := false
+	if h := s.gpuRunner.Load(); h != nil && h.runner != nil {
+		// Try zero-upload path first: use pre-cached GPU frame from source manager.
+		sourceKey := s.programSourceAtomic()
+		if sourceKey != "" {
+			if err := h.runner.RunFromCache(sourceKey, pf.PTS); err == nil {
+				gpuUsed = true
+				s.gpuFramesProcessed.Add(1)
+			} else {
+				s.gpuCacheMisses.Add(1)
+			}
+		}
+		// Fall back to CPU→GPU upload if cache miss or no source key.
+		if !gpuUsed {
+			if err := h.runner.RunWithUpload(pf.Data, pf.Width, pf.Height, pf.PTS); err == nil {
+				gpuUsed = true
+				s.gpuFramesProcessed.Add(1)
+			}
+		}
+	}
+
+	if !gpuUsed {
+		if h := s.gpuRunner.Load(); h != nil {
+			// GPU was available but failed — this is a fallback.
+			s.gpuFallbackFrames.Add(1)
+		}
+
+		// Run the CPU pipeline (key → layout → compositor → encode).
+		// When the pipeline includes an encode node, it handles broadcasting
+		// via the onEncoded callback. When no pipeline is configured, we
+		// broadcast the raw YUV data as a video frame directly.
+		hasPipeline := false
+		if p := s.pipeline.Load(); p != nil {
+			hasPipeline = true
+			pf = p.Run(pf)
+		}
+
+		// When no pipeline is configured (no encoder), broadcast raw frame
+		// data directly. This covers test scenarios and encoder-less configs.
+		if !hasPipeline && len(pf.Data) > 0 {
+			// Make a copy of the frame data for the broadcast since the underlying
+			// buffer is owned by the frame sync (ss.lastRawVideo) and may be
+			// reused on the next tick.
+			dataCopy := make([]byte, len(pf.Data))
+			copy(dataCopy, pf.Data)
+			frame := &media.VideoFrame{
+				PTS:        pf.PTS,
+				DTS:        pf.DTS,
+				WireData:   dataCopy,
+				IsKeyframe: true,
+			}
+			s.broadcastToProgram(frame)
+		}
 	}
 
 	dur := time.Since(start).Nanoseconds()
@@ -296,23 +351,6 @@ func (s *Switcher) runPipelineAndBroadcast(pf *ProcessingFrame, tick clock.Tick)
 	atomicutil.UpdateMax(&s.videoProcMaxNano, dur)
 	if dur > s.frameBudgetNs.Load() {
 		s.deadlineViolations.Add(1)
-	}
-
-	// When no pipeline is configured (no encoder), broadcast raw frame
-	// data directly. This covers test scenarios and encoder-less configs.
-	if !hasPipeline && len(pf.Data) > 0 {
-		// Make a copy of the frame data for the broadcast since the underlying
-		// buffer is owned by the frame sync (ss.lastRawVideo) and may be
-		// reused on the next tick.
-		dataCopy := make([]byte, len(pf.Data))
-		copy(dataCopy, pf.Data)
-		frame := &media.VideoFrame{
-			PTS:        pf.PTS,
-			DTS:        pf.DTS,
-			WireData:   dataCopy,
-			IsKeyframe: true,
-		}
-		s.broadcastToProgram(frame)
 	}
 
 	// Store for freeze-repeat.

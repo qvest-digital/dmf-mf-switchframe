@@ -1590,10 +1590,25 @@ func (s *Switcher) enqueueVideoWork(work videoProcWork) {
 // and running each frame through the encode pipeline. This prevents
 // the source relay's delivery goroutine from blocking on video processing,
 // which would starve audio delivery.
+//
+// When the reference clock is active, the sync loop is the sole frame
+// processor. This loop only drains videoProcCh to prevent
+// handleRawVideoFrame from blocking, but does not process the frames.
 func (s *Switcher) videoProcessingLoop() {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	defer close(s.videoProcDone)
+
+	if s.useRefClock {
+		// Sync loop is the sole frame processor. Drain videoProcCh to prevent
+		// handleRawVideoFrame from blocking, but don't process the frames.
+		for work := range s.videoProcCh {
+			if work.yuvFrame != nil {
+				work.yuvFrame.ReleaseYUV()
+			}
+		}
+		return
+	}
 
 	for work := range s.videoProcCh {
 		if work.yuvFrame == nil {

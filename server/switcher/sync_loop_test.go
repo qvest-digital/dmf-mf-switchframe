@@ -2,6 +2,7 @@ package switcher
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -98,14 +99,16 @@ func newSyncTestSwitcher(t *testing.T) (*Switcher, *clock.ReferenceClock) {
 	s.pipelineFormat.Store(&testFmt)
 	s.delayBuffer = NewDelayBuffer(s)
 
-	// Start the async video processing loop (needed by the existing path,
-	// even though the sync loop doesn't use it — it must be running so
-	// Close() can drain it without blocking).
-	go s.videoProcessingLoop()
-
 	// Create non-realtime reference clock at 30fps.
+	// Must be set BEFORE starting videoProcessingLoop so useRefClock is
+	// visible to the goroutine (avoids data race on the bool field).
 	rc := clock.NewReferenceClock(30, 1, 48000, 0, false)
 	s.SetReferenceClock(rc)
+
+	// Start the async video processing loop (needed so Close() can drain
+	// videoProcCh without blocking). In ref clock mode, this loop only
+	// drains without processing.
+	go s.videoProcessingLoop()
 
 	// Wire frame sync with onRawVideo callback (clock-driven mode).
 	fs := NewFrameSynchronizer(
@@ -1551,4 +1554,281 @@ func TestStartSyncLoopDoubleStartGuard(t *testing.T) {
 	frames := viewer.VideoFrames()
 	require.GreaterOrEqual(t, len(frames), 3,
 		"should have produced frames with single goroutine")
+}
+
+// === Bug 1: videoProcessingLoop races with sync loop ===
+
+func TestSyncLoopNoRaceWithAsyncPath(t *testing.T) {
+	// When ref clock is active, BOTH the async videoProcessingLoop goroutine
+	// AND the sync loop could process frames from the same source. The async
+	// loop must drain videoProcCh without processing to prevent double-processing.
+	s, _ := newSyncTestSwitcher(t)
+	defer s.Close()
+
+	// Register source and cut to it.
+	cam1Relay := distribution.NewRelay()
+	s.RegisterSource("cam1", cam1Relay)
+	s.mu.Lock()
+	s.frameSync.AddSource("cam1")
+	s.mu.Unlock()
+	require.NoError(t, s.Cut(context.Background(), "cam1"))
+
+	// Build a counting pipeline node that records how many frames pass through.
+	var pipelineProcessCount atomic.Int64
+	countNode := &countingPipelineNode{count: &pipelineProcessCount}
+	p := &Pipeline{}
+	require.NoError(t, p.Build(PipelineFormat{
+		Name: "test", Width: 320, Height: 240, FPSNum: 30, FPSDen: 1,
+	}, s.framePool, []PipelineNode{countNode}))
+	s.pipeline.Store(p)
+
+	// Set up viewer to capture output.
+	viewer := newMockProgramViewer("no-race-viewer")
+	s.programRelay.AddViewer(viewer)
+
+	pool := s.framePool
+	yuvSize := 320 * 240 * 3 / 2
+
+	// Feed frames into the frame sync buffer AND trigger handleRawVideoFrame
+	// (which enqueues to videoProcCh for the async path). We call both
+	// IngestRawVideo (for the sync loop to pop) and handleRawVideoFrame
+	// (to simulate source decoder delivery that enqueues to videoProcCh).
+	for i := 0; i < 10; i++ {
+		buf := pool.Acquire()[:yuvSize]
+		for j := range buf {
+			buf[j] = byte(i + 1)
+		}
+		pf := &ProcessingFrame{
+			Data:  buf,
+			Width: 320, Height: 240,
+			PTS:   int64(i) * 3000,
+			pool:  pool,
+		}
+		pf.SetRefs(2) // one ref for frame sync, one for handleRawVideoFrame
+		s.frameSync.IngestRawVideo("cam1", pf)
+		s.handleRawVideoFrame("cam1", pf)
+	}
+
+	// Process ticks via the sync loop (directly, deterministic).
+	for i := 0; i < 10; i++ {
+		tick := clock.Tick{
+			Number:        int64(i),
+			VideoPTS:      int64(i) * 3000,
+			AudioSamples:  1600,
+			FrameDuration: 33333 * time.Microsecond,
+		}
+		s.processVideoTick(tick)
+	}
+
+	// Give the async loop time to process any items it might have.
+	time.Sleep(100 * time.Millisecond)
+
+	// The sync loop processed 10 ticks. Each tick runs the pipeline once = 10 calls.
+	// The async loop should NOT also be processing those frames through the pipeline.
+	// With the bug, the async loop would also run them through pipeline.Run(),
+	// leading to > 10 pipeline invocations.
+	syncProcessed := pipelineProcessCount.Load()
+	require.Equal(t, int64(10), syncProcessed,
+		"pipeline should be invoked exactly 10 times (once per tick), got %d (async double-processing?)", syncProcessed)
+
+	// Verify videoProcCh is not accumulating (drained by async loop).
+	require.Equal(t, 0, len(s.videoProcCh),
+		"videoProcCh should be drained, got %d items", len(s.videoProcCh))
+}
+
+// countingPipelineNode counts how many times Process is called.
+type countingPipelineNode struct {
+	count *atomic.Int64
+}
+
+func (n *countingPipelineNode) Name() string                          { return "counting-test" }
+func (n *countingPipelineNode) Configure(format PipelineFormat) error { return nil }
+func (n *countingPipelineNode) Active() bool                          { return true }
+func (n *countingPipelineNode) Err() error                            { return nil }
+func (n *countingPipelineNode) Latency() time.Duration                { return 0 }
+func (n *countingPipelineNode) Close() error                          { return nil }
+func (n *countingPipelineNode) Process(dst, src *ProcessingFrame) *ProcessingFrame {
+	n.count.Add(1)
+	return src
+}
+
+// === Bug 2: GPU pipeline bypassed in sync loop ===
+
+func TestSyncLoopChecksGPURunner(t *testing.T) {
+	// Verify that runPipelineAndBroadcast checks the GPU runner first
+	// (RunFromCache, then RunWithUpload) before falling back to CPU.
+	s, _ := newSyncTestSwitcher(t)
+	defer s.Close()
+
+	cam1Relay := distribution.NewRelay()
+	s.RegisterSource("cam1", cam1Relay)
+	s.mu.Lock()
+	s.frameSync.AddSource("cam1")
+	s.mu.Unlock()
+	require.NoError(t, s.Cut(context.Background(), "cam1"))
+
+	// Set a mock GPU runner that tracks calls.
+	var runFromCacheCalls atomic.Int64
+	var runWithUploadCalls atomic.Int64
+	mockGPU := &syncLoopGPUMock{
+		onRunFromCache:  func(sourceKey string, pts int64) error {
+			runFromCacheCalls.Add(1)
+			return fmt.Errorf("mock: no cached frame") // force fallback to RunWithUpload
+		},
+		onRunWithUpload: func(yuv []byte, w, h int, pts int64) error {
+			runWithUploadCalls.Add(1)
+			return nil // succeed
+		},
+	}
+	s.SetGPUPipeline(mockGPU)
+
+	// Also install a counting CPU pipeline to verify it's NOT called when GPU succeeds.
+	var cpuPipelineCalls atomic.Int64
+	cpuNode := &countingPipelineNode{count: &cpuPipelineCalls}
+	p := &Pipeline{}
+	require.NoError(t, p.Build(PipelineFormat{
+		Name: "test", Width: 320, Height: 240, FPSNum: 30, FPSDen: 1,
+	}, s.framePool, []PipelineNode{cpuNode}))
+	s.pipeline.Store(p)
+
+	// Feed frames and process ticks.
+	pool := s.framePool
+	yuvSize := 320 * 240 * 3 / 2
+	for i := 0; i < 5; i++ {
+		buf := pool.Acquire()[:yuvSize]
+		pf := &ProcessingFrame{
+			Data:  buf,
+			Width: 320, Height: 240,
+			PTS:   int64(i) * 3000,
+			pool:  pool,
+		}
+		pf.SetRefs(1)
+		s.frameSync.IngestRawVideo("cam1", pf)
+	}
+
+	for i := 0; i < 5; i++ {
+		tick := clock.Tick{
+			Number:        int64(i),
+			VideoPTS:      int64(i) * 3000,
+			AudioSamples:  1600,
+			FrameDuration: 33333 * time.Microsecond,
+		}
+		s.processVideoTick(tick)
+	}
+
+	// Verify GPU runner was consulted.
+	require.Equal(t, int64(5), runFromCacheCalls.Load(),
+		"RunFromCache should be called once per tick")
+	require.Equal(t, int64(5), runWithUploadCalls.Load(),
+		"RunWithUpload should be called once per tick (after cache miss)")
+
+	// CPU pipeline should NOT have been called since GPU succeeded.
+	require.Equal(t, int64(0), cpuPipelineCalls.Load(),
+		"CPU pipeline should not be called when GPU succeeds")
+
+	// GPU metrics should be updated.
+	require.Equal(t, int64(5), s.gpuFramesProcessed.Load(),
+		"gpuFramesProcessed should count GPU-processed frames")
+	require.Equal(t, int64(5), s.gpuCacheMisses.Load(),
+		"gpuCacheMisses should count cache misses")
+}
+
+func TestSyncLoopGPUFallbackToCPU(t *testing.T) {
+	// When GPU fails both RunFromCache and RunWithUpload, CPU pipeline is used.
+	s, _ := newSyncTestSwitcher(t)
+	defer s.Close()
+
+	cam1Relay := distribution.NewRelay()
+	s.RegisterSource("cam1", cam1Relay)
+	s.mu.Lock()
+	s.frameSync.AddSource("cam1")
+	s.mu.Unlock()
+	require.NoError(t, s.Cut(context.Background(), "cam1"))
+
+	// GPU mock that always fails.
+	mockGPU := &syncLoopGPUMock{
+		onRunFromCache: func(sourceKey string, pts int64) error {
+			return fmt.Errorf("mock: no cached frame")
+		},
+		onRunWithUpload: func(yuv []byte, w, h int, pts int64) error {
+			return fmt.Errorf("mock: GPU upload failed")
+		},
+	}
+	s.SetGPUPipeline(mockGPU)
+
+	// CPU pipeline that counts invocations.
+	var cpuCalls atomic.Int64
+	cpuNode := &countingPipelineNode{count: &cpuCalls}
+	p := &Pipeline{}
+	require.NoError(t, p.Build(PipelineFormat{
+		Name: "test", Width: 320, Height: 240, FPSNum: 30, FPSDen: 1,
+	}, s.framePool, []PipelineNode{cpuNode}))
+	s.pipeline.Store(p)
+
+	viewer := newMockProgramViewer("gpu-fallback-viewer")
+	s.programRelay.AddViewer(viewer)
+
+	pool := s.framePool
+	yuvSize := 320 * 240 * 3 / 2
+	for i := 0; i < 3; i++ {
+		buf := pool.Acquire()[:yuvSize]
+		pf := &ProcessingFrame{
+			Data:  buf,
+			Width: 320, Height: 240,
+			PTS:   int64(i) * 3000,
+			pool:  pool,
+		}
+		pf.SetRefs(1)
+		s.frameSync.IngestRawVideo("cam1", pf)
+	}
+
+	for i := 0; i < 3; i++ {
+		tick := clock.Tick{
+			Number:        int64(i),
+			VideoPTS:      int64(i) * 3000,
+			AudioSamples:  1600,
+			FrameDuration: 33333 * time.Microsecond,
+		}
+		s.processVideoTick(tick)
+	}
+
+	// CPU pipeline should have been called as fallback.
+	require.Equal(t, int64(3), cpuCalls.Load(),
+		"CPU pipeline should be called when GPU fails")
+
+	// Fallback metrics should be recorded.
+	require.Equal(t, int64(3), s.gpuFallbackFrames.Load(),
+		"gpuFallbackFrames should count fallback frames")
+
+	// gpuFramesProcessed should be 0 (GPU never succeeded).
+	require.Equal(t, int64(0), s.gpuFramesProcessed.Load(),
+		"gpuFramesProcessed should be 0 when GPU always fails")
+}
+
+// syncLoopGPUMock is a GPUPipelineRunner mock for sync loop tests.
+type syncLoopGPUMock struct {
+	onRunFromCache  func(sourceKey string, pts int64) error
+	onRunWithUpload func(yuv []byte, w, h int, pts int64) error
+}
+
+func (m *syncLoopGPUMock) RunFromCache(sourceKey string, pts int64) error {
+	if m.onRunFromCache != nil {
+		return m.onRunFromCache(sourceKey, pts)
+	}
+	return fmt.Errorf("not implemented")
+}
+
+func (m *syncLoopGPUMock) RunWithUpload(yuv []byte, width, height int, pts int64) error {
+	if m.onRunWithUpload != nil {
+		return m.onRunWithUpload(yuv, width, height, pts)
+	}
+	return fmt.Errorf("not implemented")
+}
+
+func (m *syncLoopGPUMock) RunTransition(fromKey, toKey string, transType string, wipeDir int, position float64, pts int64, stinger *GPUStingerFrame) error {
+	return nil
+}
+
+func (m *syncLoopGPUMock) Snapshot() map[string]any {
+	return map[string]any{"gpu": true, "backend": "sync-loop-mock"}
 }
