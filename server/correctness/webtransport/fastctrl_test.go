@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/zsiec/switchframe/server/fastctrl"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/layout"
@@ -372,29 +374,31 @@ func TestFastCtrlInvalidMessage(t *testing.T) {
 	})
 
 	testCases := []struct {
-		name string
-		data []byte
+		name      string
+		data      []byte
+		wantErr   error // nil = any error, non-nil = errors.Is match
 	}{
-		{"empty_bytes", []byte{}},
-		{"layout_type_only", []byte{0x01}},
-		{"transition_type_only", []byte{0x02}},
-		{"graphics_type_only", []byte{0x03}},
-		{"unknown_type_0xFF", []byte{0xFF}},
-		{"unknown_type_0x00", []byte{0x00}},
-		{"layout_truncated_2bytes", []byte{0x01, 0x00}},
-		{"layout_truncated_5bytes", []byte{0x01, 0x00, 0x00, 0x64, 0x00}},
-		{"transition_truncated_2bytes", []byte{0x02, 0x00}},
-		{"transition_truncated_3bytes", []byte{0x02, 0x00, 0x00}},
-		{"graphics_truncated_5bytes", []byte{0x03, 0x00, 0x01, 0x00, 0x64}},
-		{"graphics_truncated_8bytes", []byte{0x03, 0x00, 0x01, 0x00, 0x64, 0x00, 0xC8, 0x01}},
+		{"empty_bytes", []byte{}, fastctrl.ErrEmptyDatagram},
+		{"layout_type_only", []byte{0x01}, nil},
+		{"transition_type_only", []byte{0x02}, nil},
+		{"graphics_type_only", []byte{0x03}, nil},
+		{"unknown_type_0xFF", []byte{0xFF}, fastctrl.ErrUnknownType},
+		{"unknown_type_0x00", []byte{0x00}, fastctrl.ErrUnknownType},
+		{"layout_truncated_2bytes", []byte{0x01, 0x00}, nil},
+		{"layout_truncated_5bytes", []byte{0x01, 0x00, 0x00, 0x64, 0x00}, nil},
+		{"transition_truncated_2bytes", []byte{0x02, 0x00}, nil},
+		{"transition_truncated_3bytes", []byte{0x02, 0x00, 0x00}, nil},
+		{"graphics_truncated_5bytes", []byte{0x03, 0x00, 0x01, 0x00, 0x64}, nil},
+		{"graphics_truncated_8bytes", []byte{0x03, 0x00, 0x01, 0x00, 0x64, 0x00, 0xC8, 0x01}, nil},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			err := d.Dispatch(tc.data)
 			t.Logf("MEASURE: dispatch(%q) = %v", tc.name, err)
-			if err == nil {
-				t.Errorf("expected error for %s, got nil", tc.name)
+			require.Error(t, err, "expected error for %s", tc.name)
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr, "sentinel error mismatch for %s", tc.name)
 			}
 		})
 	}
@@ -662,6 +666,11 @@ func TestFastCtrlDispatcherStripsTypeByteBeforeHandler(t *testing.T) {
 }
 
 // TestFastCtrlLayoutZeroDimensions tests that a zero-dimension rect is rejected.
+//
+// Zero dimensions (w=0 or h=0) are intentionally rejected by ParseLayoutSlotPosition
+// (layout.go line 31-33: "if w == 0 || h == 0"). A zero-area slot would cause
+// division-by-zero in aspect ratio calculations and has no valid rendering interpretation.
+// The same check exists in ParseGraphicsLayerPosition (graphics.go line 31-33).
 func TestFastCtrlLayoutZeroDimensions(t *testing.T) {
 	d := fastctrl.NewDispatcher()
 	d.Register(fastctrl.MsgLayoutSlotPosition, func(data []byte) error {
@@ -669,7 +678,7 @@ func TestFastCtrlLayoutZeroDimensions(t *testing.T) {
 		return err
 	})
 
-	// Zero width.
+	// Zero width: must be rejected because a zero-area slot has no valid rendering.
 	msg := make([]byte, 10)
 	msg[0] = fastctrl.MsgLayoutSlotPosition
 	msg[1] = 0
@@ -680,11 +689,10 @@ func TestFastCtrlLayoutZeroDimensions(t *testing.T) {
 
 	err := d.Dispatch(msg)
 	t.Logf("MEASURE: dispatch with zero width = %v", err)
-	if err == nil {
-		t.Error("expected error for zero width, got nil")
-	}
+	require.Error(t, err, "zero width must be rejected")
+	require.Contains(t, err.Error(), "zero dimension", "error message should identify zero dimension")
 
-	// Zero height.
+	// Zero height: must be rejected for the same reason.
 	msg2 := make([]byte, 10)
 	msg2[0] = fastctrl.MsgLayoutSlotPosition
 	msg2[1] = 0
@@ -695,12 +703,25 @@ func TestFastCtrlLayoutZeroDimensions(t *testing.T) {
 
 	err = d.Dispatch(msg2)
 	t.Logf("MEASURE: dispatch with zero height = %v", err)
-	if err == nil {
-		t.Error("expected error for zero height, got nil")
-	}
+	require.Error(t, err, "zero height must be rejected")
+	require.Contains(t, err.Error(), "zero dimension", "error message should identify zero dimension")
+
+	// Both zero: also rejected.
+	msg3 := make([]byte, 10)
+	msg3[0] = fastctrl.MsgLayoutSlotPosition
+	msg3[1] = 0
+	binary.BigEndian.PutUint16(msg3[2:4], 100)
+	binary.BigEndian.PutUint16(msg3[4:6], 100)
+	binary.BigEndian.PutUint16(msg3[6:8], 0) // w=0
+	binary.BigEndian.PutUint16(msg3[8:10], 0) // h=0
+
+	err = d.Dispatch(msg3)
+	t.Logf("MEASURE: dispatch with both zero = %v", err)
+	require.Error(t, err, "both zero dimensions must be rejected")
 }
 
 // TestFastCtrlGraphicsZeroDimensions tests that zero-dimension graphics rects are rejected.
+// See TestFastCtrlLayoutZeroDimensions comment for rationale — the same logic applies.
 func TestFastCtrlGraphicsZeroDimensions(t *testing.T) {
 	d := fastctrl.NewDispatcher()
 	d.Register(fastctrl.MsgGraphicsLayerPosition, func(data []byte) error {
@@ -719,9 +740,22 @@ func TestFastCtrlGraphicsZeroDimensions(t *testing.T) {
 
 	err := d.Dispatch(msg)
 	t.Logf("MEASURE: dispatch graphics with zero width = %v", err)
-	if err == nil {
-		t.Error("expected error for zero graphics width, got nil")
-	}
+	require.Error(t, err, "zero graphics width must be rejected")
+	require.Contains(t, err.Error(), "zero dimension")
+
+	// Zero height.
+	msg2 := make([]byte, 11)
+	msg2[0] = fastctrl.MsgGraphicsLayerPosition
+	binary.BigEndian.PutUint16(msg2[1:3], 0)   // layer 0
+	binary.BigEndian.PutUint16(msg2[3:5], 100)  // x
+	binary.BigEndian.PutUint16(msg2[5:7], 100)  // y
+	binary.BigEndian.PutUint16(msg2[7:9], 200)  // w=200
+	binary.BigEndian.PutUint16(msg2[9:11], 0)   // h=0
+
+	err = d.Dispatch(msg2)
+	t.Logf("MEASURE: dispatch graphics with zero height = %v", err)
+	require.Error(t, err, "zero graphics height must be rejected")
+	require.Contains(t, err.Error(), "zero dimension")
 }
 
 // TestFastCtrlLayoutExceedsFrameBounds tests that a layout rect exceeding the
@@ -772,27 +806,41 @@ func TestFastCtrlLayoutExceedsFrameBounds(t *testing.T) {
 
 // TestFastCtrlMultipleMessageTypes verifies that different message types can
 // be registered and dispatched independently without interference.
+// Each handler type has its own invocation counter AND captures parsed values,
+// verifying that dispatch routes to the correct handler with correct data.
 func TestFastCtrlMultipleMessageTypes(t *testing.T) {
 	var layoutCalled, transitionCalled, graphicsCalled int
+	var lastLayoutSlotID int
+	var lastTransitionPos float64
+	var lastGraphicsLayerID int
 
 	d := fastctrl.NewDispatcher()
 	d.Register(fastctrl.MsgLayoutSlotPosition, func(data []byte) error {
 		layoutCalled++
-		_, _, err := fastctrl.ParseLayoutSlotPosition(data)
+		slotID, _, err := fastctrl.ParseLayoutSlotPosition(data)
+		if err == nil {
+			lastLayoutSlotID = slotID
+		}
 		return err
 	})
 	d.Register(fastctrl.MsgTransitionPosition, func(data []byte) error {
 		transitionCalled++
-		_, err := fastctrl.ParseTransitionPosition(data)
+		pos, err := fastctrl.ParseTransitionPosition(data)
+		if err == nil {
+			lastTransitionPos = pos
+		}
 		return err
 	})
 	d.Register(fastctrl.MsgGraphicsLayerPosition, func(data []byte) error {
 		graphicsCalled++
-		_, _, err := fastctrl.ParseGraphicsLayerPosition(data)
+		lid, _, err := fastctrl.ParseGraphicsLayerPosition(data)
+		if err == nil {
+			lastGraphicsLayerID = lid
+		}
 		return err
 	})
 
-	// Valid layout message.
+	// Valid layout message (slot 0).
 	layoutMsg := make([]byte, 10)
 	layoutMsg[0] = fastctrl.MsgLayoutSlotPosition
 	layoutMsg[1] = 0
@@ -801,12 +849,12 @@ func TestFastCtrlMultipleMessageTypes(t *testing.T) {
 	binary.BigEndian.PutUint16(layoutMsg[6:8], 200)
 	binary.BigEndian.PutUint16(layoutMsg[8:10], 200)
 
-	// Valid transition message.
+	// Valid transition message (position 0.5).
 	transMsg := make([]byte, 5)
 	transMsg[0] = fastctrl.MsgTransitionPosition
 	binary.BigEndian.PutUint32(transMsg[1:5], math.Float32bits(0.5))
 
-	// Valid graphics message.
+	// Valid graphics message (layer 0).
 	gfxMsg := make([]byte, 11)
 	gfxMsg[0] = fastctrl.MsgGraphicsLayerPosition
 	binary.BigEndian.PutUint16(gfxMsg[1:3], 0)
@@ -815,22 +863,38 @@ func TestFastCtrlMultipleMessageTypes(t *testing.T) {
 	binary.BigEndian.PutUint16(gfxMsg[7:9], 200)
 	binary.BigEndian.PutUint16(gfxMsg[9:11], 200)
 
-	_ = d.Dispatch(layoutMsg)
-	_ = d.Dispatch(transMsg)
-	_ = d.Dispatch(gfxMsg)
-	_ = d.Dispatch(layoutMsg)
+	// Dispatch each type and verify no errors. The key property: each dispatch
+	// routes to the correct handler without interfering with the others.
+	require.NoError(t, d.Dispatch(layoutMsg), "layout dispatch 1")
+	require.NoError(t, d.Dispatch(transMsg), "transition dispatch")
+	require.NoError(t, d.Dispatch(gfxMsg), "graphics dispatch")
+
+	// Second layout dispatch (slot 2 this time) to verify count + last value.
+	layoutMsg2 := make([]byte, 10)
+	layoutMsg2[0] = fastctrl.MsgLayoutSlotPosition
+	layoutMsg2[1] = 2 // different slot
+	binary.BigEndian.PutUint16(layoutMsg2[2:4], 200)
+	binary.BigEndian.PutUint16(layoutMsg2[4:6], 200)
+	binary.BigEndian.PutUint16(layoutMsg2[6:8], 300)
+	binary.BigEndian.PutUint16(layoutMsg2[8:10], 300)
+	require.NoError(t, d.Dispatch(layoutMsg2), "layout dispatch 2")
 
 	t.Logf("MEASURE: layout=%d, transition=%d, graphics=%d", layoutCalled, transitionCalled, graphicsCalled)
 
-	if layoutCalled != 2 {
-		t.Errorf("layout handler called %d times, want 2", layoutCalled)
-	}
-	if transitionCalled != 1 {
-		t.Errorf("transition handler called %d times, want 1", transitionCalled)
-	}
-	if graphicsCalled != 1 {
-		t.Errorf("graphics handler called %d times, want 1", graphicsCalled)
-	}
+	// Verify exact call counts per handler type.
+	require.Equal(t, 2, layoutCalled, "layout handler call count")
+	require.Equal(t, 1, transitionCalled, "transition handler call count")
+	require.Equal(t, 1, graphicsCalled, "graphics handler call count")
+
+	// Verify each handler received the correct parsed values (not just that it was called).
+	require.Equal(t, 2, lastLayoutSlotID, "last layout slot ID should be 2 (from second dispatch)")
+	require.InDelta(t, 0.5, lastTransitionPos, 1e-6, "transition position value")
+	require.Equal(t, 0, lastGraphicsLayerID, "graphics layer ID")
+
+	// Verify an unknown type is correctly rejected.
+	unknownMsg := []byte{0xFE, 0x00, 0x00}
+	err := d.Dispatch(unknownMsg)
+	require.ErrorIs(t, err, fastctrl.ErrUnknownType, "unknown message type should return ErrUnknownType")
 }
 
 // TestFastCtrlLayoutSlotPositionExtraBytes verifies that extra trailing bytes
