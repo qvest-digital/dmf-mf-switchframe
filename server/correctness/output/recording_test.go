@@ -88,6 +88,14 @@ func (g *aacFrameGenerator) generate(t *testing.T, frameIdx, sampleRate int) []b
 		aacData, err = g.enc.Encode(g.pcmBuf)
 		require.NoError(t, err, "encode AAC frame %d (priming)", frameIdx)
 	}
+
+	// Validate ADTS sync word: first 12 bits must be 0xFFF.
+	require.GreaterOrEqual(t, len(aacData), 7, "ADTS frame must be at least 7 bytes (header)")
+	require.Equal(t, byte(0xFF), aacData[0],
+		"ADTS sync word byte 0 must be 0xFF, got 0x%02X", aacData[0])
+	require.Equal(t, byte(0xF0), aacData[1]&0xF0,
+		"ADTS sync word upper nibble of byte 1 must be 0xF0, got 0x%02X", aacData[1]&0xF0)
+
 	return aacData
 }
 
@@ -219,7 +227,11 @@ func TestRecordingProducesValidTS(t *testing.T) {
 	aacGen := newAACFrameGenerator(t, 48000, 2)
 
 	muxer := output.NewTSMuxer()
+	muxCallbackCount := 0
+	muxTotalBytes := 0
 	muxer.SetOutput(func(data []byte) {
+		muxCallbackCount++
+		muxTotalBytes += len(data)
 		_, writeErr := recorder.Write(data)
 		require.NoError(t, writeErr, "recorder write")
 	})
@@ -285,6 +297,11 @@ func TestRecordingProducesValidTS(t *testing.T) {
 	require.NoError(t, muxer.Close())
 	require.NoError(t, recorder.Close())
 
+	// Assert mux callback was invoked — muxer must produce output.
+	t.Logf("MEASURE: mux callback invocations=%d, total bytes=%d", muxCallbackCount, muxTotalBytes)
+	require.Greater(t, muxCallbackCount, 0, "muxer must invoke output callback")
+	require.Greater(t, muxTotalBytes, 0, "muxer must produce output bytes")
+
 	// Find the recording file.
 	recFilename := recorder.Filename()
 	require.NotEmpty(t, recFilename, "recorder should have a filename")
@@ -315,11 +332,14 @@ func TestRecordingProducesValidTS(t *testing.T) {
 	audioFrames := testutil.ProbeAudioFrames(t, recPath)
 	t.Logf("MEASURE: video_frames=%d, audio_frames=%d", len(videoFrames), len(audioFrames))
 
-	// We fed 90 video frames; encoder warmup may lose a few.
-	require.GreaterOrEqual(t, len(videoFrames), 80,
-		"expected at least 80 video frames from 90 encoded (allowing encoder warmup)")
-	require.Greater(t, len(audioFrames), 50,
-		"expected substantial audio frames in the recording")
+	// We fed 90 video frames at 30fps = 3s. Encoder warmup loses a few.
+	require.InDelta(t, 90, len(videoFrames), 5,
+		"expected ~90 video frames (sent 90, encoder warmup may lose a few)")
+
+	// We write one AAC frame per video frame (90 frames total).
+	// Encoder warmup may skip a few video frames (empty output).
+	require.InDelta(t, 90, len(audioFrames), 10,
+		"expected ~90 audio frames (one per video frame)")
 
 	// Verify recorder status reports correct bytes.
 	status := recorder.Status()
@@ -446,12 +466,9 @@ func TestRecordingStartStopMultiple(t *testing.T) {
 	require.Greater(t, len(frames1), 0, "session 1 should have video frames")
 	require.Greater(t, len(frames2), 0, "session 2 should have video frames")
 
-	// PTS ranges should not overlap. The muxer rebases PTS, so both files
-	// should start near the muxerEpoch (90000). Verify each file's PTS
-	// values are internally monotonic.
+	// Verify each file's PTS values are internally monotonic.
 	if len(frames1) > 1 {
 		for i := 1; i < len(frames1); i++ {
-			t.Logf("MEASURE: session1 frame[%d] PTS=%d", i, frames1[i].PTS)
 			assert.Greater(t, frames1[i].PTS, frames1[i-1].PTS,
 				"session 1 PTS should be monotonically increasing at frame %d", i)
 		}
@@ -462,6 +479,33 @@ func TestRecordingStartStopMultiple(t *testing.T) {
 				"session 2 PTS should be monotonically increasing at frame %d", i)
 		}
 	}
+
+	// Verify PTS ranges are disjoint or independently rebased. The muxer
+	// rebases PTS to near muxerEpoch (90000), so each file should have its
+	// own self-contained PTS range. Log and verify bounds.
+	file1FirstPTS := frames1[0].PTS
+	file1LastPTS := frames1[len(frames1)-1].PTS
+	file2FirstPTS := frames2[0].PTS
+	file2LastPTS := frames2[len(frames2)-1].PTS
+	t.Logf("MEASURE: file1 PTS range [%d, %d], file2 PTS range [%d, %d]",
+		file1FirstPTS, file1LastPTS, file2FirstPTS, file2LastPTS)
+
+	// Each file's PTS span should be ~1s of content (30 frames * 3000 ticks = 90000 ticks).
+	// Allow generous margin for encoder warmup.
+	file1Span := file1LastPTS - file1FirstPTS
+	file2Span := file2LastPTS - file2FirstPTS
+	t.Logf("MEASURE: file1 PTS span=%d ticks (%.1fms), file2 PTS span=%d ticks (%.1fms)",
+		file1Span, float64(file1Span)/90.0, file2Span, float64(file2Span)/90.0)
+
+	// 1s of content = 90000 ticks. Span should be reasonable (not 0, not huge).
+	assert.Greater(t, file1Span, int64(50000),
+		"file1 PTS span should cover most of 1s of content")
+	assert.Less(t, file1Span, int64(200000),
+		"file1 PTS span should not exceed ~2s for 1s of content")
+	assert.Greater(t, file2Span, int64(50000),
+		"file2 PTS span should cover most of 1s of content")
+	assert.Less(t, file2Span, int64(200000),
+		"file2 PTS span should not exceed ~2s for 1s of content")
 
 	// Verify file sizes are reasonable (non-zero, not absurdly different).
 	info1, err := os.Stat(file1)
@@ -505,10 +549,31 @@ func TestRecordingLongDuration(t *testing.T) {
 	t.Logf("MEASURE: format duration=%s, size=%s, bitrate=%s",
 		durationStr, result.Format.Size, result.Format.BitRate)
 
+	// Compute actual bitrate and compare against target.
+	// Target: 500kbps video + ~128kbps AAC audio = ~628kbps total.
+	// Parse duration for accurate bitrate calculation.
+	var actualDuration float64 = 30.0 // fallback
+	if durationStr != "" {
+		if parsed, parseErr := strconv.ParseFloat(durationStr, 64); parseErr == nil && parsed > 0 {
+			actualDuration = parsed
+		}
+	}
+	actualBitrateBps := float64(fileSize) * 8.0 / actualDuration
+	targetBitrateBps := float64(encBitrate + 128_000) // video + audio
+	t.Logf("MEASURE: actual bitrate=%.0f bps (%.0f kbps), target=%.0f bps (%.0f kbps)",
+		actualBitrateBps, actualBitrateBps/1000, targetBitrateBps, targetBitrateBps/1000)
+
+	// Bitrate should be within +/-50% of target. Real content varies, but
+	// shouldn't be wildly off (e.g., 10x).
+	assert.Greater(t, actualBitrateBps, targetBitrateBps*0.5,
+		"actual bitrate %.0f bps should be at least 50%% of target %.0f bps", actualBitrateBps, targetBitrateBps)
+	assert.Less(t, actualBitrateBps, targetBitrateBps*1.5,
+		"actual bitrate %.0f bps should be at most 150%% of target %.0f bps", actualBitrateBps, targetBitrateBps)
+
 	// File size: for 30s at 500kbps + audio overhead, expect ~2MB +/- generous margin.
 	// 500kbps * 30s = 1,875,000 bytes. Allow 500KB to 10MB range.
 	t.Logf("MEASURE: 30s recording = %d bytes (%.0f kbps)",
-		fileSize, float64(fileSize)*8.0/30.0/1000.0)
+		fileSize, float64(fileSize)*8.0/actualDuration/1000.0)
 	assert.Greater(t, fileSize, int64(500_000),
 		"30s recording should be at least 500KB")
 	assert.Less(t, fileSize, int64(10_000_000),
@@ -519,11 +584,15 @@ func TestRecordingLongDuration(t *testing.T) {
 	audioFrames := testutil.ProbeAudioFrames(t, path)
 	t.Logf("MEASURE: video_frames=%d, audio_frames=%d", len(videoFrames), len(audioFrames))
 
-	// Expect most of the 900 frames (encoder warmup may lose a few).
-	require.GreaterOrEqual(t, len(videoFrames), 850,
-		"expected at least 850 video frames from 900 encoded")
-	require.Greater(t, len(audioFrames), 100,
-		"expected substantial audio frames in 30s recording")
+	// We sent 900 video frames at 30fps = 30s. Encoder warmup loses a few.
+	require.InDelta(t, 900, len(videoFrames), 20,
+		"expected ~900 video frames (sent 900, encoder warmup may lose a few)")
+
+	// We write one AAC frame per video frame (900 frames total).
+	// Encoder priming may skip a few, and some video frames are skipped
+	// when the encoder returns empty during warmup.
+	require.InDelta(t, 900, len(audioFrames), 50,
+		"expected ~900 audio frames (one per video frame)")
 
 	// Verify video PTS is monotonically increasing.
 	prevPTS := int64(-1)
@@ -840,7 +909,37 @@ func TestConfidenceMonitorProducesJPEG(t *testing.T) {
 	assert.Equal(t, byte(0xFF), jpeg[len(jpeg)-2], "JPEG should end with 0xFF")
 	assert.Equal(t, byte(0xD9), jpeg[len(jpeg)-1], "JPEG should have EOI marker 0xFFD9")
 
-	t.Logf("MEASURE: valid JPEG thumbnail %d bytes", len(jpeg))
+	// Decode JPEG and verify it has real content (not all-black).
+	jpegImg, decodeErr := jpegDecode(bytes.NewReader(jpeg))
+	require.NoError(t, decodeErr, "JPEG should be decodable by Go image/jpeg")
+
+	bounds := jpegImg.Bounds()
+	t.Logf("MEASURE: decoded JPEG dimensions=%dx%d", bounds.Dx(), bounds.Dy())
+	require.Greater(t, bounds.Dx(), 0, "JPEG width should be > 0")
+	require.Greater(t, bounds.Dy(), 0, "JPEG height should be > 0")
+
+	// Compute average pixel brightness. Source YUV has varied Y content
+	// (pattern: (j*7 + i*31) % 256), so decoded JPEG should not be all-black.
+	var totalBrightness uint64
+	pixelCount := 0
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			r, g, b, _ := jpegImg.At(x, y).RGBA()
+			// Convert to 8-bit and compute luminance (BT.601 approximation).
+			luma := (19595*r + 38470*g + 7471*b + (1 << 15)) >> 24
+			totalBrightness += uint64(luma)
+			pixelCount++
+		}
+	}
+	avgBrightness := float64(totalBrightness) / float64(pixelCount)
+	t.Logf("MEASURE: JPEG average brightness=%.1f (0=black, 255=white)", avgBrightness)
+
+	// Source content has varied luma, average should be well above black.
+	assert.Greater(t, avgBrightness, 20.0,
+		"JPEG average brightness should be > 20 (not all-black)")
+
+	t.Logf("MEASURE: valid JPEG thumbnail %d bytes, %dx%d, brightness=%.1f",
+		len(jpeg), bounds.Dx(), bounds.Dy(), avgBrightness)
 }
 
 // TestConfidenceMonitorNonKeyframeIgnored verifies that the confidence
