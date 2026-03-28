@@ -236,11 +236,6 @@ func (c *Context) Pool() *FramePool {
 	return c.pool
 }
 
-// Pool returns the associated FramePool, if any.
-func (c *Context) Pool() *FramePool {
-	return c.pool
-}
-
 // Sync synchronizes the default processing stream, blocking until
 // all previously queued operations complete.
 // Acquires mu to prevent Close() from destroying the stream mid-call.

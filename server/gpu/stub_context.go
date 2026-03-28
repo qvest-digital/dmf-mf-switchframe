@@ -40,9 +40,6 @@ func (c *Context) SetPool(pool *FramePool) {}
 // Pool returns nil on non-GPU builds.
 func (c *Context) Pool() *FramePool { return nil }
 
-// Pool returns nil on non-GPU builds.
-func (c *Context) Pool() *FramePool { return nil }
-
 // CUDAContext returns nil on non-GPU builds.
 func (c *Context) CUDAContext() unsafe.Pointer { return nil }
 
