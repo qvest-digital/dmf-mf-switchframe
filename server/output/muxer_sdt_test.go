@@ -113,6 +113,73 @@ func TestTSMuxer_SDTInOutput(t *testing.T) {
 	assert.True(t, foundSDT, "muxer output must contain SDT packet on PID 0x0011")
 }
 
+func TestBuildNITPacket_ValidTSPacket(t *testing.T) {
+	pkt := buildNITPacket()
+	assert.Equal(t, 188, len(pkt), "NIT packet must be 188 bytes")
+	assert.Equal(t, byte(0x47), pkt[0], "must start with sync byte")
+
+	pid := uint16(pkt[1]&0x1F)<<8 | uint16(pkt[2])
+	assert.Equal(t, uint16(0x0010), pid, "PID must be 0x0010 (NIT)")
+
+	assert.Equal(t, byte(0x40), pkt[5], "table_id must be 0x40 (NIT actual)")
+}
+
+func TestBuildNITPacket_ContainsNetworkName(t *testing.T) {
+	pkt := buildNITPacket()
+	found := false
+	for i := 0; i < len(pkt)-11; i++ {
+		if string(pkt[i:i+11]) == "Switchframe" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "NIT packet must contain 'Switchframe' network name")
+}
+
+func TestBuildNITPacket_ValidCRC(t *testing.T) {
+	pkt := buildNITPacket()
+	sectionStart := 5
+	sectionLen := int(pkt[sectionStart+1]&0x0F)<<8 | int(pkt[sectionStart+2])
+	totalSection := 3 + sectionLen
+	section := pkt[sectionStart : sectionStart+totalSection]
+
+	sectionWithoutCRC := section[:len(section)-4]
+	storedCRC := uint32(section[len(section)-4])<<24 |
+		uint32(section[len(section)-3])<<16 |
+		uint32(section[len(section)-2])<<8 |
+		uint32(section[len(section)-1])
+	computedCRC := crc32MPEG2(sectionWithoutCRC)
+	assert.Equal(t, storedCRC, computedCRC, "NIT CRC-32/MPEG-2 must be valid")
+}
+
+func TestTSMuxer_NITInOutput(t *testing.T) {
+	m := NewTSMuxer()
+	var output []byte
+	m.SetOutput(func(data []byte) { output = append(output, data...) })
+
+	idrFrame := &media.VideoFrame{
+		PTS: 90000, DTS: 90000, IsKeyframe: true,
+		SPS:      []byte{0x67, 0x42, 0xC0, 0x1E, 0xD9, 0x00, 0xA0, 0x47, 0xFE, 0x88},
+		PPS:      []byte{0x68, 0xCE, 0x38, 0x80},
+		WireData: []byte{0x00, 0x00, 0x00, 0x05, 0x65, 0x88, 0x80, 0x40, 0x00},
+		Codec:    "h264",
+	}
+	require.NoError(t, m.WriteVideo(idrFrame))
+
+	foundNIT := false
+	for i := 0; i+188 <= len(output); i += 188 {
+		if output[i] != 0x47 {
+			continue
+		}
+		pid := uint16(output[i+1]&0x1F)<<8 | uint16(output[i+2])
+		if pid == 0x0010 {
+			foundNIT = true
+			break
+		}
+	}
+	assert.True(t, foundNIT, "muxer output must contain NIT packet on PID 0x0010")
+}
+
 func TestCRC32MPEG2_KnownValues(t *testing.T) {
 	// Known CRC-32/MPEG-2 test vectors
 	// "123456789" → 0x0376E6E7

@@ -887,6 +887,7 @@ func TestTSOutputValidation(t *testing.T) {
 	t.Run("no_orphan_pids", func(t *testing.T) {
 		allowedPIDs := map[uint16]string{
 			0x0000:   "PAT",
+			nitPID:   "NIT",
 			sdtPID:   "SDT",
 			0x1000:   "PMT",
 			videoPID: "video",

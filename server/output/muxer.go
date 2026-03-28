@@ -241,8 +241,12 @@ func (m *TSMuxer) writeSCTE35Locked(data []byte) error {
 	return m.flush()
 }
 
-// sdtPID is the MPEG-TS PID for the Service Description Table.
-const sdtPID uint16 = 0x0011
+const (
+	// sdtPID is the MPEG-TS PID for the Service Description Table.
+	sdtPID uint16 = 0x0011
+	// nitPID is the MPEG-TS PID for the Network Information Table.
+	nitPID uint16 = 0x0010
+)
 
 // buildSDTPacket constructs a single 188-byte MPEG-TS packet containing a
 // Service Description Table (SDT) with the Switchframe service name and
@@ -304,6 +308,64 @@ func buildSDTPacket() []byte {
 	pkt[2] = byte(sdtPID & 0xFF)                             // PID low
 	pkt[3] = 0x10                                            // adaptation_field_control=01 (payload only), cc=0
 	pkt[4] = 0x00                                            // pointer_field
+	copy(pkt[5:], section)
+	for i := 5 + len(section); i < 188; i++ {
+		pkt[i] = 0xFF // stuffing
+	}
+
+	return pkt
+}
+
+// buildNITPacket constructs a single 188-byte MPEG-TS packet containing a
+// Network Information Table (NIT) with the Switchframe network name.
+// MediaInfo displays the NIT network_name in the General section, making
+// "Switchframe" visible at the top of the file info.
+//
+// NIT structure per ISO 13818-1 / ETSI EN 300 468:
+//   PID 0x0010, table_id 0x40 (NIT actual), network_name_descriptor tag 0x40.
+func buildNITPacket() []byte {
+	networkName := []byte("Switchframe")
+
+	// Network name descriptor (tag 0x40)
+	nameDesc := make([]byte, 0, 2+len(networkName))
+	nameDesc = append(nameDesc, 0x40)                  // descriptor_tag: network_name
+	nameDesc = append(nameDesc, byte(len(networkName))) // descriptor_length
+	nameDesc = append(nameDesc, networkName...)
+
+	// NIT section body (after table_id + flags+length):
+	//   network_id(2) + version(1) + section_num(1) + last_section_num(1) +
+	//   reserved+network_descriptors_length(2) + descriptors +
+	//   reserved+transport_stream_loop_length(2) [empty loop]
+	descLen := len(nameDesc)
+	sectionBody := make([]byte, 0, 7+descLen+2)
+	sectionBody = append(sectionBody, 0x00, 0x01) // network_id = 1
+	sectionBody = append(sectionBody, 0xC1)       // reserved(2)=0b11, version(5)=0, current_next=1
+	sectionBody = append(sectionBody, 0x00)       // section_number
+	sectionBody = append(sectionBody, 0x00)       // last_section_number
+	// reserved(4) + network_descriptors_length(12)
+	sectionBody = append(sectionBody, byte(0xF0|((descLen>>8)&0x0F)), byte(descLen))
+	sectionBody = append(sectionBody, nameDesc...)
+	// reserved(4) + transport_stream_loop_length(12) = 0 (no TS loop entries)
+	sectionBody = append(sectionBody, 0xF0, 0x00)
+
+	// Full section: table_id + section_syntax_indicator + length + body + CRC32
+	sectionLen := len(sectionBody) + 4 // +4 for CRC32
+	section := make([]byte, 0, 3+len(sectionBody)+4)
+	section = append(section, 0x40)                                                // table_id: NIT actual
+	section = append(section, byte(0xF0|((sectionLen>>8)&0x0F)), byte(sectionLen)) // section_syntax_indicator=1, reserved, section_length
+	section = append(section, sectionBody...)
+
+	// CRC-32/MPEG-2
+	crc := crc32MPEG2(section)
+	section = append(section, byte(crc>>24), byte(crc>>16), byte(crc>>8), byte(crc))
+
+	// Wrap in 188-byte TS packet
+	pkt := make([]byte, 188)
+	pkt[0] = 0x47                           // sync byte
+	pkt[1] = 0x40 | byte((nitPID>>8)&0x1F) // payload_unit_start=1, PID high
+	pkt[2] = byte(nitPID & 0xFF)            // PID low
+	pkt[3] = 0x10                           // adaptation_field_control=01 (payload only), cc=0
+	pkt[4] = 0x00                           // pointer_field
 	copy(pkt[5:], section)
 	for i := 5 + len(section); i < 188; i++ {
 		pkt[i] = 0xFF // stuffing
@@ -627,7 +689,13 @@ func (m *TSMuxer) init(_ int64) error {
 		return err
 	}
 
-	// Write SDT with Switchframe service name (immediately after PAT/PMT).
+	// Write NIT with Switchframe network name (appears in MediaInfo General section).
+	if _, err := m.buf.Write(buildNITPacket()); err != nil {
+		cancel()
+		return err
+	}
+
+	// Write SDT with Switchframe service name (appears in MediaInfo Menu section).
 	if _, err := m.buf.Write(buildSDTPacket()); err != nil {
 		cancel()
 		return err
