@@ -3,9 +3,17 @@
 package srt
 
 import (
+	"context"
+	"log/slog"
 	"math"
+	"os"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
+
+	srtgo "github.com/zsiec/srtgo"
+	"github.com/zsiec/switchframe/server/srt"
 )
 
 // TestSRTLoopbackFrameDelivery pushes a 3s TS file via SRT loopback and verifies
@@ -625,6 +633,346 @@ func TestSRTStreamKeyRouting(t *testing.T) {
 	if len(allFrames) != totalExpected {
 		t.Errorf("total frame count mismatch: got %d, expected %d (cam1=%d + cam2=%d)",
 			len(allFrames), totalExpected, len(frames1), len(frames2))
+	}
+}
+
+// roundTripVideoFrame captures a decoded video frame with raw YUV data.
+type roundTripVideoFrame struct {
+	Width  int
+	Height int
+	PTS    int64
+	AvgY   float64 // average luma computed at capture time
+}
+
+// roundTripAudioFrame captures a decoded audio frame with PCM statistics.
+type roundTripAudioFrame struct {
+	PTS        int64
+	SampleRate int
+	Channels   int
+	Samples    int
+	RMS        float64 // RMS computed at capture time
+	HasSignal  bool    // at least one non-zero sample
+}
+
+// TestSRTFullRoundTrip is the ultimate SRT input path test: generate a known
+// test pattern TS with ffmpeg, push it in via SRT, capture decoded video and
+// audio frames, and verify the content matches expectations (correct resolution,
+// monotonic PTS, non-black video, non-silent audio).
+func TestSRTFullRoundTrip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping full round-trip correctness test in short mode")
+	}
+
+	// Step 1: Generate 3s test TS with ffmpeg (320x240, 30fps, testsrc pattern + 1kHz sine).
+	tsPath := generateTestTS(t, 3, 320, 240, 30)
+
+	// Step 2: Start SRT listener on random port with raw-data-capturing callbacks.
+	addr := findFreeUDPAddr(t)
+	dir := t.TempDir()
+	store, err := srt.NewStore(filepath.Join(dir, "srt_sources.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	var mu sync.Mutex
+	var vFrames []roundTripVideoFrame
+	var aFrames []roundTripAudioFrame
+	runDone := make(chan error, 1)
+
+	l, err := srt.NewListener(srt.ListenerConfig{
+		Addr:           addr,
+		Store:          store,
+		DefaultLatency: 120 * time.Millisecond,
+		OnSource: func(srcCfg srt.SourceConfig, conn *srtgo.Conn) {
+			stats := srt.NewConnStats(srcCfg.Mode, srcCfg.StreamID, srcCfg.LatencyMs)
+			src := srt.NewSource(srcCfg, conn, stats, log)
+			src.OnRawVideo = func(key string, yuv []byte, width, height int, pts int64) {
+				// Compute average Y luma from the Y plane.
+				yPlaneSize := width * height
+				var sumY uint64
+				if len(yuv) >= yPlaneSize && yPlaneSize > 0 {
+					for i := 0; i < yPlaneSize; i++ {
+						sumY += uint64(yuv[i])
+					}
+				}
+				avgY := 0.0
+				if yPlaneSize > 0 {
+					avgY = float64(sumY) / float64(yPlaneSize)
+				}
+				mu.Lock()
+				vFrames = append(vFrames, roundTripVideoFrame{
+					Width:  width,
+					Height: height,
+					PTS:    pts,
+					AvgY:   avgY,
+				})
+				mu.Unlock()
+			}
+			src.OnRawAudio = func(key string, pcm []float32, pts int64, sampleRate, channels int) {
+				// Compute RMS and check for signal.
+				var sumSq float64
+				hasSignal := false
+				for _, s := range pcm {
+					sumSq += float64(s) * float64(s)
+					if s != 0 {
+						hasSignal = true
+					}
+				}
+				rms := 0.0
+				if len(pcm) > 0 {
+					rms = math.Sqrt(sumSq / float64(len(pcm)))
+				}
+				mu.Lock()
+				aFrames = append(aFrames, roundTripAudioFrame{
+					PTS:        pts,
+					SampleRate: sampleRate,
+					Channels:   channels,
+					Samples:    len(pcm),
+					RMS:        rms,
+					HasSignal:  hasSignal,
+				})
+				mu.Unlock()
+			}
+			if startErr := src.Start(ctx); startErr != nil {
+				t.Errorf("source start failed: %v", startErr)
+			}
+		},
+		Log: log,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	go func() {
+		runDone <- l.Run(ctx)
+	}()
+
+	// Give listener time to start accepting.
+	time.Sleep(100 * time.Millisecond)
+
+	// Step 3: Push the TS via SRT.
+	cfg := srtgo.DefaultConfig()
+	cfg.StreamID = "live/roundtrip"
+
+	var conn *srtgo.Conn
+	for i := 0; i < 20; i++ {
+		conn, err = srtgo.Dial(addr, cfg)
+		if err == nil {
+			break
+		}
+		time.Sleep(time.Duration(10*(i+1)) * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("dial SRT failed after retries: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	data, err := os.ReadFile(tsPath)
+	if err != nil {
+		t.Fatalf("read TS file: %v", err)
+	}
+
+	// Pace the data at approximately real-time.
+	nChunks := (len(data) + 1315) / 1316
+	fileBits := int64(len(data)) * 8
+	bitrateGuess := int64(400_000)
+	durationUs := fileBits * 1_000_000 / bitrateGuess
+	totalDuration := time.Duration(durationUs) * time.Microsecond
+	pacingPerChunk := totalDuration / time.Duration(nChunks)
+	if pacingPerChunk < time.Millisecond {
+		pacingPerChunk = time.Millisecond
+	}
+	if pacingPerChunk > 100*time.Millisecond {
+		pacingPerChunk = 100 * time.Millisecond
+	}
+
+	pushDone := make(chan struct{})
+	go func() {
+		defer close(pushDone)
+		for i := 0; i < len(data); i += 1316 {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			end := i + 1316
+			if end > len(data) {
+				end = len(data)
+			}
+			_, werr := conn.Write(data[i:end])
+			if werr != nil {
+				return
+			}
+			time.Sleep(pacingPerChunk)
+		}
+	}()
+
+	// Step 4: Wait for video frames with generous timeout.
+	deadline := time.After(30 * time.Second)
+	for {
+		mu.Lock()
+		vCount := len(vFrames)
+		mu.Unlock()
+		if vCount >= 30 {
+			break
+		}
+		select {
+		case <-deadline:
+			mu.Lock()
+			vc := len(vFrames)
+			ac := len(aFrames)
+			mu.Unlock()
+			t.Fatalf("timeout waiting for video frames: only got %d video, %d audio", vc, ac)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+
+	// Wait for push to complete plus extra drain time.
+	select {
+	case <-pushDone:
+	case <-time.After(20 * time.Second):
+	}
+	time.Sleep(3 * time.Second)
+
+	// Snapshot captured data.
+	mu.Lock()
+	videoSnap := make([]roundTripVideoFrame, len(vFrames))
+	copy(videoSnap, vFrames)
+	audioSnap := make([]roundTripAudioFrame, len(aFrames))
+	copy(audioSnap, aFrames)
+	mu.Unlock()
+
+	// Compute aggregate metrics before assertions.
+	var totalAvgY float64
+	for _, f := range videoSnap {
+		totalAvgY += f.AvgY
+	}
+	overallAvgY := 0.0
+	if len(videoSnap) > 0 {
+		overallAvgY = totalAvgY / float64(len(videoSnap))
+	}
+
+	var totalRMS float64
+	audioWithSignal := 0
+	for _, f := range audioSnap {
+		totalRMS += f.RMS
+		if f.HasSignal {
+			audioWithSignal++
+		}
+	}
+	overallAudioRMS := 0.0
+	if len(audioSnap) > 0 {
+		overallAudioRMS = totalRMS / float64(len(audioSnap))
+	}
+
+	t.Logf("MEASURE: video=%d, audio=%d, avg_Y=%.1f, audio_rms=%.4f",
+		len(videoSnap), len(audioSnap), overallAvgY, overallAudioRMS)
+
+	// --- Video assertions ---
+
+	// 5a. Frame count >= 70 (most of 90 expected for 3s @ 30fps).
+	t.Logf("MEASURE: video frame count=%d (expected ~90, min 70)", len(videoSnap))
+	if len(videoSnap) < 70 {
+		t.Errorf("too few video frames: got %d, expected >= 70 (3s @ 30fps ≈ 90)", len(videoSnap))
+	}
+
+	// 5b. All frames are 320x240.
+	wrongDimCount := 0
+	for i, f := range videoSnap {
+		if f.Width != 320 || f.Height != 240 {
+			wrongDimCount++
+			if wrongDimCount <= 3 {
+				t.Logf("MEASURE: wrong dimensions at frame %d: %dx%d (expected 320x240)", i, f.Width, f.Height)
+			}
+		}
+	}
+	t.Logf("MEASURE: frames with wrong dimensions=%d out of %d", wrongDimCount, len(videoSnap))
+	if wrongDimCount > 0 {
+		t.Errorf("frames with wrong dimensions: %d out of %d", wrongDimCount, len(videoSnap))
+	}
+
+	// 5c. PTS monotonically increasing.
+	nonMonotonicCount := 0
+	for i := 1; i < len(videoSnap); i++ {
+		if videoSnap[i].PTS <= videoSnap[i-1].PTS {
+			nonMonotonicCount++
+			if nonMonotonicCount <= 5 {
+				t.Logf("MEASURE: non-monotonic PTS at frame %d: %d <= %d (delta=%d)",
+					i, videoSnap[i].PTS, videoSnap[i-1].PTS, videoSnap[i].PTS-videoSnap[i-1].PTS)
+			}
+		}
+	}
+	t.Logf("MEASURE: non-monotonic PTS violations=%d out of %d frames", nonMonotonicCount, len(videoSnap))
+	if nonMonotonicCount > 0 {
+		t.Errorf("video PTS not monotonically increasing: %d violations out of %d frames",
+			nonMonotonicCount, len(videoSnap))
+	}
+
+	// 5d. Frames are non-black (avg Y > 20 — testsrc has bright content).
+	blackFrameCount := 0
+	for i, f := range videoSnap {
+		if f.AvgY <= 20 {
+			blackFrameCount++
+			if blackFrameCount <= 5 {
+				t.Logf("MEASURE: dark/black frame at %d: avg_Y=%.1f (threshold 20)", i, f.AvgY)
+			}
+		}
+	}
+	t.Logf("MEASURE: black/dark frames=%d out of %d, overall avg_Y=%.1f", blackFrameCount, len(videoSnap), overallAvgY)
+	if overallAvgY <= 20 {
+		t.Errorf("overall average Y too low (black content): %.1f, expected > 20 for testsrc pattern", overallAvgY)
+	}
+	// Allow a small number of dark frames (first frame may be black during codec warmup).
+	if blackFrameCount > 5 {
+		t.Errorf("too many black/dark frames: %d out of %d (threshold: avg Y > 20)", blackFrameCount, len(videoSnap))
+	}
+
+	// --- Audio assertions ---
+
+	// 7a. Audio frame count > 100.
+	t.Logf("MEASURE: audio frame count=%d (expected > 100)", len(audioSnap))
+	if len(audioSnap) < 100 {
+		t.Errorf("too few audio frames: got %d, expected > 100 (3s at 48kHz/1024 samples ≈ 140)", len(audioSnap))
+	}
+
+	// 7b. Samples are not all-zero (signal present).
+	t.Logf("MEASURE: audio frames with signal=%d out of %d, overall_rms=%.4f",
+		audioWithSignal, len(audioSnap), overallAudioRMS)
+	if audioWithSignal == 0 {
+		t.Errorf("no audio frames contain non-zero samples — audio signal is completely silent")
+	}
+	// The sine wave source should produce significant RMS.
+	if overallAudioRMS < 0.001 {
+		t.Errorf("audio RMS too low: %.6f, expected > 0.001 for 1kHz sine source", overallAudioRMS)
+	}
+
+	// Audio PTS monotonically increasing.
+	audioNonMono := 0
+	for i := 1; i < len(audioSnap); i++ {
+		if audioSnap[i].PTS <= audioSnap[i-1].PTS {
+			audioNonMono++
+			if audioNonMono <= 5 {
+				t.Logf("MEASURE: non-monotonic audio PTS at frame %d: %d <= %d",
+					i, audioSnap[i].PTS, audioSnap[i-1].PTS)
+			}
+		}
+	}
+	t.Logf("MEASURE: audio non-monotonic PTS violations=%d", audioNonMono)
+	if audioNonMono > 0 {
+		t.Errorf("audio PTS not monotonically increasing: %d violations out of %d frames",
+			audioNonMono, len(audioSnap))
+	}
+
+	// Cleanup.
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Error("timeout waiting for listener Run to return")
 	}
 }
 
