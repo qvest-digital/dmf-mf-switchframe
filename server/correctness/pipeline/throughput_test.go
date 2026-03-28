@@ -132,7 +132,7 @@ func (th *throughputHarness) feedFramesFast(sourceKey string, count int, startPT
 	start := time.Now()
 	for i := 0; i < count; i++ {
 		pf := &switcher.ProcessingFrame{
-			YUV:        copyBytes(yuv),
+			Data:       copyBytes(yuv),
 			Width:      th.width,
 			Height:     th.height,
 			PTS:        startPTS + int64(i)*ptsDelta,
@@ -152,7 +152,7 @@ func (th *throughputHarness) feedFramesPaced(sourceKey string, count int, startP
 	start := time.Now()
 	for i := 0; i < count; i++ {
 		pf := &switcher.ProcessingFrame{
-			YUV:        copyBytes(yuv),
+			Data:       copyBytes(yuv),
 			Width:      th.width,
 			Height:     th.height,
 			PTS:        startPTS + int64(i)*ptsDelta,
