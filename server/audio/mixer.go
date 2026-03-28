@@ -281,6 +281,28 @@ func (m *Mixer) RemoveAudioForward(srcKey string) {
 	delete(m.audioForwards, srcKey)
 }
 
+// ProduceSamples produces exactly sampleCount mixed PCM samples on demand.
+// This is the reference-clock-driven path — the caller (synchronous processing
+// loop) controls timing, not an internal ticker.
+// sampleCount is in SAMPLES (not samples*channels — the method handles channels).
+func (m *Mixer) ProduceSamples(sampleCount int) []float32 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	totalValues := sampleCount * m.numChannels
+	mixed := m.produceSamplesLocked(totalValues)
+	// Apply master chain with PTS=0; the reference clock caller manages PTS externally.
+	m.applyMasterChain(mixed, 0)
+	return mixed
+}
+
+// AdvanceCrossfade advances the cut crossfade state machine by one tick.
+// Called by the synchronous processing loop after ProduceSamples.
+func (m *Mixer) AdvanceCrossfade() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.advanceCutCrossfade()
+}
+
 // Close releases all codec resources and stops the background ticker.
 // It is safe to call multiple times.
 func (m *Mixer) Close() error {

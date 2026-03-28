@@ -49,18 +49,63 @@ func (m *Mixer) tick() *media.AudioFrame {
 		return nil
 	}
 
-	// Snapshot transition position for this tick
+	// Produce mixed PCM samples (gains, crossfade, stinger)
+	mixed := m.produceSamplesLocked(aacFrameSamples)
+
+	// Auto-advance cut crossfade position (driven by frame counter, not timer).
+	// This runs after the mix so the current tick used the position set above.
+	m.advanceCutCrossfade()
+
+	// PTS
+	pts := m.advanceOutputPTS(0)
+
+	// Apply master chain (gain -> LUFS -> limiter -> mute -> metering)
+	m.applyMasterChain(mixed, pts)
+
+	// Encode
+	aacData, err := m.encoder.Encode(mixed)
+	if err != nil {
+		m.encodeErrors.Add(1)
+		m.mu.Unlock()
+		return nil
+	}
+	m.framesMixed.Add(1)
+
+	m.mu.Unlock()
+
+	return &media.AudioFrame{
+		PTS:        pts,
+		Data:       aacData,
+		SampleRate: m.sampleRate,
+		Channels:   m.numChannels,
+	}
+}
+
+// produceSamplesLocked reads from all active channel ring buffers, applies
+// per-channel gains, crossfade, and stinger audio overlay. Returns
+// totalValues float32 samples of mixed PCM. Does NOT apply the master
+// output chain or advance PTS — callers handle those steps because:
+//   - tick() needs real PTS for the MXL sink in applyMasterChain
+//   - ProduceSamples() applies the master chain with PTS=0 (caller manages PTS)
+//
+// This is the core mixing logic shared by both:
+//   - tick() — the clock-driven output ticker (1024 samples per AAC frame)
+//   - ProduceSamples() — on-demand production for the reference clock path
+//
+// totalValues is in interleaved sample values (samples * channels).
+// Caller must hold m.mu.
+func (m *Mixer) produceSamplesLocked(totalValues int) []float32 {
+	// Snapshot transition position for this mix cycle
 	if m.transCrossfadeActive {
 		m.mixCycleTransPos = m.transCrossfadePosition
 	}
 
 	// Read from each active channel's ring buffer and apply gain
-	m.mixAccum = growBuf(m.mixAccum, aacFrameSamples)
-	for i := range m.mixAccum[:aacFrameSamples] {
+	m.mixAccum = growBuf(m.mixAccum, totalValues)
+	for i := range m.mixAccum[:totalValues] {
 		m.mixAccum[i] = 0
 	}
 
-	hasOutput := false
 	// Measure ring buffer depth of active channels before reading.
 	// This tells us how much FIFO latency audio has — used as lip-sync offset.
 	var maxRingDepth int
@@ -83,11 +128,10 @@ func (m *Mixer) tick() *media.AudioFrame {
 			continue
 		}
 
-		pcm := ch.ringBuf.Pop(aacFrameSamples)
+		pcm := ch.ringBuf.Pop(totalValues)
 		if pcm == nil {
 			continue // never pushed — skip
 		}
-		hasOutput = true
 
 		// Apply fader gain (and transition gain if active)
 		ch.gainBuf = growBuf(ch.gainBuf, len(pcm))
@@ -126,8 +170,8 @@ func (m *Mixer) tick() *media.AudioFrame {
 
 		// Sum into accumulator
 		n := len(gained)
-		if n > aacFrameSamples {
-			n = aacFrameSamples
+		if n > totalValues {
+			n = totalValues
 		}
 		if n > 0 {
 			vec.AddFloat32(&m.mixAccum[0], &gained[0], n)
@@ -136,7 +180,7 @@ func (m *Mixer) tick() *media.AudioFrame {
 
 	// Stinger audio overlay
 	if m.stingerAudio != nil {
-		m.addStingerAudio(m.mixAccum[:aacFrameSamples])
+		m.addStingerAudio(m.mixAccum[:totalValues])
 	}
 
 	// Advance transition audio position
@@ -144,37 +188,7 @@ func (m *Mixer) tick() *media.AudioFrame {
 		m.transCrossfadeAudioPos = m.mixCycleTransPos
 	}
 
-	// Auto-advance cut crossfade position (driven by frame counter, not timer).
-	// This runs after the mix so the current tick used the position set above.
-	m.advanceCutCrossfade()
-
-	// PTS
-	pts := m.advanceOutputPTS(0)
-
-	// Apply master chain (gain -> LUFS -> limiter -> mute -> metering)
-	mixed := m.mixAccum[:aacFrameSamples]
-	m.applyMasterChain(mixed, pts)
-
-	// Encode
-	aacData, err := m.encoder.Encode(mixed)
-	if err != nil {
-		m.encodeErrors.Add(1)
-		m.mu.Unlock()
-		return nil
-	}
-	m.framesMixed.Add(1)
-
-	// Track whether we had real audio data for diagnostics
-	_ = hasOutput
-
-	m.mu.Unlock()
-
-	return &media.AudioFrame{
-		PTS:        pts,
-		Data:       aacData,
-		SampleRate: m.sampleRate,
-		Channels:   m.numChannels,
-	}
+	return m.mixAccum[:totalValues]
 }
 
 // advanceCutCrossfade advances the cut crossfade state machine by one tick.
