@@ -3,7 +3,6 @@
 package gpu
 
 import (
-	"encoding/binary"
 	"fmt"
 	"math"
 	"testing"
