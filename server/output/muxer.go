@@ -278,11 +278,11 @@ func buildSDTPacket() []byte {
 	//   table_id(1) + flags+length(2) + ts_id(2) + version(1) + section_num(1) +
 	//   last_section_num(1) + original_network_id(2) + reserved(1) + service_entries
 	sectionBody := make([]byte, 0, 8+len(serviceEntry))
-	sectionBody = append(sectionBody, 0x00, 0x01) // transport_stream_id = 1
+	sectionBody = append(sectionBody, 0x00, 0x00) // transport_stream_id = 0 (matches go-astits PAT default)
 	sectionBody = append(sectionBody, 0xC1)       // reserved(2)=0b11, version(5)=0, current_next=1
 	sectionBody = append(sectionBody, 0x00)       // section_number
 	sectionBody = append(sectionBody, 0x00)       // last_section_number
-	sectionBody = append(sectionBody, 0x00, 0x01) // original_network_id = 1
+	sectionBody = append(sectionBody, 0x00, 0x00) // original_network_id = 0
 	sectionBody = append(sectionBody, 0xFF)       // reserved_future_use
 	sectionBody = append(sectionBody, serviceEntry...)
 
