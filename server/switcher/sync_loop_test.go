@@ -92,7 +92,7 @@ func newSyncTestSwitcher(t *testing.T) (*Switcher, *clock.ReferenceClock) {
 		health:        newHealthMonitor(),
 		videoProcCh:   make(chan videoProcWork, 8),
 		videoProcDone: make(chan struct{}),
-		framePool:     NewFramePool(8, 320, 240),
+		framePool:     NewFramePool(8, 320, 240, ColorYUV420_8bit),
 	}
 	s.frameBudgetNs.Store(testFmt.FrameBudgetNs())
 	s.pipelineFormat.Store(&testFmt)
@@ -182,7 +182,7 @@ func TestSyncLoopProducesVideoOutput(t *testing.T) {
 			buf[j] = byte(i + 1)
 		}
 		pf := &ProcessingFrame{
-			YUV:   buf,
+			Data:  buf,
 			Width: 320, Height: 240,
 			PTS: int64(i) * 3000,
 			pool: pool,
@@ -317,7 +317,7 @@ func TestSyncLoopAVAligned(t *testing.T) {
 	for i := 0; i < 60; i++ {
 		buf := pool.Acquire()[:yuvSize]
 		pf := &ProcessingFrame{
-			YUV:   buf,
+			Data:  buf,
 			Width: 320, Height: 240,
 			PTS: int64(i) * 3000,
 			pool: pool,
@@ -402,7 +402,7 @@ func TestSyncLoopOverload(t *testing.T) {
 	for i := 0; i < 30; i++ {
 		buf := pool.Acquire()[:yuvSize]
 		pf := &ProcessingFrame{
-			YUV:   buf,
+			Data:  buf,
 			Width: 320, Height: 240,
 			PTS: int64(i) * 3000,
 			pool: pool,
@@ -503,7 +503,7 @@ func TestSyncLoopProcessTickDirect(t *testing.T) {
 	yuvSize := 320 * 240 * 3 / 2
 	buf := pool.Acquire()[:yuvSize]
 	pf := &ProcessingFrame{
-		YUV:   buf,
+		Data:  buf,
 		Width: 320, Height: 240,
 		PTS: 90000,
 		pool: pool,
@@ -627,7 +627,7 @@ func TestSyncLoopNoMixerNoAAC(t *testing.T) {
 	yuvSize := 320 * 240 * 3 / 2
 	buf := pool.Acquire()[:yuvSize]
 	pf := &ProcessingFrame{
-		YUV:  buf,
+		Data: buf,
 		Width: 320, Height: 240,
 		PTS:  90000,
 		pool: pool,
@@ -703,7 +703,7 @@ func TestSyncLoopVideoFramesGetRefClockPTS(t *testing.T) {
 	yuvSize := 320 * 240 * 3 / 2
 	buf := pool.Acquire()[:yuvSize]
 	pf := &ProcessingFrame{
-		YUV:   buf,
+		Data:  buf,
 		Width: 320, Height: 240,
 		PTS: 99999, // source PTS — should be overwritten
 		pool: pool,
@@ -904,7 +904,7 @@ func TestSyncLoopSourceLossFreeze(t *testing.T) {
 			buf[j] = 128
 		}
 		pf := &ProcessingFrame{
-			YUV:   buf,
+			Data:  buf,
 			Width: 320, Height: 240,
 			PTS: int64(i) * 3000,
 			pool: pool,
@@ -981,7 +981,7 @@ func TestSyncLoopSourceLossToBlack(t *testing.T) {
 		buf[j] = 128
 	}
 	pf := &ProcessingFrame{
-		YUV:   buf,
+		Data:  buf,
 		Width: 320, Height: 240,
 		PTS: 0,
 		pool: pool,
@@ -1050,7 +1050,7 @@ func TestSyncLoopSourceRecovery(t *testing.T) {
 		buf[j] = 42
 	}
 	pf := &ProcessingFrame{
-		YUV:   buf,
+		Data:  buf,
 		Width: 320, Height: 240,
 		PTS: 0,
 		pool: pool,
@@ -1082,7 +1082,7 @@ func TestSyncLoopSourceRecovery(t *testing.T) {
 		buf2[j] = 128
 	}
 	pf2 := &ProcessingFrame{
-		YUV:   buf2,
+		Data:  buf2,
 		Width: 320, Height: 240,
 		PTS: 6000,
 		pool: pool,
@@ -1146,7 +1146,7 @@ func TestSyncLoopTransitionDissolve(t *testing.T) {
 			buf[j] = 128
 		}
 		pf := &ProcessingFrame{
-			YUV:   buf,
+			Data:  buf,
 			Width: 320, Height: 240,
 			PTS: 0,
 			pool: pool,
@@ -1220,7 +1220,7 @@ func TestSyncLoopTransitionComplete(t *testing.T) {
 			buf[j] = 128
 		}
 		pf := &ProcessingFrame{
-			YUV:   buf,
+			Data:  buf,
 			Width: 320, Height: 240,
 			PTS: 0,
 			pool: pool,
@@ -1291,7 +1291,7 @@ func TestSyncLoopClockRecovery(t *testing.T) {
 			buf[j] = 128
 		}
 		pf := &ProcessingFrame{
-			YUV:   buf,
+			Data:  buf,
 			Width: 320, Height: 240,
 			PTS: int64(i) * 3003, // 29.97fps PTS interval
 			pool: pool,
@@ -1408,7 +1408,7 @@ func TestRepeatLastVideoFrameUsesEncodedData(t *testing.T) {
 	// Also store a raw YUV frame (the old buggy path would use this).
 	rawYUV := makeTestYUV(320, 240, 42)
 	rawFrame := &ProcessingFrame{
-		YUV:   rawYUV,
+		Data:  rawYUV,
 		Width: 320, Height: 240,
 		PTS: 1000,
 	}
@@ -1452,7 +1452,7 @@ func TestFTBTransitionCallsCorrectHandler(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		buf := pool.Acquire()[:yuvSize]
 		pf := &ProcessingFrame{
-			YUV:   buf,
+			Data:  buf,
 			Width: 320, Height: 240,
 			PTS: int64(i) * 3000,
 			pool: pool,
@@ -1522,7 +1522,7 @@ func TestStartSyncLoopDoubleStartGuard(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		buf := pool.Acquire()[:yuvSize]
 		pf := &ProcessingFrame{
-			YUV:   buf,
+			Data:  buf,
 			Width: 320, Height: 240,
 			PTS: int64(i) * 3000,
 			pool: pool,

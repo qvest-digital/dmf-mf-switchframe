@@ -239,10 +239,10 @@ func (s *Switcher) processTransitionTick(tick clock.Tick, fs *FrameSynchronizer,
 	// Blend frames.
 	var fromYUV, toYUV []byte
 	var fromW, fromH, toW, toH int
-	fromYUV = fromFrame.YUV
+	fromYUV = fromFrame.Data
 	fromW, fromH = fromFrame.Width, fromFrame.Height
 	if toFrame != nil {
-		toYUV = toFrame.YUV
+		toYUV = toFrame.Data
 		toW, toH = toFrame.Width, toFrame.Height
 	}
 
@@ -252,7 +252,7 @@ func (s *Switcher) processTransitionTick(tick clock.Tick, fs *FrameSynchronizer,
 		// since pipeline runs synchronously within this tick and BlendRaw's buffer
 		// won't be overwritten until the next call).
 		result := &ProcessingFrame{
-			YUV:    blended,
+			Data:   blended,
 			Width:  outW,
 			Height: outH,
 			PTS:    tick.VideoPTS,
@@ -420,7 +420,7 @@ func (s *Switcher) makeBroadcastBlack(width, height int, pts int64) *ProcessingF
 			buf[i] = 128
 		}
 		cached = &ProcessingFrame{
-			YUV:   buf,
+			Data:  buf,
 			Width: width,
 			Height: height,
 		}
@@ -456,13 +456,13 @@ func (s *Switcher) repeatLastVideoFrame(pts int64) {
 
 	// Fallback: try the last raw YUV frame (for encoder-less test configs).
 	last := s.lastEncodedFrame.Load()
-	if last != nil && len(last.YUV) > 0 {
-		yuvCopy := make([]byte, len(last.YUV))
-		copy(yuvCopy, last.YUV)
+	if last != nil && len(last.Data) > 0 {
+		dataCopy := make([]byte, len(last.Data))
+		copy(dataCopy, last.Data)
 		frame := &media.VideoFrame{
 			PTS:        pts,
 			DTS:        pts,
-			WireData:   yuvCopy,
+			WireData:   dataCopy,
 			IsKeyframe: true,
 		}
 		s.broadcastToProgram(frame)
@@ -477,12 +477,12 @@ func (s *Switcher) repeatLastVideoFrame(pts int64) {
 		w, h = pf.Width, pf.Height
 	}
 	black := s.makeBroadcastBlack(w, h, pts)
-	yuvCopy := make([]byte, len(black.YUV))
-	copy(yuvCopy, black.YUV)
+	dataCopy := make([]byte, len(black.Data))
+	copy(dataCopy, black.Data)
 	frame := &media.VideoFrame{
 		PTS:        pts,
 		DTS:        pts,
-		WireData:   yuvCopy,
+		WireData:   dataCopy,
 		IsKeyframe: true,
 	}
 	s.broadcastToProgram(frame)
