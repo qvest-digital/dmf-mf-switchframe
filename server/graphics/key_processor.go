@@ -247,7 +247,37 @@ func (kp *KeyProcessor) Process(bg []byte, fills map[string][]byte, width, heigh
 		blendMaskY(&bg[ySize+uvSize], &workFill[ySize+uvSize], &chromaMask[0], uvSize)
 	}
 
+	// Clamp output to BT.709 legal range.
+	// Input frames may contain super-black (Y<16) or super-white (Y>235)
+	// values; blending preserves these out-of-range values, so we clamp
+	// after compositing to guarantee legal output.
+	clampYPlane(bg[:ySize])
+	clampCPlane(bg[ySize : ySize+uvSize])
+	clampCPlane(bg[ySize+uvSize : ySize+2*uvSize])
+
 	return bg
+}
+
+// clampYPlane clamps Y samples to BT.709 legal range [16, 235].
+func clampYPlane(plane []byte) {
+	for i, v := range plane {
+		if v < 16 {
+			plane[i] = 16
+		} else if v > 235 {
+			plane[i] = 235
+		}
+	}
+}
+
+// clampCPlane clamps Cb/Cr samples to BT.709 legal range [16, 240].
+func clampCPlane(plane []byte) {
+	for i, v := range plane {
+		if v < 16 {
+			plane[i] = 16
+		} else if v > 240 {
+			plane[i] = 240
+		}
+	}
 }
 
 // downsampleMask2x2 averages each 2x2 block of the luma-resolution mask
