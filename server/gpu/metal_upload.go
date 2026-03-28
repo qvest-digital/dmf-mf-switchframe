@@ -26,6 +26,10 @@ func Upload(ctx *Context, frame *GPUFrame, yuv []byte, width, height int) error 
 		return ErrGPUNotAvailable
 	}
 
+	if width < 2 || height < 2 {
+		return fmt.Errorf("gpu: Upload requires dimensions >= 2x2 (got %dx%d)", width, height)
+	}
+
 	ySize := width * height
 	cbSize := (width / 2) * (height / 2)
 	crSize := cbSize

@@ -2,8 +2,13 @@
 
 package gpu
 
+import "fmt"
+
 // Upload returns ErrGPUNotAvailable on non-GPU builds.
 func Upload(ctx *Context, frame *GPUFrame, yuv []byte, width, height int) error {
+	if width < 2 || height < 2 {
+		return fmt.Errorf("gpu: Upload requires dimensions >= 2x2 (got %dx%d)", width, height)
+	}
 	return ErrGPUNotAvailable
 }
 
