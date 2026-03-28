@@ -17,6 +17,7 @@ import (
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/audio"
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/correctness/testutil"
 	"github.com/zsiec/switchframe/server/graphics"
@@ -64,6 +65,11 @@ type pipelineHarness struct {
 	tsData []byte
 
 	sources map[string]sourceColor
+
+	// Reference clock fields (set when withReferenceClock option is used).
+	refClock    *clock.ReferenceClock
+	aacBuffer   *clock.AACFrameBuffer
+	useRefClock bool
 }
 
 type harnessOption func(*harnessConfig)
@@ -73,6 +79,7 @@ type harnessConfig struct {
 	withCompositor bool
 	withLayout     bool
 	withKeying     bool
+	useRefClock    bool
 }
 
 func withMixer() harnessOption {
@@ -89,6 +96,10 @@ func withLayout() harnessOption {
 
 func withKeying() harnessOption {
 	return func(c *harnessConfig) { c.withKeying = true }
+}
+
+func withReferenceClock() harnessOption {
+	return func(c *harnessConfig) { c.useRefClock = true }
 }
 
 // newPipelineHarness creates a fully wired pipeline test harness.
@@ -133,9 +144,32 @@ func newPipelineHarness(t *testing.T, opts ...harnessOption) *pipelineHarness {
 		return codec.NewFFmpegEncoder("libx264", w, ht, bitrate, fpsNum, fpsDen, 2, nil)
 	})
 
+	// Reference clock path: set up frame sync + ref clock before mixer/pipeline.
+	if cfg.useRefClock {
+		// Enable frame sync in clock-driven mode.
+		sw.SetFrameSync(true, 0)
+		sw.SetClockDrivenSync(true)
+
+		// Create non-realtime reference clock (deterministic, no wall clock).
+		rc := clock.NewReferenceClock(testFPS, 1, 48000, 0, false)
+		sw.SetReferenceClock(rc)
+		h.refClock = rc
+		h.useRefClock = true
+
+		// Create AAC frame buffer with real FDK encoder.
+		aacEnc, err := audio.NewFDKEncoder(48000, 2)
+		require.NoError(t, err)
+		t.Cleanup(func() { aacEnc.Close() })
+		aacBuf := clock.NewAACFrameBuffer(2, 48000, func(pcm []float32) ([]byte, error) {
+			return aacEnc.Encode(pcm)
+		})
+		sw.SetAACBuffer(aacBuf)
+		h.aacBuffer = aacBuf
+	}
+
 	// Optional: audio mixer.
 	if cfg.withMixer {
-		mixer := audio.NewMixer(audio.MixerConfig{
+		mixerCfg := audio.MixerConfig{
 			SampleRate: 48000,
 			Channels:   2,
 			Output: func(frame *media.AudioFrame) {
@@ -147,21 +181,30 @@ func newPipelineHarness(t *testing.T, opts ...harnessOption) *pipelineHarness {
 			EncoderFactory: func(sampleRate, channels int) (audio.Encoder, error) {
 				return audio.NewFDKEncoder(sampleRate, channels)
 			},
-		})
+		}
+		if cfg.useRefClock {
+			mixerCfg.ClockDriven = true
+		}
+		mixer := audio.NewMixer(mixerCfg)
 		h.mixer = mixer
 		sw.SetMixer(mixer)
 		sw.SetAudioHandler(func(sourceKey string, frame *media.AudioFrame) {
 			mixer.IngestFrame(sourceKey, frame)
 		})
 
-		// Mirror production wiring (app.go): seed audio PTS from video so
-		// both streams share the same PTS epoch. Without this, the mixer
-		// self-seeds from wall clock which diverges from synthetic video PTS.
-		mixer.ExpectVideoSeed()
-		sw.SetOnFirstVideoPTS(func(pts int64) {
-			mixer.SeedPTSFromVideo(pts)
-		})
-		sw.EnableWallClockVideoPTS()
+		if cfg.useRefClock {
+			// In ref clock mode, the sync loop drives audio via ProduceSamples.
+			sw.SetSyncMixer(mixer)
+		} else {
+			// Mirror production wiring (app.go): seed audio PTS from video so
+			// both streams share the same PTS epoch. Without this, the mixer
+			// self-seeds from wall clock which diverges from synthetic video PTS.
+			mixer.ExpectVideoSeed()
+			sw.SetOnFirstVideoPTS(func(pts int64) {
+				mixer.SeedPTSFromVideo(pts)
+			})
+			sw.EnableWallClockVideoPTS()
+		}
 	}
 
 	// Optional: graphics compositor.
@@ -193,6 +236,71 @@ func newPipelineHarness(t *testing.T, opts ...harnessOption) *pipelineHarness {
 	return h
 }
 
+// newPipelineHarnessNoEncode creates a ref clock harness WITHOUT an H.264
+// encoder. The sync loop broadcasts raw YUV frames directly, avoiding
+// encoder warmup overhead and overload-triggered frame skips. Used for
+// testing PTS accuracy in isolation from encoder behavior.
+func newPipelineHarnessNoEncode(t *testing.T) *pipelineHarness {
+	t.Helper()
+
+	programRelay := distribution.NewRelay()
+
+	h := &pipelineHarness{
+		programRelay: programRelay,
+		muxer:        output.NewTSMuxer(),
+		sources:      make(map[string]sourceColor),
+	}
+
+	// Capture viewer only (no muxer, since raw YUV isn't muxable).
+	capture := newCaptureViewer("pipeline-capture")
+	h.capture = capture
+	programRelay.AddViewer(capture)
+
+	// Create switcher (no encoder factory = no pipeline).
+	sw := switcher.NewTestSwitcher(programRelay)
+	h.sw = sw
+
+	// Enable frame sync in clock-driven mode.
+	sw.SetFrameSync(true, 0)
+	sw.SetClockDrivenSync(true)
+
+	// Create non-realtime reference clock.
+	rc := clock.NewReferenceClock(testFPS, 1, 48000, 0, false)
+	sw.SetReferenceClock(rc)
+	h.refClock = rc
+	h.useRefClock = true
+
+	// Create AAC frame buffer with real FDK encoder.
+	aacEnc, err := audio.NewFDKEncoder(48000, 2)
+	require.NoError(t, err)
+	t.Cleanup(func() { aacEnc.Close() })
+	aacBuf := clock.NewAACFrameBuffer(2, 48000, func(pcm []float32) ([]byte, error) {
+		return aacEnc.Encode(pcm)
+	})
+	sw.SetAACBuffer(aacBuf)
+	h.aacBuffer = aacBuf
+
+	// Create clock-driven mixer.
+	mixer := audio.NewMixer(audio.MixerConfig{
+		SampleRate:  48000,
+		Channels:    2,
+		ClockDriven: true,
+		Output: func(frame *media.AudioFrame) {
+			programRelay.BroadcastAudio(frame)
+		},
+		EncoderFactory: func(sampleRate, channels int) (audio.Encoder, error) {
+			return audio.NewFDKEncoder(sampleRate, channels)
+		},
+	})
+	h.mixer = mixer
+	sw.SetMixer(mixer)
+	sw.SetSyncMixer(mixer)
+
+	// No BuildPipeline — the sync loop will broadcast raw YUV frames.
+
+	return h
+}
+
 // addSource registers a source with the switcher and records its color.
 func (h *pipelineHarness) addSource(key string, color sourceColor) {
 	relay := distribution.NewRelay()
@@ -201,8 +309,9 @@ func (h *pipelineHarness) addSource(key string, color sourceColor) {
 }
 
 // feedFrames feeds `count` solid-color YUV frames via IngestRawVideo.
-// Frames are paced at ~5ms intervals to avoid overwhelming the async
-// pipeline channel (depth 8, newest-wins drop policy).
+// In the old path, frames are paced at ~5ms intervals to avoid overwhelming
+// the async pipeline channel (depth 8, newest-wins drop policy).
+// In the ref clock path, no pacing is needed (tick-driven processing).
 func (h *pipelineHarness) feedFrames(sourceKey string, count int, startPTS int64) {
 	color := h.sources[sourceKey]
 	yuv := testutil.GenerateSolidYUV420(testWidth, testHeight, color.Y, color.Cb, color.Cr)
@@ -216,14 +325,15 @@ func (h *pipelineHarness) feedFrames(sourceKey string, count int, startPTS int64
 			IsKeyframe: i == 0,
 		}
 		h.sw.IngestRawVideo(sourceKey, pf)
-		if i < count-1 {
+		if !h.useRefClock && i < count-1 {
 			time.Sleep(5 * time.Millisecond)
 		}
 	}
 }
 
 // feedFramesWithColor feeds `count` solid-color YUV frames with explicit color.
-// Paced at ~5ms intervals to avoid pipeline drops.
+// In the old path, paced at ~5ms intervals to avoid pipeline drops.
+// In the ref clock path, no pacing is needed.
 func (h *pipelineHarness) feedFramesWithColor(sourceKey string, count int, startPTS int64, y, cb, cr byte) {
 	yuv := testutil.GenerateSolidYUV420(testWidth, testHeight, y, cb, cr)
 
@@ -236,7 +346,7 @@ func (h *pipelineHarness) feedFramesWithColor(sourceKey string, count int, start
 			IsKeyframe: i == 0,
 		}
 		h.sw.IngestRawVideo(sourceKey, pf)
-		if i < count-1 {
+		if !h.useRefClock && i < count-1 {
 			time.Sleep(5 * time.Millisecond)
 		}
 	}
@@ -279,8 +389,48 @@ func (h *pipelineHarness) tsLen() int {
 	return len(h.tsData)
 }
 
+// startRefClock starts the reference clock and sync loop. Must be called
+// after sources are added and before consuming ticks. No-op for old path.
+func (h *pipelineHarness) startRefClock() {
+	if !h.useRefClock || h.refClock == nil {
+		return
+	}
+	h.refClock.Start()
+	h.sw.StartSyncLoop()
+}
+
+// waitForVideoFrames waits until the capture viewer has at least n video frames.
+// Uses require.Eventually with a reasonable timeout.
+func (h *pipelineHarness) waitForVideoFrames(t *testing.T, n int) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		return h.capture.videoCount() >= n
+	}, 5*time.Second, 5*time.Millisecond,
+		"expected at least %d video frames, got %d", n, h.capture.videoCount())
+}
+
+// waitForAudioFrames waits until the capture viewer has at least n audio frames.
+func (h *pipelineHarness) waitForAudioFrames(t *testing.T, n int) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		return h.capture.audioCount() >= n
+	}, 5*time.Second, 5*time.Millisecond,
+		"expected at least %d audio frames, got %d", n, h.capture.audioCount())
+}
+
+// tickCount returns the number of ticks produced by the reference clock.
+func (h *pipelineHarness) tickCount() int64 {
+	if h.refClock == nil {
+		return 0
+	}
+	return h.refClock.TickCount()
+}
+
 // close tears down all resources.
 func (h *pipelineHarness) close() {
+	if h.refClock != nil {
+		h.refClock.Stop()
+	}
 	if h.mixer != nil {
 		_ = h.mixer.Close()
 	}
