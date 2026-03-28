@@ -256,3 +256,68 @@ func TestRTMPDirect_ChannelOverflowCountsDrops(t *testing.T) {
 	require.Equal(t, int64(1), r.audioDropped.Load(),
 		"expected 1 audio drop, got %d", r.audioDropped.Load())
 }
+
+func TestParseSPSDimensions(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		sps           []byte
+		wantW, wantH  int
+	}{
+		{
+			// x264 Baseline 1920x1080 (no cropping needed, 120 MBs × 68 map units × 2)
+			// But 68*16=1088, not 1080 → needs frame_crop_bottom_offset=4
+			// Real x264 SPS for 1920x1080 Baseline:
+			name: "x264 Baseline 1920x1080",
+			sps: []byte{
+				0x67, 0x42, 0xc0, 0x28, 0xd9, 0x00, 0x78, 0x02,
+				0x27, 0xe5, 0xc0, 0x44, 0x00, 0x00, 0x03, 0x00,
+				0x04, 0x00, 0x00, 0x03, 0x00, 0xf0, 0x3c, 0x60,
+				0xc6, 0x58,
+			},
+			wantW: 1920,
+			wantH: 1080,
+		},
+		{
+			// x264 High profile 1280x720 (no cropping, 80×45 MBs)
+			name: "x264 High 1280x720",
+			sps: []byte{
+				0x67, 0x64, 0x00, 0x1f, 0xac, 0xd9, 0x40, 0x50,
+				0x05, 0xbb, 0x01, 0x10, 0x00, 0x00, 0x03, 0x00,
+				0x10, 0x00, 0x00, 0x03, 0x03, 0xc0, 0xf1, 0x62,
+				0xe4, 0x80,
+			},
+			wantW: 1280,
+			wantH: 720,
+		},
+		{
+			// Minimal Baseline SPS (too short for full parse → fallback)
+			name: "minimal fallback",
+			sps:  []byte{0x67, 0x42, 0xc0, 0x1e},
+			wantW: 1920,
+			wantH: 1080,
+		},
+		{
+			name:  "nil SPS",
+			sps:   nil,
+			wantW: 1920,
+			wantH: 1080,
+		},
+		{
+			name:  "empty SPS",
+			sps:   []byte{},
+			wantW: 1920,
+			wantH: 1080,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			w, h := parseSPSDimensions(tt.sps)
+			require.Equal(t, tt.wantW, w, "width")
+			require.Equal(t, tt.wantH, h, "height")
+		})
+	}
+}

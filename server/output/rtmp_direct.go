@@ -56,6 +56,24 @@ static int br_read_se(bitreader_t* br) {
 	return (v & 1) ? (int)((v + 1) / 2) : -(int)(v / 2);
 }
 
+// nalu_to_rbsp strips emulation prevention bytes (00 00 03 → 00 00) from
+// a raw NALU to produce the Raw Byte Sequence Payload. Output buffer must
+// be at least nalu_len bytes. Returns the RBSP length.
+static int nalu_to_rbsp(const uint8_t* nalu, int nalu_len, uint8_t* rbsp) {
+	int j = 0;
+	for (int i = 0; i < nalu_len; i++) {
+		if (i + 2 < nalu_len &&
+			nalu[i] == 0 && nalu[i+1] == 0 && nalu[i+2] == 3) {
+			rbsp[j++] = 0;
+			rbsp[j++] = 0;
+			i += 2; // skip 00 00 03; loop increment lands on byte after 03
+		} else {
+			rbsp[j++] = nalu[i];
+		}
+	}
+	return j;
+}
+
 // sps_get_dimensions parses an H.264 SPS NALU to extract width and height.
 // sps must include the NALU type byte (0x67). Falls back to 1920x1080
 // if parsing fails (never causes rtmp_flv_open to fail).
@@ -65,7 +83,12 @@ static void sps_get_dimensions(const uint8_t* sps, int sps_len,
 	*out_height = 1080;
 	if (sps_len < 4) return;
 
-	bitreader_t br = { sps, sps_len, 8 }; // skip NALU type byte
+	// Strip emulation prevention bytes before parsing.
+	uint8_t* rbsp = (uint8_t*)malloc(sps_len);
+	if (!rbsp) return;
+	int rbsp_len = nalu_to_rbsp(sps, sps_len, rbsp);
+
+	bitreader_t br = { rbsp, rbsp_len, 8 }; // skip NALU type byte
 
 	int profile_idc = br_read_bits(&br, 8);
 	br_read_bits(&br, 8);  // constraint_set_flags
@@ -149,7 +172,12 @@ static void sps_get_dimensions(const uint8_t* sps, int sps_len,
 		h -= (int)(crop_top + crop_bottom) * crop_unit_y;
 	}
 
-	if (w > 0 && h > 0 && w <= 7680 && h <= 4320) {
+	free(rbsp);
+
+	// Sanity check: smallest plausible RTMP resolution is ~128x96.
+	// If the parser ran off the end of a truncated SPS, it reads zeros
+	// and produces implausibly small dimensions — reject those.
+	if (w >= 128 && h >= 96 && w <= 7680 && h <= 4320) {
 		*out_width  = w;
 		*out_height = h;
 	}
@@ -790,6 +818,17 @@ func (r *RTMPDirect) resetBackoff() {
 	r.mu.Lock()
 	r.backoff = rtmpInitialBackoff
 	r.mu.Unlock()
+}
+
+// parseSPSDimensions extracts width and height from an H.264 SPS NALU.
+// Exported for testing. Returns (1920, 1080) as fallback on parse failure.
+func parseSPSDimensions(sps []byte) (width, height int) {
+	if len(sps) == 0 {
+		return 1920, 1080
+	}
+	var w, h C.int
+	C.sps_get_dimensions((*C.uint8_t)(unsafe.Pointer(&sps[0])), C.int(len(sps)), &w, &h)
+	return int(w), int(h)
 }
 
 // Compile-time check that RTMPDirect satisfies the FrameAdapter interface.
