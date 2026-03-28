@@ -44,8 +44,8 @@ func TestChromaKeyPureGreenTransparent(t *testing.T) {
 
 	// All pixels share the same chroma (solid frame), so all should be transparent.
 	for i, a := range mask {
-		require.LessOrEqual(t, a, byte(30),
-			"pixel %d: expected transparent (<=30) for pure green, got %d", i, a)
+		require.LessOrEqual(t, a, byte(5),
+			"pixel %d: expected transparent (<=5) for pure green, got %d", i, a)
 	}
 }
 
@@ -262,7 +262,7 @@ func TestKeyPlusProgramComposite(t *testing.T) {
 			if diff < 0 {
 				diff = -diff
 			}
-			require.LessOrEqual(t, diff, 15,
+			require.LessOrEqual(t, diff, 5,
 				"left half (red FG) pixel (%d,%d): Y=%d should be near red Y=%d",
 				col, row, yVal, redYCbCr.Y)
 		}
@@ -276,7 +276,7 @@ func TestKeyPlusProgramComposite(t *testing.T) {
 			if diff < 0 {
 				diff = -diff
 			}
-			require.LessOrEqual(t, diff, 20,
+			require.LessOrEqual(t, diff, 5,
 				"right half (green FG, keyed out) pixel (%d,%d): Y=%d should be near blue Y=%d",
 				col, row, yVal, blueYCbCr.Y)
 		}
@@ -545,6 +545,56 @@ func TestLumaKeySoftnessGradient(t *testing.T) {
 	// The mid-range pixel should have intermediate alpha (partial transparency).
 	// It may not be exactly in the transition zone, but should differ from extremes.
 	_ = midAlpha // Just validate no panics; exact value depends on column position.
+}
+
+// TestChromaKeyMaskDeterminism verifies that ChromaKey on a half-green/half-red
+// frame produces an identical key mask on every run (20 iterations).
+func TestChromaKeyMaskDeterminism(t *testing.T) {
+	t.Parallel()
+
+	// Build a frame with left half green, right half red (in chroma space).
+	w, h := 64, 64
+	ySize := w * h
+	uvW := w / 2
+	uvH := h / 2
+	uvSize := uvW * uvH
+	frame := make([]byte, ySize+2*uvSize)
+
+	// Y plane: constant 128
+	for i := 0; i < ySize; i++ {
+		frame[i] = 128
+	}
+	// Chroma planes: left half green, right half red
+	for row := 0; row < uvH; row++ {
+		for col := 0; col < uvW; col++ {
+			idx := row*uvW + col
+			if col < uvW/2 {
+				frame[ySize+idx] = greenKeyColor.Cb
+				frame[ySize+uvSize+idx] = greenKeyColor.Cr
+			} else {
+				frame[ySize+idx] = redYCbCr.Cb
+				frame[ySize+uvSize+idx] = redYCbCr.Cr
+			}
+		}
+	}
+
+	// First run — reference mask.
+	// Make a copy of the frame each time since spill suppression can modify it.
+	frameCopy := make([]byte, len(frame))
+	copy(frameCopy, frame)
+	reference := graphics.ChromaKey(frameCopy, w, h, greenKeyColor, 0.4, 0.1, 0.0)
+	refCopy := make([]byte, len(reference))
+	copy(refCopy, reference)
+
+	// 19 more runs.
+	for i := 0; i < 19; i++ {
+		fc := make([]byte, len(frame))
+		copy(fc, frame)
+		mask := graphics.ChromaKey(fc, w, h, greenKeyColor, 0.4, 0.1, 0.0)
+		if !testutil.YUVFrameEqual(refCopy, mask) {
+			t.Fatalf("Run %d produced different chroma key mask (non-determinism detected)", i+1)
+		}
+	}
 }
 
 // TestKeyProcessorDeterminism verifies that repeated keying of identical

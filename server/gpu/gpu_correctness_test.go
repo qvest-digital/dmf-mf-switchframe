@@ -176,11 +176,42 @@ func TestGPUBlendMixAt05(t *testing.T) {
 	err = BlendMix(ctx, dst, a, b, 0.5)
 	require.NoError(t, err)
 
-	yAvg, cbAvg, crAvg := avgPlanes(t, ctx, dst, width, height)
-	// Midpoints: Y=(80+200)/2=140, Cb=(60+200)/2=130, Cr=(180+40)/2=110
-	assert.InDelta(t, 140.0, yAvg, 2.0, "pos=0.5: Y should be midpoint")
-	assert.InDelta(t, 130.0, cbAvg, 2.0, "pos=0.5: Cb should be midpoint")
-	assert.InDelta(t, 110.0, crAvg, 2.0, "pos=0.5: Cr should be midpoint")
+	// Per-pixel verification: every pixel should be (A+B)/2 ±1.
+	// Expected midpoints: Y=(80+200)/2=140, Cb=(60+200)/2=130, Cr=(180+40)/2=110
+	ySize := width * height
+	cbSize := (width / 2) * (height / 2)
+	crSize := cbSize
+	result := make([]byte, ySize+cbSize+crSize)
+	require.NoError(t, Download(ctx, result, dst, width, height))
+
+	expectedY := byte(140)
+	expectedCb := byte(130)
+	expectedCr := byte(110)
+
+	for i := 0; i < ySize; i++ {
+		diff := int(result[i]) - int(expectedY)
+		if diff < 0 {
+			diff = -diff
+		}
+		require.LessOrEqual(t, diff, 1,
+			"Y pixel %d: got %d, expected %d ±1", i, result[i], expectedY)
+	}
+	for i := 0; i < cbSize; i++ {
+		diff := int(result[ySize+i]) - int(expectedCb)
+		if diff < 0 {
+			diff = -diff
+		}
+		require.LessOrEqual(t, diff, 1,
+			"Cb pixel %d: got %d, expected %d ±1", i, result[ySize+i], expectedCb)
+	}
+	for i := 0; i < crSize; i++ {
+		diff := int(result[ySize+cbSize+i]) - int(expectedCr)
+		if diff < 0 {
+			diff = -diff
+		}
+		require.LessOrEqual(t, diff, 1,
+			"Cr pixel %d: got %d, expected %d ±1", i, result[ySize+cbSize+i], expectedCr)
+	}
 }
 
 // ============================================================================
@@ -247,10 +278,10 @@ func TestGPUBlendVsCPU(t *testing.T) {
 		pos256 := int(pos * 256)
 		transition.BlendUniformBytes(cpuResult, yuvA, yuvB, pos256)
 
-		// Compare: allow +/-1 per pixel for rounding differences between
-		// GPU (NV12 interleaved UV) and CPU (planar YUV420).
+		// Per-pixel comparison: every pixel must match within ±1.
+		// Report worst pixel location and diff value.
 		maxDiff := 0
-		diffCount := 0
+		worstIdx := -1
 		for i := 0; i < totalSize; i++ {
 			diff := int(gpuResult[i]) - int(cpuResult[i])
 			if diff < 0 {
@@ -258,19 +289,29 @@ func TestGPUBlendVsCPU(t *testing.T) {
 			}
 			if diff > maxDiff {
 				maxDiff = diff
-			}
-			if diff > 1 {
-				diffCount++
+				worstIdx = i
 			}
 		}
 
-		assert.LessOrEqual(t, maxDiff, 2,
-			"pos=%.2f: max pixel diff between GPU and CPU should be <=2, got %d", pos, maxDiff)
-		assert.LessOrEqual(t, diffCount, totalSize/100,
-			"pos=%.2f: at most 1%% of pixels should differ by >1, got %d/%d",
-			pos, diffCount, totalSize)
+		if worstIdx >= 0 && maxDiff > 1 {
+			plane := "Y"
+			planeIdx := worstIdx
+			if worstIdx >= ySize+cbSize {
+				plane = "Cr"
+				planeIdx = worstIdx - ySize - cbSize
+			} else if worstIdx >= ySize {
+				plane = "Cb"
+				planeIdx = worstIdx - ySize
+			}
+			t.Logf("pos=%.2f: worst pixel at %s[%d]: GPU=%d CPU=%d diff=%d",
+				pos, plane, planeIdx, gpuResult[worstIdx], cpuResult[worstIdx], maxDiff)
+		}
 
-		t.Logf("pos=%.2f: max diff=%d, pixels >1 diff=%d/%d", pos, maxDiff, diffCount, totalSize)
+		assert.LessOrEqual(t, maxDiff, 1,
+			"pos=%.2f: max pixel diff between GPU and CPU should be <=1, got %d at index %d",
+			pos, maxDiff, worstIdx)
+
+		t.Logf("pos=%.2f: max diff=%d", pos, maxDiff)
 	}
 }
 
@@ -801,4 +842,110 @@ func TestGPUBlendIdenticalFramesLossless(t *testing.T) {
 	assert.Greater(t, psnr, 40.0,
 		"blending identical frames should produce PSNR > 40 dB, got %.1f dB", psnr)
 	t.Logf("Identical frame blend PSNR: %.1f dB", psnr)
+}
+
+// ============================================================================
+// Temporal Determinism: Blend
+// ============================================================================
+
+// TestGPUBlendDeterminism verifies that GPU BlendMix at position 0.37
+// produces byte-exact identical output across 20 runs.
+// If this test fails, it indicates real GPU non-determinism.
+func TestGPUBlendDeterminism(t *testing.T) {
+	ctx := testContext(t)
+
+	width, height := 64, 64
+	pool, err := NewFramePool(ctx, width, height, 4)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	a := makeTestFrame(t, ctx, pool, width, height, 100, 100, 100)
+	defer a.Release()
+	b := makeTestFrame(t, ctx, pool, width, height, 200, 150, 150)
+	defer b.Release()
+	dst, err := pool.Acquire()
+	require.NoError(t, err)
+	defer dst.Release()
+
+	ySize := width * height
+	cbSize := (width / 2) * (height / 2)
+	crSize := cbSize
+	totalSize := ySize + cbSize + crSize
+
+	// First run — reference result.
+	err = BlendMix(ctx, dst, a, b, 0.37)
+	require.NoError(t, err)
+	reference := make([]byte, totalSize)
+	require.NoError(t, Download(ctx, reference, dst, width, height))
+
+	// 19 more runs — must be byte-exact identical.
+	for i := 0; i < 19; i++ {
+		err = BlendMix(ctx, dst, a, b, 0.37)
+		require.NoError(t, err)
+		result := make([]byte, totalSize)
+		require.NoError(t, Download(ctx, result, dst, width, height))
+
+		for j := range reference {
+			if reference[j] != result[j] {
+				t.Fatalf("GPU blend run %d: byte %d differs (ref=%d, got=%d) — GPU non-determinism detected",
+					i+1, j, reference[j], result[j])
+			}
+		}
+	}
+}
+
+// ============================================================================
+// Temporal Determinism: Chroma Key
+// ============================================================================
+
+// TestGPUKeyDeterminism verifies that GPU ChromaKey on a green frame
+// produces byte-exact identical mask output across 20 runs.
+// If this test fails, it indicates real GPU non-determinism.
+func TestGPUKeyDeterminism(t *testing.T) {
+	ctx := testContext(t)
+
+	width, height := 64, 64
+	pool, err := NewFramePool(ctx, width, height, 3)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	// BT.709 green: Y~145, Cb~54, Cr~26
+	frame := makeTestFrame(t, ctx, pool, width, height, 145, 54, 26)
+	defer frame.Release()
+
+	maskBuf, err := pool.Acquire()
+	require.NoError(t, err)
+	defer maskBuf.Release()
+
+	cfg := ChromaKeyConfig{
+		KeyCb:      54,
+		KeyCr:      26,
+		Similarity: 0.3,
+		Smoothness: 0.1,
+	}
+
+	ySize := width * height
+	cbSize := (width / 2) * (height / 2)
+	totalSize := ySize + cbSize*2
+
+	// First run — reference result.
+	err = ChromaKey(ctx, frame, maskBuf, cfg)
+	require.NoError(t, err)
+	reference := make([]byte, totalSize)
+	require.NoError(t, Download(ctx, reference, maskBuf, width, height))
+
+	// 19 more runs — must be byte-exact identical.
+	for i := 0; i < 19; i++ {
+		err = ChromaKey(ctx, frame, maskBuf, cfg)
+		require.NoError(t, err)
+		result := make([]byte, totalSize)
+		require.NoError(t, Download(ctx, result, maskBuf, width, height))
+
+		for j := range reference {
+			if reference[j] != result[j] {
+				t.Fatalf("GPU chroma key run %d: byte %d differs (ref=%d, got=%d) — GPU non-determinism detected",
+					i+1, j, reference[j], result[j])
+			}
+		}
+	}
 }

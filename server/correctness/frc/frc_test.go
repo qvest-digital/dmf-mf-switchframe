@@ -262,10 +262,10 @@ func TestMCFIInterpolatedQuality(t *testing.T) {
 	t.Logf("SSIM(result, frameA) = %.4f", ssimA)
 	t.Logf("SSIM(result, frameB) = %.4f", ssimB)
 
-	assert.Greater(t, ssimA, 0.85,
-		"SSIM between interpolated frame and frameA should be > 0.85, got %.4f", ssimA)
-	assert.Greater(t, ssimB, 0.85,
-		"SSIM between interpolated frame and frameB should be > 0.85, got %.4f", ssimB)
+	assert.Greater(t, ssimA, 0.92,
+		"SSIM between interpolated frame and frameA should be > 0.92, got %.4f", ssimA)
+	assert.Greater(t, ssimB, 0.92,
+		"SSIM between interpolated frame and frameB should be > 0.92, got %.4f", ssimB)
 
 	// The interpolated frame should also be similar to the expected midpoint:
 	// a gradient shifted by half the displacement.

@@ -3,8 +3,11 @@
 package stinger
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"math"
 	"testing"
 
@@ -602,6 +605,94 @@ func TestFrameAtMonotonic(t *testing.T) {
 			prevIdx, currentIdx, pos)
 		prevIdx = currentIdx
 	}
+}
+
+// ==========================================================================
+// Corrupted input handling tests
+// ==========================================================================
+
+// TestCorruptedZIP generates a valid stinger ZIP, corrupts some of the PNG data,
+// and tries to upload it to the store. Must return an error, not panic.
+// The store must remain usable afterward.
+func TestCorruptedZIP(t *testing.T) {
+	t.Parallel()
+
+	// Generate a valid stinger ZIP.
+	zipData, err := demo.GenerateStingerZip(testWidth, testHeight, numFrames)
+	require.NoError(t, err)
+	require.Greater(t, len(zipData), 100, "ZIP data should be non-trivial")
+
+	// Corrupt bytes in the middle (likely PNG data, not ZIP headers).
+	corrupted := make([]byte, len(zipData))
+	copy(corrupted, zipData)
+	mid := len(corrupted) / 2
+	for i := mid; i < mid+200 && i < len(corrupted); i++ {
+		corrupted[i] ^= 0xFF
+	}
+
+	dir := t.TempDir()
+	store, err := stinger.NewStore(dir, 0, "")
+	require.NoError(t, err)
+
+	// Upload corrupted ZIP -- should not panic.
+	require.NotPanics(t, func() {
+		uploadErr := store.Upload("corrupted", corrupted)
+		// We expect an error since PNGs are corrupted.
+		// If it doesn't error (unlikely), that's acceptable too.
+		_ = uploadErr
+	}, "store.Upload should not panic on corrupted ZIP")
+
+	// Verify the store is still usable: upload a valid stinger afterward.
+	validZip, err := demo.GenerateStingerZip(testWidth, testHeight, 5)
+	require.NoError(t, err)
+
+	err = store.Upload("valid-after-corrupt", validZip)
+	require.NoError(t, err, "store should still accept valid uploads after a corrupted upload")
+
+	clip, ok := store.Get("valid-after-corrupt")
+	require.True(t, ok, "valid clip should be retrievable")
+	require.Equal(t, 5, len(clip.Frames), "valid clip should have correct frame count")
+}
+
+// TestMismatchedFrameDimensions creates a ZIP where PNG content is garbage
+// (not valid PNG images) and tries to upload it. Must not panic.
+func TestMismatchedFrameDimensions(t *testing.T) {
+	t.Parallel()
+
+	// Build a ZIP with fake "PNG" files that contain garbage data.
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+
+	for i := 0; i < 5; i++ {
+		name := fmt.Sprintf("frame_%03d.png", i)
+		w, err := zw.Create(name)
+		require.NoError(t, err)
+		// Write garbage that is not a valid PNG.
+		garbage := make([]byte, 200)
+		for j := range garbage {
+			garbage[j] = byte((i*37 + j*13) % 256)
+		}
+		_, err = w.Write(garbage)
+		require.NoError(t, err)
+	}
+	require.NoError(t, zw.Close())
+
+	dir := t.TempDir()
+	store, err := stinger.NewStore(dir, 0, "")
+	require.NoError(t, err)
+
+	require.NotPanics(t, func() {
+		uploadErr := store.Upload("garbage-pngs", buf.Bytes())
+		// Should error since the "PNGs" are not valid images.
+		require.Error(t, uploadErr,
+			"uploading ZIP with garbage PNG content should return an error")
+	}, "store.Upload should not panic on ZIP with garbage PNG content")
+
+	// Store should still be usable.
+	validZip, err := demo.GenerateStingerZip(testWidth, testHeight, 3)
+	require.NoError(t, err)
+	err = store.Upload("valid-after-garbage", validZip)
+	require.NoError(t, err, "store should still work after failed upload")
 }
 
 // ==========================================================================

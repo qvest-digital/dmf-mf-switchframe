@@ -486,3 +486,127 @@ func (a *countingAdapter) Write(data []byte) (int, error) {
 }
 func (a *countingAdapter) Close() error                    { return nil }
 func (a *countingAdapter) Status() output.AdapterStatus    { return output.AdapterStatus{} }
+
+// ==========================================================================
+// Corrupted input handling tests
+// ==========================================================================
+
+// TestMuxerRecoverAfterBadFrame feeds 5 valid frames, then one frame with
+// empty/nil Data, then 5 more valid frames. The muxer must not panic.
+// The valid frames after the bad one should still produce valid TS output.
+func TestMuxerRecoverAfterBadFrame(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping long correctness test in short mode")
+	}
+
+	const (
+		w       = 320
+		h       = 240
+		fps     = 30
+		bitrate = 500_000
+		gopSecs = 2
+	)
+
+	enc, err := codec.NewFFmpegEncoder("libx264", w, h, bitrate, fps, 1, gopSecs, nil)
+	require.NoError(t, err)
+	defer enc.Close()
+
+	muxer := output.NewTSMuxer()
+	var tsData []byte
+	muxer.SetOutput(func(data []byte) {
+		tsData = append(tsData, data...)
+	})
+
+	ptsDelta := int64(90000 / fps)
+	startPTS := int64(90000)
+	ySize := w * h
+	uvSize := (w / 2) * (h / 2)
+	yuv := make([]byte, ySize+2*uvSize)
+
+	// Encode and mux a single valid frame helper.
+	muxValidFrame := func(i int) {
+		pts := startPTS + int64(i)*ptsDelta
+		forceIDR := (i % (fps * gopSecs)) == 0
+
+		for j := 0; j < ySize; j++ {
+			yuv[j] = byte((j*7 + i*37) % 256)
+		}
+		for j := ySize; j < len(yuv); j++ {
+			yuv[j] = 128
+		}
+
+		encoded, isKeyframe, encErr := enc.Encode(yuv, pts, forceIDR)
+		require.NoError(t, encErr, "encode frame %d", i)
+		if len(encoded) == 0 {
+			return
+		}
+
+		avc1 := codec.AnnexBToAVC1(encoded)
+		frame := &media.VideoFrame{
+			PTS:        pts,
+			DTS:        pts,
+			IsKeyframe: isKeyframe,
+			WireData:   avc1,
+			Codec:      "h264",
+		}
+		if isKeyframe {
+			for _, nalu := range codec.ExtractNALUs(avc1) {
+				if len(nalu) == 0 {
+					continue
+				}
+				switch nalu[0] & 0x1F {
+				case 7:
+					frame.SPS = append([]byte(nil), nalu...)
+				case 8:
+					frame.PPS = append([]byte(nil), nalu...)
+				}
+			}
+		}
+		require.NoError(t, muxer.WriteVideo(frame), "mux frame %d", i)
+	}
+
+	// Feed 5 valid frames.
+	for i := 0; i < 5; i++ {
+		muxValidFrame(i)
+	}
+
+	bytesBeforeBad := len(tsData)
+	require.Greater(t, bytesBeforeBad, 0, "should have TS output from first 5 frames")
+
+	// Feed one bad frame with empty data.
+	badPTS := startPTS + int64(5)*ptsDelta
+	require.NotPanics(t, func() {
+		badFrame := &media.VideoFrame{
+			PTS:      badPTS,
+			DTS:      badPTS,
+			WireData: nil, // nil data
+		}
+		// WriteVideo should handle gracefully (may skip or error, but not panic).
+		_ = muxer.WriteVideo(badFrame)
+	}, "muxer should not panic on frame with nil WireData")
+
+	require.NotPanics(t, func() {
+		badFrame := &media.VideoFrame{
+			PTS:      badPTS + ptsDelta,
+			DTS:      badPTS + ptsDelta,
+			WireData: []byte{}, // empty data
+		}
+		_ = muxer.WriteVideo(badFrame)
+	}, "muxer should not panic on frame with empty WireData")
+
+	// Feed 5 more valid frames.
+	for i := 7; i < 12; i++ {
+		muxValidFrame(i)
+	}
+
+	bytesAfterRecovery := len(tsData)
+	require.Greater(t, bytesAfterRecovery, bytesBeforeBad,
+		"muxer should produce more output after recovery from bad frame")
+
+	// Validate TS structure of the output produced after the bad frame.
+	// Extract just the post-bad-frame portion.
+	postBadData := tsData[bytesBeforeBad:]
+	if len(postBadData) > 0 && len(postBadData)%188 == 0 {
+		testutil.AssertValidTSStructure(t, postBadData)
+	}
+}

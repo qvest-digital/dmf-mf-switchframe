@@ -186,7 +186,7 @@ func TestScheduledItemStartsOnTime(t *testing.T) {
 	require.GreaterOrEqual(t, pts, int64(0), "first frame PTS should be non-negative")
 	// Without a PTS provider, the channel starts from PTS 0. The first frame should
 	// be at PTS 0 or very close (one frame interval at most).
-	assert.LessOrEqual(t, pts, int64(6000), // 2 frame intervals at 30fps
+	assert.LessOrEqual(t, pts, int64(3000), // 1 frame interval at 30fps
 		"first frame PTS should be near 0 (got %d)", pts)
 }
 
@@ -238,10 +238,10 @@ func TestPlaylistAdvancement(t *testing.T) {
 		return ch.State() == playout.StateCompleted
 	})
 
-	// Verify at least 15 frames were emitted (5 per clip x 3 clips).
+	// Verify frame count matches expected: 5 frames per clip x 3 clips = 15.
 	count := frameCount.Load()
-	assert.GreaterOrEqual(t, count, int64(15),
-		"expected at least 15 frames (5 per clip x 3), got %d", count)
+	assert.InDelta(t, 15, count, 4,
+		"expected approximately 15 frames (5 per clip x 3), got %d", count)
 
 	// Verify state transitions included Cued -> OnAir -> Completed.
 	mu.Lock()

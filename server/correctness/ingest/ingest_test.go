@@ -159,9 +159,9 @@ func TestTSDemuxProducesVideoFrames(t *testing.T) {
 	videoFrames, _, err := clip.DemuxFile(path)
 	require.NoError(t, err, "DemuxFile should succeed on valid TS")
 
-	// 2 seconds at 30fps = ~60 frames. Allow encoder warmup to eat a few.
-	require.GreaterOrEqual(t, len(videoFrames), 30,
-		"expected at least 30 video frames from 2s of 30fps content, got %d", len(videoFrames))
+	// 2 seconds at 30fps = ~60 frames. Allow tolerance for encoder warmup.
+	require.InDelta(t, 60, len(videoFrames), 10,
+		"expected approximately 60 video frames from 2s of 30fps content, got %d", len(videoFrames))
 
 	// Verify at least one keyframe exists.
 	hasKeyframe := false
@@ -194,9 +194,9 @@ func TestTSDemuxProducesAudioFrames(t *testing.T) {
 	require.NoError(t, err, "DemuxFile should succeed on valid TS")
 
 	// AAC at 48kHz produces ~1024 samples per frame = ~46.9 frames/sec.
-	// 2 seconds should yield ~93 frames. Allow some tolerance.
-	require.GreaterOrEqual(t, len(audioFrames), 50,
-		"expected at least 50 audio frames from 2s, got %d", len(audioFrames))
+	// 2 seconds should yield ~93 frames. Allow tolerance for codec warmup.
+	require.InDelta(t, 93, len(audioFrames), 15,
+		"expected approximately 93 audio frames from 2s at 48kHz/1024, got %d", len(audioFrames))
 
 	// Verify audio frame metadata.
 	for i, af := range audioFrames {
@@ -233,29 +233,51 @@ func TestPTSPassthrough(t *testing.T) {
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, len(videoFrames), 30)
 
-	// Build a set of PTS values from ffprobe for quick lookup.
+	// Build ordered PTS slices from both sources.
+	probePTSOrdered := make([]int64, len(probeFrames))
+	for i, pf := range probeFrames {
+		probePTSOrdered[i] = pf.PTS
+	}
+	demuxPTSOrdered := make([]int64, len(videoFrames))
+	for i, vf := range videoFrames {
+		demuxPTSOrdered[i] = vf.PTS()
+	}
+
+	// Build a set for existence matching.
 	probePTSSet := make(map[int64]bool, len(probeFrames))
 	for _, pf := range probeFrames {
 		probePTSSet[pf.PTS] = true
 	}
 
-	// Every demuxed PTS should match an ffprobe PTS.
-	// Note: the demuxer returns frames in decode order, ffprobe may report
-	// display order. So we check that each demuxed PTS appears somewhere
-	// in the ffprobe set, rather than requiring positional matching.
+	// At least 80% of demuxed PTS values should match ffprobe.
 	matchCount := 0
 	for _, vf := range videoFrames {
 		if probePTSSet[vf.PTS()] {
 			matchCount++
 		}
 	}
-
-	// At least 80% should match (some PTS parsing edge cases are possible
-	// between go-astits and ffprobe).
 	minMatch := len(videoFrames) * 80 / 100
 	require.GreaterOrEqual(t, matchCount, minMatch,
 		"expected at least %d/%d PTS values to match ffprobe, got %d",
 		minMatch, len(videoFrames), matchCount)
+
+	// Verify PTS values appear in the same ORDER (not just same set).
+	// Filter demux PTS to only those that appear in the probe set, then
+	// verify they appear in a monotonically non-decreasing order relative
+	// to the probe sequence.
+	var matchedDemuxPTS []int64
+	for _, pts := range demuxPTSOrdered {
+		if probePTSSet[pts] {
+			matchedDemuxPTS = append(matchedDemuxPTS, pts)
+		}
+	}
+	// Matched PTS should be in non-decreasing order (since both demuxer
+	// and ffprobe should emit frames in a consistent order).
+	for i := 1; i < len(matchedDemuxPTS); i++ {
+		require.GreaterOrEqual(t, matchedDemuxPTS[i], matchedDemuxPTS[i-1],
+			"matched PTS values should be in non-decreasing order: index %d has %d < %d",
+			i, matchedDemuxPTS[i], matchedDemuxPTS[i-1])
+	}
 
 	// Verify video PTS values are non-negative and reasonable.
 	for i, vf := range videoFrames {
@@ -688,6 +710,81 @@ func TestLargeFrameHandling(t *testing.T) {
 	}
 	require.True(t, hasLargeFrame,
 		"expected at least one frame >10KB at 720p/5Mbps")
+}
+
+// ==========================================================================
+// Corrupted input handling tests
+// ==========================================================================
+
+// TestTruncatedTSFile generates a valid 2s TS with ffmpeg, truncates to 50%,
+// and feeds the truncated bytes to the demuxer. The demuxer must not panic.
+func TestTruncatedTSFile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping long correctness test in short mode")
+	}
+
+	path := generateFFmpegTS(t, 2, 320, 240, 30)
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Greater(t, len(data), 1000, "TS data should be non-trivial")
+
+	// Truncate to 50%.
+	truncated := data[:len(data)/2]
+	tmpPath := testutil.WriteTempFile(t, truncated, ".ts")
+
+	require.NotPanics(t, func() {
+		videoFrames, _, demuxErr := clip.DemuxFile(tmpPath)
+		// Truncated but mostly valid TS should still yield some frames.
+		if demuxErr == nil {
+			assert.NotEmpty(t, videoFrames,
+				"truncated TS at 50%% should still yield some video frames")
+		}
+		// Either an error or partial results is acceptable.
+	}, "demuxer should not panic on 50%% truncated file")
+}
+
+// TestZeroLengthInput feeds an empty file to the demuxer. It must not panic
+// and should return cleanly with zero frames or an error.
+func TestZeroLengthInput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping long correctness test in short mode")
+	}
+
+	// Create an empty .ts file.
+	dir := t.TempDir()
+	emptyPath := filepath.Join(dir, "empty.ts")
+	require.NoError(t, os.WriteFile(emptyPath, []byte{}, 0o644))
+
+	require.NotPanics(t, func() {
+		videoFrames, audioFrames, err := clip.DemuxFile(emptyPath)
+		// An empty file should produce an error or zero frames.
+		if err == nil {
+			assert.Empty(t, videoFrames, "empty file should yield no video frames")
+			assert.Empty(t, audioFrames, "empty file should yield no audio frames")
+		}
+	}, "demuxer should not panic on empty file")
+}
+
+// TestRandomByteStream feeds 10KB of random bytes to the demuxer.
+// The demuxer must not panic and should return an error or zero frames.
+func TestRandomByteStream(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping long correctness test in short mode")
+	}
+
+	garbage := make([]byte, 10*1024)
+	rng := rand.New(rand.NewSource(12345))
+	for i := range garbage {
+		garbage[i] = byte(rng.Intn(256))
+	}
+
+	tmpPath := testutil.WriteTempFile(t, garbage, ".ts")
+
+	require.NotPanics(t, func() {
+		_, _, err := clip.DemuxFile(tmpPath)
+		assert.Error(t, err, "random bytes should produce an error from demuxer")
+	}, "demuxer should not panic on random byte stream")
 }
 
 // TestRepeatedDemuxDeterminism verifies that demuxing the same file
