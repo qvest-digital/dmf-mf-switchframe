@@ -455,7 +455,7 @@ func TestExistingPathStillWorks(t *testing.T) {
 	defer s.Close()
 
 	// Verify useRefClock is false.
-	require.False(t, s.useRefClock, "default switcher should not use reference clock")
+	require.False(t, s.useRefClock.Load(), "default switcher should not use reference clock")
 
 	// Basic operations should work.
 	cam1Relay := distribution.NewRelay()
@@ -748,7 +748,7 @@ func TestWallClockPTSNoOpWithRefClock(t *testing.T) {
 	s, _ := newSyncTestSwitcher(t) // sets useRefClock=true via SetReferenceClock
 	defer s.Close()
 
-	require.True(t, s.useRefClock, "test switcher should use reference clock")
+	require.True(t, s.useRefClock.Load(), "test switcher should use reference clock")
 
 	// wallClockVideoPTS should be an identity function when ref clock is active.
 	got := s.wallClockVideoPTS(12345)
@@ -764,7 +764,7 @@ func TestEnableWallClockNoOpWithRefClock(t *testing.T) {
 	s, _ := newSyncTestSwitcher(t) // sets useRefClock=true
 	defer s.Close()
 
-	require.True(t, s.useRefClock)
+	require.True(t, s.useRefClock.Load())
 	require.False(t, s.wallClockVideoEnabled, "wallClockVideoEnabled should start false")
 
 	// EnableWallClockVideoPTS should be a no-op when ref clock is active.
@@ -776,7 +776,7 @@ func TestSetOnFirstVideoPTSNoOpWithRefClock(t *testing.T) {
 	s, _ := newSyncTestSwitcher(t) // sets useRefClock=true
 	defer s.Close()
 
-	require.True(t, s.useRefClock)
+	require.True(t, s.useRefClock.Load())
 	require.Nil(t, s.onFirstVideoPTS, "onFirstVideoPTS should start nil")
 
 	// SetOnFirstVideoPTS should be a no-op when ref clock is active.
@@ -792,7 +792,7 @@ func TestWallClockPTSStillWorksWithoutRefClock(t *testing.T) {
 	s := newTestSwitcher(programRelay)
 	defer s.Close()
 
-	require.False(t, s.useRefClock)
+	require.False(t, s.useRefClock.Load())
 
 	// EnableWallClockVideoPTS should work normally.
 	s.EnableWallClockVideoPTS()

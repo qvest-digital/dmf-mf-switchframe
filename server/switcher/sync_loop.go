@@ -546,7 +546,7 @@ func (s *Switcher) SetReferenceClock(rc *clock.ReferenceClock) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.refClock = rc
-	s.useRefClock = true
+	s.useRefClock.Store(true)
 }
 
 // SetClockRecovery attaches a clock recovery instance to the switcher.

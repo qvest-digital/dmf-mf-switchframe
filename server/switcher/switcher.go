@@ -469,7 +469,7 @@ type Switcher struct {
 	aacBuffer        *clock.AACFrameBuffer
 	syncMixer        syncMixerInterface
 	syncLoopWg       sync.WaitGroup
-	useRefClock      bool
+	useRefClock      atomic.Bool
 	ticksBehind      int
 	syncLoopRunning      atomic.Bool                      // double-start guard (Issue 10)
 	cachedBlackFrame     atomic.Pointer[ProcessingFrame]  // cached broadcast black (Issue 11)
@@ -740,7 +740,7 @@ func (s *Switcher) Close() {
 
 	// Stop reference clock first — this closes the Ticks channel,
 	// which exits the synchronous processing loop.
-	if s.useRefClock && s.refClock != nil {
+	if s.useRefClock.Load() && s.refClock != nil {
 		s.refClock.Stop()
 		s.syncLoopWg.Wait()
 	}
@@ -834,7 +834,7 @@ func (s *Switcher) SetAudioTransition(handler audioTransitionHandler) {
 func (s *Switcher) SetOnFirstVideoPTS(fn func(pts int64)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.useRefClock {
+	if s.useRefClock.Load() {
 		return // reference clock handles PTS — no seeding needed
 	}
 	s.onFirstVideoPTS = fn
@@ -1377,7 +1377,7 @@ func (s *Switcher) measureTransSeam() {
 func (s *Switcher) EnableWallClockVideoPTS() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.useRefClock {
+	if s.useRefClock.Load() {
 		return // reference clock handles PTS
 	}
 	s.wallClockVideoEnabled = true
@@ -1388,7 +1388,7 @@ func (s *Switcher) EnableWallClockVideoPTS() {
 // When the reference clock is active, returns sourcePTS unchanged — PTS
 // is already set by the sync loop from the reference clock.
 func (s *Switcher) wallClockVideoPTS(sourcePTS int64) int64 {
-	if s.useRefClock {
+	if s.useRefClock.Load() {
 		return sourcePTS // PTS comes from reference clock, not wall clock
 	}
 	if !s.wallClockVideoEnabled {
@@ -1599,7 +1599,7 @@ func (s *Switcher) videoProcessingLoop() {
 	defer runtime.UnlockOSThread()
 	defer close(s.videoProcDone)
 
-	if s.useRefClock {
+	if s.useRefClock.Load() {
 		// Sync loop is the sole frame processor. Drain videoProcCh to prevent
 		// handleRawVideoFrame from blocking, but don't process the frames.
 		for work := range s.videoProcCh {
