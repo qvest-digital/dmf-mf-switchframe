@@ -70,12 +70,23 @@ func (fp *FramePool) Acquire() []byte {
 }
 
 // Release returns a buffer to the pool. Wrong-sized buffers are discarded.
+// Duplicate releases of the same buffer are detected and silently ignored
+// to prevent buffer aliasing corruption.
 func (fp *FramePool) Release(buf []byte) {
 	if cap(buf) < fp.bufSize {
 		return // wrong size — discard
 	}
 	fp.mu.Lock()
 	if len(fp.free) < fp.cap {
+		// Check for duplicate (prevent double-release corruption).
+		// Scan is O(n) where n ≤ pool capacity (typically 4-16), negligible.
+		ptr := &buf[:cap(buf)][0]
+		for _, existing := range fp.free {
+			if &existing[0] == ptr {
+				fp.mu.Unlock()
+				return // already in pool — ignore duplicate release
+			}
+		}
 		fp.free = append(fp.free, buf[:cap(buf)])
 	}
 	// else: pool full — discard (extra fallback allocs draining)
