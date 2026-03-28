@@ -145,6 +145,11 @@ type Mixer struct {
 	cutFramesRemaining int // >0 means cut crossfade in progress
 	cutTotalFrames     int // total frames in cut crossfade (usually 2)
 
+	// AFV deferred deactivation: when OnProgramChange sets up a crossfade,
+	// the outgoing AFV channel stays active during the ramp. This field
+	// records which channel to deactivate when the cut crossfade completes.
+	afvDeactivateOnComplete string
+
 	// Stinger audio overlay (optional, active during stinger transitions)
 	stingerAudio    []float32 // interleaved PCM from stinger clip
 	stingerOffset   int       // current read position in stingerAudio

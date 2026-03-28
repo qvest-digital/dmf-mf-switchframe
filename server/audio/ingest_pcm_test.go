@@ -147,10 +147,13 @@ func TestIngestPCM_InactiveChannelSkipped(t *testing.T) {
 	pcm := make([]float32, 2048)
 	m.IngestPCM("mxl1", pcm, 1000, 2)
 
-	// Inactive channel should not push to ring buffer
+	// Inactive channels still push to ring buffer (for AFV priming) but
+	// should not store PCM in lastDecodedPCM (which is used for crossfade).
 	m.mu.RLock()
 	ch := m.channels["mxl1"]
 	ringLen := ch.ringBuf.Len()
+	_, hasLastDecoded := m.lastDecodedPCM["mxl1"]
 	m.mu.RUnlock()
-	require.Equal(t, 0, ringLen, "inactive channel should not push to ring buffer")
+	require.Greater(t, ringLen, 0, "inactive channel should push to ring buffer for AFV priming")
+	require.False(t, hasLastDecoded, "inactive channel should not store lastDecodedPCM")
 }

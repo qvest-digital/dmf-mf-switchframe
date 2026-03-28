@@ -71,8 +71,8 @@ func (m *Mixer) ingestFrameInner(sourceKey string, frame *media.AudioFrame) {
 	// Resample if source rate doesn't match mixer rate.
 	pcm = m.resampleIfNeeded(ch, pcm, frame.SampleRate)
 
-	// For inactive/muted channels, do metering only -- don't push to ring buffer.
-	if !ch.active || ch.muted {
+	// Muted channels skip ring buffer entirely.
+	if ch.muted {
 		ch.peakL, ch.peakR = PeakLevel(pcm, m.numChannels)
 		m.mu.Unlock()
 		return
@@ -81,11 +81,14 @@ func (m *Mixer) ingestFrameInner(sourceKey string, frame *media.AudioFrame) {
 	// Update per-channel peaks (pre-fader, pre-gain)
 	ch.peakL, ch.peakR = PeakLevel(pcm, m.numChannels)
 
-	// Store a copy of last decoded PCM for instant crossfade on future cuts.
+	// Store a copy of last decoded PCM for instant crossfade on future cuts
+	// (only for active channels).
 	// Copy to avoid aliasing if decoder reuses its internal buffer.
-	ch.storedBuf = growBuf(ch.storedBuf, len(pcm))
-	copy(ch.storedBuf, pcm)
-	m.lastDecodedPCM[sourceKey] = ch.storedBuf
+	if ch.active {
+		ch.storedBuf = growBuf(ch.storedBuf, len(pcm))
+		copy(ch.storedBuf, pcm)
+		m.lastDecodedPCM[sourceKey] = ch.storedBuf
+	}
 
 	// Pipeline order: Trim -> Phase -> HPF -> Gate -> EQ -> Compressor -> Balance -> [push to ring buffer]
 	// Fader gain and transition gain are applied by the ticker at read time.
@@ -181,7 +184,8 @@ func (m *Mixer) ingestPCMInner(sourceKey string, pcm []float32, pts int64, chann
 	// Always compute peak levels for input metering, even for inactive/muted channels.
 	ch.peakL, ch.peakR = PeakLevel(pcm, m.numChannels)
 
-	if !ch.active || ch.muted {
+	// Muted channels skip ring buffer entirely — there's no unmute crossfade.
+	if ch.muted {
 		m.mu.Unlock()
 		return
 	}
@@ -194,10 +198,12 @@ func (m *Mixer) ingestPCMInner(sourceKey string, pcm []float32, pts int64, chann
 	// Resample if source rate doesn't match mixer rate.
 	pcm = m.resampleIfNeeded(ch, pcm, 0) // PCM sources don't carry sample rate in-band
 
-	// Store a copy of PCM for instant crossfade on future cuts.
-	ch.storedBuf = growBuf(ch.storedBuf, len(pcm))
-	copy(ch.storedBuf, pcm)
-	m.lastDecodedPCM[sourceKey] = ch.storedBuf
+	// Store a copy of PCM for instant crossfade on future cuts (only for active channels).
+	if ch.active {
+		ch.storedBuf = growBuf(ch.storedBuf, len(pcm))
+		copy(ch.storedBuf, pcm)
+		m.lastDecodedPCM[sourceKey] = ch.storedBuf
+	}
 
 	// Pipeline order: Trim -> Phase -> HPF -> Gate -> EQ -> Compressor -> Balance -> [push to ring buffer]
 	// Fader gain and transition gain are applied by the ticker at read time.
@@ -247,7 +253,10 @@ func (m *Mixer) ingestPCMInner(sourceKey string, pcm []float32, pts int64, chann
 		}
 	}
 
-	// Push processed PCM to ring buffer for clock-driven output.
+	// Always push to ring buffer, even for inactive channels. This keeps the
+	// buffer primed so that when a channel activates via AFV, there is no
+	// silence gap from an empty ring buffer. The tick() loop only reads from
+	// active channels, so inactive data won't be mixed into output.
 	ch.ringBuf.Push(trimmedPCM)
 	m.mu.Unlock()
 }

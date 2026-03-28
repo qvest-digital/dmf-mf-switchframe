@@ -237,10 +237,12 @@ func TestMixerAFVActivatesOnCut(t *testing.T) {
 	require.True(t, m.IsChannelActive("cam1"), "AFV channel on program should be active")
 	require.False(t, m.IsChannelActive("cam2"), "AFV channel not on program should be inactive")
 
-	// cam2 goes to program → cam2 activates, cam1 deactivates
+	// cam2 goes to program → cam2 activates, cam1 deactivates after crossfade
 	m.OnProgramChange("cam2")
-	require.False(t, m.IsChannelActive("cam1"), "cam1 should deactivate when leaving program")
 	require.True(t, m.IsChannelActive("cam2"), "cam2 should activate on program")
+	// cam1 stays active during the 2-tick crossfade ramp (~42ms), then deactivates.
+	time.Sleep(100 * time.Millisecond)
+	require.False(t, m.IsChannelActive("cam1"), "cam1 should deactivate after crossfade completes")
 }
 
 func TestMixerAFVDisabledChannelStaysActive(t *testing.T) {

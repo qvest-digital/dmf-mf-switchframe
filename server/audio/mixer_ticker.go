@@ -41,8 +41,10 @@ func (m *Mixer) tick() *media.AudioFrame {
 
 	aacFrameSamples := 1024 * m.numChannels
 
-	// Ensure encoder is available
+	// Ensure encoder is available. If no encoder, still advance the cut
+	// crossfade state machine so AFV deferred deactivation completes.
 	if err := m.ensureEncoder(); err != nil || m.encoder == nil {
+		m.advanceCutCrossfade()
 		m.mu.Unlock()
 		return nil
 	}
@@ -144,22 +146,7 @@ func (m *Mixer) tick() *media.AudioFrame {
 
 	// Auto-advance cut crossfade position (driven by frame counter, not timer).
 	// This runs after the mix so the current tick used the position set above.
-	if m.cutFramesRemaining > 0 {
-		m.cutFramesRemaining--
-		frameIdx := m.cutTotalFrames - m.cutFramesRemaining
-		m.transCrossfadePosition = float64(frameIdx) / float64(m.cutTotalFrames)
-		if m.cutFramesRemaining <= 0 {
-			// Cut crossfade complete: clear all transition state.
-			m.transCrossfadeActive = false
-			m.transCrossfadeFrom = ""
-			m.transCrossfadeTo = ""
-			m.transCrossfadePosition = 0.0
-			m.transCrossfadeAudioPos = 0.0
-			m.mixCycleTransPos = 0.0
-			m.cutFramesRemaining = 0
-			m.cutTotalFrames = 0
-		}
-	}
+	m.advanceCutCrossfade()
 
 	// PTS
 	pts := m.advanceOutputPTS(0)
@@ -187,5 +174,37 @@ func (m *Mixer) tick() *media.AudioFrame {
 		Data:       aacData,
 		SampleRate: m.sampleRate,
 		Channels:   m.numChannels,
+	}
+}
+
+// advanceCutCrossfade advances the cut crossfade state machine by one tick.
+// Must be called with m.mu held.
+func (m *Mixer) advanceCutCrossfade() {
+	if m.cutFramesRemaining <= 0 {
+		return
+	}
+	m.cutFramesRemaining--
+	frameIdx := m.cutTotalFrames - m.cutFramesRemaining
+	m.transCrossfadePosition = float64(frameIdx) / float64(m.cutTotalFrames)
+	if m.cutFramesRemaining <= 0 {
+		// Cut crossfade complete: clear all transition state.
+		m.transCrossfadeActive = false
+		m.transCrossfadeFrom = ""
+		m.transCrossfadeTo = ""
+		m.transCrossfadePosition = 0.0
+		m.transCrossfadeAudioPos = 0.0
+		m.mixCycleTransPos = 0.0
+		m.cutFramesRemaining = 0
+		m.cutTotalFrames = 0
+
+		// Deferred AFV deactivation: the outgoing AFV channel was
+		// kept active during the crossfade ramp so its audio could
+		// fade out smoothly. Now that the ramp is complete, deactivate it.
+		if m.afvDeactivateOnComplete != "" {
+			if ch, ok := m.channels[m.afvDeactivateOnComplete]; ok {
+				ch.active = false
+			}
+			m.afvDeactivateOnComplete = ""
+		}
 	}
 }

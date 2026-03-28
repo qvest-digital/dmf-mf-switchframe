@@ -299,7 +299,9 @@ func TestMixerAddRemoveWhileMixing(t *testing.T) {
 // ==========================================================================
 
 func TestMixerCrossfadeConcurrentWithIngest(t *testing.T) {
-	t.Parallel()
+	// Not parallel: this test depends on precise timing for ring buffer fill
+	// rates and crossfade detection. CPU contention from parallel tests causes
+	// feeder goroutines to stall, leading to ring buffer underruns.
 
 	m, getCaptured := newTestMixer(t)
 	defer m.Close()
@@ -333,7 +335,11 @@ func TestMixerCrossfadeConcurrentWithIngest(t *testing.T) {
 			}
 			m.IngestPCM(key, pcm[offset:offset+chunkSize], int64(offset)*90000/int64(sampleRate*2), 2)
 			offset += chunkSize
-			time.Sleep(10 * time.Millisecond)
+			// Pace at 20ms (vs 21.3ms ticker interval) to keep the ring buffer
+			// filled just ahead of the consumer. Slightly faster than real-time
+			// to prevent underruns, but slow enough to avoid overflow-induced
+			// phase discontinuity clicks.
+			time.Sleep(20 * time.Millisecond)
 		}
 	}
 

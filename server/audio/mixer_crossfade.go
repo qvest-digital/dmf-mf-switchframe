@@ -7,14 +7,57 @@ import (
 // OnProgramChange updates AFV channel states based on the new program source.
 // Channels with AFV enabled activate when they match the program source and
 // deactivate when they don't. Non-AFV channels are unaffected.
+//
+// To avoid audible clicks, a 2-tick (~42ms) crossfade ramp is set up between
+// the outgoing and incoming AFV channels, identical to what OnCut does.
 func (m *Mixer) OnProgramChange(newProgramSource string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// Find the currently active AFV channel (the outgoing source).
+	var oldSource string
+	for key, ch := range m.channels {
+		if ch.afv && ch.active {
+			oldSource = key
+			break
+		}
+	}
+
+	// If there's both an outgoing and incoming AFV channel, set up a crossfade
+	// ramp to avoid clicks. This mirrors what OnCut does.
+	if oldSource != "" && oldSource != newProgramSource {
+		if _, ok := m.channels[newProgramSource]; ok {
+			m.transCrossfadeActive = true
+			m.transCrossfades.Add(1)
+			m.transCrossfadeFrom = oldSource
+			m.transCrossfadeTo = newProgramSource
+			m.transCrossfadeMode = Crossfade
+			m.transCrossfadePosition = 0.0
+			m.transCrossfadeAudioPos = 0.0
+			m.mixCycleTransPos = 0.0
+			m.cutFramesRemaining = 2
+			m.cutTotalFrames = 2
+		}
+	}
+
 	for key, ch := range m.channels {
 		if !ch.afv {
 			continue
 		}
-		ch.active = (key == newProgramSource)
+		if key == newProgramSource {
+			// Activate the incoming AFV channel.
+			ch.active = true
+			m.initChannelDecoder(ch)
+		} else if key == oldSource && m.cutFramesRemaining > 0 {
+			// Don't deactivate the old source yet — keep it active
+			// during the crossfade ramp so its audio fades out smoothly.
+			// It will be deactivated when the crossfade completes in tick().
+			m.afvDeactivateOnComplete = key
+		} else {
+			// All other AFV channels that aren't participating in
+			// the crossfade get deactivated immediately.
+			ch.active = false
+		}
 	}
 }
 
@@ -105,6 +148,7 @@ func (m *Mixer) OnTransitionComplete() {
 	m.stingerAudio = nil
 	m.stingerOffset = 0
 	m.stingerChannels = 0
+	m.afvDeactivateOnComplete = ""
 	m.mu.Unlock()
 }
 
@@ -125,6 +169,7 @@ func (m *Mixer) OnTransitionAbort() {
 	m.stingerAudio = nil
 	m.stingerOffset = 0
 	m.stingerChannels = 0
+	m.afvDeactivateOnComplete = ""
 	m.mu.Unlock()
 }
 
