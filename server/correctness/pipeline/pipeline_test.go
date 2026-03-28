@@ -413,14 +413,12 @@ func TestFullPipelineCutWithAudioToTS(t *testing.T) {
 	require.Greater(t, len(audioFrames), 0, "need audio frames for A/V sync check")
 
 	avDelta := math.Abs(float64(videoFrames[0].PTS - audioFrames[0].PTS))
-	t.Logf("A/V PTS delta: %.0f ticks (video=%d, audio=%d)",
-		avDelta, videoFrames[0].PTS, audioFrames[0].PTS)
+	t.Logf("MEASURE: A/V sync delta = %.0f ticks (%.1f ms), first video PTS=%d, first audio PTS=%d",
+		avDelta, avDelta/90.0, videoFrames[0].PTS, audioFrames[0].PTS)
 
-	// Allow generous tolerance: the mixer's clock-driven output and the
-	// video pipeline run independently. 2 seconds (180000 ticks) is generous
-	// but ensures they're in the same ballpark.
-	require.Less(t, avDelta, float64(180000),
-		"A/V PTS delta too large: %.0f ticks", avDelta)
+	// A/V sync must be within 100ms (9000 ticks at 90kHz).
+	require.Less(t, avDelta, float64(9000),
+		"A/V sync delta %.0f ticks (%.1f ms) exceeds 100ms tolerance", avDelta, avDelta/90.0)
 
 	t.Logf("Pipeline A/V test passed: %d video, %d audio TS frames, A/V delta=%.0f ticks",
 		len(videoFrames), len(audioFrames), avDelta)
@@ -979,10 +977,10 @@ func TestCutAVSyncInTS(t *testing.T) {
 	startVPTS := videoFrames[0].PTS
 	startAPTS := findNearestPTS(audioFrames, startVPTS)
 	startDelta := math.Abs(float64(startVPTS - startAPTS))
-	t.Logf("Start A/V PTS delta: %.0f ticks (video=%d, nearest_audio=%d)",
-		startDelta, startVPTS, startAPTS)
-	require.Less(t, startDelta, float64(90000),
-		"start A/V PTS delta too large: %.0f ticks", startDelta)
+	t.Logf("MEASURE: A/V sync delta = %.0f ticks (%.1f ms), first video PTS=%d, nearest audio PTS=%d",
+		startDelta, startDelta/90.0, startVPTS, startAPTS)
+	require.Less(t, startDelta, float64(9000),
+		"A/V sync delta %.0f ticks (%.1f ms) exceeds 100ms tolerance", startDelta, startDelta/90.0)
 
 	// Both streams should have reasonable frame counts and be parseable.
 	t.Logf("Video PTS range: %d to %d, Audio PTS range: %d to %d",
@@ -1076,7 +1074,7 @@ func TestTransitionAVSyncInTS(t *testing.T) {
 	// Check A/V PTS delta at several points by finding the nearest audio
 	// frame (by PTS) for each sampled video frame. Video and audio have
 	// different output rates so index-based comparison doesn't work.
-	const maxDeltaTicks = 90000 // 1 second generous tolerance
+	const maxDeltaTicks = 9000 // 100ms tolerance (9000 ticks at 90kHz)
 	checkVideoIndices := []struct {
 		name string
 		idx  int
@@ -1095,10 +1093,10 @@ func TestTransitionAVSyncInTS(t *testing.T) {
 		vPTS := videoFrames[cp.idx].PTS
 		nearestAudioPTS := findNearestPTS(audioFrames, vPTS)
 		delta := math.Abs(float64(vPTS - nearestAudioPTS))
-		t.Logf("A/V delta at %s: %.0f ticks (v=%d, nearest_a=%d)",
-			cp.name, delta, vPTS, nearestAudioPTS)
+		t.Logf("MEASURE: A/V sync delta at %s = %.0f ticks (%.1f ms), video PTS=%d, nearest audio PTS=%d",
+			cp.name, delta, delta/90.0, vPTS, nearestAudioPTS)
 		require.Less(t, delta, float64(maxDeltaTicks),
-			"A/V PTS delta at %s too large: %.0f ticks", cp.name, delta)
+			"A/V sync delta at %s: %.0f ticks (%.1f ms) exceeds 100ms tolerance", cp.name, delta, delta/90.0)
 	}
 
 	// Verify video PTS is monotonically increasing.
