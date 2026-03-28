@@ -692,7 +692,7 @@ func TestResourceStoreRemoveDeviceSourceFlow(t *testing.T) {
 func TestResourceStoreAddBumpsVersion(t *testing.T) {
 	store := NewResourceStore()
 
-	origVersion := NewVersion()
+	origVersion := Version("1000000000:000000000") // fixed past timestamp
 	dev := &Device{ID: "dev-001", Version: origVersion}
 	store.AddDevice(dev)
 

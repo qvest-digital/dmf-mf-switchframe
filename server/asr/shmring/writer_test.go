@@ -4,12 +4,20 @@ package shmring
 
 import (
 	"fmt"
+	"strings"
 	"math"
 	"os"
 	"sync/atomic"
 	"testing"
 	"unsafe"
 )
+
+func skipIfNoShm(t *testing.T, err error) {
+	t.Helper()
+	if err != nil && strings.Contains(err.Error(), "shared memory not available") {
+		t.Skip("shared memory not available (no cgo)")
+	}
+}
 
 func testShmName(t *testing.T) string {
 	t.Helper()
@@ -20,6 +28,7 @@ func TestWriterCreateAndClose(t *testing.T) {
 	name := testShmName(t)
 	w, err := NewWriter(name, 1024)
 	if err != nil {
+		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
 	defer w.Close()
@@ -56,6 +65,7 @@ func TestWriterCapacityMustBePowerOfTwo(t *testing.T) {
 	// 1000 is not a power of 2, should be rounded up to 1024.
 	w, err := NewWriter(name, 1000)
 	if err != nil {
+		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
 	defer w.Close()
@@ -69,6 +79,7 @@ func TestWriterWriteSamples(t *testing.T) {
 	name := testShmName(t)
 	w, err := NewWriter(name, 4096)
 	if err != nil {
+		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
 	defer w.Close()
@@ -144,6 +155,7 @@ func TestWriterWrapAround(t *testing.T) {
 	capacity := 256
 	w, err := NewWriter(name, capacity)
 	if err != nil {
+		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
 	defer w.Close()
@@ -195,6 +207,7 @@ func TestWriterWrapAroundSplit(t *testing.T) {
 	capacity := 256
 	w, err := NewWriter(name, capacity)
 	if err != nil {
+		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
 	defer w.Close()
@@ -248,6 +261,7 @@ func TestWriterWriteSeqMonotonic(t *testing.T) {
 	name := testShmName(t)
 	w, err := NewWriter(name, 1024)
 	if err != nil {
+		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
 	defer w.Close()
@@ -267,6 +281,7 @@ func TestWriterAtomicVisibility(t *testing.T) {
 	name := testShmName(t)
 	w, err := NewWriter(name, 4096)
 	if err != nil {
+		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
 	defer w.Close()

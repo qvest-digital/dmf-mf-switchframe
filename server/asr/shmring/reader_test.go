@@ -12,6 +12,7 @@ func TestReaderOpenAndRead(t *testing.T) {
 	name := testShmName(t)
 	w, err := NewWriter(name, 4096)
 	if err != nil {
+		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
 	defer w.Close()
@@ -26,6 +27,7 @@ func TestReaderOpenAndRead(t *testing.T) {
 	// Open reader.
 	r, err := NewReader(name)
 	if err != nil {
+		skipIfNoShm(t, err)
 		t.Fatalf("NewReader: %v", err)
 	}
 	defer r.Close()
@@ -55,6 +57,7 @@ func TestReaderOverflow(t *testing.T) {
 	// Tiny buffer: 1024 float32 samples.
 	w, err := NewWriter(name, 1024)
 	if err != nil {
+		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
 	defer w.Close()
@@ -62,6 +65,7 @@ func TestReaderOverflow(t *testing.T) {
 	// Open reader before writing, so readPos starts at 0.
 	r, err := NewReader(name)
 	if err != nil {
+		skipIfNoShm(t, err)
 		t.Fatalf("NewReader: %v", err)
 	}
 	defer r.Close()
@@ -110,12 +114,14 @@ func TestReaderMultipleReads(t *testing.T) {
 	name := testShmName(t)
 	w, err := NewWriter(name, 4096)
 	if err != nil {
+		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
 	defer w.Close()
 
 	r, err := NewReader(name)
 	if err != nil {
+		skipIfNoShm(t, err)
 		t.Fatalf("NewReader: %v", err)
 	}
 	defer r.Close()
@@ -165,6 +171,7 @@ func TestReaderMetadata(t *testing.T) {
 	name := testShmName(t)
 	w, err := NewWriter(name, 1024)
 	if err != nil {
+		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
 	defer w.Close()
@@ -175,6 +182,7 @@ func TestReaderMetadata(t *testing.T) {
 
 	r, err := NewReader(name)
 	if err != nil {
+		skipIfNoShm(t, err)
 		t.Fatalf("NewReader: %v", err)
 	}
 	defer r.Close()
@@ -193,6 +201,7 @@ func TestReaderInvalidMagic(t *testing.T) {
 	// Create a valid segment using Writer, then corrupt the magic.
 	w, err := NewWriter(name, 1024)
 	if err != nil {
+		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
 	// Write some data so the segment is fully initialized.
@@ -219,6 +228,7 @@ func TestReaderWrapAroundRead(t *testing.T) {
 	capacity := 256
 	w, err := NewWriter(name, capacity)
 	if err != nil {
+		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
 	defer w.Close()
@@ -232,6 +242,7 @@ func TestReaderWrapAroundRead(t *testing.T) {
 
 	r, err := NewReader(name)
 	if err != nil {
+		skipIfNoShm(t, err)
 		t.Fatalf("NewReader: %v", err)
 	}
 	defer r.Close()
@@ -270,12 +281,14 @@ func TestReaderSizeFromShm(t *testing.T) {
 	name := testShmName(t)
 	w, err := NewWriter(name, 2048)
 	if err != nil {
+		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
 	defer w.Close()
 
 	r, err := NewReader(name)
 	if err != nil {
+		skipIfNoShm(t, err)
 		t.Fatalf("NewReader: %v", err)
 	}
 	defer r.Close()
@@ -290,12 +303,14 @@ func TestReaderCloseDoesNotUnlink(t *testing.T) {
 	name := testShmName(t)
 	w, err := NewWriter(name, 1024)
 	if err != nil {
+		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
 	defer w.Close()
 
 	r, err := NewReader(name)
 	if err != nil {
+		skipIfNoShm(t, err)
 		t.Fatalf("NewReader: %v", err)
 	}
 
@@ -315,6 +330,7 @@ func TestReaderCloseDoesNotUnlink(t *testing.T) {
 	// Should be able to open a new reader (shm still exists).
 	r2, err := NewReader(name)
 	if err != nil {
+		skipIfNoShm(t, err)
 		t.Fatalf("NewReader after reader close: %v", err)
 	}
 	r2.Close()
@@ -326,12 +342,14 @@ func TestReaderWritePosUpdatesVisible(t *testing.T) {
 	name := testShmName(t)
 	w, err := NewWriter(name, 4096)
 	if err != nil {
+		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
 	defer w.Close()
 
 	r, err := NewReader(name)
 	if err != nil {
+		skipIfNoShm(t, err)
 		t.Fatalf("NewReader: %v", err)
 	}
 	defer r.Close()
@@ -365,6 +383,7 @@ func TestReaderInternalBase(t *testing.T) {
 	name := testShmName(t)
 	w, err := NewWriter(name, 1024)
 	if err != nil {
+		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
 	defer w.Close()
@@ -374,6 +393,7 @@ func TestReaderInternalBase(t *testing.T) {
 
 	r, err := NewReader(name)
 	if err != nil {
+		skipIfNoShm(t, err)
 		t.Fatalf("NewReader: %v", err)
 	}
 	defer r.Close()

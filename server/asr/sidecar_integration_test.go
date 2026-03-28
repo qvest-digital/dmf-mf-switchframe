@@ -5,6 +5,7 @@ package asr
 import (
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -35,6 +36,9 @@ func TestSidecarIntegration_MultipleChunks(t *testing.T) {
 		mu.Unlock()
 	})
 	if err != nil {
+		if strings.Contains(err.Error(), "shared memory not available") {
+			t.Skip("shared memory not available (no cgo)")
+		}
 		t.Fatalf("Start: %v", err)
 	}
 
@@ -101,6 +105,9 @@ func TestSidecarIntegration_ResetClearsState(t *testing.T) {
 		transcripts <- words
 	})
 	if err != nil {
+		if strings.Contains(err.Error(), "shared memory not available") {
+			t.Skip("shared memory not available (no cgo)")
+		}
 		t.Fatalf("Start: %v", err)
 	}
 
@@ -150,6 +157,9 @@ func TestSidecarIntegration_StopAndClose(t *testing.T) {
 
 	err = sb.Start(func(words []TranscriptWord, isFinal bool) {})
 	if err != nil {
+		if strings.Contains(err.Error(), "shared memory not available") {
+			t.Skip("shared memory not available (no cgo)")
+		}
 		t.Fatalf("Start: %v", err)
 	}
 

@@ -65,6 +65,9 @@ func TestSidecarFullCaptionPipeline(t *testing.T) {
 		}
 	})
 	if err != nil {
+		if strings.Contains(err.Error(), "shared memory not available") {
+			t.Skip("shared memory not available (no cgo)")
+		}
 		t.Fatalf("Start: %v", err)
 	}
 
