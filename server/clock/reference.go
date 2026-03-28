@@ -69,12 +69,15 @@ func (c *ReferenceClock) Start() {
 }
 
 // Stop signals the clock to stop and waits for goroutine cleanup.
+// Closes the Ticks channel after the producer goroutine exits, allowing
+// consumers using range-over-channel to terminate cleanly.
 func (c *ReferenceClock) Stop() {
 	if !c.running.Swap(false) {
 		return // not running
 	}
 	close(c.stop)
 	c.wg.Wait()
+	close(c.ticks)
 }
 
 // Ticks returns the receive channel for clock ticks.

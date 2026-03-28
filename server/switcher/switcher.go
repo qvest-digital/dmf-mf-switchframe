@@ -18,6 +18,7 @@ import (
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/caption"
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
@@ -458,6 +459,20 @@ type Switcher struct {
 	// audio delivery from the same goroutine gets starved.
 	videoProcCh   chan videoProcWork
 	videoProcDone chan struct{}
+
+	// Reference clock fields (used when useRefClock is true).
+	// When useRefClock is set, the synchronous processing loop replaces
+	// both videoProcessingLoop and the mixer's outputTicker, driving
+	// A/V from a single clock source.
+	refClock         *clock.ReferenceClock
+	aacBuffer        *clock.AACFrameBuffer
+	syncMixer        syncMixerInterface
+	syncLoopWg       sync.WaitGroup
+	useRefClock      bool
+	ticksBehind      int
+	overloadDrops    atomic.Int64
+	syncLoopRepeats  atomic.Int64
+	lastEncodedFrame atomic.Pointer[ProcessingFrame]
 }
 
 // videoProcWork represents a unit of work for the async video processing
@@ -710,6 +725,13 @@ func (s *Switcher) GetRawPreviewSink() RawVideoSink {
 func (s *Switcher) Close() {
 	s.health.stop()
 	s.delayBuffer.Close()
+
+	// Stop reference clock first — this closes the Ticks channel,
+	// which exits the synchronous processing loop.
+	if s.useRefClock && s.refClock != nil {
+		s.refClock.Stop()
+		s.syncLoopWg.Wait()
+	}
 
 	// Stop frame sync FIRST to prevent sends to videoProcCh after it is closed.
 	// The frame sync ticker goroutine delivers frames via handleRawVideoFrame,

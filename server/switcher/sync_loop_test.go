@@ -1,0 +1,741 @@
+package switcher
+
+import (
+	"context"
+	"log/slog"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+	"github.com/zsiec/prism/distribution"
+	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/clock"
+)
+
+// mockSyncMixer implements syncMixerInterface for testing.
+type mockSyncMixer struct {
+	mu              sync.Mutex
+	produceCalls    int
+	totalSamples    int
+	crossfadeCalls  int
+	channels        int
+	sampleFn        func(sampleCount int) []float32 // optional custom sample generator
+}
+
+func newMockSyncMixer(channels int) *mockSyncMixer {
+	return &mockSyncMixer{channels: channels}
+}
+
+func (m *mockSyncMixer) ProduceSamples(sampleCount int) []float32 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.produceCalls++
+	m.totalSamples += sampleCount
+	if m.sampleFn != nil {
+		return m.sampleFn(sampleCount)
+	}
+	// Return interleaved silence (sampleCount * channels values).
+	return make([]float32, sampleCount*m.channels)
+}
+
+func (m *mockSyncMixer) AdvanceCrossfade() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.crossfadeCalls++
+}
+
+func (m *mockSyncMixer) getProduceCalls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.produceCalls
+}
+
+func (m *mockSyncMixer) getTotalSamples() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.totalSamples
+}
+
+func (m *mockSyncMixer) getCrossfadeCalls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.crossfadeCalls
+}
+
+// mockAAC encodes PCM to a fixed-size "encoded" marker payload.
+// Returns 4 bytes per frame for easy counting.
+func mockAACEncode(pcm []float32) ([]byte, error) {
+	return []byte{0xAA, 0xC0, 0x00, byte(len(pcm) & 0xFF)}, nil
+}
+
+// newSyncTestSwitcher creates a Switcher configured for synchronous loop testing.
+// It creates a non-realtime reference clock, sets up the frame sync with a
+// raw video callback wired to handleRawVideoFrame, and builds a minimal pipeline.
+func newSyncTestSwitcher(t *testing.T) (*Switcher, *clock.ReferenceClock) {
+	t.Helper()
+	programRelay := distribution.NewRelay()
+	testFmt := PipelineFormat{
+		Name:   "test",
+		Width:  320,
+		Height: 240,
+		FPSNum: 30,
+		FPSDen: 1,
+	}
+
+	s := &Switcher{
+		log:           testSyncLogger(),
+		sources:       make(map[string]*sourceState),
+		programRelay:  programRelay,
+		health:        newHealthMonitor(),
+		videoProcCh:   make(chan videoProcWork, 8),
+		videoProcDone: make(chan struct{}),
+		framePool:     NewFramePool(8, 320, 240),
+	}
+	s.frameBudgetNs.Store(testFmt.FrameBudgetNs())
+	s.pipelineFormat.Store(&testFmt)
+	s.delayBuffer = NewDelayBuffer(s)
+
+	// Start the async video processing loop (needed by the existing path,
+	// even though the sync loop doesn't use it — it must be running so
+	// Close() can drain it without blocking).
+	go s.videoProcessingLoop()
+
+	// Create non-realtime reference clock at 30fps.
+	rc := clock.NewReferenceClock(30, 1, 48000, 0, false)
+	s.SetReferenceClock(rc)
+
+	// Wire frame sync with onRawVideo callback (clock-driven mode).
+	fs := NewFrameSynchronizer(
+		testFmt.FrameDuration(),
+		func(sourceKey string, frame media.VideoFrame) {},
+		func(sourceKey string, frame media.AudioFrame) {},
+	)
+	fs.onRawVideo = func(sourceKey string, pf *ProcessingFrame) {
+		s.handleRawVideoFrame(sourceKey, pf)
+	}
+	fs.framePool = s.framePool
+	fs.SetClockDriven(true)
+
+	s.mu.Lock()
+	s.frameSync = fs
+	s.frameSyncActive = true
+	s.mu.Unlock()
+
+	return s, rc
+}
+
+// testSyncLogger returns a slog.Logger used in sync loop test switchers.
+func testSyncLogger() *slog.Logger {
+	return slog.With("component", "switcher-test")
+}
+
+// consumeTicks reads exactly n ticks from a non-realtime reference clock.
+func consumeTicks(rc *clock.ReferenceClock, n int) []clock.Tick {
+	ticks := make([]clock.Tick, 0, n)
+	for i := 0; i < n; i++ {
+		tick := <-rc.Ticks()
+		ticks = append(ticks, tick)
+	}
+	return ticks
+}
+
+// makeTestYUV creates a YUV420 buffer of the given dimensions, filled with
+// a distinguishable pattern (luma = fillByte for entire Y plane).
+func makeTestYUV(width, height int, fillByte byte) []byte {
+	size := width * height * 3 / 2
+	buf := make([]byte, size)
+	for i := 0; i < width*height; i++ {
+		buf[i] = fillByte // Y plane
+	}
+	// U and V planes filled with 128 (neutral chroma)
+	for i := width * height; i < size; i++ {
+		buf[i] = 128
+	}
+	return buf
+}
+
+func TestSyncLoopProducesVideoOutput(t *testing.T) {
+	s, rc := newSyncTestSwitcher(t)
+	defer s.Close()
+
+	// Register and cut to a source.
+	cam1Relay := distribution.NewRelay()
+	s.RegisterSource("cam1", cam1Relay)
+	s.mu.Lock()
+	s.frameSync.AddSource("cam1")
+	s.mu.Unlock()
+	require.NoError(t, s.Cut(context.Background(), "cam1"))
+
+	// Set up a viewer to capture program output.
+	viewer := newMockProgramViewer("test-viewer")
+	s.programRelay.AddViewer(viewer)
+
+	// Feed frames into the frame sync buffer.
+	pool := s.framePool
+	yuvSize := 320 * 240 * 3 / 2
+	for i := 0; i < 5; i++ {
+		buf := pool.Acquire()[:yuvSize]
+		for j := range buf {
+			buf[j] = byte(i + 1)
+		}
+		pf := &ProcessingFrame{
+			YUV:   buf,
+			Width: 320, Height: 240,
+			PTS: int64(i) * 3000,
+			pool: pool,
+		}
+		pf.SetRefs(1)
+		s.frameSync.IngestRawVideo("cam1", pf)
+	}
+
+	// Start the ref clock and sync loop.
+	rc.Start()
+	s.StartSyncLoop()
+
+	// Consume ticks by processing them via the sync loop.
+	// The sync loop reads from rc.Ticks() automatically. In non-realtime
+	// mode, each tick is produced on-demand when consumed.
+	// We just need to wait for the sync loop to process ticks.
+	// Since the sync loop is consuming ticks in a goroutine, we just
+	// need to wait for output to appear.
+
+	// Wait for at least a few video frames to appear on the program relay.
+	require.Eventually(t, func() bool {
+		return len(viewer.VideoFrames()) >= 3
+	}, 2*time.Second, 10*time.Millisecond, "expected video frames on program relay")
+
+	// Stop and verify
+	rc.Stop()
+	s.syncLoopWg.Wait()
+
+	frames := viewer.VideoFrames()
+	require.GreaterOrEqual(t, len(frames), 3, "should have produced at least 3 video frames")
+
+	// Verify PTS monotonicity.
+	for i := 1; i < len(frames); i++ {
+		require.Greater(t, frames[i].PTS, frames[i-1].PTS,
+			"PTS should be monotonically increasing: frame %d PTS=%d, frame %d PTS=%d",
+			i-1, frames[i-1].PTS, i, frames[i].PTS)
+	}
+}
+
+func TestSyncLoopProducesAudioOutput(t *testing.T) {
+	s, rc := newSyncTestSwitcher(t)
+	defer s.Close()
+
+	// Set up mock mixer and AAC buffer.
+	mixer := newMockSyncMixer(2)
+	// Return non-zero samples so AAC buffer accumulates data.
+	mixer.sampleFn = func(sampleCount int) []float32 {
+		samples := make([]float32, sampleCount*2) // stereo
+		for i := range samples {
+			samples[i] = 0.1
+		}
+		return samples
+	}
+	s.SetSyncMixer(mixer)
+
+	aacBuf := clock.NewAACFrameBuffer(2, 48000, mockAACEncode)
+	s.SetAACBuffer(aacBuf)
+
+	// Register a source and cut to it (needed for video path to not return early).
+	cam1Relay := distribution.NewRelay()
+	s.RegisterSource("cam1", cam1Relay)
+	s.mu.Lock()
+	s.frameSync.AddSource("cam1")
+	s.mu.Unlock()
+	require.NoError(t, s.Cut(context.Background(), "cam1"))
+
+	// Capture audio output from program relay.
+	viewer := newMockProgramViewer("audio-viewer")
+	s.programRelay.AddViewer(viewer)
+
+	// Start clock and sync loop.
+	rc.Start()
+	s.StartSyncLoop()
+
+	// Wait for audio frames to appear.
+	require.Eventually(t, func() bool {
+		viewer.mu.Lock()
+		defer viewer.mu.Unlock()
+		return len(viewer.audios) >= 2
+	}, 2*time.Second, 10*time.Millisecond, "expected AAC audio frames on program relay")
+
+	rc.Stop()
+	s.syncLoopWg.Wait()
+
+	// Verify mixer was called.
+	require.GreaterOrEqual(t, mixer.getProduceCalls(), 2,
+		"mixer.ProduceSamples should have been called at least twice")
+	require.GreaterOrEqual(t, mixer.getCrossfadeCalls(), 2,
+		"mixer.AdvanceCrossfade should have been called")
+
+	// Verify AAC frames were produced.
+	require.GreaterOrEqual(t, aacBuf.FrameCount(), int64(1),
+		"AAC buffer should have emitted at least 1 frame")
+
+	// Verify audio frames on the relay.
+	viewer.mu.Lock()
+	defer viewer.mu.Unlock()
+	require.GreaterOrEqual(t, len(viewer.audios), 2,
+		"should have at least 2 audio frames on program relay")
+
+	// Verify audio PTS monotonicity.
+	for i := 1; i < len(viewer.audios); i++ {
+		require.Greater(t, viewer.audios[i].PTS, viewer.audios[i-1].PTS,
+			"audio PTS should be monotonically increasing")
+	}
+}
+
+func TestSyncLoopAVAligned(t *testing.T) {
+	s, rc := newSyncTestSwitcher(t)
+	defer s.Close()
+
+	mixer := newMockSyncMixer(2)
+	mixer.sampleFn = func(sampleCount int) []float32 {
+		return make([]float32, sampleCount*2)
+	}
+	s.SetSyncMixer(mixer)
+
+	aacBuf := clock.NewAACFrameBuffer(2, 48000, mockAACEncode)
+	s.SetAACBuffer(aacBuf)
+
+	// Register source, cut to it, and feed frames.
+	cam1Relay := distribution.NewRelay()
+	s.RegisterSource("cam1", cam1Relay)
+	s.mu.Lock()
+	s.frameSync.AddSource("cam1")
+	s.mu.Unlock()
+	require.NoError(t, s.Cut(context.Background(), "cam1"))
+
+	// Feed many frames.
+	pool := s.framePool
+	yuvSize := 320 * 240 * 3 / 2
+	for i := 0; i < 60; i++ {
+		buf := pool.Acquire()[:yuvSize]
+		pf := &ProcessingFrame{
+			YUV:   buf,
+			Width: 320, Height: 240,
+			PTS: int64(i) * 3000,
+			pool: pool,
+		}
+		pf.SetRefs(1)
+		s.frameSync.IngestRawVideo("cam1", pf)
+	}
+
+	// Capture output.
+	viewer := newMockProgramViewer("av-viewer")
+	s.programRelay.AddViewer(viewer)
+
+	rc.Start()
+	s.StartSyncLoop()
+
+	// Wait for both video and audio.
+	require.Eventually(t, func() bool {
+		viewer.mu.Lock()
+		defer viewer.mu.Unlock()
+		return len(viewer.videos) >= 5 && len(viewer.audios) >= 1
+	}, 2*time.Second, 10*time.Millisecond, "expected both video and audio output")
+
+	rc.Stop()
+	s.syncLoopWg.Wait()
+
+	// Verify both audio and video were produced for each tick.
+	// Mixer should have been called once per tick.
+	require.GreaterOrEqual(t, mixer.getProduceCalls(), 5,
+		"mixer should be called at least once per tick")
+
+	viewer.mu.Lock()
+	defer viewer.mu.Unlock()
+
+	// Video PTS should increase by 3000 per frame (90000/30fps).
+	for i := 1; i < len(viewer.videos); i++ {
+		delta := viewer.videos[i].PTS - viewer.videos[i-1].PTS
+		require.Equal(t, int64(3000), delta,
+			"video PTS delta should be 3000 (30fps): got %d at frame %d", delta, i)
+	}
+
+	// Audio PTS should increase by 1920 per AAC frame (1024*90000/48000).
+	for i := 1; i < len(viewer.audios); i++ {
+		delta := viewer.audios[i].PTS - viewer.audios[i-1].PTS
+		require.Equal(t, int64(1920), delta,
+			"audio PTS delta should be 1920: got %d at frame %d", delta, i)
+	}
+}
+
+func TestSyncLoopOverload(t *testing.T) {
+	s, rc := newSyncTestSwitcher(t)
+	defer s.Close()
+
+	// Set up mixer that is always called (audio never skipped).
+	mixer := newMockSyncMixer(2)
+	mixer.sampleFn = func(sampleCount int) []float32 {
+		return make([]float32, sampleCount*2)
+	}
+	s.SetSyncMixer(mixer)
+
+	aacBuf := clock.NewAACFrameBuffer(2, 48000, mockAACEncode)
+	s.SetAACBuffer(aacBuf)
+
+	// Register source and cut.
+	cam1Relay := distribution.NewRelay()
+	s.RegisterSource("cam1", cam1Relay)
+	s.mu.Lock()
+	s.frameSync.AddSource("cam1")
+	s.mu.Unlock()
+	require.NoError(t, s.Cut(context.Background(), "cam1"))
+
+	// Add a slow pipeline node that takes longer than one frame duration.
+	slowNode := &slowPipelineNode{delay: 40 * time.Millisecond} // > 33ms frame budget at 30fps
+	p := &Pipeline{}
+	require.NoError(t, p.Build(PipelineFormat{
+		Name: "test", Width: 320, Height: 240, FPSNum: 30, FPSDen: 1,
+	}, s.framePool, []PipelineNode{slowNode}))
+	s.pipeline.Store(p)
+
+	// Feed frames.
+	pool := s.framePool
+	yuvSize := 320 * 240 * 3 / 2
+	for i := 0; i < 30; i++ {
+		buf := pool.Acquire()[:yuvSize]
+		pf := &ProcessingFrame{
+			YUV:   buf,
+			Width: 320, Height: 240,
+			PTS: int64(i) * 3000,
+			pool: pool,
+		}
+		pf.SetRefs(1)
+		s.frameSync.IngestRawVideo("cam1", pf)
+	}
+
+	rc.Start()
+	s.StartSyncLoop()
+
+	// Let a few ticks run.
+	time.Sleep(200 * time.Millisecond)
+
+	rc.Stop()
+	s.syncLoopWg.Wait()
+
+	// Verify that audio was still called on every tick (never skipped).
+	require.GreaterOrEqual(t, mixer.getProduceCalls(), 2,
+		"mixer should be called even during overload")
+
+	// Verify overload drops were recorded.
+	require.GreaterOrEqual(t, s.overloadDrops.Load(), int64(1),
+		"should have recorded overload drops")
+}
+
+// slowPipelineNode is a PipelineNode that sleeps to simulate overload.
+type slowPipelineNode struct {
+	delay time.Duration
+}
+
+func (n *slowPipelineNode) Name() string                          { return "slow-test" }
+func (n *slowPipelineNode) Configure(format PipelineFormat) error { return nil }
+func (n *slowPipelineNode) Active() bool                          { return true }
+func (n *slowPipelineNode) Err() error                            { return nil }
+func (n *slowPipelineNode) Latency() time.Duration                { return 0 }
+func (n *slowPipelineNode) Close() error                          { return nil }
+func (n *slowPipelineNode) Process(dst, src *ProcessingFrame) *ProcessingFrame {
+	time.Sleep(n.delay)
+	return src
+}
+
+func TestExistingPathStillWorks(t *testing.T) {
+	// Create a Switcher WITHOUT reference clock — the traditional path.
+	programRelay := distribution.NewRelay()
+	s := newTestSwitcher(programRelay)
+	defer s.Close()
+
+	// Verify useRefClock is false.
+	require.False(t, s.useRefClock, "default switcher should not use reference clock")
+
+	// Basic operations should work.
+	cam1Relay := distribution.NewRelay()
+	s.RegisterSource("cam1", cam1Relay)
+	require.NoError(t, s.Cut(context.Background(), "cam1"))
+
+	state := s.State()
+	require.Equal(t, "cam1", state.ProgramSource)
+
+	// Preview should work.
+	cam2Relay := distribution.NewRelay()
+	s.RegisterSource("cam2", cam2Relay)
+	s.SetPreview(context.Background(), "cam2")
+	state = s.State()
+	require.Equal(t, "cam2", state.PreviewSource)
+
+	// Unregister should work.
+	s.UnregisterSource("cam2")
+	state = s.State()
+	require.Equal(t, "", state.PreviewSource)
+}
+
+func TestSyncLoopProcessTickDirect(t *testing.T) {
+	// Test processTick directly (no goroutine) for deterministic behavior.
+	s, _ := newSyncTestSwitcher(t)
+	defer s.Close()
+
+	// Register source and cut.
+	cam1Relay := distribution.NewRelay()
+	s.RegisterSource("cam1", cam1Relay)
+	s.mu.Lock()
+	s.frameSync.AddSource("cam1")
+	s.mu.Unlock()
+	require.NoError(t, s.Cut(context.Background(), "cam1"))
+
+	// Set up mixer.
+	mixer := newMockSyncMixer(2)
+	mixer.sampleFn = func(sampleCount int) []float32 {
+		return make([]float32, sampleCount*2)
+	}
+	s.SetSyncMixer(mixer)
+
+	aacBuf := clock.NewAACFrameBuffer(2, 48000, mockAACEncode)
+	s.SetAACBuffer(aacBuf)
+
+	// Feed a frame.
+	pool := s.framePool
+	yuvSize := 320 * 240 * 3 / 2
+	buf := pool.Acquire()[:yuvSize]
+	pf := &ProcessingFrame{
+		YUV:   buf,
+		Width: 320, Height: 240,
+		PTS: 90000,
+		pool: pool,
+	}
+	pf.SetRefs(1)
+	s.frameSync.IngestRawVideo("cam1", pf)
+
+	// Process a single tick directly.
+	tick := clock.Tick{
+		Number:        0,
+		VideoPTS:      0,
+		AudioSamples:  1600, // 48000/30
+		FrameDuration: 33333 * time.Microsecond,
+	}
+	s.processTick(tick)
+
+	// Verify audio was mixed.
+	require.Equal(t, 1, mixer.getProduceCalls(), "mixer should be called once")
+	require.Equal(t, 1600, mixer.getTotalSamples(), "should request 1600 samples")
+	require.Equal(t, 1, mixer.getCrossfadeCalls(), "crossfade should be advanced")
+}
+
+func TestSyncLoopAudioWithoutVideo(t *testing.T) {
+	// Audio should still be produced even when no video source is available.
+	s, rc := newSyncTestSwitcher(t)
+	defer s.Close()
+
+	mixer := newMockSyncMixer(2)
+	mixer.sampleFn = func(sampleCount int) []float32 {
+		return make([]float32, sampleCount*2)
+	}
+	s.SetSyncMixer(mixer)
+
+	aacBuf := clock.NewAACFrameBuffer(2, 48000, mockAACEncode)
+	s.SetAACBuffer(aacBuf)
+
+	// No source registered — video tick will return early.
+	// But audio should still work.
+
+	viewer := newMockProgramViewer("audio-only")
+	s.programRelay.AddViewer(viewer)
+
+	rc.Start()
+	s.StartSyncLoop()
+
+	require.Eventually(t, func() bool {
+		viewer.mu.Lock()
+		defer viewer.mu.Unlock()
+		return len(viewer.audios) >= 2
+	}, 2*time.Second, 10*time.Millisecond, "audio should be produced even without video source")
+
+	rc.Stop()
+	s.syncLoopWg.Wait()
+
+	require.GreaterOrEqual(t, mixer.getProduceCalls(), 2,
+		"mixer should be called even without video")
+	viewer.mu.Lock()
+	require.Empty(t, viewer.videos, "no video should be produced without a source")
+	viewer.mu.Unlock()
+}
+
+func TestSyncLoopTicksBehindDecrement(t *testing.T) {
+	// Verify that ticksBehind counts down and resumes normal processing.
+	s, _ := newSyncTestSwitcher(t)
+	defer s.Close()
+
+	mixer := newMockSyncMixer(2)
+	mixer.sampleFn = func(sampleCount int) []float32 {
+		return make([]float32, sampleCount*2)
+	}
+	s.SetSyncMixer(mixer)
+	s.SetAACBuffer(clock.NewAACFrameBuffer(2, 48000, mockAACEncode))
+
+	// Artificially set ticksBehind.
+	s.ticksBehind = 3
+
+	tick := clock.Tick{
+		Number:        0,
+		VideoPTS:      0,
+		AudioSamples:  1600,
+		FrameDuration: 33333 * time.Microsecond,
+	}
+
+	// Process 3 ticks while behind — should decrement and skip video.
+	s.processTick(tick)
+	require.Equal(t, 2, s.ticksBehind)
+	require.Equal(t, int64(1), s.overloadDrops.Load())
+
+	s.processTick(tick)
+	require.Equal(t, 1, s.ticksBehind)
+	require.Equal(t, int64(2), s.overloadDrops.Load())
+
+	s.processTick(tick)
+	require.Equal(t, 0, s.ticksBehind)
+	require.Equal(t, int64(3), s.overloadDrops.Load())
+
+	// Audio should have been called on every tick (3 times).
+	require.Equal(t, 3, mixer.getProduceCalls(), "audio should be produced on every tick")
+
+	// Next tick should not skip video (ticksBehind is 0).
+	s.processTick(tick)
+	// Verify audio was called a 4th time.
+	require.Equal(t, 4, mixer.getProduceCalls())
+}
+
+func TestSyncLoopNoMixerNoAAC(t *testing.T) {
+	// Verify that missing mixer/aacBuffer doesn't panic.
+	s, rc := newSyncTestSwitcher(t)
+	defer s.Close()
+	// Don't set mixer or AAC buffer.
+
+	cam1Relay := distribution.NewRelay()
+	s.RegisterSource("cam1", cam1Relay)
+	s.mu.Lock()
+	s.frameSync.AddSource("cam1")
+	s.mu.Unlock()
+	require.NoError(t, s.Cut(context.Background(), "cam1"))
+
+	// Feed a frame.
+	pool := s.framePool
+	yuvSize := 320 * 240 * 3 / 2
+	buf := pool.Acquire()[:yuvSize]
+	pf := &ProcessingFrame{
+		YUV:  buf,
+		Width: 320, Height: 240,
+		PTS:  90000,
+		pool: pool,
+	}
+	pf.SetRefs(1)
+	s.frameSync.IngestRawVideo("cam1", pf)
+
+	rc.Start()
+	s.StartSyncLoop()
+
+	// Should not panic — just no audio output.
+	time.Sleep(100 * time.Millisecond)
+
+	rc.Stop()
+	s.syncLoopWg.Wait()
+}
+
+func TestSyncLoopCloseStopsCleanly(t *testing.T) {
+	s, rc := newSyncTestSwitcher(t)
+
+	mixer := newMockSyncMixer(2)
+	mixer.sampleFn = func(sampleCount int) []float32 {
+		return make([]float32, sampleCount*2)
+	}
+	s.SetSyncMixer(mixer)
+	s.SetAACBuffer(clock.NewAACFrameBuffer(2, 48000, mockAACEncode))
+
+	rc.Start()
+	s.StartSyncLoop()
+
+	// Let it run briefly.
+	time.Sleep(50 * time.Millisecond)
+
+	// Close should stop everything cleanly (no deadlock, no panic).
+	done := make(chan struct{})
+	go func() {
+		s.Close()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Good — closed cleanly.
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close() did not complete within 5 seconds — possible deadlock")
+	}
+}
+
+func TestSyncLoopVideoFramesGetRefClockPTS(t *testing.T) {
+	// Verify that the sync loop stamps frames with reference clock PTS,
+	// not the source PTS.
+	s, _ := newSyncTestSwitcher(t)
+	defer s.Close()
+
+	cam1Relay := distribution.NewRelay()
+	s.RegisterSource("cam1", cam1Relay)
+	s.mu.Lock()
+	s.frameSync.AddSource("cam1")
+	s.mu.Unlock()
+	require.NoError(t, s.Cut(context.Background(), "cam1"))
+
+	// Build a capturing pipeline to see what PTS reaches the pipeline.
+	var capturedPTS atomic.Int64
+	captureNode := &capturePTSNode{capturedPTS: &capturedPTS}
+	p := &Pipeline{}
+	require.NoError(t, p.Build(PipelineFormat{
+		Name: "test", Width: 320, Height: 240, FPSNum: 30, FPSDen: 1,
+	}, s.framePool, []PipelineNode{captureNode}))
+	s.pipeline.Store(p)
+
+	// Feed a frame with a known source PTS that differs from the tick PTS.
+	pool := s.framePool
+	yuvSize := 320 * 240 * 3 / 2
+	buf := pool.Acquire()[:yuvSize]
+	pf := &ProcessingFrame{
+		YUV:   buf,
+		Width: 320, Height: 240,
+		PTS: 99999, // source PTS — should be overwritten
+		pool: pool,
+	}
+	pf.SetRefs(1)
+	s.frameSync.IngestRawVideo("cam1", pf)
+
+	// Process a tick with a specific PTS.
+	tick := clock.Tick{
+		Number:        0,
+		VideoPTS:      12345, // reference clock PTS
+		AudioSamples:  1600,
+		FrameDuration: 33333 * time.Microsecond,
+	}
+	s.processVideoTick(tick)
+
+	// The pipeline should have seen the ref clock PTS, not the source PTS.
+	require.Equal(t, int64(12345), capturedPTS.Load(),
+		"pipeline should receive reference clock PTS, not source PTS")
+}
+
+// capturePTSNode captures the PTS of the frame passing through the pipeline.
+type capturePTSNode struct {
+	capturedPTS *atomic.Int64
+}
+
+func (n *capturePTSNode) Name() string                          { return "capture-pts" }
+func (n *capturePTSNode) Configure(format PipelineFormat) error { return nil }
+func (n *capturePTSNode) Active() bool                          { return true }
+func (n *capturePTSNode) Err() error                            { return nil }
+func (n *capturePTSNode) Latency() time.Duration                { return 0 }
+func (n *capturePTSNode) Close() error                          { return nil }
+func (n *capturePTSNode) Process(dst, src *ProcessingFrame) *ProcessingFrame {
+	n.capturedPTS.Store(src.PTS)
+	return src
+}
