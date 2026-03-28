@@ -259,6 +259,169 @@ func TestSourceManager_P210Pool_IngestYUV_10bitInput_DifferentResolution(t *test
 	t.Logf("10-bit scaled input: Y[0]=%d (want ~600)", y0)
 }
 
+func TestSourceManager_P210Pool_IngestYUV_8bit_DistinctYUV(t *testing.T) {
+	// Tests that 8-bit YUV420P with distinct Y, Cb, Cr values produces a correct
+	// P210 frame at the same resolution as the pool.
+	// On Metal: uses UploadYUV420PToP210 directly (unified memory).
+	// On CUDA: uses uploadNV12ThenConvertP210 fallback (NV12 temp + convert kernel).
+	ctx := testContext(t)
+
+	pool, err := NewP210FramePool(ctx, 8, 8, 4)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	mgr := NewGPUSourceManager(ctx, pool, nil)
+	defer mgr.Close()
+
+	w, h := 8, 8
+	ySize := w * h
+	cbSize := (w / 2) * (h / 2)
+	crSize := cbSize
+	yuv := make([]byte, ySize+cbSize+crSize)
+
+	// Distinct values: Y=200, Cb=100, Cr=180
+	for i := 0; i < ySize; i++ {
+		yuv[i] = 200
+	}
+	for i := 0; i < cbSize; i++ {
+		yuv[ySize+i] = 100
+	}
+	for i := 0; i < crSize; i++ {
+		yuv[ySize+cbSize+i] = 180
+	}
+
+	mgr.IngestYUV("test-8bit-distinct", yuv, w, h, 12345)
+
+	frame := mgr.GetFrame("test-8bit-distinct")
+	require.NotNil(t, frame, "expected non-nil frame after IngestYUV")
+	defer frame.Release()
+
+	assert.Equal(t, GPUFormatP210, frame.Format, "expected P210 format")
+
+	// Download and verify Y values are 200<<2 = 800.
+	buf := make([]byte, p210DownloadSize(w, h))
+	require.NoError(t, Download10(ctx, frame, buf, w, h))
+
+	y0 := readP210YSample(buf, 0)
+	assert.InDelta(t, 800, int(y0), 10, "Y[0] should be ~200<<2 = 800, got %d", y0)
+
+	// Verify Cb and Cr values. The 8-bit→10-bit conversion should produce
+	// Cb ≈ 100<<2 = 400 and Cr ≈ 180<<2 = 720.
+	// Note: YUV420→YUV422 chroma upsampling may introduce slight interpolation
+	// artifacts, but for a uniform field the values should be close.
+	cb0 := readP210CbSample(buf, w, h, 0)
+	cr0 := readP210CrSample(buf, w, h, 0)
+	assert.InDelta(t, 400, int(cb0), 20, "Cb[0] should be ~100<<2 = 400, got %d", cb0)
+	assert.InDelta(t, 720, int(cr0), 20, "Cr[0] should be ~180<<2 = 720, got %d", cr0)
+
+	t.Logf("8-bit distinct YUV: Y[0]=%d (want ~800), Cb[0]=%d (want ~400), Cr[0]=%d (want ~720)", y0, cb0, cr0)
+}
+
+func TestSourceManager_P210Pool_IngestYUV_8bit_DifferentResolution_ValueCheck(t *testing.T) {
+	// Tests that 8-bit YUV420P at a different resolution than the pool produces
+	// a correct P210 frame after GPU scaling. Verifies actual pixel values.
+	// On Metal: UploadYUV420PToP210 to P210 temp + ScaleBilinearP210.
+	// On CUDA: uploadNV12ScaleThenConvertP210 fallback (NV12 temp + ScaleNV12ToP210).
+	ctx := testContext(t)
+
+	// Pool at 16x16, source at 8x8.
+	pool, err := NewP210FramePool(ctx, 16, 16, 4)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	mgr := NewGPUSourceManager(ctx, pool, nil)
+	defer mgr.Close()
+
+	w, h := 8, 8
+	ySize := w * h
+	cbSize := (w / 2) * (h / 2)
+	crSize := cbSize
+	yuv := make([]byte, ySize+cbSize+crSize)
+
+	// Uniform Y=160, Cb=90, Cr=200
+	for i := 0; i < ySize; i++ {
+		yuv[i] = 160
+	}
+	for i := 0; i < cbSize; i++ {
+		yuv[ySize+i] = 90
+	}
+	for i := 0; i < crSize; i++ {
+		yuv[ySize+cbSize+i] = 200
+	}
+
+	mgr.IngestYUV("test-8bit-diff-res", yuv, w, h, 99999)
+
+	frame := mgr.GetFrame("test-8bit-diff-res")
+	require.NotNil(t, frame, "expected non-nil frame")
+	defer frame.Release()
+
+	assert.Equal(t, GPUFormatP210, frame.Format)
+	assert.Equal(t, 16, frame.Width, "expected pool width after scaling")
+	assert.Equal(t, 16, frame.Height, "expected pool height after scaling")
+
+	// Download at pool dimensions and verify values.
+	// Bilinear scaling of a uniform field should preserve values.
+	buf := make([]byte, p210DownloadSize(16, 16))
+	require.NoError(t, Download10(ctx, frame, buf, 16, 16))
+
+	// Y should be ~160<<2 = 640 after 8-bit→10-bit promotion.
+	y0 := readP210YSample(buf, 0)
+	assert.InDelta(t, 640, int(y0), 30, "scaled Y[0] should be ~160<<2 = 640, got %d", y0)
+
+	// Cb should be ~90<<2 = 360, Cr should be ~200<<2 = 800.
+	cb0 := readP210CbSample(buf, 16, 16, 0)
+	cr0 := readP210CrSample(buf, 16, 16, 0)
+	assert.InDelta(t, 360, int(cb0), 40, "scaled Cb[0] should be ~90<<2 = 360, got %d", cb0)
+	assert.InDelta(t, 800, int(cr0), 40, "scaled Cr[0] should be ~200<<2 = 800, got %d", cr0)
+
+	t.Logf("8-bit diff-res: Y[0]=%d (want ~640), Cb[0]=%d (want ~360), Cr[0]=%d (want ~800)", y0, cb0, cr0)
+}
+
+func TestSourceManager_P210Pool_NV12TmpPoolReuse(t *testing.T) {
+	// Tests that the NV12 temp pool (used for CUDA 8-bit→P210 fallback) is
+	// correctly reused across multiple ingests. On Metal, the NV12 temp pool
+	// is never created (UploadYUV420PToP210 succeeds directly), so this test
+	// verifies that repeated ingests at the same resolution don't leak resources.
+	ctx := testContext(t)
+
+	pool, err := NewP210FramePool(ctx, 8, 8, 4)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	mgr := NewGPUSourceManager(ctx, pool, nil)
+	defer mgr.Close()
+
+	w, h := 8, 8
+	ySize := w * h
+	cbSize := (w / 2) * (h / 2)
+	crSize := cbSize
+
+	// Ingest 10 frames with different Y values to verify no resource leaks.
+	for i := 0; i < 10; i++ {
+		yuv := make([]byte, ySize+cbSize+crSize)
+		yVal := byte(50 + i*20)
+		for j := 0; j < ySize; j++ {
+			yuv[j] = yVal
+		}
+		for j := ySize; j < len(yuv); j++ {
+			yuv[j] = 128
+		}
+		mgr.IngestYUV("test-reuse", yuv, w, h, int64(i*3000))
+	}
+
+	// Final frame should have Y = 50+9*20 = 230, → P210 Y = 230<<2 = 920.
+	frame := mgr.GetFrame("test-reuse")
+	require.NotNil(t, frame)
+	defer frame.Release()
+
+	assert.Equal(t, GPUFormatP210, frame.Format)
+
+	buf := make([]byte, p210DownloadSize(w, h))
+	require.NoError(t, Download10(ctx, frame, buf, w, h))
+	y0 := readP210YSample(buf, 0)
+	assert.InDelta(t, 920, int(y0), 10, "Y[0] should be ~230<<2 = 920 after 10 ingests, got %d", y0)
+}
+
 func TestSourceManager_P210Pool_CPUScaleFallback(t *testing.T) {
 	ctx := testContext(t)
 

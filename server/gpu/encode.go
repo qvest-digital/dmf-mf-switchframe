@@ -230,6 +230,10 @@ func (e *GPUEncoder) IsHWFrames() bool {
 
 // Close releases encoder resources.
 func (e *GPUEncoder) Close() {
+	if e.p010Tmp != nil {
+		e.p010Tmp.Release()
+		e.p010Tmp = nil
+	}
 	if e.hwEnc != nil {
 		e.hwEnc.Close()
 		e.hwEnc = nil
