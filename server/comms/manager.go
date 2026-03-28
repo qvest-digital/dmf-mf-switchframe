@@ -51,7 +51,8 @@ func (m *Manager) Join(operatorID, name string) error {
 	m.mu.Lock()
 
 	// Idempotent re-join.
-	if _, ok := m.participants[operatorID]; ok {
+	if existing, ok := m.participants[operatorID]; ok {
+		existing.name = name // Update name on re-join
 		m.mu.Unlock()
 		return nil
 	}
