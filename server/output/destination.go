@@ -47,14 +47,15 @@ type DestinationStatus struct {
 
 // Destination represents a single configured output destination.
 type Destination struct {
-	mu        sync.Mutex
-	id        string
-	config    DestinationConfig
-	adapter   Adapter
-	async     *AsyncAdapter
-	active    bool
-	createdAt time.Time
-	startedAt *time.Time
+	mu           sync.Mutex
+	id           string
+	config       DestinationConfig
+	adapter      Adapter      // TS-based adapters (SRT)
+	frameAdapter FrameAdapter // Frame-based adapters (RTMP direct)
+	async        *AsyncAdapter
+	active       bool
+	createdAt    time.Time
+	startedAt    *time.Time
 }
 
 // generateDestinationID creates a random 8-character hex ID.
@@ -84,6 +85,13 @@ func (d *Destination) status() DestinationStatus {
 		st.Error = adapterStatus.Error
 	}
 
+	if d.frameAdapter != nil {
+		faStatus := d.frameAdapter.Status()
+		st.State = string(faStatus.State)
+		st.BytesWritten = faStatus.BytesWritten
+		st.Error = faStatus.Error
+	}
+
 	if d.async != nil {
 		st.DroppedPackets = d.async.Dropped()
 	}
@@ -95,9 +103,6 @@ func (d *Destination) status() DestinationStatus {
 			st.OverflowCount = a.overflowCount.Load()
 		case *SRTListener:
 			st.Connections = a.ConnectionCount()
-		case *RTMPCaller:
-			// No RTMP-specific fields beyond what AdapterStatus provides.
-			_ = a
 		}
 	}
 

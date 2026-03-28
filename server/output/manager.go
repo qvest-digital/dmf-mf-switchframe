@@ -43,8 +43,9 @@ type Manager struct {
 
 	recorder     *FileRecorder
 	srtOutput    Adapter // SRTCaller or SRTListener (legacy single output)
-	destinations map[string]*Destination
-	adapters     atomic.Pointer[[]Adapter]
+	destinations  map[string]*Destination
+	adapters      atomic.Pointer[[]Adapter]
+	frameAdapters atomic.Pointer[[]FrameAdapter] // RTMP direct (raw frames, bypass TSMuxer)
 
 	// asyncWrappers tracks AsyncAdapter wrappers by inner adapter ID,
 	// so they can be stopped when adapters are removed.
@@ -105,6 +106,8 @@ func NewManager() *Manager {
 	empty := make([]Adapter, 0)
 	m.adapters.Store(&empty)
 	m.directAdapters.Store(&empty)
+	emptyFrameAdapters := make([]FrameAdapter, 0)
+	m.frameAdapters.Store(&emptyFrameAdapters)
 	return m
 }
 
@@ -437,11 +440,14 @@ func (m *Manager) RemoveDestination(id string) error {
 	// If active, stop it. Must hold dest.mu to read dest.active consistently
 	// with StartDestination/StopDestination which modify it under dest.mu.
 	var adapterToClose Adapter
+	var frameAdapterToClose FrameAdapter
 	var stale []*AsyncAdapter
 	dest.mu.Lock()
 	if dest.active {
 		adapterToClose = dest.adapter
+		frameAdapterToClose = dest.frameAdapter
 		dest.adapter = nil
+		dest.frameAdapter = nil
 		dest.async = nil
 		dest.active = false
 	}
@@ -451,7 +457,7 @@ func (m *Manager) RemoveDestination(id string) error {
 	// iterate over the stale destination entry.
 	delete(m.destinations, id)
 
-	if adapterToClose != nil {
+	if adapterToClose != nil || frameAdapterToClose != nil {
 		stale = m.rebuildAdaptersLocked()
 		m.stopMuxerIfNoAdaptersLocked()
 	}
@@ -463,10 +469,15 @@ func (m *Manager) RemoveDestination(id string) error {
 		w.Stop()
 	}
 
-	// Close adapter outside lock.
+	// Close adapters outside lock.
 	if adapterToClose != nil {
 		if err := adapterToClose.Close(); err != nil {
 			m.log.Error("error closing destination adapter on remove", "id", id, "err", err)
+		}
+	}
+	if frameAdapterToClose != nil {
+		if err := frameAdapterToClose.Close(); err != nil {
+			m.log.Error("error closing frame adapter on remove", "id", id, "err", err)
 		}
 	}
 
@@ -570,7 +581,7 @@ func (m *Manager) StartDestination(id string) error {
 		adapter = listener
 
 	case "rtmp":
-		rtmpCaller, err := NewRTMPCaller(RTMPCallerConfig{
+		rtmpDirect, err := NewRTMPDirect(RTMPCallerConfig{
 			URL: dest.config.URL,
 		})
 		if err != nil {
@@ -578,7 +589,7 @@ func (m *Manager) StartDestination(id string) error {
 			m.mu.Unlock()
 			return fmt.Errorf("create RTMP adapter: %w", err)
 		}
-		rtmpCaller.onReconnect = func() {
+		rtmpDirect.onReconnect = func() {
 			m.mu.Lock()
 			fn := m.onState
 			m.mu.Unlock()
@@ -586,7 +597,27 @@ func (m *Manager) StartDestination(id string) error {
 				fn()
 			}
 		}
-		adapter = rtmpCaller
+		if err := rtmpDirect.Start(m.ctx); err != nil {
+			dest.mu.Unlock()
+			m.mu.Unlock()
+			return fmt.Errorf("start RTMP: %w", err)
+		}
+
+		now := time.Now()
+		dest.frameAdapter = rtmpDirect
+		dest.active = true
+		dest.startedAt = &now
+		dest.mu.Unlock()
+
+		_ = m.rebuildAdaptersLocked()
+		fn := m.onState
+		m.mu.Unlock()
+
+		if fn != nil {
+			fn()
+		}
+		m.log.Info("destination started", "id", id, "type", dest.config.Type)
+		return nil
 	}
 
 	if err := adapter.Start(m.ctx); err != nil {
@@ -644,7 +675,9 @@ func (m *Manager) StopDestination(id string) error {
 	}
 
 	adapter := dest.adapter
+	frameAdapter := dest.frameAdapter
 	dest.adapter = nil
+	dest.frameAdapter = nil
 	dest.async = nil
 	dest.active = false
 	dest.mu.Unlock()
@@ -659,10 +692,15 @@ func (m *Manager) StopDestination(id string) error {
 		w.Stop()
 	}
 
-	// Close adapter outside the lock.
+	// Close adapters outside the lock.
 	if adapter != nil {
 		if err := adapter.Close(); err != nil {
 			m.log.Error("error closing destination adapter on stop", "id", id, "err", err)
+		}
+	}
+	if frameAdapter != nil {
+		if err := frameAdapter.Close(); err != nil {
+			m.log.Error("error closing frame adapter on stop", "id", id, "err", err)
 		}
 	}
 
@@ -772,14 +810,23 @@ func (m *Manager) Close() error {
 	empty := make([]Adapter, 0)
 	m.adapters.Store(&empty)
 	m.directAdapters.Store(&empty)
+	emptyFA := make([]FrameAdapter, 0)
+	m.frameAdapters.Store(&emptyFA)
 
 	// Snapshot active destinations and clear them.
 	var destAdapters []Adapter
+	var destFrameAdapters []FrameAdapter
 	for _, dest := range m.destinations {
 		dest.mu.Lock()
-		if dest.active && dest.adapter != nil {
-			destAdapters = append(destAdapters, dest.adapter)
-			dest.adapter = nil
+		if dest.active {
+			if dest.adapter != nil {
+				destAdapters = append(destAdapters, dest.adapter)
+				dest.adapter = nil
+			}
+			if dest.frameAdapter != nil {
+				destFrameAdapters = append(destFrameAdapters, dest.frameAdapter)
+				dest.frameAdapter = nil
+			}
 			dest.async = nil
 			dest.active = false
 		}
@@ -819,6 +866,11 @@ func (m *Manager) Close() error {
 	for _, a := range destAdapters {
 		if err := a.Close(); err != nil {
 			m.log.Error("error closing destination on shutdown", "err", err)
+		}
+	}
+	for _, fa := range destFrameAdapters {
+		if err := fa.Close(); err != nil {
+			m.log.Error("error closing frame adapter on shutdown", "err", err)
 		}
 	}
 
@@ -923,6 +975,17 @@ func (m *Manager) rebuildAdaptersLocked() []*AsyncAdapter {
 	allAdapters = append(allAdapters, directAdapters...)
 	allAdapters = append(allAdapters, pacedAdapters...)
 	m.adapters.Store(&allAdapters)
+
+	// Build frame adapter list (RTMP direct).
+	var frameAdapters []FrameAdapter
+	for _, dest := range m.destinations {
+		dest.mu.Lock()
+		if dest.active && dest.frameAdapter != nil {
+			frameAdapters = append(frameAdapters, dest.frameAdapter)
+		}
+		dest.mu.Unlock()
+	}
+	m.frameAdapters.Store(&frameAdapters)
 
 	return stale
 }
@@ -1173,27 +1236,33 @@ type CBRPacerStatus struct {
 	BurstTicksTotal  int64 `json:"burstTicksTotal"`
 }
 
-// DirectWriteVideo writes a video frame directly to the MPEG-TS muxer,
-// bypassing the relay → viewer → channel path. Called synchronously from
-// the switcher's encode goroutine — no channels, no goroutine hops.
-// No-op when no outputs are active (muxer is nil).
+// DirectWriteVideo writes a video frame directly to the MPEG-TS muxer
+// and any frame adapters (RTMP direct FLV), bypassing the relay →
+// viewer → channel path. Called synchronously from the switcher's encode
+// goroutine — no channels, no goroutine hops.
 func (m *Manager) DirectWriteVideo(frame *media.VideoFrame) {
-	muxer := m.directMuxer.Load()
-	if muxer == nil {
-		return
-	}
-	// Update muxer lip-sync offset (SRT/recording path only).
-	if m.lipSyncSource != nil {
-		raw := m.lipSyncSource()
-		if m.smoothedLipSync == 0 {
-			m.smoothedLipSync = raw
-		} else {
-			m.smoothedLipSync = (m.smoothedLipSync*15 + raw) / 16
+	// TS-based outputs (SRT, recording).
+	if muxer := m.directMuxer.Load(); muxer != nil {
+		if m.lipSyncSource != nil {
+			raw := m.lipSyncSource()
+			if m.smoothedLipSync == 0 {
+				m.smoothedLipSync = raw
+			} else {
+				m.smoothedLipSync = (m.smoothedLipSync*15 + raw) / 16
+			}
+			muxer.SetLipSyncOffset90k(m.smoothedLipSync)
 		}
-		muxer.SetLipSyncOffset90k(m.smoothedLipSync)
+		if err := muxer.WriteVideo(frame); err != nil {
+			m.log.Error("direct video write error", "err", err)
+		}
 	}
-	if err := muxer.WriteVideo(frame); err != nil {
-		m.log.Error("direct video write error", "err", err)
+	// Frame adapters (RTMP direct FLV).
+	if fas := m.frameAdapters.Load(); fas != nil {
+		for _, fa := range *fas {
+			if err := fa.WriteVideo(frame); err != nil {
+				m.log.Error("frame adapter video write error", "adapter", fa.ID(), "err", err)
+			}
+		}
 	}
 	// Feed the confidence monitor (1fps JPEG thumbnail).
 	if cm := m.confidence.Load(); cm != nil {
@@ -1201,23 +1270,34 @@ func (m *Manager) DirectWriteVideo(frame *media.VideoFrame) {
 	}
 }
 
-// DirectWriteAudio writes an audio frame directly to the MPEG-TS muxer,
-// bypassing the relay → viewer → channel path. Called synchronously from
-// the mixer's output ticker goroutine.
-// No-op when no outputs are active (muxer is nil).
+// DirectWriteAudio writes an audio frame directly to the MPEG-TS muxer
+// and any frame adapters (RTMP direct FLV), bypassing the relay →
+// viewer → channel path. Called synchronously from the mixer's output
+// ticker goroutine.
 func (m *Manager) DirectWriteAudio(frame *media.AudioFrame) {
-	muxer := m.directMuxer.Load()
-	if muxer == nil {
-		return
+	if muxer := m.directMuxer.Load(); muxer != nil {
+		if err := muxer.WriteAudio(frame); err != nil {
+			m.log.Error("direct audio write error", "err", err)
+		}
 	}
-	if err := muxer.WriteAudio(frame); err != nil {
-		m.log.Error("direct audio write error", "err", err)
+	if fas := m.frameAdapters.Load(); fas != nil {
+		for _, fa := range *fas {
+			if err := fa.WriteAudio(frame); err != nil {
+				m.log.Error("frame adapter audio write error", "adapter", fa.ID(), "err", err)
+			}
+		}
 	}
 }
 
 // HasActiveOutputs returns true if at least one output is active.
 func (m *Manager) HasActiveOutputs() bool {
-	return len(*m.adapters.Load()) > 0
+	if len(*m.adapters.Load()) > 0 {
+		return true
+	}
+	if fas := m.frameAdapters.Load(); fas != nil && len(*fas) > 0 {
+		return true
+	}
+	return false
 }
 
 // StartedAt returns when recording started (zero value if not recording).
