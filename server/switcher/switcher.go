@@ -465,6 +465,7 @@ type Switcher struct {
 	// both videoProcessingLoop and the mixer's outputTicker, driving
 	// A/V from a single clock source.
 	refClock         *clock.ReferenceClock
+	clockRecovery    *clock.ClockRecovery
 	aacBuffer        *clock.AACFrameBuffer
 	syncMixer        syncMixerInterface
 	syncLoopWg       sync.WaitGroup
@@ -473,6 +474,8 @@ type Switcher struct {
 	overloadDrops    atomic.Int64
 	syncLoopRepeats  atomic.Int64
 	lastEncodedFrame atomic.Pointer[ProcessingFrame]
+	lastOverloadLog  time.Time // rate-limit overload logging to 1/sec
+	sourceLostAt     time.Time // when program source stopped providing frames
 
 	// Sync loop audio output callbacks (used in ref clock mode).
 	// outputAudioCallback delivers AAC frames to the program relay (browser).

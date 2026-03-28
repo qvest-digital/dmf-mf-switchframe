@@ -7,7 +7,12 @@ import (
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/internal/atomicutil"
+	"github.com/zsiec/switchframe/server/transition"
 )
+
+// sourceLossTimeout is the duration after which a lost source transitions
+// from freeze (last frame) to broadcast black.
+const sourceLossTimeout = 5 * time.Second
 
 // synchronousProcessingLoop drives both video and audio from the reference clock.
 // Each tick produces exactly one video frame and a precise number of audio samples,
@@ -41,6 +46,7 @@ func (s *Switcher) processTick(tick clock.Tick) {
 	if s.ticksBehind > 0 {
 		s.ticksBehind--
 		s.overloadDrops.Add(1)
+		s.logOverload()
 		s.repeatLastVideoFrame(tick.VideoPTS)
 		return
 	}
@@ -113,11 +119,22 @@ func (s *Switcher) processVideoTick(tick clock.Tick) {
 	s.mu.RLock()
 	fs := s.frameSync
 	programSource := s.programSource
+	previewSource := s.previewSource
+	engine := s.transEngine
+	inTrans := s.state.isInTransition()
 	s.mu.RUnlock()
 
 	if fs == nil || programSource == "" {
 		return
 	}
+
+	// === TRANSITION PATH ===
+	if inTrans && engine != nil {
+		s.processTransitionTick(tick, fs, programSource, previewSource, engine)
+		return
+	}
+
+	// === NORMAL (non-transition) PATH ===
 
 	// Pop the most recent raw video frame from the program source's ring buffer.
 	pf := s.popProgramFrame(fs, programSource, tick.VideoPTS)
@@ -131,10 +148,97 @@ func (s *Switcher) processVideoTick(tick clock.Tick) {
 	pf.PTS = tick.VideoPTS
 	pf.DTS = tick.VideoPTS
 
-	start := time.Now()
+	// Record arrival for clock recovery (program source only).
+	if cr := s.clockRecovery; cr != nil {
+		changed := cr.RecordArrival(time.Now())
+		if changed {
+			newNum, newDen := cr.Rate()
+			s.log.Info("clock recovery: rate changed",
+				"fpsNum", newNum, "fpsDen", newDen,
+				"measuredFPS", cr.MeasuredFPS())
+			if s.refClock != nil {
+				s.refClock.SetRate(newNum, newDen)
+			}
+		}
+	}
 
-	// Normalize to pipeline format resolution.
-	pf = s.normalizeResolution(pf)
+	s.runPipelineAndBroadcast(pf, tick)
+}
+
+// processTransitionTick handles a video tick during an active transition.
+// Pops frames from both program and preview sources, blends them, and
+// broadcasts the result. Auto-advances the transition position.
+func (s *Switcher) processTransitionTick(tick clock.Tick, fs *FrameSynchronizer, programSource, previewSource string, engine *transition.Engine) {
+	// Determine the transition's from/to sources.
+	fromSource := engine.FromSource()
+	toSource := engine.ToSource()
+
+	// Pop frames from both sources.
+	fromFrame := s.popProgramFrame(fs, fromSource, tick.VideoPTS)
+	var toFrame *ProcessingFrame
+	if toSource != "" {
+		toFrame = s.popProgramFrame(fs, toSource, tick.VideoPTS)
+	}
+
+	// Use broadcast black for missing frames.
+	pf := s.pipelineFormat.Load()
+	w, h := 320, 240
+	if pf != nil {
+		w, h = pf.Width, pf.Height
+	}
+
+	if fromFrame == nil {
+		fromFrame = s.makeBroadcastBlack(w, h, tick.VideoPTS)
+	}
+	if toFrame == nil && toSource != "" {
+		toFrame = s.makeBroadcastBlack(w, h, tick.VideoPTS)
+	}
+
+	// Normalize resolutions to pipeline format.
+	fromFrame = s.normalizeResolution(fromFrame)
+	if toFrame != nil {
+		toFrame = s.normalizeResolution(toFrame)
+	}
+
+	// Auto-advance the transition position.
+	frameDurationMs := float64(tick.FrameDuration) / float64(time.Millisecond)
+	pos, complete := engine.AutoAdvancePosition(frameDurationMs)
+
+	// Blend frames.
+	var fromYUV, toYUV []byte
+	var fromW, fromH, toW, toH int
+	fromYUV = fromFrame.YUV
+	fromW, fromH = fromFrame.Width, fromFrame.Height
+	if toFrame != nil {
+		toYUV = toFrame.YUV
+		toW, toH = toFrame.Width, toFrame.Height
+	}
+
+	blended, outW, outH := engine.BlendRaw(fromYUV, fromW, fromH, toYUV, toW, toH, pos)
+	if blended != nil {
+		// Build a ProcessingFrame from the blended result.
+		blendCopy := make([]byte, len(blended))
+		copy(blendCopy, blended)
+		result := &ProcessingFrame{
+			YUV:    blendCopy,
+			Width:  outW,
+			Height: outH,
+			PTS:    tick.VideoPTS,
+			DTS:    tick.VideoPTS,
+		}
+		s.runPipelineAndBroadcast(result, tick)
+	}
+
+	// Handle transition completion.
+	if complete {
+		s.handleTransitionComplete(false)
+	}
+}
+
+// runPipelineAndBroadcast runs the processing pipeline on a frame and broadcasts
+// the result. Shared between normal and transition tick paths.
+func (s *Switcher) runPipelineAndBroadcast(pf *ProcessingFrame, tick clock.Tick) {
+	start := time.Now()
 
 	// Run the CPU pipeline (key → layout → compositor → encode).
 	// When the pipeline includes an encode node, it handles broadcasting
@@ -173,21 +277,22 @@ func (s *Switcher) processVideoTick(tick clock.Tick) {
 
 	// Store for freeze-repeat.
 	s.lastEncodedFrame.Store(pf)
-
-	// NOTE: We do NOT call pf.ReleaseYUV() here. The frame from popProgramFrame
-	// is a value copy sharing YUV data with ss.lastRawVideo in the frame sync.
-	// The frame sync owns that buffer's lifecycle. If normalizeResolution
-	// created a scaled copy, it already released the source via pf.ReleaseYUV()
-	// and the new frame is unmanaged (allocated inline, not from pool).
 }
 
-// popProgramFrame extracts the newest raw video frame from the program
+// popProgramFrame extracts the newest raw video frame from the given
 // source's frame sync buffer. Returns a value copy safe for processing.
-// The returned frame's YUV data is valid until the next popProgramFrame call.
-// Returns nil if no frame is available (no fresh frame and no last frame).
-func (s *Switcher) popProgramFrame(fs *FrameSynchronizer, programSource string, videoPTS int64) *ProcessingFrame {
+// The returned frame's YUV data is valid until the next popProgramFrame call
+// for the same source.
+//
+// Source loss behavior (Task 14):
+//   - Fresh frame available: clear sourceLostAt, return frame.
+//   - No fresh frame, lastRawVideo exists: freeze (return copy of last frame).
+//     If sourceLostAt is zero, set it to now.
+//     If more than sourceLossTimeout has elapsed, return broadcast black.
+//   - No fresh frame, no lastRawVideo: return broadcast black.
+func (s *Switcher) popProgramFrame(fs *FrameSynchronizer, sourceKey string, videoPTS int64) *ProcessingFrame {
 	fs.mu.Lock()
-	ss, ok := fs.sources[programSource]
+	ss, ok := fs.sources[sourceKey]
 	fs.mu.Unlock()
 	if !ok {
 		return nil
@@ -203,33 +308,135 @@ func (s *Switcher) popProgramFrame(fs *FrameSynchronizer, programSource string, 
 			ss.lastRawVideo.ReleaseYUV()
 		}
 		ss.lastRawVideo = newest
+
+		// Clear source loss tracking — fresh frame recovered.
+		if !s.sourceLostAt.IsZero() && sourceKey == s.programSourceAtomic() {
+			s.log.Info("source recovered", "source", sourceKey)
+			s.sourceLostAt = time.Time{}
+		}
+
 		// Return a value copy. The underlying YUV buffer is held alive by
 		// ss.lastRawVideo's ref until the next fresh frame replaces it.
 		cp := *newest
 		return &cp
 	}
 
-	// Freeze-repeat: use last delivered frame.
+	// No fresh frame — source loss path.
 	if ss.lastRawVideo != nil {
+		// Track when source loss began (only for program source).
+		if s.sourceLostAt.IsZero() && sourceKey == s.programSourceAtomic() {
+			s.sourceLostAt = time.Now()
+			s.log.Warn("source lost — freezing", "source", sourceKey)
+		}
+
+		// After timeout, transition from freeze to black.
+		if !s.sourceLostAt.IsZero() && time.Since(s.sourceLostAt) > sourceLossTimeout {
+			pf := s.pipelineFormat.Load()
+			w, h := 320, 240
+			if pf != nil {
+				w, h = pf.Width, pf.Height
+			}
+			return s.makeBroadcastBlack(w, h, videoPTS)
+		}
+
+		// Freeze-repeat: use last delivered frame.
 		cp := *ss.lastRawVideo
 		return &cp
 	}
 
-	return nil
+	// No last frame at all — return broadcast black.
+	pf := s.pipelineFormat.Load()
+	w, h := 320, 240
+	if pf != nil {
+		w, h = pf.Width, pf.Height
+	}
+	return s.makeBroadcastBlack(w, h, videoPTS)
+}
+
+// programSourceAtomic reads the program source under RLock.
+func (s *Switcher) programSourceAtomic() string {
+	s.mu.RLock()
+	ps := s.programSource
+	s.mu.RUnlock()
+	return ps
+}
+
+// makeBroadcastBlack generates a broadcast-standard black frame (BT.709
+// limited-range: Y=16, Cb=128, Cr=128) at the given resolution and PTS.
+func (s *Switcher) makeBroadcastBlack(width, height int, pts int64) *ProcessingFrame {
+	ySize := width * height
+	uvSize := (width / 2) * (height / 2)
+	buf := make([]byte, ySize+2*uvSize)
+	// Y plane: BT.709 limited-range black = 16
+	for i := 0; i < ySize; i++ {
+		buf[i] = 16
+	}
+	// Cb and Cr planes: neutral chroma = 128
+	for i := ySize; i < ySize+2*uvSize; i++ {
+		buf[i] = 128
+	}
+	return &ProcessingFrame{
+		YUV:    buf,
+		Width:  width,
+		Height: height,
+		PTS:    pts,
+		DTS:    pts,
+	}
 }
 
 // repeatLastVideoFrame rebroadcasts the most recently encoded frame with
 // an updated PTS. This keeps downstream decoders fed during overload.
+// If no last frame exists (startup), generates broadcast black.
 func (s *Switcher) repeatLastVideoFrame(pts int64) {
 	last := s.lastEncodedFrame.Load()
-	if last == nil {
+	if last != nil && len(last.YUV) > 0 {
+		// Deep-copy the last encoded frame and update PTS.
+		cp := last.DeepCopy()
+		cp.PTS = pts
+		cp.DTS = pts
+
+		// Broadcast through program relay.
+		yuvCopy := make([]byte, len(cp.YUV))
+		copy(yuvCopy, cp.YUV)
+		frame := &media.VideoFrame{
+			PTS:        pts,
+			DTS:        pts,
+			WireData:   yuvCopy,
+			IsKeyframe: true,
+		}
+		s.broadcastToProgram(frame)
+		s.syncLoopRepeats.Add(1)
 		return
 	}
-	// Create a shallow copy with updated PTS for the program relay.
-	// The underlying YUV data is not needed — the encode node already
-	// produced the H.264 output. We just need to signal that a frame
-	// was produced at this PTS for downstream timing.
+
+	// No last frame (startup) — generate broadcast black.
+	pf := s.pipelineFormat.Load()
+	w, h := 320, 240
+	if pf != nil {
+		w, h = pf.Width, pf.Height
+	}
+	black := s.makeBroadcastBlack(w, h, pts)
+	yuvCopy := make([]byte, len(black.YUV))
+	copy(yuvCopy, black.YUV)
+	frame := &media.VideoFrame{
+		PTS:        pts,
+		DTS:        pts,
+		WireData:   yuvCopy,
+		IsKeyframe: true,
+	}
+	s.broadcastToProgram(frame)
 	s.syncLoopRepeats.Add(1)
+}
+
+// logOverload logs overload drops at most once per second to avoid flooding.
+func (s *Switcher) logOverload() {
+	now := time.Now()
+	if now.Sub(s.lastOverloadLog) >= time.Second {
+		s.lastOverloadLog = now
+		s.log.Warn("sync loop overload — skipping video",
+			"ticksBehind", s.ticksBehind,
+			"totalDrops", s.overloadDrops.Load())
+	}
 }
 
 // SetReferenceClock configures the Switcher to use a reference clock for
@@ -241,6 +448,15 @@ func (s *Switcher) SetReferenceClock(rc *clock.ReferenceClock) {
 	defer s.mu.Unlock()
 	s.refClock = rc
 	s.useRefClock = true
+}
+
+// SetClockRecovery attaches a clock recovery instance to the switcher.
+// When set, program source frame arrivals are tracked and the reference
+// clock rate is adjusted if a rate change is detected.
+func (s *Switcher) SetClockRecovery(cr *clock.ClockRecovery) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.clockRecovery = cr
 }
 
 // SetAACBuffer attaches an AAC frame buffer for the synchronous audio path.
@@ -295,4 +511,3 @@ func (s *Switcher) StartSyncLoop() {
 	s.syncLoopWg.Add(1)
 	go s.synchronousProcessingLoop()
 }
-

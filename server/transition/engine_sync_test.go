@@ -26,7 +26,7 @@ func makeSolidYUV420(w, h int, yVal byte) []byte {
 
 func TestBlendRawMix(t *testing.T) {
 	e := NewEngine(EngineConfig{})
-	e.StartSync(Mix, 1000)
+	e.StartSync("", "", Mix, 1000)
 
 	frameA := makeSolidYUV420(320, 240, 80)
 	frameB := makeSolidYUV420(320, 240, 160)
@@ -60,7 +60,7 @@ func TestBlendRawMix(t *testing.T) {
 
 func TestBlendRawDip(t *testing.T) {
 	e := NewEngine(EngineConfig{})
-	e.StartSync(Dip, 1000)
+	e.StartSync("", "", Dip, 1000)
 
 	frameA := makeSolidYUV420(320, 240, 200)
 	frameB := makeSolidYUV420(320, 240, 200)
@@ -84,7 +84,7 @@ func TestBlendRawDip(t *testing.T) {
 
 func TestBlendRawFTB(t *testing.T) {
 	e := NewEngine(EngineConfig{})
-	e.StartSync(FTB, 1000)
+	e.StartSync("", "", FTB, 1000)
 
 	frameA := makeSolidYUV420(320, 240, 200)
 	w, h := 320, 240
@@ -112,7 +112,7 @@ func TestBlendRawWipe(t *testing.T) {
 	e := NewEngine(EngineConfig{
 		WipeDirection: WipeHLeft,
 	})
-	e.StartSync(Wipe, 1000)
+	e.StartSync("", "", Wipe, 1000)
 
 	frameA := makeSolidYUV420(320, 240, 80)
 	frameB := makeSolidYUV420(320, 240, 200)
@@ -148,7 +148,7 @@ func TestBlendRawWipe(t *testing.T) {
 
 func TestBlendRawResolutionMismatch(t *testing.T) {
 	e := NewEngine(EngineConfig{})
-	e.StartSync(Mix, 1000)
+	e.StartSync("", "", Mix, 1000)
 
 	frameA := makeSolidYUV420(320, 240, 100)
 	frameB := makeSolidYUV420(640, 480, 200)
@@ -168,7 +168,7 @@ func TestBlendRawResolutionMismatch(t *testing.T) {
 
 func TestAutoAdvancePosition(t *testing.T) {
 	e := NewEngine(EngineConfig{})
-	e.StartSync(Mix, 1000) // 1000ms duration
+	e.StartSync("", "", Mix, 1000) // 1000ms duration
 
 	frameDuration := 33.3 // ~30fps
 
@@ -196,7 +196,7 @@ func TestAutoAdvancePosition(t *testing.T) {
 
 func TestAutoAdvancePositionZeroDuration(t *testing.T) {
 	e := NewEngine(EngineConfig{})
-	e.StartSync(Mix, 0)
+	e.StartSync("", "", Mix, 0)
 
 	pos, complete := e.AutoAdvancePosition(33.3)
 	assert.True(t, complete, "zero duration should immediately complete")
@@ -212,7 +212,7 @@ func TestStartSyncDoesNotSpawnGoroutines(t *testing.T) {
 	before := runtime.NumGoroutine()
 
 	e := NewEngine(EngineConfig{})
-	e.StartSync(Mix, 1000)
+	e.StartSync("", "", Mix, 1000)
 
 	// Allow a brief moment for any goroutines to appear
 	time.Sleep(20 * time.Millisecond)
@@ -272,7 +272,7 @@ func TestBlendRawReturnsCopy(t *testing.T) {
 	// Verify that BlendRaw returns a copy, not the blender's internal buffer.
 	// Two successive calls should produce independent slices.
 	e := NewEngine(EngineConfig{})
-	e.StartSync(Mix, 1000)
+	e.StartSync("", "", Mix, 1000)
 
 	frameA := makeSolidYUV420(320, 240, 80)
 	frameB := makeSolidYUV420(320, 240, 200)
@@ -291,7 +291,7 @@ func TestBlendRawReturnsCopy(t *testing.T) {
 func TestBlendRawOddDimensions(t *testing.T) {
 	// Odd dimensions are invalid for YUV420 — BlendRaw should return nil.
 	e := NewEngine(EngineConfig{})
-	e.StartSync(Mix, 1000)
+	e.StartSync("", "", Mix, 1000)
 
 	frameA := make([]byte, 321*241*3/2)
 	frameB := make([]byte, 321*241*3/2)

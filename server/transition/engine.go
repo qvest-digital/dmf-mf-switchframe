@@ -1182,7 +1182,7 @@ func (e *Engine) scaleStingerFrames(sd *StingerData) []StingerFrameData {
 // goroutines — no watchdog, no decoders, no codec pipeline. This is the
 // reference-clock path: the caller drives position via AutoAdvancePosition
 // and performs blends via BlendRaw.
-func (e *Engine) StartSync(ttype Type, durationMs int) {
+func (e *Engine) StartSync(from, to string, ttype Type, durationMs int) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.transitionType = ttype
@@ -1190,6 +1190,8 @@ func (e *Engine) StartSync(ttype Type, durationMs int) {
 	e.position = 0
 	e.state = StateActive
 	e.manualControl = false
+	e.fromSource = from
+	e.toSource = to
 }
 
 // AutoAdvancePosition advances the transition position by one tick based on
