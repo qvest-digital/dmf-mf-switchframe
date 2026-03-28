@@ -55,12 +55,15 @@ func demuxTSFile(path string) ([]BufferedFrame, []BufferedAudioFrame, error) {
 func demuxTS(r io.Reader) ([]BufferedFrame, []BufferedAudioFrame, error) {
 	dmx := astits.NewDemuxer(context.Background(), r)
 
+	const maxDemuxErrors = 100 // give up after this many non-fatal errors
+
 	var (
 		videoFrames []BufferedFrame
 		audioFrames []BufferedAudioFrame
 		lastSPS     []byte
 		lastPPS     []byte
 		packetCount int
+		errCount    int
 	)
 
 	for {
@@ -77,7 +80,14 @@ func demuxTS(r io.Reader) ([]BufferedFrame, []BufferedAudioFrame, error) {
 			if packetCount == 0 {
 				return nil, nil, fmt.Errorf("invalid TS data: %w", err)
 			}
-			return nil, nil, fmt.Errorf("demux: %w", err)
+			// Skip non-fatal errors (CRC mismatches, malformed PSI tables,
+			// corrupted PES headers). These are common in damaged streams
+			// and should not discard all previously parsed frames.
+			errCount++
+			if errCount > maxDemuxErrors {
+				return videoFrames, audioFrames, fmt.Errorf("demux: too many errors (%d): last: %w", errCount, err)
+			}
+			continue
 		}
 		packetCount++
 
