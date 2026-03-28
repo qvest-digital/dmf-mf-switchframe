@@ -319,12 +319,19 @@ func (m *GPUSourceManager) IngestYUV(sourceKey string, yuv []byte, w, h int, pts
 	m.queuePreviewFrame(entry, yuv, w, h, pts)
 }
 
-// applySourceSTMap checks if a per-source ST map is assigned and applies it
-// to the frame in-place using the stmapTmp buffer.
 // uploadAndScale uploads CPU YUV420p to the GPU frame, applying GPU-side
 // bilinear scaling when the source resolution doesn't match the pool format.
-// Falls back to CPU scaling if GPU scaling fails.
+// Dispatches to format-specific paths based on the pool's pixel format.
 func (m *GPUSourceManager) uploadAndScale(entry *gpuSourceEntry, dst *GPUFrame, yuv []byte, sourceKey string, w, h int) error {
+	if m.pool.Format() == GPUFormatP210 {
+		return m.uploadAndScaleP210(entry, dst, yuv, sourceKey, w, h)
+	}
+	return m.uploadAndScaleNV12(entry, dst, yuv, sourceKey, w, h)
+}
+
+// uploadAndScaleNV12 handles the NV12 upload path: direct Upload for matching
+// dimensions, GPU ScaleBilinear for mismatched, CPU fallback if GPU fails.
+func (m *GPUSourceManager) uploadAndScaleNV12(entry *gpuSourceEntry, dst *GPUFrame, yuv []byte, sourceKey string, w, h int) error {
 	if w == dst.Width && h == dst.Height {
 		// Matching dimensions — direct upload, no scaling.
 		return Upload(m.ctx, dst, yuv, w, h)
@@ -366,7 +373,53 @@ func (m *GPUSourceManager) uploadAndScale(entry *gpuSourceEntry, dst *GPUFrame, 
 	return nil
 }
 
+// uploadAndScaleP210 handles the P210 upload path: UploadYUV420PToP210 for
+// matching dimensions, GPU ScaleBilinearP210 for mismatched resolutions.
+// Falls back to CPU scaling if GPU scaling fails.
+func (m *GPUSourceManager) uploadAndScaleP210(entry *gpuSourceEntry, dst *GPUFrame, yuv []byte, sourceKey string, w, h int) error {
+	if w == dst.Width && h == dst.Height {
+		// Same resolution: direct upload to P210 pool frame.
+		return UploadYUV420PToP210(m.ctx, dst, yuv, w, h)
+	}
+
+	// Different resolution: upload to P210 temp, then scale P210→P210.
+	// Lazy-create P210 scale pool at source resolution.
+	if entry.scalePool == nil || entry.scaleW != w || entry.scaleH != h {
+		if entry.scalePool != nil {
+			entry.scalePool.Close()
+		}
+		pool, err := NewP210FramePool(m.ctx, w, h, 2)
+		if err != nil {
+			// Fallback: CPU scale + upload at pool dimensions.
+			return m.uploadCPUScaled(entry, dst, yuv, w, h)
+		}
+		entry.scalePool = pool
+		entry.scaleW = w
+		entry.scaleH = h
+	}
+
+	srcFrame, err := entry.scalePool.Acquire()
+	if err != nil {
+		return m.uploadCPUScaled(entry, dst, yuv, w, h)
+	}
+
+	if err := UploadYUV420PToP210(m.ctx, srcFrame, yuv, w, h); err != nil {
+		srcFrame.Release()
+		return err
+	}
+
+	if err := ScaleBilinearP210(m.ctx, dst, srcFrame); err != nil {
+		srcFrame.Release()
+		slog.Warn("gpu: GPU P210 scale failed, falling back to CPU", "source", sourceKey, "error", err)
+		return m.uploadCPUScaled(entry, dst, yuv, w, h)
+	}
+
+	srcFrame.Release()
+	return nil
+}
+
 // uploadCPUScaled is the fallback when GPU scaling isn't available.
+// Format-aware: uses UploadYUV420PToP210 when the pool is P210.
 func (m *GPUSourceManager) uploadCPUScaled(entry *gpuSourceEntry, dst *GPUFrame, yuv []byte, w, h int) error {
 	targetW, targetH := dst.Width, dst.Height
 	scaledSize := yuvFrameSize(targetW, targetH)
@@ -374,9 +427,15 @@ func (m *GPUSourceManager) uploadCPUScaled(entry *gpuSourceEntry, dst *GPUFrame,
 		entry.scaleBuf = make([]byte, scaledSize)
 	}
 	scaleYUV420pCPU(entry.scaleBuf[:scaledSize], targetW, targetH, yuv, w, h)
+
+	if m.pool.Format() == GPUFormatP210 {
+		return UploadYUV420PToP210(m.ctx, dst, entry.scaleBuf[:scaledSize], targetW, targetH)
+	}
 	return Upload(m.ctx, dst, entry.scaleBuf[:scaledSize], targetW, targetH)
 }
 
+// applySourceSTMap checks if a per-source ST map is assigned and applies it
+// to the frame in-place using the stmapTmp buffer.
 func (m *GPUSourceManager) applySourceSTMap(sourceKey string, entry *gpuSourceEntry, frame *GPUFrame) {
 	name := m.stmaps.SourceMapName(sourceKey)
 	if name == "" {

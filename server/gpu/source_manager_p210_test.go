@@ -1,0 +1,196 @@
+//go:build (cgo && darwin) || (cgo && cuda)
+
+package gpu
+
+import (
+	"encoding/binary"
+	"testing"
+	"unsafe"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestSourceManager_P210Pool_IngestYUV(t *testing.T) {
+	ctx := testContext(t)
+
+	// Create P210 pool at 8x8
+	pool, err := NewP210FramePool(ctx, 8, 8, 4)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	mgr := NewGPUSourceManager(ctx, pool, nil)
+	defer mgr.Close()
+
+	// Ingest a 8x8 YUV420P frame with uniform Y=128
+	w, h := 8, 8
+	ySize := w * h
+	cbSize := (w / 2) * (h / 2)
+	yuv := make([]byte, ySize+cbSize+cbSize)
+	for i := range yuv {
+		yuv[i] = 128
+	}
+
+	mgr.IngestYUV("test-source", yuv, w, h, 12345)
+
+	// GetFrame should return a P210 frame
+	frame := mgr.GetFrame("test-source")
+	if frame == nil {
+		t.Fatal("expected non-nil frame after IngestYUV")
+	}
+	defer frame.Release()
+
+	assert.Equal(t, GPUFormatP210, frame.Format, "expected P210 format")
+
+	// Read back the P210 Y plane and verify values are 128 << 2 = 512.
+	// On Metal unified memory, DevPtr is a direct CPU-accessible pointer.
+	p210Bytes := unsafe.Slice((*byte)(unsafe.Pointer(frame.DevPtr)), frame.FrameSize())
+	yVal := binary.LittleEndian.Uint16(p210Bytes[0:2])
+	assert.Equal(t, uint16(512), yVal, "Y[0] should be 128<<2 = 512 in P210")
+
+	// Check a few more Y samples across the first row.
+	for i := 0; i < w && i*2+2 <= len(p210Bytes); i++ {
+		val := binary.LittleEndian.Uint16(p210Bytes[i*2 : i*2+2])
+		assert.Equal(t, uint16(512), val, "Y[%d] mismatch", i)
+	}
+}
+
+func TestSourceManager_P210Pool_IngestYUV_DifferentResolution(t *testing.T) {
+	ctx := testContext(t)
+
+	// Create P210 pool at 16x16 (pipeline resolution)
+	pool, err := NewP210FramePool(ctx, 16, 16, 4)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	mgr := NewGPUSourceManager(ctx, pool, nil)
+	defer mgr.Close()
+
+	// Ingest a 8x8 YUV420P frame (source is different resolution)
+	w, h := 8, 8
+	ySize := w * h
+	cbSize := (w / 2) * (h / 2)
+	yuv := make([]byte, ySize+cbSize+cbSize)
+	for i := range yuv {
+		yuv[i] = 128
+	}
+
+	mgr.IngestYUV("test-source", yuv, w, h, 12345)
+
+	// GetFrame should return a P210 frame at pool resolution (16x16)
+	frame := mgr.GetFrame("test-source")
+	if frame == nil {
+		t.Fatal("expected non-nil frame after IngestYUV")
+	}
+	defer frame.Release()
+
+	assert.Equal(t, GPUFormatP210, frame.Format, "expected P210 format")
+	assert.Equal(t, 16, frame.Width, "expected pool width")
+	assert.Equal(t, 16, frame.Height, "expected pool height")
+}
+
+func TestSourceManager_P210Pool_MultipleIngests(t *testing.T) {
+	ctx := testContext(t)
+
+	pool, err := NewP210FramePool(ctx, 8, 8, 4)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	mgr := NewGPUSourceManager(ctx, pool, nil)
+	defer mgr.Close()
+
+	w, h := 8, 8
+	ySize := w * h
+	cbSize := (w / 2) * (h / 2)
+
+	// Ingest two frames with different Y values to verify atomic swap works.
+	yuv1 := make([]byte, ySize+cbSize+cbSize)
+	for i := 0; i < ySize; i++ {
+		yuv1[i] = 100
+	}
+	for i := ySize; i < len(yuv1); i++ {
+		yuv1[i] = 128
+	}
+	mgr.IngestYUV("test-source", yuv1, w, h, 1000)
+
+	yuv2 := make([]byte, ySize+cbSize+cbSize)
+	for i := 0; i < ySize; i++ {
+		yuv2[i] = 200
+	}
+	for i := ySize; i < len(yuv2); i++ {
+		yuv2[i] = 128
+	}
+	mgr.IngestYUV("test-source", yuv2, w, h, 2000)
+
+	// Should have the latest frame (Y=200 -> P210 Y=800)
+	frame := mgr.GetFrame("test-source")
+	require.NotNil(t, frame)
+	defer frame.Release()
+
+	assert.Equal(t, GPUFormatP210, frame.Format)
+	p210Bytes := unsafe.Slice((*byte)(unsafe.Pointer(frame.DevPtr)), frame.FrameSize())
+	yVal := binary.LittleEndian.Uint16(p210Bytes[0:2])
+	assert.Equal(t, uint16(800), yVal, "Y[0] should be 200<<2 = 800 in P210")
+}
+
+func TestSourceManager_NV12Pool_IngestYUV_Unchanged(t *testing.T) {
+	ctx := testContext(t)
+
+	// Verify NV12 path is unchanged when using an NV12 pool.
+	pool, err := NewFramePool(ctx, 8, 8, 4)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	mgr := NewGPUSourceManager(ctx, pool, nil)
+	defer mgr.Close()
+
+	w, h := 8, 8
+	ySize := w * h
+	cbSize := (w / 2) * (h / 2)
+	yuv := make([]byte, ySize+cbSize+cbSize)
+	for i := range yuv {
+		yuv[i] = 128
+	}
+
+	mgr.IngestYUV("test-source", yuv, w, h, 12345)
+
+	frame := mgr.GetFrame("test-source")
+	require.NotNil(t, frame)
+	defer frame.Release()
+
+	assert.Equal(t, GPUFormatNV12, frame.Format, "NV12 pool should produce NV12 frames")
+}
+
+func TestSourceManager_P210Pool_CPUScaleFallback(t *testing.T) {
+	ctx := testContext(t)
+
+	// Create P210 pool at 16x16 but test the CPU scale path by using
+	// a source at different resolution. The GPU path should work, but
+	// this validates the uploadCPUScaled format dispatch is correct.
+	pool, err := NewP210FramePool(ctx, 16, 16, 4)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	mgr := NewGPUSourceManager(ctx, pool, nil)
+	defer mgr.Close()
+
+	// Create a test source entry and call uploadCPUScaled directly.
+	entry := &gpuSourceEntry{width: 8, height: 8}
+	dst, err := pool.Acquire()
+	require.NoError(t, err)
+	defer dst.Release()
+
+	w, h := 8, 8
+	ySize := w * h
+	cbSize := (w / 2) * (h / 2)
+	yuv := make([]byte, ySize+cbSize+cbSize)
+	for i := range yuv {
+		yuv[i] = 128
+	}
+
+	err = mgr.uploadCPUScaled(entry, dst, yuv, w, h)
+	require.NoError(t, err)
+
+	// Verify the frame is still P210 format after CPU-scaled upload.
+	assert.Equal(t, GPUFormatP210, dst.Format)
+}
