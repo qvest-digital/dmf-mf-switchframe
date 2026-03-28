@@ -71,6 +71,9 @@ func (m *Manager) Join(operatorID, name string) error {
 	m.mu.Unlock()
 
 	m.log.Info("operator joined comms", "operator", operatorID, "name", name)
+	if m.onBroadcast != nil {
+		m.onBroadcast()
+	}
 	return nil
 }
 
