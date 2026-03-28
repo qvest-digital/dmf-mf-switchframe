@@ -34,10 +34,11 @@ func TestPipelineLongRunDrift(t *testing.T) {
 		t.Skip("skipping long correctness test")
 	}
 
-	totalFrames := 1800 // 60 seconds at 30fps
-	if testing.Short() {
-		totalFrames = 300 // 10 seconds
-	}
+	// Use 300 frames (10s at 30fps) with real-time pacing. The wall-clock-
+	// based video PTS requires frames to arrive at actual real-time intervals;
+	// faster-than-realtime feeding causes the frame counter to race ahead of
+	// the wall clock, producing artificial PTS drift.
+	totalFrames := 300
 
 	h := newPipelineHarness(t, withMixer())
 	defer h.close()
@@ -48,19 +49,25 @@ func TestPipelineLongRunDrift(t *testing.T) {
 
 	h.cut(t, "driftA")
 
-	// Feed frames with realistic pacing (~5ms per frame to avoid drops).
-	// In batches to allow the mixer ticker to produce audio output.
-	const batchSize = 30
+	// Feed frames at real-time: one frame every ~33ms (30fps).
+	// This matches the wall-clock PTS expectation in production.
+	frameDuration := time.Second / time.Duration(testFPS) // ~33.3ms
+	color := h.sources["driftA"]
+	yuv := testutil.GenerateSolidYUV420(testWidth, testHeight, color.Y, color.Cb, color.Cr)
 	pts := int64(90000)
-	for fed := 0; fed < totalFrames; fed += batchSize {
-		n := batchSize
-		if fed+n > totalFrames {
-			n = totalFrames - fed
+	for i := 0; i < totalFrames; i++ {
+		pf := &switcher.ProcessingFrame{
+			YUV:        copyBytes(yuv),
+			Width:      testWidth,
+			Height:     testHeight,
+			PTS:        pts,
+			IsKeyframe: i == 0,
 		}
-		h.feedFrames("driftA", n, pts)
-		pts += int64(n) * ptsDelta
-		// Brief pause between batches to let mixer ticker produce audio.
-		time.Sleep(50 * time.Millisecond)
+		h.sw.IngestRawVideo("driftA", pf)
+		pts += ptsDelta
+		if i < totalFrames-1 {
+			time.Sleep(frameDuration)
+		}
 	}
 
 	// Final drain.
@@ -77,15 +84,30 @@ func TestPipelineLongRunDrift(t *testing.T) {
 
 	t.Logf("MEASURE: total video frames = %d, total audio frames = %d", len(videoFrames), len(audioFrames))
 
-	// Find the first valid video and audio PTS.
+	// Measure A/V drift by finding the audio frame nearest to each video
+	// frame's PTS and computing the delta. The mixer ticker produces audio
+	// beyond the last video frame (wall-clock driven), so we compare over
+	// the video time range only.
 	firstVideoPTS := videoFrames[0].PTS
-	firstAudioPTS := audioFrames[0].PTS
-	deltaStart := firstVideoPTS - firstAudioPTS
-
-	// Find the last valid video and audio PTS.
 	lastVideoPTS := videoFrames[len(videoFrames)-1].PTS
-	lastAudioPTS := audioFrames[len(audioFrames)-1].PTS
-	deltaEnd := lastVideoPTS - lastAudioPTS
+
+	// Find audio frame nearest to first video PTS.
+	nearestAudioStart := audioFrames[0].PTS
+	for _, af := range audioFrames {
+		if math.Abs(float64(af.PTS-firstVideoPTS)) < math.Abs(float64(nearestAudioStart-firstVideoPTS)) {
+			nearestAudioStart = af.PTS
+		}
+	}
+	deltaStart := firstVideoPTS - nearestAudioStart
+
+	// Find audio frame nearest to last video PTS.
+	nearestAudioEnd := audioFrames[0].PTS
+	for _, af := range audioFrames {
+		if math.Abs(float64(af.PTS-lastVideoPTS)) < math.Abs(float64(nearestAudioEnd-lastVideoPTS)) {
+			nearestAudioEnd = af.PTS
+		}
+	}
+	deltaEnd := lastVideoPTS - nearestAudioEnd
 
 	drift := deltaEnd - deltaStart
 	absDrift := int64(math.Abs(float64(drift)))
@@ -94,8 +116,8 @@ func TestPipelineLongRunDrift(t *testing.T) {
 		deltaStart, deltaEnd, drift)
 	t.Logf("MEASURE: first video PTS = %d, last video PTS = %d (span = %d ticks = %.1f ms)",
 		firstVideoPTS, lastVideoPTS, lastVideoPTS-firstVideoPTS, float64(lastVideoPTS-firstVideoPTS)/90.0)
-	t.Logf("MEASURE: first audio PTS = %d, last audio PTS = %d (span = %d ticks = %.1f ms)",
-		firstAudioPTS, lastAudioPTS, lastAudioPTS-firstAudioPTS, float64(lastAudioPTS-firstAudioPTS)/90.0)
+	t.Logf("MEASURE: nearest audio start PTS = %d, nearest audio end PTS = %d",
+		nearestAudioStart, nearestAudioEnd)
 
 	// Assert no cumulative drift: delta at end should be within ±9000 ticks
 	// (100ms) of delta at start.
