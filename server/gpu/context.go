@@ -231,6 +231,11 @@ func (c *Context) SetPool(pool *FramePool) {
 	c.pool = pool
 }
 
+// Pool returns the FramePool associated with this context, or nil.
+func (c *Context) Pool() *FramePool {
+	return c.pool
+}
+
 // Pool returns the associated FramePool, if any.
 func (c *Context) Pool() *FramePool {
 	return c.pool

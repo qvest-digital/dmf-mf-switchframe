@@ -3,6 +3,7 @@
 package gpu
 
 import (
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -59,9 +60,15 @@ type gpuSourceEntry struct {
 	colorLUTSize int     // cube dimension (e.g., 33)
 
 	// GPU scaling for resolution-mismatched sources (e.g., 720p → 1080p).
-	scalePool *FramePool // per-source pool at source resolution
+	scalePool *FramePool // per-source pool at source resolution (format matches main pool)
 	scaleW    int        // source width that scalePool was created for
 	scaleH    int        // source height
+
+	// NV12 temp pool for CUDA 8-bit→P210 conversion (Upload NV12 → ConvertNV12ToP210).
+	// Not used on Metal (UploadYUV420PToP210 writes directly to unified memory).
+	nv12Tmp  *FramePool
+	nv12TmpW int
+	nv12TmpH int
 
 	// CPU scale buffer (fallback when GPU scaling unavailable).
 	scaleBuf []byte
@@ -187,6 +194,12 @@ func (m *GPUSourceManager) cleanupEntryLocked(entry *gpuSourceEntry) {
 	if entry.scalePool != nil {
 		entry.scalePool.Close()
 		entry.scalePool = nil
+	}
+
+	// Free NV12 temp pool (CUDA 8-bit→P210 conversion).
+	if entry.nv12Tmp != nil {
+		entry.nv12Tmp.Close()
+		entry.nv12Tmp = nil
 	}
 
 	// Free ST map resources.
@@ -387,7 +400,13 @@ func (m *GPUSourceManager) uploadAndScaleP210(entry *gpuSourceEntry, dst *GPUFra
 		if is10bitInput {
 			return Upload10(m.ctx, dst, yuv, w, h)
 		}
-		return UploadYUV420PToP210(m.ctx, dst, yuv, w, h)
+		// 8-bit YUV420P → P210. Try unified-memory direct path first (Metal).
+		// On CUDA, fall through to NV12 temp + convert path.
+		if err := UploadYUV420PToP210(m.ctx, dst, yuv, w, h); err == nil {
+			return nil
+		}
+		// CUDA fallback: Upload to NV12 temp, then ConvertNV12ToP210.
+		return m.uploadNV12ThenConvertP210(entry, dst, yuv, w, h)
 	}
 
 	// Different resolution: upload to P210 temp, then scale P210→P210.
@@ -415,7 +434,13 @@ func (m *GPUSourceManager) uploadAndScaleP210(entry *gpuSourceEntry, dst *GPUFra
 	if is10bitInput {
 		uploadErr = Upload10(m.ctx, srcFrame, yuv, w, h)
 	} else {
+		// 8-bit YUV420P → P210 temp frame.
 		uploadErr = UploadYUV420PToP210(m.ctx, srcFrame, yuv, w, h)
+		if uploadErr != nil {
+			// CUDA fallback: Upload NV12, then convert to a fresh P210 temp.
+			srcFrame.Release()
+			return m.uploadNV12ScaleThenConvertP210(entry, dst, yuv, sourceKey, w, h)
+		}
 	}
 	if uploadErr != nil {
 		srcFrame.Release()
@@ -430,6 +455,65 @@ func (m *GPUSourceManager) uploadAndScaleP210(entry *gpuSourceEntry, dst *GPUFra
 
 	srcFrame.Release()
 	return nil
+}
+
+// uploadNV12ThenConvertP210 handles same-resolution 8-bit YUV420P → P210 on CUDA
+// where unified-memory UploadYUV420PToP210 is unavailable. Two steps:
+// 1. Upload YUV420P → NV12 temp frame
+// 2. ConvertNV12ToP210 → destination P210 frame
+func (m *GPUSourceManager) uploadNV12ThenConvertP210(entry *gpuSourceEntry, dst *GPUFrame, yuv []byte, w, h int) error {
+	// Need an NV12 temp frame at same dimensions.
+	if entry.nv12Tmp == nil || entry.nv12TmpW != w || entry.nv12TmpH != h {
+		if entry.nv12Tmp != nil {
+			entry.nv12Tmp.Close()
+		}
+		pool, err := NewFramePool(m.ctx, w, h, 1)
+		if err != nil {
+			return fmt.Errorf("gpu: NV12 tmp pool failed: %w", err)
+		}
+		entry.nv12Tmp = pool
+		entry.nv12TmpW = w
+		entry.nv12TmpH = h
+	}
+	tmp, err := entry.nv12Tmp.Acquire()
+	if err != nil {
+		return fmt.Errorf("gpu: NV12 tmp acquire: %w", err)
+	}
+	defer tmp.Release()
+
+	if err := Upload(m.ctx, tmp, yuv, w, h); err != nil {
+		return fmt.Errorf("gpu: NV12 upload: %w", err)
+	}
+	return ConvertNV12ToP210(m.ctx, dst, tmp)
+}
+
+// uploadNV12ScaleThenConvertP210 handles different-resolution 8-bit YUV420P → P210
+// on CUDA. Three steps:
+// 1. Upload YUV420P → NV12 temp frame at source resolution
+// 2. ScaleNV12ToP210 → destination P210 frame at pool resolution (combined scale+convert)
+func (m *GPUSourceManager) uploadNV12ScaleThenConvertP210(entry *gpuSourceEntry, dst *GPUFrame, yuv []byte, sourceKey string, w, h int) error {
+	if entry.nv12Tmp == nil || entry.nv12TmpW != w || entry.nv12TmpH != h {
+		if entry.nv12Tmp != nil {
+			entry.nv12Tmp.Close()
+		}
+		pool, err := NewFramePool(m.ctx, w, h, 1)
+		if err != nil {
+			return m.uploadCPUScaled(entry, dst, yuv, w, h)
+		}
+		entry.nv12Tmp = pool
+		entry.nv12TmpW = w
+		entry.nv12TmpH = h
+	}
+	tmp, err := entry.nv12Tmp.Acquire()
+	if err != nil {
+		return m.uploadCPUScaled(entry, dst, yuv, w, h)
+	}
+	defer tmp.Release()
+
+	if err := Upload(m.ctx, tmp, yuv, w, h); err != nil {
+		return fmt.Errorf("gpu: NV12 upload for scale: %w", err)
+	}
+	return ScaleNV12ToP210(m.ctx, dst, tmp)
 }
 
 // uploadCPUScaled is the fallback when GPU scaling isn't available.

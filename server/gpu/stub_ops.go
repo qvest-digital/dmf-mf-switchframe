@@ -312,6 +312,11 @@ func ConvertNV12ToP210(ctx *Context, dst, src *GPUFrame) error {
 	return ErrGPUNotAvailable
 }
 
+// ConvertP210ToP010MSB returns ErrGPUNotAvailable on non-GPU builds.
+func ConvertP210ToP010MSB(ctx *Context, dst, src *GPUFrame) error {
+	return ErrGPUNotAvailable
+}
+
 // ScaleNV12ToP210 returns ErrGPUNotAvailable on non-GPU builds.
 func ScaleNV12ToP210(ctx *Context, dst, src *GPUFrame) error {
 	return ErrGPUNotAvailable

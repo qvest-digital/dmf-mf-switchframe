@@ -33,6 +33,8 @@ type GPUEncoder struct {
 	gpuCtx   *Context
 	width    int
 	height   int
+	is10bit  bool       // true when encoder uses P010LE (HEVC 10-bit)
+	p010Tmp  *GPUFrame  // temp P010 frame for P210→P010 conversion (lazy, 10-bit only)
 	cpuBuf   []byte     // reusable CPU-side YUV420p buffer for fallback
 	cpuBufMu sync.Mutex // protects cpuBuf
 }
@@ -109,11 +111,37 @@ func (e *GPUEncoder) EncodeGPU(frame *GPUFrame, forceIDR bool) ([]byte, bool, er
 	// Use encStream for device-to-device copies into FFmpeg's hw_frame,
 	// preventing races with kernel launches on ctx.stream.
 	if e.hwEnc != nil {
-		yDevPtr := unsafe.Pointer(uintptr(frame.DevPtr))
-		uvDevPtr := unsafe.Pointer(uintptr(frame.DevPtr) + uintptr(frame.Pitch*frame.Height))
+		encFrame := frame
+		// P210 source + P010LE encoder: convert P210→P010 (chroma downsample
+		// 4:2:2→4:2:0 + LSB→MSB shift <<6) into a temp NV12-sized frame.
+		// NVENC doesn't support 4:2:2 — this is the only lossy step in the pipeline.
+		if e.is10bit && frame.Format == GPUFormatP210 {
+			if e.p010Tmp == nil {
+				// Lazy-allocate temp frame. Use NV12 pool format — P010 has the
+				// same byte layout as NV12 but with uint16 samples. The pitch
+				// matches (both use width*2 bytes per row for 10-bit).
+				// Actually P010 needs pitch*height*3/2 (same as NV12 but uint16),
+				// which is smaller than P210's pitch*height*2.
+				// We can reuse the pool's Acquire since the buffer is large enough.
+				tmp, err := e.gpuCtx.Pool().Acquire()
+				if err != nil {
+					return nil, false, fmt.Errorf("gpu: P010 tmp alloc: %w", err)
+				}
+				e.p010Tmp = tmp
+			}
+			// Convert P210 → P010 (chroma downsample + MSB shift) on GPU.
+			if err := ConvertP210ToP010MSB(e.gpuCtx, e.p010Tmp, frame); err != nil {
+				return nil, false, fmt.Errorf("gpu: P210→P010 convert: %w", err)
+			}
+			e.p010Tmp.PTS = frame.PTS
+			encFrame = e.p010Tmp
+		}
+
+		yDevPtr := unsafe.Pointer(uintptr(encFrame.DevPtr))
+		uvDevPtr := unsafe.Pointer(uintptr(encFrame.DevPtr) + uintptr(encFrame.Pitch*encFrame.Height))
 
 		encStream := unsafe.Pointer(e.gpuCtx.EncStream())
-		data, isIDR, err := e.hwEnc.EncodeNV12CUDA(yDevPtr, uvDevPtr, frame.Pitch, frame.PTS, forceIDR, encStream)
+		data, isIDR, err := e.hwEnc.EncodeNV12CUDA(yDevPtr, uvDevPtr, encFrame.Pitch, frame.PTS, forceIDR, encStream)
 		if err != nil {
 			return nil, false, fmt.Errorf("gpu: hw_frames encode failed: %w", err)
 		}
@@ -238,10 +266,11 @@ func NewGPUEncoderForCodec(gpuCtx *Context, width, height, fpsNum, fpsDen, bitra
 				"10bit", is10bit,
 			)
 			return &GPUEncoder{
-				hwEnc:  hwEnc,
-				gpuCtx: gpuCtx,
-				width:  width,
-				height: height,
+				hwEnc:   hwEnc,
+				gpuCtx:  gpuCtx,
+				width:   width,
+				height:  height,
+				is10bit: is10bit,
 			}, nil
 		}
 		slog.Warn("gpu: NVENC HEVC hw_frames_ctx failed, falling back", "err", err)

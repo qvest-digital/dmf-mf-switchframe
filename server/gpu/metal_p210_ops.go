@@ -564,6 +564,11 @@ func ConvertNV12ToP210(ctx *Context, dst, src *GPUFrame) error {
 	return fmt.Errorf("gpu: ConvertNV12ToP210 not applicable on Metal (use UploadYUV420PToP210)")
 }
 
+// ConvertP210ToP010MSB is not needed on Metal (VT supports native 4:2:2 encoding).
+func ConvertP210ToP010MSB(ctx *Context, dst, src *GPUFrame) error {
+	return fmt.Errorf("gpu: ConvertP210ToP010MSB not applicable on Metal (VT supports 4:2:2)")
+}
+
 // ScaleNV12ToP210 is not needed on Metal (use UploadYUV420PToP210 + ScaleBilinearP210 instead).
 func ScaleNV12ToP210(ctx *Context, dst, src *GPUFrame) error {
 	return fmt.Errorf("gpu: ScaleNV12ToP210 not applicable on Metal (use UploadYUV420PToP210 + ScaleBilinearP210)")

@@ -326,3 +326,68 @@ cudaError_t scale_p210_to_nv12(
 }
 
 } // extern "C"
+
+// ---------------------------------------------------------------------------
+// p210_to_p010_msb: P210 (LSB, 4:2:2) -> P010 (MSB, 4:2:0)
+// Chroma downsample (average adjacent rows) + left-shift 6 for MSB alignment.
+// Used at NVENC encode time — NVENC doesn't support 4:2:2.
+// ---------------------------------------------------------------------------
+
+// Y plane: uint16 LSB -> uint16 MSB (<<6), same dimensions
+__global__ void p210_to_p010_msb_y_kernel(
+    uint16_t* __restrict__ dst, int dstPitch16,
+    const uint16_t* __restrict__ src, int srcPitch16,
+    int width, int height)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) return;
+    dst[y * dstPitch16 + x] = src[y * srcPitch16 + x] << 6;
+}
+
+// UV plane: P210 full-height uint16 CbCr -> P010 half-height uint16 CbCr
+// Average pairs of adjacent rows + <<6 shift.
+__global__ void p210_to_p010_msb_uv_kernel(
+    uint16_t* __restrict__ dst, int dstPitch16,
+    const uint16_t* __restrict__ src, int srcPitch16,
+    int chromaW, int chromaH)  // chromaH = output height (input height / 2)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= chromaW * 2 || y >= chromaH) return;  // chromaW*2 for interleaved CbCr
+
+    // Read two source rows (4:2:2 full height) and average
+    uint16_t v0 = src[(y * 2) * srcPitch16 + x];
+    uint16_t v1 = src[(y * 2 + 1) * srcPitch16 + x];
+    uint16_t avg = (uint16_t)(((uint32_t)v0 + (uint32_t)v1 + 1) >> 1);
+    dst[y * dstPitch16 + x] = avg << 6;
+}
+
+extern "C" cudaError_t p210_to_p010_msb(
+    uint8_t* dst, int dstWidth, int dstHeight, int dstPitch,
+    const uint8_t* src, int srcWidth, int srcHeight, int srcPitch,
+    cudaStream_t stream)
+{
+    int dstPitch16 = dstPitch / 2;
+    int srcPitch16 = srcPitch / 2;
+
+    // Y plane
+    dim3 block(32, 8);
+    dim3 gridY((srcWidth + 31) / 32, (srcHeight + 7) / 8);
+    p210_to_p010_msb_y_kernel<<<gridY, block, 0, stream>>>(
+        (uint16_t*)dst, dstPitch16,
+        (const uint16_t*)src, srcPitch16,
+        srcWidth, srcHeight);
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) return err;
+
+    // UV plane: P210 UV at src + srcPitch*srcHeight, P010 UV at dst + dstPitch*dstHeight
+    int chromaW = srcWidth / 2;
+    int chromaH = srcHeight / 2;  // output half-height (4:2:0)
+    dim3 gridUV((chromaW * 2 + 31) / 32, (chromaH + 7) / 8);
+    p210_to_p010_msb_uv_kernel<<<gridUV, block, 0, stream>>>(
+        (uint16_t*)(dst + dstPitch * dstHeight), dstPitch16,
+        (const uint16_t*)(src + srcPitch * srcHeight), srcPitch16,
+        chromaW, chromaH);
+    return cudaGetLastError();
+}

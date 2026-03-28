@@ -36,6 +36,10 @@ cudaError_t scale_p210_to_nv12(
     uint8_t* dst, int dstW, int dstH, int dstPitch,
     const uint8_t* src, int srcW, int srcH, int srcPitch,
     cudaStream_t stream);
+cudaError_t p210_to_p010_msb(
+    uint8_t* dst, int dstW, int dstH, int dstPitch,
+    const uint8_t* src, int srcW, int srcH, int srcPitch,
+    cudaStream_t stream);
 
 // P210 composite
 cudaError_t pip_composite_p210(
@@ -725,6 +729,27 @@ func DrawBorderP210(ctx *Context, frame *GPUFrame, rect Rect, colorY, colorCb, c
 	)
 	if rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: draw border p210 failed: %d", rc)
+	}
+	return ctx.Sync()
+}
+
+// ConvertP210ToP010MSB converts P210 (LSB-aligned, 4:2:2) to P010 (MSB-aligned, 4:2:0)
+// for NVENC encoding. Chroma is downsampled from full-height to half-height by averaging
+// adjacent row pairs. All uint16 samples are left-shifted by 6 for MSB alignment.
+// This is the only lossy step in the 10-bit pipeline on CUDA — NVENC doesn't support 4:2:2.
+func ConvertP210ToP010MSB(ctx *Context, dst, src *GPUFrame) error {
+	if ctx == nil || dst == nil || src == nil {
+		return ErrGPUNotAvailable
+	}
+	rc := C.p210_to_p010_msb(
+		(*C.uint8_t)(unsafe.Pointer(uintptr(dst.DevPtr))),
+		C.int(dst.Width), C.int(dst.Height), C.int(dst.Pitch),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(src.DevPtr))),
+		C.int(src.Width), C.int(src.Height), C.int(src.Pitch),
+		ctx.stream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: P210→P010 MSB conversion failed: %d", rc)
 	}
 	return ctx.Sync()
 }

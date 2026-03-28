@@ -403,15 +403,17 @@ static int ffenc_encode_nv12_cuda(ffenc_hw_frames_t* h,
 
 	CUstream cu_stream = (CUstream)cuda_stream;
 
-	// Copy NV12 data from our GPU frame pool into FFmpeg's hw_frame allocation
-	// via device-to-device cuMemcpy2DAsync on the provided stream. FFmpeg's
-	// hw_frame was allocated by av_hwframe_get_buffer() and has its own CUDA
-	// memory + buffer references.
-	//
-	// Using cuMemcpy2DAsync with an explicit stream instead of cuMemcpy2D
-	// (which uses the legacy/default stream) prevents data races with kernel
-	// launches on non-blocking streams created with cudaStreamNonBlocking.
-	// Y plane: pitch x height
+	// Determine format from hw_frames context for correct copy dimensions.
+	// NV12: 1 byte/sample, UV half-height (4:2:0).
+	// P210LE: 2 bytes/sample, UV full-height (4:2:2).
+	AVHWFramesContext* frames_ctx = (AVHWFramesContext*)h->hw_frames_ref->data;
+	int is_p210 = (frames_ctx->sw_format == AV_PIX_FMT_P210LE || frames_ctx->sw_format == AV_PIX_FMT_P210BE);
+	int bps = is_p210 ? 2 : 1;           // bytes per sample
+	int uv_height = is_p210 ? ht : ht/2; // 4:2:2 vs 4:2:0
+
+	// Copy frame data from our GPU pool into FFmpeg's hw_frame allocation
+	// via device-to-device cuMemcpy2DAsync on the provided stream.
+	// Y plane: w*bps bytes per row, ht rows
 	CUDA_MEMCPY2D copyY = {0};
 	copyY.srcMemoryType = CU_MEMORYTYPE_DEVICE;
 	copyY.srcDevice     = (CUdeviceptr)y_dev_ptr;
@@ -419,7 +421,7 @@ static int ffenc_encode_nv12_cuda(ffenc_hw_frames_t* h,
 	copyY.dstMemoryType = CU_MEMORYTYPE_DEVICE;
 	copyY.dstDevice     = (CUdeviceptr)frame->data[0];
 	copyY.dstPitch      = frame->linesize[0];
-	copyY.WidthInBytes  = w;
+	copyY.WidthInBytes  = w * bps;
 	copyY.Height        = ht;
 	CUresult crc = cuMemcpy2DAsync(&copyY, cu_stream);
 	if (crc != CUDA_SUCCESS) {
@@ -427,7 +429,7 @@ static int ffenc_encode_nv12_cuda(ffenc_hw_frames_t* h,
 		return -8;
 	}
 
-	// UV plane: pitch x height/2
+	// UV plane: w*bps bytes per row (interleaved CbCr), uv_height rows
 	CUDA_MEMCPY2D copyUV = {0};
 	copyUV.srcMemoryType = CU_MEMORYTYPE_DEVICE;
 	copyUV.srcDevice     = (CUdeviceptr)uv_dev_ptr;
@@ -435,8 +437,8 @@ static int ffenc_encode_nv12_cuda(ffenc_hw_frames_t* h,
 	copyUV.dstMemoryType = CU_MEMORYTYPE_DEVICE;
 	copyUV.dstDevice     = (CUdeviceptr)frame->data[1];
 	copyUV.dstPitch      = frame->linesize[1];
-	copyUV.WidthInBytes  = w;
-	copyUV.Height        = ht / 2;
+	copyUV.WidthInBytes  = w * bps;
+	copyUV.Height        = uv_height;
 	crc = cuMemcpy2DAsync(&copyUV, cu_stream);
 	if (crc != CUDA_SUCCESS) {
 		cuCtxPopCurrent(&prev_ctx);
@@ -637,8 +639,10 @@ func (e *FFmpegHWFramesEncoder) Close() {
 }
 
 // NewFFmpegHWFramesEncoderHEVC creates an NVENC HEVC encoder with hw_frames_ctx.
-// When is10bit is true, uses P010LE sw_format and main10 profile for 10-bit output.
-// When is10bit is false, uses NV12 sw_format and main profile for 8-bit output.
+// When is10bit is true, uses P010LE sw_format and main10 profile for 10-bit 4:2:0 output.
+// NVENC does not support 4:2:2 encoding (L4 rext upsamples to 4:4:4, not useful).
+// The caller converts P210→P010 at encode time — chroma downsampled from 4:2:2 to 4:2:0.
+// When is10bit is false, uses NV12 sw_format and main profile.
 func NewFFmpegHWFramesEncoderHEVC(cudaCtx unsafe.Pointer, width, height, bitrate, fpsNum, fpsDen, gopSecs int,
 	is10bit bool) (*FFmpegHWFramesEncoder, error) {
 	initFFmpegLogLevel()
