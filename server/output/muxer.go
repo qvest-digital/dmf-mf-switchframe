@@ -92,6 +92,7 @@ type TSMuxer struct {
 	lastMuxedVideoPTS    int64 // PTS written to TS (after rebase + lip-sync)
 	lastMuxedAudioPTS    int64 // PTS written to TS (after rebase)
 	diagCounter          int   // for periodic logging
+	maxBitrate           int   // encoder max bitrate in bits/sec (for PMT descriptor); 0 = use default 5 Mbps
 }
 
 // NewTSMuxer creates an uninitialized TSMuxer. Call SetOutput before
@@ -136,6 +137,23 @@ func (m *TSMuxer) SetSCTE35PID(pid uint16) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.scte35PID = pid
+}
+
+// maxBitrateBytes returns the max bitrate in bytes/sec for the PMT descriptor.
+func (m *TSMuxer) maxBitrateBytes() uint32 {
+	bps := m.maxBitrate
+	if bps <= 0 {
+		bps = 5000000 // default 5 Mbps
+	}
+	return uint32(bps / 8)
+}
+
+// SetMaxBitrate sets the video encoder's maximum bitrate (bits/sec) for
+// the PMT maximum_bitrate descriptor. Must be called before the first keyframe.
+func (m *TSMuxer) SetMaxBitrate(bps int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.maxBitrate = bps
 }
 
 // CurrentPTS returns the PTS of the most recently written video frame.
@@ -653,7 +671,7 @@ func (m *TSMuxer) init(_ int64) error {
 			{
 				Tag:            astits.DescriptorTagMaximumBitrate,
 				Length:         3, // 22-bit field in 3 bytes
-				MaximumBitrate: &astits.DescriptorMaximumBitrate{Bitrate: 625000}, // 5 Mbps / 8 = 625000 bytes/s
+				MaximumBitrate: &astits.DescriptorMaximumBitrate{Bitrate: m.maxBitrateBytes()},
 			},
 			{
 				Tag:                 astits.DescriptorTagDataStreamAlignment,
