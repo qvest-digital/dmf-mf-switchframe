@@ -155,19 +155,48 @@ func TestRapidCutsNoFrameCorruption(t *testing.T) {
 	cancel()
 	wg.Wait()
 
-	// Verify all output frames have valid tags.
+	// Verify all output frames have valid tags and are not truncated.
 	videos := capture.videosCopy()
 	require.Greater(t, len(videos), 0, "should have captured output frames")
 
 	validTags := map[byte]bool{0xAA: true, 0xBB: true, 0xCC: true, 0xDD: true}
+	framesPerSource := map[byte]int{}
+
 	for i, frame := range videos {
 		require.NotEmpty(t, frame.WireData, "frame %d has empty WireData", i)
+
 		tag := frame.WireData[0]
 		require.True(t, validTags[tag],
 			"frame %d has unknown tag 0x%02X (expected one of 0xAA, 0xBB, 0xCC, 0xDD)", i, tag)
+
+		framesPerSource[tag]++
 	}
 
-	t.Logf("Rapid cuts complete: %d output frames, all from valid sources", len(videos))
+	// Log per-source frame counts.
+	t.Logf("MEASURE: frames per source: {0xAA: %d, 0xBB: %d, 0xCC: %d, 0xDD: %d}",
+		framesPerSource[0xAA], framesPerSource[0xBB], framesPerSource[0xCC], framesPerSource[0xDD])
+
+	// After 20 cuts across 4 sources, at least 3 distinct sources should have produced frames.
+	distinctSources := 0
+	for _, count := range framesPerSource {
+		if count > 0 {
+			distinctSources++
+		}
+	}
+	t.Logf("MEASURE: distinct sources that produced frames: %d", distinctSources)
+	require.GreaterOrEqual(t, distinctSources, 3,
+		"after 20 random cuts across 4 sources, expected at least 3 distinct sources to produce frames, got %d", distinctSources)
+
+	// Verify no single source dominates (>80% would mean cuts aren't working).
+	totalFrames := len(videos)
+	for tag, count := range framesPerSource {
+		pct := float64(count) / float64(totalFrames) * 100.0
+		t.Logf("MEASURE: source 0x%02X: %d/%d frames (%.1f%%)", tag, count, totalFrames, pct)
+		require.Less(t, pct, 80.0,
+			"source 0x%02X has %.1f%% of frames (>80%%), cuts may not be working", tag, pct)
+	}
+
+	t.Logf("Rapid cuts complete: %d output frames across %d distinct sources", len(videos), distinctSources)
 }
 
 // ==========================================================================
@@ -211,6 +240,14 @@ func TestRapidGraphicsToggle(t *testing.T) {
 	var blendScratch []byte
 	var colLUTScratch []int
 
+	yPlaneSize := testWidth * testHeight
+	sampleStep := yPlaneSize / 100 // 100 evenly-spaced Y pixel samples
+	if sampleStep < 1 {
+		sampleStep = 1
+	}
+
+	const programY = byte(128)
+
 	for i := 0; i < 50; i++ {
 		// Toggle on.
 		require.NoError(t, comp.On(layerID))
@@ -222,10 +259,28 @@ func TestRapidGraphicsToggle(t *testing.T) {
 		require.NotNil(t, result, "iteration %d: On ProcessYUV returned nil", i)
 		require.Equal(t, frameSize(testWidth, testHeight), len(result),
 			"iteration %d: On result wrong size", i)
-		// Y values should be near white (235) or near program (128), never garbage.
-		yVal := result[0]
-		require.True(t, yVal >= 120, // at least program level or above
-			"iteration %d: On frame Y[0]=%d, expected >= 120", i, yVal)
+
+		// Sample 100 evenly-spaced Y pixels and verify ON state.
+		onSum := 0
+		onHighCount := 0
+		onSampleCount := 0
+		for j := 0; j < yPlaneSize; j += sampleStep {
+			onSum += int(result[j])
+			if result[j] >= 150 {
+				onHighCount++
+			}
+			onSampleCount++
+		}
+		onAvg := onSum / onSampleCount
+		onHighPct := float64(onHighCount) / float64(onSampleCount) * 100.0
+
+		if i == 0 {
+			t.Logf("MEASURE: ON frame avg Y = %d (sample 0), high pixel pct = %.1f%%", onAvg, onHighPct)
+		}
+
+		// ON state: >90% of sampled pixels should be >= 150 (white overlay Y~235).
+		require.Greater(t, onHighPct, 90.0,
+			"iteration %d: ON frame only %.1f%% of sampled Y pixels >= 150 (avg Y=%d), expected >90%%", i, onHighPct, onAvg)
 
 		// Toggle off.
 		require.NoError(t, comp.Off(layerID))
@@ -237,12 +292,36 @@ func TestRapidGraphicsToggle(t *testing.T) {
 		require.NotNil(t, result, "iteration %d: Off ProcessYUV returned nil", i)
 		require.Equal(t, frameSize(testWidth, testHeight), len(result),
 			"iteration %d: Off result wrong size", i)
-		// Off frame should be exactly the program color.
-		require.Equal(t, byte(128), result[0],
-			"iteration %d: Off frame Y[0]=%d, expected 128 (program color)", i, result[0])
+
+		// Sample 100 evenly-spaced Y pixels and verify OFF state.
+		offSum := 0
+		offNearProgramCount := 0
+		offSampleCount := 0
+		for j := 0; j < yPlaneSize; j += sampleStep {
+			offSum += int(result[j])
+			diff := int(result[j]) - int(programY)
+			if diff < 0 {
+				diff = -diff
+			}
+			if diff <= 5 {
+				offNearProgramCount++
+			}
+			offSampleCount++
+		}
+		offAvg := offSum / offSampleCount
+		offNearPct := float64(offNearProgramCount) / float64(offSampleCount) * 100.0
+
+		if i == 0 {
+			t.Logf("MEASURE: OFF frame avg Y = %d (sample 0), near-program pct = %.1f%%", offAvg, offNearPct)
+		}
+
+		// OFF state: >90% of sampled pixels should be within +/-5 of program Y (128).
+		require.Greater(t, offNearPct, 90.0,
+			"iteration %d: OFF frame only %.1f%% of sampled Y pixels within ±5 of program Y=%d (avg Y=%d), expected >90%%",
+			i, offNearPct, programY, offAvg)
 	}
 
-	t.Logf("Rapid graphics toggle: 50 On/Off cycles, all output frames valid")
+	t.Logf("Rapid graphics toggle: 50 On/Off cycles, all output frames validated with 100-pixel sampling")
 }
 
 // ==========================================================================
@@ -370,7 +449,38 @@ func TestConcurrentCutAndTransition(t *testing.T) {
 	require.Equal(t, "camC", state.ProgramSource, "program should be camC after cut-during-transition")
 	require.False(t, state.InTransition, "should not be in transition after cut")
 
-	t.Logf("Cut during transition: program=%s, inTransition=%v", state.ProgramSource, state.InTransition)
+	// Record frame count before feeding more camC frames.
+	preCount := capture.videoCount()
+
+	// Feed 5 more camC frames to verify output after cut-during-transition.
+	for i := 0; i < 5; i++ {
+		camCRelay.BroadcastVideo(&media.VideoFrame{
+			PTS:        int64(600 + i*33),
+			IsKeyframe: i == 0,
+			WireData:   []byte{0xCC},
+		})
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	// Capture output frames produced after the cut.
+	allVideos := capture.videosCopy()
+	postCutFrames := allVideos[preCount:]
+	t.Logf("MEASURE: frames captured after cut-during-transition: %d", len(postCutFrames))
+
+	// Verify at least 1 captured frame has camC's WireData tag (0xCC).
+	camCFrameCount := 0
+	for _, frame := range postCutFrames {
+		if len(frame.WireData) > 0 && frame.WireData[0] == 0xCC {
+			camCFrameCount++
+		}
+	}
+	t.Logf("MEASURE: post-cut frames with camC tag (0xCC): %d / %d", camCFrameCount, len(postCutFrames))
+	require.Greater(t, camCFrameCount, 0,
+		"after cutting to camC during transition and feeding 5 frames, expected at least 1 output frame with camC tag 0xCC")
+
+	t.Logf("Cut during transition: program=%s, inTransition=%v, postCutFrames=%d, camCFrames=%d",
+		state.ProgramSource, state.InTransition, len(postCutFrames), camCFrameCount)
 }
 
 // ==========================================================================
