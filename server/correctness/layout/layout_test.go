@@ -1088,6 +1088,50 @@ func TestActiveStateTransitions(t *testing.T) {
 }
 
 // ==========================================================================
+// Determinism: TestLayoutDeterminism — same PIP slot + source frame
+//   processed 20 times → byte-exact output every run.
+// ==========================================================================
+
+func TestLayoutDeterminism(t *testing.T) {
+	const frameW, frameH = 640, 480
+
+	comp := layout.NewCompositor(frameW, frameH)
+
+	// PIP slot at (100, 50) with size 200x100
+	l := &layout.Layout{
+		Name: "det-test",
+		Slots: []layout.Slot{
+			{
+				SourceKey: "cam1",
+				Rect:      image.Rect(100, 50, 300, 150),
+				ZOrder:    1,
+				Enabled:   true,
+			},
+		},
+	}
+	comp.SetLayout(l)
+
+	// Ingest a solid white source at slot dimensions (no scaling needed).
+	src := testutil.GenerateSolidYUV420(200, 100, whiteY, whiteCb, whiteCr)
+	comp.IngestSourceFrame("cam1", src, 200, 100, 1000)
+
+	// First run — reference result.
+	bg := testutil.GenerateSolidYUV420(frameW, frameH, blackY, blackCb, blackCr)
+	reference := make([]byte, len(bg))
+	result := comp.ProcessFrame(bg, frameW, frameH)
+	copy(reference, result)
+
+	// 19 more runs — must be byte-exact identical.
+	for i := 0; i < 19; i++ {
+		bgI := testutil.GenerateSolidYUV420(frameW, frameH, blackY, blackCb, blackCr)
+		resultI := comp.ProcessFrame(bgI, frameW, frameH)
+		if !testutil.YUVFrameEqual(reference, resultI) {
+			t.Fatalf("Run %d produced different layout composite output (non-determinism detected)", i+1)
+		}
+	}
+}
+
+// ==========================================================================
 // Test: ProcessFrame returns input unchanged when no layout
 // ==========================================================================
 

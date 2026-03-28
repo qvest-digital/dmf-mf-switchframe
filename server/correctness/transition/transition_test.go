@@ -854,6 +854,32 @@ func TestLargeFrameBlend(t *testing.T) {
 }
 
 // ==========================================================================
+// Determinism: TestBlendDeterminism -- same inputs 20x → byte-exact output
+// ==========================================================================
+
+func TestBlendDeterminism(t *testing.T) {
+	t.Parallel()
+
+	frameA := testutil.GenerateSolidYUV420(320, 240, 100, 100, 100)
+	frameB := testutil.GenerateSolidYUV420(320, 240, 200, 150, 150)
+
+	// First run — reference result.
+	fb, err := transition.NewFrameBlender(320, 240)
+	require.NoError(t, err)
+	reference := copyFrame(fb.BlendMix(frameA, frameB, 0.37))
+
+	// 19 more runs — must be byte-exact identical.
+	for i := 0; i < 19; i++ {
+		fbI, err := transition.NewFrameBlender(320, 240)
+		require.NoError(t, err)
+		result := fbI.BlendMix(frameA, frameB, 0.37)
+		if !testutil.YUVFrameEqual(reference, result) {
+			t.Fatalf("Run %d produced different output (non-determinism detected)", i+1)
+		}
+	}
+}
+
+// ==========================================================================
 // Helpers
 // ==========================================================================
 

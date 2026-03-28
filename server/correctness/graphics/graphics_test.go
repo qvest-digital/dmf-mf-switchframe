@@ -606,6 +606,44 @@ func TestDSKLayerOnOff(t *testing.T) {
 }
 
 // ==========================================================================
+// Determinism: TestCompositorDeterminism — process same overlay+program
+//   20 times with alpha=137/255, verify byte-exact output every run.
+// ==========================================================================
+
+func TestCompositorDeterminism(t *testing.T) {
+	t.Parallel()
+
+	const w, h = 320, 240
+
+	// Build reference result.
+	c := setupCompositor(w, h)
+	defer c.Close()
+
+	id, err := c.AddLayer()
+	require.NoError(t, err)
+
+	// Overlay with alpha=137 (non-trivial, exercises more code paths than 128).
+	rgba := makeRGBA(w, h, 180, 60, 220, 137)
+	require.NoError(t, c.SetOverlay(id, rgba, w, h, "det-test"))
+	require.NoError(t, c.On(id))
+
+	program := testutil.GenerateSolidYUV420(w, h, 100, 120, 140)
+
+	var blendScratch []byte
+	var colLUTScratch []int
+	reference := copyFrame(c.ProcessYUV(program, w, h, &blendScratch, &colLUTScratch))
+
+	// 19 more runs — must be byte-exact identical.
+	for i := 0; i < 19; i++ {
+		prog := testutil.GenerateSolidYUV420(w, h, 100, 120, 140)
+		result := c.ProcessYUV(prog, w, h, &blendScratch, &colLUTScratch)
+		if !testutil.YUVFrameEqual(reference, result) {
+			t.Fatalf("Run %d produced different output (non-determinism detected)", i+1)
+		}
+	}
+}
+
+// ==========================================================================
 // 11. TestBlendFormulaAccuracy — verify the alpha blending formula matches
 //     the documented integer fixed-point math across a range of alpha values.
 // ==========================================================================
