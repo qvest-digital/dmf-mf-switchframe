@@ -256,6 +256,119 @@ func TestAACBuffer29_97Pattern(t *testing.T) {
 		30, totalSamples, totalFrames, buf.Pending())
 }
 
+// Issue 5: 44.1kHz AAC PTS truncation drift test.
+// frameDuration90k = 1024 * 90000 / 44100 = 2088.435... truncates to 2088.
+// Over 1 second (43 frames at 44100Hz), PTS drifts by ~216 ticks.
+func TestAACBufferPTSAccuracy44100(t *testing.T) {
+	buf := NewAACFrameBuffer(2, 44100, mockEncode)
+	buf.SetBasePTS(0)
+
+	// Feed exactly 1 second of audio at 44100Hz: 44100 samples.
+	// Each feed: 1024 stereo samples = 2048 float32.
+	// 44100 / 1024 = 43.066... so 43 full frames, 76 samples remaining.
+	totalSamples := 0
+	for totalSamples < 44100 {
+		chunk := 1024
+		if totalSamples+chunk > 44100 {
+			chunk = 44100 - totalSamples
+		}
+		pcm := make([]float32, chunk*2) // stereo
+		_, err := buf.Feed(pcm)
+		if err != nil {
+			t.Fatalf("Feed error at sample %d: %v", totalSamples, err)
+		}
+		totalSamples += chunk
+	}
+
+	// 43 full frames emitted. The PTS of frame 43 (0-indexed: frame index 42)
+	// should represent exactly 42 * 1024 / 44100 seconds = 42 * 1024 * 90000 / 44100
+	// = 42 * 92160000 / 44100 = 42 * 2088.435... = 87714.29...
+	// With Bresenham: frame 42 PTS should be exact integer closest to 87714.
+	// With truncation bug: frame 42 PTS = 42 * 2088 = 87696 (18 ticks short).
+	//
+	// More importantly, frame 42's PTS should be: 42 * 1024 * 90000 / 44100
+	// = 3,870,720,000 / 44100 = 87,771.428... wait, let me recompute.
+	// 1024 * 90000 = 92,160,000 per frame
+	// frame N PTS = N * 92,160,000 / 44100
+	// frame 42 PTS = 42 * 92,160,000 / 44100 = 3,870,720,000 / 44100 = 87,771.428...
+	// With truncation: 42 * 2088 = 87,696 (75 ticks short)
+	// With Bresenham: should be 87,771 or 87,772 (within 1 of exact)
+
+	// Check the last emitted frame's PTS.
+	frameCount := buf.FrameCount()
+	if frameCount != 43 {
+		t.Fatalf("expected 43 frames from 44100 samples, got %d", frameCount)
+	}
+
+	// Feed one more complete frame to get frame 43's PTS and check it.
+	// Frame 43 PTS should be 43 * 92160000 / 44100 = 43 * 2088.435... = 89802.72...
+	// With truncation: 43 * 2088 = 89784 (18.72 ticks short)
+	// With Bresenham: should be 89802 or 89803
+	pcm := make([]float32, 1024*2)
+	frames, err := buf.Feed(pcm)
+	if err != nil {
+		t.Fatalf("Feed error: %v", err)
+	}
+	// We had 76 remaining + 1024 new = 1100 samples. That's 1 frame (1024) with 76 remaining.
+	if len(frames) != 1 {
+		t.Fatalf("expected 1 frame, got %d", len(frames))
+	}
+
+	// Frame 43 (index 43) PTS
+	frame43PTS := frames[0].PTS
+	exactPTS := float64(43) * float64(1024) * float64(90000) / float64(44100)
+	// With truncation: 43 * 2088 = 89784
+	// Exact: 89802.72...
+	// Bresenham should give 89802 or 89803
+	drift := float64(frame43PTS) - exactPTS
+	if drift < 0 {
+		drift = -drift
+	}
+	if drift > 1.0 {
+		t.Fatalf("44.1kHz AAC PTS drift at frame 43: PTS=%d, exact=%.2f, drift=%.2f (>1 tick)",
+			frame43PTS, exactPTS, drift)
+	}
+}
+
+// Issue 12: Flush produces frame from partial data (already tested in TestAACBufferFlush,
+// but let's add a specific test for sync loop shutdown scenario).
+func TestAACBufferFlushOnShutdown(t *testing.T) {
+	buf := NewAACFrameBuffer(2, 48000, mockEncode)
+	buf.SetBasePTS(90000)
+
+	// Feed 500 stereo samples (less than 1024).
+	pcm := make([]float32, 500*2)
+	for i := range pcm {
+		pcm[i] = 0.5
+	}
+	frames, err := buf.Feed(pcm)
+	if err != nil {
+		t.Fatalf("Feed error: %v", err)
+	}
+	if len(frames) != 0 {
+		t.Fatalf("should not produce frames before 1024 samples, got %d", len(frames))
+	}
+
+	// Flush (simulating shutdown) should produce exactly 1 padded frame.
+	frames, err = buf.Flush()
+	if err != nil {
+		t.Fatalf("Flush error: %v", err)
+	}
+	if len(frames) != 1 {
+		t.Fatalf("Flush should produce 1 frame, got %d", len(frames))
+	}
+
+	// Verify the frame has the correct base PTS.
+	if frames[0].PTS != 90000 {
+		t.Errorf("Flush frame PTS: expected 90000, got %d", frames[0].PTS)
+	}
+
+	// Verify buffer is empty after flush.
+	if buf.Pending() != 0 {
+		t.Errorf("expected 0 pending after flush, got %d", buf.Pending())
+	}
+}
+
 func TestAACBufferEmptyFeed(t *testing.T) {
 	buf := NewAACFrameBuffer(2, 48000, mockEncode)
 

@@ -15,6 +15,13 @@ type AACFrameBuffer struct {
 	frameCount int64 // AAC frames emitted (for PTS computation)
 	basePTS    int64 // PTS of first sample in the stream
 	encodeFn   func(pcm []float32) ([]byte, error)
+
+	// Bresenham PTS accumulator (Issue 5): tracks the running PTS and
+	// fractional remainder to eliminate truncation drift for non-integer
+	// frame durations (e.g., 44.1kHz where 1024*90000/44100 = 2088.435...).
+	currentPTS   int64 // PTS of the next frame to emit
+	ptsRemainder int64 // Bresenham fractional remainder
+	ptsInited    bool  // true after first SetBasePTS or first frame emission
 }
 
 // NewAACFrameBuffer creates a buffer that accumulates interleaved PCM samples
@@ -33,6 +40,9 @@ func NewAACFrameBuffer(channels, sampleRate int, encodeFn func([]float32) ([]byt
 // SetBasePTS sets the starting PTS for the audio stream.
 func (b *AACFrameBuffer) SetBasePTS(pts int64) {
 	b.basePTS = pts
+	b.currentPTS = pts
+	b.ptsRemainder = 0
+	b.ptsInited = true
 }
 
 // Feed adds interleaved PCM samples and returns any complete AAC frames.
@@ -79,11 +89,29 @@ func (b *AACFrameBuffer) FrameCount() int64 {
 	return b.frameCount
 }
 
+// advancePTS computes the PTS for the current frame and advances the Bresenham
+// accumulator for the next frame. Returns the PTS for the current frame.
+func (b *AACFrameBuffer) advancePTS() int64 {
+	if !b.ptsInited {
+		b.currentPTS = b.basePTS
+		b.ptsInited = true
+	}
+	pts := b.currentPTS
+
+	// Bresenham: advance by 1024 * 90000 / sampleRate with remainder tracking.
+	// This eliminates truncation drift for non-integer durations (e.g., 44.1kHz).
+	b.ptsRemainder += int64(aacSamplesPerFrame) * 90000
+	delta := b.ptsRemainder / int64(b.sampleRate)
+	b.ptsRemainder %= int64(b.sampleRate)
+	b.currentPTS += delta
+
+	return pts
+}
+
 // drain extracts complete 1024-sample frames from the buffer. If flush is true,
 // the final partial frame is zero-padded and emitted.
 func (b *AACFrameBuffer) drain(flush bool) ([]*media.AudioFrame, error) {
 	frameSize := aacSamplesPerFrame * b.channels
-	frameDuration90k := int64(aacSamplesPerFrame) * 90000 / int64(b.sampleRate)
 
 	var frames []*media.AudioFrame
 
@@ -93,8 +121,9 @@ func (b *AACFrameBuffer) drain(flush bool) ([]*media.AudioFrame, error) {
 			return frames, err
 		}
 
+		pts := b.advancePTS()
 		frames = append(frames, &media.AudioFrame{
-			PTS:        b.basePTS + b.frameCount*frameDuration90k,
+			PTS:        pts,
 			Data:       encoded,
 			SampleRate: b.sampleRate,
 			Channels:   b.channels,
@@ -116,8 +145,9 @@ func (b *AACFrameBuffer) drain(flush bool) ([]*media.AudioFrame, error) {
 			return frames, err
 		}
 
+		pts := b.advancePTS()
 		frames = append(frames, &media.AudioFrame{
-			PTS:        b.basePTS + b.frameCount*frameDuration90k,
+			PTS:        pts,
 			Data:       encoded,
 			SampleRate: b.sampleRate,
 			Channels:   b.channels,
