@@ -178,6 +178,111 @@ func ScaleLanczos3(ctx *Context, dst, src *GPUFrame) error {
 	return nil
 }
 
+// ScaleLanczos3P210 scales a P210 GPU frame using a two-pass separable
+// Lanczos-3 kernel. It allocates (and caches on the Context) a temporary float
+// buffer sized dstW * srcH floats, sufficient for both Y and UV passes.
+// UV is full height (4:2:2), not half height like NV12.
+func ScaleLanczos3P210(ctx *Context, dst, src *GPUFrame) error {
+	if ctx == nil || ctx.mtl == nil || dst == nil || src == nil {
+		return ErrGPUNotAvailable
+	}
+
+	mtl := ctx.mtl
+
+	// Ensure temp buffer is large enough: dstW * srcH floats cover both passes.
+	// For P210, UV is full height so the same temp size works.
+	needed := dst.Width * src.Height
+	if err := mtl.ensureLanczosTemp(needed); err != nil {
+		return err
+	}
+
+	yHPipeline, err := mtl.getPipeline("scale_lanczos3_p210_h")
+	if err != nil {
+		return fmt.Errorf("gpu: scale lanczos3 p210 h: %w", err)
+	}
+	yVPipeline, err := mtl.getPipeline("scale_lanczos3_p210_v")
+	if err != nil {
+		return fmt.Errorf("gpu: scale lanczos3 p210 v: %w", err)
+	}
+	uvHPipeline, err := mtl.getPipeline("scale_lanczos3_p210_uv_h")
+	if err != nil {
+		return fmt.Errorf("gpu: scale lanczos3 p210 uv h: %w", err)
+	}
+	uvVPipeline, err := mtl.getPipeline("scale_lanczos3_p210_uv_v")
+	if err != nil {
+		return fmt.Errorf("gpu: scale lanczos3 p210 uv v: %w", err)
+	}
+
+	// --- Y plane ---
+	// Pass 1: horizontal (srcW x srcH -> dstW x srcH)
+	hParams := C.MetalLanczos3HParams{
+		dstW:     C.uint32_t(dst.Width),
+		srcW:     C.uint32_t(src.Width),
+		srcH:     C.uint32_t(src.Height),
+		srcPitch: C.uint32_t(src.Pitch),
+	}
+	rc := C.metal_scale_lanczos3_h(mtl.queue, yHPipeline, mtl.lanczosTmpBuf, src.MetalBuf, &hParams)
+	if rc != C.METAL_SUCCESS {
+		return fmt.Errorf("gpu: scale lanczos3 p210 h Y failed: %d", rc)
+	}
+
+	// Pass 2: vertical (dstW x srcH -> dstW x dstH)
+	vParams := C.MetalLanczos3VParams{
+		dstW:     C.uint32_t(dst.Width),
+		dstH:     C.uint32_t(dst.Height),
+		dstPitch: C.uint32_t(dst.Pitch),
+		srcH:     C.uint32_t(src.Height),
+	}
+	rc = C.metal_scale_lanczos3_v(mtl.queue, yVPipeline, dst.MetalBuf, mtl.lanczosTmpBuf, &vParams)
+	if rc != C.METAL_SUCCESS {
+		return fmt.Errorf("gpu: scale lanczos3 p210 v Y failed: %d", rc)
+	}
+
+	// --- UV plane (P210: interleaved uint16 Cb/Cr pairs, FULL height for 4:2:2) ---
+	// Dedicated UV kernels filter Cb and Cr channels independently to prevent
+	// cross-channel mixing. srcW/dstW are in chroma samples (luma width / 2).
+	srcUVOffset := C.int64_t(src.Pitch * src.Height)
+	dstUVOffset := C.int64_t(dst.Pitch * dst.Height)
+	chromaSrcW := src.Width / 2
+	chromaDstW := dst.Width / 2
+
+	// Pass 1 (horizontal): UV src -> tmpBuf (2 floats per chroma sample)
+	uvHParams := C.MetalLanczos3HParams{
+		dstW:     C.uint32_t(chromaDstW),
+		srcW:     C.uint32_t(chromaSrcW),
+		srcH:     C.uint32_t(src.Height), // full height for 4:2:2
+		srcPitch: C.uint32_t(src.Pitch),
+	}
+	hBufs := [2]C.MetalBufferRef{mtl.lanczosTmpBuf, src.MetalBuf}
+	hOffsets := [2]C.int64_t{0, srcUVOffset}
+	rc = C.metal_dispatch_2d_offset(mtl.queue, uvHPipeline,
+		&hBufs[0], &hOffsets[0], 2,
+		unsafe.Pointer(&uvHParams), C.size_t(unsafe.Sizeof(uvHParams)), 2,
+		C.uint32_t(chromaDstW), C.uint32_t(src.Height))
+	if rc != C.METAL_SUCCESS {
+		return fmt.Errorf("gpu: scale lanczos3 p210 h UV failed: %d", rc)
+	}
+
+	// Pass 2 (vertical): tmpBuf -> dst UV
+	uvVParams := C.MetalLanczos3VParams{
+		dstW:     C.uint32_t(chromaDstW),
+		dstH:     C.uint32_t(dst.Height), // full height for 4:2:2
+		dstPitch: C.uint32_t(dst.Pitch),
+		srcH:     C.uint32_t(src.Height), // full height for 4:2:2
+	}
+	vBufs := [2]C.MetalBufferRef{dst.MetalBuf, mtl.lanczosTmpBuf}
+	vOffsets := [2]C.int64_t{dstUVOffset, 0}
+	rc = C.metal_dispatch_2d_offset(mtl.queue, uvVPipeline,
+		&vBufs[0], &vOffsets[0], 2,
+		unsafe.Pointer(&uvVParams), C.size_t(unsafe.Sizeof(uvVParams)), 2,
+		C.uint32_t(chromaDstW), C.uint32_t(dst.Height))
+	if rc != C.METAL_SUCCESS {
+		return fmt.Errorf("gpu: scale lanczos3 p210 v UV failed: %d", rc)
+	}
+
+	return nil
+}
+
 // Scale scales a GPU frame with the specified quality.
 func Scale(ctx *Context, dst, src *GPUFrame, quality ScaleQuality) error {
 	switch quality {

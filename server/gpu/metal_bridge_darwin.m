@@ -183,6 +183,14 @@ MetalBufferRef metal_buffer_alloc_aligned(MetalDeviceRef device, size_t size, si
     return metal_buffer_alloc(device, aligned);
 }
 
+MetalBufferRef metal_buffer_alloc_default(size_t size) {
+    id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
+    if (!dev) return NULL;
+    id<MTLBuffer> buf = [dev newBufferWithLength:size options:MTLResourceStorageModeShared];
+    if (!buf) return NULL;
+    return (void*)buf;
+}
+
 void metal_buffer_free(MetalBufferRef buffer) {
     if (buffer) CFRelease(buffer);
 }

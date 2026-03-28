@@ -243,6 +243,9 @@ func BlendFTBP210(ctx *Context, dst, src *GPUFrame, position float64) error {
 // ScaleBilinearP210 returns ErrGPUNotAvailable on non-GPU builds.
 func ScaleBilinearP210(ctx *Context, dst, src *GPUFrame) error { return ErrGPUNotAvailable }
 
+// ScaleLanczos3P210 returns ErrGPUNotAvailable on non-GPU builds.
+func ScaleLanczos3P210(ctx *Context, dst, src *GPUFrame) error { return ErrGPUNotAvailable }
+
 // PIPCompositeP210 returns ErrGPUNotAvailable on non-GPU builds.
 func PIPCompositeP210(ctx *Context, dst, src *GPUFrame, rect Rect, alpha float64) error {
 	return ErrGPUNotAvailable

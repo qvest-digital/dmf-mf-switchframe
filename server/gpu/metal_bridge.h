@@ -36,6 +36,7 @@ uint64_t metal_device_memory(MetalDeviceRef device);
 // --- Buffer management (unified memory) ---
 MetalBufferRef metal_buffer_alloc(MetalDeviceRef device, size_t size);
 MetalBufferRef metal_buffer_alloc_aligned(MetalDeviceRef device, size_t size, size_t alignment);
+MetalBufferRef metal_buffer_alloc_default(size_t size);
 void metal_buffer_free(MetalBufferRef buffer);
 void* metal_buffer_contents(MetalBufferRef buffer);
 size_t metal_buffer_length(MetalBufferRef buffer);

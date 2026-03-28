@@ -116,6 +116,15 @@ func GPUScaleDispatch(ctx *Context, dst, src *GPUFrame) error {
 	}
 }
 
+// GPUScaleLanczos3Dispatch scales a GPU frame using Lanczos-3 interpolation,
+// dispatching to the P210 or NV12 variant based on the destination frame's format.
+func GPUScaleLanczos3Dispatch(ctx *Context, dst, src *GPUFrame) error {
+	if dst != nil && dst.Format == GPUFormatP210 {
+		return ScaleLanczos3P210(ctx, dst, src)
+	}
+	return ScaleLanczos3(ctx, dst, src)
+}
+
 // GPUPIPCompositeDispatch composites a source into a destination rectangle,
 // dispatching to the P210 or NV12 variant based on the destination frame's format.
 func GPUPIPCompositeDispatch(ctx *Context, dst, src *GPUFrame, rect Rect, alpha float64) error {

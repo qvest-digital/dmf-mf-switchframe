@@ -286,6 +286,165 @@ kernel void scale_lanczos3_v(
 }
 
 // ============================================================================
+// Lanczos-3 separable two-pass scaler for P210 (10-bit 4:2:2)
+// ============================================================================
+// Y plane: horizontal reads uint16 luma, writes float. Vertical reads float,
+//   writes uint16, clamps to [0, 1023].
+// UV plane: dedicated kernels that handle interleaved CbCr uint16 pairs,
+//   filtering Cb and Cr channels independently to prevent cross-channel mixing.
+//   Temp buffer stores 2 floats per chroma sample (Cb, Cr interleaved).
+
+// Y plane pass 1 (horizontal): P210 uint16 src -> tmpBuf float
+// tmpBuf layout: row-major [srcH][dstW], row stride = dstW
+kernel void scale_lanczos3_p210_h(
+    device float* tmpBuf           [[buffer(0)]],
+    device const uchar* src        [[buffer(1)]],
+    constant Lanczos3HParams& params [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    uint dx = gid.x;
+    uint dy = gid.y;
+    if (dx >= params.dstW || dy >= params.srcH) return;
+
+    float srcXf = float(dx) * float(params.srcW - 1) / float(max(params.dstW - 1, 1u));
+    int center = int(srcXf);
+
+    device const ushort* srcU16 = (device const ushort*)src;
+    uint srcSamplesPerRow = params.srcPitch / 2;
+
+    float acc  = 0.0f;
+    float wsum = 0.0f;
+    for (int k = -2; k <= 3; ++k) {
+        int sx = center + k;
+        if (sx < 0) sx = 0;
+        if (sx >= int(params.srcW)) sx = int(params.srcW) - 1;
+        float w = lanczos3(srcXf - float(sx));
+        acc  += w * float(srcU16[dy * srcSamplesPerRow + uint(sx)]);
+        wsum += w;
+    }
+
+    tmpBuf[dy * params.dstW + dx] = (wsum != 0.0f) ? (acc / wsum) : 0.0f;
+}
+
+// Y plane pass 2 (vertical): tmpBuf float -> P210 uint16 dst
+kernel void scale_lanczos3_p210_v(
+    device uchar* dst               [[buffer(0)]],
+    device const float* tmpBuf      [[buffer(1)]],
+    constant Lanczos3VParams& params [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    uint dx = gid.x;
+    uint dy = gid.y;
+    if (dx >= params.dstW || dy >= params.dstH) return;
+
+    float srcYf = float(dy) * float(params.srcH - 1) / float(max(params.dstH - 1, 1u));
+    int center = int(srcYf);
+
+    float acc  = 0.0f;
+    float wsum = 0.0f;
+    for (int k = -2; k <= 3; ++k) {
+        int sy = center + k;
+        if (sy < 0) sy = 0;
+        if (sy >= int(params.srcH)) sy = int(params.srcH) - 1;
+        float w = lanczos3(srcYf - float(sy));
+        acc  += w * tmpBuf[uint(sy) * params.dstW + dx];
+        wsum += w;
+    }
+
+    float val = (wsum != 0.0f) ? (acc / wsum) : 0.0f;
+    // clamp to [0, 1023] for 10-bit
+    if (val < 0.0f)    val = 0.0f;
+    if (val > 1023.0f) val = 1023.0f;
+
+    uint dstSamplesPerRow = params.dstPitch / 2;
+    ((device ushort*)dst)[dy * dstSamplesPerRow + dx] = ushort(val + 0.5f);
+}
+
+// UV plane pass 1 (horizontal): P210 interleaved uint16 CbCr -> tmpBuf float
+// One thread per output chroma SAMPLE (CbCr pair).
+// srcW/dstW are in chroma samples (luma width / 2).
+// tmpBuf layout: row-major [srcH][dstW * 2] floats (Cb, Cr interleaved).
+kernel void scale_lanczos3_p210_uv_h(
+    device float* tmpBuf           [[buffer(0)]],
+    device const uchar* src        [[buffer(1)]],
+    constant Lanczos3HParams& params [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    uint dx = gid.x;  // chroma sample index
+    uint dy = gid.y;
+    if (dx >= params.dstW || dy >= params.srcH) return;
+
+    float srcXf = float(dx) * float(params.srcW - 1) / float(max(params.dstW - 1, 1u));
+    int center = int(srcXf);
+
+    device const ushort* srcU16 = (device const ushort*)src;
+    uint srcSamplesPerRow = params.srcPitch / 2; // ushort elements per row
+
+    float cbAcc = 0.0f, crAcc = 0.0f;
+    float wsum = 0.0f;
+    for (int k = -2; k <= 3; ++k) {
+        int sx = center + k;
+        if (sx < 0) sx = 0;
+        if (sx >= int(params.srcW)) sx = int(params.srcW) - 1;
+        float w = lanczos3(srcXf - float(sx));
+        cbAcc += w * float(srcU16[dy * srcSamplesPerRow + uint(sx) * 2]);
+        crAcc += w * float(srcU16[dy * srcSamplesPerRow + uint(sx) * 2 + 1]);
+        wsum  += w;
+    }
+
+    uint tmpStride = params.dstW * 2; // 2 floats per chroma sample
+    if (wsum != 0.0f) {
+        tmpBuf[dy * tmpStride + dx * 2]     = cbAcc / wsum;
+        tmpBuf[dy * tmpStride + dx * 2 + 1] = crAcc / wsum;
+    } else {
+        tmpBuf[dy * tmpStride + dx * 2]     = 0.0f;
+        tmpBuf[dy * tmpStride + dx * 2 + 1] = 0.0f;
+    }
+}
+
+// UV plane pass 2 (vertical): tmpBuf float -> P210 interleaved uint16 CbCr
+// One thread per output chroma SAMPLE (CbCr pair).
+// dstW is in chroma samples (luma width / 2).
+// tmpBuf stride is dstW * 2 floats per row.
+kernel void scale_lanczos3_p210_uv_v(
+    device uchar* dst               [[buffer(0)]],
+    device const float* tmpBuf      [[buffer(1)]],
+    constant Lanczos3VParams& params [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    uint dx = gid.x;  // chroma sample index
+    uint dy = gid.y;
+    if (dx >= params.dstW || dy >= params.dstH) return;
+
+    float srcYf = float(dy) * float(params.srcH - 1) / float(max(params.dstH - 1, 1u));
+    int center = int(srcYf);
+
+    uint tmpStride = params.dstW * 2; // 2 floats per chroma sample
+    float cbAcc = 0.0f, crAcc = 0.0f;
+    float wsum = 0.0f;
+    for (int k = -2; k <= 3; ++k) {
+        int sy = center + k;
+        if (sy < 0) sy = 0;
+        if (sy >= int(params.srcH)) sy = int(params.srcH) - 1;
+        float w = lanczos3(srcYf - float(sy));
+        cbAcc += w * tmpBuf[uint(sy) * tmpStride + dx * 2];
+        crAcc += w * tmpBuf[uint(sy) * tmpStride + dx * 2 + 1];
+        wsum  += w;
+    }
+
+    float cbVal = (wsum != 0.0f) ? (cbAcc / wsum) : 0.0f;
+    float crVal = (wsum != 0.0f) ? (crAcc / wsum) : 0.0f;
+    if (cbVal < 0.0f)    cbVal = 0.0f;
+    if (cbVal > 1023.0f) cbVal = 1023.0f;
+    if (crVal < 0.0f)    crVal = 0.0f;
+    if (crVal > 1023.0f) crVal = 1023.0f;
+
+    uint dstSamplesPerRow = params.dstPitch / 2;
+    ((device ushort*)dst)[dy * dstSamplesPerRow + dx * 2]     = ushort(cbVal + 0.5f);
+    ((device ushort*)dst)[dy * dstSamplesPerRow + dx * 2 + 1] = ushort(crVal + 0.5f);
+}
+
+// ============================================================================
 // Cross-format scale: P210 (10-bit 4:2:2) → NV12 (8-bit 4:2:0)
 // Reads uint16 samples from P210, bilinear interpolates, right-shifts to 8-bit.
 // ============================================================================
