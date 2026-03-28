@@ -320,17 +320,18 @@ describe('GraphicsPanel', () => {
 		expect(selected).toBeTruthy();
 	});
 
-	it('should have 4 source mode buttons (TPL, IMG, TICK, H5)', () => {
+	it('should have 5 source mode buttons (TPL, IMG, SEQ, TICK, H5)', () => {
 		const state = {
 			...baseState,
 			graphics: { layers: [oneLayer] },
 		};
 		const { container } = render(GraphicsPanel, { props: { state } });
 		const modeBtns = container.querySelectorAll('.mode-seg');
-		expect(modeBtns.length).toBe(4);
+		expect(modeBtns.length).toBe(5);
 		const labels = Array.from(modeBtns).map(b => b.textContent?.trim());
 		expect(labels.some(l => l?.includes('TPL'))).toBe(true);
 		expect(labels.some(l => l?.includes('IMG'))).toBe(true);
+		expect(labels.some(l => l?.includes('SEQ'))).toBe(true);
 		expect(labels.some(l => l?.includes('TICK'))).toBe(true);
 		expect(labels.some(l => l?.includes('H5'))).toBe(true);
 	});
