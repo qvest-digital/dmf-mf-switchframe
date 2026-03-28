@@ -135,6 +135,11 @@ static int ffdec_is_planar_420_10bit(AVFrame* f) {
 	return f->format == AV_PIX_FMT_YUV420P10LE || f->format == AV_PIX_FMT_YUV420P10BE;
 }
 
+// ffdec_is_planar_422 returns 1 if the frame is YUV422P or YUVJ422P (8-bit 4:2:2 planar).
+static int ffdec_is_planar_422(AVFrame* f) {
+	return f->format == AV_PIX_FMT_YUV422P || f->format == AV_PIX_FMT_YUVJ422P;
+}
+
 // ffdec_is_planar_422_10bit returns 1 if the frame is YUV422P10LE or YUV422P10BE (10-bit 4:2:2 planar).
 static int ffdec_is_planar_422_10bit(AVFrame* f) {
 	return f->format == AV_PIX_FMT_YUV422P10LE || f->format == AV_PIX_FMT_YUV422P10BE;
@@ -143,7 +148,8 @@ static int ffdec_is_planar_422_10bit(AVFrame* f) {
 // ffdec_is_supported_format returns 1 if the decoder can handle this pixel format.
 static int ffdec_is_supported_format(AVFrame* f) {
 	return ffdec_is_planar_420(f) || ffdec_is_planar_420_10bit(f)
-	    || ffdec_is_planar_422_10bit(f) || f->format == AV_PIX_FMT_NV12;
+	    || ffdec_is_planar_422(f) || ffdec_is_planar_422_10bit(f)
+	    || f->format == AV_PIX_FMT_NV12;
 }
 
 // ffdec_copy_10bit_to_8bit copies a 10-bit YUV420P plane to 8-bit by right-shifting.
@@ -312,9 +318,10 @@ static int ffdec_copy_frame_10bit(AVFrame* src_frame, unsigned char* dst, int w,
 }
 
 // ffdec_is_full_range returns 1 if the decoded frame uses full-range (JPEG) levels.
-// Checks both the deprecated YUVJ420P pixel format and the modern color_range field.
+// Checks both the deprecated YUVJ pixel formats and the modern color_range field.
 static int ffdec_is_full_range(AVFrame* f) {
 	if (f->format == AV_PIX_FMT_YUVJ420P) return 1;
+	if (f->format == AV_PIX_FMT_YUVJ422P) return 1;
 	if (f->color_range == AVCOL_RANGE_JPEG) return 1;
 	return 0;
 }
@@ -406,12 +413,105 @@ static void ffdec_copy_nv12(AVFrame* src_frame, unsigned char* dst,
 	}
 }
 
+// ffdec_copy_422p_to_420p copies 8-bit YUV422P into packed YUV420P dst buffer,
+// downsampling chroma vertically by averaging adjacent row pairs.
+// dst must have capacity >= w*h*3/2.
+static void ffdec_copy_422p_to_420p(AVFrame* src_frame, unsigned char* dst,
+                                     int w, int h_val, int remap_to_limited) {
+	int uv_w = w / 2;
+	int uv_h = h_val / 2;
+	int y_size = w * h_val;
+	int uv_size = uv_w * uv_h;
+
+	// Copy Y plane (same for 422 and 420).
+	if (remap_to_limited) {
+		for (int row = 0; row < h_val; row++) {
+			remap_row(dst + row * w,
+			          src_frame->data[0] + row * src_frame->linesize[0],
+			          w, full_to_limited_y);
+		}
+	} else {
+		for (int row = 0; row < h_val; row++) {
+			memcpy(dst + row * w,
+			       src_frame->data[0] + row * src_frame->linesize[0], w);
+		}
+	}
+
+	// Downsample chroma: 422 has full-height chroma, 420 has half-height.
+	// Average pairs of adjacent chroma rows.
+	for (int plane = 1; plane <= 2; plane++) {
+		unsigned char* plane_dst = dst + y_size + (plane - 1) * uv_size;
+		for (int row = 0; row < uv_h; row++) {
+			const unsigned char* row0 = src_frame->data[plane] + (row * 2) * src_frame->linesize[plane];
+			const unsigned char* row1 = src_frame->data[plane] + (row * 2 + 1) * src_frame->linesize[plane];
+			unsigned char* d = plane_dst + row * uv_w;
+			if (remap_to_limited) {
+				const unsigned char* lut = (plane == 1) ? full_to_limited_uv : full_to_limited_uv;
+				for (int col = 0; col < uv_w; col++) {
+					unsigned char avg = (unsigned char)(((unsigned int)row0[col] + (unsigned int)row1[col] + 1) >> 1);
+					d[col] = lut[avg];
+				}
+			} else {
+				for (int col = 0; col < uv_w; col++) {
+					d[col] = (unsigned char)(((unsigned int)row0[col] + (unsigned int)row1[col] + 1) >> 1);
+				}
+			}
+		}
+	}
+}
+
+// ffdec_copy_422p_to_422p10le promotes 8-bit YUV422P to YUV422P10LE output.
+// Each 8-bit sample is left-shifted by 2 to fill the 10-bit range.
+// dst must have capacity >= w*h*4.
+static void ffdec_copy_422p_to_422p10le(AVFrame* src_frame, unsigned char* dst,
+                                         int w, int h_val) {
+	int y_size_bytes = w * h_val * 2;       // Y: w*h samples, 2 bytes each
+	int uv_size_bytes = (w / 2) * h_val * 2; // each chroma: w/2*h samples, 2 bytes each
+
+	// Y plane: promote 8-bit to 10-bit LE
+	for (int row = 0; row < h_val; row++) {
+		const unsigned char* src = src_frame->data[0] + row * src_frame->linesize[0];
+		unsigned char* d = dst + row * w * 2;
+		for (int col = 0; col < w; col++) {
+			unsigned short val10 = (unsigned short)src[col] << 2;
+			d[col * 2]     = (unsigned char)(val10 & 0xFF);
+			d[col * 2 + 1] = (unsigned char)(val10 >> 8);
+		}
+	}
+
+	// U plane
+	int uv_w = w / 2;
+	for (int row = 0; row < h_val; row++) {
+		const unsigned char* src = src_frame->data[1] + row * src_frame->linesize[1];
+		unsigned char* d = dst + y_size_bytes + row * uv_w * 2;
+		for (int col = 0; col < uv_w; col++) {
+			unsigned short val10 = (unsigned short)src[col] << 2;
+			d[col * 2]     = (unsigned char)(val10 & 0xFF);
+			d[col * 2 + 1] = (unsigned char)(val10 >> 8);
+		}
+	}
+
+	// V plane
+	for (int row = 0; row < h_val; row++) {
+		const unsigned char* src = src_frame->data[2] + row * src_frame->linesize[2];
+		unsigned char* d = dst + y_size_bytes + uv_size_bytes + row * uv_w * 2;
+		for (int col = 0; col < uv_w; col++) {
+			unsigned short val10 = (unsigned short)src[col] << 2;
+			d[col * 2]     = (unsigned char)(val10 & 0xFF);
+			d[col * 2 + 1] = (unsigned char)(val10 >> 8);
+		}
+	}
+}
+
 // ffdec_copy_frame copies decoded frame into packed YUV420P dst buffer.
-// Handles planar YUV420P/YUVJ420P, semi-planar NV12, and 10-bit YUV420P10 inputs.
+// Handles planar YUV420P/YUVJ420P, YUV422P/YUVJ422P (with 422→420 downsample),
+// semi-planar NV12, and 10-bit YUV420P10 inputs.
 static void ffdec_copy_frame(AVFrame* src_frame, unsigned char* dst,
                              int w, int h_val, int remap_to_limited) {
 	if (ffdec_is_planar_420_10bit(src_frame)) {
 		ffdec_copy_10bit(src_frame, dst, w, h_val, remap_to_limited);
+	} else if (ffdec_is_planar_422(src_frame)) {
+		ffdec_copy_422p_to_420p(src_frame, dst, w, h_val, remap_to_limited);
 	} else if (src_frame->format == AV_PIX_FMT_NV12) {
 		ffdec_copy_nv12(src_frame, dst, w, h_val, remap_to_limited);
 	} else {
@@ -479,10 +579,11 @@ static int ffdec_decode(ffdec_t* h, unsigned char* data, int data_len,
 	int w = src_frame->width;
 	int h_val = src_frame->height;
 
-	// When output_10bit_422 is set and the source is 10-bit, output YUV422P10LE.
-	// Total bytes: w*h*4. For 8-bit sources, fall through to standard path.
+	// When output_10bit_422 is set and the source is 10-bit or 8-bit 422,
+	// output YUV422P10LE. Total bytes: w*h*4.
 	if (h->output_10bit_422 &&
-	    (ffdec_is_planar_422_10bit(src_frame) || ffdec_is_planar_420_10bit(src_frame))) {
+	    (ffdec_is_planar_422_10bit(src_frame) || ffdec_is_planar_420_10bit(src_frame)
+	     || ffdec_is_planar_422(src_frame))) {
 		int total_10bit = w * h_val * 4;
 
 		unsigned char* buf;
@@ -499,7 +600,11 @@ static int ffdec_decode(ffdec_t* h, unsigned char* data, int data_len,
 			}
 		}
 
-		ffdec_copy_frame_10bit(src_frame, buf, w, h_val);
+		if (ffdec_is_planar_422(src_frame)) {
+			ffdec_copy_422p_to_422p10le(src_frame, buf, w, h_val);
+		} else {
+			ffdec_copy_frame_10bit(src_frame, buf, w, h_val);
+		}
 
 		*out_buf = buf;
 		*out_len = total_10bit;
@@ -602,9 +707,11 @@ static int ffdec_receive_only(ffdec_t* h, unsigned char* dst_buf, int dst_cap,
 	int w = src_frame->width;
 	int h_val = src_frame->height;
 
-	// When output_10bit_422 is set and the source is 10-bit, output YUV422P10LE.
+	// When output_10bit_422 is set and the source is 10-bit or 8-bit 422,
+	// output YUV422P10LE. Total bytes: w*h*4.
 	if (h->output_10bit_422 &&
-	    (ffdec_is_planar_422_10bit(src_frame) || ffdec_is_planar_420_10bit(src_frame))) {
+	    (ffdec_is_planar_422_10bit(src_frame) || ffdec_is_planar_420_10bit(src_frame)
+	     || ffdec_is_planar_422(src_frame))) {
 		int total_10bit = w * h_val * 4;
 
 		unsigned char* buf;
@@ -621,7 +728,11 @@ static int ffdec_receive_only(ffdec_t* h, unsigned char* dst_buf, int dst_cap,
 			}
 		}
 
-		ffdec_copy_frame_10bit(src_frame, buf, w, h_val);
+		if (ffdec_is_planar_422(src_frame)) {
+			ffdec_copy_422p_to_422p10le(src_frame, buf, w, h_val);
+		} else {
+			ffdec_copy_frame_10bit(src_frame, buf, w, h_val);
+		}
 
 		*out_buf = buf;
 		*out_len = total_10bit;
@@ -755,6 +866,32 @@ func NewFFmpegDecoderWithThreads(hwDeviceCtx unsafe.Pointer, threadCount int) (*
 	if rc != 0 {
 		return nil, fmt.Errorf("failed to create FFmpeg decoder: code %d", int(rc))
 	}
+	return d, nil
+}
+
+// NewFFmpegDecoderNative10bit creates an H.264 decoder that preserves 10-bit
+// 422 output. When the decoded frame is YUV422P (8-bit) or YUV420P10/YUV422P10,
+// the decoder outputs YUV422P10LE (w*h*4 bytes) instead of downconverting.
+func NewFFmpegDecoderNative10bit(hwDeviceCtx unsafe.Pointer) (*FFmpegDecoder, error) {
+	return NewFFmpegDecoderNative10bitWithThreads(hwDeviceCtx, 0)
+}
+
+// NewFFmpegDecoderNative10bitWithThreads creates an H.264 decoder with explicit
+// thread count and native 10-bit output support.
+func NewFFmpegDecoderNative10bitWithThreads(hwDeviceCtx unsafe.Pointer, threadCount int) (*FFmpegDecoder, error) {
+	initFFmpegLogLevel()
+	initRangeTablesOnce.Do(func() {
+		C.init_range_tables()
+	})
+
+	d := &FFmpegDecoder{output10bit422: true}
+	FFmpegOpenMu.Lock()
+	rc := C.ffdec_open(&d.handle, hwDeviceCtx, C.int(threadCount))
+	FFmpegOpenMu.Unlock()
+	if rc != 0 {
+		return nil, fmt.Errorf("failed to create FFmpeg decoder (native 10-bit): code %d", int(rc))
+	}
+	d.handle.output_10bit_422 = 1
 	return d, nil
 }
 

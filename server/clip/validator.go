@@ -466,11 +466,15 @@ func ParseSPSDimensions(sps []byte) (width, height int) {
 
 	r.readUE() // seq_parameter_set_id
 
+	// chromaFormatIDC determines chroma subsampling. Inferred as 1 (4:2:0)
+	// for profiles that don't signal it (Baseline, Main, Extended).
+	var chromaFormatIDC uint32 = 1
+
 	// High profile and related profiles have additional fields.
 	if profileIDC == 100 || profileIDC == 110 || profileIDC == 122 ||
 		profileIDC == 244 || profileIDC == 44 || profileIDC == 83 ||
 		profileIDC == 86 || profileIDC == 118 || profileIDC == 128 {
-		chromaFormatIDC := r.readUE()
+		chromaFormatIDC = r.readUE()
 		if chromaFormatIDC == 3 {
 			r.skip(1) // separate_colour_plane_flag
 		}
@@ -542,12 +546,24 @@ func ParseSPSDimensions(sps []byte) (width, height int) {
 		cropTop := r.readUE()
 		cropBottom := r.readUE()
 		if !r.err {
-			// Crop units depend on chroma format, but for 4:2:0 (most common):
-			// CropUnitX = 2, CropUnitY = 2 * (2 - frame_mbs_only_flag)
+			// Crop units depend on chroma format (H.264 spec Table 6-1):
+			//   chromaFormatIDC=1 (4:2:0): SubWidthC=2, SubHeightC=2
+			//   chromaFormatIDC=2 (4:2:2): SubWidthC=2, SubHeightC=1
+			//   chromaFormatIDC=3 (4:4:4): SubWidthC=1, SubHeightC=1
+			// CropUnitX = SubWidthC
+			// CropUnitY = SubHeightC * (2 - frame_mbs_only_flag)
 			cropUnitX := 2
-			cropUnitY := 2
+			subHeightC := 2
+			switch chromaFormatIDC {
+			case 2: // 4:2:2
+				subHeightC = 1
+			case 3: // 4:4:4
+				cropUnitX = 1
+				subHeightC = 1
+			}
+			cropUnitY := subHeightC
 			if frameMbsOnly == 0 {
-				cropUnitY = 4
+				cropUnitY = subHeightC * 2
 			}
 			width -= int(cropLeft+cropRight) * cropUnitX
 			height -= int(cropTop+cropBottom) * cropUnitY
