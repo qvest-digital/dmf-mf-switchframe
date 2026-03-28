@@ -153,6 +153,15 @@ func newPipelineHarness(t *testing.T, opts ...harnessOption) *pipelineHarness {
 		sw.SetAudioHandler(func(sourceKey string, frame *media.AudioFrame) {
 			mixer.IngestFrame(sourceKey, frame)
 		})
+
+		// Mirror production wiring (app.go): seed audio PTS from video so
+		// both streams share the same PTS epoch. Without this, the mixer
+		// self-seeds from wall clock which diverges from synthetic video PTS.
+		mixer.ExpectVideoSeed()
+		sw.SetOnFirstVideoPTS(func(pts int64) {
+			mixer.SeedPTSFromVideo(pts)
+		})
+		sw.EnableWallClockVideoPTS()
 	}
 
 	// Optional: graphics compositor.
