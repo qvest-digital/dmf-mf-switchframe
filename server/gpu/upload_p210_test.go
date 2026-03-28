@@ -284,7 +284,8 @@ func TestUploadYUV420PToP210_BufferTooSmall(t *testing.T) {
 
 func TestUploadYUV420PToP210_NilContext(t *testing.T) {
 	err := UploadYUV420PToP210(nil, &GPUFrame{}, make([]byte, 1024), 16, 16)
-	assert.Equal(t, ErrGPUNotAvailable, err)
+	// On Metal: ErrGPUNotAvailable. On CUDA: "not supported" error. Both must error.
+	assert.Error(t, err)
 }
 
 func TestUploadYUV420PToP210_DimensionsTooSmall(t *testing.T) {
