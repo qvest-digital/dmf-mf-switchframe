@@ -143,7 +143,7 @@ func (m *TSMuxer) SetSCTE35PID(pid uint16) {
 func (m *TSMuxer) maxBitrateBytes() uint32 {
 	bps := m.maxBitrate
 	if bps <= 0 {
-		bps = 5000000 // default 5 Mbps
+		bps = 50000000 // default 50 Mbps
 	}
 	return uint32(bps / 8)
 }
