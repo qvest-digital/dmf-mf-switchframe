@@ -178,9 +178,26 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 	// the same caption data without double-consuming.
 	var lastCaptionSEI atomic.Pointer[[]byte]
 
-	// injectCaptionSEI inserts the given SEI NALU into AVC1 data.
-	// Returns the modified AVC1 data, or the original if sei is nil/empty.
-	injectCaptionSEI := func(avc1 []byte, sei []byte) []byte {
+	// injectCaptionSEI inserts the given SEI NALU into wire-format data
+	// (4-byte length-prefixed NALUs). Codec-aware: dispatches to HEVC VCL
+	// detection when the pipeline uses HEVC.
+	pipelineCodec := pf.Color.Codec
+	injectCaptionSEI := func(wire []byte, sei []byte) []byte {
+		if len(sei) == 0 {
+			return wire
+		}
+		var codecArg string
+		if pipelineCodec == switcher.CodecHEVC {
+			codecArg = "h265"
+		}
+		annexB := codec.WireToAnnexBInto(wire, nil)
+		inserted := caption.InsertSEIBeforeVCLInto(sei, annexB, nil, codecArg)
+		return codec.AnnexBToWireInto(inserted, nil)
+	}
+
+	// injectPreviewCaptionSEI inserts an AVC-format SEI NALU into AVC1 data.
+	// Preview is always H.264 regardless of pipeline codec.
+	injectPreviewCaptionSEI := func(avc1 []byte, sei []byte) []byte {
 		if len(sei) == 0 {
 			return avc1
 		}
@@ -194,18 +211,31 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 	// preview encoder, injects into the program output, and broadcasts.
 	broadcastToProgram := sw.BroadcastToProgramFunc()
 	videoInfoCb := app.videoInfoCallback("gpu-pipeline")
-	var gpuSPS, gpuPPS []byte
+	var gpuVPS, gpuSPS, gpuPPS []byte
 	gpuOnEncoded := func(data []byte, isIDR bool, pts int64) {
-		avc1 := codec.AnnexBToAVC1Into(data, nil)
+		// Convert Annex B to wire format (4-byte length prefix).
+		// AVC1 and HVC1 use the same wire encoding.
+		wire := codec.AnnexBToWireInto(data, nil)
 
 		// Consume caption pairs (once per frame) and cache SEI for preview.
 		if app.captionMgr != nil {
 			pairs := app.captionMgr.ConsumeForFrameWithVANC()
 			if len(pairs) > 0 {
-				sei := caption.BuildSEINALU(pairs)
+				var codecStr string
+				if pipelineCodec == switcher.CodecHEVC {
+					codecStr = "h265"
+				}
+				sei := caption.BuildSEINALU(pairs, codecStr)
 				if len(sei) > 0 {
-					lastCaptionSEI.Store(&sei)
-					avc1 = injectCaptionSEI(avc1, sei)
+					// Only cache SEI for preview when AVC — HEVC SEI NALUs
+					// have a different header format and cannot be injected
+					// into the AVC preview stream.
+					if pipelineCodec != switcher.CodecHEVC {
+						lastCaptionSEI.Store(&sei)
+					} else {
+						lastCaptionSEI.Store(nil)
+					}
+					wire = injectCaptionSEI(wire, sei)
 				} else {
 					lastCaptionSEI.Store(nil)
 				}
@@ -214,37 +244,58 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 			}
 		}
 
-		// Extract SPS/PPS from IDR keyframes for VideoInfo.
+		// Extract parameter sets from IDR keyframes for VideoInfo.
 		if isIDR {
-			nalus := codec.ExtractNALUs(avc1)
-			for _, nalu := range nalus {
-				if len(nalu) == 0 {
-					continue
+			nalus := codec.ExtractNALUs(wire)
+			if pipelineCodec == switcher.CodecHEVC {
+				for _, nalu := range nalus {
+					if len(nalu) < 2 {
+						continue
+					}
+					nalType := codec.HEVCNALUType(nalu[0])
+					switch nalType {
+					case codec.HEVCNALVPS:
+						gpuVPS = append([]byte{}, nalu...)
+					case codec.HEVCNALSPS:
+						gpuSPS = append([]byte{}, nalu...)
+					case codec.HEVCNALPPS:
+						gpuPPS = append([]byte{}, nalu...)
+					}
 				}
-				switch nalu[0] & 0x1F {
-				case 7: // SPS
-					sps := make([]byte, len(nalu))
-					copy(sps, nalu)
-					gpuSPS = sps
-				case 8: // PPS
-					pps := make([]byte, len(nalu))
-					copy(pps, nalu)
-					gpuPPS = pps
+				if gpuVPS != nil && gpuSPS != nil && gpuPPS != nil {
+					videoInfoCb(gpuVPS, gpuSPS, gpuPPS, pf.Width, pf.Height)
+				}
+			} else {
+				for _, nalu := range nalus {
+					if len(nalu) == 0 {
+						continue
+					}
+					switch nalu[0] & 0x1F {
+					case 7: // SPS
+						gpuSPS = append([]byte{}, nalu...)
+					case 8: // PPS
+						gpuPPS = append([]byte{}, nalu...)
+					}
+				}
+				if gpuSPS != nil && gpuPPS != nil {
+					videoInfoCb(nil, gpuSPS, gpuPPS, pf.Width, pf.Height)
 				}
 			}
-			if gpuSPS != nil && gpuPPS != nil {
-				// GPU pipeline is currently AVC-only, so VPS is nil.
-				videoInfoCb(nil, gpuSPS, gpuPPS, pf.Width, pf.Height)
-			}
+		}
+
+		frameCodec := "H264"
+		if pipelineCodec == switcher.CodecHEVC {
+			frameCodec = "H265"
 		}
 
 		frame := &media.VideoFrame{
 			PTS:        pts,
 			IsKeyframe: isIDR,
-			WireData:   avc1,
-			Codec:      "H264",
+			WireData:   wire,
+			Codec:      frameCodec,
 		}
-		if isIDR && gpuSPS != nil {
+		if isIDR {
+			frame.VPS = gpuVPS
 			frame.SPS = gpuSPS
 			frame.PPS = gpuPPS
 		}
@@ -265,8 +316,10 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 			avc1 := codec.AnnexBToAVC1Into(data, nil)
 
 			// Inject cached caption SEI (produced by program encode callback).
+			// Only available when pipeline is AVC — HEVC SEI NALUs have a
+			// different header format and cannot be injected into AVC preview.
 			if seiPtr := lastCaptionSEI.Load(); seiPtr != nil {
-				avc1 = injectCaptionSEI(avc1, *seiPtr)
+				avc1 = injectPreviewCaptionSEI(avc1, *seiPtr)
 			}
 
 			if isIDR {
