@@ -246,7 +246,10 @@ func TestDetectTmpfsDir_ValidPath(t *testing.T) {
 }
 
 func TestDetectTmpfsDir_InvalidPath(t *testing.T) {
-	_, ok := detectTmpfsDir("/nonexistent/impossible/path/replay")
+	// Use a path under /proc which cannot have user-created subdirectories,
+	// even as root. This avoids false passes from stale directories left
+	// by previous test runs.
+	_, ok := detectTmpfsDir("/proc/nonexistent_switchframe_test/replay")
 	require.False(t, ok)
 }
 
@@ -302,7 +305,7 @@ func TestManager_TmpfsDisabled(t *testing.T) {
 func TestManager_TmpfsFallbackOnError(t *testing.T) {
 	relay := &mockRelay{}
 	cfg := DefaultConfig()
-	cfg.TmpfsDir = "/nonexistent/impossible/path"
+	cfg.TmpfsDir = "/proc/nonexistent_switchframe_test"
 
 	m := NewManager(relay, cfg, mockDecoderFactory, mockEncoderFactory)
 	defer m.Close()

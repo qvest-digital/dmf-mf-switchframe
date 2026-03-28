@@ -27,7 +27,7 @@ func TestNewSAM2Model_InvalidPath(t *testing.T) {
 func TestSAM2EncodeStub(t *testing.T) {
 	t.Run("Encode returns ErrDisabled on nil receiver", func(t *testing.T) {
 		var m *sam2Model
-		err := m.Encode(0x1000, 1920, 1080, 2048)
+		err := m.Encode(0x1000, 1920, 1080, 2048, FormatNV12)
 		if !errors.Is(err, ErrDisabled) {
 			t.Errorf("expected ErrDisabled, got %v", err)
 		}
@@ -37,7 +37,7 @@ func TestSAM2EncodeStub(t *testing.T) {
 func TestSAM2PropagateStub(t *testing.T) {
 	t.Run("Propagate returns ErrDisabled on nil receiver", func(t *testing.T) {
 		var m *sam2Model
-		err := m.Propagate(0x1000, 1920, 1080, 2048, 0x2000)
+		err := m.Propagate(0x1000, 1920, 1080, 2048, 0x2000, FormatNV12)
 		if !errors.Is(err, ErrDisabled) {
 			t.Errorf("expected ErrDisabled, got %v", err)
 		}

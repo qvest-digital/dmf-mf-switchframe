@@ -44,7 +44,7 @@ func ComputeCropRect(srcW, srcH, slotW, slotH int, anchorX, anchorY float64) (cr
 }
 
 // CropYUV420Region extracts a YUV420 sub-region from src into dst.
-// dst must be at least cropW*cropH*3/2 bytes.
+// dst must be at least yuvFrameSize(cropW, cropH) bytes.
 // All crop coordinates must be even-aligned.
 func CropYUV420Region(dst, src []byte, srcW, srcH, cropX, cropY, cropW, cropH int) {
 	if cropW <= 0 || cropH <= 0 {

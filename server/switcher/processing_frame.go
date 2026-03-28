@@ -13,7 +13,7 @@ type GPURefCounter interface {
 	Release()
 }
 
-// ProcessingFrame carries decoded YUV420 data through the video processing chain.
+// ProcessingFrame carries decoded pixel data through the video processing chain.
 // Created by decoding a media.VideoFrame, consumed by encoding back to one.
 // Used only inside the switcher pipeline — not a replacement for media.VideoFrame.
 //
@@ -28,7 +28,8 @@ type GPURefCounter interface {
 // frame_sync's pattern of `releaseRawVideo = *newest` correctly shares the
 // refcount. This follows the FFmpeg AVBufferRef model.
 type ProcessingFrame struct {
-	YUV        []byte // YUV420 planar: Y[w*h] + Cb[w/2*h/2] + Cr[w/2*h/2]
+	Data       []byte              // Raw planar pixel data (layout depends on pipeline color format)
+	Format     PipelineColorFormat // Color format of this frame's data
 	Width      int
 	Height     int
 	PTS        int64
@@ -92,7 +93,7 @@ func (pf *ProcessingFrame) Refs() int32 {
 }
 
 // Ref increments the reference count, indicating an additional consumer
-// holds a reference to this frame's YUV buffer. No-op on unmanaged frames.
+// holds a reference to this frame's data buffer. No-op on unmanaged frames.
 func (pf *ProcessingFrame) Ref() {
 	if pf.refs == nil {
 		return
@@ -100,15 +101,15 @@ func (pf *ProcessingFrame) Ref() {
 	pf.refs.Add(1)
 }
 
-// ReleaseYUV returns the YUV buffer to the pool when the last reference is
+// ReleaseYUV returns the data buffer to the pool when the last reference is
 // dropped. For refcounted frames (refs >= 1), decrements and releases only
 // when refs reaches 0. For unmanaged frames (nil refs), releases immediately.
-// Safe to call multiple times; subsequent calls on nil YUV are no-ops.
+// Safe to call multiple times; subsequent calls on nil Data are no-ops.
 //
 // Also releases GPUData if it implements GPURefCounter (decrements GPU
 // frame reference count, freeing GPU memory when the last reference drops).
 func (pf *ProcessingFrame) ReleaseYUV() {
-	if pf.YUV == nil {
+	if pf.Data == nil {
 		return
 	}
 	if pf.refs != nil {
@@ -131,22 +132,22 @@ func (pf *ProcessingFrame) ReleaseYUV() {
 		pf.GPUData = nil
 	}
 	if pf.pool != nil {
-		pf.pool.Release(pf.YUV)
+		pf.pool.Release(pf.Data)
 	}
-	pf.YUV = nil
+	pf.Data = nil
 }
 
-// MakeWritable ensures this frame has exclusive ownership of its YUV buffer.
+// MakeWritable ensures this frame has exclusive ownership of its data buffer.
 // If the refcount is > 1 (buffer shared with frame_sync, another consumer, etc.),
 // acquires a new buffer from the pool, copies the data, and detaches from the
-// shared refcount. If the frame is already the sole owner (refs ≤ 1) or
+// shared refcount. If the frame is already the sole owner (refs <= 1) or
 // unmanaged (nil refs), this is a no-op.
 //
 // Follows the FFmpeg av_frame_make_writable() / GStreamer gst_buffer_make_writable()
 // pattern. The pipeline calls this at entry so compositor nodes can safely modify
-// YUV in-place without aliasing source frames retained by frame_sync.
+// data in-place without aliasing source frames retained by frame_sync.
 func (pf *ProcessingFrame) MakeWritable(pool *FramePool) {
-	if pf.YUV == nil {
+	if pf.Data == nil {
 		return
 	}
 	if pf.refs == nil || pf.refs.Load() <= 1 {
@@ -154,13 +155,13 @@ func (pf *ProcessingFrame) MakeWritable(pool *FramePool) {
 	}
 
 	// Shared buffer — acquire our own copy.
-	var newYUV []byte
-	if pool != nil && len(pf.YUV) <= pool.bufSize {
-		newYUV = pool.Acquire()[:len(pf.YUV)]
+	var newBuf []byte
+	if pool != nil && len(pf.Data) <= pool.bufSize {
+		newBuf = pool.Acquire()[:len(pf.Data)]
 	} else {
-		newYUV = make([]byte, len(pf.YUV))
+		newBuf = make([]byte, len(pf.Data))
 	}
-	copy(newYUV, pf.YUV)
+	copy(newBuf, pf.Data)
 
 	// Release our ref on the shared buffer. If this drops it to 0 the
 	// original owner's ReleaseYUV will be a no-op (already returned).
@@ -169,11 +170,11 @@ func (pf *ProcessingFrame) MakeWritable(pool *FramePool) {
 	// Detach: independent refcount, own buffer, own pool reference.
 	pf.refs = &atomic.Int32{}
 	pf.refs.Store(1)
-	pf.YUV = newYUV
+	pf.Data = newBuf
 	pf.pool = pool
 }
 
-// SetPool sets the FramePool that owns this frame's YUV buffer.
+// SetPool sets the FramePool that owns this frame's data buffer.
 // ReleaseYUV will return the buffer to the pool when all references
 // are dropped. Exported so external packages (e.g., SRT wiring in
 // main) can set pool ownership on frames they create.
@@ -181,7 +182,7 @@ func (pf *ProcessingFrame) SetPool(pool *FramePool) {
 	pf.pool = pool
 }
 
-// DeepCopy returns a new ProcessingFrame with a copied YUV buffer.
+// DeepCopy returns a new ProcessingFrame with a copied data buffer.
 // The copy starts with nil refs (unmanaged, independent lifecycle).
 // Caller should call SetRefs(1) if the copy will flow through the pipeline.
 //
@@ -191,12 +192,12 @@ func (pf *ProcessingFrame) SetPool(pool *FramePool) {
 func (pf *ProcessingFrame) DeepCopy() *ProcessingFrame {
 	cp := *pf
 	cp.refs = nil // independent lifecycle — new allocation on SetRefs
-	if pf.pool != nil && len(pf.YUV) <= pf.pool.bufSize {
-		cp.YUV = pf.pool.Acquire()[:len(pf.YUV)]
+	if pf.pool != nil && len(pf.Data) <= pf.pool.bufSize {
+		cp.Data = pf.pool.Acquire()[:len(pf.Data)]
 	} else {
-		cp.YUV = make([]byte, len(pf.YUV))
+		cp.Data = make([]byte, len(pf.Data))
 	}
-	copy(cp.YUV, pf.YUV)
+	copy(cp.Data, pf.Data)
 
 	// Increment GPU frame reference count if present
 	if rc, ok := cp.GPUData.(GPURefCounter); ok {
@@ -204,4 +205,41 @@ func (pf *ProcessingFrame) DeepCopy() *ProcessingFrame {
 	}
 
 	return &cp
+}
+
+// YPlane returns the Y (luma) plane slice.
+func (pf *ProcessingFrame) YPlane() []byte {
+	size := pf.Format.YPlaneSize(pf.Width, pf.Height)
+	if len(pf.Data) < size {
+		return pf.Data
+	}
+	return pf.Data[:size]
+}
+
+// CbPlane returns the Cb (blue-difference chroma) plane slice.
+func (pf *ProcessingFrame) CbPlane() []byte {
+	ySize := pf.Format.YPlaneSize(pf.Width, pf.Height)
+	cSize := pf.Format.ChromaPlaneSize(pf.Width, pf.Height)
+	end := ySize + cSize
+	if len(pf.Data) < end {
+		return nil
+	}
+	return pf.Data[ySize:end]
+}
+
+// CrPlane returns the Cr (red-difference chroma) plane slice.
+func (pf *ProcessingFrame) CrPlane() []byte {
+	ySize := pf.Format.YPlaneSize(pf.Width, pf.Height)
+	cSize := pf.Format.ChromaPlaneSize(pf.Width, pf.Height)
+	start := ySize + cSize
+	end := ySize + 2*cSize
+	if len(pf.Data) < end {
+		return nil
+	}
+	return pf.Data[start:end]
+}
+
+// FrameDataSize returns the expected total byte count for this frame's format and dimensions.
+func (pf *ProcessingFrame) FrameDataSize() int {
+	return pf.Format.FrameSize(pf.Width, pf.Height)
 }

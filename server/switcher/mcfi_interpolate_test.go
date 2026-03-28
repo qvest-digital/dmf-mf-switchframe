@@ -8,7 +8,7 @@ import (
 
 func TestMCFIInterpolateInto_ZeroAllocs(t *testing.T) {
 	w, h := 32, 32
-	frameSize := w * h * 3 / 2
+	frameSize := ColorYUV420_8bit.FrameSize(w, h)
 	frameA := make([]byte, frameSize)
 	frameB := make([]byte, frameSize)
 	dst := make([]byte, frameSize)
@@ -35,7 +35,7 @@ func TestMCFIInterpolate_NearThresholdReturnsCopy(t *testing.T) {
 	//
 	// The fix should return a copy for both the low and high threshold paths.
 	w, h := 32, 32
-	frameSize := w * h * 3 / 2
+	frameSize := ColorYUV420_8bit.FrameSize(w, h)
 
 	// Create two distinct frames.
 	frameA := make([]byte, frameSize)

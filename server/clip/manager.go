@@ -32,11 +32,16 @@ type Manager struct {
 type ManagerConfig struct {
 	// DemuxFunc overrides DemuxFile for testing. If nil, uses DemuxFile.
 	DemuxFunc func(path string) ([]BufferedFrame, []BufferedAudioFrame, error)
-	// DecoderFactory creates an H.264 decoder for each clip player.
+	// DecoderFactory creates a video decoder for each clip player.
 	// If nil, wireData is passed through without decoding (for testing).
+	// Deprecated: Use DecoderFactoryForCodec for codec-aware decoder creation.
 	DecoderFactory func() (VideoDecoder, error)
-	// EncoderFactory creates an H.264 encoder for re-encoding decoded frames
-	// to browser-compatible 8-bit H.264. If nil, original wire data is forwarded.
+	// DecoderFactoryForCodec creates a video decoder for the specified codec
+	// ("h264" or "h265"). Takes precedence over DecoderFactory when set.
+	// If nil, falls back to DecoderFactory.
+	DecoderFactoryForCodec func(codec string) (VideoDecoder, error)
+	// EncoderFactory creates a video encoder for re-encoding decoded frames
+	// to browser-compatible format. If nil, original wire data is forwarded.
 	// fpsNum/fpsDen express the frame rate as a rational number
 	// (e.g. 30000/1001 for 29.97fps, 25000/1000 for 25fps).
 	EncoderFactory func(w, h, fpsNum, fpsDen int) (VideoEncoder, error)
@@ -262,10 +267,24 @@ func (m *Manager) Play(playerID int, speed float64, loop bool) error {
 	key := playerKey(playerID)
 
 	// Create a per-player decoder if factory is available.
+	// Use codec-aware factory when available (HEVC clips need HEVC decoder).
 	var dec VideoDecoder
 	var decodeFrame func([]byte) ([]byte, int, int, error)
 	var decoderCloser func()
-	if m.config.DecoderFactory != nil {
+	clipCodec := slot.clip.Codec
+	if clipCodec == "" {
+		clipCodec = "h264"
+	}
+	if m.config.DecoderFactoryForCodec != nil {
+		var err error
+		dec, err = m.config.DecoderFactoryForCodec(clipCodec)
+		if err != nil {
+			m.mu.Unlock()
+			return fmt.Errorf("create %s decoder: %w", clipCodec, err)
+		}
+		decodeFrame = dec.Decode
+		decoderCloser = dec.Close
+	} else if m.config.DecoderFactory != nil {
 		var err error
 		dec, err = m.config.DecoderFactory()
 		if err != nil {

@@ -507,7 +507,7 @@ func TestARIntegration_4_ARComposite(t *testing.T) {
 	defer frame.Release()
 
 	// Download the original frame for comparison.
-	origYUV := make([]byte, w*h*3/2)
+	origYUV := make([]byte, switcher.ColorYUV420_8bit.FrameSize(w, h))
 	err := gpu.Download(gpuCtx, origYUV, frame, w, h)
 	if err != nil {
 		t.Fatalf("Download original frame: %v", err)
@@ -559,7 +559,7 @@ func TestARIntegration_4_ARComposite(t *testing.T) {
 	t.Logf("AR composite kernel completed")
 
 	// Download the composited frame and compare with original.
-	compYUV := make([]byte, w*h*3/2)
+	compYUV := make([]byte, switcher.ColorYUV420_8bit.FrameSize(w, h))
 	err = gpu.Download(gpuCtx, compYUV, frame, w, h)
 	if err != nil {
 		t.Fatalf("Download composited frame: %v", err)
@@ -609,7 +609,7 @@ func TestARIntegration_5_FullPipeline(t *testing.T) {
 	defer frame.Release()
 
 	// Download original for comparison.
-	origYUV := make([]byte, w*h*3/2)
+	origYUV := make([]byte, switcher.ColorYUV420_8bit.FrameSize(w, h))
 	if err := gpu.Download(gpuCtx, origYUV, frame, w, h); err != nil {
 		t.Fatalf("Download original: %v", err)
 	}
@@ -764,7 +764,7 @@ func TestARIntegration_5_FullPipeline(t *testing.T) {
 	}
 
 	// Download final composited frame.
-	finalYUV := make([]byte, w*h*3/2)
+	finalYUV := make([]byte, switcher.ColorYUV420_8bit.FrameSize(w, h))
 	if err := gpu.Download(gpuCtx, finalYUV, frame, w, h); err != nil {
 		t.Fatalf("Download final: %v", err)
 	}

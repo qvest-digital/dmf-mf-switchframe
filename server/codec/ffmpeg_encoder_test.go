@@ -168,7 +168,7 @@ func TestFFmpegEncoderClosedEncode(t *testing.T) {
 	require.NoError(t, err)
 	enc.Close()
 
-	yuv := make([]byte, 320*240*3/2)
+	yuv := make([]byte, yuvFrameSize(320, 240))
 	_, _, err = enc.Encode(yuv, 0, false)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "closed")
@@ -181,7 +181,7 @@ func TestFFmpegEncoderVBVConstrainedOutput(t *testing.T) {
 	require.NoError(t, err)
 	defer enc.Close()
 
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	var maxSize int
 
 	for i := 0; i < 60; i++ {
@@ -215,7 +215,7 @@ func TestFFmpegEncoderProducesOutput_WithNewSettings(t *testing.T) {
 	require.NoError(t, err)
 	defer enc.Close()
 
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	keyframeCount := 0
 	for i := 0; i < 30; i++ {
 		for j := 0; j < w*h; j++ {
@@ -258,7 +258,7 @@ func TestFFmpegEncoderSetsLevel(t *testing.T) {
 			require.NoError(t, err)
 			defer enc.Close()
 
-			yuv := make([]byte, tc.width*tc.height*3/2)
+			yuv := make([]byte, yuvFrameSize(tc.width, tc.height))
 			for i := range yuv {
 				yuv[i] = 128
 			}
@@ -290,7 +290,7 @@ func TestFFmpegEncoderIncludesAUD(t *testing.T) {
 	require.NoError(t, err)
 	defer enc.Close()
 
-	yuv := make([]byte, 320*240*3/2)
+	yuv := make([]byte, yuvFrameSize(320, 240))
 	for i := range yuv {
 		yuv[i] = 128
 	}
@@ -318,7 +318,7 @@ func TestEncoderPTSPassthrough(t *testing.T) {
 	require.NoError(t, err)
 	defer enc.Close()
 
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	for i := range yuv {
 		yuv[i] = 128
 	}
@@ -336,7 +336,7 @@ func BenchmarkEncoderOutput(b *testing.B) {
 	require.NoError(b, err)
 	defer enc.Close()
 
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	for i := range yuv {
 		yuv[i] = 128
 	}
@@ -373,7 +373,7 @@ func TestFFmpegEncoderSlicedThreadingImmediate(t *testing.T) {
 	require.NoError(t, err)
 	defer enc.Close()
 
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	for i := range yuv {
 		yuv[i] = 128
 	}
@@ -403,7 +403,7 @@ func TestNewPreviewEncoder(t *testing.T) {
 
 	// Verify it can encode a frame.
 	w, h := 854, 480
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		yuv[i] = byte((i * 7) % 256)
 	}
@@ -428,7 +428,7 @@ func TestPreviewEncoderUsesBaselineProfile(t *testing.T) {
 
 	// Encode a keyframe — SPS/PPS are inline in the Annex B output
 	// (no GLOBAL_HEADER flag). Extract SPS to verify baseline profile.
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	for i := range yuv {
 		yuv[i] = 128
 	}
@@ -454,7 +454,7 @@ func TestPreviewEncoderMultipleFrames(t *testing.T) {
 	require.NoError(t, err)
 	defer enc.Close()
 
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	outputCount := 0
 	for i := 0; i < 30; i++ {
 		for j := 0; j < w*h; j++ {

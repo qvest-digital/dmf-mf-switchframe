@@ -197,6 +197,36 @@ func (w *Writer) WriteVideo(yuv []byte, width, height int, pts int64) {
 	w.v210BufIdx = nextIdx
 }
 
+// WriteVideo10bit converts a YUV422P10LE (10-bit 4:2:2 planar) frame to V210
+// LOSSLESSLY and stores it for the steady-rate output ticker. Unlike WriteVideo
+// (which converts 8-bit 4:2:0 with bit-depth upscale and chroma interpolation),
+// this path preserves the full 10-bit precision and 4:2:2 chroma resolution.
+//
+// Called from a single goroutine (video processing loop).
+func (w *Writer) WriteVideo10bit(yuv []byte, width, height int, pts int64) {
+	if w.closed.Load() {
+		return
+	}
+
+	// Skip frames that don't match the configured output resolution.
+	if w.config.Width > 0 && w.config.Height > 0 {
+		if width != w.config.Width || height != w.config.Height {
+			return
+		}
+	}
+
+	// Convert YUV422P10LE → V210 losslessly. The SIMD-accelerated path is
+	// selected automatically when available.
+	v210, err := YUV422P10ToV210(yuv, width, height)
+	if err != nil {
+		w.log.Error("mxl writer: YUV422P10→V210 conversion failed",
+			"error", err, "width", width, "height", height)
+		return
+	}
+
+	w.latestV210.Store(&v210Frame{data: v210})
+}
+
 // videoTickLoop writes the latest V210 frame to MXL at a steady frame rate.
 // This decouples the write rate from the pipeline callback rate, preventing
 // gaps during keyframe waits and bursts during transitions.

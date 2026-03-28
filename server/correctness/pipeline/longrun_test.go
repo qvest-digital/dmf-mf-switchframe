@@ -57,7 +57,7 @@ func TestPipelineLongRunDrift(t *testing.T) {
 	pts := int64(90000)
 	for i := 0; i < totalFrames; i++ {
 		pf := &switcher.ProcessingFrame{
-			YUV:        copyBytes(yuv),
+			Data:       copyBytes(yuv),
 			Width:      testWidth,
 			Height:     testHeight,
 			PTS:        pts,
@@ -400,7 +400,7 @@ func TestMixerLongRunDrift(t *testing.T) {
 			}
 			yuv := testutil.GenerateSolidYUV420(testWidth, testHeight, sourceA.Y, sourceA.Cb, sourceA.Cr)
 			pf := &switcher.ProcessingFrame{
-				YUV:        copyBytes(yuv),
+				Data:       copyBytes(yuv),
 				Width:      testWidth,
 				Height:     testHeight,
 				PTS:        pts,

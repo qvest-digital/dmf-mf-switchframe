@@ -13,7 +13,7 @@ import (
 // sets YUV=nil, but Width/Height remain). ScaleYUV420 then panics on
 // src[:srcYSize] with capacity 0.
 func TestNormalizeResolution_NilYUV_NoPanic(t *testing.T) {
-	pool := NewFramePool(4, 320, 240)
+	pool := NewFramePool(4, 320, 240, ColorYUV420_8bit)
 	sw := &Switcher{
 		framePool: pool,
 	}
@@ -24,7 +24,7 @@ func TestNormalizeResolution_NilYUV_NoPanic(t *testing.T) {
 	// Frame with dimensions that differ from pipeline format, triggering
 	// ScaleYUV420 — but YUV is nil (freed by another goroutine).
 	frame := &ProcessingFrame{
-		YUV:    nil,
+		Data:    nil,
 		Width:  160,
 		Height: 120,
 		PTS:    12345,
@@ -41,7 +41,7 @@ func TestNormalizeResolution_NilYUV_NoPanic(t *testing.T) {
 // TestNormalizeResolution_EmptyYUV_NoPanic tests the same scenario but with
 // an empty (non-nil, zero-length) YUV slice.
 func TestNormalizeResolution_EmptyYUV_NoPanic(t *testing.T) {
-	pool := NewFramePool(4, 320, 240)
+	pool := NewFramePool(4, 320, 240, ColorYUV420_8bit)
 	sw := &Switcher{
 		framePool: pool,
 	}
@@ -49,7 +49,7 @@ func TestNormalizeResolution_EmptyYUV_NoPanic(t *testing.T) {
 	sw.pipelineFormat.Store(&pf)
 
 	frame := &ProcessingFrame{
-		YUV:    []byte{},
+		Data:    []byte{},
 		Width:  160,
 		Height: 120,
 		PTS:    12345,

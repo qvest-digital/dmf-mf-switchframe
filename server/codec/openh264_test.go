@@ -89,7 +89,7 @@ func TestOpenH264EncoderMultipleFrames(t *testing.T) {
 	require.NoError(t, err)
 	defer enc.Close()
 
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	for i := range yuv {
 		yuv[i] = 128
 	}

@@ -117,7 +117,7 @@ func (n *gpuLayoutNode) processSlot(frame *GPUFrame, slot *SlotSnapshot) error {
 			cropX, cropY, cropW, cropH = computeGPUCropRect(
 				fillGPU.Width, fillGPU.Height, rect.W, rect.H, slot.CropAnchor)
 		}
-		if err := PIPCompositeWithCrop(n.ctx, frame, fillGPU, rect, alpha,
+		if err := GPUPIPCompositeWithCropDispatch(n.ctx, frame, fillGPU, rect, alpha,
 			cropX, cropY, cropW, cropH); err != nil {
 			return err
 		}
@@ -137,7 +137,7 @@ func (n *gpuLayoutNode) processSlot(frame *GPUFrame, slot *SlotSnapshot) error {
 			cropX, cropY, cropW, cropH = computeGPUCropRect(
 				uploaded.Width, uploaded.Height, rect.W, rect.H, slot.CropAnchor)
 		}
-		if err := PIPCompositeWithCrop(n.ctx, frame, uploaded, rect, alpha,
+		if err := GPUPIPCompositeWithCropDispatch(n.ctx, frame, uploaded, rect, alpha,
 			cropX, cropY, cropW, cropH); err != nil {
 			return err
 		}
@@ -216,7 +216,7 @@ func (n *gpuLayoutNode) getOrUploadFill(slot *SlotSnapshot) (*GPUFrame, error) {
 
 	if ok && n.fillDims[slot.SourceKey] == dims {
 		// Cache hit — re-upload pixel data (fill content changes every frame).
-		if err := Upload(n.ctx, cached, slot.FillYUV, slot.FillW, slot.FillH); err != nil {
+		if err := GPUUploadDispatch(n.ctx, cached, slot.FillYUV, slot.FillW, slot.FillH); err != nil {
 			return nil, err
 		}
 		return cached, nil
@@ -234,7 +234,7 @@ func (n *gpuLayoutNode) getOrUploadFill(slot *SlotSnapshot) (*GPUFrame, error) {
 		return nil, err
 	}
 
-	if err := Upload(n.ctx, fillFrame, slot.FillYUV, slot.FillW, slot.FillH); err != nil {
+	if err := GPUUploadDispatch(n.ctx, fillFrame, slot.FillYUV, slot.FillW, slot.FillH); err != nil {
 		fillFrame.Release()
 		return nil, err
 	}

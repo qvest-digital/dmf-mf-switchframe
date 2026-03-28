@@ -392,3 +392,235 @@ func TestFindFirstVCL(t *testing.T) {
 		})
 	}
 }
+
+// --- HEVC tests ---
+
+func TestBuildSEINALU_HEVC_Structure(t *testing.T) {
+	pairs := []CCPair{
+		{Data: [2]byte{'H', 'i'}},
+	}
+
+	nalu := BuildSEINALU(pairs, "h265")
+	if nalu == nil {
+		t.Fatal("BuildSEINALU(h265) returned nil")
+	}
+
+	// Should start with Annex B start code.
+	if !bytes.HasPrefix(nalu, []byte{0x00, 0x00, 0x00, 0x01}) {
+		t.Error("missing Annex B start code")
+	}
+
+	// HEVC PREFIX_SEI: 2-byte header 0x4E 0x01.
+	if nalu[4] != 0x4E {
+		t.Errorf("HEVC NALU header byte 0 = %02X, want 0x4E", nalu[4])
+	}
+	if nalu[5] != 0x01 {
+		t.Errorf("HEVC NALU header byte 1 = %02X, want 0x01", nalu[5])
+	}
+
+	// SEI payload type should be 4 (T.35) at byte 6 (after 2-byte header).
+	if nalu[6] != seiPayloadTypeT35 {
+		t.Errorf("payload type = %02X, want %02X", nalu[6], seiPayloadTypeT35)
+	}
+
+	// Should end with RBSP trailing bits 0x80.
+	if nalu[len(nalu)-1] != 0x80 {
+		t.Errorf("last byte = %02X, want 0x80 (RBSP trailing)", nalu[len(nalu)-1])
+	}
+}
+
+func TestBuildSEINALU_HEVC_HeaderDiffersFromH264(t *testing.T) {
+	pairs := []CCPair{{Data: [2]byte{'A', 'B'}}}
+
+	h264NALU := BuildSEINALU(pairs)
+	hevcNALU := BuildSEINALU(pairs, "h265")
+
+	// H.264: start_code(4) + header(1) = 5 bytes before payload type
+	// HEVC:  start_code(4) + header(2) = 6 bytes before payload type
+	if len(hevcNALU) != len(h264NALU)+1 {
+		t.Errorf("HEVC NALU len=%d, H.264 NALU len=%d, expected HEVC to be 1 byte longer",
+			len(hevcNALU), len(h264NALU))
+	}
+
+	// H.264 header: 0x06
+	if h264NALU[4] != 0x06 {
+		t.Errorf("H.264 header = %02X, want 0x06", h264NALU[4])
+	}
+
+	// HEVC header: 0x4E 0x01
+	if hevcNALU[4] != 0x4E || hevcNALU[5] != 0x01 {
+		t.Errorf("HEVC header = %02X %02X, want 0x4E 0x01", hevcNALU[4], hevcNALU[5])
+	}
+}
+
+func TestBuildSEINALU_HEVC_RoundTrip(t *testing.T) {
+	pairs := []CCPair{
+		{Data: [2]byte{'H', 'e'}},
+		{Data: [2]byte{'l', 'l'}},
+		{Data: [2]byte{'o', 0x80}},
+	}
+
+	nalu := BuildSEINALU(pairs, "h265")
+	if nalu == nil {
+		t.Fatal("BuildSEINALU(h265) returned nil")
+	}
+
+	// Remove EPB for parsing — strip start code and 2-byte HEVC NALU header.
+	body := removeEPB(nalu[6:])
+
+	// Parse back — the SEI payload format is identical for H.264 and HEVC.
+	extracted := ExtractCCPairsFromSEI(body)
+	if len(extracted) != len(pairs) {
+		t.Fatalf("extracted %d pairs, want %d", len(extracted), len(pairs))
+	}
+
+	for i, p := range extracted {
+		if p.Data != pairs[i].Data {
+			t.Errorf("pair %d: got %02X %02X, want %02X %02X",
+				i, p.Data[0], p.Data[1], pairs[i].Data[0], pairs[i].Data[1])
+		}
+	}
+}
+
+func TestFindFirstVCLHEVC(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+		want int
+	}{
+		{
+			// HEVC TRAIL_R (type 1): first byte = (1 << 1) | 0 = 0x02
+			"TRAIL_R only",
+			[]byte{0x00, 0x00, 0x00, 0x01, 0x02, 0x01, 0xAA},
+			0,
+		},
+		{
+			// HEVC IDR_W_RADL (type 19): first byte = (19 << 1) | 0 = 0x26
+			"IDR_W_RADL only",
+			[]byte{0x00, 0x00, 0x00, 0x01, 0x26, 0x01, 0xAA},
+			0,
+		},
+		{
+			// HEVC BLA_W_LP (type 16): first byte = (16 << 1) | 0 = 0x20
+			"BLA_W_LP only",
+			[]byte{0x00, 0x00, 0x00, 0x01, 0x20, 0x01, 0xAA},
+			0,
+		},
+		{
+			// HEVC VPS (type 32): first byte = (32 << 1) | 0 = 0x40
+			// HEVC SPS (type 33): first byte = (33 << 1) | 0 = 0x42
+			// HEVC IDR_W_RADL (type 19): first byte = 0x26
+			"VPS then SPS then IDR",
+			[]byte{
+				0x00, 0x00, 0x00, 0x01, 0x40, 0x01, 0xFF, // VPS (type 32, non-VCL)
+				0x00, 0x00, 0x00, 0x01, 0x42, 0x01, 0xFF, // SPS (type 33, non-VCL)
+				0x00, 0x00, 0x00, 0x01, 0x26, 0x01, 0xAA, // IDR (type 19, VCL)
+			},
+			14,
+		},
+		{
+			// Only non-VCL NALUs: VPS (32) + SPS (33) + PPS (34)
+			"no VCL",
+			[]byte{
+				0x00, 0x00, 0x00, 0x01, 0x40, 0x01, 0xFF, // VPS (type 32)
+				0x00, 0x00, 0x00, 0x01, 0x42, 0x01, 0xFF, // SPS (type 33)
+				0x00, 0x00, 0x00, 0x01, 0x44, 0x01, 0xFF, // PPS (type 34)
+			},
+			-1,
+		},
+		{
+			// PREFIX_SEI (type 39): first byte = (39 << 1) | 0 = 0x4E — non-VCL
+			// Followed by TRAIL_N (type 0): first byte = (0 << 1) | 0 = 0x00
+			"SEI then TRAIL_N",
+			[]byte{
+				0x00, 0x00, 0x00, 0x01, 0x4E, 0x01, 0xFF, // PREFIX_SEI (type 39)
+				0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0xAA, // TRAIL_N (type 0, VCL)
+			},
+			7,
+		},
+		{
+			"nil",
+			nil,
+			-1,
+		},
+		{
+			"empty",
+			[]byte{},
+			-1,
+		},
+		{
+			"truncated start code",
+			[]byte{0x00, 0x00, 0x00, 0x01},
+			-1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := findFirstVCLHEVC(tt.data); got != tt.want {
+				t.Errorf("findFirstVCLHEVC() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestInsertSEIBeforeVCLInto_HEVC_IDR(t *testing.T) {
+	sei := BuildSEINALU([]CCPair{{Data: [2]byte{'A', 'B'}}}, "h265")
+
+	// HEVC IDR_W_RADL (type 19): first byte = 0x26, second byte = 0x01
+	idr := []byte{0x00, 0x00, 0x00, 0x01, 0x26, 0x01, 0xAA, 0xBB}
+
+	result := InsertSEIBeforeVCLInto(sei, idr, nil, "h265")
+
+	// SEI should come before IDR.
+	seiIdx := bytes.Index(result, sei)
+	idrIdx := bytes.Index(result, []byte{0x00, 0x00, 0x00, 0x01, 0x26})
+	if seiIdx < 0 || idrIdx < 0 {
+		t.Fatal("could not find SEI or IDR in result")
+	}
+	if seiIdx >= idrIdx {
+		t.Errorf("SEI at %d should be before IDR at %d", seiIdx, idrIdx)
+	}
+}
+
+func TestInsertSEIBeforeVCLInto_HEVC_WithVPSSPSPPS(t *testing.T) {
+	sei := BuildSEINALU([]CCPair{{Data: [2]byte{'X', 'Y'}}}, "h265")
+
+	// VPS(32) + SPS(33) + PPS(34) + IDR(19)
+	annexB := []byte{
+		0x00, 0x00, 0x00, 0x01, 0x40, 0x01, 0x01, 0x02, // VPS (type 32)
+		0x00, 0x00, 0x00, 0x01, 0x42, 0x01, 0x03, 0x04, // SPS (type 33)
+		0x00, 0x00, 0x00, 0x01, 0x44, 0x01, 0x05, 0x06, // PPS (type 34)
+		0x00, 0x00, 0x00, 0x01, 0x26, 0x01, 0xAA, 0xBB, // IDR (type 19)
+	}
+
+	result := InsertSEIBeforeVCLInto(sei, annexB, nil, "h265")
+
+	// VPS, SPS, PPS should remain before SEI.
+	vpsIdx := bytes.Index(result, []byte{0x00, 0x00, 0x00, 0x01, 0x40})
+	spsIdx := bytes.Index(result, []byte{0x00, 0x00, 0x00, 0x01, 0x42})
+	ppsIdx := bytes.Index(result, []byte{0x00, 0x00, 0x00, 0x01, 0x44})
+	seiIdx := bytes.Index(result, sei)
+	idrIdx := bytes.LastIndex(result, []byte{0x00, 0x00, 0x00, 0x01, 0x26})
+
+	if vpsIdx >= spsIdx || spsIdx >= ppsIdx || ppsIdx >= seiIdx || seiIdx >= idrIdx {
+		t.Errorf("order should be VPS(%d) < SPS(%d) < PPS(%d) < SEI(%d) < IDR(%d)",
+			vpsIdx, spsIdx, ppsIdx, seiIdx, idrIdx)
+	}
+}
+
+func TestBuildSEINALU_DefaultCodecIsH264(t *testing.T) {
+	pairs := []CCPair{{Data: [2]byte{'A', 'B'}}}
+
+	// No codec parameter — should default to H.264.
+	nalu := BuildSEINALU(pairs)
+	if nalu[4] != 0x06 {
+		t.Errorf("default codec header = %02X, want 0x06 (H.264 SEI)", nalu[4])
+	}
+
+	// Explicit "h264" — should be identical.
+	naluExplicit := BuildSEINALU(pairs, "h264")
+	if !bytes.Equal(nalu, naluExplicit) {
+		t.Error("default and explicit h264 should produce identical output")
+	}
+}

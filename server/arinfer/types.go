@@ -21,10 +21,25 @@ var (
 	ErrDisabled = errors.New("arinfer: feature disabled")
 )
 
+// FrameFormat identifies the pixel format of GPU frames for preprocessing dispatch.
+type FrameFormat int
+
+const (
+	// FormatNV12 is 8-bit 4:2:0 semi-planar (uint8 Y plane + interleaved UV).
+	FormatNV12 FrameFormat = 0
+
+	// FormatP210 is 10-bit 4:2:2 semi-planar (uint16 Y plane + interleaved UV).
+	FormatP210 FrameFormat = 1
+)
+
 // Config holds initialization parameters for the inference engine.
 type Config struct {
 	// ModelsDir is the path to the directory containing model files.
 	ModelsDir string
+
+	// FrameFormat specifies the GPU frame pixel format for preprocessing.
+	// Defaults to FormatNV12 (0) if not set.
+	FrameFormat FrameFormat
 
 	// DepthEnabled enables depth estimation on startup.
 	DepthEnabled bool

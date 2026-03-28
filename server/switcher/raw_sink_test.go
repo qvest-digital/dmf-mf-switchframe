@@ -41,7 +41,7 @@ func TestSetRawVideoSink_ReceivesFrames(t *testing.T) {
 		defer mu.Unlock()
 		received = append(received, sinkSnapshot{
 			Width: pf.Width, Height: pf.Height,
-			PTS: pf.PTS, YUVLen: len(pf.YUV),
+			PTS: pf.PTS, YUVLen: len(pf.Data),
 		})
 	})
 	require.NoError(t, sw.BuildPipeline())
@@ -90,8 +90,8 @@ func TestSetRawVideoSink_DeepCopy(t *testing.T) {
 		defer mu.Unlock()
 		sinkFrame = pf
 		// Mutate the sink's copy
-		for i := range pf.YUV {
-			pf.YUV[i] = 0xFF
+		for i := range pf.Data {
+			pf.Data[i] = 0xFF
 		}
 	})
 	require.NoError(t, sw.BuildPipeline())
@@ -188,7 +188,7 @@ func TestSetRawVideoSink_TransitionFrames(t *testing.T) {
 		defer mu.Unlock()
 		received = append(received, sinkSnapshot{
 			Width: pf.Width, Height: pf.Height,
-			HasYUV: pf.YUV != nil,
+			HasYUV: pf.Data != nil,
 		})
 	})
 	require.NoError(t, sw.BuildPipeline())

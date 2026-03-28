@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -15,11 +16,11 @@ import (
 // errPipelineClosed is returned by encode() when called after close().
 var errPipelineClosed = errors.New("pipeline codecs: closed")
 
-// allocAVC1Buffer allocates an owned AVC1 buffer. Each encoded frame needs
-// its own buffer because BroadcastVideo fans out to viewers via buffered
+// allocWireBuffer allocates an owned wire format buffer. Each encoded frame
+// needs its own buffer because BroadcastVideo fans out to viewers via buffered
 // channels — async consumers (output muxer, SRT, WebTransport) may still
 // reference WireData when the next encode cycle runs.
-func allocAVC1Buffer(size int) []byte {
+func allocWireBuffer(size int) []byte {
 	return make([]byte, size)
 }
 
@@ -55,7 +56,7 @@ func DefaultBitrateForResolution(width, height int) int {
 
 // pipelineCodecs manages a shared encoder for the video processing pipeline.
 // The pipeline receives raw YUV420 frames (decoded per-source by sourceDecoder)
-// and encodes them to H.264 for program output.
+// and encodes them to H.264 or H.265 for program output.
 type pipelineCodecs struct {
 	mu             sync.Mutex
 	encoder        transition.VideoEncoder
@@ -64,6 +65,10 @@ type pipelineCodecs struct {
 	encHeight      int
 	groupID        uint32
 	closed         bool
+
+	// Pipeline codec — AVC (H.264) or HEVC (H.265).
+	// Determines wire format conversion and parameter set extraction.
+	pipelineCodec PipelineCodec
 
 	// Pipeline format reference — provides FPS for encoder creation.
 	// Points to the Switcher's atomic PipelineFormat pointer for lock-free reads.
@@ -82,15 +87,23 @@ type pipelineCodecs struct {
 	// Protected by pc.mu (accessed from the async encodeLoop goroutine).
 	lastOutputPTS int64
 
-	// Callback invoked when the encoder produces a keyframe with new SPS/PPS.
-	onVideoInfoChange func(sps, pps []byte, width, height int)
+	// Callback invoked when the encoder produces a keyframe with new VPS/SPS/PPS.
+	// For AVC, vps is always nil.
+	onVideoInfoChange func(vps, sps, pps []byte, width, height int)
 
-	// Reusable buffer for AnnexB->AVC1 conversion (grows to steady state).
-	avc1Buf []byte
+	// Reusable buffer for AnnexB->wire format conversion (grows to steady state).
+	wireBuf []byte
 
-	// Last-known SPS/PPS for deduplication -- only fire callback on change.
+	// Last-known VPS/SPS/PPS for deduplication -- only fire callback on change.
+	lastVPS []byte
 	lastSPS []byte
 	lastPPS []byte
+
+	// Pre-built encoder identification SEI NALU (user_data_unregistered, payload
+	// type 5). Contains the Switchframe UUID and encoder metadata string. Built
+	// lazily on the first keyframe and injected into every subsequent keyframe.
+	// Invalidated on resolution change (format string changes).
+	identSEI []byte
 }
 
 // SetEncoderFactory replaces the encoder factory and invalidates the current
@@ -117,7 +130,8 @@ func (pc *pipelineCodecs) invalidateEncoder() {
 }
 
 // encode converts a ProcessingFrame back to a media.VideoFrame by encoding
-// YUV420 to H.264. Lazy-initializes the encoder on first call.
+// YUV420 to H.264 or H.265 (based on pipelineCodec). Lazy-initializes the
+// encoder on first call.
 //
 // The lock is held for the entire encode to prevent invalidateEncoder() from
 // closing the encoder while Encode() is in progress (use-after-free).
@@ -126,7 +140,7 @@ func (pc *pipelineCodecs) invalidateEncoder() {
 // concurrently — the mutex serializes them. Transient PTS reordering during
 // the swap window is handled by the monotonic PTS enforcement below.
 func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.VideoFrame, error) {
-	if len(pf.YUV) == 0 {
+	if len(pf.Data) == 0 {
 		return nil, nil
 	}
 
@@ -137,10 +151,11 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 		return nil, errPipelineClosed
 	}
 
-	// Invalidate encoder on resolution change.
+	// Invalidate encoder and ident SEI on resolution change.
 	if pc.encoder != nil && (pf.Width != pc.encWidth || pf.Height != pc.encHeight) {
 		pc.encoder.Close()
 		pc.encoder = nil
+		pc.identSEI = nil // rebuild with new dimensions
 	}
 
 	// Invalidate encoder when the effective bitrate would change significantly
@@ -195,7 +210,7 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 
 	// Encode under lock — prevents invalidateEncoder() from closing the
 	// encoder while Encode() is using it.
-	encoded, isKeyframe, err := pc.encoder.Encode(pf.YUV, pf.PTS, forceIDR)
+	encoded, isKeyframe, err := pc.encoder.Encode(pf.Data, pf.PTS, forceIDR)
 	if err != nil {
 		return nil, fmt.Errorf("pipeline: encode: %w", err)
 	}
@@ -205,9 +220,11 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 		return nil, nil
 	}
 
-	pc.avc1Buf = codec.AnnexBToAVC1Into(encoded, pc.avc1Buf[:0])
-	avc1 := allocAVC1Buffer(len(pc.avc1Buf))
-	copy(avc1, pc.avc1Buf)
+	// Convert Annex B → wire format (4-byte length-prefixed NALUs).
+	// Wire format is identical for AVC and HEVC (both use length prefixes).
+	pc.wireBuf = codec.AnnexBToWireInto(encoded, pc.wireBuf[:0])
+	wireData := allocWireBuffer(len(pc.wireBuf))
+	copy(wireData, pc.wireBuf)
 
 	// Update group ID state.
 	if pf.GroupID > pc.groupID {
@@ -249,44 +266,158 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 	// causing A/V desync in the muxed output.
 	pc.lastOutputPTS = outPTS
 
+	// Set codec string based on pipeline codec setting (not the source codec).
+	codecStr := "h264"
+	if pc.pipelineCodec == CodecHEVC {
+		codecStr = "h265"
+	}
+
 	frame := &media.VideoFrame{
 		PTS:        outPTS,
 		DTS:        outPTS, // No B-frames: DTS always equals PTS
 		IsKeyframe: isKeyframe,
-		WireData:   avc1,
-		Codec:      pf.Codec,
+		WireData:   wireData,
+		Codec:      codecStr,
 		GroupID:    groupID,
 	}
 
 	if isKeyframe {
-		for _, nalu := range codec.ExtractNALUs(avc1) {
+		// Extract param sets BEFORE ident SEI injection so the SEI NALU
+		// doesn't interfere with SPS/PPS/VPS detection.
+		pc.extractParamSets(frame, wireData)
+		pc.fireVideoInfoChangeIfNeeded(frame, pf.Width, pf.Height)
+
+		// Inject Switchframe encoder identification SEI on keyframes.
+		pc.injectIdentSEI(frame, pf, codecStr)
+	}
+
+	return frame, nil
+}
+
+// injectIdentSEI builds (if needed) and injects the encoder identification
+// SEI NALU into keyframe wire data. The SEI contains a user_data_unregistered
+// message with the Switchframe UUID and encoder metadata, allowing downstream
+// tools to identify Switchframe-encoded streams.
+// Caller must hold pc.mu.
+func (pc *pipelineCodecs) injectIdentSEI(frame *media.VideoFrame, pf *ProcessingFrame, codecStr string) {
+	// Build the ident SEI lazily on the first keyframe.
+	if pc.identSEI == nil {
+		fpsNum := 30000
+		fpsDen := 1001
+		if pc.formatRef != nil {
+			if f := pc.formatRef.Load(); f != nil {
+				fpsNum = f.FPSNum
+				fpsDen = f.FPSDen
+			}
+		}
+		bitDepth := 8
+		chroma := "420"
+		if pc.pipelineCodec == CodecHEVC {
+			// Conservative defaults; the actual profile is encoder-dependent.
+			// For HEVC we may be encoding 10-bit 4:2:2 but the encoder name
+			// and profile from the factory are not available here, so we use
+			// the pipeline codec as the encoder name.
+		}
+		pc.identSEI = codec.BuildEncoderIdentSEI(codecStr, codec.EncoderIdentInfo{
+			EncoderName: codecStr, // best available without factory introspection
+			Profile:     codecStr,
+			Width:       pf.Width,
+			Height:      pf.Height,
+			FPSNum:      fpsNum,
+			FPSDen:      fpsDen,
+			BitDepth:    bitDepth,
+			Chroma:      chroma,
+		})
+	}
+
+	if len(pc.identSEI) == 0 {
+		return
+	}
+
+	// Convert wire → Annex B, insert SEI before VCL, convert back to wire.
+	annexB := codec.WireToAnnexBInto(frame.WireData, nil)
+	withIdent := caption.InsertSEIBeforeVCLInto(pc.identSEI, annexB, nil, codecStr)
+	newWire := codec.AnnexBToWireInto(withIdent, nil)
+
+	// Allocate an owned buffer for the expanded wire data.
+	owned := allocWireBuffer(len(newWire))
+	copy(owned, newWire)
+	frame.WireData = owned
+}
+
+// extractParamSets extracts codec parameter sets from wire-format keyframe data
+// and populates the VideoFrame fields. For AVC: SPS (type 7) + PPS (type 8).
+// For HEVC: VPS (type 32) + SPS (type 33) + PPS (type 34).
+// Caller must hold pc.mu.
+func (pc *pipelineCodecs) extractParamSets(frame *media.VideoFrame, wireData []byte) {
+	if pc.pipelineCodec == CodecHEVC {
+		// HEVC: extract from Annex B (need to convert back from wire for the
+		// param set scanner which operates on Annex B). We already have the
+		// Annex B data in the encoder output, but we discarded it. Instead,
+		// extract NALUs from wire format and check HEVC NAL types.
+		for _, nalu := range codec.ExtractNALUs(wireData) {
+			if len(nalu) < 2 {
+				continue
+			}
+			nalType := codec.HEVCNALUType(nalu[0])
+			switch nalType {
+			case codec.HEVCNALVPS:
+				frame.VPS = append([]byte(nil), nalu...)
+			case codec.HEVCNALSPS:
+				frame.SPS = append([]byte(nil), nalu...)
+			case codec.HEVCNALPPS:
+				frame.PPS = append([]byte(nil), nalu...)
+			}
+		}
+	} else {
+		// AVC: extract SPS (type 7) and PPS (type 8).
+		for _, nalu := range codec.ExtractNALUs(wireData) {
 			if len(nalu) == 0 {
 				continue
 			}
 			switch nalu[0] & 0x1F {
 			case 7:
-				// Copy SPS — ExtractNALUs returns sub-slices of the AVC1
-				// buffer. SPS/PPS are stored separately on the frame and
-				// may outlive the WireData reference.
 				frame.SPS = append([]byte(nil), nalu...)
 			case 8:
 				frame.PPS = append([]byte(nil), nalu...)
 			}
 		}
-		if frame.SPS != nil && frame.PPS != nil && pc.onVideoInfoChange != nil {
-			if !bytes.Equal(frame.SPS, pc.lastSPS) || !bytes.Equal(frame.PPS, pc.lastPPS) {
-				pc.lastSPS = append(pc.lastSPS[:0], frame.SPS...)
-				pc.lastPPS = append(pc.lastPPS[:0], frame.PPS...)
-				// Release lock before callback to avoid holding it during
-				// potentially slow onVideoInfoChange processing.
-				pc.mu.Unlock()
-				pc.onVideoInfoChange(frame.SPS, frame.PPS, pf.Width, pf.Height)
-				pc.mu.Lock()
-			}
-		}
+	}
+}
+
+// fireVideoInfoChangeIfNeeded checks if the parameter sets have changed and
+// fires the onVideoInfoChange callback if so. Releases and re-acquires pc.mu
+// around the callback to avoid holding the lock during potentially slow processing.
+// Caller must hold pc.mu.
+func (pc *pipelineCodecs) fireVideoInfoChangeIfNeeded(frame *media.VideoFrame, width, height int) {
+	if pc.onVideoInfoChange == nil {
+		return
+	}
+	// For AVC: require SPS + PPS. For HEVC: require VPS + SPS + PPS.
+	if frame.SPS == nil || frame.PPS == nil {
+		return
+	}
+	if pc.pipelineCodec == CodecHEVC && frame.VPS == nil {
+		return
 	}
 
-	return frame, nil
+	changed := !bytes.Equal(frame.SPS, pc.lastSPS) ||
+		!bytes.Equal(frame.PPS, pc.lastPPS) ||
+		!bytes.Equal(frame.VPS, pc.lastVPS)
+
+	if !changed {
+		return
+	}
+
+	pc.lastVPS = append(pc.lastVPS[:0], frame.VPS...)
+	pc.lastSPS = append(pc.lastSPS[:0], frame.SPS...)
+	pc.lastPPS = append(pc.lastPPS[:0], frame.PPS...)
+
+	// Release lock before callback to avoid holding it during
+	// potentially slow onVideoInfoChange processing.
+	pc.mu.Unlock()
+	pc.onVideoInfoChange(frame.VPS, frame.SPS, frame.PPS, width, height)
+	pc.mu.Lock()
 }
 
 // updateSourceStats propagates the program source's estimated bitrate and FPS

@@ -12,8 +12,8 @@ import (
 // Real implementations are provided by Tasks 3-4.
 type depthModel interface {
 	// Infer runs depth estimation on the input GPU frame and writes
-	// the depth map to outputPtr.
-	Infer(inputPtr uintptr, w, h, pitch int, outputPtr uintptr) error
+	// the depth map to outputPtr. Format selects NV12 vs P210 preprocessing.
+	Infer(inputPtr uintptr, w, h, pitch int, outputPtr uintptr, format FrameFormat) error
 
 	// OutputPtr returns the CUDA device pointer to the model's internal
 	// output buffer (float16 depth map at model native resolution).
@@ -27,14 +27,20 @@ type depthModel interface {
 // Real implementations are provided by Tasks 3-4.
 type samModel interface {
 	// Encode runs the SAM image encoder on the input GPU frame.
-	Encode(inputPtr uintptr, w, h, pitch int) error
+	// Format selects NV12 vs P210 preprocessing.
+	Encode(inputPtr uintptr, w, h, pitch int, format FrameFormat) error
 
 	// Propagate runs mask propagation and writes the result to outputPtr.
-	Propagate(inputPtr uintptr, w, h, pitch int, outputPtr uintptr) error
+	// Format selects NV12 vs P210 preprocessing.
+	Propagate(inputPtr uintptr, w, h, pitch int, outputPtr uintptr, format FrameFormat) error
 
 	// MaskOutputPtr returns the CUDA device pointer to the model's internal
 	// mask output buffer (uint8 binary mask at frame resolution).
 	MaskOutputPtr() uintptr
+
+	// PreallocMask pre-allocates the mask output buffer at the given resolution.
+	// Returns the device pointer, or 0 on error.
+	PreallocMask(w, h int) uintptr
 
 	// AddPrompt registers a new segmentation prompt.
 	AddPrompt(p SAMPrompt) error
@@ -191,12 +197,14 @@ func (e *Engine) ProcessFrame(framePtr uintptr, w, h, pitch int) {
 		Height: h,
 	}
 
+	format := e.cfg.FrameFormat
+
 	// Run depth estimation.
 	// Pass 0 as outputPtr — the model writes to its internal buffer.
 	// We read the buffer address via OutputPtr() and store it in the OcclusionMap.
 	if hasDepth {
 		depthStart := time.Now()
-		if err := depth.Infer(framePtr, w, h, pitch, 0); err != nil {
+		if err := depth.Infer(framePtr, w, h, pitch, 0, format); err != nil {
 			e.framesSkipped.Add(1)
 			return // use previous frame's occlusion map
 		}
@@ -215,7 +223,7 @@ func (e *Engine) ProcessFrame(framePtr uintptr, w, h, pitch int) {
 
 		// Encode on first frame to produce image embeddings.
 		if !samEncoded {
-			if err := sam.Encode(framePtr, w, h, pitch); err != nil {
+			if err := sam.Encode(framePtr, w, h, pitch, format); err != nil {
 				// Encoder failure is non-fatal; skip SAM this frame.
 			} else {
 				e.mu.Lock()
@@ -226,7 +234,7 @@ func (e *Engine) ProcessFrame(framePtr uintptr, w, h, pitch int) {
 		}
 
 		if samEncoded {
-			if err := sam.Propagate(framePtr, w, h, pitch, 0); err != nil {
+			if err := sam.Propagate(framePtr, w, h, pitch, 0, format); err != nil {
 				// Continue with depth-only occlusion; SAM failure is non-fatal.
 			} else {
 				occ.MaskPtr = sam.MaskOutputPtr()
@@ -270,21 +278,45 @@ func (e *Engine) EnableDepth(planPath string) error {
 	return nil
 }
 
+// DepthOutputPtr returns the CUDA device pointer to the depth model's
+// internal output buffer. Returns 0 if depth is not enabled.
+// Available immediately after EnableDepth (no ProcessFrame needed).
+func (e *Engine) DepthOutputPtr() uintptr {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if e.depth == nil {
+		return 0
+	}
+	return e.depth.OutputPtr()
+}
+
+// DepthDims returns the depth model's native output resolution.
+// Returns (0, 0) if depth is not enabled.
+func (e *Engine) DepthDims() (int, int) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.depthW, e.depthH
+}
+
 // DisableDepth tears down the depth estimation model and clears stale data.
 // Safe to call when depth is already disabled (no-op).
 func (e *Engine) DisableDepth() {
-	// Wait for any in-flight ProcessFrame calls to finish before closing
-	// the model, preventing use-after-free on GPU resources.
+	// Phase 1: nil the model under lock so new ProcessFrame calls see nil
+	// and skip inference. This closes the TOCTOU window.
+	e.mu.Lock()
+	d := e.depth
+	e.depth = nil
+	e.mu.Unlock()
+
+	// Phase 2: wait for any in-flight ProcessFrame calls that copied the
+	// old depth interface value before we nil'd it.
 	e.activeFrames.Wait()
 
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if e.depth != nil {
-		e.depth.Close()
-		e.depth = nil
+	// Phase 3: close the model (safe — no one holds a reference now).
+	if d != nil {
+		d.Close()
 	}
-	e.lastOcclusion.Store(nil) // clear stale data
+	e.lastOcclusion.Store(nil)
 }
 
 // EnableSAM loads and enables the SAM 2 segmentation model.
@@ -316,22 +348,39 @@ func (e *Engine) EnableSAM(encoderPlanPath, decoderPlanPath string) error {
 	return nil
 }
 
+// PreallocSAMMask pre-allocates the SAM mask output buffer at the given
+// resolution. Must be called after EnableSAM. Returns the mask device pointer,
+// or 0 if SAM is not enabled. This allows the sidecar to export the IPC
+// handle immediately without waiting for the first Propagate call.
+func (e *Engine) PreallocSAMMask(w, h int) uintptr {
+	e.mu.RLock()
+	sam := e.sam
+	e.mu.RUnlock()
+	if sam == nil {
+		return 0
+	}
+	return sam.PreallocMask(w, h)
+}
+
 // DisableSAM tears down the SAM 2 segmentation model.
 // Safe to call when SAM is already disabled (no-op).
 func (e *Engine) DisableSAM() {
-	// Wait for any in-flight ProcessFrame calls to finish before closing
-	// the model, preventing use-after-free on GPU resources.
-	e.activeFrames.Wait()
-
+	// Phase 1: nil the model under lock so new ProcessFrame calls see nil
+	// and skip inference. This closes the TOCTOU window.
 	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if e.sam != nil {
-		e.sam.Close()
-		e.sam = nil
-	}
+	s := e.sam
+	e.sam = nil
 	e.prompts = nil
 	e.samEncoded = false
+	e.mu.Unlock()
+
+	// Phase 2: wait for in-flight ProcessFrame calls that copied the old sam value.
+	e.activeFrames.Wait()
+
+	// Phase 3: close the model.
+	if s != nil {
+		s.Close()
+	}
 }
 
 // AddPrompt registers a new segmentation prompt with the SAM model.

@@ -230,6 +230,90 @@ __global__ void scale_lanczos3_v_uv_kernel(
     dst[dstByte + 1] = (uint8_t)(valCr + 0.5f);
 }
 
+// ============================================================================
+// P210 (10-bit 4:2:2) scale kernels
+// ============================================================================
+
+// Bilinear scale for P210 Y plane (uint16 per sample)
+__global__ void scale_bilinear_p210_y_kernel(
+    uint16_t* __restrict__ dst, int dstW, int dstH, int dstPitch16,
+    const uint16_t* __restrict__ src, int srcW, int srcH, int srcPitch16)
+{
+    int dx = blockIdx.x * blockDim.x + threadIdx.x;
+    int dy = blockIdx.y * blockDim.y + threadIdx.y;
+    if (dx >= dstW || dy >= dstH) return;
+
+    float srcXf = (float)dx * (float)(srcW - 1) / (float)max(dstW - 1, 1);
+    float srcYf = (float)dy * (float)(srcH - 1) / (float)max(dstH - 1, 1);
+    int sx = (int)srcXf;
+    int sy = (int)srcYf;
+    int fx = (int)((srcXf - sx) * 65536.0f);
+    int fy = (int)((srcYf - sy) * 65536.0f);
+
+    int sx1 = min(sx + 1, srcW - 1);
+    int sy1 = min(sy + 1, srcH - 1);
+
+    int v00 = src[sy  * srcPitch16 + sx];
+    int v10 = src[sy  * srcPitch16 + sx1];
+    int v01 = src[sy1 * srcPitch16 + sx];
+    int v11 = src[sy1 * srcPitch16 + sx1];
+
+    int top = v00 + ((v10 - v00) * fx >> 16);
+    int bot = v01 + ((v11 - v01) * fx >> 16);
+    int val = top + ((bot - top) * fy >> 16);
+
+    dst[dy * dstPitch16 + dx] = (uint16_t)min(max(val, 0), 1023);
+}
+
+// Bilinear scale for P210 UV plane (interleaved uint16 CbCr pairs)
+// chromaDstW/chromaSrcW are in CHROMA SAMPLES (width/2), not bytes.
+// P210 chroma: full height (4:2:2), half width.
+__global__ void scale_bilinear_p210_uv_kernel(
+    uint16_t* __restrict__ dst, int chromaDstW, int dstH, int dstPitch16,
+    const uint16_t* __restrict__ src, int chromaSrcW, int srcH, int srcPitch16)
+{
+    int dx = blockIdx.x * blockDim.x + threadIdx.x;
+    int dy = blockIdx.y * blockDim.y + threadIdx.y;
+    if (dx >= chromaDstW || dy >= dstH) return;
+
+    float srcXf = (float)dx * (float)(chromaSrcW - 1) / (float)max(chromaDstW - 1, 1);
+    float srcYf = (float)dy * (float)(srcH - 1) / (float)max(dstH - 1, 1);
+    int sx = (int)srcXf;
+    int sy = (int)srcYf;
+    int fx = (int)((srcXf - sx) * 65536.0f);
+    int fy = (int)((srcYf - sy) * 65536.0f);
+
+    int sx1 = min(sx + 1, chromaSrcW - 1);
+    int sy1 = min(sy + 1, srcH - 1);
+
+    // Cb channel (even index in interleaved pairs)
+    int srcByteX0 = sx * 2;
+    int srcByteX1 = sx1 * 2;
+
+    int cb00 = src[sy  * srcPitch16 + srcByteX0];
+    int cb10 = src[sy  * srcPitch16 + srcByteX1];
+    int cb01 = src[sy1 * srcPitch16 + srcByteX0];
+    int cb11 = src[sy1 * srcPitch16 + srcByteX1];
+
+    int cbTop = cb00 + ((cb10 - cb00) * fx >> 16);
+    int cbBot = cb01 + ((cb11 - cb01) * fx >> 16);
+    int cb = cbTop + ((cbBot - cbTop) * fy >> 16);
+
+    // Cr channel (odd index)
+    int cr00 = src[sy  * srcPitch16 + srcByteX0 + 1];
+    int cr10 = src[sy  * srcPitch16 + srcByteX1 + 1];
+    int cr01 = src[sy1 * srcPitch16 + srcByteX0 + 1];
+    int cr11 = src[sy1 * srcPitch16 + srcByteX1 + 1];
+
+    int crTop = cr00 + ((cr10 - cr00) * fx >> 16);
+    int crBot = cr01 + ((cr11 - cr01) * fx >> 16);
+    int cr = crTop + ((crBot - crTop) * fy >> 16);
+
+    int dstIdx = dy * dstPitch16 + dx * 2;
+    dst[dstIdx]     = (uint16_t)min(max(cb, 0), 1023);
+    dst[dstIdx + 1] = (uint16_t)min(max(cr, 0), 1023);
+}
+
 extern "C" {
 
 cudaError_t scale_bilinear_nv12(
@@ -301,6 +385,37 @@ cudaError_t scale_lanczos3_nv12(
     dim3 gridV_UV((chromaDstW + block.x - 1) / block.x, (dstChromaH + block.y - 1) / block.y);
     scale_lanczos3_v_uv_kernel<<<gridV_UV, block, 0, stream>>>(
         dstUV, chromaDstW, dstChromaH, dstPitch, tmpBuf, srcChromaH);
+
+    return cudaGetLastError();
+}
+
+// --- P210 scale wrapper ---
+
+cudaError_t scale_bilinear_p210(
+    uint8_t* dst, int dstW, int dstH, int dstPitch,
+    const uint8_t* src, int srcW, int srcH, int srcPitch,
+    cudaStream_t stream)
+{
+    int dstPitch16 = dstPitch / 2;
+    int srcPitch16 = srcPitch / 2;
+    dim3 block(BLOCK_DIM_X, BLOCK_DIM_Y);
+
+    // Scale Y plane (uint16 per sample)
+    dim3 gridY((dstW + block.x - 1) / block.x, (dstH + block.y - 1) / block.y);
+    scale_bilinear_p210_y_kernel<<<gridY, block, 0, stream>>>(
+        (uint16_t*)dst, dstW, dstH, dstPitch16,
+        (const uint16_t*)src, srcW, srcH, srcPitch16);
+
+    // Scale UV plane (interleaved uint16 CbCr pairs)
+    // P210: full height, half width for chroma
+    int chromaSrcW = srcW / 2;
+    int chromaDstW = dstW / 2;
+    const uint16_t* srcUV = (const uint16_t*)(src + srcPitch * srcH);
+    uint16_t* dstUV = (uint16_t*)(dst + dstPitch * dstH);
+    dim3 gridUV((chromaDstW + block.x - 1) / block.x, (dstH + block.y - 1) / block.y);
+    scale_bilinear_p210_uv_kernel<<<gridUV, block, 0, stream>>>(
+        dstUV, chromaDstW, dstH, dstPitch16,
+        srcUV, chromaSrcW, srcH, srcPitch16);
 
     return cudaGetLastError();
 }

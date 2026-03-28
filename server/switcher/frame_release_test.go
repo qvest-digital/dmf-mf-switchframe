@@ -7,13 +7,13 @@ import (
 
 // frcSource.ingest releases the old prevFrame's YUV buffer back to the pool.
 func TestFRCIngest_ReleasesOldPrevFrame(t *testing.T) {
-	pool := NewFramePool(4, 320, 240)
-	yuvSize := 320 * 240 * 3 / 2
+	pool := NewFramePool(4, 320, 240, ColorYUV420_8bit)
+	yuvSize := ColorYUV420_8bit.FrameSize(320, 240)
 
 	// Create 3 frames using pool buffers.
-	f1 := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 1000, pool: pool}
-	f2 := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 2000, pool: pool}
-	f3 := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 3000, pool: pool}
+	f1 := &ProcessingFrame{Data: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 1000, pool: pool}
+	f2 := &ProcessingFrame{Data: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 2000, pool: pool}
+	f3 := &ProcessingFrame{Data: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 3000, pool: pool}
 
 	frc := newFRCSource(FRCNearest, 3003)
 
@@ -36,8 +36,8 @@ func TestFRCIngest_ReleasesOldPrevFrame(t *testing.T) {
 	frc.ingest(f3)
 
 	// The key check: F1's YUV should be nil (ReleaseYUV sets it nil).
-	if f1.YUV != nil {
-		t.Error("f1.YUV should be nil after FRC ingest released it")
+	if f1.Data != nil {
+		t.Error("f1.Data should be nil after FRC ingest released it")
 	}
 
 	// Pool should have gotten a buffer back.
@@ -55,11 +55,11 @@ func TestFRCIngest_ReleasesOldPrevFrame(t *testing.T) {
 
 // frcSource.reset releases both prevFrame and currFrame buffers.
 func TestFRCReset_ReleasesBothFrames(t *testing.T) {
-	pool := NewFramePool(4, 320, 240)
-	yuvSize := 320 * 240 * 3 / 2
+	pool := NewFramePool(4, 320, 240, ColorYUV420_8bit)
+	yuvSize := ColorYUV420_8bit.FrameSize(320, 240)
 
-	f1 := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 1000, pool: pool}
-	f2 := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 2000, pool: pool}
+	f1 := &ProcessingFrame{Data: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 1000, pool: pool}
+	f2 := &ProcessingFrame{Data: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 2000, pool: pool}
 
 	frc := newFRCSource(FRCNearest, 3003)
 	frc.ingest(f1)
@@ -69,11 +69,11 @@ func TestFRCReset_ReleasesBothFrames(t *testing.T) {
 	frc.reset()
 
 	// Both frames' YUV buffers should be released.
-	if f1.YUV != nil {
-		t.Error("f1.YUV should be nil after reset")
+	if f1.Data != nil {
+		t.Error("f1.Data should be nil after reset")
 	}
-	if f2.YUV != nil {
-		t.Error("f2.YUV should be nil after reset")
+	if f2.Data != nil {
+		t.Error("f2.Data should be nil after reset")
 	}
 
 	// Pool should have gotten both buffers back.
@@ -89,23 +89,23 @@ func TestFRCReset_ReleasesBothFrames(t *testing.T) {
 
 // Ring buffer overwrite releases the old frame when FRC is inactive.
 func TestSyncSource_PushRawVideo_ReleasesOverwrittenFrame(t *testing.T) {
-	pool := NewFramePool(4, 320, 240)
-	yuvSize := 320 * 240 * 3 / 2
+	pool := NewFramePool(4, 320, 240, ColorYUV420_8bit)
+	yuvSize := ColorYUV420_8bit.FrameSize(320, 240)
 
 	ss := &syncSource{} // no FRC
 
 	// Push 2 frames (fills the ring, syncRingSize=2).
-	f1 := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 1000, pool: pool}
-	f2 := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 2000, pool: pool}
+	f1 := &ProcessingFrame{Data: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 1000, pool: pool}
+	f2 := &ProcessingFrame{Data: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 2000, pool: pool}
 	ss.pushRawVideo(f1)
 	ss.pushRawVideo(f2)
 
 	// Push a 3rd frame — should overwrite F1 and release its buffer.
-	f3 := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 3000, pool: pool}
+	f3 := &ProcessingFrame{Data: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 3000, pool: pool}
 	ss.pushRawVideo(f3)
 
-	if f1.YUV != nil {
-		t.Error("f1.YUV should be nil after being overwritten in ring buffer")
+	if f1.Data != nil {
+		t.Error("f1.Data should be nil after being overwritten in ring buffer")
 	}
 
 	// Pool should have gotten F1's buffer back.
@@ -120,14 +120,14 @@ func TestSyncSource_PushRawVideo_ReleasesOverwrittenFrame(t *testing.T) {
 
 // popNewestRawVideo releases non-newest frames when FRC is inactive.
 func TestSyncSource_PopNewestRawVideo_ReleasesNonNewest(t *testing.T) {
-	pool := NewFramePool(4, 320, 240)
-	yuvSize := 320 * 240 * 3 / 2
+	pool := NewFramePool(4, 320, 240, ColorYUV420_8bit)
+	yuvSize := ColorYUV420_8bit.FrameSize(320, 240)
 
 	ss := &syncSource{} // no FRC
 
 	// Push 2 frames.
-	f1 := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 1000, pool: pool}
-	f2 := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 2000, pool: pool}
+	f1 := &ProcessingFrame{Data: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 1000, pool: pool}
+	f2 := &ProcessingFrame{Data: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 2000, pool: pool}
 	ss.pushRawVideo(f1)
 	ss.pushRawVideo(f2)
 
@@ -137,12 +137,12 @@ func TestSyncSource_PopNewestRawVideo_ReleasesNonNewest(t *testing.T) {
 	if newest != f2 {
 		t.Fatal("popNewest should return f2")
 	}
-	if f1.YUV != nil {
-		t.Error("f1.YUV should be nil (non-newest released on pop)")
+	if f1.Data != nil {
+		t.Error("f1.Data should be nil (non-newest released on pop)")
 	}
 	// F2 should still have its buffer (it's the returned frame).
-	if f2.YUV == nil {
-		t.Error("f2.YUV should NOT be nil (it's the returned newest)")
+	if f2.Data == nil {
+		t.Error("f2.Data should NOT be nil (it's the returned newest)")
 	}
 }
 
@@ -157,17 +157,17 @@ func TestSyncSource_PopNewestRawVideo_ReleasesNonNewest(t *testing.T) {
 // When FRC later ingests a 4th frame, it releases the old prevFrame (refs 1→0),
 // returning the buffer to the pool.
 func TestSyncSource_PushRawVideo_WithFRC_ReleasesRingRef(t *testing.T) {
-	pool := NewFramePool(8, 320, 240)
-	yuvSize := 320 * 240 * 3 / 2
+	pool := NewFramePool(8, 320, 240, ColorYUV420_8bit)
+	yuvSize := ColorYUV420_8bit.FrameSize(320, 240)
 
 	ss := &syncSource{
 		frc: newFRCSource(FRCNearest, 3003),
 	}
 
 	// Create refcounted frames (matching real sourceDecoder behavior).
-	f1 := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 1000, pool: pool}
+	f1 := &ProcessingFrame{Data: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 1000, pool: pool}
 	f1.SetRefs(1)
-	f2 := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 2000, pool: pool}
+	f2 := &ProcessingFrame{Data: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 2000, pool: pool}
 	f2.SetRefs(1)
 
 	// Simulate IngestRawVideo: push + frc.ingest together.
@@ -180,14 +180,14 @@ func TestSyncSource_PushRawVideo_WithFRC_ReleasesRingRef(t *testing.T) {
 	// Push a 3rd frame — overwrites f1's ring slot.
 	// The ring should release its ref on f1 (refs 2→1).
 	// FRC still holds f1 via prevFrame (refs=1), so f1 stays alive.
-	f3 := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 3000, pool: pool}
+	f3 := &ProcessingFrame{Data: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 3000, pool: pool}
 	f3.SetRefs(1)
 	ss.pushRawVideo(f3)
 	ss.frc.ingest(f3) // FRC releases old prev (f1): refs 1→0, buffer returned to pool.
 
 	// f1's buffer should now be fully released (refs=0, returned to pool).
-	if f1.YUV != nil {
-		t.Error("f1.YUV should be nil: ring ref released on overwrite, FRC ref released on ingest(f3)")
+	if f1.Data != nil {
+		t.Error("f1.Data should be nil: ring ref released on overwrite, FRC ref released on ingest(f3)")
 	}
 	if f1.Refs() != 0 {
 		t.Errorf("f1.Refs() = %d, want 0", f1.Refs())
@@ -197,24 +197,24 @@ func TestSyncSource_PushRawVideo_WithFRC_ReleasesRingRef(t *testing.T) {
 	// Actually after f3 overwrites f2's slot too (ring wraps), refs depends on
 	// ring size. With syncRingSize=2, f3 overwrites slot 0 (was f1). f2 is at
 	// slot 1 and hasn't been overwritten yet. So f2.refs is still 2.
-	if f2.YUV == nil {
-		t.Error("f2.YUV should still be alive (FRC prevFrame + ring slot)")
+	if f2.Data == nil {
+		t.Error("f2.Data should still be alive (FRC prevFrame + ring slot)")
 	}
 }
 
 // popNewestRawVideo must release non-newest frames' ring refs even with FRC active.
 // FRC holds its own refs via Ref() in ingest, so the ring ref release is safe.
 func TestSyncSource_PopNewestRawVideo_WithFRC_ReleasesNonNewest(t *testing.T) {
-	pool := NewFramePool(8, 320, 240)
-	yuvSize := 320 * 240 * 3 / 2
+	pool := NewFramePool(8, 320, 240, ColorYUV420_8bit)
+	yuvSize := ColorYUV420_8bit.FrameSize(320, 240)
 
 	ss := &syncSource{
 		frc: newFRCSource(FRCNearest, 3003),
 	}
 
-	f1 := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 1000, pool: pool}
+	f1 := &ProcessingFrame{Data: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 1000, pool: pool}
 	f1.SetRefs(1)
-	f2 := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 2000, pool: pool}
+	f2 := &ProcessingFrame{Data: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 2000, pool: pool}
 	f2.SetRefs(1)
 
 	ss.pushRawVideo(f1)
@@ -240,17 +240,17 @@ func TestSyncSource_PopNewestRawVideo_WithFRC_ReleasesNonNewest(t *testing.T) {
 	// Actually: popNewestRawVideo sets all ring entries to nil but does NOT
 	// call ReleaseYUV on the newest. So f2.refs stays at 2 (FRC ref only
 	// decremented when FRC ingests a replacement). The caller gets the pointer.
-	if f2.YUV == nil {
-		t.Error("f2.YUV should still be alive (it's the returned newest)")
+	if f2.Data == nil {
+		t.Error("f2.Data should still be alive (it's the returned newest)")
 	}
 }
 
 // Delay buffer releases frame after delivering via timer callback.
 func TestDelayBuffer_ReleasesFrameOnDelivery(t *testing.T) {
-	pool := NewFramePool(4, 320, 240)
-	yuvSize := 320 * 240 * 3 / 2
+	pool := NewFramePool(4, 320, 240, ColorYUV420_8bit)
+	yuvSize := ColorYUV420_8bit.FrameSize(320, 240)
 
-	pf := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 1000, pool: pool}
+	pf := &ProcessingFrame{Data: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 1000, pool: pool}
 
 	// The delay buffer's timer callback should release after delivering.
 	// When delay=0 (immediate path), release happens after handler call.
@@ -262,7 +262,7 @@ func TestDelayBuffer_ReleasesFrameOnDelivery(t *testing.T) {
 	// handleRawVideoFrame returns its buffer to the pool.
 	pf.ReleaseYUV()
 
-	if pf.YUV != nil {
+	if pf.Data != nil {
 		t.Error("frame should be released after delivery")
 	}
 
@@ -278,8 +278,8 @@ func TestDelayBuffer_ReleasesFrameOnDelivery(t *testing.T) {
 
 // rawSinkNode.Process releases frames via refcount after sink callback.
 func TestRawSinkNode_ZeroCopyWithRefcount(t *testing.T) {
-	pool := NewFramePool(4, 320, 240)
-	yuvSize := 320 * 240 * 3 / 2
+	pool := NewFramePool(4, 320, 240, ColorYUV420_8bit)
+	yuvSize := ColorYUV420_8bit.FrameSize(320, 240)
 
 	var sinkReceived *ProcessingFrame
 	sink := RawVideoSink(func(pf *ProcessingFrame) {
@@ -294,7 +294,7 @@ func TestRawSinkNode_ZeroCopyWithRefcount(t *testing.T) {
 
 	// Create a refcounted source frame (as pipeline frames are).
 	src := &ProcessingFrame{
-		YUV: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 1000, pool: pool,
+		Data: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 1000, pool: pool,
 	}
 	src.SetRefs(1)
 
@@ -313,8 +313,8 @@ func TestRawSinkNode_ZeroCopyWithRefcount(t *testing.T) {
 	}
 
 	// Frame stays alive — pipeline still holds refs=1.
-	if src.YUV == nil {
-		t.Error("src.YUV should still be alive (pipeline ref outstanding)")
+	if src.Data == nil {
+		t.Error("src.Data should still be alive (pipeline ref outstanding)")
 	}
 
 	// No pool misses: zero-copy means no buffer was acquired for a deep copy.
@@ -326,17 +326,17 @@ func TestRawSinkNode_ZeroCopyWithRefcount(t *testing.T) {
 
 	// Final release by pipeline owner.
 	src.ReleaseYUV()
-	if src.YUV != nil {
-		t.Error("src.YUV should be nil after final release")
+	if src.Data != nil {
+		t.Error("src.Data should be nil after final release")
 	}
 }
 
 // makeDecoderCallback direct path releases frame after handleRawVideoFrame.
 func TestDecoderCallback_ReleasesOnDirectPath(t *testing.T) {
-	pool := NewFramePool(4, 320, 240)
-	yuvSize := 320 * 240 * 3 / 2
+	pool := NewFramePool(4, 320, 240, ColorYUV420_8bit)
+	yuvSize := ColorYUV420_8bit.FrameSize(320, 240)
 
-	pf := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 1000, pool: pool}
+	pf := &ProcessingFrame{Data: pool.Acquire()[:yuvSize], Width: 320, Height: 240, PTS: 1000, pool: pool}
 
 	// In the direct path (no frame sync, no delay buffer),
 	// the callback should release after handleRawVideoFrame returns.
@@ -344,7 +344,7 @@ func TestDecoderCallback_ReleasesOnDirectPath(t *testing.T) {
 	// In both cases, the original is safe to release after the call.
 	pf.ReleaseYUV()
 
-	if pf.YUV != nil {
+	if pf.Data != nil {
 		t.Error("frame should be released after direct path")
 	}
 

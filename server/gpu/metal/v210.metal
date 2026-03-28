@@ -134,3 +134,136 @@ kernel void nv12_to_v210(
     v210[v210Idx + 2] = w2;
     v210[v210Idx + 3] = w3;
 }
+
+// ============================================================================
+// V210 <-> P210 lossless conversion (both 10-bit, just rearrangement)
+// ============================================================================
+
+struct V210ToP210Params {
+    uint width;
+    uint height;
+    uint p210Pitch;     // P210 row pitch in bytes
+    uint v210Stride32;  // V210 stride in uint32 elements
+};
+
+struct P210ToV210Params {
+    uint width;
+    uint height;
+    uint p210Pitch;
+    uint v210Stride32;
+};
+
+// V210 -> P210: Lossless unpack (no bit shifting, both are 10-bit).
+// Each thread processes one 6-pixel V210 group for one row.
+// V210 is 4:2:2 packed, P210 is 4:2:2 semi-planar.
+// Y plane: uint16 luma samples at native 10-bit.
+// UV plane: interleaved uint16 Cb/Cr pairs at full height (4:2:2).
+kernel void v210_to_p210(
+    device uchar* p210                   [[buffer(0)]],
+    device const uint32_t* v210          [[buffer(1)]],
+    constant V210ToP210Params& params    [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    uint groupX = gid.x;
+    uint y = gid.y;
+    uint groupsPerRow = params.width / 6;
+    if (groupX >= groupsPerRow || y >= params.height) return;
+
+    uint v210Idx = y * params.v210Stride32 + groupX * 4;
+    uint32_t w0 = v210[v210Idx];
+    uint32_t w1 = v210[v210Idx + 1];
+    uint32_t w2 = v210[v210Idx + 2];
+    uint32_t w3 = v210[v210Idx + 3];
+
+    // Extract 6 Y samples (10-bit, no shifting)
+    ushort Y0 = ushort((w0 >> 10) & 0x3FF);
+    ushort Y1 = ushort((w1)       & 0x3FF);
+    ushort Y2 = ushort((w1 >> 20) & 0x3FF);
+    ushort Y3 = ushort((w2 >> 10) & 0x3FF);
+    ushort Y4 = ushort((w3)       & 0x3FF);
+    ushort Y5 = ushort((w3 >> 20) & 0x3FF);
+
+    // Extract 3 CbCr pairs (10-bit)
+    ushort Cb0 = ushort((w0)       & 0x3FF);
+    ushort Cr0 = ushort((w0 >> 20) & 0x3FF);
+    ushort Cb2 = ushort((w1 >> 10) & 0x3FF);
+    ushort Cr2 = ushort((w2)       & 0x3FF);
+    ushort Cb4 = ushort((w2 >> 20) & 0x3FF);
+    ushort Cr4 = ushort((w3 >> 10) & 0x3FF);
+
+    // Write Y plane (uint16 samples)
+    uint px = groupX * 6;
+    uint ySPR = params.p210Pitch / 2;  // Y samples per row
+    device ushort* yPlane = (device ushort*)p210;
+    yPlane[y * ySPR + px]     = Y0;
+    yPlane[y * ySPR + px + 1] = Y1;
+    yPlane[y * ySPR + px + 2] = Y2;
+    yPlane[y * ySPR + px + 3] = Y3;
+    yPlane[y * ySPR + px + 4] = Y4;
+    yPlane[y * ySPR + px + 5] = Y5;
+
+    // Write UV plane (interleaved uint16 Cb/Cr at full height)
+    // UV plane offset: pitch * height bytes from start
+    uint uvByteOffset = params.p210Pitch * params.height;
+    device ushort* uvPlane = (device ushort*)(p210 + uvByteOffset);
+    uint cx = groupX * 3;  // 3 chroma pairs per 6-pixel group
+    uvPlane[y * ySPR + cx * 2]     = Cb0;
+    uvPlane[y * ySPR + cx * 2 + 1] = Cr0;
+    if (cx + 1 < params.width / 2) {
+        uvPlane[y * ySPR + (cx+1) * 2]     = Cb2;
+        uvPlane[y * ySPR + (cx+1) * 2 + 1] = Cr2;
+    }
+    if (cx + 2 < params.width / 2) {
+        uvPlane[y * ySPR + (cx+2) * 2]     = Cb4;
+        uvPlane[y * ySPR + (cx+2) * 2 + 1] = Cr4;
+    }
+}
+
+// P210 -> V210: Lossless pack (no bit shifting, both are 10-bit).
+// Each thread processes one 6-pixel group for one row.
+kernel void p210_to_v210(
+    device uint32_t* v210                [[buffer(0)]],
+    device const uchar* p210             [[buffer(1)]],
+    constant P210ToV210Params& params    [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    uint groupX = gid.x;
+    uint y = gid.y;
+    uint groupsPerRow = params.width / 6;
+    if (groupX >= groupsPerRow || y >= params.height) return;
+
+    uint px = groupX * 6;
+    uint ySPR = params.p210Pitch / 2;
+    device const ushort* yPlane = (device const ushort*)p210;
+
+    uint32_t Y0 = uint32_t(yPlane[y * ySPR + px]);
+    uint32_t Y1 = uint32_t(yPlane[y * ySPR + px + 1]);
+    uint32_t Y2 = uint32_t(yPlane[y * ySPR + px + 2]);
+    uint32_t Y3 = uint32_t(yPlane[y * ySPR + px + 3]);
+    uint32_t Y4 = uint32_t(yPlane[y * ySPR + px + 4]);
+    uint32_t Y5 = uint32_t(yPlane[y * ySPR + px + 5]);
+
+    // Read from UV plane
+    uint uvByteOffset = params.p210Pitch * params.height;
+    device const ushort* uvPlane = (device const ushort*)(p210 + uvByteOffset);
+    uint cx = groupX * 3;
+
+    uint32_t Cb0 = uint32_t(uvPlane[y * ySPR + cx * 2]);
+    uint32_t Cr0 = uint32_t(uvPlane[y * ySPR + cx * 2 + 1]);
+    uint32_t Cb2 = (cx + 1 < params.width / 2) ? uint32_t(uvPlane[y * ySPR + (cx+1) * 2])     : Cb0;
+    uint32_t Cr2 = (cx + 1 < params.width / 2) ? uint32_t(uvPlane[y * ySPR + (cx+1) * 2 + 1]) : Cr0;
+    uint32_t Cb4 = (cx + 2 < params.width / 2) ? uint32_t(uvPlane[y * ySPR + (cx+2) * 2])     : Cb2;
+    uint32_t Cr4 = (cx + 2 < params.width / 2) ? uint32_t(uvPlane[y * ySPR + (cx+2) * 2 + 1]) : Cr2;
+
+    // Pack into V210 words
+    uint32_t w0 = (Cb0 & 0x3FF) | ((Y0 & 0x3FF) << 10) | ((Cr0 & 0x3FF) << 20);
+    uint32_t w1 = (Y1  & 0x3FF) | ((Cb2 & 0x3FF) << 10) | ((Y2 & 0x3FF) << 20);
+    uint32_t w2 = (Cr2 & 0x3FF) | ((Y3  & 0x3FF) << 10) | ((Cb4 & 0x3FF) << 20);
+    uint32_t w3 = (Y4  & 0x3FF) | ((Cr4 & 0x3FF) << 10) | ((Y5 & 0x3FF) << 20);
+
+    uint v210Idx = y * params.v210Stride32 + groupX * 4;
+    v210[v210Idx]     = w0;
+    v210[v210Idx + 1] = w1;
+    v210[v210Idx + 2] = w2;
+    v210[v210Idx + 3] = w3;
+}

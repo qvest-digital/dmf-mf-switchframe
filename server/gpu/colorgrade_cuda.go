@@ -10,6 +10,9 @@ package gpu
 cudaError_t launch_colorgrade_lut3d(
     uint8_t* nv12, const float* lut, int lutSize, float intensity,
     int width, int height, int pitch, cudaStream_t stream);
+cudaError_t launch_colorgrade_lut3d_p210(
+    uint8_t* p210, const float* lut, int lutSize, float intensity,
+    int width, int height, int pitch, cudaStream_t stream);
 cudaError_t colorgrade_upload_lut(float** devLut, const float* hostLut, int count);
 void colorgrade_free_lut(float* devLut);
 */
@@ -34,6 +37,33 @@ func ColorGradeLUT3D(ctx *Context, frame *GPUFrame, lutDevPtr uintptr, lutSize i
 	)
 	if rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: colorgrade LUT3D failed: %d", rc)
+	}
+	return ctx.Sync()
+}
+
+// ColorGradeLUT3DP210 applies a 3D LUT color grade to a P210 (10-bit 4:2:2)
+// frame in-place. Uses 10-bit limited-range BT.709 scaling:
+//
+//	Y:  [64, 940]  → excursion 876
+//	Cb: [64, 960]  → centered at 512, excursion 896
+//	Cr: [64, 960]  → centered at 512, excursion 896
+//
+// The LUT must already be uploaded to GPU memory via UploadLUT3D.
+// intensity controls blend: 0.0 = bypass, 1.0 = full grade.
+func ColorGradeLUT3DP210(ctx *Context, frame *GPUFrame, lutDevPtr uintptr, lutSize int, intensity float32) error {
+	if ctx == nil || frame == nil {
+		return ErrGPUNotAvailable
+	}
+	rc := C.launch_colorgrade_lut3d_p210(
+		(*C.uint8_t)(unsafe.Pointer(uintptr(frame.DevPtr))),
+		(*C.float)(unsafe.Pointer(lutDevPtr)),
+		C.int(lutSize),
+		C.float(intensity),
+		C.int(frame.Width), C.int(frame.Height), C.int(frame.Pitch),
+		ctx.stream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: colorgrade LUT3D P210 failed: %d", rc)
 	}
 	return ctx.Sync()
 }

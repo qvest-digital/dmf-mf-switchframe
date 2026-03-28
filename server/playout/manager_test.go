@@ -561,7 +561,7 @@ func TestManager_SetGPUSourceTap_PropagatesToChannels(t *testing.T) {
 	m.SetGPUSourceTap(func(channelKey, sourceKey string) *DecodedFrame {
 		called.Add(1)
 		return &DecodedFrame{
-			YUV:    make([]byte, 1920*1080*3/2),
+			YUV:    make([]byte, yuvFrameSize(1920, 1080)),
 			Width:  1920,
 			Height: 1080,
 		}

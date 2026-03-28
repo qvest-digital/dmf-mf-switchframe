@@ -24,6 +24,14 @@ extern cudaError_t nv12_to_rgb_chw(
     int outW, int outH,
     cudaStream_t stream);
 
+// p210_to_rgb_chw is the fused P210 (10-bit 4:2:2) -> RGB float32 CHW preprocessing kernel.
+extern cudaError_t p210_to_rgb_chw(
+    float* rgbOut,
+    const uint16_t* p210,
+    int srcW, int srcH, int srcPitch16,
+    int outW, int outH,
+    cudaStream_t stream);
+
 // sam_threshold_mask converts float32 logits to uint8 binary mask.
 // Each pixel: output = (logits[i] > threshold) ? 255 : 0.
 // Declared in gpu/cuda/preprocess.cu.
@@ -225,21 +233,39 @@ func (m *sam2Model) allocBuffers() error {
 //   - high_res_feat1: [1, 64, 128, 128]
 //
 // Typically called once when the scene changes or when prompts are first added.
-func (m *sam2Model) Encode(inputPtr uintptr, w, h, pitch int) error {
+func (m *sam2Model) Encode(inputPtr uintptr, w, h, pitch int, format FrameFormat) error {
 	if m == nil || m.encoder == nil {
 		return ErrDisabled
 	}
 
-	// Preprocess NV12 -> RGB float32 CHW, resize to 1024x1024.
-	rc := C.nv12_to_rgb_chw(
-		(*C.float)(m.encoderInputBuf),
-		(*C.uint8_t)(unsafe.Pointer(inputPtr)),
-		C.int(w), C.int(h), C.int(pitch),
-		C.int(samEncoderInputW), C.int(samEncoderInputH),
-		nil,
-	)
-	if rc != C.cudaSuccess {
-		return fmt.Errorf("SAM encoder preprocess NV12->RGB: CUDA error %d", rc)
+	// Preprocess frame -> RGB float32 CHW, resize to 1024x1024.
+	var rc C.cudaError_t
+	switch format {
+	case FormatP210:
+		if pitch%2 != 0 {
+			return fmt.Errorf("SAM encoder preprocess P210: odd pitch %d", pitch)
+		}
+		rc = C.p210_to_rgb_chw(
+			(*C.float)(m.encoderInputBuf),
+			(*C.uint16_t)(unsafe.Pointer(inputPtr)),
+			C.int(w), C.int(h), C.int(pitch/2),
+			C.int(samEncoderInputW), C.int(samEncoderInputH),
+			nil,
+		)
+		if rc != C.cudaSuccess {
+			return fmt.Errorf("SAM encoder preprocess P210->RGB: CUDA error %d", rc)
+		}
+	default:
+		rc = C.nv12_to_rgb_chw(
+			(*C.float)(m.encoderInputBuf),
+			(*C.uint8_t)(unsafe.Pointer(inputPtr)),
+			C.int(w), C.int(h), C.int(pitch),
+			C.int(samEncoderInputW), C.int(samEncoderInputH),
+			nil,
+		)
+		if rc != C.cudaSuccess {
+			return fmt.Errorf("SAM encoder preprocess NV12->RGB: CUDA error %d", rc)
+		}
 	}
 
 	// Run image encoder with named bindings: 1 input, 3 outputs.
@@ -269,7 +295,7 @@ func (m *sam2Model) Encode(inputPtr uintptr, w, h, pitch int) error {
 // resolution via a device-to-device copy. When outputPtr is 0, the result
 // is left in the internal maskOutputBuf accessible via MaskOutputPtr().
 // Encode() must have been called at least once before Propagate().
-func (m *sam2Model) Propagate(inputPtr uintptr, w, h, pitch int, outputPtr uintptr) error {
+func (m *sam2Model) Propagate(inputPtr uintptr, w, h, pitch int, outputPtr uintptr, format FrameFormat) error {
 	if m == nil || m.decoder == nil {
 		return ErrDisabled
 	}
@@ -518,6 +544,18 @@ func (m *sam2Model) Prompts() []SAMPrompt {
 	out := make([]SAMPrompt, len(m.prompts))
 	copy(out, m.prompts)
 	return out
+}
+
+// PreallocMask pre-allocates the mask output buffer at the given resolution
+// and returns the device pointer. Returns 0 on error or nil receiver.
+func (m *sam2Model) PreallocMask(w, h int) uintptr {
+	if m == nil {
+		return 0
+	}
+	if err := m.ensureMaskOutputBuf(w, h); err != nil {
+		return 0
+	}
+	return m.MaskOutputPtr()
 }
 
 // Close releases all GPU resources held by the SAM model.

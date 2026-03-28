@@ -101,7 +101,9 @@ flowchart LR
     mqctl -.->|"state updates"| browsers
 ```
 
-The key architectural insight is that every source is continuously decoded to raw YUV420, regardless of how it arrives. All video processing -- transitions, upstream keying, PIP compositing, graphics overlay, scaling -- operates in BT.709 YUV420, the same colorspace hardware broadcast mixers use internally. This eliminates costly YUV-to-RGB round-trips and means cuts between sources are instant: there is no keyframe wait because every source always has a current decoded frame ready.
+The key architectural insight is that every source is continuously decoded to raw YUV, regardless of how it arrives. All video processing -- transitions, upstream keying, PIP compositing, graphics overlay, scaling -- operates in BT.709 YUV, the same colorspace hardware broadcast mixers use internally. This eliminates costly YUV-to-RGB round-trips and means cuts between sources are instant: there is no keyframe wait because every source always has a current decoded frame ready.
+
+The pipeline's internal pixel format is selected at startup via the `--color-format` flag. Three profiles are available: `standard` (YUV420 8-bit, H.264), `standard-hevc` (YUV420 8-bit, H.265), and `professional` (YUV422 10-bit, H.265). In professional mode, all processing runs at 10-bit 4:2:2 precision with HEVC encoding, matching the quality tier of hardware broadcast infrastructure. Sources are normalized to the pipeline format on ingest.
 
 Audio follows a similar always-ready model. Each channel flows through a fixed processing chain before being mixed to a stereo master bus. A passthrough optimization bypasses the entire decode/process/encode chain when a single source is at unity gain with no processing enabled, dropping audio CPU to near zero in the common case.
 
@@ -807,9 +809,9 @@ GPU bridge nodes implement the same `switcher.PipelineNode` interface as CPU nod
 
 If any GPU node encounters an error (shader compilation failure, out of memory, unsupported operation), it passes the `ProcessingFrame` through unchanged, preserving the CPU YUV420 data. The pipeline continues on the CPU path for that frame. This graceful fallback means a GPU failure never causes a frame drop or program interruption.
 
-### NV12 Internal Format
+### GPU Internal Formats
 
-All GPU operations use NV12 (planar Y + interleaved UV) as the internal format, matching the native format of hardware video encoders and decoders. The upload node converts YUV420p (three separate planes) to NV12, and the download node converts back. On Apple Silicon, Metal uses unified memory -- the CPU and GPU share the same physical memory, so upload and download are effectively zero-copy pointer operations rather than DMA transfers.
+GPU operations use NV12 (8-bit 4:2:0 semi-planar) or P210 (10-bit 4:2:2 semi-planar) as the internal format, depending on the `--color-format` pipeline profile. Both formats match the native layout expected by hardware video encoders. The upload node converts CPU planar formats (YUV420p or YUV422P10LE) to the GPU semi-planar format, and the download node converts back. On Apple Silicon, Metal uses unified memory, so upload and download are effectively zero-copy pointer operations.
 
 ### Compute Shaders
 

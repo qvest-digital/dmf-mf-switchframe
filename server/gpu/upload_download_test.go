@@ -73,7 +73,7 @@ func TestUploadDownloadSmallFrame(t *testing.T) {
 	defer pool.Close()
 
 	w, h := 320, 240
-	totalSize := w * h * 3 / 2
+	totalSize := yuvFrameSize(w, h)
 
 	// Create deterministic pattern
 	yuv := make([]byte, totalSize)
@@ -116,7 +116,7 @@ func TestFillBlack(t *testing.T) {
 
 	// Download and verify black (Y=16, Cb=128, Cr=128)
 	w, h := 320, 240
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	err = Download(ctx, yuv, frame, w, h)
 	require.NoError(t, err)
 
@@ -192,7 +192,7 @@ func TestUploadResolutionChange(t *testing.T) {
 	require.NoError(t, err)
 	defer smallFrame.Release()
 
-	smallYUV := make([]byte, smallW*smallH*3/2)
+	smallYUV := make([]byte, yuvFrameSize(smallW, smallH))
 	for i := 0; i < smallW*smallH; i++ {
 		smallYUV[i] = 64 // dark gray Y
 	}
@@ -202,7 +202,7 @@ func TestUploadResolutionChange(t *testing.T) {
 	require.NoError(t, Upload(ctx, smallFrame, smallYUV, smallW, smallH))
 
 	// Verify small frame round-trips correctly.
-	smallResult := make([]byte, smallW*smallH*3/2)
+	smallResult := make([]byte, yuvFrameSize(smallW, smallH))
 	require.NoError(t, Download(ctx, smallResult, smallFrame, smallW, smallH))
 	assert.Equal(t, byte(64), smallResult[0], "small frame Y[0] should be 64")
 
@@ -211,7 +211,7 @@ func TestUploadResolutionChange(t *testing.T) {
 	require.NoError(t, err)
 	defer largeFrame.Release()
 
-	largeYUV := make([]byte, largeW*largeH*3/2)
+	largeYUV := make([]byte, yuvFrameSize(largeW, largeH))
 	for i := 0; i < largeW*largeH; i++ {
 		largeYUV[i] = 192 // bright gray Y
 	}
@@ -221,7 +221,7 @@ func TestUploadResolutionChange(t *testing.T) {
 	require.NoError(t, Upload(ctx, largeFrame, largeYUV, largeW, largeH))
 
 	// Verify large frame round-trips correctly after the realloc.
-	largeResult := make([]byte, largeW*largeH*3/2)
+	largeResult := make([]byte, yuvFrameSize(largeW, largeH))
 	require.NoError(t, Download(ctx, largeResult, largeFrame, largeW, largeH))
 	assert.Equal(t, byte(192), largeResult[0], "large frame Y[0] should be 192 after staging realloc")
 

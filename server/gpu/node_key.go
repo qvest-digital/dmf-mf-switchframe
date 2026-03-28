@@ -154,7 +154,7 @@ func (n *gpuKeyNode) applyKey(frame, fillGPU *GPUFrame, key *EnabledKeySnapshot)
 		}
 		scaled.PTS = frame.PTS
 
-		if scaleErr = ScaleBilinear(n.ctx, scaled, fillGPU); scaleErr != nil {
+		if scaleErr = GPUScaleDispatch(n.ctx, scaled, fillGPU); scaleErr != nil {
 			scaled.Release()
 			return scaleErr
 		}
@@ -205,7 +205,7 @@ func (n *gpuKeyNode) getOrUploadFill(key *EnabledKeySnapshot) (*GPUFrame, error)
 	if ok && cached.w == key.FillW && cached.h == key.FillH {
 		// Cache hit — re-upload pixel data (fill content changes every frame
 		// since it's the latest decoded frame from the source).
-		if err := Upload(n.ctx, cached.frame, key.FillYUV, key.FillW, key.FillH); err != nil {
+		if err := GPUUploadDispatch(n.ctx, cached.frame, key.FillYUV, key.FillW, key.FillH); err != nil {
 			return nil, err
 		}
 		return cached.frame, nil
@@ -225,7 +225,7 @@ func (n *gpuKeyNode) getOrUploadFill(key *EnabledKeySnapshot) (*GPUFrame, error)
 		return nil, err
 	}
 
-	if err := Upload(n.ctx, fillFrame, key.FillYUV, key.FillW, key.FillH); err != nil {
+	if err := GPUUploadDispatch(n.ctx, fillFrame, key.FillYUV, key.FillW, key.FillH); err != nil {
 		fillFrame.Release()
 		return nil, err
 	}

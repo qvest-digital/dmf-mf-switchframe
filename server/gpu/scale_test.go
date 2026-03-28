@@ -29,7 +29,7 @@ func TestGPUScaleBilinear(t *testing.T) {
 	defer dst.Release()
 
 	// Upload gradient pattern to source
-	srcYUV := make([]byte, 1920*1080*3/2)
+	srcYUV := make([]byte, yuvFrameSize(1920, 1080))
 	for i := 0; i < 1920*1080; i++ {
 		srcYUV[i] = byte((i%1920)*219/1919 + 16) // horizontal gradient
 	}
@@ -44,7 +44,7 @@ func TestGPUScaleBilinear(t *testing.T) {
 	require.NoError(t, err)
 
 	// Download and verify
-	dstYUV := make([]byte, 960*540*3/2)
+	dstYUV := make([]byte, yuvFrameSize(960, 540))
 	err = Download(ctx, dstYUV, dst, 960, 540)
 	require.NoError(t, err)
 
@@ -88,7 +88,7 @@ func TestGPUScaleUpscale(t *testing.T) {
 	defer dst.Release()
 
 	// Fill source with known value
-	srcYUV := make([]byte, 320*240*3/2)
+	srcYUV := make([]byte, yuvFrameSize(320, 240))
 	for i := 0; i < 320*240; i++ {
 		srcYUV[i] = 128 // mid-gray Y
 	}
@@ -101,7 +101,7 @@ func TestGPUScaleUpscale(t *testing.T) {
 	err = ScaleBilinear(ctx, dst, src)
 	require.NoError(t, err)
 
-	dstYUV := make([]byte, 640*480*3/2)
+	dstYUV := make([]byte, yuvFrameSize(640, 480))
 	err = Download(ctx, dstYUV, dst, 640, 480)
 	require.NoError(t, err)
 
@@ -138,7 +138,7 @@ func TestGPUScaleBilinearUVCorrectness(t *testing.T) {
 
 	// Create source with known UV pattern: Cb=50, Cr=200 everywhere.
 	// If scaling mixes channels, we'll see values in between.
-	srcYUV := make([]byte, srcW*srcH*3/2)
+	srcYUV := make([]byte, yuvFrameSize(srcW, srcH))
 	for i := 0; i < srcW*srcH; i++ {
 		srcYUV[i] = 128 // Y = mid-gray
 	}
@@ -159,7 +159,7 @@ func TestGPUScaleBilinearUVCorrectness(t *testing.T) {
 	err = ScaleBilinear(ctx, dst, src)
 	require.NoError(t, err)
 
-	dstYUV := make([]byte, dstW*dstH*3/2)
+	dstYUV := make([]byte, yuvFrameSize(dstW, dstH))
 	err = Download(ctx, dstYUV, dst, dstW, dstH)
 	require.NoError(t, err)
 

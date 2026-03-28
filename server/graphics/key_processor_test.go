@@ -520,3 +520,94 @@ func TestKeyTypeNeural(t *testing.T) {
 	require.NotEqual(t, KeyTypeChroma, KeyTypeNeural)
 	require.NotEqual(t, KeyTypeLuma, KeyTypeNeural)
 }
+
+// --- 10-bit KeyProcessorBridge tests ---
+
+func TestKeyProcessorBridge_ProcessYUV10_ChromaKey(t *testing.T) {
+	kp := NewKeyProcessor()
+	kp.SetKey("cam1", KeyConfig{
+		Type:       KeyTypeChroma,
+		Enabled:    true,
+		KeyColorCb: 30,
+		KeyColorCr: 12,
+		Similarity: 0.4,
+	})
+
+	bridge := NewKeyProcessorBridge(kp)
+
+	w, h := 16, 8
+	// Fill: green (should be keyed out). In 10-bit: Cb=120(30*4), Cr=48(12*4).
+	fill := make10bitGraphicsFrame(w, h, 728, 120, 48) // green fill
+	bridge.IngestFillYUV10("cam1", fill, w, h)
+
+	// Program: mid-gray background.
+	program := make10bitGraphicsFrame(w, h, 512, 512, 512)
+
+	result := bridge.ProcessYUV10(program, w, h)
+	require.NotNil(t, result)
+
+	// Since the fill is all green and keyed out, the program (background)
+	// should show through. Result Y should be close to 512 (program Y).
+	gotY := readY10g(result, 4, 4, w)
+	// Green pixels should be keyed → result is program (512). Allow tolerance.
+	require.InDelta(t, 512, int(gotY), 50, "keyed green pixel should show program background Y~512")
+}
+
+func TestKeyProcessorBridge_ProcessYUV10_LumaKey(t *testing.T) {
+	kp := NewKeyProcessor()
+	kp.SetKey("cam1", KeyConfig{
+		Type:     KeyTypeLuma,
+		Enabled:  true,
+		LowClip:  0.5,
+		HighClip: 1.0,
+	})
+
+	bridge := NewKeyProcessorBridge(kp)
+
+	w, h := 16, 8
+	// Fill: bright luma (Y=900 > lowClip in 10-bit terms).
+	// Luma key keeps pixels in [lowThresh, highThresh], keys rest.
+	// In 10-bit terms: lowThresh ~= 512, highThresh ~= 1023 (scaled from LowClip/HighClip).
+	// Fill Y=900 is within range → opaque (mask=255, keep).
+	fill := make10bitGraphicsFrame(w, h, 900, 512, 512)
+	bridge.IngestFillYUV10("cam1", fill, w, h)
+
+	// Program: dark background.
+	program := make10bitGraphicsFrame(w, h, 100, 512, 512)
+
+	result := bridge.ProcessYUV10(program, w, h)
+
+	// Fill Y=900 is in the luma key range (opaque), so fill should show.
+	gotY := readY10g(result, 4, 4, w)
+	require.InDelta(t, 900, int(gotY), 50, "luma key opaque pixel should show fill Y~900")
+}
+
+func TestKeyProcessorBridge_ProcessYUV10_NoKeysPassthrough(t *testing.T) {
+	kp := NewKeyProcessor()
+	bridge := NewKeyProcessorBridge(kp)
+
+	w, h := 16, 8
+	program := make10bitGraphicsFrame(w, h, 500, 400, 600)
+	original := make([]byte, len(program))
+	copy(original, program)
+
+	result := bridge.ProcessYUV10(program, w, h)
+	require.Equal(t, original, result, "no keys should return program unchanged")
+}
+
+func TestKeyProcessorBridge_ProcessYUV10_NoFillsPassthrough(t *testing.T) {
+	kp := NewKeyProcessor()
+	kp.SetKey("cam1", KeyConfig{
+		Type:    KeyTypeChroma,
+		Enabled: true,
+	})
+	bridge := NewKeyProcessorBridge(kp)
+
+	w, h := 16, 8
+	program := make10bitGraphicsFrame(w, h, 500, 400, 600)
+	original := make([]byte, len(program))
+	copy(original, program)
+
+	result := bridge.ProcessYUV10(program, w, h)
+	require.Equal(t, original, result, "no fills should return program unchanged")
+}

@@ -104,9 +104,17 @@ func (n *gpuColorGradeNode) ProcessGPU(frame *GPUFrame) error {
 		n.lutSize = n.state.GradingLUTSize()
 	}
 
-	if err := ColorGradeLUT3D(n.ctx, frame, n.lutDev, n.lutSize, intensity); err != nil {
+	// Dispatch to the correct kernel based on frame format.
+	var err error
+	switch frame.Format {
+	case GPUFormatP210:
+		err = ColorGradeLUT3DP210(n.ctx, frame, n.lutDev, n.lutSize, intensity)
+	default: // GPUFormatNV12
+		err = ColorGradeLUT3D(n.ctx, frame, n.lutDev, n.lutSize, intensity)
+	}
+	if err != nil {
 		n.lastErr.Store(err)
-		slog.Warn("gpu_colorgrade: kernel failed, skipping", "error", err)
+		slog.Warn("gpu_colorgrade: kernel failed, skipping", "error", err, "format", frame.Format)
 		return nil
 	}
 

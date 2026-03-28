@@ -2,6 +2,7 @@ package control
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -450,12 +451,13 @@ func TestAR_ErrorMappings(t *testing.T) {
 
 // mockARTrackingManager is a test double for ARTrackingManager.
 type mockARTrackingManager struct {
-	sources      map[string][]tracking.TrackingSourceInfo
-	poses        map[string]*tracking.CameraPose
-	calibrations map[string]*tracking.CameraIntrinsics
-	addErr       error // injected error for AddFreeDSource
-	removeErr    error // injected error for RemoveSource
-	calSetErr    error // injected error for SetCalibration
+	sources        map[string][]tracking.TrackingSourceInfo
+	poses          map[string]*tracking.CameraPose
+	calibrations   map[string]*tracking.CameraIntrinsics
+	addErr         error // injected error for AddFreeDSource
+	addVisualErr   error // injected error for AddVisualSource
+	removeErr      error // injected error for RemoveSource
+	calSetErr      error // injected error for SetCalibration
 }
 
 func newMockARTrackingManager() *mockARTrackingManager {
@@ -473,6 +475,18 @@ func (m *mockARTrackingManager) AddFreeDSource(sourceKey, udpAddr string, camera
 	m.sources[sourceKey] = append(m.sources[sourceKey], tracking.TrackingSourceInfo{
 		Name:    "freed",
 		Type:    "freed",
+		Running: true,
+	})
+	return nil
+}
+
+func (m *mockARTrackingManager) AddVisualSource(sourceKey string) error {
+	if m.addVisualErr != nil {
+		return m.addVisualErr
+	}
+	m.sources[sourceKey] = append(m.sources[sourceKey], tracking.TrackingSourceInfo{
+		Name:    "visual-sidecar-" + sourceKey,
+		Type:    "visual",
 		Running: true,
 	})
 	return nil
@@ -617,6 +631,32 @@ func TestARTracking_AddFreeD_Duplicate(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Mux().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusConflict, rec.Code)
+}
+
+// --- Add visual source ---
+
+func TestARTracking_AddVisual(t *testing.T) {
+	api, mgr := setupTrackingAPI(t)
+
+	req := httptest.NewRequest("PUT", "/api/ar/tracking/sources/cam1/visual", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusCreated, rec.Code)
+
+	require.Len(t, mgr.sources["cam1"], 1)
+	require.Equal(t, "visual-sidecar-cam1", mgr.sources["cam1"][0].Name)
+	require.Equal(t, "visual", mgr.sources["cam1"][0].Type)
+	require.True(t, mgr.sources["cam1"][0].Running)
+}
+
+func TestARTracking_AddVisual_Error(t *testing.T) {
+	api, mgr := setupTrackingAPI(t)
+	mgr.addVisualErr = fmt.Errorf("AI sidecar not configured (use --ai-sidecar flag)")
+
+	req := httptest.NewRequest("PUT", "/api/ar/tracking/sources/cam1/visual", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusInternalServerError, rec.Code)
 }
 
 // --- Remove source ---

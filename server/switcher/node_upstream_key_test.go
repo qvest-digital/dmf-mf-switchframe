@@ -30,12 +30,12 @@ func TestUpstreamKeyNode_ProcessPassthrough(t *testing.T) {
 	n := &upstreamKeyNode{bridge: bridge}
 
 	pf := &ProcessingFrame{
-		YUV:    make([]byte, 8*8*3/2),
+		Data:    make([]byte, ColorYUV420_8bit.FrameSize(8, 8)),
 		Width:  8,
 		Height: 8,
 		PTS:    1000,
 	}
-	pf.YUV[0] = 0x42
+	pf.Data[0] = 0x42
 
 	out := n.Process(nil, pf)
 	require.Same(t, pf, out, "Process should return src for in-place node")

@@ -46,7 +46,7 @@ func TestGPUPipelineFullChain(t *testing.T) {
 	defer pipe.Close()
 
 	// Create test pattern
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		yuv[i] = byte(i%220) + 16
 	}
@@ -107,7 +107,7 @@ func TestGPUPipelineWithRawSink(t *testing.T) {
 	defer pipe.Close()
 
 	// Upload a frame with Y=200
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		yuv[i] = 200
 	}

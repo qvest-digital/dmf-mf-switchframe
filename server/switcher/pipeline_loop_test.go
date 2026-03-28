@@ -33,7 +33,7 @@ func (n *countingNode) Close() error                          { return nil }
 func (n *countingNode) Process(dst, src *ProcessingFrame) *ProcessingFrame {
 	n.calls++
 	if n.marker != 0 {
-		src.YUV[0] = n.marker
+		src.Data[0] = n.marker
 	}
 	return src
 }
@@ -84,7 +84,7 @@ func TestPipelineLoop_Run(t *testing.T) {
 	require.NoError(t, p.Build(DefaultFormat, nil, []PipelineNode{n1, n2}))
 
 	pf := &ProcessingFrame{
-		YUV:   make([]byte, 4*4*3/2),
+		Data:   make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width: 4, Height: 4,
 	}
 
@@ -93,7 +93,7 @@ func TestPipelineLoop_Run(t *testing.T) {
 	require.Equal(t, 1, n1.calls)
 	require.Equal(t, 1, n2.calls)
 	// Last node's marker wins
-	require.Equal(t, byte(0xBB), out.YUV[0])
+	require.Equal(t, byte(0xBB), out.Data[0])
 }
 
 func TestPipelineLoop_RunSkipsInactive(t *testing.T) {
@@ -104,7 +104,7 @@ func TestPipelineLoop_RunSkipsInactive(t *testing.T) {
 	require.NoError(t, p.Build(DefaultFormat, nil, []PipelineNode{active, inactive}))
 
 	pf := &ProcessingFrame{
-		YUV:   make([]byte, 4*4*3/2),
+		Data:   make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width: 4, Height: 4,
 	}
 
@@ -121,7 +121,7 @@ func TestPipelineLoop_Snapshot(t *testing.T) {
 	require.NoError(t, p.Build(DefaultFormat, nil, []PipelineNode{n1, n2}))
 
 	pf := &ProcessingFrame{
-		YUV:   make([]byte, 4*4*3/2),
+		Data:   make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width: 4, Height: 4,
 	}
 	p.Run(pf)
@@ -145,7 +145,7 @@ func TestPipelineLoop_WaitAndClose(t *testing.T) {
 
 	// Run a frame, then wait
 	pf := &ProcessingFrame{
-		YUV:   make([]byte, 4*4*3/2),
+		Data:   make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width: 4, Height: 4,
 	}
 	p.Run(pf)
@@ -226,7 +226,7 @@ func TestRebuildPipeline_IncrementsEpoch(t *testing.T) {
 	sw.mu.Lock()
 	sw.pipeCodecs = &pipelineCodecs{}
 	sw.mu.Unlock()
-	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit)
 
 	before := sw.pipelineEpoch.Load()
 	sw.rebuildPipeline()
@@ -244,7 +244,7 @@ func TestSetCompositor_TriggersPipelineRebuild(t *testing.T) {
 	sw.mu.Lock()
 	sw.pipeCodecs = &pipelineCodecs{}
 	sw.mu.Unlock()
-	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit)
 
 	epochBefore := sw.pipelineEpoch.Load()
 	sw.SetCompositor(nil)
@@ -260,7 +260,7 @@ func TestSetKeyBridge_TriggersPipelineRebuild(t *testing.T) {
 	sw.mu.Lock()
 	sw.pipeCodecs = &pipelineCodecs{}
 	sw.mu.Unlock()
-	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit)
 
 	epochBefore := sw.pipelineEpoch.Load()
 	sw.SetKeyBridge(nil)
@@ -276,7 +276,7 @@ func TestSetRawVideoSink_TriggersPipelineRebuild(t *testing.T) {
 	sw.mu.Lock()
 	sw.pipeCodecs = &pipelineCodecs{}
 	sw.mu.Unlock()
-	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit)
 
 	epochBefore := sw.pipelineEpoch.Load()
 	sink := RawVideoSink(func(pf *ProcessingFrame) {})
@@ -294,7 +294,7 @@ func TestSetPipelineFormat_SwapsPipeline(t *testing.T) {
 	sw.mu.Lock()
 	sw.pipeCodecs = &pipelineCodecs{}
 	sw.mu.Unlock()
-	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit)
 	sw.rebuildPipeline()
 	require.NotNil(t, sw.pipeline.Load())
 
@@ -320,7 +320,7 @@ func TestSetPipelineFormat_CallsOnFormatChange(t *testing.T) {
 	sw.mu.Lock()
 	sw.pipeCodecs = &pipelineCodecs{}
 	sw.mu.Unlock()
-	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit)
 	sw.rebuildPipeline()
 
 	// Register callback.
@@ -351,7 +351,7 @@ func TestClose_SwapsNilAndWaits(t *testing.T) {
 	sw.mu.Lock()
 	sw.pipeCodecs = &pipelineCodecs{}
 	sw.mu.Unlock()
-	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit)
 	sw.rebuildPipeline()
 	require.NotNil(t, sw.pipeline.Load())
 
@@ -368,7 +368,7 @@ func TestBuildPipeline_SetsEpoch(t *testing.T) {
 	sw.mu.Lock()
 	sw.pipeCodecs = &pipelineCodecs{}
 	sw.mu.Unlock()
-	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit)
 
 	err := sw.BuildPipeline()
 	require.NoError(t, err)
@@ -387,7 +387,7 @@ func TestAtomicSwap_FullLifecycle(t *testing.T) {
 	sw.mu.Lock()
 	sw.pipeCodecs = &pipelineCodecs{}
 	sw.mu.Unlock()
-	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit)
 
 	err := sw.BuildPipeline()
 	require.NoError(t, err)
@@ -453,7 +453,7 @@ func TestSwapPipeline_DrainsInflightFrames(t *testing.T) {
 	// Start a frame that will block in Process.
 	go func() {
 		pf := &ProcessingFrame{
-			YUV:   make([]byte, 4*4*3/2),
+			Data:   make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 			Width: 4, Height: 4,
 		}
 		p.Run(pf)
@@ -486,7 +486,7 @@ func TestRebuildPipeline_BuildFailurePreservesOld(t *testing.T) {
 	sw.mu.Lock()
 	sw.pipeCodecs = &pipelineCodecs{}
 	sw.mu.Unlock()
-	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit)
 
 	// Build and install initial pipeline.
 	sw.rebuildPipeline()
@@ -531,7 +531,7 @@ func TestSwapPipeline_ConcurrentTriggers(t *testing.T) {
 	sw.mu.Lock()
 	sw.pipeCodecs = &pipelineCodecs{}
 	sw.mu.Unlock()
-	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit)
 	sw.rebuildPipeline()
 
 	// Fire 10 concurrent rebuild triggers — no panics, no races.
@@ -560,7 +560,7 @@ func TestPipelineLoop_RunObservesPrometheus(t *testing.T) {
 	p.SetMetrics(m)
 
 	pf := &ProcessingFrame{
-		YUV:   make([]byte, 4*4*3/2),
+		Data:   make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width: 4, Height: 4,
 	}
 	p.Run(pf)
@@ -591,7 +591,7 @@ func TestPipelineLoop_RunNilMetricsSafe(t *testing.T) {
 	// No SetMetrics call — p.metrics is nil.
 
 	pf := &ProcessingFrame{
-		YUV:   make([]byte, 4*4*3/2),
+		Data:   make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width: 4, Height: 4,
 	}
 	// Should not panic.
@@ -638,7 +638,7 @@ func TestBuildPipeline_WiresMetrics(t *testing.T) {
 	sw.mu.Lock()
 	sw.pipeCodecs = &pipelineCodecs{}
 	sw.mu.Unlock()
-	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit)
 
 	err := sw.BuildPipeline()
 	require.NoError(t, err)
@@ -659,7 +659,7 @@ func TestRebuildPipeline_WiresMetrics(t *testing.T) {
 	sw.mu.Lock()
 	sw.pipeCodecs = &pipelineCodecs{}
 	sw.mu.Unlock()
-	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit)
 
 	sw.rebuildPipeline()
 
@@ -673,7 +673,7 @@ func TestPipelineLoop_EmptyPipeline(t *testing.T) {
 	require.NoError(t, p.Build(DefaultFormat, nil, nil))
 
 	pf := &ProcessingFrame{
-		YUV:   make([]byte, 4*4*3/2),
+		Data:   make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width: 4, Height: 4,
 	}
 	out := p.Run(pf)
@@ -692,7 +692,7 @@ func TestVideoProcessingLoop_RewritesPTSBeforePipelineRun(t *testing.T) {
 	sw := createTestSwitcher(t)
 	defer sw.Close()
 
-	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit)
 	sw.EnableWallClockVideoPTS()
 
 	// Seed the wall-clock PTS epoch with a known value.
@@ -727,10 +727,10 @@ func TestVideoProcessingLoop_RewritesPTSBeforePipelineRun(t *testing.T) {
 	// Create a frame with a raw source PTS that differs from wall-clock.
 	// The raw source PTS 9999 is arbitrary — wall-clock should override it.
 	rawSourcePTS := int64(9999)
-	yuvSize := DefaultFormat.Width * DefaultFormat.Height * 3 / 2
+	yuvSize := ColorYUV420_8bit.FrameSize(DefaultFormat.Width, DefaultFormat.Height)
 	yuv := make([]byte, yuvSize)
 	pf := &ProcessingFrame{
-		YUV:    yuv,
+		Data:    yuv,
 		Width:  DefaultFormat.Width,
 		Height: DefaultFormat.Height,
 		PTS:    rawSourcePTS,
@@ -777,7 +777,7 @@ func TestRebuildPipeline_RedundantCallsIncrementEpoch(t *testing.T) {
 	sw.mu.Lock()
 	sw.pipeCodecs = &pipelineCodecs{}
 	sw.mu.Unlock()
-	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height)
+	sw.framePool = NewFramePool(4, DefaultFormat.Width, DefaultFormat.Height, ColorYUV420_8bit)
 
 	sw.rebuildPipeline()
 	epochAfterFirst := sw.pipelineEpoch.Load()

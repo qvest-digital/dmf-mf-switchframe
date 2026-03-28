@@ -21,6 +21,15 @@ var (
 
 	listOnce          sync.Once
 	availableEncoders []EncoderInfo
+
+	// HEVC probing state — separate from AVC to allow independent selection.
+	hevcProbeOnce       sync.Once
+	selectedHEVCEncoder string         // e.g. "hevc_videotoolbox", "libx265"
+	selectedHEVCDecoder string         // e.g. "hevc"
+	hevcProbeResults    map[string]bool
+
+	hevcListOnce          sync.Once
+	availableHEVCEncoders []EncoderInfo
 )
 
 var displayNames = map[string]string{
@@ -29,6 +38,13 @@ var displayNames = map[string]string{
 	"h264_videotoolbox": "VideoToolbox (macOS)",
 	"libx264":           "x264 (Software)",
 	"openh264":          "OpenH264 (Software)",
+}
+
+var hevcDisplayNames = map[string]string{
+	"hevc_nvenc":        "NVENC HEVC (CUDA)",
+	"hevc_vaapi":        "VA-API HEVC (Linux)",
+	"hevc_videotoolbox": "VideoToolbox HEVC (macOS)",
+	"libx265":           "x265 (Software)",
 }
 
 // encoderCandidate describes an encoder to try during probing.
@@ -49,6 +65,16 @@ var candidates = []encoderCandidate{
 	{name: "libx264", hwType: ""},
 }
 
+// hevcCandidates lists HEVC encoder candidates in priority order.
+// Unlike AVC, hevc_videotoolbox on Apple Silicon has good rate control
+// and quality, so it is NOT demoted on macOS.
+var hevcCandidates = []encoderCandidate{
+	{name: "hevc_nvenc", hwType: "cuda"},
+	{name: "hevc_vaapi", hwType: "vaapi"},
+	{name: "hevc_videotoolbox", hwType: "videotoolbox"},
+	{name: "libx265", hwType: ""},
+}
+
 func init() {
 	if runtime.GOOS == "darwin" {
 		candidates = []encoderCandidate{
@@ -57,6 +83,7 @@ func init() {
 			{name: "libx264", hwType: ""},
 			{name: "h264_videotoolbox", hwType: "videotoolbox"},
 		}
+		// HEVC: keep hevc_videotoolbox in default priority (not demoted).
 	}
 }
 
@@ -141,7 +168,7 @@ func tryEncoder(codecName string) bool {
 	}
 	defer enc.Close()
 
-	yuvSize := 256 * 256 * 3 / 2
+	yuvSize := yuvFrameSize(256, 256)
 	yuv := make([]byte, yuvSize)
 	for i := range yuv {
 		yuv[i] = 128
@@ -168,7 +195,7 @@ func tryOpenH264Encoder() bool {
 	}
 	defer enc.Close()
 
-	yuvSize := 64 * 64 * 3 / 2
+	yuvSize := yuvFrameSize(64, 64)
 	yuv := make([]byte, yuvSize)
 	for i := range yuv {
 		yuv[i] = 128
@@ -253,4 +280,82 @@ func ListAvailableEncoders() []EncoderInfo {
 // ProbeEncoders() must be called before this function returns a meaningful value.
 func HWDeviceCtx() unsafe.Pointer {
 	return hwDeviceCtxPtr
+}
+
+// ProbeHEVCEncoders tests available HEVC encoder backends and caches the result.
+// It tries hardware-accelerated encoders first, falling back to libx265.
+//
+// Returns (encoderName, decoderName). decoderName is "hevc" when FFmpeg's HEVC
+// decoder is available. encoderName may be "none" if no HEVC encoder works.
+//
+// Safe to call from multiple goroutines; probing runs exactly once.
+func ProbeHEVCEncoders() (string, string) {
+	hevcProbeOnce.Do(func() {
+		selectedHEVCEncoder = probeHEVCEncoder()
+		// FFmpeg software HEVC decoder is universally available when FFmpeg is linked
+		// with libde265 or the built-in HEVC decoder.
+		selectedHEVCDecoder = "hevc"
+
+		slog.Info("codec: HEVC probe complete",
+			"encoder", selectedHEVCEncoder,
+			"decoder", selectedHEVCDecoder,
+		)
+
+		if selectedHEVCEncoder == "libx265" {
+			slog.Warn("software-only HEVC encoder detected — may not sustain real-time at high resolutions; hardware encoder recommended")
+		}
+	})
+	return selectedHEVCEncoder, selectedHEVCDecoder
+}
+
+// probeHEVCEncoder tries each HEVC candidate encoder in priority order.
+// Returns the name of the first encoder that successfully opens and encodes a frame.
+func probeHEVCEncoder() string {
+	hevcProbeResults = make(map[string]bool)
+	var best string
+
+	for _, c := range hevcCandidates {
+		ok := tryEncoder(c.name)
+		hevcProbeResults[c.name] = ok
+		if ok {
+			slog.Debug("codec: HEVC probe candidate succeeded", "encoder", c.name)
+			if best == "" {
+				best = c.name
+			}
+		} else {
+			slog.Debug("codec: HEVC probe candidate failed", "encoder", c.name)
+		}
+	}
+
+	if best != "" {
+		return best
+	}
+
+	slog.Info("codec: no HEVC encoder found during probe")
+	return "none"
+}
+
+// ListAvailableHEVCEncoders returns all functional HEVC encoder backends on this
+// system. Each entry includes the encoder name, a human-readable display name,
+// and whether it is the current default (as selected by ProbeHEVCEncoders).
+//
+// The list is computed once and cached; safe to call from multiple goroutines.
+func ListAvailableHEVCEncoders() []EncoderInfo {
+	hevcListOnce.Do(func() {
+		defaultEnc, _ := ProbeHEVCEncoders()
+		for _, c := range hevcCandidates {
+			if hevcProbeResults[c.name] {
+				display := hevcDisplayNames[c.name]
+				if display == "" {
+					display = c.name
+				}
+				availableHEVCEncoders = append(availableHEVCEncoders, EncoderInfo{
+					Name:        c.name,
+					DisplayName: display,
+					IsDefault:   c.name == defaultEnc,
+				})
+			}
+		}
+	})
+	return availableHEVCEncoders
 }

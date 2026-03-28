@@ -80,7 +80,7 @@ func (a *App) startMXLDemo(ctx context.Context) func() {
 			},
 			OnRawVideo: func(sourceKey string, yuv []byte, w, h int, pts int64) {
 				pf := &switcher.ProcessingFrame{
-					YUV:    yuv,
+					Data:    yuv,
 					Width:  w,
 					Height: h,
 					PTS:    pts,
@@ -137,8 +137,13 @@ func (a *App) startMXLDemo(ctx context.Context) func() {
 			)
 		}
 		// Forward to the real MXL writer if configured.
+		// Route based on frame format: 10-bit uses lossless YUV422P10→V210 path.
 		if existingWriter != nil {
-			existingWriter.Writer().WriteVideo(pf.YUV, pf.Width, pf.Height, pf.PTS)
+			if pf.Format == switcher.ColorYUV422_10bit {
+				existingWriter.Writer().WriteVideo10bit(pf.Data, pf.Width, pf.Height, pf.PTS)
+			} else {
+				existingWriter.Writer().WriteVideo(pf.Data, pf.Width, pf.Height, pf.PTS)
+			}
 		}
 	}))
 	a.updateGPURawVideoSink()

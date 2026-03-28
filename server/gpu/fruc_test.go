@@ -48,8 +48,8 @@ func TestFRUCInterpolate(t *testing.T) {
 	defer output.Release()
 
 	// prev=dark (Y=64), curr=bright (Y=192)
-	yuvPrev := make([]byte, w*h*3/2)
-	yuvCurr := make([]byte, w*h*3/2)
+	yuvPrev := make([]byte, yuvFrameSize(w, h))
+	yuvCurr := make([]byte, yuvFrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		yuvPrev[i] = 64
 		yuvCurr[i] = 192
@@ -68,7 +68,7 @@ func TestFRUCInterpolate(t *testing.T) {
 	err = fruc.Interpolate(prev, curr, output, 0.5)
 	require.NoError(t, err)
 
-	result := make([]byte, w*h*3/2)
+	result := make([]byte, yuvFrameSize(w, h))
 	require.NoError(t, Download(ctx, result, output, w, h))
 
 	// At 50%, should be ~128 (midpoint of 64 and 192)
@@ -96,8 +96,8 @@ func TestFRUCInterpolateEndpoints(t *testing.T) {
 	defer curr.Release()
 	defer output.Release()
 
-	yuvPrev := make([]byte, w*h*3/2)
-	yuvCurr := make([]byte, w*h*3/2)
+	yuvPrev := make([]byte, yuvFrameSize(w, h))
+	yuvCurr := make([]byte, yuvFrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		yuvPrev[i] = 80
 		yuvCurr[i] = 200
@@ -109,7 +109,7 @@ func TestFRUCInterpolateEndpoints(t *testing.T) {
 	require.NoError(t, Upload(ctx, prev, yuvPrev, w, h))
 	require.NoError(t, Upload(ctx, curr, yuvCurr, w, h))
 
-	result := make([]byte, w*h*3/2)
+	result := make([]byte, yuvFrameSize(w, h))
 
 	// alpha=0.0 should produce prev
 	require.NoError(t, fruc.Interpolate(prev, curr, output, 0.0))
@@ -159,8 +159,8 @@ func TestFRUCMotionBlur(t *testing.T) {
 	defer output.Release()
 
 	// prev=dark (Y=64), curr=bright (Y=192)
-	yuvPrev := make([]byte, w*h*3/2)
-	yuvCurr := make([]byte, w*h*3/2)
+	yuvPrev := make([]byte, yuvFrameSize(w, h))
+	yuvCurr := make([]byte, yuvFrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		yuvPrev[i] = 64
 		yuvCurr[i] = 192
@@ -183,7 +183,7 @@ func TestFRUCMotionBlur(t *testing.T) {
 	err = fruc.MotionBlur(prev, curr, output, 0.5, 0.5)
 	require.NoError(t, err)
 
-	result := make([]byte, w*h*3/2)
+	result := make([]byte, yuvFrameSize(w, h))
 	require.NoError(t, Download(ctx, result, output, w, h))
 
 	// Center pixel should be ~128 (midpoint of 64 and 192)
@@ -212,8 +212,8 @@ func TestFRUCMotionBlurZeroShutter(t *testing.T) {
 	defer output.Release()
 
 	// prev=dark (Y=64), curr=bright (Y=192)
-	yuvPrev := make([]byte, w*h*3/2)
-	yuvCurr := make([]byte, w*h*3/2)
+	yuvPrev := make([]byte, yuvFrameSize(w, h))
+	yuvCurr := make([]byte, yuvFrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		yuvPrev[i] = 64
 		yuvCurr[i] = 192
@@ -232,7 +232,7 @@ func TestFRUCMotionBlurZeroShutter(t *testing.T) {
 	err = fruc.MotionBlur(prev, curr, output, 0.5, 0.0)
 	require.NoError(t, err)
 
-	result := make([]byte, w*h*3/2)
+	result := make([]byte, yuvFrameSize(w, h))
 	require.NoError(t, Download(ctx, result, output, w, h))
 
 	// Fallback to Interpolate at alpha=0.5: midpoint of 64 and 192 = 128
@@ -285,8 +285,8 @@ func TestFRUCMotionBlurMultipleAlphas(t *testing.T) {
 	defer output.Release()
 
 	// Horizontal gradient: pixel value = x * 255 / w
-	yuvPrev := make([]byte, w*h*3/2)
-	yuvCurr := make([]byte, w*h*3/2)
+	yuvPrev := make([]byte, yuvFrameSize(w, h))
+	yuvCurr := make([]byte, yuvFrameSize(w, h))
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			yuvPrev[y*w+x] = byte(x * 255 / w)

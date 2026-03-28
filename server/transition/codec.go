@@ -7,7 +7,7 @@ import "fmt"
 type VideoDecoder interface {
 	// Decode decodes encoded video data and returns YUV420 planar bytes,
 	// width, height, and any error. The returned YUV buffer length is
-	// width * height * 3/2.
+	// yuvFrameSize(width, height) bytes for YUV420 8-bit.
 	Decode(data []byte) (yuv []byte, width, height int, err error)
 
 	// Close releases decoder resources.
@@ -43,14 +43,14 @@ type EncoderFactory func(width, height, bitrate, fpsNum, fpsDen int) (VideoEncod
 type mockDecoder struct {
 	width  int
 	height int
-	yuvOut []byte // if nil, allocates width*height*3/2 zeros
+	yuvOut []byte // if nil, allocates yuvFrameSize(width,height) zeros
 }
 
 func (d *mockDecoder) Decode(data []byte) ([]byte, int, int, error) {
 	if d.yuvOut != nil {
 		return d.yuvOut, d.width, d.height, nil
 	}
-	return make([]byte, d.width*d.height*3/2), d.width, d.height, nil
+	return make([]byte, yuvFrameSize(d.width, d.height)), d.width, d.height, nil
 }
 
 func (d *mockDecoder) Close() {}
@@ -84,7 +84,7 @@ func (d *bufferingMockDecoder) Decode(data []byte) ([]byte, int, int, error) {
 		d.bufferLeft--
 		return nil, 0, 0, fmt.Errorf("no output frame yet (buffering)")
 	}
-	return make([]byte, d.width*d.height*3/2), d.width, d.height, nil
+	return make([]byte, yuvFrameSize(d.width, d.height)), d.width, d.height, nil
 }
 
 func (d *bufferingMockDecoder) Close() {}

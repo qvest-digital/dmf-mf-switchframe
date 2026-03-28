@@ -2,6 +2,12 @@ package mxl
 
 import "errors"
 
+// yuvFrameSize returns the byte size of a YUV420 8-bit frame (w*h*3/2).
+// Local helper to avoid importing the switcher package.
+func yuvFrameSize(w, h int) int {
+	return w * h * 3 / 2
+}
+
 // ErrMXLNotAvailable is returned by stub constructors when the mxl build tag
 // is not set. Callers should check for this at startup and provide a clear
 // message to the user.

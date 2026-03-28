@@ -135,6 +135,66 @@ kernel void wipe_mask_generate(
     mask[gid.y * params.pitch + gid.x] = uint8_t(alpha * 255.0f + 0.5f);
 }
 
+// ============================================================================
+// P210 (10-bit 4:2:2) blend kernels
+// ============================================================================
+
+struct BlendUniformP210Params {
+    uint width;
+    uint height;
+    uint pitch;     // in bytes (width * 2 rounded to alignment)
+    int pos256;     // 0-256 fixed-point blend position
+};
+
+struct BlendFadeConstP210Params {
+    uint width;
+    uint height;
+    uint pitch;
+    int pos256;
+    ushort constVal; // constant value (Y=64 or UV=512 for 10-bit black)
+};
+
+// Uniform blend for P210: processes uint16 samples.
+// A single dispatch covers both Y and UV planes (P210 has full-height UV).
+// Total dispatch height = height * 2 (Y plane + UV plane).
+// Width is in samples (samples per row = pitch / 2).
+kernel void blend_uniform_p210(
+    device uchar* dst            [[buffer(0)]],
+    device const uchar* a        [[buffer(1)]],
+    device const uchar* b        [[buffer(2)]],
+    constant BlendUniformP210Params& params [[buffer(3)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    // Width in uint16 samples per row
+    uint samplesPerRow = params.pitch / 2;
+    if (gid.x >= samplesPerRow || gid.y >= params.height) return;
+
+    uint idx = gid.y * samplesPerRow + gid.x;
+    ushort sa = ((device const ushort*)a)[idx];
+    ushort sb = ((device const ushort*)b)[idx];
+    int inv = 256 - params.pos256;
+    int result = (int(sa) * inv + int(sb) * params.pos256 + 128) >> 8;
+    ((device ushort*)dst)[idx] = ushort(clamp(result, 0, 1023));
+}
+
+// Fade to constant value for P210. Used for FTB (Y→64, UV→512).
+// Dispatched separately for Y and UV planes.
+kernel void blend_fade_const_p210(
+    device uchar* dst            [[buffer(0)]],
+    device const uchar* src      [[buffer(1)]],
+    constant BlendFadeConstP210Params& params [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    uint samplesPerRow = params.pitch / 2;
+    if (gid.x >= samplesPerRow || gid.y >= params.height) return;
+
+    uint idx = gid.y * samplesPerRow + gid.x;
+    ushort s = ((device const ushort*)src)[idx];
+    int inv = 256 - params.pos256;
+    int result = (int(s) * inv + int(params.constVal) * params.pos256 + 128) >> 8;
+    ((device ushort*)dst)[idx] = ushort(clamp(result, 0, 1023));
+}
+
 // Downsample luma-resolution alpha to NV12 UV-plane width.
 // Each chroma alpha is written to both Cb (2*cx) and Cr (2*cx+1) positions.
 kernel void downsample_alpha_to_nv12_uv(

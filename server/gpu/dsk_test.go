@@ -41,7 +41,7 @@ func TestDSKCompositeFullFrame(t *testing.T) {
 	require.NoError(t, err)
 
 	// Download and verify — red in BT.709: Y≈81, Cb≈90, Cr≈240
-	result := make([]byte, w*h*3/2)
+	result := make([]byte, yuvFrameSize(w, h))
 	require.NoError(t, Download(ctx, result, frame, w, h))
 
 	// Verify the overlay changed the frame from black (Y=16)
@@ -66,7 +66,7 @@ func TestDSKCompositeWithGlobalAlpha(t *testing.T) {
 	defer frame.Release()
 
 	// Fill frame with mid-gray (Y=128)
-	grayYUV := make([]byte, w*h*3/2)
+	grayYUV := make([]byte, yuvFrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		grayYUV[i] = 128
 	}
@@ -92,7 +92,7 @@ func TestDSKCompositeWithGlobalAlpha(t *testing.T) {
 	err = DSKCompositeFullFrame(ctx, frame, overlay, 0.0)
 	require.NoError(t, err)
 
-	result := make([]byte, w*h*3/2)
+	result := make([]byte, yuvFrameSize(w, h))
 	require.NoError(t, Download(ctx, result, frame, w, h))
 	assert.Equal(t, byte(128), result[h/2*w+w/2], "0%% alpha should preserve background")
 }
@@ -130,7 +130,7 @@ func TestDSKCompositeRect(t *testing.T) {
 	err = DSKCompositeRect(ctx, frame, overlay, rect, 1.0)
 	require.NoError(t, err)
 
-	result := make([]byte, w*h*3/2)
+	result := make([]byte, yuvFrameSize(w, h))
 	require.NoError(t, Download(ctx, result, frame, w, h))
 
 	// Inside rect should have green Y value (~145 for BT.709 green)

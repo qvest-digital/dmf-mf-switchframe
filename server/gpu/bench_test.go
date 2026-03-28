@@ -32,7 +32,7 @@ func BenchmarkUpload1080p(b *testing.B) {
 	frame, _ := pool.Acquire()
 	defer frame.Release()
 
-	yuv := make([]byte, 1920*1080*3/2)
+	yuv := make([]byte, yuvFrameSize(1920, 1080))
 	for i := range yuv {
 		yuv[i] = 128
 	}
@@ -52,7 +52,7 @@ func BenchmarkDownload1080p(b *testing.B) {
 	defer frame.Release()
 	FillBlack(ctx, frame)
 
-	yuv := make([]byte, 1920*1080*3/2)
+	yuv := make([]byte, yuvFrameSize(1920, 1080))
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -342,7 +342,7 @@ func BenchmarkFullPipeline1080p(b *testing.B) {
 	})
 	defer pipe.Close()
 
-	yuv := make([]byte, 1920*1080*3/2)
+	yuv := make([]byte, yuvFrameSize(1920, 1080))
 	for i := range yuv {
 		yuv[i] = 128
 	}

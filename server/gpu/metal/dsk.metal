@@ -69,6 +69,70 @@ kernel void dsk_overlay_nv12(
     }
 }
 
+// ============================================================================
+// P210 (10-bit 4:2:2) DSK overlay
+// ============================================================================
+
+struct DSKP210FullFrameParams {
+    uint width;
+    uint height;
+    uint p210Pitch;   // bytes per row
+    uint rgbaPitch;
+    int alphaScale256;
+};
+
+// Alpha blend RGBA overlay onto P210 frame (full-frame)
+// BT.709 limited-range 10-bit conversion
+kernel void dsk_overlay_p210(
+    device uchar* p210           [[buffer(0)]],
+    device const uint8_t* rgba   [[buffer(1)]],
+    constant DSKP210FullFrameParams& params [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= params.width || gid.y >= params.height) return;
+
+    uint rgbaIdx = gid.y * params.rgbaPitch + gid.x * 4;
+    int r = int(rgba[rgbaIdx]);
+    int g = int(rgba[rgbaIdx + 1]);
+    int b = int(rgba[rgbaIdx + 2]);
+    int a = int(rgba[rgbaIdx + 3]);
+
+    a = (a * params.alphaScale256 + 128) >> 8;
+    if (a == 0) return;
+
+    int inv = 256 - a;
+
+    // BT.709 limited-range 10-bit conversion (scale 8-bit coefficients by 4)
+    // Y  = 64  + ((47*R + 157*G + 16*B + 128) >> 8) * 4
+    // Cb = 512 + ((-26*R - 86*G + 112*B + 128) >> 8) * 4
+    // Cr = 512 + ((112*R - 102*G - 10*B + 128) >> 8) * 4
+    int overlayY  = 64  + ((47 * r + 157 * g + 16 * b + 32) >> 6);
+    int overlayCb = 512 + ((-26 * r - 86 * g + 112 * b + 32) >> 6);
+    int overlayCr = 512 + ((112 * r - 102 * g - 10 * b + 32) >> 6);
+
+    overlayY  = clamp(overlayY,  64, 940);
+    overlayCb = clamp(overlayCb, 64, 960);
+    overlayCr = clamp(overlayCr, 64, 960);
+
+    // Blend Y plane
+    uint ySPR = params.p210Pitch / 2;
+    device ushort* yPlane = (device ushort*)p210;
+    uint yIdx = gid.y * ySPR + gid.x;
+    int curY = int(yPlane[yIdx]);
+    yPlane[yIdx] = ushort(clamp((curY * inv + overlayY * a + 128) >> 8, 0, 1023));
+
+    // Blend UV plane (P210: once per 2-pixel horizontal pair, full height for 4:2:2)
+    if ((gid.x & 1) == 0) {
+        uint uvByteOffset = params.p210Pitch * params.height;
+        device ushort* uvPlane = (device ushort*)(p210 + uvByteOffset);
+        uint uvIdx = gid.y * ySPR + gid.x;  // same pitch, same row, UV plane at offset
+        int curCb = int(uvPlane[uvIdx]);
+        int curCr = int(uvPlane[uvIdx + 1]);
+        uvPlane[uvIdx]     = ushort(clamp((curCb * inv + overlayCb * a + 128) >> 8, 0, 1023));
+        uvPlane[uvIdx + 1] = ushort(clamp((curCr * inv + overlayCr * a + 128) >> 8, 0, 1023));
+    }
+}
+
 // Rectangular RGBA overlay with nearest-neighbor scaling onto NV12
 kernel void dsk_overlay_rect_nv12(
     device uint8_t* nv12          [[buffer(0)]],

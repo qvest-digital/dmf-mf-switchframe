@@ -1,0 +1,46 @@
+//go:build cgo && darwin
+
+package gpu
+
+/*
+#include "metal_bridge.h"
+*/
+import "C"
+
+import (
+	"fmt"
+	"unsafe"
+)
+
+// Upload10 transfers a CPU YUV422P10LE frame to a GPU P210 frame.
+//
+// YUV422P10LE layout (planar): Y plane (w*h uint16 LE) + Cb plane (w/2*h uint16 LE) + Cr plane (w/2*h uint16 LE).
+// P210 layout (semi-planar): Y plane (pitch*height bytes, uint16 per sample) + UV plane (pitch*height bytes, interleaved Cb/Cr uint16 pairs).
+//
+// On Apple Silicon with unified memory, this writes P210 data directly
+// into the frame's Metal buffer via CPU. The Cb/Cr interleaving is done
+// in C where Clang auto-vectorizes the inner loop.
+func Upload10(ctx *Context, frame *GPUFrame, yuv422p10 []byte, width, height int) error {
+	if ctx == nil || ctx.mtl == nil || frame == nil {
+		return ErrGPUNotAvailable
+	}
+
+	chromaW := width / 2
+	ySize := width * height * 2       // uint16 per sample
+	cbSize := chromaW * height * 2     // uint16 per sample, full height (4:2:2)
+	crSize := cbSize
+	expectedSize := ySize + cbSize + crSize
+	if len(yuv422p10) < expectedSize {
+		return fmt.Errorf("gpu: upload10: YUV422P10LE buffer too small: %d < %d", len(yuv422p10), expectedSize)
+	}
+
+	C.metal_yuv422p10_to_p210_cpu(
+		frame.contentsPtr(),
+		C.int(frame.Pitch),
+		unsafe.Pointer(&yuv422p10[0]),
+		C.int(width),
+		C.int(height),
+	)
+
+	return nil
+}

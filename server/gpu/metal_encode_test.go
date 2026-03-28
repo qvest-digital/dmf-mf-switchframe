@@ -22,7 +22,7 @@ func TestGPUEncode(t *testing.T) {
 
 	// Upload a test pattern
 	w, h := 640, 480
-	testYUV := make([]byte, w*h*3/2)
+	testYUV := make([]byte, yuvFrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		testYUV[i] = byte(i%220) + 16
 	}
@@ -83,7 +83,7 @@ func TestGPUEncodeMultipleFrames(t *testing.T) {
 	defer frame.Release()
 
 	w, h := 320, 240
-	testYUV := make([]byte, w*h*3/2)
+	testYUV := make([]byte, yuvFrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		testYUV[i] = byte(i%220) + 16
 	}
@@ -144,7 +144,7 @@ func TestGPUEncodeNativeVTIDRKeyframes(t *testing.T) {
 	defer frame.Release()
 
 	// Upload test pattern
-	testYUV := make([]byte, w*h*3/2)
+	testYUV := make([]byte, yuvFrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		testYUV[i] = byte(i%220) + 16
 	}

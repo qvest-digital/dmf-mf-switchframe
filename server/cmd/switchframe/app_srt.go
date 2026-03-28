@@ -282,7 +282,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	go func() {
 		for job := range pipelineCh {
 			pfr := &switcher.ProcessingFrame{
-				YUV:    job.yuv,
+				Data:    job.yuv,
 				Width:  job.w,
 				Height: job.h,
 				PTS:    job.pts,
@@ -626,7 +626,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 				if w == encW && h == encH {
 					frameYUV = job.yuv
 				} else {
-					targetSize := encW * encH * 3 / 2
+					targetSize := switcher.ColorYUV420_8bit.FrameSize(encW, encH)
 					if cap(scaledYUV) < targetSize {
 						scaledYUV = make([]byte, targetSize)
 					}

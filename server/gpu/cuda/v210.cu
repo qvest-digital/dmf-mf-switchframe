@@ -158,6 +158,122 @@ __global__ void nv12_to_v210_kernel(
     v210[v210Idx + 3] = w3;
 }
 
+// ============================================================================
+// V210 <-> P210 conversion kernels (LOSSLESS 10-bit — no bit shift)
+// ============================================================================
+// V210 packing: 6 pixels per 4 x 32-bit words (same as above).
+// P210: uint16 semi-planar (Y plane + interleaved UV plane, full height).
+// V210 is 4:2:2 and P210 is 4:2:2, so NO vertical chroma downsampling.
+
+// V210 -> P210: extract 10-bit samples directly (no >> 2 bit loss)
+__global__ void v210_to_p210_kernel(
+    uint16_t* __restrict__ p210,
+    const uint32_t* __restrict__ v210,
+    int width, int height, int p210Pitch16, int v210Stride32)
+{
+    int groupX = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    int groupsPerRow = width / 6;
+    if (groupX >= groupsPerRow || y >= height) return;
+
+    // Read 4 words for this 6-pixel group
+    int v210Idx = y * v210Stride32 + groupX * 4;
+    uint32_t w0 = v210[v210Idx];
+    uint32_t w1 = v210[v210Idx + 1];
+    uint32_t w2 = v210[v210Idx + 2];
+    uint32_t w3 = v210[v210Idx + 3];
+
+    // Extract 10-bit luma values (NO bit shift — lossless)
+    int px = groupX * 6;
+    uint16_t y0 = (uint16_t)((w0 >> 10) & 0x3FF);
+    uint16_t y1 = (uint16_t)((w1)       & 0x3FF);
+    uint16_t y2 = (uint16_t)((w1 >> 20) & 0x3FF);
+    uint16_t y3 = (uint16_t)((w2 >> 10) & 0x3FF);
+    uint16_t y4 = (uint16_t)((w3)       & 0x3FF);
+    uint16_t y5 = (uint16_t)((w3 >> 20) & 0x3FF);
+
+    // Write Y plane (uint16 per sample)
+    p210[y * p210Pitch16 + px]     = y0;
+    p210[y * p210Pitch16 + px + 1] = y1;
+    p210[y * p210Pitch16 + px + 2] = y2;
+    p210[y * p210Pitch16 + px + 3] = y3;
+    p210[y * p210Pitch16 + px + 4] = y4;
+    p210[y * p210Pitch16 + px + 5] = y5;
+
+    // Extract 10-bit chroma values (3 Cb + 3 Cr per 6-pixel group)
+    uint16_t cb0 = (uint16_t)((w0)       & 0x3FF);
+    uint16_t cr0 = (uint16_t)((w0 >> 20) & 0x3FF);
+    uint16_t cb2 = (uint16_t)((w1 >> 10) & 0x3FF);
+    uint16_t cr2 = (uint16_t)((w2)       & 0x3FF);
+    uint16_t cb4 = (uint16_t)((w2 >> 20) & 0x3FF);
+    uint16_t cr4 = (uint16_t)((w3 >> 10) & 0x3FF);
+
+    // Write UV plane (interleaved CbCr uint16 pairs at half horizontal resolution)
+    // NO vertical downsampling — write every row (4:2:2)
+    int uvOffset = p210Pitch16 * height;
+    int cx = groupX * 3;  // 3 chroma pairs per V210 group
+
+    int uvIdx0 = y * p210Pitch16 + cx * 2;
+    p210[uvOffset + uvIdx0]     = cb0;
+    p210[uvOffset + uvIdx0 + 1] = cr0;
+
+    if (cx + 1 < width / 2) {
+        int uvIdx1 = y * p210Pitch16 + (cx + 1) * 2;
+        p210[uvOffset + uvIdx1]     = cb2;
+        p210[uvOffset + uvIdx1 + 1] = cr2;
+    }
+    if (cx + 2 < width / 2) {
+        int uvIdx2 = y * p210Pitch16 + (cx + 2) * 2;
+        p210[uvOffset + uvIdx2]     = cb4;
+        p210[uvOffset + uvIdx2 + 1] = cr4;
+    }
+}
+
+// P210 -> V210: pack uint16 samples into V210 32-bit words (lossless)
+__global__ void p210_to_v210_kernel(
+    uint32_t* __restrict__ v210,
+    const uint16_t* __restrict__ p210,
+    int width, int height, int p210Pitch16, int v210Stride32)
+{
+    int groupX = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    int groupsPerRow = width / 6;
+    if (groupX >= groupsPerRow || y >= height) return;
+
+    int px = groupX * 6;
+
+    // Read 6 Y values (uint16, already 10-bit)
+    uint32_t Y0 = (uint32_t)p210[y * p210Pitch16 + px];
+    uint32_t Y1 = (uint32_t)p210[y * p210Pitch16 + px + 1];
+    uint32_t Y2 = (uint32_t)p210[y * p210Pitch16 + px + 2];
+    uint32_t Y3 = (uint32_t)p210[y * p210Pitch16 + px + 3];
+    uint32_t Y4 = (uint32_t)p210[y * p210Pitch16 + px + 4];
+    uint32_t Y5 = (uint32_t)p210[y * p210Pitch16 + px + 5];
+
+    // Read chroma from UV plane (4:2:2 — every row)
+    int uvOffset = p210Pitch16 * height;
+    int cx = groupX * 3;
+
+    uint32_t Cb0 = (uint32_t)p210[uvOffset + y * p210Pitch16 + cx * 2];
+    uint32_t Cr0 = (uint32_t)p210[uvOffset + y * p210Pitch16 + cx * 2 + 1];
+    uint32_t Cb2 = (cx + 1 < width / 2) ? (uint32_t)p210[uvOffset + y * p210Pitch16 + (cx+1) * 2]     : Cb0;
+    uint32_t Cr2 = (cx + 1 < width / 2) ? (uint32_t)p210[uvOffset + y * p210Pitch16 + (cx+1) * 2 + 1] : Cr0;
+    uint32_t Cb4 = (cx + 2 < width / 2) ? (uint32_t)p210[uvOffset + y * p210Pitch16 + (cx+2) * 2]     : Cb2;
+    uint32_t Cr4 = (cx + 2 < width / 2) ? (uint32_t)p210[uvOffset + y * p210Pitch16 + (cx+2) * 2 + 1] : Cr2;
+
+    // Pack into V210 words (no bit shift — lossless)
+    uint32_t w0 = (Cb0 & 0x3FF) | ((Y0 & 0x3FF) << 10) | ((Cr0 & 0x3FF) << 20);
+    uint32_t w1 = (Y1  & 0x3FF) | ((Cb2 & 0x3FF) << 10) | ((Y2 & 0x3FF) << 20);
+    uint32_t w2 = (Cr2 & 0x3FF) | ((Y3  & 0x3FF) << 10) | ((Cb4 & 0x3FF) << 20);
+    uint32_t w3 = (Y4  & 0x3FF) | ((Cr4 & 0x3FF) << 10) | ((Y5 & 0x3FF) << 20);
+
+    int v210Idx = y * v210Stride32 + groupX * 4;
+    v210[v210Idx]     = w0;
+    v210[v210Idx + 1] = w1;
+    v210[v210Idx + 2] = w2;
+    v210[v210Idx + 3] = w3;
+}
+
 extern "C" {
 
 cudaError_t v210_to_nv12(
@@ -185,6 +301,38 @@ cudaError_t nv12_to_v210(
     dim3 grid((groupsPerRow + block.x - 1) / block.x, (height + block.y - 1) / block.y);
     nv12_to_v210_kernel<<<grid, block, 0, stream>>>(
         v210, nv12, width, height, nv12Pitch, v210Stride32);
+    return cudaGetLastError();
+}
+
+// --- V210 <-> P210 wrappers ---
+
+cudaError_t v210_to_p210(
+    uint8_t* p210, const uint32_t* v210,
+    int width, int height, int p210Pitch, int v210StrideBytes,
+    cudaStream_t stream)
+{
+    int groupsPerRow = width / 6;
+    int v210Stride32 = v210StrideBytes / 4;
+    int p210Pitch16 = p210Pitch / 2;
+    dim3 block(32, 8);
+    dim3 grid((groupsPerRow + block.x - 1) / block.x, (height + block.y - 1) / block.y);
+    v210_to_p210_kernel<<<grid, block, 0, stream>>>(
+        (uint16_t*)p210, v210, width, height, p210Pitch16, v210Stride32);
+    return cudaGetLastError();
+}
+
+cudaError_t p210_to_v210(
+    uint32_t* v210, const uint8_t* p210,
+    int width, int height, int p210Pitch, int v210StrideBytes,
+    cudaStream_t stream)
+{
+    int groupsPerRow = width / 6;
+    int v210Stride32 = v210StrideBytes / 4;
+    int p210Pitch16 = p210Pitch / 2;
+    dim3 block(32, 8);
+    dim3 grid((groupsPerRow + block.x - 1) / block.x, (height + block.y - 1) / block.y);
+    p210_to_v210_kernel<<<grid, block, 0, stream>>>(
+        v210, (const uint16_t*)p210, width, height, p210Pitch16, v210Stride32);
     return cudaGetLastError();
 }
 

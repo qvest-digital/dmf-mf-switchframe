@@ -15,18 +15,23 @@ import (
 	"unsafe"
 )
 
-// FramePool manages pre-allocated NV12 frames in GPU VRAM.
+// FramePool manages pre-allocated GPU frames in GPU VRAM.
 // Mirrors switcher.FramePool but for GPU memory. Uses cudaMallocPitch
 // for 256-byte row alignment (NVENC requirement). LIFO free list with mutex.
+// The format field determines the pixel layout and buffer sizing:
+//   - GPUFormatNV12: pitch * height * 3/2
+//   - GPUFormatP210: pitch * height * 2
 type FramePool struct {
 	ctx    *Context
 	width  int
 	height int
-	pitch  int // row pitch from cudaMallocPitch (256-byte aligned)
-	cap    int // total capacity
+	pitch  int            // row pitch from cudaMallocPitch (256-byte aligned)
+	cap    int            // total capacity
+	format GPUFrameFormat // pixel format (default: GPUFormatNV12)
 
 	mu   sync.Mutex
 	free []*GPUFrame
+	all  []*GPUFrame // all pre-allocated frames (for IPC export)
 
 	// Diagnostics
 	hits   uint64
@@ -57,6 +62,7 @@ func NewFramePool(ctx *Context, width, height, initialSize int) (*FramePool, err
 
 	// Pre-allocate initial frames
 	p.free = make([]*GPUFrame, 0, initialSize)
+	p.all = make([]*GPUFrame, 0, initialSize)
 	for i := 0; i < initialSize; i++ {
 		frame, err := p.allocFrame()
 		if err != nil {
@@ -64,6 +70,7 @@ func NewFramePool(ctx *Context, width, height, initialSize int) (*FramePool, err
 			return nil, fmt.Errorf("gpu: pre-allocate frame %d: %w", i, err)
 		}
 		p.free = append(p.free, frame)
+		p.all = append(p.all, frame)
 	}
 
 	return p, nil
@@ -74,12 +81,20 @@ func NewFramePool(ctx *Context, width, height, initialSize int) (*FramePool, err
 func (p *FramePool) determinePitch() (int, error) {
 	var devPtr unsafe.Pointer
 	var pitch C.size_t
-	// NV12 total height: height + height/2 (Y + UV planes)
-	totalHeight := C.size_t(p.height * 3 / 2)
+	var totalHeight C.size_t
+	var allocWidth C.size_t
+	switch p.format {
+	case GPUFormatP210:
+		totalHeight = C.size_t(p.height * 2)
+		allocWidth = C.size_t(p.width * 2)
+	default:
+		totalHeight = C.size_t(p.height * 3 / 2)
+		allocWidth = C.size_t(p.width)
+	}
 	rc := C.cudaMallocPitch(
 		&devPtr,
 		&pitch,
-		C.size_t(p.width),
+		allocWidth,
 		totalHeight,
 	)
 	if rc != C.cudaSuccess {
@@ -89,15 +104,25 @@ func (p *FramePool) determinePitch() (int, error) {
 	return int(pitch), nil
 }
 
-// allocFrame allocates a single NV12 frame on the GPU.
+// allocFrame allocates a single frame on the GPU.
+// Buffer height depends on pool format: NV12 = h*3/2, P210 = h*2.
 func (p *FramePool) allocFrame() (*GPUFrame, error) {
 	var devPtr unsafe.Pointer
 	var pitch C.size_t
-	totalHeight := C.size_t(p.height * 3 / 2)
+	var totalHeight C.size_t
+	var allocWidth C.size_t
+	switch p.format {
+	case GPUFormatP210:
+		totalHeight = C.size_t(p.height * 2) // Y + UV (full height for 4:2:2)
+		allocWidth = C.size_t(p.width * 2)   // uint16 per sample
+	default:
+		totalHeight = C.size_t(p.height * 3 / 2)
+		allocWidth = C.size_t(p.width)
+	}
 	rc := C.cudaMallocPitch(
 		&devPtr,
 		&pitch,
-		C.size_t(p.width),
+		allocWidth,
 		totalHeight,
 	)
 	if rc != C.cudaSuccess {
@@ -109,6 +134,7 @@ func (p *FramePool) allocFrame() (*GPUFrame, error) {
 		Pitch:  int(pitch),
 		Width:  p.width,
 		Height: p.height,
+		Format: p.format,
 		pool:   p,
 	}
 	frame.refs.Store(1)
@@ -139,10 +165,11 @@ func (p *FramePool) Acquire() (*GPUFrame, error) {
 // release returns a frame to the pool's free list.
 // Called by GPUFrame.Release() when refcount reaches 0.
 func (p *FramePool) release(frame *GPUFrame) {
-	// Reset dimensions to pool defaults — callers may have temporarily
-	// changed them (e.g., stinger overlay, IngestYUV resolution normalization).
+	// Reset dimensions and format to pool defaults — callers may have
+	// temporarily changed them (e.g., stinger overlay, IngestYUV).
 	frame.Width = p.width
 	frame.Height = p.height
+	frame.Format = p.format
 
 	p.mu.Lock()
 	if len(p.free) < p.cap {
@@ -171,6 +198,43 @@ func (p *FramePool) Close() {
 	p.mu.Unlock()
 }
 
+// NewP210FramePool creates a pool of GPU P210 frames (10-bit 4:2:2 semi-planar).
+func NewP210FramePool(ctx *Context, width, height, initialSize int) (*FramePool, error) {
+	if ctx == nil {
+		return nil, ErrGPUNotAvailable
+	}
+
+	p := &FramePool{
+		ctx:    ctx,
+		width:  width,
+		height: height,
+		cap:    initialSize,
+		format: GPUFormatP210,
+	}
+
+	// Determine pitch by allocating one temporary frame
+	pitch, err := p.determinePitch()
+	if err != nil {
+		return nil, fmt.Errorf("gpu: determine P210 pitch: %w", err)
+	}
+	p.pitch = pitch
+
+	// Pre-allocate initial frames
+	p.free = make([]*GPUFrame, 0, initialSize)
+	p.all = make([]*GPUFrame, 0, initialSize)
+	for i := 0; i < initialSize; i++ {
+		frame, err := p.allocFrame()
+		if err != nil {
+			p.Close()
+			return nil, fmt.Errorf("gpu: pre-allocate P210 frame %d: %w", i, err)
+		}
+		p.free = append(p.free, frame)
+		p.all = append(p.all, frame)
+	}
+
+	return p, nil
+}
+
 // Stats returns hit/miss counts for diagnostics.
 func (p *FramePool) Stats() (hits, misses uint64) {
 	p.mu.Lock()
@@ -182,4 +246,33 @@ func (p *FramePool) Stats() (hits, misses uint64) {
 // Pitch returns the row pitch for frames in this pool.
 func (p *FramePool) Pitch() int {
 	return p.pitch
+}
+
+// Format returns the pixel format of frames in this pool.
+func (p *FramePool) Format() GPUFrameFormat {
+	return p.format
+}
+
+// AllDevPtrs returns the CUDA device pointers for all pre-allocated frames.
+// Used to create a CUDAGPUPool that exports these pointers via IPC handles
+// for zero-copy sharing with sidecar processes.
+func (p *FramePool) AllDevPtrs() []uintptr {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	ptrs := make([]uintptr, len(p.all))
+	for i, f := range p.all {
+		ptrs[i] = uintptr(f.DevPtr)
+	}
+	return ptrs
+}
+
+// AllFrames returns the pre-allocated GPUFrame objects.
+// Used by InferenceProxy to build a DevPtr→GPUFrame map for Ref/Release
+// of frames while the sidecar processes them asynchronously.
+func (p *FramePool) AllFrames() []*GPUFrame {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]*GPUFrame, len(p.all))
+	copy(out, p.all)
+	return out
 }

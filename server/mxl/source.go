@@ -89,6 +89,12 @@ type SourceConfig struct {
 		SendAudio(frame *media.AudioFrame)
 	}
 
+	// Lossless10bit enables lossless V210→YUV422P10LE conversion instead of
+	// the default lossy V210→YUV420P 8-bit path. Use this when the pipeline
+	// is in professional mode (10-bit 4:2:2) to preserve full bit depth and
+	// chroma resolution from SDI/MXL sources.
+	Lossless10bit bool
+
 	// OnVideoInfo is called once after the first keyframe is encoded,
 	// providing SPS/PPS so the caller can set VideoInfo on the relay
 	// (required for browser decoder initialization).
@@ -318,15 +324,29 @@ func (s *Source) videoFanOut(ctx context.Context) {
 }
 
 func (s *Source) processVideoGrain(grain VideoGrain) {
-	// 1. Convert V210 → YUV420p using pre-allocated buffers.
-	s.v210Bufs.ensureSize(grain.Width, grain.Height)
-	err := V210ToYUV420pInto(grain.V210, s.v210Bufs.yuvOut, s.v210Bufs.cb422Tmp, s.v210Bufs.cr422Tmp, grain.Width, grain.Height)
-	if err != nil {
-		s.log.Error("mxl source: V210→YUV420p conversion failed",
-			"error", err, "width", grain.Width, "height", grain.Height)
-		return
+	var yuv []byte
+
+	if s.config.Lossless10bit {
+		// Lossless path: V210 → YUV422P10LE (preserves 10-bit depth + 4:2:2 chroma).
+		srcStride := V210LineStride(grain.Width)
+		out, err := V210ToYUV422P10(grain.V210, srcStride, grain.Width, grain.Height)
+		if err != nil {
+			s.log.Error("mxl source: V210→YUV422P10 conversion failed",
+				"error", err, "width", grain.Width, "height", grain.Height)
+			return
+		}
+		yuv = out
+	} else {
+		// Default path: V210 → YUV420P 8-bit (lossy but compatible with standard pipeline).
+		s.v210Bufs.ensureSize(grain.Width, grain.Height)
+		err := V210ToYUV420pInto(grain.V210, s.v210Bufs.yuvOut, s.v210Bufs.cb422Tmp, s.v210Bufs.cr422Tmp, grain.Width, grain.Height)
+		if err != nil {
+			s.log.Error("mxl source: V210→YUV420p conversion failed",
+				"error", err, "width", grain.Width, "height", grain.Height)
+			return
+		}
+		yuv = s.v210Bufs.yuvOut
 	}
-	yuv := s.v210Bufs.yuvOut
 
 	// Use wall-clock time for PTS to maintain AV sync across independently-
 	// started video and audio flows. Both share the same epoch (set by
@@ -337,7 +357,7 @@ func (s *Source) processVideoGrain(grain VideoGrain) {
 	// 2. Deliver raw YUV to switcher pipeline.
 	// Allocate a fresh copy because v210Bufs.yuvOut is overwritten on the
 	// next frame conversion, and the consumer (switcher pipeline) retains
-	// the buffer reference asynchronously via ProcessingFrame.YUV.
+	// the buffer reference asynchronously via ProcessingFrame.Data.
 	if s.config.OnRawVideo != nil {
 		rawCopy := make([]byte, len(yuv))
 		copy(rawCopy, yuv)

@@ -703,11 +703,28 @@ func (a *API) handleARAssetDelete(w http.ResponseWriter, r *http.Request) {
 // =============================================================================
 
 // handleARTrackingAddVisual enables visual tracking for a source.
-// This requires TensorRT models that are not yet available.
+// The AI sidecar runs SuperPoint + LightGlue for visual pose estimation.
 //
 // PUT /api/ar/tracking/sources/{sourceKey}/visual
 func (a *API) handleARTrackingAddVisual(w http.ResponseWriter, r *http.Request) {
-	httperr.Write(w, http.StatusNotImplemented, "visual tracking requires TensorRT models (not yet available)")
+	a.setLastOperator(r)
+
+	sourceKey := r.PathValue("sourceKey")
+	if sourceKey == "" {
+		httperr.Write(w, http.StatusBadRequest, "sourceKey is required")
+		return
+	}
+
+	if err := a.arTracking.AddVisualSource(sourceKey); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+
+	a.broadcast()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(a.arTracking.Sources())
 }
 
 // =============================================================================

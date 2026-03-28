@@ -10,7 +10,7 @@ func TestBridgeProcessYUV_NoKeys(t *testing.T) {
 	kp := NewKeyProcessor()
 	bridge := NewKeyProcessorBridge(kp)
 
-	yuv := make([]byte, 4*4*3/2)
+	yuv := make([]byte, yuvFrameSize(4, 4))
 	yuv[0] = 42
 
 	result := bridge.ProcessYUV(yuv, 4, 4)
@@ -19,7 +19,7 @@ func TestBridgeProcessYUV_NoKeys(t *testing.T) {
 
 func TestBridgeProcessYUV_WithFill(t *testing.T) {
 	w, h := 8, 8
-	yuvSize := w * h * 3 / 2
+	yuvSize := yuvFrameSize(w, h)
 
 	bgYUV := make([]byte, yuvSize)
 	for i := range bgYUV {
@@ -78,7 +78,7 @@ func TestBridgeProcessYUV_NoFills(t *testing.T) {
 
 	bridge := NewKeyProcessorBridge(kp)
 
-	yuv := make([]byte, 4*4*3/2)
+	yuv := make([]byte, yuvFrameSize(4, 4))
 	yuv[0] = 42
 
 	result := bridge.ProcessYUV(yuv, 4, 4)

@@ -20,10 +20,10 @@ func TestFramePoolDoubleRelease(t *testing.T) {
 	// Use capacity=1 so the free list only ever holds the ONE buffer.
 	// After double-release, the free list has [buf, buf] but cap check
 	// limits it to 1 entry. So we use capacity=2 to allow both entries.
-	fp := NewFramePool(2, 320, 240)
+	fp := NewFramePool(2, 320, 240, ColorYUV420_8bit)
 	defer fp.Close()
 
-	bufSize := 320 * 240 * 3 / 2
+	bufSize := ColorYUV420_8bit.FrameSize(320, 240)
 
 	// Acquire BOTH pre-allocated buffers to empty the pool
 	held := fp.Acquire()
@@ -80,10 +80,10 @@ func TestFramePoolDoubleRelease(t *testing.T) {
 // TestFramePoolConcurrentAcquireRelease hammers the pool from multiple
 // goroutines to verify no data races or panics occur under contention.
 func TestFramePoolConcurrentAcquireRelease(t *testing.T) {
-	fp := NewFramePool(8, 320, 240)
+	fp := NewFramePool(8, 320, 240, ColorYUV420_8bit)
 	defer fp.Close()
 
-	bufSize := 320 * 240 * 3 / 2
+	bufSize := ColorYUV420_8bit.FrameSize(320, 240)
 	const goroutines = 4
 	const iterations = 1000
 
@@ -121,13 +121,13 @@ func TestFramePoolConcurrentAcquireRelease(t *testing.T) {
 // is called more times than refs allow, using value copies that share the
 // same refs pointer but have independent YUV slice headers.
 func TestProcessingFrameRefCountUnderflow(t *testing.T) {
-	pool := NewFramePool(4, 8, 8)
+	pool := NewFramePool(4, 8, 8, ColorYUV420_8bit)
 	defer pool.Close()
 
 	pf := &ProcessingFrame{
 		Width:  8,
 		Height: 8,
-		YUV:    pool.Acquire(),
+		Data:   pool.Acquire(),
 		pool:   pool,
 	}
 	pf.SetRefs(1)
@@ -140,10 +140,10 @@ func TestProcessingFrameRefCountUnderflow(t *testing.T) {
 	// First release via original: refs 1→0, buffer returned to pool, YUV set to nil
 	pf.ReleaseYUV()
 	t.Logf("MEASURE: after first ReleaseYUV: refs=%d, original.YUV==nil: %v, copy.YUV==nil: %v",
-		pf.Refs(), pf.YUV == nil, copy1.YUV == nil)
+		pf.Refs(), pf.Data == nil, copy1.Data == nil)
 
 	// Second release via value copy: refs 0→-1 (underflow!)
-	// copy1.YUV is still non-nil (value copy preserved the slice header)
+	// copy1.Data is still non-nil (value copy preserved the slice header)
 	// Should NOT panic — should log and leak
 	require.NotPanics(t, func() {
 		copy1.ReleaseYUV()
@@ -161,7 +161,7 @@ func TestProcessingFrameRefCountUnderflow(t *testing.T) {
 // triggers the actual pool release when multiple goroutines concurrently
 // call ReleaseYUV on value copies sharing the same refcount.
 func TestProcessingFrameRefCountConcurrent(t *testing.T) {
-	pool := NewFramePool(4, 8, 8)
+	pool := NewFramePool(4, 8, 8, ColorYUV420_8bit)
 	defer pool.Close()
 
 	const numConsumers = 4
@@ -169,7 +169,7 @@ func TestProcessingFrameRefCountConcurrent(t *testing.T) {
 	pf := &ProcessingFrame{
 		Width:  8,
 		Height: 8,
-		YUV:    pool.Acquire(),
+		Data:   pool.Acquire(),
 		pool:   pool,
 	}
 	pf.SetRefs(int32(numConsumers))
@@ -216,10 +216,10 @@ func TestProcessingFrameRefCountConcurrent(t *testing.T) {
 // TestFramePoolExhaustedFallback verifies that when the pool is exhausted,
 // Acquire falls back to heap allocation and returns a correctly-sized buffer.
 func TestFramePoolExhaustedFallback(t *testing.T) {
-	fp := NewFramePool(2, 320, 240)
+	fp := NewFramePool(2, 320, 240, ColorYUV420_8bit)
 	defer fp.Close()
 
-	bufSize := 320 * 240 * 3 / 2
+	bufSize := ColorYUV420_8bit.FrameSize(320, 240)
 
 	// Exhaust the pool
 	buf1 := fp.Acquire()
@@ -261,8 +261,8 @@ func TestFramePoolExhaustedFallback(t *testing.T) {
 // after the pool has been closed. After Close(), the free list is empty
 // so Acquire should fall back to heap allocation.
 func TestFramePoolAcquireAfterClose(t *testing.T) {
-	fp := NewFramePool(4, 320, 240)
-	bufSize := 320 * 240 * 3 / 2
+	fp := NewFramePool(4, 320, 240, ColorYUV420_8bit)
+	bufSize := ColorYUV420_8bit.FrameSize(320, 240)
 
 	fp.Close()
 
@@ -288,7 +288,7 @@ func TestFramePoolAcquireAfterClose(t *testing.T) {
 // silently discarded.
 func TestFramePoolDoubleReleaseOverflowsCap(t *testing.T) {
 	// Pool with cap=4, start with 4 pre-allocated buffers
-	fp := NewFramePool(4, 8, 8)
+	fp := NewFramePool(4, 8, 8, ColorYUV420_8bit)
 	defer fp.Close()
 
 	// Acquire all 4 — free list is now empty
@@ -336,7 +336,7 @@ func TestFramePoolDoubleReleaseOverflowsCap(t *testing.T) {
 // TestFramePoolDoubleReleaseConcurrent verifies that concurrent
 // double-release does not cause a data race or panic.
 func TestFramePoolDoubleReleaseConcurrent(t *testing.T) {
-	fp := NewFramePool(8, 8, 8)
+	fp := NewFramePool(8, 8, 8, ColorYUV420_8bit)
 	defer fp.Close()
 
 	buf := fp.Acquire()
@@ -373,7 +373,7 @@ func TestFramePoolDoubleReleaseConcurrent(t *testing.T) {
 // TestProcessingFrameRefCountStress hammers refcount operations from
 // many goroutines to verify atomicity under contention.
 func TestProcessingFrameRefCountStress(t *testing.T) {
-	pool := NewFramePool(4, 8, 8)
+	pool := NewFramePool(4, 8, 8, ColorYUV420_8bit)
 	defer pool.Close()
 
 	const iterations = 10000
@@ -382,7 +382,7 @@ func TestProcessingFrameRefCountStress(t *testing.T) {
 		pf := &ProcessingFrame{
 			Width:  8,
 			Height: 8,
-			YUV:    pool.Acquire(),
+			Data:   pool.Acquire(),
 			pool:   pool,
 		}
 		// Start with refs=2: one for "owner", one for concurrent consumers
@@ -421,7 +421,7 @@ func TestProcessingFrameRefCountStress(t *testing.T) {
 // TestFramePoolReleaseAfterClose verifies that releasing a buffer after
 // the pool is closed does not panic.
 func TestFramePoolReleaseAfterClose(t *testing.T) {
-	fp := NewFramePool(4, 8, 8)
+	fp := NewFramePool(4, 8, 8, ColorYUV420_8bit)
 	buf := fp.Acquire()
 
 	fp.Close()
@@ -440,13 +440,13 @@ func TestFramePoolReleaseAfterClose(t *testing.T) {
 // TestProcessingFrameReleaseYUVNilRefs verifies behavior when refs is nil
 // (unmanaged frame) — should release immediately without any refcount logic.
 func TestProcessingFrameReleaseYUVNilRefs(t *testing.T) {
-	pool := NewFramePool(4, 8, 8)
+	pool := NewFramePool(4, 8, 8, ColorYUV420_8bit)
 	defer pool.Close()
 
 	pf := &ProcessingFrame{
 		Width:  8,
 		Height: 8,
-		YUV:    pool.Acquire(),
+		Data:   pool.Acquire(),
 		pool:   pool,
 	}
 	// No SetRefs — refs is nil (unmanaged)
@@ -455,7 +455,7 @@ func TestProcessingFrameReleaseYUVNilRefs(t *testing.T) {
 
 	pf.ReleaseYUV()
 
-	require.Nil(t, pf.YUV, "unmanaged frame should release immediately")
+	require.Nil(t, pf.Data, "unmanaged frame should release immediately")
 
 	// Second release should be a no-op (YUV is nil)
 	require.NotPanics(t, func() {
@@ -470,10 +470,10 @@ func TestFramePoolDoubleReleaseWriteCorruption(t *testing.T) {
 	// Use capacity=2, acquire both to empty the pool, then double-release
 	// one buffer. This guarantees the free list has [victim, victim] and
 	// two subsequent Acquires return the same pointer.
-	fp := NewFramePool(2, 8, 8)
+	fp := NewFramePool(2, 8, 8, ColorYUV420_8bit)
 	defer fp.Close()
 
-	bufSize := 8 * 8 * 3 / 2
+	bufSize := ColorYUV420_8bit.FrameSize(8, 8)
 
 	// Acquire both pre-allocated buffers to empty the pool
 	held := fp.Acquire()

@@ -579,6 +579,164 @@ MetalResult metal_fill_rect(MetalQueueRef queue, MetalPipelineRef pipeline,
 }
 
 // ============================================================================
+// P210 (10-bit 4:2:2) blend kernels
+// ============================================================================
+
+MetalResult metal_blend_uniform_p210(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dst, MetalBufferRef a, MetalBufferRef b,
+    const MetalBlendUniformP210Params* params) {
+    id<MTLBuffer> bufs[] = {
+        (id<MTLBuffer>)dst,
+        (id<MTLBuffer>)a,
+        (id<MTLBuffer>)b,
+    };
+    // Grid: samples per row x total height (Y + UV planes)
+    uint32_t samplesPerRow = params->pitch / 2;
+    return dispatch_2d((id<MTLCommandQueue>)queue,
+                       (id<MTLComputePipelineState>)pipeline,
+                       bufs, 3, params, sizeof(*params), 3,
+                       samplesPerRow, params->height);
+}
+
+MetalResult metal_blend_fade_const_p210(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dst, MetalBufferRef src,
+    const MetalBlendFadeConstP210Params* params) {
+    id<MTLBuffer> bufs[] = {
+        (id<MTLBuffer>)dst,
+        (id<MTLBuffer>)src,
+    };
+    uint32_t samplesPerRow = params->pitch / 2;
+    return dispatch_2d((id<MTLCommandQueue>)queue,
+                       (id<MTLComputePipelineState>)pipeline,
+                       bufs, 2, params, sizeof(*params), 2,
+                       samplesPerRow, params->height);
+}
+
+// ============================================================================
+// P210 scale kernels
+// ============================================================================
+
+MetalResult metal_scale_bilinear_p210_y(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dst, MetalBufferRef src, const MetalScaleP210Params* params) {
+    id<MTLBuffer> bufs[] = {
+        (id<MTLBuffer>)dst,
+        (id<MTLBuffer>)src,
+    };
+    return dispatch_2d((id<MTLCommandQueue>)queue,
+                       (id<MTLComputePipelineState>)pipeline,
+                       bufs, 2, params, sizeof(*params), 2,
+                       params->dstW, params->dstH);
+}
+
+// ============================================================================
+// P210 composite kernels
+// ============================================================================
+
+MetalResult metal_pip_composite_p210_y(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dst, MetalBufferRef src, const MetalPIPCompositeP210YParams* params) {
+    id<MTLBuffer> bufs[] = {
+        (id<MTLBuffer>)dst,
+        (id<MTLBuffer>)src,
+    };
+    return dispatch_2d((id<MTLCommandQueue>)queue,
+                       (id<MTLComputePipelineState>)pipeline,
+                       bufs, 2, params, sizeof(*params), 2,
+                       (uint32_t)params->rectW, (uint32_t)params->rectH);
+}
+
+MetalResult metal_pip_composite_p210_uv(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dstUV, MetalBufferRef srcUV, const MetalPIPCompositeP210UVParams* params) {
+    id<MTLBuffer> bufs[] = {
+        (id<MTLBuffer>)dstUV,
+        (id<MTLBuffer>)srcUV,
+    };
+    return dispatch_2d((id<MTLCommandQueue>)queue,
+                       (id<MTLComputePipelineState>)pipeline,
+                       bufs, 2, params, sizeof(*params), 2,
+                       (uint32_t)params->rectCW, (uint32_t)params->rectCH);
+}
+
+// ============================================================================
+// P210 V210 lossless conversion kernels
+// ============================================================================
+
+MetalResult metal_v210_to_p210(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef p210, MetalBufferRef v210, const MetalV210P210Params* params) {
+    id<MTLBuffer> bufs[] = {
+        (id<MTLBuffer>)p210,
+        (id<MTLBuffer>)v210,
+    };
+    uint32_t groupsPerRow = params->width / 6;
+    return dispatch_2d((id<MTLCommandQueue>)queue,
+                       (id<MTLComputePipelineState>)pipeline,
+                       bufs, 2, params, sizeof(*params), 2,
+                       groupsPerRow, params->height);
+}
+
+MetalResult metal_p210_to_v210(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef v210, MetalBufferRef p210, const MetalV210P210Params* params) {
+    id<MTLBuffer> bufs[] = {
+        (id<MTLBuffer>)v210,
+        (id<MTLBuffer>)p210,
+    };
+    uint32_t groupsPerRow = params->width / 6;
+    return dispatch_2d((id<MTLCommandQueue>)queue,
+                       (id<MTLComputePipelineState>)pipeline,
+                       bufs, 2, params, sizeof(*params), 2,
+                       groupsPerRow, params->height);
+}
+
+// ============================================================================
+// P210 DSK overlay kernels
+// ============================================================================
+
+MetalResult metal_dsk_overlay_p210(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef p210, MetalBufferRef rgba, const MetalDSKP210FullFrameParams* params) {
+    id<MTLBuffer> bufs[] = {
+        (id<MTLBuffer>)p210,
+        (id<MTLBuffer>)rgba,
+    };
+    return dispatch_2d((id<MTLCommandQueue>)queue,
+                       (id<MTLComputePipelineState>)pipeline,
+                       bufs, 2, params, sizeof(*params), 2,
+                       params->width, params->height);
+}
+
+// ============================================================================
+// P210 STMap kernels
+// ============================================================================
+
+MetalResult metal_stmap_warp_p210_y(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef src, MetalBufferRef stmapS, MetalBufferRef stmapT,
+    MetalBufferRef dst, const MetalSTMapP210Params* params) {
+    id<MTLBuffer> bufs[] = {
+        (id<MTLBuffer>)src,
+        (id<MTLBuffer>)stmapS,
+        (id<MTLBuffer>)stmapT,
+        (id<MTLBuffer>)dst,
+    };
+    return dispatch_2d((id<MTLCommandQueue>)queue,
+                       (id<MTLComputePipelineState>)pipeline,
+                       bufs, 4, params, sizeof(*params), 4,
+                       params->width, params->height);
+}
+
+MetalResult metal_stmap_warp_p210_uv(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef srcUV, MetalBufferRef stmapS, MetalBufferRef stmapT,
+    MetalBufferRef dstUV, const MetalSTMapP210UVParams* params) {
+    id<MTLBuffer> bufs[] = {
+        (id<MTLBuffer>)srcUV,
+        (id<MTLBuffer>)stmapS,
+        (id<MTLBuffer>)stmapT,
+        (id<MTLBuffer>)dstUV,
+    };
+    return dispatch_2d((id<MTLCommandQueue>)queue,
+                       (id<MTLComputePipelineState>)pipeline,
+                       bufs, 4, params, sizeof(*params), 4,
+                       params->chromaW, params->chromaH);
+}
+
+// ============================================================================
 // Gaussian blur kernels
 // ============================================================================
 
@@ -1024,6 +1182,81 @@ void metal_nv12_to_yuv420p_cpu(const void* src, int srcPitch,
         const uint8_t* uvRow = uvSrc + row * srcPitch;
         uint8_t* cbRow = cbBytes + row * chromaW;
         uint8_t* crRow = crBytes + row * chromaW;
+        for (int x = 0; x < chromaW; x++) {
+            cbRow[x] = uvRow[x * 2];
+            crRow[x] = uvRow[x * 2 + 1];
+        }
+    }
+}
+
+// ============================================================================
+// Direct CPU YUV422P10LE → P210 conversion (Apple Silicon unified memory)
+// ============================================================================
+
+void metal_yuv422p10_to_p210_cpu(void* dst, int dstPitch,
+                                  const void* src, int width, int height) {
+    uint8_t* dstBytes = (uint8_t*)dst;
+    const uint8_t* srcBytes = (const uint8_t*)src;
+    int bps = 2; // bytes per sample (uint16)
+
+    // Y plane: copy row-by-row (pitch may differ from width*2 due to alignment)
+    int yRowBytes = width * bps;
+    for (int row = 0; row < height; row++) {
+        memcpy(dstBytes + row * dstPitch, srcBytes + row * yRowBytes, yRowBytes);
+    }
+
+    // UV plane: interleave planar Cb + Cr into P210 semi-planar format.
+    // Source layout: Y (w*h uint16) | Cb (w/2*h uint16) | Cr (w/2*h uint16)
+    // P210 UV: interleaved Cb,Cr uint16 pairs at full height (4:2:2).
+    int chromaW = width / 2;
+    int yPlaneSize = width * height * bps;
+    int cbPlaneSize = chromaW * height * bps;
+    const uint16_t* cbSrc = (const uint16_t*)(srcBytes + yPlaneSize);
+    const uint16_t* crSrc = (const uint16_t*)(srcBytes + yPlaneSize + cbPlaneSize);
+    uint16_t* uvDst = (uint16_t*)(dstBytes + dstPitch * height);
+
+    // dstPitch is in bytes; UV row stride in uint16 units is dstPitch/2
+    int uvRowStride16 = dstPitch / bps;
+    for (int row = 0; row < height; row++) {
+        const uint16_t* cbRow = cbSrc + row * chromaW;
+        const uint16_t* crRow = crSrc + row * chromaW;
+        uint16_t* dstRow = uvDst + row * uvRowStride16;
+        for (int x = 0; x < chromaW; x++) {
+            dstRow[x * 2]     = cbRow[x];
+            dstRow[x * 2 + 1] = crRow[x];
+        }
+    }
+}
+
+// ============================================================================
+// Direct CPU P210 → YUV422P10LE conversion (Apple Silicon unified memory)
+// ============================================================================
+
+void metal_p210_to_yuv422p10_cpu(const void* src, int srcPitch,
+                                  void* dst, int width, int height) {
+    const uint8_t* srcBytes = (const uint8_t*)src;
+    uint8_t* dstBytes = (uint8_t*)dst;
+    int bps = 2; // bytes per sample (uint16)
+
+    // Y plane: copy row-by-row
+    int yRowBytes = width * bps;
+    for (int row = 0; row < height; row++) {
+        memcpy(dstBytes + row * yRowBytes, srcBytes + row * srcPitch, yRowBytes);
+    }
+
+    // UV plane: deinterleave P210 CbCr pairs into planar Cb and Cr.
+    int chromaW = width / 2;
+    int yPlaneSize = width * height * bps;
+    int cbPlaneSize = chromaW * height * bps;
+    uint16_t* cbDst = (uint16_t*)(dstBytes + yPlaneSize);
+    uint16_t* crDst = (uint16_t*)(dstBytes + yPlaneSize + cbPlaneSize);
+    const uint16_t* uvSrc = (const uint16_t*)(srcBytes + srcPitch * height);
+
+    int uvRowStride16 = srcPitch / bps;
+    for (int row = 0; row < height; row++) {
+        const uint16_t* uvRow = uvSrc + row * uvRowStride16;
+        uint16_t* cbRow = cbDst + row * chromaW;
+        uint16_t* crRow = crDst + row * chromaW;
         for (int x = 0; x < chromaW; x++) {
             cbRow[x] = uvRow[x * 2];
             crRow[x] = uvRow[x * 2 + 1];

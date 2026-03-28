@@ -21,7 +21,7 @@ func newTestPlayoutManager() *playout.Manager {
 	frames := make([]playout.DecodedFrame, 10)
 	for i := range frames {
 		frames[i] = playout.DecodedFrame{
-			YUV:        make([]byte, 1920*1080*3/2),
+			YUV:        make([]byte, switcher.ColorYUV420_8bit.FrameSize(1920, 1080)),
 			PTS:        int64(i) * 3003,
 			IsKeyframe: i == 0,
 			Width:      1920,

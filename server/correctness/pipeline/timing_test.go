@@ -248,7 +248,7 @@ func TestPipelineTimingAcrossTransition(t *testing.T) {
 		// Feed FROM source.
 		yuvA := testutil.GenerateSolidYUV420(testWidth, testHeight, colorA.Y, colorA.Cb, colorA.Cr)
 		pfA := &switcher.ProcessingFrame{
-			YUV:        yuvA,
+			Data:       yuvA,
 			Width:      testWidth,
 			Height:     testHeight,
 			PTS:        pts,
@@ -262,7 +262,7 @@ func TestPipelineTimingAcrossTransition(t *testing.T) {
 		// Feed TO source.
 		yuvB := testutil.GenerateSolidYUV420(testWidth, testHeight, colorB.Y, colorB.Cb, colorB.Cr)
 		pfB := &switcher.ProcessingFrame{
-			YUV:        yuvB,
+			Data:       yuvB,
 			Width:      testWidth,
 			Height:     testHeight,
 			PTS:        pts,

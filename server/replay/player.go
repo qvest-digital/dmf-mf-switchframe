@@ -37,6 +37,18 @@ type PlayerConfig struct {
 	// Called for every output frame (including slow-mo duplicates/interpolations).
 	RawVideoOutput func(yuv []byte, w, h int, pts int64)
 
+	// ProxyEncoderFactory creates a browser-compatible encoder (typically H.264)
+	// for the browser relay output. When set, the main EncoderFactory creates the
+	// pipeline codec encoder (e.g., HEVC), and this factory creates the browser proxy.
+	// The proxy encoder's output goes to the Output callback (browser relay).
+	// The main encoder's output goes to PipelineVideoOutput.
+	// When nil, the main EncoderFactory is used for Output (legacy behavior).
+	ProxyEncoderFactory transition.EncoderFactory
+
+	// PipelineVideoOutput sends pipeline-codec encoded frames for recording/SRT.
+	// Only used when ProxyEncoderFactory is set (dual-encode mode).
+	PipelineVideoOutput func(frame *media.VideoFrame)
+
 	// AudioDecoderFactory creates an AAC decoder for WSOLA pre-processing.
 	// Required when Speed < 1.0 for pitch-preserved slow-motion audio.
 	AudioDecoderFactory audio.DecoderFactory
@@ -228,19 +240,21 @@ const gopLookahead = 2
 // gopOutputState holds the mutable state threaded through outputGOP calls,
 // grouping per-GOP parameters into a single struct for readability.
 type gopOutputState struct {
-	encoder       transition.VideoEncoder
-	interpolator  FrameInterpolator
-	timer         *time.Timer
-	dupCount      int
-	ptsPerFrame   int64
-	frameDuration time.Duration
-	totalFrames   int
-	outputPTS     int64
-	firstFrame    bool
-	outputIdx     int
-	codecStr      string
-	groupID       uint32
-	pacingIdx     int
+	encoder         transition.VideoEncoder // legacy single-encode
+	proxyEncoder    transition.VideoEncoder // dual-encode: browser proxy (H.264)
+	pipelineEncoder transition.VideoEncoder // dual-encode: pipeline codec (HEVC)
+	interpolator    FrameInterpolator
+	timer           *time.Timer
+	dupCount        int
+	ptsPerFrame     int64
+	frameDuration   time.Duration
+	totalFrames     int
+	outputPTS       int64
+	firstFrame      bool
+	outputIdx       int
+	codecStr        string
+	groupID         uint32
+	pacingIdx       int
 }
 
 func (p *replayPlayer) run(ctx context.Context) {
@@ -295,11 +309,37 @@ func (p *replayPlayer) run(ctx context.Context) {
 	fpsNum, fpsDen := fpsToRational(sourceFPS)
 	ptsPerFrame := int64(90000) * int64(fpsDen) / int64(fpsNum)
 
-	// Create encoder (optional — only needed when H.264 Output callback is set).
+	// Create encoder(s). In dual-encode mode (ProxyEncoderFactory set):
+	//   - proxyEncoder: browser-compatible (H.264) → Output callback (browser relay)
+	//   - pipelineEncoder: pipeline codec (e.g. HEVC) → PipelineVideoOutput callback
+	// In legacy mode (ProxyEncoderFactory nil):
+	//   - encoder: main EncoderFactory → Output callback
 	w, h := decodedWindow[0][0].width, decodedWindow[0][0].height
-	var encoder transition.VideoEncoder
-	if p.config.EncoderFactory != nil && p.config.Output != nil {
-		bitrate := estimateBitrate(w, h)
+	var encoder transition.VideoEncoder       // legacy: Output callback
+	var proxyEncoder transition.VideoEncoder   // dual-encode: browser relay
+	var pipelineEncoder transition.VideoEncoder // dual-encode: pipeline output
+
+	bitrate := estimateBitrate(w, h)
+	if p.config.ProxyEncoderFactory != nil && p.config.Output != nil {
+		// Dual-encode mode: proxy for browsers, pipeline encoder for recording/SRT.
+		var err error
+		proxyEncoder, err = p.config.ProxyEncoderFactory(w, h, bitrate, fpsNum, fpsDen)
+		if err != nil {
+			slog.Error("replay player: proxy encoder creation failed", "err", err)
+			return
+		}
+		defer proxyEncoder.Close()
+
+		if p.config.EncoderFactory != nil && p.config.PipelineVideoOutput != nil {
+			pipelineEncoder, err = p.config.EncoderFactory(w, h, bitrate, fpsNum, fpsDen)
+			if err != nil {
+				slog.Error("replay player: pipeline encoder creation failed", "err", err)
+				return
+			}
+			defer pipelineEncoder.Close()
+		}
+	} else if p.config.EncoderFactory != nil && p.config.Output != nil {
+		// Legacy mode: single encoder for Output callback.
 		var err error
 		encoder, err = p.config.EncoderFactory(w, h, bitrate, fpsNum, fpsDen)
 		if err != nil {
@@ -332,16 +372,18 @@ func (p *replayPlayer) run(ctx context.Context) {
 
 	// Initialize mutable GOP output state, threaded through outputGOP calls.
 	gs := &gopOutputState{
-		encoder:       encoder,
-		interpolator:  newInterpolator(p.config.Interpolation),
-		timer:         timer,
-		dupCount:      dupCount,
-		ptsPerFrame:   ptsPerFrame,
-		frameDuration: frameDuration,
-		totalFrames:   totalFrames,
-		outputPTS:     p.config.InitialPTS,
-		firstFrame:    true,
-		codecStr:      "avc1.42C01E", // Fallback; overwritten on first keyframe from encoder SPS.
+		encoder:         encoder,
+		proxyEncoder:    proxyEncoder,
+		pipelineEncoder: pipelineEncoder,
+		interpolator:    newInterpolator(p.config.Interpolation),
+		timer:           timer,
+		dupCount:        dupCount,
+		ptsPerFrame:     ptsPerFrame,
+		frameDuration:   frameDuration,
+		totalFrames:     totalFrames,
+		outputPTS:       p.config.InitialPTS,
+		firstFrame:      true,
+		codecStr:        "avc1.42C01E", // Fallback; overwritten on first keyframe from encoder SPS.
 	}
 
 	p.outputAudioPTS = p.config.InitialPTS
@@ -558,23 +600,27 @@ func (p *replayPlayer) outputGOP(
 				}
 			}
 
-			// H.264 monitoring output (optional — only when encoder is available).
-			if gs.encoder != nil {
-				encoded, isKeyframe, encErr := gs.encoder.Encode(yuvToEncode, gs.outputPTS, forceIDR)
+			// Encode output. In dual-encode mode, the proxy encoder feeds the
+			// browser relay (Output) and the pipeline encoder feeds PipelineVideoOutput.
+			// In legacy mode, the single encoder feeds Output.
+			browserEncoder := gs.encoder       // legacy
+			browserOutput := p.config.Output
+			if gs.proxyEncoder != nil {
+				browserEncoder = gs.proxyEncoder
+			}
+
+			if browserEncoder != nil && browserOutput != nil {
+				encoded, isKeyframe, encErr := browserEncoder.Encode(yuvToEncode, gs.outputPTS, forceIDR)
 				if encErr != nil {
 					slog.Error("replay player: encode failed", "err", encErr)
 					return true
 				}
-				// Multi-threaded encoders may return nil during pipeline warmup (EAGAIN).
 				if encoded != nil {
-					// Convert Annex B encoder output to AVC1 for relay.
 					avc1 := codec.AnnexBToAVC1(encoded)
 					if len(avc1) == 0 {
-						avc1 = encoded // Fallback if already AVC1
+						avc1 = encoded
 					}
 
-					// Derive codec string from encoder's SPS on keyframes,
-					// and fire OnVideoInfo callback once with SPS/PPS.
 					var spsNALU, ppsNALU []byte
 					if isKeyframe {
 						for _, nalu := range codec.ExtractNALUs(avc1) {
@@ -595,7 +641,6 @@ func (p *replayPlayer) outputGOP(
 						}
 					}
 
-					// Only start a new MoQ group on the very first keyframe.
 					if isKeyframe && gs.groupID == 0 {
 						gs.groupID++
 					}
@@ -609,7 +654,27 @@ func (p *replayPlayer) outputGOP(
 						SPS:        spsNALU,
 						PPS:        ppsNALU,
 					}
-					p.config.Output(frame)
+					browserOutput(frame)
+				}
+			}
+
+			// Pipeline codec encode (dual-encode mode only).
+			if gs.pipelineEncoder != nil && p.config.PipelineVideoOutput != nil {
+				encoded, isKeyframe, encErr := gs.pipelineEncoder.Encode(yuvToEncode, gs.outputPTS, forceIDR)
+				if encErr != nil {
+					slog.Error("replay player: pipeline encode failed", "err", encErr)
+				} else if encoded != nil {
+					avc1 := codec.AnnexBToAVC1(encoded)
+					if len(avc1) == 0 {
+						avc1 = encoded
+					}
+					frame := &media.VideoFrame{
+						PTS:        gs.outputPTS,
+						IsKeyframe: isKeyframe,
+						WireData:   avc1,
+						GroupID:    gs.groupID,
+					}
+					p.config.PipelineVideoOutput(frame)
 				}
 			}
 
@@ -897,14 +962,19 @@ func decodeGOP(gop []bufferedFrame, factory transition.DecoderFactory) ([]decode
 	drainer, canDrain := decoder.(frameDrainer)
 
 	for _, bf := range gop {
-		// Convert AVC1 to Annex B for decoder, prepending SPS/PPS for keyframes.
-		annexB := codec.AVC1ToAnnexB(bf.wireData)
+		// Convert wire format to Annex B for decoder, prepending parameter sets for keyframes.
+		annexB := codec.WireToAnnexB(bf.wireData)
 		if len(annexB) == 0 {
 			continue
 		}
 
 		if bf.isKeyframe {
-			annexB = codec.PrependSPSPPS(bf.sps, bf.pps, annexB)
+			isHEVC := bf.codec == "h265"
+			if isHEVC {
+				annexB = codec.PrependVPSSPSPPS(bf.vps, bf.sps, bf.pps, annexB)
+			} else {
+				annexB = codec.PrependSPSPPS(bf.sps, bf.pps, annexB)
+			}
 		}
 
 		yuv, w, h, decErr := decoder.Decode(annexB)

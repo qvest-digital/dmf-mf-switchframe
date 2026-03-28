@@ -52,6 +52,59 @@ __global__ void chroma_key_nv12_kernel(
     }
 }
 
+// ============================================================================
+// P210 (10-bit 4:2:2) chroma key kernel
+// ============================================================================
+// Chroma key in 10-bit. keyCb/keyCr are 10-bit values.
+// Generates luma-resolution alpha mask (uint8, same as NV12 for compositing compatibility).
+__global__ void chroma_key_p210_kernel(
+    uint16_t* __restrict__ p210,    // P210 frame (modified in-place for spill)
+    uint8_t* __restrict__ mask,      // Output: luma-resolution alpha mask (uint8)
+    int width, int height, int pitch16, int maskPitch,
+    uint16_t keyCb, uint16_t keyCr,
+    int simDistSq, int totalDistSq,
+    float spillSuppress,
+    uint16_t spillReplaceCb, uint16_t spillReplaceCr)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) return;
+
+    // Read chroma (P210: half width, full height)
+    int cx = x / 2;
+    int uvOffset = pitch16 * height;
+    int uvIdx = y * pitch16 + cx * 2;
+    int cb = p210[uvOffset + uvIdx];
+    int cr = p210[uvOffset + uvIdx + 1];
+
+    // Squared distance from key color in Cb/Cr space
+    int dcb = cb - (int)keyCb;
+    int dcr = cr - (int)keyCr;
+    int distSq = dcb * dcb + dcr * dcr;
+
+    // Generate alpha mask (uint8 for compatibility)
+    uint8_t alpha;
+    if (distSq <= simDistSq) {
+        alpha = 0;
+    } else if (distSq >= totalDistSq) {
+        alpha = 255;
+    } else {
+        float t = (float)(distSq - simDistSq) / (float)(totalDistSq - simDistSq);
+        alpha = (uint8_t)(sqrtf(t) * 255.0f);
+    }
+    mask[y * maskPitch + x] = alpha;
+
+    // Spill suppression (once per chroma pair)
+    if (spillSuppress > 0.0f && (x & 1) == 0 && distSq < totalDistSq) {
+        float amount = 1.0f - sqrtf((float)distSq / (float)totalDistSq);
+        amount *= spillSuppress;
+        int newCb = cb + (int)((spillReplaceCb - cb) * amount);
+        int newCr = cr + (int)((spillReplaceCr - cr) * amount);
+        p210[uvOffset + uvIdx]     = (uint16_t)min(max(newCb, 64), 960);
+        p210[uvOffset + uvIdx + 1] = (uint16_t)min(max(newCr, 64), 960);
+    }
+}
+
 // Luma key: threshold-based with precomputed LUT in constant memory
 __constant__ uint8_t d_lumaKeyLUT[256];
 
@@ -99,6 +152,27 @@ cudaError_t luma_key_nv12(
     dim3 block(BLOCK_DIM_X, BLOCK_DIM_Y);
     dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
     luma_key_nv12_kernel<<<grid, block, 0, stream>>>(nv12, mask, width, height, pitch);
+    return cudaGetLastError();
+}
+
+// --- P210 chroma key wrapper ---
+
+cudaError_t chroma_key_p210(
+    uint8_t* p210, uint8_t* mask,
+    int width, int height, int pitch, int maskPitch,
+    uint16_t keyCb, uint16_t keyCr,
+    int simDistSq, int totalDistSq,
+    float spillSuppress,
+    uint16_t spillReplaceCb, uint16_t spillReplaceCr,
+    cudaStream_t stream)
+{
+    int pitch16 = pitch / 2;
+    dim3 block(BLOCK_DIM_X, BLOCK_DIM_Y);
+    dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
+    chroma_key_p210_kernel<<<grid, block, 0, stream>>>(
+        (uint16_t*)p210, mask, width, height, pitch16, maskPitch,
+        keyCb, keyCr, simDistSq, totalDistSq,
+        spillSuppress, spillReplaceCb, spillReplaceCr);
     return cudaGetLastError();
 }
 

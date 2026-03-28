@@ -62,3 +62,11 @@ func TestGPUColorGradeNode_Interface(t *testing.T) {
 		t.Errorf("Close error: %v", err)
 	}
 }
+
+func TestColorGradeLUT3DP210_Stub_NilGuards(t *testing.T) {
+	// Verify the P210 stub returns an error for nil context.
+	err := ColorGradeLUT3DP210(nil, &GPUFrame{}, 0, 17, 1.0)
+	if err == nil {
+		t.Error("expected error for nil context from stub/nil check")
+	}
+}

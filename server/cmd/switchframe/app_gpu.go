@@ -1,12 +1,17 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/arinfer"
 	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/control"
@@ -14,7 +19,9 @@ import (
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/layout"
+	"github.com/zsiec/switchframe/server/sidecar"
 	"github.com/zsiec/switchframe/server/switcher"
+	"github.com/zsiec/switchframe/server/tracking"
 )
 
 // gpuState holds all GPU subsystem resources. Nil fields mean the GPU
@@ -91,22 +98,23 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 	// Register on switcher — gates CPU fill paths in handleRawVideoFrame.
 	sw.SetGPUSourceManager(sourceMgr)
 
-	// Initialize AI segmentation engine if model path is configured and backend is CUDA.
+	// Initialize AI segmentation via sidecar (the only supported path).
 	var segAdapter gpu.SegmentationState
-	if app.cfg.AIModelPath != "" && gs.ctx.Backend() == "cuda" {
-		segEngine, segErr := gpu.NewSegmentationEngine(gs.ctx, app.cfg.AIModelPath)
-		if segErr != nil {
-			slog.Warn("AI segmentation unavailable", "error", segErr)
-		} else {
-			sourceMgr.SetSegmentationEngine(segEngine)
-			app.segEngine = segEngine
+	if app.cfg.AISidecarBin != "" && gs.ctx.Backend() == "cuda" {
+		// Sidecar mode: spawn AI sidecar, share FramePool via CUDA IPC.
+		segProxy, arProxy := app.initAISidecar(gs, sw)
+		if segProxy != nil {
+			sourceMgr.SetSegmenter(segProxy)
+			app.segEngine = segProxy
 			sa := &segmentationStateAdapter{
-				engine:   segEngine,
+				engine:   segProxy,
 				switcher: sw,
 			}
 			app.segAdapter = sa
 			segAdapter = sa
-			slog.Info("AI segmentation engine initialized", "model", app.cfg.AIModelPath)
+		}
+		if arProxy != nil {
+			app.arInferEngine = arProxy
 		}
 	}
 
@@ -208,7 +216,8 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 				}
 			}
 			if gpuSPS != nil && gpuPPS != nil {
-				videoInfoCb(gpuSPS, gpuPPS, pf.Width, pf.Height)
+				// GPU pipeline is currently AVC-only, so VPS is nil.
+				videoInfoCb(nil, gpuSPS, gpuPPS, pf.Width, pf.Height)
 			}
 		}
 
@@ -384,7 +393,7 @@ func (a *App) updateGPURawVideoSink() {
 		return
 	}
 	fn := gpu.RawSinkFunc(func(yuv []byte, w, h int) {
-		cpuSink(&switcher.ProcessingFrame{YUV: yuv, Width: w, Height: h})
+		cpuSink(&switcher.ProcessingFrame{Data: yuv, Width: w, Height: h})
 	})
 	a.gpuRawVideoSink.Store(&fn)
 }
@@ -411,6 +420,171 @@ func (a *App) wireGPUReplay() {
 		"width", pf.Width,
 		"height", pf.Height,
 		"shutterAngle", "180deg")
+}
+
+// initAISidecar spawns the AI sidecar process, exports the FramePool via
+// CUDA IPC, sends the handshake, and creates proxy objects. Returns nil
+// proxies if the sidecar binary is not found or initialization fails
+// (non-fatal — production continues without AI features).
+func (a *App) initAISidecar(gs *gpuState, sw *switcher.Switcher) (*gpu.SegmentationProxy, *arinfer.InferenceProxy) {
+	binPath := a.cfg.AISidecarBin
+
+	// Verify binary exists.
+	if _, err := os.Stat(binPath); err != nil {
+		slog.Info("AI sidecar binary not found, AI features disabled", "path", binPath)
+		return nil, nil
+	}
+
+	pf := sw.PipelineFormat()
+
+	// Export FramePool device pointers for zero-copy IPC sharing.
+	framePtrs := gs.pool.AllDevPtrs()
+	if len(framePtrs) == 0 {
+		slog.Warn("AI sidecar: no frame pool device pointers to export")
+		return nil, nil
+	}
+
+	// Create the shared VRAM pool with IPC handles.
+	shmName := "/switchframe-ai-pool"
+	pool, err := sidecar.NewCUDAGPUPoolHostFromPtrs(framePtrs, sidecar.GPUPoolConfig{
+		Width:  pf.Width,
+		Height: pf.Height,
+		Pitch:  gs.pool.Pitch(),
+		Format: int(gs.pool.Format()),
+	}, shmName)
+	if err != nil {
+		slog.Warn("AI sidecar: GPU pool creation failed", "error", err)
+		return nil, nil
+	}
+	a.aiSidecarPool = pool
+
+	// Create sidecar host (proxies created after spawn with the host reference).
+	var segProxy *gpu.SegmentationProxy
+	var arProxy *arinfer.InferenceProxy
+
+	host := sidecar.NewHost(sidecar.Config{
+		Binary:       binPath,
+		ReadyTimeout: 120 * time.Second, // TRT engine build from ONNX can take 60+ seconds on first run
+		BuildArgs: func(socketDir string) []string {
+			socketPath := filepath.Join(socketDir, "control.sock")
+			args := []string{}
+			if a.cfg.AIModelsDir != "" {
+				args = append(args, "--models-dir", a.cfg.AIModelsDir)
+			}
+			args = append(args, socketPath)
+			return args
+		},
+		OnRestart: func(gen int64) {
+			slog.Info("AI sidecar restarted, recovering state", "generation", gen)
+			if segProxy != nil {
+				segProxy.RecoverStaleSlots()
+			}
+			if arProxy != nil {
+				arProxy.RecoverStaleSlots()
+			}
+			// Recover stale slots for all visual tracking proxies.
+			a.aiTrackingProxiesMu.Lock()
+			for _, tp := range a.aiTrackingProxies {
+				tp.RecoverStaleSlots()
+			}
+			a.aiTrackingProxiesMu.Unlock()
+
+			// Re-send GPU pool handshake via Host.Send (thread-safe).
+			hs := &sidecar.GPUPoolHandshake{
+				Config:       pool.Config(),
+				ShmName:      shmName,
+				FrameHandles: pool.FrameHandles(),
+				ReadyEvents:  pool.ReadyEventHandles(),
+				DoneEvents:   pool.DoneEventHandles(),
+			}
+			if hsErr := a.aiSidecarHost.Send(&sidecar.Message{
+				Cmd:  "gpu_pool_init",
+				Data: hs,
+			}); hsErr != nil {
+				slog.Error("AI sidecar: re-send handshake failed", "error", hsErr)
+				return
+			}
+
+			// Re-enable sources/state lost during sidecar restart.
+			if segProxy != nil {
+				segProxy.ReenableSources()
+			}
+			if arProxy != nil {
+				arProxy.ReenableState()
+			}
+			// Re-start visual tracking proxies lost during sidecar restart.
+			a.aiTrackingProxiesMu.Lock()
+			for _, tp := range a.aiTrackingProxies {
+				if err := tp.Start(); err != nil {
+					slog.Warn("AI sidecar: re-enable visual tracker failed", "error", err)
+				}
+			}
+			a.aiTrackingProxiesMu.Unlock()
+		},
+		OnStatus: func(s sidecar.Status) {
+			if !s.Alive && s.LastError != "" {
+				slog.Warn("AI sidecar status", "alive", s.Alive, "error", s.LastError)
+			}
+		},
+	})
+	a.aiSidecarHost = host
+
+	// Spawn the sidecar.
+	if err := host.Start(context.Background()); err != nil {
+		slog.Warn("AI sidecar: failed to start", "error", err)
+		pool.Close()
+		a.aiSidecarPool = nil
+		a.aiSidecarHost = nil
+		return nil, nil
+	}
+
+	// Send handshake via Host.Send (writeMu-protected).
+	hs := &sidecar.GPUPoolHandshake{
+		Config:       pool.Config(),
+		ShmName:      shmName,
+		FrameHandles: pool.FrameHandles(),
+		ReadyEvents:  pool.ReadyEventHandles(),
+		DoneEvents:   pool.DoneEventHandles(),
+	}
+	if err := host.Send(&sidecar.Message{Cmd: "gpu_pool_init", Data: hs}); err != nil {
+		slog.Warn("AI sidecar: handshake failed", "error", err)
+		host.Close()
+		pool.Close()
+		a.aiSidecarPool = nil
+		a.aiSidecarHost = nil
+		return nil, nil
+	}
+
+	// Create proxies now that host is live and connected.
+	segProxy = gpu.NewSegmentationProxy(host, pool)
+	arProxy = arinfer.NewInferenceProxy(host, pool, gs.pool)
+
+	// Initialize the tracking proxy map for visual tracking sources.
+	a.aiTrackingProxies = make(map[string]*tracking.VisualTrackingProxy)
+
+	// Wire OnMessage to dispatch to all proxies. Each proxy checks msg.Type
+	// and ignores irrelevant messages, so broadcasting to all is safe.
+	// VisualTrackingProxy messages (pose_result, track_slot_done) are also
+	// handled here when tracking proxies are created via AddVisualSource.
+	host.OnMessage = func(msg *sidecar.Message) {
+		segProxy.HandleMessage(msg)
+		arProxy.HandleMessage(msg)
+
+		// Dispatch to all visual tracking proxies.
+		a.aiTrackingProxiesMu.Lock()
+		for _, tp := range a.aiTrackingProxies {
+			tp.HandleMessage(msg)
+		}
+		a.aiTrackingProxiesMu.Unlock()
+	}
+
+	slog.Info("AI sidecar initialized",
+		"binary", binPath,
+		"pool_slots", len(framePtrs),
+		"frame_size", fmt.Sprintf("%dx%d", pf.Width, pf.Height),
+	)
+
+	return segProxy, arProxy
 }
 
 // closeGPU releases all GPU resources.
@@ -609,7 +783,7 @@ func (r *gpuPipelineRunnerImpl) RunTransition(fromKey, toKey string, transType s
 				dst.Release()
 				return fmt.Errorf("gpu transition stinger: acquire alpha: %w", alphaErr)
 			}
-			alphaYUV := make([]byte, stinger.Width*stinger.Height*3/2)
+			alphaYUV := make([]byte, switcher.ColorYUV420_8bit.FrameSize(stinger.Width, stinger.Height))
 			copy(alphaYUV[:len(stinger.Alpha)], stinger.Alpha)
 			cbOff := stinger.Width * stinger.Height
 			for i := cbOff; i < len(alphaYUV); i++ {
@@ -844,10 +1018,10 @@ func (gpuNoOpPreviewEncoder) Send(_ []byte, _, _ int, _ int64) {}
 
 // --- Segmentation State Adapter ---
 
-// segmentationStateAdapter bridges SegmentationEngine + Switcher to the
+// segmentationStateAdapter bridges Segmenter + Switcher to the
 // gpu.SegmentationState interface consumed by gpuAISegmentNode.
 type segmentationStateAdapter struct {
-	engine   *gpu.SegmentationEngine
+	engine   gpu.Segmenter
 	switcher *switcher.Switcher
 
 	// Per-source configs, managed by the REST API (Phase 4).
@@ -957,10 +1131,10 @@ func (a *neuralKeyStateAdapter) SnapshotNeuralKeys() []gpu.NeuralKeySnapshot {
 // --- AI Segment Manager Adapter ---
 
 // aiSegmentManagerAdapter implements control.AISegmentManager.
-// It bridges the GPU SegmentationEngine and segmentationStateAdapter
+// It bridges the GPU Segmenter and segmentationStateAdapter
 // to the REST API interface. Non-nil only when segEngine is active.
 type aiSegmentManagerAdapter struct {
-	engine  *gpu.SegmentationEngine
+	engine  gpu.Segmenter
 	adapter *segmentationStateAdapter
 }
 

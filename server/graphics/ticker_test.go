@@ -375,7 +375,7 @@ func TestTickerEngine_NonLoopCompletion(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Drive the ticker via ProcessYUV calls until it scrolls off.
-	yuv := make([]byte, 1920*1080*3/2)
+	yuv := make([]byte, yuvFrameSize(1920, 1080))
 	for i := 0; i < 200; i++ {
 		c.ProcessYUV(yuv, 1920, 1080, nil, nil)
 	}
@@ -471,7 +471,7 @@ func TestTickerEngine_FrameLockedAdvancement(t *testing.T) {
 	// Give the goroutine time to render the strip and set up state.
 	time.Sleep(50 * time.Millisecond)
 
-	yuv := make([]byte, progW*progH*3/2)
+	yuv := make([]byte, yuvFrameSize(progW, progH))
 	// Fill Y with 128 (mid-gray) so we can detect overlay changes.
 	for i := 0; i < progW*progH; i++ {
 		yuv[i] = 128
@@ -545,7 +545,7 @@ func TestTickerEngine_FrameLockedMultipleFPS(t *testing.T) {
 
 			time.Sleep(50 * time.Millisecond)
 
-			yuv := make([]byte, 320*240*3/2)
+			yuv := make([]byte, yuvFrameSize(320, 240))
 
 			// Advance 5 frames and check final position.
 			for i := 0; i < 5; i++ {

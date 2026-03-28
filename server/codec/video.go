@@ -4,6 +4,7 @@ package codec
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -91,4 +92,111 @@ func NewVideoDecoderSingleThread() (transition.VideoDecoder, error) {
 	default:
 		return NewFFmpegDecoderWithThreads(HWDeviceCtx(), 1)
 	}
+}
+
+// NewHEVCVideoDecoder creates an HEVC video decoder using the FFmpeg software decoder.
+// Returns an error if FFmpeg HEVC decoding is not available.
+func NewHEVCVideoDecoder() (transition.VideoDecoder, error) {
+	return NewFFmpegHEVCDecoder(HWDeviceCtx())
+}
+
+// NewHEVCVideoDecoderSingleThread creates an HEVC video decoder with single-threaded decoding.
+// This eliminates frame-level multithreading buffering delay, ensuring each Decode()
+// call produces output immediately. Use for clip/replay decoders.
+func NewHEVCVideoDecoderSingleThread() (transition.VideoDecoder, error) {
+	return NewFFmpegHEVCDecoderWithThreads(HWDeviceCtx(), 1)
+}
+
+// NewVideoDecoderForCodec creates a video decoder for the specified codec.
+// Accepts "h264" or "h265"/"hevc". Returns an error for unknown codecs.
+func NewVideoDecoderForCodec(codec string) (transition.VideoDecoder, error) {
+	switch codec {
+	case "h264":
+		return NewVideoDecoder()
+	case "h265", "hevc":
+		return NewHEVCVideoDecoder()
+	default:
+		return nil, fmt.Errorf("unsupported video codec: %q (supported: h264, h265)", codec)
+	}
+}
+
+// NewVideoDecoderForCodecSingleThread creates a single-threaded video decoder for the
+// specified codec. Accepts "h264" or "h265"/"hevc".
+func NewVideoDecoderForCodecSingleThread(codec string) (transition.VideoDecoder, error) {
+	switch codec {
+	case "h264":
+		return NewVideoDecoderSingleThread()
+	case "h265", "hevc":
+		return NewHEVCVideoDecoderSingleThread()
+	default:
+		return nil, fmt.Errorf("unsupported video codec: %q (supported: h264, h265)", codec)
+	}
+}
+
+// NewVideoDecoderNative10bit creates a video decoder that preserves 10-bit 422
+// output when the source provides 10-bit content. For 10-bit HEVC sources, the
+// decoder outputs YUV422P10LE (w*h*4 bytes) instead of downconverting to 8-bit
+// 420, eliminating the lossy round-trip when the pipeline is in professional mode.
+// For 8-bit sources, falls back to standard YUV420P 8-bit output.
+func NewVideoDecoderNative10bit() (transition.VideoDecoder, error) {
+	return NewFFmpegHEVCDecoderNative10bit(HWDeviceCtx())
+}
+
+// NewVideoDecoderNative10bitSingleThread creates a native 10-bit decoder with
+// single-threaded decoding. Eliminates frame-level multithreading buffering delay.
+// Use for clip/replay decoders where immediate per-frame output is needed.
+func NewVideoDecoderNative10bitSingleThread() (transition.VideoDecoder, error) {
+	return NewFFmpegHEVCDecoderNative10bitWithThreads(HWDeviceCtx(), 1)
+}
+
+// NewVideoDecoderForCodecNative10bit creates a native 10-bit decoder for the
+// specified codec. For HEVC sources, preserves 10-bit 422 output.
+// For H.264 sources (which don't support 10-bit 422), falls back to standard decoding.
+func NewVideoDecoderForCodecNative10bit(codec string) (transition.VideoDecoder, error) {
+	switch codec {
+	case "h265", "hevc":
+		return NewVideoDecoderNative10bit()
+	case "h264":
+		// H.264 doesn't support 10-bit 422, use standard decoder.
+		return NewVideoDecoder()
+	default:
+		return nil, fmt.Errorf("unsupported video codec: %q (supported: h264, h265)", codec)
+	}
+}
+
+// NewVideoDecoderForCodecNative10bitSingleThread creates a single-threaded
+// native 10-bit decoder for the specified codec.
+func NewVideoDecoderForCodecNative10bitSingleThread(codec string) (transition.VideoDecoder, error) {
+	switch codec {
+	case "h265", "hevc":
+		return NewVideoDecoderNative10bitSingleThread()
+	case "h264":
+		return NewVideoDecoderSingleThread()
+	default:
+		return nil, fmt.Errorf("unsupported video codec: %q (supported: h264, h265)", codec)
+	}
+}
+
+// NewHEVCVideoEncoder creates an HEVC video encoder using the best available backend.
+// The first call triggers HEVC codec probing (via ProbeHEVCEncoders) which tests
+// available hardware and software encoders in priority order.
+func NewHEVCVideoEncoder(width, height, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+	enc, _ := ProbeHEVCEncoders()
+	if enc == "none" {
+		return nil, errors.New("no HEVC encoder available")
+	}
+	gopSecs := transition.DefaultGOPSecs
+	return NewFFmpegEncoder(enc, width, height, bitrate, fpsNum, fpsDen, gopSecs, nil)
+}
+
+// NewHEVCVideoEncoder10bit creates an HEVC encoder configured for 10-bit YUV422P10LE
+// input. Probes for available HEVC encoders and selects the best one.
+// For libx265: uses main422-10 profile. For NVENC: uses main10 profile.
+func NewHEVCVideoEncoder10bit(width, height, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+	enc, _ := ProbeHEVCEncoders()
+	if enc == "none" {
+		return nil, errors.New("no HEVC encoder available for 10-bit")
+	}
+	gopSecs := transition.DefaultGOPSecs
+	return NewFFmpegEncoder10bit(enc, width, height, bitrate, fpsNum, fpsDen, gopSecs, nil)
 }

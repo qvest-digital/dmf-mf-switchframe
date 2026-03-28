@@ -69,7 +69,7 @@ func TestV210UploadDownloadRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 
 	// Download NV12 → YUV420p to verify
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	err = Download(ctx, yuv, frame, w, h)
 	require.NoError(t, err)
 
@@ -122,7 +122,7 @@ func TestV210GradientRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 
 	// Download as YUV420p and check gradient
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	err = Download(ctx, yuv, frame, w, h)
 	require.NoError(t, err)
 
@@ -145,7 +145,7 @@ func TestV210NV12ToV210RoundTrip(t *testing.T) {
 	defer frame.Release()
 
 	// Upload a known YUV420p pattern
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		yuv[i] = 180 // Y
 	}

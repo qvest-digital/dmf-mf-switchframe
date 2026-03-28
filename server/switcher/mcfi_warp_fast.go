@@ -18,7 +18,7 @@ const (
 // replacement for mcfiInterpolateSmooth that produces output within +/-1 LSB
 // of the float64 reference.
 //
-// dst, srcA, srcB are YUV420 frames (width * height * 3/2 bytes).
+// dst, srcA, srcB are YUV420 frames (ColorYUV420_8bit.FrameSize(width, height) bytes).
 // mvf contains per-16x16-block motion vectors.
 // alpha is the interpolation position (0.0=srcA, 1.0=srcB).
 func mcfiInterpolateFast(dst, srcA, srcB []byte, width, height int, mvf *motionVectorField, alpha float64) {

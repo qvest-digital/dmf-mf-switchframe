@@ -464,7 +464,7 @@ func TestFullPipelineLayoutToTS(t *testing.T) {
 		// Feed A (program source).
 		yuvA := testutil.GenerateSolidYUV420(testWidth, testHeight, sourceA.Y, sourceA.Cb, sourceA.Cr)
 		pfA := &switcher.ProcessingFrame{
-			YUV:        yuvA,
+			Data:       yuvA,
 			Width:      testWidth,
 			Height:     testHeight,
 			PTS:        pts,
@@ -475,7 +475,7 @@ func TestFullPipelineLayoutToTS(t *testing.T) {
 		// Feed B (PIP source) - this populates the layout compositor's fill cache.
 		yuvB := testutil.GenerateSolidYUV420(testWidth, testHeight, sourceB.Y, sourceB.Cb, sourceB.Cr)
 		pfB := &switcher.ProcessingFrame{
-			YUV:        yuvB,
+			Data:       yuvB,
 			Width:      testWidth,
 			Height:     testHeight,
 			PTS:        pts,
@@ -575,7 +575,7 @@ func TestFullPipelineKeyingToTS(t *testing.T) {
 
 		yuvA := testutil.GenerateSolidYUV420(testWidth, testHeight, blueColor.Y, blueColor.Cb, blueColor.Cr)
 		pfA := &switcher.ProcessingFrame{
-			YUV:        yuvA,
+			Data:       yuvA,
 			Width:      testWidth,
 			Height:     testHeight,
 			PTS:        pts,
@@ -585,7 +585,7 @@ func TestFullPipelineKeyingToTS(t *testing.T) {
 
 		yuvB := testutil.GenerateSolidYUV420(testWidth, testHeight, greenColor.Y, greenColor.Cb, greenColor.Cr)
 		pfB := &switcher.ProcessingFrame{
-			YUV:        yuvB,
+			Data:       yuvB,
 			Width:      testWidth,
 			Height:     testHeight,
 			PTS:        pts,
@@ -1650,7 +1650,7 @@ func TestPipelineTransitionBlendProgression(t *testing.T) {
 		// Feed FROM source (srcA).
 		yuvA := testutil.GenerateSolidYUV420(testWidth, testHeight, colorA.Y, colorA.Cb, colorA.Cr)
 		pfA := &switcher.ProcessingFrame{
-			YUV:        yuvA,
+			Data:       yuvA,
 			Width:      testWidth,
 			Height:     testHeight,
 			PTS:        pts,
@@ -1664,7 +1664,7 @@ func TestPipelineTransitionBlendProgression(t *testing.T) {
 		// Feed TO source (srcB) — this triggers blend output.
 		yuvB := testutil.GenerateSolidYUV420(testWidth, testHeight, colorB.Y, colorB.Cb, colorB.Cr)
 		pfB := &switcher.ProcessingFrame{
-			YUV:        yuvB,
+			Data:       yuvB,
 			Width:      testWidth,
 			Height:     testHeight,
 			PTS:        pts,

@@ -23,7 +23,7 @@ func TestSTMapIdentityWarp(t *testing.T) {
 	defer dst.Release()
 
 	// Upload a gradient pattern
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			yuv[y*w+x] = byte(x*219/(w-1) + 16) // horizontal gradient
@@ -53,8 +53,8 @@ func TestSTMapIdentityWarp(t *testing.T) {
 	require.NoError(t, err)
 
 	// Download both and compare
-	srcResult := make([]byte, w*h*3/2)
-	dstResult := make([]byte, w*h*3/2)
+	srcResult := make([]byte, yuvFrameSize(w, h))
+	dstResult := make([]byte, yuvFrameSize(w, h))
 	require.NoError(t, Download(ctx, srcResult, src, w, h))
 	require.NoError(t, Download(ctx, dstResult, dst, w, h))
 
@@ -86,7 +86,7 @@ func TestSTMapHorizontalFlip(t *testing.T) {
 	defer dst.Release()
 
 	// Upload left=dark, right=bright pattern
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			yuv[y*w+x] = byte(x*219/(w-1) + 16)
@@ -114,7 +114,7 @@ func TestSTMapHorizontalFlip(t *testing.T) {
 	err = STMapWarp(ctx, dst, src, stmap)
 	require.NoError(t, err)
 
-	result := make([]byte, w*h*3/2)
+	result := make([]byte, yuvFrameSize(w, h))
 	require.NoError(t, Download(ctx, result, dst, w, h))
 
 	// After horizontal flip: left should be bright, right should be dark

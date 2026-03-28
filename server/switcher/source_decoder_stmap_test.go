@@ -19,7 +19,7 @@ type patternMockDecoder struct {
 }
 
 func (d *patternMockDecoder) Decode(data []byte) ([]byte, int, int, error) {
-	size := d.width * d.height * 3 / 2
+	size := ColorYUV420_8bit.FrameSize(d.width, d.height)
 	yuv := make([]byte, size)
 	// Fill Y plane with column-dependent values.
 	for y := 0; y < d.height; y++ {
@@ -105,7 +105,7 @@ func TestSourceDecoder_AppliesSTMap(t *testing.T) {
 	require.Equal(t, h, pf.Height)
 
 	// Check first row of Y plane.
-	row0 := pf.YUV[0:w]
+	row0 := pf.Data[0:w]
 	require.Equal(t, byte(40), row0[0], "Y[0,0] should be 40 after hflip")
 	require.Equal(t, byte(30), row0[1], "Y[0,1] should be 30 after hflip")
 	require.Equal(t, byte(20), row0[2], "Y[0,2] should be 20 after hflip")
@@ -152,7 +152,7 @@ func TestSourceDecoder_NoSTMapRegistry(t *testing.T) {
 	mu.Unlock()
 
 	// Original column values should be preserved: 10, 20, 30, 40.
-	row0 := pf.YUV[0:w]
+	row0 := pf.Data[0:w]
 	require.Equal(t, byte(10), row0[0], "Y[0,0] should be 10 (no stmap)")
 	require.Equal(t, byte(20), row0[1], "Y[0,1] should be 20 (no stmap)")
 	require.Equal(t, byte(30), row0[2], "Y[0,2] should be 30 (no stmap)")
@@ -205,7 +205,7 @@ func TestSourceDecoder_STMapNoAssignment(t *testing.T) {
 	mu.Unlock()
 
 	// Original column values should be preserved (no assignment = no warp).
-	row0 := pf.YUV[0:w]
+	row0 := pf.Data[0:w]
 	require.Equal(t, byte(10), row0[0], "Y[0,0] should be 10 (no assignment)")
 	require.Equal(t, byte(20), row0[1], "Y[0,1] should be 20 (no assignment)")
 	require.Equal(t, byte(30), row0[2], "Y[0,2] should be 30 (no assignment)")

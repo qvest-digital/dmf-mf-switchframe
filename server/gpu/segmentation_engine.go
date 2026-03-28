@@ -13,6 +13,12 @@ cudaError_t nv12_to_rgb_chw(
     int srcW, int srcH, int srcPitch,
     int outW, int outH,
     cudaStream_t stream);
+cudaError_t p210_to_rgb_chw(
+    float* rgbOut,
+    const uint16_t* p210,
+    int srcW, int srcH, int srcPitch16,
+    int outW, int outH,
+    cudaStream_t stream);
 cudaError_t mask_to_u8_upscale(
     uint8_t* dst, int dstW, int dstH,
     const float* src, int srcW, int srcH,
@@ -66,7 +72,7 @@ type segSession struct {
 	rgbBuf  unsafe.Pointer // [1,3,segModelH,segModelW] float32
 	maskBuf unsafe.Pointer // [1,1,segModelH,segModelW] float32 (pha output)
 	fgrBuf  unsafe.Pointer // [1,3,segModelH,segModelW] float32 (fgr output, unused but required)
-	maskU8  unsafe.Pointer // [srcW*srcH*3/2] uint8 (NV12-sized)
+	maskU8  unsafe.Pointer // [yuvFrameSize(srcW,srcH)] uint8 (NV12-sized)
 
 	// RVM recurrent hidden states. Two sets for ping-pong swap:
 	// rIn is read during inference, rOut is written. After inference, swap pointers.
@@ -287,8 +293,8 @@ func (se *SegmentationEngine) EnableSource(key string, w, h int, smoothing float
 	// Allocate NV12-sized mask buffer: Y plane (w*h) for the actual mask +
 	// UV plane (w*h/2) for neutral chroma. BlendStinger reads the UV portion
 	// as scratch space for downsampled chroma alpha, so the allocation must
-	// be pitch*height*3/2 — not just w*h (single-plane would cause OOB reads).
-	maskU8, err := alloc(w*h*3/2, "maskU8")
+	// be yuvFrameSize(w,h) — not just w*h (single-plane would cause OOB reads).
+	maskU8, err := alloc(yuvFrameSize(w, h), "maskU8")
 	if err != nil {
 		return err
 	}
@@ -477,17 +483,31 @@ func (se *SegmentationEngine) Segment(key string, frame *GPUFrame) {
 		return
 	}
 
-	// Step 1: NV12 → RGB CHW preprocessing on session stream.
-	rc := C.nv12_to_rgb_chw(
-		(*C.float)(sess.rgbBuf),
-		(*C.uint8_t)(unsafe.Pointer(uintptr(frame.DevPtr))),
-		C.int(frame.Width), C.int(frame.Height), C.int(frame.Pitch),
-		C.int(segModelW), C.int(segModelH),
-		sess.stream,
-	)
+	// Step 1: Frame → RGB CHW preprocessing on session stream.
+	// Dispatches to the correct kernel based on frame format.
+	var rc C.cudaError_t
+	switch frame.Format {
+	case GPUFormatP210:
+		// P210: uint16 semi-planar 4:2:2, pitch in uint16 units = pitch_bytes / 2.
+		rc = C.p210_to_rgb_chw(
+			(*C.float)(sess.rgbBuf),
+			(*C.uint16_t)(unsafe.Pointer(uintptr(frame.DevPtr))),
+			C.int(frame.Width), C.int(frame.Height), C.int(frame.Pitch/2),
+			C.int(segModelW), C.int(segModelH),
+			sess.stream,
+		)
+	default: // GPUFormatNV12
+		rc = C.nv12_to_rgb_chw(
+			(*C.float)(sess.rgbBuf),
+			(*C.uint8_t)(unsafe.Pointer(uintptr(frame.DevPtr))),
+			C.int(frame.Width), C.int(frame.Height), C.int(frame.Pitch),
+			C.int(segModelW), C.int(segModelH),
+			sess.stream,
+		)
+	}
 	if rc != C.cudaSuccess {
 		slog.Warn("gpu: segmentation: preprocess failed",
-			"source", key, "cuda_rc", rc)
+			"source", key, "format", frame.Format, "cuda_rc", rc)
 		return
 	}
 
@@ -567,6 +587,23 @@ func (se *SegmentationEngine) MaskForSource(key string) *GPUFrame {
 	}
 
 	return sess.mask.Load()
+}
+
+// MaskDevPtrForSource returns the raw device pointer of the mask buffer
+// for a source, suitable for CUDA IPC handle export. Returns 0 if the
+// source has no active session. The pointer is valid immediately after
+// EnableSource() — no inference needs to have run yet.
+func (se *SegmentationEngine) MaskDevPtrForSource(key string) uintptr {
+	if se == nil {
+		return 0
+	}
+	se.mu.RLock()
+	sess, exists := se.sessions[key]
+	se.mu.RUnlock()
+	if !exists || sess.maskU8 == nil {
+		return 0
+	}
+	return uintptr(sess.maskU8)
 }
 
 // Close destroys all sessions and the TensorRT engine.

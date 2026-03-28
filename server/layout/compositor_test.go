@@ -445,7 +445,7 @@ func TestCompositor_FillMode_CropsBeforeScale(t *testing.T) {
 
 	// Source is 8x4 (wider than slot aspect).
 	// Left half: Y=200, right half: Y=100
-	src := make([]byte, 8*4*3/2)
+	src := make([]byte, yuvFrameSize(8, 4))
 	for y := 0; y < 4; y++ {
 		for x := 0; x < 4; x++ {
 			src[y*8+x] = 200 // left half
@@ -902,19 +902,19 @@ func TestCompositor_SkipsScaleOnSamePTS(t *testing.T) {
 	c.SetLayout(layout)
 
 	// Create a source frame at different resolution (forces scaling)
-	yuv := make([]byte, 1280*720*3/2)
+	yuv := make([]byte, yuvFrameSize(1280, 720))
 	for i := range yuv {
 		yuv[i] = byte(i % 256)
 	}
 
 	// First ingest + process -- must scale
 	c.IngestSourceFrame("cam1", yuv, 1280, 720, 1000)
-	frame1 := make([]byte, 1920*1080*3/2)
+	frame1 := make([]byte, yuvFrameSize(1920, 1080))
 	c.ProcessFrame(frame1, 1920, 1080)
 
 	// Same PTS again -- should use cache
 	c.IngestSourceFrame("cam1", yuv, 1280, 720, 1000)
-	frame2 := make([]byte, 1920*1080*3/2)
+	frame2 := make([]byte, yuvFrameSize(1920, 1080))
 	c.ProcessFrame(frame2, 1920, 1080)
 
 	if !bytes.Equal(frame1, frame2) {
@@ -931,22 +931,22 @@ func TestCompositor_InvalidatesCacheOnPTSChange(t *testing.T) {
 	}
 	c.SetLayout(layout)
 
-	yuv1 := make([]byte, 1280*720*3/2)
+	yuv1 := make([]byte, yuvFrameSize(1280, 720))
 	for i := range yuv1 {
 		yuv1[i] = byte(i % 256)
 	}
-	yuv2 := make([]byte, 1280*720*3/2)
+	yuv2 := make([]byte, yuvFrameSize(1280, 720))
 	for i := range yuv2 {
 		yuv2[i] = byte((i + 50) % 256)
 	}
 
 	c.IngestSourceFrame("cam1", yuv1, 1280, 720, 1000)
-	frame1 := make([]byte, 1920*1080*3/2)
+	frame1 := make([]byte, yuvFrameSize(1920, 1080))
 	c.ProcessFrame(frame1, 1920, 1080)
 
 	// Different PTS + different content
 	c.IngestSourceFrame("cam1", yuv2, 1280, 720, 2000)
-	frame2 := make([]byte, 1920*1080*3/2)
+	frame2 := make([]byte, yuvFrameSize(1920, 1080))
 	c.ProcessFrame(frame2, 1920, 1080)
 
 	if bytes.Equal(frame1, frame2) {
@@ -964,25 +964,160 @@ func TestCompositor_InvalidatesCacheOnDimensionChange(t *testing.T) {
 	c.SetLayout(layout)
 
 	// Ingest a 1280x720 source and process to populate cache.
-	yuv720 := make([]byte, 1280*720*3/2)
+	yuv720 := make([]byte, yuvFrameSize(1280, 720))
 	for i := range yuv720 {
 		yuv720[i] = byte(i % 256)
 	}
 	c.IngestSourceFrame("cam1", yuv720, 1280, 720, 1000)
-	frame1 := make([]byte, 1920*1080*3/2)
+	frame1 := make([]byte, yuvFrameSize(1920, 1080))
 	c.ProcessFrame(frame1, 1920, 1080)
 
 	// Same PTS but different source dimensions (640x480).
 	// This must invalidate the cache and re-scale.
-	yuv480 := make([]byte, 640*480*3/2)
+	yuv480 := make([]byte, yuvFrameSize(640, 480))
 	for i := range yuv480 {
 		yuv480[i] = byte((i + 30) % 256)
 	}
 	c.IngestSourceFrame("cam1", yuv480, 640, 480, 1000)
-	frame2 := make([]byte, 1920*1080*3/2)
+	frame2 := make([]byte, yuvFrameSize(1920, 1080))
 	c.ProcessFrame(frame2, 1920, 1080)
 
 	if bytes.Equal(frame1, frame2) {
 		t.Error("dimension change at same PTS should invalidate cache and produce different output")
 	}
+}
+
+func TestCompositor_ProcessFrame10_TwoSlotPIP(t *testing.T) {
+	c := NewCompositor(32, 16)
+
+	l := &Layout{
+		Name: "pip",
+		Slots: []Slot{
+			{SourceKey: "cam1", Rect: image.Rect(0, 0, 16, 8), Enabled: true},
+			{SourceKey: "cam2", Rect: image.Rect(16, 0, 32, 8), Enabled: true},
+		},
+	}
+	c.SetLayout(l)
+
+	// Ingest 10-bit source frames: cam1=bright, cam2=mid-tone.
+	c.IngestSourceFrame10("cam1", makeLayout10Frame(16, 8, 800, 300, 700), 16, 8, 0)
+	c.IngestSourceFrame10("cam2", makeLayout10Frame(16, 8, 500, 400, 600), 16, 8, 0)
+
+	// Create a black background 10-bit frame.
+	bg := makeLayout10Frame(32, 16, 64, 512, 512)
+	result := c.ProcessFrame10(bg, 32, 16)
+	require.NotNil(t, result)
+
+	// Slot 1 (cam1) at (0,0): Y should be 800.
+	gotY1 := readLayout10Y(result, 4, 4, 32)
+	require.Equal(t, uint16(800), gotY1, "slot 1 Y should be 800 (cam1)")
+
+	// Slot 2 (cam2) at (16,0): Y should be 500.
+	gotY2 := readLayout10Y(result, 20, 4, 32)
+	require.Equal(t, uint16(500), gotY2, "slot 2 Y should be 500 (cam2)")
+
+	// Area below slots (row 10, outside both PIP rects) should remain background black.
+	gotY3 := readLayout10Y(result, 4, 10, 32)
+	require.Equal(t, uint16(64), gotY3, "area outside PIP should be background (64)")
+}
+
+func TestCompositor_ProcessFrame10_NoLayout(t *testing.T) {
+	c := NewCompositor(32, 16)
+	bg := makeLayout10Frame(32, 16, 500, 400, 600)
+	result := c.ProcessFrame10(bg, 32, 16)
+	// No layout = return unchanged.
+	require.Equal(t, bg, result)
+}
+
+func TestCompositor_ProcessFrame10_NoSignalSlotIsBlack(t *testing.T) {
+	c := NewCompositor(32, 16)
+
+	l := &Layout{
+		Name: "pip",
+		Slots: []Slot{
+			{SourceKey: "missing", Rect: image.Rect(0, 0, 16, 8), Enabled: true},
+		},
+	}
+	c.SetLayout(l)
+
+	bg := makeLayout10Frame(32, 16, 940, 300, 700) // white background
+	result := c.ProcessFrame10(bg, 32, 16)
+
+	// Slot region should be broadcast black (Y=64).
+	gotY := readLayout10Y(result, 4, 4, 32)
+	require.Equal(t, uint16(64), gotY, "no-signal slot should be broadcast black")
+
+	// Outside slot should be unchanged.
+	gotY2 := readLayout10Y(result, 20, 10, 32)
+	require.Equal(t, uint16(940), gotY2, "outside slot should be unchanged white")
+}
+
+func TestCompositor_ProcessFrame10_WithBorder(t *testing.T) {
+	c := NewCompositor(32, 16)
+
+	l := &Layout{
+		Name: "pip",
+		Slots: []Slot{
+			{
+				SourceKey: "cam1",
+				Rect:      image.Rect(4, 4, 20, 12),
+				Enabled:   true,
+				Border:    BorderConfig{Width: 2, ColorY: 235, ColorCb: 128, ColorCr: 128},
+			},
+		},
+	}
+	c.SetLayout(l)
+
+	c.IngestSourceFrame10("cam1", makeLayout10Frame(16, 8, 500, 400, 600), 16, 8, 0)
+
+	bg := makeLayout10Frame(32, 16, 64, 512, 512) // black background
+	result := c.ProcessFrame10(bg, 32, 16)
+
+	// Border: 10-bit color values = 8-bit * 4. Border Y=235 -> 10-bit ~940.
+	// The border is drawn with 10-bit color values from the slot config.
+	// For 8-bit border config (235,128,128), the 10-bit equivalent is (940,512,512).
+	borderY := readLayout10Y(result, 4, 2, 32) // top border pixel
+	require.Equal(t, uint16(940), borderY, "border Y should be 940 (10-bit)")
+}
+
+func TestCompositor_IngestSourceFrame10(t *testing.T) {
+	c := NewCompositor(32, 16)
+
+	l := &Layout{
+		Name: "pip",
+		Slots: []Slot{
+			{SourceKey: "cam1", Rect: image.Rect(0, 0, 16, 8), Enabled: true},
+		},
+	}
+	c.SetLayout(l)
+
+	// Ingest a 10-bit frame.
+	frame := makeLayout10Frame(16, 8, 800, 300, 700)
+	c.IngestSourceFrame10("cam1", frame, 16, 8, 1000)
+
+	require.True(t, c.HasFrame10("cam1"))
+	require.False(t, c.HasFrame10("cam2"))
+}
+
+func TestCompositor_ProcessFrame10_Scaling(t *testing.T) {
+	c := NewCompositor(32, 16)
+
+	l := &Layout{
+		Name: "pip",
+		Slots: []Slot{
+			{SourceKey: "cam1", Rect: image.Rect(0, 0, 16, 8), Enabled: true},
+		},
+	}
+	c.SetLayout(l)
+
+	// Ingest a 32x16 source that needs to be scaled down to 16x8 slot.
+	src := makeLayout10Frame(32, 16, 800, 300, 700)
+	c.IngestSourceFrame10("cam1", src, 32, 16, 0)
+
+	bg := makeLayout10Frame(32, 16, 64, 512, 512)
+	result := c.ProcessFrame10(bg, 32, 16)
+
+	// The scaled slot should have approximately Y=800 (bilinear from uniform source).
+	gotY := readLayout10Y(result, 4, 4, 32)
+	require.InDelta(t, 800, int(gotY), 5, "scaled slot Y should be ~800")
 }

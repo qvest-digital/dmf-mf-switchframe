@@ -30,6 +30,7 @@ typedef struct {
 	AVPacket*       pkt;
 	int             width;
 	int             height;
+	int             pix_fmt_10bit; // non-zero if YUV422P10LE (10-bit 4:2:2)
 } ffenc_t;
 
 // ffenc_open initializes the encoder with the given codec name and parameters.
@@ -40,8 +41,10 @@ typedef struct {
 static int ffenc_open(ffenc_t* h, const char* codec_name,
                       int width, int height, int bitrate,
                       int fps_num, int fps_den,
-                      int gop_secs, void* hwDeviceCtx) {
+                      int gop_secs, void* hwDeviceCtx,
+                      int pix_fmt_10bit) {
 	memset(h, 0, sizeof(ffenc_t));
+	h->pix_fmt_10bit = pix_fmt_10bit;
 
 	// av_log_set_level is called once from Go via initFFmpegLogLevel().
 
@@ -74,7 +77,7 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 
 	h->ctx->gop_size = fps_num * gop_secs / fps_den;
 	h->ctx->max_b_frames = 0;
-	h->ctx->pix_fmt = AV_PIX_FMT_YUV420P;
+	h->ctx->pix_fmt = pix_fmt_10bit ? AV_PIX_FMT_YUV422P10LE : AV_PIX_FMT_YUV420P;
 
 	// Signal BT.709 colorspace in VUI parameters.
 	h->ctx->color_primaries = AVCOL_PRI_BT709;
@@ -94,17 +97,29 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 	h->ctx->thread_count = ncpu;
 
 	// Set explicit H.264 level for downstream decoder compatibility.
+	// HEVC uses a different level numbering scheme (see HEVC section below).
 	float fps_f = (float)fps_num / (float)fps_den;
-	int level;
+	int avc_level;
 	if (width <= 1280 && height <= 720) {
-		level = 31; // Level 3.1
+		avc_level = 31; // Level 3.1
 	} else if (width <= 1920 && height <= 1080 && fps_f <= 30.5f) {
-		level = 40; // Level 4.0
+		avc_level = 40; // Level 4.0
 	} else {
-		level = 42; // Level 4.2
+		avc_level = 42; // Level 4.2
 	}
 
-	// Codec-specific options.
+	// HEVC level: ITU-T H.265 Table A.6. Level values are 30x the level number.
+	// Level 3.1 = 93, Level 4.0 = 120, Level 4.1 = 123.
+	int hevc_level;
+	if (width <= 1280 && height <= 720) {
+		hevc_level = 93;  // Level 3.1
+	} else if (width <= 1920 && height <= 1080 && fps_f <= 30.5f) {
+		hevc_level = 120; // Level 4.0
+	} else {
+		hevc_level = 123; // Level 4.1
+	}
+
+	// --- H.264 (AVC) codec-specific options ---
 	if (strcmp(codec_name, "libx264") == 0) {
 		av_opt_set(h->ctx->priv_data, "preset", "superfast", 0);
 		av_opt_set(h->ctx->priv_data, "profile", "high", 0);
@@ -122,7 +137,7 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 		// Disable scene-change detection: transitions ARE the content change.
 		av_opt_set(h->ctx->priv_data, "sc_threshold", "0", 0);
 		char level_str[8];
-		snprintf(level_str, sizeof(level_str), "%d", level);
+		snprintf(level_str, sizeof(level_str), "%d", avc_level);
 		av_opt_set(h->ctx->priv_data, "level", level_str, 0);
 		// Enable Access Unit Delimiters for MPEG-TS compliance.
 		av_opt_set(h->ctx->priv_data, "aud", "1", 0);
@@ -140,7 +155,7 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 		av_opt_set_int(h->ctx->priv_data, "aq-strength", 8, 0);
 		av_opt_set_int(h->ctx->priv_data, "no-scenecut", 1, 0);
 		av_opt_set_int(h->ctx->priv_data, "forced-idr", 1, 0);
-		av_opt_set_int(h->ctx->priv_data, "level", level, 0);
+		av_opt_set_int(h->ctx->priv_data, "level", avc_level, 0);
 		// NVENC CBR is hardware-native and works correctly.
 		// Note: with rc=cbr, NVENC uses bit_rate as the target and ignores
 		// rc_max_rate. The VBV buffer (rc_buffer_size) is still applied.
@@ -149,7 +164,7 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 		av_opt_set_int(h->ctx->priv_data, "temporal-aq", 0, 0);
 	} else if (strcmp(codec_name, "h264_vaapi") == 0) {
 		av_opt_set_int(h->ctx->priv_data, "profile", 100, 0); // HIGH
-		h->ctx->level = level;
+		h->ctx->level = avc_level;
 	} else if (strcmp(codec_name, "h264_videotoolbox") == 0) {
 		av_opt_set(h->ctx->priv_data, "profile", "high", 0);
 		av_opt_set_int(h->ctx->priv_data, "realtime", 1, 0);
@@ -157,13 +172,73 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 		// Force frame-at-a-time output — no internal encoder frame buffering.
 		h->ctx->max_b_frames = 0;
 		av_opt_set_int(h->ctx->priv_data, "allow_b_frames", 0, 0);
-		av_opt_set_int(h->ctx->priv_data, "level", level, 0);
+		av_opt_set_int(h->ctx->priv_data, "level", avc_level, 0);
+	}
+	// --- H.265 (HEVC) codec-specific options ---
+	// Mirrors the libx264 configuration above for broadcast-quality live encoding:
+	// superfast preset (not ultrafast — measurable quality improvement at negligible
+	// speed cost with zerolatency tune), AQ mode 3 for mixed content, AUDs for
+	// MPEG-TS compliance, closed GOP for random access, deblock tuning for detail.
+	else if (strcmp(codec_name, "libx265") == 0) {
+		// superfast matches our libx264 preset. With zerolatency tune, the quality
+		// delta between ultrafast and superfast is real but the speed cost is <5%.
+		av_opt_set(h->ctx->priv_data, "preset", "superfast", 0);
+		// zerolatency: disables frame parallelism (zero internal buffer), uses
+		// sliced threading via thread_count. Eliminates encoder buffering latency.
+		av_opt_set(h->ctx->priv_data, "tune", "zerolatency", 0);
+		if (pix_fmt_10bit) {
+			av_opt_set(h->ctx->priv_data, "profile", "main422-10", 0);
+		} else {
+			av_opt_set(h->ctx->priv_data, "profile", "main", 0);
+		}
+		// Auto-variance AQ adapts per-frame between temporal and spatial
+		// redistribution — better than mode 2 for mixed content (static →
+		// dissolve → stinger → camera motion). Matches libx264 aq-mode=3.
+		// x265-params is the only way to pass x265-specific options via FFmpeg.
+		av_opt_set(h->ctx->priv_data, "x265-params",
+			"aq-mode=3:aq-strength=1.2"    // auto-variance AQ (matches x264)
+			":no-scenecut=1"                // transitions are the content change
+			":no-open-gop=1"                // closed GOP for MPEG-TS random access
+			":aud=1"                        // AUDs mandatory for MPEG-TS compliance
+			":repeat-headers=1"             // VPS/SPS/PPS on every IDR for mid-stream join
+			":deblock=-1,-1"                // mild deblock reduction (preserve detail)
+			, 0);
+		av_opt_set_int(h->ctx->priv_data, "level-idc", hevc_level, 0);
+	} else if (strcmp(codec_name, "hevc_nvenc") == 0) {
+		av_opt_set(h->ctx->priv_data, "preset", "p4", 0);
+		av_opt_set(h->ctx->priv_data, "profile", pix_fmt_10bit ? "main10" : "main", 0);
+		av_opt_set(h->ctx->priv_data, "delay", "0", 0);
+		av_opt_set_int(h->ctx->priv_data, "spatial-aq", 1, 0);
+		av_opt_set_int(h->ctx->priv_data, "aq-strength", 8, 0);
+		av_opt_set_int(h->ctx->priv_data, "no-scenecut", 1, 0);
+		av_opt_set_int(h->ctx->priv_data, "forced-idr", 1, 0);
+		av_opt_set_int(h->ctx->priv_data, "level", hevc_level, 0);
+		av_opt_set(h->ctx->priv_data, "rc", "cbr", 0);
+		av_opt_set_int(h->ctx->priv_data, "temporal-aq", 0, 0);
+	} else if (strcmp(codec_name, "hevc_vaapi") == 0) {
+		if (pix_fmt_10bit) {
+			av_opt_set_int(h->ctx->priv_data, "profile", 2, 0); // Main 10 (FF_PROFILE_HEVC_MAIN_10)
+		} else {
+			av_opt_set_int(h->ctx->priv_data, "profile", 1, 0); // Main
+		}
+		h->ctx->level = hevc_level;
+	} else if (strcmp(codec_name, "hevc_videotoolbox") == 0) {
+		if (pix_fmt_10bit) {
+			av_opt_set(h->ctx->priv_data, "profile", "main10", 0);
+		} else {
+			av_opt_set(h->ctx->priv_data, "profile", "main", 0);
+		}
+		av_opt_set_int(h->ctx->priv_data, "realtime", 1, 0);
+		av_opt_set_int(h->ctx->priv_data, "prio_speed", 1, 0);
+		h->ctx->max_b_frames = 0;
+		av_opt_set_int(h->ctx->priv_data, "allow_b_frames", 0, 0);
+		av_opt_set_int(h->ctx->priv_data, "level", hevc_level, 0);
 	}
 
-	// Enable Access Unit Delimiters for hardware encoders.
-	// libx264 sets aud=1 above; for NVENC/VideoToolbox/VA-API, set it here.
+	// Enable Access Unit Delimiters for hardware encoders and software encoders
+	// that don't set it above. libx264 sets aud=1 above; for others set it here.
 	// av_opt_set returns error if unsupported — safe to ignore.
-	if (strcmp(codec_name, "libx264") != 0) {
+	if (strcmp(codec_name, "libx264") != 0 && strcmp(codec_name, "libx265") != 0) {
 		av_opt_set(h->ctx->priv_data, "aud", "1", 0);
 	}
 
@@ -178,7 +253,7 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 		avcodec_free_context(&h->ctx);
 		return -4;
 	}
-	h->frame->format = AV_PIX_FMT_YUV420P;
+	h->frame->format = pix_fmt_10bit ? AV_PIX_FMT_YUV422P10LE : AV_PIX_FMT_YUV420P;
 	h->frame->width = width;
 	h->frame->height = height;
 
@@ -307,27 +382,55 @@ static int ffenc_encode(ffenc_t* h, unsigned char* yuv_data, int force_idr,
 		return -1;
 	}
 
-	// Copy packed YUV420 input into the AVFrame planes, respecting linesize.
+	// Copy packed YUV input into the AVFrame planes, respecting linesize.
 	int w = h->width;
 	int ht = h->height;
-	int y_size = w * ht;
-	int uv_w = w / 2;
-	int uv_h = ht / 2;
 
-	// Y plane
-	for (int row = 0; row < ht; row++) {
-		memcpy(h->frame->data[0] + row * h->frame->linesize[0],
-		       yuv_data + row * w, w);
-	}
-	// U plane
-	for (int row = 0; row < uv_h; row++) {
-		memcpy(h->frame->data[1] + row * h->frame->linesize[1],
-		       yuv_data + y_size + row * uv_w, uv_w);
-	}
-	// V plane
-	for (int row = 0; row < uv_h; row++) {
-		memcpy(h->frame->data[2] + row * h->frame->linesize[2],
-		       yuv_data + y_size + uv_w * uv_h + row * uv_w, uv_w);
+	if (h->pix_fmt_10bit) {
+		// YUV422P10LE: Y plane = w*h*2 bytes (uint16 per sample),
+		// Cb plane = w/2*h*2 bytes, Cr plane = w/2*h*2 bytes.
+		int y_row_bytes = w * 2;
+		int uv_w = w / 2;
+		int uv_row_bytes = uv_w * 2;
+		int y_plane_size = y_row_bytes * ht;
+		int uv_plane_size = uv_row_bytes * ht; // full height for 4:2:2
+
+		// Y plane
+		for (int row = 0; row < ht; row++) {
+			memcpy(h->frame->data[0] + row * h->frame->linesize[0],
+			       yuv_data + row * y_row_bytes, y_row_bytes);
+		}
+		// Cb plane
+		for (int row = 0; row < ht; row++) {
+			memcpy(h->frame->data[1] + row * h->frame->linesize[1],
+			       yuv_data + y_plane_size + row * uv_row_bytes, uv_row_bytes);
+		}
+		// Cr plane
+		for (int row = 0; row < ht; row++) {
+			memcpy(h->frame->data[2] + row * h->frame->linesize[2],
+			       yuv_data + y_plane_size + uv_plane_size + row * uv_row_bytes, uv_row_bytes);
+		}
+	} else {
+		// YUV420P: Y plane = w*h bytes, Cb = w/2*h/2, Cr = w/2*h/2.
+		int y_size = w * ht;
+		int uv_w = w / 2;
+		int uv_h = ht / 2;
+
+		// Y plane
+		for (int row = 0; row < ht; row++) {
+			memcpy(h->frame->data[0] + row * h->frame->linesize[0],
+			       yuv_data + row * w, w);
+		}
+		// U plane
+		for (int row = 0; row < uv_h; row++) {
+			memcpy(h->frame->data[1] + row * h->frame->linesize[1],
+			       yuv_data + y_size + row * uv_w, uv_w);
+		}
+		// V plane
+		for (int row = 0; row < uv_h; row++) {
+			memcpy(h->frame->data[2] + row * h->frame->linesize[2],
+			       yuv_data + y_size + uv_w * uv_h + row * uv_w, uv_w);
+		}
 	}
 
 	h->frame->pts = input_pts;
@@ -439,7 +542,7 @@ func NewFFmpegEncoder(codecName string, width, height, bitrate, fpsNum, fpsDen, 
 	rc := C.ffenc_open(&e.handle, cName,
 		C.int(width), C.int(height), C.int(bitrate),
 		C.int(fpsNum), C.int(fpsDen),
-		C.int(gopSecs), hwDeviceCtx)
+		C.int(gopSecs), hwDeviceCtx, C.int(0))
 	FFmpegOpenMu.Unlock()
 	if rc != 0 {
 		desc := map[int]string{
@@ -455,6 +558,54 @@ func NewFFmpegEncoder(codecName string, width, height, bitrate, fpsNum, fpsDen, 
 			msg = "unknown error"
 		}
 		return nil, fmt.Errorf("failed to create FFmpeg encoder %q: %s (code %d)", codecName, msg, int(rc))
+	}
+	return e, nil
+}
+
+// NewFFmpegEncoder10bit creates a 10-bit YUV422P10LE encoder.
+// Uses the same codec selection as NewFFmpegEncoder but configures the encoder
+// for 10-bit 4:2:2 input (professional pipeline profile).
+// For libx265: profile=main422-10. For NVENC: profile=main10.
+func NewFFmpegEncoder10bit(codecName string, width, height, bitrate, fpsNum, fpsDen, gopSecs int, hwDeviceCtx unsafe.Pointer) (*FFmpegEncoder, error) {
+	initFFmpegLogLevel()
+
+	if width <= 0 || height <= 0 {
+		return nil, fmt.Errorf("invalid dimensions: %dx%d", width, height)
+	}
+	if bitrate <= 0 {
+		return nil, fmt.Errorf("invalid bitrate: %d", bitrate)
+	}
+	if fpsNum <= 0 || fpsDen <= 0 {
+		return nil, fmt.Errorf("invalid fps: %d/%d", fpsNum, fpsDen)
+	}
+	if gopSecs <= 0 {
+		return nil, fmt.Errorf("invalid gopSecs: %d", gopSecs)
+	}
+
+	cName := C.CString(codecName)
+	defer C.free(unsafe.Pointer(cName))
+
+	e := &FFmpegEncoder{}
+	FFmpegOpenMu.Lock()
+	rc := C.ffenc_open(&e.handle, cName,
+		C.int(width), C.int(height), C.int(bitrate),
+		C.int(fpsNum), C.int(fpsDen),
+		C.int(gopSecs), hwDeviceCtx, C.int(1))
+	FFmpegOpenMu.Unlock()
+	if rc != 0 {
+		desc := map[int]string{
+			-1: "codec not found",
+			-2: "context allocation failed",
+			-3: "avcodec_open2 failed",
+			-4: "frame allocation failed",
+			-5: "frame buffer allocation failed",
+			-6: "packet allocation failed",
+		}
+		msg := desc[int(rc)]
+		if msg == "" {
+			msg = "unknown error"
+		}
+		return nil, fmt.Errorf("failed to create 10-bit FFmpeg encoder %q: %s (code %d)", codecName, msg, int(rc))
 	}
 	return e, nil
 }
@@ -537,7 +688,7 @@ func (e *FFmpegEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bo
 
 	w := int(e.handle.width)
 	h := int(e.handle.height)
-	expected := w * h * 3 / 2
+	expected := yuvFrameSize(w, h)
 	if len(yuv) != expected {
 		return nil, false, fmt.Errorf("YUV buffer must be %d bytes (%dx%d*3/2), got %d",
 			expected, w, h, len(yuv))

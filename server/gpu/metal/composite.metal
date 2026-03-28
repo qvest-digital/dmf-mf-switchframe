@@ -154,6 +154,147 @@ kernel void pip_composite_uv(
     }
 }
 
+// ============================================================================
+// P210 (10-bit 4:2:2) composite kernels
+// ============================================================================
+
+struct PIPCompositeP210YParams {
+    uint dstW;
+    uint dstH;
+    uint dstPitch;   // bytes per row
+    uint srcW;
+    uint srcH;
+    uint srcPitch;
+    int rectX;
+    int rectY;
+    int rectW;
+    int rectH;
+    int alpha256;
+    int cropX;
+    int cropY;
+    int cropW;
+    int cropH;
+};
+
+struct PIPCompositeP210UVParams {
+    uint dstW;       // chroma width (luma width / 2) — NOT used for bounds, use dstChromaW
+    uint dstChromaH; // full height for 4:2:2
+    uint dstPitch;
+    uint srcW;
+    uint srcChromaH;
+    uint srcPitch;
+    int rectX;
+    int rectY;
+    int rectCW;      // chroma rect width
+    int rectCH;      // chroma rect height
+    int alpha256;
+    int cropX;
+    int cropY;
+    int cropCW;
+    int cropCH;
+};
+
+// PIP composite Y plane for P210 (uint16 samples with bilinear scaling)
+kernel void pip_composite_p210_y(
+    device uchar* dst            [[buffer(0)]],
+    device const uchar* src      [[buffer(1)]],
+    constant PIPCompositeP210YParams& params [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= uint(params.rectW) || gid.y >= uint(params.rectH)) return;
+
+    int dx = params.rectX + int(gid.x);
+    int dy = params.rectY + int(gid.y);
+    if (dx >= int(params.dstW) || dy >= int(params.dstH) || dx < 0 || dy < 0) return;
+
+    int srcRegionX = (params.cropW > 0) ? params.cropX : 0;
+    int srcRegionY = (params.cropW > 0) ? params.cropY : 0;
+    int srcRegionW = (params.cropW > 0) ? params.cropW : int(params.srcW);
+    int srcRegionH = (params.cropW > 0) ? params.cropH : int(params.srcH);
+
+    float srcXf = float(srcRegionX) + float(gid.x) * float(srcRegionW - 1) / float(max(params.rectW - 1, 1));
+    float srcYf = float(srcRegionY) + float(gid.y) * float(srcRegionH - 1) / float(max(params.rectH - 1, 1));
+    int sx = int(srcXf);
+    int sy = int(srcYf);
+    float fx = srcXf - float(sx);
+    float fy = srcYf - float(sy);
+
+    uint sx1 = min(uint(sx + 1), params.srcW - 1);
+    uint sy1 = min(uint(sy + 1), params.srcH - 1);
+
+    uint srcSPR = params.srcPitch / 2;  // samples per row
+    device const ushort* srcU16 = (device const ushort*)src;
+
+    int v00 = int(srcU16[uint(sy) * srcSPR + uint(sx)]);
+    int v10 = int(srcU16[uint(sy) * srcSPR + sx1]);
+    int v01 = int(srcU16[sy1 * srcSPR + uint(sx)]);
+    int v11 = int(srcU16[sy1 * srcSPR + sx1]);
+
+    float top = float(v00) + float(v10 - v00) * fx;
+    float bot = float(v01) + float(v11 - v01) * fx;
+    int val = int(top + (bot - top) * fy + 0.5f);
+
+    uint dstSPR = params.dstPitch / 2;
+    uint dstIdx = uint(dy) * dstSPR + uint(dx);
+    device ushort* dstU16 = (device ushort*)dst;
+
+    if (params.alpha256 >= 256) {
+        dstU16[dstIdx] = ushort(clamp(val, 0, 1023));
+    } else {
+        int inv = 256 - params.alpha256;
+        int result = (int(dstU16[dstIdx]) * inv + val * params.alpha256 + 128) >> 8;
+        dstU16[dstIdx] = ushort(clamp(result, 0, 1023));
+    }
+}
+
+// PIP composite UV plane for P210 (interleaved uint16 CbCr pairs, full height for 4:2:2)
+kernel void pip_composite_p210_uv(
+    device uchar* dstUV          [[buffer(0)]],
+    device const uchar* srcUV    [[buffer(1)]],
+    constant PIPCompositeP210UVParams& params [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= uint(params.rectCW) || gid.y >= uint(params.rectCH)) return;
+
+    // P210 UV has full height (4:2:2), so no divide-by-2 for Y coords
+    int dx = params.rectX / 2 + int(gid.x);
+    int dy = params.rectY + int(gid.y);
+    if (dx < 0 || dy < 0) return;
+
+    uint dstSPR = params.dstPitch / 2;  // ushort elements per row
+    uint dstChromaW = params.dstW;      // chroma width in samples
+    if (uint(dx) >= dstChromaW || uint(dy) >= params.dstChromaH) return;
+
+    int srcChromaX = (params.cropCW > 0) ? params.cropX : 0;
+    int srcChromaY = (params.cropCW > 0) ? params.cropY : 0;
+    int srcChromaW = (params.cropCW > 0) ? params.cropCW : int(params.srcW / 2);
+    int srcChromaH = (params.cropCW > 0) ? params.cropCH : int(params.srcChromaH);
+
+    float srcXf = float(srcChromaX) + float(gid.x) * float(srcChromaW - 1) / float(max(params.rectCW - 1, 1));
+    float srcYf = float(srcChromaY) + float(gid.y) * float(srcChromaH - 1) / float(max(params.rectCH - 1, 1));
+    int sxc = min(int(srcXf), int(params.srcW / 2 - 1));
+    int syc = min(int(srcYf), int(params.srcChromaH - 1));
+
+    device const ushort* srcU16 = (device const ushort*)srcUV;
+    uint srcSPR = params.srcPitch / 2;
+    uint srcIdx = uint(syc) * srcSPR + uint(sxc) * 2;
+
+    device ushort* dstU16 = (device ushort*)dstUV;
+    uint dstIdx = uint(dy) * dstSPR + uint(dx) * 2;
+    if (dstIdx + 1 >= dstSPR * params.dstChromaH) return;
+
+    if (params.alpha256 >= 256) {
+        dstU16[dstIdx]     = srcU16[srcIdx];
+        dstU16[dstIdx + 1] = srcU16[srcIdx + 1];
+    } else {
+        int inv = 256 - params.alpha256;
+        int resCb = (int(dstU16[dstIdx])     * inv + int(srcU16[srcIdx])     * params.alpha256 + 128) >> 8;
+        int resCr = (int(dstU16[dstIdx + 1]) * inv + int(srcU16[srcIdx + 1]) * params.alpha256 + 128) >> 8;
+        dstU16[dstIdx]     = ushort(clamp(resCb, 0, 1023));
+        dstU16[dstIdx + 1] = ushort(clamp(resCr, 0, 1023));
+    }
+}
+
 // Draw border around a rectangle
 // Thread indices are relative to the outer bounding box origin (outerX, outerY).
 kernel void draw_border_nv12(

@@ -29,6 +29,12 @@ func (n *compositorNode) Latency() time.Duration { return 200 * time.Microsecond
 func (n *compositorNode) Close() error           { return nil }
 
 func (n *compositorNode) Process(dst, src *ProcessingFrame) *ProcessingFrame {
-	src.YUV = n.compositor.ProcessYUV(src.YUV, src.Width, src.Height, &n.blendScratch, &n.colLUTScratch)
-	return src
+	switch src.Format {
+	case ColorYUV422_10bit:
+		src.Data = n.compositor.ProcessYUV10(src.Data, src.Width, src.Height)
+		return src
+	default:
+		src.Data = n.compositor.ProcessYUV(src.Data, src.Width, src.Height, &n.blendScratch, &n.colLUTScratch)
+		return src
+	}
 }

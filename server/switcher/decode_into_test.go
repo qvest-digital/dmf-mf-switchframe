@@ -22,7 +22,7 @@ type mockDecodeIntoDecoder struct {
 }
 
 func (d *mockDecodeIntoDecoder) Decode(data []byte) ([]byte, int, int, error) {
-	yuvSize := d.width * d.height * 3 / 2
+	yuvSize := ColorYUV420_8bit.FrameSize(d.width, d.height)
 	result := make([]byte, yuvSize)
 	for i := range result {
 		result[i] = d.fill
@@ -32,7 +32,7 @@ func (d *mockDecodeIntoDecoder) Decode(data []byte) ([]byte, int, int, error) {
 
 func (d *mockDecodeIntoDecoder) DecodeInto(data []byte, dst []byte) ([]byte, int, int, error) {
 	d.decodeIntoCalled = true
-	yuvSize := d.width * d.height * 3 / 2
+	yuvSize := ColorYUV420_8bit.FrameSize(d.width, d.height)
 	if len(dst) >= yuvSize {
 		// Write directly into dst — this is the zero-copy path.
 		d.usedDstBuffer = true
@@ -56,7 +56,7 @@ func (d *mockDecodeIntoDecoder) Close() {}
 // pool buffer directly without an extra copy.
 func TestDecodeInto_DirectWriteSkipsCopy(t *testing.T) {
 	width, height := 320, 240
-	pool := NewFramePool(4, width, height) // exact match to source resolution
+	pool := NewFramePool(4, width, height, ColorYUV420_8bit) // exact match to source resolution
 
 	mockDec := &mockDecodeIntoDecoder{width: width, height: height, fill: 0xAB}
 	factory := func() (transition.VideoDecoder, error) {
@@ -113,15 +113,15 @@ func TestDecodeInto_DirectWriteSkipsCopy(t *testing.T) {
 	}
 
 	// Verify frame data is correct.
-	expectedSize := width * height * 3 / 2
-	if len(pf.YUV) != expectedSize {
-		t.Errorf("pf.YUV len = %d, want %d", len(pf.YUV), expectedSize)
+	expectedSize := ColorYUV420_8bit.FrameSize(width, height)
+	if len(pf.Data) != expectedSize {
+		t.Errorf("pf.Data len = %d, want %d", len(pf.Data), expectedSize)
 	}
 
 	// Verify the data was filled correctly.
 	for i := 0; i < expectedSize; i++ {
-		if pf.YUV[i] != 0xAB {
-			t.Fatalf("pf.YUV[%d] = %d, want 0xAB", i, pf.YUV[i])
+		if pf.Data[i] != 0xAB {
+			t.Fatalf("pf.Data[%d] = %d, want 0xAB", i, pf.Data[i])
 		}
 	}
 
@@ -137,7 +137,7 @@ func TestDecodeInto_DirectWriteSkipsCopy(t *testing.T) {
 func TestDecodeInto_FallbackWhenPoolTooSmall(t *testing.T) {
 	// Decoder produces 640x480, but pool has 320x240 buffers.
 	decWidth, decHeight := 640, 480
-	pool := NewFramePool(4, 320, 240) // too small for 640x480
+	pool := NewFramePool(4, 320, 240, ColorYUV420_8bit) // too small for 640x480
 
 	mockDec := &mockDecodeIntoDecoder{width: decWidth, height: decHeight, fill: 0xCD}
 	factory := func() (transition.VideoDecoder, error) {
@@ -194,13 +194,13 @@ func TestDecodeInto_FallbackWhenPoolTooSmall(t *testing.T) {
 	}
 
 	// Frame data should still be correct.
-	expectedSize := decWidth * decHeight * 3 / 2
-	if len(pf.YUV) != expectedSize {
-		t.Errorf("pf.YUV len = %d, want %d", len(pf.YUV), expectedSize)
+	expectedSize := ColorYUV420_8bit.FrameSize(decWidth, decHeight)
+	if len(pf.Data) != expectedSize {
+		t.Errorf("pf.Data len = %d, want %d", len(pf.Data), expectedSize)
 	}
 	for i := 0; i < expectedSize; i++ {
-		if pf.YUV[i] != 0xCD {
-			t.Fatalf("pf.YUV[%d] = %d, want 0xCD", i, pf.YUV[i])
+		if pf.Data[i] != 0xCD {
+			t.Fatalf("pf.Data[%d] = %d, want 0xCD", i, pf.Data[i])
 		}
 	}
 
@@ -214,7 +214,7 @@ func TestDecodeInto_FallbackWhenPoolTooSmall(t *testing.T) {
 // don't support DecodeInto still work correctly through the standard Decode path.
 func TestDecodeInto_FallbackForNonDecodeIntoDecoder(t *testing.T) {
 	width, height := 320, 240
-	pool := NewFramePool(4, width, height)
+	pool := NewFramePool(4, width, height, ColorYUV420_8bit)
 
 	// Use the standard mock decoder which does NOT implement DecodeInto.
 	factory := func() (transition.VideoDecoder, error) {
@@ -261,9 +261,9 @@ func TestDecodeInto_FallbackForNonDecodeIntoDecoder(t *testing.T) {
 	pf := received[0]
 
 	// Standard mock decoder, so pool should be used via the copy path.
-	expectedSize := width * height * 3 / 2
-	if len(pf.YUV) != expectedSize {
-		t.Errorf("pf.YUV len = %d, want %d", len(pf.YUV), expectedSize)
+	expectedSize := ColorYUV420_8bit.FrameSize(width, height)
+	if len(pf.Data) != expectedSize {
+		t.Errorf("pf.Data len = %d, want %d", len(pf.Data), expectedSize)
 	}
 
 	// Frame should be associated with the pool (copy into pool buffer).
@@ -327,8 +327,8 @@ func TestDecodeInto_NilPool(t *testing.T) {
 		t.Error("DecodeInto should not be called when pool is nil")
 	}
 
-	expectedSize := width * height * 3 / 2
-	if len(pf.YUV) != expectedSize {
-		t.Errorf("pf.YUV len = %d, want %d", len(pf.YUV), expectedSize)
+	expectedSize := ColorYUV420_8bit.FrameSize(width, height)
+	if len(pf.Data) != expectedSize {
+		t.Errorf("pf.Data len = %d, want %d", len(pf.Data), expectedSize)
 	}
 }

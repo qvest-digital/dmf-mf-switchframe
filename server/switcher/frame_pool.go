@@ -6,7 +6,7 @@ import (
 	"github.com/zsiec/switchframe/server/mmaputil"
 )
 
-// FramePool manages a fixed set of pre-allocated YUV420 buffers.
+// FramePool manages a fixed set of pre-allocated pixel buffers.
 // Buffers are acquired and released via a mutex-guarded free list.
 // The pool is sized at init time and never grows. If all buffers are in
 // use, Acquire falls back to a fresh allocation (logged as a pool miss).
@@ -17,7 +17,7 @@ import (
 type FramePool struct {
 	mu      sync.Mutex
 	free    [][]byte // stack of available buffers (LIFO for cache warmth)
-	bufSize int      // YUV420 buffer size (width * height * 3/2)
+	bufSize int      // frame buffer size in bytes (determined by color format)
 	cap     int      // total capacity (pre-allocated count)
 
 	// Diagnostics
@@ -30,11 +30,11 @@ type FramePool struct {
 	mmapBufs [][]byte
 }
 
-// NewFramePool creates a pool with n pre-allocated buffers of the given
-// YUV420 dimensions. Buffers are allocated via mmap to avoid GC overhead;
-// if mmap fails, the pool falls back to heap allocation.
-func NewFramePool(n int, width, height int) *FramePool {
-	bufSize := width * height * 3 / 2
+// NewFramePool creates a pool with n pre-allocated buffers for the given
+// dimensions and color format. Buffers are allocated via mmap to avoid GC
+// overhead; if mmap fails, the pool falls back to heap allocation.
+func NewFramePool(n int, width, height int, colorFmt PipelineColorFormat) *FramePool {
+	bufSize := colorFmt.FrameSize(width, height)
 	fp := &FramePool{
 		free:     make([][]byte, 0, n),
 		mmapBufs: make([][]byte, 0, n),

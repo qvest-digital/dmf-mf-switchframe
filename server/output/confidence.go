@@ -92,9 +92,16 @@ func (cm *ConfidenceMonitor) IngestVideo(frame *media.VideoFrame) {
 
 	// Decode, scale, and JPEG-encode outside the lock to avoid blocking
 	// the viewer goroutine or LatestThumbnail readers.
-	annexB := codec.AVC1ToAnnexBInto(frame.WireData, nil)
+	// Use codec-agnostic wire format conversion (identical for AVC and HEVC).
+	annexB := codec.WireToAnnexBInto(frame.WireData, nil)
 	if frame.IsKeyframe {
-		annexB = codec.PrependSPSPPSInto(frame.SPS, frame.PPS, annexB, nil)
+		if frame.Codec == "h265" {
+			// HEVC: prepend VPS+SPS+PPS.
+			annexB = codec.PrependVPSSPSPPSInto(frame.VPS, frame.SPS, frame.PPS, annexB, nil)
+		} else {
+			// H.264: prepend SPS+PPS only.
+			annexB = codec.PrependSPSPPSInto(frame.SPS, frame.PPS, annexB, nil)
+		}
 	}
 	yuv, w, h, err := decoder.Decode(annexB)
 	if err != nil {
@@ -113,7 +120,7 @@ func (cm *ConfidenceMonitor) IngestVideo(frame *media.VideoFrame) {
 	if w == dstW && h == dstH {
 		scaledYUV = yuv
 	} else {
-		scaledSize := dstW * dstH * 3 / 2
+		scaledSize := yuvFrameSize(dstW, dstH)
 		if cap(cm.scaledBuf) < scaledSize {
 			cm.scaledBuf = make([]byte, scaledSize)
 		}

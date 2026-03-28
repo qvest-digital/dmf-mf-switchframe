@@ -94,8 +94,13 @@ func (b *replayBuffer) recordFrameAt(frame *media.VideoFrame, wallTime time.Time
 		}
 	}
 
-	// SPS/PPS always stay on the Go heap (tiny, ~8 bytes each).
+	// Parameter sets always stay on the Go heap (tiny, ~8-40 bytes each).
 	if frame.IsKeyframe {
+		if len(frame.VPS) > 0 {
+			bf.vps = make([]byte, len(frame.VPS))
+			copy(bf.vps, frame.VPS)
+			b.bytesUsed += int64(len(frame.VPS))
+		}
 		if len(frame.SPS) > 0 {
 			bf.sps = make([]byte, len(frame.SPS))
 			copy(bf.sps, frame.SPS)
@@ -106,6 +111,10 @@ func (b *replayBuffer) recordFrameAt(frame *media.VideoFrame, wallTime time.Time
 			copy(bf.pps, frame.PPS)
 			b.bytesUsed += int64(len(frame.PPS))
 		}
+	}
+	// Record codec from frame.
+	if frame.Codec != "" {
+		bf.codec = frame.Codec
 	}
 
 	idx := len(b.frames)
@@ -182,6 +191,7 @@ func (b *replayBuffer) trimLocked() {
 			removeEnd := b.gops[0].endIdx + 1
 			for i := b.gops[0].startIdx; i <= b.gops[0].endIdx && i < len(b.frames); i++ {
 				b.bytesUsed -= int64(len(b.frames[i].wireData))
+				b.bytesUsed -= int64(len(b.frames[i].vps))
 				b.bytesUsed -= int64(len(b.frames[i].sps))
 				b.bytesUsed -= int64(len(b.frames[i].pps))
 			}
@@ -334,6 +344,10 @@ func (b *replayBuffer) ExtractClip(inTime, outTime time.Time) ([]bufferedFrame, 
 			copy(dst.wireData, src.wireData)
 		}
 
+		if len(src.vps) > 0 {
+			dst.vps = make([]byte, len(src.vps))
+			copy(dst.vps, src.vps)
+		}
 		if len(src.sps) > 0 {
 			dst.sps = make([]byte, len(src.sps))
 			copy(dst.sps, src.sps)
@@ -342,6 +356,7 @@ func (b *replayBuffer) ExtractClip(inTime, outTime time.Time) ([]bufferedFrame, 
 			dst.pps = make([]byte, len(src.pps))
 			copy(dst.pps, src.pps)
 		}
+		dst.codec = src.codec
 	}
 
 	// Determine the wall-clock range of the video clip for audio extraction.

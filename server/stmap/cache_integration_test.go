@@ -39,7 +39,7 @@ func TestMmapCacheLifecycle(t *testing.T) {
 	require.True(t, registry.HasProgramMap())
 
 	// Step 3: Use processors (simulate pipeline frames).
-	src := make([]byte, w*h*3/2)
+	src := make([]byte, yuvFrameSize(w, h))
 	for i := range src {
 		src[i] = byte(i % 256)
 	}

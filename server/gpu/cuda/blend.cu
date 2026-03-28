@@ -146,6 +146,49 @@ __global__ void downsample_alpha_to_nv12_uv_kernel(
     dst[cy * dstPitch + cx * 2 + 1] = (uint8_t)avg;
 }
 
+// ============================================================================
+// P210 (10-bit 4:2:2) blend kernels
+// ============================================================================
+// P210 uses uint16 samples [0, 1023]. Both Y and UV planes are full height.
+// Blend arithmetic: (sa*(256-pos) + sb*pos + 128) >> 8, clamped to [0, 1023].
+
+// Uniform blend for P210: dst = (a * inv + b * pos + 128) >> 8
+// Operates on uint16 samples. Works for both Y and UV planes.
+__global__ void blend_uniform_p210_kernel(
+    uint16_t* __restrict__ dst,
+    const uint16_t* __restrict__ a,
+    const uint16_t* __restrict__ b,
+    int pos256,
+    int width, int height, int pitch16)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) return;
+
+    int idx = y * pitch16 + x;
+    int inv = 256 - pos256;
+    int val = ((int)a[idx] * inv + (int)b[idx] * pos256 + 128) >> 8;
+    dst[idx] = (uint16_t)min(max(val, 0), 1023);
+}
+
+// Fade to constant value for P210 (FTB, dip phase)
+__global__ void blend_fade_const_p210_kernel(
+    uint16_t* __restrict__ dst,
+    const uint16_t* __restrict__ src,
+    uint16_t constVal,
+    int pos256,
+    int width, int height, int pitch16)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) return;
+
+    int idx = y * pitch16 + x;
+    int inv = 256 - pos256;
+    int val = ((int)src[idx] * inv + (int)constVal * pos256 + 128) >> 8;
+    dst[idx] = (uint16_t)min(max(val, 0), 1023);
+}
+
 extern "C" {
 
 cudaError_t blend_uniform_nv12(
@@ -245,6 +288,47 @@ cudaError_t blend_stinger_nv12(
     const uint8_t* overlayUV = overlay + pitch * height;
     dim3 gridUV((width + block.x - 1) / block.x, (chromaH + block.y - 1) / block.y);
     blend_alpha_kernel<<<gridUV, block, 0, stream>>>(dstUV, baseUV, overlayUV, uvAlphaBuf, width, chromaH, pitch, pitch);
+
+    return cudaGetLastError();
+}
+
+// --- P210 blend wrappers ---
+
+cudaError_t blend_uniform_p210(
+    uint8_t* dst, const uint8_t* a, const uint8_t* b,
+    int pos256, int width, int height, int pitch, cudaStream_t stream)
+{
+    // P210: both Y and UV planes are full height. Total samples = width * height * 2
+    // (Y plane: width samples per row, UV plane: width samples per row as interleaved pairs)
+    // We can blend both planes in a single dispatch since they're contiguous uint16 samples.
+    int pitch16 = pitch / 2;
+    int totalHeight = height * 2;  // Y + UV (both full height for 4:2:2)
+    dim3 block(BLOCK_DIM_X, BLOCK_DIM_Y);
+    dim3 grid((width + block.x - 1) / block.x, (totalHeight + block.y - 1) / block.y);
+    blend_uniform_p210_kernel<<<grid, block, 0, stream>>>(
+        (uint16_t*)dst, (const uint16_t*)a, (const uint16_t*)b,
+        pos256, width, totalHeight, pitch16);
+    return cudaGetLastError();
+}
+
+cudaError_t blend_fade_const_p210(
+    uint8_t* dst, const uint8_t* src,
+    uint16_t constY, uint16_t constUV, int pos256,
+    int width, int height, int pitch, cudaStream_t stream)
+{
+    int pitch16 = pitch / 2;
+    dim3 block(BLOCK_DIM_X, BLOCK_DIM_Y);
+
+    // Y plane: fade to constY
+    dim3 gridY((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
+    blend_fade_const_p210_kernel<<<gridY, block, 0, stream>>>(
+        (uint16_t*)dst, (const uint16_t*)src, constY, pos256, width, height, pitch16);
+
+    // UV plane: fade to constUV (full height for 4:2:2)
+    uint16_t* dstUV = (uint16_t*)(dst + pitch * height);
+    const uint16_t* srcUV = (const uint16_t*)(src + pitch * height);
+    blend_fade_const_p210_kernel<<<gridY, block, 0, stream>>>(
+        dstUV, srcUV, constUV, pos256, width, height, pitch16);
 
     return cudaGetLastError();
 }

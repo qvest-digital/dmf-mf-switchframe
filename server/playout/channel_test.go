@@ -14,7 +14,7 @@ func fakeFrames(n int) []DecodedFrame {
 	// 30fps = 3000 PTS ticks per frame (90kHz / 30)
 	for i := range frames {
 		frames[i] = DecodedFrame{
-			YUV:        make([]byte, 1920*1080*3/2),
+			YUV:        make([]byte, yuvFrameSize(1920, 1080)),
 			PTS:        int64(i) * 3000,
 			IsKeyframe: i == 0,
 			Width:      1920,
@@ -849,7 +849,7 @@ func (e *errorAfterNIterator) Next() (*DecodedFrame, error) {
 		return nil, fmt.Errorf("decode error at frame %d", e.pos)
 	}
 	f := &DecodedFrame{
-		YUV:    make([]byte, 320*240*3/2),
+		YUV:    make([]byte, yuvFrameSize(320, 240)),
 		PTS:    int64(e.pos) * 3000,
 		Width:  320,
 		Height: 240,
@@ -1004,7 +1004,7 @@ func fakeFramesWithAudio(n int) []DecodedFrame {
 	frames := make([]DecodedFrame, n)
 	for i := range frames {
 		frames[i] = DecodedFrame{
-			YUV:             make([]byte, 320*240*3/2),
+			YUV:             make([]byte, yuvFrameSize(320, 240)),
 			PTS:             int64(i) * 3000,
 			IsKeyframe:      i == 0,
 			Width:           320,
@@ -1190,7 +1190,7 @@ func fakeFramesSized(n, w, h int, fps float64) []DecodedFrame {
 	ptsTick := int64(90000.0 / fps)
 	for i := range frames {
 		frames[i] = DecodedFrame{
-			YUV:        make([]byte, w*h*3/2),
+			YUV:        make([]byte, yuvFrameSize(w, h)),
 			PTS:        int64(i) * ptsTick,
 			IsKeyframe: i == 0,
 			Width:      w,
@@ -1385,7 +1385,7 @@ func TestChannel_LiveTap_EmitsFrames(t *testing.T) {
 
 	// Set up a fake GPU source tap that returns a frame.
 	tapFrame := &DecodedFrame{
-		YUV:        make([]byte, 320*240*3/2),
+		YUV:        make([]byte, yuvFrameSize(320, 240)),
 		Width:      320,
 		Height:     240,
 		IsKeyframe: true,
@@ -1479,7 +1479,7 @@ func TestChannel_DefaultDimensions_WhenZero(t *testing.T) {
 		t.Errorf("default slate dimensions = %dx%d, want 1920x1080", sf.Width, sf.Height)
 	}
 
-	expectedSize := 1920 * 1080 * 3 / 2
+	expectedSize := yuvFrameSize(1920, 1080)
 	if len(sf.YUV) != expectedSize {
 		t.Errorf("slate YUV size = %d, want %d", len(sf.YUV), expectedSize)
 	}
@@ -1490,7 +1490,7 @@ func TestChannel_MakeBlackFrame(t *testing.T) {
 	if frame.Width != 320 || frame.Height != 240 {
 		t.Errorf("dimensions = %dx%d, want 320x240", frame.Width, frame.Height)
 	}
-	expectedSize := 320 * 240 * 3 / 2
+	expectedSize := yuvFrameSize(320, 240)
 	if len(frame.YUV) != expectedSize {
 		t.Errorf("YUV size = %d, want %d", len(frame.YUV), expectedSize)
 	}
@@ -1598,7 +1598,7 @@ func TestChannel_LiveTap_GPUAlias_FallbackToCPU(t *testing.T) {
 
 	// CPU fallback should be called.
 	tapFrame := &DecodedFrame{
-		YUV:        make([]byte, 320*240*3/2),
+		YUV:        make([]byte, yuvFrameSize(320, 240)),
 		Width:      320,
 		Height:     240,
 		IsKeyframe: true,

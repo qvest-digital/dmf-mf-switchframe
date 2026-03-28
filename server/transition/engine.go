@@ -131,6 +131,9 @@ type Engine struct {
 	// Pre-scaled stinger frames (scaled to match video dimensions on first use)
 	stingerScaled []StingerFrameData
 
+	// Reusable buffer for upconverting 8-bit stinger frames to 10-bit (avoids per-frame alloc).
+	stinger10bitBuf []byte
+
 	// In-flight decode tracking: cleanup waits for active decodes to finish
 	// before closing decoders, preventing use-after-free.
 	decodeWG sync.WaitGroup
@@ -156,6 +159,10 @@ type Engine struct {
 	framesBlended  atomic.Int64
 
 	config EngineConfig
+
+	// colorFormat specifies the pipeline pixel format (8-bit or 10-bit).
+	// Determines which blend functions are used and frame sizing.
+	colorFormat ColorFormat
 }
 
 // NewEngine creates a new engine with the given configuration.
@@ -190,6 +197,15 @@ func (e *Engine) SetTimeout(d time.Duration) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.timeout = d
+}
+
+// SetColorFormat sets the pipeline color format for blend operations.
+// Must be called before Start(). When set to ColorFormat10bit, the engine
+// uses 10-bit blend functions and 10-bit frame sizing.
+func (e *Engine) SetColorFormat(f ColorFormat) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.colorFormat = f
 }
 
 // Timeout returns the current watchdog timeout.
@@ -476,11 +492,15 @@ func (e *Engine) decodeAndStore(sourceKey string, wireData []byte, isFrom bool) 
 	if w != e.width || h != e.height {
 		slog.Debug("transition: resolution mismatch, scaling",
 			"source_w", w, "source_h", h, "target_w", e.width, "target_h", e.height)
-		targetSize := e.width * e.height * 3 / 2
+		targetSize := e.colorFormat.frameSize(e.width, e.height)
 		if e.scaleBuf == nil || len(e.scaleBuf) < targetSize {
 			e.scaleBuf = make([]byte, targetSize)
 		}
-		ScaleYUV420WithQuality(yuv, w, h, e.scaleBuf, e.width, e.height, ScaleQualityFast)
+		if e.colorFormat == ColorFormat10bit {
+			ScaleYUV422P10(yuv, w, h, e.scaleBuf, e.width, e.height)
+		} else {
+			ScaleYUV420WithQuality(yuv, w, h, e.scaleBuf, e.width, e.height, ScaleQualityFast)
+		}
 		yuv = e.scaleBuf[:targetSize]
 		w = e.width
 		h = e.height
@@ -488,7 +508,7 @@ func (e *Engine) decodeAndStore(sourceKey string, wireData []byte, isFrom bool) 
 
 	// Store YUV directly — no colorspace conversion needed.
 	// Deep-copy because the decoder may reuse its internal buffer.
-	yuvSize := w * h * 3 / 2
+	yuvSize := e.colorFormat.frameSize(w, h)
 	if isFrom {
 		if len(e.latestYUVA) != yuvSize {
 			e.latestYUVA = make([]byte, yuvSize)
@@ -621,18 +641,22 @@ func (e *Engine) IngestFrame(sourceKey string, wireData []byte, pts int64, isKey
 		if decW != e.width || decH != e.height {
 			slog.Debug("transition: resolution mismatch, scaling",
 				"source_w", decW, "source_h", decH, "target_w", e.width, "target_h", e.height)
-			targetSize := e.width * e.height * 3 / 2
+			targetSize := e.colorFormat.frameSize(e.width, e.height)
 			if e.scaleBuf == nil || len(e.scaleBuf) < targetSize {
 				e.scaleBuf = make([]byte, targetSize)
 			}
-			ScaleYUV420WithQuality(decodedYUV, decW, decH, e.scaleBuf, e.width, e.height, ScaleQualityFast)
+			if e.colorFormat == ColorFormat10bit {
+				ScaleYUV422P10(decodedYUV, decW, decH, e.scaleBuf, e.width, e.height)
+			} else {
+				ScaleYUV420WithQuality(decodedYUV, decW, decH, e.scaleBuf, e.width, e.height, ScaleQualityFast)
+			}
 			decodedYUV = e.scaleBuf[:targetSize]
 			decW = e.width
 			decH = e.height
 		}
 
 		// Deep-copy because the decoder may reuse its internal buffer.
-		yuvSize := decW * decH * 3 / 2
+		yuvSize := e.colorFormat.frameSize(decW, decH)
 		if isFrom {
 			if len(e.latestYUVA) != yuvSize {
 				e.latestYUVA = make([]byte, yuvSize)
@@ -698,16 +722,20 @@ func (e *Engine) IngestRawFrame(sourceKey string, yuv []byte, width, height int,
 	if width != e.width || height != e.height {
 		slog.Debug("transition: resolution mismatch, scaling",
 			"source_w", width, "source_h", height, "target_w", e.width, "target_h", e.height)
-		targetSize := e.width * e.height * 3 / 2
+		targetSize := e.colorFormat.frameSize(e.width, e.height)
 		if e.scaleBuf == nil || len(e.scaleBuf) < targetSize {
 			e.scaleBuf = make([]byte, targetSize)
 		}
-		ScaleYUV420WithQuality(yuv, width, height, e.scaleBuf, e.width, e.height, ScaleQualityFast)
+		if e.colorFormat == ColorFormat10bit {
+			ScaleYUV422P10(yuv, width, height, e.scaleBuf, e.width, e.height)
+		} else {
+			ScaleYUV420WithQuality(yuv, width, height, e.scaleBuf, e.width, e.height, ScaleQualityFast)
+		}
 		src = e.scaleBuf[:targetSize]
 	}
 
 	// Store directly — no decode needed. Deep-copy since caller may reuse buffer.
-	yuvSize := e.width * e.height * 3 / 2
+	yuvSize := e.colorFormat.frameSize(e.width, e.height)
 	if isFrom {
 		if len(e.latestYUVA) != yuvSize {
 			e.latestYUVA = make([]byte, yuvSize)
@@ -786,21 +814,25 @@ func (e *Engine) blendAndOutput(isFrom bool, pts int64) {
 
 	blendStart := time.Now()
 	var blended []byte
-	switch e.transitionType {
-	case Mix:
-		blended = e.blender.BlendMix(yuvA, yuvB, pos)
-	case Dip:
-		blended = e.blender.BlendDip(yuvA, yuvB, pos)
-	case FTB:
-		blended = e.blender.BlendFTB(yuvA, pos)
-	case FTBReverse:
-		blended = e.blender.BlendFTB(yuvA, 1.0-pos)
-	case Wipe:
-		blended = e.blender.BlendWipe(yuvA, yuvB, pos, e.wipeDirection)
-	case Stinger:
-		blended = e.blendStinger(pos)
-	default:
-		blended = yuvA
+	if e.colorFormat == ColorFormat10bit {
+		blended = e.blend10bit(yuvA, yuvB, pos)
+	} else {
+		switch e.transitionType {
+		case Mix:
+			blended = e.blender.BlendMix(yuvA, yuvB, pos)
+		case Dip:
+			blended = e.blender.BlendDip(yuvA, yuvB, pos)
+		case FTB:
+			blended = e.blender.BlendFTB(yuvA, pos)
+		case FTBReverse:
+			blended = e.blender.BlendFTB(yuvA, 1.0-pos)
+		case Wipe:
+			blended = e.blender.BlendWipe(yuvA, yuvB, pos, e.wipeDirection)
+		case Stinger:
+			blended = e.blendStinger(pos)
+		default:
+			blended = yuvA
+		}
 	}
 	blendDur := time.Since(blendStart).Nanoseconds()
 	e.blendLastNano.Store(blendDur)
@@ -881,11 +913,13 @@ func (e *Engine) WarmupComplete() {
 	e.needsFlushB = true
 }
 
-// getBlackFrame returns a reusable YUV420 black frame matching the engine's
-// dimensions. Used as a placeholder when a source hasn't produced decoded
-// output yet (e.g., B-frame reorder EAGAIN during warmup). BT.709 limited
-// range: Y=16, U=V=128. Caller must hold e.mu.
+// getBlackFrame returns a reusable black frame matching the engine's
+// dimensions and color format. Used as a placeholder when a source hasn't
+// produced decoded output yet. BT.709 limited range. Caller must hold e.mu.
 func (e *Engine) getBlackFrame() []byte {
+	if e.colorFormat == ColorFormat10bit {
+		return e.getBlackFrame10()
+	}
 	ySize := e.width * e.height
 	uvSize := (e.width / 2) * (e.height / 2)
 	total := ySize + 2*uvSize
@@ -901,6 +935,114 @@ func (e *Engine) getBlackFrame() []byte {
 		}
 	}
 	return e.blackBuf
+}
+
+// getBlackFrame10 returns a reusable YUV422P10LE black frame.
+// BT.709 limited range: Y=64, Cb=Cr=512 (10-bit values). Caller must hold e.mu.
+func (e *Engine) getBlackFrame10() []byte {
+	total := ColorFormat10bit.frameSize(e.width, e.height)
+	if len(e.blackBuf) != total {
+		e.blackBuf = make([]byte, total)
+		ySize := e.width * e.height * 2
+		// Y plane: 64 (10-bit limited-range black)
+		for i := 0; i < ySize; i += 2 {
+			e.blackBuf[i] = 64   // low byte
+			e.blackBuf[i+1] = 0  // high byte
+		}
+		// Cb and Cr planes: 512 (10-bit neutral chroma)
+		for i := ySize; i < total; i += 2 {
+			e.blackBuf[i] = 0    // low byte of 512
+			e.blackBuf[i+1] = 2  // high byte of 512
+		}
+	}
+	return e.blackBuf
+}
+
+// blend10bit performs format-aware blending for 10-bit YUV422P10LE frames.
+// Uses the 10-bit blend functions (BlendMix10, BlendDip10, etc.).
+// Caller must hold e.mu.
+func (e *Engine) blend10bit(yuvA, yuvB []byte, pos float64) []byte {
+	w, h := e.width, e.height
+	frameSize := ColorFormat10bit.frameSize(w, h)
+
+	// Ensure output buffer exists. Reuse the blender's yuvBufOut for 10-bit output.
+	if e.blender == nil {
+		e.blender = &FrameBlender{width: w, height: h}
+	}
+	if len(e.blender.yuvBufOut) != frameSize {
+		e.blender.yuvBufOut = make([]byte, frameSize)
+	}
+	dst := e.blender.yuvBufOut
+
+	pos256 := int(pos * 256)
+	if pos256 < 0 {
+		pos256 = 0
+	}
+	if pos256 > 256 {
+		pos256 = 256
+	}
+
+	switch e.transitionType {
+	case Mix:
+		BlendMix10(dst, yuvA, yuvB, w, h, pos256)
+	case Dip:
+		BlendDip10(dst, yuvA, yuvB, w, h, pos256, true)
+	case FTB:
+		BlendFTB10(dst, yuvA, w, h, pos256, true)
+	case FTBReverse:
+		inv256 := 256 - pos256
+		BlendFTB10(dst, yuvA, w, h, inv256, true)
+	case Wipe:
+		// Generate wipe alpha map through the blender, then use 10-bit wipe.
+		e.blender.width = w
+		e.blender.height = h
+		if len(e.blender.wipeAlphaMap) != w*h {
+			e.blender.wipeAlphaMap = make([]byte, w*h)
+		}
+		e.blender.generateWipeAlpha(pos, e.wipeDirection)
+		BlendWipe10(dst, yuvA, yuvB, w, h, e.blender.wipeAlphaMap)
+	case Stinger:
+		sd := e.config.Stinger
+		if sd == nil || len(sd.Frames) == 0 {
+			copy(dst, yuvA)
+		} else {
+			// Lazy-scale 8-bit stinger frames if needed.
+			if e.stingerScaled == nil {
+				e.stingerScaled = e.scaleStingerFrames(sd)
+			}
+
+			// Pick frame by position.
+			frameIdx := int(pos * float64(len(e.stingerScaled)))
+			if frameIdx >= len(e.stingerScaled) {
+				frameIdx = len(e.stingerScaled) - 1
+			}
+			if frameIdx < 0 {
+				frameIdx = 0
+			}
+			sf := &e.stingerScaled[frameIdx]
+
+			// Pick the base source: A before cut point, B after.
+			base := yuvA
+			if pos >= sd.CutPoint && yuvB != nil {
+				base = yuvB
+			}
+
+			// Upconvert the 8-bit YUV420 stinger frame to 10-bit YUV422P10LE.
+			// Reuse a cached buffer to avoid per-frame allocation.
+			if e.stinger10bitBuf == nil || len(e.stinger10bitBuf) < frameSize {
+				e.stinger10bitBuf = make([]byte, frameSize)
+			}
+			if err := upconvert420to422_10(sf.YUV, e.stinger10bitBuf, w, h); err != nil {
+				// Upconvert failed — fall back to base frame.
+				copy(dst, base)
+			} else {
+				BlendStinger10(dst, base, e.stinger10bitBuf, w, h, sf.Alpha)
+			}
+		}
+	default:
+		copy(dst, yuvA)
+	}
+	return dst
 }
 
 // Abort cancels the active transition and invokes OnComplete(aborted=true).

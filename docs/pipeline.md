@@ -1,6 +1,6 @@
 # Video Processing Pipeline
 
-The pipeline transforms decoded YUV420 frames into H.264 program output. It is a chain of immutable processing nodes, atomically swapped at runtime for zero-frame-drop reconfiguration.
+The pipeline transforms decoded YUV frames into encoded program output. It is a chain of immutable processing nodes, atomically swapped at runtime for zero-frame-drop reconfiguration. The internal pixel format (YUV420 8-bit or YUV422 10-bit) and output codec (H.264 or H.265) are selected at startup via `--color-format`.
 
 **Contents:** [Node Chain](#1-the-node-chain) · [Frame Lifecycle](#2-frame-lifecycle) · [ProcessingFrame](#3-processingframe) · [FramePool](#4-framepool) · [PipelineNode Interface](#5-pipelinenode-interface) · [Node Implementations](#6-node-implementations) · [Atomic Swap](#7-atomic-swap) · [Encoder Management](#8-encoder-management) · [Program Epoch](#9-program-epoch) · [Instrumentation](#10-instrumentation) · [Performance](#11-performance)
 
@@ -59,7 +59,7 @@ Five processing nodes execute in a fixed order on a single dedicated goroutine. 
 | `layout-compositor` | [`layout.Compositor`](../server/layout/compositor.go) | Yes | 1ms | Layout has enabled slots |
 | `compositor` | [`graphics.Compositor`](../server/graphics/compositor.go) | Yes | 200μs | Graphics layers active |
 | `raw-sink-mxl` | MXL shared-memory output | No (ref-counted tap) | 50μs | MXL output connected |
-| `h264-encode` | [`pipelineCodecs`](../server/switcher/pipeline_codecs.go) | N/A (terminal) | 10ms | Always |
+| `encode` | [`pipelineCodecs`](../server/switcher/pipeline_codecs.go) | N/A (terminal) | 10ms | Always |
 
 Inactive nodes are filtered out at build time — zero overhead for disabled features.
 
@@ -106,14 +106,14 @@ During transitions, the [`Engine`](../server/transition/engine.go) blends frames
 
 ## 3. ProcessingFrame
 
-The `ProcessingFrame` is the data carrier through the pipeline — a YUV420 buffer with reference counting modeled after FFmpeg's `AVBufferRef`.
+The `ProcessingFrame` is the data carrier through the pipeline — a YUV buffer with reference counting modeled after FFmpeg's `AVBufferRef`. The `Format` field identifies the pixel format (`ColorYUV420_8bit` or `ColorYUV422_10bit`), and plane accessors (`YPlane()`, `CbPlane()`, `CrPlane()`) return the correct slices for either format.
 
 ```mermaid
 flowchart TD
     subgraph pf ["ProcessingFrame"]
         style pf fill:#1a1a2e,color:#fff,stroke:#16213e
-        YUV["YUV []byte\nY[w×h] + Cb[w/2×h/2] + Cr[w/2×h/2]"]
-        META["Width · Height · PTS · DTS\nIsKeyframe · GroupID · Codec"]
+        YUV["Data []byte\nYUV420: Y[w×h] + Cb[w/2×h/2] + Cr[w/2×h/2]\nYUV422P10: Y[w×h×2] + Cb[w/2×h×2] + Cr[w/2×h×2]"]
+        META["Width · Height · PTS · DTS · Format\nIsKeyframe · GroupID · Codec"]
         POOL["pool *FramePool"]
         REFS["refs *int32\nshared across copies"]
     end
@@ -265,9 +265,9 @@ The sink receives a reference-counted frame: `Ref()` before the callback, `Relea
 
 **File:** [`node_raw_sink.go`](../server/switcher/node_raw_sink.go) (29 lines)
 
-### h264-encode
+### encode
 
-Wraps [`pipelineCodecs.encode()`](../server/switcher/pipeline_codecs.go). Always active — encoding is mandatory for program output. The encoded H.264 AVC1 frame is delivered via `onEncoded` callback to [`broadcastWithCaptions()`](../server/switcher/switcher.go), which injects CEA-608 caption SEI NALUs and broadcasts to `programRelay`.
+Wraps [`pipelineCodecs.encode()`](../server/switcher/pipeline_codecs.go). Always active — encoding is mandatory for program output. The encoded frame (H.264 AVC1 or H.265 HVC1, depending on `--color-format`) is delivered via `onEncoded` callback to [`broadcastWithCaptions()`](../server/switcher/switcher.go), which injects caption SEI NALUs and broadcasts to `programRelay`.
 
 ```mermaid
 flowchart LR
@@ -352,7 +352,7 @@ The pipeline is swapped to nil (preventing new `Run()` calls), then drained and 
 
 ## 8. Encoder Management
 
-The [`pipelineCodecs`](../server/switcher/pipeline_codecs.go) struct manages the H.264 encoder lifecycle, wrapped by `encodeNode`.
+The [`pipelineCodecs`](../server/switcher/pipeline_codecs.go) struct manages the video encoder lifecycle (H.264 or H.265, depending on `--color-format`), wrapped by `encodeNode`.
 
 ```mermaid
 flowchart TD
@@ -509,15 +509,53 @@ Pipeline node dispatch (slice iteration + interface call) is below the pprof sam
 
 ```go
 type PipelineFormat struct {
-    Width  int    // e.g., 1920
-    Height int    // e.g., 1080
-    FPSNum int    // e.g., 30000
-    FPSDen int    // e.g., 1001 (29.97fps NTSC)
-    Name   string // e.g., "1080p29.97"
+    Width  int                 // e.g., 1920
+    Height int                 // e.g., 1080
+    FPSNum int                 // e.g., 30000
+    FPSDen int                 // e.g., 1001 (29.97fps NTSC)
+    Name   string              // e.g., "1080p29.97"
+    Color  PipelineColorConfig // Color format + codec (default: YUV420 8-bit AVC)
 }
 ```
 
 The format drives FramePool buffer sizing, frame budget for deadline monitoring, frame synchronizer tick rate, encoder bitrate/FPS, and node `Configure()` calls. Frame rate is rational for broadcast correctness.
+
+### Configurable Color Format
+
+The pipeline supports two internal pixel formats, selected at startup via `--color-format`:
+
+| Profile | CPU Format | GPU Format | Codec |
+|---------|-----------|------------|-------|
+| `standard` / `standard-hevc` | YUV420P 8-bit (3 planes, 1 byte/sample) | NV12 (Y uint8 + UV uint8 interleaved) | AVC or HEVC |
+| `professional` | YUV422P10LE (3 planes, 2 bytes/sample, little-endian) | P210 (Y uint16 + UV uint16 interleaved) | HEVC |
+
+#### Source Normalization
+
+All sources are normalized to the pipeline format on ingest. In `professional` mode, 8-bit 4:2:0 sources (H.264, MoQ) are upconverted: luma is expanded from 8-bit [16-235] to 10-bit [64-940], and chroma is interpolated from 4:2:0 to 4:2:2 using vertical averaging. In `standard` mode, 10-bit 4:2:2 sources (MXL V210) are downconverted via the existing V210-to-YUV420 path.
+
+MXL V210 ingest in `professional` mode is lossless -- both V210 and YUV422P10LE are 10-bit 4:2:2, requiring only a packing format change with no chroma subsampling or bit depth conversion.
+
+#### Processing Operations
+
+All pixel-level operations have 10-bit 4:2:2 variants:
+
+- **Transition blending** (mix, dip, wipe, FTB, alpha) -- 16-bit arithmetic
+- **Bilinear and Lanczos-3 scaling** -- 32-bit intermediate precision
+- **Chroma/luma keying** -- 10-bit threshold and distance calculations
+- **PIP/layout compositing** -- 10-bit opaque blit, border draw, alpha blend
+- **DSK graphics overlay** -- RGBA-to-YUV422P10 alpha blend (BT.709 10-bit coefficients)
+- **ST map warp** -- 10-bit bilinear interpolation
+- **Frame rate conversion** -- 10-bit SAD and MCFI interpolation
+
+CPU SIMD kernels (arm64 NEON, amd64 SSE2/AVX2) are provided for all 10-bit operations. GPU compute shaders (Metal and CUDA) have P210 variants for all kernel types.
+
+#### Buffer Sizing
+
+YUV422P10LE frames are larger than YUV420P: at 1080p, each buffer is `1920 x 1080 x 2 x 2 = ~8.3 MB` vs `~3.1 MB` for 8-bit 4:2:0. The `FramePool` and `GPUFramePool` allocate accordingly based on the active `PipelineColorFormat`.
+
+#### Browser Preview
+
+Browser preview and multiview always encode to H.264 8-bit regardless of the pipeline color format. The preview encoder downconverts 10-bit 4:2:2 frames internally before encoding.
 
 ---
 
@@ -535,6 +573,6 @@ The format drives FramePool buffer sizing, frame budget for deadline monitoring,
 | [`pipeline_codecs.go`](../server/switcher/pipeline_codecs.go) | Encoder lifecycle, bitrate adaptation, PTS normalization |
 | [`frame_pool.go`](../server/switcher/frame_pool.go) | LIFO free list for YUV420 buffers |
 | [`processing_frame.go`](../server/switcher/processing_frame.go) | Reference-counted YUV carrier |
-| [`format.go`](../server/switcher/format.go) | `PipelineFormat` resolution/FPS presets |
+| [`format.go`](../server/switcher/format.go) | `PipelineFormat`, `PipelineColorFormat`, `PipelineColorConfig`, color profile selection |
 | [`switcher.go`](../server/switcher/switcher.go) | Integration: buildNodeList, BuildPipeline, swapPipeline, rebuildPipeline |
 | [`metrics/metrics.go`](../server/metrics/metrics.go) | `NodeProcessDuration` histogram definition |

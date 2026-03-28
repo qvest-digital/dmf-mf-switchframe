@@ -553,7 +553,7 @@ func (a *App) activateST2110Receiver(id string, params nmos.StagedParams) error 
 			Channels: 2,
 			OnRawVideo: func(key string, yuv []byte, w, h int, pts int64) {
 				pf := &switcher.ProcessingFrame{
-					YUV:    yuv,
+					Data:    yuv,
 					Width:  w,
 					Height: h,
 					PTS:    pts,
@@ -841,7 +841,7 @@ func (a *App) startOrRestartST2110Output() error {
 	if videoTx != nil {
 		out := state.output
 		a.sw.SetRawVideoSink(switcher.RawVideoSink(func(pf *switcher.ProcessingFrame) {
-			out.WriteVideo(pf.YUV, pf.Width, pf.Height, pf.PTS)
+			out.WriteVideo(pf.Data, pf.Width, pf.Height, pf.PTS)
 		}))
 		a.updateGPURawVideoSink()
 	}

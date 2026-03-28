@@ -8,14 +8,16 @@ GPU-accelerated video processing pipeline for Switchframe. Dual backend: Metal (
 
 ## 1. Overview
 
-When a GPU is available, the entire video processing chain runs on GPU-resident NV12 frames. Frames are uploaded to VRAM once, processed through all pipeline nodes in-place, and downloaded back to CPU only for final output. If no GPU is detected or any GPU node fails, the frame passes through unchanged -- the CPU pipeline handles it transparently.
+When a GPU is available, the entire video processing chain runs on GPU-resident frames. Frames are uploaded to VRAM once, processed through all pipeline nodes in-place, and downloaded back to CPU only for final output. If no GPU is detected or any GPU node fails, the frame passes through unchanged -- the CPU pipeline handles it transparently.
 
 ```
-CPU YUV420p ──upload──> GPU NV12 ──[pipeline nodes]──> GPU NV12 ──download──> CPU YUV420p
-                                                                    |
-                                                              GPU H.264 encode
-                                                              (NVENC / VideoToolbox)
+CPU YUV420p/YUV422P10 ──upload──> GPU NV12/P210 ──[pipeline nodes]──> GPU NV12/P210 ──download──> CPU
+                                                                            |
+                                                                      GPU encode
+                                                                      (NVENC / VideoToolbox)
 ```
+
+The GPU intermediate format depends on the pipeline color profile: NV12 for 8-bit (`standard`, `standard-hevc`) and P210 for 10-bit (`professional`).
 
 Backend selection is automatic:
 
@@ -69,7 +71,27 @@ pipe.Run(gpuFrame)
 
 ### Frame Pool
 
-`FramePool` manages GPU-resident NV12 frame buffers. CUDA uses `cuMemAllocPitch` for optimal memory alignment. Metal uses `MTLBuffer` with `StorageModeShared` for unified memory access. Frames are reference-counted (`Ref()` / `Release()`).
+`FramePool` manages GPU-resident frame buffers. CUDA uses `cuMemAllocPitch` for optimal memory alignment. Metal uses `MTLBuffer` with `StorageModeShared` for unified memory access. Frames are reference-counted (`Ref()` / `Release()`).
+
+The pool is format-aware via `GPUFrameFormat`:
+
+| Format | Layout | Buffer Size | Use Case |
+|--------|--------|-------------|----------|
+| `GPUFormatNV12` | Y uint8 plane + UV uint8 interleaved (half-height) | pitch x height x 3/2 | 8-bit pipeline (`standard`, `standard-hevc`) |
+| `GPUFormatP210` | Y uint16 plane + UV uint16 interleaved (full-height) | pitch x height x 2 | 10-bit pipeline (`professional`) |
+
+`NewFramePool()` creates NV12 pools; `NewP210FramePool()` creates P210 pools. The pitch is determined by a probe allocation and rounded to 256-byte alignment for NVENC compatibility. All GPU operations dispatch to format-specific shader variants based on `GPUFrame.Format`.
+
+### P210 GPU Intermediate Format
+
+P210 is the 10-bit 4:2:2 semi-planar GPU format, analogous to NV12 for 8-bit 4:2:0. Memory layout:
+
+```
+Y plane:   width*2 bytes per row (uint16 per sample), height rows
+UV plane:  width*2 bytes per row (U16 V16 interleaved), height rows (full height for 4:2:2)
+```
+
+Both Metal and CUDA shader variants exist for all pipeline operations (blend, scale, key, composite, DSK overlay, ST map warp, V210 conversion). The 10-bit shaders use 16-bit unsigned integer arithmetic with BT.709 coefficients scaled to [64-940] (luma) and [64-960] (chroma) ranges.
 
 ---
 
@@ -83,7 +105,7 @@ upload -> key -> layout -> compositor (DSK) -> colorgrade -> ai_segment -> stmap
 
 | Node | Name | Build Tag | Description |
 |------|------|-----------|-------------|
-| Upload | `gpu_upload` | `darwin` / `cuda` | YUV420p to NV12 conversion and GPU upload |
+| Upload | `gpu_upload` | `darwin` / `cuda` | CPU to GPU upload (YUV420p to NV12, or YUV422P10 to P210) |
 | Upstream Key | `gpu_key` | `darwin` / `cuda` | Chroma/luma keying with per-source fill frames |
 | Layout | `gpu_layout` | `darwin` / `cuda` | PIP/multi-layout compositing (up to 4 slots) |
 | DSK Compositor | `gpu_dsk` | `darwin` / `cuda` | Multi-layer graphics overlays (up to 8 layers) |
@@ -92,8 +114,8 @@ upload -> key -> layout -> compositor (DSK) -> colorgrade -> ai_segment -> stmap
 | ST Map | `gpu_stmap` | `darwin` / `cuda` | Per-pixel coordinate remapping (lens correction, creative effects) |
 | Preview Encode | `gpu_preview_encode` | `darwin` / `cuda` | Low-bitrate preview encoding for browser multiview |
 | Raw Sink | `gpu_raw_sink` | `darwin` / `cuda` | Deep-copy callback for MXL output |
-| Encode | `gpu_encode` | `darwin` / `cuda` | H.264 hardware encode (NVENC / VideoToolbox) |
-| Download | `gpu_download` | `darwin` / `cuda` | NV12 to YUV420p conversion and CPU download |
+| Encode | `gpu_encode` | `darwin` / `cuda` | H.264/H.265 hardware encode (NVENC / VideoToolbox) |
+| Download | `gpu_download` | `darwin` / `cuda` | GPU to CPU download (NV12 to YUV420p, or P210 to YUV422P10) |
 
 Each node checks `Active()` dynamically per frame -- inactive nodes are skipped at zero cost. If a node's `ProcessGPU()` returns an error, the pipeline logs a warning and continues with the remaining nodes (graceful degradation).
 
@@ -391,7 +413,8 @@ At 1080p29.97 (33.3 ms frame budget), the full GPU pipeline typically completes 
 | Resource | Size (1080p) |
 |----------|-------------|
 | NV12 frame (GPU) | ~3.1 MB (1920 x 1080 x 1.5, pitched) |
-| Frame pool (default 32 frames) | ~100 MB |
+| P210 frame (GPU) | ~8.3 MB (1920 x 1080 x 2 x 2, pitched) |
+| Frame pool (default 32 frames) | ~100 MB (NV12) / ~265 MB (P210) |
 | ST map GPU texture (static) | ~16 MB (2 x float32 arrays) |
 | AI segmentation per-source buffers | ~12 MB |
 | TensorRT engine plan (u2netp) | ~8 MB |
@@ -424,6 +447,7 @@ GPU pipeline metrics are exposed via the debug snapshot endpoint (`GET /api/debu
 | [`context.go`](../server/gpu/context.go) | CUDA context, device init, streams, staging buffers |
 | [`metal_context.go`](../server/gpu/metal_context.go) | Metal context, command queue, pipeline cache |
 | [`stub_context.go`](../server/gpu/stub_context.go) | Non-GPU stub (returns `ErrGPUNotAvailable`) |
+| [`frame_format.go`](../server/gpu/frame_format.go) | `GPUFrameFormat` enum (NV12, P210), format-aware sizing helpers |
 | [`pipeline.go`](../server/gpu/pipeline.go) | CUDA `GPUPipeline` struct, `Build()`, `Run()`, per-node timing |
 | [`metal_pipeline.go`](../server/gpu/metal_pipeline.go) | Metal `GPUPipeline` (same interface, Metal dispatch) |
 | [`pool.go`](../server/gpu/pool.go) | CUDA frame pool (`cuMemAllocPitch`) |

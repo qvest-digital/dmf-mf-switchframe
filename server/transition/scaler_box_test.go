@@ -10,8 +10,8 @@ import (
 func TestBoxShrink2xYUV420_Correctness(t *testing.T) {
 	srcW, srcH := 8, 8
 	dstW, dstH := 4, 4
-	srcSize := srcW * srcH * 3 / 2
-	dstSize := dstW * dstH * 3 / 2
+	srcSize := yuvFrameSize(srcW, srcH)
+	dstSize := yuvFrameSize(dstW, dstH)
 
 	src := make([]byte, srcSize)
 	// Fill Y plane with gradient
@@ -49,8 +49,8 @@ func TestBoxShrink2xYUV420_Correctness(t *testing.T) {
 func TestBoxShrink2xYUV420_1080pTo540p(t *testing.T) {
 	srcW, srcH := 1920, 1080
 	dstW, dstH := 960, 540
-	srcSize := srcW * srcH * 3 / 2
-	dstSize := dstW * dstH * 3 / 2
+	srcSize := yuvFrameSize(srcW, srcH)
+	dstSize := yuvFrameSize(dstW, dstH)
 
 	src := make([]byte, srcSize)
 	for i := range src {
@@ -69,8 +69,8 @@ func TestBoxShrink2xYUV420_1080pTo540p(t *testing.T) {
 }
 
 func BenchmarkScaleYUV420_1080pTo480p_Bilinear(b *testing.B) {
-	src := make([]byte, 1920*1080*3/2)
-	dst := make([]byte, 854*480*3/2)
+	src := make([]byte, yuvFrameSize(1920, 1080))
+	dst := make([]byte, yuvFrameSize(854, 480))
 	for i := range src {
 		src[i] = byte(i % 256)
 	}
@@ -82,9 +82,9 @@ func BenchmarkScaleYUV420_1080pTo480p_Bilinear(b *testing.B) {
 }
 
 func BenchmarkScaleYUV420_1080pTo480p_BoxThenBilinear(b *testing.B) {
-	src := make([]byte, 1920*1080*3/2)
-	boxBuf := make([]byte, 960*540*3/2)
-	dst := make([]byte, 854*480*3/2)
+	src := make([]byte, yuvFrameSize(1920, 1080))
+	boxBuf := make([]byte, yuvFrameSize(960, 540))
+	dst := make([]byte, yuvFrameSize(854, 480))
 	for i := range src {
 		src[i] = byte(i % 256)
 	}

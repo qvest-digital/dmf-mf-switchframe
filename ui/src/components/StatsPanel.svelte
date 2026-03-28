@@ -4,8 +4,12 @@
 	import { notify } from '$lib/state/notifications.svelte';
 	import type { EncoderInfo } from '$lib/api/types';
 	import type { MediaPipeline, SourceDiagnostics } from '$lib/transport/media-pipeline';
+	import { filterEncodersByCodec } from '$lib/util/format-badge';
 
-	const HW_ENCODERS = new Set(['h264_nvenc', 'h264_vaapi', 'h264_videotoolbox']);
+	const HW_ENCODERS = new Set([
+		'h264_nvenc', 'h264_vaapi', 'h264_videotoolbox',
+		'hevc_nvenc', 'hevc_vaapi', 'hevc_videotoolbox',
+	]);
 
 	// --- Perf Types ---
 	interface PerfWindowStats { min_ns: number; max_ns: number; mean_ns: number; p95_ns: number }
@@ -387,9 +391,10 @@
 		onclose: () => void;
 		onopengraph?: () => void;
 		pipeline?: MediaPipeline | null;
+		pipelineCodec?: string;
 	}
 
-	let { visible, onclose, onopengraph, pipeline = null }: Props = $props();
+	let { visible, onclose, onopengraph, pipeline = null, pipelineCodec }: Props = $props();
 
 	// --- State ---
 	let snapshot = $state<DebugSnapshot | null>(null);
@@ -403,6 +408,7 @@
 	let currentEncoder = $state('');
 	let selectedEncoder = $state('');
 	let encoderChanging = $state(false);
+	const filteredEncoders = $derived(filterEncodersByCodec(availableEncoders, pipelineCodec));
 
 	async function fetchEncoderInfo() {
 		try {
@@ -1426,10 +1432,10 @@
 							<span class="codec-value">{codecInfo.decoder || 'none'}</span>
 						</span>
 					</div>
-					{#if availableEncoders.length > 1}
+					{#if filteredEncoders.length > 1}
 						<div class="encoder-select">
 							<select bind:value={selectedEncoder} disabled={encoderChanging}>
-								{#each availableEncoders as enc}
+								{#each filteredEncoders as enc}
 									<option value={enc.name}>
 										{enc.displayName}{enc.isDefault ? ' (default)' : ''}
 									</option>

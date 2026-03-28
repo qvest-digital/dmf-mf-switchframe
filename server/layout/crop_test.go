@@ -84,7 +84,7 @@ func TestCropYUV420Region_Basic(t *testing.T) {
 	src[3*8+3] = 42 // Y at (3,3)
 
 	cropW, cropH := 4, 4
-	dst := make([]byte, cropW*cropH*3/2)
+	dst := make([]byte, yuvFrameSize(cropW, cropH))
 	CropYUV420Region(dst, src, 8, 8, 2, 2, cropW, cropH)
 
 	// Y at (1,1) in cropped = Y at (3,3) in source
@@ -99,7 +99,7 @@ func TestCropYUV420Region_ChromaCorrectness(t *testing.T) {
 	src := makeYUV420(srcW, srcH, 200, 100, 150)
 
 	cropW, cropH := 4, 4
-	dst := make([]byte, cropW*cropH*3/2)
+	dst := make([]byte, yuvFrameSize(cropW, cropH))
 	CropYUV420Region(dst, src, srcW, srcH, 2, 2, cropW, cropH)
 
 	ySize := cropW * cropH
@@ -129,9 +129,9 @@ func BenchmarkCropYUV420Region_1080p(b *testing.B) {
 	srcW, srcH := 1920, 1080
 	cropW, cropH := 1280, 1080
 	src := makeYUV420(srcW, srcH, 200, 100, 150)
-	dst := make([]byte, cropW*cropH*3/2)
+	dst := make([]byte, yuvFrameSize(cropW, cropH))
 
-	b.SetBytes(int64(cropW * cropH * 3 / 2))
+	b.SetBytes(int64(yuvFrameSize(cropW, cropH)))
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		CropYUV420Region(dst, src, srcW, srcH, 320, 0, cropW, cropH)

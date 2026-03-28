@@ -127,7 +127,7 @@ func TestOutput_StopsCleanly(t *testing.T) {
 	out.Start(ctx, vMock, aMock, sw, mixer)
 
 	// Write something.
-	yuv := make([]byte, 12*2*3/2)
+	yuv := make([]byte, yuvFrameSize(12, 2))
 	sw.sink(yuv, 12, 2, 0)
 
 	cancel()

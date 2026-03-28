@@ -2,7 +2,6 @@ package transition
 
 import (
 	"math/rand"
-	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -70,7 +69,7 @@ func TestKernelUniform_VariousSizes(t *testing.T) {
 
 func TestKernelUniform_1080p(t *testing.T) {
 	t.Parallel()
-	n := 1920 * 1080 * 3 / 2
+	n := yuvFrameSize(1920, 1080)
 	rng := rand.New(rand.NewSource(42))
 	a := make([]byte, n)
 	b := make([]byte, n)
@@ -249,9 +248,6 @@ func TestKernelAlpha_VariousSizes(t *testing.T) {
 
 func TestKernelUniform_Rounding(t *testing.T) {
 	t.Parallel()
-	if runtime.GOARCH == "amd64" {
-		t.Skip("SIMD kernel on amd64 needs matching +128 rounding fix — only generic and arm64 kernels fixed")
-	}
 	// Blend a=100, b=200 at pos=128 (half), inv=128.
 	// Without rounding: (100*128 + 200*128) >> 8 = 38400 >> 8 = 150 (no difference here)
 	// Pick values where rounding matters: a=0, b=1, pos=128, inv=128.
@@ -269,9 +265,6 @@ func TestKernelUniform_Rounding(t *testing.T) {
 
 func TestKernelAlpha_Rounding(t *testing.T) {
 	t.Parallel()
-	if runtime.GOARCH == "amd64" {
-		t.Skip("SIMD kernel on amd64 needs matching +128 rounding fix — only generic and arm64 kernels fixed")
-	}
 	// a=0, b=1, alpha=128 → w=128+(128>>7)=129, inv=127
 	// Without rounding: (0*127 + 1*129) >> 8 = 129 >> 8 = 0
 	// With rounding:    (0*127 + 1*129 + 128) >> 8 = 257 >> 8 = 1
@@ -291,7 +284,7 @@ func TestKernelUniform_CrossValidateWithBlendMix(t *testing.T) {
 	t.Parallel()
 	// Verify kernel produces identical results to the original inline loop
 	rng := rand.New(rand.NewSource(99))
-	n := 1920 * 1080 * 3 / 2
+	n := yuvFrameSize(1920, 1080)
 	a := make([]byte, n)
 	b := make([]byte, n)
 	for i := range a {

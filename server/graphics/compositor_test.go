@@ -791,7 +791,7 @@ func TestCompositor_ConcurrentOps(t *testing.T) {
 	c := NewCompositor()
 	defer c.Close()
 
-	yuv := make([]byte, 8*8*3/2)
+	yuv := make([]byte, yuvFrameSize(8, 8))
 	overlay := makeTestOverlay(8, 8)
 
 	var wg sync.WaitGroup
@@ -963,7 +963,7 @@ func BenchmarkProcessYUV_NoLayersActive(b *testing.B) {
 		_ = c.SetOverlay(id, overlay, 1920, 1080, "test")
 	}
 
-	yuv := make([]byte, 1920*1080*3/2)
+	yuv := make([]byte, yuvFrameSize(1920, 1080))
 
 	b.ResetTimer()
 	b.ReportAllocs()

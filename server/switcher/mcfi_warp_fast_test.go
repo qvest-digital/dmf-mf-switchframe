@@ -26,15 +26,15 @@ func TestFastWarp_MatchesReference(t *testing.T) {
 		mvf.bwdY[i] = 0
 	}
 
-	frameSize := w * h * 3 / 2
+	frameSize := ColorYUV420_8bit.FrameSize(w, h)
 
 	// Run reference (float64) implementation
 	refDst := make([]byte, frameSize)
-	mcfiInterpolateSmooth(refDst, f0.YUV, f1.YUV, w, h, mvf, 0.5)
+	mcfiInterpolateSmooth(refDst, f0.Data, f1.Data, w, h, mvf, 0.5)
 
 	// Run fast (fixed-point) implementation
 	fastDst := make([]byte, frameSize)
-	mcfiInterpolateFast(fastDst, f0.YUV, f1.YUV, w, h, mvf, 0.5)
+	mcfiInterpolateFast(fastDst, f0.Data, f1.Data, w, h, mvf, 0.5)
 
 	// Compare all pixels: allow +/-1 LSB difference
 	maxDiff := 0
@@ -77,15 +77,15 @@ func TestFastWarp_MatchesReference_DiagonalMotion(t *testing.T) {
 		mvf.bwdY[i] = -4
 	}
 
-	frameSize := w * h * 3 / 2
+	frameSize := ColorYUV420_8bit.FrameSize(w, h)
 
 	for _, alpha := range []float64{0.1, 0.25, 0.5, 0.75, 0.9} {
 		t.Run("alpha="+formatAlpha(alpha), func(t *testing.T) {
 			refDst := make([]byte, frameSize)
-			mcfiInterpolateSmooth(refDst, f0.YUV, f1.YUV, w, h, mvf, alpha)
+			mcfiInterpolateSmooth(refDst, f0.Data, f1.Data, w, h, mvf, alpha)
 
 			fastDst := make([]byte, frameSize)
-			mcfiInterpolateFast(fastDst, f0.YUV, f1.YUV, w, h, mvf, alpha)
+			mcfiInterpolateFast(fastDst, f0.Data, f1.Data, w, h, mvf, alpha)
 
 			maxDiff := 0
 			for i := 0; i < frameSize; i++ {
@@ -115,11 +115,11 @@ func TestFastWarp_AlphaExtremes(t *testing.T) {
 
 	mvf := newMotionVectorField(w, h, bs)
 	// Zero MVs: no motion
-	frameSize := w * h * 3 / 2
+	frameSize := ColorYUV420_8bit.FrameSize(w, h)
 
 	t.Run("alpha=0", func(t *testing.T) {
 		dst := make([]byte, frameSize)
-		mcfiInterpolateFast(dst, f0.YUV, f1.YUV, w, h, mvf, 0.0)
+		mcfiInterpolateFast(dst, f0.Data, f1.Data, w, h, mvf, 0.0)
 
 		// With zero MVs and alpha=0:
 		// sA = srcA[px, py] (no displacement), sB = srcB[px, py] (no displacement)
@@ -137,7 +137,7 @@ func TestFastWarp_AlphaExtremes(t *testing.T) {
 
 	t.Run("alpha=1", func(t *testing.T) {
 		dst := make([]byte, frameSize)
-		mcfiInterpolateFast(dst, f0.YUV, f1.YUV, w, h, mvf, 1.0)
+		mcfiInterpolateFast(dst, f0.Data, f1.Data, w, h, mvf, 1.0)
 
 		// With zero MVs and alpha=1:
 		// sA = srcA[px, py], sB = srcB[px, py]
@@ -172,20 +172,20 @@ func TestFastWarp_RowParallel(t *testing.T) {
 		mvf.bwdY[i] = -2
 	}
 
-	frameSize := w * h * 3 / 2
+	frameSize := ColorYUV420_8bit.FrameSize(w, h)
 	alpha := 0.4
 
 	// Serial: Y plane with maxGoroutines=1
 	serialDst := make([]byte, frameSize)
 	fastWarpPlane(
-		serialDst[:w*h], f0.YUV[:w*h], f1.YUV[:w*h],
+		serialDst[:w*h], f0.Data[:w*h], f1.Data[:w*h],
 		w, h, mvf, alpha, 1, 1,
 	)
 
 	// Parallel: Y plane with maxGoroutines=0 (uses NumCPU)
 	parallelDst := make([]byte, frameSize)
 	fastWarpPlane(
-		parallelDst[:w*h], f0.YUV[:w*h], f1.YUV[:w*h],
+		parallelDst[:w*h], f0.Data[:w*h], f1.Data[:w*h],
 		w, h, mvf, alpha, 1, 0,
 	)
 
@@ -213,14 +213,14 @@ func TestFastWarp_WithMotion(t *testing.T) {
 		mvf.bwdY[i] = 0
 	}
 
-	frameSize := w * h * 3 / 2
+	frameSize := ColorYUV420_8bit.FrameSize(w, h)
 
 	// At alpha=0.5, gather warp samples each source at half-displacement:
 	// sA = srcA[px - alpha*fwd_mv] = srcA[px - 4] (sample backward from motion)
 	// sB = srcB[px - invAlpha*bwd_mv] = srcB[px + 4] (sample forward from motion)
 	// Both yield content at the interpolated position, blended at 50/50.
 	dst := make([]byte, frameSize)
-	mcfiInterpolateFast(dst, f0.YUV, f1.YUV, w, h, mvf, 0.5)
+	mcfiInterpolateFast(dst, f0.Data, f1.Data, w, h, mvf, 0.5)
 
 	// Expected midpoint frame: f0 shifted right by 4
 	expected := makeShiftedFrame(w, h, shift/2, 0)
@@ -232,7 +232,7 @@ func TestFastWarp_WithMotion(t *testing.T) {
 	for row := margin; row < h-margin; row++ {
 		for col := margin; col < w-margin; col++ {
 			total++
-			diff := int(dst[row*w+col]) - int(expected.YUV[row*w+col])
+			diff := int(dst[row*w+col]) - int(expected.Data[row*w+col])
 			if diff < 0 {
 				diff = -diff
 			}
@@ -263,11 +263,11 @@ func TestFastWarp_BoundsClipping(t *testing.T) {
 		mvf.bwdY[i] = -200
 	}
 
-	frameSize := w * h * 3 / 2
+	frameSize := ColorYUV420_8bit.FrameSize(w, h)
 	dst := make([]byte, frameSize)
 
 	require.NotPanics(t, func() {
-		mcfiInterpolateFast(dst, f0.YUV, f1.YUV, w, h, mvf, 0.5)
+		mcfiInterpolateFast(dst, f0.Data, f1.Data, w, h, mvf, 0.5)
 	}, "mcfiInterpolateFast should not panic with out-of-bounds MVs")
 }
 
@@ -288,14 +288,14 @@ func TestFastWarp_NegativeMV(t *testing.T) {
 		mvf.bwdY[i] = 3
 	}
 
-	frameSize := w * h * 3 / 2
+	frameSize := ColorYUV420_8bit.FrameSize(w, h)
 
 	// Compare with reference
 	refDst := make([]byte, frameSize)
-	mcfiInterpolateSmooth(refDst, f0.YUV, f1.YUV, w, h, mvf, 0.5)
+	mcfiInterpolateSmooth(refDst, f0.Data, f1.Data, w, h, mvf, 0.5)
 
 	fastDst := make([]byte, frameSize)
-	mcfiInterpolateFast(fastDst, f0.YUV, f1.YUV, w, h, mvf, 0.5)
+	mcfiInterpolateFast(fastDst, f0.Data, f1.Data, w, h, mvf, 0.5)
 
 	maxDiff := 0
 	for i := 0; i < frameSize; i++ {
@@ -341,9 +341,9 @@ func TestFastWarp_StepFunction(t *testing.T) {
 		mvf.bwdY[i] = 0
 	}
 
-	frameSize := w * h * 3 / 2
+	frameSize := ColorYUV420_8bit.FrameSize(w, h)
 	dst := make([]byte, frameSize)
-	mcfiInterpolateFast(dst, f0.YUV, f1.YUV, w, h, mvf, 0.5)
+	mcfiInterpolateFast(dst, f0.Data, f1.Data, w, h, mvf, 0.5)
 
 	// At alpha=0.5, bright band should be at cols 58-77 (midpoint).
 	// Check interior of the bright band (cols 60-75, away from edges).
@@ -408,7 +408,7 @@ func makeStepFrame(w, h, startCol, endCol, brightVal, darkVal int) *ProcessingFr
 	for i := ySize; i < len(yuv); i++ {
 		yuv[i] = 128
 	}
-	return &ProcessingFrame{YUV: yuv, Width: w, Height: h}
+	return &ProcessingFrame{Data: yuv, Width: w, Height: h}
 }
 
 // BenchmarkFastWarp_1080p benchmarks the fast fixed-point warp at 1080p.
@@ -427,14 +427,14 @@ func BenchmarkFastWarp_1080p(b *testing.B) {
 		mvf.bwdY[i] = 0
 	}
 
-	frameSize := w * h * 3 / 2
+	frameSize := ColorYUV420_8bit.FrameSize(w, h)
 	dst := make([]byte, frameSize)
 
 	b.ResetTimer()
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		mcfiInterpolateFast(dst, f0.YUV, f1.YUV, w, h, mvf, 0.5)
+		mcfiInterpolateFast(dst, f0.Data, f1.Data, w, h, mvf, 0.5)
 	}
 }
 
@@ -454,14 +454,14 @@ func BenchmarkSmoothWarp_1080p_Reference(b *testing.B) {
 		mvf.bwdY[i] = 0
 	}
 
-	frameSize := w * h * 3 / 2
+	frameSize := ColorYUV420_8bit.FrameSize(w, h)
 	dst := make([]byte, frameSize)
 
 	b.ResetTimer()
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
-		mcfiInterpolateSmooth(dst, f0.YUV, f1.YUV, w, h, mvf, 0.5)
+		mcfiInterpolateSmooth(dst, f0.Data, f1.Data, w, h, mvf, 0.5)
 	}
 }
 
@@ -475,7 +475,7 @@ func BenchmarkMCFI_EndToEnd_1080p(b *testing.B) {
 
 	state := NewMCFIState()
 	// Prime the state so buffers are allocated
-	state.Interpolate(f0.YUV, f1.YUV, w, h, 0.5)
+	state.Interpolate(f0.Data, f1.Data, w, h, 0.5)
 
 	b.ResetTimer()
 	b.ReportAllocs()
@@ -484,7 +484,7 @@ func BenchmarkMCFI_EndToEnd_1080p(b *testing.B) {
 		// Force new frame pair each iteration to include ME cost
 		state.mvValid = false
 		state.lastPtrA = nil
-		state.Interpolate(f0.YUV, f1.YUV, w, h, 0.5)
+		state.Interpolate(f0.Data, f1.Data, w, h, 0.5)
 	}
 }
 
@@ -497,14 +497,14 @@ func BenchmarkMCFI_WarpOnly_1080p(b *testing.B) {
 
 	state := NewMCFIState()
 	// Run once to compute MVs
-	state.Interpolate(f0.YUV, f1.YUV, w, h, 0.5)
+	state.Interpolate(f0.Data, f1.Data, w, h, 0.5)
 
 	b.ResetTimer()
 	b.ReportAllocs()
 
 	for i := 0; i < b.N; i++ {
 		// Same frame pair = MV cache hit, only warp runs
-		state.Interpolate(f0.YUV, f1.YUV, w, h, float64(i%10)/10.0)
+		state.Interpolate(f0.Data, f1.Data, w, h, float64(i%10)/10.0)
 	}
 }
 

@@ -36,8 +36,11 @@ type Compositor struct {
 	mu     sync.Mutex
 	layout atomic.Pointer[Layout]
 
-	// Per-source cached frames
+	// Per-source cached frames (8-bit YUV420)
 	fills map[string]*fillEntry
+
+	// Per-source cached frames (10-bit YUV422P10LE)
+	fills10 map[string]*fillEntry10
 
 	// Per-slot pre-allocated scale buffers
 	scaleBufs [][]byte
@@ -127,7 +130,7 @@ func (c *Compositor) allocateBuffers(l *Layout) {
 	for i, slot := range l.Slots {
 		w := slot.Rect.Dx()
 		h := slot.Rect.Dy()
-		size := w * h * 3 / 2
+		size := yuvFrameSize(w, h)
 		c.scaleBufs[i] = make([]byte, size)
 		c.grayBufs[i] = makeGrayFrame(w, h)
 		// cropBufs allocated lazily in ProcessFrame when needed.
@@ -211,7 +214,7 @@ func (c *Compositor) IngestSourceFrame(sourceKey string, yuv []byte, width, heig
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	yuvSize := width * height * 3 / 2
+	yuvSize := yuvFrameSize(width, height)
 	if len(yuv) < yuvSize {
 		return
 	}
@@ -333,7 +336,7 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 		}
 
 		if entry, ok := c.fills[slot.SourceKey]; ok {
-			yuvSize := entry.width * entry.height * 3 / 2
+			yuvSize := yuvFrameSize(entry.width, entry.height)
 			// Deep-copy fill data into per-slot snapshot buffer under lock
 			// to avoid racing with IngestSourceFrame writes to entry.yuv.
 			for len(c.snapBufs) <= idx {
@@ -358,7 +361,7 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 			// (they match at allocation but slot rect can change during animation).
 			grayW := slot.Rect.Dx()
 			grayH := slot.Rect.Dy()
-			if len(snap.srcYUV) == grayW*grayH*3/2 {
+			if len(snap.srcYUV) == yuvFrameSize(grayW, grayH) {
 				snap.srcW = grayW
 				snap.srcH = grayH
 			} else {
@@ -373,7 +376,7 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 		// Grab the scale buffer reference (pre-allocated).
 		slotW := rect.Dx()
 		slotH := rect.Dy()
-		neededSize := slotW * slotH * 3 / 2
+		neededSize := yuvFrameSize(slotW, slotH)
 		if idx < len(c.scaleBufs) && len(c.scaleBufs[idx]) >= neededSize {
 			snap.scaleBuf = c.scaleBufs[idx][:neededSize]
 		} else {
@@ -393,7 +396,7 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 
 		// For fill-mode slots with a real source, allocate a crop buffer.
 		if snap.hasFill && slot.EffectiveScaleMode() == ScaleModeFill {
-			cropNeeded := snap.srcW * snap.srcH * 3 / 2
+			cropNeeded := yuvFrameSize(snap.srcW, snap.srcH)
 			// Extend cropBufs slice if needed.
 			for len(c.cropBufs) <= idx {
 				c.cropBufs = append(c.cropBufs, nil)
@@ -434,7 +437,7 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 			anchorX, anchorY := snap.slot.EffectiveCropAnchor()
 			cropX, cropY, cropW, cropH := ComputeCropRect(srcW, srcH, slotW, slotH, anchorX, anchorY)
 			if cropW > 0 && cropH > 0 && (cropW != srcW || cropH != srcH) {
-				cropSize := cropW * cropH * 3 / 2
+				cropSize := yuvFrameSize(cropW, cropH)
 				CropYUV420Region(snap.cropBuf[:cropSize], srcYUV, srcW, srcH, cropX, cropY, cropW, cropH)
 				srcYUV = snap.cropBuf[:cropSize]
 				srcW = cropW
@@ -465,7 +468,7 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 						entry.scaledCache = make(map[int]*scaledCacheEntry)
 					}
 					cacheEntry := entry.scaledCache[snap.idx]
-					scaledSize := slotW * slotH * 3 / 2
+					scaledSize := yuvFrameSize(slotW, slotH)
 					if cacheEntry == nil || len(cacheEntry.yuv) != scaledSize {
 						cacheEntry = &scaledCacheEntry{
 							yuv: make([]byte, scaledSize),
@@ -589,7 +592,7 @@ func (c *Compositor) SnapshotSlots() []SlotSnap {
 		}
 
 		if entry, ok := c.fills[slot.SourceKey]; ok {
-			yuvSize := entry.width * entry.height * 3 / 2
+			yuvSize := yuvFrameSize(entry.width, entry.height)
 			if len(entry.yuv) >= yuvSize {
 				fillCopy := make([]byte, yuvSize)
 				copy(fillCopy, entry.yuv[:yuvSize])

@@ -96,7 +96,7 @@ func newGPUEncoderWithGOP(gpuCtx *Context, width, height, fpsNum, fpsDen, bitrat
 		}
 	}
 
-	yuvSize := width * height * 3 / 2
+	yuvSize := yuvFrameSize(width, height)
 	return &GPUEncoder{
 		ffEnc:  enc,
 		gpuCtx: gpuCtx,

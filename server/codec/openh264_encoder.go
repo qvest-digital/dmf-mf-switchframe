@@ -216,7 +216,7 @@ func (e *OpenH264Encoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, 
 
 	w := int(e.handle.width)
 	h := int(e.handle.height)
-	expected := w * h * 3 / 2
+	expected := yuvFrameSize(w, h)
 	if len(yuv) != expected {
 		return nil, false, fmt.Errorf("YUV buffer must be %d bytes (%dx%d*3/2), got %d",
 			expected, w, h, len(yuv))

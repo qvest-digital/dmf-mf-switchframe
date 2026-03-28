@@ -44,7 +44,7 @@ func TestFRC_QualityString(t *testing.T) {
 
 // makeTestFrame creates a ProcessingFrame with a solid Y value for testing.
 func makeTestFrame(width, height int, yVal byte, pts int64) *ProcessingFrame {
-	totalSize := width * height * 3 / 2
+	totalSize := ColorYUV420_8bit.FrameSize(width, height)
 	yuv := make([]byte, totalSize)
 	ySize := width * height
 
@@ -58,7 +58,7 @@ func makeTestFrame(width, height int, yVal byte, pts int64) *ProcessingFrame {
 	}
 
 	return &ProcessingFrame{
-		YUV:    yuv,
+		Data:    yuv,
 		Width:  width,
 		Height: height,
 		PTS:    pts,
@@ -68,7 +68,7 @@ func makeTestFrame(width, height int, yVal byte, pts int64) *ProcessingFrame {
 
 // makeFRCGradientFrame creates a ProcessingFrame with a horizontal gradient.
 func makeFRCGradientFrame(width, height int, offset byte, pts int64) *ProcessingFrame {
-	totalSize := width * height * 3 / 2
+	totalSize := ColorYUV420_8bit.FrameSize(width, height)
 	yuv := make([]byte, totalSize)
 	ySize := width * height
 
@@ -82,7 +82,7 @@ func makeFRCGradientFrame(width, height int, offset byte, pts int64) *Processing
 	}
 
 	return &ProcessingFrame{
-		YUV:    yuv,
+		Data:    yuv,
 		Width:  width,
 		Height: height,
 		PTS:    pts,
@@ -129,13 +129,13 @@ func TestFRC_EmitNearest(t *testing.T) {
 	tickLow := prevPTS + int64(float64(currPTS-prevPTS)*0.3) // 3900
 	result := fs.emit(tickLow)
 	require.NotNil(t, result)
-	require.Equal(t, byte(100), result.YUV[0], "alpha=0.3 should select prevFrame")
+	require.Equal(t, byte(100), result.Data[0], "alpha=0.3 should select prevFrame")
 
 	// alpha = 0.7 -> should return currFrame
 	tickHigh := prevPTS + int64(float64(currPTS-prevPTS)*0.7) // 5100
 	result = fs.emit(tickHigh)
 	require.NotNil(t, result)
-	require.Equal(t, byte(200), result.YUV[0], "alpha=0.7 should select currFrame")
+	require.Equal(t, byte(200), result.Data[0], "alpha=0.7 should select currFrame")
 }
 
 func TestFRC_EmitBlend(t *testing.T) {
@@ -157,7 +157,7 @@ func TestFRC_EmitBlend(t *testing.T) {
 	// BlendUniformBytes at pos=128 with a=100, b=200:
 	// dst = (100*(256-128) + 200*128) >> 8 = (12800 + 25600) >> 8 = 38400 >> 8 = 150
 	expected := byte(150)
-	actual := result.YUV[0]
+	actual := result.Data[0]
 	// Allow +/- 2 for integer rounding
 	require.InDelta(t, float64(expected), float64(actual), 2.0,
 		"blend at alpha=0.5: expected ~%d, got %d", expected, actual)
@@ -182,7 +182,7 @@ func TestFRC_EmitMCFI_Static(t *testing.T) {
 
 	// Static scene: all pixels should be very close to 128
 	for i := 0; i < 64*64; i++ {
-		require.InDelta(t, 128.0, float64(result.YUV[i]), 3.0,
+		require.InDelta(t, 128.0, float64(result.Data[i]), 3.0,
 			"pixel[%d] should be ~128 for static MCFI", i)
 	}
 }
@@ -242,13 +242,13 @@ func TestFRC_NearThreshold(t *testing.T) {
 	tickNearPrev := prevPTS + 100 // alpha = 100/3000 ≈ 0.033
 	result := fs.emit(tickNearPrev)
 	require.NotNil(t, result)
-	require.Equal(t, byte(100), result.YUV[0], "alpha < 0.05 should return prevFrame directly")
+	require.Equal(t, byte(100), result.Data[0], "alpha < 0.05 should return prevFrame directly")
 
 	// alpha > 0.95 -> should return currFrame directly
 	tickNearCurr := currPTS - 100 // alpha = 2900/3000 ≈ 0.967
 	result = fs.emit(tickNearCurr)
 	require.NotNil(t, result)
-	require.Equal(t, byte(200), result.YUV[0], "alpha > 0.95 should return currFrame directly")
+	require.Equal(t, byte(200), result.Data[0], "alpha > 0.95 should return currFrame directly")
 }
 
 func TestFRC_Reset(t *testing.T) {
@@ -314,9 +314,9 @@ func (h *rawVideoTestHandler) onRawVideo(sourceKey string, pf *ProcessingFrame) 
 	defer h.mu.Unlock()
 	cp := *pf
 	// Deep copy YUV to avoid races
-	if pf.YUV != nil {
-		cp.YUV = make([]byte, len(pf.YUV))
-		copy(cp.YUV, pf.YUV)
+	if pf.Data != nil {
+		cp.Data = make([]byte, len(pf.Data))
+		copy(cp.Data, pf.Data)
 	}
 	h.frames = append(h.frames, rawVideoTagged{sourceKey: sourceKey, frame: cp})
 }
@@ -377,7 +377,7 @@ func TestFrameSync_FRC_24to30(t *testing.T) {
 
 	// Verify no nil YUV in any output frame
 	for i, f := range frames {
-		require.NotNil(t, f.frame.YUV, "frame[%d] YUV should not be nil", i)
+		require.NotNil(t, f.frame.Data, "frame[%d] YUV should not be nil", i)
 	}
 
 	// For ticks without a new source frame, the FRC should have interpolated.
@@ -496,12 +496,12 @@ func TestFRC_EmitClampsAlpha(t *testing.T) {
 	// tickPTS before prevPTS -> alpha < 0 -> clamped to 0 -> near threshold returns prev
 	result := fs.emit(1000)
 	require.NotNil(t, result)
-	require.Equal(t, byte(100), result.YUV[0], "alpha < 0 should return prevFrame")
+	require.Equal(t, byte(100), result.Data[0], "alpha < 0 should return prevFrame")
 
 	// tickPTS after currPTS -> alpha > 1 -> clamped to 1 -> near threshold returns curr
 	result = fs.emit(9000)
 	require.NotNil(t, result)
-	require.Equal(t, byte(200), result.YUV[0], "alpha > 1 should return currFrame")
+	require.Equal(t, byte(200), result.Data[0], "alpha > 1 should return currFrame")
 }
 
 func TestFRC_FPSTracking(t *testing.T) {
@@ -524,7 +524,7 @@ func TestFRC_EmitBlendNoPoolReference(t *testing.T) {
 	// because YUV data points to fs.blendOut (a reusable make()-allocated
 	// buffer), not a pool buffer. If pool were set, ReleaseYUV() would
 	// return the internal buffer to the pool, causing data corruption.
-	pool := NewFramePool(4, 64, 64)
+	pool := NewFramePool(4, 64, 64, ColorYUV420_8bit)
 
 	fs := newFRCSource(FRCBlend, 3000)
 	fs.pool = pool // set pool reference on frcSource
@@ -551,7 +551,7 @@ func TestFRC_EmitMCFINoPoolReference(t *testing.T) {
 	// Bug 3: Same as blend, verify MCFI-emitted frames do NOT carry pool.
 	// MCFI uses fs.blendOut which is not a pool buffer. If MCFI falls back
 	// to nearest (emitNearest), the result also uses fs.nearestOut (not pool).
-	pool := NewFramePool(4, 64, 64)
+	pool := NewFramePool(4, 64, 64, ColorYUV420_8bit)
 
 	fs := newFRCSource(FRCMCFI, 3000)
 	fs.pool = pool
@@ -588,7 +588,7 @@ func TestFRC_EmitZeroPTSDelta(t *testing.T) {
 	// Should not panic, returns currFrame
 	result := fs.emit(3000)
 	require.NotNil(t, result)
-	require.Equal(t, byte(200), result.YUV[0], "zero PTS delta should return currFrame")
+	require.Equal(t, byte(200), result.Data[0], "zero PTS delta should return currFrame")
 }
 
 func TestFRC_EmitNearest_ReturnsCopy(t *testing.T) {
@@ -607,20 +607,20 @@ func TestFRC_EmitNearest_ReturnsCopy(t *testing.T) {
 	// Emit with alpha < 0.5 -> selects prevFrame
 	result := fs.emitNearest(0.3)
 	require.NotNil(t, result)
-	require.Equal(t, byte(100), result.YUV[0], "should select prevFrame content")
+	require.Equal(t, byte(100), result.Data[0], "should select prevFrame content")
 
 	// Store the returned YUV data for comparison
-	savedYUV := make([]byte, len(result.YUV))
-	copy(savedYUV, result.YUV)
+	savedYUV := make([]byte, len(result.Data))
+	copy(savedYUV, result.Data)
 
 	// Ingest a new frame — this calls prevFrame.ReleaseYUV() which frees the old buffer.
 	f3 := makeTestFrame(64, 64, 50, 9000)
 	fs.ingest(f3)
 
 	// The previously returned result's YUV data must still be intact (independent copy).
-	require.Equal(t, savedYUV, result.YUV,
+	require.Equal(t, savedYUV, result.Data,
 		"emitNearest result must be independent of live buffer lifecycle")
-	require.Equal(t, byte(100), result.YUV[0],
+	require.Equal(t, byte(100), result.Data[0],
 		"emitNearest result must not be corrupted after ingest releases prevFrame")
 }
 
@@ -640,17 +640,17 @@ func TestFRC_EmitNearThreshold_ReturnsCopy(t *testing.T) {
 	tickNearPrev := prevPTS + 100 // alpha = 100/3000 ≈ 0.033
 	result := fs.emit(tickNearPrev)
 	require.NotNil(t, result)
-	require.Equal(t, byte(100), result.YUV[0])
+	require.Equal(t, byte(100), result.Data[0])
 
-	savedYUV := make([]byte, len(result.YUV))
-	copy(savedYUV, result.YUV)
+	savedYUV := make([]byte, len(result.Data))
+	copy(savedYUV, result.Data)
 
 	// Ingest new frame (releases prevFrame)
 	f3 := makeTestFrame(64, 64, 50, 9000)
 	fs.ingest(f3)
 
 	// Result must still be intact
-	require.Equal(t, savedYUV, result.YUV,
+	require.Equal(t, savedYUV, result.Data,
 		"near-threshold emit result must be independent of live buffer lifecycle")
 
 	// Test the high threshold path too
@@ -664,16 +664,16 @@ func TestFRC_EmitNearThreshold_ReturnsCopy(t *testing.T) {
 	tickNearCurr := currPTS - 100 // alpha = 2900/3000 ≈ 0.967
 	result2 := fs2.emit(tickNearCurr)
 	require.NotNil(t, result2)
-	require.Equal(t, byte(200), result2.YUV[0])
+	require.Equal(t, byte(200), result2.Data[0])
 
-	savedYUV2 := make([]byte, len(result2.YUV))
-	copy(savedYUV2, result2.YUV)
+	savedYUV2 := make([]byte, len(result2.Data))
+	copy(savedYUV2, result2.Data)
 
 	// Ingest new frame
 	f6 := makeTestFrame(64, 64, 50, 9000)
 	fs2.ingest(f6)
 
-	require.Equal(t, savedYUV2, result2.YUV,
+	require.Equal(t, savedYUV2, result2.Data,
 		"near-threshold high emit result must be independent of live buffer lifecycle")
 }
 
@@ -731,7 +731,7 @@ func TestFRC_EmitAlphaPTSWraparound(t *testing.T) {
 	// With FRCBlend at alpha=0.5, BlendUniformBytes at pos=128:
 	// dst = (100*(256-128) + 200*128) >> 8 = 150
 	expected := byte(150)
-	actual := result.YUV[0]
+	actual := result.Data[0]
 	require.InDelta(t, float64(expected), float64(actual), 2.0,
 		"blend at alpha=0.5 across PTS wrap: expected ~%d, got %d", expected, actual)
 }
@@ -749,7 +749,7 @@ func TestFRC_EmitAfterYUVRelease(t *testing.T) {
 
 	// Simulate what releaseTick does: release the YUV of a frame the FRC
 	// still references (prevFrame = f1, whose YUV gets nilled out).
-	f1.YUV = nil
+	f1.Data = nil
 
 	// emit should return nil (not panic) when the selected frame's YUV
 	// has been released.
@@ -757,7 +757,7 @@ func TestFRC_EmitAfterYUVRelease(t *testing.T) {
 	require.Nil(t, result, "emit should return nil when prevFrame YUV is released")
 
 	// Also test currFrame release.
-	f2.YUV = nil
+	f2.Data = nil
 	result = fs.emit(2500) // alpha ~0.83, selects currFrame
 	require.Nil(t, result, "emit should return nil when currFrame YUV is released")
 }
@@ -772,7 +772,7 @@ func TestFRC_EmitBlendAfterYUVRelease(t *testing.T) {
 	fs.ingest(f2)
 
 	// Release prevFrame YUV.
-	f1.YUV = nil
+	f1.Data = nil
 
 	// Blend path: alpha ~0.5, in the blend zone between near-thresholds.
 	result := fs.emit(1500)
@@ -839,15 +839,15 @@ func TestFrameSync_ParallelFRC_MultiSource(t *testing.T) {
 
 	// Verify FRC output has valid YUV (not nil, not zero-length).
 	for _, f := range frames {
-		require.NotNil(t, f.frame.YUV, "FRC output YUV should not be nil for %s", f.sourceKey)
-		require.NotEmpty(t, f.frame.YUV, "FRC output YUV should not be empty for %s", f.sourceKey)
+		require.NotNil(t, f.frame.Data, "FRC output YUV should not be nil for %s", f.sourceKey)
+		require.NotEmpty(t, f.frame.Data, "FRC output YUV should not be empty for %s", f.sourceKey)
 	}
 
 	// Verify all sources have distinct YUV data (different source frames → different FRC output).
 	if len(frames) >= 2 {
 		yuvSets := make(map[byte]bool)
 		for _, f := range frames {
-			yuvSets[f.frame.YUV[0]] = true
+			yuvSets[f.frame.Data[0]] = true
 		}
 		require.Greater(t, len(yuvSets), 1,
 			"FRC outputs should have distinct Y values from different sources")
@@ -883,7 +883,7 @@ func TestFrameSync_ParallelFRC_SingleSource(t *testing.T) {
 
 	frames := rawHandler.getFrames()
 	require.Len(t, frames, 1, "should have 1 FRC output for single source")
-	require.NotNil(t, frames[0].frame.YUV)
+	require.NotNil(t, frames[0].frame.Data)
 	require.Equal(t, "cam1", frames[0].sourceKey)
 }
 
@@ -894,7 +894,7 @@ func TestFrameSync_ParallelFRC_DeepCopiesAreIndependent(t *testing.T) {
 	syncHandler := &syncTestHandler{}
 
 	tickRate := 33333 * time.Microsecond
-	pool := NewFramePool(8, 64, 64)
+	pool := NewFramePool(8, 64, 64, ColorYUV420_8bit)
 
 	fs := NewFrameSynchronizer(tickRate, syncHandler.onVideo, syncHandler.onAudio)
 	fs.frcQuality = FRCNearest
@@ -930,10 +930,10 @@ func TestFrameSync_ParallelFRC_DeepCopiesAreIndependent(t *testing.T) {
 	// Verify no two frames share the same underlying YUV buffer.
 	for i := 0; i < len(frames); i++ {
 		for j := i + 1; j < len(frames); j++ {
-			if len(frames[i].frame.YUV) > 0 && len(frames[j].frame.YUV) > 0 {
+			if len(frames[i].frame.Data) > 0 && len(frames[j].frame.Data) > 0 {
 				// Check they don't start at the same address.
 				require.NotEqual(t,
-					&frames[i].frame.YUV[0], &frames[j].frame.YUV[0],
+					&frames[i].frame.Data[0], &frames[j].frame.Data[0],
 					"FRC outputs for %s and %s should not alias",
 					frames[i].sourceKey, frames[j].sourceKey)
 			}
@@ -942,7 +942,7 @@ func TestFrameSync_ParallelFRC_DeepCopiesAreIndependent(t *testing.T) {
 
 	// Verify each frame has correct Y value from its source.
 	for _, f := range frames {
-		require.NotEmpty(t, f.frame.YUV)
+		require.NotEmpty(t, f.frame.Data)
 	}
 }
 
@@ -963,7 +963,7 @@ func TestFRC_EmitNearestPTSWraparound(t *testing.T) {
 	tickLow := prevPTS + 1000 // = pts33Max - 2000, before the wrap
 	result := fs.emit(tickLow)
 	require.NotNil(t, result)
-	require.Equal(t, byte(100), result.YUV[0],
+	require.Equal(t, byte(100), result.Data[0],
 		"alpha=0.25 across PTS wrap should select prevFrame")
 
 	// alpha = 3000/4000 = 0.75 -> should select currFrame (alpha > 0.5)
@@ -971,24 +971,24 @@ func TestFRC_EmitNearestPTSWraparound(t *testing.T) {
 	tickHigh := int64(0) // prevPTS + 3000 wraps to 0
 	result = fs.emit(tickHigh)
 	require.NotNil(t, result)
-	require.Equal(t, byte(200), result.YUV[0],
+	require.Equal(t, byte(200), result.Data[0],
 		"alpha=0.75 across PTS wrap should select currFrame")
 }
 
 func TestFRC_IngestRefcountNoDoubleRelease(t *testing.T) {
 	// Verify that FRC takes its own Ref() on ingest, so that both FRC
 	// and frame_sync can release independently without underflow.
-	pool := NewFramePool(4, 4, 4)
+	pool := NewFramePool(4, 4, 4, ColorYUV420_8bit)
 	fs := newFRCSource(FRCNearest, 3000)
 
 	// Create frames from pool (refcounted).
-	pf1 := &ProcessingFrame{YUV: pool.Acquire(), Width: 4, Height: 4, PTS: 0}
+	pf1 := &ProcessingFrame{Data: pool.Acquire(), Width: 4, Height: 4, PTS: 0}
 	pf1.SetRefs(1) // frame_sync ownership
 
-	pf2 := &ProcessingFrame{YUV: pool.Acquire(), Width: 4, Height: 4, PTS: 3000}
+	pf2 := &ProcessingFrame{Data: pool.Acquire(), Width: 4, Height: 4, PTS: 3000}
 	pf2.SetRefs(1)
 
-	pf3 := &ProcessingFrame{YUV: pool.Acquire(), Width: 4, Height: 4, PTS: 6000}
+	pf3 := &ProcessingFrame{Data: pool.Acquire(), Width: 4, Height: 4, PTS: 6000}
 	pf3.SetRefs(1)
 
 	// Ingest first frame: FRC takes Ref → refs=2
@@ -1069,7 +1069,7 @@ func TestFRCNearest_SkipsSceneChangeAndME(t *testing.T) {
 	frc := newFRCSource(FRCNearest, 3000)
 
 	pf1 := &ProcessingFrame{
-		YUV:    make([]byte, 1920*1080*3/2),
+		Data:    make([]byte, ColorYUV420_8bit.FrameSize(1920, 1080)),
 		Width:  1920,
 		Height: 1080,
 		PTS:    0,
@@ -1077,7 +1077,7 @@ func TestFRCNearest_SkipsSceneChangeAndME(t *testing.T) {
 	pf1.SetRefs(2)
 
 	pf2 := &ProcessingFrame{
-		YUV:    make([]byte, 1920*1080*3/2),
+		Data:    make([]byte, ColorYUV420_8bit.FrameSize(1920, 1080)),
 		Width:  1920,
 		Height: 1080,
 		PTS:    3000,
@@ -1112,7 +1112,7 @@ func TestFRCMCFI_SkipsMEWhenSourceAtPipelineRate(t *testing.T) {
 	// Ingest 20 frames at exactly the pipeline tick rate.
 	for i := 0; i < 20; i++ {
 		pf := &ProcessingFrame{
-			YUV:    make([]byte, 64*64*3/2),
+			Data:    make([]byte, ColorYUV420_8bit.FrameSize(64, 64)),
 			Width:  64,
 			Height: 64,
 			PTS:    int64(i) * tickInterval,
@@ -1146,7 +1146,7 @@ func TestFRCMCFI_RunsMEForSlowerSource(t *testing.T) {
 	// Ingest 20 frames at half the pipeline rate (15fps).
 	for i := 0; i < 20; i++ {
 		pf := &ProcessingFrame{
-			YUV:    make([]byte, 64*64*3/2),
+			Data:    make([]byte, ColorYUV420_8bit.FrameSize(64, 64)),
 			Width:  64,
 			Height: 64,
 			PTS:    int64(i) * sourceInterval,
@@ -1178,7 +1178,7 @@ func TestFRCMCFI_SkipsME_EdgeCases(t *testing.T) {
 		// Ingest only 5 frames (4 intervals, below convergence threshold).
 		for i := 0; i < 5; i++ {
 			pf := &ProcessingFrame{
-				YUV:    make([]byte, 64*64*3/2),
+				Data:    make([]byte, ColorYUV420_8bit.FrameSize(64, 64)),
 				Width:  64,
 				Height: 64,
 				PTS:    int64(i) * tickInterval,
@@ -1201,7 +1201,7 @@ func TestFRCMCFI_SkipsME_EdgeCases(t *testing.T) {
 
 		for i := 0; i < 15; i++ {
 			pf := &ProcessingFrame{
-				YUV:    make([]byte, 64*64*3/2),
+				Data:    make([]byte, ColorYUV420_8bit.FrameSize(64, 64)),
 				Width:  64,
 				Height: 64,
 				PTS:    int64(i) * 3003,
@@ -1222,17 +1222,17 @@ func TestFRCMCFI_SkipsME_EdgeCases(t *testing.T) {
 // DeepCopy. Without SetRefs, the frame has refs=nil, causing DeepCopy to
 // allocate a second pool buffer while the first leaks (never released).
 func TestFRC_RunFRCEmit_ProducesRefcountedFrame(t *testing.T) {
-	pool := NewFramePool(8, 64, 64)
-	yuvSize := 64 * 64 * 3 / 2
+	pool := NewFramePool(8, 64, 64, ColorYUV420_8bit)
+	yuvSize := ColorYUV420_8bit.FrameSize(64, 64)
 
 	ss := &syncSource{
 		frc: newFRCSource(FRCNearest, 3000),
 	}
 
 	// Ingest two refcounted frames so FRC can interpolate.
-	f1 := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 64, Height: 64, PTS: 0, pool: pool}
+	f1 := &ProcessingFrame{Data: pool.Acquire()[:yuvSize], Width: 64, Height: 64, PTS: 0, pool: pool}
 	f1.SetRefs(1)
-	f2 := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 64, Height: 64, PTS: 3000, pool: pool}
+	f2 := &ProcessingFrame{Data: pool.Acquire()[:yuvSize], Width: 64, Height: 64, PTS: 3000, pool: pool}
 	f2.SetRefs(1)
 
 	ss.pushRawVideo(f1)
@@ -1259,7 +1259,7 @@ func TestFRC_RunFRCEmit_ProducesRefcountedFrame(t *testing.T) {
 
 	// Verify the buffer can be properly released.
 	r.rawVideo.ReleaseYUV()
-	require.Nil(t, r.rawVideo.YUV, "buffer should be released")
+	require.Nil(t, r.rawVideo.Data, "buffer should be released")
 
 	// Cleanup
 	ss.frc.reset()
@@ -1270,16 +1270,16 @@ func TestFRC_RunFRCEmit_ProducesRefcountedFrame(t *testing.T) {
 // After delivery, FRC-allocated frames must be releasable without leaking
 // pool buffers. This tests the full lifecycle: emit → deliver → release.
 func TestFRC_RunFRCEmit_PoolBufferNotLeaked(t *testing.T) {
-	pool := NewFramePool(8, 64, 64)
-	yuvSize := 64 * 64 * 3 / 2
+	pool := NewFramePool(8, 64, 64, ColorYUV420_8bit)
+	yuvSize := ColorYUV420_8bit.FrameSize(64, 64)
 
 	ss := &syncSource{
 		frc: newFRCSource(FRCNearest, 3000),
 	}
 
-	f1 := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 64, Height: 64, PTS: 0, pool: pool}
+	f1 := &ProcessingFrame{Data: pool.Acquire()[:yuvSize], Width: 64, Height: 64, PTS: 0, pool: pool}
 	f1.SetRefs(1)
-	f2 := &ProcessingFrame{YUV: pool.Acquire()[:yuvSize], Width: 64, Height: 64, PTS: 3000, pool: pool}
+	f2 := &ProcessingFrame{Data: pool.Acquire()[:yuvSize], Width: 64, Height: 64, PTS: 3000, pool: pool}
 	f2.SetRefs(1)
 
 	ss.pushRawVideo(f1)

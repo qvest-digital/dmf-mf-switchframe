@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/scte35"
@@ -303,7 +304,7 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 		mgr := &aiSegmentManagerAdapter{engine: a.segEngine, adapter: a.segAdapter}
 		aiState := &internal.AISegmentationState{
 			Available: true,
-			ModelName: a.cfg.AIModelPath,
+			ModelName: a.cfg.AIModelsDir,
 			Sources:   mgr.AllConfigs(),
 		}
 		state.AISegmentation = aiState
@@ -543,12 +544,27 @@ func (a *App) broadcastState(gfxOverride *graphics.State) {
 
 // videoInfoCallback returns a callback for OnVideoInfoChange that updates the
 // program relay's VideoInfo. Used by both the compositor and key bridge.
-func (a *App) videoInfoCallback(subsystem string) func(sps, pps []byte, width, height int) {
-	return func(sps, pps []byte, width, height int) {
-		avcC := a.buildAVCConfig(sps, pps)
-		if avcC != nil {
-			a.programRelay.SetVideoInfo(a.buildVideoInfo(sps, avcC, width, height))
-			slog.Info(subsystem+": updated program relay VideoInfo", "w", width, "h", height)
+// For AVC pipelines, vps is nil and the callback builds an AVCDecoderConfigurationRecord.
+// For HEVC pipelines, vps is set and the codec string is "hev1".
+func (a *App) videoInfoCallback(subsystem string) func(vps, sps, pps []byte, width, height int) {
+	return func(vps, sps, pps []byte, width, height int) {
+		if vps != nil {
+			// HEVC path: set codec string for HEVC.
+			// DecoderConfig (HEVCDecoderConfigurationRecord) is not yet built
+			// — viewers use in-band VPS/SPS/PPS from keyframes for now.
+			a.programRelay.SetVideoInfo(distribution.VideoInfo{
+				Codec:  "hev1",
+				Width:  width,
+				Height: height,
+			})
+			slog.Info(subsystem+": updated program relay VideoInfo (HEVC)", "w", width, "h", height)
+		} else {
+			// AVC path: build AVCDecoderConfigurationRecord.
+			avcC := a.buildAVCConfig(sps, pps)
+			if avcC != nil {
+				a.programRelay.SetVideoInfo(a.buildVideoInfo(sps, avcC, width, height))
+				slog.Info(subsystem+": updated program relay VideoInfo", "w", width, "h", height)
+			}
 		}
 	}
 }

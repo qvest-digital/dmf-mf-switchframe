@@ -119,6 +119,82 @@ __global__ void p016_to_nv12_kernel(
     }
 }
 
+// ============================================================================
+// P210 (10-bit 4:2:2 semi-planar) conversion kernels
+// ============================================================================
+
+// Convert YUV422P10LE (3 separate uint16 planes) to P210 (Y + interleaved UV)
+__global__ void yuv422p10_to_p210_kernel(
+    uint16_t* __restrict__ dst,
+    const uint16_t* __restrict__ y_src,
+    const uint16_t* __restrict__ cb_src,
+    const uint16_t* __restrict__ cr_src,
+    int width, int height, int dstPitch16, int srcStride)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x < width && y < height) {
+        dst[y * dstPitch16 + x] = y_src[y * srcStride + x];
+    }
+
+    int chromaW = width / 2;
+    if (x < chromaW && y < height) {
+        int uv_offset = dstPitch16 * height;
+        int uv_idx = y * dstPitch16 + x * 2;
+        int src_idx = y * (srcStride / 2) + x;
+        dst[uv_offset + uv_idx]     = cb_src[src_idx];
+        dst[uv_offset + uv_idx + 1] = cr_src[src_idx];
+    }
+}
+
+// Convert P210 to YUV422P10LE (deinterleave)
+__global__ void p210_to_yuv422p10_kernel(
+    uint16_t* __restrict__ y_dst,
+    uint16_t* __restrict__ cb_dst,
+    uint16_t* __restrict__ cr_dst,
+    const uint16_t* __restrict__ src,
+    int width, int height, int srcPitch16, int dstStride)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x < width && y < height) {
+        y_dst[y * dstStride + x] = src[y * srcPitch16 + x];
+    }
+
+    int chromaW = width / 2;
+    if (x < chromaW && y < height) {
+        int uv_offset = srcPitch16 * height;
+        int uv_idx = y * srcPitch16 + x * 2;
+        int dst_idx = y * (dstStride / 2) + x;
+        cb_dst[dst_idx] = src[uv_offset + uv_idx];
+        cr_dst[dst_idx] = src[uv_offset + uv_idx + 1];
+    }
+}
+
+// Fill P210 frame with constant color (10-bit limited range)
+__global__ void p210_fill_kernel(
+    uint16_t* __restrict__ p210,
+    int width, int height, int pitch16,
+    uint16_t yVal, uint16_t cbVal, uint16_t crVal)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x < width && y < height) {
+        p210[y * pitch16 + x] = yVal;
+    }
+
+    int chromaW = width / 2;
+    if (x < chromaW && y < height) {
+        int uv_offset = pitch16 * height;
+        int uv_idx = y * pitch16 + x * 2;
+        p210[uv_offset + uv_idx]     = cbVal;
+        p210[uv_offset + uv_idx + 1] = crVal;
+    }
+}
+
 // C wrapper functions for cgo
 extern "C" {
 
@@ -166,6 +242,61 @@ cudaError_t p016_to_nv12(
     p016_to_nv12_kernel<<<grid, block, 0, stream>>>(
         nv12_dst, p016_y_src, p016_uv_src,
         width, height, dst_pitch, src_pitch_bytes);
+    return cudaGetLastError();
+}
+
+cudaError_t yuv422p10_to_p210(
+    uint8_t* dst, const uint8_t* src,
+    int width, int height, int dstPitch, int srcStride,
+    cudaStream_t stream)
+{
+    int dstPitch16 = dstPitch / 2;
+    int ySize = srcStride * height;
+    int chromaW = srcStride / 2;
+
+    const uint16_t* ySrc  = (const uint16_t*)src;
+    const uint16_t* cbSrc = ySrc + ySize;
+    const uint16_t* crSrc = cbSrc + chromaW * height;
+
+    dim3 block(BLOCK_DIM_X, BLOCK_DIM_Y);
+    dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
+    yuv422p10_to_p210_kernel<<<grid, block, 0, stream>>>(
+        (uint16_t*)dst, ySrc, cbSrc, crSrc,
+        width, height, dstPitch16, srcStride);
+    return cudaGetLastError();
+}
+
+cudaError_t p210_to_yuv422p10(
+    uint8_t* dst, const uint8_t* src,
+    int width, int height, int srcPitch, int dstStride,
+    cudaStream_t stream)
+{
+    int srcPitch16 = srcPitch / 2;
+    int ySize = dstStride * height;
+    int chromaW = dstStride / 2;
+
+    uint16_t* yDst  = (uint16_t*)dst;
+    uint16_t* cbDst = yDst + ySize;
+    uint16_t* crDst = cbDst + chromaW * height;
+
+    dim3 block(BLOCK_DIM_X, BLOCK_DIM_Y);
+    dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
+    p210_to_yuv422p10_kernel<<<grid, block, 0, stream>>>(
+        yDst, cbDst, crDst,
+        (const uint16_t*)src,
+        width, height, srcPitch16, dstStride);
+    return cudaGetLastError();
+}
+
+cudaError_t p210_fill(
+    uint8_t* p210, int width, int height, int pitch,
+    uint16_t yVal, uint16_t cbVal, uint16_t crVal, cudaStream_t stream)
+{
+    int pitch16 = pitch / 2;
+    dim3 block(BLOCK_DIM_X, BLOCK_DIM_Y);
+    dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
+    p210_fill_kernel<<<grid, block, 0, stream>>>(
+        (uint16_t*)p210, width, height, pitch16, yVal, cbVal, crVal);
     return cudaGetLastError();
 }
 

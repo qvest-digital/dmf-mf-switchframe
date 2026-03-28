@@ -23,7 +23,7 @@ func generateH264IDR(t *testing.T, w, h int) []byte {
 	}
 	defer enc.Close()
 
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	// Fill with a gradient pattern
 	for i := 0; i < w*h; i++ {
 		yuv[i] = byte(i%220) + 16 // Y: limited range gradient
@@ -64,7 +64,7 @@ func TestNVDECDecode(t *testing.T) {
 	}
 	defer enc.Close()
 
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		yuv[i] = byte(i%220) + 16
 	}
@@ -98,7 +98,7 @@ func TestNVDECDecode(t *testing.T) {
 	require.NoError(t, err, "NVDEC should decode after multiple frames")
 	assert.Equal(t, w, dw)
 	assert.Equal(t, h, dh)
-	assert.Equal(t, w*h*3/2, len(decYUV))
+	assert.Equal(t, yuvFrameSize(w, h), len(decYUV))
 
 	// Verify it's not all zeros (actual decoded content)
 	nonZero := 0
@@ -125,7 +125,7 @@ func TestNVDECDecodeMultipleFrames(t *testing.T) {
 	}
 	defer enc.Close()
 
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		yuv[i] = byte(i%220) + 16
 	}

@@ -130,16 +130,18 @@ func (c *Context) Pool() *FramePool {
 // CUDAContext returns nil on Metal builds (no CUDA).
 func (c *Context) CUDAContext() unsafe.Pointer { return nil }
 
-// GPUFrame holds a single NV12 frame in Metal GPU memory.
+// GPUFrame holds a single GPU frame in Metal GPU memory.
 // On Apple Silicon, the buffer is in unified memory — CPU and GPU
 // can both access it directly with zero-copy.
+// The Format field determines the pixel layout (NV12 or P210).
 type GPUFrame struct {
-	MetalBuf C.MetalBufferRef // NV12 data in unified memory
+	MetalBuf C.MetalBufferRef // pixel data in unified memory
 	DevPtr   uintptr          // CPU-accessible pointer to the same memory
 	Pitch    int              // row pitch in bytes (256-byte aligned)
 	Width    int
 	Height   int
-	PTS      int64 // 90kHz MPEG-TS timestamp
+	PTS      int64          // 90kHz MPEG-TS timestamp
+	Format   GPUFrameFormat // pixel format (default: GPUFormatNV12)
 
 	refs atomic.Int32 // reference counting
 	pool *FramePool   // return-to-pool on last release
@@ -184,9 +186,33 @@ func (f *GPUFrame) UVPlaneOffset() int {
 	return f.Pitch * f.Height
 }
 
-// NV12Size returns the total byte size of the NV12 frame.
+// NV12Size returns the total byte size assuming NV12 layout.
+// Deprecated: Use FrameSize() which is format-aware.
 func (f *GPUFrame) NV12Size() int {
 	return f.Pitch * f.Height * 3 / 2
+}
+
+// FrameSize returns the total byte size of the frame based on its format.
+// NV12: pitch * height * 3/2 (half-height UV plane).
+// P210: pitch * height * 2 (full-height UV plane).
+func (f *GPUFrame) FrameSize() int {
+	switch f.Format {
+	case GPUFormatP210:
+		return f.Pitch * f.Height * 2
+	default: // GPUFormatNV12
+		return f.Pitch * f.Height * 3 / 2
+	}
+}
+
+// UVPlaneHeight returns the height of the UV/chroma plane.
+// NV12 (4:2:0): height/2. P210 (4:2:2): height.
+func (f *GPUFrame) UVPlaneHeight() int {
+	switch f.Format {
+	case GPUFormatP210:
+		return f.Height
+	default: // GPUFormatNV12
+		return f.Height / 2
+	}
 }
 
 // contentsPtr returns a Go-accessible unsafe.Pointer to the Metal buffer contents.
@@ -260,6 +286,22 @@ type GPUAnimatedSTMap struct {
 	Height int
 	FPS    int
 	index  atomic.Int64
+}
+
+// NewGPUFrameFromDevPtr creates a GPUFrame wrapping an external device pointer.
+// On Metal builds this sets DevPtr as a uintptr. The MetalBuf is left nil
+// since the memory is not owned by a Metal allocation.
+func NewGPUFrameFromDevPtr(devPtr uintptr, width, height, pitch int, pts int64, format GPUFrameFormat) *GPUFrame {
+	f := &GPUFrame{
+		DevPtr: devPtr,
+		Width:  width,
+		Height: height,
+		Pitch:  pitch,
+		PTS:    pts,
+		Format: format,
+	}
+	f.refs.Store(1)
+	return f
 }
 
 // RawSinkFunc is a callback for raw YUV420p frames.

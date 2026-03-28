@@ -2,6 +2,12 @@ package graphics
 
 import "image"
 
+// yuvFrameSize returns the byte size of a YUV420 8-bit frame (w*h*3/2).
+// Local helper to avoid importing the switcher package.
+func yuvFrameSize(w, h int) int {
+	return w * h * 3 / 2
+}
+
 // AlphaBlendRGBA composites an RGBA overlay onto a YUV420 planar frame
 // using BT.709 coefficients. The overlay is expected to be the same
 // resolution as the video frame. alphaScale modulates the overlay alpha
@@ -100,7 +106,7 @@ func AlphaBlendRGBARectInto(yuv []byte, rgba []byte, frameW, frameH, overlayW, o
 	if len(rgba) < overlayW*overlayH*4 {
 		return scratch, colLUTScratch
 	}
-	if len(yuv) < frameW*frameH*3/2 {
+	if len(yuv) < yuvFrameSize(frameW, frameH) {
 		return scratch, colLUTScratch
 	}
 

@@ -154,6 +154,103 @@ __global__ void fill_rect_nv12_kernel(
     }
 }
 
+// ============================================================================
+// P210 (10-bit 4:2:2) composite kernels
+// ============================================================================
+
+// PIP composite for P210 Y plane (uint16 per sample)
+__global__ void pip_composite_p210_y_kernel(
+    uint16_t* __restrict__ dst, int dstW, int dstH, int dstPitch16,
+    const uint16_t* __restrict__ src, int srcW, int srcH, int srcPitch16,
+    int rectX, int rectY, int rectW, int rectH,
+    int alpha256,
+    int cropX, int cropY, int cropW, int cropH)
+{
+    int lx = blockIdx.x * blockDim.x + threadIdx.x;
+    int ly = blockIdx.y * blockDim.y + threadIdx.y;
+    if (lx >= rectW || ly >= rectH) return;
+
+    int dx = rectX + lx;
+    int dy = rectY + ly;
+    if (dx >= dstW || dy >= dstH || dx < 0 || dy < 0) return;
+
+    int srcRegionX = (cropW > 0) ? cropX : 0;
+    int srcRegionY = (cropW > 0) ? cropY : 0;
+    int srcRegionW = (cropW > 0) ? cropW : srcW;
+    int srcRegionH = (cropW > 0) ? cropH : srcH;
+
+    float srcXf = (float)srcRegionX + (float)lx * (float)(srcRegionW - 1) / (float)max(rectW - 1, 1);
+    float srcYf = (float)srcRegionY + (float)ly * (float)(srcRegionH - 1) / (float)max(rectH - 1, 1);
+    int sx = (int)srcXf;
+    int sy = (int)srcYf;
+    float fx = srcXf - sx;
+    float fy = srcYf - sy;
+
+    int sx1 = min(sx + 1, srcW - 1);
+    int sy1 = min(sy + 1, srcH - 1);
+
+    int v00 = src[sy  * srcPitch16 + sx];
+    int v10 = src[sy  * srcPitch16 + sx1];
+    int v01 = src[sy1 * srcPitch16 + sx];
+    int v11 = src[sy1 * srcPitch16 + sx1];
+
+    float top = v00 + (v10 - v00) * fx;
+    float bot = v01 + (v11 - v01) * fx;
+    int val = (int)(top + (bot - top) * fy + 0.5f);
+    val = min(max(val, 0), 1023);
+
+    int dstIdx = dy * dstPitch16 + dx;
+    if (alpha256 >= 256) {
+        dst[dstIdx] = (uint16_t)val;
+    } else {
+        int inv = 256 - alpha256;
+        int blended = ((int)dst[dstIdx] * inv + val * alpha256 + 128) >> 8;
+        dst[dstIdx] = (uint16_t)min(max(blended, 0), 1023);
+    }
+}
+
+// PIP composite for P210 UV plane (interleaved uint16 CbCr, full height)
+__global__ void pip_composite_p210_uv_kernel(
+    uint16_t* __restrict__ dstUV, int dstW, int dstChromaH, int dstPitch16,
+    const uint16_t* __restrict__ srcUV, int srcW, int srcChromaH, int srcPitch16,
+    int rectX, int rectY, int rectCW, int rectCH,
+    int alpha256,
+    int cropX, int cropY, int cropCW, int cropCH)
+{
+    int lx = blockIdx.x * blockDim.x + threadIdx.x;
+    int ly = blockIdx.y * blockDim.y + threadIdx.y;
+    if (lx >= rectCW || ly >= rectCH) return;
+
+    int dx = rectX / 2 + lx;
+    int dy = rectY + ly;  // P210: full height chroma
+    if (dx * 2 + 1 >= dstW || dy >= dstChromaH || dx < 0 || dy < 0) return;
+
+    int srcChromaX = (cropCW > 0) ? cropX : 0;
+    int srcChromaY = (cropCW > 0) ? cropY : 0;
+    int srcChromaW = (cropCW > 0) ? cropCW : srcW / 2;
+    int srcChromaHR = (cropCW > 0) ? cropCH : srcChromaH;
+
+    float srcXf = (float)srcChromaX + (float)lx * (float)(srcChromaW - 1) / (float)max(rectCW - 1, 1);
+    float srcYf = (float)srcChromaY + (float)ly * (float)(srcChromaHR - 1) / (float)max(rectCH - 1, 1);
+    int sx = min((int)srcXf, srcW / 2 - 1);
+    int sy = min((int)srcYf, srcChromaH - 1);
+
+    int srcIdx = sy * srcPitch16 + sx * 2;
+    int dstIdx = dy * dstPitch16 + dx * 2;
+    if (dstIdx + 1 >= dstPitch16 * dstChromaH) return;
+
+    if (alpha256 >= 256) {
+        dstUV[dstIdx]     = srcUV[srcIdx];
+        dstUV[dstIdx + 1] = srcUV[srcIdx + 1];
+    } else {
+        int inv = 256 - alpha256;
+        int cb = ((int)dstUV[dstIdx]     * inv + (int)srcUV[srcIdx]     * alpha256 + 128) >> 8;
+        int cr = ((int)dstUV[dstIdx + 1] * inv + (int)srcUV[srcIdx + 1] * alpha256 + 128) >> 8;
+        dstUV[dstIdx]     = (uint16_t)min(max(cb, 0), 1023);
+        dstUV[dstIdx + 1] = (uint16_t)min(max(cr, 0), 1023);
+    }
+}
+
 extern "C" {
 
 cudaError_t pip_composite_nv12(
@@ -225,6 +322,47 @@ cudaError_t fill_rect_nv12(
         dst, dstW, dstH, dstPitch,
         rectX, rectY, rectW, rectH,
         colorY, colorCb, colorCr);
+    return cudaGetLastError();
+}
+
+// --- P210 composite wrapper ---
+
+cudaError_t pip_composite_p210(
+    uint8_t* dst, int dstW, int dstH, int dstPitch,
+    const uint8_t* src, int srcW, int srcH, int srcPitch,
+    int rectX, int rectY, int rectW, int rectH,
+    int alpha256,
+    int cropX, int cropY, int cropW, int cropH,
+    cudaStream_t stream)
+{
+    int dstPitch16 = dstPitch / 2;
+    int srcPitch16 = srcPitch / 2;
+    dim3 block(BLOCK_DIM_X, BLOCK_DIM_Y);
+
+    // Y plane
+    dim3 gridY((rectW + block.x - 1) / block.x, (rectH + block.y - 1) / block.y);
+    pip_composite_p210_y_kernel<<<gridY, block, 0, stream>>>(
+        (uint16_t*)dst, dstW, dstH, dstPitch16,
+        (const uint16_t*)src, srcW, srcH, srcPitch16,
+        rectX, rectY, rectW, rectH, alpha256,
+        cropX, cropY, cropW, cropH);
+
+    // UV plane: P210 = full height, half width
+    int chromaRW = rectW / 2;
+    int chromaRH = rectH;  // full height for 4:2:2
+    int chromaCropX = cropX / 2;
+    int chromaCropY = cropY;  // full height
+    int chromaCropW = cropW / 2;
+    int chromaCropH = cropH;  // full height
+    if (chromaRW > 0 && chromaRH > 0) {
+        dim3 gridUV((chromaRW + block.x - 1) / block.x, (chromaRH + block.y - 1) / block.y);
+        pip_composite_p210_uv_kernel<<<gridUV, block, 0, stream>>>(
+            (uint16_t*)(dst + dstPitch * dstH), dstW, dstH, dstPitch16,
+            (const uint16_t*)(src + srcPitch * srcH), srcW, srcH, srcPitch16,
+            rectX, rectY, chromaRW, chromaRH, alpha256,
+            chromaCropX, chromaCropY, chromaCropW, chromaCropH);
+    }
+
     return cudaGetLastError();
 }
 

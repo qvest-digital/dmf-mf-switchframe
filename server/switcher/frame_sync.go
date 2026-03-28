@@ -949,15 +949,15 @@ func runFRCEmit(task *frcTask, r *pendingRelease, framePool *FramePool) {
 	// refs, DeepCopy allocates a second buffer and the first is never released.
 	result := *emitted
 	result.refs = nil // detach from emitted's refcount (if any)
-	if framePool != nil && len(emitted.YUV) <= framePool.bufSize {
-		yuvCopy := framePool.Acquire()[:len(emitted.YUV)]
-		copy(yuvCopy, emitted.YUV)
-		result.YUV = yuvCopy
+	if framePool != nil && len(emitted.Data) <= framePool.bufSize {
+		yuvCopy := framePool.Acquire()[:len(emitted.Data)]
+		copy(yuvCopy, emitted.Data)
+		result.Data = yuvCopy
 		result.pool = framePool
 	} else {
-		yuvCopy := make([]byte, len(emitted.YUV))
-		copy(yuvCopy, emitted.YUV)
-		result.YUV = yuvCopy
+		yuvCopy := make([]byte, len(emitted.Data))
+		copy(yuvCopy, emitted.Data)
+		result.Data = yuvCopy
 		result.pool = nil
 	}
 	result.SetRefs(1)

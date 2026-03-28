@@ -7,10 +7,10 @@ import (
 )
 
 func TestFramePoolAcquireRelease(t *testing.T) {
-	fp := NewFramePool(4, 320, 240)
+	fp := NewFramePool(4, 320, 240, ColorYUV420_8bit)
 	defer fp.Close()
 
-	bufSize := 320 * 240 * 3 / 2
+	bufSize := ColorYUV420_8bit.FrameSize(320, 240)
 
 	buf := fp.Acquire()
 	require.Len(t, buf, bufSize)
@@ -23,7 +23,7 @@ func TestFramePoolAcquireRelease(t *testing.T) {
 }
 
 func TestFramePoolExhaustion(t *testing.T) {
-	fp := NewFramePool(2, 8, 8)
+	fp := NewFramePool(2, 8, 8, ColorYUV420_8bit)
 	defer fp.Close()
 
 	// Acquire all pre-allocated buffers
@@ -37,7 +37,7 @@ func TestFramePoolExhaustion(t *testing.T) {
 	require.Equal(t, uint64(2), hits)
 	require.Equal(t, uint64(1), misses)
 
-	require.Len(t, b3, 8*8*3/2)
+	require.Len(t, b3, ColorYUV420_8bit.FrameSize(8, 8))
 
 	fp.Release(b1)
 	fp.Release(b2)
@@ -45,7 +45,7 @@ func TestFramePoolExhaustion(t *testing.T) {
 }
 
 func TestFramePoolWrongSizeDiscard(t *testing.T) {
-	fp := NewFramePool(2, 320, 240)
+	fp := NewFramePool(2, 320, 240, ColorYUV420_8bit)
 	defer fp.Close()
 
 	// Release a wrong-sized buffer — should be discarded
@@ -63,7 +63,7 @@ func TestFramePoolWrongSizeDiscard(t *testing.T) {
 }
 
 func TestFramePoolLIFOCacheWarmth(t *testing.T) {
-	fp := NewFramePool(4, 8, 8)
+	fp := NewFramePool(4, 8, 8, ColorYUV420_8bit)
 	defer fp.Close()
 
 	// Acquire 2 buffers
@@ -84,7 +84,7 @@ func TestFramePoolLIFOCacheWarmth(t *testing.T) {
 }
 
 func TestFramePoolCapLimit(t *testing.T) {
-	fp := NewFramePool(2, 8, 8)
+	fp := NewFramePool(2, 8, 8, ColorYUV420_8bit)
 	defer fp.Close()
 
 	// Acquire all 2, then acquire 3 more (fallback allocs)
@@ -111,23 +111,23 @@ func TestFramePoolCapLimit(t *testing.T) {
 }
 
 func TestFramePoolClose(t *testing.T) {
-	fp := NewFramePool(4, 8, 8)
+	fp := NewFramePool(4, 8, 8, ColorYUV420_8bit)
 	fp.Close()
 
 	// After close, Acquire falls back to make()
 	buf := fp.Acquire()
-	require.Len(t, buf, 8*8*3/2)
+	require.Len(t, buf, ColorYUV420_8bit.FrameSize(8, 8))
 	_, misses := fp.Stats()
 	require.Equal(t, uint64(1), misses)
 }
 
 func TestFramePoolFormatChange(t *testing.T) {
 	// Simulate format change: old pool buffers are wrong size for new pool
-	oldPool := NewFramePool(4, 320, 240)
-	newPool := NewFramePool(4, 640, 480)
+	oldPool := NewFramePool(4, 320, 240, ColorYUV420_8bit)
+	newPool := NewFramePool(4, 640, 480, ColorYUV420_8bit)
 
 	oldBuf := oldPool.Acquire()
-	require.Len(t, oldBuf, 320*240*3/2)
+	require.Len(t, oldBuf, ColorYUV420_8bit.FrameSize(320, 240))
 
 	// Release old buffer to new pool — should be discarded (too small)
 	newPool.Release(oldBuf)
@@ -135,7 +135,7 @@ func TestFramePoolFormatChange(t *testing.T) {
 	// New pool should still have all 4 pre-allocated buffers
 	for i := 0; i < 4; i++ {
 		buf := newPool.Acquire()
-		require.Len(t, buf, 640*480*3/2)
+		require.Len(t, buf, ColorYUV420_8bit.FrameSize(640, 480))
 	}
 
 	hits, _ := newPool.Stats()
@@ -146,11 +146,11 @@ func TestFramePoolFormatChange(t *testing.T) {
 }
 
 func TestFramePool_MmapBacked(t *testing.T) {
-	fp := NewFramePool(4, 64, 48)
+	fp := NewFramePool(4, 64, 48, ColorYUV420_8bit)
 	defer fp.Close()
 
 	buf := fp.Acquire()
-	require.Len(t, buf, 64*48*3/2)
+	require.Len(t, buf, ColorYUV420_8bit.FrameSize(64, 48))
 
 	// Write and read back to verify the mmap region is usable.
 	buf[0] = 0xAB
@@ -166,18 +166,18 @@ func TestFramePool_MmapBacked(t *testing.T) {
 }
 
 func TestFramePool_CloseFreesMemory(t *testing.T) {
-	fp := NewFramePool(4, 64, 48)
+	fp := NewFramePool(4, 64, 48, ColorYUV420_8bit)
 	// Acquire and release to exercise the pool.
 	buf := fp.Acquire()
 	fp.Release(buf)
 	fp.Close()
 	// After close, acquire falls back to make().
 	buf2 := fp.Acquire()
-	require.Len(t, buf2, 64*48*3/2)
+	require.Len(t, buf2, ColorYUV420_8bit.FrameSize(64, 48))
 }
 
 func TestFramePool_MmapBufsTracked(t *testing.T) {
-	fp := NewFramePool(8, 64, 48)
+	fp := NewFramePool(8, 64, 48, ColorYUV420_8bit)
 
 	// All pre-allocated buffers should be tracked as mmap'd.
 	fp.mu.Lock()
@@ -195,7 +195,7 @@ func TestFramePool_MmapBufsTracked(t *testing.T) {
 }
 
 func BenchmarkFramePoolAcquireRelease(b *testing.B) {
-	fp := NewFramePool(8, 1920, 1080)
+	fp := NewFramePool(8, 1920, 1080, ColorYUV420_8bit)
 	defer fp.Close()
 
 	b.ResetTimer()

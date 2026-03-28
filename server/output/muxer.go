@@ -17,7 +17,7 @@ import (
 
 const (
 	muxerBufCap = 65536 // 64KB default buffer capacity for Annex B buffers
-	// videoPID is the MPEG-TS packet identifier for the H.264 video stream.
+	// videoPID is the MPEG-TS packet identifier for the video stream (H.264 or HEVC).
 	videoPID uint16 = 0x100
 	// audioPID is the MPEG-TS packet identifier for the AAC audio stream.
 	audioPID uint16 = 0x101
@@ -44,7 +44,9 @@ const (
 
 // TSMuxer wraps go-astits to produce 188-byte MPEG-TS packets from
 // Prism video and audio frames. Initialization is deferred until the
-// first keyframe arrives, since SPS/PPS are needed for PAT/PMT.
+// first keyframe arrives. The video codec (AVC or HEVC) is detected
+// from the first keyframe's Codec field and determines the PMT stream
+// type and parameter set prepending behavior.
 type TSMuxer struct {
 	mu            sync.Mutex
 	muxer         *astits.Muxer
@@ -55,6 +57,7 @@ type TSMuxer struct {
 	pendingAudio  []*media.AudioFrame
 	annexBBuf     []byte
 	prependBuf    []byte
+	videoCodec    string // "h264" (default) or "h265"; set from first keyframe's Codec field
 	scte35PID     uint16 // 0 = disabled; non-zero = enabled with this PID
 	pendingSCTE35 [][]byte
 
@@ -271,8 +274,8 @@ func setProgramDescriptors(muxer *astits.Muxer, descriptors []*astits.Descriptor
 // not yet initialized, non-keyframes are silently dropped. The first
 // keyframe triggers initialization (PAT/PMT with codec config).
 //
-// On keyframes, SPS and PPS are prepended as Annex B NALUs before the
-// frame data.
+// On keyframes, parameter sets are prepended as Annex B NALUs before the
+// frame data: SPS+PPS for AVC, VPS+SPS+PPS for HEVC.
 func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -280,6 +283,12 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 	if !m.initialized {
 		if !frame.IsKeyframe {
 			return nil
+		}
+		// Detect codec from first keyframe.
+		if frame.Codec == "h265" {
+			m.videoCodec = "h265"
+		} else {
+			m.videoCodec = "h264"
 		}
 		if err := m.init(frame.PTS); err != nil {
 			return err
@@ -339,16 +348,23 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 		}
 	}
 
-	// Convert AVC1 wire data to Annex B format, reusing the buffer.
-	m.annexBBuf = codec.AVC1ToAnnexBInto(frame.WireData, m.annexBBuf[:0])
+	// Convert wire data (4-byte length-prefixed NALUs) to Annex B format.
+	// The wire format is identical for AVC and HEVC.
+	m.annexBBuf = codec.WireToAnnexBInto(frame.WireData, m.annexBBuf[:0])
 	if len(m.annexBBuf) == 0 {
 		return nil
 	}
 
 	annexB := m.annexBBuf
-	// On keyframes, prepend SPS + PPS as Annex B NALUs.
+	// On keyframes, prepend parameter sets as Annex B NALUs.
 	if frame.IsKeyframe {
-		m.prependBuf = codec.PrependSPSPPSInto(frame.SPS, frame.PPS, m.annexBBuf, m.prependBuf[:0])
+		if m.videoCodec == "h265" {
+			// HEVC: prepend VPS + SPS + PPS.
+			m.prependBuf = codec.PrependVPSSPSPPSInto(frame.VPS, frame.SPS, frame.PPS, m.annexBBuf, m.prependBuf[:0])
+		} else {
+			// AVC: prepend SPS + PPS.
+			m.prependBuf = codec.PrependSPSPPSInto(frame.SPS, frame.PPS, m.annexBBuf, m.prependBuf[:0])
+		}
 		annexB = m.prependBuf
 	}
 
@@ -454,6 +470,7 @@ func (m *TSMuxer) Close() error {
 	}
 	m.muxer = nil
 	m.initialized = false
+	m.videoCodec = ""
 	m.pendingAudio = nil
 	m.pendingSCTE35 = nil
 	m.pendingIDRSCTE35 = nil
@@ -465,7 +482,7 @@ func (m *TSMuxer) Close() error {
 }
 
 // init creates the go-astits muxer and registers elementary streams.
-// Must be called with m.mu held.
+// Must be called with m.mu held. The videoCodec field must be set before calling.
 func (m *TSMuxer) init(_ int64) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
@@ -473,10 +490,14 @@ func (m *TSMuxer) init(_ int64) error {
 	m.buf = &bytes.Buffer{}
 	m.muxer = astits.NewMuxer(ctx, m.buf)
 
-	// Register video elementary stream (H.264).
+	// Register video elementary stream with codec-appropriate stream type.
+	videoStreamType := astits.StreamTypeH264Video
+	if m.videoCodec == "h265" {
+		videoStreamType = astits.StreamTypeH265Video
+	}
 	if err := m.muxer.AddElementaryStream(astits.PMTElementaryStream{
 		ElementaryPID: videoPID,
-		StreamType:    astits.StreamTypeH264Video,
+		StreamType:    videoStreamType,
 	}); err != nil {
 		cancel()
 		return err

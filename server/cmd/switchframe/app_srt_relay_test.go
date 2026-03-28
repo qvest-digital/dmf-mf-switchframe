@@ -2,6 +2,8 @@ package main
 
 import (
 	"testing"
+
+	"github.com/zsiec/switchframe/server/switcher"
 )
 
 // TestSRTRelayVideoCallback_SingleCopy verifies that the OnRawVideo callback
@@ -24,7 +26,7 @@ func TestSRTRelayVideoCallback_SingleCopy(t *testing.T) {
 	relayVideoCh := make(chan videoJob, 4)
 
 	// Simulate a decoded YUV frame from FFmpeg (source buffer we must not retain).
-	srcYUV := make([]byte, 1920*1080*3/2) // ~3.1MB 1080p YUV420
+	srcYUV := make([]byte, switcher.ColorYUV420_8bit.FrameSize(1920, 1080)) // ~3.1MB 1080p YUV420
 	for i := range srcYUV {
 		srcYUV[i] = byte(i & 0xFF)
 	}
@@ -79,7 +81,7 @@ func TestSRTRelayVideoCallback_SingleCopy(t *testing.T) {
 // BenchmarkSRTRelayVideoCallback_DoubleCopy benchmarks the old pattern
 // that allocates two separate YUV copies per frame.
 func BenchmarkSRTRelayVideoCallback_DoubleCopy(b *testing.B) {
-	srcYUV := make([]byte, 1920*1080*3/2)
+	srcYUV := make([]byte, switcher.ColorYUV420_8bit.FrameSize(1920, 1080))
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
@@ -95,7 +97,7 @@ func BenchmarkSRTRelayVideoCallback_DoubleCopy(b *testing.B) {
 // BenchmarkSRTRelayVideoCallback_SingleCopy benchmarks the fixed pattern
 // that makes one copy shared by both channels.
 func BenchmarkSRTRelayVideoCallback_SingleCopy(b *testing.B) {
-	srcYUV := make([]byte, 1920*1080*3/2)
+	srcYUV := make([]byte, switcher.ColorYUV420_8bit.FrameSize(1920, 1080))
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {

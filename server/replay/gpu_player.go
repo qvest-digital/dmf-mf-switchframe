@@ -370,7 +370,7 @@ func (p *gpuReplayPlayer) run(ctx context.Context) {
 	// CPU-side YUV buffer for RawVideoOutput (lazily used).
 	var cpuYUV []byte
 	if p.config.RawVideoOutput != nil {
-		cpuYUV = make([]byte, w*h*3/2)
+		cpuYUV = make([]byte, yuvFrameSize(w, h))
 	}
 
 	// Create timer for pacing.

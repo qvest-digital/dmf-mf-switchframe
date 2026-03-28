@@ -10,9 +10,9 @@ func TestProcessingFrameYUVSize(t *testing.T) {
 	pf := &ProcessingFrame{
 		Width:  8,
 		Height: 8,
-		YUV:    make([]byte, 8*8*3/2),
+		Data:    make([]byte, ColorYUV420_8bit.FrameSize(8, 8)),
 	}
-	require.Equal(t, 8*8*3/2, len(pf.YUV))
+	require.Equal(t, ColorYUV420_8bit.FrameSize(8, 8), len(pf.Data))
 	require.Equal(t, 8, pf.Width)
 	require.Equal(t, 8, pf.Height)
 }
@@ -21,7 +21,7 @@ func TestProcessingFrameDeepCopy(t *testing.T) {
 	original := &ProcessingFrame{
 		Width:      4,
 		Height:     4,
-		YUV:        []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24},
+		Data:        []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24},
 		PTS:        1000,
 		DTS:        900,
 		IsKeyframe: true,
@@ -38,21 +38,21 @@ func TestProcessingFrameDeepCopy(t *testing.T) {
 	require.Equal(t, original.IsKeyframe, copied.IsKeyframe)
 	require.Equal(t, original.GroupID, copied.GroupID)
 	require.Equal(t, original.Codec, copied.Codec)
-	require.Equal(t, original.YUV, copied.YUV)
+	require.Equal(t, original.Data, copied.Data)
 
 	// Verify it's a true deep copy
-	copied.YUV[0] = 255
-	require.NotEqual(t, original.YUV[0], copied.YUV[0])
+	copied.Data[0] = 255
+	require.NotEqual(t, original.Data[0], copied.Data[0])
 }
 
 func TestProcessingFrameDeepCopyWithPool(t *testing.T) {
-	pool := NewFramePool(4, 4, 4)
+	pool := NewFramePool(4, 4, 4, ColorYUV420_8bit)
 	defer pool.Close()
 
 	original := &ProcessingFrame{
 		Width:      4,
 		Height:     4,
-		YUV:        pool.Acquire(),
+		Data:        pool.Acquire(),
 		PTS:        1000,
 		DTS:        900,
 		IsKeyframe: true,
@@ -60,7 +60,7 @@ func TestProcessingFrameDeepCopyWithPool(t *testing.T) {
 		Codec:      "h264",
 		pool:       pool,
 	}
-	copy(original.YUV, []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24})
+	copy(original.Data, []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24})
 
 	copied := original.DeepCopy()
 
@@ -68,9 +68,9 @@ func TestProcessingFrameDeepCopyWithPool(t *testing.T) {
 	require.NotNil(t, copied.pool)
 
 	// Data is independent
-	require.Equal(t, original.YUV, copied.YUV)
-	copied.YUV[0] = 255
-	require.NotEqual(t, original.YUV[0], copied.YUV[0])
+	require.Equal(t, original.Data, copied.Data)
+	copied.Data[0] = 255
+	require.NotEqual(t, original.Data[0], copied.Data[0])
 
 	// Release both — should go back to pool
 	original.ReleaseYUV()
@@ -82,18 +82,18 @@ func TestProcessingFrameDeepCopyWithPool(t *testing.T) {
 }
 
 func TestProcessingFrameReleaseYUVWithPool(t *testing.T) {
-	pool := NewFramePool(4, 8, 8)
+	pool := NewFramePool(4, 8, 8, ColorYUV420_8bit)
 	defer pool.Close()
 
 	pf := &ProcessingFrame{
 		Width:  8,
 		Height: 8,
-		YUV:    pool.Acquire(),
+		Data:    pool.Acquire(),
 		pool:   pool,
 	}
 
 	pf.ReleaseYUV()
-	require.Nil(t, pf.YUV)
+	require.Nil(t, pf.Data)
 
 	// Double release is safe
 	pf.ReleaseYUV()
@@ -103,7 +103,7 @@ func TestProcessingFrame_TimestampsDeepCopy(t *testing.T) {
 	original := &ProcessingFrame{
 		Width:           4,
 		Height:          4,
-		YUV:             make([]byte, 4*4*3/2),
+		Data:             make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		PTS:             1000,
 		ArrivalNano:     100000,
 		DecodeStartNano: 200000,
@@ -119,18 +119,18 @@ func TestProcessingFrame_TimestampsDeepCopy(t *testing.T) {
 	require.Equal(t, original.SyncReleaseNano, copied.SyncReleaseNano, "SyncReleaseNano should be preserved")
 
 	// Verify modifying the copy doesn't affect the original's YUV
-	copied.YUV[0] = 255
-	require.NotEqual(t, original.YUV[0], copied.YUV[0])
+	copied.Data[0] = 255
+	require.NotEqual(t, original.Data[0], copied.Data[0])
 }
 
 func TestReleaseYUVUnderflowLogsAndLeaks(t *testing.T) {
-	pool := NewFramePool(4, 8, 8)
+	pool := NewFramePool(4, 8, 8, ColorYUV420_8bit)
 	defer pool.Close()
 
 	pf := &ProcessingFrame{
 		Width:  8,
 		Height: 8,
-		YUV:    pool.Acquire(),
+		Data:    pool.Acquire(),
 		pool:   pool,
 	}
 	pf.SetRefs(1)
@@ -157,12 +157,12 @@ func TestReleaseYUVUnderflowLogsAndLeaks(t *testing.T) {
 
 func TestDeepCopyPoolSizeMismatch(t *testing.T) {
 	// Create a small pool (2x2 = 6 bytes YUV420)
-	pool := NewFramePool(4, 2, 2)
+	pool := NewFramePool(4, 2, 2, ColorYUV420_8bit)
 	defer pool.Close()
 
-	// Create a frame with YUV larger than the pool's bufSize (2*2*3/2 = 6 bytes).
+	// Create a frame with YUV larger than the pool's bufSize (ColorYUV420_8bit.FrameSize(2, 2) = 6 bytes).
 	// Use an 8x8 frame = 96 bytes, which exceeds pool.bufSize of 6.
-	largeYUV := make([]byte, 8*8*3/2)
+	largeYUV := make([]byte, ColorYUV420_8bit.FrameSize(8, 8))
 	for i := range largeYUV {
 		largeYUV[i] = byte(i % 256)
 	}
@@ -170,7 +170,7 @@ func TestDeepCopyPoolSizeMismatch(t *testing.T) {
 	original := &ProcessingFrame{
 		Width:  8,
 		Height: 8,
-		YUV:    largeYUV,
+		Data:    largeYUV,
 		PTS:    2000,
 		pool:   pool,
 	}
@@ -183,14 +183,14 @@ func TestDeepCopyPoolSizeMismatch(t *testing.T) {
 	})
 
 	// Verify data was copied correctly
-	require.Equal(t, original.YUV, copied.YUV)
+	require.Equal(t, original.Data, copied.Data)
 	require.Equal(t, original.Width, copied.Width)
 	require.Equal(t, original.Height, copied.Height)
 	require.Equal(t, original.PTS, copied.PTS)
 
 	// Verify it's a true deep copy
-	copied.YUV[0] = 255
-	require.NotEqual(t, original.YUV[0], copied.YUV[0])
+	copied.Data[0] = 255
+	require.NotEqual(t, original.Data[0], copied.Data[0])
 }
 
 func TestProcessingFrameGPUData(t *testing.T) {
@@ -201,7 +201,7 @@ func TestProcessingFrameGPUData(t *testing.T) {
 	pf := &ProcessingFrame{
 		Width:  4,
 		Height: 4,
-		YUV:    make([]byte, 4*4*3/2),
+		Data:    make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 	}
 
 	// Initially nil.
@@ -232,7 +232,7 @@ func TestProcessingFrameGPUDataRefCounting(t *testing.T) {
 	pf := &ProcessingFrame{
 		Width:   4,
 		Height:  4,
-		YUV:     make([]byte, 4*4*3/2),
+		Data:     make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		GPUData: fakeRC,
 	}
 
@@ -268,7 +268,7 @@ func TestProcessingFrame_GPUData_OnlyReleasedOnFinalRef(t *testing.T) {
 	pf := &ProcessingFrame{
 		Width:   4,
 		Height:  4,
-		YUV:     make([]byte, 4*4*3/2),
+		Data:     make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		GPUData: fakeRC,
 	}
 	pf.SetRefs(2) // simulate pipeline ref + async encode ref
@@ -290,13 +290,13 @@ func TestProcessingFrameNilPoolFallback(t *testing.T) {
 	original := &ProcessingFrame{
 		Width:  4,
 		Height: 4,
-		YUV:    make([]byte, 4*4*3/2),
+		Data:    make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 	}
 
 	copied := original.DeepCopy()
-	require.Len(t, copied.YUV, 4*4*3/2)
+	require.Len(t, copied.Data, ColorYUV420_8bit.FrameSize(4, 4))
 
 	// ReleaseYUV with nil pool doesn't panic
 	copied.ReleaseYUV()
-	require.Nil(t, copied.YUV)
+	require.Nil(t, copied.Data)
 }

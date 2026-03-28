@@ -716,7 +716,7 @@ func (c *Compositor) ProcessYUV(yuv []byte, width, height int, blendScratch *[]b
 	if width%2 != 0 || height%2 != 0 || width <= 0 || height <= 0 {
 		return yuv
 	}
-	if len(yuv) < width*height*3/2 {
+	if len(yuv) < yuvFrameSize(width, height) {
 		return yuv
 	}
 
@@ -855,6 +855,137 @@ func (c *Compositor) ProcessYUV(yuv []byte, width, height int, blendScratch *[]b
 		}
 	}
 	return yuv
+}
+
+// ProcessYUV10 composites graphics layers onto a YUV422P10LE frame in-place.
+// This is the 10-bit equivalent of ProcessYUV. It uses AlphaBlendRGBA10 for
+// full-frame overlays. Sub-frame (rect) compositing currently falls back to
+// full-frame blending — acceptable since graphics overlays are typically
+// full-frame (lower thirds, bugs, tickers are rendered at full resolution).
+func (c *Compositor) ProcessYUV10(yuv []byte, width, height int) []byte {
+	if width%2 != 0 || height <= 0 || width <= 0 {
+		return yuv
+	}
+	if len(yuv) < yuv422p10FrameSize(width, height) {
+		return yuv
+	}
+
+	// Fast path: skip when no layers are visible and no tickers need advancement.
+	c.mu.RLock()
+	hasWork := c.hasVisibleLayersLocked() || c.hasActiveTickersLocked() || c.hasActiveSequencesLocked()
+	c.mu.RUnlock()
+	if !hasWork {
+		return yuv
+	}
+
+	// Advance tickers and sequences under write lock (same as 8-bit path).
+	c.mu.Lock()
+	if c.pipelineFPSNum > 0 && c.pipelineFPSDen > 0 {
+		for _, id := range c.sortedIDs {
+			layer := c.layers[id]
+			if layer.ticker == nil || !layer.active || layer.ticker.done {
+				continue
+			}
+			ts := layer.ticker
+			pixelsPerFrame := ts.speed * float64(c.pipelineFPSDen) / float64(c.pipelineFPSNum)
+			ts.xOffset += pixelsPerFrame
+			if ts.loopPoint > 0 {
+				for ts.xOffset >= float64(ts.loopPoint) {
+					ts.xOffset -= float64(ts.loopPoint)
+				}
+			} else {
+				stripW := ts.strip.Bounds().Dx()
+				if int(ts.xOffset)+ts.viewW > stripW {
+					ts.done = true
+					layer.active = false
+					if ts.doneCh != nil {
+						close(ts.doneCh)
+						ts.doneCh = nil
+					}
+					continue
+				}
+			}
+			xInt := int(ts.xOffset)
+			if ts.strip != nil && ts.viewport != nil {
+				extractTickerViewport(ts.strip, xInt, ts.viewW, ts.viewH, ts.viewport)
+				layer.overlay = ts.viewport
+				layer.overlayWidth = ts.viewW
+				layer.overlayHeight = ts.viewH
+				layer.overlayGen++
+			}
+		}
+	}
+	for _, id := range c.sortedIDs {
+		layer := c.layers[id]
+		if layer.seq == nil || !layer.active {
+			continue
+		}
+		ss := layer.seq
+		if ss.phase == seqPhaseIdle || ss.phase == seqPhaseDone {
+			continue
+		}
+		if ss.tick() {
+			frame := ss.currentFrame()
+			if frame != nil {
+				layer.overlay = frame
+				layer.overlayWidth = ss.cropW
+				layer.overlayHeight = ss.cropH
+				layer.overlayGen++
+			}
+		}
+		if ss.phase == seqPhaseDone {
+			layer.active = false
+			layer.fadePosition = 0.0
+		}
+	}
+	c.mu.Unlock()
+
+	// Compositing pass under read lock.
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	for _, id := range c.sortedIDs {
+		layer := c.layers[id]
+		if !layer.active || layer.fadePosition < 1.0/255.0 || layer.overlay == nil {
+			continue
+		}
+		if isOverlayTransparent(layer.overlay, layer.overlayWidth*layer.overlayHeight) {
+			continue
+		}
+		overlay := layer.overlay
+		if layer.fadePosition < 1.0 {
+			overlay = applyFadeAlpha(overlay, layer.overlayWidth*layer.overlayHeight, layer.fadePosition)
+		}
+
+		fullFrame := fullFrameRect(width, height)
+		if (layer.rect == image.Rectangle{} || layer.rect == fullFrame) &&
+			layer.overlayWidth == width && layer.overlayHeight == height {
+			// Fast path: full-frame overlay at matching dimensions.
+			AlphaBlendRGBA10(yuv, overlay, width, height)
+		} else {
+			// Sub-frame: blend overlay into rect region.
+			rect := layer.rect
+			if (rect == image.Rectangle{}) {
+				rect = fullFrame
+			}
+			AlphaBlendRGBARect10(yuv, overlay, width, height,
+				layer.overlayWidth, layer.overlayHeight,
+				rect, layer.fadePosition)
+		}
+	}
+	return yuv
+}
+
+// applyFadeAlpha creates a copy of RGBA data with alpha scaled by fadePosition.
+func applyFadeAlpha(rgba []byte, pixelCount int, fadePosition float64) []byte {
+	scaled := make([]byte, len(rgba))
+	copy(scaled, rgba)
+	fade := int32(fadePosition * 255.0)
+	for i := 0; i < pixelCount; i++ {
+		a := int32(scaled[i*4+3])
+		scaled[i*4+3] = byte((a * fade + 128) >> 8)
+	}
+	return scaled
 }
 
 // IsActive returns whether any layer is currently active.

@@ -11,7 +11,7 @@ func newDepthAnythingV2(planPath string, inputW, inputH int) (*depthAnythingV2, 
 }
 
 // Infer returns ErrDisabled on non-TensorRT builds.
-func (d *depthAnythingV2) Infer(inputPtr uintptr, w, h, pitch int, outputPtr uintptr) error {
+func (d *depthAnythingV2) Infer(inputPtr uintptr, w, h, pitch int, outputPtr uintptr, format FrameFormat) error {
 	return ErrDisabled
 }
 

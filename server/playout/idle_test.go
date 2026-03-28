@@ -69,7 +69,7 @@ func TestIdleLoop_BlackFrameCorrectSize(t *testing.T) {
 			defer loop.Close()
 
 			frame := loop.NextFrame()
-			expected := tc.w * tc.h * 3 / 2
+			expected := yuvFrameSize(tc.w, tc.h)
 			if len(frame.YUV) != expected {
 				t.Fatalf("YUV len = %d, want %d", len(frame.YUV), expected)
 			}

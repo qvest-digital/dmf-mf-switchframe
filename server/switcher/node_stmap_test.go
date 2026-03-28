@@ -17,7 +17,7 @@ func TestSTMapProgramNode_Configure(t *testing.T) {
 	n := &stmapProgramNode{}
 	err := n.Configure(PipelineFormat{Width: 1920, Height: 1080})
 	require.NoError(t, err)
-	require.Len(t, n.buf, 1920*1080*3/2, "buffer should be allocated for full YUV420 frame")
+	require.Len(t, n.buf, ColorYUV420_8bit.FrameSize(1920, 1080), "buffer should be allocated for full YUV420 frame")
 }
 
 func TestSTMapProgramNode_Inactive_WhenNoRegistry(t *testing.T) {
@@ -44,7 +44,7 @@ func TestSTMapProgramNode_Active_WhenMapAssigned(t *testing.T) {
 
 func TestSTMapProgramNode_Process_StaticMap(t *testing.T) {
 	const w, h = 8, 8
-	frameSize := w * h * 3 / 2
+	frameSize := ColorYUV420_8bit.FrameSize(w, h)
 
 	reg := stmap.NewRegistry()
 	// Identity map: output should match input (within rounding tolerance)
@@ -69,27 +69,27 @@ func TestSTMapProgramNode_Process_StaticMap(t *testing.T) {
 	}
 
 	src := &ProcessingFrame{
-		YUV:    make([]byte, frameSize),
+		Data:    make([]byte, frameSize),
 		Width:  w,
 		Height: h,
 	}
-	copy(src.YUV, yuv)
+	copy(src.Data, yuv)
 
 	result := n.Process(nil, src)
 	require.Equal(t, src, result, "process should return src (in-place)")
 
 	// Identity map: every pixel should match within +-1 due to bilinear rounding.
 	for i := 0; i < frameSize; i++ {
-		diff := int(result.YUV[i]) - int(yuv[i])
+		diff := int(result.Data[i]) - int(yuv[i])
 		if diff < -1 || diff > 1 {
-			t.Fatalf("pixel %d: got %d, want %d (±1)", i, result.YUV[i], yuv[i])
+			t.Fatalf("pixel %d: got %d, want %d (±1)", i, result.Data[i], yuv[i])
 		}
 	}
 }
 
 func TestSTMapProgramNode_Process_AnimatedMap(t *testing.T) {
 	const w, h = 4, 4
-	frameSize := w * h * 3 / 2
+	frameSize := ColorYUV420_8bit.FrameSize(w, h)
 
 	// Build 3 animated frames, all identity maps.
 	frames := make([]*stmap.STMap, 3)
@@ -114,20 +114,20 @@ func TestSTMapProgramNode_Process_AnimatedMap(t *testing.T) {
 	// Process multiple times to verify frame advancement.
 	for iter := 0; iter < 5; iter++ {
 		src := &ProcessingFrame{
-			YUV:    make([]byte, frameSize),
+			Data:    make([]byte, frameSize),
 			Width:  w,
 			Height: h,
 		}
-		copy(src.YUV, yuv)
+		copy(src.Data, yuv)
 
 		result := n.Process(nil, src)
 		require.Equal(t, src, result, "process should return src")
 
 		// With identity frames, output should be ±1 of input.
 		for i := 0; i < frameSize; i++ {
-			diff := int(result.YUV[i]) - int(yuv[i])
+			diff := int(result.Data[i]) - int(yuv[i])
 			if diff < -1 || diff > 1 {
-				t.Fatalf("iter %d pixel %d: got %d, want %d (±1)", iter, i, result.YUV[i], yuv[i])
+				t.Fatalf("iter %d pixel %d: got %d, want %d (±1)", iter, i, result.Data[i], yuv[i])
 			}
 		}
 	}
@@ -139,7 +139,7 @@ func TestSTMapProgramNode_Process_NoMap_Passthrough(t *testing.T) {
 	n := &stmapProgramNode{registry: reg}
 	require.NoError(t, n.Configure(PipelineFormat{Width: 8, Height: 8}))
 
-	yuv := make([]byte, 8*8*3/2)
+	yuv := make([]byte, ColorYUV420_8bit.FrameSize(8, 8))
 	for i := range yuv {
 		yuv[i] = byte(i % 256)
 	}
@@ -147,14 +147,14 @@ func TestSTMapProgramNode_Process_NoMap_Passthrough(t *testing.T) {
 	copy(original, yuv)
 
 	src := &ProcessingFrame{
-		YUV:    yuv,
+		Data:    yuv,
 		Width:  8,
 		Height: 8,
 	}
 
 	result := n.Process(nil, src)
 	require.Equal(t, src, result)
-	require.Equal(t, original, result.YUV, "frame should be unmodified when no map assigned")
+	require.Equal(t, original, result.Data, "frame should be unmodified when no map assigned")
 }
 
 func TestSTMapProgramNode_ErrAndClose(t *testing.T) {

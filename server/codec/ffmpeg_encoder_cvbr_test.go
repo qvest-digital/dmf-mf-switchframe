@@ -19,7 +19,7 @@ func TestCVBR_NoFillerNALUs(t *testing.T) {
 	require.NoError(t, err)
 	defer enc.Close()
 
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	for i := range yuv {
 		yuv[i] = 128 // uniform gray — minimal complexity
 	}
@@ -59,7 +59,7 @@ func TestCVBR_BitrateConvergence(t *testing.T) {
 	require.NoError(t, err)
 	defer enc.Close()
 
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	totalBytes := 0
 	frameCount := 0
 
@@ -106,7 +106,7 @@ func TestCVBR_VBVConstrainedFrameSize(t *testing.T) {
 	require.NoError(t, err)
 	defer enc.Close()
 
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	var maxSize int
 
 	for i := 0; i < 90; i++ {
@@ -141,7 +141,7 @@ func TestCVBR_SlicedThreadingImmediate(t *testing.T) {
 	require.NoError(t, err)
 	defer enc.Close()
 
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	for i := range yuv {
 		yuv[i] = 128
 	}
@@ -161,7 +161,7 @@ func TestCVBR_ProducesOutput(t *testing.T) {
 	require.NoError(t, err)
 	defer enc.Close()
 
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	for i := range yuv {
 		yuv[i] = 128
 	}

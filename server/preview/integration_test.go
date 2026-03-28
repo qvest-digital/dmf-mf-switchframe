@@ -32,7 +32,7 @@ func TestMultipleEncoders_Independent(t *testing.T) {
 
 	// Send frames to all encoders concurrently.
 	srcW, srcH := 640, 480
-	yuv := make([]byte, srcW*srcH*3/2)
+	yuv := make([]byte, yuvFrameSize(srcW, srcH))
 
 	var wg sync.WaitGroup
 	for i := range nSources {

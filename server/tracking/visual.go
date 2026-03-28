@@ -24,6 +24,14 @@ extern cudaError_t nv12_to_rgb_chw(
     int outW, int outH,
     cudaStream_t stream);
 
+// p210_to_rgb_chw is the fused P210 (10-bit 4:2:2) -> RGB float32 CHW preprocessing kernel.
+extern cudaError_t p210_to_rgb_chw(
+    float* rgbOut,
+    const uint16_t* p210,
+    int srcW, int srcH, int srcPitch16,
+    int outW, int outH,
+    cudaStream_t stream);
+
 static cudaError_t visual_cuda_malloc(void** ptr, size_t size) {
     return cudaMalloc(ptr, size);
 }
@@ -68,6 +76,8 @@ type VisualLocalizer struct {
 	spKpBuf    unsafe.Pointer // SuperPoint keypoints output (float32)
 	spDescBuf  unsafe.Pointer // SuperPoint descriptors output (float32)
 	lgMatchBuf unsafe.Pointer // LightGlue match indices output (int32)
+
+	frameFormat gpu.GPUFrameFormat // NV12 or P210
 
 	latest  atomic.Pointer[CameraPose]
 	running atomic.Bool
@@ -191,6 +201,14 @@ func NewVisualLocalizer(mapDir string, superpointPlan, lightgluePlan string, int
 	}, nil
 }
 
+// SetFrameFormat configures the input frame pixel format (NV12 or P210).
+// Thread-safe; may be called while ProcessFrame is running.
+func (v *VisualLocalizer) SetFrameFormat(f gpu.GPUFrameFormat) {
+	v.mu.Lock()
+	v.frameFormat = f
+	v.mu.Unlock()
+}
+
 // Name returns the unique name of this tracking source.
 func (v *VisualLocalizer) Name() string { return "visual" }
 
@@ -253,14 +271,29 @@ func (v *VisualLocalizer) ProcessFrame(framePtr uintptr, w, h, pitch int) {
 		return
 	}
 
-	// Step 1: Preprocess NV12 -> RGB float32 CHW.
-	rc := C.nv12_to_rgb_chw(
-		(*C.float)(v.inputBuf),
-		(*C.uint8_t)(unsafe.Pointer(framePtr)),
-		C.int(w), C.int(h), C.int(pitch),
-		C.int(superpointInputW), C.int(superpointInputH),
-		v.stream,
-	)
+	// Step 1: Preprocess frame -> RGB float32 CHW.
+	var rc C.cudaError_t
+	switch v.frameFormat {
+	case gpu.GPUFormatP210:
+		if pitch%2 != 0 {
+			return // odd pitch invalid for P210 uint16 division
+		}
+		rc = C.p210_to_rgb_chw(
+			(*C.float)(v.inputBuf),
+			(*C.uint16_t)(unsafe.Pointer(framePtr)),
+			C.int(w), C.int(h), C.int(pitch/2),
+			C.int(superpointInputW), C.int(superpointInputH),
+			v.stream,
+		)
+	default: // GPUFormatNV12
+		rc = C.nv12_to_rgb_chw(
+			(*C.float)(v.inputBuf),
+			(*C.uint8_t)(unsafe.Pointer(framePtr)),
+			C.int(w), C.int(h), C.int(pitch),
+			C.int(superpointInputW), C.int(superpointInputH),
+			v.stream,
+		)
+	}
 	if rc != C.cudaSuccess {
 		return
 	}
@@ -341,7 +374,7 @@ func (v *VisualLocalizer) ProcessFrame(framePtr uintptr, w, h, pitch int) {
 		return
 	}
 
-	pose.Timestamp = time.Now().UnixNano() / 1e6 * 90 // 90kHz PTS (divide to ms first to avoid int64 overflow)
+	pose.Timestamp = time.Now().UnixMicro() * 90 / 1000 // 90kHz PTS with µs precision (no int64 overflow until year 3000+)
 	v.latest.Store(pose)
 	v.lastUpdate = time.Now()
 }

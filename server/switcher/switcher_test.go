@@ -1206,7 +1206,7 @@ func TestHandleRawVideoFrame_NilViewer(t *testing.T) {
 
 	// Should not panic — viewer is nil for MXL sources.
 	pf := &ProcessingFrame{
-		YUV:   make([]byte, 1920*1080*3/2),
+		Data:   make([]byte, ColorYUV420_8bit.FrameSize(1920, 1080)),
 		Width: 1920, Height: 1080,
 		PTS: 90000, DTS: 90000,
 	}
@@ -1300,7 +1300,7 @@ func TestIngestReplayVideo_RoutesToPipeline(t *testing.T) {
 	require.NoError(t, sw.Cut(context.Background(), "replay"))
 
 	pf := &ProcessingFrame{
-		YUV:        make([]byte, 320*240*3/2),
+		Data:        make([]byte, ColorYUV420_8bit.FrameSize(320, 240)),
 		Width:      320,
 		Height:     240,
 		PTS:        90000,
@@ -1338,7 +1338,7 @@ func TestCloseWithFrameSyncActive(t *testing.T) {
 		// Feed some raw frames through the frame sync so it has data to tick.
 		for j := 0; j < 5; j++ {
 			pf := &ProcessingFrame{
-				YUV:        make([]byte, 320*240*3/2),
+				Data:        make([]byte, ColorYUV420_8bit.FrameSize(320, 240)),
 				Width:      320,
 				Height:     240,
 				PTS:        int64(j * 3000),
@@ -1374,7 +1374,7 @@ func TestEnqueueVideoWork_ReenqueueFailureReleasesNewBuffer(t *testing.T) {
 	// drop-oldest path.
 
 	// Create a switcher with a tiny channel capacity of 1.
-	pool := NewFramePool(8, 4, 4)
+	pool := NewFramePool(8, 4, 4, ColorYUV420_8bit)
 	programRelay := newTestRelay()
 	sw := &Switcher{
 		sources:      make(map[string]*sourceState),
@@ -1394,7 +1394,7 @@ func TestEnqueueVideoWork_ReenqueueFailureReleasesNewBuffer(t *testing.T) {
 
 	// Fill the channel (capacity 1).
 	pf1 := &ProcessingFrame{
-		YUV: pool.Acquire(), Width: 4, Height: 4,
+		Data: pool.Acquire(), Width: 4, Height: 4,
 		PTS: 100, IsKeyframe: true, pool: pool,
 	}
 	sw.videoProcCh <- videoProcWork{yuvFrame: pf1}
@@ -1403,7 +1403,7 @@ func TestEnqueueVideoWork_ReenqueueFailureReleasesNewBuffer(t *testing.T) {
 	// The oldest (pf1) will be drained and released, then the new frame
 	// will be enqueued into the now-empty slot. This is the success path.
 	pf2 := &ProcessingFrame{
-		YUV: pool.Acquire(), Width: 4, Height: 4,
+		Data: pool.Acquire(), Width: 4, Height: 4,
 		PTS: 200, IsKeyframe: false, pool: pool,
 	}
 	sw.enqueueVideoWork(videoProcWork{yuvFrame: pf2})
@@ -1426,7 +1426,7 @@ func TestEnqueueVideoWork_ReenqueueFailureReleasesNewBuffer(t *testing.T) {
 	//
 	// Strategy: acquire all buffers, enqueue them on a stopped channel,
 	// then check pool stats.
-	pool2 := NewFramePool(4, 4, 4)
+	pool2 := NewFramePool(4, 4, 4, ColorYUV420_8bit)
 	sw2 := &Switcher{
 		sources:       make(map[string]*sourceState),
 		programRelay:  programRelay,
@@ -1449,14 +1449,14 @@ func TestEnqueueVideoWork_ReenqueueFailureReleasesNewBuffer(t *testing.T) {
 
 	// Put one in the channel to fill it.
 	sw2.videoProcCh <- videoProcWork{yuvFrame: &ProcessingFrame{
-		YUV: bufs[0], Width: 4, Height: 4, PTS: 1, pool: pool2,
+		Data: bufs[0], Width: 4, Height: 4, PTS: 1, pool: pool2,
 	}}
 
 	// Enqueue the remaining 3 — each triggers drop-oldest + re-enqueue.
 	// One frame remains in the channel at the end, the rest should be released.
 	for i := 1; i < 4; i++ {
 		sw2.enqueueVideoWork(videoProcWork{yuvFrame: &ProcessingFrame{
-			YUV: bufs[i], Width: 4, Height: 4, PTS: int64(i * 100), pool: pool2,
+			Data: bufs[i], Width: 4, Height: 4, PTS: int64(i * 100), pool: pool2,
 		}})
 	}
 
@@ -1486,7 +1486,7 @@ func TestEnqueueVideoWork_DroppedCountOnlyOnActualLoss(t *testing.T) {
 	// is actually lost (re-enqueue failure), not on every drop-oldest path.
 	// When the oldest frame is dropped but the new one is successfully
 	// enqueued, there is no net frame loss — just a swap of old for new.
-	pool := NewFramePool(8, 4, 4)
+	pool := NewFramePool(8, 4, 4, ColorYUV420_8bit)
 	programRelay := newTestRelay()
 	sw := &Switcher{
 		sources:       make(map[string]*sourceState),
@@ -1508,14 +1508,14 @@ func TestEnqueueVideoWork_DroppedCountOnlyOnActualLoss(t *testing.T) {
 
 	// Fill the channel.
 	pf1 := &ProcessingFrame{
-		YUV: pool.Acquire(), Width: 4, Height: 4,
+		Data: pool.Acquire(), Width: 4, Height: 4,
 		PTS: 100, IsKeyframe: true, pool: pool,
 	}
 	sw.videoProcCh <- videoProcWork{yuvFrame: pf1}
 
 	// Enqueue a new frame — should drop oldest and re-enqueue successfully.
 	pf2 := &ProcessingFrame{
-		YUV: pool.Acquire(), Width: 4, Height: 4,
+		Data: pool.Acquire(), Width: 4, Height: 4,
 		PTS: 200, IsKeyframe: false, pool: pool,
 	}
 	sw.enqueueVideoWork(videoProcWork{yuvFrame: pf2})
@@ -1540,7 +1540,7 @@ func TestBroadcastProcessed_ShortYUVDoesNotPanic(t *testing.T) {
 	require.NoError(t, sw.BuildPipeline())
 	defer sw.Close()
 
-	// Create a short YUV buffer — smaller than 320x240 * 3/2 = 115200.
+	// Create a short YUV buffer — smaller than ColorYUV420_8bit.FrameSize(320, 240) = 115200.
 	shortYUV := make([]byte, 100)
 
 	// Should not panic.

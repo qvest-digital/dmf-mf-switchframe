@@ -51,6 +51,15 @@ type encodeNode struct {
 	lastEncodeNs atomic.Int64 // most recent real encode duration (nanoseconds)
 	maxEncodeNs  atomic.Int64 // peak encode duration (nanoseconds)
 	encodeTotal  atomic.Int64 // total frames encoded successfully
+
+	// encoder10bit is true when the encoder accepts YUV422P10LE input directly
+	// (e.g., HEVC main422-10 or main10 profile). When true, 10-bit frames are
+	// passed to the encoder without downconversion.
+	encoder10bit bool
+
+	// downconvertBuf is a preallocated buffer for 10-bit→8-bit conversion
+	// when the encoder expects YUV420 8-bit. Allocated lazily on first use.
+	downconvertBuf []byte
 }
 
 func (n *encodeNode) Name() string                          { return "h264-encode" }
@@ -137,11 +146,39 @@ func (n *encodeNode) processWorkItem(work encodeWork) {
 	n.doEncode(work.frame, work.forceIDR)
 }
 
-// doEncode performs the actual H.264 encode with timing, metrics, and error handling.
+// doEncode performs the actual encode with timing, metrics, and error handling.
 // Called from processWorkItem (async) or Process (sync fallback).
+//
+// When the frame is 10-bit (YUV422P10LE) and the encoder accepts 10-bit input
+// (e.g., HEVC main422-10 profile), the frame is passed directly. Otherwise,
+// it is downconverted to 8-bit (YUV420P) before encoding. The downconvert
+// buffer is reused across frames to avoid per-frame allocation.
 func (n *encodeNode) doEncode(src *ProcessingFrame, forceIDR bool) {
+	encSrc := src
+	if src.Format == ColorYUV422_10bit && !n.encoder10bit {
+		// Encoder expects 8-bit input — downconvert.
+		dstSize := ColorYUV420_8bit.FrameSize(src.Width, src.Height)
+		if len(n.downconvertBuf) < dstSize {
+			n.downconvertBuf = make([]byte, dstSize)
+		}
+		if err := Downconvert422_10to420(src.Data, n.downconvertBuf[:dstSize], src.Width, src.Height); err == nil {
+			encSrc = &ProcessingFrame{
+				Data:       n.downconvertBuf[:dstSize],
+				Format:     ColorYUV420_8bit,
+				Width:      src.Width,
+				Height:     src.Height,
+				PTS:        src.PTS,
+				DTS:        src.DTS,
+				IsKeyframe: src.IsKeyframe,
+				GroupID:    src.GroupID,
+				Codec:      src.Codec,
+			}
+		}
+		// If downconvert fails, fall through and let the encoder try with the original data.
+	}
+
 	encStart := time.Now().UnixNano()
-	frame, err := n.codecs.encode(src, forceIDR)
+	frame, err := n.codecs.encode(encSrc, forceIDR)
 	encDur := time.Now().UnixNano() - encStart
 
 	// Store real encode timing for debug snapshot (AsyncMetrics).

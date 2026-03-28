@@ -1,3 +1,5 @@
+//go:build !cgo || !cuda || !tensorrt
+
 package neuralkey
 
 import (

@@ -173,7 +173,7 @@ func (n *gpuSTMapNode) ProcessGPU(frame *GPUFrame) error {
 	}
 	tempFrame.PTS = frame.PTS
 
-	if err := STMapWarp(n.ctx, tempFrame, frame, gpuMap); err != nil {
+	if err := GPUSTMapWarpDispatch(n.ctx, tempFrame, frame, gpuMap); err != nil {
 		n.lastErr.Store(err)
 		tempFrame.Release()
 		slog.Warn("gpu_stmap: warp failed, skipping", "error", err)

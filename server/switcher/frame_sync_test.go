@@ -754,11 +754,11 @@ func TestFrameSync_RemoveSourceReleasesPoolBuffers(t *testing.T) {
 	fs.onRawVideo = func(string, *ProcessingFrame) {} // enable raw video delivery
 	fs.AddSource("cam1")
 
-	pool := NewFramePool(2, 4, 4) // tiny 4x4 pool with 2 buffers
+	pool := NewFramePool(2, 4, 4, ColorYUV420_8bit) // tiny 4x4 pool with 2 buffers
 	buf := pool.Acquire()
 	pf := &ProcessingFrame{
 		PTS:  1000,
-		YUV:  buf,
+		Data:  buf,
 		pool: pool,
 	}
 	fs.IngestRawVideo("cam1", pf)
@@ -789,11 +789,11 @@ func TestFrameSync_LastRawVideoReleasedOnReplacement(t *testing.T) {
 	fs.onRawVideo = func(string, *ProcessingFrame) {} // enable raw video delivery
 	fs.AddSource("cam1")
 
-	pool := NewFramePool(3, 4, 4) // tiny 4x4 pool with 3 buffers
+	pool := NewFramePool(3, 4, 4, ColorYUV420_8bit) // tiny 4x4 pool with 3 buffers
 
 	// Push first frame and let it become lastRawVideo.
 	buf1 := pool.Acquire()
-	pf1 := &ProcessingFrame{PTS: 1000, YUV: buf1, pool: pool}
+	pf1 := &ProcessingFrame{PTS: 1000, Data: buf1, pool: pool}
 	fs.IngestRawVideo("cam1", pf1)
 
 	// Run one tick so pf1 is popped and becomes lastRawVideo.
@@ -807,7 +807,7 @@ func TestFrameSync_LastRawVideoReleasedOnReplacement(t *testing.T) {
 	// Push a second frame — on next tick, it should replace lastRawVideo
 	// and the old buffer (buf1) should be released back to the pool.
 	buf2 := pool.Acquire()
-	pf2 := &ProcessingFrame{PTS: 2000, YUV: buf2, pool: pool}
+	pf2 := &ProcessingFrame{PTS: 2000, Data: buf2, pool: pool}
 	fs.IngestRawVideo("cam1", pf2)
 
 	fs.releaseTick()
@@ -830,7 +830,7 @@ func TestFrameSync_StopReleasesPoolBuffers(t *testing.T) {
 	fs.AddSource("cam1")
 	fs.AddSource("cam2")
 
-	pool := NewFramePool(6, 4, 4) // tiny 4x4 pool with 6 buffers
+	pool := NewFramePool(6, 4, 4, ColorYUV420_8bit) // tiny 4x4 pool with 6 buffers
 
 	// Acquire 4 buffers, put them into the frame sync as raw video frames.
 	for i := 0; i < 2; i++ {
@@ -838,7 +838,7 @@ func TestFrameSync_StopReleasesPoolBuffers(t *testing.T) {
 			buf := pool.Acquire()
 			pf := &ProcessingFrame{
 				PTS:  int64(i * 3000),
-				YUV:  buf,
+				Data:  buf,
 				pool: pool,
 			}
 			fs.IngestRawVideo(key, pf)
@@ -879,18 +879,18 @@ func TestFrameSync_StopReleasesPoolBuffersWithFRC(t *testing.T) {
 	fs.onRawVideo = func(string, *ProcessingFrame) { rawCount.Add(1) }
 	fs.AddSource("cam1")
 
-	pool := NewFramePool(4, 64, 64)
+	pool := NewFramePool(4, 64, 64, ColorYUV420_8bit)
 
 	// Ingest frames so FRC has prevFrame and currFrame populated.
 	for i := 0; i < 3; i++ {
 		buf := pool.Acquire()
-		yuvSize := 64 * 64 * 3 / 2
+		yuvSize := ColorYUV420_8bit.FrameSize(64, 64)
 		for j := range buf[:yuvSize] {
 			buf[j] = byte(100 + i)
 		}
 		pf := &ProcessingFrame{
 			PTS:    int64(i * 3000),
-			YUV:    buf[:yuvSize],
+			Data:    buf[:yuvSize],
 			Width:  64,
 			Height: 64,
 			pool:   pool,
@@ -1299,7 +1299,7 @@ func TestFrameSync_SetTickRateResetsPtsRemAccum(t *testing.T) {
 
 	// Ingest a raw video frame so there's content to release.
 	pf := &ProcessingFrame{
-		YUV:   make([]byte, 64*64*3/2),
+		Data:   make([]byte, ColorYUV420_8bit.FrameSize(64, 64)),
 		Width: 64, Height: 64,
 		PTS: 0,
 	}
@@ -1347,7 +1347,7 @@ func TestFrameSync_SetTickRateResetsPtsRemAccum(t *testing.T) {
 
 	// Ingest a fresh frame with known PTS.
 	pf2 := &ProcessingFrame{
-		YUV:   make([]byte, 64*64*3/2),
+		Data:   make([]byte, ColorYUV420_8bit.FrameSize(64, 64)),
 		Width: 64, Height: 64,
 		PTS: 90000, // start at 1 second
 	}
@@ -1391,7 +1391,7 @@ func TestFrameSync_FRCEmitBufferNotOverwritten(t *testing.T) {
 	// Part 1: Direct frcSource test — emit returns aliased buffer.
 	t.Run("emit_returns_scratch_buffer", func(t *testing.T) {
 		w, h := 32, 32
-		totalSize := w * h * 3 / 2
+		totalSize := ColorYUV420_8bit.FrameSize(w, h)
 
 		frc := newFRCSource(FRCNearest, 3000)
 
@@ -1410,8 +1410,8 @@ func TestFrameSync_FRCEmitBufferNotOverwritten(t *testing.T) {
 			yuv2[i] = 128
 		}
 
-		pf1 := &ProcessingFrame{YUV: yuv1, Width: w, Height: h, PTS: 3000}
-		pf2 := &ProcessingFrame{YUV: yuv2, Width: w, Height: h, PTS: 6000}
+		pf1 := &ProcessingFrame{Data: yuv1, Width: w, Height: h, PTS: 3000}
+		pf2 := &ProcessingFrame{Data: yuv2, Width: w, Height: h, PTS: 6000}
 		frc.ingest(pf1)
 		frc.ingest(pf2)
 
@@ -1419,18 +1419,18 @@ func TestFrameSync_FRCEmitBufferNotOverwritten(t *testing.T) {
 		// alpha = (3600-3000)/(6000-3000) = 0.2 → selects prevFrame (Y=100).
 		emitted1 := frc.emit(3600)
 		require.NotNil(t, emitted1)
-		snap1 := make([]byte, len(emitted1.YUV))
-		copy(snap1, emitted1.YUV)
+		snap1 := make([]byte, len(emitted1.Data))
+		copy(snap1, emitted1.Data)
 
 		// Emit again — alpha that selects currFrame (alpha > 0.5).
 		// alpha = (5400-3000)/(6000-3000) = 0.8 → selects currFrame (Y=200).
 		emitted2 := frc.emit(5400)
 		require.NotNil(t, emitted2)
 
-		// emitted1.YUV and emitted2.YUV alias the same scratch buffer.
+		// emitted1.Data and emitted2.Data alias the same scratch buffer.
 		// emitted1's content should have been overwritten by emitted2.
 		// This is the underlying bug — the emit returns the scratch buffer.
-		require.NotEqual(t, snap1, emitted1.YUV,
+		require.NotEqual(t, snap1, emitted1.Data,
 			"emit result should alias the scratch buffer (proves the bug exists)")
 	})
 
@@ -1447,13 +1447,13 @@ func TestFrameSync_FRCEmitBufferNotOverwritten(t *testing.T) {
 		var deliveries []delivery
 		fs.onRawVideo = func(sourceKey string, pf *ProcessingFrame) {
 			callbackMu.Lock()
-			deliveries = append(deliveries, delivery{yuvRef: pf.YUV})
+			deliveries = append(deliveries, delivery{yuvRef: pf.Data})
 			callbackMu.Unlock()
 		}
 		fs.AddSource("cam1")
 
 		w, h := 32, 32
-		totalSize := w * h * 3 / 2
+		totalSize := ColorYUV420_8bit.FrameSize(w, h)
 
 		yuv1 := make([]byte, totalSize)
 		for i := 0; i < w*h; i++ {
@@ -1470,8 +1470,8 @@ func TestFrameSync_FRCEmitBufferNotOverwritten(t *testing.T) {
 			yuv2[i] = 128
 		}
 
-		pf1 := &ProcessingFrame{YUV: yuv1, Width: w, Height: h, PTS: 3000}
-		pf2 := &ProcessingFrame{YUV: yuv2, Width: w, Height: h, PTS: 6000}
+		pf1 := &ProcessingFrame{Data: yuv1, Width: w, Height: h, PTS: 3000}
+		pf2 := &ProcessingFrame{Data: yuv2, Width: w, Height: h, PTS: 6000}
 		fs.IngestRawVideo("cam1", pf1)
 		fs.IngestRawVideo("cam1", pf2)
 
@@ -1557,7 +1557,7 @@ func TestFrameSynchronizer_DebugSnapshot(t *testing.T) {
 		// Ingest some video and audio frames
 		fs.IngestVideo("cam1", &media.VideoFrame{PTS: 3000, WireData: []byte{0}})
 		fs.IngestAudio("cam1", &media.AudioFrame{PTS: 3000, Data: []byte{0}})
-		fs.IngestRawVideo("cam1", &ProcessingFrame{YUV: make([]byte, 64*64*3/2), Width: 64, Height: 64, PTS: 3000})
+		fs.IngestRawVideo("cam1", &ProcessingFrame{Data: make([]byte, ColorYUV420_8bit.FrameSize(64, 64)), Width: 64, Height: 64, PTS: 3000})
 
 		snap := fs.DebugSnapshot()
 		sources := snap["sources"].(map[string]any)
@@ -1617,13 +1617,13 @@ func TestFrameSynchronizer_DebugSnapshot(t *testing.T) {
 		handler := &syncTestHandler{}
 		fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)
 		fs.frcQuality = FRCBlend
-		pool := NewFramePool(4, 64, 64)
+		pool := NewFramePool(4, 64, 64, ColorYUV420_8bit)
 		fs.framePool = pool
 		fs.AddSource("cam1")
 
 		// Ingest two frames to set hasTwo=true
 		w, h := 64, 64
-		totalSize := w * h * 3 / 2
+		totalSize := ColorYUV420_8bit.FrameSize(w, h)
 		yuv1 := make([]byte, totalSize)
 		yuv2 := make([]byte, totalSize)
 		for i := 0; i < totalSize; i++ {
@@ -1631,8 +1631,8 @@ func TestFrameSynchronizer_DebugSnapshot(t *testing.T) {
 			yuv2[i] = 200
 		}
 
-		fs.IngestRawVideo("cam1", &ProcessingFrame{YUV: yuv1, Width: w, Height: h, PTS: 3000})
-		fs.IngestRawVideo("cam1", &ProcessingFrame{YUV: yuv2, Width: w, Height: h, PTS: 6000})
+		fs.IngestRawVideo("cam1", &ProcessingFrame{Data: yuv1, Width: w, Height: h, PTS: 3000})
+		fs.IngestRawVideo("cam1", &ProcessingFrame{Data: yuv2, Width: w, Height: h, PTS: 6000})
 
 		snap := fs.DebugSnapshot()
 		sources := snap["sources"].(map[string]any)
@@ -1682,7 +1682,7 @@ func TestFrameSync_SyncReleaseNano(t *testing.T) {
 	beforeIngest := time.Now().UnixNano()
 	pf := &ProcessingFrame{
 		PTS:           1000,
-		YUV:           []byte{0x01},
+		Data:           []byte{0x01},
 		DecodeEndNano: beforeIngest,
 	}
 	fs.IngestRawVideo("cam1", pf)
@@ -1725,7 +1725,7 @@ func TestFrameSync_ProgramSourceTriggersImmediateRelease(t *testing.T) {
 
 	// Ingest a frame for the program source — should trigger immediate release.
 	pf := &ProcessingFrame{
-		YUV:    make([]byte, 64),
+		Data:    make([]byte, 64),
 		Width:  8,
 		Height: 4,
 		PTS:    5000,
@@ -1757,7 +1757,7 @@ func TestFrameSync_NonProgramSourceDoesNotTriggerEarlyRelease(t *testing.T) {
 
 	// Ingest a frame for cam2 (NOT the program source).
 	pf := &ProcessingFrame{
-		YUV:    make([]byte, 64),
+		Data:    make([]byte, 64),
 		Width:  8,
 		Height: 4,
 		PTS:    5000,
@@ -1797,7 +1797,7 @@ func TestFrameSync_SetProgramSourceSwitchesDriver(t *testing.T) {
 
 	// Ingest frame for cam2 — should trigger immediate release now.
 	pf := &ProcessingFrame{
-		YUV:    make([]byte, 64),
+		Data:    make([]byte, 64),
 		Width:  8,
 		Height: 4,
 		PTS:    6000,
@@ -1821,7 +1821,7 @@ func TestFrameSync_TimerFallbackWithoutProgramFrames(t *testing.T) {
 
 	// Ingest an initial frame so freeze has something to repeat.
 	pf := &ProcessingFrame{
-		YUV:    make([]byte, 64),
+		Data:    make([]byte, 64),
 		Width:  8,
 		Height: 4,
 		PTS:    1000,
@@ -1864,7 +1864,7 @@ func TestFrameSync_NoDoubleRelease(t *testing.T) {
 	start := time.Now()
 	for time.Since(start) < 200*time.Millisecond {
 		pf := &ProcessingFrame{
-			YUV:    make([]byte, 64),
+			Data:    make([]byte, 64),
 			Width:  8,
 			Height: 4,
 			PTS:    int64(time.Since(start).Milliseconds()) * 90,
@@ -1895,7 +1895,7 @@ func TestFrameSync_DebugSnapshotIncludesReleaseCounters(t *testing.T) {
 
 	// Ingest a frame to trigger a program-driven release.
 	pf := &ProcessingFrame{
-		YUV:    make([]byte, 64),
+		Data:    make([]byte, 64),
 		Width:  8,
 		Height: 4,
 		PTS:    1000,
@@ -1941,9 +1941,9 @@ func TestFrameSync_ProgramSourceDeliveredBeforeFRC(t *testing.T) {
 
 	// Give cam2 two frames so FRC has data to interpolate.
 	w, h := 8, 4
-	yuvSize := w * h * 3 / 2
-	pf2a := &ProcessingFrame{YUV: make([]byte, yuvSize), Width: w, Height: h, PTS: 3000}
-	pf2b := &ProcessingFrame{YUV: make([]byte, yuvSize), Width: w, Height: h, PTS: 6000}
+	yuvSize := ColorYUV420_8bit.FrameSize(w, h)
+	pf2a := &ProcessingFrame{Data: make([]byte, yuvSize), Width: w, Height: h, PTS: 3000}
+	pf2b := &ProcessingFrame{Data: make([]byte, yuvSize), Width: w, Height: h, PTS: 6000}
 	fs.IngestRawVideo("cam2", pf2a)
 	fs.IngestRawVideo("cam2", pf2b)
 
@@ -1956,7 +1956,7 @@ func TestFrameSync_ProgramSourceDeliveredBeforeFRC(t *testing.T) {
 
 	// Now ingest a fresh frame for cam1 (program source) only.
 	// cam2 has no new frame — it will need FRC interpolation.
-	pf1 := &ProcessingFrame{YUV: make([]byte, yuvSize), Width: w, Height: h, PTS: 9000}
+	pf1 := &ProcessingFrame{Data: make([]byte, yuvSize), Width: w, Height: h, PTS: 9000}
 	fs.IngestRawVideo("cam1", pf1)
 
 	// Fire a tick — cam1 should be delivered BEFORE cam2's FRC result.
@@ -2004,9 +2004,9 @@ func TestFrameSync_ProgramSourceFRCNotEarlyDelivered(t *testing.T) {
 
 	// Give cam1 two frames so FRC has data to interpolate.
 	w, h := 8, 4
-	yuvSize := w * h * 3 / 2
-	pf1a := &ProcessingFrame{YUV: make([]byte, yuvSize), Width: w, Height: h, PTS: 3000}
-	pf1b := &ProcessingFrame{YUV: make([]byte, yuvSize), Width: w, Height: h, PTS: 6000}
+	yuvSize := ColorYUV420_8bit.FrameSize(w, h)
+	pf1a := &ProcessingFrame{Data: make([]byte, yuvSize), Width: w, Height: h, PTS: 3000}
+	pf1b := &ProcessingFrame{Data: make([]byte, yuvSize), Width: w, Height: h, PTS: 6000}
 	fs.IngestRawVideo("cam1", pf1a)
 	fs.IngestRawVideo("cam1", pf1b)
 
@@ -2051,17 +2051,17 @@ func TestFrameSync_FRCFramesClearDecodeTimestamps(t *testing.T) {
 	fs.SetProgramSource("cam1")
 
 	w, h := 8, 4
-	yuvSize := w * h * 3 / 2
+	yuvSize := ColorYUV420_8bit.FrameSize(w, h)
 
 	// Ingest two frames with non-zero decode timestamps (simulating real frames).
 	pf1 := &ProcessingFrame{
-		YUV: make([]byte, yuvSize), Width: w, Height: h, PTS: 3000,
+		Data: make([]byte, yuvSize), Width: w, Height: h, PTS: 3000,
 		DecodeStartNano: 1_000_000_000,
 		DecodeEndNano:   1_001_000_000, // 1ms decode
 		ArrivalNano:     999_000_000,
 	}
 	pf2 := &ProcessingFrame{
-		YUV: make([]byte, yuvSize), Width: w, Height: h, PTS: 6000,
+		Data: make([]byte, yuvSize), Width: w, Height: h, PTS: 6000,
 		DecodeStartNano: 1_040_000_000,
 		DecodeEndNano:   1_041_000_000,
 		ArrivalNano:     1_039_000_000,
@@ -2115,11 +2115,11 @@ func TestFrameSync_FrozenFramesClearDecodeTimestamps(t *testing.T) {
 	fs.SetProgramSource("cam1")
 
 	w, h := 8, 4
-	yuvSize := w * h * 3 / 2
+	yuvSize := ColorYUV420_8bit.FrameSize(w, h)
 
 	// Ingest one frame with non-zero decode timestamps.
 	pf1 := &ProcessingFrame{
-		YUV: make([]byte, yuvSize), Width: w, Height: h, PTS: 3000,
+		Data: make([]byte, yuvSize), Width: w, Height: h, PTS: 3000,
 		DecodeStartNano: 1_000_000_000,
 		DecodeEndNano:   1_001_000_000, // 1ms decode
 		ArrivalNano:     999_000_000,
@@ -2173,11 +2173,11 @@ func TestFrameSync_PTSWrapsAt33Bits_RawVideo(t *testing.T) {
 	fs.AddSource("cam1")
 
 	w, h := 8, 4
-	yuvSize := w * h * 3 / 2
+	yuvSize := ColorYUV420_8bit.FrameSize(w, h)
 
 	// Seed a frame to initialize PTS tracking.
 	initPTS := ptsMask33 - 6000 // near the 33-bit boundary
-	pf1 := &ProcessingFrame{YUV: make([]byte, yuvSize), Width: w, Height: h, PTS: initPTS}
+	pf1 := &ProcessingFrame{Data: make([]byte, yuvSize), Width: w, Height: h, PTS: initPTS}
 	fs.IngestRawVideo("cam1", pf1)
 	fs.releaseTick() // consumes pf1, sets lastReleasedPTS = initPTS
 
@@ -2334,7 +2334,7 @@ func TestFrameSync_FRCWithPhaseLock_ImmediateRelease(t *testing.T) {
 
 	// Ingest a frame for the program source.
 	pf := &ProcessingFrame{
-		YUV:    make([]byte, 64),
+		Data:    make([]byte, 64),
 		Width:  8,
 		Height: 4,
 		PTS:    5000,
@@ -2373,7 +2373,7 @@ func TestFrameSync_FRCWithPhaseLock_OutputRateNotInflated(t *testing.T) {
 	start := time.Now()
 	for time.Since(start) < 500*time.Millisecond {
 		pf := &ProcessingFrame{
-			YUV:    make([]byte, 64),
+			Data:    make([]byte, 64),
 			Width:  8,
 			Height: 4,
 			PTS:    int64(time.Since(start).Milliseconds()) * 90,
@@ -2406,7 +2406,7 @@ func TestFrameSync_FRCWithPhaseLock_TimerContinuesBetweenSourceFrames(t *testing
 
 	// Ingest a frame so there's something to release.
 	pf := &ProcessingFrame{
-		YUV:    make([]byte, 64),
+		Data:    make([]byte, 64),
 		Width:  8,
 		Height: 4,
 		PTS:    1000,
@@ -2434,8 +2434,8 @@ func TestFrameSync_FRCWithPhaseLock_TimerContinuesBetweenSourceFrames(t *testing
 // this, SetPipelineFormat creates a new pool but the frame sync continues
 // using the old one — leaking buffers into the stale pool.
 func TestFrameSync_SetFramePool_UpdatesPool(t *testing.T) {
-	oldPool := NewFramePool(4, 320, 240)
-	newPool := NewFramePool(4, 640, 480)
+	oldPool := NewFramePool(4, 320, 240, ColorYUV420_8bit)
+	newPool := NewFramePool(4, 640, 480, ColorYUV420_8bit)
 
 	fs := NewFrameSynchronizer(
 		33*time.Millisecond,

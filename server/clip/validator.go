@@ -39,8 +39,8 @@ func IsAcceptedExtension(ext string) bool {
 
 // NeedsTranscode returns true if the file at path needs transcoding before
 // it can be stored. Files with transcode-only extensions always need it.
-// Files with native extensions are probed to check if the video codec is H.264;
-// non-H.264 video in .mp4/.mov containers (e.g., HEVC) triggers transcode.
+// Files with native extensions are probed to check if the video codec is H.264
+// or HEVC; other codecs in .mp4/.mov containers trigger transcode.
 func NeedsTranscode(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
 	if transcodeExtensions[ext] {
@@ -49,16 +49,16 @@ func NeedsTranscode(path string) bool {
 	if !supportedExtensions[ext] {
 		return false // unknown extension, let Validate reject it
 	}
-	// Probe native container to check if codec is actually H.264.
+	// Probe native container to check if codec is H.264 or HEVC.
 	result, err := codec.ProbeFile(path)
 	if err != nil {
 		// Probe failed. For MP4/MOV containers, the Go-native demuxer only
-		// handles avc1 boxes, so transcoding is the safer fallback. For TS
-		// files, the Go demuxer handles H.264 TS reliably, so let Validate
-		// try first (recordings and replay exports are always H.264 TS).
+		// handles avc1/hvc1 boxes, so transcoding is the safer fallback. For TS
+		// files, the Go demuxer handles H.264/HEVC TS reliably, so let Validate
+		// try first (recordings and replay exports are always TS).
 		return ext != ".ts"
 	}
-	return !result.IsH264()
+	return !result.IsH264() && !result.IsHEVC()
 }
 
 // CanTranscodeFallback returns true if the extension is a native container
@@ -98,6 +98,11 @@ func Validate(path string) (*ProbeResult, error) {
 		return nil, ErrNoVideo
 	}
 
+	// Detect codec from the first keyframe's NALU type.
+	// HEVC NALUs have 2-byte headers; the type is bits 1-6 of byte 0.
+	// H.264 NALUs have 1-byte headers; the type is bits 0-4 of byte 0.
+	isHEVC := detectCodecFromFrames(videoFrames)
+
 	// Find first keyframe with SPS for metadata extraction.
 	var spsNALU []byte
 	for _, f := range videoFrames {
@@ -108,7 +113,11 @@ func Validate(path string) (*ProbeResult, error) {
 	}
 
 	// Extract resolution from SPS if available.
-	width, height := ParseSPSDimensions(spsNALU)
+	// For HEVC, ParseSPSDimensions won't work (different format), so skip.
+	var width, height int
+	if !isHEVC {
+		width, height = ParseSPSDimensions(spsNALU)
+	}
 
 	// Determine audio codec from ADTS presence.
 	var audioCodec string
@@ -122,7 +131,11 @@ func Validate(path string) (*ProbeResult, error) {
 	// --- Stage 2: Test decode (first GOP only) ---
 
 	var warnings []string
-	decodeWidth, decodeHeight, decodeWarnings, decodeErr := testDecodeFirstGOP(videoFrames, width, height)
+	codecName := "h264"
+	if isHEVC {
+		codecName = "h265"
+	}
+	decodeWidth, decodeHeight, decodeWarnings, decodeErr := testDecodeFirstGOP(videoFrames, width, height, codecName)
 	if decodeErr != nil {
 		return nil, decodeErr
 	}
@@ -175,11 +188,8 @@ func Validate(path string) (*ProbeResult, error) {
 	fps := estimateFPS(videoFrames)
 	fpsNum, fpsDen := fpsToRational(fps)
 
-	// Build codec string.
-	codecStr := "h264"
-
 	result := &ProbeResult{
-		Codec:      codecStr,
+		Codec:      codecName,
 		AudioCodec: audioCodec,
 		Width:      width,
 		Height:     height,
@@ -200,8 +210,8 @@ func Validate(path string) (*ProbeResult, error) {
 // If the decoder produces frames whose dimensions don't match the SPS
 // dimensions, it returns ErrCorruptFile. If decoding fails entirely
 // (e.g., synthetic test data), it returns zero dimensions with a
-// warning rather than a hard error.
-func testDecodeFirstGOP(frames []BufferedFrame, spsWidth, spsHeight int) (width, height int, warnings []string, err error) {
+// warning rather than a hard error. codecName is "h264" or "h265".
+func testDecodeFirstGOP(frames []BufferedFrame, spsWidth, spsHeight int, codecName string) (width, height int, warnings []string, err error) {
 	if len(frames) == 0 {
 		return 0, 0, nil, nil
 	}
@@ -229,24 +239,30 @@ func testDecodeFirstGOP(frames []BufferedFrame, spsWidth, spsHeight int) (width,
 		gop = gop[:30]
 	}
 
-	// Try to create a decoder.
-	decoder, decErr := codec.NewVideoDecoder()
+	// Try to create a codec-appropriate decoder.
+	decoder, decErr := codec.NewVideoDecoderForCodec(codecName)
 	if decErr != nil {
-		return 0, 0, []string{fmt.Sprintf("video decoder unavailable: %v", decErr)}, nil
+		return 0, 0, []string{fmt.Sprintf("video decoder unavailable (%s): %v", codecName, decErr)}, nil
 	}
 	defer decoder.Close()
 
+	isHEVC := codecName == "h265"
+
 	// Decode each frame.
 	for _, f := range gop {
-		// Convert AVC1 to Annex B for the decoder.
-		annexB := codec.AVC1ToAnnexB(f.wireData)
+		// Convert wire format to Annex B for the decoder.
+		annexB := codec.WireToAnnexB(f.wireData)
 		if len(annexB) == 0 {
 			continue
 		}
 
-		// Prepend SPS/PPS for keyframes.
+		// Prepend parameter sets for keyframes.
 		if f.isKeyframe && len(f.sps) > 0 {
-			annexB = codec.PrependSPSPPS(f.sps, f.pps, annexB)
+			if isHEVC {
+				annexB = codec.PrependVPSSPSPPS(f.vps, f.sps, f.pps, annexB)
+			} else {
+				annexB = codec.PrependSPSPPS(f.sps, f.pps, annexB)
+			}
 		}
 
 		yuv, w, h, frameErr := decoder.Decode(annexB)
@@ -261,7 +277,7 @@ func testDecodeFirstGOP(frames []BufferedFrame, spsWidth, spsHeight int) (width,
 		}
 
 		// Verify YUV buffer size matches dimensions.
-		expectedSize := w * h * 3 / 2
+		expectedSize := yuvFrameSize(w, h)
 		if len(yuv) < expectedSize {
 			warnings = append(warnings, fmt.Sprintf("decoded YUV size mismatch: got %d, expected %d", len(yuv), expectedSize))
 			continue
@@ -269,10 +285,13 @@ func testDecodeFirstGOP(frames []BufferedFrame, spsWidth, spsHeight int) (width,
 
 		// Check for dimension mismatch between SPS and decoded output.
 		// SPS display dimensions (after frame cropping) and decoded output
-		// may differ by up to one macroblock (16px) due to macroblock
-		// alignment, cropping applied differently by encoder vs decoder,
-		// or SPS parser rounding. Allow ±16px tolerance per axis.
+		// may differ by up to one macroblock (16px for H.264, 64px CTU for HEVC)
+		// due to alignment, cropping, or SPS parser rounding.
 		if spsWidth > 0 && spsHeight > 0 {
+			tolerance := 16
+			if isHEVC {
+				tolerance = 64 // CTU size
+			}
 			dw := w - spsWidth
 			dh := h - spsHeight
 			if dw < 0 {
@@ -281,7 +300,7 @@ func testDecodeFirstGOP(frames []BufferedFrame, spsWidth, spsHeight int) (width,
 			if dh < 0 {
 				dh = -dh
 			}
-			if dw > 16 || dh > 16 {
+			if dw > tolerance || dh > tolerance {
 				return 0, 0, nil, fmt.Errorf("%w: SPS declares %dx%d but decoder produced %dx%d",
 					ErrCorruptFile, spsWidth, spsHeight, w, h)
 			}
@@ -300,6 +319,57 @@ func testDecodeFirstGOP(frames []BufferedFrame, spsWidth, spsHeight int) (width,
 		warnings = append(warnings, "no frames decoded in test decode (possible synthetic data)")
 	}
 	return 0, 0, warnings, nil
+}
+
+// detectCodecFromFrames inspects the first keyframe's wire data NALUs to
+// determine whether the content is H.264 or HEVC. Returns true for HEVC.
+func detectCodecFromFrames(frames []BufferedFrame) bool {
+	for _, f := range frames {
+		if !f.isKeyframe {
+			continue
+		}
+		// Check wire data NALUs (4-byte length-prefixed).
+		nalus := codec.ExtractNALUs(f.wireData)
+		for _, nalu := range nalus {
+			if len(nalu) < 2 {
+				continue
+			}
+			// H.264 IDR has NALU type 5 (bits 0-4 of byte 0).
+			// HEVC IDR has NALU types 19-20 (bits 1-6 of byte 0).
+			// A quick heuristic: check if the first VCL NALU looks like HEVC.
+			h264Type := nalu[0] & 0x1F
+			hevcType := codec.HEVCNALUType(nalu[0])
+
+			// HEVC IDR types 19-20 map to H.264 NALU type bits that would
+			// be unusual (high forbidden bit patterns). Check the codec field
+			// on the frame first if set.
+			if f.codec == "h265" {
+				return true
+			}
+			if f.codec == "h264" {
+				return false
+			}
+
+			// Heuristic: H.264 IDR is type 5, H.264 non-IDR is 1.
+			// HEVC IDR_W_RADL is type 19, IDR_N_LP is 20.
+			// In H.264, type 5 = IDR slice. In HEVC, the byte pattern
+			// for type 19 IDR would have (nalu[0]>>1)&0x3F = 19.
+			// For H.264, nalu[0]&0x1F = 5 means nalu[0] = 0x65 (forbidden=0, ref=3, type=5).
+			// For HEVC type 19 IDR: nalu[0] = 0x26 (forbidden=0, type=19<<1=38, so 0x26).
+			// These don't overlap, so we can distinguish.
+			if h264Type == 5 { // H.264 IDR
+				return false
+			}
+			if codec.IsHEVCKeyframe(hevcType) && hevcType >= 16 {
+				return true
+			}
+		}
+		// Also check VPS presence on the frame (set by HEVC-aware demuxer).
+		if len(f.vps) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // estimateFPS estimates the source FPS from buffered frame PTS values.

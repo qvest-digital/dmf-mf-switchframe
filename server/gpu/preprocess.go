@@ -19,6 +19,12 @@ cudaError_t nv12_to_rgb_nhwc(
     int srcW, int srcH, int srcPitch,
     int outW, int outH,
     cudaStream_t stream);
+cudaError_t p210_to_rgb_chw(
+    float* rgbOut,
+    const uint16_t* p210,
+    int srcW, int srcH, int srcPitch16,
+    int outW, int outH,
+    cudaStream_t stream);
 cudaError_t mask_to_u8_upscale(
     uint8_t* dst, int dstW, int dstH,
     const float* src, int srcW, int srcH,

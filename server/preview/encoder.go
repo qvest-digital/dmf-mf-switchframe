@@ -24,6 +24,12 @@ import (
 	"github.com/zsiec/switchframe/server/transition"
 )
 
+// yuvFrameSize returns the byte size of a YUV420 8-bit frame (w*h*3/2).
+// Local helper to avoid importing the switcher package.
+func yuvFrameSize(w, h int) int {
+	return w * h * 3 / 2
+}
+
 // Relay is the subset of distribution.Relay used by the preview encoder.
 type Relay interface {
 	BroadcastVideo(frame *media.VideoFrame)
@@ -222,12 +228,13 @@ func (e *Encoder) loop() {
 	defer close(e.done)
 
 	var (
-		encoder  transition.VideoEncoder
-		groupID  atomic.Uint32
-		infoSent bool
-		encYUV   []byte // persistent encoder input buffer (reused)
-		lastSrcW int
-		lastSrcH int
+		encoder        transition.VideoEncoder
+		groupID        atomic.Uint32
+		infoSent       bool
+		encYUV         []byte // persistent encoder input buffer (reused)
+		downconvertBuf []byte // reusable buffer for 10-bit to 8-bit downconversion
+		lastSrcW       int
+		lastSrcH       int
 	)
 
 	var frameCount int64
@@ -274,8 +281,29 @@ func (e *Encoder) loop() {
 			encoder = enc
 		}
 
+		// Detect 10-bit YUV422P10LE input by buffer size.
+		// 10-bit frame: w*h*4 bytes; 8-bit frame: w*h*3/2 bytes.
+		// When 10-bit is detected, downconvert to 8-bit for the H.264 encoder.
+		expected10bitSize := encW * encH * 4
+		encSize := yuvFrameSize(encW, encH)
+		if len(job.yuv) >= expected10bitSize && expected10bitSize > encSize {
+			// 10-bit input: downconvert to 8-bit YUV420P.
+			if cap(downconvertBuf) < encSize {
+				downconvertBuf = make([]byte, encSize)
+			}
+			downconvertBuf = downconvertBuf[:encSize]
+			if err := downconvert422_10to420(job.yuv, downconvertBuf, encW, encH); err != nil {
+				slog.Warn("preview: 10-bit downconversion failed",
+					"key", e.cfg.SourceKey, "error", err)
+				if job.release != nil {
+					job.release(job.yuv)
+				}
+				continue
+			}
+			job.yuv = downconvertBuf
+		}
+
 		// Copy into encoder buffer (encoder may hold a reference to previous frame).
-		encSize := encW * encH * 3 / 2
 		if cap(encYUV) < encSize {
 			encYUV = make([]byte, encSize)
 		}

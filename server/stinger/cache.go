@@ -13,14 +13,20 @@ const cacheMagic = "SFST"
 const cacheVersion = 1
 const cacheHeaderSize = 28 // 4 (magic) + 4 (version) + 4 (width) + 4 (height) + 4 (frameCount) + 8 (cutPoint)
 
+// yuvFrameSize returns the byte size of a YUV420 8-bit frame (w*h*3/2).
+// Local helper to avoid importing the switcher package.
+func yuvFrameSize(w, h int) int {
+	return w * h * 3 / 2
+}
+
 // WriteCache writes a clip's decoded frames to a flat binary cache file.
 //
 // File format:
 //
 //	[magic: "SFST" 4 bytes][version: uint32 LE][width: uint32 LE][height: uint32 LE]
 //	[frameCount: uint32 LE][cutPoint: float64 LE]
-//	[frame0 YUV: w*h*3/2 bytes][frame0 Alpha: w*h bytes]
-//	[frame1 YUV: w*h*3/2 bytes][frame1 Alpha: w*h bytes]
+//	[frame0 YUV: yuvFrameSize(w,h) bytes][frame0 Alpha: w*h bytes]
+//	[frame1 YUV: yuvFrameSize(w,h) bytes][frame1 Alpha: w*h bytes]
 //	...
 func WriteCache(path string, clip *Clip) error {
 	f, err := os.Create(path)
@@ -87,7 +93,7 @@ func LoadCache(path string) (*Clip, error) {
 	frameCount := int(binary.LittleEndian.Uint32(mapped[16:20]))
 	cutPoint := math.Float64frombits(binary.LittleEndian.Uint64(mapped[20:28]))
 
-	yuvSize := w * h * 3 / 2
+	yuvSize := yuvFrameSize(w, h)
 	alphaSize := w * h
 	frameSize := yuvSize + alphaSize
 	expectedSize := cacheHeaderSize + frameCount*frameSize

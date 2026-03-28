@@ -6,6 +6,12 @@ import (
 	"time"
 )
 
+// yuvFrameSize returns the byte size of a YUV420 8-bit frame (w*h*3/2).
+// Local helper to avoid importing the switcher package.
+func yuvFrameSize(w, h int) int {
+	return w * h * 3 / 2
+}
+
 // ClipSource indicates how the clip was ingested.
 type ClipSource string
 
@@ -116,14 +122,19 @@ type VideoEncoder interface {
 // Fields are unexported for encapsulation; use accessor methods.
 type BufferedFrame struct {
 	wireData   []byte
+	vps        []byte // VPS NAL unit (HEVC keyframes only)
 	sps        []byte
 	pps        []byte
 	pts        int64
 	isKeyframe bool
+	codec      string // "h264" or "h265"; empty defaults to "h264"
 }
 
-// WireData returns the AVC1-format H.264 frame data (excluding SPS/PPS).
+// WireData returns the wire-format frame data (excluding parameter sets).
 func (f BufferedFrame) WireData() []byte { return f.wireData }
+
+// VPS returns the VPS NALU bytes (set on HEVC keyframes, nil for H.264).
+func (f BufferedFrame) VPS() []byte { return f.vps }
 
 // SPS returns the SPS NALU bytes (set on keyframes, nil otherwise).
 func (f BufferedFrame) SPS() []byte { return f.sps }
@@ -136,6 +147,17 @@ func (f BufferedFrame) PTS() int64 { return f.pts }
 
 // IsKeyframe returns true if this frame is an IDR/keyframe.
 func (f BufferedFrame) IsKeyframe() bool { return f.isKeyframe }
+
+// Codec returns the video codec ("h264" or "h265"). Empty string defaults to "h264".
+func (f BufferedFrame) Codec() string {
+	if f.codec == "" {
+		return "h264"
+	}
+	return f.codec
+}
+
+// IsHEVC returns true if this frame uses the HEVC codec.
+func (f BufferedFrame) IsHEVC() bool { return f.codec == "h265" }
 
 // BufferedAudioFrame mirrors replay's internal audio frame format.
 // Fields are unexported for encapsulation; use accessor methods.

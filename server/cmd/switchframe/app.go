@@ -54,6 +54,7 @@ import (
 	"github.com/zsiec/switchframe/server/replay"
 	"github.com/zsiec/switchframe/server/scte104"
 	"github.com/zsiec/switchframe/server/scte35"
+	"github.com/zsiec/switchframe/server/sidecar"
 	"github.com/zsiec/switchframe/server/srt"
 	"github.com/zsiec/switchframe/server/stinger"
 	"github.com/zsiec/switchframe/server/stmap"
@@ -162,12 +163,20 @@ type App struct {
 	gpuState        *gpuState
 	gpuRawVideoSink *atomic.Pointer[gpu.RawSinkFunc] // GPU raw sink for MXL output
 
-	// AI segmentation engine (CUDA + TensorRT, nil on other platforms)
-	segEngine  *gpu.SegmentationEngine
+	// AI sidecar (nil when not using sidecar mode)
+	aiSidecarHost *sidecar.Host
+	aiSidecarPool *sidecar.CUDAGPUPool
+
+	// Visual tracking proxies created via the sidecar (per-source, keyed by sourceKey).
+	aiTrackingProxies   map[string]*tracking.VisualTrackingProxy
+	aiTrackingProxiesMu sync.Mutex
+
+	// AI segmentation (CUDA + TensorRT or sidecar proxy, nil on other platforms)
+	segEngine  gpu.Segmenter
 	segAdapter *segmentationStateAdapter // non-nil when segEngine is active
 
 	// AR inference engine (depth estimation + SAM segmentation, nil when unavailable)
-	arInferEngine *arinfer.Engine
+	arInferEngine arinfer.Inferrer
 
 	// Camera tracking manager (Free-D, visual, ArUco; always initialized)
 	trackingMgr *tracking.Manager
@@ -409,7 +418,22 @@ func (a *App) initCoreEngine() error {
 	a.sw.SetAvailableEncoders(codec.ListAvailableEncoders())
 
 	// Apply pipeline format from config.
+	colorCfg, err := switcher.ParseColorProfile(a.cfg.ColorFormat)
+	if err != nil {
+		return err
+	}
+	if err := colorCfg.Validate(); err != nil {
+		return fmt.Errorf("invalid color profile: %w", err)
+	}
+
 	if f, ok := switcher.FormatPresets[a.cfg.Format]; ok {
+		f.Color = colorCfg
+
+		slog.Info("pipeline color format",
+			"profile", a.cfg.ColorFormat,
+			"colorFormat", colorCfg.ColorFormat.String(),
+			"codec", colorCfg.Codec.String())
+
 		if err := a.sw.SetPipelineFormat(f); err != nil {
 			return fmt.Errorf("set pipeline format: %w", err)
 		}
@@ -449,13 +473,17 @@ func (a *App) initCoreEngine() error {
 	a.sw.EnableWallClockVideoPTS()
 
 	// Configure transition engine with auto-detected video codec.
+	// When the pipeline is professional (10-bit 422), use native 10-bit decoders
+	// to preserve quality by avoiding the lossy 10-bit→8-bit→10-bit round-trip.
+	srcDecFactory := decoderFactoryForColorFormat(colorCfg.ColorFormat)
 	a.sw.SetTransitionConfig(switcher.TransitionConfig{
-		DecoderFactory: decoderFactory(),
+		DecoderFactory: srcDecFactory,
 	})
 
-	// Always-decode: every H.264 source gets a dedicated decoder goroutine
-	// producing raw YUV420, eliminating keyframe wait on cuts/transitions.
-	a.sw.SetSourceDecoderFactory(decoderFactory())
+	// Always-decode: every source gets a dedicated decoder goroutine
+	// producing raw YUV. With 10-bit decoders, sources that provide 10-bit
+	// content output YUV422P10LE directly, avoiding lossy downconversion.
+	a.sw.SetSourceDecoderFactory(srcDecFactory)
 
 	return nil
 }
@@ -496,7 +524,9 @@ func (a *App) initOutput() error {
 	// The 512-slot SRT listener buffer absorbs muxer bursts instead.
 
 	// Attach confidence monitor for 1fps program output thumbnail.
-	a.confidenceMon = output.NewConfidenceMonitor(decoderFactory())
+	// Use codec-aware decoder factory: when the pipeline is HEVC (10-bit professional),
+	// the program output is HEVC-encoded and needs an HEVC-capable decoder.
+	a.confidenceMon = output.NewConfidenceMonitor(decoderFactoryForColorFormat(a.sw.PipelineFormat().Color.ColorFormat))
 	a.outputMgr.SetConfidenceMonitor(a.confidenceMon)
 
 	// When the output muxer starts, request an IDR keyframe from the
@@ -729,7 +759,11 @@ func (a *App) initSubsystems() error {
 	}
 
 	// Pipeline encoder for the video processing chain.
-	a.sw.SetPipelineCodecs(encoderFactory())
+	// Use the codec and color format from the pipeline config to select the
+	// appropriate encoder: AVC 8-bit, HEVC 8-bit, or HEVC 10-bit 4:2:2.
+	pipelineColor := a.sw.PipelineFormat().Color
+	pipelineCodec := pipelineColor.Codec
+	a.sw.SetPipelineCodecs(encoderFactoryForCodec(pipelineCodec, pipelineColor.ColorFormat), pipelineCodec)
 	a.sw.SetPipelineVideoInfoCallback(a.videoInfoCallback("pipeline"))
 	if err := a.sw.BuildPipeline(); err != nil {
 		return fmt.Errorf("build pipeline: %w", err)
@@ -770,7 +804,7 @@ func (a *App) initSubsystems() error {
 		// the switcher pipeline (keying → compositor → encode → program).
 		a.replayMgr.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64) {
 			pf := &switcher.ProcessingFrame{
-				YUV:        yuv,
+				Data:        yuv,
 				Width:      w,
 				Height:     h,
 				PTS:        pts,
@@ -912,6 +946,8 @@ func (a *App) initMXL() error {
 		// Capture relay for OnVideoInfo closure.
 		pf := a.sw.PipelineFormat()
 		sourceRelay := relay
+		// Enable lossless 10-bit V210 conversion when the pipeline is professional (10-bit 4:2:2).
+		lossless10bit := pf.Color.ColorFormat == switcher.ColorYUV422_10bit
 		srcCfg := mxl.SourceConfig{
 			FlowName:            flowName,
 			VideoFlowID:         videoFlowID,
@@ -919,6 +955,7 @@ func (a *App) initMXL() error {
 			Height:              pf.Height,
 			FPSNum:              pf.FPSNum,
 			FPSDen:              pf.FPSDen,
+			Lossless10bit:       lossless10bit,
 			EncoderFactory:      encoderFactory(),
 			AudioEncoderFactory: audioEncoderFactoryForMXL(),
 			Relay:               relay,
@@ -935,8 +972,13 @@ func (a *App) initMXL() error {
 				}
 			},
 			OnRawVideo: func(key string, yuv []byte, w, h int, pts int64) {
+				frameFmt := switcher.ColorYUV420_8bit
+				if lossless10bit {
+					frameFmt = switcher.ColorYUV422_10bit
+				}
 				pf := &switcher.ProcessingFrame{
-					YUV:    yuv,
+					Data:   yuv,
+					Format: frameFmt,
 					Width:  w,
 					Height: h,
 					PTS:    pts,
@@ -1131,9 +1173,15 @@ func (a *App) initMXL() error {
 		}
 
 		// Adapt between switcher's RawVideoSink (*ProcessingFrame) and
-		// the MXL writer's WriteVideo (flat YUV params).
+		// the MXL writer's WriteVideo/WriteVideo10bit.
+		// Route based on frame format: 10-bit uses lossless YUV422P10→V210 path,
+		// 8-bit uses the standard YUV420→V210 path.
 		a.sw.SetRawVideoSink(switcher.RawVideoSink(func(pf *switcher.ProcessingFrame) {
-			out.Writer().WriteVideo(pf.YUV, pf.Width, pf.Height, pf.PTS)
+			if pf.Format == switcher.ColorYUV422_10bit {
+				out.Writer().WriteVideo10bit(pf.Data, pf.Width, pf.Height, pf.PTS)
+			} else {
+				out.Writer().WriteVideo(pf.Data, pf.Width, pf.Height, pf.PTS)
+			}
 		}))
 		a.updateGPURawVideoSink()
 		a.mixer.SetRawAudioSink(audio.RawAudioSink(out.Writer().WriteAudio))
@@ -1362,7 +1410,7 @@ func (a *App) initAPI() error {
 		apiOpts = append(apiOpts, control.WithARInference(a.arInferEngine))
 	}
 	if a.trackingMgr != nil {
-		apiOpts = append(apiOpts, control.WithARTracking(&trackingManagerAdapter{mgr: a.trackingMgr}))
+		apiOpts = append(apiOpts, control.WithARTracking(&trackingManagerAdapter{mgr: a.trackingMgr, app: a}))
 	}
 	// AR scene is always available (even without OptiX renderer).
 	if a.arScene != nil {
@@ -1627,8 +1675,22 @@ func (a *App) Run(ctx context.Context) error {
 				}
 			})
 
+			// Downconvert 10-bit frames to 8-bit for the CPU preview encoder.
+			// The preview encoder always expects YUV420P 8-bit input.
+			var previewDownconvertBuf []byte
 			a.sw.SetRawPreviewSink(switcher.RawVideoSink(func(frame *switcher.ProcessingFrame) {
-				pe.Send(frame.YUV, frame.Width, frame.Height, frame.PTS)
+				if frame.Format == switcher.ColorYUV422_10bit {
+					dstSize := switcher.ColorYUV420_8bit.FrameSize(frame.Width, frame.Height)
+					if len(previewDownconvertBuf) < dstSize {
+						previewDownconvertBuf = make([]byte, dstSize)
+					}
+					if err := switcher.Downconvert422_10to420(frame.Data, previewDownconvertBuf[:dstSize], frame.Width, frame.Height); err != nil {
+						return
+					}
+					pe.Send(previewDownconvertBuf[:dstSize], frame.Width, frame.Height, frame.PTS)
+				} else {
+					pe.Send(frame.Data, frame.Width, frame.Height, frame.PTS)
+				}
 			}))
 
 			slog.Info("program preview encoder enabled (CPU fallback)",
@@ -1826,6 +1888,20 @@ func (a *App) closeSubsystems() {
 	// AI segmentation engine cleanup before GPU (holds GPU resources).
 	if a.segEngine != nil {
 		a.segEngine.Close()
+	}
+	// Close all visual tracking proxies before sidecar shutdown.
+	a.aiTrackingProxiesMu.Lock()
+	for _, tp := range a.aiTrackingProxies {
+		tp.Close()
+	}
+	a.aiTrackingProxies = nil
+	a.aiTrackingProxiesMu.Unlock()
+	// AI sidecar cleanup: close host (kills sidecar process), then pool (unmaps shm).
+	if a.aiSidecarHost != nil {
+		a.aiSidecarHost.Close()
+	}
+	if a.aiSidecarPool != nil {
+		a.aiSidecarPool.Close()
 	}
 	// GPU cleanup after switcher (pipeline frames must be released first).
 	closeGPU(a.gpuState)

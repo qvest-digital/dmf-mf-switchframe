@@ -353,8 +353,8 @@ func estimateMotionField(prev, curr *ProcessingFrame, mvf *motionVectorField, se
 	h := prev.Height
 	bs := mvf.blockSize
 
-	prevY := prev.YUV[:w*h]
-	currY := curr.YUV[:w*h]
+	prevY := prev.Data[:w*h]
+	currY := curr.Data[:w*h]
 
 	// Forward ME pass: raster scan with neighbor predictors
 	for row := 0; row < mvf.rows; row++ {
@@ -569,8 +569,8 @@ func (h *hierarchicalME) estimate(prev, curr *ProcessingFrame, mvf *motionVector
 	h0 := prev.Height
 	bs := mvf.blockSize
 
-	prevY := prev.YUV[:w*h0]
-	currY := curr.YUV[:w*h0]
+	prevY := prev.Data[:w*h0]
+	currY := curr.Data[:w*h0]
 
 	// Level 0: full resolution (pointers, no copy)
 	h.prevPyr[0] = prevY
@@ -600,8 +600,8 @@ func (h *hierarchicalME) estimate(prev, curr *ProcessingFrame, mvf *motionVector
 	if h.mvfL2 == nil || h.mvfL2.cols != cols2 || h.mvfL2.rows != rows2 {
 		h.mvfL2 = newMotionVectorField(w2, h2, bs)
 	}
-	pfL2prev := &ProcessingFrame{YUV: h.prevPyr[2][:w2*h2], Width: w2, Height: h2}
-	pfL2curr := &ProcessingFrame{YUV: h.currPyr[2][:w2*h2], Width: w2, Height: h2}
+	pfL2prev := &ProcessingFrame{Data: h.prevPyr[2][:w2*h2], Width: w2, Height: h2}
+	pfL2curr := &ProcessingFrame{Data: h.currPyr[2][:w2*h2], Width: w2, Height: h2}
 	estimateMotionField(pfL2prev, pfL2curr, h.mvfL2, searchRange)
 
 	// --- Level 1 (half res): seed from upscaled L2 MVs ---

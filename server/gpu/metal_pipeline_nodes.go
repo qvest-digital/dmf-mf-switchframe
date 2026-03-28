@@ -132,10 +132,11 @@ func (n *gpuEncodeNode) stopLoop() {
 type gpuRawSinkNode struct {
 	ctx    *Context
 	sink   *atomic.Pointer[RawSinkFunc]
-	cpuBuf [2][]byte // double-buffer to prevent aliasing if callback retains slice
+	cpuBuf [2][]byte      // double-buffer to prevent aliasing if callback retains slice
 	bufIdx int
 	width  int
 	height int
+	format GPUFrameFormat // tracked for lazy buffer resize on format change
 }
 
 // NewGPURawSinkNode creates a node that downloads GPU frames to CPU.
@@ -147,10 +148,23 @@ func (n *gpuRawSinkNode) Name() string { return "gpu_raw_sink" }
 func (n *gpuRawSinkNode) Configure(width, height, pitch int) error {
 	n.width = width
 	n.height = height
-	size := width * height * 3 / 2
+	// Default to NV12 buffer size; will be resized on first ProcessGPU
+	// if the frame format differs.
+	size := yuvFrameSize(width, height)
 	n.cpuBuf[0] = make([]byte, size)
 	n.cpuBuf[1] = make([]byte, size)
 	return nil
+}
+
+// configureForFormat resizes CPU buffers based on the frame format.
+// Called lazily when the frame format changes from the default NV12.
+func (n *gpuRawSinkNode) configureForFormat(width, height int, format GPUFrameFormat) {
+	size := cpuFrameSize(width, height, format)
+	if len(n.cpuBuf[0]) != size {
+		n.cpuBuf[0] = make([]byte, size)
+		n.cpuBuf[1] = make([]byte, size)
+	}
+	n.format = format
 }
 func (n *gpuRawSinkNode) Active() bool {
 	return n.sink != nil && n.sink.Load() != nil
@@ -164,9 +178,13 @@ func (n *gpuRawSinkNode) ProcessGPU(frame *GPUFrame) error {
 	if fn == nil {
 		return nil
 	}
+	// Lazily resize CPU buffers when frame format changes (e.g., NV12→P210).
+	if frame.Format != n.format {
+		n.configureForFormat(n.width, n.height, frame.Format)
+	}
 	buf := n.cpuBuf[n.bufIdx]
 	n.bufIdx ^= 1 // flip 0↔1
-	if err := Download(n.ctx, buf, frame, n.width, n.height); err != nil {
+	if err := GPUDownloadDispatch(n.ctx, frame, buf, n.width, n.height); err != nil {
 		return err
 	}
 	(*fn)(buf, n.width, n.height)

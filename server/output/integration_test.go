@@ -36,6 +36,31 @@ func makePFrame(pts int64) *media.VideoFrame {
 	}
 }
 
+// makeHEVCKeyframeInteg builds a minimal HEVC keyframe with VPS/SPS/PPS in wire format.
+func makeHEVCKeyframeInteg(pts int64) *media.VideoFrame {
+	return &media.VideoFrame{
+		PTS:        pts,
+		DTS:        pts,
+		IsKeyframe: true,
+		VPS:        []byte{0x40, 0x01, 0x0C, 0x01, 0xFF, 0xFF},
+		SPS:        []byte{0x42, 0x01, 0x01, 0x01, 0x60, 0x00},
+		PPS:        []byte{0x44, 0x01, 0xC0, 0xF7, 0x24},
+		WireData:   []byte{0x00, 0x00, 0x00, 0x04, 0x26, 0x01, 0x88, 0x80},
+		Codec:      "h265",
+	}
+}
+
+// makeHEVCPFrameInteg builds a minimal HEVC trailing non-keyframe in wire format.
+func makeHEVCPFrameInteg(pts int64) *media.VideoFrame {
+	return &media.VideoFrame{
+		PTS:        pts,
+		DTS:        pts,
+		IsKeyframe: false,
+		WireData:   []byte{0x00, 0x00, 0x00, 0x03, 0x02, 0x01, 0x50},
+		Codec:      "h265",
+	}
+}
+
 // makeAudioFrame builds a minimal AAC audio frame.
 func makeAudioFrame(pts int64) *media.AudioFrame {
 	return &media.AudioFrame{
@@ -251,3 +276,43 @@ func (a *testAdapter) Status() AdapterStatus { return AdapterStatus{State: State
 
 // Compile-time check that testAdapter satisfies Adapter.
 var _ Adapter = (*testAdapter)(nil)
+
+// TestIntegration_HEVCRecordingProducesValidTS verifies the full pipeline with HEVC:
+// program relay -> Viewer -> TSMuxer -> FileRecorder -> .ts file.
+func TestIntegration_HEVCRecordingProducesValidTS(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test")
+	}
+	mgr := NewManager()
+	defer func() { _ = mgr.Close() }()
+
+	dir := t.TempDir()
+	require.NoError(t, mgr.StartRecording(RecorderConfig{Dir: dir}))
+
+	// Send a mini-GOP: HEVC keyframe + P-frame with interleaved audio.
+	mgr.DirectWriteVideo(makeHEVCKeyframeInteg(90000))
+	mgr.DirectWriteAudio(makeAudioFrame(90000))
+	mgr.DirectWriteVideo(makeHEVCPFrameInteg(93000))
+	mgr.DirectWriteAudio(makeAudioFrame(93000))
+
+	time.Sleep(100 * time.Millisecond)
+
+	require.NoError(t, mgr.StopRecording())
+
+	// Read the recorded file.
+	files, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.NotEmpty(t, files, "recording directory must contain a .ts file")
+
+	path := filepath.Join(dir, files[0].Name())
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.True(t, len(data) > 0, "recorded file must not be empty")
+
+	// Validate MPEG-TS structure.
+	require.Equal(t, 0, len(data)%188, "file size must be a multiple of 188 bytes (got %d)", len(data))
+
+	for i := 0; i < len(data); i += 188 {
+		require.Equal(t, byte(0x47), data[i], "TS packet at offset %d must start with sync byte 0x47", i)
+	}
+}

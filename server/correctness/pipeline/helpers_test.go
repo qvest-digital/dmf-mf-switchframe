@@ -209,7 +209,7 @@ func (h *pipelineHarness) feedFrames(sourceKey string, count int, startPTS int64
 
 	for i := 0; i < count; i++ {
 		pf := &switcher.ProcessingFrame{
-			YUV:        copyBytes(yuv),
+			Data:       copyBytes(yuv),
 			Width:      testWidth,
 			Height:     testHeight,
 			PTS:        startPTS + int64(i)*ptsDelta,
@@ -229,7 +229,7 @@ func (h *pipelineHarness) feedFramesWithColor(sourceKey string, count int, start
 
 	for i := 0; i < count; i++ {
 		pf := &switcher.ProcessingFrame{
-			YUV:        copyBytes(yuv),
+			Data:       copyBytes(yuv),
 			Width:      testWidth,
 			Height:     testHeight,
 			PTS:        startPTS + int64(i)*ptsDelta,

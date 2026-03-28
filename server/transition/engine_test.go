@@ -1315,7 +1315,7 @@ func TestIngestRawFrame_ProducesOutput(t *testing.T) {
 	require.NoError(t, e.Start("cam1", "cam2", Mix, 5000))
 
 	w, h := 4, 4
-	yuvSize := w * h * 3 / 2
+	yuvSize := yuvFrameSize(w, h)
 
 	// FROM source raw YUV (stored, no output)
 	yuvA := make([]byte, yuvSize)
@@ -1361,7 +1361,7 @@ func TestIngestRawFrame_IgnoresNonParticipants(t *testing.T) {
 
 	require.NoError(t, e.Start("cam1", "cam2", Mix, 5000))
 
-	yuv := make([]byte, 4*4*3/2)
+	yuv := make([]byte, yuvFrameSize(4, 4))
 	e.IngestRawFrame("cam3", yuv, 4, 4, 0)
 
 	mu.Lock()
@@ -1417,15 +1417,15 @@ func TestIngestRawFrame_ResolutionMismatchScales(t *testing.T) {
 	require.NoError(t, e.Start("cam1", "cam2", Mix, 5000))
 
 	// FROM at 8x8 sets engine resolution
-	e.IngestRawFrame("cam1", make([]byte, 8*8*3/2), 8, 8, 0)
+	e.IngestRawFrame("cam1", make([]byte, yuvFrameSize(8, 8)), 8, 8, 0)
 
 	// TO at 4x4 must be scaled to 8x8
-	e.IngestRawFrame("cam2", make([]byte, 4*4*3/2), 4, 4, 3000)
+	e.IngestRawFrame("cam2", make([]byte, yuvFrameSize(4, 4)), 4, 4, 3000)
 
 	mu.Lock()
 	require.Equal(t, 1, len(outputs), "should produce output after scaling")
 	require.Equal(t, 8, outWidths[0], "output should be at engine resolution")
-	require.Equal(t, 8*8*3/2, len(outputs[0]))
+	require.Equal(t, yuvFrameSize(8, 8), len(outputs[0]))
 	mu.Unlock()
 
 	e.Stop()
@@ -1450,7 +1450,7 @@ func TestIngestRawFrame_AutoCompletes(t *testing.T) {
 	require.NoError(t, e.Start("cam1", "cam2", Mix, 50)) // 50ms
 
 	w, h := 4, 4
-	yuvSize := w * h * 3 / 2
+	yuvSize := yuvFrameSize(w, h)
 
 	for i := 0; i < 20; i++ {
 		e.IngestRawFrame("cam1", make([]byte, yuvSize), w, h, int64(i*3000))
@@ -1496,7 +1496,7 @@ func TestIngestRawFrame_MixedWithIngestFrame(t *testing.T) {
 	mu.Unlock()
 
 	// TO via raw YUV (MXL source)
-	yuvB := make([]byte, 4*4*3/2)
+	yuvB := make([]byte, yuvFrameSize(4, 4))
 	for i := range yuvB {
 		yuvB[i] = 128
 	}
@@ -1530,7 +1530,7 @@ func TestIngestRawFrame_DeepCopiesInput(t *testing.T) {
 	require.NoError(t, e.Start("cam1", "cam2", Mix, 5000))
 
 	w, h := 4, 4
-	yuvSize := w * h * 3 / 2
+	yuvSize := yuvFrameSize(w, h)
 
 	buf := make([]byte, yuvSize)
 	for i := range buf {
@@ -1569,7 +1569,7 @@ func TestIngestRawFrame_ConcurrentSafe(t *testing.T) {
 	require.NoError(t, e.Start("cam1", "cam2", Mix, 5000))
 
 	w, h := 4, 4
-	yuvSize := w * h * 3 / 2
+	yuvSize := yuvFrameSize(w, h)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -1659,7 +1659,7 @@ func TestEngineTimingInstrumentation_RawFrames(t *testing.T) {
 	e, mu, outputs, _ := newTestEngine(t)
 
 	w, h := 4, 4
-	yuvSize := w * h * 3 / 2
+	yuvSize := yuvFrameSize(w, h)
 
 	require.NoError(t, e.Start("cam1", "cam2", Mix, 5000))
 
@@ -1896,7 +1896,7 @@ func TestIngestRawFrame_SkipsBlendWhenSourceANil(t *testing.T) {
 	require.NoError(t, e.Start("cam1", "cam2", Mix, 5000))
 
 	w, h := 4, 4
-	yuvSize := w * h * 3 / 2
+	yuvSize := yuvFrameSize(w, h)
 
 	// Send ONLY the TO source frame (cam2) — no FROM source frame yet.
 	// This simulates the race where "to" arrives before "from".
@@ -1961,7 +1961,7 @@ func TestIngestRawFrame_FTBStillUsesBlackForSourceB(t *testing.T) {
 	require.NoError(t, e.Start("cam1", "cam2", FTB, 5000))
 
 	w, h := 4, 4
-	yuvSize := w * h * 3 / 2
+	yuvSize := yuvFrameSize(w, h)
 
 	// FTB: only FROM source (cam1) triggers blend. Source B is irrelevant.
 	yuvA := make([]byte, yuvSize)
@@ -2000,7 +2000,7 @@ func (d *racyDecoder) Decode(data []byte) ([]byte, int, int, error) {
 	}
 	// Read shared state (races with Close's write)
 	_ = d.shared
-	return make([]byte, d.width*d.height*3/2), d.width, d.height, nil
+	return make([]byte, yuvFrameSize(d.width, d.height)), d.width, d.height, nil
 }
 
 func (d *racyDecoder) Close() {
@@ -2057,7 +2057,7 @@ type slowMockDecoder struct {
 
 func (d *slowMockDecoder) Decode(data []byte) ([]byte, int, int, error) {
 	<-d.blockCh
-	return make([]byte, d.width*d.height*3/2), d.width, d.height, nil
+	return make([]byte, yuvFrameSize(d.width, d.height)), d.width, d.height, nil
 }
 
 func (d *slowMockDecoder) Close() {}
@@ -2149,7 +2149,7 @@ func TestEngineSkipBlend(t *testing.T) {
 	require.NoError(t, err)
 
 	// Feed frames to drive position tracking.
-	frame := make([]byte, 4*4*3/2)
+	frame := make([]byte, yuvFrameSize(4, 4))
 	for i := 0; i < 5; i++ {
 		e.IngestRawFrame("cam1", frame, 4, 4, int64(i*3000))
 		e.IngestRawFrame("cam2", frame, 4, 4, int64(i*3000))

@@ -136,8 +136,16 @@ func (n *gpuCompositorNode) ProcessGPU(frame *GPUFrame) error {
 			cached.Width == frame.Width && cached.Height == frame.Height
 
 		var err error
-		if occPtr != 0 {
-			// Occlusion-aware path: overlay alpha is modulated per-pixel
+		if frame.Format == GPUFormatP210 {
+			// P210 (10-bit) path: use P210-aware DSK overlay kernel.
+			// Occlusion masking is not supported for P210 yet.
+			if isFullFrame {
+				err = DSKCompositeFullFrameP210(n.ctx, frame, cached, alpha)
+			} else {
+				err = DSKCompositeRectP210(n.ctx, frame, cached, layer.Rect, alpha)
+			}
+		} else if occPtr != 0 {
+			// NV12 occlusion-aware path: overlay alpha is modulated per-pixel
 			// so 2D graphics appear BEHIND real-world foreground objects.
 			if isFullFrame {
 				err = DSKCompositeFullFrameOcc(n.ctx, frame, cached, alpha, occPtr, occW, occH)
@@ -145,7 +153,7 @@ func (n *gpuCompositorNode) ProcessGPU(frame *GPUFrame) error {
 				err = DSKCompositeRectOcc(n.ctx, frame, cached, layer.Rect, alpha, occPtr, occW, occH)
 			}
 		} else {
-			// Standard path: no occlusion masking.
+			// NV12 standard path: no occlusion masking.
 			if isFullFrame {
 				err = DSKCompositeFullFrame(n.ctx, frame, cached, alpha)
 			} else {

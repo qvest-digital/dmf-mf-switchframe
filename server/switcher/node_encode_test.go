@@ -42,7 +42,7 @@ func TestEncodeNode_ProcessEncodes(t *testing.T) {
 	defer func() { _ = n.Close() }()
 
 	pf := &ProcessingFrame{
-		YUV:        make([]byte, 4*4*3/2),
+		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        1000,
@@ -84,7 +84,7 @@ func TestEncodeNode_ForceIDR(t *testing.T) {
 	defer func() { _ = n.Close() }()
 
 	pf := &ProcessingFrame{
-		YUV:        make([]byte, 4*4*3/2),
+		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        2000,
@@ -121,7 +121,7 @@ func TestEncodeNode_EncodeError(t *testing.T) {
 	defer func() { _ = n.Close() }()
 
 	pf := &ProcessingFrame{
-		YUV:    make([]byte, 4*4*3/2),
+		Data:    make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:  4,
 		Height: 4,
 		PTS:    3000,
@@ -157,7 +157,7 @@ func TestEncodeNode_ProcessReturnsImmediately(t *testing.T) {
 	defer func() { _ = n.Close() }()
 
 	pf := &ProcessingFrame{
-		YUV:    make([]byte, 4*4*3/2),
+		Data:    make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:  4,
 		Height: 4,
 		PTS:    1000,
@@ -199,7 +199,7 @@ func TestEncodeNode_DropCounterOnBackpressure(t *testing.T) {
 
 	// First frame: goes to the encoder goroutine (blocks on blockCh).
 	pf1 := &ProcessingFrame{
-		YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4, PTS: 1000, Codec: "h264",
+		Data: make([]byte, ColorYUV420_8bit.FrameSize(4, 4)), Width: 4, Height: 4, PTS: 1000, Codec: "h264",
 	}
 	pf1.SetRefs(1)
 	n.Process(nil, pf1)
@@ -210,7 +210,7 @@ func TestEncodeNode_DropCounterOnBackpressure(t *testing.T) {
 	// Frames 2-5: fill the channel buffer (size 4).
 	for i := 2; i <= 5; i++ {
 		pf := &ProcessingFrame{
-			YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4, PTS: int64(i * 1000), Codec: "h264",
+			Data: make([]byte, ColorYUV420_8bit.FrameSize(4, 4)), Width: 4, Height: 4, PTS: int64(i * 1000), Codec: "h264",
 		}
 		pf.SetRefs(1)
 		n.Process(nil, pf)
@@ -218,7 +218,7 @@ func TestEncodeNode_DropCounterOnBackpressure(t *testing.T) {
 
 	// Sixth frame: channel full, should be dropped.
 	pf6 := &ProcessingFrame{
-		YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4, PTS: 6000, Codec: "h264",
+		Data: make([]byte, ColorYUV420_8bit.FrameSize(4, 4)), Width: 4, Height: 4, PTS: 6000, Codec: "h264",
 	}
 	pf6.SetRefs(1)
 	n.Process(nil, pf6)
@@ -253,7 +253,7 @@ func TestEncodeNode_ForceIDRReArmedOnDrop(t *testing.T) {
 
 	// First frame: picked up by goroutine and blocks.
 	pf1 := &ProcessingFrame{
-		YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4, PTS: 1000, Codec: "h264",
+		Data: make([]byte, ColorYUV420_8bit.FrameSize(4, 4)), Width: 4, Height: 4, PTS: 1000, Codec: "h264",
 	}
 	pf1.SetRefs(1)
 	n.Process(nil, pf1)
@@ -262,7 +262,7 @@ func TestEncodeNode_ForceIDRReArmedOnDrop(t *testing.T) {
 	// Frames 2-5: fill channel buffer (size 4).
 	for i := 2; i <= 5; i++ {
 		pf := &ProcessingFrame{
-			YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4, PTS: int64(i * 1000), Codec: "h264",
+			Data: make([]byte, ColorYUV420_8bit.FrameSize(4, 4)), Width: 4, Height: 4, PTS: int64(i * 1000), Codec: "h264",
 		}
 		pf.SetRefs(1)
 		n.Process(nil, pf)
@@ -271,7 +271,7 @@ func TestEncodeNode_ForceIDRReArmedOnDrop(t *testing.T) {
 	// Set forceIDR, then send a sixth frame that will be dropped.
 	forceIDR.Store(true)
 	pf6 := &ProcessingFrame{
-		YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4, PTS: 6000, Codec: "h264",
+		Data: make([]byte, ColorYUV420_8bit.FrameSize(4, 4)), Width: 4, Height: 4, PTS: 6000, Codec: "h264",
 	}
 	pf6.SetRefs(1)
 	n.Process(nil, pf6)
@@ -302,7 +302,7 @@ func TestEncodeNode_CloseWaitsForPending(t *testing.T) {
 	n.start()
 
 	pf := &ProcessingFrame{
-		YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4, PTS: 1000, Codec: "h264",
+		Data: make([]byte, ColorYUV420_8bit.FrameSize(4, 4)), Width: 4, Height: 4, PTS: 1000, Codec: "h264",
 	}
 	pf.SetRefs(1)
 	n.Process(nil, pf)
@@ -345,10 +345,10 @@ func TestEncodeNode_RefReleaseLifecycle(t *testing.T) {
 	n.start()
 	defer func() { _ = n.Close() }()
 
-	pool := NewFramePool(1, 4, 4)
+	pool := NewFramePool(1, 4, 4, ColorYUV420_8bit)
 	buf := pool.Acquire()
 	pf := &ProcessingFrame{
-		YUV:    buf[:4*4*3/2],
+		Data:    buf[:ColorYUV420_8bit.FrameSize(4, 4)],
 		Width:  4,
 		Height: 4,
 		PTS:    1000,
@@ -372,7 +372,7 @@ func TestEncodeNode_RefReleaseLifecycle(t *testing.T) {
 
 	// Pipeline releases its ref
 	pf.ReleaseYUV()
-	require.Nil(t, pf.YUV, "buffer should be returned to pool")
+	require.Nil(t, pf.Data, "buffer should be returned to pool")
 }
 
 func TestEncodeNode_CloseWithoutStart(t *testing.T) {
@@ -408,7 +408,7 @@ func TestEncodeNode_AsyncMetrics(t *testing.T) {
 
 	// Encode a frame.
 	pf := &ProcessingFrame{
-		YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4, PTS: 1000, Codec: "h264",
+		Data: make([]byte, ColorYUV420_8bit.FrameSize(4, 4)), Width: 4, Height: 4, PTS: 1000, Codec: "h264",
 	}
 	pf.SetRefs(1)
 	n.Process(nil, pf)
@@ -468,7 +468,7 @@ func TestEncodeNode_AsyncMetricsMaxTracksHighWater(t *testing.T) {
 
 	// First frame: slow encode (20ms).
 	pf1 := &ProcessingFrame{
-		YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4, PTS: 1000, Codec: "h264",
+		Data: make([]byte, ColorYUV420_8bit.FrameSize(4, 4)), Width: 4, Height: 4, PTS: 1000, Codec: "h264",
 	}
 	pf1.SetRefs(1)
 	n.Process(nil, pf1)
@@ -478,7 +478,7 @@ func TestEncodeNode_AsyncMetricsMaxTracksHighWater(t *testing.T) {
 
 	// Second frame: fast encode (2ms).
 	pf2 := &ProcessingFrame{
-		YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4, PTS: 2000, Codec: "h264",
+		Data: make([]byte, ColorYUV420_8bit.FrameSize(4, 4)), Width: 4, Height: 4, PTS: 2000, Codec: "h264",
 	}
 	pf2.SetRefs(1)
 	n.Process(nil, pf2)
@@ -522,7 +522,7 @@ func TestEncodeNode_ProcessWithoutStart(t *testing.T) {
 	// Note: start() NOT called
 
 	pf := &ProcessingFrame{
-		YUV:        make([]byte, 4*4*3/2),
+		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        1000,
@@ -562,7 +562,7 @@ func TestEncodeNode_PanicRecovery(t *testing.T) {
 
 	// First frame: will panic inside encoder.
 	pf1 := &ProcessingFrame{
-		YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4, PTS: 1000, Codec: "h264",
+		Data: make([]byte, ColorYUV420_8bit.FrameSize(4, 4)), Width: 4, Height: 4, PTS: 1000, Codec: "h264",
 	}
 	pf1.SetRefs(1)
 	n.Process(nil, pf1)
@@ -575,7 +575,7 @@ func TestEncodeNode_PanicRecovery(t *testing.T) {
 
 	// Second frame: goroutine should still be alive and process it.
 	pf2 := &ProcessingFrame{
-		YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4, PTS: 2000, Codec: "h264",
+		Data: make([]byte, ColorYUV420_8bit.FrameSize(4, 4)), Width: 4, Height: 4, PTS: 2000, Codec: "h264",
 	}
 	pf2.SetRefs(1)
 	n.Process(nil, pf2)

@@ -1,5 +1,7 @@
 package stmap
 
+import "sync"
+
 // Processor applies an ST map warp to YUV420 frames using bilinear
 // interpolation. It precomputes 16.16 fixed-point lookup tables from the
 // float32 ST map coordinates so the per-pixel hot path is integer-only.
@@ -11,9 +13,13 @@ type Processor struct {
 	// Halves LUT memory vs int64: 16.6MB vs 33.2MB at 1080p, improving cache hit rate.
 	lutSX []int32
 	lutSY []int32
-	// LUTs for chroma planes (half resolution).
+	// LUTs for chroma planes (half resolution, YUV420).
 	lutCSX []int32
 	lutCSY []int32
+	// LUTs for 4:2:2 chroma (half-width, full-height). Built lazily by Warp10.
+	lut422CSX []int32
+	lut422CSY []int32
+	lut422Once sync.Once
 	// mmapBacking is non-nil when the LUT slices point into an mmap'd region.
 	// Close() must be called to munmap.
 	mmapBacking []byte
@@ -54,7 +60,7 @@ func (p *Processor) STArrays() (s, t []float32) {
 }
 
 // ProcessYUV applies the ST map warp to a YUV420 frame. src and dst must
-// both be w*h*3/2 bytes. The three planes (Y, Cb, Cr) are warped
+// both be yuvFrameSize(w,h) bytes. The three planes (Y, Cb, Cr) are warped
 // sequentially on the calling goroutine.
 //
 // Profiling showed that goroutine parallelism (both 4-worker Y split and

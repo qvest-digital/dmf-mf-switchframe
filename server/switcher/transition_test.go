@@ -1007,9 +1007,9 @@ func TestSwitcherGPUTransitionSkipsCPUBlend(t *testing.T) {
 	viewer.mu.Unlock()
 
 	// Feed raw YUV frames to the switcher (always-decode path).
-	frame := make([]byte, 4*4*3/2)
-	sw.handleRawVideoFrame("cam1", &ProcessingFrame{YUV: frame, Width: 4, Height: 4, PTS: 100})
-	sw.handleRawVideoFrame("cam2", &ProcessingFrame{YUV: frame, Width: 4, Height: 4, PTS: 101})
+	frame := make([]byte, ColorYUV420_8bit.FrameSize(4, 4))
+	sw.handleRawVideoFrame("cam1", &ProcessingFrame{Data: frame, Width: 4, Height: 4, PTS: 100})
+	sw.handleRawVideoFrame("cam2", &ProcessingFrame{Data: frame, Width: 4, Height: 4, PTS: 101})
 	time.Sleep(20 * time.Millisecond)
 
 	// GPU RunTransition should have been called (triggered by cam2, the TO source).
@@ -1056,8 +1056,8 @@ func TestSwitcherGPUTransitionFTB(t *testing.T) {
 	require.NoError(t, err)
 
 	// FTB triggers on FROM source (cam1) frames.
-	frame := make([]byte, 4*4*3/2)
-	sw.handleRawVideoFrame("cam1", &ProcessingFrame{YUV: frame, Width: 4, Height: 4, PTS: 200})
+	frame := make([]byte, ColorYUV420_8bit.FrameSize(4, 4))
+	sw.handleRawVideoFrame("cam1", &ProcessingFrame{Data: frame, Width: 4, Height: 4, PTS: 200})
 	time.Sleep(20 * time.Millisecond)
 
 	gpuMock.mu.Lock()

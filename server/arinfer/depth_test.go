@@ -37,7 +37,7 @@ func TestNewDepthAnythingV2_InvalidPath(t *testing.T) {
 func TestDepthAnythingV2InferStub(t *testing.T) {
 	t.Run("Infer returns ErrDisabled on nil receiver", func(t *testing.T) {
 		var d *depthAnythingV2
-		err := d.Infer(0x1000, 1920, 1080, 2048, 0x2000)
+		err := d.Infer(0x1000, 1920, 1080, 2048, 0x2000, FormatNV12)
 		if !errors.Is(err, ErrDisabled) {
 			t.Errorf("expected ErrDisabled, got %v", err)
 		}

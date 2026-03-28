@@ -83,10 +83,10 @@ func (r *mockRelay) getVideoInfo() *distribution.VideoInfo {
 	return r.videoInfo
 }
 
-// makeYUV420 creates a YUV420 buffer of size w*h*3/2 filled with a
+// makeYUV420 creates a YUV420 buffer of size yuvFrameSize(w, h) filled with a
 // deterministic pattern so we can verify frames aren't aliased.
 func makeYUV420(w, h int, fill byte) []byte {
-	size := w * h * 3 / 2
+	size := yuvFrameSize(w, h)
 	buf := make([]byte, size)
 	for i := range buf {
 		buf[i] = fill

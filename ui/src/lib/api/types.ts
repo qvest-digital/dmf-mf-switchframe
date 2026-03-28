@@ -429,6 +429,8 @@ export interface PipelineFormatInfo {
 	fpsNum: number;
 	fpsDen: number;
 	name: string;
+	colorFormat?: string;
+	codec?: string;
 }
 
 export interface EncoderInfo {

@@ -351,6 +351,7 @@ type CommsManagerAPI interface {
 // ARTrackingManager provides camera tracking management for AR graphics.
 type ARTrackingManager interface {
 	AddFreeDSource(sourceKey, udpAddr string, cameraID byte) error
+	AddVisualSource(sourceKey string) error
 	RemoveSource(sourceKey, trackerName string) error
 	LatestPose(sourceKey string) *tracking.CameraPose
 	Sources() map[string][]tracking.TrackingSourceInfo

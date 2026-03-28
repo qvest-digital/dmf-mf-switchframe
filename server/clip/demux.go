@@ -13,10 +13,11 @@ import (
 	"github.com/zsiec/switchframe/server/codec"
 )
 
-// DemuxFile reads a media file and extracts H.264 video frames and AAC
+// DemuxFile reads a media file and extracts H.264/HEVC video frames and AAC
 // audio frames. The format is detected by file extension (.ts or .mp4).
-// Video frames are returned in AVC1 format with SPS/PPS set on keyframes,
-// in decode order (not display/PTS order) so that the H.264 decoder receives
+// Video frames are returned in wire format (4-byte length-prefixed NALUs) with
+// parameter sets (SPS/PPS for H.264, VPS/SPS/PPS for HEVC) set on keyframes,
+// in decode order (not display/PTS order) so that the decoder receives
 // reference frames before B-frames that depend on them.
 // Audio frames contain raw AAC payloads (ADTS headers stripped), sorted by PTS.
 func DemuxFile(path string) ([]BufferedFrame, []BufferedAudioFrame, error) {
@@ -60,8 +61,10 @@ func demuxTS(r io.Reader) ([]BufferedFrame, []BufferedAudioFrame, error) {
 	var (
 		videoFrames []BufferedFrame
 		audioFrames []BufferedAudioFrame
+		lastVPS     []byte
 		lastSPS     []byte
 		lastPPS     []byte
+		videoCodec  string // "h264" or "h265", detected from PMT or first NALU
 		packetCount int
 		errCount    int
 	)
@@ -91,6 +94,18 @@ func demuxTS(r io.Reader) ([]BufferedFrame, []BufferedAudioFrame, error) {
 		}
 		packetCount++
 
+		// Detect video codec from PMT stream type.
+		if d.PMT != nil && videoCodec == "" {
+			for _, es := range d.PMT.ElementaryStreams {
+				switch es.StreamType {
+				case astits.StreamTypeH264Video:
+					videoCodec = "h264"
+				case astits.StreamTypeH265Video:
+					videoCodec = "h265"
+				}
+			}
+		}
+
 		if d.PES == nil {
 			continue
 		}
@@ -99,8 +114,11 @@ func demuxTS(r io.Reader) ([]BufferedFrame, []BufferedAudioFrame, error) {
 
 		switch {
 		case d.PES.Header.IsVideoStream():
-			frame, sps, pps := parseVideoFrameForClip(d, oh, lastSPS, lastPPS)
+			frame, vps, sps, pps := parseVideoFrameForClip(d, oh, lastVPS, lastSPS, lastPPS, videoCodec)
 			if frame == nil {
+				if vps != nil {
+					lastVPS = vps
+				}
 				if sps != nil {
 					lastSPS = sps
 				}
@@ -109,11 +127,18 @@ func demuxTS(r io.Reader) ([]BufferedFrame, []BufferedAudioFrame, error) {
 				}
 				continue
 			}
+			if vps != nil {
+				lastVPS = vps
+			}
 			if sps != nil {
 				lastSPS = sps
 			}
 			if pps != nil {
 				lastPPS = pps
+			}
+			// Auto-detect codec from first frame if PMT didn't tell us.
+			if videoCodec == "" {
+				videoCodec = frame.codec
 			}
 			videoFrames = append(videoFrames, *frame)
 
@@ -144,59 +169,120 @@ func demuxTS(r io.Reader) ([]BufferedFrame, []BufferedAudioFrame, error) {
 }
 
 // parseVideoFrameForClip converts a PES video packet into a BufferedFrame.
-// Returns updated SPS/PPS if found in this frame's NALUs. Returns nil frame
+// Returns updated VPS/SPS/PPS if found in this frame's NALUs. Returns nil frame
 // if the packet contains only parameter sets or is empty.
-func parseVideoFrameForClip(d *astits.DemuxerData, oh *astits.PESOptionalHeader, lastSPS, lastPPS []byte) (*BufferedFrame, []byte, []byte) {
+// videoCodec is "h264", "h265", or "" (auto-detect from NALU types).
+func parseVideoFrameForClip(d *astits.DemuxerData, oh *astits.PESOptionalHeader, lastVPS, lastSPS, lastPPS []byte, videoCodec string) (*BufferedFrame, []byte, []byte, []byte) {
 	if len(d.PES.Data) == 0 {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 
-	// PES video data is Annex B format -- convert to AVC1.
-	avc1 := codec.AnnexBToAVC1(d.PES.Data)
-	if len(avc1) == 0 {
-		return nil, nil, nil
+	// PES video data is Annex B format -- convert to wire format (4-byte length prefix).
+	wireFormatData := codec.AnnexBToWire(d.PES.Data)
+	if len(wireFormatData) == 0 {
+		return nil, nil, nil, nil
 	}
 
-	// Extract NALUs to find SPS, PPS, and keyframe status.
-	nalus := codec.ExtractNALUs(avc1)
+	// Extract NALUs to find parameter sets and keyframe status.
+	nalus := codec.ExtractNALUs(wireFormatData)
+
+	// Auto-detect codec from NALU types if not specified.
+	isHEVC := videoCodec == "h265"
+	if videoCodec == "" {
+		for _, nalu := range nalus {
+			if len(nalu) < 1 {
+				continue
+			}
+			if isHEVC {
+				break
+			}
+			// Check for HEVC VPS (type 32) — unique to HEVC, never appears in H.264.
+			hevcType := codec.HEVCNALUType(nalu[0])
+			if hevcType == codec.HEVCNALVPS {
+				isHEVC = true
+				break
+			}
+			// Check for H.264 SPS (type 7) or IDR (type 5) — confirms H.264.
+			h264Type := nalu[0] & 0x1F
+			if h264Type == 7 || h264Type == 5 {
+				break // confirmed H.264
+			}
+		}
+	}
 
 	var (
+		vps        []byte
 		sps        []byte
 		pps        []byte
 		isKeyframe bool
 	)
 
-	// Build wire data excluding SPS/PPS NALUs (they go in separate fields).
+	// Build wire data excluding parameter set NALUs (they go in separate fields).
 	var wireNALUs [][]byte
 
-	for _, nalu := range nalus {
-		if len(nalu) == 0 {
-			continue
+	if isHEVC {
+		for _, nalu := range nalus {
+			if len(nalu) < 2 { // HEVC NALUs need at least 2-byte header
+				continue
+			}
+			naluType := codec.HEVCNALUType(nalu[0])
+			switch naluType {
+			case codec.HEVCNALVPS:
+				vps = make([]byte, len(nalu))
+				copy(vps, nalu)
+			case codec.HEVCNALSPS:
+				sps = make([]byte, len(nalu))
+				copy(sps, nalu)
+			case codec.HEVCNALPPS:
+				pps = make([]byte, len(nalu))
+				copy(pps, nalu)
+			case codec.HEVCNALAUD, codec.HEVCNALFillerData:
+				// Skip AUD and filler data.
+			case codec.HEVCNALSEIPrefix, codec.HEVCNALSEISuffix:
+				wireNALUs = append(wireNALUs, nalu)
+			default:
+				if codec.IsHEVCKeyframe(naluType) {
+					isKeyframe = true
+				}
+				if codec.IsHEVCVCL(naluType) || naluType >= 32 {
+					wireNALUs = append(wireNALUs, nalu)
+				}
+			}
 		}
-		naluType := nalu[0] & 0x1F
-		switch naluType {
-		case 7: // SPS
-			sps = make([]byte, len(nalu))
-			copy(sps, nalu)
-		case 8: // PPS
-			pps = make([]byte, len(nalu))
-			copy(pps, nalu)
-		case 5: // IDR
-			isKeyframe = true
-			wireNALUs = append(wireNALUs, nalu)
-		default:
-			wireNALUs = append(wireNALUs, nalu)
+	} else {
+		for _, nalu := range nalus {
+			if len(nalu) == 0 {
+				continue
+			}
+			naluType := nalu[0] & 0x1F
+			switch naluType {
+			case 7: // SPS
+				sps = make([]byte, len(nalu))
+				copy(sps, nalu)
+			case 8: // PPS
+				pps = make([]byte, len(nalu))
+				copy(pps, nalu)
+			case 5: // IDR
+				isKeyframe = true
+				wireNALUs = append(wireNALUs, nalu)
+			default:
+				wireNALUs = append(wireNALUs, nalu)
+			}
 		}
 	}
 
 	if len(wireNALUs) == 0 {
-		return nil, sps, pps
+		return nil, vps, sps, pps
 	}
 
-	// Rebuild AVC1 wire data from non-parameter-set NALUs.
+	// Rebuild wire data from non-parameter-set NALUs.
 	wireData := nalusToAVC1(wireNALUs)
 
-	// Use last known SPS/PPS if not in this frame.
+	// Use last known parameter sets if not in this frame.
+	frameVPS := vps
+	if frameVPS == nil {
+		frameVPS = lastVPS
+	}
 	frameSPS := sps
 	if frameSPS == nil {
 		frameSPS = lastSPS
@@ -218,17 +304,24 @@ func parseVideoFrameForClip(d *astits.DemuxerData, oh *astits.PESOptionalHeader,
 		}
 	}
 
+	codecStr := "h264"
+	if isHEVC {
+		codecStr = "h265"
+	}
+
 	frame := &BufferedFrame{
 		wireData:   wireData,
 		pts:        pts,
 		isKeyframe: isKeyframe,
+		codec:      codecStr,
 	}
 	if isKeyframe {
+		frame.vps = frameVPS
 		frame.sps = frameSPS
 		frame.pps = framePPS
 	}
 
-	return frame, sps, pps
+	return frame, vps, sps, pps
 }
 
 // parseAudioFramesForClip splits a PES audio packet into individual

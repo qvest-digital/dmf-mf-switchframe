@@ -19,9 +19,9 @@ import (
 // The pipeline becomes the sole owner and frees the buffer when done.
 // lastRawVideo is left pointing to a freed pool buffer (use-after-free).
 func TestFreezeRepeat_BufferSurvivesPipelineRelease(t *testing.T) {
-	pool := NewFramePool(4, 8, 8)
+	pool := NewFramePool(4, 8, 8, ColorYUV420_8bit)
 	defer pool.Close()
-	yuvSize := 8 * 8 * 3 / 2
+	yuvSize := ColorYUV420_8bit.FrameSize(8, 8)
 
 	// Track raw video deliveries.
 	var deliveredFrames []*ProcessingFrame
@@ -37,12 +37,12 @@ func TestFreezeRepeat_BufferSurvivesPipelineRelease(t *testing.T) {
 
 	// Create a managed frame (mimics sourceDecoder output).
 	frame := &ProcessingFrame{
-		YUV:   pool.Acquire()[:yuvSize],
+		Data:   pool.Acquire()[:yuvSize],
 		Width: 8, Height: 8, PTS: 90000,
 		pool: pool,
 	}
 	frame.SetRefs(1)
-	frame.YUV[0] = 0xAA // sentinel data
+	frame.Data[0] = 0xAA // sentinel data
 
 	// Ingest the frame.
 	fs.IngestRawVideo("cam1", frame)
@@ -69,7 +69,7 @@ func TestFreezeRepeat_BufferSurvivesPipelineRelease(t *testing.T) {
 	pipelineCopy.ReleaseYUV()
 
 	// KEY ASSERTION: The frame_sync's lastRawVideo buffer must still be alive.
-	// If the bug exists, the pool buffer was freed and lastRawVideo.YUV is stale.
+	// If the bug exists, the pool buffer was freed and lastRawVideo.Data is stale.
 	fs.mu.Lock()
 	ss := fs.sources["cam1"]
 	fs.mu.Unlock()
@@ -79,9 +79,9 @@ func TestFreezeRepeat_BufferSurvivesPipelineRelease(t *testing.T) {
 	ss.mu.Unlock()
 
 	require.NotNil(t, lastRaw, "lastRawVideo should exist")
-	require.NotNil(t, lastRaw.YUV, "lastRawVideo.YUV must not be nil (buffer must survive pipeline release)")
+	require.NotNil(t, lastRaw.Data, "lastRawVideo.Data must not be nil (buffer must survive pipeline release)")
 	require.True(t, lastRaw.Refs() >= 1, "lastRawVideo must hold at least one ref")
-	require.Equal(t, byte(0xAA), lastRaw.YUV[0], "lastRawVideo data must be intact")
+	require.Equal(t, byte(0xAA), lastRaw.Data[0], "lastRawVideo data must be intact")
 
 	// Now simulate freeze-repeat: tick again with no new frame.
 	deliveredFrames = deliveredFrames[:0]
@@ -93,8 +93,8 @@ func TestFreezeRepeat_BufferSurvivesPipelineRelease(t *testing.T) {
 	delivered2 := deliveredFrames[0]
 
 	// The freeze-repeated frame must have valid YUV data.
-	require.NotNil(t, delivered2.YUV, "freeze-repeated frame must have valid YUV")
-	require.Equal(t, byte(0xAA), delivered2.YUV[0], "freeze-repeated frame must have correct data")
+	require.NotNil(t, delivered2.Data, "freeze-repeated frame must have valid YUV")
+	require.Equal(t, byte(0xAA), delivered2.Data[0], "freeze-repeated frame must have correct data")
 
 	// Simulate pipeline processing the freeze-repeated frame.
 	delivered2.Ref()
@@ -109,8 +109,8 @@ func TestFreezeRepeat_BufferSurvivesPipelineRelease(t *testing.T) {
 	lastRaw2 := ss.lastRawVideo
 	ss.mu.Unlock()
 
-	require.NotNil(t, lastRaw2.YUV, "lastRawVideo.YUV must survive second pipeline release")
-	require.Equal(t, byte(0xAA), lastRaw2.YUV[0], "lastRawVideo data must still be intact")
+	require.NotNil(t, lastRaw2.Data, "lastRawVideo.Data must survive second pipeline release")
+	require.Equal(t, byte(0xAA), lastRaw2.Data[0], "lastRawVideo data must still be intact")
 
 	// Cleanup: remove source (releases lastRawVideo).
 	fs.RemoveSource("cam1")
@@ -121,9 +121,9 @@ func TestFreezeRepeat_BufferSurvivesPipelineRelease(t *testing.T) {
 // ReleaseYUV in deliverRelease must not drop the buffer while the pipeline
 // copy still references it.
 func TestFreezeRepeat_FRCFrame_BufferSurvivesDelivery(t *testing.T) {
-	pool := NewFramePool(8, 8, 8)
+	pool := NewFramePool(8, 8, 8, ColorYUV420_8bit)
 	defer pool.Close()
-	yuvSize := 8 * 8 * 3 / 2
+	yuvSize := ColorYUV420_8bit.FrameSize(8, 8)
 
 	var deliveredFrames []*ProcessingFrame
 
@@ -138,7 +138,7 @@ func TestFreezeRepeat_FRCFrame_BufferSurvivesDelivery(t *testing.T) {
 
 	// Ingest two frames so FRC has enough state to interpolate.
 	f1 := &ProcessingFrame{
-		YUV: pool.Acquire()[:yuvSize], Width: 8, Height: 8, PTS: 90000, pool: pool,
+		Data: pool.Acquire()[:yuvSize], Width: 8, Height: 8, PTS: 90000, pool: pool,
 	}
 	f1.SetRefs(1)
 	fs.IngestRawVideo("cam1", f1)
@@ -148,7 +148,7 @@ func TestFreezeRepeat_FRCFrame_BufferSurvivesDelivery(t *testing.T) {
 	deliveredFrames = deliveredFrames[:0]
 
 	f2 := &ProcessingFrame{
-		YUV: pool.Acquire()[:yuvSize], Width: 8, Height: 8, PTS: 93003, pool: pool,
+		Data: pool.Acquire()[:yuvSize], Width: 8, Height: 8, PTS: 93003, pool: pool,
 	}
 	f2.SetRefs(1)
 	fs.IngestRawVideo("cam1", f2)
@@ -165,7 +165,7 @@ func TestFreezeRepeat_FRCFrame_BufferSurvivesDelivery(t *testing.T) {
 	}
 
 	delivered := deliveredFrames[0]
-	require.NotNil(t, delivered.YUV, "FRC-emitted frame must have valid YUV at delivery time")
+	require.NotNil(t, delivered.Data, "FRC-emitted frame must have valid YUV at delivery time")
 
 	// Simulate pipeline processing.
 	if delivered.Refs() > 0 {
@@ -176,7 +176,7 @@ func TestFreezeRepeat_FRCFrame_BufferSurvivesDelivery(t *testing.T) {
 
 		// The pipeline copy must have valid YUV — the buffer must not have
 		// been freed by the frcAllocated ReleaseYUV before pipeline runs.
-		require.NotNil(t, cp.YUV, "pipeline copy of FRC frame must have valid YUV")
+		require.NotNil(t, cp.Data, "pipeline copy of FRC frame must have valid YUV")
 		require.True(t, cp.Refs() >= 1, "pipeline copy refs must be >= 1, got %d", cp.Refs())
 
 		cp.ReleaseYUV()
@@ -191,9 +191,9 @@ func TestFreezeRepeat_FRCFrame_BufferSurvivesDelivery(t *testing.T) {
 func TestFreezeRepeat_PoolBufferNotReusedWhileLastRawVideoHeld(t *testing.T) {
 	// Small pool: 2 buffers. If the bug exists, the first buffer is freed
 	// and reacquired, causing data corruption.
-	pool := NewFramePool(2, 8, 8)
+	pool := NewFramePool(2, 8, 8, ColorYUV420_8bit)
 	defer pool.Close()
-	yuvSize := 8 * 8 * 3 / 2
+	yuvSize := ColorYUV420_8bit.FrameSize(8, 8)
 
 	var lastDelivered *ProcessingFrame
 	handler := &syncTestHandler{}
@@ -205,11 +205,11 @@ func TestFreezeRepeat_PoolBufferNotReusedWhileLastRawVideoHeld(t *testing.T) {
 
 	// Ingest frame with sentinel data.
 	frame := &ProcessingFrame{
-		YUV: pool.Acquire()[:yuvSize], Width: 8, Height: 8, PTS: 90000, pool: pool,
+		Data: pool.Acquire()[:yuvSize], Width: 8, Height: 8, PTS: 90000, pool: pool,
 	}
 	frame.SetRefs(1)
-	for i := range frame.YUV {
-		frame.YUV[i] = 0xAA
+	for i := range frame.Data {
+		frame.Data[i] = 0xAA
 	}
 	fs.IngestRawVideo("cam1", frame)
 
@@ -239,10 +239,10 @@ func TestFreezeRepeat_PoolBufferNotReusedWhileLastRawVideoHeld(t *testing.T) {
 	require.NotNil(t, lastDelivered, "should deliver freeze-repeated frame")
 
 	// The freeze-repeated frame must have the original data, not 0xBB.
-	require.Equal(t, byte(0xAA), lastDelivered.YUV[0],
+	require.Equal(t, byte(0xAA), lastDelivered.Data[0],
 		"freeze-repeated frame must have original data (0xAA), got 0x%02X — "+
 			"pool buffer was reused while lastRawVideo still referenced it",
-		lastDelivered.YUV[0])
+		lastDelivered.Data[0])
 
 	pool.Release(otherBuf)
 	fs.RemoveSource("cam1")

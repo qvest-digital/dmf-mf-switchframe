@@ -168,5 +168,165 @@ func TestSetPipelineFormat_RejectedDuringTransition(t *testing.T) {
 	require.NotEqual(t, "1080p25", f.Name, "format should be unchanged after rejection")
 }
 
+func TestPipelineColorFormat_FrameSize(t *testing.T) {
+	tests := []struct {
+		name   string
+		format PipelineColorFormat
+		w, h   int
+		want   int
+	}{
+		{"420_8bit_1080p", ColorYUV420_8bit, 1920, 1080, 1920 * 1080 * 3 / 2},
+		{"422_10bit_1080p", ColorYUV422_10bit, 1920, 1080, 1920 * 1080 * 4},
+		{"420_8bit_720p", ColorYUV420_8bit, 1280, 720, 1280 * 720 * 3 / 2},
+		{"422_10bit_720p", ColorYUV422_10bit, 1280, 720, 1280 * 720 * 4},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.format.FrameSize(tt.w, tt.h)
+			if got != tt.want {
+				t.Errorf("FrameSize(%d, %d) = %d, want %d", tt.w, tt.h, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPipelineColorFormat_ChromaDimensions(t *testing.T) {
+	if ColorYUV420_8bit.ChromaWidth(1920) != 960 {
+		t.Fatal("420 chroma width")
+	}
+	if ColorYUV420_8bit.ChromaHeight(1080) != 540 {
+		t.Fatal("420 chroma height")
+	}
+	if ColorYUV422_10bit.ChromaWidth(1920) != 960 {
+		t.Fatal("422 chroma width")
+	}
+	if ColorYUV422_10bit.ChromaHeight(1080) != 1080 {
+		t.Fatal("422 chroma height")
+	}
+}
+
+func TestPipelineColorFormat_BytesPerSample(t *testing.T) {
+	if ColorYUV420_8bit.BytesPerSample() != 1 {
+		t.Fatal("8-bit should be 1 byte")
+	}
+	if ColorYUV422_10bit.BytesPerSample() != 2 {
+		t.Fatal("10-bit should be 2 bytes")
+	}
+}
+
+func TestPipelineColorConfig_Validate(t *testing.T) {
+	cfg := PipelineColorConfig{ColorFormat: ColorYUV420_8bit, Codec: CodecAVC}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	cfg = PipelineColorConfig{ColorFormat: ColorYUV420_8bit, Codec: CodecHEVC}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	cfg = PipelineColorConfig{ColorFormat: ColorYUV422_10bit, Codec: CodecHEVC}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	cfg = PipelineColorConfig{ColorFormat: ColorYUV422_10bit, Codec: CodecAVC}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("AVC + 10-bit should fail")
+	}
+}
+
+func TestColorProfilePresets(t *testing.T) {
+	std := ColorProfileStandard()
+	if std.ColorFormat != ColorYUV420_8bit || std.Codec != CodecAVC {
+		t.Fatal("standard profile mismatch")
+	}
+	hevc := ColorProfileStandardHEVC()
+	if hevc.ColorFormat != ColorYUV420_8bit || hevc.Codec != CodecHEVC {
+		t.Fatal("standard-hevc profile mismatch")
+	}
+	pro := ColorProfileProfessional()
+	if pro.ColorFormat != ColorYUV422_10bit || pro.Codec != CodecHEVC {
+		t.Fatal("professional profile mismatch")
+	}
+}
+
+func TestPipelineColorFormat_String(t *testing.T) {
+	if ColorYUV420_8bit.String() != "yuv420p" {
+		t.Fatal("420 string")
+	}
+	if ColorYUV422_10bit.String() != "yuv422p10le" {
+		t.Fatal("422 string")
+	}
+}
+
+func TestPipelineCodec_String(t *testing.T) {
+	if CodecAVC.String() != "h264" {
+		t.Fatal("avc string")
+	}
+	if CodecHEVC.String() != "h265" {
+		t.Fatal("hevc string")
+	}
+}
+
+func TestPipelineColorFormat_BlackLevel(t *testing.T) {
+	if ColorYUV420_8bit.BlackY() != 16 {
+		t.Fatal("8-bit black Y")
+	}
+	if ColorYUV420_8bit.NeutralChroma() != 128 {
+		t.Fatal("8-bit neutral chroma")
+	}
+	if ColorYUV422_10bit.BlackY() != 64 {
+		t.Fatal("10-bit black Y")
+	}
+	if ColorYUV422_10bit.NeutralChroma() != 512 {
+		t.Fatal("10-bit neutral chroma")
+	}
+}
+
+func TestParseColorProfile(t *testing.T) {
+	cfg, err := ParseColorProfile("standard")
+	if err != nil || cfg.ColorFormat != ColorYUV420_8bit || cfg.Codec != CodecAVC {
+		t.Fatal("standard parse failed")
+	}
+	cfg, err = ParseColorProfile("standard-hevc")
+	if err != nil || cfg.Codec != CodecHEVC {
+		t.Fatal("standard-hevc parse failed")
+	}
+	cfg, err = ParseColorProfile("professional")
+	if err != nil || cfg.ColorFormat != ColorYUV422_10bit {
+		t.Fatal("professional parse failed")
+	}
+	_, err = ParseColorProfile("invalid")
+	if err == nil {
+		t.Fatal("should reject invalid profile")
+	}
+}
+
+func TestPipelineColorFormat_PlaneSize(t *testing.T) {
+	// 420 8-bit: Y = 1920*1080 = 2073600, chroma = 960*540 = 518400
+	if ColorYUV420_8bit.YPlaneSize(1920, 1080) != 2073600 {
+		t.Fatal("420 Y plane size")
+	}
+	if ColorYUV420_8bit.ChromaPlaneSize(1920, 1080) != 518400 {
+		t.Fatal("420 chroma plane size")
+	}
+	// 422 10-bit: Y = 1920*1080*2 = 4147200, chroma = 960*1080*2 = 2073600
+	if ColorYUV422_10bit.YPlaneSize(1920, 1080) != 4147200 {
+		t.Fatal("422 Y plane size")
+	}
+	if ColorYUV422_10bit.ChromaPlaneSize(1920, 1080) != 2073600 {
+		t.Fatal("422 chroma plane size")
+	}
+}
+
+func TestPipelineColorFormat_MaxSampleValue(t *testing.T) {
+	if ColorYUV420_8bit.MaxSampleValue() != 255 {
+		t.Fatal("8-bit max")
+	}
+	if ColorYUV422_10bit.MaxSampleValue() != 1023 {
+		t.Fatal("10-bit max")
+	}
+}
+
 // Ensure fmt.Stringer is satisfied at compile time.
 var _ fmt.Stringer = PipelineFormat{}
+var _ fmt.Stringer = ColorYUV420_8bit
+var _ fmt.Stringer = CodecAVC

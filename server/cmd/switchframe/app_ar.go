@@ -5,10 +5,10 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 	"unsafe"
 
-	"github.com/zsiec/switchframe/server/arinfer"
 	"github.com/zsiec/switchframe/server/arrender"
 	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/gpu"
@@ -19,28 +19,15 @@ import (
 // depth estimation and SAM segmentation are enabled on demand via the REST API.
 // Always succeeds; the engine is lightweight until models are loaded.
 func (a *App) initAR() {
-	// Look for models in the per-session state dir first, then fall back
-	// to a shared system-wide location. This allows a single set of TRT
-	// engine files to serve all sessions on the machine.
-	modelsDir := a.statePath("ar_models")
-	if _, err := os.Stat(filepath.Join(modelsDir, "depth_anything_v2_vits.plan")); err != nil {
-		for _, fallback := range []string{
-			"/data/switchframe/ar_models",
-			"/opt/switchframe/ar_models",
-		} {
-			if _, err := os.Stat(filepath.Join(fallback, "depth_anything_v2_vits.plan")); err == nil {
-				modelsDir = fallback
-				break
-			}
-		}
+	// The AR inference engine is now exclusively in the AI sidecar process.
+	// If initAISidecar already set arInferEngine to an InferenceProxy, keep it.
+	// Otherwise (no sidecar configured), arInferEngine stays nil and AR
+	// inference is unavailable. All callers nil-check arInferEngine.
+	if a.arInferEngine != nil {
+		slog.Info("AR inference engine already configured via sidecar")
+		return
 	}
-
-	cfg := arinfer.Config{
-		ModelsDir:      modelsDir,
-		MaxInferenceMs: 20,
-	}
-	a.arInferEngine = arinfer.New(cfg)
-	slog.Info("AR inference engine initialized (dormant)", "modelsDir", modelsDir)
+	slog.Info("AR inference engine not available (no AI sidecar configured)")
 }
 
 // initTracking initializes the camera tracking manager. The manager starts
@@ -130,6 +117,7 @@ func (a *App) initARAssetStore() error {
 // trackingManagerAdapter bridges tracking.Manager to control.ARTrackingManager.
 type trackingManagerAdapter struct {
 	mgr *tracking.Manager
+	app *App
 }
 
 func (t *trackingManagerAdapter) AddFreeDSource(sourceKey, udpAddr string, cameraID byte) error {
@@ -144,7 +132,54 @@ func (t *trackingManagerAdapter) AddFreeDSource(sourceKey, udpAddr string, camer
 	return nil
 }
 
+func (t *trackingManagerAdapter) AddVisualSource(sourceKey string) error {
+	if t.app.aiSidecarHost == nil || t.app.aiSidecarPool == nil {
+		return fmt.Errorf("AI sidecar not configured (use --ai-sidecar flag)")
+	}
+
+	var framePool *gpu.FramePool
+	if t.app.gpuState != nil {
+		framePool = t.app.gpuState.pool
+	}
+
+	proxy := tracking.NewVisualTrackingProxy(
+		t.app.aiSidecarHost,
+		t.app.aiSidecarPool,
+		sourceKey,
+		framePool,
+	)
+
+	// Register with tracking manager.
+	if err := t.mgr.AddSource(sourceKey, proxy); err != nil {
+		proxy.Close()
+		return err
+	}
+
+	// Store for OnMessage dispatch.
+	t.app.aiTrackingProxiesMu.Lock()
+	t.app.aiTrackingProxies[sourceKey] = proxy
+	t.app.aiTrackingProxiesMu.Unlock()
+
+	// Start tracking.
+	if err := proxy.Start(); err != nil {
+		t.mgr.RemoveSource(sourceKey, proxy.Name())
+		t.app.aiTrackingProxiesMu.Lock()
+		delete(t.app.aiTrackingProxies, sourceKey)
+		t.app.aiTrackingProxiesMu.Unlock()
+		return fmt.Errorf("start visual tracker: %w", err)
+	}
+
+	return nil
+}
+
 func (t *trackingManagerAdapter) RemoveSource(sourceKey, trackerName string) error {
+	// Clean up tracking proxy from OnMessage dispatch map if it's a visual tracker.
+	t.app.aiTrackingProxiesMu.Lock()
+	if _, ok := t.app.aiTrackingProxies[sourceKey]; ok && (trackerName == "" || strings.HasPrefix(trackerName, "visual-sidecar-")) {
+		delete(t.app.aiTrackingProxies, sourceKey)
+	}
+	t.app.aiTrackingProxiesMu.Unlock()
+
 	return t.mgr.RemoveSource(sourceKey, trackerName)
 }
 

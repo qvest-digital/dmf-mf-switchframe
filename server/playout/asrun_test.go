@@ -965,7 +965,7 @@ func TestSpliceCoordinatorEmitsAsRunEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	blackFrame := make([]byte, 320*240*3/2) // all zeros = black
+	blackFrame := make([]byte, yuvFrameSize(320, 240)) // all zeros = black
 	sc.IngestFrame(blackFrame, 320, 240, 5000)  // inside window
 	sc.IngestFrame(blackFrame, 320, 240, 20000) // past window, triggers finalization
 

@@ -13,12 +13,12 @@ func newSAM2Model(encoderPlanPath, decoderPlanPath string) (*sam2Model, error) {
 }
 
 // Encode returns ErrDisabled on non-TensorRT builds.
-func (m *sam2Model) Encode(inputPtr uintptr, w, h, pitch int) error {
+func (m *sam2Model) Encode(inputPtr uintptr, w, h, pitch int, format FrameFormat) error {
 	return ErrDisabled
 }
 
 // Propagate returns ErrDisabled on non-TensorRT builds.
-func (m *sam2Model) Propagate(inputPtr uintptr, w, h, pitch int, outputPtr uintptr) error {
+func (m *sam2Model) Propagate(inputPtr uintptr, w, h, pitch int, outputPtr uintptr, format FrameFormat) error {
 	return ErrDisabled
 }
 
@@ -78,6 +78,9 @@ func (m *sam2Model) Prompts() []SAMPrompt {
 	copy(out, m.prompts)
 	return out
 }
+
+// PreallocMask returns 0 on non-TensorRT builds.
+func (m *sam2Model) PreallocMask(w, h int) uintptr { return 0 }
 
 // Close is a no-op on non-TensorRT builds.
 func (m *sam2Model) Close() {}

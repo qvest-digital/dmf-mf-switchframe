@@ -20,7 +20,7 @@ type stmapProgramNode struct {
 func (n *stmapProgramNode) Name() string { return "stmap-program" }
 
 func (n *stmapProgramNode) Configure(format PipelineFormat) error {
-	n.buf = make([]byte, format.Width*format.Height*3/2)
+	n.buf = make([]byte, format.Color.ColorFormat.FrameSize(format.Width, format.Height))
 	return nil
 }
 
@@ -39,15 +39,26 @@ func (n *stmapProgramNode) Process(dst, src *ProcessingFrame) *ProcessingFrame {
 	if anim != nil {
 		idx := anim.AdvanceIndex()
 		p := anim.ProcessorAt(idx)
-		p.ProcessYUV(n.buf, src.YUV, src.Width, src.Height)
-		copy(src.YUV, n.buf)
+		n.warpProcessor(p, src)
 		return src
 	}
 
 	if proc != nil && proc.Active() {
-		proc.ProcessYUV(n.buf, src.YUV, src.Width, src.Height)
-		copy(src.YUV, n.buf)
+		n.warpProcessor(proc, src)
 	}
 
 	return src
+}
+
+// warpProcessor dispatches to the appropriate warp path based on frame format.
+func (n *stmapProgramNode) warpProcessor(p *stmap.Processor, src *ProcessingFrame) {
+	switch src.Format {
+	case ColorYUV422_10bit:
+		if err := p.Warp10(n.buf, src.Data, src.Width, src.Height); err == nil {
+			copy(src.Data, n.buf)
+		}
+	default:
+		p.ProcessYUV(n.buf, src.Data, src.Width, src.Height)
+		copy(src.Data, n.buf)
+	}
 }

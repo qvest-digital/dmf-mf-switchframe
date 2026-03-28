@@ -10,7 +10,7 @@
 // ============================================================================
 // func blendUniform(dst, a, b *byte, n, pos, inv int)
 // ============================================================================
-// dst[i] = (a[i]*inv + b[i]*pos) >> 8
+// dst[i] = (a[i]*inv + b[i]*pos + 128) >> 8
 TEXT ·blendUniform(SB), NOSPLIT, $0-48
 	MOVQ dst+0(FP), DI
 	MOVQ a+8(FP), SI
@@ -38,6 +38,12 @@ TEXT ·blendUniform(SB), NOSPLIT, $0-48
 
 	PXOR    X5, X5              // X5 = zero register
 
+	// Broadcast rounding bias (128) as 16-bit words
+	MOVQ    $128, AX
+	MOVQ    AX, X8
+	PSHUFLW $0, X8, X8
+	PUNPCKLQDQ X8, X8           // X8 = [128] × 8
+
 	CMPQ    CX, $16
 	JLT     uniform_sse2_tail
 
@@ -54,6 +60,7 @@ uniform_sse2_loop:
 	PMULLW  X7, X2              // X2 = a_lo * inv
 	PMULLW  X6, X3              // X3 = b_lo * pos
 	PADDW   X3, X2              // X2 = sum_lo
+	PADDW   X8, X2              // X2 += 128 (rounding bias)
 	PSRLW   $8, X2              // X2 >>= 8
 
 	// Upper 8 bytes: widen to 16-bit
@@ -65,6 +72,7 @@ uniform_sse2_loop:
 	PMULLW  X7, X3              // X3 = a_hi * inv
 	PMULLW  X6, X4              // X4 = b_hi * pos
 	PADDW   X4, X3              // X3 = sum_hi
+	PADDW   X8, X3              // X3 += 128 (rounding bias)
 	PSRLW   $8, X3              // X3 >>= 8
 
 	// Narrow and store
@@ -88,6 +96,7 @@ uniform_scalar_loop:
 	IMULQ   R9, AX              // a * inv
 	IMULQ   R8, BX              // b * pos
 	ADDQ    BX, AX
+	ADDQ    $128, AX            // + 128 (rounding bias)
 	SHRQ    $8, AX
 	MOVB    AX, (DI)
 	INCQ    SI
@@ -99,11 +108,14 @@ uniform_scalar_loop:
 
 uniform_avx2:
 	// --- AVX2 path (32 bytes/iteration) ---
-	// Broadcast pos and inv to YMM registers
+	// Broadcast pos, inv, and rounding bias to YMM registers
 	MOVQ    R8, X6
 	VPBROADCASTW X6, Y6         // Y6 = [pos] × 16
 	MOVQ    R9, X7
 	VPBROADCASTW X7, Y7         // Y7 = [inv] × 16
+	MOVQ    $128, AX
+	MOVQ    AX, X8
+	VPBROADCASTW X8, Y8         // Y8 = [128] × 16 (rounding bias)
 	VPXOR   Y5, Y5, Y5          // Y5 = zero
 
 	CMPQ    CX, $32
@@ -119,6 +131,7 @@ uniform_avx2_loop:
 	VPMULLW Y7, Y2, Y2          // Y2 = a_lo * inv
 	VPMULLW Y6, Y3, Y3          // Y3 = b_lo * pos
 	VPADDW  Y3, Y2, Y2          // Y2 = sum_lo
+	VPADDW  Y8, Y2, Y2          // Y2 += 128 (rounding bias)
 	VPSRLW  $8, Y2, Y2
 
 	// Upper 16 bytes → 16 words
@@ -127,6 +140,7 @@ uniform_avx2_loop:
 	VPMULLW Y7, Y3, Y3
 	VPMULLW Y6, Y4, Y4
 	VPADDW  Y4, Y3, Y3
+	VPADDW  Y8, Y3, Y3          // Y3 += 128 (rounding bias)
 	VPSRLW  $8, Y3, Y3
 
 	// Pack 16-bit words back to bytes.
@@ -158,6 +172,11 @@ uniform_avx2_tail:
 	PSHUFLW $0, X7, X7
 	PUNPCKLQDQ X7, X7
 	PXOR    X5, X5
+	// Broadcast rounding bias (128) as 16-bit words
+	MOVQ    $128, AX
+	MOVQ    AX, X8
+	PSHUFLW $0, X8, X8
+	PUNPCKLQDQ X8, X8           // X8 = [128] × 8
 
 uniform_avx2_sse2_tail:
 	MOVOU   (SI), X0
@@ -169,6 +188,7 @@ uniform_avx2_sse2_tail:
 	PMULLW  X7, X2
 	PMULLW  X6, X3
 	PADDW   X3, X2
+	PADDW   X8, X2              // + 128 (rounding bias)
 	PSRLW   $8, X2
 	MOVO    X0, X3
 	PUNPCKHBW X5, X3
@@ -177,6 +197,7 @@ uniform_avx2_sse2_tail:
 	PMULLW  X7, X3
 	PMULLW  X6, X4
 	PADDW   X4, X3
+	PADDW   X8, X3              // + 128 (rounding bias)
 	PSRLW   $8, X3
 	PACKUSWB X3, X2
 	MOVOU   X2, (DI)
@@ -195,6 +216,7 @@ uniform_scalar_loop_avx2_tail:
 	IMULQ   R9, AX
 	IMULQ   R8, BX
 	ADDQ    BX, AX
+	ADDQ    $128, AX            // + 128 (rounding bias)
 	SHRQ    $8, AX
 	MOVB    AX, (DI)
 	INCQ    SI
@@ -304,7 +326,7 @@ fadeconst_done:
 // ============================================================================
 // func blendAlpha(dst, a, b, alpha *byte, n int)
 // ============================================================================
-// dst[i] = (a[i]*(256-w) + b[i]*w) >> 8, w = alpha[i]+(alpha[i]>>7)
+// dst[i] = (a[i]*(256-w) + b[i]*w + 128) >> 8, w = alpha[i]+(alpha[i]>>7)
 TEXT ·blendAlpha(SB), NOSPLIT, $0-40
 	MOVQ dst+0(FP), DI
 	MOVQ a+8(FP), SI
@@ -327,6 +349,12 @@ TEXT ·blendAlpha(SB), NOSPLIT, $0-40
 	PUNPCKLQDQ X7, X7
 
 	PXOR    X6, X6              // zero
+
+	// Broadcast rounding bias (128) as 16-bit words
+	MOVQ    $128, AX
+	MOVQ    AX, X11
+	PSHUFLW $0, X11, X11
+	PUNPCKLQDQ X11, X11         // X11 = [128] × 8
 
 	CMPQ    CX, $16
 	JLT     alpha_sse2_tail
@@ -352,6 +380,7 @@ alpha_sse2_loop:
 	PMULLW  X4, X8              // X8 = a_lo * inv
 	PMULLW  X3, X9              // X9 = b_lo * w
 	PADDW   X9, X8              // X8 = sum_lo
+	PADDW   X11, X8             // X8 += 128 (rounding bias)
 	PSRLW   $8, X8
 
 	// --- Upper 8 bytes ---
@@ -370,6 +399,7 @@ alpha_sse2_loop:
 	PMULLW  X4, X9
 	PMULLW  X3, X10
 	PADDW   X10, X9
+	PADDW   X11, X9             // X9 += 128 (rounding bias)
 	PSRLW   $8, X9
 
 	PACKUSWB X9, X8
@@ -399,6 +429,7 @@ alpha_scalar_loop:
 	IMULQ   R12, AX             // a * inv
 	IMULQ   R11, BX             // b * w
 	ADDQ    BX, AX
+	ADDQ    $128, AX            // + 128 (rounding bias)
 	SHRQ    $8, AX
 	MOVB    AX, (DI)
 	INCQ    SI
@@ -414,6 +445,9 @@ alpha_avx2:
 	MOVQ    $256, AX
 	MOVQ    AX, X7
 	VPBROADCASTW X7, Y7         // Y7 = [256] × 16 words
+	MOVQ    $128, AX
+	MOVQ    AX, X11
+	VPBROADCASTW X11, Y11       // Y11 = [128] × 16 words (rounding bias)
 	VPXOR   Y6, Y6, Y6
 
 	CMPQ    CX, $32
@@ -435,6 +469,7 @@ alpha_avx2_loop:
 	VPMULLW Y4, Y8, Y8          // a_lo * inv
 	VPMULLW Y3, Y9, Y9          // b_lo * w
 	VPADDW  Y9, Y8, Y8
+	VPADDW  Y11, Y8, Y8         // Y8 += 128 (rounding bias)
 	VPSRLW  $8, Y8, Y8
 
 	// Upper 16: widen
@@ -448,6 +483,7 @@ alpha_avx2_loop:
 	VPMULLW Y4, Y9, Y9
 	VPMULLW Y3, Y10, Y10
 	VPADDW  Y10, Y9, Y9
+	VPADDW  Y11, Y9, Y9         // Y9 += 128 (rounding bias)
 	VPSRLW  $8, Y9, Y9
 
 	// VPUNPCKLBW/VPUNPCKHBW + VPACKUSWB already produces correct order.
@@ -476,6 +512,11 @@ alpha_avx2_tail:
 	PSHUFLW $0, X7, X7
 	PUNPCKLQDQ X7, X7
 	PXOR    X6, X6
+	// Broadcast rounding bias (128) as 16-bit words
+	MOVQ    $128, AX
+	MOVQ    AX, X11
+	PSHUFLW $0, X11, X11
+	PUNPCKLQDQ X11, X11         // X11 = [128] × 8
 	JMP     alpha_sse2_loop
 
 alpha_done:

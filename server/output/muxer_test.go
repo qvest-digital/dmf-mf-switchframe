@@ -1413,3 +1413,222 @@ func TestTSMuxer_DeltaFrameNoPATPMT(t *testing.T) {
 			"delta frame output should not contain PMT packets")
 	}
 }
+
+// ---------- HEVC codec support ----------
+
+// makeHEVCKeyframe builds a minimal HEVC keyframe with VPS/SPS/PPS in wire format.
+// HEVC NAL header is 2 bytes: forbidden(1) | type(6) | layerID(6) | tid(3).
+// IDR_W_RADL = type 19 → first byte = (19 << 1) = 0x26, second byte = 0x01 (tid=1).
+func makeHEVCKeyframe(pts int64) *media.VideoFrame {
+	return &media.VideoFrame{
+		PTS: pts, DTS: pts, IsKeyframe: true,
+		VPS:      []byte{0x40, 0x01, 0x0C, 0x01, 0xFF, 0xFF}, // type 32 → (32<<1)=0x40
+		SPS:      []byte{0x42, 0x01, 0x01, 0x01, 0x60, 0x00}, // type 33 → (33<<1)=0x42
+		PPS:      []byte{0x44, 0x01, 0xC0, 0xF7, 0x24},       // type 34 → (34<<1)=0x44
+		WireData: []byte{0x00, 0x00, 0x00, 0x04, 0x26, 0x01, 0x88, 0x80}, // IDR_W_RADL
+		Codec:    "h265",
+	}
+}
+
+// makeHEVCPFrame builds a minimal HEVC trailing non-keyframe in wire format.
+// TRAIL_R = type 1 → first byte = (1 << 1) = 0x02, second byte = 0x01 (tid=1).
+func makeHEVCPFrame(pts int64) *media.VideoFrame {
+	return &media.VideoFrame{
+		PTS: pts, DTS: pts, IsKeyframe: false,
+		WireData: []byte{0x00, 0x00, 0x00, 0x03, 0x02, 0x01, 0x50},
+		Codec:    "h265",
+	}
+}
+
+func TestTSMuxer_HEVC_InitOnKeyframe(t *testing.T) {
+	m := NewTSMuxer()
+	var output []byte
+	m.SetOutput(func(data []byte) { output = append(output, data...) })
+
+	err := m.WriteVideo(makeHEVCKeyframe(90000))
+	require.NoError(t, err)
+	require.True(t, m.initialized)
+	require.Equal(t, "h265", m.videoCodec)
+	require.NotEmpty(t, output)
+	require.Equal(t, 0, len(output)%188, "output must be multiple of 188 bytes")
+}
+
+func TestTSMuxer_HEVC_PMT_StreamType(t *testing.T) {
+	// Verify the PMT contains stream_type 0x24 (H.265) for the video PID.
+	m := NewTSMuxer()
+	var output []byte
+	m.SetOutput(func(data []byte) { output = append(output, data...) })
+
+	require.NoError(t, m.WriteVideo(makeHEVCKeyframe(90000)))
+	require.NotEmpty(t, output)
+
+	// Demux the output and inspect PMT for stream_type.
+	demuxer := astits.NewDemuxer(context.Background(), bytes.NewReader(output))
+	foundH265Stream := false
+	for {
+		d, err := demuxer.NextData()
+		if err != nil {
+			break
+		}
+		if d == nil || d.PMT == nil {
+			continue
+		}
+		for _, es := range d.PMT.ElementaryStreams {
+			if es.ElementaryPID == videoPID {
+				require.Equal(t, astits.StreamTypeH265Video, es.StreamType,
+					"video stream type should be H.265 (0x24)")
+				foundH265Stream = true
+			}
+		}
+	}
+	require.True(t, foundH265Stream, "PMT should contain H.265 video stream")
+}
+
+func TestTSMuxer_HEVC_KeyframePrependsVPSSPSPPS(t *testing.T) {
+	m := NewTSMuxer()
+	var output []byte
+	m.SetOutput(func(data []byte) { output = append(output, data...) })
+
+	vps := []byte{0x40, 0x01, 0x0C, 0x01, 0xFF, 0xFF}
+	sps := []byte{0x42, 0x01, 0x01, 0x01, 0x60, 0x00}
+	pps := []byte{0x44, 0x01, 0xC0, 0xF7, 0x24}
+
+	idrFrame := &media.VideoFrame{
+		PTS: 90000, DTS: 90000, IsKeyframe: true,
+		VPS:      vps,
+		SPS:      sps,
+		PPS:      pps,
+		WireData: []byte{0x00, 0x00, 0x00, 0x04, 0x26, 0x01, 0x88, 0x80},
+		Codec:    "h265",
+	}
+	err := m.WriteVideo(idrFrame)
+	require.NoError(t, err)
+	require.NotEmpty(t, output)
+
+	// Demux and extract the video PES payload. Look for VPS/SPS/PPS start codes
+	// followed by the expected NALU type bytes.
+	demuxer := astits.NewDemuxer(context.Background(), bytes.NewReader(output))
+	var videoPayload []byte
+	for {
+		d, err := demuxer.NextData()
+		if err != nil {
+			break
+		}
+		if d == nil || d.PES == nil || d.PES.Header == nil {
+			continue
+		}
+		if d.PES.Header.StreamID >= 0xE0 && d.PES.Header.StreamID <= 0xEF {
+			videoPayload = d.PES.Data
+			break
+		}
+	}
+	require.NotEmpty(t, videoPayload, "should find video PES data")
+
+	// The payload should contain Annex B start codes followed by VPS, SPS, PPS, IDR.
+	// VPS NALU type 32: first byte (32<<1) = 0x40
+	// SPS NALU type 33: first byte (33<<1) = 0x42
+	// IDR NALU type 19: first byte (19<<1) = 0x26
+	require.True(t, bytes.Contains(videoPayload, vps),
+		"video payload should contain VPS NALU data")
+	require.True(t, bytes.Contains(videoPayload, sps),
+		"video payload should contain SPS NALU data")
+	require.True(t, bytes.Contains(videoPayload, pps),
+		"video payload should contain PPS NALU data")
+
+	// Verify ordering: VPS appears before SPS appears before PPS.
+	vpsIdx := bytes.Index(videoPayload, vps)
+	spsIdx := bytes.Index(videoPayload, sps)
+	ppsIdx := bytes.Index(videoPayload, pps)
+	require.Less(t, vpsIdx, spsIdx, "VPS should appear before SPS")
+	require.Less(t, spsIdx, ppsIdx, "SPS should appear before PPS")
+}
+
+func TestTSMuxer_HEVC_SubsequentFrames(t *testing.T) {
+	m := NewTSMuxer()
+	var output []byte
+	m.SetOutput(func(data []byte) { output = append(output, data...) })
+
+	// Init with HEVC keyframe.
+	require.NoError(t, m.WriteVideo(makeHEVCKeyframe(90000)))
+	output = nil
+
+	// Subsequent HEVC P-frame should produce output.
+	err := m.WriteVideo(makeHEVCPFrame(93000))
+	require.NoError(t, err)
+	require.NotEmpty(t, output)
+	require.Equal(t, 0, len(output)%188, "output must be multiple of 188 bytes")
+}
+
+func TestTSMuxer_HEVC_DefaultCodecIsAVC(t *testing.T) {
+	// When Codec field is empty or "h264", the muxer should use H.264 stream type.
+	m := NewTSMuxer()
+	var output []byte
+	m.SetOutput(func(data []byte) { output = append(output, data...) })
+
+	require.NoError(t, m.WriteVideo(makeTestKeyframe2(90000)))
+	require.Equal(t, "h264", m.videoCodec)
+
+	// Demux and verify H.264 stream type.
+	demuxer := astits.NewDemuxer(context.Background(), bytes.NewReader(output))
+	for {
+		d, err := demuxer.NextData()
+		if err != nil {
+			break
+		}
+		if d == nil || d.PMT == nil {
+			continue
+		}
+		for _, es := range d.PMT.ElementaryStreams {
+			if es.ElementaryPID == videoPID {
+				require.Equal(t, astits.StreamTypeH264Video, es.StreamType,
+					"default video stream type should be H.264 (0x1B)")
+			}
+		}
+	}
+}
+
+func TestTSMuxer_HEVC_Close_ResetsCodec(t *testing.T) {
+	m := NewTSMuxer()
+	m.SetOutput(func(data []byte) {})
+
+	require.NoError(t, m.WriteVideo(makeHEVCKeyframe(90000)))
+	require.Equal(t, "h265", m.videoCodec)
+
+	require.NoError(t, m.Close())
+	require.Equal(t, "", m.videoCodec, "Close should reset videoCodec")
+}
+
+func TestTSMuxer_HEVC_WithSCTE35(t *testing.T) {
+	// HEVC stream type and SCTE-35 should coexist in PMT.
+	m := NewTSMuxer()
+	var output []byte
+	m.SetOutput(func(data []byte) { output = append(output, data...) })
+
+	m.SetSCTE35PID(defaultSCTE35PID)
+	require.NoError(t, m.WriteVideo(makeHEVCKeyframe(90000)))
+	require.NotEmpty(t, output)
+
+	// Demux PMT and verify both HEVC video and SCTE-35 streams are registered.
+	demuxer := astits.NewDemuxer(context.Background(), bytes.NewReader(output))
+	foundH265 := false
+	foundSCTE35 := false
+	for {
+		d, err := demuxer.NextData()
+		if err != nil {
+			break
+		}
+		if d == nil || d.PMT == nil {
+			continue
+		}
+		for _, es := range d.PMT.ElementaryStreams {
+			if es.ElementaryPID == videoPID && es.StreamType == astits.StreamTypeH265Video {
+				foundH265 = true
+			}
+			if es.ElementaryPID == defaultSCTE35PID && es.StreamType == astits.StreamType(0x86) {
+				foundSCTE35 = true
+			}
+		}
+	}
+	require.True(t, foundH265, "PMT should contain H.265 video stream")
+	require.True(t, foundSCTE35, "PMT should contain SCTE-35 stream")
+}

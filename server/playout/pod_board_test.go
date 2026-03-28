@@ -762,7 +762,7 @@ func TestPodBoard_SpliceReady_TransitionsToBreakActive(t *testing.T) {
 
 	// Pod is in PreRoll. Feed frames through window to trigger finalization.
 	w, h := 320, 240
-	ySize := w * h * 3 / 2
+	ySize := yuvFrameSize(w, h)
 	// Window: target=9000, window=[4500, 13500] at 90kHz
 	for pts := int64(0); pts <= 15000; pts += 3000 {
 		frame := make([]byte, ySize)

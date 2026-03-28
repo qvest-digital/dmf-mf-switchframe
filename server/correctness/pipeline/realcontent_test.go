@@ -81,7 +81,7 @@ func TestPipelineWithMotionContent(t *testing.T) {
 		inputFrames[frame] = yuv
 
 		pf := &switcher.ProcessingFrame{
-			YUV:        copyBytes(yuv),
+			Data:       copyBytes(yuv),
 			Width:      w,
 			Height:     ht,
 			PTS:        90000 + int64(frame)*ptsDelta,
@@ -253,7 +253,7 @@ func TestPipelineWithSceneChange(t *testing.T) {
 
 			globalIdx := startFrame + frame
 			pf := &switcher.ProcessingFrame{
-				YUV:        yuv,
+				Data:       yuv,
 				Width:      w,
 				Height:     ht,
 				PTS:        90000 + int64(globalIdx)*ptsDelta,
@@ -398,7 +398,7 @@ func TestPipelineRateControl(t *testing.T) {
 		}
 
 		pf := &switcher.ProcessingFrame{
-			YUV:        yuv,
+			Data:       yuv,
 			Width:      w,
 			Height:     ht,
 			PTS:        90000 + int64(frame)*ptsDelta,
@@ -562,7 +562,7 @@ func TestPipelineCutBetweenRealContent(t *testing.T) {
 	h.cut(t, "patA")
 	for frame := 0; frame < 30; frame++ {
 		pf := &switcher.ProcessingFrame{
-			YUV:        copyBytes(hBars),
+			Data:       copyBytes(hBars),
 			Width:      w,
 			Height:     ht,
 			PTS:        90000 + int64(frame)*ptsDelta,
@@ -582,7 +582,7 @@ func TestPipelineCutBetweenRealContent(t *testing.T) {
 	h.cut(t, "patB")
 	for frame := 0; frame < 30; frame++ {
 		pf := &switcher.ProcessingFrame{
-			YUV:        copyBytes(vBars),
+			Data:       copyBytes(vBars),
 			Width:      w,
 			Height:     ht,
 			PTS:        90000 + int64(30+frame)*ptsDelta,

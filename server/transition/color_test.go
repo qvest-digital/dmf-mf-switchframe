@@ -7,19 +7,24 @@ import (
 	"github.com/zsiec/switchframe/server/transition"
 )
 
+// yuvFrameSize returns the byte size of a YUV420 8-bit frame (w*h*3/2).
+func yuvFrameSize(w, h int) int {
+	return w * h * 3 / 2
+}
+
 func TestYUV420ToRGBBlack(t *testing.T) {
 	t.Parallel()
 	// Black in YUV: Y=16, U=128, V=128 (studio range)
 	// But OpenH264 outputs full-range: Y=0, U=128, V=128
 	w, h := 4, 4
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	// Y plane = 0 (full-range black)
 	// U plane = 128 (neutral chroma)
 	for i := w * h; i < w*h+w*h/4; i++ {
 		yuv[i] = 128
 	}
 	// V plane = 128 (neutral chroma)
-	for i := w*h + w*h/4; i < w*h*3/2; i++ {
+	for i := w*h + w*h/4; i < yuvFrameSize(w, h); i++ {
 		yuv[i] = 128
 	}
 
@@ -35,13 +40,13 @@ func TestYUV420ToRGBBlack(t *testing.T) {
 func TestYUV420ToRGBWhite(t *testing.T) {
 	t.Parallel()
 	w, h := 4, 4
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	// Y plane = 255 (full-range white)
 	for i := 0; i < w*h; i++ {
 		yuv[i] = 255
 	}
 	// U, V = 128 (neutral)
-	for i := w * h; i < w*h*3/2; i++ {
+	for i := w * h; i < yuvFrameSize(w, h); i++ {
 		yuv[i] = 128
 	}
 
@@ -58,18 +63,18 @@ func TestRoundTripYUVRGBYUV(t *testing.T) {
 	t.Parallel()
 	w, h := 8, 8
 	// Create a gradient in YUV
-	original := make([]byte, w*h*3/2)
+	original := make([]byte, yuvFrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		original[i] = byte(i * 3 % 256) // Y gradient
 	}
-	for i := w * h; i < w*h*3/2; i++ {
+	for i := w * h; i < yuvFrameSize(w, h); i++ {
 		original[i] = 128 // neutral chroma
 	}
 
 	rgb := make([]byte, w*h*3)
 	transition.YUV420ToRGB(original, w, h, rgb)
 
-	roundtrip := make([]byte, w*h*3/2)
+	roundtrip := make([]byte, yuvFrameSize(w, h))
 	transition.RGBToYUV420(rgb, w, h, roundtrip)
 
 	// Y plane should round-trip within +/-1 (quantization error)
@@ -86,7 +91,7 @@ func TestYUV420ToRGBKnownColor(t *testing.T) {
 	t.Parallel()
 	// Pure red in full-range YUV (BT.709): Y~54, U~99, V~255
 	w, h := 2, 2
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		yuv[i] = 54 // Y
 	}
@@ -105,7 +110,7 @@ func TestYUV420ToRGBKnownColor(t *testing.T) {
 func TestBufferSizes(t *testing.T) {
 	t.Parallel()
 	w, h := 1920, 1080
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	rgb := make([]byte, w*h*3)
 
 	// Should not panic with correct buffer sizes

@@ -32,8 +32,9 @@ type Manager struct {
 	mu             sync.Mutex
 	relay          Relay
 	config         Config
-	decoderFactory transition.DecoderFactory
-	encoderFactory transition.EncoderFactory
+	decoderFactory      transition.DecoderFactory
+	encoderFactory      transition.EncoderFactory
+	proxyEncoderFactory transition.EncoderFactory // H.264 proxy for browser relay (dual-encode mode)
 
 	tmpfsDir string // resolved tmpfs path, empty = in-memory only
 	buffers  map[string]*replayBuffer
@@ -375,6 +376,7 @@ func (m *Manager) Play(source string, speed float64, loop bool) error {
 				Interpolation:       InterpolationHoldCrossfade,
 				DecoderFactory:      m.decoderFactory,
 				EncoderFactory:      m.encoderFactory,
+				ProxyEncoderFactory: m.proxyEncoderFactory,
 				Output:              outputCb,
 				AudioOutput:         audioOutCb,
 				RawVideoOutput:      rawVideoCb,
@@ -653,6 +655,15 @@ func (m *Manager) SetAudioOutput(fn func(frame *media.AudioFrame)) {
 	m.audioOutput = fn
 }
 
+// SetProxyEncoderFactory sets a browser-compatible encoder factory (typically H.264)
+// for dual-encode mode. When set, the main encoder factory creates the pipeline codec
+// encoder (e.g. HEVC), and this factory creates the H.264 proxy for browser playback.
+func (m *Manager) SetProxyEncoderFactory(factory transition.EncoderFactory) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.proxyEncoderFactory = factory
+}
+
 // SetAudioCodecFactories sets the AAC decoder/encoder factories used for
 // WSOLA audio time-stretching during slow-motion playback.
 func (m *Manager) SetAudioCodecFactories(decFactory audio.DecoderFactory, encFactory audio.EncoderFactory) {
@@ -794,14 +805,20 @@ func muxClipToTempFile(videoFrames []bufferedFrame, audioFrames []bufferedAudioF
 
 		if writeVideo {
 			f := videoFrames[vi]
+			// Determine codec string for the muxer.
+			codecStr := "h264"
+			if f.codec == "h265" {
+				codecStr = "h265"
+			}
 			vf := &media.VideoFrame{
 				WireData:   f.wireData,
 				PTS:        f.pts,
 				DTS:        f.pts,
 				IsKeyframe: f.isKeyframe,
+				VPS:        f.vps,
 				SPS:        f.sps,
 				PPS:        f.pps,
-				Codec:      "avc1",
+				Codec:      codecStr,
 			}
 			if muxErr := muxer.WriteVideo(vf); muxErr != nil {
 				_ = tmpFile.Close()
@@ -845,10 +862,40 @@ func muxClipToTempFile(videoFrames []bufferedFrame, audioFrames []bufferedAudioF
 // detectTmpfsDir checks if a directory exists (or can be created) for
 // tmpfs-backed replay buffers. Returns the resolved path and true if
 // available, empty string and false otherwise.
+//
+// To prevent creating deep directory trees on the root filesystem (which
+// would happen on Linux as root with MkdirAll alone), we verify that a
+// non-root ancestor of the target path already exists. This ensures the
+// path is rooted under an existing mount point (e.g. /dev/shm) rather
+// than being fabricated from /.
 func detectTmpfsDir(dir string) (string, bool) {
 	if dir == "" {
 		dir = "/dev/shm/switchframe/replay"
 	}
+
+	// Walk up the path to find the nearest existing ancestor.
+	// Reject the path if the only existing ancestor is the filesystem root,
+	// since that means we'd be creating a deep tree on the root filesystem.
+	ancestor := dir
+	for {
+		info, err := os.Stat(ancestor)
+		if err == nil && info.IsDir() {
+			break
+		}
+		parent := filepath.Dir(ancestor)
+		if parent == ancestor {
+			// Reached the filesystem root without finding an existing
+			// non-root directory — the path is not under a valid mount point.
+			return "", false
+		}
+		ancestor = parent
+	}
+
+	// Verify the existing ancestor is not the filesystem root itself.
+	if ancestor == "/" || ancestor == filepath.VolumeName(dir)+string(filepath.Separator) {
+		return "", false
+	}
+
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", false
 	}

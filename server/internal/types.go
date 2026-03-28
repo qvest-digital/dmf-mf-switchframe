@@ -245,11 +245,13 @@ type LockInfo struct {
 
 // PipelineFormatInfo describes the current video pipeline format.
 type PipelineFormatInfo struct {
-	Width  int    `json:"width"`
-	Height int    `json:"height"`
-	FPSNum int    `json:"fpsNum"`
-	FPSDen int    `json:"fpsDen"`
-	Name   string `json:"name"`
+	Width       int    `json:"width"`
+	Height      int    `json:"height"`
+	FPSNum      int    `json:"fpsNum"`
+	FPSDen      int    `json:"fpsDen"`
+	Name        string `json:"name"`
+	ColorFormat string `json:"colorFormat,omitempty"`
+	Codec       string `json:"codec,omitempty"`
 }
 
 // EncoderInfo describes an available video encoder backend.

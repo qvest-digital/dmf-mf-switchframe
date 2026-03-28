@@ -201,14 +201,14 @@ func (a *App) initPlayout() error {
 			// pipeline uses RunFromCache to read the aliased VRAM frame.
 			outW, outH = curPF.Width, curPF.Height
 		} else if w != curPF.Width || h != curPF.Height {
-			targetSize := curPF.Width * curPF.Height * 3 / 2
+			targetSize := switcher.ColorYUV420_8bit.FrameSize(curPF.Width, curPF.Height)
 			scaled := make([]byte, targetSize)
 			transition.ScaleYUV420(yuv, w, h, scaled, curPF.Width, curPF.Height)
 			outYUV, outW, outH = scaled, curPF.Width, curPF.Height
 		}
 
 		frame := &switcher.ProcessingFrame{
-			YUV:        outYUV,
+			Data:        outYUV,
 			Width:      outW,
 			Height:     outH,
 			PTS:        pts,

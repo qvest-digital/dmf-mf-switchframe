@@ -11,7 +11,7 @@ var _ PipelineNode = (*upstreamKeyNode)(nil)
 
 // upstreamKeyNode applies upstream chroma/luma keying to the program frame.
 // Wraps graphics.KeyProcessorBridge as a PipelineNode. In-place: modifies
-// src.YUV via bridge.ProcessYUV and returns src.
+// src.Data via bridge.ProcessYUV and returns src.
 //
 // Active only when the bridge has enabled keys with cached fill frames.
 // When inactive, the pipeline skips this node entirely (zero overhead).
@@ -22,13 +22,19 @@ type upstreamKeyNode struct {
 func (n *upstreamKeyNode) Name() string                          { return "upstream-key" }
 func (n *upstreamKeyNode) Configure(format PipelineFormat) error { return nil }
 func (n *upstreamKeyNode) Active() bool {
-	return n.bridge != nil && n.bridge.HasEnabledKeysWithFills()
+	return n.bridge != nil && (n.bridge.HasEnabledKeysWithFills() || n.bridge.HasEnabledKeysWithFills10())
 }
 func (n *upstreamKeyNode) Err() error             { return nil }
 func (n *upstreamKeyNode) Latency() time.Duration { return 100 * time.Microsecond }
 func (n *upstreamKeyNode) Close() error           { return nil }
 
 func (n *upstreamKeyNode) Process(dst, src *ProcessingFrame) *ProcessingFrame {
-	src.YUV = n.bridge.ProcessYUV(src.YUV, src.Width, src.Height)
-	return src
+	switch src.Format {
+	case ColorYUV422_10bit:
+		src.Data = n.bridge.ProcessYUV10(src.Data, src.Width, src.Height)
+		return src
+	default:
+		src.Data = n.bridge.ProcessYUV(src.Data, src.Width, src.Height)
+		return src
+	}
 }

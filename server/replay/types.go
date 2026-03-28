@@ -5,6 +5,12 @@ import (
 	"time"
 )
 
+// yuvFrameSize returns the byte size of a YUV420 8-bit frame (w*h*3/2).
+// Local helper to avoid adding switcher import to GPU-specific files.
+func yuvFrameSize(w, h int) int {
+	return w * h * 3 / 2
+}
+
 // Sentinel errors for the replay subsystem.
 var (
 	ErrNoSource       = errors.New("replay: source not found")
@@ -64,11 +70,13 @@ func DefaultConfig() Config {
 
 // bufferedFrame stores a single encoded video frame with wall-clock timestamp.
 type bufferedFrame struct {
-	wireData   []byte // AVC1 format (original from relay); nil when ring-backed
+	wireData   []byte // Wire format (original from relay); nil when ring-backed
+	vps        []byte // VPS NAL unit (HEVC keyframes only)
 	sps        []byte // SPS NAL unit (keyframes only)
 	pps        []byte // PPS NAL unit (keyframes only)
 	pts        int64  // Original 90kHz PTS
 	isKeyframe bool
+	codec      string    // "h264" or "h265"; empty defaults to "h264"
 	wallTime   time.Time // Wall-clock time for IN/OUT matching
 
 	// File ring fields (only used when replayBuffer.ring != nil).

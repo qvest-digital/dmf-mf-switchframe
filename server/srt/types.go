@@ -8,6 +8,12 @@ import (
 	"unsafe"
 )
 
+// yuvFrameSize returns the byte size of a YUV420 8-bit frame (w*h*3/2).
+// Local helper to avoid importing the switcher package.
+func yuvFrameSize(w, h int) int {
+	return w * h * 3 / 2
+}
+
 // ErrInvalidConfig is a sentinel error for SRT configuration validation failures.
 // Wrapping a validation error with this sentinel allows callers to distinguish
 // user input errors (HTTP 400) from internal failures (HTTP 500).

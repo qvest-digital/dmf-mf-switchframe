@@ -26,7 +26,7 @@ func TestLayoutCompositor_InSwitcher(t *testing.T) {
 	require.False(t, lc.NeedsSource("cam1"))
 
 	// Ingest a white source frame
-	src := make([]byte, 4*4*3/2) // 4x4 YUV420
+	src := make([]byte, ColorYUV420_8bit.FrameSize(4, 4)) // 4x4 YUV420
 	for i := 0; i < 4*4; i++ {
 		src[i] = 235 // white Y
 	}
@@ -37,7 +37,7 @@ func TestLayoutCompositor_InSwitcher(t *testing.T) {
 	require.True(t, lc.HasFrame("cam2"))
 
 	// Process on a black background
-	bg := make([]byte, 8*8*3/2)
+	bg := make([]byte, ColorYUV420_8bit.FrameSize(8, 8))
 	for i := 0; i < 8*8; i++ {
 		bg[i] = 16 // black Y
 	}

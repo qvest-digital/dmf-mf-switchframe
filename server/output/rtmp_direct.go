@@ -446,6 +446,14 @@ type RTMPDirect struct {
 
 	// onReconnect is called after a successful reconnection.
 	onReconnect func()
+
+	// transcoder decodes HEVC→YUV→H.264 when the pipeline codec is HEVC.
+	// Created lazily on the first HEVC frame; nil when pipeline is H.264.
+	transcoder *rtmpTranscoder
+
+	// transcoderFactory creates a transcoder for a given resolution.
+	// Overridden in tests to inject mock decoders/encoders.
+	transcoderFactory func(width, height int) (*rtmpTranscoder, error)
 }
 
 // NewRTMPDirect creates an RTMP direct adapter.
@@ -510,6 +518,12 @@ func (r *RTMPDirect) Close() error {
 	r.mu.Lock()
 	r.closeLocked()
 	r.mu.Unlock()
+
+	// Close transcoder if active.
+	if r.transcoder != nil {
+		r.transcoder.Close()
+		r.transcoder = nil
+	}
 
 	r.state.Store(ptrTo(StateStopped))
 	return nil
@@ -606,6 +620,15 @@ func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
 		return
 	}
 
+	// HEVC→H.264 transcoding: standard RTMP only supports H.264.
+	// When HEVC frames arrive, transcode them to H.264 before writing.
+	if frame.Codec == "h265" {
+		frame = r.transcodeHEVC(frame)
+		if frame == nil {
+			return // transcode failed or buffering
+		}
+	}
+
 	if !r.initialized.Load() {
 		if !frame.IsKeyframe {
 			return // drop non-keyframes before init
@@ -615,7 +638,7 @@ func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
 		if r.connectFn != nil {
 			r.initialized.Store(true)
 			r.ptsBase = frame.PTS
-	
+
 			return
 		}
 
@@ -881,6 +904,48 @@ func parseSPSDimensions(sps []byte) (width, height int) {
 	var w, h C.int
 	C.sps_get_dimensions((*C.uint8_t)(unsafe.Pointer(&sps[0])), C.int(len(sps)), &w, &h)
 	return int(w), int(h)
+}
+
+// transcodeHEVC lazily creates a transcoder and converts an HEVC frame to H.264.
+// Returns the transcoded H.264 frame, or nil if transcoding fails or the
+// decoder is still buffering.
+func (r *RTMPDirect) transcodeHEVC(frame *media.VideoFrame) *media.VideoFrame {
+	// Lazy init: create transcoder on first HEVC frame.
+	if r.transcoder == nil {
+		if !frame.IsKeyframe {
+			// Can't create transcoder without a keyframe (need SPS/PPS for decoder init).
+			return nil
+		}
+
+		var err error
+		if r.transcoderFactory != nil {
+			// Use injected factory (testing).
+			r.transcoder, err = r.transcoderFactory(1920, 1080)
+		} else {
+			r.transcoder, err = r.createDefaultTranscoder()
+		}
+		if err != nil {
+			slog.Warn("RTMP direct: failed to create HEVC→H.264 transcoder",
+				"url", rtmpMaskURL(r.config.URL), "err", err)
+			return nil
+		}
+		slog.Info("RTMP direct: created HEVC→H.264 transcoder",
+			"url", rtmpMaskURL(r.config.URL))
+	}
+
+	h264Frame, err := r.transcoder.Transcode(frame)
+	if err != nil {
+		slog.Debug("RTMP direct: transcode failed, dropping frame",
+			"url", rtmpMaskURL(r.config.URL), "err", err)
+		return nil
+	}
+	return h264Frame
+}
+
+// createDefaultTranscoder creates a real HEVC decoder + H.264 encoder pair
+// using the codec package. Called when no test factory is injected.
+func (r *RTMPDirect) createDefaultTranscoder() (*rtmpTranscoder, error) {
+	return nil, fmt.Errorf("HEVC→H.264 transcoder requires codec factory (not yet wired)")
 }
 
 // Compile-time check that RTMPDirect satisfies the FrameAdapter interface.

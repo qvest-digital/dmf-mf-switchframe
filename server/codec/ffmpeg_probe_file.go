@@ -112,3 +112,8 @@ func ProbeFile(path string) (*FileProbeResult, error) {
 func (r *FileProbeResult) IsH264() bool {
 	return r.VideoCodecID == 27 // AV_CODEC_ID_H264
 }
+
+// IsHEVC returns true if the probed video codec is HEVC (H.265).
+func (r *FileProbeResult) IsHEVC() bool {
+	return r.VideoCodecID == 173 // AV_CODEC_ID_HEVC
+}

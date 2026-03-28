@@ -133,4 +133,67 @@ describe('OutputControls', () => {
 		expect(ioBtn?.classList.contains('io-active')).toBe(true);
 		expect(ioBtn?.classList.contains('io-warning')).toBe(false);
 	});
+
+	// --- Format Badge ---
+
+	it('should not show format badge when pipelineFormat is missing', () => {
+		const { container } = render(OutputControls, { props: { state: baseState } });
+		const badge = container.querySelector('.format-badge');
+		expect(badge).toBeFalsy();
+	});
+
+	it('should not show format badge when codec is missing', () => {
+		const state = {
+			...baseState,
+			pipelineFormat: { width: 1920, height: 1080, fpsNum: 30, fpsDen: 1, name: 'standard' },
+		};
+		const { container } = render(OutputControls, { props: { state } });
+		const badge = container.querySelector('.format-badge');
+		expect(badge).toBeFalsy();
+	});
+
+	it('should show H.264 · 420 8-bit badge for standard format', () => {
+		const state = {
+			...baseState,
+			pipelineFormat: {
+				width: 1920, height: 1080, fpsNum: 30, fpsDen: 1,
+				name: 'standard', codec: 'h264', colorFormat: 'yuv420p',
+			},
+		};
+		const { container } = render(OutputControls, { props: { state } });
+		const badge = container.querySelector('.format-badge');
+		expect(badge).toBeTruthy();
+		expect(badge?.textContent).toContain('H.264');
+		expect(badge?.textContent).toContain('420 8-bit');
+	});
+
+	it('should show HEVC · 420 8-bit badge for standard-hevc format', () => {
+		const state = {
+			...baseState,
+			pipelineFormat: {
+				width: 1920, height: 1080, fpsNum: 30, fpsDen: 1,
+				name: 'standard-hevc', codec: 'h265', colorFormat: 'yuv420p',
+			},
+		};
+		const { container } = render(OutputControls, { props: { state } });
+		const badge = container.querySelector('.format-badge');
+		expect(badge).toBeTruthy();
+		expect(badge?.textContent).toContain('HEVC');
+		expect(badge?.textContent).toContain('420 8-bit');
+	});
+
+	it('should show HEVC · 422 10-bit badge for professional format', () => {
+		const state = {
+			...baseState,
+			pipelineFormat: {
+				width: 1920, height: 1080, fpsNum: 30, fpsDen: 1,
+				name: 'professional', codec: 'h265', colorFormat: 'yuv422p10le',
+			},
+		};
+		const { container } = render(OutputControls, { props: { state } });
+		const badge = container.querySelector('.format-badge');
+		expect(badge).toBeTruthy();
+		expect(badge?.textContent).toContain('HEVC');
+		expect(badge?.textContent).toContain('422 10-bit');
+	});
 });

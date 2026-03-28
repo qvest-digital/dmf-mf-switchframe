@@ -17,6 +17,16 @@ func Download(ctx *Context, yuv []byte, frame *GPUFrame, width, height int) erro
 	return ErrGPUNotAvailable
 }
 
+// Upload10 returns ErrGPUNotAvailable on non-GPU builds.
+func Upload10(ctx *Context, frame *GPUFrame, yuv422p10 []byte, width, height int) error {
+	return ErrGPUNotAvailable
+}
+
+// Download10 returns ErrGPUNotAvailable on non-GPU builds.
+func Download10(ctx *Context, frame *GPUFrame, dst []byte, width, height int) error {
+	return ErrGPUNotAvailable
+}
+
 // FillBlack returns ErrGPUNotAvailable on non-GPU builds.
 func FillBlack(ctx *Context, frame *GPUFrame) error {
 	return ErrGPUNotAvailable
@@ -192,3 +202,64 @@ func (a *GPUAnimatedSTMap) FrameCount() int { return 0 }
 
 // Free is a no-op on non-GPU builds.
 func (a *GPUAnimatedSTMap) Free() {}
+
+// --- P210 (10-bit) stubs ---
+
+// BlendMixP210 returns ErrGPUNotAvailable on non-GPU builds.
+func BlendMixP210(ctx *Context, dst, a, b *GPUFrame, position float64) error {
+	return ErrGPUNotAvailable
+}
+
+// BlendFTBP210 returns ErrGPUNotAvailable on non-GPU builds.
+func BlendFTBP210(ctx *Context, dst, src *GPUFrame, position float64) error {
+	return ErrGPUNotAvailable
+}
+
+// ScaleBilinearP210 returns ErrGPUNotAvailable on non-GPU builds.
+func ScaleBilinearP210(ctx *Context, dst, src *GPUFrame) error { return ErrGPUNotAvailable }
+
+// PIPCompositeP210 returns ErrGPUNotAvailable on non-GPU builds.
+func PIPCompositeP210(ctx *Context, dst, src *GPUFrame, rect Rect, alpha float64) error {
+	return ErrGPUNotAvailable
+}
+
+// PIPCompositeP210WithCrop returns ErrGPUNotAvailable on non-GPU builds.
+func PIPCompositeP210WithCrop(ctx *Context, dst, src *GPUFrame, rect Rect, alpha float64,
+	cropX, cropY, cropW, cropH int) error {
+	return ErrGPUNotAvailable
+}
+
+// UploadV210ToP210 returns ErrGPUNotAvailable on non-GPU builds.
+func UploadV210ToP210(ctx *Context, dst *GPUFrame, v210 []byte, width, height int) error {
+	return ErrGPUNotAvailable
+}
+
+// DownloadP210ToV210 returns ErrGPUNotAvailable on non-GPU builds.
+func DownloadP210ToV210(ctx *Context, v210 []byte, src *GPUFrame, width, height int) error {
+	return ErrGPUNotAvailable
+}
+
+// DSKCompositeFullFrameP210 returns ErrGPUNotAvailable on non-GPU builds.
+func DSKCompositeFullFrameP210(ctx *Context, frame *GPUFrame, overlay *GPUOverlay, alphaScale float64) error {
+	return ErrGPUNotAvailable
+}
+
+// DSKCompositeRectP210 returns ErrGPUNotAvailable on non-GPU builds.
+func DSKCompositeRectP210(ctx *Context, frame *GPUFrame, overlay *GPUOverlay, rect Rect, alphaScale float64) error {
+	return ErrGPUNotAvailable
+}
+
+// DSKOverlayP210 returns ErrGPUNotAvailable on non-GPU builds.
+func DSKOverlayP210(ctx *Context, frame *GPUFrame, rgba []byte, width, height, rgbaPitch, alphaScale256 int) error {
+	return ErrGPUNotAvailable
+}
+
+// STMapWarpP210Map returns ErrGPUNotAvailable on non-GPU builds.
+func STMapWarpP210Map(ctx *Context, dst, src *GPUFrame, stmap *GPUSTMap) error {
+	return ErrGPUNotAvailable
+}
+
+// STMapWarpP210 returns ErrGPUNotAvailable on non-GPU builds.
+func STMapWarpP210(ctx *Context, dst, src *GPUFrame, stmapS, stmapT []float32, width, height int) error {
+	return ErrGPUNotAvailable
+}

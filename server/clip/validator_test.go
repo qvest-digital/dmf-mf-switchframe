@@ -267,7 +267,7 @@ func TestTestDecodeFirstGOP_DimensionMismatchReturnsCorrupt(t *testing.T) {
 	// If the decoder can't decode synthetic data, it returns warnings
 	// (not an error), so this test only validates the mismatch path
 	// when decoding succeeds.
-	_, _, _, err := testDecodeFirstGOP(frames, 640, 480)
+	_, _, _, err := testDecodeFirstGOP(frames, 640, 480, "h264")
 	if err != nil {
 		// If the decoder could decode and found a mismatch, we get ErrCorruptFile.
 		assert.ErrorIs(t, err, ErrCorruptFile,
@@ -300,7 +300,7 @@ func TestTestDecodeFirstGOP_MatchingDimensionsNoError(t *testing.T) {
 	// Parse the actual SPS dimensions to pass as expected.
 	spsW, spsH := ParseSPSDimensions(sps)
 
-	w, h, _, err := testDecodeFirstGOP(frames, spsW, spsH)
+	w, h, _, err := testDecodeFirstGOP(frames, spsW, spsH, "h264")
 	assert.NoError(t, err, "matching dimensions should not return error")
 	// If decoding succeeded, dimensions should match.
 	if w > 0 && h > 0 {
@@ -328,7 +328,7 @@ func TestTestDecodeFirstGOP_ZeroSPSDimensionsSkipsMismatchCheck(t *testing.T) {
 	}
 
 	// Pass zero SPS dimensions (simulating unparseable SPS).
-	_, _, _, err := testDecodeFirstGOP(frames, 0, 0)
+	_, _, _, err := testDecodeFirstGOP(frames, 0, 0, "h264")
 	assert.NoError(t, err, "zero SPS dimensions should skip mismatch check")
 }
 

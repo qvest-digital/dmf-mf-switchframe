@@ -55,17 +55,17 @@ func NewMCFIState() *MCFIState {
 //
 // The returned slice is a freshly allocated copy, safe for async consumers.
 func (s *MCFIState) Interpolate(frameA, frameB []byte, width, height int, alpha float64) []byte {
-	frameSize := width * height * 3 / 2
+	frameSize := ColorYUV420_8bit.FrameSize(width, height)
 	out := make([]byte, frameSize)
 	s.InterpolateInto(out, frameA, frameB, width, height, alpha)
 	return out
 }
 
 // InterpolateInto writes the interpolated frame into dst. dst must be at least
-// width*height*3/2 bytes. This variant avoids allocation when the caller can
+// ColorYUV420_8bit.FrameSize(width, height) bytes. This variant avoids allocation when the caller can
 // provide a reusable buffer.
 func (s *MCFIState) InterpolateInto(dst, frameA, frameB []byte, width, height int, alpha float64) {
-	frameSize := width * height * 3 / 2
+	frameSize := ColorYUV420_8bit.FrameSize(width, height)
 
 	// Near-threshold: skip ME/warp for extreme alpha values.
 	if alpha < frcNearThresholdLow {
@@ -100,8 +100,8 @@ func (s *MCFIState) InterpolateInto(dst, frameA, frameB []byte, width, height in
 
 		if !s.sceneChange {
 			// Wrap raw YUV in ProcessingFrame for the ME pipeline
-			pfA := &ProcessingFrame{YUV: frameA, Width: width, Height: height}
-			pfB := &ProcessingFrame{YUV: frameB, Width: width, Height: height}
+			pfA := &ProcessingFrame{Data: frameA, Width: width, Height: height}
+			pfB := &ProcessingFrame{Data: frameB, Width: width, Height: height}
 
 			// Allocate/resize motion vector field
 			cols := width / frcMEBlockSize

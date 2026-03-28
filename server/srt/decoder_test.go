@@ -49,8 +49,8 @@ func TestStreamDecoderWithTSFile(t *testing.T) {
 			lastWidth.Store(int32(width))
 			lastHeight.Store(int32(height))
 
-			// Verify YUV420 buffer size: w * h * 3 / 2
-			expected := width * height * 3 / 2
+			// Verify YUV420 buffer size
+			expected := yuvFrameSize(width, height)
 			if len(yuv) != expected {
 				t.Errorf("YUV buffer size mismatch: got %d, want %d (w=%d h=%d)",
 					len(yuv), expected, width, height)
@@ -442,7 +442,7 @@ func TestStreamDecoderMultiClipResolutionReuse(t *testing.T) {
 					lastWidth.Store(int32(width))
 					lastHeight.Store(int32(height))
 
-					expected := width * height * 3 / 2
+					expected := yuvFrameSize(width, height)
 					if len(yuv) != expected {
 						t.Errorf("YUV buffer size mismatch: got %d, want %d", len(yuv), expected)
 					}

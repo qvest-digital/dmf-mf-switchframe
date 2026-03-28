@@ -20,8 +20,9 @@ import (
 	"unsafe"
 )
 
-// CopyGPUFrame copies NV12 data from src to dst on the default CUDA stream.
+// CopyGPUFrame copies frame data from src to dst on the default CUDA stream.
 // Both frames must have the same dimensions and pitch.
+// The copy size is format-aware: NV12 = pitch*h*3/2, P210 = pitch*h*2.
 //
 // Uses cudaMemcpyAsync on defaultCUDAStream (the context's main processing
 // stream) followed by cudaStreamSynchronize to ensure the copy completes
@@ -33,7 +34,7 @@ func CopyGPUFrame(dst, src *GPUFrame) error {
 			dst.Width, dst.Height, dst.Pitch, src.Width, src.Height, src.Pitch)
 	}
 
-	size := C.size_t(src.Pitch * src.Height * 3 / 2)
+	size := C.size_t(src.FrameSize())
 	rc := C.cudaMemcpyAsync(
 		unsafe.Pointer(uintptr(dst.DevPtr)),
 		unsafe.Pointer(uintptr(src.DevPtr)),
@@ -50,8 +51,9 @@ func CopyGPUFrame(dst, src *GPUFrame) error {
 	return nil
 }
 
-// CopyGPUFrameOn copies NV12 data from src to dst using the specified work
+// CopyGPUFrameOn copies frame data from src to dst using the specified work
 // queue's CUDA stream. If q is nil, the default CUDA stream is used.
+// The copy size is format-aware: NV12 = pitch*h*3/2, P210 = pitch*h*2.
 // The copy is synchronous — it blocks until the copy completes.
 func CopyGPUFrameOn(dst, src *GPUFrame, q *GPUWorkQueue) error {
 	if dst == nil || src == nil {
@@ -67,7 +69,7 @@ func CopyGPUFrameOn(dst, src *GPUFrame, q *GPUWorkQueue) error {
 		stream = defaultCUDAStream
 	}
 
-	size := C.size_t(src.Pitch * src.Height * 3 / 2)
+	size := C.size_t(src.FrameSize())
 	rc := C.cudaMemcpyAsync(
 		unsafe.Pointer(uintptr(dst.DevPtr)),
 		unsafe.Pointer(uintptr(src.DevPtr)),

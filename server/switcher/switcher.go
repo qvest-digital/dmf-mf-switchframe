@@ -494,7 +494,7 @@ func New(programRelay *distribution.Relay) *Switcher {
 		health:        newHealthMonitor(),
 		videoProcCh:   make(chan videoProcWork, 8),
 		videoProcDone: make(chan struct{}),
-		framePool:     NewFramePool(512, defaultFmt.Width, defaultFmt.Height),
+		framePool:     NewFramePool(512, defaultFmt.Width, defaultFmt.Height, defaultFmt.Color.ColorFormat),
 	}
 	s.frameBudgetNs.Store(defaultFmt.FrameBudgetNs())
 	s.pipelineFormat.Store(&defaultFmt)
@@ -908,18 +908,26 @@ func (s *Switcher) SetSourceDecoderFactory(factory transition.DecoderFactory) {
 
 // SetPipelineCodecs creates the shared pipeline encoder for the video
 // processing chain. Called from app.go during initialization.
-func (s *Switcher) SetPipelineCodecs(encoderFactory transition.EncoderFactory) {
+// The pipelineCodec parameter determines wire format (AVC vs HEVC) and
+// parameter set extraction (SPS/PPS vs VPS/SPS/PPS).
+func (s *Switcher) SetPipelineCodecs(encoderFactory transition.EncoderFactory, pipelineCodec ...PipelineCodec) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	pc := CodecAVC
+	if len(pipelineCodec) > 0 {
+		pc = pipelineCodec[0]
+	}
 	s.pipeCodecs = &pipelineCodecs{
 		encoderFactory: encoderFactory,
+		pipelineCodec:  pc,
 		formatRef:      &s.pipelineFormat,
 	}
 }
 
 // SetPipelineVideoInfoCallback sets the callback invoked when the pipeline
-// encoder produces a keyframe with new SPS/PPS parameters.
-func (s *Switcher) SetPipelineVideoInfoCallback(cb func(sps, pps []byte, width, height int)) {
+// encoder produces a keyframe with new VPS/SPS/PPS parameters.
+// For AVC pipelines, vps is always nil.
+func (s *Switcher) SetPipelineVideoInfoCallback(cb func(vps, sps, pps []byte, width, height int)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.pipeCodecs != nil {
@@ -952,6 +960,13 @@ func (s *Switcher) buildNodeList() []PipelineNode {
 // newAsyncEncodeNode creates an encodeNode with its async goroutine started.
 // Must be called with s.mu held (reads pipeCodecs, promMetrics, etc.).
 func newAsyncEncodeNode(s *Switcher) *encodeNode {
+	// Determine if the encoder is 10-bit capable (professional pipeline with
+	// HEVC codec and YUV422P10LE color format). When true, 10-bit frames
+	// bypass downconversion and are passed directly to the encoder.
+	is10bit := false
+	if pf := s.pipelineFormat.Load(); pf != nil {
+		is10bit = pf.Color.ColorFormat == ColorYUV422_10bit && pf.Color.Codec == CodecHEVC
+	}
 	enc := &encodeNode{
 		codecs:          s.pipeCodecs,
 		forceIDR:        &s.forceNextIDR,
@@ -959,6 +974,7 @@ func newAsyncEncodeNode(s *Switcher) *encodeNode {
 		encodeNilCount:  &s.pipeEncodeNil,
 		encodeDropCount: &s.pipeEncodeDrop,
 		onEncoded:       s.broadcastWithCaptions,
+		encoder10bit:    is10bit,
 	}
 	enc.start()
 	return enc
@@ -1186,7 +1202,7 @@ func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
 
 	// Recreate frame pool at new dimensions. Old pool drains naturally —
 	// Release() discards wrong-sized buffers via cap check.
-	s.framePool = NewFramePool(512, f.Width, f.Height)
+	s.framePool = NewFramePool(512, f.Width, f.Height, f.Color.ColorFormat)
 
 	// Update frame sync tick rate and pool reference if active.
 	if s.frameSyncActive && s.frameSync != nil {
@@ -1466,20 +1482,27 @@ func (s *Switcher) broadcastWithCaptions(frame *media.VideoFrame) {
 		return
 	}
 
-	// Build SEI NALU containing cc_data.
-	seiNALU := caption.BuildSEINALU(pairs)
+	// Determine codec string for SEI framing (H.264 vs HEVC).
+	codecStr := "h264"
+	if s.pipeCodecs != nil && s.pipeCodecs.pipelineCodec == CodecHEVC {
+		codecStr = "h265"
+	}
+
+	// Build SEI NALU containing cc_data (codec-aware: H.264 type 6 vs HEVC type 39).
+	seiNALU := caption.BuildSEINALU(pairs, codecStr)
 	if len(seiNALU) == 0 {
 		s.broadcastOwnedToProgram(frame)
 		return
 	}
 
-	// Convert AVC1 → Annex B → insert SEI → convert back to AVC1.
+	// Convert wire format → Annex B → insert SEI → convert back to wire format.
+	// Uses codec-agnostic WireToAnnexBInto/AnnexBToWireInto (identical for AVC/HEVC).
 	// Buffers are local (not reused across frames) because broadcastWithCaptions
 	// is called from the async encodeLoop goroutine and would race during
 	// pipeline swap if stored on the Switcher struct.
-	annexB := codec.AVC1ToAnnexBInto(frame.WireData, nil)
-	inserted := caption.InsertSEIBeforeVCLInto(seiNALU, annexB, nil)
-	frame.WireData = codec.AnnexBToAVC1Into(inserted, nil)
+	annexB := codec.WireToAnnexBInto(frame.WireData, nil)
+	inserted := caption.InsertSEIBeforeVCLInto(seiNALU, annexB, nil, codecStr)
+	frame.WireData = codec.AnnexBToWireInto(inserted, nil)
 	s.broadcastOwnedToProgram(frame)
 }
 
@@ -1602,7 +1625,7 @@ func (s *Switcher) videoProcessingLoop() {
 			}
 			// Fall back to CPU→GPU upload if cache miss or no source key.
 			if !gpuUsed {
-				if err := h.runner.RunWithUpload(work.yuvFrame.YUV, work.yuvFrame.Width, work.yuvFrame.Height, work.yuvFrame.PTS); err == nil {
+				if err := h.runner.RunWithUpload(work.yuvFrame.Data, work.yuvFrame.Width, work.yuvFrame.Height, work.yuvFrame.PTS); err == nil {
 					gpuUsed = true
 					s.gpuFramesProcessed.Add(1)
 				}
@@ -1637,6 +1660,8 @@ func (s *Switcher) videoProcessingLoop() {
 
 // broadcastProcessed handles frames that are already decoded to YUV
 // (e.g., from the transition engine). Enqueues for pipeline processing.
+// Format-aware: uses the pipeline's color format to determine frame size
+// and codec string, supporting both 8-bit YUV420 and 10-bit YUV422P10LE.
 func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, isKeyframe bool) {
 	s.transOutputCount.Add(1)
 	if s.pipeline.Load() == nil {
@@ -1650,7 +1675,16 @@ func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, 
 	}
 	s.mu.RUnlock()
 
-	expectedSize := width * height * 3 / 2
+	// Use the pipeline's color format for frame sizing and codec metadata.
+	pf := s.pipelineFormat.Load()
+	colorFmt := ColorYUV420_8bit
+	codecStr := "h264"
+	if pf != nil {
+		colorFmt = pf.Color.ColorFormat
+		codecStr = pf.Color.Codec.String()
+	}
+
+	expectedSize := colorFmt.FrameSize(width, height)
 	if len(yuv) < expectedSize {
 		return
 	}
@@ -1669,15 +1703,16 @@ func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, 
 	buf := s.framePool.Acquire()
 	copy(buf, yuv[:expectedSize])
 
-	pf := &ProcessingFrame{
-		YUV: buf[:expectedSize], Width: width, Height: height,
+	frame := &ProcessingFrame{
+		Data: buf[:expectedSize], Width: width, Height: height,
 		PTS: pts, DTS: pts, IsKeyframe: isKeyframe,
-		Codec:   "h264",
+		Format:  colorFmt,
+		Codec:   codecStr,
 		GroupID: groupID,
 		pool:    s.framePool,
 	}
-	pf.SetRefs(1)
-	s.enqueueVideoWork(videoProcWork{yuvFrame: pf, enqueueNano: time.Now().UnixNano()})
+	frame.SetRefs(1)
+	s.enqueueVideoWork(videoProcWork{yuvFrame: frame, enqueueNano: time.Now().UnixNano()})
 }
 
 // broadcastProcessedFromPF handles a ProcessingFrame from the always-decode
@@ -1719,7 +1754,7 @@ func (s *Switcher) broadcastProcessedFromPF(sourceKey string, pf *ProcessingFram
 // Skips scaling when the frame pool can't accommodate the target resolution
 // (e.g., test environments with small pools).
 func (s *Switcher) normalizeResolution(pf *ProcessingFrame) *ProcessingFrame {
-	if len(pf.YUV) == 0 {
+	if len(pf.Data) == 0 {
 		return pf
 	}
 	fmt := s.pipelineFormat.Load()
@@ -1727,22 +1762,28 @@ func (s *Switcher) normalizeResolution(pf *ProcessingFrame) *ProcessingFrame {
 		return pf
 	}
 	dstW, dstH := fmt.Width, fmt.Height
-	dstSize := dstW * dstH * 3 / 2
+	colorFmt := fmt.Color.ColorFormat
+	dstSize := colorFmt.FrameSize(dstW, dstH)
 	// Skip if the pool can't hold the target resolution (test safety).
 	if s.framePool.BufSize() < dstSize {
 		return pf
 	}
 	buf := s.framePool.Acquire()
 	buf = buf[:dstSize]
-	transition.ScaleYUV420(pf.YUV, pf.Width, pf.Height, buf, dstW, dstH)
+	if colorFmt == ColorYUV422_10bit {
+		transition.ScaleYUV422P10(pf.Data, pf.Width, pf.Height, buf, dstW, dstH)
+	} else {
+		transition.ScaleYUV420(pf.Data, pf.Width, pf.Height, buf, dstW, dstH)
+	}
 	pf.ReleaseYUV()
 	scaled := &ProcessingFrame{
-		YUV:        buf,
+		Data:        buf,
 		Width:      dstW,
 		Height:     dstH,
 		PTS:        pf.PTS,
 		DTS:        pf.DTS,
 		IsKeyframe: pf.IsKeyframe,
+		Format:     pf.Format,
 		Codec:      pf.Codec,
 		GroupID:    pf.GroupID,
 		pool:       s.framePool,
@@ -1884,6 +1925,12 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		},
 	})
 
+	// Set 10-bit color format on the transition engine so it uses the correct
+	// blend functions and frame sizing for the pipeline's color format.
+	if pf.Color.ColorFormat == ColorYUV422_10bit {
+		engine.SetColorFormat(transition.ColorFormat10bit)
+	}
+
 	if err := engine.Start(fromSource, sourceKey, tt, durationMs); err != nil {
 		// Roll back state since we failed to start.
 		s.mu.Lock()
@@ -2021,6 +2068,11 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 			},
 		})
 
+		// Set 10-bit color format for FTB reverse transition engine.
+		if ftbPF.Color.ColorFormat == ColorYUV422_10bit {
+			engine.SetColorFormat(transition.ColorFormat10bit)
+		}
+
 		if err := engine.Start(fromSource, "", transition.FTBReverse, defaultFTBDurMs); err != nil {
 			s.mu.Lock()
 			s.transitionState(StateFTB) // Roll back to StateFTB
@@ -2088,6 +2140,11 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 			s.handleFTBComplete(aborted)
 		},
 	})
+
+	// Set 10-bit color format for FTB forward transition engine.
+	if ftbFwdPF.Color.ColorFormat == ColorYUV422_10bit {
+		engine.SetColorFormat(transition.ColorFormat10bit)
+	}
 
 	if err := engine.Start(fromSource, "", transition.FTB, defaultFTBDurMs); err != nil {
 		s.mu.Lock()
@@ -3043,11 +3100,13 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 	// Include pipeline format
 	if f := s.pipelineFormat.Load(); f != nil {
 		state.PipelineFormat = &internal.PipelineFormatInfo{
-			Width:  f.Width,
-			Height: f.Height,
-			FPSNum: f.FPSNum,
-			FPSDen: f.FPSDen,
-			Name:   f.Name,
+			Width:       f.Width,
+			Height:      f.Height,
+			FPSNum:      f.FPSNum,
+			FPSDen:      f.FPSDen,
+			Name:        f.Name,
+			ColorFormat: f.Color.ColorFormat.String(),
+			Codec:       f.Color.Codec.String(),
 		}
 	}
 
@@ -3277,14 +3336,24 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 	// When active, fills are read from GPU cache by key/layout nodes (via GPUFill),
 	// so CPU IngestFillYUV / IngestSourceFrame are skipped.
 	if h := s.gpuSourceMgr.Load(); h != nil && h.mgr != nil {
-		h.mgr.IngestYUV(sourceKey, pf.YUV, pf.Width, pf.Height, pf.PTS)
+		h.mgr.IngestYUV(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
 	} else {
 		// CPU fill paths — feed key bridge and layout compositor with decoded YUV.
-		if keyBridge != nil {
-			keyBridge.IngestFillYUV(sourceKey, pf.YUV, pf.Width, pf.Height)
-		}
-		if layoutComp != nil && layoutComp.NeedsSource(sourceKey) {
-			layoutComp.IngestSourceFrame(sourceKey, pf.YUV, pf.Width, pf.Height, pf.PTS)
+		// Dispatch to format-appropriate ingest method based on pipeline color format.
+		if pf.Format == ColorYUV422_10bit {
+			if keyBridge != nil {
+				keyBridge.IngestFillYUV10(sourceKey, pf.Data, pf.Width, pf.Height)
+			}
+			if layoutComp != nil && layoutComp.NeedsSource(sourceKey) {
+				layoutComp.IngestSourceFrame10(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
+			}
+		} else {
+			if keyBridge != nil {
+				keyBridge.IngestFillYUV(sourceKey, pf.Data, pf.Width, pf.Height)
+			}
+			if layoutComp != nil && layoutComp.NeedsSource(sourceKey) {
+				layoutComp.IngestSourceFrame(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
+			}
 		}
 	}
 
@@ -3307,7 +3376,7 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 		tt := engine.TransitionType()
 		if h := s.gpuRunner.Load(); h != nil && h.runner != nil {
 			// Feed the engine for state tracking (SkipBlend skips CPU blend).
-			engine.IngestRawFrame(sourceKey, pf.YUV, pf.Width, pf.Height, pf.PTS)
+			engine.IngestRawFrame(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
 			pos := engine.Position()
 
 			if audioHandler != nil {
@@ -3369,7 +3438,7 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 		}
 
 		// CPU transition path (no GPU available).
-		engine.IngestRawFrame(sourceKey, pf.YUV, pf.Width, pf.Height, pf.PTS)
+		engine.IngestRawFrame(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
 		if audioHandler != nil {
 			audioHandler.OnTransitionPosition(engine.Position())
 		}

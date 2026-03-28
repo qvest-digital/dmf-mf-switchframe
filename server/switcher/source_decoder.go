@@ -55,6 +55,9 @@ type sourceDecoder struct {
 	stmapRegistry *stmap.Registry
 	stmapBuf      []byte // reusable buffer for stmap warp output (lazy-allocated)
 
+	// Reusable buffer for 420 8-bit → 422 10-bit upconversion (lazy-allocated).
+	upconvertBuf []byte
+
 	// gpuSourceActive — shared pointer to Switcher's atomic.Bool.
 	// When true, skip CPU ST map correction (GPU source manager does it on GPU).
 	gpuSourceActive *atomic.Bool
@@ -156,10 +159,17 @@ func (sd *sourceDecoder) decodeLoop() {
 		frame := input.frame
 		decodeStartNano := time.Now().UnixNano()
 
-		// Convert AVC1 wire format to Annex B for decoder (buffer reuse)
-		sd.annexBBuf = codec.AVC1ToAnnexBInto(frame.WireData, sd.annexBBuf[:0])
+		// Convert wire format to Annex B for decoder (buffer reuse).
+		// Works identically for AVC and HEVC (same 4-byte length prefix → start code).
+		sd.annexBBuf = codec.WireToAnnexBInto(frame.WireData, sd.annexBBuf[:0])
 		if frame.IsKeyframe && len(frame.SPS) > 0 && len(frame.PPS) > 0 {
-			sd.prependBuf = codec.PrependSPSPPSInto(frame.SPS, frame.PPS, sd.annexBBuf, sd.prependBuf[:0])
+			if len(frame.VPS) > 0 {
+				// HEVC: prepend VPS+SPS+PPS for decoder initialization.
+				sd.prependBuf = codec.PrependVPSSPSPPSInto(frame.VPS, frame.SPS, frame.PPS, sd.annexBBuf, sd.prependBuf[:0])
+			} else {
+				// H.264: prepend SPS+PPS only.
+				sd.prependBuf = codec.PrependSPSPPSInto(frame.SPS, frame.PPS, sd.annexBBuf, sd.prependBuf[:0])
+			}
 			sd.annexBBuf, sd.prependBuf = sd.prependBuf, sd.annexBBuf
 		}
 
@@ -199,28 +209,57 @@ func (sd *sourceDecoder) decodeLoop() {
 			continue
 		}
 
-		// Scale to pipeline format if resolution differs.
-		needsScale := false
+		// Determine the pipeline color format for this frame.
 		var pipeFmt *PipelineFormat
+		pipeColorFmt := ColorYUV420_8bit // default
 		if sd.pipelineFormat != nil {
 			pipeFmt = sd.pipelineFormat.Load()
-			if pipeFmt != nil && pipeFmt.Width > 0 && pipeFmt.Height > 0 && (w != pipeFmt.Width || h != pipeFmt.Height) {
-				needsScale = true
+			if pipeFmt != nil {
+				pipeColorFmt = pipeFmt.Color.ColorFormat
 			}
 		}
 
-		yuvSize := w * h * 3 / 2
-		if len(yuv) < yuvSize {
+		// Detect decoded output format by buffer size.
+		// A native 10-bit decoder produces w*h*4 bytes (YUV422P10LE),
+		// while the standard decoder produces w*h*3/2 (YUV420P 8-bit).
+		expected420Size := ColorYUV420_8bit.FrameSize(w, h)
+		expected422_10Size := ColorYUV422_10bit.FrameSize(w, h)
+		decodedIs10bit422 := len(yuv) == expected422_10Size
+		decodedIs420_8bit := len(yuv) >= expected420Size && !decodedIs10bit422
+
+		// Validate output size.
+		if !decodedIs10bit422 && !decodedIs420_8bit {
 			if poolBuf != nil {
 				sd.pool.Release(poolBuf)
 			}
 			continue
 		}
 
+		// Determine the frame's native color format.
+		decodedFormat := ColorYUV420_8bit
+		if decodedIs10bit422 {
+			decodedFormat = ColorYUV422_10bit
+		}
+
+		// Effective frame size based on decoded format.
+		yuvSize := decodedFormat.FrameSize(w, h)
+
+		// Scale to pipeline format if resolution differs.
+		needsScale := false
+		needsScale10 := false
+		if pipeFmt != nil && pipeFmt.Width > 0 && pipeFmt.Height > 0 && (w != pipeFmt.Width || h != pipeFmt.Height) {
+			if decodedIs420_8bit {
+				needsScale = true
+			} else if decodedIs10bit422 {
+				needsScale10 = true
+			}
+		}
+
 		var buf []byte
 		var framePool *FramePool
+		outputFormat := decodedFormat
 
-		if usedPoolBuf && !needsScale {
+		if usedPoolBuf && !needsScale && !needsScale10 {
 			// Common fast path: decoder wrote directly into pool buffer,
 			// no scaling needed. Skip the copy entirely.
 			buf = poolBuf[:yuvSize]
@@ -232,7 +271,7 @@ func (sd *sourceDecoder) decodeLoop() {
 					"source", sd.sourceKey, "source_w", w, "source_h", h,
 					"pipeline_w", pipeFmt.Width, "pipeline_h", pipeFmt.Height)
 			})
-			dstSize := pipeFmt.Width * pipeFmt.Height * 3 / 2
+			dstSize := ColorYUV420_8bit.FrameSize(pipeFmt.Width, pipeFmt.Height)
 			if len(sd.scaleBuf) < dstSize {
 				sd.scaleBuf = make([]byte, dstSize)
 			}
@@ -257,7 +296,7 @@ func (sd *sourceDecoder) decodeLoop() {
 						"source", sd.sourceKey, "source_w", w, "source_h", h,
 						"pipeline_w", pipeFmt.Width, "pipeline_h", pipeFmt.Height)
 				})
-				dstSize := pipeFmt.Width * pipeFmt.Height * 3 / 2
+				dstSize := ColorYUV420_8bit.FrameSize(pipeFmt.Width, pipeFmt.Height)
 				if len(sd.scaleBuf) < dstSize {
 					sd.scaleBuf = make([]byte, dstSize)
 				}
@@ -266,6 +305,27 @@ func (sd *sourceDecoder) decodeLoop() {
 				w = pipeFmt.Width
 				h = pipeFmt.Height
 				yuvSize = dstSize
+			}
+
+			if needsScale10 {
+				sd.scaleWarnOnce.Do(func() {
+					slog.Info("source resolution differs from pipeline format; scaling 10-bit with bilinear",
+						"source", sd.sourceKey, "source_w", w, "source_h", h,
+						"pipeline_w", pipeFmt.Width, "pipeline_h", pipeFmt.Height)
+				})
+				dstSize := ColorYUV422_10bit.FrameSize(pipeFmt.Width, pipeFmt.Height)
+				if len(sd.scaleBuf) < dstSize {
+					sd.scaleBuf = make([]byte, dstSize)
+				}
+				if err := transition.ScaleYUV422P10(yuv[:yuvSize], w, h, sd.scaleBuf[:dstSize], pipeFmt.Width, pipeFmt.Height); err == nil {
+					yuv = sd.scaleBuf
+					w = pipeFmt.Width
+					h = pipeFmt.Height
+					yuvSize = dstSize
+				} else {
+					slog.Warn("10-bit scaling failed, passing through at source resolution",
+						"source", sd.sourceKey, "error", err)
+				}
 			}
 
 			// Deep-copy YUV (decoder reuses internal buffer)
@@ -284,22 +344,59 @@ func (sd *sourceDecoder) decodeLoop() {
 			copy(buf, yuv[:yuvSize])
 		}
 
+		// Format conversion: match decoded format to pipeline format.
+		if pipeColorFmt == ColorYUV422_10bit && outputFormat == ColorYUV420_8bit {
+			// 8-bit 420 decoded → 10-bit 422 pipeline: upconvert.
+			dstSize := ColorYUV422_10bit.FrameSize(w, h)
+			if len(sd.upconvertBuf) < dstSize {
+				sd.upconvertBuf = make([]byte, dstSize)
+			}
+			if err := Upconvert420to422_10(buf[:yuvSize], sd.upconvertBuf[:dstSize], w, h); err == nil {
+				// Allocate a new buffer for the upconverted data.
+				newBuf := make([]byte, dstSize)
+				copy(newBuf, sd.upconvertBuf[:dstSize])
+				// Release the original buffer.
+				if framePool != nil {
+					framePool.Release(buf)
+				}
+				buf = newBuf
+				yuvSize = dstSize
+				outputFormat = ColorYUV422_10bit
+				framePool = nil
+			}
+		}
+		// When decodedIs10bit422 && pipeColorFmt == ColorYUV422_10bit:
+		// No conversion needed — frame is already in pipeline format.
+
 		// Apply per-source ST map correction (post-decode, pre-fan-out).
 		// All consumers (preview, replay, pipeline) see corrected frames.
 		// Skip when GPU source manager is active — it handles ST map on GPU.
 		if (sd.gpuSourceActive == nil || !sd.gpuSourceActive.Load()) && sd.stmapRegistry != nil {
 			if proc := sd.stmapRegistry.SourceProcessor(sd.sourceKey); proc != nil && proc.Active() {
-				dstSize := w * h * 3 / 2
-				if len(sd.stmapBuf) < dstSize {
-					sd.stmapBuf = make([]byte, dstSize)
+				if outputFormat == ColorYUV422_10bit {
+					// 10-bit 422 ST map warp.
+					dstSize := ColorYUV422_10bit.FrameSize(w, h)
+					if len(sd.stmapBuf) < dstSize {
+						sd.stmapBuf = make([]byte, dstSize)
+					}
+					if err := proc.Warp10(sd.stmapBuf[:dstSize], buf[:yuvSize], w, h); err == nil {
+						copy(buf[:yuvSize], sd.stmapBuf[:dstSize])
+					}
+				} else {
+					// 8-bit 420 ST map warp.
+					dstSize := ColorYUV420_8bit.FrameSize(w, h)
+					if len(sd.stmapBuf) < dstSize {
+						sd.stmapBuf = make([]byte, dstSize)
+					}
+					proc.ProcessYUV(sd.stmapBuf[:dstSize], buf[:yuvSize], w, h)
+					copy(buf[:yuvSize], sd.stmapBuf[:dstSize])
 				}
-				proc.ProcessYUV(sd.stmapBuf[:dstSize], buf[:yuvSize], w, h)
-				copy(buf[:yuvSize], sd.stmapBuf[:dstSize])
 			}
 		}
 
 		pf := &ProcessingFrame{
-			YUV:    buf[:yuvSize],
+			Data:    buf[:yuvSize],
+			Format:  outputFormat,
 			Width:  w,
 			Height: h,
 			PTS:    frame.PTS,

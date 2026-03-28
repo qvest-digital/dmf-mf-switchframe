@@ -64,6 +64,26 @@ func NewFFmpegDecoderWithThreads(hwDeviceCtx unsafe.Pointer, threadCount int) (*
 	return nil, errFFmpegDisabled
 }
 
+// NewFFmpegHEVCDecoder returns an error when FFmpeg is not available.
+func NewFFmpegHEVCDecoder(hwDeviceCtx unsafe.Pointer) (*FFmpegDecoder, error) {
+	return nil, errFFmpegDisabled
+}
+
+// NewFFmpegHEVCDecoderWithThreads returns an error when FFmpeg is not available.
+func NewFFmpegHEVCDecoderWithThreads(hwDeviceCtx unsafe.Pointer, threadCount int) (*FFmpegDecoder, error) {
+	return nil, errFFmpegDisabled
+}
+
+// NewFFmpegHEVCDecoderNative10bit returns an error when FFmpeg is not available.
+func NewFFmpegHEVCDecoderNative10bit(hwDeviceCtx unsafe.Pointer) (*FFmpegDecoder, error) {
+	return nil, errFFmpegDisabled
+}
+
+// NewFFmpegHEVCDecoderNative10bitWithThreads returns an error when FFmpeg is not available.
+func NewFFmpegHEVCDecoderNative10bitWithThreads(hwDeviceCtx unsafe.Pointer, threadCount int) (*FFmpegDecoder, error) {
+	return nil, errFFmpegDisabled
+}
+
 // Decode is a stub that always returns an error.
 func (d *FFmpegDecoder) Decode(data []byte) ([]byte, int, int, error) {
 	return nil, 0, 0, errFFmpegDisabled
@@ -93,8 +113,14 @@ func (d *FFmpegDecoder) Close() {}
 // encoders to find the best backend.
 func ProbeEncoders() (string, string) { return "none", "none" }
 
+// ProbeHEVCEncoders is a stub that returns "none" when FFmpeg is not available.
+func ProbeHEVCEncoders() (string, string) { return "none", "none" }
+
 // ListAvailableEncoders is a stub that returns nil when FFmpeg is not available.
 func ListAvailableEncoders() []EncoderInfo { return nil }
+
+// ListAvailableHEVCEncoders is a stub that returns nil when FFmpeg is not available.
+func ListAvailableHEVCEncoders() []EncoderInfo { return nil }
 
 // HWDeviceCtx is a stub that returns nil when FFmpeg is not available.
 func HWDeviceCtx() unsafe.Pointer { return nil }
@@ -123,6 +149,51 @@ func NewVideoDecoder() (transition.VideoDecoder, error) {
 
 // NewVideoDecoderSingleThread is a stub that returns an error when FFmpeg is not available.
 func NewVideoDecoderSingleThread() (transition.VideoDecoder, error) {
+	return nil, errFFmpegDisabled
+}
+
+// NewHEVCVideoDecoder is a stub that returns an error when FFmpeg is not available.
+func NewHEVCVideoDecoder() (transition.VideoDecoder, error) {
+	return nil, errFFmpegDisabled
+}
+
+// NewHEVCVideoDecoderSingleThread is a stub that returns an error when FFmpeg is not available.
+func NewHEVCVideoDecoderSingleThread() (transition.VideoDecoder, error) {
+	return nil, errFFmpegDisabled
+}
+
+// NewVideoDecoderNative10bit is a stub that returns an error when FFmpeg is not available.
+func NewVideoDecoderNative10bit() (transition.VideoDecoder, error) {
+	return nil, errFFmpegDisabled
+}
+
+// NewVideoDecoderNative10bitSingleThread is a stub that returns an error when FFmpeg is not available.
+func NewVideoDecoderNative10bitSingleThread() (transition.VideoDecoder, error) {
+	return nil, errFFmpegDisabled
+}
+
+// NewVideoDecoderForCodecNative10bit is a stub that returns an error when FFmpeg is not available.
+func NewVideoDecoderForCodecNative10bit(codec string) (transition.VideoDecoder, error) {
+	return nil, errFFmpegDisabled
+}
+
+// NewVideoDecoderForCodecNative10bitSingleThread is a stub that returns an error when FFmpeg is not available.
+func NewVideoDecoderForCodecNative10bitSingleThread(codec string) (transition.VideoDecoder, error) {
+	return nil, errFFmpegDisabled
+}
+
+// NewVideoDecoderForCodec is a stub that returns an error when FFmpeg is not available.
+func NewVideoDecoderForCodec(codec string) (transition.VideoDecoder, error) {
+	return nil, errFFmpegDisabled
+}
+
+// NewVideoDecoderForCodecSingleThread is a stub that returns an error when FFmpeg is not available.
+func NewVideoDecoderForCodecSingleThread(codec string) (transition.VideoDecoder, error) {
+	return nil, errFFmpegDisabled
+}
+
+// NewHEVCVideoEncoder is a stub that returns an error when FFmpeg is not available.
+func NewHEVCVideoEncoder(width, height, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 	return nil, errFFmpegDisabled
 }
 

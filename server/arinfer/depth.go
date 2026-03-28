@@ -22,6 +22,14 @@ extern cudaError_t nv12_to_rgb_chw(
     int outW, int outH,
     cudaStream_t stream);
 
+// p210_to_rgb_chw is the fused P210 (10-bit 4:2:2) -> RGB float32 CHW preprocessing kernel.
+extern cudaError_t p210_to_rgb_chw(
+    float* rgbOut,
+    const uint16_t* p210,
+    int srcW, int srcH, int srcPitch16,
+    int outW, int outH,
+    cudaStream_t stream);
+
 static cudaError_t depth_cuda_malloc(void** ptr, size_t size) {
     return cudaMalloc(ptr, size);
 }
@@ -113,29 +121,48 @@ func newDepthAnythingV2(planPath string, inputW, inputH int) (*depthAnythingV2, 
 	}, nil
 }
 
-// Infer runs depth estimation on a single NV12 GPU frame.
+// Infer runs depth estimation on a single GPU frame.
 //
-// inputPtr is the device pointer to the NV12 frame (from gpu.GPUFrame.DevPtr).
+// inputPtr is the device pointer to the frame (NV12 or P210, selected by format).
 // w, h, pitch describe the source frame dimensions and row pitch.
 // outputPtr receives the float16 depth map at the model's native resolution
 // (inputW x inputH). The caller is responsible for any upscaling needed.
-func (d *depthAnythingV2) Infer(inputPtr uintptr, w, h, pitch int, outputPtr uintptr) error {
+func (d *depthAnythingV2) Infer(inputPtr uintptr, w, h, pitch int, outputPtr uintptr, format FrameFormat) error {
 	if d == nil || d.engine == nil {
 		return ErrDisabled
 	}
 
-	// Step 1: Preprocess NV12 -> RGB float32 CHW, resize to model input dims.
-	// Uses the fused GPU kernel that does colorspace conversion + bilinear resize
-	// in a single pass.
-	rc := C.nv12_to_rgb_chw(
-		(*C.float)(d.inputBuf),
-		(*C.uint8_t)(unsafe.Pointer(inputPtr)),
-		C.int(w), C.int(h), C.int(pitch),
-		C.int(d.inputW), C.int(d.inputH),
-		nil, // default stream
-	)
-	if rc != C.cudaSuccess {
-		return fmt.Errorf("depth preprocess NV12->RGB: CUDA error %d", rc)
+	// Step 1: Preprocess frame -> RGB float32 CHW, resize to model input dims.
+	// Dispatch between NV12 and P210 preprocessing kernels.
+	var rc C.cudaError_t
+	switch format {
+	case FormatP210:
+		// P210: uint16 semi-planar 4:2:2, pitch in uint16 units = pitch_bytes / 2.
+		// CUDA guarantees even pitch alignment from cudaMallocPitch.
+		if pitch%2 != 0 {
+			return fmt.Errorf("depth preprocess P210: odd pitch %d (must be even for uint16 division)", pitch)
+		}
+		rc = C.p210_to_rgb_chw(
+			(*C.float)(d.inputBuf),
+			(*C.uint16_t)(unsafe.Pointer(inputPtr)),
+			C.int(w), C.int(h), C.int(pitch/2),
+			C.int(d.inputW), C.int(d.inputH),
+			nil,
+		)
+		if rc != C.cudaSuccess {
+			return fmt.Errorf("depth preprocess P210->RGB: CUDA error %d", rc)
+		}
+	default: // FormatNV12
+		rc = C.nv12_to_rgb_chw(
+			(*C.float)(d.inputBuf),
+			(*C.uint8_t)(unsafe.Pointer(inputPtr)),
+			C.int(w), C.int(h), C.int(pitch),
+			C.int(d.inputW), C.int(d.inputH),
+			nil,
+		)
+		if rc != C.cudaSuccess {
+			return fmt.Errorf("depth preprocess NV12->RGB: CUDA error %d", rc)
+		}
 	}
 
 	// Step 2: Run TensorRT inference.

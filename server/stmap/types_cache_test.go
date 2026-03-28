@@ -24,7 +24,7 @@ func TestAnimatedSTMap_BuildProcessorsCached(t *testing.T) {
 	require.Nil(t, anim.Frames)
 
 	// Processors should work.
-	src := make([]byte, 64*48*3/2)
+	src := make([]byte, yuvFrameSize(64, 48))
 	dst := make([]byte, len(src))
 	p := anim.ProcessorAt(0)
 	require.True(t, p.Active())
@@ -49,7 +49,7 @@ func TestAnimatedSTMap_BuildProcessorsCached_LoadsExisting(t *testing.T) {
 	require.NoError(t, err)
 	anim1.BuildProcessorsCached(dir)
 
-	src := make([]byte, 64*48*3/2)
+	src := make([]byte, yuvFrameSize(64, 48))
 	for i := range src {
 		src[i] = byte(i % 256)
 	}

@@ -76,7 +76,7 @@ func TestMultipleFrameRoundTrip(t *testing.T) {
 	defer pool.Close()
 
 	w, h := 320, 240
-	totalSize := w * h * 3 / 2
+	totalSize := yuvFrameSize(w, h)
 
 	// Create two distinct patterns
 	yuv1 := make([]byte, totalSize)
@@ -137,7 +137,7 @@ func TestFillBlackAndDownload(t *testing.T) {
 	require.NoError(t, err)
 
 	w, h := 1920, 1080
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	err = Download(ctx, yuv, frame, w, h)
 	require.NoError(t, err)
 

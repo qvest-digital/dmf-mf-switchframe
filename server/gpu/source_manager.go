@@ -25,7 +25,7 @@ type GPUSourceManager struct {
 
 	mu               sync.RWMutex
 	sources          map[string]*gpuSourceEntry
-	segEngine        *SegmentationEngine      // nil when AI segmentation is not configured
+	segEngine        Segmenter                // nil when AI segmentation is not configured
 	sourceColorGrade SourceColorGradeProvider // nil when per-source color grading is not configured
 }
 
@@ -80,12 +80,12 @@ func NewGPUSourceManager(ctx *Context, pool *FramePool, stmaps SourceSTMapProvid
 	}
 }
 
-// SetSegmentationEngine wires a SegmentationEngine into the source manager.
-// When set (non-nil), IngestYUV will call engine.Segment() for every source
+// SetSegmenter wires a Segmenter into the source manager.
+// When set (non-nil), IngestYUV will call seg.Segment() for every source
 // that has segmentation enabled. Pass nil to disable.
-func (m *GPUSourceManager) SetSegmentationEngine(engine *SegmentationEngine) {
+func (m *GPUSourceManager) SetSegmenter(seg Segmenter) {
 	m.mu.Lock()
-	m.segEngine = engine
+	m.segEngine = seg
 	m.mu.Unlock()
 }
 
@@ -369,7 +369,7 @@ func (m *GPUSourceManager) uploadAndScale(entry *gpuSourceEntry, dst *GPUFrame, 
 // uploadCPUScaled is the fallback when GPU scaling isn't available.
 func (m *GPUSourceManager) uploadCPUScaled(entry *gpuSourceEntry, dst *GPUFrame, yuv []byte, w, h int) error {
 	targetW, targetH := dst.Width, dst.Height
-	scaledSize := targetW * targetH * 3 / 2
+	scaledSize := yuvFrameSize(targetW, targetH)
 	if len(entry.scaleBuf) < scaledSize {
 		entry.scaleBuf = make([]byte, scaledSize)
 	}
@@ -473,9 +473,17 @@ func (m *GPUSourceManager) applySourceColorGrade(sourceKey string, entry *gpuSou
 	}
 
 	// Apply the LUT at full intensity (per-source correction, no slider).
-	if err := ColorGradeLUT3D(m.ctx, frame, entry.colorLUTDev, entry.colorLUTSize, 1.0); err != nil {
+	// Dispatch to the correct kernel based on frame format.
+	var gradeErr error
+	switch frame.Format {
+	case GPUFormatP210:
+		gradeErr = ColorGradeLUT3DP210(m.ctx, frame, entry.colorLUTDev, entry.colorLUTSize, 1.0)
+	default:
+		gradeErr = ColorGradeLUT3D(m.ctx, frame, entry.colorLUTDev, entry.colorLUTSize, 1.0)
+	}
+	if gradeErr != nil {
 		slog.Warn("gpu: source manager: color grade kernel failed",
-			"source", sourceKey, "error", err)
+			"source", sourceKey, "error", gradeErr, "format", frame.Format)
 	}
 }
 

@@ -353,3 +353,187 @@ func TestDemuxTS_VideoOnly(t *testing.T) {
 	assert.NotEmpty(t, frames, "should have video frames")
 	assert.Empty(t, audioFrames, "should have no audio frames")
 }
+
+// --- HEVC Tests ---
+
+// makeWireData wraps a NALU body in wire format (4-byte length prefix).
+func makeWireData(naluData []byte) []byte {
+	out := make([]byte, 4+len(naluData))
+	out[0] = byte(len(naluData) >> 24)
+	out[1] = byte(len(naluData) >> 16)
+	out[2] = byte(len(naluData) >> 8)
+	out[3] = byte(len(naluData))
+	copy(out[4:], naluData)
+	return out
+}
+
+func TestDemuxTS_HEVCDetection(t *testing.T) {
+	// Generate HEVC TS data using the muxer.
+	// HEVC VPS: 2-byte header, type 32 (VPS) = byte 0: (32<<1) = 0x40
+	vps := []byte{0x40, 0x01, 0x0C, 0x01, 0xFF, 0xFF}       // VPS NALU (type 32)
+	sps := []byte{0x42, 0x01, 0x01, 0x01, 0x60, 0x00}        // SPS NALU (type 33)
+	pps := []byte{0x44, 0x01, 0xC0, 0xF3, 0x18}              // PPS NALU (type 34)
+	idrBody := make([]byte, 64)
+	idrBody[0] = 0x26 // IDR_W_RADL (type 19): (19<<1) = 0x26
+	idrBody[1] = 0x01 // TID=1
+
+	nonIDRBody := make([]byte, 32)
+	nonIDRBody[0] = 0x02 // TRAIL_R (type 1): (1<<1) = 0x02
+	nonIDRBody[1] = 0x01
+
+	muxer := output.NewTSMuxer()
+	var tsData []byte
+	muxer.SetOutput(func(data []byte) {
+		tsData = append(tsData, data...)
+	})
+
+	for i := 0; i < 5; i++ {
+		pts := int64(90000 + i*3000)
+		if i == 0 {
+			frame := &media.VideoFrame{
+				PTS:        pts,
+				DTS:        pts,
+				IsKeyframe: true,
+				VPS:        vps,
+				SPS:        sps,
+				PPS:        pps,
+				WireData:   makeWireData(idrBody),
+				Codec:      "h265",
+			}
+			require.NoError(t, muxer.WriteVideo(frame))
+		} else {
+			frame := &media.VideoFrame{
+				PTS:      pts,
+				DTS:      pts,
+				WireData: makeWireData(nonIDRBody),
+				Codec:    "h265",
+			}
+			require.NoError(t, muxer.WriteVideo(frame))
+		}
+	}
+
+	tmpFile := writeTemp(t, tsData, ".ts")
+	frames, _, err := DemuxFile(tmpFile)
+	require.NoError(t, err)
+	require.NotEmpty(t, frames, "expected video frames")
+
+	// First frame should be a keyframe with HEVC codec.
+	assert.True(t, frames[0].isKeyframe, "first frame should be keyframe")
+	assert.Equal(t, "h265", frames[0].Codec(), "codec should be h265")
+
+	// First keyframe should have VPS, SPS, PPS.
+	assert.NotEmpty(t, frames[0].vps, "HEVC keyframe should have VPS")
+	assert.NotEmpty(t, frames[0].sps, "HEVC keyframe should have SPS")
+	assert.NotEmpty(t, frames[0].pps, "HEVC keyframe should have PPS")
+
+	// VPS should start with HEVC VPS NALU type (type 32).
+	if len(frames[0].vps) >= 1 {
+		nalType := codec.HEVCNALUType(frames[0].vps[0])
+		assert.Equal(t, byte(codec.HEVCNALVPS), nalType, "VPS NALU type should be 32")
+	}
+}
+
+func TestDetectCodecFromFrames_H264(t *testing.T) {
+	idrBody := make([]byte, 16)
+	idrBody[0] = 0x65 // H.264 IDR (type 5)
+
+	frames := []BufferedFrame{
+		{
+			wireData:   makeWireData(idrBody),
+			isKeyframe: true,
+		},
+	}
+
+	assert.False(t, detectCodecFromFrames(frames), "H.264 IDR should not be detected as HEVC")
+}
+
+func TestDetectCodecFromFrames_HEVC(t *testing.T) {
+	idrBody := make([]byte, 16)
+	idrBody[0] = 0x26 // HEVC IDR_W_RADL (type 19): (19<<1) = 0x26
+	idrBody[1] = 0x01
+
+	frames := []BufferedFrame{
+		{
+			wireData:   makeWireData(idrBody),
+			isKeyframe: true,
+			codec:      "h265",
+		},
+	}
+
+	assert.True(t, detectCodecFromFrames(frames), "HEVC IDR should be detected as HEVC")
+}
+
+func TestDetectCodecFromFrames_VPSPresence(t *testing.T) {
+	frames := []BufferedFrame{
+		{
+			wireData:   makeWireData([]byte{0x02, 0x01}), // TRAIL_R
+			vps:        []byte{0x40, 0x01},                // VPS present
+			isKeyframe: true,
+		},
+	}
+
+	assert.True(t, detectCodecFromFrames(frames), "frame with VPS should be detected as HEVC")
+}
+
+func TestBufferedFrame_CodecAccessors(t *testing.T) {
+	// Default empty codec should return "h264".
+	f := BufferedFrame{}
+	assert.Equal(t, "h264", f.Codec())
+	assert.False(t, f.IsHEVC())
+
+	// Explicit h265 codec.
+	f2 := BufferedFrame{codec: "h265"}
+	assert.Equal(t, "h265", f2.Codec())
+	assert.True(t, f2.IsHEVC())
+
+	// VPS accessor.
+	vps := []byte{0x40, 0x01}
+	f3 := BufferedFrame{vps: vps}
+	assert.Equal(t, vps, f3.VPS())
+}
+
+func TestValidateTS_HEVCCodecString(t *testing.T) {
+	// Generate HEVC TS and validate it reports h265 codec.
+	vps := []byte{0x40, 0x01, 0x0C, 0x01, 0xFF, 0xFF}
+	sps := []byte{0x42, 0x01, 0x01, 0x01, 0x60, 0x00}
+	pps := []byte{0x44, 0x01, 0xC0, 0xF3, 0x18}
+	idrBody := make([]byte, 64)
+	idrBody[0] = 0x26 // IDR_W_RADL
+	idrBody[1] = 0x01
+
+	muxer := output.NewTSMuxer()
+	var tsData []byte
+	muxer.SetOutput(func(data []byte) {
+		tsData = append(tsData, data...)
+	})
+
+	for i := 0; i < 10; i++ {
+		pts := int64(90000 + i*3000)
+		if i == 0 {
+			frame := &media.VideoFrame{
+				PTS: pts, DTS: pts, IsKeyframe: true,
+				VPS: vps, SPS: sps, PPS: pps,
+				WireData: makeWireData(idrBody),
+				Codec:    "h265",
+			}
+			require.NoError(t, muxer.WriteVideo(frame))
+		} else {
+			nonIDR := make([]byte, 32)
+			nonIDR[0] = 0x02 // TRAIL_R
+			nonIDR[1] = 0x01
+			frame := &media.VideoFrame{
+				PTS: pts, DTS: pts,
+				WireData: makeWireData(nonIDR),
+				Codec:    "h265",
+			}
+			require.NoError(t, muxer.WriteVideo(frame))
+		}
+	}
+
+	path := writeTemp(t, tsData, ".ts")
+	result, err := Validate(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, "h265", result.Codec, "validate should report HEVC codec")
+	assert.Greater(t, result.FrameCount, 0, "should have frames")
+}

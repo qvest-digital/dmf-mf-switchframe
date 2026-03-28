@@ -3,23 +3,19 @@
 package asr
 
 import (
-	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
-	"net"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/zsiec/switchframe/server/asr/asripc"
 	"github.com/zsiec/switchframe/server/asr/shmring"
+	"github.com/zsiec/switchframe/server/sidecar"
 )
 
 // SidecarConfig configures the ASR sidecar subprocess.
@@ -35,26 +31,20 @@ type SidecarConfig struct {
 // SidecarBackend implements the Backend interface by spawning an ASR sidecar
 // process, feeding it audio via shared memory, and reading transcripts over
 // a Unix socket using the asripc protocol.
+//
+// Lifecycle management (spawn, restart, shutdown) is delegated to sidecar.Host.
+// The ASR backend uses DisableReadLoop because asripc.Message has a different
+// schema than sidecar.Message — transcript/status fields are top-level, not
+// nested in Data.
 type SidecarBackend struct {
-	cfg SidecarConfig
+	cfg  SidecarConfig
+	host *sidecar.Host
 
-	mu       sync.Mutex
-	cmd      *exec.Cmd
-	shm      *shmring.Writer
-	conn     net.Conn
-	listener net.Listener
-	waitDone chan struct{} // closed when cmd.Wait() returns (one per spawn generation)
-
-	socketPath string
-	socketDir  string
+	mu      sync.Mutex // guards shm
+	writeMu sync.Mutex // serializes writes to the control socket
+	shm     *shmring.Writer
 
 	onTranscript func([]TranscriptWord, bool)
-
-	spawnGen  atomic.Int64
-	alive     atomic.Bool
-	restartCh chan string
-	doneCh    chan struct{}
-	closeOnce sync.Once
 
 	// Cached status from sidecar.
 	cachedModel             atomic.Pointer[string]
@@ -83,14 +73,10 @@ func NewSidecarBackend(cfg SidecarConfig) (*SidecarBackend, error) {
 	}
 
 	return &SidecarBackend{
-		cfg:       cfg,
-		restartCh: make(chan string, 1),
-		doneCh:    make(chan struct{}),
+		cfg: cfg,
 	}, nil
 }
 
-// Name returns the active backend name from the sidecar.
-// Falls back to "parakeet" if no status has been received yet.
 // Name returns "sidecar" — the engine-level backend identifier.
 // Use ActiveBackendName() for the sidecar's internal active backend name.
 func (s *SidecarBackend) Name() string {
@@ -115,23 +101,72 @@ func (s *SidecarBackend) OnStatusUpdate(fn func()) {
 
 // Start begins the sidecar process and IPC communication.
 func (s *SidecarBackend) Start(onTranscript func([]TranscriptWord, bool)) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	s.onTranscript = onTranscript
 
-	if err := s.spawnLocked(); err != nil {
+	// Create the sidecar host with ASR-specific configuration.
+	// DisableReadLoop is set because asripc.Message has a different schema
+	// than sidecar.Message — we run our own readLoop using asripc.ReadMessage.
+	host := sidecar.NewHost(sidecar.Config{
+		Binary:          s.cfg.BinPath,
+		ReadyTimeout:    120 * time.Second, // 120s for model loading
+		DisableReadLoop: true,
+		BuildArgs: func(socketDir string) []string {
+			socketPath := filepath.Join(socketDir, "control.sock")
+			args := []string{
+				"--shm-name", s.cfg.ShmName,
+				"--socket", socketPath,
+				"--device", strconv.Itoa(s.cfg.Device),
+			}
+			if s.cfg.ModelDir != "" {
+				args = append(args, "--model-dir", s.cfg.ModelDir)
+			}
+			if s.cfg.WhisperModelsDir != "" {
+				args = append(args, "--whisper-models-dir", s.cfg.WhisperModelsDir)
+			}
+			if s.cfg.DefaultBackend != "" {
+				args = append(args, "--default-backend", s.cfg.DefaultBackend)
+			}
+			return args
+		},
+		OnRestart: func(gen int64) {
+			// Start a new readLoop for the new connection. The shm writer
+			// persists across restarts — the new sidecar process re-opens
+			// the same named shared memory region. Destroying and recreating
+			// it here would race with the sidecar (which opens it during init,
+			// before printing READY).
+			go s.readLoop(gen)
+		},
+	})
+	s.host = host
+
+	// Create shared memory writer before spawn.
+	shm, err := shmring.NewWriter(s.cfg.ShmName, shmring.DefaultCapacity)
+	if err != nil {
+		return fmt.Errorf("asr: create shm: %w", err)
+	}
+	s.mu.Lock()
+	s.shm = shm
+	s.mu.Unlock()
+
+	if err := host.Start(context.Background()); err != nil {
+		s.mu.Lock()
+		if s.shm != nil {
+			s.shm.Close()
+			s.shm = nil
+		}
+		s.mu.Unlock()
 		return fmt.Errorf("asr: start sidecar: %w", err)
 	}
 
-	go s.restartLoop()
+	// Start our own readLoop since DisableReadLoop is set.
+	go s.readLoop(host.Generation())
 
 	return nil
 }
 
 // IngestAudio feeds raw PCM to the sidecar via shared memory. Lock-free hot path.
 func (s *SidecarBackend) IngestAudio(pcm []float32, pts int64, sampleRate, channels int) {
-	if !s.alive.Load() {
+	if !s.host.Alive() {
 		return
 	}
 	s.mu.Lock()
@@ -154,34 +189,16 @@ func (s *SidecarBackend) Stop() {
 
 // Close shuts down the sidecar and releases all resources.
 func (s *SidecarBackend) Close() {
-	s.closeOnce.Do(func() {
-		close(s.doneCh)
-		s.alive.Store(false)
+	if s.host != nil {
+		s.host.Close()
+	}
 
-		s.mu.Lock()
-		defer s.mu.Unlock()
-
-		// Send shutdown command.
-		if s.conn != nil {
-			_ = asripc.WriteMessage(s.conn, &asripc.Message{Cmd: "shutdown"})
-		}
-
-		// Wait for the process to exit (watchProcess owns cmd.Wait).
-		if s.waitDone != nil {
-			select {
-			case <-s.waitDone:
-				// watchProcess already reaped it.
-			case <-time.After(2 * time.Second):
-				// Force kill if it didn't exit in time.
-				if s.cmd != nil && s.cmd.Process != nil {
-					s.cmd.Process.Kill()
-				}
-				<-s.waitDone
-			}
-		}
-
-		s.cleanupLocked()
-	})
+	s.mu.Lock()
+	if s.shm != nil {
+		s.shm.Close()
+		s.shm = nil
+	}
+	s.mu.Unlock()
 }
 
 // Models lists available models for the active backend in the sidecar.
@@ -221,190 +238,25 @@ func (s *SidecarBackend) SetConfig(raw json.RawMessage) error {
 	return nil
 }
 
-// spawnLocked starts the sidecar process. Must be called with s.mu held.
-func (s *SidecarBackend) spawnLocked() error {
-	gen := s.spawnGen.Add(1)
-
-	// Create temp dir for socket.
-	socketDir, err := os.MkdirTemp("", "switchframe-asr-*")
-	if err != nil {
-		return fmt.Errorf("create socket dir: %w", err)
-	}
-	s.socketDir = socketDir
-	s.socketPath = filepath.Join(socketDir, "asr.sock")
-
-	// Create shared memory writer.
-	shm, err := shmring.NewWriter(s.cfg.ShmName, shmring.DefaultCapacity)
-	if err != nil {
-		os.RemoveAll(socketDir)
-		return fmt.Errorf("create shm: %w", err)
-	}
-	s.shm = shm
-
-	// Listen on Unix socket.
-	listener, err := net.Listen("unix", s.socketPath)
-	if err != nil {
-		shm.Close()
-		os.RemoveAll(socketDir)
-		return fmt.Errorf("listen socket: %w", err)
-	}
-	s.listener = listener
-
-	// Build sidecar args. Only pass optional flags when non-empty.
-	args := []string{
-		"--shm-name", s.cfg.ShmName,
-		"--socket", s.socketPath,
-		"--device", strconv.Itoa(s.cfg.Device),
-	}
-	if s.cfg.ModelDir != "" {
-		args = append(args, "--model-dir", s.cfg.ModelDir)
-	}
-	if s.cfg.WhisperModelsDir != "" {
-		args = append(args, "--whisper-models-dir", s.cfg.WhisperModelsDir)
-	}
-	if s.cfg.DefaultBackend != "" {
-		args = append(args, "--default-backend", s.cfg.DefaultBackend)
-	}
-
-	// Spawn sidecar process.
-	cmd := exec.Command(s.cfg.BinPath, args...)
-
-	// Capture stderr with a prefixed logger.
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		listener.Close()
-		shm.Close()
-		os.RemoveAll(socketDir)
-		return fmt.Errorf("stderr pipe: %w", err)
-	}
-
-	// Capture stdout to watch for READY line.
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		listener.Close()
-		shm.Close()
-		os.RemoveAll(socketDir)
-		return fmt.Errorf("stdout pipe: %w", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		listener.Close()
-		shm.Close()
-		os.RemoveAll(socketDir)
-		return fmt.Errorf("start sidecar: %w", err)
-	}
-	s.cmd = cmd
-
-	// Log stderr in background.
-	go sidecarLogger(stderr)
-
-	// Wait for READY on stdout with timeout.
-	readyCh := make(chan error, 1)
-	go func() {
-		scanner := bufio.NewScanner(stdout)
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if line == "READY" {
-				readyCh <- nil
-				return
-			}
-			slog.Info("asr-sidecar stdout", "line", line)
-		}
-		if err := scanner.Err(); err != nil {
-			readyCh <- fmt.Errorf("reading stdout: %w", err)
-		} else {
-			readyCh <- fmt.Errorf("sidecar exited before READY")
-		}
-	}()
-
-	select {
-	case err := <-readyCh:
-		if err != nil {
-			cmd.Process.Kill()
-			cmd.Wait()
-			listener.Close()
-			shm.Close()
-			os.RemoveAll(socketDir)
-			return fmt.Errorf("wait for READY: %w", err)
-		}
-	case <-time.After(120 * time.Second):
-		cmd.Process.Kill()
-		cmd.Wait()
-		listener.Close()
-		shm.Close()
-		os.RemoveAll(socketDir)
-		return fmt.Errorf("sidecar READY timeout after 120s")
-	}
-
-	// Accept connection from sidecar.
-	acceptCh := make(chan net.Conn, 1)
-	acceptErrCh := make(chan error, 1)
-	go func() {
-		conn, err := listener.Accept()
-		if err != nil {
-			acceptErrCh <- err
-			return
-		}
-		acceptCh <- conn
-	}()
-
-	select {
-	case conn := <-acceptCh:
-		s.conn = conn
-	case err := <-acceptErrCh:
-		cmd.Process.Kill()
-		cmd.Wait()
-		listener.Close()
-		shm.Close()
-		os.RemoveAll(socketDir)
-		return fmt.Errorf("accept socket: %w", err)
-	case <-time.After(120 * time.Second):
-		cmd.Process.Kill()
-		cmd.Wait()
-		listener.Close()
-		shm.Close()
-		os.RemoveAll(socketDir)
-		return fmt.Errorf("sidecar socket connect timeout after 10s")
-	}
-
-	// Create a channel that watchProcess will close when cmd.Wait() returns.
-	waitDone := make(chan struct{})
-	s.waitDone = waitDone
-	s.alive.Store(true)
-
-	go s.readLoop(gen)
-	go s.watchProcess(cmd, gen, waitDone)
-
-	return nil
-}
-
-// readLoop reads messages from the sidecar's Unix socket.
+// readLoop reads messages from the sidecar's Unix socket using asripc protocol.
+// Triggers restart via host.TriggerRestart on read errors.
 func (s *SidecarBackend) readLoop(gen int64) {
 	for {
-		select {
-		case <-s.doneCh:
+		if !s.host.Alive() {
 			return
-		default:
 		}
 
-		s.mu.Lock()
-		conn := s.conn
-		s.mu.Unlock()
-
+		conn := s.host.Conn()
 		if conn == nil {
 			return
 		}
 
 		msg, err := asripc.ReadMessage(conn)
 		if err != nil {
-			select {
-			case <-s.doneCh:
-				return
-			default:
-			}
-			if s.spawnGen.Load() == gen {
+			// Check if this is still the current generation before restarting.
+			if s.host.Generation() == gen {
 				slog.Warn("asr-sidecar: read error, triggering restart", "err", err)
-				s.triggerRestart(fmt.Sprintf("read error: %v", err))
+				s.host.TriggerRestart(fmt.Sprintf("read error: %v", err))
 			}
 			return
 		}
@@ -468,87 +320,15 @@ func (s *SidecarBackend) readLoop(gen int64) {
 	}
 }
 
-// watchProcess waits for the sidecar process to exit and triggers restart if needed.
-// It is the sole owner of cmd.Wait() — no other goroutine may call it.
-func (s *SidecarBackend) watchProcess(cmd *exec.Cmd, gen int64, waitDone chan struct{}) {
-	err := cmd.Wait()
-	close(waitDone)
-
-	select {
-	case <-s.doneCh:
-		return
-	default:
-	}
-
-	if s.spawnGen.Load() == gen {
-		reason := "process exited"
-		if err != nil {
-			reason = fmt.Sprintf("process exited: %v", err)
-		}
-		slog.Warn("asr-sidecar: process exited unexpectedly", "err", err)
-		s.triggerRestart(reason)
-	}
-}
-
-// restartLoop handles automatic restarts with exponential backoff.
-func (s *SidecarBackend) restartLoop() {
-	backoff := 1 * time.Second
-	const maxBackoff = 30 * time.Second
-
-	for {
-		select {
-		case <-s.doneCh:
-			return
-		case reason := <-s.restartCh:
-			slog.Info("asr-sidecar: restarting", "reason", reason, "backoff", backoff)
-
-			s.alive.Store(false)
-
-			// Clean up old resources.
-			s.mu.Lock()
-			s.killAndCleanupLocked()
-			s.mu.Unlock()
-
-			// Wait with backoff.
-			select {
-			case <-s.doneCh:
-				return
-			case <-time.After(backoff):
-			}
-
-			// Attempt respawn.
-			s.mu.Lock()
-			err := s.spawnLocked()
-			s.mu.Unlock()
-
-			if err != nil {
-				slog.Error("asr-sidecar: respawn failed", "err", err)
-				backoff = min(backoff*2, maxBackoff)
-				// Re-trigger restart to try again.
-				s.triggerRestart(fmt.Sprintf("respawn failed: %v", err))
-			} else {
-				slog.Info("asr-sidecar: respawned successfully")
-				backoff = 1 * time.Second
-			}
-		}
-	}
-}
-
-// triggerRestart sends a non-blocking restart signal.
-func (s *SidecarBackend) triggerRestart(reason string) {
-	select {
-	case s.restartCh <- reason:
-	default:
-		// Already a restart pending.
-	}
-}
-
-// sendCommand sends a command to the sidecar over the Unix socket.
+// sendCommand sends a command to the sidecar over the Unix socket using asripc protocol.
+// Writes are serialized by writeMu to prevent interleaved header+body from concurrent callers.
 func (s *SidecarBackend) sendCommand(cmd string, config ...json.RawMessage) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	if !s.host.Alive() {
+		return
+	}
 
-	if !s.alive.Load() || s.conn == nil {
+	conn := s.host.Conn()
+	if conn == nil {
 		return
 	}
 
@@ -557,53 +337,11 @@ func (s *SidecarBackend) sendCommand(cmd string, config ...json.RawMessage) {
 		msg.Config = config[0]
 	}
 
-	if err := asripc.WriteMessage(s.conn, msg); err != nil {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	if err := asripc.WriteMessage(conn, msg); err != nil {
 		slog.Warn("asr-sidecar: send command failed", "cmd", cmd, "err", err)
-	}
-}
-
-// killAndCleanupLocked kills the current process and cleans up resources.
-// Must be called with s.mu held.
-func (s *SidecarBackend) killAndCleanupLocked() {
-	if s.cmd != nil && s.cmd.Process != nil {
-		s.cmd.Process.Kill()
-		// Wait for watchProcess to reap the process.
-		if s.waitDone != nil {
-			<-s.waitDone
-		}
-	}
-	s.cleanupLocked()
-}
-
-// cleanupLocked releases socket, listener, shm, and temp dir.
-// Must be called with s.mu held.
-func (s *SidecarBackend) cleanupLocked() {
-	if s.conn != nil {
-		s.conn.Close()
-		s.conn = nil
-	}
-	if s.listener != nil {
-		s.listener.Close()
-		s.listener = nil
-	}
-	if s.shm != nil {
-		s.shm.Close()
-		s.shm = nil
-	}
-	if s.socketDir != "" {
-		os.RemoveAll(s.socketDir)
-		s.socketDir = ""
-		s.socketPath = ""
-	}
-	s.cmd = nil
-	s.waitDone = nil
-}
-
-// sidecarLogger reads from the sidecar's stderr and logs each line.
-func sidecarLogger(r io.Reader) {
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		slog.Info("asr-sidecar", "msg", scanner.Text())
 	}
 }
 

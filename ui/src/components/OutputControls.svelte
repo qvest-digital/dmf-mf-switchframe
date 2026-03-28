@@ -6,6 +6,7 @@
 	import ConnectionStatus from './ConnectionStatus.svelte';
 	import SRTHealthDot from './SRTHealthDot.svelte';
 	import { computeOutputHealth } from '$lib/util/srt-health';
+	import { formatBadgeText } from '$lib/util/format-badge';
 
 	type ConnectionIndicatorState = 'webtransport' | 'polling' | 'disconnected';
 
@@ -45,6 +46,7 @@
 	const ioWarning = $derived(hasUnhealthySRTInput || hasOutputError);
 
 	const outputHealth = $derived(computeOutputHealth(crState.destinations));
+	const badgeText = $derived(formatBadgeText(crState.pipelineFormat));
 
 	$effect(() => {
 		if (showConfidence) {
@@ -60,6 +62,9 @@
 <div class="output-controls">
 	<Clock />
 	<ConnectionStatus state={connectionState} />
+	{#if badgeText}
+		<span class="format-badge">{badgeText}</span>
+	{/if}
 	{#if showConfidence}
 		<img
 			class="confidence-thumb"
@@ -163,6 +168,19 @@
 		position: static;
 		width: 6px;
 		height: 6px;
+	}
+
+	.format-badge {
+		padding: 2px 8px;
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		background: var(--bg-elevated);
+		color: var(--text-muted, var(--text-secondary));
+		font-family: var(--font-mono, var(--font-ui));
+		font-size: var(--text-xs);
+		letter-spacing: 0.03em;
+		white-space: nowrap;
+		opacity: 0.8;
 	}
 
 	.confidence-thumb {

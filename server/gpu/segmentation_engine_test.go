@@ -24,8 +24,8 @@ func segModelPath(t *testing.T) string {
 	return path
 }
 
-// makeTestFrame creates a gray YUV420p frame and uploads it to the GPU pool.
-func makeTestFrame(t *testing.T, ctx *Context, pool *FramePool, w, h int) *GPUFrame {
+// makeGrayTestFrame creates a gray YUV420p frame and uploads it to the GPU pool.
+func makeGrayTestFrame(t *testing.T, ctx *Context, pool *FramePool, w, h int) *GPUFrame {
 	t.Helper()
 
 	frame, err := pool.Acquire()
@@ -106,7 +106,7 @@ func TestSegmentationEngineSession(t *testing.T) {
 	assert.True(t, se.IsEnabled("cam1"))
 
 	// Upload a test frame and run segmentation.
-	frame := makeTestFrame(t, ctx, pool, 1920, 1080)
+	frame := makeGrayTestFrame(t, ctx, pool, 1920, 1080)
 	defer frame.Release()
 
 	se.Segment("cam1", frame)
@@ -140,7 +140,7 @@ func TestSegmentationEngineMaskForSource(t *testing.T) {
 	assert.Nil(t, se.MaskForSource("cam1"))
 
 	// Segment a frame.
-	frame := makeTestFrame(t, ctx, pool, 1920, 1080)
+	frame := makeGrayTestFrame(t, ctx, pool, 1920, 1080)
 	defer frame.Release()
 
 	se.Segment("cam1", frame)

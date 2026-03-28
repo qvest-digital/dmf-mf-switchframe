@@ -859,8 +859,9 @@ Caddy terminates TLS for REST API traffic. WebTransport/QUIC traffic goes direct
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--format` | `1080p29.97` | Broadcast format preset (see table below) |
-| `--frame-sync` | `false` | Freerun frame synchronizer |
+| `--format` | `1080p29.97` | Video standard preset (see [Format Presets](#format-presets) below) |
+| `--color-format` | `standard` | Pipeline color format profile (see [Color Format Profiles](#color-format-profiles) below) |
+| `--frame-sync` | `false` | Enable freerun frame synchronizer (aligns sources to common tick) |
 | `--frc-quality` | `none` | Frame rate conversion: `none` · `nearest` · `blend` · `mcfi` |
 | `--replay-buffer-secs` | `60` | Per-source replay buffer (0 = disabled, max 300) |
 | `--captions` | `false` | Enable CEA-608/708 closed captioning |
@@ -952,6 +953,23 @@ Caddy terminates TLS for REST API traffic. WebTransport/QUIC traffic goes direct
 | `2160p25` | `1080p25` | `720p25` |
 | — | `1080p24` · `1080p23.976` | — |
 
+Frame rates use rational numbers for broadcast correctness (e.g., 30000/1001 for 29.97fps NTSC). The format can also be changed at runtime via `PUT /api/format`.
+
+### Color Format Profiles
+
+The `--color-format` flag selects the pipeline's internal pixel format and output codec. Set at startup; cannot be changed at runtime.
+
+| Profile | Pixel Format | Codec | Use Case |
+|---------|-------------|-------|----------|
+| `standard` | YUV420 8-bit | H.264 (AVC) | Default. Maximum compatibility with browsers, CDNs, and decoders. |
+| `standard-hevc` | YUV420 8-bit | H.265 (HEVC) | Same quality at ~40% lower bitrate. Requires HEVC-capable encoder. |
+| `professional` | YUV422 10-bit | H.265 (HEVC) | Broadcast-grade color fidelity. 4:2:2 chroma, 10-bit depth, HEVC encoding. |
+
+`professional` requires an HEVC-capable encoder: `hevc_nvenc` (NVIDIA), `hevc_videotoolbox` (macOS), or `libx265` (software). The encoder is auto-detected at startup via `ProbeEncoders()`.
+
+Browser preview and multiview always use H.264 8-bit regardless of the pipeline color format -- browsers do not support HEVC in WebCodecs.
+
+MXL V210 ingest is lossless in `professional` mode: both V210 and YUV422P10 are 10-bit 4:2:2, so no chroma subsampling or bit depth conversion occurs.
 ---
 
 ## 12. Networking & Ports

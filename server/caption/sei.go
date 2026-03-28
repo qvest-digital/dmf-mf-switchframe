@@ -5,7 +5,7 @@ import (
 	"unsafe"
 )
 
-// ATSC A/53 constants for CEA-608/708 in H.264 SEI NALUs.
+// ATSC A/53 constants for CEA-608/708 in SEI NALUs.
 const (
 	// ITU-T T.35 country code for United States.
 	seiCountryCode = 0xB5
@@ -22,8 +22,14 @@ const (
 	// User data type code for cc_data (CEA-708).
 	seiCCDataType = 0x03
 
-	// NALU type for SEI.
+	// H.264 NALU type for SEI.
 	naluTypeSEI = 6
+
+	// HEVC PREFIX_SEI NALU header (2 bytes).
+	// First byte: (39 << 1) | 0 = 0x4E (nal_unit_type=39, forbidden_zero=0)
+	// Second byte: 0x01 (nuh_layer_id=0, nuh_temporal_id_plus1=1)
+	hevcSEIByte0 = 0x4E
+	hevcSEIByte1 = 0x01
 
 	// SEI payload type for user_data_registered_itu_t_t35.
 	seiPayloadTypeT35 = 4
@@ -35,12 +41,18 @@ const (
 	annexBSC3 = 0x01
 )
 
-// BuildSEINALU constructs an H.264 SEI NALU containing CEA-608/708 caption data
+// BuildSEINALU constructs a SEI NALU containing CEA-608/708 caption data
 // in ATSC A/53 format (user_data_registered_itu_t_t35).
+//
+// The codec parameter selects the NALU framing:
+//   - "h264" or "": H.264 SEI (1-byte header 0x06)
+//   - "h265": HEVC PREFIX_SEI (2-byte header 0x4E 0x01)
+//
+// The SEI payload (ATSC A/53 registered user data) is identical for both codecs.
 //
 // The NALU structure is:
 //
-//	[start_code 00 00 00 01] [nalu_header 06] [sei_payload] [rbsp_trailing 80]
+//	[start_code 00 00 00 01] [nalu_header] [sei_payload] [rbsp_trailing 80]
 //
 // The SEI payload contains:
 //
@@ -49,10 +61,13 @@ const (
 //	[cc_data: process|count] [cc_valid|type|data0|data1]... [marker FF]
 //
 // Emulation prevention bytes (0x03) are inserted where needed.
-func BuildSEINALU(pairs []CCPair) []byte {
+func BuildSEINALU(pairs []CCPair, codec ...string) []byte {
 	if len(pairs) == 0 {
 		return nil
 	}
+
+	// Determine codec from variadic parameter.
+	isHEVC := len(codec) > 0 && codec[0] == "h265"
 
 	// cc_count is a 5-bit field (max 31). Each input pair produces 2 triples
 	// (field 1 + field 2 null), so max input is 15 pairs → 30 triples.
@@ -68,15 +83,27 @@ func BuildSEINALU(pairs []CCPair) []byte {
 	//           process_em_data|cc_count(1) + em_data(1) + cc_data(3*N) + marker(1)
 	payloadSize := 1 + 2 + 4 + 1 + 1 + 1 + 3*ccCount + 1
 
-	// Allocate generous buffer: start_code(4) + nalu_header(1) + payload_type(1) +
+	// NALU header size: 1 byte for H.264, 2 bytes for HEVC.
+	naluHeaderSize := 1
+	if isHEVC {
+		naluHeaderSize = 2
+	}
+
+	// Allocate generous buffer: start_code(4) + nalu_header + payload_type(1) +
 	// payload_size(variable) + payload + trailing(1) + room for EPB
-	buf := make([]byte, 0, 4+1+1+2+payloadSize+1+payloadSize/2)
+	buf := make([]byte, 0, 4+naluHeaderSize+1+2+payloadSize+1+payloadSize/2)
 
 	// Annex B start code.
 	buf = append(buf, annexBSC0, annexBSC1, annexBSC2, annexBSC3)
 
-	// NALU header: forbidden_zero_bit(0) | nal_ref_idc(00) | nal_unit_type(6=SEI)
-	buf = append(buf, naluTypeSEI)
+	// NALU header (codec-specific).
+	if isHEVC {
+		// HEVC PREFIX_SEI: 2-byte header (nal_unit_type=39, layer_id=0, tid=1).
+		buf = append(buf, hevcSEIByte0, hevcSEIByte1)
+	} else {
+		// H.264: forbidden_zero_bit(0) | nal_ref_idc(00) | nal_unit_type(6=SEI)
+		buf = append(buf, naluTypeSEI)
+	}
 
 	// SEI message: payload_type = 4 (user_data_registered_itu_t_t35)
 	buf = append(buf, seiPayloadTypeT35)
@@ -202,7 +229,11 @@ func insertEPB(buf []byte, startOffset int) []byte {
 }
 
 // InsertSEIBeforeVCLInto inserts an SEI NALU before the first VCL (Video Coding Layer)
-// NALU in an Annex B bitstream. VCL NALUs have type 1 (non-IDR slice) or 5 (IDR slice).
+// NALU in an Annex B bitstream.
+//
+// The codec parameter selects VCL NALU detection:
+//   - "h264" or "": H.264 VCL types 1-5 (type = byte & 0x1F)
+//   - "h265": HEVC VCL types 0-31 (type = (byte >> 1) & 0x3F)
 //
 // If dst has insufficient capacity, a new buffer is allocated.
 // Returns the result slice. Pass dst[:0] to reuse a buffer.
@@ -210,7 +241,7 @@ func insertEPB(buf []byte, startOffset int) []byte {
 // SAFETY: dst must not share a backing array with annexB. If it might,
 // pass nil for dst (the function detects aliasing and allocates a fresh
 // buffer to prevent corruption).
-func InsertSEIBeforeVCLInto(sei, annexB []byte, dst []byte) []byte {
+func InsertSEIBeforeVCLInto(sei, annexB []byte, dst []byte, codec ...string) []byte {
 	if len(sei) == 0 {
 		// No SEI to insert — copy annexB as-is.
 		needed := len(annexB)
@@ -226,8 +257,14 @@ func InsertSEIBeforeVCLInto(sei, annexB []byte, dst []byte) []byte {
 		return dst
 	}
 
-	// Find the first VCL NALU start code position.
-	vclPos := findFirstVCL(annexB)
+	// Find the first VCL NALU start code position (codec-aware).
+	isHEVC := len(codec) > 0 && codec[0] == "h265"
+	var vclPos int
+	if isHEVC {
+		vclPos = findFirstVCLHEVC(annexB)
+	} else {
+		vclPos = findFirstVCL(annexB)
+	}
 
 	if vclPos < 0 {
 		// No VCL found — prepend SEI before everything.
@@ -288,6 +325,43 @@ func findFirstVCL(data []byte) int {
 			naluType := data[i+scLen] & 0x1F
 			// VCL NALU types: 1 (non-IDR), 5 (IDR)
 			if naluType == 1 || naluType == 5 {
+				return scPos
+			}
+			i += scLen + 1
+		} else {
+			i++
+		}
+	}
+	return -1
+}
+
+// findFirstVCLHEVC returns the byte offset of the first HEVC VCL NALU's start code
+// in an Annex B bitstream. HEVC VCL NALU types are 0-31.
+// The NALU type is extracted from the first byte after the start code as (byte >> 1) & 0x3F.
+// HEVC NALUs have a 2-byte header, so we need at least start_code + 1 byte to read the type.
+// Returns -1 if no VCL found.
+func findFirstVCLHEVC(data []byte) int {
+	i := 0
+	for i+4 <= len(data) {
+		// Look for start code.
+		scLen := 0
+		scPos := i
+		if data[i] == 0x00 && data[i+1] == 0x00 {
+			if i+3 < len(data) && data[i+2] == 0x00 && data[i+3] == 0x01 {
+				scLen = 4
+			} else if data[i+2] == 0x01 {
+				scLen = 3
+			}
+		}
+
+		if scLen > 0 {
+			if i+scLen >= len(data) {
+				break
+			}
+			// HEVC NALU type: bits 1-6 of the first header byte.
+			naluType := (data[i+scLen] >> 1) & 0x3F
+			// HEVC VCL NALU types: 0-31.
+			if naluType <= 31 {
 				return scPos
 			}
 			i += scLen + 1

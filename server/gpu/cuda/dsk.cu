@@ -244,6 +244,66 @@ __global__ void alpha_blend_rgba_rect_nv12_occ_kernel(
     }
 }
 
+// ============================================================================
+// P210 (10-bit 4:2:2) DSK overlay kernel
+// ============================================================================
+// Alpha-blends RGBA (8-bit per channel) overlay onto P210 frame.
+// BT.709 10-bit limited-range conversion uses the same 8-bit coefficients
+// as the NV12 path (47, 157, 16 for Y etc.) but divides by 64 instead of 256
+// to produce 10-bit output: effectively 4x the 8-bit result.
+//   Y  = 64   + ((47*R + 157*G + 16*B + 32) >> 6)
+//   Cb = 512  + ((-26*R - 86*G + 112*B + 32) >> 6)
+//   Cr = 512  + ((112*R - 102*G - 10*B + 32) >> 6)
+
+__global__ void dsk_overlay_p210_kernel(
+    uint16_t* __restrict__ p210,
+    const uint8_t* __restrict__ rgba,
+    int width, int height, int p210Pitch16, int rgbaPitch,
+    int alphaScale256)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) return;
+
+    int rgbaIdx = y * rgbaPitch + x * 4;
+    int r = rgba[rgbaIdx];
+    int g = rgba[rgbaIdx + 1];
+    int b = rgba[rgbaIdx + 2];
+    int a = rgba[rgbaIdx + 3];
+
+    // Apply global alpha scale
+    a = (a * alphaScale256 + 128) >> 8;
+    if (a == 0) return;
+
+    int inv = 256 - a;
+
+    // BT.709 10-bit limited-range conversion
+    // Same coefficients as 8-bit NV12, but >> 6 instead of >> 8 to produce 10-bit
+    int overlayY  = 64  + ((47 * r + 157 * g + 16 * b + 32) >> 6);
+    int overlayCb = 512 + ((-26 * r - 86 * g + 112 * b + 32) >> 6);
+    int overlayCr = 512 + ((112 * r - 102 * g - 10 * b + 32) >> 6);
+
+    // Clamp to 10-bit valid range
+    overlayY  = min(max(overlayY, 64), 940);
+    overlayCb = min(max(overlayCb, 64), 960);
+    overlayCr = min(max(overlayCr, 64), 960);
+
+    // Blend Y plane
+    int yIdx = y * p210Pitch16 + x;
+    p210[yIdx] = (uint16_t)(((int)p210[yIdx] * inv + overlayY * a + 128) >> 8);
+
+    // Blend UV plane (once per pair — even pixels only)
+    // P210 is 4:2:2: UV is every other pixel horizontally, every row
+    if ((x & 1) == 0) {
+        int uvOffset = p210Pitch16 * height;
+        int uvIdx = y * p210Pitch16 + x;  // x is even, UV pairs at x, x+1
+        int curCb = p210[uvOffset + uvIdx];
+        int curCr = p210[uvOffset + uvIdx + 1];
+        p210[uvOffset + uvIdx]     = (uint16_t)min(max(((int)curCb * inv + overlayCb * a + 128) >> 8, 0), 1023);
+        p210[uvOffset + uvIdx + 1] = (uint16_t)min(max(((int)curCr * inv + overlayCr * a + 128) >> 8, 0), 1023);
+    }
+}
+
 extern "C" {
 
 cudaError_t alpha_blend_rgba_nv12(
@@ -303,6 +363,21 @@ cudaError_t alpha_blend_rgba_rect_nv12_occ(
         occlusion, occ_w, occ_h,
         nv12Pitch, frameW, frameH,
         rectX, rectY, rectW, rectH, alphaScale256);
+    return cudaGetLastError();
+}
+
+// --- P210 DSK overlay wrapper ---
+
+cudaError_t alpha_blend_rgba_p210(
+    uint8_t* p210, const uint8_t* rgba,
+    int width, int height, int p210Pitch, int rgbaPitch,
+    int alphaScale256, cudaStream_t stream)
+{
+    int p210Pitch16 = p210Pitch / 2;
+    dim3 block(BLOCK_DIM_X, BLOCK_DIM_Y);
+    dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
+    dsk_overlay_p210_kernel<<<grid, block, 0, stream>>>(
+        (uint16_t*)p210, rgba, width, height, p210Pitch16, rgbaPitch, alphaScale256);
     return cudaGetLastError();
 }
 

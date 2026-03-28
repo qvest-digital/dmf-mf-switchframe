@@ -74,7 +74,7 @@ func (d *DemoVideoReader) ReadGrain(_ uint64, _ uint64) ([]byte, GrainInfo, erro
 
 	// Generate YUV420p test pattern, then convert to V210.
 	// Pre-allocate the yuv buffer and let generate functions write into it.
-	yuvSize := d.width * d.height * 3 / 2
+	yuvSize := yuvFrameSize(d.width, d.height)
 	if cap(d.yuvBuf) < yuvSize {
 		d.yuvBuf = make([]byte, yuvSize)
 	}
@@ -274,7 +274,7 @@ func generateDemoYUV420pInto(buf []byte, width, height, colorIdx int, frameNum u
 }
 
 func generateDemoYUV420p(width, height, colorIdx int, frameNum uint64) []byte {
-	buf := make([]byte, width*height*3/2)
+	buf := make([]byte, yuvFrameSize(width, height))
 	generateDemoYUV420pInto(buf, width, height, colorIdx, frameNum)
 	return buf
 }
@@ -363,7 +363,7 @@ func generateGreenScreenYUV420pInto(buf []byte, width, height int, frameNum uint
 }
 
 func generateGreenScreenYUV420p(width, height int, frameNum uint64) []byte {
-	buf := make([]byte, width*height*3/2)
+	buf := make([]byte, yuvFrameSize(width, height))
 	generateGreenScreenYUV420pInto(buf, width, height, frameNum)
 	return buf
 }

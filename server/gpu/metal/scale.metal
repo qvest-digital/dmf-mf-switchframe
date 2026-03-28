@@ -109,6 +109,106 @@ kernel void scale_bilinear_uv(
     dst[dstByte + 1] = uint8_t(cr);
 }
 
+// ============================================================================
+// P210 (10-bit 4:2:2) scale kernels
+// ============================================================================
+
+struct ScaleP210Params {
+    uint srcW;      // width in luma samples
+    uint srcH;
+    uint srcPitch;  // bytes per row
+    uint dstW;
+    uint dstH;
+    uint dstPitch;
+};
+
+// Bilinear scale for P210 Y plane (uint16 samples).
+// One thread per output luma sample.
+kernel void scale_bilinear_p210_y(
+    device uchar* dst            [[buffer(0)]],
+    device const uchar* src      [[buffer(1)]],
+    constant ScaleP210Params& params [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= params.dstW || gid.y >= params.dstH) return;
+
+    float srcXf = float(gid.x) * float(params.srcW - 1) / float(max(params.dstW - 1, 1u));
+    float srcYf = float(gid.y) * float(params.srcH - 1) / float(max(params.dstH - 1, 1u));
+    int sx = int(srcXf);
+    int sy = int(srcYf);
+    int fx = int((srcXf - float(sx)) * 65536.0f);
+    int fy = int((srcYf - float(sy)) * 65536.0f);
+
+    uint sx1 = min(uint(sx + 1), params.srcW - 1);
+    uint sy1 = min(uint(sy + 1), params.srcH - 1);
+
+    // Access as uint16 — offset in samples: row * (pitch/2) + col
+    uint srcSamplesPerRow = params.srcPitch / 2;
+    device const ushort* srcU16 = (device const ushort*)src;
+
+    int v00 = int(srcU16[uint(sy)  * srcSamplesPerRow + uint(sx)]);
+    int v10 = int(srcU16[uint(sy)  * srcSamplesPerRow + sx1]);
+    int v01 = int(srcU16[sy1 * srcSamplesPerRow + uint(sx)]);
+    int v11 = int(srcU16[sy1 * srcSamplesPerRow + sx1]);
+
+    int top = v00 + ((v10 - v00) * fx >> 16);
+    int bot = v01 + ((v11 - v01) * fx >> 16);
+    int val = top + ((bot - top) * fy >> 16);
+
+    uint dstSamplesPerRow = params.dstPitch / 2;
+    ((device ushort*)dst)[gid.y * dstSamplesPerRow + gid.x] = ushort(clamp(val, 0, 1023));
+}
+
+// Bilinear scale for P210 UV plane (interleaved uint16 CbCr pairs, full height for 4:2:2).
+// One thread per output chroma sample (CbCr pair).
+// dstW/srcW are in chroma samples (width/2), not bytes.
+kernel void scale_bilinear_p210_uv(
+    device uchar* dst            [[buffer(0)]],
+    device const uchar* src      [[buffer(1)]],
+    constant ScaleP210Params& params [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= params.dstW || gid.y >= params.dstH) return;
+
+    float srcXf = float(gid.x) * float(params.srcW - 1) / float(max(params.dstW - 1, 1u));
+    float srcYf = float(gid.y) * float(params.srcH - 1) / float(max(params.dstH - 1, 1u));
+    int sx = int(srcXf);
+    int sy = int(srcYf);
+    int fx = int((srcXf - float(sx)) * 65536.0f);
+    int fy = int((srcYf - float(sy)) * 65536.0f);
+
+    uint sx1 = min(uint(sx + 1), params.srcW - 1);
+    uint sy1 = min(uint(sy + 1), params.srcH - 1);
+
+    // UV plane has interleaved uint16 pairs. Each chroma sample occupies 4 bytes (Cb uint16 + Cr uint16).
+    device const ushort* srcU16 = (device const ushort*)src;
+    uint srcSamplesPerRow = params.srcPitch / 2; // ushort elements per row
+
+    // Cb channel (even indices within the row of ushorts)
+    int cb00 = int(srcU16[uint(sy)  * srcSamplesPerRow + uint(sx)  * 2]);
+    int cb10 = int(srcU16[uint(sy)  * srcSamplesPerRow + sx1 * 2]);
+    int cb01 = int(srcU16[sy1 * srcSamplesPerRow + uint(sx)  * 2]);
+    int cb11 = int(srcU16[sy1 * srcSamplesPerRow + sx1 * 2]);
+
+    int cbTop = cb00 + ((cb10 - cb00) * fx >> 16);
+    int cbBot = cb01 + ((cb11 - cb01) * fx >> 16);
+    int cb = cbTop + ((cbBot - cbTop) * fy >> 16);
+
+    // Cr channel (odd indices)
+    int cr00 = int(srcU16[uint(sy)  * srcSamplesPerRow + uint(sx)  * 2 + 1]);
+    int cr10 = int(srcU16[uint(sy)  * srcSamplesPerRow + sx1 * 2 + 1]);
+    int cr01 = int(srcU16[sy1 * srcSamplesPerRow + uint(sx)  * 2 + 1]);
+    int cr11 = int(srcU16[sy1 * srcSamplesPerRow + sx1 * 2 + 1]);
+
+    int crTop = cr00 + ((cr10 - cr00) * fx >> 16);
+    int crBot = cr01 + ((cr11 - cr01) * fx >> 16);
+    int cr = crTop + ((crBot - crTop) * fy >> 16);
+
+    uint dstSamplesPerRow = params.dstPitch / 2;
+    ((device ushort*)dst)[gid.y * dstSamplesPerRow + gid.x * 2]     = ushort(clamp(cb, 0, 1023));
+    ((device ushort*)dst)[gid.y * dstSamplesPerRow + gid.x * 2 + 1] = ushort(clamp(cr, 0, 1023));
+}
+
 // ---------------------------------------------------------------------------
 // Lanczos-3 separable two-pass scaler
 // ---------------------------------------------------------------------------

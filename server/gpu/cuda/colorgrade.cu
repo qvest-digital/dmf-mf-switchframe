@@ -118,6 +118,76 @@ __global__ void colorgrade_lut3d_nv12_kernel(
     }
 }
 
+// Fused P210 (10-bit 4:2:2 semi-planar) color grading kernel:
+// Read P210 pixel → BT.709 10-bit limited-range YCbCr→RGB → 3D LUT lookup →
+// blend by intensity → RGB→YCbCr → write P210.
+//
+// P210 layout: Y plane (uint16, pitch bytes per row, height rows)
+//              UV plane (interleaved Cb/Cr uint16, pitch bytes per row, height rows for 4:2:2)
+// 10-bit limited range: Y [64..940], Cb/Cr [64..960]
+// Each thread processes one luma pixel. UV writes are gated to even-x pixels.
+__global__ void colorgrade_lut3d_p210_kernel(
+    uint8_t* __restrict__ p210,
+    const float* __restrict__ lut,
+    int lutSize,
+    float intensity,  // 0.0 = bypass, 1.0 = full grade
+    int width, int height, int pitch)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) return;
+
+    // Y plane: uint16 at byte offset y * pitch + x * 2
+    uint16_t* yRow = (uint16_t*)(p210 + y * pitch);
+    float Y = (float)yRow[x];
+
+    // UV plane: interleaved Cb/Cr uint16 at offset pitch * height + y * pitch + (x & ~1) * 2
+    // For 4:2:2, UV has full height. Each pair of luma pixels shares one Cb/Cr pair.
+    int uvOff = pitch * height;
+    uint16_t* uvRow = (uint16_t*)(p210 + uvOff + y * pitch);
+    int uvX = (x & ~1);  // align to even pixel
+    float Cb = (float)uvRow[uvX];
+    float Cr = (float)uvRow[uvX + 1];
+
+    // BT.709 10-bit limited-range YCbCr → RGB [0,1]
+    // Y range [64, 940] → excursion 876
+    // Cb/Cr range [64, 960] → excursion 896
+    float Yn  = (Y  - 64.0f) / 876.0f;
+    float Cbn = (Cb - 512.0f) / 896.0f;
+    float Crn = (Cr - 512.0f) / 896.0f;
+
+    float r = Yn + 1.5748f * Crn;
+    float g = Yn - 0.1873f * Cbn - 0.4681f * Crn;
+    float b = Yn + 1.8556f * Cbn;
+
+    r = fminf(fmaxf(r, 0.0f), 1.0f);
+    g = fminf(fmaxf(g, 0.0f), 1.0f);
+    b = fminf(fmaxf(b, 0.0f), 1.0f);
+
+    // 3D LUT lookup with trilinear interpolation
+    float lr, lg, lb;
+    lut3d_lookup(lut, lutSize, r, g, b, &lr, &lg, &lb);
+
+    // Blend original with graded by intensity
+    float fr = r + (lr - r) * intensity;
+    float fg = g + (lg - g) * intensity;
+    float fb = b + (lb - b) * intensity;
+
+    // RGB [0,1] → BT.709 10-bit limited-range YCbCr
+    float Yout  = 64.0f  + 876.0f * (BT709_Y_R * fr + BT709_Y_G * fg + BT709_Y_B * fb);
+    float Cbout = 512.0f + 896.0f * (-0.1146f * fr - 0.3854f * fg + 0.5f * fb);
+    float Crout = 512.0f + 896.0f * (0.5f * fr - 0.4542f * fg - 0.0458f * fb);
+
+    // Write Y (every pixel) — clamp to 10-bit limited range [64, 940]
+    yRow[x] = (uint16_t)fminf(fmaxf(Yout + 0.5f, 64.0f), 940.0f);
+
+    // Write UV (once per 2-pixel pair — even-x pixel only)
+    if ((x & 1) == 0) {
+        uvRow[uvX]     = (uint16_t)fminf(fmaxf(Cbout + 0.5f, 64.0f), 960.0f);
+        uvRow[uvX + 1] = (uint16_t)fminf(fmaxf(Crout + 0.5f, 64.0f), 960.0f);
+    }
+}
+
 extern "C" {
 
 cudaError_t launch_colorgrade_lut3d(
@@ -129,6 +199,18 @@ cudaError_t launch_colorgrade_lut3d(
               (height + BLOCK_DIM_Y - 1) / BLOCK_DIM_Y);
     colorgrade_lut3d_nv12_kernel<<<grid, block, 0, stream>>>(
         nv12, lut, lutSize, intensity, width, height, pitch);
+    return cudaGetLastError();
+}
+
+cudaError_t launch_colorgrade_lut3d_p210(
+    uint8_t* p210, const float* lut, int lutSize, float intensity,
+    int width, int height, int pitch, cudaStream_t stream)
+{
+    dim3 block(BLOCK_DIM_X, BLOCK_DIM_Y);
+    dim3 grid((width + BLOCK_DIM_X - 1) / BLOCK_DIM_X,
+              (height + BLOCK_DIM_Y - 1) / BLOCK_DIM_Y);
+    colorgrade_lut3d_p210_kernel<<<grid, block, 0, stream>>>(
+        p210, lut, lutSize, intensity, width, height, pitch);
     return cudaGetLastError();
 }
 

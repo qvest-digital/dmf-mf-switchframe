@@ -1,11 +1,13 @@
 package switcher
 
 import (
+	"bytes"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -23,7 +25,7 @@ func TestPipelineCodecs_EncodeProcessingFrame(t *testing.T) {
 	pc.encoder = enc
 
 	pf := &ProcessingFrame{
-		YUV:        make([]byte, 4*4*3/2),
+		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        1000,
@@ -51,7 +53,7 @@ func TestPipelineCodecs_ResolutionChange(t *testing.T) {
 
 	// First encode at 4x4
 	pf := &ProcessingFrame{
-		YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4,
+		Data: make([]byte, ColorYUV420_8bit.FrameSize(4, 4)), Width: 4, Height: 4,
 		PTS: 1000, IsKeyframe: true, Codec: "h264",
 	}
 	_, err := pc.encode(pf, true)
@@ -62,7 +64,7 @@ func TestPipelineCodecs_ResolutionChange(t *testing.T) {
 
 	// Encode at 8x8 -- encoder should be recreated
 	pf2 := &ProcessingFrame{
-		YUV: make([]byte, 8*8*3/2), Width: 8, Height: 8,
+		Data: make([]byte, ColorYUV420_8bit.FrameSize(8, 8)), Width: 8, Height: 8,
 		PTS: 2000, IsKeyframe: true, Codec: "h264",
 	}
 	_, err = pc.encode(pf2, true)
@@ -81,7 +83,7 @@ func TestPipelineCodecs_Close(t *testing.T) {
 
 	// Init encoder via an encode call
 	pf := &ProcessingFrame{
-		YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4,
+		Data: make([]byte, ColorYUV420_8bit.FrameSize(4, 4)), Width: 4, Height: 4,
 		PTS: 1000, IsKeyframe: true, Codec: "h264",
 	}
 	_, err := pc.encode(pf, true)
@@ -101,7 +103,7 @@ func TestPipelineCodecs_DTSEqualsPTS(t *testing.T) {
 	}
 
 	pf := &ProcessingFrame{
-		YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4,
+		Data: make([]byte, ColorYUV420_8bit.FrameSize(4, 4)), Width: 4, Height: 4,
 		PTS: 9000, DTS: 3000, // Source had B-frames: DTS != PTS
 		IsKeyframe: true, Codec: "h264",
 	}
@@ -122,7 +124,7 @@ func TestPipelineCodecs_MonotonicPTS(t *testing.T) {
 
 	mkFrame := func(pts int64) *ProcessingFrame {
 		return &ProcessingFrame{
-			YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4,
+			Data: make([]byte, ColorYUV420_8bit.FrameSize(4, 4)), Width: 4, Height: 4,
 			PTS: pts, DTS: pts, IsKeyframe: true, Codec: "h264",
 		}
 	}
@@ -157,7 +159,7 @@ func TestPipelineCodecs_ForwardPTSJumpReseeds(t *testing.T) {
 
 	mkFrame := func(pts int64) *ProcessingFrame {
 		return &ProcessingFrame{
-			YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4,
+			Data: make([]byte, ColorYUV420_8bit.FrameSize(4, 4)), Width: 4, Height: 4,
 			PTS: pts, DTS: pts, IsKeyframe: true, Codec: "h264",
 		}
 	}
@@ -206,7 +208,7 @@ func TestPipelineCodecs_OutputPTSPassesThroughUnmasked(t *testing.T) {
 
 	mkFrame := func(pts int64) *ProcessingFrame {
 		return &ProcessingFrame{
-			YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4,
+			Data: make([]byte, ColorYUV420_8bit.FrameSize(4, 4)), Width: 4, Height: 4,
 			PTS: pts, DTS: pts, IsKeyframe: true, Codec: "h264",
 		}
 	}
@@ -248,7 +250,7 @@ func TestPipelineCodecs_BitrateChangeRecreatesEncoder(t *testing.T) {
 	}
 
 	pf := &ProcessingFrame{
-		YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4,
+		Data: make([]byte, ColorYUV420_8bit.FrameSize(4, 4)), Width: 4, Height: 4,
 		PTS: 1000, IsKeyframe: true, Codec: "h264",
 	}
 
@@ -287,7 +289,7 @@ func TestPipelineCodecs_LowSourceBitrateUsesFloor(t *testing.T) {
 
 	// Use 1280x720 to get a meaningful resolution default (4 Mbps)
 	pf := &ProcessingFrame{
-		YUV: make([]byte, 1280*720*3/2), Width: 1280, Height: 720,
+		Data: make([]byte, ColorYUV420_8bit.FrameSize(1280, 720)), Width: 1280, Height: 720,
 		PTS: 1000, IsKeyframe: true, Codec: "h264",
 	}
 
@@ -319,7 +321,7 @@ func TestPipelineCodecs_SmallBitrateChangeKeepsEncoder(t *testing.T) {
 
 	// Use 1280x720 (floor = 6 Mbps) so we can test above-floor changes
 	pf := &ProcessingFrame{
-		YUV: make([]byte, 1280*720*3/2), Width: 1280, Height: 720,
+		Data: make([]byte, ColorYUV420_8bit.FrameSize(1280, 720)), Width: 1280, Height: 720,
 		PTS: 1000, IsKeyframe: true, Codec: "h264",
 	}
 
@@ -372,7 +374,7 @@ func TestPipelineCodecs_SPSPPSIndependentOfWireData(t *testing.T) {
 	}
 
 	pf := &ProcessingFrame{
-		YUV:        make([]byte, 4*4*3/2),
+		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        1000,
@@ -435,7 +437,7 @@ func TestPipelineCodecs_EncodeAfterCloseReturnsError(t *testing.T) {
 
 	// Prime the encoder with an initial encode.
 	pf := &ProcessingFrame{
-		YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4,
+		Data: make([]byte, ColorYUV420_8bit.FrameSize(4, 4)), Width: 4, Height: 4,
 		PTS: 1000, IsKeyframe: true, Codec: "h264",
 	}
 	_, err := pc.encode(pf, true)
@@ -449,7 +451,7 @@ func TestPipelineCodecs_EncodeAfterCloseReturnsError(t *testing.T) {
 
 	// Subsequent encode must return errPipelineClosed.
 	pf2 := &ProcessingFrame{
-		YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4,
+		Data: make([]byte, ColorYUV420_8bit.FrameSize(4, 4)), Width: 4, Height: 4,
 		PTS: 2000, IsKeyframe: true, Codec: "h264",
 	}
 	frame, err := pc.encode(pf2, true)
@@ -471,7 +473,7 @@ func TestPipelineCodecs_EncodeAfterCloseWithoutPriorEncode(t *testing.T) {
 	pc.close()
 
 	pf := &ProcessingFrame{
-		YUV: make([]byte, 4*4*3/2), Width: 4, Height: 4,
+		Data: make([]byte, ColorYUV420_8bit.FrameSize(4, 4)), Width: 4, Height: 4,
 		PTS: 1000, IsKeyframe: true, Codec: "h264",
 	}
 	frame, err := pc.encode(pf, true)
@@ -519,7 +521,7 @@ func TestPipelineCodecs_InvalidateEncoderRace(t *testing.T) {
 	}
 
 	pf := &ProcessingFrame{
-		YUV:        make([]byte, 4*4*3/2),
+		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        1000,
@@ -576,7 +578,7 @@ func BenchmarkPipelineEncode(b *testing.B) {
 	}
 
 	pf := &ProcessingFrame{
-		YUV:        make([]byte, 320*240*3/2),
+		Data:        make([]byte, ColorYUV420_8bit.FrameSize(320, 240)),
 		Width:      320,
 		Height:     240,
 		PTS:        1000,
@@ -609,7 +611,7 @@ func TestPipelineCodecs_NilYUV(t *testing.T) {
 
 	// nil YUV should return (nil, nil) — not an error, not an encoder creation.
 	pf := &ProcessingFrame{
-		YUV: nil, Width: 4, Height: 4,
+		Data: nil, Width: 4, Height: 4,
 		PTS: 1000, IsKeyframe: true, Codec: "h264",
 	}
 	frame, err := pc.encode(pf, true)
@@ -629,11 +631,616 @@ func TestPipelineCodecs_EmptyYUV(t *testing.T) {
 
 	// Zero-length non-nil YUV should be treated like nil — not an error.
 	pf := &ProcessingFrame{
-		YUV: []byte{}, Width: 4, Height: 4,
+		Data: []byte{}, Width: 4, Height: 4,
 		PTS: 1000, IsKeyframe: true, Codec: "h264",
 	}
 	frame, err := pc.encode(pf, true)
 	require.NoError(t, err, "empty YUV should not produce an error")
 	require.Nil(t, frame, "empty YUV should produce nil output")
 	require.False(t, encoderCreated, "empty YUV should not create encoder")
+}
+
+// --- HEVC codec awareness tests ---
+
+// buildHEVCAnnexBKeyframe constructs Annex B data containing VPS, SPS, PPS,
+// and IDR NALUs with 4-byte start codes, matching what a real HEVC encoder produces.
+// HEVC NAL header is 2 bytes: forbidden(1) | type(6) | layerID(6) | tid(3).
+// First byte: (type << 1) & 0x7E, second byte: 0x01 (TID=1).
+func buildHEVCAnnexBKeyframe(vpsPayload, spsPayload, ppsPayload []byte) []byte {
+	startCode := []byte{0x00, 0x00, 0x00, 0x01}
+
+	// VPS: type 32 → first byte = 32<<1 = 0x40
+	vpsNALU := append([]byte{0x40, 0x01}, vpsPayload...)
+	// SPS: type 33 → first byte = 33<<1 = 0x42
+	spsNALU := append([]byte{0x42, 0x01}, spsPayload...)
+	// PPS: type 34 → first byte = 34<<1 = 0x44
+	ppsNALU := append([]byte{0x44, 0x01}, ppsPayload...)
+	// IDR_W_RADL: type 19 → first byte = 19<<1 = 0x26
+	idrNALU := []byte{0x26, 0x01, 0xAA, 0xBB}
+
+	var annexB []byte
+	for _, nalu := range [][]byte{vpsNALU, spsNALU, ppsNALU, idrNALU} {
+		annexB = append(annexB, startCode...)
+		annexB = append(annexB, nalu...)
+	}
+	return annexB
+}
+
+func TestPipelineCodecs_HEVC_CodecString(t *testing.T) {
+	// When pipeline codec is HEVC, output frame.Codec must be "h265".
+	pc := &pipelineCodecs{
+		pipelineCodec: CodecHEVC,
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	}
+
+	pf := &ProcessingFrame{
+		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Width:      4,
+		Height:     4,
+		PTS:        1000,
+		IsKeyframe: true,
+		Codec:      "h264", // source codec doesn't matter — pipeline codec overrides
+	}
+
+	frame, err := pc.encode(pf, true)
+	require.NoError(t, err)
+	require.NotNil(t, frame)
+	require.Equal(t, "h265", frame.Codec, "HEVC pipeline must set Codec to h265")
+}
+
+func TestPipelineCodecs_AVC_CodecString(t *testing.T) {
+	// When pipeline codec is AVC (default), output frame.Codec must be "h264".
+	pc := &pipelineCodecs{
+		pipelineCodec: CodecAVC,
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	}
+
+	pf := &ProcessingFrame{
+		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Width:      4,
+		Height:     4,
+		PTS:        1000,
+		IsKeyframe: true,
+		Codec:      "h264",
+	}
+
+	frame, err := pc.encode(pf, true)
+	require.NoError(t, err)
+	require.NotNil(t, frame)
+	require.Equal(t, "h264", frame.Codec, "AVC pipeline must set Codec to h264")
+}
+
+func TestPipelineCodecs_HEVC_ExtractsVPSSPSPPS(t *testing.T) {
+	// HEVC keyframes must extract VPS, SPS, and PPS from the encoded bitstream.
+	vpsPayload := []byte{0x01, 0x02, 0x03}
+	spsPayload := []byte{0x04, 0x05, 0x06, 0x07}
+	ppsPayload := []byte{0x08, 0x09}
+
+	annexBData := buildHEVCAnnexBKeyframe(vpsPayload, spsPayload, ppsPayload)
+
+	pc := &pipelineCodecs{
+		pipelineCodec: CodecHEVC,
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return &mockAnnexBEncoder{annexB: annexBData}, nil
+		},
+	}
+
+	pf := &ProcessingFrame{
+		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Width:      4,
+		Height:     4,
+		PTS:        1000,
+		IsKeyframe: true,
+		Codec:      "h265",
+		GroupID:    1,
+	}
+
+	frame, err := pc.encode(pf, true)
+	require.NoError(t, err)
+	require.NotNil(t, frame)
+
+	// Expected NALUs include the 2-byte HEVC NAL header.
+	expectedVPS := append([]byte{0x40, 0x01}, vpsPayload...)
+	expectedSPS := append([]byte{0x42, 0x01}, spsPayload...)
+	expectedPPS := append([]byte{0x44, 0x01}, ppsPayload...)
+
+	require.Equal(t, expectedVPS, frame.VPS, "HEVC keyframe must have VPS")
+	require.Equal(t, expectedSPS, frame.SPS, "HEVC keyframe must have SPS")
+	require.Equal(t, expectedPPS, frame.PPS, "HEVC keyframe must have PPS")
+}
+
+func TestPipelineCodecs_AVC_NoVPS(t *testing.T) {
+	// AVC keyframes must have SPS and PPS but NOT VPS.
+	spsPayload := []byte{0x42, 0xC0, 0x1E, 0xD9}
+	ppsPayload := []byte{0xCE, 0x3C, 0x80}
+
+	annexBData := buildAnnexBKeyframe(spsPayload, ppsPayload)
+
+	pc := &pipelineCodecs{
+		pipelineCodec: CodecAVC,
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return &mockAnnexBEncoder{annexB: annexBData}, nil
+		},
+	}
+
+	pf := &ProcessingFrame{
+		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Width:      4,
+		Height:     4,
+		PTS:        1000,
+		IsKeyframe: true,
+		Codec:      "h264",
+		GroupID:    1,
+	}
+
+	frame, err := pc.encode(pf, true)
+	require.NoError(t, err)
+	require.NotNil(t, frame)
+
+	require.Nil(t, frame.VPS, "AVC keyframe must NOT have VPS")
+	require.NotNil(t, frame.SPS, "AVC keyframe must have SPS")
+	require.NotNil(t, frame.PPS, "AVC keyframe must have PPS")
+}
+
+func TestPipelineCodecs_HEVC_VideoInfoCallback(t *testing.T) {
+	// HEVC pipeline must invoke onVideoInfoChange with VPS.
+	vpsPayload := []byte{0x01, 0x02, 0x03}
+	spsPayload := []byte{0x04, 0x05, 0x06, 0x07}
+	ppsPayload := []byte{0x08, 0x09}
+
+	annexBData := buildHEVCAnnexBKeyframe(vpsPayload, spsPayload, ppsPayload)
+
+	var gotVPS, gotSPS, gotPPS []byte
+	var gotW, gotH int
+	callbackCalled := false
+
+	pc := &pipelineCodecs{
+		pipelineCodec: CodecHEVC,
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return &mockAnnexBEncoder{annexB: annexBData}, nil
+		},
+		onVideoInfoChange: func(vps, sps, pps []byte, width, height int) {
+			callbackCalled = true
+			gotVPS = vps
+			gotSPS = sps
+			gotPPS = pps
+			gotW = width
+			gotH = height
+		},
+	}
+
+	pf := &ProcessingFrame{
+		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Width:      4,
+		Height:     4,
+		PTS:        1000,
+		IsKeyframe: true,
+		Codec:      "h265",
+		GroupID:    1,
+	}
+
+	_, err := pc.encode(pf, true)
+	require.NoError(t, err)
+
+	require.True(t, callbackCalled, "onVideoInfoChange must be called for HEVC keyframe")
+	require.NotNil(t, gotVPS, "HEVC callback must receive VPS")
+	require.NotNil(t, gotSPS, "HEVC callback must receive SPS")
+	require.NotNil(t, gotPPS, "HEVC callback must receive PPS")
+	require.Equal(t, 4, gotW)
+	require.Equal(t, 4, gotH)
+}
+
+func TestPipelineCodecs_AVC_VideoInfoCallbackNilVPS(t *testing.T) {
+	// AVC pipeline must invoke onVideoInfoChange with nil VPS.
+	spsPayload := []byte{0x42, 0xC0, 0x1E, 0xD9}
+	ppsPayload := []byte{0xCE, 0x3C, 0x80}
+
+	annexBData := buildAnnexBKeyframe(spsPayload, ppsPayload)
+
+	var gotVPS []byte
+	callbackCalled := false
+
+	pc := &pipelineCodecs{
+		pipelineCodec: CodecAVC,
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return &mockAnnexBEncoder{annexB: annexBData}, nil
+		},
+		onVideoInfoChange: func(vps, sps, pps []byte, width, height int) {
+			callbackCalled = true
+			gotVPS = vps
+		},
+	}
+
+	pf := &ProcessingFrame{
+		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Width:      4,
+		Height:     4,
+		PTS:        1000,
+		IsKeyframe: true,
+		Codec:      "h264",
+		GroupID:    1,
+	}
+
+	_, err := pc.encode(pf, true)
+	require.NoError(t, err)
+
+	require.True(t, callbackCalled, "onVideoInfoChange must be called for AVC keyframe")
+	require.Nil(t, gotVPS, "AVC callback must receive nil VPS")
+}
+
+func TestPipelineCodecs_HEVC_ParamSetsIndependentOfWireData(t *testing.T) {
+	// Regression test: HEVC VPS/SPS/PPS must be independent copies, not
+	// sub-slices of the WireData buffer.
+	vpsPayload := []byte{0x01, 0x02, 0x03}
+	spsPayload := []byte{0x04, 0x05, 0x06, 0x07}
+	ppsPayload := []byte{0x08, 0x09}
+
+	annexBData := buildHEVCAnnexBKeyframe(vpsPayload, spsPayload, ppsPayload)
+
+	pc := &pipelineCodecs{
+		pipelineCodec: CodecHEVC,
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return &mockAnnexBEncoder{annexB: annexBData}, nil
+		},
+	}
+
+	pf := &ProcessingFrame{
+		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Width:      4,
+		Height:     4,
+		PTS:        1000,
+		IsKeyframe: true,
+		Codec:      "h265",
+		GroupID:    1,
+	}
+
+	frame, err := pc.encode(pf, true)
+	require.NoError(t, err)
+	require.NotNil(t, frame)
+
+	// Save expected values
+	expectedVPS := append([]byte{0x40, 0x01}, vpsPayload...)
+	expectedSPS := append([]byte{0x42, 0x01}, spsPayload...)
+	expectedPPS := append([]byte{0x44, 0x01}, ppsPayload...)
+
+	// Overwrite WireData to simulate pool recycling
+	for i := range frame.WireData {
+		frame.WireData[i] = 0xFF
+	}
+
+	require.Equal(t, expectedVPS, frame.VPS,
+		"VPS corrupted after WireData overwrite — still a sub-slice of the pooled buffer")
+	require.Equal(t, expectedSPS, frame.SPS,
+		"SPS corrupted after WireData overwrite — still a sub-slice of the pooled buffer")
+	require.Equal(t, expectedPPS, frame.PPS,
+		"PPS corrupted after WireData overwrite — still a sub-slice of the pooled buffer")
+}
+
+func TestPipelineCodecs_DefaultCodecIsAVC(t *testing.T) {
+	// When pipelineCodec is zero-value (CodecAVC), output should be H.264.
+	pc := &pipelineCodecs{
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	}
+
+	pf := &ProcessingFrame{
+		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Width:      4,
+		Height:     4,
+		PTS:        1000,
+		IsKeyframe: true,
+		Codec:      "h264",
+	}
+
+	frame, err := pc.encode(pf, true)
+	require.NoError(t, err)
+	require.NotNil(t, frame)
+	require.Equal(t, "h264", frame.Codec, "default pipeline codec must be h264")
+}
+
+func TestPipelineCodecs_HEVC_CallbackDeduplication(t *testing.T) {
+	// Same VPS/SPS/PPS should not trigger the callback twice.
+	vpsPayload := []byte{0x01, 0x02, 0x03}
+	spsPayload := []byte{0x04, 0x05, 0x06, 0x07}
+	ppsPayload := []byte{0x08, 0x09}
+
+	annexBData := buildHEVCAnnexBKeyframe(vpsPayload, spsPayload, ppsPayload)
+
+	callbackCount := 0
+	pc := &pipelineCodecs{
+		pipelineCodec: CodecHEVC,
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return &mockAnnexBEncoder{annexB: annexBData}, nil
+		},
+		onVideoInfoChange: func(vps, sps, pps []byte, width, height int) {
+			callbackCount++
+		},
+	}
+
+	pf := &ProcessingFrame{
+		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Width:      4,
+		Height:     4,
+		PTS:        1000,
+		IsKeyframe: true,
+		Codec:      "h265",
+		GroupID:    1,
+	}
+
+	_, err := pc.encode(pf, true)
+	require.NoError(t, err)
+	require.Equal(t, 1, callbackCount, "first keyframe should trigger callback")
+
+	// Second keyframe with same params
+	pf.PTS = 2000
+	_, err = pc.encode(pf, true)
+	require.NoError(t, err)
+	require.Equal(t, 1, callbackCount, "duplicate params should NOT trigger callback again")
+}
+
+func TestSetPipelineCodecs_DefaultIsAVC(t *testing.T) {
+	// SetPipelineCodecs without explicit codec parameter defaults to AVC.
+	sw := New(nil)
+	defer sw.Close()
+
+	sw.SetPipelineCodecs(func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+		return transition.NewMockEncoder(), nil
+	})
+
+	require.Equal(t, CodecAVC, sw.pipeCodecs.pipelineCodec, "default pipeline codec should be AVC")
+}
+
+func TestSetPipelineCodecs_WithHEVC(t *testing.T) {
+	// SetPipelineCodecs with explicit HEVC codec.
+	sw := New(nil)
+	defer sw.Close()
+
+	sw.SetPipelineCodecs(func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+		return transition.NewMockEncoder(), nil
+	}, CodecHEVC)
+
+	require.Equal(t, CodecHEVC, sw.pipeCodecs.pipelineCodec, "pipeline codec should be HEVC")
+}
+
+// --- Encoder Identification SEI Tests ---
+
+func TestPipelineCodecs_IdentSEI_H264_Keyframe(t *testing.T) {
+	// The ident SEI should be injected into H.264 keyframe wire data.
+	spsPayload := []byte{0x42, 0xC0, 0x1E, 0xD9, 0x00, 0xA0, 0x47, 0xFE, 0x6C}
+	ppsPayload := []byte{0xCE, 0x3C, 0x80}
+	annexBData := buildAnnexBKeyframe(spsPayload, ppsPayload)
+
+	pc := &pipelineCodecs{
+		pipelineCodec: CodecAVC,
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return &mockAnnexBEncoder{annexB: annexBData}, nil
+		},
+	}
+
+	pf := &ProcessingFrame{
+		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Width:      4,
+		Height:     4,
+		PTS:        1000,
+		IsKeyframe: true,
+		Codec:      "h264",
+		GroupID:    1,
+	}
+
+	frame, err := pc.encode(pf, true)
+	require.NoError(t, err)
+	require.NotNil(t, frame)
+	require.True(t, frame.IsKeyframe)
+
+	// The Switchframe UUID must be present in the wire data.
+	// Wire data is AVC1 format (length-prefixed NALUs), so we convert
+	// to Annex B to search for the UUID.
+	annexB := codec.WireToAnnexB(frame.WireData)
+	require.True(t, bytes.Contains(annexB, codec.SwitchframeUUID[:]),
+		"keyframe wire data must contain Switchframe ident UUID")
+
+	// The ident string must be present.
+	require.True(t, bytes.Contains(annexB, []byte("Switchframe/1.0")),
+		"keyframe wire data must contain Switchframe ident string")
+}
+
+func TestPipelineCodecs_IdentSEI_HEVC_Keyframe(t *testing.T) {
+	// The ident SEI should be injected into HEVC keyframe wire data.
+	vpsPayload := []byte{0x01, 0x02, 0x03}
+	spsPayload := []byte{0x04, 0x05, 0x06, 0x07}
+	ppsPayload := []byte{0x08, 0x09}
+	annexBData := buildHEVCAnnexBKeyframe(vpsPayload, spsPayload, ppsPayload)
+
+	pc := &pipelineCodecs{
+		pipelineCodec: CodecHEVC,
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return &mockAnnexBEncoder{annexB: annexBData}, nil
+		},
+	}
+
+	pf := &ProcessingFrame{
+		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Width:      4,
+		Height:     4,
+		PTS:        1000,
+		IsKeyframe: true,
+		Codec:      "h265",
+		GroupID:    1,
+	}
+
+	frame, err := pc.encode(pf, true)
+	require.NoError(t, err)
+	require.NotNil(t, frame)
+
+	annexB := codec.WireToAnnexB(frame.WireData)
+	require.True(t, bytes.Contains(annexB, codec.SwitchframeUUID[:]),
+		"HEVC keyframe wire data must contain Switchframe ident UUID")
+	require.True(t, bytes.Contains(annexB, []byte("Switchframe/1.0")),
+		"HEVC keyframe wire data must contain Switchframe ident string")
+}
+
+func TestPipelineCodecs_IdentSEI_NonKeyframe_NoIdent(t *testing.T) {
+	// Non-keyframes must NOT contain the ident SEI (inject only on keyframes).
+	pc := &pipelineCodecs{
+		pipelineCodec: CodecAVC,
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return transition.NewMockEncoder(), nil
+		},
+	}
+
+	// First, encode a keyframe to prime the encoder and build the ident SEI.
+	pf := &ProcessingFrame{
+		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Width:      4,
+		Height:     4,
+		PTS:        1000,
+		IsKeyframe: true,
+		Codec:      "h264",
+		GroupID:    1,
+	}
+	_, err := pc.encode(pf, true)
+	require.NoError(t, err)
+
+	// Now encode a non-keyframe.
+	pf2 := &ProcessingFrame{
+		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Width:      4,
+		Height:     4,
+		PTS:        2000,
+		IsKeyframe: false,
+		Codec:      "h264",
+		GroupID:    1,
+	}
+	frame, err := pc.encode(pf2, false)
+	require.NoError(t, err)
+	require.NotNil(t, frame)
+	require.False(t, frame.IsKeyframe)
+
+	annexB := codec.WireToAnnexB(frame.WireData)
+	require.False(t, bytes.Contains(annexB, codec.SwitchframeUUID[:]),
+		"non-keyframe wire data must NOT contain Switchframe ident UUID")
+}
+
+func TestPipelineCodecs_IdentSEI_BuiltLazily(t *testing.T) {
+	// The ident SEI is built lazily on the first keyframe (once we know
+	// the encoder dimensions and format).
+	spsPayload := []byte{0x42, 0xC0, 0x1E}
+	ppsPayload := []byte{0xCE, 0x3C}
+	annexBData := buildAnnexBKeyframe(spsPayload, ppsPayload)
+
+	pc := &pipelineCodecs{
+		pipelineCodec: CodecAVC,
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return &mockAnnexBEncoder{annexB: annexBData}, nil
+		},
+	}
+
+	// Before any encode, identSEI should be nil.
+	require.Nil(t, pc.identSEI, "identSEI should be nil before first keyframe")
+
+	pf := &ProcessingFrame{
+		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Width:      4,
+		Height:     4,
+		PTS:        1000,
+		IsKeyframe: true,
+		Codec:      "h264",
+		GroupID:    1,
+	}
+
+	_, err := pc.encode(pf, true)
+	require.NoError(t, err)
+
+	// After keyframe encode, identSEI should be built.
+	require.NotNil(t, pc.identSEI, "identSEI should be built after first keyframe")
+
+	// It should contain the UUID.
+	require.True(t, bytes.Contains(pc.identSEI, codec.SwitchframeUUID[:]),
+		"identSEI must contain the Switchframe UUID")
+}
+
+func TestPipelineCodecs_IdentSEI_InvalidatedOnResolutionChange(t *testing.T) {
+	// When the resolution changes, the encoder is recreated and the ident SEI
+	// must be rebuilt with the new dimensions.
+	spsPayload := []byte{0x42, 0xC0, 0x1E}
+	ppsPayload := []byte{0xCE, 0x3C}
+
+	pc := &pipelineCodecs{
+		pipelineCodec: CodecAVC,
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return &mockAnnexBEncoder{annexB: buildAnnexBKeyframe(spsPayload, ppsPayload)}, nil
+		},
+	}
+
+	// First keyframe at 4x4.
+	pf := &ProcessingFrame{
+		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Width:      4,
+		Height:     4,
+		PTS:        1000,
+		IsKeyframe: true,
+		Codec:      "h264",
+		GroupID:    1,
+	}
+	_, err := pc.encode(pf, true)
+	require.NoError(t, err)
+	firstSEI := append([]byte(nil), pc.identSEI...)
+
+	// Second keyframe at 8x8 — ident SEI should be rebuilt.
+	pf2 := &ProcessingFrame{
+		Data:        make([]byte, ColorYUV420_8bit.FrameSize(8, 8)),
+		Width:      8,
+		Height:     8,
+		PTS:        2000,
+		IsKeyframe: true,
+		Codec:      "h264",
+		GroupID:    2,
+	}
+	_, err = pc.encode(pf2, true)
+	require.NoError(t, err)
+
+	// The ident SEI should have been rebuilt (different height in the format string).
+	require.NotEqual(t, firstSEI, pc.identSEI,
+		"identSEI must be rebuilt when resolution changes")
+}
+
+func TestPipelineCodecs_IdentSEI_PreservesParamSets(t *testing.T) {
+	// The ident SEI injection must not corrupt SPS/PPS extraction.
+	spsPayload := []byte{0x42, 0xC0, 0x1E, 0xD9, 0x00}
+	ppsPayload := []byte{0xCE, 0x3C, 0x80}
+	annexBData := buildAnnexBKeyframe(spsPayload, ppsPayload)
+
+	pc := &pipelineCodecs{
+		pipelineCodec: CodecAVC,
+		encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			return &mockAnnexBEncoder{annexB: annexBData}, nil
+		},
+	}
+
+	pf := &ProcessingFrame{
+		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Width:      4,
+		Height:     4,
+		PTS:        1000,
+		IsKeyframe: true,
+		Codec:      "h264",
+		GroupID:    1,
+	}
+
+	frame, err := pc.encode(pf, true)
+	require.NoError(t, err)
+	require.NotNil(t, frame)
+
+	expectedSPS := append([]byte{0x67}, spsPayload...)
+	expectedPPS := append([]byte{0x68}, ppsPayload...)
+
+	require.Equal(t, expectedSPS, frame.SPS,
+		"SPS must not be corrupted by ident SEI injection")
+	require.Equal(t, expectedPPS, frame.PPS,
+		"PPS must not be corrupted by ident SEI injection")
 }

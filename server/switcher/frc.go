@@ -223,8 +223,8 @@ func (fs *frcSource) ingest(pf *ProcessingFrame) {
 	}
 
 	// Skip MCFI when frames lack CPU YUV data (GPU path).
-	ySize := fs.prevFrame.Width * fs.prevFrame.Height * 3 / 2
-	if len(fs.prevFrame.YUV) < ySize || len(fs.currFrame.YUV) < ySize {
+	ySize := ColorYUV420_8bit.FrameSize(fs.prevFrame.Width, fs.prevFrame.Height)
+	if len(fs.prevFrame.Data) < ySize || len(fs.currFrame.Data) < ySize {
 		return
 	}
 
@@ -336,20 +336,20 @@ func (fs *frcSource) emitNearest(alpha float64) *ProcessingFrame {
 	}
 
 	w, h := src.Width, src.Height
-	totalSize := w * h * 3 / 2
+	totalSize := ColorYUV420_8bit.FrameSize(w, h)
 
 	// Guard: the frame sync's releaseTick may have released this frame's
 	// pool buffer (via lastRawVideo.ReleaseYUV) while the FRC still holds
 	// a pointer to it. If YUV was released, we cannot emit.
-	if len(src.YUV) < totalSize {
+	if len(src.Data) < totalSize {
 		return nil
 	}
 
 	fs.ensureNearestOut(totalSize)
-	copy(fs.nearestOut, src.YUV[:totalSize])
+	copy(fs.nearestOut, src.Data[:totalSize])
 
 	return &ProcessingFrame{
-		YUV:        fs.nearestOut,
+		Data:        fs.nearestOut,
 		Width:      w,
 		Height:     h,
 		PTS:        src.PTS,
@@ -362,10 +362,10 @@ func (fs *frcSource) emitNearest(alpha float64) *ProcessingFrame {
 func (fs *frcSource) emitBlend(alpha float64, tickPTS int64) *ProcessingFrame {
 	w := fs.prevFrame.Width
 	h := fs.prevFrame.Height
-	totalSize := w * h * 3 / 2
+	totalSize := ColorYUV420_8bit.FrameSize(w, h)
 
 	// Guard against released YUV buffers (see emitNearest comment).
-	if len(fs.prevFrame.YUV) < totalSize || len(fs.currFrame.YUV) < totalSize {
+	if len(fs.prevFrame.Data) < totalSize || len(fs.currFrame.Data) < totalSize {
 		return nil
 	}
 
@@ -380,10 +380,10 @@ func (fs *frcSource) emitBlend(alpha float64, tickPTS int64) *ProcessingFrame {
 		pos = 256
 	}
 
-	transition.BlendUniformBytes(fs.blendOut, fs.prevFrame.YUV[:totalSize], fs.currFrame.YUV[:totalSize], pos)
+	transition.BlendUniformBytes(fs.blendOut, fs.prevFrame.Data[:totalSize], fs.currFrame.Data[:totalSize], pos)
 
 	return &ProcessingFrame{
-		YUV:        fs.blendOut,
+		Data:        fs.blendOut,
 		Width:      w,
 		Height:     h,
 		PTS:        tickPTS,
@@ -401,19 +401,19 @@ func (fs *frcSource) emitMCFI(alpha float64, tickPTS int64) *ProcessingFrame {
 
 	w := fs.prevFrame.Width
 	h := fs.prevFrame.Height
-	totalSize := w * h * 3 / 2
+	totalSize := ColorYUV420_8bit.FrameSize(w, h)
 
 	// Guard against released YUV buffers (see emitNearest comment).
-	if len(fs.prevFrame.YUV) < totalSize || len(fs.currFrame.YUV) < totalSize {
+	if len(fs.prevFrame.Data) < totalSize || len(fs.currFrame.Data) < totalSize {
 		return nil
 	}
 
 	fs.ensureBlendOut(totalSize)
 
-	mcfiInterpolateFast(fs.blendOut, fs.prevFrame.YUV, fs.currFrame.YUV, w, h, fs.mvField, alpha)
+	mcfiInterpolateFast(fs.blendOut, fs.prevFrame.Data, fs.currFrame.Data, w, h, fs.mvField, alpha)
 
 	return &ProcessingFrame{
-		YUV:        fs.blendOut,
+		Data:        fs.blendOut,
 		Width:      w,
 		Height:     h,
 		PTS:        tickPTS,
@@ -455,11 +455,11 @@ func (fs *frcSource) detectSceneChange(prev, curr *ProcessingFrame) bool {
 	width := prev.Width
 	height := prev.Height
 	ySize := width * height
-	if len(prev.YUV) < ySize || len(curr.YUV) < ySize {
+	if len(prev.Data) < ySize || len(curr.Data) < ySize {
 		return false // No CPU YUV data (GPU path) — skip scene detection.
 	}
-	yA := prev.YUV[:ySize]
-	yB := curr.YUV[:ySize]
+	yA := prev.Data[:ySize]
+	yB := curr.Data[:ySize]
 
 	var totalSAD uint64
 	rows := 0

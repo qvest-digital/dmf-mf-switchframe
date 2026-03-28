@@ -38,6 +38,7 @@ type AppConfig struct {
 	LowLatencySync   bool
 	FRCQuality       string
 	Format           string
+	ColorFormat      string // "standard", "standard-hevc", or "professional"
 	DemoVideoDir     string
 	LogLevel         string
 	AdminAddr        string
@@ -104,8 +105,9 @@ type AppConfig struct {
 	MXLDomain         string   // MXL shared memory domain path
 	MXLDiscover       bool     // List available MXL flows and exit
 
-	// AI segmentation.
-	AIModelPath string // Path to ONNX segmentation model (empty = disabled)
+	// AI inference (segmentation, depth, SAM, tracking — all via sidecar).
+	AISidecarBin string // Path to switchframe-ai sidecar binary (empty = AI disabled)
+	AIModelsDir  string // Path to directory with all AI model files (empty = auto-discover)
 
 	// Neural key (CorridorKey).
 	NeuralKeyModelPath string // Path to CorridorKey ONNX model (empty = disabled)
@@ -241,6 +243,7 @@ func parseConfig() (AppConfig, error) {
 	lowLatencySyncFlag := flag.Bool("low-latency-sync", false, "Use source-driven frame sync (lower latency, less smooth output)")
 	frcQualityFlag := flag.String("frc-quality", "none", "Frame rate conversion: none, nearest, blend, mcfi")
 	formatFlag := flag.String("format", "1080p29.97", "Video standard (e.g. 1080p29.97, 1080p25, 720p59.94)")
+	colorFormatFlag := flag.String("color-format", "standard", "Pipeline color format profile (standard, standard-hevc, professional)")
 	replayBufferSecs := flag.Int("replay-buffer-secs", 300, "Per-source replay buffer duration in seconds (0 to disable, max 300)")
 	replayTmpfsDir := flag.String("replay-tmpfs-dir", "/dev/shm/switchframe/replay", "Directory for tmpfs-backed replay buffers (use 'none' to disable)")
 	addrFlag := flag.String("addr", ":8080", "QUIC/HTTP3 listen address (e.g., :8080, 0.0.0.0:443)")
@@ -299,7 +302,8 @@ func parseConfig() (AppConfig, error) {
 	mxlDiscover := flag.Bool("mxl-discover", false, "List available MXL flows and exit")
 
 	// AI segmentation flags.
-	aiModelFlag := flag.String("ai-model", "", "Path to ONNX segmentation model for AI background replacement (requires CUDA + TensorRT)")
+	aiSidecarFlag := flag.String("ai-sidecar", "", "Path to switchframe-ai sidecar binary (all AI inference)")
+	aiModelsDirFlag := flag.String("ai-models-dir", "", "Directory with AI model files (ONNX + .plan) forwarded to sidecar")
 
 	// Neural key flags.
 	neuralKeyModelFlag := flag.String("neural-key-model", "", "Path to CorridorKey ONNX model for neural green screen keying (requires CUDA + TensorRT)")
@@ -408,6 +412,7 @@ func parseConfig() (AppConfig, error) {
 		LowLatencySync:       *lowLatencySyncFlag,
 		FRCQuality:           *frcQualityFlag,
 		Format:               *formatFlag,
+		ColorFormat:           *colorFormatFlag,
 		DemoVideoDir:         *demoVideoDir,
 		LogLevel:             *logLevel,
 		AdminAddr:            *adminAddr,
@@ -453,7 +458,8 @@ func parseConfig() (AppConfig, error) {
 		MXLDomain:            *mxlDomain,
 		MXLDiscover:          *mxlDiscover,
 		StateDir:             stateDir,
-		AIModelPath:          *aiModelFlag,
+		AISidecarBin:         *aiSidecarFlag,
+		AIModelsDir:          *aiModelsDirFlag,
 		NeuralKeyModelPath:   *neuralKeyModelFlag,
 		ASRSidecarBin:       *asrSidecarFlag,
 		ASRSidecarModelDir:  *asrSidecarModelDirFlag,

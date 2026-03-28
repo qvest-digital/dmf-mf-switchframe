@@ -174,7 +174,7 @@ func TestWriter_StopsOnContextCancel(t *testing.T) {
 	w.Start(ctx)
 
 	// Write a video frame and wait for the ticker to pick it up.
-	yuv := make([]byte, 12*2*3/2)
+	yuv := make([]byte, yuvFrameSize(12, 2))
 	w.WriteVideo(yuv, 12, 2, 0)
 
 	deadline := time.After(200 * time.Millisecond)
@@ -264,7 +264,7 @@ func TestWriter_SkipsMismatchedResolution(t *testing.T) {
 	w.Start(ctx)
 
 	// Write a frame at wrong resolution — should be silently skipped.
-	yuv := make([]byte, 640*128*3/2)
+	yuv := make([]byte, yuvFrameSize(640, 128))
 	w.WriteVideo(yuv, 640, 128, 0)
 
 	time.Sleep(100 * time.Millisecond)

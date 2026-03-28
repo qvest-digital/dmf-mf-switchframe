@@ -7,8 +7,6 @@ import "unsafe"
 // blendUniform computes dst[i] = (a[i]*inv + b[i]*pos + 128) >> 8 for n bytes.
 // Used by BlendMix for the entire YUV420 frame.
 // Range: inv + pos = 256, max result = 255*256 + 128 = 65408, fits uint16.
-//
-// NOTE: SIMD kernels (amd64/arm64) also need this +128 rounding fix applied.
 func blendUniform(dst, a, b *byte, n, pos, inv int) {
 	if n <= 0 {
 		return
@@ -39,8 +37,6 @@ func blendFadeConst(dst, src *byte, n, gain, constTerm int) {
 // where w = alpha[i] + (alpha[i]>>7), mapping 0-255 to 0-256.
 // Used by BlendWipe and BlendStinger for the Y-plane.
 // Range: w + inv = 256, max result = 255*256 + 128 = 65408, fits uint16.
-//
-// NOTE: SIMD kernels (amd64/arm64) also need this +128 rounding fix applied.
 func blendAlpha(dst, a, b, alpha *byte, n int) {
 	if n <= 0 {
 		return

@@ -27,7 +27,7 @@ func TestPreviewEncoder(t *testing.T) {
 	src, _ := srcPool.Acquire()
 	defer src.Release()
 
-	yuv := make([]byte, srcW*srcH*3/2)
+	yuv := make([]byte, yuvFrameSize(srcW, srcH))
 	for i := 0; i < srcW*srcH; i++ {
 		yuv[i] = byte(i%220) + 16
 	}
@@ -72,7 +72,7 @@ func TestPreviewEncoderSmallResolution(t *testing.T) {
 	src, _ := srcPool.Acquire()
 	defer src.Release()
 
-	yuv := make([]byte, 640*480*3/2)
+	yuv := make([]byte, yuvFrameSize(640, 480))
 	for i := range yuv {
 		yuv[i] = 128
 	}

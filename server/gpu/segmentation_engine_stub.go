@@ -5,6 +5,9 @@ package gpu
 // SegmentationEngine is a stub for non-TensorRT builds.
 type SegmentationEngine struct{}
 
+// Compile-time check that SegmentationEngine implements Segmenter.
+var _ Segmenter = (*SegmentationEngine)(nil)
+
 // NewSegmentationEngine returns nil and ErrTensorRTNotAvailable on non-TensorRT builds.
 func NewSegmentationEngine(ctx *Context, modelPath string) (*SegmentationEngine, error) {
 	return nil, ErrTensorRTNotAvailable
@@ -38,6 +41,9 @@ func (se *SegmentationEngine) Segment(key string, frame *GPUFrame) {}
 
 // MaskForSource returns nil on non-TensorRT builds.
 func (se *SegmentationEngine) MaskForSource(key string) *GPUFrame { return nil }
+
+// MaskDevPtrForSource returns 0 on non-TensorRT builds.
+func (se *SegmentationEngine) MaskDevPtrForSource(key string) uintptr { return 0 }
 
 // Close is a no-op on non-TensorRT builds.
 func (se *SegmentationEngine) Close() {}

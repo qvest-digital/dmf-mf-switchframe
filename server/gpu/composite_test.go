@@ -32,7 +32,7 @@ func TestPIPComposite(t *testing.T) {
 	require.NoError(t, FillBlack(ctx, dst))
 
 	// Fill src with bright gray (Y=200)
-	srcYUV := make([]byte, srcW*srcH*3/2)
+	srcYUV := make([]byte, yuvFrameSize(srcW, srcH))
 	for i := 0; i < srcW*srcH; i++ {
 		srcYUV[i] = 200
 	}
@@ -47,7 +47,7 @@ func TestPIPComposite(t *testing.T) {
 	require.NoError(t, err)
 
 	// Download and verify
-	result := make([]byte, dstW*dstH*3/2)
+	result := make([]byte, yuvFrameSize(dstW, dstH))
 	require.NoError(t, Download(ctx, result, dst, dstW, dstH))
 
 	// Pixel inside PIP rect should be bright (~200)
@@ -75,8 +75,8 @@ func TestPIPCompositeWithAlpha(t *testing.T) {
 	defer src.Release()
 
 	// Dst: Y=100, Src: Y=200
-	dstYUV := make([]byte, w*h*3/2)
-	srcYUV := make([]byte, w*h*3/2)
+	dstYUV := make([]byte, yuvFrameSize(w, h))
+	srcYUV := make([]byte, yuvFrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		dstYUV[i] = 100
 		srcYUV[i] = 200
@@ -93,7 +93,7 @@ func TestPIPCompositeWithAlpha(t *testing.T) {
 	err = PIPComposite(ctx, dst, src, rect, 0.5)
 	require.NoError(t, err)
 
-	result := make([]byte, w*h*3/2)
+	result := make([]byte, yuvFrameSize(w, h))
 	require.NoError(t, Download(ctx, result, dst, w, h))
 
 	// Should be ~150 (midpoint of 100 and 200)
@@ -112,7 +112,7 @@ func TestFillRect(t *testing.T) {
 	defer frame.Release()
 
 	// Fill full frame with white (Y=235)
-	whiteYUV := make([]byte, w*h*3/2)
+	whiteYUV := make([]byte, yuvFrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		whiteYUV[i] = 235
 	}
@@ -126,7 +126,7 @@ func TestFillRect(t *testing.T) {
 	err = FillRect(ctx, frame, rect, ColorBlack)
 	require.NoError(t, err)
 
-	result := make([]byte, w*h*3/2)
+	result := make([]byte, yuvFrameSize(w, h))
 	require.NoError(t, Download(ctx, result, frame, w, h))
 
 	// Inside rect should be black
@@ -161,7 +161,7 @@ func TestPIPCompositeWithCrop(t *testing.T) {
 	require.NoError(t, FillBlack(ctx, dst))
 
 	// Fill src with a horizontal split: left half Y=100, right half Y=200
-	srcYUV := make([]byte, srcW*srcH*3/2)
+	srcYUV := make([]byte, yuvFrameSize(srcW, srcH))
 	for y := 0; y < srcH; y++ {
 		for x := 0; x < srcW; x++ {
 			if x < srcW/2 {
@@ -183,7 +183,7 @@ func TestPIPCompositeWithCrop(t *testing.T) {
 		320, 0, 320, 480) // crop right half
 	require.NoError(t, err)
 
-	result := make([]byte, dstW*dstH*3/2)
+	result := make([]byte, yuvFrameSize(dstW, dstH))
 	require.NoError(t, Download(ctx, result, dst, dstW, dstH))
 
 	// Center pixel should be ~200 (from the cropped right half)
@@ -209,7 +209,7 @@ func TestPIPCompositeWithCropZero(t *testing.T) {
 
 	require.NoError(t, FillBlack(ctx, dst))
 
-	srcYUV := make([]byte, w*h*3/2)
+	srcYUV := make([]byte, yuvFrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		srcYUV[i] = 180
 	}
@@ -222,7 +222,7 @@ func TestPIPCompositeWithCropZero(t *testing.T) {
 	err = PIPCompositeWithCrop(ctx, dst, src, rect, 1.0, 0, 0, 0, 0)
 	require.NoError(t, err)
 
-	result := make([]byte, w*h*3/2)
+	result := make([]byte, yuvFrameSize(w, h))
 	require.NoError(t, Download(ctx, result, dst, w, h))
 
 	centerY := result[h/2*w+w/2]
@@ -247,7 +247,7 @@ func TestDrawBorder(t *testing.T) {
 	defer frame.Release()
 
 	// Fill the frame with mid-gray (Y=128)
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, yuvFrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		yuv[i] = 128
 	}
@@ -265,7 +265,7 @@ func TestDrawBorder(t *testing.T) {
 	err = DrawBorder(ctx, frame, rect, borderColor, thickness)
 	require.NoError(t, err)
 
-	result := make([]byte, w*h*3/2)
+	result := make([]byte, yuvFrameSize(w, h))
 	require.NoError(t, Download(ctx, result, frame, w, h))
 
 	// A pixel just above the rect top edge should be colored (white Y=235).

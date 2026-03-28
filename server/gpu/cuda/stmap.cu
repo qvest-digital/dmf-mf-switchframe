@@ -118,6 +118,108 @@ __global__ void stmap_warp_uv_kernel(
 }
 
 // ============================================================================
+// P210 (10-bit 4:2:2) ST map warp kernels
+// ============================================================================
+
+// Y plane warp for P210 (uint16 per sample)
+__global__ void stmap_warp_p210_y_kernel(
+    uint16_t* __restrict__ dst, int dstPitch16,
+    const uint16_t* __restrict__ src, int srcPitch16,
+    const float* __restrict__ stS,
+    const float* __restrict__ stT,
+    int width, int height)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) return;
+
+    int stIdx = y * width + x;
+    float srcXf = stS[stIdx] * (float)(width - 1);
+    float srcYf = stT[stIdx] * (float)(height - 1);
+
+    srcXf = fmaxf(0.0f, fminf(srcXf, (float)(width - 1)));
+    srcYf = fmaxf(0.0f, fminf(srcYf, (float)(height - 1)));
+
+    int sx = (int)srcXf;
+    int sy = (int)srcYf;
+    float fx = srcXf - sx;
+    float fy = srcYf - sy;
+
+    int sx1 = min(sx + 1, width - 1);
+    int sy1 = min(sy + 1, height - 1);
+
+    float v00 = (float)src[sy  * srcPitch16 + sx];
+    float v10 = (float)src[sy  * srcPitch16 + sx1];
+    float v01 = (float)src[sy1 * srcPitch16 + sx];
+    float v11 = (float)src[sy1 * srcPitch16 + sx1];
+
+    float top = v00 + (v10 - v00) * fx;
+    float bot = v01 + (v11 - v01) * fx;
+    float val = top + (bot - top) * fy;
+
+    dst[y * dstPitch16 + x] = (uint16_t)min(max((int)(val + 0.5f), 0), 1023);
+}
+
+// UV plane warp for P210 (interleaved uint16 CbCr, full height)
+// For P210 (4:2:2): chroma has full height, half width.
+// ST map averaging uses horizontal 1x2 from luma coords.
+__global__ void stmap_warp_p210_uv_kernel(
+    uint16_t* __restrict__ dstUV, int dstPitch16,
+    const uint16_t* __restrict__ srcUV, int srcPitch16,
+    const float* __restrict__ stS,
+    const float* __restrict__ stT,
+    int lumaW, int lumaH,
+    int chromaW, int chromaH)
+{
+    int cx = blockIdx.x * blockDim.x + threadIdx.x;
+    int cy = blockIdx.y * blockDim.y + threadIdx.y;
+    if (cx >= chromaW || cy >= chromaH) return;
+
+    // Average ST coords from 2 horizontal luma pixels (4:2:2 has full vertical)
+    int lx = cx * 2;
+    int lx1 = min(lx + 1, lumaW - 1);
+
+    float avgS = (stS[cy * lumaW + lx] + stS[cy * lumaW + lx1]) * 0.5f;
+    float avgT = (stT[cy * lumaW + lx] + stT[cy * lumaW + lx1]) * 0.5f;
+
+    float srcXf = avgS * (float)(chromaW - 1);
+    float srcYf = avgT * (float)(chromaH - 1);
+
+    srcXf = fmaxf(0.0f, fminf(srcXf, (float)(chromaW - 1)));
+    srcYf = fmaxf(0.0f, fminf(srcYf, (float)(chromaH - 1)));
+
+    int sx = (int)srcXf;
+    int sy = (int)srcYf;
+    float fx = srcXf - sx;
+    float fy = srcYf - sy;
+
+    int sx1 = min(sx + 1, chromaW - 1);
+    int sy1 = min(sy + 1, chromaH - 1);
+
+    // Bilinear for Cb
+    float u00 = (float)srcUV[sy  * srcPitch16 + sx  * 2];
+    float u10 = (float)srcUV[sy  * srcPitch16 + sx1 * 2];
+    float u01 = (float)srcUV[sy1 * srcPitch16 + sx  * 2];
+    float u11 = (float)srcUV[sy1 * srcPitch16 + sx1 * 2];
+    float uTop = u00 + (u10 - u00) * fx;
+    float uBot = u01 + (u11 - u01) * fx;
+    float uVal = uTop + (uBot - uTop) * fy;
+
+    // Bilinear for Cr
+    float v00 = (float)srcUV[sy  * srcPitch16 + sx  * 2 + 1];
+    float v10 = (float)srcUV[sy  * srcPitch16 + sx1 * 2 + 1];
+    float v01 = (float)srcUV[sy1 * srcPitch16 + sx  * 2 + 1];
+    float v11 = (float)srcUV[sy1 * srcPitch16 + sx1 * 2 + 1];
+    float vTop = v00 + (v10 - v00) * fx;
+    float vBot = v01 + (v11 - v01) * fx;
+    float vVal = vTop + (vBot - vTop) * fy;
+
+    int idx = cy * dstPitch16 + cx * 2;
+    dstUV[idx]     = (uint16_t)min(max((int)(uVal + 0.5f), 0), 1023);
+    dstUV[idx + 1] = (uint16_t)min(max((int)(vVal + 0.5f), 0), 1023);
+}
+
+// ============================================================================
 // Texture-based warp kernels (hardware bilinear interpolation)
 //
 // CUDA texture units perform bilinear interpolation in hardware: a single
@@ -323,6 +425,37 @@ cudaError_t stmap_upload(
 void stmap_free(float* devS, float* devT) {
     if (devS) cudaFree(devS);
     if (devT) cudaFree(devT);
+}
+
+// --- P210 stmap warp wrapper ---
+
+cudaError_t stmap_warp_p210(
+    uint8_t* dst, int dstPitch,
+    const uint8_t* src, int srcPitch,
+    const float* stS, const float* stT,
+    int width, int height, cudaStream_t stream)
+{
+    int dstPitch16 = dstPitch / 2;
+    int srcPitch16 = srcPitch / 2;
+    dim3 block(BLOCK_DIM_X, BLOCK_DIM_Y);
+
+    // Warp Y plane
+    dim3 gridY((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
+    stmap_warp_p210_y_kernel<<<gridY, block, 0, stream>>>(
+        (uint16_t*)dst, dstPitch16,
+        (const uint16_t*)src, srcPitch16,
+        stS, stT, width, height);
+
+    // Warp UV plane (P210: full height, half width)
+    int chromaW = width / 2;
+    dim3 gridUV((chromaW + block.x - 1) / block.x, (height + block.y - 1) / block.y);
+    stmap_warp_p210_uv_kernel<<<gridUV, block, 0, stream>>>(
+        (uint16_t*)(dst + dstPitch * height), dstPitch16,
+        (const uint16_t*)(src + srcPitch * height), srcPitch16,
+        stS, stT,
+        width, height, chromaW, height);
+
+    return cudaGetLastError();
 }
 
 } // extern "C"

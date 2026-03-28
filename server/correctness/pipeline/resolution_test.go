@@ -95,7 +95,7 @@ func (rh *resolutionHarness) feedFrames(sourceKey string, count int, startPTS in
 
 	for i := 0; i < count; i++ {
 		pf := &switcher.ProcessingFrame{
-			YUV:        copyBytes(yuv),
+			Data:       copyBytes(yuv),
 			Width:      rh.width,
 			Height:     rh.height,
 			PTS:        startPTS + int64(i)*ptsDelta,
@@ -243,7 +243,7 @@ func TestPipelineResolutionMismatch(t *testing.T) {
 	yuvB := testutil.GenerateSolidYUV420(srcBW, srcBH, 160, 50, 60)
 	for i := 0; i < 30; i++ {
 		pf := &switcher.ProcessingFrame{
-			YUV:        copyBytes(yuvB),
+			Data:       copyBytes(yuvB),
 			Width:      srcBW,
 			Height:     srcBH,
 			PTS:        90000 + int64(30+i)*3000,

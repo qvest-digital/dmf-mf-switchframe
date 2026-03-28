@@ -411,21 +411,25 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 
 		f := clip[frameIdx]
 
-		// Decode H.264 to YUV420 for the switcher pipeline.
+		// Decode video to YUV420 for the switcher pipeline.
 		// Wire data forwarding to the browser relay is independent of decode
 		// success — the browser has its own decoder and always gets frames.
 		var frameData []byte // nil when decode fails (browser relay still works)
 		fw, fh := p.config.Width, p.config.Height
+		isHEVC := f.IsHEVC()
 		if p.config.DecodeFrame != nil {
-			// Convert AVC1 wire data to Annex B for the decoder (reuses buffer).
-			p.annexBBuf = codec.AVC1ToAnnexBInto(f.wireData, p.annexBBuf[:0])
+			// Convert wire format to Annex B for the decoder (reuses buffer).
+			p.annexBBuf = codec.WireToAnnexBInto(f.wireData, p.annexBBuf[:0])
 			if len(p.annexBBuf) > 0 {
-				// Prepend SPS/PPS for keyframes so the decoder can initialize.
-				// Use prependBuf as a separate destination to avoid aliasing
-				// (PrependSPSPPS reads from annexBBuf while writing to dst).
+				// Prepend parameter sets for keyframes so the decoder can initialize.
+				// Use prependBuf as a separate destination to avoid aliasing.
 				decoderInput := p.annexBBuf
 				if f.isKeyframe && len(f.sps) > 0 {
-					p.prependBuf = codec.PrependSPSPPSInto(f.sps, f.pps, p.annexBBuf, p.prependBuf[:0])
+					if isHEVC {
+						p.prependBuf = codec.PrependVPSSPSPPSInto(f.vps, f.sps, f.pps, p.annexBBuf, p.prependBuf[:0])
+					} else {
+						p.prependBuf = codec.PrependSPSPPSInto(f.sps, f.pps, p.annexBBuf, p.prependBuf[:0])
+					}
 					decoderInput = p.prependBuf
 				}
 
@@ -454,6 +458,7 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 								"wireDataLen", len(f.wireData),
 								"annexBLen", len(p.annexBBuf),
 								"hasSPS", len(f.sps) > 0,
+								"codec", f.Codec(),
 							)
 						}
 					}
@@ -703,8 +708,8 @@ func (p *Player) holdLoop(ctx context.Context, outputPTS *int64) {
 	}
 }
 
-// reencodeForBrowser re-encodes a decoded YUV frame to 8-bit H.264 for
-// browser relay output. Creates the encoder lazily on first call.
+// reencodeForBrowser re-encodes a decoded YUV frame to browser-compatible
+// format for relay output. Creates the encoder lazily on first call.
 // Returns nil wireData if no encoder factory is set or encoding fails.
 func (p *Player) reencodeForBrowser(yuv []byte, w, h int, pts int64, isKeyframe bool) (wireData []byte, isKF bool, sps, pps []byte) {
 	if p.config.EncoderFactory == nil {
@@ -735,17 +740,19 @@ func (p *Player) reencodeForBrowser(yuv []byte, w, h int, pts int64, isKeyframe 
 		return nil, false, nil, nil
 	}
 
-	// FFmpeg encoder returns Annex B — convert to AVC1 for the relay (reuses buffer).
-	p.avc1Buf = codec.AnnexBToAVC1Into(encoded, p.avc1Buf[:0])
+	// FFmpeg encoder returns Annex B — convert to wire format for the relay (reuses buffer).
+	p.avc1Buf = codec.AnnexBToWireInto(encoded, p.avc1Buf[:0])
 	// Deep-copy: downstream consumers (BroadcastVideo) retain frame references
 	// in the GOP cache and send them asynchronously via channels. Without a copy,
 	// the next encode cycle overwrites the aliased scratch buffer.
-	avc1 := make([]byte, len(p.avc1Buf))
-	copy(avc1, p.avc1Buf)
+	wire := make([]byte, len(p.avc1Buf))
+	copy(wire, p.avc1Buf)
 
 	// Extract SPS/PPS from keyframes for relay VideoInfo.
+	// The re-encoder always produces H.264 output for browser compatibility,
+	// so we use H.264 NALU type parsing here.
 	if encKF {
-		for _, nalu := range codec.ExtractNALUs(avc1) {
+		for _, nalu := range codec.ExtractNALUs(wire) {
 			if len(nalu) == 0 {
 				continue
 			}
@@ -758,7 +765,7 @@ func (p *Player) reencodeForBrowser(yuv []byte, w, h int, pts int64, isKeyframe 
 		}
 	}
 
-	return avc1, encKF, sps, pps
+	return wire, encKF, sps, pps
 }
 
 // estimateFPSFromClipFrames estimates FPS from buffered frame PTS values.

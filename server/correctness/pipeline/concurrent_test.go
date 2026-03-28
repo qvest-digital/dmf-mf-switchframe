@@ -217,7 +217,7 @@ func TestMultiSourceConcurrentDecode(t *testing.T) {
 		for i := 0; i < 30; i++ {
 			yuv := testutil.GenerateSolidYUV420(w, h, 40, 128, 128)
 			pf := &switcher.ProcessingFrame{
-				YUV:        yuv,
+				Data:       yuv,
 				Width:      w,
 				Height:     h,
 				PTS:        int64(90000 + i*ptsDelta),
@@ -409,7 +409,7 @@ func TestMultiSourceRapidCutUnderLoad(t *testing.T) {
 				for j := 0; j < 5; j++ {
 					yuv := testutil.GenerateSolidYUV420(w, h, s.yVal, 128, 128)
 					pf := &switcher.ProcessingFrame{
-						YUV:        yuv,
+						Data:       yuv,
 						Width:      w,
 						Height:     h,
 						PTS:        int64(90000 + j*ptsDelta),
@@ -569,7 +569,7 @@ func TestMultiSourceFramePoolContention(t *testing.T) {
 		for i := 0; i < 15; i++ {
 			yuv := testutil.GenerateSolidYUV420(w, h, 128, 128, 128)
 			pf := &switcher.ProcessingFrame{
-				YUV:        yuv,
+				Data:       yuv,
 				Width:      w,
 				Height:     h,
 				PTS:        int64(90000 + i*ptsDelta),
@@ -702,7 +702,7 @@ func TestMultiSourceDecodeResolutionMix(t *testing.T) {
 		for i := 0; i < 30; i++ {
 			yuv := testutil.GenerateSolidYUV420(320, 240, 80, 128, 128)
 			pf := &switcher.ProcessingFrame{
-				YUV:        yuv,
+				Data:       yuv,
 				Width:      320,
 				Height:     240,
 				PTS:        int64(90000 + i*ptsDelta),

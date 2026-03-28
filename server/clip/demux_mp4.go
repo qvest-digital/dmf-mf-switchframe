@@ -10,9 +10,10 @@ import (
 	mp4 "github.com/abema/go-mp4"
 )
 
-// demuxMP4 reads an MP4/M4V/MOV file and extracts H.264 video frames and AAC
-// audio frames. Video frames are returned in AVC1 format with SPS/PPS set on
-// keyframes. Audio frames contain raw AAC payloads (no ADTS headers).
+// demuxMP4 reads an MP4/M4V/MOV file and extracts H.264 or HEVC video frames and AAC
+// audio frames. Video frames are returned in wire format (4-byte length-prefixed NALUs)
+// with parameter sets (SPS/PPS for H.264, VPS/SPS/PPS for HEVC) set on keyframes.
+// Audio frames contain raw AAC payloads (no ADTS headers).
 func demuxMP4(path string) ([]BufferedFrame, []BufferedAudioFrame, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -68,12 +69,12 @@ func demuxMP4(path string) ([]BufferedFrame, []BufferedAudioFrame, error) {
 	}
 
 	// B-frame handling: video frames are kept in sample table order (decode order)
-	// because the H.264 decoder needs reference frames before B-frames that
-	// depend on them. Sorting by PTS would reorder to display order, breaking
-	// B-frame decoding. The FFmpeg decoder handles reordering internally,
-	// returning EAGAIN while it buffers reference frames. After playback, the
-	// player drains remaining buffered frames via SendEOS + ReceiveFrame
-	// (see player.go drain phase). The output encoder uses tune=zerolatency
+	// because the decoder needs reference frames before B-frames that depend on
+	// them. Sorting by PTS would reorder to display order, breaking B-frame
+	// decoding. The FFmpeg decoder handles reordering internally, returning
+	// EAGAIN while it buffers reference frames. After playback, the player
+	// drains remaining buffered frames via SendEOS + ReceiveFrame (see
+	// player.go drain phase). The output encoder uses tune=zerolatency
 	// (bframes=0), so the output stream never contains B-frames.
 
 	// Audio frames have no B-frame reordering — sort by PTS for proper playback.
@@ -93,12 +94,14 @@ type mp4Track struct {
 	handlerType string
 	timescale   uint32
 
-	// Video-specific: SPS/PPS from avcC box.
+	// Video-specific: parameter sets from avcC or hvcC box.
+	vps            []byte // VPS NAL unit (HEVC only)
 	sps            []byte
 	pps            []byte
-	naluLengthSize int // typically 4
+	naluLengthSize int    // typically 4
 	width          uint16
 	height         uint16
+	videoCodec     string // "h264" or "h265"
 
 	// Audio-specific: from esds and mp4a boxes.
 	audioObjectType  int
@@ -178,6 +181,7 @@ func parseMP4Tracks(r io.ReadSeeker) ([]mp4Track, error) {
 			vse := box.(*mp4.VisualSampleEntry)
 			currentTrack.width = vse.Width
 			currentTrack.height = vse.Height
+			currentTrack.videoCodec = "h264"
 			// Expand to find avcC child box.
 			_, err = h.Expand()
 			return nil, err
@@ -201,6 +205,52 @@ func parseMP4Tracks(r io.ReadSeeker) ([]mp4Track, error) {
 				pps := avcc.PictureParameterSets[0].NALUnit
 				currentTrack.pps = make([]byte, len(pps))
 				copy(currentTrack.pps, pps)
+			}
+			return nil, nil
+
+		case mp4.BoxType(mp4.BoxTypeHvc1()), mp4.BoxType(mp4.BoxTypeHev1()):
+			if currentTrack == nil {
+				return nil, nil
+			}
+			box, _, err := h.ReadPayload()
+			if err != nil {
+				return nil, err
+			}
+			vse := box.(*mp4.VisualSampleEntry)
+			currentTrack.width = vse.Width
+			currentTrack.height = vse.Height
+			currentTrack.videoCodec = "h265"
+			// Expand to find hvcC child box.
+			_, err = h.Expand()
+			return nil, err
+
+		case mp4.BoxType(mp4.BoxTypeHvcC()):
+			if currentTrack == nil {
+				return nil, nil
+			}
+			box, _, err := h.ReadPayload()
+			if err != nil {
+				return nil, err
+			}
+			hvcc := box.(*mp4.HvcC)
+			currentTrack.naluLengthSize = int(hvcc.LengthSizeMinusOne) + 1
+			// Extract VPS, SPS, PPS from HEVC NALU arrays.
+			for _, arr := range hvcc.NaluArrays {
+				if len(arr.Nalus) == 0 {
+					continue
+				}
+				nalu := arr.Nalus[0].NALUnit
+				switch arr.NaluType {
+				case 32: // VPS
+					currentTrack.vps = make([]byte, len(nalu))
+					copy(currentTrack.vps, nalu)
+				case 33: // SPS
+					currentTrack.sps = make([]byte, len(nalu))
+					copy(currentTrack.sps, nalu)
+				case 34: // PPS
+					currentTrack.pps = make([]byte, len(nalu))
+					copy(currentTrack.pps, nalu)
+				}
 			}
 			return nil, nil
 
@@ -561,12 +611,16 @@ func readVideoSamples(r io.ReadSeeker, track *mp4Track) ([]BufferedFrame, error)
 			wireData:   wireData,
 			pts:        pts90k,
 			isKeyframe: isKey,
+			codec:      track.videoCodec,
 		}
 
 		if isKey {
-			// Deep-copy SPS/PPS so each keyframe owns independent slices,
+			// Deep-copy parameter sets so each keyframe owns independent slices,
 			// matching the TS demux path. Shared references would let a
-			// mutation of one frame's SPS/PPS corrupt all other keyframes.
+			// mutation of one frame's sets corrupt all other keyframes.
+			if len(track.vps) > 0 {
+				frame.vps = append([]byte(nil), track.vps...)
+			}
 			frame.sps = append([]byte(nil), track.sps...)
 			frame.pps = append([]byte(nil), track.pps...)
 		}

@@ -10,7 +10,7 @@ import (
 var _ PipelineNode = (*layoutCompositorNode)(nil)
 
 // layoutCompositorNode composites PIP/split-screen overlays onto the program frame.
-// Wraps layout.Compositor as a PipelineNode. In-place: modifies src.YUV via
+// Wraps layout.Compositor as a PipelineNode. In-place: modifies src.Data via
 // compositor.ProcessFrame and returns src.
 //
 // Active only when the compositor has an active layout with enabled slots.
@@ -29,6 +29,12 @@ func (n *layoutCompositorNode) Latency() time.Duration { return time.Millisecond
 func (n *layoutCompositorNode) Close() error           { return nil }
 
 func (n *layoutCompositorNode) Process(dst, src *ProcessingFrame) *ProcessingFrame {
-	src.YUV = n.compositor.ProcessFrame(src.YUV, src.Width, src.Height)
-	return src
+	switch src.Format {
+	case ColorYUV422_10bit:
+		src.Data = n.compositor.ProcessFrame10(src.Data, src.Width, src.Height)
+		return src
+	default:
+		src.Data = n.compositor.ProcessFrame(src.Data, src.Width, src.Height)
+		return src
+	}
 }

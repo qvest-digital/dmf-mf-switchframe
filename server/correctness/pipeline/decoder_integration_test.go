@@ -584,7 +584,7 @@ func TestFullPipelineWithRealDecode(t *testing.T) {
 
 		for i := 0; i < 30; i++ {
 			pf := &switcher.ProcessingFrame{
-				YUV:        copyBytes(original),
+				Data:       copyBytes(original),
 				Width:      w,
 				Height:     h,
 				PTS:        int64(90000 + i*3000),

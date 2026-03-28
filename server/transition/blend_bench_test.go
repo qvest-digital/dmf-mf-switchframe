@@ -7,7 +7,7 @@ import "testing"
 // source frames in the native YUV domain.
 func BenchmarkBlendMix720p(b *testing.B) {
 	blender := mustNewFrameBlender(b, 1280, 720)
-	yuvSize := 1280 * 720 * 3 / 2
+	yuvSize := yuvFrameSize(1280, 720)
 	a := make([]byte, yuvSize)
 	bSlice := make([]byte, yuvSize)
 	fillTestPattern(a)
@@ -25,7 +25,7 @@ func BenchmarkBlendMix720p(b *testing.B) {
 // BenchmarkBlendMix1080p benchmarks the YUV420 mix blend at 1080p resolution.
 func BenchmarkBlendMix1080p(b *testing.B) {
 	blender := mustNewFrameBlender(b, 1920, 1080)
-	yuvSize := 1920 * 1080 * 3 / 2
+	yuvSize := yuvFrameSize(1920, 1080)
 	a := make([]byte, yuvSize)
 	bSlice := make([]byte, yuvSize)
 	fillTestPattern(a)
@@ -44,7 +44,7 @@ func BenchmarkBlendMix1080p(b *testing.B) {
 // at 1080p. This is more complex than mix (per-plane black blending).
 func BenchmarkBlendDip1080p(b *testing.B) {
 	blender := mustNewFrameBlender(b, 1920, 1080)
-	yuvSize := 1920 * 1080 * 3 / 2
+	yuvSize := yuvFrameSize(1920, 1080)
 	a := make([]byte, yuvSize)
 	bSlice := make([]byte, yuvSize)
 	fillTestPattern(a)
@@ -63,7 +63,7 @@ func BenchmarkBlendDip1080p(b *testing.B) {
 // FTB operates on a single source, fading toward YUV black (Y=0, Cb/Cr=128).
 func BenchmarkBlendFTB1080p(b *testing.B) {
 	blender := mustNewFrameBlender(b, 1920, 1080)
-	yuvSize := 1920 * 1080 * 3 / 2
+	yuvSize := yuvFrameSize(1920, 1080)
 	a := make([]byte, yuvSize)
 	fillTestPattern(a)
 
@@ -79,7 +79,7 @@ func BenchmarkBlendFTB1080p(b *testing.B) {
 // BenchmarkBlendWipe1080p benchmarks a horizontal-left wipe at 1080p.
 func BenchmarkBlendWipe1080p(b *testing.B) {
 	blender := mustNewFrameBlender(b, 1920, 1080)
-	yuvSize := 1920 * 1080 * 3 / 2
+	yuvSize := yuvFrameSize(1920, 1080)
 	a := make([]byte, yuvSize)
 	bSlice := make([]byte, yuvSize)
 	fillTestPattern(a)
@@ -97,7 +97,7 @@ func BenchmarkBlendWipe1080p(b *testing.B) {
 // BenchmarkBlendWipeVTop1080p benchmarks a vertical top-to-bottom wipe at 1080p.
 func BenchmarkBlendWipeVTop1080p(b *testing.B) {
 	blender := mustNewFrameBlender(b, 1920, 1080)
-	yuvSize := 1920 * 1080 * 3 / 2
+	yuvSize := yuvFrameSize(1920, 1080)
 	a := make([]byte, yuvSize)
 	bSlice := make([]byte, yuvSize)
 	fillTestPattern(a)
@@ -115,7 +115,7 @@ func BenchmarkBlendWipeVTop1080p(b *testing.B) {
 // BenchmarkBlendWipeBox1080p benchmarks a box-center-out wipe at 1080p (per-pixel).
 func BenchmarkBlendWipeBox1080p(b *testing.B) {
 	blender := mustNewFrameBlender(b, 1920, 1080)
-	yuvSize := 1920 * 1080 * 3 / 2
+	yuvSize := yuvFrameSize(1920, 1080)
 	a := make([]byte, yuvSize)
 	bSlice := make([]byte, yuvSize)
 	fillTestPattern(a)
@@ -161,7 +161,7 @@ func BenchmarkWipeAlphaBoxCenterOut1080p(b *testing.B) {
 
 func BenchmarkBlendMix4K(b *testing.B) {
 	blender := mustNewFrameBlender(b, 3840, 2160)
-	yuvSize := 3840 * 2160 * 3 / 2
+	yuvSize := yuvFrameSize(3840, 2160)
 	a := make([]byte, yuvSize)
 	bs := make([]byte, yuvSize)
 	fillTestPattern(a)
@@ -176,7 +176,7 @@ func BenchmarkBlendMix4K(b *testing.B) {
 
 func BenchmarkBlendDip4K(b *testing.B) {
 	blender := mustNewFrameBlender(b, 3840, 2160)
-	yuvSize := 3840 * 2160 * 3 / 2
+	yuvSize := yuvFrameSize(3840, 2160)
 	a := make([]byte, yuvSize)
 	bs := make([]byte, yuvSize)
 	fillTestPattern(a)
@@ -191,7 +191,7 @@ func BenchmarkBlendDip4K(b *testing.B) {
 
 func BenchmarkBlendFTB4K(b *testing.B) {
 	blender := mustNewFrameBlender(b, 3840, 2160)
-	yuvSize := 3840 * 2160 * 3 / 2
+	yuvSize := yuvFrameSize(3840, 2160)
 	a := make([]byte, yuvSize)
 	fillTestPattern(a)
 	b.SetBytes(int64(yuvSize))
@@ -204,7 +204,7 @@ func BenchmarkBlendFTB4K(b *testing.B) {
 
 func BenchmarkBlendWipe4K(b *testing.B) {
 	blender := mustNewFrameBlender(b, 3840, 2160)
-	yuvSize := 3840 * 2160 * 3 / 2
+	yuvSize := yuvFrameSize(3840, 2160)
 	a := make([]byte, yuvSize)
 	bs := make([]byte, yuvSize)
 	fillTestPattern(a)
@@ -220,7 +220,7 @@ func BenchmarkBlendWipe4K(b *testing.B) {
 // --- Per-kernel benchmarks ---
 
 func BenchmarkKernelUniform1080p(b *testing.B) {
-	n := 1920 * 1080 * 3 / 2
+	n := yuvFrameSize(1920, 1080)
 	a := make([]byte, n)
 	bs := make([]byte, n)
 	dst := make([]byte, n)

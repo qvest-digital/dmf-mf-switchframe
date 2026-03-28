@@ -172,7 +172,7 @@ func (d *recordingDecoder) Decode(data []byte) ([]byte, int, int, error) {
 	copy(cp, data)
 	*d.received = cp
 	w, h := 320, 180
-	return make([]byte, w*h*3/2), w, h, nil
+	return make([]byte, yuvFrameSize(w, h)), w, h, nil
 }
 
 func (d *recordingDecoder) Close() {}
@@ -185,7 +185,7 @@ type countingDecoder struct {
 func (d *countingDecoder) Decode(data []byte) ([]byte, int, int, error) {
 	*d.count++
 	w, h := 320, 180
-	return make([]byte, w*h*3/2), w, h, nil
+	return make([]byte, yuvFrameSize(w, h)), w, h, nil
 }
 
 func (d *countingDecoder) Close() {}
@@ -199,7 +199,7 @@ type slowDecoder struct {
 func (d *slowDecoder) Decode(data []byte) ([]byte, int, int, error) {
 	time.Sleep(d.delay)
 	w, h := 320, 180
-	return make([]byte, w*h*3/2), w, h, nil
+	return make([]byte, yuvFrameSize(w, h)), w, h, nil
 }
 
 func (d *slowDecoder) Close() {}

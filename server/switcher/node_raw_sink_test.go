@@ -33,17 +33,17 @@ func TestRawSinkNode_ProcessZeroCopy(t *testing.T) {
 	var called bool
 	fn := RawVideoSink(func(pf *ProcessingFrame) {
 		called = true
-		receivedYUV = pf.YUV
+		receivedYUV = pf.Data
 		receivedPTS = pf.PTS
 	})
 	sink.Store(&fn)
 
 	n := &rawSinkNode{sink: &sink, name: "raw-sink-test"}
 
-	srcYUV := make([]byte, 8*8*3/2)
+	srcYUV := make([]byte, ColorYUV420_8bit.FrameSize(8, 8))
 	srcYUV[0] = 0xAA
 	pf := &ProcessingFrame{
-		YUV:    srcYUV,
+		Data:    srcYUV,
 		Width:  8,
 		Height: 8,
 		PTS:    1000,
@@ -59,7 +59,7 @@ func TestRawSinkNode_ProcessZeroCopy(t *testing.T) {
 	// Zero-copy: sink received the same YUV buffer, not a deep copy
 	require.Same(t, &srcYUV[0], &receivedYUV[0], "sink should receive same YUV buffer (zero-copy)")
 	// Frame stays alive for the pipeline (refs=1 after Ref+ReleaseYUV cycle)
-	require.NotNil(t, out.YUV)
+	require.NotNil(t, out.Data)
 	require.Equal(t, int32(1), pf.Refs())
 }
 
@@ -68,7 +68,7 @@ func TestRawSinkNode_ProcessSkipsNilSink(t *testing.T) {
 	n := &rawSinkNode{sink: &sink, name: "raw-sink-test"}
 
 	pf := &ProcessingFrame{
-		YUV:    make([]byte, 8*8*3/2),
+		Data:    make([]byte, ColorYUV420_8bit.FrameSize(8, 8)),
 		Width:  8,
 		Height: 8,
 	}

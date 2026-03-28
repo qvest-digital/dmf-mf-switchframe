@@ -29,7 +29,7 @@ func makeGradientFrame(w, h int) *ProcessingFrame {
 	}
 
 	return &ProcessingFrame{
-		YUV:    yuv,
+		Data:    yuv,
 		Width:  w,
 		Height: h,
 	}
@@ -59,7 +59,7 @@ func makeShiftedFrame(w, h, dx, dy int) *ProcessingFrame {
 	}
 
 	return &ProcessingFrame{
-		YUV:    yuv,
+		Data:    yuv,
 		Width:  w,
 		Height: h,
 	}
@@ -84,7 +84,7 @@ func makeVerticalGradientFrame(w, h int) *ProcessingFrame {
 	}
 
 	return &ProcessingFrame{
-		YUV:    yuv,
+		Data:    yuv,
 		Width:  w,
 		Height: h,
 	}
@@ -109,7 +109,7 @@ func makeVerticalShiftedFrame(w, h, dy int) *ProcessingFrame {
 	}
 
 	return &ProcessingFrame{
-		YUV:    yuv,
+		Data:    yuv,
 		Width:  w,
 		Height: h,
 	}
@@ -139,7 +139,7 @@ func makeCheckerGradientFrame(w, h int) *ProcessingFrame {
 	}
 
 	return &ProcessingFrame{
-		YUV:    yuv,
+		Data:    yuv,
 		Width:  w,
 		Height: h,
 	}
@@ -156,7 +156,7 @@ func makeTranslatedFrame(prev *ProcessingFrame, dx, dy int) *ProcessingFrame {
 	crSize := cbSize
 	yuv := make([]byte, ySize+cbSize+crSize)
 
-	prevY := prev.YUV[:ySize]
+	prevY := prev.Data[:ySize]
 
 	// Fill with neutral gray (distinct from most gradient values)
 	for i := 0; i < ySize; i++ {
@@ -184,7 +184,7 @@ func makeTranslatedFrame(prev *ProcessingFrame, dx, dy int) *ProcessingFrame {
 	}
 
 	return &ProcessingFrame{
-		YUV:    yuv,
+		Data:    yuv,
 		Width:  w,
 		Height: h,
 	}
@@ -204,7 +204,7 @@ func makeUniformFrame(w, h int, yVal byte) *ProcessingFrame {
 	}
 
 	return &ProcessingFrame{
-		YUV:    yuv,
+		Data:    yuv,
 		Width:  w,
 		Height: h,
 	}
@@ -316,7 +316,7 @@ func TestDiamondSearch_TwoRegions(t *testing.T) {
 	currYUV := make([]byte, ySize+cbSize+crSize)
 	halfW := w / 2
 
-	prevY := prev.YUV[:ySize]
+	prevY := prev.Data[:ySize]
 	for row := 0; row < h; row++ {
 		for col := 0; col < w; col++ {
 			var srcCol int
@@ -338,7 +338,7 @@ func TestDiamondSearch_TwoRegions(t *testing.T) {
 		currYUV[i] = 128
 	}
 
-	curr := &ProcessingFrame{YUV: currYUV, Width: w, Height: h}
+	curr := &ProcessingFrame{Data: currYUV, Width: w, Height: h}
 	mvf := newMotionVectorField(w, h, bs)
 	estimateMotionField(prev, curr, mvf, 32)
 
@@ -882,14 +882,14 @@ func TestHalfPelWarp(t *testing.T) {
 		mvf.bwdY[i] = 0
 	}
 
-	frameSize := w * h * 3 / 2
+	frameSize := ColorYUV420_8bit.FrameSize(w, h)
 
 	// Run both reference and fast warp
 	refDst := make([]byte, frameSize)
-	mcfiInterpolateSmooth(refDst, f0.YUV, f1.YUV, w, h, mvf, 0.5)
+	mcfiInterpolateSmooth(refDst, f0.Data, f1.Data, w, h, mvf, 0.5)
 
 	fastDst := make([]byte, frameSize)
-	mcfiInterpolateFast(fastDst, f0.YUV, f1.YUV, w, h, mvf, 0.5)
+	mcfiInterpolateFast(fastDst, f0.Data, f1.Data, w, h, mvf, 0.5)
 
 	// Fast should match reference within ±1 LSB
 	maxDiff := 0
@@ -945,8 +945,8 @@ func BenchmarkDiamondSearch_SingleBlock(b *testing.B) {
 	prev := makeGradientFrame(w, h)
 	curr := makeShiftedFrame(w, h, 8, 0)
 
-	prevY := prev.YUV[:w*h]
-	currY := curr.YUV[:w*h]
+	prevY := prev.Data[:w*h]
+	currY := curr.Data[:w*h]
 
 	// Test block at center of frame
 	bx := (w/2/16)*16 - 16
@@ -965,7 +965,7 @@ func BenchmarkDiamondSearch_SingleBlock(b *testing.B) {
 func TestDiamondSearch_StaticBlockEarlyExit(t *testing.T) {
 	w, h := 320, 240
 	frame := makeGradientFrame(w, h)
-	frameY := frame.YUV[:w*h]
+	frameY := frame.Data[:w*h]
 
 	// Identical frames: SAD(0,0) = 0, which is < staticBlockSADThreshold.
 	// Should return (0,0) with SAD=0 without running diamond iterations.
@@ -981,7 +981,7 @@ func TestDiamondSearch_NearStaticBlockEarlyExit(t *testing.T) {
 
 	// Create a copy with tiny noise (avg diff < 1 per pixel → SAD < 256)
 	noisy := make([]byte, w*h)
-	copy(noisy, frame.YUV[:w*h])
+	copy(noisy, frame.Data[:w*h])
 	// Add +1 to every other pixel in a 16x16 block at (32,32)
 	for row := 32; row < 48; row++ {
 		for col := 32; col < 48; col += 2 {
@@ -990,7 +990,7 @@ func TestDiamondSearch_NearStaticBlockEarlyExit(t *testing.T) {
 	}
 	// SAD for this block = 128 (half of 256 pixels differ by 1), well under threshold
 
-	mvx, mvy, sad := diamondSearch(frame.YUV[:w*h], w, noisy, w, 32, 32, w, h, 32, 16, 0, 0)
+	mvx, mvy, sad := diamondSearch(frame.Data[:w*h], w, noisy, w, 32, 32, w, h, 32, 16, 0, 0)
 	require.Equal(t, int16(0), mvx)
 	require.Equal(t, int16(0), mvy)
 	require.Equal(t, uint32(128), sad)
@@ -1005,7 +1005,7 @@ func TestDiamondSearch_AboveThresholdNoEarlyExit(t *testing.T) {
 
 	// Test interior block where motion is clearly detectable
 	bx, by := 80, 80
-	mvx, mvy, sad := diamondSearch(prev.YUV[:w*h], w, curr.YUV[:w*h], w, bx, by, w, h, 32, 16, 0, 0)
+	mvx, mvy, sad := diamondSearch(prev.Data[:w*h], w, curr.Data[:w*h], w, bx, by, w, h, 32, 16, 0, 0)
 
 	// The block shifted 8px right, so fwd MV should be (8,0)
 	require.Equal(t, int16(8), mvx, "should find real motion, not early-exit")
@@ -1016,7 +1016,7 @@ func TestDiamondSearch_AboveThresholdNoEarlyExit(t *testing.T) {
 func TestDiamondSearch_StaticWithNonZeroPredictor(t *testing.T) {
 	w, h := 320, 240
 	frame := makeGradientFrame(w, h)
-	frameY := frame.YUV[:w*h]
+	frameY := frame.Data[:w*h]
 
 	// Even with a non-zero predictor, identical frames have SAD(0,0) = 0.
 	// The early exit should fire and return (0,0), not the predictor.
@@ -1051,7 +1051,7 @@ func TestDiamondSearch_JustBelowThreshold(t *testing.T) {
 
 	// Create a copy where the block at (32,32) has SAD exactly 255 (just below 256)
 	modified := make([]byte, w*h)
-	copy(modified, frame.YUV[:w*h])
+	copy(modified, frame.Data[:w*h])
 	// Set 255 pixels to differ by 1 each, last pixel identical → SAD = 255
 	count := 0
 	for row := 32; row < 48 && count < 255; row++ {
@@ -1061,7 +1061,7 @@ func TestDiamondSearch_JustBelowThreshold(t *testing.T) {
 		}
 	}
 
-	mvx, mvy, sad := diamondSearch(frame.YUV[:w*h], w, modified, w, 32, 32, w, h, 32, 16, 0, 0)
+	mvx, mvy, sad := diamondSearch(frame.Data[:w*h], w, modified, w, 32, 32, w, h, 32, 16, 0, 0)
 	require.Equal(t, int16(0), mvx)
 	require.Equal(t, int16(0), mvy)
 	require.Equal(t, uint32(255), sad)
@@ -1187,7 +1187,7 @@ func BenchmarkDownsampleY2x_1080p(b *testing.B) {
 func BenchmarkDiamondSearch_Static(b *testing.B) {
 	w, h := 1920, 1080
 	frame := makeGradientFrame(w, h)
-	frameY := frame.YUV[:w*h]
+	frameY := frame.Data[:w*h]
 	bx, by := 960, 540
 
 	b.ResetTimer()
@@ -1202,8 +1202,8 @@ func BenchmarkDiamondSearch_Moving(b *testing.B) {
 	w, h := 1920, 1080
 	prev := makeGradientFrame(w, h)
 	curr := makeShiftedFrame(w, h, 8, 0)
-	prevY := prev.YUV[:w*h]
-	currY := curr.YUV[:w*h]
+	prevY := prev.Data[:w*h]
+	currY := curr.Data[:w*h]
 	bx, by := 960, 540
 
 	b.ResetTimer()

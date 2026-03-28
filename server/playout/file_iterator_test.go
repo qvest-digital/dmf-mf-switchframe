@@ -533,7 +533,7 @@ func TestFileFrameIterator_DecoderBufferReuseSafety(t *testing.T) {
 	mock := &mockReusingDecoder{
 		width:  4,
 		height: 2,
-		buf:    make([]byte, 4*2*3/2), // shared buffer
+		buf:    make([]byte, yuvFrameSize(4, 2)), // shared buffer
 	}
 
 	encoded := []encodedFrame{
@@ -582,7 +582,7 @@ func (d *mockVideoDecoder) Decode(h264 []byte) ([]byte, int, int, error) {
 	if len(h264) == 0 {
 		return nil, 0, 0, fmt.Errorf("empty input")
 	}
-	size := d.width * d.height * 3 / 2
+	size := yuvFrameSize(d.width, d.height)
 	yuv := make([]byte, size)
 	return yuv, d.width, d.height, nil
 }
@@ -613,7 +613,7 @@ func (d *mockDrainableDecoder) Decode(h264 []byte) ([]byte, int, int, error) {
 	if d.callCount <= d.bufferCount {
 		return nil, 0, 0, fmt.Errorf("buffering")
 	}
-	size := d.width * d.height * 3 / 2
+	size := yuvFrameSize(d.width, d.height)
 	yuv := make([]byte, size)
 	return yuv, d.width, d.height, nil
 }
@@ -628,7 +628,7 @@ func (d *mockDrainableDecoder) ReceiveFrame() ([]byte, int, int, error) {
 	if d.drainCount > d.drainFrames {
 		return nil, 0, 0, fmt.Errorf("no more frames")
 	}
-	size := d.width * d.height * 3 / 2
+	size := yuvFrameSize(d.width, d.height)
 	yuv := make([]byte, size)
 	return yuv, d.width, d.height, nil
 }
@@ -768,8 +768,8 @@ func TestFileFrameIterator_Integration(t *testing.T) {
 			continue
 		}
 
-		// YUV420 size must match width*height*3/2.
-		expectedSize := frame.Width * frame.Height * 3 / 2
+		// YUV420 size must match yuvFrameSize(width, height).
+		expectedSize := yuvFrameSize(frame.Width, frame.Height)
 		if len(frame.YUV) != expectedSize {
 			t.Errorf("frame %d: YUV size = %d, want %d (for %dx%d)",
 				count, len(frame.YUV), expectedSize, frame.Width, frame.Height)

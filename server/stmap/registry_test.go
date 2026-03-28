@@ -525,8 +525,8 @@ func TestRegistry_ProgramSnapshot_ConcurrentProcessAndDelete(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			buf := make([]byte, 8*8*3/2)
-			src := make([]byte, 8*8*3/2)
+			buf := make([]byte, yuvFrameSize(8, 8))
+			src := make([]byte, yuvFrameSize(8, 8))
 			for {
 				select {
 				case <-stop:

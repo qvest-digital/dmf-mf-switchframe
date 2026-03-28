@@ -338,6 +338,117 @@ void metal_nv12_to_yuv420p_cpu(const void* src, int srcPitch,
                                 void* y, void* cb, void* cr,
                                 int width, int height);
 
+// --- P210 (10-bit 4:2:2) CPU conversion (Apple Silicon unified memory) ---
+// YUV422P10LE (planar) → P210 (semi-planar): interleave Cb/Cr into UV plane.
+void metal_yuv422p10_to_p210_cpu(void* dst, int dstPitch,
+                                  const void* src, int width, int height);
+
+// P210 (semi-planar) → YUV422P10LE (planar): deinterleave UV to Cb/Cr planes.
+void metal_p210_to_yuv422p10_cpu(const void* src, int srcPitch,
+                                  void* dst, int width, int height);
+
+// --- P210 (10-bit 4:2:2) blend kernels ---
+typedef struct {
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;
+    int32_t pos256;
+} MetalBlendUniformP210Params;
+
+typedef struct {
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;
+    int32_t pos256;
+    uint16_t constVal;
+} MetalBlendFadeConstP210Params;
+
+MetalResult metal_blend_uniform_p210(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dst, MetalBufferRef a, MetalBufferRef b,
+    const MetalBlendUniformP210Params* params);
+
+MetalResult metal_blend_fade_const_p210(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dst, MetalBufferRef src,
+    const MetalBlendFadeConstP210Params* params);
+
+// --- P210 scale kernels ---
+typedef struct {
+    uint32_t srcW;
+    uint32_t srcH;
+    uint32_t srcPitch;
+    uint32_t dstW;
+    uint32_t dstH;
+    uint32_t dstPitch;
+} MetalScaleP210Params;
+
+MetalResult metal_scale_bilinear_p210_y(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dst, MetalBufferRef src, const MetalScaleP210Params* params);
+
+// --- P210 composite kernels ---
+typedef struct {
+    uint32_t dstW; uint32_t dstH; uint32_t dstPitch;
+    uint32_t srcW; uint32_t srcH; uint32_t srcPitch;
+    int32_t rectX; int32_t rectY; int32_t rectW; int32_t rectH;
+    int32_t alpha256;
+    int32_t cropX; int32_t cropY; int32_t cropW; int32_t cropH;
+} MetalPIPCompositeP210YParams;
+
+typedef struct {
+    uint32_t dstW; uint32_t dstChromaH; uint32_t dstPitch;
+    uint32_t srcW; uint32_t srcChromaH; uint32_t srcPitch;
+    int32_t rectX; int32_t rectY; int32_t rectCW; int32_t rectCH;
+    int32_t alpha256;
+    int32_t cropX; int32_t cropY; int32_t cropCW; int32_t cropCH;
+} MetalPIPCompositeP210UVParams;
+
+MetalResult metal_pip_composite_p210_y(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dst, MetalBufferRef src, const MetalPIPCompositeP210YParams* params);
+
+MetalResult metal_pip_composite_p210_uv(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dstUV, MetalBufferRef srcUV, const MetalPIPCompositeP210UVParams* params);
+
+// --- P210 V210 lossless conversion kernels ---
+typedef struct {
+    uint32_t width; uint32_t height;
+    uint32_t p210Pitch; uint32_t v210Stride32;
+} MetalV210P210Params;
+
+MetalResult metal_v210_to_p210(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef p210, MetalBufferRef v210, const MetalV210P210Params* params);
+
+MetalResult metal_p210_to_v210(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef v210, MetalBufferRef p210, const MetalV210P210Params* params);
+
+// --- P210 DSK overlay kernels ---
+typedef struct {
+    uint32_t width; uint32_t height;
+    uint32_t p210Pitch; uint32_t rgbaPitch;
+    int32_t alphaScale256;
+} MetalDSKP210FullFrameParams;
+
+MetalResult metal_dsk_overlay_p210(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef p210, MetalBufferRef rgba, const MetalDSKP210FullFrameParams* params);
+
+// --- P210 STMap kernels ---
+typedef struct {
+    uint32_t width; uint32_t height;
+    uint32_t dstPitch; uint32_t srcPitch;
+} MetalSTMapP210Params;
+
+typedef struct {
+    uint32_t lumaW; uint32_t lumaH;
+    uint32_t chromaW; uint32_t chromaH;
+    uint32_t dstPitch; uint32_t srcPitch;
+} MetalSTMapP210UVParams;
+
+MetalResult metal_stmap_warp_p210_y(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef src, MetalBufferRef stmapS, MetalBufferRef stmapT,
+    MetalBufferRef dst, const MetalSTMapP210Params* params);
+
+MetalResult metal_stmap_warp_p210_uv(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef srcUV, MetalBufferRef stmapS, MetalBufferRef stmapT,
+    MetalBufferRef dstUV, const MetalSTMapP210UVParams* params);
+
 // --- Gaussian blur kernels ---
 typedef struct {
     uint32_t width;

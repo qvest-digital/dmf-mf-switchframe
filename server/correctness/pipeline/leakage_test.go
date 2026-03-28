@@ -233,7 +233,7 @@ func TestNoFrameLeakageDuringTransition(t *testing.T) {
 		rampY := byte(20.0 + progress*210.0) // 20 → 230
 		yuv := testutil.GenerateSolidYUV420(testWidth, testHeight, rampY, 128, 128)
 		pf := &switcher.ProcessingFrame{
-			YUV:        copyBytes(yuv),
+			Data:       copyBytes(yuv),
 			Width:      testWidth,
 			Height:     testHeight,
 			PTS:        90000 + int64(30+i)*ptsDelta,
@@ -381,7 +381,7 @@ func TestNoFrameLeakageUnderPoolPressure(t *testing.T) {
 		for i := 0; i < framesPerCut; i++ {
 			yuv := testutil.GenerateSolidYUV420(testWidth, testHeight, activeColor.Y, activeColor.Cb, activeColor.Cr)
 			pf := &switcher.ProcessingFrame{
-				YUV:        copyBytes(yuv),
+				Data:       copyBytes(yuv),
 				Width:      testWidth,
 				Height:     testHeight,
 				PTS:        pts,
@@ -393,7 +393,7 @@ func TestNoFrameLeakageUnderPoolPressure(t *testing.T) {
 			// Also feed the inactive source to create pool contention.
 			yuvInactive := testutil.GenerateSolidYUV420(testWidth, testHeight, inactiveColor.Y, inactiveColor.Cb, inactiveColor.Cr)
 			pfInactive := &switcher.ProcessingFrame{
-				YUV:        copyBytes(yuvInactive),
+				Data:       copyBytes(yuvInactive),
 				Width:      testWidth,
 				Height:     testHeight,
 				PTS:        pts,

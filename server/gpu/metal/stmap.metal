@@ -57,6 +57,133 @@ kernel void stmap_warp_y(
     dst[gid.y * params.dstPitch + gid.x] = uint8_t(val + 0.5f);
 }
 
+// ============================================================================
+// P210 (10-bit 4:2:2) STMap warp kernels
+// ============================================================================
+
+struct STMapP210Params {
+    uint width;
+    uint height;
+    uint dstPitch;   // bytes per row
+    uint srcPitch;
+};
+
+struct STMapP210UVParams {
+    uint lumaW;
+    uint lumaH;
+    uint chromaW;
+    uint chromaH;    // full height for 4:2:2
+    uint dstPitch;
+    uint srcPitch;
+};
+
+// Y plane warp for P210: uint16 samples with bilinear interpolation.
+kernel void stmap_warp_p210_y(
+    device const uchar* src      [[buffer(0)]],
+    device const float* stmapS   [[buffer(1)]],
+    device const float* stmapT   [[buffer(2)]],
+    device uchar* dst            [[buffer(3)]],
+    constant STMapP210Params& params [[buffer(4)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= params.width || gid.y >= params.height) return;
+
+    uint stIdx = gid.y * params.width + gid.x;
+    float srcXf = stmapS[stIdx] * float(params.width - 1);
+    float srcYf = stmapT[stIdx] * float(params.height - 1);
+
+    srcXf = max(0.0f, min(srcXf, float(params.width - 1)));
+    srcYf = max(0.0f, min(srcYf, float(params.height - 1)));
+
+    int sx = int(srcXf);
+    int sy = int(srcYf);
+    float fx = srcXf - float(sx);
+    float fy = srcYf - float(sy);
+
+    uint sx1 = min(uint(sx + 1), params.width - 1);
+    uint sy1 = min(uint(sy + 1), params.height - 1);
+
+    uint srcSPR = params.srcPitch / 2;
+    device const ushort* srcU16 = (device const ushort*)src;
+
+    float v00 = float(srcU16[uint(sy)  * srcSPR + uint(sx)]);
+    float v10 = float(srcU16[uint(sy)  * srcSPR + sx1]);
+    float v01 = float(srcU16[sy1 * srcSPR + uint(sx)]);
+    float v11 = float(srcU16[sy1 * srcSPR + sx1]);
+
+    float top = v00 + (v10 - v00) * fx;
+    float bot = v01 + (v11 - v01) * fx;
+    float val = top + (bot - top) * fy;
+
+    uint dstSPR = params.dstPitch / 2;
+    ((device ushort*)dst)[gid.y * dstSPR + gid.x] = ushort(clamp(int(val + 0.5f), 0, 1023));
+}
+
+// UV plane warp for P210 (interleaved uint16 CbCr, full height for 4:2:2).
+// Averages ST coords from 1x2 luma block (horizontal pair) for chroma position.
+kernel void stmap_warp_p210_uv(
+    device const uchar* srcUV    [[buffer(0)]],
+    device const float* stmapS   [[buffer(1)]],
+    device const float* stmapT   [[buffer(2)]],
+    device uchar* dstUV          [[buffer(3)]],
+    constant STMapP210UVParams& params [[buffer(4)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= params.chromaW || gid.y >= params.chromaH) return;
+
+    // Average ST coords from the 1x2 horizontal luma pair (4:2:2 has full vertical resolution)
+    uint lx = gid.x * 2;
+    uint ly = gid.y;
+    uint lx1 = min(lx + 1, params.lumaW - 1);
+
+    float s0 = stmapS[ly * params.lumaW + lx];
+    float s1 = stmapS[ly * params.lumaW + lx1];
+    float t0 = stmapT[ly * params.lumaW + lx];
+    float t1 = stmapT[ly * params.lumaW + lx1];
+
+    float avgS = (s0 + s1) * 0.5f;
+    float avgT = (t0 + t1) * 0.5f;
+
+    float srcXf = avgS * float(params.chromaW - 1);
+    float srcYf = avgT * float(params.chromaH - 1);
+
+    srcXf = max(0.0f, min(srcXf, float(params.chromaW - 1)));
+    srcYf = max(0.0f, min(srcYf, float(params.chromaH - 1)));
+
+    int sx = int(srcXf);
+    int sy = int(srcYf);
+    float fx = srcXf - float(sx);
+    float fy = srcYf - float(sy);
+
+    uint sx1 = min(uint(sx + 1), params.chromaW - 1);
+    uint sy1 = min(uint(sy + 1), params.chromaH - 1);
+
+    uint srcSPR = params.srcPitch / 2;
+    device const ushort* srcU16 = (device const ushort*)srcUV;
+
+    // Bilinear for Cb
+    float u00 = float(srcU16[uint(sy) * srcSPR + uint(sx) * 2]);
+    float u10 = float(srcU16[uint(sy) * srcSPR + sx1 * 2]);
+    float u01 = float(srcU16[sy1 * srcSPR + uint(sx) * 2]);
+    float u11 = float(srcU16[sy1 * srcSPR + sx1 * 2]);
+    float uTop = u00 + (u10 - u00) * fx;
+    float uBot = u01 + (u11 - u01) * fx;
+    float uVal = uTop + (uBot - uTop) * fy;
+
+    // Bilinear for Cr
+    float v00 = float(srcU16[uint(sy) * srcSPR + uint(sx) * 2 + 1]);
+    float v10 = float(srcU16[uint(sy) * srcSPR + sx1 * 2 + 1]);
+    float v01 = float(srcU16[sy1 * srcSPR + uint(sx) * 2 + 1]);
+    float v11 = float(srcU16[sy1 * srcSPR + sx1 * 2 + 1]);
+    float vTop = v00 + (v10 - v00) * fx;
+    float vBot = v01 + (v11 - v01) * fx;
+    float vVal = vTop + (vBot - vTop) * fy;
+
+    uint dstSPR = params.dstPitch / 2;
+    ((device ushort*)dstUV)[gid.y * dstSPR + gid.x * 2]     = ushort(clamp(int(uVal + 0.5f), 0, 1023));
+    ((device ushort*)dstUV)[gid.y * dstSPR + gid.x * 2 + 1] = ushort(clamp(int(vVal + 0.5f), 0, 1023));
+}
+
 // UV plane warp (NV12 interleaved, half resolution)
 // Averages ST coords from 2x2 luma block for chroma position.
 kernel void stmap_warp_uv(

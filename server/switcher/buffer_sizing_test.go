@@ -12,7 +12,7 @@ import (
 // source_decoder slices buffer to actual frame dimensions, not pool buffer size.
 func TestSourceDecoder_YUVBufferMatchesFrameSize(t *testing.T) {
 	// Pool is 1080p (bufSize=3,110,400) but decoder produces 320x240 frames.
-	pool := NewFramePool(4, 1920, 1080)
+	pool := NewFramePool(4, 1920, 1080, ColorYUV420_8bit)
 
 	factory := func() (transition.VideoDecoder, error) {
 		return transition.NewMockDecoder(320, 240), nil
@@ -57,25 +57,25 @@ func TestSourceDecoder_YUVBufferMatchesFrameSize(t *testing.T) {
 	defer mu.Unlock()
 	pf := received[0]
 
-	expectedSize := pf.Width * pf.Height * 3 / 2 // 320*240*3/2 = 115200
-	if len(pf.YUV) != expectedSize {
-		t.Errorf("pf.YUV len = %d, want %d (Width=%d, Height=%d)",
-			len(pf.YUV), expectedSize, pf.Width, pf.Height)
+	expectedSize := ColorYUV420_8bit.FrameSize(pf.Width, pf.Height) // ColorYUV420_8bit.FrameSize(320, 240) = 115200
+	if len(pf.Data) != expectedSize {
+		t.Errorf("pf.Data len = %d, want %d (Width=%d, Height=%d)",
+			len(pf.Data), expectedSize, pf.Width, pf.Height)
 	}
 }
 
 // DeepCopy preserves source YUV slice length, not pool buffer capacity.
 func TestDeepCopy_PreservesYUVLength(t *testing.T) {
-	pool := NewFramePool(4, 1920, 1080)
+	pool := NewFramePool(4, 1920, 1080, ColorYUV420_8bit)
 
 	// Create a 720p frame using a pool buffer sliced to 720p.
 	buf := pool.Acquire()
-	yuvSize720p := 1280 * 720 * 3 / 2
+	yuvSize720p := ColorYUV420_8bit.FrameSize(1280, 720)
 	for i := 0; i < yuvSize720p; i++ {
 		buf[i] = byte(i % 251)
 	}
 	pf := &ProcessingFrame{
-		YUV:    buf[:yuvSize720p],
+		Data:    buf[:yuvSize720p],
 		Width:  1280,
 		Height: 720,
 		PTS:    90000,
@@ -84,38 +84,38 @@ func TestDeepCopy_PreservesYUVLength(t *testing.T) {
 
 	cp := pf.DeepCopy()
 
-	if len(cp.YUV) != yuvSize720p {
-		t.Errorf("DeepCopy YUV len = %d, want %d", len(cp.YUV), yuvSize720p)
+	if len(cp.Data) != yuvSize720p {
+		t.Errorf("DeepCopy YUV len = %d, want %d", len(cp.Data), yuvSize720p)
 	}
 
 	// Verify data was copied correctly.
 	for i := 0; i < yuvSize720p; i++ {
-		if cp.YUV[i] != pf.YUV[i] {
+		if cp.Data[i] != pf.Data[i] {
 			t.Fatalf("DeepCopy data mismatch at byte %d: got %d, want %d",
-				i, cp.YUV[i], pf.YUV[i])
+				i, cp.Data[i], pf.Data[i])
 		}
 	}
 
 	// The underlying buffer should still have full pool capacity
 	// (so Release works correctly).
-	poolBufSize := 1920 * 1080 * 3 / 2
-	if cap(cp.YUV) < poolBufSize {
-		t.Errorf("DeepCopy cap = %d, want >= %d (pool buf)", cap(cp.YUV), poolBufSize)
+	poolBufSize := ColorYUV420_8bit.FrameSize(1920, 1080)
+	if cap(cp.Data) < poolBufSize {
+		t.Errorf("DeepCopy cap = %d, want >= %d (pool buf)", cap(cp.Data), poolBufSize)
 	}
 }
 
 // DeepCopy without pool preserves YUV slice length.
 func TestDeepCopy_NoPool_PreservesLength(t *testing.T) {
 	pf := &ProcessingFrame{
-		YUV:    make([]byte, 115200), // 320x240
+		Data:    make([]byte, 115200), // 320x240
 		Width:  320,
 		Height: 240,
 	}
 
 	cp := pf.DeepCopy()
 
-	if len(cp.YUV) != 115200 {
-		t.Errorf("DeepCopy YUV len = %d, want 115200", len(cp.YUV))
+	if len(cp.Data) != 115200 {
+		t.Errorf("DeepCopy YUV len = %d, want 115200", len(cp.Data))
 	}
 }
 
@@ -123,10 +123,10 @@ func TestDeepCopy_NoPool_PreservesLength(t *testing.T) {
 // Tests the pattern used in broadcastProcessed: acquire pool buffer, copy
 // source data, slice to actual frame dimensions.
 func TestBroadcastProcessed_YUVBufferMatchesFrameSize(t *testing.T) {
-	pool := NewFramePool(4, 1920, 1080)
+	pool := NewFramePool(4, 1920, 1080, ColorYUV420_8bit)
 
 	width, height := 1280, 720
-	yuvSize720p := width * height * 3 / 2
+	yuvSize720p := ColorYUV420_8bit.FrameSize(width, height)
 	yuv := make([]byte, yuvSize720p)
 	for i := range yuv {
 		yuv[i] = byte(i % 251)
@@ -134,42 +134,42 @@ func TestBroadcastProcessed_YUVBufferMatchesFrameSize(t *testing.T) {
 
 	// Replicate the fixed broadcastProcessed pattern:
 	// acquire pool buf, copy source data, slice to actual size.
-	expectedSize := width * height * 3 / 2
+	expectedSize := ColorYUV420_8bit.FrameSize(width, height)
 	buf := pool.Acquire()
 	copy(buf, yuv[:expectedSize])
 	pf := &ProcessingFrame{
-		YUV: buf[:expectedSize], Width: width, Height: height,
+		Data: buf[:expectedSize], Width: width, Height: height,
 		pool: pool,
 	}
 
 	// The YUV buffer should match the frame dimensions.
-	if len(pf.YUV) != expectedSize {
-		t.Errorf("broadcastProcessed pf.YUV len = %d, want %d",
-			len(pf.YUV), expectedSize)
+	if len(pf.Data) != expectedSize {
+		t.Errorf("broadcastProcessed pf.Data len = %d, want %d",
+			len(pf.Data), expectedSize)
 	}
 
 	// Underlying buffer should still have pool capacity for Release.
-	poolBufSize := 1920 * 1080 * 3 / 2
-	if cap(pf.YUV) < poolBufSize {
-		t.Errorf("cap = %d, want >= %d (pool buf)", cap(pf.YUV), poolBufSize)
+	poolBufSize := ColorYUV420_8bit.FrameSize(1920, 1080)
+	if cap(pf.Data) < poolBufSize {
+		t.Errorf("cap = %d, want >= %d (pool buf)", cap(pf.Data), poolBufSize)
 	}
 
 	// Data should match source.
 	for i := 0; i < expectedSize; i++ {
-		if pf.YUV[i] != yuv[i] {
-			t.Fatalf("data mismatch at byte %d: got %d, want %d", i, pf.YUV[i], yuv[i])
+		if pf.Data[i] != yuv[i] {
+			t.Fatalf("data mismatch at byte %d: got %d, want %d", i, pf.Data[i], yuv[i])
 		}
 	}
 }
 
 // Pool buffers round-trip correctly through Release even when sliced.
 func TestFramePool_ReleaseAcceptsSubslice(t *testing.T) {
-	pool := NewFramePool(2, 1920, 1080)
-	poolBufSize := 1920 * 1080 * 3 / 2
+	pool := NewFramePool(2, 1920, 1080, ColorYUV420_8bit)
+	poolBufSize := ColorYUV420_8bit.FrameSize(1920, 1080)
 
 	// Acquire, slice to 720p, release.
 	buf := pool.Acquire()
-	smallSlice := buf[:1280*720*3/2]
+	smallSlice := buf[:ColorYUV420_8bit.FrameSize(1280, 720)]
 	pool.Release(smallSlice)
 
 	// Acquire again — should get a hit (buffer was returned).

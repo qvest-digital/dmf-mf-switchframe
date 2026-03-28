@@ -30,12 +30,20 @@ func (a *App) initClips() error {
 	}
 	slog.Info("clip store initialized", "path", clipDir, "maxBytes", a.cfg.ClipStorageMax)
 
+	// Use native 10-bit decoders for clips when the pipeline is professional mode,
+	// preserving 10-bit quality through the clip decode path.
+	pf := a.sw.PipelineFormat()
+	is10bitPipeline := pf.Color.ColorFormat == switcher.ColorYUV422_10bit
+
 	mgr := clip.NewManager(store, clip.ManagerConfig{
-		DecoderFactory: func() (clip.VideoDecoder, error) {
+		DecoderFactoryForCodec: func(codecName string) (clip.VideoDecoder, error) {
 			// Single-threaded decoder eliminates frame-level multithreading
 			// buffering delay — each Decode() produces output immediately
 			// (only B-frame reordering delay remains, typically 1-2 frames).
-			return codec.NewVideoDecoderSingleThread()
+			if is10bitPipeline {
+				return codec.NewVideoDecoderForCodecNative10bitSingleThread(codecName)
+			}
+			return codec.NewVideoDecoderForCodecSingleThread(codecName)
 		},
 		EncoderFactory: func(w, h, fpsNum, fpsDen int) (clip.VideoEncoder, error) {
 			bitrate := switcher.DefaultBitrateForResolution(w, h)
@@ -163,7 +171,7 @@ func (a *App) initClips() error {
 		pf := a.sw.PipelineFormat()
 		outYUV, outW, outH := yuv, w, h
 		if w != pf.Width || h != pf.Height {
-			targetSize := pf.Width * pf.Height * 3 / 2
+			targetSize := switcher.ColorYUV420_8bit.FrameSize(pf.Width, pf.Height)
 			if cap(clipScaleBuf) < targetSize {
 				clipScaleBuf = make([]byte, targetSize)
 			}
@@ -173,7 +181,7 @@ func (a *App) initClips() error {
 		}
 
 		frame := &switcher.ProcessingFrame{
-			YUV:        outYUV,
+			Data:        outYUV,
 			Width:      outW,
 			Height:     outH,
 			PTS:        pts,

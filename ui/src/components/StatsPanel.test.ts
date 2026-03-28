@@ -1458,4 +1458,25 @@ describe('StatsPanel', () => {
 		await vi.advanceTimersByTimeAsync(4100);
 		expect(getAllDiagnostics.mock.calls.length).toBeGreaterThan(initialCalls);
 	});
+
+	it('shows HW badge for HEVC hardware encoders', async () => {
+		mockFetch(mockSnapshot({
+			switcher: {
+				...mockSnapshot().switcher,
+				codec: { encoder: 'hevc_nvenc', decoder: 'hevc', hw_accel: true },
+			},
+		}));
+
+		const { container } = render(StatsPanel, {
+			props: { visible: true, onclose: vi.fn() },
+		});
+
+		await vi.advanceTimersByTimeAsync(100);
+
+		const panel = container.querySelector('.stats-panel');
+		expect(panel?.textContent).toContain('hevc_nvenc');
+		const hwBadge = container.querySelector('.hw-badge.hw');
+		expect(hwBadge).toBeTruthy();
+		expect(hwBadge?.textContent).toBe('HW');
+	});
 });

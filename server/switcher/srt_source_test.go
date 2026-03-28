@@ -106,12 +106,12 @@ func TestSRTSource_IngestRawVideo(t *testing.T) {
 	sw.RegisterSRTSource("srt:cam1")
 	require.NoError(t, sw.Cut(context.Background(), "srt:cam1"))
 
-	yuv := make([]byte, 4*4*3/2) // 24 bytes for 4x4 YUV420
+	yuv := make([]byte, ColorYUV420_8bit.FrameSize(4, 4)) // 24 bytes for 4x4 YUV420
 	for i := range yuv {
 		yuv[i] = byte(i)
 	}
 	pf := &ProcessingFrame{
-		YUV:        yuv,
+		Data:        yuv,
 		Width:      4,
 		Height:     4,
 		PTS:        1000,

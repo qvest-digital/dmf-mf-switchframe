@@ -2,18 +2,19 @@ package htmlgfx
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/zsiec/switchframe/server/sidecar"
 )
 
 // compositorSetter is the interface the Manager needs from graphics.Compositor.
@@ -24,23 +25,30 @@ type compositorSetter interface {
 // Manager manages a pool of browser instances in the CEF sidecar process.
 // It communicates over Unix domain sockets using the JSON control protocol
 // and binary frame protocol defined in protocol.go.
+//
+// Process lifecycle (spawn, restart, crash recovery) is delegated to
+// sidecar.Host. The Manager owns the CEF-specific control and frame
+// socket connections and read loops.
 type Manager struct {
-	compositor  compositorSetter
-	config      Config
+	compositor compositorSetter
+	config     Config
+	host       *sidecar.Host // nil until Start(); nil in test path (connectSockets)
+
+	mu          sync.Mutex
+	browsers    []*BrowserState
 	controlConn net.Conn
 	frameConn   net.Conn
-	process     *os.Process
-	socketDir   string // temp directory for Unix sockets
+	done        chan struct{} // closed on shutdown, checked by read loops
+	stopOnce    sync.Once
 
-	mu        sync.Mutex
-	browsers  []*BrowserState
-	done      chan struct{}
-	restartCh chan struct{} // buffered(1), signals restart loop
-	stopOnce  sync.Once
-	alive     atomic.Bool
-
-	restartCount atomic.Int64
+	// Test path fields — used when connectSockets() is called directly
+	// (tests) without going through Start()/Host. The Host handles all
+	// of this in production.
 	spawnGen     atomic.Int64
+	alive        atomic.Bool
+	restartCount atomic.Int64
+	restartCh    chan struct{} // buffered(1), signals restart loop
+	socketDir    string        // temp directory for Unix sockets (test path only)
 
 	onStateChange func()
 }
@@ -63,7 +71,7 @@ func NewManager(compositor compositorSetter, cfg Config) *Manager {
 	}
 }
 
-// Start spawns the CEF sidecar process and connects to it.
+// Start spawns the CEF sidecar process and connects to it using sidecar.Host.
 // If the sidecar binary is not found, it logs a warning and returns nil
 // (graceful degradation — HTML5 graphics won't be available but the server runs).
 func (m *Manager) Start() error {
@@ -85,146 +93,111 @@ func (m *Manager) Start() error {
 		return nil
 	}
 
-	if err := m.spawn(binPath); err != nil {
+	h := sidecar.NewHost(sidecar.Config{
+		Binary:                 binPath,
+		ReadyTimeout:           10 * time.Second,
+		DisableShutdownMessage: true, // Manager sends CEF-format shutdown in Close()
+		BuildArgs: func(socketDir string) []string {
+			controlPath := filepath.Join(socketDir, "control.sock")
+			framePath := filepath.Join(socketDir, "frames.sock")
+			userDataDir := filepath.Join(socketDir, "cef-data")
+			return []string{
+				"--control-socket", controlPath,
+				"--frame-socket", framePath,
+				"--user-data-dir", userDataDir,
+			}
+		},
+		Connect: func(socketDir string) (net.Conn, error) {
+			// CEF creates listeners, we connect to them.
+			controlPath := filepath.Join(socketDir, "control.sock")
+			var conn net.Conn
+			var err error
+			for i := 0; i < 50; i++ {
+				conn, err = net.Dial("unix", controlPath)
+				if err == nil {
+					return conn, nil
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			return nil, fmt.Errorf("connect control socket: %w", err)
+		},
+		OnRestart: func(gen int64) {
+			m.resetBrowserPool()
+			m.connectAfterSpawn()
+		},
+	})
+
+	m.host = h
+
+	if err := h.Start(context.Background()); err != nil {
 		return err
 	}
 
-	go m.restartLoop()
+	// Connect the frame socket and start read loops.
+	m.connectAfterSpawn()
 	return nil
 }
 
-// spawn starts the sidecar process and connects sockets.
-func (m *Manager) spawn(binPath string) error {
-	gen := m.spawnGen.Add(1)
-
-	// Create temp directory for Unix sockets.
-	socketDir, err := os.MkdirTemp("", "switchframe-cef-*")
-	if err != nil {
-		return fmt.Errorf("create socket dir: %w", err)
+// connectAfterSpawn connects the frame socket and starts the control and
+// frame read loops. Called after the Host has spawned the sidecar and
+// established the control connection, both on initial start and on restart.
+func (m *Manager) connectAfterSpawn() {
+	socketDir := m.host.SocketDir()
+	if socketDir == "" {
+		return
 	}
-	m.mu.Lock()
-	m.socketDir = socketDir
-	m.mu.Unlock()
-
-	controlPath := filepath.Join(socketDir, "control.sock")
 	framePath := filepath.Join(socketDir, "frames.sock")
 
-	// Use the socket dir as CEF's user data dir (unique per instance,
-	// prevents singleton lock conflicts between concurrent sessions).
-	userDataDir := filepath.Join(socketDir, "cef-data")
-
-	// Spawn the sidecar.
-	cmd := exec.Command(binPath,
-		"--control-socket", controlPath,
-		"--frame-socket", framePath,
-		"--user-data-dir", userDataDir,
-	)
-	cmd.Stderr = &sidecarLogger{prefix: "cef-sidecar"}
-
-	// Capture stdout to wait for READY signal.
-	stdout, err := cmd.StdoutPipe()
+	// Connect to the frame socket with retry.
+	var frameConn net.Conn
+	var err error
+	for i := 0; i < 50; i++ {
+		frameConn, err = net.Dial("unix", framePath)
+		if err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	if err != nil {
-		m.mu.Lock()
-		m.socketDir = ""
-		m.mu.Unlock()
-		_ = os.RemoveAll(socketDir)
-		return fmt.Errorf("stdout pipe: %w", err)
+		slog.Error("htmlgfx: failed to connect frame socket", "error", err)
+		m.host.TriggerRestart("frame socket connect failed")
+		return
 	}
 
-	if err := cmd.Start(); err != nil {
-		m.mu.Lock()
-		m.socketDir = ""
-		m.mu.Unlock()
-		_ = os.RemoveAll(socketDir)
-		return fmt.Errorf("start sidecar: %w", err)
+	// Get the control connection from the Host.
+	controlConn := m.host.Conn()
+	if controlConn == nil {
+		_ = frameConn.Close()
+		slog.Error("htmlgfx: no control connection from host")
+		m.host.TriggerRestart("no control connection")
+		return
 	}
+
+	gen := m.host.Generation()
+
 	m.mu.Lock()
-	m.process = cmd.Process
+	// Close any old connections from a previous generation.
+	if m.frameConn != nil {
+		_ = m.frameConn.Close()
+	}
+	m.controlConn = controlConn
+	m.frameConn = frameConn
 	m.mu.Unlock()
 
-	slog.Info("htmlgfx: sidecar started", "pid", cmd.Process.Pid, "binary", binPath)
+	slog.Info("htmlgfx: sidecar connected",
+		"control", filepath.Join(socketDir, "control.sock"),
+		"frames", framePath)
 
-	// Wait for READY signal (with timeout).
-	readyCh := make(chan error, 1)
-	go func() {
-		scanner := bufio.NewScanner(stdout)
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if line == "READY" {
-				readyCh <- nil
-				return
-			}
-		}
-		if err := scanner.Err(); err != nil {
-			readyCh <- fmt.Errorf("reading sidecar stdout: %w", err)
-		} else {
-			readyCh <- fmt.Errorf("sidecar exited before READY signal")
-		}
-	}()
-
-	select {
-	case err := <-readyCh:
-		if err != nil {
-			m.killProcess()
-			return err
-		}
-	case <-time.After(10 * time.Second):
-		m.killProcess()
-		return fmt.Errorf("sidecar did not send READY within 10s")
-	}
-
-	// Connect to the sidecar's sockets.
-	if err := m.connectSockets(controlPath, framePath, gen); err != nil {
-		m.killProcess()
-		return fmt.Errorf("connect to sidecar: %w", err)
-	}
-
-	slog.Info("htmlgfx: sidecar connected", "control", controlPath, "frames", framePath)
-
-	// Monitor for unexpected exit.
-	go m.watchProcess(cmd)
-
-	return nil
-}
-
-// watchProcess waits for the sidecar to exit and triggers restart if unexpected.
-func (m *Manager) watchProcess(cmd *exec.Cmd) {
-	err := cmd.Wait()
-
-	select {
-	case <-m.done:
-		return // expected shutdown
-	default:
-	}
-
-	slog.Error("htmlgfx: sidecar exited unexpectedly", "error", err)
-	m.triggerRestart("process exited")
-}
-
-// killProcess terminates the sidecar and cleans up.
-// It grabs m.mu to snapshot and nil-out process/socketDir, then
-// performs blocking cleanup outside the lock.
-func (m *Manager) killProcess() {
-	m.mu.Lock()
-	proc := m.process
-	m.process = nil
-	dir := m.socketDir
-	m.socketDir = ""
-	m.mu.Unlock()
-
-	if proc != nil {
-		_ = proc.Kill()
-		_, _ = proc.Wait() // reap zombie
-	}
-	if dir != "" {
-		_ = os.RemoveAll(dir)
-	}
+	go m.frameReadLoop(gen)
+	go m.controlReadLoop(gen)
 }
 
 // Alive returns whether the sidecar process is currently alive and connected.
-// Unlike the old Started() flag, Alive becomes false when Close() is called
-// or the sidecar process exits.
 func (m *Manager) Alive() bool {
+	if m.host != nil {
+		return m.host.Alive()
+	}
+	// Test path: use the local alive flag.
 	return m.alive.Load()
 }
 
@@ -235,22 +208,34 @@ func (m *Manager) Started() bool {
 
 // RestartCount returns the number of restart attempts made by the restart loop.
 func (m *Manager) RestartCount() int64 {
+	if m.host != nil {
+		return m.host.Restarts()
+	}
+	// Test path: use local counter.
 	return m.restartCount.Load()
 }
 
 // SocketDir returns the current socket directory path. Returns "" if no
 // sidecar is running.
 func (m *Manager) SocketDir() string {
+	if m.host != nil {
+		return m.host.SocketDir()
+	}
+	// Test path: use local field.
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.socketDir
 }
 
-// triggerRestart signals that the sidecar needs restarting due to an
-// unexpected socket closure or error. It sets alive to false and sends
-// on restartCh (non-blocking). If the manager is already shutting down
-// (done closed), this is a no-op.
+// triggerRestart signals that the sidecar needs restarting. If a Host is
+// present, it delegates to the Host. Otherwise (test path), it uses the
+// local restartCh and alive flag.
 func (m *Manager) triggerRestart(reason string) {
+	if m.host != nil {
+		m.host.TriggerRestart(reason)
+		return
+	}
+	// Test path: signal via local channels.
 	select {
 	case <-m.done:
 		return // intentional shutdown
@@ -264,7 +249,9 @@ func (m *Manager) triggerRestart(reason string) {
 	}
 }
 
-// restartLoop watches restartCh and respawns the sidecar with exponential backoff.
+// restartLoop watches restartCh and handles restart bookkeeping for the
+// test path (when no Host is present). In production, the Host's restart
+// loop handles all of this.
 func (m *Manager) restartLoop() {
 	backoff := time.Second
 	maxBackoff := 30 * time.Second
@@ -276,8 +263,7 @@ func (m *Manager) restartLoop() {
 		case <-m.restartCh:
 		}
 
-		// Kill existing process and clean up connections.
-		m.killProcess()
+		// Clean up connections.
 		m.resetBrowserPool()
 
 		m.mu.Lock()
@@ -306,14 +292,9 @@ func (m *Manager) restartLoop() {
 		case <-time.After(backoff):
 		}
 
-		if err := m.spawn(m.config.BinaryPath); err != nil {
-			slog.Error("htmlgfx: restart failed", "error", err)
-			backoff = min(backoff*2, maxBackoff)
-		} else {
-			slog.Info("htmlgfx: sidecar restarted successfully",
-				"restart_count", m.restartCount.Load())
-			backoff = time.Second // reset on success
-		}
+		// In test path, spawn will fail (no binary). Just track the attempt.
+		slog.Error("htmlgfx: restart failed (test path, no binary)")
+		backoff = min(backoff*2, maxBackoff)
 		m.restartCount.Add(1)
 	}
 }
@@ -336,9 +317,10 @@ func (m *Manager) resetBrowserPool() {
 }
 
 // connectSockets connects the manager to the sidecar's Unix domain sockets
-// and starts the read loop goroutines. The gen parameter is the spawn
-// generation — read loops use it to avoid triggering restarts for stale
-// connections after a new sidecar has already been spawned.
+// and starts the read loop goroutines. This is used by tests that bypass
+// the Host and connect directly to a mock sidecar. The gen parameter is
+// the spawn generation — read loops use it to avoid triggering restarts
+// for stale connections after a new sidecar has already been spawned.
 func (m *Manager) connectSockets(controlPath, framePath string, gen ...int64) error {
 	controlConn, err := net.Dial("unix", controlPath)
 	if err != nil {
@@ -630,10 +612,6 @@ func (m *Manager) Close() error {
 		m.controlConn = nil
 		fc := m.frameConn
 		m.frameConn = nil
-		proc := m.process
-		m.process = nil
-		dir := m.socketDir
-		m.socketDir = ""
 		m.mu.Unlock()
 
 		// Send shutdown best-effort.
@@ -641,6 +619,19 @@ func (m *Manager) Close() error {
 			_ = WriteControlCommand(cc, ControlCommand{Cmd: "shutdown"})
 		}
 
+		// If using the Host (production path), delegate process shutdown.
+		if m.host != nil {
+			if cc != nil {
+				_ = cc.Close()
+			}
+			if fc != nil {
+				_ = fc.Close()
+			}
+			closeErr = m.host.Close()
+			return
+		}
+
+		// Test path: close connections directly.
 		if cc != nil {
 			if err := cc.Close(); err != nil {
 				closeErr = err
@@ -651,56 +642,9 @@ func (m *Manager) Close() error {
 				closeErr = err
 			}
 		}
-
-		// Give the sidecar 2s to exit gracefully, then kill.
-		if proc != nil {
-			done := make(chan struct{})
-			go func() {
-				_, _ = proc.Wait()
-				close(done)
-			}()
-			select {
-			case <-done:
-			case <-time.After(2 * time.Second):
-				_ = proc.Kill()
-				<-done
-			}
-		}
-
-		if dir != "" {
-			_ = os.RemoveAll(dir)
-		}
 	})
 
 	return closeErr
-}
-
-// sidecarLogger forwards sidecar stderr lines to slog.
-type sidecarLogger struct {
-	prefix string
-	buf    []byte
-}
-
-func (l *sidecarLogger) Write(p []byte) (int, error) {
-	l.buf = append(l.buf, p...)
-	for {
-		idx := -1
-		for i, b := range l.buf {
-			if b == '\n' {
-				idx = i
-				break
-			}
-		}
-		if idx < 0 {
-			break
-		}
-		line := strings.TrimSpace(string(l.buf[:idx]))
-		l.buf = l.buf[idx+1:]
-		if line != "" {
-			slog.Info(l.prefix, "msg", line)
-		}
-	}
-	return len(p), nil
 }
 
 // frameReadLoop reads frames from the frame connection and delivers them
@@ -708,7 +652,7 @@ func (l *sidecarLogger) Write(p []byte) (int, error) {
 // generation so that stale loops don't trigger restarts for a new sidecar.
 func (m *Manager) frameReadLoop(gen int64) {
 	defer func() {
-		if m.spawnGen.Load() == gen {
+		if m.currentGen() == gen {
 			m.triggerRestart("frame socket closed")
 		}
 	}()
@@ -775,7 +719,7 @@ func (m *Manager) frameReadLoop(gen int64) {
 // per call. The gen parameter ties this loop to a specific spawn generation.
 func (m *Manager) controlReadLoop(gen int64) {
 	defer func() {
-		if m.spawnGen.Load() == gen {
+		if m.currentGen() == gen {
 			m.triggerRestart("control socket closed")
 		}
 	}()
@@ -817,6 +761,15 @@ func (m *Manager) controlReadLoop(gen int64) {
 		}
 		m.mu.Unlock()
 	}
+}
+
+// currentGen returns the current spawn generation. Uses Host.Generation()
+// if a Host is present, otherwise uses the local spawnGen counter (test path).
+func (m *Manager) currentGen() int64 {
+	if m.host != nil {
+		return m.host.Generation()
+	}
+	return m.spawnGen.Load()
 }
 
 // sendCommand writes a control command to the control connection.

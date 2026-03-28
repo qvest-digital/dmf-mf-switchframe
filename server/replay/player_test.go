@@ -26,7 +26,7 @@ type mockReplayDecoder struct {
 
 func (d *mockReplayDecoder) Decode(data []byte) ([]byte, int, int, error) {
 	d.decodeCount++
-	yuv := make([]byte, d.width*d.height*3/2)
+	yuv := make([]byte, yuvFrameSize(d.width, d.height))
 	// Mark first byte with decode count for identification.
 	yuv[0] = byte(d.decodeCount)
 	return yuv, d.width, d.height, nil
@@ -687,7 +687,7 @@ func TestBlendInterpolator(t *testing.T) {
 	interp := &blendInterpolator{}
 
 	// Two 4x4 frames: A is all black (Y=0), B is all white (Y=255)
-	size := 4 * 4 * 3 / 2 // YUV420
+	size := yuvFrameSize(4, 4) // YUV420
 	frameA := make([]byte, size)
 	frameB := make([]byte, size)
 	for i := range frameB[:16] { // Y plane
@@ -714,7 +714,7 @@ func TestBlendInterpolator(t *testing.T) {
 func TestBlendInterpolator_BufferReuse(t *testing.T) {
 	interp := &blendInterpolator{}
 
-	size := 8 * 8 * 3 / 2
+	size := yuvFrameSize(8, 8)
 	frameA := make([]byte, size)
 	frameB := make([]byte, size)
 	for i := range frameB {
@@ -742,7 +742,7 @@ func TestBlendInterpolator_AliasedBufferCorruption(t *testing.T) {
 	interp := &blendInterpolator{}
 
 	w, h := 8, 8
-	size := w * h * 3 / 2
+	size := yuvFrameSize(w, h)
 
 	// Frame A: all zeros
 	frameA := make([]byte, size)
@@ -792,7 +792,7 @@ func TestMCFIInterpolator_AliasedBufferCorruption(t *testing.T) {
 	require.NotNil(t, interp)
 
 	w, h := 32, 32
-	size := w * h * 3 / 2
+	size := yuvFrameSize(w, h)
 
 	// First pair: frame A = all 60, frame B = all 180
 	frameA := make([]byte, size)
@@ -839,7 +839,7 @@ func TestNewInterpolator(t *testing.T) {
 	assert.NotNil(t, interp)
 
 	// Verify it actually works.
-	size := 2 * 2 * 3 / 2
+	size := yuvFrameSize(2, 2)
 	a := make([]byte, size)
 	b := make([]byte, size)
 	for i := range b {
@@ -859,7 +859,7 @@ func TestMCFIInterpolator(t *testing.T) {
 
 	// Create two 32x32 frames (minimum for 16x16 block ME: 2 blocks wide, 2 tall).
 	w, h := 32, 32
-	size := w * h * 3 / 2
+	size := yuvFrameSize(w, h)
 	frameA := make([]byte, size)
 	frameB := make([]byte, size)
 
@@ -912,7 +912,7 @@ func TestMCFIInterpolator_CachesMVs(t *testing.T) {
 
 	// Use frames with spatial variation and motion so MVs are non-zero.
 	w, h := 32, 32
-	size := w * h * 3 / 2
+	size := yuvFrameSize(w, h)
 	frameA := make([]byte, size)
 	frameB := make([]byte, size)
 
@@ -1649,7 +1649,7 @@ func (d *mockDropDecoder) Decode(data []byte) ([]byte, int, int, error) {
 	if idx == d.dropIndex {
 		return nil, 0, 0, errors.New("corrupt frame")
 	}
-	yuv := make([]byte, d.width*d.height*3/2)
+	yuv := make([]byte, yuvFrameSize(d.width, d.height))
 	yuv[0] = byte(idx + 1) // mark for identification
 	return yuv, d.width, d.height, nil
 }
@@ -1781,7 +1781,7 @@ type verySlowMockDecoder struct {
 func (d *verySlowMockDecoder) Decode(data []byte) ([]byte, int, int, error) {
 	d.decodeCount++
 	time.Sleep(40 * time.Millisecond) // heavy decode latency
-	yuv := make([]byte, d.width*d.height*3/2)
+	yuv := make([]byte, yuvFrameSize(d.width, d.height))
 	yuv[0] = byte(d.decodeCount)
 	return yuv, d.width, d.height, nil
 }
@@ -2085,4 +2085,100 @@ func TestReplayPlayer_PauseBlocksOutputGOP(t *testing.T) {
 
 	p.Stop()
 	p.Wait()
+}
+
+func TestReplayPlayer_DualEncode_ProxyForBrowser(t *testing.T) {
+	clip := buildTestClip(1, 5) // 1 GOP, 5 frames
+
+	var browserFrames []*media.VideoFrame
+	var pipelineFrames []*media.VideoFrame
+	var mu sync.Mutex
+
+	// Track which encoder produced which output by using separate mock encoders.
+	proxyEncoder := &mockReplayEncoder{}
+	pipelineEncoder := &mockReplayEncoder{}
+
+	proxyFactory := func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+		return proxyEncoder, nil
+	}
+	pipelineFactory := func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+		return pipelineEncoder, nil
+	}
+
+	p := newReplayPlayer(PlayerConfig{
+		Clip:           clip,
+		Speed:          1.0,
+		Loop:           false,
+		DecoderFactory: mockDecoderFactory,
+		EncoderFactory: pipelineFactory,
+		ProxyEncoderFactory: proxyFactory,
+		Output: func(frame *media.VideoFrame) {
+			mu.Lock()
+			defer mu.Unlock()
+			browserFrames = append(browserFrames, &media.VideoFrame{PTS: frame.PTS})
+		},
+		PipelineVideoOutput: func(frame *media.VideoFrame) {
+			mu.Lock()
+			defer mu.Unlock()
+			pipelineFrames = append(pipelineFrames, &media.VideoFrame{PTS: frame.PTS})
+		},
+		OnDone: func() {},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	p.Start(ctx)
+	p.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Both encoders should have produced 5 frames.
+	require.Len(t, browserFrames, 5, "proxy encoder should produce 5 frames for browsers")
+	require.Len(t, pipelineFrames, 5, "pipeline encoder should produce 5 frames for pipeline output")
+
+	// Both should have been called.
+	proxyEncoder.mu.Lock()
+	proxyCount := proxyEncoder.encodeCount
+	proxyEncoder.mu.Unlock()
+	pipelineEncoder.mu.Lock()
+	pipelineCount := pipelineEncoder.encodeCount
+	pipelineEncoder.mu.Unlock()
+
+	require.Equal(t, 5, proxyCount, "proxy encoder should have encoded 5 frames")
+	require.Equal(t, 5, pipelineCount, "pipeline encoder should have encoded 5 frames")
+}
+
+func TestReplayPlayer_DualEncode_NoProxy_FallsBack(t *testing.T) {
+	// When ProxyEncoderFactory is nil, the main encoder should be used for Output.
+	clip := buildTestClip(1, 3)
+	var outputFrames []*media.VideoFrame
+	var mu sync.Mutex
+
+	p := newReplayPlayer(PlayerConfig{
+		Clip:           clip,
+		Speed:          1.0,
+		Loop:           false,
+		DecoderFactory: mockDecoderFactory,
+		EncoderFactory: mockEncoderFactory,
+		// ProxyEncoderFactory: nil (default — no proxy)
+		Output: func(frame *media.VideoFrame) {
+			mu.Lock()
+			defer mu.Unlock()
+			outputFrames = append(outputFrames, &media.VideoFrame{PTS: frame.PTS})
+		},
+		OnDone: func() {},
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	p.Start(ctx)
+	p.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	require.Len(t, outputFrames, 3, "without proxy, main encoder should produce 3 frames for Output")
 }

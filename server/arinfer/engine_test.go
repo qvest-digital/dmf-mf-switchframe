@@ -327,7 +327,7 @@ type mockDepthModel struct {
 	outputAddr uintptr // simulated output buffer address
 }
 
-func (m *mockDepthModel) Infer(inputPtr uintptr, w, h, pitch int, outputPtr uintptr) error {
+func (m *mockDepthModel) Infer(inputPtr uintptr, w, h, pitch int, outputPtr uintptr, format FrameFormat) error {
 	m.inferCount++
 	return m.inferErr
 }
@@ -349,11 +349,11 @@ type mockSAMModel struct {
 	maskAddr       uintptr // simulated mask output buffer address
 }
 
-func (m *mockSAMModel) Encode(inputPtr uintptr, w, h, pitch int) error {
+func (m *mockSAMModel) Encode(inputPtr uintptr, w, h, pitch int, format FrameFormat) error {
 	return nil
 }
 
-func (m *mockSAMModel) Propagate(inputPtr uintptr, w, h, pitch int, outputPtr uintptr) error {
+func (m *mockSAMModel) Propagate(inputPtr uintptr, w, h, pitch int, outputPtr uintptr, format FrameFormat) error {
 	m.propagateCount++
 	return m.propagateErr
 }
@@ -390,6 +390,8 @@ func (m *mockSAMModel) Prompts() []SAMPrompt {
 	copy(out, m.prompts)
 	return out
 }
+
+func (m *mockSAMModel) PreallocMask(w, h int) uintptr { return m.maskAddr }
 
 func (m *mockSAMModel) Close() {
 	m.closed = true

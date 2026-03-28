@@ -356,7 +356,7 @@ type blockingMockDecoder struct {
 
 func (d *blockingMockDecoder) Decode(data []byte) ([]byte, int, int, error) {
 	<-d.blockCh
-	return make([]byte, d.width*d.height*3/2), d.width, d.height, nil
+	return make([]byte, ColorYUV420_8bit.FrameSize(d.width, d.height)), d.width, d.height, nil
 }
 
 func (d *blockingMockDecoder) Close() {}
@@ -372,7 +372,7 @@ func (d *failingMockDecoder) Decode(data []byte) ([]byte, int, int, error) {
 	if d.calls <= d.failCount {
 		return nil, 0, 0, fmt.Errorf("decode error")
 	}
-	return make([]byte, 320*240*3/2), 320, 240, nil
+	return make([]byte, ColorYUV420_8bit.FrameSize(320, 240)), 320, 240, nil
 }
 
 func (d *failingMockDecoder) Close() {}
@@ -504,7 +504,7 @@ func (d *slowDecoder) Decode(data []byte) ([]byte, int, int, error) {
 		time.Sleep(d.delay)
 	}
 	w, h := 4, 4
-	yuv := make([]byte, w*h*3/2)
+	yuv := make([]byte, ColorYUV420_8bit.FrameSize(w, h))
 	return yuv, w, h, nil
 }
 
@@ -709,9 +709,9 @@ func TestSourceDecoder_ScalesToPipelineFormat(t *testing.T) {
 	if got.Width != 640 || got.Height != 480 {
 		t.Errorf("dimensions = %dx%d, want 640x480", got.Width, got.Height)
 	}
-	expectedSize := 640 * 480 * 3 / 2
-	if len(got.YUV) != expectedSize {
-		t.Errorf("YUV size = %d, want %d", len(got.YUV), expectedSize)
+	expectedSize := ColorYUV420_8bit.FrameSize(640, 480)
+	if len(got.Data) != expectedSize {
+		t.Errorf("YUV size = %d, want %d", len(got.Data), expectedSize)
 	}
 }
 
@@ -774,9 +774,9 @@ func TestSourceDecoder_SkipsScaleWhenResolutionMatches(t *testing.T) {
 	if got.Width != 320 || got.Height != 240 {
 		t.Errorf("dimensions = %dx%d, want 320x240", got.Width, got.Height)
 	}
-	expectedSize := 320 * 240 * 3 / 2
-	if len(got.YUV) != expectedSize {
-		t.Errorf("YUV size = %d, want %d", len(got.YUV), expectedSize)
+	expectedSize := ColorYUV420_8bit.FrameSize(320, 240)
+	if len(got.Data) != expectedSize {
+		t.Errorf("YUV size = %d, want %d", len(got.Data), expectedSize)
 	}
 }
 
@@ -853,9 +853,9 @@ func TestSourceDecoder_PipelineFormatChangeUpdatesScaling(t *testing.T) {
 	if frame1.Width != 640 || frame1.Height != 480 {
 		t.Errorf("frame 1: dimensions = %dx%d, want 640x480", frame1.Width, frame1.Height)
 	}
-	expectedSize1 := 640 * 480 * 3 / 2
-	if len(frame1.YUV) != expectedSize1 {
-		t.Errorf("frame 1: YUV size = %d, want %d", len(frame1.YUV), expectedSize1)
+	expectedSize1 := ColorYUV420_8bit.FrameSize(640, 480)
+	if len(frame1.Data) != expectedSize1 {
+		t.Errorf("frame 1: YUV size = %d, want %d", len(frame1.Data), expectedSize1)
 	}
 
 	// Step 2: Change pipeline format to 1280x720.
@@ -873,9 +873,9 @@ func TestSourceDecoder_PipelineFormatChangeUpdatesScaling(t *testing.T) {
 	if frame2.Width != 1280 || frame2.Height != 720 {
 		t.Errorf("frame 2: dimensions = %dx%d, want 1280x720", frame2.Width, frame2.Height)
 	}
-	expectedSize2 := 1280 * 720 * 3 / 2
-	if len(frame2.YUV) != expectedSize2 {
-		t.Errorf("frame 2: YUV size = %d, want %d", len(frame2.YUV), expectedSize2)
+	expectedSize2 := ColorYUV420_8bit.FrameSize(1280, 720)
+	if len(frame2.Data) != expectedSize2 {
+		t.Errorf("frame 2: YUV size = %d, want %d", len(frame2.Data), expectedSize2)
 	}
 }
 
@@ -898,7 +898,7 @@ func TestSourceDecoderPoolDimensionMismatch(t *testing.T) {
 	}
 
 	// Pool is sized for 320x240 — smaller than the 640x480 decoded frame.
-	pool := NewFramePool(4, 320, 240)
+	pool := NewFramePool(4, 320, 240, ColorYUV420_8bit)
 
 	sd := newSourceDecoder("cam1", factory, callback, pool, nil, nil, nil)
 	if sd == nil {
@@ -943,8 +943,8 @@ func TestSourceDecoderPoolDimensionMismatch(t *testing.T) {
 	if pf.Width != 640 || pf.Height != 480 {
 		t.Errorf("dimensions = %dx%d, want 640x480", pf.Width, pf.Height)
 	}
-	expectedSize := 640 * 480 * 3 / 2
-	if len(pf.YUV) != expectedSize {
-		t.Errorf("YUV size = %d, want %d", len(pf.YUV), expectedSize)
+	expectedSize := ColorYUV420_8bit.FrameSize(640, 480)
+	if len(pf.Data) != expectedSize {
+		t.Errorf("YUV size = %d, want %d", len(pf.Data), expectedSize)
 	}
 }

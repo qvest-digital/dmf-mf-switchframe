@@ -237,7 +237,7 @@ func TestCutStartsOnIDRBoundary(t *testing.T) {
 	yuvA := testutil.GenerateSolidYUV420(width, height, 100, 128, 128)
 	for i := 0; i < 10; i++ {
 		pf := &switcher.ProcessingFrame{
-			YUV:        copyBytes(yuvA),
+			Data:       copyBytes(yuvA),
 			Width:      width,
 			Height:     height,
 			PTS:        int64(1000 + i*3003),
@@ -261,7 +261,7 @@ func TestCutStartsOnIDRBoundary(t *testing.T) {
 	yuvB := testutil.GenerateSolidYUV420(width, height, 200, 128, 128)
 	for i := 0; i < 10; i++ {
 		pf := &switcher.ProcessingFrame{
-			YUV:        copyBytes(yuvB),
+			Data:       copyBytes(yuvB),
 			Width:      width,
 			Height:     height,
 			PTS:        int64(5000 + i*3003),
@@ -540,7 +540,7 @@ func TestRapidCutsWithRawPipeline(t *testing.T) {
 	yuvA := testutil.GenerateSolidYUV420(width, height, 100, 128, 128)
 	for i := 0; i < 5; i++ {
 		pf := &switcher.ProcessingFrame{
-			YUV:        copyBytes(yuvA),
+			Data:       copyBytes(yuvA),
 			Width:      width,
 			Height:     height,
 			PTS:        int64(1000 + i*3003),
@@ -569,7 +569,7 @@ func TestRapidCutsWithRawPipeline(t *testing.T) {
 	// Feed frames from A (now on program).
 	for i := 0; i < 10; i++ {
 		pf := &switcher.ProcessingFrame{
-			YUV:        copyBytes(yuvA),
+			Data:       copyBytes(yuvA),
 			Width:      width,
 			Height:     height,
 			PTS:        int64(5000 + i*3003),
@@ -755,7 +755,7 @@ func TestCutWithRawPipelinePTSIdentity(t *testing.T) {
 	yuvA := testutil.GenerateSolidYUV420(width, height, 100, 128, 128)
 	for i := 0; i < 5; i++ {
 		pf := &switcher.ProcessingFrame{
-			YUV:        copyBytes(yuvA),
+			Data:       copyBytes(yuvA),
 			Width:      width,
 			Height:     height,
 			PTS:        int64(1000 + i*3003),
@@ -776,7 +776,7 @@ func TestCutWithRawPipelinePTSIdentity(t *testing.T) {
 	yuvB := testutil.GenerateSolidYUV420(width, height, 200, 128, 128)
 	for i := 0; i < 5; i++ {
 		pf := &switcher.ProcessingFrame{
-			YUV:        copyBytes(yuvB),
+			Data:       copyBytes(yuvB),
 			Width:      width,
 			Height:     height,
 			PTS:        int64(50000 + i*3003),
@@ -788,7 +788,7 @@ func TestCutWithRawPipelinePTSIdentity(t *testing.T) {
 	// Also inject frames from A (no longer on program — should be filtered).
 	for i := 0; i < 3; i++ {
 		pf := &switcher.ProcessingFrame{
-			YUV:        copyBytes(yuvA),
+			Data:       copyBytes(yuvA),
 			Width:      width,
 			Height:     height,
 			PTS:        int64(90000 + i*3003),

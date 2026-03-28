@@ -147,7 +147,7 @@ func TestSidecarBackendStartStop(t *testing.T) {
 	sb.Close()
 
 	// Verify alive is false after close.
-	if sb.alive.Load() {
+	if sb.host.Alive() {
 		t.Error("alive should be false after Close")
 	}
 }
@@ -182,7 +182,7 @@ func TestSidecarBackendReset(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Should still be alive after reset.
-	if !sb.alive.Load() {
+	if !sb.host.Alive() {
 		t.Error("sidecar should still be alive after Reset")
 	}
 
