@@ -510,6 +510,368 @@ func TestSRTOutputRingBufferOverflow(t *testing.T) {
 	require.False(t, rb.Overflowed(), "overflow flag should be cleared after ReadAll")
 }
 
+// TestSRTOutputBackpressure verifies that the SRT output pipeline handles
+// backpressure from a slow receiver without hanging the muxer/adapter side.
+//
+// Part 1: Tests the raw SRTCaller — its Write() is synchronous and blocks
+// on conn.Write. This is by design; the production path wraps it in AsyncAdapter.
+//
+// Part 2: Tests AsyncAdapter wrapping a blocked SRTCaller — Write() must return
+// immediately (non-blocking), dropping data when the buffer fills up.
+func TestSRTOutputBackpressure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping long correctness test in short mode")
+	}
+
+	// Encode 30 video frames (1s at 30fps).
+	frames := encodeVideoFrames(t, 320, 240, 30, 1, 500_000, 30, 90000)
+	require.GreaterOrEqual(t, len(frames), 20, "encoder should produce at least 20 frames")
+	t.Logf("MEASURE: encoded %d video frames for backpressure test", len(frames))
+
+	// Mux all frames to TS data to get realistic TS chunks.
+	muxer := output.NewTSMuxer()
+	var tsChunks [][]byte
+	muxer.SetOutput(func(data []byte) {
+		cp := make([]byte, len(data))
+		copy(cp, data)
+		tsChunks = append(tsChunks, cp)
+	})
+	for _, frame := range frames {
+		err := muxer.WriteVideo(frame)
+		require.NoError(t, err)
+	}
+	require.Greater(t, len(tsChunks), 0, "muxer should produce TS chunks")
+	t.Logf("MEASURE: muxed %d TS chunks from %d frames", len(tsChunks), len(frames))
+
+	// --- Part 1: Raw SRTCaller (synchronous writes) ---
+	t.Run("raw_caller_synchronous", func(t *testing.T) {
+		var mu sync.Mutex
+		var bytesReceived int64
+		var writeCount int64
+
+		caller := output.NewSRTCaller(output.SRTCallerConfig{
+			Address:        "127.0.0.1",
+			Port:           9999,
+			RingBufferSize: 4 * 1024,
+		})
+
+		caller.SetConnectFn(func(ctx context.Context, config output.SRTCallerConfig) (output.SrtConn, error) {
+			return &slowMockConn{
+				delay: 100 * time.Millisecond,
+				onWrite: func(n int) {
+					mu.Lock()
+					bytesReceived += int64(n)
+					writeCount++
+					mu.Unlock()
+				},
+			}, nil
+		})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		err := caller.Start(ctx)
+		require.NoError(t, err)
+		defer caller.Close()
+
+		feedStart := time.Now()
+		framesFed := 0
+		writeDone := make(chan struct{})
+
+		go func() {
+			defer close(writeDone)
+			for _, chunk := range tsChunks {
+				_, writeErr := caller.Write(chunk)
+				if writeErr != nil {
+					return
+				}
+				framesFed++
+			}
+		}()
+
+		select {
+		case <-writeDone:
+		case <-time.After(30 * time.Second):
+			t.Fatal("BUG: muxer writes hung for 30s")
+		}
+
+		feedDuration := time.Since(feedStart)
+
+		mu.Lock()
+		rcvd := bytesReceived
+		wc := writeCount
+		mu.Unlock()
+
+		overflows := caller.SRTStatusSnapshot().OverflowCount
+
+		t.Logf("MEASURE: frames fed=%d, bytes received=%d, buffer overflows=%d", framesFed, rcvd, overflows)
+		t.Logf("MEASURE: feed duration=%v, write count=%d", feedDuration, wc)
+
+		require.Greater(t, rcvd, int64(0),
+			"receiver should have received some bytes despite being slow")
+		require.Equal(t, len(tsChunks), framesFed,
+			"all TS chunks should have been fed without error")
+
+		// SRTCaller.Write IS synchronous — it blocks on conn.Write.
+		// The feed duration should be proportional to chunk count * write delay.
+		t.Logf("MEASURE: SRTCaller.Write is synchronous — %d writes at 100ms each took %v (expected ~%v)",
+			len(tsChunks), feedDuration, time.Duration(len(tsChunks))*100*time.Millisecond)
+	})
+
+	// --- Part 2: AsyncAdapter wrapping a blocked SRTCaller ---
+	// In production, AsyncAdapter makes writes non-blocking by buffering
+	// data in a channel. When the channel is full, writes are dropped.
+	t.Run("async_adapter_nonblocking", func(t *testing.T) {
+		var mu sync.Mutex
+		var bytesReceived int64
+
+		caller := output.NewSRTCaller(output.SRTCallerConfig{
+			Address:        "127.0.0.1",
+			Port:           9999,
+			RingBufferSize: 4 * 1024,
+		})
+
+		caller.SetConnectFn(func(ctx context.Context, config output.SRTCallerConfig) (output.SrtConn, error) {
+			return &slowMockConn{
+				delay: 100 * time.Millisecond, // Very slow
+				onWrite: func(n int) {
+					mu.Lock()
+					bytesReceived += int64(n)
+					mu.Unlock()
+				},
+			}, nil
+		})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// Wrap in AsyncAdapter with a small buffer (8 slots).
+		async := output.NewAsyncAdapter(caller, 8)
+		err := async.Start(ctx)
+		require.NoError(t, err)
+		defer func() {
+			async.Stop()
+			_ = async.Close()
+		}()
+
+		// Feed all chunks as fast as possible — should NOT block.
+		feedStart := time.Now()
+		framesFed := 0
+		for _, chunk := range tsChunks {
+			_, writeErr := async.Write(chunk)
+			require.NoError(t, writeErr)
+			framesFed++
+		}
+		feedDuration := time.Since(feedStart)
+
+		t.Logf("MEASURE: async adapter fed %d chunks in %v", framesFed, feedDuration)
+
+		// Critical assertion: AsyncAdapter.Write must be non-blocking.
+		// With 30 chunks, feeding should take well under 100ms (no conn.Write delay).
+		require.Less(t, feedDuration, 500*time.Millisecond,
+			"AsyncAdapter.Write must be non-blocking; took %v (expected < 500ms for %d chunks)",
+			feedDuration, len(tsChunks))
+
+		// Wait a bit for the drain goroutine to deliver some data.
+		time.Sleep(2 * time.Second)
+
+		mu.Lock()
+		rcvd := bytesReceived
+		mu.Unlock()
+
+		dropped := async.Dropped()
+		t.Logf("MEASURE: frames fed=%d, bytes received=%d, buffer overflows=%d", framesFed, rcvd, dropped)
+
+		// Some data should have been delivered.
+		require.Greater(t, rcvd, int64(0),
+			"some data should be delivered through the async pipeline")
+
+		// With 8-slot buffer and 100ms per write, only ~20 writes can
+		// complete in 2s. The rest should have been dropped.
+		t.Logf("MEASURE: async adapter dropped %d of %d chunks (buffer size=8, conn delay=100ms)",
+			dropped, len(tsChunks))
+
+		// If the buffer is 8 and we fed 30 rapidly, we expect drops.
+		// The drain loop processes 1 per 100ms = 20 in 2s.
+		// 30 fed - 8 buffered - ~0 already drained = ~22 dropped.
+		// But exact count depends on timing. Just verify drops > 0.
+		require.Greater(t, dropped, int64(0),
+			"with slow conn and small buffer, some chunks should be dropped")
+	})
+}
+
+// TestSRTOutputMultipleReceivers tests that the SRT listener output (pull mode)
+// correctly fans out TS data to multiple connected receivers.
+func TestSRTOutputMultipleReceivers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping long correctness test in short mode")
+	}
+
+	// Encode 90 video frames (3s at 30fps).
+	frames := encodeVideoFrames(t, 320, 240, 30, 1, 500_000, 90, 90000)
+	require.GreaterOrEqual(t, len(frames), 60, "encoder should produce at least 60 frames")
+	t.Logf("MEASURE: encoded %d video frames for multi-receiver test", len(frames))
+
+	// Create SRT listener (pull mode).
+	listener := output.NewSRTListener(output.SRTListenerConfig{
+		Port:     0, // doesn't matter — we use mock connections
+		MaxConns: 8,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := listener.Start(ctx)
+	require.NoError(t, err)
+	defer listener.Close()
+
+	// Create two mock receivers.
+	var mu1, mu2 sync.Mutex
+	var recv1Data, recv2Data []byte
+
+	conn1 := &captureMockConn{
+		onWrite: func(data []byte) {
+			mu1.Lock()
+			recv1Data = append(recv1Data, data...)
+			mu1.Unlock()
+		},
+	}
+	conn2 := &captureMockConn{
+		onWrite: func(data []byte) {
+			mu2.Lock()
+			recv2Data = append(recv2Data, data...)
+			mu2.Unlock()
+		},
+	}
+
+	// Add both receivers.
+	err = listener.AddConnection("recv1", conn1)
+	require.NoError(t, err)
+	err = listener.AddConnection("recv2", conn2)
+	require.NoError(t, err)
+
+	require.Equal(t, 2, listener.ConnectionCount(), "should have 2 connections")
+
+	// Create muxer and wire output to the listener.
+	muxer := output.NewTSMuxer()
+	muxer.SetOutput(func(data []byte) {
+		_, _ = listener.Write(data)
+	})
+
+	// Mux all 90 frames.
+	videoFramesSent := 0
+	for _, frame := range frames {
+		muxErr := muxer.WriteVideo(frame)
+		require.NoError(t, muxErr, "mux video frame %d", videoFramesSent)
+		videoFramesSent++
+	}
+
+	t.Logf("MEASURE: sent %d video frames through listener", videoFramesSent)
+
+	// Give connWriter goroutines time to drain their channels.
+	time.Sleep(2 * time.Second)
+
+	mu1.Lock()
+	r1Len := len(recv1Data)
+	r1Copy := make([]byte, r1Len)
+	copy(r1Copy, recv1Data)
+	mu1.Unlock()
+
+	mu2.Lock()
+	r2Len := len(recv2Data)
+	r2Copy := make([]byte, r2Len)
+	copy(r2Copy, recv2Data)
+	mu2.Unlock()
+
+	t.Logf("MEASURE: receiver1=%d bytes, receiver2=%d bytes", r1Len, r2Len)
+
+	// Both receivers should have received substantial data (> 10KB each).
+	require.Greater(t, r1Len, 10*1024,
+		"receiver 1 should have received > 10KB, got %d", r1Len)
+	require.Greater(t, r2Len, 10*1024,
+		"receiver 2 should have received > 10KB, got %d", r2Len)
+
+	// Both receivers should have received the same amount of data
+	// (since neither is slow, no drops should occur).
+	t.Logf("MEASURE: receiver delta=%d bytes (expected 0 for equally fast receivers)", abs(r1Len-r2Len))
+	require.Equal(t, r1Len, r2Len,
+		"both receivers should get identical data, got %d vs %d", r1Len, r2Len)
+
+	// Write each to a temp file and validate with ffprobe.
+	dir := t.TempDir()
+
+	path1 := filepath.Join(dir, "recv1.ts")
+	require.NoError(t, os.WriteFile(path1, r1Copy, 0o644))
+	testutil.RequireNoErrors(t, path1)
+
+	result1 := testutil.ProbeFile(t, path1)
+	vs1 := result1.VideoStream()
+	require.NotNil(t, vs1, "receiver 1: expected video stream")
+	require.Equal(t, "h264", vs1.CodecName)
+
+	probeFrames1 := testutil.ProbeVideoFrames(t, path1)
+	t.Logf("MEASURE: receiver1 ffprobe frames=%d", len(probeFrames1))
+
+	path2 := filepath.Join(dir, "recv2.ts")
+	require.NoError(t, os.WriteFile(path2, r2Copy, 0o644))
+	testutil.RequireNoErrors(t, path2)
+
+	result2 := testutil.ProbeFile(t, path2)
+	vs2 := result2.VideoStream()
+	require.NotNil(t, vs2, "receiver 2: expected video stream")
+	require.Equal(t, "h264", vs2.CodecName)
+
+	probeFrames2 := testutil.ProbeVideoFrames(t, path2)
+	t.Logf("MEASURE: receiver2 ffprobe frames=%d", len(probeFrames2))
+
+	// Both should have same frame count.
+	t.Logf("MEASURE: receiver1 frames=%d, receiver2 frames=%d", len(probeFrames1), len(probeFrames2))
+	require.Equal(t, len(probeFrames1), len(probeFrames2),
+		"both receivers should decode same number of video frames")
+
+	require.Greater(t, len(probeFrames1), 50,
+		"receivers should have > 50 video frames from 90 encoded")
+}
+
+// slowMockConn simulates a slow SRT connection that takes delay per write.
+type slowMockConn struct {
+	delay   time.Duration
+	onWrite func(n int)
+}
+
+func (m *slowMockConn) Write(data []byte) (int, error) {
+	time.Sleep(m.delay)
+	if m.onWrite != nil {
+		m.onWrite(len(data))
+	}
+	return len(data), nil
+}
+
+func (m *slowMockConn) Close() {}
+
+// captureMockConn captures all written data for verification.
+type captureMockConn struct {
+	onWrite func(data []byte)
+}
+
+func (m *captureMockConn) Write(data []byte) (int, error) {
+	if m.onWrite != nil {
+		cp := make([]byte, len(data))
+		copy(cp, data)
+		m.onWrite(cp)
+	}
+	return len(data), nil
+}
+
+func (m *captureMockConn) Close() {}
+
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
 // TestSRTOutputRingBufferOverflowNoPanic tests that massive writes don't panic.
 func TestSRTOutputRingBufferOverflowNoPanic(t *testing.T) {
 	if testing.Short() {
