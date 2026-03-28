@@ -214,3 +214,74 @@ kernel void downsample_alpha_to_nv12_uv(
     dst[gid.y * params.dstPitch + gid.x * 2]     = uint8_t(avg);
     dst[gid.y * params.dstPitch + gid.x * 2 + 1] = uint8_t(avg);
 }
+
+// ============================================================================
+// P210 (10-bit 4:2:2) alpha-blend and downsample kernels
+// ============================================================================
+
+struct BlendAlphaP210Params {
+    uint width;      // luma width in samples
+    uint height;     // luma height (or UV height for UV dispatch)
+    uint pitch;      // P210 pitch in bytes
+    uint alphaPitch; // alpha mask pitch in bytes (uint8 per pixel)
+};
+
+// Per-pixel alpha blend for P210: reads/writes uint16 samples, clamps to 0-1023.
+// The alpha mask is uint8 at luma resolution. For UV dispatch, the mask should
+// be pre-downsampled to UV resolution.
+kernel void blend_alpha_p210(
+    device uchar* dst            [[buffer(0)]],
+    device const uchar* a        [[buffer(1)]],
+    device const uchar* b        [[buffer(2)]],
+    device const uchar* alpha    [[buffer(3)]],
+    constant BlendAlphaP210Params& params [[buffer(4)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= params.width || gid.y >= params.height) return;
+
+    uint samplesPerRow = params.pitch / 2;
+    uint idx = gid.y * samplesPerRow + gid.x;
+
+    ushort sa = ((device const ushort*)a)[idx];
+    ushort sb = ((device const ushort*)b)[idx];
+    uint aidx = gid.y * params.alphaPitch + gid.x;
+    int al = int(alpha[aidx]) + (int(alpha[aidx]) >> 7); // 0-256 range (match CPU)
+    int inv = 256 - al;
+    int result = (int(sa) * inv + int(sb) * al + 128) >> 8;
+    ((device ushort*)dst)[idx] = ushort(clamp(result, 0, 1023));
+}
+
+struct DownsampleAlphaP210Params {
+    uint chromaW;   // width/2
+    uint chromaH;   // height (FULL height for 4:2:2)
+    uint srcPitch;  // luma alpha mask pitch in bytes
+    uint dstPitch;  // output UV alpha pitch in bytes
+};
+
+// Downsample luma-resolution uint8 alpha mask to P210 UV resolution.
+// P210 is 4:2:2: UV has full height but half width. Each output element
+// covers 2 horizontal luma pixels and 1 vertical row.
+// Output writes both Cb and Cr alpha positions (same value for both).
+kernel void downsample_alpha_to_p210_uv(
+    device uint8_t* dst              [[buffer(0)]],
+    device const uint8_t* src        [[buffer(1)]],
+    constant DownsampleAlphaP210Params& params [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= params.chromaW || gid.y >= params.chromaH) return;
+
+    // Average 2 horizontal luma pixels for each chroma sample.
+    // For 4:2:2, each UV row corresponds to one luma row (not two).
+    uint srcRow = gid.y;
+    uint srcX0 = gid.x * 2;
+    uint srcX1 = min(srcX0 + 1, params.chromaW * 2 - 1);
+
+    uchar v0 = src[srcRow * params.srcPitch + srcX0];
+    uchar v1 = src[srcRow * params.srcPitch + srcX1];
+    uchar avg = uchar(((uint)v0 + (uint)v1 + 1) >> 1);
+
+    // Write to both Cb and Cr alpha positions (interleaved uint8 pairs).
+    uint dstIdx = gid.y * params.dstPitch + gid.x * 2;
+    dst[dstIdx]     = avg;  // Cb alpha
+    dst[dstIdx + 1] = avg;  // Cr alpha
+}

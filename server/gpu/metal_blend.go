@@ -197,6 +197,174 @@ func BlendWipe(ctx *Context, dst, a, b, maskBuf *GPUFrame, position float64, dir
 	return nil
 }
 
+// BlendWipeP210 performs a wipe transition between two P210 frames.
+// Pass 1: Generate luma-resolution wipe mask into maskBuf (format-independent, uint8).
+// Pass 2: Alpha-blend Y plane using mask (P210 uint16 samples).
+// Pass 3: Downsample luma mask to P210 UV resolution (full height, half width).
+// Pass 4: Alpha-blend UV plane using downsampled mask (offset-aware).
+func BlendWipeP210(ctx *Context, dst, a, b, maskBuf *GPUFrame, position float64, dir WipeDirection, softEdge int) error {
+	if ctx == nil || ctx.mtl == nil || dst == nil || a == nil || b == nil || maskBuf == nil {
+		return ErrGPUNotAvailable
+	}
+
+	mtl := ctx.mtl
+
+	// Pass 1: Generate wipe mask at luma resolution (uint8, format-independent)
+	maskPipeline, err := mtl.getPipeline("wipe_mask_generate")
+	if err != nil {
+		return fmt.Errorf("gpu: wipe mask p210: %w", err)
+	}
+	maskParams := C.MetalWipeMaskParams{
+		width:     C.uint32_t(a.Width),
+		height:    C.uint32_t(a.Height),
+		pitch:     C.uint32_t(a.Pitch), // mask is uint8, pitch has enough room
+		position:  C.float(position),
+		direction: C.int32_t(dir),
+		softEdge:  C.int32_t(softEdge),
+	}
+	rc := C.metal_wipe_mask_generate(mtl.queue, maskPipeline, maskBuf.MetalBuf, &maskParams)
+	if rc != C.METAL_SUCCESS {
+		return fmt.Errorf("gpu: wipe mask p210 generate failed: %d", rc)
+	}
+
+	// Pass 2: Alpha-blend Y plane (P210 uint16 samples, uint8 alpha mask)
+	blendPipeline, err := mtl.getPipeline("blend_alpha_p210")
+	if err != nil {
+		return fmt.Errorf("gpu: wipe blend alpha p210: %w", err)
+	}
+	yParams := C.MetalBlendAlphaP210Params{
+		width:      C.uint32_t(a.Width),
+		height:     C.uint32_t(a.Height),
+		pitch:      C.uint32_t(a.Pitch),
+		alphaPitch: C.uint32_t(a.Pitch),
+	}
+	rc = C.metal_blend_alpha_p210(mtl.queue, blendPipeline, dst.MetalBuf, a.MetalBuf, b.MetalBuf, maskBuf.MetalBuf, &yParams)
+	if rc != C.METAL_SUCCESS {
+		return fmt.Errorf("gpu: wipe blend p210 Y failed: %d", rc)
+	}
+
+	// Pass 3: Downsample luma mask to P210 UV resolution in the UV portion of maskBuf.
+	// P210 is 4:2:2: UV has full height, half width.
+	dsaPipeline, err := mtl.getPipeline("downsample_alpha_to_p210_uv")
+	if err != nil {
+		return fmt.Errorf("gpu: wipe downsample p210: %w", err)
+	}
+	chromaW := a.Width / 2
+	chromaH := a.Height // P210: full height for 4:2:2
+	uvOffset := C.int64_t(a.Pitch * a.Height)
+
+	dsaParams := C.MetalDownsampleAlphaP210Params{
+		chromaW:  C.uint32_t(chromaW),
+		chromaH:  C.uint32_t(chromaH),
+		srcPitch: C.uint32_t(a.Pitch),
+		dstPitch: C.uint32_t(a.Pitch),
+	}
+	// dst = UV region of maskBuf (at offset), src = Y region of maskBuf (at offset 0)
+	dsaBufs := [2]C.MetalBufferRef{maskBuf.MetalBuf, maskBuf.MetalBuf}
+	dsaOffsets := [2]C.int64_t{uvOffset, 0}
+	rc = C.metal_dispatch_2d_offset(mtl.queue, dsaPipeline,
+		&dsaBufs[0], &dsaOffsets[0], 2,
+		unsafe.Pointer(&dsaParams), C.size_t(unsafe.Sizeof(dsaParams)), 2,
+		C.uint32_t(chromaW), C.uint32_t(chromaH))
+	if rc != C.METAL_SUCCESS {
+		return fmt.Errorf("gpu: wipe downsample alpha p210 failed: %d", rc)
+	}
+
+	// Pass 4: Alpha-blend UV plane with offset-aware dispatch.
+	// P210 UV: full height, width uint16 samples per row (width/2 CbCr pairs).
+	uvBlendParams := C.MetalBlendAlphaP210Params{
+		width:      C.uint32_t(a.Width),
+		height:     C.uint32_t(a.Height), // P210: full height UV
+		pitch:      C.uint32_t(a.Pitch),
+		alphaPitch: C.uint32_t(a.Pitch),
+	}
+	uvBufs := [4]C.MetalBufferRef{dst.MetalBuf, a.MetalBuf, b.MetalBuf, maskBuf.MetalBuf}
+	uvOffsets := [4]C.int64_t{uvOffset, uvOffset, uvOffset, uvOffset}
+	rc = C.metal_dispatch_2d_offset(mtl.queue, blendPipeline,
+		&uvBufs[0], &uvOffsets[0], 4,
+		unsafe.Pointer(&uvBlendParams), C.size_t(unsafe.Sizeof(uvBlendParams)), 4,
+		C.uint32_t(a.Width), C.uint32_t(a.Height))
+	if rc != C.METAL_SUCCESS {
+		return fmt.Errorf("gpu: wipe blend p210 UV failed: %d", rc)
+	}
+
+	return nil
+}
+
+// BlendStingerP210 composites a stinger overlay onto a base P210 frame using per-pixel alpha.
+// Pass 1: Alpha-blend Y plane using per-pixel alpha.
+// Pass 2: Downsample luma alpha to P210 UV resolution (full height, half width).
+// Pass 3: Alpha-blend UV plane using downsampled alpha (offset-aware).
+func BlendStingerP210(ctx *Context, dst, base, overlay, alpha *GPUFrame) error {
+	if ctx == nil || ctx.mtl == nil || dst == nil || base == nil || overlay == nil || alpha == nil {
+		return ErrGPUNotAvailable
+	}
+
+	mtl := ctx.mtl
+
+	// Pass 1: Alpha-blend Y plane (P210 uint16 samples, uint8 alpha)
+	blendPipeline, err := mtl.getPipeline("blend_alpha_p210")
+	if err != nil {
+		return fmt.Errorf("gpu: stinger blend alpha p210: %w", err)
+	}
+	yParams := C.MetalBlendAlphaP210Params{
+		width:      C.uint32_t(base.Width),
+		height:     C.uint32_t(base.Height),
+		pitch:      C.uint32_t(base.Pitch),
+		alphaPitch: C.uint32_t(alpha.Pitch),
+	}
+	rc := C.metal_blend_alpha_p210(mtl.queue, blendPipeline, dst.MetalBuf, base.MetalBuf, overlay.MetalBuf, alpha.MetalBuf, &yParams)
+	if rc != C.METAL_SUCCESS {
+		return fmt.Errorf("gpu: stinger blend p210 Y failed: %d", rc)
+	}
+
+	// Pass 2: Downsample luma alpha to P210 UV resolution in the UV portion of alpha buffer.
+	// P210 is 4:2:2: UV has full height, half width.
+	dsaPipeline, err := mtl.getPipeline("downsample_alpha_to_p210_uv")
+	if err != nil {
+		return fmt.Errorf("gpu: stinger downsample p210: %w", err)
+	}
+	chromaW := base.Width / 2
+	chromaH := base.Height // P210: full height for 4:2:2
+	uvOffset := C.int64_t(alpha.Pitch * alpha.Height)
+
+	dsaParams := C.MetalDownsampleAlphaP210Params{
+		chromaW:  C.uint32_t(chromaW),
+		chromaH:  C.uint32_t(chromaH),
+		srcPitch: C.uint32_t(alpha.Pitch),
+		dstPitch: C.uint32_t(alpha.Pitch),
+	}
+	dsaBufs := [2]C.MetalBufferRef{alpha.MetalBuf, alpha.MetalBuf}
+	dsaOffsets := [2]C.int64_t{uvOffset, 0}
+	rc = C.metal_dispatch_2d_offset(mtl.queue, dsaPipeline,
+		&dsaBufs[0], &dsaOffsets[0], 2,
+		unsafe.Pointer(&dsaParams), C.size_t(unsafe.Sizeof(dsaParams)), 2,
+		C.uint32_t(chromaW), C.uint32_t(chromaH))
+	if rc != C.METAL_SUCCESS {
+		return fmt.Errorf("gpu: stinger downsample alpha p210 failed: %d", rc)
+	}
+
+	// Pass 3: Alpha-blend UV plane using downsampled alpha (offset-aware).
+	baseUVOffset := C.int64_t(base.Pitch * base.Height)
+	uvBlendParams := C.MetalBlendAlphaP210Params{
+		width:      C.uint32_t(base.Width),
+		height:     C.uint32_t(base.Height), // P210: full height UV
+		pitch:      C.uint32_t(base.Pitch),
+		alphaPitch: C.uint32_t(alpha.Pitch),
+	}
+	uvBufs := [4]C.MetalBufferRef{dst.MetalBuf, base.MetalBuf, overlay.MetalBuf, alpha.MetalBuf}
+	uvOffsets := [4]C.int64_t{baseUVOffset, baseUVOffset, C.int64_t(overlay.Pitch * overlay.Height), uvOffset}
+	rc = C.metal_dispatch_2d_offset(mtl.queue, blendPipeline,
+		&uvBufs[0], &uvOffsets[0], 4,
+		unsafe.Pointer(&uvBlendParams), C.size_t(unsafe.Sizeof(uvBlendParams)), 4,
+		C.uint32_t(base.Width), C.uint32_t(base.Height))
+	if rc != C.METAL_SUCCESS {
+		return fmt.Errorf("gpu: stinger blend p210 UV failed: %d", rc)
+	}
+
+	return nil
+}
+
 // BlendStinger composites a stinger overlay onto a base frame using per-pixel alpha.
 // Pass 1: Alpha-blend Y plane.
 // Pass 2: Downsample luma alpha to chroma resolution in the UV portion of alpha buffer.

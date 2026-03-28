@@ -445,6 +445,18 @@ func STMapWarpP210(ctx *Context, dst, src *GPUFrame, stmapS, stmapT []float32, w
 	return ctx.Sync()
 }
 
+// BlendWipeP210 performs a wipe transition between two P210 frames on CUDA.
+// CUDA kernel not yet implemented.
+func BlendWipeP210(ctx *Context, dst, a, b, maskBuf *GPUFrame, position float64, dir WipeDirection, softEdge int) error {
+	return fmt.Errorf("gpu: BlendWipeP210 CUDA not yet implemented")
+}
+
+// BlendStingerP210 composites a stinger overlay onto a base P210 frame on CUDA.
+// CUDA kernel not yet implemented.
+func BlendStingerP210(ctx *Context, dst, base, overlay, alpha *GPUFrame) error {
+	return fmt.Errorf("gpu: BlendStingerP210 CUDA not yet implemented")
+}
+
 // ScaleP210ToNV12On scales a P210 source to NV12 destination on GPU.
 // CUDA kernel not yet implemented; returns an error.
 func ScaleP210ToNV12On(ctx *Context, dst, src *GPUFrame, q *GPUWorkQueue) error {

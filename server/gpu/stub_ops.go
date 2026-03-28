@@ -91,8 +91,18 @@ func BlendWipe(ctx *Context, dst, a, b, maskBuf *GPUFrame, position float64, dir
 	return ErrGPUNotAvailable
 }
 
+// BlendWipeP210 returns ErrGPUNotAvailable on non-GPU builds.
+func BlendWipeP210(ctx *Context, dst, a, b, maskBuf *GPUFrame, position float64, dir WipeDirection, softEdge int) error {
+	return ErrGPUNotAvailable
+}
+
 // BlendStinger returns ErrGPUNotAvailable on non-GPU builds.
 func BlendStinger(ctx *Context, dst, base, overlay, alpha *GPUFrame) error { return ErrGPUNotAvailable }
+
+// BlendStingerP210 returns ErrGPUNotAvailable on non-GPU builds.
+func BlendStingerP210(ctx *Context, dst, base, overlay, alpha *GPUFrame) error {
+	return ErrGPUNotAvailable
+}
 
 // ChromaKeyConfig holds chroma key parameters.
 type ChromaKeyConfig struct {

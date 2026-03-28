@@ -414,6 +414,30 @@ MetalResult metal_blend_fade_const_p210(MetalQueueRef queue, MetalPipelineRef pi
     MetalBufferRef dst, MetalBufferRef src,
     const MetalBlendFadeConstP210Params* params);
 
+// P210 alpha-blend (wipes, stingers)
+typedef struct {
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;
+    uint32_t alphaPitch;
+} MetalBlendAlphaP210Params;
+
+// P210 downsample alpha (luma resolution -> UV resolution for 4:2:2)
+typedef struct {
+    uint32_t chromaW;
+    uint32_t chromaH;
+    uint32_t srcPitch;
+    uint32_t dstPitch;
+} MetalDownsampleAlphaP210Params;
+
+MetalResult metal_blend_alpha_p210(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dst, MetalBufferRef a, MetalBufferRef b, MetalBufferRef alpha,
+    const MetalBlendAlphaP210Params* params);
+
+MetalResult metal_downsample_alpha_to_p210_uv(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dst, MetalBufferRef src,
+    const MetalDownsampleAlphaP210Params* params);
+
 // --- P210 scale kernels ---
 typedef struct {
     uint32_t srcW;

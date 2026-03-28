@@ -78,6 +78,24 @@ func GPUBlendFTBDispatch(ctx *Context, dst, src *GPUFrame, position float64) err
 	}
 }
 
+// GPUBlendWipeDispatch performs a wipe transition, dispatching to the
+// P210 or NV12 variant based on the destination frame's format.
+func GPUBlendWipeDispatch(ctx *Context, dst, a, b, maskBuf *GPUFrame, position float64, dir WipeDirection, softEdge int) error {
+	if dst != nil && dst.Format == GPUFormatP210 {
+		return BlendWipeP210(ctx, dst, a, b, maskBuf, position, dir, softEdge)
+	}
+	return BlendWipe(ctx, dst, a, b, maskBuf, position, dir, softEdge)
+}
+
+// GPUBlendStingerDispatch composites a stinger overlay, dispatching to the
+// P210 or NV12 variant based on the destination frame's format.
+func GPUBlendStingerDispatch(ctx *Context, dst, base, overlay, alpha *GPUFrame) error {
+	if dst != nil && dst.Format == GPUFormatP210 {
+		return BlendStingerP210(ctx, dst, base, overlay, alpha)
+	}
+	return BlendStinger(ctx, dst, base, overlay, alpha)
+}
+
 // GPUScaleDispatch scales a GPU frame using bilinear interpolation,
 // dispatching to the P210 or NV12 variant based on the source frame's format.
 func GPUScaleDispatch(ctx *Context, dst, src *GPUFrame) error {

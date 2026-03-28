@@ -638,6 +638,34 @@ MetalResult metal_blend_fade_const_p210(MetalQueueRef queue, MetalPipelineRef pi
                        samplesPerRow, params->height);
 }
 
+MetalResult metal_blend_alpha_p210(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dst, MetalBufferRef a, MetalBufferRef b, MetalBufferRef alpha,
+    const MetalBlendAlphaP210Params* params) {
+    id<MTLBuffer> bufs[] = {
+        (id<MTLBuffer>)dst,
+        (id<MTLBuffer>)a,
+        (id<MTLBuffer>)b,
+        (id<MTLBuffer>)alpha,
+    };
+    return dispatch_2d((id<MTLCommandQueue>)queue,
+                       (id<MTLComputePipelineState>)pipeline,
+                       bufs, 4, params, sizeof(*params), 4,
+                       params->width, params->height);
+}
+
+MetalResult metal_downsample_alpha_to_p210_uv(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dst, MetalBufferRef src,
+    const MetalDownsampleAlphaP210Params* params) {
+    id<MTLBuffer> bufs[] = {
+        (id<MTLBuffer>)dst,
+        (id<MTLBuffer>)src,
+    };
+    return dispatch_2d((id<MTLCommandQueue>)queue,
+                       (id<MTLComputePipelineState>)pipeline,
+                       bufs, 2, params, sizeof(*params), 2,
+                       params->chromaW, params->chromaH);
+}
+
 // ============================================================================
 // P210 scale kernels
 // ============================================================================
