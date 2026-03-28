@@ -280,6 +280,14 @@ MetalResult metal_nv12_fill(MetalQueueRef queue, MetalPipelineRef pipeline,
                        params->width, params->height);
 }
 
+MetalResult metal_p210_fill(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef p210, const MetalFillP210Params* params) {
+    MetalBufferRef bufs[] = {p210};
+    int64_t offsets[] = {0};
+    return metal_dispatch_2d_offset(queue, pipeline, bufs, offsets, 1,
+        params, sizeof(*params), 1, params->width, params->height);
+}
+
 // ============================================================================
 // Blend kernels
 // ============================================================================
@@ -576,6 +584,24 @@ MetalResult metal_fill_rect(MetalQueueRef queue, MetalPipelineRef pipeline,
                        (id<MTLComputePipelineState>)pipeline,
                        bufs, 1, params, sizeof(*params), 1,
                        (uint32_t)params->rectW, (uint32_t)params->rectH);
+}
+
+MetalResult metal_fill_rect_p210(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dst, const MetalFillRectP210Params* params) {
+    id<MTLBuffer> bufs[] = { (id<MTLBuffer>)dst };
+    return dispatch_2d((id<MTLCommandQueue>)queue,
+                       (id<MTLComputePipelineState>)pipeline,
+                       bufs, 1, params, sizeof(*params), 1,
+                       (uint32_t)params->rectW, (uint32_t)params->rectH);
+}
+
+MetalResult metal_draw_border_p210(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dst, const MetalBorderP210Params* params) {
+    id<MTLBuffer> bufs[] = { (id<MTLBuffer>)dst };
+    return dispatch_2d((id<MTLCommandQueue>)queue,
+                       (id<MTLComputePipelineState>)pipeline,
+                       bufs, 1, params, sizeof(*params), 1,
+                       (uint32_t)params->outerW, (uint32_t)params->outerH);
 }
 
 // ============================================================================

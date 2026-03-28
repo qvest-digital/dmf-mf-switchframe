@@ -76,6 +76,18 @@ MetalResult metal_nv12_to_yuv420p(MetalQueueRef queue, MetalPipelineRef pipeline
 MetalResult metal_nv12_fill(MetalQueueRef queue, MetalPipelineRef pipeline,
     MetalBufferRef nv12, const MetalFillParams* params);
 
+typedef struct {
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;
+    uint16_t yVal;
+    uint16_t cbVal;
+    uint16_t crVal;
+} MetalFillP210Params;
+
+MetalResult metal_p210_fill(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef p210, const MetalFillP210Params* params);
+
 // --- Offset-aware dispatch ---
 // dispatch_2d_offset binds each buffer at a caller-specified byte offset.
 // This is critical for NV12 UV-plane operations where UV data starts at
@@ -311,6 +323,27 @@ MetalResult metal_draw_border(MetalQueueRef queue, MetalPipelineRef pipeline,
 
 MetalResult metal_fill_rect(MetalQueueRef queue, MetalPipelineRef pipeline,
     MetalBufferRef dst, const MetalFillRectParams* params);
+
+// --- P210 (10-bit) Border / FillRect kernels ---
+typedef struct {
+    uint32_t dstW; uint32_t dstH; uint32_t dstPitch;
+    int32_t rectX; int32_t rectY; int32_t rectW; int32_t rectH;
+    uint16_t colorY; uint16_t colorCb; uint16_t colorCr;
+} MetalFillRectP210Params;
+
+typedef struct {
+    uint32_t dstW; uint32_t dstH; uint32_t dstPitch;
+    int32_t rectX; int32_t rectY; int32_t rectW; int32_t rectH;
+    int32_t outerX; int32_t outerY; int32_t outerW; int32_t outerH;
+    int32_t thickness;
+    uint16_t colorY; uint16_t colorCb; uint16_t colorCr;
+} MetalBorderP210Params;
+
+MetalResult metal_fill_rect_p210(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dst, const MetalFillRectP210Params* params);
+
+MetalResult metal_draw_border_p210(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dst, const MetalBorderP210Params* params);
 
 // --- VideoToolbox direct encode from NV12 unified memory ---
 typedef void* VTEncoderRef;

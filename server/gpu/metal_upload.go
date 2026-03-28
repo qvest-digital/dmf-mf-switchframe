@@ -112,3 +112,59 @@ func FillColor(ctx *Context, frame *GPUFrame, color YUVColor) error {
 
 	return nil
 }
+
+// FillBlackP210 fills a P210 frame with 10-bit limited-range black (Y=64, Cb=Cr=512).
+func FillBlackP210(ctx *Context, frame *GPUFrame) error {
+	if ctx == nil || ctx.mtl == nil || frame == nil {
+		return ErrGPUNotAvailable
+	}
+
+	mtl := ctx.mtl
+	pipeline, err := mtl.getPipeline("p210_fill")
+	if err != nil {
+		return fmt.Errorf("gpu: p210 fill black: %w", err)
+	}
+
+	params := C.MetalFillP210Params{
+		width:  C.uint32_t(frame.Width),
+		height: C.uint32_t(frame.Height),
+		pitch:  C.uint32_t(frame.Pitch),
+		yVal:   64,  // 10-bit limited-range black
+		cbVal:  512, // neutral chroma
+		crVal:  512,
+	}
+
+	rc := C.metal_p210_fill(mtl.queue, pipeline, frame.MetalBuf, &params)
+	if rc != C.METAL_SUCCESS {
+		return fmt.Errorf("gpu: p210 fill black failed: %d", rc)
+	}
+	return nil
+}
+
+// FillColorP210 fills a P210 frame with a constant 10-bit YUV color.
+func FillColorP210(ctx *Context, frame *GPUFrame, y, cb, cr uint16) error {
+	if ctx == nil || ctx.mtl == nil || frame == nil {
+		return ErrGPUNotAvailable
+	}
+
+	mtl := ctx.mtl
+	pipeline, err := mtl.getPipeline("p210_fill")
+	if err != nil {
+		return fmt.Errorf("gpu: p210 fill color: %w", err)
+	}
+
+	params := C.MetalFillP210Params{
+		width:  C.uint32_t(frame.Width),
+		height: C.uint32_t(frame.Height),
+		pitch:  C.uint32_t(frame.Pitch),
+		yVal:   C.uint16_t(y),
+		cbVal:  C.uint16_t(cb),
+		crVal:  C.uint16_t(cr),
+	}
+
+	rc := C.metal_p210_fill(mtl.queue, pipeline, frame.MetalBuf, &params)
+	if rc != C.METAL_SUCCESS {
+		return fmt.Errorf("gpu: p210 fill color failed: %d", rc)
+	}
+	return nil
+}

@@ -22,6 +22,14 @@ func cpuFrameSize(w, h int, format GPUFrameFormat) int {
 	}
 }
 
+// GPUFillBlackDispatch fills a frame with black, routing to the correct format.
+func GPUFillBlackDispatch(ctx *Context, frame *GPUFrame) error {
+	if frame != nil && frame.Format == GPUFormatP210 {
+		return FillBlackP210(ctx, frame)
+	}
+	return FillBlack(ctx, frame)
+}
+
 // GPUUploadDispatch uploads a CPU planar buffer to a GPU frame, selecting the
 // correct kernel based on the frame's format.
 //   - NV12: expects YUV420p (w*h*3/2 bytes), calls Upload.
@@ -113,4 +121,26 @@ func GPUSTMapWarpDispatch(ctx *Context, dst, src *GPUFrame, stmap *GPUSTMap) err
 	default:
 		return STMapWarp(ctx, dst, src, stmap)
 	}
+}
+
+// GPUFillRectDispatch fills a rectangular region with a constant color,
+// dispatching to the P210 or NV12 variant based on the frame's format.
+// For P210, the 8-bit YUVColor is promoted to 10-bit (<<2).
+func GPUFillRectDispatch(ctx *Context, frame *GPUFrame, rect Rect, color YUVColor) error {
+	if frame != nil && frame.Format == GPUFormatP210 {
+		return FillRectP210(ctx, frame, rect,
+			uint16(color.Y)<<2, uint16(color.Cb)<<2, uint16(color.Cr)<<2)
+	}
+	return FillRect(ctx, frame, rect, color)
+}
+
+// GPUDrawBorderDispatch draws a colored border outside the given rectangle,
+// dispatching to the P210 or NV12 variant based on the frame's format.
+// For P210, the 8-bit YUVColor is promoted to 10-bit (<<2).
+func GPUDrawBorderDispatch(ctx *Context, frame *GPUFrame, rect Rect, color YUVColor, thickness int) error {
+	if frame != nil && frame.Format == GPUFormatP210 {
+		return DrawBorderP210(ctx, frame, rect,
+			uint16(color.Y)<<2, uint16(color.Cb)<<2, uint16(color.Cr)<<2, thickness)
+	}
+	return DrawBorder(ctx, frame, rect, color, thickness)
 }

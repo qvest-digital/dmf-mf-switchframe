@@ -471,3 +471,15 @@ func ScaleNV12ToP210(ctx *Context, dst, src *GPUFrame) error {
 	}
 	return fmt.Errorf("gpu: ScaleNV12ToP210 CUDA kernel not yet implemented")
 }
+
+// FillBlackP210 fills a P210 frame with 10-bit limited-range black on CUDA.
+// CUDA kernel not yet implemented.
+func FillBlackP210(ctx *Context, frame *GPUFrame) error {
+	return fmt.Errorf("gpu: FillBlackP210 CUDA not yet implemented")
+}
+
+// FillColorP210 fills a P210 frame with a constant 10-bit YUV color on CUDA.
+// CUDA kernel not yet implemented.
+func FillColorP210(ctx *Context, frame *GPUFrame, y, cb, cr uint16) error {
+	return fmt.Errorf("gpu: FillColorP210 CUDA not yet implemented")
+}
