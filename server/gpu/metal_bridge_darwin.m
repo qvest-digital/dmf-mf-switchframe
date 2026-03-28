@@ -1215,41 +1215,77 @@ int metal_vt_encode(VTEncoderRef enc, void* nv12_ptr, int pitch, int width, int 
         return -2;
     }
 
-    // Copy NV12/P010 data from the Metal unified-memory buffer into the VT pixel buffer.
+    // Copy frame data from Metal unified-memory buffer into the VT pixel buffer.
     // VT needs its own copy because it holds reference frames for P-frame prediction
     // beyond the lifetime of this call.
+    //
+    // Three source formats handled:
+    //   NV12 (8-bit 4:2:0): direct copy, Y + UV(h/2)
+    //   P010 → P010 (10-bit 4:2:0): direct copy, but our P210 stores LSB-aligned
+    //     while Apple P010 is MSB-aligned (10 bits in high 10 of uint16, 6 zero LSBs).
+    //   P210 → P010 (10-bit 4:2:2 → 4:2:0): left-shift Y samples by 6 to convert
+    //     LSB→MSB alignment, and vertically downsample UV from full-height to half-height
+    //     by averaging adjacent row pairs, also with the <<6 shift.
     int is10bit = (state->pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange);
-    // For 10-bit (P010), each sample is 2 bytes; for 8-bit (NV12), 1 byte.
-    int sampleBytes = is10bit ? 2 : 1;
 
     CVPixelBufferLockBaseAddress(pixelBuffer, 0);
 
-    // Y plane — bulk copy if strides match, row-by-row otherwise.
     uint8_t *vtY = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0);
     size_t vtYStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0);
     const uint8_t *srcY = (const uint8_t *)nv12_ptr;
-    int yRowBytes = width * sampleBytes;
-    if (vtYStride == (size_t)pitch) {
-        // Strides match — single memcpy for the entire Y plane.
-        memcpy(vtY, srcY, (size_t)pitch * height);
-    } else {
-        for (int row = 0; row < height; row++) {
-            memcpy(vtY + row * vtYStride, srcY + row * pitch, yRowBytes);
-        }
-    }
 
-    // UV plane — same bulk/row-by-row optimization.
-    // For both NV12 and P010, UV is interleaved (CbCr pairs) with half the height.
-    uint8_t *vtUV = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1);
-    size_t vtUVStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1);
-    const uint8_t *srcUV = (const uint8_t *)nv12_ptr + pitch * height;
-    int chromaW = width * sampleBytes;  // UV row width in bytes
-    int chromaH = height / 2;
-    if (vtUVStride == (size_t)pitch) {
-        memcpy(vtUV, srcUV, (size_t)pitch * chromaH);
-    } else {
+    if (is10bit) {
+        // P210 source (LSB-aligned uint16) → P010 destination (MSB-aligned uint16).
+        // Left-shift each sample by 6 to convert LSB→MSB alignment.
+        // Source UV is full-height (4:2:2); destination UV is half-height (4:2:0).
+        int samplesPerRow = width;
+
+        // Y plane: shift each uint16 sample left by 6
+        for (int row = 0; row < height; row++) {
+            const uint16_t *srcRow = (const uint16_t *)(srcY + row * pitch);
+            uint16_t *dstRow = (uint16_t *)(vtY + row * vtYStride);
+            for (int col = 0; col < samplesPerRow; col++) {
+                dstRow[col] = srcRow[col] << 6;
+            }
+        }
+
+        // UV plane: P210 has full-height UV (4:2:2), P010 expects half-height (4:2:0).
+        // Average pairs of adjacent UV rows and shift LSB→MSB.
+        uint8_t *vtUV = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1);
+        size_t vtUVStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1);
+        const uint8_t *srcUV = (const uint8_t *)nv12_ptr + pitch * height;
+        int chromaH = height / 2;
+        int uvSamplesPerRow = width; // interleaved Cb/Cr = width uint16 values
+
         for (int row = 0; row < chromaH; row++) {
-            memcpy(vtUV + row * vtUVStride, srcUV + row * pitch, chromaW);
+            const uint16_t *srcRow0 = (const uint16_t *)(srcUV + (row * 2) * pitch);
+            const uint16_t *srcRow1 = (const uint16_t *)(srcUV + (row * 2 + 1) * pitch);
+            uint16_t *dstRow = (uint16_t *)(vtUV + row * vtUVStride);
+            for (int col = 0; col < uvSamplesPerRow; col++) {
+                uint16_t avg = (uint16_t)(((uint32_t)srcRow0[col] + (uint32_t)srcRow1[col] + 1) >> 1);
+                dstRow[col] = avg << 6;
+            }
+        }
+    } else {
+        // NV12 (8-bit): direct copy as before.
+        if (vtYStride == (size_t)pitch) {
+            memcpy(vtY, srcY, (size_t)pitch * height);
+        } else {
+            for (int row = 0; row < height; row++) {
+                memcpy(vtY + row * vtYStride, srcY + row * pitch, width);
+            }
+        }
+
+        uint8_t *vtUV = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1);
+        size_t vtUVStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1);
+        const uint8_t *srcUV = (const uint8_t *)nv12_ptr + pitch * height;
+        int chromaH = height / 2;
+        if (vtUVStride == (size_t)pitch) {
+            memcpy(vtUV, srcUV, (size_t)pitch * chromaH);
+        } else {
+            for (int row = 0; row < chromaH; row++) {
+                memcpy(vtUV + row * vtUVStride, srcUV + row * pitch, width);
+            }
         }
     }
 
