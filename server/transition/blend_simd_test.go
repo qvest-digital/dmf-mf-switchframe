@@ -38,7 +38,7 @@ func TestKernelUniform_HalfPosition(t *testing.T) {
 	dst := make([]byte, 5)
 	blendUniform(&dst[0], &a[0], &b[0], 5, 128, 128)
 	for i := range dst {
-		expected := (int(a[i])*128 + int(b[i])*128) >> 8
+		expected := (int(a[i])*128 + int(b[i])*128 + 128) >> 8
 		require.Equal(t, byte(expected), dst[i], "pixel %d", i)
 	}
 }
@@ -62,7 +62,7 @@ func TestKernelUniform_VariousSizes(t *testing.T) {
 		}
 		blendUniform(&dst[0], &a[0], &b[0], n, 100, 156)
 		for i := 0; i < n; i++ {
-			expected := byte((int(a[i])*156 + int(b[i])*100) >> 8)
+			expected := byte((int(a[i])*156 + int(b[i])*100 + 128) >> 8)
 			require.Equal(t, expected, dst[i], "size=%d pixel=%d", n, i)
 		}
 	}
@@ -84,7 +84,7 @@ func TestKernelUniform_1080p(t *testing.T) {
 	blendUniform(&dst[0], &a[0], &b[0], n, pos, inv)
 	// Spot check first, middle, last pixels
 	for _, i := range []int{0, n / 2, n - 1} {
-		expected := byte((int(a[i])*inv + int(b[i])*pos) >> 8)
+		expected := byte((int(a[i])*inv + int(b[i])*pos + 128) >> 8)
 		require.Equal(t, expected, dst[i], "pixel %d", i)
 	}
 }
@@ -195,7 +195,7 @@ func TestKernelAlpha_HalfAlpha(t *testing.T) {
 	for i := range dst {
 		w := 128 + (128 >> 7)
 		inv := 256 - w
-		expected := byte((200*inv + 100*w) >> 8)
+		expected := byte((200*inv + 100*w + 128) >> 8)
 		require.Equal(t, expected, dst[i], "pixel %d", i)
 	}
 }
@@ -212,7 +212,7 @@ func TestKernelAlpha_PerPixel(t *testing.T) {
 		ai := int(alpha[i])
 		w := ai + (ai >> 7)
 		inv := 256 - w
-		expected := byte((int(a[i])*inv + int(b[i])*w) >> 8)
+		expected := byte((int(a[i])*inv + int(b[i])*w + 128) >> 8)
 		require.Equal(t, expected, dst[i], "pixel %d", i)
 	}
 }
@@ -239,7 +239,7 @@ func TestKernelAlpha_VariousSizes(t *testing.T) {
 			ai := int(alpha[i])
 			w := ai + (ai >> 7)
 			inv := 256 - w
-			expected := byte((int(a[i])*inv + int(b[i])*w) >> 8)
+			expected := byte((int(a[i])*inv + int(b[i])*w + 128) >> 8)
 			require.Equal(t, expected, dst[i], "size=%d pixel=%d", n, i)
 		}
 	}
@@ -249,8 +249,8 @@ func TestKernelAlpha_VariousSizes(t *testing.T) {
 
 func TestKernelUniform_Rounding(t *testing.T) {
 	t.Parallel()
-	if runtime.GOARCH == "amd64" || runtime.GOARCH == "arm64" {
-		t.Skip("SIMD kernels on amd64/arm64 need matching +128 rounding fix — only generic kernel fixed")
+	if runtime.GOARCH == "amd64" {
+		t.Skip("SIMD kernel on amd64 needs matching +128 rounding fix — only generic and arm64 kernels fixed")
 	}
 	// Blend a=100, b=200 at pos=128 (half), inv=128.
 	// Without rounding: (100*128 + 200*128) >> 8 = 38400 >> 8 = 150 (no difference here)
@@ -269,8 +269,8 @@ func TestKernelUniform_Rounding(t *testing.T) {
 
 func TestKernelAlpha_Rounding(t *testing.T) {
 	t.Parallel()
-	if runtime.GOARCH == "amd64" || runtime.GOARCH == "arm64" {
-		t.Skip("SIMD kernels on amd64/arm64 need matching +128 rounding fix — only generic kernel fixed")
+	if runtime.GOARCH == "amd64" {
+		t.Skip("SIMD kernel on amd64 needs matching +128 rounding fix — only generic and arm64 kernels fixed")
 	}
 	// a=0, b=1, alpha=128 → w=128+(128>>7)=129, inv=127
 	// Without rounding: (0*127 + 1*129) >> 8 = 129 >> 8 = 0
@@ -310,10 +310,10 @@ func TestKernelUniform_CrossValidateWithBlendMix(t *testing.T) {
 		kernelDst := make([]byte, n)
 		blendUniform(&kernelDst[0], &a[0], &b[0], n, pos, inv)
 
-		// Reference (original scalar)
+		// Reference (scalar with +128 rounding bias)
 		refDst := make([]byte, n)
 		for i := 0; i < n; i++ {
-			refDst[i] = byte((int(a[i])*inv + int(b[i])*pos) >> 8)
+			refDst[i] = byte((int(a[i])*inv + int(b[i])*pos + 128) >> 8)
 		}
 
 		require.Equal(t, refDst, kernelDst, "pos=%.2f mismatch", posF)
@@ -384,13 +384,13 @@ func TestKernelAlpha_CrossValidateWithBlendWipe(t *testing.T) {
 	kernelDst := make([]byte, n)
 	blendAlpha(&kernelDst[0], &a[0], &b[0], &alpha[0], n)
 
-	// Reference
+	// Reference (scalar with +128 rounding bias)
 	refDst := make([]byte, n)
 	for i := 0; i < n; i++ {
 		ai := int(alpha[i])
 		w := ai + (ai >> 7)
 		inv := 256 - w
-		refDst[i] = byte((int(a[i])*inv + int(b[i])*w) >> 8)
+		refDst[i] = byte((int(a[i])*inv + int(b[i])*w + 128) >> 8)
 	}
 
 	require.Equal(t, refDst, kernelDst)

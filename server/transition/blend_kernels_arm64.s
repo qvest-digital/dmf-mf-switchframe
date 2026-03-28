@@ -49,8 +49,8 @@
 // ============================================================================
 // func blendUniform(dst, a, b *byte, n, pos, inv int)
 // ============================================================================
-// dst[i] = (a[i]*inv + b[i]*pos) >> 8
-// pos+inv = 256, max result = 255*256 = 65280, fits uint16.
+// dst[i] = (a[i]*inv + b[i]*pos + 128) >> 8
+// pos+inv = 256, max result = 255*256 + 128 = 65408, fits uint16.
 // 16 bytes/iteration: widen to H8, VMUL+VMLA at 16-bit, narrow back.
 TEXT ·blendUniform(SB), NOSPLIT, $0-48
 	MOVD dst+0(FP), R0
@@ -63,9 +63,11 @@ TEXT ·blendUniform(SB), NOSPLIT, $0-48
 	CMP  $0, R3
 	BLE  uniform_done
 
-	// Broadcast pos and inv as halfwords
+	// Broadcast pos, inv, and rounding bias as halfwords
 	VDUP R4, V6.H8     // V6 = [pos] × 8 halfwords
 	VDUP R5, V7.H8     // V7 = [inv] × 8 halfwords
+	MOVD $128, R6
+	VDUP R6, V30.H8    // V30 = [128] × 8 halfwords (rounding bias)
 
 	CMP  $16, R3
 	BLT  uniform_tail
@@ -79,6 +81,7 @@ uniform_loop16:
 	UXTL_8H(3, 1)             // V3.8H = b_lo
 	VMUL_8H(2, 2, 7)          // V2 = a_lo * inv (16×16→16)
 	VMLA_8H(2, 3, 6)          // V2 += b_lo * pos
+	VADD V30.H8, V2.H8, V2.H8 // V2 += 128 (rounding bias)
 	VUSHR $8, V2.H8, V2.H8   // >> 8
 
 	// --- Upper 8 bytes ---
@@ -86,6 +89,7 @@ uniform_loop16:
 	UXTL2_8H(4, 1)            // V4.8H = b_hi
 	VMUL_8H(3, 3, 7)          // V3 = a_hi * inv
 	VMLA_8H(3, 4, 6)          // V3 += b_hi * pos
+	VADD V30.H8, V3.H8, V3.H8 // V3 += 128 (rounding bias)
 	VUSHR $8, V3.H8, V3.H8
 
 	// Narrow halfwords → bytes
@@ -106,6 +110,7 @@ uniform_tail_loop:
 	MUL   R5, R6, R6         // a * inv
 	MUL   R4, R7, R7         // b * pos
 	ADD   R7, R6, R6
+	ADD   $128, R6, R6        // + 128 (rounding bias)
 	LSR   $8, R6, R6
 	MOVB  R6, (R0)
 	ADD   $1, R0
@@ -206,8 +211,8 @@ fadeconst_done:
 // ============================================================================
 // func blendAlpha(dst, a, b, alpha *byte, n int)
 // ============================================================================
-// dst[i] = (a[i]*(256-w) + b[i]*w) >> 8, w = alpha[i]+(alpha[i]>>7)
-// w + inv = 256, max result = 65280, fits uint16. 16 bytes/iteration.
+// dst[i] = (a[i]*(256-w) + b[i]*w + 128) >> 8, w = alpha[i]+(alpha[i]>>7)
+// w + inv = 256, max result = 65280 + 128 = 65408, fits uint16. 16 bytes/iteration.
 TEXT ·blendAlpha(SB), NOSPLIT, $0-40
 	MOVD dst+0(FP), R0
 	MOVD a+8(FP), R1
@@ -221,6 +226,9 @@ TEXT ·blendAlpha(SB), NOSPLIT, $0-40
 	// V7 = [256] constant (8 × uint16)
 	MOVD $256, R5
 	VDUP R5, V7.H8
+	// V30 = [128] constant (rounding bias)
+	MOVD $128, R5
+	VDUP R5, V30.H8
 
 	CMP  $16, R4
 	BLT  alpha_tail
@@ -240,6 +248,7 @@ alpha_loop16:
 	UXTL_8H(11, 1)            // V11.8H = b_lo
 	VMUL_8H(10, 10, 9)        // V10 = a_lo * inv
 	VMLA_8H(10, 11, 8)        // V10 += b_lo * w
+	VADD V30.H8, V10.H8, V10.H8 // V10 += 128 (rounding bias)
 	VUSHR $8, V10.H8, V10.H8
 
 	// --- Upper 8 bytes ---
@@ -252,6 +261,7 @@ alpha_loop16:
 	UXTL2_8H(12, 1)           // V12.8H = b_hi
 	VMUL_8H(11, 11, 9)        // V11 = a_hi * inv
 	VMLA_8H(11, 12, 8)        // V11 += b_hi * w
+	VADD V30.H8, V11.H8, V11.H8 // V11 += 128 (rounding bias)
 	VUSHR $8, V11.H8, V11.H8
 
 	// Narrow
@@ -277,6 +287,7 @@ alpha_tail_loop:
 	MUL   R8, R5, R5         // a * inv
 	MUL   R7, R6, R6         // b * w
 	ADD   R6, R5, R5
+	ADD   $128, R5, R5        // + 128 (rounding bias)
 	LSR   $8, R5, R5
 	MOVB  R5, (R0)
 	ADD   $1, R0
