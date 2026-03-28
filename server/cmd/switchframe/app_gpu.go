@@ -57,15 +57,32 @@ func initGPU(sw *switcher.Switcher) *gpuState {
 	// + 1 stmap temp + 1 mask + 3 headroom = 24. Under-sizing causes pool
 	// exhaustion under load when all sources are active with ST maps.
 	pf := sw.PipelineFormat()
-	pool, err := gpu.NewFramePool(ctx, pf.Width, pf.Height, 32)
+	poolFormat := gpuPoolFormatForColor(pf.Color.ColorFormat)
+	var pool *gpu.FramePool
+	if poolFormat == gpu.GPUFormatP210 {
+		pool, err = gpu.NewP210FramePool(ctx, pf.Width, pf.Height, 32)
+	} else {
+		pool, err = gpu.NewFramePool(ctx, pf.Width, pf.Height, 32)
+	}
 	if err != nil {
 		slog.Warn("GPU frame pool failed, falling back to CPU", "error", err)
 		_ = ctx.Close()
 		return nil
 	}
+	slog.Info("GPU frame pool created", "format", poolFormat, "width", pf.Width, "height", pf.Height)
 	ctx.SetPool(pool)
 
 	return &gpuState{ctx: ctx, pool: pool}
+}
+
+// gpuPoolFormatForColor maps a pipeline color format to the corresponding GPU
+// frame pool format. Professional 10-bit 4:2:2 uses P210; everything else
+// uses NV12 (8-bit 4:2:0).
+func gpuPoolFormatForColor(cf switcher.PipelineColorFormat) gpu.GPUFrameFormat {
+	if cf == switcher.ColorYUV422_10bit {
+		return gpu.GPUFormatP210
+	}
+	return gpu.GPUFormatNV12
 }
 
 // wireGPUPipeline creates the full GPU pipeline with all processing nodes
