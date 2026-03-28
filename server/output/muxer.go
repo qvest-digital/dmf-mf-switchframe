@@ -252,8 +252,8 @@ const sdtPID uint16 = 0x0011
 // SDT structure per ISO 13818-1 / ETSI EN 300 468:
 //   PID 0x0011, table_id 0x42 (SDT actual), service descriptor tag 0x48.
 func buildSDTPacket() []byte {
-	serviceName := []byte("Switchframe")
-	providerName := []byte("switchframe.dev")
+	serviceName := append([]byte{0x15, 0xF0, 0x9F, 0x8E, 0xA5}, []byte(" Switchframe")...) // 0x15 = DVB UTF-8 prefix, then U+1F3A5 movie camera
+	providerName := append([]byte{0x15}, []byte("switchframe.dev")...)
 
 	// Service descriptor (tag 0x48): type + provider_len + provider + name_len + name
 	descPayload := make([]byte, 0, 3+len(providerName)+len(serviceName))
