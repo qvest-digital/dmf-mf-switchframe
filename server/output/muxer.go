@@ -241,6 +241,94 @@ func (m *TSMuxer) writeSCTE35Locked(data []byte) error {
 	return m.flush()
 }
 
+// sdtPID is the MPEG-TS PID for the Service Description Table.
+const sdtPID uint16 = 0x0011
+
+// buildSDTPacket constructs a single 188-byte MPEG-TS packet containing a
+// Service Description Table (SDT) with the Switchframe service name and
+// provider. This makes the stream identifiable in tools like MediaInfo,
+// ffprobe, and broadcast analyzers.
+//
+// SDT structure per ISO 13818-1 / ETSI EN 300 468:
+//   PID 0x0011, table_id 0x42 (SDT actual), service descriptor tag 0x48.
+func buildSDTPacket() []byte {
+	serviceName := []byte("Switchframe")
+	providerName := []byte("switchframe.dev")
+
+	// Service descriptor (tag 0x48): type + provider_len + provider + name_len + name
+	descPayload := make([]byte, 0, 3+len(providerName)+len(serviceName))
+	descPayload = append(descPayload, 0x48) // descriptor_tag
+	descLen := 1 + 1 + len(providerName) + 1 + len(serviceName)
+	descPayload = append(descPayload, byte(descLen))           // descriptor_length
+	descPayload = append(descPayload, 0x01)                    // service_type: digital television
+	descPayload = append(descPayload, byte(len(providerName))) // provider name length
+	descPayload = append(descPayload, providerName...)
+	descPayload = append(descPayload, byte(len(serviceName))) // service name length
+	descPayload = append(descPayload, serviceName...)
+
+	// Service loop entry: service_id(2) + flags(1) + desc_loop_length(2) + descriptors
+	descLoopLen := len(descPayload)
+	serviceEntry := make([]byte, 0, 5+descLoopLen)
+	serviceEntry = append(serviceEntry, 0x00, 0x01)                                   // service_id = 1
+	serviceEntry = append(serviceEntry, 0xFC)                                          // reserved(6) + EIT_schedule(0) + EIT_pf(0)
+	serviceEntry = append(serviceEntry, byte(0x80|((descLoopLen>>8)&0x0F)), byte(descLoopLen)) // running_status=4(running), free_CA=0, desc_loop_length
+	serviceEntry = append(serviceEntry, descPayload...)
+
+	// SDT section header (before CRC):
+	//   table_id(1) + flags+length(2) + ts_id(2) + version(1) + section_num(1) +
+	//   last_section_num(1) + original_network_id(2) + reserved(1) + service_entries
+	sectionBody := make([]byte, 0, 8+len(serviceEntry))
+	sectionBody = append(sectionBody, 0x00, 0x01) // transport_stream_id = 1
+	sectionBody = append(sectionBody, 0xC1)       // reserved(2)=0b11, version(5)=0, current_next=1
+	sectionBody = append(sectionBody, 0x00)       // section_number
+	sectionBody = append(sectionBody, 0x00)       // last_section_number
+	sectionBody = append(sectionBody, 0x00, 0x01) // original_network_id = 1
+	sectionBody = append(sectionBody, 0xFF)       // reserved_future_use
+	sectionBody = append(sectionBody, serviceEntry...)
+
+	// Full section: table_id + section_syntax_indicator + length + body + CRC32
+	sectionLen := len(sectionBody) + 4 // +4 for CRC32
+	section := make([]byte, 0, 3+len(sectionBody)+4)
+	section = append(section, 0x42)                                           // table_id: SDT actual
+	section = append(section, byte(0xF0|((sectionLen>>8)&0x0F)), byte(sectionLen)) // section_syntax_indicator=1, reserved=0b11, section_length
+	section = append(section, sectionBody...)
+
+	// CRC-32/MPEG-2
+	crc := crc32MPEG2(section)
+	section = append(section, byte(crc>>24), byte(crc>>16), byte(crc>>8), byte(crc))
+
+	// Wrap in 188-byte TS packet
+	pkt := make([]byte, 188)
+	pkt[0] = 0x47                                            // sync byte
+	pkt[1] = 0x40 | byte((sdtPID>>8)&0x1F)                  // payload_unit_start=1, PID high
+	pkt[2] = byte(sdtPID & 0xFF)                             // PID low
+	pkt[3] = 0x10                                            // adaptation_field_control=01 (payload only), cc=0
+	pkt[4] = 0x00                                            // pointer_field
+	copy(pkt[5:], section)
+	for i := 5 + len(section); i < 188; i++ {
+		pkt[i] = 0xFF // stuffing
+	}
+
+	return pkt
+}
+
+// crc32MPEG2 computes the CRC-32/MPEG-2 checksum used by MPEG-TS PSI tables.
+// Polynomial: 0x04C11DB7, init: 0xFFFFFFFF, no final XOR.
+func crc32MPEG2(data []byte) uint32 {
+	crc := uint32(0xFFFFFFFF)
+	for _, b := range data {
+		crc ^= uint32(b) << 24
+		for i := 0; i < 8; i++ {
+			if crc&0x80000000 != 0 {
+				crc = (crc << 1) ^ 0x04C11DB7
+			} else {
+				crc <<= 1
+			}
+		}
+	}
+	return crc
+}
+
 // cueiDescriptor builds the CUEI registration descriptor required by
 // SCTE-35 section 8.1 in the PMT program_info loop. The format identifier
 // 0x43554549 corresponds to the ASCII string "CUEI".
@@ -535,6 +623,12 @@ func (m *TSMuxer) init(_ int64) error {
 
 	// Write initial PAT/PMT tables.
 	if _, err := m.muxer.WriteTables(); err != nil {
+		cancel()
+		return err
+	}
+
+	// Write SDT with Switchframe service name (immediately after PAT/PMT).
+	if _, err := m.buf.Write(buildSDTPacket()); err != nil {
 		cancel()
 		return err
 	}
