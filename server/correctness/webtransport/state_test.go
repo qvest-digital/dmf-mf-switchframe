@@ -538,6 +538,7 @@ func TestStateBroadcastSerialization(t *testing.T) {
 		"pipelineFormat":       true,
 		"encoder":              true,
 		"scte35":               true,
+		"cbr":                  true,
 		"connectionInfo":       true,
 		"captions":             true,
 		"asr":                  true,
@@ -638,7 +639,8 @@ func TestStateBroadcastSerialization(t *testing.T) {
 	goSourceFields := extractJSONTags(sourceInfoType)
 	tsSourceFields := map[string]bool{
 		"key": true, "label": true, "type": true, "status": true,
-		"position": true, "delayMs": true, "isVirtual": true, "hasCaptions": true,
+		"position": true, "delayMs": true, "keyConfig": true,
+		"isVirtual": true, "hasCaptions": true,
 		"srt": true, "corrector": true,
 	}
 
@@ -660,7 +662,7 @@ func TestStateBroadcastSerialization(t *testing.T) {
 	tsReplayFields := map[string]bool{
 		"state": true, "source": true, "speed": true, "loop": true,
 		"position": true, "markIn": true, "markOut": true, "markSource": true,
-		"buffers": true,
+		"buffers": true, "shutterAngle": true, "gpuAccelerated": true,
 	}
 
 	var replayMissingInTS []string
@@ -679,8 +681,8 @@ func TestStateBroadcastSerialization(t *testing.T) {
 	scte35Type := reflect.TypeOf(internal.SCTE35State{})
 	goSCTE35Fields := extractJSONTags(scte35Type)
 	tsSCTE35Fields := map[string]bool{
-		"enabled": true, "activeEvents": true, "eventLog": true,
-		"heartbeatOk": true, "config": true,
+		"enabled": true, "scte104Enabled": true, "activeEvents": true,
+		"eventLog": true, "heartbeatOk": true, "config": true,
 	}
 
 	var scte35MissingInTS []string
@@ -699,9 +701,9 @@ func TestStateBroadcastSerialization(t *testing.T) {
 	scte35DescType := reflect.TypeOf(internal.SCTE35DescriptorInfo{})
 	goDescFields := extractJSONTags(scte35DescType)
 	tsDescFields := map[string]bool{
-		"segEventId": true, "segmentationType": true, "upidType": true,
-		"upid": true, "durationTicks": true, "subSegmentNum": true,
-		"subSegmentsExpected": true,
+		"segEventId": true, "segmentationType": true, "segmentationTypeName": true,
+		"upidType": true, "upidTypeName": true, "upid": true, "durationMs": true,
+		"subSegmentNum": true, "subSegmentsExpected": true, "cancelled": true,
 	}
 
 	var descMissingInTS []string
@@ -726,7 +728,6 @@ func TestStateBroadcastSerialization(t *testing.T) {
 		"imageName": true, "imageWidth": true, "imageHeight": true,
 		"html5Url": true, "html5Format": true, "html5Status": true,
 		"html5DataSchema": true,
-		// TS also has these extra fields not in Go struct:
 		"sequenceLoaded": true, "sequencePhase": true,
 		"sequenceProcessing": true, "sequenceProgress": true,
 		"sequenceSpeed": true,

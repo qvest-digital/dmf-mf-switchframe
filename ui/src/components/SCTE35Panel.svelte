@@ -593,9 +593,9 @@
 														<span class="detail-value">{desc.upidType} — {formatUpidType(desc.upidType)}</span>
 														<span class="detail-label">UPID</span>
 														<span class="detail-value detail-mono">{desc.upid || '—'}</span>
-														{#if desc.durationTicks}
+														{#if desc.durationMs}
 															<span class="detail-label">Duration</span>
-															<span class="detail-value detail-mono">{formatPts(desc.durationTicks)}</span>
+															<span class="detail-value detail-mono">{(desc.durationMs / 1000).toFixed(3)}s</span>
 														{/if}
 														{#if desc.subSegmentNum !== undefined}
 															<span class="detail-label">Sub-segment</span>

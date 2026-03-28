@@ -33,6 +33,7 @@ export interface SourceInfo {
 
 	position?: number;
 	delayMs?: number;
+	keyConfig?: KeyConfig;
 	isVirtual?: boolean;
 	hasCaptions?: boolean;
 	corrector?: CorrectorState;
@@ -403,6 +404,8 @@ export interface ReplayState {
 	markOut?: number;    // Unix ms
 	markSource?: string;
 	buffers?: ReplayBufferInfo[];
+	shutterAngle?: number;    // 0-360 degrees
+	gpuAccelerated?: boolean;
 }
 
 export type OperatorRole = 'director' | 'audio' | 'graphics' | 'captioner' | 'viewer';
@@ -507,6 +510,7 @@ export interface RecordingFileInfo {
 
 export interface SCTE35State {
 	enabled: boolean;
+	scte104Enabled?: boolean;
 	activeEvents: Record<string, SCTE35Active>;
 	eventLog: SCTE35Event[];
 	heartbeatOk: boolean;
@@ -531,11 +535,14 @@ export interface SCTE35Active {
 export interface SCTE35DescriptorInfo {
 	segEventId: number;
 	segmentationType: number;
+	segmentationTypeName?: string;
 	upidType: number;
+	upidTypeName?: string;
 	upid: string;
-	durationTicks?: number;
+	durationMs?: number;
 	subSegmentNum?: number;
 	subSegmentsExpected?: number;
+	cancelled?: boolean;
 }
 
 export interface SCTE35Event {
@@ -611,6 +618,15 @@ export interface CommsState {
 	participants: CommsParticipant[];
 }
 
+export interface CBRStatus {
+	enabled: boolean;
+	muxrateBps?: number;
+	nullPacketsTotal?: number;
+	realBytesTotal?: number;
+	padBytesTotal?: number;
+	burstTicksTotal?: number;
+}
+
 export interface ConnectionInfo {
 	domain?: string;
 	srtIngestPort?: number;
@@ -648,6 +664,7 @@ export interface ControlRoomState {
 	pipelineFormat?: PipelineFormatInfo;
 	encoder?: EncoderState;
 	scte35?: SCTE35State;
+	cbr?: CBRStatus;
 	connectionInfo?: ConnectionInfo;
 	captions?: CaptionState;
 	asr?: ASRState;

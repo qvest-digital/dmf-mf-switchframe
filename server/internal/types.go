@@ -163,24 +163,29 @@ type GraphicsState struct {
 
 // GraphicsLayerState is the JSON-serializable state for a single graphics layer.
 type GraphicsLayerState struct {
-	ID              int            `json:"id"`
-	Template        string         `json:"template,omitempty"`
-	Active          bool           `json:"active"`
-	FadePosition    float64        `json:"fadePosition,omitempty"`
-	AnimationMode   string         `json:"animationMode,omitempty"`
-	AnimationHz     float64        `json:"animationHz,omitempty"`
-	ZOrder          int            `json:"zOrder"`
-	X               int            `json:"x"`
-	Y               int            `json:"y"`
-	Width           int            `json:"width"`
-	Height          int            `json:"height"`
-	ImageName       string         `json:"imageName,omitempty"`
-	ImageWidth      int            `json:"imageWidth,omitempty"`
-	ImageHeight     int            `json:"imageHeight,omitempty"`
-	HTML5URL        string         `json:"html5Url,omitempty"`
-	HTML5Format     string         `json:"html5Format,omitempty"`
-	HTML5Status     string         `json:"html5Status,omitempty"`
-	HTML5DataSchema map[string]any `json:"html5DataSchema,omitempty"`
+	ID                 int            `json:"id"`
+	Template           string         `json:"template,omitempty"`
+	Active             bool           `json:"active"`
+	FadePosition       float64        `json:"fadePosition,omitempty"`
+	AnimationMode      string         `json:"animationMode,omitempty"`
+	AnimationHz        float64        `json:"animationHz,omitempty"`
+	ZOrder             int            `json:"zOrder"`
+	X                  int            `json:"x"`
+	Y                  int            `json:"y"`
+	Width              int            `json:"width"`
+	Height             int            `json:"height"`
+	ImageName          string         `json:"imageName,omitempty"`
+	ImageWidth         int            `json:"imageWidth,omitempty"`
+	ImageHeight        int            `json:"imageHeight,omitempty"`
+	HTML5URL           string         `json:"html5Url,omitempty"`
+	HTML5Format        string         `json:"html5Format,omitempty"`
+	HTML5Status        string         `json:"html5Status,omitempty"`
+	HTML5DataSchema    map[string]any `json:"html5DataSchema,omitempty"`
+	SequenceLoaded     bool           `json:"sequenceLoaded,omitempty"`
+	SequencePhase      string         `json:"sequencePhase,omitempty"`
+	SequenceProcessing bool           `json:"sequenceProcessing,omitempty"`
+	SequenceProgress   float64        `json:"sequenceProgress,omitempty"`
+	SequenceSpeed      float64        `json:"sequenceSpeed,omitempty"`
 }
 
 // ReplayState is the JSON-serializable state for the instant replay system,
