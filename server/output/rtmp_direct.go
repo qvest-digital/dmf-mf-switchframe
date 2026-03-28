@@ -428,7 +428,8 @@ type RTMPDirect struct {
 
 	initialized atomic.Bool
 	ptsBase     int64
-	ptsBaseSet  bool
+	lastSPS     []byte // cached for reconnect (written only from writeLoop)
+	lastPPS     []byte // cached for reconnect (written only from writeLoop)
 
 	state        atomic.Pointer[AdapterState]
 	lastError    atomic.Pointer[string]
@@ -614,7 +615,7 @@ func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
 		if r.connectFn != nil {
 			r.initialized.Store(true)
 			r.ptsBase = frame.PTS
-			r.ptsBaseSet = true
+	
 			return
 		}
 
@@ -624,6 +625,23 @@ func (r *RTMPDirect) handleVideo(frame *media.VideoFrame) {
 			r.enterReconnect(err.Error())
 			return
 		}
+	}
+
+	// Cache SPS/PPS from keyframes for eager reconnect.
+	if frame.IsKeyframe && len(frame.SPS) > 0 && len(frame.PPS) > 0 {
+		r.lastSPS = append(r.lastSPS[:0], frame.SPS...)
+		r.lastPPS = append(r.lastPPS[:0], frame.PPS...)
+	}
+
+	// After reconnect, drop P-frames until the first keyframe. The new
+	// RTMP connection has a fresh sequence header but the decoder needs
+	// an IDR to start. Also rebase PTS for the new connection.
+	if r.pendingIDR.Load() {
+		if !frame.IsKeyframe {
+			return
+		}
+		r.pendingIDR.Store(false)
+		r.ptsBase = frame.PTS // rebase for new connection
 	}
 
 	// In test mode, skip the C write call.
@@ -738,7 +756,6 @@ func (r *RTMPDirect) initConnection(frame *media.VideoFrame) error {
 	}
 
 	r.ptsBase = frame.PTS
-	r.ptsBaseSet = true
 	r.initialized.Store(true)
 	return nil
 }
@@ -753,6 +770,9 @@ func (r *RTMPDirect) enterReconnect(errMsg string) {
 }
 
 // reconnectLoop retries the RTMP connection with exponential backoff.
+// If cached SPS/PPS are available (from a prior keyframe), it eagerly
+// re-opens the RTMP connection. Otherwise it resets state and waits for
+// the next keyframe to trigger initConnection from the writeLoop.
 func (r *RTMPDirect) reconnectLoop() {
 	defer r.reconnecting.Store(false)
 
@@ -774,11 +794,44 @@ func (r *RTMPDirect) reconnectLoop() {
 
 		r.mu.Lock()
 		r.closeLocked()
+
+		// Try eager reconnect if we have cached SPS/PPS.
+		if len(r.lastSPS) > 0 && len(r.lastPPS) > 0 {
+			cURL := C.CString(r.config.URL)
+			rc := C.rtmp_flv_open(&r.ctx, cURL,
+				(*C.uchar)(unsafe.Pointer(&r.lastSPS[0])), C.int(len(r.lastSPS)),
+				(*C.uchar)(unsafe.Pointer(&r.lastPPS[0])), C.int(len(r.lastPPS)),
+				C.int(r.config.SampleRate),
+				C.int(r.config.Channels))
+			C.free(unsafe.Pointer(cURL))
+
+			if rc == 0 {
+				r.mu.Unlock()
+				// Eagerly reconnected — need a keyframe to resume cleanly.
+				r.initialized.Store(true)
+				r.pendingIDR.Store(true)
+				r.state.Store(ptrTo(StateActive))
+				r.lastError.Store(ptrTo(""))
+				r.resetBackoff()
+
+				slog.Info("RTMP direct reconnected", "url", rtmpMaskURL(r.config.URL))
+				if r.onReconnect != nil {
+					r.onReconnect()
+				}
+				return
+			}
+			// Eager reconnect failed — retry with backoff.
+			slog.Warn("RTMP direct eager reconnect failed", "rc", int(rc),
+				"url", rtmpMaskURL(r.config.URL))
+			r.mu.Unlock()
+			r.lastError.Store(ptrTo("RTMP reconnect failed"))
+			continue
+		}
+
 		r.mu.Unlock()
 
-		// Reset state for new connection — will be initialized on next keyframe.
+		// No cached SPS/PPS — reset and wait for next keyframe.
 		r.initialized.Store(false)
-		r.ptsBaseSet = false
 		r.pendingIDR.Store(true)
 		r.state.Store(ptrTo(StateActive))
 		r.lastError.Store(ptrTo(""))
@@ -786,7 +839,6 @@ func (r *RTMPDirect) reconnectLoop() {
 
 		slog.Info("RTMP direct ready for reconnect (waiting for keyframe)",
 			"url", rtmpMaskURL(r.config.URL))
-
 		if r.onReconnect != nil {
 			r.onReconnect()
 		}
