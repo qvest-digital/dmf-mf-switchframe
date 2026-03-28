@@ -788,10 +788,18 @@ func (r *gpuPipelineRunnerImpl) RunTransition(fromKey, toKey string, transType s
 	dst.PTS = pts
 
 	// GPU blend based on transition type.
+	// Dispatch to P210 kernels when pool is 10-bit 4:2:2.
 	ctx := r.ctx
+	isP210 := dst.Format == gpu.GPUFormatP210
 	switch transType {
 	case "mix":
-		if err := gpu.BlendMix(ctx, dst, frameA, frameB, position); err != nil {
+		var err error
+		if isP210 {
+			err = gpu.BlendMixP210(ctx, dst, frameA, frameB, position)
+		} else {
+			err = gpu.BlendMix(ctx, dst, frameA, frameB, position)
+		}
+		if err != nil {
 			dst.Release()
 			return fmt.Errorf("gpu transition mix: %w", err)
 		}
@@ -801,24 +809,48 @@ func (r *gpuPipelineRunnerImpl) RunTransition(fromKey, toKey string, transType s
 		// Phase 2 (pos 0.5-1.0): fade B from black.
 		if position <= 0.5 {
 			dipPos := position * 2.0
-			if err := gpu.BlendFTB(ctx, dst, frameA, dipPos); err != nil {
+			var err error
+			if isP210 {
+				err = gpu.BlendFTBP210(ctx, dst, frameA, dipPos)
+			} else {
+				err = gpu.BlendFTB(ctx, dst, frameA, dipPos)
+			}
+			if err != nil {
 				dst.Release()
 				return fmt.Errorf("gpu transition dip phase1: %w", err)
 			}
 		} else {
 			dipPos := (1.0 - position) * 2.0
-			if err := gpu.BlendFTB(ctx, dst, frameB, dipPos); err != nil {
+			var err error
+			if isP210 {
+				err = gpu.BlendFTBP210(ctx, dst, frameB, dipPos)
+			} else {
+				err = gpu.BlendFTB(ctx, dst, frameB, dipPos)
+			}
+			if err != nil {
 				dst.Release()
 				return fmt.Errorf("gpu transition dip phase2: %w", err)
 			}
 		}
 	case "ftb":
-		if err := gpu.BlendFTB(ctx, dst, frameA, position); err != nil {
+		var err error
+		if isP210 {
+			err = gpu.BlendFTBP210(ctx, dst, frameA, position)
+		} else {
+			err = gpu.BlendFTB(ctx, dst, frameA, position)
+		}
+		if err != nil {
 			dst.Release()
 			return fmt.Errorf("gpu transition ftb: %w", err)
 		}
 	case "ftb_reverse":
-		if err := gpu.BlendFTB(ctx, dst, frameA, 1.0-position); err != nil {
+		var err error
+		if isP210 {
+			err = gpu.BlendFTBP210(ctx, dst, frameA, 1.0-position)
+		} else {
+			err = gpu.BlendFTB(ctx, dst, frameA, 1.0-position)
+		}
+		if err != nil {
 			dst.Release()
 			return fmt.Errorf("gpu transition ftb_reverse: %w", err)
 		}
