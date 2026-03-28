@@ -775,7 +775,7 @@
 	{/if}
 </ErrorBoundary>
 
-<StatsPanel visible={statsPanelVisible} onclose={() => { statsPanelVisible = false; }} onopengraph={() => { pipelineGraphVisible = true; statsPanelVisible = false; }} {pipeline} pipelineCodec={store.effectiveState.pipelineFormat?.codec} />
+<StatsPanel visible={statsPanelVisible} onclose={() => { statsPanelVisible = false; }} onopengraph={() => { pipelineGraphVisible = true; statsPanelVisible = false; }} {pipeline} pipelineCodec={store.effectiveState.pipelineFormat?.codec} pipelineColorFormat={store.effectiveState.pipelineFormat?.colorFormat} />
 <PipelineGraph visible={pipelineGraphVisible} onclose={() => { pipelineGraphVisible = false; }} {pipeline} />
 <IOPanel visible={ioPanelVisible} state={store.effectiveState} onclose={() => { ioPanelVisible = false; }} />
 <div class="sr-only" aria-live="polite" role="status">{announcement}</div>

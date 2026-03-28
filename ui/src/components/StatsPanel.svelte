@@ -392,9 +392,15 @@
 		onopengraph?: () => void;
 		pipeline?: MediaPipeline | null;
 		pipelineCodec?: string;
+		pipelineColorFormat?: string;
 	}
 
-	let { visible, onclose, onopengraph, pipeline = null, pipelineCodec }: Props = $props();
+	let { visible, onclose, onopengraph, pipeline = null, pipelineCodec, pipelineColorFormat }: Props = $props();
+
+	// Derive GPU frame format labels from pipeline color format.
+	const isP210 = $derived(pipelineColorFormat === 'yuv422p10le');
+	const gpuUploadLabel = $derived(isP210 ? 'YUV420p → P210' : 'YUV420p → NV12');
+	const gpuDownloadLabel = $derived(isP210 ? 'P210 → YUV422p10' : 'NV12 → YUV420p');
 
 	// --- State ---
 	let snapshot = $state<DebugSnapshot | null>(null);
@@ -1518,7 +1524,7 @@
 						<div class="flow-input gpu-flow-input">
 							<span class="flow-box-label">GPU UPLOAD</span>
 							<span class="flow-box-detail">
-								YUV420p &rarr; NV12
+								{gpuUploadLabel}
 								· {fmtCount(gpuPipe.run_count)} runs
 							</span>
 						</div>
@@ -1561,7 +1567,7 @@
 						<div class="flow-output gpu-flow-output">
 							<span class="flow-box-label">GPU DOWNLOAD</span>
 							<span class="flow-box-detail">
-								NV12 &rarr; YUV420p
+								{gpuDownloadLabel}
 								· total {fmtUs(gpuPipe.last_run_ns)}us
 								· max {fmtUs(gpuPipe.max_run_ns)}us
 							</span>
