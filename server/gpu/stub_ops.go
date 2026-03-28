@@ -293,3 +293,13 @@ func ConvertNV12ToP210(ctx *Context, dst, src *GPUFrame) error {
 func ScaleNV12ToP210(ctx *Context, dst, src *GPUFrame) error {
 	return ErrGPUNotAvailable
 }
+
+// FillRectP210 returns ErrGPUNotAvailable on non-GPU builds.
+func FillRectP210(ctx *Context, frame *GPUFrame, rect Rect, colorY, colorCb, colorCr uint16) error {
+	return ErrGPUNotAvailable
+}
+
+// DrawBorderP210 returns ErrGPUNotAvailable on non-GPU builds.
+func DrawBorderP210(ctx *Context, frame *GPUFrame, rect Rect, colorY, colorCb, colorCr uint16, thickness int) error {
+	return ErrGPUNotAvailable
+}

@@ -346,3 +346,99 @@ kernel void fill_rect_nv12(
         dst[uvOffset + uvIdx + 1] = params.colorCr;
     }
 }
+
+// ============================================================================
+// P210 (10-bit 4:2:2) FillRect / DrawBorder kernels
+// ============================================================================
+
+struct FillRectP210Params {
+    uint dstW;
+    uint dstH;
+    uint dstPitch;  // bytes per row
+    int rectX;
+    int rectY;
+    int rectW;
+    int rectH;
+    ushort colorY;
+    ushort colorCb;
+    ushort colorCr;
+};
+
+struct BorderP210Params {
+    uint dstW;
+    uint dstH;
+    uint dstPitch;  // bytes per row
+    int rectX;
+    int rectY;
+    int rectW;
+    int rectH;
+    int outerX;
+    int outerY;
+    int outerW;
+    int outerH;
+    int thickness;
+    ushort colorY;
+    ushort colorCb;
+    ushort colorCr;
+};
+
+// Fill rectangle with constant P210 color (10-bit uint16 Y + interleaved uint16 CbCr)
+kernel void fill_rect_p210(
+    device uchar* dst              [[buffer(0)]],
+    constant FillRectP210Params& params [[buffer(1)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= uint(params.rectW) || gid.y >= uint(params.rectH)) return;
+
+    int x = params.rectX + int(gid.x);
+    int y = params.rectY + int(gid.y);
+    if (x >= int(params.dstW) || y >= int(params.dstH) || x < 0 || y < 0) return;
+
+    uint samplesPerRow = params.dstPitch / 2;
+
+    // Fill Y plane (uint16 per sample)
+    ((device ushort*)dst)[uint(y) * samplesPerRow + uint(x)] = params.colorY;
+
+    // Fill UV plane (full height for 4:2:2, interleaved CbCr uint16 pairs)
+    // Only write once per chroma pair (when x is even)
+    if ((x & 1) == 0) {
+        uint uvOffset = samplesPerRow * params.dstH;
+        uint chromaX = uint(x) / 2;
+        ((device ushort*)dst)[uvOffset + uint(y) * samplesPerRow + chromaX * 2]     = params.colorCb;
+        ((device ushort*)dst)[uvOffset + uint(y) * samplesPerRow + chromaX * 2 + 1] = params.colorCr;
+    }
+}
+
+// Draw border around a rectangle in P210 format (10-bit uint16)
+// Thread indices are relative to the outer bounding box origin (outerX, outerY).
+kernel void draw_border_p210(
+    device uchar* dst              [[buffer(0)]],
+    constant BorderP210Params& params [[buffer(1)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    int lx = int(gid.x);
+    int ly = int(gid.y);
+
+    // Convert local (outer-box-relative) coords to absolute frame coords
+    int x = params.outerX + lx;
+    int y = params.outerY + ly;
+
+    if (lx >= params.outerW || ly >= params.outerH) return;
+    if (x >= int(params.dstW) || y >= int(params.dstH) || x < 0 || y < 0) return;
+
+    // Inside the rect itself? Skip (not border)
+    if (x >= params.rectX && x < params.rectX + params.rectW && y >= params.rectY && y < params.rectY + params.rectH) return;
+
+    uint samplesPerRow = params.dstPitch / 2;
+
+    // Fill Y plane (uint16 per sample)
+    ((device ushort*)dst)[uint(y) * samplesPerRow + uint(x)] = params.colorY;
+
+    // Fill UV plane (full height for 4:2:2, interleaved CbCr uint16 pairs)
+    if ((x & 1) == 0) {
+        uint uvOffset = samplesPerRow * params.dstH;
+        uint chromaX = uint(x) / 2;
+        ((device ushort*)dst)[uvOffset + uint(y) * samplesPerRow + chromaX * 2]     = params.colorCb;
+        ((device ushort*)dst)[uvOffset + uint(y) * samplesPerRow + chromaX * 2 + 1] = params.colorCr;
+    }
+}

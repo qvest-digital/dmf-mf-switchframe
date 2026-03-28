@@ -483,3 +483,15 @@ func FillBlackP210(ctx *Context, frame *GPUFrame) error {
 func FillColorP210(ctx *Context, frame *GPUFrame, y, cb, cr uint16) error {
 	return fmt.Errorf("gpu: FillColorP210 CUDA not yet implemented")
 }
+
+// FillRectP210 fills a rectangular region with a constant 10-bit color on a P210 GPU frame.
+// CUDA kernel not yet implemented.
+func FillRectP210(ctx *Context, frame *GPUFrame, rect Rect, colorY, colorCb, colorCr uint16) error {
+	return fmt.Errorf("gpu: FillRectP210 CUDA not yet implemented")
+}
+
+// DrawBorderP210 draws a colored border outside the given rectangle on a P210 GPU frame.
+// CUDA kernel not yet implemented.
+func DrawBorderP210(ctx *Context, frame *GPUFrame, rect Rect, colorY, colorCb, colorCr uint16, thickness int) error {
+	return fmt.Errorf("gpu: DrawBorderP210 CUDA not yet implemented")
+}

@@ -162,3 +162,63 @@ func FillRect(ctx *Context, frame *GPUFrame, rect Rect, color YUVColor) error {
 	}
 	return nil
 }
+
+// FillRectP210 fills a rectangular region with a constant 10-bit color on a P210 GPU frame.
+func FillRectP210(ctx *Context, frame *GPUFrame, rect Rect, colorY, colorCb, colorCr uint16) error {
+	if ctx == nil || ctx.mtl == nil || frame == nil {
+		return ErrGPUNotAvailable
+	}
+
+	mtl := ctx.mtl
+	pipeline, err := mtl.getPipeline("fill_rect_p210")
+	if err != nil {
+		return fmt.Errorf("gpu: fill rect p210: %w", err)
+	}
+
+	params := C.MetalFillRectP210Params{
+		dstW: C.uint32_t(frame.Width), dstH: C.uint32_t(frame.Height), dstPitch: C.uint32_t(frame.Pitch),
+		rectX: C.int32_t(rect.X), rectY: C.int32_t(rect.Y),
+		rectW: C.int32_t(rect.W), rectH: C.int32_t(rect.H),
+		colorY: C.uint16_t(colorY), colorCb: C.uint16_t(colorCb), colorCr: C.uint16_t(colorCr),
+	}
+
+	rc := C.metal_fill_rect_p210(mtl.queue, pipeline, frame.MetalBuf, &params)
+	if rc != C.METAL_SUCCESS {
+		return fmt.Errorf("gpu: fill rect p210 failed: %d", rc)
+	}
+	return nil
+}
+
+// DrawBorderP210 draws a colored border outside the given rectangle on a P210 GPU frame.
+func DrawBorderP210(ctx *Context, frame *GPUFrame, rect Rect, colorY, colorCb, colorCr uint16, thickness int) error {
+	if ctx == nil || ctx.mtl == nil || frame == nil {
+		return ErrGPUNotAvailable
+	}
+
+	mtl := ctx.mtl
+	pipeline, err := mtl.getPipeline("draw_border_p210")
+	if err != nil {
+		return fmt.Errorf("gpu: draw border p210: %w", err)
+	}
+
+	outerX := rect.X - thickness
+	outerY := rect.Y - thickness
+	outerW := rect.W + thickness*2
+	outerH := rect.H + thickness*2
+
+	params := C.MetalBorderP210Params{
+		dstW: C.uint32_t(frame.Width), dstH: C.uint32_t(frame.Height), dstPitch: C.uint32_t(frame.Pitch),
+		rectX: C.int32_t(rect.X), rectY: C.int32_t(rect.Y),
+		rectW: C.int32_t(rect.W), rectH: C.int32_t(rect.H),
+		outerX: C.int32_t(outerX), outerY: C.int32_t(outerY),
+		outerW: C.int32_t(outerW), outerH: C.int32_t(outerH),
+		thickness: C.int32_t(thickness),
+		colorY: C.uint16_t(colorY), colorCb: C.uint16_t(colorCb), colorCr: C.uint16_t(colorCr),
+	}
+
+	rc := C.metal_draw_border_p210(mtl.queue, pipeline, frame.MetalBuf, &params)
+	if rc != C.METAL_SUCCESS {
+		return fmt.Errorf("gpu: draw border p210 failed: %d", rc)
+	}
+	return nil
+}

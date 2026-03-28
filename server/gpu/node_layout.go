@@ -123,7 +123,7 @@ func (n *gpuLayoutNode) processSlot(frame *GPUFrame, slot *SlotSnapshot) error {
 		}
 	} else if len(slot.FillYUV) == 0 || slot.FillW == 0 || slot.FillH == 0 {
 		// No signal — fill with black.
-		if err := FillRect(n.ctx, frame, rect, ColorBlack); err != nil {
+		if err := GPUFillRectDispatch(n.ctx, frame, rect, ColorBlack); err != nil {
 			return err
 		}
 	} else {
@@ -150,7 +150,7 @@ func (n *gpuLayoutNode) processSlot(frame *GPUFrame, slot *SlotSnapshot) error {
 			Cb: slot.Border.ColorCb,
 			Cr: slot.Border.ColorCr,
 		}
-		if err := DrawBorder(n.ctx, frame, rect, color, slot.Border.Thickness); err != nil {
+		if err := GPUDrawBorderDispatch(n.ctx, frame, rect, color, slot.Border.Thickness); err != nil {
 			return err
 		}
 	}
