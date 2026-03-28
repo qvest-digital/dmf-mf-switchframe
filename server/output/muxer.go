@@ -640,7 +640,8 @@ func (m *TSMuxer) init(_ int64) error {
 	m.buf = &bytes.Buffer{}
 	m.muxer = astits.NewMuxer(ctx, m.buf)
 
-	// Register video elementary stream with codec-appropriate stream type.
+	// Register video elementary stream with codec-appropriate stream type
+	// and ES-level descriptors for broadcast metadata.
 	videoStreamType := astits.StreamTypeH264Video
 	if m.videoCodec == "h265" {
 		videoStreamType = astits.StreamTypeH265Video
@@ -648,15 +649,36 @@ func (m *TSMuxer) init(_ int64) error {
 	if err := m.muxer.AddElementaryStream(astits.PMTElementaryStream{
 		ElementaryPID: videoPID,
 		StreamType:    videoStreamType,
+		ElementaryStreamDescriptors: []*astits.Descriptor{
+			{
+				Tag:                astits.DescriptorTagMaximumBitrate,
+				MaximumBitrate:     &astits.DescriptorMaximumBitrate{Bitrate: 625000}, // 5 Mbps / 8 = 625000 bytes/s
+				DataStreamAlignment: nil,
+			},
+			{
+				Tag:                 astits.DescriptorTagDataStreamAlignment,
+				DataStreamAlignment: &astits.DescriptorDataStreamAlignment{Type: uint8(astits.DataStreamAligmentVideoAccessUnit)},
+			},
+		},
 	}); err != nil {
 		cancel()
 		return err
 	}
 
-	// Register audio elementary stream (AAC with ADTS).
+	// Register audio elementary stream (AAC with ADTS) with language and alignment.
 	if err := m.muxer.AddElementaryStream(astits.PMTElementaryStream{
 		ElementaryPID: audioPID,
 		StreamType:    astits.StreamTypeADTS,
+		ElementaryStreamDescriptors: []*astits.Descriptor{
+			{
+				Tag:                        astits.DescriptorTagISO639LanguageAndAudioType,
+				ISO639LanguageAndAudioType: &astits.DescriptorISO639LanguageAndAudioType{Language: []byte("eng"), Type: 0},
+			},
+			{
+				Tag:                 astits.DescriptorTagDataStreamAlignment,
+				DataStreamAlignment: &astits.DescriptorDataStreamAlignment{Type: uint8(astits.DataStreamAligmentAudioSyncWord)},
+			},
+		},
 	}); err != nil {
 		cancel()
 		return err

@@ -141,28 +141,6 @@ func Download10(ctx *Context, frame *GPUFrame, dst []byte, width, height int) er
 	return nil
 }
 
-// FillBlackP210 fills a GPU P210 frame with black (Y=64, Cb=512, Cr=512 for BT.709 10-bit limited range).
-func FillBlackP210(ctx *Context, frame *GPUFrame) error {
-	if ctx == nil || frame == nil {
-		return ErrGPUNotAvailable
-	}
-
-	cerr := C.p210_fill(
-		(*C.uint8_t)(unsafe.Pointer(uintptr(frame.DevPtr))),
-		C.int(frame.Width), C.int(frame.Height), C.int(frame.Pitch),
-		C.uint16_t(64), C.uint16_t(512), C.uint16_t(512),
-		ctx.stream,
-	)
-	if cerr != C.cudaSuccess {
-		return fmt.Errorf("gpu: fill black p210: kernel failed: %d", cerr)
-	}
-
-	if rc := C.cudaStreamSynchronize(ctx.stream); rc != C.cudaSuccess {
-		return fmt.Errorf("gpu: fill black p210: sync failed: %d", rc)
-	}
-	return nil
-}
-
 // UploadYUV420PToP210 is not supported on CUDA (requires unified memory).
 // Use Upload to NV12 temp + ConvertNV12ToP210 instead.
 func UploadYUV420PToP210(ctx *Context, frame *GPUFrame, yuv []byte, width, height int) error {

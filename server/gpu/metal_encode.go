@@ -217,17 +217,21 @@ func (e *GPUEncoder) EncodeGPU(frame *GPUFrame, forceIDR bool) ([]byte, bool, er
 			&outBuf, &outLen, &outIsIDR,
 		)
 		if rc != 0 {
+			slog.Error("gpu: VT encode failed", "rc", rc, "format", frame.Format,
+				"w", frame.Width, "h", frame.Height, "pitch", frame.Pitch,
+				"isHEVC", e.pipelineCodec == 1)
 			return nil, false, fmt.Errorf("gpu: VT encode failed: %d", rc)
 		}
 		if outLen == 0 {
-			// Encoder buffering (warmup) — no output yet
+			slog.Debug("gpu: VT encode returned 0 bytes (buffering)", "format", frame.Format,
+				"w", frame.Width, "h", frame.Height, "isHEVC", e.pipelineCodec == 1)
 			return nil, false, nil
 		}
 
 		// Copy encoded data from C-side reusable buffer to Go memory.
-		// The buffer is owned by VTEncoderState and reused across frames —
-		// do NOT free it here.
 		data := C.GoBytes(unsafe.Pointer(outBuf), outLen)
+		slog.Debug("gpu: VT encode success", "bytes", len(data), "isIDR", outIsIDR != 0,
+			"isHEVC", e.pipelineCodec == 1)
 		return data, outIsIDR != 0, nil
 	}
 
