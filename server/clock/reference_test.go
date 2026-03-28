@@ -112,22 +112,27 @@ func TestReferenceClockSetRate(t *testing.T) {
 	c.Start()
 	defer c.Stop()
 
+	var lastPTS int64
 	for i := 0; i < 10; i++ {
-		<-c.Ticks()
+		tick := <-c.Ticks()
+		lastPTS = tick.VideoPTS
+	}
+	// After 10 ticks at 30fps: tick 9 PTS = 9 * 3000 = 27000
+	if lastPTS != 27000 {
+		t.Fatalf("before SetRate: expected lastPTS=27000, got %d", lastPTS)
 	}
 
-	// Switch to 25fps.
+	// Switch to 25fps. PTS should continue smoothly from 30000 (not jump).
 	c.SetRate(25, 1)
 
-	// PTS delta should now be 90000/25 = 3600.
-	// After SetRate, tickCount is 10, so next PTS = basePTS + 10 * 3600 = 36000.
+	// Next tick should have PTS = 30000 (continuation from 30fps).
 	tick := <-c.Ticks()
-	expectedPTS := int64(10) * 3600
+	expectedPTS := int64(30000) // 10th tick's PTS at 30fps = 10 * 3000
 	if tick.VideoPTS != expectedPTS {
 		t.Fatalf("after SetRate: expected PTS=%d, got %d", expectedPTS, tick.VideoPTS)
 	}
 
-	// Verify consecutive delta is 3600.
+	// Verify consecutive delta is 3600 (25fps).
 	tick2 := <-c.Ticks()
 	delta := tick2.VideoPTS - tick.VideoPTS
 	if delta != 3600 {
@@ -212,6 +217,170 @@ func TestReferenceClockRealtimePacing(t *testing.T) {
 	if elapsed < 850*time.Millisecond || elapsed > 1150*time.Millisecond {
 		t.Fatalf("expected ~1s for 30 ticks at 30fps, got %v", elapsed)
 	}
+}
+
+// Issue 2: 59.94fps PTS truncation drift test.
+// ptsDelta(60000, 1001) truncates 1501.5 to 1501.
+// Over 60000 ticks the cumulative error is 30,000 ticks (333ms).
+func TestPTSAccuracy5994fps(t *testing.T) {
+	rc := NewReferenceClock(60000, 1001, 48000, 0, false)
+	rc.Start()
+	defer rc.Stop()
+
+	const numTicks = 60000
+	var totalPTSAdvance int64
+	var prevPTS int64
+	for i := 0; i < numTicks; i++ {
+		tick := <-rc.Ticks()
+		if i > 0 {
+			totalPTSAdvance += tick.VideoPTS - prevPTS
+		}
+		prevPTS = tick.VideoPTS
+	}
+
+	// Exact total PTS advance after 59999 deltas at 59.94fps (60000/1001):
+	// Each tick should advance by exactly 90000*1001/60000 = 1501.5 on average.
+	// Total advance = 59999 * 90000 * 1001 / 60000 (Bresenham exact).
+	// With truncation bug: 59999 * 1501 = 90,058,499 (short by ~30,000).
+	// With Bresenham: last PTS = 59999 * 90000 * 1001 / 60000
+	// Total sum of all deltas should be: lastPTS - firstPTS = lastPTS (since firstPTS=0).
+	// With correct Bresenham over 60000 ticks:
+	// tick 59999 PTS should be close to 59999 * 90000 * 1001 / 60000 = 90,088,498.5
+	// The key test: the final PTS should not have drifted.
+	// After exactly 60000 ticks (tick indices 0..59999), total span = tick[59999].PTS - tick[0].PTS = totalPTSAdvance
+	// Expected span = 59999 * 90000 * 1001 / 60000
+	// = 59999 * 90090000 / 60000
+	// = 5,401,309,910,000 / 60000
+	// = 90,021,831.833... (hmm, not integer)
+	//
+	// Actually the simplest check: after numTicks ticks, the PTS of the last tick
+	// should match what you'd get from Bresenham accumulation.
+	// Total Bresenham advance over 60000 deltas = 60000 * 90000 * 1001 / 60000 = 90000 * 1001 = 90,090,000.
+	// So PTS of tick[59999] = sum of first 60000-1=59999 deltas from Bresenham,
+	// but since the accumulator covers all 60000 deltas, that's 90,090,000 - last_delta.
+	//
+	// Easier: just check that the last PTS is in the right ballpark.
+	// With truncation: lastPTS = 59999 * 1501 = 90,058,499
+	// With Bresenham: lastPTS should be ~90,088,499 (approximately)
+	// Difference = ~30,000 (333ms of drift)
+
+	// The most robust check: lastPTS should NOT have 333ms of drift.
+	expectedApprox := int64(59999) * int64(90000) * int64(1001) / int64(60000) // = 90,088,498 (integer division)
+	drift := prevPTS - expectedApprox
+	if drift < 0 {
+		drift = -drift
+	}
+	// Allow up to 1502 ticks tolerance (one frame delta) for Bresenham rounding.
+	if drift > 1502 {
+		t.Fatalf("59.94fps PTS drift after %d ticks: lastPTS=%d, expected~%d, drift=%d (>1 frame)",
+			numTicks, prevPTS, expectedApprox, drift)
+	}
+}
+
+// Issue 6: PTS discontinuity on SetRate.
+func TestSetRateNoPTSJump(t *testing.T) {
+	rc := NewReferenceClock(30, 1, 48000, 0, false)
+	rc.Start()
+	defer rc.Stop()
+
+	// Consume 100 ticks at 30fps.
+	var lastPTS int64
+	for i := 0; i < 100; i++ {
+		tick := <-rc.Ticks()
+		lastPTS = tick.VideoPTS
+	}
+
+	// After 100 ticks at 30fps: tick 99 PTS = 99 * 3000 = 297,000
+	if lastPTS != 297000 {
+		t.Fatalf("PTS after 100 ticks at 30fps: expected 297000, got %d", lastPTS)
+	}
+
+	// Switch to 25fps. Next tick should continue from ~300,000, not jump.
+	rc.SetRate(25, 1)
+
+	// Consume next tick.
+	tick := <-rc.Ticks()
+
+	// Expected: continuation from 30fps. Tick 100 at 30fps would have PTS=300,000.
+	// After rate change to 25fps, the next tick PTS should be 300,000 (the 100th
+	// frame's worth of PTS at 30fps) — NOT 100*3600=360,000.
+	// With the bug: PTS = 0 + 100 * 3600 = 360,000 (60,000 tick jump!)
+	expected := int64(300000) // continuation
+	tolerance := int64(3600)  // one 25fps frame delta
+	diff := tick.VideoPTS - expected
+	if diff < 0 {
+		diff = -diff
+	}
+	if diff > tolerance {
+		t.Fatalf("PTS after SetRate should continue smoothly: expected ~%d, got %d (jump=%d)",
+			expected, tick.VideoPTS, tick.VideoPTS-lastPTS)
+	}
+}
+
+// Issue 8: 33-bit PTS masking for long sessions.
+func TestPTSWraps33Bits(t *testing.T) {
+	// Set basePTS near the 33-bit limit.
+	basePTS := int64(1<<33) - 5*3000 // 5 frames before wraparound at 30fps
+	rc := NewReferenceClock(30, 1, 48000, basePTS, false)
+	rc.Start()
+	defer rc.Stop()
+
+	var lastPTS int64
+	for i := 0; i < 10; i++ {
+		tick := <-rc.Ticks()
+		lastPTS = tick.VideoPTS
+	}
+
+	// After 10 ticks at 30fps from near-max basePTS, PTS should have wrapped.
+	// Without masking, it would exceed 2^33.
+	maxPTS := int64(1 << 33)
+	if lastPTS >= maxPTS {
+		t.Fatalf("PTS should be masked to 33 bits (got %d, max %d)", lastPTS, maxPTS)
+	}
+	if lastPTS < 0 {
+		t.Fatalf("PTS should be non-negative after wrap (got %d)", lastPTS)
+	}
+}
+
+// Issue 3: Verify that audio samples from consumed ticks have valid Bresenham
+// distribution even when ticks are dropped in realtime mode. Each consumed tick
+// should have a sample count within the expected Bresenham range.
+func TestRealtimeDroppedTickAudioIntegrity(t *testing.T) {
+	// Use realtime clock at 29.97fps with a slow consumer to force drops.
+	rc := NewReferenceClock(30000, 1001, 48000, 0, true)
+	rc.Start()
+
+	var consumedTicks int64
+	var invalidSamples int
+	deadline := time.After(500 * time.Millisecond)
+
+	for {
+		select {
+		case tick, ok := <-rc.Ticks():
+			if !ok {
+				goto done
+			}
+			consumedTicks++
+			// At 48000Hz/29.97fps, Bresenham produces 1601 or 1602 samples.
+			if tick.AudioSamples != 1601 && tick.AudioSamples != 1602 {
+				invalidSamples++
+			}
+			// Simulate slow consumer to force some drops.
+			time.Sleep(50 * time.Millisecond)
+		case <-deadline:
+			goto done
+		}
+	}
+done:
+	rc.Stop()
+
+	if consumedTicks == 0 {
+		t.Fatal("no ticks consumed")
+	}
+	if invalidSamples > 0 {
+		t.Fatalf("found %d ticks with invalid AudioSamples (expected 1601 or 1602)", invalidSamples)
+	}
+	t.Logf("consumed %d ticks (some dropped) - all had valid Bresenham sample counts", consumedTicks)
 }
 
 func TestReferenceClockBasePTS(t *testing.T) {

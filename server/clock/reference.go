@@ -14,6 +14,9 @@ type Tick struct {
 	FrameDuration time.Duration // nominal frame duration (for overload detection)
 }
 
+// ptsMask33 masks a PTS value to 33 bits (MPEG-TS PTS range: 0 to 2^33-1).
+const ptsMask33 = int64(1<<33) - 1
+
 // ReferenceClock produces ticks at a stable frame rate, driving synchronous
 // A/V processing. Rate can be changed at runtime (for source clock recovery).
 type ReferenceClock struct {
@@ -23,13 +26,20 @@ type ReferenceClock struct {
 	sampleRate int
 	accum      *AudioAccumulator
 	tickCount  int64
-	basePTS    int64
 	ticks      chan Tick
 	request    chan struct{} // non-realtime: consumer signals readiness
 	stop       chan struct{}
 	wg         sync.WaitGroup
 	realtime   bool
 	running    atomic.Bool
+
+	// currentPTS tracks the running PTS value using Bresenham accumulation
+	// (Issue 2). Eliminates truncation drift for non-integer PTS deltas
+	// (e.g., 59.94fps where exact delta = 1501.5).
+	currentPTS int64
+
+	// ptsRemainder is the Bresenham fractional remainder for PTS computation.
+	ptsRemainder int64
 }
 
 // NewReferenceClock creates a clock at the given rate.
@@ -41,7 +51,7 @@ func NewReferenceClock(fpsNum, fpsDen, sampleRate int, basePTS int64, realtime b
 		fpsDen:     fpsDen,
 		sampleRate: sampleRate,
 		accum:      NewAudioAccumulator(sampleRate, fpsNum, fpsDen),
-		basePTS:    basePTS,
+		currentPTS: basePTS,
 		stop:       make(chan struct{}),
 		realtime:   realtime,
 	}
@@ -96,9 +106,14 @@ func (c *ReferenceClock) Ticks() <-chan Tick {
 }
 
 // SetRate changes the clock rate. Thread-safe. Takes effect on next tick.
+// Rebases the PTS accumulator so the next tick continues from the current
+// PTS position, avoiding discontinuities (Issue 6).
 func (c *ReferenceClock) SetRate(fpsNum, fpsDen int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// currentPTS already holds the PTS for the next tick. Just reset the
+	// Bresenham remainder so the new rate starts clean from currentPTS.
+	c.ptsRemainder = 0
 	c.fpsNum = fpsNum
 	c.fpsDen = fpsDen
 	c.accum.Reset(c.sampleRate, fpsNum, fpsDen)
@@ -123,21 +138,25 @@ func frameDuration(fpsNum, fpsDen int) time.Duration {
 	return time.Duration(int64(fpsDen) * int64(time.Second) / int64(fpsNum))
 }
 
-// ptsDelta returns the 90kHz PTS increment per frame for the given rate.
-func ptsDelta(fpsNum, fpsDen int) int64 {
-	return int64(90000) * int64(fpsDen) / int64(fpsNum)
-}
-
 // produceTick creates the next tick under the lock, advancing state.
+// Uses Bresenham accumulation for PTS (Issue 2) and 33-bit masking (Issue 8).
 func (c *ReferenceClock) produceTick() Tick {
 	c.mu.Lock()
-	num := c.fpsNum
-	den := c.fpsDen
-	dur := frameDuration(num, den)
-	delta := ptsDelta(num, den)
+	dur := frameDuration(c.fpsNum, c.fpsDen)
 	samples := c.accum.SamplesForTick()
 	count := c.tickCount
-	pts := c.basePTS + count*delta
+
+	// The PTS for this tick is currentPTS (already computed).
+	pts := c.currentPTS & ptsMask33
+
+	// Advance currentPTS for the NEXT tick using Bresenham accumulation.
+	// This distributes the fractional PTS delta (e.g., 1501.5 for 59.94fps)
+	// across ticks with zero cumulative error.
+	c.ptsRemainder += int64(90000) * int64(c.fpsDen)
+	delta := c.ptsRemainder / int64(c.fpsNum)
+	c.ptsRemainder %= int64(c.fpsNum)
+	c.currentPTS += delta
+
 	c.tickCount++
 	c.mu.Unlock()
 
