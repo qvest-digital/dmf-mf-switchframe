@@ -69,7 +69,9 @@ func (m *corrSTMapState) ProgramGPUSnapshot() (string, bool, int, []float32, []f
 
 // ============================================================================
 // TestGPUFullPipelineChain — Upload A (Y=80), blend with B (Y=160) at 0.5,
-// download, verify avg Y≈120±2. Run 30 times, verify consistency.
+// download, verify EVERY Y pixel is 119-121. The GPU blend kernel computes:
+//   (80*128 + 160*128 + 128) >> 8 = 120 exactly.
+// Run 30 times, verify consistency.
 // ============================================================================
 
 func TestGPUFullPipelineChain(t *testing.T) {
@@ -82,6 +84,11 @@ func TestGPUFullPipelineChain(t *testing.T) {
 	require.NoError(t, err)
 	defer pool.Close()
 
+	ySize := width * height
+	cbSize := (width / 2) * (height / 2)
+	crSize := cbSize
+	downloadBuf := make([]byte, ySize+cbSize+crSize)
+
 	const iterations = 30
 	yResults := make([]float64, 0, iterations)
 
@@ -91,29 +98,74 @@ func TestGPUFullPipelineChain(t *testing.T) {
 		dst, err := pool.Acquire()
 		require.NoError(t, err, "iteration %d: acquire dst", i)
 
-		// Blend at 0.5: expect (80+160)/2 = 120
+		// Blend at 0.5: expect (80*128 + 160*128 + 128) >> 8 = 120 exactly
 		err = BlendMix(ctx, dst, a, b, 0.5)
 		require.NoError(t, err, "iteration %d: blend", i)
 
-		yAvg, cbAvg, crAvg := avgPlanes(t, ctx, dst, width, height)
-		t.Logf("iteration %d: Y=%.2f, Cb=%.2f, Cr=%.2f", i, yAvg, cbAvg, crAvg)
+		// Download full frame for per-pixel validation
+		err = Download(ctx, downloadBuf, dst, width, height)
+		require.NoError(t, err, "iteration %d: download", i)
+
+		// Per-pixel Y plane validation: every pixel must be 119-121 (±1)
+		outOfRange := 0
+		var ySum int64
+		for j := 0; j < ySize; j++ {
+			v := downloadBuf[j]
+			ySum += int64(v)
+			if v < 119 || v > 121 {
+				outOfRange++
+			}
+		}
+		yAvg := float64(ySum) / float64(ySize)
+
+		// Per-pixel Cb/Cr validation
+		var cbSum, crSum int64
+		cbOutOfRange := 0
+		crOutOfRange := 0
+		for j := 0; j < cbSize; j++ {
+			v := downloadBuf[ySize+j]
+			cbSum += int64(v)
+			if v < 127 || v > 129 {
+				cbOutOfRange++
+			}
+		}
+		for j := 0; j < crSize; j++ {
+			v := downloadBuf[ySize+cbSize+j]
+			crSum += int64(v)
+			if v < 127 || v > 129 {
+				crOutOfRange++
+			}
+		}
+		cbAvg := float64(cbSum) / float64(cbSize)
+		crAvg := float64(crSum) / float64(crSize)
+
+		t.Logf("iteration %d: Y=%.4f (out-of-range=%d/%d), Cb=%.4f (oor=%d), Cr=%.4f (oor=%d)",
+			i, yAvg, outOfRange, ySize, cbAvg, cbOutOfRange, crAvg, crOutOfRange)
 
 		yResults = append(yResults, yAvg)
 
-		// Assert per-iteration
-		assert.InDelta(t, 120.0, yAvg, 2.0,
+		// Assert per-iteration: avg within ±1
+		assert.InDelta(t, 120.0, yAvg, 1.0,
 			"iteration %d: avg Y should be ~120 (blend of 80 and 160 at 0.5)", i)
-		assert.InDelta(t, 128.0, cbAvg, 2.0,
+		assert.InDelta(t, 128.0, cbAvg, 1.0,
 			"iteration %d: avg Cb should be ~128", i)
-		assert.InDelta(t, 128.0, crAvg, 2.0,
+		assert.InDelta(t, 128.0, crAvg, 1.0,
 			"iteration %d: avg Cr should be ~128", i)
+
+		// Per-pixel: zero pixels outside ±1 tolerance
+		assert.Equal(t, 0, outOfRange,
+			"iteration %d: %d/%d Y pixels outside [119,121] — blend should produce exactly 120", i, outOfRange, ySize)
+		assert.Equal(t, 0, cbOutOfRange,
+			"iteration %d: %d Cb pixels outside [127,129]", i, cbOutOfRange)
+		assert.Equal(t, 0, crOutOfRange,
+			"iteration %d: %d Cr pixels outside [127,129]", i, crOutOfRange)
 
 		dst.Release()
 		b.Release()
 		a.Release()
 	}
 
-	// Verify consistency across all 30 runs: all Y values should be within ±1 of each other.
+	// Verify consistency across all 30 runs: all Y values should be within ±0.5 of each other.
 	if len(yResults) > 1 {
 		minY, maxY := yResults[0], yResults[0]
 		for _, v := range yResults[1:] {
@@ -126,8 +178,8 @@ func TestGPUFullPipelineChain(t *testing.T) {
 		}
 		spread := maxY - minY
 		t.Logf("Y consistency across %d runs: min=%.4f, max=%.4f, spread=%.4f", iterations, minY, maxY, spread)
-		assert.LessOrEqual(t, spread, 1.0,
-			"Y values should be consistent across iterations: spread=%.4f", spread)
+		assert.LessOrEqual(t, spread, 0.5,
+			"Y values should be identical across iterations: spread=%.4f", spread)
 	}
 }
 
@@ -236,19 +288,10 @@ func TestGPUPipelineSustained1080p(t *testing.T) {
 	assert.Less(t, avgFrameTime, 100*time.Millisecond,
 		"average frame time should be under 100ms (sanity check); got %v", avgFrameTime)
 
-	// Pool misses after initial warm-up should be low.
-	// The first few frames may miss, but sustained should be all hits.
-	// With pool size 6 and 3 frames per iteration, we expect some misses only
-	// at the start. After warm-up, misses should stop.
-	// We check that total misses are less than 10% of total acquisitions.
-	totalAcquisitions := poolHits + poolMisses
-	if totalAcquisitions > 0 {
-		missRate := float64(poolMisses) / float64(totalAcquisitions)
-		t.Logf("  pool miss rate:  %.2f%%", missRate*100)
-		assert.Less(t, missRate, 0.10,
-			"pool miss rate should be under 10%%; got %.2f%% (%d misses / %d total)",
-			missRate*100, poolMisses, totalAcquisitions)
-	}
+	// Pool misses: with pool size 6 and 3 frames per iteration (all released before
+	// next iteration), we expect at most the initial 6 cold misses. Assert hard cap.
+	require.Less(t, poolMisses, uint64(5),
+		"pool should not thrash under sustained load: got %d misses (hits=%d)", poolMisses, poolHits)
 }
 
 // ============================================================================
@@ -350,9 +393,9 @@ func TestGPUPipelineAllNodesConfigured(t *testing.T) {
 			// Verify frame survives pipeline (all nodes inactive -> passthrough).
 			yAvg, cbAvg, crAvg := avgPlanes(t, ctx, pipeFrame, width, height)
 			t.Logf("post-pipeline: Y=%.2f, Cb=%.2f, Cr=%.2f", yAvg, cbAvg, crAvg)
-			assert.InDelta(t, 100.0, yAvg, 2.0, "Y should survive inactive pipeline")
-			assert.InDelta(t, 128.0, cbAvg, 2.0, "Cb should survive inactive pipeline")
-			assert.InDelta(t, 128.0, crAvg, 2.0, "Cr should survive inactive pipeline")
+			assert.InDelta(t, 100.0, yAvg, 1.0, "Y should survive inactive pipeline")
+			assert.InDelta(t, 128.0, cbAvg, 1.0, "Cb should survive inactive pipeline")
+			assert.InDelta(t, 128.0, crAvg, 1.0, "Cr should survive inactive pipeline")
 
 			_ = pipe.Close()
 		}
@@ -456,7 +499,7 @@ func TestGPUMultiSourceQuadComposite(t *testing.T) {
 		actual := result[idx]
 		t.Logf("quadrant %s: sample at (%d,%d) => Y=%d (expected=%d)",
 			s.name, s.row, s.col, actual, s.expected)
-		assert.InDelta(t, float64(s.expected), float64(actual), 2.0,
+		assert.InDelta(t, float64(s.expected), float64(actual), 1.0,
 			"quadrant %s: Y at center (%d,%d) should be ~%d, got %d",
 			s.name, s.row, s.col, s.expected, actual)
 	}
@@ -476,7 +519,7 @@ func TestGPUMultiSourceQuadComposite(t *testing.T) {
 		avg := float64(sum) / float64(count)
 		t.Logf("quadrant %s: region avg Y=%.2f (expected=%d, count=%d)",
 			colors[qi].name, avg, colors[qi].y, count)
-		assert.InDelta(t, float64(colors[qi].y), avg, 2.0,
+		assert.InDelta(t, float64(colors[qi].y), avg, 1.0,
 			"quadrant %s: avg Y should be ~%d, got %.2f",
 			colors[qi].name, colors[qi].y, avg)
 	}
@@ -492,8 +535,8 @@ func TestGPUMultiSourceQuadComposite(t *testing.T) {
 	cbAvg := float64(cbSum) / float64(cbSize)
 	crAvg := float64(crSum) / float64(crSize)
 	t.Logf("chroma: avg Cb=%.2f, avg Cr=%.2f", cbAvg, crAvg)
-	assert.InDelta(t, 128.0, cbAvg, 2.0, "avg Cb should be ~128")
-	assert.InDelta(t, 128.0, crAvg, 2.0, "avg Cr should be ~128")
+	assert.InDelta(t, 128.0, cbAvg, 1.0, "avg Cb should be ~128")
+	assert.InDelta(t, 128.0, crAvg, 1.0, "avg Cr should be ~128")
 
 	// Verify quadrant boundaries: adjacent quadrants should have distinct Y values.
 	// Sample just inside each boundary.
@@ -512,6 +555,40 @@ func TestGPUMultiSourceQuadComposite(t *testing.T) {
 	assert.Greater(t, vdiff, 30.0,
 		"quadrants across vertical boundary should have distinct Y values: top=%d bottom=%d",
 		topOfBoundary, bottomOfBoundary)
+
+	// Boundary precision checks: verify pixel at last column of left quadrant
+	// is still the correct color, and first column of right quadrant is the next
+	// quadrant's color. This catches off-by-one in composite coordinates.
+	midRow := halfH / 2 // middle of top row of quadrants
+	lastColLeft := halfW - 1
+	firstColRight := halfW
+
+	leftEdge := result[midRow*width+lastColLeft]
+	rightEdge := result[midRow*width+firstColRight]
+	t.Logf("boundary precision: pixel at (%d,%d)=Y%d (expect ~%d), pixel at (%d,%d)=Y%d (expect ~%d)",
+		midRow, lastColLeft, leftEdge, colors[0].y, midRow, firstColRight, rightEdge, colors[1].y)
+	assert.InDelta(t, float64(colors[0].y), float64(leftEdge), 2.0,
+		"last pixel of top-left quadrant should match top-left color: got Y=%d, expected ~%d",
+		leftEdge, colors[0].y)
+	assert.InDelta(t, float64(colors[1].y), float64(rightEdge), 2.0,
+		"first pixel of top-right quadrant should match top-right color: got Y=%d, expected ~%d",
+		rightEdge, colors[1].y)
+
+	// Vertical boundary: last row of top-left vs first row of bottom-left
+	lastRowTop := halfH - 1
+	firstRowBottom := halfH
+	midCol := halfW / 2
+
+	topEdge := result[lastRowTop*width+midCol]
+	bottomEdge := result[firstRowBottom*width+midCol]
+	t.Logf("vertical boundary precision: pixel at (%d,%d)=Y%d (expect ~%d), pixel at (%d,%d)=Y%d (expect ~%d)",
+		lastRowTop, midCol, topEdge, colors[0].y, firstRowBottom, midCol, bottomEdge, colors[2].y)
+	assert.InDelta(t, float64(colors[0].y), float64(topEdge), 2.0,
+		"last row of top-left quadrant should match top-left color: got Y=%d, expected ~%d",
+		topEdge, colors[0].y)
+	assert.InDelta(t, float64(colors[2].y), float64(bottomEdge), 2.0,
+		"first row of bottom-left quadrant should match bottom-left color: got Y=%d, expected ~%d",
+		bottomEdge, colors[2].y)
 }
 
 // ============================================================================
@@ -554,11 +631,11 @@ func TestGPUMultiSourceIngest(t *testing.T) {
 		t.Logf("MEASURE: %s: uploaded Y=%d, downloaded avg Y=%.4f, Cb=%.4f, Cr=%.4f",
 			s.name, s.y, yAvg, cbAvg, crAvg)
 
-		assert.InDelta(t, float64(s.y), yAvg, 2.0,
+		assert.InDelta(t, float64(s.y), yAvg, 1.0,
 			"%s: avg Y should be ~%d after upload+download, got %.4f", s.name, s.y, yAvg)
-		assert.InDelta(t, 128.0, cbAvg, 2.0,
+		assert.InDelta(t, 128.0, cbAvg, 1.0,
 			"%s: avg Cb should be ~128, got %.4f", s.name, cbAvg)
-		assert.InDelta(t, 128.0, crAvg, 2.0,
+		assert.InDelta(t, 128.0, crAvg, 1.0,
 			"%s: avg Cr should be ~128, got %.4f", s.name, crAvg)
 	}
 
@@ -639,21 +716,39 @@ func TestGPUMultiSourceCutUnderLoad(t *testing.T) {
 	require.NoError(t, err)
 	defer dst.Release()
 
-	// CUT to source 0: blend(source0, source0, 0.0) → pure source0
+	ySize := width * height
+	cbSize := (width / 2) * (height / 2)
+	crSize := cbSize
+	downloadBuf := make([]byte, ySize+cbSize+crSize)
+
+	// Helper: download and verify >95% of Y pixels match expected ±1.
+	verifyPerPixel := func(label string, expected byte) float64 {
+		t.Helper()
+		err := Download(ctx, downloadBuf, dst, width, height)
+		require.NoError(t, err, "%s: download", label)
+		matching := 0
+		for j := 0; j < ySize; j++ {
+			v := downloadBuf[j]
+			if v >= expected-1 && v <= expected+1 {
+				matching++
+			}
+		}
+		pct := float64(matching) / float64(ySize) * 100.0
+		t.Logf("MEASURE: %s: %d/%d Y pixels match %d±1 (%.2f%%)", label, matching, ySize, expected, pct)
+		require.Greater(t, pct, 95.0,
+			"%s: expected >95%% of Y pixels to match %d±1, got %.2f%%", label, expected, pct)
+		return pct
+	}
+
+	// CUT to source 0: blend(source0, source1, 0.0) → pure source0
 	err = BlendMix(ctx, dst, frames[0], frames[1], 0.0)
 	require.NoError(t, err)
-	yAvg, _, _ := avgPlanes(t, ctx, dst, width, height)
-	t.Logf("MEASURE: CUT to source-0: Y=%.4f (expected=%d)", yAvg, colors[0].y)
-	assert.InDelta(t, float64(colors[0].y), yAvg, 2.0,
-		"CUT to source-0: Y should be ~%d, got %.4f", colors[0].y, yAvg)
+	verifyPerPixel("CUT to source-0", colors[0].y)
 
 	// CUT to source 1: blend(source0, source1, 1.0) → pure source1
 	err = BlendMix(ctx, dst, frames[0], frames[1], 1.0)
 	require.NoError(t, err)
-	yAvg, _, _ = avgPlanes(t, ctx, dst, width, height)
-	t.Logf("MEASURE: CUT to source-1: Y=%.4f (expected=%d)", yAvg, colors[1].y)
-	assert.InDelta(t, float64(colors[1].y), yAvg, 2.0,
-		"CUT to source-1: Y should be ~%d, got %.4f", colors[1].y, yAvg)
+	verifyPerPixel("CUT to source-1", colors[1].y)
 
 	// Rapid cycle through all 4 sources: 20 switches
 	switchErrors := 0
@@ -664,25 +759,43 @@ func TestGPUMultiSourceCutUnderLoad(t *testing.T) {
 		err = BlendMix(ctx, dst, frames[dummyIdx], frames[srcIdx], 1.0)
 		require.NoError(t, err, "switch %d: blend to %s", i, colors[srcIdx].name)
 
-		yAvg, cbAvg, crAvg := avgPlanes(t, ctx, dst, width, height)
-		t.Logf("MEASURE: switch %d → %s: Y=%.4f (expected=%d), Cb=%.4f, Cr=%.4f",
-			i, colors[srcIdx].name, yAvg, colors[srcIdx].y, cbAvg, crAvg)
+		// Full-frame per-pixel verification
+		err = Download(ctx, downloadBuf, dst, width, height)
+		require.NoError(t, err, "switch %d: download", i)
 
-		// Check Y matches expected source
-		if math.Abs(yAvg-float64(colors[srcIdx].y)) > 2.0 {
+		matching := 0
+		for j := 0; j < ySize; j++ {
+			v := downloadBuf[j]
+			if v >= colors[srcIdx].y-1 && v <= colors[srcIdx].y+1 {
+				matching++
+			}
+		}
+		pct := float64(matching) / float64(ySize) * 100.0
+		t.Logf("MEASURE: switch %d → %s: %d/%d Y pixels match %d±1 (%.2f%%)",
+			i, colors[srcIdx].name, matching, ySize, colors[srcIdx].y, pct)
+
+		if pct < 95.0 {
 			switchErrors++
-			t.Logf("MEASURE: BUG: switch %d: expected Y≈%d, got %.4f (delta=%.4f)",
-				i, colors[srcIdx].y, yAvg, math.Abs(yAvg-float64(colors[srcIdx].y)))
+			t.Logf("MEASURE: BUG: switch %d: only %.2f%% pixels matched (expected >95%%)", i, pct)
 		}
 
 		// Check no cross-contamination: Cb/Cr should stay neutral
-		if math.Abs(cbAvg-128.0) > 2.0 || math.Abs(crAvg-128.0) > 2.0 {
+		var cbSum, crSum int64
+		for j := 0; j < cbSize; j++ {
+			cbSum += int64(downloadBuf[ySize+j])
+		}
+		for j := 0; j < crSize; j++ {
+			crSum += int64(downloadBuf[ySize+cbSize+j])
+		}
+		cbAvg := float64(cbSum) / float64(cbSize)
+		crAvg := float64(crSum) / float64(crSize)
+		if math.Abs(cbAvg-128.0) > 1.0 || math.Abs(crAvg-128.0) > 1.0 {
 			t.Logf("MEASURE: BUG: switch %d: chroma contamination Cb=%.4f, Cr=%.4f", i, cbAvg, crAvg)
 		}
 	}
 
 	assert.Equal(t, 0, switchErrors,
-		"%d of 20 switches had wrong Y value — cross-source contamination?", switchErrors)
+		"%d of 20 switches had <95%% pixel match — cross-source contamination?", switchErrors)
 	t.Logf("MEASURE: 20 rapid switches complete, errors=%d", switchErrors)
 }
 
@@ -762,7 +875,7 @@ func TestGPUEncodeConcurrentWithCompute(t *testing.T) {
 				i, blendY, blendCb, blendCr)
 		}
 
-		if math.Abs(blendY-130.0) > 3.0 {
+		if math.Abs(blendY-130.0) > 1.0 {
 			corruptionCount++
 			t.Logf("MEASURE: BUG: iteration %d: blend Y=%.4f, expected ~130 (corruption?)", i, blendY)
 		}
@@ -773,7 +886,7 @@ func TestGPUEncodeConcurrentWithCompute(t *testing.T) {
 			ySum += int64(downloadBuf[j])
 		}
 		dlYAvg := float64(ySum) / float64(ySize)
-		if math.Abs(dlYAvg-150.0) > 3.0 {
+		if math.Abs(dlYAvg-150.0) > 1.0 {
 			corruptionCount++
 			t.Logf("MEASURE: BUG: iteration %d: download Y=%.4f, expected ~150 (corruption?)", i, dlYAvg)
 		}
@@ -850,7 +963,7 @@ func TestGPU1080pFramePoolPressure(t *testing.T) {
 		}
 		yAvg1 := float64(ySum1) / float64(ySize)
 		expectedY1 := (50.0 + 120.0) / 2.0 // 85
-		if math.Abs(yAvg1-expectedY1) > 3.0 {
+		if math.Abs(yAvg1-expectedY1) > 1.0 {
 			corruptFrames++
 			t.Logf("MEASURE: BUG: iteration %d pair1: Y=%.4f expected=%.1f", i, yAvg1, expectedY1)
 		}
@@ -875,7 +988,7 @@ func TestGPU1080pFramePoolPressure(t *testing.T) {
 		}
 		yAvg2 := float64(ySum2) / float64(ySize)
 		expectedY2 := (180.0 + 230.0) / 2.0 // 205
-		if math.Abs(yAvg2-expectedY2) > 3.0 {
+		if math.Abs(yAvg2-expectedY2) > 1.0 {
 			corruptFrames++
 			t.Logf("MEASURE: BUG: iteration %d pair2: Y=%.4f expected=%.1f", i, yAvg2, expectedY2)
 		}
@@ -902,16 +1015,11 @@ func TestGPU1080pFramePoolPressure(t *testing.T) {
 	totalMisses := missesEnd - missesStart
 	t.Logf("MEASURE: pool hits=%d, misses=%d over %d cycles", totalHits, totalMisses, iterations)
 
-	// With pool size 6 and each iteration acquiring 6 frames (4 sources + 2 dst),
-	// the first iteration will have some misses (pool pre-allocates 6 but we need 6
-	// at once for sources, then 2 for dst). After warm-up, pool cycling should
-	// produce mostly hits. Allow reasonable miss rate.
-	totalAcquisitions := totalHits + totalMisses
-	if totalAcquisitions > 0 {
-		missRate := float64(totalMisses) / float64(totalAcquisitions)
-		t.Logf("MEASURE: pool miss rate: %.2f%% (%d misses / %d total acquisitions)",
-			missRate*100, totalMisses, totalAcquisitions)
-	}
+	// Assert pool misses: with pool size 6 and each iteration acquiring 6 frames
+	// (4 sources + 2 dst), then releasing all before next iteration, the pool
+	// should not thrash. First iteration creates 6, after that all reuse.
+	require.Less(t, totalMisses, uint64(3),
+		"pool should not thrash under pressure: got %d misses (hits=%d)", totalMisses, totalHits)
 
 	assert.Equal(t, 0, corruptFrames,
 		"found %d corrupted frames in %d iterations of pool pressure test", corruptFrames, iterations)
