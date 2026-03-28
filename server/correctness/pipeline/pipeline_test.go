@@ -72,13 +72,11 @@ func TestFullPipelineCutToTS(t *testing.T) {
 	require.Equal(t, testWidth, vs.Width)
 	require.Equal(t, testHeight, vs.Height)
 
-	// Verify frame count. The async pipeline drops some frames due to
-	// channel depth and encode latency, so we expect a reasonable fraction.
+	// Verify frame count. We fed 60 frames total; async pipeline drops some.
 	videoFrames := testutil.ProbeVideoFrames(t, tsPath)
-	require.GreaterOrEqual(t, len(videoFrames), 20,
-		"expected at least 20 video frames, got %d", len(videoFrames))
-	require.LessOrEqual(t, len(videoFrames), 70,
-		"expected at most 70 video frames, got %d", len(videoFrames))
+	t.Logf("MEASURE: video frame count = %d, expected ~60", len(videoFrames))
+	require.InDelta(t, 60, len(videoFrames), 15,
+		"expected ~60 video frames, got %d", len(videoFrames))
 
 	// Verify PTS is monotonically increasing.
 	ptsValues := make([]int64, len(videoFrames))
@@ -97,23 +95,60 @@ func TestFullPipelineCutToTS(t *testing.T) {
 	require.GreaterOrEqual(t, keyCount, 2,
 		"expected at least 2 keyframes (one per source), got %d", keyCount)
 
-	// Decode output and verify colors.
+	// Decode output and verify colors with per-pixel region checks.
 	videos := h.capture.videosCopy()
 	decoded := decodeCapturedFrames(t, videos)
-	require.Greater(t, len(decoded), 0, "should decode at least some frames")
+	require.Greater(t, len(decoded), 6, "should decode at least 6 frames for first/last 3 check")
 
-	// First decoded frames should approximate source A color (Y~80).
-	firstY := averageY(decoded[0].YUV, decoded[0].Width, decoded[0].Height)
-	t.Logf("First decoded frame avg Y: %.1f (expected ~%d)", firstY, sourceA.Y)
-	require.InDelta(t, float64(sourceA.Y), firstY, 25,
-		"first frames should approximate source A color")
+	// Check first 3 frames: >70% of sampled Y pixels within ±25 of sourceA.Y (80).
+	for fi := 0; fi < 3 && fi < len(decoded); fi++ {
+		df := decoded[fi]
+		avgY := averageY(df.YUV, df.Width, df.Height)
+		t.Logf("MEASURE: frame %d avg Y = %.1f, expected ~%d (sourceA)", fi, avgY, sourceA.Y)
 
-	// Last decoded frames should approximate source B color (Y~160).
-	last := decoded[len(decoded)-1]
-	lastY := averageY(last.YUV, last.Width, last.Height)
-	t.Logf("Last decoded frame avg Y: %.1f (expected ~%d)", lastY, sourceB.Y)
-	require.InDelta(t, float64(sourceB.Y), lastY, 25,
-		"last frames should approximate source B color")
+		matchCount := 0
+		const sampleCount = 50
+		for s := 0; s < sampleCount; s++ {
+			// Evenly-spaced pixels across the Y plane.
+			pixIdx := s * (df.Width * df.Height) / sampleCount
+			px := pixIdx % df.Width
+			py := pixIdx / df.Width
+			yVal, _, _ := testutil.YUVPixelAt(df.YUV, df.Width, df.Height, px, py)
+			if math.Abs(float64(yVal)-float64(sourceA.Y)) <= 25 {
+				matchCount++
+			}
+		}
+		pct := float64(matchCount) / float64(sampleCount) * 100.0
+		t.Logf("MEASURE: frame %d sourceA pixel match = %.0f%% (%d/%d)", fi, pct, matchCount, sampleCount)
+		require.GreaterOrEqual(t, pct, 70.0,
+			"frame %d: only %.0f%% of sampled pixels within ±25 of sourceA.Y(%d)", fi, pct, sourceA.Y)
+	}
+
+	// Check last 3 frames: >70% of sampled Y pixels within ±25 of sourceB.Y (160).
+	for fi := len(decoded) - 3; fi < len(decoded); fi++ {
+		if fi < 0 {
+			continue
+		}
+		df := decoded[fi]
+		avgY := averageY(df.YUV, df.Width, df.Height)
+		t.Logf("MEASURE: frame %d avg Y = %.1f, expected ~%d (sourceB)", fi, avgY, sourceB.Y)
+
+		matchCount := 0
+		const sampleCount = 50
+		for s := 0; s < sampleCount; s++ {
+			pixIdx := s * (df.Width * df.Height) / sampleCount
+			px := pixIdx % df.Width
+			py := pixIdx / df.Width
+			yVal, _, _ := testutil.YUVPixelAt(df.YUV, df.Width, df.Height, px, py)
+			if math.Abs(float64(yVal)-float64(sourceB.Y)) <= 25 {
+				matchCount++
+			}
+		}
+		pct := float64(matchCount) / float64(sampleCount) * 100.0
+		t.Logf("MEASURE: frame %d sourceB pixel match = %.0f%% (%d/%d)", fi, pct, matchCount, sampleCount)
+		require.GreaterOrEqual(t, pct, 70.0,
+			"frame %d: only %.0f%% of sampled pixels within ±25 of sourceB.Y(%d)", fi, pct, sourceB.Y)
+	}
 
 	t.Logf("Pipeline cut test passed: %d TS frames, %d decoded, %d keyframes",
 		len(videoFrames), len(decoded), keyCount)
@@ -169,7 +204,8 @@ func TestFullPipelineTransitionToTS(t *testing.T) {
 	testutil.RequireNoErrors(t, tsPath)
 
 	videoFrames := testutil.ProbeVideoFrames(t, tsPath)
-	require.InDelta(t, 60, len(videoFrames), 20,
+	t.Logf("MEASURE: video frame count = %d, expected ~60", len(videoFrames))
+	require.InDelta(t, 60, len(videoFrames), 15,
 		"expected ~60 video frames, got %d", len(videoFrames))
 
 	// Verify PTS monotonic.
@@ -184,21 +220,24 @@ func TestFullPipelineTransitionToTS(t *testing.T) {
 	decoded := decodeCapturedFrames(t, videos)
 	require.Greater(t, len(decoded), 5, "should decode enough frames to check blend")
 
-	// Check that mid-section frames have Y values between source A and B.
-	// Find frames in the middle third.
+	// Check that mid-section frames have Y values BETWEEN sourceA.Y and sourceB.Y
+	// with a ±20 margin (tighter than before). The blend region should not be
+	// purely one source or the other.
 	midStart := len(decoded) / 3
 	midEnd := 2 * len(decoded) / 3
 	if midEnd > len(decoded) {
 		midEnd = len(decoded)
 	}
 
+	lowerBound := float64(sourceA.Y) - 20 // 60
+	upperBound := float64(sourceB.Y) + 20 // 180
 	for i := midStart; i < midEnd; i++ {
 		y := averageY(decoded[i].YUV, decoded[i].Width, decoded[i].Height)
-		// Mid-blend Y should be between sourceA.Y(80) and sourceB.Y(160), with tolerance.
-		require.Greater(t, y, float64(sourceA.Y)-30,
-			"frame %d: Y=%.1f too low for blend", i, y)
-		require.Less(t, y, float64(sourceB.Y)+30,
-			"frame %d: Y=%.1f too high for blend", i, y)
+		t.Logf("MEASURE: mid-transition frame %d avg Y = %.1f, expected in [%.0f, %.0f]", i, y, lowerBound, upperBound)
+		require.Greater(t, y, lowerBound,
+			"frame %d: Y=%.1f below lower bound %.0f for blend", i, y, lowerBound)
+		require.Less(t, y, upperBound,
+			"frame %d: Y=%.1f above upper bound %.0f for blend", i, y, upperBound)
 	}
 
 	t.Logf("Pipeline transition test passed: %d TS frames, %d decoded", len(videoFrames), len(decoded))
@@ -245,27 +284,61 @@ func TestFullPipelineGraphicsOverlayToTS(t *testing.T) {
 	videoFrames := testutil.ProbeVideoFrames(t, tsPath)
 	require.Greater(t, len(videoFrames), 5, "should have video frames with overlay")
 
-	// Decode and check Y values are high (white overlay).
+	// Decode and check per-pixel: white overlay => Y>190, Cb~128, Cr~128.
 	videos := h.capture.videosCopy()
 	decoded := decodeCapturedFrames(t, videos)
 	require.Greater(t, len(decoded), 0, "should decode at least some frames")
 
 	// White in YUV is approximately Y=235, Cb=128, Cr=128.
-	// With lossy compression, expect Y > 200.
-	highYCount := 0
-	for _, df := range decoded {
-		y := averageY(df.YUV, df.Width, df.Height)
-		if y > 200 {
-			highYCount++
+	// Per-pixel check: 50 evenly-spaced Y pixels per frame, >70% should be >190.
+	// Also verify Cb and Cr are near 128 (neutral chroma = white).
+	highYFrameCount := 0
+	for fi, df := range decoded {
+		avgY := averageY(df.YUV, df.Width, df.Height)
+		t.Logf("MEASURE: overlay frame %d avg Y = %.1f, expected >190 (white)", fi, avgY)
+
+		yMatchCount := 0
+		cbMatchCount := 0
+		crMatchCount := 0
+		const sampleCount = 50
+		for s := 0; s < sampleCount; s++ {
+			pixIdx := s * (df.Width * df.Height) / sampleCount
+			px := pixIdx % df.Width
+			py := pixIdx / df.Width
+			yVal, cbVal, crVal := testutil.YUVPixelAt(df.YUV, df.Width, df.Height, px, py)
+			if yVal > 190 {
+				yMatchCount++
+			}
+			if math.Abs(float64(cbVal)-128) <= 15 {
+				cbMatchCount++
+			}
+			if math.Abs(float64(crVal)-128) <= 15 {
+				crMatchCount++
+			}
 		}
+		yPct := float64(yMatchCount) / float64(sampleCount) * 100.0
+		cbPct := float64(cbMatchCount) / float64(sampleCount) * 100.0
+		crPct := float64(crMatchCount) / float64(sampleCount) * 100.0
+		t.Logf("MEASURE: overlay frame %d Y>190: %.0f%%, Cb~128: %.0f%%, Cr~128: %.0f%%",
+			fi, yPct, cbPct, crPct)
+
+		if yPct >= 70.0 {
+			highYFrameCount++
+		}
+		require.GreaterOrEqual(t, yPct, 70.0,
+			"frame %d: only %.0f%% of sampled pixels have Y>190 (white overlay)", fi, yPct)
+		require.GreaterOrEqual(t, cbPct, 70.0,
+			"frame %d: only %.0f%% of sampled pixels have Cb within ±15 of 128 (white chroma)", fi, cbPct)
+		require.GreaterOrEqual(t, crPct, 70.0,
+			"frame %d: only %.0f%% of sampled pixels have Cr within ±15 of 128 (white chroma)", fi, crPct)
 	}
 
-	require.Greater(t, highYCount, 0,
+	require.Greater(t, highYFrameCount, 0,
 		"at least some decoded frames should have high Y values from white overlay (got %d of %d)",
-		highYCount, len(decoded))
+		highYFrameCount, len(decoded))
 
-	t.Logf("Pipeline graphics overlay test passed: %d decoded frames, %d with Y>200",
-		len(decoded), highYCount)
+	t.Logf("Pipeline graphics overlay test passed: %d decoded frames, %d with >70%% white pixels",
+		len(decoded), highYFrameCount)
 }
 
 // ==========================================================================
@@ -421,7 +494,7 @@ func TestFullPipelineLayoutToTS(t *testing.T) {
 	require.Greater(t, len(videoFrames), 5, "should have video frames with PIP layout")
 
 	// Decode and check: the main area should be approximately source A's color,
-	// and the PIP region should have source B's color (or at least different from A).
+	// and the PIP region should have Y values closer to sourceB.Y than to sourceA.Y.
 	videos := h.capture.videosCopy()
 	decoded := decodeCapturedFrames(t, videos)
 	require.Greater(t, len(decoded), 0, "should decode at least some frames")
@@ -431,27 +504,27 @@ func TestFullPipelineLayoutToTS(t *testing.T) {
 	lastFrame := decoded[len(decoded)-1]
 	centerY, _, _ := testutil.YUVPixelAt(lastFrame.YUV, lastFrame.Width, lastFrame.Height,
 		lastFrame.Width/2, lastFrame.Height/2)
-	t.Logf("Center Y: %d (expected ~%d for source A)", centerY, sourceA.Y)
+	t.Logf("MEASURE: center Y = %d, expected ~%d (sourceA)", centerY, sourceA.Y)
 	require.InDelta(t, float64(sourceA.Y), float64(centerY), 30,
 		"center of frame should approximate source A color")
 
 	// Check a pixel in the PIP region (top-right area).
 	// PIP is at top-right with ~33% width.
 	pipX := lastFrame.Width - lastFrame.Width/6 // middle of PIP region
-	pipY := lastFrame.Height / 6                 // near top
-	pipYVal, _, _ := testutil.YUVPixelAt(lastFrame.YUV, lastFrame.Width, lastFrame.Height, pipX, pipY)
-	t.Logf("PIP region Y: %d (expected ~%d for source B)", pipYVal, sourceB.Y)
+	pipYCoord := lastFrame.Height / 6           // near top
+	pipYVal, _, _ := testutil.YUVPixelAt(lastFrame.YUV, lastFrame.Width, lastFrame.Height, pipX, pipYCoord)
 
-	// The PIP should be notably different from the main program.
-	// After lossy compression, exact values shift, but the PIP region
-	// should be measurably different from the main area.
-	yDiff := math.Abs(float64(centerY) - float64(pipYVal))
-	t.Logf("Y difference between center and PIP: %.1f", yDiff)
-	require.Greater(t, yDiff, 20.0,
-		"PIP region Y should differ significantly from main area (diff=%.1f)", yDiff)
+	// PIP region should be closer to sourceB.Y than to sourceA.Y.
+	distToA := math.Abs(float64(pipYVal) - float64(sourceA.Y))
+	distToB := math.Abs(float64(pipYVal) - float64(sourceB.Y))
+	t.Logf("MEASURE: PIP region Y = %d, distToA(Y=%d) = %.1f, distToB(Y=%d) = %.1f",
+		pipYVal, sourceA.Y, distToA, sourceB.Y, distToB)
+	require.Less(t, distToB, distToA,
+		"PIP region Y(%d) should be closer to sourceB.Y(%d) than sourceA.Y(%d); distToB=%.1f, distToA=%.1f",
+		pipYVal, sourceB.Y, sourceA.Y, distToB, distToA)
 
-	t.Logf("Pipeline layout test passed: %d frames, center Y=%d, PIP Y=%d",
-		len(decoded), centerY, pipYVal)
+	t.Logf("Pipeline layout test passed: %d frames, center Y=%d, PIP Y=%d (distToA=%.1f, distToB=%.1f)",
+		len(decoded), centerY, pipYVal, distToA, distToB)
 }
 
 // ==========================================================================
@@ -531,25 +604,50 @@ func TestFullPipelineKeyingToTS(t *testing.T) {
 	require.Greater(t, len(videoFrames), 5, "should have video frames with keying")
 
 	// Decode and verify: output should be mostly blue (green keyed out).
+	// Per-pixel check: >70% of Y pixels within ±25 of blue Y (41),
+	// and also check Cb and Cr are close to blue values.
 	videos := h.capture.videosCopy()
 	decoded := decodeCapturedFrames(t, videos)
 	require.Greater(t, len(decoded), 0, "should decode at least some frames")
 
-	// Check that output Y values are closer to blue (Y~41) than green (Y~145).
-	// With a solid green source keyed out, the background blue should dominate.
 	last := decoded[len(decoded)-1]
-	y := averageY(last.YUV, last.Width, last.Height)
-	t.Logf("Output avg Y: %.1f (blue=%d, green=%d)", y, blueColor.Y, greenColor.Y)
+	avgY := averageY(last.YUV, last.Width, last.Height)
+	t.Logf("MEASURE: keying output avg Y = %.1f (blue=%d, green=%d)", avgY, blueColor.Y, greenColor.Y)
 
-	// The output should be closer to the blue program than to pure green.
-	distToBlue := math.Abs(y - float64(blueColor.Y))
-	distToGreen := math.Abs(y - float64(greenColor.Y))
-	require.Less(t, distToBlue, distToGreen,
-		"output should be closer to blue (%.1f) than green (%.1f); avg Y=%.1f",
-		distToBlue, distToGreen, y)
+	yMatchCount := 0
+	cbMatchCount := 0
+	crMatchCount := 0
+	const sampleCount = 50
+	for s := 0; s < sampleCount; s++ {
+		pixIdx := s * (last.Width * last.Height) / sampleCount
+		px := pixIdx % last.Width
+		py := pixIdx / last.Width
+		yVal, cbVal, crVal := testutil.YUVPixelAt(last.YUV, last.Width, last.Height, px, py)
+		if math.Abs(float64(yVal)-float64(blueColor.Y)) <= 25 {
+			yMatchCount++
+		}
+		if math.Abs(float64(cbVal)-float64(blueColor.Cb)) <= 25 {
+			cbMatchCount++
+		}
+		if math.Abs(float64(crVal)-float64(blueColor.Cr)) <= 25 {
+			crMatchCount++
+		}
+	}
+	yPct := float64(yMatchCount) / float64(sampleCount) * 100.0
+	cbPct := float64(cbMatchCount) / float64(sampleCount) * 100.0
+	crPct := float64(crMatchCount) / float64(sampleCount) * 100.0
+	t.Logf("MEASURE: keying blue Y match = %.0f%%, Cb match = %.0f%%, Cr match = %.0f%%",
+		yPct, cbPct, crPct)
 
-	t.Logf("Pipeline keying test passed: %d frames, output Y=%.1f (blue=%d, green=%d)",
-		len(decoded), y, blueColor.Y, greenColor.Y)
+	require.GreaterOrEqual(t, yPct, 70.0,
+		"only %.0f%% of sampled pixels have Y within ±25 of blue Y(%d)", yPct, blueColor.Y)
+	require.GreaterOrEqual(t, cbPct, 70.0,
+		"only %.0f%% of sampled pixels have Cb within ±25 of blue Cb(%d)", cbPct, blueColor.Cb)
+	require.GreaterOrEqual(t, crPct, 70.0,
+		"only %.0f%% of sampled pixels have Cr within ±25 of blue Cr(%d)", crPct, blueColor.Cr)
+
+	t.Logf("Pipeline keying test passed: %d frames, Y match=%.0f%%, Cb match=%.0f%%, Cr match=%.0f%%",
+		len(decoded), yPct, cbPct, crPct)
 }
 
 // ==========================================================================
