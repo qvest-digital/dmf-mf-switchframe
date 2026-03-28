@@ -158,7 +158,7 @@ func (n *gpuAISegmentNode) applyBackground(frame, mask *GPUFrame, bg string) err
 		} else if radius > 50 {
 			radius = 50
 		}
-		if err := GaussianBlur(n.ctx, n.blurTmp, frame, radius); err != nil {
+		if err := GPUGaussianBlurDispatch(n.ctx, n.blurTmp, frame, radius); err != nil {
 			return err
 		}
 

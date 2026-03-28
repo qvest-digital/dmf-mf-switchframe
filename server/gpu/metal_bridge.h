@@ -542,4 +542,21 @@ MetalResult metal_gaussian_blur_v(MetalQueueRef queue, MetalPipelineRef pipeline
     MetalBufferRef dst, MetalBufferRef tmpBuf, MetalBufferRef weights,
     const MetalBlurParams* params);
 
+// --- P210 (10-bit) Gaussian blur kernels ---
+typedef struct {
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;
+    uint32_t radius;
+    uint32_t samplesPerRow;
+} MetalBlurP210Params;
+
+MetalResult metal_gaussian_blur_p210_h(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef tmpBuf, MetalBufferRef src, MetalBufferRef weights,
+    const MetalBlurP210Params* params);
+
+MetalResult metal_gaussian_blur_p210_v(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dst, MetalBufferRef tmpBuf, MetalBufferRef weights,
+    const MetalBlurP210Params* params);
+
 #endif // SWITCHFRAME_METAL_BRIDGE_H

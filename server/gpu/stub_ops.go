@@ -55,6 +55,16 @@ func FillColorP210(ctx *Context, frame *GPUFrame, y, cb, cr uint16) error {
 // GaussianBlur returns ErrGPUNotAvailable on non-GPU builds.
 func GaussianBlur(ctx *Context, dst, src *GPUFrame, radius int) error { return ErrGPUNotAvailable }
 
+// GaussianBlurP210 returns ErrGPUNotAvailable on non-GPU builds.
+func GaussianBlurP210(ctx *Context, dst, src *GPUFrame, radius int) error {
+	return ErrGPUNotAvailable
+}
+
+// GPUGaussianBlurDispatch returns ErrGPUNotAvailable on non-GPU builds.
+func GPUGaussianBlurDispatch(ctx *Context, dst, src *GPUFrame, radius int) error {
+	return ErrGPUNotAvailable
+}
+
 // ScaleQuality selects the scaling algorithm.
 type ScaleQuality int
 
