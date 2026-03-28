@@ -51,10 +51,31 @@ type srtHarness struct {
 	aFrames []capturedAudioFrame
 }
 
+// harnessOption is a functional option for configuring the SRT harness.
+type harnessOption func(*harnessConfig)
+
+type harnessConfig struct {
+	latency time.Duration
+}
+
+// withLatency sets the SRT listener's default latency.
+func withLatency(d time.Duration) harnessOption {
+	return func(c *harnessConfig) {
+		c.latency = d
+	}
+}
+
 // newSRTHarness creates a harness with an SRT listener on a random port.
 // The listener captures decoded video and audio frames from any connected source.
-func newSRTHarness(t *testing.T) *srtHarness {
+func newSRTHarness(t *testing.T, opts ...harnessOption) *srtHarness {
 	t.Helper()
+
+	cfg := harnessConfig{
+		latency: 120 * time.Millisecond,
+	}
+	for _, o := range opts {
+		o(&cfg)
+	}
 
 	addr := findFreeUDPAddr(t)
 	dir := t.TempDir()
@@ -79,10 +100,10 @@ func newSRTHarness(t *testing.T) *srtHarness {
 	l, err := srt.NewListener(srt.ListenerConfig{
 		Addr:           addr,
 		Store:          store,
-		DefaultLatency: 120 * time.Millisecond,
-		OnSource: func(cfg srt.SourceConfig, conn *srtgo.Conn) {
-			stats := srt.NewConnStats(cfg.Mode, cfg.StreamID, cfg.LatencyMs)
-			src := srt.NewSource(cfg, conn, stats, log)
+		DefaultLatency: cfg.latency,
+		OnSource: func(srcCfg srt.SourceConfig, conn *srtgo.Conn) {
+			stats := srt.NewConnStats(srcCfg.Mode, srcCfg.StreamID, srcCfg.LatencyMs)
+			src := srt.NewSource(srcCfg, conn, stats, log)
 			src.OnRawVideo = func(key string, yuv []byte, width, height int, pts int64) {
 				h.mu.Lock()
 				h.vFrames = append(h.vFrames, capturedVideoFrame{
@@ -124,6 +145,35 @@ func newSRTHarness(t *testing.T) *srtHarness {
 	time.Sleep(100 * time.Millisecond)
 
 	return h
+}
+
+// videoFramesForKey returns captured video frames filtered by source key.
+func (h *srtHarness) videoFramesForKey(key string) []capturedVideoFrame {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []capturedVideoFrame
+	for _, f := range h.vFrames {
+		if f.Key == key {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// waitForVideoFramesForKey polls until at least n video frames with the given
+// source key are captured, or times out.
+func (h *srtHarness) waitForVideoFramesForKey(key string, n int, timeout time.Duration) bool {
+	deadline := time.After(timeout)
+	for {
+		if len(h.videoFramesForKey(key)) >= n {
+			return true
+		}
+		select {
+		case <-deadline:
+			return false
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
 
 // videoFrames returns a snapshot of captured video frames.
@@ -182,6 +232,71 @@ func (h *srtHarness) close() {
 	case <-time.After(5 * time.Second):
 		h.t.Error("timeout waiting for listener Run to return")
 	}
+}
+
+// pushTSFileWithLatency is like pushTSFile but sets a specific SRT latency on
+// the caller side. The negotiated latency is max(caller, listener).
+func (h *srtHarness) pushTSFileWithLatency(streamID string, tsPath string, latency time.Duration) *srtgo.Conn {
+	h.t.Helper()
+
+	cfg := srtgo.DefaultConfig()
+	cfg.StreamID = streamID
+	cfg.Latency = latency
+
+	var conn *srtgo.Conn
+	var err error
+	for i := 0; i < 20; i++ {
+		conn, err = srtgo.Dial(h.addr, cfg)
+		if err == nil {
+			break
+		}
+		time.Sleep(time.Duration(10*(i+1)) * time.Millisecond)
+	}
+	if err != nil {
+		h.t.Fatalf("dial SRT (latency=%v) failed after retries: %v", latency, err)
+	}
+
+	data, err := os.ReadFile(tsPath)
+	if err != nil {
+		h.t.Fatalf("read TS file: %v", err)
+	}
+
+	nChunks := (len(data) + 1315) / 1316
+	pacingPerChunk := time.Millisecond
+	if nChunks > 0 {
+		fileBits := int64(len(data)) * 8
+		bitrateGuess := int64(400_000)
+		durationUs := fileBits * 1_000_000 / bitrateGuess
+		totalDuration := time.Duration(durationUs) * time.Microsecond
+		pacingPerChunk = totalDuration / time.Duration(nChunks)
+		if pacingPerChunk < time.Millisecond {
+			pacingPerChunk = time.Millisecond
+		}
+		if pacingPerChunk > 100*time.Millisecond {
+			pacingPerChunk = 100 * time.Millisecond
+		}
+	}
+
+	go func() {
+		for i := 0; i < len(data); i += 1316 {
+			select {
+			case <-h.ctx.Done():
+				return
+			default:
+			}
+			end := i + 1316
+			if end > len(data) {
+				end = len(data)
+			}
+			_, werr := conn.Write(data[i:end])
+			if werr != nil {
+				return
+			}
+			time.Sleep(pacingPerChunk)
+		}
+	}()
+
+	return conn
 }
 
 // pushTSFile dials the SRT listener and sends a TS file in 1316-byte chunks
