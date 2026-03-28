@@ -56,6 +56,26 @@ cudaError_t p210_to_v210(
     int width, int height, int p210Pitch, int v210StrideBytes,
     cudaStream_t stream);
 
+// P210 fill (constant color)
+cudaError_t p210_fill(
+    uint8_t* p210, int width, int height, int pitch,
+    uint16_t yVal, uint16_t cbVal, uint16_t crVal, cudaStream_t stream);
+
+// P210 fill rect (rectangular region)
+cudaError_t fill_rect_p210(
+    uint8_t* dst, int dstW, int dstH, int dstPitch,
+    int rectX, int rectY, int rectW, int rectH,
+    uint16_t colorY, uint16_t colorCb, uint16_t colorCr,
+    cudaStream_t stream);
+
+// P210 draw border (border around rectangle)
+cudaError_t draw_border_p210(
+    uint8_t* dst, int dstW, int dstH, int dstPitch,
+    int rectX, int rectY, int rectW, int rectH,
+    int outerX, int outerY, int outerW, int outerH,
+    int thickness, uint16_t colorY, uint16_t colorCb, uint16_t colorCr,
+    cudaStream_t stream);
+
 // P210 DSK overlay
 cudaError_t alpha_blend_rgba_p210(
     uint8_t* p210, const uint8_t* rgba,
@@ -83,6 +103,24 @@ cudaError_t chroma_key_p210(
     int simDistSq, int totalDistSq,
     float spillSuppress,
     uint16_t spillReplaceCb, uint16_t spillReplaceCr,
+    cudaStream_t stream);
+
+// P210 blend wipe + stinger
+cudaError_t blend_wipe_p210(
+    uint8_t* dst, const uint8_t* a, const uint8_t* b,
+    float position, int direction, int softEdge,
+    int width, int height, int pitch,
+    uint8_t* maskBuf, cudaStream_t stream);
+cudaError_t blend_stinger_p210(
+    uint8_t* dst, const uint8_t* base, const uint8_t* overlay,
+    const uint8_t* alpha, int width, int height, int pitch, int alphaPitch,
+    uint8_t* uvAlphaBuf, cudaStream_t stream);
+
+// P210 Lanczos-3 scale
+cudaError_t scale_lanczos3_p210(
+    uint8_t* dst, int dstW, int dstH, int dstPitch,
+    const uint8_t* src, int srcW, int srcH, int srcPitch,
+    float* tmpBuf,
     cudaStream_t stream);
 */
 import "C"
@@ -460,22 +498,90 @@ func STMapWarpP210(ctx *Context, dst, src *GPUFrame, stmapS, stmapT []float32, w
 	return ctx.Sync()
 }
 
-// ScaleLanczos3P210 scales a P210 GPU frame using Lanczos-3 on CUDA.
-// CUDA kernel not yet implemented.
+// ScaleLanczos3P210 scales a P210 GPU frame using a two-pass separable Lanczos-3
+// kernel on CUDA. It allocates (and caches on the Context) a temporary float
+// device buffer sized dstW * srcH floats, sufficient for both Y and UV passes.
 func ScaleLanczos3P210(ctx *Context, dst, src *GPUFrame) error {
-	return fmt.Errorf("gpu: ScaleLanczos3P210 CUDA not yet implemented")
+	if ctx == nil || dst == nil || src == nil {
+		return ErrGPUNotAvailable
+	}
+
+	// Ensure temp buffer is large enough: dstW * srcH floats cover both passes.
+	// For P210, UV is full height so the same temp size works.
+	needed := dst.Width * src.Height
+	if err := ctx.ensureLanczosTemp(needed); err != nil {
+		return err
+	}
+
+	rc := C.scale_lanczos3_p210(
+		(*C.uint8_t)(unsafe.Pointer(uintptr(dst.DevPtr))),
+		C.int(dst.Width), C.int(dst.Height), C.int(dst.Pitch),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(src.DevPtr))),
+		C.int(src.Width), C.int(src.Height), C.int(src.Pitch),
+		ctx.lanczosTmp,
+		ctx.stream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: scale lanczos3 p210 failed: %d", rc)
+	}
+
+	if syncRc := C.cudaStreamSynchronize(ctx.stream); syncRc != C.cudaSuccess {
+		return fmt.Errorf("gpu: scale lanczos3 p210 sync failed: %d", syncRc)
+	}
+	return nil
 }
 
 // BlendWipeP210 performs a wipe transition between two P210 frames on CUDA.
-// CUDA kernel not yet implemented.
+// maskBuf must be a GPUFrame-sized P210 buffer used as scratch for the wipe
+// alpha mask (Y-plane slot) and the downsampled UV-width alpha (UV-plane slot).
 func BlendWipeP210(ctx *Context, dst, a, b, maskBuf *GPUFrame, position float64, dir WipeDirection, softEdge int) error {
-	return fmt.Errorf("gpu: BlendWipeP210 CUDA not yet implemented")
+	if ctx == nil || dst == nil || a == nil || b == nil || maskBuf == nil {
+		return ErrGPUNotAvailable
+	}
+
+	rc := C.blend_wipe_p210(
+		(*C.uint8_t)(unsafe.Pointer(uintptr(dst.DevPtr))),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(a.DevPtr))),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(b.DevPtr))),
+		C.float(position), C.int(dir), C.int(softEdge),
+		C.int(a.Width), C.int(a.Height), C.int(a.Pitch),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(maskBuf.DevPtr))),
+		ctx.stream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: blend wipe p210 failed: %d", rc)
+	}
+	return ctx.Sync()
 }
 
-// BlendStingerP210 composites a stinger overlay onto a base P210 frame on CUDA.
-// CUDA kernel not yet implemented.
+// BlendStingerP210 composites a stinger overlay onto a base P210 frame on CUDA
+// using per-pixel alpha. alpha is a GPUFrame whose Y-plane contains the
+// luma-resolution alpha mask. The UV-plane slot of alpha is used as scratch
+// space for the downsampled UV-width alpha.
 func BlendStingerP210(ctx *Context, dst, base, overlay, alpha *GPUFrame) error {
-	return fmt.Errorf("gpu: BlendStingerP210 CUDA not yet implemented")
+	if ctx == nil || dst == nil || base == nil || overlay == nil || alpha == nil {
+		return ErrGPUNotAvailable
+	}
+
+	// Use the UV-plane slot of the alpha buffer as scratch for the downsampled
+	// UV-width alpha. The alpha frame is P210-sized (pitch * height * 2),
+	// so offset pitch*height is always valid scratch space.
+	uvAlphaBuf := uintptr(alpha.DevPtr) + uintptr(alpha.Pitch*alpha.Height)
+
+	rc := C.blend_stinger_p210(
+		(*C.uint8_t)(unsafe.Pointer(uintptr(dst.DevPtr))),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(base.DevPtr))),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(overlay.DevPtr))),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(alpha.DevPtr))),
+		C.int(base.Width), C.int(base.Height), C.int(base.Pitch),
+		C.int(alpha.Pitch),
+		(*C.uint8_t)(unsafe.Pointer(uvAlphaBuf)),
+		ctx.stream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: blend stinger p210 failed: %d", rc)
+	}
+	return ctx.Sync()
 }
 
 // ScaleP210ToNV12On scales a P210 source to NV12 destination on GPU.
@@ -555,26 +661,70 @@ func ScaleNV12ToP210(ctx *Context, dst, src *GPUFrame) error {
 	return ctx.Sync()
 }
 
-// FillBlackP210 fills a P210 frame with 10-bit limited-range black on CUDA.
-// CUDA kernel not yet implemented.
+// FillBlackP210 fills a P210 frame with 10-bit limited-range black (Y=64, Cb=Cr=512).
 func FillBlackP210(ctx *Context, frame *GPUFrame) error {
-	return fmt.Errorf("gpu: FillBlackP210 CUDA not yet implemented")
+	return FillColorP210(ctx, frame, 64, 512, 512)
 }
 
 // FillColorP210 fills a P210 frame with a constant 10-bit YUV color on CUDA.
-// CUDA kernel not yet implemented.
 func FillColorP210(ctx *Context, frame *GPUFrame, y, cb, cr uint16) error {
-	return fmt.Errorf("gpu: FillColorP210 CUDA not yet implemented")
+	if ctx == nil || frame == nil {
+		return ErrGPUNotAvailable
+	}
+
+	rc := C.p210_fill(
+		(*C.uint8_t)(unsafe.Pointer(uintptr(frame.DevPtr))),
+		C.int(frame.Width), C.int(frame.Height), C.int(frame.Pitch),
+		C.uint16_t(y), C.uint16_t(cb), C.uint16_t(cr),
+		ctx.stream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: p210 fill failed: %d", rc)
+	}
+	return ctx.Sync()
 }
 
 // FillRectP210 fills a rectangular region with a constant 10-bit color on a P210 GPU frame.
-// CUDA kernel not yet implemented.
 func FillRectP210(ctx *Context, frame *GPUFrame, rect Rect, colorY, colorCb, colorCr uint16) error {
-	return fmt.Errorf("gpu: FillRectP210 CUDA not yet implemented")
+	if ctx == nil || frame == nil {
+		return ErrGPUNotAvailable
+	}
+
+	rc := C.fill_rect_p210(
+		(*C.uint8_t)(unsafe.Pointer(uintptr(frame.DevPtr))),
+		C.int(frame.Width), C.int(frame.Height), C.int(frame.Pitch),
+		C.int(rect.X), C.int(rect.Y), C.int(rect.W), C.int(rect.H),
+		C.uint16_t(colorY), C.uint16_t(colorCb), C.uint16_t(colorCr),
+		ctx.stream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: fill rect p210 failed: %d", rc)
+	}
+	return ctx.Sync()
 }
 
 // DrawBorderP210 draws a colored border outside the given rectangle on a P210 GPU frame.
-// CUDA kernel not yet implemented.
 func DrawBorderP210(ctx *Context, frame *GPUFrame, rect Rect, colorY, colorCb, colorCr uint16, thickness int) error {
-	return fmt.Errorf("gpu: DrawBorderP210 CUDA not yet implemented")
+	if ctx == nil || frame == nil {
+		return ErrGPUNotAvailable
+	}
+
+	outerX := rect.X - thickness
+	outerY := rect.Y - thickness
+	outerW := rect.W + thickness*2
+	outerH := rect.H + thickness*2
+
+	rc := C.draw_border_p210(
+		(*C.uint8_t)(unsafe.Pointer(uintptr(frame.DevPtr))),
+		C.int(frame.Width), C.int(frame.Height), C.int(frame.Pitch),
+		C.int(rect.X), C.int(rect.Y), C.int(rect.W), C.int(rect.H),
+		C.int(outerX), C.int(outerY), C.int(outerW), C.int(outerH),
+		C.int(thickness),
+		C.uint16_t(colorY), C.uint16_t(colorCb), C.uint16_t(colorCr),
+		ctx.stream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: draw border p210 failed: %d", rc)
+	}
+	return ctx.Sync()
 }

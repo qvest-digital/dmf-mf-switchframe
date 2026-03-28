@@ -251,6 +251,70 @@ __global__ void pip_composite_p210_uv_kernel(
     }
 }
 
+// Fill rectangle with constant P210 color (10-bit 4:2:2)
+// Thread indices are relative to the rect origin (rectX, rectY).
+__global__ void fill_rect_p210_kernel(
+    uint16_t* __restrict__ dst, int dstW, int dstH, int dstPitch16,
+    int rectX, int rectY, int rectW, int rectH,
+    uint16_t colorY, uint16_t colorCb, uint16_t colorCr)
+{
+    int lx = blockIdx.x * blockDim.x + threadIdx.x;
+    int ly = blockIdx.y * blockDim.y + threadIdx.y;
+    if (lx >= rectW || ly >= rectH) return;
+
+    int x = rectX + lx;
+    int y = rectY + ly;
+    if (x >= dstW || y >= dstH || x < 0 || y < 0) return;
+
+    // Y plane
+    dst[y * dstPitch16 + x] = colorY;
+
+    // UV plane (P210: full height, half width chroma pairs)
+    int chromaW = dstW / 2;
+    int chromaX = x / 2;
+    if ((x & 1) == 0 && chromaX < chromaW) {
+        int uvOffset = dstPitch16 * dstH;
+        int uvIdx = y * dstPitch16 + chromaX * 2;
+        dst[uvOffset + uvIdx]     = colorCb;
+        dst[uvOffset + uvIdx + 1] = colorCr;
+    }
+}
+
+// Draw border around a rectangle on P210 frame (4 strips: top, bottom, left, right)
+// Thread indices are relative to the outer bounding box origin (outerX, outerY).
+__global__ void draw_border_p210_kernel(
+    uint16_t* __restrict__ dst, int dstW, int dstH, int dstPitch16,
+    int rectX, int rectY, int rectW, int rectH,
+    int outerX, int outerY, int outerW, int outerH,
+    int thickness, uint16_t colorY, uint16_t colorCb, uint16_t colorCr)
+{
+    int lx = blockIdx.x * blockDim.x + threadIdx.x;
+    int ly = blockIdx.y * blockDim.y + threadIdx.y;
+
+    // Convert local (outer-box-relative) coords to absolute frame coords
+    int x = outerX + lx;
+    int y = outerY + ly;
+
+    if (lx >= outerW || ly >= outerH) return;
+    if (x >= dstW || y >= dstH || x < 0 || y < 0) return;
+
+    // Inside the rect itself? Skip (not border)
+    if (x >= rectX && x < rectX + rectW && y >= rectY && y < rectY + rectH) return;
+
+    // Y plane
+    dst[y * dstPitch16 + x] = colorY;
+
+    // UV plane (P210: full height, half width chroma pairs)
+    int chromaW = dstW / 2;
+    int chromaX = x / 2;
+    if ((x & 1) == 0 && chromaX < chromaW) {
+        int uvOffset = dstPitch16 * dstH;
+        int uvIdx = y * dstPitch16 + chromaX * 2;
+        dst[uvOffset + uvIdx]     = colorCb;
+        dst[uvOffset + uvIdx + 1] = colorCr;
+    }
+}
+
 extern "C" {
 
 cudaError_t pip_composite_nv12(
@@ -363,6 +427,44 @@ cudaError_t pip_composite_p210(
             chromaCropX, chromaCropY, chromaCropW, chromaCropH);
     }
 
+    return cudaGetLastError();
+}
+
+// --- P210 fill rect wrapper ---
+
+cudaError_t fill_rect_p210(
+    uint8_t* dst, int dstW, int dstH, int dstPitch,
+    int rectX, int rectY, int rectW, int rectH,
+    uint16_t colorY, uint16_t colorCb, uint16_t colorCr,
+    cudaStream_t stream)
+{
+    int dstPitch16 = dstPitch / 2;
+    dim3 block(BLOCK_DIM_X, BLOCK_DIM_Y);
+    dim3 grid((rectW + block.x - 1) / block.x, (rectH + block.y - 1) / block.y);
+    fill_rect_p210_kernel<<<grid, block, 0, stream>>>(
+        (uint16_t*)dst, dstW, dstH, dstPitch16,
+        rectX, rectY, rectW, rectH,
+        colorY, colorCb, colorCr);
+    return cudaGetLastError();
+}
+
+// --- P210 draw border wrapper ---
+
+cudaError_t draw_border_p210(
+    uint8_t* dst, int dstW, int dstH, int dstPitch,
+    int rectX, int rectY, int rectW, int rectH,
+    int outerX, int outerY, int outerW, int outerH,
+    int thickness, uint16_t colorY, uint16_t colorCb, uint16_t colorCr,
+    cudaStream_t stream)
+{
+    int dstPitch16 = dstPitch / 2;
+    dim3 block(BLOCK_DIM_X, BLOCK_DIM_Y);
+    dim3 grid((outerW + block.x - 1) / block.x, (outerH + block.y - 1) / block.y);
+    draw_border_p210_kernel<<<grid, block, 0, stream>>>(
+        (uint16_t*)dst, dstW, dstH, dstPitch16,
+        rectX, rectY, rectW, rectH,
+        outerX, outerY, outerW, outerH,
+        thickness, colorY, colorCb, colorCr);
     return cudaGetLastError();
 }
 

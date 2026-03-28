@@ -389,7 +389,185 @@ cudaError_t scale_lanczos3_nv12(
     return cudaGetLastError();
 }
 
+// ============================================================================
+// Lanczos-3 P210 (10-bit 4:2:2) scale kernels
+// ============================================================================
+
+// Pass 1 (horizontal): P210 uint16 src → tmpBuf float
+// tmpBuf layout: row-major [srcH][dstW], row stride = dstW
+__global__ void scale_lanczos3_p210_h_kernel(
+    float* __restrict__ tmpBuf, int dstW, int srcW, int srcH, int srcPitch16,
+    const uint16_t* __restrict__ src)
+{
+    int dx = blockIdx.x * blockDim.x + threadIdx.x;
+    int dy = blockIdx.y * blockDim.y + threadIdx.y;
+    if (dx >= dstW || dy >= srcH) return;
+
+    float srcXf = (float)dx * (float)(srcW - 1) / (float)max(dstW - 1, 1);
+    int   center = (int)srcXf;
+
+    float acc  = 0.0f;
+    float wsum = 0.0f;
+    for (int k = -2; k <= 3; ++k) {
+        int sx = center + k;
+        if (sx < 0) sx = 0;
+        if (sx >= srcW) sx = srcW - 1;
+        float w = lanczos3(srcXf - (float)sx);
+        acc  += w * (float)src[dy * srcPitch16 + sx];
+        wsum += w;
+    }
+
+    tmpBuf[dy * dstW + dx] = (wsum != 0.0f) ? (acc / wsum) : 0.0f;
+}
+
+// Pass 2 (vertical): tmpBuf float → P210 uint16 dst
+__global__ void scale_lanczos3_p210_v_kernel(
+    uint16_t* __restrict__ dst, int dstW, int dstH, int dstPitch16,
+    const float* __restrict__ tmpBuf, int srcH)
+{
+    int dx = blockIdx.x * blockDim.x + threadIdx.x;
+    int dy = blockIdx.y * blockDim.y + threadIdx.y;
+    if (dx >= dstW || dy >= dstH) return;
+
+    float srcYf = (float)dy * (float)(srcH - 1) / (float)max(dstH - 1, 1);
+    int   center = (int)srcYf;
+
+    float acc  = 0.0f;
+    float wsum = 0.0f;
+    for (int k = -2; k <= 3; ++k) {
+        int sy = center + k;
+        if (sy < 0) sy = 0;
+        if (sy >= srcH) sy = srcH - 1;
+        float w = lanczos3(srcYf - (float)sy);
+        acc  += w * tmpBuf[sy * dstW + dx];
+        wsum += w;
+    }
+
+    float val = (wsum != 0.0f) ? (acc / wsum) : 0.0f;
+    if (val < 0.0f)    val = 0.0f;
+    if (val > 1023.0f) val = 1023.0f;
+    dst[dy * dstPitch16 + dx] = (uint16_t)(val + 0.5f);
+}
+
+// Lanczos-3 horizontal pass for P210 UV plane (interleaved uint16 CbCr pairs).
+// One thread per output chroma sample. Writes TWO floats per sample (Cb, Cr)
+// into tmpBuf layout: [srcH][chromaDstW * 2], row stride = chromaDstW * 2.
+// P210 UV is full height (4:2:2).
+__global__ void scale_lanczos3_p210_h_uv_kernel(
+    float* __restrict__ tmpBuf, int chromaDstW, int chromaSrcW, int srcH,
+    int srcPitch16, const uint16_t* __restrict__ src)
+{
+    int dx = blockIdx.x * blockDim.x + threadIdx.x;
+    int dy = blockIdx.y * blockDim.y + threadIdx.y;
+    if (dx >= chromaDstW || dy >= srcH) return;
+
+    float srcXf = (float)dx * (float)(chromaSrcW - 1) / (float)max(chromaDstW - 1, 1);
+    int center = (int)srcXf;
+
+    float accCb = 0.0f, accCr = 0.0f;
+    float wsum = 0.0f;
+    for (int k = -2; k <= 3; ++k) {
+        int sx = center + k;
+        if (sx < 0) sx = 0;
+        if (sx >= chromaSrcW) sx = chromaSrcW - 1;
+        float w = lanczos3(srcXf - (float)sx);
+        accCb += w * (float)src[dy * srcPitch16 + sx * 2];
+        accCr += w * (float)src[dy * srcPitch16 + sx * 2 + 1];
+        wsum += w;
+    }
+
+    int idx = dy * chromaDstW * 2 + dx * 2;
+    if (wsum != 0.0f) {
+        tmpBuf[idx]     = accCb / wsum;
+        tmpBuf[idx + 1] = accCr / wsum;
+    } else {
+        tmpBuf[idx]     = 0.0f;
+        tmpBuf[idx + 1] = 0.0f;
+    }
+}
+
+// Lanczos-3 vertical pass for P210 UV plane (interleaved uint16 CbCr pairs).
+// Reads TWO floats per sample from tmpBuf, writes interleaved uint16 Cb/Cr to dst.
+// P210 UV is full height (4:2:2).
+__global__ void scale_lanczos3_p210_v_uv_kernel(
+    uint16_t* __restrict__ dst, int chromaDstW, int dstH, int dstPitch16,
+    const float* __restrict__ tmpBuf, int srcH)
+{
+    int dx = blockIdx.x * blockDim.x + threadIdx.x;
+    int dy = blockIdx.y * blockDim.y + threadIdx.y;
+    if (dx >= chromaDstW || dy >= dstH) return;
+
+    float srcYf = (float)dy * (float)(srcH - 1) / (float)max(dstH - 1, 1);
+    int center = (int)srcYf;
+
+    float accCb = 0.0f, accCr = 0.0f;
+    float wsum = 0.0f;
+    for (int k = -2; k <= 3; ++k) {
+        int sy = center + k;
+        if (sy < 0) sy = 0;
+        if (sy >= srcH) sy = srcH - 1;
+        float w = lanczos3(srcYf - (float)sy);
+        int idx = sy * chromaDstW * 2 + dx * 2;
+        accCb += w * tmpBuf[idx];
+        accCr += w * tmpBuf[idx + 1];
+        wsum += w;
+    }
+
+    float valCb = (wsum != 0.0f) ? (accCb / wsum) : 0.0f;
+    float valCr = (wsum != 0.0f) ? (accCr / wsum) : 0.0f;
+    if (valCb < 0.0f) valCb = 0.0f; if (valCb > 1023.0f) valCb = 1023.0f;
+    if (valCr < 0.0f) valCr = 0.0f; if (valCr > 1023.0f) valCr = 1023.0f;
+
+    int dstIdx = dy * dstPitch16 + dx * 2;
+    dst[dstIdx]     = (uint16_t)(valCb + 0.5f);
+    dst[dstIdx + 1] = (uint16_t)(valCr + 0.5f);
+}
+
 // --- P210 scale wrapper ---
+
+// scale_lanczos3_p210: two-pass Lanczos-3 scale for P210 frames.
+// tmpBuf must be caller-allocated device memory with at least
+// max(dstW * srcH, chromaDstW * srcH * 2) floats = dstW * srcH floats.
+// P210: UV is full height (4:2:2).
+cudaError_t scale_lanczos3_p210(
+    uint8_t* dst, int dstW, int dstH, int dstPitch,
+    const uint8_t* src, int srcW, int srcH, int srcPitch,
+    float* tmpBuf,
+    cudaStream_t stream)
+{
+    int dstPitch16 = dstPitch / 2;
+    int srcPitch16 = srcPitch / 2;
+    dim3 block(BLOCK_DIM_X, BLOCK_DIM_Y);
+
+    // --- Y plane ---
+    // Pass 1: horizontal (srcW x srcH -> dstW x srcH)
+    dim3 gridH_Y((dstW + block.x - 1) / block.x, (srcH + block.y - 1) / block.y);
+    scale_lanczos3_p210_h_kernel<<<gridH_Y, block, 0, stream>>>(
+        tmpBuf, dstW, srcW, srcH, srcPitch16, (const uint16_t*)src);
+
+    // Pass 2: vertical (dstW x srcH -> dstW x dstH)
+    dim3 gridV_Y((dstW + block.x - 1) / block.x, (dstH + block.y - 1) / block.y);
+    scale_lanczos3_p210_v_kernel<<<gridV_Y, block, 0, stream>>>(
+        (uint16_t*)dst, dstW, dstH, dstPitch16, tmpBuf, srcH);
+
+    // --- UV plane: P210 is 4:2:2 (full height, half width) ---
+    int chromaSrcW = srcW / 2;
+    int chromaDstW = dstW / 2;
+    const uint16_t* srcUV = (const uint16_t*)(src + srcPitch * srcH);
+    uint16_t*       dstUV = (uint16_t*)(dst + dstPitch * dstH);
+
+    // Pass 1 (horizontal): srcUV -> tmpBuf (2 floats per chroma sample)
+    dim3 gridH_UV((chromaDstW + block.x - 1) / block.x, (srcH + block.y - 1) / block.y);
+    scale_lanczos3_p210_h_uv_kernel<<<gridH_UV, block, 0, stream>>>(
+        tmpBuf, chromaDstW, chromaSrcW, srcH, srcPitch16, srcUV);
+
+    // Pass 2 (vertical): tmpBuf -> dstUV (interleaved uint16 Cb/Cr)
+    dim3 gridV_UV((chromaDstW + block.x - 1) / block.x, (dstH + block.y - 1) / block.y);
+    scale_lanczos3_p210_v_uv_kernel<<<gridV_UV, block, 0, stream>>>(
+        dstUV, chromaDstW, dstH, dstPitch16, tmpBuf, srcH);
+
+    return cudaGetLastError();
+}
 
 cudaError_t scale_bilinear_p210(
     uint8_t* dst, int dstW, int dstH, int dstPitch,

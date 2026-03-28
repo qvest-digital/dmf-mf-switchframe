@@ -292,7 +292,119 @@ cudaError_t blend_stinger_nv12(
     return cudaGetLastError();
 }
 
+// Per-pixel alpha blend for P210 (uint16 samples, uint8 alpha mask).
+// Alpha mask is at luma resolution (uint8). Samples are [0, 1023].
+__global__ void blend_alpha_p210_kernel(
+    uint16_t* __restrict__ dst,
+    const uint16_t* __restrict__ a,
+    const uint16_t* __restrict__ b,
+    const uint8_t* __restrict__ alpha,
+    int width, int height, int pitch16, int alphaPitch)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= width || y >= height) return;
+
+    int idx = y * pitch16 + x;
+    int aidx = y * alphaPitch + x;
+    int al = alpha[aidx] + (alpha[aidx] >> 7); // match CPU: 0-256 range
+    int inv = 256 - al;
+    int val = ((int)a[idx] * inv + (int)b[idx] * al + 128) >> 8;
+    dst[idx] = (uint16_t)min(max(val, 0), 1023);
+}
+
+// Downsample luma-resolution uint8 alpha to P210 UV-plane layout.
+// P210 4:2:2: UV has FULL height, half width. For each row, average 2 horizontal
+// luma pixels per chroma sample. Write the same alpha to both Cb and Cr
+// interleaved positions (2*cx and 2*cx+1) in the output.
+__global__ void downsample_alpha_to_p210_uv_kernel(
+    uint8_t* __restrict__ dst,
+    const uint8_t* __restrict__ src,
+    int chromaW, int chromaH, int srcPitch, int dstPitch)
+{
+    int cx = blockIdx.x * blockDim.x + threadIdx.x;
+    int cy = blockIdx.y * blockDim.y + threadIdx.y;
+    if (cx >= chromaW || cy >= chromaH) return;
+
+    // P210 4:2:2: UV is full height, half width. Average 2 horizontal luma samples.
+    int lx = cx * 2;
+    int avg = (src[cy * srcPitch + lx] +
+               src[cy * srcPitch + lx + 1] + 1) >> 1;
+    // Write to both Cb (even) and Cr (odd) interleaved positions
+    dst[cy * dstPitch + cx * 2]     = (uint8_t)avg;
+    dst[cy * dstPitch + cx * 2 + 1] = (uint8_t)avg;
+}
+
 // --- P210 blend wrappers ---
+
+cudaError_t blend_wipe_p210(
+    uint8_t* dst, const uint8_t* a, const uint8_t* b,
+    float position, int direction, int softEdge,
+    int width, int height, int pitch,
+    uint8_t* maskBuf, cudaStream_t stream)
+{
+    int pitch16 = pitch / 2;
+    dim3 block(BLOCK_DIM_X, BLOCK_DIM_Y);
+
+    // Pass 1: Generate wipe mask at luma resolution (uint8, format-independent)
+    dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
+    wipe_mask_kernel<<<grid, block, 0, stream>>>(maskBuf, width, height, pitch, position, direction, softEdge);
+
+    // Pass 2: Alpha-blend Y plane (P210 uint16 samples with uint8 alpha)
+    blend_alpha_p210_kernel<<<grid, block, 0, stream>>>(
+        (uint16_t*)dst, (const uint16_t*)a, (const uint16_t*)b,
+        maskBuf, width, height, pitch16, pitch);
+
+    // Pass 3: Downsample luma mask to P210 UV resolution.
+    // P210 4:2:2: UV has full height, half width.
+    int chromaW = width / 2;
+    int chromaH = height;  // Full height for 4:2:2
+    uint8_t* uvMask = maskBuf + pitch * height;  // UV-plane slot of maskBuf
+    dim3 gridC((chromaW + block.x - 1) / block.x, (chromaH + block.y - 1) / block.y);
+    downsample_alpha_to_p210_uv_kernel<<<gridC, block, 0, stream>>>(uvMask, maskBuf, chromaW, chromaH, pitch, pitch);
+
+    // Pass 4: Alpha-blend UV plane (P210: full height, width uint16 samples)
+    uint16_t* dstUV = (uint16_t*)(dst + pitch * height);
+    const uint16_t* aUV = (const uint16_t*)(a + pitch * height);
+    const uint16_t* bUV = (const uint16_t*)(b + pitch * height);
+    dim3 gridUV((width + block.x - 1) / block.x, (chromaH + block.y - 1) / block.y);
+    blend_alpha_p210_kernel<<<gridUV, block, 0, stream>>>(
+        dstUV, aUV, bUV, uvMask, width, chromaH, pitch16, pitch);
+
+    return cudaGetLastError();
+}
+
+cudaError_t blend_stinger_p210(
+    uint8_t* dst, const uint8_t* base, const uint8_t* overlay,
+    const uint8_t* alpha, int width, int height, int pitch, int alphaPitch,
+    uint8_t* uvAlphaBuf, cudaStream_t stream)
+{
+    int pitch16 = pitch / 2;
+    dim3 block(BLOCK_DIM_X, BLOCK_DIM_Y);
+    dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
+
+    // Pass 1: Alpha-blend Y plane (P210 uint16 samples with uint8 alpha at luma resolution)
+    blend_alpha_p210_kernel<<<grid, block, 0, stream>>>(
+        (uint16_t*)dst, (const uint16_t*)base, (const uint16_t*)overlay,
+        alpha, width, height, pitch16, alphaPitch);
+
+    // Pass 2: Downsample luma alpha to P210 UV resolution.
+    // P210 4:2:2: UV has full height, half width.
+    int chromaW = width / 2;
+    int chromaH = height;  // Full height for 4:2:2
+    dim3 gridC((chromaW + block.x - 1) / block.x, (chromaH + block.y - 1) / block.y);
+    downsample_alpha_to_p210_uv_kernel<<<gridC, block, 0, stream>>>(uvAlphaBuf, alpha, chromaW, chromaH, alphaPitch, pitch);
+
+    // Pass 3: Alpha-blend UV plane using downsampled alpha (P210: full height)
+    uint16_t* dstUV = (uint16_t*)(dst + pitch * height);
+    const uint16_t* baseUV = (const uint16_t*)(base + pitch * height);
+    const uint16_t* overlayUV = (const uint16_t*)(overlay + pitch * height);
+    dim3 gridUV((width + block.x - 1) / block.x, (chromaH + block.y - 1) / block.y);
+    blend_alpha_p210_kernel<<<gridUV, block, 0, stream>>>(
+        dstUV, baseUV, overlayUV, uvAlphaBuf, width, chromaH, pitch16, pitch);
+
+    return cudaGetLastError();
+}
 
 cudaError_t blend_uniform_p210(
     uint8_t* dst, const uint8_t* a, const uint8_t* b,
