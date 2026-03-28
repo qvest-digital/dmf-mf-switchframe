@@ -473,6 +473,12 @@ type Switcher struct {
 	overloadDrops    atomic.Int64
 	syncLoopRepeats  atomic.Int64
 	lastEncodedFrame atomic.Pointer[ProcessingFrame]
+
+	// Sync loop audio output callbacks (used in ref clock mode).
+	// outputAudioCallback delivers AAC frames to the program relay (browser).
+	// outputAudioCallbackDirect delivers AAC frames to the muxer (SRT/recording).
+	outputAudioCallback       atomic.Pointer[func(*media.AudioFrame)]
+	outputAudioCallbackDirect atomic.Pointer[func(*media.AudioFrame)]
 }
 
 // videoProcWork represents a unit of work for the async video processing

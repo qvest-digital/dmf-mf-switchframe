@@ -80,9 +80,22 @@ func (s *Switcher) processAudioTick(tick clock.Tick) {
 		return
 	}
 
-	// Broadcast completed AAC frames to the program relay.
+	// Deliver completed AAC frames via callbacks.
+	relayCb := s.outputAudioCallback.Load()
+	directCb := s.outputAudioCallbackDirect.Load()
 	for _, af := range frames {
-		s.programRelay.BroadcastAudio(af)
+		// Relay callback: browser viewers via program relay.
+		if relayCb != nil {
+			(*relayCb)(af)
+		} else {
+			// Fallback: broadcast directly to program relay (backward compat
+			// for tests that don't set the callback).
+			s.programRelay.BroadcastAudio(af)
+		}
+		// Direct callback: MPEG-TS muxer for SRT/recording output.
+		if directCb != nil {
+			(*directCb)(af)
+		}
 	}
 }
 
@@ -143,16 +156,16 @@ func (s *Switcher) processVideoTick(tick clock.Tick) {
 
 	// When no pipeline is configured (no encoder), broadcast raw frame
 	// data directly. This covers test scenarios and encoder-less configs.
-	if !hasPipeline && len(pf.YUV) > 0 {
-		// Make a copy of the YUV data for the broadcast since the underlying
+	if !hasPipeline && len(pf.Data) > 0 {
+		// Make a copy of the frame data for the broadcast since the underlying
 		// buffer is owned by the frame sync (ss.lastRawVideo) and may be
 		// reused on the next tick.
-		yuvCopy := make([]byte, len(pf.YUV))
-		copy(yuvCopy, pf.YUV)
+		dataCopy := make([]byte, len(pf.Data))
+		copy(dataCopy, pf.Data)
 		frame := &media.VideoFrame{
 			PTS:        pf.PTS,
 			DTS:        pf.DTS,
-			WireData:   yuvCopy,
+			WireData:   dataCopy,
 			IsKeyframe: true,
 		}
 		s.broadcastToProgram(frame)
@@ -249,6 +262,28 @@ func (s *Switcher) SetSyncMixer(m syncMixerInterface) {
 type syncMixerInterface interface {
 	ProduceSamples(sampleCount int) []float32
 	AdvanceCrossfade()
+}
+
+// SetOutputAudioCallback registers a callback invoked for each AAC frame
+// produced by the sync loop. Intended for broadcasting to the program relay
+// (browser viewers). Only used in reference clock mode.
+func (s *Switcher) SetOutputAudioCallback(fn func(*media.AudioFrame)) {
+	if fn != nil {
+		s.outputAudioCallback.Store(&fn)
+	} else {
+		s.outputAudioCallback.Store(nil)
+	}
+}
+
+// SetOutputAudioCallbackDirect registers a callback invoked for each AAC
+// frame produced by the sync loop, for direct delivery to the MPEG-TS muxer
+// (SRT/recording output). Only used in reference clock mode.
+func (s *Switcher) SetOutputAudioCallbackDirect(fn func(*media.AudioFrame)) {
+	if fn != nil {
+		s.outputAudioCallbackDirect.Store(&fn)
+	} else {
+		s.outputAudioCallbackDirect.Store(nil)
+	}
 }
 
 // StartSyncLoop starts the synchronous processing loop. Must be called
