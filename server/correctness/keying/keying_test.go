@@ -281,6 +281,70 @@ func TestKeyPlusProgramComposite(t *testing.T) {
 				col, row, yVal, blueYCbCr.Y)
 		}
 	}
+
+	// --- Cb/Cr channel verification ---
+	// Chroma plane layout: each sample covers a 2x2 luma block.
+	// Left half chroma cols = [0, uvW/2), right half = [uvW/2, uvW).
+	cbPlane := result[ySize : ySize+uvSize]
+	crPlane := result[ySize+uvSize : ySize+2*uvSize]
+
+	// Left half: red foreground preserved — expect Cb≈90, Cr≈240.
+	var leftCbSum, leftCrSum int
+	var leftCount int
+	for row := 0; row < uvH; row++ {
+		for col := 0; col < uvW/2; col++ {
+			idx := row*uvW + col
+			leftCbSum += int(cbPlane[idx])
+			leftCrSum += int(crPlane[idx])
+			leftCount++
+		}
+	}
+	leftAvgCb := leftCbSum / leftCount
+	leftAvgCr := leftCrSum / leftCount
+	t.Logf("MEASURE: left half avg Cb=%d (expected ~90), avg Cr=%d (expected ~240)", leftAvgCb, leftAvgCr)
+
+	leftCbDiff := leftAvgCb - int(redYCbCr.Cb)
+	if leftCbDiff < 0 {
+		leftCbDiff = -leftCbDiff
+	}
+	require.LessOrEqual(t, leftCbDiff, 15,
+		"left half (red FG) avg Cb=%d should be within ±15 of red Cb=%d", leftAvgCb, redYCbCr.Cb)
+
+	leftCrDiff := leftAvgCr - int(redYCbCr.Cr)
+	if leftCrDiff < 0 {
+		leftCrDiff = -leftCrDiff
+	}
+	require.LessOrEqual(t, leftCrDiff, 15,
+		"left half (red FG) avg Cr=%d should be within ±15 of red Cr=%d", leftAvgCr, redYCbCr.Cr)
+
+	// Right half: green keyed out, blue program shows through — expect Cb≈240, Cr≈110.
+	var rightCbSum, rightCrSum int
+	var rightCount int
+	for row := 0; row < uvH; row++ {
+		for col := uvW / 2; col < uvW; col++ {
+			idx := row*uvW + col
+			rightCbSum += int(cbPlane[idx])
+			rightCrSum += int(crPlane[idx])
+			rightCount++
+		}
+	}
+	rightAvgCb := rightCbSum / rightCount
+	rightAvgCr := rightCrSum / rightCount
+	t.Logf("MEASURE: right half avg Cb=%d (expected ~240), avg Cr=%d (expected ~110)", rightAvgCb, rightAvgCr)
+
+	rightCbDiff := rightAvgCb - int(blueYCbCr.Cb)
+	if rightCbDiff < 0 {
+		rightCbDiff = -rightCbDiff
+	}
+	require.LessOrEqual(t, rightCbDiff, 15,
+		"right half (keyed out) avg Cb=%d should be within ±15 of blue Cb=%d", rightAvgCb, blueYCbCr.Cb)
+
+	rightCrDiff := rightAvgCr - int(blueYCbCr.Cr)
+	if rightCrDiff < 0 {
+		rightCrDiff = -rightCrDiff
+	}
+	require.LessOrEqual(t, rightCrDiff, 15,
+		"right half (keyed out) avg Cr=%d should be within ±15 of blue Cr=%d", rightAvgCr, blueYCbCr.Cr)
 }
 
 // ==========================================================================
@@ -321,6 +385,31 @@ func TestKeyOutputLegalRange(t *testing.T) {
 			fillY:  20, fillCb: 128, fillCr: 128,
 			keyType: graphics.KeyTypeLuma,
 		},
+		// Edge cases: extreme values that stress blend arithmetic
+		{
+			name:    "chroma_superblack_fill_on_white_bg",
+			bgY:     235, bgCb: 128, bgCr: 128,
+			fillY:   0, fillCb: 0, fillCr: 0,
+			keyType: graphics.KeyTypeChroma,
+		},
+		{
+			name:    "chroma_max_fill_on_black_bg",
+			bgY:     0, bgCb: 255, bgCr: 255,
+			fillY:   255, fillCb: 255, fillCr: 255,
+			keyType: graphics.KeyTypeChroma,
+		},
+		{
+			name:    "luma_superblack_on_superwhite",
+			bgY:     255, bgCb: 0, bgCr: 255,
+			fillY:   0, fillCb: 255, fillCr: 0,
+			keyType: graphics.KeyTypeLuma,
+		},
+		{
+			name:    "chroma_near_green_fill_on_saturated_bg",
+			bgY:     16, bgCb: 240, bgCr: 240,
+			fillY:   145, fillCb: 60, fillCr: 30,
+			keyType: graphics.KeyTypeChroma,
+		},
 	}
 
 	for _, tc := range testCases {
@@ -357,29 +446,66 @@ func TestKeyOutputLegalRange(t *testing.T) {
 
 			result := kp.Process(bg, map[string][]byte{"src": fill}, w, h)
 
-			// Check Y plane
+			// BT.709 legal range with ±2 rounding tolerance:
+			// Y ∈ [14, 237] (16-2 to 235+2), Cb/Cr ∈ [14, 242] (16-2 to 240+2)
 			ySize := w * h
 			chromaSize := (w / 2) * (h / 2)
 			cbStart := ySize
 			crStart := cbStart + chromaSize
 
+			// Measure actual Y range
+			yMin, yMax := byte(255), byte(0)
 			for i := 0; i < ySize; i++ {
 				v := result[i]
-				// Allow full byte range for blend output -- the keyer operates on
-				// raw byte values and the blend kernel does not clamp to legal range.
-				// This test validates the output doesn't go wildly out of bounds.
-				// For strict legal range compliance, the pipeline applies clamping after.
-				require.LessOrEqual(t, v, byte(255),
-					"Y[%d]=%d unexpectedly large", i, v)
+				if v < yMin {
+					yMin = v
+				}
+				if v > yMax {
+					yMax = v
+				}
 			}
+			t.Logf("MEASURE: Y min=%d max=%d (legal range with tolerance: [14, 237])", yMin, yMax)
 
+			// Measure actual Cb/Cr range
+			cbMin, cbMax := byte(255), byte(0)
+			crMin, crMax := byte(255), byte(0)
 			for i := 0; i < chromaSize; i++ {
 				cb := result[cbStart+i]
 				cr := result[crStart+i]
-				require.LessOrEqual(t, cb, byte(255),
-					"Cb[%d]=%d unexpectedly large", i, cb)
-				require.LessOrEqual(t, cr, byte(255),
-					"Cr[%d]=%d unexpectedly large", i, cr)
+				if cb < cbMin {
+					cbMin = cb
+				}
+				if cb > cbMax {
+					cbMax = cb
+				}
+				if cr < crMin {
+					crMin = cr
+				}
+				if cr > crMax {
+					crMax = cr
+				}
+			}
+			t.Logf("MEASURE: Cb min=%d max=%d, Cr min=%d max=%d (legal range with tolerance: [14, 242])", cbMin, cbMax, crMin, crMax)
+
+			// Assert BT.709 legal range (with ±2 rounding tolerance)
+			// If these fail, the keyer lacks output clamping — a real bug.
+			if yMin < 14 {
+				t.Errorf("BUG: Y min=%d is below BT.709 legal range floor (14). The keyer needs output clamping.", yMin)
+			}
+			if yMax > 237 {
+				t.Errorf("BUG: Y max=%d is above BT.709 legal range ceiling (237). The keyer needs output clamping.", yMax)
+			}
+			if cbMin < 14 {
+				t.Errorf("BUG: Cb min=%d is below BT.709 legal range floor (14). The keyer needs output clamping.", cbMin)
+			}
+			if cbMax > 242 {
+				t.Errorf("BUG: Cb max=%d is above BT.709 legal range ceiling (242). The keyer needs output clamping.", cbMax)
+			}
+			if crMin < 14 {
+				t.Errorf("BUG: Cr min=%d is below BT.709 legal range floor (14). The keyer needs output clamping.", crMin)
+			}
+			if crMax > 242 {
+				t.Errorf("BUG: Cr max=%d is above BT.709 legal range ceiling (242). The keyer needs output clamping.", crMax)
 			}
 		})
 	}
