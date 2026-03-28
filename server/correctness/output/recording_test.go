@@ -4,19 +4,84 @@ package output
 
 import (
 	"context"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/correctness/testutil"
 	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/transition"
 )
+
+// aacFrameCache holds pre-encoded AAC frames for reuse across tests.
+// Generated once via newAACFrameGenerator.
+type aacFrameGenerator struct {
+	enc      *audio.FDKEncoder
+	pcmBuf   []float32
+	channels int
+}
+
+// newAACFrameGenerator creates an FDK AAC encoder and returns a generator
+// that produces valid ADTS-framed AAC audio frames from a sine wave.
+func newAACFrameGenerator(t *testing.T, sampleRate, channels int) *aacFrameGenerator {
+	t.Helper()
+	enc, err := audio.NewFDKEncoder(sampleRate, channels)
+	require.NoError(t, err, "create FDK AAC encoder")
+
+	// AAC-LC frame size is 1024 samples per channel.
+	pcmBuf := make([]float32, 1024*channels)
+
+	g := &aacFrameGenerator{
+		enc:      enc,
+		pcmBuf:   pcmBuf,
+		channels: channels,
+	}
+	t.Cleanup(func() { enc.Close() })
+
+	// Prime the encoder with a few frames (FDK may buffer the first frame).
+	for i := 0; i < 3; i++ {
+		g.fillSine(i, sampleRate)
+		_, _ = enc.Encode(g.pcmBuf)
+	}
+	return g
+}
+
+// fillSine fills the PCM buffer with a 440Hz sine wave for the given frame index.
+func (g *aacFrameGenerator) fillSine(frameIdx, sampleRate int) {
+	const freq = 440.0
+	const amplitude = 0.5
+	for i := 0; i < 1024; i++ {
+		sampleIdx := frameIdx*1024 + i
+		val := float32(amplitude * math.Sin(2*math.Pi*freq*float64(sampleIdx)/float64(sampleRate)))
+		for ch := 0; ch < g.channels; ch++ {
+			g.pcmBuf[i*g.channels+ch] = val
+		}
+	}
+}
+
+// generate produces one valid ADTS-framed AAC audio frame.
+func (g *aacFrameGenerator) generate(t *testing.T, frameIdx, sampleRate int) []byte {
+	t.Helper()
+	g.fillSine(frameIdx, sampleRate)
+	aacData, err := g.enc.Encode(g.pcmBuf)
+	require.NoError(t, err, "encode AAC frame %d", frameIdx)
+	// If encoder returns empty (still priming), generate more frames.
+	for len(aacData) == 0 {
+		frameIdx++
+		g.fillSine(frameIdx, sampleRate)
+		aacData, err = g.enc.Encode(g.pcmBuf)
+		require.NoError(t, err, "encode AAC frame %d (priming)", frameIdx)
+	}
+	return aacData
+}
 
 const (
 	encWidth   = 320
@@ -35,6 +100,11 @@ func encodeAndMux(t *testing.T, numFrames int, withAudio bool) []byte {
 	enc, err := codec.NewFFmpegEncoder("libx264", encWidth, encHeight, encBitrate, encFPS, 1, encGOPSecs, nil)
 	require.NoError(t, err, "create encoder")
 	defer enc.Close()
+
+	var aacGen *aacFrameGenerator
+	if withAudio {
+		aacGen = newAACFrameGenerator(t, 48000, 2)
+	}
 
 	muxer := output.NewTSMuxer()
 	var tsData []byte
@@ -93,13 +163,10 @@ func encodeAndMux(t *testing.T, numFrames int, withAudio bool) []byte {
 		require.NoError(t, muxer.WriteVideo(frame), "mux video frame %d", i)
 
 		if withAudio {
-			silentPayload := []byte{0x01, 0x08}
-			adtsFrame := codec.BuildADTS(48000, 2, len(silentPayload))
-			adtsFrame = append(adtsFrame, silentPayload...)
-
+			aacData := aacGen.generate(t, i, 48000)
 			aFrame := &media.AudioFrame{
 				PTS:        pts,
-				Data:       adtsFrame,
+				Data:       aacData,
 				SampleRate: 48000,
 				Channels:   2,
 			}
@@ -140,6 +207,8 @@ func TestRecordingProducesValidTS(t *testing.T) {
 	enc, err := codec.NewFFmpegEncoder("libx264", encWidth, encHeight, encBitrate, encFPS, 1, encGOPSecs, nil)
 	require.NoError(t, err, "create encoder")
 	defer enc.Close()
+
+	aacGen := newAACFrameGenerator(t, 48000, 2)
 
 	muxer := output.NewTSMuxer()
 	muxer.SetOutput(func(data []byte) {
@@ -193,13 +262,11 @@ func TestRecordingProducesValidTS(t *testing.T) {
 		}
 		require.NoError(t, muxer.WriteVideo(frame), "mux video frame %d", i)
 
-		// Write interleaved audio.
-		silentPayload := []byte{0x01, 0x08}
-		adtsFrame := codec.BuildADTS(48000, 2, len(silentPayload))
-		adtsFrame = append(adtsFrame, silentPayload...)
+		// Write interleaved audio using real FDK AAC encoder.
+		aacData := aacGen.generate(t, i, 48000)
 		aFrame := &media.AudioFrame{
 			PTS:        pts,
-			Data:       adtsFrame,
+			Data:       aacData,
 			SampleRate: 48000,
 			Channels:   2,
 		}
@@ -274,6 +341,8 @@ func TestRecordingStartStopMultiple(t *testing.T) {
 		require.NoError(t, err)
 		defer enc.Close()
 
+		aacGen := newAACFrameGenerator(t, 48000, 2)
+
 		muxer := output.NewTSMuxer()
 		muxer.SetOutput(func(data []byte) {
 			_, writeErr := recorder.Write(data)
@@ -328,12 +397,10 @@ func TestRecordingStartStopMultiple(t *testing.T) {
 			}
 			require.NoError(t, muxer.WriteVideo(frame))
 
-			silentPayload := []byte{0x01, 0x08}
-			adtsFrame := codec.BuildADTS(48000, 2, len(silentPayload))
-			adtsFrame = append(adtsFrame, silentPayload...)
+			aacData := aacGen.generate(t, i, 48000)
 			aFrame := &media.AudioFrame{
 				PTS:        pts,
-				Data:       adtsFrame,
+				Data:       aacData,
 				SampleRate: 48000,
 				Channels:   2,
 			}
