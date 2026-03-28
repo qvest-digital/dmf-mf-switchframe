@@ -248,6 +248,24 @@ func TestPipelineThroughput320x240(t *testing.T) {
 	require.Less(t, elapsed.Seconds(), 20.0,
 		"320x240 pipeline must process 300 frames in under 20s, took %.1fs", elapsed.Seconds())
 
+	// Assert: 320x240 must achieve at least 2x realtime (>60 fps throughput).
+	require.Greater(t, actualFPS, 60.0,
+		"320x240 must achieve 2x realtime (>60fps), got %.1f fps", actualFPS)
+
+	// Validate TS output: write to temp file and probe.
+	th.tsMu.Lock()
+	capturedTS := make([]byte, len(th.tsData))
+	copy(capturedTS, th.tsData)
+	th.tsMu.Unlock()
+
+	require.Greater(t, len(capturedTS), 0, "pipeline must produce TS data")
+	tsPath := testutil.WriteTempFile(t, capturedTS, ".ts")
+	probeResult := testutil.ProbeFile(t, tsPath)
+	vs := probeResult.VideoStream()
+	require.NotNil(t, vs, "TS output must contain a video stream")
+	t.Logf("MEASURE: TS output: %d bytes, codec=%s, %dx%d",
+		len(capturedTS), vs.CodecName, vs.Width, vs.Height)
+
 	_ = realtimeMultiple // suppress unused
 }
 
@@ -306,12 +324,30 @@ func TestPipelineThroughput720p(t *testing.T) {
 	// Must produce at least some output.
 	require.Greater(t, totalFrames, 0, "pipeline should produce output frames at 720p")
 
+	// Assert: 720p must be usable (>20 fps).
+	require.Greater(t, actualFPS, 20.0,
+		"720p must be usable (>20fps), got %.1f fps", actualFPS)
+
 	// Informational: log whether 720p can keep up with realtime.
 	if realtimeX >= 1.0 {
 		t.Logf("MEASURE: 720p runs at or above realtime (%.1fx)", realtimeX)
 	} else {
 		t.Logf("MEASURE: 720p runs below realtime (%.1fx) -- expected on CPU-only", realtimeX)
 	}
+
+	// Validate TS output.
+	th.tsMu.Lock()
+	capturedTS := make([]byte, len(th.tsData))
+	copy(capturedTS, th.tsData)
+	th.tsMu.Unlock()
+
+	require.Greater(t, len(capturedTS), 0, "pipeline must produce TS data at 720p")
+	tsPath := testutil.WriteTempFile(t, capturedTS, ".ts")
+	probeResult := testutil.ProbeFile(t, tsPath)
+	vs := probeResult.VideoStream()
+	require.NotNil(t, vs, "TS output must contain a video stream")
+	t.Logf("MEASURE: TS output: %d bytes, codec=%s, %dx%d",
+		len(capturedTS), vs.CodecName, vs.Width, vs.Height)
 }
 
 // ---------------------------------------------------------------------------
@@ -369,12 +405,26 @@ func TestPipelineThroughput1080p(t *testing.T) {
 	// Must produce at least some output -- don't fail on speed.
 	require.Greater(t, totalFrames, 0, "pipeline should produce output frames at 1080p")
 
-	// Informational only: report whether 1080p can keep up.
+	// 1080p: just log (hardware-dependent), no FPS assertion.
 	if realtimeX >= 1.0 {
 		t.Logf("MEASURE: 1080p runs at or above realtime (%.1fx)", realtimeX)
 	} else {
 		t.Logf("MEASURE: 1080p runs below realtime (%.1fx) -- expected on CPU-only", realtimeX)
 	}
+
+	// Validate TS output.
+	th.tsMu.Lock()
+	capturedTS := make([]byte, len(th.tsData))
+	copy(capturedTS, th.tsData)
+	th.tsMu.Unlock()
+
+	require.Greater(t, len(capturedTS), 0, "pipeline must produce TS data at 1080p")
+	tsPath := testutil.WriteTempFile(t, capturedTS, ".ts")
+	probeResult := testutil.ProbeFile(t, tsPath)
+	vs := probeResult.VideoStream()
+	require.NotNil(t, vs, "TS output must contain a video stream")
+	t.Logf("MEASURE: TS output: %d bytes, codec=%s, %dx%d",
+		len(capturedTS), vs.CodecName, vs.Width, vs.Height)
 }
 
 // ---------------------------------------------------------------------------
@@ -465,6 +515,14 @@ func TestPipelineThroughputWithGraphics(t *testing.T) {
 	// Both should produce output.
 	require.Greater(t, baselineFrames, 0, "baseline should produce output frames")
 	require.Greater(t, graphicsFrames, 0, "graphics path should produce output frames")
+
+	// Assert: graphics overhead must be < 20%.
+	// If overhead > 20%, something is wrong with the compositor.
+	if baselineFPS > 0 {
+		require.Less(t, overheadPct, 20.0,
+			"graphics overhead=%.1f%% should be < 20%% (baseline=%.1f fps, graphics=%.1f fps)",
+			overheadPct, baselineFPS, graphicsFPS)
+	}
 }
 
 // createOverlayPNG creates a semi-transparent RGBA PNG suitable for graphics overlay.
