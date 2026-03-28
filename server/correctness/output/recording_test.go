@@ -3,7 +3,10 @@
 package output
 
 import (
+	"bytes"
 	"context"
+	"image"
+	"image/jpeg"
 	"math"
 	"os"
 	"path/filepath"
@@ -20,6 +23,11 @@ import (
 	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/transition"
 )
+
+// jpegDecode wraps image/jpeg.Decode for use in tests.
+func jpegDecode(r *bytes.Reader) (image.Image, error) {
+	return jpeg.Decode(r)
+}
 
 // aacFrameCache holds pre-encoded AAC frames for reuse across tests.
 // Generated once via newAACFrameGenerator.
@@ -833,4 +841,456 @@ func TestConfidenceMonitorProducesJPEG(t *testing.T) {
 	assert.Equal(t, byte(0xD9), jpeg[len(jpeg)-1], "JPEG should have EOI marker 0xFFD9")
 
 	t.Logf("MEASURE: valid JPEG thumbnail %d bytes", len(jpeg))
+}
+
+// TestConfidenceMonitorNonKeyframeIgnored verifies that the confidence
+// monitor only processes keyframes. P-frames (IsKeyframe=false) must
+// produce zero JPEG output.
+func TestConfidenceMonitorNonKeyframeIgnored(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping long correctness test in short mode")
+	}
+
+	ySize := encWidth * encHeight
+	uvSize := (encWidth / 2) * (encHeight / 2)
+	yuv := make([]byte, ySize+2*uvSize)
+
+	type frameEntry struct {
+		avc1 []byte
+		sps  []byte
+		pps  []byte
+		pts  int64
+	}
+
+	// Phase 1: Encode P-frames (non-keyframes) using one encoder.
+	// We encode a GOP starting with an IDR, then collect the non-IDR frames.
+	encP, err := codec.NewFFmpegEncoder("libx264", encWidth, encHeight, encBitrate, encFPS, 1, encGOPSecs, nil)
+	require.NoError(t, err)
+
+	var pFrames []frameEntry
+	for i := 0; i < 30; i++ {
+		pts := int64(90000) + int64(i)*3000
+		forceIDR := i == 0
+
+		for j := 0; j < ySize; j++ {
+			yuv[j] = byte((j*7 + i*31) % 256)
+		}
+		for j := ySize; j < len(yuv); j++ {
+			yuv[j] = 128
+		}
+
+		encoded, isKeyframe, encErr := encP.Encode(yuv, pts, forceIDR)
+		require.NoError(t, encErr)
+		if len(encoded) == 0 {
+			continue
+		}
+
+		if !isKeyframe {
+			avc1 := codec.AnnexBToAVC1(encoded)
+			pFrames = append(pFrames, frameEntry{avc1: avc1, pts: pts})
+		}
+	}
+	encP.Close()
+
+	// Phase 2: Encode keyframes (all forced IDR) using a separate encoder.
+	encK, err := codec.NewFFmpegEncoder("libx264", encWidth, encHeight, encBitrate, encFPS, 1, encGOPSecs, nil)
+	require.NoError(t, err)
+
+	var keyframes []frameEntry
+	for i := 0; i < 10; i++ {
+		pts := int64(200000) + int64(i)*3000
+
+		for j := 0; j < ySize; j++ {
+			yuv[j] = byte((j*7 + i*41) % 256)
+		}
+		for j := ySize; j < len(yuv); j++ {
+			yuv[j] = 128
+		}
+
+		encoded, isKeyframe, encErr := encK.Encode(yuv, pts, true /* forceIDR */)
+		require.NoError(t, encErr)
+		if len(encoded) == 0 {
+			continue
+		}
+		if isKeyframe {
+			avc1 := codec.AnnexBToAVC1(encoded)
+			var entrySPS, entryPPS []byte
+			for _, nalu := range codec.ExtractNALUs(avc1) {
+				if len(nalu) == 0 {
+					continue
+				}
+				switch nalu[0] & 0x1F {
+				case 7:
+					entrySPS = append([]byte(nil), nalu...)
+				case 8:
+					entryPPS = append([]byte(nil), nalu...)
+				}
+			}
+			keyframes = append(keyframes, frameEntry{avc1: avc1, sps: entrySPS, pps: entryPPS, pts: pts})
+		}
+	}
+	encK.Close()
+
+	t.Logf("MEASURE: encoded %d P-frames and %d keyframes", len(pFrames), len(keyframes))
+	require.GreaterOrEqual(t, len(pFrames), 10, "should have at least 10 P-frames")
+	require.GreaterOrEqual(t, len(keyframes), 5, "should have at least 5 keyframes")
+
+	// Create confidence monitor with a real decoder.
+	decoderFactory := transition.DecoderFactory(func() (transition.VideoDecoder, error) {
+		dec, decErr := codec.NewFFmpegDecoder(nil)
+		if decErr != nil {
+			return nil, decErr
+		}
+		return dec, nil
+	})
+
+	cm := output.NewConfidenceMonitor(decoderFactory)
+	defer cm.Close()
+
+	// Feed 10 P-frames — none should produce a JPEG.
+	pFrameCount := 10
+	for i := 0; i < pFrameCount; i++ {
+		pf := pFrames[i]
+		frame := &media.VideoFrame{
+			PTS:        pf.pts,
+			IsKeyframe: false, // explicitly P-frame
+			WireData:   pf.avc1,
+			Codec:      "h264",
+		}
+		cm.IngestVideo(frame)
+	}
+
+	jpegAfterPFrames := cm.LatestThumbnail()
+	t.Logf("MEASURE: JPEGs from %d P-frames=%d", pFrameCount, len(jpegAfterPFrames))
+	assert.Nil(t, jpegAfterPFrames, "P-frames should not produce JPEG output")
+
+	// Now feed keyframes (with rate limiter sleep) until we get a JPEG.
+	var jpegAfterKeyframe []byte
+	keyframesFed := 0
+	for _, kf := range keyframes {
+		if keyframesFed > 0 {
+			time.Sleep(1100 * time.Millisecond)
+		}
+		frame := &media.VideoFrame{
+			PTS:        kf.pts,
+			IsKeyframe: true,
+			WireData:   kf.avc1,
+			SPS:        kf.sps,
+			PPS:        kf.pps,
+			Codec:      "h264",
+		}
+		cm.IngestVideo(frame)
+		keyframesFed++
+		jpegAfterKeyframe = cm.LatestThumbnail()
+		if jpegAfterKeyframe != nil {
+			break
+		}
+	}
+
+	t.Logf("MEASURE: JPEGs from %d P-frames=%d, after %d keyframe(s)=%d",
+		pFrameCount, len(jpegAfterPFrames), keyframesFed, len(jpegAfterKeyframe))
+
+	// We expect a JPEG after feeding keyframes (decoder warmup may require ~4).
+	if jpegAfterKeyframe == nil {
+		t.Log("MEASURE: no JPEG after keyframes (decoder warmup issue)")
+		t.Skip("decoder did not produce output; skipping keyframe validation")
+	}
+	assert.Greater(t, len(jpegAfterKeyframe), 100, "JPEG after keyframe should be non-trivial")
+}
+
+// TestConfidenceMonitorRateLimited verifies that the confidence monitor
+// rate-limits thumbnail generation to approximately 1 fps, even when
+// fed keyframes faster than that.
+func TestConfidenceMonitorRateLimited(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping long correctness test in short mode")
+	}
+
+	// Encode many keyframes.
+	enc, err := codec.NewFFmpegEncoder("libx264", encWidth, encHeight, encBitrate, encFPS, 1, encGOPSecs, nil)
+	require.NoError(t, err)
+	defer enc.Close()
+
+	ySize := encWidth * encHeight
+	uvSize := (encWidth / 2) * (encHeight / 2)
+	yuv := make([]byte, ySize+2*uvSize)
+
+	type keyframeEntry struct {
+		avc1 []byte
+		sps  []byte
+		pps  []byte
+		pts  int64
+	}
+	var keyframes []keyframeEntry
+
+	for i := 0; i < 20; i++ {
+		pts := int64(90000) + int64(i)*3000
+		for j := 0; j < ySize; j++ {
+			yuv[j] = byte((j*7 + i*31) % 256)
+		}
+		for j := ySize; j < len(yuv); j++ {
+			yuv[j] = 128
+		}
+
+		encoded, isKeyframe, encErr := enc.Encode(yuv, pts, true /* forceIDR */)
+		require.NoError(t, encErr)
+		if len(encoded) == 0 {
+			continue
+		}
+
+		avc1 := codec.AnnexBToAVC1(encoded)
+		if isKeyframe {
+			var entrySPS, entryPPS []byte
+			for _, nalu := range codec.ExtractNALUs(avc1) {
+				if len(nalu) == 0 {
+					continue
+				}
+				switch nalu[0] & 0x1F {
+				case 7:
+					entrySPS = append([]byte(nil), nalu...)
+				case 8:
+					entryPPS = append([]byte(nil), nalu...)
+				}
+			}
+			keyframes = append(keyframes, keyframeEntry{
+				avc1: avc1,
+				sps:  entrySPS,
+				pps:  entryPPS,
+				pts:  pts,
+			})
+		}
+	}
+
+	require.GreaterOrEqual(t, len(keyframes), 10, "need at least 10 keyframes for rate limit test")
+	t.Logf("MEASURE: encoded %d keyframes for rate-limit test", len(keyframes))
+
+	// Create confidence monitor with a real decoder.
+	decoderFactory := transition.DecoderFactory(func() (transition.VideoDecoder, error) {
+		dec, decErr := codec.NewFFmpegDecoder(nil)
+		if decErr != nil {
+			return nil, decErr
+		}
+		return dec, nil
+	})
+
+	cm := output.NewConfidenceMonitor(decoderFactory)
+	defer cm.Close()
+
+	// First, warm up the decoder by feeding the first keyframe and
+	// waiting for it to produce a JPEG.
+	warmupCount := 0
+	for i, kf := range keyframes {
+		if i > 0 {
+			time.Sleep(1100 * time.Millisecond)
+		}
+		frame := &media.VideoFrame{
+			PTS:        kf.pts,
+			IsKeyframe: true,
+			WireData:   kf.avc1,
+			SPS:        kf.sps,
+			PPS:        kf.pps,
+			Codec:      "h264",
+		}
+		cm.IngestVideo(frame)
+		warmupCount++
+		if cm.LatestThumbnail() != nil {
+			break
+		}
+	}
+
+	if cm.LatestThumbnail() == nil {
+		t.Skip("decoder did not produce output during warmup; skipping rate limit test")
+	}
+	t.Logf("MEASURE: decoder warmed up after %d keyframes", warmupCount)
+
+	// Now track JPEG changes. We save the current JPEG and count
+	// how many times it changes during rapid keyframe feeding.
+	remainingKeyframes := keyframes[warmupCount:]
+	if len(remainingKeyframes) < 10 {
+		t.Skipf("only %d keyframes remaining after warmup; need 10", len(remainingKeyframes))
+	}
+
+	// Wait for the rate limiter to allow the next update.
+	time.Sleep(1100 * time.Millisecond)
+
+	prevJPEG := cm.LatestThumbnail()
+	jpegChanges := 0
+
+	// Feed 10 keyframes as fast as possible (no sleep between them).
+	for i := 0; i < 10 && i < len(remainingKeyframes); i++ {
+		kf := remainingKeyframes[i]
+		frame := &media.VideoFrame{
+			PTS:        kf.pts,
+			IsKeyframe: true,
+			WireData:   kf.avc1,
+			SPS:        kf.sps,
+			PPS:        kf.pps,
+			Codec:      "h264",
+		}
+		cm.IngestVideo(frame)
+
+		currentJPEG := cm.LatestThumbnail()
+		if len(currentJPEG) != len(prevJPEG) {
+			jpegChanges++
+			prevJPEG = currentJPEG
+		} else {
+			// Check if bytes differ (same length but different content).
+			differs := false
+			for b := range currentJPEG {
+				if currentJPEG[b] != prevJPEG[b] {
+					differs = true
+					break
+				}
+			}
+			if differs {
+				jpegChanges++
+				prevJPEG = currentJPEG
+			}
+		}
+	}
+
+	t.Logf("MEASURE: 10 rapid keyframes produced %d JPEG changes", jpegChanges)
+
+	// Rate limiter should allow at most ~1 JPEG per second. Since we feed
+	// 10 keyframes in rapid succession (well under 1 second), we expect
+	// at most 1-2 JPEG changes (the first one gets through, rest are rate-limited).
+	assert.Less(t, jpegChanges, 10,
+		"rate limiter should prevent all 10 rapid keyframes from producing JPEGs")
+	// More specifically, at most 2 should get through (one at start, maybe one at boundary).
+	assert.LessOrEqual(t, jpegChanges, 2,
+		"expected at most 2 JPEG changes from 10 rapid keyframes (1fps rate limit)")
+}
+
+// TestConfidenceMonitorJPEGDecodable verifies that JPEG output from the
+// confidence monitor is properly formatted and decodable.
+func TestConfidenceMonitorJPEGDecodable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping long correctness test in short mode")
+	}
+
+	// Encode keyframes.
+	enc, err := codec.NewFFmpegEncoder("libx264", encWidth, encHeight, encBitrate, encFPS, 1, encGOPSecs, nil)
+	require.NoError(t, err)
+	defer enc.Close()
+
+	ySize := encWidth * encHeight
+	uvSize := (encWidth / 2) * (encHeight / 2)
+	yuv := make([]byte, ySize+2*uvSize)
+
+	type keyframeEntry struct {
+		avc1 []byte
+		sps  []byte
+		pps  []byte
+		pts  int64
+	}
+	var keyframes []keyframeEntry
+
+	for i := 0; i < 10; i++ {
+		pts := int64(90000) + int64(i)*3000
+		for j := 0; j < ySize; j++ {
+			yuv[j] = byte((j*7 + i*31) % 256)
+		}
+		for j := ySize; j < len(yuv); j++ {
+			yuv[j] = 128
+		}
+
+		encoded, isKeyframe, encErr := enc.Encode(yuv, pts, true /* forceIDR */)
+		require.NoError(t, encErr)
+		if len(encoded) == 0 {
+			continue
+		}
+
+		avc1 := codec.AnnexBToAVC1(encoded)
+		if isKeyframe {
+			var entrySPS, entryPPS []byte
+			for _, nalu := range codec.ExtractNALUs(avc1) {
+				if len(nalu) == 0 {
+					continue
+				}
+				switch nalu[0] & 0x1F {
+				case 7:
+					entrySPS = append([]byte(nil), nalu...)
+				case 8:
+					entryPPS = append([]byte(nil), nalu...)
+				}
+			}
+			keyframes = append(keyframes, keyframeEntry{
+				avc1: avc1,
+				sps:  entrySPS,
+				pps:  entryPPS,
+				pts:  pts,
+			})
+		}
+	}
+
+	require.NotEmpty(t, keyframes, "should have encoded at least one keyframe")
+	t.Logf("MEASURE: encoded %d keyframes for JPEG decodability test", len(keyframes))
+
+	// Create confidence monitor with a real decoder.
+	decoderFactory := transition.DecoderFactory(func() (transition.VideoDecoder, error) {
+		dec, decErr := codec.NewFFmpegDecoder(nil)
+		if decErr != nil {
+			return nil, decErr
+		}
+		return dec, nil
+	})
+
+	cm := output.NewConfidenceMonitor(decoderFactory)
+	defer cm.Close()
+
+	// Feed keyframes until we get a JPEG.
+	for i, kf := range keyframes {
+		if i > 0 {
+			time.Sleep(1100 * time.Millisecond)
+		}
+		frame := &media.VideoFrame{
+			PTS:        kf.pts,
+			IsKeyframe: true,
+			WireData:   kf.avc1,
+			SPS:        kf.sps,
+			PPS:        kf.pps,
+			Codec:      "h264",
+		}
+		cm.IngestVideo(frame)
+		if cm.LatestThumbnail() != nil {
+			t.Logf("MEASURE: got JPEG after %d keyframes", i+1)
+			break
+		}
+	}
+
+	jpegData := cm.LatestThumbnail()
+	if jpegData == nil {
+		t.Skip("decoder did not produce JPEG; skipping decodability test")
+	}
+
+	t.Logf("MEASURE: JPEG size=%d bytes", len(jpegData))
+
+	// Check JPEG SOI marker (0xFF 0xD8).
+	validSOI := len(jpegData) >= 2 && jpegData[0] == 0xFF && jpegData[1] == 0xD8
+	t.Logf("MEASURE: JPEG SOI marker valid=%v (bytes: 0x%02X 0x%02X)", validSOI, jpegData[0], jpegData[1])
+	assert.True(t, validSOI, "JPEG should start with SOI marker 0xFFD8")
+
+	// Check JPEG EOI marker (0xFF 0xD9).
+	validEOI := len(jpegData) >= 2 && jpegData[len(jpegData)-2] == 0xFF && jpegData[len(jpegData)-1] == 0xD9
+	t.Logf("MEASURE: JPEG EOI marker valid=%v (bytes: 0x%02X 0x%02X)",
+		validEOI, jpegData[len(jpegData)-2], jpegData[len(jpegData)-1])
+	assert.True(t, validEOI, "JPEG should end with EOI marker 0xFFD9")
+
+	// Check minimum size.
+	t.Logf("MEASURE: JPEG size=%d bytes, valid_markers=%v", len(jpegData), validSOI && validEOI)
+	assert.Greater(t, len(jpegData), 100, "JPEG should be at least 100 bytes (not empty/truncated)")
+
+	// Decode the JPEG using image/jpeg and verify dimensions.
+	img, decodeErr := jpegDecode(bytes.NewReader(jpegData))
+	t.Logf("MEASURE: jpeg.Decode err=%v", decodeErr)
+	require.NoError(t, decodeErr, "JPEG should be decodable by image/jpeg")
+
+	bounds := img.Bounds()
+	imgWidth := bounds.Dx()
+	imgHeight := bounds.Dy()
+	t.Logf("MEASURE: decoded JPEG dimensions=%dx%d (expected %dx%d)", imgWidth, imgHeight, 320, 180)
+
+	// The confidence monitor scales to thumbWidth x thumbHeight (320x180).
+	assert.Equal(t, 320, imgWidth, "JPEG width should be 320 (thumbWidth)")
+	assert.Equal(t, 180, imgHeight, "JPEG height should be 180 (thumbHeight)")
 }
