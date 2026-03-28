@@ -49,40 +49,6 @@ func generate422H264(t *testing.T, w, h, numFrames int) string {
 	return outPath
 }
 
-// generate422H264TS generates an H.264 High 4:2:2 profile clip in MPEG-TS container.
-func generate422H264TS(t *testing.T, w, h, numFrames int) string {
-	t.Helper()
-
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		t.Skip("ffmpeg CLI not available")
-	}
-
-	dir := t.TempDir()
-	outPath := filepath.Join(dir, "test_422.ts")
-
-	cmd := exec.Command("ffmpeg",
-		"-f", "lavfi",
-		"-i", "testsrc=size="+itoa(w)+"x"+itoa(h)+":rate=30",
-		"-c:v", "libx264",
-		"-pix_fmt", "yuv422p",
-		"-profile:v", "high422",
-		"-preset", "ultrafast",
-		"-frames:v", itoa(numFrames),
-		"-f", "mpegts",
-		"-y", outPath,
-	)
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("ffmpeg 422 TS generation failed: %v", err)
-	}
-
-	info, err := os.Stat(outPath)
-	require.NoError(t, err)
-	require.Greater(t, info.Size(), int64(0))
-
-	return outPath
-}
-
 func itoa(n int) string {
 	return fmt.Sprintf("%d", n)
 }
@@ -314,7 +280,7 @@ func TestFFmpegDecoder_422_FlushAndReuse(t *testing.T) {
 
 	// First decode pass
 	for _, frame := range frames {
-		dec.Decode(frame)
+		_, _, _, _ = dec.Decode(frame)
 	}
 
 	// Flush

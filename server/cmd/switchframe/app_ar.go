@@ -126,7 +126,7 @@ func (t *trackingManagerAdapter) AddFreeDSource(sourceKey, udpAddr string, camer
 		return err
 	}
 	if err := recv.Start(); err != nil {
-		t.mgr.RemoveSource(sourceKey, "freed")
+		_ = t.mgr.RemoveSource(sourceKey, "freed")
 		return err
 	}
 	return nil
@@ -151,7 +151,7 @@ func (t *trackingManagerAdapter) AddVisualSource(sourceKey string) error {
 
 	// Register with tracking manager.
 	if err := t.mgr.AddSource(sourceKey, proxy); err != nil {
-		proxy.Close()
+		_ = proxy.Close()
 		return err
 	}
 
@@ -162,7 +162,7 @@ func (t *trackingManagerAdapter) AddVisualSource(sourceKey string) error {
 
 	// Start tracking.
 	if err := proxy.Start(); err != nil {
-		t.mgr.RemoveSource(sourceKey, proxy.Name())
+		_ = t.mgr.RemoveSource(sourceKey, proxy.Name())
 		t.app.aiTrackingProxiesMu.Lock()
 		delete(t.app.aiTrackingProxies, sourceKey)
 		t.app.aiTrackingProxiesMu.Unlock()
@@ -315,7 +315,7 @@ func (a *arCompositorStateAdapter) TriggerRender() {
 	h := a.app.arRenderer.Settings().Height
 	sample := make([]byte, 64) // first 16 pixels
 	if framePtr != 0 {
-		gpu.DownloadMaskU8(sample, unsafe.Pointer(framePtr), 64)
+		_ = gpu.DownloadMaskU8(sample, unsafe.Pointer(framePtr), 64) //nolint:govet // intentional GPU device pointer conversion
 	}
 	nonZero := 0
 	for _, b := range sample {

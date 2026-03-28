@@ -609,7 +609,7 @@ func (a *App) initAISidecar(gs *gpuState, sw *switcher.Switcher) (*gpu.Segmentat
 	// Spawn the sidecar.
 	if err := host.Start(context.Background()); err != nil {
 		slog.Warn("AI sidecar: failed to start", "error", err)
-		pool.Close()
+		_ = pool.Close()
 		a.aiSidecarPool = nil
 		a.aiSidecarHost = nil
 		return nil, nil
@@ -625,8 +625,8 @@ func (a *App) initAISidecar(gs *gpuState, sw *switcher.Switcher) (*gpu.Segmentat
 	}
 	if err := host.Send(&sidecar.Message{Cmd: "gpu_pool_init", Data: hs}); err != nil {
 		slog.Warn("AI sidecar: handshake failed", "error", err)
-		host.Close()
-		pool.Close()
+		_ = host.Close()
+		_ = pool.Close()
 		a.aiSidecarPool = nil
 		a.aiSidecarHost = nil
 		return nil, nil

@@ -6,8 +6,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"sync/atomic"
 	"time"
 
@@ -306,13 +304,6 @@ func (a *App) initPlayout() error {
 	slog.Info("playout manager initialized", "cacheDir", cacheDir, "asRunDir", asRunDir,
 		"playlistDir", playlistDir)
 	return nil
-}
-
-// playoutChannelIDFromKey extracts the channel ID from a "playout:N" key.
-func playoutChannelIDFromKey(key string) int {
-	s := strings.TrimPrefix(key, "playout:")
-	n, _ := strconv.Atoi(s)
-	return n
 }
 
 // playoutSecondaryHandler implements playout.SecondaryEventHandler by

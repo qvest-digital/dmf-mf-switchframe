@@ -363,7 +363,7 @@ func TestGPUSourceManager_ReadCachedFrame(t *testing.T) {
 	inputYUV2 := createTestYUV420p(w, h, 50, 120, 130)
 	mgr.IngestYUV("cam1", inputYUV2, w, h, 84000)
 
-	yuv, rw, rh, rpts = mgr.ReadCachedFrame("cam1")
+	yuv, _, _, rpts = mgr.ReadCachedFrame("cam1")
 	require.NotNil(t, yuv)
 	assert.Equal(t, int64(84000), rpts, "PTS should update on second ingest")
 	assert.Equal(t, byte(50), yuv[centerIdx],

@@ -14,7 +14,7 @@ import (
 // On Metal (Apple Silicon unified memory), DevPtr is a direct CPU-accessible pointer.
 func fillP210AlphaMask(t *testing.T, _ *Context, frame *GPUFrame, w, h int) {
 	t.Helper()
-	buf := unsafe.Slice((*byte)(unsafe.Pointer(frame.DevPtr)), frame.FrameSize())
+	buf := unsafe.Slice((*byte)(unsafe.Pointer(frame.DevPtr)), frame.FrameSize()) //nolint:govet // intentional Metal unified memory pointer conversion
 	halfH := h / 2
 	pitch := int(frame.Pitch)
 	for row := 0; row < h; row++ {
@@ -33,7 +33,7 @@ func fillP210AlphaMask(t *testing.T, _ *Context, frame *GPUFrame, w, h int) {
 // On Metal (Apple Silicon unified memory), DevPtr is a direct CPU-accessible pointer.
 func fillP210AlphaUniform(t *testing.T, _ *Context, frame *GPUFrame, w, h int, alphaVal byte) {
 	t.Helper()
-	buf := unsafe.Slice((*byte)(unsafe.Pointer(frame.DevPtr)), frame.FrameSize())
+	buf := unsafe.Slice((*byte)(unsafe.Pointer(frame.DevPtr)), frame.FrameSize()) //nolint:govet // intentional Metal unified memory pointer conversion
 	pitch := int(frame.Pitch)
 	for row := 0; row < h; row++ {
 		for col := 0; col < w; col++ {

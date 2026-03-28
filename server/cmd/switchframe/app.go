@@ -1871,15 +1871,15 @@ func (a *App) closeSubsystems() {
 	}
 	// Camera tracking cleanup (close all receivers).
 	if a.trackingMgr != nil {
-		a.trackingMgr.Close()
+		_ = a.trackingMgr.Close()
 	}
 	// AR renderer cleanup before GPU (holds GPU resources).
 	if a.arRenderer != nil {
-		a.arRenderer.Close()
+		_ = a.arRenderer.Close()
 	}
 	// AR asset store cleanup.
 	if a.arAssetStore != nil {
-		a.arAssetStore.Close()
+		_ = a.arAssetStore.Close()
 	}
 	// AR inference engine cleanup before GPU (holds GPU/TensorRT resources).
 	if a.arInferEngine != nil {
@@ -1892,16 +1892,16 @@ func (a *App) closeSubsystems() {
 	// Close all visual tracking proxies before sidecar shutdown.
 	a.aiTrackingProxiesMu.Lock()
 	for _, tp := range a.aiTrackingProxies {
-		tp.Close()
+		_ = tp.Close()
 	}
 	a.aiTrackingProxies = nil
 	a.aiTrackingProxiesMu.Unlock()
 	// AI sidecar cleanup: close host (kills sidecar process), then pool (unmaps shm).
 	if a.aiSidecarHost != nil {
-		a.aiSidecarHost.Close()
+		_ = a.aiSidecarHost.Close()
 	}
 	if a.aiSidecarPool != nil {
-		a.aiSidecarPool.Close()
+		_ = a.aiSidecarPool.Close()
 	}
 	// GPU cleanup after switcher (pipeline frames must be released first).
 	closeGPU(a.gpuState)

@@ -89,7 +89,7 @@ func (n *gpuColorGradeNode) ProcessGPU(frame *GPUFrame) error {
 		}
 
 		data := n.state.GradingLUTData()
-		if data == nil || len(data) == 0 {
+		if len(data) == 0 {
 			return nil
 		}
 

@@ -214,7 +214,7 @@ func TestBuildEncoderIdentSEI_PayloadSizeEncoding(t *testing.T) {
 	payloadSize := int(sei[6])
 	// 16 (UUID) + len("Switchframe/1.0 encoder=libx264 profile=high format=1080p30")
 	// The payload size must be correct.
-	expectedPayload := fmt.Sprintf("Switchframe/1.0 encoder=libx264 profile=high format=1080p30")
+	expectedPayload := "Switchframe/1.0 encoder=libx264 profile=high format=1080p30"
 	expectedSize := 16 + len(expectedPayload)
 	assert.Equal(t, expectedSize, payloadSize,
 		"payload size must equal 16 (UUID) + len(user_data_string)")

@@ -11,8 +11,6 @@ var (
 	testHEVCSPS = []byte{0x42, 0x01, 0xCC, 0xDD} // type 33
 	testHEVCPPS = []byte{0x44, 0x01, 0xEE}        // type 34
 	testHEVCIDR = []byte{0x26, 0x01, 0x11, 0x22, 0x33, 0x44} // type 19
-	testHEVCSEI = []byte{0x4E, 0x01, 0x55}        // type 39
-	testHEVCAUD = []byte{0x46, 0x01}              // type 35
 )
 
 func TestHEVCNALUType(t *testing.T) {

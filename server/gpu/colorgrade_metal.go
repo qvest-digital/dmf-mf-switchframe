@@ -42,7 +42,7 @@ func ColorGradeLUT3D(ctx *Context, frame *GPUFrame, lutDevPtr uintptr, lutSize i
 		intensity: intensity,
 	}
 
-	lutBuf := C.MetalBufferRef(unsafe.Pointer(lutDevPtr))
+	lutBuf := C.MetalBufferRef(unsafe.Pointer(lutDevPtr)) //nolint:govet // intentional Metal buffer pointer conversion
 	bufs := [2]C.MetalBufferRef{frame.MetalBuf, lutBuf}
 	offsets := [2]C.int64_t{0, 0}
 
@@ -91,7 +91,7 @@ func ColorGradeLUT3DP210(ctx *Context, frame *GPUFrame, lutDevPtr uintptr, lutSi
 		intensity: intensity,
 	}
 
-	lutBuf := C.MetalBufferRef(unsafe.Pointer(lutDevPtr))
+	lutBuf := C.MetalBufferRef(unsafe.Pointer(lutDevPtr)) //nolint:govet // intentional Metal buffer pointer conversion
 	bufs := [2]C.MetalBufferRef{frame.MetalBuf, lutBuf}
 	offsets := [2]C.int64_t{0, 0}
 
@@ -128,6 +128,6 @@ func UploadLUT3D(data []float32) (uintptr, error) {
 // FreeLUT3D frees a LUT Metal buffer previously uploaded via UploadLUT3D.
 func FreeLUT3D(devPtr uintptr) {
 	if devPtr != 0 {
-		C.metal_buffer_free(C.MetalBufferRef(unsafe.Pointer(devPtr)))
+		C.metal_buffer_free(C.MetalBufferRef(unsafe.Pointer(devPtr))) //nolint:govet // intentional Metal buffer pointer conversion
 	}
 }
