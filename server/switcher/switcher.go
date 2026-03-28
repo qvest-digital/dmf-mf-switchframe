@@ -822,6 +822,9 @@ func (s *Switcher) SetAudioTransition(handler audioTransitionHandler) {
 func (s *Switcher) SetOnFirstVideoPTS(fn func(pts int64)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.useRefClock {
+		return // reference clock handles PTS — no seeding needed
+	}
 	s.onFirstVideoPTS = fn
 }
 
@@ -1358,15 +1361,24 @@ func (s *Switcher) measureTransSeam() {
 // EnableWallClockVideoPTS enables wall-clock PTS rewriting on the program
 // relay. When enabled, video PTS is rewritten to match the mixer's
 // wall-clock audio PTS, keeping A/V aligned after source cuts.
+// No-op when the reference clock is active (PTS comes from the clock).
 func (s *Switcher) EnableWallClockVideoPTS() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.useRefClock {
+		return // reference clock handles PTS
+	}
 	s.wallClockVideoEnabled = true
 }
 
 // wallClockVideoPTS returns a hybrid PTS: frame-counter for regular spacing
 // with wall-clock resync to match the mixer's audio PTS timeline.
+// When the reference clock is active, returns sourcePTS unchanged — PTS
+// is already set by the sync loop from the reference clock.
 func (s *Switcher) wallClockVideoPTS(sourcePTS int64) int64 {
+	if s.useRefClock {
+		return sourcePTS // PTS comes from reference clock, not wall clock
+	}
 	if !s.wallClockVideoEnabled {
 		return sourcePTS
 	}

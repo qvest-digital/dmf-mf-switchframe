@@ -739,3 +739,70 @@ func (n *capturePTSNode) Process(dst, src *ProcessingFrame) *ProcessingFrame {
 	n.capturedPTS.Store(src.PTS)
 	return src
 }
+
+func TestWallClockPTSNoOpWithRefClock(t *testing.T) {
+	s, _ := newSyncTestSwitcher(t) // sets useRefClock=true via SetReferenceClock
+	defer s.Close()
+
+	require.True(t, s.useRefClock, "test switcher should use reference clock")
+
+	// wallClockVideoPTS should be an identity function when ref clock is active.
+	got := s.wallClockVideoPTS(12345)
+	require.Equal(t, int64(12345), got, "wallClockVideoPTS should return PTS unchanged with ref clock")
+
+	// Even with wallClockVideoEnabled forced on, ref clock should still win.
+	s.wallClockVideoEnabled = true
+	got = s.wallClockVideoPTS(67890)
+	require.Equal(t, int64(67890), got, "wallClockVideoPTS should return PTS unchanged even if wallClockVideoEnabled is set")
+}
+
+func TestEnableWallClockNoOpWithRefClock(t *testing.T) {
+	s, _ := newSyncTestSwitcher(t) // sets useRefClock=true
+	defer s.Close()
+
+	require.True(t, s.useRefClock)
+	require.False(t, s.wallClockVideoEnabled, "wallClockVideoEnabled should start false")
+
+	// EnableWallClockVideoPTS should be a no-op when ref clock is active.
+	s.EnableWallClockVideoPTS()
+	require.False(t, s.wallClockVideoEnabled, "wallClockVideoEnabled should remain false with ref clock")
+}
+
+func TestSetOnFirstVideoPTSNoOpWithRefClock(t *testing.T) {
+	s, _ := newSyncTestSwitcher(t) // sets useRefClock=true
+	defer s.Close()
+
+	require.True(t, s.useRefClock)
+	require.Nil(t, s.onFirstVideoPTS, "onFirstVideoPTS should start nil")
+
+	// SetOnFirstVideoPTS should be a no-op when ref clock is active.
+	called := false
+	s.SetOnFirstVideoPTS(func(pts int64) { called = true })
+	require.Nil(t, s.onFirstVideoPTS, "onFirstVideoPTS should remain nil with ref clock")
+	require.False(t, called, "callback should not have been invoked")
+}
+
+func TestWallClockPTSStillWorksWithoutRefClock(t *testing.T) {
+	// Verify the old path still works when useRefClock is false.
+	programRelay := distribution.NewRelay()
+	s := newTestSwitcher(programRelay)
+	defer s.Close()
+
+	require.False(t, s.useRefClock)
+
+	// EnableWallClockVideoPTS should work normally.
+	s.EnableWallClockVideoPTS()
+	require.True(t, s.wallClockVideoEnabled)
+
+	// SetOnFirstVideoPTS should store the callback.
+	called := false
+	s.SetOnFirstVideoPTS(func(pts int64) { called = true })
+	require.NotNil(t, s.onFirstVideoPTS)
+
+	// Invoke it to verify it was stored.
+	s.mu.RLock()
+	fn := s.onFirstVideoPTS
+	s.mu.RUnlock()
+	fn(0)
+	require.True(t, called)
+}
