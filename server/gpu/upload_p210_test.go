@@ -1,4 +1,4 @@
-//go:build cgo && darwin
+//go:build (cgo && darwin) || (cgo && cuda)
 
 package gpu
 
