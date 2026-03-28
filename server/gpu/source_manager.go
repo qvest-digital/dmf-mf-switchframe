@@ -527,7 +527,11 @@ func (m *GPUSourceManager) uploadCPUScaled(entry *gpuSourceEntry, dst *GPUFrame,
 	scaleYUV420pCPU(entry.scaleBuf[:scaledSize], targetW, targetH, yuv, w, h)
 
 	if m.pool.Format() == GPUFormatP210 {
-		return UploadYUV420PToP210(m.ctx, dst, entry.scaleBuf[:scaledSize], targetW, targetH)
+		if err := UploadYUV420PToP210(m.ctx, dst, entry.scaleBuf[:scaledSize], targetW, targetH); err == nil {
+			return nil
+		}
+		// CUDA fallback: Upload NV12, then convert to P210.
+		return m.uploadNV12ThenConvertP210(entry, dst, entry.scaleBuf[:scaledSize], targetW, targetH)
 	}
 	return Upload(m.ctx, dst, entry.scaleBuf[:scaledSize], targetW, targetH)
 }
