@@ -5,7 +5,6 @@ package gpu
 import (
 	"encoding/binary"
 	"testing"
-	"unsafe"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -42,15 +41,17 @@ func TestSourceManager_P210Pool_IngestYUV(t *testing.T) {
 
 	assert.Equal(t, GPUFormatP210, frame.Format, "expected P210 format")
 
-	// Read back the P210 Y plane and verify values are 128 << 2 = 512.
-	// On Metal unified memory, DevPtr is a direct CPU-accessible pointer.
-	p210Bytes := unsafe.Slice((*byte)(unsafe.Pointer(frame.DevPtr)), frame.FrameSize())
-	yVal := binary.LittleEndian.Uint16(p210Bytes[0:2])
+	// Read back via Download10 (planar YUV422P10LE) and verify Y values are 128<<2 = 512.
+	buf := make([]byte, p210DownloadSize(w, h))
+	require.NoError(t, Download10(ctx, frame, buf, w, h))
+
+	yVal := binary.LittleEndian.Uint16(buf[0:2])
 	assert.Equal(t, uint16(512), yVal, "Y[0] should be 128<<2 = 512 in P210")
 
 	// Check a few more Y samples across the first row.
-	for i := 0; i < w && i*2+2 <= len(p210Bytes); i++ {
-		val := binary.LittleEndian.Uint16(p210Bytes[i*2 : i*2+2])
+	for i := 0; i < w; i++ {
+		off := i * 2
+		val := binary.LittleEndian.Uint16(buf[off : off+2])
 		assert.Equal(t, uint16(512), val, "Y[%d] mismatch", i)
 	}
 }
@@ -128,8 +129,10 @@ func TestSourceManager_P210Pool_MultipleIngests(t *testing.T) {
 	defer frame.Release()
 
 	assert.Equal(t, GPUFormatP210, frame.Format)
-	p210Bytes := unsafe.Slice((*byte)(unsafe.Pointer(frame.DevPtr)), frame.FrameSize())
-	yVal := binary.LittleEndian.Uint16(p210Bytes[0:2])
+
+	buf := make([]byte, p210DownloadSize(w, h))
+	require.NoError(t, Download10(ctx, frame, buf, w, h))
+	yVal := binary.LittleEndian.Uint16(buf[0:2])
 	assert.Equal(t, uint16(800), yVal, "Y[0] should be 200<<2 = 800 in P210")
 }
 
@@ -204,8 +207,9 @@ func TestSourceManager_P210Pool_IngestYUV_10bitInput(t *testing.T) {
 	// Verify Y values are ~400 (Upload10 preserves 10-bit values).
 	// If the code incorrectly used UploadYUV420PToP210, the values would
 	// be wildly wrong because it interprets uint8 bytes as Y samples.
-	p210Bytes := unsafe.Slice((*byte)(unsafe.Pointer(frame.DevPtr)), frame.FrameSize())
-	y0 := binary.LittleEndian.Uint16(p210Bytes[0:2])
+	buf := make([]byte, p210DownloadSize(w, h))
+	require.NoError(t, Download10(ctx, frame, buf, w, h))
+	y0 := binary.LittleEndian.Uint16(buf[0:2])
 	assert.InDelta(t, 400, int(y0), 20, "Y[0] = %d, want ~400 (10-bit preserved via Upload10)", y0)
 
 	t.Logf("10-bit input: Y[0]=%d (want ~400)", y0)
@@ -247,8 +251,9 @@ func TestSourceManager_P210Pool_IngestYUV_10bitInput_DifferentResolution(t *test
 
 	// Verify scaled Y values are approximately 600. Bilinear scaling of a
 	// uniform field should preserve the value.
-	p210Bytes := unsafe.Slice((*byte)(unsafe.Pointer(frame.DevPtr)), frame.FrameSize())
-	y0 := binary.LittleEndian.Uint16(p210Bytes[0:2])
+	buf := make([]byte, p210DownloadSize(16, 16))
+	require.NoError(t, Download10(ctx, frame, buf, 16, 16))
+	y0 := binary.LittleEndian.Uint16(buf[0:2])
 	assert.InDelta(t, 600, int(y0), 30, "scaled Y[0] = %d, want ~600", y0)
 
 	t.Logf("10-bit scaled input: Y[0]=%d (want ~600)", y0)

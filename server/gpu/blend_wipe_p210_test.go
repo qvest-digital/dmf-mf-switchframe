@@ -4,7 +4,6 @@ package gpu
 
 import (
 	"testing"
-	"unsafe"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -185,8 +184,7 @@ func TestBlendStingerP210(t *testing.T) {
 	// The alpha is stored in the Y plane of a P210-sized buffer as uint8 values.
 	// We need to write raw uint8 alpha values into the buffer directly.
 	// The blend_alpha_p210 kernel reads alpha as uint8 at alphaPitch bytes per row.
-	// For P210 frames on Metal, MetalBuf contents are directly accessible.
-	fillP210AlphaMask(t, alphaFrame, w, h)
+	fillP210AlphaMask(t, ctx, alphaFrame, w, h)
 
 	dst, err := pool.Acquire()
 	require.NoError(t, err)
@@ -237,7 +235,7 @@ func TestBlendStingerP210_UV(t *testing.T) {
 	require.NoError(t, err)
 	defer alphaFrame.Release()
 
-	fillP210AlphaUniform(t, alphaFrame, w, h, 255)
+	fillP210AlphaUniform(t, ctx, alphaFrame, w, h, 255)
 
 	dst, err := pool.Acquire()
 	require.NoError(t, err)
@@ -255,7 +253,7 @@ func TestBlendStingerP210_UV(t *testing.T) {
 	assert.InDelta(t, 300, int(gotCr), 5, "full alpha stinger Cr should be overlay=300, got %d", gotCr)
 
 	// Zero alpha should produce base
-	fillP210AlphaUniform(t, alphaFrame, w, h, 0)
+	fillP210AlphaUniform(t, ctx, alphaFrame, w, h, 0)
 
 	err = BlendStingerP210(ctx, dst, base, overlay, alphaFrame)
 	require.NoError(t, err)
@@ -319,7 +317,7 @@ func TestBlendStingerP210_Dispatch(t *testing.T) {
 	alphaFrame, err := alphaPool.Acquire()
 	require.NoError(t, err)
 	defer alphaFrame.Release()
-	fillP210AlphaUniform(t, alphaFrame, w, h, 255)
+	fillP210AlphaUniform(t, ctx, alphaFrame, w, h, 255)
 
 	dst, err := pool.Acquire()
 	require.NoError(t, err)
@@ -344,50 +342,4 @@ func TestBlendWipeP210_NilArgs(t *testing.T) {
 // TestBlendStingerP210_NilArgs verifies nil argument handling.
 func TestBlendStingerP210_NilArgs(t *testing.T) {
 	assert.ErrorIs(t, BlendStingerP210(nil, nil, nil, nil, nil), ErrGPUNotAvailable)
-}
-
-// --- test helpers ---
-
-// fillP210AlphaMask writes a uint8 alpha mask into a P210 frame's buffer:
-// top half = 255, bottom half = 0. The alpha mask is written as uint8 values
-// at the frame's pitch, occupying the Y-plane region of the P210 buffer.
-func fillP210AlphaMask(t *testing.T, frame *GPUFrame, w, h int) {
-	t.Helper()
-	// The P210 frame buffer is directly accessible on Metal (unified memory).
-	// We write uint8 alpha values into the Y-plane region at frame.Pitch stride.
-	buf := getFrameBytes(t, frame)
-	halfH := h / 2
-	pitch := int(frame.Pitch)
-	for row := 0; row < h; row++ {
-		val := byte(0)
-		if row < halfH {
-			val = 255
-		}
-		for col := 0; col < w; col++ {
-			buf[row*pitch+col] = val
-		}
-	}
-}
-
-// fillP210AlphaUniform writes a uniform uint8 alpha value into a P210 frame's buffer.
-func fillP210AlphaUniform(t *testing.T, frame *GPUFrame, w, h int, alphaVal byte) {
-	t.Helper()
-	buf := getFrameBytes(t, frame)
-	pitch := int(frame.Pitch)
-	for row := 0; row < h; row++ {
-		for col := 0; col < w; col++ {
-			buf[row*pitch+col] = alphaVal
-		}
-	}
-}
-
-// getFrameBytes returns a byte slice over the GPU frame's buffer for direct access.
-// This only works on Metal (Apple Silicon unified memory).
-func getFrameBytes(t *testing.T, frame *GPUFrame) []byte {
-	t.Helper()
-	size := frame.FrameSize()
-	if size == 0 {
-		t.Fatal("frame has zero size")
-	}
-	return unsafe.Slice((*byte)(unsafe.Pointer(frame.DevPtr)), size)
 }

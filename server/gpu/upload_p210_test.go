@@ -5,16 +5,10 @@ package gpu
 import (
 	"encoding/binary"
 	"testing"
-	"unsafe"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// asUint16Slice reinterprets a byte slice as a little-endian uint16 slice.
-func asUint16Slice(b []byte) []uint16 {
-	return unsafe.Slice((*uint16)(unsafe.Pointer(&b[0])), len(b)/2)
-}
 
 func TestUploadYUV420PToP210_UniformMidGray(t *testing.T) {
 	ctx := testContext(t)
@@ -47,34 +41,36 @@ func TestUploadYUV420PToP210_UniformMidGray(t *testing.T) {
 	err = UploadYUV420PToP210(ctx, frame, yuv, w, h)
 	require.NoError(t, err)
 
-	// Read back P210 data from unified memory
-	raw := unsafe.Slice((*byte)(unsafe.Pointer(frame.DevPtr)), frame.FrameSize())
-	dstStrideU16 := frame.Pitch / 2
+	// Read back P210 data via Download10 (planar YUV422P10LE)
+	buf := make([]byte, p210DownloadSize(w, h))
+	require.NoError(t, Download10(ctx, frame, buf, w, h))
 
 	// Check Y plane: every sample should be 128<<2 = 512
-	yPlane := asUint16Slice(raw[:frame.Pitch*h])
 	for row := 0; row < h; row++ {
 		for col := 0; col < w; col++ {
-			val := yPlane[row*dstStrideU16+col]
+			off := (row*w + col) * 2
+			val := binary.LittleEndian.Uint16(buf[off:])
 			if val != 512 {
 				t.Fatalf("Y[%d][%d] = %d, want 512", row, col, val)
 			}
 		}
 	}
 
-	// Check UV plane: Cb=512, Cr=512 at full height (4:2:2)
-	uvStart := frame.Pitch * h
-	uvPlane := asUint16Slice(raw[uvStart : uvStart+frame.Pitch*h])
+	// Check chroma planes: Cb=512, Cr=512 at full height (4:2:2)
 	chromaW := w / 2
+	yPlaneSize := w * h * 2
+	cbPlaneSize := chromaW * h * 2
 	for row := 0; row < h; row++ {
 		for col := 0; col < chromaW; col++ {
-			cb := uvPlane[row*dstStrideU16+col*2]
-			cr := uvPlane[row*dstStrideU16+col*2+1]
+			cbOff := yPlaneSize + (row*chromaW+col)*2
+			crOff := yPlaneSize + cbPlaneSize + (row*chromaW+col)*2
+			cb := binary.LittleEndian.Uint16(buf[cbOff:])
+			cr := binary.LittleEndian.Uint16(buf[crOff:])
 			if cb != 512 {
-				t.Fatalf("UV Cb[%d][%d] = %d, want 512", row, col, cb)
+				t.Fatalf("Cb[%d][%d] = %d, want 512", row, col, cb)
 			}
 			if cr != 512 {
-				t.Fatalf("UV Cr[%d][%d] = %d, want 512", row, col, cr)
+				t.Fatalf("Cr[%d][%d] = %d, want 512", row, col, cr)
 			}
 		}
 	}
@@ -112,28 +108,30 @@ func TestUploadYUV420PToP210_ChromaUpsample(t *testing.T) {
 	err = UploadYUV420PToP210(ctx, frame, yuv, w, h)
 	require.NoError(t, err)
 
-	raw := unsafe.Slice((*byte)(unsafe.Pointer(frame.DevPtr)), frame.FrameSize())
-	dstStrideU16 := frame.Pitch / 2
+	buf := make([]byte, p210DownloadSize(w, h))
+	require.NoError(t, Download10(ctx, frame, buf, w, h))
 
 	// Y plane: 64<<2 = 256
-	yPlane := asUint16Slice(raw[:frame.Pitch*h])
 	for row := 0; row < h; row++ {
 		for col := 0; col < w; col++ {
-			val := yPlane[row*dstStrideU16+col]
+			off := (row*w + col) * 2
+			val := binary.LittleEndian.Uint16(buf[off:])
 			assert.Equal(t, uint16(256), val, "Y[%d][%d]", row, col)
 		}
 	}
 
-	// UV plane: full height (4 rows), Cb=100<<2=400, Cr=200<<2=800
-	uvStart := frame.Pitch * h
-	uvPlane := asUint16Slice(raw[uvStart : uvStart+frame.Pitch*h])
+	// Chroma planes: full height (4 rows), Cb=100<<2=400, Cr=200<<2=800
 	chromaW := w / 2
+	yPlaneSize := w * h * 2
+	cbPlaneSize := chromaW * h * 2
 	for row := 0; row < h; row++ {
 		for col := 0; col < chromaW; col++ {
-			cb := uvPlane[row*dstStrideU16+col*2]
-			cr := uvPlane[row*dstStrideU16+col*2+1]
-			assert.Equal(t, uint16(400), cb, "UV Cb[%d][%d]", row, col)
-			assert.Equal(t, uint16(800), cr, "UV Cr[%d][%d]", row, col)
+			cbOff := yPlaneSize + (row*chromaW+col)*2
+			crOff := yPlaneSize + cbPlaneSize + (row*chromaW+col)*2
+			cb := binary.LittleEndian.Uint16(buf[cbOff:])
+			cr := binary.LittleEndian.Uint16(buf[crOff:])
+			assert.Equal(t, uint16(400), cb, "Cb[%d][%d]", row, col)
+			assert.Equal(t, uint16(800), cr, "Cr[%d][%d]", row, col)
 		}
 	}
 }
@@ -169,25 +167,28 @@ func TestUploadYUV420PToP210_BlackFrame(t *testing.T) {
 	err = UploadYUV420PToP210(ctx, frame, yuv, w, h)
 	require.NoError(t, err)
 
-	raw := unsafe.Slice((*byte)(unsafe.Pointer(frame.DevPtr)), frame.FrameSize())
-	dstStrideU16 := frame.Pitch / 2
+	buf := make([]byte, p210DownloadSize(w, h))
+	require.NoError(t, Download10(ctx, frame, buf, w, h))
 
 	// Y: 16<<2 = 64
-	yPlane := asUint16Slice(raw[:frame.Pitch*h])
 	for i := 0; i < h; i++ {
 		for j := 0; j < w; j++ {
-			assert.Equal(t, uint16(64), yPlane[i*dstStrideU16+j], "Y[%d][%d]", i, j)
+			off := (i*w + j) * 2
+			val := binary.LittleEndian.Uint16(buf[off:])
+			assert.Equal(t, uint16(64), val, "Y[%d][%d]", i, j)
 		}
 	}
 
-	// UV: Cb=512, Cr=512 at full height
-	uvStart := frame.Pitch * h
-	uvPlane := asUint16Slice(raw[uvStart : uvStart+frame.Pitch*h])
+	// Chroma: Cb=512, Cr=512 at full height
 	chromaW := w / 2
+	yPlaneSize := w * h * 2
+	cbPlaneSize := chromaW * h * 2
 	for i := 0; i < h; i++ {
 		for j := 0; j < chromaW; j++ {
-			assert.Equal(t, uint16(512), uvPlane[i*dstStrideU16+j*2], "Cb[%d][%d]", i, j)
-			assert.Equal(t, uint16(512), uvPlane[i*dstStrideU16+j*2+1], "Cr[%d][%d]", i, j)
+			cbOff := yPlaneSize + (i*chromaW+j)*2
+			crOff := yPlaneSize + cbPlaneSize + (i*chromaW+j)*2
+			assert.Equal(t, uint16(512), binary.LittleEndian.Uint16(buf[cbOff:]), "Cb[%d][%d]", i, j)
+			assert.Equal(t, uint16(512), binary.LittleEndian.Uint16(buf[crOff:]), "Cr[%d][%d]", i, j)
 		}
 	}
 }
@@ -223,25 +224,28 @@ func TestUploadYUV420PToP210_MaxWhite(t *testing.T) {
 	err = UploadYUV420PToP210(ctx, frame, yuv, w, h)
 	require.NoError(t, err)
 
-	raw := unsafe.Slice((*byte)(unsafe.Pointer(frame.DevPtr)), frame.FrameSize())
-	dstStrideU16 := frame.Pitch / 2
+	buf := make([]byte, p210DownloadSize(w, h))
+	require.NoError(t, Download10(ctx, frame, buf, w, h))
 
 	// Y: 235<<2 = 940
-	yPlane := asUint16Slice(raw[:frame.Pitch*h])
 	for i := 0; i < h; i++ {
 		for j := 0; j < w; j++ {
-			assert.Equal(t, uint16(940), yPlane[i*dstStrideU16+j], "Y[%d][%d]", i, j)
+			off := (i*w + j) * 2
+			val := binary.LittleEndian.Uint16(buf[off:])
+			assert.Equal(t, uint16(940), val, "Y[%d][%d]", i, j)
 		}
 	}
 
-	// UV: Cb=512, Cr=512 at full height
-	uvStart := frame.Pitch * h
-	uvPlane := asUint16Slice(raw[uvStart : uvStart+frame.Pitch*h])
+	// Chroma: Cb=512, Cr=512 at full height
 	chromaW := w / 2
+	yPlaneSize := w * h * 2
+	cbPlaneSize := chromaW * h * 2
 	for i := 0; i < h; i++ {
 		for j := 0; j < chromaW; j++ {
-			assert.Equal(t, uint16(512), uvPlane[i*dstStrideU16+j*2], "Cb[%d][%d]", i, j)
-			assert.Equal(t, uint16(512), uvPlane[i*dstStrideU16+j*2+1], "Cr[%d][%d]", i, j)
+			cbOff := yPlaneSize + (i*chromaW+j)*2
+			crOff := yPlaneSize + cbPlaneSize + (i*chromaW+j)*2
+			assert.Equal(t, uint16(512), binary.LittleEndian.Uint16(buf[cbOff:]), "Cb[%d][%d]", i, j)
+			assert.Equal(t, uint16(512), binary.LittleEndian.Uint16(buf[crOff:]), "Cr[%d][%d]", i, j)
 		}
 	}
 }
@@ -283,6 +287,3 @@ func TestUploadYUV420PToP210_DimensionsTooSmall(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), ">= 2x2")
 }
-
-// Suppress unused import warning for binary package.
-var _ = binary.LittleEndian
