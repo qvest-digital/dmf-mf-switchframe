@@ -15,10 +15,12 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/switchframe/server/audio"
+	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/correctness/testutil"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/layout"
 	"github.com/zsiec/switchframe/server/switcher"
+	"github.com/zsiec/switchframe/server/transition"
 )
 
 // ==========================================================================
@@ -1447,6 +1449,306 @@ func findNearestPTS(frames []testutil.FrameInfo, targetPTS int64) int64 {
 		}
 	}
 	return best
+}
+
+// ==========================================================================
+// TestPipelineSourceIdentity
+//
+// The most important correctness test: proves that cutting to source B
+// actually produces source B's content on program output, and cutting
+// back to A produces A's content. Uses maximally distinct Y values
+// (40 vs 220, delta=180) so lossy compression cannot confuse them.
+//
+// Protocol:
+// 1. Cut to A, feed 60 frames, decode all output → assert all avg Y ≈ 40
+// 2. Cut to B, feed 60 frames, decode output → after flush, all avg Y ≈ 220
+// 3. Cut back to A, feed 30 frames, decode → verify A is back (avg Y ≈ 40)
+// ==========================================================================
+
+func TestPipelineSourceIdentity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping long correctness test")
+	}
+
+	h := newPipelineHarness(t)
+	defer h.close()
+
+	// Maximally distinct source colors: 180 apart in Y, impossible to confuse.
+	colorA := sourceColor{Y: 40, Cb: 200, Cr: 200}
+	colorB := sourceColor{Y: 220, Cb: 40, Cr: 40}
+
+	h.addSource("srcA", colorA)
+	h.addSource("srcB", colorB)
+
+	const tolerance = 40.0 // ±40 for lossy H.264 compression of solid color at 320x240
+
+	// ---- Phase 1: Cut to A, feed 60 frames ----
+	h.cut(t, "srcA")
+	h.feedFrames("srcA", 60, 90000)
+	h.waitForPipeline(500 * time.Millisecond)
+
+	videosPhase1 := h.capture.videosCopy()
+	decodedPhase1 := decodeCapturedFrames(t, videosPhase1)
+	require.Greater(t, len(decodedPhase1), 0, "phase 1: should decode at least some frames from srcA")
+
+	t.Logf("Phase 1 (srcA): decoded %d frames", len(decodedPhase1))
+	for i, df := range decodedPhase1 {
+		avgY := averageY(df.YUV, df.Width, df.Height)
+		t.Logf("  MEASURE: phase1 frame %d avg Y = %.1f (expect ~%d)", i, avgY, colorA.Y)
+
+		// Every frame from source A must be near A's Y value.
+		require.InDelta(t, float64(colorA.Y), avgY, tolerance,
+			"phase1 frame %d: avg Y=%.1f not within ±%.0f of srcA.Y=%d", i, avgY, tolerance, colorA.Y)
+		// No frame should look like source B.
+		require.Greater(t, math.Abs(avgY-float64(colorB.Y)), tolerance,
+			"phase1 frame %d: avg Y=%.1f is too close to srcB.Y=%d — wrong source on program!", i, avgY, colorB.Y)
+	}
+
+	// ---- Phase 2: Cut to B, feed 60 frames ----
+	h.cut(t, "srcB")
+	h.feedFrames("srcB", 60, 90000+60*ptsDelta)
+	h.waitForPipeline(500 * time.Millisecond)
+
+	videosPhase2 := h.capture.videosCopy()
+	// Phase 2 decoded = all frames minus phase 1 frames.
+	decodedAll := decodeCapturedFrames(t, videosPhase2)
+	require.Greater(t, len(decodedAll), len(decodedPhase1),
+		"phase 2: should have more decoded frames after feeding srcB")
+
+	decodedPhase2 := decodedAll[len(decodedPhase1):]
+	t.Logf("Phase 2 (srcB): decoded %d new frames", len(decodedPhase2))
+
+	// Allow first 3 frames for pipeline flush (stale srcA frames in encoder).
+	flushFrames := 3
+	if flushFrames > len(decodedPhase2) {
+		flushFrames = len(decodedPhase2)
+	}
+	for i := 0; i < flushFrames; i++ {
+		df := decodedPhase2[i]
+		avgY := averageY(df.YUV, df.Width, df.Height)
+		t.Logf("  MEASURE: phase2 flush frame %d avg Y = %.1f (transitional, skipping assert)", i, avgY)
+	}
+
+	// After flush, ALL remaining frames must be source B.
+	require.Greater(t, len(decodedPhase2), flushFrames,
+		"phase 2: not enough frames after flush window")
+	for i := flushFrames; i < len(decodedPhase2); i++ {
+		df := decodedPhase2[i]
+		avgY := averageY(df.YUV, df.Width, df.Height)
+		t.Logf("  MEASURE: phase2 frame %d avg Y = %.1f (expect ~%d)", i, avgY, colorB.Y)
+
+		require.InDelta(t, float64(colorB.Y), avgY, tolerance,
+			"phase2 frame %d: avg Y=%.1f not within ±%.0f of srcB.Y=%d", i, avgY, tolerance, colorB.Y)
+		// No frame should look like source A (stale frame leak).
+		require.Greater(t, math.Abs(avgY-float64(colorA.Y)), tolerance,
+			"phase2 frame %d: avg Y=%.1f is too close to srcA.Y=%d — stale source A leaking through!", i, avgY, colorA.Y)
+	}
+
+	// ---- Phase 3: Cut back to A, feed 30 frames ----
+	h.cut(t, "srcA")
+	h.feedFrames("srcA", 30, 90000+120*ptsDelta)
+	h.waitForPipeline(500 * time.Millisecond)
+
+	videosPhase3 := h.capture.videosCopy()
+	decodedAllP3 := decodeCapturedFrames(t, videosPhase3)
+	require.Greater(t, len(decodedAllP3), len(decodedAll),
+		"phase 3: should have more decoded frames after feeding srcA again")
+
+	decodedPhase3 := decodedAllP3[len(decodedAll):]
+	t.Logf("Phase 3 (srcA again): decoded %d new frames", len(decodedPhase3))
+
+	// Allow first 3 frames for pipeline flush.
+	flushFrames3 := 3
+	if flushFrames3 > len(decodedPhase3) {
+		flushFrames3 = len(decodedPhase3)
+	}
+	for i := 0; i < flushFrames3; i++ {
+		df := decodedPhase3[i]
+		avgY := averageY(df.YUV, df.Width, df.Height)
+		t.Logf("  MEASURE: phase3 flush frame %d avg Y = %.1f (transitional, skipping assert)", i, avgY)
+	}
+
+	require.Greater(t, len(decodedPhase3), flushFrames3,
+		"phase 3: not enough frames after flush window")
+	for i := flushFrames3; i < len(decodedPhase3); i++ {
+		df := decodedPhase3[i]
+		avgY := averageY(df.YUV, df.Width, df.Height)
+		t.Logf("  MEASURE: phase3 frame %d avg Y = %.1f (expect ~%d)", i, avgY, colorA.Y)
+
+		require.InDelta(t, float64(colorA.Y), avgY, tolerance,
+			"phase3 frame %d: avg Y=%.1f not within ±%.0f of srcA.Y=%d", i, avgY, tolerance, colorA.Y)
+		require.Greater(t, math.Abs(avgY-float64(colorB.Y)), tolerance,
+			"phase3 frame %d: avg Y=%.1f is too close to srcB.Y=%d — stale source B leaking!", i, avgY, colorB.Y)
+	}
+
+	t.Logf("Source identity test passed: phase1=%d, phase2=%d (flush=%d), phase3=%d (flush=%d) decoded frames",
+		len(decodedPhase1), len(decodedPhase2), flushFrames, len(decodedPhase3), flushFrames3)
+}
+
+// ==========================================================================
+// TestPipelineTransitionBlendProgression
+//
+// Verifies that a dissolve transition actually produces progressively
+// blended frames — not stuck at one value. Uses the real transition
+// engine (not simulated intermediate colors).
+//
+// Protocol:
+// 1. Source A: Y=40, Source B: Y=220
+// 2. Cut to A, feed 15 frames
+// 3. Start dissolve transition to B, feed 30 frames from both sources
+//    while manually advancing transition position 0→1
+// 4. Feed 15 frames of pure B after transition completes
+// 5. Decode all frames, measure avg Y, assert progression
+// ==========================================================================
+
+func TestPipelineTransitionBlendProgression(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping long correctness test")
+	}
+
+	h := newPipelineHarness(t)
+	defer h.close()
+
+	// Maximally distinct source colors.
+	colorA := sourceColor{Y: 40, Cb: 200, Cr: 200}
+	colorB := sourceColor{Y: 220, Cb: 40, Cr: 40}
+
+	h.addSource("srcA", colorA)
+	h.addSource("srcB", colorB)
+
+	// Configure real transition engine with FFmpeg decoder.
+	h.sw.SetTransitionConfig(switcher.TransitionConfig{
+		DecoderFactory: func() (transition.VideoDecoder, error) {
+			return codec.NewFFmpegDecoder(nil)
+		},
+	})
+
+	// ---- Phase 1: Establish A on program ----
+	h.cut(t, "srcA")
+	h.feedFrames("srcA", 15, 90000)
+	h.waitForPipeline(300 * time.Millisecond)
+
+	preTransCount := h.capture.videoCount()
+	t.Logf("Pre-transition frames: %d", preTransCount)
+	require.Greater(t, preTransCount, 0, "should have frames from srcA before transition")
+
+	// ---- Phase 2: Start dissolve, feed both sources, advance position ----
+	// SetPreview is required before StartTransition.
+	require.NoError(t, h.sw.SetPreview(t.Context(), "srcB"))
+
+	// Use manual control (long duration) + explicit position to control blend.
+	err := h.sw.StartTransition(t.Context(), "srcB", "mix", 10000, "")
+	require.NoError(t, err, "should start dissolve transition")
+
+	// Feed 30 frames from both sources while advancing blend position.
+	// The transition engine triggers blend on the TO source (srcB) frames.
+	basePTS := int64(90000 + 15*ptsDelta)
+	for i := 0; i < 30; i++ {
+		pts := basePTS + int64(i)*ptsDelta
+		pos := float64(i) / 29.0 // 0.0 → 1.0
+
+		// Feed FROM source (srcA).
+		yuvA := testutil.GenerateSolidYUV420(testWidth, testHeight, colorA.Y, colorA.Cb, colorA.Cr)
+		pfA := &switcher.ProcessingFrame{
+			YUV:        yuvA,
+			Width:      testWidth,
+			Height:     testHeight,
+			PTS:        pts,
+			IsKeyframe: i == 0,
+		}
+		h.sw.IngestRawVideo("srcA", pfA)
+
+		// Advance transition position before feeding TO source.
+		require.NoError(t, h.sw.SetTransitionPosition(t.Context(), pos))
+
+		// Feed TO source (srcB) — this triggers blend output.
+		yuvB := testutil.GenerateSolidYUV420(testWidth, testHeight, colorB.Y, colorB.Cb, colorB.Cr)
+		pfB := &switcher.ProcessingFrame{
+			YUV:        yuvB,
+			Width:      testWidth,
+			Height:     testHeight,
+			PTS:        pts,
+			IsKeyframe: i == 0,
+		}
+		h.sw.IngestRawVideo("srcB", pfB)
+
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	h.waitForPipeline(500 * time.Millisecond)
+
+	// ---- Phase 3: Feed pure B after transition ----
+	// The transition auto-completes when position reaches 1.0.
+	// Feed post-transition frames from B.
+	h.feedFrames("srcB", 15, basePTS+30*ptsDelta)
+	h.waitForPipeline(300 * time.Millisecond)
+
+	// ---- Decode all captured frames ----
+	videos := h.capture.videosCopy()
+	decoded := decodeCapturedFrames(t, videos)
+	require.Greater(t, len(decoded), 5, "should decode enough frames to verify blend progression")
+
+	// ---- Measure avg Y for every frame ----
+	avgYValues := make([]float64, len(decoded))
+	for i, df := range decoded {
+		avgYValues[i] = averageY(df.YUV, df.Width, df.Height)
+		t.Logf("MEASURE: frame %d/%d avg Y = %.1f", i, len(decoded), avgYValues[i])
+	}
+
+	// ---- Assert progression properties ----
+
+	// Property 1: Early frames should be near source A (Y ≈ 40).
+	earlyEnd := len(avgYValues) / 5
+	if earlyEnd < 1 {
+		earlyEnd = 1
+	}
+	for i := 0; i < earlyEnd; i++ {
+		require.Less(t, avgYValues[i], 100.0,
+			"early frame %d: avg Y=%.1f should be < 100 (near source A)", i, avgYValues[i])
+	}
+	t.Logf("Early frames (0-%d) all have avg Y < 100: PASS", earlyEnd-1)
+
+	// Property 2: Late frames should be near source B (Y ≈ 220).
+	lateStart := len(avgYValues) - len(avgYValues)/5
+	if lateStart >= len(avgYValues) {
+		lateStart = len(avgYValues) - 1
+	}
+	for i := lateStart; i < len(avgYValues); i++ {
+		require.Greater(t, avgYValues[i], 160.0,
+			"late frame %d: avg Y=%.1f should be > 160 (near source B)", i, avgYValues[i])
+	}
+	t.Logf("Late frames (%d-%d) all have avg Y > 160: PASS", lateStart, len(avgYValues)-1)
+
+	// Property 3: At least one frame in the middle should show actual blending
+	// (avg Y between 80 and 180 — neither purely A nor purely B).
+	hasBlendedFrame := false
+	for i, y := range avgYValues {
+		if y >= 80.0 && y <= 180.0 {
+			t.Logf("Blended frame found: frame %d avg Y = %.1f", i, y)
+			hasBlendedFrame = true
+			break
+		}
+	}
+	require.True(t, hasBlendedFrame,
+		"no frame has avg Y in [80, 180] — dissolve did not produce intermediate blend values")
+
+	// Property 4: General increasing trend. Count how many consecutive pairs
+	// have Y[i+1] > Y[i] - 10 (allow small dips from encoder variance).
+	// At least 60% of transitions should be non-decreasing.
+	if len(avgYValues) > 2 {
+		nonDecreasingCount := 0
+		for i := 1; i < len(avgYValues); i++ {
+			if avgYValues[i] >= avgYValues[i-1]-10.0 {
+				nonDecreasingCount++
+			}
+		}
+		pctNonDecreasing := float64(nonDecreasingCount) / float64(len(avgYValues)-1) * 100.0
+		t.Logf("Non-decreasing transitions: %d/%d (%.0f%%)", nonDecreasingCount, len(avgYValues)-1, pctNonDecreasing)
+		require.GreaterOrEqual(t, pctNonDecreasing, 60.0,
+			"blend progression should generally increase: only %.0f%% of transitions are non-decreasing", pctNonDecreasing)
+	}
+
+	t.Logf("Blend progression test passed: %d frames, early Y<100, late Y>160, blend found", len(decoded))
 }
 
 // assertNearlyMonotonic asserts that the values are generally increasing,
