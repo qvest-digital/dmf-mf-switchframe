@@ -692,14 +692,20 @@ func TestAudioCutViaSwitcher(t *testing.T) {
 	require.False(t, mixer.IsChannelActive("camB"),
 		"camB should be inactive after cut to camA")
 
-	// Cut to B — camB activates, camA deactivates.
+	// Cut to B — camB activates, camA deactivation is deferred until
+	// the cut crossfade ramp completes (4 ticks, ~85ms).
 	require.NoError(t, sw.Cut(context.Background(), "camB"))
 	camBRelay.BroadcastVideo(&media.VideoFrame{PTS: 150, IsKeyframe: true})
 
 	require.True(t, mixer.IsChannelActive("camB"),
 		"camB should be active after cut to camB")
+
+	// Wait for the cut crossfade ramp to complete. The mixer ticker
+	// advances the ramp state even without an encoder, at ~21.3ms intervals.
+	// 4 ticks = ~85ms; wait 150ms for margin.
+	time.Sleep(150 * time.Millisecond)
 	require.False(t, mixer.IsChannelActive("camA"),
-		"camA should be inactive after cut to camB")
+		"camA should be inactive after cut crossfade completes")
 
 	t.Log("Audio AFV channel activation verified through cut operations")
 }

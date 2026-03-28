@@ -417,14 +417,12 @@ func TestClockDrivenMixer_CutCrossfade(t *testing.T) {
 		pcmNew[i] = 0.3
 	}
 
-	// Push enough frames for 3 ticks (cut crossfade uses 2 + 1 after)
+	// Push enough frames for 5 ticks (cut crossfade uses 4 + 1 after)
 	m.mu.Lock()
-	m.channels["cam1"].ringBuf.Push(pcmOld)
-	m.channels["cam1"].ringBuf.Push(pcmOld)
-	m.channels["cam1"].ringBuf.Push(pcmOld)
-	m.channels["cam2"].ringBuf.Push(pcmNew)
-	m.channels["cam2"].ringBuf.Push(pcmNew)
-	m.channels["cam2"].ringBuf.Push(pcmNew)
+	for i := 0; i < 5; i++ {
+		m.channels["cam1"].ringBuf.Push(pcmOld)
+		m.channels["cam2"].ringBuf.Push(pcmNew)
+	}
 	m.mu.Unlock()
 
 	// Trigger cut crossfade
@@ -435,37 +433,49 @@ func TestClockDrivenMixer_CutCrossfade(t *testing.T) {
 	assert.True(t, m.transCrossfadeActive, "transCrossfadeActive should be true after OnCut")
 	assert.Equal(t, "cam1", m.transCrossfadeFrom)
 	assert.Equal(t, "cam2", m.transCrossfadeTo)
-	assert.Equal(t, 2, m.cutFramesRemaining, "should have 2 frames remaining")
-	assert.Equal(t, 2, m.cutTotalFrames, "total frames should be 2")
+	assert.Equal(t, 4, m.cutFramesRemaining, "should have 4 frames remaining")
+	assert.Equal(t, 4, m.cutTotalFrames, "total frames should be 4")
 	m.mu.RUnlock()
 
-	// Tick 1: crossfade at position 0.0, then auto-advances to 0.5
+	// Tick 1: crossfade at position 0.0, then auto-advances to 0.25
 	frame1 := m.tick()
 	require.NotNil(t, frame1, "first tick should produce output")
 
 	m.mu.RLock()
-	assert.Equal(t, 1, m.cutFramesRemaining, "should have 1 frame remaining after first tick")
-	assert.InDelta(t, 0.5, m.transCrossfadePosition, 0.01, "position should be 0.5 after first tick")
+	assert.Equal(t, 3, m.cutFramesRemaining, "should have 3 frames remaining after first tick")
+	assert.InDelta(t, 0.25, m.transCrossfadePosition, 0.01, "position should be 0.25 after first tick")
 	assert.True(t, m.transCrossfadeActive, "should still be active after first tick")
 	m.mu.RUnlock()
 
-	// Tick 2: crossfade at position 0.5, then auto-advances to 1.0 and completes
-	frame2 := m.tick()
-	require.NotNil(t, frame2, "second tick should produce output")
+	// Ticks 2-3: crossfade continues
+	for i := 2; i <= 3; i++ {
+		frame := m.tick()
+		require.NotNil(t, frame, "tick %d should produce output", i)
+	}
 
 	m.mu.RLock()
-	assert.False(t, m.transCrossfadeActive, "crossfade should be complete after 2 ticks")
+	assert.Equal(t, 1, m.cutFramesRemaining, "should have 1 frame remaining after tick 3")
+	assert.InDelta(t, 0.75, m.transCrossfadePosition, 0.01, "position should be 0.75 after tick 3")
+	assert.True(t, m.transCrossfadeActive, "should still be active after tick 3")
+	m.mu.RUnlock()
+
+	// Tick 4: crossfade at position 0.75, then auto-advances to 1.0 and completes
+	frame4 := m.tick()
+	require.NotNil(t, frame4, "fourth tick should produce output")
+
+	m.mu.RLock()
+	assert.False(t, m.transCrossfadeActive, "crossfade should be complete after 4 ticks")
 	assert.Equal(t, 0, m.cutFramesRemaining, "no frames remaining after completion")
 	assert.Equal(t, "", m.transCrossfadeFrom, "from should be cleared")
 	assert.Equal(t, "", m.transCrossfadeTo, "to should be cleared")
 	m.mu.RUnlock()
 
-	// Tick 3: normal operation, no crossfade
-	frame3 := m.tick()
-	require.NotNil(t, frame3, "third tick should produce output normally")
+	// Tick 5: normal operation, no crossfade
+	frame5 := m.tick()
+	require.NotNil(t, frame5, "fifth tick should produce output normally")
 
-	// Verify encoder was called for all 3 ticks (plus 1 priming call)
-	assert.Equal(t, 4, enc.getCalls(), "encoder should be called: 1 priming + 3 ticks")
+	// Verify encoder was called for all 5 ticks (plus 1 priming call)
+	assert.Equal(t, 6, enc.getCalls(), "encoder should be called: 1 priming + 5 ticks")
 }
 
 func TestClockDrivenMixer_CutCrossfade_ActivatesNewSource(t *testing.T) {
@@ -578,10 +588,10 @@ func TestClockDrivenMixer_TransitionCrossfade(t *testing.T) {
 func TestClockDrivenMixer_CutCrossfade_GainProgression(t *testing.T) {
 	t.Parallel()
 	// This test verifies that cut crossfade position progresses correctly:
-	// Tick 1: position starts at 0.0, audio pos at 0.0
-	// After tick 1: position advances to 0.5
-	// Tick 2: position at 0.5, audio pos at 0.5 from previous tick
-	// After tick 2: position advances to 1.0, crossfade completes
+	// Tick 1: position starts at 0.0, auto-advances to 0.25
+	// Tick 2: position at 0.25, auto-advances to 0.50
+	// Tick 3: position at 0.50, auto-advances to 0.75
+	// Tick 4: position at 0.75, auto-advances to 1.0, crossfade completes
 
 	m, _ := newTickTestMixer(t)
 
@@ -591,7 +601,7 @@ func TestClockDrivenMixer_CutCrossfade_GainProgression(t *testing.T) {
 	m.SetActive("cam2", true)
 
 	// Pre-fill ring buffers
-	for i := 0; i < 4; i++ {
+	for i := 0; i < 6; i++ {
 		pcm := make([]float32, 1024*2)
 		for j := range pcm {
 			pcm[j] = 0.5
@@ -614,36 +624,27 @@ func TestClockDrivenMixer_CutCrossfade_GainProgression(t *testing.T) {
 
 	var snapshots []posSnapshot
 
-	// Tick 1
-	m.tick()
-	m.mu.RLock()
-	snapshots = append(snapshots, posSnapshot{
-		active:    m.transCrossfadeActive,
-		pos:       m.transCrossfadePosition,
-		audioPos:  m.transCrossfadeAudioPos,
-		remaining: m.cutFramesRemaining,
-	})
-	m.mu.RUnlock()
+	// Ticks 1-4
+	for i := 0; i < 4; i++ {
+		m.tick()
+		m.mu.RLock()
+		snapshots = append(snapshots, posSnapshot{
+			active:    m.transCrossfadeActive,
+			pos:       m.transCrossfadePosition,
+			audioPos:  m.transCrossfadeAudioPos,
+			remaining: m.cutFramesRemaining,
+		})
+		m.mu.RUnlock()
+	}
 
-	// Tick 2
-	m.tick()
-	m.mu.RLock()
-	snapshots = append(snapshots, posSnapshot{
-		active:    m.transCrossfadeActive,
-		pos:       m.transCrossfadePosition,
-		audioPos:  m.transCrossfadeAudioPos,
-		remaining: m.cutFramesRemaining,
-	})
-	m.mu.RUnlock()
-
-	// After tick 1: position should be 0.5, 1 frame remaining
+	// After tick 1: position should be 0.25, 3 frames remaining
 	assert.True(t, snapshots[0].active, "should still be active after tick 1")
-	assert.InDelta(t, 0.5, snapshots[0].pos, 0.01, "position should be 0.5 after tick 1")
-	assert.Equal(t, 1, snapshots[0].remaining, "should have 1 frame remaining after tick 1")
+	assert.InDelta(t, 0.25, snapshots[0].pos, 0.01, "position should be 0.25 after tick 1")
+	assert.Equal(t, 3, snapshots[0].remaining, "should have 3 frames remaining after tick 1")
 
-	// After tick 2: crossfade should be complete (position cleared to 0.0)
-	assert.False(t, snapshots[1].active, "should be complete after tick 2")
-	assert.Equal(t, 0, snapshots[1].remaining, "no frames remaining after tick 2")
+	// After tick 4: crossfade should be complete (position cleared to 0.0)
+	assert.False(t, snapshots[3].active, "should be complete after tick 4")
+	assert.Equal(t, 0, snapshots[3].remaining, "no frames remaining after tick 4")
 }
 
 func TestClockDrivenMixer_OnTransitionAbort(t *testing.T) {

@@ -324,9 +324,7 @@ func TestMixerIngestAACFrame(t *testing.T) {
 	// Add channel and make it active.
 	sourceKey := "test-source-1"
 	mixer.AddChannel(sourceKey)
-
-	// Use OnCut to make the channel active (there's no direct SetActive).
-	mixer.OnCut("", sourceKey)
+	mixer.SetActive(sourceKey, true)
 
 	// Feed AAC frames.
 	pts := int64(0)

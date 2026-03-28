@@ -301,11 +301,15 @@ func TestIntegrationMixerAFVOnCut(t *testing.T) {
 	require.GreaterOrEqual(t, len(capture.audios), 1, "ticker should have produced at least 1 output frame")
 	capture.mu.Unlock()
 
-	// Cut to cam2 — cam2 activates, cam1 deactivates (auto-wired).
+	// Cut to cam2 — cam2 activates, cam1 deactivation is deferred until
+	// the cut crossfade ramp completes (4 ticks, ~85ms).
 	require.NoError(t, sw.Cut(context.Background(), "cam2"))
 	cam2Relay.BroadcastVideo(&media.VideoFrame{PTS: 150, IsKeyframe: true})
 
 	require.True(t, mixer.IsChannelActive("cam2"))
+
+	// Wait for the cut crossfade ramp to complete (~85ms = 4 ticks at ~21.3ms).
+	time.Sleep(150 * time.Millisecond)
 	require.False(t, mixer.IsChannelActive("cam1"))
 }
 

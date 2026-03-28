@@ -8,7 +8,7 @@ import (
 // Channels with AFV enabled activate when they match the program source and
 // deactivate when they don't. Non-AFV channels are unaffected.
 //
-// To avoid audible clicks, a 2-tick (~42ms) crossfade ramp is set up between
+// To avoid audible clicks, a 4-tick (~85ms) crossfade ramp is set up between
 // the outgoing and incoming AFV channels, identical to what OnCut does.
 func (m *Mixer) OnProgramChange(newProgramSource string) {
 	m.mu.Lock()
@@ -35,8 +35,8 @@ func (m *Mixer) OnProgramChange(newProgramSource string) {
 			m.transCrossfadePosition = 0.0
 			m.transCrossfadeAudioPos = 0.0
 			m.mixCycleTransPos = 0.0
-			m.cutFramesRemaining = 2
-			m.cutTotalFrames = 2
+			m.cutFramesRemaining = 4
+			m.cutTotalFrames = 4
 		}
 	}
 
@@ -78,9 +78,9 @@ func (m *Mixer) OnCut(oldSource, newSource string) {
 	m.transCrossfadeAudioPos = 0.0
 	m.mixCycleTransPos = 0.0
 
-	// Set up cut crossfade: the ticker will advance position over 2 ticks.
-	m.cutFramesRemaining = 2
-	m.cutTotalFrames = 2
+	// Set up cut crossfade: the ticker will advance position over 4 ticks.
+	m.cutFramesRemaining = 4
+	m.cutTotalFrames = 4
 
 	// Activate the new source channel so its audio frames are accepted.
 	if ch, ok := m.channels[newSource]; ok {
