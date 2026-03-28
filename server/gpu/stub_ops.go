@@ -22,6 +22,11 @@ func Upload10(ctx *Context, frame *GPUFrame, yuv422p10 []byte, width, height int
 	return ErrGPUNotAvailable
 }
 
+// UploadYUV420PToP210 returns ErrGPUNotAvailable on non-GPU builds.
+func UploadYUV420PToP210(ctx *Context, frame *GPUFrame, yuv []byte, width, height int) error {
+	return ErrGPUNotAvailable
+}
+
 // Download10 returns ErrGPUNotAvailable on non-GPU builds.
 func Download10(ctx *Context, frame *GPUFrame, dst []byte, width, height int) error {
 	return ErrGPUNotAvailable
@@ -266,5 +271,15 @@ func STMapWarpP210(ctx *Context, dst, src *GPUFrame, stmapS, stmapT []float32, w
 
 // ScaleP210ToNV12On returns ErrGPUNotAvailable on non-GPU builds.
 func ScaleP210ToNV12On(ctx *Context, dst, src *GPUFrame, q *GPUWorkQueue) error {
+	return ErrGPUNotAvailable
+}
+
+// ConvertNV12ToP210 returns ErrGPUNotAvailable on non-GPU builds.
+func ConvertNV12ToP210(ctx *Context, dst, src *GPUFrame) error {
+	return ErrGPUNotAvailable
+}
+
+// ScaleNV12ToP210 returns ErrGPUNotAvailable on non-GPU builds.
+func ScaleNV12ToP210(ctx *Context, dst, src *GPUFrame) error {
 	return ErrGPUNotAvailable
 }

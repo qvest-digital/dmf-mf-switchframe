@@ -450,3 +450,24 @@ func STMapWarpP210(ctx *Context, dst, src *GPUFrame, stmapS, stmapT []float32, w
 func ScaleP210ToNV12On(ctx *Context, dst, src *GPUFrame, q *GPUWorkQueue) error {
 	return fmt.Errorf("gpu: P210→NV12 scale not yet implemented for CUDA")
 }
+
+// ConvertNV12ToP210 converts an NV12 GPU frame to P210 format on CUDA.
+// Reads uint8 NV12 (4:2:0), writes uint16 P210 (4:2:2) with <<2 bit promotion.
+// UV plane is upsampled from half-height (4:2:0) to full-height (4:2:2).
+// TODO: real CUDA kernel implementation pending GPU server testing.
+func ConvertNV12ToP210(ctx *Context, dst, src *GPUFrame) error {
+	if ctx == nil || dst == nil || src == nil {
+		return ErrGPUNotAvailable
+	}
+	return fmt.Errorf("gpu: ConvertNV12ToP210 CUDA kernel not yet implemented")
+}
+
+// ScaleNV12ToP210 scales an NV12 GPU frame to P210 format with bilinear
+// interpolation on CUDA. Combined scale + format convert in one pass.
+// TODO: real CUDA kernel implementation pending GPU server testing.
+func ScaleNV12ToP210(ctx *Context, dst, src *GPUFrame) error {
+	if ctx == nil || dst == nil || src == nil {
+		return ErrGPUNotAvailable
+	}
+	return fmt.Errorf("gpu: ScaleNV12ToP210 CUDA kernel not yet implemented")
+}
