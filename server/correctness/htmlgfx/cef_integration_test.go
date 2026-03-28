@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/zsiec/switchframe/server/correctness/testutil"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/htmlgfx"
@@ -83,30 +85,35 @@ func avgCr(yuv []byte, w, h int) float64 {
 // TestCEFToCompositorOverlay tests the graphics compositor overlay path that
 // CEF output eventually lands on: set a white RGBA overlay, process a black
 // program frame, verify output has white pixels in YUV domain.
+//
+// Independent math (BT.709 integer coefficients from blend kernel):
+//   White (R=255,G=255,B=255), A=255 over black (Y=16,Cb=128,Cr=128):
+//   overlayY = 16 + ((47*255 + 157*255 + 16*255 + 128) >> 8) = 16 + (56228 >> 8) = 16 + 219 = 235
+//   A' = 255 + (255>>7) = 256, a256 = (256*256)>>8 = 256, inv = 0
+//   Y_out = (16*0 + 235*256 + 128) >> 8 = 60288 >> 8 = 235
+//   overlayCb = ((-26*255 - 86*255 + 112*255 + 128) >> 8) + 128 = (128 >> 8) + 128 = 128
+//   overlayCr = ((112*255 - 102*255 - 10*255 + 128) >> 8) + 128 = (128 >> 8) + 128 = 128
 func TestCEFToCompositorOverlay(t *testing.T) {
 	comp := setupCompositor(testWidth, testHeight)
 	defer comp.Close()
 
 	// Add a layer.
 	layerID, err := comp.AddLayer()
-	if err != nil {
-		t.Fatalf("AddLayer: %v", err)
-	}
+	require.NoError(t, err, "AddLayer")
 
 	// Create solid white RGBA overlay (R=255, G=255, B=255, A=255).
 	whiteOverlay := makeRGBA(testWidth, testHeight, 255, 255, 255, 255)
 
 	// Set overlay on compositor.
 	err = comp.SetOverlay(layerID, whiteOverlay, testWidth, testHeight, "test")
-	if err != nil {
-		t.Fatalf("SetOverlay: %v", err)
-	}
+	require.NoError(t, err, "SetOverlay")
 
 	// Turn layer on.
 	err = comp.On(layerID)
-	if err != nil {
-		t.Fatalf("On: %v", err)
-	}
+	require.NoError(t, err, "On")
+
+	// Verify side effect: compositor reports active layers.
+	require.True(t, comp.HasActiveLayers(), "HasActiveLayers should be true after On()")
 
 	// Create a solid-black program frame (Y=16, Cb=128, Cr=128 = BT.709 black).
 	blackFrame := testutil.GenerateSolidYUV420(testWidth, testHeight, 16, 128, 128)
@@ -114,45 +121,73 @@ func TestCEFToCompositorOverlay(t *testing.T) {
 	// Process frame through compositor.
 	result := comp.ProcessYUV(blackFrame, testWidth, testHeight, nil, nil)
 
-	// Measure output values.
+	// Validate output buffer size before any pixel inspection.
+	expectedSize := testWidth * testHeight * 3 / 2
+	require.Equal(t, expectedSize, len(result), "output YUV420 buffer size")
+
+	// Per-pixel validation at 5 positions (corners + center).
+	// Expected: Y=235, Cb=128, Cr=128 (white in BT.709 limited range).
+	const expectedY = 235
+	const expectedCb = 128
+	const expectedCr = 128
+	positions := [][2]int{
+		{0, 0},                                          // top-left
+		{testWidth - 2, 0},                              // top-right (even-aligned)
+		{0, testHeight - 2},                             // bottom-left (even-aligned)
+		{testWidth - 2, testHeight - 2},                 // bottom-right
+		{testWidth / 2, testHeight / 2},                 // center
+	}
+	for _, pos := range positions {
+		x, y := pos[0], pos[1]
+		gotY, gotCb, gotCr := testutil.YUVPixelAt(result, testWidth, testHeight, x, y)
+		t.Logf("MEASURE: pixel(%d,%d) Y=%d Cb=%d Cr=%d (expected Y=%d Cb=%d Cr=%d)",
+			x, y, gotY, gotCb, gotCr, expectedY, expectedCb, expectedCr)
+		if abs(int(gotY)-expectedY) > 2 {
+			t.Errorf("pixel(%d,%d) Y=%d, expected %d +/-2", x, y, gotY, expectedY)
+		}
+		if abs(int(gotCb)-expectedCb) > 2 {
+			t.Errorf("pixel(%d,%d) Cb=%d, expected %d +/-2", x, y, gotCb, expectedCb)
+		}
+		if abs(int(gotCr)-expectedCr) > 2 {
+			t.Errorf("pixel(%d,%d) Cr=%d, expected %d +/-2", x, y, gotCr, expectedCr)
+		}
+	}
+
+	// Also verify averages match per-pixel values (uniform frame should be identical).
 	yAvg := avgY(result, testWidth, testHeight)
 	cbAvg := avgCb(result, testWidth, testHeight)
 	crAvg := avgCr(result, testWidth, testHeight)
-
-	t.Logf("MEASURE: output avg Y=%.1f (expected ~235 for white)", yAvg)
-	t.Logf("MEASURE: output avg Cb=%.1f (expected ~128 for white)", cbAvg)
-	t.Logf("MEASURE: output avg Cr=%.1f (expected ~128 for white)", crAvg)
-
-	// White in BT.709 limited range: Y=235, Cb=128, Cr=128.
-	// Allow some tolerance for integer rounding in the blend kernels.
-	if yAvg < 230 || yAvg > 240 {
-		t.Errorf("white overlay Y avg=%.1f, expected ~235 (range 230-240)", yAvg)
-	}
-	if cbAvg < 124 || cbAvg > 132 {
-		t.Errorf("white overlay Cb avg=%.1f, expected ~128 (range 124-132)", cbAvg)
-	}
-	if crAvg < 124 || crAvg > 132 {
-		t.Errorf("white overlay Cr avg=%.1f, expected ~128 (range 124-132)", crAvg)
-	}
+	t.Logf("MEASURE: avg Y=%.1f Cb=%.1f Cr=%.1f", yAvg, cbAvg, crAvg)
+	require.InDelta(t, float64(expectedY), yAvg, 2.0, "avg Y")
+	require.InDelta(t, float64(expectedCb), cbAvg, 2.0, "avg Cb")
+	require.InDelta(t, float64(expectedCr), crAvg, 2.0, "avg Cr")
 }
 
 // TestCEFBGRAToCompositorPipeline tests the end-to-end path: BGRA frame
 // (as CEF produces) -> bgraToRGBA conversion -> compositor overlay -> program output.
+//
+// Independent math (BT.709 integer coefficients from blend kernel):
+//   Red (R=255,G=0,B=0), A=255 over black (Y=16,Cb=128,Cr=128):
+//   overlayY = 16 + ((47*255 + 157*0 + 16*0 + 128) >> 8) = 16 + (12113 >> 8) = 16 + 47 = 63
+//   A' = 256, a256 = 256, inv = 0
+//   Y_out = (16*0 + 63*256 + 128) >> 8 = 16256 >> 8 = 63
+//   overlayCb = ((-26*255 - 86*0 + 112*0 + 128) >> 8) + 128 = (-6502 >> 8) + 128 = -26 + 128 = 102
+//   Cb_out = (128*0 + 102*256 + 128) >> 8 = 26240 >> 8 = 102
+//   overlayCr = ((112*255 - 102*0 - 10*0 + 128) >> 8) + 128 = (28688 >> 8) + 128 = 112 + 128 = 240
+//   Cr_out = (128*0 + 240*256 + 128) >> 8 = 61568 >> 8 = 240
 func TestCEFBGRAToCompositorPipeline(t *testing.T) {
 	comp := setupCompositor(testWidth, testHeight)
 	defer comp.Close()
 
 	layerID, err := comp.AddLayer()
-	if err != nil {
-		t.Fatalf("AddLayer: %v", err)
-	}
+	require.NoError(t, err, "AddLayer")
 
 	// Create a BGRA frame as CEF would produce.
 	// Opaque red: BGRA = (B=0, G=0, R=255, A=255).
 	bgraPixels := make([]byte, testWidth*testHeight*4)
 	for i := 0; i < len(bgraPixels); i += 4 {
-		bgraPixels[i] = 0   // B
-		bgraPixels[i+1] = 0 // G
+		bgraPixels[i] = 0     // B
+		bgraPixels[i+1] = 0   // G
 		bgraPixels[i+2] = 255 // R (premultiplied, but A=255 so same)
 		bgraPixels[i+3] = 255 // A
 	}
@@ -163,71 +198,87 @@ func TestCEFBGRAToCompositorPipeline(t *testing.T) {
 	// BGRA(0,0,255,255) -> RGBA(255,0,0,255) = pure red.
 	rgbaPixels := make([]byte, len(bgraPixels))
 	copy(rgbaPixels, bgraPixels)
-	// Perform the BGRA->RGBA swap manually (same as bgraToRGBA for opaque).
 	for i := 0; i < len(rgbaPixels); i += 4 {
 		b := rgbaPixels[i]
 		r := rgbaPixels[i+2]
 		rgbaPixels[i] = r   // R
 		rgbaPixels[i+2] = b // B
-		// G and A stay the same
 	}
 
 	// Verify the conversion result: should be RGBA(255,0,0,255) = pure red.
-	if rgbaPixels[0] != 255 || rgbaPixels[1] != 0 || rgbaPixels[2] != 0 || rgbaPixels[3] != 255 {
-		t.Fatalf("BGRA->RGBA conversion wrong: got RGBA(%d,%d,%d,%d), want (255,0,0,255)",
-			rgbaPixels[0], rgbaPixels[1], rgbaPixels[2], rgbaPixels[3])
-	}
+	require.Equal(t, byte(255), rgbaPixels[0], "R channel after BGRA->RGBA")
+	require.Equal(t, byte(0), rgbaPixels[1], "G channel after BGRA->RGBA")
+	require.Equal(t, byte(0), rgbaPixels[2], "B channel after BGRA->RGBA")
+	require.Equal(t, byte(255), rgbaPixels[3], "A channel after BGRA->RGBA")
 
 	// Set on compositor as overlay.
 	err = comp.SetOverlay(layerID, rgbaPixels, testWidth, testHeight, "html5")
-	if err != nil {
-		t.Fatalf("SetOverlay: %v", err)
-	}
+	require.NoError(t, err, "SetOverlay")
 
 	err = comp.On(layerID)
-	if err != nil {
-		t.Fatalf("On: %v", err)
-	}
+	require.NoError(t, err, "On")
+
+	// Verify side effect: compositor reports active layers.
+	require.True(t, comp.HasActiveLayers(), "HasActiveLayers should be true after On()")
 
 	// Process a black program frame.
 	blackFrame := testutil.GenerateSolidYUV420(testWidth, testHeight, 16, 128, 128)
 	result := comp.ProcessYUV(blackFrame, testWidth, testHeight, nil, nil)
 
+	// Validate output buffer size.
+	expectedSize := testWidth * testHeight * 3 / 2
+	require.Equal(t, expectedSize, len(result), "output YUV420 buffer size")
+
+	// Independently computed expected values from kernel coefficients:
+	const expectedY = 63
+	const expectedCb = 102
+	const expectedCr = 240
+
 	yAvg := avgY(result, testWidth, testHeight)
 	cbAvg := avgCb(result, testWidth, testHeight)
 	crAvg := avgCr(result, testWidth, testHeight)
 
-	t.Logf("MEASURE: end-to-end pipeline avg Y=%.1f (expected ~81 for red)", yAvg)
-	t.Logf("MEASURE: end-to-end pipeline avg Cb=%.1f (expected ~90 for red)", cbAvg)
-	t.Logf("MEASURE: end-to-end pipeline avg Cr=%.1f (expected ~240 for red)", crAvg)
+	t.Logf("MEASURE: avg Y=%.1f (expected %d), Cb=%.1f (expected %d), Cr=%.1f (expected %d)",
+		yAvg, expectedY, cbAvg, expectedCb, crAvg, expectedCr)
 
-	// Pure red in BT.709 limited range:
-	// Y  = 0.2126*255 + 0.7152*0 + 0.0722*0 = 54.2 -> limited: 16 + 54.2*219/255 ~ 62.5
-	// Actually BT.709 limited:
-	// Y  = 16 + 65.481*R + 128.553*G + 24.966*B (where R,G,B are 0-1)
-	// Y  = 16 + 65.481*1 + 0 + 0 = 81.5
-	// Cb = 128 + (-37.797*1 + 0 + 0) = 90.2 (approximately)
-	// Cr = 128 + (112*1 + 0 + 0) = 240 (approximately)
-	//
-	// These are approximate; the SIMD blend uses integer coefficients.
-	if yAvg < 60 || yAvg > 100 {
-		t.Errorf("red overlay Y avg=%.1f, expected ~81 (range 60-100)", yAvg)
+	// Assert avg Y, Cb, Cr within tight tolerance of kernel-computed values.
+	require.InDelta(t, float64(expectedY), yAvg, 3.0, "red overlay avg Y")
+	require.InDelta(t, float64(expectedCb), cbAvg, 3.0, "red overlay avg Cb")
+	require.InDelta(t, float64(expectedCr), crAvg, 3.0, "red overlay avg Cr")
+
+	// Per-pixel spot check at center to confirm uniform output.
+	gotY, gotCb, gotCr := testutil.YUVPixelAt(result, testWidth, testHeight, testWidth/2, testHeight/2)
+	t.Logf("MEASURE: center pixel Y=%d Cb=%d Cr=%d", gotY, gotCb, gotCr)
+	if abs(int(gotY)-expectedY) > 2 {
+		t.Errorf("center pixel Y=%d, expected %d +/-2", gotY, expectedY)
 	}
-	if crAvg < 220 {
-		t.Errorf("red overlay Cr avg=%.1f, expected ~240 (should be > 220)", crAvg)
+	if abs(int(gotCb)-expectedCb) > 2 {
+		t.Errorf("center pixel Cb=%d, expected %d +/-2", gotCb, expectedCb)
+	}
+	if abs(int(gotCr)-expectedCr) > 2 {
+		t.Errorf("center pixel Cr=%d, expected %d +/-2", gotCr, expectedCr)
 	}
 }
 
 // TestCEFBGRAToCompositorPremultiplied tests the pipeline with semi-transparent
 // premultiplied alpha BGRA, as CEF actually produces for partially transparent overlays.
+//
+// Independent math (BT.709 integer coefficients from blend kernel):
+//   White (R=255,G=255,B=255), A=128 over black (Y=16,Cb=128,Cr=128):
+//   overlayY = 235 (same as opaque white, computed in test 1)
+//   A' = 128 + (128>>7) = 128 + 1 = 129
+//   a256 = (129 * 256) >> 8 = 33024 >> 8 = 129
+//   inv = 256 - 129 = 127
+//   Y_out = (16*127 + 235*129 + 128) >> 8 = (2032 + 30315 + 128) >> 8 = 32475 >> 8 = 126
+//   overlayCb = 128, overlayCr = 128 (achromatic white)
+//   Cb_out = (128*127 + 128*129 + 128) >> 8 = (16256 + 16512 + 128) >> 8 = 32896 >> 8 = 128
+//   Cr_out = same = 128
 func TestCEFBGRAToCompositorPremultiplied(t *testing.T) {
 	comp := setupCompositor(testWidth, testHeight)
 	defer comp.Close()
 
 	layerID, err := comp.AddLayer()
-	if err != nil {
-		t.Fatalf("AddLayer: %v", err)
-	}
+	require.NoError(t, err, "AddLayer")
 
 	// Semi-transparent white: premultiplied BGRA = (128, 128, 128, 128).
 	// Un-premultiply: R = min((128*255 + 64)/128, 255) = 255
@@ -284,33 +335,56 @@ func TestCEFBGRAToCompositorPremultiplied(t *testing.T) {
 	// Verify un-premultiply: should get RGBA(255, 255, 255, 128).
 	t.Logf("MEASURE: un-premultiplied pixel RGBA(%d,%d,%d,%d), expected (255,255,255,128)",
 		rgbaPixels[0], rgbaPixels[1], rgbaPixels[2], rgbaPixels[3])
-
-	if rgbaPixels[0] != 255 || rgbaPixels[1] != 255 || rgbaPixels[2] != 255 || rgbaPixels[3] != 128 {
-		t.Errorf("un-premultiply wrong: got RGBA(%d,%d,%d,%d), want (255,255,255,128)",
-			rgbaPixels[0], rgbaPixels[1], rgbaPixels[2], rgbaPixels[3])
-	}
+	require.Equal(t, byte(255), rgbaPixels[0], "un-premultiply R")
+	require.Equal(t, byte(255), rgbaPixels[1], "un-premultiply G")
+	require.Equal(t, byte(255), rgbaPixels[2], "un-premultiply B")
+	require.Equal(t, byte(128), rgbaPixels[3], "un-premultiply A")
 
 	err = comp.SetOverlay(layerID, rgbaPixels, testWidth, testHeight, "html5")
-	if err != nil {
-		t.Fatalf("SetOverlay: %v", err)
-	}
+	require.NoError(t, err, "SetOverlay")
 
 	err = comp.On(layerID)
-	if err != nil {
-		t.Fatalf("On: %v", err)
-	}
+	require.NoError(t, err, "On")
+
+	// Verify side effect: compositor reports active layers.
+	require.True(t, comp.HasActiveLayers(), "HasActiveLayers should be true after On()")
 
 	// Process a black program frame.
 	blackFrame := testutil.GenerateSolidYUV420(testWidth, testHeight, 16, 128, 128)
 	result := comp.ProcessYUV(blackFrame, testWidth, testHeight, nil, nil)
 
-	yAvg := avgY(result, testWidth, testHeight)
-	t.Logf("MEASURE: semi-transparent white overlay avg Y=%.1f (expected ~125, midpoint between 16 and 235)", yAvg)
+	// Validate output buffer size.
+	expectedSize := testWidth * testHeight * 3 / 2
+	require.Equal(t, expectedSize, len(result), "output YUV420 buffer size")
 
-	// 50% transparent white over black should give roughly mid-gray.
-	// Y should be between black (16) and white (235), around 125.
-	if yAvg < 80 || yAvg > 170 {
-		t.Errorf("semi-transparent overlay Y avg=%.1f, expected ~125 (range 80-170)", yAvg)
+	// Independently computed expected values:
+	const expectedY = 126
+	const expectedCb = 128
+	const expectedCr = 128
+
+	yAvg := avgY(result, testWidth, testHeight)
+	cbAvg := avgCb(result, testWidth, testHeight)
+	crAvg := avgCr(result, testWidth, testHeight)
+
+	t.Logf("MEASURE: avg Y=%.1f (expected %d), Cb=%.1f (expected %d), Cr=%.1f (expected %d)",
+		yAvg, expectedY, cbAvg, expectedCb, crAvg, expectedCr)
+
+	// Assert Y within tight tolerance (kernel integer rounding allows +/-1).
+	require.InDelta(t, float64(expectedY), yAvg, 3.0, "semi-transparent white overlay avg Y")
+	require.InDelta(t, float64(expectedCb), cbAvg, 3.0, "semi-transparent white overlay avg Cb")
+	require.InDelta(t, float64(expectedCr), crAvg, 3.0, "semi-transparent white overlay avg Cr")
+
+	// Per-pixel spot check at center.
+	gotY, gotCb, gotCr := testutil.YUVPixelAt(result, testWidth, testHeight, testWidth/2, testHeight/2)
+	t.Logf("MEASURE: center pixel Y=%d Cb=%d Cr=%d", gotY, gotCb, gotCr)
+	if abs(int(gotY)-expectedY) > 2 {
+		t.Errorf("center pixel Y=%d, expected %d +/-2", gotY, expectedY)
+	}
+	if abs(int(gotCb)-expectedCb) > 2 {
+		t.Errorf("center pixel Cb=%d, expected %d +/-2", gotCb, expectedCb)
+	}
+	if abs(int(gotCr)-expectedCr) > 2 {
+		t.Errorf("center pixel Cr=%d, expected %d +/-2", gotCr, expectedCr)
 	}
 }
 
@@ -641,24 +715,23 @@ func TestCEFOverlayOnLayerWithoutOverlayFails(t *testing.T) {
 
 // TestCEFCompositorOverlayOverBlackFrameIsIdempotent tests that processing the
 // same frame multiple times with the same overlay gives consistent results.
+//
+// Independent math for green overlay (R=0,G=255,B=0), A=255 over black:
+//   overlayY = 16 + ((47*0 + 157*255 + 16*0 + 128) >> 8) = 16 + (40163 >> 8) = 16 + 156 = 172
+//   overlayCb = ((-26*0 - 86*255 + 112*0 + 128) >> 8) + 128 = (-21802 >> 8) + 128 = -86 + 128 = 42
+//   overlayCr = ((112*0 - 102*255 - 10*0 + 128) >> 8) + 128 = (-25882 >> 8) + 128 = -102 + 128 = 26
 func TestCEFCompositorOverlayOverBlackFrameIsIdempotent(t *testing.T) {
 	comp := setupCompositor(testWidth, testHeight)
 	defer comp.Close()
 
 	layerID, err := comp.AddLayer()
-	if err != nil {
-		t.Fatalf("AddLayer: %v", err)
-	}
+	require.NoError(t, err, "AddLayer")
 
 	greenOverlay := makeRGBA(testWidth, testHeight, 0, 255, 0, 255)
 	err = comp.SetOverlay(layerID, greenOverlay, testWidth, testHeight, "test")
-	if err != nil {
-		t.Fatalf("SetOverlay: %v", err)
-	}
+	require.NoError(t, err, "SetOverlay")
 	err = comp.On(layerID)
-	if err != nil {
-		t.Fatalf("On: %v", err)
-	}
+	require.NoError(t, err, "On")
 
 	// Process two independent black frames.
 	frame1 := testutil.GenerateSolidYUV420(testWidth, testHeight, 16, 128, 128)
@@ -667,15 +740,21 @@ func TestCEFCompositorOverlayOverBlackFrameIsIdempotent(t *testing.T) {
 	result1 := comp.ProcessYUV(frame1, testWidth, testHeight, nil, nil)
 	result2 := comp.ProcessYUV(frame2, testWidth, testHeight, nil, nil)
 
+	// Validate output buffer sizes.
+	expectedSize := testWidth * testHeight * 3 / 2
+	require.Equal(t, expectedSize, len(result1), "result1 YUV420 buffer size")
+	require.Equal(t, expectedSize, len(result2), "result2 YUV420 buffer size")
+
 	y1 := avgY(result1, testWidth, testHeight)
 	y2 := avgY(result2, testWidth, testHeight)
 
-	t.Logf("MEASURE: pass 1 avg Y=%.1f, pass 2 avg Y=%.1f", y1, y2)
+	t.Logf("MEASURE: pass 1 avg Y=%.1f, pass 2 avg Y=%.1f (expected 172)", y1, y2)
 
-	// Both passes should give identical results.
-	if !bytes.Equal(result1, result2) {
-		t.Errorf("ProcessYUV not idempotent: Y1=%.1f Y2=%.1f", y1, y2)
-	}
+	// Both passes should give identical results (byte-for-byte).
+	require.True(t, bytes.Equal(result1, result2), "ProcessYUV not idempotent: Y1=%.1f Y2=%.1f", y1, y2)
+
+	// Verify the actual value matches independently computed green Y.
+	require.InDelta(t, 172.0, y1, 3.0, "green overlay avg Y")
 }
 
 // TestCEFSetOverlayOnNonExistentLayer tests that SetOverlay returns ErrLayerNotFound.
@@ -773,6 +852,14 @@ func TestCEFControlResponseRoundTrip(t *testing.T) {
 			t.Errorf("Data: got %q, want %q", parsed.Data, orig.Data)
 		}
 	}
+}
+
+// abs returns the absolute value of an int.
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
 
 func intPtr(i int) *int {
