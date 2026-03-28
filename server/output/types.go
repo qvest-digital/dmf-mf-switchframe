@@ -9,6 +9,11 @@ import (
 	"github.com/zsiec/switchframe/server/internal"
 )
 
+const (
+	rtmpInitialBackoff = 1 * time.Second
+	rtmpMaxBackoff     = 30 * time.Second
+)
+
 // Sentinel errors for the output package.
 var (
 	ErrRecorderActive    = errors.New("output: recorder already active")
@@ -86,4 +91,34 @@ type SRTConfig struct {
 // RTMPCallerConfig holds configuration for RTMP caller (push mode).
 type RTMPCallerConfig struct {
 	URL string // full RTMP URL, e.g. rtmp://a.rtmp.youtube.com/live2/stream-key
+}
+
+// RTMPStatus holds runtime RTMP connection info for ControlRoomState.
+type RTMPStatus struct {
+	Active       bool   `json:"active"`
+	URL          string `json:"url,omitempty"`
+	State        string `json:"state,omitempty"`
+	BytesWritten int64  `json:"bytesWritten,omitempty"`
+	Error        string `json:"error,omitempty"`
+}
+
+// rtmpMaskURL masks the stream key portion of an RTMP URL for safe logging.
+// "rtmp://host/app/secret-key" -> "rtmp://host/app/****"
+func rtmpMaskURL(rawURL string) string {
+	// Find the fourth slash (after scheme://host/app/).
+	slashCount := 0
+	lastSlash := -1
+	for i, ch := range rawURL {
+		if ch == '/' {
+			slashCount++
+			if slashCount >= 4 {
+				lastSlash = i
+				break
+			}
+		}
+	}
+	if lastSlash > 0 && lastSlash < len(rawURL)-1 {
+		return rawURL[:lastSlash+1] + "****"
+	}
+	return rawURL
 }

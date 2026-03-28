@@ -240,10 +240,9 @@ const (
 )
 
 // RTMPDirect pushes program output to an RTMP ingest server using direct
-// FLV muxing. Unlike RTMPCaller (which demuxes TS then remuxes to FLV),
-// RTMPDirect receives raw H.264 and AAC frames and writes them directly
-// to the FLV container, eliminating the TS demuxer ring buffer that caused
-// permanent audio corruption on ring underrun.
+// FLV muxing. It receives raw H.264 and AAC frames and writes them directly
+// to the FLV container via libavformat, avoiding any intermediate TS
+// demux/remux step.
 //
 // Implements the FrameAdapter interface.
 type RTMPDirect struct {
