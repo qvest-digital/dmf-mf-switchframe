@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/internal"
 )
 
@@ -53,6 +54,17 @@ type Adapter interface {
 	// Close shuts down the adapter and releases resources.
 	Close() error
 	// Status returns the current status of the adapter.
+	Status() AdapterStatus
+}
+
+// FrameAdapter receives raw codec frames instead of muxed MPEG-TS.
+// Used by RTMP output which muxes directly to FLV, bypassing TS.
+type FrameAdapter interface {
+	ID() string
+	WriteVideo(frame *media.VideoFrame) error
+	WriteAudio(frame *media.AudioFrame) error
+	Start(ctx context.Context) error
+	Close() error
 	Status() AdapterStatus
 }
 
