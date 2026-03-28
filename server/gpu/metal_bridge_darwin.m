@@ -906,8 +906,6 @@ static void vtOutputCallback(void *outputCallbackRefCon,
                               CMSampleBufferRef sampleBuffer) {
     VTEncoderState *state = (VTEncoderState *)outputCallbackRefCon;
     if (status != noErr || sampleBuffer == NULL) {
-        NSLog(@"VT encode callback error: status=%d sampleBuffer=%p codecType=%d",
-              (int)status, sampleBuffer, state->codecType);
         state->outputLen = 0;
         dispatch_semaphore_signal(state->sem);
         return;
@@ -1292,18 +1290,7 @@ int metal_vt_encode(VTEncoderRef enc, void* nv12_ptr, int pitch, int width, int 
                     uint8_t** out_buf, int* out_len, int* out_is_idr) {
     VTEncoderState *state = (VTEncoderState *)enc;
     if (!state || !state->session) {
-        NSLog(@"VT encode: NULL state or session");
         return -1;
-    }
-
-    static int frameCount = 0;
-    frameCount++;
-    int shouldLog = (frameCount <= 5 || frameCount % 100 == 0);
-
-    if (shouldLog) {
-        NSLog(@"VT encode frame #%d: codecType=%d pixFmt=0x%x w=%d h=%d pitch=%d ptr=%p pts=%lld forceIDR=%d",
-              frameCount, state->codecType, (unsigned)state->pixelFormat,
-              width, height, pitch, nv12_ptr, (long long)pts, force_idr);
     }
 
     // Acquire a CVPixelBuffer from the pool (or create one if pool unavailable).
@@ -1311,39 +1298,15 @@ int metal_vt_encode(VTEncoderRef enc, void* nv12_ptr, int pitch, int width, int 
     CVReturn cvRet;
     if (state->pixelBufferPool) {
         cvRet = CVPixelBufferPoolCreatePixelBuffer(NULL, state->pixelBufferPool, &pixelBuffer);
-        if (shouldLog) {
-            NSLog(@"VT encode: pool buffer acquired: cvRet=%d pixelBuffer=%p", (int)cvRet, pixelBuffer);
-        }
     } else {
         cvRet = CVPixelBufferCreate(
             NULL, width, height,
             state->pixelFormat,
             NULL, &pixelBuffer
         );
-        if (shouldLog) {
-            NSLog(@"VT encode: direct buffer created: cvRet=%d pixelBuffer=%p", (int)cvRet, pixelBuffer);
-        }
     }
     if (cvRet != kCVReturnSuccess || !pixelBuffer) {
-        NSLog(@"VT encode: CVPixelBuffer creation FAILED: cvRet=%d pool=%p pixFmt=0x%x",
-              (int)cvRet, state->pixelBufferPool, (unsigned)state->pixelFormat);
         return -2;
-    }
-
-    // Log pixel buffer details
-    if (shouldLog) {
-        size_t planeCount = CVPixelBufferGetPlaneCount(pixelBuffer);
-        OSType pbFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
-        size_t pbWidth = CVPixelBufferGetWidth(pixelBuffer);
-        size_t pbHeight = CVPixelBufferGetHeight(pixelBuffer);
-        NSLog(@"VT encode: CVPixelBuffer planes=%zu format=0x%x size=%zux%zu",
-              planeCount, (unsigned)pbFormat, pbWidth, pbHeight);
-        for (size_t p = 0; p < planeCount; p++) {
-            size_t planeW = CVPixelBufferGetWidthOfPlane(pixelBuffer, p);
-            size_t planeH = CVPixelBufferGetHeightOfPlane(pixelBuffer, p);
-            size_t planeStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, p);
-            NSLog(@"VT encode:   plane[%zu] size=%zux%zu stride=%zu", p, planeW, planeH, planeStride);
-        }
     }
 
     // Copy frame data from Metal unified-memory buffer into the VT pixel buffer.
@@ -1362,12 +1325,6 @@ int metal_vt_encode(VTEncoderRef enc, void* nv12_ptr, int pitch, int width, int 
         // Both are 4:2:2 with full-height UV — direct shift, no chroma subsampling.
         int samplesPerRow = width;
 
-        if (shouldLog) {
-            const uint16_t *firstRow = (const uint16_t *)srcY;
-            NSLog(@"VT encode 10bit 422: Y src samples[0..3]=%u %u %u %u  vtYStride=%zu pitch=%d",
-                  firstRow[0], firstRow[1], firstRow[2], firstRow[3], vtYStride, pitch);
-        }
-
         // Y plane: shift each uint16 sample left by 6
         for (int row = 0; row < height; row++) {
             const uint16_t *srcRow = (const uint16_t *)(srcY + row * pitch);
@@ -1384,13 +1341,6 @@ int metal_vt_encode(VTEncoderRef enc, void* nv12_ptr, int pitch, int width, int 
         int uvHeight = height; // full height for 4:2:2
         int uvSamplesPerRow = width; // interleaved Cb/Cr = width uint16 values
 
-        if (shouldLog) {
-            const uint16_t *firstUVRow = (const uint16_t *)srcUV;
-            NSLog(@"VT encode 10bit 422: UV src samples[0..3]=%u %u %u %u  vtUVStride=%zu uvHeight=%d",
-                  firstUVRow[0], firstUVRow[1], firstUVRow[2], firstUVRow[3],
-                  vtUVStride, uvHeight);
-        }
-
         for (int row = 0; row < uvHeight; row++) {
             const uint16_t *srcRow = (const uint16_t *)(srcUV + row * pitch);
             uint16_t *dstRow = (uint16_t *)(vtUV + row * vtUVStride);
@@ -1399,13 +1349,6 @@ int metal_vt_encode(VTEncoderRef enc, void* nv12_ptr, int pitch, int width, int 
             }
         }
 
-        if (shouldLog) {
-            uint16_t *dstFirstY = (uint16_t *)vtY;
-            uint16_t *dstFirstUV = (uint16_t *)vtUV;
-            NSLog(@"VT encode 10bit 422: dst Y[0..3]=%u %u %u %u  dst UV[0..3]=%u %u %u %u",
-                  dstFirstY[0], dstFirstY[1], dstFirstY[2], dstFirstY[3],
-                  dstFirstUV[0], dstFirstUV[1], dstFirstUV[2], dstFirstUV[3]);
-        }
     } else {
         // NV12 (8-bit): direct copy as before.
         if (vtYStride == (size_t)pitch) {
@@ -1459,19 +1402,11 @@ int metal_vt_encode(VTEncoderRef enc, void* nv12_ptr, int pitch, int width, int 
     CVPixelBufferRelease(pixelBuffer);
 
     if (status != noErr) {
-        NSLog(@"VT EncodeFrame FAILED: status=%d (0x%x) codecType=%d pixFmt=0x%x w=%d h=%d pitch=%d frame#%d",
-              (int)status, (unsigned)status, state->codecType, (unsigned)state->pixelFormat,
-              width, height, pitch, frameCount);
         return -3;
     }
 
     // Wait for the async callback to complete
     dispatch_semaphore_wait(state->sem, DISPATCH_TIME_FOREVER);
-
-    if (shouldLog) {
-        NSLog(@"VT encode frame #%d: callback returned outputLen=%d isIDR=%d",
-              frameCount, state->outputLen, state->outputIsIDR);
-    }
 
     *out_buf = state->outputBuf;
     *out_len = state->outputLen;
