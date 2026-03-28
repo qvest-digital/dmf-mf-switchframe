@@ -788,18 +788,11 @@ func (r *gpuPipelineRunnerImpl) RunTransition(fromKey, toKey string, transType s
 	dst.PTS = pts
 
 	// GPU blend based on transition type.
-	// Dispatch to P210 kernels when pool is 10-bit 4:2:2.
+	// All blend calls use dispatch functions that route P210 vs NV12 automatically.
 	ctx := r.ctx
-	isP210 := dst.Format == gpu.GPUFormatP210
 	switch transType {
 	case "mix":
-		var err error
-		if isP210 {
-			err = gpu.BlendMixP210(ctx, dst, frameA, frameB, position)
-		} else {
-			err = gpu.BlendMix(ctx, dst, frameA, frameB, position)
-		}
-		if err != nil {
+		if err := gpu.GPUBlendMixDispatch(ctx, dst, frameA, frameB, position); err != nil {
 			dst.Release()
 			return fmt.Errorf("gpu transition mix: %w", err)
 		}
@@ -809,48 +802,24 @@ func (r *gpuPipelineRunnerImpl) RunTransition(fromKey, toKey string, transType s
 		// Phase 2 (pos 0.5-1.0): fade B from black.
 		if position <= 0.5 {
 			dipPos := position * 2.0
-			var err error
-			if isP210 {
-				err = gpu.BlendFTBP210(ctx, dst, frameA, dipPos)
-			} else {
-				err = gpu.BlendFTB(ctx, dst, frameA, dipPos)
-			}
-			if err != nil {
+			if err := gpu.GPUBlendFTBDispatch(ctx, dst, frameA, dipPos); err != nil {
 				dst.Release()
 				return fmt.Errorf("gpu transition dip phase1: %w", err)
 			}
 		} else {
 			dipPos := (1.0 - position) * 2.0
-			var err error
-			if isP210 {
-				err = gpu.BlendFTBP210(ctx, dst, frameB, dipPos)
-			} else {
-				err = gpu.BlendFTB(ctx, dst, frameB, dipPos)
-			}
-			if err != nil {
+			if err := gpu.GPUBlendFTBDispatch(ctx, dst, frameB, dipPos); err != nil {
 				dst.Release()
 				return fmt.Errorf("gpu transition dip phase2: %w", err)
 			}
 		}
 	case "ftb":
-		var err error
-		if isP210 {
-			err = gpu.BlendFTBP210(ctx, dst, frameA, position)
-		} else {
-			err = gpu.BlendFTB(ctx, dst, frameA, position)
-		}
-		if err != nil {
+		if err := gpu.GPUBlendFTBDispatch(ctx, dst, frameA, position); err != nil {
 			dst.Release()
 			return fmt.Errorf("gpu transition ftb: %w", err)
 		}
 	case "ftb_reverse":
-		var err error
-		if isP210 {
-			err = gpu.BlendFTBP210(ctx, dst, frameA, 1.0-position)
-		} else {
-			err = gpu.BlendFTB(ctx, dst, frameA, 1.0-position)
-		}
-		if err != nil {
+		if err := gpu.GPUBlendFTBDispatch(ctx, dst, frameA, 1.0-position); err != nil {
 			dst.Release()
 			return fmt.Errorf("gpu transition ftb_reverse: %w", err)
 		}
@@ -861,7 +830,7 @@ func (r *gpuPipelineRunnerImpl) RunTransition(fromKey, toKey string, transType s
 			return fmt.Errorf("gpu transition wipe: acquire mask: %w", maskErr)
 		}
 		dir := gpu.WipeDirection(wipeDir)
-		if err := gpu.BlendWipe(ctx, dst, frameA, frameB, maskBuf, position, dir, 4); err != nil {
+		if err := gpu.GPUBlendWipeDispatch(ctx, dst, frameA, frameB, maskBuf, position, dir, 4); err != nil {
 			maskBuf.Release()
 			dst.Release()
 			return fmt.Errorf("gpu transition wipe: %w", err)
@@ -871,21 +840,29 @@ func (r *gpuPipelineRunnerImpl) RunTransition(fromKey, toKey string, transType s
 		// Stinger: composite stinger overlay with per-pixel alpha onto
 		// base source (A before cut point, B after).
 		if stinger != nil && len(stinger.YUV) > 0 && len(stinger.Alpha) > 0 {
-			// Upload stinger overlay YUV to GPU as NV12.
+			// Upload stinger overlay YUV to GPU.
+			// Stinger YUV is always 8-bit YUV420P. For P210 pools, promote
+			// via UploadYUV420PToP210. For NV12 pools, use standard Upload.
 			overlayFrame, overlayErr := pool.Acquire()
 			if overlayErr != nil {
 				dst.Release()
 				return fmt.Errorf("gpu transition stinger: acquire overlay: %w", overlayErr)
 			}
-			if err := gpu.Upload(ctx, overlayFrame, stinger.YUV, stinger.Width, stinger.Height); err != nil {
+			var uploadErr error
+			if overlayFrame.Format == gpu.GPUFormatP210 {
+				uploadErr = gpu.UploadYUV420PToP210(ctx, overlayFrame, stinger.YUV, stinger.Width, stinger.Height)
+			} else {
+				uploadErr = gpu.Upload(ctx, overlayFrame, stinger.YUV, stinger.Width, stinger.Height)
+			}
+			if uploadErr != nil {
 				overlayFrame.Release()
 				dst.Release()
-				return fmt.Errorf("gpu transition stinger: upload overlay: %w", err)
+				return fmt.Errorf("gpu transition stinger: upload overlay: %w", uploadErr)
 			}
 			overlayFrame.Width = stinger.Width
 			overlayFrame.Height = stinger.Height
 
-			// Upload alpha plane as fake NV12: Y=alpha, UV=128 (neutral).
+			// Upload alpha plane as fake YUV420P: Y=alpha, UV=128 (neutral).
 			alphaFrame, alphaErr := pool.Acquire()
 			if alphaErr != nil {
 				overlayFrame.Release()
@@ -898,7 +875,12 @@ func (r *gpuPipelineRunnerImpl) RunTransition(fromKey, toKey string, transType s
 			for i := cbOff; i < len(alphaYUV); i++ {
 				alphaYUV[i] = 128
 			}
-			if err := gpu.Upload(ctx, alphaFrame, alphaYUV, stinger.Width, stinger.Height); err != nil {
+			if alphaFrame.Format == gpu.GPUFormatP210 {
+				uploadErr = gpu.UploadYUV420PToP210(ctx, alphaFrame, alphaYUV, stinger.Width, stinger.Height)
+			} else {
+				uploadErr = gpu.Upload(ctx, alphaFrame, alphaYUV, stinger.Width, stinger.Height)
+			}
+			if uploadErr != nil {
 				alphaFrame.Release()
 				overlayFrame.Release()
 				dst.Release()
@@ -920,7 +902,7 @@ func (r *gpuPipelineRunnerImpl) RunTransition(fromKey, toKey string, transType s
 				}
 				scaledOverlay.Width = frameA.Width
 				scaledOverlay.Height = frameA.Height
-				if err := gpu.ScaleBilinear(ctx, scaledOverlay, overlayFrame); err != nil {
+				if err := gpu.GPUScaleDispatch(ctx, scaledOverlay, overlayFrame); err != nil {
 					scaledOverlay.Release()
 					alphaFrame.Release()
 					overlayFrame.Release()
@@ -939,7 +921,7 @@ func (r *gpuPipelineRunnerImpl) RunTransition(fromKey, toKey string, transType s
 				}
 				scaledAlpha.Width = frameA.Width
 				scaledAlpha.Height = frameA.Height
-				if err := gpu.ScaleBilinear(ctx, scaledAlpha, alphaFrame); err != nil {
+				if err := gpu.GPUScaleDispatch(ctx, scaledAlpha, alphaFrame); err != nil {
 					scaledAlpha.Release()
 					alphaFrame.Release()
 					overlayFrame.Release()
@@ -956,7 +938,7 @@ func (r *gpuPipelineRunnerImpl) RunTransition(fromKey, toKey string, transType s
 				base = frameB
 			}
 
-			if err := gpu.BlendStinger(ctx, dst, base, overlayFrame, alphaFrame); err != nil {
+			if err := gpu.GPUBlendStingerDispatch(ctx, dst, base, overlayFrame, alphaFrame); err != nil {
 				alphaFrame.Release()
 				overlayFrame.Release()
 				dst.Release()
@@ -966,14 +948,14 @@ func (r *gpuPipelineRunnerImpl) RunTransition(fromKey, toKey string, transType s
 			overlayFrame.Release()
 		} else {
 			// No stinger data — fall back to mix blend.
-			if err := gpu.BlendMix(ctx, dst, frameA, frameB, position); err != nil {
+			if err := gpu.GPUBlendMixDispatch(ctx, dst, frameA, frameB, position); err != nil {
 				dst.Release()
 				return fmt.Errorf("gpu transition stinger fallback: %w", err)
 			}
 		}
 	default:
 		// Unknown type — use mix as fallback.
-		if err := gpu.BlendMix(ctx, dst, frameA, frameB, position); err != nil {
+		if err := gpu.GPUBlendMixDispatch(ctx, dst, frameA, frameB, position); err != nil {
 			dst.Release()
 			return fmt.Errorf("gpu transition fallback: %w", err)
 		}
