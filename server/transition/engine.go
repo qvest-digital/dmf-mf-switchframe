@@ -158,6 +158,10 @@ type Engine struct {
 	framesIngested atomic.Int64
 	framesBlended  atomic.Int64
 
+	// rawBlender is cached for BlendRaw to avoid per-frame allocation (Issue 7).
+	// Recreated only when resolution changes.
+	rawBlender *FrameBlender
+
 	config EngineConfig
 
 	// colorFormat specifies the pipeline pixel format (8-bit or 10-bit).
@@ -1229,18 +1233,31 @@ func (e *Engine) BlendRaw(
 	toYUV []byte, toW, toH int,
 	position float64,
 ) ([]byte, int, int) {
-	e.mu.RLock()
+	e.mu.Lock()
 	ttype := e.transitionType
 	wipeDir := e.wipeDirection
 	stinger := e.config.Stinger
-	e.mu.RUnlock()
 
 	outW, outH := fromW, fromH
 
 	// Ensure even dimensions for YUV420
 	if outW%2 != 0 || outH%2 != 0 {
+		e.mu.Unlock()
 		return nil, 0, 0
 	}
+
+	// Reuse cached blender if resolution matches, otherwise create new (Issue 7).
+	blender := e.rawBlender
+	if blender == nil || blender.width != outW || blender.height != outH {
+		var err error
+		blender, err = NewFrameBlender(outW, outH)
+		if err != nil {
+			e.mu.Unlock()
+			return nil, 0, 0
+		}
+		e.rawBlender = blender
+	}
+	e.mu.Unlock()
 
 	// Scale toYUV to match fromYUV dimensions if they differ
 	var scaledTo []byte
@@ -1249,12 +1266,6 @@ func (e *Engine) BlendRaw(
 		scaledTo = make([]byte, targetSize)
 		ScaleYUV420(toYUV, toW, toH, scaledTo, fromW, fromH)
 		toYUV = scaledTo
-	}
-
-	// Create a fresh blender for this resolution
-	blender, err := NewFrameBlender(outW, outH)
-	if err != nil {
-		return nil, 0, 0
 	}
 
 	// Generate broadcast-standard black frame for FTB / missing source B
