@@ -313,7 +313,12 @@ func TestRefClockZeroDrift(t *testing.T) {
 // the same inputs always produce the same outputs.
 //
 // Strategy: run the pipeline twice with identical inputs and compare the
-// video PTS sequences. They must be identical.
+// video and audio PTS sequences. They must be identical.
+//
+// Uses the no-encode harness (raw YUV broadcast) to isolate clock
+// determinism from H.264 encoder non-determinism (encoder startup
+// buffering and rate control vary across runs, especially on GPU
+// encoders like NVENC).
 // ==========================================================================
 
 func TestRefClockDeterministic(t *testing.T) {
@@ -321,56 +326,94 @@ func TestRefClockDeterministic(t *testing.T) {
 		t.Skip("skipping long correctness test")
 	}
 
-	runOnce := func() []int64 {
-		h := newPipelineHarness(t, withReferenceClock())
+	type ptsResult struct {
+		video []int64
+		audio []int64
+	}
+
+	const feedCount = 100
+	const expectVideo = 60
+	const expectAudio = 10
+
+	runOnce := func() ptsResult {
+		h := newPipelineHarnessNoEncode(t)
 		defer h.close()
 
 		h.addSource("camA", sourceA)
 		h.cut(t, "camA")
-		h.feedFrames("camA", 60, 0)
+		h.feedFrames("camA", feedCount, 0)
 		h.startRefClock()
-		h.waitForVideoFrames(t, 20)
+		h.waitForVideoFrames(t, expectVideo)
+		h.waitForAudioFrames(t, expectAudio)
 
 		h.refClock.Stop()
 		h.refClock = nil
 
 		videos := h.capture.videosCopy()
-		pts := make([]int64, len(videos))
+		audios := h.capture.audiosCopy()
+
+		vpts := make([]int64, len(videos))
 		for i, v := range videos {
-			pts[i] = v.PTS
+			vpts[i] = v.PTS
 		}
-		return pts
+		apts := make([]int64, len(audios))
+		for i, a := range audios {
+			apts[i] = a.PTS
+		}
+		return ptsResult{video: vpts, audio: apts}
 	}
 
-	pts1 := runOnce()
-	pts2 := runOnce()
+	r1 := runOnce()
+	r2 := runOnce()
 
-	t.Logf("MEASURE: run1 frames = %d, run2 frames = %d", len(pts1), len(pts2))
-	require.Greater(t, len(pts1), 10, "run1 should produce >10 frames")
-	require.Greater(t, len(pts2), 10, "run2 should produce >10 frames")
+	t.Logf("MEASURE: run1 video=%d audio=%d, run2 video=%d audio=%d",
+		len(r1.video), len(r1.audio), len(r2.video), len(r2.audio))
+	require.Greater(t, len(r1.video), 30, "run1 should produce >30 video frames")
+	require.Greater(t, len(r2.video), 30, "run2 should produce >30 video frames")
+	require.Greater(t, len(r1.audio), 5, "run1 should produce >5 audio frames")
+	require.Greater(t, len(r2.audio), 5, "run2 should produce >5 audio frames")
 
-	// Compare the common prefix (both runs may produce different counts
-	// due to timing of Stop(), but the prefix should be identical).
-	compareLen := len(pts1)
-	if len(pts2) < compareLen {
-		compareLen = len(pts2)
+	// Compare video PTS: common prefix must be identical.
+	vLen := len(r1.video)
+	if len(r2.video) < vLen {
+		vLen = len(r2.video)
 	}
-	// Compare at least 10 frames.
-	require.GreaterOrEqual(t, compareLen, 10, "need at least 10 frames to compare")
+	require.GreaterOrEqual(t, vLen, 30, "need at least 30 video frames to compare")
 
-	for i := 0; i < compareLen; i++ {
-		require.Equal(t, pts1[i], pts2[i],
-			"PTS mismatch at frame %d: run1=%d, run2=%d", i, pts1[i], pts2[i])
+	for i := 0; i < vLen; i++ {
+		require.Equal(t, r1.video[i], r2.video[i],
+			"video PTS mismatch at frame %d: run1=%d, run2=%d", i, r1.video[i], r2.video[i])
 	}
 
-	// Verify the PTS values start at 0 and increment by ptsDelta.
-	for i := 0; i < compareLen; i++ {
+	// Verify video PTS starts at 0 and increments by ptsDelta (exact).
+	for i := 0; i < vLen; i++ {
 		expected := int64(i) * ptsDelta
-		require.Equal(t, expected, pts1[i],
-			"frame %d PTS should be %d, got %d", i, expected, pts1[i])
+		require.Equal(t, expected, r1.video[i],
+			"video frame %d PTS should be %d, got %d", i, expected, r1.video[i])
 	}
 
-	t.Logf("Deterministic test passed: %d frames compared, all PTS identical", compareLen)
+	// Compare audio PTS: common prefix must be identical.
+	aLen := len(r1.audio)
+	if len(r2.audio) < aLen {
+		aLen = len(r2.audio)
+	}
+	require.GreaterOrEqual(t, aLen, 5, "need at least 5 audio frames to compare")
+
+	const aacFramePTS = int64(1920)
+	for i := 0; i < aLen; i++ {
+		require.Equal(t, r1.audio[i], r2.audio[i],
+			"audio PTS mismatch at frame %d: run1=%d, run2=%d", i, r1.audio[i], r2.audio[i])
+	}
+
+	// Verify audio PTS starts at 0 and increments by 1920 (exact).
+	for i := 0; i < aLen; i++ {
+		expected := int64(i) * aacFramePTS
+		require.Equal(t, expected, r1.audio[i],
+			"audio frame %d PTS should be %d, got %d", i, expected, r1.audio[i])
+	}
+
+	t.Logf("Deterministic test passed: %d video + %d audio frames compared, all PTS identical",
+		vLen, aLen)
 }
 
 // ==========================================================================
