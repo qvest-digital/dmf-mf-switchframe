@@ -20,9 +20,145 @@ typedef struct {
 	int header_written;
 } rtmp_flv_ctx_t;
 
+// --- Minimal H.264 SPS parser for extracting width/height ---
+
+// Bit reader for exp-Golomb and fixed-width reads.
+typedef struct {
+	const uint8_t* data;
+	int            size;    // total bytes
+	int            bit_pos; // current bit offset
+} bitreader_t;
+
+static int br_read_bits(bitreader_t* br, int n) {
+	int val = 0;
+	for (int i = 0; i < n; i++) {
+		int byte_idx = br->bit_pos / 8;
+		int bit_idx  = 7 - (br->bit_pos % 8);
+		if (byte_idx >= br->size) return 0;
+		val = (val << 1) | ((br->data[byte_idx] >> bit_idx) & 1);
+		br->bit_pos++;
+	}
+	return val;
+}
+
+// Unsigned exp-Golomb (ISO 14496-10 section 9.1).
+static unsigned br_read_ue(bitreader_t* br) {
+	int leading_zeros = 0;
+	while (br->bit_pos / 8 < br->size && br_read_bits(br, 1) == 0)
+		leading_zeros++;
+	if (leading_zeros > 31) return 0;
+	return ((1u << leading_zeros) - 1) + (unsigned)br_read_bits(br, leading_zeros);
+}
+
+// Signed exp-Golomb.
+static int br_read_se(bitreader_t* br) {
+	unsigned v = br_read_ue(br);
+	return (v & 1) ? (int)((v + 1) / 2) : -(int)(v / 2);
+}
+
+// sps_get_dimensions parses an H.264 SPS NALU to extract width and height.
+// sps must include the NALU type byte (0x67). Falls back to 1920x1080
+// if parsing fails (never causes rtmp_flv_open to fail).
+static void sps_get_dimensions(const uint8_t* sps, int sps_len,
+	int* out_width, int* out_height) {
+	*out_width  = 1920;
+	*out_height = 1080;
+	if (sps_len < 4) return;
+
+	bitreader_t br = { sps, sps_len, 8 }; // skip NALU type byte
+
+	int profile_idc = br_read_bits(&br, 8);
+	br_read_bits(&br, 8);  // constraint_set_flags
+	br_read_bits(&br, 8);  // level_idc
+	br_read_ue(&br);       // seq_parameter_set_id
+
+	// High-profile family: chroma_format_idc and related fields.
+	int chroma_format_idc = 1; // default
+	if (profile_idc == 100 || profile_idc == 110 || profile_idc == 122 ||
+		profile_idc == 244 || profile_idc == 44  || profile_idc == 83  ||
+		profile_idc == 86  || profile_idc == 118 || profile_idc == 128 ||
+		profile_idc == 138 || profile_idc == 139 || profile_idc == 134 ||
+		profile_idc == 135) {
+		chroma_format_idc = (int)br_read_ue(&br);
+		if (chroma_format_idc == 3) {
+			br_read_bits(&br, 1); // separate_colour_plane_flag
+		}
+		br_read_ue(&br); // bit_depth_luma_minus8
+		br_read_ue(&br); // bit_depth_chroma_minus8
+		br_read_bits(&br, 1); // qpprime_y_zero_transform_bypass_flag
+		int scaling_matrix_present = br_read_bits(&br, 1);
+		if (scaling_matrix_present) {
+			int cnt = (chroma_format_idc != 3) ? 8 : 12;
+			for (int i = 0; i < cnt; i++) {
+				if (br_read_bits(&br, 1)) { // scaling_list_present_flag
+					int size = (i < 6) ? 16 : 64;
+					int last = 8, next = 8;
+					for (int j = 0; j < size; j++) {
+						if (next != 0) {
+							int delta = br_read_se(&br);
+							next = (last + delta + 256) % 256;
+						}
+						last = (next == 0) ? last : next;
+					}
+				}
+			}
+		}
+	}
+
+	br_read_ue(&br); // log2_max_frame_num_minus4
+	unsigned poc_type = br_read_ue(&br);
+	if (poc_type == 0) {
+		br_read_ue(&br); // log2_max_pic_order_cnt_lsb_minus4
+	} else if (poc_type == 1) {
+		br_read_bits(&br, 1); // delta_pic_order_always_zero_flag
+		br_read_se(&br);      // offset_for_non_ref_pic
+		br_read_se(&br);      // offset_for_top_to_bottom_field
+		unsigned n = br_read_ue(&br); // num_ref_frames_in_pic_order_cnt_cycle
+		for (unsigned i = 0; i < n && i < 256; i++)
+			br_read_se(&br);  // offset_for_ref_frame
+	}
+
+	br_read_ue(&br);       // max_num_ref_frames
+	br_read_bits(&br, 1);  // gaps_in_frame_num_value_allowed_flag
+
+	unsigned pic_width_in_mbs_minus1        = br_read_ue(&br);
+	unsigned pic_height_in_map_units_minus1 = br_read_ue(&br);
+	int frame_mbs_only_flag                 = br_read_bits(&br, 1);
+
+	int w = (int)(pic_width_in_mbs_minus1 + 1) * 16;
+	int h = (2 - frame_mbs_only_flag) * (int)(pic_height_in_map_units_minus1 + 1) * 16;
+
+	if (!frame_mbs_only_flag) {
+		br_read_bits(&br, 1); // mb_adaptive_frame_field_flag
+	}
+	br_read_bits(&br, 1); // direct_8x8_inference_flag
+
+	// Frame cropping — adjusts final dimensions.
+	int crop_flag = br_read_bits(&br, 1);
+	if (crop_flag) {
+		int sub_width_c  = (chroma_format_idc == 1 || chroma_format_idc == 2) ? 2 : 1;
+		int sub_height_c = (chroma_format_idc == 1) ? 2 : 1;
+		int crop_unit_x  = (chroma_format_idc == 0) ? 1 : sub_width_c;
+		int crop_unit_y  = (chroma_format_idc == 0) ? (2 - frame_mbs_only_flag) :
+		                   sub_height_c * (2 - frame_mbs_only_flag);
+		unsigned crop_left   = br_read_ue(&br);
+		unsigned crop_right  = br_read_ue(&br);
+		unsigned crop_top    = br_read_ue(&br);
+		unsigned crop_bottom = br_read_ue(&br);
+		w -= (int)(crop_left + crop_right) * crop_unit_x;
+		h -= (int)(crop_top + crop_bottom) * crop_unit_y;
+	}
+
+	if (w > 0 && h > 0 && w <= 7680 && h <= 4320) {
+		*out_width  = w;
+		*out_height = h;
+	}
+}
+
 // rtmp_flv_open opens an RTMP connection and sets up FLV muxing with
 // pre-configured H.264 video and AAC audio streams.
 // SPS/PPS are used to build the AVCDecoderConfigurationRecord extradata.
+// Width/height are parsed from the SPS for correct FLV metadata.
 // Returns 0 on success, negative on error.
 static int rtmp_flv_open(rtmp_flv_ctx_t* ctx, const char* url,
 	const unsigned char* sps, int sps_len,
@@ -34,6 +170,10 @@ static int rtmp_flv_open(rtmp_flv_ctx_t* ctx, const char* url,
 
 	av_opt_set(ctx->out_ctx->priv_data, "flvflags", "no_duration_filesize", 0);
 
+	// Parse resolution from SPS.
+	int vid_width, vid_height;
+	sps_get_dimensions(sps, sps_len, &vid_width, &vid_height);
+
 	// --- Video stream ---
 	AVStream* vst = avformat_new_stream(ctx->out_ctx, NULL);
 	if (!vst) {
@@ -44,8 +184,8 @@ static int rtmp_flv_open(rtmp_flv_ctx_t* ctx, const char* url,
 	ctx->video_idx = vst->index;
 	vst->codecpar->codec_type = AVMEDIA_TYPE_VIDEO;
 	vst->codecpar->codec_id = AV_CODEC_ID_H264;
-	vst->codecpar->width = 1920;
-	vst->codecpar->height = 1080;
+	vst->codecpar->width = vid_width;
+	vst->codecpar->height = vid_height;
 	vst->time_base = (AVRational){1, 90000};
 
 	// Build AVCDecoderConfigurationRecord:
@@ -283,6 +423,12 @@ type RTMPDirect struct {
 func NewRTMPDirect(config RTMPCallerConfig) (*RTMPDirect, error) {
 	if config.URL == "" {
 		return nil, fmt.Errorf("RTMP URL is required")
+	}
+	if config.SampleRate <= 0 {
+		config.SampleRate = 48000
+	}
+	if config.Channels <= 0 {
+		config.Channels = 2
 	}
 
 	r := &RTMPDirect{
@@ -557,8 +703,8 @@ func (r *RTMPDirect) initConnection(frame *media.VideoFrame) error {
 	rc := C.rtmp_flv_open(&r.ctx, cURL,
 		(*C.uchar)(unsafe.Pointer(&frame.SPS[0])), C.int(len(frame.SPS)),
 		(*C.uchar)(unsafe.Pointer(&frame.PPS[0])), C.int(len(frame.PPS)),
-		C.int(48000), // default sample rate
-		C.int(2))     // default stereo
+		C.int(r.config.SampleRate),
+		C.int(r.config.Channels))
 	if rc < 0 {
 		return fmt.Errorf("rtmp_flv_open failed (code %d)", int(rc))
 	}

@@ -90,7 +90,9 @@ type SRTConfig struct {
 
 // RTMPCallerConfig holds configuration for RTMP caller (push mode).
 type RTMPCallerConfig struct {
-	URL string // full RTMP URL, e.g. rtmp://a.rtmp.youtube.com/live2/stream-key
+	URL        string // full RTMP URL, e.g. rtmp://a.rtmp.youtube.com/live2/stream-key
+	SampleRate int    // audio sample rate (default 48000)
+	Channels   int    // audio channels (default 2 = stereo)
 }
 
 // RTMPStatus holds runtime RTMP connection info for ControlRoomState.
