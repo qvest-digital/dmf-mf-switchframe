@@ -316,6 +316,9 @@ MetalResult metal_fill_rect(MetalQueueRef queue, MetalPipelineRef pipeline,
 typedef void* VTEncoderRef;
 
 VTEncoderRef metal_vt_encoder_create(int width, int height, int fps_num, int fps_den, int bitrate, int gop_frames, int preview);
+VTEncoderRef metal_vt_encoder_create_v2(int width, int height, int fps_num, int fps_den,
+                                         int bitrate, int gop_frames, int preview,
+                                         int codec_type, int bit_depth);
 void metal_vt_encoder_destroy(VTEncoderRef enc);
 
 // Encode an NV12 frame from unified memory. Returns Annex B H.264 data.

@@ -2,11 +2,19 @@
 
 package gpu
 
+import "github.com/zsiec/switchframe/server/switcher"
+
 // GPUEncoder is a stub for non-GPU builds.
 type GPUEncoder struct{}
 
 // NewGPUEncoder returns ErrGPUNotAvailable on non-GPU builds.
 func NewGPUEncoder(ctx *Context, width, height, fpsNum, fpsDen, bitrate int) (*GPUEncoder, error) {
+	return nil, ErrGPUNotAvailable
+}
+
+// NewGPUEncoderForCodec returns ErrGPUNotAvailable on non-GPU builds.
+func NewGPUEncoderForCodec(ctx *Context, width, height, fpsNum, fpsDen, bitrate int,
+	pipelineCodec switcher.PipelineCodec, colorFormat switcher.PipelineColorFormat) (*GPUEncoder, error) {
 	return nil, ErrGPUNotAvailable
 }
 
@@ -30,6 +38,9 @@ func (e *GPUEncoder) IsNativeVT() bool { return false }
 
 // IsHWFrames returns false on non-GPU builds.
 func (e *GPUEncoder) IsHWFrames() bool { return false }
+
+// IsHEVC returns false on non-GPU builds.
+func (e *GPUEncoder) IsHEVC() bool { return false }
 
 // Close is a no-op on non-GPU builds.
 func (e *GPUEncoder) Close() {}

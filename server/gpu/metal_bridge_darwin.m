@@ -778,6 +778,8 @@ MetalResult metal_gaussian_blur_v(MetalQueueRef queue, MetalPipelineRef pipeline
 typedef struct VTEncoderState {
     VTCompressionSessionRef session;
     CVPixelBufferPoolRef pixelBufferPool;  // reusable pixel buffer pool
+    OSType pixelFormat;  // track pixel format for encode-time data copy
+    int codecType;       // 0=H.264, 1=HEVC (for parameter set extraction)
     int width, height, pitch;
     // Output buffer (reused across frames, grows as needed)
     uint8_t *outputBuf;
@@ -810,20 +812,29 @@ static void vtOutputCallback(void *outputCallbackRefCon,
         }
     }
 
-    // Extract H.264 Annex B data from CMSampleBuffer
+    // Extract Annex B data from CMSampleBuffer (codec-aware: H.264 or HEVC)
     CMFormatDescriptionRef format = CMSampleBufferGetFormatDescription(sampleBuffer);
     CMBlockBufferRef blockBuf = CMSampleBufferGetDataBuffer(sampleBuffer);
 
     size_t paramSetsLen = 0;
+    int isHEVC = state->codecType == 1;
 
     // Calculate parameter sets length for keyframes
     if (state->outputIsIDR && format) {
         size_t paramSetCount = 0;
-        CMVideoFormatDescriptionGetH264ParameterSetAtIndex(format, 0, NULL, NULL, &paramSetCount, NULL);
+        if (isHEVC) {
+            CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(format, 0, NULL, NULL, &paramSetCount, NULL);
+        } else {
+            CMVideoFormatDescriptionGetH264ParameterSetAtIndex(format, 0, NULL, NULL, &paramSetCount, NULL);
+        }
         for (size_t i = 0; i < paramSetCount; i++) {
             const uint8_t *paramSet;
             size_t paramSetSize;
-            CMVideoFormatDescriptionGetH264ParameterSetAtIndex(format, i, &paramSet, &paramSetSize, NULL, NULL);
+            if (isHEVC) {
+                CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(format, i, &paramSet, &paramSetSize, NULL, NULL);
+            } else {
+                CMVideoFormatDescriptionGetH264ParameterSetAtIndex(format, i, &paramSet, &paramSetSize, NULL, NULL);
+            }
             paramSetsLen += 4 + paramSetSize; // start code + data
         }
     }
@@ -831,7 +842,7 @@ static void vtOutputCallback(void *outputCallbackRefCon,
     // Get block buffer data
     size_t blockLen = CMBlockBufferGetDataLength(blockBuf);
 
-    // Total size: parameter sets (for IDR) + block data (AVCC → Annex B is same size: 4→4)
+    // Total size: parameter sets (for IDR) + block data (AVCC/hvCC → Annex B is same size: 4→4)
     size_t totalLen = paramSetsLen + blockLen;
 
     // Reuse output buffer — only reallocate when capacity is insufficient.
@@ -852,11 +863,19 @@ static void vtOutputCallback(void *outputCallbackRefCon,
     // Write parameter sets with Annex B start codes for keyframes
     if (state->outputIsIDR && format) {
         size_t paramSetCount = 0;
-        CMVideoFormatDescriptionGetH264ParameterSetAtIndex(format, 0, NULL, NULL, &paramSetCount, NULL);
+        if (isHEVC) {
+            CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(format, 0, NULL, NULL, &paramSetCount, NULL);
+        } else {
+            CMVideoFormatDescriptionGetH264ParameterSetAtIndex(format, 0, NULL, NULL, &paramSetCount, NULL);
+        }
         for (size_t i = 0; i < paramSetCount; i++) {
             const uint8_t *paramSet;
             size_t paramSetSize;
-            CMVideoFormatDescriptionGetH264ParameterSetAtIndex(format, i, &paramSet, &paramSetSize, NULL, NULL);
+            if (isHEVC) {
+                CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(format, i, &paramSet, &paramSetSize, NULL, NULL);
+            } else {
+                CMVideoFormatDescriptionGetH264ParameterSetAtIndex(format, i, &paramSet, &paramSetSize, NULL, NULL);
+            }
             state->outputBuf[offset++] = 0;
             state->outputBuf[offset++] = 0;
             state->outputBuf[offset++] = 0;
@@ -899,6 +918,8 @@ VTEncoderRef metal_vt_encoder_create(int width, int height, int fps_num, int fps
 
     state->width = width;
     state->height = height;
+    state->pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
+    state->codecType = 0; // H.264
     state->sem = dispatch_semaphore_create(0);
 
     NSDictionary *pixelBufferAttrs = @{
@@ -1004,6 +1025,140 @@ VTEncoderRef metal_vt_encoder_create(int width, int height, int fps_num, int fps
     return (VTEncoderRef)state;
 }
 
+VTEncoderRef metal_vt_encoder_create_v2(int width, int height, int fps_num, int fps_den,
+                                         int bitrate, int gop_frames, int preview,
+                                         int codec_type, int bit_depth) {
+    VTEncoderState *state = calloc(1, sizeof(VTEncoderState));
+    if (!state) return NULL;
+
+    state->width = width;
+    state->height = height;
+    state->codecType = codec_type;
+    state->sem = dispatch_semaphore_create(0);
+
+    // Select codec
+    CMVideoCodecType vtCodec;
+    if (codec_type == 1) {
+        vtCodec = kCMVideoCodecType_HEVC;
+    } else {
+        vtCodec = kCMVideoCodecType_H264;
+    }
+
+    // Select pixel format
+    OSType pixelFormat;
+    if (bit_depth == 10) {
+        pixelFormat = kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange;
+    } else {
+        pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
+    }
+    state->pixelFormat = pixelFormat;
+
+    NSDictionary *pixelBufferAttrs = @{
+        (NSString *)kCVPixelBufferWidthKey: @(width),
+        (NSString *)kCVPixelBufferHeightKey: @(height),
+        (NSString *)kCVPixelBufferPixelFormatTypeKey: @(pixelFormat),
+    };
+
+    VTCompressionSessionRef session;
+    OSStatus status = VTCompressionSessionCreate(
+        NULL,                           // allocator
+        width, height,
+        vtCodec,
+        NULL,                           // encoder specification
+        (__bridge CFDictionaryRef)pixelBufferAttrs,
+        NULL,                           // compressed data allocator
+        vtOutputCallback,
+        state,                          // callback ref
+        &session
+    );
+    if (status != noErr) {
+        dispatch_release(state->sem);
+        free(state);
+        return NULL;
+    }
+
+    // Configure encoder properties
+    VTSessionSetProperty(session, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue);
+
+    if (codec_type == 1) {
+        // HEVC profile selection
+        if (bit_depth == 10) {
+            VTSessionSetProperty(session, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_HEVC_Main10_AutoLevel);
+        } else {
+            VTSessionSetProperty(session, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_HEVC_Main_AutoLevel);
+        }
+        // Note: H264EntropyMode is H.264-specific, not set for HEVC
+    } else {
+        // H.264 profile selection (same as v1)
+        if (preview) {
+            VTSessionSetProperty(session, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_Baseline_AutoLevel);
+            VTSessionSetProperty(session, kVTCompressionPropertyKey_H264EntropyMode, kVTH264EntropyMode_CAVLC);
+        } else {
+            VTSessionSetProperty(session, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_High_AutoLevel);
+            VTSessionSetProperty(session, kVTCompressionPropertyKey_H264EntropyMode, kVTH264EntropyMode_CABAC);
+        }
+    }
+
+    VTSessionSetProperty(session, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse);
+
+    // Force immediate output — no internal frame buffering
+    int maxDelay = 0;
+    CFNumberRef delayRef = CFNumberCreate(NULL, kCFNumberIntType, &maxDelay);
+    VTSessionSetProperty(session, kVTCompressionPropertyKey_MaxFrameDelayCount, delayRef);
+    CFRelease(delayRef);
+
+    // BT.709 colorspace signaling
+    VTSessionSetProperty(session, kVTCompressionPropertyKey_ColorPrimaries, kCVImageBufferColorPrimaries_ITU_R_709_2);
+    VTSessionSetProperty(session, kVTCompressionPropertyKey_TransferFunction, kCVImageBufferTransferFunction_ITU_R_709_2);
+    VTSessionSetProperty(session, kVTCompressionPropertyKey_YCbCrMatrix, kCVImageBufferYCbCrMatrix_ITU_R_709_2);
+
+    // Set bitrate (constrained VBR: average + 1.2x peak)
+    CFNumberRef bitrateRef = CFNumberCreate(NULL, kCFNumberIntType, &bitrate);
+    VTSessionSetProperty(session, kVTCompressionPropertyKey_AverageBitRate, bitrateRef);
+    CFRelease(bitrateRef);
+
+    // Data rate limits: [bytes_per_second, period_in_seconds]
+    int peakBytesPerSec = (bitrate + bitrate / 5) / 8;
+    float periodSecs = 1.0f;
+    NSArray *limits = @[@(peakBytesPerSec), @(periodSecs)];
+    VTSessionSetProperty(session, kVTCompressionPropertyKey_DataRateLimits, (__bridge CFArrayRef)limits);
+
+    // Set max keyframe interval
+    if (gop_frames < 1) gop_frames = 60;
+    CFNumberRef kfRef = CFNumberCreate(NULL, kCFNumberIntType, &gop_frames);
+    VTSessionSetProperty(session, kVTCompressionPropertyKey_MaxKeyFrameInterval, kfRef);
+    CFRelease(kfRef);
+
+    // Set expected frame rate
+    float fps = (float)fps_num / (float)fps_den;
+    CFNumberRef fpsRef = CFNumberCreate(NULL, kCFNumberFloatType, &fps);
+    VTSessionSetProperty(session, kVTCompressionPropertyKey_ExpectedFrameRate, fpsRef);
+    CFRelease(fpsRef);
+
+    VTCompressionSessionPrepareToEncodeFrames(session);
+
+    state->session = session;
+
+    // Create a CVPixelBufferPool for reusable pixel buffers
+    NSDictionary *poolAttrs = @{
+        (NSString *)kCVPixelBufferWidthKey: @(width),
+        (NSString *)kCVPixelBufferHeightKey: @(height),
+        (NSString *)kCVPixelBufferPixelFormatTypeKey: @(pixelFormat),
+    };
+    CVPixelBufferPoolRef pool = NULL;
+    CVReturn poolRet = CVPixelBufferPoolCreate(
+        NULL,   // allocator
+        NULL,   // pool attributes
+        (__bridge CFDictionaryRef)poolAttrs,
+        &pool
+    );
+    if (poolRet == kCVReturnSuccess && pool) {
+        state->pixelBufferPool = pool;
+    }
+
+    return (VTEncoderRef)state;
+}
+
 void metal_vt_encoder_destroy(VTEncoderRef enc) {
     if (!enc) return;
     VTEncoderState *state = (VTEncoderState *)enc;
@@ -1036,7 +1191,7 @@ int metal_vt_encode(VTEncoderRef enc, void* nv12_ptr, int pitch, int width, int 
     } else {
         cvRet = CVPixelBufferCreate(
             NULL, width, height,
-            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            state->pixelFormat,
             NULL, &pixelBuffer
         );
     }
@@ -1044,29 +1199,35 @@ int metal_vt_encode(VTEncoderRef enc, void* nv12_ptr, int pitch, int width, int 
         return -2;
     }
 
-    // Copy NV12 data from the Metal unified-memory buffer into the VT pixel buffer.
+    // Copy NV12/P010 data from the Metal unified-memory buffer into the VT pixel buffer.
     // VT needs its own copy because it holds reference frames for P-frame prediction
     // beyond the lifetime of this call.
+    int is10bit = (state->pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange);
+    // For 10-bit (P010), each sample is 2 bytes; for 8-bit (NV12), 1 byte.
+    int sampleBytes = is10bit ? 2 : 1;
+
     CVPixelBufferLockBaseAddress(pixelBuffer, 0);
 
     // Y plane — bulk copy if strides match, row-by-row otherwise.
     uint8_t *vtY = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0);
     size_t vtYStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0);
     const uint8_t *srcY = (const uint8_t *)nv12_ptr;
+    int yRowBytes = width * sampleBytes;
     if (vtYStride == (size_t)pitch) {
         // Strides match — single memcpy for the entire Y plane.
         memcpy(vtY, srcY, (size_t)pitch * height);
     } else {
         for (int row = 0; row < height; row++) {
-            memcpy(vtY + row * vtYStride, srcY + row * pitch, width);
+            memcpy(vtY + row * vtYStride, srcY + row * pitch, yRowBytes);
         }
     }
 
     // UV plane — same bulk/row-by-row optimization.
+    // For both NV12 and P010, UV is interleaved (CbCr pairs) with half the height.
     uint8_t *vtUV = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1);
     size_t vtUVStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1);
     const uint8_t *srcUV = (const uint8_t *)nv12_ptr + pitch * height;
-    int chromaW = width;  // NV12 UV row is width bytes (width/2 CbCr pairs × 2 bytes)
+    int chromaW = width * sampleBytes;  // UV row width in bytes
     int chromaH = height / 2;
     if (vtUVStride == (size_t)pitch) {
         memcpy(vtUV, srcUV, (size_t)pitch * chromaH);

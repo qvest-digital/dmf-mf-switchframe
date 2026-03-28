@@ -16,6 +16,7 @@ import (
 	"unsafe"
 
 	"github.com/zsiec/switchframe/server/codec"
+	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -35,7 +36,8 @@ type GPUEncoder struct {
 	mu     sync.Mutex // serializes encode calls (VT callback is async)
 
 	// CPU fallback state — used only when vtEnc is nil
-	cpuBuf []byte
+	cpuBuf        []byte
+	pipelineCodec int // 0=AVC, 1=HEVC
 }
 
 // NewGPUEncoder creates a native VideoToolbox encoder that accepts GPU frames
@@ -104,6 +106,78 @@ func newGPUEncoderWithGOP(gpuCtx *Context, width, height, fpsNum, fpsDen, bitrat
 		height: height,
 		cpuBuf: make([]byte, yuvSize),
 	}, nil
+}
+
+// NewGPUEncoderForCodec creates a VideoToolbox encoder with explicit codec and
+// color format selection. For AVC, delegates to NewGPUEncoder. For HEVC,
+// creates a native VT session with Main or Main10 profile, falling back to
+// FFmpeg hevc_videotoolbox if native creation fails.
+func NewGPUEncoderForCodec(gpuCtx *Context, width, height, fpsNum, fpsDen, bitrate int,
+	pipelineCodec switcher.PipelineCodec, colorFormat switcher.PipelineColorFormat) (*GPUEncoder, error) {
+	if gpuCtx == nil || gpuCtx.mtl == nil {
+		return nil, ErrGPUNotAvailable
+	}
+
+	if pipelineCodec == switcher.CodecAVC {
+		return NewGPUEncoder(gpuCtx, width, height, fpsNum, fpsDen, bitrate)
+	}
+
+	// HEVC path
+	gopFrames := fpsNum * transition.DefaultGOPSecs / fpsDen
+	if gopFrames < 1 {
+		gopFrames = 60
+	}
+
+	codecType := C.int(1) // HEVC
+	bitDepth := C.int(8)
+	if colorFormat == switcher.ColorYUV422_10bit {
+		bitDepth = C.int(10)
+	}
+
+	vtEnc := C.metal_vt_encoder_create_v2(
+		C.int(width), C.int(height),
+		C.int(fpsNum), C.int(fpsDen),
+		C.int(bitrate), C.int(gopFrames),
+		C.int(0), // not preview
+		codecType, bitDepth,
+	)
+
+	if vtEnc != nil {
+		slog.Info("gpu: native VideoToolbox HEVC encoder created",
+			"size", fmt.Sprintf("%dx%d", width, height),
+			"bitrate", bitrate,
+			"bitDepth", int(bitDepth),
+		)
+		return &GPUEncoder{
+			vtEnc:         vtEnc,
+			gpuCtx:        gpuCtx,
+			width:         width,
+			height:        height,
+			pipelineCodec: 1,
+		}, nil
+	}
+
+	// Fallback: FFmpeg hevc_videotoolbox
+	slog.Warn("gpu: native VT HEVC encoder failed, falling back to FFmpeg hevc_videotoolbox")
+	enc, err := codec.NewFFmpegEncoder("hevc_videotoolbox", width, height, bitrate, fpsNum, fpsDen, transition.DefaultGOPSecs, nil)
+	if err != nil {
+		return nil, fmt.Errorf("gpu: no HEVC encoder available: %w", err)
+	}
+
+	yuvSize := yuvFrameSize(width, height)
+	return &GPUEncoder{
+		ffEnc:         enc,
+		gpuCtx:        gpuCtx,
+		width:         width,
+		height:        height,
+		cpuBuf:        make([]byte, yuvSize),
+		pipelineCodec: 1,
+	}, nil
+}
+
+// IsHEVC returns true if this encoder produces HEVC (H.265) output.
+func (e *GPUEncoder) IsHEVC() bool {
+	return e.pipelineCodec == 1
 }
 
 // EncodeGPU encodes a GPU-resident NV12 frame to H.264 Annex B.
