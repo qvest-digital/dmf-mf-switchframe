@@ -22,6 +22,21 @@ cudaError_t scale_bilinear_p210(
     const uint8_t* src, int srcW, int srcH, int srcPitch,
     cudaStream_t stream);
 
+// NV12 <-> P210 cross-format conversion + scale
+cudaError_t nv12_to_p210(
+    uint8_t* dst, int dstPitch,
+    const uint8_t* src, int srcPitch,
+    int width, int height,
+    cudaStream_t stream);
+cudaError_t scale_nv12_to_p210(
+    uint8_t* dst, int dstW, int dstH, int dstPitch,
+    const uint8_t* src, int srcW, int srcH, int srcPitch,
+    cudaStream_t stream);
+cudaError_t scale_p210_to_nv12(
+    uint8_t* dst, int dstW, int dstH, int dstPitch,
+    const uint8_t* src, int srcW, int srcH, int srcPitch,
+    cudaStream_t stream);
+
 // P210 composite
 cudaError_t pip_composite_p210(
     uint8_t* dst, int dstW, int dstH, int dstPitch,
@@ -445,6 +460,12 @@ func STMapWarpP210(ctx *Context, dst, src *GPUFrame, stmapS, stmapT []float32, w
 	return ctx.Sync()
 }
 
+// ScaleLanczos3P210 scales a P210 GPU frame using Lanczos-3 on CUDA.
+// CUDA kernel not yet implemented.
+func ScaleLanczos3P210(ctx *Context, dst, src *GPUFrame) error {
+	return fmt.Errorf("gpu: ScaleLanczos3P210 CUDA not yet implemented")
+}
+
 // BlendWipeP210 performs a wipe transition between two P210 frames on CUDA.
 // CUDA kernel not yet implemented.
 func BlendWipeP210(ctx *Context, dst, a, b, maskBuf *GPUFrame, position float64, dir WipeDirection, softEdge int) error {
@@ -458,30 +479,80 @@ func BlendStingerP210(ctx *Context, dst, base, overlay, alpha *GPUFrame) error {
 }
 
 // ScaleP210ToNV12On scales a P210 source to NV12 destination on GPU.
-// CUDA kernel not yet implemented; returns an error.
+// Combined bilinear scale + 10-bit->8-bit + 4:2:2->4:2:0 in one pass.
+// Runs on the specified work queue (nil = default stream).
 func ScaleP210ToNV12On(ctx *Context, dst, src *GPUFrame, q *GPUWorkQueue) error {
-	return fmt.Errorf("gpu: P210→NV12 scale not yet implemented for CUDA")
+	if ctx == nil || dst == nil || src == nil {
+		return ErrGPUNotAvailable
+	}
+
+	stream := cudaStream(q)
+	if stream == nil {
+		stream = ctx.stream
+	}
+
+	rc := C.scale_p210_to_nv12(
+		(*C.uint8_t)(unsafe.Pointer(uintptr(dst.DevPtr))),
+		C.int(dst.Width), C.int(dst.Height), C.int(dst.Pitch),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(src.DevPtr))),
+		C.int(src.Width), C.int(src.Height), C.int(src.Pitch),
+		stream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: ScaleP210ToNV12On failed: %d", rc)
+	}
+
+	if syncRc := C.cudaStreamSynchronize(stream); syncRc != C.cudaSuccess {
+		return fmt.Errorf("gpu: ScaleP210ToNV12On sync failed: %d", syncRc)
+	}
+	return nil
 }
 
 // ConvertNV12ToP210 converts an NV12 GPU frame to P210 format on CUDA.
 // Reads uint8 NV12 (4:2:0), writes uint16 P210 (4:2:2) with <<2 bit promotion.
 // UV plane is upsampled from half-height (4:2:0) to full-height (4:2:2).
-// TODO: real CUDA kernel implementation pending GPU server testing.
+// Frames must have the same resolution.
 func ConvertNV12ToP210(ctx *Context, dst, src *GPUFrame) error {
 	if ctx == nil || dst == nil || src == nil {
 		return ErrGPUNotAvailable
 	}
-	return fmt.Errorf("gpu: ConvertNV12ToP210 CUDA kernel not yet implemented")
+	if dst.Width != src.Width || dst.Height != src.Height {
+		return fmt.Errorf("gpu: ConvertNV12ToP210 dimension mismatch: dst %dx%d vs src %dx%d",
+			dst.Width, dst.Height, src.Width, src.Height)
+	}
+
+	rc := C.nv12_to_p210(
+		(*C.uint8_t)(unsafe.Pointer(uintptr(dst.DevPtr))),
+		C.int(dst.Pitch),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(src.DevPtr))),
+		C.int(src.Pitch),
+		C.int(src.Width), C.int(src.Height),
+		ctx.stream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: ConvertNV12ToP210 failed: %d", rc)
+	}
+	return ctx.Sync()
 }
 
 // ScaleNV12ToP210 scales an NV12 GPU frame to P210 format with bilinear
 // interpolation on CUDA. Combined scale + format convert in one pass.
-// TODO: real CUDA kernel implementation pending GPU server testing.
 func ScaleNV12ToP210(ctx *Context, dst, src *GPUFrame) error {
 	if ctx == nil || dst == nil || src == nil {
 		return ErrGPUNotAvailable
 	}
-	return fmt.Errorf("gpu: ScaleNV12ToP210 CUDA kernel not yet implemented")
+
+	rc := C.scale_nv12_to_p210(
+		(*C.uint8_t)(unsafe.Pointer(uintptr(dst.DevPtr))),
+		C.int(dst.Width), C.int(dst.Height), C.int(dst.Pitch),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(src.DevPtr))),
+		C.int(src.Width), C.int(src.Height), C.int(src.Pitch),
+		ctx.stream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: ScaleNV12ToP210 failed: %d", rc)
+	}
+	return ctx.Sync()
 }
 
 // FillBlackP210 fills a P210 frame with 10-bit limited-range black on CUDA.

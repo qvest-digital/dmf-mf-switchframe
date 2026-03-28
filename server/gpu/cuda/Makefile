@@ -1,7 +1,7 @@
 NVCC := nvcc
 ARCH := -arch=sm_89  # Ada Lovelace (L4)
 CFLAGS := -O3 -Xcompiler -fPIC -std=c++17
-SOURCES := convert.cu blend.cu key.cu scale.cu composite.cu dsk.cu stmap.cu fruc.cu v210.cu preprocess.cu mask_smooth.cu colorgrade.cu blur.cu sharpness.cu neural_key.cu occlusion_fuse.cu ar_composite.cu
+SOURCES := convert.cu convert_p210.cu blend.cu key.cu scale.cu composite.cu dsk.cu stmap.cu fruc.cu v210.cu preprocess.cu mask_smooth.cu colorgrade.cu blur.cu sharpness.cu neural_key.cu occlusion_fuse.cu ar_composite.cu
 OBJECTS := $(SOURCES:.cu=.o)
 LIBRARY := libswitchframe_cuda.a
 
