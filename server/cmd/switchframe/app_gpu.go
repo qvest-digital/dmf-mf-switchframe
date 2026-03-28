@@ -95,12 +95,19 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 	pf := sw.PipelineFormat()
 
 	// Create GPU encoder (VideoToolbox on macOS, NVENC on Linux).
-	encoder, err := gpu.NewGPUEncoder(gs.ctx, pf.Width, pf.Height, pf.FPSNum, pf.FPSDen, 8_000_000)
+	// Codec-aware: creates HEVC encoder for professional/standard-hevc profiles.
+	encoder, err := gpu.NewGPUEncoderForCodec(gs.ctx, pf.Width, pf.Height, pf.FPSNum, pf.FPSDen,
+		8_000_000, pf.Color.Codec, pf.Color.ColorFormat)
 	if err != nil {
 		slog.Warn("GPU encoder failed, falling back to CPU pipeline", "error", err)
 		return
 	}
 	gs.encoder = encoder
+	slog.Info("GPU encoder created",
+		"codec", pf.Color.Codec,
+		"colorFormat", pf.Color.ColorFormat,
+		"isHEVC", encoder.IsHEVC(),
+	)
 
 	// Create GPU pipeline.
 	gpuPipeline := gpu.NewGPUPipeline(gs.ctx, gs.pool)
