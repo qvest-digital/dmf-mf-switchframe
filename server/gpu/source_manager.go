@@ -373,12 +373,20 @@ func (m *GPUSourceManager) uploadAndScaleNV12(entry *gpuSourceEntry, dst *GPUFra
 	return nil
 }
 
-// uploadAndScaleP210 handles the P210 upload path: UploadYUV420PToP210 for
-// matching dimensions, GPU ScaleBilinearP210 for mismatched resolutions.
-// Falls back to CPU scaling if GPU scaling fails.
+// uploadAndScaleP210 handles the P210 upload path. Detects whether the input
+// is YUV420P 8-bit (w*h*3/2 bytes) or YUV422P10LE (w*h*4 bytes) and routes
+// to the appropriate upload function. The source decoder may upconvert
+// YUV420P → YUV422P10LE when the pipeline is in professional mode.
 func (m *GPUSourceManager) uploadAndScaleP210(entry *gpuSourceEntry, dst *GPUFrame, yuv []byte, sourceKey string, w, h int) error {
+	// Detect input format: YUV422P10LE (w*h*4) vs YUV420P (w*h*3/2).
+	expected10bit := w * h * 4
+	is10bitInput := len(yuv) >= expected10bit
+
 	if w == dst.Width && h == dst.Height {
-		// Same resolution: direct upload to P210 pool frame.
+		// Same resolution: direct upload.
+		if is10bitInput {
+			return Upload10(m.ctx, dst, yuv, w, h)
+		}
 		return UploadYUV420PToP210(m.ctx, dst, yuv, w, h)
 	}
 
@@ -403,9 +411,15 @@ func (m *GPUSourceManager) uploadAndScaleP210(entry *gpuSourceEntry, dst *GPUFra
 		return m.uploadCPUScaled(entry, dst, yuv, w, h)
 	}
 
-	if err := UploadYUV420PToP210(m.ctx, srcFrame, yuv, w, h); err != nil {
+	var uploadErr error
+	if is10bitInput {
+		uploadErr = Upload10(m.ctx, srcFrame, yuv, w, h)
+	} else {
+		uploadErr = UploadYUV420PToP210(m.ctx, srcFrame, yuv, w, h)
+	}
+	if uploadErr != nil {
 		srcFrame.Release()
-		return err
+		return uploadErr
 	}
 
 	if err := ScaleBilinearP210(m.ctx, dst, srcFrame); err != nil {
