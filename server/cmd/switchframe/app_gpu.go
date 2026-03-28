@@ -290,9 +290,9 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 			}
 		}
 
-		frameCodec := "H264"
+		frameCodec := "h264"
 		if pipelineCodec == switcher.CodecHEVC {
-			frameCodec = "H265"
+			frameCodec = "h265"
 		}
 
 		frame := &media.VideoFrame{
