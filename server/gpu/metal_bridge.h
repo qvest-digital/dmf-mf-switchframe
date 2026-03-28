@@ -350,6 +350,13 @@ void metal_yuv422p10_to_p210_cpu(void* dst, int dstPitch,
 void metal_p210_to_yuv422p10_cpu(const void* src, int srcPitch,
                                   void* dst, int width, int height);
 
+// YUV420P (8-bit planar 4:2:0) → P210 (10-bit semi-planar 4:2:2).
+// Bit-promotes each sample (<<2) and upsamples chroma from half to full height
+// by duplicating rows. Writes directly to unified memory.
+void metal_yuv420p_to_p210_cpu(void* dst, int dstPitch,
+                                const void* y, const void* cb, const void* cr,
+                                int width, int height);
+
 // --- P210 (10-bit 4:2:2) blend kernels ---
 typedef struct {
     uint32_t width;

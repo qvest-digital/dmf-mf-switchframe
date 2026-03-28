@@ -162,3 +162,9 @@ func FillBlackP210(ctx *Context, frame *GPUFrame) error {
 	}
 	return nil
 }
+
+// UploadYUV420PToP210 is not supported on CUDA (requires unified memory).
+// Use Upload to NV12 temp + ConvertNV12ToP210 instead.
+func UploadYUV420PToP210(ctx *Context, frame *GPUFrame, yuv []byte, width, height int) error {
+	return fmt.Errorf("gpu: UploadYUV420PToP210 not supported on CUDA (use NV12→P210 kernel)")
+}

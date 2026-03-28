@@ -1442,6 +1442,50 @@ void metal_yuv422p10_to_p210_cpu(void* dst, int dstPitch,
 }
 
 // ============================================================================
+// Direct CPU YUV420P (8-bit) → P210 (10-bit 4:2:2) conversion
+// ============================================================================
+
+void metal_yuv420p_to_p210_cpu(void* dst, int dstPitch,
+                                const void* y, const void* cb, const void* cr,
+                                int width, int height) {
+    uint8_t* dstBytes = (uint8_t*)dst;
+    const uint8_t* yPlane = (const uint8_t*)y;
+    const uint8_t* cbPlane = (const uint8_t*)cb;
+    const uint8_t* crPlane = (const uint8_t*)cr;
+
+    // Y plane: uint8 → uint16 with <<2 bit promotion.
+    int dstStrideU16 = dstPitch / 2;
+    uint16_t* dstY16 = (uint16_t*)dstBytes;
+    for (int row = 0; row < height; row++) {
+        const uint8_t* srcRow = yPlane + row * width;
+        uint16_t* dstRow = dstY16 + row * dstStrideU16;
+        for (int col = 0; col < width; col++) {
+            dstRow[col] = (uint16_t)srcRow[col] << 2;
+        }
+    }
+
+    // UV plane: 4:2:0 → 4:2:2 (duplicate rows) + interleave + <<2.
+    int chromaW = width / 2;
+    int chromaH = height / 2;
+    uint16_t* dstUV = (uint16_t*)(dstBytes + dstPitch * height);
+
+    for (int srcRow = 0; srcRow < chromaH; srcRow++) {
+        const uint8_t* cbRow = cbPlane + srcRow * chromaW;
+        const uint8_t* crRow = crPlane + srcRow * chromaW;
+        uint16_t* dstRow0 = dstUV + (srcRow * 2) * dstStrideU16;
+        uint16_t* dstRow1 = dstUV + (srcRow * 2 + 1) * dstStrideU16;
+        for (int col = 0; col < chromaW; col++) {
+            uint16_t cb16 = (uint16_t)cbRow[col] << 2;
+            uint16_t cr16 = (uint16_t)crRow[col] << 2;
+            dstRow0[col * 2]     = cb16;
+            dstRow0[col * 2 + 1] = cr16;
+            dstRow1[col * 2]     = cb16;
+            dstRow1[col * 2 + 1] = cr16;
+        }
+    }
+}
+
+// ============================================================================
 // Direct CPU P210 → YUV422P10LE conversion (Apple Silicon unified memory)
 // ============================================================================
 
