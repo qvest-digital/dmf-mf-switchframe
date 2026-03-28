@@ -21,5 +21,11 @@ func (e *FFmpegHWFramesEncoder) EncodeNV12CUDA(yDevPtr, uvDevPtr unsafe.Pointer,
 	return nil, false, fmt.Errorf("CUDA hw_frames encoder not available")
 }
 
+// NewFFmpegHWFramesEncoderHEVC returns an error on non-CUDA builds.
+func NewFFmpegHWFramesEncoderHEVC(cudaCtx unsafe.Pointer, width, height, bitrate, fpsNum, fpsDen, gopSecs int,
+	is10bit bool) (*FFmpegHWFramesEncoder, error) {
+	return nil, fmt.Errorf("HEVC NVENC not available (build without CUDA)")
+}
+
 // Close is a no-op stub.
 func (e *FFmpegHWFramesEncoder) Close() {}

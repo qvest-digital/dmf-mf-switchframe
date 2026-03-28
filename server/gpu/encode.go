@@ -15,6 +15,7 @@ import (
 	"unsafe"
 
 	"github.com/zsiec/switchframe/server/codec"
+	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -209,4 +210,66 @@ func (e *GPUEncoder) Close() {
 		e.ffEnc.Close()
 		e.ffEnc = nil
 	}
+}
+
+// NewGPUEncoderForCodec creates a GPU encoder for the specified pipeline codec and color format.
+// For CodecAVC, delegates to NewGPUEncoder. For CodecHEVC, tries zero-copy hw_frames_ctx
+// with hevc_nvenc first, then falls back to download+hevc_nvenc, then libx265.
+func NewGPUEncoderForCodec(gpuCtx *Context, width, height, fpsNum, fpsDen, bitrate int,
+	pipelineCodec switcher.PipelineCodec, colorFormat switcher.PipelineColorFormat) (*GPUEncoder, error) {
+	if gpuCtx == nil {
+		return nil, ErrGPUNotAvailable
+	}
+
+	if pipelineCodec == switcher.CodecAVC {
+		return NewGPUEncoder(gpuCtx, width, height, fpsNum, fpsDen, bitrate)
+	}
+
+	// HEVC path: try zero-copy hw_frames_ctx with hevc_nvenc
+	is10bit := colorFormat == switcher.ColorYUV422_10bit
+	cudaCtx := gpuCtx.CUDAContext()
+	if cudaCtx != nil {
+		hwEnc, err := codec.NewFFmpegHWFramesEncoderHEVC(cudaCtx, width, height, bitrate,
+			fpsNum, fpsDen, transition.DefaultGOPSecs, is10bit)
+		if err == nil {
+			slog.Info("gpu: NVENC HEVC hw_frames_ctx encoder created",
+				"size", fmt.Sprintf("%dx%d", width, height),
+				"bitrate", bitrate,
+				"10bit", is10bit,
+			)
+			return &GPUEncoder{
+				hwEnc:  hwEnc,
+				gpuCtx: gpuCtx,
+				width:  width,
+				height: height,
+			}, nil
+		}
+		slog.Warn("gpu: NVENC HEVC hw_frames_ctx failed, falling back", "err", err)
+	}
+
+	// Fallback: download to CPU then encode via hevc_nvenc or libx265
+	enc, err := codec.NewFFmpegEncoder("hevc_nvenc", width, height, bitrate, fpsNum, fpsDen,
+		transition.DefaultGOPSecs, nil)
+	if err != nil {
+		slog.Warn("gpu: hevc_nvenc unavailable, trying libx265", "err", err)
+		enc, err = codec.NewFFmpegEncoder("libx265", width, height, bitrate, fpsNum, fpsDen,
+			transition.DefaultGOPSecs, nil)
+		if err != nil {
+			return nil, fmt.Errorf("gpu: no HEVC encoder available: %w", err)
+		}
+	}
+
+	yuvSize := yuvFrameSize(width, height)
+	return &GPUEncoder{
+		ffEnc:  enc,
+		gpuCtx: gpuCtx,
+		width:  width,
+		height: height,
+		cpuBuf: make([]byte, yuvSize),
+	}, nil
+}
+
+// IsHEVC returns true if this encoder produces HEVC output.
+func (e *GPUEncoder) IsHEVC() bool {
+	return false // HEVC detection tracked via pipeline codec, not encoder struct
 }

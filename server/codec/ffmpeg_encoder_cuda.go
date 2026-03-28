@@ -206,6 +206,175 @@ static int ffenc_open_cuda_hw(ffenc_hw_frames_t* h, int width, int height,
 	return 0;
 }
 
+// ffenc_open_cuda_hw_v2 opens an NVENC encoder with hw_frames_ctx, parameterized
+// for codec, pixel format, and profile. This supports both H.264 and HEVC with
+// configurable bit depth (NV12 for 8-bit, P010LE for 10-bit).
+// Returns 0 on success, negative on error.
+static int ffenc_open_cuda_hw_v2(ffenc_hw_frames_t* h, int width, int height,
+                                  int bitrate, int fps_num, int fps_den,
+                                  int gop_secs, void* cuda_ctx, int preview,
+                                  const char* codec_name, int sw_pix_fmt,
+                                  const char* profile_name) {
+	memset(h, 0, sizeof(ffenc_hw_frames_t));
+
+	const AVCodec* codec = avcodec_find_encoder_by_name(codec_name);
+	if (!codec) return -1;
+
+	h->base.ctx = avcodec_alloc_context3(codec);
+	if (!h->base.ctx) return -2;
+
+	h->base.width = width;
+	h->base.height = height;
+	h->base.ctx->width = width;
+	h->base.ctx->height = height;
+	h->base.ctx->time_base = (AVRational){fps_den, fps_num};
+	h->base.ctx->framerate = (AVRational){fps_num, fps_den};
+	h->base.ctx->bit_rate = bitrate;
+	h->base.ctx->rc_max_rate = bitrate + bitrate / 5;
+	h->base.ctx->rc_buffer_size = bitrate + bitrate / 5;
+	h->base.ctx->gop_size = fps_num * gop_secs / fps_den;
+	h->base.ctx->max_b_frames = 0;
+	h->base.ctx->pix_fmt = AV_PIX_FMT_CUDA;
+
+	// BT.709 colorspace signaling
+	h->base.ctx->color_primaries = AVCOL_PRI_BT709;
+	h->base.ctx->color_trc = AVCOL_TRC_BT709;
+	h->base.ctx->colorspace = AVCOL_SPC_BT709;
+	h->base.ctx->color_range = AVCOL_RANGE_MPEG;
+
+	// Determine if this is an H.264 codec (for H.264-specific options like level).
+	int is_h264 = (strcmp(codec_name, "h264_nvenc") == 0);
+
+	if (preview) {
+		av_opt_set(h->base.ctx->priv_data, "preset", "p1", 0);
+		av_opt_set(h->base.ctx->priv_data, "profile", profile_name, 0);
+		av_opt_set(h->base.ctx->priv_data, "delay", "0", 0);
+		av_opt_set_int(h->base.ctx->priv_data, "spatial-aq", 0, 0);
+		av_opt_set_int(h->base.ctx->priv_data, "temporal-aq", 0, 0);
+		av_opt_set_int(h->base.ctx->priv_data, "no-scenecut", 1, 0);
+		av_opt_set_int(h->base.ctx->priv_data, "forced-idr", 1, 0);
+		av_opt_set(h->base.ctx->priv_data, "rc", "cbr", 0);
+		av_opt_set(h->base.ctx->priv_data, "aud", "1", 0);
+		// H.264 level auto-selection; HEVC auto-levels are fine
+		if (is_h264) {
+			float fps_f = (float)fps_num / (float)fps_den;
+			int level;
+			if (width <= 1280 && height <= 720)
+				level = 31;
+			else if (width <= 1920 && height <= 1080 && fps_f <= 30.5f)
+				level = 40;
+			else
+				level = 42;
+			av_opt_set_int(h->base.ctx->priv_data, "level", level, 0);
+		}
+	} else {
+		av_opt_set(h->base.ctx->priv_data, "preset", "p4", 0);
+		av_opt_set(h->base.ctx->priv_data, "profile", profile_name, 0);
+		av_opt_set(h->base.ctx->priv_data, "delay", "0", 0);
+		av_opt_set_int(h->base.ctx->priv_data, "spatial-aq", 1, 0);
+		av_opt_set_int(h->base.ctx->priv_data, "aq-strength", 8, 0);
+		av_opt_set_int(h->base.ctx->priv_data, "no-scenecut", 1, 0);
+		av_opt_set_int(h->base.ctx->priv_data, "forced-idr", 1, 0);
+		av_opt_set(h->base.ctx->priv_data, "rc", "cbr", 0);
+		av_opt_set_int(h->base.ctx->priv_data, "temporal-aq", 0, 0);
+		av_opt_set(h->base.ctx->priv_data, "aud", "1", 0);
+		if (is_h264) {
+			float fps_f = (float)fps_num / (float)fps_den;
+			int level;
+			if (width <= 1280 && height <= 720)
+				level = 31;
+			else if (width <= 1920 && height <= 1080 && fps_f <= 30.5f)
+				level = 40;
+			else
+				level = 42;
+			av_opt_set_int(h->base.ctx->priv_data, "level", level, 0);
+		}
+	}
+
+	// --- Create CUDA hw_device_ctx from existing CUcontext ---
+	h->hw_device_ref = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_CUDA);
+	if (!h->hw_device_ref) {
+		avcodec_free_context(&h->base.ctx);
+		return -10;
+	}
+	AVHWDeviceContext* device_ctx = (AVHWDeviceContext*)h->hw_device_ref->data;
+	AVCUDADeviceContext* cuda_device = (AVCUDADeviceContext*)device_ctx->hwctx;
+	cuda_device->cuda_ctx = (CUcontext)cuda_ctx;
+	cuda_device->stream = NULL;
+
+	int rc = av_hwdevice_ctx_init(h->hw_device_ref);
+	if (rc < 0) {
+		av_buffer_unref(&h->hw_device_ref);
+		avcodec_free_context(&h->base.ctx);
+		return -11;
+	}
+
+	// --- Create hw_frames_ctx with the specified sw_format ---
+	h->hw_frames_ref = av_hwframe_ctx_alloc(h->hw_device_ref);
+	if (!h->hw_frames_ref) {
+		av_buffer_unref(&h->hw_device_ref);
+		avcodec_free_context(&h->base.ctx);
+		return -12;
+	}
+	AVHWFramesContext* frames_ctx = (AVHWFramesContext*)h->hw_frames_ref->data;
+	frames_ctx->format    = AV_PIX_FMT_CUDA;
+	frames_ctx->sw_format = (enum AVPixelFormat)sw_pix_fmt;
+	frames_ctx->width     = width;
+	frames_ctx->height    = height;
+	frames_ctx->initial_pool_size = 1;
+
+	rc = av_hwframe_ctx_init(h->hw_frames_ref);
+	if (rc < 0) {
+		av_buffer_unref(&h->hw_frames_ref);
+		av_buffer_unref(&h->hw_device_ref);
+		avcodec_free_context(&h->base.ctx);
+		return -13;
+	}
+
+	h->base.ctx->hw_frames_ctx = av_buffer_ref(h->hw_frames_ref);
+	if (!h->base.ctx->hw_frames_ctx) {
+		av_buffer_unref(&h->hw_frames_ref);
+		av_buffer_unref(&h->hw_device_ref);
+		avcodec_free_context(&h->base.ctx);
+		return -14;
+	}
+
+	rc = avcodec_open2(h->base.ctx, codec, NULL);
+	if (rc < 0) {
+		av_buffer_unref(&h->hw_frames_ref);
+		av_buffer_unref(&h->hw_device_ref);
+		avcodec_free_context(&h->base.ctx);
+		return -3;
+	}
+
+	h->hw_frame = av_frame_alloc();
+	if (!h->hw_frame) {
+		av_buffer_unref(&h->hw_frames_ref);
+		av_buffer_unref(&h->hw_device_ref);
+		avcodec_free_context(&h->base.ctx);
+		return -4;
+	}
+	rc = av_hwframe_get_buffer(h->hw_frames_ref, h->hw_frame, 0);
+	if (rc < 0) {
+		av_frame_free(&h->hw_frame);
+		av_buffer_unref(&h->hw_frames_ref);
+		av_buffer_unref(&h->hw_device_ref);
+		avcodec_free_context(&h->base.ctx);
+		return -15;
+	}
+
+	h->base.pkt = av_packet_alloc();
+	if (!h->base.pkt) {
+		av_frame_free(&h->hw_frame);
+		av_buffer_unref(&h->hw_frames_ref);
+		av_buffer_unref(&h->hw_device_ref);
+		avcodec_free_context(&h->base.ctx);
+		return -6;
+	}
+
+	return 0;
+}
+
 // ffenc_encode_nv12_cuda encodes one NV12 frame from CUDA device memory.
 // y_dev_ptr points to Y plane, uv_dev_ptr points to UV plane (both device pointers).
 // pitch is the row stride in bytes.
@@ -465,4 +634,73 @@ func (e *FFmpegHWFramesEncoder) Close() {
 		C.ffenc_close_hw_frames(&e.handle)
 		e.closed = true
 	}
+}
+
+// NewFFmpegHWFramesEncoderHEVC creates an NVENC HEVC encoder with hw_frames_ctx.
+// When is10bit is true, uses P010LE sw_format and main10 profile for 10-bit output.
+// When is10bit is false, uses NV12 sw_format and main profile for 8-bit output.
+func NewFFmpegHWFramesEncoderHEVC(cudaCtx unsafe.Pointer, width, height, bitrate, fpsNum, fpsDen, gopSecs int,
+	is10bit bool) (*FFmpegHWFramesEncoder, error) {
+	initFFmpegLogLevel()
+
+	if cudaCtx == nil {
+		return nil, fmt.Errorf("cuda context is nil")
+	}
+	if width <= 0 || height <= 0 {
+		return nil, fmt.Errorf("invalid dimensions: %dx%d", width, height)
+	}
+	if bitrate <= 0 {
+		return nil, fmt.Errorf("invalid bitrate: %d", bitrate)
+	}
+	if fpsNum <= 0 || fpsDen <= 0 {
+		return nil, fmt.Errorf("invalid fps: %d/%d", fpsNum, fpsDen)
+	}
+	if gopSecs <= 0 {
+		return nil, fmt.Errorf("invalid gopSecs: %d", gopSecs)
+	}
+
+	codecName := C.CString("hevc_nvenc")
+	defer C.free(unsafe.Pointer(codecName))
+
+	var swFormat C.int
+	var profileName *C.char
+	if is10bit {
+		swFormat = C.AV_PIX_FMT_P010LE
+		profileName = C.CString("main10")
+	} else {
+		swFormat = C.AV_PIX_FMT_NV12
+		profileName = C.CString("main")
+	}
+	defer C.free(unsafe.Pointer(profileName))
+
+	e := &FFmpegHWFramesEncoder{}
+	FFmpegOpenMu.Lock()
+	rc := C.ffenc_open_cuda_hw_v2(&e.handle,
+		C.int(width), C.int(height), C.int(bitrate),
+		C.int(fpsNum), C.int(fpsDen), C.int(gopSecs),
+		cudaCtx, C.int(0), // not preview
+		codecName, swFormat, profileName)
+	FFmpegOpenMu.Unlock()
+	if rc != 0 {
+		desc := map[int]string{
+			-1:  "HEVC NVENC codec not found",
+			-2:  "context allocation failed",
+			-3:  "avcodec_open2 failed",
+			-4:  "frame allocation failed",
+			-6:  "packet allocation failed",
+			-10: "CUDA hw_device_ctx alloc failed",
+			-11: "CUDA hw_device_ctx init failed",
+			-12: "hw_frames_ctx alloc failed",
+			-13: "hw_frames_ctx init failed",
+			-14: "hw_frames_ctx ref failed",
+			-15: "hw_frame get_buffer failed",
+		}
+		msg := desc[int(rc)]
+		if msg == "" {
+			msg = "unknown error"
+		}
+		return nil, fmt.Errorf("failed to create HEVC NVENC hw_frames encoder: %s (code %d)", msg, int(rc))
+	}
+	e.cudaCtx = cudaCtx
+	return e, nil
 }

@@ -43,6 +43,12 @@ func NewFFmpegHWFramesEncoder(cudaCtx unsafe.Pointer, width, height, bitrate, fp
 	return nil, errFFmpegDisabled
 }
 
+// NewFFmpegHWFramesEncoderHEVC returns an error when FFmpeg is not available.
+func NewFFmpegHWFramesEncoderHEVC(cudaCtx unsafe.Pointer, width, height, bitrate, fpsNum, fpsDen, gopSecs int,
+	is10bit bool) (*FFmpegHWFramesEncoder, error) {
+	return nil, errFFmpegDisabled
+}
+
 // EncodeNV12CUDA is a stub that always returns an error.
 func (e *FFmpegHWFramesEncoder) EncodeNV12CUDA(yDevPtr, uvDevPtr unsafe.Pointer, pitch int, pts int64, forceIDR bool, cudaStream unsafe.Pointer) ([]byte, bool, error) {
 	return nil, false, errFFmpegDisabled
