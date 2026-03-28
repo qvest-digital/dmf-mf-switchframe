@@ -145,7 +145,7 @@ func (n *gpuAISegmentNode) applyBackground(frame, mask *GPUFrame, bg string) err
 	case bg == "" || bg == "transparent":
 		// Transparent = black background. Since NV12/H.264 has no alpha channel,
 		// "transparent" means background removed (replaced with black).
-		if err := FillBlack(n.ctx, n.blurTmp); err != nil {
+		if err := GPUFillBlackDispatch(n.ctx, n.blurTmp); err != nil {
 			return err
 		}
 
@@ -168,7 +168,7 @@ func (n *gpuAISegmentNode) applyBackground(frame, mask *GPUFrame, bg string) err
 		if err != nil {
 			return err
 		}
-		if err := FillColor(n.ctx, n.blurTmp, YUVColor{y, cb, cr}); err != nil {
+		if err := GPUFillColorDispatch(n.ctx, n.blurTmp, YUVColor{y, cb, cr}); err != nil {
 			return err
 		}
 
@@ -178,7 +178,7 @@ func (n *gpuAISegmentNode) applyBackground(frame, mask *GPUFrame, bg string) err
 
 	// Composite: person from original frame onto the replacement background.
 	// BlendStinger reads mask Y-plane as per-pixel alpha (255=foreground).
-	return BlendStinger(n.ctx, frame, n.blurTmp, frame, mask)
+	return GPUBlendStingerDispatch(n.ctx, frame, n.blurTmp, frame, mask)
 }
 
 func (n *gpuAISegmentNode) Close() error {

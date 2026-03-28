@@ -191,7 +191,7 @@ func (n *gpuKeyNode) applyKey(frame, fillGPU *GPUFrame, key *EnabledKeySnapshot)
 	//   dst[i] = lerp(base[i], overlay[i], alpha[i])
 	// Using frame as both dst and base is safe because blend_alpha
 	// indexes by unique thread gid — no two threads access the same pixel.
-	if err := BlendStinger(n.ctx, frame, frame, fillGPU, n.maskBuf); err != nil {
+	if err := GPUBlendStingerDispatch(n.ctx, frame, frame, fillGPU, n.maskBuf); err != nil {
 		return err
 	}
 

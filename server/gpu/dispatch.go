@@ -30,6 +30,15 @@ func GPUFillBlackDispatch(ctx *Context, frame *GPUFrame) error {
 	return FillBlack(ctx, frame)
 }
 
+// GPUFillColorDispatch fills a frame with a constant YUV color, routing to the
+// correct format. For P210, promotes 8-bit YUVColor values to 10-bit (<<2).
+func GPUFillColorDispatch(ctx *Context, frame *GPUFrame, color YUVColor) error {
+	if frame != nil && frame.Format == GPUFormatP210 {
+		return FillColorP210(ctx, frame, uint16(color.Y)<<2, uint16(color.Cb)<<2, uint16(color.Cr)<<2)
+	}
+	return FillColor(ctx, frame, color)
+}
+
 // GPUUploadDispatch uploads a CPU planar buffer to a GPU frame, selecting the
 // correct kernel based on the frame's format.
 //   - NV12: expects YUV420p (w*h*3/2 bytes), calls Upload.
