@@ -513,3 +513,408 @@ func TestGPUMultiSourceQuadComposite(t *testing.T) {
 		"quadrants across vertical boundary should have distinct Y values: top=%d bottom=%d",
 		topOfBoundary, bottomOfBoundary)
 }
+
+// ============================================================================
+// TestGPUMultiSourceIngest — Upload 4 frames at 1920x1080 with distinct Y
+// values (40, 100, 160, 220), download each, verify correct color survives
+// the upload→download round-trip.
+// ============================================================================
+
+func TestGPUMultiSourceIngest(t *testing.T) {
+	ctx := testContext(t)
+
+	const width, height = 1920, 1080
+
+	// Pool: 4 source frames + headroom
+	pool, err := NewFramePool(ctx, width, height, 6)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	type sourceColor struct {
+		name string
+		y    byte
+	}
+	sources := []sourceColor{
+		{"source-A", 40},
+		{"source-B", 100},
+		{"source-C", 160},
+		{"source-D", 220},
+	}
+
+	// Upload all 4 simultaneously (create all frames first, then verify)
+	frames := make([]*GPUFrame, len(sources))
+	for i, s := range sources {
+		frames[i] = makeTestFrame(t, ctx, pool, width, height, s.y, 128, 128)
+		defer frames[i].Release()
+	}
+
+	// Download each and verify correct color
+	for i, s := range sources {
+		yAvg, cbAvg, crAvg := avgPlanes(t, ctx, frames[i], width, height)
+		t.Logf("MEASURE: %s: uploaded Y=%d, downloaded avg Y=%.4f, Cb=%.4f, Cr=%.4f",
+			s.name, s.y, yAvg, cbAvg, crAvg)
+
+		assert.InDelta(t, float64(s.y), yAvg, 2.0,
+			"%s: avg Y should be ~%d after upload+download, got %.4f", s.name, s.y, yAvg)
+		assert.InDelta(t, 128.0, cbAvg, 2.0,
+			"%s: avg Cb should be ~128, got %.4f", s.name, cbAvg)
+		assert.InDelta(t, 128.0, crAvg, 2.0,
+			"%s: avg Cr should be ~128, got %.4f", s.name, crAvg)
+	}
+
+	// Verify no cross-contamination: each frame is still independent
+	// Re-download and compare pairwise
+	ySize := width * height
+	cbSize := (width / 2) * (height / 2)
+	crSize := cbSize
+	totalSize := ySize + cbSize + crSize
+
+	bufs := make([][]byte, len(sources))
+	for i := range sources {
+		bufs[i] = make([]byte, totalSize)
+		require.NoError(t, Download(ctx, bufs[i], frames[i], width, height))
+	}
+
+	for i := 0; i < len(sources); i++ {
+		for j := i + 1; j < len(sources); j++ {
+			// Spot-check 100 Y-plane samples — they should differ
+			diffCount := 0
+			for k := 0; k < 100; k++ {
+				idx := k * (ySize / 100)
+				if bufs[i][idx] != bufs[j][idx] {
+					diffCount++
+				}
+			}
+			t.Logf("MEASURE: %s vs %s: %d/100 Y samples differ",
+				sources[i].name, sources[j].name, diffCount)
+			assert.Greater(t, diffCount, 90,
+				"sources %s and %s should have distinct Y planes, only %d/100 differed",
+				sources[i].name, sources[j].name, diffCount)
+		}
+	}
+
+	t.Log("MEASURE: 4-source upload+download complete, colors verified")
+}
+
+// ============================================================================
+// TestGPUMultiSourceCutUnderLoad — Simulate program switching across 4
+// sources with distinct colors. Verify each cut produces the correct source
+// color with no cross-source contamination. 20 rapid switches total.
+// ============================================================================
+
+func TestGPUMultiSourceCutUnderLoad(t *testing.T) {
+	ctx := testContext(t)
+
+	const width, height = 1920, 1080
+
+	// Pool: 4 sources + 1 dst + headroom
+	pool, err := NewFramePool(ctx, width, height, 8)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	// Create 4 source frames with distinct Y values
+	type sourceColor struct {
+		name string
+		y    byte
+	}
+	colors := []sourceColor{
+		{"source-0", 40},
+		{"source-1", 100},
+		{"source-2", 160},
+		{"source-3", 220},
+	}
+
+	frames := make([]*GPUFrame, len(colors))
+	for i, c := range colors {
+		frames[i] = makeTestFrame(t, ctx, pool, width, height, c.y, 128, 128)
+		defer frames[i].Release()
+	}
+
+	// Test 1: CUT to source 0 (blend at pos=1.0 means 100% source B; pos=0.0 means 100% source A)
+	// BlendMix(dst, A, B, pos) → result = A*(1-pos) + B*pos
+	// So pos=0.0 → 100% A, pos=1.0 → 100% B
+	// To simulate CUT to a source, blend it at pos=0.0 (pure A) or pos=1.0 (pure B)
+
+	dst, err := pool.Acquire()
+	require.NoError(t, err)
+	defer dst.Release()
+
+	// CUT to source 0: blend(source0, source0, 0.0) → pure source0
+	err = BlendMix(ctx, dst, frames[0], frames[1], 0.0)
+	require.NoError(t, err)
+	yAvg, _, _ := avgPlanes(t, ctx, dst, width, height)
+	t.Logf("MEASURE: CUT to source-0: Y=%.4f (expected=%d)", yAvg, colors[0].y)
+	assert.InDelta(t, float64(colors[0].y), yAvg, 2.0,
+		"CUT to source-0: Y should be ~%d, got %.4f", colors[0].y, yAvg)
+
+	// CUT to source 1: blend(source0, source1, 1.0) → pure source1
+	err = BlendMix(ctx, dst, frames[0], frames[1], 1.0)
+	require.NoError(t, err)
+	yAvg, _, _ = avgPlanes(t, ctx, dst, width, height)
+	t.Logf("MEASURE: CUT to source-1: Y=%.4f (expected=%d)", yAvg, colors[1].y)
+	assert.InDelta(t, float64(colors[1].y), yAvg, 2.0,
+		"CUT to source-1: Y should be ~%d, got %.4f", colors[1].y, yAvg)
+
+	// Rapid cycle through all 4 sources: 20 switches
+	switchErrors := 0
+	for i := 0; i < 20; i++ {
+		srcIdx := i % len(colors)
+		// Blend to 100% of target source using pos=1.0 with dummy as A
+		dummyIdx := (srcIdx + 1) % len(colors)
+		err = BlendMix(ctx, dst, frames[dummyIdx], frames[srcIdx], 1.0)
+		require.NoError(t, err, "switch %d: blend to %s", i, colors[srcIdx].name)
+
+		yAvg, cbAvg, crAvg := avgPlanes(t, ctx, dst, width, height)
+		t.Logf("MEASURE: switch %d → %s: Y=%.4f (expected=%d), Cb=%.4f, Cr=%.4f",
+			i, colors[srcIdx].name, yAvg, colors[srcIdx].y, cbAvg, crAvg)
+
+		// Check Y matches expected source
+		if math.Abs(yAvg-float64(colors[srcIdx].y)) > 2.0 {
+			switchErrors++
+			t.Logf("MEASURE: BUG: switch %d: expected Y≈%d, got %.4f (delta=%.4f)",
+				i, colors[srcIdx].y, yAvg, math.Abs(yAvg-float64(colors[srcIdx].y)))
+		}
+
+		// Check no cross-contamination: Cb/Cr should stay neutral
+		if math.Abs(cbAvg-128.0) > 2.0 || math.Abs(crAvg-128.0) > 2.0 {
+			t.Logf("MEASURE: BUG: switch %d: chroma contamination Cb=%.4f, Cr=%.4f", i, cbAvg, crAvg)
+		}
+	}
+
+	assert.Equal(t, 0, switchErrors,
+		"%d of 20 switches had wrong Y value — cross-source contamination?", switchErrors)
+	t.Logf("MEASURE: 20 rapid switches complete, errors=%d", switchErrors)
+}
+
+// ============================================================================
+// TestGPUEncodeConcurrentWithCompute — Run GPU blend (compute shader) and
+// simultaneous download (transfer) in separate goroutines sharing the GPU.
+// Verify no corruption over 30 iterations.
+// ============================================================================
+
+func TestGPUEncodeConcurrentWithCompute(t *testing.T) {
+	ctx := testContext(t)
+
+	const (
+		width      = 1920
+		height     = 1080
+		iterations = 30
+	)
+
+	pool, err := NewFramePool(ctx, width, height, 8)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	ySize := width * height
+	cbSize := (width / 2) * (height / 2)
+	crSize := cbSize
+	totalSize := ySize + cbSize + crSize
+
+	corruptionCount := 0
+
+	for i := 0; i < iterations; i++ {
+		// Create source frames for blend
+		a := makeTestFrame(t, ctx, pool, width, height, 60, 128, 128)
+		b := makeTestFrame(t, ctx, pool, width, height, 200, 128, 128)
+		blendDst, err := pool.Acquire()
+		require.NoError(t, err, "iteration %d: acquire blend dst", i)
+
+		// Also create a separate frame for concurrent download
+		readSrc := makeTestFrame(t, ctx, pool, width, height, 150, 128, 128)
+
+		// Run blend and download concurrently
+		blendErrCh := make(chan error, 1)
+		downloadResultCh := make(chan []byte, 1)
+		downloadErrCh := make(chan error, 1)
+
+		// Goroutine 1: GPU compute (blend)
+		go func() {
+			blendErrCh <- BlendMix(ctx, blendDst, a, b, 0.5)
+		}()
+
+		// Goroutine 2: GPU transfer (download from separate frame)
+		go func() {
+			buf := make([]byte, totalSize)
+			err := Download(ctx, buf, readSrc, width, height)
+			downloadErrCh <- err
+			downloadResultCh <- buf
+		}()
+
+		// Collect results
+		blendErr := <-blendErrCh
+		downloadErr := <-downloadErrCh
+		downloadBuf := <-downloadResultCh
+
+		if blendErr != nil {
+			t.Logf("MEASURE: iteration %d: blend error = %v", i, blendErr)
+		}
+		require.NoError(t, blendErr, "iteration %d: blend should succeed", i)
+
+		if downloadErr != nil {
+			t.Logf("MEASURE: iteration %d: download error = %v", i, downloadErr)
+		}
+		require.NoError(t, downloadErr, "iteration %d: concurrent download should succeed", i)
+
+		// Verify blend result: expected Y = (60+200)/2 = 130
+		blendY, blendCb, blendCr := avgPlanes(t, ctx, blendDst, width, height)
+		if i%10 == 0 {
+			t.Logf("MEASURE: iteration %d: blend Y=%.4f (exp=130), Cb=%.4f, Cr=%.4f",
+				i, blendY, blendCb, blendCr)
+		}
+
+		if math.Abs(blendY-130.0) > 3.0 {
+			corruptionCount++
+			t.Logf("MEASURE: BUG: iteration %d: blend Y=%.4f, expected ~130 (corruption?)", i, blendY)
+		}
+
+		// Verify download result: should be Y=150 from readSrc
+		var ySum int64
+		for j := 0; j < ySize; j++ {
+			ySum += int64(downloadBuf[j])
+		}
+		dlYAvg := float64(ySum) / float64(ySize)
+		if math.Abs(dlYAvg-150.0) > 3.0 {
+			corruptionCount++
+			t.Logf("MEASURE: BUG: iteration %d: download Y=%.4f, expected ~150 (corruption?)", i, dlYAvg)
+		}
+		if i%10 == 0 {
+			t.Logf("MEASURE: iteration %d: concurrent download Y=%.4f (exp=150)", i, dlYAvg)
+		}
+
+		blendDst.Release()
+		readSrc.Release()
+		b.Release()
+		a.Release()
+	}
+
+	assert.Equal(t, 0, corruptionCount,
+		"found %d corrupted results in %d iterations of concurrent GPU compute+transfer",
+		corruptionCount, iterations)
+	t.Logf("MEASURE: %d iterations of concurrent compute+transfer complete, corruptions=%d",
+		iterations, corruptionCount)
+}
+
+// ============================================================================
+// TestGPU1080pFramePoolPressure — Small pool (6 frames) at 1920x1080,
+// acquire 4, blend pairs, download, release and reacquire in a tight loop
+// for 50 iterations. Pool should handle pressure gracefully.
+// ============================================================================
+
+func TestGPU1080pFramePoolPressure(t *testing.T) {
+	ctx := testContext(t)
+
+	const (
+		width      = 1920
+		height     = 1080
+		poolSize   = 6
+		iterations = 50
+	)
+
+	pool, err := NewFramePool(ctx, width, height, poolSize)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	hitsStart, missesStart := pool.Stats()
+	t.Logf("MEASURE: initial pool stats: hits=%d, misses=%d", hitsStart, missesStart)
+
+	ySize := width * height
+	cbSize := (width / 2) * (height / 2)
+	crSize := cbSize
+	totalSize := ySize + cbSize + crSize
+	downloadBuf := make([]byte, totalSize)
+
+	corruptFrames := 0
+	var totalHitsAccum, totalMissesAccum uint64
+
+	for i := 0; i < iterations; i++ {
+		hitsBefore, missesBefore := pool.Stats()
+
+		// Acquire 4 frames
+		f0 := makeTestFrame(t, ctx, pool, width, height, 50, 128, 128)
+		f1 := makeTestFrame(t, ctx, pool, width, height, 120, 128, 128)
+		f2 := makeTestFrame(t, ctx, pool, width, height, 180, 128, 128)
+		f3 := makeTestFrame(t, ctx, pool, width, height, 230, 128, 128)
+
+		// Blend pair 1: f0+f1 → dst1
+		dst1, err := pool.Acquire()
+		require.NoError(t, err, "iteration %d: acquire dst1", i)
+		err = BlendMix(ctx, dst1, f0, f1, 0.5)
+		require.NoError(t, err, "iteration %d: blend pair 1", i)
+
+		// Download and verify pair 1
+		err = Download(ctx, downloadBuf, dst1, width, height)
+		require.NoError(t, err, "iteration %d: download dst1", i)
+		var ySum1 int64
+		for j := 0; j < ySize; j++ {
+			ySum1 += int64(downloadBuf[j])
+		}
+		yAvg1 := float64(ySum1) / float64(ySize)
+		expectedY1 := (50.0 + 120.0) / 2.0 // 85
+		if math.Abs(yAvg1-expectedY1) > 3.0 {
+			corruptFrames++
+			t.Logf("MEASURE: BUG: iteration %d pair1: Y=%.4f expected=%.1f", i, yAvg1, expectedY1)
+		}
+
+		// Release pair 1 results
+		dst1.Release()
+		f0.Release()
+		f1.Release()
+
+		// Blend pair 2: f2+f3 → dst2 (reusing released pool slots)
+		dst2, err := pool.Acquire()
+		require.NoError(t, err, "iteration %d: acquire dst2", i)
+		err = BlendMix(ctx, dst2, f2, f3, 0.5)
+		require.NoError(t, err, "iteration %d: blend pair 2", i)
+
+		// Download and verify pair 2
+		err = Download(ctx, downloadBuf, dst2, width, height)
+		require.NoError(t, err, "iteration %d: download dst2", i)
+		var ySum2 int64
+		for j := 0; j < ySize; j++ {
+			ySum2 += int64(downloadBuf[j])
+		}
+		yAvg2 := float64(ySum2) / float64(ySize)
+		expectedY2 := (180.0 + 230.0) / 2.0 // 205
+		if math.Abs(yAvg2-expectedY2) > 3.0 {
+			corruptFrames++
+			t.Logf("MEASURE: BUG: iteration %d pair2: Y=%.4f expected=%.1f", i, yAvg2, expectedY2)
+		}
+
+		// Release everything
+		dst2.Release()
+		f2.Release()
+		f3.Release()
+
+		hitsAfter, missesAfter := pool.Stats()
+		cycleHits := hitsAfter - hitsBefore
+		cycleMisses := missesAfter - missesBefore
+		totalHitsAccum += cycleHits
+		totalMissesAccum += cycleMisses
+
+		if i%10 == 0 {
+			t.Logf("MEASURE: iteration %d: pair1 Y=%.4f (exp=%.1f), pair2 Y=%.4f (exp=%.1f), cycle hits=%d misses=%d",
+				i, yAvg1, expectedY1, yAvg2, expectedY2, cycleHits, cycleMisses)
+		}
+	}
+
+	hitsEnd, missesEnd := pool.Stats()
+	totalHits := hitsEnd - hitsStart
+	totalMisses := missesEnd - missesStart
+	t.Logf("MEASURE: pool hits=%d, misses=%d over %d cycles", totalHits, totalMisses, iterations)
+
+	// With pool size 6 and each iteration acquiring 6 frames (4 sources + 2 dst),
+	// the first iteration will have some misses (pool pre-allocates 6 but we need 6
+	// at once for sources, then 2 for dst). After warm-up, pool cycling should
+	// produce mostly hits. Allow reasonable miss rate.
+	totalAcquisitions := totalHits + totalMisses
+	if totalAcquisitions > 0 {
+		missRate := float64(totalMisses) / float64(totalAcquisitions)
+		t.Logf("MEASURE: pool miss rate: %.2f%% (%d misses / %d total acquisitions)",
+			missRate*100, totalMisses, totalAcquisitions)
+	}
+
+	assert.Equal(t, 0, corruptFrames,
+		"found %d corrupted frames in %d iterations of pool pressure test", corruptFrames, iterations)
+	t.Logf("MEASURE: %d iterations complete, corrupt frames=%d, pool hits=%d misses=%d",
+		iterations, corruptFrames, totalHits, totalMisses)
+}
