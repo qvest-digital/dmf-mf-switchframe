@@ -812,6 +812,8 @@ static void vtOutputCallback(void *outputCallbackRefCon,
                               CMSampleBufferRef sampleBuffer) {
     VTEncoderState *state = (VTEncoderState *)outputCallbackRefCon;
     if (status != noErr || sampleBuffer == NULL) {
+        NSLog(@"VT encode callback error: status=%d sampleBuffer=%p codecType=%d",
+              (int)status, sampleBuffer, state->codecType);
         state->outputLen = 0;
         dispatch_semaphore_signal(state->sem);
         return;
@@ -1063,7 +1065,7 @@ VTEncoderRef metal_vt_encoder_create_v2(int width, int height, int fps_num, int 
     // Select pixel format
     OSType pixelFormat;
     if (bit_depth == 10) {
-        pixelFormat = kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange;
+        pixelFormat = kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange; // 4:2:2 10-bit
     } else {
         pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
     }
@@ -1099,7 +1101,7 @@ VTEncoderRef metal_vt_encoder_create_v2(int width, int height, int fps_num, int 
     if (codec_type == 1) {
         // HEVC profile selection
         if (bit_depth == 10) {
-            VTSessionSetProperty(session, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_HEVC_Main10_AutoLevel);
+            VTSessionSetProperty(session, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_HEVC_Main42210_AutoLevel);
         } else {
             VTSessionSetProperty(session, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_HEVC_Main_AutoLevel);
         }
@@ -1195,38 +1197,65 @@ int metal_vt_encode(VTEncoderRef enc, void* nv12_ptr, int pitch, int width, int 
                     int64_t pts, int force_idr,
                     uint8_t** out_buf, int* out_len, int* out_is_idr) {
     VTEncoderState *state = (VTEncoderState *)enc;
-    if (!state || !state->session) return -1;
+    if (!state || !state->session) {
+        NSLog(@"VT encode: NULL state or session");
+        return -1;
+    }
+
+    static int frameCount = 0;
+    frameCount++;
+    int shouldLog = (frameCount <= 5 || frameCount % 100 == 0);
+
+    if (shouldLog) {
+        NSLog(@"VT encode frame #%d: codecType=%d pixFmt=0x%x w=%d h=%d pitch=%d ptr=%p pts=%lld forceIDR=%d",
+              frameCount, state->codecType, (unsigned)state->pixelFormat,
+              width, height, pitch, nv12_ptr, (long long)pts, force_idr);
+    }
 
     // Acquire a CVPixelBuffer from the pool (or create one if pool unavailable).
-    // Pool buffers are recycled across frames, avoiding per-frame kernel memory
-    // allocation (~1-2ms savings per frame).
     CVPixelBufferRef pixelBuffer = NULL;
     CVReturn cvRet;
     if (state->pixelBufferPool) {
         cvRet = CVPixelBufferPoolCreatePixelBuffer(NULL, state->pixelBufferPool, &pixelBuffer);
+        if (shouldLog) {
+            NSLog(@"VT encode: pool buffer acquired: cvRet=%d pixelBuffer=%p", (int)cvRet, pixelBuffer);
+        }
     } else {
         cvRet = CVPixelBufferCreate(
             NULL, width, height,
             state->pixelFormat,
             NULL, &pixelBuffer
         );
+        if (shouldLog) {
+            NSLog(@"VT encode: direct buffer created: cvRet=%d pixelBuffer=%p", (int)cvRet, pixelBuffer);
+        }
     }
     if (cvRet != kCVReturnSuccess || !pixelBuffer) {
+        NSLog(@"VT encode: CVPixelBuffer creation FAILED: cvRet=%d pool=%p pixFmt=0x%x",
+              (int)cvRet, state->pixelBufferPool, (unsigned)state->pixelFormat);
         return -2;
     }
 
+    // Log pixel buffer details
+    if (shouldLog) {
+        size_t planeCount = CVPixelBufferGetPlaneCount(pixelBuffer);
+        OSType pbFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
+        size_t pbWidth = CVPixelBufferGetWidth(pixelBuffer);
+        size_t pbHeight = CVPixelBufferGetHeight(pixelBuffer);
+        NSLog(@"VT encode: CVPixelBuffer planes=%zu format=0x%x size=%zux%zu",
+              planeCount, (unsigned)pbFormat, pbWidth, pbHeight);
+        for (size_t p = 0; p < planeCount; p++) {
+            size_t planeW = CVPixelBufferGetWidthOfPlane(pixelBuffer, p);
+            size_t planeH = CVPixelBufferGetHeightOfPlane(pixelBuffer, p);
+            size_t planeStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, p);
+            NSLog(@"VT encode:   plane[%zu] size=%zux%zu stride=%zu", p, planeW, planeH, planeStride);
+        }
+    }
+
     // Copy frame data from Metal unified-memory buffer into the VT pixel buffer.
-    // VT needs its own copy because it holds reference frames for P-frame prediction
-    // beyond the lifetime of this call.
-    //
-    // Three source formats handled:
-    //   NV12 (8-bit 4:2:0): direct copy, Y + UV(h/2)
-    //   P010 → P010 (10-bit 4:2:0): direct copy, but our P210 stores LSB-aligned
-    //     while Apple P010 is MSB-aligned (10 bits in high 10 of uint16, 6 zero LSBs).
-    //   P210 → P010 (10-bit 4:2:2 → 4:2:0): left-shift Y samples by 6 to convert
-    //     LSB→MSB alignment, and vertically downsample UV from full-height to half-height
-    //     by averaging adjacent row pairs, also with the <<6 shift.
-    int is10bit = (state->pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange);
+    // P210 source → 4:2:2 10-bit VT pixel buffer (x422): same chroma height,
+    // just LSB→MSB shift (<<6). No chroma row averaging needed.
+    int is10bit = (state->pixelFormat == kCVPixelFormatType_422YpCbCr10BiPlanarVideoRange);
 
     CVPixelBufferLockBaseAddress(pixelBuffer, 0);
 
@@ -1235,10 +1264,15 @@ int metal_vt_encode(VTEncoderRef enc, void* nv12_ptr, int pitch, int width, int 
     const uint8_t *srcY = (const uint8_t *)nv12_ptr;
 
     if (is10bit) {
-        // P210 source (LSB-aligned uint16) → P010 destination (MSB-aligned uint16).
-        // Left-shift each sample by 6 to convert LSB→MSB alignment.
-        // Source UV is full-height (4:2:2); destination UV is half-height (4:2:0).
+        // P210 source (LSB-aligned uint16) → x422 destination (MSB-aligned uint16).
+        // Both are 4:2:2 with full-height UV — direct shift, no chroma subsampling.
         int samplesPerRow = width;
+
+        if (shouldLog) {
+            const uint16_t *firstRow = (const uint16_t *)srcY;
+            NSLog(@"VT encode 10bit 422: Y src samples[0..3]=%u %u %u %u  vtYStride=%zu pitch=%d",
+                  firstRow[0], firstRow[1], firstRow[2], firstRow[3], vtYStride, pitch);
+        }
 
         // Y plane: shift each uint16 sample left by 6
         for (int row = 0; row < height; row++) {
@@ -1249,22 +1283,34 @@ int metal_vt_encode(VTEncoderRef enc, void* nv12_ptr, int pitch, int width, int 
             }
         }
 
-        // UV plane: P210 has full-height UV (4:2:2), P010 expects half-height (4:2:0).
-        // Average pairs of adjacent UV rows and shift LSB→MSB.
+        // UV plane: P210 and x422 are both full-height 4:2:2 — direct <<6 shift.
         uint8_t *vtUV = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1);
         size_t vtUVStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1);
         const uint8_t *srcUV = (const uint8_t *)nv12_ptr + pitch * height;
-        int chromaH = height / 2;
+        int uvHeight = height; // full height for 4:2:2
         int uvSamplesPerRow = width; // interleaved Cb/Cr = width uint16 values
 
-        for (int row = 0; row < chromaH; row++) {
-            const uint16_t *srcRow0 = (const uint16_t *)(srcUV + (row * 2) * pitch);
-            const uint16_t *srcRow1 = (const uint16_t *)(srcUV + (row * 2 + 1) * pitch);
+        if (shouldLog) {
+            const uint16_t *firstUVRow = (const uint16_t *)srcUV;
+            NSLog(@"VT encode 10bit 422: UV src samples[0..3]=%u %u %u %u  vtUVStride=%zu uvHeight=%d",
+                  firstUVRow[0], firstUVRow[1], firstUVRow[2], firstUVRow[3],
+                  vtUVStride, uvHeight);
+        }
+
+        for (int row = 0; row < uvHeight; row++) {
+            const uint16_t *srcRow = (const uint16_t *)(srcUV + row * pitch);
             uint16_t *dstRow = (uint16_t *)(vtUV + row * vtUVStride);
             for (int col = 0; col < uvSamplesPerRow; col++) {
-                uint16_t avg = (uint16_t)(((uint32_t)srcRow0[col] + (uint32_t)srcRow1[col] + 1) >> 1);
-                dstRow[col] = avg << 6;
+                dstRow[col] = srcRow[col] << 6;
             }
+        }
+
+        if (shouldLog) {
+            uint16_t *dstFirstY = (uint16_t *)vtY;
+            uint16_t *dstFirstUV = (uint16_t *)vtUV;
+            NSLog(@"VT encode 10bit 422: dst Y[0..3]=%u %u %u %u  dst UV[0..3]=%u %u %u %u",
+                  dstFirstY[0], dstFirstY[1], dstFirstY[2], dstFirstY[3],
+                  dstFirstUV[0], dstFirstUV[1], dstFirstUV[2], dstFirstUV[3]);
         }
     } else {
         // NV12 (8-bit): direct copy as before.
@@ -1315,16 +1361,23 @@ int metal_vt_encode(VTEncoderRef enc, void* nv12_ptr, int pitch, int width, int 
         NULL                            // info flags out
     );
 
-    // Release our reference. VT retains the buffer internally during encode
-    // and releases its own reference after the output callback fires.
+    // Release our reference.
     CVPixelBufferRelease(pixelBuffer);
 
     if (status != noErr) {
+        NSLog(@"VT EncodeFrame FAILED: status=%d (0x%x) codecType=%d pixFmt=0x%x w=%d h=%d pitch=%d frame#%d",
+              (int)status, (unsigned)status, state->codecType, (unsigned)state->pixelFormat,
+              width, height, pitch, frameCount);
         return -3;
     }
 
     // Wait for the async callback to complete
     dispatch_semaphore_wait(state->sem, DISPATCH_TIME_FOREVER);
+
+    if (shouldLog) {
+        NSLog(@"VT encode frame #%d: callback returned outputLen=%d isIDR=%d",
+              frameCount, state->outputLen, state->outputIsIDR);
+    }
 
     *out_buf = state->outputBuf;
     *out_len = state->outputLen;
