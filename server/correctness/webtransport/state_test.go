@@ -84,68 +84,163 @@ func newSwitcherWithRawSources(t *testing.T, keys ...string) *switcher.Switcher 
 // TestStateBroadcastOnCut
 //
 // Verifies that Cut operations produce correct state broadcasts with
-// accurate ProgramSource and TallyState fields.
+// accurate ProgramSource, PreviewSource, and TallyState fields.
+// Asserts exact broadcast counts and verifies every source's tally state.
 // ==========================================================================
 func TestStateBroadcastOnCut(t *testing.T) {
-	sw := newSwitcherWithRawSources(t, "camA", "camB")
+	sw := newSwitcherWithRawSources(t, "camA", "camB", "camC")
 
 	cap := &stateCapture{}
 	sw.OnStateChange(cap.callback)
 
-	// Cut to camA
+	// Cut to camA — first cut, no previous program
 	err := sw.Cut(context.Background(), "camA")
 	if err != nil {
 		t.Fatalf("Cut(camA) failed: %v", err)
 	}
 
 	cap.waitForStates(t, 1, 2*time.Second)
+
+	// Assert exactly 1 broadcast occurred (not >=1, exactly 1)
+	if got := cap.count(); got != 1 {
+		t.Fatalf("expected exactly 1 broadcast after first Cut, got %d", got)
+	}
+
 	state1 := cap.last()
-	t.Logf("MEASURE: after Cut(camA): program=%s, preview=%s, tally=%v",
-		state1.ProgramSource, state1.PreviewSource, state1.TallyState)
+	t.Logf("MEASURE: after Cut(camA): program=%s, preview=%s, tally=%v, sources=%d, seq=%d",
+		state1.ProgramSource, state1.PreviewSource, state1.TallyState,
+		len(state1.Sources), state1.Seq)
 
 	// Verify programSource
 	if state1.ProgramSource != "camA" {
 		t.Errorf("expected ProgramSource=camA, got %q", state1.ProgramSource)
 	}
 
-	// Verify tally: camA should be program
+	// Verify no preview (first cut, nothing was on program before)
+	if state1.PreviewSource != "" {
+		t.Errorf("expected PreviewSource=\"\" after first cut, got %q", state1.PreviewSource)
+	}
+
+	// Verify tally for ALL sources, not just the ones we cut to
 	if state1.TallyState["camA"] != "program" {
 		t.Errorf("expected tally[camA]=program, got %q", state1.TallyState["camA"])
 	}
-
-	// camB should be idle (not on program or preview)
 	if state1.TallyState["camB"] != "idle" {
 		t.Errorf("expected tally[camB]=idle, got %q", state1.TallyState["camB"])
 	}
+	if state1.TallyState["camC"] != "idle" {
+		t.Errorf("expected tally[camC]=idle, got %q", state1.TallyState["camC"])
+	}
 
-	// Cut to camB
-	countBefore := cap.count()
+	// Verify Sources map contains all registered sources
+	if len(state1.Sources) != 3 {
+		t.Errorf("expected 3 sources in broadcast, got %d: %v", len(state1.Sources), sourceKeys(state1.Sources))
+	}
+	for _, key := range []string{"camA", "camB", "camC"} {
+		if _, ok := state1.Sources[key]; !ok {
+			t.Errorf("source %q missing from Sources map", key)
+		}
+	}
+
+	// Verify TransitionType is "cut" (not in transition)
+	if state1.TransitionType != "cut" {
+		t.Errorf("expected TransitionType=cut, got %q", state1.TransitionType)
+	}
+	if state1.InTransition {
+		t.Errorf("expected InTransition=false after cut")
+	}
+
+	// Cut to camB — camA should move to preview
 	err = sw.Cut(context.Background(), "camB")
 	if err != nil {
 		t.Fatalf("Cut(camB) failed: %v", err)
 	}
 
-	cap.waitForStates(t, countBefore+1, 2*time.Second)
+	cap.waitForStates(t, 2, 2*time.Second)
+
+	// Assert exactly 2 broadcasts total
+	if got := cap.count(); got != 2 {
+		t.Fatalf("expected exactly 2 broadcasts after second Cut, got %d", got)
+	}
+
 	state2 := cap.last()
-	t.Logf("MEASURE: after Cut(camB): program=%s, preview=%s, tally=%v",
-		state2.ProgramSource, state2.PreviewSource, state2.TallyState)
+	t.Logf("MEASURE: after Cut(camB): program=%s, preview=%s, tally=%v, seq=%d",
+		state2.ProgramSource, state2.PreviewSource, state2.TallyState, state2.Seq)
 
 	// Verify programSource changed
 	if state2.ProgramSource != "camB" {
 		t.Errorf("expected ProgramSource=camB, got %q", state2.ProgramSource)
 	}
 
-	// Verify preview: camA should move to preview
+	// Verify preview: camA (old program) should move to preview
 	if state2.PreviewSource != "camA" {
 		t.Errorf("expected PreviewSource=camA, got %q", state2.PreviewSource)
 	}
 
-	// Verify tally: camB=program, camA=preview
+	// Verify tally for ALL three sources
 	if state2.TallyState["camB"] != "program" {
 		t.Errorf("expected tally[camB]=program, got %q", state2.TallyState["camB"])
 	}
 	if state2.TallyState["camA"] != "preview" {
 		t.Errorf("expected tally[camA]=preview, got %q", state2.TallyState["camA"])
+	}
+	if state2.TallyState["camC"] != "idle" {
+		t.Errorf("expected tally[camC]=idle, got %q", state2.TallyState["camC"])
+	}
+
+	// Verify seq incremented exactly by 1
+	if state2.Seq != state1.Seq+1 {
+		t.Errorf("expected Seq=%d (previous+1), got %d", state1.Seq+1, state2.Seq)
+	}
+
+	// Cut to camC — camB should move to preview
+	err = sw.Cut(context.Background(), "camC")
+	if err != nil {
+		t.Fatalf("Cut(camC) failed: %v", err)
+	}
+
+	cap.waitForStates(t, 3, 2*time.Second)
+
+	// Assert exactly 3 broadcasts total
+	if got := cap.count(); got != 3 {
+		t.Fatalf("expected exactly 3 broadcasts after third Cut, got %d", got)
+	}
+
+	state3 := cap.last()
+	t.Logf("MEASURE: after Cut(camC): program=%s, preview=%s, tally=%v, seq=%d",
+		state3.ProgramSource, state3.PreviewSource, state3.TallyState, state3.Seq)
+
+	if state3.ProgramSource != "camC" {
+		t.Errorf("expected ProgramSource=camC, got %q", state3.ProgramSource)
+	}
+	if state3.PreviewSource != "camB" {
+		t.Errorf("expected PreviewSource=camB, got %q", state3.PreviewSource)
+	}
+	if state3.TallyState["camC"] != "program" {
+		t.Errorf("expected tally[camC]=program, got %q", state3.TallyState["camC"])
+	}
+	if state3.TallyState["camB"] != "preview" {
+		t.Errorf("expected tally[camB]=preview, got %q", state3.TallyState["camB"])
+	}
+	if state3.TallyState["camA"] != "idle" {
+		t.Errorf("expected tally[camA]=idle, got %q", state3.TallyState["camA"])
+	}
+
+	// Verify seq incremented exactly by 1 from state2
+	if state3.Seq != state2.Seq+1 {
+		t.Errorf("expected Seq=%d (previous+1), got %d", state2.Seq+1, state3.Seq)
+	}
+
+	// Cutting to same source should NOT produce a broadcast
+	err = sw.Cut(context.Background(), "camC")
+	if err != nil {
+		t.Fatalf("Cut(camC) again failed: %v", err)
+	}
+
+	// Small sleep to allow any rogue broadcast to arrive
+	time.Sleep(50 * time.Millisecond)
+	if got := cap.count(); got != 3 {
+		t.Errorf("cutting to same source should not broadcast; expected 3 total, got %d", got)
 	}
 }
 
@@ -210,290 +305,157 @@ func TestStateBroadcastOnSourceAdd(t *testing.T) {
 // ==========================================================================
 // TestStateBroadcastSerialization
 //
-// Verifies JSON round-trip of ControlRoomState and checks that Go JSON
-// field names match what the TypeScript client expects.
+// Verifies JSON round-trip of a REAL broadcast state produced by an actual
+// Cut operation. This tests that buildStateLocked populates all fields
+// correctly, not just that JSON works on a hand-crafted struct.
+// Also checks Go↔TypeScript field name alignment.
 // ==========================================================================
 func TestStateBroadcastSerialization(t *testing.T) {
-	// Build a ControlRoomState with many fields populated
-	markIn := int64(1000)
-	markOut := int64(5000)
-	state := internal.ControlRoomState{
-		ProgramSource:        "camA",
-		PreviewSource:        "camB",
-		TransitionType:       "mix",
-		TransitionDurationMs: 500,
-		TransitionPosition:   0.5,
-		TransitionEasing:     "smoothstep",
-		InTransition:         true,
-		FTBActive:            false,
-		AudioChannels: map[string]internal.AudioChannel{
-			"camA": {
-				Level: -6.0,
-				Trim:  0.0,
-				Muted: false,
-				AFV:   true,
-				PeakL: -12.0,
-				PeakR: -14.0,
-				EQ: [3]internal.EQBand{
-					{Frequency: 100, Gain: 0, Q: 1.0, Enabled: true},
-					{Frequency: 1000, Gain: 2.0, Q: 0.7, Enabled: true},
-					{Frequency: 8000, Gain: -1.0, Q: 1.4, Enabled: false},
-				},
-				Compressor: internal.CompressorSettings{
-					Threshold: -20.0, Ratio: 4.0, Attack: 10.0, Release: 100.0, MakeupGain: 3.0,
-				},
-				GainReduction: 2.5,
-				Gate: internal.GateSettings{
-					Threshold: -40.0, Range: -80.0, Attack: 0.5, Release: 50.0, Hold: 10.0,
-				},
-			},
-		},
-		MasterLevel:    0.0,
-		ProgramPeak:    [2]float64{-8.0, -9.0},
-		GainReduction:  1.5,
-		MomentaryLUFS:  -23.0,
-		ShortTermLUFS:  -24.0,
-		IntegratedLUFS: -24.5,
-		Limiter: &internal.LimiterSettings{
-			Threshold: -1.0, Ceiling: -0.5, GainReduction: 0.3,
-		},
-		TallyState: map[string]string{
-			"camA": "program",
-			"camB": "preview",
-		},
-		Sources: map[string]internal.SourceInfo{
-			"camA": {Key: "camA", Label: "Camera A", Status: "healthy", Position: 1},
-			"camB": {Key: "camB", Label: "Camera B", Status: "healthy", Position: 2},
-		},
-		Presets: []internal.PresetInfo{
-			{ID: "p1", Name: "Default"},
-		},
-		Recording: &internal.RecordingStatus{
-			Active: true, Filename: "rec001.ts", BytesWritten: 1048576,
-		},
-		SRTOutput: &internal.SRTOutputStatus{
-			Active: true, Mode: "caller", Address: "192.168.1.100", Port: 9000,
-		},
-		Destinations: []internal.DestinationInfo{
-			{ID: "d1", Type: "srt-caller", State: "connected"},
-		},
-		Graphics: &internal.GraphicsState{
-			Layers: []internal.GraphicsLayerState{
-				{ID: 1, Active: true, ZOrder: 0, X: 0, Y: 0, Width: 1920, Height: 1080},
-			},
-			ProgramWidth: 1920, ProgramHeight: 1080,
-		},
-		Layout: &internal.LayoutState{
-			ActivePreset: "pip",
-			Slots: []internal.LayoutSlotState{
-				{ID: 0, SourceKey: "camB", Enabled: true, X: 100, Y: 100, Width: 480, Height: 270, ZOrder: 1},
-			},
-		},
-		Replay: &internal.ReplayState{
-			State:  "idle",
-			Source: "camA",
-			Speed:  1.0,
-			MarkIn: &markIn, MarkOut: &markOut,
-			Buffers: []internal.ReplayBufferInfo{
-				{Source: "camA", FrameCount: 900, GOPCount: 30, DurationSecs: 30.0, BytesUsed: 10485760},
-			},
-			ShutterAngle:   180.0,
-			GPUAccelerated: true,
-		},
-		ClipPlayers: []internal.ClipPlayerInfo{
-			{ID: 0, State: "empty"},
-			{ID: 1, State: "loaded", ClipID: "clip1", ClipName: "Intro"},
-		},
-		ClipCount: 5,
-		Operators: []internal.OperatorInfo{
-			{ID: "op1", Name: "Director", Role: "director", Connected: true},
-		},
-		Locks: map[string]internal.LockInfo{
-			"switcher": {HolderID: "op1", HolderName: "Director", AcquiredAt: 1700000000000},
-		},
-		PipelineFormat: &internal.PipelineFormatInfo{
-			Width: 1920, Height: 1080, FPSNum: 30, FPSDen: 1, Name: "1080p30",
-		},
-		Encoder: &internal.EncoderState{
-			Current: "x264",
-			Available: []internal.EncoderInfo{
-				{Name: "x264", DisplayName: "x264 (Software)", IsDefault: true},
-			},
-		},
-		SCTE35: &internal.SCTE35State{
-			Enabled:        true,
-			SCTE104Enabled: true,
-			ActiveEvents:   map[uint32]internal.SCTE35Active{},
-			EventLog:       []internal.SCTE35Event{},
-			HeartbeatOK:    true,
-			Config: internal.SCTE35Config{
-				HeartbeatIntervalMs: 5000,
-				DefaultPreRollMs:    4000,
-				PID:                 500,
-			},
-		},
-		CBR: &internal.CBRStatus{
-			Enabled:    true,
-			MuxrateBps: 20000000,
-		},
-		ConnectionInfo: &internal.ConnectionInfo{
-			Domain:         "switchframe.dev",
-			SRTIngestPort:  9000,
-			SRTOutputPorts: []int{9001, 9002},
-		},
-		Captions: &internal.CaptionState{
-			Mode: "off",
-		},
-		Comms: &internal.CommsState{
-			Active: true,
-			Participants: []internal.CommsParticipant{
-				{OperatorID: "op1", Name: "Director", Muted: false, Speaking: true},
-			},
-		},
-		STMap: &internal.STMapState{
-			Sources:   map[string]string{"camA": "barrel"},
-			Available: []string{"barrel", "pincushion"},
-		},
-		Macro: &internal.MacroExecutionState{
-			Running:   true,
-			MacroName: "OpeningSequence",
-			Steps: []internal.MacroStepState{
-				{Action: "cut", Summary: "Cut to camA", Status: "done"},
-				{Action: "wait", Summary: "Wait 2s", Status: "running", WaitMs: 2000},
-			},
-			CurrentStep: 1,
-		},
-		Playout: &internal.PlayoutState{
-			Channels: []internal.PlayoutChannelInfo{
-				{ID: 0, State: "on_air", PlaylistName: "Morning Show"},
-			},
-		},
-		LastChangedBy: "op1",
-		Seq:           42,
-		Timestamp:     time.Now().UnixMilli(),
-	}
+	// =====================================================================
+	// Part 1: Capture a REAL broadcast state from actual operations
+	// =====================================================================
+	sw := newSwitcherWithRawSources(t, "camA", "camB")
 
-	// Marshal to JSON
-	data, err := json.Marshal(state)
+	// Attach a mock mixer so audio fields are populated
+	mock := &mockAudioStateProvider{
+		programPeak:    [2]float64{-8.5, -10.2},
+		masterLevel:    -3.0,
+		gainReduction:  1.5,
+		limThreshold:   -1.0,
+		limCeiling:     -0.5,
+		limGR:          0.3,
+		momentaryLUFS:  -23.0,
+		shortTermLUFS:  -24.0,
+		integratedLUFS: -24.5,
+		channels: map[string]internal.AudioChannel{
+			"camA": {Level: -6.0, Trim: 0.0, Muted: false, AFV: true, PeakL: -12.0, PeakR: -14.0},
+			"camB": {Level: -10.0, Trim: -2.0, Muted: true, AFV: false, PeakL: -20.0, PeakR: -22.0},
+		},
+	}
+	sw.SetMixer(mock)
+
+	cap := &stateCapture{}
+	sw.OnStateChange(cap.callback)
+
+	// Perform a real Cut to produce a real broadcast
+	err := sw.Cut(context.Background(), "camA")
 	if err != nil {
-		t.Fatalf("json.Marshal failed: %v", err)
+		t.Fatalf("Cut(camA) failed: %v", err)
 	}
-	t.Logf("MEASURE: JSON size=%d bytes", len(data))
+	cap.waitForStates(t, 1, 2*time.Second)
 
-	// Unmarshal back
+	// Cut to camB so we have preview + program
+	err = sw.Cut(context.Background(), "camB")
+	if err != nil {
+		t.Fatalf("Cut(camB) failed: %v", err)
+	}
+	cap.waitForStates(t, 2, 2*time.Second)
+
+	// Capture the ACTUAL broadcast state from the real code path
+	realState := cap.last()
+	t.Logf("MEASURE: real broadcast: program=%s, preview=%s, sources=%d, seq=%d",
+		realState.ProgramSource, realState.PreviewSource, len(realState.Sources), realState.Seq)
+
+	// Verify the real state has correct program/preview/tally
+	if realState.ProgramSource != "camB" {
+		t.Errorf("real broadcast ProgramSource: expected camB, got %q", realState.ProgramSource)
+	}
+	if realState.PreviewSource != "camA" {
+		t.Errorf("real broadcast PreviewSource: expected camA, got %q", realState.PreviewSource)
+	}
+
+	// Verify real state has audio fields populated from the mock mixer
+	if realState.ProgramPeak[0] != -8.5 || realState.ProgramPeak[1] != -10.2 {
+		t.Errorf("real broadcast ProgramPeak: expected [-8.5, -10.2], got %v", realState.ProgramPeak)
+	}
+	if realState.MasterLevel != -3.0 {
+		t.Errorf("real broadcast MasterLevel: expected -3.0, got %f", realState.MasterLevel)
+	}
+	if realState.GainReduction != 1.5 {
+		t.Errorf("real broadcast GainReduction: expected 1.5, got %f", realState.GainReduction)
+	}
+	if realState.Limiter == nil {
+		t.Fatal("real broadcast Limiter is nil — mixer wiring broken")
+	} else {
+		if realState.Limiter.Threshold != -1.0 {
+			t.Errorf("real broadcast Limiter.Threshold: expected -1.0, got %f", realState.Limiter.Threshold)
+		}
+	}
+	if realState.MomentaryLUFS != -23.0 {
+		t.Errorf("real broadcast MomentaryLUFS: expected -23.0, got %f", realState.MomentaryLUFS)
+	}
+	if realState.AudioChannels == nil {
+		t.Fatal("real broadcast AudioChannels is nil — mixer wiring broken")
+	} else if ch, ok := realState.AudioChannels["camA"]; !ok {
+		t.Error("real broadcast AudioChannels missing camA")
+	} else if ch.Level != -6.0 {
+		t.Errorf("real broadcast AudioChannels[camA].Level: expected -6.0, got %f", ch.Level)
+	}
+
+	// Verify pipeline format is populated (default format)
+	if realState.PipelineFormat == nil {
+		t.Error("real broadcast PipelineFormat is nil")
+	} else {
+		t.Logf("MEASURE: pipelineFormat: %dx%d %d/%d fps name=%s",
+			realState.PipelineFormat.Width, realState.PipelineFormat.Height,
+			realState.PipelineFormat.FPSNum, realState.PipelineFormat.FPSDen,
+			realState.PipelineFormat.Name)
+		if realState.PipelineFormat.Width == 0 || realState.PipelineFormat.Height == 0 {
+			t.Error("real broadcast PipelineFormat has zero dimensions")
+		}
+	}
+
+	// =====================================================================
+	// Part 2: JSON round-trip the REAL state (not a hand-crafted one)
+	// =====================================================================
+	data, err := json.Marshal(realState)
+	if err != nil {
+		t.Fatalf("json.Marshal of real state failed: %v", err)
+	}
+	t.Logf("MEASURE: real state JSON size=%d bytes", len(data))
+
 	var decoded internal.ControlRoomState
 	err = json.Unmarshal(data, &decoded)
 	if err != nil {
-		t.Fatalf("json.Unmarshal failed: %v", err)
+		t.Fatalf("json.Unmarshal of real state failed: %v", err)
 	}
 
-	// Compare key fields
-	t.Logf("MEASURE: fields preserved: program=%v, preview=%v, tally=%v, sources=%v, seq=%v",
-		decoded.ProgramSource == state.ProgramSource,
-		decoded.PreviewSource == state.PreviewSource,
-		reflect.DeepEqual(decoded.TallyState, state.TallyState),
-		len(decoded.Sources) == len(state.Sources),
-		decoded.Seq == state.Seq)
-
-	// Verify exact field match for critical fields
-	if decoded.ProgramSource != state.ProgramSource {
-		t.Errorf("ProgramSource mismatch: %q vs %q", decoded.ProgramSource, state.ProgramSource)
+	// Verify critical fields survive JSON round-trip
+	if decoded.ProgramSource != realState.ProgramSource {
+		t.Errorf("round-trip ProgramSource: %q vs %q", decoded.ProgramSource, realState.ProgramSource)
 	}
-	if decoded.PreviewSource != state.PreviewSource {
-		t.Errorf("PreviewSource mismatch: %q vs %q", decoded.PreviewSource, state.PreviewSource)
+	if decoded.PreviewSource != realState.PreviewSource {
+		t.Errorf("round-trip PreviewSource: %q vs %q", decoded.PreviewSource, realState.PreviewSource)
 	}
-	if !reflect.DeepEqual(decoded.TallyState, state.TallyState) {
-		t.Errorf("TallyState mismatch: %v vs %v", decoded.TallyState, state.TallyState)
+	if !reflect.DeepEqual(decoded.TallyState, realState.TallyState) {
+		t.Errorf("round-trip TallyState: %v vs %v", decoded.TallyState, realState.TallyState)
 	}
-	if decoded.TransitionType != state.TransitionType {
-		t.Errorf("TransitionType mismatch: %q vs %q", decoded.TransitionType, state.TransitionType)
+	if decoded.Seq != realState.Seq {
+		t.Errorf("round-trip Seq: %d vs %d", decoded.Seq, realState.Seq)
 	}
-	if decoded.TransitionDurationMs != state.TransitionDurationMs {
-		t.Errorf("TransitionDurationMs mismatch: %d vs %d", decoded.TransitionDurationMs, state.TransitionDurationMs)
+	if decoded.Timestamp != realState.Timestamp {
+		t.Errorf("round-trip Timestamp: %d vs %d", decoded.Timestamp, realState.Timestamp)
 	}
-	if decoded.TransitionPosition != state.TransitionPosition {
-		t.Errorf("TransitionPosition mismatch: %f vs %f", decoded.TransitionPosition, state.TransitionPosition)
+	if decoded.TransitionType != realState.TransitionType {
+		t.Errorf("round-trip TransitionType: %q vs %q", decoded.TransitionType, realState.TransitionType)
 	}
-	if decoded.InTransition != state.InTransition {
-		t.Errorf("InTransition mismatch: %v vs %v", decoded.InTransition, state.InTransition)
+	if decoded.ProgramPeak != realState.ProgramPeak {
+		t.Errorf("round-trip ProgramPeak: %v vs %v", decoded.ProgramPeak, realState.ProgramPeak)
 	}
-	if decoded.FTBActive != state.FTBActive {
-		t.Errorf("FTBActive mismatch: %v vs %v", decoded.FTBActive, state.FTBActive)
+	if decoded.MasterLevel != realState.MasterLevel {
+		t.Errorf("round-trip MasterLevel: %f vs %f", decoded.MasterLevel, realState.MasterLevel)
 	}
-	if decoded.MasterLevel != state.MasterLevel {
-		t.Errorf("MasterLevel mismatch: %f vs %f", decoded.MasterLevel, state.MasterLevel)
+	if len(decoded.Sources) != len(realState.Sources) {
+		t.Errorf("round-trip Sources count: %d vs %d", len(decoded.Sources), len(realState.Sources))
 	}
-	if decoded.ProgramPeak != state.ProgramPeak {
-		t.Errorf("ProgramPeak mismatch: %v vs %v", decoded.ProgramPeak, state.ProgramPeak)
-	}
-	if decoded.Seq != state.Seq {
-		t.Errorf("Seq mismatch: %d vs %d", decoded.Seq, state.Seq)
-	}
-	if decoded.Timestamp != state.Timestamp {
-		t.Errorf("Timestamp mismatch: %d vs %d", decoded.Timestamp, state.Timestamp)
-	}
-
-	// Verify audio channels round-trip correctly
+	// Verify audio channels survived
 	if decoded.AudioChannels == nil {
-		t.Fatal("AudioChannels is nil after round-trip")
+		t.Fatal("round-trip AudioChannels is nil")
 	}
-	origCh := state.AudioChannels["camA"]
-	decodedCh, ok := decoded.AudioChannels["camA"]
-	if !ok {
-		t.Fatal("AudioChannel camA missing after round-trip")
-	}
-	if decodedCh.Level != origCh.Level {
-		t.Errorf("AudioChannel.Level mismatch: %f vs %f", decodedCh.Level, origCh.Level)
-	}
-	if decodedCh.AFV != origCh.AFV {
-		t.Errorf("AudioChannel.AFV mismatch: %v vs %v", decodedCh.AFV, origCh.AFV)
-	}
-	if decodedCh.EQ != origCh.EQ {
-		t.Errorf("AudioChannel.EQ mismatch: %v vs %v", decodedCh.EQ, origCh.EQ)
-	}
-
-	// Verify optional struct fields survived
-	if decoded.Recording == nil || !decoded.Recording.Active {
-		t.Errorf("Recording field lost in round-trip")
-	}
-	if decoded.SRTOutput == nil || decoded.SRTOutput.Port != 9000 {
-		t.Errorf("SRTOutput field lost in round-trip")
-	}
-	if decoded.Graphics == nil || len(decoded.Graphics.Layers) != 1 {
-		t.Errorf("Graphics field lost in round-trip")
-	}
-	if decoded.Layout == nil || decoded.Layout.ActivePreset != "pip" {
-		t.Errorf("Layout field lost in round-trip")
-	}
-	if decoded.Replay == nil || decoded.Replay.State != "idle" {
-		t.Errorf("Replay field lost in round-trip")
-	}
-	if decoded.SCTE35 == nil || !decoded.SCTE35.Enabled {
-		t.Errorf("SCTE35 field lost in round-trip")
-	}
-	if decoded.CBR == nil || !decoded.CBR.Enabled {
-		t.Errorf("CBR field lost in round-trip")
-	}
-	if decoded.Captions == nil || decoded.Captions.Mode != "off" {
-		t.Errorf("Captions field lost in round-trip")
-	}
-	if decoded.Comms == nil || !decoded.Comms.Active {
-		t.Errorf("Comms field lost in round-trip")
-	}
-	if decoded.STMap == nil || len(decoded.STMap.Available) != 2 {
-		t.Errorf("STMap field lost in round-trip")
-	}
-	if decoded.Macro == nil || !decoded.Macro.Running {
-		t.Errorf("Macro field lost in round-trip")
-	}
-	if decoded.Playout == nil || len(decoded.Playout.Channels) != 1 {
-		t.Errorf("Playout field lost in round-trip")
-	}
-	if decoded.ConnectionInfo == nil || decoded.ConnectionInfo.Domain != "switchframe.dev" {
-		t.Errorf("ConnectionInfo field lost in round-trip")
-	}
-	if decoded.Encoder == nil || decoded.Encoder.Current != "x264" {
-		t.Errorf("Encoder field lost in round-trip")
+	if ch, ok := decoded.AudioChannels["camA"]; !ok {
+		t.Error("round-trip AudioChannels missing camA")
+	} else if ch.Level != -6.0 {
+		t.Errorf("round-trip AudioChannels[camA].Level: expected -6.0, got %f", ch.Level)
 	}
 
 	// =====================================================================
@@ -758,8 +720,9 @@ func TestStateBroadcastSerialization(t *testing.T) {
 // ==========================================================================
 // TestStateBroadcastSequenceNumber
 //
-// Verifies that the Seq field in state broadcasts increases monotonically
-// across multiple operations.
+// Verifies that the Seq field in state broadcasts increases by exactly 1
+// per operation (no gaps, no duplicates), and that each broadcast's state
+// content matches the operation that produced it.
 // ==========================================================================
 func TestStateBroadcastSequenceNumber(t *testing.T) {
 	sw := newSwitcherWithRawSources(t, "camA", "camB", "camC")
@@ -767,29 +730,43 @@ func TestStateBroadcastSequenceNumber(t *testing.T) {
 	cap := &stateCapture{}
 	sw.OnStateChange(cap.callback)
 
-	// Perform several operations that trigger state broadcasts
-	// Each should increment the sequence number
+	// Define the operations and expected state after each
+	type expectedState struct {
+		op      string
+		program string
+		preview string
+	}
+	ops := []expectedState{
+		{"Cut(camA)", "camA", ""},
+		{"SetPreview(camB)", "camA", "camB"},
+		{"Cut(camC)", "camC", "camA"},
+		{"Cut(camA)", "camA", "camC"},
+	}
+
+	// Perform operations
 	err := sw.Cut(context.Background(), "camA")
 	if err != nil {
 		t.Fatalf("Cut(camA) failed: %v", err)
 	}
-
 	err = sw.SetPreview(context.Background(), "camB")
 	if err != nil {
 		t.Fatalf("SetPreview(camB) failed: %v", err)
 	}
-
 	err = sw.Cut(context.Background(), "camC")
 	if err != nil {
 		t.Fatalf("Cut(camC) failed: %v", err)
 	}
-
 	err = sw.Cut(context.Background(), "camA")
 	if err != nil {
 		t.Fatalf("Cut(camA) failed: %v", err)
 	}
 
 	cap.waitForStates(t, 4, 2*time.Second)
+
+	// Assert exactly 4 broadcasts (one per operation)
+	if got := cap.count(); got != 4 {
+		t.Fatalf("expected exactly 4 broadcasts, got %d", got)
+	}
 
 	states := cap.all()
 	seqs := make([]uint64, len(states))
@@ -798,31 +775,209 @@ func TestStateBroadcastSequenceNumber(t *testing.T) {
 	}
 	t.Logf("MEASURE: seq values=%v", seqs)
 
-	// Verify monotonically increasing
-	for i := 1; i < len(seqs); i++ {
-		if seqs[i] <= seqs[i-1] {
-			t.Errorf("seq not monotonically increasing: seq[%d]=%d <= seq[%d]=%d",
-				i, seqs[i], i-1, seqs[i-1])
-		}
-	}
-
-	// Verify no gaps of more than 1 between consecutive broadcasts
-	// (RegisterMXLSource also increments seq, so initial seq may be > 0)
-	// But within our own operations, each should increment by exactly 1
+	// Verify seq increases by exactly 1 between consecutive broadcasts (no gaps, no duplicates)
 	for i := 1; i < len(seqs); i++ {
 		gap := seqs[i] - seqs[i-1]
-		t.Logf("MEASURE: seq gap[%d→%d] = %d", i-1, i, gap)
+		t.Logf("MEASURE: seq gap[%d->%d] = %d", i-1, i, gap)
 		if gap != 1 {
-			t.Errorf("seq gap between broadcasts %d and %d is %d (expected 1)", i-1, i, gap)
+			t.Errorf("seq gap between broadcasts %d and %d is %d (expected exactly 1, no gaps)", i-1, i, gap)
 		}
 	}
 
-	// Verify timestamps are also non-decreasing
+	// Verify each broadcast's state content matches the operation
+	for i, exp := range ops {
+		s := states[i]
+		t.Logf("MEASURE: broadcast[%d] (%s): program=%s preview=%s seq=%d",
+			i, exp.op, s.ProgramSource, s.PreviewSource, s.Seq)
+		if s.ProgramSource != exp.program {
+			t.Errorf("broadcast[%d] (%s): ProgramSource=%q, expected %q",
+				i, exp.op, s.ProgramSource, exp.program)
+		}
+		if s.PreviewSource != exp.preview {
+			t.Errorf("broadcast[%d] (%s): PreviewSource=%q, expected %q",
+				i, exp.op, s.PreviewSource, exp.preview)
+		}
+		// Every broadcast should have all 3 sources
+		if len(s.Sources) != 3 {
+			t.Errorf("broadcast[%d] (%s): Sources count=%d, expected 3", i, exp.op, len(s.Sources))
+		}
+		// Tally should be consistent with program/preview
+		if s.ProgramSource != "" && s.TallyState[s.ProgramSource] != "program" {
+			t.Errorf("broadcast[%d] (%s): tally[%s]=%q, expected program",
+				i, exp.op, s.ProgramSource, s.TallyState[s.ProgramSource])
+		}
+		if s.PreviewSource != "" && s.PreviewSource != s.ProgramSource && s.TallyState[s.PreviewSource] != "preview" {
+			t.Errorf("broadcast[%d] (%s): tally[%s]=%q, expected preview",
+				i, exp.op, s.PreviewSource, s.TallyState[s.PreviewSource])
+		}
+	}
+
+	// Verify timestamps are non-decreasing
 	for i := 1; i < len(states); i++ {
 		if states[i].Timestamp < states[i-1].Timestamp {
 			t.Errorf("timestamp decreased: states[%d].Timestamp=%d < states[%d].Timestamp=%d",
 				i, states[i].Timestamp, i-1, states[i-1].Timestamp)
 		}
+	}
+}
+
+// ==========================================================================
+// TestStateBroadcastContainsAudioLevels
+//
+// Verifies that when a mixer is attached to the switcher, state broadcasts
+// contain non-zero audio fields (ProgramPeak, MasterLevel, LUFS, channels).
+// This tests the full mixer→buildStateLocked→broadcast wiring.
+// ==========================================================================
+func TestStateBroadcastContainsAudioLevels(t *testing.T) {
+	sw := newSwitcherWithRawSources(t, "camA", "camB")
+
+	// Attach a mock mixer with known non-zero values
+	mock := &mockAudioStateProvider{
+		programPeak:    [2]float64{-6.0, -7.5},
+		masterLevel:    -2.0,
+		gainReduction:  3.0,
+		limThreshold:   -1.0,
+		limCeiling:     -0.5,
+		limGR:          0.8,
+		momentaryLUFS:  -22.0,
+		shortTermLUFS:  -23.5,
+		integratedLUFS: -24.0,
+		channels: map[string]internal.AudioChannel{
+			"camA": {Level: -3.0, Trim: 1.0, Muted: false, AFV: true, PeakL: -8.0, PeakR: -9.0},
+			"camB": {Level: -12.0, Trim: 0.0, Muted: true, AFV: false, PeakL: -30.0, PeakR: -32.0},
+		},
+	}
+	sw.SetMixer(mock)
+
+	cap := &stateCapture{}
+	sw.OnStateChange(cap.callback)
+
+	// Cut to camA to trigger a broadcast
+	err := sw.Cut(context.Background(), "camA")
+	if err != nil {
+		t.Fatalf("Cut(camA) failed: %v", err)
+	}
+	cap.waitForStates(t, 1, 2*time.Second)
+
+	state := cap.last()
+	t.Logf("MEASURE: ProgramPeak=%v, MasterLevel=%f, GainReduction=%f",
+		state.ProgramPeak, state.MasterLevel, state.GainReduction)
+	t.Logf("MEASURE: MomentaryLUFS=%f, ShortTermLUFS=%f, IntegratedLUFS=%f",
+		state.MomentaryLUFS, state.ShortTermLUFS, state.IntegratedLUFS)
+
+	// Verify ProgramPeak is exactly what the mock returns
+	if state.ProgramPeak[0] != -6.0 {
+		t.Errorf("ProgramPeak[0]: expected -6.0, got %f", state.ProgramPeak[0])
+	}
+	if state.ProgramPeak[1] != -7.5 {
+		t.Errorf("ProgramPeak[1]: expected -7.5, got %f", state.ProgramPeak[1])
+	}
+
+	// Verify MasterLevel
+	if state.MasterLevel != -2.0 {
+		t.Errorf("MasterLevel: expected -2.0, got %f", state.MasterLevel)
+	}
+
+	// Verify GainReduction
+	if state.GainReduction != 3.0 {
+		t.Errorf("GainReduction: expected 3.0, got %f", state.GainReduction)
+	}
+
+	// Verify Limiter settings
+	if state.Limiter == nil {
+		t.Fatal("Limiter is nil — mixer→state wiring broken")
+	}
+	if state.Limiter.Threshold != -1.0 {
+		t.Errorf("Limiter.Threshold: expected -1.0, got %f", state.Limiter.Threshold)
+	}
+	if state.Limiter.Ceiling != -0.5 {
+		t.Errorf("Limiter.Ceiling: expected -0.5, got %f", state.Limiter.Ceiling)
+	}
+	if state.Limiter.GainReduction != 0.8 {
+		t.Errorf("Limiter.GainReduction: expected 0.8, got %f", state.Limiter.GainReduction)
+	}
+
+	// Verify LUFS values
+	if state.MomentaryLUFS != -22.0 {
+		t.Errorf("MomentaryLUFS: expected -22.0, got %f", state.MomentaryLUFS)
+	}
+	if state.ShortTermLUFS != -23.5 {
+		t.Errorf("ShortTermLUFS: expected -23.5, got %f", state.ShortTermLUFS)
+	}
+	if state.IntegratedLUFS != -24.0 {
+		t.Errorf("IntegratedLUFS: expected -24.0, got %f", state.IntegratedLUFS)
+	}
+
+	// Verify AudioChannels are populated from the mock
+	if state.AudioChannels == nil {
+		t.Fatal("AudioChannels is nil — mixer→state wiring broken")
+	}
+	if len(state.AudioChannels) != 2 {
+		t.Errorf("expected 2 audio channels, got %d", len(state.AudioChannels))
+	}
+
+	// Verify camA channel details
+	chA, ok := state.AudioChannels["camA"]
+	if !ok {
+		t.Fatal("AudioChannels missing camA")
+	}
+	if chA.Level != -3.0 {
+		t.Errorf("AudioChannels[camA].Level: expected -3.0, got %f", chA.Level)
+	}
+	if chA.Trim != 1.0 {
+		t.Errorf("AudioChannels[camA].Trim: expected 1.0, got %f", chA.Trim)
+	}
+	if chA.Muted {
+		t.Error("AudioChannels[camA].Muted: expected false, got true")
+	}
+	if !chA.AFV {
+		t.Error("AudioChannels[camA].AFV: expected true, got false")
+	}
+	if chA.PeakL != -8.0 {
+		t.Errorf("AudioChannels[camA].PeakL: expected -8.0, got %f", chA.PeakL)
+	}
+	if chA.PeakR != -9.0 {
+		t.Errorf("AudioChannels[camA].PeakR: expected -9.0, got %f", chA.PeakR)
+	}
+
+	// Verify camB channel (muted source)
+	chB, ok := state.AudioChannels["camB"]
+	if !ok {
+		t.Fatal("AudioChannels missing camB")
+	}
+	if !chB.Muted {
+		t.Error("AudioChannels[camB].Muted: expected true, got false")
+	}
+	if chB.AFV {
+		t.Error("AudioChannels[camB].AFV: expected false, got true")
+	}
+
+	// =====================================================================
+	// Verify that without a mixer, audio fields are zero-valued
+	// =====================================================================
+	sw2 := newSwitcherWithRawSources(t, "src1")
+	// Intentionally do NOT call sw2.SetMixer()
+	cap2 := &stateCapture{}
+	sw2.OnStateChange(cap2.callback)
+
+	err = sw2.Cut(context.Background(), "src1")
+	if err != nil {
+		t.Fatalf("Cut(src1) failed: %v", err)
+	}
+	cap2.waitForStates(t, 1, 2*time.Second)
+
+	noMixerState := cap2.last()
+	t.Logf("MEASURE: no-mixer state: ProgramPeak=%v, AudioChannels=%v, Limiter=%v",
+		noMixerState.ProgramPeak, noMixerState.AudioChannels, noMixerState.Limiter)
+
+	if noMixerState.ProgramPeak != [2]float64{0, 0} {
+		t.Errorf("no-mixer ProgramPeak should be zero, got %v", noMixerState.ProgramPeak)
+	}
+	if noMixerState.AudioChannels != nil {
+		t.Errorf("no-mixer AudioChannels should be nil, got %v", noMixerState.AudioChannels)
+	}
+	if noMixerState.Limiter != nil {
+		t.Errorf("no-mixer Limiter should be nil, got %v", noMixerState.Limiter)
 	}
 }
 
@@ -964,3 +1119,27 @@ func extractJSONTags(t reflect.Type) map[string]bool {
 	}
 	return tags
 }
+
+// mockAudioStateProvider implements the audioStateProvider interface for testing
+// the mixer→state→broadcast wiring without needing a real audio mixer.
+type mockAudioStateProvider struct {
+	programPeak    [2]float64
+	channels       map[string]internal.AudioChannel
+	masterLevel    float64
+	gainReduction  float64
+	limThreshold   float64
+	limCeiling     float64
+	limGR          float64
+	momentaryLUFS  float64
+	shortTermLUFS  float64
+	integratedLUFS float64
+}
+
+func (m *mockAudioStateProvider) ProgramPeak() [2]float64                            { return m.programPeak }
+func (m *mockAudioStateProvider) ChannelStates() map[string]internal.AudioChannel     { return m.channels }
+func (m *mockAudioStateProvider) MasterLevel() float64                                { return m.masterLevel }
+func (m *mockAudioStateProvider) GainReduction() float64                              { return m.gainReduction }
+func (m *mockAudioStateProvider) LimiterSettings() (float64, float64, float64)        { return m.limThreshold, m.limCeiling, m.limGR }
+func (m *mockAudioStateProvider) MomentaryLUFS() float64                              { return m.momentaryLUFS }
+func (m *mockAudioStateProvider) ShortTermLUFS() float64                              { return m.shortTermLUFS }
+func (m *mockAudioStateProvider) IntegratedLUFS() float64                             { return m.integratedLUFS }
