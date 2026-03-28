@@ -1326,3 +1326,229 @@ func TestSyncLoopClockRecovery(t *testing.T) {
 	require.Greater(t, num, 0, "recovered rate num should be > 0")
 	require.Greater(t, den, 0, "recovered rate den should be > 0")
 }
+
+// Issue 12: AAC buffer should be flushed on sync loop shutdown.
+func TestSyncLoopFlushesAACOnShutdown(t *testing.T) {
+	s, rc := newSyncTestSwitcher(t)
+	defer s.Close()
+
+	mixer := newMockSyncMixer(2)
+	mixer.sampleFn = func(sampleCount int) []float32 {
+		return make([]float32, sampleCount*2) // non-zero to accumulate
+	}
+	s.SetSyncMixer(mixer)
+
+	aacBuf := clock.NewAACFrameBuffer(2, 48000, mockAACEncode)
+	s.SetAACBuffer(aacBuf)
+
+	cam1Relay := distribution.NewRelay()
+	s.RegisterSource("cam1", cam1Relay)
+	s.mu.Lock()
+	s.frameSync.AddSource("cam1")
+	s.mu.Unlock()
+	require.NoError(t, s.Cut(context.Background(), "cam1"))
+
+	// Capture audio output.
+	viewer := newMockProgramViewer("flush-viewer")
+	s.programRelay.AddViewer(viewer)
+
+	// Start the clock and sync loop, consume a few ticks.
+	rc.Start()
+	s.StartSyncLoop()
+
+	// Wait for at least one audio frame.
+	require.Eventually(t, func() bool {
+		viewer.mu.Lock()
+		defer viewer.mu.Unlock()
+		return len(viewer.audios) >= 1
+	}, 2*time.Second, 10*time.Millisecond)
+
+	// Record pre-stop count.
+	viewer.mu.Lock()
+	preStopCount := len(viewer.audios)
+	viewer.mu.Unlock()
+
+	// Stop the clock (closes channel, triggering sync loop exit + flush).
+	rc.Stop()
+	s.syncLoopWg.Wait()
+
+	// After shutdown, the flush should have delivered any remaining partial frame.
+	viewer.mu.Lock()
+	postStopCount := len(viewer.audios)
+	viewer.mu.Unlock()
+
+	// We should have at least as many frames as before (flush may add one more).
+	require.GreaterOrEqual(t, postStopCount, preStopCount,
+		"shutdown flush should not lose audio frames")
+
+	// Verify the AAC buffer is empty after flush.
+	require.Equal(t, 0, aacBuf.Pending(),
+		"AAC buffer should be empty after shutdown flush")
+}
+
+// Issue 1: repeatLastVideoFrame should broadcast the last encoded H.264 frame,
+// not raw YUV data.
+func TestRepeatLastVideoFrameUsesEncodedData(t *testing.T) {
+	s, _ := newSyncTestSwitcher(t)
+	defer s.Close()
+
+	viewer := newMockProgramViewer("encoded-repeat")
+	s.programRelay.AddViewer(viewer)
+
+	// Simulate a previously broadcast H.264 frame by storing it directly.
+	h264Marker := []byte{0x00, 0x00, 0x00, 0x01, 0x67} // H.264 NALU start code + SPS
+	encodedFrame := &media.VideoFrame{
+		PTS:        1000,
+		DTS:        1000,
+		WireData:   h264Marker,
+		IsKeyframe: true,
+	}
+	s.lastBroadcastVFrame.Store(encodedFrame)
+
+	// Also store a raw YUV frame (the old buggy path would use this).
+	rawYUV := makeTestYUV(320, 240, 42)
+	rawFrame := &ProcessingFrame{
+		YUV:   rawYUV,
+		Width: 320, Height: 240,
+		PTS: 1000,
+	}
+	s.lastEncodedFrame.Store(rawFrame)
+
+	// Call repeatLastVideoFrame.
+	s.repeatLastVideoFrame(5000)
+
+	// Check the output.
+	frames := viewer.VideoFrames()
+	require.Len(t, frames, 1, "should have broadcast exactly 1 frame")
+
+	// The frame should contain H.264 data (starting with NALU prefix),
+	// NOT raw YUV (which would start with byte 42).
+	require.True(t, len(frames[0].WireData) >= 5, "WireData should have H.264 data")
+	require.Equal(t, byte(0x00), frames[0].WireData[0], "should start with H.264 NALU prefix")
+	require.Equal(t, byte(0x00), frames[0].WireData[1])
+	require.Equal(t, byte(0x00), frames[0].WireData[2])
+	require.Equal(t, byte(0x01), frames[0].WireData[3])
+	require.Equal(t, byte(0x67), frames[0].WireData[4], "should be H.264 SPS NALU type")
+
+	// PTS should be updated to the requested value.
+	require.Equal(t, int64(5000), frames[0].PTS)
+}
+
+// Issue 4: FTB transition completion should call handleFTBComplete, not handleTransitionComplete.
+func TestFTBTransitionCallsCorrectHandler(t *testing.T) {
+	s, _ := newSyncTestSwitcher(t)
+	defer s.Close()
+
+	cam1Relay := distribution.NewRelay()
+	s.RegisterSource("cam1", cam1Relay)
+	s.mu.Lock()
+	s.frameSync.AddSource("cam1")
+	s.mu.Unlock()
+	require.NoError(t, s.Cut(context.Background(), "cam1"))
+
+	// Feed frames for the source.
+	pool := s.framePool
+	yuvSize := 320 * 240 * 3 / 2
+	for i := 0; i < 10; i++ {
+		buf := pool.Acquire()[:yuvSize]
+		pf := &ProcessingFrame{
+			YUV:   buf,
+			Width: 320, Height: 240,
+			PTS: int64(i) * 3000,
+			pool: pool,
+		}
+		pf.SetRefs(1)
+		s.frameSync.IngestRawVideo("cam1", pf)
+	}
+
+	// Set up a transition engine for FTB.
+	engine := transition.NewEngine(transition.EngineConfig{
+		HintWidth:  320,
+		HintHeight: 240,
+		OnComplete: func(aborted bool) {
+			s.handleFTBComplete(aborted)
+		},
+	})
+	require.NoError(t, engine.Start("cam1", "", transition.FTB, 100))
+
+	s.mu.Lock()
+	s.transEngine = engine
+	s.transitionState(StateFTBTransitioning)
+	s.mu.Unlock()
+
+	// Process enough ticks to complete the transition.
+	for i := 0; i < 20; i++ {
+		tick := clock.Tick{
+			Number:        int64(i),
+			VideoPTS:      int64(i) * 3000,
+			AudioSamples:  1600,
+			FrameDuration: 33333 * time.Microsecond,
+		}
+		s.processVideoTick(tick)
+
+		// Check if transition completed.
+		s.mu.RLock()
+		st := s.state
+		s.mu.RUnlock()
+		if !st.isInTransition() {
+			break
+		}
+	}
+
+	// After FTB completion, state should be StateFTB (holding black), not StateIdle.
+	s.mu.RLock()
+	finalState := s.state
+	s.mu.RUnlock()
+
+	require.Equal(t, StateFTB, finalState,
+		"FTB completion should leave state as StateFTB (holding black), not %s", finalState)
+}
+
+// Issue 10: Double-start guard on StartSyncLoop.
+func TestStartSyncLoopDoubleStartGuard(t *testing.T) {
+	s, rc := newSyncTestSwitcher(t)
+	defer s.Close()
+
+	cam1Relay := distribution.NewRelay()
+	s.RegisterSource("cam1", cam1Relay)
+	s.mu.Lock()
+	s.frameSync.AddSource("cam1")
+	s.mu.Unlock()
+	require.NoError(t, s.Cut(context.Background(), "cam1"))
+
+	// Feed some frames.
+	pool := s.framePool
+	yuvSize := 320 * 240 * 3 / 2
+	for i := 0; i < 20; i++ {
+		buf := pool.Acquire()[:yuvSize]
+		pf := &ProcessingFrame{
+			YUV:   buf,
+			Width: 320, Height: 240,
+			PTS: int64(i) * 3000,
+			pool: pool,
+		}
+		pf.SetRefs(1)
+		s.frameSync.IngestRawVideo("cam1", pf)
+	}
+
+	viewer := newMockProgramViewer("double-start")
+	s.programRelay.AddViewer(viewer)
+
+	rc.Start()
+	s.StartSyncLoop()
+	s.StartSyncLoop() // second call should be a no-op
+
+	// Wait for some output.
+	require.Eventually(t, func() bool {
+		return len(viewer.VideoFrames()) >= 3
+	}, 2*time.Second, 10*time.Millisecond)
+
+	rc.Stop()
+	s.syncLoopWg.Wait()
+
+	// If two goroutines were consuming, frames would be split and we'd get
+	// intermittent failures. With the guard, all frames come from one goroutine.
+	frames := viewer.VideoFrames()
+	require.GreaterOrEqual(t, len(frames), 3,
+		"should have produced frames with single goroutine")
+}

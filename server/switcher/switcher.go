@@ -471,10 +471,13 @@ type Switcher struct {
 	syncLoopWg       sync.WaitGroup
 	useRefClock      bool
 	ticksBehind      int
-	overloadDrops    atomic.Int64
-	syncLoopRepeats  atomic.Int64
-	lastEncodedFrame atomic.Pointer[ProcessingFrame]
-	lastOverloadLog  time.Time // rate-limit overload logging to 1/sec
+	syncLoopRunning      atomic.Bool                      // double-start guard (Issue 10)
+	cachedBlackFrame     atomic.Pointer[ProcessingFrame]  // cached broadcast black (Issue 11)
+	overloadDrops        atomic.Int64
+	syncLoopRepeats      atomic.Int64
+	lastEncodedFrame     atomic.Pointer[ProcessingFrame]
+	lastBroadcastVFrame  atomic.Pointer[media.VideoFrame] // last broadcast H.264 frame (for overload repeat)
+	lastOverloadLog      time.Time                        // rate-limit overload logging to 1/sec
 	sourceLostAt     time.Time // when program source stopped providing frames
 
 	// Sync loop audio output callbacks (used in ref clock mode).
@@ -1446,6 +1449,12 @@ func (s *Switcher) broadcastToProgram(frame *media.VideoFrame) {
 	if cb := s.outputVideoCallback.Load(); cb != nil {
 		(*cb)(&f)
 	}
+
+	// Store last broadcast frame for overload repeat (Issue 1).
+	// This ensures repeatLastVideoFrame replays encoded H.264 data,
+	// not raw YUV bytes.
+	stored := f // copy for atomic store
+	s.lastBroadcastVFrame.Store(&stored)
 }
 
 // broadcastOwnedToProgram sends an owned frame (safe to mutate) to the

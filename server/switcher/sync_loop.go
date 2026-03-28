@@ -24,6 +24,7 @@ func (s *Switcher) synchronousProcessingLoop() {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	defer s.syncLoopWg.Done()
+	defer s.flushAACBuffer() // Issue 12: deliver partial AAC frame on shutdown
 
 	for {
 		tick, ok := <-s.refClock.Ticks()
@@ -31,6 +32,37 @@ func (s *Switcher) synchronousProcessingLoop() {
 			return
 		}
 		s.processTick(tick)
+	}
+}
+
+// flushAACBuffer delivers any remaining partial PCM as a padded AAC frame
+// on shutdown (Issue 12).
+func (s *Switcher) flushAACBuffer() {
+	s.mu.RLock()
+	aacBuf := s.aacBuffer
+	s.mu.RUnlock()
+
+	if aacBuf == nil {
+		return
+	}
+
+	frames, err := aacBuf.Flush()
+	if err != nil {
+		s.log.Warn("AAC flush error on shutdown", "err", err)
+		return
+	}
+
+	relayCb := s.outputAudioCallback.Load()
+	directCb := s.outputAudioCallbackDirect.Load()
+	for _, af := range frames {
+		if relayCb != nil {
+			(*relayCb)(af)
+		} else {
+			s.programRelay.BroadcastAudio(af)
+		}
+		if directCb != nil {
+			(*directCb)(af)
+		}
 	}
 }
 
@@ -216,11 +248,11 @@ func (s *Switcher) processTransitionTick(tick clock.Tick, fs *FrameSynchronizer,
 
 	blended, outW, outH := engine.BlendRaw(fromYUV, fromW, fromH, toYUV, toW, toH, pos)
 	if blended != nil {
-		// Build a ProcessingFrame from the blended result.
-		blendCopy := make([]byte, len(blended))
-		copy(blendCopy, blended)
+		// Build a ProcessingFrame from the blended result (Issue 9: no copy needed
+		// since pipeline runs synchronously within this tick and BlendRaw's buffer
+		// won't be overwritten until the next call).
 		result := &ProcessingFrame{
-			YUV:    blendCopy,
+			YUV:    blended,
 			Width:  outW,
 			Height: outH,
 			PTS:    tick.VideoPTS,
@@ -229,9 +261,17 @@ func (s *Switcher) processTransitionTick(tick clock.Tick, fs *FrameSynchronizer,
 		s.runPipelineAndBroadcast(result, tick)
 	}
 
-	// Handle transition completion.
+	// Handle transition completion (Issue 4: dispatch to correct handler by type).
 	if complete {
-		s.handleTransitionComplete(false)
+		ttype := engine.TransitionType()
+		switch ttype {
+		case transition.FTB:
+			s.handleFTBComplete(false)
+		case transition.FTBReverse:
+			s.handleFTBReverseComplete(false)
+		default:
+			s.handleTransitionComplete(false)
+		}
 	}
 }
 
@@ -361,43 +401,64 @@ func (s *Switcher) programSourceAtomic() string {
 	return ps
 }
 
-// makeBroadcastBlack generates a broadcast-standard black frame (BT.709
+// makeBroadcastBlack returns a broadcast-standard black frame (BT.709
 // limited-range: Y=16, Cb=128, Cr=128) at the given resolution and PTS.
+// The underlying buffer is cached and reused across calls at the same resolution
+// (Issue 11). Caller must not modify the returned YUV data.
 func (s *Switcher) makeBroadcastBlack(width, height int, pts int64) *ProcessingFrame {
-	ySize := width * height
-	uvSize := (width / 2) * (height / 2)
-	buf := make([]byte, ySize+2*uvSize)
-	// Y plane: BT.709 limited-range black = 16
-	for i := 0; i < ySize; i++ {
-		buf[i] = 16
+	cached := s.cachedBlackFrame.Load()
+	if cached == nil || cached.Width != width || cached.Height != height {
+		ySize := width * height
+		uvSize := (width / 2) * (height / 2)
+		buf := make([]byte, ySize+2*uvSize)
+		// Y plane: BT.709 limited-range black = 16
+		for i := 0; i < ySize; i++ {
+			buf[i] = 16
+		}
+		// Cb and Cr planes: neutral chroma = 128
+		for i := ySize; i < ySize+2*uvSize; i++ {
+			buf[i] = 128
+		}
+		cached = &ProcessingFrame{
+			YUV:   buf,
+			Width: width,
+			Height: height,
+		}
+		s.cachedBlackFrame.Store(cached)
 	}
-	// Cb and Cr planes: neutral chroma = 128
-	for i := ySize; i < ySize+2*uvSize; i++ {
-		buf[i] = 128
-	}
-	return &ProcessingFrame{
-		YUV:    buf,
-		Width:  width,
-		Height: height,
-		PTS:    pts,
-		DTS:    pts,
-	}
+	// Return a value copy with updated PTS (avoids mutating the cache).
+	cp := *cached
+	cp.PTS = pts
+	cp.DTS = pts
+	return &cp
 }
 
 // repeatLastVideoFrame rebroadcasts the most recently encoded frame with
 // an updated PTS. This keeps downstream decoders fed during overload.
+// Uses the last successfully broadcast H.264 frame (Issue 1), not raw YUV.
 // If no last frame exists (startup), generates broadcast black.
 func (s *Switcher) repeatLastVideoFrame(pts int64) {
+	// Try the last broadcast H.264 frame first (Issue 1 fix).
+	if last := s.lastBroadcastVFrame.Load(); last != nil && len(last.WireData) > 0 {
+		// Copy WireData to avoid aliasing the stored frame.
+		wireCopy := make([]byte, len(last.WireData))
+		copy(wireCopy, last.WireData)
+		frame := &media.VideoFrame{
+			PTS:        pts,
+			DTS:        pts,
+			WireData:   wireCopy,
+			IsKeyframe: last.IsKeyframe,
+		}
+		s.broadcastToProgram(frame)
+		s.syncLoopRepeats.Add(1)
+		return
+	}
+
+	// Fallback: try the last raw YUV frame (for encoder-less test configs).
 	last := s.lastEncodedFrame.Load()
 	if last != nil && len(last.YUV) > 0 {
-		// Deep-copy the last encoded frame and update PTS.
-		cp := last.DeepCopy()
-		cp.PTS = pts
-		cp.DTS = pts
-
-		// Broadcast through program relay.
-		yuvCopy := make([]byte, len(cp.YUV))
-		copy(yuvCopy, cp.YUV)
+		yuvCopy := make([]byte, len(last.YUV))
+		copy(yuvCopy, last.YUV)
 		frame := &media.VideoFrame{
 			PTS:        pts,
 			DTS:        pts,
@@ -504,9 +565,13 @@ func (s *Switcher) SetOutputAudioCallbackDirect(fn func(*media.AudioFrame)) {
 
 // StartSyncLoop starts the synchronous processing loop. Must be called
 // after SetReferenceClock. The reference clock must be started separately.
+// Safe to call multiple times — second call is a no-op (Issue 10).
 func (s *Switcher) StartSyncLoop() {
 	if s.refClock == nil {
 		return
+	}
+	if s.syncLoopRunning.Swap(true) {
+		return // already running
 	}
 	s.syncLoopWg.Add(1)
 	go s.synchronousProcessingLoop()
