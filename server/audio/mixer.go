@@ -42,6 +42,7 @@ type MixerConfig struct {
 	Output         func(*media.AudioFrame)
 	DecoderFactory DecoderFactory // nil = no AAC decoding (PCM-only sources)
 	EncoderFactory EncoderFactory // nil = no AAC encoding (tick returns nil)
+	ClockDriven    bool           // when true, skip internal ticker (external clock drives output via ProduceSamples)
 }
 
 // CompressorState holds the current state of a channel's compressor.
@@ -222,13 +223,15 @@ func NewMixer(config MixerConfig) *Mixer {
 		numChannels:    config.Channels,
 		output:         config.Output,
 		config:         config,
-		stopTicker:     make(chan struct{}),
 		limiter:        NewLimiter(config.SampleRate, config.Channels),
 		loudness:       NewLoudnessMeter(config.SampleRate, config.Channels),
 		lastDecodedPCM: make(map[string][]float32),
 	}
-	m.tickerWg.Add(1)
-	go m.outputTicker()
+	if !config.ClockDriven {
+		m.stopTicker = make(chan struct{})
+		m.tickerWg.Add(1)
+		go m.outputTicker()
+	}
 	return m
 }
 
@@ -307,8 +310,10 @@ func (m *Mixer) AdvanceCrossfade() {
 // It is safe to call multiple times.
 func (m *Mixer) Close() error {
 	m.closeOnce.Do(func() {
-		close(m.stopTicker)
-		m.tickerWg.Wait()
+		if m.stopTicker != nil {
+			close(m.stopTicker)
+			m.tickerWg.Wait()
+		}
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		for _, ch := range m.channels {
@@ -374,7 +379,11 @@ func (m *Mixer) frameDuration90k() int64 {
 // ExpectVideoSeed tells the mixer to wait for SeedPTSFromVideo before
 // self-seeding from audio input. Without this, the mixer seeds from the
 // first IngestPCM call which may use a different PTS timeline.
+// No-op when ClockDriven is true (PTS comes from the external clock).
 func (m *Mixer) ExpectVideoSeed() {
+	if m.config.ClockDriven {
+		return
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.videoSeedExpected = true
@@ -384,7 +393,11 @@ func (m *Mixer) ExpectVideoSeed() {
 // frame. Called by the switcher when the first program video frame is
 // processed, ensuring audio and video PTS share the same starting point.
 // Thread-safe — can be called from any goroutine.
+// No-op when ClockDriven is true (PTS comes from the external clock).
 func (m *Mixer) SeedPTSFromVideo(videoPTS int64) {
+	if m.config.ClockDriven {
+		return
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	// Always override — audio may have already seeded via advanceOutputPTS
