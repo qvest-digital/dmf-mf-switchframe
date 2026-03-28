@@ -151,7 +151,9 @@ static int srtdec_is_nvdec_supported(enum AVCodecID codec_id) {
 }
 
 // srtdec_get_hw_format is the get_format callback that tells FFmpeg to use
-// CUDA pixel format (NVDEC) when available.
+// CUDA pixel format (NVDEC) when available. Falls back to the first offered
+// software format (e.g., YUV422P for 4:2:2 content) rather than hardcoding
+// YUV420P, which may not be in the offered list.
 static enum AVPixelFormat srtdec_get_hw_format(AVCodecContext *ctx,
                                                 const enum AVPixelFormat *pix_fmts) {
     for (const enum AVPixelFormat *p = pix_fmts; *p != AV_PIX_FMT_NONE; p++) {
@@ -159,7 +161,7 @@ static enum AVPixelFormat srtdec_get_hw_format(AVCodecContext *ctx,
             return AV_PIX_FMT_CUDA;
         }
     }
-    return AV_PIX_FMT_YUV420P;
+    return pix_fmts[0];
 }
 
 // srtdec_is_hw_decode returns 1 if the video decoder is using hardware acceleration.
@@ -430,6 +432,7 @@ fail:
 // srtdec_is_full_range returns 1 if the frame uses full-range (JPEG) levels.
 static int srtdec_is_full_range(AVFrame* f) {
     if (f->format == AV_PIX_FMT_YUVJ420P) return 1;
+    if (f->format == AV_PIX_FMT_YUVJ422P) return 1;
     if (f->color_range == AVCOL_RANGE_JPEG) return 1;
     return 0;
 }
@@ -592,6 +595,18 @@ static void srtdec_process_video(srtdec_t *h, AVFrame *frame, int64_t pts) {
                 w, h_val, AV_PIX_FMT_YUV420P,
                 SWS_BILINEAR, NULL, NULL, NULL);
             if (!h->sws_ctx) return;
+
+            // If source is full-range (YUVJ422P, or color_range=JPEG),
+            // set colorspace details for proper range conversion to limited.
+            if (srtdec_is_full_range(frame)) {
+                const int *inv_table = sws_getCoefficients(SWS_CS_ITU709);
+                const int *table     = sws_getCoefficients(SWS_CS_ITU709);
+                sws_setColorspaceDetails(h->sws_ctx,
+                    inv_table, 1,  // source: full range
+                    table,     0,  // dest: limited range
+                    0, 1 << 16, 1 << 16);
+            }
+
             h->last_sws_fmt = frame->format;
             h->last_sws_w = frame->width;
             h->last_sws_h = frame->height;

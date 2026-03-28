@@ -446,10 +446,9 @@ static void ffdec_copy_422p_to_420p(AVFrame* src_frame, unsigned char* dst,
 			const unsigned char* row1 = src_frame->data[plane] + (row * 2 + 1) * src_frame->linesize[plane];
 			unsigned char* d = plane_dst + row * uv_w;
 			if (remap_to_limited) {
-				const unsigned char* lut = (plane == 1) ? full_to_limited_uv : full_to_limited_uv;
 				for (int col = 0; col < uv_w; col++) {
 					unsigned char avg = (unsigned char)(((unsigned int)row0[col] + (unsigned int)row1[col] + 1) >> 1);
-					d[col] = lut[avg];
+					d[col] = full_to_limited_uv[avg];
 				}
 			} else {
 				for (int col = 0; col < uv_w; col++) {
