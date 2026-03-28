@@ -444,3 +444,9 @@ func STMapWarpP210(ctx *Context, dst, src *GPUFrame, stmapS, stmapT []float32, w
 	}
 	return ctx.Sync()
 }
+
+// ScaleP210ToNV12On scales a P210 source to NV12 destination on GPU.
+// CUDA kernel not yet implemented; returns an error.
+func ScaleP210ToNV12On(ctx *Context, dst, src *GPUFrame, q *GPUWorkQueue) error {
+	return fmt.Errorf("gpu: P210→NV12 scale not yet implemented for CUDA")
+}

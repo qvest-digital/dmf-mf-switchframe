@@ -387,6 +387,15 @@ typedef struct {
 MetalResult metal_scale_bilinear_p210_y(MetalQueueRef queue, MetalPipelineRef pipeline,
     MetalBufferRef dst, MetalBufferRef src, const MetalScaleP210Params* params);
 
+// --- P210→NV12 cross-format scale ---
+typedef struct {
+    uint32_t srcW; uint32_t srcH; uint32_t srcPitch;
+    uint32_t dstW; uint32_t dstH; uint32_t dstPitch;
+} MetalScaleP210ToNV12Params;
+
+MetalResult metal_scale_p210_to_nv12_y(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dst, MetalBufferRef src, const MetalScaleP210ToNV12Params* params);
+
 // --- P210 composite kernels ---
 typedef struct {
     uint32_t dstW; uint32_t dstH; uint32_t dstPitch;

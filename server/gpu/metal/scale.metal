@@ -284,3 +284,106 @@ kernel void scale_lanczos3_v(
     if (val > 255.0f) val = 255.0f;
     dst[dy * params.dstPitch + dx] = uint8_t(val + 0.5f);
 }
+
+// ============================================================================
+// Cross-format scale: P210 (10-bit 4:2:2) → NV12 (8-bit 4:2:0)
+// Reads uint16 samples from P210, bilinear interpolates, right-shifts to 8-bit.
+// ============================================================================
+
+struct ScaleP210ToNV12Params {
+    uint srcW;      // source luma width in samples
+    uint srcH;      // source luma height
+    uint srcPitch;  // source P210 row pitch in bytes (uint16 samples)
+    uint dstW;      // destination luma width in samples
+    uint dstH;      // destination luma height
+    uint dstPitch;  // destination NV12 row pitch in bytes (uint8 samples)
+};
+
+// Y plane: read P210 uint16 luma, bilinear scale, write NV12 uint8 luma.
+kernel void scale_p210_to_nv12_y(
+    device uint8_t* dst          [[buffer(0)]],
+    device const uchar* src      [[buffer(1)]],
+    constant ScaleP210ToNV12Params& params [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= params.dstW || gid.y >= params.dstH) return;
+
+    float srcXf = float(gid.x) * float(params.srcW - 1) / float(max(params.dstW - 1, 1u));
+    float srcYf = float(gid.y) * float(params.srcH - 1) / float(max(params.dstH - 1, 1u));
+    int sx = int(srcXf);
+    int sy = int(srcYf);
+    int fx = int((srcXf - float(sx)) * 65536.0f);
+    int fy = int((srcYf - float(sy)) * 65536.0f);
+
+    uint sx1 = min(uint(sx + 1), params.srcW - 1);
+    uint sy1 = min(uint(sy + 1), params.srcH - 1);
+
+    // Read from P210: uint16 samples
+    uint srcSamplesPerRow = params.srcPitch / 2;
+    device const ushort* srcU16 = (device const ushort*)src;
+
+    int v00 = int(srcU16[uint(sy)  * srcSamplesPerRow + uint(sx)]);
+    int v10 = int(srcU16[uint(sy)  * srcSamplesPerRow + sx1]);
+    int v01 = int(srcU16[sy1 * srcSamplesPerRow + uint(sx)]);
+    int v11 = int(srcU16[sy1 * srcSamplesPerRow + sx1]);
+
+    int top = v00 + ((v10 - v00) * fx >> 16);
+    int bot = v01 + ((v11 - v01) * fx >> 16);
+    int val = top + ((bot - top) * fy >> 16);
+
+    // Write to NV12: 10-bit → 8-bit (right-shift 2)
+    dst[gid.y * params.dstPitch + gid.x] = uint8_t(clamp(val >> 2, 0, 255));
+}
+
+// UV plane: read P210 uint16 CbCr (full-height 4:2:2), bilinear scale,
+// write NV12 uint8 CbCr (half-height 4:2:0).
+// srcW/dstW are in chroma samples (luma width / 2).
+// srcH is full source chroma height (4:2:2 = luma height).
+// dstH is half destination luma height (4:2:0 = luma height / 2).
+kernel void scale_p210_to_nv12_uv(
+    device uint8_t* dst          [[buffer(0)]],
+    device const uchar* src      [[buffer(1)]],
+    constant ScaleP210ToNV12Params& params [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= params.dstW || gid.y >= params.dstH) return;
+
+    float srcXf = float(gid.x) * float(params.srcW - 1) / float(max(params.dstW - 1, 1u));
+    float srcYf = float(gid.y) * float(params.srcH - 1) / float(max(params.dstH - 1, 1u));
+    int sx = int(srcXf);
+    int sy = int(srcYf);
+    int fx = int((srcXf - float(sx)) * 65536.0f);
+    int fy = int((srcYf - float(sy)) * 65536.0f);
+
+    uint sx1 = min(uint(sx + 1), params.srcW - 1);
+    uint sy1 = min(uint(sy + 1), params.srcH - 1);
+
+    // Read P210 UV: interleaved uint16 CbCr pairs (4 bytes per chroma sample)
+    device const ushort* srcU16 = (device const ushort*)src;
+    uint srcSamplesPerRow = params.srcPitch / 2; // ushort elements per row
+
+    // Cb channel (even indices)
+    int cb00 = int(srcU16[uint(sy)  * srcSamplesPerRow + uint(sx)  * 2]);
+    int cb10 = int(srcU16[uint(sy)  * srcSamplesPerRow + sx1 * 2]);
+    int cb01 = int(srcU16[sy1 * srcSamplesPerRow + uint(sx)  * 2]);
+    int cb11 = int(srcU16[sy1 * srcSamplesPerRow + sx1 * 2]);
+
+    int cbTop = cb00 + ((cb10 - cb00) * fx >> 16);
+    int cbBot = cb01 + ((cb11 - cb01) * fx >> 16);
+    int cb = cbTop + ((cbBot - cbTop) * fy >> 16);
+
+    // Cr channel (odd indices)
+    int cr00 = int(srcU16[uint(sy)  * srcSamplesPerRow + uint(sx)  * 2 + 1]);
+    int cr10 = int(srcU16[uint(sy)  * srcSamplesPerRow + sx1 * 2 + 1]);
+    int cr01 = int(srcU16[sy1 * srcSamplesPerRow + uint(sx)  * 2 + 1]);
+    int cr11 = int(srcU16[sy1 * srcSamplesPerRow + sx1 * 2 + 1]);
+
+    int crTop = cr00 + ((cr10 - cr00) * fx >> 16);
+    int crBot = cr01 + ((cr11 - cr01) * fx >> 16);
+    int cr = crTop + ((crBot - crTop) * fy >> 16);
+
+    // Write NV12 UV: interleaved uint8 CbCr pairs, 10-bit → 8-bit
+    uint dstIdx = gid.y * params.dstPitch + gid.x * 2;
+    dst[dstIdx]     = uint8_t(clamp(cb >> 2, 0, 255));
+    dst[dstIdx + 1] = uint8_t(clamp(cr >> 2, 0, 255));
+}

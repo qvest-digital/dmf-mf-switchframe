@@ -24,10 +24,6 @@ type PreviewEncoder struct {
 	dstW     int
 	dstH     int
 	mu       sync.Mutex
-
-	// P210 fallback buffers (allocated lazily on first P210 frame)
-	p210Buf []byte // CPU-side YUV422P10LE download buffer
-	yuvBuf  []byte // CPU-side YUV420P buffer at preview resolution
 }
 
 // NewPreviewEncoder creates a GPU preview encoder that scales and encodes
@@ -95,11 +91,9 @@ func NewPreviewEncoder(ctx *Context, srcW, srcH, dstW, dstH, bitrate, fpsNum, fp
 // Scale and encode run on the preview encoder's dedicated work queue,
 // enabling concurrent GPU execution with the program pipeline.
 //
-// When the source frame is P210 (10-bit 4:2:2), the GPU scale kernel cannot
-// handle the format mismatch (P210 src → NV12 dst), so we use a CPU fallback:
-// download P210 → convert to 8-bit YUV420P at preview resolution → upload to
-// the NV12 scaleDst frame → encode via normal GPU path. This is acceptable
-// for 480p preview running in an async background goroutine.
+// When the source frame is P210 (10-bit 4:2:2), the cross-format GPU kernel
+// ScaleP210ToNV12On reads P210 uint16 samples, bilinear-interpolates, and
+// writes NV12 uint8 output in a single pass — no CPU round-trip needed.
 func (p *PreviewEncoder) Encode(src *GPUFrame, forceIDR bool) ([]byte, bool, error) {
 	if p == nil || src == nil {
 		return nil, false, ErrGPUNotAvailable
@@ -108,127 +102,19 @@ func (p *PreviewEncoder) Encode(src *GPUFrame, forceIDR bool) ([]byte, bool, err
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// P210 source: preview always outputs H.264 NV12, so use CPU fallback path.
 	if src.Format == GPUFormatP210 {
-		return p.encodeP210Fallback(src, forceIDR)
-	}
-
-	if err := ScaleBilinearOn(p.gpuCtx, p.scaleDst, src, p.queue); err != nil {
-		return nil, false, fmt.Errorf("gpu: preview scale failed: %w", err)
+		// P210→NV12 cross-format scale: single GPU pass, no CPU round-trip.
+		if err := ScaleP210ToNV12On(p.gpuCtx, p.scaleDst, src, p.queue); err != nil {
+			return nil, false, fmt.Errorf("gpu: preview P210→NV12 scale failed: %w", err)
+		}
+	} else {
+		if err := ScaleBilinearOn(p.gpuCtx, p.scaleDst, src, p.queue); err != nil {
+			return nil, false, fmt.Errorf("gpu: preview scale failed: %w", err)
+		}
 	}
 
 	p.scaleDst.PTS = src.PTS
 	return p.encoder.EncodeGPUOn(p.scaleDst, forceIDR, p.queue)
-}
-
-// encodeP210Fallback handles preview encoding when the source is P210.
-// Downloads the P210 frame to CPU, converts to 8-bit YUV420P at preview
-// resolution, uploads to the NV12 scaleDst frame, and encodes via the
-// normal GPU path. Acceptable for 480p preview running in an async
-// background goroutine.
-func (p *PreviewEncoder) encodeP210Fallback(src *GPUFrame, forceIDR bool) ([]byte, bool, error) {
-	// Lazy-allocate CPU buffers.
-	// P210 CPU frame: YUV422P10LE = w*h*4 bytes (Y: w*h*2, U: w/2*h*2, V: w/2*h*2)
-	p210Size := yuv10FrameSize(src.Width, src.Height)
-	if len(p.p210Buf) < p210Size {
-		p.p210Buf = make([]byte, p210Size)
-	}
-
-	// Download P210 frame to CPU as YUV422P10LE.
-	if err := Download10(p.gpuCtx, src, p.p210Buf[:p210Size], src.Width, src.Height); err != nil {
-		return nil, false, fmt.Errorf("gpu: preview P210 download: %w", err)
-	}
-
-	// Convert P210 → YUV420P at preview resolution.
-	yuvSize := yuvFrameSize(p.dstW, p.dstH)
-	if len(p.yuvBuf) < yuvSize {
-		p.yuvBuf = make([]byte, yuvSize)
-	}
-	convertP210ToYUV420PScaled(p.p210Buf[:p210Size], src.Width, src.Height,
-		p.yuvBuf[:yuvSize], p.dstW, p.dstH)
-
-	// Upload YUV420P to the NV12 scaleDst frame.
-	if err := Upload(p.gpuCtx, p.scaleDst, p.yuvBuf[:yuvSize], p.dstW, p.dstH); err != nil {
-		return nil, false, fmt.Errorf("gpu: preview P210 upload: %w", err)
-	}
-
-	p.scaleDst.PTS = src.PTS
-	return p.encoder.EncodeGPUOn(p.scaleDst, forceIDR, p.queue)
-}
-
-// convertP210ToYUV420PScaled converts YUV422P10LE to YUV420P with nearest-neighbor scaling.
-// src is planar: Y (srcW*srcH*2 bytes of uint16LE), U (srcW/2*srcH*2 bytes), V (srcW/2*srcH*2 bytes).
-// dst is planar YUV420P: Y (dstW*dstH), U (dstW/2*dstH/2), V (dstW/2*dstH/2).
-//
-// Nearest-neighbor is sufficient for 480p preview — the visual difference
-// from bilinear is imperceptible at this resolution and frame rate.
-func convertP210ToYUV420PScaled(src []byte, srcW, srcH int, dst []byte, dstW, dstH int) {
-	// Source plane offsets (YUV422P10LE: Y + U + V, each sample is 2 bytes)
-	srcYStride := srcW * 2
-	srcUOffset := srcW * srcH * 2
-	srcUStride := (srcW / 2) * 2
-	srcVOffset := srcUOffset + (srcW/2)*srcH*2
-
-	// Destination plane offsets (YUV420P: Y + U + V, each sample is 1 byte)
-	dstYStride := dstW
-	dstUOffset := dstW * dstH
-	dstUStride := dstW / 2
-	dstVOffset := dstUOffset + (dstW/2)*(dstH/2)
-
-	// Scale Y plane: nearest-neighbor + 10-bit→8-bit (right-shift 2)
-	for dy := 0; dy < dstH; dy++ {
-		sy := dy * srcH / dstH
-		if sy >= srcH {
-			sy = srcH - 1
-		}
-		srcRowOff := sy * srcYStride
-		dstRowOff := dy * dstYStride
-		for dx := 0; dx < dstW; dx++ {
-			sx := dx * srcW / dstW
-			if sx >= srcW {
-				sx = srcW - 1
-			}
-			// Read uint16LE, shift to 8-bit
-			off := srcRowOff + sx*2
-			val := uint16(src[off]) | uint16(src[off+1])<<8
-			dst[dstRowOff+dx] = byte(val >> 2)
-		}
-	}
-
-	// Scale U and V planes: nearest-neighbor + 10-bit→8-bit
-	// Source is 4:2:2 (full height chroma), dest is 4:2:0 (half height chroma)
-	srcChromaW := srcW / 2
-	srcChromaH := srcH // 4:2:2: full height
-	dstChromaW := dstW / 2
-	dstChromaH := dstH / 2
-
-	for _, planeInfo := range [2]struct {
-		srcOffset int
-		srcStride int
-		dstOffset int
-		dstStride int
-	}{
-		{srcUOffset, srcUStride, dstUOffset, dstUStride},
-		{srcVOffset, srcUStride, dstVOffset, dstUStride},
-	} {
-		for dy := 0; dy < dstChromaH; dy++ {
-			sy := dy * srcChromaH / dstChromaH
-			if sy >= srcChromaH {
-				sy = srcChromaH - 1
-			}
-			srcRowOff := planeInfo.srcOffset + sy*planeInfo.srcStride
-			dstRowOff := planeInfo.dstOffset + dy*planeInfo.dstStride
-			for dx := 0; dx < dstChromaW; dx++ {
-				sx := dx * srcChromaW / dstChromaW
-				if sx >= srcChromaW {
-					sx = srcChromaW - 1
-				}
-				off := srcRowOff + sx*2
-				val := uint16(src[off]) | uint16(src[off+1])<<8
-				dst[dstRowOff+dx] = byte(val >> 2)
-			}
-		}
-	}
 }
 
 // Close releases all preview encoder resources.

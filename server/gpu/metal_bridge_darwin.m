@@ -629,6 +629,22 @@ MetalResult metal_scale_bilinear_p210_y(MetalQueueRef queue, MetalPipelineRef pi
 }
 
 // ============================================================================
+// P210→NV12 cross-format scale kernels
+// ============================================================================
+
+MetalResult metal_scale_p210_to_nv12_y(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dst, MetalBufferRef src, const MetalScaleP210ToNV12Params* params) {
+    id<MTLBuffer> bufs[] = {
+        (id<MTLBuffer>)dst,
+        (id<MTLBuffer>)src,
+    };
+    return dispatch_2d((id<MTLCommandQueue>)queue,
+                       (id<MTLComputePipelineState>)pipeline,
+                       bufs, 2, params, sizeof(*params), 2,
+                       params->dstW, params->dstH);
+}
+
+// ============================================================================
 // P210 composite kernels
 // ============================================================================
 

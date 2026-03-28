@@ -187,3 +187,70 @@ func Scale(ctx *Context, dst, src *GPUFrame, quality ScaleQuality) error {
 		return ScaleBilinear(ctx, dst, src)
 	}
 }
+
+// ScaleP210ToNV12On scales a P210 source frame to an NV12 destination frame
+// using bilinear interpolation with 10-bit→8-bit conversion and 4:2:2→4:2:0
+// chroma subsampling in a single GPU pass. Runs on the specified work queue
+// (nil = default queue). This is the GPU-resident path for preview encoding
+// in professional mode, eliminating the CPU round-trip.
+func ScaleP210ToNV12On(ctx *Context, dst, src *GPUFrame, q *GPUWorkQueue) error {
+	if ctx == nil || ctx.mtl == nil || dst == nil || src == nil {
+		return ErrGPUNotAvailable
+	}
+
+	mtl := ctx.mtl
+
+	queue := metalQueueRef(q)
+	if queue == nil {
+		queue = mtl.queue
+	}
+
+	// Scale Y plane: P210 uint16 → NV12 uint8
+	yPipeline, err := mtl.getPipeline("scale_p210_to_nv12_y")
+	if err != nil {
+		return fmt.Errorf("gpu: scale p210→nv12 Y: %w", err)
+	}
+	yParams := C.MetalScaleP210ToNV12Params{
+		srcW:     C.uint32_t(src.Width),
+		srcH:     C.uint32_t(src.Height),
+		srcPitch: C.uint32_t(src.Pitch),
+		dstW:     C.uint32_t(dst.Width),
+		dstH:     C.uint32_t(dst.Height),
+		dstPitch: C.uint32_t(dst.Pitch),
+	}
+	rc := C.metal_scale_p210_to_nv12_y(queue, yPipeline, dst.MetalBuf, src.MetalBuf, &yParams)
+	if rc != C.METAL_SUCCESS {
+		return fmt.Errorf("gpu: scale p210→nv12 Y dispatch: %d", rc)
+	}
+
+	// Scale UV plane: P210 full-height uint16 CbCr → NV12 half-height uint8 CbCr
+	uvPipeline, err := mtl.getPipeline("scale_p210_to_nv12_uv")
+	if err != nil {
+		return fmt.Errorf("gpu: scale p210→nv12 UV: %w", err)
+	}
+
+	srcUVOffset := C.int64_t(src.Pitch * src.Height)
+	dstUVOffset := C.int64_t(dst.Pitch * dst.Height)
+	chromaSrcW := src.Width / 2
+	chromaDstW := dst.Width / 2
+
+	uvParams := C.MetalScaleP210ToNV12Params{
+		srcW:     C.uint32_t(chromaSrcW),
+		srcH:     C.uint32_t(src.Height),     // P210: full-height UV (4:2:2)
+		srcPitch: C.uint32_t(src.Pitch),
+		dstW:     C.uint32_t(chromaDstW),
+		dstH:     C.uint32_t(dst.Height / 2), // NV12: half-height UV (4:2:0)
+		dstPitch: C.uint32_t(dst.Pitch),
+	}
+	uvBufs := [2]C.MetalBufferRef{dst.MetalBuf, src.MetalBuf}
+	uvOffsets := [2]C.int64_t{dstUVOffset, srcUVOffset}
+	rc = C.metal_dispatch_2d_offset(queue, uvPipeline,
+		&uvBufs[0], &uvOffsets[0], 2,
+		unsafe.Pointer(&uvParams), C.size_t(unsafe.Sizeof(uvParams)), 2,
+		C.uint32_t(chromaDstW), C.uint32_t(dst.Height/2))
+	if rc != C.METAL_SUCCESS {
+		return fmt.Errorf("gpu: scale p210→nv12 UV dispatch: %d", rc)
+	}
+
+	return nil
+}

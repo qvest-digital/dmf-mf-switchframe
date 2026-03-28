@@ -263,3 +263,8 @@ func STMapWarpP210Map(ctx *Context, dst, src *GPUFrame, stmap *GPUSTMap) error {
 func STMapWarpP210(ctx *Context, dst, src *GPUFrame, stmapS, stmapT []float32, width, height int) error {
 	return ErrGPUNotAvailable
 }
+
+// ScaleP210ToNV12On returns ErrGPUNotAvailable on non-GPU builds.
+func ScaleP210ToNV12On(ctx *Context, dst, src *GPUFrame, q *GPUWorkQueue) error {
+	return ErrGPUNotAvailable
+}
