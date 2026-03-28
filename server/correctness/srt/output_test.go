@@ -211,10 +211,13 @@ func TestSRTOutputProducesValidTS(t *testing.T) {
 	t.Logf("MEASURE: ffprobe codec=%s, resolution=%dx%d", vs.CodecName, vs.Width, vs.Height)
 	require.Equal(t, "h264", vs.CodecName)
 
-	// Check frame count.
+	// Check frame count via independent ffprobe validation.
+	// We sent videoFramesSent frames. ffprobe should find close to that number.
+	// Tolerance ±10 for SRT transit losses and muxer frame buffering.
 	probeFrames := testutil.ProbeVideoFrames(t, path)
 	t.Logf("MEASURE: sent %d video frames, receiver got %d bytes, ffprobe frames=%d", videoFramesSent, capturedLen, len(probeFrames))
-	require.Greater(t, len(probeFrames), 50, "ffprobe should find > 50 video frames from 90 encoded")
+	require.InDelta(t, videoFramesSent, len(probeFrames), 10,
+		"ffprobe frame count should match sent frames: sent %d, ffprobe found %d", videoFramesSent, len(probeFrames))
 }
 
 // TestSRTOutputReconnectionIDRGating tests the SRT output adapter's IDR gating behavior
@@ -404,27 +407,50 @@ func TestSRTOutputReconnectionIDRGating(t *testing.T) {
 
 	mu.Lock()
 	writesTotal := len(writtenData)
-	// Check if any P-frames leaked through before the keyframe.
-	firstWriteIsKeyframe := false
-	if len(writtenData) > 0 {
-		firstWriteIsKeyframe = output.ContainsKeyframe(writtenData[0])
+	// Copy all post-reconnect written data for independent TS parsing.
+	postReconnectData := make([][]byte, len(writtenData))
+	for i, d := range writtenData {
+		postReconnectData[i] = make([]byte, len(d))
+		copy(postReconnectData[i], d)
 	}
 	mu.Unlock()
 
-	t.Logf("MEASURE: frames after reconnect, total_writes=%d, writes_after_pframes_only=%d, first_is_keyframe=%v",
-		writesTotal, writesAfterPFrames, firstWriteIsKeyframe)
+	t.Logf("MEASURE: frames after reconnect, total_writes=%d, writes_after_pframes_only=%d",
+		writesTotal, writesAfterPFrames)
 
-	// The IDR gate should have dropped the P-frames written after reconnect.
-	// The P-frames fed should not have reached the connection.
-	t.Logf("MEASURE: writes_after_pframes_only=%d (expected 0 if IDR gate works)", writesAfterPFrames)
+	// The IDR gate should have dropped all P-frames written after reconnect.
+	require.Zero(t, writesAfterPFrames,
+		"IDR gate must drop all P-frame writes before first keyframe; %d P-frame writes leaked through",
+		writesAfterPFrames)
 
 	// After feeding the keyframe, writes should resume.
 	require.Greater(t, writesTotal, 0,
 		"some data should have been written after feeding keyframe post-reconnect")
 
-	// Verify the first write after reconnect contains a keyframe.
-	require.True(t, firstWriteIsKeyframe,
-		"first write after SRT reconnection should contain a keyframe (RAI), IDR gating may be broken")
+	// INDEPENDENT VALIDATION: Parse the first post-reconnect write as TS packets
+	// and verify RAI (Random Access Indicator) is set in the adaptation field.
+	// This uses testutil.ParseTSPackets instead of output.ContainsKeyframe
+	// to avoid testing self-consistency.
+	require.Greater(t, len(postReconnectData), 0, "should have post-reconnect data")
+	firstWrite := postReconnectData[0]
+
+	// TS data must be packet-aligned (multiple of 188).
+	require.Equal(t, 0, len(firstWrite)%188,
+		"first post-reconnect write should be TS-packet-aligned, got %d bytes", len(firstWrite))
+
+	packets := testutil.ParseTSPackets(t, firstWrite)
+	foundRAI := false
+	for _, p := range packets {
+		if p.PID != 0x0000 && p.PID != 0x0001 && // skip PAT/PMT
+			p.HasAdaptation && p.AdaptationField != nil &&
+			p.AdaptationField.RandomAccessIndicator {
+			foundRAI = true
+			t.Logf("MEASURE: found RAI on PID 0x%04X in first post-reconnect write", p.PID)
+			break
+		}
+	}
+	require.True(t, foundRAI,
+		"first write after SRT reconnection must contain a video packet with RAI set (independent TS parse)")
 }
 
 // mockConn implements srtConn for testing.
@@ -503,6 +529,28 @@ func TestSRTOutputRingBufferOverflow(t *testing.T) {
 	for i := 0; i+188 <= readable; i += 188 {
 		require.Equal(t, byte(0x47), readback[i],
 			"packet at offset %d should start with sync byte 0x47, got 0x%02X", i, readback[i])
+	}
+
+	// Verify that the NEWEST data survived overflow, not the oldest.
+	// Packets are numbered 0-29 with fill byte = byte(i).
+	// After overflow of 5640 bytes into 1024, we should see the last ~5 packets (25-29).
+	actualPackets := readable / 188
+	require.Greater(t, actualPackets, 0, "should have at least one packet after overflow")
+	lastPkt := readback[(actualPackets-1)*188 : actualPackets*188]
+	lastFillByte := lastPkt[4]
+	t.Logf("MEASURE: last packet fill byte=%d (expected 29 if newest data preserved)", lastFillByte)
+	require.Equal(t, byte(29), lastFillByte,
+		"ring buffer must preserve newest data on overflow; last packet fill byte should be 29 (newest), got %d", lastFillByte)
+
+	// Verify sequence continuity: all preserved packets should be contiguous
+	// and represent the tail of the written sequence.
+	for i := 0; i < actualPackets; i++ {
+		pkt := readback[i*188 : (i+1)*188]
+		fillByte := pkt[4]
+		expectedSeq := byte(30 - actualPackets + i)
+		t.Logf("MEASURE: packet %d fill byte=%d (expected %d)", i, fillByte, expectedSeq)
+		require.Equal(t, expectedSeq, fillByte,
+			"packet %d: fill byte should be %d (contiguous newest data), got %d", i, expectedSeq, fillByte)
 	}
 
 	// After ReadAll, buffer should be empty and overflow cleared.
@@ -829,8 +877,10 @@ func TestSRTOutputMultipleReceivers(t *testing.T) {
 	require.Equal(t, len(probeFrames1), len(probeFrames2),
 		"both receivers should decode same number of video frames")
 
-	require.Greater(t, len(probeFrames1), 50,
-		"receivers should have > 50 video frames from 90 encoded")
+	// Both receivers should have close to the number of frames sent.
+	// We encoded 90 frames; tolerance ±10 for muxer frame buffering.
+	require.InDelta(t, len(frames), len(probeFrames1), 10,
+		"receiver1 ffprobe frames should match encoded count: encoded %d, found %d", len(frames), len(probeFrames1))
 }
 
 // slowMockConn simulates a slow SRT connection that takes delay per write.

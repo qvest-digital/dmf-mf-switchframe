@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	srtgo "github.com/zsiec/srtgo"
 	"github.com/zsiec/switchframe/server/srt"
 )
@@ -57,16 +58,12 @@ func TestSRTLoopbackFrameDelivery(t *testing.T) {
 	t.Logf("MEASURE: video frames=%d, first PTS=%d, last PTS=%d, dimensions=%dx%d",
 		len(vFrames), firstPTS, lastPTS, firstW, firstH)
 
-	// Assert: frame count should be approximately 90 (3s * 30fps), with tolerance
-	// for encoder warmup/flush loss.
-	if len(vFrames) < 70 {
-		t.Errorf("too few video frames: got %d, expected ~90 (3s @ 30fps), min 70", len(vFrames))
-	}
-	if len(vFrames) > 110 {
-		t.Errorf("too many video frames: got %d, expected ~90 (3s @ 30fps), max 110", len(vFrames))
-	}
+	// Assert: frame count should be approximately 90 (3s * 30fps).
+	// Spec: 3s * 30fps = 90 frames. Tolerance ±10 for encoder warmup/flush.
+	require.InDelta(t, 90, len(vFrames), 10,
+		"video frame count: 3s @ 30fps = 90 frames, got %d", len(vFrames))
 
-	// Assert: PTS monotonically increasing.
+	// Assert: PTS must be strictly monotonically increasing.
 	nonMonotonicCount := 0
 	for i := 1; i < len(vFrames); i++ {
 		if vFrames[i].PTS <= vFrames[i-1].PTS {
@@ -77,41 +74,20 @@ func TestSRTLoopbackFrameDelivery(t *testing.T) {
 			}
 		}
 	}
-	if nonMonotonicCount > 0 {
-		t.Errorf("PTS not monotonically increasing: %d violations out of %d frames",
-			nonMonotonicCount, len(vFrames))
-	}
+	require.Zero(t, nonMonotonicCount, "PTS must be strictly monotonic: %d violations out of %d frames",
+		nonMonotonicCount, len(vFrames))
 
 	// Assert: all frames have the expected dimensions.
-	wrongDimCount := 0
 	for i, f := range vFrames {
-		if f.Width != 320 || f.Height != 240 {
-			wrongDimCount++
-			if wrongDimCount <= 3 {
-				t.Logf("MEASURE: wrong dimensions at frame %d: %dx%d (expected 320x240)",
-					i, f.Width, f.Height)
-			}
-		}
-	}
-	if wrongDimCount > 0 {
-		t.Errorf("frames with wrong dimensions: %d out of %d", wrongDimCount, len(vFrames))
+		require.Equal(t, 320, f.Width, "frame %d: width mismatch", i)
+		require.Equal(t, 240, f.Height, "frame %d: height mismatch", i)
 	}
 
-	// Assert: YUV420 frame size should be width*height*3/2.
+	// Assert: YUV420 frame size matches expected dimensions.
 	expectedSize := 320 * 240 * 3 / 2
-	wrongSizeCount := 0
 	for i, f := range vFrames {
-		if f.Size != expectedSize {
-			wrongSizeCount++
-			if wrongSizeCount <= 3 {
-				t.Logf("MEASURE: wrong YUV size at frame %d: %d (expected %d)",
-					i, f.Size, expectedSize)
-			}
-		}
-	}
-	if wrongSizeCount > 0 {
-		t.Errorf("frames with wrong YUV buffer size: %d out of %d (expected %d bytes each)",
-			wrongSizeCount, len(vFrames), expectedSize)
+		require.Equal(t, expectedSize, f.Size,
+			"frame %d: YUV420 buffer size should be %d (320*240*3/2), got %d", i, expectedSize, f.Size)
 	}
 }
 
@@ -154,35 +130,22 @@ func TestSRTLoopbackAudioDelivery(t *testing.T) {
 	t.Logf("MEASURE: audio frames=%d, sample_rate=%d, channels=%d, first PTS=%d, last PTS=%d",
 		len(aFrames), firstSR, firstCh, firstPTS, lastPTS)
 
-	// Assert: frame count should be > 100. At 48kHz with AAC 1024-sample frames,
-	// 3s produces ~140 frames. Allow for some loss.
-	if len(aFrames) < 100 {
-		t.Errorf("too few audio frames: got %d, expected >100 (3s at 48kHz/1024 samples per frame ≈ 140)",
-			len(aFrames))
-	}
+	// Assert: frame count should be ~140 (3s * 48000Hz / 1024 samples per frame = 140.6).
+	// Spec: 3s @ 48kHz with AAC 1024-sample frames = 140 frames. Tolerance ±15.
+	require.InDelta(t, 140, len(aFrames), 15,
+		"audio frame count: 3s @ 48kHz/1024 = 140 frames, got %d", len(aFrames))
 
 	// Assert: sample rate is consistent across all frames.
-	sampleRateMismatch := 0
 	for i, f := range aFrames {
-		if f.SampleRate != firstSR {
-			sampleRateMismatch++
-			if sampleRateMismatch <= 3 {
-				t.Logf("MEASURE: sample rate mismatch at frame %d: %d vs first=%d",
-					i, f.SampleRate, firstSR)
-			}
-		}
-	}
-	if sampleRateMismatch > 0 {
-		t.Errorf("inconsistent sample rate across frames: %d mismatches out of %d",
-			sampleRateMismatch, len(aFrames))
+		require.Equal(t, firstSR, f.SampleRate,
+			"frame %d: sample rate mismatch: got %d, expected %d", i, f.SampleRate, firstSR)
 	}
 
-	// Assert: sample rate is 48000 or 44100 (common values).
-	if firstSR != 48000 && firstSR != 44100 {
-		t.Errorf("unexpected sample rate: %d (expected 48000 or 44100)", firstSR)
-	}
+	// Assert: sample rate is 48000 (we generate test source at 48kHz).
+	require.Equal(t, 48000, firstSR,
+		"sample rate should be 48000 Hz (test source), got %d", firstSR)
 
-	// Assert: audio PTS monotonically increasing.
+	// Assert: audio PTS must be strictly monotonically increasing.
 	nonMonotonicCount := 0
 	for i := 1; i < len(aFrames); i++ {
 		if aFrames[i].PTS <= aFrames[i-1].PTS {
@@ -193,25 +156,13 @@ func TestSRTLoopbackAudioDelivery(t *testing.T) {
 			}
 		}
 	}
-	if nonMonotonicCount > 0 {
-		t.Errorf("audio PTS not monotonically increasing: %d violations out of %d frames",
-			nonMonotonicCount, len(aFrames))
-	}
+	require.Zero(t, nonMonotonicCount, "audio PTS must be strictly monotonic: %d violations out of %d frames",
+		nonMonotonicCount, len(aFrames))
 
-	// Assert: channels are consistent.
-	channelMismatch := 0
+	// Assert: channels are consistent across all frames.
 	for i, f := range aFrames {
-		if f.Channels != firstCh {
-			channelMismatch++
-			if channelMismatch <= 3 {
-				t.Logf("MEASURE: channel count mismatch at frame %d: %d vs first=%d",
-					i, f.Channels, firstCh)
-			}
-		}
-	}
-	if channelMismatch > 0 {
-		t.Errorf("inconsistent channel count: %d mismatches out of %d",
-			channelMismatch, len(aFrames))
+		require.Equal(t, firstCh, f.Channels,
+			"frame %d: channel count mismatch: got %d, expected %d", i, f.Channels, firstCh)
 	}
 }
 
@@ -335,20 +286,16 @@ func TestSRTLoopbackReconnection(t *testing.T) {
 		session1Frames, session2Frames, totalFrames)
 
 	// Assert: frames received from both sessions.
-	if session1Frames < 5 {
-		t.Errorf("session 1 delivered too few frames: %d (expected >= 5)", session1Frames)
-	}
-	if session2Frames < 5 {
-		t.Errorf("session 2 delivered too few frames: %d (expected >= 5)", session2Frames)
-	}
+	// Each session pushes a 1s clip = 30 frames. Expect at least 15 per session
+	// (encoder warmup + pushTSFileSync doesn't wait for decode to finish).
+	require.GreaterOrEqual(t, session1Frames, 15,
+		"session 1 delivered too few frames: %d (1s @ 30fps = 30 expected, min 15)", session1Frames)
+	require.GreaterOrEqual(t, session2Frames, 15,
+		"session 2 delivered too few frames: %d (1s @ 30fps = 30 expected, min 15)", session2Frames)
 
-	// Assert: total frames reasonable (> 30 across both sessions).
-	if totalFrames < 30 {
-		t.Errorf("total frames across both sessions too low: %d (expected > 30)", totalFrames)
-	}
-
-	// Assert: no panic occurred (test reaching this point is sufficient).
-	t.Log("MEASURE: no panic during reconnection test")
+	// Assert: total frames ~60 (2 sessions * 1s * 30fps). Tolerance ±20.
+	require.InDelta(t, 60, totalFrames, 20,
+		"total frames across both sessions: 2 * 1s @ 30fps = 60 expected, got %d", totalFrames)
 }
 
 // absDiff returns the absolute difference between two int64 values.
@@ -391,44 +338,18 @@ func TestSRTHighLatencyNoLoss(t *testing.T) {
 	t.Logf("MEASURE: frames=%d with 500ms latency", len(vFrames))
 
 	// Assert: frame count should be approximately 90 (3s * 30fps).
-	// With 500ms latency on localhost, ARQ should recover everything.
-	if len(vFrames) < 80 {
-		t.Errorf("too few video frames with high latency: got %d, expected ~90 (3s @ 30fps), min 80", len(vFrames))
-	}
-	if len(vFrames) > 100 {
-		t.Errorf("too many video frames with high latency: got %d, expected ~90 (3s @ 30fps), max 100", len(vFrames))
-	}
-
-	// Assert: all frames have valid dimensions (no decode artifacts).
-	invalidDimCount := 0
-	for i, f := range vFrames {
-		if f.Width <= 0 || f.Height <= 0 {
-			invalidDimCount++
-			if invalidDimCount <= 3 {
-				t.Logf("MEASURE: invalid dimensions at frame %d: %dx%d", i, f.Width, f.Height)
-			}
-		}
-	}
-	t.Logf("MEASURE: invalid dimension frames=%d out of %d total", invalidDimCount, len(vFrames))
-	if invalidDimCount > 0 {
-		t.Errorf("frames with invalid dimensions (decode artifacts): %d out of %d", invalidDimCount, len(vFrames))
-	}
+	// Spec: 3s * 30fps = 90 frames. With 500ms latency on localhost, ARQ
+	// should recover everything. Tolerance ±10.
+	require.InDelta(t, 90, len(vFrames), 10,
+		"video frame count with high latency: 3s @ 30fps = 90 frames, got %d", len(vFrames))
 
 	// Assert: all frames match expected 320x240.
-	wrongDimCount := 0
 	for i, f := range vFrames {
-		if f.Width != 320 || f.Height != 240 {
-			wrongDimCount++
-			if wrongDimCount <= 3 {
-				t.Logf("MEASURE: wrong dimensions at frame %d: %dx%d (expected 320x240)", i, f.Width, f.Height)
-			}
-		}
-	}
-	if wrongDimCount > 0 {
-		t.Errorf("frames with wrong dimensions: %d out of %d", wrongDimCount, len(vFrames))
+		require.Equal(t, 320, f.Width, "frame %d: width mismatch", i)
+		require.Equal(t, 240, f.Height, "frame %d: height mismatch", i)
 	}
 
-	// Assert: PTS monotonically increasing.
+	// Assert: PTS must be strictly monotonically increasing.
 	nonMonotonicCount := 0
 	for i := 1; i < len(vFrames); i++ {
 		if vFrames[i].PTS <= vFrames[i-1].PTS {
@@ -436,10 +357,9 @@ func TestSRTHighLatencyNoLoss(t *testing.T) {
 		}
 	}
 	t.Logf("MEASURE: non-monotonic PTS violations=%d with 500ms latency", nonMonotonicCount)
-	if nonMonotonicCount > 0 {
-		t.Errorf("PTS not monotonically increasing with high latency: %d violations out of %d frames",
-			nonMonotonicCount, len(vFrames))
-	}
+	require.Zero(t, nonMonotonicCount,
+		"PTS must be strictly monotonic with high latency: %d violations out of %d frames",
+		nonMonotonicCount, len(vFrames))
 }
 
 // TestSRTLowLatencyUnderLoad configures SRT with 20ms latency (very low) and
@@ -489,20 +409,20 @@ func TestSRTLowLatencyUnderLoad(t *testing.T) {
 
 	t.Logf("MEASURE: frames=%d with 20ms latency, vs %d with default latency", lowFrames, defaultFrames)
 
-	// Assert: at minimum some frames delivered (no crash, no hang).
-	if lowFrames < 20 {
-		t.Errorf("too few video frames with 20ms latency: got %d, expected at least 20", lowFrames)
-	}
+	// Assert: on localhost with no real network delay, low latency should still
+	// deliver close to spec. Spec: 3s * 30fps = 90 frames.
+	// Tolerance ±20 to account for 20ms latency reducing ARQ effectiveness.
+	require.InDelta(t, 90, lowFrames, 20,
+		"low-latency video frame count: 3s @ 30fps = 90 frames, got %d", lowFrames)
 
 	// Assert: low latency shouldn't produce drastically fewer frames than
-	// default on localhost (within 50% of baseline).
-	minExpected := defaultFrames / 2
+	// default on localhost (within 75% of baseline).
+	minExpected := defaultFrames * 3 / 4
 	t.Logf("MEASURE: low-latency delivery ratio=%.1f%% of baseline (%d/%d)",
 		float64(lowFrames)*100/float64(defaultFrames), lowFrames, defaultFrames)
-	if lowFrames < minExpected {
-		t.Errorf("low latency produced significantly fewer frames: %d vs baseline %d (threshold %d)",
-			lowFrames, defaultFrames, minExpected)
-	}
+	require.GreaterOrEqual(t, lowFrames, minExpected,
+		"low latency produced significantly fewer frames: %d vs baseline %d (threshold 75%% = %d)",
+		lowFrames, defaultFrames, minExpected)
 }
 
 // TestSRTStreamKeyRouting verifies that two simultaneous SRT callers with
@@ -584,30 +504,22 @@ func TestSRTStreamKeyRouting(t *testing.T) {
 		t.Logf("MEASURE: key=%q frame_count=%d", k, c)
 	}
 
-	// Assert: both sources produced a reasonable number of frames independently.
-	if len(frames1) < 30 {
-		t.Errorf("cam1 produced too few frames: got %d, expected >= 30 (out of ~90)", len(frames1))
-	}
-	if len(frames2) < 30 {
-		t.Errorf("cam2 produced too few frames: got %d, expected >= 30 (out of ~90)", len(frames2))
-	}
+	// Assert: both sources produced ~90 frames each (3s @ 30fps).
+	// Each camera gets the same 3s file, so each should produce ~90 frames.
+	// Tolerance ±15 since concurrent sources may cause slightly more loss.
+	require.InDelta(t, 90, len(frames1), 15,
+		"cam1 frame count: 3s @ 30fps = 90 frames, got %d", len(frames1))
+	require.InDelta(t, 90, len(frames2), 15,
+		"cam2 frame count: 3s @ 30fps = 90 frames, got %d", len(frames2))
 
 	// Assert: frames are correctly attributed to their source keys.
 	// No frames should have unexpected keys.
-	unexpectedKeys := 0
-	for _, f := range allFrames {
-		if f.Key != cam1Key && f.Key != cam2Key {
-			unexpectedKeys++
-			if unexpectedKeys <= 3 {
-				t.Logf("MEASURE: unexpected key=%q at PTS=%d", f.Key, f.PTS)
-			}
-		}
-	}
-	if unexpectedKeys > 0 {
-		t.Errorf("found %d frames with unexpected keys (not %q or %q)", unexpectedKeys, cam1Key, cam2Key)
+	for i, f := range allFrames {
+		require.True(t, f.Key == cam1Key || f.Key == cam2Key,
+			"frame %d: unexpected key %q (expected %q or %q)", i, f.Key, cam1Key, cam2Key)
 	}
 
-	// Assert: both sources have monotonically increasing PTS independently.
+	// Assert: both sources have strictly monotonically increasing PTS.
 	for _, tc := range []struct {
 		name   string
 		frames []capturedVideoFrame
@@ -622,10 +534,9 @@ func TestSRTStreamKeyRouting(t *testing.T) {
 			}
 		}
 		t.Logf("MEASURE: %s PTS non-monotonic violations=%d out of %d frames", tc.name, nonMono, len(tc.frames))
-		if nonMono > 0 {
-			t.Errorf("%s: PTS not monotonically increasing: %d violations out of %d frames",
-				tc.name, nonMono, len(tc.frames))
-		}
+		require.Zero(t, nonMono,
+			"%s: PTS must be strictly monotonic: %d violations out of %d frames",
+			tc.name, nonMono, len(tc.frames))
 	}
 
 	// Assert: total frame count is approximately the sum of both streams.
@@ -874,28 +785,18 @@ func TestSRTFullRoundTrip(t *testing.T) {
 
 	// --- Video assertions ---
 
-	// 5a. Frame count >= 70 (most of 90 expected for 3s @ 30fps).
-	t.Logf("MEASURE: video frame count=%d (expected ~90, min 70)", len(videoSnap))
-	if len(videoSnap) < 70 {
-		t.Errorf("too few video frames: got %d, expected >= 70 (3s @ 30fps ≈ 90)", len(videoSnap))
-	}
+	// 5a. Frame count ~90 (3s * 30fps). Spec-derived tolerance ±10.
+	t.Logf("MEASURE: video frame count=%d (expected ~90)", len(videoSnap))
+	require.InDelta(t, 90, len(videoSnap), 10,
+		"round-trip video frame count: 3s @ 30fps = 90 frames, got %d", len(videoSnap))
 
 	// 5b. All frames are 320x240.
-	wrongDimCount := 0
 	for i, f := range videoSnap {
-		if f.Width != 320 || f.Height != 240 {
-			wrongDimCount++
-			if wrongDimCount <= 3 {
-				t.Logf("MEASURE: wrong dimensions at frame %d: %dx%d (expected 320x240)", i, f.Width, f.Height)
-			}
-		}
-	}
-	t.Logf("MEASURE: frames with wrong dimensions=%d out of %d", wrongDimCount, len(videoSnap))
-	if wrongDimCount > 0 {
-		t.Errorf("frames with wrong dimensions: %d out of %d", wrongDimCount, len(videoSnap))
+		require.Equal(t, 320, f.Width, "frame %d: width mismatch", i)
+		require.Equal(t, 240, f.Height, "frame %d: height mismatch", i)
 	}
 
-	// 5c. PTS monotonically increasing.
+	// 5c. PTS must be strictly monotonically increasing.
 	nonMonotonicCount := 0
 	for i := 1; i < len(videoSnap); i++ {
 		if videoSnap[i].PTS <= videoSnap[i-1].PTS {
@@ -907,12 +808,12 @@ func TestSRTFullRoundTrip(t *testing.T) {
 		}
 	}
 	t.Logf("MEASURE: non-monotonic PTS violations=%d out of %d frames", nonMonotonicCount, len(videoSnap))
-	if nonMonotonicCount > 0 {
-		t.Errorf("video PTS not monotonically increasing: %d violations out of %d frames",
-			nonMonotonicCount, len(videoSnap))
-	}
+	require.Zero(t, nonMonotonicCount,
+		"video PTS must be strictly monotonic: %d violations out of %d frames",
+		nonMonotonicCount, len(videoSnap))
 
-	// 5d. Frames are non-black (avg Y > 20 — testsrc has bright content).
+	// 5d. Frames are non-black (avg Y > 20 -- testsrc has bright content).
+	// ffmpeg testsrc produces a pattern with avg luma typically 80-130.
 	blackFrameCount := 0
 	for i, f := range videoSnap {
 		if f.AvgY <= 20 {
@@ -923,34 +824,32 @@ func TestSRTFullRoundTrip(t *testing.T) {
 		}
 	}
 	t.Logf("MEASURE: black/dark frames=%d out of %d, overall avg_Y=%.1f", blackFrameCount, len(videoSnap), overallAvgY)
-	if overallAvgY <= 20 {
-		t.Errorf("overall average Y too low (black content): %.1f, expected > 20 for testsrc pattern", overallAvgY)
-	}
-	// Allow a small number of dark frames (first frame may be black during codec warmup).
-	if blackFrameCount > 5 {
-		t.Errorf("too many black/dark frames: %d out of %d (threshold: avg Y > 20)", blackFrameCount, len(videoSnap))
-	}
+	// Overall average Y for testsrc should be well above black (typically 80+).
+	require.Greater(t, overallAvgY, 40.0,
+		"overall average Y too low: %.1f, testsrc pattern should have avg Y > 40", overallAvgY)
+	// Allow at most 2 dark frames (codec warmup).
+	require.LessOrEqual(t, blackFrameCount, 2,
+		"too many black/dark frames: %d out of %d (max 2 allowed for codec warmup)", blackFrameCount, len(videoSnap))
 
 	// --- Audio assertions ---
 
-	// 7a. Audio frame count > 100.
-	t.Logf("MEASURE: audio frame count=%d (expected > 100)", len(audioSnap))
-	if len(audioSnap) < 100 {
-		t.Errorf("too few audio frames: got %d, expected > 100 (3s at 48kHz/1024 samples ≈ 140)", len(audioSnap))
-	}
+	// 7a. Audio frame count ~140 (3s * 48000 / 1024 = 140.6). Tolerance ±15.
+	t.Logf("MEASURE: audio frame count=%d (expected ~140)", len(audioSnap))
+	require.InDelta(t, 140, len(audioSnap), 15,
+		"round-trip audio frame count: 3s @ 48kHz/1024 = 140 frames, got %d", len(audioSnap))
 
 	// 7b. Samples are not all-zero (signal present).
 	t.Logf("MEASURE: audio frames with signal=%d out of %d, overall_rms=%.4f",
 		audioWithSignal, len(audioSnap), overallAudioRMS)
-	if audioWithSignal == 0 {
-		t.Errorf("no audio frames contain non-zero samples — audio signal is completely silent")
-	}
-	// The sine wave source should produce significant RMS.
-	if overallAudioRMS < 0.001 {
-		t.Errorf("audio RMS too low: %.6f, expected > 0.001 for 1kHz sine source", overallAudioRMS)
-	}
+	// At least 90% of frames should have signal (1kHz sine tone).
+	minSignalFrames := len(audioSnap) * 9 / 10
+	require.GreaterOrEqual(t, audioWithSignal, minSignalFrames,
+		"audio signal: %d of %d frames have signal (expected >= 90%%)", audioWithSignal, len(audioSnap))
+	// The sine wave source should produce significant RMS (1kHz sine at full volume ~ 0.7 RMS).
+	require.Greater(t, overallAudioRMS, 0.01,
+		"audio RMS too low: %.6f, expected > 0.01 for 1kHz sine source", overallAudioRMS)
 
-	// Audio PTS monotonically increasing.
+	// Audio PTS must be strictly monotonically increasing.
 	audioNonMono := 0
 	for i := 1; i < len(audioSnap); i++ {
 		if audioSnap[i].PTS <= audioSnap[i-1].PTS {
@@ -962,10 +861,9 @@ func TestSRTFullRoundTrip(t *testing.T) {
 		}
 	}
 	t.Logf("MEASURE: audio non-monotonic PTS violations=%d", audioNonMono)
-	if audioNonMono > 0 {
-		t.Errorf("audio PTS not monotonically increasing: %d violations out of %d frames",
-			audioNonMono, len(audioSnap))
-	}
+	require.Zero(t, audioNonMono,
+		"audio PTS must be strictly monotonic: %d violations out of %d frames",
+		audioNonMono, len(audioSnap))
 
 	// Cleanup.
 	cancel()
