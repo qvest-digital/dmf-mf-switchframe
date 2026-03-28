@@ -651,12 +651,13 @@ func (m *TSMuxer) init(_ int64) error {
 		StreamType:    videoStreamType,
 		ElementaryStreamDescriptors: []*astits.Descriptor{
 			{
-				Tag:                astits.DescriptorTagMaximumBitrate,
-				MaximumBitrate:     &astits.DescriptorMaximumBitrate{Bitrate: 625000}, // 5 Mbps / 8 = 625000 bytes/s
-				DataStreamAlignment: nil,
+				Tag:            astits.DescriptorTagMaximumBitrate,
+				Length:         3, // 22-bit field in 3 bytes
+				MaximumBitrate: &astits.DescriptorMaximumBitrate{Bitrate: 625000}, // 5 Mbps / 8 = 625000 bytes/s
 			},
 			{
 				Tag:                 astits.DescriptorTagDataStreamAlignment,
+				Length:              1,
 				DataStreamAlignment: &astits.DescriptorDataStreamAlignment{Type: uint8(astits.DataStreamAligmentVideoAccessUnit)},
 			},
 		},
@@ -672,10 +673,12 @@ func (m *TSMuxer) init(_ int64) error {
 		ElementaryStreamDescriptors: []*astits.Descriptor{
 			{
 				Tag:                        astits.DescriptorTagISO639LanguageAndAudioType,
+				Length:                     4, // 3-byte language code + 1-byte audio_type
 				ISO639LanguageAndAudioType: &astits.DescriptorISO639LanguageAndAudioType{Language: []byte("eng"), Type: 0},
 			},
 			{
 				Tag:                 astits.DescriptorTagDataStreamAlignment,
+				Length:              1,
 				DataStreamAlignment: &astits.DescriptorDataStreamAlignment{Type: uint8(astits.DataStreamAligmentAudioSyncWord)},
 			},
 		},
