@@ -20,6 +20,87 @@ func makeUniform422P10(w, h int, val uint16) []byte {
 	return buf
 }
 
+func TestPreviewEncoder_P210Input_ProducesOutput(t *testing.T) {
+	// Verify that the PreviewEncoder handles P210 input frames correctly,
+	// dispatching through ScaleP210ToNV12On instead of ScaleBilinearOn.
+	ctx := testContext(t)
+
+	srcW, srcH := 64, 64
+	dstW, dstH := 32, 32
+
+	// Create a P210 source frame.
+	srcPool, err := NewP210FramePool(ctx, srcW, srcH, 2)
+	require.NoError(t, err)
+	defer srcPool.Close()
+
+	src, err := srcPool.Acquire()
+	require.NoError(t, err)
+	defer src.Release()
+
+	// Fill with valid P210 data (10-bit value 400).
+	require.NoError(t, FillColorP210(ctx, src, 400, 512, 512))
+
+	// Create preview encoder (64x64 -> 32x32).
+	enc, err := NewPreviewEncoder(ctx, srcW, srcH, dstW, dstH, 500000, 30, 1)
+	require.NoError(t, err)
+	defer enc.Close()
+
+	// Encode P210 source frame — should use ScaleP210ToNV12On internally.
+	// Hardware encoders may buffer the first few frames before producing output.
+	var encoded int
+	var totalBytes int
+	for i := 0; i < 30; i++ {
+		src.PTS = int64(i * 3000)
+		data, _, err := enc.Encode(src, i == 0)
+		require.NoError(t, err, "preview encode of P210 frame %d failed", i)
+		if len(data) > 0 {
+			encoded++
+			totalBytes += len(data)
+		}
+	}
+
+	assert.Greater(t, encoded, 0,
+		"preview encoder should produce output from P210 input")
+	t.Logf("P210 preview encode: %d/30 frames, %d total bytes", encoded, totalBytes)
+}
+
+func TestPreviewEncoder_P210Input_1080pTo480p(t *testing.T) {
+	// Production-scale test: P210 1080p source to 480p preview.
+	ctx := testContext(t)
+
+	srcW, srcH := 1920, 1080
+	dstW, dstH := 854, 480
+
+	srcPool, err := NewP210FramePool(ctx, srcW, srcH, 2)
+	require.NoError(t, err)
+	defer srcPool.Close()
+
+	src, err := srcPool.Acquire()
+	require.NoError(t, err)
+	defer src.Release()
+
+	// Fill with a mid-range color.
+	require.NoError(t, FillColorP210(ctx, src, 512, 512, 512))
+
+	enc, err := NewPreviewEncoder(ctx, srcW, srcH, dstW, dstH, 1_000_000, 30, 1)
+	require.NoError(t, err)
+	defer enc.Close()
+
+	var encoded int
+	for i := 0; i < 10; i++ {
+		src.PTS = int64(i * 3000)
+		data, _, err := enc.Encode(src, i == 0)
+		require.NoError(t, err, "1080p P210 preview encode frame %d failed", i)
+		if len(data) > 0 {
+			encoded++
+		}
+	}
+
+	assert.Greater(t, encoded, 0,
+		"1080p P210 preview should produce at least one frame")
+	t.Logf("P210 1080p->480p preview: %d/10 frames produced", encoded)
+}
+
 func TestScaleP210ToNV12On_UniformValue(t *testing.T) {
 	ctx := testContext(t)
 

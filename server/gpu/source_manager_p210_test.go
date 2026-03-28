@@ -161,6 +161,99 @@ func TestSourceManager_NV12Pool_IngestYUV_Unchanged(t *testing.T) {
 	assert.Equal(t, GPUFormatNV12, frame.Format, "NV12 pool should produce NV12 frames")
 }
 
+func TestSourceManager_P210Pool_IngestYUV_10bitInput(t *testing.T) {
+	// When the source decoder upconverts to YUV422P10LE, IngestYUV receives
+	// w*h*4 bytes instead of w*h*3/2. The P210 upload path must detect this
+	// and use Upload10 instead of UploadYUV420PToP210.
+	ctx := testContext(t)
+
+	pool, err := NewP210FramePool(ctx, 8, 8, 4)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	mgr := NewGPUSourceManager(ctx, pool, nil)
+	defer mgr.Close()
+
+	// Build YUV422P10LE data (w*h*4 bytes = 256 bytes for 8x8).
+	// This simulates what the source decoder produces after upconversion.
+	w, h := 8, 8
+	yuv10 := make([]byte, yuv10FrameSize(w, h))
+
+	// Fill Y plane with 10-bit value 400 (little-endian uint16).
+	for i := 0; i < w*h; i++ {
+		binary.LittleEndian.PutUint16(yuv10[i*2:], 400)
+	}
+	// Fill Cb with 300, Cr with 700.
+	cbOffset := w * h * 2
+	crOffset := cbOffset + (w/2)*h*2
+	for i := 0; i < (w/2)*h; i++ {
+		binary.LittleEndian.PutUint16(yuv10[cbOffset+i*2:], 300)
+		binary.LittleEndian.PutUint16(yuv10[crOffset+i*2:], 700)
+	}
+
+	mgr.IngestYUV("test-10bit", yuv10, w, h, 99999)
+
+	frame := mgr.GetFrame("test-10bit")
+	if frame == nil {
+		t.Fatal("expected non-nil frame after IngestYUV with 10-bit data")
+	}
+	defer frame.Release()
+
+	assert.Equal(t, GPUFormatP210, frame.Format, "expected P210 format")
+
+	// Verify Y values are ~400 (Upload10 preserves 10-bit values).
+	// If the code incorrectly used UploadYUV420PToP210, the values would
+	// be wildly wrong because it interprets uint8 bytes as Y samples.
+	p210Bytes := unsafe.Slice((*byte)(unsafe.Pointer(frame.DevPtr)), frame.FrameSize())
+	y0 := binary.LittleEndian.Uint16(p210Bytes[0:2])
+	assert.InDelta(t, 400, int(y0), 20, "Y[0] = %d, want ~400 (10-bit preserved via Upload10)", y0)
+
+	t.Logf("10-bit input: Y[0]=%d (want ~400)", y0)
+}
+
+func TestSourceManager_P210Pool_IngestYUV_10bitInput_DifferentResolution(t *testing.T) {
+	// When the source decoder produces 10-bit data at a different resolution
+	// than the pool, the scale path must also detect 10-bit input and use
+	// Upload10 for the temporary source frame.
+	ctx := testContext(t)
+
+	// Pool at 16x16, source at 8x8.
+	pool, err := NewP210FramePool(ctx, 16, 16, 4)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	mgr := NewGPUSourceManager(ctx, pool, nil)
+	defer mgr.Close()
+
+	w, h := 8, 8
+	yuv10 := make([]byte, yuv10FrameSize(w, h))
+
+	// Fill with uniform 10-bit value 600.
+	for i := 0; i < len(yuv10)/2; i++ {
+		binary.LittleEndian.PutUint16(yuv10[i*2:], 600)
+	}
+
+	mgr.IngestYUV("test-10bit-scale", yuv10, w, h, 12345)
+
+	frame := mgr.GetFrame("test-10bit-scale")
+	if frame == nil {
+		t.Fatal("expected non-nil frame after IngestYUV with 10-bit scaled data")
+	}
+	defer frame.Release()
+
+	assert.Equal(t, 16, frame.Width, "expected pool width after scale")
+	assert.Equal(t, 16, frame.Height, "expected pool height after scale")
+	assert.Equal(t, GPUFormatP210, frame.Format, "expected P210 format")
+
+	// Verify scaled Y values are approximately 600. Bilinear scaling of a
+	// uniform field should preserve the value.
+	p210Bytes := unsafe.Slice((*byte)(unsafe.Pointer(frame.DevPtr)), frame.FrameSize())
+	y0 := binary.LittleEndian.Uint16(p210Bytes[0:2])
+	assert.InDelta(t, 600, int(y0), 30, "scaled Y[0] = %d, want ~600", y0)
+
+	t.Logf("10-bit scaled input: Y[0]=%d (want ~600)", y0)
+}
+
 func TestSourceManager_P210Pool_CPUScaleFallback(t *testing.T) {
 	ctx := testContext(t)
 
