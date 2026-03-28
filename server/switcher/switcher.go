@@ -1190,6 +1190,20 @@ func (s *Switcher) SetClockDrivenSync(enabled bool) {
 	}
 }
 
+// SetFrameSyncBufferOnly puts the frame sync into buffer-only mode.
+// Ring buffers still accept frames, but the tickLoop timer is not started.
+// This is used in reference clock mode where the sync loop pops frames
+// directly from the ring buffers, preventing two goroutines from racing
+// over the same buffers. Must be called before the frame sync is started
+// (i.e., before SetFrameSync enables it, or immediately after).
+func (s *Switcher) SetFrameSyncBufferOnly(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.frameSync != nil {
+		s.frameSync.SetBufferOnly(enabled)
+	}
+}
+
 // SetFRCQuality sets the frame rate conversion quality for all sources.
 // Only effective when frame sync is enabled.
 func (s *Switcher) SetFRCQuality(q FRCQuality) {

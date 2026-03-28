@@ -1832,3 +1832,180 @@ func (m *syncLoopGPUMock) RunTransition(fromKey, toKey string, transType string,
 func (m *syncLoopGPUMock) Snapshot() map[string]any {
 	return map[string]any{"gpu": true, "backend": "sync-loop-mock"}
 }
+
+// newSyncTestSwitcherBufferOnly creates a test switcher using buffer-only
+// FrameSync mode, mirroring the production ref clock path where the
+// FrameSync provides ring buffers but does NOT run its tickLoop timer.
+func newSyncTestSwitcherBufferOnly(t *testing.T) (*Switcher, *clock.ReferenceClock) {
+	t.Helper()
+	programRelay := distribution.NewRelay()
+	testFmt := PipelineFormat{
+		Name:   "test",
+		Width:  320,
+		Height: 240,
+		FPSNum: 30,
+		FPSDen: 1,
+	}
+
+	s := &Switcher{
+		log:           testSyncLogger(),
+		sources:       make(map[string]*sourceState),
+		programRelay:  programRelay,
+		health:        newHealthMonitor(),
+		videoProcCh:   make(chan videoProcWork, 8),
+		videoProcDone: make(chan struct{}),
+		framePool:     NewFramePool(8, 320, 240, ColorYUV420_8bit),
+	}
+	s.frameBudgetNs.Store(testFmt.FrameBudgetNs())
+	s.pipelineFormat.Store(&testFmt)
+	s.delayBuffer = NewDelayBuffer(s)
+
+	rc := clock.NewReferenceClock(30, 1, 48000, 0, false)
+	s.SetReferenceClock(rc)
+	go s.videoProcessingLoop()
+
+	// Create FrameSync in buffer-only mode (production ref clock path).
+	fs := NewFrameSynchronizer(
+		testFmt.FrameDuration(),
+		func(sourceKey string, frame media.VideoFrame) {},
+		func(sourceKey string, frame media.AudioFrame) {},
+	)
+	fs.onRawVideo = func(sourceKey string, pf *ProcessingFrame) {
+		s.handleRawVideoFrame(sourceKey, pf)
+	}
+	fs.framePool = s.framePool
+	fs.SetClockDriven(true)
+	fs.SetBufferOnly(true)
+	fs.Start() // should NOT launch tickLoop
+
+	s.mu.Lock()
+	s.frameSync = fs
+	s.frameSyncActive = true
+	s.mu.Unlock()
+
+	return s, rc
+}
+
+// TestSyncLoopWithBufferOnlyFrameSync verifies that the sync loop works
+// correctly when the FrameSync is in buffer-only mode. Frames are pushed
+// to the ring buffer via IngestRawVideo, the sync loop pops them, and
+// output arrives on the program relay.
+func TestSyncLoopWithBufferOnlyFrameSync(t *testing.T) {
+	s, rc := newSyncTestSwitcherBufferOnly(t)
+	defer s.Close()
+
+	// Register and cut to a source.
+	cam1Relay := distribution.NewRelay()
+	s.RegisterSource("cam1", cam1Relay)
+	s.mu.Lock()
+	s.frameSync.AddSource("cam1")
+	s.mu.Unlock()
+	require.NoError(t, s.Cut(context.Background(), "cam1"))
+
+	// Capture program output.
+	viewer := newMockProgramViewer("test-viewer")
+	s.programRelay.AddViewer(viewer)
+
+	// Feed frames into the frame sync ring buffer.
+	pool := s.framePool
+	yuvSize := 320 * 240 * 3 / 2
+	for i := 0; i < 5; i++ {
+		buf := pool.Acquire()[:yuvSize]
+		for j := range buf {
+			buf[j] = byte(i + 1)
+		}
+		pf := &ProcessingFrame{
+			Data:  buf,
+			Width: 320, Height: 240,
+			PTS: int64(i) * 3000,
+			pool: pool,
+		}
+		pf.SetRefs(1)
+		s.frameSync.IngestRawVideo("cam1", pf)
+	}
+
+	// Start clock and sync loop.
+	rc.Start()
+	s.StartSyncLoop()
+
+	// Wait for video frames to arrive.
+	require.Eventually(t, func() bool {
+		return len(viewer.VideoFrames()) >= 3
+	}, 2*time.Second, 10*time.Millisecond, "expected video frames on program relay")
+
+	rc.Stop()
+	s.syncLoopWg.Wait()
+
+	frames := viewer.VideoFrames()
+	require.GreaterOrEqual(t, len(frames), 3, "should have produced at least 3 video frames")
+
+	// Verify PTS monotonicity.
+	for i := 1; i < len(frames); i++ {
+		require.Greater(t, frames[i].PTS, frames[i-1].PTS,
+			"PTS should be monotonically increasing")
+	}
+
+	// Verify the FrameSync timer never fired (no timer-driven releases).
+	require.Equal(t, int64(0), s.frameSync.timerDrivenReleases.Load(),
+		"timer should not have fired in buffer-only mode")
+	require.Equal(t, int64(0), s.frameSync.programDrivenReleases.Load(),
+		"program-driven releases should be zero in buffer-only mode")
+}
+
+// TestSyncLoopBufferOnlyNoTimerRace verifies there is no data race between
+// the sync loop popping frames and the FrameSync timer (which should not
+// be running). This test is primarily useful with -race.
+func TestSyncLoopBufferOnlyNoTimerRace(t *testing.T) {
+	s, rc := newSyncTestSwitcherBufferOnly(t)
+	defer s.Close()
+
+	cam1Relay := distribution.NewRelay()
+	s.RegisterSource("cam1", cam1Relay)
+	s.mu.Lock()
+	s.frameSync.AddSource("cam1")
+	s.mu.Unlock()
+	require.NoError(t, s.Cut(context.Background(), "cam1"))
+
+	viewer := newMockProgramViewer("race-viewer")
+	s.programRelay.AddViewer(viewer)
+
+	// Continuously ingest frames from a background goroutine while the
+	// sync loop is running. With -race this catches any data races.
+	pool := s.framePool
+	yuvSize := 320 * 240 * 3 / 2
+	stopIngest := make(chan struct{})
+	go func() {
+		pts := int64(0)
+		for {
+			select {
+			case <-stopIngest:
+				return
+			default:
+			}
+			buf := pool.Acquire()[:yuvSize]
+			buf[0] = byte(pts % 256)
+			pf := &ProcessingFrame{
+				Data:  buf,
+				Width: 320, Height: 240,
+				PTS: pts,
+				pool: pool,
+			}
+			pf.SetRefs(1)
+			s.frameSync.IngestRawVideo("cam1", pf)
+			pts += 3000
+			time.Sleep(time.Millisecond) // ~1000fps ingest
+		}
+	}()
+
+	rc.Start()
+	s.StartSyncLoop()
+
+	// Let it run for a bit under the race detector.
+	require.Eventually(t, func() bool {
+		return len(viewer.VideoFrames()) >= 10
+	}, 3*time.Second, 10*time.Millisecond, "expected frames under concurrent ingest")
+
+	close(stopIngest)
+	rc.Stop()
+	s.syncLoopWg.Wait()
+}

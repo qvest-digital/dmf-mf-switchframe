@@ -289,6 +289,7 @@ type FrameSynchronizer struct {
 	programSource     string        // key of current program source
 	programFrameReady chan struct{} // buffered(1) signal from IngestRawVideo
 	clockDriven       bool          // when true, only timer drives output (no early release)
+	bufferOnly        bool          // when true, Start() skips tickLoop (ref clock pops directly)
 
 	// Observability counters for release trigger type.
 	programDrivenReleases atomic.Int64
@@ -711,6 +712,45 @@ func (fs *FrameSynchronizer) SetClockDriven(enabled bool) {
 	}
 }
 
+// SetBufferOnly enables or disables buffer-only mode. When true, Start()
+// will NOT launch the tickLoop goroutine. Ring buffers still accept frames
+// via IngestRawVideo (for the reference clock sync loop to pop), but no
+// timer fires and no callbacks (onVideo, onRawVideo, onAudio) are invoked.
+// This prevents the FrameSync timer from competing with the ref clock sync
+// loop over the same ring buffers.
+//
+// If the tickLoop is already running (Start() was called before SetBufferOnly),
+// it is stopped gracefully. The done channel is closed and the goroutine
+// drains, then the channel is reset so Stop() can close it again cleanly.
+func (fs *FrameSynchronizer) SetBufferOnly(enabled bool) {
+	fs.mu.Lock()
+	alreadyRunning := fs.started && !fs.bufferOnly && !fs.stopped && enabled
+	fs.bufferOnly = enabled
+	fs.mu.Unlock()
+
+	if alreadyRunning {
+		// Stop the tickLoop that was already launched by Start().
+		// Close done to signal the goroutine, wait for it, then reset
+		// the done channel so Stop() doesn't double-close.
+		close(fs.done)
+		fs.wg.Wait()
+		fs.mu.Lock()
+		fs.done = make(chan struct{})
+		fs.mu.Unlock()
+	}
+
+	if enabled {
+		fs.log.Info("buffer-only mode enabled (no timer, ref clock drives output)")
+	}
+}
+
+// BufferOnly returns whether the FrameSynchronizer is in buffer-only mode.
+func (fs *FrameSynchronizer) BufferOnly() bool {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	return fs.bufferOnly
+}
+
 // DebugSnapshot returns a point-in-time snapshot of the frame synchronizer
 // state for diagnostic display. Includes per-source buffer counts, audio
 // miss counts, and FRC state (when enabled).
@@ -745,6 +785,7 @@ func (fs *FrameSynchronizer) DebugSnapshot() map[string]any {
 		"sources":                 sources,
 		"frc_quality":             fs.frcQuality.String(),
 		"clock_driven":            fs.clockDriven,
+		"buffer_only":             fs.bufferOnly,
 		"program_source":          fs.programSource,
 		"program_driven_releases": fs.programDrivenReleases.Load(),
 		"timer_driven_releases":   fs.timerDrivenReleases.Load(),
@@ -784,6 +825,10 @@ func (fs *FrameSynchronizer) SourceCount() int {
 // Start begins the background ticker goroutine that releases frames at
 // the configured tick rate. Calling Start multiple times is safe (no-op
 // after first call).
+//
+// In buffer-only mode (SetBufferOnly(true)), Start() marks the synchronizer
+// as started but does NOT launch the tickLoop goroutine. Ring buffers remain
+// functional for external consumers (e.g., the reference clock sync loop).
 func (fs *FrameSynchronizer) Start() {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
@@ -791,6 +836,9 @@ func (fs *FrameSynchronizer) Start() {
 		return
 	}
 	fs.started = true
+	if fs.bufferOnly {
+		return
+	}
 	fs.wg.Add(1)
 	go fs.tickLoop()
 }

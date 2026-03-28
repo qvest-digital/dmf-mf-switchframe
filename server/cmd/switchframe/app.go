@@ -542,6 +542,15 @@ func (a *App) initSwitcherCommon() error {
 	// Enable frame sync if requested.
 	if a.cfg.FrameSync {
 		a.sw.SetFrameSync(true, 0) // 0 = default 30fps
+
+		// In reference clock mode, disable the FrameSync timer entirely.
+		// The sync loop pops frames directly from the ring buffers. Without
+		// this, two goroutines (tickLoop + sync loop) race over the same
+		// ring buffers and process frames through different paths.
+		if a.cfg.RefClock {
+			a.sw.SetFrameSyncBufferOnly(true)
+		}
+
 		// Default: clock-driven output (steady timing like a hardware frame sync).
 		// --low-latency-sync disables this for minimum latency at the cost of
 		// output jitter from source delivery patterns.

@@ -180,6 +180,12 @@ func (s *Switcher) processVideoTick(tick clock.Tick) {
 	pf.PTS = tick.VideoPTS
 	pf.DTS = tick.VideoPTS
 
+	// Feed GPU source manager / key bridge / layout compositor with the
+	// program source's decoded YUV. In buffer-only mode the FrameSync
+	// tickLoop doesn't run, so handleRawVideoFrame is never called —
+	// these subsystems would otherwise never see fresh fill data.
+	s.feedSourceSubsystems(programSource, pf)
+
 	// Record arrival for clock recovery (program source only).
 	if cr := s.clockRecovery; cr != nil {
 		changed := cr.RecordArrival(time.Now())
@@ -525,6 +531,38 @@ func (s *Switcher) repeatLastVideoFrame(pts int64) {
 	}
 	s.broadcastToProgram(frame)
 	s.syncLoopRepeats.Add(1)
+}
+
+// feedSourceSubsystems updates GPU source manager, key bridge, and layout
+// compositor with a decoded YUV frame. In the normal (non-ref-clock) path,
+// handleRawVideoFrame does this for every source on every FrameSync tick.
+// In the ref clock path with buffer-only FrameSync, the tickLoop doesn't
+// run, so this method provides the equivalent feed for the sync loop.
+func (s *Switcher) feedSourceSubsystems(sourceKey string, pf *ProcessingFrame) {
+	if h := s.gpuSourceMgr.Load(); h != nil && h.mgr != nil {
+		h.mgr.IngestYUV(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
+	} else {
+		s.mu.RLock()
+		keyBridge := s.keyBridge
+		layoutComp := s.layoutCompositor
+		s.mu.RUnlock()
+
+		if pf.Format == ColorYUV422_10bit {
+			if keyBridge != nil {
+				keyBridge.IngestFillYUV10(sourceKey, pf.Data, pf.Width, pf.Height)
+			}
+			if layoutComp != nil && layoutComp.NeedsSource(sourceKey) {
+				layoutComp.IngestSourceFrame10(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
+			}
+		} else {
+			if keyBridge != nil {
+				keyBridge.IngestFillYUV(sourceKey, pf.Data, pf.Width, pf.Height)
+			}
+			if layoutComp != nil && layoutComp.NeedsSource(sourceKey) {
+				layoutComp.IngestSourceFrame(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
+			}
+		}
+	}
 }
 
 // logOverload logs overload drops at most once per second to avoid flooding.
