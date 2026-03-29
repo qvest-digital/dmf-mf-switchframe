@@ -43,6 +43,11 @@ type PerfSourceSample struct {
 	// RawFrameCount is the monotonic raw video ingest counter.
 	// The perf sampler computes IngestFPS from deltas between ticks.
 	RawFrameCount int64
+
+	// DriftPPM is the estimated clock drift between the source's PTS clock
+	// and the pipeline wall clock. Positive = source clock faster.
+	DriftPPM    int64
+	DriftSamples int
 }
 
 // PerfSample returns a performance snapshot of the switcher's current state.
@@ -63,6 +68,9 @@ func (s *Switcher) PerfSample() PerfSwitcherSample {
 			}
 		}
 		sample.RawFrameCount = ss.rawFrameCount.Load()
+		if fs := s.frameSync; fs != nil {
+			sample.DriftPPM, sample.DriftSamples = fs.SourceDrift(key)
+		}
 		sources[key] = sample
 	}
 

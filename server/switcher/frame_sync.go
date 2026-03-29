@@ -80,6 +80,59 @@ type frcTask struct {
 	frcPTS     int64       // target PTS for interpolation
 }
 
+// driftEstimator tracks the clock drift between a source's PTS clock and
+// the pipeline wall clock. Positive driftPPM means the source clock is
+// faster than the pipeline.
+type driftEstimator struct {
+	firstPTS    int64
+	firstWallNs int64
+	lastPTS     int64
+	lastWallNs  int64
+	samples     int
+	driftPPM    int64 // positive = source clock faster than pipeline
+}
+
+func (d *driftEstimator) sample(pts int64, wallNs int64) {
+	if d.samples == 0 {
+		d.firstPTS = pts
+		d.firstWallNs = wallNs
+		d.lastPTS = pts
+		d.lastWallNs = wallNs
+		d.samples = 1
+		return
+	}
+	d.lastPTS = pts
+	d.lastWallNs = wallNs
+	d.samples++
+
+	// Need at least 100 samples for stable estimate
+	if d.samples < 100 {
+		return
+	}
+
+	// PTS is 90kHz, wall is nanoseconds
+	ptsElapsed := d.lastPTS - d.firstPTS
+	wallElapsed := d.lastWallNs - d.firstWallNs
+	if wallElapsed <= 0 || ptsElapsed <= 0 {
+		return
+	}
+
+	// Expected wall time for the PTS elapsed (90kHz -> ns)
+	expectedWallNs := ptsElapsed * 1_000_000_000 / 90_000
+
+	// Drift = (actual - expected) / expected * 1_000_000
+	drift := (wallElapsed - expectedWallNs) * 1_000_000 / expectedWallNs
+	d.driftPPM = drift
+}
+
+func (d *driftEstimator) DriftPPM() int64 {
+	return d.driftPPM
+}
+
+func (d *driftEstimator) Samples() int {
+	return d.samples
+}
+
 // syncSource holds per-source buffering state for the FrameSynchronizer.
 type syncSource struct {
 	mu sync.Mutex // per-source lock; protects ring buffers and last-frame state
@@ -157,6 +210,9 @@ type syncSource struct {
 
 	// frc holds per-source frame rate conversion state. nil when FRC is disabled.
 	frc *frcSource
+
+	// drift tracks clock drift between this source's PTS and the pipeline wall clock.
+	drift driftEstimator
 }
 
 // pushVideo adds a video frame to the ring buffer, overwriting the oldest
@@ -483,6 +539,7 @@ func (fs *FrameSynchronizer) IngestRawVideo(sourceKey string, pf *ProcessingFram
 	}
 	ss.mu.Lock()
 	ss.pushRawVideo(pf)
+	ss.drift.sample(pf.PTS, time.Now().UnixNano())
 	if ss.frc != nil {
 		ss.frc.ingest(pf)
 	}
@@ -767,6 +824,8 @@ func (fs *FrameSynchronizer) DebugSnapshot() map[string]any {
 			"video_count":      ss.videoCount,
 			"audio_count":      ss.audioCount,
 			"raw_video_count":  ss.rawVideoCount,
+			"drift_ppm":        ss.drift.DriftPPM(),
+			"drift_samples":    ss.drift.Samples(),
 		}
 		if ss.frc != nil {
 			info["frc"] = map[string]any{
@@ -790,6 +849,22 @@ func (fs *FrameSynchronizer) DebugSnapshot() map[string]any {
 		"program_driven_releases": fs.programDrivenReleases.Load(),
 		"timer_driven_releases":   fs.timerDrivenReleases.Load(),
 	}
+}
+
+// SourceDrift returns the clock drift estimate for the given source.
+// Returns (driftPPM, samples). If the source is not found, returns (0, 0).
+func (fs *FrameSynchronizer) SourceDrift(sourceKey string) (int64, int) {
+	fs.mu.Lock()
+	ss, ok := fs.sources[sourceKey]
+	fs.mu.Unlock()
+	if !ok {
+		return 0, 0
+	}
+	ss.mu.Lock()
+	ppm := ss.drift.DriftPPM()
+	n := ss.drift.Samples()
+	ss.mu.Unlock()
+	return ppm, n
 }
 
 // ReleaseFPS computes the frame sync output rate (releases per second)

@@ -84,6 +84,7 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 	h->ctx->color_trc = AVCOL_TRC_BT709;
 	h->ctx->colorspace = AVCOL_SPC_BT709;
 	h->ctx->color_range = AVCOL_RANGE_MPEG; // limited range (16-235)
+	h->ctx->chroma_sample_location = AVCHROMA_LOC_LEFT;
 
 	// Thread count for sliced threading (zerolatency tune): determines how
 	// many slices per frame. More threads = faster per-frame encode at the
@@ -317,6 +318,7 @@ static int ffenc_open_preview(ffenc_t* h, int width, int height, int bitrate,
 	h->ctx->color_trc = AVCOL_TRC_BT709;
 	h->ctx->colorspace = AVCOL_SPC_BT709;
 	h->ctx->color_range = AVCOL_RANGE_MPEG;
+	h->ctx->chroma_sample_location = AVCHROMA_LOC_LEFT;
 
 	// NOTE: No AV_CODEC_FLAG_GLOBAL_HEADER. SPS/PPS are emitted inline
 	// in the Annex B bitstream on keyframes, matching the production encoder
@@ -488,6 +490,7 @@ import "C"
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"unsafe"
 
 	"github.com/zsiec/switchframe/server/transition"
@@ -501,6 +504,7 @@ var _ transition.VideoEncoder = (*FFmpegEncoder)(nil)
 //
 // FFmpegEncoder is NOT safe for concurrent use. Callers must synchronize access externally.
 type FFmpegEncoder struct {
+	mu     sync.Mutex
 	handle C.ffenc_t
 	closed bool
 }
@@ -734,6 +738,8 @@ func (e *FFmpegEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bo
 
 // Close releases the encoder resources. Safe to call multiple times.
 func (e *FFmpegEncoder) Close() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if !e.closed {
 		C.ffenc_close(&e.handle)
 		e.closed = true

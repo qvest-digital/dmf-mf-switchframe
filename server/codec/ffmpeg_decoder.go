@@ -837,10 +837,11 @@ var initRangeTablesOnce sync.Once
 //
 // FFmpegDecoder is NOT safe for concurrent use. Callers must synchronize access externally.
 type FFmpegDecoder struct {
-	handle        C.ffdec_t
-	closed        bool
+	closeMu        sync.Mutex
+	handle         C.ffdec_t
+	closed         bool
 	output10bit422 bool   // when true, preserve 10-bit 422 output for 10-bit sources
-	yuvBuf        []byte // reusable buffer for decoded YUV output
+	yuvBuf         []byte // reusable buffer for decoded YUV output
 }
 
 // NewFFmpegDecoder creates a new FFmpeg H.264 decoder with auto thread count.
@@ -1163,6 +1164,8 @@ func (d *FFmpegDecoder) ReceiveFrame() ([]byte, int, int, error) {
 
 // Close releases the decoder resources. Safe to call multiple times.
 func (d *FFmpegDecoder) Close() {
+	d.closeMu.Lock()
+	defer d.closeMu.Unlock()
 	if !d.closed {
 		C.ffdec_close(&d.handle)
 		d.closed = true

@@ -312,17 +312,30 @@ func (m *Mixer) Close() error {
 	m.closeOnce.Do(func() {
 		if m.stopTicker != nil {
 			close(m.stopTicker)
-			m.tickerWg.Wait()
-		}
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		for _, ch := range m.channels {
-			if ch.decoder != nil {
-				_ = ch.decoder.Close()
+			if !internal.WaitWithTimeout(&m.tickerWg, 5*time.Second) {
+				m.log.Warn("mixer ticker shutdown timed out after 5s")
 			}
 		}
-		if m.encoder != nil {
-			_ = m.encoder.Close()
+
+		// Collect codecs under lock, then close outside lock to avoid
+		// holding mu during cgo calls (which may block).
+		m.mu.Lock()
+		var decoders []Decoder
+		for _, ch := range m.channels {
+			if ch.decoder != nil {
+				decoders = append(decoders, ch.decoder)
+				ch.decoder = nil
+			}
+		}
+		enc := m.encoder
+		m.encoder = nil
+		m.mu.Unlock()
+
+		for _, dec := range decoders {
+			_ = dec.Close()
+		}
+		if enc != nil {
+			_ = enc.Close()
 		}
 	})
 	return nil

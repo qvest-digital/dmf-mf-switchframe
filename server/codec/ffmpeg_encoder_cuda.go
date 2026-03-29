@@ -78,6 +78,7 @@ static int ffenc_open_cuda_hw(ffenc_hw_frames_t* h, int width, int height,
 	h->base.ctx->color_trc = AVCOL_TRC_BT709;
 	h->base.ctx->colorspace = AVCOL_SPC_BT709;
 	h->base.ctx->color_range = AVCOL_RANGE_MPEG;
+	h->base.ctx->chroma_sample_location = AVCHROMA_LOC_LEFT;
 
 	// H.264 level
 	float fps_f = (float)fps_num / (float)fps_den;
@@ -241,6 +242,7 @@ static int ffenc_open_cuda_hw_v2(ffenc_hw_frames_t* h, int width, int height,
 	h->base.ctx->color_trc = AVCOL_TRC_BT709;
 	h->base.ctx->colorspace = AVCOL_SPC_BT709;
 	h->base.ctx->color_range = AVCOL_RANGE_MPEG;
+	h->base.ctx->chroma_sample_location = AVCHROMA_LOC_LEFT;
 
 	// Determine if this is an H.264 codec (for H.264-specific options like level).
 	int is_h264 = (strcmp(codec_name, "h264_nvenc") == 0);

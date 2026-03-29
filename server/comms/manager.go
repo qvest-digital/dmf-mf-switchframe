@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/zsiec/switchframe/server/internal"
 )
 
 // Sentinel errors for the comms manager.
@@ -242,7 +244,9 @@ func (m *Manager) mixTick(encodeBuf []byte) {
 // Close shuts down the manager, stopping the mix loop and closing all participants.
 func (m *Manager) Close() {
 	m.cancel()
-	<-m.done
+	if !internal.WaitChanTimeout(m.done, 5*time.Second) {
+		m.log.Warn("comms mix loop shutdown timed out after 5s")
+	}
 
 	m.mu.Lock()
 	for id, p := range m.participants {
