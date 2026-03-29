@@ -219,6 +219,8 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 	broadcastToProgram := sw.BroadcastToProgramFunc()
 	videoInfoCb := app.videoInfoCallback("gpu-pipeline")
 	var gpuVPS, gpuSPS, gpuPPS []byte
+	// pic_timing frame counter for the GPU encode path.
+	var gpuPicTimingFrame int64
 	gpuOnEncoded := func(data []byte, isIDR bool, pts int64) {
 		// Convert Annex B to wire format (4-byte length prefix).
 		// AVC1 and HVC1 use the same wire encoding.
@@ -232,7 +234,16 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 				if pipelineCodec == switcher.CodecHEVC {
 					codecStr = "h265"
 				}
-				sei := caption.BuildSEINALU(pairs, codecStr)
+				// Build combined pic_timing + caption SEI for broadcast
+				// decoder compliance, or caption-only SEI if pic_timing
+				// is not configured on the switcher.
+				var sei []byte
+				if ptCfg := sw.PicTimingConfig(); ptCfg != nil {
+					sei = caption.BuildPicTimingAndCaptionSEI(pairs, *ptCfg, gpuPicTimingFrame, codecStr)
+					gpuPicTimingFrame++
+				} else {
+					sei = caption.BuildSEINALU(pairs, codecStr)
+				}
 				if len(sei) > 0 {
 					// Only cache SEI for preview when AVC — HEVC SEI NALUs
 					// have a different header format and cannot be injected

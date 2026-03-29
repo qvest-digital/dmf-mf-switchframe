@@ -23,6 +23,12 @@ func (a *App) initCaptions() error {
 	// Wire caption manager to switcher for SEI injection.
 	a.sw.SetCaptionManager(mgr)
 
+	// Enable pic_timing SEI injection for broadcast decoder compatibility.
+	// Downstream equipment (Evertz, Harmonic, etc.) requires pic_timing to
+	// precede user_data_registered_itu_t_t35 (caption SEI) in each access unit.
+	ptCfg := caption.DefaultPicTimingConfig()
+	a.sw.SetPicTimingConfig(&ptCfg)
+
 	// Wire state change callback to trigger broadcast.
 	mgr.OnStateChange(func() {
 		a.broadcastState(nil)
