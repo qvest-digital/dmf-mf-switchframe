@@ -38,6 +38,12 @@ type GPUEncoder struct {
 	nv12Tmp  *GPUFrame  // temp NV12 frame for P210→NV12 conversion (lazy, 8-bit encoder + P210 input)
 	cpuBuf   []byte     // reusable CPU-side YUV420p buffer for fallback
 	cpuBufMu sync.Mutex // protects cpuBuf
+
+	// GOP safety: force IDR if NVENC's internal GOP counter fails.
+	// NVENC can stop producing periodic IDRs after PTS discontinuities.
+	framesSinceIDR int   // frames since last IDR output
+	maxGOPFrames   int   // max frames before forcing IDR (0 = disabled)
+	lastPTS        int64 // previous frame PTS for discontinuity detection
 }
 
 // NewGPUEncoder creates an NVENC encoder that accepts GPU frames.
@@ -108,6 +114,24 @@ func (e *GPUEncoder) EncodeGPU(frame *GPUFrame, forceIDR bool) ([]byte, bool, er
 		return nil, false, fmt.Errorf("gpu: encode: nil frame")
 	}
 
+	// GOP safety: force IDR if NVENC's internal GOP counter may have failed.
+	// NVENC can stop producing periodic IDRs after PTS discontinuities.
+	if e.maxGOPFrames > 0 && !forceIDR {
+		e.framesSinceIDR++
+		// Force IDR if we've exceeded the GOP limit without one.
+		if e.framesSinceIDR >= e.maxGOPFrames {
+			forceIDR = true
+		}
+		// Also force IDR on PTS discontinuity (backward jump or large forward jump).
+		if e.lastPTS != 0 && frame.PTS != 0 {
+			ptsDelta := frame.PTS - e.lastPTS
+			if ptsDelta < 0 || ptsDelta > 90000*5 { // backward or >5s forward jump
+				forceIDR = true
+			}
+		}
+	}
+	e.lastPTS = frame.PTS
+
 	// Zero-copy path: pass CUDA device pointers directly to NVENC.
 	// Use encStream for device-to-device copies into FFmpeg's hw_frame,
 	// preventing races with kernel launches on ctx.stream.
@@ -166,6 +190,9 @@ func (e *GPUEncoder) EncodeGPU(frame *GPUFrame, forceIDR bool) ([]byte, bool, er
 		if err != nil {
 			return nil, false, fmt.Errorf("gpu: hw_frames encode failed: %w", err)
 		}
+		if isIDR {
+			e.framesSinceIDR = 0
+		}
 		return data, isIDR, nil
 	}
 
@@ -180,6 +207,9 @@ func (e *GPUEncoder) EncodeGPU(frame *GPUFrame, forceIDR bool) ([]byte, bool, er
 	data, isIDR, err := e.ffEnc.Encode(e.cpuBuf, frame.PTS, forceIDR)
 	e.cpuBufMu.Unlock()
 
+	if isIDR {
+		e.framesSinceIDR = 0
+	}
 	if err != nil {
 		return nil, false, fmt.Errorf("gpu: encode failed: %w", err)
 	}
@@ -294,12 +324,17 @@ func NewGPUEncoderForCodec(gpuCtx *Context, width, height, fpsNum, fpsDen, bitra
 				"bitrate", bitrate,
 				"10bit", is10bit,
 			)
+			gopFrames := fpsNum * transition.DefaultGOPSecs / fpsDen
+			if gopFrames < 1 {
+				gopFrames = 120
+			}
 			return &GPUEncoder{
-				hwEnc:   hwEnc,
-				gpuCtx:  gpuCtx,
-				width:   width,
-				height:  height,
-				is10bit: is10bit,
+				hwEnc:          hwEnc,
+				gpuCtx:         gpuCtx,
+				width:          width,
+				height:         height,
+				is10bit:        is10bit,
+				maxGOPFrames:   gopFrames,
 			}, nil
 		}
 		slog.Warn("gpu: NVENC HEVC hw_frames_ctx failed, falling back", "err", err)

@@ -220,6 +220,17 @@ func (f *GPUFrame) contentsPtr() unsafe.Pointer {
 	return unsafe.Pointer(f.DevPtr) //nolint:govet // intentional Metal buffer pointer conversion
 }
 
+// ProbeGPUFrame copies the first len(dst) bytes from a GPU frame to CPU for diagnostics.
+// On Metal (unified memory), this is a direct memcpy.
+func ProbeGPUFrame(_ *Context, frame *GPUFrame, dst []byte) error {
+	if frame == nil || len(dst) == 0 {
+		return ErrGPUNotAvailable
+	}
+	src := unsafe.Slice((*byte)(unsafe.Pointer(frame.DevPtr)), len(dst)) //nolint:govet // intentional Metal unified memory pointer
+	copy(dst, src)
+	return nil
+}
+
 // ScaleQuality selects the scaling algorithm.
 type ScaleQuality int
 
