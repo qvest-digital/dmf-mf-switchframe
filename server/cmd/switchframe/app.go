@@ -596,9 +596,13 @@ func (a *App) initOutput() error {
 	a.outputMgr.SetMetrics(a.appMetrics)
 
 	if a.cfg.RefClock {
-		// Reference clock path: A/V PTS is assigned by the clock, so lip-sync
-		// is inherently correct. No ring buffer latency or source gap to compensate.
-		a.outputMgr.SetLipSyncSource(func() int64 { return 0 })
+		// Reference clock path: PTS is assigned by the clock, but audio CONTENT
+		// is delayed by the mixer ring buffer FIFO (~30ms). Video is newest-wins
+		// (no content delay). Delay video PTS by ring buffer depth so audio
+		// content catches up in the muxed output.
+		a.outputMgr.SetLipSyncSource(func() int64 {
+			return a.mixer.RingBufferLatency90k()
+		})
 	} else {
 		// Legacy path: dynamic lip-sync for SRT/recording output (muxer path only).
 		// The browser path handles its own compensation in audio-decoder.ts.
