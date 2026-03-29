@@ -6,6 +6,7 @@
 		clipPlayerLoad, clipPlayerEject, clipPlayerPlay, clipPlayerPause, clipPlayerStop, clipPlayerSeek,
 		apiCall,
 	} from '$lib/api/switch-api';
+	import { resolveApiUrl } from '$lib/api/base-url';
 	import { notify } from '$lib/state/notifications.svelte';
 	import {
 		ICON_PLAY, ICON_PAUSE, ICON_STOP, ICON_EJECT, ICON_UPLOAD, ICON_TRASH, ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT,
@@ -476,6 +477,7 @@
 											<span class="clip-meta">{formatBytes(rec.byteSize)}</span>
 										</div>
 										<div class="clip-actions">
+											<a href={resolveApiUrl(`/api/clips/recordings/download?path=${encodeURIComponent(rec.path)}`)} download={rec.filename} class="download-btn" title="Download recording">DL</a>
 											<button type="button" class="import-btn" onclick={() => handleImport(rec.path)}>Import</button>
 										</div>
 									</div>
@@ -914,6 +916,25 @@
 		background: var(--bg-hover);
 		border-color: var(--accent-blue);
 		color: var(--accent-blue);
+	}
+
+	.download-btn {
+		padding: 2px 6px;
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-xs);
+		background: var(--bg-base);
+		color: var(--text-secondary);
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		cursor: pointer;
+		line-height: 1.3;
+		text-decoration: none;
+	}
+
+	.download-btn:hover {
+		background: var(--bg-hover);
+		border-color: var(--accent-green);
+		color: var(--accent-green);
 	}
 
 	.icon-btn {

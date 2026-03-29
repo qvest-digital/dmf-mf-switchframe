@@ -30,6 +30,7 @@ func (a *API) registerClipRoutes(mux *http.ServeMux) {
 	// Go's ServeMux picks them correctly.
 	mux.HandleFunc("GET /api/clips/players", a.handleClipPlayersList)
 	mux.HandleFunc("GET /api/clips/recordings", a.handleClipRecordings)
+	mux.HandleFunc("GET /api/clips/recordings/download", a.handleRecordingDownload)
 	mux.HandleFunc("POST /api/clips/upload", a.handleClipUpload)
 	mux.HandleFunc("POST /api/clips/from-recording", a.handleClipFromRecording)
 	mux.HandleFunc("GET /api/clips", a.handleClipsList)
@@ -449,6 +450,52 @@ func (a *API) handleClipRecordings(w http.ResponseWriter, _ *http.Request) {
 		result = []RecordingFileInfo{}
 	}
 	_ = json.NewEncoder(w).Encode(result)
+}
+
+// handleRecordingDownload serves a recording file for direct download.
+// Query parameter: ?path=/full/path/to/recording.ts
+// Validates the path is within the recording directory to prevent path traversal.
+func (a *API) handleRecordingDownload(w http.ResponseWriter, r *http.Request) {
+	filePath := r.URL.Query().Get("path")
+	if filePath == "" {
+		httperr.Write(w, http.StatusBadRequest, "missing path parameter")
+		return
+	}
+
+	recDirPtr := a.recordingDir.Load()
+	if recDirPtr == nil || *recDirPtr == "" {
+		httperr.Write(w, http.StatusNotFound, "no recording directory configured")
+		return
+	}
+	recDir := *recDirPtr
+
+	// Path traversal prevention: resolve to absolute and verify it's within recDir.
+	absPath, err := filepath.Abs(filePath)
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid path")
+		return
+	}
+	absDir, err := filepath.Abs(recDir)
+	if err != nil {
+		httperr.Write(w, http.StatusInternalServerError, "recording directory error")
+		return
+	}
+	if !strings.HasPrefix(absPath, absDir+string(filepath.Separator)) && absPath != absDir {
+		httperr.Write(w, http.StatusForbidden, "path outside recording directory")
+		return
+	}
+
+	// Verify file exists and is not a directory.
+	info, err := os.Stat(absPath)
+	if err != nil || info.IsDir() {
+		httperr.Write(w, http.StatusNotFound, "recording not found")
+		return
+	}
+
+	// Serve the file with Content-Disposition for download.
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", info.Name()))
+	w.Header().Set("Content-Type", "video/mp2t")
+	http.ServeFile(w, r, absPath)
 }
 
 // handleClipFromRecording imports a recording file as a clip.
