@@ -961,6 +961,26 @@ func (r *gpuPipelineRunnerImpl) RunTransition(fromKey, toKey string, transType s
 		}
 	}
 
+	// Diagnostic: verify blend produced non-zero output.
+	{
+		probe := make([]byte, 64)
+		if err := gpu.ProbeGPUFrame(r.ctx, dst, probe); err == nil {
+			nonZero := 0
+			for _, b := range probe {
+				if b != 0 {
+					nonZero++
+				}
+			}
+			slog.Info("gpu transition: blend probe",
+				"type", transType, "pos", fmt.Sprintf("%.3f", position),
+				"nonZeroBytes", nonZero, "dstFormat", dst.Format,
+				"dstW", dst.Width, "dstH", dst.Height, "dstPitch", dst.Pitch,
+				"aW", frameA.Width, "aH", frameA.Height, "aPitch", frameA.Pitch,
+				"first8", fmt.Sprintf("%02x %02x %02x %02x %02x %02x %02x %02x",
+					probe[0], probe[1], probe[2], probe[3], probe[4], probe[5], probe[6], probe[7]))
+		}
+	}
+
 	// Run blended result through rest of GPU pipeline (key → layout →
 	// compositor → stmap → raw sinks → encode).
 	if err := r.pipeline.Run(dst); err != nil {

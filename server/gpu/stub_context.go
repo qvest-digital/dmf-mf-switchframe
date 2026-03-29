@@ -43,6 +43,9 @@ func (c *Context) Pool() *FramePool { return nil }
 // CUDAContext returns nil on non-GPU builds.
 func (c *Context) CUDAContext() unsafe.Pointer { return nil }
 
+// ProbeGPUFrame is a no-op on non-GPU builds.
+func ProbeGPUFrame(ctx *Context, frame *GPUFrame, dst []byte) error { return ErrGPUNotAvailable }
+
 // DeviceProperties holds GPU device information.
 type DeviceProperties struct {
 	Name                string

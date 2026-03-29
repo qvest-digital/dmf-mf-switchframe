@@ -251,6 +251,24 @@ func (c *Context) Sync() error {
 	return nil
 }
 
+// ProbeGPUFrame copies the first len(dst) bytes from a GPU frame to CPU for diagnostics.
+func ProbeGPUFrame(ctx *Context, frame *GPUFrame, dst []byte) error {
+	if ctx == nil || frame == nil || len(dst) == 0 {
+		return ErrGPUNotAvailable
+	}
+	n := len(dst)
+	rc := C.cudaMemcpy(
+		unsafe.Pointer(&dst[0]),
+		unsafe.Pointer(uintptr(frame.DevPtr)),
+		C.size_t(n),
+		C.cudaMemcpyDeviceToHost,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: probe failed: %d", rc)
+	}
+	return nil
+}
+
 // MemoryStats returns current GPU memory usage.
 func (c *Context) MemoryStats() MemoryStats {
 	var free, total C.size_t
