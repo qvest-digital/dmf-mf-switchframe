@@ -2727,6 +2727,13 @@ func (s *Switcher) IngestRawVideo(sourceKey string, pf *ProcessingFrame) {
 	s.mu.RUnlock()
 	if fs != nil {
 		fs.IngestRawVideo(sourceKey, pf)
+		// Also feed the GPU source manager so RunFromCache has fresh frames.
+		// SRT sources have a separate NVDEC zero-copy path (IngestGPUFrame)
+		// that updates the GPU cache independently, but CPU-decoded sources
+		// (playout, clips, replay) rely on this path for GPU cache updates.
+		if h := s.gpuSourceMgr.Load(); h != nil && h.mgr != nil && len(pf.Data) > 0 {
+			h.mgr.IngestYUV(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
+		}
 		return
 	}
 	s.handleRawVideoFrame(sourceKey, pf)
