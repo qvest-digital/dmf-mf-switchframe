@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/quic-go/quic-go"
 	"github.com/zsiec/prism/certs"
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
@@ -386,6 +387,18 @@ func (a *App) initPrismServer() error {
 					a.gpuState.previewNode.ForceIDR()
 				}
 			}
+		},
+		// QUIC flow control windows sized for live video streaming.
+		// quic-go defaults (512KB stream / 768KB connection) are too small —
+		// a 3Mbps preview stream exhausts the initial window in ~2s, causing
+		// SendStream.Write to block and triggering frame drops in the MoQ relay.
+		QUICConfig: &quic.Config{
+			MaxIdleTimeout:                 30 * time.Second,
+			Allow0RTT:                      true,
+			InitialStreamReceiveWindow:     4 * 1024 * 1024,  // 4 MB (default 512 KB)
+			MaxStreamReceiveWindow:         16 * 1024 * 1024, // 16 MB (default 6 MB)
+			InitialConnectionReceiveWindow: 8 * 1024 * 1024,  // 8 MB (default 768 KB)
+			MaxConnectionReceiveWindow:     32 * 1024 * 1024, // 32 MB
 		},
 	}
 
