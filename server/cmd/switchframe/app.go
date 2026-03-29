@@ -28,6 +28,7 @@ import (
 	"github.com/zsiec/switchframe/server/asr"
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/caption"
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/colorgrade"
@@ -212,6 +213,10 @@ type App struct {
 	sourceLastAudioPTS atomic.Int64 // latest source audio PTS (linearized)
 	sourceAVGapInited  atomic.Bool  // true after both video and audio PTS seen
 
+	// Reference clock (when --ref-clock is active)
+	refClock        *clock.ReferenceClock
+	refClockEncoder audio.Encoder // AAC encoder for ref clock path (needs Close on shutdown)
+
 	// MXL integration
 	mxlInstance *mxl.Instance
 	mxlSources  []*mxl.Source
@@ -383,6 +388,15 @@ func (a *App) initPrismServer() error {
 // initCoreEngine creates the audio mixer and switcher, wires audio handling,
 // and configures the transition engine.
 func (a *App) initCoreEngine() error {
+	if a.cfg.RefClock {
+		return a.initCoreEngineRefClock()
+	}
+	return a.initCoreEngineLegacy()
+}
+
+// initCoreEngineLegacy is the existing audio/video wiring path: wall-clock PTS,
+// mixer with internal ticker, PTS seeding from video.
+func (a *App) initCoreEngineLegacy() error {
 	// Create audio mixer -- sends mixed audio to the program relay
 	// and the program preview relay (for browser low-bitrate monitoring).
 	a.mixer = audio.NewMixer(audio.MixerConfig{
@@ -408,6 +422,94 @@ func (a *App) initCoreEngine() error {
 	})
 	a.mixer.SetMetrics(a.appMetrics)
 
+	if err := a.initSwitcherCommon(); err != nil {
+		return err
+	}
+
+	// Wire audio mixer to the switcher (wall-clock PTS path).
+	a.sw.SetAudioHandler(func(sourceKey string, frame *media.AudioFrame) {
+		a.mixer.IngestFrame(sourceKey, frame)
+	})
+	a.sw.SetMixer(a.mixer)
+	a.mixer.ExpectVideoSeed()
+	a.sw.SetOnFirstVideoPTS(func(pts int64) {
+		a.mixer.SeedPTSFromVideo(pts)
+	})
+	a.sw.EnableWallClockVideoPTS()
+
+	return nil
+}
+
+// initCoreEngineRefClock wires the reference clock path: a single clock drives
+// both video and audio processing synchronously, eliminating wall-clock PTS
+// and the mixer's internal ticker.
+func (a *App) initCoreEngineRefClock() error {
+	slog.Info("reference clock mode enabled")
+
+	// Create clock-driven mixer: no internal ticker, output comes from sync loop.
+	a.mixer = audio.NewMixer(audio.MixerConfig{
+		SampleRate:     48000,
+		Channels:       2,
+		ClockDriven:    true,
+		DecoderFactory: audioDecoderFactory(),
+		EncoderFactory: audioEncoderFactory(),
+	})
+	a.mixer.SetMetrics(a.appMetrics)
+
+	if err := a.initSwitcherCommon(); err != nil {
+		return err
+	}
+
+	// Wire audio ingest: sources still push to ring buffers as before.
+	a.sw.SetAudioHandler(func(sourceKey string, frame *media.AudioFrame) {
+		a.mixer.IngestFrame(sourceKey, frame)
+	})
+	a.sw.SetMixer(a.mixer)
+
+	// Create reference clock from pipeline format.
+	pf := a.sw.PipelineFormat()
+	a.refClock = clock.NewReferenceClock(pf.FPSNum, pf.FPSDen, 48000, 90000, true)
+
+	// Create AAC encoder for the sync loop's audio path.
+	aacEnc, err := audio.NewFDKEncoder(48000, 2)
+	if err != nil {
+		return fmt.Errorf("create AAC encoder for ref clock: %w", err)
+	}
+	a.refClockEncoder = aacEnc
+
+	// Create AAC frame buffer wired to the encoder.
+	aacBuf := clock.NewAACFrameBuffer(2, 48000, aacEnc.Encode)
+	aacBuf.SetBasePTS(90000)
+
+	// Wire clock recovery — detects source frame rate changes and adjusts clock.
+	cr := clock.NewClockRecovery(pf.FPSNum, pf.FPSDen, 30)
+	a.sw.SetClockRecovery(cr)
+
+	// Wire to switcher.
+	a.sw.SetReferenceClock(a.refClock)
+	a.sw.SetAACBuffer(aacBuf)
+	a.sw.SetSyncMixer(a.mixer)
+
+	// Wire audio output callback so the sync loop can deliver AAC frames
+	// to both the program relay (browser) and output manager (muxer/SRT).
+	a.sw.SetOutputAudioCallback(func(frame *media.AudioFrame) {
+		a.programRelay.BroadcastAudio(frame)
+		if a.programPreviewRelay != nil {
+			a.programPreviewRelay.BroadcastAudio(frame)
+		}
+	})
+
+	// DON'T call: EnableWallClockVideoPTS, ExpectVideoSeed, SetOnFirstVideoPTS
+	// The reference clock provides PTS directly.
+	// Transition + source decoder factories are set by initSwitcherCommon
+	// (with 10-bit color-aware factory when the pipeline is 422/10-bit).
+
+	return nil
+}
+
+// initSwitcherCommon initializes the switcher with settings shared by both
+// the legacy and reference clock paths.
+func (a *App) initSwitcherCommon() error {
 	// Create switcher with Prism's relay so frames reach MoQ viewers.
 	a.sw = switcher.New(a.programRelay)
 	a.sw.SetMetrics(a.appMetrics)
@@ -444,6 +546,15 @@ func (a *App) initCoreEngine() error {
 	// Enable frame sync if requested.
 	if a.cfg.FrameSync {
 		a.sw.SetFrameSync(true, 0) // 0 = default 30fps
+
+		// In reference clock mode, disable the FrameSync timer entirely.
+		// The sync loop pops frames directly from the ring buffers. Without
+		// this, two goroutines (tickLoop + sync loop) race over the same
+		// ring buffers and process frames through different paths.
+		if a.cfg.RefClock {
+			a.sw.SetFrameSyncBufferOnly(true)
+		}
+
 		// Default: clock-driven output (steady timing like a hardware frame sync).
 		// --low-latency-sync disables this for minimum latency at the cost of
 		// output jitter from source delivery patterns.
@@ -460,17 +571,6 @@ func (a *App) initCoreEngine() error {
 	if !a.cfg.FrameSync && a.cfg.FRCQuality != "" && a.cfg.FRCQuality != "none" {
 		slog.Warn("--frc-quality has no effect without --frame-sync")
 	}
-
-	// Wire audio mixer to the switcher.
-	a.sw.SetAudioHandler(func(sourceKey string, frame *media.AudioFrame) {
-		a.mixer.IngestFrame(sourceKey, frame)
-	})
-	a.sw.SetMixer(a.mixer)
-	a.mixer.ExpectVideoSeed()
-	a.sw.SetOnFirstVideoPTS(func(pts int64) {
-		a.mixer.SeedPTSFromVideo(pts)
-	})
-	a.sw.EnableWallClockVideoPTS()
 
 	// Configure transition engine with auto-detected video codec.
 	// When the pipeline is professional (10-bit 422), use native 10-bit decoders
@@ -495,27 +595,33 @@ func (a *App) initOutput() error {
 	a.outputMgr.SetSRTWiring(output.SRTConnect, output.SRTAcceptLoop)
 	a.outputMgr.SetMetrics(a.appMetrics)
 
-	// Dynamic lip-sync for SRT/recording output (muxer path only).
-	// The browser path handles its own compensation in audio-decoder.ts.
-	// Combines ring buffer depth + source A/V PTS gap.
-	a.outputMgr.SetLipSyncSource(func() int64 {
-		ringBuf := a.mixer.RingBufferLatency90k()
+	if a.cfg.RefClock {
+		// Reference clock path: A/V PTS is assigned by the clock, so lip-sync
+		// is inherently correct. No ring buffer latency or source gap to compensate.
+		a.outputMgr.SetLipSyncSource(func() int64 { return 0 })
+	} else {
+		// Legacy path: dynamic lip-sync for SRT/recording output (muxer path only).
+		// The browser path handles its own compensation in audio-decoder.ts.
+		// Combines ring buffer depth + source A/V PTS gap.
+		a.outputMgr.SetLipSyncSource(func() int64 {
+			ringBuf := a.mixer.RingBufferLatency90k()
 
-		// Source A/V gap: video PTS - audio PTS. If positive, video PTS is
-		// ahead of audio PTS at the source, meaning audio content is from
-		// an earlier source moment. We need to delay video by this amount.
-		var sourceGap int64
-		if a.sourceAVGapInited.Load() {
-			vPTS := a.sourceLastVideoPTS.Load()
-			aPTS := a.sourceLastAudioPTS.Load()
-			gap := vPTS - aPTS
-			if gap > 0 && gap < 270000 { // sanity: 0 to 3 seconds
-				sourceGap = gap
+			// Source A/V gap: video PTS - audio PTS. If positive, video PTS is
+			// ahead of audio PTS at the source, meaning audio content is from
+			// an earlier source moment. We need to delay video by this amount.
+			var sourceGap int64
+			if a.sourceAVGapInited.Load() {
+				vPTS := a.sourceLastVideoPTS.Load()
+				aPTS := a.sourceLastAudioPTS.Load()
+				gap := vPTS - aPTS
+				if gap > 0 && gap < 270000 { // sanity: 0 to 3 seconds
+					sourceGap = gap
+				}
 			}
-		}
 
-		return ringBuf + sourceGap
-	})
+			return ringBuf + sourceGap
+		})
+	}
 
 	// CBR pacing is NOT enabled for SRT output. SRT has its own congestion
 	// control and jitter buffer that handle VBR natively. CBR null-padding
@@ -542,8 +648,14 @@ func (a *App) initOutput() error {
 	// → channel path (3 goroutine hops + 3 channel buffers eliminated).
 	a.sw.SetOutputVideoCallback(a.outputMgr.DirectWriteVideo)
 
-	// Wire direct audio path: mixer output goes straight to the muxer.
-	a.mixer.SetOutputAudioCallback(a.outputMgr.DirectWriteAudio)
+	if a.cfg.RefClock {
+		// Reference clock path: audio comes from the sync loop's AAC frame
+		// buffer, delivered via the switcher's output audio callback.
+		a.sw.SetOutputAudioCallbackDirect(a.outputMgr.DirectWriteAudio)
+	} else {
+		// Legacy path: mixer output goes straight to the muxer.
+		a.mixer.SetOutputAudioCallback(a.outputMgr.DirectWriteAudio)
+	}
 
 	return nil
 }
@@ -1734,6 +1846,14 @@ func (a *App) Run(ctx context.Context) error {
 		}
 	}()
 
+	// Start reference clock sync loop if configured. Must happen after all
+	// output wiring is complete (video/audio callbacks are set).
+	if a.cfg.RefClock && a.refClock != nil {
+		a.sw.StartSyncLoop()
+		a.refClock.Start()
+		slog.Info("reference clock started")
+	}
+
 	// All components initialized -- mark ready for readiness probe.
 	readyFlag.Store(true)
 
@@ -1905,6 +2025,9 @@ func (a *App) closeSubsystems() {
 	}
 	// GPU cleanup after switcher (pipeline frames must be released first).
 	closeGPU(a.gpuState)
+	if a.refClockEncoder != nil {
+		_ = a.refClockEncoder.Close()
+	}
 	if a.mixer != nil {
 		_ = a.mixer.Close()
 	}

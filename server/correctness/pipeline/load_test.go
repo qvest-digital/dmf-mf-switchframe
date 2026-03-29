@@ -64,7 +64,7 @@ func TestMultiSourceLoad4Sources(t *testing.T) {
 			pts := int64(90000)
 			for i := 0; i < totalFrames; i++ {
 				pf := &switcher.ProcessingFrame{
-					YUV:        copyBytes(yuv),
+					Data:       copyBytes(yuv),
 					Width:      testWidth,
 					Height:     testHeight,
 					PTS:        pts + int64(i)*ptsDelta,
@@ -255,7 +255,7 @@ func TestMultiSourceMemoryStability(t *testing.T) {
 			frameDuration := duration / time.Duration(framesPerSource)
 			for i := 0; i < framesPerSource; i++ {
 				pf := &switcher.ProcessingFrame{
-					YUV:        copyBytes(yuv),
+					Data:       copyBytes(yuv),
 					Width:      testWidth,
 					Height:     testHeight,
 					PTS:        pts + int64(i)*ptsDelta,
@@ -452,7 +452,7 @@ func TestMultiSourceOutputQuality(t *testing.T) {
 	pts := int64(90000)
 	for i := 0; i < framesPerHalf; i++ {
 		pf := &switcher.ProcessingFrame{
-			YUV:        copyBytes(inputFramesA[i]),
+			Data:       copyBytes(inputFramesA[i]),
 			Width:      w,
 			Height:     ht,
 			PTS:        pts,
@@ -469,7 +469,7 @@ func TestMultiSourceOutputQuality(t *testing.T) {
 		for i := 0; i < totalFrames; i++ {
 			frameIdx := i % framesPerHalf
 			pf := &switcher.ProcessingFrame{
-				YUV:        copyBytes(inputFramesB[frameIdx]),
+				Data:       copyBytes(inputFramesB[frameIdx]),
 				Width:      w,
 				Height:     ht,
 				PTS:        bPts,
@@ -493,7 +493,7 @@ func TestMultiSourceOutputQuality(t *testing.T) {
 
 	for i := 0; i < framesPerHalf; i++ {
 		pf := &switcher.ProcessingFrame{
-			YUV:        copyBytes(inputFramesB[i]),
+			Data:       copyBytes(inputFramesB[i]),
 			Width:      w,
 			Height:     ht,
 			PTS:        pts,

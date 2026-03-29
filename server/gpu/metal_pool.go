@@ -128,11 +128,10 @@ func (p *FramePool) Acquire() (*GPUFrame, error) {
 // IngestYUV at source resolution). Without this reset, recycled frames
 // carry stale dimensions that corrupt subsequent operations.
 func (p *FramePool) release(frame *GPUFrame) {
+	p.mu.Lock()
 	frame.Width = p.width
 	frame.Height = p.height
 	frame.Format = p.format
-
-	p.mu.Lock()
 	if len(p.free) < p.cap {
 		p.free = append(p.free, frame)
 		p.mu.Unlock()

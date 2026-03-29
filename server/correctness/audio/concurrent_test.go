@@ -299,15 +299,19 @@ func TestMixerAddRemoveWhileMixing(t *testing.T) {
 // ==========================================================================
 
 func TestMixerCrossfadeConcurrentWithIngest(t *testing.T) {
-	// Not parallel: this test depends on precise timing for ring buffer fill
-	// rates and crossfade detection. CPU contention from parallel tests causes
-	// feeder goroutines to stall, leading to ring buffer underruns.
+	t.Parallel()
 
-	m, getCaptured := newTestMixer(t)
+	// ClockDriven mixer: no internal ticker, ProduceSamples is deterministic.
+	m := audio.NewMixer(audio.MixerConfig{
+		SampleRate:  48000,
+		Channels:    2,
+		ClockDriven: true,
+		Output:      func(_ *media.AudioFrame) {},
+	})
 	defer m.Close()
 
 	const sampleRate = 48000
-	const chunkSize = 1024 * 2
+	const chunkSize = 1024 * 2 // stereo: 1024 samples * 2 channels
 
 	// camA is active (on program), camB is inactive
 	m.AddChannel("camA")
@@ -318,73 +322,118 @@ func TestMixerCrossfadeConcurrentWithIngest(t *testing.T) {
 	m.SetActive("camB", false) // not on program yet
 	m.SetAFV("camB", true)
 
-	stopA := make(chan struct{})
-	stopB := make(chan struct{})
+	// Pre-generate audio buffers (5 seconds each)
+	pcmA := generateStereoSine(440, sampleRate, 5.0)
+	pcmB := generateStereoSine(880, sampleRate, 5.0)
 
-	feedLoop := func(key string, freqHz float64, stop <-chan struct{}) {
-		pcm := generateStereoSine(freqHz, sampleRate, 10.0)
-		offset := 0
-		for {
-			select {
-			case <-stop:
-				return
-			default:
+	// Phase 1: Concurrent ingest stress test.
+	// Multiple goroutines hammer IngestPCM simultaneously to verify no
+	// data races, panics, or corruption under concurrent access.
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	for _, feed := range []struct {
+		key string
+		pcm []float32
+	}{
+		{"camA", pcmA},
+		{"camB", pcmB},
+	} {
+		wg.Add(1)
+		go func(key string, pcm []float32) {
+			defer wg.Done()
+			offset := 0
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if offset+chunkSize > len(pcm) {
+					offset = 0
+				}
+				m.IngestPCM(key, pcm[offset:offset+chunkSize], int64(offset)*90000/int64(sampleRate*2), 2)
+				offset += chunkSize
+				time.Sleep(time.Millisecond)
 			}
-			if offset+chunkSize > len(pcm) {
-				offset = 0
-			}
-			m.IngestPCM(key, pcm[offset:offset+chunkSize], int64(offset)*90000/int64(sampleRate*2), 2)
-			offset += chunkSize
-			// Pace at 20ms (vs 21.3ms ticker interval) to keep the ring buffer
-			// filled just ahead of the consumer. Slightly faster than real-time
-			// to prevent underruns, but slow enough to avoid overflow-induced
-			// phase discontinuity clicks.
-			time.Sleep(20 * time.Millisecond)
-		}
+		}(feed.key, feed.pcm)
 	}
 
-	// Both goroutines feed PCM simultaneously
-	go feedLoop("camA", 440, stopA)
-	go feedLoop("camB", 880, stopB)
+	// Let concurrent feeders run for a bit to exercise the race detector
+	time.Sleep(100 * time.Millisecond)
+	close(stop)
+	wg.Wait()
 
-	// Let camA stabilize on program for 500ms
-	time.Sleep(500 * time.Millisecond)
+	// Phase 2: Deterministic crossfade verification.
+	// Now that concurrent ingest is done, refill ring buffers with a known
+	// amount of audio and produce output without any timing dependency.
 
-	// Trigger program change: camB becomes program via AFV
+	// Fill each ring buffer with enough data for the entire test.
+	// Ring buffer capacity is 10*1024*2 = 20480 samples.
+	// We'll produce 8 ticks * 1024 samples * 2 channels = 16384 values per tick.
+	// Fill with ~9K stereo samples (18K values) to stay within capacity.
+	const fillSamples = 9 * 1024 * 2 // stereo values to push
+	m.IngestPCM("camA", pcmA[:fillSamples], 0, 2)
+	m.IngestPCM("camB", pcmB[:fillSamples], 0, 2)
+
+	// Produce pre-crossfade output to verify camA signal is present.
+	const samplesPerTick = 1024
+	preCrossfade := m.ProduceSamples(samplesPerTick)
+	require.Greater(t, len(preCrossfade), 0, "pre-crossfade should produce output")
+
+	preRMS, _, _, _ := pcmStats(preCrossfade)
+	t.Logf("MEASURE: pre-crossfade RMS = %.4f", preRMS)
+	assert.Greater(t, preRMS, 0.01, "pre-crossfade should have non-trivial signal from camA")
+
+	// Trigger AFV crossfade: camB becomes program
 	m.OnProgramChange("camB")
 
-	// Let it run for another 500ms to capture the crossfade
-	time.Sleep(500 * time.Millisecond)
+	// Produce samples deterministically through the 4-tick crossfade ramp
+	// and a few ticks beyond. No timing dependency — purely sequential.
+	var allOutput []float32
+	for i := 0; i < 8; i++ {
+		samples := m.ProduceSamples(samplesPerTick)
+		m.AdvanceCrossfade()
+		allOutput = append(allOutput, samples...)
+	}
 
-	close(stopA)
-	close(stopB)
-	time.Sleep(100 * time.Millisecond) // flush
+	require.Greater(t, len(allOutput), 0, "should have produced output")
 
-	output := getCaptured()
-	require.Greater(t, len(output), 0, "should have captured output")
-
-	rms, maxAbs, hasNaN, hasInf := pcmStats(output)
-	t.Logf("MEASURE: output RMS = %.4f, max abs = %.4f, sample count = %d", rms, maxAbs, len(output))
+	rms, maxAbs, hasNaN, hasInf := pcmStats(allOutput)
+	t.Logf("MEASURE: output RMS = %.4f, max abs = %.4f, sample count = %d", rms, maxAbs, len(allOutput))
 
 	assert.False(t, hasNaN, "output contains NaN samples")
 	assert.False(t, hasInf, "output contains Inf samples")
 
-	// Check for clicks: max sample-to-sample delta
-	maxClick := float64(0)
-	for i := 1; i < len(output); i++ {
-		delta := math.Abs(float64(output[i]) - float64(output[i-1]))
-		if delta > maxClick {
-			maxClick = delta
+	// Check for clicks per-channel (L and R separately) to avoid false
+	// positives from interleaved stereo where adjacent L/R samples from
+	// different-frequency sine waves naturally differ.
+	maxClickL := float64(0)
+	maxClickR := float64(0)
+	for i := 2; i+1 < len(allOutput); i += 2 {
+		deltaL := math.Abs(float64(allOutput[i]) - float64(allOutput[i-2]))
+		deltaR := math.Abs(float64(allOutput[i+1]) - float64(allOutput[i-1]))
+		if deltaL > maxClickL {
+			maxClickL = deltaL
+		}
+		if deltaR > maxClickR {
+			maxClickR = deltaR
 		}
 	}
-	t.Logf("MEASURE: max click = %.4f", maxClick)
+	t.Logf("MEASURE: max click L = %.4f, R = %.4f", maxClickL, maxClickR)
 
-	// Check for silence runs > 5ms (5ms * 48000 * 2 = 480 samples)
+	// Per-channel delta should be < 0.5 (no hard discontinuities).
+	// Equal-power crossfade between two sine waves produces smooth transitions.
+	assert.Less(t, maxClickL, 0.5, "left channel max delta should be < 0.5 (no clicks)")
+	assert.Less(t, maxClickR, 0.5, "right channel max delta should be < 0.5 (no clicks)")
+
+	// Check for silence runs > 5ms per channel (5ms * 48000 = 240 per-channel samples).
 	maxSilenceRun := 0
 	currentSilence := 0
 	const silenceThreshold = 0.0001
-	for _, s := range output {
-		if math.Abs(float64(s)) < silenceThreshold {
+	for i := 0; i < len(allOutput); i += 2 {
+		// Check left channel (right mirrors it in generateStereoSine)
+		if math.Abs(float64(allOutput[i])) < silenceThreshold {
 			currentSilence++
 			if currentSilence > maxSilenceRun {
 				maxSilenceRun = currentSilence
@@ -393,17 +442,17 @@ func TestMixerCrossfadeConcurrentWithIngest(t *testing.T) {
 			currentSilence = 0
 		}
 	}
-	silenceRunMs := float64(maxSilenceRun) / float64(sampleRate*2) * 1000.0
-	t.Logf("MEASURE: max silence run = %d samples (%.2f ms)", maxSilenceRun, silenceRunMs)
+	silenceRunMs := float64(maxSilenceRun) / float64(sampleRate) * 1000.0
+	t.Logf("MEASURE: max silence run = %d per-channel samples (%.2f ms)", maxSilenceRun, silenceRunMs)
 
-	// The max click should be < 0.5 (no hard discontinuities)
-	assert.Less(t, maxClick, 0.5, "max sample-to-sample delta should be < 0.5 (no clicks)")
-
-	// No silence gap > 5ms. The ring buffer ticker produces output every ~21ms,
-	// so we allow up to one tick of silence during the AFV transition.
-	const maxAllowedSilenceMs = 25.0
+	// No silence gap > 5ms. With deterministic production from pre-filled
+	// ring buffers, there should be no underruns.
+	const maxAllowedSilenceMs = 5.0
 	assert.Less(t, silenceRunMs, maxAllowedSilenceMs,
-		"silence gap should be < %.0fms (got %.2fms = %d samples)", maxAllowedSilenceMs, silenceRunMs, maxSilenceRun)
+		"silence gap should be < %.0fms (got %.2fms = %d per-channel samples)", maxAllowedSilenceMs, silenceRunMs, maxSilenceRun)
+
+	// Verify crossfade completed (no longer active)
+	assert.False(t, m.IsInTransitionCrossfade(), "crossfade should have completed after 8 ticks (4 needed)")
 }
 
 // ==========================================================================

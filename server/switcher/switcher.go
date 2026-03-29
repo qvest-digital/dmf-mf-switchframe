@@ -18,6 +18,7 @@ import (
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/caption"
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
@@ -458,6 +459,32 @@ type Switcher struct {
 	// audio delivery from the same goroutine gets starved.
 	videoProcCh   chan videoProcWork
 	videoProcDone chan struct{}
+
+	// Reference clock fields (used when useRefClock is true).
+	// When useRefClock is set, the synchronous processing loop replaces
+	// both videoProcessingLoop and the mixer's outputTicker, driving
+	// A/V from a single clock source.
+	refClock         *clock.ReferenceClock
+	clockRecovery    *clock.ClockRecovery
+	aacBuffer        *clock.AACFrameBuffer
+	syncMixer        syncMixerInterface
+	syncLoopWg       sync.WaitGroup
+	useRefClock      atomic.Bool
+	ticksBehind      int
+	syncLoopRunning      atomic.Bool                      // double-start guard (Issue 10)
+	cachedBlackFrame     atomic.Pointer[ProcessingFrame]  // cached broadcast black (Issue 11)
+	overloadDrops        atomic.Int64
+	syncLoopRepeats      atomic.Int64
+	lastEncodedFrame     atomic.Pointer[ProcessingFrame]
+	lastBroadcastVFrame  atomic.Pointer[media.VideoFrame] // last broadcast H.264 frame (for overload repeat)
+	lastOverloadLog      time.Time                        // rate-limit overload logging to 1/sec
+	sourceLostAt     atomic.Pointer[time.Time] // when program source stopped providing frames (sync loop goroutine only)
+
+	// Sync loop audio output callbacks (used in ref clock mode).
+	// outputAudioCallback delivers AAC frames to the program relay (browser).
+	// outputAudioCallbackDirect delivers AAC frames to the muxer (SRT/recording).
+	outputAudioCallback       atomic.Pointer[func(*media.AudioFrame)]
+	outputAudioCallbackDirect atomic.Pointer[func(*media.AudioFrame)]
 }
 
 // videoProcWork represents a unit of work for the async video processing
@@ -711,6 +738,13 @@ func (s *Switcher) Close() {
 	s.health.stop()
 	s.delayBuffer.Close()
 
+	// Stop reference clock first — this closes the Ticks channel,
+	// which exits the synchronous processing loop.
+	if s.useRefClock.Load() && s.refClock != nil {
+		s.refClock.Stop()
+		s.syncLoopWg.Wait()
+	}
+
 	// Stop frame sync FIRST to prevent sends to videoProcCh after it is closed.
 	// The frame sync ticker goroutine delivers frames via handleRawVideoFrame,
 	// which calls enqueueVideoWork. If we close videoProcCh while the ticker is
@@ -800,6 +834,9 @@ func (s *Switcher) SetAudioTransition(handler audioTransitionHandler) {
 func (s *Switcher) SetOnFirstVideoPTS(fn func(pts int64)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.useRefClock.Load() {
+		return // reference clock handles PTS — no seeding needed
+	}
 	s.onFirstVideoPTS = fn
 }
 
@@ -1153,6 +1190,20 @@ func (s *Switcher) SetClockDrivenSync(enabled bool) {
 	}
 }
 
+// SetFrameSyncBufferOnly puts the frame sync into buffer-only mode.
+// Ring buffers still accept frames, but the tickLoop timer is not started.
+// This is used in reference clock mode where the sync loop pops frames
+// directly from the ring buffers, preventing two goroutines from racing
+// over the same buffers. Must be called before the frame sync is started
+// (i.e., before SetFrameSync enables it, or immediately after).
+func (s *Switcher) SetFrameSyncBufferOnly(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.frameSync != nil {
+		s.frameSync.SetBufferOnly(enabled)
+	}
+}
+
 // SetFRCQuality sets the frame rate conversion quality for all sources.
 // Only effective when frame sync is enabled.
 func (s *Switcher) SetFRCQuality(q FRCQuality) {
@@ -1336,15 +1387,24 @@ func (s *Switcher) measureTransSeam() {
 // EnableWallClockVideoPTS enables wall-clock PTS rewriting on the program
 // relay. When enabled, video PTS is rewritten to match the mixer's
 // wall-clock audio PTS, keeping A/V aligned after source cuts.
+// No-op when the reference clock is active (PTS comes from the clock).
 func (s *Switcher) EnableWallClockVideoPTS() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.useRefClock.Load() {
+		return // reference clock handles PTS
+	}
 	s.wallClockVideoEnabled = true
 }
 
 // wallClockVideoPTS returns a hybrid PTS: frame-counter for regular spacing
 // with wall-clock resync to match the mixer's audio PTS timeline.
+// When the reference clock is active, returns sourcePTS unchanged — PTS
+// is already set by the sync loop from the reference clock.
 func (s *Switcher) wallClockVideoPTS(sourcePTS int64) int64 {
+	if s.useRefClock.Load() {
+		return sourcePTS // PTS comes from reference clock, not wall clock
+	}
 	if !s.wallClockVideoEnabled {
 		return sourcePTS
 	}
@@ -1403,6 +1463,12 @@ func (s *Switcher) broadcastToProgram(frame *media.VideoFrame) {
 	if cb := s.outputVideoCallback.Load(); cb != nil {
 		(*cb)(&f)
 	}
+
+	// Store last broadcast frame for overload repeat (Issue 1).
+	// This ensures repeatLastVideoFrame replays encoded H.264 data,
+	// not raw YUV bytes.
+	stored := f // copy for atomic store
+	s.lastBroadcastVFrame.Store(&stored)
 }
 
 // broadcastOwnedToProgram sends an owned frame (safe to mutate) to the
@@ -1538,10 +1604,25 @@ func (s *Switcher) enqueueVideoWork(work videoProcWork) {
 // and running each frame through the encode pipeline. This prevents
 // the source relay's delivery goroutine from blocking on video processing,
 // which would starve audio delivery.
+//
+// When the reference clock is active, the sync loop is the sole frame
+// processor. This loop only drains videoProcCh to prevent
+// handleRawVideoFrame from blocking, but does not process the frames.
 func (s *Switcher) videoProcessingLoop() {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	defer close(s.videoProcDone)
+
+	if s.useRefClock.Load() {
+		// Sync loop is the sole frame processor. Drain videoProcCh to prevent
+		// handleRawVideoFrame from blocking, but don't process the frames.
+		for work := range s.videoProcCh {
+			if work.yuvFrame != nil {
+				work.yuvFrame.ReleaseYUV()
+			}
+		}
+		return
+	}
 
 	for work := range s.videoProcCh {
 		if work.yuvFrame == nil {

@@ -158,6 +158,10 @@ type Engine struct {
 	framesIngested atomic.Int64
 	framesBlended  atomic.Int64
 
+	// rawBlender is cached for BlendRaw to avoid per-frame allocation (Issue 7).
+	// Recreated only when resolution changes.
+	rawBlender *FrameBlender
+
 	config EngineConfig
 
 	// colorFormat specifies the pipeline pixel format (8-bit or 10-bit).
@@ -1175,6 +1179,184 @@ func (e *Engine) scaleStingerFrames(sd *StingerData) []StingerFrameData {
 		scaled[i] = StingerFrameData{YUV: scaledYUV, Alpha: scaledAlpha}
 	}
 	return scaled
+}
+
+// StartSync configures the engine for synchronous blending (no goroutines).
+// Sets transition type, duration, and direction but does NOT spawn any
+// goroutines — no watchdog, no decoders, no codec pipeline. This is the
+// reference-clock path: the caller drives position via AutoAdvancePosition
+// and performs blends via BlendRaw.
+func (e *Engine) StartSync(from, to string, ttype Type, durationMs int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.transitionType = ttype
+	e.durationMs = durationMs
+	e.position = 0
+	e.state = StateActive
+	e.manualControl = false
+	e.fromSource = from
+	e.toSource = to
+}
+
+// AutoAdvancePosition advances the transition position by one tick based on
+// frame duration. Returns the new position and whether the transition is
+// complete (position >= 1.0). On completion, the engine state is set to Idle.
+// This is the reference-clock path — no wall-clock timing, purely tick-driven.
+func (e *Engine) AutoAdvancePosition(frameDurationMs float64) (float64, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.durationMs <= 0 {
+		e.state = StateIdle
+		return 1.0, true
+	}
+	e.position += frameDurationMs / float64(e.durationMs)
+	if e.position >= 1.0 {
+		e.position = 1.0
+		e.state = StateIdle
+		return 1.0, true
+	}
+	return e.position, false
+}
+
+// BlendRaw performs a synchronous blend of two YUV420 frames at the given
+// position. This is the reference-clock path — no goroutines, no internal
+// timing, no codec pipeline.
+//
+// Returns the blended YUV420 data, output width, and output height.
+// If frames have different dimensions, toYUV is scaled to match fromYUV.
+// For FTB transitions, toYUV may be nil.
+//
+// The returned slice is owned by an internal FrameBlender and will be
+// overwritten on the next call. Callers must copy if they need to retain it.
+func (e *Engine) BlendRaw(
+	fromYUV []byte, fromW, fromH int,
+	toYUV []byte, toW, toH int,
+	position float64,
+) ([]byte, int, int) {
+	e.mu.Lock()
+	ttype := e.transitionType
+	wipeDir := e.wipeDirection
+	stinger := e.config.Stinger
+
+	outW, outH := fromW, fromH
+
+	// Ensure even dimensions for YUV420
+	if outW%2 != 0 || outH%2 != 0 {
+		e.mu.Unlock()
+		return nil, 0, 0
+	}
+
+	// Reuse cached blender if resolution matches, otherwise create new (Issue 7).
+	blender := e.rawBlender
+	if blender == nil || blender.width != outW || blender.height != outH {
+		var err error
+		blender, err = NewFrameBlender(outW, outH)
+		if err != nil {
+			e.mu.Unlock()
+			return nil, 0, 0
+		}
+		e.rawBlender = blender
+	}
+	e.mu.Unlock()
+
+	// Scale toYUV to match fromYUV dimensions if they differ
+	var scaledTo []byte
+	if toYUV != nil && (toW != fromW || toH != fromH) {
+		targetSize := fromW * fromH * 3 / 2
+		scaledTo = make([]byte, targetSize)
+		ScaleYUV420(toYUV, toW, toH, scaledTo, fromW, fromH)
+		toYUV = scaledTo
+	}
+
+	// Generate broadcast-standard black frame for FTB / missing source B
+	makeBlack := func() []byte {
+		ySize := outW * outH
+		uvSize := (outW / 2) * (outH / 2)
+		black := make([]byte, ySize+2*uvSize)
+		for i := 0; i < ySize; i++ {
+			black[i] = 16 // BT.709 limited-range black
+		}
+		for i := ySize; i < ySize+2*uvSize; i++ {
+			black[i] = 128 // neutral chroma
+		}
+		return black
+	}
+
+	var blended []byte
+	switch ttype {
+	case Mix:
+		if toYUV == nil {
+			toYUV = makeBlack()
+		}
+		blended = blender.BlendMix(fromYUV, toYUV, position)
+	case Dip:
+		if toYUV == nil {
+			toYUV = makeBlack()
+		}
+		blended = blender.BlendDip(fromYUV, toYUV, position)
+	case FTB:
+		blended = blender.BlendFTB(fromYUV, position)
+	case FTBReverse:
+		blended = blender.BlendFTB(fromYUV, 1.0-position)
+	case Wipe:
+		if toYUV == nil {
+			toYUV = makeBlack()
+		}
+		blended = blender.BlendWipe(fromYUV, toYUV, position, wipeDir)
+	case Stinger:
+		if stinger != nil && len(stinger.Frames) > 0 {
+			frameIdx := int(position * float64(len(stinger.Frames)))
+			if frameIdx >= len(stinger.Frames) {
+				frameIdx = len(stinger.Frames) - 1
+			}
+			if frameIdx < 0 {
+				frameIdx = 0
+			}
+			sf := &stinger.Frames[frameIdx]
+
+			// Pick base source: A before cut point, B after
+			base := fromYUV
+			if position >= stinger.CutPoint && toYUV != nil {
+				base = toYUV
+			}
+
+			// Scale stinger frame if needed
+			sYUV := sf.YUV
+			sAlpha := sf.Alpha
+			if stinger.Width != outW || stinger.Height != outH {
+				scaledYUVSize := outW * outH * 3 / 2
+				sYUV = make([]byte, scaledYUVSize)
+				ScaleYUV420(sf.YUV, stinger.Width, stinger.Height, sYUV, outW, outH)
+				sAlpha = make([]byte, outW*outH)
+				for y := 0; y < outH; y++ {
+					srcY := y * stinger.Height / outH
+					for x := 0; x < outW; x++ {
+						srcX := x * stinger.Width / outW
+						sAlpha[y*outW+x] = sf.Alpha[srcY*stinger.Width+srcX]
+					}
+				}
+			}
+			blended = blender.BlendStinger(base, sYUV, sAlpha)
+		} else {
+			// No stinger data: hard cut at 0.5
+			if position >= 0.5 && toYUV != nil {
+				blended = toYUV
+			} else {
+				blended = fromYUV
+			}
+		}
+	default:
+		blended = fromYUV
+	}
+
+	if blended == nil {
+		return nil, 0, 0
+	}
+
+	// Deep-copy the result since blender reuses its internal buffer
+	result := make([]byte, len(blended))
+	copy(result, blended)
+	return result, outW, outH
 }
 
 // cleanup releases codec resources and resets state. Caller must hold e.mu.

@@ -127,6 +127,9 @@ type AppConfig struct {
 	ST2110Inputs   int    // number of ST 2110 inputs (default 4)
 	ST2110PTP      string // PTP mode (default "auto")
 	ST2110NMOSPort int    // NMOS API HTTP port (default 8090)
+
+	// Reference clock: single clock source drives synchronous A/V processing.
+	RefClock bool // --ref-clock (experimental)
 }
 
 func main() {
@@ -324,6 +327,9 @@ func parseConfig() (AppConfig, error) {
 	st2110PTPFlag := flag.String("st2110-ptp", "auto", "PTP mode for ST 2110 (auto, l2, l4, none)")
 	st2110NMOSPortFlag := flag.Int("st2110-nmos-port", 8090, "NMOS API HTTP port for IS-04/IS-05")
 
+	// Reference clock (experimental).
+	refClockFlag := flag.Bool("ref-clock", false, "Use reference clock for synchronous A/V processing (experimental)")
+
 	flag.Parse()
 
 	// Parse SRT output port range if provided.
@@ -471,6 +477,7 @@ func parseConfig() (AppConfig, error) {
 		ST2110Inputs:         *st2110InputsFlag,
 		ST2110PTP:            *st2110PTPFlag,
 		ST2110NMOSPort:       *st2110NMOSPortFlag,
+		RefClock:             *refClockFlag,
 	}, nil
 }
 

@@ -167,11 +167,12 @@ func (p *FramePool) Acquire() (*GPUFrame, error) {
 func (p *FramePool) release(frame *GPUFrame) {
 	// Reset dimensions and format to pool defaults — callers may have
 	// temporarily changed them (e.g., stinger overlay, IngestYUV).
+	// Must be inside the mutex: two goroutines releasing different refs to
+	// the same frame can race on these writes.
+	p.mu.Lock()
 	frame.Width = p.width
 	frame.Height = p.height
 	frame.Format = p.format
-
-	p.mu.Lock()
 	if len(p.free) < p.cap {
 		p.free = append(p.free, frame)
 		p.mu.Unlock()

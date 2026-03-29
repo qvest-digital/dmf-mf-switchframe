@@ -4,6 +4,7 @@ import (
 	"log/slog"
 
 	"github.com/zsiec/prism/distribution"
+	"github.com/zsiec/switchframe/server/transition"
 )
 
 // NewTestSwitcher creates a Switcher with a tiny frame pool (4 × 320×240)
@@ -40,4 +41,15 @@ func NewTestSwitcher(programRelay *distribution.Relay) *Switcher {
 	s.delayBuffer = NewDelayBuffer(s)
 	go s.videoProcessingLoop()
 	return s
+}
+
+// SetTransitionEngine sets the transition engine and transition state for
+// testing the synchronous (ref clock) transition path from external packages.
+// This bypasses the async StartTransition flow which spawns goroutines.
+func (s *Switcher) SetTransitionEngine(engine *transition.Engine) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.transConfig = &TransitionConfig{}
+	s.transEngine = engine
+	s.transitionState(StateTransitioning)
 }

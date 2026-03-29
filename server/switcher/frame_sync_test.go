@@ -2843,3 +2843,178 @@ func TestFrameSync_PTSCorrectionDelta_SignedAcrossWrap(t *testing.T) {
 	require.Equal(t, int64(-2000), got,
 		"negative delta should be returned as negative, got %d", got)
 }
+
+// --- Buffer-only mode tests ---
+
+// TestFrameSyncBufferOnlyNoTimer verifies that Start() in buffer-only mode
+// does NOT launch the tickLoop goroutine — no callbacks fire even though
+// frames are ingested and the ring buffer is populated.
+func TestFrameSyncBufferOnlyNoTimer(t *testing.T) {
+	var rawCalls atomic.Int64
+	handler := &syncTestHandler{}
+	fs := NewFrameSynchronizer(20*time.Millisecond, handler.onVideo, handler.onAudio)
+	fs.onRawVideo = func(sourceKey string, pf *ProcessingFrame) {
+		rawCalls.Add(1)
+	}
+	fs.AddSource("cam1")
+
+	// Enable buffer-only mode before Start.
+	fs.SetBufferOnly(true)
+	require.True(t, fs.BufferOnly())
+
+	fs.Start()
+	defer fs.Stop()
+
+	// Ingest video, raw video, and audio frames.
+	vf := &media.VideoFrame{PTS: 1000, WireData: []byte{0x01}}
+	fs.IngestVideo("cam1", vf)
+
+	af := &media.AudioFrame{PTS: 2000, Data: []byte{0x02}}
+	fs.IngestAudio("cam1", af)
+
+	pool := NewFramePool(4, 320, 240, ColorYUV420_8bit)
+	yuvSize := 320 * 240 * 3 / 2
+	buf := pool.Acquire()[:yuvSize]
+	pf := &ProcessingFrame{Data: buf, Width: 320, Height: 240, PTS: 3000, pool: pool}
+	pf.SetRefs(1)
+	fs.IngestRawVideo("cam1", pf)
+
+	// Wait long enough for several tick periods to have elapsed if the
+	// timer were running (20ms tick * 10 = 200ms).
+	time.Sleep(200 * time.Millisecond)
+
+	// No callbacks should have fired.
+	require.Equal(t, 0, handler.videoCount(), "onVideo should not be called in buffer-only mode")
+	require.Equal(t, 0, handler.audioCount(), "onAudio should not be called in buffer-only mode")
+	require.Equal(t, int64(0), rawCalls.Load(), "onRawVideo should not be called in buffer-only mode")
+
+	// Verify ring buffers are populated — external consumer (sync loop) can pop.
+	fs.mu.Lock()
+	ss := fs.sources["cam1"]
+	fs.mu.Unlock()
+	require.NotNil(t, ss)
+
+	ss.mu.Lock()
+	require.Greater(t, ss.rawVideoCount, 0, "raw video ring should have frames")
+	ss.mu.Unlock()
+}
+
+// TestFrameSyncBufferOnlyNoCallbackAfterStart verifies that even when
+// SetBufferOnly(true) is called AFTER Start() (tickLoop already launched),
+// the tickLoop is stopped and no further callbacks fire.
+func TestFrameSyncBufferOnlyNoCallbackAfterStart(t *testing.T) {
+	var rawCalls atomic.Int64
+	handler := &syncTestHandler{}
+	fs := NewFrameSynchronizer(20*time.Millisecond, handler.onVideo, handler.onAudio)
+	fs.onRawVideo = func(sourceKey string, pf *ProcessingFrame) {
+		rawCalls.Add(1)
+	}
+	fs.AddSource("cam1")
+
+	// Start normally (tickLoop runs).
+	fs.Start()
+
+	// Ingest a frame so the tickLoop has something to deliver.
+	vf := &media.VideoFrame{PTS: 1000, WireData: []byte{0x01}}
+	fs.IngestVideo("cam1", vf)
+
+	// Wait for at least one callback to confirm the tickLoop is running.
+	require.Eventually(t, func() bool {
+		return handler.videoCount() > 0
+	}, 500*time.Millisecond, 5*time.Millisecond, "tickLoop should deliver at least one frame before buffer-only")
+
+	countBefore := handler.videoCount()
+
+	// Now switch to buffer-only mode — this should stop the tickLoop.
+	fs.SetBufferOnly(true)
+
+	// Ingest more frames — these should NOT be delivered.
+	for i := 0; i < 5; i++ {
+		vf2 := &media.VideoFrame{PTS: int64(2000 + i*1000), WireData: []byte{byte(i + 2)}}
+		fs.IngestVideo("cam1", vf2)
+	}
+
+	// Wait for enough time that the tickLoop WOULD have delivered if running.
+	time.Sleep(200 * time.Millisecond)
+
+	// No additional callbacks should have fired after SetBufferOnly.
+	require.Equal(t, countBefore, handler.videoCount(),
+		"no additional onVideo calls after SetBufferOnly(true)")
+
+	// Stop should still work cleanly.
+	fs.Stop()
+}
+
+// TestFrameSyncBufferOnlyPopWorks verifies that in buffer-only mode,
+// IngestRawVideo populates the ring buffer and popNewestRawVideo works
+// correctly for external consumers (the sync loop).
+func TestFrameSyncBufferOnlyPopWorks(t *testing.T) {
+	handler := &syncTestHandler{}
+	fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)
+	fs.SetBufferOnly(true)
+	fs.AddSource("cam1")
+	fs.Start()
+	defer fs.Stop()
+
+	pool := NewFramePool(4, 320, 240, ColorYUV420_8bit)
+	yuvSize := 320 * 240 * 3 / 2
+
+	// Ingest 3 frames (ring size is 2, so first is overwritten).
+	for i := 0; i < 3; i++ {
+		buf := pool.Acquire()[:yuvSize]
+		buf[0] = byte(i + 1) // distinguish frames by first byte
+		pf := &ProcessingFrame{Data: buf, Width: 320, Height: 240, PTS: int64(i * 3000), pool: pool}
+		pf.SetRefs(1)
+		fs.IngestRawVideo("cam1", pf)
+	}
+
+	// Pop the newest raw video — should be the last ingested frame.
+	fs.mu.Lock()
+	ss := fs.sources["cam1"]
+	fs.mu.Unlock()
+
+	ss.mu.Lock()
+	newest := ss.popNewestRawVideo()
+	ss.mu.Unlock()
+
+	require.NotNil(t, newest, "popNewestRawVideo should return a frame")
+	require.Equal(t, byte(3), newest.Data[0], "should be the newest frame (fillByte=3)")
+	require.Equal(t, int64(6000), newest.PTS, "PTS should match the last ingested frame")
+}
+
+// TestFrameSyncBufferOnlyDebugSnapshot verifies that buffer_only appears
+// in the debug snapshot.
+func TestFrameSyncBufferOnlyDebugSnapshot(t *testing.T) {
+	handler := &syncTestHandler{}
+	fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)
+	fs.SetBufferOnly(true)
+	fs.Start()
+	defer fs.Stop()
+
+	snap := fs.DebugSnapshot()
+	require.Equal(t, true, snap["buffer_only"], "debug snapshot should show buffer_only=true")
+}
+
+// TestFrameSyncBufferOnlyStopClean verifies that Stop() works correctly
+// in buffer-only mode (no tickLoop was launched, wg.Wait returns immediately).
+func TestFrameSyncBufferOnlyStopClean(t *testing.T) {
+	handler := &syncTestHandler{}
+	fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)
+	fs.SetBufferOnly(true)
+	fs.AddSource("cam1")
+	fs.Start()
+
+	// Stop should not hang.
+	done := make(chan struct{})
+	go func() {
+		fs.Stop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Good — Stop returned promptly.
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop() hung in buffer-only mode")
+	}
+}
