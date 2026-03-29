@@ -483,8 +483,23 @@ func (m *Mixer) AddChannel(sourceKey string) {
 		balL:        1.0,
 		balR:        1.0,
 		audioDelay:  NewDelayBuffer(0),
-		ringBuf:     NewPCMRingBuffer(10 * 1024 * m.numChannels),
+		ringBuf:     m.newChannelRingBuf(),
 	}
+}
+
+// newChannelRingBuf creates a PCM ring buffer for a mixer channel.
+// In clock-driven mode (ref clock), sets a target depth to bound the
+// FIFO latency — preventing unbounded A/V content offset. In legacy
+// ticker mode, no target depth is set (unlimited FIFO).
+func (m *Mixer) newChannelRingBuf() *PCMRingBuffer {
+	rb := NewPCMRingBuffer(10 * 1024 * m.numChannels)
+	if m.clockDriven {
+		// Target: 1024 frames × numChannels = one AAC frame (~21ms at 48kHz).
+		// This bounds the audio FIFO latency to ≤21ms — well within the
+		// ITU-R BT.1359 imperceptible range (±40ms).
+		rb.SetTargetDepth(1024 * m.numChannels)
+	}
+	return rb
 }
 
 // RemoveChannel unregisters a source.

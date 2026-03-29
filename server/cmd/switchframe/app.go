@@ -639,51 +639,11 @@ func (a *App) initOutput() error {
 	a.outputMgr.SetMetrics(a.appMetrics)
 
 	if a.cfg.RefClock {
-		// Reference clock path: measure the audio ring buffer depth ONCE
-		// after it stabilizes, then latch it as a permanent constant offset.
-		// This compensates for the audio FIFO latency (video is newest-wins,
-		// audio is FIFO — the ring buffer depth is the content offset).
-		//
-		// The offset is constant so it doesn't affect PTS deltas (Bresenham
-		// cadence is preserved). A per-frame reading would add jitter.
-		// Measure the ring buffer depth after audio is flowing and latch it.
-		// The lip-sync source returns the live value until latched, then
-		// returns the frozen constant forever (no per-frame jitter).
-		var lipSyncLatched atomic.Bool
-		var lipSyncValue atomic.Int64
-		a.outputMgr.SetLipSyncSource(func() int64 {
-			if lipSyncLatched.Load() {
-				return lipSyncValue.Load()
-			}
-			raw := a.mixer.RingBufferLatency90k()
-			// Once we see a non-zero measurement, latch after a few samples.
-			// The ring buffer needs real audio flowing to produce a valid depth.
-			if raw > 0 {
-				lipSyncValue.Store(raw)
-			}
-			return raw
-		})
-		// Poll until ring buffer has data, then latch after stabilization.
-		go func() {
-			// Wait for audio to start flowing (source cut to program).
-			for {
-				time.Sleep(500 * time.Millisecond)
-				if a.mixer.RingBufferLatency90k() > 0 {
-					break
-				}
-			}
-			// Let it stabilize for 1 second.
-			time.Sleep(1 * time.Second)
-			offset := a.mixer.RingBufferLatency90k()
-			if offset <= 0 {
-				offset = lipSyncValue.Load()
-			}
-			a.outputMgr.LatchLipSync(offset)
-			lipSyncLatched.Store(true)
-			slog.Info("ref clock: lip-sync offset latched",
-				"offset_90k", offset,
-				"offset_ms", float64(offset)/90.0)
-		}()
+		// Reference clock path: A/V sync is handled by the mixer's ring
+		// buffer target depth (bounded FIFO trim in PCMRingBuffer.Pop).
+		// No lip-sync PTS offset needed — the ring buffer trims excess
+		// samples on every Pop, keeping audio content within ~21ms of
+		// video content. PTS grid stays untouched (zero lip-sync offset).
 	} else {
 		// Legacy path: dynamic lip-sync for SRT/recording output (muxer path only).
 		// The browser path handles its own compensation in audio-decoder.ts.
