@@ -1060,6 +1060,13 @@ func (m *Manager) ensureMuxerLocked() bool {
 		pacer.Start()
 	}
 
+	// Propagate latched lip-sync offset to the new muxer. LatchLipSync
+	// is called at startup before the muxer exists, so the offset must
+	// be applied here when the muxer is first created.
+	if m.lipSyncLatched && m.smoothedLipSync != 0 {
+		muxer.SetLipSyncOffset90k(m.smoothedLipSync)
+	}
+
 	m.muxer = muxer
 	// Store in atomic pointer for lock-free access from direct write callbacks.
 	m.directMuxer.Store(muxer)
