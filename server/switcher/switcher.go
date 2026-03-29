@@ -445,6 +445,12 @@ type Switcher struct {
 	// called from the async encodeLoop goroutine, so shared mutable buffers
 	// would race during pipeline swap. Per-frame allocation is negligible.
 
+	// pic_timing SEI configuration — derived from encoder SPS VUI/HRD parameters.
+	// Set via SetPicTimingConfig(). The frame counter increments per encoded frame
+	// and drives the cpb_removal_delay field in pic_timing SEI.
+	picTimingConfig atomic.Pointer[caption.PicTimingConfig]
+	picTimingFrame  atomic.Int64
+
 	// Codec info — which encoder/decoder were selected at startup.
 	// Set via SetCodecInfo(), read-only after initialization.
 	codecEncoder              string
@@ -1507,6 +1513,21 @@ func (s *Switcher) SetCaptionManager(cm captionManager) {
 	s.captionMgr = cm
 }
 
+// SetPicTimingConfig configures pic_timing SEI injection parameters.
+// When set (non-nil), BuildPicTimingAndCaptionSEI is used instead of BuildSEINALU,
+// producing a combined SEI NALU with pic_timing before caption data for broadcast
+// decoder compatibility (Evertz, Harmonic, etc.).
+func (s *Switcher) SetPicTimingConfig(cfg *caption.PicTimingConfig) {
+	s.picTimingConfig.Store(cfg)
+}
+
+// PicTimingConfig returns the current pic_timing SEI configuration, or nil if
+// pic_timing injection is not enabled. Used by the GPU pipeline encode callback
+// which maintains its own frame counter.
+func (s *Switcher) PicTimingConfig() *caption.PicTimingConfig {
+	return s.picTimingConfig.Load()
+}
+
 // SetOnCaptionBroadcast registers a callback that fires whenever passthrough
 // captions are broadcast to the program relay. Used by the app layer to
 // mirror captions to the program-preview relay.
@@ -1555,8 +1576,16 @@ func (s *Switcher) broadcastWithCaptions(frame *media.VideoFrame) {
 		codecStr = "h265"
 	}
 
-	// Build SEI NALU containing cc_data (codec-aware: H.264 type 6 vs HEVC type 39).
-	seiNALU := caption.BuildSEINALU(pairs, codecStr)
+	// Build SEI NALU. When pic_timing is configured, produce a combined NALU
+	// with pic_timing (payload_type=1) before caption (payload_type=4) for
+	// broadcast decoder compliance (Evertz, Harmonic, etc.).
+	var seiNALU []byte
+	if ptCfg := s.picTimingConfig.Load(); ptCfg != nil {
+		frameNum := s.picTimingFrame.Add(1) - 1
+		seiNALU = caption.BuildPicTimingAndCaptionSEI(pairs, *ptCfg, frameNum, codecStr)
+	} else {
+		seiNALU = caption.BuildSEINALU(pairs, codecStr)
+	}
 	if len(seiNALU) == 0 {
 		s.broadcastOwnedToProgram(frame)
 		return
@@ -2646,8 +2675,9 @@ func (s *Switcher) RegisterSRTSource(key string) {
 }
 
 // RegisterReplaySource registers a transient replay source that receives
-// raw YUV frames via IngestReplayVideo. Like virtual sources, replay
-// sources skip delay buffer, frame sync, and replay buffering.
+// raw YUV frames via IngestReplayVideo. Virtual sources skip delay buffer
+// and replay buffering, but ARE registered with the FrameSynchronizer so
+// the ref clock sync loop can read their frames.
 // Safe to call if the key already exists — cleans up the old registration.
 func (s *Switcher) RegisterReplaySource(key string) {
 	s.mu.Lock()
@@ -2665,6 +2695,9 @@ func (s *Switcher) RegisterReplaySource(key string) {
 		isVirtual: true,
 	}
 	s.health.registerSource(key)
+	if s.frameSyncActive && s.frameSync != nil {
+		s.frameSync.AddSource(key)
+	}
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
@@ -2672,11 +2705,11 @@ func (s *Switcher) RegisterReplaySource(key string) {
 	s.notifyStateChange(snapshot)
 }
 
-// IngestReplayVideo accepts a raw YUV420p frame from the replay player.
-// Routes through the full video processing pipeline (keying, compositor,
-// encode) — identical to always-decode live sources.
+// IngestReplayVideo accepts a raw YUV420p frame from the replay player,
+// clip player, or playout channel. Routes through IngestRawVideo so
+// frames enter the FrameSynchronizer (needed for ref clock sync loop).
 func (s *Switcher) IngestReplayVideo(sourceKey string, pf *ProcessingFrame) {
-	s.handleRawVideoFrame(sourceKey, pf)
+	s.IngestRawVideo(sourceKey, pf)
 }
 
 // IngestRawVideo accepts a raw YUV420p frame from an MXL or SRT source.
