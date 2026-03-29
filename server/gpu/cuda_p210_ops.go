@@ -80,10 +80,16 @@ cudaError_t draw_border_p210(
     int thickness, uint16_t colorY, uint16_t colorCb, uint16_t colorCr,
     cudaStream_t stream);
 
-// P210 DSK overlay
+// P210 DSK overlay (full-frame + rect)
 cudaError_t alpha_blend_rgba_p210(
     uint8_t* p210, const uint8_t* rgba,
     int width, int height, int p210Pitch, int rgbaPitch,
+    int alphaScale256, cudaStream_t stream);
+cudaError_t alpha_blend_rgba_rect_p210(
+    uint8_t* p210,
+    const uint8_t* rgba, int overlayW, int overlayH, int rgbaPitch,
+    int p210Pitch, int frameW, int frameH,
+    int rectX, int rectY, int rectW, int rectH,
     int alphaScale256, cudaStream_t stream);
 
 // ST map upload/free (shared with NV12 path)
@@ -407,10 +413,32 @@ func DSKCompositeFullFrameP210(ctx *Context, frame *GPUFrame, overlay *GPUOverla
 }
 
 // DSKCompositeRectP210 composites an RGBA overlay into a rectangular region of a P210 frame.
-// NOTE: Currently delegates to full-frame composite. The rect parameter is ignored.
-// A dedicated rect-clipped kernel will be added when needed for partial overlays.
+// Uses nearest-neighbor scaling if overlay dimensions differ from rect dimensions.
 func DSKCompositeRectP210(ctx *Context, frame *GPUFrame, overlay *GPUOverlay, rect Rect, alphaScale float64) error {
-	return DSKCompositeFullFrameP210(ctx, frame, overlay, alphaScale)
+	if ctx == nil || frame == nil || overlay == nil {
+		return ErrGPUNotAvailable
+	}
+	alphaScale256 := int(alphaScale * 256.0)
+	if alphaScale256 <= 0 {
+		return nil
+	}
+	if alphaScale256 > 256 {
+		alphaScale256 = 256
+	}
+
+	rc := C.alpha_blend_rgba_rect_p210(
+		(*C.uint8_t)(unsafe.Pointer(uintptr(frame.DevPtr))),
+		(*C.uint8_t)(overlay.DevPtr),
+		C.int(overlay.Width), C.int(overlay.Height), C.int(overlay.Pitch),
+		C.int(frame.Pitch), C.int(frame.Width), C.int(frame.Height),
+		C.int(rect.X), C.int(rect.Y), C.int(rect.W), C.int(rect.H),
+		C.int(alphaScale256),
+		ctx.stream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: DSK rect p210 composite failed: %d", rc)
+	}
+	return ctx.Sync()
 }
 
 // ChromaKeyP210 generates an 8-bit alpha mask from a P210 frame's chroma values.

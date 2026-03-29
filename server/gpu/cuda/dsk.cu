@@ -366,7 +366,65 @@ cudaError_t alpha_blend_rgba_rect_nv12_occ(
     return cudaGetLastError();
 }
 
-// --- P210 DSK overlay wrapper ---
+// Rectangular RGBA overlay with nearest-neighbor scaling onto P210.
+// Analogous to alpha_blend_rgba_rect_nv12_kernel but for 10-bit 4:2:2.
+__global__ void dsk_overlay_rect_p210_kernel(
+    uint16_t* __restrict__ p210,
+    const uint8_t* __restrict__ rgba, int overlayW, int overlayH, int rgbaPitch,
+    int p210Pitch16, int frameW, int frameH,
+    int rectX, int rectY, int rectW, int rectH,
+    int alphaScale256)
+{
+    int lx = blockIdx.x * blockDim.x + threadIdx.x;
+    int ly = blockIdx.y * blockDim.y + threadIdx.y;
+    if (lx >= rectW || ly >= rectH) return;
+
+    int dx = rectX + lx;
+    int dy = rectY + ly;
+    if (dx >= frameW || dy >= frameH || dx < 0 || dy < 0) return;
+
+    // Nearest-neighbor sample from overlay
+    int sx = lx * overlayW / max(rectW, 1);
+    int sy = ly * overlayH / max(rectH, 1);
+    sx = min(sx, overlayW - 1);
+    sy = min(sy, overlayH - 1);
+    int rgbaIdx = sy * rgbaPitch + sx * 4;
+
+    int r = rgba[rgbaIdx];
+    int g = rgba[rgbaIdx + 1];
+    int b = rgba[rgbaIdx + 2];
+    int a = rgba[rgbaIdx + 3];
+
+    a = (a * alphaScale256 + 128) >> 8;
+    if (a == 0) return;
+
+    int inv = 256 - a;
+
+    // BT.709 10-bit limited-range conversion
+    int overlayY  = 64  + ((47 * r + 157 * g + 16 * b + 32) >> 6);
+    int overlayCb = 512 + ((-26 * r - 86 * g + 112 * b + 32) >> 6);
+    int overlayCr = 512 + ((112 * r - 102 * g - 10 * b + 32) >> 6);
+
+    overlayY  = min(max(overlayY, 64), 940);
+    overlayCb = min(max(overlayCb, 64), 960);
+    overlayCr = min(max(overlayCr, 64), 960);
+
+    // Blend Y plane
+    int yIdx = dy * p210Pitch16 + dx;
+    p210[yIdx] = (uint16_t)(((int)p210[yIdx] * inv + overlayY * a + 128) >> 8);
+
+    // Blend UV plane (once per pair — even pixels only, every row for 4:2:2)
+    if ((dx & 1) == 0) {
+        int uvOffset = p210Pitch16 * frameH;
+        int uvIdx = dy * p210Pitch16 + dx;
+        int curCb = p210[uvOffset + uvIdx];
+        int curCr = p210[uvOffset + uvIdx + 1];
+        p210[uvOffset + uvIdx]     = (uint16_t)min(max(((int)curCb * inv + overlayCb * a + 128) >> 8, 0), 1023);
+        p210[uvOffset + uvIdx + 1] = (uint16_t)min(max(((int)curCr * inv + overlayCr * a + 128) >> 8, 0), 1023);
+    }
+}
+
+// --- P210 DSK overlay wrappers ---
 
 cudaError_t alpha_blend_rgba_p210(
     uint8_t* p210, const uint8_t* rgba,
@@ -378,6 +436,23 @@ cudaError_t alpha_blend_rgba_p210(
     dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
     dsk_overlay_p210_kernel<<<grid, block, 0, stream>>>(
         (uint16_t*)p210, rgba, width, height, p210Pitch16, rgbaPitch, alphaScale256);
+    return cudaGetLastError();
+}
+
+cudaError_t alpha_blend_rgba_rect_p210(
+    uint8_t* p210,
+    const uint8_t* rgba, int overlayW, int overlayH, int rgbaPitch,
+    int p210Pitch, int frameW, int frameH,
+    int rectX, int rectY, int rectW, int rectH,
+    int alphaScale256, cudaStream_t stream)
+{
+    int p210Pitch16 = p210Pitch / 2;
+    dim3 block(BLOCK_DIM_X, BLOCK_DIM_Y);
+    dim3 grid((rectW + block.x - 1) / block.x, (rectH + block.y - 1) / block.y);
+    dsk_overlay_rect_p210_kernel<<<grid, block, 0, stream>>>(
+        (uint16_t*)p210, rgba, overlayW, overlayH, rgbaPitch,
+        p210Pitch16, frameW, frameH,
+        rectX, rectY, rectW, rectH, alphaScale256);
     return cudaGetLastError();
 }
 
