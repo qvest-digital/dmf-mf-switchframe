@@ -405,11 +405,13 @@ static int ffenc_encode_nv12_cuda(ffenc_hw_frames_t* h,
 
 	// Determine format from hw_frames context for correct copy dimensions.
 	// NV12: 1 byte/sample, UV half-height (4:2:0).
+	// P010LE: 2 bytes/sample, UV half-height (4:2:0).
 	// P210LE: 2 bytes/sample, UV full-height (4:2:2).
 	AVHWFramesContext* frames_ctx = (AVHWFramesContext*)h->hw_frames_ref->data;
 	int is_p210 = (frames_ctx->sw_format == AV_PIX_FMT_P210LE || frames_ctx->sw_format == AV_PIX_FMT_P210BE);
-	int bps = is_p210 ? 2 : 1;           // bytes per sample
-	int uv_height = is_p210 ? ht : ht/2; // 4:2:2 vs 4:2:0
+	int is_p010 = (frames_ctx->sw_format == AV_PIX_FMT_P010LE || frames_ctx->sw_format == AV_PIX_FMT_P010BE);
+	int bps = (is_p210 || is_p010) ? 2 : 1; // bytes per sample (10-bit = 2)
+	int uv_height = is_p210 ? ht : ht/2;    // 4:2:2 vs 4:2:0
 
 	// Copy frame data from our GPU pool into FFmpeg's hw_frame allocation
 	// via device-to-device cuMemcpy2DAsync on the provided stream.
