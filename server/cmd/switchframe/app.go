@@ -493,9 +493,17 @@ func (a *App) initCoreEngineRefClock() error {
 	// Wire audio output callback so the sync loop can deliver AAC frames
 	// to both the program relay (browser) and output manager (muxer/SRT).
 	a.sw.SetOutputAudioCallback(func(frame *media.AudioFrame) {
-		a.programRelay.BroadcastAudio(frame)
+		// Adjust audio PTS for browser relay to reflect actual content age.
+		// Audio content is delayed by the ring buffer FIFO relative to video
+		// content (newest-wins). Subtracting the ring buffer depth makes audio
+		// PTS older, so the browser renderer holds video frames until audio
+		// catches up — aligning content ages. Same adjustment as the legacy path.
+		relayPTS := frame.PTS - a.mixer.RingBufferLatency90k()
+		relayFrame := *frame
+		relayFrame.PTS = relayPTS
+		a.programRelay.BroadcastAudio(&relayFrame)
 		if a.programPreviewRelay != nil {
-			a.programPreviewRelay.BroadcastAudio(frame)
+			a.programPreviewRelay.BroadcastAudio(&relayFrame)
 		}
 	})
 
