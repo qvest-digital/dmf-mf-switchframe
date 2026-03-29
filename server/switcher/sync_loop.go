@@ -86,8 +86,11 @@ func (s *Switcher) processTick(tick clock.Tick) {
 	s.processVideoTick(tick)
 
 	// === OVERLOAD CHECK ===
+	// Only declare overload if we have a last broadcast frame to repeat.
+	// Without one (e.g., first frame after cut, GPU warmup), skipping video
+	// would produce a gap — better to run the next frame even if late.
 	elapsed := time.Since(frameStart)
-	if elapsed > tick.FrameDuration {
+	if elapsed > tick.FrameDuration && s.lastBroadcastVFrame.Load() != nil {
 		s.ticksBehind = int(elapsed / tick.FrameDuration)
 	}
 }
@@ -186,9 +189,8 @@ func (s *Switcher) processVideoTick(tick clock.Tick) {
 	// these subsystems would otherwise never see fresh fill data.
 	s.feedSourceSubsystems(programSource, pf)
 
-	// Update health monitor — in buffer-only mode, handleRawVideoFrame doesn't
-	// fire, so the health monitor would think the source is offline.
-	s.health.recordFrame(programSource, time.Now())
+	// Health is now recorded in IngestRawVideo (the entry point for ALL sources),
+	// so we don't need to record it here in the sync loop.
 
 	// Record arrival for clock recovery (program source only).
 	if cr := s.clockRecovery; cr != nil {
@@ -236,11 +238,7 @@ func (s *Switcher) processTransitionTick(tick clock.Tick, fs *FrameSynchronizer,
 		toFrame = s.makeBroadcastBlack(w, h, tick.VideoPTS)
 	}
 
-	// Update health monitor for both transition sources.
-	s.health.recordFrame(fromSource, time.Now())
-	if toSource != "" {
-		s.health.recordFrame(toSource, time.Now())
-	}
+	// Health is recorded in IngestRawVideo for all sources.
 
 	// Normalize resolutions to pipeline format.
 	fromFrame = s.normalizeResolution(fromFrame)

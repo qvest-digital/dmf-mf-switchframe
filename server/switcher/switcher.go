@@ -2679,6 +2679,11 @@ func (s *Switcher) IngestReplayVideo(sourceKey string, pf *ProcessingFrame) {
 // per-source ring and released at steady tick rate. Otherwise, delegates
 // directly to handleRawVideoFrame for immediate processing.
 func (s *Switcher) IngestRawVideo(sourceKey string, pf *ProcessingFrame) {
+	// Record health for ALL sources — in buffer-only mode (ref clock),
+	// handleRawVideoFrame doesn't fire, so this is the only place that
+	// updates health for non-program sources.
+	s.health.recordFrame(sourceKey, time.Now())
+
 	s.mu.RLock()
 	fs := s.frameSync
 	s.mu.RUnlock()
