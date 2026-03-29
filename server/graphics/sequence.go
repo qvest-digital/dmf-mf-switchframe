@@ -19,8 +19,7 @@ const (
 )
 
 var (
-	ErrSequenceNoLoopFrames = errors.New("graphics: sequence ZIP must contain root-level loop PNGs")
-	ErrSequenceTooLarge     = errors.New("graphics: sequence exceeds memory limit")
+	ErrSequenceTooLarge = errors.New("graphics: sequence exceeds memory limit")
 	ErrSequenceEmpty        = errors.New("graphics: sequence ZIP contains no PNG files")
 	ErrSequenceSizeMismatch = errors.New("graphics: all PNGs must have same dimensions")
 )
@@ -201,6 +200,36 @@ func LoadSequenceZIPWithProgress(zipData []byte, onProgress ProgressFunc) (*sequ
 	}
 	var inEntries, loopEntries, outEntries []entry
 
+	// Detect common root folder: if ALL entries share the same top-level directory
+	// prefix (e.g., "my-animation/in/001.png"), strip it so in/out matching works.
+	// Don't strip "in" or "out" themselves — those are the meaningful folder names.
+	var commonPrefix string
+	for _, f := range zr.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		if strings.HasPrefix(f.Name, "__MACOSX") || strings.HasPrefix(filepath.Base(f.Name), "._") {
+			continue
+		}
+		parts := strings.SplitN(f.Name, "/", 2)
+		if len(parts) < 2 {
+			commonPrefix = ""
+			break
+		}
+		top := parts[0]
+		// Don't strip "in" or "out" — these are real folder names, not a wrapper.
+		if top == "in" || top == "out" {
+			commonPrefix = ""
+			break
+		}
+		if commonPrefix == "" {
+			commonPrefix = top
+		} else if top != commonPrefix {
+			commonPrefix = ""
+			break
+		}
+	}
+
 	for _, f := range zr.File {
 		if f.FileInfo().IsDir() {
 			continue
@@ -213,8 +242,14 @@ func LoadSequenceZIPWithProgress(zipData []byte, onProgress ProgressFunc) (*sequ
 			continue
 		}
 
-		dir := filepath.Dir(f.Name)
-		base := filepath.Base(f.Name)
+		// Strip common root folder prefix if present.
+		name := f.Name
+		if commonPrefix != "" {
+			name = strings.TrimPrefix(name, commonPrefix+"/")
+		}
+
+		dir := filepath.Dir(name)
+		base := filepath.Base(name)
 
 		switch {
 		case dir == "in" || strings.HasPrefix(dir, "in/"):
