@@ -68,13 +68,14 @@ type Channel struct {
 	compositor *Compositor
 
 	// Active clip playback.
-	clipIter      FrameIterator
-	clipItemID    string  // ID of item currently being decoded
-	clipFPS       float64
-	clipTotal     int
-	clipFrame     int
-	clipStartTime time.Time
-	clipLastFrame *DecodedFrame // for hold mode
+	clipIter        FrameIterator
+	clipItemID      string  // ID of item currently being decoded
+	clipFPS         float64
+	clipTotal       int
+	clipFrame       int     // source frames consumed from iterator
+	clipOutputFrame int     // pipeline ticks since clip started (for FRC timestamp selection)
+	clipStartTime   time.Time
+	clipLastFrame   *DecodedFrame // for hold mode
 
 	// GPU-native live source aliasing — zero-copy frame routing in VRAM.
 	// When set, live items alias the playout channel's GPU frame to the
@@ -653,14 +654,14 @@ func (c *Channel) configDimensions() (int, int) {
 // ---------------------------------------------------------------------------
 
 // run is the main playback goroutine. It ticks at frame rate and delegates
-// all scheduling decisions to the Scheduler. The tick rate adapts to the
-// current clip's native FPS so audio proportional distribution works correctly.
+// all scheduling decisions to the Scheduler. The ticker always runs at the
+// pipeline frame rate; clips with a different native FPS are handled by
+// timestamp-based frame selection in nextClipFrame().
 func (c *Channel) run(ctx context.Context) {
 	defer close(c.done)
 
 	ticker := time.NewTicker(c.frameDuration)
 	defer ticker.Stop()
-	currentDuration := c.frameDuration
 
 	for {
 		select {
@@ -668,22 +669,9 @@ func (c *Channel) run(ctx context.Context) {
 			c.cleanup()
 			return
 		case <-ticker.C:
-			// Adapt tick rate to current clip's FPS if it differs from pipeline.
-			c.mu.Lock()
-			clipFPS := c.clipFPS
-			c.mu.Unlock()
-			if clipFPS > 0 {
-				clipDuration := time.Duration(float64(time.Second) / clipFPS)
-				if clipDuration != currentDuration {
-					ticker.Reset(clipDuration)
-					currentDuration = clipDuration
-				}
-			} else if currentDuration != c.frameDuration {
-				// Non-clip item (live/slate): revert to pipeline rate.
-				ticker.Reset(c.frameDuration)
-				currentDuration = c.frameDuration
-			}
-
+			// Always tick at pipeline rate. Frame rate conversion for
+			// clips with a different native FPS is handled by timestamp-
+			// based frame selection in nextClipFrame().
 			if c.tick(time.Now()) {
 				c.cleanup()
 				return // playlist completed
@@ -930,6 +918,7 @@ func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
 		c.clipIter = nil
 		c.clipItemID = item.ID
 		c.clipFrame = 0
+		c.clipOutputFrame = 0
 		c.clipLastFrame = nil
 		c.clipStartTime = time.Now()
 
@@ -970,21 +959,74 @@ func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
 	}
 
 	iter := c.clipIter
-	fps := c.clipFPS
+	clipFPS := c.clipFPS
 	total := c.clipTotal
-	frameIdx := c.clipFrame
+	sourceFrame := c.clipFrame
+	outputFrame := c.clipOutputFrame
 	c.mu.Unlock()
 
 	if iter == nil {
 		return nil
 	}
 
-	frame, err := iter.Next()
-	if err != nil {
-		slog.Warn("playout: frame read error", "item", item.ID, "frame", frameIdx, "error", err)
+	// Determine which source frame should be displayed at this pipeline tick.
+	// This is nearest-neighbor frame rate conversion:
+	//   targetSourceFrame = outputFrame * clipFPS / pipelineFPS
+	pipelineFPS := c.config.FPS
+	if pipelineFPS == 0 {
+		pipelineFPS = 30.0
+	}
+	if clipFPS == 0 {
+		clipFPS = pipelineFPS
+	}
+
+	targetSourceFrame := int(float64(outputFrame) * clipFPS / pipelineFPS)
+
+	// Always increment output frame counter.
+	c.mu.Lock()
+	c.clipOutputFrame++
+	c.mu.Unlock()
+
+	// If the target source frame hasn't advanced, hold the last frame.
+	if targetSourceFrame < sourceFrame && sourceFrame > 0 {
 		c.mu.Lock()
-		c.clipFrame++
+		lf := c.clipLastFrame
 		c.mu.Unlock()
+		if lf != nil {
+			if total > 0 {
+				prog := int64(sourceFrame * 1000 / total)
+				c.itemProgress.Store(prog)
+				remainFrames := total - sourceFrame
+				if remainFrames < 0 {
+					remainFrames = 0
+				}
+				c.itemRemainMs.Store(int64(float64(remainFrames) * 1000.0 / clipFPS))
+			}
+			return lf
+		}
+	}
+
+	// Advance to the target source frame. For same-rate this is always +1.
+	// For fast clips (e.g. 60fps on 30fps pipeline) this skips frames.
+	var frame *DecodedFrame
+	var err error
+	for sourceFrame <= targetSourceFrame {
+		frame, err = iter.Next()
+		if err != nil {
+			break
+		}
+		if frame == nil {
+			break
+		}
+		sourceFrame++
+		c.mu.Lock()
+		c.clipFrame = sourceFrame
+		c.clipLastFrame = frame
+		c.mu.Unlock()
+	}
+
+	if err != nil {
+		slog.Warn("playout: frame read error", "item", item.ID, "frame", sourceFrame, "error", err)
 
 		// Any frame read error is treated as terminal — signal complete so
 		// the scheduler advances to the next item.
@@ -995,7 +1037,7 @@ func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
 				ChannelID: channelID,
 				ItemID:    item.ID,
 				Title:     item.Title,
-				Message:   fmt.Sprintf("persistent frame error after %d frames: %v", frameIdx, err),
+				Message:   fmt.Sprintf("persistent frame error after %d frames: %v", sourceFrame, err),
 			})
 		}
 		c.scheduler.SignalItemComplete()
@@ -1032,6 +1074,7 @@ func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
 			c.clipIter = nil
 			c.clipItemID = "" // force re-open on next tick
 			c.clipFrame = 0
+			c.clipOutputFrame = 0
 			c.clipLastFrame = nil
 			c.mu.Unlock()
 			// Return last frame to avoid gap during rewind.
@@ -1052,20 +1095,14 @@ func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
 	}
 
 	// Update progress.
-	c.mu.Lock()
-	c.clipFrame++
-	frameIdx = c.clipFrame
-	c.clipLastFrame = frame
-	c.mu.Unlock()
-
 	if total > 0 {
-		prog := int64(frameIdx * 1000 / total)
+		prog := int64(sourceFrame * 1000 / total)
 		c.itemProgress.Store(prog)
-		remainFrames := total - frameIdx
+		remainFrames := total - sourceFrame
 		if remainFrames < 0 {
 			remainFrames = 0
 		}
-		c.itemRemainMs.Store(int64(float64(remainFrames) * 1000.0 / fps))
+		c.itemRemainMs.Store(int64(float64(remainFrames) * 1000.0 / clipFPS))
 	}
 
 	return frame

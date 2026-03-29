@@ -1642,3 +1642,229 @@ func TestChannel_LiveTap_GPUAlias_FallbackToCPU(t *testing.T) {
 		return ch.State() == StateCompleted
 	})
 }
+
+// fakeFrames24fps returns n fake YUV420 frames at 24fps.
+func fakeFrames24fps(n int) []DecodedFrame {
+	frames := make([]DecodedFrame, n)
+	for i := range frames {
+		frames[i] = DecodedFrame{
+			YUV:        make([]byte, yuvFrameSize(320, 240)),
+			PTS:        int64(i) * 3750, // 90000/24 = 3750
+			IsKeyframe: i == 0,
+			Width:      320,
+			Height:     240,
+		}
+	}
+	return frames
+}
+
+// TestChannel_TicksAtPipelineRate verifies that the playout channel always
+// ticks at the pipeline frame rate, not the clip's native rate.
+func TestChannel_TicksAtPipelineRate(t *testing.T) {
+	frames := fakeFrames24fps(120)
+	provider := NewFakeAssetProvider(frames)
+
+	var mu sync.Mutex
+	var outputTimes []time.Time
+
+	ch := NewChannel(1, ChannelConfig{
+		Width:         320,
+		Height:        240,
+		FPS:           30.0,
+		AssetProvider: provider,
+	})
+
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKey bool) {
+		mu.Lock()
+		outputTimes = append(outputTimes, time.Now())
+		mu.Unlock()
+	})
+
+	pl := testPlaylist(clipItem("a"))
+	if err := ch.LoadPlaylist(pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	if err := ch.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer ch.Stop()
+
+	waitFor(t, 3*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(outputTimes) >= 60
+	})
+
+	ch.Stop()
+
+	mu.Lock()
+	times := make([]time.Time, len(outputTimes))
+	copy(times, outputTimes)
+	mu.Unlock()
+
+	if len(times) < 10 {
+		t.Fatal("not enough output frames")
+	}
+
+	var totalInterval time.Duration
+	for i := 1; i < len(times); i++ {
+		totalInterval += times[i].Sub(times[i-1])
+	}
+	avgMs := float64(totalInterval.Milliseconds()) / float64(len(times)-1)
+
+	t.Logf("average output interval: %.1fms (want ~33.3ms for 30fps)", avgMs)
+	if avgMs > 38.0 {
+		t.Errorf("output interval %.1fms is too high — playout is ticking at clip rate, not pipeline rate", avgMs)
+	}
+	if avgMs < 28.0 {
+		t.Errorf("output interval %.1fms is too low", avgMs)
+	}
+}
+
+// TestChannel_FRC_24to30 verifies that a 24fps clip played on a 30fps
+// pipeline holds some frames for 2 ticks (3:2 pulldown pattern).
+func TestChannel_FRC_24to30(t *testing.T) {
+	frames := fakeFrames24fps(72)
+	for i := range frames {
+		frames[i].YUV[0] = byte(i)
+	}
+	provider := NewFakeAssetProvider(frames)
+
+	var mu sync.Mutex
+	var outputs []byte
+
+	ch := NewChannel(1, ChannelConfig{
+		Width:         320,
+		Height:        240,
+		FPS:           30.0,
+		AssetProvider: provider,
+	})
+
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKey bool) {
+		mu.Lock()
+		if len(yuv) > 0 {
+			outputs = append(outputs, yuv[0])
+		}
+		mu.Unlock()
+	})
+
+	pl := testPlaylist(clipItem("a"))
+	if err := ch.LoadPlaylist(pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	if err := ch.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Wait for enough output ticks to consume all 72 source frames.
+	// At 30fps pipeline with 24fps source: 72 * 30/24 = 90 output ticks.
+	waitFor(t, 5*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(outputs) >= 90
+	})
+
+	ch.Stop()
+
+	mu.Lock()
+	out := make([]byte, len(outputs))
+	copy(out, outputs)
+	mu.Unlock()
+
+	// Output frames should be monotonically non-decreasing.
+	for i := 1; i < len(out); i++ {
+		if out[i] < out[i-1] {
+			t.Errorf("output frame %d (src=%d) < frame %d (src=%d) — went backward",
+				i, out[i], i-1, out[i-1])
+		}
+	}
+
+	// Some frames must be repeated (30/24 = 1.25, so ~20% repeats).
+	repeats := 0
+	for i := 1; i < len(out); i++ {
+		if out[i] == out[i-1] {
+			repeats++
+		}
+	}
+	t.Logf("output frames: %d, repeated: %d (%.1f%%)", len(out), repeats, 100*float64(repeats)/float64(len(out)))
+	if repeats == 0 {
+		t.Error("expected some repeated frames for 24fps→30fps FRC, got none")
+	}
+
+	// All source frames should be used (none skipped).
+	seen := make(map[byte]bool)
+	for _, b := range out {
+		seen[b] = true
+	}
+	if len(seen) < 70 {
+		t.Errorf("only %d unique source frames seen, expected ~72", len(seen))
+	}
+}
+
+// TestChannel_FRC_SameRate verifies that matching clip/pipeline FPS
+// results in 1:1 passthrough with no repeated or skipped frames.
+func TestChannel_FRC_SameRate(t *testing.T) {
+	frames := make([]DecodedFrame, 60)
+	for i := range frames {
+		frames[i] = DecodedFrame{
+			YUV:        make([]byte, yuvFrameSize(320, 240)),
+			PTS:        int64(i) * 3000, // 30fps
+			IsKeyframe: i == 0,
+			Width:      320,
+			Height:     240,
+		}
+		frames[i].YUV[0] = byte(i)
+	}
+	provider := NewFakeAssetProvider(frames)
+
+	var mu sync.Mutex
+	var outputs []byte
+
+	ch := NewChannel(1, ChannelConfig{
+		Width:         320,
+		Height:        240,
+		FPS:           30.0,
+		AssetProvider: provider,
+	})
+
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKey bool) {
+		mu.Lock()
+		if len(yuv) > 0 {
+			outputs = append(outputs, yuv[0])
+		}
+		mu.Unlock()
+	})
+
+	pl := testPlaylist(clipItem("a"))
+	if err := ch.LoadPlaylist(pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	if err := ch.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	waitFor(t, 3*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(outputs) >= 55
+	})
+
+	ch.Stop()
+
+	mu.Lock()
+	out := make([]byte, len(outputs))
+	copy(out, outputs)
+	mu.Unlock()
+
+	// 1:1 passthrough: minimal repeats.
+	repeats := 0
+	for i := 1; i < len(out); i++ {
+		if out[i] == out[i-1] {
+			repeats++
+		}
+	}
+	t.Logf("output frames: %d, repeated: %d", len(out), repeats)
+	if repeats > 3 {
+		t.Errorf("too many repeated frames (%d) for same-rate playback — expected ~0", repeats)
+	}
+}
