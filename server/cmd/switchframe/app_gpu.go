@@ -251,7 +251,12 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 			// is not configured on the switcher.
 			var sei []byte
 			if ptCfg := sw.PicTimingConfig(); ptCfg != nil {
-				sei = caption.BuildPicTimingAndCaptionSEI(pairs, *ptCfg, gpuPicTimingFrame, nil, codecStr)
+				var tc *caption.Timecode
+				if ptCfg.TimecodeEnabled {
+					t := caption.UTCToTimecode(time.Now().UTC(), ptCfg.FPSNum, ptCfg.FPSDen)
+					tc = &t
+				}
+				sei = caption.BuildPicTimingAndCaptionSEI(pairs, *ptCfg, gpuPicTimingFrame, tc, codecStr)
 				gpuPicTimingFrame++
 			} else {
 				sei = caption.BuildSEINALU(pairs, codecStr)

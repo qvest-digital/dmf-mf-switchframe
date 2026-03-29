@@ -27,6 +27,10 @@ func (a *App) initCaptions() error {
 	// Downstream equipment (Evertz, Harmonic, etc.) requires pic_timing to
 	// precede user_data_registered_itu_t_t35 (caption SEI) in each access unit.
 	ptCfg := caption.DefaultPicTimingConfig()
+	pf := a.sw.PipelineFormat()
+	ptCfg.TimecodeEnabled = true
+	ptCfg.FPSNum = pf.FPSNum
+	ptCfg.FPSDen = pf.FPSDen
 	a.sw.SetPicTimingConfig(&ptCfg)
 
 	// Wire state change callback to trigger broadcast.
