@@ -909,6 +909,7 @@ func (a *App) initSubsystems() error {
 
 		// Wire replay playback lifecycle: register/unregister replay as a
 		// raw YUV switcher source + mixer channel.
+		var replayPreviewGroupID atomic.Uint32
 		a.replayMgr.OnPlaybackLifecycle(
 			func() {
 				a.sw.RegisterReplaySource("replay")
@@ -917,8 +918,60 @@ func (a *App) initSubsystems() error {
 				// If program is already "replay" (user cut before OnReady),
 				// re-trigger AFV activation so the new channel becomes active.
 				a.mixer.OnProgramChange(a.sw.ProgramSource())
+
+				// Register replay source with GPU preview encoder.
+				if a.cfg.PreviewProxy && a.gpuState != nil && a.gpuState.sourceManager != nil {
+					pw, ph := parsePreviewResolution(a.cfg.PreviewResolution)
+					curPF := a.sw.PipelineFormat()
+					var replayVideoInfoSent bool
+					a.gpuState.sourceManager.RegisterSource("replay", curPF.Width, curPF.Height, &gpu.PreviewConfig{
+						Width:   pw,
+						Height:  ph,
+						Bitrate: a.cfg.PreviewBitrate,
+						FPSNum:  curPF.FPSNum,
+						FPSDen:  curPF.FPSDen,
+						OnPreview: func(data []byte, isIDR bool, pts int64) {
+							avc1 := codec.AnnexBToAVC1(data)
+							if isIDR {
+								replayPreviewGroupID.Add(1)
+							}
+							frame := &media.VideoFrame{
+								PTS: pts, DTS: pts, IsKeyframe: isIDR,
+								WireData: avc1, Codec: "h264",
+								GroupID: replayPreviewGroupID.Load(),
+							}
+							if isIDR {
+								for _, nalu := range codec.ExtractNALUs(avc1) {
+									if len(nalu) == 0 {
+										continue
+									}
+									switch nalu[0] & 0x1F {
+									case 7:
+										frame.SPS = nalu
+									case 8:
+										frame.PPS = nalu
+									}
+								}
+								if !replayVideoInfoSent && frame.SPS != nil && frame.PPS != nil {
+									avcC := a.buildAVCConfig(frame.SPS, frame.PPS)
+									if avcC != nil {
+										a.replayRelay.SetVideoInfo(a.buildVideoInfo(frame.SPS, avcC, pw, ph))
+										replayVideoInfoSent = true
+									}
+								}
+							}
+							a.replayRelay.BroadcastVideo(frame)
+						},
+					})
+					slog.Info("replay: GPU preview encoder registered", "key", "replay")
+				}
 			},
 			func() {
+				// Release GPU preview encoder and cached frames.
+				if a.gpuState != nil && a.gpuState.sourceManager != nil {
+					a.gpuState.sourceManager.RemoveSource("replay")
+				}
+				replayPreviewGroupID.Store(0)
 				a.sw.UnregisterSource("replay")
 				a.mixer.RemoveChannel("replay")
 			},
