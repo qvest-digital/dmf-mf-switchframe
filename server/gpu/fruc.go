@@ -20,7 +20,7 @@ typedef struct NvOFGPUBufferHandle_st* NvOFGPUBufferHandle;
 
 typedef int NV_OF_STATUS;
 #define NV_OF_SUCCESS 0
-#define NV_OF_API_VERSION 0x0500  // SDK 5.0 (major=5, minor=0)
+#define NV_OF_API_VERSION 0x0050  // SDK 5.0: (major << 4) | minor = (5 << 4) | 0
 
 // Enums (matching nvOpticalFlowCommon.h values)
 #define NV_OF_FALSE 0
