@@ -242,7 +242,16 @@ func (s *Switcher) processTransitionTick(tick clock.Tick, fs *FrameSynchronizer,
 	frameDurationMs := float64(tick.FrameDuration) / float64(time.Millisecond)
 	pos, complete := engine.AutoAdvancePosition(frameDurationMs)
 
-	// Blend frames.
+	// Blend frames. Guard against nil/empty Data — can happen if the source
+	// is flapping (rapid loss/recovery) and the freeze-repeat frame's buffer
+	// was already recycled by the pool.
+	if len(fromFrame.Data) == 0 {
+		fromFrame = s.makeBroadcastBlack(w, h, tick.VideoPTS)
+	}
+	if toFrame != nil && len(toFrame.Data) == 0 {
+		toFrame = s.makeBroadcastBlack(w, h, tick.VideoPTS)
+	}
+
 	var fromYUV, toYUV []byte
 	var fromW, fromH, toW, toH int
 	fromYUV = fromFrame.Data

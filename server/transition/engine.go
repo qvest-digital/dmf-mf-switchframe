@@ -1282,6 +1282,12 @@ func (e *Engine) BlendRaw(
 		return black
 	}
 
+	// Guard against nil/empty fromYUV — can happen during source flapping
+	// when the freeze-repeat frame's buffer was recycled.
+	if len(fromYUV) == 0 {
+		fromYUV = makeBlack()
+	}
+
 	var blended []byte
 	switch ttype {
 	case Mix:
