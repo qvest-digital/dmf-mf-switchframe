@@ -489,6 +489,7 @@ type Switcher struct {
 	lastEncodedFrame     atomic.Pointer[ProcessingFrame]
 	lastBroadcastVFrame  atomic.Pointer[media.VideoFrame] // last broadcast H.264 frame (for overload repeat)
 	lastOverloadLog      time.Time                        // rate-limit overload logging to 1/sec
+	lastTickPTS          int64                            // diagnostic: last tick PTS for delta check
 	lastGPUErrorLog      time.Time                        // rate-limit GPU error logging to 1/sec
 	sourceLostAt     atomic.Pointer[time.Time] // when program source stopped providing frames (sync loop goroutine only)
 

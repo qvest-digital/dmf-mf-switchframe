@@ -183,6 +183,17 @@ func (s *Switcher) processVideoTick(tick clock.Tick) {
 	pf.PTS = tick.VideoPTS
 	pf.DTS = tick.VideoPTS
 
+	// Diagnostic: verify tick PTS deltas are clean Bresenham
+	if s.lastTickPTS != 0 {
+		delta := tick.VideoPTS - s.lastTickPTS
+		if delta != 3003 && delta != 3004 && delta != 3753 && delta != 3754 {
+			slog.Warn("sync loop: non-nominal tick PTS delta",
+				"delta", delta, "pts", tick.VideoPTS, "prevPts", s.lastTickPTS,
+				"tickNum", tick.Number)
+		}
+	}
+	s.lastTickPTS = tick.VideoPTS
+
 	// Feed GPU source manager / key bridge / layout compositor with the
 	// program source's decoded YUV. In buffer-only mode the FrameSync
 	// tickLoop doesn't run, so handleRawVideoFrame is never called —
