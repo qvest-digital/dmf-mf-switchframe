@@ -818,6 +818,38 @@ func (m *GPUSourceManager) IngestGPUFrame(sourceKey string, frame *GPUFrame, pts
 
 	frame.PTS = pts
 
+	// Format conversion: if the incoming frame format doesn't match the pool
+	// (e.g., NVDEC produces NV12 but pool is P210 in professional mode),
+	// convert into a pool-format frame before caching.
+	if frame.Format != m.pool.Format() {
+		converted, err := m.pool.Acquire()
+		if err != nil {
+			slog.Warn("gpu: source manager: pool acquire for format convert failed",
+				"source", sourceKey, "error", err)
+			frame.Release()
+			return
+		}
+		converted.PTS = frame.PTS
+		if frame.Format == GPUFormatNV12 && m.pool.Format() == GPUFormatP210 {
+			if err := ConvertNV12ToP210(m.ctx, converted, frame); err != nil {
+				slog.Warn("gpu: source manager: NV12→P210 convert failed",
+					"source", sourceKey, "error", err)
+				converted.Release()
+				frame.Release()
+				return
+			}
+		} else {
+			// Unsupported conversion — fall through with raw copy (may be wrong).
+			if err := CopyGPUFrame(converted, frame); err != nil {
+				converted.Release()
+				frame.Release()
+				return
+			}
+		}
+		frame.Release()
+		frame = converted
+	}
+
 	// Apply per-source ST map correction if configured.
 	if m.stmaps != nil {
 		m.applySourceSTMap(sourceKey, entry, frame)
