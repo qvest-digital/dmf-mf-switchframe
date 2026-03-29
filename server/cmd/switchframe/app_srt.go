@@ -854,16 +854,51 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 				return // pool exhausted, drop frame
 			}
 
-			// P016 (10-bit HEVC) needs conversion; NV12 (8-bit) is a direct copy.
-			if bitDepth > 8 {
-				if err := gpu.CopyP016ToNV12FromDevice(frame, yDevPtr, uvDevPtr, pitch, w, h); err != nil {
+			// NVDEC produces NV12 (8-bit) or P016 (10-bit) device frames.
+			// When the pool is P210 (professional mode), we need to:
+			// 1. Copy NVDEC output into a temporary NV12 frame
+			// 2. Convert NV12 → P210 into the pool frame
+			// When the pool is NV12 (standard mode), direct copy suffices.
+			if pool.Format() == gpu.GPUFormatP210 {
+				// Need an NV12 temp frame for the NVDEC copy.
+				// Use the source manager's NV12 temp pool via a helper.
+				nv12Tmp, nv12Err := srcMgr.AcquireNV12Tmp(sourceKey, w, h)
+				if nv12Err != nil {
 					frame.Release()
 					return
 				}
-			} else {
-				if err := gpu.CopyNV12FromDevice(frame, yDevPtr, uvDevPtr, pitch, w, h); err != nil {
+				if bitDepth > 8 {
+					if err := gpu.CopyP016ToNV12FromDevice(nv12Tmp, yDevPtr, uvDevPtr, pitch, w, h); err != nil {
+						nv12Tmp.Release()
+						frame.Release()
+						return
+					}
+				} else {
+					if err := gpu.CopyNV12FromDevice(nv12Tmp, yDevPtr, uvDevPtr, pitch, w, h); err != nil {
+						nv12Tmp.Release()
+						frame.Release()
+						return
+					}
+				}
+				// Convert NV12 → P210 on GPU.
+				if err := gpu.ConvertNV12ToP210(a.gpuState.ctx, frame, nv12Tmp); err != nil {
+					nv12Tmp.Release()
 					frame.Release()
 					return
+				}
+				nv12Tmp.Release()
+			} else {
+				// Standard mode: direct NV12 copy into NV12 pool frame.
+				if bitDepth > 8 {
+					if err := gpu.CopyP016ToNV12FromDevice(frame, yDevPtr, uvDevPtr, pitch, w, h); err != nil {
+						frame.Release()
+						return
+					}
+				} else {
+					if err := gpu.CopyNV12FromDevice(frame, yDevPtr, uvDevPtr, pitch, w, h); err != nil {
+						frame.Release()
+						return
+					}
 				}
 			}
 

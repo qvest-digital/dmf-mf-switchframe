@@ -797,6 +797,38 @@ func (m *GPUSourceManager) Snapshot() map[string]any {
 // operations (e.g., CopyNV12FromDevice from NVDEC decode).
 func (m *GPUSourceManager) Pool() *FramePool { return m.pool }
 
+// AcquireNV12Tmp returns a temporary NV12-format GPU frame at the specified
+// dimensions, lazily creating a per-source NV12 pool. Used by the NVDEC
+// zero-copy path when the main pool is P210: NVDEC output is NV12, so we
+// need an NV12 temp frame to copy into before converting to P210.
+// The caller must Release() the returned frame when done.
+func (m *GPUSourceManager) AcquireNV12Tmp(sourceKey string, w, h int) (*GPUFrame, error) {
+	m.mu.RLock()
+	entry, exists := m.sources[sourceKey]
+	m.mu.RUnlock()
+	if !exists {
+		entry = m.autoRegister(sourceKey, w, h)
+		if entry == nil {
+			return nil, fmt.Errorf("gpu: AcquireNV12Tmp: auto-register failed for %s", sourceKey)
+		}
+	}
+
+	if entry.nv12Tmp == nil || entry.nv12TmpW != w || entry.nv12TmpH != h {
+		if entry.nv12Tmp != nil {
+			entry.nv12Tmp.Close()
+		}
+		pool, err := NewFramePool(m.ctx, w, h, 2)
+		if err != nil {
+			return nil, fmt.Errorf("gpu: NV12 tmp pool failed: %w", err)
+		}
+		entry.nv12Tmp = pool
+		entry.nv12TmpW = w
+		entry.nv12TmpH = h
+	}
+
+	return entry.nv12Tmp.Acquire()
+}
+
 // IngestGPUFrame stores a GPUFrame that is already in VRAM (e.g., from NVDEC
 // zero-copy decode), applying per-source ST map correction and queuing preview.
 // Unlike IngestYUV, this skips CPU→GPU upload entirely — the frame is already
