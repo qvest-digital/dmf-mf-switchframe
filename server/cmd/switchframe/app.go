@@ -639,11 +639,32 @@ func (a *App) initOutput() error {
 	a.outputMgr.SetMetrics(a.appMetrics)
 
 	if a.cfg.RefClock {
-		// Reference clock path: audio and video PTS both come from the same
-		// Bresenham clock, so they're inherently synchronized. No per-frame
-		// lip-sync adjustment needed — a fluctuating ring buffer depth would
-		// add jitter to the deterministic video PTS grid.
-		// Leave lip-sync source nil (offset stays 0).
+		// Reference clock path: measure the audio ring buffer depth ONCE
+		// after it stabilizes, then latch it as a permanent constant offset.
+		// This compensates for the audio FIFO latency (video is newest-wins,
+		// audio is FIFO — the ring buffer depth is the content offset).
+		//
+		// The offset is constant so it doesn't affect PTS deltas (Bresenham
+		// cadence is preserved). A per-frame reading would add jitter.
+		var lipSyncLatched atomic.Bool
+		a.outputMgr.SetLipSyncSource(func() int64 {
+			if lipSyncLatched.Load() {
+				// Already latched — return the frozen value. The manager
+				// won't call SetLipSyncOffset again because the delta is 0.
+				return a.outputMgr.LipSyncOffset()
+			}
+			return a.mixer.RingBufferLatency90k()
+		})
+		// After 2 seconds, latch the current measurement permanently.
+		go func() {
+			time.Sleep(2 * time.Second)
+			offset := a.mixer.RingBufferLatency90k()
+			a.outputMgr.LatchLipSync(offset)
+			lipSyncLatched.Store(true)
+			slog.Info("ref clock: lip-sync offset latched",
+				"offset_90k", offset,
+				"offset_ms", float64(offset)/90.0)
+		}()
 	} else {
 		// Legacy path: dynamic lip-sync for SRT/recording output (muxer path only).
 		// The browser path handles its own compensation in audio-decoder.ts.

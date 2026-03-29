@@ -90,6 +90,7 @@ type Manager struct {
 	// Lip-sync for SRT/recording output: reads ring buffer depth from mixer.
 	lipSyncSource   func() int64
 	smoothedLipSync int64
+	lipSyncLatched  bool // true after LatchLipSync — no further updates
 
 	// PTS delta diagnostic: detect jitter at DirectWriteVideo stage.
 	lastDirectVideoPTS int64
@@ -140,6 +141,22 @@ func (m *Manager) SetLipSyncSource(fn func() int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.lipSyncSource = fn
+}
+
+// LipSyncOffset returns the current smoothed lip-sync offset.
+func (m *Manager) LipSyncOffset() int64 {
+	return m.smoothedLipSync
+}
+
+// LatchLipSync permanently sets the lip-sync offset to a fixed value
+// and disables further updates from the lip-sync source function.
+// Used in ref clock mode to freeze the offset after initial measurement.
+func (m *Manager) LatchLipSync(offset int64) {
+	m.smoothedLipSync = offset
+	m.lipSyncLatched = true
+	if muxer := m.directMuxer.Load(); muxer != nil {
+		muxer.SetLipSyncOffset90k(offset)
+	}
 }
 
 // SetCBRMuxrate configures CBR pacing for SRT outputs. When muxrateBps > 0,
@@ -1246,18 +1263,14 @@ type CBRPacerStatus struct {
 func (m *Manager) DirectWriteVideo(frame *media.VideoFrame) {
 	// TS-based outputs (SRT, recording).
 	if muxer := m.directMuxer.Load(); muxer != nil {
-		if m.lipSyncSource != nil {
+		if m.lipSyncSource != nil && !m.lipSyncLatched {
 			raw := m.lipSyncSource()
 			if m.smoothedLipSync == 0 {
-				// Latch the first measurement as the constant offset.
-				// In ref clock mode the ring buffer depth is stable (~30ms),
-				// so re-reading per frame just adds jitter to the video PTS grid.
 				m.smoothedLipSync = raw
 				muxer.SetLipSyncOffset90k(m.smoothedLipSync)
 			}
-			// Only update if the offset drifts significantly (>5ms = 450 ticks).
-			// This prevents per-frame jitter while still tracking large shifts
-			// (e.g., mixer reconfiguration, format change).
+			// Only update if drift exceeds threshold. Once latched
+			// (ref clock mode), this block is skipped entirely.
 			if delta := raw - m.smoothedLipSync; delta > 450 || delta < -450 {
 				m.smoothedLipSync = (m.smoothedLipSync*15 + raw) / 16
 				muxer.SetLipSyncOffset90k(m.smoothedLipSync)
