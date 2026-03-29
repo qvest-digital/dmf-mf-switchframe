@@ -1967,3 +1967,281 @@ func TestChannel_FRC_AudioNotDuplicated(t *testing.T) {
 		t.Errorf("only %d unique audio tags delivered, expected ~48 (some source audio lost)", len(counts))
 	}
 }
+
+// TestChannel_FRC_HoldModeStripsAudio verifies that when a clip ends in
+// hold mode, the held frame's audio is not re-pushed every tick.
+func TestChannel_FRC_HoldModeStripsAudio(t *testing.T) {
+	// 10 frames of 30fps content with audio = ~333ms.
+	frames := fakeFramesWithAudioFRC(10, 3000) // 30fps
+	provider := NewFakeAssetProvider(frames)
+
+	var mu sync.Mutex
+	var audioTags []byte
+	var videoCount int
+
+	ch := NewChannel(1, ChannelConfig{
+		Width:         320,
+		Height:        240,
+		FPS:           30.0,
+		AssetProvider: provider,
+	})
+
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKey bool) {
+		mu.Lock()
+		videoCount++
+		mu.Unlock()
+	})
+	ch.SetAudioOutput(func(data []byte, pts int64, sampleRate, channels int) {
+		mu.Lock()
+		if len(data) > 0 {
+			audioTags = append(audioTags, data[0])
+		}
+		mu.Unlock()
+	})
+
+	// Use a hold item so the last frame is held after clip ends.
+	holdItem := clipItem("a")
+	holdItem.Hold = true
+	pl := testPlaylist(holdItem)
+	require.NoError(t, ch.LoadPlaylist(pl))
+	ch.Start()
+
+	// Wait for well past clip end — should get ~10 frames of content + many held frames.
+	waitFor(t, 3*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return videoCount >= 40 // 10 real + 30 held
+	})
+
+	ch.Stop()
+
+	mu.Lock()
+	tags := make([]byte, len(audioTags))
+	copy(tags, audioTags)
+	mu.Unlock()
+
+	// Count occurrences of each audio tag.
+	counts := make(map[byte]int)
+	for _, tag := range tags {
+		counts[tag]++
+	}
+
+	// The last frame's audio (tag 9) should appear exactly once,
+	// not once per held tick.
+	lastTag := byte(9)
+	if count, ok := counts[lastTag]; ok && count > 1 {
+		t.Errorf("last frame audio tag %d delivered %d times — hold mode is leaking audio", lastTag, count)
+	}
+
+	// All 10 source audio tags should be present.
+	if len(counts) < 9 {
+		t.Errorf("only %d unique audio tags, expected ~10", len(counts))
+	}
+
+	t.Logf("audio tags: %d total, %d unique, last_tag_count=%d",
+		len(tags), len(counts), counts[lastTag])
+}
+
+// TestChannel_FRC_LoopRewindStripsAudio verifies that when a clip loops,
+// the transitional last frame doesn't re-push audio.
+func TestChannel_FRC_LoopRewindStripsAudio(t *testing.T) {
+	// 10 frames of 30fps content with audio.
+	frames := fakeFramesWithAudioFRC(10, 3000)
+	provider := NewFakeAssetProvider(frames)
+
+	var mu sync.Mutex
+	var audioTags []byte
+
+	ch := NewChannel(1, ChannelConfig{
+		Width:         320,
+		Height:        240,
+		FPS:           30.0,
+		AssetProvider: provider,
+	})
+
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKey bool) {})
+	ch.SetAudioOutput(func(data []byte, pts int64, sampleRate, channels int) {
+		mu.Lock()
+		if len(data) > 0 {
+			audioTags = append(audioTags, data[0])
+		}
+		mu.Unlock()
+	})
+
+	loopItem := clipItem("a")
+	loopItem.Loop = true
+	pl := testPlaylist(loopItem)
+	require.NoError(t, ch.LoadPlaylist(pl))
+	ch.Start()
+
+	// Wait for at least 2 full loops (20+ unique audio tags if no loss).
+	waitFor(t, 3*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(audioTags) >= 18
+	})
+
+	ch.Stop()
+
+	mu.Lock()
+	tags := make([]byte, len(audioTags))
+	copy(tags, audioTags)
+	mu.Unlock()
+
+	// Check that no single tag appears more than expected.
+	// With 2 loops, each tag should appear ~2 times.
+	counts := make(map[byte]int)
+	for _, tag := range tags {
+		counts[tag]++
+	}
+
+	for tag, count := range counts {
+		// Allow up to 3 (2 loops + 1 for timing jitter), but not more.
+		if count > 4 {
+			t.Errorf("audio tag %d delivered %d times (expected ~2-3 for loop mode)", tag, count)
+		}
+	}
+
+	t.Logf("audio tags: %d total, %d unique, counts=%v", len(tags), len(counts), counts)
+}
+
+// TestChannel_FRC_60to30 verifies that a 60fps clip played on a 30fps
+// pipeline skips every other frame, and audio from skipped frames is preserved.
+func TestChannel_FRC_60to30(t *testing.T) {
+	// 120 frames of 60fps content = 2 seconds.
+	frames := fakeFramesWithAudioFRC(120, 1500) // 90000/60 = 1500
+	provider := NewFakeAssetProvider(frames)
+
+	var mu sync.Mutex
+	var videoOutputs []byte
+	var audioTags []byte
+
+	ch := NewChannel(1, ChannelConfig{
+		Width:         320,
+		Height:        240,
+		FPS:           30.0,
+		AssetProvider: provider,
+	})
+
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKey bool) {
+		mu.Lock()
+		if len(yuv) > 0 {
+			videoOutputs = append(videoOutputs, yuv[0])
+		}
+		mu.Unlock()
+	})
+	ch.SetAudioOutput(func(data []byte, pts int64, sampleRate, channels int) {
+		mu.Lock()
+		if len(data) > 0 {
+			audioTags = append(audioTags, data[0])
+		}
+		mu.Unlock()
+	})
+
+	pl := testPlaylist(clipItem("a"))
+	require.NoError(t, ch.LoadPlaylist(pl))
+	ch.Start()
+
+	// Wait for all 120 audio tags to be delivered. At 60fps source on 30fps
+	// pipeline, each tick consumes 2 source frames, so ~60 ticks = 2 seconds.
+	// Wait for at least 118 audio tags to account for the end-of-clip tick.
+	waitFor(t, 5*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(audioTags) >= 118
+	})
+
+	ch.Stop()
+
+	mu.Lock()
+	vOut := make([]byte, len(videoOutputs))
+	copy(vOut, videoOutputs)
+	aOut := make([]byte, len(audioTags))
+	copy(aOut, audioTags)
+	mu.Unlock()
+
+	// Video: ~60 output frames for 2 seconds at 30fps.
+	// Each output frame should skip ~1 source frame (60/30 = 2x).
+	t.Logf("video outputs: %d", len(vOut))
+
+	// Video frames should be monotonically non-decreasing.
+	for i := 1; i < len(vOut); i++ {
+		if vOut[i] < vOut[i-1] {
+			t.Errorf("video frame %d (src=%d) < frame %d (src=%d)", i, vOut[i], i-1, vOut[i-1])
+		}
+	}
+
+	// Should have skips (some source frames not displayed).
+	videoSeen := make(map[byte]bool)
+	for _, b := range vOut {
+		videoSeen[b] = true
+	}
+	// At 60->30, roughly half of source frames should be displayed.
+	t.Logf("unique video frames displayed: %d out of 120", len(videoSeen))
+	if len(videoSeen) > 70 {
+		t.Errorf("too many unique video frames (%d) — expected ~60 for 60->30 skip", len(videoSeen))
+	}
+
+	// Audio: ALL source frames' audio should be delivered (none lost).
+	audioSeen := make(map[byte]bool)
+	for _, b := range aOut {
+		audioSeen[b] = true
+	}
+	t.Logf("unique audio tags delivered: %d out of 120", len(audioSeen))
+	// We can only track byte(0..119), but byte wraps at 256. With 120 frames,
+	// all tags are unique (0-119). All should be present.
+	if len(audioSeen) < 115 {
+		t.Errorf("only %d unique audio tags — skipped frames are losing audio", len(audioSeen))
+	}
+}
+
+// TestChannel_FRC_FrameMutationSafety verifies that when the FRC engine
+// attaches collected audio to a frame, it doesn't corrupt the original
+// iterator frames.
+func TestChannel_FRC_FrameMutationSafety(t *testing.T) {
+	// 60 frames at 60fps = 1 second.
+	frames := fakeFramesWithAudioFRC(60, 1500)
+	// Save original audio frame counts before playback.
+	originalAudioCounts := make([]int, len(frames))
+	for i, f := range frames {
+		originalAudioCounts[i] = len(f.AudioFrames)
+	}
+
+	provider := NewFakeAssetProvider(frames)
+
+	ch := NewChannel(1, ChannelConfig{
+		Width:         320,
+		Height:        240,
+		FPS:           30.0,
+		AssetProvider: provider,
+	})
+
+	var mu sync.Mutex
+	var outputCount int
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKey bool) {
+		mu.Lock()
+		outputCount++
+		mu.Unlock()
+	})
+	ch.SetAudioOutput(func(data []byte, pts int64, sampleRate, channels int) {})
+
+	pl := testPlaylist(clipItem("a"))
+	require.NoError(t, ch.LoadPlaylist(pl))
+	ch.Start()
+
+	waitFor(t, 3*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return outputCount >= 25
+	})
+
+	ch.Stop()
+
+	// Verify original frames weren't mutated.
+	for i, f := range frames {
+		if len(f.AudioFrames) != originalAudioCounts[i] {
+			t.Errorf("frame %d AudioFrames mutated: was %d, now %d",
+				i, originalAudioCounts[i], len(f.AudioFrames))
+		}
+	}
+}

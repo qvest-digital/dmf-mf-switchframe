@@ -1020,16 +1020,21 @@ func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
 	// Collect audio from ALL consumed frames (including skipped ones) so
 	// no audio is lost during frame rate conversion.
 	var frame *DecodedFrame
+	var lastGoodFrame *DecodedFrame
 	var err error
 	var collectedAudio []AudioFrameData
 	for sourceFrame <= targetSourceFrame {
-		frame, err = iter.Next()
+		var next *DecodedFrame
+		next, err = iter.Next()
 		if err != nil {
 			break
 		}
-		if frame == nil {
+		if next == nil {
+			// End of clip — frame stays as last good frame from previous iteration.
+			frame = nil
 			break
 		}
+		frame = next
 		// Collect audio from every consumed frame (including skipped ones).
 		if len(frame.AudioFrames) > 0 {
 			collectedAudio = append(collectedAudio, frame.AudioFrames...)
@@ -1040,6 +1045,7 @@ func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
 				Channels:   frame.AudioChannels,
 			})
 		}
+		lastGoodFrame = frame
 		sourceFrame++
 		c.mu.Lock()
 		c.clipFrame = sourceFrame
@@ -1047,10 +1053,26 @@ func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
 		c.mu.Unlock()
 	}
 
-	// Attach all collected audio to the output frame so emitFrame delivers it.
-	if frame != nil && len(collectedAudio) > 0 {
-		frame.AudioFrames = collectedAudio
-		frame.AudioData = nil // clear single-frame field; AudioFrames takes precedence
+	// Build the result frame. When we consumed multiple source frames
+	// (skipping), attach all collected audio to a NEW DecodedFrame so we
+	// don't mutate the iterator's backing data.
+	//
+	// If the iterator hit end-of-clip mid-skip (frame==nil but we consumed
+	// frames earlier in the loop), use lastGoodFrame so the collected audio
+	// is still delivered.
+	resultFrame := frame
+	if resultFrame == nil && lastGoodFrame != nil {
+		resultFrame = lastGoodFrame
+	}
+	if resultFrame != nil && len(collectedAudio) > 0 {
+		resultFrame = &DecodedFrame{
+			YUV:         resultFrame.YUV,
+			PTS:         resultFrame.PTS,
+			IsKeyframe:  resultFrame.IsKeyframe,
+			Width:       resultFrame.Width,
+			Height:      resultFrame.Height,
+			AudioFrames: collectedAudio,
+		}
 	}
 
 	if err != nil {
@@ -1069,27 +1091,49 @@ func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
 			})
 		}
 		c.scheduler.SignalItemComplete()
-		// Return last good frame to avoid output gap.
+		// Return last good frame (video only) to avoid output gap.
+		// Audio was already delivered when this frame was first emitted.
 		c.mu.Lock()
 		lf := c.clipLastFrame
 		c.mu.Unlock()
 		if lf != nil {
-			return lf
+			return &DecodedFrame{
+				YUV:        lf.YUV,
+				Width:      lf.Width,
+				Height:     lf.Height,
+				PTS:        lf.PTS,
+				IsKeyframe: lf.IsKeyframe,
+			}
 		}
 		return c.slateFrame
 	}
 
 	if frame == nil {
-		// End of clip.
+		// End of clip — or hit end-of-clip mid-skip during FRC.
+		// If we consumed frames before hitting nil, resultFrame will be non-nil
+		// with collected audio attached. Return it now and let the next tick
+		// handle the end-of-clip state transition (hold/loop/advance).
+		if resultFrame != nil {
+			return resultFrame
+		}
+
 		c.mu.Lock()
 		c.itemProgress.Store(1000)
 		c.itemRemainMs.Store(0)
 		lastFrame := c.clipLastFrame
 		c.mu.Unlock()
 
-		// If hold mode, return the last frame instead of signaling complete.
+		// If hold mode, return video-only copy — audio was already delivered
+		// when this frame was first emitted. Repeating it would leak audio
+		// on every hold tick.
 		if item.Hold && lastFrame != nil {
-			return lastFrame
+			return &DecodedFrame{
+				YUV:        lastFrame.YUV,
+				Width:      lastFrame.Width,
+				Height:     lastFrame.Height,
+				PTS:        lastFrame.PTS,
+				IsKeyframe: lastFrame.IsKeyframe,
+			}
 		}
 
 		// If loop mode, rewind — close the iterator so it re-opens on the
@@ -1105,19 +1149,33 @@ func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
 			c.clipOutputFrame = 0
 			c.clipLastFrame = nil
 			c.mu.Unlock()
-			// Return last frame to avoid gap during rewind.
+			// Return video-only copy to avoid gap during rewind.
+			// Audio was already delivered on the frame's first emission.
 			if lastFrame != nil {
-				return lastFrame
+				return &DecodedFrame{
+					YUV:        lastFrame.YUV,
+					Width:      lastFrame.Width,
+					Height:     lastFrame.Height,
+					PTS:        lastFrame.PTS,
+					IsKeyframe: lastFrame.IsKeyframe,
+				}
 			}
 			return c.slateFrame
 		}
 
 		c.scheduler.SignalItemComplete()
 
-		// Return the last frame to avoid a gap while the scheduler advances
-		// and the next item opens on the following tick.
+		// Return video-only copy to avoid a gap while the scheduler advances
+		// and the next item opens on the following tick. Audio was already
+		// delivered on the frame's first emission.
 		if lastFrame != nil {
-			return lastFrame
+			return &DecodedFrame{
+				YUV:        lastFrame.YUV,
+				Width:      lastFrame.Width,
+				Height:     lastFrame.Height,
+				PTS:        lastFrame.PTS,
+				IsKeyframe: lastFrame.IsKeyframe,
+			}
 		}
 		return c.slateFrame
 	}
@@ -1133,7 +1191,7 @@ func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
 		c.itemRemainMs.Store(int64(float64(remainFrames) * 1000.0 / clipFPS))
 	}
 
-	return frame
+	return resultFrame
 }
 
 // tapLiveSource routes live frames through the playout channel.
