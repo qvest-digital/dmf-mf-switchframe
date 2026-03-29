@@ -493,7 +493,7 @@ func (m *Mixer) AddChannel(sourceKey string) {
 // ticker mode, no target depth is set (unlimited FIFO).
 func (m *Mixer) newChannelRingBuf() *PCMRingBuffer {
 	rb := NewPCMRingBuffer(10 * 1024 * m.numChannels)
-	if m.clockDriven {
+	if m.config.ClockDriven {
 		// Target: 1024 frames × numChannels = one AAC frame (~21ms at 48kHz).
 		// This bounds the audio FIFO latency to ≤21ms — well within the
 		// ITU-R BT.1359 imperceptible range (±40ms).
