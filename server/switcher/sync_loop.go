@@ -1,6 +1,7 @@
 package switcher
 
 import (
+	"log/slog"
 	"runtime"
 	"time"
 
