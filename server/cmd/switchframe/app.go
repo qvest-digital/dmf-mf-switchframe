@@ -225,6 +225,12 @@ type App struct {
 	// ST 2110 integration
 	st2110State *st2110State
 
+	// A/V sync: gate relay audio until the first video keyframe has been
+	// broadcast, preventing the browser from playing audio before video is
+	// decodable. Set true by broadcastOwnedToProgram (video path) on the
+	// first IDR; checked by the mixer output callback (audio path).
+	programRelayVideoStarted atomic.Bool
+
 	// Performance monitoring
 	perfSampler *perf.Sampler
 
@@ -371,6 +377,16 @@ func (a *App) initPrismServer() error {
 			}
 		},
 		OnBidirectionalStream: a.handleCommsBidiStream,
+		OnViewerAdded: func(streamKey string) {
+			if streamKey == "program" || streamKey == "program-preview" {
+				if a.sw != nil {
+					a.sw.RequestKeyframe()
+				}
+				if streamKey == "program-preview" && a.gpuState != nil && a.gpuState.previewNode != nil {
+					a.gpuState.previewNode.ForceIDR()
+				}
+			}
+		},
 	}
 
 	server, err := distribution.NewServer(config)
@@ -403,6 +419,12 @@ func (a *App) initCoreEngineLegacy() error {
 		SampleRate: 48000,
 		Channels:   2,
 		Output: func(frame *media.AudioFrame) {
+			// Hold relay audio until the first video keyframe has been
+			// broadcast. This prevents the browser from playing audio
+			// before video is decodable at stream start.
+			if !a.programRelayVideoStarted.Load() {
+				return
+			}
 			// Adjust audio PTS for browser relay to reflect actual content age.
 			// Audio content is delayed by the ring buffer FIFO (~30ms) relative
 			// to video content (newest-wins, zero delay). Subtracting the ring
@@ -493,6 +515,12 @@ func (a *App) initCoreEngineRefClock() error {
 	// Wire audio output callback so the sync loop can deliver AAC frames
 	// to both the program relay (browser) and output manager (muxer/SRT).
 	a.sw.SetOutputAudioCallback(func(frame *media.AudioFrame) {
+		// Hold relay audio until the first video keyframe has been
+		// broadcast. This prevents the browser from playing audio
+		// before video is decodable at stream start.
+		if !a.programRelayVideoStarted.Load() {
+			return
+		}
 		// Adjust audio PTS for browser relay to reflect actual content age.
 		// Audio content is delayed by the ring buffer FIFO relative to video
 		// content (newest-wins). Subtracting the ring buffer depth makes audio
@@ -521,6 +549,13 @@ func (a *App) initSwitcherCommon() error {
 	// Create switcher with Prism's relay so frames reach MoQ viewers.
 	a.sw = switcher.New(a.programRelay)
 	a.sw.SetMetrics(a.appMetrics)
+
+	// Gate relay audio until the first video keyframe is broadcast.
+	// This prevents the browser from playing audio before video is
+	// decodable, eliminating the ~400ms audio-leads-video gap at start.
+	a.sw.SetOnKeyframeBroadcast(func() {
+		a.programRelayVideoStarted.Store(true)
+	})
 
 	// Record which codec was selected at startup for debug snapshot.
 	encName, decName := codec.ProbeEncoders()

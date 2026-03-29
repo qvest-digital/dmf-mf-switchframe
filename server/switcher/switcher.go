@@ -441,6 +441,11 @@ type Switcher struct {
 	// the same caption data. Set by the app layer via SetOnCaptionBroadcast.
 	onCaptionBroadcast atomic.Pointer[func(*ccx.CaptionFrame)]
 
+	// onKeyframeBroadcast is called when an IDR keyframe is broadcast to the
+	// program relay, allowing the app layer to track video start for A/V sync
+	// gating. Set by the app layer via SetOnKeyframeBroadcast.
+	onKeyframeBroadcast atomic.Pointer[func()]
+
 	// Caption SEI injection buffers removed — broadcastWithCaptions is now
 	// called from the async encodeLoop goroutine, so shared mutable buffers
 	// would race during pipeline swap. Per-frame allocation is negligible.
@@ -852,6 +857,17 @@ func (s *Switcher) SetOnFirstVideoPTS(fn func(pts int64)) {
 // TSMuxer can initialize immediately without waiting for the next GOP boundary.
 func (s *Switcher) RequestKeyframe() {
 	s.forceNextIDR.Store(true)
+}
+
+// SetOnKeyframeBroadcast registers a callback that fires when an IDR keyframe
+// is broadcast to the program relay. Used by the app layer to gate relay audio
+// until the first video keyframe is available for browser A/V sync.
+func (s *Switcher) SetOnKeyframeBroadcast(fn func()) {
+	if fn != nil {
+		s.onKeyframeBroadcast.Store(&fn)
+	} else {
+		s.onKeyframeBroadcast.Store(nil)
+	}
 }
 
 // SetCompositor attaches the DSK graphics compositor. The compositor's
@@ -1486,6 +1502,11 @@ func (s *Switcher) broadcastOwnedToProgram(frame *media.VideoFrame) {
 	frame.DTS = frame.PTS
 	if frame.IsKeyframe {
 		frame.GroupID = s.programGroupID.Add(1)
+		// Notify app layer that a keyframe has been broadcast (used to
+		// gate relay audio until video is decodable for A/V sync).
+		if cb := s.onKeyframeBroadcast.Load(); cb != nil {
+			(*cb)()
+		}
 	} else {
 		frame.GroupID = s.programGroupID.Load()
 	}
