@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // fakeFrames returns n fake YUV420 frames at 30fps.
@@ -1643,6 +1645,31 @@ func TestChannel_LiveTap_GPUAlias_FallbackToCPU(t *testing.T) {
 	})
 }
 
+// fakeFramesWithAudioFRC returns n fake frames at the given PTS delta with
+// AudioFrames attached. Each frame gets one AudioFrameData tagged with the
+// frame index for tracking audio delivery in FRC tests.
+func fakeFramesWithAudioFRC(n int, ptsDelta int64) []DecodedFrame {
+	frames := make([]DecodedFrame, n)
+	for i := range frames {
+		frames[i] = DecodedFrame{
+			YUV:        make([]byte, yuvFrameSize(320, 240)),
+			PTS:        int64(i) * ptsDelta,
+			IsKeyframe: i == 0,
+			Width:      320,
+			Height:     240,
+			AudioFrames: []AudioFrameData{
+				{
+					Data:       []byte{byte(i)}, // tag with frame index
+					SampleRate: 48000,
+					Channels:   2,
+				},
+			},
+		}
+		frames[i].YUV[0] = byte(i)
+	}
+	return frames
+}
+
 // fakeFrames24fps returns n fake YUV420 frames at 24fps.
 func fakeFrames24fps(n int) []DecodedFrame {
 	frames := make([]DecodedFrame, n)
@@ -1866,5 +1893,77 @@ func TestChannel_FRC_SameRate(t *testing.T) {
 	t.Logf("output frames: %d, repeated: %d", len(out), repeats)
 	if repeats > 3 {
 		t.Errorf("too many repeated frames (%d) for same-rate playback — expected ~0", repeats)
+	}
+}
+
+// TestChannel_FRC_AudioNotDuplicated verifies that when frames are held
+// (24fps→30fps), audio is NOT pushed twice for the same source frame.
+func TestChannel_FRC_AudioNotDuplicated(t *testing.T) {
+	// 48 frames of 24fps content with audio = 2 seconds.
+	frames := fakeFramesWithAudioFRC(48, 3750) // 90000/24 = 3750
+	provider := NewFakeAssetProvider(frames)
+
+	var mu sync.Mutex
+	var audioDeliveries []byte // track which audio tags are delivered
+
+	ch := NewChannel(1, ChannelConfig{
+		Width:         320,
+		Height:        240,
+		FPS:           30.0,
+		AssetProvider: provider,
+	})
+
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKey bool) {})
+	ch.SetAudioOutput(func(data []byte, pts int64, sampleRate, channels int) {
+		mu.Lock()
+		if len(data) > 0 {
+			audioDeliveries = append(audioDeliveries, data[0])
+		}
+		mu.Unlock()
+	})
+
+	pl := testPlaylist(clipItem("a"))
+	require.NoError(t, ch.LoadPlaylist(pl))
+	ch.Start()
+
+	// Wait for clip to finish (~2s of content at 30fps output = ~60 ticks).
+	waitFor(t, 4*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(audioDeliveries) >= 45
+	})
+
+	ch.Stop()
+
+	mu.Lock()
+	audio := make([]byte, len(audioDeliveries))
+	copy(audio, audioDeliveries)
+	mu.Unlock()
+
+	// Each source frame's audio should be delivered exactly once.
+	// Count occurrences of each tag.
+	counts := make(map[byte]int)
+	for _, tag := range audio {
+		counts[tag]++
+	}
+
+	duplicates := 0
+	for tag, count := range counts {
+		if count > 1 {
+			duplicates++
+			t.Logf("audio tag %d delivered %d times (should be 1)", tag, count)
+		}
+	}
+
+	t.Logf("audio deliveries: %d total, %d unique tags, %d duplicated tags",
+		len(audio), len(counts), duplicates)
+
+	if duplicates > 0 {
+		t.Errorf("%d audio tags delivered more than once — held frames are leaking audio", duplicates)
+	}
+
+	// All 48 source frames' audio should be present.
+	if len(counts) < 45 {
+		t.Errorf("only %d unique audio tags delivered, expected ~48 (some source audio lost)", len(counts))
 	}
 }

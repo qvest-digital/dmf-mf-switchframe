@@ -988,6 +988,8 @@ func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
 	c.mu.Unlock()
 
 	// If the target source frame hasn't advanced, hold the last frame.
+	// Return a video-only copy — audio was already pushed on the first
+	// delivery, so repeating it would double-deliver and desync A/V.
 	if targetSourceFrame < sourceFrame && sourceFrame > 0 {
 		c.mu.Lock()
 		lf := c.clipLastFrame
@@ -1002,14 +1004,24 @@ func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
 				}
 				c.itemRemainMs.Store(int64(float64(remainFrames) * 1000.0 / clipFPS))
 			}
-			return lf
+			// Strip audio — it was already pushed when this frame was first emitted.
+			return &DecodedFrame{
+				YUV:        lf.YUV,
+				Width:      lf.Width,
+				Height:     lf.Height,
+				PTS:        lf.PTS,
+				IsKeyframe: lf.IsKeyframe,
+			}
 		}
 	}
 
 	// Advance to the target source frame. For same-rate this is always +1.
 	// For fast clips (e.g. 60fps on 30fps pipeline) this skips frames.
+	// Collect audio from ALL consumed frames (including skipped ones) so
+	// no audio is lost during frame rate conversion.
 	var frame *DecodedFrame
 	var err error
+	var collectedAudio []AudioFrameData
 	for sourceFrame <= targetSourceFrame {
 		frame, err = iter.Next()
 		if err != nil {
@@ -1018,11 +1030,27 @@ func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
 		if frame == nil {
 			break
 		}
+		// Collect audio from every consumed frame (including skipped ones).
+		if len(frame.AudioFrames) > 0 {
+			collectedAudio = append(collectedAudio, frame.AudioFrames...)
+		} else if len(frame.AudioData) > 0 {
+			collectedAudio = append(collectedAudio, AudioFrameData{
+				Data:       frame.AudioData,
+				SampleRate: frame.AudioSampleRate,
+				Channels:   frame.AudioChannels,
+			})
+		}
 		sourceFrame++
 		c.mu.Lock()
 		c.clipFrame = sourceFrame
 		c.clipLastFrame = frame
 		c.mu.Unlock()
+	}
+
+	// Attach all collected audio to the output frame so emitFrame delivers it.
+	if frame != nil && len(collectedAudio) > 0 {
+		frame.AudioFrames = collectedAudio
+		frame.AudioData = nil // clear single-frame field; AudioFrames takes precedence
 	}
 
 	if err != nil {
@@ -1226,11 +1254,11 @@ func (c *Channel) emitFrame(frame *DecodedFrame, outputFn func([]byte, int, int,
 		outputFn(frame.YUV, frame.Width, frame.Height, pts, frame.IsKeyframe)
 	}
 
-	// Push audio to mixer. Use elapsed wall-clock time to determine how many
-	// audio frames should have been delivered by now — not tied to video frame
-	// count. This correctly handles the case where the playout tick rate (24fps
-	// pipeline) differs from the clip's native rate (30fps clip). The mixer
-	// ignores PTS and uses its own clock-driven outputTicker.
+	// Push audio to mixer. Audio frames are attached to each DecodedFrame
+	// by the FileFrameIterator. During FRC, nextClipFrame collects audio
+	// from all consumed source frames (including skipped ones) and strips
+	// audio from held frames, ensuring correct delivery regardless of
+	// clip-vs-pipeline rate mismatch.
 	if audioFn != nil {
 		if len(frame.AudioFrames) > 0 {
 			// The FileFrameIterator attaches audio proportionally to encoded video
