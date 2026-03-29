@@ -238,39 +238,33 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 		wire := codec.AnnexBToWireInto(data, nil)
 
 		// Consume caption pairs (once per frame) and cache SEI for preview.
+		// ConsumeForFrameWithVANC always returns at least a null pair to
+		// maintain continuous ATSC A/53 cc_data presence in the stream.
 		if app.captionMgr != nil {
 			pairs := app.captionMgr.ConsumeForFrameWithVANC()
-			if len(pairs) > 0 {
-				var codecStr string
-				if pipelineCodec == switcher.CodecHEVC {
-					codecStr = "h265"
-				}
-				// Build combined pic_timing + caption SEI for broadcast
-				// decoder compliance, or caption-only SEI if pic_timing
-				// is not configured on the switcher.
-				var sei []byte
-				if ptCfg := sw.PicTimingConfig(); ptCfg != nil {
-					sei = caption.BuildPicTimingAndCaptionSEI(pairs, *ptCfg, gpuPicTimingFrame, codecStr)
-					gpuPicTimingFrame++
-				} else {
-					sei = caption.BuildSEINALU(pairs, codecStr)
-				}
-				if len(sei) > 0 {
-					// Only cache SEI for preview when AVC — HEVC SEI NALUs
-					// have a different header format and cannot be injected
-					// into the AVC preview stream.
-					if pipelineCodec != switcher.CodecHEVC {
-						lastCaptionSEI.Store(&sei)
-					} else {
-						lastCaptionSEI.Store(nil)
-					}
-					wire = injectCaptionSEI(wire, sei)
-				} else {
-					lastCaptionSEI.Store(nil)
-				}
+			var codecStr string
+			if pipelineCodec == switcher.CodecHEVC {
+				codecStr = "h265"
+			}
+			// Build combined pic_timing + caption SEI for broadcast
+			// decoder compliance, or caption-only SEI if pic_timing
+			// is not configured on the switcher.
+			var sei []byte
+			if ptCfg := sw.PicTimingConfig(); ptCfg != nil {
+				sei = caption.BuildPicTimingAndCaptionSEI(pairs, *ptCfg, gpuPicTimingFrame, codecStr)
+				gpuPicTimingFrame++
+			} else {
+				sei = caption.BuildSEINALU(pairs, codecStr)
+			}
+			// Only cache SEI for preview when AVC — HEVC SEI NALUs
+			// have a different header format and cannot be injected
+			// into the AVC preview stream.
+			if pipelineCodec != switcher.CodecHEVC {
+				lastCaptionSEI.Store(&sei)
 			} else {
 				lastCaptionSEI.Store(nil)
 			}
+			wire = injectCaptionSEI(wire, sei)
 		}
 
 		// Extract parameter sets from IDR keyframes for VideoInfo.

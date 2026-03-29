@@ -232,29 +232,35 @@ func (m *Manager) ConsumeForFrame() []CCPair {
 }
 
 // consumeForFrameLocked implements ConsumeForFrame. Must be called with m.mu held.
+//
+// Every mode emits at least a null pair (0x80, 0x80) per frame. This maintains
+// continuous ATSC A/53 cc_data presence in the stream, signaling to downstream
+// decoders (Evertz, Harmonic, etc.) that the stream carries CEA-608/708 captions
+// from the very first frame. Without this, decoders would not detect caption
+// carriage until the first actual text arrives, causing acquisition delay.
 func (m *Manager) consumeForFrameLocked() []CCPair {
 	switch m.mode {
 	case ModeOff:
-		return nil
+		// Null pair keeps the cc_data channel open so downstream decoders
+		// know captions are available when the mode changes.
+		return []CCPair{NullPair()}
 
 	case ModePassThrough:
 		pair := m.ptEncoder.NextPair()
 		if pair == nil {
-			return nil
+			return []CCPair{NullPair()}
 		}
 		return []CCPair{*pair}
 
 	case ModeAuthor, ModeAuto:
 		pair := m.encoder.NextPair()
 		if pair == nil {
-			// Emit null pair to maintain cc_data presence in stream.
-			null := NullPair()
-			return []CCPair{null}
+			return []CCPair{NullPair()}
 		}
 		return []CCPair{*pair}
 
 	default:
-		return nil
+		return []CCPair{NullPair()}
 	}
 }
 

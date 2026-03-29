@@ -38,11 +38,16 @@ func TestManagerSetMode(t *testing.T) {
 	}
 }
 
-func TestManagerConsumeOff(t *testing.T) {
+func TestManagerConsumeOff_EmitsNullPair(t *testing.T) {
+	// Even in ModeOff, ConsumeForFrame emits a null pair to maintain continuous
+	// ATSC A/53 cc_data presence for downstream decoder acquisition.
 	m := NewManager()
 	pairs := m.ConsumeForFrame()
-	if pairs != nil {
-		t.Errorf("off mode should return nil, got %v", pairs)
+	if len(pairs) != 1 {
+		t.Fatalf("off mode should return 1 null pair, got %d pairs", len(pairs))
+	}
+	if !pairs[0].IsNull() {
+		t.Errorf("off mode pair should be null (0x80,0x80), got %v", pairs[0])
 	}
 }
 
@@ -172,11 +177,11 @@ func TestManagerPassThrough(t *testing.T) {
 		t.Error("did not find 'AB' pair with parity in pass-through output")
 	}
 
-	// Same text should not re-queue — ConsumeForFrame returns nil.
+	// Same text should not re-queue — ConsumeForFrame returns null pair only.
 	m.SetPassThroughText("AB")
 	got := m.ConsumeForFrame()
-	if got != nil {
-		t.Errorf("same text should not produce new pairs, got %v", got)
+	if len(got) != 1 || !got[0].IsNull() {
+		t.Errorf("same text should produce only null pair, got %v", got)
 	}
 }
 

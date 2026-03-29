@@ -1597,10 +1597,6 @@ func (s *Switcher) broadcastWithCaptions(frame *media.VideoFrame) {
 	}
 
 	pairs := cm.ConsumeForFrameWithVANC()
-	if len(pairs) == 0 {
-		s.broadcastOwnedToProgram(frame)
-		return
-	}
 
 	// Determine codec string for SEI framing (H.264 vs HEVC).
 	codecStr := "h264"

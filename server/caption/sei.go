@@ -62,8 +62,11 @@ const (
 //
 // Emulation prevention bytes (0x03) are inserted where needed.
 func BuildSEINALU(pairs []CCPair, codec ...string) []byte {
+	// Always emit at least a null pair to maintain continuous cc_data presence
+	// in the stream. This establishes ATSC A/53 caption carriage from the first
+	// frame so downstream decoders detect the channel immediately.
 	if len(pairs) == 0 {
-		return nil
+		pairs = []CCPair{NullPair()}
 	}
 
 	// Determine codec from variadic parameter.

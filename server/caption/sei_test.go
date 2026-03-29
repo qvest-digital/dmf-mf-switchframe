@@ -5,15 +5,23 @@ import (
 	"testing"
 )
 
-func TestBuildSEINALU_NilPairs(t *testing.T) {
-	if got := BuildSEINALU(nil); got != nil {
-		t.Errorf("BuildSEINALU(nil) = %v, want nil", got)
+func TestBuildSEINALU_NilPairs_EmitsNullCC(t *testing.T) {
+	// nil pairs should still produce a valid SEI with null cc_data to maintain
+	// continuous ATSC A/53 caption carriage for downstream decoder acquisition.
+	got := BuildSEINALU(nil)
+	if got == nil {
+		t.Fatal("BuildSEINALU(nil) should emit null cc_data SEI, got nil")
+	}
+	// Verify it's a valid Annex B NALU with start code.
+	if len(got) < 4 || got[0] != 0x00 || got[1] != 0x00 || got[2] != 0x00 || got[3] != 0x01 {
+		t.Errorf("expected Annex B start code, got %x", got[:4])
 	}
 }
 
-func TestBuildSEINALU_EmptyPairs(t *testing.T) {
-	if got := BuildSEINALU([]CCPair{}); got != nil {
-		t.Errorf("BuildSEINALU([]) = %v, want nil", got)
+func TestBuildSEINALU_EmptyPairs_EmitsNullCC(t *testing.T) {
+	got := BuildSEINALU([]CCPair{})
+	if got == nil {
+		t.Fatal("BuildSEINALU([]) should emit null cc_data SEI, got nil")
 	}
 }
 

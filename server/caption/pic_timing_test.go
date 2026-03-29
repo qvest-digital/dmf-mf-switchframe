@@ -339,19 +339,24 @@ func TestBuildPicTimingSEI_HEVC_FrameFieldInfoOnly(t *testing.T) {
 
 // --- Combined pic_timing + caption SEI NALU tests ---
 
-func TestBuildPicTimingAndCaptionSEI_NilPairs(t *testing.T) {
+func TestBuildPicTimingAndCaptionSEI_NilPairs_EmitsNullCC(t *testing.T) {
+	// nil pairs should still produce pic_timing + null cc_data SEI to maintain
+	// continuous caption carriage for downstream decoder acquisition.
 	cfg := DefaultPicTimingConfig()
 	result := BuildPicTimingAndCaptionSEI(nil, cfg, 0, "h264")
-	if result != nil {
-		t.Errorf("expected nil for nil pairs, got %X", result)
+	if result == nil {
+		t.Fatal("expected non-nil SEI with null cc_data, got nil")
+	}
+	if len(result) < 4 || result[0] != 0x00 || result[1] != 0x00 || result[2] != 0x00 || result[3] != 0x01 {
+		t.Errorf("expected Annex B start code, got %x", result[:4])
 	}
 }
 
-func TestBuildPicTimingAndCaptionSEI_EmptyPairs(t *testing.T) {
+func TestBuildPicTimingAndCaptionSEI_EmptyPairs_EmitsNullCC(t *testing.T) {
 	cfg := DefaultPicTimingConfig()
 	result := BuildPicTimingAndCaptionSEI([]CCPair{}, cfg, 0, "h264")
-	if result != nil {
-		t.Errorf("expected nil for empty pairs, got %X", result)
+	if result == nil {
+		t.Fatal("expected non-nil SEI with null cc_data, got nil")
 	}
 }
 

@@ -173,8 +173,11 @@ func buildPicTimingSEIHEVC(cfg PicTimingConfig, frameNum int64) []byte {
 //
 // codec: "h264" or "" for H.264, "h265" for HEVC.
 func BuildPicTimingAndCaptionSEI(pairs []CCPair, ptCfg PicTimingConfig, frameNum int64, codec string) []byte {
+	// Always emit at least a null pair to maintain continuous cc_data presence
+	// in the stream. This signals caption carriage to downstream decoders from
+	// the first frame, regardless of whether text is being authored.
 	if len(pairs) == 0 {
-		return nil
+		pairs = []CCPair{NullPair()}
 	}
 
 	isHEVC := codec == "h265"
