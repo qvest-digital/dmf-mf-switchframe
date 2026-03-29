@@ -317,7 +317,7 @@ func TestBuildSEINALU_EmptyInput_RoundTrip(t *testing.T) {
 func TestPicTimingAndCaption_NullPair_ContainsBothMessages(t *testing.T) {
 	t.Parallel()
 	cfg := DefaultPicTimingConfig()
-	nalu := BuildPicTimingAndCaptionSEI([]CCPair{NullPair()}, cfg, 0, "h264")
+	nalu := BuildPicTimingAndCaptionSEI([]CCPair{NullPair()}, cfg, 0, nil, "h264")
 	if nalu == nil {
 		t.Fatal("null pair should produce valid combined SEI NALU")
 	}
@@ -351,7 +351,7 @@ func TestPicTimingAndCaption_EmptyInput_ProducesValidSEI(t *testing.T) {
 	t.Parallel()
 	cfg := DefaultPicTimingConfig()
 	// nil pairs should auto-substitute null pair.
-	nalu := BuildPicTimingAndCaptionSEI(nil, cfg, 0, "h264")
+	nalu := BuildPicTimingAndCaptionSEI(nil, cfg, 0, nil, "h264")
 	if nalu == nil {
 		t.Fatal("nil pairs should produce SEI with pic_timing + null cc_data")
 	}
@@ -364,7 +364,7 @@ func TestPicTimingAndCaption_EmptyInput_ProducesValidSEI(t *testing.T) {
 func TestPicTimingAndCaption_EmptyInput_HEVC(t *testing.T) {
 	t.Parallel()
 	cfg := DefaultHEVCPicTimingConfig()
-	nalu := BuildPicTimingAndCaptionSEI(nil, cfg, 0, "h265")
+	nalu := BuildPicTimingAndCaptionSEI(nil, cfg, 0, nil, "h265")
 	if nalu == nil {
 		t.Fatal("nil pairs should produce HEVC SEI with pic_timing + null cc_data")
 	}
@@ -378,8 +378,8 @@ func TestPicTimingAndCaption_FrameCounter_IncrementsWithNullPairs(t *testing.T) 
 	t.Parallel()
 	cfg := DefaultPicTimingConfig()
 	// Generate two NALUs with consecutive frame numbers.
-	nalu0 := BuildPicTimingAndCaptionSEI([]CCPair{NullPair()}, cfg, 0, "h264")
-	nalu1 := BuildPicTimingAndCaptionSEI([]CCPair{NullPair()}, cfg, 1, "h264")
+	nalu0 := BuildPicTimingAndCaptionSEI([]CCPair{NullPair()}, cfg, 0, nil, "h264")
+	nalu1 := BuildPicTimingAndCaptionSEI([]CCPair{NullPair()}, cfg, 1, nil, "h264")
 	if nalu0 == nil || nalu1 == nil {
 		t.Fatal("both NALUs should be non-nil")
 	}
@@ -570,7 +570,7 @@ func TestContinuousCarriage_EndToEnd_WithPicTiming(t *testing.T) {
 	// Simulate 10 frames of continuous carriage.
 	for i := int64(0); i < 10; i++ {
 		pairs := m.ConsumeForFrame()
-		nalu := BuildPicTimingAndCaptionSEI(pairs, cfg, i, "h264")
+		nalu := BuildPicTimingAndCaptionSEI(pairs, cfg, i, nil, "h264")
 		if nalu == nil {
 			t.Fatalf("frame %d: combined SEI should not be nil", i)
 		}
@@ -587,7 +587,7 @@ func TestContinuousCarriage_EndToEnd_WithPicTiming_HEVC(t *testing.T) {
 
 	for i := int64(0); i < 10; i++ {
 		pairs := m.ConsumeForFrame()
-		nalu := BuildPicTimingAndCaptionSEI(pairs, cfg, i, "h265")
+		nalu := BuildPicTimingAndCaptionSEI(pairs, cfg, i, nil, "h265")
 		if nalu == nil {
 			t.Fatalf("frame %d: HEVC combined SEI should not be nil", i)
 		}

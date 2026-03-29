@@ -117,7 +117,7 @@ func TestBuildPicTimingSEI_H264_NoHRD(t *testing.T) {
 		PicStructPresent:        true,
 	}
 
-	payload := BuildPicTimingSEI(cfg, 0)
+	payload := BuildPicTimingSEI(cfg, 0, nil)
 	if len(payload) != 1 {
 		t.Fatalf("payload length = %d, want 1", len(payload))
 	}
@@ -135,7 +135,7 @@ func TestBuildPicTimingSEI_H264_NoHRD_NoPicStruct(t *testing.T) {
 		PicStructPresent:        false,
 	}
 
-	payload := BuildPicTimingSEI(cfg, 0)
+	payload := BuildPicTimingSEI(cfg, 0, nil)
 	if len(payload) != 0 {
 		t.Errorf("payload length = %d, want 0 (no data to encode)", len(payload))
 	}
@@ -152,7 +152,7 @@ func TestBuildPicTimingSEI_H264_WithHRD(t *testing.T) {
 	}
 
 	// Frame 100: cpb_removal_delay = 200 (0x0000C8), dpb_output_delay = 0.
-	payload := BuildPicTimingSEI(cfg, 100)
+	payload := BuildPicTimingSEI(cfg, 100, nil)
 
 	// Expected bit layout:
 	// cpb_removal_delay (24 bits): 0x0000C8 = 200
@@ -188,7 +188,7 @@ func TestBuildPicTimingSEI_H264_WithHRD_Frame0(t *testing.T) {
 	// Frame 0: cpb_removal_delay = 0.
 	cfg := DefaultPicTimingConfig()
 
-	payload := BuildPicTimingSEI(cfg, 0)
+	payload := BuildPicTimingSEI(cfg, 0, nil)
 	if len(payload) != 7 {
 		t.Fatalf("payload length = %d, want 7", len(payload))
 	}
@@ -210,7 +210,7 @@ func TestBuildPicTimingSEI_H264_VclHRD(t *testing.T) {
 		DpbOutputDelayLength:    24,
 	}
 
-	payload := BuildPicTimingSEI(cfg, 10)
+	payload := BuildPicTimingSEI(cfg, 10, nil)
 	// Same structure as NAL HRD: 7 bytes.
 	if len(payload) != 7 {
 		t.Fatalf("payload length = %d, want 7 (VCL HRD present)", len(payload))
@@ -232,7 +232,7 @@ func TestBuildPicTimingSEI_H264_HRDOnly_NoPicStruct(t *testing.T) {
 		DpbOutputDelayLength:    24,
 	}
 
-	payload := BuildPicTimingSEI(cfg, 5)
+	payload := BuildPicTimingSEI(cfg, 5, nil)
 	// 24 + 24 = 48 bits = 6 bytes (no pic_struct, already byte-aligned).
 	if len(payload) != 6 {
 		t.Fatalf("payload length = %d, want 6", len(payload))
@@ -248,7 +248,7 @@ func TestBuildPicTimingSEI_HEVC(t *testing.T) {
 	// HEVC with frame_field_info + CpbDpbDelays.
 	cfg := DefaultHEVCPicTimingConfig()
 
-	payload := BuildPicTimingSEI(cfg, 50)
+	payload := BuildPicTimingSEI(cfg, 50, nil)
 
 	// Expected bit layout:
 	// pic_struct (4 bits):                0b0000
@@ -276,7 +276,7 @@ func TestBuildPicTimingSEI_HEVC_Frame0(t *testing.T) {
 	// HEVC frame 0: au_cpb_removal_delay_minus1 = 0 (since 0*2=0, stays 0).
 	cfg := DefaultHEVCPicTimingConfig()
 
-	payload := BuildPicTimingSEI(cfg, 0)
+	payload := BuildPicTimingSEI(cfg, 0, nil)
 
 	// pic_struct(0000) + source_scan_type(01) + duplicate_flag(0) = 7 bits = 0b0000010
 	// au_cpb_removal_delay_minus1(24 bits) = 0
@@ -304,7 +304,7 @@ func TestBuildPicTimingSEI_HEVC_NoFrameFieldInfo(t *testing.T) {
 		DpbOutputDelayLength:  24,
 	}
 
-	payload := BuildPicTimingSEI(cfg, 10)
+	payload := BuildPicTimingSEI(cfg, 10, nil)
 	// 24 + 24 = 48 bits = 6 bytes.
 	if len(payload) != 6 {
 		t.Fatalf("payload length = %d, want 6", len(payload))
@@ -325,7 +325,7 @@ func TestBuildPicTimingSEI_HEVC_FrameFieldInfoOnly(t *testing.T) {
 		CpbDpbDelaysPresent:   false,
 	}
 
-	payload := BuildPicTimingSEI(cfg, 0)
+	payload := BuildPicTimingSEI(cfg, 0, nil)
 	// 4+2+1 = 7 bits, padded to 1 byte.
 	if len(payload) != 1 {
 		t.Fatalf("payload length = %d, want 1", len(payload))
@@ -343,7 +343,7 @@ func TestBuildPicTimingAndCaptionSEI_NilPairs_EmitsNullCC(t *testing.T) {
 	// nil pairs should still produce pic_timing + null cc_data SEI to maintain
 	// continuous caption carriage for downstream decoder acquisition.
 	cfg := DefaultPicTimingConfig()
-	result := BuildPicTimingAndCaptionSEI(nil, cfg, 0, "h264")
+	result := BuildPicTimingAndCaptionSEI(nil, cfg, 0, nil, "h264")
 	if result == nil {
 		t.Fatal("expected non-nil SEI with null cc_data, got nil")
 	}
@@ -354,7 +354,7 @@ func TestBuildPicTimingAndCaptionSEI_NilPairs_EmitsNullCC(t *testing.T) {
 
 func TestBuildPicTimingAndCaptionSEI_EmptyPairs_EmitsNullCC(t *testing.T) {
 	cfg := DefaultPicTimingConfig()
-	result := BuildPicTimingAndCaptionSEI([]CCPair{}, cfg, 0, "h264")
+	result := BuildPicTimingAndCaptionSEI([]CCPair{}, cfg, 0, nil, "h264")
 	if result == nil {
 		t.Fatal("expected non-nil SEI with null cc_data, got nil")
 	}
@@ -364,7 +364,7 @@ func TestBuildPicTimingAndCaptionSEI_H264_Structure(t *testing.T) {
 	pairs := []CCPair{{Data: [2]byte{'H', 'i'}}}
 	cfg := DefaultPicTimingConfig()
 
-	nalu := BuildPicTimingAndCaptionSEI(pairs, cfg, 0, "h264")
+	nalu := BuildPicTimingAndCaptionSEI(pairs, cfg, 0, nil, "h264")
 	if nalu == nil {
 		t.Fatal("returned nil")
 	}
@@ -389,7 +389,7 @@ func TestBuildPicTimingAndCaptionSEI_HEVC_Structure(t *testing.T) {
 	pairs := []CCPair{{Data: [2]byte{'H', 'i'}}}
 	cfg := DefaultHEVCPicTimingConfig()
 
-	nalu := BuildPicTimingAndCaptionSEI(pairs, cfg, 0, "h265")
+	nalu := BuildPicTimingAndCaptionSEI(pairs, cfg, 0, nil, "h265")
 	if nalu == nil {
 		t.Fatal("returned nil")
 	}
@@ -417,7 +417,7 @@ func TestPicTimingBeforeCaptionInNALU(t *testing.T) {
 	pairs := []CCPair{{Data: [2]byte{'A', 'B'}}}
 	cfg := DefaultPicTimingConfig()
 
-	nalu := BuildPicTimingAndCaptionSEI(pairs, cfg, 0, "h264")
+	nalu := BuildPicTimingAndCaptionSEI(pairs, cfg, 0, nil, "h264")
 	if nalu == nil {
 		t.Fatal("returned nil")
 	}
@@ -466,7 +466,7 @@ func TestPicTimingBeforeCaptionInNALU_HEVC(t *testing.T) {
 	pairs := []CCPair{{Data: [2]byte{'X', 'Y'}}}
 	cfg := DefaultHEVCPicTimingConfig()
 
-	nalu := BuildPicTimingAndCaptionSEI(pairs, cfg, 0, "h265")
+	nalu := BuildPicTimingAndCaptionSEI(pairs, cfg, 0, nil, "h265")
 	if nalu == nil {
 		t.Fatal("returned nil")
 	}
@@ -505,7 +505,7 @@ func TestBuildPicTimingAndCaptionSEI_CaptionRoundTrip(t *testing.T) {
 	}
 	cfg := DefaultPicTimingConfig()
 
-	nalu := BuildPicTimingAndCaptionSEI(pairs, cfg, 42, "h264")
+	nalu := BuildPicTimingAndCaptionSEI(pairs, cfg, 42, nil, "h264")
 	if nalu == nil {
 		t.Fatal("returned nil")
 	}
@@ -550,7 +550,7 @@ func TestBuildPicTimingAndCaptionSEI_InsertBeforeVCL(t *testing.T) {
 	pairs := []CCPair{{Data: [2]byte{'O', 'K'}}}
 	cfg := DefaultPicTimingConfig()
 
-	sei := BuildPicTimingAndCaptionSEI(pairs, cfg, 0, "h264")
+	sei := BuildPicTimingAndCaptionSEI(pairs, cfg, 0, nil, "h264")
 
 	// SPS + PPS + IDR.
 	annexB := []byte{
@@ -577,7 +577,7 @@ func TestBuildPicTimingAndCaptionSEI_HEVC_InsertBeforeVCL(t *testing.T) {
 	pairs := []CCPair{{Data: [2]byte{'O', 'K'}}}
 	cfg := DefaultHEVCPicTimingConfig()
 
-	sei := BuildPicTimingAndCaptionSEI(pairs, cfg, 0, "h265")
+	sei := BuildPicTimingAndCaptionSEI(pairs, cfg, 0, nil, "h265")
 
 	// VPS + SPS + PPS + IDR (HEVC).
 	annexB := []byte{
@@ -607,7 +607,7 @@ func TestBuildPicTimingAndCaptionSEI_MonotonicallyIncreasingDelay(t *testing.T) 
 	pairs := []CCPair{{Data: [2]byte{'A', 'B'}}}
 
 	for _, frame := range []int64{0, 1, 100, 10000} {
-		nalu := BuildPicTimingAndCaptionSEI(pairs, cfg, frame, "h264")
+		nalu := BuildPicTimingAndCaptionSEI(pairs, cfg, frame, nil, "h264")
 		if nalu == nil {
 			t.Fatalf("returned nil for frame %d", frame)
 		}
@@ -712,5 +712,204 @@ func TestAppendSEISize(t *testing.T) {
 		if !bytes.Equal(got, tt.want) {
 			t.Errorf("appendSEISize(%d) = %X, want %X", tt.size, got, tt.want)
 		}
+	}
+}
+
+// bitReader reads bits from a byte slice (for test verification).
+type bitReader struct {
+	data   []byte
+	pos    int // byte position
+	bitPos int // bit position within current byte (0-7)
+}
+
+func (r *bitReader) readBits(n int) int {
+	val := 0
+	for i := 0; i < n; i++ {
+		if r.pos >= len(r.data) {
+			return val
+		}
+		bit := (r.data[r.pos] >> uint(7-r.bitPos)) & 1
+		val = (val << 1) | int(bit)
+		r.bitPos++
+		if r.bitPos == 8 {
+			r.bitPos = 0
+			r.pos++
+		}
+	}
+	return val
+}
+
+func TestBuildPicTimingSEI_H264_WithTimecode_NDF(t *testing.T) {
+	cfg := DefaultPicTimingConfig()
+	cfg.TimecodeEnabled = true
+	cfg.FPSNum = 30
+	cfg.FPSDen = 1
+
+	tc := &Timecode{Hours: 12, Minutes: 30, Seconds: 45, Frames: 15}
+	payload := BuildPicTimingSEI(cfg, 100, tc)
+
+	if len(payload) <= 7 {
+		t.Fatalf("payload length = %d, expected > 7 with timecode", len(payload))
+	}
+
+	br := &bitReader{data: payload}
+
+	// cpb_removal_delay (24 bits) = 200
+	if v := br.readBits(24); v != 200 {
+		t.Errorf("cpb_removal_delay = %d, want 200", v)
+	}
+	// dpb_output_delay (24 bits) = 0
+	if v := br.readBits(24); v != 0 {
+		t.Errorf("dpb_output_delay = %d, want 0", v)
+	}
+	// pic_struct (4 bits) = 0
+	if v := br.readBits(4); v != 0 {
+		t.Errorf("pic_struct = %d, want 0", v)
+	}
+	// clock_timestamp_flag[0] = 1
+	if v := br.readBits(1); v != 1 {
+		t.Fatalf("clock_timestamp_flag = %d, want 1", v)
+	}
+	// ct_type = 0
+	if v := br.readBits(2); v != 0 {
+		t.Errorf("ct_type = %d, want 0", v)
+	}
+	// nuit_field_based_flag = 0
+	if v := br.readBits(1); v != 0 {
+		t.Errorf("nuit_field_based_flag = %d, want 0", v)
+	}
+	// counting_type = 1 (NDF for 30/1)
+	if v := br.readBits(5); v != 1 {
+		t.Errorf("counting_type = %d, want 1", v)
+	}
+	// full_timestamp_flag = 1
+	if v := br.readBits(1); v != 1 {
+		t.Errorf("full_timestamp_flag = %d, want 1", v)
+	}
+	// discontinuity_flag = 0
+	if v := br.readBits(1); v != 0 {
+		t.Errorf("discontinuity_flag = %d, want 0", v)
+	}
+	// cnt_dropped_flag = 0
+	if v := br.readBits(1); v != 0 {
+		t.Errorf("cnt_dropped_flag = %d, want 0", v)
+	}
+	// n_frames = 15
+	if v := br.readBits(8); v != 15 {
+		t.Errorf("n_frames = %d, want 15", v)
+	}
+	// seconds = 45
+	if v := br.readBits(6); v != 45 {
+		t.Errorf("seconds = %d, want 45", v)
+	}
+	// minutes = 30
+	if v := br.readBits(6); v != 30 {
+		t.Errorf("minutes = %d, want 30", v)
+	}
+	// hours = 12
+	if v := br.readBits(5); v != 12 {
+		t.Errorf("hours = %d, want 12", v)
+	}
+}
+
+func TestBuildPicTimingSEI_H264_WithTimecode_DF(t *testing.T) {
+	cfg := DefaultPicTimingConfig()
+	cfg.TimecodeEnabled = true
+	cfg.FPSNum = 30000
+	cfg.FPSDen = 1001
+
+	tc := &Timecode{
+		Hours: 0, Minutes: 1, Seconds: 0, Frames: 2,
+		DropFrame: true, CntDropped: true,
+	}
+	payload := BuildPicTimingSEI(cfg, 0, tc)
+
+	br := &bitReader{data: payload}
+	br.readBits(24) // cpb_removal_delay
+	br.readBits(24) // dpb_output_delay
+	br.readBits(4)  // pic_struct
+	br.readBits(1)  // clock_timestamp_flag
+	br.readBits(2)  // ct_type
+	br.readBits(1)  // nuit_field_based_flag
+
+	// counting_type = 4 (DF)
+	if v := br.readBits(5); v != 4 {
+		t.Errorf("counting_type = %d, want 4", v)
+	}
+	br.readBits(1) // full_timestamp_flag
+	br.readBits(1) // discontinuity_flag
+
+	// cnt_dropped_flag = 1
+	if v := br.readBits(1); v != 1 {
+		t.Errorf("cnt_dropped_flag = %d, want 1", v)
+	}
+	// n_frames = 2
+	if v := br.readBits(8); v != 2 {
+		t.Errorf("n_frames = %d, want 2", v)
+	}
+}
+
+func TestBuildPicTimingSEI_H264_NilTimecode_BackwardsCompat(t *testing.T) {
+	cfg := DefaultPicTimingConfig()
+	payload := BuildPicTimingSEI(cfg, 100, nil)
+	if len(payload) != 7 {
+		t.Fatalf("payload length = %d, want 7 (backwards compat)", len(payload))
+	}
+}
+
+func TestBuildPicTimingAndCaptionSEI_WithTimecode(t *testing.T) {
+	pairs := []CCPair{{Data: [2]byte{'A', 'B'}}}
+	cfg := DefaultPicTimingConfig()
+	cfg.TimecodeEnabled = true
+	cfg.FPSNum = 30000
+	cfg.FPSDen = 1001
+
+	tc := &Timecode{Hours: 14, Minutes: 30, Seconds: 0, Frames: 2, DropFrame: true, CntDropped: true}
+	nalu := BuildPicTimingAndCaptionSEI(pairs, cfg, 42, tc, "h264")
+	if nalu == nil {
+		t.Fatal("returned nil")
+	}
+
+	// Verify pic_timing comes before caption.
+	body := removeEPBStateful(nalu[5:])
+	if body[0] != seiPayloadTypePicTiming {
+		t.Errorf("first SEI type = %02X, want pic_timing", body[0])
+	}
+
+	// Skip pic_timing to find caption.
+	pos := 1
+	ptSize := 0
+	for pos < len(body) && body[pos] == 0xFF {
+		ptSize += 255
+		pos++
+	}
+	ptSize += int(body[pos])
+	pos++
+	pos += ptSize
+
+	if pos >= len(body) {
+		t.Fatal("no second SEI message found")
+	}
+	if body[pos] != seiPayloadTypeT35 {
+		t.Errorf("second SEI type = %02X, want caption", body[pos])
+	}
+
+	// Verify caption data round-trips.
+	extracted := ExtractCCPairsFromSEI(body[pos:])
+	if len(extracted) != 1 || extracted[0].Data != [2]byte{'A', 'B'} {
+		t.Errorf("caption round-trip failed: got %v", extracted)
+	}
+}
+
+func TestBuildPicTimingAndCaptionSEI_NilTimecode_BackwardsCompat(t *testing.T) {
+	pairs := []CCPair{{Data: [2]byte{'X', 'Y'}}}
+	cfg := DefaultPicTimingConfig()
+
+	nalu := BuildPicTimingAndCaptionSEI(pairs, cfg, 0, nil, "h264")
+	if nalu == nil {
+		t.Fatal("returned nil")
+	}
+	if !bytes.HasPrefix(nalu, []byte{0x00, 0x00, 0x00, 0x01}) {
+		t.Error("missing Annex B start code")
 	}
 }

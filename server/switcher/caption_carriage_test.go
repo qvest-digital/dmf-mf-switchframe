@@ -168,7 +168,7 @@ func TestBroadcastWithCaptions_PicTiming_ModeOff_InjectsCombinedSEI(t *testing.T
 	// Simulate 5 frames.
 	for i := int64(0); i < 5; i++ {
 		pairs := mgr.ConsumeForFrame()
-		nalu := caption.BuildPicTimingAndCaptionSEI(pairs, cfg, i, "h264")
+		nalu := caption.BuildPicTimingAndCaptionSEI(pairs, cfg, i, nil, "h264")
 		if nalu == nil {
 			t.Fatalf("frame %d: combined SEI should not be nil in ModeOff", i)
 		}

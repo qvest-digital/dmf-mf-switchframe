@@ -31,6 +31,14 @@ type PicTimingConfig struct {
 
 	// HEVC-specific: CpbDpbDelaysPresentFlag derived from VPS HRD.
 	CpbDpbDelaysPresent bool
+
+	// Time offset length from SPS HRD (default 0 = no time_offset field).
+	TimeOffsetLength int
+
+	// Timecode injection: when true, clock_timestamp is written with UTC timecode.
+	TimecodeEnabled bool
+	FPSNum          int // pipeline frame rate numerator (e.g. 30000)
+	FPSDen          int // pipeline frame rate denominator (e.g. 1001)
 }
 
 // DefaultPicTimingConfig returns a PicTimingConfig matching typical NVENC CBR/VBR
@@ -78,15 +86,15 @@ const seiPayloadTypePicTiming = 1
 //   - Padded to byte boundary
 //
 // frameNum is the monotonically increasing frame counter used for cpb_removal_delay.
-func BuildPicTimingSEI(cfg PicTimingConfig, frameNum int64) []byte {
+func BuildPicTimingSEI(cfg PicTimingConfig, frameNum int64, tc *Timecode) []byte {
 	if cfg.IsHEVC {
-		return buildPicTimingSEIHEVC(cfg, frameNum)
+		return buildPicTimingSEIHEVC(cfg, frameNum, tc)
 	}
-	return buildPicTimingSEIH264(cfg, frameNum)
+	return buildPicTimingSEIH264(cfg, frameNum, tc)
 }
 
 // buildPicTimingSEIH264 builds an H.264 pic_timing SEI payload.
-func buildPicTimingSEIH264(cfg PicTimingConfig, frameNum int64) []byte {
+func buildPicTimingSEIH264(cfg PicTimingConfig, frameNum int64, tc *Timecode) []byte {
 	var bw bitWriter
 	bw.init(16) // generous initial capacity
 
@@ -112,8 +120,42 @@ func buildPicTimingSEIH264(cfg PicTimingConfig, frameNum int64) []byte {
 	if cfg.PicStructPresent {
 		// pic_struct = 0: progressive frame.
 		bw.writeBits(0, 4)
-		// NumClockTS = 1 for pic_struct=0. Write clock_timestamp_flag[0] = 0.
-		bw.writeBits(0, 1)
+
+		if tc != nil {
+			// clock_timestamp_flag[0] = 1: SMPTE 12M timecode present.
+			bw.writeBits(1, 1)
+			// ct_type = 0: progressive.
+			bw.writeBits(0, 2)
+			// nuit_field_based_flag = 0.
+			bw.writeBits(0, 1)
+			// counting_type: 1=NDF, 4=DF per H.264 Table D-2.
+			bw.writeBits(uint64(countingType(cfg.FPSNum, cfg.FPSDen)), 5)
+			// full_timestamp_flag = 1: all time fields present.
+			bw.writeBits(1, 1)
+			// discontinuity_flag = 0.
+			bw.writeBits(0, 1)
+			// cnt_dropped_flag.
+			if tc.CntDropped {
+				bw.writeBits(1, 1)
+			} else {
+				bw.writeBits(0, 1)
+			}
+			// n_frames (8 bits).
+			bw.writeBits(uint64(tc.Frames), 8)
+			// seconds_value (6 bits).
+			bw.writeBits(uint64(tc.Seconds), 6)
+			// minutes_value (6 bits).
+			bw.writeBits(uint64(tc.Minutes), 6)
+			// hours_value (5 bits).
+			bw.writeBits(uint64(tc.Hours), 5)
+			// time_offset (if length > 0).
+			if cfg.TimeOffsetLength > 0 {
+				bw.writeBits(0, cfg.TimeOffsetLength)
+			}
+		} else {
+			// No timecode: clock_timestamp_flag[0] = 0.
+			bw.writeBits(0, 1)
+		}
 	}
 
 	// Pad to byte boundary with trailing bits (1 + zeros).
@@ -123,7 +165,7 @@ func buildPicTimingSEIH264(cfg PicTimingConfig, frameNum int64) []byte {
 }
 
 // buildPicTimingSEIHEVC builds an HEVC pic_timing SEI payload.
-func buildPicTimingSEIHEVC(cfg PicTimingConfig, frameNum int64) []byte {
+func buildPicTimingSEIHEVC(cfg PicTimingConfig, frameNum int64, tc *Timecode) []byte {
 	var bw bitWriter
 	bw.init(16)
 
@@ -172,7 +214,7 @@ func buildPicTimingSEIHEVC(cfg PicTimingConfig, frameNum int64) []byte {
 // broadcast decoder compliance.
 //
 // codec: "h264" or "" for H.264, "h265" for HEVC.
-func BuildPicTimingAndCaptionSEI(pairs []CCPair, ptCfg PicTimingConfig, frameNum int64, codec string) []byte {
+func BuildPicTimingAndCaptionSEI(pairs []CCPair, ptCfg PicTimingConfig, frameNum int64, tc *Timecode, codec string) []byte {
 	// Always emit at least a null pair to maintain continuous cc_data presence
 	// in the stream. This signals caption carriage to downstream decoders from
 	// the first frame, regardless of whether text is being authored.
@@ -188,7 +230,7 @@ func BuildPicTimingAndCaptionSEI(pairs []CCPair, ptCfg PicTimingConfig, frameNum
 	}
 
 	// Build pic_timing payload.
-	ptPayload := BuildPicTimingSEI(ptCfg, frameNum)
+	ptPayload := BuildPicTimingSEI(ptCfg, frameNum, tc)
 
 	// Build caption payload (the raw SEI message payload, same as in BuildSEINALU).
 	ccCount := len(pairs) * 2

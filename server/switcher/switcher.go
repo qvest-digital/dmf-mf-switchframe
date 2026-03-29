@@ -1610,7 +1610,7 @@ func (s *Switcher) broadcastWithCaptions(frame *media.VideoFrame) {
 	var seiNALU []byte
 	if ptCfg := s.picTimingConfig.Load(); ptCfg != nil {
 		frameNum := s.picTimingFrame.Add(1) - 1
-		seiNALU = caption.BuildPicTimingAndCaptionSEI(pairs, *ptCfg, frameNum, codecStr)
+		seiNALU = caption.BuildPicTimingAndCaptionSEI(pairs, *ptCfg, frameNum, nil, codecStr)
 	} else {
 		seiNALU = caption.BuildSEINALU(pairs, codecStr)
 	}
