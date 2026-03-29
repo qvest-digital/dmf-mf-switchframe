@@ -421,21 +421,37 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 
 		go func() {
 			var (
-				gpuEnc       *gpu.GPUEncoder
-				groupID      atomic.Uint32
-				lastW, lastH int
+				gpuEnc        *gpu.GPUEncoder
+				groupID       atomic.Uint32
+				lastW, lastH  int
+				replayNV12Tmp  *gpu.GPUFrame // temp NV12 frame for P210→NV12 convert
+				replayNV12Pool *gpu.FramePool
 			)
 			defer func() {
+				if replayNV12Tmp != nil {
+					replayNV12Tmp.Release()
+				}
+				if replayNV12Pool != nil {
+					replayNV12Pool.Close()
+				}
 				if gpuEnc != nil {
 					gpuEnc.Close()
 				}
 			}()
 
 			for job := range replayGPUCh {
-				// Resolution change → recreate encoder.
+				// Resolution change → recreate encoder and NV12 temp.
 				if gpuEnc != nil && (job.w != lastW || job.h != lastH) {
 					gpuEnc.Close()
 					gpuEnc = nil
+					if replayNV12Tmp != nil {
+						replayNV12Tmp.Release()
+						replayNV12Tmp = nil
+					}
+					if replayNV12Pool != nil {
+						replayNV12Pool.Close()
+						replayNV12Pool = nil
+					}
 				}
 
 				if gpuEnc == nil {
@@ -454,8 +470,31 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 					continue
 				}
 
+				// If source frame is P210, convert to NV12 before H.264 encode.
+				// Replay always outputs H.264 for browser compatibility.
+				encFrame := gpuFrame
+				if gpuFrame.Format == gpu.GPUFormatP210 {
+					if replayNV12Tmp == nil {
+						tmp, tmpErr := gpu.NewFramePool(a.gpuState.ctx, job.w, job.h, 2)
+						if tmpErr != nil {
+							continue
+						}
+						replayNV12Pool = tmp
+						f, fErr := tmp.Acquire()
+						if fErr != nil {
+							continue
+						}
+						replayNV12Tmp = f
+					}
+					if err := gpu.ScaleP210ToNV12On(a.gpuState.ctx, replayNV12Tmp, gpuFrame, nil); err != nil {
+						continue
+					}
+					replayNV12Tmp.PTS = gpuFrame.PTS
+					encFrame = replayNV12Tmp
+				}
+
 				// NVENC encode directly from VRAM.
-				data, isIDR, err := gpuEnc.EncodeGPU(gpuFrame, false)
+				data, isIDR, err := gpuEnc.EncodeGPU(encFrame, false)
 				if err != nil || len(data) == 0 {
 					continue
 				}
