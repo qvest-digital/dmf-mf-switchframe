@@ -8,18 +8,16 @@ package audio
 // When the buffer has fewer than N samples, silence (zeros) is
 // returned — less audible than freeze-repeat with bursty SRT delivery.
 //
-// When targetDepth > 0, Pop trims excess samples from the front before
-// reading. This keeps the FIFO depth bounded, preventing unbounded
-// A/V content offset in the ref clock architecture (video is newest-wins,
-// audio is FIFO — without trim, the FIFO accumulates stale content).
+// In clock-driven mode (ref clock), the capacity is reduced so the
+// Push-side overflow naturally discards oldest samples, bounding the
+// FIFO depth without creating audible discontinuities in Pop.
 type PCMRingBuffer struct {
-	buf         []float32 // circular sample buffer
-	rd          int       // read position
-	wr          int       // write position
-	count       int       // current number of samples in buffer
-	cap         int       // total capacity in samples
-	targetDepth int       // target FIFO depth (0 = no trim)
-	lastFrame   []float32 // last successfully popped frame (for freeze-repeat)
+	buf       []float32 // circular sample buffer
+	rd        int       // read position
+	wr        int       // write position
+	count     int       // current number of samples in buffer
+	cap       int       // total capacity in samples
+	lastFrame []float32 // last successfully popped frame (for freeze-repeat)
 }
 
 // NewPCMRingBuffer creates a ring buffer with the given capacity in samples.
@@ -68,36 +66,12 @@ func (rb *PCMRingBuffer) Push(pcm []float32) {
 	rb.count += n
 }
 
-// SetTargetDepth sets the target FIFO depth in samples. When set > 0,
-// Pop trims excess samples before reading, keeping the buffer depth
-// bounded to targetDepth + requested samples. This prevents unbounded
-// A/V content offset from accumulating in the FIFO.
-//
-// Typical value: 2048 (stereo interleaved = 1024 frames = ~21ms at 48kHz).
-func (rb *PCMRingBuffer) SetTargetDepth(samples int) {
-	rb.targetDepth = samples
-}
-
 // Pop removes and returns exactly n samples from the buffer. If fewer
 // than n samples are available, returns silence (zeros). Returns nil
 // if n <= 0.
-//
-// When targetDepth > 0 and the buffer holds more than targetDepth + n
-// samples, the oldest excess samples are discarded before reading.
-// This bounds the FIFO latency to ~targetDepth samples regardless of
-// how much data accumulated from bursty source delivery or clock drift.
 func (rb *PCMRingBuffer) Pop(n int) []float32 {
 	if n <= 0 {
 		return nil
-	}
-
-	// Trim excess: if buffer is deeper than target + requested, discard
-	// the oldest samples to keep FIFO latency bounded. This is the audio
-	// equivalent of video's "newest-wins" — we keep the freshest content.
-	if rb.targetDepth > 0 && rb.count > rb.targetDepth+n {
-		excess := rb.count - rb.targetDepth - n
-		rb.rd = (rb.rd + excess) % rb.cap
-		rb.count -= excess
 	}
 
 	if rb.count < n {

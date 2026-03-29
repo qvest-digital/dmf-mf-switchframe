@@ -488,18 +488,23 @@ func (m *Mixer) AddChannel(sourceKey string) {
 }
 
 // newChannelRingBuf creates a PCM ring buffer for a mixer channel.
-// In clock-driven mode (ref clock), sets a target depth to bound the
-// FIFO latency — preventing unbounded A/V content offset. In legacy
-// ticker mode, no target depth is set (unlimited FIFO).
+// In clock-driven mode (ref clock), uses a small capacity so the
+// Push-side overflow naturally bounds FIFO depth. The existing Push
+// logic discards oldest samples when the buffer is full — no sudden
+// discontinuities like Pop-side trimming would cause.
+//
+// Legacy ticker mode uses a larger capacity (10 AAC frames ≈ 213ms).
 func (m *Mixer) newChannelRingBuf() *PCMRingBuffer {
-	rb := NewPCMRingBuffer(10 * 1024 * m.numChannels)
 	if m.config.ClockDriven {
-		// Target: 1024 frames × numChannels = one AAC frame (~21ms at 48kHz).
-		// This bounds the audio FIFO latency to ≤21ms — well within the
-		// ITU-R BT.1359 imperceptible range (±40ms).
-		rb.SetTargetDepth(1024 * m.numChannels)
+		// 3 AAC frames of capacity (~64ms at 48kHz stereo).
+		// This provides enough jitter buffer for SRT delivery bursts
+		// while bounding the FIFO depth to ≤64ms — well within
+		// ITU-R BT.1359 imperceptible range (±40ms for A/V offset).
+		// Push overflow discards oldest samples smoothly at the write
+		// boundary, avoiding the audible clicks that Pop-side trim causes.
+		return NewPCMRingBuffer(3 * 1024 * m.numChannels)
 	}
-	return rb
+	return NewPCMRingBuffer(10 * 1024 * m.numChannels)
 }
 
 // RemoveChannel unregisters a source.
