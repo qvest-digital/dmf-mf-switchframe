@@ -1246,11 +1246,19 @@ func (m *Manager) DirectWriteVideo(frame *media.VideoFrame) {
 		if m.lipSyncSource != nil {
 			raw := m.lipSyncSource()
 			if m.smoothedLipSync == 0 {
+				// Latch the first measurement as the constant offset.
+				// In ref clock mode the ring buffer depth is stable (~30ms),
+				// so re-reading per frame just adds jitter to the video PTS grid.
 				m.smoothedLipSync = raw
-			} else {
-				m.smoothedLipSync = (m.smoothedLipSync*15 + raw) / 16
+				muxer.SetLipSyncOffset90k(m.smoothedLipSync)
 			}
-			muxer.SetLipSyncOffset90k(m.smoothedLipSync)
+			// Only update if the offset drifts significantly (>5ms = 450 ticks).
+			// This prevents per-frame jitter while still tracking large shifts
+			// (e.g., mixer reconfiguration, format change).
+			if delta := raw - m.smoothedLipSync; delta > 450 || delta < -450 {
+				m.smoothedLipSync = (m.smoothedLipSync*15 + raw) / 16
+				muxer.SetLipSyncOffset90k(m.smoothedLipSync)
+			}
 		}
 		if err := muxer.WriteVideo(frame); err != nil {
 			m.log.Error("direct video write error", "err", err)
