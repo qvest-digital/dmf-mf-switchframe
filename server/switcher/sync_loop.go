@@ -313,7 +313,9 @@ func (s *Switcher) processTransitionTick(tick clock.Tick, fs *FrameSynchronizer,
 				PTS:    tick.VideoPTS,
 				DTS:    tick.VideoPTS,
 			}
-			s.runPipelineAndBroadcast(result, tick)
+			// Use the transition-specific broadcast that skips RunFromCache
+			// and uploads the CPU-blended frame via RunWithUpload instead.
+			s.runPipelineAndBroadcastTransition(result, tick)
 		}
 	}
 
