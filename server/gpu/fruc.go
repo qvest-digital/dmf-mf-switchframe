@@ -167,9 +167,11 @@ typedef struct {
     NvOFGPUBufferHandle hInput;
     NvOFGPUBufferHandle hRef;
     NvOFGPUBufferHandle hOutput;
+    NvOFGPUBufferHandle hCost;     // per-block cost/confidence map
     CUdeviceptr         inputPtr;
     CUdeviceptr         refPtr;
     CUdeviceptr         outputPtr;
+    CUdeviceptr         costPtr;   // device pointer for cost map (uint32_t per block)
     uint32_t            outputStrideX;
     uint32_t            outputStrideY;
     int                 width;
@@ -203,7 +205,7 @@ static NV_OF_STATUS nvof_create_session(NvOF_Session* s, int width, int height) 
     rc = nvof_funcs.nvCreateOpticalFlowCuda(cuCtx, &s->hOf);
     if (rc != NV_OF_SUCCESS) return rc;
 
-    // Initialize: NV12 input, 4x4 grid, SLOW quality, forward prediction
+    // Initialize: NV12 input, 4x4 grid, SLOW quality, forward prediction, cost output
     NvOF_InitParams init;
     memset(&init, 0, sizeof(init));
     init.width = width;
@@ -213,6 +215,7 @@ static NV_OF_STATUS nvof_create_session(NvOF_Session* s, int width, int height) 
     init.perfLevel = NV_OF_PERF_LEVEL_SLOW;
     init.predDirection = NV_OF_PRED_DIRECTION_FORWARD;
     init.inputBufferFormat = NV_OF_BUFFER_FORMAT_NV12;
+    init.enableOutputCost = NV_OF_TRUE;
     rc = nvof_funcs.nvOFInit(s->hOf, &init);
     if (rc != NV_OF_SUCCESS) { nvof_funcs.nvOFDestroy(s->hOf); return rc; }
 
@@ -230,10 +233,22 @@ static NV_OF_STATUS nvof_create_session(NvOF_Session* s, int width, int height) 
     rc = nvof_funcs.nvOFCreateGPUBufferCuda(s->hOf, &outputDesc, NV_OF_CUDA_BUFFER_TYPE_CUDEVICEPTR, &s->hOutput);
     if (rc != NV_OF_SUCCESS) { nvof_destroy_session(s); return rc; }
 
+    // Create cost buffer (UINT = per-block confidence, 0=best 65535=worst)
+    NvOF_BufferDesc costDesc = {s->flowW, s->flowH, NV_OF_BUFFER_USAGE_OUTPUT, 6}; // 6 = NV_OF_BUFFER_FORMAT_UINT
+    rc = nvof_funcs.nvOFCreateGPUBufferCuda(s->hOf, &costDesc, NV_OF_CUDA_BUFFER_TYPE_CUDEVICEPTR, &s->hCost);
+    if (rc != NV_OF_SUCCESS) {
+        // Cost map is optional — continue without it
+        s->hCost = NULL;
+        s->costPtr = 0;
+    }
+
     // Get device pointers for memcpy
     s->inputPtr = nvof_funcs.nvOFGPUBufferGetCUdeviceptr(s->hInput);
     s->refPtr = nvof_funcs.nvOFGPUBufferGetCUdeviceptr(s->hRef);
     s->outputPtr = nvof_funcs.nvOFGPUBufferGetCUdeviceptr(s->hOutput);
+    if (s->hCost) {
+        s->costPtr = nvof_funcs.nvOFGPUBufferGetCUdeviceptr(s->hCost);
+    }
 
     // Get output stride
     NvOF_CudaBufferStrideInfo strideInfo;
@@ -292,12 +307,14 @@ static NV_OF_STATUS nvof_compute_flow(NvOF_Session* s,
     inParams.inputFrame = s->hInput;
     inParams.referenceFrame = s->hRef;
     outParams.outputBuffer = s->hOutput;
+    outParams.outputCostBuffer = s->hCost;  // NULL if cost not available
 
     return nvof_funcs.nvOFExecute(s->hOf, &inParams, &outParams);
 }
 
 static void nvof_destroy_session(NvOF_Session* s) {
     if (!s || !s->hOf) return;
+    if (s->hCost) nvof_funcs.nvOFDestroyGPUBufferCuda(s->hCost);
     if (s->hOutput) nvof_funcs.nvOFDestroyGPUBufferCuda(s->hOutput);
     if (s->hRef) nvof_funcs.nvOFDestroyGPUBufferCuda(s->hRef);
     if (s->hInput) nvof_funcs.nvOFDestroyGPUBufferCuda(s->hInput);
@@ -310,7 +327,7 @@ cudaError_t fruc_interpolate_nv12(
     uint8_t* dst, int dstPitch,
     const uint8_t* prev, int prevPitch,
     const uint8_t* curr, int currPitch,
-    const int16_t* flowXY, int flowStride,
+    const int16_t* flowXY, const uint32_t* costMap, int flowStride,
     int width, int height, float alpha,
     cudaStream_t stream);
 
@@ -325,7 +342,7 @@ cudaError_t fruc_motionblur_nv12(
     uint8_t* dst, int dstPitch,
     const uint8_t* prev, int prevPitch,
     const uint8_t* curr, int currPitch,
-    const int16_t* flowXY, int flowStride,
+    const int16_t* flowXY, const uint32_t* costMap, int flowStride,
     int width, int height,
     float alpha, float shutterAngle,
     cudaStream_t stream);
@@ -360,6 +377,10 @@ type FRUC struct {
 	flowBuf unsafe.Pointer
 	flowW   int // flow field width (frame width / 4)
 	flowH   int // flow field height (frame height / 4)
+
+	// Cost map buffer in VRAM (uint32 per block, from NVOFA cost output).
+	// NULL when NVOFA has no cost map available — kernels handle NULL gracefully.
+	costBuf unsafe.Pointer
 }
 
 var (
@@ -409,14 +430,25 @@ func NewFRUC(ctx *Context, width, height int) (*FRUC, error) {
 	}
 	C.cudaMemset(f.flowBuf, 0, C.size_t(flowSize))
 
+	// Allocate cost map buffer: uint32 per 4x4 block
+	costSize := f.flowW * f.flowH * 4
+	if rc := C.cudaMalloc(&f.costBuf, C.size_t(costSize)); rc != C.cudaSuccess {
+		// Cost map is optional — continue without it
+		f.costBuf = nil
+	} else {
+		C.cudaMemset(f.costBuf, 0, C.size_t(costSize))
+	}
+
 	// Try to create NVOFA session
 	if nvofaAvailable() {
 		rc := C.nvof_create_session(&f.session, C.int(width), C.int(height))
 		if rc == C.NV_OF_SUCCESS {
 			f.hasNVOFA = true
+			hasCost := f.session.costPtr != 0
 			slog.Info("gpu: FRUC initialized with NVOFA hardware optical flow",
 				"width", width, "height", height,
-				"flow_grid", fmt.Sprintf("%dx%d", f.flowW, f.flowH))
+				"flow_grid", fmt.Sprintf("%dx%d", f.flowW, f.flowH),
+				"costMap", hasCost)
 		} else {
 			slog.Warn("gpu: NVOFA session creation failed, using blend fallback",
 				"rc", rc, "width", width, "height", height)
@@ -473,8 +505,17 @@ func (f *FRUC) Interpolate(prev, curr, output *GPUFrame, alpha float64) error {
 				C.cuMemcpy2D(&cp)
 			}
 
-			// Motion-compensated interpolation with NVOFA S10.5 flow vectors.
-			// The CUDA kernel converts S10.5 to pixels via * 0.03125f (1/32).
+			// Copy cost map if available
+			var costPtr *C.uint32_t
+			if f.session.costPtr != 0 && f.costBuf != nil {
+				costBytes := C.size_t(f.flowW * f.flowH * 4) // uint32 per block
+				C.cuMemcpy(C.CUdeviceptr(uintptr(f.costBuf)),
+					f.session.costPtr, costBytes)
+				costPtr = (*C.uint32_t)(f.costBuf)
+			}
+
+			// Motion-compensated interpolation with NVOFA S10.5 flow vectors,
+			// cost-map confidence, magnitude clamping, and occlusion-aware blend.
 			cerr := C.fruc_interpolate_nv12(
 				(*C.uint8_t)(unsafe.Pointer(uintptr(output.DevPtr))),
 				C.int(output.Pitch),
@@ -483,6 +524,7 @@ func (f *FRUC) Interpolate(prev, curr, output *GPUFrame, alpha float64) error {
 				(*C.uint8_t)(unsafe.Pointer(uintptr(curr.DevPtr))),
 				C.int(curr.Pitch),
 				(*C.int16_t)(f.flowBuf),
+				costPtr,
 				C.int(f.flowW*2),
 				C.int(f.width), C.int(f.height),
 				C.float(alpha),
@@ -579,6 +621,11 @@ func (f *FRUC) MotionBlur(prev, curr, output *GPUFrame, alpha, shutterAngle floa
 		return f.Interpolate(prev, curr, output, alpha)
 	}
 
+	var costPtr *C.uint32_t
+	if f.costBuf != nil {
+		costPtr = (*C.uint32_t)(f.costBuf)
+	}
+
 	cerr := C.fruc_motionblur_nv12(
 		(*C.uint8_t)(unsafe.Pointer(uintptr(output.DevPtr))),
 		C.int(output.Pitch),
@@ -587,6 +634,7 @@ func (f *FRUC) MotionBlur(prev, curr, output *GPUFrame, alpha, shutterAngle floa
 		(*C.uint8_t)(unsafe.Pointer(uintptr(curr.DevPtr))),
 		C.int(curr.Pitch),
 		(*C.int16_t)(f.flowBuf),
+		costPtr,
 		C.int(f.flowW*2),
 		C.int(f.width), C.int(f.height),
 		C.float(alpha), C.float(shutterAngle),
@@ -618,5 +666,9 @@ func (f *FRUC) Close() {
 	if f.flowBuf != nil {
 		C.cudaFree(f.flowBuf)
 		f.flowBuf = nil
+	}
+	if f.costBuf != nil {
+		C.cudaFree(f.costBuf)
+		f.costBuf = nil
 	}
 }
