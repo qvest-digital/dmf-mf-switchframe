@@ -639,13 +639,11 @@ func (a *App) initOutput() error {
 	a.outputMgr.SetMetrics(a.appMetrics)
 
 	if a.cfg.RefClock {
-		// Reference clock path: PTS is assigned by the clock, but audio CONTENT
-		// is delayed by the mixer ring buffer FIFO (~30ms). Video is newest-wins
-		// (no content delay). Delay video PTS by ring buffer depth so audio
-		// content catches up in the muxed output.
-		a.outputMgr.SetLipSyncSource(func() int64 {
-			return a.mixer.RingBufferLatency90k()
-		})
+		// Reference clock path: audio and video PTS both come from the same
+		// Bresenham clock, so they're inherently synchronized. No per-frame
+		// lip-sync adjustment needed — a fluctuating ring buffer depth would
+		// add jitter to the deterministic video PTS grid.
+		// Leave lip-sync source nil (offset stays 0).
 	} else {
 		// Legacy path: dynamic lip-sync for SRT/recording output (muxer path only).
 		// The browser path handles its own compensation in audio-decoder.ts.
