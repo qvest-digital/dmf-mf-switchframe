@@ -90,6 +90,9 @@ type Manager struct {
 	// Lip-sync for SRT/recording output: reads ring buffer depth from mixer.
 	lipSyncSource   func() int64
 	smoothedLipSync int64
+
+	// PTS delta diagnostic: detect jitter at DirectWriteVideo stage.
+	lastDirectVideoPTS int64
 }
 
 // NewManager creates an output Manager. Frames are delivered via
@@ -1260,6 +1263,15 @@ func (m *Manager) DirectWriteVideo(frame *media.VideoFrame) {
 				muxer.SetLipSyncOffset90k(m.smoothedLipSync)
 			}
 		}
+		// Diagnostic: verify upstream PTS deltas at DirectWriteVideo stage.
+		if prev := m.lastDirectVideoPTS; prev != 0 {
+			delta := frame.PTS - prev
+			if delta != 3003 && delta != 3004 && delta != 3753 && delta != 3754 {
+				slog.Warn("DirectWriteVideo: non-nominal PTS delta",
+					"delta", delta, "pts", frame.PTS, "prevPts", prev)
+			}
+		}
+		m.lastDirectVideoPTS = frame.PTS
 		if err := muxer.WriteVideo(frame); err != nil {
 			m.log.Error("direct video write error", "err", err)
 		}

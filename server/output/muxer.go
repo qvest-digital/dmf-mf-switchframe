@@ -93,6 +93,7 @@ type TSMuxer struct {
 	lastMuxedAudioPTS    int64 // PTS written to TS (after rebase)
 	diagCounter          int   // for periodic logging
 	maxBitrate           int   // encoder max bitrate in bits/sec (for PMT descriptor); 0 = use default 5 Mbps
+	diagPrevMuxerPTS     int64 // PTS delta diagnostic: previous muxerPTS for delta tracking
 }
 
 // NewTSMuxer creates an uninitialized TSMuxer. Call SetOutput before
@@ -476,6 +477,16 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 	// ring buffer's FIFO latency. The browser path handles its own
 	// compensation in audio-decoder.ts getPlaybackPTS().
 	muxerPTS := (frame.PTS - m.ptsBase + m.muxerEpoch + m.lipSyncOffset) & 0x1FFFFFFFF
+	// Diagnostic: verify muxerPTS deltas are nominal.
+	if prev := m.diagPrevMuxerPTS; prev != 0 {
+		delta := muxerPTS - prev
+		if delta != 3003 && delta != 3004 && delta != 3753 && delta != 3754 {
+			slog.Warn("muxer: non-nominal muxerPTS delta",
+				"delta", delta, "muxerPTS", muxerPTS, "prevMuxerPTS", prev,
+				"upstreamPTS", frame.PTS, "lipSyncOffset", m.lipSyncOffset)
+		}
+	}
+	m.diagPrevMuxerPTS = muxerPTS
 	m.lastVideoPTS = muxerPTS
 	m.lastUpstreamVideoPTS = frame.PTS
 	m.lastMuxedVideoPTS = muxerPTS

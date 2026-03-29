@@ -221,7 +221,18 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 	var gpuVPS, gpuSPS, gpuPPS []byte
 	// pic_timing frame counter for the GPU encode path.
 	var gpuPicTimingFrame int64
+	// PTS delta diagnostic: detect jitter introduced by GPU encode.
+	var gpuLastEncodedPTS int64
 	gpuOnEncoded := func(data []byte, isIDR bool, pts int64) {
+		// Diagnostic: verify GPU-encoded PTS deltas are nominal.
+		if prev := gpuLastEncodedPTS; prev != 0 {
+			delta := pts - prev
+			if delta != 3003 && delta != 3004 && delta != 3753 && delta != 3754 {
+				slog.Warn("gpuOnEncoded: non-nominal PTS delta",
+					"delta", delta, "pts", pts, "prevPts", prev)
+			}
+		}
+		gpuLastEncodedPTS = pts
 		// Convert Annex B to wire format (4-byte length prefix).
 		// AVC1 and HVC1 use the same wire encoding.
 		wire := codec.AnnexBToWireInto(data, nil)

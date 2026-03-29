@@ -366,6 +366,8 @@ type Switcher struct {
 
 	// Last broadcast PTS for replay PTS anchoring (atomic, lock-free).
 	lastBroadcastPTS atomic.Int64
+	// PTS delta diagnostic: detect jitter at program broadcast stage.
+	lastBroadcastCheckPTS atomic.Int64
 
 	// Broadcast interval diagnostics (atomic, lock-free).
 	lastBroadcastNano         atomic.Int64 // UnixNano of last program broadcast
@@ -1475,6 +1477,14 @@ func (s *Switcher) broadcastToProgram(frame *media.VideoFrame) {
 		f.GroupID = s.programGroupID.Add(1)
 	} else {
 		f.GroupID = s.programGroupID.Load()
+	}
+	// Diagnostic: verify PTS deltas at program broadcast stage.
+	if prev := s.lastBroadcastCheckPTS.Swap(f.PTS); prev != 0 {
+		delta := f.PTS - prev
+		if delta != 3003 && delta != 3004 && delta != 3753 && delta != 3754 {
+			slog.Warn("broadcastToProgram: non-nominal PTS delta",
+				"delta", delta, "pts", f.PTS, "prevPts", prev)
+		}
 	}
 	s.lastBroadcastPTS.Store(f.PTS)
 	s.measureTransSeam()
