@@ -285,7 +285,7 @@ func (e *inferenceEngine) greedyDecode(encoded []float32, encodedFrames int) []a
 		}
 
 		// Softmax probability for confidence.
-		var maxLogit float32 = logits[0]
+		maxLogit := logits[0]
 		for i := 1; i < vocabSize; i++ {
 			if logits[i] > maxLogit {
 				maxLogit = logits[i]

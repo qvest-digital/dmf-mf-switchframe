@@ -95,7 +95,7 @@ func (m *Manager) RemoveSource(sourceKey, trackerName string) error {
 
 	for i, t := range entry.trackers {
 		if t.Name() == trackerName {
-			t.Close()
+			_ = t.Close()
 			entry.trackers = append(entry.trackers[:i], entry.trackers[i+1:]...)
 
 			// Clean up empty entries.
@@ -309,7 +309,7 @@ func (m *Manager) Close() error {
 
 	for _, entry := range m.sources {
 		for _, t := range entry.trackers {
-			t.Close()
+			_ = t.Close()
 		}
 	}
 

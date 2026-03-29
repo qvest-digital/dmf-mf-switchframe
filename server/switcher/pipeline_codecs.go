@@ -312,12 +312,11 @@ func (pc *pipelineCodecs) injectIdentSEI(frame *media.VideoFrame, pf *Processing
 		}
 		bitDepth := 8
 		chroma := "420"
-		if pc.pipelineCodec == CodecHEVC {
-			// Conservative defaults; the actual profile is encoder-dependent.
-			// For HEVC we may be encoding 10-bit 4:2:2 but the encoder name
-			// and profile from the factory are not available here, so we use
-			// the pipeline codec as the encoder name.
-		}
+		// NOTE: For HEVC we may be encoding 10-bit 4:2:2 but the actual
+		// profile is encoder-dependent and not available here. We use
+		// conservative 8-bit 4:2:0 defaults for the ident SEI regardless
+		// of codec since the encoder name/profile from the factory are
+		// not introspectable at this point.
 		pc.identSEI = codec.BuildEncoderIdentSEI(codecStr, codec.EncoderIdentInfo{
 			EncoderName: codecStr, // best available without factory introspection
 			Profile:     codecStr,

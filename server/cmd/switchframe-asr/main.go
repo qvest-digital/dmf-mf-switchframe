@@ -116,7 +116,7 @@ func main() {
 		slog.Error("failed to open shm", "error", err)
 		os.Exit(1)
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	// Connect to Unix socket.
 	conn, err := net.Dial("unix", *socketPath)
@@ -124,7 +124,7 @@ func main() {
 		slog.Error("failed to connect to socket", "error", err)
 		os.Exit(1)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Create audio processor (48kHz stereo -> 16kHz mono).
 	audioProc := newAudioProcessor(48000, 2)

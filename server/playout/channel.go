@@ -848,9 +848,10 @@ func (c *Channel) handleItemChange(item *PlaylistItem, secScheduler *SecondaryEv
 	// Begin secondary events for new item.
 	if secScheduler != nil && len(item.SecondaryEvents) > 0 {
 		var durationMs int64
-		if item.Type == ItemSlate {
+		switch item.Type {
+		case ItemSlate:
 			durationMs = item.DurationMs
-		} else if item.Type == ItemClip {
+		case ItemClip:
 			// We'll estimate once the clip iter is open.
 			c.mu.Lock()
 			if c.clipTotal > 0 && c.clipFPS > 0 {
@@ -958,7 +959,7 @@ func (c *Channel) nextClipFrame(item *PlaylistItem) *DecodedFrame {
 		}
 
 		// Wrap with trim if in/out points set.
-		var frameSource FrameIterator = iter
+		frameSource := iter
 		if item.InPointMs > 0 || item.OutPointMs > 0 {
 			frameSource = NewTrimIterator(iter, item.InPointMs, item.OutPointMs)
 		}

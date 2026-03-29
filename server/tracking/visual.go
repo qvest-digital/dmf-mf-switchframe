@@ -58,6 +58,17 @@ static cudaError_t visual_cuda_memcpy_d2h(void* dst, const void* src, size_t siz
 */
 import "C"
 
+const (
+	// superpointInputW is the SuperPoint model input width.
+	superpointInputW = 640
+
+	// superpointInputH is the SuperPoint model input height.
+	superpointInputH = 480
+
+	// maxKeypoints is the maximum number of keypoints SuperPoint can produce.
+	maxKeypoints = 1024
+)
+
 // VisualLocalizer performs visual localization by extracting SuperPoint features
 // from live frames, matching them against a pre-built studio map using LightGlue,
 // and solving for camera pose via PnP. All GPU inference runs on a dedicated

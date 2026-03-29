@@ -695,9 +695,10 @@ func (pb *PodBoard) completePod(id string, finalState PodState) {
 	// Emit as-run event for pod completion.
 	if asRunFn != nil {
 		var operation string
-		if finalState == PodRejoined {
+		switch finalState {
+		case PodRejoined:
 			operation = "return"
-		} else if finalState == PodDumpedOut {
+		case PodDumpedOut:
 			operation = "dump_out"
 		}
 		if operation != "" {

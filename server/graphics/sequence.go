@@ -415,7 +415,7 @@ func decodeZipPNG(f *zip.File) (*image.NRGBA, error) {
 	if err != nil {
 		return nil, fmt.Errorf("graphics: open %s: %w", f.Name, err)
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	img, _, err := image.Decode(rc)
 	if err != nil {

@@ -268,11 +268,11 @@ func (m *Manager) restartLoop() {
 
 		m.mu.Lock()
 		if m.controlConn != nil {
-			m.controlConn.Close()
+			_ = m.controlConn.Close()
 			m.controlConn = nil
 		}
 		if m.frameConn != nil {
-			m.frameConn.Close()
+			_ = m.frameConn.Close()
 			m.frameConn = nil
 		}
 		// Clean up old socket directory.
@@ -281,7 +281,7 @@ func (m *Manager) restartLoop() {
 		m.mu.Unlock()
 
 		if oldDir != "" {
-			os.RemoveAll(oldDir)
+			_ = os.RemoveAll(oldDir)
 		}
 
 		slog.Info("htmlgfx: restarting sidecar", "backoff", backoff)

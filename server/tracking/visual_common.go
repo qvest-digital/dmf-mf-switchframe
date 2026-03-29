@@ -5,15 +5,6 @@ import "math"
 // superpointDescDim is the dimensionality of SuperPoint descriptors.
 const superpointDescDim = 256
 
-// superpointInputW is the SuperPoint model input width.
-const superpointInputW = 640
-
-// superpointInputH is the SuperPoint model input height.
-const superpointInputH = 480
-
-// maxKeypoints is the maximum number of keypoints SuperPoint can produce.
-const maxKeypoints = 1024
-
 // descriptorMatch represents a match between a query and train descriptor.
 type descriptorMatch struct {
 	queryIdx int     // index in the frame keypoints

@@ -151,7 +151,7 @@ func (s *SidecarBackend) Start(onTranscript func([]TranscriptWord, bool)) error 
 	if err := host.Start(context.Background()); err != nil {
 		s.mu.Lock()
 		if s.shm != nil {
-			s.shm.Close()
+			_ = s.shm.Close()
 			s.shm = nil
 		}
 		s.mu.Unlock()
@@ -190,12 +190,12 @@ func (s *SidecarBackend) Stop() {
 // Close shuts down the sidecar and releases all resources.
 func (s *SidecarBackend) Close() {
 	if s.host != nil {
-		s.host.Close()
+		_ = s.host.Close()
 	}
 
 	s.mu.Lock()
 	if s.shm != nil {
-		s.shm.Close()
+		_ = s.shm.Close()
 		s.shm = nil
 	}
 	s.mu.Unlock()

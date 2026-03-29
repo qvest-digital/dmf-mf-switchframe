@@ -8,26 +8,6 @@ import (
 	"testing"
 )
 
-// lumaKey10GoRef computes the reference 10-bit luma key mask using pure Go (no SIMD).
-// Used by tests to verify SIMD output is bit-identical.
-func lumaKey10GoRef(yuv []byte, w, h int, lowThresh, highThresh uint16) []byte {
-	pixelCount := w * h
-	if pixelCount == 0 {
-		return nil
-	}
-	if len(yuv) < pixelCount*2 {
-		return nil
-	}
-	mask := make([]byte, pixelCount)
-	for i := 0; i < pixelCount; i++ {
-		y := binary.LittleEndian.Uint16(yuv[i*2:])
-		if y >= lowThresh && y <= highThresh {
-			mask[i] = 255
-		}
-	}
-	return mask
-}
-
 // TestLumaKey10Row_DirectKernel tests the low-level lumaKey10Row kernel directly
 // against the Go reference across a range of sizes and thresholds.
 func TestLumaKey10Row_DirectKernel(t *testing.T) {

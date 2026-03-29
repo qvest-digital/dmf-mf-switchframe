@@ -47,7 +47,7 @@ func (f *LocalFetcher) Fetch(ctx context.Context, source string, destPath string
 	if err != nil {
 		return 0, fmt.Errorf("open source %q: %w", source, err)
 	}
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 
 	dst, err := os.Create(destPath)
 	if err != nil {
@@ -99,7 +99,7 @@ func (f *HTTPFetcher) Fetch(ctx context.Context, source string, destPath string)
 	if err != nil {
 		return 0, fmt.Errorf("fetch %q: %w", source, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("fetch %q returned status %d: %w", source, resp.StatusCode, ErrFetchFailed)

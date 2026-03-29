@@ -7,12 +7,6 @@ import (
 	"testing"
 )
 
-// scalePlane10GoRef is a pure Go reference for bilinear plane scaling, used
-// to verify the SIMD dispatch path is bit-identical.
-func scalePlane10GoRef(src []byte, srcW, srcH int, dst []byte, dstW, dstH int) {
-	scalePlane10(src, srcW, srcH, dst, dstW, dstH)
-}
-
 // TestScaleBilinear10RowKernels_MatchesReference verifies the SIMD row-based
 // bilinear scaler produces bit-identical results to the Go reference for
 // a variety of scale factors and random input data.

@@ -2,7 +2,6 @@ package main
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -55,7 +54,3 @@ func defaultWhisperModel(models []string) string {
 	return ""
 }
 
-// whisperModelPath returns the full path for a model name.
-func whisperModelPath(dir, name string) string {
-	return filepath.Join(dir, "ggml-"+name+".bin")
-}

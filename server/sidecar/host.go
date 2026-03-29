@@ -197,7 +197,7 @@ func (h *Host) spawnLocked(ctx context.Context) error {
 	if !customConnect {
 		listener, err = net.Listen("unix", socketPath)
 		if err != nil {
-			os.RemoveAll(socketDir)
+			_ = os.RemoveAll(socketDir)
 			h.socketDir = ""
 			return fmt.Errorf("listen socket: %w", err)
 		}
@@ -318,15 +318,15 @@ func (h *Host) abortSpawnLocked() {
 		_ = h.cmd.Wait()
 	}
 	if h.listener != nil {
-		h.listener.Close()
+		_ = h.listener.Close()
 		h.listener = nil
 	}
 	if h.conn != nil {
-		h.conn.Close()
+		_ = h.conn.Close()
 		h.conn = nil
 	}
 	if h.socketDir != "" {
-		os.RemoveAll(h.socketDir)
+		_ = os.RemoveAll(h.socketDir)
 		h.socketDir = ""
 	}
 	h.cmd = nil
@@ -497,7 +497,7 @@ func (h *Host) killAndCleanupLocked() {
 			}
 		}
 	}
-	h.cleanupLocked()
+	_ = h.cleanupLocked()
 }
 
 // cleanupLocked releases socket, listener, and temp dir.
@@ -518,7 +518,7 @@ func (h *Host) cleanupLocked() error {
 		h.listener = nil
 	}
 	if h.socketDir != "" {
-		os.RemoveAll(h.socketDir)
+		_ = os.RemoveAll(h.socketDir)
 		h.socketDir = ""
 	}
 	h.cmd = nil

@@ -1903,7 +1903,9 @@ func (s *Switcher) normalizeResolution(pf *ProcessingFrame) *ProcessingFrame {
 	buf := s.framePool.Acquire()
 	buf = buf[:dstSize]
 	if colorFmt == ColorYUV422_10bit {
-		transition.ScaleYUV422P10(pf.Data, pf.Width, pf.Height, buf, dstW, dstH)
+		if err := transition.ScaleYUV422P10(pf.Data, pf.Width, pf.Height, buf, dstW, dstH); err != nil {
+			slog.Error("scale YUV422P10 failed", "err", err)
+		}
 	} else {
 		transition.ScaleYUV420(pf.Data, pf.Width, pf.Height, buf, dstW, dstH)
 	}

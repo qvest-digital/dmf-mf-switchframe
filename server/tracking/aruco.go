@@ -856,29 +856,6 @@ func solveLinear8x8(A [8][8]float64, b [8]float64) [8]float64 {
 	return x
 }
 
-// interpolateQuad performs bilinear interpolation within a quadrilateral.
-// u, v are in [0, 1] representing position within the quad.
-// Kept for backward compatibility; decodeMarker now uses homography instead.
-func interpolateQuad(corners [4][2]float64, u, v float64) (float64, float64) {
-	// Bilinear interpolation: corners ordered TL, TR, BR, BL.
-	// P = (1-v)*((1-u)*TL + u*TR) + v*((1-u)*BL + u*BR)
-	tl := corners[0]
-	tr := corners[1]
-	br := corners[2]
-	bl := corners[3]
-
-	top := [2]float64{
-		(1-u)*tl[0] + u*tr[0],
-		(1-u)*tl[1] + u*tr[1],
-	}
-	bot := [2]float64{
-		(1-u)*bl[0] + u*br[0],
-		(1-u)*bl[1] + u*br[1],
-	}
-
-	return (1-v)*top[0] + v*bot[0], (1-v)*top[1] + v*bot[1]
-}
-
 // lookupMarkerID searches for a 4x4 bit pattern in DICT_4X4_50.
 // It checks all 4 rotations and returns the marker ID if found.
 func lookupMarkerID(bits [4][4]bool) (int, bool) {

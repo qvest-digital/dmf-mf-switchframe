@@ -14,6 +14,7 @@ import "C"
 import (
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"unsafe"
 
@@ -64,7 +65,7 @@ func (b *whisperASRBackend) loadModel(name string) error {
 		b.ctx = nil
 	}
 
-	path := whisperModelPath(b.modelsDir, name)
+	path := filepath.Join(b.modelsDir, "ggml-"+name+".bin")
 	cPath := C.CString(path)
 	defer C.free(unsafe.Pointer(cPath))
 

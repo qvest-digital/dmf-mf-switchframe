@@ -100,7 +100,7 @@ func (f *FreeDReceiver) Stop() error {
 	f.mu.Unlock()
 
 	if conn != nil {
-		conn.Close()
+		_ = conn.Close()
 	}
 	f.wg.Wait()
 	f.running.Store(false)

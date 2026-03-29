@@ -36,37 +36,37 @@ func NewReader(name string) (*Reader, error) {
 	// Get the segment size via fstat.
 	totalSize, err := shmFstat(fd)
 	if err != nil {
-		shmClose(fd)
+		_ = shmClose(fd)
 		return nil, fmt.Errorf("shmring: %w", err)
 	}
 
 	if totalSize < HeaderSize {
-		shmClose(fd)
+		_ = shmClose(fd)
 		return nil, fmt.Errorf("shmring: segment too small (%d bytes, need at least %d)", totalSize, HeaderSize)
 	}
 
 	// Map into memory.
 	base, err := shmMmap(fd, totalSize)
 	if err != nil {
-		shmClose(fd)
+		_ = shmClose(fd)
 		return nil, fmt.Errorf("shmring: %w", err)
 	}
 
 	// Close the fd; the mmap keeps the segment accessible.
-	shmClose(fd)
+	_ = shmClose(fd)
 
 	// Validate magic. Read into a local var before any potential munmap,
 	// since h points into the mmap'd region.
 	h := (*header)(base)
 	magic := h.Magic
 	if magic != Magic {
-		shmMunmap(base, totalSize)
+		_ = shmMunmap(base, totalSize)
 		return nil, fmt.Errorf("shmring: invalid magic 0x%08X, want 0x%08X", magic, Magic)
 	}
 
 	capacityBytes := h.CapacityBytes
 	if capacityBytes == 0 || capacityBytes&(capacityBytes-1) != 0 {
-		shmMunmap(base, totalSize)
+		_ = shmMunmap(base, totalSize)
 		return nil, fmt.Errorf("shmring: invalid capacity %d (must be a positive power of 2)", capacityBytes)
 	}
 

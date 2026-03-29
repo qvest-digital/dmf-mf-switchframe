@@ -135,16 +135,6 @@ func testSyncLogger() *slog.Logger {
 	return slog.With("component", "switcher-test")
 }
 
-// consumeTicks reads exactly n ticks from a non-realtime reference clock.
-func consumeTicks(rc *clock.ReferenceClock, n int) []clock.Tick {
-	ticks := make([]clock.Tick, 0, n)
-	for i := 0; i < n; i++ {
-		tick := <-rc.Ticks()
-		ticks = append(ticks, tick)
-	}
-	return ticks
-}
-
 // makeTestYUV creates a YUV420 buffer of the given dimensions, filled with
 // a distinguishable pattern (luma = fillByte for entire Y plane).
 func makeTestYUV(width, height int, fillByte byte) []byte {
