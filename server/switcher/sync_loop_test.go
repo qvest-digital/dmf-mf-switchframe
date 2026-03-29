@@ -391,17 +391,39 @@ func TestSyncLoopOverload(t *testing.T) {
 	s.mu.Unlock()
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
 
-	// Add a slow pipeline node that takes longer than one frame duration.
-	slowNode := &slowPipelineNode{delay: 40 * time.Millisecond} // > 33ms frame budget at 30fps
+	// First, process one frame WITHOUT the slow node to establish
+	// lastBroadcastVFrame. Without this, the overload guard (which
+	// prevents skipping when there's nothing to repeat) won't trigger.
+	pool := s.framePool
+	yuvSize := 320 * 240 * 3 / 2
+	{
+		buf := pool.Acquire()[:yuvSize]
+		pf := &ProcessingFrame{Data: buf, Width: 320, Height: 240, PTS: 0, pool: pool}
+		pf.SetRefs(1)
+		s.frameSync.IngestRawVideo("cam1", pf)
+	}
+	// Process one tick without a pipeline — raw frame goes through broadcastToProgram.
+	rc.Start()
+	s.StartSyncLoop()
+	time.Sleep(50 * time.Millisecond)
+	rc.Stop()
+	s.syncLoopWg.Wait()
+
+	// Now add a slow pipeline node that takes longer than one frame duration.
+	slowNode := &slowPipelineNode{delay: 40 * time.Millisecond}
 	p := &Pipeline{}
 	require.NoError(t, p.Build(PipelineFormat{
 		Name: "test", Width: 320, Height: 240, FPSNum: 30, FPSDen: 1,
 	}, s.framePool, []PipelineNode{slowNode}))
 	s.pipeline.Store(p)
 
+	// Reset for second run with slow pipeline.
+	s.overloadDrops.Store(0)
+	s.syncLoopRunning.Store(false)
+	rc2 := clock.NewReferenceClock(30, 1, 48000, 90000, true)
+	s.SetReferenceClock(rc2)
+
 	// Feed frames.
-	pool := s.framePool
-	yuvSize := 320 * 240 * 3 / 2
 	for i := 0; i < 30; i++ {
 		buf := pool.Acquire()[:yuvSize]
 		pf := &ProcessingFrame{
@@ -414,13 +436,13 @@ func TestSyncLoopOverload(t *testing.T) {
 		s.frameSync.IngestRawVideo("cam1", pf)
 	}
 
-	rc.Start()
+	rc2.Start()
 	s.StartSyncLoop()
 
 	// Let a few ticks run.
 	time.Sleep(200 * time.Millisecond)
 
-	rc.Stop()
+	rc2.Stop()
 	s.syncLoopWg.Wait()
 
 	// Verify that audio was still called on every tick (never skipped).
