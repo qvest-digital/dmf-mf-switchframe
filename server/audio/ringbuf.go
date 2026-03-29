@@ -100,6 +100,113 @@ func (rb *PCMRingBuffer) Pop(n int) []float32 {
 	return out
 }
 
+// PopDriftCompensated reads samples with adaptive drift compensation.
+// Always returns exactly n samples. Adjusts the actual number consumed
+// from the buffer to steer depth toward targetDepth:
+//
+//   - depth > target + threshold: consume n + channels (micro speed-up)
+//   - depth < target - threshold: consume n - channels (micro slow-down)
+//   - otherwise: consume exactly n (no correction)
+//
+// The ±channels adjustment is absorbed by linear interpolation so the
+// output is always exactly n samples with no discontinuities. This
+// corrects clock drift between push source and pop consumer at a rate
+// of ±1 sample per frame (~20μs at 48kHz) — completely inaudible.
+//
+// channels is needed to keep adjustments frame-aligned (stereo pairs).
+// targetDepth is in total sample values (samples × channels).
+func (rb *PCMRingBuffer) PopDriftCompensated(n, targetDepth, channels int) []float32 {
+	if n <= 0 {
+		return nil
+	}
+	if channels < 1 {
+		channels = 1
+	}
+
+	// Not enough data for even a reduced read — return silence.
+	if rb.count < n-channels {
+		return make([]float32, n)
+	}
+
+	// Determine how many samples to actually consume.
+	threshold := 1024 * channels // 1 AAC frame hysteresis
+	actual := n
+	if rb.count > targetDepth+threshold && rb.count >= n+channels {
+		actual = n + channels // consume 1 extra frame-pair (speed up)
+	} else if rb.count < targetDepth-threshold && rb.count >= n-channels && n > channels {
+		actual = n - channels // consume 1 fewer frame-pair (slow down)
+	}
+
+	// Read 'actual' samples from ring buffer.
+	raw := make([]float32, actual)
+	first := rb.cap - rb.rd
+	if first >= actual {
+		copy(raw, rb.buf[rb.rd:rb.rd+actual])
+	} else {
+		copy(raw[:first], rb.buf[rb.rd:])
+		copy(raw[first:], rb.buf[:actual-first])
+	}
+	rb.rd = (rb.rd + actual) % rb.cap
+	rb.count -= actual
+
+	// If actual == n, no resampling needed.
+	if actual == n {
+		if cap(rb.lastFrame) >= n {
+			rb.lastFrame = rb.lastFrame[:n]
+		} else {
+			rb.lastFrame = make([]float32, n)
+		}
+		copy(rb.lastFrame, raw)
+		return raw
+	}
+
+	// Linear interpolation: resample 'actual' samples to exactly 'n'.
+	out := make([]float32, n)
+	frames := n / channels
+	srcFrames := actual / channels
+
+	// Guard: need at least 2 source frames to interpolate.
+	if srcFrames < 2 || frames < 2 {
+		copy(out, raw)
+		if cap(rb.lastFrame) >= n {
+			rb.lastFrame = rb.lastFrame[:n]
+		} else {
+			rb.lastFrame = make([]float32, n)
+		}
+		copy(rb.lastFrame, out)
+		return out
+	}
+
+	for f := 0; f < frames; f++ {
+		srcPos := float64(f) * float64(srcFrames-1) / float64(frames-1)
+		srcIdx := int(srcPos)
+		frac := float32(srcPos - float64(srcIdx))
+
+		if srcIdx >= srcFrames-1 {
+			srcIdx = srcFrames - 2
+			frac = 1.0
+		}
+		if srcIdx < 0 {
+			srcIdx = 0
+			frac = 0
+		}
+
+		for c := 0; c < channels; c++ {
+			s0 := raw[srcIdx*channels+c]
+			s1 := raw[(srcIdx+1)*channels+c]
+			out[f*channels+c] = s0 + frac*(s1-s0)
+		}
+	}
+
+	if cap(rb.lastFrame) >= n {
+		rb.lastFrame = rb.lastFrame[:n]
+	} else {
+		rb.lastFrame = make([]float32, n)
+	}
+	copy(rb.lastFrame, out)
+	return out
+}
+
 // Len returns the current number of buffered samples.
 func (rb *PCMRingBuffer) Len() int {
 	return rb.count

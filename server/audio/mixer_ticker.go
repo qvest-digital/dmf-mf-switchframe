@@ -107,7 +107,8 @@ func (m *Mixer) produceSamplesLocked(totalValues int) []float32 {
 	}
 
 	// Measure ring buffer depth of active channels before reading.
-	// This tells us how much FIFO latency audio has — used as lip-sync offset.
+	// With drift compensation, depth stays near the 2-frame target.
+	// This measurement is retained for diagnostics and debug snapshot.
 	var maxRingDepth int
 	for _, ch := range m.channels {
 		if ch.active && !ch.muted && ch.ringBuf != nil {
@@ -128,7 +129,7 @@ func (m *Mixer) produceSamplesLocked(totalValues int) []float32 {
 			continue
 		}
 
-		pcm := ch.ringBuf.Pop(totalValues)
+		pcm := ch.ringBuf.PopDriftCompensated(totalValues, m.driftTarget(), m.numChannels)
 		if pcm == nil {
 			continue // never pushed — skip
 		}

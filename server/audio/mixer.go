@@ -492,6 +492,14 @@ func (m *Mixer) newChannelRingBuf() *PCMRingBuffer {
 	return NewPCMRingBuffer(10 * 1024 * m.numChannels)
 }
 
+// driftTarget returns the target ring buffer depth in total sample values
+// (samples × channels) for drift compensation. 2 AAC frames provides
+// enough jitter buffer for bursty SRT delivery while staying within
+// EBU R37 ±40ms imperceptible range.
+func (m *Mixer) driftTarget() int {
+	return 2 * 1024 * m.numChannels
+}
+
 // RemoveChannel unregisters a source.
 func (m *Mixer) RemoveChannel(sourceKey string) {
 	m.mu.Lock()

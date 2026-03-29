@@ -639,11 +639,11 @@ func (a *App) initOutput() error {
 	a.outputMgr.SetMetrics(a.appMetrics)
 
 	if a.cfg.RefClock {
-		// Reference clock path: A/V sync is handled by the mixer's ring
-		// buffer target depth (bounded FIFO trim in PCMRingBuffer.Pop).
-		// No lip-sync PTS offset needed — the ring buffer trims excess
-		// samples on every Pop, keeping audio content within ~21ms of
-		// video content. PTS grid stays untouched (zero lip-sync offset).
+		// Reference clock path: A/V sync is handled by drift-compensated
+		// ring buffer reads (PopDriftCompensated). The ring buffer maintains
+		// a target depth of 2 AAC frames (~42ms) by micro-resampling ±1
+		// sample per read, correcting for clock drift between SRT sources
+		// and the reference clock. No PTS offset needed.
 	} else {
 		// Legacy path: dynamic lip-sync for SRT/recording output (muxer path only).
 		// The browser path handles its own compensation in audio-decoder.ts.

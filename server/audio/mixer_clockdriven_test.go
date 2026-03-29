@@ -227,3 +227,52 @@ func TestClockDrivenMixerCrossfadeWorks(t *testing.T) {
 	assert.Equal(t, 0, m.cutFramesRemaining)
 	m.mu.RUnlock()
 }
+
+// TestClockDrivenMixer_DriftCompensation_DepthConverges verifies that with
+// simulated clock drift (source pushes slightly more than consumed), the
+// ring buffer depth stays bounded near the target rather than growing unbounded.
+func TestClockDrivenMixer_DriftCompensation_DepthConverges(t *testing.T) {
+	t.Parallel()
+
+	m := NewMixer(MixerConfig{
+		SampleRate:  48000,
+		Channels:    2,
+		ClockDriven: true,
+		Output:      func(_ *media.AudioFrame) {},
+	})
+	defer func() { _ = m.Close() }()
+
+	m.AddChannel("cam1")
+	m.SetActive("cam1", true)
+
+	// Seed ring buffer to target depth (2 AAC frames stereo = 4096 values).
+	seed := make([]float32, 2*1024*2)
+	for i := range seed {
+		seed[i] = 0.25
+	}
+	m.IngestPCM("cam1", seed, 0, 2)
+
+	// Simulate clock drift: push 1025 stereo samples per cycle,
+	// consume 1024 stereo samples via ProduceSamples.
+	pushBuf := make([]float32, 1025*2)
+	for i := range pushBuf {
+		pushBuf[i] = 0.25
+	}
+
+	for i := 0; i < 1000; i++ {
+		m.IngestPCM("cam1", pushBuf, int64(i)*1920, 2)
+		result := m.ProduceSamples(1024)
+		require.Len(t, result, 1024*2)
+	}
+
+	// Without drift compensation, 1000 cycles × 1 extra stereo pair = 2000
+	// extra samples accumulated. With compensation, depth stays near target.
+	m.mu.RLock()
+	ch := m.channels["cam1"]
+	depth := ch.ringBuf.Len()
+	m.mu.RUnlock()
+
+	target := 2 * 1024 * 2
+	assert.InDelta(t, target, depth, float64(2*1024*2),
+		"ring buffer depth should stay near target (%d), got %d", target, depth)
+}
