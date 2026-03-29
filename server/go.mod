@@ -15,7 +15,7 @@ require (
 	github.com/stretchr/testify v1.11.1
 	github.com/untangledco/streaming v0.0.4
 	github.com/zsiec/ccx v0.2.0
-	github.com/zsiec/prism v0.1.6-0.20260329065234-c0e78e09214a
+	github.com/zsiec/prism v0.1.6-0.20260329230938-1e1e4e64f928
 	github.com/zsiec/srtgo v0.2.5-0.20260320141915-f0f3efc9a40e
 	golang.org/x/image v0.37.0
 	golang.org/x/sys v0.41.0
