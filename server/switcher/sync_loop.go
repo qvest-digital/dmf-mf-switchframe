@@ -250,39 +250,74 @@ func (s *Switcher) processTransitionTick(tick clock.Tick, fs *FrameSynchronizer,
 	frameDurationMs := float64(tick.FrameDuration) / float64(time.Millisecond)
 	pos, complete := engine.AutoAdvancePosition(frameDurationMs)
 
-	// Blend frames. Guard against nil/empty Data — can happen if the source
-	// is flapping (rapid loss/recovery) and the freeze-repeat frame's buffer
-	// was already recycled by the pool.
-	if len(fromFrame.Data) == 0 {
-		fromFrame = s.makeBroadcastBlack(w, h, tick.VideoPTS)
-	}
-	if toFrame != nil && len(toFrame.Data) == 0 {
-		toFrame = s.makeBroadcastBlack(w, h, tick.VideoPTS)
-	}
+	// GPU-native transition path: blend on GPU using cached source frames,
+	// bypassing CPU blend + upload entirely. RunTransition reads both sources
+	// from the GPU source manager cache and blends them with GPU kernels.
+	if h := s.gpuRunner.Load(); h != nil && h.runner != nil {
+		tt := engine.TransitionType()
+		wipeDir := s.transitionWipeDirToGPU(engine.WipeDirection())
 
-	var fromYUV, toYUV []byte
-	var fromW, fromH, toW, toH int
-	fromYUV = fromFrame.Data
-	fromW, fromH = fromFrame.Width, fromFrame.Height
-	if toFrame != nil {
-		toYUV = toFrame.Data
-		toW, toH = toFrame.Width, toFrame.Height
-	}
-
-	blended, outW, outH := engine.BlendRaw(fromYUV, fromW, fromH, toYUV, toW, toH, pos)
-	if blended != nil {
-		// Build a ProcessingFrame from the blended result (Issue 9: no copy needed
-		// since pipeline runs synchronously within this tick and BlendRaw's buffer
-		// won't be overwritten until the next call).
-		result := &ProcessingFrame{
-			Data:   blended,
-			Width:  outW,
-			Height: outH,
-			PTS:    tick.VideoPTS,
-			DTS:    tick.VideoPTS,
+		// Clamp position to [0, 1].
+		blendPos := pos
+		if blendPos > 1.0 {
+			blendPos = 1.0
 		}
-		s.runPipelineAndBroadcastTransition(result, tick)
+
+		// Extract stinger frame data if applicable.
+		var stinger *GPUStingerFrame
+		if tt == transition.Stinger {
+			yuv, alpha, sw, sh, cutPt := engine.StingerFrameAt(blendPos)
+			if yuv != nil && alpha != nil {
+				stinger = &GPUStingerFrame{
+					YUV: yuv, Alpha: alpha,
+					Width: sw, Height: sh, CutPoint: cutPt,
+				}
+			}
+		}
+
+		pts := tick.VideoPTS
+		if err := h.runner.RunTransition(fromSource, toSource, string(tt), wipeDir, blendPos, pts, stinger); err != nil {
+			s.log.Debug("sync loop: GPU transition failed, falling back to CPU blend",
+				"err", err, "from", fromSource, "to", toSource)
+		} else {
+			s.gpuTransitionFrames.Add(1)
+			goto transitionDone
+		}
 	}
+
+	// CPU fallback: blend on CPU and upload to GPU pipeline.
+	{
+		// Guard against nil/empty Data — can happen if the source is flapping.
+		if len(fromFrame.Data) == 0 {
+			fromFrame = s.makeBroadcastBlack(w, h, tick.VideoPTS)
+		}
+		if toFrame != nil && len(toFrame.Data) == 0 {
+			toFrame = s.makeBroadcastBlack(w, h, tick.VideoPTS)
+		}
+
+		var fromYUV, toYUV []byte
+		var fromW, fromH, toW, toH int
+		fromYUV = fromFrame.Data
+		fromW, fromH = fromFrame.Width, fromFrame.Height
+		if toFrame != nil {
+			toYUV = toFrame.Data
+			toW, toH = toFrame.Width, toFrame.Height
+		}
+
+		blended, outW, outH := engine.BlendRaw(fromYUV, fromW, fromH, toYUV, toW, toH, pos)
+		if blended != nil {
+			result := &ProcessingFrame{
+				Data:   blended,
+				Width:  outW,
+				Height: outH,
+				PTS:    tick.VideoPTS,
+				DTS:    tick.VideoPTS,
+			}
+			s.runPipelineAndBroadcast(result, tick)
+		}
+	}
+
+transitionDone:
 
 	// Handle transition completion (Issue 4: dispatch to correct handler by type).
 	if complete {
