@@ -315,6 +315,7 @@ func (s *Switcher) runPipelineAndBroadcast(pf *ProcessingFrame, tick clock.Tick)
 				s.gpuFramesProcessed.Add(1)
 			} else {
 				s.gpuCacheMisses.Add(1)
+				s.logGPUErrorOnce("RunFromCache failed", "source", sourceKey, "err", err)
 			}
 		}
 		// Fall back to CPU→GPU upload if cache miss or no source key.
@@ -322,6 +323,9 @@ func (s *Switcher) runPipelineAndBroadcast(pf *ProcessingFrame, tick clock.Tick)
 			if err := h.runner.RunWithUpload(pf.Data, pf.Width, pf.Height, pf.PTS); err == nil {
 				gpuUsed = true
 				s.gpuFramesProcessed.Add(1)
+			} else {
+				s.logGPUErrorOnce("RunWithUpload failed", "err", err,
+					"dataLen", len(pf.Data), "w", pf.Width, "h", pf.Height)
 			}
 		}
 	}
@@ -403,8 +407,13 @@ func (s *Switcher) popProgramFrame(fs *FrameSynchronizer, sourceKey string, vide
 		ss.lastRawVideo = newest
 
 		// Clear source loss tracking — fresh frame recovered.
+		// Only log recovery if the gap was meaningful (>100ms), not just
+		// a normal inter-frame gap at mismatched rates.
 		if lost := s.sourceLostAt.Load(); lost != nil && sourceKey == s.programSourceAtomic() {
-			s.log.Info("source recovered", "source", sourceKey)
+			if time.Since(*lost) > 100*time.Millisecond {
+				s.log.Info("source recovered", "source", sourceKey,
+					"gap", time.Since(*lost))
+			}
 			s.sourceLostAt.Store(nil)
 		}
 
@@ -414,17 +423,21 @@ func (s *Switcher) popProgramFrame(fs *FrameSynchronizer, sourceKey string, vide
 		return &cp
 	}
 
-	// No fresh frame — source loss path.
+	// No fresh frame — freeze-repeat path.
+	// At mismatched rates (e.g., 30fps source on 60fps clock), every other tick
+	// is expected to have no fresh frame. Only declare source LOST after 500ms
+	// of continuous missing frames — not on a single empty tick.
 	if ss.lastRawVideo != nil {
-		// Track when source loss began (only for program source).
 		if s.sourceLostAt.Load() == nil && sourceKey == s.programSourceAtomic() {
 			now := time.Now()
 			s.sourceLostAt.Store(&now)
-			s.log.Warn("source lost — freezing", "source", sourceKey)
+			// Don't log here — wait until the timeout to avoid spam at mismatched rates.
 		}
 
 		// After timeout, transition from freeze to black.
 		if lost := s.sourceLostAt.Load(); lost != nil && time.Since(*lost) > sourceLossTimeout {
+			s.log.Warn("source lost — transitioning to black",
+				"source", sourceKey, "duration", time.Since(*lost))
 			pf := s.pipelineFormat.Load()
 			w, h := 320, 240
 			if pf != nil {
@@ -583,6 +596,15 @@ func (s *Switcher) logOverload() {
 		s.log.Warn("sync loop overload — skipping video",
 			"ticksBehind", s.ticksBehind,
 			"totalDrops", s.overloadDrops.Load())
+	}
+}
+
+// logGPUErrorOnce logs a GPU pipeline error at most once per second.
+func (s *Switcher) logGPUErrorOnce(msg string, args ...any) {
+	now := time.Now()
+	if now.Sub(s.lastGPUErrorLog) >= time.Second {
+		s.lastGPUErrorLog = now
+		s.log.Warn(msg, args...)
 	}
 }
 
