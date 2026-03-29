@@ -481,6 +481,10 @@ func (a *App) initCoreEngineRefClock() error {
 	aacBuf := clock.NewAACFrameBuffer(2, 48000, aacEnc.Encode)
 	aacBuf.SetBasePTS(90000)
 
+	// Wire clock recovery — detects source frame rate changes and adjusts clock.
+	cr := clock.NewClockRecovery(pf.FPSNum, pf.FPSDen, 30)
+	a.sw.SetClockRecovery(cr)
+
 	// Wire to switcher.
 	a.sw.SetReferenceClock(a.refClock)
 	a.sw.SetAACBuffer(aacBuf)
