@@ -186,6 +186,10 @@ func (s *Switcher) processVideoTick(tick clock.Tick) {
 	// these subsystems would otherwise never see fresh fill data.
 	s.feedSourceSubsystems(programSource, pf)
 
+	// Update health monitor — in buffer-only mode, handleRawVideoFrame doesn't
+	// fire, so the health monitor would think the source is offline.
+	s.health.recordFrame(programSource, time.Now())
+
 	// Record arrival for clock recovery (program source only).
 	if cr := s.clockRecovery; cr != nil {
 		changed := cr.RecordArrival(time.Now())
@@ -230,6 +234,12 @@ func (s *Switcher) processTransitionTick(tick clock.Tick, fs *FrameSynchronizer,
 	}
 	if toFrame == nil && toSource != "" {
 		toFrame = s.makeBroadcastBlack(w, h, tick.VideoPTS)
+	}
+
+	// Update health monitor for both transition sources.
+	s.health.recordFrame(fromSource, time.Now())
+	if toSource != "" {
+		s.health.recordFrame(toSource, time.Now())
 	}
 
 	// Normalize resolutions to pipeline format.
