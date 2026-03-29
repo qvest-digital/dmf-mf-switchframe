@@ -133,9 +133,11 @@ func (p *GPUPipeline) Run(frame *GPUFrame) error {
 	return nil
 }
 
-// RunWithUpload uploads a CPU YUV420p frame to GPU, runs the pipeline,
-// and returns the GPU frame. Used when source frames are on CPU (e.g.,
-// always-decode architecture produces YUV420p on CPU).
+// RunWithUpload uploads a CPU planar frame to GPU, runs the pipeline,
+// and returns the GPU frame. The upload kernel is selected based on the
+// pool's frame format:
+//   - NV12: expects YUV420P 8-bit (w*h*3/2 bytes)
+//   - P210: expects YUV422P10LE (w*h*4 bytes)
 func (p *GPUPipeline) RunWithUpload(yuv []byte, width, height int, pts int64) (*GPUFrame, error) {
 	frame, err := p.pool.Acquire()
 	if err != nil {
@@ -143,7 +145,7 @@ func (p *GPUPipeline) RunWithUpload(yuv []byte, width, height int, pts int64) (*
 	}
 	frame.PTS = pts
 
-	if err := Upload(p.ctx, frame, yuv, width, height); err != nil {
+	if err := GPUUploadDispatch(p.ctx, frame, yuv, width, height); err != nil {
 		frame.Release()
 		return nil, fmt.Errorf("gpu pipeline: upload: %w", err)
 	}
