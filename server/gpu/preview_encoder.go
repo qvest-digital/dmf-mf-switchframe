@@ -58,7 +58,7 @@ func NewPreviewEncoder(ctx *Context, srcW, srcH, dstW, dstH, bitrate, fpsNum, fp
 		return nil, fmt.Errorf("gpu: preview frame alloc failed: %w", err)
 	}
 
-	encoder, err := newGPUEncoderWithGOP(ctx, dstW, dstH, fpsNum, fpsDen, bitrate, transition.PreviewGOPSecs, true)
+	encoder, err := newGPUEncoderWithGOP(ctx, dstW, dstH, fpsNum, fpsDen, bitrate, -transition.PreviewGOPFrames, true)
 	if err != nil {
 		scaleDst.Release()
 		pool.Close()

@@ -21,6 +21,12 @@ const (
 	// Shorter GOPs mean faster recovery after transport stalls — the browser
 	// waits at most 1s for the next keyframe instead of 2s.
 	PreviewGOPSecs = 1
+
+	// PreviewGOPFrames is the IDR interval in frames for preview encodes.
+	// ~15 frames at 30fps = 0.5s GOPs. Halving the GOP reduces the
+	// damaged-group cascade impact on jittery networks: each drop loses
+	// at most ~14 frames instead of ~29.
+	PreviewGOPFrames = 15
 )
 
 // DefaultTimeout is the default watchdog timeout for transition frame starvation.

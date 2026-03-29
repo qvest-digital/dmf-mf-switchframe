@@ -68,7 +68,9 @@ static int ffenc_open_cuda_hw(ffenc_hw_frames_t* h, int width, int height,
 	h->base.ctx->bit_rate = bitrate;
 	h->base.ctx->rc_max_rate = bitrate + bitrate / 5;
 	h->base.ctx->rc_buffer_size = bitrate + bitrate / 5;
-	h->base.ctx->gop_size = fps_num * gop_secs / fps_den;
+	// gop_secs: when negative, the absolute value is used as GOP size
+	// in frames directly (allows sub-second GOPs for preview encodes).
+	h->base.ctx->gop_size = (gop_secs < 0) ? -gop_secs : fps_num * gop_secs / fps_den;
 	h->base.ctx->max_b_frames = 0;
 	// Input pixel format is AV_PIX_FMT_CUDA — NVENC reads NV12 from device memory.
 	h->base.ctx->pix_fmt = AV_PIX_FMT_CUDA;
@@ -233,7 +235,7 @@ static int ffenc_open_cuda_hw_v2(ffenc_hw_frames_t* h, int width, int height,
 	h->base.ctx->bit_rate = bitrate;
 	h->base.ctx->rc_max_rate = bitrate + bitrate / 5;
 	h->base.ctx->rc_buffer_size = bitrate + bitrate / 5;
-	h->base.ctx->gop_size = fps_num * gop_secs / fps_den;
+	h->base.ctx->gop_size = (gop_secs < 0) ? -gop_secs : fps_num * gop_secs / fps_den;
 	h->base.ctx->max_b_frames = 0;
 	h->base.ctx->pix_fmt = AV_PIX_FMT_CUDA;
 
@@ -549,8 +551,8 @@ func NewFFmpegHWFramesEncoder(cudaCtx unsafe.Pointer, width, height, bitrate, fp
 	if fpsNum <= 0 || fpsDen <= 0 {
 		return nil, fmt.Errorf("invalid fps: %d/%d", fpsNum, fpsDen)
 	}
-	if gopSecs <= 0 {
-		return nil, fmt.Errorf("invalid gopSecs: %d", gopSecs)
+	if gopSecs == 0 {
+		return nil, fmt.Errorf("invalid gopSecs: %d (use negative for frame count)", gopSecs)
 	}
 
 	isPreview := C.int(0)
