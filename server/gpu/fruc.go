@@ -189,9 +189,17 @@ static NV_OF_STATUS nvof_create_session(NvOF_Session* s, int width, int height) 
     s->flowW = (width + 3) / 4;
     s->flowH = (height + 3) / 4;
 
-    // Create OF handle (uses CUDA primary context)
+    // Create OF handle — push the CUDA primary context onto this thread.
+    // Go goroutines may migrate to threads without an active CUDA context,
+    // so cuCtxGetCurrent alone can return NULL and NVOFA fails with error 7.
     CUcontext cuCtx;
-    cuCtxGetCurrent(&cuCtx);
+    CUresult cuErr = cuCtxGetCurrent(&cuCtx);
+    if (cuErr != CUDA_SUCCESS || cuCtx == NULL) {
+        // No context on this thread — push device 0's primary context.
+        cuErr = cuDevicePrimaryCtxRetain(&cuCtx, 0);
+        if (cuErr != CUDA_SUCCESS) return (NV_OF_STATUS)cuErr;
+        cuCtxPushCurrent(cuCtx);
+    }
     rc = nvof_funcs.nvCreateOpticalFlowCuda(cuCtx, &s->hOf);
     if (rc != NV_OF_SUCCESS) return rc;
 
