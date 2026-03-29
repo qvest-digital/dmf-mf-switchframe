@@ -15,6 +15,14 @@ cudaError_t nv12_to_rgb_chw(
     int outW, int outH,
     cudaStream_t stream);
 
+// Preprocessing: P210 → RGB float32 CHW with bilinear scale (from preprocess.cu).
+cudaError_t p210_to_rgb_chw(
+    float* rgbOut,
+    const uint16_t* p210,
+    int srcW, int srcH, int srcPitch16,
+    int outW, int outH,
+    cudaStream_t stream);
+
 // ImageNet normalize RGB CHW in-place (from neural_key.cu).
 cudaError_t ck_imagenet_normalize(
     float* rgb,
@@ -36,7 +44,15 @@ cudaError_t ck_composite_neural(
     int modelW, int modelH,
     cudaStream_t stream);
 
-// Chroma key for generating coarse hint mask (from key.cu).
+// Fused composite: upscale alpha+fg from model res, despill, blend onto P210 (from neural_key.cu).
+cudaError_t ck_composite_neural_p210(
+    uint8_t* p210,
+    const float* alpha, const float* fg,
+    int progW, int progH, int progPitch,
+    int modelW, int modelH,
+    cudaStream_t stream);
+
+// Chroma key for generating coarse hint mask — NV12 (from key.cu).
 cudaError_t chroma_key_nv12(
     uint8_t* nv12,
     uint8_t* mask,
@@ -45,6 +61,17 @@ cudaError_t chroma_key_nv12(
     int simDistSq, int totalDistSq,
     float spillSuppress,
     uint8_t spillReplaceCb, uint8_t spillReplaceCr,
+    cudaStream_t stream);
+
+// Chroma key for generating coarse hint mask — P210 (from key.cu).
+cudaError_t chroma_key_p210(
+    uint8_t* p210,
+    uint8_t* mask,
+    int width, int height, int pitch, int maskPitch,
+    uint16_t keyCb, uint16_t keyCr,
+    int simDistSq, int totalDistSq,
+    float spillSuppress,
+    uint16_t spillReplaceCb, uint16_t spillReplaceCr,
     cudaStream_t stream);
 */
 import "C"
@@ -224,43 +251,78 @@ func (nke *NeuralKeyEngine) Infer(
 	w := frame.Width
 	h := frame.Height
 	pitch := frame.Pitch
-	nv12 := unsafe.Pointer(uintptr(frame.DevPtr))
+	devPtr := unsafe.Pointer(uintptr(frame.DevPtr))
+	isP210 := frame.Format == GPUFormatP210
 
 	// Step 1: Generate coarse chroma hint mask (uint8 [progH, progW]).
 	// Convert similarity/smoothness to squared distance thresholds.
-	simDist := similarity * 255.0
-	totalDist := (similarity + smoothness) * 255.0
-	simDistSq := int(simDist * simDist)
-	totalDistSq := int(totalDist * totalDist)
-	if totalDistSq <= simDistSq {
-		totalDistSq = simDistSq + 1
+	var rc C.cudaError_t
+	if isP210 {
+		// P210: 10-bit chroma space. Scale 8-bit key values to 10-bit.
+		keyCb10 := C.uint16_t(uint16(keyCb) << 2)
+		keyCr10 := C.uint16_t(uint16(keyCr) << 2)
+		simDist := similarity * 1023.0
+		totalDist := (similarity + smoothness) * 1023.0
+		simDistSq := int(simDist * simDist)
+		totalDistSq := int(totalDist * totalDist)
+		if totalDistSq <= simDistSq {
+			totalDistSq = simDistSq + 1
+		}
+		rc = C.chroma_key_p210(
+			(*C.uint8_t)(devPtr),
+			(*C.uint8_t)(nke.chromaHint),
+			C.int(w), C.int(h), C.int(pitch), C.int(w),
+			keyCb10, keyCr10,
+			C.int(simDistSq), C.int(totalDistSq),
+			C.float(0),
+			C.uint16_t(512), C.uint16_t(512), // 10-bit neutral
+			stream,
+		)
+	} else {
+		simDist := similarity * 255.0
+		totalDist := (similarity + smoothness) * 255.0
+		simDistSq := int(simDist * simDist)
+		totalDistSq := int(totalDist * totalDist)
+		if totalDistSq <= simDistSq {
+			totalDistSq = simDistSq + 1
+		}
+		rc = C.chroma_key_nv12(
+			(*C.uint8_t)(devPtr),
+			(*C.uint8_t)(nke.chromaHint),
+			C.int(w), C.int(h), C.int(pitch),
+			C.uint8_t(keyCb), C.uint8_t(keyCr),
+			C.int(simDistSq), C.int(totalDistSq),
+			C.float(0),
+			C.uint8_t(128), C.uint8_t(128),
+			stream,
+		)
 	}
-	rc := C.chroma_key_nv12(
-		(*C.uint8_t)(nv12),
-		(*C.uint8_t)(nke.chromaHint),
-		C.int(w), C.int(h), C.int(pitch),
-		C.uint8_t(keyCb), C.uint8_t(keyCr),
-		C.int(simDistSq), C.int(totalDistSq),
-		C.float(0), // no spill suppress for hint generation
-		C.uint8_t(128), C.uint8_t(128), // neutral replace
-		stream,
-	)
 	if rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: neural_key: chroma hint failed: cuda %d", rc)
 	}
 
-	// Step 2: NV12 → RGB float32 CHW at model resolution.
+	// Step 2: Frame → RGB float32 CHW at model resolution.
 	// inputBuf layout: [1, 4, 512, 512]. Write RGB to first 3 channels.
 	rgbPtr := nke.inputBuf // offset 0: channels 0-2
-	rc = C.nv12_to_rgb_chw(
-		(*C.float)(rgbPtr),
-		(*C.uint8_t)(nv12),
-		C.int(w), C.int(h), C.int(pitch),
-		C.int(ckModelW), C.int(ckModelH),
-		stream,
-	)
+	if isP210 {
+		rc = C.p210_to_rgb_chw(
+			(*C.float)(rgbPtr),
+			(*C.uint16_t)(devPtr),
+			C.int(w), C.int(h), C.int(pitch/2), // pitch16 = pitch_bytes / 2
+			C.int(ckModelW), C.int(ckModelH),
+			stream,
+		)
+	} else {
+		rc = C.nv12_to_rgb_chw(
+			(*C.float)(rgbPtr),
+			(*C.uint8_t)(devPtr),
+			C.int(w), C.int(h), C.int(pitch),
+			C.int(ckModelW), C.int(ckModelH),
+			stream,
+		)
+	}
 	if rc != C.cudaSuccess {
-		return fmt.Errorf("gpu: neural_key: nv12_to_rgb failed: cuda %d", rc)
+		return fmt.Errorf("gpu: neural_key: frame_to_rgb failed: cuda %d", rc)
 	}
 
 	// Step 3: ImageNet normalize RGB in-place.
@@ -399,14 +461,25 @@ func (nke *NeuralKeyEngine) Infer(
 	// Step 6: Composite — upscale alpha+fg from 512 to program res, despill, blend.
 	// Launch on the DEFAULT stream (stream 0) which is synchronous, ensuring
 	// the kernel completes before the encoder reads the frame.
-	rc = C.ck_composite_neural(
-		(*C.uint8_t)(nv12),
-		(*C.float)(nke.alphaBuf),
-		(*C.float)(nke.fgBuf),
-		C.int(w), C.int(h), C.int(pitch),
-		C.int(ckModelW), C.int(ckModelH),
-		nil, // default stream — synchronous
-	)
+	if isP210 {
+		rc = C.ck_composite_neural_p210(
+			(*C.uint8_t)(devPtr),
+			(*C.float)(nke.alphaBuf),
+			(*C.float)(nke.fgBuf),
+			C.int(w), C.int(h), C.int(pitch),
+			C.int(ckModelW), C.int(ckModelH),
+			nil, // default stream — synchronous
+		)
+	} else {
+		rc = C.ck_composite_neural(
+			(*C.uint8_t)(devPtr),
+			(*C.float)(nke.alphaBuf),
+			(*C.float)(nke.fgBuf),
+			C.int(w), C.int(h), C.int(pitch),
+			C.int(ckModelW), C.int(ckModelH),
+			nil, // default stream — synchronous
+		)
+	}
 	if rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: neural_key: composite failed: cuda %d", rc)
 	}
@@ -421,9 +494,12 @@ func (nke *NeuralKeyEngine) Infer(
 // composites the result onto the program frame (background). This is the upstream
 // key pattern: the fill source is keyed and blended over program.
 //
+// Supports both NV12 (8-bit 4:2:0) and P210 (10-bit 4:2:2) pipeline formats.
+// Format is detected from fillFrame.Format (fill and program must match).
+//
 // Steps:
 //  1. Generate chroma hint from the fill frame
-//  2. NV12→RGB at 512×512 from the fill frame
+//  2. Fill→RGB at 512×512 from the fill frame
 //  3. ImageNet normalize + hint concat
 //  4. TRT inference → alpha + foreground
 //  5. Composite foreground onto program frame using alpha
@@ -437,49 +513,84 @@ func (nke *NeuralKeyEngine) InferAndComposite(
 	fillW := fillFrame.Width
 	fillH := fillFrame.Height
 	fillPitch := fillFrame.Pitch
-	fillNV12 := unsafe.Pointer(uintptr(fillFrame.DevPtr))
+	fillPtr := unsafe.Pointer(uintptr(fillFrame.DevPtr))
+	isP210 := fillFrame.Format == GPUFormatP210
 
 	progW := programFrame.Width
 	progH := programFrame.Height
 	progPitch := programFrame.Pitch
-	progNV12 := unsafe.Pointer(uintptr(programFrame.DevPtr))
+	progPtr := unsafe.Pointer(uintptr(programFrame.DevPtr))
 
 	// Step 1: Generate chroma hint from the FILL frame (not program).
-	simDist := similarity * 255.0
-	totalDist := (similarity + smoothness) * 255.0
-	simDistSq := int(simDist * simDist)
-	totalDistSq := int(totalDist * totalDist)
-	if totalDistSq <= simDistSq {
-		totalDistSq = simDistSq + 1
+	var rc C.cudaError_t
+	if isP210 {
+		// P210: 10-bit chroma space. Scale 8-bit key values to 10-bit.
+		keyCb10 := C.uint16_t(uint16(keyCb) << 2)
+		keyCr10 := C.uint16_t(uint16(keyCr) << 2)
+		simDist := similarity * 1023.0
+		totalDist := (similarity + smoothness) * 1023.0
+		simDistSq := int(simDist * simDist)
+		totalDistSq := int(totalDist * totalDist)
+		if totalDistSq <= simDistSq {
+			totalDistSq = simDistSq + 1
+		}
+		rc = C.chroma_key_p210(
+			(*C.uint8_t)(fillPtr),
+			(*C.uint8_t)(nke.chromaHint),
+			C.int(fillW), C.int(fillH), C.int(fillPitch), C.int(fillW),
+			keyCb10, keyCr10,
+			C.int(simDistSq), C.int(totalDistSq),
+			C.float(0),
+			C.uint16_t(512), C.uint16_t(512), // 10-bit neutral
+			stream,
+		)
+	} else {
+		simDist := similarity * 255.0
+		totalDist := (similarity + smoothness) * 255.0
+		simDistSq := int(simDist * simDist)
+		totalDistSq := int(totalDist * totalDist)
+		if totalDistSq <= simDistSq {
+			totalDistSq = simDistSq + 1
+		}
+		rc = C.chroma_key_nv12(
+			(*C.uint8_t)(fillPtr),
+			(*C.uint8_t)(nke.chromaHint),
+			C.int(fillW), C.int(fillH), C.int(fillPitch),
+			C.uint8_t(keyCb), C.uint8_t(keyCr),
+			C.int(simDistSq), C.int(totalDistSq),
+			C.float(0),
+			C.uint8_t(128), C.uint8_t(128),
+			stream,
+		)
 	}
-	rc := C.chroma_key_nv12(
-		(*C.uint8_t)(fillNV12),
-		(*C.uint8_t)(nke.chromaHint),
-		C.int(fillW), C.int(fillH), C.int(fillPitch),
-		C.uint8_t(keyCb), C.uint8_t(keyCr),
-		C.int(simDistSq), C.int(totalDistSq),
-		C.float(0),
-		C.uint8_t(128), C.uint8_t(128),
-		stream,
-	)
 	if rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: neural_key: chroma hint failed: cuda %d", rc)
 	}
 
-	// Step 2: NV12→RGB from the FILL frame at model resolution.
+	// Step 2: Fill → RGB float32 CHW at model resolution.
 	rgbPtr := nke.inputBuf
-	rc = C.nv12_to_rgb_chw(
-		(*C.float)(rgbPtr),
-		(*C.uint8_t)(fillNV12),
-		C.int(fillW), C.int(fillH), C.int(fillPitch),
-		C.int(ckModelW), C.int(ckModelH),
-		stream,
-	)
+	if isP210 {
+		rc = C.p210_to_rgb_chw(
+			(*C.float)(rgbPtr),
+			(*C.uint16_t)(fillPtr),
+			C.int(fillW), C.int(fillH), C.int(fillPitch/2), // pitch16
+			C.int(ckModelW), C.int(ckModelH),
+			stream,
+		)
+	} else {
+		rc = C.nv12_to_rgb_chw(
+			(*C.float)(rgbPtr),
+			(*C.uint8_t)(fillPtr),
+			C.int(fillW), C.int(fillH), C.int(fillPitch),
+			C.int(ckModelW), C.int(ckModelH),
+			stream,
+		)
+	}
 	if rc != C.cudaSuccess {
-		return fmt.Errorf("gpu: neural_key: nv12_to_rgb failed: cuda %d", rc)
+		return fmt.Errorf("gpu: neural_key: fill_to_rgb failed: cuda %d", rc)
 	}
 
-	// Step 3: ImageNet normalize.
+	// Step 3: ImageNet normalize (format-agnostic, operates on float32 RGB).
 	rc = C.ck_imagenet_normalize(
 		(*C.float)(rgbPtr),
 		C.int(ckModelH), C.int(ckModelW),
@@ -489,7 +600,7 @@ func (nke *NeuralKeyEngine) InferAndComposite(
 		return fmt.Errorf("gpu: neural_key: normalize failed: cuda %d", rc)
 	}
 
-	// Step 4: Resize hint and copy to channel 3.
+	// Step 4: Resize hint and copy to channel 3 (format-agnostic, uint8 mask).
 	rc = C.ck_resize_mask_u8_f32(
 		(*C.float)(nke.hintBuf),
 		(*C.uint8_t)(nke.chromaHint), C.int(fillW), C.int(fillH), C.int(fillW),
@@ -511,7 +622,7 @@ func (nke *NeuralKeyEngine) InferAndComposite(
 		return fmt.Errorf("gpu: neural_key: hint copy failed: cuda %d", rc)
 	}
 
-	// Step 5: TRT inference.
+	// Step 5: TRT inference (format-agnostic, float32 tensors).
 	bindings := []TRTBinding{
 		{Name: "input", DevPtr: nke.inputBuf, Dims: []int{1, 4, ckModelH, ckModelW}},
 		{Name: "alpha", DevPtr: nke.alphaBuf, Dims: []int{1, 1, ckModelH, ckModelW}},
@@ -525,14 +636,25 @@ func (nke *NeuralKeyEngine) InferAndComposite(
 	C.cudaStreamSynchronize(stream)
 
 	// Step 6: Composite onto the PROGRAM frame.
-	rc = C.ck_composite_neural(
-		(*C.uint8_t)(progNV12),
-		(*C.float)(nke.alphaBuf),
-		(*C.float)(nke.fgBuf),
-		C.int(progW), C.int(progH), C.int(progPitch),
-		C.int(ckModelW), C.int(ckModelH),
-		nil, // default stream
-	)
+	if isP210 {
+		rc = C.ck_composite_neural_p210(
+			(*C.uint8_t)(progPtr),
+			(*C.float)(nke.alphaBuf),
+			(*C.float)(nke.fgBuf),
+			C.int(progW), C.int(progH), C.int(progPitch),
+			C.int(ckModelW), C.int(ckModelH),
+			nil, // default stream
+		)
+	} else {
+		rc = C.ck_composite_neural(
+			(*C.uint8_t)(progPtr),
+			(*C.float)(nke.alphaBuf),
+			(*C.float)(nke.fgBuf),
+			C.int(progW), C.int(progH), C.int(progPitch),
+			C.int(ckModelW), C.int(ckModelH),
+			nil, // default stream
+		)
+	}
 	if rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: neural_key: composite failed: cuda %d", rc)
 	}

@@ -186,3 +186,110 @@ cudaError_t ck_composite_neural(
         progNV12, alpha, fg, progW, progH, progPitch, modelW, modelH);
     return cudaGetLastError();
 }
+
+// ---------------------------------------------------------------------------
+// ck_composite_neural_p210: composite neural key result onto P210 program frame.
+//
+// P210: 10-bit 4:2:2 semi-planar (uint16, left-justified by 6).
+//   Y plane:  uint16 per pixel, pitch16 = pitch_bytes/2
+//   UV plane: full height (4:2:2), uint16 interleaved Cb/Cr at half-width
+//   UV offset: pitch16 * height (in uint16 units)
+//   Value range: Y [64,940], Cb/Cr [64,960], neutral 512 (all 10-bit)
+// ---------------------------------------------------------------------------
+__global__ void ck_composite_neural_p210_kernel(
+    uint16_t* __restrict__ progP210,  // program P210 frame (modified in-place)
+    const float* __restrict__ alpha,  // [1, 1, modelH, modelW]
+    const float* __restrict__ fg,     // [1, 3, modelH, modelW] sRGB [0,1]
+    int progW, int progH, int progPitch16,  // pitch in uint16 units
+    int modelW, int modelH)
+{
+    int px = blockIdx.x * blockDim.x + threadIdx.x;
+    int py = blockIdx.y * blockDim.y + threadIdx.y;
+    if (px >= progW || py >= progH) return;
+
+    // Map program pixel to model coordinates (bilinear).
+    float mx = (float)px * (float)(modelW - 1) / (float)(progW - 1);
+    float my = (float)py * (float)(modelH - 1) / (float)(progH - 1);
+
+    int ix = (int)mx, iy = (int)my;
+    float fx = mx - ix, fy = my - iy;
+    int ix1 = min(ix + 1, modelW - 1);
+    int iy1 = min(iy + 1, modelH - 1);
+
+    int modelPixels = modelW * modelH;
+
+    // Bilinear sample alpha.
+    float a = (alpha[iy * modelW + ix] * (1.0f - fx) + alpha[iy * modelW + ix1] * fx) * (1.0f - fy)
+            + (alpha[iy1 * modelW + ix] * (1.0f - fx) + alpha[iy1 * modelW + ix1] * fx) * fy;
+    a = fminf(fmaxf(a, 0.0f), 1.0f);
+
+    if (a < 1.0f / 1023.0f) return;
+
+    // Bilinear sample foreground RGB (CHW layout).
+    auto sample_plane = [&](const float* plane) -> float {
+        return (plane[iy * modelW + ix] * (1.0f - fx) + plane[iy * modelW + ix1] * fx) * (1.0f - fy)
+             + (plane[iy1 * modelW + ix] * (1.0f - fx) + plane[iy1 * modelW + ix1] * fx) * fy;
+    };
+
+    float r = fminf(fmaxf(sample_plane(fg + 0 * modelPixels), 0.0f), 1.0f);
+    float g = fminf(fmaxf(sample_plane(fg + 1 * modelPixels), 0.0f), 1.0f);
+    float b = fminf(fmaxf(sample_plane(fg + 2 * modelPixels), 0.0f), 1.0f);
+
+    // Green despill.
+    float rb_avg = (r + b) * 0.5f;
+    if (g > rb_avg) {
+        float excess = (g - rb_avg) * 0.5f;
+        g -= excess;
+        r = fminf(r + excess * 0.5f, 1.0f);
+        b = fminf(b + excess * 0.5f, 1.0f);
+    }
+
+    // Convert foreground sRGB [0,1] → BT.709 10-bit limited-range YCbCr.
+    float r10 = r * 1023.0f, g10 = g * 1023.0f, b10 = b * 1023.0f;
+    float fgY  = 64.0f  + 0.2126f * r10 + 0.7152f * g10 + 0.0722f * b10;
+    float fgCb = 512.0f - 0.1146f * r10 - 0.3854f * g10 + 0.5000f * b10;
+    float fgCr = 512.0f + 0.5000f * r10 - 0.4542f * g10 - 0.0458f * b10;
+
+    // Read existing program Y (10-bit, left-justified in uint16: >> 6).
+    float progY = (float)(progP210[py * progPitch16 + px] >> 6);
+
+    // Alpha blend Y.
+    float outY = a * fgY + (1.0f - a) * progY;
+    int outY10 = (int)fminf(fmaxf(outY + 0.5f, 0.0f), 1023.0f);
+    progP210[py * progPitch16 + px] = (uint16_t)(outY10 << 6);
+
+    // UV: process once per horizontal pair, at every row (4:2:2 = full vertical res).
+    if ((px & 1) == 0) {
+        int uvOffset = progPitch16 * progH;
+        int cx = px / 2;
+        int uvIdx = uvOffset + py * progPitch16 + cx * 2;
+
+        float progCb = (float)(progP210[uvIdx] >> 6);
+        float progCr = (float)(progP210[uvIdx + 1] >> 6);
+
+        float outCb = a * fgCb + (1.0f - a) * progCb;
+        float outCr = a * fgCr + (1.0f - a) * progCr;
+
+        int outCb10 = (int)fminf(fmaxf(outCb + 0.5f, 0.0f), 1023.0f);
+        int outCr10 = (int)fminf(fmaxf(outCr + 0.5f, 0.0f), 1023.0f);
+
+        progP210[uvIdx]     = (uint16_t)(outCb10 << 6);
+        progP210[uvIdx + 1] = (uint16_t)(outCr10 << 6);
+    }
+}
+
+extern "C"
+cudaError_t ck_composite_neural_p210(
+    uint8_t* progP210,
+    const float* alpha, const float* fg,
+    int progW, int progH, int progPitch,
+    int modelW, int modelH,
+    cudaStream_t stream)
+{
+    int progPitch16 = progPitch / 2;
+    dim3 block(16, 16);
+    dim3 grid((progW + block.x - 1) / block.x, (progH + block.y - 1) / block.y);
+    ck_composite_neural_p210_kernel<<<grid, block, 0, stream>>>(
+        (uint16_t*)progP210, alpha, fg, progW, progH, progPitch16, modelW, modelH);
+    return cudaGetLastError();
+}
