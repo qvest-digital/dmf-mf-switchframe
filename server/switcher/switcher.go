@@ -2013,7 +2013,12 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		engine.SetColorFormat(transition.ColorFormat10bit)
 	}
 
-	if err := engine.Start(fromSource, sourceKey, tt, durationMs); err != nil {
+	// In ref clock mode, use StartSync so the engine relies on tick-driven
+	// AutoAdvancePosition instead of wall-clock timing. This prevents position
+	// jitter from two competing clocks (wall-clock vs tick-driven).
+	if s.useRefClock.Load() {
+		engine.StartSync(fromSource, sourceKey, tt, durationMs)
+	} else if err := engine.Start(fromSource, sourceKey, tt, durationMs); err != nil {
 		// Roll back state since we failed to start.
 		s.mu.Lock()
 		s.transitionState(StateIdle)

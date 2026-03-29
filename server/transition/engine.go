@@ -1184,24 +1184,53 @@ func (e *Engine) scaleStingerFrames(sd *StingerData) []StingerFrameData {
 // StartSync configures the engine for synchronous blending (no goroutines).
 // Sets transition type, duration, and direction but does NOT spawn any
 // goroutines — no watchdog, no decoders, no codec pipeline. This is the
-// reference-clock path: the caller drives position via AutoAdvancePosition
-// and performs blends via BlendRaw.
+// StartSync initializes a transition for the reference-clock path.
+// Unlike Start(), it does NOT use wall-clock timing — the caller drives
+// position via AutoAdvancePosition. No watchdog goroutine is started
+// because the sync loop handles completion directly.
 func (e *Engine) StartSync(from, to string, ttype Type, durationMs int) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.transitionType = ttype
+	e.wipeDirection = e.config.WipeDirection
+	e.easing = e.config.Easing
 	e.durationMs = durationMs
 	e.position = 0
 	e.state = StateActive
 	e.manualControl = false
+	e.manualPosition = 0
 	e.fromSource = from
 	e.toSource = to
+	e.latestYUVA = nil
+	e.latestYUVB = nil
+
+	// Initialize blender from hint dimensions.
+	if e.config.HintWidth > 0 && e.config.HintHeight > 0 {
+		e.width = e.config.HintWidth
+		e.height = e.config.HintHeight
+		blender, err := NewFrameBlender(e.width, e.height)
+		if err == nil {
+			e.blender = blender
+		}
+	}
+
+	// Pre-scale stinger frames eagerly.
+	e.stingerScaled = nil
+	if ttype == Stinger && e.config.Stinger != nil && len(e.config.Stinger.Frames) > 0 && e.width > 0 {
+		e.stingerScaled = e.scaleStingerFrames(e.config.Stinger)
+	}
+
+	e.log.Info("engine started (sync)", "type", ttype, "from", from, "to", to, "durationMs", durationMs)
 }
 
 // AutoAdvancePosition advances the transition position by one tick based on
-// frame duration. Returns the new position and whether the transition is
-// complete (position >= 1.0). On completion, the engine state is set to Idle.
+// frame duration. Returns the eased position and whether the transition is
+// complete (linear t >= 1.0). On completion, the engine state is set to Idle.
 // This is the reference-clock path — no wall-clock timing, purely tick-driven.
+//
+// The internal e.position tracks linear progress (0→1). The returned value
+// has the easing curve applied, matching what currentPosition() produces
+// in the wall-clock path.
 func (e *Engine) AutoAdvancePosition(frameDurationMs float64) (float64, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -1215,7 +1244,15 @@ func (e *Engine) AutoAdvancePosition(frameDurationMs float64) (float64, bool) {
 		e.state = StateIdle
 		return 1.0, true
 	}
-	return e.position, false
+	// Apply easing curve to linear position, matching currentPosition().
+	t := e.position
+	var pos float64
+	if e.easing != nil {
+		pos = e.easing.Ease(t)
+	} else {
+		pos = t * t * (3.0 - 2.0*t) // smoothstep
+	}
+	return math.Max(0.0, math.Min(1.0, pos)), false
 }
 
 // BlendRaw performs a synchronous blend of two YUV420 frames at the given
