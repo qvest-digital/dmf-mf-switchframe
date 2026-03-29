@@ -140,17 +140,15 @@ func (e *GPUEncoder) EncodeGPU(frame *GPUFrame, forceIDR bool) ([]byte, bool, er
 		// NVENC doesn't support 4:2:2 — this is the only lossy step in the pipeline.
 		if e.is10bit && frame.Format == GPUFormatP210 {
 			if e.p010Tmp == nil {
-				// Lazy-allocate temp frame. Use NV12 pool format — P010 has the
-				// same byte layout as NV12 but with uint16 samples. The pitch
-				// matches (both use width*2 bytes per row for 10-bit).
-				// Actually P010 needs pitch*height*3/2 (same as NV12 but uint16),
-				// which is smaller than P210's pitch*height*2.
-				// We can reuse the pool's Acquire since the buffer is large enough.
 				tmp, err := e.gpuCtx.Pool().Acquire()
 				if err != nil {
 					return nil, false, fmt.Errorf("gpu: P010 tmp alloc: %w", err)
 				}
 				e.p010Tmp = tmp
+				slog.Info("gpu: P010 tmp frame allocated",
+					"width", tmp.Width, "height", tmp.Height, "pitch", tmp.Pitch,
+					"format", tmp.Format, "frameSize", tmp.FrameSize(),
+					"srcPitch", frame.Pitch, "srcFormat", frame.Format)
 			}
 			// Convert P210 → P010 (chroma downsample + MSB shift) on GPU.
 			if err := ConvertP210ToP010MSB(e.gpuCtx, e.p010Tmp, frame); err != nil {
