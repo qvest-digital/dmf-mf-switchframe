@@ -890,6 +890,9 @@ func (a *App) initSubsystems() error {
 	// for the GPU preview encode node (which broadcasts directly to this relay).
 	a.programPreviewRelay = a.server.RegisterStream("program-preview")
 
+	// Expose program-preview relay viewer stats for diagnostics.
+	a.debugCollector.Register("program_preview_relay", &previewRelayDebugProvider{app: a})
+
 	// GPU pipeline auto-detection and wiring.
 	// Must happen after stmap registry is set and before BuildPipeline().
 	a.gpuState = initGPU(a.sw)

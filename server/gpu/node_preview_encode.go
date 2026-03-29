@@ -35,6 +35,14 @@ type gpuPreviewEncodeNode struct {
 	// Async encode channel + goroutine
 	frameCh chan *GPUFrame
 	done    chan struct{}
+
+	// Diagnostic counters (atomic, lock-free).
+	framesIn      atomic.Int64 // frames received by ProcessGPU
+	framesDropped atomic.Int64 // frames dropped (newest-wins channel full)
+	framesEncoded atomic.Int64 // frames successfully encoded + broadcast
+	encodeErrors  atomic.Int64 // encode failures
+	lastEncodeNs  atomic.Int64 // last encode duration (scale + NVENC)
+	maxEncodeNs   atomic.Int64 // max encode duration seen
 }
 
 // NewGPUPreviewEncodeNode creates a GPU preview encode pipeline node.
@@ -116,6 +124,8 @@ func (n *gpuPreviewEncodeNode) ProcessGPU(frame *GPUFrame) error {
 		return nil
 	}
 
+	n.framesIn.Add(1)
+
 	// Ref the frame so it's not recycled before the encode goroutine reads it.
 	frame.Ref()
 
@@ -123,6 +133,7 @@ func (n *gpuPreviewEncodeNode) ProcessGPU(frame *GPUFrame) error {
 	select {
 	case old := <-n.frameCh:
 		old.Release()
+		n.framesDropped.Add(1)
 	default:
 	}
 	n.frameCh <- frame
@@ -136,14 +147,24 @@ func (n *gpuPreviewEncodeNode) encodeLoop() {
 	for frame := range n.frameCh {
 		forceIDR := n.forceIDR.Swap(false)
 		pts := frame.PTS // capture before Release
+
+		t0 := time.Now()
 		data, isIDR, err := n.enc.Encode(frame, forceIDR)
+		encNs := time.Since(t0).Nanoseconds()
 		frame.Release()
+
+		n.lastEncodeNs.Store(encNs)
+		if mx := n.maxEncodeNs.Load(); encNs > mx {
+			n.maxEncodeNs.Store(encNs)
+		}
 
 		if err != nil {
 			n.lastErr.Store(err)
+			n.encodeErrors.Add(1)
 			continue
 		}
 		if len(data) > 0 {
+			n.framesEncoded.Add(1)
 			n.onEncoded(data, isIDR, pts)
 		}
 	}
@@ -163,6 +184,18 @@ func (n *gpuPreviewEncodeNode) stopLoop() {
 // Safe to call from any goroutine.
 func (n *gpuPreviewEncodeNode) ForceIDR() {
 	n.forceIDR.Store(true)
+}
+
+// DiagSnapshot returns diagnostic counters for this node.
+func (n *gpuPreviewEncodeNode) DiagSnapshot() map[string]any {
+	return map[string]any{
+		"frames_in":      n.framesIn.Load(),
+		"frames_dropped": n.framesDropped.Load(),
+		"frames_encoded": n.framesEncoded.Load(),
+		"encode_errors":  n.encodeErrors.Load(),
+		"last_encode_ns": n.lastEncodeNs.Load(),
+		"max_encode_ns":  n.maxEncodeNs.Load(),
+	}
 }
 
 func (n *gpuPreviewEncodeNode) Close() error {

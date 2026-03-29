@@ -778,6 +778,49 @@ func (r *gpuPipelineRunnerImpl) Snapshot() map[string]any {
 	return snap
 }
 
+// previewRelayDebugProvider exposes program-preview relay viewer stats
+// and GPU preview encode counters in the debug snapshot.
+type previewRelayDebugProvider struct {
+	app *App
+}
+
+func (p *previewRelayDebugProvider) DebugSnapshot() map[string]any {
+	result := make(map[string]any)
+
+	// Relay viewer stats (videoSent, videoDropped, bytesSent per viewer).
+	if relay := p.app.programPreviewRelay; relay != nil {
+		viewers := relay.ViewerStatsAll()
+		viewerList := make([]map[string]any, 0, len(viewers))
+		var totalSent, totalDropped int64
+		for _, v := range viewers {
+			viewerList = append(viewerList, map[string]any{
+				"id":             v.ID,
+				"video_sent":     v.VideoSent,
+				"video_dropped":  v.VideoDropped,
+				"audio_sent":     v.AudioSent,
+				"audio_dropped":  v.AudioDropped,
+				"bytes_sent":     v.BytesSent,
+				"last_video_ts":  v.LastVideoTsMS,
+			})
+			totalSent += v.VideoSent
+			totalDropped += v.VideoDropped
+		}
+		result["viewer_count"] = len(viewers)
+		result["total_video_sent"] = totalSent
+		result["total_video_dropped"] = totalDropped
+		result["viewers"] = viewerList
+	}
+
+	// GPU preview encode node counters.
+	if gs := p.app.gpuState; gs != nil && gs.previewNode != nil {
+		if dn, ok := gs.previewNode.(interface{ DiagSnapshot() map[string]any }); ok {
+			result["gpu_encode"] = dn.DiagSnapshot()
+		}
+	}
+
+	return result
+}
+
 func (r *gpuPipelineRunnerImpl) RunTransition(fromKey, toKey string, transType string, wipeDir int, position float64, pts int64, stinger *switcher.GPUStingerFrame) error {
 	if r.sourceManager == nil {
 		return fmt.Errorf("no GPU source manager")
