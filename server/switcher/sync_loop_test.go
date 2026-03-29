@@ -1343,6 +1343,60 @@ func TestSyncLoopClockRecovery(t *testing.T) {
 	require.Greater(t, den, 0, "recovered rate den should be > 0")
 }
 
+// TestSyncLoopClockRecoveryNoMutation verifies that clock recovery observes
+// source frame rate but never mutates the reference clock rate.
+func TestSyncLoopClockRecoveryNoMutation(t *testing.T) {
+	s, rc := newSyncTestSwitcherBufferOnly(t)
+	defer s.Close()
+
+	cr := clock.NewClockRecovery(30000, 1001, 3)
+	s.SetClockRecovery(cr)
+
+	cam1Relay := distribution.NewRelay()
+	s.RegisterSource("cam1", cam1Relay)
+	s.mu.Lock()
+	s.frameSync.AddSource("cam1")
+	s.mu.Unlock()
+	require.NoError(t, s.Cut(context.Background(), "cam1"))
+
+	// Record initial rate.
+	initNum, initDen := rc.Rate()
+
+	pool := s.framePool
+	yuvSize := 320 * 240 * 3 / 2
+
+	// Feed 100 frames with 25fps timing — clock recovery will detect 25fps
+	// but must NOT change the reference clock.
+	for i := 0; i < 100; i++ {
+		buf := pool.Acquire()[:yuvSize]
+		for j := range buf {
+			buf[j] = 128
+		}
+		pf := &ProcessingFrame{
+			Data:  buf,
+			Width: 320, Height: 240,
+			PTS: int64(i) * 3600, // 25fps PTS
+			pool: pool,
+		}
+		pf.SetRefs(1)
+		s.frameSync.IngestRawVideo("cam1", pf)
+
+		tick := clock.Tick{
+			Number:        int64(i),
+			VideoPTS:      int64(i) * 3003,
+			AudioSamples:  1601,
+			FrameDuration: time.Duration(33_370_000),
+		}
+		s.processVideoTick(tick)
+		time.Sleep(100 * time.Microsecond)
+	}
+
+	// Reference clock rate must be unchanged.
+	finalNum, finalDen := rc.Rate()
+	require.Equal(t, initNum, finalNum, "reference clock fpsNum must not change")
+	require.Equal(t, initDen, finalDen, "reference clock fpsDen must not change")
+}
+
 // Issue 12: AAC buffer should be flushed on sync loop shutdown.
 func TestSyncLoopFlushesAACOnShutdown(t *testing.T) {
 	s, rc := newSyncTestSwitcher(t)

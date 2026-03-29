@@ -204,18 +204,15 @@ func (s *Switcher) processVideoTick(tick clock.Tick) {
 	// Health is now recorded in IngestRawVideo (the entry point for ALL sources),
 	// so we don't need to record it here in the sync loop.
 
-	// Record arrival for clock recovery (program source only).
+	// Record arrival for clock recovery (diagnostics only).
+	// Clock recovery observes the program source's frame rate but never
+	// mutates the reference clock. The pipeline rate is fixed at startup
+	// from PipelineFormat and must not change at runtime. A previous bug
+	// allowed SetRate() here, which created a feedback loop: a transient
+	// stall caused clock recovery to snap to a lower rate (e.g. 24fps),
+	// which then became self-confirming.
 	if cr := s.clockRecovery; cr != nil {
-		changed := cr.RecordArrival(time.Now())
-		if changed {
-			newNum, newDen := cr.Rate()
-			s.log.Info("clock recovery: rate changed",
-				"fpsNum", newNum, "fpsDen", newDen,
-				"measuredFPS", cr.MeasuredFPS())
-			if s.refClock != nil {
-				s.refClock.SetRate(newNum, newDen)
-			}
-		}
+		cr.RecordArrival(time.Now())
 	}
 
 	s.runPipelineAndBroadcast(pf, tick)
