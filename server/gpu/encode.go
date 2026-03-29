@@ -35,6 +35,7 @@ type GPUEncoder struct {
 	height   int
 	is10bit  bool       // true when encoder uses P010LE (HEVC 10-bit)
 	p010Tmp  *GPUFrame  // temp P010 frame for P210→P010 conversion (lazy, 10-bit only)
+	nv12Tmp  *GPUFrame  // temp NV12 frame for P210→NV12 conversion (lazy, 8-bit encoder + P210 input)
 	cpuBuf   []byte     // reusable CPU-side YUV420p buffer for fallback
 	cpuBufMu sync.Mutex // protects cpuBuf
 }
@@ -112,6 +113,28 @@ func (e *GPUEncoder) EncodeGPU(frame *GPUFrame, forceIDR bool) ([]byte, bool, er
 	// preventing races with kernel launches on ctx.stream.
 	if e.hwEnc != nil {
 		encFrame := frame
+		// P210 source + NV12 encoder (H.264): convert P210→NV12 (10-bit→8-bit
+		// + chroma downsample 4:2:2→4:2:0) into a temp NV12 frame.
+		// This handles the case where the pipeline runs P210 but the encoder is AVC.
+		if !e.is10bit && frame.Format == GPUFormatP210 {
+			if e.nv12Tmp == nil {
+				pool, err := NewFramePool(e.gpuCtx, e.width, e.height, 1)
+				if err != nil {
+					return nil, false, fmt.Errorf("gpu: NV12 tmp pool alloc: %w", err)
+				}
+				tmp, err := pool.Acquire()
+				if err != nil {
+					pool.Close()
+					return nil, false, fmt.Errorf("gpu: NV12 tmp alloc: %w", err)
+				}
+				e.nv12Tmp = tmp
+			}
+			if err := ScaleP210ToNV12On(e.gpuCtx, e.nv12Tmp, frame, nil); err != nil {
+				return nil, false, fmt.Errorf("gpu: P210→NV12 convert: %w", err)
+			}
+			e.nv12Tmp.PTS = frame.PTS
+			encFrame = e.nv12Tmp
+		}
 		// P210 source + P010LE encoder: convert P210→P010 (chroma downsample
 		// 4:2:2→4:2:0 + LSB→MSB shift <<6) into a temp NV12-sized frame.
 		// NVENC doesn't support 4:2:2 — this is the only lossy step in the pipeline.
@@ -230,6 +253,10 @@ func (e *GPUEncoder) IsHWFrames() bool {
 
 // Close releases encoder resources.
 func (e *GPUEncoder) Close() {
+	if e.nv12Tmp != nil {
+		e.nv12Tmp.Release()
+		e.nv12Tmp = nil
+	}
 	if e.p010Tmp != nil {
 		e.p010Tmp.Release()
 		e.p010Tmp = nil
