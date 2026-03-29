@@ -281,7 +281,7 @@ func (s *Switcher) processTransitionTick(tick clock.Tick, fs *FrameSynchronizer,
 			PTS:    tick.VideoPTS,
 			DTS:    tick.VideoPTS,
 		}
-		s.runPipelineAndBroadcast(result, tick)
+		s.runPipelineAndBroadcastTransition(result, tick)
 	}
 
 	// Handle transition completion (Issue 4: dispatch to correct handler by type).
@@ -298,8 +298,59 @@ func (s *Switcher) processTransitionTick(tick clock.Tick, fs *FrameSynchronizer,
 	}
 }
 
+// runPipelineAndBroadcastTransition runs the pipeline for a BLENDED transition frame.
+// Unlike runPipelineAndBroadcast, this SKIPS RunFromCache because the GPU source
+// manager's cache contains un-blended source frames, not the CPU-blended result.
+// The blended YUV must be uploaded to GPU via RunWithUpload.
+func (s *Switcher) runPipelineAndBroadcastTransition(pf *ProcessingFrame, tick clock.Tick) {
+	start := time.Now()
+
+	gpuUsed := false
+	if h := s.gpuRunner.Load(); h != nil && h.runner != nil {
+		// Skip RunFromCache — cache has raw source frames, not the blend.
+		// Upload the CPU-blended frame directly.
+		if err := h.runner.RunWithUpload(pf.Data, pf.Width, pf.Height, pf.PTS); err == nil {
+			gpuUsed = true
+			s.gpuFramesProcessed.Add(1)
+			s.gpuTransitionFrames.Add(1)
+		} else {
+			s.gpuFallbackFrames.Add(1)
+			s.logGPUErrorOnce("RunWithUpload (transition) failed", "err", err,
+				"dataLen", len(pf.Data), "w", pf.Width, "h", pf.Height)
+		}
+	}
+
+	if !gpuUsed {
+		hasPipeline := false
+		if p := s.pipeline.Load(); p != nil {
+			hasPipeline = true
+			pf = p.Run(pf)
+		}
+		if !hasPipeline && len(pf.Data) > 0 {
+			dataCopy := make([]byte, len(pf.Data))
+			copy(dataCopy, pf.Data)
+			frame := &media.VideoFrame{
+				PTS:        pf.PTS,
+				DTS:        pf.DTS,
+				WireData:   dataCopy,
+				IsKeyframe: true,
+			}
+			s.broadcastToProgram(frame)
+		}
+	}
+
+	dur := time.Since(start).Nanoseconds()
+	s.videoProcLastNano.Store(dur)
+	s.videoProcCount.Add(1)
+	atomicutil.UpdateMax(&s.videoProcMaxNano, dur)
+	elapsed := time.Duration(dur)
+	if elapsed > tick.FrameDuration && s.lastBroadcastVFrame.Load() != nil {
+		s.ticksBehind = int(elapsed / tick.FrameDuration)
+	}
+}
+
 // runPipelineAndBroadcast runs the processing pipeline on a frame and broadcasts
-// the result. Shared between normal and transition tick paths.
+// the result. Used for normal (non-transition) tick paths.
 //
 // Routes through the GPU pipeline when available, falling back to the CPU
 // pipeline. This mirrors the videoProcessingLoop's GPU routing logic:
