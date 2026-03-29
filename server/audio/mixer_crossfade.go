@@ -82,8 +82,15 @@ func (m *Mixer) OnCut(oldSource, newSource string) {
 	m.cutFramesRemaining = 4
 	m.cutTotalFrames = 4
 
-	// Activate the new source channel so its audio frames are accepted.
+	// Flush the new source's ring buffer to discard stale audio that
+	// accumulated between source connect and this cut. Without this,
+	// the mixer reads samples that are hundreds of ms old, causing
+	// audible A/V desync. After flush, push and pop rates match
+	// (both 48kHz), so depth stays near zero.
 	if ch, ok := m.channels[newSource]; ok {
+		if ch.ringBuf != nil {
+			ch.ringBuf.Reset()
+		}
 		ch.active = true
 		m.initChannelDecoder(ch)
 	}
@@ -110,8 +117,12 @@ func (m *Mixer) OnTransitionStart(oldSource, newSource string, mode TransitionMo
 	m.transCrossfadeAudioPos = 0.0
 	m.mixCycleTransPos = 0.0
 
-	// Ensure the incoming source's channel is active so frames are accepted.
+	// Flush + activate the incoming source's channel so we start from
+	// fresh audio rather than stale data buffered before the transition.
 	if ch, ok := m.channels[newSource]; ok {
+		if ch.ringBuf != nil {
+			ch.ringBuf.Reset()
+		}
 		ch.active = true
 		// Pre-warm the decoder so the first frame from this source
 		// doesn't produce warmup transients in the mix output.

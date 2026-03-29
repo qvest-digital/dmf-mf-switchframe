@@ -7,10 +7,6 @@ package audio
 // The output ticker pulls exactly N samples per tick (fixed cadence).
 // When the buffer has fewer than N samples, silence (zeros) is
 // returned — less audible than freeze-repeat with bursty SRT delivery.
-//
-// In clock-driven mode (ref clock), the capacity is reduced so the
-// Push-side overflow naturally discards oldest samples, bounding the
-// FIFO depth without creating audible discontinuities in Pop.
 type PCMRingBuffer struct {
 	buf       []float32 // circular sample buffer
 	rd        int       // read position
