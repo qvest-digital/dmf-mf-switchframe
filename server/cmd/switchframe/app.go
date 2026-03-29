@@ -646,19 +646,38 @@ func (a *App) initOutput() error {
 		//
 		// The offset is constant so it doesn't affect PTS deltas (Bresenham
 		// cadence is preserved). A per-frame reading would add jitter.
+		// Measure the ring buffer depth after audio is flowing and latch it.
+		// The lip-sync source returns the live value until latched, then
+		// returns the frozen constant forever (no per-frame jitter).
 		var lipSyncLatched atomic.Bool
+		var lipSyncValue atomic.Int64
 		a.outputMgr.SetLipSyncSource(func() int64 {
 			if lipSyncLatched.Load() {
-				// Already latched — return the frozen value. The manager
-				// won't call SetLipSyncOffset again because the delta is 0.
-				return a.outputMgr.LipSyncOffset()
+				return lipSyncValue.Load()
 			}
-			return a.mixer.RingBufferLatency90k()
+			raw := a.mixer.RingBufferLatency90k()
+			// Once we see a non-zero measurement, latch after a few samples.
+			// The ring buffer needs real audio flowing to produce a valid depth.
+			if raw > 0 {
+				lipSyncValue.Store(raw)
+			}
+			return raw
 		})
-		// After 2 seconds, latch the current measurement permanently.
+		// Poll until ring buffer has data, then latch after stabilization.
 		go func() {
-			time.Sleep(2 * time.Second)
+			// Wait for audio to start flowing (source cut to program).
+			for {
+				time.Sleep(500 * time.Millisecond)
+				if a.mixer.RingBufferLatency90k() > 0 {
+					break
+				}
+			}
+			// Let it stabilize for 1 second.
+			time.Sleep(1 * time.Second)
 			offset := a.mixer.RingBufferLatency90k()
+			if offset <= 0 {
+				offset = lipSyncValue.Load()
+			}
 			a.outputMgr.LatchLipSync(offset)
 			lipSyncLatched.Store(true)
 			slog.Info("ref clock: lip-sync offset latched",
