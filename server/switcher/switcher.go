@@ -478,7 +478,7 @@ type Switcher struct {
 	lastEncodedFrame     atomic.Pointer[ProcessingFrame]
 	lastBroadcastVFrame  atomic.Pointer[media.VideoFrame] // last broadcast H.264 frame (for overload repeat)
 	lastOverloadLog      time.Time                        // rate-limit overload logging to 1/sec
-	sourceLostAt     time.Time // when program source stopped providing frames
+	sourceLostAt     atomic.Pointer[time.Time] // when program source stopped providing frames (sync loop goroutine only)
 
 	// Sync loop audio output callbacks (used in ref clock mode).
 	// outputAudioCallback delivers AAC frames to the program relay (browser).

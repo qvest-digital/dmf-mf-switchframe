@@ -30,8 +30,9 @@ type ReferenceClock struct {
 	request    chan struct{} // non-realtime: consumer signals readiness
 	stop       chan struct{}
 	wg         sync.WaitGroup
-	realtime   bool
-	running    atomic.Bool
+	realtime     bool
+	running      atomic.Bool
+	droppedTicks atomic.Int64 // ticks dropped because consumer was behind
 
 	// currentPTS tracks the running PTS value using Bresenham accumulation
 	// (Issue 2). Eliminates truncation drift for non-integer PTS deltas
@@ -131,6 +132,12 @@ func (c *ReferenceClock) TickCount() int64 {
 	return atomic.LoadInt64(&c.tickCount)
 }
 
+// DroppedTicks returns the number of ticks dropped because the consumer
+// couldn't keep up with the clock rate. Non-zero indicates overload.
+func (c *ReferenceClock) DroppedTicks() int64 {
+	return c.droppedTicks.Load()
+}
+
 // frameDuration returns the nominal frame duration for the given rate.
 func frameDuration(fpsNum, fpsDen int) time.Duration {
 	// duration = fpsDen / fpsNum seconds
@@ -191,6 +198,7 @@ func (c *ReferenceClock) runRealtime() {
 		select {
 		case c.ticks <- tick:
 		default:
+			c.droppedTicks.Add(1)
 		}
 
 		// Sleep until next deadline.

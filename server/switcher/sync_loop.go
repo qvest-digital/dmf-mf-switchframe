@@ -394,9 +394,9 @@ func (s *Switcher) popProgramFrame(fs *FrameSynchronizer, sourceKey string, vide
 		ss.lastRawVideo = newest
 
 		// Clear source loss tracking — fresh frame recovered.
-		if !s.sourceLostAt.IsZero() && sourceKey == s.programSourceAtomic() {
+		if lost := s.sourceLostAt.Load(); lost != nil && sourceKey == s.programSourceAtomic() {
 			s.log.Info("source recovered", "source", sourceKey)
-			s.sourceLostAt = time.Time{}
+			s.sourceLostAt.Store(nil)
 		}
 
 		// Return a value copy. The underlying YUV buffer is held alive by
@@ -408,13 +408,14 @@ func (s *Switcher) popProgramFrame(fs *FrameSynchronizer, sourceKey string, vide
 	// No fresh frame — source loss path.
 	if ss.lastRawVideo != nil {
 		// Track when source loss began (only for program source).
-		if s.sourceLostAt.IsZero() && sourceKey == s.programSourceAtomic() {
-			s.sourceLostAt = time.Now()
+		if s.sourceLostAt.Load() == nil && sourceKey == s.programSourceAtomic() {
+			now := time.Now()
+			s.sourceLostAt.Store(&now)
 			s.log.Warn("source lost — freezing", "source", sourceKey)
 		}
 
 		// After timeout, transition from freeze to black.
-		if !s.sourceLostAt.IsZero() && time.Since(s.sourceLostAt) > sourceLossTimeout {
+		if lost := s.sourceLostAt.Load(); lost != nil && time.Since(*lost) > sourceLossTimeout {
 			pf := s.pipelineFormat.Load()
 			w, h := 320, 240
 			if pf != nil {

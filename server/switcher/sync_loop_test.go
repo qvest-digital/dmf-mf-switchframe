@@ -1008,7 +1008,8 @@ func TestSyncLoopSourceLossToBlack(t *testing.T) {
 	s.processVideoTick(tick) // This sets sourceLostAt
 
 	// Fake sourceLostAt to be 6 seconds ago to exceed the 5s timeout.
-	s.sourceLostAt = time.Now().Add(-6 * time.Second)
+	past := time.Now().Add(-6 * time.Second)
+	s.sourceLostAt.Store(&past)
 
 	// Clear viewer.
 	viewer.mu.Lock()
@@ -1074,7 +1075,7 @@ func TestSyncLoopSourceRecovery(t *testing.T) {
 	tick.VideoPTS = 3000
 	s.processVideoTick(tick)
 
-	require.False(t, s.sourceLostAt.IsZero(), "sourceLostAt should be set after loss")
+	require.NotNil(t, s.sourceLostAt.Load(), "sourceLostAt should be set after loss")
 
 	// Recover: feed a new frame with different luma.
 	buf2 := pool.Acquire()[:yuvSize]
@@ -1102,7 +1103,7 @@ func TestSyncLoopSourceRecovery(t *testing.T) {
 	tick.VideoPTS = 6000
 	s.processVideoTick(tick)
 
-	require.True(t, s.sourceLostAt.IsZero(), "sourceLostAt should be cleared after recovery")
+	require.Nil(t, s.sourceLostAt.Load(), "sourceLostAt should be cleared after recovery")
 
 	frames := viewer.VideoFrames()
 	require.GreaterOrEqual(t, len(frames), 1, "should produce frame after recovery")
