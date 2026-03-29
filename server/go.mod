@@ -44,10 +44,3 @@ require (
 	google.golang.org/protobuf v1.36.8 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-// Use BBRv3 congestion control instead of CUBIC. BBR maintains throughput
-// on high-RTT, high-jitter paths by probing bandwidth directly instead of
-// reacting to packet reordering as loss. CUBIC collapses the congestion
-// window on jitter, causing QUIC SendStream.Write to block and triggering
-// frame drops in the MoQ video relay.
-replace github.com/quic-go/quic-go => github.com/zsiec/quic-go v0.59.1-bbr
