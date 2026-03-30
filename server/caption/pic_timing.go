@@ -73,6 +73,10 @@ func (c PicTimingConfig) hrdPresent() bool {
 // seiPayloadTypePicTiming is the SEI payload type for pic_timing.
 const seiPayloadTypePicTiming = 1
 
+// seiPayloadTypeTimeCode is the HEVC SEI payload type for time_code (D.2.27).
+// HEVC does not carry clock_timestamp in pic_timing — it uses this separate message.
+const seiPayloadTypeTimeCode = 136
+
 // BuildPicTimingSEI generates a pic_timing SEI payload (payload_type=1).
 //
 // For H.264 (ITU-T H.264 D.2.2):
@@ -204,6 +208,66 @@ func buildPicTimingSEIHEVC(cfg PicTimingConfig, frameNum int64, tc *Timecode) []
 	return bw.bytes()
 }
 
+// buildTimeCodeSEI builds an HEVC time_code SEI payload (payload_type=136).
+// Per ITU-T H.265 D.2.27, this is the HEVC-native mechanism for carrying
+// SMPTE 12M timecode (HEVC pic_timing has no clock_timestamp fields).
+//
+// Structure:
+//
+//	num_clock_ts:              u(2)
+//	for each clock timestamp:
+//	  clock_timestamp_flag:    u(1)
+//	  units_field_based_flag:  u(1)
+//	  counting_type:           u(5)
+//	  full_timestamp_flag:     u(1)
+//	  discontinuity_flag:      u(1)
+//	  cnt_dropped_flag:        u(1)
+//	  n_frames:                u(9)  // 9 bits in HEVC (vs 8 in H.264)
+//	  if full_timestamp_flag:
+//	    seconds_value:         u(6)
+//	    minutes_value:         u(6)
+//	    hours_value:           u(5)
+//	  time_offset_length:      u(5)
+//	  if time_offset_length > 0:
+//	    time_offset:           i(v)
+func buildTimeCodeSEI(tc *Timecode, fpsNum, fpsDen int) []byte {
+	var bw bitWriter
+	bw.init(8)
+
+	// num_clock_ts = 1: one timestamp per picture.
+	bw.writeBits(1, 2)
+
+	// clock_timestamp_flag[0] = 1.
+	bw.writeBits(1, 1)
+	// units_field_based_flag = 0 (progressive, not field-based).
+	bw.writeBits(0, 1)
+	// counting_type: 1=NDF, 4=DF.
+	bw.writeBits(uint64(countingType(fpsNum, fpsDen)), 5)
+	// full_timestamp_flag = 1.
+	bw.writeBits(1, 1)
+	// discontinuity_flag = 0.
+	bw.writeBits(0, 1)
+	// cnt_dropped_flag.
+	if tc.CntDropped {
+		bw.writeBits(1, 1)
+	} else {
+		bw.writeBits(0, 1)
+	}
+	// n_frames (9 bits in HEVC, vs 8 in H.264).
+	bw.writeBits(uint64(tc.Frames), 9)
+	// seconds_value (6 bits).
+	bw.writeBits(uint64(tc.Seconds), 6)
+	// minutes_value (6 bits).
+	bw.writeBits(uint64(tc.Minutes), 6)
+	// hours_value (5 bits).
+	bw.writeBits(uint64(tc.Hours), 5)
+	// time_offset_length = 0 (no time_offset).
+	bw.writeBits(0, 5)
+
+	bw.byteAlign()
+	return bw.bytes()
+}
+
 // BuildPicTimingAndCaptionSEI builds a single SEI NALU containing both
 // pic_timing (payload_type=1) and user_data_registered_itu_t_t35 (payload_type=4).
 //
@@ -232,6 +296,13 @@ func BuildPicTimingAndCaptionSEI(pairs []CCPair, ptCfg PicTimingConfig, frameNum
 	// Build pic_timing payload.
 	ptPayload := BuildPicTimingSEI(ptCfg, frameNum, tc)
 
+	// Build HEVC time_code payload (payload_type=136) when timecode is provided.
+	// HEVC does not carry clock_timestamp in pic_timing — it uses a separate SEI.
+	var tcPayload []byte
+	if isHEVC && tc != nil {
+		tcPayload = buildTimeCodeSEI(tc, ptCfg.FPSNum, ptCfg.FPSDen)
+	}
+
 	// Build caption payload (the raw SEI message payload, same as in BuildSEINALU).
 	ccCount := len(pairs) * 2
 	captionPayloadSize := 1 + 2 + 4 + 1 + 1 + 1 + 3*ccCount + 1
@@ -242,13 +313,15 @@ func BuildPicTimingAndCaptionSEI(pairs []CCPair, ptCfg PicTimingConfig, frameNum
 		naluHeaderSize = 2
 	}
 
-	// Total buffer: start_code(4) + nalu_header + pic_timing_msg + caption_msg + trailing(1)
-	// pic_timing_msg = type(1) + size(variable) + payload
-	// caption_msg = type(1) + size(variable) + payload
+	// Total buffer: start_code(4) + nalu_header + pic_timing_msg + [time_code_msg] + caption_msg + trailing(1)
 	ptMsgSize := 1 + seiSizeLen(len(ptPayload)) + len(ptPayload)
+	tcMsgSize := 0
+	if len(tcPayload) > 0 {
+		tcMsgSize = seiTypeLen(seiPayloadTypeTimeCode) + seiSizeLen(len(tcPayload)) + len(tcPayload)
+	}
 	capMsgSize := 1 + seiSizeLen(captionPayloadSize) + captionPayloadSize
 
-	buf := make([]byte, 0, 4+naluHeaderSize+ptMsgSize+capMsgSize+1+capMsgSize/2)
+	buf := make([]byte, 0, 4+naluHeaderSize+ptMsgSize+tcMsgSize+capMsgSize+1+capMsgSize/2)
 
 	// Annex B start code.
 	buf = append(buf, annexBSC0, annexBSC1, annexBSC2, annexBSC3)
@@ -266,7 +339,14 @@ func BuildPicTimingAndCaptionSEI(pairs []CCPair, ptCfg PicTimingConfig, frameNum
 	payloadStart := len(buf) // EPB scan starts here
 	buf = append(buf, ptPayload...)
 
-	// --- SEI message 2: user_data_registered_itu_t_t35 (payload_type=4) ---
+	// --- SEI message 2 (HEVC only): time_code (payload_type=136) ---
+	if len(tcPayload) > 0 {
+		buf = appendSEIType(buf, seiPayloadTypeTimeCode)
+		buf = appendSEISize(buf, len(tcPayload))
+		buf = append(buf, tcPayload...)
+	}
+
+	// --- SEI message 3: user_data_registered_itu_t_t35 (payload_type=4) ---
 	buf = append(buf, seiPayloadTypeT35)
 	buf = appendSEISize(buf, captionPayloadSize)
 	buf = appendCaptionPayload(buf, pairs, ccCount)
@@ -311,6 +391,25 @@ func appendCaptionPayload(buf []byte, pairs []CCPair, ccCount int) []byte {
 	// Marker byte 0xFF.
 	buf = append(buf, 0xFF)
 
+	return buf
+}
+
+// seiTypeLen returns the number of bytes needed to encode a SEI payload type.
+func seiTypeLen(payloadType int) int {
+	if payloadType < 255 {
+		return 1
+	}
+	return payloadType/255 + 1
+}
+
+// appendSEIType appends a SEI payload type encoding to buf.
+// Types >= 255 use 0xFF escape bytes followed by the remainder.
+func appendSEIType(buf []byte, payloadType int) []byte {
+	for payloadType >= 255 {
+		buf = append(buf, 0xFF)
+		payloadType -= 255
+	}
+	buf = append(buf, byte(payloadType))
 	return buf
 }
 

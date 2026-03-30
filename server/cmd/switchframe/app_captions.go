@@ -7,6 +7,7 @@ import (
 	"github.com/zsiec/ccx"
 	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/internal"
+	"github.com/zsiec/switchframe/server/switcher"
 )
 
 // initCaptions sets up the caption manager when --captions is enabled.
@@ -26,8 +27,13 @@ func (a *App) initCaptions() error {
 	// Enable pic_timing SEI injection for broadcast decoder compatibility.
 	// Downstream equipment (Evertz, Harmonic, etc.) requires pic_timing to
 	// precede user_data_registered_itu_t_t35 (caption SEI) in each access unit.
-	ptCfg := caption.DefaultPicTimingConfig()
 	pf := a.sw.PipelineFormat()
+	var ptCfg caption.PicTimingConfig
+	if pf.Color.Codec == switcher.CodecHEVC {
+		ptCfg = caption.DefaultHEVCPicTimingConfig()
+	} else {
+		ptCfg = caption.DefaultPicTimingConfig()
+	}
 	ptCfg.TimecodeEnabled = true
 	ptCfg.FPSNum = pf.FPSNum
 	ptCfg.FPSDen = pf.FPSDen
