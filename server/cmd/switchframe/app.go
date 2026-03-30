@@ -639,14 +639,8 @@ func (a *App) initOutput() error {
 	a.outputMgr.SetMetrics(a.appMetrics)
 
 	if a.cfg.RefClock {
-		// Reference clock path: audio pipeline has ~440ms more latency than
-		// video (ring buffer FIFO + AAC codec round-trip + mixer tick) while
-		// video takes the newest-wins path (~10ms). Latch a fixed lip-sync
-		// offset on the TS muxer so video PTS is delayed relative to audio,
-		// aligning presentation with content age. Only affects .ts recordings
-		// and SRT output — the browser path has its own adaptive sync.
-		a.outputMgr.LatchLipSync(39600) // ~440ms at 90kHz
-	} else {
+		a.outputMgr.LatchLipSync(0)
+    } else {
 		// Legacy path: dynamic lip-sync for SRT/recording output (muxer path only).
 		// The browser path handles its own compensation in audio-decoder.ts.
 		// Combines ring buffer depth + source A/V PTS gap.
