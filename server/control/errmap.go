@@ -4,9 +4,6 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/zsiec/switchframe/server/arinfer"
-	"github.com/zsiec/switchframe/server/arrender"
-	"github.com/zsiec/switchframe/server/tracking"
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/comms"
@@ -167,28 +164,6 @@ var errorMappings = []errorMapping{
 	{comms.ErrNotInComms, http.StatusNotFound},
 	{comms.ErrCommsFull, http.StatusConflict},
 	{comms.ErrOpusUnavailable, http.StatusServiceUnavailable},
-
-	// AR inference
-	{arinfer.ErrNotReady, http.StatusConflict},
-	{arinfer.ErrModelMissing, http.StatusNotFound},
-	{arinfer.ErrPromptFailed, http.StatusBadRequest},
-	{arinfer.ErrDisabled, http.StatusNotImplemented},
-
-	// AR tracking
-	{tracking.ErrNoTracking, http.StatusNotFound},
-	{tracking.ErrInvalidConfig, http.StatusBadRequest},
-	{tracking.ErrSourceExists, http.StatusConflict},
-	{tracking.ErrSourceNotFound, http.StatusNotFound},
-	{tracking.ErrMapNotReady, http.StatusConflict},
-
-	// AR rendering
-	{arrender.ErrObjectNotFound, http.StatusNotFound},
-	{arrender.ErrLightNotFound, http.StatusNotFound},
-	{arrender.ErrAssetNotFound, http.StatusNotFound},
-	{arrender.ErrInvalidAsset, http.StatusBadRequest},
-	{arrender.ErrTooManyAssets, http.StatusConflict},
-	{arrender.ErrRendererNotReady, http.StatusServiceUnavailable},
-	{arrender.ErrDuplicateID, http.StatusConflict},
 }
 
 // errorStatus maps a sentinel error to an HTTP status code.

@@ -13,17 +13,12 @@ import (
 // DSKCompositeRect/DSKCompositeFullFrame GPU kernels per visible layer.
 // Per-layer RGBA overlays are cached on the GPU and invalidated by
 // generation counter — avoiding re-upload every frame.
-//
-// When an OcclusionMaskProvider is set (from the AR compositor node),
-// the DSK compositor uses occlusion-aware blending so 2D overlays
-// appear BEHIND real-world foreground objects (people, desks).
 type gpuCompositorNode struct {
 	ctx        *Context
 	compositor CompositorState
-	occlusion  OcclusionMaskProvider // nil when AR is not configured
-	overlays   map[int]*GPUOverlay   // per-layer cached RGBA on GPU
-	overlayGen map[int]uint64        // per-layer generation for invalidation
-	visibleSet map[int]bool          // reusable set for cache eviction (avoids per-frame alloc)
+	overlays   map[int]*GPUOverlay // per-layer cached RGBA on GPU
+	overlayGen map[int]uint64      // per-layer generation for invalidation
+	visibleSet map[int]bool        // reusable set for cache eviction (avoids per-frame alloc)
 	lastErr    atomic.Value
 }
 
@@ -37,13 +32,6 @@ func NewGPUCompositorNode(ctx *Context, compositor CompositorState) GPUPipelineN
 		overlayGen: make(map[int]uint64),
 		visibleSet: make(map[int]bool, 8),
 	}
-}
-
-// SetOcclusionProvider sets the occlusion mask provider for AR-aware DSK
-// compositing. When set, overlay alpha is modulated per-pixel so 2D graphics
-// appear behind real-world foreground objects.
-func (n *gpuCompositorNode) SetOcclusionProvider(p OcclusionMaskProvider) {
-	n.occlusion = p
 }
 
 func (n *gpuCompositorNode) Name() string                             { return "gpu_dsk" }
@@ -83,13 +71,6 @@ func (n *gpuCompositorNode) ProcessGPU(frame *GPUFrame) error {
 	// Clear and reuse the visible set instead of allocating a new map per frame.
 	for k := range n.visibleSet {
 		delete(n.visibleSet, k)
-	}
-
-	// Read the occlusion mask once per frame (all layers share the same mask).
-	var occPtr uintptr
-	var occW, occH int
-	if n.occlusion != nil {
-		occPtr, occW, occH = n.occlusion.OcclusionMask()
 	}
 
 	// Process each layer in z-order (SnapshotVisibleLayers returns sorted).
@@ -138,22 +119,13 @@ func (n *gpuCompositorNode) ProcessGPU(frame *GPUFrame) error {
 		var err error
 		if frame.Format == GPUFormatP210 {
 			// P210 (10-bit) path: use P210-aware DSK overlay kernel.
-			// Occlusion masking is not supported for P210 yet.
 			if isFullFrame {
 				err = DSKCompositeFullFrameP210(n.ctx, frame, cached, alpha)
 			} else {
 				err = DSKCompositeRectP210(n.ctx, frame, cached, layer.Rect, alpha)
 			}
-		} else if occPtr != 0 {
-			// NV12 occlusion-aware path: overlay alpha is modulated per-pixel
-			// so 2D graphics appear BEHIND real-world foreground objects.
-			if isFullFrame {
-				err = DSKCompositeFullFrameOcc(n.ctx, frame, cached, alpha, occPtr, occW, occH)
-			} else {
-				err = DSKCompositeRectOcc(n.ctx, frame, cached, layer.Rect, alpha, occPtr, occW, occH)
-			}
 		} else {
-			// NV12 standard path: no occlusion masking.
+			// NV12 standard path.
 			if isFullFrame {
 				err = DSKCompositeFullFrame(n.ctx, frame, cached, alpha)
 			} else {
@@ -162,8 +134,7 @@ func (n *gpuCompositorNode) ProcessGPU(frame *GPUFrame) error {
 		}
 		if err != nil {
 			slog.Warn("gpu_dsk: composite failed",
-				"layer", layer.ID, "fullFrame", isFullFrame,
-				"occlusion", occPtr != 0, "error", err)
+				"layer", layer.ID, "fullFrame", isFullFrame, "error", err)
 			n.lastErr.Store(err)
 			// Continue processing remaining layers — partial overlay is
 			// better than no overlay.
