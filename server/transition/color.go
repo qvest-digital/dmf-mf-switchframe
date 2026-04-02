@@ -1,7 +1,7 @@
 package transition
 
-// NOTE: These functions are currently unused in production — blending operates directly in YUV420
-// space (see blend.go). Retained for potential future use (e.g., WebGPU integration, debug tooling).
+// Color conversion utilities. The blending pipeline operates directly in YUV420 space (see blend.go).
+// YUV420ToRGBLimited is used by the confidence monitor for JPEG thumbnail generation.
 
 // YUV420ToRGB converts YUV420 planar (full-range) to interleaved RGB using BT.709 coefficients.
 // yuv layout: Y[w*h] + U[w/2 * h/2] + V[w/2 * h/2]

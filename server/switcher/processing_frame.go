@@ -163,9 +163,17 @@ func (pf *ProcessingFrame) MakeWritable(pool *FramePool) {
 	}
 	copy(newBuf, pf.Data)
 
-	// Release our ref on the shared buffer. If this drops it to 0 the
-	// original owner's ReleaseYUV will be a no-op (already returned).
-	pf.refs.Add(-1)
+	// Release our ref on the shared buffer. Normally the other owner
+	// (lastRawVideo) still holds a ref so this stays > 0. In the rare
+	// case where the frame sync tick raced and already released its ref,
+	// we drop to 0 and must return the old buffer to the pool ourselves.
+	oldData := pf.Data
+	oldPool := pf.pool
+	if pf.refs.Add(-1) <= 0 {
+		if oldPool != nil {
+			oldPool.Release(oldData)
+		}
+	}
 
 	// Detach: independent refcount, own buffer, own pool reference.
 	pf.refs = &atomic.Int32{}

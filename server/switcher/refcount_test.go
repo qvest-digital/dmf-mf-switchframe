@@ -400,6 +400,58 @@ func TestMakeWritable_NilYUVIsNoOp(t *testing.T) {
 	pf.MakeWritable(nil) // should not panic
 }
 
+// TestMakeWritable_SharedCopyReleaseSafe verifies that when two ProcessingFrame
+// copies share a refs pointer (the production scenario), each can independently
+// release without corrupting the other. This models the frame_sync delivery path:
+// lastRawVideo and the pipeline's shallow copy share the same refs atomic.
+func TestMakeWritable_SharedCopyReleaseSafe(t *testing.T) {
+	pool := NewFramePool(4, 8, 8, ColorYUV420_8bit)
+	defer pool.Close()
+
+	// Simulate: frame_sync holds lastRawVideo (refs=1), broadcastProcessedFromPF
+	// adds a Ref and makes a shallow copy for the pipeline.
+	lastRawVideo := &ProcessingFrame{
+		Data:  pool.Acquire(),
+		Width: 8, Height: 8,
+		pool:  pool,
+	}
+	lastRawVideo.SetRefs(1) // creation ref
+	lastRawVideo.Data[0] = 0x42
+
+	// broadcastProcessedFromPF: Ref + shallow copy
+	lastRawVideo.Ref() // refs: 1 → 2
+	pipelineCopy := new(ProcessingFrame)
+	*pipelineCopy = *lastRawVideo // shares refs pointer
+
+	// Pipeline MakeWritable: detaches with a private copy
+	pipelineCopy.MakeWritable(pool)
+	require.NotSame(t, &lastRawVideo.Data[0], &pipelineCopy.Data[0],
+		"MakeWritable should produce a separate buffer")
+
+	// Shared refs should be 1 (MakeWritable decremented from 2→1)
+	require.Equal(t, int32(1), lastRawVideo.Refs(),
+		"lastRawVideo should still hold its creation ref")
+
+	// Pipeline finishes, releases its private copy
+	pipelineCopy.ReleaseYUV()
+
+	// lastRawVideo's buffer is still alive (refs=1)
+	require.NotNil(t, lastRawVideo.Data, "lastRawVideo buffer must survive pipeline release")
+	require.Equal(t, byte(0x42), lastRawVideo.Data[0], "lastRawVideo data must be intact")
+
+	// Frame sync replaces lastRawVideo — creation ref released
+	pool.mu.Lock()
+	freeBefore := len(pool.free)
+	pool.mu.Unlock()
+
+	lastRawVideo.ReleaseYUV() // refs: 1 → 0, buffer returned to pool
+
+	pool.mu.Lock()
+	freeAfter := len(pool.free)
+	pool.mu.Unlock()
+	require.Equal(t, freeBefore+1, freeAfter, "buffer should be returned to pool when last ref drops")
+}
+
 func TestMakeWritable_PreservesSourceForFrameSync(t *testing.T) {
 	// Simulates the exact bug scenario: frame_sync holds lastRawVideo,
 	// pipeline gets shallow copy, calls MakeWritable, modifies its buffer.
