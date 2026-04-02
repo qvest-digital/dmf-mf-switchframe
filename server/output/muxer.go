@@ -479,8 +479,8 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 	muxerPTS := (frame.PTS - m.ptsBase + m.muxerEpoch + m.lipSyncOffset) & 0x1FFFFFFFF
 	// Diagnostic: verify muxerPTS deltas are nominal.
 	if prev := m.diagPrevMuxerPTS; prev != 0 {
-		delta := muxerPTS - prev
-		if delta != 3003 && delta != 3004 && delta != 3753 && delta != 3754 {
+		delta := (muxerPTS - prev) & 0x1FFFFFFFF
+		if !isNominalPTSDelta(delta) {
 			slog.Warn("muxer: non-nominal muxerPTS delta",
 				"delta", delta, "muxerPTS", muxerPTS, "prevMuxerPTS", prev,
 				"upstreamPTS", frame.PTS, "lipSyncOffset", m.lipSyncOffset)
@@ -591,6 +591,31 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 	}
 
 	return m.flush()
+}
+
+// isNominalPTSDelta returns true if delta matches a standard frame duration
+// in 90kHz ticks (±1 tick tolerance for rounding).
+func isNominalPTSDelta(delta int64) bool {
+	switch delta {
+	case 3000:                // 30fps
+		return true
+	case 3003, 3004:          // 29.97fps (30000/1001)
+		return true
+	case 3600:                // 25fps
+		return true
+	case 3750:                // 24fps
+		return true
+	case 3753, 3754:          // 23.976fps (24000/1001)
+		return true
+	case 1800:                // 50fps
+		return true
+	case 1500:                // 60fps
+		return true
+	case 1501, 1502:          // 59.94fps (60000/1001)
+		return true
+	default:
+		return false
+	}
 }
 
 // WriteAudio muxes an audio frame into MPEG-TS packets. Frames
