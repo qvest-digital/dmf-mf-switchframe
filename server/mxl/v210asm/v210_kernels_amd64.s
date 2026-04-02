@@ -104,7 +104,8 @@ cavg_done:
 // ============================================================================
 // func V210UnpackRow(yOut, cbOut, crOut, v210In *byte, groups int)
 // ============================================================================
-// Extracts 10-bit fields from V210 words, converts to 8-bit (>>2).
+// Extracts 10-bit fields from V210 words, converts to 8-bit (>> 2).
+// Truncation (not rounding) preserves round-trip idempotency with bit-replication pack.
 // Per group: 4 x uint32 -> 6 Y + 3 Cb + 3 Cr bytes.
 // Scalar per-group: V210's irregular bit layout prevents useful SIMD.
 TEXT ·V210UnpackRow(SB), NOSPLIT, $0-40
@@ -207,8 +208,10 @@ unpack_done:
 // ============================================================================
 // func V210PackRow(v210Out, yIn, cbIn, crIn *byte, groups int)
 // ============================================================================
-// Packs 8-bit Y/Cb/Cr into V210 words (<<2 to 10-bit).
+// Packs 8-bit Y/Cb/Cr into V210 words with bit-replication:
+// 10-bit = (val << 2) | (val >> 6), mapping [0,255] → [0,1023].
 // Per group: 6 Y + 3 Cb + 3 Cr -> 4 x uint32 (16 bytes).
+// R9 is used as scratch for bit-replication.
 TEXT ·V210PackRow(SB), NOSPLIT, $0-40
 	MOVQ v210Out+0(FP), DI    // V210 output
 	MOVQ yIn+8(FP), SI        // Y input
@@ -221,57 +224,101 @@ TEXT ·V210PackRow(SB), NOSPLIT, $0-40
 
 pack_loop:
 	// Build each word by loading 3 values at a time.
-	// Uses AX as accumulator, BX as temp per field.
+	// Uses AX as accumulator, BX as temp per field, R9 as bit-repl scratch.
 
 	// --- Word 0: Cb0 | (Y0 << 10) | (Cr0 << 20) ---
 	MOVBLZX (DX), AX          // Cb0
+	MOVL    AX, R9
 	SHLL    $2, AX             // Cb0 << 2
+	SHRL    $6, R9             // Cb0 >> 6
+	ORL     R9, AX             // bit-replicated 10-bit Cb0
 
 	MOVBLZX (SI), BX          // Y0
-	SHLL    $12, BX            // Y0 << 2 << 10 = Y0 << 12
+	MOVL    BX, R9
+	SHLL    $2, BX             // Y0 << 2
+	SHRL    $6, R9             // Y0 >> 6
+	ORL     R9, BX             // bit-replicated 10-bit Y0
+	SHLL    $10, BX            // position in word
 	ORL     BX, AX
 
 	MOVBLZX (R8), BX          // Cr0
-	SHLL    $22, BX            // Cr0 << 2 << 20 = Cr0 << 22
+	MOVL    BX, R9
+	SHLL    $2, BX
+	SHRL    $6, R9
+	ORL     R9, BX
+	SHLL    $20, BX
 	ORL     BX, AX
 	MOVL    AX, (DI)           // store w0
 
 	// --- Word 1: Y1 | (Cb2 << 10) | (Y2 << 20) ---
 	MOVBLZX 1(SI), AX         // Y1
+	MOVL    AX, R9
 	SHLL    $2, AX
+	SHRL    $6, R9
+	ORL     R9, AX
 
 	MOVBLZX 1(DX), BX         // Cb2
-	SHLL    $12, BX
+	MOVL    BX, R9
+	SHLL    $2, BX
+	SHRL    $6, R9
+	ORL     R9, BX
+	SHLL    $10, BX
 	ORL     BX, AX
 
 	MOVBLZX 2(SI), BX         // Y2
-	SHLL    $22, BX
+	MOVL    BX, R9
+	SHLL    $2, BX
+	SHRL    $6, R9
+	ORL     R9, BX
+	SHLL    $20, BX
 	ORL     BX, AX
 	MOVL    AX, 4(DI)          // store w1
 
 	// --- Word 2: Cr2 | (Y3 << 10) | (Cb4 << 20) ---
 	MOVBLZX 1(R8), AX         // Cr2
+	MOVL    AX, R9
 	SHLL    $2, AX
+	SHRL    $6, R9
+	ORL     R9, AX
 
 	MOVBLZX 3(SI), BX         // Y3
-	SHLL    $12, BX
+	MOVL    BX, R9
+	SHLL    $2, BX
+	SHRL    $6, R9
+	ORL     R9, BX
+	SHLL    $10, BX
 	ORL     BX, AX
 
 	MOVBLZX 2(DX), BX         // Cb4
-	SHLL    $22, BX
+	MOVL    BX, R9
+	SHLL    $2, BX
+	SHRL    $6, R9
+	ORL     R9, BX
+	SHLL    $20, BX
 	ORL     BX, AX
 	MOVL    AX, 8(DI)          // store w2
 
 	// --- Word 3: Y4 | (Cr4 << 10) | (Y5 << 20) ---
 	MOVBLZX 4(SI), AX         // Y4
+	MOVL    AX, R9
 	SHLL    $2, AX
+	SHRL    $6, R9
+	ORL     R9, AX
 
 	MOVBLZX 2(R8), BX         // Cr4
-	SHLL    $12, BX
+	MOVL    BX, R9
+	SHLL    $2, BX
+	SHRL    $6, R9
+	ORL     R9, BX
+	SHLL    $10, BX
 	ORL     BX, AX
 
 	MOVBLZX 5(SI), BX         // Y5
-	SHLL    $22, BX
+	MOVL    BX, R9
+	SHLL    $2, BX
+	SHRL    $6, R9
+	ORL     R9, BX
+	SHLL    $20, BX
 	ORL     BX, AX
 	MOVL    AX, 12(DI)         // store w3
 

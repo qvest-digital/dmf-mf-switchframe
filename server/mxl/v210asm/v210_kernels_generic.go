@@ -7,15 +7,12 @@ import (
 	"unsafe"
 )
 
-// conv10to8 converts a 10-bit value to 8-bit with rounding and clamping.
-// (val+2)>>2 rounds to nearest, but 10-bit values 1022-1023 produce 256
-// which overflows byte. Clamping to 255 prevents wrap-to-zero.
+// conv10to8 converts a 10-bit value to 8-bit by truncation (>> 2).
+// Truncation is used instead of rounding to preserve round-trip idempotency:
+// when paired with bit-replication pack ((val<<2)|(val>>6)), truncation
+// unpack ensures V210→YUV420→V210 converges in one pass.
 func conv10to8(v uint32) byte {
-	r := (v + 2) >> 2
-	if r > 255 {
-		return 255
-	}
-	return byte(r)
+	return byte(v >> 2)
 }
 
 // ChromaVAvg computes dst[i] = (top[i] + bot[i] + 1) >> 1 for n bytes.
@@ -34,9 +31,7 @@ func ChromaVAvg(dst, top, bot *byte, n int) {
 
 // V210UnpackRow extracts Y, Cb, Cr from V210 packed data for one row.
 // Each group of 16 bytes (4 uint32 words) produces 6 Y + 3 Cb + 3 Cr bytes.
-// 10-bit values are converted to 8-bit with rounding: (val + 2) >> 2.
-//
-// NOTE: SIMD kernels (amd64/arm64) also need this rounding fix applied.
+// 10-bit values are converted to 8-bit by truncation: val >> 2.
 func V210UnpackRow(yOut, cbOut, crOut, v210In *byte, groups int) {
 	if groups <= 0 {
 		return
@@ -78,8 +73,6 @@ func V210UnpackRow(yOut, cbOut, crOut, v210In *byte, groups int) {
 // Each group of 6 Y + 3 Cb + 3 Cr bytes produces 16 bytes (4 uint32 words).
 // 8-bit values are expanded to 10-bit using bit-replication: (val<<2)|(val>>6).
 // This maps the full 8-bit range [0,255] to the full 10-bit range [0,1023].
-//
-// NOTE: SIMD kernels (amd64/arm64) also need this bit-replication fix applied.
 func V210PackRow(v210Out, yIn, cbIn, crIn *byte, groups int) {
 	if groups <= 0 {
 		return

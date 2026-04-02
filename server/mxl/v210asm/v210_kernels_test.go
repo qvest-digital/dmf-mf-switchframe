@@ -2,7 +2,6 @@ package v210asm
 
 import (
 	"encoding/binary"
-	"runtime"
 	"testing"
 )
 
@@ -338,8 +337,9 @@ func TestV210UnpackPackRoundTrip(t *testing.T) {
 	V210PackRow(&v210Out[0], &yBuf[0], &cbBuf[0], &crBuf[0], groups)
 
 	// Compare: each 10-bit field should be within +-3 of the original.
-	// The 10→8→10 round-trip loses bottom 2 bits, so +-3 is the maximum error
-	// regardless of whether rounding/bit-replication is used.
+	// Truncation unpack (>>2) loses bottom 2 bits (max error 3).
+	// Bit-replication pack adds back an approximation of the lost bits.
+	// The round-trip is idempotent: a second pass produces identical output.
 	for g := 0; g < groups; g++ {
 		offset := g * 16
 		for w := 0; w < 4; w++ {
@@ -420,52 +420,34 @@ func BenchmarkV210PackRow_1080p(b *testing.B) {
 	}
 }
 
-// --- V210UnpackRow rounding tests (Bug: >> 2 truncates, should round with +2) ---
+// --- V210UnpackRow truncation tests (10→8 uses >>2, NOT rounding) ---
 
-func TestV210UnpackRow_Rounding(t *testing.T) {
-	if runtime.GOARCH == "amd64" || runtime.GOARCH == "arm64" {
-		t.Skip("SIMD kernels on amd64/arm64 need matching rounding fix — only generic kernel fixed")
-	}
-	// 10-bit value 5 should map to 8-bit 1 with rounding: (5+2)>>2 = 1
-	// Without rounding (truncation): 5>>2 = 1 — same result.
-	// 10-bit value 3 should map to 8-bit 1 with rounding: (3+2)>>2 = 1
-	// Without rounding (truncation): 3>>2 = 0 — different!
-	// Use Cb0 slot (word 0, bits [9:0]) for the test value.
+func TestV210UnpackRow_Truncation(t *testing.T) {
+	// 10-bit value 3 → 8-bit: 3>>2 = 0 (truncation discards low 2 bits).
+	// 10-bit value 7 → 8-bit: 7>>2 = 1.
 	v210 := make([]byte, 16)
-	// Word 0: Cb0=3, Y0=512, Cr0=512
-	binary.LittleEndian.PutUint32(v210[0:], packV210Word(3, 512, 512))
-	// Word 1: Y1=512, Cb2=512, Y2=512
+	binary.LittleEndian.PutUint32(v210[0:], packV210Word(3, 7, 512))
 	binary.LittleEndian.PutUint32(v210[4:], packV210Word(512, 512, 512))
-	// Word 2: Cr2=512, Y3=512, Cb4=512
 	binary.LittleEndian.PutUint32(v210[8:], packV210Word(512, 512, 512))
-	// Word 3: Y4=512, Cr4=512, Y5=512
 	binary.LittleEndian.PutUint32(v210[12:], packV210Word(512, 512, 512))
 
 	yOut := make([]byte, 6)
 	cbOut := make([]byte, 3)
 	crOut := make([]byte, 3)
-
 	V210UnpackRow(&yOut[0], &cbOut[0], &crOut[0], &v210[0], 1)
 
-	// Cb0 = 10-bit 3 → 8-bit should be 1 (rounded), not 0 (truncated)
-	if cbOut[0] != 1 {
-		t.Errorf("Cb0: 10-bit 3 → 8-bit = %d, want 1 (rounded)", cbOut[0])
+	if cbOut[0] != 0 {
+		t.Errorf("Cb0: 10-bit 3 → 8-bit = %d, want 0 (truncated)", cbOut[0])
+	}
+	if yOut[0] != 1 {
+		t.Errorf("Y0: 10-bit 7 → 8-bit = %d, want 1 (truncated)", yOut[0])
 	}
 }
 
-func TestV210UnpackRow_RoundingMaxValue(t *testing.T) {
-	if runtime.GOARCH == "amd64" || runtime.GOARCH == "arm64" {
-		t.Skip("SIMD kernels on amd64/arm64 need matching rounding fix — only generic kernel fixed")
-	}
-	// 10-bit 1023 should map to 8-bit 255 with rounding: (1023+2)>>2 = 256,
-	// but clamped to 255. Without rounding: 1023>>2 = 255 — same result.
-	// 10-bit 1022 should map to 8-bit 256 with rounding: (1022+2)>>2 = 256,
-	// clamped to 255. Without rounding: 1022>>2 = 255 — same.
-	// The key test case: 10-bit 1021 → (1021+2)>>2 = 255. Without rounding: 1021>>2 = 255.
-	// So max values are fine. Let's test value 7: (7+2)>>2 = 2 vs 7>>2 = 1.
+func TestV210UnpackRow_TruncationMaxValue(t *testing.T) {
+	// 10-bit 1023 → 8-bit: 1023>>2 = 255.
 	v210 := make([]byte, 16)
-	// Put 7 in the Y0 slot (word 0, bits [19:10])
-	binary.LittleEndian.PutUint32(v210[0:], packV210Word(512, 7, 512))
+	binary.LittleEndian.PutUint32(v210[0:], packV210Word(512, 1023, 512))
 	binary.LittleEndian.PutUint32(v210[4:], packV210Word(512, 512, 512))
 	binary.LittleEndian.PutUint32(v210[8:], packV210Word(512, 512, 512))
 	binary.LittleEndian.PutUint32(v210[12:], packV210Word(512, 512, 512))
@@ -473,21 +455,16 @@ func TestV210UnpackRow_RoundingMaxValue(t *testing.T) {
 	yOut := make([]byte, 6)
 	cbOut := make([]byte, 3)
 	crOut := make([]byte, 3)
-
 	V210UnpackRow(&yOut[0], &cbOut[0], &crOut[0], &v210[0], 1)
 
-	// Y0 = 10-bit 7 → 8-bit should be 2 (rounded), not 1 (truncated)
-	if yOut[0] != 2 {
-		t.Errorf("Y0: 10-bit 7 → 8-bit = %d, want 2 (rounded)", yOut[0])
+	if yOut[0] != 255 {
+		t.Errorf("Y0: 10-bit 1023 → 8-bit = %d, want 255", yOut[0])
 	}
 }
 
 // --- V210PackRow bit-replicate tests (Bug: << 2 zero-fills, should bit-replicate) ---
 
 func TestV210PackRow_BitReplicate(t *testing.T) {
-	if runtime.GOARCH == "amd64" || runtime.GOARCH == "arm64" {
-		t.Skip("SIMD kernels on amd64/arm64 need matching bit-replication fix — only generic kernel fixed")
-	}
 	// 8-bit 255 should map to 10-bit 1023 with bit-replication:
 	// (255 << 2) | (255 >> 6) = 1020 | 3 = 1023.
 	// Without bit-replication (zero-fill): 255 << 2 = 1020.
@@ -517,9 +494,6 @@ func TestV210PackRow_BitReplicate(t *testing.T) {
 }
 
 func TestV210PackRow_BitReplicateMiddleValue(t *testing.T) {
-	if runtime.GOARCH == "amd64" || runtime.GOARCH == "arm64" {
-		t.Skip("SIMD kernels on amd64/arm64 need matching bit-replication fix — only generic kernel fixed")
-	}
 	// 8-bit 128 should map to 10-bit (128<<2)|(128>>6) = 512|2 = 514.
 	// Without bit-replication: 128 << 2 = 512.
 	yIn := []byte{128, 0, 0, 0, 0, 0}
@@ -542,20 +516,15 @@ func packV210Word(a, b, c uint32) uint32 {
 	return (a & 0x3FF) | ((b & 0x3FF) << 10) | ((c & 0x3FF) << 20)
 }
 
-// conv10to8 converts a 10-bit value to 8-bit using the platform-appropriate formula.
-// On amd64/arm64 the SIMD kernels still truncate (>> 2); the generic kernel rounds ((val+2) >> 2).
+// conv10to8 converts a 10-bit value to 8-bit by truncation (>> 2).
+// Truncation preserves round-trip idempotency with bit-replication pack.
+// All platforms now use the same formula.
 func conv10to8(val uint32) byte {
-	if runtime.GOARCH == "amd64" || runtime.GOARCH == "arm64" {
-		return byte(val >> 2)
-	}
-	return byte((val + 2) >> 2)
+	return byte(val >> 2)
 }
 
-// conv8to10 converts an 8-bit value to 10-bit using the platform-appropriate formula.
-// On amd64/arm64 the SIMD kernels still zero-fill (<< 2); the generic kernel bit-replicates.
+// conv8to10 converts an 8-bit value to 10-bit with bit-replication.
+// All platforms now use the same formula: (val<<2)|(val>>6).
 func conv8to10(val byte) uint32 {
-	if runtime.GOARCH == "amd64" || runtime.GOARCH == "arm64" {
-		return uint32(val) << 2
-	}
 	return uint32(val)<<2 | uint32(val)>>6
 }

@@ -63,7 +63,8 @@ cavg_done:
 // ============================================================================
 // func V210UnpackRow(yOut, cbOut, crOut, v210In *byte, groups int)
 // ============================================================================
-// Extracts 10-bit fields from V210 words, converts to 8-bit (>>2).
+// Extracts 10-bit fields from V210 words, converts to 8-bit (>> 2).
+// Truncation (not rounding) preserves round-trip idempotency with bit-replication pack.
 // Per group: 4 x uint32 -> 6 Y + 3 Cb + 3 Cr bytes.
 // Scalar per-group with efficient register usage (no bounds checks).
 TEXT ·V210UnpackRow(SB), NOSPLIT, $0-40
@@ -160,8 +161,10 @@ unpack_done:
 // ============================================================================
 // func V210PackRow(v210Out, yIn, cbIn, crIn *byte, groups int)
 // ============================================================================
-// Packs 8-bit Y/Cb/Cr into V210 words (<<2 to 10-bit).
+// Packs 8-bit Y/Cb/Cr into V210 words with bit-replication:
+// 10-bit = (val << 2) | (val >> 6), mapping [0,255] → [0,1023].
 // Per group: 6 Y + 3 Cb + 3 Cr -> 4 x uint32 (16 bytes).
+// R19 is used as scratch for bit-replication.
 TEXT ·V210PackRow(SB), NOSPLIT, $0-40
 	MOVD v210Out+0(FP), R0   // V210 output pointer
 	MOVD yIn+8(FP), R1       // Y input pointer
@@ -173,35 +176,59 @@ TEXT ·V210PackRow(SB), NOSPLIT, $0-40
 	BLE  pack_done
 
 pack_loop:
-	// Load Y values and shift left by 2
+	// Load Y values, bit-replicate to 10-bit: (val<<2)|(val>>6)
 	MOVBU (R1), R5            // Y0
+	LSR   $6, R5, R19
 	LSL   $2, R5, R5
+	ORR   R19, R5, R5
 	MOVBU 1(R1), R6           // Y1
+	LSR   $6, R6, R19
 	LSL   $2, R6, R6
+	ORR   R19, R6, R6
 	MOVBU 2(R1), R7           // Y2
+	LSR   $6, R7, R19
 	LSL   $2, R7, R7
+	ORR   R19, R7, R7
 	MOVBU 3(R1), R8           // Y3
+	LSR   $6, R8, R19
 	LSL   $2, R8, R8
+	ORR   R19, R8, R8
 	MOVBU 4(R1), R9           // Y4
+	LSR   $6, R9, R19
 	LSL   $2, R9, R9
+	ORR   R19, R9, R9
 	MOVBU 5(R1), R10          // Y5
+	LSR   $6, R10, R19
 	LSL   $2, R10, R10
+	ORR   R19, R10, R10
 
-	// Load Cb values and shift left by 2
+	// Load Cb values, bit-replicate to 10-bit
 	MOVBU (R2), R11           // Cb0
+	LSR   $6, R11, R19
 	LSL   $2, R11, R11
+	ORR   R19, R11, R11
 	MOVBU 1(R2), R12          // Cb2
+	LSR   $6, R12, R19
 	LSL   $2, R12, R12
+	ORR   R19, R12, R12
 	MOVBU 2(R2), R13          // Cb4
+	LSR   $6, R13, R19
 	LSL   $2, R13, R13
+	ORR   R19, R13, R13
 
-	// Load Cr values and shift left by 2
+	// Load Cr values, bit-replicate to 10-bit
 	MOVBU (R3), R14           // Cr0
+	LSR   $6, R14, R19
 	LSL   $2, R14, R14
+	ORR   R19, R14, R14
 	MOVBU 1(R3), R15          // Cr2
+	LSR   $6, R15, R19
 	LSL   $2, R15, R15
+	ORR   R19, R15, R15
 	MOVBU 2(R3), R16          // Cr4
+	LSR   $6, R16, R19
 	LSL   $2, R16, R16
+	ORR   R19, R16, R16
 
 	// Word 0: Cb0 | (Y0 << 10) | (Cr0 << 20)
 	LSL   $10, R5, R17       // Y0 << 10
