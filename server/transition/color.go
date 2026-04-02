@@ -33,6 +33,36 @@ func YUV420ToRGB(yuv []byte, width, height int, rgb []byte) {
 	}
 }
 
+// YUV420ToRGBLimited converts YUV420 planar (limited-range BT.709) to interleaved RGB.
+// Input ranges: Y [16, 235], Cb [16, 240], Cr [16, 240].
+// Super-white/super-black values are handled gracefully via output clamping.
+func YUV420ToRGBLimited(yuv []byte, width, height int, rgb []byte) {
+	ySize := width * height
+	uOffset := ySize
+	vOffset := ySize + (width/2)*(height/2)
+	halfW := width / 2
+
+	for row := 0; row < height; row++ {
+		for col := 0; col < width; col++ {
+			yIdx := row*width + col
+			uvIdx := (row/2)*halfW + (col / 2)
+
+			yLin := (float64(yuv[yIdx]) - 16.0) / 219.0
+			cbLin := (float64(yuv[uOffset+uvIdx]) - 128.0) / 224.0
+			crLin := (float64(yuv[vOffset+uvIdx]) - 128.0) / 224.0
+
+			r := yLin + 1.5748*crLin
+			g := yLin - 0.1873*cbLin - 0.4681*crLin
+			b := yLin + 1.8556*cbLin
+
+			rgbIdx := yIdx * 3
+			rgb[rgbIdx] = clampByte(r * 255.0)
+			rgb[rgbIdx+1] = clampByte(g * 255.0)
+			rgb[rgbIdx+2] = clampByte(b * 255.0)
+		}
+	}
+}
+
 // RGBToYUV420 converts interleaved RGB to YUV420 planar (full-range) using BT.709 coefficients.
 func RGBToYUV420(rgb []byte, width, height int, yuv []byte) {
 	ySize := width * height

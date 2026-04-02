@@ -225,3 +225,39 @@ func TestBT709Limited_KnownRed(t *testing.T) {
 	require.InDelta(t, 102, int(cb), 2, "Cb for red")
 	require.InDelta(t, 240, int(cr), 1, "Cr for red")
 }
+
+func TestYUV420ToRGBLimited_Black(t *testing.T) {
+	t.Parallel()
+	w, h := 4, 4
+	yuv := make([]byte, yuvFrameSize(w, h))
+	// Limited-range black: Y=16, Cb=128, Cr=128
+	for i := 0; i < w*h; i++ {
+		yuv[i] = 16
+	}
+	for i := w * h; i < yuvFrameSize(w, h); i++ {
+		yuv[i] = 128
+	}
+	rgb := make([]byte, w*h*3)
+	transition.YUV420ToRGBLimited(yuv, w, h, rgb)
+	for i := 0; i < len(rgb); i++ {
+		require.Equal(t, byte(0), rgb[i], "pixel %d should be 0 for limited-range black", i)
+	}
+}
+
+func TestYUV420ToRGBLimited_White(t *testing.T) {
+	t.Parallel()
+	w, h := 4, 4
+	yuv := make([]byte, yuvFrameSize(w, h))
+	// Limited-range white: Y=235, Cb=128, Cr=128
+	for i := 0; i < w*h; i++ {
+		yuv[i] = 235
+	}
+	for i := w * h; i < yuvFrameSize(w, h); i++ {
+		yuv[i] = 128
+	}
+	rgb := make([]byte, w*h*3)
+	transition.YUV420ToRGBLimited(yuv, w, h, rgb)
+	for i := 0; i < len(rgb); i++ {
+		require.Equal(t, byte(255), rgb[i], "pixel %d should be 255 for limited-range white", i)
+	}
+}

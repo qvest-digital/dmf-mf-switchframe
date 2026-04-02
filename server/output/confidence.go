@@ -136,7 +136,7 @@ func (cm *ConfidenceMonitor) IngestVideo(frame *media.VideoFrame) {
 		cm.rgbBuf = make([]byte, rgbSize)
 	}
 	cm.rgbBuf = cm.rgbBuf[:rgbSize]
-	transition.YUV420ToRGB(scaledYUV, dstW, dstH, cm.rgbBuf)
+	transition.YUV420ToRGBLimited(scaledYUV, dstW, dstH, cm.rgbBuf)
 
 	if cm.rgbaBuf == nil || cm.rgbaBuf.Rect.Dx() != dstW || cm.rgbaBuf.Rect.Dy() != dstH {
 		cm.rgbaBuf = image.NewRGBA(image.Rect(0, 0, dstW, dstH))
