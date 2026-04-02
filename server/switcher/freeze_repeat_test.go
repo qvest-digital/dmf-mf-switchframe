@@ -13,11 +13,11 @@ import (
 // arrives, the frame sync re-delivers lastRawVideo on the next tick, so the
 // buffer must not have been returned to the pool.
 //
-// Bug: The creation ref (SetRefs(1)) is the only ref on the frame. After
-// delivery, broadcastProcessedFromPF Refs for the pipeline copy, but the
-// delay buffer's ReleaseYUV immediately cancels it out (+1 then -1 = net 0).
-// The pipeline becomes the sole owner and frees the buffer when done.
-// lastRawVideo is left pointing to a freed pool buffer (use-after-free).
+// The creation ref (SetRefs(1)) is held by lastRawVideo. After delivery,
+// broadcastProcessedFromPF Refs for the pipeline copy (+1), and MakeWritable
+// detaches the pipeline's copy (-1 shared, +1 private). The pipeline processes
+// and releases its private copy. The shared creation ref stays at 1, keeping
+// the buffer alive for freeze-repeat.
 func TestFreezeRepeat_BufferSurvivesPipelineRelease(t *testing.T) {
 	pool := NewFramePool(4, 8, 8, ColorYUV420_8bit)
 	defer pool.Close()
@@ -53,23 +53,20 @@ func TestFreezeRepeat_BufferSurvivesPipelineRelease(t *testing.T) {
 	require.Len(t, deliveredFrames, 1, "should deliver one frame on tick 1")
 	delivered1 := deliveredFrames[0]
 
-	// Simulate the full delivery pipeline:
+	// Simulate the full delivery pipeline (frame sync path — no delay buffer):
 	// broadcastProcessedFromPF: Ref for pipeline copy
 	delivered1.Ref()
 	pipelineCopy := new(ProcessingFrame)
 	*pipelineCopy = *delivered1
 
-	// delay buffer: ReleaseYUV (balances the Ref, nets to zero change)
-	delivered1.ReleaseYUV()
-
-	// Pipeline: MakeWritable should copy (refs > 1 because lastRawVideo holds a ref)
+	// Pipeline: MakeWritable detaches since refs > 1 (creation + pipeline)
 	pipelineCopy.MakeWritable(pool)
 
-	// Pipeline processes and releases its copy.
+	// Pipeline processes and releases its private copy.
 	pipelineCopy.ReleaseYUV()
 
 	// KEY ASSERTION: The frame_sync's lastRawVideo buffer must still be alive.
-	// If the bug exists, the pool buffer was freed and lastRawVideo.Data is stale.
+	// The creation ref protects it.
 	fs.mu.Lock()
 	ss := fs.sources["cam1"]
 	fs.mu.Unlock()
@@ -100,7 +97,6 @@ func TestFreezeRepeat_BufferSurvivesPipelineRelease(t *testing.T) {
 	delivered2.Ref()
 	pipeline2 := new(ProcessingFrame)
 	*pipeline2 = *delivered2
-	delivered2.ReleaseYUV()
 	pipeline2.MakeWritable(pool)
 	pipeline2.ReleaseYUV()
 
@@ -129,7 +125,12 @@ func TestFreezeRepeat_FRCFrame_BufferSurvivesDelivery(t *testing.T) {
 
 	handler := &syncTestHandler{}
 	fs := NewFrameSynchronizer(33*time.Millisecond, handler.onVideo, handler.onAudio)
+	// Simulate broadcastProcessedFromPF: Ref inside callback keeps the buffer
+	// alive past the frcAllocated ReleaseYUV that fires after onRawVideo returns.
 	fs.onRawVideo = func(sourceKey string, pf *ProcessingFrame) {
+		if pf.refs != nil {
+			pf.Ref() // mimics broadcastProcessedFromPF
+		}
 		deliveredFrames = append(deliveredFrames, pf)
 	}
 	fs.SetFramePool(pool)
@@ -145,6 +146,10 @@ func TestFreezeRepeat_FRCFrame_BufferSurvivesDelivery(t *testing.T) {
 
 	// First tick: delivers f1.
 	fs.releaseTick()
+	// Release the pipeline Ref we added in the callback for f1.
+	for _, d := range deliveredFrames {
+		d.ReleaseYUV()
+	}
 	deliveredFrames = deliveredFrames[:0]
 
 	f2 := &ProcessingFrame{
@@ -155,6 +160,9 @@ func TestFreezeRepeat_FRCFrame_BufferSurvivesDelivery(t *testing.T) {
 
 	// Second tick: delivers f2.
 	fs.releaseTick()
+	for _, d := range deliveredFrames {
+		d.ReleaseYUV()
+	}
 	deliveredFrames = deliveredFrames[:0]
 
 	// Third tick: no new frame → FRC interpolation tick.
@@ -167,20 +175,12 @@ func TestFreezeRepeat_FRCFrame_BufferSurvivesDelivery(t *testing.T) {
 	delivered := deliveredFrames[0]
 	require.NotNil(t, delivered.Data, "FRC-emitted frame must have valid YUV at delivery time")
 
-	// Simulate pipeline processing.
-	if delivered.Refs() > 0 {
-		delivered.Ref()
-		cp := new(ProcessingFrame)
-		*cp = *delivered
-		delivered.ReleaseYUV()
-
-		// The pipeline copy must have valid YUV — the buffer must not have
-		// been freed by the frcAllocated ReleaseYUV before pipeline runs.
-		require.NotNil(t, cp.Data, "pipeline copy of FRC frame must have valid YUV")
-		require.True(t, cp.Refs() >= 1, "pipeline copy refs must be >= 1, got %d", cp.Refs())
-
-		cp.ReleaseYUV()
-	}
+	// The pipeline Ref was added in the callback. Simulate pipeline processing.
+	require.True(t, delivered.Refs() >= 1, "pipeline ref must keep buffer alive, got %d", delivered.Refs())
+	cp := new(ProcessingFrame)
+	*cp = *delivered
+	cp.MakeWritable(pool)
+	cp.ReleaseYUV()
 
 	fs.RemoveSource("cam1")
 }
@@ -217,11 +217,10 @@ func TestFreezeRepeat_PoolBufferNotReusedWhileLastRawVideoHeld(t *testing.T) {
 	fs.releaseTick()
 	require.NotNil(t, lastDelivered)
 
-	// Simulate full pipeline lifecycle.
+	// Simulate full pipeline lifecycle (frame sync path — no delay buffer).
 	lastDelivered.Ref()
 	cp := new(ProcessingFrame)
 	*cp = *lastDelivered
-	lastDelivered.ReleaseYUV()
 	cp.MakeWritable(pool)
 	cp.ReleaseYUV()
 

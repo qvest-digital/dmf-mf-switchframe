@@ -3018,3 +3018,58 @@ func TestFrameSyncBufferOnlyStopClean(t *testing.T) {
 		t.Fatal("Stop() hung in buffer-only mode")
 	}
 }
+
+// TestFrameSync_DeliveryRefReleasedWithoutDelayBuffer verifies that frames
+// delivered via onRawVideo don't leak a reference when there is no delay
+// buffer in the path (the standard frame-sync-active configuration).
+//
+// Regression test: deliverRelease added a delivery Ref() assuming the
+// delay buffer would release it, but the delay buffer is nil when frame
+// sync is active. The orphaned ref prevented pool buffers from being freed.
+func TestFrameSync_DeliveryRefReleasedWithoutDelayBuffer(t *testing.T) {
+	t.Parallel()
+	handler := &syncTestHandler{}
+	fs := NewFrameSynchronizer(15*time.Millisecond, handler.onVideo, handler.onAudio)
+
+	pool := NewFramePool(4, 4, 4, ColorYUV420_8bit)
+
+	var deliveredRefs atomic.Int32
+	fs.onRawVideo = func(sourceKey string, pf *ProcessingFrame) {
+		// Record the ref count at delivery time.
+		deliveredRefs.Store(pf.Refs())
+		// Simulate what broadcastProcessedFromPF does: Ref + async release.
+		pf.Ref()
+		go func() {
+			pf.ReleaseYUV()
+		}()
+	}
+
+	fs.AddSource("cam1")
+
+	// Push first refcounted frame and tick — it becomes lastRawVideo.
+	buf1 := pool.Acquire()
+	pf1 := &ProcessingFrame{PTS: 3000, Data: buf1, pool: pool}
+	pf1.SetRefs(1) // managed frame with refcount
+	fs.IngestRawVideo("cam1", pf1)
+	fs.releaseTick()
+
+	// Verify it was delivered.
+	require.Eventually(t, func() bool {
+		return deliveredRefs.Load() > 0
+	}, 200*time.Millisecond, 5*time.Millisecond, "frame should be delivered via onRawVideo")
+
+	// Push a second frame and tick to replace lastRawVideo (releases creation ref of pf1).
+	buf2 := pool.Acquire()
+	pf2 := &ProcessingFrame{PTS: 6000, Data: buf2, pool: pool}
+	pf2.SetRefs(1)
+	fs.IngestRawVideo("cam1", pf2)
+	fs.releaseTick()
+
+	// Wait for the async pipeline release goroutine to complete.
+	time.Sleep(50 * time.Millisecond)
+
+	// The first frame's refs should reach 0 — all refs released.
+	// With the bug, refs would be 1 (orphaned delivery ref).
+	require.Equal(t, int32(0), pf1.Refs(),
+		"first frame refs should reach 0 — delivery ref leaked (got %d)", pf1.Refs())
+}

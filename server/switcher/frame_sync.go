@@ -1369,22 +1369,16 @@ func (fs *FrameSynchronizer) deliverRelease(r *pendingRelease, tickIntervalPTS, 
 		}
 		pf.SyncReleaseNano = time.Now().UnixNano()
 		if fs.onRawVideo != nil {
-			// Ref for delivery: the downstream delay buffer calls ReleaseYUV
-			// after the handler returns, consuming this ref. Without it, the
-			// handler's Ref/Release (broadcastProcessedFromPF + delay buffer)
-			// nets to zero, leaving the creation ref as the pipeline's sole
-			// ref — which drops to 0 when the pipeline finishes, freeing the
-			// pool buffer while lastRawVideo still points to it.
-			if pf.refs != nil {
-				pf.Ref()
-			}
+			// No delivery Ref needed: the creation ref (held by lastRawVideo)
+			// protects the buffer, and broadcastProcessedFromPF's Ref +
+			// MakeWritable handles the async pipeline independently.
 			fs.onRawVideo(r.sourceKey, &pf)
 		}
 		// Release FRC-allocated frames after delivery. These frames own their
 		// own pool buffer (not shared with lastRawVideo), so the creation ref
-		// must be explicitly dropped. After the delivery Ref above (+1) and
-		// broadcastProcessedFromPF Ref (+1) and delay buffer Release (-1),
-		// this drops the creation ref — leaving the pipeline as sole owner.
+		// must be explicitly dropped. After broadcastProcessedFromPF's
+		// Ref (+1) and pipeline MakeWritable (-1 shared, +1 private),
+		// this drops the creation ref — the pipeline's private ref is sole owner.
 		if r.frcAllocated {
 			pf.ReleaseYUV()
 		}
