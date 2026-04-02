@@ -22,8 +22,6 @@ github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/dunglas/httpsfv v1.1.0 h1:Jw76nAyKWKZKFrpMMcL76y35tOpYHqQPzHQiwDvpe54=
 github.com/dunglas/httpsfv v1.1.0/go.mod h1:zID2mqw9mFsnt7YC3vYQ9/cjq30q41W+1AnDwH8TiMg=
-github.com/go-test/deep v1.0.1 h1:UQhStjbkDClarlmv0am7OXXO4/GaPdCGiUiMTvi28sg=
-github.com/go-test/deep v1.0.1/go.mod h1:wGDj63lr65AM2AQyKZd/NYHGb0R+1RLqB8NKt3aSFNA=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
 github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX3N/iU=
 github.com/google/uuid v1.1.2/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
@@ -56,8 +54,6 @@ github.com/prometheus/common v0.48.0 h1:QO8U2CdOzSn1BBsmXJXduaaW+dY/5QLjfB8svtSz
 github.com/prometheus/common v0.48.0/go.mod h1:0/KsvlIEfPQCQ5I2iNSAWKPZziNCvRs5EC6ILDTlAPc=
 github.com/prometheus/procfs v0.12.0 h1:jluTpSng7V9hY0O2R9DzzJHYb2xULk9VTR1V1R/k6Bo=
 github.com/prometheus/procfs v0.12.0/go.mod h1:pcuDEFsWDnvcgNzo4EEweacyhjeA9Zk3cnaOZAZEfOo=
-github.com/qmuntal/gltf v0.28.0 h1:C4A1temWMPtcI2+qNfpfRq8FEJxoBGUN3ZZM8BCc+xU=
-github.com/qmuntal/gltf v0.28.0/go.mod h1:YoXZOt0Nc0kIfSKOLZIRoV4FycdC+GzE+3JgiAGYoMs=
 github.com/quic-go/qpack v0.6.0 h1:g7W+BMYynC1LbYLSqRt8PBg5Tgwxn214ZZR34VIOjz8=
 github.com/quic-go/qpack v0.6.0/go.mod h1:lUpLKChi8njB4ty2bFLX2x4gzDqXwUpaO1DP9qMDZII=
 github.com/quic-go/quic-go v0.59.0 h1:OLJkp1Mlm/aS7dpKgTc6cnpynnD2Xg7C1pwL6vy/SAw=
@@ -75,8 +71,6 @@ github.com/untangledco/streaming v0.0.4 h1:Fiy/ETGeKx5NqO7ve93QHDAEKkAQ1LaLRd1CN
 github.com/untangledco/streaming v0.0.4/go.mod h1:6JLR+oAI3xOuUL3YUzfHUSU2gWPibK4ZU4sipziSCJQ=
 github.com/zsiec/ccx v0.2.0 h1:RaCC4a0ng9wa6AUvT9Kg9kfiEy9svfXL5mmRbi6Ykmo=
 github.com/zsiec/ccx v0.2.0/go.mod h1:Y30W1TCZX7HAXM0miCzG18kSyKtJvqbOk7zrFcTGpU4=
-github.com/zsiec/prism v0.1.6-0.20260329065234-c0e78e09214a h1:mQ+bYeBOj0ykK5y4Hsk79rV0A5pEcMrzREuWG9Rj6E8=
-github.com/zsiec/prism v0.1.6-0.20260329065234-c0e78e09214a/go.mod h1:B8MUNrUBFyvzF0TVde0NbE15IHb7Dy+IsuDjkC4X7+Y=
 github.com/zsiec/prism v0.1.6-0.20260329230938-1e1e4e64f928 h1:Zhv9SwGdab6wozYs/E2kxMzKm+sDUIjwnW/t/jJsKEs=
 github.com/zsiec/prism v0.1.6-0.20260329230938-1e1e4e64f928/go.mod h1:B8MUNrUBFyvzF0TVde0NbE15IHb7Dy+IsuDjkC4X7+Y=
 github.com/zsiec/srtgo v0.2.5-0.20260320141915-f0f3efc9a40e h1:EMk2kkZW8RNc8jgTCkBo1ADVZwBHbQxb1GCFzJmHYI8=
