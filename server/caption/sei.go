@@ -326,8 +326,8 @@ func findFirstVCL(data []byte) int {
 				break
 			}
 			naluType := data[i+scLen] & 0x1F
-			// VCL NALU types: 1 (non-IDR), 5 (IDR)
-			if naluType == 1 || naluType == 5 {
+			// VCL NALU types: 1 (non-IDR slice), 2-4 (data partitions), 5 (IDR)
+			if naluType >= 1 && naluType <= 5 {
 				return scPos
 			}
 			i += scLen + 1
