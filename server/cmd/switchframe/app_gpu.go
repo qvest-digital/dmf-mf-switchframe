@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/zsiec/prism/media"
-	"github.com/zsiec/switchframe/server/arinfer"
 	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/control"
@@ -21,7 +20,6 @@ import (
 	"github.com/zsiec/switchframe/server/layout"
 	"github.com/zsiec/switchframe/server/sidecar"
 	"github.com/zsiec/switchframe/server/switcher"
-	"github.com/zsiec/switchframe/server/tracking"
 )
 
 // gpuState holds all GPU subsystem resources. Nil fields mean the GPU
@@ -126,7 +124,7 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 	var segAdapter gpu.SegmentationState
 	if app.cfg.AISidecarBin != "" && gs.ctx.Backend() == "cuda" {
 		// Sidecar mode: spawn AI sidecar, share FramePool via CUDA IPC.
-		segProxy, arProxy := app.initAISidecar(gs, sw)
+		segProxy := app.initAISidecar(gs, sw)
 		if segProxy != nil {
 			sourceMgr.SetSegmenter(segProxy)
 			app.segEngine = segProxy
@@ -136,9 +134,6 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 			}
 			app.segAdapter = sa
 			segAdapter = sa
-		}
-		if arProxy != nil {
-			app.arInferEngine = arProxy
 		}
 	}
 
@@ -396,16 +391,8 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 		colorGradeAdapter = newColorGradeStateAdapter(app.colorGradeCtrl)
 	}
 
-	// AR compositor state adapter (bridges arinfer.Engine + arrender.Renderer → gpu.ARCompositorState).
-	// Always created: the adapter lazily resolves app.arInferEngine and
-	// app.arRenderer, which may be nil now but are populated later by
-	// initAR/initARRenderer (called after wireGPUPipeline).
-	arAdapter := gpu.ARCompositorState(&arCompositorStateAdapter{app: app})
-
 	// Build GPU pipeline node chain:
-	//   gpu_key → [gpu_neural_key] → gpu_layout → [gpu_ar_composite] → gpu_compositor → [gpu_ai_segment] → gpu_colorgrade → gpu_stmap → raw_sink → gpu_preview_encode → gpu_encode
-	// AR compositor renders BEHIND 2D DSK graphics (lower z-order), so it
-	// must come before the DSK compositor node in the pipeline.
+	//   gpu_key → [gpu_neural_key] → gpu_layout → gpu_compositor → [gpu_ai_segment] → gpu_colorgrade → gpu_stmap → raw_sink → gpu_preview_encode → gpu_encode
 	// Some nodes return nil on unsupported builds (e.g. AI segment on non-TensorRT).
 	neuralKeyNode := gpu.NewGPUNeuralKeyNode(gs.ctx, gs.pool, neuralKeyAdapter, app.cfg.NeuralKeyModelPath)
 	// Inject TensorRT engine into the neural key node if available.
@@ -415,24 +402,12 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 		}
 	}
 
-	arNode := gpu.NewGPUARCompositorNode(gs.ctx, gs.pool, arAdapter)
 	dskNode := gpu.NewGPUCompositorNode(gs.ctx, compositorAdapter)
-
-	// Wire the AR compositor's occlusion mask into the DSK compositor so 2D
-	// overlays appear behind real-world foreground objects when occlusion is active.
-	if arNode != nil && dskNode != nil {
-		if occProvider, ok := arNode.(gpu.OcclusionMaskProvider); ok {
-			if setter, ok := dskNode.(interface{ SetOcclusionProvider(gpu.OcclusionMaskProvider) }); ok {
-				setter.SetOcclusionProvider(occProvider)
-			}
-		}
-	}
 
 	candidateNodes := []gpu.GPUPipelineNode{
 		gpu.NewGPUKeyNode(gs.ctx, gs.pool, keyAdapter),
 		neuralKeyNode,
 		gpu.NewGPULayoutNode(gs.ctx, gs.pool, layoutAdapter),
-		arNode,
 		dskNode,
 		gpu.NewGPUAISegmentNode(gs.ctx, gs.pool, segAdapter),
 		gpu.NewGPUColorGradeNode(gs.ctx, colorGradeAdapter),
@@ -521,16 +496,16 @@ func (a *App) wireGPUReplay() {
 }
 
 // initAISidecar spawns the AI sidecar process, exports the FramePool via
-// CUDA IPC, sends the handshake, and creates proxy objects. Returns nil
-// proxies if the sidecar binary is not found or initialization fails
-// (non-fatal — production continues without AI features).
-func (a *App) initAISidecar(gs *gpuState, sw *switcher.Switcher) (*gpu.SegmentationProxy, *arinfer.InferenceProxy) {
+// CUDA IPC, sends the handshake, and creates a segmentation proxy. Returns nil
+// if the sidecar binary is not found or initialization fails (non-fatal —
+// production continues without AI features).
+func (a *App) initAISidecar(gs *gpuState, sw *switcher.Switcher) *gpu.SegmentationProxy {
 	binPath := a.cfg.AISidecarBin
 
 	// Verify binary exists.
 	if _, err := os.Stat(binPath); err != nil {
 		slog.Info("AI sidecar binary not found, AI features disabled", "path", binPath)
-		return nil, nil
+		return nil
 	}
 
 	pf := sw.PipelineFormat()
@@ -539,7 +514,7 @@ func (a *App) initAISidecar(gs *gpuState, sw *switcher.Switcher) (*gpu.Segmentat
 	framePtrs := gs.pool.AllDevPtrs()
 	if len(framePtrs) == 0 {
 		slog.Warn("AI sidecar: no frame pool device pointers to export")
-		return nil, nil
+		return nil
 	}
 
 	// Create the shared VRAM pool with IPC handles.
@@ -552,13 +527,12 @@ func (a *App) initAISidecar(gs *gpuState, sw *switcher.Switcher) (*gpu.Segmentat
 	}, shmName)
 	if err != nil {
 		slog.Warn("AI sidecar: GPU pool creation failed", "error", err)
-		return nil, nil
+		return nil
 	}
 	a.aiSidecarPool = pool
 
 	// Create sidecar host (proxies created after spawn with the host reference).
 	var segProxy *gpu.SegmentationProxy
-	var arProxy *arinfer.InferenceProxy
 
 	host := sidecar.NewHost(sidecar.Config{
 		Binary:       binPath,
@@ -577,15 +551,6 @@ func (a *App) initAISidecar(gs *gpuState, sw *switcher.Switcher) (*gpu.Segmentat
 			if segProxy != nil {
 				segProxy.RecoverStaleSlots()
 			}
-			if arProxy != nil {
-				arProxy.RecoverStaleSlots()
-			}
-			// Recover stale slots for all visual tracking proxies.
-			a.aiTrackingProxiesMu.Lock()
-			for _, tp := range a.aiTrackingProxies {
-				tp.RecoverStaleSlots()
-			}
-			a.aiTrackingProxiesMu.Unlock()
 
 			// Re-send GPU pool handshake via Host.Send (thread-safe).
 			hs := &sidecar.GPUPoolHandshake{
@@ -607,17 +572,6 @@ func (a *App) initAISidecar(gs *gpuState, sw *switcher.Switcher) (*gpu.Segmentat
 			if segProxy != nil {
 				segProxy.ReenableSources()
 			}
-			if arProxy != nil {
-				arProxy.ReenableState()
-			}
-			// Re-start visual tracking proxies lost during sidecar restart.
-			a.aiTrackingProxiesMu.Lock()
-			for _, tp := range a.aiTrackingProxies {
-				if err := tp.Start(); err != nil {
-					slog.Warn("AI sidecar: re-enable visual tracker failed", "error", err)
-				}
-			}
-			a.aiTrackingProxiesMu.Unlock()
 		},
 		OnStatus: func(s sidecar.Status) {
 			if !s.Alive && s.LastError != "" {
@@ -633,7 +587,7 @@ func (a *App) initAISidecar(gs *gpuState, sw *switcher.Switcher) (*gpu.Segmentat
 		_ = pool.Close()
 		a.aiSidecarPool = nil
 		a.aiSidecarHost = nil
-		return nil, nil
+		return nil
 	}
 
 	// Send handshake via Host.Send (writeMu-protected).
@@ -650,30 +604,15 @@ func (a *App) initAISidecar(gs *gpuState, sw *switcher.Switcher) (*gpu.Segmentat
 		_ = pool.Close()
 		a.aiSidecarPool = nil
 		a.aiSidecarHost = nil
-		return nil, nil
+		return nil
 	}
 
-	// Create proxies now that host is live and connected.
+	// Create segmentation proxy now that host is live and connected.
 	segProxy = gpu.NewSegmentationProxy(host, pool)
-	arProxy = arinfer.NewInferenceProxy(host, pool, gs.pool)
 
-	// Initialize the tracking proxy map for visual tracking sources.
-	a.aiTrackingProxies = make(map[string]*tracking.VisualTrackingProxy)
-
-	// Wire OnMessage to dispatch to all proxies. Each proxy checks msg.Type
-	// and ignores irrelevant messages, so broadcasting to all is safe.
-	// VisualTrackingProxy messages (pose_result, track_slot_done) are also
-	// handled here when tracking proxies are created via AddVisualSource.
+	// Wire OnMessage to dispatch to the segmentation proxy.
 	host.OnMessage = func(msg *sidecar.Message) {
 		segProxy.HandleMessage(msg)
-		arProxy.HandleMessage(msg)
-
-		// Dispatch to all visual tracking proxies.
-		a.aiTrackingProxiesMu.Lock()
-		for _, tp := range a.aiTrackingProxies {
-			tp.HandleMessage(msg)
-		}
-		a.aiTrackingProxiesMu.Unlock()
 	}
 
 	slog.Info("AI sidecar initialized",
@@ -682,7 +621,7 @@ func (a *App) initAISidecar(gs *gpuState, sw *switcher.Switcher) (*gpu.Segmentat
 		"frame_size", fmt.Sprintf("%dx%d", pf.Width, pf.Height),
 	)
 
-	return segProxy, arProxy
+	return segProxy
 }
 
 // closeGPU releases all GPU resources.

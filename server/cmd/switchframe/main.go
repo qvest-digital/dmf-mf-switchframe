@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zsiec/switchframe/server/arrender"
 	"github.com/zsiec/switchframe/server/comms"
 	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/srt"
@@ -195,14 +194,6 @@ func run() error {
 		return err
 	}
 	if err := app.initASR(); err != nil {
-		return err
-	}
-	app.initAR()
-	app.initTracking()
-	// Scene must be created before renderer so SetScene can share it.
-	app.arScene = arrender.NewScene()
-	app.initARRenderer()
-	if err := app.initARAssetStore(); err != nil {
 		return err
 	}
 	if err := app.initClips(); err != nil {
