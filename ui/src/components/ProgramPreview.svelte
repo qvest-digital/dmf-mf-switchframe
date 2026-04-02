@@ -2,7 +2,6 @@
 	import type { ControlRoomState, SCTE35Active } from '$lib/api/types';
 	import type { FastControl } from '$lib/transport/fast-control';
 	import { setupHiDPICanvas } from '$lib/video/canvas-utils';
-	import { getArPromptState } from '$lib/state/ar-prompt.svelte';
 	import HealthAlarm from './HealthAlarm.svelte';
 	import LayoutOverlay from './LayoutOverlay.svelte';
 	import GraphicsOverlay from './GraphicsOverlay.svelte';
@@ -109,70 +108,6 @@
 		return () => obs.disconnect();
 	});
 
-	// ── AR Prompt overlay ──
-	const arPrompt = getArPromptState();
-	const arPromptActive = $derived(arPrompt.mode !== 'off');
-	const arPlaceMode = $derived(arPrompt.mode === 'place');
-
-	// Box drag state for shift+drag
-	let arBoxDrag = $state<{ startX: number; startY: number; curX: number; curY: number } | null>(null);
-
-	// Pipeline output dimensions for coordinate mapping (SAM prompts etc.)
-	const pipeW = $derived(crState.pipelineFormat?.width ?? 1920);
-	const pipeH = $derived(crState.pipelineFormat?.height ?? 1080);
-
-	function arPromptClick(e: MouseEvent) {
-		if (!programViewport) return;
-		const rect = programViewport.getBoundingClientRect();
-		const nx = (e.clientX - rect.left) / rect.width;
-		const ny = (e.clientY - rect.top) / rect.height;
-		const px = Math.round(nx * pipeW);
-		const py = Math.round(ny * pipeH);
-
-		// Place mode: call place callback with pixel coords
-		if (arPrompt.mode === 'place' && arPrompt.placeCallback) {
-			arPrompt.placeCallback(px, py);
-			return;
-		}
-
-		// Prompt mode: call prompt callback
-		if (!arPrompt.callback) return;
-		// Shift+click starts/continues box mode — handled by pointer events
-		if (e.shiftKey) return;
-		arPrompt.callback('point', [[px, py]]);
-	}
-
-	function arBoxPointerDown(e: PointerEvent) {
-		if (!arPrompt.callback || !programViewport || !e.shiftKey) return;
-		e.preventDefault();
-		(e.target as HTMLElement).setPointerCapture(e.pointerId);
-		const rect = programViewport.getBoundingClientRect();
-		const nx = (e.clientX - rect.left) / rect.width;
-		const ny = (e.clientY - rect.top) / rect.height;
-		arBoxDrag = { startX: nx, startY: ny, curX: nx, curY: ny };
-	}
-
-	function arBoxPointerMove(e: MouseEvent) {
-		if (!arBoxDrag || !programViewport) return;
-		const rect = programViewport.getBoundingClientRect();
-		arBoxDrag.curX = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-		arBoxDrag.curY = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
-	}
-
-	function arBoxPointerUp() {
-		if (!arBoxDrag || !arPrompt.callback) {
-			arBoxDrag = null;
-			return;
-		}
-		const x1 = Math.round(Math.min(arBoxDrag.startX, arBoxDrag.curX) * pipeW);
-		const y1 = Math.round(Math.min(arBoxDrag.startY, arBoxDrag.curY) * pipeH);
-		const x2 = Math.round(Math.max(arBoxDrag.startX, arBoxDrag.curX) * pipeW);
-		const y2 = Math.round(Math.max(arBoxDrag.startY, arBoxDrag.curY) * pipeH);
-		if (Math.abs(x2 - x1) > 5 && Math.abs(y2 - y1) > 5) {
-			arPrompt.callback('box', [[x1, y1, x2, y2]]);
-		}
-		arBoxDrag = null;
-	}
 </script>
 
 <div class="program-preview">
@@ -203,45 +138,6 @@
 			{/if}
 			{#if showGraphicsOverlay && crState.graphics?.layers?.some(l => l.active)}
 				<GraphicsOverlay state={crState} containerWidth={programViewportW} containerHeight={programViewportH} {fastControl} onSelect={onGraphicsLayerSelect} />
-			{/if}
-			{#if arPromptActive}
-				<!-- svelte-ignore a11y_no_static_element_interactions a11y_no_noninteractive_element_interactions -->
-				<div
-					class="ar-prompt-overlay"
-					class:place-mode={arPlaceMode}
-					role="application"
-					tabindex="-1"
-					onclick={arPromptClick}
-					onkeydown={(e) => { if (e.key === 'Enter') arPromptClick(e as any); }}
-					onpointerdown={arBoxPointerDown}
-					onpointermove={arBoxPointerMove}
-					onpointerup={arBoxPointerUp}
-				>
-					{#each arPrompt.prompts as marker (marker.id)}
-						<div
-							class="ar-prompt-marker"
-							style="left:{(marker.x / pipeW) * 100}%;top:{(marker.y / pipeH) * 100}%"
-							title="{marker.label}"
-						></div>
-					{/each}
-					{#if arBoxDrag}
-						{@const left = Math.min(arBoxDrag.startX, arBoxDrag.curX) * 100}
-						{@const top = Math.min(arBoxDrag.startY, arBoxDrag.curY) * 100}
-						{@const width = Math.abs(arBoxDrag.curX - arBoxDrag.startX) * 100}
-						{@const height = Math.abs(arBoxDrag.curY - arBoxDrag.startY) * 100}
-						<div
-							class="ar-prompt-box"
-							style="left:{left}%;top:{top}%;width:{width}%;height:{height}%"
-						></div>
-					{/if}
-					<div class="ar-prompt-hint">
-						{#if arPlaceMode}
-							Click to place object in scene.
-						{:else}
-							Click to place point. Shift+drag for box.
-						{/if}
-					</div>
-				</div>
 			{/if}
 		</div>
 	</div>
@@ -426,51 +322,4 @@
 		text-align: right;
 	}
 
-	/* AR Prompt Overlay */
-	.ar-prompt-overlay {
-		position: absolute;
-		top: 0;
-		left: 0;
-		width: 100%;
-		height: 100%;
-		cursor: crosshair;
-		z-index: calc(var(--z-above) + 1);
-		pointer-events: auto;
-	}
-
-	.ar-prompt-overlay.place-mode {
-		cursor: cell;
-	}
-
-	.ar-prompt-marker {
-		position: absolute;
-		width: 12px;
-		height: 12px;
-		border: 2px solid var(--accent-purple, #a855f7);
-		border-radius: 50%;
-		transform: translate(-50%, -50%);
-		pointer-events: none;
-	}
-
-	.ar-prompt-box {
-		position: absolute;
-		border: 2px dashed var(--accent-purple, #a855f7);
-		background: rgba(168, 85, 247, 0.1);
-		pointer-events: none;
-	}
-
-	.ar-prompt-hint {
-		position: absolute;
-		bottom: 24px;
-		left: 50%;
-		transform: translateX(-50%);
-		font-family: var(--font-ui);
-		font-size: var(--text-xs);
-		color: rgba(168, 85, 247, 0.9);
-		background: rgba(0, 0, 0, 0.7);
-		padding: 2px 8px;
-		border-radius: var(--radius-sm);
-		pointer-events: none;
-		white-space: nowrap;
-	}
 </style>
