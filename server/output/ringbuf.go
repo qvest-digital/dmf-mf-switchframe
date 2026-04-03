@@ -1,5 +1,7 @@
 package output
 
+import "github.com/zsiec/switchframe/server/internal/mpegts"
+
 // ringBuffer is a fixed-size circular buffer used to hold MPEG-TS data during
 // SRT reconnection. If writes exceed the capacity, the oldest data is silently
 // overwritten and the overflowed flag is set. On reconnect the SRT caller
@@ -111,9 +113,9 @@ func (r *ringBuffer) alignToTSPacket() {
 	// In MPEG-TS data, sync bytes occur every 188 bytes, so we'll find one
 	// within at most 187 bytes of scanning.
 	found := false
-	for skip := 0; skip < tsPacketSize && skip < r.count; skip++ {
+	for skip := 0; skip < mpegts.PacketSize && skip < r.count; skip++ {
 		pos := (r.readPos + skip) % r.capacity
-		if r.data[pos] == 0x47 {
+		if r.data[pos] == mpegts.SyncByte {
 			if skip > 0 {
 				r.readPos = pos
 				r.count -= skip
@@ -129,7 +131,7 @@ func (r *ringBuffer) alignToTSPacket() {
 	}
 
 	// Trim trailing partial packet.
-	if tail := r.count % tsPacketSize; tail != 0 {
+	if tail := r.count % mpegts.PacketSize; tail != 0 {
 		r.count -= tail
 	}
 }

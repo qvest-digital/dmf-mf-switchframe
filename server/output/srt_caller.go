@@ -5,16 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math/rand/v2"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/zsiec/switchframe/server/internal/backoff"
+	"github.com/zsiec/switchframe/server/internal/mpegts"
+	"github.com/zsiec/switchframe/server/srt"
 )
 
 const (
 	defaultRingBufSize = 4 * 1024 * 1024 // 4MB
-	maxBackoff         = 30 * time.Second
-	initialBackoff     = 1 * time.Second
 	idrGateTimeout     = 2 * time.Second // max time to wait for a keyframe before forcing output
 )
 
@@ -39,7 +40,7 @@ type SRTCaller struct {
 	ctx             context.Context
 	cancel          context.CancelFunc
 	ringBuf         *ringBuffer
-	backoff         time.Duration
+	bo              backoff.Backoff
 	reconnecting    atomic.Bool  // guards against duplicate reconnect goroutines
 	pendingIDR      atomic.Bool  // when true, drop writes until a keyframe arrives
 	pendingIDRSince atomic.Int64 // UnixMilli timestamp when pendingIDR was set (for timeout)
@@ -48,6 +49,10 @@ type SRTCaller struct {
 	state           atomic.Pointer[AdapterState]
 	lastError       atomic.Pointer[string]
 	startedAt       time.Time
+
+	// stats tracks SRT connection statistics. When non-nil, a background goroutine
+	// polls the connection for stats every second and calls stats.UpdateSend().
+	stats *srt.ConnStats
 
 	// connectFn is overridden in tests to avoid real network I/O.
 	connectFn func(ctx context.Context, config SRTCallerConfig) (srtConn, error)
@@ -70,12 +75,17 @@ func NewSRTCaller(config SRTCallerConfig) *SRTCaller {
 	c := &SRTCaller{
 		config:  config,
 		ringBuf: newRingBuffer(ringSize),
-		backoff: initialBackoff,
+		bo:      backoff.Backoff{JitterPct: 0.20},
 	}
 	c.state.Store(ptrTo(StateStopped))
 	c.lastError.Store(ptrTo(""))
 	c.connectFn = defaultSRTConnect
 	return c
+}
+
+// SetStats sets the ConnStats tracker for this caller. Must be called before Start().
+func (c *SRTCaller) SetStats(cs *srt.ConnStats) {
+	c.stats = cs
 }
 
 // ID returns the adapter identifier.
@@ -107,7 +117,12 @@ func (c *SRTCaller) Start(ctx context.Context) error {
 
 	c.conn = conn
 	c.state.Store(ptrTo(StateActive))
-	c.resetBackoffLocked()
+	c.bo.Reset()
+
+	if c.stats != nil {
+		go c.pollStats(c.ctx)
+	}
+
 	return nil
 }
 
@@ -127,7 +142,7 @@ func (c *SRTCaller) Write(tsData []byte) (int, error) {
 		// indefinite output hang (e.g., during transitions that produce
 		// only P-frames).
 		if c.pendingIDR.Load() {
-			if !containsKeyframe(tsData) {
+			if !mpegts.ContainsKeyframe(tsData) {
 				elapsed := time.Since(time.UnixMilli(c.pendingIDRSince.Load()))
 				if elapsed <= idrGateTimeout {
 					return len(tsData), nil // drop delta frames silently
@@ -238,13 +253,13 @@ func (c *SRTCaller) reconnectLoop() {
 		default:
 		}
 
-		backoff := c.nextBackoff()
-		slog.Info("SRT reconnecting", "backoff", backoff, "address", c.config.Address)
+		wait := c.bo.Next()
+		slog.Info("SRT reconnecting", "backoff", wait, "address", c.config.Address)
 
 		select {
 		case <-c.ctx.Done():
 			return
-		case <-time.After(backoff):
+		case <-time.After(wait):
 		}
 
 		conn, err := c.connectFn(c.ctx, c.config)
@@ -277,9 +292,16 @@ func (c *SRTCaller) reconnectLoop() {
 
 		c.state.Store(ptrTo(StateActive))
 		c.lastError.Store(ptrTo(""))
-		c.resetBackoff()
+		c.bo.Reset()
 
 		slog.Info("SRT reconnected", "address", c.config.Address, "overflowed", overflowed)
+
+		// Start stats polling — it wasn't started in Start() because the
+		// initial connection failed. Safe to start here because reconnectLoop
+		// runs at most once (guarded by CAS on c.reconnecting).
+		if c.stats != nil {
+			go c.pollStats(c.ctx)
+		}
 
 		if c.onReconnect != nil {
 			c.onReconnect(overflowed)
@@ -288,42 +310,45 @@ func (c *SRTCaller) reconnectLoop() {
 	}
 }
 
-// nextBackoff returns the current backoff duration with ±20% jitter and
-// advances to the next level. The progression is: 1s → 2s → 4s → 8s →
-// 16s → 30s (capped). Jitter prevents thundering herd on reconnect.
-// Thread-safe: protects c.backoff with c.mu.
-func (c *SRTCaller) nextBackoff() time.Duration {
-	c.mu.Lock()
-	current := c.backoffLocked()
-	c.mu.Unlock()
-	return current
-}
-
-// backoffLocked returns the current jittered backoff and advances to the
-// next level. Must be called with c.mu held.
-func (c *SRTCaller) backoffLocked() time.Duration {
-	current := c.backoff
-	next := current * 2
-	if next > maxBackoff {
-		next = maxBackoff
+// pollStats polls the SRT connection for stats every second and updates ConnStats.
+func (c *SRTCaller) pollStats(ctx context.Context) {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			c.updateStats()
+		}
 	}
-	c.backoff = next
-	// Apply ±20% jitter
-	jitter := 0.8 + rand.Float64()*0.4
-	return time.Duration(float64(current) * jitter)
 }
 
-// resetBackoff returns the backoff duration to its initial value.
-// Thread-safe: protects c.backoff with c.mu.
-func (c *SRTCaller) resetBackoff() {
+// updateStats fetches SRT stats from the connection and updates ConnStats.
+func (c *SRTCaller) updateStats() {
 	c.mu.Lock()
-	c.resetBackoffLocked()
+	conn := c.conn
 	c.mu.Unlock()
-}
-
-// resetBackoffLocked resets backoff. Must be called with c.mu held.
-func (c *SRTCaller) resetBackoffLocked() {
-	c.backoff = initialBackoff
+	if conn == nil {
+		return
+	}
+	statter, ok := conn.(SRTStatter)
+	if !ok {
+		return
+	}
+	cs := statter.SRTStats(true)
+	if c.stats != nil {
+		c.stats.UpdateSend(srt.SendStatsUpdate{
+			RTTMs:           float64(cs.RTT) / float64(time.Millisecond),
+			SendRateMbps:    cs.MbpsSendRate,
+			SendLossRatePct: cs.SendLossRate,
+			PacketsSent:     int64(cs.SendPackets),
+			PacketsSendLost: int64(cs.SendLoss),
+			PacketsSendDrop: int64(cs.SendDropped),
+			SendBufMs:       float64(cs.MsSndBuf) / float64(time.Millisecond),
+			SendBufPackets:  cs.SendBufSize,
+		})
+	}
 }
 
 // defaultSRTConnect is a placeholder connection function. The real SRT
@@ -331,46 +356,6 @@ func (c *SRTCaller) resetBackoffLocked() {
 // package free of srtgo imports for clean unit testing.
 func defaultSRTConnect(_ context.Context, _ SRTCallerConfig) (srtConn, error) {
 	return nil, errors.New("SRT connect not configured (set connectFn)")
-}
-
-const tsPacketSize = 188
-
-// containsKeyframe scans 188-byte MPEG-TS packets in data for the
-// Random Access Indicator (RAI) flag, which signals an IDR/keyframe.
-//
-// TS packet structure (relevant bytes):
-//
-//	Byte 0:    sync byte (0x47)
-//	Byte 3:    bits 5-4 = adaptation field control
-//	             0b10 (2) = adaptation only
-//	             0b11 (3) = adaptation + payload
-//	Byte 4:    adaptation field length
-//	Byte 5:    adaptation flags, bit 6 = Random Access Indicator
-func containsKeyframe(data []byte) bool {
-	for i := 0; i+tsPacketSize <= len(data); i += tsPacketSize {
-		if data[i] != 0x47 {
-			continue // not a valid sync byte, skip
-		}
-
-		// Adaptation field control is in byte 3, bits 5-4.
-		// Values: 2 = adaptation only, 3 = adaptation + payload.
-		afc := (data[i+3] >> 4) & 0x03
-		if afc < 2 {
-			continue // no adaptation field
-		}
-
-		// Adaptation field length at byte 4.
-		afLen := data[i+4]
-		if afLen == 0 {
-			continue // no flags in adaptation field
-		}
-
-		// RAI is bit 6 of the adaptation flags byte (byte 5).
-		if data[i+5]&0x40 != 0 {
-			return true
-		}
-	}
-	return false
 }
 
 // Compile-time check that SRTCaller satisfies the Adapter interface.

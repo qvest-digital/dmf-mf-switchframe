@@ -1,6 +1,10 @@
 package output
 
-import "context"
+import (
+	"context"
+
+	"github.com/zsiec/switchframe/server/internal/mpegts"
+)
 
 // scte35Filter wraps an Adapter and strips MPEG-TS packets
 // carrying the SCTE-35 PID before forwarding to the inner adapter.
@@ -21,10 +25,9 @@ func (f *scte35Filter) ID() string { return f.inner.ID() }
 func (f *scte35Filter) Start(ctx context.Context) error { return f.inner.Start(ctx) }
 
 func (f *scte35Filter) Write(data []byte) (int, error) {
-	const tsPacketSize = 188
 	inputLen := len(data)
 
-	if inputLen < tsPacketSize {
+	if inputLen < mpegts.PacketSize {
 		// Not a full TS packet — pass through as-is.
 		return f.inner.Write(data)
 	}
@@ -32,10 +35,9 @@ func (f *scte35Filter) Write(data []byte) (int, error) {
 	// Fast path: scan for any matching PID. SCTE-35 packets are rare,
 	// so most writes can be forwarded without allocation.
 	hasMatch := false
-	for i := 0; i+tsPacketSize <= inputLen; i += tsPacketSize {
-		if data[i] == 0x47 {
-			pid := uint16(data[i+1]&0x1F)<<8 | uint16(data[i+2])
-			if pid == f.pid {
+	for i := 0; i+mpegts.PacketSize <= inputLen; i += mpegts.PacketSize {
+		if data[i] == mpegts.SyncByte {
+			if mpegts.ExtractPID(data[i:]) == f.pid {
 				hasMatch = true
 				break
 			}
@@ -50,17 +52,16 @@ func (f *scte35Filter) Write(data []byte) (int, error) {
 		f.filterBuf = make([]byte, 0, inputLen)
 	}
 	filtered := f.filterBuf[:0]
-	for i := 0; i+tsPacketSize <= inputLen; i += tsPacketSize {
-		pkt := data[i : i+tsPacketSize]
+	for i := 0; i+mpegts.PacketSize <= inputLen; i += mpegts.PacketSize {
+		pkt := data[i : i+mpegts.PacketSize]
 		// Verify sync byte.
-		if pkt[0] != 0x47 {
+		if pkt[0] != mpegts.SyncByte {
 			// Not a valid TS packet — include it.
 			filtered = append(filtered, pkt...)
 			continue
 		}
 		// Extract PID from bytes 1-2.
-		pid := uint16(pkt[1]&0x1F)<<8 | uint16(pkt[2])
-		if pid == f.pid {
+		if mpegts.ExtractPID(pkt) == f.pid {
 			continue // strip this packet
 		}
 		filtered = append(filtered, pkt...)

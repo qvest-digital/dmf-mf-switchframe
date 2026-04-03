@@ -270,7 +270,7 @@ func WithLayoutStore(ls *layout.Store) APIOption {
 // This keeps the control package free of srt package imports.
 type SRTManager interface {
 	// CreatePull starts an outbound SRT pull connection. Returns the source key.
-	CreatePull(ctx context.Context, address, streamID, label string, latencyMs int) (string, error)
+	CreatePull(ctx context.Context, address, streamID, label string, latencyMs int, inputBW int64, overheadBW int) (string, error)
 	// StopPull cancels an active pull and removes it from the store.
 	// Returns ErrNotSRTSource if the key is not an SRT pull source.
 	StopPull(key string) error

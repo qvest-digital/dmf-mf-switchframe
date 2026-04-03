@@ -5,6 +5,7 @@ import (
 
 	scte35lib "github.com/Comcast/scte35-go/pkg/scte35"
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/internal/mpegts"
 )
 
 func TestTSMuxer_WriteSCTE35_BeforeInit(t *testing.T) {
@@ -317,8 +318,8 @@ func TestTSMuxer_WriteSCTE35_IDRAligned_FlushedOnKeyframe(t *testing.T) {
 	// Verify SCTE-35 packets appear before video packets in the output.
 	firstSCTE35 := -1
 	firstVideo := -1
-	for i := 0; i+tsPacketSize <= len(output); i += tsPacketSize {
-		pkt := output[i : i+tsPacketSize]
+	for i := 0; i+mpegts.PacketSize <= len(output); i += mpegts.PacketSize {
+		pkt := output[i : i+mpegts.PacketSize]
 		if pkt[0] != 0x47 {
 			continue
 		}
@@ -436,8 +437,8 @@ func TestTSMuxer_WriteSCTE35_IDRAligned_MultipleSections(t *testing.T) {
 // countSCTE35Packets counts TS packets with the given SCTE-35 PID.
 func countSCTE35Packets(output []byte, pid uint16) int {
 	count := 0
-	for i := 0; i+tsPacketSize <= len(output); i += tsPacketSize {
-		pkt := output[i : i+tsPacketSize]
+	for i := 0; i+mpegts.PacketSize <= len(output); i += mpegts.PacketSize {
+		pkt := output[i : i+mpegts.PacketSize]
 		if pkt[0] != 0x47 {
 			continue
 		}

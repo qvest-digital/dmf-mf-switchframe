@@ -24,6 +24,15 @@ type ListenerConfig struct {
 	// MaxSources limits the number of concurrent active sources. 0 = unlimited.
 	MaxSources int
 
+	// InputBW is the estimated input bandwidth in bytes/sec (SRTO_INPUTBW).
+	// When > 0, SRT derives MaxBW = InputBW * (1 + OverheadBW/100) instead
+	// of auto-estimating. 0 = auto-estimate.
+	InputBW int64
+
+	// OverheadBW is the bandwidth overhead percentage for retransmissions.
+	// 0 = srtgo default (25%).
+	OverheadBW int
+
 	// OnSource is called for each accepted connection with the resolved config
 	// and the raw srtgo connection. The callback owns the connection lifecycle.
 	OnSource func(SourceConfig, *srtgo.Conn)
@@ -75,6 +84,17 @@ func (l *Listener) Run(ctx context.Context) error {
 		srtCfg.Latency = l.cfg.DefaultLatency
 	}
 
+	// When InputBW is set, tell SRT the expected input rate so it can
+	// derive MaxBW = InputBW * (1 + OverheadBW/100) instead of relying
+	// on auto-estimation which chases VBR spikes.
+	if l.cfg.InputBW > 0 {
+		srtCfg.InputBW = l.cfg.InputBW
+		srtCfg.MaxBW = 0 // auto = InputBW * (1 + OverheadBW/100)
+		if l.cfg.OverheadBW > 0 {
+			srtCfg.OverheadBW = l.cfg.OverheadBW
+		}
+	}
+
 	ln, err := srtgo.Listen(l.cfg.Addr, srtCfg)
 	if err != nil {
 		return fmt.Errorf("srt listen on %s: %w", l.cfg.Addr, err)
@@ -98,12 +118,11 @@ func (l *Listener) Run(ctx context.Context) error {
 			continue
 		}
 
-		// Check MaxSources limit before processing.
+		// Check MaxSources and increment atomically.
 		if l.cfg.MaxSources > 0 {
 			l.mu.Lock()
-			count := l.activeCount
-			l.mu.Unlock()
-			if count >= l.cfg.MaxSources {
+			if l.activeCount >= l.cfg.MaxSources {
+				l.mu.Unlock()
 				l.log.Warn("max sources reached, rejecting connection",
 					"max", l.cfg.MaxSources,
 					"remote", conn.RemoteAddr(),
@@ -111,6 +130,12 @@ func (l *Listener) Run(ctx context.Context) error {
 				_ = conn.Close()
 				continue
 			}
+			l.activeCount++
+			l.mu.Unlock()
+		} else {
+			l.mu.Lock()
+			l.activeCount++
+			l.mu.Unlock()
 		}
 
 		streamID := conn.StreamID()
@@ -130,11 +155,6 @@ func (l *Listener) Run(ctx context.Context) error {
 		if err := l.cfg.Store.Save(cfg); err != nil {
 			l.log.Warn("failed to save source config", "key", key, "error", err)
 		}
-
-		// Track active source count.
-		l.mu.Lock()
-		l.activeCount++
-		l.mu.Unlock()
 
 		// Wrap the OnSource callback to decrement active count when done.
 		wrappedCfg := cfg

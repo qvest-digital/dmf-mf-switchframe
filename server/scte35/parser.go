@@ -3,15 +3,11 @@ package scte35
 import (
 	"errors"
 	"fmt"
+
+	"github.com/zsiec/switchframe/server/internal/mpegts"
 )
 
 const (
-	// tsPacketSize is the standard MPEG-TS packet size.
-	tsPacketSize = 188
-
-	// tsSyncByte is the MPEG-TS sync byte that starts every packet.
-	tsSyncByte = 0x47
-
 	// scte35TableID is the MPEG-2 table_id for SCTE-35 splice_info_section.
 	scte35TableID = 0xFC
 
@@ -44,8 +40,8 @@ func ParseFromTS(pid uint16, data []byte) (*CueMessage, error) {
 		return nil, ErrEmptyData
 	}
 
-	if len(data) < tsPacketSize {
-		return nil, fmt.Errorf("%w: data length %d is less than packet size %d", ErrInvalidPacket, len(data), tsPacketSize)
+	if len(data) < mpegts.PacketSize {
+		return nil, fmt.Errorf("%w: data length %d is less than packet size %d", ErrInvalidPacket, len(data), mpegts.PacketSize)
 	}
 
 	var sectionData []byte
@@ -54,16 +50,16 @@ func ParseFromTS(pid uint16, data []byte) (*CueMessage, error) {
 	// Track how many bytes of the section we expect (from section_length field).
 	expectedLen := 0
 
-	for offset := 0; offset+tsPacketSize <= len(data); offset += tsPacketSize {
-		pkt := data[offset : offset+tsPacketSize]
+	for offset := 0; offset+mpegts.PacketSize <= len(data); offset += mpegts.PacketSize {
+		pkt := data[offset : offset+mpegts.PacketSize]
 
 		// Validate sync byte.
-		if pkt[0] != tsSyncByte {
+		if pkt[0] != mpegts.SyncByte {
 			return nil, fmt.Errorf("%w: expected sync byte 0x47, got 0x%02x at offset %d", ErrInvalidPacket, pkt[0], offset)
 		}
 
 		// Extract PID from bytes 1-2 (13-bit field).
-		pktPID := uint16(pkt[1]&0x1F)<<8 | uint16(pkt[2])
+		pktPID := mpegts.ExtractPID(pkt)
 		if pktPID != pid {
 			continue
 		}
@@ -83,7 +79,7 @@ func ParseFromTS(pid uint16, data []byte) (*CueMessage, error) {
 		}
 		if adaptationFieldControl == 0x03 {
 			// Adaptation field followed by payload.
-			if payloadStart >= tsPacketSize {
+			if payloadStart >= mpegts.PacketSize {
 				continue
 			}
 			adaptationFieldLength := int(pkt[payloadStart])
@@ -91,7 +87,7 @@ func ParseFromTS(pid uint16, data []byte) (*CueMessage, error) {
 		}
 		// adaptationFieldControl == 0x01: payload only (payloadStart stays at 4)
 
-		if payloadStart >= tsPacketSize {
+		if payloadStart >= mpegts.PacketSize {
 			continue
 		}
 
@@ -210,7 +206,9 @@ func DetectSCTE35PID(pmtData []byte) []uint16 {
 
 	for offset+5 <= loopEnd {
 		streamType := pmtData[offset]
-		esPID := uint16(pmtData[offset+1]&0x1F)<<8 | uint16(pmtData[offset+2])
+		// PMT ES entries store the 13-bit PID at the same bit position
+		// (bytes 1-2, masked 0x1F) as TS packet headers, so ExtractPID works here.
+		esPID := mpegts.ExtractPID(pmtData[offset:])
 		esInfoLength := int(pmtData[offset+3]&0x0F)<<8 | int(pmtData[offset+4])
 
 		if streamType == streamTypeSCTE35 {

@@ -37,9 +37,11 @@ type SourceConfig struct {
 	Address   string `json:"address,omitempty"`
 	StreamID  string `json:"streamID"`
 	Label     string `json:"label,omitempty"`
-	Position  int    `json:"position,omitempty"`
-	LatencyMs int    `json:"latencyMs,omitempty"`
-	DelayMs   int    `json:"delayMs,omitempty"`
+	Position   int    `json:"position,omitempty"`
+	LatencyMs  int    `json:"latencyMs,omitempty"`
+	DelayMs    int    `json:"delayMs,omitempty"`
+	InputBW    int64  `json:"inputBW,omitempty"`    // bytes/sec, 0 = auto-estimate
+	OverheadBW int    `json:"overheadBW,omitempty"` // percent, 0 = srtgo default (25%)
 
 	// HWDeviceCtx is an FFmpeg AVBufferRef* for NVDEC hardware decode.
 	// When non-nil, the SRT decoder will attempt NVDEC acceleration and
@@ -69,6 +71,12 @@ func (c *SourceConfig) Validate() error {
 	}
 	if c.DelayMs < 0 || c.DelayMs > MaxDelay {
 		return fmt.Errorf("delayMs must be 0-%d", MaxDelay)
+	}
+	if c.InputBW < 0 {
+		return errors.New("inputBW must be >= 0")
+	}
+	if c.OverheadBW < 0 || c.OverheadBW > 100 {
+		return errors.New("overheadBW must be 0-100")
 	}
 	return nil
 }

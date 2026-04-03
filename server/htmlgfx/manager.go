@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/zsiec/switchframe/server/internal/backoff"
 	"github.com/zsiec/switchframe/server/sidecar"
 )
 
@@ -253,8 +254,7 @@ func (m *Manager) triggerRestart(reason string) {
 // test path (when no Host is present). In production, the Host's restart
 // loop handles all of this.
 func (m *Manager) restartLoop() {
-	backoff := time.Second
-	maxBackoff := 30 * time.Second
+	bo := backoff.Backoff{}
 
 	for {
 		select {
@@ -284,17 +284,17 @@ func (m *Manager) restartLoop() {
 			_ = os.RemoveAll(oldDir)
 		}
 
-		slog.Info("htmlgfx: restarting sidecar", "backoff", backoff)
+		wait := bo.Next()
+		slog.Info("htmlgfx: restarting sidecar", "backoff", wait)
 
 		select {
 		case <-m.done:
 			return
-		case <-time.After(backoff):
+		case <-time.After(wait):
 		}
 
 		// In test path, spawn will fail (no binary). Just track the attempt.
 		slog.Error("htmlgfx: restart failed (test path, no binary)")
-		backoff = min(backoff*2, maxBackoff)
 		m.restartCount.Add(1)
 	}
 }

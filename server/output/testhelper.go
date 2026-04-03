@@ -1,6 +1,10 @@
 package output
 
-import "context"
+import (
+	"context"
+
+	"github.com/zsiec/switchframe/server/internal/mpegts"
+)
 
 // SrtConn is the exported version of srtConn for external test packages.
 type SrtConn = srtConn
@@ -47,7 +51,7 @@ func (r *TestRingBuffer) Reset() {
 	r.inner.Reset()
 }
 
-// ContainsKeyframe exposes the internal containsKeyframe function for testing.
+// ContainsKeyframe exposes mpegts.ContainsKeyframe for testing.
 func ContainsKeyframe(data []byte) bool {
-	return containsKeyframe(data)
+	return mpegts.ContainsKeyframe(data)
 }

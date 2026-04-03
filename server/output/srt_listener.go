@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/zsiec/switchframe/server/srt"
 )
 
 const (
@@ -50,6 +52,12 @@ type SRTListener struct {
 	lastError    atomic.Pointer[string]
 	startedAt    time.Time
 
+	// stats tracks SRT connection statistics. When non-nil, each connection's
+	// writer goroutine polls for stats every second and calls stats.UpdateSend().
+	// A single ConnStats is shared across all connections since they serve the
+	// same output stream.
+	stats *srt.ConnStats
+
 	// acceptFn is overridden in tests to avoid real network I/O.
 	// When set, Start() launches it in a background goroutine.
 	acceptFn func(ctx context.Context, config SRTListenerConfig) error
@@ -75,6 +83,11 @@ func NewSRTListener(config SRTListenerConfig) *SRTListener {
 	l.state.Store(ptrTo(StateStopped))
 	l.lastError.Store(ptrTo(""))
 	return l
+}
+
+// SetStats sets the ConnStats tracker for this listener. Must be called before Start().
+func (l *SRTListener) SetStats(cs *srt.ConnStats) {
+	l.stats = cs
 }
 
 // OnConnect registers a callback invoked when a new SRT client connects.
@@ -129,6 +142,11 @@ func (l *SRTListener) AddConnection(id string, conn srtConn) error {
 
 	// Start writer goroutine for this connection
 	go l.connWriter(ctx, lc)
+
+	// Start per-connection stats polling if stats tracker is set.
+	if l.stats != nil {
+		go l.connStatsPoll(ctx, conn)
+	}
 
 	slog.Info("SRT listener client connected", "id", id, "total", len(l.conns))
 
@@ -258,6 +276,37 @@ func (l *SRTListener) connWriter(ctx context.Context, lc *listenerConn) {
 					"id", lc.id, "error", err)
 				l.RemoveConnection(lc.id)
 				return
+			}
+		}
+	}
+}
+
+// connStatsPoll polls an SRT connection for stats every second.
+// Exits when the connection's context is cancelled.
+func (l *SRTListener) connStatsPoll(ctx context.Context, conn srtConn) {
+	statter, ok := conn.(SRTStatter)
+	if !ok {
+		return
+	}
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cs := statter.SRTStats(true)
+			if l.stats != nil {
+				l.stats.UpdateSend(srt.SendStatsUpdate{
+					RTTMs:           float64(cs.RTT) / float64(time.Millisecond),
+					SendRateMbps:    cs.MbpsSendRate,
+					SendLossRatePct: cs.SendLossRate,
+					PacketsSent:     int64(cs.SendPackets),
+					PacketsSendLost: int64(cs.SendLoss),
+					PacketsSendDrop: int64(cs.SendDropped),
+					SendBufMs:       float64(cs.MsSndBuf) / float64(time.Millisecond),
+					SendBufPackets:  cs.SendBufSize,
+				})
 			}
 		}
 	}

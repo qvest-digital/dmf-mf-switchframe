@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/srt"
 )
 
 type mockListenerConn struct {
@@ -345,4 +346,156 @@ func TestSRTListener_BandwidthHintsPassedToAcceptFn(t *testing.T) {
 	defer mu.Unlock()
 	require.Equal(t, int64(625000), capturedConfig.InputBW)
 	require.Equal(t, 15, capturedConfig.OverheadBW)
+}
+
+// mockStatsListenerConn implements srtConn + SRTStatter for testing listener stats polling.
+type mockStatsListenerConn struct {
+	mu        sync.Mutex
+	received  [][]byte
+	closed    atomic.Bool
+	pollCount atomic.Int32
+	stats     SRTConnStats
+}
+
+func (m *mockStatsListenerConn) Write(data []byte) (int, error) {
+	m.mu.Lock()
+	cp := make([]byte, len(data))
+	copy(cp, data)
+	m.received = append(m.received, cp)
+	m.mu.Unlock()
+	return len(data), nil
+}
+
+func (m *mockStatsListenerConn) Close() {
+	m.closed.Store(true)
+}
+
+func (m *mockStatsListenerConn) SRTStats(clear bool) SRTConnStats {
+	m.pollCount.Add(1)
+	return m.stats
+}
+
+func TestSRTListener_StatsPolling(t *testing.T) {
+	t.Parallel()
+	mock := &mockStatsListenerConn{
+		stats: SRTConnStats{
+			RTT:          30 * time.Millisecond,
+			MbpsSendRate: 6.5,
+			SendLossRate: 0.02,
+			SendPackets:  2000,
+			SendLoss:     20,
+			SendDropped:  3,
+			Retransmits:  8,
+			MsSndBuf:     60 * time.Millisecond,
+			SendBufSize:  48,
+			FlightSize:   24,
+		},
+	}
+
+	cs := srt.NewConnStats("send", "output-listener", 120)
+
+	l := NewSRTListener(SRTListenerConfig{Port: 9999, MaxConns: 8})
+	l.SetStats(cs)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	l.ctx = ctx
+	l.cancel = cancel
+	l.state.Store(ptrTo(StateActive))
+
+	err := l.AddConnection("stats-conn", mock)
+	require.NoError(t, err)
+
+	// Wait for at least one stats poll (1-second ticker + margin).
+	require.Eventually(t, func() bool {
+		return mock.pollCount.Load() >= 1
+	}, 3*time.Second, 50*time.Millisecond)
+
+	snap := cs.Snapshot()
+	require.InDelta(t, 30.0, snap.RTTMs, 0.1, "RTT should be 30ms")
+	require.InDelta(t, 6.5, snap.SendRateMbps, 0.01)
+	require.InDelta(t, 0.02, snap.SendLossRatePct, 0.001)
+	require.Equal(t, int64(2000), snap.PacketsSent)
+	require.Equal(t, int64(20), snap.PacketsSendLost)
+	require.Equal(t, int64(3), snap.PacketsSendDrop)
+}
+
+func TestSRTListener_StatsPollingStopsOnRemove(t *testing.T) {
+	t.Parallel()
+	mock := &mockStatsListenerConn{}
+	cs := srt.NewConnStats("send", "output-listener", 120)
+
+	l := NewSRTListener(SRTListenerConfig{Port: 9999, MaxConns: 8})
+	l.SetStats(cs)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	l.ctx = ctx
+	l.cancel = cancel
+	l.state.Store(ptrTo(StateActive))
+
+	err := l.AddConnection("poll-stop", mock)
+	require.NoError(t, err)
+
+	// Wait for at least one poll.
+	require.Eventually(t, func() bool {
+		return mock.pollCount.Load() >= 1
+	}, 3*time.Second, 50*time.Millisecond)
+
+	// Remove the connection (cancels the per-connection context).
+	l.RemoveConnection("poll-stop")
+	countAtRemove := mock.pollCount.Load()
+
+	// Wait to verify no more polls happen.
+	time.Sleep(1500 * time.Millisecond)
+	require.Equal(t, countAtRemove, mock.pollCount.Load(),
+		"stats polling should stop after RemoveConnection")
+}
+
+func TestSRTListener_NoStatsWithoutSetStats(t *testing.T) {
+	t.Parallel()
+	mock := &mockStatsListenerConn{}
+
+	l := NewSRTListener(SRTListenerConfig{Port: 9999, MaxConns: 8})
+	// Intentionally do NOT call SetStats.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	l.ctx = ctx
+	l.cancel = cancel
+	l.state.Store(ptrTo(StateActive))
+
+	err := l.AddConnection("no-stats", mock)
+	require.NoError(t, err)
+
+	// Wait a bit — the stats poll goroutine should not have been started.
+	time.Sleep(1500 * time.Millisecond)
+	require.Equal(t, int32(0), mock.pollCount.Load(),
+		"no stats polling should occur without SetStats")
+
+	l.RemoveConnection("no-stats")
+}
+
+func TestSRTListener_StatsPollingWithNonStatterConn(t *testing.T) {
+	t.Parallel()
+	// A plain mockListenerConn does not implement SRTStatter.
+	mock := &mockListenerConn{id: "plain"}
+	cs := srt.NewConnStats("send", "output-listener", 120)
+
+	l := NewSRTListener(SRTListenerConfig{Port: 9999, MaxConns: 8})
+	l.SetStats(cs)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	l.ctx = ctx
+	l.cancel = cancel
+	l.state.Store(ptrTo(StateActive))
+
+	// Should not panic — connStatsPoll exits immediately if conn is not SRTStatter.
+	err := l.AddConnection("plain", mock)
+	require.NoError(t, err)
+
+	// Wait a bit to confirm no crash.
+	time.Sleep(200 * time.Millisecond)
+
+	snap := cs.Snapshot()
+	require.Equal(t, float64(0), snap.RTTMs, "no stats should be updated with non-statter conn")
+
+	l.RemoveConnection("plain")
 }

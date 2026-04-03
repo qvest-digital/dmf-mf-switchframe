@@ -9,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/zsiec/switchframe/server/internal/mpegts"
 )
 
 // RecorderConfig configures a FileRecorder.
@@ -157,18 +159,18 @@ func (r *FileRecorder) rotateLocked() error {
 // and caches them for writing at the start of rotated files.
 func (r *FileRecorder) cachePATandPMT(tsData []byte) {
 	var patPkt, pmtPkt []byte
-	for i := 0; i+tsPacketSize <= len(tsData); i += tsPacketSize {
-		if tsData[i] != 0x47 {
+	for i := 0; i+mpegts.PacketSize <= len(tsData); i += mpegts.PacketSize {
+		if tsData[i] != mpegts.SyncByte {
 			continue
 		}
-		pid := uint16(tsData[i+1]&0x1F)<<8 | uint16(tsData[i+2])
+		pid := mpegts.ExtractPID(tsData[i:])
 		if pid == 0 && patPkt == nil {
-			patPkt = make([]byte, tsPacketSize)
-			copy(patPkt, tsData[i:i+tsPacketSize])
+			patPkt = make([]byte, mpegts.PacketSize)
+			copy(patPkt, tsData[i:i+mpegts.PacketSize])
 		}
 		if pid == pmtPID && pmtPkt == nil {
-			pmtPkt = make([]byte, tsPacketSize)
-			copy(pmtPkt, tsData[i:i+tsPacketSize])
+			pmtPkt = make([]byte, mpegts.PacketSize)
+			copy(pmtPkt, tsData[i:i+mpegts.PacketSize])
 		}
 		if patPkt != nil && pmtPkt != nil {
 			break
@@ -192,8 +194,8 @@ func (r *FileRecorder) cachePATandPMT(tsData []byte) {
 // discontinuity_indicator bit (bit 7 of the flags byte) is set in the
 // existing adaptation field.
 func setTSDiscontinuityIndicator(tsData []byte) {
-	for i := 0; i+tsPacketSize <= len(tsData); i += tsPacketSize {
-		if tsData[i] != 0x47 {
+	for i := 0; i+mpegts.PacketSize <= len(tsData); i += mpegts.PacketSize {
+		if tsData[i] != mpegts.SyncByte {
 			continue // not a valid sync byte
 		}
 
@@ -213,11 +215,11 @@ func setTSDiscontinuityIndicator(tsData []byte) {
 			// Shifting payload right by 2 bytes drops the last 2 bytes. Verify
 			// they are 0xFF stuffing before proceeding; otherwise skip this
 			// packet to avoid corrupting a PAT/PMT with a full descriptor loop.
-			if tsData[i+tsPacketSize-1] != 0xFF || tsData[i+tsPacketSize-2] != 0xFF {
+			if tsData[i+mpegts.PacketSize-1] != 0xFF || tsData[i+mpegts.PacketSize-2] != 0xFF {
 				slog.Warn("setTSDiscontinuityIndicator: skipping payload-only packet with non-stuffing trailing bytes",
 					"offset", i,
-					"byte[-1]", fmt.Sprintf("0x%02X", tsData[i+tsPacketSize-1]),
-					"byte[-2]", fmt.Sprintf("0x%02X", tsData[i+tsPacketSize-2]))
+					"byte[-1]", fmt.Sprintf("0x%02X", tsData[i+mpegts.PacketSize-1]),
+					"byte[-2]", fmt.Sprintf("0x%02X", tsData[i+mpegts.PacketSize-2]))
 				continue
 			}
 
@@ -227,7 +229,7 @@ func setTSDiscontinuityIndicator(tsData []byte) {
 			// Shift existing payload right by 2 bytes to make room for the
 			// adaptation field header (length + flags). The last 2 bytes of
 			// the original payload are 0xFF stuffing and are safely dropped.
-			copy(tsData[i+6:i+tsPacketSize], tsData[i+4:i+tsPacketSize-2])
+			copy(tsData[i+6:i+mpegts.PacketSize], tsData[i+4:i+mpegts.PacketSize-2])
 
 			// Set adaptation_field_length = 1 (just the flags byte).
 			tsData[i+4] = 1
@@ -259,7 +261,7 @@ func (r *FileRecorder) Write(tsData []byte) (int, error) {
 	}
 
 	// Rotate only when we have a keyframe to start the new file.
-	if r.pendingRotate && containsKeyframe(tsData) {
+	if r.pendingRotate && mpegts.ContainsKeyframe(tsData) {
 		if err := r.rotateLocked(); err != nil {
 			return 0, fmt.Errorf("rotate file: %w", err)
 		}

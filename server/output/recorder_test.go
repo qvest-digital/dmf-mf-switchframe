@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/internal/mpegts"
 )
 
 func TestFileRecorder_ID(t *testing.T) {
@@ -467,7 +468,7 @@ func TestFileRecorder_RotatedFileStartsWithPATandPMT(t *testing.T) {
 	// Verify first two packets are PAT and PMT.
 	foundPAT := false
 	foundPMT := false
-	for i := 0; i+tsPacketSize <= len(content) && i < tsPacketSize*2; i += tsPacketSize {
+	for i := 0; i+mpegts.PacketSize <= len(content) && i < mpegts.PacketSize*2; i += mpegts.PacketSize {
 		if content[i] != 0x47 {
 			continue
 		}

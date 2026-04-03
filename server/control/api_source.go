@@ -24,12 +24,14 @@ type labelRequest struct {
 
 // createSourceRequest is the JSON body for creating an SRT pull source.
 type createSourceRequest struct {
-	Type      string `json:"type"`
-	Mode      string `json:"mode"`
-	Address   string `json:"address"`
-	StreamID  string `json:"streamID"`
-	Label     string `json:"label"`
-	LatencyMs int    `json:"latencyMs"`
+	Type       string `json:"type"`
+	Mode       string `json:"mode"`
+	Address    string `json:"address"`
+	StreamID   string `json:"streamID"`
+	Label      string `json:"label"`
+	LatencyMs  int    `json:"latencyMs"`
+	InputBW    int64  `json:"inputBW"`    // bytes/sec, 0 = auto
+	OverheadBW int    `json:"overheadBW"` // percent, 0 = default
 }
 
 // updateSourceSRTRequest is the JSON body for updating SRT config.
@@ -192,7 +194,7 @@ func (a *API) handleCreateSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key, err := a.srtMgr.CreatePull(r.Context(), req.Address, req.StreamID, req.Label, req.LatencyMs)
+	key, err := a.srtMgr.CreatePull(r.Context(), req.Address, req.StreamID, req.Label, req.LatencyMs, req.InputBW, req.OverheadBW)
 	if err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return

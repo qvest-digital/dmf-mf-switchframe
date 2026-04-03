@@ -156,6 +156,80 @@ func TestSourceConfigValidate(t *testing.T) {
 			},
 			wantErr: "",
 		},
+		// InputBW / OverheadBW validation
+		{
+			name: "valid with inputBW and overheadBW",
+			config: SourceConfig{
+				Key:        "srt:camera1",
+				Mode:       ModeListener,
+				StreamID:   "live/camera1",
+				InputBW:    625000,
+				OverheadBW: 15,
+			},
+			wantErr: "",
+		},
+		{
+			name: "valid with zero inputBW (auto-estimate)",
+			config: SourceConfig{
+				Key:      "srt:camera1",
+				Mode:     ModeListener,
+				StreamID: "live/camera1",
+				InputBW:  0,
+			},
+			wantErr: "",
+		},
+		{
+			name: "valid with zero overheadBW (default)",
+			config: SourceConfig{
+				Key:        "srt:camera1",
+				Mode:       ModeListener,
+				StreamID:   "live/camera1",
+				InputBW:    625000,
+				OverheadBW: 0,
+			},
+			wantErr: "",
+		},
+		{
+			name: "valid with overheadBW at max (100)",
+			config: SourceConfig{
+				Key:        "srt:camera1",
+				Mode:       ModeListener,
+				StreamID:   "live/camera1",
+				InputBW:    625000,
+				OverheadBW: 100,
+			},
+			wantErr: "",
+		},
+		{
+			name: "negative inputBW",
+			config: SourceConfig{
+				Key:      "srt:camera1",
+				Mode:     ModeListener,
+				StreamID: "live/camera1",
+				InputBW:  -1,
+			},
+			wantErr: "inputBW must be >= 0",
+		},
+		{
+			name: "negative overheadBW",
+			config: SourceConfig{
+				Key:        "srt:camera1",
+				Mode:       ModeListener,
+				StreamID:   "live/camera1",
+				OverheadBW: -1,
+			},
+			wantErr: "overheadBW must be 0-100",
+		},
+		{
+			name: "overheadBW too high",
+			config: SourceConfig{
+				Key:        "srt:camera1",
+				Mode:       ModeListener,
+				StreamID:   "live/camera1",
+				OverheadBW: 101,
+			},
+			wantErr: "overheadBW must be 0-100",
+		},
 	}
 
 	for _, tt := range tests {

@@ -5,29 +5,47 @@ import (
 	"time"
 )
 
+// Direction indicates whether stats are for an ingest (recv) or output (send) connection.
+type Direction string
+
+const (
+	DirectionRecv Direction = "recv"
+	DirectionSend Direction = "send"
+)
+
 // ConnStatsSnapshot is a point-in-time snapshot of SRT connection statistics.
 type ConnStatsSnapshot struct {
-	Mode                 string  `json:"mode"`
-	StreamID             string  `json:"streamID"`
-	RemoteAddr           string  `json:"remoteAddr,omitempty"`
-	State                string  `json:"state"`
-	Connected            bool    `json:"connected"`
-	UptimeMs             int64   `json:"uptimeMs"`
-	LatencyMs            int     `json:"latencyMs"`
-	NegotiatedLatencyMs  int     `json:"negotiatedLatencyMs"`
-	RTTMs                float64 `json:"rttMs"`
-	RTTVarMs             float64 `json:"rttVarMs"`
-	RecvRateMbps         float64 `json:"recvRateMbps"`
-	LossRatePct          float64 `json:"lossRatePct"`
-	PacketsReceived      int64   `json:"packetsReceived"`
-	PacketsLost          int64   `json:"packetsLost"`
-	PacketsDropped       int64   `json:"packetsDropped"`
-	PacketsRetransmitted int64   `json:"packetsRetransmitted"`
-	PacketsBelated       int64   `json:"packetsBelated"`
-	RecvBufMs            float64 `json:"recvBufMs"`
-	RecvBufPackets       int     `json:"recvBufPackets"`
-	FlightSize           int     `json:"flightSize"`
-	ReconnectCount       int     `json:"reconnectCount,omitempty"`
+	Mode                 string    `json:"mode"`
+	Direction            Direction `json:"direction"`
+	StreamID             string    `json:"streamID"`
+	RemoteAddr           string    `json:"remoteAddr,omitempty"`
+	State                string    `json:"state"`
+	Connected            bool      `json:"connected"`
+	UptimeMs             int64     `json:"uptimeMs"`
+	LatencyMs            int       `json:"latencyMs"`
+	NegotiatedLatencyMs  int       `json:"negotiatedLatencyMs"`
+	RTTMs                float64   `json:"rttMs"`
+	RTTVarMs             float64   `json:"rttVarMs"`
+	RecvRateMbps         float64   `json:"recvRateMbps"`
+	LossRatePct          float64   `json:"lossRatePct"`
+	PacketsReceived      int64     `json:"packetsReceived"`
+	PacketsLost          int64     `json:"packetsLost"`
+	PacketsDropped       int64     `json:"packetsDropped"`
+	PacketsRetransmitted int64     `json:"packetsRetransmitted"`
+	PacketsBelated       int64     `json:"packetsBelated"`
+	RecvBufMs            float64   `json:"recvBufMs"`
+	RecvBufPackets       int       `json:"recvBufPackets"`
+	FlightSize           int       `json:"flightSize"`
+	ReconnectCount       int       `json:"reconnectCount,omitempty"`
+
+	// Send-side metrics (output connections)
+	SendRateMbps    float64 `json:"sendRateMbps,omitempty"`
+	SendLossRatePct float64 `json:"sendLossRatePct,omitempty"`
+	PacketsSent     int64   `json:"packetsSent,omitempty"`
+	PacketsSendLost int64   `json:"packetsSendLost,omitempty"`
+	PacketsSendDrop int64   `json:"packetsSendDrop,omitempty"`
+	SendBufMs       float64 `json:"sendBufMs,omitempty"`
+	SendBufPackets  int     `json:"sendBufPackets,omitempty"`
 }
 
 // ConnStats tracks live SRT connection metrics. Thread-safe.
@@ -35,6 +53,7 @@ type ConnStats struct {
 	mu sync.RWMutex
 
 	mode      string
+	direction Direction
 	streamID  string
 	latencyMs int
 	startTime time.Time
@@ -45,7 +64,7 @@ type ConnStats struct {
 	negotiatedLatencyMs int
 	reconnectCount      int
 
-	// Live metrics
+	// Recv-side metrics (ingest connections)
 	rttMs                float64
 	rttVarMs             float64
 	recvRateMbps         float64
@@ -58,12 +77,28 @@ type ConnStats struct {
 	recvBufMs            float64
 	recvBufPackets       int
 	flightSize           int
+
+	// Send-side metrics (output connections)
+	sendRateMbps    float64
+	sendLossRatePct float64
+	packetsSent     int64
+	packetsSendLost int64
+	packetsSendDrop int64
+	sendBufMs       float64
+	sendBufPackets  int
 }
 
 // NewConnStats creates a ConnStats tracker for an SRT connection.
+// The direction is derived from mode: "send" maps to DirectionSend,
+// everything else (listener, caller, empty) maps to DirectionRecv.
 func NewConnStats(mode, streamID string, latencyMs int) *ConnStats {
+	dir := DirectionRecv
+	if mode == "send" {
+		dir = DirectionSend
+	}
 	return &ConnStats{
 		mode:      mode,
+		direction: dir,
 		streamID:  streamID,
 		latencyMs: latencyMs,
 		startTime: time.Now(),
@@ -121,6 +156,32 @@ func (cs *ConnStats) Update(u StatsUpdate) {
 	cs.flightSize = u.FlightSize
 }
 
+// SendStatsUpdate holds a batch of SRT send-side metrics for ConnStats.UpdateSend.
+type SendStatsUpdate struct {
+	RTTMs           float64
+	SendRateMbps    float64
+	SendLossRatePct float64
+	PacketsSent     int64
+	PacketsSendLost int64
+	PacketsSendDrop int64
+	SendBufMs       float64
+	SendBufPackets  int
+}
+
+// UpdateSend applies a bulk send-side stats update from srtgo.
+func (cs *ConnStats) UpdateSend(u SendStatsUpdate) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	cs.rttMs = u.RTTMs // RTT is shared, used by both recv and send
+	cs.sendRateMbps = u.SendRateMbps
+	cs.sendLossRatePct = u.SendLossRatePct
+	cs.packetsSent = u.PacketsSent
+	cs.packetsSendLost = u.PacketsSendLost
+	cs.packetsSendDrop = u.PacketsSendDrop
+	cs.sendBufMs = u.SendBufMs
+	cs.sendBufPackets = u.SendBufPackets
+}
+
 // Snapshot returns a point-in-time copy of connection statistics.
 func (cs *ConnStats) Snapshot() ConnStatsSnapshot {
 	cs.mu.RLock()
@@ -133,6 +194,7 @@ func (cs *ConnStats) Snapshot() ConnStatsSnapshot {
 
 	return ConnStatsSnapshot{
 		Mode:                 cs.mode,
+		Direction:            cs.direction,
 		StreamID:             cs.streamID,
 		RemoteAddr:           cs.remoteAddr,
 		State:                state,
@@ -153,6 +215,13 @@ func (cs *ConnStats) Snapshot() ConnStatsSnapshot {
 		RecvBufPackets:       cs.recvBufPackets,
 		FlightSize:           cs.flightSize,
 		ReconnectCount:       cs.reconnectCount,
+		SendRateMbps:         cs.sendRateMbps,
+		SendLossRatePct:      cs.sendLossRatePct,
+		PacketsSent:          cs.packetsSent,
+		PacketsSendLost:      cs.packetsSendLost,
+		PacketsSendDrop:      cs.packetsSendDrop,
+		SendBufMs:            cs.sendBufMs,
+		SendBufPackets:       cs.sendBufPackets,
 	}
 }
 

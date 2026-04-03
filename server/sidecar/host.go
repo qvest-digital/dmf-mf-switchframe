@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math/rand/v2"
 	"net"
 	"os"
 	"os/exec"
@@ -15,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/zsiec/switchframe/server/internal/backoff"
 )
 
 // Host manages the lifecycle of a sidecar process: spawning, ready handshake,
@@ -422,14 +423,14 @@ func (h *Host) triggerRestart(reason string) {
 
 // restartLoop handles automatic restarts with exponential backoff.
 func (h *Host) restartLoop() {
-	backoff := h.cfg.InitialBackoff
+	bo := backoff.Backoff{Initial: h.cfg.InitialBackoff, Max: h.cfg.MaxBackoff, JitterPct: 0.25}
 
 	for {
 		select {
 		case <-h.doneCh:
 			return
 		case reason := <-h.restartCh:
-			slog.Info("sidecar: restarting", "reason", reason, "backoff", backoff)
+			slog.Info("sidecar: restarting", "reason", reason)
 
 			h.alive.Store(false)
 
@@ -439,10 +440,11 @@ func (h *Host) restartLoop() {
 			h.mu.Unlock()
 
 			// Wait with backoff (interruptible by doneCh).
+			wait := bo.Next()
 			select {
 			case <-h.doneCh:
 				return
-			case <-time.After(backoff):
+			case <-time.After(wait):
 			}
 
 			// Attempt respawn.
@@ -452,18 +454,12 @@ func (h *Host) restartLoop() {
 
 			if err != nil {
 				slog.Error("sidecar: respawn failed", "err", err)
-				backoff = min(backoff*2, h.cfg.MaxBackoff)
-				// Add jitter: ±25% to prevent synchronized restart storms.
-				jitter := backoff / 4
-				if jitter > 0 {
-					backoff += time.Duration(rand.Int64N(int64(jitter*2))) - jitter
-				}
 				h.notifyStatus(fmt.Sprintf("respawn failed: %v", err))
 				// Re-trigger to try again.
 				h.triggerRestart(fmt.Sprintf("respawn failed: %v", err))
 			} else {
 				slog.Info("sidecar: respawned successfully")
-				backoff = h.cfg.InitialBackoff
+				bo.Reset()
 				h.restartCnt.Add(1)
 
 				// Drain any stale restart signals from the old generation's

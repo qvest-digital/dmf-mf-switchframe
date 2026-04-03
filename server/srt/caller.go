@@ -4,16 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"math/rand/v2"
 	"sync"
 	"time"
 
 	srtgo "github.com/zsiec/srtgo"
-)
 
-const (
-	initialBackoff = 1 * time.Second
-	maxBackoff     = 30 * time.Second
+	"github.com/zsiec/switchframe/server/internal/backoff"
 )
 
 // CallerConfig configures an SRT caller for outbound pull connections.
@@ -146,23 +142,10 @@ func (c *Caller) RestoreFromStore(ctx context.Context) {
 	}
 }
 
-// computeJitteredBackoff adds ±25% random jitter to a backoff duration
-// to prevent thundering herd when multiple callers reconnect simultaneously.
-func computeJitteredBackoff(backoff time.Duration) time.Duration {
-	// Jitter range: ±25% of backoff
-	quarter := int64(backoff / 4)
-	if quarter <= 0 {
-		return backoff
-	}
-	// Random offset in [-quarter, +quarter)
-	jitter := rand.Int64N(2*quarter) - quarter
-	return backoff + time.Duration(jitter)
-}
-
 // connectLoop dials the remote SRT address with exponential backoff. On success,
 // it calls OnSource and waits for the source to stop before reconnecting.
 func (c *Caller) connectLoop(ctx context.Context, config SourceConfig) {
-	backoff := initialBackoff
+	bo := backoff.Backoff{JitterPct: 0.25}
 
 	for {
 		// Check if cancelled before attempting to connect.
@@ -180,34 +163,34 @@ func (c *Caller) connectLoop(ctx context.Context, config SourceConfig) {
 			srtCfg.Latency = c.cfg.DefaultLatency
 		}
 
+		// When InputBW is set, tell SRT the expected input rate so it can
+		// derive MaxBW = InputBW * (1 + OverheadBW/100) instead of relying
+		// on auto-estimation which chases VBR spikes.
+		if config.InputBW > 0 {
+			srtCfg.InputBW = config.InputBW
+			srtCfg.MaxBW = 0 // auto = InputBW * (1 + OverheadBW/100)
+			if config.OverheadBW > 0 {
+				srtCfg.OverheadBW = config.OverheadBW
+			}
+		}
+
 		c.log.Info("dialing", "key", config.Key, "address", config.Address)
 		conn, err := srtgo.Dial(config.Address, srtCfg)
 		if err != nil {
-			jitteredBackoff := computeJitteredBackoff(backoff)
 			c.log.Warn("dial failed",
 				"key", config.Key,
 				"address", config.Address,
 				"error", err,
-				"backoff", jitteredBackoff,
 			)
 
-			// Sleep with jittered backoff, respecting context cancellation.
-			select {
-			case <-ctx.Done():
+			if bo.Wait(ctx) != nil {
 				return
-			case <-time.After(jitteredBackoff):
-			}
-
-			// Exponential backoff with cap.
-			backoff *= 2
-			if backoff > maxBackoff {
-				backoff = maxBackoff
 			}
 			continue
 		}
 
 		// Connection succeeded — reset backoff.
-		backoff = initialBackoff
+		bo.Reset()
 		c.log.Info("connected", "key", config.Key, "address", config.Address)
 
 		// Call OnSource and get a channel that signals when the source stops.

@@ -10,6 +10,8 @@ import (
 	"time"
 
 	srtgo "github.com/zsiec/srtgo"
+
+	"github.com/zsiec/switchframe/server/internal/backoff"
 )
 
 func TestCallerPullAndStop(t *testing.T) {
@@ -483,14 +485,16 @@ func TestCallerValidation(t *testing.T) {
 }
 
 func TestCallerBackoffJitter(t *testing.T) {
-	// Verify that computeJitteredBackoff adds randomness to backoff values.
+	// Verify that the backoff package jitter adds randomness.
 	// Run multiple times and check that not all values are identical.
-	base := 2 * time.Second
+	bo := backoff.Backoff{Initial: 2 * time.Second, Max: 30 * time.Second, JitterPct: 0.25}
 	seen := make(map[time.Duration]bool)
 	for i := 0; i < 100; i++ {
-		jittered := computeJitteredBackoff(base)
+		bo.Reset()
+		jittered := bo.Next()
 		seen[jittered] = true
-		// Jitter should be within ±25% of base.
+		// Jitter should be within ±25% of initial.
+		base := 2 * time.Second
 		minVal := base - base/4
 		maxVal := base + base/4
 		if jittered < minVal || jittered > maxVal {
@@ -504,10 +508,12 @@ func TestCallerBackoffJitter(t *testing.T) {
 }
 
 func TestCallerBackoffJitterRespectsCap(t *testing.T) {
-	// Even with jitter, backoff should never exceed maxBackoff + 25%.
+	// Even with jitter, backoff should never exceed max + 25%.
+	bo := backoff.Backoff{Initial: 30 * time.Second, Max: 30 * time.Second, JitterPct: 0.25}
 	for i := 0; i < 100; i++ {
-		jittered := computeJitteredBackoff(maxBackoff)
-		maxAllowed := maxBackoff + maxBackoff/4
+		bo.Reset()
+		jittered := bo.Next()
+		maxAllowed := 30*time.Second + 30*time.Second/4
 		if jittered > maxAllowed {
 			t.Errorf("jittered backoff %v exceeds max allowed %v", jittered, maxAllowed)
 		}

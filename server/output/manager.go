@@ -11,6 +11,7 @@ import (
 
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/metrics"
+	"github.com/zsiec/switchframe/server/srt"
 )
 
 // asyncAdapterBufSize is the default buffer size for async adapter wrappers.
@@ -94,6 +95,10 @@ type Manager struct {
 
 	// PTS delta diagnostic: detect jitter at DirectWriteVideo stage.
 	lastDirectVideoPTS int64
+
+	// SRT stats manager for tracking per-output SRT connection metrics.
+	// When set, ConnStats entries are created/removed with SRT adapter lifecycle.
+	srtStatsManager *srt.StatsManager
 }
 
 // NewManager creates an output Manager. Frames are delivered via
@@ -125,6 +130,16 @@ func (m *Manager) SetSRTWiring(
 	defer m.mu.Unlock()
 	m.srtConnectFn = connectFn
 	m.srtAcceptFn = acceptFn
+}
+
+// SetSRTStatsManager attaches an SRT stats manager so the output manager
+// can create/remove ConnStats entries when SRT output adapters start and stop.
+// Stats entries are keyed as "output:<adapter-id>" (e.g., "output:srt-caller")
+// with DirectionSend so they appear alongside ingest stats in the debug snapshot.
+func (m *Manager) SetSRTStatsManager(sm *srt.StatsManager) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.srtStatsManager = sm
 }
 
 // SetMetrics attaches Prometheus metrics to the output manager.
@@ -308,6 +323,9 @@ func (m *Manager) StartSRTOutput(config SRTConfig) error {
 				fn()
 			}
 		}
+		if cs := m.createSRTStats(caller.ID(), "", config.Mode, config.Latency); cs != nil {
+			caller.SetStats(cs)
+		}
 		adapter = caller
 	case "listener":
 		listenerCfg := SRTListenerConfig{
@@ -331,6 +349,9 @@ func (m *Manager) StartSRTOutput(config SRTConfig) error {
 		// next natural keyframe in the GOP.
 		if m.onMuxStart != nil {
 			listener.OnConnect(m.onMuxStart)
+		}
+		if cs := m.createSRTStats(listener.ID(), "", config.Mode, config.Latency); cs != nil {
+			listener.SetStats(cs)
 		}
 		adapter = listener
 	default:
@@ -378,6 +399,7 @@ func (m *Manager) StopSRTOutput() error {
 
 	adapter := m.srtOutput
 	m.srtOutput = nil
+	m.removeSRTStats(adapter.ID(), "")
 	stale := m.rebuildAdaptersLocked()
 	m.stopMuxerIfNoAdaptersLocked()
 	fn := m.onState
@@ -472,6 +494,11 @@ func (m *Manager) RemoveDestination(id string) error {
 		dest.active = false
 	}
 	dest.mu.Unlock()
+
+	// Remove SRT stats entry for this destination.
+	if adapterToClose != nil {
+		m.removeSRTStats(adapterToClose.ID(), id)
+	}
 
 	// Remove from map before rebuild so rebuildAdaptersLocked won't
 	// iterate over the stale destination entry.
@@ -573,6 +600,9 @@ func (m *Manager) StartDestination(id string) error {
 				fn()
 			}
 		}
+		if cs := m.createSRTStats(caller.ID(), id, dest.config.Type, dest.config.Latency); cs != nil {
+			caller.SetStats(cs)
+		}
 		adapter = caller
 
 	case "srt-listener":
@@ -597,6 +627,9 @@ func (m *Manager) StartDestination(id string) error {
 		// start decoding immediately without waiting for the next GOP.
 		if m.onMuxStart != nil {
 			listener.OnConnect(m.onMuxStart)
+		}
+		if cs := m.createSRTStats(listener.ID(), id, dest.config.Type, dest.config.Latency); cs != nil {
+			listener.SetStats(cs)
 		}
 		adapter = listener
 
@@ -701,6 +734,11 @@ func (m *Manager) StopDestination(id string) error {
 	dest.async = nil
 	dest.active = false
 	dest.mu.Unlock()
+
+	// Remove SRT stats entry for this destination.
+	if adapter != nil {
+		m.removeSRTStats(adapter.ID(), id)
+	}
 
 	stale := m.rebuildAdaptersLocked()
 	m.stopMuxerIfNoAdaptersLocked()
@@ -824,7 +862,7 @@ func (m *Manager) Close() error {
 	m.closed = true
 
 	rec := m.recorder
-	srt := m.srtOutput
+	srtAdapter := m.srtOutput
 	m.recorder = nil
 	m.srtOutput = nil
 	empty := make([]Adapter, 0)
@@ -833,13 +871,19 @@ func (m *Manager) Close() error {
 	emptyFA := make([]FrameAdapter, 0)
 	m.frameAdapters.Store(&emptyFA)
 
+	// Remove stats for legacy SRT output.
+	if srtAdapter != nil {
+		m.removeSRTStats(srtAdapter.ID(), "")
+	}
+
 	// Snapshot active destinations and clear them.
 	var destAdapters []Adapter
 	var destFrameAdapters []FrameAdapter
-	for _, dest := range m.destinations {
+	for id, dest := range m.destinations {
 		dest.mu.Lock()
 		if dest.active {
 			if dest.adapter != nil {
+				m.removeSRTStats(dest.adapter.ID(), id)
 				destAdapters = append(destAdapters, dest.adapter)
 				dest.adapter = nil
 			}
@@ -878,8 +922,8 @@ func (m *Manager) Close() error {
 			m.log.Error("error closing recorder on shutdown", "err", err)
 		}
 	}
-	if srt != nil {
-		if err := srt.Close(); err != nil {
+	if srtAdapter != nil {
+		if err := srtAdapter.Close(); err != nil {
 			m.log.Error("error closing SRT output on shutdown", "err", err)
 		}
 	}
@@ -1187,6 +1231,39 @@ func (m *Manager) SetConfidenceMonitor(cm *ConfidenceMonitor) {
 	} else {
 		m.confidence.Store(nil)
 	}
+}
+
+// srtStatsKey returns the stats manager key for an output SRT adapter.
+// For the legacy single output, adapterID is "srt-caller" or "srt-listener".
+// For destinations, it includes the destination ID (e.g., "output:dest:abc123:srt-caller").
+func srtStatsKey(adapterID, destID string) string {
+	if destID != "" {
+		return "output:dest:" + destID + ":" + adapterID
+	}
+	return "output:" + adapterID
+}
+
+// createSRTStats creates a ConnStats entry for an SRT output adapter.
+// Returns the ConnStats (or nil if no stats manager is set).
+// Must be called with m.mu held (reads m.srtStatsManager).
+func (m *Manager) createSRTStats(adapterID, destID, mode string, latencyMs int) *srt.ConnStats {
+	sm := m.srtStatsManager
+	if sm == nil {
+		return nil
+	}
+	key := srtStatsKey(adapterID, destID)
+	return sm.Create(key, "send", mode+":"+adapterID, latencyMs)
+}
+
+// removeSRTStats removes a ConnStats entry for an SRT output adapter.
+// Must be called with m.mu held (reads m.srtStatsManager).
+func (m *Manager) removeSRTStats(adapterID, destID string) {
+	sm := m.srtStatsManager
+	if sm == nil {
+		return
+	}
+	key := srtStatsKey(adapterID, destID)
+	sm.Remove(key)
 }
 
 // SetSCTE35Injector attaches a SCTE-35 injector to the output manager.

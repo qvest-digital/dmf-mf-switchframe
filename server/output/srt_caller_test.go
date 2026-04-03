@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/internal/mpegts"
+	"github.com/zsiec/switchframe/server/srt"
 )
 
 // mockSRTConn implements the srtConn interface for testing without real network I/O.
@@ -129,7 +131,7 @@ func TestSRTCaller_BackoffProgression(t *testing.T) {
 		30 * time.Second, // stays at cap
 	}
 	for _, expected := range levels {
-		got := c.nextBackoff()
+		got := c.bo.Next()
 		lo := time.Duration(float64(expected) * 0.79)
 		hi := time.Duration(float64(expected) * 1.21)
 		require.True(t, got >= lo && got <= hi,
@@ -147,8 +149,8 @@ func TestSRTCaller_BackoffHasJitter(t *testing.T) {
 	// They should NOT all be identical (jitter)
 	seen := make(map[time.Duration]bool)
 	for i := 0; i < 100; i++ {
-		c.backoff = 1 * time.Second // reset to same starting point
-		d := c.nextBackoff()
+		c.bo.Reset() // reset to same starting point
+		d := c.bo.Next()
 		seen[d] = true
 	}
 	require.True(t, len(seen) > 1, "backoff should have jitter (got %d unique values)", len(seen))
@@ -161,10 +163,10 @@ func TestSRTCaller_ResetBackoff(t *testing.T) {
 		Port:    9998,
 	})
 
-	c.nextBackoff() // ~1s
-	c.nextBackoff() // ~2s
-	c.resetBackoff()
-	got := c.nextBackoff() // should be back near 1s
+	c.bo.Next() // ~1s
+	c.bo.Next() // ~2s
+	c.bo.Reset()
+	got := c.bo.Next() // should be back near 1s
 	// With ±20% jitter: 800ms - 1200ms
 	require.True(t, got >= 800*time.Millisecond && got <= 1200*time.Millisecond,
 		"after reset, backoff should be near 1s, got %v", got)
@@ -547,12 +549,12 @@ func TestContainsKeyframe(t *testing.T) {
 	t.Parallel()
 	t.Run("single keyframe packet", func(t *testing.T) {
 		pkt := makeTSPacket(0x100, true)
-		require.True(t, containsKeyframe(pkt))
+		require.True(t, mpegts.ContainsKeyframe(pkt))
 	})
 
 	t.Run("single delta packet", func(t *testing.T) {
 		pkt := makeTSPacket(0x100, false)
-		require.False(t, containsKeyframe(pkt))
+		require.False(t, mpegts.ContainsKeyframe(pkt))
 	})
 
 	t.Run("keyframe among delta packets", func(t *testing.T) {
@@ -560,7 +562,7 @@ func TestContainsKeyframe(t *testing.T) {
 		data = append(data, makeTSPacket(0x100, false)...)
 		data = append(data, makeTSPacket(0x100, true)...)
 		data = append(data, makeTSPacket(0x100, false)...)
-		require.True(t, containsKeyframe(data))
+		require.True(t, mpegts.ContainsKeyframe(data))
 	})
 
 	t.Run("all delta packets", func(t *testing.T) {
@@ -568,16 +570,16 @@ func TestContainsKeyframe(t *testing.T) {
 		data = append(data, makeTSPacket(0x100, false)...)
 		data = append(data, makeTSPacket(0x100, false)...)
 		data = append(data, makeTSPacket(0x100, false)...)
-		require.False(t, containsKeyframe(data))
+		require.False(t, mpegts.ContainsKeyframe(data))
 	})
 
 	t.Run("empty data", func(t *testing.T) {
-		require.False(t, containsKeyframe(nil))
-		require.False(t, containsKeyframe([]byte{}))
+		require.False(t, mpegts.ContainsKeyframe(nil))
+		require.False(t, mpegts.ContainsKeyframe([]byte{}))
 	})
 
 	t.Run("data shorter than TS packet", func(t *testing.T) {
-		require.False(t, containsKeyframe([]byte{0x47, 0x00}))
+		require.False(t, mpegts.ContainsKeyframe([]byte{0x47, 0x00}))
 	})
 
 	t.Run("adaptation field length zero", func(t *testing.T) {
@@ -585,7 +587,7 @@ func TestContainsKeyframe(t *testing.T) {
 		pkt := makeTSPacket(0x100, false)
 		pkt[3] = 0x30 // adaptation + payload
 		pkt[4] = 0    // adaptation field length = 0
-		require.False(t, containsKeyframe(pkt))
+		require.False(t, mpegts.ContainsKeyframe(pkt))
 	})
 }
 
@@ -925,6 +927,157 @@ func TestSRTCaller_BandwidthHintsZeroByDefault(t *testing.T) {
 
 	require.Equal(t, int64(0), capturedConfig.InputBW)
 	require.Equal(t, 0, capturedConfig.OverheadBW)
+}
+
+// mockStatsSRTConn implements both srtConn and SRTStatter for testing stats polling.
+type mockStatsSRTConn struct {
+	written   atomic.Int64
+	closed    atomic.Bool
+	pollCount atomic.Int32
+	stats     SRTConnStats
+}
+
+func (m *mockStatsSRTConn) Write(data []byte) (int, error) {
+	m.written.Add(int64(len(data)))
+	return len(data), nil
+}
+
+func (m *mockStatsSRTConn) Close() {
+	m.closed.Store(true)
+}
+
+func (m *mockStatsSRTConn) SRTStats(clear bool) SRTConnStats {
+	m.pollCount.Add(1)
+	return m.stats
+}
+
+func TestSRTCaller_StatsPolling(t *testing.T) {
+	t.Parallel()
+	mock := &mockStatsSRTConn{
+		stats: SRTConnStats{
+			RTT:          25 * time.Millisecond,
+			MbpsSendRate: 5.0,
+			SendLossRate: 0.01,
+			SendPackets:  1000,
+			SendLoss:     10,
+			SendDropped:  2,
+			Retransmits:  5,
+			MsSndBuf:     50 * time.Millisecond,
+			SendBufSize:  32,
+			FlightSize:   16,
+		},
+	}
+
+	cs := srt.NewConnStats("send", "test-stream", 120)
+
+	c := NewSRTCaller(SRTCallerConfig{
+		Address: "srt.example.com",
+		Port:    9998,
+	})
+	c.SetStats(cs)
+	c.connectFn = func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
+		return mock, nil
+	}
+
+	err := c.Start(context.Background())
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+
+	// Wait for at least one stats poll (1-second ticker + margin).
+	require.Eventually(t, func() bool {
+		return mock.pollCount.Load() >= 1
+	}, 3*time.Second, 50*time.Millisecond)
+
+	snap := cs.Snapshot()
+	require.InDelta(t, 25.0, snap.RTTMs, 0.1, "RTT should be 25ms")
+	require.InDelta(t, 5.0, snap.SendRateMbps, 0.01)
+	require.InDelta(t, 0.01, snap.SendLossRatePct, 0.001)
+	require.Equal(t, int64(1000), snap.PacketsSent)
+	require.Equal(t, int64(10), snap.PacketsSendLost)
+	require.Equal(t, int64(2), snap.PacketsSendDrop)
+}
+
+func TestSRTCaller_StatsPollingStopsOnClose(t *testing.T) {
+	t.Parallel()
+	mock := &mockStatsSRTConn{}
+	cs := srt.NewConnStats("send", "test-stream", 120)
+
+	c := NewSRTCaller(SRTCallerConfig{
+		Address: "srt.example.com",
+		Port:    9998,
+	})
+	c.SetStats(cs)
+	c.connectFn = func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
+		return mock, nil
+	}
+
+	err := c.Start(context.Background())
+	require.NoError(t, err)
+
+	// Wait for at least one poll tick.
+	require.Eventually(t, func() bool {
+		return mock.pollCount.Load() >= 1
+	}, 3*time.Second, 50*time.Millisecond)
+
+	// Close and record the count.
+	_ = c.Close()
+	countAtClose := mock.pollCount.Load()
+
+	// Wait to verify no more polls happen.
+	time.Sleep(1500 * time.Millisecond)
+	require.Equal(t, countAtClose, mock.pollCount.Load(),
+		"stats polling should stop after Close()")
+}
+
+func TestSRTCaller_NoStatsWithoutSetStats(t *testing.T) {
+	t.Parallel()
+	mock := &mockStatsSRTConn{}
+
+	c := NewSRTCaller(SRTCallerConfig{
+		Address: "srt.example.com",
+		Port:    9998,
+	})
+	// Intentionally do NOT call SetStats.
+	c.connectFn = func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
+		return mock, nil
+	}
+
+	err := c.Start(context.Background())
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+
+	// Wait a bit — the poll goroutine should not have been started.
+	time.Sleep(1500 * time.Millisecond)
+	require.Equal(t, int32(0), mock.pollCount.Load(),
+		"no stats polling should occur without SetStats")
+}
+
+func TestSRTCaller_UpdateStatsWithNilConn(t *testing.T) {
+	t.Parallel()
+	cs := srt.NewConnStats("send", "test-stream", 120)
+	c := NewSRTCaller(SRTCallerConfig{
+		Address: "srt.example.com",
+		Port:    9998,
+	})
+	c.SetStats(cs)
+	// conn is nil — should not panic.
+	c.updateStats()
+}
+
+func TestSRTCaller_UpdateStatsWithNonStatterConn(t *testing.T) {
+	t.Parallel()
+	cs := srt.NewConnStats("send", "test-stream", 120)
+	mock := &mockSRTConn{} // does NOT implement SRTStatter
+	c := NewSRTCaller(SRTCallerConfig{
+		Address: "srt.example.com",
+		Port:    9998,
+	})
+	c.SetStats(cs)
+	c.conn = mock
+	// Should not panic — just return early.
+	c.updateStats()
+	snap := cs.Snapshot()
+	require.Equal(t, float64(0), snap.RTTMs, "no stats should be updated with non-statter conn")
 }
 
 func TestSRTCaller_ReconnectDiscardsBuffer(t *testing.T) {

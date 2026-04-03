@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/srt"
 )
 
 func TestOutputManager_New(t *testing.T) {
@@ -771,4 +772,193 @@ func TestOutputManager_RemoveDestination_ConcurrentWithList(t *testing.T) {
 	// Verify all destinations were removed.
 	remaining := mgr.ListDestinations()
 	require.Empty(t, remaining, "all destinations should be removed")
+}
+
+func TestManager_SRTStats_LegacyCallerOutput(t *testing.T) {
+	mgr := NewManager()
+	defer func() { _ = mgr.Close() }()
+
+	sm := srt.NewStatsManager()
+	mgr.SetSRTStatsManager(sm)
+
+	mock := &mockSRTConn{}
+	mgr.SetSRTWiring(
+		func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
+			mock.connected.Store(true)
+			return mock, nil
+		},
+		nil,
+	)
+
+	err := mgr.StartSRTOutput(SRTConfig{Mode: "caller", Address: "127.0.0.1", Port: 9000, Latency: 200})
+	require.NoError(t, err)
+
+	// Verify stats entry was created.
+	cs, ok := sm.Get("output:srt-caller")
+	require.True(t, ok, "stats entry should exist after start")
+	require.NotNil(t, cs)
+
+	snap := cs.Snapshot()
+	require.Equal(t, srt.DirectionSend, snap.Direction)
+	require.Equal(t, 200, snap.LatencyMs)
+
+	// Stop and verify removal.
+	require.NoError(t, mgr.StopSRTOutput())
+	_, ok = sm.Get("output:srt-caller")
+	require.False(t, ok, "stats entry should be removed after stop")
+}
+
+func TestManager_SRTStats_LegacyListenerOutput(t *testing.T) {
+	mgr := NewManager()
+	defer func() { _ = mgr.Close() }()
+
+	sm := srt.NewStatsManager()
+	mgr.SetSRTStatsManager(sm)
+
+	err := mgr.StartSRTOutput(SRTConfig{Mode: "listener", Port: 0, Latency: 150})
+	require.NoError(t, err)
+
+	cs, ok := sm.Get("output:srt-listener")
+	require.True(t, ok, "stats entry should exist after start")
+	snap := cs.Snapshot()
+	require.Equal(t, srt.DirectionSend, snap.Direction)
+	require.Equal(t, 150, snap.LatencyMs)
+
+	require.NoError(t, mgr.StopSRTOutput())
+	_, ok = sm.Get("output:srt-listener")
+	require.False(t, ok, "stats entry should be removed after stop")
+}
+
+func TestManager_SRTStats_Destination(t *testing.T) {
+	mgr := NewManager()
+	defer func() { _ = mgr.Close() }()
+
+	sm := srt.NewStatsManager()
+	mgr.SetSRTStatsManager(sm)
+
+	mock := &mockSRTConn{}
+	mgr.SetSRTWiring(
+		func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
+			mock.connected.Store(true)
+			return mock, nil
+		},
+		nil,
+	)
+
+	id, err := mgr.AddDestination(DestinationConfig{
+		Type:    "srt-caller",
+		Address: "127.0.0.1",
+		Port:    9000,
+		Latency: 250,
+	})
+	require.NoError(t, err)
+	require.NoError(t, mgr.StartDestination(id))
+
+	// Verify stats entry was created with destination-specific key.
+	key := "output:dest:" + id + ":srt-caller"
+	cs, ok := sm.Get(key)
+	require.True(t, ok, "stats entry should exist for destination")
+	snap := cs.Snapshot()
+	require.Equal(t, srt.DirectionSend, snap.Direction)
+	require.Equal(t, 250, snap.LatencyMs)
+
+	// Stop destination — stats should be removed.
+	require.NoError(t, mgr.StopDestination(id))
+	_, ok = sm.Get(key)
+	require.False(t, ok, "stats entry should be removed after stop")
+}
+
+func TestManager_SRTStats_RemoveDestination(t *testing.T) {
+	mgr := NewManager()
+	defer func() { _ = mgr.Close() }()
+
+	sm := srt.NewStatsManager()
+	mgr.SetSRTStatsManager(sm)
+
+	mock := &mockSRTConn{}
+	mgr.SetSRTWiring(
+		func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
+			mock.connected.Store(true)
+			return mock, nil
+		},
+		nil,
+	)
+
+	id, err := mgr.AddDestination(DestinationConfig{
+		Type:    "srt-caller",
+		Address: "127.0.0.1",
+		Port:    9000,
+	})
+	require.NoError(t, err)
+	require.NoError(t, mgr.StartDestination(id))
+
+	key := "output:dest:" + id + ":srt-caller"
+	_, ok := sm.Get(key)
+	require.True(t, ok)
+
+	// Remove (which also stops) — stats should be cleaned up.
+	require.NoError(t, mgr.RemoveDestination(id))
+	_, ok = sm.Get(key)
+	require.False(t, ok, "stats entry should be removed when destination is removed")
+}
+
+func TestManager_SRTStats_CloseRemovesAll(t *testing.T) {
+	mgr := NewManager()
+
+	sm := srt.NewStatsManager()
+	mgr.SetSRTStatsManager(sm)
+
+	mock := &mockSRTConn{}
+	mgr.SetSRTWiring(
+		func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
+			mock.connected.Store(true)
+			return mock, nil
+		},
+		nil,
+	)
+
+	// Start legacy SRT output.
+	require.NoError(t, mgr.StartSRTOutput(SRTConfig{Mode: "caller", Address: "127.0.0.1", Port: 9000}))
+
+	// Start a destination.
+	id, err := mgr.AddDestination(DestinationConfig{
+		Type:    "srt-caller",
+		Address: "10.0.0.1",
+		Port:    9001,
+	})
+	require.NoError(t, err)
+	require.NoError(t, mgr.StartDestination(id))
+
+	// Verify both entries exist.
+	_, ok1 := sm.Get("output:srt-caller")
+	_, ok2 := sm.Get("output:dest:" + id + ":srt-caller")
+	require.True(t, ok1, "legacy stats should exist")
+	require.True(t, ok2, "destination stats should exist")
+
+	// Close manager — all stats should be cleaned up.
+	require.NoError(t, mgr.Close())
+
+	_, ok1 = sm.Get("output:srt-caller")
+	_, ok2 = sm.Get("output:dest:" + id + ":srt-caller")
+	require.False(t, ok1, "legacy stats should be removed on close")
+	require.False(t, ok2, "destination stats should be removed on close")
+}
+
+func TestManager_SRTStats_NilManagerSafe(t *testing.T) {
+	// Verify no panic when stats manager is not set.
+	mgr := NewManager()
+	defer func() { _ = mgr.Close() }()
+
+	mock := &mockSRTConn{}
+	mgr.SetSRTWiring(
+		func(ctx context.Context, config SRTCallerConfig) (srtConn, error) {
+			mock.connected.Store(true)
+			return mock, nil
+		},
+		nil,
+	)
+
+	// Should work fine without stats manager.
+	require.NoError(t, mgr.StartSRTOutput(SRTConfig{Mode: "caller", Address: "127.0.0.1", Port: 9000}))
+	require.NoError(t, mgr.StopSRTOutput())
 }

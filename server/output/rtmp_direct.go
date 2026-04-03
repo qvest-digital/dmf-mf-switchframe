@@ -392,7 +392,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"math/rand/v2"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -400,6 +399,7 @@ import (
 
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/codec"
+	"github.com/zsiec/switchframe/server/internal/backoff"
 )
 
 const (
@@ -439,7 +439,7 @@ type RTMPDirect struct {
 	videoDropped atomic.Int64
 	audioDropped atomic.Int64
 	startedAt    time.Time
-	backoff      time.Duration
+	bo           backoff.Backoff
 
 	// connectFn can be overridden in tests to avoid real RTMP connections.
 	connectFn func(url string) error
@@ -469,8 +469,8 @@ func NewRTMPDirect(config RTMPCallerConfig) (*RTMPDirect, error) {
 	}
 
 	r := &RTMPDirect{
-		config:  config,
-		backoff: rtmpInitialBackoff,
+		config: config,
+		bo:     backoff.Backoff{JitterPct: 0.20},
 	}
 	r.state.Store(ptrTo(StateStopped))
 	r.lastError.Store(ptrTo(""))
@@ -806,13 +806,13 @@ func (r *RTMPDirect) reconnectLoop() {
 		default:
 		}
 
-		backoff := r.nextBackoff()
-		slog.Info("RTMP direct reconnecting", "backoff", backoff, "url", rtmpMaskURL(r.config.URL))
+		wait := r.bo.Next()
+		slog.Info("RTMP direct reconnecting", "backoff", wait, "url", rtmpMaskURL(r.config.URL))
 
 		select {
 		case <-r.goCtx.Done():
 			return
-		case <-time.After(backoff):
+		case <-time.After(wait):
 		}
 
 		r.mu.Lock()
@@ -835,7 +835,7 @@ func (r *RTMPDirect) reconnectLoop() {
 				r.pendingIDR.Store(true)
 				r.state.Store(ptrTo(StateActive))
 				r.lastError.Store(ptrTo(""))
-				r.resetBackoff()
+				r.bo.Reset()
 
 				slog.Info("RTMP direct reconnected", "url", rtmpMaskURL(r.config.URL))
 				if r.onReconnect != nil {
@@ -858,7 +858,7 @@ func (r *RTMPDirect) reconnectLoop() {
 		r.pendingIDR.Store(true)
 		r.state.Store(ptrTo(StateActive))
 		r.lastError.Store(ptrTo(""))
-		r.resetBackoff()
+		r.bo.Reset()
 
 		slog.Info("RTMP direct ready for reconnect (waiting for keyframe)",
 			"url", rtmpMaskURL(r.config.URL))
@@ -872,27 +872,6 @@ func (r *RTMPDirect) reconnectLoop() {
 // closeLocked tears down the FFmpeg FLV context. Must be called with r.mu held.
 func (r *RTMPDirect) closeLocked() {
 	C.rtmp_flv_close(&r.ctx)
-}
-
-// nextBackoff returns the current backoff duration and advances to the next level.
-func (r *RTMPDirect) nextBackoff() time.Duration {
-	r.mu.Lock()
-	current := r.backoff
-	next := current * 2
-	if next > rtmpMaxBackoff {
-		next = rtmpMaxBackoff
-	}
-	r.backoff = next
-	r.mu.Unlock()
-	jitter := 0.8 + rand.Float64()*0.4
-	return time.Duration(float64(current) * jitter)
-}
-
-// resetBackoff resets the backoff duration to the initial value.
-func (r *RTMPDirect) resetBackoff() {
-	r.mu.Lock()
-	r.backoff = rtmpInitialBackoff
-	r.mu.Unlock()
 }
 
 // parseSPSDimensions extracts width and height from an H.264 SPS NALU.

@@ -415,3 +415,196 @@ func TestConnStatsUptimeGrowsOverTime(t *testing.T) {
 		t.Errorf("UptimeMs did not increase: %d -> %d", snap1.UptimeMs, snap2.UptimeMs)
 	}
 }
+
+func TestDirectionRecv(t *testing.T) {
+	cs := NewConnStats("listener", "live/cam1", 120)
+	snap := cs.Snapshot()
+	if snap.Direction != DirectionRecv {
+		t.Errorf("Direction = %q, want %q", snap.Direction, DirectionRecv)
+	}
+}
+
+func TestDirectionSendFromMode(t *testing.T) {
+	cs := NewConnStats("send", "output/pgm", 120)
+	snap := cs.Snapshot()
+	if snap.Direction != DirectionSend {
+		t.Errorf("Direction = %q, want %q", snap.Direction, DirectionSend)
+	}
+}
+
+func TestDirectionCallerIsRecv(t *testing.T) {
+	// Caller mode for ingest is still recv direction.
+	cs := NewConnStats("caller", "live/cam2", 200)
+	snap := cs.Snapshot()
+	if snap.Direction != DirectionRecv {
+		t.Errorf("Direction = %q, want %q for caller mode", snap.Direction, DirectionRecv)
+	}
+}
+
+func TestUpdateSend(t *testing.T) {
+	cs := NewConnStats("send", "output/pgm", 120)
+	cs.SetConnected("10.0.0.5:9000", 120)
+
+	cs.UpdateSend(SendStatsUpdate{
+		RTTMs:           6.3,
+		SendRateMbps:    18.5,
+		SendLossRatePct: 0.02,
+		PacketsSent:     200000,
+		PacketsSendLost: 40,
+		PacketsSendDrop: 2,
+		SendBufMs:       30.0,
+		SendBufPackets:  24,
+	})
+
+	snap := cs.Snapshot()
+	if snap.RTTMs != 6.3 {
+		t.Errorf("RTTMs = %f, want 6.3", snap.RTTMs)
+	}
+	if snap.SendRateMbps != 18.5 {
+		t.Errorf("SendRateMbps = %f, want 18.5", snap.SendRateMbps)
+	}
+	if snap.SendLossRatePct != 0.02 {
+		t.Errorf("SendLossRatePct = %f, want 0.02", snap.SendLossRatePct)
+	}
+	if snap.PacketsSent != 200000 {
+		t.Errorf("PacketsSent = %d, want 200000", snap.PacketsSent)
+	}
+	if snap.PacketsSendLost != 40 {
+		t.Errorf("PacketsSendLost = %d, want 40", snap.PacketsSendLost)
+	}
+	if snap.PacketsSendDrop != 2 {
+		t.Errorf("PacketsSendDrop = %d, want 2", snap.PacketsSendDrop)
+	}
+	if snap.SendBufMs != 30.0 {
+		t.Errorf("SendBufMs = %f, want 30.0", snap.SendBufMs)
+	}
+	if snap.SendBufPackets != 24 {
+		t.Errorf("SendBufPackets = %d, want 24", snap.SendBufPackets)
+	}
+}
+
+func TestSendFieldsZeroForRecvConnection(t *testing.T) {
+	cs := NewConnStats("listener", "live/cam1", 120)
+	cs.SetConnected("10.0.0.1:5000", 120)
+	cs.Update(StatsUpdate{
+		RTTMs:           5.0,
+		RecvRateMbps:    12.0,
+		PacketsReceived: 50000,
+	})
+
+	snap := cs.Snapshot()
+	if snap.SendRateMbps != 0 {
+		t.Errorf("SendRateMbps = %f, want 0 for recv connection", snap.SendRateMbps)
+	}
+	if snap.PacketsSent != 0 {
+		t.Errorf("PacketsSent = %d, want 0 for recv connection", snap.PacketsSent)
+	}
+	if snap.SendBufMs != 0 {
+		t.Errorf("SendBufMs = %f, want 0 for recv connection", snap.SendBufMs)
+	}
+}
+
+func TestRecvFieldsZeroForSendConnection(t *testing.T) {
+	cs := NewConnStats("send", "output/pgm", 120)
+	cs.SetConnected("10.0.0.5:9000", 120)
+	cs.UpdateSend(SendStatsUpdate{
+		RTTMs:        6.0,
+		SendRateMbps: 18.0,
+		PacketsSent:  100000,
+	})
+
+	snap := cs.Snapshot()
+	if snap.RecvRateMbps != 0 {
+		t.Errorf("RecvRateMbps = %f, want 0 for send connection", snap.RecvRateMbps)
+	}
+	if snap.PacketsReceived != 0 {
+		t.Errorf("PacketsReceived = %d, want 0 for send connection", snap.PacketsReceived)
+	}
+	if snap.RecvBufMs != 0 {
+		t.Errorf("RecvBufMs = %f, want 0 for send connection", snap.RecvBufMs)
+	}
+}
+
+func TestStatsManagerCreateSendDirection(t *testing.T) {
+	sm := NewStatsManager()
+	cs := sm.Create("output:pgm", "send", "output/pgm", 120)
+	snap := cs.Snapshot()
+	if snap.Direction != DirectionSend {
+		t.Errorf("Direction = %q, want %q", snap.Direction, DirectionSend)
+	}
+	if snap.Mode != "send" {
+		t.Errorf("Mode = %q, want %q", snap.Mode, "send")
+	}
+}
+
+func TestExistingRecvUpdateUnchanged(t *testing.T) {
+	// Ensure the existing Update method still works exactly as before.
+	cs := NewConnStats("listener", "live/cam1", 120)
+	cs.SetConnected("10.0.0.1:5000", 120)
+
+	u := StatsUpdate{
+		RTTMs:           7.7,
+		RTTVarMs:        2.0,
+		RecvRateMbps:    14.0,
+		LossRatePct:     0.1,
+		PacketsReceived: 300000,
+		PacketsLost:     300,
+		PacketsDropped:  10,
+		PacketsRetrans:  100,
+		PacketsBelated:  5,
+		RecvBufMs:       50.0,
+		RecvBufPackets:  40,
+		FlightSize:      15,
+	}
+	cs.Update(u)
+
+	snap := cs.Snapshot()
+	if snap.Direction != DirectionRecv {
+		t.Errorf("Direction = %q, want %q", snap.Direction, DirectionRecv)
+	}
+	if snap.RTTMs != 7.7 {
+		t.Errorf("RTTMs = %f, want 7.7", snap.RTTMs)
+	}
+	if snap.RecvRateMbps != 14.0 {
+		t.Errorf("RecvRateMbps = %f, want 14.0", snap.RecvRateMbps)
+	}
+	if snap.PacketsReceived != 300000 {
+		t.Errorf("PacketsReceived = %d, want 300000", snap.PacketsReceived)
+	}
+	if snap.PacketsLost != 300 {
+		t.Errorf("PacketsLost = %d, want 300", snap.PacketsLost)
+	}
+	if snap.LossRatePct != 0.1 {
+		t.Errorf("LossRatePct = %f, want 0.1", snap.LossRatePct)
+	}
+}
+
+func TestUpdateSendConcurrency(t *testing.T) {
+	cs := NewConnStats("send", "output/pgm", 120)
+
+	done := make(chan struct{})
+
+	// Writer goroutine: UpdateSend.
+	go func() {
+		defer close(done)
+		for i := 0; i < 1000; i++ {
+			cs.UpdateSend(SendStatsUpdate{
+				RTTMs:           float64(i) * 0.1,
+				SendRateMbps:    18.5,
+				SendLossRatePct: 0.01,
+				PacketsSent:     int64(i),
+				PacketsSendLost: 1,
+				PacketsSendDrop: 0,
+				SendBufMs:       30.0,
+				SendBufPackets:  24,
+			})
+		}
+	}()
+
+	// Reader goroutine.
+	for i := 0; i < 1000; i++ {
+		_ = cs.Snapshot()
+	}
+
+	<-done
+}

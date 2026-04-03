@@ -11,32 +11,26 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/correctness/testutil"
+	"github.com/zsiec/switchframe/server/internal/mpegts"
 )
-
-const tsPacketSize = 188
-
-// extractPID returns the PID from a 188-byte TS packet.
-func extractPID(pkt []byte) uint16 {
-	return uint16(pkt[0+1]&0x1F)<<8 | uint16(pkt[2])
-}
 
 // splitTSPackets splits raw TS data into 188-byte packet slices.
 // Returns nil if the data length is not a multiple of 188.
 func splitTSPackets(data []byte) [][]byte {
-	if len(data)%tsPacketSize != 0 {
+	if len(data)%mpegts.PacketSize != 0 {
 		return nil
 	}
-	n := len(data) / tsPacketSize
+	n := len(data) / mpegts.PacketSize
 	packets := make([][]byte, n)
 	for i := 0; i < n; i++ {
-		packets[i] = data[i*tsPacketSize : (i+1)*tsPacketSize]
+		packets[i] = data[i*mpegts.PacketSize : (i+1)*mpegts.PacketSize]
 	}
 	return packets
 }
 
 // reassembleTS concatenates TS packet slices back into a contiguous byte slice.
 func reassembleTS(packets [][]byte) []byte {
-	out := make([]byte, 0, len(packets)*tsPacketSize)
+	out := make([]byte, 0, len(packets)*mpegts.PacketSize)
 	for _, p := range packets {
 		out = append(out, p...)
 	}
@@ -70,7 +64,7 @@ func TestDemuxWithRandomPacketLoss(t *testing.T) {
 	var kept [][]byte
 	dropped := 0
 	for _, pkt := range packets {
-		pid := extractPID(pkt)
+		pid := mpegts.ExtractPID(pkt)
 		if pid == 0x0000 {
 			// Always keep PAT packets.
 			kept = append(kept, pkt)
@@ -237,9 +231,9 @@ func TestDemuxWithCorruptedPESHeaders(t *testing.T) {
 
 	corruptedCount := 0
 	for i := 0; i < totalPackets; i++ {
-		offset := i * tsPacketSize
-		pkt := corrupted[offset : offset+tsPacketSize]
-		pid := uint16(pkt[1]&0x1F)<<8 | uint16(pkt[2])
+		offset := i * mpegts.PacketSize
+		pkt := corrupted[offset : offset+mpegts.PacketSize]
+		pid := mpegts.ExtractPID(pkt)
 
 		// Preserve PAT and system PIDs.
 		if pid < 0x0020 {
@@ -250,7 +244,7 @@ func TestDemuxWithCorruptedPESHeaders(t *testing.T) {
 			// Flip between 1 and 5 random bytes in the payload area (bytes 4-187).
 			numFlips := 1 + rng.Intn(5)
 			for f := 0; f < numFlips; f++ {
-				bytePos := 4 + rng.Intn(tsPacketSize-4)
+				bytePos := 4 + rng.Intn(mpegts.PacketSize-4)
 				pkt[bytePos] ^= byte(1 + rng.Intn(255))
 			}
 			corruptedCount++
@@ -320,7 +314,7 @@ func TestDemuxWithTruncatedPackets(t *testing.T) {
 		truncatedCount, totalPackets, float64(truncatedCount)*100/float64(totalPackets),
 		len(data), len(result))
 	t.Logf("MEASURE: result is multiple of 188? %v (remainder = %d)",
-		len(result)%tsPacketSize == 0, len(result)%tsPacketSize)
+		len(result)%mpegts.PacketSize == 0, len(result)%mpegts.PacketSize)
 
 	tmpPath := testutil.WriteTempFile(t, result, ".ts")
 

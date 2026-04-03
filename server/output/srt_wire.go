@@ -26,6 +26,24 @@ func (c *srtgoConn) Close() {
 	_ = c.conn.Close()
 }
 
+// SRTStats returns SRT connection statistics from the underlying srtgo connection.
+func (c *srtgoConn) SRTStats(clear bool) SRTConnStats {
+	cs := c.conn.Stats(clear)
+	return SRTConnStats{
+		RTT:          cs.RTT,
+		RTTVar:       cs.RTTVar,
+		MbpsSendRate: cs.MbpsSendRate,
+		SendLossRate: cs.SendLossRate,
+		SendPackets:  cs.SentPackets,
+		SendLoss:     cs.LostPackets,
+		SendDropped:  cs.SentDropped,
+		Retransmits:  cs.Retransmits,
+		MsSndBuf:     cs.MsSndBuf,
+		SendBufSize:  cs.SendBufSize,
+		FlightSize:   cs.FlightSize,
+	}
+}
+
 // SRTConnect creates a real SRT caller connection using zsiec/srtgo.
 // It dials the remote SRT endpoint with the given configuration.
 //
@@ -119,5 +137,7 @@ func SRTAcceptLoop(ctx context.Context, config SRTListenerConfig, listener *SRTL
 	}
 }
 
-// Compile-time check that srtgoConn implements srtConn.
+// Compile-time checks.
 var _ srtConn = (*srtgoConn)(nil)
+var _ SRTStatter = (*srtgoConn)(nil)
+var _ SRTStatter = (*chunkedConn)(nil)

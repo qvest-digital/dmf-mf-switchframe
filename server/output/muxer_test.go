@@ -10,6 +10,7 @@ import (
 	astits "github.com/asticode/go-astits"
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/internal/mpegts"
 	"github.com/zsiec/switchframe/server/scte35"
 )
 
@@ -1021,7 +1022,7 @@ func TestTSMuxer_WriteVideo_PCROnKeyframe(t *testing.T) {
 
 	// Scan output for video PID (0x100) packets with PCR flag set.
 	foundPCR := false
-	for i := 0; i+tsPacketSize <= len(output); i += tsPacketSize {
+	for i := 0; i+mpegts.PacketSize <= len(output); i += mpegts.PacketSize {
 		if output[i] != 0x47 {
 			continue
 		}
@@ -1075,7 +1076,7 @@ func TestTSMuxer_WriteVideo_PCRInterval(t *testing.T) {
 
 	// Count PCR flags across all video PID packets.
 	pcrCount := 0
-	for i := 0; i+tsPacketSize <= len(allOutput); i += tsPacketSize {
+	for i := 0; i+mpegts.PacketSize <= len(allOutput); i += mpegts.PacketSize {
 		if allOutput[i] != 0x47 {
 			continue
 		}
@@ -1150,7 +1151,7 @@ func TestTSMuxer_PCRWrapAround(t *testing.T) {
 
 	// Scan the output for a video PID packet with the PCR flag set.
 	foundPCR := false
-	for i := 0; i+tsPacketSize <= len(allOutput); i += tsPacketSize {
+	for i := 0; i+mpegts.PacketSize <= len(allOutput); i += mpegts.PacketSize {
 		if allOutput[i] != 0x47 {
 			continue
 		}

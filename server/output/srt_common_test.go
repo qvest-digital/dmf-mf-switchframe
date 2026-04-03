@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/internal/mpegts"
 )
 
 // recordingConn records individual write sizes to verify chunking.
@@ -47,11 +49,11 @@ func TestChunkedConn_ExactMaxPayload(t *testing.T) {
 	cc := &chunkedConn{inner: inner}
 
 	// Exactly 1316 bytes (7 TS packets) — single write.
-	data := make([]byte, srtLiveMaxPayload)
+	data := make([]byte, mpegts.LiveMaxPayload)
 	n, err := cc.Write(data)
 	require.NoError(t, err)
-	assert.Equal(t, srtLiveMaxPayload, n)
-	assert.Equal(t, []int{srtLiveMaxPayload}, inner.writeSizes)
+	assert.Equal(t, mpegts.LiveMaxPayload, n)
+	assert.Equal(t, []int{mpegts.LiveMaxPayload}, inner.writeSizes)
 }
 
 func TestChunkedConn_LargeWriteChunked(t *testing.T) {
@@ -77,16 +79,16 @@ func TestChunkedConn_VeryLargeKeyframe(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, size, n)
 
-	// Every chunk should be ≤ srtLiveMaxPayload
+	// Every chunk should be ≤ mpegts.LiveMaxPayload
 	for i, sz := range inner.writeSizes {
-		assert.LessOrEqual(t, sz, srtLiveMaxPayload, "chunk %d too large: %d", i, sz)
+		assert.LessOrEqual(t, sz, mpegts.LiveMaxPayload, "chunk %d too large: %d", i, sz)
 	}
 	assert.Equal(t, size, inner.totalBytes)
 }
 
 func TestChunkedConn_InnerEnforcesLimit(t *testing.T) {
 	// Inner connection rejects writes > 1316 (simulates real SRT live mode).
-	inner := &recordingConn{maxWrite: srtLiveMaxPayload}
+	inner := &recordingConn{maxWrite: mpegts.LiveMaxPayload}
 	cc := &chunkedConn{inner: inner}
 
 	// Without chunking this would fail. With chunking it should succeed.
@@ -96,7 +98,7 @@ func TestChunkedConn_InnerEnforcesLimit(t *testing.T) {
 	assert.Equal(t, 14852, n)
 
 	for i, sz := range inner.writeSizes {
-		assert.LessOrEqual(t, sz, srtLiveMaxPayload, "chunk %d too large: %d", i, sz)
+		assert.LessOrEqual(t, sz, mpegts.LiveMaxPayload, "chunk %d too large: %d", i, sz)
 	}
 }
 
@@ -108,4 +110,43 @@ func TestChunkedConn_EmptyWrite(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 0, n)
 	assert.Empty(t, inner.writeSizes)
+}
+
+// statsRecordingConn implements both srtConn and SRTStatter for testing chunkedConn delegation.
+type statsRecordingConn struct {
+	recordingConn
+	statsCalled bool
+	fakeStats   SRTConnStats
+}
+
+func (s *statsRecordingConn) SRTStats(clear bool) SRTConnStats {
+	s.statsCalled = true
+	return s.fakeStats
+}
+
+func TestChunkedConn_SRTStatsDelegates(t *testing.T) {
+	inner := &statsRecordingConn{
+		fakeStats: SRTConnStats{
+			RTT:          42 * time.Millisecond,
+			MbpsSendRate: 7.5,
+			FlightSize:   100,
+		},
+	}
+	cc := &chunkedConn{inner: inner}
+
+	stats := cc.SRTStats(true)
+	require.True(t, inner.statsCalled, "SRTStats should delegate to inner")
+	assert.Equal(t, 42*time.Millisecond, stats.RTT)
+	assert.Equal(t, 7.5, stats.MbpsSendRate)
+	assert.Equal(t, 100, stats.FlightSize)
+}
+
+func TestChunkedConn_SRTStatsNonStatter(t *testing.T) {
+	// A plain recordingConn does not implement SRTStatter.
+	inner := &recordingConn{}
+	cc := &chunkedConn{inner: inner}
+
+	stats := cc.SRTStats(true)
+	// Should return zero-value stats without panic.
+	assert.Equal(t, SRTConnStats{}, stats)
 }

@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/zsiec/switchframe/server/internal/mpegts"
 	"github.com/zsiec/switchframe/server/metrics"
 )
 
@@ -18,13 +19,13 @@ func ComputeMuxrate(videoBps, audioBps int64) int64 {
 
 // nullTSPacket returns a single 188-byte null TS packet (PID 0x1FFF).
 // ISO 13818-1 defines null packets as stuffing that decoders discard.
-func nullTSPacket() [tsPacketSize]byte {
-	var pkt [tsPacketSize]byte
-	pkt[0] = 0x47 // sync byte
+func nullTSPacket() [mpegts.PacketSize]byte {
+	var pkt [mpegts.PacketSize]byte
+	pkt[0] = mpegts.SyncByte
 	pkt[1] = 0x1F // PID high bits (no PUSI, no TEI, no priority)
 	pkt[2] = 0xFF // PID low bits → PID = 0x1FFF
 	pkt[3] = 0x10 // AFC=01 (payload only), CC=0
-	for i := 4; i < tsPacketSize; i++ {
+	for i := 4; i < mpegts.PacketSize; i++ {
 		pkt[i] = 0xFF // null payload
 	}
 	return pkt
@@ -93,15 +94,15 @@ func NewCBRPacer(muxrateBps int64, tickInterval time.Duration) *CBRPacer {
 	if slabBytes > maxSlabBytes {
 		slabBytes = maxSlabBytes
 	}
-	nullPktsForSlab := (slabBytes + tsPacketSize - 1) / tsPacketSize
+	nullPktsForSlab := (slabBytes + mpegts.PacketSize - 1) / mpegts.PacketSize
 	if nullPktsForSlab < 1 {
 		nullPktsForSlab = 1
 	}
 
 	nullPkt := nullTSPacket()
-	nullSlab := make([]byte, nullPktsForSlab*tsPacketSize)
+	nullSlab := make([]byte, nullPktsForSlab*mpegts.PacketSize)
 	for i := 0; i < nullPktsForSlab; i++ {
-		copy(nullSlab[i*tsPacketSize:], nullPkt[:])
+		copy(nullSlab[i*mpegts.PacketSize:], nullPkt[:])
 	}
 
 	// Pre-allocate buffers with generous capacity, capped to avoid OOM.
@@ -153,7 +154,7 @@ func (p *CBRPacer) Stop() {
 // muxer output callback. Lock hold time is minimal (~50ns for append).
 // Input must be TS-packet-aligned (multiple of 188 bytes).
 func (p *CBRPacer) Enqueue(tsData []byte) {
-	if len(tsData)%tsPacketSize != 0 {
+	if len(tsData)%mpegts.PacketSize != 0 {
 		slog.Warn("CBR pacer: enqueued non-TS-aligned data", "len", len(tsData))
 	}
 	p.mu.Lock()
@@ -217,7 +218,7 @@ func (p *CBRPacer) tick() {
 	elapsed := time.Since(p.startTime)
 	targetBytes := int64(elapsed.Seconds() * p.bytesPerSec)
 	// Align to TS packet boundary.
-	targetBytes = (targetBytes / tsPacketSize) * tsPacketSize
+	targetBytes = (targetBytes / mpegts.PacketSize) * mpegts.PacketSize
 
 	bytesToSend := targetBytes - p.bytesSent
 	if bytesToSend < 0 {
@@ -242,7 +243,7 @@ func (p *CBRPacer) tick() {
 	// Real data fits within budget — pad with null packets.
 	nullBytes := bytesToSend - realLen
 	// Align null bytes to TS packet boundary.
-	nullBytes = (nullBytes / tsPacketSize) * tsPacketSize
+	nullBytes = (nullBytes / mpegts.PacketSize) * mpegts.PacketSize
 
 	if nullBytes <= 0 && realLen == 0 {
 		// No debt and no data — nothing to send. Byte-debt will
@@ -268,7 +269,7 @@ func (p *CBRPacer) tick() {
 		nullRemaining -= chunk
 	}
 
-	nullPkts := nullBytes / tsPacketSize
+	nullPkts := nullBytes / mpegts.PacketSize
 	p.nullPktsTotal.Add(nullPkts)
 	p.padBytesTotal.Add(nullBytes)
 	if pm := p.prom; pm != nil {

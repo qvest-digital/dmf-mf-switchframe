@@ -4,9 +4,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/internal/mpegts"
 )
-
-const tsPacketSize = 188
 
 // TSPacket represents a parsed MPEG-TS packet.
 type TSPacket struct {
@@ -31,22 +30,22 @@ type AdaptationField struct {
 // Asserts every packet starts with 0x47 and data length is a multiple of 188.
 func ParseTSPackets(t *testing.T, data []byte) []TSPacket {
 	t.Helper()
-	require.Equal(t, 0, len(data)%tsPacketSize,
-		"data length %d is not a multiple of %d", len(data), tsPacketSize)
+	require.Equal(t, 0, len(data)%mpegts.PacketSize,
+		"data length %d is not a multiple of %d", len(data), mpegts.PacketSize)
 
-	numPackets := len(data) / tsPacketSize
+	numPackets := len(data) / mpegts.PacketSize
 	packets := make([]TSPacket, 0, numPackets)
 
 	for i := 0; i < numPackets; i++ {
-		offset := i * tsPacketSize
-		pkt := data[offset : offset+tsPacketSize]
+		offset := i * mpegts.PacketSize
+		pkt := data[offset : offset+mpegts.PacketSize]
 
 		require.Equal(t, byte(0x47), pkt[0],
 			"packet %d: sync byte is 0x%02X, expected 0x47", i, pkt[0])
 
 		p := TSPacket{
 			SyncByte: pkt[0],
-			PID:      uint16(pkt[1]&0x1F)<<8 | uint16(pkt[2]),
+			PID:      mpegts.ExtractPID(pkt),
 		}
 
 		// Byte 3: adaptation_field_control (bits 5-4) and continuity_counter (bits 3-0)
@@ -63,7 +62,7 @@ func ParseTSPackets(t *testing.T, data []byte) []TSPacket {
 			payloadStart = 4 + 1 + int(pkt[4]) // 4 header + 1 length byte + length
 		}
 
-		if p.HasPayload && payloadStart < tsPacketSize {
+		if p.HasPayload && payloadStart < mpegts.PacketSize {
 			p.Payload = pkt[payloadStart:]
 		}
 
@@ -119,12 +118,12 @@ func parseAdaptationField(data []byte) *AdaptationField {
 // AssertValidTSStructure verifies sync bytes and 188-byte alignment.
 func AssertValidTSStructure(t *testing.T, data []byte) {
 	t.Helper()
-	require.Equal(t, 0, len(data)%tsPacketSize,
-		"data length %d is not a multiple of %d", len(data), tsPacketSize)
+	require.Equal(t, 0, len(data)%mpegts.PacketSize,
+		"data length %d is not a multiple of %d", len(data), mpegts.PacketSize)
 
-	numPackets := len(data) / tsPacketSize
+	numPackets := len(data) / mpegts.PacketSize
 	for i := 0; i < numPackets; i++ {
-		offset := i * tsPacketSize
+		offset := i * mpegts.PacketSize
 		require.Equal(t, byte(0x47), data[offset],
 			"packet %d at offset %d: sync byte is 0x%02X, expected 0x47", i, offset, data[offset])
 	}

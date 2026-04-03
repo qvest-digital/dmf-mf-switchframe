@@ -33,10 +33,12 @@ type mockSRTManager struct {
 }
 
 type mockCreatePullCall struct {
-	address   string
-	streamID  string
-	label     string
-	latencyMs int
+	address    string
+	streamID   string
+	label      string
+	latencyMs  int
+	inputBW    int64
+	overheadBW int
 }
 
 type mockUpdateLatCall struct {
@@ -57,8 +59,8 @@ func newMockSRTManager() *mockSRTManager {
 	}
 }
 
-func (m *mockSRTManager) CreatePull(ctx context.Context, address, streamID, label string, latencyMs int) (string, error) {
-	m.createPullCalls = append(m.createPullCalls, mockCreatePullCall{address, streamID, label, latencyMs})
+func (m *mockSRTManager) CreatePull(ctx context.Context, address, streamID, label string, latencyMs int, inputBW int64, overheadBW int) (string, error) {
+	m.createPullCalls = append(m.createPullCalls, mockCreatePullCall{address, streamID, label, latencyMs, inputBW, overheadBW})
 	if m.createPullErr != nil {
 		return "", m.createPullErr
 	}
@@ -239,6 +241,36 @@ func TestCreateSource_DefaultLatency(t *testing.T) {
 	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
 	require.Len(t, mock.createPullCalls, 1)
 	require.Equal(t, 0, mock.createPullCalls[0].latencyMs)
+}
+
+func TestCreateSource_WithInputBWAndOverheadBW(t *testing.T) {
+	api, _, mock := setupSRTTestAPI(t)
+
+	body := `{"type":"srt","mode":"caller","address":"srt://192.168.1.100:6464","streamID":"camera3","label":"Camera 3","latencyMs":200,"inputBW":625000,"overheadBW":15}`
+	req := httptest.NewRequest("POST", "/api/sources", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
+	require.Len(t, mock.createPullCalls, 1)
+	require.Equal(t, int64(625000), mock.createPullCalls[0].inputBW)
+	require.Equal(t, 15, mock.createPullCalls[0].overheadBW)
+}
+
+func TestCreateSource_ZeroInputBWAndOverheadBW(t *testing.T) {
+	api, _, mock := setupSRTTestAPI(t)
+
+	body := `{"type":"srt","mode":"caller","address":"srt://192.168.1.100:6464","streamID":"camera3"}`
+	req := httptest.NewRequest("POST", "/api/sources", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
+	require.Len(t, mock.createPullCalls, 1)
+	require.Equal(t, int64(0), mock.createPullCalls[0].inputBW)
+	require.Equal(t, 0, mock.createPullCalls[0].overheadBW)
 }
 
 // --- DELETE /api/sources/{key} ---

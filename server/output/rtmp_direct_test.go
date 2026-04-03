@@ -199,7 +199,7 @@ func TestRTMPDirect_BackoffProgression(t *testing.T) {
 		30 * time.Second,
 	}
 	for _, expected := range levels {
-		got := r.nextBackoff()
+		got := r.bo.Next()
 		lo := time.Duration(float64(expected) * 0.79)
 		hi := time.Duration(float64(expected) * 1.21)
 		require.True(t, got >= lo && got <= hi,

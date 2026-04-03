@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/internal/mpegts"
 )
 
 // Integration-level rotation tests that verify TS packet alignment, per-file
@@ -207,11 +208,11 @@ func TestRotation_RotatedPATMPTHasDiscontinuityIndicator(t *testing.T) {
 	// and video data. The PAT/PMT are payload-only packets (no adaptation field).
 	// Real PAT/PMT packets have 0xFF stuffing in their trailing bytes.
 	pat := makeTSPacket(0x0000, false) // PAT: adaptation_field_control = 01 (payload only)
-	pat[tsPacketSize-1] = 0xFF
-	pat[tsPacketSize-2] = 0xFF
+	pat[mpegts.PacketSize-1] = 0xFF
+	pat[mpegts.PacketSize-2] = 0xFF
 	pmt := makeTSPacket(0x1000, false) // PMT: adaptation_field_control = 01 (payload only)
-	pmt[tsPacketSize-1] = 0xFF
-	pmt[tsPacketSize-2] = 0xFF
+	pmt[mpegts.PacketSize-1] = 0xFF
+	pmt[mpegts.PacketSize-2] = 0xFF
 	video := makeTSPacket(0x0100, false)
 
 	// Set non-zero CC values on PAT and PMT to verify they are preserved (not reset to 0).
@@ -241,8 +242,8 @@ func TestRotation_RotatedPATMPTHasDiscontinuityIndicator(t *testing.T) {
 
 	// Verify the first two TS packets (PAT and PMT) have discontinuity_indicator set.
 	for i := 0; i < 2; i++ {
-		offset := i * tsPacketSize
-		pkt := content[offset : offset+tsPacketSize]
+		offset := i * mpegts.PacketSize
+		pkt := content[offset : offset+mpegts.PacketSize]
 
 		require.Equal(t, byte(0x47), pkt[0], "packet %d: sync byte", i)
 
@@ -277,8 +278,8 @@ func TestSetTSDiscontinuityIndicator_PayloadOnly(t *testing.T) {
 	pkt[3] = 0x15                      // AFC=01 (payload only), CC=5
 
 	// PAT/PMT packets typically have 0xFF stuffing in their trailing bytes.
-	pkt[tsPacketSize-1] = 0xFF
-	pkt[tsPacketSize-2] = 0xFF
+	pkt[mpegts.PacketSize-1] = 0xFF
+	pkt[mpegts.PacketSize-2] = 0xFF
 
 	require.Equal(t, byte(0x01), (pkt[3]>>4)&0x03,
 		"precondition: AFC should be 01 (payload only)")
@@ -328,18 +329,18 @@ func TestSetTSDiscontinuityIndicator_AdaptationFieldPresent(t *testing.T) {
 func TestSetTSDiscontinuityIndicator_MultiplePackets(t *testing.T) {
 	// Test that it handles a buffer containing multiple TS packets.
 	pat := makeTSPacket(0x0000, false)
-	pat[tsPacketSize-1] = 0xFF
-	pat[tsPacketSize-2] = 0xFF
+	pat[mpegts.PacketSize-1] = 0xFF
+	pat[mpegts.PacketSize-2] = 0xFF
 	pmt := makeTSPacket(0x1000, false)
-	pmt[tsPacketSize-1] = 0xFF
-	pmt[tsPacketSize-2] = 0xFF
+	pmt[mpegts.PacketSize-1] = 0xFF
+	pmt[mpegts.PacketSize-2] = 0xFF
 	buf := append(pat, pmt...)
 
 	setTSDiscontinuityIndicator(buf)
 
 	// Both packets should have discontinuity flag set.
 	for i := 0; i < 2; i++ {
-		offset := i * tsPacketSize
+		offset := i * mpegts.PacketSize
 		afc := (buf[offset+3] >> 4) & 0x03
 		require.GreaterOrEqual(t, afc, byte(2),
 			"packet %d: AFC should indicate adaptation field present", i)
@@ -356,10 +357,10 @@ func TestSetTSDiscontinuityIndicator_PayloadOnlyWithStuffing(t *testing.T) {
 	pkt[3] = 0x15                      // AFC=01, CC=5
 
 	// Fill the trailing bytes with 0xFF stuffing (as PAT/PMT typically have).
-	pkt[tsPacketSize-1] = 0xFF
-	pkt[tsPacketSize-2] = 0xFF
+	pkt[mpegts.PacketSize-1] = 0xFF
+	pkt[mpegts.PacketSize-2] = 0xFF
 
-	original := make([]byte, tsPacketSize)
+	original := make([]byte, mpegts.PacketSize)
 	copy(original, pkt)
 
 	setTSDiscontinuityIndicator(pkt)
@@ -388,11 +389,11 @@ func TestSetTSDiscontinuityIndicator_PayloadOnlyNonStuffingTrailingBytes(t *test
 
 	// Set the last 2 bytes to non-stuffing values (simulate a full PMT with
 	// a large descriptor loop that uses all available space).
-	pkt[tsPacketSize-1] = 0xAB
-	pkt[tsPacketSize-2] = 0xCD
+	pkt[mpegts.PacketSize-1] = 0xAB
+	pkt[mpegts.PacketSize-2] = 0xCD
 
 	// Save original packet for comparison.
-	original := make([]byte, tsPacketSize)
+	original := make([]byte, mpegts.PacketSize)
 	copy(original, pkt)
 
 	setTSDiscontinuityIndicator(pkt)
@@ -408,10 +409,10 @@ func TestSetTSDiscontinuityIndicator_PayloadOnlyOneByteNonStuffing(t *testing.T)
 	pkt := makeTSPacket(0x0000, false)
 	pkt[3] = 0x15 // AFC=01, CC=5
 
-	pkt[tsPacketSize-1] = 0xFF
-	pkt[tsPacketSize-2] = 0xCD // non-stuffing
+	pkt[mpegts.PacketSize-1] = 0xFF
+	pkt[mpegts.PacketSize-2] = 0xCD // non-stuffing
 
-	original := make([]byte, tsPacketSize)
+	original := make([]byte, mpegts.PacketSize)
 	copy(original, pkt)
 
 	setTSDiscontinuityIndicator(pkt)

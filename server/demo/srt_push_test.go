@@ -5,6 +5,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/zsiec/switchframe/server/internal/mpegts"
 )
 
 func TestPacingTarget(t *testing.T) {
@@ -454,7 +456,7 @@ func TestParseAccessUnits_RealClip(t *testing.T) {
 
 // buildTSContinuation creates a TS continuation packet (no PUSI, no PES header).
 func buildTSContinuation(pid int) []byte {
-	pkt := make([]byte, tsPacketSize)
+	pkt := make([]byte, mpegts.PacketSize)
 	pkt[0] = 0x47
 	pkt[1] = byte((pid >> 8) & 0x1F) // no PUSI
 	pkt[2] = byte(pid & 0xFF)
@@ -471,7 +473,6 @@ func buildTSPacketWithPTSOnPID(streamID byte, pts int64, pid int) []byte {
 	return pkt
 }
 
-const tsPacketSize = 188
 
 // buildTestTSWithPTS creates minimal MPEG-TS data containing two
 // video PES packets with the given PTS values (90kHz clock).
@@ -491,7 +492,7 @@ func buildTestTSWithSinglePTS(t *testing.T, pts int64) []byte {
 // buildTSPacketWithPTS constructs a single 188-byte TS packet containing
 // a minimal PES header with the given stream ID and PTS.
 func buildTSPacketWithPTS(streamID byte, pts int64) []byte {
-	pkt := make([]byte, tsPacketSize)
+	pkt := make([]byte, mpegts.PacketSize)
 	pkt[0] = 0x47 // sync byte
 	// PID = 0x100 (arbitrary video PID), PUSI = 1
 	pkt[1] = 0x41 // TEI=0, PUSI=1, priority=0, PID high=0x01

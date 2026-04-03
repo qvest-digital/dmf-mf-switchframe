@@ -13,6 +13,7 @@ import (
 	astits "github.com/asticode/go-astits"
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/codec"
+	"github.com/zsiec/switchframe/server/internal/mpegts"
 )
 
 const (
@@ -212,7 +213,7 @@ func (m *TSMuxer) writeSCTE35Locked(data []byte) error {
 	first := true
 
 	for len(remaining) > 0 {
-		var pkt [tsPacketSize]byte
+		var pkt [mpegts.PacketSize]byte
 
 		// Sync byte
 		pkt[0] = 0x47
@@ -239,7 +240,7 @@ func (m *TSMuxer) writeSCTE35Locked(data []byte) error {
 			first = false
 		}
 
-		payloadSpace := tsPacketSize - payloadStart
+		payloadSpace := mpegts.PacketSize - payloadStart
 		n := len(remaining)
 		if n > payloadSpace {
 			n = payloadSpace
@@ -248,7 +249,7 @@ func (m *TSMuxer) writeSCTE35Locked(data []byte) error {
 		remaining = remaining[n:]
 
 		// Pad remainder with 0xFF (stuffing bytes)
-		for i := payloadStart + n; i < tsPacketSize; i++ {
+		for i := payloadStart + n; i < mpegts.PacketSize; i++ {
 			pkt[i] = 0xFF
 		}
 

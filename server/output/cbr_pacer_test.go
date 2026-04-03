@@ -11,6 +11,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/internal/mpegts"
 	"github.com/zsiec/switchframe/server/metrics"
 )
 
@@ -18,7 +19,7 @@ func TestCBRPacer_NullPacketFormat(t *testing.T) {
 	// Verify null TS packets have correct format: sync byte 0x47,
 	// PID 0x1FFF, AFC=01 (payload only), payload all 0xFF.
 	pkt := nullTSPacket()
-	require.Len(t, pkt, tsPacketSize)
+	require.Len(t, pkt, mpegts.PacketSize)
 
 	assert.Equal(t, byte(0x47), pkt[0], "sync byte")
 	pid := uint16(pkt[1]&0x1F)<<8 | uint16(pkt[2])
@@ -26,7 +27,7 @@ func TestCBRPacer_NullPacketFormat(t *testing.T) {
 	assert.Equal(t, byte(0x10), pkt[3]&0x30, "AFC=payload only")
 
 	// Payload bytes (4..187) should all be 0xFF.
-	for i := 4; i < tsPacketSize; i++ {
+	for i := 4; i < mpegts.PacketSize; i++ {
 		assert.Equal(t, byte(0xFF), pkt[i], "null payload byte %d", i)
 	}
 }
@@ -53,7 +54,7 @@ func TestCBRPacer_PadsToMuxrate(t *testing.T) {
 	p.Start()
 
 	// Enqueue one TS packet worth of real data.
-	realData := make([]byte, tsPacketSize)
+	realData := make([]byte, mpegts.PacketSize)
 	realData[0] = 0x47
 	p.Enqueue(realData)
 
@@ -72,7 +73,7 @@ func TestCBRPacer_PadsToMuxrate(t *testing.T) {
 		"output should be roughly %d bytes for 100ms at %d bps", expectedBytes, muxrateBps)
 
 	// All output should be a multiple of 188.
-	assert.Zero(t, got%tsPacketSize, "output must be TS-packet-aligned")
+	assert.Zero(t, got%mpegts.PacketSize, "output must be TS-packet-aligned")
 }
 
 func TestCBRPacer_BurstWhenExceeded(t *testing.T) {
@@ -97,8 +98,8 @@ func TestCBRPacer_BurstWhenExceeded(t *testing.T) {
 	p.Start()
 
 	// Enqueue much more than the budget allows.
-	bigData := make([]byte, tsPacketSize*100) // 18,800 bytes
-	for i := 0; i < len(bigData); i += tsPacketSize {
+	bigData := make([]byte, mpegts.PacketSize*100) // 18,800 bytes
+	for i := 0; i < len(bigData); i += mpegts.PacketSize {
 		bigData[i] = 0x47
 	}
 	p.Enqueue(bigData)
@@ -151,8 +152,8 @@ func TestCBRPacer_EmptyTickSendsNullOnly(t *testing.T) {
 
 	// Verify all output is null packets (PID 0x1FFF).
 	for _, chunk := range allData {
-		require.Zero(t, len(chunk)%tsPacketSize, "output must be TS-packet-aligned")
-		for i := 0; i+tsPacketSize <= len(chunk); i += tsPacketSize {
+		require.Zero(t, len(chunk)%mpegts.PacketSize, "output must be TS-packet-aligned")
+		for i := 0; i+mpegts.PacketSize <= len(chunk); i += mpegts.PacketSize {
 			require.Equal(t, byte(0x47), chunk[i], "sync byte")
 			pid := uint16(chunk[i+1]&0x1F)<<8 | uint16(chunk[i+2])
 			assert.Equal(t, uint16(0x1FFF), pid, "all packets should be null PID")
@@ -168,7 +169,7 @@ func TestCBRPacer_OutputMultipleOf188(t *testing.T) {
 
 	sink := &mockSink{
 		writeFn: func(data []byte) (int, error) {
-			if len(data)%tsPacketSize != 0 {
+			if len(data)%mpegts.PacketSize != 0 {
 				badWrites.Add(1)
 			}
 			return len(data), nil
@@ -182,7 +183,7 @@ func TestCBRPacer_OutputMultipleOf188(t *testing.T) {
 
 	// Enqueue a variety of TS-aligned sizes.
 	for i := 0; i < 20; i++ {
-		data := make([]byte, tsPacketSize*(i+1))
+		data := make([]byte, mpegts.PacketSize*(i+1))
 		data[0] = 0x47
 		p.Enqueue(data)
 		time.Sleep(5 * time.Millisecond)
@@ -216,8 +217,8 @@ func TestCBRPacer_StopDrainsBuffer(t *testing.T) {
 	p.Start()
 
 	// Enqueue data.
-	data := make([]byte, tsPacketSize*50)
-	for i := 0; i < len(data); i += tsPacketSize {
+	data := make([]byte, mpegts.PacketSize*50)
+	for i := 0; i < len(data); i += mpegts.PacketSize {
 		data[i] = 0x47
 	}
 	p.Enqueue(data)
@@ -277,9 +278,9 @@ func TestCBRPacer_PrometheusCountersIncremented(t *testing.T) {
 	p.Start()
 
 	// Enqueue some real data so both real and null counters increment.
-	realData := make([]byte, tsPacketSize*2)
+	realData := make([]byte, mpegts.PacketSize*2)
 	realData[0] = 0x47
-	realData[tsPacketSize] = 0x47
+	realData[mpegts.PacketSize] = 0x47
 	p.Enqueue(realData)
 
 	// Let it run a few ticks.
@@ -303,8 +304,8 @@ func TestCBRPacer_PrometheusCountersIncremented(t *testing.T) {
 	require.InDelta(t, float64(p.PadBytesTotal()), promPad, 1.0,
 		"prometheus pad bytes should match atomic counter")
 
-	// Verify padBytesTotal == nullPktsTotal * tsPacketSize.
-	require.Equal(t, p.NullPacketsTotal()*tsPacketSize, p.PadBytesTotal(),
+	// Verify padBytesTotal == nullPktsTotal * mpegts.PacketSize.
+	require.Equal(t, p.NullPacketsTotal()*mpegts.PacketSize, p.PadBytesTotal(),
 		"pad bytes should equal null packets * 188")
 }
 
@@ -325,8 +326,8 @@ func TestCBRPacer_PrometheusCountersBurstPath(t *testing.T) {
 	p.Start()
 
 	// Enqueue much more than budget.
-	bigData := make([]byte, tsPacketSize*100)
-	for i := 0; i < len(bigData); i += tsPacketSize {
+	bigData := make([]byte, mpegts.PacketSize*100)
+	for i := 0; i < len(bigData); i += mpegts.PacketSize {
 		bigData[i] = 0x47
 	}
 	p.Enqueue(bigData)
@@ -357,8 +358,8 @@ func TestCBRPacer_DrainRemainingIncrementsPrometheus(t *testing.T) {
 	p.Start()
 
 	// Enqueue data — with 1hr tick interval, tick() won't fire.
-	data := make([]byte, tsPacketSize*10)
-	for i := 0; i < len(data); i += tsPacketSize {
+	data := make([]byte, mpegts.PacketSize*10)
+	for i := 0; i < len(data); i += mpegts.PacketSize {
 		data[i] = 0x47
 	}
 	p.Enqueue(data)

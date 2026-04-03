@@ -37,6 +37,52 @@ type srtSourceState struct {
 	relayAudioDrops *atomic.Int64
 }
 
+// srtVideoJob carries a decoded YUV frame between the decode callback and
+// the relay/pipeline/replay goroutines.
+type srtVideoJob struct {
+	yuv []byte
+	w   int
+	h   int
+	pts int64
+}
+
+// srtAudioJob carries decoded PCM audio between the decode callback and
+// the audio goroutine.
+type srtAudioJob struct {
+	pcm        []float32
+	pts        int64
+	sampleRate int
+	channels   int
+}
+
+// srtReplayGPUJob is a lightweight signal for the GPU replay encode goroutine.
+// No YUV data — the GPU frame is read from the source manager's atomic pointer.
+type srtReplayGPUJob struct {
+	pts  int64
+	w, h int
+}
+
+// srtRelayContext groups the shared state passed from wireSRTSource to the
+// relay helper methods. This avoids passing 10+ individual parameters.
+type srtRelayContext struct {
+	key       string
+	relay     *distribution.Relay
+	state     *srtSourceState
+	framePool *switcher.FramePool
+	pf        switcher.PipelineFormat
+
+	// Channels connecting decode callbacks to goroutines.
+	relayVideoCh  chan srtVideoJob
+	replayVideoCh chan srtVideoJob // nil when replay is not active
+	audioCh       chan srtAudioJob
+
+	// Replay viewer (nil when replay is not active or wired via relay).
+	replayViewer interface {
+		SendVideo(frame *media.VideoFrame)
+		SendAudio(frame *media.AudioFrame)
+	}
+}
+
 // initSRT initializes the SRT store, stats manager, caller, and optionally the
 // listener. Called after initSubsystems, before initAPI. The store, stats, and
 // caller are always initialized so the SRT pull API works without --srt-listen.
@@ -59,6 +105,12 @@ func (a *App) initSRT() error {
 	a.srtStats = statsMgr
 	a.debugCollector.Register("srt", statsMgr)
 	a.debugCollector.Register("relay_drops", &relayDropProvider{app: a})
+
+	// Wire stats manager into output manager so SRT output adapters
+	// get ConnStats entries for monitoring via /debug/snapshot.
+	if a.outputMgr != nil {
+		a.outputMgr.SetSRTStatsManager(statsMgr)
+	}
 
 	latency := time.Duration(a.cfg.SRTLatencyMs) * time.Millisecond
 
@@ -227,9 +279,6 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	// OR audio frames are produced. This causes bursty frame delivery
 	// with 100-1500ms gaps.
 	//
-	// Demo cameras don't have this problem because their audio and video
-	// arrive on SEPARATE goroutines (sourceViewer via Prism relay).
-	//
 	// Solution: The decode callbacks do NOTHING blocking. They deep-copy
 	// the data and send to buffered channels. Three separate goroutines
 	// handle the heavy work:
@@ -242,33 +291,13 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	pf := a.sw.PipelineFormat()
 	framePool := a.sw.GetFramePool()
 
-	type videoJob struct {
-		yuv []byte
-		w   int
-		h   int
-		pts int64
-	}
-	type audioJob struct {
-		pcm        []float32
-		pts        int64
-		sampleRate int
-		channels   int
-	}
-
-	// replayGPUJob is a lightweight signal for the GPU replay encode goroutine.
-	// No YUV data — the GPU frame is read from the source manager's atomic pointer.
-	type replayGPUJob struct {
-		pts  int64
-		w, h int
-	}
-
-	pipelineCh := make(chan videoJob, 4)   // → IngestRawVideo
-	relayVideoCh := make(chan videoJob, 4) // → H.264 encode + relay
-	audioCh := make(chan audioJob, 8)      // → IngestPCM + AAC encode + relay
+	pipelineCh := make(chan srtVideoJob, 4)   // → IngestRawVideo
+	relayVideoCh := make(chan srtVideoJob, 4) // → H.264 encode + relay
+	audioCh := make(chan srtAudioJob, 8)      // → IngestPCM + AAC encode + relay
 
 	// Replay channel: when preview proxy is active and replay is configured,
 	// a separate full-quality encode goroutine feeds the replay viewer directly.
-	var replayVideoCh chan videoJob
+	var replayVideoCh chan srtVideoJob
 	var replayViewer interface {
 		SendVideo(frame *media.VideoFrame)
 		SendAudio(frame *media.AudioFrame)
@@ -279,22 +308,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	ptsLin := srt.NewPTSLinearizer()
 
 	// --- Goroutine 1: Pipeline ingest (program path) ---
-	go func() {
-		for job := range pipelineCh {
-			pfr := &switcher.ProcessingFrame{
-				Data:    job.yuv,
-				Width:  job.w,
-				Height: job.h,
-				PTS:    job.pts,
-				DTS:    job.pts,
-				Codec:  "h264",
-			}
-			if framePool != nil {
-				pfr.SetPool(framePool)
-			}
-			a.sw.IngestRawVideo(key, pfr)
-		}
-	}()
+	a.startSRTPipelineIngest(key, pipelineCh, framePool)
 
 	// --- Preview proxy encoder (replaces full-quality relay encode) ---
 	var previewEnc *preview.Encoder
@@ -379,8 +393,21 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 			slog.Warn("srt: could not add replay source", "key", key, "err", err)
 		} else if v := a.replayMgr.Viewer(key); v != nil {
 			replayViewer = v
-			replayVideoCh = make(chan videoJob, 4)
+			replayVideoCh = make(chan srtVideoJob, 4)
 		}
+	}
+
+	// Build the shared relay context used by all helper methods.
+	rc := &srtRelayContext{
+		key:           key,
+		relay:         relay,
+		state:         state,
+		framePool:     framePool,
+		pf:            pf,
+		relayVideoCh:  relayVideoCh,
+		replayVideoCh: replayVideoCh,
+		audioCh:       audioCh,
+		replayViewer:  replayViewer,
 	}
 
 	// --- Goroutine 2: Relay video encode ---
@@ -388,409 +415,29 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	// encoding via IngestYUV, so we just drain the relay channel to release
 	// frame pool buffers. When CPU preview is enabled, the preview.Encoder
 	// handles scaling and encoding. Otherwise, use full-quality encode.
+	var replayGPUCh chan srtReplayGPUJob
 	if gpuPreviewActive {
-		go func() {
-			for job := range relayVideoCh {
-				if framePool != nil {
-					framePool.Release(job.yuv)
-				}
-			}
-		}()
+		a.startSRTVideoRelayGPUDrain(rc)
 	} else if previewEnc != nil {
-		go func() {
-			for job := range relayVideoCh {
-				release := func(buf []byte) {
-					if framePool != nil {
-						framePool.Release(buf)
-					}
-				}
-				previewEnc.SendOwned(job.yuv, job.w, job.h, job.pts, release)
-			}
-			previewEnc.Stop()
-		}()
+		a.startSRTVideoRelayPreview(rc, previewEnc)
+	} else {
+		a.startSRTVideoRelayFullQuality(rc)
 	}
 
-	// --- Goroutine 2c: GPU replay encode (NVDEC + NVENC, zero CPU-copy) ---
-	// When NVDEC is active, OnRawVideo never fires, so the CPU replay encode
-	// goroutine (2b) starves. Instead, read the GPU-resident NV12 frame from
-	// the source manager and NVENC-encode directly from VRAM.
-	var replayGPUCh chan replayGPUJob
+	// --- GPU replay encode (NVDEC + NVENC, zero CPU-copy) ---
 	if a.gpuState != nil && a.gpuState.sourceManager != nil && cfg.HWDeviceCtx != nil && replayViewer != nil {
-		replayGPUCh = make(chan replayGPUJob, 2)
-		srcMgr := a.gpuState.sourceManager
-
-		go func() {
-			var (
-				gpuEnc        *gpu.GPUEncoder
-				groupID       atomic.Uint32
-				lastW, lastH  int
-				replayNV12Tmp  *gpu.GPUFrame // temp NV12 frame for P210→NV12 convert
-				replayNV12Pool *gpu.FramePool
-			)
-			defer func() {
-				if replayNV12Tmp != nil {
-					replayNV12Tmp.Release()
-				}
-				if replayNV12Pool != nil {
-					replayNV12Pool.Close()
-				}
-				if gpuEnc != nil {
-					gpuEnc.Close()
-				}
-			}()
-
-			for job := range replayGPUCh {
-				// Resolution change → recreate encoder and NV12 temp.
-				if gpuEnc != nil && (job.w != lastW || job.h != lastH) {
-					gpuEnc.Close()
-					gpuEnc = nil
-					if replayNV12Tmp != nil {
-						replayNV12Tmp.Release()
-						replayNV12Tmp = nil
-					}
-					if replayNV12Pool != nil {
-						replayNV12Pool.Close()
-						replayNV12Pool = nil
-					}
-				}
-
-				if gpuEnc == nil {
-					enc, err := gpu.NewGPUEncoder(a.gpuState.ctx, job.w, job.h, pf.FPSNum, pf.FPSDen, 6_000_000)
-					if err != nil {
-						slog.Error("srt: GPU replay encoder init failed", "key", key, "error", err)
-						continue
-					}
-					gpuEnc = enc
-					lastW, lastH = job.w, job.h
-				}
-
-				// Load current GPU frame (atomic, lock-free read).
-				gpuFrame := srcMgr.CurrentFrame(key)
-				if gpuFrame == nil {
-					continue
-				}
-
-				// If source frame is P210, convert to NV12 before H.264 encode.
-				// Replay always outputs H.264 for browser compatibility.
-				encFrame := gpuFrame
-				if gpuFrame.Format == gpu.GPUFormatP210 {
-					if replayNV12Tmp == nil {
-						tmp, tmpErr := gpu.NewFramePool(a.gpuState.ctx, job.w, job.h, 2)
-						if tmpErr != nil {
-							continue
-						}
-						replayNV12Pool = tmp
-						f, fErr := tmp.Acquire()
-						if fErr != nil {
-							continue
-						}
-						replayNV12Tmp = f
-					}
-					if err := gpu.ScaleP210ToNV12On(a.gpuState.ctx, replayNV12Tmp, gpuFrame, nil); err != nil {
-						continue
-					}
-					replayNV12Tmp.PTS = gpuFrame.PTS
-					encFrame = replayNV12Tmp
-				}
-
-				// NVENC encode directly from VRAM.
-				data, isIDR, err := gpuEnc.EncodeGPU(encFrame, false)
-				if err != nil || len(data) == 0 {
-					continue
-				}
-
-				avc1 := codec.AnnexBToAVC1(data)
-				if isIDR {
-					groupID.Add(1)
-				}
-
-				vf := &media.VideoFrame{
-					PTS:        job.pts,
-					DTS:        job.pts,
-					IsKeyframe: isIDR,
-					GroupID:    groupID.Load(),
-					WireData:   avc1,
-					Codec:      "h264",
-				}
-
-				// Extract SPS/PPS from IDR frames for decoder init.
-				if isIDR {
-					for _, nalu := range codec.ExtractNALUs(avc1) {
-						if len(nalu) == 0 {
-							continue
-						}
-						switch nalu[0] & 0x1F {
-						case 7:
-							vf.SPS = nalu
-						case 8:
-							vf.PPS = nalu
-						}
-					}
-				}
-
-				replayViewer.SendVideo(vf)
-			}
-		}()
+		replayGPUCh = make(chan srtReplayGPUJob, 2)
+		a.startSRTReplayGPUEncode(rc, replayGPUCh)
 	}
 
-	// --- Goroutine 2b: Replay full-quality encode (only when preview proxy + replay) ---
-	// Skipped when GPU replay encode (2c) is active — NVDEC path handles replay.
+	// --- CPU replay full-quality encode (only when preview proxy + replay) ---
+	// Skipped when GPU replay encode is active — NVDEC path handles replay.
 	if replayVideoCh != nil && replayGPUCh == nil {
-		go func() {
-			var (
-				videoEncoder transition.VideoEncoder
-				groupID      atomic.Uint32
-				encoderYUV   []byte
-				lastW, lastH int
-			)
-			replayEncFactory := encoderFactory()
-			for job := range replayVideoCh {
-				w, h, pts := job.w, job.h, job.pts
-
-				// Resolution change → recreate encoder.
-				if videoEncoder != nil && (w != lastW || h != lastH) {
-					videoEncoder.Close()
-					videoEncoder = nil
-				}
-
-				if videoEncoder == nil {
-					enc, err := replayEncFactory(w, h, 6_000_000, pf.FPSNum, pf.FPSDen)
-					if err != nil {
-						slog.Error("srt: replay encoder init failed", "key", key, "error", err)
-						if framePool != nil {
-							framePool.Release(job.yuv)
-						}
-						continue
-					}
-					videoEncoder = enc
-					lastW = w
-					lastH = h
-				}
-
-				needed := len(job.yuv)
-				if cap(encoderYUV) < needed {
-					encoderYUV = make([]byte, needed)
-				}
-				encoderYUV = encoderYUV[:needed]
-				copy(encoderYUV, job.yuv)
-				if framePool != nil {
-					framePool.Release(job.yuv)
-				}
-
-				encoded, isKeyframe, err := videoEncoder.Encode(encoderYUV, pts, false)
-				if err != nil || len(encoded) == 0 {
-					continue
-				}
-
-				avc1 := codec.AnnexBToAVC1(encoded)
-				if isKeyframe {
-					groupID.Add(1)
-				}
-
-				frame := &media.VideoFrame{
-					PTS: pts, DTS: pts, IsKeyframe: isKeyframe,
-					WireData: avc1, Codec: "h264", GroupID: groupID.Load(),
-				}
-
-				if isKeyframe {
-					for _, nalu := range codec.ExtractNALUs(avc1) {
-						if len(nalu) == 0 {
-							continue
-						}
-						switch nalu[0] & 0x1F {
-						case 7:
-							frame.SPS = nalu
-						case 8:
-							frame.PPS = nalu
-						}
-					}
-				}
-				replayViewer.SendVideo(frame)
-			}
-			if videoEncoder != nil {
-				videoEncoder.Close()
-			}
-		}()
-	}
-
-	if previewEnc == nil && !gpuPreviewActive {
-		// Relay encode goroutine: ultrafast/baseline at configured resolution.
-		relayW, relayH := parseRelayResolution(a.cfg.RelayResolution)
-
-		var (
-			videoEncoder  transition.VideoEncoder
-			groupID       atomic.Uint32
-			videoInfoSent bool
-			scaledYUV     []byte // persistent scale buffer
-			encoderYUV    []byte
-			lastVideoW    int
-			lastVideoH    int
-		)
-		go func() {
-			for job := range relayVideoCh {
-				if relay == nil {
-					continue
-				}
-				w, h, pts := job.w, job.h, job.pts
-
-				// Determine encode dimensions: scale or use source.
-				encW, encH := relayW, relayH
-				if encW == 0 || encH == 0 {
-					encW, encH = w, h // "source" mode: no scaling
-				}
-
-				// Resolution change → recreate encoder.
-				if videoEncoder != nil && (w != lastVideoW || h != lastVideoH) {
-					videoEncoder.Close()
-					videoEncoder = nil
-					state.videoEncoder = nil
-					videoInfoSent = false
-				}
-
-				// Lazy encoder creation (ultrafast/baseline for low CPU).
-				if videoEncoder == nil {
-					enc, err := codec.NewPreviewEncoder(encW, encH, a.cfg.RelayBitrate, pf.FPSNum, pf.FPSDen)
-					if err != nil {
-						slog.Error("srt: relay encoder init failed", "key", key, "error", err)
-						continue
-					}
-					videoEncoder = enc
-					state.videoEncoder = enc
-					lastVideoW = w
-					lastVideoH = h
-				}
-
-				// Scale if needed, then copy into encoder buffer.
-				var frameYUV []byte
-				if w == encW && h == encH {
-					frameYUV = job.yuv
-				} else {
-					targetSize := switcher.ColorYUV420_8bit.FrameSize(encW, encH)
-					if cap(scaledYUV) < targetSize {
-						scaledYUV = make([]byte, targetSize)
-					}
-					scaledYUV = scaledYUV[:targetSize]
-					transition.ScaleYUV420(job.yuv, w, h, scaledYUV, encW, encH)
-					frameYUV = scaledYUV
-				}
-
-				needed := len(frameYUV)
-				if cap(encoderYUV) < needed {
-					encoderYUV = make([]byte, needed)
-				}
-				encoderYUV = encoderYUV[:needed]
-				copy(encoderYUV, frameYUV)
-				if framePool != nil {
-					framePool.Release(job.yuv)
-				}
-
-				encoded, isKeyframe, err := videoEncoder.Encode(encoderYUV, pts, false)
-				if err != nil || len(encoded) == 0 {
-					continue
-				}
-
-				avc1 := codec.AnnexBToAVC1(encoded)
-				if isKeyframe {
-					groupID.Add(1)
-				}
-
-				frame := &media.VideoFrame{
-					PTS: pts, DTS: pts, IsKeyframe: isKeyframe,
-					WireData: avc1, Codec: "h264", GroupID: groupID.Load(),
-				}
-
-				if isKeyframe {
-					for _, nalu := range codec.ExtractNALUs(avc1) {
-						if len(nalu) == 0 {
-							continue
-						}
-						switch nalu[0] & 0x1F {
-						case 7:
-							frame.SPS = nalu
-						case 8:
-							frame.PPS = nalu
-						}
-					}
-					if !videoInfoSent && frame.SPS != nil && frame.PPS != nil {
-						avcC := moq.BuildAVCDecoderConfig(frame.SPS, frame.PPS)
-						if avcC != nil {
-							relay.SetVideoInfo(distribution.VideoInfo{
-								Codec: codec.ParseSPSCodecString(frame.SPS),
-								Width: encW, Height: encH, DecoderConfig: avcC,
-							})
-							slog.Info("SRT source: relay VideoInfo set", "key", key, "w", encW, "h", encH)
-							videoInfoSent = true
-						}
-					}
-				}
-				relay.BroadcastVideo(frame)
-			}
-			if videoEncoder != nil {
-				videoEncoder.Close()
-				videoEncoder = nil
-			}
-		}()
+		a.startSRTReplayCPUEncode(rc)
 	}
 
 	// --- Goroutine 3: Audio (mixer + relay encode) ---
-	const aacFrameSamples = 1024
-	var (
-		audioEncoder audio.Encoder
-		audioBuf     []float32
-		audioPTS     int64
-	)
-	go func() {
-		for job := range audioCh {
-			// Deliver to mixer.
-			a.mixer.IngestPCM(key, job.pcm, job.pts, job.channels)
-
-			// Encode for relay.
-			if relay == nil {
-				continue
-			}
-
-			if audioEncoder == nil {
-				enc, err := audio.NewFDKEncoder(job.sampleRate, job.channels)
-				if err != nil {
-					slog.Error("srt: audio encoder init failed", "key", key, "error", err)
-					continue
-				}
-				audioEncoder = enc
-				state.audioEncoder = enc
-			}
-
-			if len(audioBuf) == 0 {
-				audioPTS = job.pts
-			}
-			audioBuf = append(audioBuf, job.pcm...)
-
-			chunkSize := aacFrameSamples * job.channels
-			for len(audioBuf) >= chunkSize {
-				chunk := audioBuf[:chunkSize]
-				encoded, err := audioEncoder.Encode(chunk)
-				if err != nil {
-					audioBuf = audioBuf[chunkSize:]
-					continue
-				}
-				if len(encoded) > 0 {
-					af := &media.AudioFrame{
-						PTS: audioPTS, Data: encoded,
-						SampleRate: job.sampleRate, Channels: job.channels,
-					}
-					relay.BroadcastAudio(af)
-					if replayViewer != nil {
-						replayViewer.SendAudio(af)
-					}
-				}
-				audioPTS += int64(aacFrameSamples) * 90000 / int64(job.sampleRate)
-				audioBuf = audioBuf[chunkSize:]
-			}
-		}
-		if audioEncoder != nil {
-			_ = audioEncoder.Close()
-			audioEncoder = nil
-		}
-	}()
+	a.startSRTAudioRelay(rc)
 
 	// --- Register preview encoder with debug collector ---
 	if previewEnc != nil {
@@ -824,7 +471,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		copy(pipelineBuf, yuv)
 
 		select {
-		case pipelineCh <- videoJob{yuv: pipelineBuf, w: w, h: h, pts: pts}:
+		case pipelineCh <- srtVideoJob{yuv: pipelineBuf, w: w, h: h, pts: pts}:
 		default:
 			if framePool != nil {
 				framePool.Release(pipelineBuf)
@@ -841,7 +488,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		copy(relayBuf, yuv)
 
 		select {
-		case relayVideoCh <- videoJob{yuv: relayBuf, w: w, h: h, pts: pts}:
+		case relayVideoCh <- srtVideoJob{yuv: relayBuf, w: w, h: h, pts: pts}:
 		default:
 			relayVideoDrops.Add(1)
 			if framePool != nil {
@@ -860,7 +507,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 			copy(replayBuf, yuv)
 
 			select {
-			case replayVideoCh <- videoJob{yuv: replayBuf, w: w, h: h, pts: pts}:
+			case replayVideoCh <- srtVideoJob{yuv: replayBuf, w: w, h: h, pts: pts}:
 			default:
 				if framePool != nil {
 					framePool.Release(replayBuf)
@@ -957,7 +604,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 			// Fan out to GPU replay encode (NVENC from VRAM).
 			if replayGPUCh != nil {
 				select {
-				case replayGPUCh <- replayGPUJob{pts: pts, w: w, h: h}:
+				case replayGPUCh <- srtReplayGPUJob{pts: pts, w: w, h: h}:
 				default:
 					// Drop if replay encode can't keep up.
 				}
@@ -979,7 +626,7 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 		pcmCopy := make([]float32, len(pcm))
 		copy(pcmCopy, pcm)
 		select {
-		case audioCh <- audioJob{pcm: pcmCopy, pts: pts, sampleRate: sampleRate, channels: channels}:
+		case audioCh <- srtAudioJob{pcm: pcmCopy, pts: pts, sampleRate: sampleRate, channels: channels}:
 		default:
 			relayAudioDrops.Add(1)
 		}
@@ -1049,6 +696,443 @@ func (a *App) wireSRTSource(cfg srt.SourceConfig, conn *srtgo.Conn) *srt.Source 
 	)
 
 	return src
+}
+
+// startSRTPipelineIngest starts a goroutine that reads decoded YUV frames from
+// pipelineCh and delivers them to the switcher's IngestRawVideo path. Each frame
+// is wrapped in a ProcessingFrame with pool-aware lifecycle.
+func (a *App) startSRTPipelineIngest(key string, pipelineCh <-chan srtVideoJob, framePool *switcher.FramePool) {
+	go func() {
+		for job := range pipelineCh {
+			pfr := &switcher.ProcessingFrame{
+				Data:   job.yuv,
+				Width:  job.w,
+				Height: job.h,
+				PTS:    job.pts,
+				DTS:    job.pts,
+				Codec:  "h264",
+			}
+			if framePool != nil {
+				pfr.SetPool(framePool)
+			}
+			a.sw.IngestRawVideo(key, pfr)
+		}
+	}()
+}
+
+// startSRTVideoRelayGPUDrain starts a goroutine that drains the relay video
+// channel without encoding. Used when the GPU source manager handles preview
+// encoding via IngestYUV — we just release pool buffers.
+func (a *App) startSRTVideoRelayGPUDrain(rc *srtRelayContext) {
+	go func() {
+		for job := range rc.relayVideoCh {
+			if rc.framePool != nil {
+				rc.framePool.Release(job.yuv)
+			}
+		}
+	}()
+}
+
+// startSRTVideoRelayPreview starts a goroutine that feeds decoded YUV frames
+// to the CPU preview encoder for low-bitrate browser relay.
+func (a *App) startSRTVideoRelayPreview(rc *srtRelayContext, previewEnc *preview.Encoder) {
+	go func() {
+		for job := range rc.relayVideoCh {
+			release := func(buf []byte) {
+				if rc.framePool != nil {
+					rc.framePool.Release(buf)
+				}
+			}
+			previewEnc.SendOwned(job.yuv, job.w, job.h, job.pts, release)
+		}
+		previewEnc.Stop()
+	}()
+}
+
+// startSRTVideoRelayFullQuality starts a goroutine that encodes YUV frames at
+// the configured relay resolution and broadcasts them to the browser relay.
+// Used when neither GPU preview nor CPU preview proxy is active.
+func (a *App) startSRTVideoRelayFullQuality(rc *srtRelayContext) {
+	relayW, relayH := parseRelayResolution(a.cfg.RelayResolution)
+
+	var (
+		videoEncoder  transition.VideoEncoder
+		groupID       atomic.Uint32
+		videoInfoSent bool
+		scaledYUV     []byte // persistent scale buffer
+		encoderYUV    []byte
+		lastVideoW    int
+		lastVideoH    int
+	)
+	go func() {
+		for job := range rc.relayVideoCh {
+			if rc.relay == nil {
+				continue
+			}
+			w, h, pts := job.w, job.h, job.pts
+
+			// Determine encode dimensions: scale or use source.
+			encW, encH := relayW, relayH
+			if encW == 0 || encH == 0 {
+				encW, encH = w, h // "source" mode: no scaling
+			}
+
+			// Resolution change → recreate encoder.
+			if videoEncoder != nil && (w != lastVideoW || h != lastVideoH) {
+				videoEncoder.Close()
+				videoEncoder = nil
+				rc.state.videoEncoder = nil
+				videoInfoSent = false
+			}
+
+			// Lazy encoder creation (ultrafast/baseline for low CPU).
+			if videoEncoder == nil {
+				enc, err := codec.NewPreviewEncoder(encW, encH, a.cfg.RelayBitrate, rc.pf.FPSNum, rc.pf.FPSDen)
+				if err != nil {
+					slog.Error("srt: relay encoder init failed", "key", rc.key, "error", err)
+					continue
+				}
+				videoEncoder = enc
+				rc.state.videoEncoder = enc
+				lastVideoW = w
+				lastVideoH = h
+			}
+
+			// Scale if needed, then copy into encoder buffer.
+			var frameYUV []byte
+			if w == encW && h == encH {
+				frameYUV = job.yuv
+			} else {
+				targetSize := switcher.ColorYUV420_8bit.FrameSize(encW, encH)
+				if cap(scaledYUV) < targetSize {
+					scaledYUV = make([]byte, targetSize)
+				}
+				scaledYUV = scaledYUV[:targetSize]
+				transition.ScaleYUV420(job.yuv, w, h, scaledYUV, encW, encH)
+				frameYUV = scaledYUV
+			}
+
+			needed := len(frameYUV)
+			if cap(encoderYUV) < needed {
+				encoderYUV = make([]byte, needed)
+			}
+			encoderYUV = encoderYUV[:needed]
+			copy(encoderYUV, frameYUV)
+			if rc.framePool != nil {
+				rc.framePool.Release(job.yuv)
+			}
+
+			encoded, isKeyframe, err := videoEncoder.Encode(encoderYUV, pts, false)
+			if err != nil || len(encoded) == 0 {
+				continue
+			}
+
+			avc1 := codec.AnnexBToAVC1(encoded)
+			if isKeyframe {
+				groupID.Add(1)
+			}
+
+			frame := &media.VideoFrame{
+				PTS: pts, DTS: pts, IsKeyframe: isKeyframe,
+				WireData: avc1, Codec: "h264", GroupID: groupID.Load(),
+			}
+
+			if isKeyframe {
+				for _, nalu := range codec.ExtractNALUs(avc1) {
+					if len(nalu) == 0 {
+						continue
+					}
+					switch nalu[0] & 0x1F {
+					case 7:
+						frame.SPS = nalu
+					case 8:
+						frame.PPS = nalu
+					}
+				}
+				if !videoInfoSent && frame.SPS != nil && frame.PPS != nil {
+					avcC := moq.BuildAVCDecoderConfig(frame.SPS, frame.PPS)
+					if avcC != nil {
+						rc.relay.SetVideoInfo(distribution.VideoInfo{
+							Codec: codec.ParseSPSCodecString(frame.SPS),
+							Width: encW, Height: encH, DecoderConfig: avcC,
+						})
+						slog.Info("SRT source: relay VideoInfo set", "key", rc.key, "w", encW, "h", encH)
+						videoInfoSent = true
+					}
+				}
+			}
+			rc.relay.BroadcastVideo(frame)
+		}
+		if videoEncoder != nil {
+			videoEncoder.Close()
+			videoEncoder = nil
+		}
+	}()
+}
+
+// startSRTReplayGPUEncode starts a goroutine that reads GPU-resident NV12 frames
+// from the source manager and NVENC-encodes them directly from VRAM for replay.
+// Used when NVDEC is active (OnRawVideo never fires, so CPU replay starves).
+func (a *App) startSRTReplayGPUEncode(rc *srtRelayContext, replayGPUCh <-chan srtReplayGPUJob) {
+	srcMgr := a.gpuState.sourceManager
+
+	go func() {
+		var (
+			gpuEnc         *gpu.GPUEncoder
+			groupID        atomic.Uint32
+			lastW, lastH   int
+			replayNV12Tmp  *gpu.GPUFrame // temp NV12 frame for P210→NV12 convert
+			replayNV12Pool *gpu.FramePool
+		)
+		defer func() {
+			if replayNV12Tmp != nil {
+				replayNV12Tmp.Release()
+			}
+			if replayNV12Pool != nil {
+				replayNV12Pool.Close()
+			}
+			if gpuEnc != nil {
+				gpuEnc.Close()
+			}
+		}()
+
+		for job := range replayGPUCh {
+			// Resolution change → recreate encoder and NV12 temp.
+			if gpuEnc != nil && (job.w != lastW || job.h != lastH) {
+				gpuEnc.Close()
+				gpuEnc = nil
+				if replayNV12Tmp != nil {
+					replayNV12Tmp.Release()
+					replayNV12Tmp = nil
+				}
+				if replayNV12Pool != nil {
+					replayNV12Pool.Close()
+					replayNV12Pool = nil
+				}
+			}
+
+			if gpuEnc == nil {
+				enc, err := gpu.NewGPUEncoder(a.gpuState.ctx, job.w, job.h, rc.pf.FPSNum, rc.pf.FPSDen, 6_000_000)
+				if err != nil {
+					slog.Error("srt: GPU replay encoder init failed", "key", rc.key, "error", err)
+					continue
+				}
+				gpuEnc = enc
+				lastW, lastH = job.w, job.h
+			}
+
+			// Load current GPU frame (atomic, lock-free read).
+			gpuFrame := srcMgr.CurrentFrame(rc.key)
+			if gpuFrame == nil {
+				continue
+			}
+
+			// If source frame is P210, convert to NV12 before H.264 encode.
+			// Replay always outputs H.264 for browser compatibility.
+			encFrame := gpuFrame
+			if gpuFrame.Format == gpu.GPUFormatP210 {
+				if replayNV12Tmp == nil {
+					tmp, tmpErr := gpu.NewFramePool(a.gpuState.ctx, job.w, job.h, 2)
+					if tmpErr != nil {
+						continue
+					}
+					replayNV12Pool = tmp
+					f, fErr := tmp.Acquire()
+					if fErr != nil {
+						continue
+					}
+					replayNV12Tmp = f
+				}
+				if err := gpu.ScaleP210ToNV12On(a.gpuState.ctx, replayNV12Tmp, gpuFrame, nil); err != nil {
+					continue
+				}
+				replayNV12Tmp.PTS = gpuFrame.PTS
+				encFrame = replayNV12Tmp
+			}
+
+			// NVENC encode directly from VRAM.
+			data, isIDR, err := gpuEnc.EncodeGPU(encFrame, false)
+			if err != nil || len(data) == 0 {
+				continue
+			}
+
+			avc1 := codec.AnnexBToAVC1(data)
+			if isIDR {
+				groupID.Add(1)
+			}
+
+			vf := &media.VideoFrame{
+				PTS:        job.pts,
+				DTS:        job.pts,
+				IsKeyframe: isIDR,
+				GroupID:    groupID.Load(),
+				WireData:   avc1,
+				Codec:      "h264",
+			}
+
+			// Extract SPS/PPS from IDR frames for decoder init.
+			if isIDR {
+				for _, nalu := range codec.ExtractNALUs(avc1) {
+					if len(nalu) == 0 {
+						continue
+					}
+					switch nalu[0] & 0x1F {
+					case 7:
+						vf.SPS = nalu
+					case 8:
+						vf.PPS = nalu
+					}
+				}
+			}
+
+			rc.replayViewer.SendVideo(vf)
+		}
+	}()
+}
+
+// startSRTReplayCPUEncode starts a goroutine that encodes YUV frames at full
+// quality for the replay system. Used when preview proxy is active (so the relay
+// gets low-bitrate preview) but replay needs full-quality H.264.
+// Skipped when GPU replay encode is active (NVDEC path handles replay).
+func (a *App) startSRTReplayCPUEncode(rc *srtRelayContext) {
+	go func() {
+		var (
+			videoEncoder transition.VideoEncoder
+			groupID      atomic.Uint32
+			encoderYUV   []byte
+			lastW, lastH int
+		)
+		replayEncFactory := encoderFactory()
+		for job := range rc.replayVideoCh {
+			w, h, pts := job.w, job.h, job.pts
+
+			// Resolution change → recreate encoder.
+			if videoEncoder != nil && (w != lastW || h != lastH) {
+				videoEncoder.Close()
+				videoEncoder = nil
+			}
+
+			if videoEncoder == nil {
+				enc, err := replayEncFactory(w, h, 6_000_000, rc.pf.FPSNum, rc.pf.FPSDen)
+				if err != nil {
+					slog.Error("srt: replay encoder init failed", "key", rc.key, "error", err)
+					if rc.framePool != nil {
+						rc.framePool.Release(job.yuv)
+					}
+					continue
+				}
+				videoEncoder = enc
+				lastW = w
+				lastH = h
+			}
+
+			needed := len(job.yuv)
+			if cap(encoderYUV) < needed {
+				encoderYUV = make([]byte, needed)
+			}
+			encoderYUV = encoderYUV[:needed]
+			copy(encoderYUV, job.yuv)
+			if rc.framePool != nil {
+				rc.framePool.Release(job.yuv)
+			}
+
+			encoded, isKeyframe, err := videoEncoder.Encode(encoderYUV, pts, false)
+			if err != nil || len(encoded) == 0 {
+				continue
+			}
+
+			avc1 := codec.AnnexBToAVC1(encoded)
+			if isKeyframe {
+				groupID.Add(1)
+			}
+
+			frame := &media.VideoFrame{
+				PTS: pts, DTS: pts, IsKeyframe: isKeyframe,
+				WireData: avc1, Codec: "h264", GroupID: groupID.Load(),
+			}
+
+			if isKeyframe {
+				for _, nalu := range codec.ExtractNALUs(avc1) {
+					if len(nalu) == 0 {
+						continue
+					}
+					switch nalu[0] & 0x1F {
+					case 7:
+						frame.SPS = nalu
+					case 8:
+						frame.PPS = nalu
+					}
+				}
+			}
+			rc.replayViewer.SendVideo(frame)
+		}
+		if videoEncoder != nil {
+			videoEncoder.Close()
+		}
+	}()
+}
+
+// startSRTAudioRelay starts a goroutine that delivers decoded PCM audio to the
+// mixer and encodes it as AAC for the browser relay and replay system.
+func (a *App) startSRTAudioRelay(rc *srtRelayContext) {
+	const aacFrameSamples = 1024
+	var (
+		audioEncoder audio.Encoder
+		audioBuf     []float32
+		audioPTS     int64
+	)
+	go func() {
+		for job := range rc.audioCh {
+			// Deliver to mixer.
+			a.mixer.IngestPCM(rc.key, job.pcm, job.pts, job.channels)
+
+			// Encode for relay.
+			if rc.relay == nil {
+				continue
+			}
+
+			if audioEncoder == nil {
+				enc, err := audio.NewFDKEncoder(job.sampleRate, job.channels)
+				if err != nil {
+					slog.Error("srt: audio encoder init failed", "key", rc.key, "error", err)
+					continue
+				}
+				audioEncoder = enc
+				rc.state.audioEncoder = enc
+			}
+
+			if len(audioBuf) == 0 {
+				audioPTS = job.pts
+			}
+			audioBuf = append(audioBuf, job.pcm...)
+
+			chunkSize := aacFrameSamples * job.channels
+			for len(audioBuf) >= chunkSize {
+				chunk := audioBuf[:chunkSize]
+				encoded, err := audioEncoder.Encode(chunk)
+				if err != nil {
+					audioBuf = audioBuf[chunkSize:]
+					continue
+				}
+				if len(encoded) > 0 {
+					af := &media.AudioFrame{
+						PTS: audioPTS, Data: encoded,
+						SampleRate: job.sampleRate, Channels: job.channels,
+					}
+					rc.relay.BroadcastAudio(af)
+					if rc.replayViewer != nil {
+						rc.replayViewer.SendAudio(af)
+					}
+				}
+				audioPTS += int64(aacFrameSamples) * 90000 / int64(job.sampleRate)
+				audioBuf = audioBuf[chunkSize:]
+			}
+		}
+		if audioEncoder != nil {
+			_ = audioEncoder.Close()
+			audioEncoder = nil
+		}
+	}()
 }
 
 // startSRT starts the SRT listener and restores persisted caller configs.
@@ -1122,7 +1206,7 @@ var _ control.SRTManager = (*srtManagerAdapter)(nil)
 // CreatePull starts an outbound SRT pull connection and returns the source key.
 // The source is pre-registered with the switcher/mixer so it appears immediately
 // in the UI with "offline" status while the connection is being established.
-func (m *srtManagerAdapter) CreatePull(ctx context.Context, address, streamID, label string, latencyMs int) (string, error) {
+func (m *srtManagerAdapter) CreatePull(ctx context.Context, address, streamID, label string, latencyMs int, inputBW int64, overheadBW int) (string, error) {
 	key := srt.KeyPrefix + srt.ExtractStreamKey(streamID)
 
 	// Pre-register source so it appears immediately in the UI.
@@ -1141,12 +1225,14 @@ func (m *srtManagerAdapter) CreatePull(ctx context.Context, address, streamID, l
 	// r.Context() is cancelled when the HTTP response is sent, which
 	// would immediately kill the connect loop goroutine before it can dial.
 	err := m.caller.Pull(m.app.srtCtx, srt.SourceConfig{
-		Key:       key,
-		Mode:      srt.ModeCaller,
-		Address:   address,
-		StreamID:  streamID,
-		Label:     label,
-		LatencyMs: latencyMs,
+		Key:        key,
+		Mode:       srt.ModeCaller,
+		Address:    address,
+		StreamID:   streamID,
+		Label:      label,
+		LatencyMs:  latencyMs,
+		InputBW:    inputBW,
+		OverheadBW: overheadBW,
 	})
 	if err != nil {
 		// Rollback pre-registration on failure.
