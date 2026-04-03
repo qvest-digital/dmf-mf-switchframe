@@ -26,8 +26,8 @@ import (
 )
 
 const (
-	maxMelFrames = 600  // 5s * 100 frames/s + margin
-	maxEncFrames = 80   // 600 / 8 subsampling + margin
+	maxMelFrames = 600 // 5s * 100 frames/s + margin
+	maxEncFrames = 80  // 600 / 8 subsampling + margin
 	maxTargetLen = 128
 	encoderDim   = 1024
 	stateSize    = 640

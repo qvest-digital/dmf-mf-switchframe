@@ -26,7 +26,7 @@ func (b *trtASRBackend) SetModel(string) error {
 	return nil
 }
 
-func (b *trtASRBackend) Config() map[string]interface{} { return nil }
-func (b *trtASRBackend) SetConfig(map[string]interface{})                {}
+func (b *trtASRBackend) Config() map[string]interface{}   { return nil }
+func (b *trtASRBackend) SetConfig(map[string]interface{}) {}
 
 func (b *trtASRBackend) Close() { b.engine.backend.close() }

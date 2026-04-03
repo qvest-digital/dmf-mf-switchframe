@@ -37,7 +37,7 @@ func TestFreezeRepeat_BufferSurvivesPipelineRelease(t *testing.T) {
 
 	// Create a managed frame (mimics sourceDecoder output).
 	frame := &ProcessingFrame{
-		Data:   pool.Acquire()[:yuvSize],
+		Data:  pool.Acquire()[:yuvSize],
 		Width: 8, Height: 8, PTS: 90000,
 		pool: pool,
 	}

@@ -13,9 +13,9 @@ import (
 )
 
 const (
-	trtSidecarBin  = "/tmp/switchframe-ai"
-	aiModelsDir    = "/data/switchframe/ai_models"
-	rvmModelFile   = "rvm_mobilenetv3_fp32_fixed.onnx"
+	trtSidecarBin = "/tmp/switchframe-ai"
+	aiModelsDir   = "/data/switchframe/ai_models"
+	rvmModelFile  = "rvm_mobilenetv3_fp32_fixed.onnx"
 )
 
 // TestSegmentationProxy_RealTRTInference spawns the AI sidecar with a real

@@ -424,9 +424,9 @@ func TestQuadPreset(t *testing.T) {
 
 	// Four distinct colors for the four quadrants.
 	colors := [4][3]byte{
-		{redY, redCb, redCr},       // cam1 = top-left
-		{greenY, greenCb, greenCr}, // cam2 = top-right
-		{blueY, blueCb, blueCr},    // cam3 = bottom-left
+		{redY, redCb, redCr},          // cam1 = top-left
+		{greenY, greenCb, greenCr},    // cam2 = top-right
+		{blueY, blueCb, blueCr},       // cam3 = bottom-left
 		{yellowY, yellowCb, yellowCr}, // cam4 = bottom-right
 	}
 
@@ -500,10 +500,10 @@ func TestBackgroundFill(t *testing.T) {
 	// Areas outside the slot should be broadcast black.
 	// Check corners of the frame.
 	corners := [][2]int{
-		{0, 0},                      // top-left
-		{frameW - 2, 0},             // top-right
-		{0, frameH - 2},             // bottom-left
-		{frameW - 2, frameH - 2},    // bottom-right
+		{0, 0},                   // top-left
+		{frameW - 2, 0},          // top-right
+		{0, frameH - 2},          // bottom-left
+		{frameW - 2, frameH - 2}, // bottom-right
 	}
 	for _, pt := range corners {
 		assertPixelColor(t, result, frameW, frameH, pt[0], pt[1],
@@ -892,7 +892,7 @@ func TestLayoutValidation(t *testing.T) {
 
 	t.Run("TooManySlots", func(t *testing.T) {
 		l := &layout.Layout{
-			Name: "too-many",
+			Name:  "too-many",
 			Slots: make([]layout.Slot, layout.MaxSlots+1),
 		}
 		// Fill with valid slots

@@ -1768,4 +1768,3 @@ func assertNearlyMonotonic(t *testing.T, values []int64, maxBackward int64, fiel
 			"%s should increase overall: first=%d, last=%d", fieldName, values[0], values[len(values)-1])
 	}
 }
-

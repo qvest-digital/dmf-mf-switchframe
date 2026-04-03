@@ -15,14 +15,14 @@ import (
 // Index 0 = blank, 1 = "▁hello", 2 = "▁world", 3 = "▁break", 4 = "ing", 5 = "▁news"
 func testVocab() []string {
 	return []string{
-		"<blank>",  // 0
-		"▁hello",   // 1
-		"▁world",   // 2
-		"▁break",   // 3
-		"ing",      // 4
-		"▁news",    // 5
-		"▁the",     // 6
-		"▁a",       // 7
+		"<blank>", // 0
+		"▁hello",  // 1
+		"▁world",  // 2
+		"▁break",  // 3
+		"ing",     // 4
+		"▁news",   // 5
+		"▁the",    // 6
+		"▁a",      // 7
 	}
 }
 
@@ -96,11 +96,11 @@ func TestTokenAssemblerBlankSkip(t *testing.T) {
 	// Feed blank, ▁hello, blank, blank, ▁world.
 	// Blanks should be ignored.
 	tokens := []decodedToken{
-		{id: 0, prob: 0.99, framePos: 0},  // blank
-		{id: 1, prob: 0.9, framePos: 1},   // ▁hello
-		{id: 0, prob: 0.99, framePos: 2},  // blank
-		{id: 0, prob: 0.99, framePos: 3},  // blank
-		{id: 2, prob: 0.85, framePos: 4},  // ▁world
+		{id: 0, prob: 0.99, framePos: 0}, // blank
+		{id: 1, prob: 0.9, framePos: 1},  // ▁hello
+		{id: 0, prob: 0.99, framePos: 2}, // blank
+		{id: 0, prob: 0.99, framePos: 3}, // blank
+		{id: 2, prob: 0.85, framePos: 4}, // ▁world
 	}
 
 	words := ta.feed(tokens)
@@ -339,9 +339,9 @@ func TestTokenAssemblerInvalidTokenID(t *testing.T) {
 
 	// Feed tokens with out-of-range IDs — they should be silently skipped.
 	tokens := []decodedToken{
-		{id: -1, prob: 0.9, framePos: 0},  // negative
-		{id: 1, prob: 0.9, framePos: 1},   // ▁hello (valid)
-		{id: 99, prob: 0.9, framePos: 2},  // out of range
+		{id: -1, prob: 0.9, framePos: 0}, // negative
+		{id: 1, prob: 0.9, framePos: 1},  // ▁hello (valid)
+		{id: 99, prob: 0.9, framePos: 2}, // out of range
 	}
 	ta.feed(tokens)
 
@@ -544,7 +544,7 @@ func TestTranscribeSingleWordEmission(t *testing.T) {
 	vocabSize := 8
 	numDurBins := 4
 
-	encoded := make([]float32, 8) // 2 frames * encoderDim=4
+	encoded := make([]float32, 8)                          // 2 frames * encoderDim=4
 	logitsHello := makeLogits(vocabSize, 1, numDurBins, 1) // token 1=▁hello, dur=1
 	logitsWorld := makeLogits(vocabSize, 2, numDurBins, 1) // token 2=▁world, dur=1
 
@@ -600,7 +600,7 @@ func TestTranscribeDurationSkip(t *testing.T) {
 	vocabSize := 8
 	numDurBins := 4
 
-	encoded := make([]float32, 4*4) // 4 frames * encoderDim=4
+	encoded := make([]float32, 4*4)                        // 4 frames * encoderDim=4
 	logitsHello := makeLogits(vocabSize, 1, numDurBins, 3) // dur=3 -> skip 3
 	logitsWorld := makeLogits(vocabSize, 2, numDurBins, 1) // dur=1
 

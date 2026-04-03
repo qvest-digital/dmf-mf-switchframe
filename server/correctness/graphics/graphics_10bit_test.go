@@ -275,12 +275,12 @@ func TestGraphics10bit_AlphaBlendOutputRange(t *testing.T) {
 	w, h := 32, 32
 
 	testCases := []struct {
-		name          string
-		baseY         uint16
-		overlayR      byte
-		overlayG      byte
-		overlayB      byte
-		overlayAlpha  byte
+		name         string
+		baseY        uint16
+		overlayR     byte
+		overlayG     byte
+		overlayB     byte
+		overlayAlpha byte
 	}{
 		{"max_on_max", 1023, 255, 255, 255, 255},
 		{"max_on_min", 0, 255, 255, 255, 255},

@@ -33,13 +33,13 @@ func TestAVSync10bit_PTSPreservation(t *testing.T) {
 
 	// Create source frames with known content at specific PTS values
 	type ptsFrame struct {
-		pts int64
+		pts  int64
 		yVal uint16
 	}
 
 	frames := []ptsFrame{
 		{pts: 0, yVal: 100},
-		{pts: 3000, yVal: 200},     // 30fps = 3000 PTS ticks/frame at 90kHz
+		{pts: 3000, yVal: 200}, // 30fps = 3000 PTS ticks/frame at 90kHz
 		{pts: 6000, yVal: 300},
 		{pts: 9000, yVal: 400},
 		{pts: 12000, yVal: 500},

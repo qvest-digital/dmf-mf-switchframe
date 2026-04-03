@@ -151,7 +151,7 @@ func TestWarpPlane10Dispatch_OutOfBounds(t *testing.T) {
 	p.lutSX = make([]int32, w*h)
 	p.lutSY = make([]int32, w*h)
 	for i := range p.lutSX {
-		p.lutSX[i] = -1 << 16    // negative: should clamp to 0
+		p.lutSX[i] = -1 << 16      // negative: should clamp to 0
 		p.lutSY[i] = (h + 5) << 16 // above max: should clamp to h-1
 	}
 

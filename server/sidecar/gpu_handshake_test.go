@@ -123,10 +123,10 @@ func TestWriteReadGPUPoolHandshake(t *testing.T) {
 			Height:    1080,
 			Pitch:     2048,
 		},
-		ShmName:       "/sf-test-proto",
-		FrameHandles:  make([]CUDAIPCHandle, 2),
-		ReadyEvents:   make([]CUDAIPCEventHandle, 2),
-		DoneEvents:    make([]CUDAIPCEventHandle, 2),
+		ShmName:      "/sf-test-proto",
+		FrameHandles: make([]CUDAIPCHandle, 2),
+		ReadyEvents:  make([]CUDAIPCEventHandle, 2),
+		DoneEvents:   make([]CUDAIPCEventHandle, 2),
 	}
 
 	// Fill frame handle 0 with a pattern.

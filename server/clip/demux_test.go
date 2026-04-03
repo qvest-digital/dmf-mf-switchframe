@@ -370,9 +370,9 @@ func makeWireData(naluData []byte) []byte {
 func TestDemuxTS_HEVCDetection(t *testing.T) {
 	// Generate HEVC TS data using the muxer.
 	// HEVC VPS: 2-byte header, type 32 (VPS) = byte 0: (32<<1) = 0x40
-	vps := []byte{0x40, 0x01, 0x0C, 0x01, 0xFF, 0xFF}       // VPS NALU (type 32)
-	sps := []byte{0x42, 0x01, 0x01, 0x01, 0x60, 0x00}        // SPS NALU (type 33)
-	pps := []byte{0x44, 0x01, 0xC0, 0xF3, 0x18}              // PPS NALU (type 34)
+	vps := []byte{0x40, 0x01, 0x0C, 0x01, 0xFF, 0xFF} // VPS NALU (type 32)
+	sps := []byte{0x42, 0x01, 0x01, 0x01, 0x60, 0x00} // SPS NALU (type 33)
+	pps := []byte{0x44, 0x01, 0xC0, 0xF3, 0x18}       // PPS NALU (type 34)
 	idrBody := make([]byte, 64)
 	idrBody[0] = 0x26 // IDR_W_RADL (type 19): (19<<1) = 0x26
 	idrBody[1] = 0x01 // TID=1
@@ -467,7 +467,7 @@ func TestDetectCodecFromFrames_VPSPresence(t *testing.T) {
 	frames := []BufferedFrame{
 		{
 			wireData:   makeWireData([]byte{0x02, 0x01}), // TRAIL_R
-			vps:        []byte{0x40, 0x01},                // VPS present
+			vps:        []byte{0x40, 0x01},               // VPS present
 			isKeyframe: true,
 		},
 	}

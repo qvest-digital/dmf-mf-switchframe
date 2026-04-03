@@ -15,12 +15,12 @@ func newWhisperASRBackend(modelsDir string, useGPU bool) (*whisperASRBackend, er
 }
 
 func (b *whisperASRBackend) Transcribe([]float32) []asr.TranscriptWord { return nil }
-func (b *whisperASRBackend) Name() string                               { return "whisper" }
-func (b *whisperASRBackend) Models() []string                           { return nil }
-func (b *whisperASRBackend) ModelName() string                          { return "" }
+func (b *whisperASRBackend) Name() string                              { return "whisper" }
+func (b *whisperASRBackend) Models() []string                          { return nil }
+func (b *whisperASRBackend) ModelName() string                         { return "" }
 func (b *whisperASRBackend) SetModel(string) error {
 	return fmt.Errorf("whisper not available")
 }
-func (b *whisperASRBackend) Config() map[string]interface{} { return nil }
-func (b *whisperASRBackend) SetConfig(map[string]interface{})                {}
-func (b *whisperASRBackend) Close()                                          {}
+func (b *whisperASRBackend) Config() map[string]interface{}   { return nil }
+func (b *whisperASRBackend) SetConfig(map[string]interface{}) {}
+func (b *whisperASRBackend) Close()                           {}

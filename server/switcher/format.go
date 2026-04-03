@@ -43,7 +43,7 @@ func (c PipelineCodec) String() string {
 // PipelineColorConfig combines color format and codec selection.
 type PipelineColorConfig struct {
 	ColorFormat PipelineColorFormat `json:"colorFormat"`
-	Codec       PipelineCodec      `json:"codec"`
+	Codec       PipelineCodec       `json:"codec"`
 }
 
 // Validate checks that the color format and codec are compatible.

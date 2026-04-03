@@ -8,10 +8,10 @@ import (
 
 // Errors for 10-bit warp validation.
 var (
-	ErrInactive        = errors.New("stmap: processor is inactive (no ST map loaded)")
-	ErrBufferTooSmall  = errors.New("stmap: buffer too small for given dimensions")
-	ErrOddWidth        = errors.New("stmap: width must be even for YUV422")
-	ErrZeroDimensions  = errors.New("stmap: width and height must be positive")
+	ErrInactive       = errors.New("stmap: processor is inactive (no ST map loaded)")
+	ErrBufferTooSmall = errors.New("stmap: buffer too small for given dimensions")
+	ErrOddWidth       = errors.New("stmap: width must be even for YUV422")
+	ErrZeroDimensions = errors.New("stmap: width and height must be positive")
 )
 
 // yuv422p10Size returns the byte size of a YUV422P10LE frame.
@@ -170,8 +170,8 @@ func warpPlane10(dst, src []byte, w, h int, lutX, lutY []int32) {
 		// multiplies that by 65536, which overflows int32. Use int64 for the
 		// vertical accumulation.
 		invFx := 65536 - fx
-		top := p00*invFx + p10*fx          // max ~67M, fits int32
-		bot := p01*invFx + p11*fx          // max ~67M, fits int32
+		top := p00*invFx + p10*fx // max ~67M, fits int32
+		bot := p01*invFx + p11*fx // max ~67M, fits int32
 		invFy := int64(65536) - int64(fy)
 		val := (int64(top)*invFy + int64(bot)*int64(fy) + (1 << 31)) >> 32
 

@@ -475,4 +475,3 @@ func TestPipelineMinimumResolution(t *testing.T) {
 
 	require.False(t, panicked, "pipeline should not panic at %dx%d", w, h)
 }
-

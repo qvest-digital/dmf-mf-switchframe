@@ -149,10 +149,10 @@ func TestV210ToYUV422P10_KnownValues(t *testing.T) {
 	// Y:  100, 200, 300, 400, 500, 600
 	// Cb: 150, 250, 350
 	// Cr: 450, 550, 650
-	binary.LittleEndian.PutUint32(v210[0:], packV210Word(150, 100, 450))   // Cb0=150, Y0=100, Cr0=450
-	binary.LittleEndian.PutUint32(v210[4:], packV210Word(200, 250, 300))   // Y1=200, Cb1=250, Y2=300
-	binary.LittleEndian.PutUint32(v210[8:], packV210Word(550, 400, 350))   // Cr1=550, Y3=400, Cb2=350
-	binary.LittleEndian.PutUint32(v210[12:], packV210Word(500, 650, 600))  // Y4=500, Cr2=650, Y5=600
+	binary.LittleEndian.PutUint32(v210[0:], packV210Word(150, 100, 450))  // Cb0=150, Y0=100, Cr0=450
+	binary.LittleEndian.PutUint32(v210[4:], packV210Word(200, 250, 300))  // Y1=200, Cb1=250, Y2=300
+	binary.LittleEndian.PutUint32(v210[8:], packV210Word(550, 400, 350))  // Cr1=550, Y3=400, Cb2=350
+	binary.LittleEndian.PutUint32(v210[12:], packV210Word(500, 650, 600)) // Y4=500, Cr2=650, Y5=600
 
 	result, err := V210ToYUV422P10(v210, stride, w, h)
 	if err != nil {

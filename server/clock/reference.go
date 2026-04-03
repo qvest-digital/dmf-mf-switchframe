@@ -20,16 +20,16 @@ const ptsMask33 = int64(1<<33) - 1
 // ReferenceClock produces ticks at a stable frame rate, driving synchronous
 // A/V processing. Rate can be changed at runtime (for source clock recovery).
 type ReferenceClock struct {
-	mu         sync.Mutex
-	fpsNum     int
-	fpsDen     int
-	sampleRate int
-	accum      *AudioAccumulator
-	tickCount  int64
-	ticks      chan Tick
-	request    chan struct{} // non-realtime: consumer signals readiness
-	stop       chan struct{}
-	wg         sync.WaitGroup
+	mu           sync.Mutex
+	fpsNum       int
+	fpsDen       int
+	sampleRate   int
+	accum        *AudioAccumulator
+	tickCount    int64
+	ticks        chan Tick
+	request      chan struct{} // non-realtime: consumer signals readiness
+	stop         chan struct{}
+	wg           sync.WaitGroup
 	realtime     bool
 	running      atomic.Bool
 	droppedTicks atomic.Int64 // ticks dropped because consumer was behind

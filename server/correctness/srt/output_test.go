@@ -223,9 +223,9 @@ func TestSRTOutputProducesValidTS(t *testing.T) {
 // TestSRTOutputReconnectionIDRGating tests the SRT output adapter's IDR gating behavior
 // after reconnection. This test verifies two things:
 //
-// 1. The ContainsKeyframe function correctly identifies keyframe vs non-keyframe TS data
-// 2. After an SRT reconnection, the SRTCaller adapter gates (drops) non-keyframe TS data
-//    until a keyframe arrives, ensuring the remote decoder can cleanly start decoding.
+//  1. The ContainsKeyframe function correctly identifies keyframe vs non-keyframe TS data
+//  2. After an SRT reconnection, the SRTCaller adapter gates (drops) non-keyframe TS data
+//     until a keyframe arrives, ensuring the remote decoder can cleanly start decoding.
 //
 // We use the SRTCaller with a mock connection to control reconnection timing precisely.
 func TestSRTOutputReconnectionIDRGating(t *testing.T) {
@@ -361,7 +361,7 @@ func TestSRTOutputReconnectionIDRGating(t *testing.T) {
 	// Allow reconnection to happen. The mock connect function resolves immediately
 	// but the reconnect loop has a backoff delay.
 	mu.Lock()
-	writeErr = nil // Clear error so reconnection succeeds.
+	writeErr = nil    // Clear error so reconnection succeeds.
 	writtenData = nil // Reset to track post-reconnect writes only.
 	mu.Unlock()
 

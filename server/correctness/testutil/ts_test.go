@@ -28,8 +28,8 @@ func buildTSPacket(pid uint16, cc uint8, hasAdaptation, hasPayload bool) []byte 
 
 	if hasAdaptation {
 		// Minimal adaptation field: length=1, flags=0
-		pkt[4] = 1  // adaptation field length
-		pkt[5] = 0  // flags
+		pkt[4] = 1 // adaptation field length
+		pkt[5] = 0 // flags
 		// Fill rest with stuffing (0xFF)
 		for i := 6; i < 188; i++ {
 			pkt[i] = 0xFF
@@ -48,7 +48,7 @@ func buildTSPacketWithPCR(pid uint16, cc uint8, pcrBase int64) []byte {
 	pkt[3] = 0x20 | (cc & 0x0F) // adaptation only
 
 	// Adaptation field with PCR
-	pkt[4] = 7  // adaptation field length (1 flag + 6 PCR bytes)
+	pkt[4] = 7    // adaptation field length (1 flag + 6 PCR bytes)
 	pkt[5] = 0x10 // PCR flag set
 
 	// PCR: 33-bit base + 6 reserved + 9-bit extension
@@ -58,7 +58,7 @@ func buildTSPacketWithPCR(pid uint16, cc uint8, pcrBase int64) []byte {
 	pkt[8] = byte(pcrBase >> 9)
 	pkt[9] = byte(pcrBase >> 1)
 	pkt[10] = byte((pcrBase&1)<<7) | 0x7E // bit0 of base << 7, then 6 reserved bits = 1
-	pkt[11] = 0 // extension = 0
+	pkt[11] = 0                           // extension = 0
 
 	// Fill rest with stuffing
 	for i := 12; i < 188; i++ {

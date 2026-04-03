@@ -460,10 +460,10 @@ func TestGPUMultiSourceQuadComposite(t *testing.T) {
 	halfW := (width / 2) &^ 1
 	halfH := (height / 2) &^ 1
 	rects := []Rect{
-		{X: 0, Y: 0, W: halfW, H: halfH},            // top-left
-		{X: halfW, Y: 0, W: halfW, H: halfH},         // top-right
-		{X: 0, Y: halfH, W: halfW, H: halfH},         // bottom-left
-		{X: halfW, Y: halfH, W: halfW, H: halfH},     // bottom-right
+		{X: 0, Y: 0, W: halfW, H: halfH},         // top-left
+		{X: halfW, Y: 0, W: halfW, H: halfH},     // top-right
+		{X: 0, Y: halfH, W: halfW, H: halfH},     // bottom-left
+		{X: halfW, Y: halfH, W: halfW, H: halfH}, // bottom-right
 	}
 
 	// Composite each source into its quadrant.

@@ -733,13 +733,13 @@ func (p *previewRelayDebugProvider) DebugSnapshot() map[string]any {
 		var totalSent, totalDropped int64
 		for _, v := range viewers {
 			viewerList = append(viewerList, map[string]any{
-				"id":             v.ID,
-				"video_sent":     v.VideoSent,
-				"video_dropped":  v.VideoDropped,
-				"audio_sent":     v.AudioSent,
-				"audio_dropped":  v.AudioDropped,
-				"bytes_sent":     v.BytesSent,
-				"last_video_ts":  v.LastVideoTsMS,
+				"id":            v.ID,
+				"video_sent":    v.VideoSent,
+				"video_dropped": v.VideoDropped,
+				"audio_sent":    v.AudioSent,
+				"audio_dropped": v.AudioDropped,
+				"bytes_sent":    v.BytesSent,
+				"last_video_ts": v.LastVideoTsMS,
 			})
 			totalSent += v.VideoSent
 			totalDropped += v.VideoDropped

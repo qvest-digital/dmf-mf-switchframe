@@ -424,4 +424,3 @@ func TestUnregisterAllContinuesOnError(t *testing.T) {
 		t.Errorf("expected 6 DELETE calls (best-effort), got %d", callCount)
 	}
 }
-

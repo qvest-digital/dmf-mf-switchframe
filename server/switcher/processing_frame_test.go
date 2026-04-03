@@ -10,7 +10,7 @@ func TestProcessingFrameYUVSize(t *testing.T) {
 	pf := &ProcessingFrame{
 		Width:  8,
 		Height: 8,
-		Data:    make([]byte, ColorYUV420_8bit.FrameSize(8, 8)),
+		Data:   make([]byte, ColorYUV420_8bit.FrameSize(8, 8)),
 	}
 	require.Equal(t, ColorYUV420_8bit.FrameSize(8, 8), len(pf.Data))
 	require.Equal(t, 8, pf.Width)
@@ -21,7 +21,7 @@ func TestProcessingFrameDeepCopy(t *testing.T) {
 	original := &ProcessingFrame{
 		Width:      4,
 		Height:     4,
-		Data:        []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24},
+		Data:       []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24},
 		PTS:        1000,
 		DTS:        900,
 		IsKeyframe: true,
@@ -52,7 +52,7 @@ func TestProcessingFrameDeepCopyWithPool(t *testing.T) {
 	original := &ProcessingFrame{
 		Width:      4,
 		Height:     4,
-		Data:        pool.Acquire(),
+		Data:       pool.Acquire(),
 		PTS:        1000,
 		DTS:        900,
 		IsKeyframe: true,
@@ -88,7 +88,7 @@ func TestProcessingFrameReleaseYUVWithPool(t *testing.T) {
 	pf := &ProcessingFrame{
 		Width:  8,
 		Height: 8,
-		Data:    pool.Acquire(),
+		Data:   pool.Acquire(),
 		pool:   pool,
 	}
 
@@ -103,7 +103,7 @@ func TestProcessingFrame_TimestampsDeepCopy(t *testing.T) {
 	original := &ProcessingFrame{
 		Width:           4,
 		Height:          4,
-		Data:             make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:            make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		PTS:             1000,
 		ArrivalNano:     100000,
 		DecodeStartNano: 200000,
@@ -130,7 +130,7 @@ func TestReleaseYUVUnderflowLogsAndLeaks(t *testing.T) {
 	pf := &ProcessingFrame{
 		Width:  8,
 		Height: 8,
-		Data:    pool.Acquire(),
+		Data:   pool.Acquire(),
 		pool:   pool,
 	}
 	pf.SetRefs(1)
@@ -170,7 +170,7 @@ func TestDeepCopyPoolSizeMismatch(t *testing.T) {
 	original := &ProcessingFrame{
 		Width:  8,
 		Height: 8,
-		Data:    largeYUV,
+		Data:   largeYUV,
 		PTS:    2000,
 		pool:   pool,
 	}
@@ -201,7 +201,7 @@ func TestProcessingFrameGPUData(t *testing.T) {
 	pf := &ProcessingFrame{
 		Width:  4,
 		Height: 4,
-		Data:    make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:   make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 	}
 
 	// Initially nil.
@@ -232,7 +232,7 @@ func TestProcessingFrameGPUDataRefCounting(t *testing.T) {
 	pf := &ProcessingFrame{
 		Width:   4,
 		Height:  4,
-		Data:     make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:    make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		GPUData: fakeRC,
 	}
 
@@ -268,7 +268,7 @@ func TestProcessingFrame_GPUData_OnlyReleasedOnFinalRef(t *testing.T) {
 	pf := &ProcessingFrame{
 		Width:   4,
 		Height:  4,
-		Data:     make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:    make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		GPUData: fakeRC,
 	}
 	pf.SetRefs(2) // simulate pipeline ref + async encode ref
@@ -290,7 +290,7 @@ func TestProcessingFrameNilPoolFallback(t *testing.T) {
 	original := &ProcessingFrame{
 		Width:  4,
 		Height: 4,
-		Data:    make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:   make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 	}
 
 	copied := original.DeepCopy()

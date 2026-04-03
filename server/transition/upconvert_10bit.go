@@ -26,7 +26,7 @@ func upconvert420to422_10(src []byte, dst []byte, width, height int) error {
 		return fmt.Errorf("dimensions must be even: %dx%d", width, height)
 	}
 
-	srcSize := width*height + 2*(width/2)*(height/2) // YUV420P 8-bit
+	srcSize := width*height + 2*(width/2)*(height/2)      // YUV420P 8-bit
 	dstSize := video.YUV422_10bitFrameSize(width, height) // YUV422P10LE
 	if len(src) < srcSize {
 		return fmt.Errorf("src buffer too small: need %d, got %d", srcSize, len(src))

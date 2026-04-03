@@ -144,7 +144,7 @@ func BenchmarkFRCIngest_WithSceneChange(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		pf := &ProcessingFrame{
-			Data:    yuv,
+			Data:   yuv,
 			Width:  1920,
 			Height: 1080,
 			PTS:    int64(i * 3000),
@@ -166,7 +166,7 @@ func BenchmarkFRCIngest_Nearest(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		pf := &ProcessingFrame{
-			Data:    yuv,
+			Data:   yuv,
 			Width:  1920,
 			Height: 1080,
 			PTS:    int64(i * 3000),

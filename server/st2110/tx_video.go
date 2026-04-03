@@ -136,10 +136,12 @@ func (tx *VideoTx) PutFrame(yuv []byte) error {
 // Chroma is vertically upsampled by row duplication (nearest-neighbor).
 //
 // Input layout (YUV420p 8-bit):
-//   Y: w*h bytes, U: w/2*h/2 bytes, V: w/2*h/2 bytes
+//
+//	Y: w*h bytes, U: w/2*h/2 bytes, V: w/2*h/2 bytes
 //
 // Output layout (YUV422 planar 10-bit LE):
-//   Y: w*h*2 bytes (uint16 LE), U: w/2*h*2 bytes, V: w/2*h*2 bytes
+//
+//	Y: w*h*2 bytes (uint16 LE), U: w/2*h*2 bytes, V: w/2*h*2 bytes
 func yuv420p8ToYUV422Planar10LE(src, dst []byte, w, h int) {
 	ySize8 := w * h
 	chromaW := w / 2

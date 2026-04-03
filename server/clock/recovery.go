@@ -24,8 +24,8 @@ var StandardRates = []StandardRate{
 }
 
 const (
-	windowSize     = 64
-	minSamples     = 16
+	windowSize = 64
+	minSamples = 16
 )
 
 // ClockRecovery measures program source frame arrival rate and snaps to

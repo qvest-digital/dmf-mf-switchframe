@@ -26,8 +26,9 @@ import (
 // produces correct BT.709 10-bit limited-range values.
 //
 // BT.709 10-bit limited range:
-//   Y black  = 64  (not 0, not 16)
-//   Cb/Cr neutral = 512 (not 128, not 0)
+//
+//	Y black  = 64  (not 0, not 16)
+//	Cb/Cr neutral = 512 (not 128, not 0)
 func TestPlayout10bit_MediaFrameBlack(t *testing.T) {
 	w, h := 128, 64
 
@@ -96,9 +97,9 @@ func TestPlayout10bit_MediaFrameNotEightBitBlack(t *testing.T) {
 // works at various standard broadcast resolutions.
 func TestPlayout10bit_MediaFrameMultipleDimensions(t *testing.T) {
 	dimensions := []struct{ w, h int }{
-		{320, 240},  // QVGA
-		{640, 480},  // VGA
-		{1280, 720}, // 720p
+		{320, 240},   // QVGA
+		{640, 480},   // VGA
+		{1280, 720},  // 720p
 		{1920, 1080}, // 1080i/p
 	}
 

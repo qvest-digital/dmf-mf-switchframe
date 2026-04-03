@@ -341,7 +341,7 @@ func ScaleP210ToNV12On(ctx *Context, dst, src *GPUFrame, q *GPUWorkQueue) error 
 
 	uvParams := C.MetalScaleP210ToNV12Params{
 		srcW:     C.uint32_t(chromaSrcW),
-		srcH:     C.uint32_t(src.Height),     // P210: full-height UV (4:2:2)
+		srcH:     C.uint32_t(src.Height), // P210: full-height UV (4:2:2)
 		srcPitch: C.uint32_t(src.Pitch),
 		dstW:     C.uint32_t(chromaDstW),
 		dstH:     C.uint32_t(dst.Height / 2), // NV12: half-height UV (4:2:0)

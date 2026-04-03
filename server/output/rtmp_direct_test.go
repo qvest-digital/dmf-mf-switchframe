@@ -261,9 +261,9 @@ func TestParseSPSDimensions(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
-		sps           []byte
-		wantW, wantH  int
+		name         string
+		sps          []byte
+		wantW, wantH int
 	}{
 		{
 			// x264 Baseline 1920x1080 (no cropping needed, 120 MBs × 68 map units × 2)
@@ -293,8 +293,8 @@ func TestParseSPSDimensions(t *testing.T) {
 		},
 		{
 			// Minimal Baseline SPS (too short for full parse → fallback)
-			name: "minimal fallback",
-			sps:  []byte{0x67, 0x42, 0xc0, 0x1e},
+			name:  "minimal fallback",
+			sps:   []byte{0x67, 0x42, 0xc0, 0x1e},
 			wantW: 1920,
 			wantH: 1080,
 		},

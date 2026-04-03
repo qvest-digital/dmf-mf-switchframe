@@ -16,7 +16,7 @@ import (
 // Layout: Y plane (w*h*2) + Cb plane (w/2*h*2) + Cr plane (w/2*h*2).
 func generateSolidYUV422P10(w, h int, y, cb, cr uint16) []byte {
 	chromaW := w / 2
-	totalBytes := w*h*4 // Y + Cb + Cr
+	totalBytes := w * h * 4 // Y + Cb + Cr
 	frame := make([]byte, totalBytes)
 
 	// Y plane
@@ -63,7 +63,7 @@ func avgUint16Plane(data []byte, sampleCount int) float64 {
 func TestScaleYUV422P10_SolidColorPreservation(t *testing.T) {
 	type dimPair struct {
 		srcW, srcH, dstW, dstH int
-		label                   string
+		label                  string
 	}
 
 	cases := []dimPair{

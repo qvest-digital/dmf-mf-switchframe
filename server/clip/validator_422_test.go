@@ -14,8 +14,9 @@ import (
 // the correct crop unit for 4:2:2 content.
 //
 // H.264 spec (Table 6-1):
-//   4:2:0 (chromaFormatIDC=1): SubWidthC=2, SubHeightC=2 → CropUnitY = 2
-//   4:2:2 (chromaFormatIDC=2): SubWidthC=2, SubHeightC=1 → CropUnitY = 1
+//
+//	4:2:0 (chromaFormatIDC=1): SubWidthC=2, SubHeightC=2 → CropUnitY = 2
+//	4:2:2 (chromaFormatIDC=2): SubWidthC=2, SubHeightC=1 → CropUnitY = 1
 //
 // Without this fix, 4:2:2 content with frame cropping gets wrong height because
 // the crop offset is doubled (using 4:2:0 SubHeightC=2 instead of 4:2:2 SubHeightC=1).

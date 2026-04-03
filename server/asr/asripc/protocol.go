@@ -20,12 +20,12 @@ const MaxMessageSize = 65536
 type Message struct {
 	// Direction: sidecar -> switchframe
 	Type      string `json:"type,omitempty"`       // "transcript", "status", "error"
-	Words     []Word `json:"words,omitempty"`       // for type=transcript
-	IsFinal   bool   `json:"is_final,omitempty"`    // for type=transcript
-	State     string `json:"state,omitempty"`       // for type=status: "ready", "inference"
-	Model     string `json:"model,omitempty"`       // for type=status
-	LatencyMs int    `json:"latency_ms,omitempty"`  // for type=status
-	Error     string `json:"error,omitempty"`        // for type=error
+	Words     []Word `json:"words,omitempty"`      // for type=transcript
+	IsFinal   bool   `json:"is_final,omitempty"`   // for type=transcript
+	State     string `json:"state,omitempty"`      // for type=status: "ready", "inference"
+	Model     string `json:"model,omitempty"`      // for type=status
+	LatencyMs int    `json:"latency_ms,omitempty"` // for type=status
+	Error     string `json:"error,omitempty"`      // for type=error
 
 	// Additional status fields for multi-backend support (sidecar -> server).
 	Backend           string                 `json:"backend,omitempty"`            // active backend name

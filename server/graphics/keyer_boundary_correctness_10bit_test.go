@@ -51,7 +51,7 @@ func TestChromaKey10_BoundarySizes(t *testing.T) {
 	// Key parameters: target chroma = the green we're looking for
 	targetCb := greenCb10
 	targetCr := greenCr10
-	tolerance := 60  // squared distance threshold
+	tolerance := 60 // squared distance threshold
 	softness := 20
 
 	dims := []struct{ w, h int }{

@@ -34,19 +34,19 @@ const (
 // Protocol command constants. These are the Cmd field values in
 // host-to-sidecar messages.
 const (
-	CmdStatus             = "status"
-	CmdEnableSegmentation = "enable_segmentation"
+	CmdStatus              = "status"
+	CmdEnableSegmentation  = "enable_segmentation"
 	CmdDisableSegmentation = "disable_segmentation"
-	CmdEnableDepth        = "enable_depth"
-	CmdDisableDepth       = "disable_depth"
-	CmdEnableSAM          = "enable_sam"
-	CmdDisableSAM         = "disable_sam"
-	CmdAddPrompt          = "add_prompt"
-	CmdRemovePrompt       = "remove_prompt"
-	CmdEnableTracking     = "enable_tracking"
-	CmdDisableTracking    = "disable_tracking"
-	CmdGPUPoolInit        = "gpu_pool_init"
-	CmdShutdown           = "shutdown"
+	CmdEnableDepth         = "enable_depth"
+	CmdDisableDepth        = "disable_depth"
+	CmdEnableSAM           = "enable_sam"
+	CmdDisableSAM          = "disable_sam"
+	CmdAddPrompt           = "add_prompt"
+	CmdRemovePrompt        = "remove_prompt"
+	CmdEnableTracking      = "enable_tracking"
+	CmdDisableTracking     = "disable_tracking"
+	CmdGPUPoolInit         = "gpu_pool_init"
+	CmdShutdown            = "shutdown"
 )
 
 // Source key prefixes used in shared memory slot source key field.

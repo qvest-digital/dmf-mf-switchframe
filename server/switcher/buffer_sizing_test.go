@@ -75,7 +75,7 @@ func TestDeepCopy_PreservesYUVLength(t *testing.T) {
 		buf[i] = byte(i % 251)
 	}
 	pf := &ProcessingFrame{
-		Data:    buf[:yuvSize720p],
+		Data:   buf[:yuvSize720p],
 		Width:  1280,
 		Height: 720,
 		PTS:    90000,
@@ -107,7 +107,7 @@ func TestDeepCopy_PreservesYUVLength(t *testing.T) {
 // DeepCopy without pool preserves YUV slice length.
 func TestDeepCopy_NoPool_PreservesLength(t *testing.T) {
 	pf := &ProcessingFrame{
-		Data:    make([]byte, 115200), // 320x240
+		Data:   make([]byte, 115200), // 320x240
 		Width:  320,
 		Height: 240,
 	}

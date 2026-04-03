@@ -11,12 +11,12 @@ import (
 
 // PrefetcherConfig configures the schedule-aware prefetch scheduler.
 type PrefetcherConfig struct {
-	Cache               *Cache
-	Resolver            *AssetResolver
-	Transcoder          *Transcoder // optional: nil = skip transcode
-	LookaheadItems      int         // how many items ahead to pre-fetch (default 5)
-	MaxConcurrentFetches int        // max parallel fetches (default 2)
-	OnFetched           func(uri string, err error)
+	Cache                *Cache
+	Resolver             *AssetResolver
+	Transcoder           *Transcoder // optional: nil = skip transcode
+	LookaheadItems       int         // how many items ahead to pre-fetch (default 5)
+	MaxConcurrentFetches int         // max parallel fetches (default 2)
+	OnFetched            func(uri string, err error)
 }
 
 // Prefetcher watches the playlist lookahead window and queues cache fetches

@@ -95,8 +95,8 @@ type ActiveEventState struct {
 	AutoReturn    bool                     `json:"autoReturn"`
 	Held          bool                     `json:"held"`
 	SpliceTimePTS int64                    `json:"spliceTimePts"`
-	StartedAt     int64                    `json:"startedAt"`              // unix ms
-	PreRollMs     int64                    `json:"preRollMs,omitempty"`    // pre-roll duration in ms
+	StartedAt     int64                    `json:"startedAt"`           // unix ms
+	PreRollMs     int64                    `json:"preRollMs,omitempty"` // pre-roll duration in ms
 	Descriptors   []SegmentationDescriptor `json:"descriptors,omitempty"`
 }
 

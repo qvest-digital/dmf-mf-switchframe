@@ -98,7 +98,7 @@ type mp4Track struct {
 	vps            []byte // VPS NAL unit (HEVC only)
 	sps            []byte
 	pps            []byte
-	naluLengthSize int    // typically 4
+	naluLengthSize int // typically 4
 	width          uint16
 	height         uint16
 	videoCodec     string // "h264" or "h265"

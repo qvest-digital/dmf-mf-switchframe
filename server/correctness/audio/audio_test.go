@@ -270,7 +270,7 @@ func TestLimiterPassesBelow(t *testing.T) {
 
 	// Generate a quiet signal at -10 dBFS (well below -1 dBFS threshold).
 	amplitude := math.Pow(10, -10.0/20.0) // ≈ 0.316
-	numSamples := sampleRate               // 1 second
+	numSamples := sampleRate              // 1 second
 	input := make([]float32, numSamples*channels)
 	reference := make([]float32, numSamples*channels)
 	for i := 0; i < numSamples; i++ {

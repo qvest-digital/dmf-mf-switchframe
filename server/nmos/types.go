@@ -102,17 +102,17 @@ type Control struct {
 
 // Source represents an NMOS IS-04 Source resource.
 type Source struct {
-	ID          string              `json:"id"`
-	Version     Version             `json:"version"`
-	Label       string              `json:"label"`
-	Description string              `json:"description"`
-	Tags        map[string][]string `json:"tags"`
+	ID          string                 `json:"id"`
+	Version     Version                `json:"version"`
+	Label       string                 `json:"label"`
+	Description string                 `json:"description"`
+	Tags        map[string][]string    `json:"tags"`
 	Caps        map[string]interface{} `json:"caps"`
-	Format      string              `json:"format"`
-	Parents     []string            `json:"parents"`
-	DeviceID    string              `json:"device_id"`
-	ClockName   string              `json:"clock_name"`
-	Channels    []SourceChannel     `json:"channels,omitempty"`
+	Format      string                 `json:"format"`
+	Parents     []string               `json:"parents"`
+	DeviceID    string                 `json:"device_id"`
+	ClockName   string                 `json:"clock_name"`
+	Channels    []SourceChannel        `json:"channels,omitempty"`
 }
 
 // SourceChannel describes a channel within an audio Source.
@@ -159,18 +159,18 @@ type Component struct {
 
 // Sender represents an NMOS IS-04 Sender resource.
 type Sender struct {
-	ID                string              `json:"id"`
-	Version           Version             `json:"version"`
-	Label             string              `json:"label"`
-	Description       string              `json:"description"`
-	Tags              map[string][]string `json:"tags"`
-	FlowID            string              `json:"flow_id"`
-	Transport         string              `json:"transport"`
-	DeviceID          string              `json:"device_id"`
-	ManifestHref      string              `json:"manifest_href"`
-	InterfaceBindings []string            `json:"interface_bindings"`
+	ID                string                 `json:"id"`
+	Version           Version                `json:"version"`
+	Label             string                 `json:"label"`
+	Description       string                 `json:"description"`
+	Tags              map[string][]string    `json:"tags"`
+	FlowID            string                 `json:"flow_id"`
+	Transport         string                 `json:"transport"`
+	DeviceID          string                 `json:"device_id"`
+	ManifestHref      string                 `json:"manifest_href"`
+	InterfaceBindings []string               `json:"interface_bindings"`
 	Caps              map[string]interface{} `json:"caps"`
-	Subscription      SenderSubscription  `json:"subscription"`
+	Subscription      SenderSubscription     `json:"subscription"`
 }
 
 // SenderSubscription tracks which receiver a sender is connected to.
@@ -181,16 +181,16 @@ type SenderSubscription struct {
 
 // Receiver represents an NMOS IS-04 Receiver resource.
 type Receiver struct {
-	ID                string              `json:"id"`
-	Version           Version             `json:"version"`
-	Label             string              `json:"label"`
-	Description       string              `json:"description"`
-	Tags              map[string][]string `json:"tags"`
-	Format            string              `json:"format"`
-	Caps              ReceiverCaps        `json:"caps"`
-	Transport         string              `json:"transport"`
-	DeviceID          string              `json:"device_id"`
-	InterfaceBindings []string            `json:"interface_bindings"`
+	ID                string               `json:"id"`
+	Version           Version              `json:"version"`
+	Label             string               `json:"label"`
+	Description       string               `json:"description"`
+	Tags              map[string][]string  `json:"tags"`
+	Format            string               `json:"format"`
+	Caps              ReceiverCaps         `json:"caps"`
+	Transport         string               `json:"transport"`
+	DeviceID          string               `json:"device_id"`
+	InterfaceBindings []string             `json:"interface_bindings"`
 	Subscription      ReceiverSubscription `json:"subscription"`
 }
 

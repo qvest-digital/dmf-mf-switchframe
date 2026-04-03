@@ -53,9 +53,9 @@ func TestConfidenceMonitor_HEVC_UsesCodecAwareConversion(t *testing.T) {
 		WireData:   wireData,
 		IsKeyframe: true,
 		Codec:      "h265",
-		VPS:        []byte{0x40, 0x01, 0xFF},       // VPS NALU body
-		SPS:        []byte{0x42, 0x01, 0xFF},       // SPS NALU body
-		PPS:        []byte{0x44, 0x01, 0xFF},       // PPS NALU body
+		VPS:        []byte{0x40, 0x01, 0xFF}, // VPS NALU body
+		SPS:        []byte{0x42, 0x01, 0xFF}, // SPS NALU body
+		PPS:        []byte{0x44, 0x01, 0xFF}, // PPS NALU body
 	}
 
 	cm.IngestVideo(frame)

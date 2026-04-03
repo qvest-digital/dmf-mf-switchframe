@@ -69,11 +69,11 @@ type Channel struct {
 
 	// Active clip playback.
 	clipIter        FrameIterator
-	clipItemID      string  // ID of item currently being decoded
+	clipItemID      string // ID of item currently being decoded
 	clipFPS         float64
 	clipTotal       int
-	clipFrame       int     // source frames consumed from iterator
-	clipOutputFrame int     // pipeline ticks since clip started (for FRC timestamp selection)
+	clipFrame       int // source frames consumed from iterator
+	clipOutputFrame int // pipeline ticks since clip started (for FRC timestamp selection)
 	clipStartTime   time.Time
 	clipLastFrame   *DecodedFrame // for hold mode
 
@@ -83,8 +83,8 @@ type Channel struct {
 	gpuAlias func(liveSourceKey string) bool
 
 	// CPU fallback: returns latest decoded frame for a source key.
-	gpuSourceTap    func(sourceKey string) *DecodedFrame
-	lastLiveTapMiss string // for once-per-item logging of tap failures
+	gpuSourceTap     func(sourceKey string) *DecodedFrame
+	lastLiveTapMiss  string // for once-per-item logging of tap failures
 	activeLiveSource string // current live source key (for audio routing)
 
 	// Sentinel frame returned by tapLiveSource when GPU alias succeeded.
@@ -122,7 +122,6 @@ type Channel struct {
 	frameDuration  time.Duration
 	outputPTS      int64
 	outputAudioPTS int64 // independent audio PTS counter (AAC frame cadence)
-
 
 	// Run control.
 	cancel context.CancelFunc

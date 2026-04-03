@@ -167,7 +167,7 @@ func TestEncoderEdge10bit_ChromaDimensions(t *testing.T) {
 		"10-bit YUV422 should have full-height chroma (h, not h/2)")
 
 	// Chroma plane sizes differ.
-	chromaPlane8 := format8.ChromaPlaneSize(w, h)  // (w/2)*(h/2)*1
+	chromaPlane8 := format8.ChromaPlaneSize(w, h)   // (w/2)*(h/2)*1
 	chromaPlane10 := format10.ChromaPlaneSize(w, h) // (w/2)*h*2
 
 	// 10-bit chroma plane should be 8x the 8-bit chroma plane

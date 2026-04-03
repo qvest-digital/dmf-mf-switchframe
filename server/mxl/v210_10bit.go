@@ -67,16 +67,16 @@ func V210ToYUV422P10(v210 []byte, srcStride, width, height int) ([]byte, error) 
 
 			// Extract 6 Y samples
 			yBase := yOff + g*6*2
-			binary.LittleEndian.PutUint16(yPlane[yBase:], uint16((w0>>10)&0x3FF))   // Y0
-			binary.LittleEndian.PutUint16(yPlane[yBase+2:], uint16(w1&0x3FF))       // Y1
-			binary.LittleEndian.PutUint16(yPlane[yBase+4:], uint16((w1>>20)&0x3FF)) // Y2
-			binary.LittleEndian.PutUint16(yPlane[yBase+6:], uint16((w2>>10)&0x3FF)) // Y3
-			binary.LittleEndian.PutUint16(yPlane[yBase+8:], uint16(w3&0x3FF))       // Y4
+			binary.LittleEndian.PutUint16(yPlane[yBase:], uint16((w0>>10)&0x3FF))    // Y0
+			binary.LittleEndian.PutUint16(yPlane[yBase+2:], uint16(w1&0x3FF))        // Y1
+			binary.LittleEndian.PutUint16(yPlane[yBase+4:], uint16((w1>>20)&0x3FF))  // Y2
+			binary.LittleEndian.PutUint16(yPlane[yBase+6:], uint16((w2>>10)&0x3FF))  // Y3
+			binary.LittleEndian.PutUint16(yPlane[yBase+8:], uint16(w3&0x3FF))        // Y4
 			binary.LittleEndian.PutUint16(yPlane[yBase+10:], uint16((w3>>20)&0x3FF)) // Y5
 
 			// Extract 3 Cb samples
 			cBase := cOff + g*3*2
-			binary.LittleEndian.PutUint16(cbPlane[cBase:], uint16(w0&0x3FF))       // Cb0
+			binary.LittleEndian.PutUint16(cbPlane[cBase:], uint16(w0&0x3FF))         // Cb0
 			binary.LittleEndian.PutUint16(cbPlane[cBase+2:], uint16((w1>>10)&0x3FF)) // Cb2
 			binary.LittleEndian.PutUint16(cbPlane[cBase+4:], uint16((w2>>20)&0x3FF)) // Cb4
 
@@ -95,19 +95,19 @@ func V210ToYUV422P10(v210 []byte, srcStride, width, height int) ([]byte, error) 
 
 			w0 := binary.LittleEndian.Uint32(v210Row[wordOff:])
 			// Always have at least 2 remainder pixels
-			binary.LittleEndian.PutUint16(yPlane[yBase:], uint16((w0>>10)&0x3FF))   // Y0
-			binary.LittleEndian.PutUint16(cbPlane[cBase:], uint16(w0&0x3FF))         // Cb0
-			binary.LittleEndian.PutUint16(crPlane[cBase:], uint16((w0>>20)&0x3FF))   // Cr0
+			binary.LittleEndian.PutUint16(yPlane[yBase:], uint16((w0>>10)&0x3FF))  // Y0
+			binary.LittleEndian.PutUint16(cbPlane[cBase:], uint16(w0&0x3FF))       // Cb0
+			binary.LittleEndian.PutUint16(crPlane[cBase:], uint16((w0>>20)&0x3FF)) // Cr0
 
 			if remainder >= 4 {
 				w1 := binary.LittleEndian.Uint32(v210Row[wordOff+4:])
-				binary.LittleEndian.PutUint16(yPlane[yBase+2:], uint16(w1&0x3FF))       // Y1
-				binary.LittleEndian.PutUint16(yPlane[yBase+4:], uint16((w1>>20)&0x3FF)) // Y2
+				binary.LittleEndian.PutUint16(yPlane[yBase+2:], uint16(w1&0x3FF))        // Y1
+				binary.LittleEndian.PutUint16(yPlane[yBase+4:], uint16((w1>>20)&0x3FF))  // Y2
 				binary.LittleEndian.PutUint16(cbPlane[cBase+2:], uint16((w1>>10)&0x3FF)) // Cb2
 
 				w2 := binary.LittleEndian.Uint32(v210Row[wordOff+8:])
 				binary.LittleEndian.PutUint16(yPlane[yBase+6:], uint16((w2>>10)&0x3FF)) // Y3
-				binary.LittleEndian.PutUint16(crPlane[cBase+2:], uint16(w2&0x3FF))       // Cr2
+				binary.LittleEndian.PutUint16(crPlane[cBase+2:], uint16(w2&0x3FF))      // Cr2
 			} else {
 				// remainder == 2: just Y0, Y1, Cb0, Cr0
 				w1 := binary.LittleEndian.Uint32(v210Row[wordOff+4:])

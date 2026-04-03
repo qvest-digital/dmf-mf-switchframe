@@ -225,7 +225,7 @@ func AlphaBlendRGBARect10(yuv []byte, rgba []byte, frameW, frameH, overlayW, ove
 			}
 
 			// Apply global alpha scale.
-			a = (a * alphaScale256 + 128) >> 8
+			a = (a*alphaScale256 + 128) >> 8
 			if a <= 0 {
 				continue
 			}
@@ -282,7 +282,7 @@ func AlphaBlendRGBARect10(yuv []byte, rgba []byte, frameW, frameH, overlayW, ove
 				continue
 			}
 
-			a = (a * alphaScale256 + 128) >> 8
+			a = (a*alphaScale256 + 128) >> 8
 			if a <= 0 {
 				continue
 			}

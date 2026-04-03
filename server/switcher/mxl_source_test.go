@@ -83,7 +83,7 @@ func TestIngestRawVideo_EnqueuesWork(t *testing.T) {
 		yuv[i] = byte(i)
 	}
 	pf := &ProcessingFrame{
-		Data:        yuv,
+		Data:       yuv,
 		Width:      4,
 		Height:     4,
 		PTS:        1000,
@@ -123,7 +123,7 @@ func TestIngestRawVideo_NonProgramSourceDropped(t *testing.T) {
 
 	// Ingest a frame for the non-program source.
 	pf := &ProcessingFrame{
-		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:       make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        1000,
@@ -144,7 +144,7 @@ func TestIngestRawVideo_UnknownSourceDropped(t *testing.T) {
 	initialFiltered := sw.routeFiltered.Load()
 
 	pf := &ProcessingFrame{
-		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:       make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        1000,
@@ -172,7 +172,7 @@ func TestIngestRawVideo_FTBActiveDropped(t *testing.T) {
 	initialFiltered := sw.routeFiltered.Load()
 
 	pf := &ProcessingFrame{
-		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:       make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        1000,
@@ -197,7 +197,7 @@ func TestIngestRawVideo_HealthTracking(t *testing.T) {
 		"no frame should be recorded yet")
 
 	pf := &ProcessingFrame{
-		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:       make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        1000,
@@ -288,7 +288,7 @@ func TestIngestRawVideo_KeyingApplied(t *testing.T) {
 
 	// Ingest cam2 fill (non-program source — tests that fill is cached for all sources).
 	fillPF := &ProcessingFrame{
-		Data:    fillYUV,
+		Data:   fillYUV,
 		Width:  w,
 		Height: h,
 		PTS:    500,
@@ -313,7 +313,7 @@ func TestIngestRawVideo_KeyingApplied(t *testing.T) {
 	}
 
 	programPF := &ProcessingFrame{
-		Data:     programYUV,
+		Data:    programYUV,
 		Width:   w,
 		Height:  h,
 		PTS:     1000,
@@ -363,7 +363,7 @@ func TestIngestRawVideo_KeyBridgeFillCachedForNonProgram(t *testing.T) {
 		yuv[i] = 200
 	}
 	pf := &ProcessingFrame{
-		Data:    yuv,
+		Data:   yuv,
 		Width:  4,
 		Height: 4,
 		PTS:    500,
@@ -410,7 +410,7 @@ func TestRegisterRawSource_FrameSyncWiring(t *testing.T) {
 	// Ingest a frame — it should route through frame sync and eventually
 	// be released to handleRawVideoFrame → pipeline → program relay.
 	pf := &ProcessingFrame{
-		Data:    make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:   make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:  4,
 		Height: 4,
 		PTS:    1000,

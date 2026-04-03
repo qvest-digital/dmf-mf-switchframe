@@ -18,12 +18,12 @@ import (
 
 // mockSyncMixer implements syncMixerInterface for testing.
 type mockSyncMixer struct {
-	mu              sync.Mutex
-	produceCalls    int
-	totalSamples    int
-	crossfadeCalls  int
-	channels        int
-	sampleFn        func(sampleCount int) []float32 // optional custom sample generator
+	mu             sync.Mutex
+	produceCalls   int
+	totalSamples   int
+	crossfadeCalls int
+	channels       int
+	sampleFn       func(sampleCount int) []float32 // optional custom sample generator
 }
 
 func newMockSyncMixer(channels int) *mockSyncMixer {
@@ -177,7 +177,7 @@ func TestSyncLoopProducesVideoOutput(t *testing.T) {
 		pf := &ProcessingFrame{
 			Data:  buf,
 			Width: 320, Height: 240,
-			PTS: int64(i) * 3000,
+			PTS:  int64(i) * 3000,
 			pool: pool,
 		}
 		pf.SetRefs(1)
@@ -312,7 +312,7 @@ func TestSyncLoopAVAligned(t *testing.T) {
 		pf := &ProcessingFrame{
 			Data:  buf,
 			Width: 320, Height: 240,
-			PTS: int64(i) * 3000,
+			PTS:  int64(i) * 3000,
 			pool: pool,
 		}
 		pf.SetRefs(1)
@@ -419,7 +419,7 @@ func TestSyncLoopOverload(t *testing.T) {
 		pf := &ProcessingFrame{
 			Data:  buf,
 			Width: 320, Height: 240,
-			PTS: int64(i) * 3000,
+			PTS:  int64(i) * 3000,
 			pool: pool,
 		}
 		pf.SetRefs(1)
@@ -520,7 +520,7 @@ func TestSyncLoopProcessTickDirect(t *testing.T) {
 	pf := &ProcessingFrame{
 		Data:  buf,
 		Width: 320, Height: 240,
-		PTS: 90000,
+		PTS:  90000,
 		pool: pool,
 	}
 	pf.SetRefs(1)
@@ -642,7 +642,7 @@ func TestSyncLoopNoMixerNoAAC(t *testing.T) {
 	yuvSize := 320 * 240 * 3 / 2
 	buf := pool.Acquire()[:yuvSize]
 	pf := &ProcessingFrame{
-		Data: buf,
+		Data:  buf,
 		Width: 320, Height: 240,
 		PTS:  90000,
 		pool: pool,
@@ -720,7 +720,7 @@ func TestSyncLoopVideoFramesGetRefClockPTS(t *testing.T) {
 	pf := &ProcessingFrame{
 		Data:  buf,
 		Width: 320, Height: 240,
-		PTS: 99999, // source PTS — should be overwritten
+		PTS:  99999, // source PTS — should be overwritten
 		pool: pool,
 	}
 	pf.SetRefs(1)
@@ -921,7 +921,7 @@ func TestSyncLoopSourceLossFreeze(t *testing.T) {
 		pf := &ProcessingFrame{
 			Data:  buf,
 			Width: 320, Height: 240,
-			PTS: int64(i) * 3000,
+			PTS:  int64(i) * 3000,
 			pool: pool,
 		}
 		pf.SetRefs(1)
@@ -998,7 +998,7 @@ func TestSyncLoopSourceLossToBlack(t *testing.T) {
 	pf := &ProcessingFrame{
 		Data:  buf,
 		Width: 320, Height: 240,
-		PTS: 0,
+		PTS:  0,
 		pool: pool,
 	}
 	pf.SetRefs(1)
@@ -1068,7 +1068,7 @@ func TestSyncLoopSourceRecovery(t *testing.T) {
 	pf := &ProcessingFrame{
 		Data:  buf,
 		Width: 320, Height: 240,
-		PTS: 0,
+		PTS:  0,
 		pool: pool,
 	}
 	pf.SetRefs(1)
@@ -1100,7 +1100,7 @@ func TestSyncLoopSourceRecovery(t *testing.T) {
 	pf2 := &ProcessingFrame{
 		Data:  buf2,
 		Width: 320, Height: 240,
-		PTS: 6000,
+		PTS:  6000,
 		pool: pool,
 	}
 	pf2.SetRefs(1)
@@ -1164,7 +1164,7 @@ func TestSyncLoopTransitionDissolve(t *testing.T) {
 		pf := &ProcessingFrame{
 			Data:  buf,
 			Width: 320, Height: 240,
-			PTS: 0,
+			PTS:  0,
 			pool: pool,
 		}
 		pf.SetRefs(1)
@@ -1238,7 +1238,7 @@ func TestSyncLoopTransitionComplete(t *testing.T) {
 		pf := &ProcessingFrame{
 			Data:  buf,
 			Width: 320, Height: 240,
-			PTS: 0,
+			PTS:  0,
 			pool: pool,
 		}
 		pf.SetRefs(1)
@@ -1309,7 +1309,7 @@ func TestSyncLoopClockRecovery(t *testing.T) {
 		pf := &ProcessingFrame{
 			Data:  buf,
 			Width: 320, Height: 240,
-			PTS: int64(i) * 3003, // 29.97fps PTS interval
+			PTS:  int64(i) * 3003, // 29.97fps PTS interval
 			pool: pool,
 		}
 		pf.SetRefs(1)
@@ -1375,7 +1375,7 @@ func TestSyncLoopClockRecoveryNoMutation(t *testing.T) {
 		pf := &ProcessingFrame{
 			Data:  buf,
 			Width: 320, Height: 240,
-			PTS: int64(i) * 3600, // 25fps PTS
+			PTS:  int64(i) * 3600, // 25fps PTS
 			pool: pool,
 		}
 		pf.SetRefs(1)
@@ -1524,7 +1524,7 @@ func TestFTBTransitionCallsCorrectHandler(t *testing.T) {
 		pf := &ProcessingFrame{
 			Data:  buf,
 			Width: 320, Height: 240,
-			PTS: int64(i) * 3000,
+			PTS:  int64(i) * 3000,
 			pool: pool,
 		}
 		pf.SetRefs(1)
@@ -1594,7 +1594,7 @@ func TestStartSyncLoopDoubleStartGuard(t *testing.T) {
 		pf := &ProcessingFrame{
 			Data:  buf,
 			Width: 320, Height: 240,
-			PTS: int64(i) * 3000,
+			PTS:  int64(i) * 3000,
 			pool: pool,
 		}
 		pf.SetRefs(1)
@@ -1668,8 +1668,8 @@ func TestSyncLoopNoRaceWithAsyncPath(t *testing.T) {
 		pf := &ProcessingFrame{
 			Data:  buf,
 			Width: 320, Height: 240,
-			PTS:   int64(i) * 3000,
-			pool:  pool,
+			PTS:  int64(i) * 3000,
+			pool: pool,
 		}
 		pf.SetRefs(2) // one ref for frame sync, one for handleRawVideoFrame
 		s.frameSync.IngestRawVideo("cam1", pf)
@@ -1738,7 +1738,7 @@ func TestSyncLoopChecksGPURunner(t *testing.T) {
 	var runFromCacheCalls atomic.Int64
 	var runWithUploadCalls atomic.Int64
 	mockGPU := &syncLoopGPUMock{
-		onRunFromCache:  func(sourceKey string, pts int64) error {
+		onRunFromCache: func(sourceKey string, pts int64) error {
 			runFromCacheCalls.Add(1)
 			return fmt.Errorf("mock: no cached frame") // force fallback to RunWithUpload
 		},
@@ -1766,8 +1766,8 @@ func TestSyncLoopChecksGPURunner(t *testing.T) {
 		pf := &ProcessingFrame{
 			Data:  buf,
 			Width: 320, Height: 240,
-			PTS:   int64(i) * 3000,
-			pool:  pool,
+			PTS:  int64(i) * 3000,
+			pool: pool,
 		}
 		pf.SetRefs(1)
 		s.frameSync.IngestRawVideo("cam1", pf)
@@ -1842,8 +1842,8 @@ func TestSyncLoopGPUFallbackToCPU(t *testing.T) {
 		pf := &ProcessingFrame{
 			Data:  buf,
 			Width: 320, Height: 240,
-			PTS:   int64(i) * 3000,
-			pool:  pool,
+			PTS:  int64(i) * 3000,
+			pool: pool,
 		}
 		pf.SetRefs(1)
 		s.frameSync.IngestRawVideo("cam1", pf)
@@ -1984,7 +1984,7 @@ func TestSyncLoopWithBufferOnlyFrameSync(t *testing.T) {
 		pf := &ProcessingFrame{
 			Data:  buf,
 			Width: 320, Height: 240,
-			PTS: int64(i) * 3000,
+			PTS:  int64(i) * 3000,
 			pool: pool,
 		}
 		pf.SetRefs(1)
@@ -2054,7 +2054,7 @@ func TestSyncLoopBufferOnlyNoTimerRace(t *testing.T) {
 			pf := &ProcessingFrame{
 				Data:  buf,
 				Width: 320, Height: 240,
-				PTS: pts,
+				PTS:  pts,
 				pool: pool,
 			}
 			pf.SetRefs(1)

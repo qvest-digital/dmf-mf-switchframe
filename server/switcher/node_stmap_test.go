@@ -69,7 +69,7 @@ func TestSTMapProgramNode_Process_StaticMap(t *testing.T) {
 	}
 
 	src := &ProcessingFrame{
-		Data:    make([]byte, frameSize),
+		Data:   make([]byte, frameSize),
 		Width:  w,
 		Height: h,
 	}
@@ -114,7 +114,7 @@ func TestSTMapProgramNode_Process_AnimatedMap(t *testing.T) {
 	// Process multiple times to verify frame advancement.
 	for iter := 0; iter < 5; iter++ {
 		src := &ProcessingFrame{
-			Data:    make([]byte, frameSize),
+			Data:   make([]byte, frameSize),
 			Width:  w,
 			Height: h,
 		}
@@ -147,7 +147,7 @@ func TestSTMapProgramNode_Process_NoMap_Passthrough(t *testing.T) {
 	copy(original, yuv)
 
 	src := &ProcessingFrame{
-		Data:    yuv,
+		Data:   yuv,
 		Width:  8,
 		Height: 8,
 	}

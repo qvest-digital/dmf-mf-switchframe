@@ -46,7 +46,7 @@ type PerfSourceSample struct {
 
 	// DriftPPM is the estimated clock drift between the source's PTS clock
 	// and the pipeline wall clock. Positive = source clock faster.
-	DriftPPM    int64
+	DriftPPM     int64
 	DriftSamples int
 }
 

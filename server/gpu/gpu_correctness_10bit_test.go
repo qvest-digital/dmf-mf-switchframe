@@ -559,30 +559,29 @@ func TestGPU_P210_MultipleResolutions(t *testing.T) {
 
 	for _, res := range resolutions {
 		t.Run(fmt.Sprintf("%dx%d", res.w, res.h), func(t *testing.T) {
-				pool, err := NewP210FramePool(ctx, res.w, res.h, 2)
-				require.NoError(t, err)
-				defer pool.Close()
+			pool, err := NewP210FramePool(ctx, res.w, res.h, 2)
+			require.NoError(t, err)
+			defer pool.Close()
 
-				frame, err := pool.Acquire()
-				require.NoError(t, err)
-				defer frame.Release()
+			frame, err := pool.Acquire()
+			require.NoError(t, err)
+			defer frame.Release()
 
-				// Upload known values
-				data := makeP210TestFrame(res.w, res.h, 600, 400, 700)
-				err = Upload10(ctx, frame, data, res.w, res.h)
-				require.NoError(t, err)
+			// Upload known values
+			data := makeP210TestFrame(res.w, res.h, 600, 400, 700)
+			err = Upload10(ctx, frame, data, res.w, res.h)
+			require.NoError(t, err)
 
-				result := make([]byte, p210DownloadSize(res.w, res.h))
-				err = Download10(ctx, frame, result, res.w, res.h)
-				require.NoError(t, err)
+			result := make([]byte, p210DownloadSize(res.w, res.h))
+			err = Download10(ctx, frame, result, res.w, res.h)
+			require.NoError(t, err)
 
-				// Verify center pixel
-				centerIdx := (res.h/2)*res.w + res.w/2
-				gotY := binary.LittleEndian.Uint16(result[centerIdx*2:])
-				assert.Equal(t, uint16(600), gotY,
-					"%dx%d center Y: expected 600, got %d", res.w, res.h, gotY)
-			},
+			// Verify center pixel
+			centerIdx := (res.h/2)*res.w + res.w/2
+			gotY := binary.LittleEndian.Uint16(result[centerIdx*2:])
+			assert.Equal(t, uint16(600), gotY,
+				"%dx%d center Y: expected 600, got %d", res.w, res.h, gotY)
+		},
 		)
 	}
 }
-

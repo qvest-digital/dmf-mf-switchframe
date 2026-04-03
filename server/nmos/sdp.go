@@ -180,12 +180,12 @@ func ParseSDP(raw string) (SDPParams, error) {
 	lines := strings.Split(strings.TrimRight(raw, "\n"), "\n")
 
 	var (
-		hasMLine   bool
-		hasRTpmap  bool
-		encoding   string
-		clockRate  int
-		channels   int
-		fmtpValue  string
+		hasMLine  bool
+		hasRTpmap bool
+		encoding  string
+		clockRate int
+		channels  int
+		fmtpValue string
 	)
 
 	for _, line := range lines {

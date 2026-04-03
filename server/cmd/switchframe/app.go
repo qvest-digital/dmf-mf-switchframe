@@ -26,8 +26,8 @@ import (
 	"github.com/zsiec/switchframe/server/asr"
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/caption"
-	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/clip"
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/colorgrade"
 	"github.com/zsiec/switchframe/server/comms"
@@ -150,12 +150,12 @@ type App struct {
 	clipRelays [clip.MaxPlayers]*distribution.Relay
 
 	// Playout channels
-	playoutMgr        *playout.Manager
-	playoutCache      *playout.Cache
-	playoutPrefetcher *playout.Prefetcher
+	playoutMgr         *playout.Manager
+	playoutCache       *playout.Cache
+	playoutPrefetcher  *playout.Prefetcher
 	playoutSamples     []playout.SampleClip
 	playoutPlaylistDir string
-	playoutRelays     [playout.MaxChannels]*distribution.Relay
+	playoutRelays      [playout.MaxChannels]*distribution.Relay
 
 	// GPU pipeline (Metal on macOS, CUDA on Linux)
 	gpuState        *gpuState
@@ -622,7 +622,7 @@ func (a *App) initOutput() error {
 
 	if a.cfg.RefClock {
 		a.outputMgr.LatchLipSync(0)
-    } else {
+	} else {
 		// Legacy path: dynamic lip-sync for SRT/recording output (muxer path only).
 		// The browser path handles its own compensation in audio-decoder.ts.
 		// Combines ring buffer depth + source A/V PTS gap.
@@ -995,7 +995,7 @@ func (a *App) initSubsystems() error {
 		// the switcher pipeline (keying → compositor → encode → program).
 		a.replayMgr.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64) {
 			pf := &switcher.ProcessingFrame{
-				Data:        yuv,
+				Data:       yuv,
 				Width:      w,
 				Height:     h,
 				PTS:        pts,

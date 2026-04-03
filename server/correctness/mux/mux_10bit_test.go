@@ -109,10 +109,11 @@ func TestMux10bit_HEVCStreamType(t *testing.T) {
 // contain VPS+SPS+PPS parameter sets in Annex B format before the frame data.
 //
 // Per ITU-T H.265:
-//   VPS NALU type = 32 (nal_unit_type bits 1-6 of first header byte >> 1)
-//   SPS NALU type = 33
-//   PPS NALU type = 34
-//   Annex B start code = 0x00000001 (4 bytes)
+//
+//	VPS NALU type = 32 (nal_unit_type bits 1-6 of first header byte >> 1)
+//	SPS NALU type = 33
+//	PPS NALU type = 34
+//	Annex B start code = 0x00000001 (4 bytes)
 func TestMux10bit_VPSPrepended(t *testing.T) {
 	muxer := output.NewTSMuxer()
 

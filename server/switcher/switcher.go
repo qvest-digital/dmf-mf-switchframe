@@ -478,23 +478,23 @@ type Switcher struct {
 	// When useRefClock is set, the synchronous processing loop replaces
 	// both videoProcessingLoop and the mixer's outputTicker, driving
 	// A/V from a single clock source.
-	refClock         *clock.ReferenceClock
-	clockRecovery    *clock.ClockRecovery
-	aacBuffer        *clock.AACFrameBuffer
-	syncMixer        syncMixerInterface
-	syncLoopWg       sync.WaitGroup
-	useRefClock      atomic.Bool
-	ticksBehind      int
-	syncLoopRunning      atomic.Bool                      // double-start guard (Issue 10)
-	cachedBlackFrame     atomic.Pointer[ProcessingFrame]  // cached broadcast black (Issue 11)
-	overloadDrops        atomic.Int64
-	syncLoopRepeats      atomic.Int64
-	lastEncodedFrame     atomic.Pointer[ProcessingFrame]
-	lastBroadcastVFrame  atomic.Pointer[media.VideoFrame] // last broadcast H.264 frame (for overload repeat)
-	lastOverloadLog      time.Time                        // rate-limit overload logging to 1/sec
-	lastTickPTS          int64                            // diagnostic: last tick PTS for delta check
-	lastGPUErrorLog      time.Time                        // rate-limit GPU error logging to 1/sec
-	sourceLostAt     atomic.Pointer[time.Time] // when program source stopped providing frames (sync loop goroutine only)
+	refClock            *clock.ReferenceClock
+	clockRecovery       *clock.ClockRecovery
+	aacBuffer           *clock.AACFrameBuffer
+	syncMixer           syncMixerInterface
+	syncLoopWg          sync.WaitGroup
+	useRefClock         atomic.Bool
+	ticksBehind         int
+	syncLoopRunning     atomic.Bool                     // double-start guard (Issue 10)
+	cachedBlackFrame    atomic.Pointer[ProcessingFrame] // cached broadcast black (Issue 11)
+	overloadDrops       atomic.Int64
+	syncLoopRepeats     atomic.Int64
+	lastEncodedFrame    atomic.Pointer[ProcessingFrame]
+	lastBroadcastVFrame atomic.Pointer[media.VideoFrame] // last broadcast H.264 frame (for overload repeat)
+	lastOverloadLog     time.Time                        // rate-limit overload logging to 1/sec
+	lastTickPTS         int64                            // diagnostic: last tick PTS for delta check
+	lastGPUErrorLog     time.Time                        // rate-limit GPU error logging to 1/sec
+	sourceLostAt        atomic.Pointer[time.Time]        // when program source stopped providing frames (sync loop goroutine only)
 
 	// Sync loop audio output callbacks (used in ref clock mode).
 	// outputAudioCallback delivers AAC frames to the program relay (browser).
@@ -1924,7 +1924,7 @@ func (s *Switcher) normalizeResolution(pf *ProcessingFrame) *ProcessingFrame {
 	}
 	pf.ReleaseYUV()
 	scaled := &ProcessingFrame{
-		Data:        buf,
+		Data:       buf,
 		Width:      dstW,
 		Height:     dstH,
 		PTS:        pf.PTS,

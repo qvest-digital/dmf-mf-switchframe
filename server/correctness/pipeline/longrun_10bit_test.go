@@ -158,11 +158,11 @@ func TestPipeline10bit_PeriodicCuts(t *testing.T) {
 	h.addSource("cut10B", colorB)
 
 	const (
-		w               = testWidth
-		ht              = testHeight
-		framesPerSeg    = 60
-		numSegments     = 10
-		flushFrames     = 8
+		w            = testWidth
+		ht           = testHeight
+		framesPerSeg = 60
+		numSegments  = 10
+		flushFrames  = 8
 	)
 
 	prevDecodedLen := 0
@@ -172,7 +172,7 @@ func TestPipeline10bit_PeriodicCuts(t *testing.T) {
 
 	for seg := 0; seg < numSegments; seg++ {
 		activeSource := "cut10A"
-		activeY := uint16(160)  // dark in 10-bit
+		activeY := uint16(160) // dark in 10-bit
 		thresholdLow := 100.0
 		if seg%2 == 1 {
 			activeSource = "cut10B"

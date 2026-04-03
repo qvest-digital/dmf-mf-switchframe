@@ -4,8 +4,8 @@ import "math"
 
 const (
 	melSampleRate = 16000
-	melWindowSize = 400  // 25ms at 16kHz
-	melHopSize    = 160  // 10ms at 16kHz
+	melWindowSize = 400 // 25ms at 16kHz
+	melHopSize    = 160 // 10ms at 16kHz
 	melFFTSize    = 512
 	melNumBins    = 80
 	melFMin       = 0.0
@@ -89,10 +89,10 @@ func (f *melFFT) Forward(input []float64) []complex128 {
 
 // melFrontend computes 80-bin log-mel spectrograms from 16kHz audio.
 type melFrontend struct {
-	window     []float64     // Hann window [melWindowSize]
-	filterbank [][]float64   // mel filterbank [melNumBins][melFFTSize/2 + 1]
-	fft        *melFFT       // FFT engine
-	fftBuf     []float64     // scratch for windowed frame [melFFTSize]
+	window     []float64   // Hann window [melWindowSize]
+	filterbank [][]float64 // mel filterbank [melNumBins][melFFTSize/2 + 1]
+	fft        *melFFT     // FFT engine
+	fftBuf     []float64   // scratch for windowed frame [melFFTSize]
 }
 
 func newMelFrontend() *melFrontend {

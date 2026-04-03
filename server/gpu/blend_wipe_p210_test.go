@@ -52,7 +52,7 @@ func TestBlendWipeP210(t *testing.T) {
 	require.NoError(t, Download10(ctx, dst, result, w, h))
 
 	// Left quarter should be B (800), right quarter should be A (200)
-	leftY := readP210YSample(result, 16*w+w/4)   // row 16, ~25% from left
+	leftY := readP210YSample(result, 16*w+w/4)    // row 16, ~25% from left
 	rightY := readP210YSample(result, 16*w+3*w/4) // row 16, ~75% from left
 	assert.Greater(t, leftY, rightY,
 		"left Y (%d) should be brighter (B=800) than right Y (%d, A=200) at 50%% h-left wipe",

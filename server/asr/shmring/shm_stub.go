@@ -10,7 +10,7 @@ import (
 var errShmNotAvailable = errors.New("shared memory not available (requires cgo)")
 
 func shmOpen(name string, create bool) (int, error) { return 0, errShmNotAvailable }
-func shmFtruncate(fd int, size int) error            { return errShmNotAvailable }
+func shmFtruncate(fd int, size int) error           { return errShmNotAvailable }
 func shmMmap(fd int, size int) (unsafe.Pointer, error) {
 	return nil, errShmNotAvailable
 }

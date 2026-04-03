@@ -24,7 +24,7 @@ func TestNormalizeResolution_NilYUV_NoPanic(t *testing.T) {
 	// Frame with dimensions that differ from pipeline format, triggering
 	// ScaleYUV420 — but YUV is nil (freed by another goroutine).
 	frame := &ProcessingFrame{
-		Data:    nil,
+		Data:   nil,
 		Width:  160,
 		Height: 120,
 		PTS:    12345,
@@ -49,7 +49,7 @@ func TestNormalizeResolution_EmptyYUV_NoPanic(t *testing.T) {
 	sw.pipelineFormat.Store(&pf)
 
 	frame := &ProcessingFrame{
-		Data:    []byte{},
+		Data:   []byte{},
 		Width:  160,
 		Height: 120,
 		PTS:    12345,

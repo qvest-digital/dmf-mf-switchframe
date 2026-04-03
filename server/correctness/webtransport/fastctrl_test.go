@@ -374,9 +374,9 @@ func TestFastCtrlInvalidMessage(t *testing.T) {
 	})
 
 	testCases := []struct {
-		name      string
-		data      []byte
-		wantErr   error // nil = any error, non-nil = errors.Is match
+		name    string
+		data    []byte
+		wantErr error // nil = any error, non-nil = errors.Is match
 	}{
 		{"empty_bytes", []byte{}, fastctrl.ErrEmptyDatagram},
 		{"layout_type_only", []byte{0x01}, nil},
@@ -684,7 +684,7 @@ func TestFastCtrlLayoutZeroDimensions(t *testing.T) {
 	msg[1] = 0
 	binary.BigEndian.PutUint16(msg[2:4], 100)
 	binary.BigEndian.PutUint16(msg[4:6], 100)
-	binary.BigEndian.PutUint16(msg[6:8], 0)   // w=0
+	binary.BigEndian.PutUint16(msg[6:8], 0)    // w=0
 	binary.BigEndian.PutUint16(msg[8:10], 200) // h=200
 
 	err := d.Dispatch(msg)
@@ -712,7 +712,7 @@ func TestFastCtrlLayoutZeroDimensions(t *testing.T) {
 	msg3[1] = 0
 	binary.BigEndian.PutUint16(msg3[2:4], 100)
 	binary.BigEndian.PutUint16(msg3[4:6], 100)
-	binary.BigEndian.PutUint16(msg3[6:8], 0) // w=0
+	binary.BigEndian.PutUint16(msg3[6:8], 0)  // w=0
 	binary.BigEndian.PutUint16(msg3[8:10], 0) // h=0
 
 	err = d.Dispatch(msg3)
@@ -732,7 +732,7 @@ func TestFastCtrlGraphicsZeroDimensions(t *testing.T) {
 	// Zero width.
 	msg := make([]byte, 11)
 	msg[0] = fastctrl.MsgGraphicsLayerPosition
-	binary.BigEndian.PutUint16(msg[1:3], 0)   // layer 0
+	binary.BigEndian.PutUint16(msg[1:3], 0)    // layer 0
 	binary.BigEndian.PutUint16(msg[3:5], 100)  // x
 	binary.BigEndian.PutUint16(msg[5:7], 100)  // y
 	binary.BigEndian.PutUint16(msg[7:9], 0)    // w=0
@@ -747,10 +747,10 @@ func TestFastCtrlGraphicsZeroDimensions(t *testing.T) {
 	msg2 := make([]byte, 11)
 	msg2[0] = fastctrl.MsgGraphicsLayerPosition
 	binary.BigEndian.PutUint16(msg2[1:3], 0)   // layer 0
-	binary.BigEndian.PutUint16(msg2[3:5], 100)  // x
-	binary.BigEndian.PutUint16(msg2[5:7], 100)  // y
-	binary.BigEndian.PutUint16(msg2[7:9], 200)  // w=200
-	binary.BigEndian.PutUint16(msg2[9:11], 0)   // h=0
+	binary.BigEndian.PutUint16(msg2[3:5], 100) // x
+	binary.BigEndian.PutUint16(msg2[5:7], 100) // y
+	binary.BigEndian.PutUint16(msg2[7:9], 200) // w=200
+	binary.BigEndian.PutUint16(msg2[9:11], 0)  // h=0
 
 	err = d.Dispatch(msg2)
 	t.Logf("MEASURE: dispatch graphics with zero height = %v", err)

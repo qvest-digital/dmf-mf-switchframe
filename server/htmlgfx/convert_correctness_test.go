@@ -217,13 +217,13 @@ func TestBGRAToRGBAAllAlphaValues(t *testing.T) {
 // This test documents what happens with invalid input: clamp, wrap, or garbage.
 func TestBGRAToRGBAInvalidPremult(t *testing.T) {
 	testCases := []struct {
-		name string
+		name       string
 		b, g, r, a byte
 	}{
-		{"R>A slight", 0, 0, 200, 128},   // R=200 but A=128
-		{"all>A", 200, 200, 200, 100},     // All channels > alpha
-		{"max>min", 255, 255, 255, 1},     // Extreme: all 255 with alpha=1
-		{"R=255 A=128", 0, 0, 255, 128},   // Half transparent, full premul R
+		{"R>A slight", 0, 0, 200, 128},  // R=200 but A=128
+		{"all>A", 200, 200, 200, 100},   // All channels > alpha
+		{"max>min", 255, 255, 255, 1},   // Extreme: all 255 with alpha=1
+		{"R=255 A=128", 0, 0, 255, 128}, // Half transparent, full premul R
 	}
 
 	for _, tc := range testCases {

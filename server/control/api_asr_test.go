@@ -29,8 +29,8 @@ type mockASRManager struct {
 	setConfigErr      error
 }
 
-func (m *mockASRManager) IsASRAvailable() bool          { return m.available }
-func (m *mockASRManager) IsASRActive() bool             { return m.active }
+func (m *mockASRManager) IsASRAvailable() bool           { return m.available }
+func (m *mockASRManager) IsASRActive() bool              { return m.active }
 func (m *mockASRManager) ActiveBackend() string          { return m.backend }
 func (m *mockASRManager) AvailableBackends() []string    { return m.availableBackends }
 func (m *mockASRManager) ASRModelName() string           { return m.modelName }

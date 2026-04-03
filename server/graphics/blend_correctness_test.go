@@ -17,7 +17,7 @@ func TestAlphaBlendFormula(t *testing.T) {
 		t.Run(testNameForAlpha(alpha), func(t *testing.T) {
 			width := 16 // minimum practical width
 			height := 2 // minimum for YUV420
-			yuvSize := width*height*3/2
+			yuvSize := width * height * 3 / 2
 			rgbaSize := width * height * 4
 
 			// Create a gray frame (Y=128, Cb=128, Cr=128)
@@ -28,7 +28,7 @@ func TestAlphaBlendFormula(t *testing.T) {
 			ySize := width * height
 			uvSize := (width / 2) * (height / 2)
 			for i := 0; i < uvSize; i++ {
-				yuv[ySize+i] = 128    // Cb
+				yuv[ySize+i] = 128        // Cb
 				yuv[ySize+uvSize+i] = 128 // Cr
 			}
 
@@ -199,9 +199,9 @@ func TestAlphaBlendChromaFormula(t *testing.T) {
 	rgba := make([]byte, chromaWidth*8)
 	for i := 0; i < chromaWidth; i++ {
 		off := i * 8
-		rgba[off] = 255   // R
-		rgba[off+1] = 0   // G
-		rgba[off+2] = 0   // B
+		rgba[off] = 255     // R
+		rgba[off+1] = 0     // G
+		rgba[off+2] = 0     // B
 		rgba[off+3] = alpha // A
 	}
 

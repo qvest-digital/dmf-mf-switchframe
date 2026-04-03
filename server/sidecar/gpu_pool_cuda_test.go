@@ -185,9 +185,9 @@ func TestCUDAGPUPoolBadShmName(t *testing.T) {
 func TestCUDAGPUPoolWorkerHandleCountMismatch(t *testing.T) {
 	cfg := GPUPoolConfig{SlotCount: 2, Width: 1920, Height: 1080}
 	_, err := OpenCUDAGPUPoolWorker(
-		[]CUDAIPCHandle{{}, {}},    // frame: ok
-		nil,                         // result: ok (ResultSize=0)
-		[]CUDAIPCEventHandle{{}},    // wrong count
+		[]CUDAIPCHandle{{}, {}},  // frame: ok
+		nil,                      // result: ok (ResultSize=0)
+		[]CUDAIPCEventHandle{{}}, // wrong count
 		[]CUDAIPCEventHandle{{}, {}},
 		cfg, "/sf-test-mismatch",
 	)

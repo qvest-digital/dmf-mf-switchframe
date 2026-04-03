@@ -535,7 +535,7 @@ func TestPTSWraparound(t *testing.T) {
 	w, h := 320, 240
 	fps := 30
 	numFrames := 300
-	ptsDelta := int64(3000)                                      // 90kHz / 30fps
+	ptsDelta := int64(3000)                                    // 90kHz / 30fps
 	startPTS := int64((1 << 33) - int64(numFrames/2)*ptsDelta) // Start so wrap occurs midway
 
 	enc, err := codec.NewFFmpegEncoder("libx264", w, h, 500_000, fps, 1, 2, nil)
@@ -749,4 +749,3 @@ func TestDecodeTruncatedStream(t *testing.T) {
 	t.Logf("decoded %d frames from %d truncated NALUs (out of %d total)",
 		decodedCount, truncateAt, len(encodedNALUs))
 }
-

@@ -274,7 +274,8 @@ const (
 // ffprobe, and broadcast analyzers.
 //
 // SDT structure per ISO 13818-1 / ETSI EN 300 468:
-//   PID 0x0011, table_id 0x42 (SDT actual), service descriptor tag 0x48.
+//
+//	PID 0x0011, table_id 0x42 (SDT actual), service descriptor tag 0x48.
 func buildSDTPacket() []byte {
 	serviceName := []byte("Switchframe")
 	providerName := []byte("switchframe.dev")
@@ -293,8 +294,8 @@ func buildSDTPacket() []byte {
 	// Service loop entry: service_id(2) + flags(1) + desc_loop_length(2) + descriptors
 	descLoopLen := len(descPayload)
 	serviceEntry := make([]byte, 0, 5+descLoopLen)
-	serviceEntry = append(serviceEntry, 0x00, 0x01)                                   // service_id = 1
-	serviceEntry = append(serviceEntry, 0xFC)                                          // reserved(6) + EIT_schedule(0) + EIT_pf(0)
+	serviceEntry = append(serviceEntry, 0x00, 0x01)                                            // service_id = 1
+	serviceEntry = append(serviceEntry, 0xFC)                                                  // reserved(6) + EIT_schedule(0) + EIT_pf(0)
 	serviceEntry = append(serviceEntry, byte(0x80|((descLoopLen>>8)&0x0F)), byte(descLoopLen)) // running_status=4(running), free_CA=0, desc_loop_length
 	serviceEntry = append(serviceEntry, descPayload...)
 
@@ -313,7 +314,7 @@ func buildSDTPacket() []byte {
 	// Full section: table_id + section_syntax_indicator + length + body + CRC32
 	sectionLen := len(sectionBody) + 4 // +4 for CRC32
 	section := make([]byte, 0, 3+len(sectionBody)+4)
-	section = append(section, 0x42)                                           // table_id: SDT actual
+	section = append(section, 0x42)                                                // table_id: SDT actual
 	section = append(section, byte(0xF0|((sectionLen>>8)&0x0F)), byte(sectionLen)) // section_syntax_indicator=1, reserved=0b11, section_length
 	section = append(section, sectionBody...)
 
@@ -323,11 +324,11 @@ func buildSDTPacket() []byte {
 
 	// Wrap in 188-byte TS packet
 	pkt := make([]byte, 188)
-	pkt[0] = 0x47                                            // sync byte
-	pkt[1] = 0x40 | byte((sdtPID>>8)&0x1F)                  // payload_unit_start=1, PID high
-	pkt[2] = byte(sdtPID & 0xFF)                             // PID low
-	pkt[3] = 0x10                                            // adaptation_field_control=01 (payload only), cc=0
-	pkt[4] = 0x00                                            // pointer_field
+	pkt[0] = 0x47                          // sync byte
+	pkt[1] = 0x40 | byte((sdtPID>>8)&0x1F) // payload_unit_start=1, PID high
+	pkt[2] = byte(sdtPID & 0xFF)           // PID low
+	pkt[3] = 0x10                          // adaptation_field_control=01 (payload only), cc=0
+	pkt[4] = 0x00                          // pointer_field
 	copy(pkt[5:], section)
 	for i := 5 + len(section); i < 188; i++ {
 		pkt[i] = 0xFF // stuffing
@@ -342,13 +343,14 @@ func buildSDTPacket() []byte {
 // "Switchframe" visible at the top of the file info.
 //
 // NIT structure per ISO 13818-1 / ETSI EN 300 468:
-//   PID 0x0010, table_id 0x40 (NIT actual), network_name_descriptor tag 0x40.
+//
+//	PID 0x0010, table_id 0x40 (NIT actual), network_name_descriptor tag 0x40.
 func buildNITPacket() []byte {
 	networkName := []byte("Switchframe")
 
 	// Network name descriptor (tag 0x40)
 	nameDesc := make([]byte, 0, 2+len(networkName))
-	nameDesc = append(nameDesc, 0x40)                  // descriptor_tag: network_name
+	nameDesc = append(nameDesc, 0x40)                   // descriptor_tag: network_name
 	nameDesc = append(nameDesc, byte(len(networkName))) // descriptor_length
 	nameDesc = append(nameDesc, networkName...)
 
@@ -381,11 +383,11 @@ func buildNITPacket() []byte {
 
 	// Wrap in 188-byte TS packet
 	pkt := make([]byte, 188)
-	pkt[0] = 0x47                           // sync byte
+	pkt[0] = 0x47                          // sync byte
 	pkt[1] = 0x40 | byte((nitPID>>8)&0x1F) // payload_unit_start=1, PID high
-	pkt[2] = byte(nitPID & 0xFF)            // PID low
-	pkt[3] = 0x10                           // adaptation_field_control=01 (payload only), cc=0
-	pkt[4] = 0x00                           // pointer_field
+	pkt[2] = byte(nitPID & 0xFF)           // PID low
+	pkt[3] = 0x10                          // adaptation_field_control=01 (payload only), cc=0
+	pkt[4] = 0x00                          // pointer_field
 	copy(pkt[5:], section)
 	for i := 5 + len(section); i < 188; i++ {
 		pkt[i] = 0xFF // stuffing
@@ -598,21 +600,21 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 // in 90kHz ticks (±1 tick tolerance for rounding).
 func isNominalPTSDelta(delta int64) bool {
 	switch delta {
-	case 3000:                // 30fps
+	case 3000: // 30fps
 		return true
-	case 3003, 3004:          // 29.97fps (30000/1001)
+	case 3003, 3004: // 29.97fps (30000/1001)
 		return true
-	case 3600:                // 25fps
+	case 3600: // 25fps
 		return true
-	case 3750:                // 24fps
+	case 3750: // 24fps
 		return true
-	case 3753, 3754:          // 23.976fps (24000/1001)
+	case 3753, 3754: // 23.976fps (24000/1001)
 		return true
-	case 1800:                // 50fps
+	case 1800: // 50fps
 		return true
-	case 1500:                // 60fps
+	case 1500: // 60fps
 		return true
-	case 1501, 1502:          // 59.94fps (60000/1001)
+	case 1501, 1502: // 59.94fps (60000/1001)
 		return true
 	default:
 		return false

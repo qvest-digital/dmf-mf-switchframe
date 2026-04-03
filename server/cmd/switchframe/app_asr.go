@@ -177,9 +177,9 @@ func (a *App) updateASRStateCache() {
 // asrManagerAdapter implements control.ASRManager, bridging the multi-backend
 // asr.Engine to the control package's REST API interface.
 type asrManagerAdapter struct {
-	engine       *asr.Engine
-	captionMgr   *caption.Manager
-	pacer        *captionPacer
+	engine        *asr.Engine
+	captionMgr    *caption.Manager
+	pacer         *captionPacer
 	onCacheUpdate func() // called after state-changing operations to update cached ASR state
 }
 

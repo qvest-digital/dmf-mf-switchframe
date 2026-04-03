@@ -105,7 +105,7 @@ func TestConvertInt24BufferToFloat32(t *testing.T) {
 	channels := 2
 	samplesPerCh := 4
 	totalSamples := channels * samplesPerCh
-	input := make([]byte, totalSamples*3)  // all zeros = silence
+	input := make([]byte, totalSamples*3) // all zeros = silence
 	output := make([]float32, totalSamples)
 
 	ConvertInt24BEToFloat32(input, output, channels, samplesPerCh)

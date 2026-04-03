@@ -26,11 +26,11 @@ const (
 
 // SourceConfig defines an SRT source (persisted for caller, restored for listener).
 type SourceConfig struct {
-	Key       string `json:"key"`
-	Mode      string `json:"mode"`
-	Address   string `json:"address,omitempty"`
-	StreamID  string `json:"streamID"`
-	Label     string `json:"label,omitempty"`
+	Key        string `json:"key"`
+	Mode       string `json:"mode"`
+	Address    string `json:"address,omitempty"`
+	StreamID   string `json:"streamID"`
+	Label      string `json:"label,omitempty"`
 	Position   int    `json:"position,omitempty"`
 	LatencyMs  int    `json:"latencyMs,omitempty"`
 	DelayMs    int    `json:"delayMs,omitempty"`

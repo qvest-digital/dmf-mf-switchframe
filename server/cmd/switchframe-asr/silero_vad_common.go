@@ -6,7 +6,7 @@ const (
 	sileroChunkSize       = 512
 	sileroContextSize     = 64
 	sileroInputSize       = sileroContextSize + sileroChunkSize // 576
-	sileroStateSize       = 2 * 1 * 128                        // [2,1,128]
+	sileroStateSize       = 2 * 1 * 128                         // [2,1,128]
 	sileroSampleRate      = 16000
 	sileroChunkDurationMs = 32
 )

@@ -206,7 +206,7 @@ func (a *App) initPlayout() error {
 		}
 
 		frame := &switcher.ProcessingFrame{
-			Data:        outYUV,
+			Data:       outYUV,
 			Width:      outW,
 			Height:     outH,
 			PTS:        pts,

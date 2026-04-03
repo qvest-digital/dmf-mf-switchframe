@@ -16,7 +16,7 @@ func TestBT709RoundTrip(t *testing.T) {
 	// Use a 2x2 pixel image (minimum for YUV420 chroma subsampling)
 	width := 2
 	height := 2
-	yuvSize := width*height*3/2 // 4 + 1 + 1 = 6
+	yuvSize := width * height * 3 / 2 // 4 + 1 + 1 = 6
 	rgbSize := width * height * 3
 
 	for _, r := range steps {

@@ -129,7 +129,7 @@ func encodeAndMux(t *testing.T, numFrames int, withAudio bool) []byte {
 	})
 
 	ptsDelta := int64(90000 / encFPS) // 3000 ticks per frame at 30fps
-	startPTS := int64(90000)           // start at 1 second
+	startPTS := int64(90000)          // start at 1 second
 
 	ySize := encWidth * encHeight
 	uvSize := (encWidth / 2) * (encHeight / 2)

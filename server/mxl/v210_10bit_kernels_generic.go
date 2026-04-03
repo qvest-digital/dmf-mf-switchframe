@@ -54,20 +54,20 @@ func v210UnpackRow10Ptr(yOut, cbOut, crOut *uint16, v210In *byte, groups int) {
 
 		yBase := g * 6
 		yS[yBase+0] = uint16((w0 >> 10) & 0x3FF) // Y0
-		yS[yBase+1] = uint16(w1 & 0x3FF)          // Y1
-		yS[yBase+2] = uint16((w1 >> 20) & 0x3FF)  // Y2
-		yS[yBase+3] = uint16((w2 >> 10) & 0x3FF)  // Y3
-		yS[yBase+4] = uint16(w3 & 0x3FF)           // Y4
-		yS[yBase+5] = uint16((w3 >> 20) & 0x3FF)   // Y5
+		yS[yBase+1] = uint16(w1 & 0x3FF)         // Y1
+		yS[yBase+2] = uint16((w1 >> 20) & 0x3FF) // Y2
+		yS[yBase+3] = uint16((w2 >> 10) & 0x3FF) // Y3
+		yS[yBase+4] = uint16(w3 & 0x3FF)         // Y4
+		yS[yBase+5] = uint16((w3 >> 20) & 0x3FF) // Y5
 
 		cBase := g * 3
-		cbS[cBase+0] = uint16(w0 & 0x3FF)          // Cb0
-		cbS[cBase+1] = uint16((w1 >> 10) & 0x3FF)  // Cb2
-		cbS[cBase+2] = uint16((w2 >> 20) & 0x3FF)  // Cb4
+		cbS[cBase+0] = uint16(w0 & 0x3FF)         // Cb0
+		cbS[cBase+1] = uint16((w1 >> 10) & 0x3FF) // Cb2
+		cbS[cBase+2] = uint16((w2 >> 20) & 0x3FF) // Cb4
 
-		crS[cBase+0] = uint16((w0 >> 20) & 0x3FF)  // Cr0
-		crS[cBase+1] = uint16(w2 & 0x3FF)           // Cr2
-		crS[cBase+2] = uint16((w3 >> 10) & 0x3FF)   // Cr4
+		crS[cBase+0] = uint16((w0 >> 20) & 0x3FF) // Cr0
+		crS[cBase+1] = uint16(w2 & 0x3FF)         // Cr2
+		crS[cBase+2] = uint16((w3 >> 10) & 0x3FF) // Cr4
 	}
 }
 

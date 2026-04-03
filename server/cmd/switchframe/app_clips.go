@@ -181,7 +181,7 @@ func (a *App) initClips() error {
 		}
 
 		frame := &switcher.ProcessingFrame{
-			Data:        outYUV,
+			Data:       outYUV,
 			Width:      outW,
 			Height:     outH,
 			PTS:        pts,

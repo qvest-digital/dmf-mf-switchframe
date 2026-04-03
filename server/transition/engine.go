@@ -957,13 +957,13 @@ func (e *Engine) getBlackFrame10() []byte {
 		ySize := e.width * e.height * 2
 		// Y plane: 64 (10-bit limited-range black)
 		for i := 0; i < ySize; i += 2 {
-			e.blackBuf[i] = 64   // low byte
-			e.blackBuf[i+1] = 0  // high byte
+			e.blackBuf[i] = 64  // low byte
+			e.blackBuf[i+1] = 0 // high byte
 		}
 		// Cb and Cr planes: 512 (10-bit neutral chroma)
 		for i := ySize; i < total; i += 2 {
-			e.blackBuf[i] = 0    // low byte of 512
-			e.blackBuf[i+1] = 2  // high byte of 512
+			e.blackBuf[i] = 0   // low byte of 512
+			e.blackBuf[i+1] = 2 // high byte of 512
 		}
 	}
 	return e.blackBuf

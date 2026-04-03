@@ -395,8 +395,8 @@ func (sd *sourceDecoder) decodeLoop() {
 		}
 
 		pf := &ProcessingFrame{
-			Data:    buf[:yuvSize],
-			Format:  outputFormat,
+			Data:   buf[:yuvSize],
+			Format: outputFormat,
 			Width:  w,
 			Height: h,
 			PTS:    frame.PTS,

@@ -4,9 +4,9 @@ package shmring
 
 import (
 	"fmt"
-	"strings"
 	"math"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"unsafe"

@@ -232,20 +232,20 @@ func TestPipelineLongRunWithPeriodicCuts(t *testing.T) {
 	h.addSource("cutB", colorB)
 
 	const (
-		totalFrames     = 900 // 30 seconds at 30fps
-		framesPerSegment = 90  // 3 seconds per segment
-		numSegments     = totalFrames / framesPerSegment // 10 segments
-		flushFrames     = 8 // frames to skip after each cut for pipeline flush
-		thresholdLow    = 100.0
-		thresholdHigh   = 160.0
+		totalFrames      = 900                            // 30 seconds at 30fps
+		framesPerSegment = 90                             // 3 seconds per segment
+		numSegments      = totalFrames / framesPerSegment // 10 segments
+		flushFrames      = 8                              // frames to skip after each cut for pipeline flush
+		thresholdLow     = 100.0
+		thresholdHigh    = 160.0
 	)
 
 	type segmentResult struct {
-		source     string
-		expectedY  float64
-		framesOK   int
-		framesBAD  int
-		avgY       float64
+		source    string
+		expectedY float64
+		framesOK  int
+		framesBAD int
+		avgY      float64
 	}
 
 	var results []segmentResult
@@ -381,8 +381,8 @@ func TestMixerLongRunDrift(t *testing.T) {
 	// Feed video frames to seed the PTS and keep the pipeline alive.
 	// The mixer's wall-clock ticker produces audio independently.
 	const (
-		totalDuration = 30 * time.Second
-		checkInterval = 5 * time.Second
+		totalDuration  = 30 * time.Second
+		checkInterval  = 5 * time.Second
 		numCheckpoints = 6
 	)
 
@@ -417,8 +417,8 @@ func TestMixerLongRunDrift(t *testing.T) {
 
 	// Collect audio PTS at checkpoints.
 	type checkpoint struct {
-		time      time.Duration
-		lastPTS   int64
+		time       time.Duration
+		lastPTS    int64
 		audioCount int
 	}
 

@@ -592,8 +592,8 @@ func (s *Switcher) makeBroadcastBlack(width, height int, pts int64) *ProcessingF
 			buf[i] = 128
 		}
 		cached = &ProcessingFrame{
-			Data:  buf,
-			Width: width,
+			Data:   buf,
+			Width:  width,
 			Height: height,
 		}
 		s.cachedBlackFrame.Store(cached)

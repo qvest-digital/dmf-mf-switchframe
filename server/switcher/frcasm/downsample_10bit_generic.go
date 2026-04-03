@@ -33,7 +33,7 @@ func DownsampleY10_2x(dst, src *byte, srcStride, dstW, dstH int) {
 
 			// Average 2x2 block, then convert 10-bit to 8-bit by right-shifting 2
 			avg := (p00 + p10 + p01 + p11 + 2) >> 2 // 10-bit average
-			dstSlice[dstOff+col] = byte(avg >> 2)    // 10→8 bit
+			dstSlice[dstOff+col] = byte(avg >> 2)   // 10→8 bit
 		}
 	}
 }

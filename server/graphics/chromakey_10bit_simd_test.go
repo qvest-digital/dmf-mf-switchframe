@@ -130,7 +130,7 @@ func TestChromaKey10SIMD_MatchesReference(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		tCb, tCr          uint16
+		tCb, tCr            uint16
 		tolerance, softness int
 	}{
 		{512, 512, 80, 40},

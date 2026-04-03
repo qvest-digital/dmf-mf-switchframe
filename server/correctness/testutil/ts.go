@@ -9,13 +9,13 @@ import (
 
 // TSPacket represents a parsed MPEG-TS packet.
 type TSPacket struct {
-	SyncByte           byte
-	PID                uint16
-	ContinuityCounter  uint8
-	HasAdaptation      bool
-	HasPayload         bool
-	AdaptationField    *AdaptationField
-	Payload            []byte
+	SyncByte          byte
+	PID               uint16
+	ContinuityCounter uint8
+	HasAdaptation     bool
+	HasPayload        bool
+	AdaptationField   *AdaptationField
+	Payload           []byte
 }
 
 // AdaptationField represents the adaptation field of a TS packet.

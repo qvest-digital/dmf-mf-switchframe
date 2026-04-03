@@ -14,7 +14,7 @@ func TestRefcount_UnmanagedFrameReleasesImmediately(t *testing.T) {
 	defer pool.Close()
 
 	pf := &ProcessingFrame{
-		Data:  pool.Acquire(),
+		Data: pool.Acquire(),
 		pool: pool,
 	}
 
@@ -28,7 +28,7 @@ func TestRefcount_SingleOwnerReleasesOnLastRef(t *testing.T) {
 	defer pool.Close()
 
 	pf := &ProcessingFrame{
-		Data:  pool.Acquire(),
+		Data: pool.Acquire(),
 		pool: pool,
 	}
 	pf.SetRefs(1)
@@ -43,7 +43,7 @@ func TestRefcount_SharedFrameReleasesOnLastRef(t *testing.T) {
 	defer pool.Close()
 
 	pf := &ProcessingFrame{
-		Data:    pool.Acquire(),
+		Data:   pool.Acquire(),
 		Width:  8,
 		Height: 8,
 		pool:   pool,
@@ -74,7 +74,7 @@ func TestRefcount_DoubleReleaseOnUnmanagedIsSafe(t *testing.T) {
 	defer pool.Close()
 
 	pf := &ProcessingFrame{
-		Data:  pool.Acquire(),
+		Data: pool.Acquire(),
 		pool: pool,
 	}
 	// refs=0 (unmanaged)
@@ -121,7 +121,7 @@ func TestRefcount_DeepCopyResetsRefs(t *testing.T) {
 	defer pool.Close()
 
 	original := &ProcessingFrame{
-		Data:    pool.Acquire(),
+		Data:   pool.Acquire(),
 		Width:  4,
 		Height: 4,
 		PTS:    1000,
@@ -161,7 +161,7 @@ func TestRefcount_RawSinkNodeZeroCopy(t *testing.T) {
 	srcYUV := make([]byte, ColorYUV420_8bit.FrameSize(8, 8))
 	srcYUV[0] = 0xAA
 	pf := &ProcessingFrame{
-		Data:    srcYUV,
+		Data:   srcYUV,
 		Width:  8,
 		Height: 8,
 		PTS:    1000,
@@ -187,7 +187,7 @@ func TestRefcount_SharedAcrossValueCopies(t *testing.T) {
 	defer pool.Close()
 
 	original := &ProcessingFrame{
-		Data:   pool.Acquire(),
+		Data:  pool.Acquire(),
 		Width: 8, Height: 8, PTS: 1000,
 		pool: pool,
 	}
@@ -219,7 +219,7 @@ func TestRefcount_ValueCopyChainForPipeline(t *testing.T) {
 
 	// 1. Source decoder creates frame (copy #1 from FFmpeg)
 	decoderFrame := &ProcessingFrame{
-		Data:   pool.Acquire(),
+		Data:  pool.Acquire(),
 		Width: 8, Height: 8, PTS: 1000,
 		pool: pool,
 	}
@@ -253,7 +253,7 @@ func TestRefcount_ValueCopyChainForPipeline(t *testing.T) {
 
 	// 8. Pipeline processes (rawSinkNode Ref/Release cycle: net zero)
 	pipelineCopy.Ref()        // +1 for sink: refs=3
-	_ = pipelineCopy.Data[0]   // sink reads
+	_ = pipelineCopy.Data[0]  // sink reads
 	pipelineCopy.ReleaseYUV() // -1 for sink: refs=2
 
 	// 9. Pipeline done: release pipeline's ref
@@ -273,7 +273,7 @@ func TestRefcount_FreezeRepeatWithSharedRefs(t *testing.T) {
 	defer pool.Close()
 
 	frame := &ProcessingFrame{
-		Data:   pool.Acquire(),
+		Data:  pool.Acquire(),
 		Width: 8, Height: 8, PTS: 1000,
 		pool: pool,
 	}
@@ -318,7 +318,7 @@ func TestRefcount_UnmanagedFrameFallsBackToDeepCopy(t *testing.T) {
 	defer pool.Close()
 
 	pf := &ProcessingFrame{
-		Data:   pool.Acquire(),
+		Data:  pool.Acquire(),
 		Width: 8, Height: 8, PTS: 1000,
 		pool: pool,
 	}
@@ -336,7 +336,7 @@ func TestMakeWritable_SoleOwnerIsNoOp(t *testing.T) {
 	defer pool.Close()
 
 	pf := &ProcessingFrame{
-		Data:   pool.Acquire(),
+		Data:  pool.Acquire(),
 		Width: 8, Height: 8,
 		pool: pool,
 	}
@@ -354,7 +354,7 @@ func TestMakeWritable_SoleOwnerIsNoOp(t *testing.T) {
 
 func TestMakeWritable_UnmanagedIsNoOp(t *testing.T) {
 	pf := &ProcessingFrame{
-		Data:   make([]byte, 96),
+		Data:  make([]byte, 96),
 		Width: 8, Height: 8,
 	}
 	// No SetRefs — unmanaged
@@ -370,7 +370,7 @@ func TestMakeWritable_SharedCopiesAndDetaches(t *testing.T) {
 	defer pool.Close()
 
 	pf := &ProcessingFrame{
-		Data:   pool.Acquire(),
+		Data:  pool.Acquire(),
 		Width: 8, Height: 8,
 		pool: pool,
 	}
@@ -413,7 +413,7 @@ func TestMakeWritable_SharedCopyReleaseSafe(t *testing.T) {
 	lastRawVideo := &ProcessingFrame{
 		Data:  pool.Acquire(),
 		Width: 8, Height: 8,
-		pool:  pool,
+		pool: pool,
 	}
 	lastRawVideo.SetRefs(1) // creation ref
 	lastRawVideo.Data[0] = 0x42
@@ -461,7 +461,7 @@ func TestMakeWritable_PreservesSourceForFrameSync(t *testing.T) {
 
 	// 1. Source decoder creates frame.
 	sourceFrame := &ProcessingFrame{
-		Data:   pool.Acquire(),
+		Data:  pool.Acquire(),
 		Width: 8, Height: 8,
 		pool: pool,
 	}
@@ -502,7 +502,7 @@ func TestRefcount_RawSinkNodeConcurrentSafe(t *testing.T) {
 	defer pool.Close()
 
 	pf := &ProcessingFrame{
-		Data:  pool.Acquire(),
+		Data: pool.Acquire(),
 		pool: pool,
 	}
 	pf.SetRefs(1)

@@ -767,7 +767,7 @@ func TestTransitionEngineOutputPTS(t *testing.T) {
 	testPTS := []int64{90000, 93000, 96000}
 	for _, pts := range testPTS {
 		harness.engine.IngestRawFrame("srcA", frameA, w, h, pts-1000) // A with different PTS
-		harness.engine.IngestRawFrame("srcB", frameB, w, h, pts)     // B triggers output
+		harness.engine.IngestRawFrame("srcB", frameB, w, h, pts)      // B triggers output
 	}
 
 	outputs := harness.getOutputs()

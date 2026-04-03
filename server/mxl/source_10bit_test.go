@@ -74,10 +74,10 @@ func TestSource_Lossless10bit_ProducesLargerFrames(t *testing.T) {
 	})
 
 	src := NewSource(SourceConfig{
-		FlowName:       "cam1",
-		Width:          width,
-		Height:         height,
-		Lossless10bit:  true,
+		FlowName:      "cam1",
+		Width:         width,
+		Height:        height,
+		Lossless10bit: true,
 		OnRawVideo: func(key string, yuv []byte, w, h int, pts int64) {
 			received.mu.Lock()
 			defer received.mu.Unlock()

@@ -73,7 +73,7 @@ type CUDAGPUPool struct {
 	readyHandles []CUDAIPCEventHandle
 	doneHandles  []CUDAIPCEventHandle
 
-	isHost    bool // true for host side, false for worker
+	isHost     bool // true for host side, false for worker
 	ownsFrames bool // true if we allocated frame VRAM (false for zero-copy export)
 }
 

@@ -42,7 +42,7 @@ func TestEncodeNode_ProcessEncodes(t *testing.T) {
 	defer func() { _ = n.Close() }()
 
 	pf := &ProcessingFrame{
-		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:       make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        1000,
@@ -84,7 +84,7 @@ func TestEncodeNode_ForceIDR(t *testing.T) {
 	defer func() { _ = n.Close() }()
 
 	pf := &ProcessingFrame{
-		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:       make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        2000,
@@ -121,7 +121,7 @@ func TestEncodeNode_EncodeError(t *testing.T) {
 	defer func() { _ = n.Close() }()
 
 	pf := &ProcessingFrame{
-		Data:    make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:   make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:  4,
 		Height: 4,
 		PTS:    3000,
@@ -157,7 +157,7 @@ func TestEncodeNode_ProcessReturnsImmediately(t *testing.T) {
 	defer func() { _ = n.Close() }()
 
 	pf := &ProcessingFrame{
-		Data:    make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:   make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:  4,
 		Height: 4,
 		PTS:    1000,
@@ -348,7 +348,7 @@ func TestEncodeNode_RefReleaseLifecycle(t *testing.T) {
 	pool := NewFramePool(1, 4, 4, ColorYUV420_8bit)
 	buf := pool.Acquire()
 	pf := &ProcessingFrame{
-		Data:    buf[:ColorYUV420_8bit.FrameSize(4, 4)],
+		Data:   buf[:ColorYUV420_8bit.FrameSize(4, 4)],
 		Width:  4,
 		Height: 4,
 		PTS:    1000,
@@ -522,7 +522,7 @@ func TestEncodeNode_ProcessWithoutStart(t *testing.T) {
 	// Note: start() NOT called
 
 	pf := &ProcessingFrame{
-		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:       make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        1000,

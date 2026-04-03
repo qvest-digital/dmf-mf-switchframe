@@ -758,7 +758,7 @@ func TestFrameSync_RemoveSourceReleasesPoolBuffers(t *testing.T) {
 	buf := pool.Acquire()
 	pf := &ProcessingFrame{
 		PTS:  1000,
-		Data:  buf,
+		Data: buf,
 		pool: pool,
 	}
 	fs.IngestRawVideo("cam1", pf)
@@ -838,7 +838,7 @@ func TestFrameSync_StopReleasesPoolBuffers(t *testing.T) {
 			buf := pool.Acquire()
 			pf := &ProcessingFrame{
 				PTS:  int64(i * 3000),
-				Data:  buf,
+				Data: buf,
 				pool: pool,
 			}
 			fs.IngestRawVideo(key, pf)
@@ -890,7 +890,7 @@ func TestFrameSync_StopReleasesPoolBuffersWithFRC(t *testing.T) {
 		}
 		pf := &ProcessingFrame{
 			PTS:    int64(i * 3000),
-			Data:    buf[:yuvSize],
+			Data:   buf[:yuvSize],
 			Width:  64,
 			Height: 64,
 			pool:   pool,
@@ -1299,7 +1299,7 @@ func TestFrameSync_SetTickRateResetsPtsRemAccum(t *testing.T) {
 
 	// Ingest a raw video frame so there's content to release.
 	pf := &ProcessingFrame{
-		Data:   make([]byte, ColorYUV420_8bit.FrameSize(64, 64)),
+		Data:  make([]byte, ColorYUV420_8bit.FrameSize(64, 64)),
 		Width: 64, Height: 64,
 		PTS: 0,
 	}
@@ -1347,7 +1347,7 @@ func TestFrameSync_SetTickRateResetsPtsRemAccum(t *testing.T) {
 
 	// Ingest a fresh frame with known PTS.
 	pf2 := &ProcessingFrame{
-		Data:   make([]byte, ColorYUV420_8bit.FrameSize(64, 64)),
+		Data:  make([]byte, ColorYUV420_8bit.FrameSize(64, 64)),
 		Width: 64, Height: 64,
 		PTS: 90000, // start at 1 second
 	}
@@ -1682,7 +1682,7 @@ func TestFrameSync_SyncReleaseNano(t *testing.T) {
 	beforeIngest := time.Now().UnixNano()
 	pf := &ProcessingFrame{
 		PTS:           1000,
-		Data:           []byte{0x01},
+		Data:          []byte{0x01},
 		DecodeEndNano: beforeIngest,
 	}
 	fs.IngestRawVideo("cam1", pf)
@@ -1725,7 +1725,7 @@ func TestFrameSync_ProgramSourceTriggersImmediateRelease(t *testing.T) {
 
 	// Ingest a frame for the program source — should trigger immediate release.
 	pf := &ProcessingFrame{
-		Data:    make([]byte, 64),
+		Data:   make([]byte, 64),
 		Width:  8,
 		Height: 4,
 		PTS:    5000,
@@ -1757,7 +1757,7 @@ func TestFrameSync_NonProgramSourceDoesNotTriggerEarlyRelease(t *testing.T) {
 
 	// Ingest a frame for cam2 (NOT the program source).
 	pf := &ProcessingFrame{
-		Data:    make([]byte, 64),
+		Data:   make([]byte, 64),
 		Width:  8,
 		Height: 4,
 		PTS:    5000,
@@ -1797,7 +1797,7 @@ func TestFrameSync_SetProgramSourceSwitchesDriver(t *testing.T) {
 
 	// Ingest frame for cam2 — should trigger immediate release now.
 	pf := &ProcessingFrame{
-		Data:    make([]byte, 64),
+		Data:   make([]byte, 64),
 		Width:  8,
 		Height: 4,
 		PTS:    6000,
@@ -1821,7 +1821,7 @@ func TestFrameSync_TimerFallbackWithoutProgramFrames(t *testing.T) {
 
 	// Ingest an initial frame so freeze has something to repeat.
 	pf := &ProcessingFrame{
-		Data:    make([]byte, 64),
+		Data:   make([]byte, 64),
 		Width:  8,
 		Height: 4,
 		PTS:    1000,
@@ -1864,7 +1864,7 @@ func TestFrameSync_NoDoubleRelease(t *testing.T) {
 	start := time.Now()
 	for time.Since(start) < 200*time.Millisecond {
 		pf := &ProcessingFrame{
-			Data:    make([]byte, 64),
+			Data:   make([]byte, 64),
 			Width:  8,
 			Height: 4,
 			PTS:    int64(time.Since(start).Milliseconds()) * 90,
@@ -1895,7 +1895,7 @@ func TestFrameSync_DebugSnapshotIncludesReleaseCounters(t *testing.T) {
 
 	// Ingest a frame to trigger a program-driven release.
 	pf := &ProcessingFrame{
-		Data:    make([]byte, 64),
+		Data:   make([]byte, 64),
 		Width:  8,
 		Height: 4,
 		PTS:    1000,
@@ -2334,7 +2334,7 @@ func TestFrameSync_FRCWithPhaseLock_ImmediateRelease(t *testing.T) {
 
 	// Ingest a frame for the program source.
 	pf := &ProcessingFrame{
-		Data:    make([]byte, 64),
+		Data:   make([]byte, 64),
 		Width:  8,
 		Height: 4,
 		PTS:    5000,
@@ -2373,7 +2373,7 @@ func TestFrameSync_FRCWithPhaseLock_OutputRateNotInflated(t *testing.T) {
 	start := time.Now()
 	for time.Since(start) < 500*time.Millisecond {
 		pf := &ProcessingFrame{
-			Data:    make([]byte, 64),
+			Data:   make([]byte, 64),
 			Width:  8,
 			Height: 4,
 			PTS:    int64(time.Since(start).Milliseconds()) * 90,
@@ -2406,7 +2406,7 @@ func TestFrameSync_FRCWithPhaseLock_TimerContinuesBetweenSourceFrames(t *testing
 
 	// Ingest a frame so there's something to release.
 	pf := &ProcessingFrame{
-		Data:    make([]byte, 64),
+		Data:   make([]byte, 64),
 		Width:  8,
 		Height: 4,
 		PTS:    1000,

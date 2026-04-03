@@ -449,7 +449,7 @@ func resampleFrames(frames [][]byte, sourceFPS, targetFPS float64) [][]byte {
 	resampled := make([][]byte, targetCount)
 	for i := 0; i < targetCount; i++ {
 		// Map target frame index to source frame index (nearest-neighbor).
-		srcIdx := int(float64(i) * sourceFPS / targetFPS + 0.5)
+		srcIdx := int(float64(i)*sourceFPS/targetFPS + 0.5)
 		if srcIdx >= len(frames) {
 			srcIdx = len(frames) - 1
 		}

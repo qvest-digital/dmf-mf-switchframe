@@ -11,7 +11,7 @@ import (
 // sum to 1.0 ±1e-6 after normalization. This is essential for energy preservation.
 func TestLanczosKernelSum(t *testing.T) {
 	testCases := []struct {
-		name            string
+		name             string
 		srcSize, dstSize int
 	}{
 		{"upscale_960_1920", 960, 1920},
@@ -53,13 +53,13 @@ func TestLanczos3Kernel(t *testing.T) {
 		expected float64
 		tol      float64
 	}{
-		{0.0, 1.0, 1e-10},      // Center: sinc(0)*sinc(0) = 1
-		{3.0, 0.0, 1e-10},      // Support boundary: sinc(3)*sinc(1) = 0
-		{-3.0, 0.0, 1e-10},     // Negative boundary
-		{4.0, 0.0, 1e-10},      // Beyond support
-		{1.0, 0.0, 1e-10},      // sinc(1) = 0, so L(1) = 0
-		{2.0, 0.0, 1e-10},      // sinc(2) = 0, so L(2) = 0
-		{0.5, 0.6079, 0.001},   // Approximate known value
+		{0.0, 1.0, 1e-10},    // Center: sinc(0)*sinc(0) = 1
+		{3.0, 0.0, 1e-10},    // Support boundary: sinc(3)*sinc(1) = 0
+		{-3.0, 0.0, 1e-10},   // Negative boundary
+		{4.0, 0.0, 1e-10},    // Beyond support
+		{1.0, 0.0, 1e-10},    // sinc(1) = 0, so L(1) = 0
+		{2.0, 0.0, 1e-10},    // sinc(2) = 0, so L(2) = 0
+		{0.5, 0.6079, 0.001}, // Approximate known value
 	}
 
 	for _, tc := range tests {
@@ -74,9 +74,9 @@ func TestLanczos3Kernel(t *testing.T) {
 // produces a uniform color output with no ringing artifacts.
 func TestScalerEnergyPreservation(t *testing.T) {
 	testCases := []struct {
-		name            string
-		srcW, srcH      int
-		dstW, dstH      int
+		name               string
+		srcW, srcH         int
+		dstW, dstH         int
 		yVal, cbVal, crVal byte
 	}{
 		{"upscale_128_gray", 64, 48, 128, 96, 128, 128, 128},

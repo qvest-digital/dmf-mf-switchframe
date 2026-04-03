@@ -25,7 +25,7 @@ func TestPipelineCodecs_EncodeProcessingFrame(t *testing.T) {
 	pc.encoder = enc
 
 	pf := &ProcessingFrame{
-		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:       make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        1000,
@@ -374,7 +374,7 @@ func TestPipelineCodecs_SPSPPSIndependentOfWireData(t *testing.T) {
 	}
 
 	pf := &ProcessingFrame{
-		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:       make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        1000,
@@ -521,7 +521,7 @@ func TestPipelineCodecs_InvalidateEncoderRace(t *testing.T) {
 	}
 
 	pf := &ProcessingFrame{
-		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:       make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        1000,
@@ -578,7 +578,7 @@ func BenchmarkPipelineEncode(b *testing.B) {
 	}
 
 	pf := &ProcessingFrame{
-		Data:        make([]byte, ColorYUV420_8bit.FrameSize(320, 240)),
+		Data:       make([]byte, ColorYUV420_8bit.FrameSize(320, 240)),
 		Width:      320,
 		Height:     240,
 		PTS:        1000,
@@ -676,7 +676,7 @@ func TestPipelineCodecs_HEVC_CodecString(t *testing.T) {
 	}
 
 	pf := &ProcessingFrame{
-		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:       make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        1000,
@@ -700,7 +700,7 @@ func TestPipelineCodecs_AVC_CodecString(t *testing.T) {
 	}
 
 	pf := &ProcessingFrame{
-		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:       make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        1000,
@@ -730,7 +730,7 @@ func TestPipelineCodecs_HEVC_ExtractsVPSSPSPPS(t *testing.T) {
 	}
 
 	pf := &ProcessingFrame{
-		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:       make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        1000,
@@ -768,7 +768,7 @@ func TestPipelineCodecs_AVC_NoVPS(t *testing.T) {
 	}
 
 	pf := &ProcessingFrame{
-		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:       make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        1000,
@@ -814,7 +814,7 @@ func TestPipelineCodecs_HEVC_VideoInfoCallback(t *testing.T) {
 	}
 
 	pf := &ProcessingFrame{
-		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:       make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        1000,
@@ -856,7 +856,7 @@ func TestPipelineCodecs_AVC_VideoInfoCallbackNilVPS(t *testing.T) {
 	}
 
 	pf := &ProcessingFrame{
-		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:       make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        1000,
@@ -889,7 +889,7 @@ func TestPipelineCodecs_HEVC_ParamSetsIndependentOfWireData(t *testing.T) {
 	}
 
 	pf := &ProcessingFrame{
-		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:       make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        1000,
@@ -929,7 +929,7 @@ func TestPipelineCodecs_DefaultCodecIsAVC(t *testing.T) {
 	}
 
 	pf := &ProcessingFrame{
-		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:       make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        1000,
@@ -963,7 +963,7 @@ func TestPipelineCodecs_HEVC_CallbackDeduplication(t *testing.T) {
 	}
 
 	pf := &ProcessingFrame{
-		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:       make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        1000,
@@ -1023,7 +1023,7 @@ func TestPipelineCodecs_IdentSEI_H264_Keyframe(t *testing.T) {
 	}
 
 	pf := &ProcessingFrame{
-		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:       make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        1000,
@@ -1064,7 +1064,7 @@ func TestPipelineCodecs_IdentSEI_HEVC_Keyframe(t *testing.T) {
 	}
 
 	pf := &ProcessingFrame{
-		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:       make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        1000,
@@ -1095,7 +1095,7 @@ func TestPipelineCodecs_IdentSEI_NonKeyframe_NoIdent(t *testing.T) {
 
 	// First, encode a keyframe to prime the encoder and build the ident SEI.
 	pf := &ProcessingFrame{
-		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:       make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        1000,
@@ -1108,7 +1108,7 @@ func TestPipelineCodecs_IdentSEI_NonKeyframe_NoIdent(t *testing.T) {
 
 	// Now encode a non-keyframe.
 	pf2 := &ProcessingFrame{
-		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:       make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        2000,
@@ -1144,7 +1144,7 @@ func TestPipelineCodecs_IdentSEI_BuiltLazily(t *testing.T) {
 	require.Nil(t, pc.identSEI, "identSEI should be nil before first keyframe")
 
 	pf := &ProcessingFrame{
-		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:       make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        1000,
@@ -1179,7 +1179,7 @@ func TestPipelineCodecs_IdentSEI_InvalidatedOnResolutionChange(t *testing.T) {
 
 	// First keyframe at 4x4.
 	pf := &ProcessingFrame{
-		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:       make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        1000,
@@ -1193,7 +1193,7 @@ func TestPipelineCodecs_IdentSEI_InvalidatedOnResolutionChange(t *testing.T) {
 
 	// Second keyframe at 8x8 — ident SEI should be rebuilt.
 	pf2 := &ProcessingFrame{
-		Data:        make([]byte, ColorYUV420_8bit.FrameSize(8, 8)),
+		Data:       make([]byte, ColorYUV420_8bit.FrameSize(8, 8)),
 		Width:      8,
 		Height:     8,
 		PTS:        2000,
@@ -1223,7 +1223,7 @@ func TestPipelineCodecs_IdentSEI_PreservesParamSets(t *testing.T) {
 	}
 
 	pf := &ProcessingFrame{
-		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:       make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:      4,
 		Height:     4,
 		PTS:        1000,

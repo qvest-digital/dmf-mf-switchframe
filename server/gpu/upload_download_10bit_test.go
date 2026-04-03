@@ -15,7 +15,7 @@ func TestUpload10_Download10_RoundTrip(t *testing.T) {
 
 	w, h := 64, 32
 	// YUV422P10LE layout: Y (w*h uint16) + Cb (w/2*h uint16) + Cr (w/2*h uint16)
-	ySize := w * h * 2       // uint16 per sample
+	ySize := w * h * 2 // uint16 per sample
 	chromaW := w / 2
 	cbSize := chromaW * h * 2 // uint16 per sample
 	crSize := cbSize

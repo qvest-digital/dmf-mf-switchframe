@@ -43,7 +43,7 @@ func TestRawSinkNode_ProcessZeroCopy(t *testing.T) {
 	srcYUV := make([]byte, ColorYUV420_8bit.FrameSize(8, 8))
 	srcYUV[0] = 0xAA
 	pf := &ProcessingFrame{
-		Data:    srcYUV,
+		Data:   srcYUV,
 		Width:  8,
 		Height: 8,
 		PTS:    1000,
@@ -68,7 +68,7 @@ func TestRawSinkNode_ProcessSkipsNilSink(t *testing.T) {
 	n := &rawSinkNode{sink: &sink, name: "raw-sink-test"}
 
 	pf := &ProcessingFrame{
-		Data:    make([]byte, ColorYUV420_8bit.FrameSize(8, 8)),
+		Data:   make([]byte, ColorYUV420_8bit.FrameSize(8, 8)),
 		Width:  8,
 		Height: 8,
 	}

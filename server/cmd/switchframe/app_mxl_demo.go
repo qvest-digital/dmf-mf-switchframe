@@ -80,7 +80,7 @@ func (a *App) startMXLDemo(ctx context.Context) func() {
 			},
 			OnRawVideo: func(sourceKey string, yuv []byte, w, h int, pts int64) {
 				pf := &switcher.ProcessingFrame{
-					Data:    yuv,
+					Data:   yuv,
 					Width:  w,
 					Height: h,
 					PTS:    pts,

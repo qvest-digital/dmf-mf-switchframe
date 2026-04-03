@@ -523,8 +523,8 @@ func TestGPUFTBFullRange(t *testing.T) {
 	err = BlendFTB(ctx, dst, src, 0.5)
 	require.NoError(t, err)
 	yAvg5, cbAvg5, crAvg5 := avgPlanes(t, ctx, dst, width, height)
-	expectedY5 := (200.0 + 16.0) / 2.0  // 108
-	expectedCb5 := (80.0 + 128.0) / 2.0 // 104
+	expectedY5 := (200.0 + 16.0) / 2.0   // 108
+	expectedCb5 := (80.0 + 128.0) / 2.0  // 104
 	expectedCr5 := (180.0 + 128.0) / 2.0 // 154
 	t.Logf("MEASURE: FTB pos=0.5: Y=%.4f (exp=%.1f), Cb=%.4f (exp=%.1f), Cr=%.4f (exp=%.1f)",
 		yAvg5, expectedY5, cbAvg5, expectedCb5, crAvg5, expectedCr5)

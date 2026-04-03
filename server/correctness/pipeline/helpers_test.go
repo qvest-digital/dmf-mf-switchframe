@@ -36,10 +36,10 @@ const (
 
 // Source colors -- distinct in YUV space, easily identified after lossy compression.
 var (
-	sourceA = sourceColor{Y: 80, Cb: 90, Cr: 240}  // reddish
+	sourceA = sourceColor{Y: 80, Cb: 90, Cr: 240}   // reddish
 	sourceB = sourceColor{Y: 160, Cb: 50, Cr: 60}   // greenish
-	sourceC = sourceColor{Y: 200, Cb: 200, Cr: 100}  // bluish
-	sourceD = sourceColor{Y: 120, Cb: 128, Cr: 128}  // neutral gray
+	sourceC = sourceColor{Y: 200, Cb: 200, Cr: 100} // bluish
+	sourceD = sourceColor{Y: 120, Cb: 128, Cr: 128} // neutral gray
 )
 
 type sourceColor struct {

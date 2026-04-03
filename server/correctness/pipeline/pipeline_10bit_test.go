@@ -193,7 +193,7 @@ func TestPipeline10bit_FrameSizeCalculation(t *testing.T) {
 		w, h     int
 		expected int
 	}{
-		{320, 240, 320 * 240 * 4},    // w*h*4 for YUV422P10LE
+		{320, 240, 320 * 240 * 4}, // w*h*4 for YUV422P10LE
 		{1920, 1080, 1920 * 1080 * 4},
 		{1280, 720, 1280 * 720 * 4},
 		{640, 480, 640 * 480 * 4},

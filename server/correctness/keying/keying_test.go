@@ -356,58 +356,58 @@ func TestKeyOutputLegalRange(t *testing.T) {
 	t.Parallel()
 
 	testCases := []struct {
-		name     string
+		name                  string
 		bgY, bgCb, bgCr       byte
-		fillY, fillCb, fillCr  byte
-		keyType  graphics.KeyType
+		fillY, fillCb, fillCr byte
+		keyType               graphics.KeyType
 	}{
 		{
-			name:   "chroma_green_on_red_bg",
-			bgY:    redYCbCr.Y, bgCb: redYCbCr.Cb, bgCr: redYCbCr.Cr,
-			fillY:  greenKeyColor.Y, fillCb: greenKeyColor.Cb, fillCr: greenKeyColor.Cr,
+			name: "chroma_green_on_red_bg",
+			bgY:  redYCbCr.Y, bgCb: redYCbCr.Cb, bgCr: redYCbCr.Cr,
+			fillY: greenKeyColor.Y, fillCb: greenKeyColor.Cb, fillCr: greenKeyColor.Cr,
 			keyType: graphics.KeyTypeChroma,
 		},
 		{
-			name:   "chroma_mixed_on_blue_bg",
-			bgY:    blueYCbCr.Y, bgCb: blueYCbCr.Cb, bgCr: blueYCbCr.Cr,
-			fillY:  128, fillCb: 100, fillCr: 180,
+			name: "chroma_mixed_on_blue_bg",
+			bgY:  blueYCbCr.Y, bgCb: blueYCbCr.Cb, bgCr: blueYCbCr.Cr,
+			fillY: 128, fillCb: 100, fillCr: 180,
 			keyType: graphics.KeyTypeChroma,
 		},
 		{
-			name:   "luma_bright_on_dark_bg",
-			bgY:    30, bgCb: 128, bgCr: 128,
-			fillY:  220, fillCb: 128, fillCr: 128,
+			name: "luma_bright_on_dark_bg",
+			bgY:  30, bgCb: 128, bgCr: 128,
+			fillY: 220, fillCb: 128, fillCr: 128,
 			keyType: graphics.KeyTypeLuma,
 		},
 		{
-			name:   "luma_dark_on_bright_bg",
-			bgY:    200, bgCb: 128, bgCr: 128,
-			fillY:  20, fillCb: 128, fillCr: 128,
+			name: "luma_dark_on_bright_bg",
+			bgY:  200, bgCb: 128, bgCr: 128,
+			fillY: 20, fillCb: 128, fillCr: 128,
 			keyType: graphics.KeyTypeLuma,
 		},
 		// Edge cases: extreme values that stress blend arithmetic
 		{
-			name:    "chroma_superblack_fill_on_white_bg",
-			bgY:     235, bgCb: 128, bgCr: 128,
-			fillY:   0, fillCb: 0, fillCr: 0,
+			name: "chroma_superblack_fill_on_white_bg",
+			bgY:  235, bgCb: 128, bgCr: 128,
+			fillY: 0, fillCb: 0, fillCr: 0,
 			keyType: graphics.KeyTypeChroma,
 		},
 		{
-			name:    "chroma_max_fill_on_black_bg",
-			bgY:     0, bgCb: 255, bgCr: 255,
-			fillY:   255, fillCb: 255, fillCr: 255,
+			name: "chroma_max_fill_on_black_bg",
+			bgY:  0, bgCb: 255, bgCr: 255,
+			fillY: 255, fillCb: 255, fillCr: 255,
 			keyType: graphics.KeyTypeChroma,
 		},
 		{
-			name:    "luma_superblack_on_superwhite",
-			bgY:     255, bgCb: 0, bgCr: 255,
-			fillY:   0, fillCb: 255, fillCr: 0,
+			name: "luma_superblack_on_superwhite",
+			bgY:  255, bgCb: 0, bgCr: 255,
+			fillY: 0, fillCb: 255, fillCr: 0,
 			keyType: graphics.KeyTypeLuma,
 		},
 		{
-			name:    "chroma_near_green_fill_on_saturated_bg",
-			bgY:     16, bgCb: 240, bgCr: 240,
-			fillY:   145, fillCb: 60, fillCr: 30,
+			name: "chroma_near_green_fill_on_saturated_bg",
+			bgY:  16, bgCb: 240, bgCr: 240,
+			fillY: 145, fillCb: 60, fillCr: 30,
 			keyType: graphics.KeyTypeChroma,
 		},
 	}
@@ -659,9 +659,9 @@ func TestLumaKeySoftnessGradient(t *testing.T) {
 	// - Low Y (left side) should be fully opaque.
 	// - High Y (right side) should be transparent.
 	// - There should be a gradual transition in between.
-	leftAlpha := mask[0]        // Y=16, should be opaque
-	rightAlpha := mask[w-1]     // Y=235, should be transparent
-	midAlpha := mask[w*3/4]     // Somewhere in the transition zone
+	leftAlpha := mask[0]    // Y=16, should be opaque
+	rightAlpha := mask[w-1] // Y=235, should be transparent
+	midAlpha := mask[w*3/4] // Somewhere in the transition zone
 
 	require.GreaterOrEqual(t, leftAlpha, byte(200),
 		"low-Y pixels should be opaque, got %d", leftAlpha)

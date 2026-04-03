@@ -94,7 +94,7 @@ func TestAACEncodeDecodeRoundTrip(t *testing.T) {
 	if noisePower < 1e-30 {
 		noisePower = 1e-30
 	}
-	snr := 10.0 * math.Log10(signalPower / noisePower)
+	snr := 10.0 * math.Log10(signalPower/noisePower)
 	t.Logf("MEASURE: SNR = %.1f dB (measured %d samples, skipped %d priming samples)",
 		snr, measured, skipSamples)
 

@@ -58,7 +58,7 @@ func makeTestFrame(width, height int, yVal byte, pts int64) *ProcessingFrame {
 	}
 
 	return &ProcessingFrame{
-		Data:    yuv,
+		Data:   yuv,
 		Width:  width,
 		Height: height,
 		PTS:    pts,
@@ -82,7 +82,7 @@ func makeFRCGradientFrame(width, height int, offset byte, pts int64) *Processing
 	}
 
 	return &ProcessingFrame{
-		Data:    yuv,
+		Data:   yuv,
 		Width:  width,
 		Height: height,
 		PTS:    pts,
@@ -1069,7 +1069,7 @@ func TestFRCNearest_SkipsSceneChangeAndME(t *testing.T) {
 	frc := newFRCSource(FRCNearest, 3000)
 
 	pf1 := &ProcessingFrame{
-		Data:    make([]byte, ColorYUV420_8bit.FrameSize(1920, 1080)),
+		Data:   make([]byte, ColorYUV420_8bit.FrameSize(1920, 1080)),
 		Width:  1920,
 		Height: 1080,
 		PTS:    0,
@@ -1077,7 +1077,7 @@ func TestFRCNearest_SkipsSceneChangeAndME(t *testing.T) {
 	pf1.SetRefs(2)
 
 	pf2 := &ProcessingFrame{
-		Data:    make([]byte, ColorYUV420_8bit.FrameSize(1920, 1080)),
+		Data:   make([]byte, ColorYUV420_8bit.FrameSize(1920, 1080)),
 		Width:  1920,
 		Height: 1080,
 		PTS:    3000,
@@ -1112,7 +1112,7 @@ func TestFRCMCFI_SkipsMEWhenSourceAtPipelineRate(t *testing.T) {
 	// Ingest 20 frames at exactly the pipeline tick rate.
 	for i := 0; i < 20; i++ {
 		pf := &ProcessingFrame{
-			Data:    make([]byte, ColorYUV420_8bit.FrameSize(64, 64)),
+			Data:   make([]byte, ColorYUV420_8bit.FrameSize(64, 64)),
 			Width:  64,
 			Height: 64,
 			PTS:    int64(i) * tickInterval,
@@ -1146,7 +1146,7 @@ func TestFRCMCFI_RunsMEForSlowerSource(t *testing.T) {
 	// Ingest 20 frames at half the pipeline rate (15fps).
 	for i := 0; i < 20; i++ {
 		pf := &ProcessingFrame{
-			Data:    make([]byte, ColorYUV420_8bit.FrameSize(64, 64)),
+			Data:   make([]byte, ColorYUV420_8bit.FrameSize(64, 64)),
 			Width:  64,
 			Height: 64,
 			PTS:    int64(i) * sourceInterval,
@@ -1178,7 +1178,7 @@ func TestFRCMCFI_SkipsME_EdgeCases(t *testing.T) {
 		// Ingest only 5 frames (4 intervals, below convergence threshold).
 		for i := 0; i < 5; i++ {
 			pf := &ProcessingFrame{
-				Data:    make([]byte, ColorYUV420_8bit.FrameSize(64, 64)),
+				Data:   make([]byte, ColorYUV420_8bit.FrameSize(64, 64)),
 				Width:  64,
 				Height: 64,
 				PTS:    int64(i) * tickInterval,
@@ -1201,7 +1201,7 @@ func TestFRCMCFI_SkipsME_EdgeCases(t *testing.T) {
 
 		for i := 0; i < 15; i++ {
 			pf := &ProcessingFrame{
-				Data:    make([]byte, ColorYUV420_8bit.FrameSize(64, 64)),
+				Data:   make([]byte, ColorYUV420_8bit.FrameSize(64, 64)),
 				Width:  64,
 				Height: 64,
 				PTS:    int64(i) * 3003,

@@ -73,9 +73,9 @@ func TestRTMPTranscoder_TranscodeHEVCtoH264(t *testing.T) {
 		DTS:        90000,
 		IsKeyframe: true,
 		Codec:      "h265",
-		VPS:        []byte{0x40, 0x01, 0x0c},        // mock VPS
-		SPS:        []byte{0x42, 0x01, 0x01},        // mock SPS
-		PPS:        []byte{0x44, 0x01, 0xc0},        // mock PPS
+		VPS:        []byte{0x40, 0x01, 0x0c},                               // mock VPS
+		SPS:        []byte{0x42, 0x01, 0x01},                               // mock SPS
+		PPS:        []byte{0x44, 0x01, 0xc0},                               // mock PPS
 		WireData:   []byte{0x00, 0x00, 0x00, 0x04, 0x26, 0x01, 0xaf, 0x09}, // mock HEVC NALU in HVC1
 	}
 

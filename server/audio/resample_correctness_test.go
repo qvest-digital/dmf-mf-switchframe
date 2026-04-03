@@ -96,7 +96,7 @@ func TestResamplerSineWave(t *testing.T) {
 	// Skip the transient region (filter startup) and analyze steady state.
 	// The transient is tapsPerPhase input samples long, which maps to
 	// approximately tapsPerPhase * L/M output samples.
-	skipSamples := int(float64(r.TapsPerPhase()) * float64(dstRate) / float64(srcRate)) * 2
+	skipSamples := int(float64(r.TapsPerPhase())*float64(dstRate)/float64(srcRate)) * 2
 	if skipSamples >= len(output)-dstRate/2 {
 		t.Fatalf("not enough output samples to analyze after transient skip")
 	}
@@ -188,7 +188,7 @@ func TestPolyphaseCoeffSum(t *testing.T) {
 		for t := 0; t < tapsPerPhase; t++ {
 			sum += float64(coeffs[p*tapsPerPhase+t])
 		}
-		errDB := 20 * math.Log10(math.Abs(sum-1.0) + 1e-15)
+		errDB := 20 * math.Log10(math.Abs(sum-1.0)+1e-15)
 		// Each sub-filter should have DC gain of approximately 1.0
 		// float32 precision limits us to about -40 dB error
 		if math.Abs(sum-1.0) > 0.01 {

@@ -48,24 +48,24 @@ type PersistedState struct {
 
 // PersistedChannel is the serializable state of a single playout channel.
 type PersistedChannel struct {
-	ID            int          `json:"id"`
-	State         ChannelState `json:"state"`
-	Mode          OnAirMode    `json:"mode"`
-	Cursor        int          `json:"cursor"`
-	ItemStartTime time.Time   `json:"item_start_time"`
-	Playlist      *Playlist    `json:"playlist,omitempty"`
+	ID            int            `json:"id"`
+	State         ChannelState   `json:"state"`
+	Mode          OnAirMode      `json:"mode"`
+	Cursor        int            `json:"cursor"`
+	ItemStartTime time.Time      `json:"item_start_time"`
+	Playlist      *Playlist      `json:"playlist,omitempty"`
 	Pods          []PersistedPod `json:"pods,omitempty"`
 }
 
 // PersistedPod is the serializable state of a single pod instance.
 type PersistedPod struct {
-	ID             string    `json:"id"`
-	Config         PodConfig `json:"config"`
-	State          PodState  `json:"state"`
-	Armed          bool      `json:"armed"`
-	ElapsedMs      int64     `json:"elapsed_ms"`
-	FiredAt        int64     `json:"fired_at,omitempty"`
-	SCTE35EventID  uint32    `json:"scte35_event_id,omitempty"`
+	ID            string    `json:"id"`
+	Config        PodConfig `json:"config"`
+	State         PodState  `json:"state"`
+	Armed         bool      `json:"armed"`
+	ElapsedMs     int64     `json:"elapsed_ms"`
+	FiredAt       int64     `json:"fired_at,omitempty"`
+	SCTE35EventID uint32    `json:"scte35_event_id,omitempty"`
 }
 
 // atomicWriteJSON writes v as JSON to path using a temp file + rename

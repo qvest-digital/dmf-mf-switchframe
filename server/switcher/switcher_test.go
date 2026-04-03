@@ -1206,7 +1206,7 @@ func TestHandleRawVideoFrame_NilViewer(t *testing.T) {
 
 	// Should not panic — viewer is nil for MXL sources.
 	pf := &ProcessingFrame{
-		Data:   make([]byte, ColorYUV420_8bit.FrameSize(1920, 1080)),
+		Data:  make([]byte, ColorYUV420_8bit.FrameSize(1920, 1080)),
 		Width: 1920, Height: 1080,
 		PTS: 90000, DTS: 90000,
 	}
@@ -1300,7 +1300,7 @@ func TestIngestReplayVideo_RoutesToPipeline(t *testing.T) {
 	require.NoError(t, sw.Cut(context.Background(), "replay"))
 
 	pf := &ProcessingFrame{
-		Data:        make([]byte, ColorYUV420_8bit.FrameSize(320, 240)),
+		Data:       make([]byte, ColorYUV420_8bit.FrameSize(320, 240)),
 		Width:      320,
 		Height:     240,
 		PTS:        90000,
@@ -1338,7 +1338,7 @@ func TestCloseWithFrameSyncActive(t *testing.T) {
 		// Feed some raw frames through the frame sync so it has data to tick.
 		for j := 0; j < 5; j++ {
 			pf := &ProcessingFrame{
-				Data:        make([]byte, ColorYUV420_8bit.FrameSize(320, 240)),
+				Data:       make([]byte, ColorYUV420_8bit.FrameSize(320, 240)),
 				Width:      320,
 				Height:     240,
 				PTS:        int64(j * 3000),

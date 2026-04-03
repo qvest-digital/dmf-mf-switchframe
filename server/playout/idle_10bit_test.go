@@ -100,7 +100,7 @@ func newIdleFrame10Filled(w, h int, yVal, cbVal, crVal uint16) []byte {
 		binary.LittleEndian.PutUint16(buf[cbOff+i*2:], cbVal)
 	}
 	// Fill Cr plane
-	crOff := cbOff + chromaSize * 2
+	crOff := cbOff + chromaSize*2
 	for i := 0; i < chromaSize; i++ {
 		binary.LittleEndian.PutUint16(buf[crOff+i*2:], crVal)
 	}

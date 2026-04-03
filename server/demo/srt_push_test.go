@@ -473,7 +473,6 @@ func buildTSPacketWithPTSOnPID(streamID byte, pts int64, pid int) []byte {
 	return pkt
 }
 
-
 // buildTestTSWithPTS creates minimal MPEG-TS data containing two
 // video PES packets with the given PTS values (90kHz clock).
 func buildTestTSWithPTS(t *testing.T, pts1, pts2 int64) []byte {

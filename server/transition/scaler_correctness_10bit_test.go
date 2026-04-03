@@ -53,11 +53,11 @@ func TestScaler10bit_EnergyPreservation(t *testing.T) {
 		srcW, srcH int
 		dstW, dstH int
 	}{
-		{320, 240, 160, 120}, // 2x downscale
-		{320, 240, 640, 480}, // 2x upscale
+		{320, 240, 160, 120},   // 2x downscale
+		{320, 240, 640, 480},   // 2x upscale
 		{1920, 1080, 960, 540}, // half
-		{64, 32, 128, 64},     // 2x upscale small
-		{128, 64, 32, 16},     // 4x downscale
+		{64, 32, 128, 64},      // 2x upscale small
+		{128, 64, 32, 16},      // 4x downscale
 	}
 
 	for _, tc := range testCases {

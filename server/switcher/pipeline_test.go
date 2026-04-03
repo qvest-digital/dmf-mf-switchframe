@@ -23,7 +23,7 @@ import (
 // The YUV buffer is 4x4 (24 bytes) for test compatibility with mock decoders.
 func sendRawFrame(sw *Switcher, sourceKey string, pts int64, isKeyframe bool) {
 	pf := &ProcessingFrame{
-		Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)), // 4x4 YUV420
+		Data:       make([]byte, ColorYUV420_8bit.FrameSize(4, 4)), // 4x4 YUV420
 		Width:      4,
 		Height:     4,
 		PTS:        pts,
@@ -353,7 +353,7 @@ func TestPipeline_SourceStatsPropagate(t *testing.T) {
 	// Feed enough raw YUV frames to trigger stats propagation
 	for i := 0; i < 15; i++ {
 		pf := &ProcessingFrame{
-			Data:        make([]byte, ColorYUV420_8bit.FrameSize(4, 4)), // 4x4 YUV420
+			Data:       make([]byte, ColorYUV420_8bit.FrameSize(4, 4)), // 4x4 YUV420
 			Width:      4,
 			Height:     4,
 			PTS:        int64(i * 33333),
@@ -622,7 +622,7 @@ func TestPipeline_CompositorDoesNotCorruptSharedBuffer(t *testing.T) {
 	// repeated frames from frame sync).
 	for i := 0; i < 2; i++ {
 		pf := &ProcessingFrame{
-			Data:        sharedYUV, // same underlying buffer both times
+			Data:       sharedYUV, // same underlying buffer both times
 			Width:      4,
 			Height:     4,
 			PTS:        int64(i * 100),
@@ -677,7 +677,7 @@ func TestEnqueueVideoWork_DroppedFrameReleasesPool(t *testing.T) {
 	// Fill the channel completely, then enqueue one more to trigger drop.
 	for i := 0; i < cap(sw.videoProcCh)+1; i++ {
 		pf := &ProcessingFrame{
-			Data:        pool.Acquire(),
+			Data:       pool.Acquire(),
 			Width:      4,
 			Height:     4,
 			PTS:        int64(i * 100),
@@ -829,7 +829,7 @@ func TestPipelineSnapshot_LastError(t *testing.T) {
 	require.NoError(t, p.Build(DefaultFormat, nil, []PipelineNode{n}))
 
 	pf := &ProcessingFrame{
-		Data:    make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:   make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:  4,
 		Height: 4,
 		PTS:    100,
@@ -867,7 +867,7 @@ func TestPipelineCodecs_SetEncoderFactory(t *testing.T) {
 
 	// First encode triggers factory1.
 	pf := &ProcessingFrame{
-		Data:    make([]byte, ColorYUV420_8bit.FrameSize(1920, 1080)),
+		Data:   make([]byte, ColorYUV420_8bit.FrameSize(1920, 1080)),
 		Width:  1920,
 		Height: 1080,
 		PTS:    90000,
@@ -913,7 +913,7 @@ func TestPipelineSnapshot_AsyncMetrics(t *testing.T) {
 	require.NoError(t, p.Build(DefaultFormat, nil, []PipelineNode{n}))
 
 	pf := &ProcessingFrame{
-		Data:    make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:   make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width:  4,
 		Height: 4,
 		PTS:    100,

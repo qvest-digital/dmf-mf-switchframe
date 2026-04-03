@@ -57,8 +57,8 @@ func readLayout10Cr(buf []byte, x, y, w, h int) uint16 {
 func TestComposePIPOpaque10_CopiesCorrectly(t *testing.T) {
 	dstW, dstH := 32, 16
 	srcW, srcH := 8, 4
-	dst := makeLayout10Frame(dstW, dstH, 64, 512, 512)   // black background
-	src := makeLayout10Frame(srcW, srcH, 940, 300, 700)   // bright PIP
+	dst := makeLayout10Frame(dstW, dstH, 64, 512, 512)         // black background
+	src := makeLayout10Frame(srcW, srcH, 940, 300, 700)        // bright PIP
 	ComposePIPOpaque10(dst, dstW, dstH, src, srcW, srcH, 4, 4) // place at (4,4)
 
 	// Check Y at PIP origin

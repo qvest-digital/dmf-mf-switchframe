@@ -30,7 +30,7 @@ func TestUpstreamKeyNode_ProcessPassthrough(t *testing.T) {
 	n := &upstreamKeyNode{bridge: bridge}
 
 	pf := &ProcessingFrame{
-		Data:    make([]byte, ColorYUV420_8bit.FrameSize(8, 8)),
+		Data:   make([]byte, ColorYUV420_8bit.FrameSize(8, 8)),
 		Width:  8,
 		Height: 8,
 		PTS:    1000,

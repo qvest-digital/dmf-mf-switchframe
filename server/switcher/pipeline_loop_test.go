@@ -84,7 +84,7 @@ func TestPipelineLoop_Run(t *testing.T) {
 	require.NoError(t, p.Build(DefaultFormat, nil, []PipelineNode{n1, n2}))
 
 	pf := &ProcessingFrame{
-		Data:   make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:  make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width: 4, Height: 4,
 	}
 
@@ -104,7 +104,7 @@ func TestPipelineLoop_RunSkipsInactive(t *testing.T) {
 	require.NoError(t, p.Build(DefaultFormat, nil, []PipelineNode{active, inactive}))
 
 	pf := &ProcessingFrame{
-		Data:   make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:  make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width: 4, Height: 4,
 	}
 
@@ -121,7 +121,7 @@ func TestPipelineLoop_Snapshot(t *testing.T) {
 	require.NoError(t, p.Build(DefaultFormat, nil, []PipelineNode{n1, n2}))
 
 	pf := &ProcessingFrame{
-		Data:   make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:  make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width: 4, Height: 4,
 	}
 	p.Run(pf)
@@ -145,7 +145,7 @@ func TestPipelineLoop_WaitAndClose(t *testing.T) {
 
 	// Run a frame, then wait
 	pf := &ProcessingFrame{
-		Data:   make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:  make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width: 4, Height: 4,
 	}
 	p.Run(pf)
@@ -453,7 +453,7 @@ func TestSwapPipeline_DrainsInflightFrames(t *testing.T) {
 	// Start a frame that will block in Process.
 	go func() {
 		pf := &ProcessingFrame{
-			Data:   make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+			Data:  make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 			Width: 4, Height: 4,
 		}
 		p.Run(pf)
@@ -560,7 +560,7 @@ func TestPipelineLoop_RunObservesPrometheus(t *testing.T) {
 	p.SetMetrics(m)
 
 	pf := &ProcessingFrame{
-		Data:   make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:  make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width: 4, Height: 4,
 	}
 	p.Run(pf)
@@ -591,7 +591,7 @@ func TestPipelineLoop_RunNilMetricsSafe(t *testing.T) {
 	// No SetMetrics call — p.metrics is nil.
 
 	pf := &ProcessingFrame{
-		Data:   make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:  make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width: 4, Height: 4,
 	}
 	// Should not panic.
@@ -673,7 +673,7 @@ func TestPipelineLoop_EmptyPipeline(t *testing.T) {
 	require.NoError(t, p.Build(DefaultFormat, nil, nil))
 
 	pf := &ProcessingFrame{
-		Data:   make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
+		Data:  make([]byte, ColorYUV420_8bit.FrameSize(4, 4)),
 		Width: 4, Height: 4,
 	}
 	out := p.Run(pf)
@@ -730,7 +730,7 @@ func TestVideoProcessingLoop_RewritesPTSBeforePipelineRun(t *testing.T) {
 	yuvSize := ColorYUV420_8bit.FrameSize(DefaultFormat.Width, DefaultFormat.Height)
 	yuv := make([]byte, yuvSize)
 	pf := &ProcessingFrame{
-		Data:    yuv,
+		Data:   yuv,
 		Width:  DefaultFormat.Width,
 		Height: DefaultFormat.Height,
 		PTS:    rawSourcePTS,

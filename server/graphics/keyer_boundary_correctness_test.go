@@ -221,7 +221,7 @@ func TestExpandChromaMaskBoundaryLarge(t *testing.T) {
 			dst := make([]byte, chromaWidth*2)
 
 			for i := range src {
-				src[i] = byte((i * 7 + 13) & 0xFF)
+				src[i] = byte((i*7 + 13) & 0xFF)
 			}
 
 			expandChromaMaskRow(&dst[0], &src[0], chromaWidth)

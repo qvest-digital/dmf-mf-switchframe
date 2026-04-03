@@ -14,12 +14,12 @@ import (
 // Sent from host to worker over the control socket immediately after spawn.
 // The worker uses these to call OpenCUDAGPUPoolWorker (or Metal equivalent).
 type GPUPoolHandshake struct {
-	Config       GPUPoolConfig        `json:"config"`
-	ShmName      string               `json:"shm_name"`
-	FrameHandles []CUDAIPCHandle      `json:"frame_handles"`
-	ResultHandles []CUDAIPCHandle     `json:"result_handles,omitempty"`
-	ReadyEvents  []CUDAIPCEventHandle `json:"ready_events"`
-	DoneEvents   []CUDAIPCEventHandle `json:"done_events"`
+	Config        GPUPoolConfig        `json:"config"`
+	ShmName       string               `json:"shm_name"`
+	FrameHandles  []CUDAIPCHandle      `json:"frame_handles"`
+	ResultHandles []CUDAIPCHandle      `json:"result_handles,omitempty"`
+	ReadyEvents   []CUDAIPCEventHandle `json:"ready_events"`
+	DoneEvents    []CUDAIPCEventHandle `json:"done_events"`
 }
 
 // gpuPoolHandshakeWire is the JSON-friendly wire format. Handles are

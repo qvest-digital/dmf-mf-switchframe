@@ -19,9 +19,9 @@ import (
 const (
 	sampleRate    = 48000
 	channels      = 2
-	aacFrameSize  = 1024                                       // samples per channel per AAC-LC frame
-	aacDuration90 = int64(aacFrameSize) * 90000 / sampleRate   // 1920 ticks at 90kHz
-	videoDelta30  = int64(90000 / 30)                          // 3000 ticks at 90kHz for 30fps
+	aacFrameSize  = 1024                                     // samples per channel per AAC-LC frame
+	aacDuration90 = int64(aacFrameSize) * 90000 / sampleRate // 1920 ticks at 90kHz
+	videoDelta30  = int64(90000 / 30)                        // 3000 ticks at 90kHz for 30fps
 )
 
 // encodeAVToTS generates synchronized video + audio, muxes to MPEG-TS, and

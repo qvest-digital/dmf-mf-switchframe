@@ -129,7 +129,9 @@ func TestAlphaBlendRGBA10_Formula(t *testing.T) {
 // TestAlphaBlendRGBA10_FullyOpaque verifies that a fully opaque white
 // (255,255,255,255) overlay produces BT.709 10-bit white.
 // BT.709 8-bit Y = (66*255 + 129*255 + 25*255 + 128)>>8 + 16
-//                = (56100 + 128) >> 8 + 16 = 219 + 16 = 235
+//
+//	= (56100 + 128) >> 8 + 16 = 219 + 16 = 235
+//
 // 10-bit Y = 235 * 4 = 940
 func TestAlphaBlendRGBA10_FullyOpaque(t *testing.T) {
 	w, h := 32, 16
@@ -179,11 +181,15 @@ func TestAlphaBlendRGBA10_ScaleZero(t *testing.T) {
 // for a fully opaque red overlay.
 //
 // BT.709 8-bit Cb = (-38*255 - 74*0 + 112*0 + 128) >> 8 + 128
-//                  = (-9690 + 128) >> 8 + 128 = -37 + 128 = 91
+//
+//	= (-9690 + 128) >> 8 + 128 = -37 + 128 = 91
+//
 // 10-bit Cb = 91 * 4 = 364
 //
 // BT.709 8-bit Cr = (112*255 - 94*0 - 18*0 + 128) >> 8 + 128
-//                  = (28560 + 128) >> 8 + 128 = 112 + 128 = 240
+//
+//	= (28560 + 128) >> 8 + 128 = 112 + 128 = 240
+//
 // 10-bit Cr = 240 * 4 = 960
 func TestAlphaBlendRGBA10_ChromaFormula(t *testing.T) {
 	w, h := 64, 32

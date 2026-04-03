@@ -9,7 +9,7 @@ import (
 type SchedulerState int
 
 const (
-	SchedIdle          SchedulerState = iota
+	SchedIdle SchedulerState = iota
 	SchedPlaying
 	SchedTransitioning
 )

@@ -21,14 +21,14 @@ func (h *captureHandler) OnSCTE35Cue(data *SCTE35EventData) error {
 	return nil
 }
 
-func (h *captureHandler) OnGraphicsOn(layer int, template string) error  { return nil }
-func (h *captureHandler) OnGraphicsOff(layer int) error                  { return nil }
-func (h *captureHandler) OnGraphicsUpdate(layer int, template string) error { return nil }
+func (h *captureHandler) OnGraphicsOn(layer int, template string) error        { return nil }
+func (h *captureHandler) OnGraphicsOff(layer int) error                        { return nil }
+func (h *captureHandler) OnGraphicsUpdate(layer int, template string) error    { return nil }
 func (h *captureHandler) OnAudioLevel(sourceKey string, levelDB float64) error { return nil }
-func (h *captureHandler) OnAudioMute(sourceKey string, muted bool) error { return nil }
-func (h *captureHandler) OnAudioAFV(sourceKey string, afv bool) error    { return nil }
-func (h *captureHandler) OnCaptionMode(mode string) error                { return nil }
-func (h *captureHandler) OnCaptionText(text string) error                { return nil }
+func (h *captureHandler) OnAudioMute(sourceKey string, muted bool) error       { return nil }
+func (h *captureHandler) OnAudioAFV(sourceKey string, afv bool) error          { return nil }
+func (h *captureHandler) OnCaptionMode(mode string) error                      { return nil }
+func (h *captureHandler) OnCaptionText(text string) error                      { return nil }
 
 func (h *captureHandler) getCues() []*SCTE35EventData {
 	h.mu.Lock()

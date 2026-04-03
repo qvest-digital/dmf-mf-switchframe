@@ -38,7 +38,7 @@ func TestGPUUploadDownloadRoundTrip(t *testing.T) {
 	original := make([]byte, ySize+cbSize+crSize)
 
 	for i := 0; i < ySize; i++ {
-		original[i] = byte((i * 7 + 31) % 256) // Y: varied pattern
+		original[i] = byte((i*7 + 31) % 256) // Y: varied pattern
 	}
 	for i := 0; i < cbSize; i++ {
 		original[ySize+i] = byte((i*13 + 67) % 256) // Cb: varied
@@ -237,8 +237,8 @@ func TestGPUBlendVsCPU(t *testing.T) {
 	yuvA := make([]byte, totalSize)
 	yuvB := make([]byte, totalSize)
 	for i := 0; i < ySize; i++ {
-		yuvA[i] = byte((i*3 + 17) % 220)       // Y plane A
-		yuvB[i] = byte((i*7 + 41) % 220)        // Y plane B
+		yuvA[i] = byte((i*3 + 17) % 220) // Y plane A
+		yuvB[i] = byte((i*7 + 41) % 220) // Y plane B
 	}
 	for i := 0; i < cbSize; i++ {
 		yuvA[ySize+i] = byte((i*5 + 23) % 256)  // Cb A
@@ -397,10 +397,10 @@ func TestGPUChromaKeyVsCPU(t *testing.T) {
 			idx := row*uvWidth + col
 			if col < uvWidth/2 {
 				// Left quarter in chroma space -> left half in luma space
-				yuv[ySize+idx] = 54  // Cb: green
-				yuv[ySize+cbSize+idx] = 26  // Cr: green
+				yuv[ySize+idx] = 54        // Cb: green
+				yuv[ySize+cbSize+idx] = 26 // Cr: green
 			} else {
-				yuv[ySize+idx] = 128       // Cb: neutral
+				yuv[ySize+idx] = 128        // Cb: neutral
 				yuv[ySize+cbSize+idx] = 128 // Cr: neutral
 			}
 		}
@@ -797,7 +797,7 @@ func TestGPUBlendIdenticalFramesLossless(t *testing.T) {
 	crSize := cbSize
 	original := make([]byte, ySize+cbSize+crSize)
 	for i := 0; i < ySize; i++ {
-		original[i] = byte(16 + (i*219/ySize))
+		original[i] = byte(16 + (i * 219 / ySize))
 	}
 	for i := 0; i < cbSize; i++ {
 		original[ySize+i] = 128

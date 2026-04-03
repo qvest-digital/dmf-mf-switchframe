@@ -687,7 +687,7 @@ func TestStateBroadcastSerialization(t *testing.T) {
 		"imageName": true, "imageWidth": true, "imageHeight": true,
 		"html5Url": true, "html5Format": true, "html5Status": true,
 		"html5DataSchema": true,
-		"sequenceLoaded": true, "sequencePhase": true,
+		"sequenceLoaded":  true, "sequencePhase": true,
 		"sequenceProcessing": true, "sequenceProgress": true,
 		"sequenceSpeed": true,
 	}
@@ -1132,11 +1132,13 @@ type mockAudioStateProvider struct {
 	integratedLUFS float64
 }
 
-func (m *mockAudioStateProvider) ProgramPeak() [2]float64                            { return m.programPeak }
-func (m *mockAudioStateProvider) ChannelStates() map[string]internal.AudioChannel     { return m.channels }
-func (m *mockAudioStateProvider) MasterLevel() float64                                { return m.masterLevel }
-func (m *mockAudioStateProvider) GainReduction() float64                              { return m.gainReduction }
-func (m *mockAudioStateProvider) LimiterSettings() (float64, float64, float64)        { return m.limThreshold, m.limCeiling, m.limGR }
-func (m *mockAudioStateProvider) MomentaryLUFS() float64                              { return m.momentaryLUFS }
-func (m *mockAudioStateProvider) ShortTermLUFS() float64                              { return m.shortTermLUFS }
-func (m *mockAudioStateProvider) IntegratedLUFS() float64                             { return m.integratedLUFS }
+func (m *mockAudioStateProvider) ProgramPeak() [2]float64                         { return m.programPeak }
+func (m *mockAudioStateProvider) ChannelStates() map[string]internal.AudioChannel { return m.channels }
+func (m *mockAudioStateProvider) MasterLevel() float64                            { return m.masterLevel }
+func (m *mockAudioStateProvider) GainReduction() float64                          { return m.gainReduction }
+func (m *mockAudioStateProvider) LimiterSettings() (float64, float64, float64) {
+	return m.limThreshold, m.limCeiling, m.limGR
+}
+func (m *mockAudioStateProvider) MomentaryLUFS() float64  { return m.momentaryLUFS }
+func (m *mockAudioStateProvider) ShortTermLUFS() float64  { return m.shortTermLUFS }
+func (m *mockAudioStateProvider) IntegratedLUFS() float64 { return m.integratedLUFS }

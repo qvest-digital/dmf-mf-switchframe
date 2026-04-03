@@ -46,7 +46,7 @@ type srtHarness struct {
 	runDone  chan error
 	log      *slog.Logger
 
-	mu     sync.Mutex
+	mu      sync.Mutex
 	vFrames []capturedVideoFrame
 	aFrames []capturedAudioFrame
 }

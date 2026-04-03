@@ -65,7 +65,7 @@ func (a *App) initST2110(ctx context.Context) error {
 		Port:     a.cfg.ST2110Port,
 		SourceIP: a.cfg.ST2110IP,
 		TxQueues: a.cfg.ST2110Inputs + 2, // inputs + program video/audio TX
-		RxQueues: a.cfg.ST2110Inputs * 2,  // video + audio per input
+		RxQueues: a.cfg.ST2110Inputs * 2, // video + audio per input
 		PTPMode:  a.cfg.ST2110PTP,
 		LogLevel: 3, // MTL info level
 	})
@@ -264,13 +264,13 @@ func (a *App) initST2110(ctx context.Context) error {
 	})
 
 	store.AddSender(&nmos.Sender{
-		ID:           pgmVideoSenderID,
-		Label:        "Program Video",
-		Description:  "ST 2110-20 program video output",
-		FlowID:       pgmVideoFlowID,
-		Transport:    nmos.TransportRTPMcast,
-		DeviceID:     state.deviceID,
-		ManifestHref: fmt.Sprintf("http://%s:%d/x-nmos/connection/v1.1/single/senders/%s/transportfile", a.cfg.ST2110IP, a.cfg.ST2110NMOSPort, pgmVideoSenderID),
+		ID:                pgmVideoSenderID,
+		Label:             "Program Video",
+		Description:       "ST 2110-20 program video output",
+		FlowID:            pgmVideoFlowID,
+		Transport:         nmos.TransportRTPMcast,
+		DeviceID:          state.deviceID,
+		ManifestHref:      fmt.Sprintf("http://%s:%d/x-nmos/connection/v1.1/single/senders/%s/transportfile", a.cfg.ST2110IP, a.cfg.ST2110NMOSPort, pgmVideoSenderID),
 		Tags:              map[string][]string{},
 		InterfaceBindings: []string{},
 		Subscription:      nmos.SenderSubscription{},
@@ -309,13 +309,13 @@ func (a *App) initST2110(ctx context.Context) error {
 	})
 
 	store.AddSender(&nmos.Sender{
-		ID:           pgmAudioSenderID,
-		Label:        "Program Audio",
-		Description:  "ST 2110-30 program audio output",
-		FlowID:       pgmAudioFlowID,
-		Transport:    nmos.TransportRTPMcast,
-		DeviceID:     state.deviceID,
-		ManifestHref: fmt.Sprintf("http://%s:%d/x-nmos/connection/v1.1/single/senders/%s/transportfile", a.cfg.ST2110IP, a.cfg.ST2110NMOSPort, pgmAudioSenderID),
+		ID:                pgmAudioSenderID,
+		Label:             "Program Audio",
+		Description:       "ST 2110-30 program audio output",
+		FlowID:            pgmAudioFlowID,
+		Transport:         nmos.TransportRTPMcast,
+		DeviceID:          state.deviceID,
+		ManifestHref:      fmt.Sprintf("http://%s:%d/x-nmos/connection/v1.1/single/senders/%s/transportfile", a.cfg.ST2110IP, a.cfg.ST2110NMOSPort, pgmAudioSenderID),
 		Tags:              map[string][]string{},
 		InterfaceBindings: []string{},
 		Subscription:      nmos.SenderSubscription{},
@@ -553,7 +553,7 @@ func (a *App) activateST2110Receiver(id string, params nmos.StagedParams) error 
 			Channels: 2,
 			OnRawVideo: func(key string, yuv []byte, w, h int, pts int64) {
 				pf := &switcher.ProcessingFrame{
-					Data:    yuv,
+					Data:   yuv,
 					Width:  w,
 					Height: h,
 					PTS:    pts,

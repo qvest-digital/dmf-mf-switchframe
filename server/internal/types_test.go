@@ -134,4 +134,3 @@ func TestControlRoomStateNeuralKeyField(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, string(data2), "neuralKey")
 }
-

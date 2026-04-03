@@ -315,8 +315,8 @@ func (p *replayPlayer) run(ctx context.Context) {
 	// In legacy mode (ProxyEncoderFactory nil):
 	//   - encoder: main EncoderFactory → Output callback
 	w, h := decodedWindow[0][0].width, decodedWindow[0][0].height
-	var encoder transition.VideoEncoder       // legacy: Output callback
-	var proxyEncoder transition.VideoEncoder   // dual-encode: browser relay
+	var encoder transition.VideoEncoder         // legacy: Output callback
+	var proxyEncoder transition.VideoEncoder    // dual-encode: browser relay
 	var pipelineEncoder transition.VideoEncoder // dual-encode: pipeline output
 
 	bitrate := estimateBitrate(w, h)
@@ -603,7 +603,7 @@ func (p *replayPlayer) outputGOP(
 			// Encode output. In dual-encode mode, the proxy encoder feeds the
 			// browser relay (Output) and the pipeline encoder feeds PipelineVideoOutput.
 			// In legacy mode, the single encoder feeds Output.
-			browserEncoder := gs.encoder       // legacy
+			browserEncoder := gs.encoder // legacy
 			browserOutput := p.config.Output
 			if gs.proxyEncoder != nil {
 				browserEncoder = gs.proxyEncoder

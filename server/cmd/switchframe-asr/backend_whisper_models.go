@@ -53,4 +53,3 @@ func defaultWhisperModel(models []string) string {
 	}
 	return ""
 }
-

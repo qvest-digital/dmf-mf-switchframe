@@ -40,8 +40,8 @@ func Upload10(ctx *Context, frame *GPUFrame, yuv422p10 []byte, width, height int
 	}
 
 	chromaW := width / 2
-	ySize := width * height * 2       // uint16 per sample
-	cbSize := chromaW * height * 2     // uint16 per sample, full height (4:2:2)
+	ySize := width * height * 2    // uint16 per sample
+	cbSize := chromaW * height * 2 // uint16 per sample, full height (4:2:2)
 	crSize := cbSize
 	expectedSize := ySize + cbSize + crSize
 	if len(yuv422p10) < expectedSize {

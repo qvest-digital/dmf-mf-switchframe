@@ -88,7 +88,7 @@ func NewTrimIterator(inner FrameIterator, inMs, outMs int64) *TrimIterator {
 
 // Next returns the next frame within the trim range, or (nil, nil) at end.
 func (t *TrimIterator) Next() (*DecodedFrame, error) {
-	inPTS := t.inMs * 90  // ms → 90kHz ticks
+	inPTS := t.inMs * 90   // ms → 90kHz ticks
 	outPTS := t.outMs * 90 // ms → 90kHz ticks
 
 	for {

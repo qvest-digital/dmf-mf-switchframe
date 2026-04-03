@@ -213,7 +213,7 @@ func DrawBorderP210(ctx *Context, frame *GPUFrame, rect Rect, colorY, colorCb, c
 		outerX: C.int32_t(outerX), outerY: C.int32_t(outerY),
 		outerW: C.int32_t(outerW), outerH: C.int32_t(outerH),
 		thickness: C.int32_t(thickness),
-		colorY: C.uint16_t(colorY), colorCb: C.uint16_t(colorCb), colorCr: C.uint16_t(colorCr),
+		colorY:    C.uint16_t(colorY), colorCb: C.uint16_t(colorCb), colorCr: C.uint16_t(colorCr),
 	}
 
 	rc := C.metal_draw_border_p210(mtl.queue, pipeline, frame.MetalBuf, &params)

@@ -42,8 +42,8 @@ type Manager struct {
 	// Bypasses the relay → viewer → channel path entirely.
 	directMuxer atomic.Pointer[TSMuxer]
 
-	recorder     *FileRecorder
-	srtOutput    Adapter // SRTCaller or SRTListener (legacy single output)
+	recorder      *FileRecorder
+	srtOutput     Adapter // SRTCaller or SRTListener (legacy single output)
 	destinations  map[string]*Destination
 	adapters      atomic.Pointer[[]Adapter]
 	frameAdapters atomic.Pointer[[]FrameAdapter] // RTMP direct (raw frames, bypass TSMuxer)

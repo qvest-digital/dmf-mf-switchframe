@@ -7,9 +7,9 @@ import (
 
 // HEVC test NALU bytes (2-byte headers): first byte = (type << 1), second byte = 0x01 (TID=1)
 var (
-	testHEVCVPS = []byte{0x40, 0x01, 0xAA, 0xBB} // type 32
-	testHEVCSPS = []byte{0x42, 0x01, 0xCC, 0xDD} // type 33
-	testHEVCPPS = []byte{0x44, 0x01, 0xEE}        // type 34
+	testHEVCVPS = []byte{0x40, 0x01, 0xAA, 0xBB}             // type 32
+	testHEVCSPS = []byte{0x42, 0x01, 0xCC, 0xDD}             // type 33
+	testHEVCPPS = []byte{0x44, 0x01, 0xEE}                   // type 34
 	testHEVCIDR = []byte{0x26, 0x01, 0x11, 0x22, 0x33, 0x44} // type 19
 )
 
@@ -19,18 +19,18 @@ func TestHEVCNALUType(t *testing.T) {
 		firstByte byte
 		wantType  byte
 	}{
-		{"VPS", 0x40, HEVCNALVPS},           // (32 << 1) = 0x40
-		{"SPS", 0x42, HEVCNALSPS},           // (33 << 1) = 0x42
-		{"PPS", 0x44, HEVCNALPPS},           // (34 << 1) = 0x44
-		{"IDR_W_RADL", 0x26, HEVCNALIDRWRadl}, // (19 << 1) = 0x26
-		{"IDR_N_LP", 0x28, HEVCNALIDRNLP},   // (20 << 1) = 0x28
+		{"VPS", 0x40, HEVCNALVPS},              // (32 << 1) = 0x40
+		{"SPS", 0x42, HEVCNALSPS},              // (33 << 1) = 0x42
+		{"PPS", 0x44, HEVCNALPPS},              // (34 << 1) = 0x44
+		{"IDR_W_RADL", 0x26, HEVCNALIDRWRadl},  // (19 << 1) = 0x26
+		{"IDR_N_LP", 0x28, HEVCNALIDRNLP},      // (20 << 1) = 0x28
 		{"SEI_PREFIX", 0x4E, HEVCNALSEIPrefix}, // (39 << 1) = 0x4E
-		{"AUD", 0x46, HEVCNALAUD},           // (35 << 1) = 0x46
-		{"TRAIL_N", 0x00, HEVCNALTrailN},    // (0 << 1) = 0x00
-		{"TRAIL_R", 0x02, HEVCNALTrailR},    // (1 << 1) = 0x02
-		{"CRA", 0x2A, HEVCNALCraNut},        // (21 << 1) = 0x2A
-		{"BLA_W_LP", 0x20, HEVCNALBlaWLP},   // (16 << 1) = 0x20
-		{"filler", 0x4C, HEVCNALFillerData}, // (38 << 1) = 0x4C
+		{"AUD", 0x46, HEVCNALAUD},              // (35 << 1) = 0x46
+		{"TRAIL_N", 0x00, HEVCNALTrailN},       // (0 << 1) = 0x00
+		{"TRAIL_R", 0x02, HEVCNALTrailR},       // (1 << 1) = 0x02
+		{"CRA", 0x2A, HEVCNALCraNut},           // (21 << 1) = 0x2A
+		{"BLA_W_LP", 0x20, HEVCNALBlaWLP},      // (16 << 1) = 0x20
+		{"filler", 0x4C, HEVCNALFillerData},    // (38 << 1) = 0x4C
 	}
 
 	for _, tt := range tests {

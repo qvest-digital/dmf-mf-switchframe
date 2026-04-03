@@ -74,7 +74,7 @@ func TestBitWriter_CrossByteBoundary(t *testing.T) {
 	var bw bitWriter
 	bw.init(4)
 	// Write 4 bits, then 8 bits — should cross byte boundary.
-	bw.writeBits(0xA, 4) // 1010 ....
+	bw.writeBits(0xA, 4)  // 1010 ....
 	bw.writeBits(0xBC, 8) // .... 1011 1100 -> 1010 1011 | 1100 0000
 	bw.byteAlign()
 	got := bw.bytes()

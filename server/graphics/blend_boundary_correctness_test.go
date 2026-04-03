@@ -134,7 +134,7 @@ func TestAlphaBlendAlphaZeroPassthrough(t *testing.T) {
 
 	// Fill Y with a pattern
 	for i := range yRow {
-		yRow[i] = byte((i * 13 + 42) & 0xFF)
+		yRow[i] = byte((i*13 + 42) & 0xFF)
 	}
 	origY := make([]byte, width)
 	copy(origY, yRow)
@@ -338,8 +338,8 @@ func TestAlphaBlendHalfAlpha(t *testing.T) {
 	// A=128: A'=128+(128>>7)=128+1=129, a256=(129*256)>>8=129, inv=127
 	// overlayY = 16 + ((47*255 + 157*255 + 16*255 + 128) >> 8) = 16 + 219 = 235
 	// result = (0*127 + 235*129 + 128) >> 8 = 30443 >> 8 = 118
-	aPrime := 128 + (128 >> 7) // 129
-	a256 := (aPrime * 256) >> 8 // 129
+	aPrime := 128 + (128 >> 7)                                // 129
+	a256 := (aPrime * 256) >> 8                               // 129
 	overlayY := 16 + ((47*255 + 157*255 + 16*255 + 128) >> 8) // 235
 	expected := (0*(256-a256) + overlayY*a256 + 128) >> 8
 

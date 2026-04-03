@@ -5,7 +5,7 @@ import "math"
 type vadState int
 
 const (
-	vadIdle     vadState = iota
+	vadIdle vadState = iota
 	vadSpeaking
 	vadTrailing
 )

@@ -20,10 +20,10 @@ type DestinationConfig struct {
 	Type          string `json:"type"` // "srt-caller", "srt-listener", or "rtmp"
 	Address       string `json:"address,omitempty"`
 	Port          int    `json:"port,omitempty"`
-	URL           string `json:"url,omitempty"`           // RTMP only: full rtmp:// URL
-	Latency       int    `json:"latency,omitempty"`       // ms, default 120
+	URL           string `json:"url,omitempty"`     // RTMP only: full rtmp:// URL
+	Latency       int    `json:"latency,omitempty"` // ms, default 120
 	StreamID      string `json:"streamID,omitempty"`
-	Encryption    string `json:"encryption,omitempty"`    // "", "aes-128", "aes-256"
+	Encryption    string `json:"encryption,omitempty"` // "", "aes-128", "aes-256"
 	Passphrase    string `json:"passphrase,omitempty"`
 	MaxBW         int64  `json:"maxBandwidth,omitempty"`
 	MaxConns      int    `json:"maxConns,omitempty"`      // listener only

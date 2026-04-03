@@ -28,10 +28,10 @@ type Relay interface {
 // Manager orchestrates the replay system: per-source buffers, viewers,
 // mark-in/out points, and the active player.
 type Manager struct {
-	log            *slog.Logger
-	mu             sync.Mutex
-	relay          Relay
-	config         Config
+	log                 *slog.Logger
+	mu                  sync.Mutex
+	relay               Relay
+	config              Config
 	decoderFactory      transition.DecoderFactory
 	encoderFactory      transition.EncoderFactory
 	proxyEncoderFactory transition.EncoderFactory // H.264 proxy for browser relay (dual-encode mode)

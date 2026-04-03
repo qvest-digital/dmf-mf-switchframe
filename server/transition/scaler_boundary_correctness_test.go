@@ -56,7 +56,7 @@ func avgByte(data []byte) float64 {
 func TestScaleYUV420OddDimensions(t *testing.T) {
 	type dimPair struct {
 		srcW, srcH, dstW, dstH int
-		label                   string
+		label                  string
 	}
 
 	cases := []dimPair{
@@ -81,7 +81,7 @@ func TestScaleYUV420OddDimensions(t *testing.T) {
 			t.Logf("MEASURE: scaling %dx%d -> %dx%d", tc.srcW, tc.srcH, tc.dstW, tc.dstH)
 
 			src := generateSolidYUV420(tc.srcW, tc.srcH, srcY, srcCb, srcCr)
-			expectedDstSize := tc.dstW*tc.dstH*3/2
+			expectedDstSize := tc.dstW * tc.dstH * 3 / 2
 			dst := make([]byte, expectedDstSize)
 
 			t.Logf("MEASURE: src buffer size = %d (expected %d)", len(src), tc.srcW*tc.srcH*3/2)
@@ -475,7 +475,7 @@ func TestScaleYUV420MinimumDimensions(t *testing.T) {
 		t.Logf("MEASURE: scaling %dx%d -> %dx%d", srcW, srcH, dstW, dstH)
 
 		src := generateSolidYUV420(srcW, srcH, srcY, srcCb, srcCr)
-		expectedDstSize := dstW*dstH*3/2
+		expectedDstSize := dstW * dstH * 3 / 2
 		dst := make([]byte, expectedDstSize)
 
 		t.Logf("MEASURE: src size = %d, dst size = %d", len(src), len(dst))
@@ -516,7 +516,7 @@ func TestScaleYUV420MinimumDimensions(t *testing.T) {
 		t.Logf("MEASURE: scaling %dx%d -> %dx%d", srcW, srcH, dstW, dstH)
 
 		src := generateSolidYUV420(srcW, srcH, srcY, srcCb, srcCr)
-		expectedDstSize := dstW*dstH*3/2
+		expectedDstSize := dstW * dstH * 3 / 2
 		dst := make([]byte, expectedDstSize)
 
 		t.Logf("MEASURE: src size = %d, dst size = %d", len(src), len(dst))
@@ -537,7 +537,7 @@ func TestScaleYUV420MinimumDimensions(t *testing.T) {
 		}
 
 		// Verify output: 2x2 frame = 4 Y + 1 Cb + 1 Cr = 6 bytes.
-		dstYSize := dstW * dstH // 4
+		dstYSize := dstW * dstH              // 4
 		dstUVSize := (dstW / 2) * (dstH / 2) // 1
 
 		t.Logf("MEASURE: dst Y pixels = %d, UV pixels = %d", dstYSize, dstUVSize)

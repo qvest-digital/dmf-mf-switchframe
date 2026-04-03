@@ -111,7 +111,7 @@ func TestSRTSource_IngestRawVideo(t *testing.T) {
 		yuv[i] = byte(i)
 	}
 	pf := &ProcessingFrame{
-		Data:        yuv,
+		Data:       yuv,
 		Width:      4,
 		Height:     4,
 		PTS:        1000,

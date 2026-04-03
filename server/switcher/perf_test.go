@@ -65,7 +65,7 @@ func TestPerfSample_FRCFrameZeroesSyncWait(t *testing.T) {
 	// Simulate processing an FRC frame: DecodeEndNano=0, SyncReleaseNano set.
 	// This is what videoProcessingLoop does when it dequeues a work item.
 	frame := &ProcessingFrame{
-		Data:             make([]byte, 64),
+		Data:            make([]byte, 64),
 		Width:           8,
 		Height:          4,
 		PTS:             1000,
@@ -98,7 +98,7 @@ func TestPerfSample_FreshFramePreservesSyncWait(t *testing.T) {
 	syncRelease := int64(1_005_000_000) // 5ms later
 
 	frame := &ProcessingFrame{
-		Data:             make([]byte, 64),
+		Data:            make([]byte, 64),
 		Width:           8,
 		Height:          4,
 		PTS:             1000,
@@ -138,7 +138,7 @@ func TestPerfSample_RawFrameCount(t *testing.T) {
 	// Ingest some raw video frames
 	for i := 0; i < 30; i++ {
 		pf := &ProcessingFrame{
-			Data:    make([]byte, 64),
+			Data:   make([]byte, 64),
 			Width:  8,
 			Height: 4,
 			PTS:    int64(i * 3000),

@@ -349,7 +349,7 @@ func (fs *frcSource) emitNearest(alpha float64) *ProcessingFrame {
 	copy(fs.nearestOut, src.Data[:totalSize])
 
 	return &ProcessingFrame{
-		Data:        fs.nearestOut,
+		Data:       fs.nearestOut,
 		Width:      w,
 		Height:     h,
 		PTS:        src.PTS,
@@ -383,7 +383,7 @@ func (fs *frcSource) emitBlend(alpha float64, tickPTS int64) *ProcessingFrame {
 	transition.BlendUniformBytes(fs.blendOut, fs.prevFrame.Data[:totalSize], fs.currFrame.Data[:totalSize], pos)
 
 	return &ProcessingFrame{
-		Data:        fs.blendOut,
+		Data:       fs.blendOut,
 		Width:      w,
 		Height:     h,
 		PTS:        tickPTS,
@@ -413,7 +413,7 @@ func (fs *frcSource) emitMCFI(alpha float64, tickPTS int64) *ProcessingFrame {
 	mcfiInterpolateFast(fs.blendOut, fs.prevFrame.Data, fs.currFrame.Data, w, h, fs.mvField, alpha)
 
 	return &ProcessingFrame{
-		Data:        fs.blendOut,
+		Data:       fs.blendOut,
 		Width:      w,
 		Height:     h,
 		PTS:        tickPTS,

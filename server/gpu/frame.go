@@ -21,8 +21,8 @@ import (
 //
 // Pitch is 256-byte aligned for NVENC compatibility.
 type GPUFrame struct {
-	DevPtr C.CUdeviceptr  // pixel data in VRAM
-	Pitch  int            // row pitch in bytes (256-byte aligned)
+	DevPtr C.CUdeviceptr // pixel data in VRAM
+	Pitch  int           // row pitch in bytes (256-byte aligned)
 	Width  int
 	Height int
 	PTS    int64          // 90kHz MPEG-TS timestamp

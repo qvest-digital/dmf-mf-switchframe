@@ -1087,7 +1087,7 @@ func runFRCEmit(task *frcTask, r *pendingRelease, framePool *FramePool) {
 
 	r.rawVideo = result
 	r.hasRawVideo = true
-	r.freshVideo = true // FRC frames have unique PTS, treat as fresh
+	r.freshVideo = true   // FRC frames have unique PTS, treat as fresh
 	r.frcAllocated = true // delivery must release after onRawVideo callback
 }
 

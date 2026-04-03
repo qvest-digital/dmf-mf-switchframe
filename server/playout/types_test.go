@@ -357,11 +357,11 @@ func TestAssetURIParse(t *testing.T) {
 		{"file:///path.ts", "local", "/path.ts"},
 
 		// Edge cases.
-		{"", "local", ""},                                                              // empty string
-		{"clip.ts", "local", "clip.ts"},                                                // relative path (no scheme)
-		{"file://path.ts", "file", "path.ts"},                                          // file:// with 2 slashes (not 3) — falls to generic ://
+		{"", "local", ""},                     // empty string
+		{"clip.ts", "local", "clip.ts"},       // relative path (no scheme)
+		{"file://path.ts", "file", "path.ts"}, // file:// with 2 slashes (not 3) — falls to generic ://
 		{"http://cdn.example.com/clip.ts?token=abc", "http", "cdn.example.com/clip.ts?token=abc"}, // URI with query params
-		{"local://path.ts", "local", "path.ts"},                                        // local:// with 2 slashes (not 3) — falls to generic ://
+		{"local://path.ts", "local", "path.ts"},                                                   // local:// with 2 slashes (not 3) — falls to generic ://
 	}
 	for _, tt := range tests {
 		scheme, path := ParseAssetURI(tt.uri)
@@ -451,9 +451,9 @@ func TestCacheConfigDefaults(t *testing.T) {
 	}
 }
 
-func boolPtr(b bool) *bool         { return &b }
+func boolPtr(b bool) *bool          { return &b }
 func float64Ptr(f float64) *float64 { return &f }
-func int64Ptr(v int64) *int64      { return &v }
+func int64Ptr(v int64) *int64       { return &v }
 
 func TestSecondaryEvent_ExtendedJSONRoundTrip(t *testing.T) {
 	events := []SecondaryEvent{

@@ -484,14 +484,14 @@ func TestOutputInLegalRange(t *testing.T) {
 	t.Parallel()
 
 	testCases := []struct {
-		name    string
-		progY   byte
-		progCb  byte
-		progCr  byte
-		overlR  byte
-		overlG  byte
-		overlB  byte
-		overlA  byte
+		name   string
+		progY  byte
+		progCb byte
+		progCr byte
+		overlR byte
+		overlG byte
+		overlB byte
+		overlA byte
 	}{
 		{"red_on_black", 16, 128, 128, 255, 0, 0, 255},
 		{"green_on_white", 235, 128, 128, 0, 255, 0, 255},

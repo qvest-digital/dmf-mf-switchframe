@@ -29,7 +29,7 @@ func makeGradientFrame(w, h int) *ProcessingFrame {
 	}
 
 	return &ProcessingFrame{
-		Data:    yuv,
+		Data:   yuv,
 		Width:  w,
 		Height: h,
 	}
@@ -59,7 +59,7 @@ func makeShiftedFrame(w, h, dx, dy int) *ProcessingFrame {
 	}
 
 	return &ProcessingFrame{
-		Data:    yuv,
+		Data:   yuv,
 		Width:  w,
 		Height: h,
 	}
@@ -84,7 +84,7 @@ func makeVerticalGradientFrame(w, h int) *ProcessingFrame {
 	}
 
 	return &ProcessingFrame{
-		Data:    yuv,
+		Data:   yuv,
 		Width:  w,
 		Height: h,
 	}
@@ -109,7 +109,7 @@ func makeVerticalShiftedFrame(w, h, dy int) *ProcessingFrame {
 	}
 
 	return &ProcessingFrame{
-		Data:    yuv,
+		Data:   yuv,
 		Width:  w,
 		Height: h,
 	}
@@ -139,7 +139,7 @@ func makeCheckerGradientFrame(w, h int) *ProcessingFrame {
 	}
 
 	return &ProcessingFrame{
-		Data:    yuv,
+		Data:   yuv,
 		Width:  w,
 		Height: h,
 	}
@@ -184,7 +184,7 @@ func makeTranslatedFrame(prev *ProcessingFrame, dx, dy int) *ProcessingFrame {
 	}
 
 	return &ProcessingFrame{
-		Data:    yuv,
+		Data:   yuv,
 		Width:  w,
 		Height: h,
 	}
@@ -204,7 +204,7 @@ func makeUniformFrame(w, h int, yVal byte) *ProcessingFrame {
 	}
 
 	return &ProcessingFrame{
-		Data:    yuv,
+		Data:   yuv,
 		Width:  w,
 		Height: h,
 	}

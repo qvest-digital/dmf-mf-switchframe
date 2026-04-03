@@ -18,9 +18,9 @@ type mockVideoReceiver struct {
 }
 
 type mockVideoFrame struct {
-	yuv    []byte
-	w, h   int
-	pts    int64
+	yuv  []byte
+	w, h int
+	pts  int64
 }
 
 func (m *mockVideoReceiver) GetFrame(ctx context.Context) ([]byte, int, int, int64, error) {
@@ -117,10 +117,10 @@ func TestSource_VideoFanOut(t *testing.T) {
 
 	var mu sync.Mutex
 	var received []struct {
-		key          string
-		yuv          []byte
+		key           string
+		yuv           []byte
 		width, height int
-		pts          int64
+		pts           int64
 	}
 
 	src := NewSource(SourceConfig{
@@ -132,10 +132,10 @@ func TestSource_VideoFanOut(t *testing.T) {
 			cp := make([]byte, len(yuv))
 			copy(cp, yuv)
 			received = append(received, struct {
-				key          string
-				yuv          []byte
+				key           string
+				yuv           []byte
 				width, height int
-				pts          int64
+				pts           int64
 			}{key, cp, width, height, pts})
 		},
 		Logger: slog.Default(),

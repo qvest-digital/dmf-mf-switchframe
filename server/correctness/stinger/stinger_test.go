@@ -183,7 +183,7 @@ func TestWAVParsing(t *testing.T) {
 		// Create raw float32 sample bytes.
 		rawSamples := make([]byte, numSamples*4)
 		for i := 0; i < numSamples; i++ {
-			val := float32(math.Sin(2.0*math.Pi*440.0*float64(i)/float64(sampleRate)))
+			val := float32(math.Sin(2.0 * math.Pi * 440.0 * float64(i) / float64(sampleRate)))
 			binary.LittleEndian.PutUint32(rawSamples[i*4:], math.Float32bits(val))
 		}
 

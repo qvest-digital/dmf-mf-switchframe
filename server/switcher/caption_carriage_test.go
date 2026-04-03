@@ -18,8 +18,8 @@ func TestBroadcastWithCaptions_ModeOff_InjectsSEI(t *testing.T) {
 
 	// Build a minimal H.264 IDR frame in wire format (4-byte length prefix).
 	// SPS + PPS + IDR slice.
-	sps := []byte{0x67, 0x42, 0x00, 0x1E, 0xAB}               // SPS
-	pps := []byte{0x68, 0xCE, 0x38, 0x80}                       // PPS
+	sps := []byte{0x67, 0x42, 0x00, 0x1E, 0xAB}                   // SPS
+	pps := []byte{0x68, 0xCE, 0x38, 0x80}                         // PPS
 	idr := []byte{0x65, 0x88, 0x84, 0x00, 0x33, 0xFF, 0xAA, 0xBB} // IDR slice
 
 	var wire []byte
@@ -110,9 +110,9 @@ func TestBroadcastWithCaptions_HEVC_ModeOff_InjectsSEI(t *testing.T) {
 
 	// Build minimal HEVC stream: VPS + SPS + PPS + IDR_W_RADL.
 	// HEVC NALU header: 2 bytes. First byte: (type << 1). Second byte: 0x01.
-	vps := []byte{0x40, 0x01, 0xFF}       // VPS (type=32)
-	spsh := []byte{0x42, 0x01, 0xFF}      // SPS (type=33)
-	ppsh := []byte{0x44, 0x01, 0xFF}      // PPS (type=34)
+	vps := []byte{0x40, 0x01, 0xFF}        // VPS (type=32)
+	spsh := []byte{0x42, 0x01, 0xFF}       // SPS (type=33)
+	ppsh := []byte{0x44, 0x01, 0xFF}       // PPS (type=34)
 	idrh := []byte{0x26, 0x01, 0xAA, 0xBB} // IDR_W_RADL (type=19)
 
 	var wire []byte

@@ -476,16 +476,16 @@ type countingAdapter struct {
 	onWrite func(int)
 }
 
-func (a *countingAdapter) ID() string                      { return "counting" }
-func (a *countingAdapter) Start(_ context.Context) error   { return nil }
+func (a *countingAdapter) ID() string                    { return "counting" }
+func (a *countingAdapter) Start(_ context.Context) error { return nil }
 func (a *countingAdapter) Write(data []byte) (int, error) {
 	if a.onWrite != nil {
 		a.onWrite(len(data))
 	}
 	return len(data), nil
 }
-func (a *countingAdapter) Close() error                    { return nil }
-func (a *countingAdapter) Status() output.AdapterStatus    { return output.AdapterStatus{} }
+func (a *countingAdapter) Close() error                 { return nil }
+func (a *countingAdapter) Status() output.AdapterStatus { return output.AdapterStatus{} }
 
 // ==========================================================================
 // Corrupted input handling tests

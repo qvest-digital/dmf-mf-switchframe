@@ -841,14 +841,14 @@ func TestSanitizePlaylistName(t *testing.T) {
 		{"My Playlist", "My Playlist", false},
 		{"  spaces  ", "spaces", false},
 		{"", "", true},
-		{"   ", "", true},                          // whitespace-only
+		{"   ", "", true}, // whitespace-only
 		{"hello-world_123", "hello-world_123", false},
 		{"../evil", "", true},
-		{"..\\evil", "", true},                     // backslash traversal
+		{"..\\evil", "", true}, // backslash traversal
 		{"has/slash", "", true},
 		{"has\\backslash", "", true},
 		{"has@symbol", "", true},
-		{"---", "---", false},                      // all-dash is valid
+		{"---", "---", false}, // all-dash is valid
 		{strings.Repeat("a", 101), "", true},
 		{strings.Repeat("a", 100), strings.Repeat("a", 100), false}, // exactly 100 chars ok
 	}

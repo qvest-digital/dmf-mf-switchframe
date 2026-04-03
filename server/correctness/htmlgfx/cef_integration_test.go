@@ -87,12 +87,13 @@ func avgCr(yuv []byte, w, h int) float64 {
 // program frame, verify output has white pixels in YUV domain.
 //
 // Independent math (BT.709 integer coefficients from blend kernel):
-//   White (R=255,G=255,B=255), A=255 over black (Y=16,Cb=128,Cr=128):
-//   overlayY = 16 + ((47*255 + 157*255 + 16*255 + 128) >> 8) = 16 + (56228 >> 8) = 16 + 219 = 235
-//   A' = 255 + (255>>7) = 256, a256 = (256*256)>>8 = 256, inv = 0
-//   Y_out = (16*0 + 235*256 + 128) >> 8 = 60288 >> 8 = 235
-//   overlayCb = ((-26*255 - 86*255 + 112*255 + 128) >> 8) + 128 = (128 >> 8) + 128 = 128
-//   overlayCr = ((112*255 - 102*255 - 10*255 + 128) >> 8) + 128 = (128 >> 8) + 128 = 128
+//
+//	White (R=255,G=255,B=255), A=255 over black (Y=16,Cb=128,Cr=128):
+//	overlayY = 16 + ((47*255 + 157*255 + 16*255 + 128) >> 8) = 16 + (56228 >> 8) = 16 + 219 = 235
+//	A' = 255 + (255>>7) = 256, a256 = (256*256)>>8 = 256, inv = 0
+//	Y_out = (16*0 + 235*256 + 128) >> 8 = 60288 >> 8 = 235
+//	overlayCb = ((-26*255 - 86*255 + 112*255 + 128) >> 8) + 128 = (128 >> 8) + 128 = 128
+//	overlayCr = ((112*255 - 102*255 - 10*255 + 128) >> 8) + 128 = (128 >> 8) + 128 = 128
 func TestCEFToCompositorOverlay(t *testing.T) {
 	comp := setupCompositor(testWidth, testHeight)
 	defer comp.Close()
@@ -131,11 +132,11 @@ func TestCEFToCompositorOverlay(t *testing.T) {
 	const expectedCb = 128
 	const expectedCr = 128
 	positions := [][2]int{
-		{0, 0},                                          // top-left
-		{testWidth - 2, 0},                              // top-right (even-aligned)
-		{0, testHeight - 2},                             // bottom-left (even-aligned)
-		{testWidth - 2, testHeight - 2},                 // bottom-right
-		{testWidth / 2, testHeight / 2},                 // center
+		{0, 0},                          // top-left
+		{testWidth - 2, 0},              // top-right (even-aligned)
+		{0, testHeight - 2},             // bottom-left (even-aligned)
+		{testWidth - 2, testHeight - 2}, // bottom-right
+		{testWidth / 2, testHeight / 2}, // center
 	}
 	for _, pos := range positions {
 		x, y := pos[0], pos[1]
@@ -167,14 +168,15 @@ func TestCEFToCompositorOverlay(t *testing.T) {
 // (as CEF produces) -> bgraToRGBA conversion -> compositor overlay -> program output.
 //
 // Independent math (BT.709 integer coefficients from blend kernel):
-//   Red (R=255,G=0,B=0), A=255 over black (Y=16,Cb=128,Cr=128):
-//   overlayY = 16 + ((47*255 + 157*0 + 16*0 + 128) >> 8) = 16 + (12113 >> 8) = 16 + 47 = 63
-//   A' = 256, a256 = 256, inv = 0
-//   Y_out = (16*0 + 63*256 + 128) >> 8 = 16256 >> 8 = 63
-//   overlayCb = ((-26*255 - 86*0 + 112*0 + 128) >> 8) + 128 = (-6502 >> 8) + 128 = -26 + 128 = 102
-//   Cb_out = (128*0 + 102*256 + 128) >> 8 = 26240 >> 8 = 102
-//   overlayCr = ((112*255 - 102*0 - 10*0 + 128) >> 8) + 128 = (28688 >> 8) + 128 = 112 + 128 = 240
-//   Cr_out = (128*0 + 240*256 + 128) >> 8 = 61568 >> 8 = 240
+//
+//	Red (R=255,G=0,B=0), A=255 over black (Y=16,Cb=128,Cr=128):
+//	overlayY = 16 + ((47*255 + 157*0 + 16*0 + 128) >> 8) = 16 + (12113 >> 8) = 16 + 47 = 63
+//	A' = 256, a256 = 256, inv = 0
+//	Y_out = (16*0 + 63*256 + 128) >> 8 = 16256 >> 8 = 63
+//	overlayCb = ((-26*255 - 86*0 + 112*0 + 128) >> 8) + 128 = (-6502 >> 8) + 128 = -26 + 128 = 102
+//	Cb_out = (128*0 + 102*256 + 128) >> 8 = 26240 >> 8 = 102
+//	overlayCr = ((112*255 - 102*0 - 10*0 + 128) >> 8) + 128 = (28688 >> 8) + 128 = 112 + 128 = 240
+//	Cr_out = (128*0 + 240*256 + 128) >> 8 = 61568 >> 8 = 240
 func TestCEFBGRAToCompositorPipeline(t *testing.T) {
 	comp := setupCompositor(testWidth, testHeight)
 	defer comp.Close()
@@ -264,15 +266,16 @@ func TestCEFBGRAToCompositorPipeline(t *testing.T) {
 // premultiplied alpha BGRA, as CEF actually produces for partially transparent overlays.
 //
 // Independent math (BT.709 integer coefficients from blend kernel):
-//   White (R=255,G=255,B=255), A=128 over black (Y=16,Cb=128,Cr=128):
-//   overlayY = 235 (same as opaque white, computed in test 1)
-//   A' = 128 + (128>>7) = 128 + 1 = 129
-//   a256 = (129 * 256) >> 8 = 33024 >> 8 = 129
-//   inv = 256 - 129 = 127
-//   Y_out = (16*127 + 235*129 + 128) >> 8 = (2032 + 30315 + 128) >> 8 = 32475 >> 8 = 126
-//   overlayCb = 128, overlayCr = 128 (achromatic white)
-//   Cb_out = (128*127 + 128*129 + 128) >> 8 = (16256 + 16512 + 128) >> 8 = 32896 >> 8 = 128
-//   Cr_out = same = 128
+//
+//	White (R=255,G=255,B=255), A=128 over black (Y=16,Cb=128,Cr=128):
+//	overlayY = 235 (same as opaque white, computed in test 1)
+//	A' = 128 + (128>>7) = 128 + 1 = 129
+//	a256 = (129 * 256) >> 8 = 33024 >> 8 = 129
+//	inv = 256 - 129 = 127
+//	Y_out = (16*127 + 235*129 + 128) >> 8 = (2032 + 30315 + 128) >> 8 = 32475 >> 8 = 126
+//	overlayCb = 128, overlayCr = 128 (achromatic white)
+//	Cb_out = (128*127 + 128*129 + 128) >> 8 = (16256 + 16512 + 128) >> 8 = 32896 >> 8 = 128
+//	Cr_out = same = 128
 func TestCEFBGRAToCompositorPremultiplied(t *testing.T) {
 	comp := setupCompositor(testWidth, testHeight)
 	defer comp.Close()
@@ -717,9 +720,10 @@ func TestCEFOverlayOnLayerWithoutOverlayFails(t *testing.T) {
 // same frame multiple times with the same overlay gives consistent results.
 //
 // Independent math for green overlay (R=0,G=255,B=0), A=255 over black:
-//   overlayY = 16 + ((47*0 + 157*255 + 16*0 + 128) >> 8) = 16 + (40163 >> 8) = 16 + 156 = 172
-//   overlayCb = ((-26*0 - 86*255 + 112*0 + 128) >> 8) + 128 = (-21802 >> 8) + 128 = -86 + 128 = 42
-//   overlayCr = ((112*0 - 102*255 - 10*0 + 128) >> 8) + 128 = (-25882 >> 8) + 128 = -102 + 128 = 26
+//
+//	overlayY = 16 + ((47*0 + 157*255 + 16*0 + 128) >> 8) = 16 + (40163 >> 8) = 16 + 156 = 172
+//	overlayCb = ((-26*0 - 86*255 + 112*0 + 128) >> 8) + 128 = (-21802 >> 8) + 128 = -86 + 128 = 42
+//	overlayCr = ((112*0 - 102*255 - 10*0 + 128) >> 8) + 128 = (-25882 >> 8) + 128 = -102 + 128 = 26
 func TestCEFCompositorOverlayOverBlackFrameIsIdempotent(t *testing.T) {
 	comp := setupCompositor(testWidth, testHeight)
 	defer comp.Close()

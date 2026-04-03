@@ -84,15 +84,15 @@ func (c *Compositor) ProcessFrame10(yuv []byte, width, height int) []byte {
 	}
 
 	type slot10Snap struct {
-		slot     Slot
-		idx      int
-		srcYUV   []byte
-		srcW     int
-		srcH     int
-		rect     image.Rectangle
-		alpha    float64
-		hasFill  bool
-		hasGray  bool
+		slot    Slot
+		idx     int
+		srcYUV  []byte
+		srcW    int
+		srcH    int
+		rect    image.Rectangle
+		alpha   float64
+		hasFill bool
+		hasGray bool
 	}
 
 	var snaps []slot10Snap

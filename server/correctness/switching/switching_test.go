@@ -40,7 +40,7 @@ func newCaptureViewer(id string) *captureViewer {
 	return &captureViewer{id: id}
 }
 
-func (c *captureViewer) ID() string                    { return c.id }
+func (c *captureViewer) ID() string                       { return c.id }
 func (c *captureViewer) SendCaptions(_ *ccx.CaptionFrame) {}
 func (c *captureViewer) Stats() distribution.ViewerStats {
 	return distribution.ViewerStats{ID: c.id}

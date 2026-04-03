@@ -574,7 +574,7 @@ func TestSequenceProcessYUVAdvancement(t *testing.T) {
 	layer := c.layers[id]
 	layer.seq = &sequenceState{
 		loopFrames: [][]byte{frame1, frame2},
-		cropX: 0, cropY: 0, cropW: 2, cropH: 2,
+		cropX:      0, cropY: 0, cropW: 2, cropH: 2,
 		phase: seqPhaseLoop, frameIdx: 0,
 	}
 	layer.overlay = frame1
@@ -623,7 +623,7 @@ func TestSequenceOutDeactivatesLayer(t *testing.T) {
 	layer.seq = &sequenceState{
 		loopFrames: [][]byte{outFrame},
 		outFrames:  [][]byte{outFrame},
-		cropX: 0, cropY: 0, cropW: 2, cropH: 2,
+		cropX:      0, cropY: 0, cropW: 2, cropH: 2,
 		phase: seqPhaseOut, frameIdx: 0,
 	}
 	layer.overlay = outFrame

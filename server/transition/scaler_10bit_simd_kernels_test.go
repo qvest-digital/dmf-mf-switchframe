@@ -17,14 +17,14 @@ func TestScaleBilinear10RowKernels_MatchesReference(t *testing.T) {
 	testCases := []struct {
 		srcW, srcH, dstW, dstH int
 	}{
-		{64, 48, 32, 24},   // downsample 2:1
-		{32, 24, 64, 48},   // upsample 1:2
-		{64, 48, 48, 36},   // fractional downsample
-		{30, 20, 60, 40},   // upsample non-power-of-2
+		{64, 48, 32, 24},       // downsample 2:1
+		{32, 24, 64, 48},       // upsample 1:2
+		{64, 48, 48, 36},       // fractional downsample
+		{30, 20, 60, 40},       // upsample non-power-of-2
 		{1920, 1080, 960, 540}, // 1080p → 540p
 		{960, 540, 1920, 1080}, // 540p → 1080p
-		{10, 10, 6, 6},     // small frame
-		{6, 4, 16, 12},     // small upsample
+		{10, 10, 6, 6},         // small frame
+		{6, 4, 16, 12},         // small upsample
 	}
 
 	for _, tc := range testCases {

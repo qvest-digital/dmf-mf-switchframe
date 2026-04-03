@@ -28,7 +28,7 @@ func TestMuxerHighFrameRate(t *testing.T) {
 		fps       = 60
 		bitrate   = 500_000
 		gopSecs   = 2
-		numFrames = 600 // 10 seconds at 60fps
+		numFrames = 600                // 10 seconds at 60fps
 		ptsDelta  = int64(90000 / fps) // 1500 ticks
 	)
 
@@ -186,11 +186,11 @@ func TestMuxerLargeFrames(t *testing.T) {
 	}
 
 	const (
-		w       = 640
-		h       = 480
-		fps     = 30
-		bitrate = 4_000_000 // 4 Mbps to produce large frames
-		gopSecs = 2
+		w         = 640
+		h         = 480
+		fps       = 30
+		bitrate   = 4_000_000 // 4 Mbps to produce large frames
+		gopSecs   = 2
 		numFrames = 150
 	)
 
@@ -321,11 +321,11 @@ func TestMuxerAudioVideoInterleaving(t *testing.T) {
 	}
 
 	const (
-		w       = 320
-		h       = 240
-		fps     = 30
-		bitrate = 500_000
-		gopSecs = 2
+		w              = 320
+		h              = 240
+		fps            = 30
+		bitrate        = 500_000
+		gopSecs        = 2
 		numVideoFrames = 150 // 5 seconds
 	)
 
@@ -506,11 +506,11 @@ func TestMuxerRapidKeyframes(t *testing.T) {
 	}
 
 	const (
-		w       = 320
-		h       = 240
-		fps     = 30
-		bitrate = 1_000_000 // 1 Mbps (all-IDR will be larger)
-		gopSecs = 1         // doesn't matter since we force IDR every frame
+		w         = 320
+		h         = 240
+		fps       = 30
+		bitrate   = 1_000_000 // 1 Mbps (all-IDR will be larger)
+		gopSecs   = 1         // doesn't matter since we force IDR every frame
 		numFrames = 100
 	)
 

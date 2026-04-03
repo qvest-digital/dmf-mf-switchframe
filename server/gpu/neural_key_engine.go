@@ -100,13 +100,13 @@ type NeuralKeyEngine struct {
 	trtCtx *TRTContext
 
 	// Pre-allocated device buffers (float32).
-	inputBuf  unsafe.Pointer // [1, 4, ckModelH, ckModelW] — RGB + hint concatenated
-	alphaBuf  unsafe.Pointer // [1, 1, ckModelH, ckModelW] — model alpha output
-	fgBuf     unsafe.Pointer // [1, 3, ckModelH, ckModelW] — model foreground output
-	hintBuf   unsafe.Pointer // [1, 1, ckModelH, ckModelW] — resized chroma hint
+	inputBuf unsafe.Pointer // [1, 4, ckModelH, ckModelW] — RGB + hint concatenated
+	alphaBuf unsafe.Pointer // [1, 1, ckModelH, ckModelW] — model alpha output
+	fgBuf    unsafe.Pointer // [1, 3, ckModelH, ckModelW] — model foreground output
+	hintBuf  unsafe.Pointer // [1, 1, ckModelH, ckModelW] — resized chroma hint
 
 	// Pre-allocated uint8 chroma hint mask at program resolution.
-	chromaHint unsafe.Pointer // [progH, progW] uint8
+	chromaHint   unsafe.Pointer // [progH, progW] uint8
 	progW, progH int
 
 	warmupDone atomic.Bool
@@ -191,19 +191,19 @@ func NewNeuralKeyEngine(ctx *Context, modelPath string, progW, progH int) (*Neur
 	}
 
 	// Model I/O buffers (float32).
-	inputBuf, err := alloc(4*ckModelW*ckModelH*4, "input")  // [1,4,512,512]
+	inputBuf, err := alloc(4*ckModelW*ckModelH*4, "input") // [1,4,512,512]
 	if err != nil {
 		return nil, err
 	}
-	alphaBuf, err := alloc(1*ckModelW*ckModelH*4, "alpha")   // [1,1,512,512]
+	alphaBuf, err := alloc(1*ckModelW*ckModelH*4, "alpha") // [1,1,512,512]
 	if err != nil {
 		return nil, err
 	}
-	fgBuf, err := alloc(3*ckModelW*ckModelH*4, "fg")         // [1,3,512,512]
+	fgBuf, err := alloc(3*ckModelW*ckModelH*4, "fg") // [1,3,512,512]
 	if err != nil {
 		return nil, err
 	}
-	hintBuf, err := alloc(1*ckModelW*ckModelH*4, "hint")     // [1,1,512,512]
+	hintBuf, err := alloc(1*ckModelW*ckModelH*4, "hint") // [1,1,512,512]
 	if err != nil {
 		return nil, err
 	}
@@ -437,8 +437,12 @@ func (nke *NeuralKeyEngine) Infer(
 		minA := float32(1)
 		sumA := float32(0)
 		for _, v := range allAlpha {
-			if v > maxA { maxA = v }
-			if v < minA { minA = v }
+			if v > maxA {
+				maxA = v
+			}
+			if v < minA {
+				minA = v
+			}
 			sumA += v
 		}
 		meanA := sumA / float32(len(allAlpha))

@@ -19,7 +19,7 @@ const (
 )
 
 var (
-	ErrSequenceTooLarge = errors.New("graphics: sequence exceeds memory limit")
+	ErrSequenceTooLarge     = errors.New("graphics: sequence exceeds memory limit")
 	ErrSequenceEmpty        = errors.New("graphics: sequence ZIP contains no PNG files")
 	ErrSequenceSizeMismatch = errors.New("graphics: all PNGs must have same dimensions")
 )
