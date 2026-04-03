@@ -3,10 +3,13 @@ package video
 import "encoding/binary"
 
 // FillFrame fills buf with uniform Y, Cb, Cr sample values for the given format.
-// For 8-bit formats, values are clamped to [0,255]. For 10-bit formats, values
-// are clamped to [0,1023] and stored as little-endian uint16.
-// buf must be at least f.FrameSize(w, h) bytes.
+// For 8-bit formats, values are stored as bytes. For 10-bit formats, values
+// are stored as little-endian uint16.
+// Width and height must be positive and even. buf must be at least f.FrameSize(w, h) bytes.
 func FillFrame(buf []byte, f Format, w, h, y, cb, cr int) {
+	if w <= 0 || h <= 0 || w%2 != 0 || h%2 != 0 {
+		return
+	}
 	yPlane := f.YPlaneSize(w, h)
 	chromaPlane := f.ChromaPlaneSize(w, h)
 	cbOff := yPlane

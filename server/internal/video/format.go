@@ -1,3 +1,5 @@
+// Package video provides YUV video frame format definitions, frame filling,
+// and format conversion utilities shared across the switchframe pipeline.
 package video
 
 import "fmt"

@@ -139,7 +139,7 @@ func TestStaticAudit_NoHardcodedColorYUV420InFormatAwarePaths(t *testing.T) {
 
 // TestStaticAudit_TransitionEngineNoYuvFrameSize verifies the transition engine
 // does not use video.YUV420FrameSize() in its production code paths (engine.go).
-// The transition engine has its own ColorFormat.frameSize() and must use it.
+// The transition engine uses video.Format.FrameSize() which is format-aware.
 func TestStaticAudit_TransitionEngineNoYuvFrameSize(t *testing.T) {
 	t.Parallel()
 
