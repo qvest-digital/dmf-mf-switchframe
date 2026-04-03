@@ -23,6 +23,7 @@ import (
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/internal/atomicutil"
+	"github.com/zsiec/switchframe/server/internal/video"
 	"github.com/zsiec/switchframe/server/layout"
 	"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/stmap"
@@ -2074,7 +2075,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	// Set 10-bit color format on the transition engine so it uses the correct
 	// blend functions and frame sizing for the pipeline's color format.
 	if pf.Color.ColorFormat == ColorYUV422_10bit {
-		engine.SetColorFormat(transition.ColorFormat10bit)
+		engine.SetColorFormat(video.YUV422_10bit)
 	}
 
 	// In ref clock mode, use StartSync so the engine relies on tick-driven
@@ -2221,7 +2222,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 
 		// Set 10-bit color format for FTB reverse transition engine.
 		if ftbPF.Color.ColorFormat == ColorYUV422_10bit {
-			engine.SetColorFormat(transition.ColorFormat10bit)
+			engine.SetColorFormat(video.YUV422_10bit)
 		}
 
 		if err := engine.Start(fromSource, "", transition.FTBReverse, defaultFTBDurMs); err != nil {
@@ -2294,7 +2295,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 
 	// Set 10-bit color format for FTB forward transition engine.
 	if ftbFwdPF.Color.ColorFormat == ColorYUV422_10bit {
-		engine.SetColorFormat(transition.ColorFormat10bit)
+		engine.SetColorFormat(video.YUV422_10bit)
 	}
 
 	if err := engine.Start(fromSource, "", transition.FTB, defaultFTBDurMs); err != nil {

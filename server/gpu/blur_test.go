@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 func TestGaussianBlur_SmoothenSharpEdge(t *testing.T) {
@@ -22,7 +24,7 @@ func TestGaussianBlur_SmoothenSharpEdge(t *testing.T) {
 	defer dst.Release()
 
 	// Create frame with sharp vertical edge: left half black, right half white
-	yuv := make([]byte, yuvFrameSize(w, h))
+	yuv := make([]byte, video.YUV420FrameSize(w, h))
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			if x < w/2 {
@@ -43,7 +45,7 @@ func TestGaussianBlur_SmoothenSharpEdge(t *testing.T) {
 	require.NoError(t, err)
 
 	// Download result
-	result := make([]byte, yuvFrameSize(w, h))
+	result := make([]byte, video.YUV420FrameSize(w, h))
 	require.NoError(t, Download(ctx, result, dst, w, h))
 
 	// At the edge (x=32, middle row), the blurred value should be between black and white
@@ -72,7 +74,7 @@ func TestGaussianBlur_Radius1(t *testing.T) {
 	defer dst.Release()
 
 	// Uniform frame should be unchanged after blur
-	yuv := make([]byte, yuvFrameSize(32, 32))
+	yuv := make([]byte, video.YUV420FrameSize(32, 32))
 	for i := 0; i < 32*32; i++ {
 		yuv[i] = 128
 	}
@@ -84,7 +86,7 @@ func TestGaussianBlur_Radius1(t *testing.T) {
 	err = GaussianBlur(ctx, dst, src, 1)
 	require.NoError(t, err)
 
-	result := make([]byte, yuvFrameSize(32, 32))
+	result := make([]byte, video.YUV420FrameSize(32, 32))
 	require.NoError(t, Download(ctx, result, dst, 32, 32))
 
 	// Uniform input blurred should still be ~128 everywhere (within +/-1 rounding)
@@ -129,7 +131,7 @@ func TestGaussianBlur_UVPlanePreserved(t *testing.T) {
 	defer dst.Release()
 
 	// Uniform UV should remain unchanged after blur
-	yuv := make([]byte, yuvFrameSize(w, h))
+	yuv := make([]byte, video.YUV420FrameSize(w, h))
 	// Y plane: gradient (will change)
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
@@ -145,7 +147,7 @@ func TestGaussianBlur_UVPlanePreserved(t *testing.T) {
 	err = GaussianBlur(ctx, dst, src, 3)
 	require.NoError(t, err)
 
-	result := make([]byte, yuvFrameSize(w, h))
+	result := make([]byte, video.YUV420FrameSize(w, h))
 	require.NoError(t, Download(ctx, result, dst, w, h))
 
 	// UV (Cb and Cr) should be ~100 everywhere (uniform input stays uniform)

@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 func TestScalePlane_Identity(t *testing.T) {
@@ -347,7 +349,7 @@ func TestScaleYUV420WithQuality(t *testing.T) {
 func TestScaleYUV420WithQuality_SameDimsCopy(t *testing.T) {
 	t.Parallel()
 	w, h := 4, 4
-	total := yuvFrameSize(w, h)
+	total := video.YUV420FrameSize(w, h)
 	src := make([]byte, total)
 	for i := range src {
 		src[i] = byte(i*7 + 3)
@@ -366,8 +368,8 @@ func BenchmarkScaleYUV420_720pTo1080p(b *testing.B) {
 	srcW, srcH := 1280, 720
 	dstW, dstH := 1920, 1080
 
-	srcSize := yuvFrameSize(srcW, srcH)
-	dstSize := yuvFrameSize(dstW, dstH)
+	srcSize := video.YUV420FrameSize(srcW, srcH)
+	dstSize := video.YUV420FrameSize(dstW, dstH)
 
 	src := make([]byte, srcSize)
 	dst := make([]byte, dstSize)
@@ -387,8 +389,8 @@ func BenchmarkScaleYUV420_1080pTo720p(b *testing.B) {
 	srcW, srcH := 1920, 1080
 	dstW, dstH := 1280, 720
 
-	srcSize := yuvFrameSize(srcW, srcH)
-	dstSize := yuvFrameSize(dstW, dstH)
+	srcSize := video.YUV420FrameSize(srcW, srcH)
+	dstSize := video.YUV420FrameSize(dstW, dstH)
 
 	src := make([]byte, srcSize)
 	dst := make([]byte, dstSize)
@@ -408,8 +410,8 @@ func BenchmarkScaleLanczos_1080to720(b *testing.B) {
 	srcW, srcH := 1920, 1080
 	dstW, dstH := 1280, 720
 
-	srcSize := yuvFrameSize(srcW, srcH)
-	dstSize := yuvFrameSize(dstW, dstH)
+	srcSize := video.YUV420FrameSize(srcW, srcH)
+	dstSize := video.YUV420FrameSize(dstW, dstH)
 
 	src := make([]byte, srcSize)
 	dst := make([]byte, dstSize)
@@ -674,8 +676,8 @@ func BenchmarkScaleLanczos_720to1080(b *testing.B) {
 	srcW, srcH := 1280, 720
 	dstW, dstH := 1920, 1080
 
-	srcSize := yuvFrameSize(srcW, srcH)
-	dstSize := yuvFrameSize(dstW, dstH)
+	srcSize := video.YUV420FrameSize(srcW, srcH)
+	dstSize := video.YUV420FrameSize(dstW, dstH)
 
 	src := make([]byte, srcSize)
 	dst := make([]byte, dstSize)
@@ -695,8 +697,8 @@ func BenchmarkScaleLanczos_1080to360(b *testing.B) {
 	srcW, srcH := 1920, 1080
 	dstW, dstH := 640, 360
 
-	srcSize := yuvFrameSize(srcW, srcH)
-	dstSize := yuvFrameSize(dstW, dstH)
+	srcSize := video.YUV420FrameSize(srcW, srcH)
+	dstSize := video.YUV420FrameSize(dstW, dstH)
 
 	src := make([]byte, srcSize)
 	dst := make([]byte, dstSize)

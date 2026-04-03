@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 func TestRegistry_StoreAndGet(t *testing.T) {
@@ -525,8 +527,8 @@ func TestRegistry_ProgramSnapshot_ConcurrentProcessAndDelete(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			buf := make([]byte, yuvFrameSize(8, 8))
-			src := make([]byte, yuvFrameSize(8, 8))
+			buf := make([]byte, video.YUV420FrameSize(8, 8))
+			src := make([]byte, video.YUV420FrameSize(8, 8))
 			for {
 				select {
 				case <-stop:

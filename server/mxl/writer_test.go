@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // --- Mock discrete writer (video) ---
@@ -174,7 +176,7 @@ func TestWriter_StopsOnContextCancel(t *testing.T) {
 	w.Start(ctx)
 
 	// Write a video frame and wait for the ticker to pick it up.
-	yuv := make([]byte, yuvFrameSize(12, 2))
+	yuv := make([]byte, video.YUV420FrameSize(12, 2))
 	w.WriteVideo(yuv, 12, 2, 0)
 
 	deadline := time.After(200 * time.Millisecond)
@@ -264,7 +266,7 @@ func TestWriter_SkipsMismatchedResolution(t *testing.T) {
 	w.Start(ctx)
 
 	// Write a frame at wrong resolution — should be silently skipped.
-	yuv := make([]byte, yuvFrameSize(640, 128))
+	yuv := make([]byte, video.YUV420FrameSize(640, 128))
 	w.WriteVideo(yuv, 640, 128, 0)
 
 	time.Sleep(100 * time.Millisecond)

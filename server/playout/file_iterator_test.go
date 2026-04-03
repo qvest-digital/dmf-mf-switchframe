@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/zsiec/switchframe/server/codec"
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // Compile-time interface compliance check.
@@ -533,7 +534,7 @@ func TestFileFrameIterator_DecoderBufferReuseSafety(t *testing.T) {
 	mock := &mockReusingDecoder{
 		width:  4,
 		height: 2,
-		buf:    make([]byte, yuvFrameSize(4, 2)), // shared buffer
+		buf:    make([]byte, video.YUV420FrameSize(4, 2)), // shared buffer
 	}
 
 	encoded := []encodedFrame{
@@ -582,7 +583,7 @@ func (d *mockVideoDecoder) Decode(h264 []byte) ([]byte, int, int, error) {
 	if len(h264) == 0 {
 		return nil, 0, 0, fmt.Errorf("empty input")
 	}
-	size := yuvFrameSize(d.width, d.height)
+	size := video.YUV420FrameSize(d.width, d.height)
 	yuv := make([]byte, size)
 	return yuv, d.width, d.height, nil
 }
@@ -613,7 +614,7 @@ func (d *mockDrainableDecoder) Decode(h264 []byte) ([]byte, int, int, error) {
 	if d.callCount <= d.bufferCount {
 		return nil, 0, 0, fmt.Errorf("buffering")
 	}
-	size := yuvFrameSize(d.width, d.height)
+	size := video.YUV420FrameSize(d.width, d.height)
 	yuv := make([]byte, size)
 	return yuv, d.width, d.height, nil
 }
@@ -628,7 +629,7 @@ func (d *mockDrainableDecoder) ReceiveFrame() ([]byte, int, int, error) {
 	if d.drainCount > d.drainFrames {
 		return nil, 0, 0, fmt.Errorf("no more frames")
 	}
-	size := yuvFrameSize(d.width, d.height)
+	size := video.YUV420FrameSize(d.width, d.height)
 	yuv := make([]byte, size)
 	return yuv, d.width, d.height, nil
 }
@@ -680,7 +681,7 @@ func generateTestTSFile(t *testing.T) string {
 		"-f", "lavfi", "-i", "sine=frequency=440:duration=1:sample_rate=48000",
 		"-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
 		"-pix_fmt", "yuv420p", // force YUV420 (testsrc is RGB; without this, x264 may use High 4:4:4)
-		"-g", "30",            // keyframe every 30 frames (1 GOP for 1 second)
+		"-g", "30", // keyframe every 30 frames (1 GOP for 1 second)
 		"-c:a", "aac", "-b:a", "64k", "-ac", "2",
 		"-f", "mpegts", tmpFile,
 	)
@@ -768,8 +769,8 @@ func TestFileFrameIterator_Integration(t *testing.T) {
 			continue
 		}
 
-		// YUV420 size must match yuvFrameSize(width, height).
-		expectedSize := yuvFrameSize(frame.Width, frame.Height)
+		// YUV420 size must match video.YUV420FrameSize(width, height).
+		expectedSize := video.YUV420FrameSize(frame.Width, frame.Height)
 		if len(frame.YUV) != expectedSize {
 			t.Errorf("frame %d: YUV size = %d, want %d (for %dx%d)",
 				count, len(frame.YUV), expectedSize, frame.Width, frame.Height)
@@ -880,4 +881,3 @@ func TestFileFrameIterator_AudioBoundaryWithStreamingDecode(t *testing.T) {
 		t.Error("expected EOF")
 	}
 }
-

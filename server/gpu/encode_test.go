@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 func TestGPUEncode(t *testing.T) {
@@ -22,7 +24,7 @@ func TestGPUEncode(t *testing.T) {
 
 	// Upload a test pattern
 	w, h := 640, 480
-	testYUV := make([]byte, yuvFrameSize(w, h))
+	testYUV := make([]byte, video.YUV420FrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		testYUV[i] = byte(i%220) + 16
 	}
@@ -73,7 +75,7 @@ func TestGPUEncodeMultipleFrames(t *testing.T) {
 	defer frame.Release()
 
 	w, h := 320, 240
-	testYUV := make([]byte, yuvFrameSize(w, h))
+	testYUV := make([]byte, video.YUV420FrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		testYUV[i] = byte(i%220) + 16
 	}
@@ -116,14 +118,14 @@ func TestGPUEncodeCPUFallback(t *testing.T) {
 	// When hw_frames is active, EncodeCPU is not supported
 	// (GPU→CPU fallback encoder is not allocated). Skip in that case.
 	if enc.IsHWFrames() {
-		_, _, err := enc.EncodeCPU(make([]byte, yuvFrameSize(w, h)), 0, true)
+		_, _, err := enc.EncodeCPU(make([]byte, video.YUV420FrameSize(w, h)), 0, true)
 		require.Error(t, err, "EncodeCPU should return error when hw_frames is active")
 		t.Log("hw_frames active — EncodeCPU correctly returns error")
 		return
 	}
 
 	// Encode from CPU-side YUV directly (bypass GPU path)
-	testYUV := make([]byte, yuvFrameSize(w, h))
+	testYUV := make([]byte, video.YUV420FrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		testYUV[i] = byte(i%220) + 16
 	}
@@ -175,7 +177,7 @@ func TestGPUEncodeHWFrames(t *testing.T) {
 	defer frame.Release()
 
 	// Upload a test pattern
-	testYUV := make([]byte, yuvFrameSize(w, h))
+	testYUV := make([]byte, video.YUV420FrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		testYUV[i] = byte(i%220) + 16
 	}

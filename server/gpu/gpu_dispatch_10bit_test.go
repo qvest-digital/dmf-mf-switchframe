@@ -9,6 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // makeP210TestFrame is defined in p210_shaders_test.go
@@ -30,7 +32,7 @@ func TestGPUUploadDispatch_NV12(t *testing.T) {
 	assert.Equal(t, GPUFormatNV12, frame.Format)
 
 	// Create a YUV420p buffer
-	yuv := make([]byte, yuvFrameSize(w, h))
+	yuv := make([]byte, video.YUV420FrameSize(w, h))
 	for i := range yuv {
 		yuv[i] = byte(i % 256)
 	}
@@ -71,7 +73,7 @@ func TestGPUDownloadDispatch_NV12(t *testing.T) {
 	defer frame.Release()
 
 	// Upload a known pattern
-	src := make([]byte, yuvFrameSize(w, h))
+	src := make([]byte, video.YUV420FrameSize(w, h))
 	for i := range src {
 		src[i] = byte(i % 256)
 	}
@@ -79,7 +81,7 @@ func TestGPUDownloadDispatch_NV12(t *testing.T) {
 	require.NoError(t, err)
 
 	// Download via dispatch
-	dst := make([]byte, yuvFrameSize(w, h))
+	dst := make([]byte, video.YUV420FrameSize(w, h))
 	err = GPUDownloadDispatch(ctx, frame, dst, w, h)
 	require.NoError(t, err)
 
@@ -166,8 +168,8 @@ func TestGPUBlendMixDispatch_NV12(t *testing.T) {
 	defer dst.Release()
 
 	// Upload white and black NV12 frames
-	white := make([]byte, yuvFrameSize(w, h))
-	black := make([]byte, yuvFrameSize(w, h))
+	white := make([]byte, video.YUV420FrameSize(w, h))
+	black := make([]byte, video.YUV420FrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		white[i] = 235 // BT.709 white
 		black[i] = 16  // BT.709 black
@@ -399,7 +401,7 @@ func TestGPURawSinkNode_FrameSizeForFormat(t *testing.T) {
 	// yuv10FrameSize should return the CPU-side YUV422P10LE buffer size
 	w, h := 64, 32
 	// NV12 (8-bit 4:2:0): w*h*3/2
-	assert.Equal(t, yuvFrameSize(w, h), w*h*3/2)
+	assert.Equal(t, video.YUV420FrameSize(w, h), w*h*3/2)
 	// P210 (10-bit 4:2:2): Y(w*h*2) + Cb(w/2*h*2) + Cr(w/2*h*2) = w*h*4
 	assert.Equal(t, yuv10FrameSize(w, h), w*h*4)
 

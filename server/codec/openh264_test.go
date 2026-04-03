@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -89,7 +91,7 @@ func TestOpenH264EncoderMultipleFrames(t *testing.T) {
 	require.NoError(t, err)
 	defer enc.Close()
 
-	yuv := make([]byte, yuvFrameSize(w, h))
+	yuv := make([]byte, video.YUV420FrameSize(w, h))
 	for i := range yuv {
 		yuv[i] = 128
 	}

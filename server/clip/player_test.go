@@ -10,6 +10,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // generateTestFrames creates test video and audio frames by generating a test
@@ -708,7 +710,7 @@ func TestPlayerReencodeForBrowser(t *testing.T) {
 		InitialPTS: 0,
 		DecodeFrame: func(annexB []byte) ([]byte, int, int, error) {
 			// Return fake YUV data.
-			yuv := make([]byte, yuvFrameSize(320, 240))
+			yuv := make([]byte, video.YUV420FrameSize(320, 240))
 			return yuv, 320, 240, nil
 		},
 		EncoderFactory: func(w, h, fpsNum, fpsDen int) (VideoEncoder, error) {
@@ -751,7 +753,7 @@ func TestPlayerReencodeFailureFallsBack(t *testing.T) {
 		Loop:       false,
 		InitialPTS: 0,
 		DecodeFrame: func(annexB []byte) ([]byte, int, int, error) {
-			yuv := make([]byte, yuvFrameSize(320, 240))
+			yuv := make([]byte, video.YUV420FrameSize(320, 240))
 			return yuv, 320, 240, nil
 		},
 		EncoderFactory: func(w, h, fpsNum, fpsDen int) (VideoEncoder, error) {
@@ -915,7 +917,7 @@ func TestPlayerEncoderFactoryReceivesRationalFPS(t *testing.T) {
 		Width:      320,
 		Height:     240,
 		DecodeFrame: func(annexB []byte) ([]byte, int, int, error) {
-			yuv := make([]byte, yuvFrameSize(320, 240))
+			yuv := make([]byte, video.YUV420FrameSize(320, 240))
 			return yuv, 320, 240, nil
 		},
 		EncoderFactory: func(w, h, fpsNum, fpsDen int) (VideoEncoder, error) {
@@ -976,7 +978,7 @@ func TestPlayerEncoderFactoryPAL25fps(t *testing.T) {
 		Width:      320,
 		Height:     240,
 		DecodeFrame: func(annexB []byte) ([]byte, int, int, error) {
-			yuv := make([]byte, yuvFrameSize(320, 240))
+			yuv := make([]byte, video.YUV420FrameSize(320, 240))
 			return yuv, 320, 240, nil
 		},
 		EncoderFactory: func(w, h, fpsNum, fpsDen int) (VideoEncoder, error) {
@@ -1090,7 +1092,7 @@ func TestPlayerDrainBFrameBufferedFrames(t *testing.T) {
 			decodeCount++
 			// First 3 frames decode normally, last 2 return "buffering" (EAGAIN).
 			if decodeCount <= 3 {
-				yuv := make([]byte, yuvFrameSize(320, 240)) // minimal YUV420
+				yuv := make([]byte, video.YUV420FrameSize(320, 240)) // minimal YUV420
 				return yuv, 320, 240, nil
 			}
 			return nil, 0, 0, bufferingError
@@ -1111,7 +1113,7 @@ func TestPlayerDrainBFrameBufferedFrames(t *testing.T) {
 			count := drainCount.Load()
 			if count < 2 {
 				drainCount.Add(1)
-				yuv := make([]byte, yuvFrameSize(320, 240))
+				yuv := make([]byte, video.YUV420FrameSize(320, 240))
 				return yuv, 320, 240, nil
 			}
 			return nil, 0, 0, fmt.Errorf("no more frames")
@@ -1189,7 +1191,7 @@ func TestPlayerReencodeReturnsCopy(t *testing.T) {
 	p.avc1Buf = make([]byte, 0, 1024)
 
 	// First call — get a keyframe result.
-	yuv1 := make([]byte, yuvFrameSize(320, 240))
+	yuv1 := make([]byte, video.YUV420FrameSize(320, 240))
 	result1, kf1, _, _ := p.reencodeForBrowser(yuv1, 320, 240, 0, true)
 	require.NotNil(t, result1)
 	assert.True(t, kf1)
@@ -1199,7 +1201,7 @@ func TestPlayerReencodeReturnsCopy(t *testing.T) {
 	copy(snapshot, result1)
 
 	// Second call — should NOT overwrite result1's data.
-	yuv2 := make([]byte, yuvFrameSize(320, 240))
+	yuv2 := make([]byte, video.YUV420FrameSize(320, 240))
 	result2, _, _, _ := p.reencodeForBrowser(yuv2, 320, 240, 3000, false)
 	require.NotNil(t, result2)
 
@@ -1232,7 +1234,7 @@ func TestPlayerDrainBFramesSentToBrowserRelay(t *testing.T) {
 			defer mu.Unlock()
 			decodeCount++
 			if decodeCount <= 3 {
-				yuv := make([]byte, yuvFrameSize(320, 240))
+				yuv := make([]byte, video.YUV420FrameSize(320, 240))
 				return yuv, 320, 240, nil
 			}
 			return nil, 0, 0, bufferingError
@@ -1252,7 +1254,7 @@ func TestPlayerDrainBFramesSentToBrowserRelay(t *testing.T) {
 			count := drainCount.Load()
 			if count < 2 {
 				drainCount.Add(1)
-				yuv := make([]byte, yuvFrameSize(320, 240))
+				yuv := make([]byte, video.YUV420FrameSize(320, 240))
 				return yuv, 320, 240, nil
 			}
 			return nil, 0, 0, fmt.Errorf("no more frames")
@@ -1444,7 +1446,7 @@ func TestPlayerReencodeAVC1BufferNotAliased(t *testing.T) {
 		sourceFPS: 30.0,
 	}
 
-	yuv := make([]byte, yuvFrameSize(320, 240))
+	yuv := make([]byte, video.YUV420FrameSize(320, 240))
 
 	// First call: get wireData reference.
 	wd1, _, _, _ := p.reencodeForBrowser(yuv, 320, 240, 0, true)

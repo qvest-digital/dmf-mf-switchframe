@@ -10,6 +10,7 @@ import (
 	"github.com/zsiec/prism/media"
 
 	"github.com/zsiec/switchframe/server/codec"
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // skipWithoutEncoder skips the test if no H.264 encoder is available
@@ -83,10 +84,10 @@ func (r *mockRelay) getVideoInfo() *distribution.VideoInfo {
 	return r.videoInfo
 }
 
-// makeYUV420 creates a YUV420 buffer of size yuvFrameSize(w, h) filled with a
+// makeYUV420 creates a YUV420 buffer of size video.YUV420FrameSize(w, h) filled with a
 // deterministic pattern so we can verify frames aren't aliased.
 func makeYUV420(w, h int, fill byte) []byte {
-	size := yuvFrameSize(w, h)
+	size := video.YUV420FrameSize(w, h)
 	buf := make([]byte, size)
 	for i := range buf {
 		buf[i] = fill

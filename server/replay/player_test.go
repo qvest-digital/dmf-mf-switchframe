@@ -13,8 +13,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
+
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/codec"
+	"github.com/zsiec/switchframe/server/internal/video"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -26,7 +28,7 @@ type mockReplayDecoder struct {
 
 func (d *mockReplayDecoder) Decode(data []byte) ([]byte, int, int, error) {
 	d.decodeCount++
-	yuv := make([]byte, yuvFrameSize(d.width, d.height))
+	yuv := make([]byte, video.YUV420FrameSize(d.width, d.height))
 	// Mark first byte with decode count for identification.
 	yuv[0] = byte(d.decodeCount)
 	return yuv, d.width, d.height, nil
@@ -687,7 +689,7 @@ func TestBlendInterpolator(t *testing.T) {
 	interp := &blendInterpolator{}
 
 	// Two 4x4 frames: A is all black (Y=0), B is all white (Y=255)
-	size := yuvFrameSize(4, 4) // YUV420
+	size := video.YUV420FrameSize(4, 4) // YUV420
 	frameA := make([]byte, size)
 	frameB := make([]byte, size)
 	for i := range frameB[:16] { // Y plane
@@ -714,7 +716,7 @@ func TestBlendInterpolator(t *testing.T) {
 func TestBlendInterpolator_BufferReuse(t *testing.T) {
 	interp := &blendInterpolator{}
 
-	size := yuvFrameSize(8, 8)
+	size := video.YUV420FrameSize(8, 8)
 	frameA := make([]byte, size)
 	frameB := make([]byte, size)
 	for i := range frameB {
@@ -742,7 +744,7 @@ func TestBlendInterpolator_AliasedBufferCorruption(t *testing.T) {
 	interp := &blendInterpolator{}
 
 	w, h := 8, 8
-	size := yuvFrameSize(w, h)
+	size := video.YUV420FrameSize(w, h)
 
 	// Frame A: all zeros
 	frameA := make([]byte, size)
@@ -792,7 +794,7 @@ func TestMCFIInterpolator_AliasedBufferCorruption(t *testing.T) {
 	require.NotNil(t, interp)
 
 	w, h := 32, 32
-	size := yuvFrameSize(w, h)
+	size := video.YUV420FrameSize(w, h)
 
 	// First pair: frame A = all 60, frame B = all 180
 	frameA := make([]byte, size)
@@ -839,7 +841,7 @@ func TestNewInterpolator(t *testing.T) {
 	assert.NotNil(t, interp)
 
 	// Verify it actually works.
-	size := yuvFrameSize(2, 2)
+	size := video.YUV420FrameSize(2, 2)
 	a := make([]byte, size)
 	b := make([]byte, size)
 	for i := range b {
@@ -859,7 +861,7 @@ func TestMCFIInterpolator(t *testing.T) {
 
 	// Create two 32x32 frames (minimum for 16x16 block ME: 2 blocks wide, 2 tall).
 	w, h := 32, 32
-	size := yuvFrameSize(w, h)
+	size := video.YUV420FrameSize(w, h)
 	frameA := make([]byte, size)
 	frameB := make([]byte, size)
 
@@ -912,7 +914,7 @@ func TestMCFIInterpolator_CachesMVs(t *testing.T) {
 
 	// Use frames with spatial variation and motion so MVs are non-zero.
 	w, h := 32, 32
-	size := yuvFrameSize(w, h)
+	size := video.YUV420FrameSize(w, h)
 	frameA := make([]byte, size)
 	frameB := make([]byte, size)
 
@@ -1649,7 +1651,7 @@ func (d *mockDropDecoder) Decode(data []byte) ([]byte, int, int, error) {
 	if idx == d.dropIndex {
 		return nil, 0, 0, errors.New("corrupt frame")
 	}
-	yuv := make([]byte, yuvFrameSize(d.width, d.height))
+	yuv := make([]byte, video.YUV420FrameSize(d.width, d.height))
 	yuv[0] = byte(idx + 1) // mark for identification
 	return yuv, d.width, d.height, nil
 }
@@ -1781,7 +1783,7 @@ type verySlowMockDecoder struct {
 func (d *verySlowMockDecoder) Decode(data []byte) ([]byte, int, int, error) {
 	d.decodeCount++
 	time.Sleep(40 * time.Millisecond) // heavy decode latency
-	yuv := make([]byte, yuvFrameSize(d.width, d.height))
+	yuv := make([]byte, video.YUV420FrameSize(d.width, d.height))
 	yuv[0] = byte(d.decodeCount)
 	return yuv, d.width, d.height, nil
 }
@@ -2106,11 +2108,11 @@ func TestReplayPlayer_DualEncode_ProxyForBrowser(t *testing.T) {
 	}
 
 	p := newReplayPlayer(PlayerConfig{
-		Clip:           clip,
-		Speed:          1.0,
-		Loop:           false,
-		DecoderFactory: mockDecoderFactory,
-		EncoderFactory: pipelineFactory,
+		Clip:                clip,
+		Speed:               1.0,
+		Loop:                false,
+		DecoderFactory:      mockDecoderFactory,
+		EncoderFactory:      pipelineFactory,
 		ProxyEncoderFactory: proxyFactory,
 		Output: func(frame *media.VideoFrame) {
 			mu.Lock()

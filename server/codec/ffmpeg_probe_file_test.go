@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // createTestH264File creates a minimal H.264 Annex B file using the FFmpeg encoder.
@@ -23,7 +25,7 @@ func createTestH264File(t *testing.T, dir string) string {
 	}
 	defer enc.Close()
 
-	yuvSize := yuvFrameSize(64, 64)
+	yuvSize := video.YUV420FrameSize(64, 64)
 	yuv := make([]byte, yuvSize)
 	// Fill with a green frame (Y=128, Cb=128, Cr=128 = neutral gray)
 	for i := range yuv {

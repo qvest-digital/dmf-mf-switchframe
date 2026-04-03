@@ -2,6 +2,8 @@ package graphics
 
 import (
 	"sync"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // ScaleFunc scales a YUV420 buffer from (srcW, srcH) to (dstW, dstH).
@@ -75,7 +77,7 @@ func (b *KeyProcessorBridge) IngestFillYUV(sourceKey string, yuv []byte, width, 
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	yuvSize := yuvFrameSize(width, height)
+	yuvSize := video.YUV420FrameSize(width, height)
 	if len(yuv) < yuvSize {
 		return
 	}
@@ -186,7 +188,7 @@ func (b *KeyProcessorBridge) ProcessYUV(yuv []byte, width, height int) []byte {
 	// Build the fills map for Process(), scaling any mismatched fills.
 	// Reuse b.fillMap to avoid per-call map allocation: clear old entries,
 	// then populate with current fills.
-	targetSize := yuvFrameSize(width, height)
+	targetSize := video.YUV420FrameSize(width, height)
 	for k := range b.fillMap {
 		delete(b.fillMap, k)
 	}
@@ -265,7 +267,7 @@ func (b *KeyProcessorBridge) SnapshotEnabledKeys() []EnabledKeySnap {
 			continue
 		}
 
-		yuvSize := yuvFrameSize(entry.width, entry.height)
+		yuvSize := video.YUV420FrameSize(entry.width, entry.height)
 		if len(entry.yuv) < yuvSize {
 			continue
 		}

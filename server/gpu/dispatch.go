@@ -1,5 +1,7 @@
 package gpu
 
+import "github.com/zsiec/switchframe/server/internal/video"
+
 // GPU dispatch functions route to NV12 or P210 kernel variants based on the
 // GPUFrame's Format field. All callers in the pipeline nodes should use these
 // dispatch functions instead of calling NV12-only operations directly, so the
@@ -18,7 +20,7 @@ func cpuFrameSize(w, h int, format GPUFrameFormat) int {
 	case GPUFormatP210:
 		return yuv10FrameSize(w, h)
 	default:
-		return yuvFrameSize(w, h)
+		return video.YUV420FrameSize(w, h)
 	}
 }
 

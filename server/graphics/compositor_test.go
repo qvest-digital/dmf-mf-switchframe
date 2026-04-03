@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 func makeTestOverlay(w, h int) []byte {
@@ -791,7 +793,7 @@ func TestCompositor_ConcurrentOps(t *testing.T) {
 	c := NewCompositor()
 	defer c.Close()
 
-	yuv := make([]byte, yuvFrameSize(8, 8))
+	yuv := make([]byte, video.YUV420FrameSize(8, 8))
 	overlay := makeTestOverlay(8, 8)
 
 	var wg sync.WaitGroup
@@ -963,7 +965,7 @@ func BenchmarkProcessYUV_NoLayersActive(b *testing.B) {
 		_ = c.SetOverlay(id, overlay, 1920, 1080, "test")
 	}
 
-	yuv := make([]byte, yuvFrameSize(1920, 1080))
+	yuv := make([]byte, video.YUV420FrameSize(1920, 1080))
 
 	b.ResetTimer()
 	b.ReportAllocs()

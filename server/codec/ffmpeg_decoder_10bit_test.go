@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // yuv422p10leFrameSize returns the byte size of a YUV422P10LE frame.
@@ -55,7 +57,7 @@ func TestFFmpegDecoderNative10bit_10bitSource_Passthrough(t *testing.T) {
 	require.NoError(t, err)
 	defer enc.Close()
 
-	yuv := make([]byte, yuvFrameSize(w, h))
+	yuv := make([]byte, video.YUV420FrameSize(w, h))
 	// Fill with test pattern
 	for i := 0; i < w*h; i++ {
 		yuv[i] = byte((i * 7) % 256)
@@ -96,7 +98,7 @@ func TestFFmpegDecoderNative10bit_10bitSource_Passthrough(t *testing.T) {
 
 	// 8-bit source stream → output should be 8-bit 420 (the native format,
 	// since there's no 10-bit data to preserve).
-	expected420 := yuvFrameSize(w, h)
+	expected420 := video.YUV420FrameSize(w, h)
 	assert.Equal(t, expected420, len(decoded),
 		"8-bit source should produce 8-bit 420 output even with 10-bit decoder flag")
 }
@@ -131,11 +133,11 @@ func TestFFmpegDecoderNative10bit_FlushAndSendEOS(t *testing.T) {
 // 10-bit 422 output.
 func TestOutputFormatFromBufferSize(t *testing.T) {
 	tests := []struct {
-		name     string
-		w, h     int
-		bufSize  int
-		is10bit  bool
-		is420_8  bool
+		name    string
+		w, h    int
+		bufSize int
+		is10bit bool
+		is420_8 bool
 	}{
 		{"1080p 8-bit 420", 1920, 1080, 1920 * 1080 * 3 / 2, false, true},
 		{"1080p 10-bit 422", 1920, 1080, 1920 * 1080 * 4, true, false},
@@ -147,7 +149,7 @@ func TestOutputFormatFromBufferSize(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			expected420 := yuvFrameSize(tc.w, tc.h)
+			expected420 := video.YUV420FrameSize(tc.w, tc.h)
 			expected422_10 := yuv422p10leFrameSize(tc.w, tc.h)
 
 			is420 := tc.bufSize == expected420
@@ -173,7 +175,7 @@ func TestFFmpegDecoder_Standard_AlwaysOutputs420_8bit(t *testing.T) {
 	require.NoError(t, err)
 	defer enc.Close()
 
-	yuv := make([]byte, yuvFrameSize(w, h))
+	yuv := make([]byte, video.YUV420FrameSize(w, h))
 	for i := range yuv {
 		yuv[i] = 128
 	}
@@ -205,7 +207,7 @@ func TestFFmpegDecoder_Standard_AlwaysOutputs420_8bit(t *testing.T) {
 	require.Equal(t, w, dw)
 	require.Equal(t, h, dh)
 
-	expected420 := yuvFrameSize(w, h)
+	expected420 := video.YUV420FrameSize(w, h)
 	assert.Equal(t, expected420, len(decoded),
 		"standard decoder should always produce 8-bit 420 output")
 }
@@ -255,7 +257,7 @@ func TestNative10bitDecoder_DecodeInto(t *testing.T) {
 	require.NoError(t, err)
 	defer enc.Close()
 
-	yuv := make([]byte, yuvFrameSize(w, h))
+	yuv := make([]byte, video.YUV420FrameSize(w, h))
 	for i := range yuv {
 		yuv[i] = 128
 	}

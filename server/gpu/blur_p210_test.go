@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 func TestGaussianBlurP210_SmoothenSharpEdge(t *testing.T) {
@@ -193,7 +195,7 @@ func TestGPUGaussianBlurDispatch_RoutesP210(t *testing.T) {
 	defer nv12Src.Release()
 	defer nv12Dst.Release()
 
-	nv12Yuv := make([]byte, yuvFrameSize(32, 32))
+	nv12Yuv := make([]byte, video.YUV420FrameSize(32, 32))
 	for i := range nv12Yuv {
 		nv12Yuv[i] = 128
 	}

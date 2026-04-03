@@ -5,6 +5,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // fakeSpliceInjector records SchedulePodCue and InjectPodCue calls.
@@ -187,7 +189,7 @@ func TestSpliceCoordinator_IngestFrame_CollectsInWindow(t *testing.T) {
 	sc.BeginSplice("pod-1", true, true, 180000, 0)
 
 	// Frame before window: should be ignored.
-	sc.IngestFrame(make([]byte, yuvFrameSize(100, 100)), 100, 100, 400000)
+	sc.IngestFrame(make([]byte, video.YUV420FrameSize(100, 100)), 100, 100, 400000)
 
 	sc.mu.Lock()
 	candCount := len(sc.active.candidates)
@@ -197,9 +199,9 @@ func TestSpliceCoordinator_IngestFrame_CollectsInWindow(t *testing.T) {
 	}
 
 	// Frame inside window: should be collected.
-	sc.IngestFrame(make([]byte, yuvFrameSize(100, 100)), 100, 100, 410000)
-	sc.IngestFrame(make([]byte, yuvFrameSize(100, 100)), 100, 100, 450000)
-	sc.IngestFrame(make([]byte, yuvFrameSize(100, 100)), 100, 100, 490000)
+	sc.IngestFrame(make([]byte, video.YUV420FrameSize(100, 100)), 100, 100, 410000)
+	sc.IngestFrame(make([]byte, video.YUV420FrameSize(100, 100)), 100, 100, 450000)
+	sc.IngestFrame(make([]byte, video.YUV420FrameSize(100, 100)), 100, 100, 490000)
 
 	sc.mu.Lock()
 	candCount = len(sc.active.candidates)
@@ -233,18 +235,18 @@ func TestSpliceCoordinator_IngestFrame_TriggersAnalysis(t *testing.T) {
 	sc.BeginSplice("pod-test", true, true, 180000, 0)
 
 	// Create a black frame (all zeros) inside the window.
-	blackFrame := make([]byte, yuvFrameSize(100, 100)) // all zeros = black
+	blackFrame := make([]byte, video.YUV420FrameSize(100, 100)) // all zeros = black
 	sc.IngestFrame(blackFrame, 100, 100, 420000)
 
 	// Create a non-black frame inside the window.
-	nonBlack := make([]byte, yuvFrameSize(100, 100))
+	nonBlack := make([]byte, video.YUV420FrameSize(100, 100))
 	for i := range nonBlack[:100*100] { // fill Y plane with 200
 		nonBlack[i] = 200
 	}
 	sc.IngestFrame(nonBlack, 100, 100, 450000)
 
 	// Send a frame past the window end to trigger finalization.
-	sc.IngestFrame(make([]byte, yuvFrameSize(100, 100)), 100, 100, 500000)
+	sc.IngestFrame(make([]byte, video.YUV420FrameSize(100, 100)), 100, 100, 500000)
 
 	// Verify SchedulePodCue was called.
 	calls := inj.getCalls()
@@ -340,20 +342,20 @@ func TestSpliceCoordinator_FinalizeTriggersSceneChange(t *testing.T) {
 	sc.BeginSplice("pod-scene", true, true, 180000, 0)
 
 	// Two very different frames: should detect scene change.
-	darkFrame := make([]byte, yuvFrameSize(100, 100))
+	darkFrame := make([]byte, video.YUV420FrameSize(100, 100))
 	for i := 0; i < 100*100; i++ {
 		darkFrame[i] = 50 // not black (above threshold), but dark
 	}
 	sc.IngestFrame(darkFrame, 100, 100, 420000)
 
-	brightFrame := make([]byte, yuvFrameSize(100, 100))
+	brightFrame := make([]byte, video.YUV420FrameSize(100, 100))
 	for i := 0; i < 100*100; i++ {
 		brightFrame[i] = 250 // bright
 	}
 	sc.IngestFrame(brightFrame, 100, 100, 450000)
 
 	// Close the window.
-	sc.IngestFrame(make([]byte, yuvFrameSize(100, 100)), 100, 100, 500000)
+	sc.IngestFrame(make([]byte, video.YUV420FrameSize(100, 100)), 100, 100, 500000)
 
 	// Scene change should pick the second frame (index 1).
 	if readyPTS != 450000 {
@@ -380,7 +382,7 @@ func TestSpliceCoordinator_FallbackToScheduled(t *testing.T) {
 
 	// All similar frames: no black, no scene change -> fallback to middle.
 	for pts := int64(410000); pts <= 490000; pts += 10000 {
-		frame := make([]byte, yuvFrameSize(100, 100))
+		frame := make([]byte, video.YUV420FrameSize(100, 100))
 		for i := 0; i < 100*100; i++ {
 			frame[i] = 128 // uniform mid-gray
 		}
@@ -388,7 +390,7 @@ func TestSpliceCoordinator_FallbackToScheduled(t *testing.T) {
 	}
 
 	// Close window.
-	sc.IngestFrame(make([]byte, yuvFrameSize(100, 100)), 100, 100, 500000)
+	sc.IngestFrame(make([]byte, video.YUV420FrameSize(100, 100)), 100, 100, 500000)
 
 	// Middle of 9 frames (indices 0-8) is index 4, which is PTS 450000.
 	if readyPTS != 450000 {
@@ -416,7 +418,7 @@ func TestSpliceCoordinator_Timeout(t *testing.T) {
 	sc.BeginSplice("pod-timeout", true, true, 180000, 0)
 
 	// Send one candidate frame inside the window.
-	sc.IngestFrame(make([]byte, yuvFrameSize(100, 100)), 100, 100, 450000)
+	sc.IngestFrame(make([]byte, video.YUV420FrameSize(100, 100)), 100, 100, 450000)
 
 	// Wait for timeout to trigger finalization.
 	select {
@@ -510,8 +512,8 @@ func TestSpliceCoordinator_Integration_FireToReturn(t *testing.T) {
 	sc := NewSpliceCoordinator(SpliceCoordinatorConfig{
 		Injector:      inj,
 		BlackDetector: bd,
-		PreRollMs:     300,  // short for test (27000 PTS ticks)
-		WindowMs:      100,  // ±100ms = ±9000 ticks
+		PreRollMs:     300, // short for test (27000 PTS ticks)
+		WindowMs:      100, // ±100ms = ±9000 ticks
 		TimeoutMs:     500,
 	})
 
@@ -549,7 +551,7 @@ func TestSpliceCoordinator_Integration_FireToReturn(t *testing.T) {
 	// Feed frames through the window.
 	// Target PTS = 0 + 300*90 = 27000. Window: [18000, 36000].
 	w, h := 320, 240
-	ySize := yuvFrameSize(w, h)
+	ySize := video.YUV420FrameSize(w, h)
 
 	for pts := int64(0); pts <= 40000; pts += 3000 {
 		frame := make([]byte, ySize)
@@ -678,7 +680,7 @@ func TestSpliceCoordinator_ReturnSplice(t *testing.T) {
 
 	// Send frames with a black frame in the window.
 	w, h := 320, 240
-	ySize := yuvFrameSize(w, h)
+	ySize := video.YUV420FrameSize(w, h)
 	// Target PTS = 450000, window = [405000, 495000]
 	for pts := int64(400000); pts <= 500000; pts += 3000 {
 		frame := make([]byte, ySize)

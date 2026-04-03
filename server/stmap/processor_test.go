@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 func TestProcessor_Identity_NoChange(t *testing.T) {
@@ -15,7 +17,7 @@ func TestProcessor_Identity_NoChange(t *testing.T) {
 
 	require.True(t, p.Active())
 
-	frameSize := yuvFrameSize(w, h)
+	frameSize := video.YUV420FrameSize(w, h)
 	src := make([]byte, frameSize)
 	dst := make([]byte, frameSize)
 
@@ -78,7 +80,7 @@ func TestProcessor_HorizontalFlip(t *testing.T) {
 
 	p := NewProcessor(m)
 
-	frameSize := yuvFrameSize(w, h)
+	frameSize := video.YUV420FrameSize(w, h)
 	src := make([]byte, frameSize)
 	dst := make([]byte, frameSize)
 
@@ -109,7 +111,7 @@ func TestProcessor_NilMap_NoOp(t *testing.T) {
 	require.False(t, p.Active())
 
 	// ProcessYUV should be a safe no-op.
-	src := make([]byte, 48) // yuvFrameSize(8, 4)
+	src := make([]byte, 48) // video.YUV420FrameSize(8, 4)
 	dst := make([]byte, 48)
 	for i := range src {
 		src[i] = byte(i)
@@ -140,7 +142,7 @@ func TestProcessor_ChromaPlanes(t *testing.T) {
 
 	p := NewProcessor(m)
 
-	frameSize := yuvFrameSize(w, h)
+	frameSize := video.YUV420FrameSize(w, h)
 	src := make([]byte, frameSize)
 	dst := make([]byte, frameSize)
 
@@ -181,7 +183,7 @@ func TestProcessor_OutOfBounds_Clamps(t *testing.T) {
 
 	p := NewProcessor(m)
 
-	frameSize := yuvFrameSize(w, h)
+	frameSize := video.YUV420FrameSize(w, h)
 	src := make([]byte, frameSize)
 	dst := make([]byte, frameSize)
 
@@ -214,7 +216,7 @@ func TestProcessor_LargerFrame(t *testing.T) {
 	m := Identity(w, h)
 	p := NewProcessor(m)
 
-	frameSize := yuvFrameSize(w, h)
+	frameSize := video.YUV420FrameSize(w, h)
 	src := make([]byte, frameSize)
 	dst := make([]byte, frameSize)
 
@@ -288,7 +290,7 @@ func TestNewProcessorCached_WritesAndMmaps(t *testing.T) {
 
 	// Should produce same output as heap-based.
 	heapP := NewProcessor(m)
-	src := make([]byte, yuvFrameSize(64, 48))
+	src := make([]byte, video.YUV420FrameSize(64, 48))
 	for i := range src {
 		src[i] = byte(i % 256)
 	}
@@ -310,7 +312,7 @@ func TestNewProcessorCached_LoadsExisting(t *testing.T) {
 	require.NoError(t, err)
 
 	// Get reference output.
-	src := make([]byte, yuvFrameSize(64, 48))
+	src := make([]byte, video.YUV420FrameSize(64, 48))
 	for i := range src {
 		src[i] = byte(i % 256)
 	}
@@ -388,7 +390,7 @@ func BenchmarkProcessor_1080p(b *testing.B) {
 	m := Identity(w, h)
 	p := NewProcessor(m)
 
-	frameSize := yuvFrameSize(w, h)
+	frameSize := video.YUV420FrameSize(w, h)
 	src := make([]byte, frameSize)
 	dst := make([]byte, frameSize)
 	for i := range src {

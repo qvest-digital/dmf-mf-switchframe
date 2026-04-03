@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 func TestMultipleEncoders_Independent(t *testing.T) {
@@ -32,7 +34,7 @@ func TestMultipleEncoders_Independent(t *testing.T) {
 
 	// Send frames to all encoders concurrently.
 	srcW, srcH := 640, 480
-	yuv := make([]byte, yuvFrameSize(srcW, srcH))
+	yuv := make([]byte, video.YUV420FrameSize(srcW, srcH))
 
 	var wg sync.WaitGroup
 	for i := range nSources {

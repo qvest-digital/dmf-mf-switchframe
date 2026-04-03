@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -445,7 +447,7 @@ func TestCompositor_FillMode_CropsBeforeScale(t *testing.T) {
 
 	// Source is 8x4 (wider than slot aspect).
 	// Left half: Y=200, right half: Y=100
-	src := make([]byte, yuvFrameSize(8, 4))
+	src := make([]byte, video.YUV420FrameSize(8, 4))
 	for y := 0; y < 4; y++ {
 		for x := 0; x < 4; x++ {
 			src[y*8+x] = 200 // left half
@@ -902,19 +904,19 @@ func TestCompositor_SkipsScaleOnSamePTS(t *testing.T) {
 	c.SetLayout(layout)
 
 	// Create a source frame at different resolution (forces scaling)
-	yuv := make([]byte, yuvFrameSize(1280, 720))
+	yuv := make([]byte, video.YUV420FrameSize(1280, 720))
 	for i := range yuv {
 		yuv[i] = byte(i % 256)
 	}
 
 	// First ingest + process -- must scale
 	c.IngestSourceFrame("cam1", yuv, 1280, 720, 1000)
-	frame1 := make([]byte, yuvFrameSize(1920, 1080))
+	frame1 := make([]byte, video.YUV420FrameSize(1920, 1080))
 	c.ProcessFrame(frame1, 1920, 1080)
 
 	// Same PTS again -- should use cache
 	c.IngestSourceFrame("cam1", yuv, 1280, 720, 1000)
-	frame2 := make([]byte, yuvFrameSize(1920, 1080))
+	frame2 := make([]byte, video.YUV420FrameSize(1920, 1080))
 	c.ProcessFrame(frame2, 1920, 1080)
 
 	if !bytes.Equal(frame1, frame2) {
@@ -931,22 +933,22 @@ func TestCompositor_InvalidatesCacheOnPTSChange(t *testing.T) {
 	}
 	c.SetLayout(layout)
 
-	yuv1 := make([]byte, yuvFrameSize(1280, 720))
+	yuv1 := make([]byte, video.YUV420FrameSize(1280, 720))
 	for i := range yuv1 {
 		yuv1[i] = byte(i % 256)
 	}
-	yuv2 := make([]byte, yuvFrameSize(1280, 720))
+	yuv2 := make([]byte, video.YUV420FrameSize(1280, 720))
 	for i := range yuv2 {
 		yuv2[i] = byte((i + 50) % 256)
 	}
 
 	c.IngestSourceFrame("cam1", yuv1, 1280, 720, 1000)
-	frame1 := make([]byte, yuvFrameSize(1920, 1080))
+	frame1 := make([]byte, video.YUV420FrameSize(1920, 1080))
 	c.ProcessFrame(frame1, 1920, 1080)
 
 	// Different PTS + different content
 	c.IngestSourceFrame("cam1", yuv2, 1280, 720, 2000)
-	frame2 := make([]byte, yuvFrameSize(1920, 1080))
+	frame2 := make([]byte, video.YUV420FrameSize(1920, 1080))
 	c.ProcessFrame(frame2, 1920, 1080)
 
 	if bytes.Equal(frame1, frame2) {
@@ -964,22 +966,22 @@ func TestCompositor_InvalidatesCacheOnDimensionChange(t *testing.T) {
 	c.SetLayout(layout)
 
 	// Ingest a 1280x720 source and process to populate cache.
-	yuv720 := make([]byte, yuvFrameSize(1280, 720))
+	yuv720 := make([]byte, video.YUV420FrameSize(1280, 720))
 	for i := range yuv720 {
 		yuv720[i] = byte(i % 256)
 	}
 	c.IngestSourceFrame("cam1", yuv720, 1280, 720, 1000)
-	frame1 := make([]byte, yuvFrameSize(1920, 1080))
+	frame1 := make([]byte, video.YUV420FrameSize(1920, 1080))
 	c.ProcessFrame(frame1, 1920, 1080)
 
 	// Same PTS but different source dimensions (640x480).
 	// This must invalidate the cache and re-scale.
-	yuv480 := make([]byte, yuvFrameSize(640, 480))
+	yuv480 := make([]byte, video.YUV420FrameSize(640, 480))
 	for i := range yuv480 {
 		yuv480[i] = byte((i + 30) % 256)
 	}
 	c.IngestSourceFrame("cam1", yuv480, 640, 480, 1000)
-	frame2 := make([]byte, yuvFrameSize(1920, 1080))
+	frame2 := make([]byte, video.YUV420FrameSize(1920, 1080))
 	c.ProcessFrame(frame2, 1920, 1080)
 
 	if bytes.Equal(frame1, frame2) {

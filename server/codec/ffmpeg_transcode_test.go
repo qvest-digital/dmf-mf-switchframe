@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // createTestTSInputFile creates a minimal H.264 Annex B file that avformat can
@@ -21,7 +23,7 @@ func createTestTSInputFile(t *testing.T, dir string, width, height, numFrames in
 	}
 	defer enc.Close()
 
-	yuvSize := yuvFrameSize(width, height)
+	yuvSize := video.YUV420FrameSize(width, height)
 	yuv := make([]byte, yuvSize)
 	for i := range yuv {
 		yuv[i] = 128

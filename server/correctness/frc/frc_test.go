@@ -8,7 +8,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
 	"github.com/zsiec/switchframe/server/correctness/testutil"
+	"github.com/zsiec/switchframe/server/internal/video"
 	"github.com/zsiec/switchframe/server/switcher"
 )
 
@@ -17,11 +19,6 @@ const (
 	testHeight = 240
 )
 
-// yuvFrameSize returns the total byte count for a YUV420p frame.
-func yuvFrameSize(w, h int) int {
-	return w*h + 2*(w/2)*(h/2)
-}
-
 // ==========================================================================
 // Test Helpers
 // ==========================================================================
@@ -29,7 +26,7 @@ func yuvFrameSize(w, h int) int {
 // makeGradientYUV creates a horizontal gradient on Y (col % 256) with
 // neutral chroma. This matches the pattern used in switcher's internal tests.
 func makeGradientYUV(w, h int) []byte {
-	size := yuvFrameSize(w, h)
+	size := video.YUV420FrameSize(w, h)
 	yuv := make([]byte, size)
 	ySize := w * h
 	for row := 0; row < h; row++ {
@@ -46,7 +43,7 @@ func makeGradientYUV(w, h int) []byte {
 // makeShiftedGradientYUV creates a horizontal gradient shifted right by dx pixels.
 // Pixels that shift out of bounds wrap around.
 func makeShiftedGradientYUV(w, h, dx int) []byte {
-	size := yuvFrameSize(w, h)
+	size := video.YUV420FrameSize(w, h)
 	yuv := make([]byte, size)
 	ySize := w * h
 	for row := 0; row < h; row++ {
@@ -64,7 +61,7 @@ func makeShiftedGradientYUV(w, h, dx int) []byte {
 // makeTranslatedYUV creates a frame by translating src by (dx, dy) pixels.
 // Out-of-bounds pixels are filled with neutral gray (128).
 func makeTranslatedYUV(src []byte, w, h, dx, dy int) []byte {
-	size := yuvFrameSize(w, h)
+	size := video.YUV420FrameSize(w, h)
 	yuv := make([]byte, size)
 	ySize := w * h
 
@@ -97,7 +94,7 @@ func makeTranslatedYUV(src []byte, w, h, dx, dy int) []byte {
 
 // makeCheckerGradientYUV creates a frame with strong 2D structure: each pixel = col+row.
 func makeCheckerGradientYUV(w, h int) []byte {
-	size := yuvFrameSize(w, h)
+	size := video.YUV420FrameSize(w, h)
 	yuv := make([]byte, size)
 	ySize := w * h
 	for row := 0; row < h; row++ {
@@ -197,7 +194,7 @@ func TestStaticScenePassthrough(t *testing.T) {
 	t.Parallel()
 
 	w, h := testWidth, testHeight
-	frameSize := yuvFrameSize(w, h)
+	frameSize := video.YUV420FrameSize(w, h)
 
 	// Create a solid frame with known content.
 	frameA := testutil.GenerateSolidYUV420(w, h, 128, 100, 200)
@@ -461,7 +458,7 @@ func TestInterpolatedFrameNotBlack(t *testing.T) {
 	t.Parallel()
 
 	w, h := testWidth, testHeight
-	frameSize := yuvFrameSize(w, h)
+	frameSize := video.YUV420FrameSize(w, h)
 
 	tests := []struct {
 		name   string
@@ -569,7 +566,7 @@ func TestMCFIWithKnownDisplacement(t *testing.T) {
 
 	// The result should not be a simple average (which would produce ghosting).
 	// Compute PSNR between result and a naive linear blend.
-	naiveBlend := make([]byte, yuvFrameSize(w, h))
+	naiveBlend := make([]byte, video.YUV420FrameSize(w, h))
 	for i := 0; i < ySize; i++ {
 		naiveBlend[i] = byte((int(frameA[i]) + int(frameB[i])) / 2)
 	}
@@ -630,7 +627,7 @@ func TestMCFIInterpolateIntoReusesBuffer(t *testing.T) {
 	t.Parallel()
 
 	w, h := testWidth, testHeight
-	frameSize := yuvFrameSize(w, h)
+	frameSize := video.YUV420FrameSize(w, h)
 
 	frameA := testutil.GenerateSolidYUV420(w, h, 100, 128, 128)
 	frameB := testutil.GenerateSolidYUV420(w, h, 200, 128, 128)

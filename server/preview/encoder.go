@@ -20,15 +20,11 @@ import (
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/prism/moq"
+
 	"github.com/zsiec/switchframe/server/codec"
+	"github.com/zsiec/switchframe/server/internal/video"
 	"github.com/zsiec/switchframe/server/transition"
 )
-
-// yuvFrameSize returns the byte size of a YUV420 8-bit frame (w*h*3/2).
-// Local helper to avoid importing the switcher package.
-func yuvFrameSize(w, h int) int {
-	return w * h * 3 / 2
-}
 
 // Relay is the subset of distribution.Relay used by the preview encoder.
 type Relay interface {
@@ -285,14 +281,14 @@ func (e *Encoder) loop() {
 		// 10-bit frame: w*h*4 bytes; 8-bit frame: w*h*3/2 bytes.
 		// When 10-bit is detected, downconvert to 8-bit for the H.264 encoder.
 		expected10bitSize := encW * encH * 4
-		encSize := yuvFrameSize(encW, encH)
+		encSize := video.YUV420FrameSize(encW, encH)
 		if len(job.yuv) >= expected10bitSize && expected10bitSize > encSize {
 			// 10-bit input: downconvert to 8-bit YUV420P.
 			if cap(downconvertBuf) < encSize {
 				downconvertBuf = make([]byte, encSize)
 			}
 			downconvertBuf = downconvertBuf[:encSize]
-			if err := downconvert422_10to420(job.yuv, downconvertBuf, encW, encH); err != nil {
+			if err := video.Downconvert422_10to420(job.yuv, downconvertBuf, encW, encH); err != nil {
 				slog.Warn("preview: 10-bit downconversion failed",
 					"key", e.cfg.SourceKey, "error", err)
 				if job.release != nil {

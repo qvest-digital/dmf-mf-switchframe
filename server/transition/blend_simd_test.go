@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // --- blendUniform kernel tests ---
@@ -69,7 +71,7 @@ func TestKernelUniform_VariousSizes(t *testing.T) {
 
 func TestKernelUniform_1080p(t *testing.T) {
 	t.Parallel()
-	n := yuvFrameSize(1920, 1080)
+	n := video.YUV420FrameSize(1920, 1080)
 	rng := rand.New(rand.NewSource(42))
 	a := make([]byte, n)
 	b := make([]byte, n)
@@ -284,7 +286,7 @@ func TestKernelUniform_CrossValidateWithBlendMix(t *testing.T) {
 	t.Parallel()
 	// Verify kernel produces identical results to the original inline loop
 	rng := rand.New(rand.NewSource(99))
-	n := yuvFrameSize(1920, 1080)
+	n := video.YUV420FrameSize(1920, 1080)
 	a := make([]byte, n)
 	b := make([]byte, n)
 	for i := range a {

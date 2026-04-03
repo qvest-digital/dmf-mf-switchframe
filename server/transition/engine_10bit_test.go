@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // TestEngine_IngestRawFrame_10bit_BlendMix verifies that the transition engine
@@ -34,7 +36,7 @@ func TestEngine_IngestRawFrame_10bit_BlendMix(t *testing.T) {
 	})
 
 	// Set 10-bit format.
-	engine.SetColorFormat(ColorFormat10bit)
+	engine.SetColorFormat(video.YUV422_10bit)
 
 	err := engine.Start("src-a", "src-b", Mix, 1000)
 	require.NoError(t, err)
@@ -90,7 +92,7 @@ func TestEngine_IngestRawFrame_10bit_FTB(t *testing.T) {
 		HintHeight: h,
 	})
 
-	engine.SetColorFormat(ColorFormat10bit)
+	engine.SetColorFormat(video.YUV422_10bit)
 
 	err := engine.Start("src-a", "", FTB, 1000)
 	require.NoError(t, err)
@@ -138,7 +140,7 @@ func TestEngine_8bit_IngestRawFrame(t *testing.T) {
 	err := engine.Start("src-a", "src-b", Mix, 1000)
 	require.NoError(t, err)
 
-	frame8Size := yuvFrameSize(w, h)
+	frame8Size := video.YUV420FrameSize(w, h)
 	frameA := make([]byte, frame8Size)
 	for i := 0; i < w*h; i++ {
 		frameA[i] = 100

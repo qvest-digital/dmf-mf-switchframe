@@ -4,13 +4,15 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 func TestBridgeProcessYUV_NoKeys(t *testing.T) {
 	kp := NewKeyProcessor()
 	bridge := NewKeyProcessorBridge(kp)
 
-	yuv := make([]byte, yuvFrameSize(4, 4))
+	yuv := make([]byte, video.YUV420FrameSize(4, 4))
 	yuv[0] = 42
 
 	result := bridge.ProcessYUV(yuv, 4, 4)
@@ -19,7 +21,7 @@ func TestBridgeProcessYUV_NoKeys(t *testing.T) {
 
 func TestBridgeProcessYUV_WithFill(t *testing.T) {
 	w, h := 8, 8
-	yuvSize := yuvFrameSize(w, h)
+	yuvSize := video.YUV420FrameSize(w, h)
 
 	bgYUV := make([]byte, yuvSize)
 	for i := range bgYUV {
@@ -78,7 +80,7 @@ func TestBridgeProcessYUV_NoFills(t *testing.T) {
 
 	bridge := NewKeyProcessorBridge(kp)
 
-	yuv := make([]byte, yuvFrameSize(4, 4))
+	yuv := make([]byte, video.YUV420FrameSize(4, 4))
 	yuv[0] = 42
 
 	result := bridge.ProcessYUV(yuv, 4, 4)

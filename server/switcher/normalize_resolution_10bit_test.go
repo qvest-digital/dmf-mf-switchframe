@@ -12,7 +12,7 @@ import (
 // Regression guards: normalizeResolution must use format-aware sizing.
 //
 // normalizeResolution scales ProcessingFrames to the pipeline resolution.
-// The bug: if it uses yuvFrameSize(w,h) or ColorYUV420_8bit.FrameSize()
+// The bug: if it uses video.YUV420FrameSize(w,h) or ColorYUV420_8bit.FrameSize()
 // instead of colorFmt.FrameSize(), 10-bit frames are truncated from w*h*4
 // to w*h*3/2, destroying 62.5% of the data.
 // ==========================================================================

@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
 	"github.com/zsiec/switchframe/server/graphics/textrender"
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 func newTestRenderer(t *testing.T) *textrender.Renderer {
@@ -375,7 +377,7 @@ func TestTickerEngine_NonLoopCompletion(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Drive the ticker via ProcessYUV calls until it scrolls off.
-	yuv := make([]byte, yuvFrameSize(1920, 1080))
+	yuv := make([]byte, video.YUV420FrameSize(1920, 1080))
 	for i := 0; i < 200; i++ {
 		c.ProcessYUV(yuv, 1920, 1080, nil, nil)
 	}
@@ -471,7 +473,7 @@ func TestTickerEngine_FrameLockedAdvancement(t *testing.T) {
 	// Give the goroutine time to render the strip and set up state.
 	time.Sleep(50 * time.Millisecond)
 
-	yuv := make([]byte, yuvFrameSize(progW, progH))
+	yuv := make([]byte, video.YUV420FrameSize(progW, progH))
 	// Fill Y with 128 (mid-gray) so we can detect overlay changes.
 	for i := 0; i < progW*progH; i++ {
 		yuv[i] = 128
@@ -545,7 +547,7 @@ func TestTickerEngine_FrameLockedMultipleFPS(t *testing.T) {
 
 			time.Sleep(50 * time.Millisecond)
 
-			yuv := make([]byte, yuvFrameSize(320, 240))
+			yuv := make([]byte, video.YUV420FrameSize(320, 240))
 
 			// Advance 5 frames and check final position.
 			for i := 0; i < 5; i++ {

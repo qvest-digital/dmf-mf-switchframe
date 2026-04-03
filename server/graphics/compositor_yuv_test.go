@@ -6,11 +6,13 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 func TestCompositorProcessYUV_Inactive(t *testing.T) {
 	c := NewCompositor()
-	yuv := make([]byte, yuvFrameSize(4, 4))
+	yuv := make([]byte, video.YUV420FrameSize(4, 4))
 	yuv[0] = 42
 
 	result := c.ProcessYUV(yuv, 4, 4, nil, nil)
@@ -32,10 +34,10 @@ func TestCompositorProcessYUV_Active(t *testing.T) {
 	require.NoError(t, c.SetOverlay(id, rgba, 4, 4, "test"))
 	require.NoError(t, c.On(id))
 
-	yuv := make([]byte, yuvFrameSize(4, 4))
+	yuv := make([]byte, video.YUV420FrameSize(4, 4))
 
 	result := c.ProcessYUV(yuv, 4, 4, nil, nil)
-	require.NotEqual(t, make([]byte, yuvFrameSize(4, 4)), result)
+	require.NotEqual(t, make([]byte, video.YUV420FrameSize(4, 4)), result)
 }
 
 func TestCompositorProcessYUV_ResolutionMismatch(t *testing.T) {
@@ -52,7 +54,7 @@ func TestCompositorProcessYUV_ResolutionMismatch(t *testing.T) {
 	// 4x4 YUV frame — doesn't match 8x8 overlay but will be blended
 	// via sub-frame path (AlphaBlendRGBARect) into the default
 	// full-frame rect which clips to 4x4.
-	yuv := make([]byte, yuvFrameSize(4, 4))
+	yuv := make([]byte, video.YUV420FrameSize(4, 4))
 	origY := make([]byte, 4*4)
 	copy(origY, yuv[:4*4])
 
@@ -105,7 +107,7 @@ func TestCompositorProcessYUV_FadePosition(t *testing.T) {
 	c.layers[id].fadePosition = 0.001
 	c.mu.Unlock()
 
-	yuv := make([]byte, yuvFrameSize(4, 4))
+	yuv := make([]byte, video.YUV420FrameSize(4, 4))
 	for i := range yuv {
 		yuv[i] = 100
 	}

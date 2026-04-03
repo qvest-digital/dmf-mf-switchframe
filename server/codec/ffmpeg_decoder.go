@@ -327,7 +327,7 @@ static int ffdec_is_full_range(AVFrame* f) {
 }
 
 // ffdec_copy_planar copies 3-plane YUV420P/YUVJ420P from src_frame into dst.
-// dst must have capacity >= yuvFrameSize(w,h). When remap_to_limited is non-zero, pixel values
+// dst must have capacity >= video.YUV420FrameSize(w,h). When remap_to_limited is non-zero, pixel values
 // are converted from full-range (0-255) to limited-range (Y:16-235, UV:16-240).
 static void ffdec_copy_planar(AVFrame* src_frame, unsigned char* dst,
                               int w, int h_val, int remap_to_limited) {
@@ -817,6 +817,7 @@ import (
 	"sync"
 	"unsafe"
 
+	"github.com/zsiec/switchframe/server/internal/video"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -1010,8 +1011,8 @@ func (d *FFmpegDecoder) adoptOrCopyInto(outBuf *C.uchar, outLen C.int, w, h int,
 	// Use the actual output length for buffer caching. When the decoder produces
 	// 10-bit 422 output (w*h*4), we need the yuvBuf to be large enough for that.
 	needed := n
-	if needed < yuvFrameSize(w, h) {
-		needed = yuvFrameSize(w, h)
+	if needed < video.YUV420FrameSize(w, h) {
+		needed = video.YUV420FrameSize(w, h)
 	}
 
 	if len(d.yuvBuf) > 0 && outBuf == (*C.uchar)(unsafe.Pointer(&d.yuvBuf[0])) {

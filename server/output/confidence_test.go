@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -172,7 +174,7 @@ func (d *recordingDecoder) Decode(data []byte) ([]byte, int, int, error) {
 	copy(cp, data)
 	*d.received = cp
 	w, h := 320, 180
-	return make([]byte, yuvFrameSize(w, h)), w, h, nil
+	return make([]byte, video.YUV420FrameSize(w, h)), w, h, nil
 }
 
 func (d *recordingDecoder) Close() {}
@@ -185,7 +187,7 @@ type countingDecoder struct {
 func (d *countingDecoder) Decode(data []byte) ([]byte, int, int, error) {
 	*d.count++
 	w, h := 320, 180
-	return make([]byte, yuvFrameSize(w, h)), w, h, nil
+	return make([]byte, video.YUV420FrameSize(w, h)), w, h, nil
 }
 
 func (d *countingDecoder) Close() {}
@@ -199,7 +201,7 @@ type slowDecoder struct {
 func (d *slowDecoder) Decode(data []byte) ([]byte, int, int, error) {
 	time.Sleep(d.delay)
 	w, h := 320, 180
-	return make([]byte, yuvFrameSize(w, h)), w, h, nil
+	return make([]byte, video.YUV420FrameSize(w, h)), w, h, nil
 }
 
 func (d *slowDecoder) Close() {}

@@ -1,11 +1,5 @@
 package gpu
 
-// yuvFrameSize returns the byte size of a YUV420 8-bit frame (w*h*3/2).
-// Local helper to avoid importing the switcher package.
-func yuvFrameSize(w, h int) int {
-	return w * h * 3 / 2
-}
-
 // KeyBridge provides key processor state to the GPU key node.
 // Implemented by an adapter wrapping graphics.KeyProcessorBridge.
 type KeyBridge interface {

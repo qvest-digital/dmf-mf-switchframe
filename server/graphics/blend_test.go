@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // makeYUV420 creates a YUV420 planar buffer filled with the given Y, Cb, Cr values.
@@ -480,7 +482,7 @@ func TestAlphaBlendRGBARectInto_TransparentOverlayNoOp(t *testing.T) {
 	t.Parallel()
 
 	frameW, frameH := 1920, 1080
-	yuv := make([]byte, yuvFrameSize(frameW, frameH))
+	yuv := make([]byte, video.YUV420FrameSize(frameW, frameH))
 	// Fill with known value.
 	for i := range yuv {
 		yuv[i] = 128
@@ -751,7 +753,7 @@ func BenchmarkAlphaBlendRGBA_FullFrame_ForComparison(b *testing.B) {
 // a fully transparent overlay to measure the row-level skip optimization.
 func BenchmarkAlphaBlendRGBARectInto_Transparent(b *testing.B) {
 	frameW, frameH := 1920, 1080
-	yuv := make([]byte, yuvFrameSize(frameW, frameH))
+	yuv := make([]byte, video.YUV420FrameSize(frameW, frameH))
 	overlayW, overlayH := 640, 360
 	rgba := make([]byte, overlayW*overlayH*4)
 	rect := image.Rect(100, 100, 740, 460)
@@ -769,7 +771,7 @@ func BenchmarkAlphaBlendRGBARectInto_Transparent(b *testing.B) {
 // a fully opaque overlay for comparison against the transparent case.
 func BenchmarkAlphaBlendRGBARectInto_Opaque(b *testing.B) {
 	frameW, frameH := 1920, 1080
-	yuv := make([]byte, yuvFrameSize(frameW, frameH))
+	yuv := make([]byte, video.YUV420FrameSize(frameW, frameH))
 	overlayW, overlayH := 640, 360
 	rgba := make([]byte, overlayW*overlayH*4)
 	for i := 0; i < len(rgba); i += 4 {

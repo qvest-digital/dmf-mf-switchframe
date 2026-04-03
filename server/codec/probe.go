@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"sync"
 	"unsafe"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 var (
@@ -24,8 +26,8 @@ var (
 
 	// HEVC probing state — separate from AVC to allow independent selection.
 	hevcProbeOnce       sync.Once
-	selectedHEVCEncoder string         // e.g. "hevc_videotoolbox", "libx265"
-	selectedHEVCDecoder string         // e.g. "hevc"
+	selectedHEVCEncoder string // e.g. "hevc_videotoolbox", "libx265"
+	selectedHEVCDecoder string // e.g. "hevc"
 	hevcProbeResults    map[string]bool
 
 	hevcListOnce          sync.Once
@@ -168,7 +170,7 @@ func tryEncoder(codecName string) bool {
 	}
 	defer enc.Close()
 
-	yuvSize := yuvFrameSize(256, 256)
+	yuvSize := video.YUV420FrameSize(256, 256)
 	yuv := make([]byte, yuvSize)
 	for i := range yuv {
 		yuv[i] = 128
@@ -195,7 +197,7 @@ func tryOpenH264Encoder() bool {
 	}
 	defer enc.Close()
 
-	yuvSize := yuvFrameSize(64, 64)
+	yuvSize := video.YUV420FrameSize(64, 64)
 	yuv := make([]byte, yuvSize)
 	for i := range yuv {
 		yuv[i] = 128

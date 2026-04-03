@@ -11,6 +11,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // generate422H264 uses ffmpeg CLI to generate an H.264 High 4:2:2 profile
@@ -88,7 +90,7 @@ func TestFFmpegDecoder_422_Decode_ProducesYUV420(t *testing.T) {
 	require.Greater(t, decoded, 0, "decoder should produce at least one frame from 422 input")
 
 	// Output should be YUV420P: w*h*3/2 bytes
-	expected420 := yuvFrameSize(dw, dh)
+	expected420 := video.YUV420FrameSize(dw, dh)
 	assert.Equal(t, expected420, len(yuv),
 		"422 input should be downsampled to YUV420P (w*h*3/2)")
 	assert.Equal(t, w, dw, "width should match input")
@@ -124,7 +126,7 @@ func TestFFmpegDecoder_422_Decode_CorrectDimensions(t *testing.T) {
 				}
 				assert.Equal(t, tc.w, dw, "decoded width")
 				assert.Equal(t, tc.h, dh, "decoded height")
-				assert.Equal(t, yuvFrameSize(dw, dh), len(yuv),
+				assert.Equal(t, video.YUV420FrameSize(dw, dh), len(yuv),
 					"output should be YUV420P size")
 				return
 			}

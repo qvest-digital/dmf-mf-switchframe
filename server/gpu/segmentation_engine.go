@@ -34,6 +34,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"unsafe"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 const (
@@ -72,7 +74,7 @@ type segSession struct {
 	rgbBuf  unsafe.Pointer // [1,3,segModelH,segModelW] float32
 	maskBuf unsafe.Pointer // [1,1,segModelH,segModelW] float32 (pha output)
 	fgrBuf  unsafe.Pointer // [1,3,segModelH,segModelW] float32 (fgr output, unused but required)
-	maskU8  unsafe.Pointer // [yuvFrameSize(srcW,srcH)] uint8 (NV12-sized)
+	maskU8  unsafe.Pointer // [video.YUV420FrameSize(srcW,srcH)] uint8 (NV12-sized)
 
 	// RVM recurrent hidden states. Two sets for ping-pong swap:
 	// rIn is read during inference, rOut is written. After inference, swap pointers.
@@ -293,8 +295,8 @@ func (se *SegmentationEngine) EnableSource(key string, w, h int, smoothing float
 	// Allocate NV12-sized mask buffer: Y plane (w*h) for the actual mask +
 	// UV plane (w*h/2) for neutral chroma. BlendStinger reads the UV portion
 	// as scratch space for downsampled chroma alpha, so the allocation must
-	// be yuvFrameSize(w,h) — not just w*h (single-plane would cause OOB reads).
-	maskU8, err := alloc(yuvFrameSize(w, h), "maskU8")
+	// be video.YUV420FrameSize(w,h) — not just w*h (single-plane would cause OOB reads).
+	maskU8, err := alloc(video.YUV420FrameSize(w, h), "maskU8")
 	if err != nil {
 		return err
 	}

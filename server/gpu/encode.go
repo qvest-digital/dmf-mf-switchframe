@@ -15,6 +15,7 @@ import (
 	"unsafe"
 
 	"github.com/zsiec/switchframe/server/codec"
+	"github.com/zsiec/switchframe/server/internal/video"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -90,7 +91,7 @@ func newGPUEncoderWithGOP(gpuCtx *Context, width, height, fpsNum, fpsDen, bitrat
 		}
 	}
 
-	yuvSize := yuvFrameSize(width, height)
+	yuvSize := video.YUV420FrameSize(width, height)
 	return &GPUEncoder{
 		ffEnc:  enc,
 		gpuCtx: gpuCtx,
@@ -329,12 +330,12 @@ func NewGPUEncoderForCodec(gpuCtx *Context, width, height, fpsNum, fpsDen, bitra
 				gopFrames = 120
 			}
 			return &GPUEncoder{
-				hwEnc:          hwEnc,
-				gpuCtx:         gpuCtx,
-				width:          width,
-				height:         height,
-				is10bit:        is10bit,
-				maxGOPFrames:   gopFrames,
+				hwEnc:        hwEnc,
+				gpuCtx:       gpuCtx,
+				width:        width,
+				height:       height,
+				is10bit:      is10bit,
+				maxGOPFrames: gopFrames,
 			}, nil
 		}
 		slog.Warn("gpu: NVENC HEVC hw_frames_ctx failed, falling back", "err", err)
@@ -352,7 +353,7 @@ func NewGPUEncoderForCodec(gpuCtx *Context, width, height, fpsNum, fpsDen, bitra
 		}
 	}
 
-	yuvSize := yuvFrameSize(width, height)
+	yuvSize := video.YUV420FrameSize(width, height)
 	return &GPUEncoder{
 		ffEnc:  enc,
 		gpuCtx: gpuCtx,

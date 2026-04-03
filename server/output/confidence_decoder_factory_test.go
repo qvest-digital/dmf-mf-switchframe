@@ -7,7 +7,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
+
 	"github.com/zsiec/switchframe/server/codec"
+	"github.com/zsiec/switchframe/server/internal/video"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -67,7 +69,7 @@ func (d *annexBRecorder) Decode(data []byte) ([]byte, int, int, error) {
 	cp := make([]byte, len(data))
 	copy(cp, data)
 	*d.received = cp
-	return make([]byte, yuvFrameSize(d.w, d.h)), d.w, d.h, nil
+	return make([]byte, video.YUV420FrameSize(d.w, d.h)), d.w, d.h, nil
 }
 
 func (d *annexBRecorder) Close() {}

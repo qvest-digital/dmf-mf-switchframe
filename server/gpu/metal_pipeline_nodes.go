@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"sync/atomic"
 	"time"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // --- gpuEncodeNode: async H.264 encode via VideoToolbox ---
@@ -132,7 +134,7 @@ func (n *gpuEncodeNode) stopLoop() {
 type gpuRawSinkNode struct {
 	ctx    *Context
 	sink   *atomic.Pointer[RawSinkFunc]
-	cpuBuf [2][]byte      // double-buffer to prevent aliasing if callback retains slice
+	cpuBuf [2][]byte // double-buffer to prevent aliasing if callback retains slice
 	bufIdx int
 	width  int
 	height int
@@ -150,7 +152,7 @@ func (n *gpuRawSinkNode) Configure(width, height, pitch int) error {
 	n.height = height
 	// Default to NV12 buffer size; will be resized on first ProcessGPU
 	// if the frame format differs.
-	size := yuvFrameSize(width, height)
+	size := video.YUV420FrameSize(width, height)
 	n.cpuBuf[0] = make([]byte, size)
 	n.cpuBuf[1] = make([]byte, size)
 	return nil

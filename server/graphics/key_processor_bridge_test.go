@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 func TestBridge_HasEnabledKeys(t *testing.T) {
@@ -34,7 +36,7 @@ func TestBridge_EnabledSources(t *testing.T) {
 
 func TestBridge_IngestFillYUV(t *testing.T) {
 	w, h := 8, 8
-	yuvSize := yuvFrameSize(w, h)
+	yuvSize := video.YUV420FrameSize(w, h)
 	fillYUV := make([]byte, yuvSize)
 	for i := range fillYUV {
 		fillYUV[i] = 200
@@ -64,7 +66,7 @@ func TestBridge_IngestFillYUV(t *testing.T) {
 
 func TestBridge_RemoveFillSource(t *testing.T) {
 	w, h := 4, 4
-	yuvSize := yuvFrameSize(w, h)
+	yuvSize := video.YUV420FrameSize(w, h)
 	yuv := make([]byte, yuvSize)
 
 	kp := NewKeyProcessor()
@@ -89,7 +91,7 @@ func TestBridge_RemoveFillSource(t *testing.T) {
 
 func TestBridge_CleanupOnClose(t *testing.T) {
 	w, h := 4, 4
-	yuvSize := yuvFrameSize(w, h)
+	yuvSize := video.YUV420FrameSize(w, h)
 	yuv := make([]byte, yuvSize)
 
 	kp := NewKeyProcessor()

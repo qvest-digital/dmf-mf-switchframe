@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 func TestGPUScaleBilinear(t *testing.T) {
@@ -29,7 +31,7 @@ func TestGPUScaleBilinear(t *testing.T) {
 	defer dst.Release()
 
 	// Upload gradient pattern to source
-	srcYUV := make([]byte, yuvFrameSize(1920, 1080))
+	srcYUV := make([]byte, video.YUV420FrameSize(1920, 1080))
 	for i := 0; i < 1920*1080; i++ {
 		srcYUV[i] = byte((i%1920)*219/1919 + 16) // horizontal gradient
 	}
@@ -44,7 +46,7 @@ func TestGPUScaleBilinear(t *testing.T) {
 	require.NoError(t, err)
 
 	// Download and verify
-	dstYUV := make([]byte, yuvFrameSize(960, 540))
+	dstYUV := make([]byte, video.YUV420FrameSize(960, 540))
 	err = Download(ctx, dstYUV, dst, 960, 540)
 	require.NoError(t, err)
 
@@ -88,7 +90,7 @@ func TestGPUScaleUpscale(t *testing.T) {
 	defer dst.Release()
 
 	// Fill source with known value
-	srcYUV := make([]byte, yuvFrameSize(320, 240))
+	srcYUV := make([]byte, video.YUV420FrameSize(320, 240))
 	for i := 0; i < 320*240; i++ {
 		srcYUV[i] = 128 // mid-gray Y
 	}
@@ -101,7 +103,7 @@ func TestGPUScaleUpscale(t *testing.T) {
 	err = ScaleBilinear(ctx, dst, src)
 	require.NoError(t, err)
 
-	dstYUV := make([]byte, yuvFrameSize(640, 480))
+	dstYUV := make([]byte, video.YUV420FrameSize(640, 480))
 	err = Download(ctx, dstYUV, dst, 640, 480)
 	require.NoError(t, err)
 
@@ -138,7 +140,7 @@ func TestGPUScaleBilinearUVCorrectness(t *testing.T) {
 
 	// Create source with known UV pattern: Cb=50, Cr=200 everywhere.
 	// If scaling mixes channels, we'll see values in between.
-	srcYUV := make([]byte, yuvFrameSize(srcW, srcH))
+	srcYUV := make([]byte, video.YUV420FrameSize(srcW, srcH))
 	for i := 0; i < srcW*srcH; i++ {
 		srcYUV[i] = 128 // Y = mid-gray
 	}
@@ -159,7 +161,7 @@ func TestGPUScaleBilinearUVCorrectness(t *testing.T) {
 	err = ScaleBilinear(ctx, dst, src)
 	require.NoError(t, err)
 
-	dstYUV := make([]byte, yuvFrameSize(dstW, dstH))
+	dstYUV := make([]byte, video.YUV420FrameSize(dstW, dstH))
 	err = Download(ctx, dstYUV, dst, dstW, dstH)
 	require.NoError(t, err)
 

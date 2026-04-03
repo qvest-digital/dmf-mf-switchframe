@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 func TestMmapCacheLifecycle(t *testing.T) {
@@ -39,7 +41,7 @@ func TestMmapCacheLifecycle(t *testing.T) {
 	require.True(t, registry.HasProgramMap())
 
 	// Step 3: Use processors (simulate pipeline frames).
-	src := make([]byte, yuvFrameSize(w, h))
+	src := make([]byte, video.YUV420FrameSize(w, h))
 	for i := range src {
 		src[i] = byte(i % 256)
 	}

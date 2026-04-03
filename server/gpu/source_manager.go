@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // GPUSourceManager manages per-source GPU frame caching, per-source ST map
@@ -40,8 +42,8 @@ type cpuFrameCache struct {
 
 // gpuSourceEntry holds the GPU state for a single source.
 type gpuSourceEntry struct {
-	current atomic.Pointer[GPUFrame]        // latest frame for readers
-	lastCPU atomic.Pointer[cpuFrameCache]   // cached CPU YUV for playout tap
+	current atomic.Pointer[GPUFrame]      // latest frame for readers
+	lastCPU atomic.Pointer[cpuFrameCache] // cached CPU YUV for playout tap
 
 	// Preview encoder (nil if no preview configured).
 	prevEnc   *PreviewEncoder
@@ -520,7 +522,7 @@ func (m *GPUSourceManager) uploadNV12ScaleThenConvertP210(entry *gpuSourceEntry,
 // Format-aware: uses UploadYUV420PToP210 when the pool is P210.
 func (m *GPUSourceManager) uploadCPUScaled(entry *gpuSourceEntry, dst *GPUFrame, yuv []byte, w, h int) error {
 	targetW, targetH := dst.Width, dst.Height
-	scaledSize := yuvFrameSize(targetW, targetH)
+	scaledSize := video.YUV420FrameSize(targetW, targetH)
 	if len(entry.scaleBuf) < scaledSize {
 		entry.scaleBuf = make([]byte, scaledSize)
 	}

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/zsiec/switchframe/server/codec"
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // supportedExtensions lists file extensions that Validate accepts directly
@@ -277,7 +278,7 @@ func testDecodeFirstGOP(frames []BufferedFrame, spsWidth, spsHeight int, codecNa
 		}
 
 		// Verify YUV buffer size matches dimensions.
-		expectedSize := yuvFrameSize(w, h)
+		expectedSize := video.YUV420FrameSize(w, h)
 		if len(yuv) < expectedSize {
 			warnings = append(warnings, fmt.Sprintf("decoded YUV size mismatch: got %d, expected %d", len(yuv), expectedSize))
 			continue

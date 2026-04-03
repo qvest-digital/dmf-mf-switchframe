@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // --- Task 1: As-Run Event Type Tests ---
@@ -965,9 +967,9 @@ func TestSpliceCoordinatorEmitsAsRunEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	blackFrame := make([]byte, yuvFrameSize(320, 240)) // all zeros = black
-	sc.IngestFrame(blackFrame, 320, 240, 5000)  // inside window
-	sc.IngestFrame(blackFrame, 320, 240, 20000) // past window, triggers finalization
+	blackFrame := make([]byte, video.YUV420FrameSize(320, 240)) // all zeros = black
+	sc.IngestFrame(blackFrame, 320, 240, 5000)                  // inside window
+	sc.IngestFrame(blackFrame, 320, 240, 20000)                 // past window, triggers finalization
 
 	waitFor(t, 2*time.Second, func() bool {
 		return !sc.Active()

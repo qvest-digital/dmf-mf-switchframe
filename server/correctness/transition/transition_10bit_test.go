@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -303,8 +305,8 @@ func TestTransition10bit_BlendVs8bit_Proportional(t *testing.T) {
 	y10 := readY10(dst10, w, 0, 0)
 
 	// 8-bit blend: A=50, B=200 at 50%.
-	frameA8 := make([]byte, yuvFrameSize(w, h))
-	frameB8 := make([]byte, yuvFrameSize(w, h))
+	frameA8 := make([]byte, video.YUV420FrameSize(w, h))
+	frameB8 := make([]byte, video.YUV420FrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		frameA8[i] = 50
 		frameB8[i] = 200

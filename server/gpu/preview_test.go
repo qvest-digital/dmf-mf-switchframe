@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 func TestPreviewEncoder(t *testing.T) {
@@ -27,7 +29,7 @@ func TestPreviewEncoder(t *testing.T) {
 	src, _ := srcPool.Acquire()
 	defer src.Release()
 
-	yuv := make([]byte, yuvFrameSize(srcW, srcH))
+	yuv := make([]byte, video.YUV420FrameSize(srcW, srcH))
 	for i := 0; i < srcW*srcH; i++ {
 		yuv[i] = byte(i%220) + 16
 	}
@@ -72,7 +74,7 @@ func TestPreviewEncoderSmallResolution(t *testing.T) {
 	src, _ := srcPool.Acquire()
 	defer src.Release()
 
-	yuv := make([]byte, yuvFrameSize(640, 480))
+	yuv := make([]byte, video.YUV420FrameSize(640, 480))
 	for i := range yuv {
 		yuv[i] = 128
 	}

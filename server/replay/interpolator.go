@@ -1,6 +1,9 @@
 package replay
 
-import "github.com/zsiec/switchframe/server/switcher"
+import (
+	"github.com/zsiec/switchframe/server/internal/video"
+	"github.com/zsiec/switchframe/server/switcher"
+)
 
 // InterpolationMode selects the frame interpolation algorithm.
 type InterpolationMode string
@@ -23,7 +26,7 @@ type blendInterpolator struct {
 }
 
 func (b *blendInterpolator) Interpolate(frameA, frameB []byte, width, height int, alpha float64) []byte {
-	size := yuvFrameSize(width, height)
+	size := video.YUV420FrameSize(width, height)
 	if len(b.buf) < size {
 		b.buf = make([]byte, size)
 	}
@@ -49,7 +52,7 @@ type holdCrossfadeInterpolator struct {
 }
 
 func (p *holdCrossfadeInterpolator) Interpolate(frameA, frameB []byte, width, height int, alpha float64) []byte {
-	size := yuvFrameSize(width, height)
+	size := video.YUV420FrameSize(width, height)
 
 	// Hold frameA for alpha < 0.625 (first 2-3 dups); crossfade above that.
 	// For dupCount=4: alpha 0.25→A, 0.50→A, 0.75→crossfade(A,B,0.6)

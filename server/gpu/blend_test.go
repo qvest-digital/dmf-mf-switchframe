@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 func TestBlendMix50(t *testing.T) {
@@ -25,8 +27,8 @@ func TestBlendMix50(t *testing.T) {
 	defer dst.Release()
 
 	// Frame A: Y=64 (dark), Frame B: Y=192 (bright)
-	yuvA := make([]byte, yuvFrameSize(w, h))
-	yuvB := make([]byte, yuvFrameSize(w, h))
+	yuvA := make([]byte, video.YUV420FrameSize(w, h))
+	yuvB := make([]byte, video.YUV420FrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		yuvA[i] = 64
 		yuvB[i] = 192
@@ -43,7 +45,7 @@ func TestBlendMix50(t *testing.T) {
 	err = BlendMix(ctx, dst, a, b, 0.5)
 	require.NoError(t, err)
 
-	result := make([]byte, yuvFrameSize(w, h))
+	result := make([]byte, video.YUV420FrameSize(w, h))
 	require.NoError(t, Download(ctx, result, dst, w, h))
 
 	// At 50%, Y should be ~128 (midpoint of 64 and 192)
@@ -66,8 +68,8 @@ func TestBlendMixEndpoints(t *testing.T) {
 	defer b.Release()
 	defer dst.Release()
 
-	yuvA := make([]byte, yuvFrameSize(w, h))
-	yuvB := make([]byte, yuvFrameSize(w, h))
+	yuvA := make([]byte, video.YUV420FrameSize(w, h))
+	yuvB := make([]byte, video.YUV420FrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		yuvA[i] = 100
 		yuvB[i] = 200
@@ -81,7 +83,7 @@ func TestBlendMixEndpoints(t *testing.T) {
 
 	// 0% = all A
 	require.NoError(t, BlendMix(ctx, dst, a, b, 0.0))
-	result := make([]byte, yuvFrameSize(w, h))
+	result := make([]byte, video.YUV420FrameSize(w, h))
 	require.NoError(t, Download(ctx, result, dst, w, h))
 	assert.Equal(t, byte(100), result[0], "0%% mix should be all A")
 
@@ -104,7 +106,7 @@ func TestBlendFTB(t *testing.T) {
 	defer src.Release()
 	defer dst.Release()
 
-	yuv := make([]byte, yuvFrameSize(w, h))
+	yuv := make([]byte, video.YUV420FrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		yuv[i] = 200 // bright
 	}
@@ -116,7 +118,7 @@ func TestBlendFTB(t *testing.T) {
 	// Fade to black at 100%
 	require.NoError(t, BlendFTB(ctx, dst, src, 1.0))
 
-	result := make([]byte, yuvFrameSize(w, h))
+	result := make([]byte, video.YUV420FrameSize(w, h))
 	require.NoError(t, Download(ctx, result, dst, w, h))
 
 	// Should be BT.709 black (Y=16)
@@ -145,8 +147,8 @@ func TestBlendWipe(t *testing.T) {
 	defer dst.Release()
 	defer mask.Release()
 
-	yuvA := make([]byte, yuvFrameSize(w, h))
-	yuvB := make([]byte, yuvFrameSize(w, h))
+	yuvA := make([]byte, video.YUV420FrameSize(w, h))
+	yuvB := make([]byte, video.YUV420FrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		yuvA[i] = 50
 		yuvB[i] = 200
@@ -162,7 +164,7 @@ func TestBlendWipe(t *testing.T) {
 	err = BlendWipe(ctx, dst, a, b, mask, 0.5, WipeHLeft, 4)
 	require.NoError(t, err)
 
-	result := make([]byte, yuvFrameSize(w, h))
+	result := make([]byte, video.YUV420FrameSize(w, h))
 	require.NoError(t, Download(ctx, result, dst, w, h))
 
 	// Left side should be B (200), right side should be A (50)
@@ -194,7 +196,7 @@ func TestBlendStinger(t *testing.T) {
 	defer dst.Release()
 
 	// Base frame: Y=50 (dark)
-	yuvBase := make([]byte, yuvFrameSize(w, h))
+	yuvBase := make([]byte, video.YUV420FrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		yuvBase[i] = 50
 	}
@@ -203,7 +205,7 @@ func TestBlendStinger(t *testing.T) {
 	}
 
 	// Overlay frame: Y=200 (bright)
-	yuvOverlay := make([]byte, yuvFrameSize(w, h))
+	yuvOverlay := make([]byte, video.YUV420FrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		yuvOverlay[i] = 200
 	}
@@ -213,7 +215,7 @@ func TestBlendStinger(t *testing.T) {
 
 	// Alpha mask: top half fully opaque (255), bottom half fully transparent (0).
 	// The alpha frame is NV12-pitched; we set the Y-plane portion.
-	yuvAlpha := make([]byte, yuvFrameSize(w, h))
+	yuvAlpha := make([]byte, video.YUV420FrameSize(w, h))
 	halfY := h / 2
 	for row := 0; row < h; row++ {
 		val := byte(0)
@@ -235,7 +237,7 @@ func TestBlendStinger(t *testing.T) {
 	err = BlendStinger(ctx, dst, base, overlay, alpha)
 	require.NoError(t, err)
 
-	result := make([]byte, yuvFrameSize(w, h))
+	result := make([]byte, video.YUV420FrameSize(w, h))
 	require.NoError(t, Download(ctx, result, dst, w, h))
 
 	// Top half (alpha=255): should be overlay Y=200

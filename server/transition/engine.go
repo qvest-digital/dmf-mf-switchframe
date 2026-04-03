@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/zsiec/switchframe/server/internal/atomicutil"
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // Default encoder parameters for the pipeline codec pool.
@@ -172,7 +173,7 @@ type Engine struct {
 
 	// colorFormat specifies the pipeline pixel format (8-bit or 10-bit).
 	// Determines which blend functions are used and frame sizing.
-	colorFormat ColorFormat
+	colorFormat video.Format
 }
 
 // NewEngine creates a new engine with the given configuration.
@@ -210,9 +211,9 @@ func (e *Engine) SetTimeout(d time.Duration) {
 }
 
 // SetColorFormat sets the pipeline color format for blend operations.
-// Must be called before Start(). When set to ColorFormat10bit, the engine
+// Must be called before Start(). When set to video.YUV422_10bit, the engine
 // uses 10-bit blend functions and 10-bit frame sizing.
-func (e *Engine) SetColorFormat(f ColorFormat) {
+func (e *Engine) SetColorFormat(f video.Format) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.colorFormat = f
@@ -502,11 +503,11 @@ func (e *Engine) decodeAndStore(sourceKey string, wireData []byte, isFrom bool) 
 	if w != e.width || h != e.height {
 		slog.Debug("transition: resolution mismatch, scaling",
 			"source_w", w, "source_h", h, "target_w", e.width, "target_h", e.height)
-		targetSize := e.colorFormat.frameSize(e.width, e.height)
+		targetSize := e.colorFormat.FrameSize(e.width, e.height)
 		if e.scaleBuf == nil || len(e.scaleBuf) < targetSize {
 			e.scaleBuf = make([]byte, targetSize)
 		}
-		if e.colorFormat == ColorFormat10bit {
+		if e.colorFormat == video.YUV422_10bit {
 			ScaleYUV422P10(yuv, w, h, e.scaleBuf, e.width, e.height)
 		} else {
 			ScaleYUV420WithQuality(yuv, w, h, e.scaleBuf, e.width, e.height, ScaleQualityFast)
@@ -518,7 +519,7 @@ func (e *Engine) decodeAndStore(sourceKey string, wireData []byte, isFrom bool) 
 
 	// Store YUV directly — no colorspace conversion needed.
 	// Deep-copy because the decoder may reuse its internal buffer.
-	yuvSize := e.colorFormat.frameSize(w, h)
+	yuvSize := e.colorFormat.FrameSize(w, h)
 	if isFrom {
 		if len(e.latestYUVA) != yuvSize {
 			e.latestYUVA = make([]byte, yuvSize)
@@ -651,11 +652,11 @@ func (e *Engine) IngestFrame(sourceKey string, wireData []byte, pts int64, isKey
 		if decW != e.width || decH != e.height {
 			slog.Debug("transition: resolution mismatch, scaling",
 				"source_w", decW, "source_h", decH, "target_w", e.width, "target_h", e.height)
-			targetSize := e.colorFormat.frameSize(e.width, e.height)
+			targetSize := e.colorFormat.FrameSize(e.width, e.height)
 			if e.scaleBuf == nil || len(e.scaleBuf) < targetSize {
 				e.scaleBuf = make([]byte, targetSize)
 			}
-			if e.colorFormat == ColorFormat10bit {
+			if e.colorFormat == video.YUV422_10bit {
 				ScaleYUV422P10(decodedYUV, decW, decH, e.scaleBuf, e.width, e.height)
 			} else {
 				ScaleYUV420WithQuality(decodedYUV, decW, decH, e.scaleBuf, e.width, e.height, ScaleQualityFast)
@@ -666,7 +667,7 @@ func (e *Engine) IngestFrame(sourceKey string, wireData []byte, pts int64, isKey
 		}
 
 		// Deep-copy because the decoder may reuse its internal buffer.
-		yuvSize := e.colorFormat.frameSize(decW, decH)
+		yuvSize := e.colorFormat.FrameSize(decW, decH)
 		if isFrom {
 			if len(e.latestYUVA) != yuvSize {
 				e.latestYUVA = make([]byte, yuvSize)
@@ -732,11 +733,11 @@ func (e *Engine) IngestRawFrame(sourceKey string, yuv []byte, width, height int,
 	if width != e.width || height != e.height {
 		slog.Debug("transition: resolution mismatch, scaling",
 			"source_w", width, "source_h", height, "target_w", e.width, "target_h", e.height)
-		targetSize := e.colorFormat.frameSize(e.width, e.height)
+		targetSize := e.colorFormat.FrameSize(e.width, e.height)
 		if e.scaleBuf == nil || len(e.scaleBuf) < targetSize {
 			e.scaleBuf = make([]byte, targetSize)
 		}
-		if e.colorFormat == ColorFormat10bit {
+		if e.colorFormat == video.YUV422_10bit {
 			ScaleYUV422P10(yuv, width, height, e.scaleBuf, e.width, e.height)
 		} else {
 			ScaleYUV420WithQuality(yuv, width, height, e.scaleBuf, e.width, e.height, ScaleQualityFast)
@@ -745,7 +746,7 @@ func (e *Engine) IngestRawFrame(sourceKey string, yuv []byte, width, height int,
 	}
 
 	// Store directly — no decode needed. Deep-copy since caller may reuse buffer.
-	yuvSize := e.colorFormat.frameSize(e.width, e.height)
+	yuvSize := e.colorFormat.FrameSize(e.width, e.height)
 	if isFrom {
 		if len(e.latestYUVA) != yuvSize {
 			e.latestYUVA = make([]byte, yuvSize)
@@ -824,7 +825,7 @@ func (e *Engine) blendAndOutput(isFrom bool, pts int64) {
 
 	blendStart := time.Now()
 	var blended []byte
-	if e.colorFormat == ColorFormat10bit {
+	if e.colorFormat == video.YUV422_10bit {
 		blended = e.blend10bit(yuvA, yuvB, pos)
 	} else {
 		switch e.transitionType {
@@ -927,7 +928,7 @@ func (e *Engine) WarmupComplete() {
 // dimensions and color format. Used as a placeholder when a source hasn't
 // produced decoded output yet. BT.709 limited range. Caller must hold e.mu.
 func (e *Engine) getBlackFrame() []byte {
-	if e.colorFormat == ColorFormat10bit {
+	if e.colorFormat == video.YUV422_10bit {
 		return e.getBlackFrame10()
 	}
 	ySize := e.width * e.height
@@ -950,7 +951,7 @@ func (e *Engine) getBlackFrame() []byte {
 // getBlackFrame10 returns a reusable YUV422P10LE black frame.
 // BT.709 limited range: Y=64, Cb=Cr=512 (10-bit values). Caller must hold e.mu.
 func (e *Engine) getBlackFrame10() []byte {
-	total := ColorFormat10bit.frameSize(e.width, e.height)
+	total := video.YUV422_10bit.FrameSize(e.width, e.height)
 	if len(e.blackBuf) != total {
 		e.blackBuf = make([]byte, total)
 		ySize := e.width * e.height * 2
@@ -973,7 +974,7 @@ func (e *Engine) getBlackFrame10() []byte {
 // Caller must hold e.mu.
 func (e *Engine) blend10bit(yuvA, yuvB []byte, pos float64) []byte {
 	w, h := e.width, e.height
-	frameSize := ColorFormat10bit.frameSize(w, h)
+	frameSize := video.YUV422_10bit.FrameSize(w, h)
 
 	// Ensure output buffer exists. Reuse the blender's yuvBufOut for 10-bit output.
 	if e.blender == nil {

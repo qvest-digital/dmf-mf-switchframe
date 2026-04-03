@@ -3,6 +3,8 @@ package transition
 import (
 	"encoding/binary"
 	"testing"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // Helper to create a 10-bit YUV422P10LE frame filled with a single Y/Cb/Cr value
@@ -427,7 +429,7 @@ func TestBlend10bit_StingerAnimates(t *testing.T) {
 		HintWidth:  w,
 		HintHeight: h,
 	})
-	e.colorFormat = ColorFormat10bit
+	e.colorFormat = video.YUV422_10bit
 	e.width = w
 	e.height = h
 	e.transitionType = Stinger

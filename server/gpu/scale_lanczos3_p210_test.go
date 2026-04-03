@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 func TestScaleLanczos3P210_UniformDownscale(t *testing.T) {
@@ -140,7 +142,7 @@ func TestGPUScaleLanczos3Dispatch_RoutesNV12(t *testing.T) {
 	defer src.Release()
 
 	// Upload uniform mid-gray NV12
-	srcYUV := make([]byte, yuvFrameSize(srcW, srcH))
+	srcYUV := make([]byte, video.YUV420FrameSize(srcW, srcH))
 	for i := range srcYUV {
 		srcYUV[i] = 128
 	}

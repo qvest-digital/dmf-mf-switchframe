@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // packV210Group packs 6 Y + 3 Cb + 3 Cr values (8-bit) into 4 V210 words.
@@ -69,7 +71,7 @@ func TestV210UploadDownloadRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 
 	// Download NV12 → YUV420p to verify
-	yuv := make([]byte, yuvFrameSize(w, h))
+	yuv := make([]byte, video.YUV420FrameSize(w, h))
 	err = Download(ctx, yuv, frame, w, h)
 	require.NoError(t, err)
 
@@ -122,7 +124,7 @@ func TestV210GradientRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 
 	// Download as YUV420p and check gradient
-	yuv := make([]byte, yuvFrameSize(w, h))
+	yuv := make([]byte, video.YUV420FrameSize(w, h))
 	err = Download(ctx, yuv, frame, w, h)
 	require.NoError(t, err)
 
@@ -145,7 +147,7 @@ func TestV210NV12ToV210RoundTrip(t *testing.T) {
 	defer frame.Release()
 
 	// Upload a known YUV420p pattern
-	yuv := make([]byte, yuvFrameSize(w, h))
+	yuv := make([]byte, video.YUV420FrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		yuv[i] = 180 // Y
 	}

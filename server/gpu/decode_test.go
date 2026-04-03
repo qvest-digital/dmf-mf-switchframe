@@ -7,7 +7,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
 	"github.com/zsiec/switchframe/server/codec"
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // generateH264IDR uses FFmpeg encoder to produce a valid H.264 IDR frame.
@@ -23,7 +25,7 @@ func generateH264IDR(t *testing.T, w, h int) []byte {
 	}
 	defer enc.Close()
 
-	yuv := make([]byte, yuvFrameSize(w, h))
+	yuv := make([]byte, video.YUV420FrameSize(w, h))
 	// Fill with a gradient pattern
 	for i := 0; i < w*h; i++ {
 		yuv[i] = byte(i%220) + 16 // Y: limited range gradient
@@ -64,7 +66,7 @@ func TestNVDECDecode(t *testing.T) {
 	}
 	defer enc.Close()
 
-	yuv := make([]byte, yuvFrameSize(w, h))
+	yuv := make([]byte, video.YUV420FrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		yuv[i] = byte(i%220) + 16
 	}
@@ -98,7 +100,7 @@ func TestNVDECDecode(t *testing.T) {
 	require.NoError(t, err, "NVDEC should decode after multiple frames")
 	assert.Equal(t, w, dw)
 	assert.Equal(t, h, dh)
-	assert.Equal(t, yuvFrameSize(w, h), len(decYUV))
+	assert.Equal(t, video.YUV420FrameSize(w, h), len(decYUV))
 
 	// Verify it's not all zeros (actual decoded content)
 	nonZero := 0
@@ -125,7 +127,7 @@ func TestNVDECDecodeMultipleFrames(t *testing.T) {
 	}
 	defer enc.Close()
 
-	yuv := make([]byte, yuvFrameSize(w, h))
+	yuv := make([]byte, video.YUV420FrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		yuv[i] = byte(i%220) + 16
 	}

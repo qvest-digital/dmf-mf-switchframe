@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -112,7 +114,7 @@ func TestFFmpegHEVCEncoderEncodeFrame(t *testing.T) {
 	require.NoError(t, err)
 	defer e.Close()
 
-	yuv := make([]byte, yuvFrameSize(w, h))
+	yuv := make([]byte, video.YUV420FrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		yuv[i] = byte((i * 7) % 256)
 	}
@@ -153,7 +155,7 @@ func TestFFmpegHEVCEncoderMultipleFrames(t *testing.T) {
 	require.NoError(t, err)
 	defer e.Close()
 
-	yuv := make([]byte, yuvFrameSize(w, h))
+	yuv := make([]byte, video.YUV420FrameSize(w, h))
 	outputCount := 0
 	for i := 0; i < 60; i++ {
 		for j := 0; j < w*h; j++ {
@@ -185,7 +187,7 @@ func TestNewHEVCVideoEncoder(t *testing.T) {
 
 	// Verify it can encode frames.
 	w, h := 256, 256
-	yuv := make([]byte, yuvFrameSize(w, h))
+	yuv := make([]byte, video.YUV420FrameSize(w, h))
 	for i := range yuv {
 		yuv[i] = 128
 	}

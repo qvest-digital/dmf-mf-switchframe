@@ -2,7 +2,7 @@ package transition
 
 // ScaleYUV420 scales a YUV420 planar frame from (srcW x srcH) to (dstW x dstH)
 // using bilinear interpolation. Both src and dst must be sized for their
-// respective resolutions: yuvFrameSize(w,h) bytes (Y[w*h] + Cb[w/2*h/2] + Cr[w/2*h/2]).
+// respective resolutions: video.YUV420FrameSize(w,h) bytes (Y[w*h] + Cb[w/2*h/2] + Cr[w/2*h/2]).
 //
 // When source and destination dimensions match, a plain copy is performed
 // (zero interpolation overhead).

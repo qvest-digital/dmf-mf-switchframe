@@ -5,6 +5,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 func TestManager_NewManager(t *testing.T) {
@@ -561,7 +563,7 @@ func TestManager_SetGPUSourceTap_PropagatesToChannels(t *testing.T) {
 	m.SetGPUSourceTap(func(channelKey, sourceKey string) *DecodedFrame {
 		called.Add(1)
 		return &DecodedFrame{
-			YUV:    make([]byte, yuvFrameSize(1920, 1080)),
+			YUV:    make([]byte, video.YUV420FrameSize(1920, 1080)),
 			Width:  1920,
 			Height: 1080,
 		}

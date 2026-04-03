@@ -9,18 +9,20 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // Errors returned by Compositor methods.
 var (
-	ErrAlreadyActive       = errors.New("graphics: overlay already active")
-	ErrNotActive           = errors.New("graphics: overlay not active")
-	ErrNoOverlay           = errors.New("graphics: no overlay frame uploaded")
-	ErrFadeActive          = errors.New("graphics: fade transition in progress")
-	ErrCompositorClosed    = errors.New("compositor: closed")
-	ErrLayerNotFound       = errors.New("graphics: layer not found")
-	ErrTooManyLayers       = errors.New("graphics: maximum layers reached")
-	ErrSequenceProcessing  = errors.New("graphics: sequence still processing")
+	ErrAlreadyActive      = errors.New("graphics: overlay already active")
+	ErrNotActive          = errors.New("graphics: overlay not active")
+	ErrNoOverlay          = errors.New("graphics: no overlay frame uploaded")
+	ErrFadeActive         = errors.New("graphics: fade transition in progress")
+	ErrCompositorClosed   = errors.New("compositor: closed")
+	ErrLayerNotFound      = errors.New("graphics: layer not found")
+	ErrTooManyLayers      = errors.New("graphics: maximum layers reached")
+	ErrSequenceProcessing = errors.New("graphics: sequence still processing")
 )
 
 // DefaultMaxLayers is the maximum number of graphics layers.
@@ -46,22 +48,22 @@ type AnimationConfig struct {
 
 // LayerState describes the state of a single graphics layer for serialization.
 type LayerState struct {
-	ID            int       `json:"id"`
-	Template      string    `json:"template,omitempty"`
-	Active        bool      `json:"active"`
-	FadePosition  float64   `json:"fadePosition,omitempty"`
-	AnimationMode string    `json:"animationMode,omitempty"`
-	AnimationHz   float64   `json:"animationHz,omitempty"`
-	ZOrder        int       `json:"zOrder"`
-	Rect          RectState `json:"rect"`
-	ImageName      string    `json:"imageName,omitempty"`
-	ImageWidth     int       `json:"imageWidth,omitempty"`
-	ImageHeight    int       `json:"imageHeight,omitempty"`
-	SequenceLoaded     bool    `json:"sequenceLoaded,omitempty"`
-	SequencePhase      string  `json:"sequencePhase,omitempty"`
-	SequenceProcessing  bool    `json:"sequenceProcessing,omitempty"`
-	SequenceProgress    float64 `json:"sequenceProgress,omitempty"`
-	SequenceSpeed      float64 `json:"sequenceSpeed,omitempty"`
+	ID                 int       `json:"id"`
+	Template           string    `json:"template,omitempty"`
+	Active             bool      `json:"active"`
+	FadePosition       float64   `json:"fadePosition,omitempty"`
+	AnimationMode      string    `json:"animationMode,omitempty"`
+	AnimationHz        float64   `json:"animationHz,omitempty"`
+	ZOrder             int       `json:"zOrder"`
+	Rect               RectState `json:"rect"`
+	ImageName          string    `json:"imageName,omitempty"`
+	ImageWidth         int       `json:"imageWidth,omitempty"`
+	ImageHeight        int       `json:"imageHeight,omitempty"`
+	SequenceLoaded     bool      `json:"sequenceLoaded,omitempty"`
+	SequencePhase      string    `json:"sequencePhase,omitempty"`
+	SequenceProcessing bool      `json:"sequenceProcessing,omitempty"`
+	SequenceProgress   float64   `json:"sequenceProgress,omitempty"`
+	SequenceSpeed      float64   `json:"sequenceSpeed,omitempty"`
 }
 
 // RectState describes a layer's position and size for serialization.
@@ -118,8 +120,8 @@ type graphicsLayer struct {
 	ticker *tickerState
 
 	// Frame-locked animated sequence state. Set by SequenceEngine, advanced by ProcessYUV.
-	seq                  *sequenceState
-	seqProcessing        bool    // true while background ZIP decode is in progress
+	seq                   *sequenceState
+	seqProcessing         bool    // true while background ZIP decode is in progress
 	seqProcessingProgress float64 // 0.0-1.0 progress during processing
 }
 
@@ -716,7 +718,7 @@ func (c *Compositor) ProcessYUV(yuv []byte, width, height int, blendScratch *[]b
 	if width%2 != 0 || height%2 != 0 || width <= 0 || height <= 0 {
 		return yuv
 	}
-	if len(yuv) < yuvFrameSize(width, height) {
+	if len(yuv) < video.YUV420FrameSize(width, height) {
 		return yuv
 	}
 
@@ -983,7 +985,7 @@ func applyFadeAlpha(rgba []byte, pixelCount int, fadePosition float64) []byte {
 	fade := int32(fadePosition * 255.0)
 	for i := 0; i < pixelCount; i++ {
 		a := int32(scaled[i*4+3])
-		scaled[i*4+3] = byte((a * fade + 128) >> 8)
+		scaled[i*4+3] = byte((a*fade + 128) >> 8)
 	}
 	return scaled
 }

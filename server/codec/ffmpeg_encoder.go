@@ -493,6 +493,7 @@ import (
 	"sync"
 	"unsafe"
 
+	"github.com/zsiec/switchframe/server/internal/video"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -692,7 +693,7 @@ func (e *FFmpegEncoder) Encode(yuv []byte, pts int64, forceIDR bool) ([]byte, bo
 
 	w := int(e.handle.width)
 	h := int(e.handle.height)
-	expected := yuvFrameSize(w, h)
+	expected := video.YUV420FrameSize(w, h)
 	if len(yuv) != expected {
 		return nil, false, fmt.Errorf("YUV buffer must be %d bytes (%dx%d*3/2), got %d",
 			expected, w, h, len(yuv))

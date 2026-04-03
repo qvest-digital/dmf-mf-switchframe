@@ -14,7 +14,7 @@ import (
 // Static analysis guard: detect hardcoded 8-bit frame sizing in
 // format-aware code paths.
 //
-// When code uses yuvFrameSize(w,h) (always returns w*h*3/2) in a path that
+// When code uses video.YUV420FrameSize(w,h) (always returns w*h*3/2) in a path that
 // handles both 8-bit and 10-bit frames, it silently truncates 10-bit buffers.
 // The correct pattern is colorFormat.FrameSize(w,h) or e.colorFormat.frameSize().
 //
@@ -31,9 +31,9 @@ func serverDir() string {
 }
 
 // TestStaticAudit_NoHardcoded8bitInFormatAwarePaths scans specific production
-// files that must be format-aware and fails if they contain yuvFrameSize() calls
+// files that must be format-aware and fails if they contain video.YUV420FrameSize() calls
 // outside of comments. These files handle both 8-bit and 10-bit frames, so
-// using the always-8-bit yuvFrameSize() is a bug.
+// using the always-8-bit video.YUV420FrameSize() is a bug.
 func TestStaticAudit_NoHardcoded8bitInFormatAwarePaths(t *testing.T) {
 	t.Parallel()
 
@@ -76,8 +76,8 @@ func TestStaticAudit_NoHardcoded8bitInFormatAwarePaths(t *testing.T) {
 				line = line[:idx]
 			}
 
-			if strings.Contains(line, "yuvFrameSize(") {
-				t.Errorf("%s:%d uses yuvFrameSize() which is always 8-bit (w*h*3/2). "+
+			if strings.Contains(line, "video.YUV420FrameSize(") {
+				t.Errorf("%s:%d uses video.YUV420FrameSize() which is always 8-bit (w*h*3/2). "+
 					"Use colorFormat.FrameSize() or e.colorFormat.frameSize() for format-aware sizing.\n"+
 					"  Line: %s",
 					relPath, i+1, strings.TrimSpace(lines[i]))
@@ -138,7 +138,7 @@ func TestStaticAudit_NoHardcodedColorYUV420InFormatAwarePaths(t *testing.T) {
 }
 
 // TestStaticAudit_TransitionEngineNoYuvFrameSize verifies the transition engine
-// does not use yuvFrameSize() in its production code paths (engine.go).
+// does not use video.YUV420FrameSize() in its production code paths (engine.go).
 // The transition engine has its own ColorFormat.frameSize() and must use it.
 func TestStaticAudit_TransitionEngineNoYuvFrameSize(t *testing.T) {
 	t.Parallel()
@@ -161,8 +161,8 @@ func TestStaticAudit_TransitionEngineNoYuvFrameSize(t *testing.T) {
 			line = line[:idx]
 		}
 
-		if strings.Contains(line, "yuvFrameSize(") {
-			t.Errorf("transition/engine.go:%d uses yuvFrameSize() which is always 8-bit. "+
+		if strings.Contains(line, "video.YUV420FrameSize(") {
+			t.Errorf("transition/engine.go:%d uses video.YUV420FrameSize() which is always 8-bit. "+
 				"Use e.colorFormat.frameSize() instead.\n"+
 				"  Line: %s",
 				i+1, strings.TrimSpace(lines[i]))

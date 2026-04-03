@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 func TestWriteAndLoadCache(t *testing.T) {
@@ -20,11 +22,11 @@ func TestWriteAndLoadCache(t *testing.T) {
 		CutPoint: 0.5,
 		Frames: []Frame{
 			{
-				YUV:   make([]byte, yuvFrameSize(8, 4)), // 48 bytes
-				Alpha: make([]byte, 8*4),     // 32 bytes
+				YUV:   make([]byte, video.YUV420FrameSize(8, 4)), // 48 bytes
+				Alpha: make([]byte, 8*4),                         // 32 bytes
 			},
 			{
-				YUV:   make([]byte, yuvFrameSize(8, 4)),
+				YUV:   make([]byte, video.YUV420FrameSize(8, 4)),
 				Alpha: make([]byte, 8*4),
 			},
 		},
@@ -50,7 +52,7 @@ func TestWriteAndLoadCache(t *testing.T) {
 	// Verify file exists and has expected size.
 	fi, err := os.Stat(path)
 	require.NoError(t, err)
-	expectedSize := int64(cacheHeaderSize + 2*(yuvFrameSize(8, 4)+8*4))
+	expectedSize := int64(cacheHeaderSize + 2*(video.YUV420FrameSize(8, 4)+8*4))
 	require.Equal(t, expectedSize, fi.Size())
 
 	// Load cache.
@@ -81,7 +83,7 @@ func TestWriteAndLoadCache_PreservesCutPoint(t *testing.T) {
 		CutPoint: 0.75,
 		Frames: []Frame{
 			{
-				YUV:   make([]byte, yuvFrameSize(4, 2)),
+				YUV:   make([]byte, video.YUV420FrameSize(4, 2)),
 				Alpha: make([]byte, 4*2),
 			},
 		},
@@ -138,7 +140,7 @@ func TestLoadCache_SizeMismatch(t *testing.T) {
 		CutPoint: 0.5,
 		Frames: []Frame{
 			{
-				YUV:   make([]byte, yuvFrameSize(8, 4)),
+				YUV:   make([]byte, video.YUV420FrameSize(8, 4)),
 				Alpha: make([]byte, 8*4),
 			},
 		},
@@ -164,7 +166,7 @@ func TestClipClose_Idempotent(t *testing.T) {
 		CutPoint: 0.5,
 		Frames: []Frame{
 			{
-				YUV:   make([]byte, yuvFrameSize(8, 4)),
+				YUV:   make([]byte, video.YUV420FrameSize(8, 4)),
 				Alpha: make([]byte, 8*4),
 			},
 		},

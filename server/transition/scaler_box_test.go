@@ -5,13 +5,15 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 func TestBoxShrink2xYUV420_Correctness(t *testing.T) {
 	srcW, srcH := 8, 8
 	dstW, dstH := 4, 4
-	srcSize := yuvFrameSize(srcW, srcH)
-	dstSize := yuvFrameSize(dstW, dstH)
+	srcSize := video.YUV420FrameSize(srcW, srcH)
+	dstSize := video.YUV420FrameSize(dstW, dstH)
 
 	src := make([]byte, srcSize)
 	// Fill Y plane with gradient
@@ -49,8 +51,8 @@ func TestBoxShrink2xYUV420_Correctness(t *testing.T) {
 func TestBoxShrink2xYUV420_1080pTo540p(t *testing.T) {
 	srcW, srcH := 1920, 1080
 	dstW, dstH := 960, 540
-	srcSize := yuvFrameSize(srcW, srcH)
-	dstSize := yuvFrameSize(dstW, dstH)
+	srcSize := video.YUV420FrameSize(srcW, srcH)
+	dstSize := video.YUV420FrameSize(dstW, dstH)
 
 	src := make([]byte, srcSize)
 	for i := range src {
@@ -69,8 +71,8 @@ func TestBoxShrink2xYUV420_1080pTo540p(t *testing.T) {
 }
 
 func BenchmarkScaleYUV420_1080pTo480p_Bilinear(b *testing.B) {
-	src := make([]byte, yuvFrameSize(1920, 1080))
-	dst := make([]byte, yuvFrameSize(854, 480))
+	src := make([]byte, video.YUV420FrameSize(1920, 1080))
+	dst := make([]byte, video.YUV420FrameSize(854, 480))
 	for i := range src {
 		src[i] = byte(i % 256)
 	}
@@ -82,9 +84,9 @@ func BenchmarkScaleYUV420_1080pTo480p_Bilinear(b *testing.B) {
 }
 
 func BenchmarkScaleYUV420_1080pTo480p_BoxThenBilinear(b *testing.B) {
-	src := make([]byte, yuvFrameSize(1920, 1080))
-	boxBuf := make([]byte, yuvFrameSize(960, 540))
-	dst := make([]byte, yuvFrameSize(854, 480))
+	src := make([]byte, video.YUV420FrameSize(1920, 1080))
+	boxBuf := make([]byte, video.YUV420FrameSize(960, 540))
+	dst := make([]byte, video.YUV420FrameSize(854, 480))
 	for i := range src {
 		src[i] = byte(i % 256)
 	}

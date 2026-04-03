@@ -5,12 +5,6 @@ import (
 	"time"
 )
 
-// yuvFrameSize returns the byte size of a YUV420 8-bit frame (w*h*3/2).
-// Local helper to avoid adding switcher import to GPU-specific files.
-func yuvFrameSize(w, h int) int {
-	return w * h * 3 / 2
-}
-
 // Sentinel errors for the replay subsystem.
 var (
 	ErrNoSource       = errors.New("replay: source not found")

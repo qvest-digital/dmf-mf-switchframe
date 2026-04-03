@@ -15,12 +15,6 @@ import (
 	"github.com/zsiec/switchframe/server/mmaputil"
 )
 
-// yuvFrameSize returns the byte size of a YUV420 8-bit frame (w*h*3/2).
-// Local helper to avoid importing the switcher package.
-func yuvFrameSize(w, h int) int {
-	return w * h * 3 / 2
-}
-
 var (
 	// ErrInvalidDimensions is returned when width or height are non-positive or odd.
 	ErrInvalidDimensions = errors.New("stmap: invalid dimensions (must be positive and even)")

@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 func TestFillRectP210(t *testing.T) {
@@ -183,7 +185,7 @@ func TestGPUFillRectDispatch_NV12(t *testing.T) {
 	assert.Equal(t, GPUFormatNV12, frame.Format)
 
 	// Fill white
-	white := make([]byte, yuvFrameSize(w, h))
+	white := make([]byte, video.YUV420FrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		white[i] = 235
 	}
@@ -197,7 +199,7 @@ func TestGPUFillRectDispatch_NV12(t *testing.T) {
 	err = GPUFillRectDispatch(ctx, frame, rect, ColorBlack)
 	require.NoError(t, err)
 
-	result := make([]byte, yuvFrameSize(w, h))
+	result := make([]byte, video.YUV420FrameSize(w, h))
 	require.NoError(t, Download(ctx, result, frame, w, h))
 
 	insideY := result[16*w+32] // center of rect

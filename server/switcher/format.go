@@ -3,114 +3,20 @@ package switcher
 import (
 	"fmt"
 	"time"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
-// PipelineColorFormat defines the pixel format and bit depth for the pipeline.
-type PipelineColorFormat int
+// PipelineColorFormat is the pixel format for the pipeline.
+// This is an alias for video.Format — all methods are inherited.
+type PipelineColorFormat = video.Format
 
 const (
 	// ColorYUV420_8bit is planar YUV 4:2:0 at 8 bits per sample (standard broadcast).
-	ColorYUV420_8bit PipelineColorFormat = iota
+	ColorYUV420_8bit = video.YUV420_8bit
 	// ColorYUV422_10bit is planar YUV 4:2:2 at 10 bits per sample (professional broadcast).
-	ColorYUV422_10bit
+	ColorYUV422_10bit = video.YUV422_10bit
 )
-
-// String returns the FFmpeg-style pixel format name.
-func (f PipelineColorFormat) String() string {
-	switch f {
-	case ColorYUV420_8bit:
-		return "yuv420p"
-	case ColorYUV422_10bit:
-		return "yuv422p10le"
-	default:
-		return fmt.Sprintf("unknown(%d)", int(f))
-	}
-}
-
-// BytesPerSample returns the number of bytes per luma/chroma sample.
-func (f PipelineColorFormat) BytesPerSample() int {
-	switch f {
-	case ColorYUV422_10bit:
-		return 2
-	default:
-		return 1
-	}
-}
-
-// ChromaWidth returns the chroma plane width (half luma width for both 420 and 422).
-func (f PipelineColorFormat) ChromaWidth(w int) int {
-	return w / 2
-}
-
-// ChromaHeight returns the chroma plane height.
-// For 4:2:0 this is half the luma height; for 4:2:2 it equals luma height.
-func (f PipelineColorFormat) ChromaHeight(h int) int {
-	switch f {
-	case ColorYUV422_10bit:
-		return h
-	default:
-		return h / 2
-	}
-}
-
-// YPlaneSize returns the Y plane size in bytes.
-func (f PipelineColorFormat) YPlaneSize(w, h int) int {
-	return w * h * f.BytesPerSample()
-}
-
-// ChromaPlaneSize returns the size of one chroma plane (Cb or Cr) in bytes.
-func (f PipelineColorFormat) ChromaPlaneSize(w, h int) int {
-	return f.ChromaWidth(w) * f.ChromaHeight(h) * f.BytesPerSample()
-}
-
-// FrameSize returns the total frame size in bytes (Y + Cb + Cr).
-func (f PipelineColorFormat) FrameSize(w, h int) int {
-	return f.YPlaneSize(w, h) + 2*f.ChromaPlaneSize(w, h)
-}
-
-// BlackY returns the black level for the Y (luma) channel.
-// BT.709 limited range: 16 for 8-bit, 64 for 10-bit.
-func (f PipelineColorFormat) BlackY() int {
-	switch f {
-	case ColorYUV422_10bit:
-		return 64
-	default:
-		return 16
-	}
-}
-
-// WhiteY returns the white level for the Y (luma) channel.
-// BT.709 limited range: 235 for 8-bit, 940 for 10-bit.
-func (f PipelineColorFormat) WhiteY() int {
-	switch f {
-	case ColorYUV422_10bit:
-		return 940
-	default:
-		return 235
-	}
-}
-
-// NeutralChroma returns the neutral (zero-color) value for Cb/Cr channels.
-// 128 for 8-bit, 512 for 10-bit.
-func (f PipelineColorFormat) NeutralChroma() int {
-	switch f {
-	case ColorYUV422_10bit:
-		return 512
-	default:
-		return 128
-	}
-}
-
-// MaxSampleValue returns the maximum representable sample value.
-// 255 for 8-bit, 1023 for 10-bit.
-func (f PipelineColorFormat) MaxSampleValue() int {
-	switch f {
-	case ColorYUV422_10bit:
-		return 1023
-	default:
-		return 255
-	}
-}
 
 // PipelineCodec identifies the video codec used for encoding/decoding.
 type PipelineCodec int

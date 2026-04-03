@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // --- Mock state implementations ---
@@ -133,7 +135,7 @@ func TestGPUPipelineIntegration_PassthroughAllInactive(t *testing.T) {
 	defer frame.Release()
 
 	// Download result.
-	outputYUV := make([]byte, yuvFrameSize(w, h))
+	outputYUV := make([]byte, video.YUV420FrameSize(w, h))
 	err = Download(ctx, outputYUV, frame, w, h)
 	require.NoError(t, err)
 
@@ -221,7 +223,7 @@ func TestGPUPipelineIntegration_CompositorOverlay(t *testing.T) {
 	require.NotNil(t, frame)
 	defer frame.Release()
 
-	outputYUV := make([]byte, yuvFrameSize(w, h))
+	outputYUV := make([]byte, video.YUV420FrameSize(w, h))
 	err = Download(ctx, outputYUV, frame, w, h)
 	require.NoError(t, err)
 
@@ -278,7 +280,7 @@ func TestGPUPipelineIntegration_STMapIdentity(t *testing.T) {
 	defer func() { _ = pipe.Close() }()
 
 	// Create a gradient frame for easy verification.
-	inputYUV := make([]byte, yuvFrameSize(w, h))
+	inputYUV := make([]byte, video.YUV420FrameSize(w, h))
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			inputYUV[y*w+x] = byte((x + y) % 256)
@@ -294,7 +296,7 @@ func TestGPUPipelineIntegration_STMapIdentity(t *testing.T) {
 	require.NotNil(t, frame)
 	defer frame.Release()
 
-	outputYUV := make([]byte, yuvFrameSize(w, h))
+	outputYUV := make([]byte, video.YUV420FrameSize(w, h))
 	err = Download(ctx, outputYUV, frame, w, h)
 	require.NoError(t, err)
 
@@ -373,7 +375,7 @@ func TestGPUPipelineIntegration_LayoutSlotFill(t *testing.T) {
 	require.NotNil(t, frame)
 	defer frame.Release()
 
-	outputYUV := make([]byte, yuvFrameSize(w, h))
+	outputYUV := make([]byte, video.YUV420FrameSize(w, h))
 	err = Download(ctx, outputYUV, frame, w, h)
 	require.NoError(t, err)
 
@@ -509,7 +511,7 @@ func TestGPUPipelineIntegration_FullPipeline(t *testing.T) {
 	defer frame.Release()
 
 	// Download result to verify no corruption.
-	outputYUV := make([]byte, yuvFrameSize(w, h))
+	outputYUV := make([]byte, video.YUV420FrameSize(w, h))
 	err = Download(ctx, outputYUV, frame, w, h)
 	require.NoError(t, err, "download after full pipeline should succeed")
 
@@ -680,7 +682,7 @@ func TestGPUPipelineIntegration_SourceManagerWithPipeline(t *testing.T) {
 	defer frame.Release()
 
 	// Download and verify the slot region changed.
-	outputYUV := make([]byte, yuvFrameSize(w, h))
+	outputYUV := make([]byte, video.YUV420FrameSize(w, h))
 	err = Download(ctx, outputYUV, frame, w, h)
 	require.NoError(t, err)
 

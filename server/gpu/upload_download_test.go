@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 func TestUploadDownloadRoundTrip(t *testing.T) {
@@ -73,7 +75,7 @@ func TestUploadDownloadSmallFrame(t *testing.T) {
 	defer pool.Close()
 
 	w, h := 320, 240
-	totalSize := yuvFrameSize(w, h)
+	totalSize := video.YUV420FrameSize(w, h)
 
 	// Create deterministic pattern
 	yuv := make([]byte, totalSize)
@@ -116,7 +118,7 @@ func TestFillBlack(t *testing.T) {
 
 	// Download and verify black (Y=16, Cb=128, Cr=128)
 	w, h := 320, 240
-	yuv := make([]byte, yuvFrameSize(w, h))
+	yuv := make([]byte, video.YUV420FrameSize(w, h))
 	err = Download(ctx, yuv, frame, w, h)
 	require.NoError(t, err)
 
@@ -192,7 +194,7 @@ func TestUploadResolutionChange(t *testing.T) {
 	require.NoError(t, err)
 	defer smallFrame.Release()
 
-	smallYUV := make([]byte, yuvFrameSize(smallW, smallH))
+	smallYUV := make([]byte, video.YUV420FrameSize(smallW, smallH))
 	for i := 0; i < smallW*smallH; i++ {
 		smallYUV[i] = 64 // dark gray Y
 	}
@@ -202,7 +204,7 @@ func TestUploadResolutionChange(t *testing.T) {
 	require.NoError(t, Upload(ctx, smallFrame, smallYUV, smallW, smallH))
 
 	// Verify small frame round-trips correctly.
-	smallResult := make([]byte, yuvFrameSize(smallW, smallH))
+	smallResult := make([]byte, video.YUV420FrameSize(smallW, smallH))
 	require.NoError(t, Download(ctx, smallResult, smallFrame, smallW, smallH))
 	assert.Equal(t, byte(64), smallResult[0], "small frame Y[0] should be 64")
 
@@ -211,7 +213,7 @@ func TestUploadResolutionChange(t *testing.T) {
 	require.NoError(t, err)
 	defer largeFrame.Release()
 
-	largeYUV := make([]byte, yuvFrameSize(largeW, largeH))
+	largeYUV := make([]byte, video.YUV420FrameSize(largeW, largeH))
 	for i := 0; i < largeW*largeH; i++ {
 		largeYUV[i] = 192 // bright gray Y
 	}
@@ -221,7 +223,7 @@ func TestUploadResolutionChange(t *testing.T) {
 	require.NoError(t, Upload(ctx, largeFrame, largeYUV, largeW, largeH))
 
 	// Verify large frame round-trips correctly after the realloc.
-	largeResult := make([]byte, yuvFrameSize(largeW, largeH))
+	largeResult := make([]byte, video.YUV420FrameSize(largeW, largeH))
 	require.NoError(t, Download(ctx, largeResult, largeFrame, largeW, largeH))
 	assert.Equal(t, byte(192), largeResult[0], "large frame Y[0] should be 192 after staging realloc")
 

@@ -7,7 +7,9 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
 	"github.com/zsiec/switchframe/server/correctness/testutil"
+	"github.com/zsiec/switchframe/server/internal/video"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -15,11 +17,6 @@ const (
 	testWidth  = 320
 	testHeight = 240
 )
-
-// yuvFrameSize returns the total byte count for a YUV420p frame.
-func yuvFrameSize(w, h int) int {
-	return w*h + 2*(w/2)*(h/2)
-}
 
 // copyFrame returns a deep copy of a YUV frame slice.
 func copyFrame(src []byte) []byte {
@@ -551,7 +548,7 @@ func TestWipeAllDirections(t *testing.T) {
 			out := fb.BlendWipe(srcA, srcB, 0.5, dir)
 
 			// Output must have correct size.
-			require.Equal(t, yuvFrameSize(testWidth, testHeight), len(out))
+			require.Equal(t, video.YUV420FrameSize(testWidth, testHeight), len(out))
 
 			// At position 0.5, both source A and source B regions should be present.
 			hasA, hasB := false, false

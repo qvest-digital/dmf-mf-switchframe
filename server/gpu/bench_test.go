@@ -5,6 +5,8 @@ package gpu
 import (
 	"sync/atomic"
 	"testing"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // GPU benchmarks measure actual kernel execution time on the NVIDIA L4.
@@ -32,7 +34,7 @@ func BenchmarkUpload1080p(b *testing.B) {
 	frame, _ := pool.Acquire()
 	defer frame.Release()
 
-	yuv := make([]byte, yuvFrameSize(1920, 1080))
+	yuv := make([]byte, video.YUV420FrameSize(1920, 1080))
 	for i := range yuv {
 		yuv[i] = 128
 	}
@@ -52,7 +54,7 @@ func BenchmarkDownload1080p(b *testing.B) {
 	defer frame.Release()
 	FillBlack(ctx, frame)
 
-	yuv := make([]byte, yuvFrameSize(1920, 1080))
+	yuv := make([]byte, video.YUV420FrameSize(1920, 1080))
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -342,7 +344,7 @@ func BenchmarkFullPipeline1080p(b *testing.B) {
 	})
 	defer pipe.Close()
 
-	yuv := make([]byte, yuvFrameSize(1920, 1080))
+	yuv := make([]byte, video.YUV420FrameSize(1920, 1080))
 	for i := range yuv {
 		yuv[i] = 128
 	}

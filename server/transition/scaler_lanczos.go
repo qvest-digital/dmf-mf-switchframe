@@ -22,7 +22,7 @@ const (
 )
 
 // ScaleYUV420WithQuality scales a YUV420 planar frame using the selected algorithm.
-// Same buffer layout as ScaleYUV420: src and dst must be yuvFrameSize(w,h) bytes.
+// Same buffer layout as ScaleYUV420: src and dst must be video.YUV420FrameSize(w,h) bytes.
 func ScaleYUV420WithQuality(src []byte, srcW, srcH int, dst []byte, dstW, dstH int, quality ScaleQuality) {
 	if srcW == dstW && srcH == dstH {
 		copy(dst, src)

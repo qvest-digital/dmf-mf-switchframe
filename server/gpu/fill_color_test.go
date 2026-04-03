@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 func TestFillColor(t *testing.T) {
@@ -23,7 +25,7 @@ func TestFillColor(t *testing.T) {
 	require.NoError(t, err)
 
 	// Download and verify
-	yuv := make([]byte, yuvFrameSize(64, 64))
+	yuv := make([]byte, video.YUV420FrameSize(64, 64))
 	require.NoError(t, Download(ctx, yuv, frame, 64, 64))
 
 	// Check Y plane
@@ -52,8 +54,8 @@ func TestFillColorMatchesFillBlack(t *testing.T) {
 	require.NoError(t, FillBlack(ctx, f1))
 	require.NoError(t, FillColor(ctx, f2, ColorBlack))
 
-	yuv1 := make([]byte, yuvFrameSize(64, 64))
-	yuv2 := make([]byte, yuvFrameSize(64, 64))
+	yuv1 := make([]byte, video.YUV420FrameSize(64, 64))
+	yuv2 := make([]byte, video.YUV420FrameSize(64, 64))
 	require.NoError(t, Download(ctx, yuv1, f1, 64, 64))
 	require.NoError(t, Download(ctx, yuv2, f2, 64, 64))
 	require.Equal(t, yuv1, yuv2, "FillColor(black) should match FillBlack")

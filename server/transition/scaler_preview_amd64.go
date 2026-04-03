@@ -1,12 +1,14 @@
 package transition
 
+import "github.com/zsiec/switchframe/server/internal/video"
+
 // ScaleYUV420Preview scales a YUV420 frame optimized for preview encoding.
 // On amd64, uses box-shrink 2x + bilinear for the remainder when the source
 // is ≥1.5x the destination. This avoids the expensive scalar bilinear gather
 // on 75% of the source pixels.
 func ScaleYUV420Preview(src []byte, srcW, srcH int, dst []byte, dstW, dstH int, boxBuf *[]byte) {
 	if srcW == dstW && srcH == dstH {
-		copy(dst[:yuvFrameSize(srcW, srcH)], src[:yuvFrameSize(srcW, srcH)])
+		copy(dst[:video.YUV420FrameSize(srcW, srcH)], src[:video.YUV420FrameSize(srcW, srcH)])
 		return
 	}
 
@@ -14,7 +16,7 @@ func ScaleYUV420Preview(src []byte, srcW, srcH int, dst []byte, dstW, dstH int, 
 	if srcW >= dstW*3/2 && srcH >= dstH*3/2 && srcW >= 4 && srcH >= 4 {
 		halfW := srcW / 2
 		halfH := srcH / 2
-		halfSize := yuvFrameSize(halfW, halfH)
+		halfSize := video.YUV420FrameSize(halfW, halfH)
 		if boxBuf != nil {
 			if cap(*boxBuf) < halfSize {
 				*boxBuf = make([]byte, halfSize)

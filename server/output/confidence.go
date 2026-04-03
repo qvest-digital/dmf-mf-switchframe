@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/zsiec/prism/media"
+
 	"github.com/zsiec/switchframe/server/codec"
+	"github.com/zsiec/switchframe/server/internal/video"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -120,7 +122,7 @@ func (cm *ConfidenceMonitor) IngestVideo(frame *media.VideoFrame) {
 	if w == dstW && h == dstH {
 		scaledYUV = yuv
 	} else {
-		scaledSize := yuvFrameSize(dstW, dstH)
+		scaledSize := video.YUV420FrameSize(dstW, dstH)
 		if cap(cm.scaledBuf) < scaledSize {
 			cm.scaledBuf = make([]byte, scaledSize)
 		}

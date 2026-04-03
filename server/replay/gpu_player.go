@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/zsiec/prism/media"
+
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/gpu"
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // GPUPlayerConfig configures a GPU-accelerated replay player instance.
@@ -370,7 +372,7 @@ func (p *gpuReplayPlayer) run(ctx context.Context) {
 	// CPU-side YUV buffer for RawVideoOutput (lazily used).
 	var cpuYUV []byte
 	if p.config.RawVideoOutput != nil {
-		cpuYUV = make([]byte, yuvFrameSize(w, h))
+		cpuYUV = make([]byte, video.YUV420FrameSize(w, h))
 	}
 
 	// Create timer for pacing.

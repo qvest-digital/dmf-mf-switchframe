@@ -17,8 +17,8 @@ type Processor struct {
 	lutCSX []int32
 	lutCSY []int32
 	// LUTs for 4:2:2 chroma (half-width, full-height). Built lazily by Warp10.
-	lut422CSX []int32
-	lut422CSY []int32
+	lut422CSX  []int32
+	lut422CSY  []int32
 	lut422Once sync.Once
 	// mmapBacking is non-nil when the LUT slices point into an mmap'd region.
 	// Close() must be called to munmap.
@@ -60,7 +60,7 @@ func (p *Processor) STArrays() (s, t []float32) {
 }
 
 // ProcessYUV applies the ST map warp to a YUV420 frame. src and dst must
-// both be yuvFrameSize(w,h) bytes. The three planes (Y, Cb, Cr) are warped
+// both be video.YUV420FrameSize(w,h) bytes. The three planes (Y, Cb, Cr) are warped
 // sequentially on the calling goroutine.
 //
 // Profiling showed that goroutine parallelism (both 4-worker Y split and

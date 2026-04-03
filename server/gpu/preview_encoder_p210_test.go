@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // makeUniform422P10 creates a YUV422P10LE buffer with a uniform value.
@@ -130,7 +132,7 @@ func TestScaleP210ToNV12On_UniformValue(t *testing.T) {
 	err = ScaleP210ToNV12On(ctx, dst, src, nil)
 	require.NoError(t, err)
 
-	dstYUV := make([]byte, yuvFrameSize(dstW, dstH))
+	dstYUV := make([]byte, video.YUV420FrameSize(dstW, dstH))
 	require.NoError(t, Download(ctx, dstYUV, dst, dstW, dstH))
 
 	// Y values should be ~128 (512 >> 2)
@@ -173,7 +175,7 @@ func TestScaleP210ToNV12On_MaxValue(t *testing.T) {
 
 	require.NoError(t, ScaleP210ToNV12On(ctx, dst, src, nil))
 
-	dstYUV := make([]byte, yuvFrameSize(dstW, dstH))
+	dstYUV := make([]byte, video.YUV420FrameSize(dstW, dstH))
 	require.NoError(t, Download(ctx, dstYUV, dst, dstW, dstH))
 
 	for i := 0; i < len(dstYUV); i++ {
@@ -204,7 +206,7 @@ func TestScaleP210ToNV12On_ZeroValue(t *testing.T) {
 	defer dst.Release()
 
 	// Pre-fill NV12 dst with 0xFF to verify it gets overwritten
-	fillData := make([]byte, yuvFrameSize(dstW, dstH))
+	fillData := make([]byte, video.YUV420FrameSize(dstW, dstH))
 	for i := range fillData {
 		fillData[i] = 0xFF
 	}
@@ -216,7 +218,7 @@ func TestScaleP210ToNV12On_ZeroValue(t *testing.T) {
 
 	require.NoError(t, ScaleP210ToNV12On(ctx, dst, src, nil))
 
-	dstYUV := make([]byte, yuvFrameSize(dstW, dstH))
+	dstYUV := make([]byte, video.YUV420FrameSize(dstW, dstH))
 	require.NoError(t, Download(ctx, dstYUV, dst, dstW, dstH))
 
 	for i := 0; i < len(dstYUV); i++ {
@@ -252,7 +254,7 @@ func TestScaleP210ToNV12On_1080pTo480p(t *testing.T) {
 
 	require.NoError(t, ScaleP210ToNV12On(ctx, dst, src, nil))
 
-	dstYUV := make([]byte, yuvFrameSize(dstW, dstH))
+	dstYUV := make([]byte, video.YUV420FrameSize(dstW, dstH))
 	require.NoError(t, Download(ctx, dstYUV, dst, dstW, dstH))
 
 	// Spot-check Y values (should be 100 = 400 >> 2)
@@ -309,7 +311,7 @@ func TestScaleP210ToNV12On_ChromaSeparation(t *testing.T) {
 
 	require.NoError(t, ScaleP210ToNV12On(ctx, dst, src, nil))
 
-	dstYUV := make([]byte, yuvFrameSize(dstW, dstH))
+	dstYUV := make([]byte, video.YUV420FrameSize(dstW, dstH))
 	require.NoError(t, Download(ctx, dstYUV, dst, dstW, dstH))
 
 	// Cb should be ~50 (200>>2), Cr should be ~200 (800>>2).

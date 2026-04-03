@@ -9,12 +9,6 @@ import (
 	"github.com/zsiec/switchframe/server/internal"
 )
 
-// yuvFrameSize returns the byte size of a YUV420 8-bit frame (w*h*3/2).
-// Local helper to avoid importing the switcher package.
-func yuvFrameSize(w, h int) int {
-	return w * h * 3 / 2
-}
-
 // Sentinel errors for the output package.
 var (
 	ErrRecorderActive    = errors.New("output: recorder already active")

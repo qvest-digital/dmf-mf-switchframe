@@ -11,6 +11,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 func TestGPUSourceManager_IngestAndGetFrame(t *testing.T) {
@@ -50,7 +52,7 @@ func TestGPUSourceManager_IngestAndGetFrame(t *testing.T) {
 	require.NotNil(t, frame)
 	defer frame.Release()
 
-	out := make([]byte, yuvFrameSize(w, h))
+	out := make([]byte, video.YUV420FrameSize(w, h))
 	err := Download(ctx, out, frame, w, h)
 	require.NoError(t, err)
 
@@ -152,7 +154,7 @@ func TestGPUSourceManager_STMapCorrection(t *testing.T) {
 	defer mgr.Close()
 
 	// Create a gradient frame where the left half is bright, right half is dark.
-	yuv := make([]byte, yuvFrameSize(w, h))
+	yuv := make([]byte, video.YUV420FrameSize(w, h))
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			if x < w/2 {
@@ -176,7 +178,7 @@ func TestGPUSourceManager_STMapCorrection(t *testing.T) {
 	defer frame.Release()
 
 	// Download and check the flip happened: left should now be dark, right bright.
-	out := make([]byte, yuvFrameSize(w, h))
+	out := make([]byte, video.YUV420FrameSize(w, h))
 	err := Download(ctx, out, frame, w, h)
 	require.NoError(t, err)
 
@@ -427,7 +429,7 @@ func TestGPUSourceManager_ReadCachedFrame_ConcurrentAccess(t *testing.T) {
 			if yuv != nil {
 				reads.Add(1)
 				// Verify basic consistency: dimensions match YUV buffer size.
-				expected := yuvFrameSize(rw, rh)
+				expected := video.YUV420FrameSize(rw, rh)
 				assert.Equal(t, expected, len(yuv),
 					"YUV buffer size should match dimensions")
 			}

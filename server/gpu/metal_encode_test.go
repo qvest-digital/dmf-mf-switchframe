@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 func TestGPUEncode(t *testing.T) {
@@ -22,7 +24,7 @@ func TestGPUEncode(t *testing.T) {
 
 	// Upload a test pattern
 	w, h := 640, 480
-	testYUV := make([]byte, yuvFrameSize(w, h))
+	testYUV := make([]byte, video.YUV420FrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		testYUV[i] = byte(i%220) + 16
 	}
@@ -83,7 +85,7 @@ func TestGPUEncodeMultipleFrames(t *testing.T) {
 	defer frame.Release()
 
 	w, h := 320, 240
-	testYUV := make([]byte, yuvFrameSize(w, h))
+	testYUV := make([]byte, video.YUV420FrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		testYUV[i] = byte(i%220) + 16
 	}
@@ -144,7 +146,7 @@ func TestGPUEncodeNativeVTIDRKeyframes(t *testing.T) {
 	defer frame.Release()
 
 	// Upload test pattern
-	testYUV := make([]byte, yuvFrameSize(w, h))
+	testYUV := make([]byte, video.YUV420FrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		testYUV[i] = byte(i%220) + 16
 	}

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // makeTestFrames creates n test frames with sequential PTS and 4x4 YUV data.
@@ -69,7 +71,7 @@ func TestIdleLoop_BlackFrameCorrectSize(t *testing.T) {
 			defer loop.Close()
 
 			frame := loop.NextFrame()
-			expected := yuvFrameSize(tc.w, tc.h)
+			expected := video.YUV420FrameSize(tc.w, tc.h)
 			if len(frame.YUV) != expected {
 				t.Fatalf("YUV len = %d, want %d", len(frame.YUV), expected)
 			}

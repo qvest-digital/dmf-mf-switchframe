@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 func TestChromaKeyGreenScreen(t *testing.T) {
@@ -24,7 +26,7 @@ func TestChromaKeyGreenScreen(t *testing.T) {
 
 	// Create a "green screen" frame: Y=128, Cb=44 (green), Cr=21 (green)
 	// BT.709 green: approximately Cb~44, Cr~21
-	yuv := make([]byte, yuvFrameSize(w, h))
+	yuv := make([]byte, video.YUV420FrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		yuv[i] = 128 // Y
 	}
@@ -47,7 +49,7 @@ func TestChromaKeyGreenScreen(t *testing.T) {
 	require.NoError(t, err)
 
 	// Download mask and verify it's mostly transparent (green keyed out)
-	maskYUV := make([]byte, yuvFrameSize(w, h))
+	maskYUV := make([]byte, video.YUV420FrameSize(w, h))
 	require.NoError(t, Download(ctx, maskYUV, maskBuf, w, h))
 
 	// Check that most of the Y plane of the mask is near 0 (transparent)
@@ -76,7 +78,7 @@ func TestChromaKeyNonGreen(t *testing.T) {
 	defer maskBuf.Release()
 
 	// Create a non-green frame (neutral gray: Cb=128, Cr=128)
-	yuv := make([]byte, yuvFrameSize(w, h))
+	yuv := make([]byte, video.YUV420FrameSize(w, h))
 	for i := 0; i < w*h; i++ {
 		yuv[i] = 128
 	}
@@ -94,7 +96,7 @@ func TestChromaKeyNonGreen(t *testing.T) {
 	err = ChromaKey(ctx, frame, maskBuf, cfg)
 	require.NoError(t, err)
 
-	maskYUV := make([]byte, yuvFrameSize(w, h))
+	maskYUV := make([]byte, video.YUV420FrameSize(w, h))
 	require.NoError(t, Download(ctx, maskYUV, maskBuf, w, h))
 
 	// Non-green frame should be mostly opaque (alpha=255)
@@ -123,7 +125,7 @@ func TestLumaKey(t *testing.T) {
 	defer maskBuf.Release()
 
 	// Create frame with dark left (Y=20) and bright right (Y=200)
-	yuv := make([]byte, yuvFrameSize(w, h))
+	yuv := make([]byte, video.YUV420FrameSize(w, h))
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			if x < w/2 {
@@ -143,7 +145,7 @@ func TestLumaKey(t *testing.T) {
 	err = LumaKey(ctx, frame, maskBuf, lut)
 	require.NoError(t, err)
 
-	maskYUV := make([]byte, yuvFrameSize(w, h))
+	maskYUV := make([]byte, video.YUV420FrameSize(w, h))
 	require.NoError(t, Download(ctx, maskYUV, maskBuf, w, h))
 
 	// Dark side should be transparent, bright side opaque

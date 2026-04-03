@@ -4,19 +4,21 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 func TestMockDecoderDecode(t *testing.T) {
 	dec := &mockDecoder{
 		width:  1920,
 		height: 1080,
-		yuvOut: make([]byte, yuvFrameSize(1920, 1080)),
+		yuvOut: make([]byte, video.YUV420FrameSize(1920, 1080)),
 	}
 	yuv, w, h, err := dec.Decode([]byte{0x00, 0x00, 0x00, 0x01})
 	require.NoError(t, err)
 	require.Equal(t, 1920, w)
 	require.Equal(t, 1080, h)
-	require.Equal(t, yuvFrameSize(1920, 1080), len(yuv))
+	require.Equal(t, video.YUV420FrameSize(1920, 1080), len(yuv))
 }
 
 func TestMockDecoderAllocatesWhenNilYUV(t *testing.T) {
@@ -25,7 +27,7 @@ func TestMockDecoderAllocatesWhenNilYUV(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1280, w)
 	require.Equal(t, 720, h)
-	require.Equal(t, yuvFrameSize(1280, 720), len(yuv))
+	require.Equal(t, video.YUV420FrameSize(1280, 720), len(yuv))
 }
 
 func TestMockDecoderClose(t *testing.T) {
@@ -38,7 +40,7 @@ func TestMockEncoderEncode(t *testing.T) {
 		avcOut:     []byte{0x00, 0x00, 0x00, 0x01, 0x65},
 		isKeyframe: true,
 	}
-	yuv := make([]byte, yuvFrameSize(1920, 1080))
+	yuv := make([]byte, video.YUV420FrameSize(1920, 1080))
 	data, isIDR, err := enc.Encode(yuv, 0, true)
 	require.NoError(t, err)
 	require.True(t, isIDR)
@@ -47,7 +49,7 @@ func TestMockEncoderEncode(t *testing.T) {
 
 func TestMockEncoderDefaultOutput(t *testing.T) {
 	enc := &mockEncoder{}
-	yuv := make([]byte, yuvFrameSize(1920, 1080))
+	yuv := make([]byte, video.YUV420FrameSize(1920, 1080))
 	data, isIDR, err := enc.Encode(yuv, 0, false)
 	require.NoError(t, err)
 	require.False(t, isIDR)
@@ -56,7 +58,7 @@ func TestMockEncoderDefaultOutput(t *testing.T) {
 
 func TestMockEncoderForceIDR(t *testing.T) {
 	enc := &mockEncoder{}
-	yuv := make([]byte, yuvFrameSize(1920, 1080))
+	yuv := make([]byte, video.YUV420FrameSize(1920, 1080))
 	data, isIDR, err := enc.Encode(yuv, 0, true)
 	require.NoError(t, err)
 	require.True(t, isIDR)

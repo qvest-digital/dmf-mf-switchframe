@@ -7,6 +7,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // TestColorBarRoundTrip creates a standard SMPTE-style color bar pattern in
@@ -76,7 +78,7 @@ func TestMultipleFrameRoundTrip(t *testing.T) {
 	defer pool.Close()
 
 	w, h := 320, 240
-	totalSize := yuvFrameSize(w, h)
+	totalSize := video.YUV420FrameSize(w, h)
 
 	// Create two distinct patterns
 	yuv1 := make([]byte, totalSize)
@@ -137,7 +139,7 @@ func TestFillBlackAndDownload(t *testing.T) {
 	require.NoError(t, err)
 
 	w, h := 1920, 1080
-	yuv := make([]byte, yuvFrameSize(w, h))
+	yuv := make([]byte, video.YUV420FrameSize(w, h))
 	err = Download(ctx, yuv, frame, w, h)
 	require.NoError(t, err)
 
