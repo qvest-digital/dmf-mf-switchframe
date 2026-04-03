@@ -238,6 +238,11 @@ func TestSourceDecoder_8bitPipeline_NoConversion(t *testing.T) {
 // TestDecoderFactoryForCodec_Native10bit verifies the public factory functions
 // that create native 10-bit decoders.
 func TestDecoderFactoryForCodec_Native10bit(t *testing.T) {
+	// This test requires FFmpeg (cgo) for the native 10-bit decoder.
+	if _, err := codec.NewVideoDecoder(); err != nil {
+		t.Skip("FFmpeg not available (non-cgo build)")
+	}
+
 	factory := func() (transition.VideoDecoder, error) {
 		return codec.NewVideoDecoderNative10bit()
 	}

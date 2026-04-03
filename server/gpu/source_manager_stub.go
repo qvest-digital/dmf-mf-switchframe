@@ -45,6 +45,11 @@ func (m *GPUSourceManager) ReadCachedFrame(sourceKey string) (yuv []byte, w, h i
 // AliasSource is a no-op on non-GPU builds.
 func (m *GPUSourceManager) AliasSource(dstKey, srcKey string) bool { return false }
 
+// AcquireNV12Tmp returns an error on non-GPU builds.
+func (m *GPUSourceManager) AcquireNV12Tmp(sourceKey string, w, h int) (*GPUFrame, error) {
+	return nil, ErrGPUNotAvailable
+}
+
 // Close is a no-op on non-GPU builds.
 func (m *GPUSourceManager) Close() {}
 

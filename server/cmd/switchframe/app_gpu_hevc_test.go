@@ -126,6 +126,7 @@ func TestEncoderFactoryForCodec_HEVC10bit(t *testing.T) {
 }
 
 func TestEncoderFactoryForCodec_HEVC8bit(t *testing.T) {
+	requireFFmpeg(t)
 	// Verify encoderFactoryForCodec returns a factory for HEVC 8-bit mode.
 	factory := encoderFactoryForCodec(switcher.CodecHEVC, switcher.ColorYUV420_8bit)
 	require.NotNil(t, factory, "should return non-nil factory for HEVC 8-bit")
@@ -137,6 +138,7 @@ func TestEncoderFactoryForCodec_HEVC8bit(t *testing.T) {
 }
 
 func TestEncoderFactoryForCodec_AVC(t *testing.T) {
+	requireFFmpeg(t)
 	// Verify encoderFactoryForCodec returns a factory for AVC (default).
 	factory := encoderFactoryForCodec(switcher.CodecAVC)
 	require.NotNil(t, factory, "should return non-nil factory for AVC")

@@ -203,6 +203,11 @@ func NewHEVCVideoEncoder(width, height, bitrate, fpsNum, fpsDen int) (transition
 	return nil, errFFmpegDisabled
 }
 
+// NewHEVCVideoEncoder10bit is a stub that returns an error when FFmpeg is not available.
+func NewHEVCVideoEncoder10bit(width, height, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+	return nil, errFFmpegDisabled
+}
+
 // FileProbeResult holds the result of probing a media file.
 type FileProbeResult struct {
 	VideoCodecID int
@@ -220,6 +225,9 @@ func ProbeFile(path string) (*FileProbeResult, error) {
 
 // IsH264 always returns false when FFmpeg is not available.
 func (r *FileProbeResult) IsH264() bool { return false }
+
+// IsHEVC always returns false when FFmpeg is not available.
+func (r *FileProbeResult) IsHEVC() bool { return false }
 
 // TranscodeResult holds metadata from a transcode operation.
 type TranscodeResult struct {

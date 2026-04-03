@@ -5,12 +5,22 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/switcher"
 )
+
+func requireFFmpeg(t *testing.T) {
+	t.Helper()
+	_, err := codec.NewVideoEncoder(320, 240, 500_000, 30, 1)
+	if err != nil {
+		t.Skip("FFmpeg not available (non-cgo build)")
+	}
+}
 
 // TestDecoderFactoryForColorFormat_8bit verifies that 8-bit pipeline produces
 // a standard decoder factory (H.264-compatible).
 func TestDecoderFactoryForColorFormat_8bit(t *testing.T) {
+	requireFFmpeg(t)
 	factory := decoderFactoryForColorFormat(switcher.ColorYUV420_8bit)
 	require.NotNil(t, factory, "should return non-nil factory")
 
@@ -24,6 +34,7 @@ func TestDecoderFactoryForColorFormat_8bit(t *testing.T) {
 // TestDecoderFactoryForColorFormat_10bit verifies that 10-bit pipeline produces
 // a native 10-bit decoder factory (HEVC-compatible).
 func TestDecoderFactoryForColorFormat_10bit(t *testing.T) {
+	requireFFmpeg(t)
 	factory := decoderFactoryForColorFormat(switcher.ColorYUV422_10bit)
 	require.NotNil(t, factory, "should return non-nil factory")
 
@@ -42,6 +53,7 @@ func TestDecoderFactoryForColorFormat_10bit(t *testing.T) {
 // confidence monitor. An HEVC pipeline's program output is HEVC-encoded, so
 // the confidence monitor needs an HEVC-capable decoder.
 func TestConfidenceMonitor_UsesCodecAwareFactory(t *testing.T) {
+	requireFFmpeg(t)
 	// The fix is verified by ensuring decoderFactoryForColorFormat returns
 	// different factories for different color formats.
 	h264Factory := decoderFactoryForColorFormat(switcher.ColorYUV420_8bit)
