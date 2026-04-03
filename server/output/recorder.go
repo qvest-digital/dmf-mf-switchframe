@@ -164,7 +164,7 @@ func (r *FileRecorder) cachePATandPMT(tsData []byte) {
 			continue
 		}
 		pid := mpegts.ExtractPID(tsData[i:])
-		if pid == 0 && patPkt == nil {
+		if pid == mpegts.PATPID && patPkt == nil {
 			patPkt = make([]byte, mpegts.PacketSize)
 			copy(patPkt, tsData[i:i+mpegts.PacketSize])
 		}
