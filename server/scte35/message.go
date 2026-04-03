@@ -9,6 +9,8 @@ import (
 	"time"
 
 	scte35lib "github.com/Comcast/scte35-go/pkg/scte35"
+
+	"github.com/zsiec/switchframe/server/internal/mpegts"
 )
 
 // Command type constants matching the SCTE-35 specification.
@@ -487,7 +489,7 @@ func decodeSpliceInsertCancel(data []byte) (*CueMessage, error) {
 	}
 	crcData := data[:sectionLen-4]
 	expectedCRC := binary.BigEndian.Uint32(data[sectionLen-4 : sectionLen])
-	if crc32MPEG2(crcData) != expectedCRC {
+	if mpegts.CRC32MPEG2(crcData) != expectedCRC {
 		return nil, errors.New("CRC-32 mismatch")
 	}
 
@@ -510,21 +512,4 @@ func decodeSpliceInsertCancel(data []byte) (*CueMessage, error) {
 		EventID:                    eventID,
 		SpliceEventCancelIndicator: true,
 	}, nil
-}
-
-// crc32MPEG2 computes CRC-32/MPEG-2 as used in SCTE-35 sections.
-// Polynomial 0x04C11DB7 (normal form), initial value 0xFFFFFFFF, no final complement.
-func crc32MPEG2(data []byte) uint32 {
-	crc := uint32(0xFFFFFFFF)
-	for _, b := range data {
-		crc ^= uint32(b) << 24
-		for i := 0; i < 8; i++ {
-			if crc&0x80000000 != 0 {
-				crc = (crc << 1) ^ 0x04C11DB7
-			} else {
-				crc <<= 1
-			}
-		}
-	}
-	return crc
 }

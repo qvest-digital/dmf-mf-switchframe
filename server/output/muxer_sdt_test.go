@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/internal/mpegts"
 )
 
 func TestBuildSDTPacket_ValidTSPacket(t *testing.T) {
@@ -69,7 +70,7 @@ func TestBuildSDTPacket_ValidCRC(t *testing.T) {
 		uint32(section[len(section)-3])<<16 |
 		uint32(section[len(section)-2])<<8 |
 		uint32(section[len(section)-1])
-	computedCRC := crc32MPEG2(sectionWithoutCRC)
+	computedCRC := mpegts.CRC32MPEG2(sectionWithoutCRC)
 	assert.Equal(t, storedCRC, computedCRC, "CRC-32/MPEG-2 must be valid")
 }
 
@@ -148,7 +149,7 @@ func TestBuildNITPacket_ValidCRC(t *testing.T) {
 		uint32(section[len(section)-3])<<16 |
 		uint32(section[len(section)-2])<<8 |
 		uint32(section[len(section)-1])
-	computedCRC := crc32MPEG2(sectionWithoutCRC)
+	computedCRC := mpegts.CRC32MPEG2(sectionWithoutCRC)
 	assert.Equal(t, storedCRC, computedCRC, "NIT CRC-32/MPEG-2 must be valid")
 }
 
@@ -183,5 +184,5 @@ func TestTSMuxer_NITInOutput(t *testing.T) {
 func TestCRC32MPEG2_KnownValues(t *testing.T) {
 	// Known CRC-32/MPEG-2 test vectors
 	// "123456789" → 0x0376E6E7
-	assert.Equal(t, uint32(0x0376E6E7), crc32MPEG2([]byte("123456789")))
+	assert.Equal(t, uint32(0x0376E6E7), mpegts.CRC32MPEG2([]byte("123456789")))
 }

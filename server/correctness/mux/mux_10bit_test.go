@@ -13,6 +13,7 @@ import (
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/correctness/testutil"
+	"github.com/zsiec/switchframe/server/internal/mpegts"
 	"github.com/zsiec/switchframe/server/output"
 )
 
@@ -89,7 +90,7 @@ func TestMux10bit_HEVCStreamType(t *testing.T) {
 			continue
 		}
 		for _, es := range d.PMT.ElementaryStreams {
-			if es.ElementaryPID == videoPID {
+			if es.ElementaryPID == mpegts.VideoPID {
 				// ISO 13818-1: stream_type 0x24 = H.265/HEVC
 				assert.Equal(t, astits.StreamTypeH265Video, es.StreamType,
 					"HEVC video stream type should be H.265 (0x24), got %d", es.StreamType)
@@ -98,7 +99,7 @@ func TestMux10bit_HEVCStreamType(t *testing.T) {
 		}
 	}
 
-	assert.True(t, foundH265Stream, "PMT should contain H.265 video stream at PID 0x%04X", videoPID)
+	assert.True(t, foundH265Stream, "PMT should contain H.265 video stream at PID 0x%04X", mpegts.VideoPID)
 }
 
 // ============================================================================
@@ -157,7 +158,7 @@ func TestMux10bit_VPSPrepended(t *testing.T) {
 	packets := testutil.ParseTSPackets(t, tsData)
 	var videoPayload []byte
 	for _, pkt := range packets {
-		if pkt.PID == videoPID && pkt.HasPayload {
+		if pkt.PID == mpegts.VideoPID && pkt.HasPayload {
 			videoPayload = append(videoPayload, pkt.Payload...)
 		}
 	}

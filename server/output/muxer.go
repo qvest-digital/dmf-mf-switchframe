@@ -18,16 +18,7 @@ import (
 
 const (
 	muxerBufCap = 65536 // 64KB default buffer capacity for Annex B buffers
-	// videoPID is the MPEG-TS packet identifier for the video stream (H.264 or HEVC).
-	videoPID uint16 = 0x100
-	// audioPID is the MPEG-TS packet identifier for the AAC audio stream.
-	audioPID uint16 = 0x101
-	// pmtPID is the MPEG-TS packet identifier for the Program Map Table.
-	// This matches the go-astits default PMT PID.
-	pmtPID uint16 = 0x1000
-	// defaultSCTE35PID is the default MPEG-TS packet identifier for the SCTE-35 cue stream.
-	// Used by tests and as the fallback when no PID is explicitly configured.
-	defaultSCTE35PID uint16 = 0x102
+
 	// maxPendingSCTE35 is the maximum number of SCTE-35 sections buffered
 	// before the muxer is initialized (first keyframe).
 	maxPendingSCTE35 = 10
@@ -261,13 +252,6 @@ func (m *TSMuxer) writeSCTE35Locked(data []byte) error {
 	return m.flush()
 }
 
-const (
-	// sdtPID is the MPEG-TS PID for the Service Description Table.
-	sdtPID uint16 = 0x0011
-	// nitPID is the MPEG-TS PID for the Network Information Table.
-	nitPID uint16 = 0x0010
-)
-
 // buildSDTPacket constructs a single 188-byte MPEG-TS packet containing a
 // Service Description Table (SDT) with the Switchframe service name and
 // provider. This makes the stream identifiable in tools like MediaInfo,
@@ -314,21 +298,21 @@ func buildSDTPacket() []byte {
 	// Full section: table_id + section_syntax_indicator + length + body + CRC32
 	sectionLen := len(sectionBody) + 4 // +4 for CRC32
 	section := make([]byte, 0, 3+len(sectionBody)+4)
-	section = append(section, 0x42)                                                // table_id: SDT actual
+	section = append(section, mpegts.TableIDSDT)                                   // table_id: SDT actual
 	section = append(section, byte(0xF0|((sectionLen>>8)&0x0F)), byte(sectionLen)) // section_syntax_indicator=1, reserved=0b11, section_length
 	section = append(section, sectionBody...)
 
 	// CRC-32/MPEG-2
-	crc := crc32MPEG2(section)
+	crc := mpegts.CRC32MPEG2(section)
 	section = append(section, byte(crc>>24), byte(crc>>16), byte(crc>>8), byte(crc))
 
 	// Wrap in 188-byte TS packet
 	pkt := make([]byte, 188)
-	pkt[0] = 0x47                          // sync byte
-	pkt[1] = 0x40 | byte((sdtPID>>8)&0x1F) // payload_unit_start=1, PID high
-	pkt[2] = byte(sdtPID & 0xFF)           // PID low
-	pkt[3] = 0x10                          // adaptation_field_control=01 (payload only), cc=0
-	pkt[4] = 0x00                          // pointer_field
+	pkt[0] = 0x47                                 // sync byte
+	pkt[1] = 0x40 | byte((mpegts.SDTPID>>8)&0x1F) // payload_unit_start=1, PID high
+	pkt[2] = byte(mpegts.SDTPID & 0xFF)           // PID low
+	pkt[3] = 0x10                                 // adaptation_field_control=01 (payload only), cc=0
+	pkt[4] = 0x00                                 // pointer_field
 	copy(pkt[5:], section)
 	for i := 5 + len(section); i < 188; i++ {
 		pkt[i] = 0xFF // stuffing
@@ -373,44 +357,27 @@ func buildNITPacket() []byte {
 	// Full section: table_id + section_syntax_indicator + length + body + CRC32
 	sectionLen := len(sectionBody) + 4 // +4 for CRC32
 	section := make([]byte, 0, 3+len(sectionBody)+4)
-	section = append(section, 0x40)                                                // table_id: NIT actual
+	section = append(section, mpegts.TableIDNIT)                                   // table_id: NIT actual
 	section = append(section, byte(0xF0|((sectionLen>>8)&0x0F)), byte(sectionLen)) // section_syntax_indicator=1, reserved, section_length
 	section = append(section, sectionBody...)
 
 	// CRC-32/MPEG-2
-	crc := crc32MPEG2(section)
+	crc := mpegts.CRC32MPEG2(section)
 	section = append(section, byte(crc>>24), byte(crc>>16), byte(crc>>8), byte(crc))
 
 	// Wrap in 188-byte TS packet
 	pkt := make([]byte, 188)
-	pkt[0] = 0x47                          // sync byte
-	pkt[1] = 0x40 | byte((nitPID>>8)&0x1F) // payload_unit_start=1, PID high
-	pkt[2] = byte(nitPID & 0xFF)           // PID low
-	pkt[3] = 0x10                          // adaptation_field_control=01 (payload only), cc=0
-	pkt[4] = 0x00                          // pointer_field
+	pkt[0] = 0x47                                 // sync byte
+	pkt[1] = 0x40 | byte((mpegts.NITPID>>8)&0x1F) // payload_unit_start=1, PID high
+	pkt[2] = byte(mpegts.NITPID & 0xFF)           // PID low
+	pkt[3] = 0x10                                 // adaptation_field_control=01 (payload only), cc=0
+	pkt[4] = 0x00                                 // pointer_field
 	copy(pkt[5:], section)
 	for i := 5 + len(section); i < 188; i++ {
 		pkt[i] = 0xFF // stuffing
 	}
 
 	return pkt
-}
-
-// crc32MPEG2 computes the CRC-32/MPEG-2 checksum used by MPEG-TS PSI tables.
-// Polynomial: 0x04C11DB7, init: 0xFFFFFFFF, no final XOR.
-func crc32MPEG2(data []byte) uint32 {
-	crc := uint32(0xFFFFFFFF)
-	for _, b := range data {
-		crc ^= uint32(b) << 24
-		for i := 0; i < 8; i++ {
-			if crc&0x80000000 != 0 {
-				crc = (crc << 1) ^ 0x04C11DB7
-			} else {
-				crc <<= 1
-			}
-		}
-	}
-	return crc
 }
 
 // cueiDescriptor builds the CUEI registration descriptor required by
@@ -573,7 +540,7 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 	}
 
 	md := &astits.MuxerData{
-		PID:             videoPID,
+		PID:             mpegts.VideoPID,
 		AdaptationField: af,
 		PES: &astits.PESData{
 			Header: &astits.PESHeader{
@@ -646,7 +613,7 @@ func (m *TSMuxer) WriteAudio(frame *media.AudioFrame) error {
 	ptsRef := &astits.ClockReference{Base: muxerPTS}
 
 	md := &astits.MuxerData{
-		PID: audioPID,
+		PID: mpegts.AudioPID,
 		PES: &astits.PESData{
 			Header: &astits.PESHeader{
 				StreamID: 0xC0,
@@ -704,7 +671,7 @@ func (m *TSMuxer) init(_ int64) error {
 		videoStreamType = astits.StreamTypeH265Video
 	}
 	if err := m.muxer.AddElementaryStream(astits.PMTElementaryStream{
-		ElementaryPID: videoPID,
+		ElementaryPID: mpegts.VideoPID,
 		StreamType:    videoStreamType,
 		ElementaryStreamDescriptors: []*astits.Descriptor{
 			{
@@ -725,7 +692,7 @@ func (m *TSMuxer) init(_ int64) error {
 
 	// Register audio elementary stream (AAC with ADTS) with language and alignment.
 	if err := m.muxer.AddElementaryStream(astits.PMTElementaryStream{
-		ElementaryPID: audioPID,
+		ElementaryPID: mpegts.AudioPID,
 		StreamType:    astits.StreamTypeADTS,
 		ElementaryStreamDescriptors: []*astits.Descriptor{
 			{
@@ -763,7 +730,7 @@ func (m *TSMuxer) init(_ int64) error {
 	}
 
 	// Set video PID as the PCR source.
-	m.muxer.SetPCRPID(videoPID)
+	m.muxer.SetPCRPID(mpegts.VideoPID)
 
 	// Write initial PAT/PMT tables.
 	if _, err := m.muxer.WriteTables(); err != nil {

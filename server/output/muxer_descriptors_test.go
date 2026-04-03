@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/internal/mpegts"
 )
 
 // initMuxerAndCollect initializes a TSMuxer with a keyframe and returns the TS output.
@@ -35,7 +36,7 @@ func findPMTPayload(t *testing.T, tsData []byte) []byte {
 			continue
 		}
 		pid := uint16(tsData[i+1]&0x1F)<<8 | uint16(tsData[i+2])
-		if pid != pmtPID {
+		if pid != mpegts.PMTPID {
 			continue
 		}
 		// payload_unit_start_indicator
@@ -100,7 +101,7 @@ func findDescriptorInES(t *testing.T, pmtPayload []byte, esPID uint16, descTag b
 func TestPMT_VideoES_HasMaxBitrateDescriptor(t *testing.T) {
 	tsData := initMuxerAndCollect(t)
 	pmtPayload := findPMTPayload(t, tsData)
-	desc := findDescriptorInES(t, pmtPayload, videoPID, 0x0E) // tag 0x0E = maximum_bitrate
+	desc := findDescriptorInES(t, pmtPayload, mpegts.VideoPID, 0x0E) // tag 0x0E = maximum_bitrate
 	require.NotNil(t, desc, "video ES must have maximum bitrate descriptor (0x0E)")
 
 	// Descriptor format: tag(1) + length(1) + reserved(2 bits) + max_bitrate(22 bits)
@@ -114,7 +115,7 @@ func TestPMT_VideoES_HasMaxBitrateDescriptor(t *testing.T) {
 func TestPMT_VideoES_HasDataStreamAlignmentDescriptor(t *testing.T) {
 	tsData := initMuxerAndCollect(t)
 	pmtPayload := findPMTPayload(t, tsData)
-	desc := findDescriptorInES(t, pmtPayload, videoPID, 0x06) // tag 0x06 = data_stream_alignment
+	desc := findDescriptorInES(t, pmtPayload, mpegts.VideoPID, 0x06) // tag 0x06 = data_stream_alignment
 	require.NotNil(t, desc, "video ES must have data stream alignment descriptor (0x06)")
 
 	assert.Equal(t, byte(0x06), desc[0])
@@ -125,7 +126,7 @@ func TestPMT_VideoES_HasDataStreamAlignmentDescriptor(t *testing.T) {
 func TestPMT_AudioES_HasLanguageDescriptor(t *testing.T) {
 	tsData := initMuxerAndCollect(t)
 	pmtPayload := findPMTPayload(t, tsData)
-	desc := findDescriptorInES(t, pmtPayload, audioPID, 0x0A) // tag 0x0A = ISO_639_language
+	desc := findDescriptorInES(t, pmtPayload, mpegts.AudioPID, 0x0A) // tag 0x0A = ISO_639_language
 	require.NotNil(t, desc, "audio ES must have ISO 639 language descriptor (0x0A)")
 
 	assert.Equal(t, byte(0x0A), desc[0])
@@ -137,7 +138,7 @@ func TestPMT_AudioES_HasLanguageDescriptor(t *testing.T) {
 func TestPMT_AudioES_HasDataStreamAlignmentDescriptor(t *testing.T) {
 	tsData := initMuxerAndCollect(t)
 	pmtPayload := findPMTPayload(t, tsData)
-	desc := findDescriptorInES(t, pmtPayload, audioPID, 0x06) // tag 0x06 = data_stream_alignment
+	desc := findDescriptorInES(t, pmtPayload, mpegts.AudioPID, 0x06) // tag 0x06 = data_stream_alignment
 	require.NotNil(t, desc, "audio ES must have data stream alignment descriptor (0x06)")
 
 	assert.Equal(t, byte(0x06), desc[0])

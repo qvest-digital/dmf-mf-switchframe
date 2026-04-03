@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/internal/mpegts"
 	"github.com/zsiec/switchframe/server/scte35"
 )
 
@@ -38,7 +39,7 @@ func TestMuxerCorrectness_SpliceInsert_Immediate_IDRAligned(t *testing.T) {
 	assertValidTSPackets(t, h.output)
 
 	// Extract and verify the SCTE-35 section.
-	sections := extractSCTE35Sections(t, h.output, defaultSCTE35PID)
+	sections := extractSCTE35Sections(t, h.output, mpegts.SCTE35PID)
 	require.GreaterOrEqual(t, len(sections), 1, "expected at least 1 SCTE-35 section")
 
 	sec := sections[0]
@@ -71,7 +72,7 @@ func TestMuxerCorrectness_SpliceInsert_Scheduled_SpliceTimePTS(t *testing.T) {
 	h.output = nil
 	h.feedGOP(t, 30)
 
-	sections := extractSCTE35Sections(t, h.output, defaultSCTE35PID)
+	sections := extractSCTE35Sections(t, h.output, mpegts.SCTE35PID)
 	require.GreaterOrEqual(t, len(sections), 1, "expected at least 1 SCTE-35 section")
 
 	sec := sections[0]
@@ -103,7 +104,7 @@ func TestMuxerCorrectness_TimeSignal_ProgramStart_Immediate(t *testing.T) {
 	h.output = nil
 	h.feedGOP(t, 30)
 
-	sections := extractSCTE35Sections(t, h.output, defaultSCTE35PID)
+	sections := extractSCTE35Sections(t, h.output, mpegts.SCTE35PID)
 	require.GreaterOrEqual(t, len(sections), 1, "expected at least 1 SCTE-35 section")
 
 	sec := sections[0]
@@ -131,7 +132,7 @@ func TestMuxerCorrectness_TimeSignal_ProgramEnd_Immediate(t *testing.T) {
 	h.output = nil
 	h.feedGOP(t, 30)
 
-	sections := extractSCTE35Sections(t, h.output, defaultSCTE35PID)
+	sections := extractSCTE35Sections(t, h.output, mpegts.SCTE35PID)
 	require.GreaterOrEqual(t, len(sections), 1)
 
 	sec := sections[0]
@@ -159,7 +160,7 @@ func TestMuxerCorrectness_TimeSignal_BreakStart_WithDuration(t *testing.T) {
 	h.output = nil
 	h.feedGOP(t, 30)
 
-	sections := extractSCTE35Sections(t, h.output, defaultSCTE35PID)
+	sections := extractSCTE35Sections(t, h.output, mpegts.SCTE35PID)
 	require.GreaterOrEqual(t, len(sections), 1)
 
 	sec := sections[0]
@@ -183,7 +184,7 @@ func TestMuxerCorrectness_OnSpliceOut_FiredOnCueOut(t *testing.T) {
 	var fired atomic.Bool
 
 	h := newTestHarnessWithConfig(t, scte35.InjectorConfig{
-		SCTE35PID: defaultSCTE35PID,
+		SCTE35PID: mpegts.SCTE35PID,
 		OnSpliceOut: func() {
 			fired.Store(true)
 		},
@@ -203,7 +204,7 @@ func TestMuxerCorrectness_OnSpliceOut_NotFiredForCueIn(t *testing.T) {
 	var fired atomic.Bool
 
 	h := newTestHarnessWithConfig(t, scte35.InjectorConfig{
-		SCTE35PID: defaultSCTE35PID,
+		SCTE35PID: mpegts.SCTE35PID,
 		OnSpliceOut: func() {
 			fired.Store(true)
 		},
@@ -239,7 +240,7 @@ func TestMuxerCorrectness_AutoReturn_GeneratesCueIn(t *testing.T) {
 	h.feedGOP(t, 30)
 
 	// Verify the cue-out was flushed.
-	cueOutSections := extractSCTE35Sections(t, h.output, defaultSCTE35PID)
+	cueOutSections := extractSCTE35Sections(t, h.output, mpegts.SCTE35PID)
 	require.GreaterOrEqual(t, len(cueOutSections), 1, "expected cue-out section")
 
 	// Wait for auto-return timer to fire (100ms break + margin).
@@ -249,7 +250,7 @@ func TestMuxerCorrectness_AutoReturn_GeneratesCueIn(t *testing.T) {
 	h.output = nil
 	h.feedGOP(t, 30)
 
-	cueInSections := extractSCTE35Sections(t, h.output, defaultSCTE35PID)
+	cueInSections := extractSCTE35Sections(t, h.output, mpegts.SCTE35PID)
 	require.GreaterOrEqual(t, len(cueInSections), 1, "expected auto-return cue-in section")
 
 	// The auto-return should be a cue-in (IsOut=false).
@@ -290,7 +291,7 @@ func TestMuxerCorrectness_HoldBreak_PreventsAutoReturn(t *testing.T) {
 	h.feedGOP(t, 30)
 
 	// There should be no cue-in sections — the hold should have prevented it.
-	sections := extractSCTE35Sections(t, h.output, defaultSCTE35PID)
+	sections := extractSCTE35Sections(t, h.output, mpegts.SCTE35PID)
 	for _, sec := range sections {
 		if sec.msg.CommandType == scte35.CommandSpliceInsert && !sec.msg.IsOut {
 			t.Fatal("found unexpected cue-in section — HoldBreak should have prevented auto-return")
@@ -329,7 +330,7 @@ func TestMuxerCorrectness_TSPacketStructure(t *testing.T) {
 			continue
 		}
 		pid := uint16(pkt[1]&0x1F)<<8 | uint16(pkt[2])
-		if pid != defaultSCTE35PID {
+		if pid != mpegts.SCTE35PID {
 			continue
 		}
 

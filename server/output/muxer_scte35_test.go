@@ -10,7 +10,7 @@ import (
 
 func TestTSMuxer_WriteSCTE35_BeforeInit(t *testing.T) {
 	m := NewTSMuxer()
-	m.SetSCTE35PID(defaultSCTE35PID)
+	m.SetSCTE35PID(mpegts.SCTE35PID)
 	var output []byte
 	m.SetOutput(func(data []byte) {
 		output = append(output, data...)
@@ -29,7 +29,7 @@ func TestTSMuxer_WriteSCTE35_BeforeInit(t *testing.T) {
 
 func TestTSMuxer_WriteSCTE35_AfterInit(t *testing.T) {
 	m := NewTSMuxer()
-	m.SetSCTE35PID(defaultSCTE35PID)
+	m.SetSCTE35PID(mpegts.SCTE35PID)
 	var output []byte
 	m.SetOutput(func(data []byte) {
 		output = append(output, data...)
@@ -61,7 +61,7 @@ func TestTSMuxer_WriteSCTE35_AfterInit(t *testing.T) {
 
 func TestTSMuxer_WriteSCTE35_PID(t *testing.T) {
 	m := NewTSMuxer()
-	m.SetSCTE35PID(defaultSCTE35PID)
+	m.SetSCTE35PID(mpegts.SCTE35PID)
 	var output []byte
 	m.SetOutput(func(data []byte) {
 		output = append(output, data...)
@@ -145,7 +145,7 @@ func TestTSMuxer_CurrentPTS(t *testing.T) {
 
 func TestTSMuxer_WriteSCTE35_ContinuityCounter(t *testing.T) {
 	m := NewTSMuxer()
-	m.SetSCTE35PID(defaultSCTE35PID)
+	m.SetSCTE35PID(mpegts.SCTE35PID)
 	var output []byte
 	m.SetOutput(func(data []byte) {
 		output = append(output, data...)
@@ -194,7 +194,7 @@ func TestTSMuxer_WriteSCTE35_ContinuityCounter(t *testing.T) {
 
 func TestTSMuxer_WriteSCTE35_PendingFlushed(t *testing.T) {
 	m := NewTSMuxer()
-	m.SetSCTE35PID(defaultSCTE35PID)
+	m.SetSCTE35PID(mpegts.SCTE35PID)
 	var output []byte
 	m.SetOutput(func(data []byte) {
 		output = append(output, data...)
@@ -270,7 +270,7 @@ func TestTSMuxer_WriteSCTE35_CustomPID(t *testing.T) {
 
 func TestTSMuxer_WriteSCTE35_IDRAligned_FlushedOnKeyframe(t *testing.T) {
 	m := NewTSMuxer()
-	m.SetSCTE35PID(defaultSCTE35PID)
+	m.SetSCTE35PID(mpegts.SCTE35PID)
 	var output []byte
 	m.SetOutput(func(data []byte) {
 		output = append(output, data...)
@@ -297,7 +297,7 @@ func TestTSMuxer_WriteSCTE35_IDRAligned_FlushedOnKeyframe(t *testing.T) {
 	}
 	_ = m.WriteVideo(nonIDR)
 	// Check there are no SCTE-35 PID packets in the output.
-	if countSCTE35Packets(output, defaultSCTE35PID) > 0 {
+	if countSCTE35Packets(output, mpegts.SCTE35PID) > 0 {
 		t.Fatal("SCTE-35 should not flush on non-keyframe")
 	}
 
@@ -311,7 +311,7 @@ func TestTSMuxer_WriteSCTE35_IDRAligned_FlushedOnKeyframe(t *testing.T) {
 		Codec:    "h264",
 	}
 	_ = m.WriteVideo(idr)
-	if countSCTE35Packets(output, defaultSCTE35PID) == 0 {
+	if countSCTE35Packets(output, mpegts.SCTE35PID) == 0 {
 		t.Fatal("SCTE-35 should flush on keyframe")
 	}
 
@@ -324,10 +324,10 @@ func TestTSMuxer_WriteSCTE35_IDRAligned_FlushedOnKeyframe(t *testing.T) {
 			continue
 		}
 		pid := uint16(pkt[1]&0x1F)<<8 | uint16(pkt[2])
-		if pid == defaultSCTE35PID && firstSCTE35 < 0 {
+		if pid == mpegts.SCTE35PID && firstSCTE35 < 0 {
 			firstSCTE35 = i
 		}
-		if pid == videoPID && firstVideo < 0 {
+		if pid == mpegts.VideoPID && firstVideo < 0 {
 			firstVideo = i
 		}
 	}
@@ -344,7 +344,7 @@ func TestTSMuxer_WriteSCTE35_IDRAligned_FlushedOnKeyframe(t *testing.T) {
 
 func TestTSMuxer_WriteSCTE35_IDRAligned_TimeoutFlush(t *testing.T) {
 	m := NewTSMuxer()
-	m.SetSCTE35PID(defaultSCTE35PID)
+	m.SetSCTE35PID(mpegts.SCTE35PID)
 	var output []byte
 	m.SetOutput(func(data []byte) {
 		output = append(output, data...)
@@ -369,14 +369,14 @@ func TestTSMuxer_WriteSCTE35_IDRAligned_TimeoutFlush(t *testing.T) {
 	}
 
 	// The SCTE-35 section should have been flushed by the timeout.
-	if countSCTE35Packets(output, defaultSCTE35PID) == 0 {
+	if countSCTE35Packets(output, mpegts.SCTE35PID) == 0 {
 		t.Fatal("SCTE-35 should flush after timeout frames even without keyframe")
 	}
 }
 
 func TestTSMuxer_WriteSCTE35_IDRAligned_NoPendingNoFlush(t *testing.T) {
 	m := NewTSMuxer()
-	m.SetSCTE35PID(defaultSCTE35PID)
+	m.SetSCTE35PID(mpegts.SCTE35PID)
 	var output []byte
 	m.SetOutput(func(data []byte) {
 		output = append(output, data...)
@@ -396,14 +396,14 @@ func TestTSMuxer_WriteSCTE35_IDRAligned_NoPendingNoFlush(t *testing.T) {
 	}
 	_ = m.WriteVideo(idr)
 
-	if countSCTE35Packets(output, defaultSCTE35PID) > 0 {
+	if countSCTE35Packets(output, mpegts.SCTE35PID) > 0 {
 		t.Fatal("no SCTE-35 packets expected when none are pending")
 	}
 }
 
 func TestTSMuxer_WriteSCTE35_IDRAligned_MultipleSections(t *testing.T) {
 	m := NewTSMuxer()
-	m.SetSCTE35PID(defaultSCTE35PID)
+	m.SetSCTE35PID(mpegts.SCTE35PID)
 	var output []byte
 	m.SetOutput(func(data []byte) {
 		output = append(output, data...)
@@ -428,7 +428,7 @@ func TestTSMuxer_WriteSCTE35_IDRAligned_MultipleSections(t *testing.T) {
 	}
 	_ = m.WriteVideo(idr)
 
-	count := countSCTE35Packets(output, defaultSCTE35PID)
+	count := countSCTE35Packets(output, mpegts.SCTE35PID)
 	if count < 2 {
 		t.Fatalf("expected at least 2 SCTE-35 packets (one per section), got %d", count)
 	}

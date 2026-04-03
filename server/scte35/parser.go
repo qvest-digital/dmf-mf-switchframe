@@ -7,17 +7,6 @@ import (
 	"github.com/zsiec/switchframe/server/internal/mpegts"
 )
 
-const (
-	// scte35TableID is the MPEG-2 table_id for SCTE-35 splice_info_section.
-	scte35TableID = 0xFC
-
-	// pmtTableID is the MPEG-2 table_id for Program Map Table.
-	pmtTableID = 0x02
-
-	// streamTypeSCTE35 is the PMT stream_type for SCTE-35 data.
-	streamTypeSCTE35 = 0x86
-)
-
 var (
 	// ErrEmptyData is returned when ParseFromTS receives nil or empty input.
 	ErrEmptyData = errors.New("scte35: empty TS data")
@@ -155,7 +144,7 @@ func ParseFromTS(pid uint16, data []byte) (*CueMessage, error) {
 	}
 
 	// Validate table_id.
-	if sectionData[0] != scte35TableID {
+	if sectionData[0] != mpegts.TableIDSCTE35 {
 		return nil, fmt.Errorf("scte35: unexpected table_id 0x%02x (expected 0xFC)", sectionData[0])
 	}
 
@@ -173,7 +162,7 @@ func DetectSCTE35PID(pmtData []byte) []uint16 {
 	}
 
 	// Validate table_id.
-	if pmtData[0] != pmtTableID {
+	if pmtData[0] != mpegts.TableIDPMT {
 		return nil
 	}
 
@@ -211,7 +200,7 @@ func DetectSCTE35PID(pmtData []byte) []uint16 {
 		esPID := mpegts.ExtractPID(pmtData[offset:])
 		esInfoLength := int(pmtData[offset+3]&0x0F)<<8 | int(pmtData[offset+4])
 
-		if streamType == streamTypeSCTE35 {
+		if streamType == mpegts.StreamTypeSCTE35 {
 			pids = append(pids, esPID)
 		}
 

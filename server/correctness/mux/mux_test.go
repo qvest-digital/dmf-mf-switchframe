@@ -13,14 +13,8 @@ import (
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/correctness/testutil"
+	"github.com/zsiec/switchframe/server/internal/mpegts"
 	"github.com/zsiec/switchframe/server/output"
-)
-
-const (
-	// PIDs used by TSMuxer (must match output/muxer.go constants).
-	videoPID uint16 = 0x100
-	audioPID uint16 = 0x101
-	pmtPID   uint16 = 0x1000
 )
 
 // muxFrames encodes numFrames of video (and optionally audio) through the
@@ -172,7 +166,7 @@ func TestPMTPresent(t *testing.T) {
 	tsData := muxFrames(t, 60, false)
 	require.NotEmpty(t, tsData)
 
-	testutil.AssertPMTPresent(t, tsData, pmtPID, 7)
+	testutil.AssertPMTPresent(t, tsData, mpegts.PMTPID, 7)
 }
 
 // TestPATPMTRepeatInterval muxes 10 seconds of video and checks that
@@ -235,7 +229,7 @@ func TestPCRAccuracy(t *testing.T) {
 	// some video PTS.
 	var videoPTSValues []int64
 	for _, pkt := range packets {
-		if pkt.PID != videoPID || !pkt.HasPayload || len(pkt.Payload) < 14 {
+		if pkt.PID != mpegts.VideoPID || !pkt.HasPayload || len(pkt.Payload) < 14 {
 			continue
 		}
 		// PES header starts with 0x00 0x00 0x01
@@ -426,7 +420,7 @@ func TestRandomAccessIndicator(t *testing.T) {
 	// Verify that at least one video packet has RAI set (the first keyframe).
 	raiCount := 0
 	for _, pkt := range packets {
-		if pkt.PID == videoPID && pkt.AdaptationField != nil && pkt.AdaptationField.RandomAccessIndicator {
+		if pkt.PID == mpegts.VideoPID && pkt.AdaptationField != nil && pkt.AdaptationField.RandomAccessIndicator {
 			raiCount++
 		}
 	}

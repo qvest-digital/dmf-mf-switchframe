@@ -284,7 +284,7 @@ func TestSetTSDiscontinuityIndicator_PayloadOnly(t *testing.T) {
 	require.Equal(t, byte(0x01), (pkt[3]>>4)&0x03,
 		"precondition: AFC should be 01 (payload only)")
 
-	setTSDiscontinuityIndicator(pkt)
+	mpegts.SetDiscontinuityIndicator(pkt)
 
 	// AFC should now be 11 (adaptation + payload).
 	afc := (pkt[3] >> 4) & 0x03
@@ -313,7 +313,7 @@ func TestSetTSDiscontinuityIndicator_AdaptationFieldPresent(t *testing.T) {
 	// Discontinuity flag should NOT be set initially.
 	require.Zero(t, pkt[5]&0x80, "precondition: discontinuity should not be set")
 
-	setTSDiscontinuityIndicator(pkt)
+	mpegts.SetDiscontinuityIndicator(pkt)
 
 	// AFC should remain 11.
 	afc := (pkt[3] >> 4) & 0x03
@@ -336,7 +336,7 @@ func TestSetTSDiscontinuityIndicator_MultiplePackets(t *testing.T) {
 	pmt[mpegts.PacketSize-2] = 0xFF
 	buf := append(pat, pmt...)
 
-	setTSDiscontinuityIndicator(buf)
+	mpegts.SetDiscontinuityIndicator(buf)
 
 	// Both packets should have discontinuity flag set.
 	for i := 0; i < 2; i++ {
@@ -363,7 +363,7 @@ func TestSetTSDiscontinuityIndicator_PayloadOnlyWithStuffing(t *testing.T) {
 	original := make([]byte, mpegts.PacketSize)
 	copy(original, pkt)
 
-	setTSDiscontinuityIndicator(pkt)
+	mpegts.SetDiscontinuityIndicator(pkt)
 
 	// AFC should now be 11 (adaptation + payload).
 	afc := (pkt[3] >> 4) & 0x03
@@ -396,7 +396,7 @@ func TestSetTSDiscontinuityIndicator_PayloadOnlyNonStuffingTrailingBytes(t *test
 	original := make([]byte, mpegts.PacketSize)
 	copy(original, pkt)
 
-	setTSDiscontinuityIndicator(pkt)
+	mpegts.SetDiscontinuityIndicator(pkt)
 
 	// The packet should NOT be modified since truncating would corrupt data.
 	require.Equal(t, original, pkt,
@@ -415,7 +415,7 @@ func TestSetTSDiscontinuityIndicator_PayloadOnlyOneByteNonStuffing(t *testing.T)
 	original := make([]byte, mpegts.PacketSize)
 	copy(original, pkt)
 
-	setTSDiscontinuityIndicator(pkt)
+	mpegts.SetDiscontinuityIndicator(pkt)
 
 	// The packet should NOT be modified.
 	require.Equal(t, original, pkt,

@@ -17,20 +17,6 @@ func ComputeMuxrate(videoBps, audioBps int64) int64 {
 	return int64(float64(videoBps+audioBps) * 1.12)
 }
 
-// nullTSPacket returns a single 188-byte null TS packet (PID 0x1FFF).
-// ISO 13818-1 defines null packets as stuffing that decoders discard.
-func nullTSPacket() [mpegts.PacketSize]byte {
-	var pkt [mpegts.PacketSize]byte
-	pkt[0] = mpegts.SyncByte
-	pkt[1] = 0x1F // PID high bits (no PUSI, no TEI, no priority)
-	pkt[2] = 0xFF // PID low bits → PID = 0x1FFF
-	pkt[3] = 0x10 // AFC=01 (payload only), CC=0
-	for i := 4; i < mpegts.PacketSize; i++ {
-		pkt[i] = 0xFF // null payload
-	}
-	return pkt
-}
-
 // CBRPacer paces MPEG-TS output to a constant bitrate by inserting null
 // packets (PID 0x1FFF) between real TS data. It replaces AsyncAdapter for
 // SRT destinations when CBR mode is enabled.
@@ -99,7 +85,7 @@ func NewCBRPacer(muxrateBps int64, tickInterval time.Duration) *CBRPacer {
 		nullPktsForSlab = 1
 	}
 
-	nullPkt := nullTSPacket()
+	nullPkt := mpegts.NullPacket()
 	nullSlab := make([]byte, nullPktsForSlab*mpegts.PacketSize)
 	for i := 0; i < nullPktsForSlab; i++ {
 		copy(nullSlab[i*mpegts.PacketSize:], nullPkt[:])

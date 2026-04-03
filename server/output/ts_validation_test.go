@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/codec"
+	"github.com/zsiec/switchframe/server/internal/mpegts"
 )
 
 // ---------------------------------------------------------------------------
@@ -546,7 +547,7 @@ func analyzeTSStream(data []byte) *tsAnalysis {
 		}
 
 		// Video PES analysis (PID 0x100).
-		if pid == videoPID && pusi {
+		if pid == mpegts.VideoPID && pusi {
 			pesPayload := extractPESPayload(payload)
 			if len(pesPayload) > 0 {
 				hasSPS := false
@@ -594,7 +595,7 @@ func analyzeTSStream(data []byte) *tsAnalysis {
 		}
 
 		// Audio PES analysis (PID 0x101).
-		if pid == audioPID && pusi {
+		if pid == mpegts.AudioPID && pusi {
 			pesPayload := extractPESPayload(payload)
 			if len(pesPayload) > 0 {
 				if codec.IsADTS(pesPayload) {
@@ -863,17 +864,17 @@ func TestTSOutputValidation(t *testing.T) {
 		foundVideo := false
 		foundAudio := false
 		for _, s := range a.PMTStreams {
-			if s.PID == videoPID && s.StreamType == 0x1B {
+			if s.PID == mpegts.VideoPID && s.StreamType == 0x1B {
 				foundVideo = true
 			}
-			if s.PID == audioPID && s.StreamType == 0x0F {
+			if s.PID == mpegts.AudioPID && s.StreamType == 0x0F {
 				foundAudio = true
 			}
 		}
 		require.True(t, foundVideo,
-			"PMT must declare video stream (PID 0x%04X, stream_type 0x1B)", videoPID)
+			"PMT must declare video stream (PID 0x%04X, stream_type 0x1B)", mpegts.VideoPID)
 		require.True(t, foundAudio,
-			"PMT must declare audio stream (PID 0x%04X, stream_type 0x0F)", audioPID)
+			"PMT must declare audio stream (PID 0x%04X, stream_type 0x0F)", mpegts.AudioPID)
 	})
 
 	t.Run("continuity_counters", func(t *testing.T) {
@@ -886,13 +887,13 @@ func TestTSOutputValidation(t *testing.T) {
 
 	t.Run("no_orphan_pids", func(t *testing.T) {
 		allowedPIDs := map[uint16]string{
-			0x0000:   "PAT",
-			nitPID:   "NIT",
-			sdtPID:   "SDT",
-			0x1000:   "PMT",
-			videoPID: "video",
-			audioPID: "audio",
-			0x1FFF:   "null",
+			0x0000:          "PAT",
+			mpegts.NITPID:   "NIT",
+			mpegts.SDTPID:   "SDT",
+			0x1000:          "PMT",
+			mpegts.VideoPID: "video",
+			mpegts.AudioPID: "audio",
+			0x1FFF:          "null",
 		}
 		for pid := range a.PIDs {
 			_, ok := allowedPIDs[pid]

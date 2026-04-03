@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/internal/mpegts"
 )
 
 // wrapInTS wraps SCTE-35 section data into one or more 188-byte MPEG-TS packets
@@ -133,7 +134,7 @@ func buildMinimalPMT(streams []pmtStream) []byte {
 	}
 
 	// CRC-32: use a simple MPEG-2 CRC calculation
-	crc := crc32MPEG2(buf[:offset])
+	crc := mpegts.CRC32MPEG2(buf[:offset])
 	binary.BigEndian.PutUint32(buf[offset:], crc)
 
 	return buf

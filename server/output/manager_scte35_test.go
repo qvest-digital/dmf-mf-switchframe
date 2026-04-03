@@ -2,6 +2,8 @@ package output
 
 import (
 	"testing"
+
+	"github.com/zsiec/switchframe/server/internal/mpegts"
 )
 
 func TestManager_InjectSCTE35_NoMuxer(t *testing.T) {
@@ -52,7 +54,7 @@ func TestManager_RebuildAdapters_SCTE35Filter(t *testing.T) {
 	}
 
 	m.mu.Lock()
-	m.scte35PID = defaultSCTE35PID // enable SCTE-35 filtering
+	m.scte35PID = mpegts.SCTE35PID // enable SCTE-35 filtering
 	m.destinations["enabled"] = destEnabled
 	m.destinations["disabled"] = destDisabled
 	stale := m.rebuildAdaptersLocked()

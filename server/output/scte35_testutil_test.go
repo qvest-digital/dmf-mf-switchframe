@@ -9,6 +9,7 @@ import (
 	astits "github.com/asticode/go-astits"
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/internal/mpegts"
 	"github.com/zsiec/switchframe/server/scte35"
 )
 
@@ -29,7 +30,7 @@ func newTestHarness(t *testing.T) *testHarness {
 	h := &testHarness{}
 
 	h.muxer = NewTSMuxer()
-	h.muxer.SetSCTE35PID(defaultSCTE35PID)
+	h.muxer.SetSCTE35PID(mpegts.SCTE35PID)
 	h.muxer.SetOutput(func(data []byte) {
 		h.output = append(h.output, data...)
 	})
@@ -45,7 +46,7 @@ func newTestHarnessWithConfig(t *testing.T, config scte35.InjectorConfig) *testH
 	h := &testHarness{}
 
 	h.muxer = NewTSMuxer()
-	h.muxer.SetSCTE35PID(defaultSCTE35PID)
+	h.muxer.SetSCTE35PID(mpegts.SCTE35PID)
 	h.muxer.SetOutput(func(data []byte) {
 		h.output = append(h.output, data...)
 	})
@@ -67,7 +68,7 @@ func (h *testHarness) initInjector(t *testing.T) {
 		return
 	}
 	h.injector = scte35.NewInjector(scte35.InjectorConfig{
-		SCTE35PID: defaultSCTE35PID,
+		SCTE35PID: mpegts.SCTE35PID,
 	}, func(data []byte) {
 		_ = h.muxer.WriteSCTE35(data)
 	}, func() int64 {
@@ -253,10 +254,10 @@ func assertSCTE35BeforeIDR(t *testing.T, data []byte) {
 			continue
 		}
 		pid := uint16(pkt[1]&0x1F)<<8 | uint16(pkt[2])
-		if pid == defaultSCTE35PID && firstSCTE35 < 0 {
+		if pid == mpegts.SCTE35PID && firstSCTE35 < 0 {
 			firstSCTE35 = i
 		}
-		if pid == videoPID && firstVideo < 0 {
+		if pid == mpegts.VideoPID && firstVideo < 0 {
 			firstVideo = i
 		}
 	}

@@ -183,7 +183,7 @@ func TestMuxerDiscardsAudioBeforeKeyframe(t *testing.T) {
 	// audio was discarded.
 	for i := 0; i < len(output); i += 188 {
 		pid := (uint16(output[i+1]&0x1F) << 8) | uint16(output[i+2])
-		require.NotEqual(t, audioPID, pid, "output should not contain pre-keyframe audio")
+		require.NotEqual(t, mpegts.AudioPID, pid, "output should not contain pre-keyframe audio")
 	}
 }
 
@@ -294,7 +294,7 @@ func TestMuxerDiscardsAudioBeforeFirstVideoKeyframe(t *testing.T) {
 			continue
 		}
 		pid := (uint16(pkt[1]&0x1F) << 8) | uint16(pkt[2])
-		if pid != audioPID {
+		if pid != mpegts.AudioPID {
 			continue
 		}
 		// Check PUSI (Payload Unit Start Indicator)
@@ -416,9 +416,9 @@ func TestTSMuxer_UpstreamPTSRebase_AVAligned(t *testing.T) {
 		pts |= int64(ptsBytes[4]>>1) & 0x7F
 
 		switch pid {
-		case videoPID:
+		case mpegts.VideoPID:
 			videoPTSValues = append(videoPTSValues, pts)
-		case audioPID:
+		case mpegts.AudioPID:
 			audioPTSValues = append(audioPTSValues, pts)
 		}
 	}
@@ -504,9 +504,9 @@ func TestTSMuxer_LipSyncAppliedUpstream(t *testing.T) {
 		pts |= int64(ptsBytes[3]) << 7
 		pts |= int64(ptsBytes[4]>>1) & 0x7F
 
-		if pid == videoPID && videoPTS == 0 {
+		if pid == mpegts.VideoPID && videoPTS == 0 {
 			videoPTS = pts
-		} else if pid == audioPID && audioPTS == 0 {
+		} else if pid == mpegts.AudioPID && audioPTS == 0 {
 			audioPTS = pts
 		}
 	}
@@ -700,7 +700,7 @@ func TestTSMuxer_WriteSCTE35_BeforeInit_Buffers(t *testing.T) {
 	m.SetOutput(func(data []byte) { output = append(output, data...) })
 
 	// Enable SCTE-35.
-	m.SetSCTE35PID(defaultSCTE35PID)
+	m.SetSCTE35PID(mpegts.SCTE35PID)
 
 	// Write SCTE-35 before any keyframe.
 	section := makeTestSCTE35Section()
@@ -721,7 +721,7 @@ func TestTSMuxer_WriteSCTE35_AfterInit_ProducesPackets(t *testing.T) {
 	m.SetOutput(func(data []byte) { output = append(output, data...) })
 
 	// Enable SCTE-35 and initialize with keyframe.
-	m.SetSCTE35PID(defaultSCTE35PID)
+	m.SetSCTE35PID(mpegts.SCTE35PID)
 	require.NoError(t, m.WriteVideo(makeTestKeyframe2(90000)))
 	output = nil // clear init output
 
@@ -741,7 +741,7 @@ func TestTSMuxer_WriteSCTE35_AfterInit_ProducesPackets(t *testing.T) {
 	for i := 0; i+188 <= len(output); i += 188 {
 		require.Equal(t, byte(0x47), output[i], "TS packet must start with sync byte")
 		pid := uint16(output[i+1]&0x1F)<<8 | uint16(output[i+2])
-		if pid == defaultSCTE35PID {
+		if pid == mpegts.SCTE35PID {
 			foundSCTE35 = true
 			pusi := output[i+1]&0x40 != 0
 			if pusi {
@@ -749,7 +749,7 @@ func TestTSMuxer_WriteSCTE35_AfterInit_ProducesPackets(t *testing.T) {
 			}
 		}
 	}
-	require.True(t, foundSCTE35, "output should contain packets with SCTE-35 PID 0x%04x", defaultSCTE35PID)
+	require.True(t, foundSCTE35, "output should contain packets with SCTE-35 PID 0x%04x", mpegts.SCTE35PID)
 	require.True(t, foundPUSI, "first SCTE-35 packet should have PUSI=1")
 }
 
@@ -759,7 +759,7 @@ func TestTSMuxer_WriteSCTE35_BufferedFlushOnInit(t *testing.T) {
 	m.SetOutput(func(data []byte) { output = append(output, data...) })
 
 	// Enable SCTE-35.
-	m.SetSCTE35PID(defaultSCTE35PID)
+	m.SetSCTE35PID(mpegts.SCTE35PID)
 
 	// Buffer a SCTE-35 section before init.
 	section := makeTestSCTE35Section()
@@ -775,7 +775,7 @@ func TestTSMuxer_WriteSCTE35_BufferedFlushOnInit(t *testing.T) {
 	foundSCTE35 := false
 	for i := 0; i+188 <= len(output); i += 188 {
 		pid := uint16(output[i+1]&0x1F)<<8 | uint16(output[i+2])
-		if pid == defaultSCTE35PID {
+		if pid == mpegts.SCTE35PID {
 			foundSCTE35 = true
 			break
 		}
@@ -794,7 +794,7 @@ func TestTSMuxer_WriteSCTE35_ContinuityCounter_Increments(t *testing.T) {
 	m.SetOutput(func(data []byte) { output = append(output, data...) })
 
 	// Enable SCTE-35 and initialize.
-	m.SetSCTE35PID(defaultSCTE35PID)
+	m.SetSCTE35PID(mpegts.SCTE35PID)
 	require.NoError(t, m.WriteVideo(makeTestKeyframe2(90000)))
 	output = nil
 
@@ -810,7 +810,7 @@ func TestTSMuxer_WriteSCTE35_ContinuityCounter_Increments(t *testing.T) {
 	var ccValues []uint8
 	for i := 0; i+188 <= len(output); i += 188 {
 		pid := uint16(output[i+1]&0x1F)<<8 | uint16(output[i+2])
-		if pid == defaultSCTE35PID {
+		if pid == mpegts.SCTE35PID {
 			cc := output[i+3] & 0x0F
 			ccValues = append(ccValues, cc)
 		}
@@ -833,7 +833,7 @@ func TestTSMuxer_SCTE35_PMT_StreamType(t *testing.T) {
 	m.SetOutput(func(data []byte) { output = append(output, data...) })
 
 	// Enable SCTE-35.
-	m.SetSCTE35PID(defaultSCTE35PID)
+	m.SetSCTE35PID(mpegts.SCTE35PID)
 
 	// Initialize with keyframe — triggers PAT/PMT generation.
 	require.NoError(t, m.WriteVideo(makeTestKeyframe2(90000)))
@@ -845,8 +845,8 @@ func TestTSMuxer_SCTE35_PMT_StreamType(t *testing.T) {
 	//   reserved(3) + elementary_PID(13): 0xE1 0x02 for PID 0x102
 	foundSCTE35Stream := false
 	expectedStreamType := byte(0x86)
-	expectedPIDHigh := byte(0xE0 | byte((defaultSCTE35PID>>8)&0x1F))
-	expectedPIDLow := byte(defaultSCTE35PID & 0xFF)
+	expectedPIDHigh := byte(0xE0 | byte((mpegts.SCTE35PID>>8)&0x1F))
+	expectedPIDLow := byte(mpegts.SCTE35PID & 0xFF)
 
 	for i := 0; i+188 <= len(output); i += 188 {
 		pkt := output[i : i+188]
@@ -864,7 +864,7 @@ func TestTSMuxer_SCTE35_PMT_StreamType(t *testing.T) {
 	}
 
 	require.True(t, foundSCTE35Stream,
-		"PMT should contain SCTE-35 elementary stream with stream_type=0x86 and PID=0x%04x", defaultSCTE35PID)
+		"PMT should contain SCTE-35 elementary stream with stream_type=0x86 and PID=0x%04x", mpegts.SCTE35PID)
 
 	// Verify that a Registration descriptor (tag 0x05, length 0x04) appears
 	// in the PMT (program_info loop per SCTE-35 section 8.1). The CUEI
@@ -893,7 +893,7 @@ func TestTSMuxer_SCTE35_CUEI_InProgramInfoLoop(t *testing.T) {
 	m.SetOutput(func(data []byte) { output = append(output, data...) })
 
 	// Enable SCTE-35.
-	m.SetSCTE35PID(defaultSCTE35PID)
+	m.SetSCTE35PID(mpegts.SCTE35PID)
 
 	// Initialize with keyframe — triggers PAT/PMT generation.
 	require.NoError(t, m.WriteVideo(makeTestKeyframe2(90000)))
@@ -984,8 +984,8 @@ func TestTSMuxer_SCTE35_PMT_NoStreamType_WhenDisabled(t *testing.T) {
 	// Verify stream_type 0x86 does NOT appear in any PMT entry.
 	foundSCTE35Stream := false
 	expectedStreamType := byte(0x86)
-	expectedPIDHigh := byte(0xE0 | byte((defaultSCTE35PID>>8)&0x1F))
-	expectedPIDLow := byte(defaultSCTE35PID & 0xFF)
+	expectedPIDHigh := byte(0xE0 | byte((mpegts.SCTE35PID>>8)&0x1F))
+	expectedPIDLow := byte(mpegts.SCTE35PID & 0xFF)
 
 	for i := 0; i+188 <= len(output); i += 188 {
 		pkt := output[i : i+188]
@@ -1027,7 +1027,7 @@ func TestTSMuxer_WriteVideo_PCROnKeyframe(t *testing.T) {
 			continue
 		}
 		pid := uint16(output[i+1]&0x1F)<<8 | uint16(output[i+2])
-		if pid != videoPID {
+		if pid != mpegts.VideoPID {
 			continue
 		}
 		// Check adaptation field control (bits 5-4 of byte 3).
@@ -1081,7 +1081,7 @@ func TestTSMuxer_WriteVideo_PCRInterval(t *testing.T) {
 			continue
 		}
 		pid := uint16(allOutput[i+1]&0x1F)<<8 | uint16(allOutput[i+2])
-		if pid != videoPID {
+		if pid != mpegts.VideoPID {
 			continue
 		}
 		afc := (allOutput[i+3] >> 4) & 0x03
@@ -1156,7 +1156,7 @@ func TestTSMuxer_PCRWrapAround(t *testing.T) {
 			continue
 		}
 		pid := uint16(allOutput[i+1]&0x1F)<<8 | uint16(allOutput[i+2])
-		if pid != videoPID {
+		if pid != mpegts.VideoPID {
 			continue
 		}
 		// Check adaptation field control (bits 5-4 of byte 3).
@@ -1259,9 +1259,6 @@ func TestTSMuxer_PATRepeatedOnKeyframe(t *testing.T) {
 	require.Equal(t, 0, len(secondKeyframeOutput)%188, "output must be multiple of 188 bytes")
 
 	// Scan the second keyframe's output for PAT (PID 0x0000) and PMT (PID 0x1000).
-	const patPID uint16 = 0x0000
-	const pmtPID uint16 = 0x1000
-
 	foundPAT := false
 	foundPMT := false
 	firstPATOffset := -1
@@ -1269,16 +1266,16 @@ func TestTSMuxer_PATRepeatedOnKeyframe(t *testing.T) {
 	for i := 0; i+188 <= len(secondKeyframeOutput); i += 188 {
 		require.Equal(t, byte(0x47), secondKeyframeOutput[i], "TS sync byte")
 		pid := uint16(secondKeyframeOutput[i+1]&0x1F)<<8 | uint16(secondKeyframeOutput[i+2])
-		if pid == patPID {
+		if pid == mpegts.PATPID {
 			foundPAT = true
 			if firstPATOffset < 0 {
 				firstPATOffset = i
 			}
 		}
-		if pid == pmtPID {
+		if pid == mpegts.PMTPID {
 			foundPMT = true
 		}
-		if pid == videoPID && firstVideoOffset < 0 {
+		if pid == mpegts.VideoPID && firstVideoOffset < 0 {
 			firstVideoOffset = i
 		}
 	}
@@ -1339,7 +1336,7 @@ func TestSetProgramDescriptors_EndToEnd(t *testing.T) {
 	var output []byte
 	m.SetOutput(func(data []byte) { output = append(output, data...) })
 
-	m.SetSCTE35PID(defaultSCTE35PID)
+	m.SetSCTE35PID(mpegts.SCTE35PID)
 	require.NoError(t, m.WriteVideo(makeTestKeyframe2(90000)))
 
 	// The CUEI descriptor should have been written by setProgramDescriptors
@@ -1403,14 +1400,11 @@ func TestTSMuxer_DeltaFrameNoPATPMT(t *testing.T) {
 	require.NotEmpty(t, deltaOutput, "delta frame should produce output")
 
 	// Delta frames should NOT contain PAT/PMT — only video data.
-	const patPID uint16 = 0x0000
-	const pmtPID uint16 = 0x1000
-
 	for i := 0; i+188 <= len(deltaOutput); i += 188 {
 		pid := uint16(deltaOutput[i+1]&0x1F)<<8 | uint16(deltaOutput[i+2])
-		require.NotEqual(t, patPID, pid,
+		require.NotEqual(t, mpegts.PATPID, pid,
 			"delta frame output should not contain PAT packets")
-		require.NotEqual(t, pmtPID, pid,
+		require.NotEqual(t, mpegts.PMTPID, pid,
 			"delta frame output should not contain PMT packets")
 	}
 }
@@ -1475,7 +1469,7 @@ func TestTSMuxer_HEVC_PMT_StreamType(t *testing.T) {
 			continue
 		}
 		for _, es := range d.PMT.ElementaryStreams {
-			if es.ElementaryPID == videoPID {
+			if es.ElementaryPID == mpegts.VideoPID {
 				require.Equal(t, astits.StreamTypeH265Video, es.StreamType,
 					"video stream type should be H.265 (0x24)")
 				foundH265Stream = true
@@ -1580,7 +1574,7 @@ func TestTSMuxer_HEVC_DefaultCodecIsAVC(t *testing.T) {
 			continue
 		}
 		for _, es := range d.PMT.ElementaryStreams {
-			if es.ElementaryPID == videoPID {
+			if es.ElementaryPID == mpegts.VideoPID {
 				require.Equal(t, astits.StreamTypeH264Video, es.StreamType,
 					"default video stream type should be H.264 (0x1B)")
 			}
@@ -1605,7 +1599,7 @@ func TestTSMuxer_HEVC_WithSCTE35(t *testing.T) {
 	var output []byte
 	m.SetOutput(func(data []byte) { output = append(output, data...) })
 
-	m.SetSCTE35PID(defaultSCTE35PID)
+	m.SetSCTE35PID(mpegts.SCTE35PID)
 	require.NoError(t, m.WriteVideo(makeHEVCKeyframe(90000)))
 	require.NotEmpty(t, output)
 
@@ -1622,10 +1616,10 @@ func TestTSMuxer_HEVC_WithSCTE35(t *testing.T) {
 			continue
 		}
 		for _, es := range d.PMT.ElementaryStreams {
-			if es.ElementaryPID == videoPID && es.StreamType == astits.StreamTypeH265Video {
+			if es.ElementaryPID == mpegts.VideoPID && es.StreamType == astits.StreamTypeH265Video {
 				foundH265 = true
 			}
-			if es.ElementaryPID == defaultSCTE35PID && es.StreamType == astits.StreamType(0x86) {
+			if es.ElementaryPID == mpegts.SCTE35PID && es.StreamType == astits.StreamType(0x86) {
 				foundSCTE35 = true
 			}
 		}

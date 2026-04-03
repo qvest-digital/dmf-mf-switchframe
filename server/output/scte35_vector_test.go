@@ -11,6 +11,7 @@ import (
 	astits "github.com/asticode/go-astits"
 	"github.com/stretchr/testify/require"
 	untangled "github.com/untangledco/streaming/scte35"
+	"github.com/zsiec/switchframe/server/internal/mpegts"
 	"github.com/zsiec/switchframe/server/scte35"
 )
 
@@ -162,7 +163,7 @@ func TestVector_GenerateAndCrossValidate(t *testing.T) {
 
 			assertValidTSPackets(t, h.output)
 
-			sections := extractSCTE35Sections(t, h.output, defaultSCTE35PID)
+			sections := extractSCTE35Sections(t, h.output, mpegts.SCTE35PID)
 			require.GreaterOrEqual(t, len(sections), 1, "expected at least 1 SCTE-35 section")
 
 			v.check(t, sections[0].raw)
@@ -207,7 +208,7 @@ func TestVector_GenerateAndCrossValidate(t *testing.T) {
 			if d.PMT != nil {
 				foundPMT = true
 				for _, es := range d.PMT.ElementaryStreams {
-					if es.ElementaryPID == defaultSCTE35PID {
+					if es.ElementaryPID == mpegts.SCTE35PID {
 						foundSCTE35PID = true
 						require.Equal(t, astits.StreamTypeSCTE35, es.StreamType,
 							"SCTE-35 elementary stream must have StreamType 0x86")
@@ -224,7 +225,7 @@ func TestVector_GenerateAndCrossValidate(t *testing.T) {
 				}
 			}
 
-			if d.PES != nil && d.PID == videoPID {
+			if d.PES != nil && d.PID == mpegts.VideoPID {
 				foundVideo = true
 			}
 		}

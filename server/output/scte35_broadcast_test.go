@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/internal/mpegts"
 	"github.com/zsiec/switchframe/server/scte35"
 )
 
@@ -42,7 +43,7 @@ func TestBroadcast_LongStream_CueMidStream(t *testing.T) {
 	assertSCTE35BeforeIDR(t, h.output)
 	assertValidTSPackets(t, h.output)
 
-	sections := extractSCTE35Sections(t, h.output, defaultSCTE35PID)
+	sections := extractSCTE35Sections(t, h.output, mpegts.SCTE35PID)
 	require.GreaterOrEqual(t, len(sections), 1, "expected at least 1 SCTE-35 section")
 	require.True(t, sections[0].msg.IsOut, "expected IsOut=true for cue-out")
 
@@ -74,7 +75,7 @@ func TestBroadcast_BackToBackCues(t *testing.T) {
 	h.output = nil
 	h.feedGOP(t, 30)
 
-	sections := extractSCTE35Sections(t, h.output, defaultSCTE35PID)
+	sections := extractSCTE35Sections(t, h.output, mpegts.SCTE35PID)
 	require.GreaterOrEqual(t, len(sections), 2,
 		"expected at least 2 SCTE-35 sections (cue-out + cue-in)")
 
@@ -104,14 +105,14 @@ func TestBroadcast_CueDuringPFrameRun(t *testing.T) {
 	h.output = nil
 	h.feedPFrames(t, 14)
 
-	require.Equal(t, 0, countSCTE35Packets(h.output, defaultSCTE35PID),
+	require.Equal(t, 0, countSCTE35Packets(h.output, mpegts.SCTE35PID),
 		"SCTE-35 must NOT flush on P-frames")
 
 	// Now feed a full GOP — the cue should flush before the IDR.
 	h.output = nil
 	h.feedGOP(t, 30)
 
-	sections := extractSCTE35Sections(t, h.output, defaultSCTE35PID)
+	sections := extractSCTE35Sections(t, h.output, mpegts.SCTE35PID)
 	require.GreaterOrEqual(t, len(sections), 1, "expected SCTE-35 section after IDR")
 	assertSCTE35BeforeIDR(t, h.output)
 }
@@ -137,7 +138,7 @@ func TestBroadcast_MultipleCuesSameGOP(t *testing.T) {
 
 	assertSCTE35BeforeIDR(t, h.output)
 
-	sections := extractSCTE35Sections(t, h.output, defaultSCTE35PID)
+	sections := extractSCTE35Sections(t, h.output, mpegts.SCTE35PID)
 	require.GreaterOrEqual(t, len(sections), 3,
 		"expected at least 3 SCTE-35 sections (one per cue)")
 }
@@ -163,7 +164,7 @@ func TestBroadcast_VariableGOPSize(t *testing.T) {
 
 			assertSCTE35BeforeIDR(t, h.output)
 
-			sections := extractSCTE35Sections(t, h.output, defaultSCTE35PID)
+			sections := extractSCTE35Sections(t, h.output, mpegts.SCTE35PID)
 			require.GreaterOrEqual(t, len(sections), 1,
 				"expected SCTE-35 section for GOP size %d", size)
 		})
@@ -199,7 +200,7 @@ func TestBroadcast_RapidCueOutInCycle(t *testing.T) {
 	assertValidTSPackets(t, h.output)
 
 	// maxPendingIDRSCTE35 = 4, so only the last 4 sections are kept.
-	sections := extractSCTE35Sections(t, h.output, defaultSCTE35PID)
+	sections := extractSCTE35Sections(t, h.output, mpegts.SCTE35PID)
 	require.GreaterOrEqual(t, len(sections), 4,
 		"expected at least 4 SCTE-35 sections (muxer cap)")
 }
@@ -224,7 +225,7 @@ func TestBroadcast_PTSWrap33Bit(t *testing.T) {
 	h.output = nil
 	h.feedGOP(t, 30)
 
-	sections := extractSCTE35Sections(t, h.output, defaultSCTE35PID)
+	sections := extractSCTE35Sections(t, h.output, mpegts.SCTE35PID)
 	require.GreaterOrEqual(t, len(sections), 1, "expected at least 1 SCTE-35 section")
 
 	sec := sections[0]
@@ -250,7 +251,7 @@ func TestBroadcast_AutoReturn_CueInAppearsInTS(t *testing.T) {
 	h.output = nil
 	h.feedGOP(t, 30)
 
-	cueOutSections := extractSCTE35Sections(t, h.output, defaultSCTE35PID)
+	cueOutSections := extractSCTE35Sections(t, h.output, mpegts.SCTE35PID)
 	require.GreaterOrEqual(t, len(cueOutSections), 1, "expected cue-out section")
 
 	// Verify the cue-out.
@@ -270,7 +271,7 @@ func TestBroadcast_AutoReturn_CueInAppearsInTS(t *testing.T) {
 	h.output = nil
 	h.feedGOP(t, 30)
 
-	cueInSections := extractSCTE35Sections(t, h.output, defaultSCTE35PID)
+	cueInSections := extractSCTE35Sections(t, h.output, mpegts.SCTE35PID)
 	require.GreaterOrEqual(t, len(cueInSections), 1, "expected auto-return cue-in section")
 
 	// Find the cue-in.
@@ -313,7 +314,7 @@ func TestBroadcast_InterleavedAudioVideo(t *testing.T) {
 	assertValidTSPackets(t, h.output)
 	assertSCTE35BeforeIDR(t, h.output)
 
-	sections := extractSCTE35Sections(t, h.output, defaultSCTE35PID)
+	sections := extractSCTE35Sections(t, h.output, mpegts.SCTE35PID)
 	require.GreaterOrEqual(t, len(sections), 1, "expected SCTE-35 section with interleaved audio")
 }
 
@@ -334,7 +335,7 @@ func TestBroadcast_PreRollRepetition(t *testing.T) {
 	h.output = nil
 	h.feedGOP(t, 30)
 
-	sections := extractSCTE35Sections(t, h.output, defaultSCTE35PID)
+	sections := extractSCTE35Sections(t, h.output, mpegts.SCTE35PID)
 	require.GreaterOrEqual(t, len(sections), 1, "expected initial pre-roll cue")
 
 	// Wait for at least one repetition cycle (1s repeat, wait 1.5s).
@@ -344,6 +345,6 @@ func TestBroadcast_PreRollRepetition(t *testing.T) {
 	h.output = nil
 	h.feedGOP(t, 30)
 
-	sections = extractSCTE35Sections(t, h.output, defaultSCTE35PID)
+	sections = extractSCTE35Sections(t, h.output, mpegts.SCTE35PID)
 	require.GreaterOrEqual(t, len(sections), 1, "expected repeated pre-roll cue")
 }

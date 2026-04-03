@@ -11,6 +11,7 @@ import (
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/correctness/testutil"
+	"github.com/zsiec/switchframe/server/internal/mpegts"
 	"github.com/zsiec/switchframe/server/output"
 )
 
@@ -444,9 +445,9 @@ func TestMuxerAudioVideoInterleaving(t *testing.T) {
 	totalAudio := 0
 
 	for _, pkt := range packets {
-		if pkt.PID == videoPID {
+		if pkt.PID == mpegts.VideoPID {
 			totalVideo++
-		} else if pkt.PID == audioPID {
+		} else if pkt.PID == mpegts.AudioPID {
 			totalAudio++
 		}
 
@@ -454,10 +455,10 @@ func TestMuxerAudioVideoInterleaving(t *testing.T) {
 			currentConsecutive++
 		} else {
 			// Flush previous run.
-			if currentPID == videoPID && currentConsecutive > maxConsecutiveVideo {
+			if currentPID == mpegts.VideoPID && currentConsecutive > maxConsecutiveVideo {
 				maxConsecutiveVideo = currentConsecutive
 			}
-			if currentPID == audioPID && currentConsecutive > maxConsecutiveAudio {
+			if currentPID == mpegts.AudioPID && currentConsecutive > maxConsecutiveAudio {
 				maxConsecutiveAudio = currentConsecutive
 			}
 			currentPID = pkt.PID
@@ -465,10 +466,10 @@ func TestMuxerAudioVideoInterleaving(t *testing.T) {
 		}
 	}
 	// Flush final run.
-	if currentPID == videoPID && currentConsecutive > maxConsecutiveVideo {
+	if currentPID == mpegts.VideoPID && currentConsecutive > maxConsecutiveVideo {
 		maxConsecutiveVideo = currentConsecutive
 	}
-	if currentPID == audioPID && currentConsecutive > maxConsecutiveAudio {
+	if currentPID == mpegts.AudioPID && currentConsecutive > maxConsecutiveAudio {
 		maxConsecutiveAudio = currentConsecutive
 	}
 
@@ -617,7 +618,7 @@ func TestMuxerRapidKeyframes(t *testing.T) {
 	raiMissing := 0
 
 	for _, pkt := range packets {
-		if pkt.PID != videoPID {
+		if pkt.PID != mpegts.VideoPID {
 			continue
 		}
 

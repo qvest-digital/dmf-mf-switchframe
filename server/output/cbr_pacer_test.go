@@ -18,7 +18,7 @@ import (
 func TestCBRPacer_NullPacketFormat(t *testing.T) {
 	// Verify null TS packets have correct format: sync byte 0x47,
 	// PID 0x1FFF, AFC=01 (payload only), payload all 0xFF.
-	pkt := nullTSPacket()
+	pkt := mpegts.NullPacket()
 	require.Len(t, pkt, mpegts.PacketSize)
 
 	assert.Equal(t, byte(0x47), pkt[0], "sync byte")

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/internal/mpegts"
 )
 
 func TestNewSpliceInsert_CueOut(t *testing.T) {
@@ -432,7 +433,7 @@ func TestCrc32MPEG2(t *testing.T) {
 	// Known test vector: empty input should return 0xFFFFFFFF (initial CRC, no data).
 	// Actually for MPEG-2 CRC, the initial value is 0xFFFFFFFF with no final XOR.
 	// For zero-length data the result is 0xFFFFFFFF.
-	crc := crc32MPEG2(nil)
+	crc := mpegts.CRC32MPEG2(nil)
 	require.Equal(t, uint32(0xFFFFFFFF), crc)
 
 	// Test with a known SCTE-35 section: encode a message and verify
@@ -448,7 +449,7 @@ func TestCrc32MPEG2(t *testing.T) {
 	sectionLen := 3 + (int(data[1]&0x0F)<<8 | int(data[2]))
 	crcData := data[:sectionLen-4]
 	expectedCRC := binary.BigEndian.Uint32(data[sectionLen-4 : sectionLen])
-	computedCRC := crc32MPEG2(crcData)
+	computedCRC := mpegts.CRC32MPEG2(crcData)
 	require.Equal(t, expectedCRC, computedCRC)
 }
 
