@@ -42,6 +42,7 @@ type SRTCaller struct {
 	ringBuf         *ringBuffer
 	bo              backoff.Backoff
 	reconnecting    atomic.Bool  // guards against duplicate reconnect goroutines
+	statsPolling    atomic.Bool  // guards against duplicate pollStats goroutines
 	pendingIDR      atomic.Bool  // when true, drop writes until a keyframe arrives
 	pendingIDRSince atomic.Int64 // UnixMilli timestamp when pendingIDR was set (for timeout)
 	bytesWritten    atomic.Int64
@@ -119,7 +120,7 @@ func (c *SRTCaller) Start(ctx context.Context) error {
 	c.state.Store(ptrTo(StateActive))
 	c.bo.Reset()
 
-	if c.stats != nil {
+	if c.stats != nil && c.statsPolling.CompareAndSwap(false, true) {
 		go c.pollStats(c.ctx)
 	}
 
@@ -296,10 +297,9 @@ func (c *SRTCaller) reconnectLoop() {
 
 		slog.Info("SRT reconnected", "address", c.config.Address, "overflowed", overflowed)
 
-		// Start stats polling — it wasn't started in Start() because the
-		// initial connection failed. Safe to start here because reconnectLoop
-		// runs at most once (guarded by CAS on c.reconnecting).
-		if c.stats != nil {
+		// Start stats polling if not already running. Uses CAS to prevent
+		// accumulating duplicate goroutines across reconnect cycles.
+		if c.stats != nil && c.statsPolling.CompareAndSwap(false, true) {
 			go c.pollStats(c.ctx)
 		}
 
@@ -340,6 +340,7 @@ func (c *SRTCaller) updateStats() {
 	if c.stats != nil {
 		c.stats.UpdateSend(srt.SendStatsUpdate{
 			RTTMs:           float64(cs.RTT) / float64(time.Millisecond),
+			RTTVarMs:        float64(cs.RTTVar) / float64(time.Millisecond),
 			SendRateMbps:    cs.MbpsSendRate,
 			SendLossRatePct: cs.SendLossRate,
 			PacketsSent:     int64(cs.SendPackets),

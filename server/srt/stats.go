@@ -159,6 +159,7 @@ func (cs *ConnStats) Update(u StatsUpdate) {
 // SendStatsUpdate holds a batch of SRT send-side metrics for ConnStats.UpdateSend.
 type SendStatsUpdate struct {
 	RTTMs           float64
+	RTTVarMs        float64
 	SendRateMbps    float64
 	SendLossRatePct float64
 	PacketsSent     int64
@@ -172,7 +173,8 @@ type SendStatsUpdate struct {
 func (cs *ConnStats) UpdateSend(u SendStatsUpdate) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
-	cs.rttMs = u.RTTMs // RTT is shared, used by both recv and send
+	cs.rttMs = u.RTTMs       // RTT is shared, used by both recv and send
+	cs.rttVarMs = u.RTTVarMs // RTTVar is also shared
 	cs.sendRateMbps = u.SendRateMbps
 	cs.sendLossRatePct = u.SendLossRatePct
 	cs.packetsSent = u.PacketsSent

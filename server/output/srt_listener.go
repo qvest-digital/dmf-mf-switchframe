@@ -299,6 +299,7 @@ func (l *SRTListener) connStatsPoll(ctx context.Context, conn srtConn) {
 			if l.stats != nil {
 				l.stats.UpdateSend(srt.SendStatsUpdate{
 					RTTMs:           float64(cs.RTT) / float64(time.Millisecond),
+					RTTVarMs:        float64(cs.RTTVar) / float64(time.Millisecond),
 					SendRateMbps:    cs.MbpsSendRate,
 					SendLossRatePct: cs.SendLossRate,
 					PacketsSent:     int64(cs.SendPackets),
