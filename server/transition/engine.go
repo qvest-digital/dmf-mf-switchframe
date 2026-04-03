@@ -931,19 +931,10 @@ func (e *Engine) getBlackFrame() []byte {
 	if e.colorFormat == video.YUV422_10bit {
 		return e.getBlackFrame10()
 	}
-	ySize := e.width * e.height
-	uvSize := (e.width / 2) * (e.height / 2)
-	total := ySize + 2*uvSize
+	total := video.YUV420_8bit.FrameSize(e.width, e.height)
 	if len(e.blackBuf) != total {
 		e.blackBuf = make([]byte, total)
-		// Y plane: 16 (BT.709 limited-range black)
-		for i := 0; i < ySize; i++ {
-			e.blackBuf[i] = 16
-		}
-		// U and V planes: 128 (neutral chroma)
-		for i := ySize; i < total; i++ {
-			e.blackBuf[i] = 128
-		}
+		video.FillBlack(e.blackBuf, video.YUV420_8bit, e.width, e.height)
 	}
 	return e.blackBuf
 }
@@ -954,17 +945,7 @@ func (e *Engine) getBlackFrame10() []byte {
 	total := video.YUV422_10bit.FrameSize(e.width, e.height)
 	if len(e.blackBuf) != total {
 		e.blackBuf = make([]byte, total)
-		ySize := e.width * e.height * 2
-		// Y plane: 64 (10-bit limited-range black)
-		for i := 0; i < ySize; i += 2 {
-			e.blackBuf[i] = 64  // low byte
-			e.blackBuf[i+1] = 0 // high byte
-		}
-		// Cb and Cr planes: 512 (10-bit neutral chroma)
-		for i := ySize; i < total; i += 2 {
-			e.blackBuf[i] = 0   // low byte of 512
-			e.blackBuf[i+1] = 2 // high byte of 512
-		}
+		video.FillBlack(e.blackBuf, video.YUV422_10bit, e.width, e.height)
 	}
 	return e.blackBuf
 }
@@ -1314,16 +1295,7 @@ func (e *Engine) BlendRaw(
 
 	// Generate broadcast-standard black frame for FTB / missing source B
 	makeBlack := func() []byte {
-		ySize := outW * outH
-		uvSize := (outW / 2) * (outH / 2)
-		black := make([]byte, ySize+2*uvSize)
-		for i := 0; i < ySize; i++ {
-			black[i] = 16 // BT.709 limited-range black
-		}
-		for i := ySize; i < ySize+2*uvSize; i++ {
-			black[i] = 128 // neutral chroma
-		}
-		return black
+		return video.NewBlackFrame(video.YUV420_8bit, outW, outH)
 	}
 
 	// Guard against nil/empty fromYUV — can happen during source flapping

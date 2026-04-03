@@ -3,6 +3,8 @@ package playout
 import (
 	"log/slog"
 	"sync"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // IdleLoop wraps an AssetProvider with auto-rewind capability. When it reaches
@@ -28,22 +30,12 @@ type IdleLoop struct {
 // NewIdleLoop creates an idle loop. If assetURI is empty, only black frames
 // are produced. width/height define the black frame dimensions.
 func NewIdleLoop(assetURI string, provider AssetProvider, w, h int) *IdleLoop {
-	ySize := w * h
-	uvSize := ySize / 4
-	black := make([]byte, ySize+2*uvSize)
-	for i := 0; i < ySize; i++ {
-		black[i] = 16 // BT.709 Y black
-	}
-	for i := ySize; i < len(black); i++ {
-		black[i] = 128 // BT.709 UV neutral
-	}
-
 	return &IdleLoop{
 		assetURI: assetURI,
 		provider: provider,
 		width:    w,
 		height:   h,
-		black:    black,
+		black:    video.NewBlackFrame(video.YUV420_8bit, w, h),
 		fps:      30.0,
 	}
 }

@@ -153,16 +153,7 @@ func (c *Compositor) computeSortedSlots(l *Layout) {
 // makeGrayFrame creates a "no signal" YUV420 frame.
 // Uses BT.709 limited range black (Y=16, Cb=128, Cr=128).
 func makeGrayFrame(w, h int) []byte {
-	ySize := w * h
-	cbSize := (w / 2) * (h / 2)
-	buf := make([]byte, ySize+cbSize*2)
-	for i := 0; i < ySize; i++ {
-		buf[i] = 16 // BT.709 limited range black
-	}
-	for i := 0; i < cbSize*2; i++ {
-		buf[ySize+i] = 128 // neutral chroma
-	}
-	return buf
+	return video.NewBlackFrame(video.YUV420_8bit, w, h)
 }
 
 // FrameSize returns the compositor's configured frame dimensions.

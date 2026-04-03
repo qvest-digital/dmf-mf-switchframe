@@ -1,7 +1,6 @@
 package playout
 
 import (
-	"encoding/binary"
 	"log/slog"
 	"sync"
 
@@ -13,31 +12,7 @@ import (
 // Layout: Y plane (w*h*2 bytes) + Cb plane (w/2*h*2 bytes) + Cr plane (w/2*h*2 bytes).
 // Total size: w*h*4 bytes.
 func NewIdleFrame10(width, height int) []byte {
-	frameSize := video.YUV422_10bitFrameSize(width, height)
-	buf := make([]byte, frameSize)
-
-	ySize := width * height
-	chromaW := width / 2
-	chromaSize := chromaW * height
-
-	// Fill Y with 64 (10-bit limited-range black)
-	for i := 0; i < ySize; i++ {
-		binary.LittleEndian.PutUint16(buf[i*2:], 64)
-	}
-
-	// Fill Cb with 512 (neutral chroma)
-	cbOff := ySize * 2
-	for i := 0; i < chromaSize; i++ {
-		binary.LittleEndian.PutUint16(buf[cbOff+i*2:], 512)
-	}
-
-	// Fill Cr with 512 (neutral chroma)
-	crOff := cbOff + chromaSize*2
-	for i := 0; i < chromaSize; i++ {
-		binary.LittleEndian.PutUint16(buf[crOff+i*2:], 512)
-	}
-
-	return buf
+	return video.NewBlackFrame(video.YUV422_10bit, width, height)
 }
 
 // makeBlackFrame10 allocates a BT.709-legal black YUV422P10LE DecodedFrame.

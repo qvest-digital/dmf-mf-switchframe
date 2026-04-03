@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // AudioFrameData holds one audio frame (typically AAC) for playout.
@@ -162,16 +164,12 @@ func NewChannel(id int, config ChannelConfig) *Channel {
 
 // makeBlackFrame allocates a BT.709-legal black YUV420 frame (Y=16, UV=128).
 func makeBlackFrame(w, h int) *DecodedFrame {
-	ySize := w * h
-	uvSize := ySize / 4
-	yuv := make([]byte, ySize+2*uvSize)
-	for i := 0; i < ySize; i++ {
-		yuv[i] = 16
+	return &DecodedFrame{
+		YUV:        video.NewBlackFrame(video.YUV420_8bit, w, h),
+		Width:      w,
+		Height:     h,
+		IsKeyframe: true,
 	}
-	for i := ySize; i < len(yuv); i++ {
-		yuv[i] = 128
-	}
-	return &DecodedFrame{YUV: yuv, Width: w, Height: h, IsKeyframe: true}
 }
 
 // Key returns the virtual source key for this channel (e.g., "playout:1").

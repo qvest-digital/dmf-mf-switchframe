@@ -8,6 +8,7 @@ import (
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/internal/atomicutil"
+	"github.com/zsiec/switchframe/server/internal/video"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -580,19 +581,8 @@ func (s *Switcher) programSourceAtomic() string {
 func (s *Switcher) makeBroadcastBlack(width, height int, pts int64) *ProcessingFrame {
 	cached := s.cachedBlackFrame.Load()
 	if cached == nil || cached.Width != width || cached.Height != height {
-		ySize := width * height
-		uvSize := (width / 2) * (height / 2)
-		buf := make([]byte, ySize+2*uvSize)
-		// Y plane: BT.709 limited-range black = 16
-		for i := 0; i < ySize; i++ {
-			buf[i] = 16
-		}
-		// Cb and Cr planes: neutral chroma = 128
-		for i := ySize; i < ySize+2*uvSize; i++ {
-			buf[i] = 128
-		}
 		cached = &ProcessingFrame{
-			Data:   buf,
+			Data:   video.NewBlackFrame(video.YUV420_8bit, width, height),
 			Width:  width,
 			Height: height,
 		}
