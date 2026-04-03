@@ -21,14 +21,9 @@ import (
 // chroma (512).
 // ==========================================================================
 
-// frameSize10 returns total bytes for a YUV422P10LE frame.
-func frameSize10(w, h int) int {
-	return w * h * 4 // Y(w*h*2) + Cb(w/2*h*2) + Cr(w/2*h*2)
-}
-
 // generateSolid10 creates a solid-color YUV422P10LE frame.
 func generateSolid10(w, h int, y, cb, cr uint16) []byte {
-	buf := make([]byte, frameSize10(w, h))
+	buf := make([]byte, video.YUV422_10bitFrameSize(w, h))
 	ySize := w * h
 	chromaW := w / 2
 	chromaSize := chromaW * h
@@ -80,7 +75,7 @@ func TestTransition10bit_MixBlend(t *testing.T) {
 	w, h := testWidth, testHeight
 	frameA := generateSolid10(w, h, 200, 512, 512)
 	frameB := generateSolid10(w, h, 800, 512, 512)
-	dst := make([]byte, frameSize10(w, h))
+	dst := make([]byte, video.YUV422_10bitFrameSize(w, h))
 
 	// pos=128 is midpoint (50%).
 	err := transition.BlendMix10(dst, frameA, frameB, w, h, 128)
@@ -111,7 +106,7 @@ func TestTransition10bit_MixAt0IsSourceA(t *testing.T) {
 	w, h := testWidth, testHeight
 	frameA := generateSolid10(w, h, 300, 400, 600)
 	frameB := generateSolid10(w, h, 700, 200, 800)
-	dst := make([]byte, frameSize10(w, h))
+	dst := make([]byte, video.YUV422_10bitFrameSize(w, h))
 
 	err := transition.BlendMix10(dst, frameA, frameB, w, h, 0)
 	require.NoError(t, err)
@@ -129,7 +124,7 @@ func TestTransition10bit_MixAt256IsSourceB(t *testing.T) {
 	w, h := testWidth, testHeight
 	frameA := generateSolid10(w, h, 300, 400, 600)
 	frameB := generateSolid10(w, h, 700, 200, 800)
-	dst := make([]byte, frameSize10(w, h))
+	dst := make([]byte, video.YUV422_10bitFrameSize(w, h))
 
 	err := transition.BlendMix10(dst, frameA, frameB, w, h, 256)
 	require.NoError(t, err)
@@ -146,7 +141,7 @@ func TestTransition10bit_FTB(t *testing.T) {
 
 	w, h := testWidth, testHeight
 	src := generateSolid10(w, h, 500, 300, 700)
-	dst := make([]byte, frameSize10(w, h))
+	dst := make([]byte, video.YUV422_10bitFrameSize(w, h))
 
 	// pos=256 means fully faded to black.
 	err := transition.BlendFTB10(dst, src, w, h, 256, true)
@@ -172,7 +167,7 @@ func TestTransition10bit_FTB_AtZero(t *testing.T) {
 
 	w, h := testWidth, testHeight
 	src := generateSolid10(w, h, 500, 300, 700)
-	dst := make([]byte, frameSize10(w, h))
+	dst := make([]byte, video.YUV422_10bitFrameSize(w, h))
 
 	err := transition.BlendFTB10(dst, src, w, h, 0, true)
 	require.NoError(t, err)
@@ -189,7 +184,7 @@ func TestTransition10bit_FTB_FullRange(t *testing.T) {
 
 	w, h := testWidth, testHeight
 	src := generateSolid10(w, h, 500, 300, 700)
-	dst := make([]byte, frameSize10(w, h))
+	dst := make([]byte, video.YUV422_10bitFrameSize(w, h))
 
 	err := transition.BlendFTB10(dst, src, w, h, 256, false)
 	require.NoError(t, err)
@@ -208,7 +203,7 @@ func TestTransition10bit_Dip(t *testing.T) {
 	w, h := testWidth, testHeight
 	frameA := generateSolid10(w, h, 500, 512, 512)
 	frameB := generateSolid10(w, h, 800, 512, 512)
-	dst := make([]byte, frameSize10(w, h))
+	dst := make([]byte, video.YUV422_10bitFrameSize(w, h))
 
 	// pos=128 is the dip midpoint (fully black).
 	err := transition.BlendDip10(dst, frameA, frameB, w, h, 128, true)
@@ -234,7 +229,7 @@ func TestTransition10bit_DipEndpoints(t *testing.T) {
 	w, h := testWidth, testHeight
 	frameA := generateSolid10(w, h, 300, 400, 600)
 	frameB := generateSolid10(w, h, 700, 200, 800)
-	dst := make([]byte, frameSize10(w, h))
+	dst := make([]byte, video.YUV422_10bitFrameSize(w, h))
 
 	// pos=0: full A.
 	err := transition.BlendDip10(dst, frameA, frameB, w, h, 0, true)
@@ -258,7 +253,7 @@ func TestTransition10bit_WipeAlphaPreservation(t *testing.T) {
 	w, h := testWidth, testHeight
 	frameA := generateSolid10(w, h, 200, 512, 512)
 	frameB := generateSolid10(w, h, 800, 512, 512)
-	dst := make([]byte, frameSize10(w, h))
+	dst := make([]byte, video.YUV422_10bitFrameSize(w, h))
 
 	// Create an alpha mask: left half = 0 (show A), right half = 255 (show B).
 	alpha := make([]byte, w*h)
@@ -299,7 +294,7 @@ func TestTransition10bit_BlendVs8bit_Proportional(t *testing.T) {
 	// 10-bit blend: A=200, B=800 at 50%.
 	frameA10 := generateSolid10(w, h, 200, 512, 512)
 	frameB10 := generateSolid10(w, h, 800, 512, 512)
-	dst10 := make([]byte, frameSize10(w, h))
+	dst10 := make([]byte, video.YUV422_10bitFrameSize(w, h))
 	err := transition.BlendMix10(dst10, frameA10, frameB10, w, h, 128)
 	require.NoError(t, err)
 	y10 := readY10(dst10, w, 0, 0)
@@ -358,7 +353,7 @@ func TestTransition10bit_BlendOutputRange(t *testing.T) {
 
 			frameA := generateSolid10(w, h, tc.aY, 512, 512)
 			frameB := generateSolid10(w, h, tc.bY, 512, 512)
-			dst := make([]byte, frameSize10(w, h))
+			dst := make([]byte, video.YUV422_10bitFrameSize(w, h))
 
 			// Test at multiple positions.
 			for _, pos := range []int{0, 64, 128, 192, 256} {
@@ -388,8 +383,8 @@ func TestTransition10bit_DeterministicBlend(t *testing.T) {
 	frameA := generateSolid10(w, h, 300, 400, 600)
 	frameB := generateSolid10(w, h, 700, 200, 800)
 
-	dst1 := make([]byte, frameSize10(w, h))
-	dst2 := make([]byte, frameSize10(w, h))
+	dst1 := make([]byte, video.YUV422_10bitFrameSize(w, h))
+	dst2 := make([]byte, video.YUV422_10bitFrameSize(w, h))
 
 	for _, pos := range []int{0, 64, 128, 192, 256} {
 		err := transition.BlendMix10(dst1, frameA, frameB, w, h, pos)
@@ -413,7 +408,7 @@ func TestTransition10bit_BlendStinger(t *testing.T) {
 	w, h := testWidth, testHeight
 	base := generateSolid10(w, h, 200, 512, 512)
 	overlay := generateSolid10(w, h, 800, 512, 512)
-	dst := make([]byte, frameSize10(w, h))
+	dst := make([]byte, video.YUV422_10bitFrameSize(w, h))
 
 	// Alpha = 0 everywhere: base should show through.
 	alphaZero := make([]byte, w*h)

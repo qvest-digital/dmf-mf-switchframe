@@ -14,6 +14,8 @@ import (
 	"fmt"
 	"sync"
 	"unsafe"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // VideoTx transmits uncompressed ST 2110-20 video via MTL pipeline API.
@@ -109,7 +111,7 @@ func (tx *VideoTx) PutFrame(yuv []byte) error {
 	// YUV422 10-bit planar: Y=w*h*2, U=w/2*h*2, V=w/2*h*2 → total = w*h*4
 	// (each sample is uint16 LE, 10-bit value left-shifted by 6 for 16-bit alignment,
 	//  or stored as raw 10-bit value — MTL expects raw 10-bit in uint16 LE)
-	yuv422Size := w * h * 4 // 3 planes, all 16-bit samples
+	yuv422Size := video.YUV422_10bitFrameSize(w, h) // 3 planes, all 16-bit samples
 	if cap(tx.yuv422) < yuv422Size {
 		tx.yuv422 = make([]byte, yuv422Size)
 	}

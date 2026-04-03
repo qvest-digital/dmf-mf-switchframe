@@ -3,6 +3,8 @@ package layout
 import (
 	"encoding/binary"
 	"testing"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // makeLayout10Frame creates a YUV422P10LE frame filled with constant values.
@@ -389,13 +391,13 @@ func TestYUV422P10FrameSize(t *testing.T) {
 	// Verify our frame size calculation matches the helpers
 	w, h := 32, 16
 	frame := makeLayout10Frame(w, h, 64, 512, 512)
-	expected := yuv422p10FrameSize(w, h)
+	expected := video.YUV422_10bitFrameSize(w, h)
 	if len(frame) != expected {
 		t.Errorf("frame size: got %d, want %d", len(frame), expected)
 	}
 
 	// For 32x16: Y=32*16*2=1024, Cb=16*16*2=512, Cr=16*16*2=512 = 2048
 	if expected != 2048 {
-		t.Errorf("yuv422p10FrameSize(32,16): got %d, want 2048", expected)
+		t.Errorf("video.YUV422_10bitFrameSize(32,16): got %d, want 2048", expected)
 	}
 }

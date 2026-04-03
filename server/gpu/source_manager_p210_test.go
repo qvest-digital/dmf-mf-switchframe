@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 func TestSourceManager_P210Pool_IngestYUV(t *testing.T) {
@@ -180,7 +182,7 @@ func TestSourceManager_P210Pool_IngestYUV_10bitInput(t *testing.T) {
 	// Build YUV422P10LE data (w*h*4 bytes = 256 bytes for 8x8).
 	// This simulates what the source decoder produces after upconversion.
 	w, h := 8, 8
-	yuv10 := make([]byte, yuv10FrameSize(w, h))
+	yuv10 := make([]byte, video.YUV422_10bitFrameSize(w, h))
 
 	// Fill Y plane with 10-bit value 400 (little-endian uint16).
 	for i := 0; i < w*h; i++ {
@@ -230,7 +232,7 @@ func TestSourceManager_P210Pool_IngestYUV_10bitInput_DifferentResolution(t *test
 	defer mgr.Close()
 
 	w, h := 8, 8
-	yuv10 := make([]byte, yuv10FrameSize(w, h))
+	yuv10 := make([]byte, video.YUV422_10bitFrameSize(w, h))
 
 	// Fill with uniform 10-bit value 600.
 	for i := 0; i < len(yuv10)/2; i++ {

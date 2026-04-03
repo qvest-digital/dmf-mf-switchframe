@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // 10-bit YUV422P10LE color constants
@@ -18,12 +20,6 @@ const (
 // YUV422 chroma subsampling requires even width.
 var errOddWidth10 = errors.New("YUV422 requires even width")
 
-// frameSize10 returns the total byte size of a YUV422P10LE frame.
-// Layout: Y plane (w*h*2) + Cb plane (w/2*h*2) + Cr plane (w/2*h*2) = w*h*4
-func frameSize10(w, h int) int {
-	return w * h * 4
-}
-
 // validate10 checks dimensions and buffer sizes for 10-bit blend operations.
 func validate10(dst, a, b []byte, w, h int) error {
 	if w%2 != 0 {
@@ -32,7 +28,7 @@ func validate10(dst, a, b []byte, w, h int) error {
 	if w <= 0 || h <= 0 {
 		return fmt.Errorf("invalid dimensions: %dx%d", w, h)
 	}
-	need := frameSize10(w, h)
+	need := video.YUV422_10bitFrameSize(w, h)
 	if len(dst) < need {
 		return fmt.Errorf("dst buffer too small: got %d, need %d", len(dst), need)
 	}
@@ -53,7 +49,7 @@ func validate10Single(dst, src []byte, w, h int) error {
 	if w <= 0 || h <= 0 {
 		return fmt.Errorf("invalid dimensions: %dx%d", w, h)
 	}
-	need := frameSize10(w, h)
+	need := video.YUV422_10bitFrameSize(w, h)
 	if len(dst) < need {
 		return fmt.Errorf("dst buffer too small: got %d, need %d", len(dst), need)
 	}

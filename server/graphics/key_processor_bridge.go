@@ -113,7 +113,7 @@ func (b *KeyProcessorBridge) IngestFillYUV10(sourceKey string, yuv []byte, width
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	yuvSize := yuv422p10FrameSize(width, height)
+	yuvSize := video.YUV422_10bitFrameSize(width, height)
 	if len(yuv) < yuvSize {
 		return
 	}
@@ -330,7 +330,7 @@ func (b *KeyProcessorBridge) ProcessYUV10(yuv []byte, width, height int) []byte 
 		return yuv
 	}
 
-	frameSize := yuv422p10FrameSize(width, height)
+	frameSize := video.YUV422_10bitFrameSize(width, height)
 	if len(yuv) < frameSize {
 		return yuv
 	}
@@ -356,7 +356,7 @@ func (b *KeyProcessorBridge) ProcessYUV10(yuv []byte, width, height int) []byte 
 		if !ok {
 			continue
 		}
-		fillSize := yuv422p10FrameSize(entry.width, entry.height)
+		fillSize := video.YUV422_10bitFrameSize(entry.width, entry.height)
 		if len(entry.yuv) < fillSize || entry.width != width || entry.height != height {
 			continue // dimension mismatch — skip (scaling not yet implemented for 10-bit keys)
 		}

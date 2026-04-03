@@ -394,7 +394,7 @@ func (m *GPUSourceManager) uploadAndScaleNV12(entry *gpuSourceEntry, dst *GPUFra
 // YUV420P → YUV422P10LE when the pipeline is in professional mode.
 func (m *GPUSourceManager) uploadAndScaleP210(entry *gpuSourceEntry, dst *GPUFrame, yuv []byte, sourceKey string, w, h int) error {
 	// Detect input format: YUV422P10LE (w*h*4) vs YUV420P (w*h*3/2).
-	expected10bit := w * h * 4
+	expected10bit := video.YUV422_10bitFrameSize(w, h)
 	is10bitInput := len(yuv) >= expected10bit
 
 	if w == dst.Width && h == dst.Height {

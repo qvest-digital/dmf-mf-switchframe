@@ -3,6 +3,8 @@ package layout
 import (
 	"image"
 
+	"github.com/zsiec/switchframe/server/internal/video"
+
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -15,7 +17,7 @@ type fillEntry10 struct {
 
 // IngestSourceFrame10 caches a decoded YUV422P10LE frame for a source.
 func (c *Compositor) IngestSourceFrame10(sourceKey string, yuv []byte, width, height int, pts int64) {
-	yuvSize := yuv422p10FrameSize(width, height)
+	yuvSize := video.YUV422_10bitFrameSize(width, height)
 	if len(yuv) < yuvSize {
 		return
 	}
@@ -142,7 +144,7 @@ func (c *Compositor) ProcessFrame10(yuv []byte, width, height int) []byte {
 
 		if c.fills10 != nil {
 			if entry, ok := c.fills10[slot.SourceKey]; ok {
-				yuvSize := yuv422p10FrameSize(entry.width, entry.height)
+				yuvSize := video.YUV422_10bitFrameSize(entry.width, entry.height)
 				// Deep-copy fill data to avoid racing with IngestSourceFrame10.
 				snapBuf := make([]byte, yuvSize)
 				copy(snapBuf, entry.yuv[:yuvSize])
@@ -184,7 +186,7 @@ func (c *Compositor) ProcessFrame10(yuv []byte, width, height int) []byte {
 		if snap.srcW == slotW && snap.srcH == slotH {
 			scaled = snap.srcYUV
 		} else {
-			scaledSize := yuv422p10FrameSize(slotW, slotH)
+			scaledSize := video.YUV422_10bitFrameSize(slotW, slotH)
 			scaleBuf := make([]byte, scaledSize)
 			if err := transition.ScaleYUV422P10WithQuality(snap.srcYUV, snap.srcW, snap.srcH,
 				scaleBuf, slotW, slotH, transition.ScaleQualityFast); err != nil {

@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"unsafe"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // alphaBlendRGBA10Dispatch composites an 8-bit RGBA overlay onto a YUV422P10LE frame
@@ -15,7 +17,7 @@ func alphaBlendRGBA10Dispatch(yuv []byte, rgba []byte, frameW, frameH int) error
 	if frameW <= 0 || frameH <= 0 {
 		return fmt.Errorf("invalid dimensions: %dx%d", frameW, frameH)
 	}
-	needYUV := yuv422p10FrameSize(frameW, frameH)
+	needYUV := video.YUV422_10bitFrameSize(frameW, frameH)
 	if len(yuv) < needYUV {
 		return fmt.Errorf("YUV buffer too small: got %d, need %d", len(yuv), needYUV)
 	}

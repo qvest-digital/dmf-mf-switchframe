@@ -2,12 +2,6 @@ package layout
 
 import "encoding/binary"
 
-// yuv422p10FrameSize returns the byte size of a YUV422P10LE frame.
-// Layout: Y plane (w*h*2 bytes) + Cb plane (w/2*h*2 bytes) + Cr plane (w/2*h*2 bytes).
-func yuv422p10FrameSize(w, h int) int {
-	return w*h*2 + 2*(w/2*h*2)
-}
-
 // ComposePIPOpaque10 copies a scaled PIP source into dst at the given position.
 // Both src and dst are YUV422P10LE format.
 // dstX must be even for chroma alignment.

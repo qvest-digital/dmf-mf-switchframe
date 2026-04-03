@@ -5,17 +5,12 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/zsiec/switchframe/server/internal/video"
 )
-
-// yuv422p10FrameSize returns the byte size of a YUV422P10LE frame.
-// Y plane: w*h*2, Cb: (w/2)*h*2, Cr: (w/2)*h*2. Total = w*h*4.
-func yuv422p10FrameSize(w, h int) int {
-	return w*h*2 + 2*(w/2)*h*2
-}
 
 // make10Frame creates a YUV422P10LE frame filled with uniform Y/Cb/Cr values.
 func make10Frame(w, h int, yVal, cbVal, crVal uint16) []byte {
-	buf := make([]byte, yuv422p10FrameSize(w, h))
+	buf := make([]byte, video.YUV422_10bitFrameSize(w, h))
 	ySize := w * h
 	chromaW := w / 2
 	chromaSize := chromaW * h
@@ -63,7 +58,7 @@ func TestWarp10_Identity(t *testing.T) {
 	p := NewProcessor(m)
 
 	src := make10Frame(w, h, 500, 300, 700)
-	dst := make([]byte, yuv422p10FrameSize(w, h))
+	dst := make([]byte, video.YUV422_10bitFrameSize(w, h))
 
 	err := p.Warp10(dst, src, w, h)
 	require.NoError(t, err)
@@ -109,8 +104,8 @@ func TestWarp10_IdentityGradient(t *testing.T) {
 	m := Identity(w, h)
 	p := NewProcessor(m)
 
-	src := make([]byte, yuv422p10FrameSize(w, h))
-	dst := make([]byte, yuv422p10FrameSize(w, h))
+	src := make([]byte, video.YUV422_10bitFrameSize(w, h))
+	dst := make([]byte, video.YUV422_10bitFrameSize(w, h))
 
 	// Y plane: gradient from 64 to 940
 	for y := 0; y < h; y++ {
@@ -150,8 +145,8 @@ func TestWarp10_ChromaFullHeight(t *testing.T) {
 	m := Identity(w, h)
 	p := NewProcessor(m)
 
-	src := make([]byte, yuv422p10FrameSize(w, h))
-	dst := make([]byte, yuv422p10FrameSize(w, h))
+	src := make([]byte, video.YUV422_10bitFrameSize(w, h))
+	dst := make([]byte, video.YUV422_10bitFrameSize(w, h))
 
 	// Fill Cb with row-varying values so we can verify full-height treatment.
 	ySize := w * h * 2
@@ -211,8 +206,8 @@ func TestWarp10_HorizontalFlip(t *testing.T) {
 	}
 	p := NewProcessor(m)
 
-	src := make([]byte, yuv422p10FrameSize(w, h))
-	dst := make([]byte, yuv422p10FrameSize(w, h))
+	src := make([]byte, video.YUV422_10bitFrameSize(w, h))
+	dst := make([]byte, video.YUV422_10bitFrameSize(w, h))
 
 	// Fill Y with column index gradient.
 	for y := 0; y < h; y++ {
@@ -250,7 +245,7 @@ func TestWarp10_OutOfBounds_Clamps(t *testing.T) {
 	p := NewProcessor(m)
 
 	src := make10Frame(w, h, 0, 0, 0)
-	dst := make([]byte, yuv422p10FrameSize(w, h))
+	dst := make([]byte, video.YUV422_10bitFrameSize(w, h))
 
 	// Set bottom-left Y pixel to a known value.
 	binary.LittleEndian.PutUint16(src[((h-1)*w+0)*2:], 777)
@@ -276,7 +271,7 @@ func TestWarp10_BufferValidation(t *testing.T) {
 	m := Identity(w, h)
 	p := NewProcessor(m)
 
-	validSize := yuv422p10FrameSize(w, h)
+	validSize := video.YUV422_10bitFrameSize(w, h)
 	validSrc := make([]byte, validSize)
 
 	// Undersized dst
@@ -312,7 +307,7 @@ func TestWarp10_Clamp1023(t *testing.T) {
 	p := NewProcessor(m)
 
 	src := make10Frame(w, h, 1023, 1023, 1023) // max 10-bit
-	dst := make([]byte, yuv422p10FrameSize(w, h))
+	dst := make([]byte, video.YUV422_10bitFrameSize(w, h))
 
 	err := p.Warp10(dst, src, w, h)
 	require.NoError(t, err)
@@ -343,8 +338,8 @@ func TestWarp10_SubpixelInterpolation(t *testing.T) {
 	}
 	p := NewProcessor(m)
 
-	src := make([]byte, yuv422p10FrameSize(w, h))
-	dst := make([]byte, yuv422p10FrameSize(w, h))
+	src := make([]byte, video.YUV422_10bitFrameSize(w, h))
+	dst := make([]byte, video.YUV422_10bitFrameSize(w, h))
 
 	// Set the 4 corner pixels to distinct Y values:
 	// (0,0)=100, (1,0)=200, (0,1)=300, (1,1)=400
@@ -370,8 +365,8 @@ func TestWarp10_LargerFrame(t *testing.T) {
 	m := Identity(w, h)
 	p := NewProcessor(m)
 
-	src := make([]byte, yuv422p10FrameSize(w, h))
-	dst := make([]byte, yuv422p10FrameSize(w, h))
+	src := make([]byte, video.YUV422_10bitFrameSize(w, h))
+	dst := make([]byte, video.YUV422_10bitFrameSize(w, h))
 
 	// Fill with pseudo-random 10-bit pattern.
 	for i := 0; i < len(src)/2; i++ {
@@ -403,7 +398,7 @@ func BenchmarkWarp10_Identity_64x48(b *testing.B) {
 	m := Identity(w, h)
 	p := NewProcessor(m)
 
-	frameSize := yuv422p10FrameSize(w, h)
+	frameSize := video.YUV422_10bitFrameSize(w, h)
 	src := make10Frame(w, h, 500, 300, 700)
 	dst := make([]byte, frameSize)
 
@@ -419,7 +414,7 @@ func BenchmarkWarp10_Identity_1080p(b *testing.B) {
 	m := Identity(w, h)
 	p := NewProcessor(m)
 
-	frameSize := yuv422p10FrameSize(w, h)
+	frameSize := video.YUV422_10bitFrameSize(w, h)
 	src := make10Frame(w, h, 500, 300, 700)
 	dst := make([]byte, frameSize)
 

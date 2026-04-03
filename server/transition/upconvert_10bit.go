@@ -3,6 +3,8 @@ package transition
 import (
 	"encoding/binary"
 	"fmt"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // upconvert420to422_10 converts a YUV420P 8-bit frame to YUV422P10LE.
@@ -25,7 +27,7 @@ func upconvert420to422_10(src []byte, dst []byte, width, height int) error {
 	}
 
 	srcSize := width*height + 2*(width/2)*(height/2) // YUV420P 8-bit
-	dstSize := width * height * 4                     // YUV422P10LE
+	dstSize := video.YUV422_10bitFrameSize(width, height) // YUV422P10LE
 	if len(src) < srcSize {
 		return fmt.Errorf("src buffer too small: need %d, got %d", srcSize, len(src))
 	}

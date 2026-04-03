@@ -403,7 +403,7 @@ func TestGPURawSinkNode_FrameSizeForFormat(t *testing.T) {
 	// NV12 (8-bit 4:2:0): w*h*3/2
 	assert.Equal(t, video.YUV420FrameSize(w, h), w*h*3/2)
 	// P210 (10-bit 4:2:2): Y(w*h*2) + Cb(w/2*h*2) + Cr(w/2*h*2) = w*h*4
-	assert.Equal(t, yuv10FrameSize(w, h), w*h*4)
+	assert.Equal(t, video.YUV422_10bitFrameSize(w, h), w*h*4)
 
 	// cpuFrameSize should dispatch based on format
 	assert.Equal(t, w*h*3/2, cpuFrameSize(w, h, GPUFormatNV12))
@@ -450,6 +450,6 @@ func TestYUV10FrameSize(t *testing.T) {
 	// = 2*w*h + w*h + w*h = 4*w*h
 	w, h := 64, 32
 	expected := w * h * 4
-	got := yuv10FrameSize(w, h)
+	got := video.YUV422_10bitFrameSize(w, h)
 	assert.Equal(t, expected, got)
 }

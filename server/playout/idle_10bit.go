@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"log/slog"
 	"sync"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // NewIdleFrame10 creates a YUV422P10LE black frame.
@@ -11,7 +13,7 @@ import (
 // Layout: Y plane (w*h*2 bytes) + Cb plane (w/2*h*2 bytes) + Cr plane (w/2*h*2 bytes).
 // Total size: w*h*4 bytes.
 func NewIdleFrame10(width, height int) []byte {
-	frameSize := width * height * 4
+	frameSize := video.YUV422_10bitFrameSize(width, height)
 	buf := make([]byte, frameSize)
 
 	ySize := width * height

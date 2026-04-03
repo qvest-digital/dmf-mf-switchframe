@@ -26,7 +26,7 @@ func TestGaussianBlurP210_SmoothenSharpEdge(t *testing.T) {
 
 	// Create P210 frame with sharp vertical edge: left half dark, right half bright.
 	// P210: Y plane = w*h uint16, UV plane = w*h uint16 (interleaved CbCr, full height).
-	yuv := make([]byte, yuv10FrameSize(w, h))
+	yuv := make([]byte, video.YUV422_10bitFrameSize(w, h))
 
 	// Y plane: 10-bit limited range (64=black, 940=white)
 	ySize := w * h * 2
@@ -58,7 +58,7 @@ func TestGaussianBlurP210_SmoothenSharpEdge(t *testing.T) {
 	require.NoError(t, err)
 
 	// Download result
-	result := make([]byte, yuv10FrameSize(w, h))
+	result := make([]byte, video.YUV422_10bitFrameSize(w, h))
 	require.NoError(t, Download10(ctx, dst, result, w, h))
 
 	// At the edge (x=32, middle row), the blurred Y value should be between dark and bright
@@ -91,7 +91,7 @@ func TestGaussianBlurP210_UniformPreserved(t *testing.T) {
 	defer dst.Release()
 
 	// Uniform 10-bit frame: Y=512, Cb=512, Cr=512
-	yuv := make([]byte, yuv10FrameSize(w, h))
+	yuv := make([]byte, video.YUV422_10bitFrameSize(w, h))
 	ySize := w * h * 2
 	chromaW := w / 2
 
@@ -110,7 +110,7 @@ func TestGaussianBlurP210_UniformPreserved(t *testing.T) {
 	err = GaussianBlurP210(ctx, dst, src, 3)
 	require.NoError(t, err)
 
-	result := make([]byte, yuv10FrameSize(w, h))
+	result := make([]byte, video.YUV422_10bitFrameSize(w, h))
 	require.NoError(t, Download10(ctx, dst, result, w, h))
 
 	// Uniform input blurred should still be ~512 everywhere (within +/-1 rounding)
@@ -172,7 +172,7 @@ func TestGPUGaussianBlurDispatch_RoutesP210(t *testing.T) {
 	defer p210Dst.Release()
 
 	// Fill with uniform data
-	yuv := make([]byte, yuv10FrameSize(32, 32))
+	yuv := make([]byte, video.YUV422_10bitFrameSize(32, 32))
 	for i := 0; i < len(yuv)/2; i++ {
 		binary.LittleEndian.PutUint16(yuv[i*2:], 512)
 	}

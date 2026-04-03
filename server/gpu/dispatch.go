@@ -7,18 +7,12 @@ import "github.com/zsiec/switchframe/server/internal/video"
 // dispatch functions instead of calling NV12-only operations directly, so the
 // pipeline transparently handles both 8-bit and 10-bit frames.
 
-// yuv10FrameSize returns the byte size of a YUV422P10LE planar frame.
-// Y plane: w*h*2 (uint16) + Cb plane: (w/2)*h*2 + Cr plane: (w/2)*h*2 = w*h*4.
-func yuv10FrameSize(w, h int) int {
-	return w * h * 4
-}
-
 // cpuFrameSize returns the CPU-side planar buffer size for the given format.
 // NV12 → YUV420p (w*h*3/2). P210 → YUV422P10LE (w*h*4).
 func cpuFrameSize(w, h int, format GPUFrameFormat) int {
 	switch format {
 	case GPUFormatP210:
-		return yuv10FrameSize(w, h)
+		return video.YUV422_10bitFrameSize(w, h)
 	default:
 		return video.YUV420FrameSize(w, h)
 	}

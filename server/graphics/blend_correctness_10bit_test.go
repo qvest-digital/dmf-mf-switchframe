@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 // ============================================================================
@@ -17,7 +19,7 @@ import (
 
 // generate10bitFrame creates a solid-color YUV422P10LE frame for testing.
 func generate10bitFrame(w, h int, y, cb, cr uint16) []byte {
-	buf := make([]byte, yuv422p10FrameSize(w, h))
+	buf := make([]byte, video.YUV422_10bitFrameSize(w, h))
 	ySize := w * h
 	chromaW := w / 2
 	chromaSize := chromaW * h

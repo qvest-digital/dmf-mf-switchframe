@@ -15,7 +15,7 @@ import (
 // makeUniform422P10 creates a YUV422P10LE buffer with a uniform value.
 // Layout: Y (w*h uint16) + Cb (w/2*h uint16) + Cr (w/2*h uint16).
 func makeUniform422P10(w, h int, val uint16) []byte {
-	buf := make([]byte, yuv10FrameSize(w, h))
+	buf := make([]byte, video.YUV422_10bitFrameSize(w, h))
 	for i := 0; i < len(buf)/2; i++ {
 		binary.LittleEndian.PutUint16(buf[i*2:], val)
 	}
@@ -290,7 +290,7 @@ func TestScaleP210ToNV12On_ChromaSeparation(t *testing.T) {
 	defer dst.Release()
 
 	// Create P210 with Y=512, Cb=200, Cr=800 (distinct Cb and Cr values)
-	srcData := make([]byte, yuv10FrameSize(srcW, srcH))
+	srcData := make([]byte, video.YUV422_10bitFrameSize(srcW, srcH))
 	// Y plane: 512
 	for i := 0; i < srcW*srcH; i++ {
 		binary.LittleEndian.PutUint16(srcData[i*2:], 512)

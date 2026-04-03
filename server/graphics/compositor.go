@@ -868,7 +868,7 @@ func (c *Compositor) ProcessYUV10(yuv []byte, width, height int) []byte {
 	if width%2 != 0 || height <= 0 || width <= 0 {
 		return yuv
 	}
-	if len(yuv) < yuv422p10FrameSize(width, height) {
+	if len(yuv) < video.YUV422_10bitFrameSize(width, height) {
 		return yuv
 	}
 
