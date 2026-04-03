@@ -110,7 +110,13 @@ func (f Format) MaxSampleValue() int {
 }
 
 // YUV420FrameSize returns the byte size of a YUV420P 8-bit frame (w*h*3/2).
-// Convenience function for the common case -- equivalent to YUV420_8bit.FrameSize(w, h).
+// Convenience function for the common case — equivalent to YUV420_8bit.FrameSize(w, h).
 func YUV420FrameSize(w, h int) int {
 	return w * h * 3 / 2
+}
+
+// YUV422_10bitFrameSize returns the byte size of a YUV422P10LE frame (w*h*4).
+// Convenience function for the 10-bit case — equivalent to YUV422_10bit.FrameSize(w, h).
+func YUV422_10bitFrameSize(w, h int) int {
+	return w * h * 4
 }

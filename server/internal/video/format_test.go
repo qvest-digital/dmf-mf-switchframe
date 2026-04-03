@@ -28,6 +28,18 @@ func TestYUV420FrameSize(t *testing.T) {
 	}
 }
 
+func TestYUV422_10bitFrameSize(t *testing.T) {
+	got := YUV422_10bitFrameSize(1920, 1080)
+	want := 8294400
+	if got != want {
+		t.Errorf("YUV422_10bitFrameSize(1920,1080) = %d, want %d", got, want)
+	}
+
+	if got != YUV422_10bit.FrameSize(1920, 1080) {
+		t.Error("YUV422_10bitFrameSize disagrees with YUV422_10bit.FrameSize")
+	}
+}
+
 func TestBytesPerSample(t *testing.T) {
 	if got := YUV420_8bit.BytesPerSample(); got != 1 {
 		t.Errorf("YUV420_8bit.BytesPerSample() = %d, want 1", got)
