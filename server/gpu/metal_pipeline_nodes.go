@@ -35,8 +35,10 @@ type gpuEncodeNode struct {
 	lastErr   atomic.Value
 
 	// Async encode channel + goroutine
-	frameCh chan vtEncodeReq
-	done    chan struct{}
+	frameCh      chan vtEncodeReq
+	done         chan struct{}
+	framesIn     atomic.Int64
+	framesDropped atomic.Int64
 }
 
 type vtEncodeReq struct {
@@ -80,13 +82,15 @@ func (n *gpuEncodeNode) Err() error {
 }
 
 // ProcessGPU refs the frame and dispatches it to the async encode goroutine.
-// Returns immediately unless the encode goroutine is backed up (channel full),
-// in which case it blocks until a slot opens — no worse than the previous
-// synchronous behavior.
+// Non-blocking: if the encode goroutine is backed up (channel full), the oldest
+// queued frame is dropped (newest-wins policy). This prevents VideoToolbox
+// stalls from back-pressuring the entire GPU pipeline.
 func (n *gpuEncodeNode) ProcessGPU(frame *GPUFrame) error {
 	if n.encoder == nil || n.frameCh == nil {
 		return nil
 	}
+
+	n.framesIn.Add(1)
 
 	idr := false
 	if n.forceIDR != nil {
@@ -94,6 +98,18 @@ func (n *gpuEncodeNode) ProcessGPU(frame *GPUFrame) error {
 	}
 
 	frame.Ref()
+
+	// Newest-wins: drop oldest queued frame if channel is full.
+	select {
+	case old := <-n.frameCh:
+		// Preserve IDR request if the dropped frame had one.
+		if old.forceIDR {
+			idr = true
+		}
+		old.frame.Release()
+		n.framesDropped.Add(1)
+	default:
+	}
 	n.frameCh <- vtEncodeReq{frame: frame, forceIDR: idr}
 	return nil
 }
