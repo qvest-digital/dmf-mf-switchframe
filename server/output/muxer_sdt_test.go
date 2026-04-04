@@ -10,7 +10,7 @@ import (
 )
 
 func TestBuildSDTPacket_ValidTSPacket(t *testing.T) {
-	pkt := buildSDTPacket()
+	pkt := buildSDTPacket("h264", 1920, 1080)
 	assert.Equal(t, 188, len(pkt), "SDT packet must be 188 bytes")
 	assert.Equal(t, byte(0x47), pkt[0], "must start with sync byte")
 
@@ -28,7 +28,7 @@ func TestBuildSDTPacket_ValidTSPacket(t *testing.T) {
 }
 
 func TestBuildSDTPacket_ContainsServiceName(t *testing.T) {
-	pkt := buildSDTPacket()
+	pkt := buildSDTPacket("h264", 1920, 1080)
 
 	// The packet should contain both "Switchframe" and "switchframe.dev"
 	found := false
@@ -51,7 +51,7 @@ func TestBuildSDTPacket_ContainsServiceName(t *testing.T) {
 }
 
 func TestBuildSDTPacket_ValidCRC(t *testing.T) {
-	pkt := buildSDTPacket()
+	pkt := buildSDTPacket("h264", 1920, 1080)
 
 	// Extract the section: starts at pkt[5] (after TS header + pointer field)
 	// section_length tells us how long the section is (including CRC)

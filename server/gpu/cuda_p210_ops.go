@@ -121,6 +121,13 @@ cudaError_t blend_wipe_p210(
     float position, int direction, int softEdge,
     int width, int height, int pitch,
     uint8_t* maskBuf, cudaStream_t stream);
+cudaError_t wipe_map_blend_p210(
+    const uint8_t* srcA, const uint8_t* srcB,
+    const uint8_t* gradMap, uint8_t* dst,
+    int width, int height, int pitch, int gradPitch,
+    float position, float softEdge, float borderWidth,
+    uint16_t borderColorY, uint16_t borderColorCb, uint16_t borderColorCr,
+    int reverse, int multiply, cudaStream_t stream);
 cudaError_t blend_stinger_p210(
     uint8_t* dst, const uint8_t* base, const uint8_t* overlay,
     const uint8_t* alpha, int width, int height, int pitch, int alphaPitch,
@@ -757,6 +764,44 @@ func DrawBorderP210(ctx *Context, frame *GPUFrame, rect Rect, colorY, colorCb, c
 	)
 	if rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: draw border p210 failed: %d", rc)
+	}
+	return ctx.Sync()
+}
+
+// BlendWipeMapP210 performs a gradient-map-driven wipe transition between two
+// P210 frames on CUDA. The gradient map is stored in the Y plane of a P210
+// GPU frame (8-bit values promoted to 10-bit via <<2 during upload). The kernel
+// right-shifts gradient values by 2 to recover [0, 255] range for threshold math.
+// Border colors in WipeMapBlendConfig are 8-bit; this function promotes them to 10-bit.
+func BlendWipeMapP210(ctx *Context, dst, srcA, srcB, gradMap *GPUFrame, cfg WipeMapBlendConfig) error {
+	if ctx == nil || dst == nil || srcA == nil || srcB == nil || gradMap == nil {
+		return ErrGPUNotAvailable
+	}
+
+	reverse := 0
+	if cfg.Reverse {
+		reverse = 1
+	}
+
+	// Promote 8-bit border colors to 10-bit
+	borderY := C.uint16_t(uint16(cfg.BorderColorY) << 2)
+	borderCb := C.uint16_t(uint16(cfg.BorderColorCb) << 2)
+	borderCr := C.uint16_t(uint16(cfg.BorderColorCr) << 2)
+
+	rc := C.wipe_map_blend_p210(
+		(*C.uint8_t)(unsafe.Pointer(uintptr(srcA.DevPtr))),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(srcB.DevPtr))),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(gradMap.DevPtr))),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(dst.DevPtr))),
+		C.int(dst.Width), C.int(dst.Height), C.int(dst.Pitch),
+		C.int(gradMap.Pitch),
+		C.float(cfg.Position), C.float(cfg.SoftEdge), C.float(cfg.BorderWidth),
+		borderY, borderCb, borderCr,
+		C.int(reverse), C.int(cfg.Multiply),
+		ctx.stream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: wipe map blend p210 failed: %d", rc)
 	}
 	return ctx.Sync()
 }

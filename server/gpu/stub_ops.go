@@ -354,14 +354,31 @@ func BlendWipeMap(ctx *Context, dst, srcA, srcB, gradMap *GPUFrame, cfg WipeMapB
 	return ErrGPUNotAvailable
 }
 
+// BlendWipeMapP210 returns ErrGPUNotAvailable on non-GPU builds.
+func BlendWipeMapP210(ctx *Context, dst, srcA, srcB, gradMap *GPUFrame, cfg WipeMapBlendConfig) error {
+	return ErrGPUNotAvailable
+}
+
 // DVEComposite returns ErrGPUNotAvailable on non-GPU builds.
 func DVEComposite(ctx *Context, dst, src *GPUFrame, transform dve.Transform,
 	invMatrix dve.Matrix3x3, srcW, srcH int, aabb image.Rectangle) error {
 	return ErrGPUNotAvailable
 }
 
+// DVECompositeP210 returns ErrGPUNotAvailable on non-GPU builds.
+func DVECompositeP210(ctx *Context, dst, src *GPUFrame, transform dve.Transform,
+	invMatrix dve.Matrix3x3, srcW, srcH int, aabb image.Rectangle) error {
+	return ErrGPUNotAvailable
+}
+
 // DVE3DComposite returns ErrGPUNotAvailable on non-GPU builds.
 func DVE3DComposite(ctx *Context, dst, src *GPUFrame, t3d *dve.Transform3D,
+	invMVP dve.Matrix4x4, srcW, srcH int, slotRect image.Rectangle, alpha256 int) error {
+	return ErrGPUNotAvailable
+}
+
+// DVE3DCompositeP210 returns ErrGPUNotAvailable on non-GPU builds.
+func DVE3DCompositeP210(ctx *Context, dst, src *GPUFrame, t3d *dve.Transform3D,
 	invMVP dve.Matrix4x4, srcW, srcH int, slotRect image.Rectangle, alpha256 int) error {
 	return ErrGPUNotAvailable
 }

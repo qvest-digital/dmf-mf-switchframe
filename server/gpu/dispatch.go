@@ -1,5 +1,11 @@
 package gpu
 
+import (
+	"image"
+
+	"github.com/zsiec/switchframe/server/dve"
+)
+
 // GPU dispatch functions route to NV12 or P210 kernel variants based on the
 // GPUFrame's Format field. All callers in the pipeline nodes should use these
 // dispatch functions instead of calling NV12-only operations directly, so the
@@ -153,6 +159,15 @@ func GPUFillRectDispatch(ctx *Context, frame *GPUFrame, rect Rect, color YUVColo
 	return FillRect(ctx, frame, rect, color)
 }
 
+// GPUBlendWipeMapDispatch performs a gradient-map-driven wipe transition,
+// dispatching to the P210 or NV12 variant based on the destination frame's format.
+func GPUBlendWipeMapDispatch(ctx *Context, dst, srcA, srcB, gradMap *GPUFrame, cfg WipeMapBlendConfig) error {
+	if dst != nil && dst.Format == GPUFormatP210 {
+		return BlendWipeMapP210(ctx, dst, srcA, srcB, gradMap, cfg)
+	}
+	return BlendWipeMap(ctx, dst, srcA, srcB, gradMap, cfg)
+}
+
 // GPUDrawBorderDispatch draws a colored border outside the given rectangle,
 // dispatching to the P210 or NV12 variant based on the frame's format.
 // For P210, the 8-bit YUVColor is promoted to 10-bit (<<2).
@@ -162,4 +177,24 @@ func GPUDrawBorderDispatch(ctx *Context, frame *GPUFrame, rect Rect, color YUVCo
 			uint16(color.Y)<<2, uint16(color.Cb)<<2, uint16(color.Cr)<<2, thickness)
 	}
 	return DrawBorder(ctx, frame, rect, color, thickness)
+}
+
+// GPUDVECompositeDispatch composites a DVE slot onto the destination frame,
+// dispatching to the P210 or NV12 variant based on the destination frame's format.
+func GPUDVECompositeDispatch(ctx *Context, dst, src *GPUFrame, transform dve.Transform,
+	invMatrix dve.Matrix3x3, srcW, srcH int, aabb image.Rectangle) error {
+	if dst != nil && dst.Format == GPUFormatP210 {
+		return DVECompositeP210(ctx, dst, src, transform, invMatrix, srcW, srcH, aabb)
+	}
+	return DVEComposite(ctx, dst, src, transform, invMatrix, srcW, srcH, aabb)
+}
+
+// GPUDVE3DCompositeDispatch composites a 3D DVE slot onto the destination frame,
+// dispatching to the P210 or NV12 variant based on the destination frame's format.
+func GPUDVE3DCompositeDispatch(ctx *Context, dst, src *GPUFrame, t3d *dve.Transform3D,
+	invMVP dve.Matrix4x4, srcW, srcH int, slotRect image.Rectangle, alpha256 int) error {
+	if dst != nil && dst.Format == GPUFormatP210 {
+		return DVE3DCompositeP210(ctx, dst, src, t3d, invMVP, srcW, srcH, slotRect, alpha256)
+	}
+	return DVE3DComposite(ctx, dst, src, t3d, invMVP, srcW, srcH, slotRect, alpha256)
 }

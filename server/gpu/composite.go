@@ -73,6 +73,12 @@ cudaError_t dve_composite_y(
 cudaError_t dve_composite_uv(
     uint8_t* dstUV, const uint8_t* srcUV,
     DVECompositeUVParams params, cudaStream_t stream);
+cudaError_t dve_composite_y_p210(
+    uint8_t* dst, const uint8_t* src,
+    DVECompositeYParams params, cudaStream_t stream);
+cudaError_t dve_composite_uv_p210(
+    uint8_t* dstUV, const uint8_t* srcUV,
+    DVECompositeUVParams params, cudaStream_t stream);
 
 // 3D DVE composite structs and functions
 typedef struct {
@@ -113,6 +119,12 @@ cudaError_t dve3d_composite_y(
     uint8_t* dst, const uint8_t* src,
     DVE3DParams params, cudaStream_t stream);
 cudaError_t dve3d_composite_uv(
+    uint8_t* dstUV, const uint8_t* srcUV,
+    DVE3DUVParams params, cudaStream_t stream);
+cudaError_t dve3d_composite_y_p210(
+    uint8_t* dst, const uint8_t* src,
+    DVE3DParams params, cudaStream_t stream);
+cudaError_t dve3d_composite_uv_p210(
     uint8_t* dstUV, const uint8_t* srcUV,
     DVE3DUVParams params, cudaStream_t stream);
 */
@@ -359,6 +371,174 @@ func DVEComposite(ctx *Context, dst, src *GPUFrame, transform dve.Transform,
 	return ctx.Sync()
 }
 
+// DVECompositeP210 composites a single DVE slot onto the destination GPU frame
+// using the P210 (10-bit 4:2:2) CUDA DVE kernel. Same inverse projective
+// transform, bilinear sampling, SDF border/shadow, crop with soft edges,
+// and alpha compositing as DVEComposite, but operating on uint16 samples
+// in [0, 1023] range with full-height chroma (4:2:2).
+func DVECompositeP210(ctx *Context, dst, src *GPUFrame, transform dve.Transform,
+	invMatrix dve.Matrix3x3, srcW, srcH int, aabb image.Rectangle) error {
+	if ctx == nil || dst == nil || src == nil {
+		return ErrGPUNotAvailable
+	}
+
+	// Compute alpha256 from effective opacity
+	alpha256 := int(transform.EffectiveOpacity() * 256.0)
+	if alpha256 < 0 {
+		alpha256 = 0
+	} else if alpha256 > 256 {
+		alpha256 = 256
+	}
+
+	// Shadow alpha256
+	shadowAlpha256 := 0
+	shadowEnabled := 0
+	if transform.Shadow.Enabled {
+		shadowEnabled = 1
+		shadowAlpha256 = int(transform.Shadow.Opacity * 256.0)
+		if shadowAlpha256 < 0 {
+			shadowAlpha256 = 0
+		} else if shadowAlpha256 > 256 {
+			shadowAlpha256 = 256
+		}
+	}
+
+	// Default contrast/saturation to 1.0 when zero-valued
+	contrast := transform.Contrast
+	if contrast == 0 {
+		contrast = 1.0
+	}
+	saturation := transform.Saturation
+	if saturation == 0 {
+		saturation = 1.0
+	}
+
+	mirrorH := 0
+	if transform.MirrorH {
+		mirrorH = 1
+	}
+	mirrorV := 0
+	if transform.MirrorV {
+		mirrorV = 1
+	}
+
+	// Promote 8-bit border/shadow colors to 10-bit (<<2)
+	borderColorY10 := int(transform.Border.ColorY) << 2
+	borderColorCb10 := int(transform.Border.ColorCb) << 2
+	borderColorCr10 := int(transform.Border.ColorCr) << 2
+	shadowColorY10 := int(transform.Shadow.ColorY) << 2
+
+	// --- Y plane ---
+	yParams := C.DVECompositeYParams{
+		dstW: C.int(dst.Width), dstH: C.int(dst.Height), dstPitch: C.int(dst.Pitch),
+		srcW: C.int(srcW), srcH: C.int(srcH), srcPitch: C.int(src.Pitch),
+
+		m00: C.float(invMatrix[0]), m01: C.float(invMatrix[1]), m02: C.float(invMatrix[2]),
+		m10: C.float(invMatrix[3]), m11: C.float(invMatrix[4]), m12: C.float(invMatrix[5]),
+		m20: C.float(invMatrix[6]), m21: C.float(invMatrix[7]), m22: C.float(invMatrix[8]),
+
+		slotMinX: C.int(aabb.Min.X), slotMinY: C.int(aabb.Min.Y),
+		slotMaxX: C.int(aabb.Max.X), slotMaxY: C.int(aabb.Max.Y),
+
+		alpha256: C.int(alpha256),
+
+		cropTop: C.float(transform.CropTop), cropBottom: C.float(transform.CropBottom),
+		cropLeft: C.float(transform.CropLeft), cropRight: C.float(transform.CropRight),
+		cropSoftness: C.float(transform.CropSoftness),
+
+		borderWidth:        C.float(transform.Border.Width),
+		borderColorY:       C.int(borderColorY10),
+		borderCornerRadius: C.float(transform.Border.CornerRadius),
+		borderSoftness:     C.float(transform.Border.Softness),
+
+		shadowEnabled:  C.int(shadowEnabled),
+		shadowOffsetX:  C.float(transform.Shadow.OffsetX),
+		shadowOffsetY:  C.float(transform.Shadow.OffsetY),
+		shadowBlur:     C.float(transform.Shadow.Blur),
+		shadowAlpha256: C.int(shadowAlpha256),
+		shadowColorY:   C.int(shadowColorY10),
+
+		mirrorH:    C.int(mirrorH),
+		mirrorV:    C.int(mirrorV),
+		mosaicSize: C.int(transform.MosaicSize),
+		brightness: C.float(transform.Brightness),
+		contrast:   C.float(contrast),
+	}
+
+	rc := C.dve_composite_y_p210(
+		(*C.uint8_t)(unsafe.Pointer(uintptr(dst.DevPtr))),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(src.DevPtr))),
+		yParams,
+		ctx.stream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: dve composite Y P210 failed: %d", rc)
+	}
+
+	// --- UV plane ---
+	// UV plane offset: dst.Pitch * dst.Height bytes from base (same byte arithmetic as NV12)
+	dstUVPtr := uintptr(dst.DevPtr) + uintptr(dst.Pitch*dst.Height)
+	srcUVPtr := uintptr(src.DevPtr) + uintptr(src.Pitch*srcH)
+
+	// Chroma AABB: P210 has full height but half width.
+	// Horizontal: halved. Vertical: full resolution (4:2:2).
+	chromaW := dst.Width / 2
+	chromaH := dst.Height // full height for 4:2:2
+	chromaMinX := max(aabb.Min.X/2-1, 0)
+	chromaMinY := max(aabb.Min.Y-1, 0) // no vertical halving for 4:2:2
+	chromaMaxX := min(aabb.Max.X/2+1, chromaW)
+	chromaMaxY := min(aabb.Max.Y+1, chromaH)
+
+	uvParams := C.DVECompositeUVParams{
+		dstW: C.int(dst.Width), dstChromaH: C.int(dst.Height), dstPitch: C.int(dst.Pitch),
+		srcW: C.int(srcW), srcChromaH: C.int(srcH), srcPitch: C.int(src.Pitch),
+
+		m00: C.float(invMatrix[0]), m01: C.float(invMatrix[1]), m02: C.float(invMatrix[2]),
+		m10: C.float(invMatrix[3]), m11: C.float(invMatrix[4]), m12: C.float(invMatrix[5]),
+		m20: C.float(invMatrix[6]), m21: C.float(invMatrix[7]), m22: C.float(invMatrix[8]),
+
+		slotMinCX: C.int(chromaMinX), slotMinCY: C.int(chromaMinY),
+		slotMaxCX: C.int(chromaMaxX), slotMaxCY: C.int(chromaMaxY),
+
+		alpha256: C.int(alpha256),
+
+		cropTop: C.float(transform.CropTop), cropBottom: C.float(transform.CropBottom),
+		cropLeft: C.float(transform.CropLeft), cropRight: C.float(transform.CropRight),
+		cropSoftness: C.float(transform.CropSoftness),
+
+		borderWidth:        C.float(transform.Border.Width),
+		borderColorCb:      C.int(borderColorCb10),
+		borderColorCr:      C.int(borderColorCr10),
+		borderCornerRadius: C.float(transform.Border.CornerRadius),
+		borderSoftness:     C.float(transform.Border.Softness),
+
+		shadowEnabled:  C.int(shadowEnabled),
+		shadowOffsetX:  C.float(transform.Shadow.OffsetX),
+		shadowOffsetY:  C.float(transform.Shadow.OffsetY),
+		shadowBlur:     C.float(transform.Shadow.Blur),
+		shadowAlpha256: C.int(shadowAlpha256),
+		shadowColorCb:  C.int(512), // achromatic shadow: neutral 10-bit chroma
+		shadowColorCr:  C.int(512), // neutral Cr for shadow (10-bit)
+
+		mirrorH:    C.int(mirrorH),
+		mirrorV:    C.int(mirrorV),
+		mosaicSize: C.int(transform.MosaicSize),
+		saturation: C.float(saturation),
+	}
+
+	rc = C.dve_composite_uv_p210(
+		(*C.uint8_t)(unsafe.Pointer(dstUVPtr)),
+		(*C.uint8_t)(unsafe.Pointer(srcUVPtr)),
+		uvParams,
+		ctx.stream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: dve composite UV P210 failed: %d", rc)
+	}
+
+	return ctx.Sync()
+}
+
 // FillRect fills a rectangular region with a constant color on a GPU frame.
 func FillRect(ctx *Context, frame *GPUFrame, rect Rect, color YUVColor) error {
 	if ctx == nil || frame == nil {
@@ -461,6 +641,99 @@ func DVE3DComposite(ctx *Context, dst, src *GPUFrame, t3d *dve.Transform3D,
 	)
 	if rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: DVE3D composite UV failed: %d", rc)
+	}
+
+	return ctx.Sync()
+}
+
+// DVE3DCompositeP210 composites a 3D DVE slot using CUDA ray-casting kernels,
+// operating on P210 (10-bit 4:2:2) frames. Same geometry intersection and
+// lighting as DVE3DComposite, but with uint16 samples in [0, 1023] range
+// and full-height chroma (4:2:2).
+func DVE3DCompositeP210(ctx *Context, dst, src *GPUFrame, t3d *dve.Transform3D,
+	invMVP dve.Matrix4x4, srcW, srcH int, slotRect image.Rectangle, alpha256 int) error {
+	if ctx == nil || dst == nil || src == nil || t3d == nil {
+		return ErrGPUNotAvailable
+	}
+
+	shape := 0
+	if t3d.Shape == "cube" {
+		shape = 1
+	} else if t3d.Shape == "page_turn" {
+		shape = 2
+	}
+	ambient := t3d.Ambient
+	if ambient <= 0 {
+		ambient = 0.3
+	}
+	lightZ := 1.0
+
+	var cInvMVP [16]C.float
+	for i := 0; i < 16; i++ {
+		cInvMVP[i] = C.float(invMVP[i])
+	}
+
+	yParams := C.DVE3DParams{
+		dstW: C.int(dst.Width), dstH: C.int(dst.Height), dstPitch: C.int(dst.Pitch),
+		srcW: C.int(srcW), srcH: C.int(srcH), srcPitch: C.int(src.Pitch),
+		slotMinX: C.int(slotRect.Min.X), slotMinY: C.int(slotRect.Min.Y),
+		slotMaxX: C.int(slotRect.Max.X), slotMaxY: C.int(slotRect.Max.Y),
+		alpha256:     C.int(alpha256),
+		shape:        C.int(shape),
+		lightEnabled: boolToInt(t3d.LightEnabled),
+		lightX:       C.float(t3d.LightX), lightY: C.float(t3d.LightY), lightZ: C.float(lightZ),
+		ambient: C.float(ambient), specular: C.float(t3d.Specular),
+		srcAspect:         C.float(float32(srcW) / float32(srcH)),
+		reflectionEnabled: boolToInt(t3d.ReflectionEnabled),
+		reflectionOpacity: C.float(t3d.ReflectionOpacity),
+		reflectionFade:    C.float(t3d.ReflectionFade),
+		curlProgress:      C.float(t3d.CurlProgress),
+		curlRadius:        C.float(t3d.CurlRadius),
+	}
+	copy(yParams.invMVP[:], cInvMVP[:])
+
+	rc := C.dve3d_composite_y_p210(
+		(*C.uint8_t)(unsafe.Pointer(uintptr(dst.DevPtr))),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(src.DevPtr))),
+		yParams, ctx.stream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: DVE3D composite Y P210 failed: %d", rc)
+	}
+
+	// UV plane offset: dst.Pitch * dst.Height bytes from base
+	dstUVPtr := uintptr(dst.DevPtr) + uintptr(dst.Pitch*dst.Height)
+	srcUVPtr := uintptr(src.DevPtr) + uintptr(src.Pitch*srcH)
+
+	// P210 4:2:2: chroma has full height but half width
+	uvParams := C.DVE3DUVParams{
+		dstW: C.int(dst.Width), dstChromaH: C.int(dst.Height), dstPitch: C.int(dst.Pitch),
+		srcW: C.int(srcW), srcChromaH: C.int(srcH), srcPitch: C.int(src.Pitch),
+		slotMinCX:    C.int(max(slotRect.Min.X/2-1, 0)),
+		slotMinCY:    C.int(max(slotRect.Min.Y-1, 0)), // no vertical halving for 4:2:2
+		slotMaxCX:    C.int(min(slotRect.Max.X/2+1, dst.Width/2)),
+		slotMaxCY:    C.int(min(slotRect.Max.Y+1, dst.Height)), // full height
+		alpha256:     C.int(alpha256),
+		shape:        C.int(shape),
+		lightEnabled: boolToInt(t3d.LightEnabled),
+		lightX:       C.float(t3d.LightX), lightY: C.float(t3d.LightY), lightZ: C.float(lightZ),
+		ambient: C.float(ambient), specular: C.float(t3d.Specular),
+		srcAspect:         C.float(float32(srcW) / float32(srcH)),
+		reflectionEnabled: boolToInt(t3d.ReflectionEnabled),
+		reflectionOpacity: C.float(t3d.ReflectionOpacity),
+		reflectionFade:    C.float(t3d.ReflectionFade),
+		curlProgress:      C.float(t3d.CurlProgress),
+		curlRadius:        C.float(t3d.CurlRadius),
+	}
+	copy(uvParams.invMVP[:], cInvMVP[:])
+
+	rc = C.dve3d_composite_uv_p210(
+		(*C.uint8_t)(unsafe.Pointer(dstUVPtr)),
+		(*C.uint8_t)(unsafe.Pointer(srcUVPtr)),
+		uvParams, ctx.stream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: DVE3D composite UV P210 failed: %d", rc)
 	}
 
 	return ctx.Sync()

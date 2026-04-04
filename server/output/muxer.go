@@ -86,6 +86,19 @@ type TSMuxer struct {
 	diagCounter          int   // for periodic logging
 	maxBitrate           int   // encoder max bitrate in bits/sec (for PMT descriptor); 0 = use default 5 Mbps
 	diagPrevMuxerPTS     int64 // PTS delta diagnostic: previous muxerPTS for delta tracking
+
+	// Resolution for SDT service_type selection. Set via SetResolution
+	// before the first keyframe. If unset, defaults to HD (0x19).
+	videoWidth  int
+	videoHeight int
+
+	// Periodic NIT/SDT re-emission per ETSI EN 300 468.
+	// SDT max interval: 2s (180,000 ticks at 90kHz)
+	// NIT max interval: 10s (900,000 ticks at 90kHz)
+	lastSDTPTS int64
+	lastNITPTS int64
+	sdtCC      uint8 // continuity counter for SDT PID
+	nitCC      uint8 // continuity counter for NIT PID
 }
 
 // NewTSMuxer creates an uninitialized TSMuxer. Call SetOutput before
@@ -120,6 +133,15 @@ func (m *TSMuxer) LipSyncOffset90k() int64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.lipSyncOffset
+}
+
+// SetResolution sets the video resolution for SDT service_type selection.
+// Must be called before the first keyframe for correct DVB SI metadata.
+func (m *TSMuxer) SetResolution(width, height int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.videoWidth = width
+	m.videoHeight = height
 }
 
 // SetSCTE35PID configures the SCTE-35 PID for this muxer. A non-zero PID
@@ -252,24 +274,37 @@ func (m *TSMuxer) writeSCTE35Locked(data []byte) error {
 	return m.flush()
 }
 
+// dvbServiceType returns the ETSI EN 300 468 service_type for the SDT
+// service descriptor based on the video codec and resolution.
+//
+//	0x19 = advanced codec HD digital television (H.264 or HEVC, any res ≤1080p)
+//	0x1F = HEVC UHD digital television (HEVC above 1080p)
+func dvbServiceType(videoCodec string, width, height int) byte {
+	if videoCodec == "h265" && height > 1080 {
+		return 0x1F // HEVC UHD
+	}
+	return 0x19 // advanced codec HD (covers H.264 and HEVC ≤1080p)
+}
+
 // buildSDTPacket constructs a single 188-byte MPEG-TS packet containing a
 // Service Description Table (SDT) with the Switchframe service name and
-// provider. This makes the stream identifiable in tools like MediaInfo,
-// ffprobe, and broadcast analyzers.
+// provider. The service_type is derived from the codec and resolution per
+// ETSI EN 300 468 Table 87.
 //
 // SDT structure per ISO 13818-1 / ETSI EN 300 468:
 //
 //	PID 0x0011, table_id 0x42 (SDT actual), service descriptor tag 0x48.
-func buildSDTPacket() []byte {
+func buildSDTPacket(videoCodec string, width, height int) []byte {
 	serviceName := []byte("Switchframe")
 	providerName := []byte("switchframe.dev")
+	serviceType := dvbServiceType(videoCodec, width, height)
 
 	// Service descriptor (tag 0x48): type + provider_len + provider + name_len + name
 	descPayload := make([]byte, 0, 3+len(providerName)+len(serviceName))
 	descPayload = append(descPayload, 0x48) // descriptor_tag
 	descLen := 1 + 1 + len(providerName) + 1 + len(serviceName)
 	descPayload = append(descPayload, byte(descLen))           // descriptor_length
-	descPayload = append(descPayload, 0x01)                    // service_type: digital television
+	descPayload = append(descPayload, serviceType)             // service_type per ETSI EN 300 468
 	descPayload = append(descPayload, byte(len(providerName))) // provider name length
 	descPayload = append(descPayload, providerName...)
 	descPayload = append(descPayload, byte(len(serviceName))) // service name length
@@ -502,6 +537,35 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 	m.annexBBuf = codec.WireToAnnexBInto(frame.WireData, m.annexBBuf[:0])
 	if len(m.annexBBuf) == 0 {
 		return nil
+	}
+
+	// Periodic NIT/SDT re-emission per ETSI EN 300 468.
+	// SDT: max 2s interval (180,000 ticks). NIT: max 10s interval (900,000 ticks).
+	const (
+		sdtInterval int64 = 180000 // 2s at 90kHz
+		nitInterval int64 = 900000 // 10s at 90kHz
+	)
+	if m.lastSDTPTS == 0 {
+		m.lastSDTPTS = muxerPTS
+		m.lastNITPTS = muxerPTS
+	}
+	if (muxerPTS-m.lastSDTPTS)&0x1FFFFFFFF >= sdtInterval {
+		sdtPkt := buildSDTPacket(m.videoCodec, m.videoWidth, m.videoHeight)
+		sdtPkt[3] = (sdtPkt[3] & 0xF0) | (m.sdtCC & 0x0F)
+		m.sdtCC = (m.sdtCC + 1) & 0x0F
+		if _, err := m.buf.Write(sdtPkt); err != nil {
+			return err
+		}
+		m.lastSDTPTS = muxerPTS
+	}
+	if (muxerPTS-m.lastNITPTS)&0x1FFFFFFFF >= nitInterval {
+		nitPkt := buildNITPacket()
+		nitPkt[3] = (nitPkt[3] & 0xF0) | (m.nitCC & 0x0F)
+		m.nitCC = (m.nitCC + 1) & 0x0F
+		if _, err := m.buf.Write(nitPkt); err != nil {
+			return err
+		}
+		m.lastNITPTS = muxerPTS
 	}
 
 	annexB := m.annexBBuf
@@ -739,13 +803,20 @@ func (m *TSMuxer) init(_ int64) error {
 	}
 
 	// Write NIT with Switchframe network name (appears in MediaInfo General section).
-	if _, err := m.buf.Write(buildNITPacket()); err != nil {
+	nitPkt := buildNITPacket()
+	nitPkt[3] = (nitPkt[3] & 0xF0) | (m.nitCC & 0x0F)
+	m.nitCC = (m.nitCC + 1) & 0x0F
+	if _, err := m.buf.Write(nitPkt); err != nil {
 		cancel()
 		return err
 	}
 
 	// Write SDT with Switchframe service name (appears in MediaInfo Menu section).
-	if _, err := m.buf.Write(buildSDTPacket()); err != nil {
+	// service_type reflects the actual codec and resolution.
+	sdtPkt := buildSDTPacket(m.videoCodec, m.videoWidth, m.videoHeight)
+	sdtPkt[3] = (sdtPkt[3] & 0xF0) | (m.sdtCC & 0x0F)
+	m.sdtCC = (m.sdtCC + 1) & 0x0F
+	if _, err := m.buf.Write(sdtPkt); err != nil {
 		cancel()
 		return err
 	}

@@ -186,6 +186,168 @@ func boolToInt32(b bool) C.int32_t {
 	return 0
 }
 
+// DVECompositeP210 composites a single DVE slot onto the destination GPU frame
+// using the P210 (10-bit 4:2:2) Metal DVE shader. Same inverse projective
+// transform, bilinear sampling, SDF border/shadow, crop with soft edges,
+// and alpha compositing as DVEComposite, but operating on uint16 samples
+// in [0, 1023] range with full-height chroma (4:2:2).
+func DVECompositeP210(ctx *Context, dst, src *GPUFrame, transform dve.Transform,
+	invMatrix dve.Matrix3x3, srcW, srcH int, aabb image.Rectangle) error {
+	if ctx == nil || ctx.mtl == nil || dst == nil || src == nil {
+		return ErrGPUNotAvailable
+	}
+
+	// Compute alpha256 from effective opacity
+	alpha256 := int(transform.EffectiveOpacity() * 256.0)
+	if alpha256 < 0 {
+		alpha256 = 0
+	} else if alpha256 > 256 {
+		alpha256 = 256
+	}
+
+	// Shadow alpha256
+	shadowAlpha256 := 0
+	if transform.Shadow.Enabled {
+		shadowAlpha256 = int(transform.Shadow.Opacity * 256.0)
+		if shadowAlpha256 < 0 {
+			shadowAlpha256 = 0
+		} else if shadowAlpha256 > 256 {
+			shadowAlpha256 = 256
+		}
+	}
+
+	mtl := ctx.mtl
+
+	// Default contrast/saturation to 1.0 when zero-valued
+	contrast := transform.Contrast
+	if contrast == 0 {
+		contrast = 1.0
+	}
+	saturation := transform.Saturation
+	if saturation == 0 {
+		saturation = 1.0
+	}
+
+	// Promote 8-bit border/shadow colors to 10-bit (<<2)
+	borderColorY10 := uint32(transform.Border.ColorY) << 2
+	borderColorCb10 := uint32(transform.Border.ColorCb) << 2
+	borderColorCr10 := uint32(transform.Border.ColorCr) << 2
+	shadowColorY10 := uint32(transform.Shadow.ColorY) << 2
+
+	// --- Y plane ---
+	yPipeline, err := mtl.getPipeline("dve_composite_y_p210")
+	if err != nil {
+		return fmt.Errorf("gpu: dve composite Y P210: %w", err)
+	}
+
+	yParams := C.MetalDVECompositeYParams{
+		dstW: C.uint32_t(dst.Width), dstH: C.uint32_t(dst.Height), dstPitch: C.uint32_t(dst.Pitch),
+		srcW: C.uint32_t(srcW), srcH: C.uint32_t(srcH), srcPitch: C.uint32_t(src.Pitch),
+
+		m00: C.float(invMatrix[0]), m01: C.float(invMatrix[1]), m02: C.float(invMatrix[2]),
+		m10: C.float(invMatrix[3]), m11: C.float(invMatrix[4]), m12: C.float(invMatrix[5]),
+		m20: C.float(invMatrix[6]), m21: C.float(invMatrix[7]), m22: C.float(invMatrix[8]),
+
+		slotMinX: C.int32_t(aabb.Min.X), slotMinY: C.int32_t(aabb.Min.Y),
+		slotMaxX: C.int32_t(aabb.Max.X), slotMaxY: C.int32_t(aabb.Max.Y),
+
+		alpha256: C.int32_t(alpha256),
+
+		cropTop: C.float(transform.CropTop), cropBottom: C.float(transform.CropBottom),
+		cropLeft: C.float(transform.CropLeft), cropRight: C.float(transform.CropRight),
+		cropSoftness: C.float(transform.CropSoftness),
+
+		borderWidth:        C.float(transform.Border.Width),
+		borderColorY:       C.uint32_t(borderColorY10),
+		borderCornerRadius: C.float(transform.Border.CornerRadius),
+		borderSoftness:     C.float(transform.Border.Softness),
+
+		shadowEnabled:  boolToInt32(transform.Shadow.Enabled),
+		shadowOffsetX:  C.float(transform.Shadow.OffsetX),
+		shadowOffsetY:  C.float(transform.Shadow.OffsetY),
+		shadowBlur:     C.float(transform.Shadow.Blur),
+		shadowAlpha256: C.int32_t(shadowAlpha256),
+		shadowColorY:   C.uint32_t(shadowColorY10),
+
+		mirrorH:    boolToInt32(transform.MirrorH),
+		mirrorV:    boolToInt32(transform.MirrorV),
+		mosaicSize: C.int32_t(transform.MosaicSize),
+		brightness: C.float(transform.Brightness),
+		contrast:   C.float(contrast),
+	}
+
+	rc := C.metal_dve_composite_y(mtl.queue, yPipeline, dst.MetalBuf, src.MetalBuf, &yParams)
+	if rc != C.METAL_SUCCESS {
+		return fmt.Errorf("gpu: dve composite Y P210 failed: %d", rc)
+	}
+
+	// --- UV plane ---
+	uvPipeline, err := mtl.getPipeline("dve_composite_uv_p210")
+	if err != nil {
+		return fmt.Errorf("gpu: dve composite UV P210: %w", err)
+	}
+
+	dstUVOffset := C.int64_t(dst.Pitch * dst.Height)
+	srcUVOffset := C.int64_t(src.Pitch * srcH)
+
+	// P210 4:2:2: chroma has full height but half width.
+	chromaW := int(dst.Width) / 2
+	chromaH := int(dst.Height) // full height for 4:2:2
+	chromaMinX := max(aabb.Min.X/2-1, 0)
+	chromaMinY := max(aabb.Min.Y-1, 0) // no vertical halving for 4:2:2
+	chromaMaxX := min(aabb.Max.X/2+1, chromaW)
+	chromaMaxY := min(aabb.Max.Y+1, chromaH)
+
+	uvParams := C.MetalDVECompositeUVParams{
+		dstW: C.uint32_t(dst.Width), dstChromaH: C.uint32_t(dst.Height), dstPitch: C.uint32_t(dst.Pitch),
+		srcW: C.uint32_t(srcW), srcChromaH: C.uint32_t(srcH), srcPitch: C.uint32_t(src.Pitch),
+
+		m00: C.float(invMatrix[0]), m01: C.float(invMatrix[1]), m02: C.float(invMatrix[2]),
+		m10: C.float(invMatrix[3]), m11: C.float(invMatrix[4]), m12: C.float(invMatrix[5]),
+		m20: C.float(invMatrix[6]), m21: C.float(invMatrix[7]), m22: C.float(invMatrix[8]),
+
+		slotMinCX: C.int32_t(chromaMinX), slotMinCY: C.int32_t(chromaMinY),
+		slotMaxCX: C.int32_t(chromaMaxX), slotMaxCY: C.int32_t(chromaMaxY),
+
+		alpha256: C.int32_t(alpha256),
+
+		cropTop: C.float(transform.CropTop), cropBottom: C.float(transform.CropBottom),
+		cropLeft: C.float(transform.CropLeft), cropRight: C.float(transform.CropRight),
+		cropSoftness: C.float(transform.CropSoftness),
+
+		borderWidth:        C.float(transform.Border.Width),
+		borderColorCb:      C.uint32_t(borderColorCb10),
+		borderColorCr:      C.uint32_t(borderColorCr10),
+		borderCornerRadius: C.float(transform.Border.CornerRadius),
+		borderSoftness:     C.float(transform.Border.Softness),
+
+		shadowEnabled:  boolToInt32(transform.Shadow.Enabled),
+		shadowOffsetX:  C.float(transform.Shadow.OffsetX),
+		shadowOffsetY:  C.float(transform.Shadow.OffsetY),
+		shadowBlur:     C.float(transform.Shadow.Blur),
+		shadowAlpha256: C.int32_t(shadowAlpha256),
+		shadowColorCb:  C.uint32_t(512), // achromatic shadow: neutral 10-bit chroma
+		shadowColorCr:  C.uint32_t(512), // neutral Cr for shadow (10-bit)
+
+		mirrorH:    boolToInt32(transform.MirrorH),
+		mirrorV:    boolToInt32(transform.MirrorV),
+		mosaicSize: C.int32_t(transform.MosaicSize),
+		saturation: C.float(saturation),
+	}
+
+	uvBufs := [2]C.MetalBufferRef{dst.MetalBuf, src.MetalBuf}
+	uvOffsets := [2]C.int64_t{dstUVOffset, srcUVOffset}
+	rc = C.metal_dispatch_2d_offset(mtl.queue, uvPipeline,
+		&uvBufs[0], &uvOffsets[0], 2,
+		unsafe.Pointer(&uvParams), C.size_t(unsafe.Sizeof(uvParams)), 2,
+		C.uint32_t(dst.Width/2), C.uint32_t(dst.Height))
+	if rc != C.METAL_SUCCESS {
+		return fmt.Errorf("gpu: dve composite UV P210 failed: %d", rc)
+	}
+
+	return nil
+}
+
 // DVE3DComposite composites a 3D DVE slot onto the destination GPU frame.
 // The shader ray-casts through each output pixel to intersect with the specified
 // geometry (plane or cube), samples the video at the intersection UV, applies
@@ -290,6 +452,14 @@ func DVE3DComposite(ctx *Context, dst, src *GPUFrame, t3d *dve.Transform3D,
 	}
 
 	return nil
+}
+
+// DVE3DCompositeP210 composites a 3D DVE slot onto the destination GPU frame
+// using P210 (10-bit 4:2:2) format. Metal implementation is pending; returns
+// an error to fall back to CPU or NV12 path.
+func DVE3DCompositeP210(ctx *Context, dst, src *GPUFrame, t3d *dve.Transform3D,
+	invMVP dve.Matrix4x4, srcW, srcH int, slotRect image.Rectangle, alpha256 int) error {
+	return fmt.Errorf("gpu: DVE3DCompositeP210 not yet implemented for Metal")
 }
 
 // DVEDefocusBlur applies a Gaussian blur to a GPU frame when the DVE transform

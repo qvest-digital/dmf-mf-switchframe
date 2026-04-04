@@ -902,7 +902,7 @@ func (r *gpuPipelineRunnerImpl) RunTransition(fromKey, toKey string, transType s
 				Reverse:       r.wipeConfig.Reverse,
 				Multiply:      r.wipeConfig.Multiply,
 			}
-			if err := gpu.BlendWipeMap(ctx, dst, frameA, frameB, r.wipeGradientBuf, cfg); err != nil {
+			if err := gpu.GPUBlendWipeMapDispatch(ctx, dst, frameA, frameB, r.wipeGradientBuf, cfg); err != nil {
 				dst.Release()
 				return fmt.Errorf("gpu transition wipe map: %w", err)
 			}
@@ -1126,13 +1126,13 @@ func compositeDVESource(ctx *gpu.Context, dst, src *gpu.GPUFrame, xf dve.Transfo
 		invMVP := dve.Compute3DInverseMVP(xf.Transform3D, aspect)
 		alpha256 := int(xf.EffectiveOpacity() * 256)
 		slotRect := image.Rect(0, 0, frameW, frameH) // fullscreen
-		return gpu.DVE3DComposite(ctx, dst, src, xf.Transform3D, invMVP, src.Width, src.Height, slotRect, alpha256)
+		return gpu.GPUDVE3DCompositeDispatch(ctx, dst, src, xf.Transform3D, invMVP, src.Width, src.Height, slotRect, alpha256)
 	}
 
 	// 2D DVE: inverse transform
 	invMatrix := dve.ComputeInverseTransform(xf, src.Width, src.Height)
 	aabb := dve.ComputeAABB(xf, src.Width, src.Height, frameW, frameH)
-	return gpu.DVEComposite(ctx, dst, src, xf, invMatrix, src.Width, src.Height, aabb)
+	return gpu.GPUDVECompositeDispatch(ctx, dst, src, xf, invMatrix, src.Width, src.Height, aabb)
 }
 
 // --- State Adapters (bridge package-local types to gpu interfaces) ---

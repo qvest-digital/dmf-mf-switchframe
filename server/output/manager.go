@@ -93,6 +93,10 @@ type Manager struct {
 	smoothedLipSync int64
 	lipSyncLatched  bool // true after LatchLipSync — no further updates
 
+	// Video resolution for SDT service_type in TS output.
+	videoWidth  int
+	videoHeight int
+
 	// PTS delta diagnostic: detect jitter at DirectWriteVideo stage.
 	lastDirectVideoPTS int64
 
@@ -147,6 +151,14 @@ func (m *Manager) SetMetrics(pm *metrics.Metrics) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.promMetrics = pm
+}
+
+// SetResolution sets the video resolution for SDT service_type metadata.
+func (m *Manager) SetResolution(width, height int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.videoWidth = width
+	m.videoHeight = height
 }
 
 // SetLipSyncSource registers a function that returns the total lip-sync
@@ -1073,6 +1085,9 @@ func (m *Manager) ensureMuxerLocked() bool {
 	}
 
 	muxer := NewTSMuxer()
+	if m.videoWidth > 0 && m.videoHeight > 0 {
+		muxer.SetResolution(m.videoWidth, m.videoHeight)
+	}
 	if m.scte35PID != 0 {
 		muxer.SetSCTE35PID(m.scte35PID)
 	}

@@ -268,6 +268,151 @@ __global__ void dve3d_composite_uv_kernel(uint8_t* dstUV, const uint8_t* srcUV, 
     dstUV[dstIdx+1] = (uint8_t)min(max(((int)dstUV[dstIdx+1]*inv + (int)(cr+0.5f)*a + 128)>>8, 0), 255);
 }
 
+// ============================================================================
+// P210 (10-bit 4:2:2) DVE3D kernels
+// ============================================================================
+
+__device__ float bilinearY_p210_3d(const uint16_t* src, float u, float v, int w, int h, int pitch16) {
+    float sx = fminf(fmaxf(u * (w - 1), 0.0f), (float)(w - 1));
+    float sy = fminf(fmaxf(v * (h - 1), 0.0f), (float)(h - 1));
+    int ix = (int)sx, iy = (int)sy;
+    float fx = sx - ix, fy = sy - iy;
+    int ix1 = min(ix+1, w-1), iy1 = min(iy+1, h-1);
+    float v00 = src[iy*pitch16+ix], v10 = src[iy*pitch16+ix1];
+    float v01 = src[iy1*pitch16+ix], v11 = src[iy1*pitch16+ix1];
+    float top = v00 + (v10-v00)*fx, bot = v01 + (v11-v01)*fx;
+    return top + (bot-top)*fy;
+}
+
+// --- P210 Y Kernel ---
+
+__global__ void dve3d_composite_y_p210_kernel(uint16_t* dst, const uint16_t* src, DVE3DParams p) {
+    int ox = blockIdx.x * blockDim.x + threadIdx.x;
+    int oy = blockIdx.y * blockDim.y + threadIdx.y;
+    if (ox >= p.dstW || oy >= p.dstH) return;
+    if (ox < p.slotMinX || ox > p.slotMaxX || oy < p.slotMinY || oy > p.slotMaxY) return;
+
+    int pitch16 = p.dstPitch / 2;
+
+    float ndcX = (float(ox - p.slotMinX) / fmaxf(float(p.slotMaxX - p.slotMinX), 1.0f)) * 2.0f - 1.0f;
+    float ndcY = 1.0f - (float(oy - p.slotMinY) / fmaxf(float(p.slotMaxY - p.slotMinY), 1.0f)) * 2.0f;
+
+    float4_t nearPt = mat4_mul(p.invMVP, {ndcX, ndcY, -1.0f, 1.0f});
+    float4_t farPt = mat4_mul(p.invMVP, {ndcX, ndcY, 1.0f, 1.0f});
+    if (fabsf(nearPt.w) < 1e-8f || fabsf(farPt.w) < 1e-8f) return;
+
+    float3_t near3 = {nearPt.x/nearPt.w, nearPt.y/nearPt.w, nearPt.z/nearPt.w};
+    float3_t far3 = {farPt.x/farPt.w, farPt.y/farPt.w, farPt.z/farPt.w};
+    float3_t rayDir = norm3({far3.x-near3.x, far3.y-near3.y, far3.z-near3.z});
+
+    HitResult hit;
+    if (p.shape == 1) hit = intersectCube(near3, rayDir, p.srcAspect);
+    else if (p.shape == 2) hit = intersectPlane(near3, rayDir, p.srcAspect);
+    else hit = intersectPlane(near3, rayDir, p.srcAspect);
+    if (!hit.hit) return;
+
+    // Page turn curl deformation (shape=2)
+    float pageTurnLightScale = 1.0f;
+    if (p.shape == 2 && p.curlRadius > 0.001f) {
+        float curlX = 1.0f - p.curlProgress;
+        if (hit.u > curlX) {
+            float angle = (hit.u - curlX) / p.curlRadius;
+            hit.u = curlX + p.curlRadius * sinf(angle);
+            float depth = p.curlRadius * (1.0f - cosf(angle));
+            pageTurnLightScale = 1.0f - depth * 0.3f;
+            hit.u = fminf(fmaxf(hit.u, 0.0f), 1.0f);
+        }
+    }
+
+    int srcPitch16 = p.srcPitch / 2;
+    float sampledY = bilinearY_p210_3d(src, hit.u, hit.v, p.srcW, p.srcH, srcPitch16);
+
+    float lightScale = pageTurnLightScale;
+    if (p.lightEnabled) {
+        float light = computeLighting(hit.normal, {p.lightX, p.lightY, p.lightZ}, p.ambient, p.specular);
+        lightScale *= light;
+    }
+    if (lightScale != 1.0f) {
+        // BT.709 10-bit limited range: Y [64, 940]
+        sampledY = 64.0f + (sampledY - 64.0f) * lightScale;
+        sampledY = fminf(fmaxf(sampledY, 64.0f), 940.0f);
+    }
+
+    int dstIdx = oy * pitch16 + ox;
+    int existing = dst[dstIdx];
+    int val = (int)(sampledY + 0.5f);
+    int a = p.alpha256, inv = 256 - a;
+    dst[dstIdx] = (uint16_t)min(max((existing*inv + val*a + 128) >> 8, 0), 1023);
+}
+
+// --- P210 UV Kernel ---
+
+__global__ void dve3d_composite_uv_p210_kernel(uint16_t* dstUV, const uint16_t* srcUV, DVE3DUVParams p) {
+    int cx = blockIdx.x * blockDim.x + threadIdx.x;
+    int cy = blockIdx.y * blockDim.y + threadIdx.y;
+    int chromaW = p.dstW / 2;
+    if (cx >= chromaW || cy >= p.dstChromaH) return;
+    if (cx < p.slotMinCX || cx > p.slotMaxCX || cy < p.slotMinCY || cy > p.slotMaxCY) return;
+
+    int pitch16 = p.dstPitch / 2;
+
+    // For P210 4:2:2, chroma is full height — lumaY == cy (no vertical doubling)
+    int lumaX = cx * 2;
+    int lumaY = cy;
+
+    // Map slot bounds back to luma coordinates for NDC computation
+    float ndcX = (float(lumaX + 1 - p.slotMinCX * 2) / fmaxf(float(p.slotMaxCX*2 - p.slotMinCX*2), 1.0f)) * 2.0f - 1.0f;
+    float ndcY = 1.0f - (float(lumaY - p.slotMinCY) / fmaxf(float(p.slotMaxCY - p.slotMinCY), 1.0f)) * 2.0f;
+
+    float4_t nearPt = mat4_mul(p.invMVP, {ndcX, ndcY, -1.0f, 1.0f});
+    float4_t farPt = mat4_mul(p.invMVP, {ndcX, ndcY, 1.0f, 1.0f});
+    if (fabsf(nearPt.w) < 1e-8f || fabsf(farPt.w) < 1e-8f) return;
+
+    float3_t near3 = {nearPt.x/nearPt.w, nearPt.y/nearPt.w, nearPt.z/nearPt.w};
+    float3_t far3 = {farPt.x/farPt.w, farPt.y/farPt.w, farPt.z/farPt.w};
+    float3_t rayDir = norm3({far3.x-near3.x, far3.y-near3.y, far3.z-near3.z});
+
+    HitResult hit;
+    if (p.shape == 1) hit = intersectCube(near3, rayDir, p.srcAspect);
+    else if (p.shape == 2) hit = intersectPlane(near3, rayDir, p.srcAspect);
+    else hit = intersectPlane(near3, rayDir, p.srcAspect);
+    if (!hit.hit) return;
+
+    // Page turn curl deformation (shape=2)
+    if (p.shape == 2 && p.curlRadius > 0.001f) {
+        float curlX = 1.0f - p.curlProgress;
+        if (hit.u > curlX) {
+            float angle = (hit.u - curlX) / p.curlRadius;
+            hit.u = curlX + p.curlRadius * sinf(angle);
+            hit.u = fminf(fmaxf(hit.u, 0.0f), 1.0f);
+        }
+    }
+
+    int srcPitch16 = p.srcPitch / 2;
+    int srcCW = p.srcW / 2;
+    // P210: chroma has full height
+    float scx = fminf(fmaxf(hit.u * (srcCW-1), 0.0f), (float)(srcCW-1));
+    float scy = fminf(fmaxf(hit.v * (p.srcChromaH-1), 0.0f), (float)(p.srcChromaH-1));
+    int ix = (int)scx, iy = (int)scy;
+    float fx = scx-ix, fy = scy-iy;
+    int ix1 = min(ix+1, srcCW-1), iy1 = min(iy+1, p.srcChromaH-1);
+
+    // Bilinear Cb (uint16) — use srcPitch16 for source sampling
+    float cb00 = srcUV[iy*srcPitch16+ix*2], cb10 = srcUV[iy*srcPitch16+ix1*2];
+    float cb01 = srcUV[iy1*srcPitch16+ix*2], cb11 = srcUV[iy1*srcPitch16+ix1*2];
+    float cb = cb00+(cb10-cb00)*fx; cb += ((cb01+(cb11-cb01)*fx)-cb)*fy;
+
+    // Bilinear Cr (uint16) — use srcPitch16 for source sampling
+    float cr00 = srcUV[iy*srcPitch16+ix*2+1], cr10 = srcUV[iy*srcPitch16+ix1*2+1];
+    float cr01 = srcUV[iy1*srcPitch16+ix*2+1], cr11 = srcUV[iy1*srcPitch16+ix1*2+1];
+    float cr = cr00+(cr10-cr00)*fx; cr += ((cr01+(cr11-cr01)*fx)-cr)*fy;
+
+    int dstIdx = cy * pitch16 + cx * 2;
+    int a = p.alpha256, inv = 256 - a;
+    dstUV[dstIdx]   = (uint16_t)min(max(((int)dstUV[dstIdx]*inv + (int)(cb+0.5f)*a + 128)>>8, 0), 1023);
+    dstUV[dstIdx+1] = (uint16_t)min(max(((int)dstUV[dstIdx+1]*inv + (int)(cr+0.5f)*a + 128)>>8, 0), 1023);
+}
+
 // --- Extern C wrappers ---
 
 extern "C" {
@@ -284,6 +429,21 @@ cudaError_t dve3d_composite_uv(uint8_t* dstUV, const uint8_t* srcUV, DVE3DUVPara
     dim3 block(BLOCK_DIM_X, BLOCK_DIM_Y);
     dim3 grid((chromaW + block.x - 1) / block.x, (params.dstChromaH + block.y - 1) / block.y);
     dve3d_composite_uv_kernel<<<grid, block, 0, stream>>>(dstUV, srcUV, params);
+    return cudaGetLastError();
+}
+
+cudaError_t dve3d_composite_y_p210(uint8_t* dst, const uint8_t* src, DVE3DParams params, cudaStream_t stream) {
+    dim3 block(BLOCK_DIM_X, BLOCK_DIM_Y);
+    dim3 grid((params.dstW + block.x - 1) / block.x, (params.dstH + block.y - 1) / block.y);
+    dve3d_composite_y_p210_kernel<<<grid, block, 0, stream>>>((uint16_t*)dst, (const uint16_t*)src, params);
+    return cudaGetLastError();
+}
+
+cudaError_t dve3d_composite_uv_p210(uint8_t* dstUV, const uint8_t* srcUV, DVE3DUVParams params, cudaStream_t stream) {
+    int chromaW = params.dstW / 2;
+    dim3 block(BLOCK_DIM_X, BLOCK_DIM_Y);
+    dim3 grid((chromaW + block.x - 1) / block.x, (params.dstChromaH + block.y - 1) / block.y);
+    dve3d_composite_uv_p210_kernel<<<grid, block, 0, stream>>>((uint16_t*)dstUV, (const uint16_t*)srcUV, params);
     return cudaGetLastError();
 }
 

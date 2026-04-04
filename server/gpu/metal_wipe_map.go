@@ -92,3 +92,13 @@ func BlendWipeMap(ctx *Context, dst, srcA, srcB, gradMap *GPUFrame, cfg WipeMapB
 
 	return nil
 }
+
+// BlendWipeMapP210 performs a gradient-map-driven wipe transition between two
+// P210 frames on Metal. This is a placeholder that returns an error until the
+// Metal P210 wipe map shader is implemented.
+func BlendWipeMapP210(ctx *Context, dst, srcA, srcB, gradMap *GPUFrame, cfg WipeMapBlendConfig) error {
+	if ctx == nil || ctx.mtl == nil || dst == nil || srcA == nil || srcB == nil || gradMap == nil {
+		return ErrGPUNotAvailable
+	}
+	return fmt.Errorf("gpu: BlendWipeMapP210 not yet implemented on Metal")
+}
