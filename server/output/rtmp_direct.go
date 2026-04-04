@@ -13,6 +13,12 @@ package output
 #include <stdlib.h>
 #include <string.h>
 
+// AV_PROFILE_AAC_LOW was introduced in FFmpeg 6.1 (libavcodec 60.31).
+// Older versions (e.g. Ubuntu 24.04's libavcodec60) use FF_PROFILE_AAC_LOW.
+#ifndef AV_PROFILE_AAC_LOW
+#define AV_PROFILE_AAC_LOW FF_PROFILE_AAC_LOW
+#endif
+
 typedef struct {
 	AVFormatContext* out_ctx;
 	int video_idx;
