@@ -264,7 +264,10 @@ func (s *Switcher) processTransitionTick(tick clock.Tick, fs *FrameSynchronizer,
 	// bypassing CPU blend + upload entirely. RunTransition reads both sources
 	// from the GPU source manager cache and blends them with GPU kernels.
 	if h := s.gpuRunner.Load(); h != nil && h.runner != nil {
-		tt := engine.TransitionType()
+		tt := transition.Type(s.transTypeOrig)
+		if tt == "" {
+			tt = engine.TransitionType()
+		}
 		wipeDir := s.transitionWipeDirToGPU(engine.WipeDirection())
 
 		// Clamp position to [0, 1].
