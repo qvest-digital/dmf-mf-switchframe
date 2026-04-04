@@ -35,9 +35,9 @@ type gpuEncodeNode struct {
 	lastErr   atomic.Value
 
 	// Async encode channel + goroutine
-	frameCh      chan vtEncodeReq
-	done         chan struct{}
-	framesIn     atomic.Int64
+	frameCh       chan vtEncodeReq
+	done          chan struct{}
+	framesIn      atomic.Int64
 	framesDropped atomic.Int64
 }
 

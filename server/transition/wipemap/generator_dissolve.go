@@ -87,7 +87,7 @@ func genDissolveScanline(w, h int) []byte {
 	// Each scanline gets a base value (top-to-bottom gradient) plus random jitter.
 	for y := 0; y < h; y++ {
 		base := float64(y) / float64(max(h-1, 1)) * 200.0 // 0-200 base
-		jitter := rng.Float64() * 55.0                     // 0-55 jitter
+		jitter := rng.Float64() * 55.0                    // 0-55 jitter
 		v := clampByte(base + jitter)
 		row := buf[y*w : y*w+w]
 		for i := range row {

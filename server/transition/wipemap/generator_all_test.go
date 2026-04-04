@@ -270,9 +270,9 @@ func TestGenCheckerboard(t *testing.T) {
 	// Different blocks should have different values
 	blockW := testW / 8
 	blockH := testH / 6
-	v00 := px(buf, testW, blockW/2, blockH/2)           // block (0,0)
-	v10 := px(buf, testW, blockW+blockW/2, blockH/2)     // block (1,0)
-	v01 := px(buf, testW, blockW/2, blockH+blockH/2)     // block (0,1)
+	v00 := px(buf, testW, blockW/2, blockH/2)        // block (0,0)
+	v10 := px(buf, testW, blockW+blockW/2, blockH/2) // block (1,0)
+	v01 := px(buf, testW, blockW/2, blockH+blockH/2) // block (0,1)
 	if v00 == v10 && v10 == v01 {
 		t.Errorf("Checkerboard: blocks should have different values, all=%d", v00)
 	}

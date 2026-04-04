@@ -66,7 +66,7 @@ func AnimElasticIn(slotIdx int, targetX, targetY float64, durationMs int) *Anima
 	// Timing breakpoints
 	t1 := durationMs * 55 / 100 // first arrival (overshoot)
 	t2 := durationMs * 75 / 100 // undershoot
-	t3 := durationMs             // settle
+	t3 := durationMs            // settle
 
 	// Overshoot/undershoot amounts
 	overshootX := targetX * 0.15

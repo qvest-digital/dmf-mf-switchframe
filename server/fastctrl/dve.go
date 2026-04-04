@@ -15,13 +15,13 @@ const (
 
 // DVE single-parameter IDs for knob/slider control.
 const (
-	DVEParamPositionX     uint16 = 0x0000
-	DVEParamPositionY     uint16 = 0x0001
-	DVEParamWidth         uint16 = 0x0002
-	DVEParamHeight        uint16 = 0x0003
-	DVEParamRotationDeg   uint16 = 0x0004
-	DVEParamPerspectiveX  uint16 = 0x0005
-	DVEParamPerspectiveY  uint16 = 0x0006
+	DVEParamPositionX    uint16 = 0x0000
+	DVEParamPositionY    uint16 = 0x0001
+	DVEParamWidth        uint16 = 0x0002
+	DVEParamHeight       uint16 = 0x0003
+	DVEParamRotationDeg  uint16 = 0x0004
+	DVEParamPerspectiveX uint16 = 0x0005
+	DVEParamPerspectiveY uint16 = 0x0006
 	// 0x0007 reserved
 	DVEParamCropTop       uint16 = 0x0008
 	DVEParamCropBottom    uint16 = 0x0009

@@ -14,14 +14,14 @@ import (
 
 // WipeMapBlendConfig holds parameters for a gradient-map-driven wipe blend.
 type WipeMapBlendConfig struct {
-	Position    float64 // 0.0-1.0 transition progress
-	SoftEdge    float64 // 0.0-1.0 edge softness
-	BorderWidth float64 // 0.0-1.0 border zone width
+	Position      float64 // 0.0-1.0 transition progress
+	SoftEdge      float64 // 0.0-1.0 edge softness
+	BorderWidth   float64 // 0.0-1.0 border zone width
 	BorderColorY  byte
 	BorderColorCb byte
 	BorderColorCr byte
-	Reverse  bool // invert gradient
-	Multiply int  // repeat count (0 or 1 = no multiply)
+	Reverse       bool // invert gradient
+	Multiply      int  // repeat count (0 or 1 = no multiply)
 }
 
 // BlendWipeMap performs a gradient-map-driven wipe transition between two NV12

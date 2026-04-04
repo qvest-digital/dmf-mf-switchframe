@@ -663,7 +663,7 @@ type gpuPipelineRunnerImpl struct {
 	ctx           *gpu.Context
 
 	// Gradient-map wipe state (set once per transition via SetWipeMap).
-	wipeGradientBuf *gpu.GPUFrame      // uploaded gradient map texture (Y-plane only)
+	wipeGradientBuf *gpu.GPUFrame       // uploaded gradient map texture (Y-plane only)
 	wipeConfig      *wipemap.WipeConfig // per-frame blend parameters
 }
 

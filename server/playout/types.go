@@ -66,8 +66,8 @@ const (
 
 // TransitionConfig defines the transition between playlist items.
 type TransitionConfig struct {
-	Type       string             `json:"type"`
-	DurationMs int                `json:"duration_ms,omitempty"`
+	Type       string              `json:"type"`
+	DurationMs int                 `json:"duration_ms,omitempty"`
 	WipeConfig *wipemap.WipeConfig `json:"wipe_config,omitempty"`
 }
 

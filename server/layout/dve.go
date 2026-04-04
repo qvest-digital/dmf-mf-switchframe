@@ -464,4 +464,3 @@ func SlotFromLegacy(s Slot) dve.Slot {
 		Enabled:   s.Enabled,
 	}
 }
-

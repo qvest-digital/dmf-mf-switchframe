@@ -106,8 +106,8 @@ type Engine struct {
 	state          State
 	transitionType Type
 	wipeDirection  WipeDirection
-	wipeConfig     *wipemap.WipeConfig    // gradient-map wipe config (nil = legacy directional)
-	wipeGradient   []byte                 // resolved gradient map for current dimensions
+	wipeConfig     *wipemap.WipeConfig // gradient-map wipe config (nil = legacy directional)
+	wipeGradient   []byte              // resolved gradient map for current dimensions
 	fromSource     string
 	toSource       string // empty for FTB
 	durationMs     int

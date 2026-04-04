@@ -462,7 +462,7 @@ func AnimSlowSpin(slotIdx int, periodMs int) *Animation {
 // AnimationCatalogEntry describes a pre-canned animation.
 type AnimationCatalogEntry struct {
 	Name        string `json:"name"`
-	Category    string `json:"category"`    // "entrance", "exit", "emphasis", "3d"
+	Category    string `json:"category"` // "entrance", "exit", "emphasis", "3d"
 	Description string `json:"description"`
 }
 

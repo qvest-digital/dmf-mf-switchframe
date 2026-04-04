@@ -19,17 +19,17 @@ const (
 // Transform holds all DVE parameters for a single slot.
 type Transform struct {
 	// Geometry
-	PositionX    float64 `json:"positionX"`
-	PositionY    float64 `json:"positionY"`
-	Width        float64 `json:"width"`
-	Height       float64 `json:"height"`
-	RotationDeg  float64 `json:"rotationDeg"`
+	PositionX   float64 `json:"positionX"`
+	PositionY   float64 `json:"positionY"`
+	Width       float64 `json:"width"`
+	Height      float64 `json:"height"`
+	RotationDeg float64 `json:"rotationDeg"`
 	// AnchorX is the anchor point X for rotation/scale, normalized [0-1].
 	// Zero-value pair treated as (0.5, 0.5) center. Use EffectiveAnchor() for resolved value.
 	AnchorX float64 `json:"anchorX"`
 	// AnchorY is the anchor point Y for rotation/scale, normalized [0-1].
 	// Zero-value pair treated as (0.5, 0.5) center. Use EffectiveAnchor() for resolved value.
-	AnchorY float64 `json:"anchorY"`
+	AnchorY      float64 `json:"anchorY"`
 	PerspectiveX float64 `json:"perspectiveX"`
 	PerspectiveY float64 `json:"perspectiveY"`
 
@@ -58,8 +58,8 @@ type Transform struct {
 	Contrast   float64 `json:"contrast,omitempty"`   // 0.0=flat gray, 1.0=normal, max 3.0 (high contrast)
 
 	// 3D DVE
-	Mode3D     string         `json:"mode3d,omitempty"`     // "" = 2D (default), "3d" = 3D mode
-	Transform3D *Transform3D  `json:"transform3d,omitempty"` // 3D parameters (only when Mode3D="3d")
+	Mode3D      string       `json:"mode3d,omitempty"`      // "" = 2D (default), "3d" = 3D mode
+	Transform3D *Transform3D `json:"transform3d,omitempty"` // 3D parameters (only when Mode3D="3d")
 
 	// Source Mapping
 	ScaleMode  string     `json:"scaleMode,omitempty"`
@@ -82,10 +82,10 @@ type Transform3D struct {
 
 	// Lighting
 	LightEnabled bool    `json:"lightEnabled"`
-	LightX       float64 `json:"lightX"`       // light direction X [-1, 1]
-	LightY       float64 `json:"lightY"`       // light direction Y [-1, 1]
-	Ambient      float64 `json:"ambient"`      // ambient light [0, 1], default 0.3
-	Specular     float64 `json:"specular"`     // specular intensity [0, 1]
+	LightX       float64 `json:"lightX"`   // light direction X [-1, 1]
+	LightY       float64 `json:"lightY"`   // light direction Y [-1, 1]
+	Ambient      float64 `json:"ambient"`  // ambient light [0, 1], default 0.3
+	Specular     float64 `json:"specular"` // specular intensity [0, 1]
 
 	// Reflection
 	ReflectionEnabled bool    `json:"reflectionEnabled"`

@@ -30,7 +30,7 @@ func (a *API) handleListWipePatterns(w http.ResponseWriter, r *http.Request) {
 
 	// Group by category for the response.
 	type categoryGroup struct {
-		Category string              `json:"category"`
+		Category string                `json:"category"`
 		Patterns []wipemap.WipePattern `json:"patterns"`
 	}
 

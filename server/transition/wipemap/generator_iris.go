@@ -19,10 +19,10 @@ func GenBoxIris(cx, cy float64, reverse bool) GeneratorFunc {
 		}
 
 		for y := 0; y < h; y++ {
-			dy := math.Abs(float64(y) - centerY) / halfH
+			dy := math.Abs(float64(y)-centerY) / halfH
 			rowOff := y * w
 			for x := 0; x < w; x++ {
-				dx := math.Abs(float64(x) - centerX) / halfW
+				dx := math.Abs(float64(x)-centerX) / halfW
 				d := math.Max(dx, dy)
 				v := d * 255.0
 				if reverse {

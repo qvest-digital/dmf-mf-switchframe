@@ -57,8 +57,8 @@ func newTickTestMixer(t *testing.T) (*Mixer, *mockTickEncoder) {
 	_ = frames
 
 	m := NewMixer(MixerConfig{
-		SampleRate: 48000,
-		Channels:   2,
+		SampleRate:  48000,
+		Channels:    2,
 		ClockDriven: true, // manual tick() calls — no background ticker goroutine
 		Output: func(frame *media.AudioFrame) {
 			mu.Lock()

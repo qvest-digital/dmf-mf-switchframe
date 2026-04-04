@@ -308,11 +308,11 @@ func buildSDTPacket() []byte {
 
 	// Wrap in TS packet
 	pkt := make([]byte, mpegts.PacketSize)
-	pkt[0] = mpegts.SyncByte                       // sync byte
+	pkt[0] = mpegts.SyncByte                      // sync byte
 	pkt[1] = 0x40 | byte((mpegts.SDTPID>>8)&0x1F) // payload_unit_start=1, PID high
-	pkt[2] = byte(mpegts.SDTPID & 0xFF)            // PID low
-	pkt[3] = 0x10                                   // adaptation_field_control=01 (payload only), cc=0
-	pkt[4] = 0x00                                   // pointer_field
+	pkt[2] = byte(mpegts.SDTPID & 0xFF)           // PID low
+	pkt[3] = 0x10                                 // adaptation_field_control=01 (payload only), cc=0
+	pkt[4] = 0x00                                 // pointer_field
 	copy(pkt[5:], section)
 	for i := 5 + len(section); i < mpegts.PacketSize; i++ {
 		pkt[i] = 0xFF // stuffing
@@ -367,11 +367,11 @@ func buildNITPacket() []byte {
 
 	// Wrap in TS packet
 	pkt := make([]byte, mpegts.PacketSize)
-	pkt[0] = mpegts.SyncByte                       // sync byte
+	pkt[0] = mpegts.SyncByte                      // sync byte
 	pkt[1] = 0x40 | byte((mpegts.NITPID>>8)&0x1F) // payload_unit_start=1, PID high
-	pkt[2] = byte(mpegts.NITPID & 0xFF)            // PID low
-	pkt[3] = 0x10                                   // adaptation_field_control=01 (payload only), cc=0
-	pkt[4] = 0x00                                   // pointer_field
+	pkt[2] = byte(mpegts.NITPID & 0xFF)           // PID low
+	pkt[3] = 0x10                                 // adaptation_field_control=01 (payload only), cc=0
+	pkt[4] = 0x00                                 // pointer_field
 	copy(pkt[5:], section)
 	for i := 5 + len(section); i < mpegts.PacketSize; i++ {
 		pkt[i] = 0xFF // stuffing

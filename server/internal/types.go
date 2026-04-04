@@ -592,18 +592,18 @@ type ColorGradeState struct {
 
 // LayoutSlotState represents a single layout slot in the state broadcast.
 type LayoutSlotState struct {
-	ID         int            `json:"id"`
-	SourceKey  string         `json:"sourceKey"`
-	Enabled    bool           `json:"enabled"`
-	X          int            `json:"x"`
-	Y          int            `json:"y"`
-	Width      int            `json:"width"`
-	Height     int            `json:"height"`
-	ZOrder     int            `json:"zOrder"`
-	Animating  bool           `json:"animating,omitempty"`
-	ScaleMode  string         `json:"scaleMode,omitempty"`
-	CropAnchor [2]float64     `json:"cropAnchor,omitempty"`
-	DVE        *DVESlotState  `json:"dve,omitempty"`
+	ID         int           `json:"id"`
+	SourceKey  string        `json:"sourceKey"`
+	Enabled    bool          `json:"enabled"`
+	X          int           `json:"x"`
+	Y          int           `json:"y"`
+	Width      int           `json:"width"`
+	Height     int           `json:"height"`
+	ZOrder     int           `json:"zOrder"`
+	Animating  bool          `json:"animating,omitempty"`
+	ScaleMode  string        `json:"scaleMode,omitempty"`
+	CropAnchor [2]float64    `json:"cropAnchor,omitempty"`
+	DVE        *DVESlotState `json:"dve,omitempty"`
 }
 
 // DVESlotState holds the full DVE transform parameters for a layout slot.
