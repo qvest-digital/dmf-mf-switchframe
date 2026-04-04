@@ -766,6 +766,21 @@ func (r *gpuPipelineRunnerImpl) SetWipeMap(gradient []byte, config *wipemap.Wipe
 	frame.Width = width
 	frame.Height = height
 
+	// Diagnostic: probe gradient map to verify upload
+	{
+		probe := make([]byte, 64)
+		if err := gpu.ProbeGPUFrame(r.ctx, frame, probe); err == nil {
+			slog.Info("gpu: SetWipeMap: gradient probe after upload",
+				"format", frame.Format, "pitch", frame.Pitch,
+				"w", frame.Width, "h", frame.Height,
+				"first16", fmt.Sprintf("%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
+					probe[0], probe[1], probe[2], probe[3], probe[4], probe[5], probe[6], probe[7],
+					probe[8], probe[9], probe[10], probe[11], probe[12], probe[13], probe[14], probe[15]),
+				"gradientFirst8", fmt.Sprintf("%02x %02x %02x %02x %02x %02x %02x %02x",
+					gradient[0], gradient[1], gradient[2], gradient[3], gradient[4], gradient[5], gradient[6], gradient[7]))
+		}
+	}
+
 	r.wipeGradientBuf = frame
 	r.wipeConfig = config
 	return nil
