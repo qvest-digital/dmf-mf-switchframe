@@ -258,7 +258,7 @@ func BenchmarkBlendMix10_SIMD_1080p(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		BlendMix10(dst, a, bb, w, h, 128)
+		_ = BlendMix10(dst, a, bb, w, h, 128)
 	}
 }
 
@@ -284,6 +284,6 @@ func BenchmarkBlendMix10_SIMD_4K(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		BlendMix10(dst, a, bb, w, h, 128)
+		_ = BlendMix10(dst, a, bb, w, h, 128)
 	}
 }

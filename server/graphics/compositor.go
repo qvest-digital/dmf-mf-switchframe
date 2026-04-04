@@ -963,14 +963,14 @@ func (c *Compositor) ProcessYUV10(yuv []byte, width, height int) []byte {
 		if (layer.rect == image.Rectangle{} || layer.rect == fullFrame) &&
 			layer.overlayWidth == width && layer.overlayHeight == height {
 			// Fast path: full-frame overlay at matching dimensions.
-			AlphaBlendRGBA10(yuv, overlay, width, height)
+			_ = AlphaBlendRGBA10(yuv, overlay, width, height)
 		} else {
 			// Sub-frame: blend overlay into rect region.
 			rect := layer.rect
 			if (rect == image.Rectangle{}) {
 				rect = fullFrame
 			}
-			AlphaBlendRGBARect10(yuv, overlay, width, height,
+			_ = AlphaBlendRGBARect10(yuv, overlay, width, height,
 				layer.overlayWidth, layer.overlayHeight,
 				rect, layer.fadePosition)
 		}

@@ -186,7 +186,7 @@ func TestSpliceCoordinator_IngestFrame_CollectsInWindow(t *testing.T) {
 	})
 
 	// Begin splice at PTS 0. Window = [405000, 495000].
-	sc.BeginSplice("pod-1", true, true, 180000, 0)
+	_ = sc.BeginSplice("pod-1", true, true, 180000, 0)
 
 	// Frame before window: should be ignored.
 	sc.IngestFrame(make([]byte, video.YUV420FrameSize(100, 100)), 100, 100, 400000)
@@ -232,7 +232,7 @@ func TestSpliceCoordinator_IngestFrame_TriggersAnalysis(t *testing.T) {
 	})
 
 	// Begin splice at PTS 0. Window = [405000, 495000].
-	sc.BeginSplice("pod-test", true, true, 180000, 0)
+	_ = sc.BeginSplice("pod-test", true, true, 180000, 0)
 
 	// Create a black frame (all zeros) inside the window.
 	blackFrame := make([]byte, video.YUV420FrameSize(100, 100)) // all zeros = black
@@ -290,7 +290,7 @@ func TestSpliceCoordinator_Cancel(t *testing.T) {
 		BlackDetector: bd,
 	})
 
-	sc.BeginSplice("pod-1", true, true, 180000, 0)
+	_ = sc.BeginSplice("pod-1", true, true, 180000, 0)
 	if !sc.Active() {
 		t.Fatal("should be active")
 	}
@@ -316,7 +316,7 @@ func TestSpliceCoordinator_Reset(t *testing.T) {
 		BlackDetector: bd,
 	})
 
-	sc.BeginSplice("pod-1", true, true, 180000, 0)
+	_ = sc.BeginSplice("pod-1", true, true, 180000, 0)
 	sc.Reset()
 
 	if sc.Active() {
@@ -339,7 +339,7 @@ func TestSpliceCoordinator_FinalizeTriggersSceneChange(t *testing.T) {
 		readyPTS = pts
 	})
 
-	sc.BeginSplice("pod-scene", true, true, 180000, 0)
+	_ = sc.BeginSplice("pod-scene", true, true, 180000, 0)
 
 	// Two very different frames: should detect scene change.
 	darkFrame := make([]byte, video.YUV420FrameSize(100, 100))
@@ -378,7 +378,7 @@ func TestSpliceCoordinator_FallbackToScheduled(t *testing.T) {
 		readyPTS = pts
 	})
 
-	sc.BeginSplice("pod-sched", true, true, 180000, 0)
+	_ = sc.BeginSplice("pod-sched", true, true, 180000, 0)
 
 	// All similar frames: no black, no scene change -> fallback to middle.
 	for pts := int64(410000); pts <= 490000; pts += 10000 {
@@ -415,7 +415,7 @@ func TestSpliceCoordinator_Timeout(t *testing.T) {
 	})
 
 	// Begin splice and send one frame inside the window but never close it.
-	sc.BeginSplice("pod-timeout", true, true, 180000, 0)
+	_ = sc.BeginSplice("pod-timeout", true, true, 180000, 0)
 
 	// Send one candidate frame inside the window.
 	sc.IngestFrame(make([]byte, video.YUV420FrameSize(100, 100)), 100, 100, 450000)
@@ -460,7 +460,7 @@ func TestSpliceCoordinator_TimeoutNoCandidates(t *testing.T) {
 	})
 
 	// Begin splice but send NO frames -- timeout should still finalize with fallback.
-	sc.BeginSplice("pod-empty", true, true, 180000, 0)
+	_ = sc.BeginSplice("pod-empty", true, true, 180000, 0)
 
 	select {
 	case <-readyCh:
@@ -491,7 +491,7 @@ func TestSpliceCoordinator_CancelStopsTimeout(t *testing.T) {
 		TimeoutMs:     200,
 	})
 
-	sc.BeginSplice("pod-cancel", true, true, 180000, 0)
+	_ = sc.BeginSplice("pod-cancel", true, true, 180000, 0)
 
 	// Cancel immediately before timeout fires.
 	sc.Cancel()
@@ -535,7 +535,7 @@ func TestSpliceCoordinator_Integration_FireToReturn(t *testing.T) {
 		AutoReturn:   true,
 		AllowDumpOut: true,
 	})
-	pb.Arm(pod.ID)
+	_ = pb.Arm(pod.ID)
 
 	err := pb.Fire(pod.ID)
 	if err != nil {
@@ -635,8 +635,8 @@ func TestSpliceCoordinator_Integration_FireAndDumpOut(t *testing.T) {
 		AutoReturn:   true,
 		AllowDumpOut: true,
 	})
-	pb.Arm(pod.ID)
-	pb.Fire(pod.ID)
+	_ = pb.Arm(pod.ID)
+	_ = pb.Fire(pod.ID)
 
 	// Pod is in pre-roll, splice is scanning.
 	if !sc.Active() {

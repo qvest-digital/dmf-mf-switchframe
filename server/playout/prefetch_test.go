@@ -230,7 +230,7 @@ func TestPrefetcherHTTPFetch(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write(content)
+		_, _ = w.Write(content)
 	}))
 	defer srv.Close()
 
@@ -366,7 +366,7 @@ func TestPrefetcherSkipsInflight(t *testing.T) {
 		// Small delay to ensure both items have been scanned before fetch completes.
 		time.Sleep(100 * time.Millisecond)
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, "media content")
+		_, _ = fmt.Fprint(w, "media content")
 	}))
 	defer srv.Close()
 

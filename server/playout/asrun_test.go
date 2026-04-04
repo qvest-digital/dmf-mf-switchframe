@@ -217,7 +217,7 @@ func TestAsRunLogger_NewAndClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAsRunLogger: %v", err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	// Verify the JSONL file was created with today's date.
 	expected := filepath.Join(dir, time.Now().UTC().Format("asrun-2006-01-02")+".jsonl")
@@ -235,7 +235,7 @@ func TestAsRunLogger_CreatesDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAsRunLogger: %v", err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	if _, err := os.Stat(dir); err != nil {
 		t.Errorf("expected directory %q to exist: %v", dir, err)
@@ -251,7 +251,7 @@ func TestAsRunLogger_LogAndAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAsRunLogger: %v", err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	now := time.Now().UTC()
 	ev1 := AsRunEvent{
@@ -293,7 +293,7 @@ func TestAsRunLogger_RingOverflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAsRunLogger: %v", err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	base := time.Now().UTC()
 	for i := 0; i < 5; i++ {
@@ -332,7 +332,7 @@ func TestAsRunLogger_Reset(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAsRunLogger: %v", err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	// Log some events.
 	for i := 0; i < 5; i++ {
@@ -395,7 +395,7 @@ func TestAsRunLogger_JSONLPersistence(t *testing.T) {
 		Message:   "test error",
 	})
 
-	logger.Close()
+	_ = logger.Close()
 
 	// Read the JSONL file and verify contents.
 	filename := filepath.Join(dir, now.Format("asrun-2006-01-02")+".jsonl")
@@ -442,7 +442,7 @@ func TestAsRunLogger_DefaultRingCapacity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAsRunLogger: %v", err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	// Log more than a small number to confirm it works.
 	for i := 0; i < 100; i++ {
@@ -471,7 +471,7 @@ func TestAsRunQuery_FilterByType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAsRunLogger: %v", err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	base := time.Now().UTC()
 	logger.Log(AsRunEvent{Timestamp: base, Type: AsRunItemStart, ChannelID: 1, ItemID: "a"})
@@ -499,7 +499,7 @@ func TestAsRunQuery_FilterByChannel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAsRunLogger: %v", err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	base := time.Now().UTC()
 	logger.Log(AsRunEvent{Timestamp: base, Type: AsRunItemStart, ChannelID: 1, ItemID: "a"})
@@ -539,7 +539,7 @@ func TestAsRunQuery_FilterBySince(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAsRunLogger: %v", err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	base := time.Date(2026, 3, 25, 10, 0, 0, 0, time.UTC)
 	logger.Log(AsRunEvent{Timestamp: base, Type: AsRunItemStart, ChannelID: 1, ItemID: "a"})
@@ -568,7 +568,7 @@ func TestAsRunQuery_FilterByUntil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAsRunLogger: %v", err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	base := time.Date(2026, 3, 25, 10, 0, 0, 0, time.UTC)
 	logger.Log(AsRunEvent{Timestamp: base, Type: AsRunItemStart, ChannelID: 1, ItemID: "a"})
@@ -597,7 +597,7 @@ func TestAsRunQuery_FilterByTimeRange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAsRunLogger: %v", err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	base := time.Date(2026, 3, 25, 10, 0, 0, 0, time.UTC)
 	for i := 0; i < 5; i++ {
@@ -629,7 +629,7 @@ func TestAsRunQuery_Limit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAsRunLogger: %v", err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	base := time.Now().UTC()
 	for i := 0; i < 10; i++ {
@@ -656,7 +656,7 @@ func TestAsRunQuery_CombinedFilters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAsRunLogger: %v", err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	base := time.Date(2026, 3, 25, 10, 0, 0, 0, time.UTC)
 
@@ -693,7 +693,7 @@ func TestAsRunQuery_Empty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAsRunLogger: %v", err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	events := logger.Query(AsRunQuery{})
 	if len(events) != 0 {
@@ -715,7 +715,7 @@ func TestAsRunQuery_NoMatches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAsRunLogger: %v", err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	logger.Log(AsRunEvent{
 		Timestamp: time.Now().UTC(),
@@ -738,7 +738,7 @@ func TestAsRunQuery_ChronologicalOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAsRunLogger: %v", err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	base := time.Date(2026, 3, 25, 10, 0, 0, 0, time.UTC)
 	// Fill ring to capacity then overflow.
@@ -774,7 +774,7 @@ func TestAsRunQuery_LimitZeroMeansUnlimited(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAsRunLogger: %v", err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	base := time.Now().UTC()
 	for i := 0; i < 10; i++ {
@@ -802,7 +802,7 @@ func TestChannelEmitsAsRunEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	ch.SetAsRunLog(func(ev AsRunEvent) { logger.Log(ev) })
 
@@ -845,7 +845,7 @@ func TestPodBoardEmitsAsRunEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	pb := NewPodBoard(1)
 	pb.SetAsRunLog(func(ev AsRunEvent) { logger.Log(ev) })
@@ -896,7 +896,7 @@ func TestPodBoardDumpOutAsRunEvent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	pb := NewPodBoard(1)
 	pb.SetAsRunLog(func(ev AsRunEvent) { logger.Log(ev) })
@@ -946,7 +946,7 @@ func TestSpliceCoordinatorEmitsAsRunEvent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	inj := &fakeSpliceInjector{}
 	bd := NewBlackDetector(BlackDetectorConfig{})
@@ -995,7 +995,7 @@ func TestManagerPropagatesAsRunLogger(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	provider := fakeProvider(5)
 	mgr := NewManager(ManagerConfig{AssetProvider: provider})
@@ -1044,7 +1044,7 @@ func TestSecondaryEventFireAsRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	handler := &mockHandler{}
 	sched := NewSecondaryEventScheduler(handler)
@@ -1076,7 +1076,7 @@ func TestManualOverrideAsRunEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	ch.SetAsRunLog(func(ev AsRunEvent) { logger.Log(ev) })
 
@@ -1110,7 +1110,7 @@ func TestAsRunTimingDelta(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	scheduled := time.Date(2026, 3, 24, 19, 0, 0, 0, time.UTC)
 	actual := time.Date(2026, 3, 24, 19, 0, 0, 500000, time.UTC) // 0.5ms late
@@ -1143,7 +1143,7 @@ func TestAsRunItemDuration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	ch.SetAsRunLog(func(ev AsRunEvent) { logger.Log(ev) })
 
@@ -1174,7 +1174,7 @@ func TestAsRunFullIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	provider := fakeProvider(10)
 	mgr := NewManager(ManagerConfig{AssetProvider: provider})
@@ -1237,7 +1237,7 @@ func TestLiveItemEmitsAsRunEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	ch.SetAsRunLog(func(ev AsRunEvent) { logger.Log(ev) })
 
@@ -1278,7 +1278,7 @@ func TestSlateItemEmitsAsRunEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	ch.SetAsRunLog(func(ev AsRunEvent) { logger.Log(ev) })
 
@@ -1319,7 +1319,7 @@ func TestAsRunScheduledTSPopulated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	ch.SetAsRunLog(func(ev AsRunEvent) { logger.Log(ev) })
 
@@ -1374,7 +1374,7 @@ func TestAsRunLogger_RetentionCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAsRunLogger: %v", err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	deleted := logger.CleanupOldFiles()
 	if deleted != 1 {
@@ -1410,7 +1410,7 @@ func TestAsRunLogger_RetentionZeroDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAsRunLogger: %v", err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	deleted := logger.CleanupOldFiles()
 	if deleted != 0 {
@@ -1441,7 +1441,7 @@ func TestAsRunLogger_RetentionGoroutine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAsRunLogger: %v", err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 
 	logger.StartRetention(50 * time.Millisecond)
 

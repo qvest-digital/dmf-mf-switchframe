@@ -3,9 +3,8 @@ package mpegts
 import "testing"
 
 func TestNullPacket_Size(t *testing.T) {
-	pkt := NullPacket()
-	if len(pkt) != PacketSize {
-		t.Fatalf("expected %d bytes, got %d", PacketSize, len(pkt))
+	if n := len(NullPacket()); n != PacketSize {
+		t.Fatalf("expected %d bytes, got %d", PacketSize, n)
 	}
 }
 

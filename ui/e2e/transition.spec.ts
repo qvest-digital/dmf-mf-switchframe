@@ -41,8 +41,8 @@ test.describe('Transition Controls', () => {
 
 	test('CUT AUTO FTB button text is visible', async ({ page }) => {
 		await page.goto('/');
-		await expect(page.getByText('CUT')).toBeVisible();
-		await expect(page.getByText('AUTO')).toBeVisible();
-		await expect(page.getByText('FTB')).toBeVisible();
+		await expect(page.getByRole('button', { name: 'CUT' })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'AUTO' })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'FTB' })).toBeVisible();
 	});
 });

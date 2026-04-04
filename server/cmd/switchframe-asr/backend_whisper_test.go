@@ -8,10 +8,10 @@ import (
 
 func TestScanWhisperModels(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "ggml-base.bin"), []byte("x"), 0644)
-	os.WriteFile(filepath.Join(dir, "ggml-medium.en.bin"), []byte("x"), 0644)
-	os.WriteFile(filepath.Join(dir, "ggml-silero-v6.2.0.bin"), []byte("x"), 0644)
-	os.WriteFile(filepath.Join(dir, "other.bin"), []byte("x"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "ggml-base.bin"), []byte("x"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "ggml-medium.en.bin"), []byte("x"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "ggml-silero-v6.2.0.bin"), []byte("x"), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "other.bin"), []byte("x"), 0644)
 
 	models, err := scanWhisperModels(dir)
 	if err != nil {

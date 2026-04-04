@@ -15,7 +15,7 @@ func TestReaderOpenAndRead(t *testing.T) {
 		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	// Write 1024 samples with known pattern.
 	pcm := make([]float32, 1024)
@@ -30,7 +30,7 @@ func TestReaderOpenAndRead(t *testing.T) {
 		skipIfNoShm(t, err)
 		t.Fatalf("NewReader: %v", err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	// First read should return all 1024 samples.
 	got := r.Read()
@@ -60,7 +60,7 @@ func TestReaderOverflow(t *testing.T) {
 		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	// Open reader before writing, so readPos starts at 0.
 	r, err := NewReader(name)
@@ -68,7 +68,7 @@ func TestReaderOverflow(t *testing.T) {
 		skipIfNoShm(t, err)
 		t.Fatalf("NewReader: %v", err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	// Write 2x capacity (2048 samples) without reading.
 	// Write in two chunks so the writer wraps around.
@@ -117,14 +117,14 @@ func TestReaderMultipleReads(t *testing.T) {
 		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	r, err := NewReader(name)
 	if err != nil {
 		skipIfNoShm(t, err)
 		t.Fatalf("NewReader: %v", err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	// Write 100 samples.
 	pcm1 := make([]float32, 100)
@@ -174,7 +174,7 @@ func TestReaderMetadata(t *testing.T) {
 		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	// Write to set metadata.
 	pcm := make([]float32, 10)
@@ -185,7 +185,7 @@ func TestReaderMetadata(t *testing.T) {
 		skipIfNoShm(t, err)
 		t.Fatalf("NewReader: %v", err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	if r.SampleRate() != 44100 {
 		t.Errorf("SampleRate() = %d, want 44100", r.SampleRate())
@@ -219,7 +219,7 @@ func TestReaderInvalidMagic(t *testing.T) {
 
 	// Restore magic so writer cleanup works properly.
 	*(*uint32)(w.base) = Magic
-	w.Close()
+	_ = w.Close()
 }
 
 func TestReaderWrapAroundRead(t *testing.T) {
@@ -231,7 +231,7 @@ func TestReaderWrapAroundRead(t *testing.T) {
 		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	// Write 200 samples to move writePos to 800.
 	pcm1 := make([]float32, 200)
@@ -245,7 +245,7 @@ func TestReaderWrapAroundRead(t *testing.T) {
 		skipIfNoShm(t, err)
 		t.Fatalf("NewReader: %v", err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	// Read the initial 200 samples to advance readPos.
 	got1 := r.Read()
@@ -284,14 +284,14 @@ func TestReaderSizeFromShm(t *testing.T) {
 		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	r, err := NewReader(name)
 	if err != nil {
 		skipIfNoShm(t, err)
 		t.Fatalf("NewReader: %v", err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	// The reader's capacityBytes should match the writer's.
 	if r.capacityBytes != w.capacityBytes {
@@ -306,7 +306,7 @@ func TestReaderCloseDoesNotUnlink(t *testing.T) {
 		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	r, err := NewReader(name)
 	if err != nil {
@@ -333,7 +333,7 @@ func TestReaderCloseDoesNotUnlink(t *testing.T) {
 		skipIfNoShm(t, err)
 		t.Fatalf("NewReader after reader close: %v", err)
 	}
-	r2.Close()
+	_ = r2.Close()
 }
 
 // shmStat returns the size of a POSIX shared memory object by opening and fstat-ing.
@@ -345,14 +345,14 @@ func TestReaderWritePosUpdatesVisible(t *testing.T) {
 		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	r, err := NewReader(name)
 	if err != nil {
 		skipIfNoShm(t, err)
 		t.Fatalf("NewReader: %v", err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	// Initially no data.
 	if got := r.Read(); got != nil {
@@ -386,7 +386,7 @@ func TestReaderInternalBase(t *testing.T) {
 		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	pcm := make([]float32, 10)
 	w.Write(pcm, 99, 16000, 1)
@@ -396,7 +396,7 @@ func TestReaderInternalBase(t *testing.T) {
 		skipIfNoShm(t, err)
 		t.Fatalf("NewReader: %v", err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	// Verify the base pointer is valid and magic is accessible.
 	h := (*header)(r.base)

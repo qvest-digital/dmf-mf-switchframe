@@ -128,7 +128,7 @@ func BenchmarkScaleBilinear10_Go_1080p_to_540p(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		ScaleYUV422P10(src, srcW, srcH, dst, dstW, dstH)
+		_ = ScaleYUV422P10(src, srcW, srcH, dst, dstW, dstH)
 	}
 }
 
@@ -145,6 +145,6 @@ func BenchmarkScaleBilinear10_SIMD_1080p_to_540p(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		scaleBilinear10Dispatch(src, srcW, srcH, dst, dstW, dstH)
+		_ = scaleBilinear10Dispatch(src, srcW, srcH, dst, dstW, dstH)
 	}
 }

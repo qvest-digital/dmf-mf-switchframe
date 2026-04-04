@@ -46,21 +46,21 @@ func NewWriter(name string, capacitySamples int) (*Writer, error) {
 
 	// Set the size.
 	if err := shmFtruncate(fd, totalSize); err != nil {
-		shmClose(fd)
-		shmUnlink(name)
+		_ = shmClose(fd)
+		_ = shmUnlink(name)
 		return nil, fmt.Errorf("shmring: %w", err)
 	}
 
 	// Map it into memory.
 	base, err := shmMmap(fd, totalSize)
 	if err != nil {
-		shmClose(fd)
-		shmUnlink(name)
+		_ = shmClose(fd)
+		_ = shmUnlink(name)
 		return nil, fmt.Errorf("shmring: %w", err)
 	}
 
 	// Close the fd; the mmap keeps the segment alive.
-	shmClose(fd)
+	_ = shmClose(fd)
 
 	// Initialize the header.
 	h := (*header)(base)

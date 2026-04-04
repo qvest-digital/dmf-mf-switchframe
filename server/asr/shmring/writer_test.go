@@ -31,7 +31,7 @@ func TestWriterCreateAndClose(t *testing.T) {
 		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	if w.Capacity() != 1024 {
 		t.Errorf("Capacity = %d, want 1024", w.Capacity())
@@ -68,7 +68,7 @@ func TestWriterCapacityMustBePowerOfTwo(t *testing.T) {
 		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	if w.Capacity() != 1024 {
 		t.Errorf("Capacity = %d, want 1024 (rounded up from 1000)", w.Capacity())
@@ -82,7 +82,7 @@ func TestWriterWriteSamples(t *testing.T) {
 		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	// Write 100 samples.
 	pcm := make([]float32, 100)
@@ -158,7 +158,7 @@ func TestWriterWrapAround(t *testing.T) {
 		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	capacityBytes := uint64(capacity * 4)
 
@@ -210,7 +210,7 @@ func TestWriterWrapAroundSplit(t *testing.T) {
 		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	// Write 200 samples (800 bytes), leaving 56 sample slots (224 bytes).
 	pcm1 := make([]float32, 200)
@@ -264,7 +264,7 @@ func TestWriterWriteSeqMonotonic(t *testing.T) {
 		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	pcm := make([]float32, 10)
 	for i := 0; i < 50; i++ {
@@ -284,7 +284,7 @@ func TestWriterAtomicVisibility(t *testing.T) {
 		skipIfNoShm(t, err)
 		t.Fatalf("NewWriter: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	// Simulate a reader checking the atomic fields via unsafe.Pointer.
 	// This validates that the atomic operations on the mmap'd region work.

@@ -79,12 +79,12 @@ func TestBroadcastProcessed_10bit_FrameNotDropped(t *testing.T) {
 // broadcastProcessed sets the correct codec string and color format
 // on the ProcessingFrame based on the pipeline configuration.
 func TestBroadcastProcessed_10bit_CorrectCodecAndFormat(t *testing.T) {
-	// This test verifies broadcastProcessed creates a ProcessingFrame
-	// with correct metadata by inspecting the frame that comes through
-	// the pipeline's raw sink.
+	// Uses newTestSwitcherDirect to avoid depending on the async
+	// videoProcessingLoop goroutine — runs the pipeline synchronously
+	// so the test is deterministic on slow CI runners.
 	programRelay := distribution.NewRelay()
-	sw := NewTestSwitcher(programRelay)
-	defer sw.Close()
+	sw := newTestSwitcherDirect(programRelay)
+	defer sw.closeDirect()
 
 	// Configure 10-bit pipeline.
 	fmt10 := PipelineFormat{
@@ -108,20 +108,18 @@ func TestBroadcastProcessed_10bit_CorrectCodecAndFormat(t *testing.T) {
 	)
 
 	// Set up raw video sink to capture the ProcessingFrame metadata.
+	// Store the sink directly (not via SetRawVideoSink which triggers
+	// rebuildPipeline and creates a leaked encode goroutine when
+	// BuildPipeline is called afterward).
 	var capturedCodec string
 	var capturedFormat PipelineColorFormat
 	var capturedDataLen int
-	done := make(chan struct{})
-
-	sw.SetRawVideoSink(RawVideoSink(func(pf *ProcessingFrame) {
+	sink := RawVideoSink(func(pf *ProcessingFrame) {
 		capturedCodec = pf.Codec
 		capturedFormat = pf.Format
 		capturedDataLen = len(pf.Data)
-		select {
-		case done <- struct{}{}:
-		default:
-		}
-	}))
+	})
+	sw.rawVideoSink.Store(&sink)
 
 	require.NoError(t, sw.BuildPipeline())
 
@@ -141,16 +139,13 @@ func TestBroadcastProcessed_10bit_CorrectCodecAndFormat(t *testing.T) {
 		binary.LittleEndian.PutUint16(yuv[i:], 512)
 	}
 
+	// broadcastProcessed enqueues the frame to videoProcCh.
 	sw.broadcastProcessed(yuv, w, h, 90000, true)
 
-	// The videoProcessingLoop goroutine (started by New()) processes
-	// the frame through the pipeline asynchronously, which includes
-	// the raw sink node.
-	select {
-	case <-done:
-		// Frame received by raw sink.
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout waiting for raw sink to receive frame")
+	// Run pipeline synchronously — raw sink callback fires during Run().
+	frame := sw.runPipelineDirect(t)
+	if frame != nil {
+		frame.ReleaseYUV()
 	}
 
 	assert.Equal(t, "h265", capturedCodec,
@@ -165,8 +160,8 @@ func TestBroadcastProcessed_10bit_CorrectCodecAndFormat(t *testing.T) {
 // still works correctly for standard 8-bit YUV420 frames.
 func TestBroadcastProcessed_8bit_StillWorks(t *testing.T) {
 	programRelay := distribution.NewRelay()
-	sw := NewTestSwitcher(programRelay)
-	defer sw.Close()
+	sw := newTestSwitcherDirect(programRelay)
+	defer sw.closeDirect()
 
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
@@ -176,16 +171,11 @@ func TestBroadcastProcessed_8bit_StillWorks(t *testing.T) {
 
 	var capturedCodec string
 	var capturedFormat PipelineColorFormat
-	done := make(chan struct{})
-
-	sw.SetRawVideoSink(RawVideoSink(func(pf *ProcessingFrame) {
+	sink := RawVideoSink(func(pf *ProcessingFrame) {
 		capturedCodec = pf.Codec
 		capturedFormat = pf.Format
-		select {
-		case done <- struct{}{}:
-		default:
-		}
-	}))
+	})
+	sw.rawVideoSink.Store(&sink)
 
 	require.NoError(t, sw.BuildPipeline())
 
@@ -204,10 +194,10 @@ func TestBroadcastProcessed_8bit_StillWorks(t *testing.T) {
 
 	sw.broadcastProcessed(yuv, w, h, 90000, true)
 
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for raw sink to receive frame")
+	// Run pipeline synchronously — raw sink callback fires during Run().
+	frame := sw.runPipelineDirect(t)
+	if frame != nil {
+		frame.ReleaseYUV()
 	}
 
 	assert.Equal(t, "h264", capturedCodec)

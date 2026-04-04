@@ -145,12 +145,12 @@ func TestZeroJitterExactValues(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		d := b.Next()
 		// All values must be exact multiples, no randomness.
-		switch {
-		case d == 100*time.Millisecond,
-			d == 200*time.Millisecond,
-			d == 400*time.Millisecond,
-			d == 800*time.Millisecond,
-			d == time.Second:
+		switch d {
+		case 100 * time.Millisecond,
+			200 * time.Millisecond,
+			400 * time.Millisecond,
+			800 * time.Millisecond,
+			time.Second:
 			// ok
 		default:
 			t.Fatalf("iteration %d: unexpected value %v (should be exact)", i, d)

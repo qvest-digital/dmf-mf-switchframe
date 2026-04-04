@@ -3,7 +3,6 @@ package switcher
 import (
 	"encoding/binary"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,8 +24,8 @@ import (
 // broadcastProcessed and reaches the pipeline's raw sink intact.
 func TestBroadcastProcessedGuard_10bit_SentinelSurvivesPipeline(t *testing.T) {
 	programRelay := distribution.NewRelay()
-	sw := NewTestSwitcher(programRelay)
-	defer sw.Close()
+	sw := newTestSwitcherDirect(programRelay)
+	defer sw.closeDirect()
 
 	w, h := 16, 16
 	fmt10 := PipelineFormat{
@@ -50,16 +49,11 @@ func TestBroadcastProcessedGuard_10bit_SentinelSurvivesPipeline(t *testing.T) {
 	)
 
 	var capturedData []byte
-	done := make(chan struct{}, 1)
-
-	sw.SetRawVideoSink(RawVideoSink(func(pf *ProcessingFrame) {
+	sink := RawVideoSink(func(pf *ProcessingFrame) {
 		capturedData = make([]byte, len(pf.Data))
 		copy(capturedData, pf.Data)
-		select {
-		case done <- struct{}{}:
-		default:
-		}
-	}))
+	})
+	sw.rawVideoSink.Store(&sink)
 
 	require.NoError(t, sw.BuildPipeline())
 
@@ -89,10 +83,10 @@ func TestBroadcastProcessedGuard_10bit_SentinelSurvivesPipeline(t *testing.T) {
 
 	sw.broadcastProcessed(yuv, w, h, 90000, true)
 
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout waiting for raw sink to receive frame")
+	// Run pipeline synchronously — raw sink callback fires during Run().
+	frame := sw.runPipelineDirect(t)
+	if frame != nil {
+		frame.ReleaseYUV()
 	}
 
 	eightBitSize := ColorYUV420_8bit.FrameSize(w, h)
@@ -116,8 +110,8 @@ func TestBroadcastProcessedGuard_10bit_SentinelSurvivesPipeline(t *testing.T) {
 // Incorrect codec tagging causes downstream muxers to fail.
 func TestBroadcastProcessedGuard_10bit_CodecMatchesPipeline(t *testing.T) {
 	programRelay := distribution.NewRelay()
-	sw := NewTestSwitcher(programRelay)
-	defer sw.Close()
+	sw := newTestSwitcherDirect(programRelay)
+	defer sw.closeDirect()
 
 	w, h := 16, 16
 	fmt10 := PipelineFormat{
@@ -142,16 +136,11 @@ func TestBroadcastProcessedGuard_10bit_CodecMatchesPipeline(t *testing.T) {
 
 	var capturedCodec string
 	var capturedFormat PipelineColorFormat
-	done := make(chan struct{}, 1)
-
-	sw.SetRawVideoSink(RawVideoSink(func(pf *ProcessingFrame) {
+	sink := RawVideoSink(func(pf *ProcessingFrame) {
 		capturedCodec = pf.Codec
 		capturedFormat = pf.Format
-		select {
-		case done <- struct{}{}:
-		default:
-		}
-	}))
+	})
+	sw.rawVideoSink.Store(&sink)
 
 	require.NoError(t, sw.BuildPipeline())
 
@@ -169,10 +158,10 @@ func TestBroadcastProcessedGuard_10bit_CodecMatchesPipeline(t *testing.T) {
 
 	sw.broadcastProcessed(yuv, w, h, 90000, true)
 
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("timeout waiting for raw sink")
+	// Run pipeline synchronously — raw sink callback fires during Run().
+	frame := sw.runPipelineDirect(t)
+	if frame != nil {
+		frame.ReleaseYUV()
 	}
 
 	assert.Equal(t, "h265", capturedCodec,
@@ -188,8 +177,8 @@ func TestBroadcastProcessedGuard_10bit_CodecMatchesPipeline(t *testing.T) {
 // But then it would copy only expectedSize bytes, truncating the frame.
 func TestBroadcastProcessedGuard_10bit_NotSilentlyDropped(t *testing.T) {
 	programRelay := distribution.NewRelay()
-	sw := NewTestSwitcher(programRelay)
-	defer sw.Close()
+	sw := newTestSwitcherDirect(programRelay)
+	defer sw.closeDirect()
 
 	w, h := 16, 16
 	fmt10 := PipelineFormat{
@@ -212,13 +201,11 @@ func TestBroadcastProcessedGuard_10bit_NotSilentlyDropped(t *testing.T) {
 		},
 	)
 
-	received := make(chan struct{}, 1)
-	sw.SetRawVideoSink(RawVideoSink(func(pf *ProcessingFrame) {
-		select {
-		case received <- struct{}{}:
-		default:
-		}
-	}))
+	sinkCalled := false
+	sink2 := RawVideoSink(func(pf *ProcessingFrame) {
+		sinkCalled = true
+	})
+	sw.rawVideoSink.Store(&sink2)
 
 	require.NoError(t, sw.BuildPipeline())
 
@@ -242,11 +229,12 @@ func TestBroadcastProcessedGuard_10bit_NotSilentlyDropped(t *testing.T) {
 	assert.Equal(t, countBefore+1, countAfter,
 		"broadcastProcessed should accept 10-bit frames (counter not incremented)")
 
-	// The frame must reach the pipeline.
-	select {
-	case <-received:
-		// Success.
-	case <-time.After(5 * time.Second):
-		t.Fatal("10-bit frame was silently dropped — never reached raw sink")
+	// Run pipeline synchronously — raw sink callback fires during Run().
+	frame := sw.runPipelineDirect(t)
+	if frame != nil {
+		frame.ReleaseYUV()
 	}
+
+	assert.True(t, sinkCalled,
+		"10-bit frame was silently dropped — never reached raw sink")
 }

@@ -717,7 +717,7 @@ func TestManager_Recover_EmitsAsRunError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAsRunLogger: %v", err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 	m.SetAsRunLogger(logger)
 
 	if err := m.Recover(statePath); err != nil {
@@ -823,7 +823,7 @@ func TestManager_RecoverChannel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("asrun: %v", err)
 	}
-	defer logger.Close()
+	defer func() { _ = logger.Close() }()
 	mgr.SetAsRunLogger(logger)
 
 	pl := testPlaylist(clipItem("a"), clipItem("b"), clipItem("c"))

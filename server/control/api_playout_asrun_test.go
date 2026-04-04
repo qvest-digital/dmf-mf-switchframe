@@ -21,7 +21,7 @@ func setupTestPlayoutAPIWithAsRun(t *testing.T) (*API, *playout.AsRunLogger) {
 	dir := t.TempDir()
 	logger, err := playout.NewAsRunLogger(playout.AsRunLoggerConfig{Dir: dir, RingCapacity: 100})
 	require.NoError(t, err)
-	t.Cleanup(func() { logger.Close() })
+	t.Cleanup(func() { _ = logger.Close() })
 
 	mgr := newTestPlayoutManager()
 	mgr.SetAsRunLogger(logger)

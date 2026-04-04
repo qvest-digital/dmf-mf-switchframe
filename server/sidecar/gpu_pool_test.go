@@ -74,7 +74,7 @@ func TestCUDAGPUPoolStubReturnsError(t *testing.T) {
 	pool, err := NewCUDAGPUPoolHost(cfg, "/sf-test-stub")
 	if err == nil {
 		if pool != nil {
-			pool.Close()
+			_ = pool.Close()
 		}
 		// On CUDA builds, this is expected to succeed — skip the test.
 		t.Skip("CUDA available, skipping stub test")
@@ -102,7 +102,7 @@ func TestCUDAGPUPoolStubWorkerReturnsError(t *testing.T) {
 	)
 	if err == nil {
 		if pool != nil {
-			pool.Close()
+			_ = pool.Close()
 		}
 		t.Skip("CUDA available, skipping stub test")
 	}

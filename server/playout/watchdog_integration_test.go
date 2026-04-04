@@ -215,7 +215,7 @@ func TestPhase7_FullRecoveryFlow(t *testing.T) {
 	})
 	persister.Stop()
 	mgr1.Close()
-	logger1.Close()
+	_ = logger1.Close()
 
 	// --- Phase B: Simulate crash recovery ---
 	mgr2 := NewManager(ManagerConfig{AssetProvider: provider})
@@ -224,7 +224,7 @@ func TestPhase7_FullRecoveryFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("asrun logger 2: %v", err)
 	}
-	defer logger2.Close()
+	defer func() { _ = logger2.Close() }()
 	mgr2.SetAsRunLogger(logger2)
 
 	if err := mgr2.Recover(persister.Path()); err != nil {

@@ -508,7 +508,7 @@ func (e *Engine) decodeAndStore(sourceKey string, wireData []byte, isFrom bool) 
 			e.scaleBuf = make([]byte, targetSize)
 		}
 		if e.colorFormat == video.YUV422_10bit {
-			ScaleYUV422P10(yuv, w, h, e.scaleBuf, e.width, e.height)
+			_ = ScaleYUV422P10(yuv, w, h, e.scaleBuf, e.width, e.height)
 		} else {
 			ScaleYUV420WithQuality(yuv, w, h, e.scaleBuf, e.width, e.height, ScaleQualityFast)
 		}
@@ -657,7 +657,7 @@ func (e *Engine) IngestFrame(sourceKey string, wireData []byte, pts int64, isKey
 				e.scaleBuf = make([]byte, targetSize)
 			}
 			if e.colorFormat == video.YUV422_10bit {
-				ScaleYUV422P10(decodedYUV, decW, decH, e.scaleBuf, e.width, e.height)
+				_ = ScaleYUV422P10(decodedYUV, decW, decH, e.scaleBuf, e.width, e.height)
 			} else {
 				ScaleYUV420WithQuality(decodedYUV, decW, decH, e.scaleBuf, e.width, e.height, ScaleQualityFast)
 			}
@@ -738,7 +738,7 @@ func (e *Engine) IngestRawFrame(sourceKey string, yuv []byte, width, height int,
 			e.scaleBuf = make([]byte, targetSize)
 		}
 		if e.colorFormat == video.YUV422_10bit {
-			ScaleYUV422P10(yuv, width, height, e.scaleBuf, e.width, e.height)
+			_ = ScaleYUV422P10(yuv, width, height, e.scaleBuf, e.width, e.height)
 		} else {
 			ScaleYUV420WithQuality(yuv, width, height, e.scaleBuf, e.width, e.height, ScaleQualityFast)
 		}
@@ -976,14 +976,14 @@ func (e *Engine) blend10bit(yuvA, yuvB []byte, pos float64) []byte {
 
 	switch e.transitionType {
 	case Mix:
-		BlendMix10(dst, yuvA, yuvB, w, h, pos256)
+		_ = BlendMix10(dst, yuvA, yuvB, w, h, pos256)
 	case Dip:
-		BlendDip10(dst, yuvA, yuvB, w, h, pos256, true)
+		_ = BlendDip10(dst, yuvA, yuvB, w, h, pos256, true)
 	case FTB:
-		BlendFTB10(dst, yuvA, w, h, pos256, true)
+		_ = BlendFTB10(dst, yuvA, w, h, pos256, true)
 	case FTBReverse:
 		inv256 := 256 - pos256
-		BlendFTB10(dst, yuvA, w, h, inv256, true)
+		_ = BlendFTB10(dst, yuvA, w, h, inv256, true)
 	case Wipe:
 		// Generate wipe alpha map through the blender, then use 10-bit wipe.
 		e.blender.width = w
@@ -992,7 +992,7 @@ func (e *Engine) blend10bit(yuvA, yuvB []byte, pos float64) []byte {
 			e.blender.wipeAlphaMap = make([]byte, w*h)
 		}
 		e.blender.generateWipeAlpha(pos, e.wipeDirection)
-		BlendWipe10(dst, yuvA, yuvB, w, h, e.blender.wipeAlphaMap)
+		_ = BlendWipe10(dst, yuvA, yuvB, w, h, e.blender.wipeAlphaMap)
 	case Stinger:
 		sd := e.config.Stinger
 		if sd == nil || len(sd.Frames) == 0 {
@@ -1028,7 +1028,7 @@ func (e *Engine) blend10bit(yuvA, yuvB []byte, pos float64) []byte {
 				// Upconvert failed — fall back to base frame.
 				copy(dst, base)
 			} else {
-				BlendStinger10(dst, base, e.stinger10bitBuf, w, h, sf.Alpha)
+				_ = BlendStinger10(dst, base, e.stinger10bitBuf, w, h, sf.Alpha)
 			}
 		}
 	default:

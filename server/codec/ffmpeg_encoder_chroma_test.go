@@ -77,7 +77,7 @@ func verifyChromaLocation(t *testing.T, enc *FFmpegEncoder, w, h int, is10bit bo
 	// Write encoded data to a temp file.
 	tmpFile, err := os.CreateTemp("", "chroma_test_*.h264")
 	require.NoError(t, err)
-	defer os.Remove(tmpFile.Name())
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	// Encode 60 frames to ensure we get past any warmup and have
 	// multiple IDRs with SPS/PPS.
