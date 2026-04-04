@@ -10,6 +10,7 @@ import (
 
 	"github.com/zsiec/switchframe/server/internal/atomicutil"
 	"github.com/zsiec/switchframe/server/internal/video"
+	"github.com/zsiec/switchframe/server/transition/wipemap"
 )
 
 // Default encoder parameters for the pipeline codec pool.
@@ -62,8 +63,18 @@ type EngineConfig struct {
 	OnComplete     func(aborted bool)
 
 	// WipeDirection specifies the wipe direction when Type is "wipe".
-	// Ignored for other transition types.
+	// Ignored for other transition types. Used only for legacy directional wipes;
+	// gradient-map wipes use WipeConfig instead.
 	WipeDirection WipeDirection
+
+	// WipeConfig specifies gradient-map-based wipe parameters. When set and
+	// Type is "wipe", the engine resolves the gradient map from WipeMapStore
+	// and uses BlendWipeMap instead of BlendWipe. Takes precedence over WipeDirection.
+	WipeConfig *wipemap.WipeConfig
+
+	// WipeMapStore resolves gradient maps by pattern ID. Required when
+	// WipeConfig is set; ignored otherwise.
+	WipeMapStore *wipemap.WipeMapStore
 
 	// Stinger holds the pre-decoded stinger overlay data. Required when
 	// Type is "stinger", ignored for other types.
@@ -95,6 +106,8 @@ type Engine struct {
 	state          State
 	transitionType Type
 	wipeDirection  WipeDirection
+	wipeConfig     *wipemap.WipeConfig    // gradient-map wipe config (nil = legacy directional)
+	wipeGradient   []byte                 // resolved gradient map for current dimensions
 	fromSource     string
 	toSource       string // empty for FTB
 	durationMs     int
@@ -300,6 +313,38 @@ func (e *Engine) WipeDirection() WipeDirection {
 	return e.wipeDirection
 }
 
+// WipeMapConfig returns the current wipe map config, or nil if using legacy directional wipe.
+func (e *Engine) WipeMapConfig() *wipemap.WipeConfig {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.wipeConfig
+}
+
+// WipeGradient returns the resolved gradient map (single-channel, w*h bytes),
+// or nil if no gradient-map wipe is active.
+func (e *Engine) WipeGradient() []byte {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.wipeGradient
+}
+
+// resolveWipeGradient pre-resolves the gradient map from the WipeMapStore at the
+// current engine dimensions. Caller must hold e.mu. Safe to call when wipeConfig
+// or WipeMapStore is nil (no-op).
+func (e *Engine) resolveWipeGradient() {
+	if e.wipeConfig == nil || e.config.WipeMapStore == nil || e.width == 0 || e.height == 0 {
+		return
+	}
+	gm, err := e.config.WipeMapStore.GetMap(e.wipeConfig.PatternID, e.width, e.height)
+	if err != nil {
+		e.log.Warn("failed to resolve wipe gradient map, falling back to directional",
+			"pattern", e.wipeConfig.PatternID, "err", err)
+		e.wipeConfig = nil // fall back to legacy
+		return
+	}
+	e.wipeGradient = gm
+}
+
 // Easing returns the current easing type, or "smoothstep" if nil.
 func (e *Engine) Easing() EasingType {
 	e.mu.RLock()
@@ -341,6 +386,8 @@ func (e *Engine) Start(from, to string, ttype Type, durationMs int) error {
 	e.state = StateActive
 	e.transitionType = ttype
 	e.wipeDirection = e.config.WipeDirection
+	e.wipeConfig = e.config.WipeConfig
+	e.wipeGradient = nil
 	e.fromSource = from
 	e.toSource = to
 	e.durationMs = durationMs
@@ -366,6 +413,9 @@ func (e *Engine) Start(from, to string, ttype Type, durationMs int) error {
 			return fmt.Errorf("create blender: %w", err)
 		}
 		e.blender = blender
+
+		// Pre-resolve gradient map for wipe-map transitions at known dimensions.
+		e.resolveWipeGradient()
 	} else {
 		e.blender = nil
 		e.width = 0
@@ -495,6 +545,7 @@ func (e *Engine) decodeAndStore(sourceKey string, wireData []byte, isFrom bool) 
 			return false
 		}
 		e.blender = blender
+		e.resolveWipeGradient()
 	}
 
 	// Scale if resolution doesn't match the target (set from first decoded frame).
@@ -644,6 +695,9 @@ func (e *Engine) IngestFrame(sourceKey string, wireData []byte, pts int64, isKey
 				return
 			}
 			e.blender = blender
+
+			// Resolve gradient map now that dimensions are known.
+			e.resolveWipeGradient()
 		}
 
 		// Scale if resolution doesn't match the target.
@@ -838,7 +892,11 @@ func (e *Engine) blendAndOutput(isFrom bool, pts int64) {
 		case FTBReverse:
 			blended = e.blender.BlendFTB(yuvA, 1.0-pos)
 		case Wipe:
-			blended = e.blender.BlendWipe(yuvA, yuvB, pos, e.wipeDirection)
+			if e.wipeConfig != nil && e.wipeGradient != nil {
+				blended = e.blender.BlendWipeMap(yuvA, yuvB, pos, e.wipeGradient, *e.wipeConfig)
+			} else {
+				blended = e.blender.BlendWipe(yuvA, yuvB, pos, e.wipeDirection)
+			}
 		case Stinger:
 			blended = e.blendStinger(pos)
 		default:
@@ -991,8 +1049,12 @@ func (e *Engine) blend10bit(yuvA, yuvB []byte, pos float64) []byte {
 		if len(e.blender.wipeAlphaMap) != w*h {
 			e.blender.wipeAlphaMap = make([]byte, w*h)
 		}
-		e.blender.generateWipeAlpha(pos, e.wipeDirection)
-		_ = BlendWipe10(dst, yuvA, yuvB, w, h, e.blender.wipeAlphaMap)
+		if e.wipeConfig != nil && e.wipeGradient != nil {
+			generateWipeMapAlpha(e.blender.wipeAlphaMap, e.wipeGradient, pos, *e.wipeConfig)
+		} else {
+			e.blender.generateWipeAlpha(pos, e.wipeDirection)
+		}
+		BlendWipe10(dst, yuvA, yuvB, w, h, e.blender.wipeAlphaMap)
 	case Stinger:
 		sd := e.config.Stinger
 		if sd == nil || len(sd.Frames) == 0 {
@@ -1324,7 +1386,11 @@ func (e *Engine) BlendRaw(
 		if toYUV == nil {
 			toYUV = makeBlack()
 		}
-		blended = blender.BlendWipe(fromYUV, toYUV, position, wipeDir)
+		if e.wipeConfig != nil && e.wipeGradient != nil {
+			blended = blender.BlendWipeMap(fromYUV, toYUV, position, e.wipeGradient, *e.wipeConfig)
+		} else {
+			blended = blender.BlendWipe(fromYUV, toYUV, position, wipeDir)
+		}
 	case Stinger:
 		if stinger != nil && len(stinger.Frames) > 0 {
 			frameIdx := int(position * float64(len(stinger.Frames)))

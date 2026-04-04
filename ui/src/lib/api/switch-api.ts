@@ -1,4 +1,4 @@
-import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, GateSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig, ColorGradeState, CorrectorState, PlayoutChannelState, Playlist, PlaylistItem, CacheStatus, PodInfo, PodConfig, PodTemplate, AsRunEvent, ChannelHealth, SampleClip, PlayoutClip, ASRState } from './types';
+import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, GateSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, LayoutConfig, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig, ColorGradeState, CorrectorState, PlayoutChannelState, Playlist, PlaylistItem, CacheStatus, PodInfo, PodConfig, PodTemplate, AsRunEvent, ChannelHealth, SampleClip, PlayoutClip, ASRState, DVEPresetInfo, WipePattern, WipeConfig } from './types';
 import { notify } from '$lib/state/notifications.svelte';
 import { resolveApiUrl } from './base-url';
 
@@ -177,10 +177,13 @@ export function getLimiter(): Promise<{ threshold: number; ceiling: number; gain
 	return request('/api/audio/limiter');
 }
 
-export function startTransition(source: string, type: string, durationMs: number, wipeDirection?: string, stingerName?: string, easing?: EasingConfig): Promise<ControlRoomState> {
+export function startTransition(source: string, type: string, durationMs: number, wipeDirection?: string, stingerName?: string, easing?: EasingConfig, wipeConfig?: WipeConfig): Promise<ControlRoomState> {
 	const body: Record<string, unknown> = { source, type, durationMs };
 	if (wipeDirection) {
 		body.wipeDirection = wipeDirection;
+	}
+	if (wipeConfig) {
+		body.wipeConfig = wipeConfig;
 	}
 	if (stingerName) {
 		body.stingerName = stingerName;
@@ -1544,5 +1547,99 @@ export function playoutSavedGet(name: string): Promise<Playlist> {
 
 export function playoutSavedDelete(name: string): Promise<void> {
 	return request(`/api/playout/saved/${encodeURIComponent(name)}`, { method: 'DELETE' }) as Promise<void>;
+}
+
+// ── DVE API ──
+
+export function getDVELayout(): Promise<any> {
+	return request('/api/dve');
+}
+
+export function setDVELayout(layout: { preset?: string; name?: string; slots?: any[] }): Promise<any> {
+	return request('/api/dve', {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(layout),
+	});
+}
+
+export function deleteDVELayout(): Promise<void> {
+	return request('/api/dve', { method: 'DELETE' });
+}
+
+export function updateDVESlot(id: number, update: Record<string, unknown>): Promise<void> {
+	return request(`/api/dve/slots/${id}`, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(update),
+	});
+}
+
+export function dveSlotOn(id: number): Promise<void> {
+	return post(`/api/dve/slots/${id}/on`, {});
+}
+
+export function dveSlotOff(id: number): Promise<void> {
+	return post(`/api/dve/slots/${id}/off`, {});
+}
+
+export function listDVEPresets(): Promise<DVEPresetInfo[]> {
+	return request<DVEPresetInfo[]>('/api/dve/presets');
+}
+
+export function saveDVEPreset(name: string): Promise<void> {
+	return post('/api/dve/presets', { name });
+}
+
+export function recallDVEPreset(id: string, durationMs?: number, easing?: string): Promise<void> {
+	return request(`/api/dve/presets/${encodeURIComponent(id)}/recall`, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ durationMs, easing }),
+	});
+}
+
+export function deleteDVEPreset(id: string): Promise<void> {
+	return request(`/api/dve/presets/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+// ── Wipe Pattern API ──
+
+export function wipeListPatterns(): Promise<{ categories: { category: string; patterns: WipePattern[] }[]; total: number }> {
+	return request('/api/wipes/patterns');
+}
+
+export function wipeGetPattern(id: string): Promise<WipePattern> {
+	return request(`/api/wipes/patterns/${encodeURIComponent(id)}`);
+}
+
+export async function wipeGetPreview(id: string): Promise<Blob> {
+	const res = await fetch(resolveApiUrl(`/api/wipes/patterns/${encodeURIComponent(id)}/preview`), {
+		headers: authHeaders(),
+	});
+	if (!res.ok) {
+		throw new SwitchApiError(res.status, `Preview fetch failed: HTTP ${res.status}`);
+	}
+	return res.blob();
+}
+
+export async function wipeUploadCustom(file: File, name?: string): Promise<WipePattern> {
+	const formData = new FormData();
+	formData.append('file', file);
+	formData.append('name', name ?? file.name.replace(/\.\w+$/, ''));
+	const res = await fetch(resolveApiUrl('/api/wipes/custom'), {
+		method: 'POST',
+		headers: authHeaders(),
+		body: formData,
+	});
+	if (!res.ok) {
+		const body = await res.json().catch(() => ({ error: 'unknown error' }));
+		throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
+	}
+	return res.json();
+}
+
+export function wipeDeleteCustom(id: string): Promise<void> {
+	return request(`/api/wipes/custom/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 

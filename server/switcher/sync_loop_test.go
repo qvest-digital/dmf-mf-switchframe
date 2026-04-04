@@ -14,6 +14,7 @@ import (
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/transition"
+	"github.com/zsiec/switchframe/server/transition/wipemap"
 )
 
 // mockSyncMixer implements syncMixerInterface for testing.
@@ -1895,6 +1896,12 @@ func (m *syncLoopGPUMock) RunWithUpload(yuv []byte, width, height int, pts int64
 func (m *syncLoopGPUMock) RunTransition(fromKey, toKey string, transType string, wipeDir int, position float64, pts int64, stinger *GPUStingerFrame) error {
 	return nil
 }
+
+func (m *syncLoopGPUMock) SetWipeMap(gradient []byte, config *wipemap.WipeConfig, width, height int) error {
+	return nil
+}
+
+func (m *syncLoopGPUMock) ClearWipeMap() {}
 
 func (m *syncLoopGPUMock) Snapshot() map[string]any {
 	return map[string]any{"gpu": true, "backend": "sync-loop-mock"}

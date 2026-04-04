@@ -1,12 +1,13 @@
 <script lang="ts">
-	import type { ControlRoomState, EasingConfig } from '$lib/api/types';
+	import type { ControlRoomState, EasingConfig, WipeConfig } from '$lib/api/types';
 	import type { FastControl } from '$lib/transport/fast-control';
-	import { cut, startTransition, setTransitionPosition, fadeToBlack, listStingers, uploadStinger, deleteStinger, apiCall } from '$lib/api/switch-api';
+	import { cut, startTransition, setTransitionPosition, fadeToBlack, listStingers, uploadStinger, deleteStinger, wipeGetPreview, apiCall } from '$lib/api/switch-api';
 	import { AutoAnimation } from './auto-animation.svelte';
 	import { throttle } from '$lib/util/throttle';
 	import { scrubberPosition, applyKeyStep } from '$lib/util/tbar';
 	import type { EasingPreset } from '$lib/util/easing';
 	import { getEasingFunction } from '$lib/util/easing';
+	import WipePatternBrowser from './WipePatternBrowser.svelte';
 
 	interface Props {
 		state: ControlRoomState;
@@ -15,12 +16,88 @@
 	}
 	let { state: crState, pendingConfirm = null, fastControl = null }: Props = $props();
 
-	type TransType = 'mix' | 'dip' | 'wipe' | 'stinger';
-	type WipeDir = 'h-left' | 'h-right' | 'v-top' | 'v-bottom' | 'box-center-out' | 'box-edges-in';
+	// Base types + all DVE transitions
+	type TransType = string;
+	const DVE_TYPES: { value: TransType; label: string; group: string }[] = [
+		// 2D — Slides
+		{ value: 'dve-push-left', label: 'Push L', group: '2D' },
+		{ value: 'dve-push-right', label: 'Push R', group: '2D' },
+		{ value: 'dve-push-up', label: 'Push \u2191', group: '2D' },
+		{ value: 'dve-push-down', label: 'Push \u2193', group: '2D' },
+		{ value: 'dve-reveal-left', label: 'Reveal L', group: '2D' },
+		{ value: 'dve-reveal-right', label: 'Reveal R', group: '2D' },
+		{ value: 'dve-reveal-up', label: 'Reveal \u2191', group: '2D' },
+		{ value: 'dve-reveal-down', label: 'Reveal \u2193', group: '2D' },
+		{ value: 'dve-barn-h', label: 'Barn H', group: '2D' },
+		{ value: 'dve-barn-v', label: 'Barn V', group: '2D' },
+		// 2D — Zoom/Scale
+		{ value: 'dve-squeeze', label: 'Squeeze', group: '2D' },
+		{ value: 'dve-zoom', label: 'Zoom', group: '2D' },
+		{ value: 'dve-cross-zoom', label: 'X-Zoom', group: '2D' },
+		{ value: 'dve-shrink-grow', label: 'PIP Swap', group: '2D' },
+		// 2D — Rotate/Spin
+		{ value: 'dve-spin', label: 'Spin', group: '2D' },
+		{ value: 'dve-scale-rotate', label: 'Rotate', group: '2D' },
+		{ value: 'dve-swing-left', label: 'Swing L', group: '2D' },
+		{ value: 'dve-swing-right', label: 'Swing R', group: '2D' },
+		{ value: 'dve-corner-peel', label: 'Peel', group: '2D' },
+		// 2D — Effects
+		{ value: 'dve-fly', label: 'Fly', group: '2D' },
+		{ value: 'dve-mosaic', label: 'Mosaic', group: '2D' },
+		{ value: 'dve-bounce', label: 'Bounce', group: '2D' },
+		{ value: 'dve-blur-dissolve', label: 'Blur Dis', group: '2D' },
+		// 3D
+		{ value: 'dve-cube', label: 'Cube', group: '3D' },
+		{ value: 'dve-cube-roll', label: 'Cube Roll', group: '3D' },
+		{ value: 'dve-flip', label: 'Flip', group: '3D' },
+		{ value: 'dve-door', label: 'Door', group: '3D' },
+		{ value: 'dve-swing-door', label: 'Swing', group: '3D' },
+		{ value: 'dve-fold', label: 'Fold', group: '3D' },
+		{ value: 'dve-carousel', label: 'Carousel', group: '3D' },
+		{ value: 'dve-tumble', label: 'Tumble', group: '3D' },
+		{ value: 'dve-globe', label: 'Globe', group: '3D' },
+		{ value: 'dve-page-turn', label: 'Page Turn', group: '3D' },
+	];
 
 	let transType = $state<TransType>('mix');
 	let durationMs = $state(1000);
-	let wipeDirection = $state<WipeDir>('h-left');
+	let wipeConfig = $state<WipeConfig>({
+		pattern: 'h-left',
+		soft_edge: 0.005,
+		border_width: 0,
+		border_color_y: 235,
+		border_color_cb: 128,
+		border_color_cr: 128,
+		reverse: false,
+		offset_x: 0,
+		offset_y: 0,
+		multiply: 1,
+	});
+	let wipePopoverOpen = $state(false);
+	let wipePreviewUrl = $state('');
+
+	function loadWipePreview(patternId: string) {
+		wipeGetPreview(patternId).then(blob => {
+			if (wipePreviewUrl) URL.revokeObjectURL(wipePreviewUrl);
+			wipePreviewUrl = URL.createObjectURL(blob);
+		}).catch(() => {});
+	}
+
+	// Load initial preview
+	$effect(() => {
+		if (transType === 'wipe' && !wipePreviewUrl) {
+			loadWipePreview(wipeConfig.pattern);
+		}
+	});
+
+	// DVE transition select: when a DVE type is chosen from the dropdown,
+	// it becomes the active transType. The dropdown shows "DVE" when a
+	// non-DVE type is active.
+	let dveSelectValue = $derived(transType.startsWith('dve-') ? transType : '');
+	function handleDVESelect(e: Event) {
+		const val = (e.target as HTMLSelectElement).value as TransType;
+		if (val) transType = val;
+	}
 	let stingerName = $state('');
 	let stingerNames = $state<string[]>([]);
 	let uploading = $state(false);
@@ -113,9 +190,10 @@
 		anim.start(durationMs, easingFn);
 		apiCall(startTransition(
 			crState.previewSource, transType, durationMs,
-			transType === 'wipe' ? wipeDirection : undefined,
+			transType === 'wipe' ? wipeConfig.pattern : undefined,
 			transType === 'stinger' ? stingerName : undefined,
-			getEasingConfig()
+			getEasingConfig(),
+			transType === 'wipe' ? wipeConfig : undefined
 		), 'Transition failed');
 
 		// Safety timeout: cancel animation if server never confirms
@@ -210,9 +288,10 @@
 			tbarStarting = true;
 			const p = startTransition(
 				crState.previewSource, transType, durationMs,
-				transType === 'wipe' ? wipeDirection : undefined,
+				transType === 'wipe' ? wipeConfig.pattern : undefined,
 				transType === 'stinger' ? stingerName : undefined,
-				getEasingConfig()
+				getEasingConfig(),
+				transType === 'wipe' ? wipeConfig : undefined
 			);
 			p.catch(() => { tbarStarting = false; });
 			apiCall(p, 'Transition failed');
@@ -243,9 +322,10 @@
 				dragSessionDone = false;
 				const p = startTransition(
 					crState.previewSource, transType, durationMs,
-					transType === 'wipe' ? wipeDirection : undefined,
+					transType === 'wipe' ? wipeConfig.pattern : undefined,
 					transType === 'stinger' ? stingerName : undefined,
-					getEasingConfig()
+					getEasingConfig(),
+					transType === 'wipe' ? wipeConfig : undefined
 				);
 				p.catch(() => { tbarStarting = false; });
 				apiCall(p, 'Transition failed');
@@ -280,9 +360,10 @@
 			tbarStarting = true;
 			const p = startTransition(
 				crState.previewSource, transType, durationMs,
-				transType === 'wipe' ? wipeDirection : undefined,
+				transType === 'wipe' ? wipeConfig.pattern : undefined,
 				transType === 'stinger' ? stingerName : undefined,
-				getEasingConfig()
+				getEasingConfig(),
+				transType === 'wipe' ? wipeConfig : undefined
 			);
 			p.catch(() => { tbarStarting = false; });
 			apiCall(p, 'Transition failed');
@@ -317,6 +398,20 @@
 				<input type="radio" name="transType" value="stinger" bind:group={transType} />
 				Sting
 			</label>
+			<span class="type-separator">|</span>
+			<select class="dve-type-select" bind:value={dveSelectValue} onchange={handleDVESelect}>
+				<option value="" disabled>DVE</option>
+				<optgroup label="2D">
+					{#each DVE_TYPES.filter(t => t.group === '2D') as dt}
+						<option value={dt.value}>{dt.label}</option>
+					{/each}
+				</optgroup>
+				<optgroup label="3D">
+					{#each DVE_TYPES.filter(t => t.group === '3D') as dt}
+						<option value={dt.value}>{dt.label}</option>
+					{/each}
+				</optgroup>
+			</select>
 		</div>
 		<div class="type-specific">
 			{#if transType === 'stinger'}
@@ -343,14 +438,23 @@
 				</div>
 			{/if}
 			{#if transType === 'wipe'}
-				<div class="wipe-directions" role="radiogroup" aria-label="Wipe direction">
-					<button class="wipe-dir-btn" class:selected={wipeDirection === 'h-left'} onclick={() => wipeDirection = 'h-left'} title="Horizontal left-to-right">&#8594;</button>
-					<button class="wipe-dir-btn" class:selected={wipeDirection === 'h-right'} onclick={() => wipeDirection = 'h-right'} title="Horizontal right-to-left">&#8592;</button>
-					<button class="wipe-dir-btn" class:selected={wipeDirection === 'v-top'} onclick={() => wipeDirection = 'v-top'} title="Vertical top-to-bottom">&#8595;</button>
-					<button class="wipe-dir-btn" class:selected={wipeDirection === 'v-bottom'} onclick={() => wipeDirection = 'v-bottom'} title="Vertical bottom-to-top">&#8593;</button>
-					<button class="wipe-dir-btn" class:selected={wipeDirection === 'box-center-out'} onclick={() => wipeDirection = 'box-center-out'} title="Box center outward">&#9723;</button>
-					<button class="wipe-dir-btn" class:selected={wipeDirection === 'box-edges-in'} onclick={() => wipeDirection = 'box-edges-in'} title="Box edges inward">&#9724;</button>
+				<div class="wipe-inline">
+					<button class="wipe-selected-thumb" onclick={() => wipePopoverOpen = !wipePopoverOpen} title="Click to change wipe pattern">
+						{#if wipePreviewUrl}
+							<img src={wipePreviewUrl} alt={wipeConfig.pattern} class="wipe-thumb-img" />
+						{:else}
+							<span class="wipe-thumb-label">{wipeConfig.pattern}</span>
+						{/if}
+					</button>
+					<span class="wipe-pattern-name">{wipeConfig.pattern}</span>
 				</div>
+				{#if wipePopoverOpen}
+					<!-- svelte-ignore a11y_click_events_have_key_events -->
+					<div class="wipe-popover-backdrop" role="none" onclick={() => wipePopoverOpen = false}></div>
+					<div class="wipe-popover">
+						<WipePatternBrowser config={wipeConfig} onConfigChange={(c) => { wipeConfig = c; loadWipePreview(c.pattern); }} />
+					</div>
+				{/if}
 			{/if}
 		</div>
 	</div>
@@ -418,6 +522,7 @@
 		flex-direction: column;
 		gap: 2px;
 		justify-content: center;
+		position: relative;
 	}
 
 	.tc-right {
@@ -515,6 +620,29 @@
 		border-radius: var(--radius-md);
 		padding: 2px;
 		border: 1px solid var(--border-subtle);
+		align-items: center;
+	}
+
+	.type-separator {
+		color: var(--text-tertiary);
+		font-size: 10px;
+		padding: 0 1px;
+		user-select: none;
+	}
+
+	.dve-type-select {
+		padding: 2px 3px;
+		font: 10px var(--font-ui);
+		background: var(--bg-tertiary);
+		border: none;
+		border-radius: 3px;
+		color: var(--text-secondary);
+		cursor: pointer;
+	}
+
+	.dve-type-select:hover {
+		background: var(--bg-hover);
+		color: var(--text-primary);
 	}
 
 	.type-option {
@@ -546,36 +674,77 @@
 		display: none;
 	}
 
-	.wipe-directions {
+	.wipe-inline {
 		display: flex;
-		gap: 2px;
+		align-items: center;
+		gap: 4px;
+	}
+
+	.wipe-selected-thumb {
+		width: 48px;
+		height: 27px;
+		border: 1.5px solid var(--border-default);
+		border-radius: 3px;
 		background: var(--bg-base);
-		border-radius: var(--radius-md);
-		padding: 2px;
-		border: 1px solid var(--border-subtle);
-	}
-
-	.wipe-dir-btn {
-		font-size: var(--text-sm);
-		line-height: 1;
-		padding: 3px 6px;
-		border: none;
-		border-radius: var(--radius-sm);
-		background: transparent;
-		color: var(--text-secondary);
+		padding: 0;
 		cursor: pointer;
-		transition:
-			background var(--transition-fast),
-			color var(--transition-fast);
+		overflow: hidden;
+		flex-shrink: 0;
+		transition: border-color var(--transition-fast);
 	}
 
-	.wipe-dir-btn:hover {
-		color: var(--text-primary);
+	.wipe-selected-thumb:hover {
+		border-color: var(--accent-blue);
 	}
 
-	.wipe-dir-btn.selected {
-		background: var(--bg-elevated);
-		color: var(--accent-yellow);
+	.wipe-thumb-img {
+		width: 100%;
+		height: 100%;
+		object-fit: cover;
+		display: block;
+	}
+
+	.wipe-thumb-label {
+		font-family: var(--font-mono);
+		font-size: 7px;
+		color: var(--text-tertiary);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 100%;
+		height: 100%;
+	}
+
+	.wipe-pattern-name {
+		font-family: var(--font-mono);
+		font-size: 9px;
+		color: var(--text-tertiary);
+		max-width: 80px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.wipe-popover-backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 99;
+	}
+
+	.wipe-popover {
+		position: absolute;
+		bottom: 100%;
+		left: 0;
+		z-index: 100;
+		width: 360px;
+		max-height: 320px;
+		overflow-y: auto;
+		background: var(--bg-surface);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-md);
+		box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.5);
+		padding: 8px;
+		margin-bottom: 4px;
 	}
 
 	.stinger-select {

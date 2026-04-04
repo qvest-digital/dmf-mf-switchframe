@@ -526,6 +526,8 @@ type ClipInfo struct {
 type LayoutState struct {
 	ActivePreset string            `json:"activePreset"`
 	Slots        []LayoutSlotState `json:"slots"`
+	DVEPresets   []DVEPresetInfo   `json:"dvePresets,omitempty"`
+	DVEAnimating bool              `json:"dveAnimating,omitempty"`
 }
 
 // AISegmentConfig describes the AI segmentation configuration for a source.
@@ -590,15 +592,76 @@ type ColorGradeState struct {
 
 // LayoutSlotState represents a single layout slot in the state broadcast.
 type LayoutSlotState struct {
-	ID         int        `json:"id"`
-	SourceKey  string     `json:"sourceKey"`
-	Enabled    bool       `json:"enabled"`
-	X          int        `json:"x"`
-	Y          int        `json:"y"`
-	Width      int        `json:"width"`
-	Height     int        `json:"height"`
-	ZOrder     int        `json:"zOrder"`
-	Animating  bool       `json:"animating,omitempty"`
-	ScaleMode  string     `json:"scaleMode,omitempty"`
-	CropAnchor [2]float64 `json:"cropAnchor,omitempty"`
+	ID         int            `json:"id"`
+	SourceKey  string         `json:"sourceKey"`
+	Enabled    bool           `json:"enabled"`
+	X          int            `json:"x"`
+	Y          int            `json:"y"`
+	Width      int            `json:"width"`
+	Height     int            `json:"height"`
+	ZOrder     int            `json:"zOrder"`
+	Animating  bool           `json:"animating,omitempty"`
+	ScaleMode  string         `json:"scaleMode,omitempty"`
+	CropAnchor [2]float64     `json:"cropAnchor,omitempty"`
+	DVE        *DVESlotState  `json:"dve,omitempty"`
+}
+
+// DVESlotState holds the full DVE transform parameters for a layout slot.
+type DVESlotState struct {
+	PositionX     float64         `json:"positionX"`
+	PositionY     float64         `json:"positionY"`
+	Width         float64         `json:"width"`
+	Height        float64         `json:"height"`
+	RotationDeg   float64         `json:"rotationDeg,omitempty"`
+	AnchorX       float64         `json:"anchorX,omitempty"`
+	AnchorY       float64         `json:"anchorY,omitempty"`
+	PerspectiveX  float64         `json:"perspectiveX,omitempty"`
+	PerspectiveY  float64         `json:"perspectiveY,omitempty"`
+	CropTop       float64         `json:"cropTop,omitempty"`
+	CropBottom    float64         `json:"cropBottom,omitempty"`
+	CropLeft      float64         `json:"cropLeft,omitempty"`
+	CropRight     float64         `json:"cropRight,omitempty"`
+	CropSoftness  float64         `json:"cropSoftness,omitempty"`
+	Opacity       float64         `json:"opacity,omitempty"`
+	Border        *DVEBorderState `json:"border,omitempty"`
+	Shadow        *DVEShadowState `json:"shadow,omitempty"`
+	DefocusRadius float64         `json:"defocusRadius,omitempty"`
+	MirrorH       bool            `json:"mirrorH,omitempty"`
+	MirrorV       bool            `json:"mirrorV,omitempty"`
+	MosaicSize    int             `json:"mosaicSize,omitempty"`
+	Saturation    float64         `json:"saturation,omitempty"`
+	Brightness    float64         `json:"brightness,omitempty"`
+	Contrast      float64         `json:"contrast,omitempty"`
+	Mode3D        string          `json:"mode3d,omitempty"`
+	RotateX       float64         `json:"rotateX,omitempty"`
+	RotateY       float64         `json:"rotateY,omitempty"`
+	RotateZ       float64         `json:"rotateZ,omitempty"`
+}
+
+// DVEBorderState holds DVE border configuration for state broadcast.
+type DVEBorderState struct {
+	Width        float64 `json:"width"`
+	ColorY       byte    `json:"colorY"`
+	ColorCb      byte    `json:"colorCb"`
+	ColorCr      byte    `json:"colorCr"`
+	CornerRadius float64 `json:"cornerRadius,omitempty"`
+	Softness     float64 `json:"softness,omitempty"`
+	InnerWidth   float64 `json:"innerWidth,omitempty"`
+}
+
+// DVEShadowState holds DVE shadow configuration for state broadcast.
+type DVEShadowState struct {
+	Enabled bool    `json:"enabled"`
+	OffsetX float64 `json:"offsetX,omitempty"`
+	OffsetY float64 `json:"offsetY,omitempty"`
+	Blur    float64 `json:"blur,omitempty"`
+	Opacity float64 `json:"opacity,omitempty"`
+	ColorY  byte    `json:"colorY,omitempty"`
+}
+
+// DVEPresetInfo is a summary of a DVE preset for state broadcast.
+type DVEPresetInfo struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Builtin bool   `json:"builtin,omitempty"`
 }

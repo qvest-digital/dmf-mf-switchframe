@@ -61,7 +61,7 @@
 	let layoutTabActive = $state(false);
 	let graphicsTabActive = $state(false);
 	let activeBottomTab = $state('Audio');
-	let composeSubTab = $state<'layout' | 'graphics' | 'keys'>('layout');
+	let composeSubTab = $state<'layout' | 'graphics' | 'keys' | 'dve'>('layout');
 	let graphicsSelectedLayerId = $state<number | null>(null);
 	let layoutMode = $state<LayoutMode>(getLayoutMode());
 	let mounted = $state(false);
@@ -725,7 +725,7 @@
 							</div>
 						{:else if activeTab === 'Compose'}
 							<div class="tab-panel">
-								<CompositionPanel state={store.effectiveState} bind:activeSubTab={composeSubTab} externalSelectedLayerId={graphicsSelectedLayerId} />
+								<CompositionPanel state={store.effectiveState} bind:activeSubTab={composeSubTab} externalSelectedLayerId={graphicsSelectedLayerId} {fastControl} />
 							</div>
 						{:else if activeTab === 'Macros'}
 							<div class="tab-panel">

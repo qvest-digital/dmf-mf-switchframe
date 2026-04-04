@@ -1,13 +1,16 @@
 <script lang="ts">
 	import type { ControlRoomState } from '$lib/api/types';
+	import type { FastControl } from '$lib/transport/fast-control';
 	import LayoutPanel from './LayoutPanel.svelte';
 	import GraphicsPanel from './GraphicsPanel.svelte';
 	import KeyPanel from './KeyPanel.svelte';
+	import DVEPanel from './DVEPanel.svelte';
 
-	let { state, activeSubTab = $bindable('layout'), externalSelectedLayerId = null }: {
+	let { state, activeSubTab = $bindable('layout'), externalSelectedLayerId = null, fastControl = null }: {
 		state: ControlRoomState;
-		activeSubTab?: 'layout' | 'graphics' | 'keys';
+		activeSubTab?: 'layout' | 'graphics' | 'keys' | 'dve';
 		externalSelectedLayerId?: number | null;
+		fastControl?: FastControl | null;
 	} = $props();
 </script>
 
@@ -18,6 +21,11 @@
 			class:active={activeSubTab === 'layout'}
 			onclick={() => activeSubTab = 'layout'}
 		>Layout</button>
+		<button
+			class="vp-tab"
+			class:active={activeSubTab === 'dve'}
+			onclick={() => activeSubTab = 'dve'}
+		>DVE</button>
 		<button
 			class="vp-tab"
 			class:active={activeSubTab === 'graphics'}
@@ -32,6 +40,8 @@
 	<div class="tab-content">
 		{#if activeSubTab === 'layout'}
 			<LayoutPanel {state} />
+		{:else if activeSubTab === 'dve'}
+			<DVEPanel {state} {fastControl} />
 		{:else if activeSubTab === 'graphics'}
 			<GraphicsPanel {state} {externalSelectedLayerId} />
 		{:else}

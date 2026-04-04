@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/internal/video"
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -34,8 +35,9 @@ type scaledCacheEntry struct {
 // Frame delivery via IngestSourceFrame (called from handleRawVideoFrame).
 // Compositing via ProcessFrame (called from pipeline node).
 type Compositor struct {
-	mu     sync.Mutex
-	layout atomic.Pointer[Layout]
+	mu        sync.Mutex
+	layout    atomic.Pointer[Layout]
+	dveLayout atomic.Pointer[dve.Layout]
 
 	// Per-source cached frames (8-bit YUV420)
 	fills map[string]*fillEntry
@@ -60,6 +62,10 @@ type Compositor struct {
 
 	// Reusable snapshot slice (avoids per-frame allocation in ProcessFrame)
 	snapCache []slotSnapshot
+
+	// Reusable DVE warp buffers (single-threaded pipeline goroutine)
+	dveWarpBuf  []byte
+	dveAlphaBuf []byte
 
 	// Active animations
 	animations []*Animation
@@ -244,6 +250,7 @@ type slotSnapshot struct {
 	fillPTS      int64             // PTS of the fill entry at snapshot time
 	cachedScaled *scaledCacheEntry // cached scaled frame (may be nil)
 	fillKey      string            // source key for cache writeback
+	dveSlot      *dve.Slot         // DVE slot (non-nil when DVE layout active, for warp path)
 }
 
 // ProcessFrame composites all enabled layout slots onto the frame.
@@ -401,6 +408,23 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 
 		c.snapCache = append(c.snapCache, snap)
 	}
+
+	// Capture DVE slot references and apply DVE opacity for Phase 2.
+	if dl := c.dveLayout.Load(); dl != nil {
+		for i := range c.snapCache {
+			snap := &c.snapCache[i]
+			if snap.idx < len(dl.Slots) {
+				ds := dl.Slots[snap.idx]
+				snap.dveSlot = &ds
+				// Apply DVE opacity on top of animation alpha.
+				dveOpacity := ds.Transform.EffectiveOpacity()
+				if dveOpacity < 1.0 {
+					snap.alpha *= dveOpacity
+				}
+			}
+		}
+	}
+
 	c.mu.Unlock()
 
 	// Phase 2: Lock-free — crop (if fill mode), scale, and composite each slot.
@@ -435,6 +459,20 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 				srcW = cropW
 				srcH = cropH
 			}
+		}
+
+		// DVE warp path: for rotated/perspective slots, use inverse-warp compositing.
+		if snap.dveSlot != nil && dveNeedsWarp(snap.dveSlot.Transform) {
+			// Update snap's srcYUV/srcW/srcH after crop for the warp function.
+			snap.srcYUV = srcYUV
+			snap.srcW = srcW
+			snap.srcH = srcH
+			c.processSlotDVEWarp(yuv, width, height, snap, snap.dveSlot)
+			if snap.slot.Border.Width > 0 {
+				color := [3]byte{snap.slot.Border.ColorY, snap.slot.Border.ColorCb, snap.slot.Border.ColorCr}
+				DrawBorderYUV(yuv, width, height, snap.rect, color, snap.slot.Border.Width)
+			}
+			continue
 		}
 
 		// Scale source to slot dimensions, using cached result when possible.
@@ -534,6 +572,11 @@ type SlotSnap struct {
 	Alpha                                      float32
 	ScaleMode                                  string     // "stretch" (default) or "fill"
 	CropAnchor                                 [2]float64 // [x,y] 0.0-1.0, anchor point for crop (0.5,0.5 = center)
+
+	// DVE fields (populated when a DVE layout is active).
+	DVETransform  *dve.Transform // full DVE transform (nil if legacy layout)
+	DVEInvMatrix  dve.Matrix3x3  // pre-computed inverse transform matrix
+	DVEIsIdentity bool           // true if no DVE effects needed (fast path)
 }
 
 // SnapshotSlots returns a deep-copied snapshot of all enabled layout slots
@@ -597,6 +640,12 @@ func (c *Compositor) SnapshotSlots() []SlotSnap {
 
 		result = append(result, snap)
 	}
+
+	// Enrich with DVE transform data if a DVE layout is active.
+	if dl := c.dveLayout.Load(); dl != nil {
+		result = c.enrichSnapsWithDVE(result, dl)
+	}
+
 	return result
 }
 

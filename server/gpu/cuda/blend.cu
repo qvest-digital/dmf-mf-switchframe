@@ -189,7 +189,133 @@ __global__ void blend_fade_const_p210_kernel(
     dst[idx] = (uint16_t)min(max(val, 0), 1023);
 }
 
+// ============================================================================
+// Gradient map wipe blend kernels
+// ============================================================================
+
+struct WipeMapBlendParams {
+    int width, height, pitch, gradPitch;
+    float position, softEdge, borderWidth;
+    uint8_t borderColorY, borderColorCb, borderColorCr;
+    int reverse, multiply;
+};
+
+// Y plane gradient map wipe
+__global__ void wipe_map_blend_y_kernel(
+    const uint8_t* __restrict__ srcA,
+    const uint8_t* __restrict__ srcB,
+    const uint8_t* __restrict__ gradMap,
+    uint8_t* __restrict__ dst,
+    WipeMapBlendParams p)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= p.width || y >= p.height) return;
+
+    int idx = y * p.pitch + x;
+    int gradIdx = y * p.gradPitch + x;
+
+    int grad = (int)gradMap[gradIdx];
+    if (p.reverse) grad = 255 - grad;
+    if (p.multiply > 1) grad = (grad * p.multiply) % 256;
+
+    int threshold = (int)(p.position * 255.0f);
+    int dist = grad - threshold;
+    int halfEdge = max((int)(p.softEdge * 255.0f), 1);
+
+    int alpha;
+    if (dist < -halfEdge) { alpha = 255; }
+    else if (dist > halfEdge) { alpha = 0; }
+    else { alpha = (halfEdge - dist) * 255 / (2 * halfEdge); }
+
+    int borderHalf = (int)(p.borderWidth * 255.0f);
+    if (borderHalf > 0 && abs(dist) < borderHalf) {
+        dst[idx] = p.borderColorY;
+    } else {
+        dst[idx] = (uint8_t)(((int)srcB[idx] * alpha + (int)srcA[idx] * (255 - alpha)) >> 8);
+    }
+}
+
+// UV plane gradient map wipe (NV12 interleaved CbCr)
+__global__ void wipe_map_blend_uv_kernel(
+    const uint8_t* __restrict__ srcAUV,
+    const uint8_t* __restrict__ srcBUV,
+    const uint8_t* __restrict__ gradMap,
+    uint8_t* __restrict__ dstUV,
+    WipeMapBlendParams p)
+{
+    int cx = blockIdx.x * blockDim.x + threadIdx.x;
+    int cy = blockIdx.y * blockDim.y + threadIdx.y;
+    int chromaW = p.width / 2;
+    int chromaH = p.height / 2;
+    if (cx >= chromaW || cy >= chromaH) return;
+
+    int uvIdx = cy * p.pitch + cx * 2;
+
+    // Sample gradient at luma resolution (2x2 block) and average
+    int lumaX = cx * 2;
+    int lumaY = cy * 2;
+    int g00 = gradMap[lumaY * p.gradPitch + lumaX];
+    int g10 = gradMap[lumaY * p.gradPitch + min(lumaX + 1, p.width - 1)];
+    int g01 = gradMap[min(lumaY + 1, p.height - 1) * p.gradPitch + lumaX];
+    int g11 = gradMap[min(lumaY + 1, p.height - 1) * p.gradPitch + min(lumaX + 1, p.width - 1)];
+    int grad = (g00 + g10 + g01 + g11 + 2) >> 2;
+
+    if (p.reverse) grad = 255 - grad;
+    if (p.multiply > 1) grad = (grad * p.multiply) % 256;
+
+    int threshold = (int)(p.position * 255.0f);
+    int dist = grad - threshold;
+    int halfEdge = max((int)(p.softEdge * 255.0f), 1);
+
+    int alpha;
+    if (dist < -halfEdge) { alpha = 255; }
+    else if (dist > halfEdge) { alpha = 0; }
+    else { alpha = (halfEdge - dist) * 255 / (2 * halfEdge); }
+
+    int borderHalf = (int)(p.borderWidth * 255.0f);
+    if (borderHalf > 0 && abs(dist) < borderHalf) {
+        dstUV[uvIdx]     = p.borderColorCb;
+        dstUV[uvIdx + 1] = p.borderColorCr;
+    } else {
+        dstUV[uvIdx]     = (uint8_t)(((int)srcBUV[uvIdx]     * alpha + (int)srcAUV[uvIdx]     * (255 - alpha)) >> 8);
+        dstUV[uvIdx + 1] = (uint8_t)(((int)srcBUV[uvIdx + 1] * alpha + (int)srcAUV[uvIdx + 1] * (255 - alpha)) >> 8);
+    }
+}
+
 extern "C" {
+
+cudaError_t wipe_map_blend_nv12(
+    const uint8_t* srcA, const uint8_t* srcB,
+    const uint8_t* gradMap, uint8_t* dst,
+    int width, int height, int pitch, int gradPitch,
+    float position, float softEdge, float borderWidth,
+    uint8_t borderColorY, uint8_t borderColorCb, uint8_t borderColorCr,
+    int reverse, int multiply, cudaStream_t stream)
+{
+    WipeMapBlendParams p;
+    p.width = width; p.height = height; p.pitch = pitch; p.gradPitch = gradPitch;
+    p.position = position; p.softEdge = softEdge; p.borderWidth = borderWidth;
+    p.borderColorY = borderColorY; p.borderColorCb = borderColorCb; p.borderColorCr = borderColorCr;
+    p.reverse = reverse; p.multiply = multiply;
+
+    dim3 block(BLOCK_DIM_X, BLOCK_DIM_Y);
+
+    // Y plane
+    dim3 gridY((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
+    wipe_map_blend_y_kernel<<<gridY, block, 0, stream>>>(srcA, srcB, gradMap, dst, p);
+
+    // UV plane
+    int chromaW = width / 2;
+    int chromaH = height / 2;
+    dim3 gridUV((chromaW + block.x - 1) / block.x, (chromaH + block.y - 1) / block.y);
+    const uint8_t* srcAUV = srcA + pitch * height;
+    const uint8_t* srcBUV = srcB + pitch * height;
+    uint8_t* dstUV = dst + pitch * height;
+    wipe_map_blend_uv_kernel<<<gridUV, block, 0, stream>>>(srcAUV, srcBUV, gradMap, dstUV, p);
+
+    return cudaGetLastError();
+}
 
 cudaError_t blend_uniform_nv12(
     uint8_t* dst, const uint8_t* a, const uint8_t* b,

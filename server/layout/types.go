@@ -17,7 +17,7 @@ const (
 )
 
 // MaxSlots is the maximum number of layout slots.
-const MaxSlots = 4
+const MaxSlots = 8
 
 // Slot defines one source's position within a layout.
 type Slot struct {

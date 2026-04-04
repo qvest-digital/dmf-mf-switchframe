@@ -3,6 +3,8 @@ package transition
 import (
 	"errors"
 	"fmt"
+
+	"github.com/zsiec/switchframe/server/transition/wipemap"
 )
 
 // errOddDimensions is returned when YUV420 operations receive odd width or height.
@@ -174,6 +176,345 @@ func (fb *FrameBlender) BlendWipe(yuvA, yuvB []byte, position float64, direction
 	blendAlpha(&fb.yuvBufOut[crOffset], &yuvA[crOffset], &yuvB[crOffset], &fb.wipeAlphaMapChroma[0], fb.uvSize)
 
 	return fb.yuvBufOut
+}
+
+// BlendWipeMap performs a gradient-map-based wipe transition between yuvA and yuvB.
+// The gradientMap is a single-channel byte buffer (w*h) where 0 = revealed first
+// and 255 = revealed last. The config controls soft edge, border, reverse, and multiply.
+//
+// Approach:
+//  1. Convert gradient map → per-pixel alpha map (applying reverse, multiply, soft edge)
+//  2. Handle border pixels with a second pass
+//  3. Use existing SIMD blendAlpha for Y plane
+//  4. Downsample alpha to chroma, blendAlpha for Cb/Cr planes
+//  5. Overwrite border pixels with border color
+func (fb *FrameBlender) BlendWipeMap(yuvA, yuvB []byte, position float64, gradientMap []byte, config wipemap.WipeConfig) []byte {
+	w := fb.width
+	h := fb.height
+
+	// Clamp position.
+	if position <= 0.0 {
+		copy(fb.yuvBufOut, yuvA[:fb.ySize+2*fb.uvSize])
+		return fb.yuvBufOut
+	}
+	if position >= 1.0 {
+		copy(fb.yuvBufOut, yuvB[:fb.ySize+2*fb.uvSize])
+		return fb.yuvBufOut
+	}
+
+	borderWidth := config.BorderWidth
+
+	// Step 1: Convert gradient map to alpha map.
+	// Use integer-domain computation scaled to 16.16 fixed-point to avoid
+	// float64 quantization errors when mapping gradient bytes through the
+	// soft-edge threshold function.
+	softEdge := config.SoftEdge
+
+	// Scale to 16.16 fixed-point: multiply by 65536.
+	// position and softEdge are in [0,1], gradient values in [0,255].
+	// To compare: scale gradient to [0, 255*65536] and position to same range.
+	pos16 := int(position * 255 * 65536)
+	se16 := int(softEdge * 255 * 65536)
+	if se16 < 1 {
+		se16 = 1
+	}
+	// 2 * softEdge * 65536 (denominator for linear interpolation)
+	twoSE16 := 2 * se16
+
+	for i := 0; i < fb.ySize; i++ {
+		g := gradientMap[i]
+		if config.Reverse {
+			g = 255 - g
+		}
+		if config.Multiply > 1 {
+			g = byte((int(g) * config.Multiply) % 256)
+		}
+		// Scale gradient to 16.16 fixed-point (same domain as pos16).
+		g16 := int(g) * 65536
+
+		dist := g16 - pos16 // signed distance from threshold
+
+		var alpha byte
+		if dist < -se16 {
+			alpha = 255 // fully B
+		} else if dist > se16 {
+			alpha = 0 // fully A
+		} else {
+			// Linear interpolation: alpha = (se16 - dist) / (2 * se16) * 255
+			// Avoid overflow: se16 ≤ 255*65536 ≈ 16.7M, (se16-dist) ≤ 2*se16 ≈ 33.5M
+			// (se16 - dist) * 255 ≤ 33.5M * 255 ≈ 8.5G → fits int64 but not int32.
+			// Use int64 for the multiplication.
+			num := int64(se16-dist) * 255
+			den := int64(twoSE16)
+			a := int((num + den/2) / den)
+			if a < 0 {
+				a = 0
+			}
+			if a > 255 {
+				a = 255
+			}
+			alpha = byte(a)
+		}
+		fb.wipeAlphaMap[i] = alpha
+	}
+
+	// Step 2: Use SIMD blendAlpha for Y plane.
+	// Note: both CPU (blendAlpha SIMD) and GPU (wipe_map_blend kernel) use >>8
+	// (divide by 256) instead of /255. Max error is 1 LSB. This matches industry
+	// standard fixed-point blending used by ATEM, Ross, and other broadcast hardware.
+	blendAlpha(&fb.yuvBufOut[0], &yuvA[0], &yuvB[0], &fb.wipeAlphaMap[0], fb.ySize)
+
+	// Step 3: Downsample alpha to chroma resolution, blend Cb/Cr planes.
+	downsampleAlphaToChroma(fb.wipeAlphaMap, w, h, fb.wipeAlphaMapChroma)
+
+	cbOffset := fb.ySize
+	crOffset := fb.ySize + fb.uvSize
+	blendAlpha(&fb.yuvBufOut[cbOffset], &yuvA[cbOffset], &yuvB[cbOffset], &fb.wipeAlphaMapChroma[0], fb.uvSize)
+	blendAlpha(&fb.yuvBufOut[crOffset], &yuvA[crOffset], &yuvB[crOffset], &fb.wipeAlphaMapChroma[0], fb.uvSize)
+
+	// Step 4: Border overlay (second pass on Y and chroma planes).
+	if borderWidth > 0 {
+		borderHalf := int(borderWidth * 255)
+		if borderHalf < 1 {
+			borderHalf = 1
+		}
+		threshold256 := int(position * 255)
+
+		// Y plane border pass.
+		for i := 0; i < fb.ySize; i++ {
+			g := gradientMap[i]
+			if config.Reverse {
+				g = 255 - g
+			}
+			if config.Multiply > 1 {
+				g = byte((int(g) * config.Multiply) % 256)
+			}
+			dist := int(g) - threshold256
+			if dist < 0 {
+				dist = -dist
+			}
+			if dist < borderHalf {
+				fb.yuvBufOut[i] = config.BorderColorY
+			}
+		}
+
+		// Chroma plane border pass: recompute the gradient-based border check
+		// at chroma resolution directly, instead of comparing Y values which
+		// can false-positive when video content matches the border color.
+		chromaW := w / 2
+		chromaH := h / 2
+		for cy := 0; cy < chromaH; cy++ {
+			ly := cy * 2
+			for cx := 0; cx < chromaW; cx++ {
+				lx := cx * 2
+				// Check if any of the 4 luma pixels in this 2x2 block are border.
+				isBorder := false
+				for _, off := range [4][2]int{{0, 0}, {1, 0}, {0, 1}, {1, 1}} {
+					px := lx + off[0]
+					py := ly + off[1]
+					g := gradientMap[py*w+px]
+					if config.Reverse {
+						g = 255 - g
+					}
+					if config.Multiply > 1 {
+						g = byte((int(g) * config.Multiply) % 256)
+					}
+					dist := int(g) - threshold256
+					if dist < 0 {
+						dist = -dist
+					}
+					if dist < borderHalf {
+						isBorder = true
+						break
+					}
+				}
+				if isBorder {
+					ci := cy*chromaW + cx
+					fb.yuvBufOut[cbOffset+ci] = config.BorderColorCb
+					fb.yuvBufOut[crOffset+ci] = config.BorderColorCr
+				}
+			}
+		}
+	}
+
+	return fb.yuvBufOut
+}
+
+// generateWipeMapAlpha fills alphaOut with per-pixel alpha values derived from
+// a gradient map and WipeConfig. This is the shared logic used by both 8-bit
+// BlendWipeMap and the 10-bit wipe path (which needs only the alpha map).
+// alphaOut must be len(gradientMap) bytes.
+func generateWipeMapAlpha(alphaOut, gradientMap []byte, position float64, config wipemap.WipeConfig) {
+	n := len(alphaOut)
+	if position <= 0.0 {
+		for i := 0; i < n; i++ {
+			alphaOut[i] = 0
+		}
+		return
+	}
+	if position >= 1.0 {
+		for i := 0; i < n; i++ {
+			alphaOut[i] = 255
+		}
+		return
+	}
+
+	softEdge := config.SoftEdge
+	pos16 := int(position * 255 * 65536)
+	se16 := int(softEdge * 255 * 65536)
+	if se16 < 1 {
+		se16 = 1
+	}
+	twoSE16 := 2 * se16
+
+	for i := 0; i < n; i++ {
+		g := gradientMap[i]
+		if config.Reverse {
+			g = 255 - g
+		}
+		if config.Multiply > 1 {
+			g = byte((int(g) * config.Multiply) % 256)
+		}
+		g16 := int(g) * 65536
+		dist := g16 - pos16
+
+		var alpha byte
+		if dist < -se16 {
+			alpha = 255
+		} else if dist > se16 {
+			alpha = 0
+		} else {
+			num := int64(se16-dist) * 255
+			den := int64(twoSE16)
+			a := int((num + den/2) / den)
+			if a < 0 {
+				a = 0
+			}
+			if a > 255 {
+				a = 255
+			}
+			alpha = byte(a)
+		}
+		alphaOut[i] = alpha
+	}
+}
+
+// legacyWipeGradient generates a gradient map that exactly matches the old
+// generateWipeAlpha threshold calculations for the 6 legacy wipe directions.
+// This is used internally to provide byte-exact backward compatibility when
+// BlendWipe is called with the old WipeDirection constants.
+func legacyWipeGradient(w, h int, direction WipeDirection) []byte {
+	buf := make([]byte, w*h)
+
+	switch direction {
+	case WipeHLeft:
+		invW := 1.0
+		if w > 1 {
+			invW = 1.0 / float64(w-1)
+		}
+		for x := 0; x < w; x++ {
+			threshold := float64(x) * invW
+			v := byte(threshold*255 + 0.5)
+			for y := 0; y < h; y++ {
+				buf[y*w+x] = v
+			}
+		}
+
+	case WipeHRight:
+		invW := 1.0
+		if w > 1 {
+			invW = 1.0 / float64(w-1)
+		}
+		for x := 0; x < w; x++ {
+			threshold := 1.0 - float64(x)*invW
+			v := byte(threshold*255 + 0.5)
+			for y := 0; y < h; y++ {
+				buf[y*w+x] = v
+			}
+		}
+
+	case WipeVTop:
+		invH := 1.0
+		if h > 1 {
+			invH = 1.0 / float64(h-1)
+		}
+		for y := 0; y < h; y++ {
+			threshold := float64(y) * invH
+			v := byte(threshold*255 + 0.5)
+			row := buf[y*w : y*w+w]
+			for i := range row {
+				row[i] = v
+			}
+		}
+
+	case WipeVBottom:
+		invH := 1.0
+		if h > 1 {
+			invH = 1.0 / float64(h-1)
+		}
+		for y := 0; y < h; y++ {
+			threshold := 1.0 - float64(y)*invH
+			v := byte(threshold*255 + 0.5)
+			row := buf[y*w : y*w+w]
+			for i := range row {
+				row[i] = v
+			}
+		}
+
+	case WipeBoxCenterOut:
+		cx := float64(w-1) / 2.0
+		cy := float64(h-1) / 2.0
+		invCx := 1.0 / cx
+		invCy := 1.0 / cy
+		for y := 0; y < h; y++ {
+			dy := float64(y) - cy
+			if dy < 0 {
+				dy = -dy
+			}
+			ty := dy * invCy
+			row := y * w
+			for x := 0; x < w; x++ {
+				dx := float64(x) - cx
+				if dx < 0 {
+					dx = -dx
+				}
+				tx := dx * invCx
+				threshold := tx
+				if ty > tx {
+					threshold = ty
+				}
+				buf[row+x] = byte(threshold*255 + 0.5)
+			}
+		}
+
+	case WipeBoxEdgesIn:
+		cx := float64(w-1) / 2.0
+		cy := float64(h-1) / 2.0
+		invCx := 1.0 / cx
+		invCy := 1.0 / cy
+		for y := 0; y < h; y++ {
+			dy := float64(y) - cy
+			if dy < 0 {
+				dy = -dy
+			}
+			ty := dy * invCy
+			row := y * w
+			for x := 0; x < w; x++ {
+				dx := float64(x) - cx
+				if dx < 0 {
+					dx = -dx
+				}
+				tx := dx * invCx
+				threshold := tx
+				if ty > tx {
+					threshold = ty
+				}
+				threshold = 1.0 - threshold
+				buf[row+x] = byte(threshold*255 + 0.5)
+			}
+		}
+	}
+	return buf
 }
 
 // generateWipeAlpha populates fb.wipeAlphaMap with per-pixel alpha values
@@ -432,6 +773,79 @@ func (fb *FrameBlender) BlendStinger(baseYUV []byte, stingerYUV []byte, alpha []
 	crOffset := fb.ySize + fb.uvSize
 	blendAlpha(&fb.yuvBufOut[cbOffset], &baseYUV[cbOffset], &stingerYUV[cbOffset], &fb.stingerChromaAlpha[0], fb.uvSize)
 	blendAlpha(&fb.yuvBufOut[crOffset], &baseYUV[crOffset], &stingerYUV[crOffset], &fb.stingerChromaAlpha[0], fb.uvSize)
+
+	return fb.yuvBufOut
+}
+
+// BlendNAM performs a Non-Additive Mix between yuvA and yuvB in YUV420 space.
+// For each pixel, the output is the brighter (higher gained Y) of the two sources.
+// position 0.0 = all A, position 1.0 = all B.
+// At any position, gain_a = 1-position and gain_b = position.
+// Per luma pixel: if A*gain_a >= B*gain_b, output A*gain_a (and use A's chroma);
+// otherwise output B*gain_b (and use B's chroma).
+// Chroma is resolved per 2x2 block by majority vote of the luma winners.
+// Uses fixed-point integer math for the luma comparison and scaling.
+func (fb *FrameBlender) BlendNAM(yuvA, yuvB []byte, position float64) []byte {
+	gainB := int(position*256 + 0.5)
+	if gainB < 0 {
+		gainB = 0
+	}
+	if gainB > 256 {
+		gainB = 256
+	}
+	gainA := 256 - gainB
+
+	w := fb.width
+	h := fb.height
+
+	// --- Y plane: per-pixel max of gained values ---
+	// Also build a per-pixel winner map for chroma resolution.
+	// winner[i] = true means B won at luma pixel i.
+	// We reuse wipeAlphaMap as scratch (same size as Y plane).
+	winnerMap := fb.wipeAlphaMap // len = w*h, repurposed as scratch
+
+	for i := 0; i < fb.ySize; i++ {
+		scaledA := int(yuvA[i]) * gainA
+		scaledB := int(yuvB[i]) * gainB
+		if scaledB > scaledA {
+			fb.yuvBufOut[i] = byte(scaledB >> 8)
+			winnerMap[i] = 1 // B won
+		} else {
+			fb.yuvBufOut[i] = byte(scaledA >> 8)
+			winnerMap[i] = 0 // A won
+		}
+	}
+
+	// --- Chroma planes: for each 2x2 block, use majority winner's chroma ---
+	chromaW := w / 2
+	chromaH := h / 2
+	cbOffsetA := fb.ySize
+	crOffsetA := fb.ySize + fb.uvSize
+	cbOffsetOut := fb.ySize
+	crOffsetOut := fb.ySize + fb.uvSize
+
+	for cy := 0; cy < chromaH; cy++ {
+		ly := cy * 2
+		for cx := 0; cx < chromaW; cx++ {
+			lx := cx * 2
+			// Count B winners in the 2x2 luma block
+			bCount := int(winnerMap[ly*w+lx]) +
+				int(winnerMap[ly*w+lx+1]) +
+				int(winnerMap[(ly+1)*w+lx]) +
+				int(winnerMap[(ly+1)*w+lx+1])
+
+			ci := cy*chromaW + cx
+			if bCount >= 2 {
+				// B majority: use B's chroma scaled by gainB
+				fb.yuvBufOut[cbOffsetOut+ci] = byte(int(yuvB[cbOffsetA+ci]) * gainB >> 8)
+				fb.yuvBufOut[crOffsetOut+ci] = byte(int(yuvB[crOffsetA+ci]) * gainB >> 8)
+			} else {
+				// A majority: use A's chroma scaled by gainA
+				fb.yuvBufOut[cbOffsetOut+ci] = byte(int(yuvA[cbOffsetA+ci]) * gainA >> 8)
+				fb.yuvBufOut[crOffsetOut+ci] = byte(int(yuvA[crOffsetA+ci]) * gainA >> 8)
+			}
+		}
+	}
 
 	return fb.yuvBufOut
 }

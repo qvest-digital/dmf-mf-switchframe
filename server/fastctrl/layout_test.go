@@ -39,7 +39,7 @@ func TestParseLayoutSlotPosition_OddValues(t *testing.T) {
 
 func TestParseLayoutSlotPosition_SlotOutOfRange(t *testing.T) {
 	payload := make([]byte, 9)
-	payload[0] = 5
+	payload[0] = 8 // MaxSlots is 8, so slot IDs 0-7 valid, 8+ out of range
 	binary.BigEndian.PutUint16(payload[1:3], 100)
 	binary.BigEndian.PutUint16(payload[3:5], 200)
 	binary.BigEndian.PutUint16(payload[5:7], 480)

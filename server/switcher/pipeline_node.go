@@ -1,6 +1,10 @@
 package switcher
 
-import "time"
+import (
+	"time"
+
+	"github.com/zsiec/switchframe/server/transition/wipemap"
+)
 
 // AsyncMetricsProvider is optionally implemented by pipeline nodes that
 // perform work asynchronously (after Process() returns). The returned map
@@ -37,6 +41,16 @@ type GPUPipelineRunner interface {
 	// position is 0.0 (all A) to 1.0 (all B). stinger carries the overlay
 	// YUV + alpha for stinger transitions (nil otherwise).
 	RunTransition(fromKey, toKey string, transType string, wipeDir int, position float64, pts int64, stinger *GPUStingerFrame) error
+
+	// SetWipeMap uploads a gradient map to the GPU for gradient-map-based wipe
+	// transitions. Called once at transition start; the gradient map persists
+	// across frames until ClearWipeMap. The config holds soft-edge, border,
+	// reverse, and multiply parameters used per-frame during RunTransition.
+	SetWipeMap(gradient []byte, config *wipemap.WipeConfig, width, height int) error
+
+	// ClearWipeMap releases the GPU gradient map buffer and clears the wipe
+	// config. Called when a transition completes or is aborted.
+	ClearWipeMap()
 
 	// Snapshot returns GPU pipeline stats: per-node timing, run counts,
 	// source manager state, and backend info. Used by debug and perf endpoints.

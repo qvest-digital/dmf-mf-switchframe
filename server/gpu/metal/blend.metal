@@ -285,3 +285,106 @@ kernel void downsample_alpha_to_p210_uv(
     dst[dstIdx]     = avg;  // Cb alpha
     dst[dstIdx + 1] = avg;  // Cr alpha
 }
+
+// ============================================================================
+// Gradient map wipe blend kernels
+// ============================================================================
+// Uses a grayscale gradient map to drive a wipe transition. The gradient value
+// at each pixel determines at what position that pixel transitions from A to B.
+
+struct WipeMapBlendParams {
+    uint width;
+    uint height;
+    uint pitch;
+    uint gradPitch;     // gradient map pitch (may differ from frame pitch)
+    float position;     // 0.0-1.0 transition progress
+    float softEdge;     // 0.0-1.0 edge softness
+    float borderWidth;  // 0.0-1.0 border zone width
+    uchar borderColorY;
+    uchar borderColorCb;
+    uchar borderColorCr;
+    int reverse;        // bool: invert gradient
+    int multiply;       // repeat count, 0 or 1 = no multiply
+};
+
+// Y plane gradient map wipe
+kernel void wipe_map_blend_y(
+    device const uchar* srcA  [[buffer(0)]],
+    device const uchar* srcB  [[buffer(1)]],
+    device const uchar* gradMap [[buffer(2)]],
+    device uchar* dst         [[buffer(3)]],
+    constant WipeMapBlendParams& p [[buffer(4)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    if (gid.x >= p.width || gid.y >= p.height) return;
+
+    uint idx = gid.y * p.pitch + gid.x;
+    uint gradIdx = gid.y * p.gradPitch + gid.x;
+
+    int grad = int(gradMap[gradIdx]);
+    if (p.reverse) grad = 255 - grad;
+    if (p.multiply > 1) grad = (grad * p.multiply) % 256;
+
+    int threshold = int(p.position * 255.0f);
+    int dist = grad - threshold;
+    int halfEdge = max(int(p.softEdge * 255.0f), 1);
+
+    uchar alpha;
+    if (dist < -halfEdge) { alpha = 255; }
+    else if (dist > halfEdge) { alpha = 0; }
+    else { alpha = uchar((halfEdge - dist) * 255 / (2 * halfEdge)); }
+
+    int borderHalf = int(p.borderWidth * 255.0f);
+    if (borderHalf > 0 && abs(dist) < borderHalf) {
+        dst[idx] = p.borderColorY;
+    } else {
+        dst[idx] = uchar((int(srcB[idx]) * int(alpha) + int(srcA[idx]) * (255 - int(alpha))) >> 8);
+    }
+}
+
+// UV plane gradient map wipe (NV12 interleaved CbCr)
+// gid.x is chroma sample index (0..width/2-1), gid.y is chroma row
+kernel void wipe_map_blend_uv(
+    device const uchar* srcAUV  [[buffer(0)]],
+    device const uchar* srcBUV  [[buffer(1)]],
+    device const uchar* gradMap [[buffer(2)]],
+    device uchar* dstUV         [[buffer(3)]],
+    constant WipeMapBlendParams& p [[buffer(4)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    uint chromaW = p.width / 2;
+    uint chromaH = p.height / 2;
+    if (gid.x >= chromaW || gid.y >= chromaH) return;
+
+    uint uvIdx = gid.y * p.pitch + gid.x * 2;
+
+    // Sample gradient at luma resolution (2x2 block center) and average
+    uint lumaX = gid.x * 2;
+    uint lumaY = gid.y * 2;
+    int g00 = int(gradMap[lumaY * p.gradPitch + lumaX]);
+    int g10 = int(gradMap[lumaY * p.gradPitch + min(lumaX + 1, p.width - 1)]);
+    int g01 = int(gradMap[min(lumaY + 1, p.height - 1) * p.gradPitch + lumaX]);
+    int g11 = int(gradMap[min(lumaY + 1, p.height - 1) * p.gradPitch + min(lumaX + 1, p.width - 1)]);
+    int grad = (g00 + g10 + g01 + g11 + 2) >> 2;
+
+    if (p.reverse) grad = 255 - grad;
+    if (p.multiply > 1) grad = (grad * p.multiply) % 256;
+
+    int threshold = int(p.position * 255.0f);
+    int dist = grad - threshold;
+    int halfEdge = max(int(p.softEdge * 255.0f), 1);
+
+    uchar alpha;
+    if (dist < -halfEdge) { alpha = 255; }
+    else if (dist > halfEdge) { alpha = 0; }
+    else { alpha = uchar((halfEdge - dist) * 255 / (2 * halfEdge)); }
+
+    int borderHalf = int(p.borderWidth * 255.0f);
+    if (borderHalf > 0 && abs(dist) < borderHalf) {
+        dstUV[uvIdx]     = p.borderColorCb;
+        dstUV[uvIdx + 1] = p.borderColorCr;
+    } else {
+        dstUV[uvIdx]     = uchar((int(srcBUV[uvIdx])     * int(alpha) + int(srcAUV[uvIdx])     * (255 - int(alpha))) >> 8);
+        dstUV[uvIdx + 1] = uchar((int(srcBUV[uvIdx + 1]) * int(alpha) + int(srcAUV[uvIdx + 1]) * (255 - int(alpha))) >> 8);
+    }
+}

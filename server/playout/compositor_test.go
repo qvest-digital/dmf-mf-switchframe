@@ -3,6 +3,8 @@ package playout
 import (
 	"math"
 	"testing"
+
+	"github.com/zsiec/switchframe/server/transition/wipemap"
 )
 
 // makeTestFrame creates a YUV420 frame with uniform Y, U, V values.
@@ -314,5 +316,66 @@ func TestCompositor_Blend_ProgressClamping(t *testing.T) {
 	avg2 := avgY(r2)
 	if math.Abs(avg2-16) > 2 {
 		t.Errorf("progress=1.5: avgY = %.1f, want ~16", avg2)
+	}
+}
+
+func TestCompositor_DVETransitionFallsBackToMix(t *testing.T) {
+	comp := NewCompositor(4, 4, nil)
+	a := makeTestFrame(4, 4, 200, 128, 128, 1000)
+	b := makeTestFrame(4, 4, 50, 128, 128, 2000)
+
+	result := comp.Blend(a, b, 0.5, TransitionConfig{Type: "dve-push-left"})
+
+	// Should produce a blended frame, not a hard cut to B.
+	if result.YUV[0] == 50 {
+		t.Fatal("DVE transition should fall back to mix, not hard cut")
+	}
+	// Mix at 0.5 should be ~125 (midpoint of 200 and 50).
+	avg := avgY(result)
+	expected := (200.0 + 50.0) / 2.0
+	if math.Abs(avg-expected) > 5 {
+		t.Fatalf("expected ~%.0f, got %.1f", expected, avg)
+	}
+}
+
+func TestCompositor_WipeWithConfig(t *testing.T) {
+	dir := t.TempDir()
+	store, err := wipemap.NewWipeMapStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.RegisterBuiltins()
+
+	comp := NewCompositor(100, 100, nil)
+	comp.SetWipeMapStore(store)
+
+	a := makeTestFrame(100, 100, 200, 128, 128, 1000)
+	b := makeTestFrame(100, 100, 50, 128, 128, 2000)
+
+	config := TransitionConfig{
+		Type: "wipe",
+		WipeConfig: &wipemap.WipeConfig{
+			PatternID: "star-5",
+			SoftEdge:  0.01,
+		},
+	}
+
+	result := comp.Blend(a, b, 0.5, config)
+	if result == nil {
+		t.Fatal("expected blended frame")
+	}
+	// Should contain a mix of values (not all 200 or all 50).
+	hasA, hasB := false, false
+	ySize := 100 * 100
+	for _, v := range result.YUV[:ySize] {
+		if v > 150 {
+			hasA = true
+		}
+		if v < 100 {
+			hasB = true
+		}
+	}
+	if !hasA || !hasB {
+		t.Fatal("wipe at 0.5 should contain pixels from both sources")
 	}
 }

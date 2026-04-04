@@ -158,7 +158,7 @@ func TestValidateLayout(t *testing.T) {
 	})
 
 	t.Run("too many slots", func(t *testing.T) {
-		l := &Layout{Name: "test", Slots: make([]Slot, 5)}
+		l := &Layout{Name: "test", Slots: make([]Slot, MaxSlots+1)}
 		require.Error(t, ValidateLayout(l, 1920, 1080))
 	})
 }

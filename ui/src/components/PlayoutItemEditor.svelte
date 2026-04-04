@@ -1,6 +1,7 @@
 <script lang="ts">
-	import type { PlaylistItem, PlayoutClip, SecondaryEvent } from '$lib/api/types';
+	import type { PlaylistItem, PlayoutClip, SecondaryEvent, WipeConfig } from '$lib/api/types';
 	import SecondaryEventEditor from './SecondaryEventEditor.svelte';
+	import WipePatternBrowser from './WipePatternBrowser.svelte';
 
 	interface Props {
 		item: PlaylistItem;
@@ -12,6 +13,32 @@
 	let { item, onChange, sources = [], clips = [] }: Props = $props();
 
 	const transitionTypes = ['cut', 'dissolve', 'dip_black', 'dip_white', 'wipe'] as const;
+
+	const defaultWipeConfig: WipeConfig = {
+		pattern: 'h-left',
+		soft_edge: 0.005,
+		border_width: 0,
+		border_color_y: 235,
+		border_color_cb: 128,
+		border_color_cr: 128,
+		reverse: false,
+		offset_x: 0,
+		offset_y: 0,
+		multiply: 1,
+	};
+
+	let itemWipeConfig = $state<WipeConfig>({ ...defaultWipeConfig });
+
+	function handleWipeConfigChange(wc: WipeConfig) {
+		itemWipeConfig = wc;
+		emit({
+			transition: {
+				type: currentTransitionType,
+				duration_ms: currentTransitionDuration,
+				wipe_config: wc,
+			},
+		});
+	}
 
 	let currentTransitionType = $derived(item.transition?.type ?? 'cut');
 	let currentTransitionDuration = $derived(item.transition?.duration_ms ?? 500);
@@ -262,6 +289,13 @@
 				</label>
 			{/if}
 		</div>
+		{#if currentTransitionType === 'wipe'}
+			<div class="editor-row">
+				<div class="wipe-config-section">
+					<WipePatternBrowser config={itemWipeConfig} onConfigChange={handleWipeConfigChange} />
+				</div>
+			</div>
+		{/if}
 	</div>
 
 	<!-- Secondary Events -->
@@ -391,5 +425,10 @@
 		color: var(--text-secondary);
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
+	}
+
+	.wipe-config-section {
+		width: 100%;
+		padding: 4px 0;
 	}
 </style>

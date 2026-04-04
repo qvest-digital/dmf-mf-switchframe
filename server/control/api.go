@@ -14,6 +14,7 @@ import (
 	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/colorgrade"
 	"github.com/zsiec/switchframe/server/control/httperr"
+	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/htmlgfx"
 	"github.com/zsiec/switchframe/server/internal"
@@ -28,6 +29,7 @@ import (
 	"github.com/zsiec/switchframe/server/stinger"
 	"github.com/zsiec/switchframe/server/stmap"
 	"github.com/zsiec/switchframe/server/switcher"
+	"github.com/zsiec/switchframe/server/transition/wipemap"
 )
 
 // switchRequest is the JSON body for cut and preview commands.
@@ -265,6 +267,16 @@ func WithLayoutStore(ls *layout.Store) APIOption {
 	return func(a *API) { a.layoutStore = ls }
 }
 
+// WithDVEPresetStore attaches a DVE preset store to the API.
+func WithDVEPresetStore(s *dve.PresetStore) APIOption {
+	return func(a *API) { a.dvePresetStore = s }
+}
+
+// WithWipeMapStore attaches a wipe pattern store to the API.
+func WithWipeMapStore(s *wipemap.WipeMapStore) APIOption {
+	return func(a *API) { a.wipeStore = s }
+}
+
 // SRTManager is the interface for SRT source management operations.
 // The app layer implements this, wrapping srt.Caller and srt.StatsManager.
 // This keeps the control package free of srt package imports.
@@ -481,6 +493,8 @@ type API struct {
 	scte35Rules        SCTE35RulesAPI
 	layoutCompositor   *layout.Compositor
 	layoutStore        *layout.Store
+	dvePresetStore     *dve.PresetStore
+	wipeStore          *wipemap.WipeMapStore
 	captionMgr         CaptionManagerAPI
 	perf               PerfAPI
 	textAnimEngine     *graphics.TextAnimationEngine
@@ -658,6 +672,8 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	a.registerSCTE35Routes(mux)
 	a.registerCaptionRoutes(mux)
 	a.registerLayoutRoutes(mux)
+	a.registerDVERoutes(mux)
+	a.registerWipeRoutes(mux)
 	a.registerClipRoutes(mux)
 	a.registerPlayoutRoutes(mux)
 	a.registerPlayoutPodRoutes(mux)

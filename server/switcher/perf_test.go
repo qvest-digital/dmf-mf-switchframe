@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/transition/wipemap"
 )
 
 func TestSwitcher_PerfSubStages(t *testing.T) {
@@ -322,6 +323,12 @@ func (m *mockGPUPipelineRunnerWithTiming) RunFromCache(sourceKey string, pts int
 func (m *mockGPUPipelineRunnerWithTiming) RunTransition(fromKey, toKey string, transType string, wipeDir int, position float64, pts int64, stinger *GPUStingerFrame) error {
 	return nil
 }
+
+func (m *mockGPUPipelineRunnerWithTiming) SetWipeMap(gradient []byte, config *wipemap.WipeConfig, width, height int) error {
+	return nil
+}
+
+func (m *mockGPUPipelineRunnerWithTiming) ClearWipeMap() {}
 
 func (m *mockGPUPipelineRunnerWithTiming) Snapshot() map[string]any {
 	return map[string]any{

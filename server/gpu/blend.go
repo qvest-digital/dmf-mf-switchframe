@@ -23,6 +23,13 @@ cudaError_t blend_stinger_nv12(
     uint8_t* dst, const uint8_t* base, const uint8_t* overlay,
     const uint8_t* alpha, int width, int height, int pitch, int alphaPitch,
     uint8_t* uvAlphaBuf, cudaStream_t stream);
+cudaError_t wipe_map_blend_nv12(
+    const uint8_t* srcA, const uint8_t* srcB,
+    const uint8_t* gradMap, uint8_t* dst,
+    int width, int height, int pitch, int gradPitch,
+    float position, float softEdge, float borderWidth,
+    uint8_t borderColorY, uint8_t borderColorCb, uint8_t borderColorCr,
+    int reverse, int multiply, cudaStream_t stream);
 */
 import "C"
 
@@ -117,6 +124,48 @@ func BlendWipe(ctx *Context, dst, a, b, maskBuf *GPUFrame, position float64, dir
 	)
 	if rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: blend wipe failed: %d", rc)
+	}
+	return ctx.Sync()
+}
+
+// WipeMapBlendConfig holds parameters for a gradient-map-driven wipe blend.
+type WipeMapBlendConfig struct {
+	Position      float64
+	SoftEdge      float64
+	BorderWidth   float64
+	BorderColorY  byte
+	BorderColorCb byte
+	BorderColorCr byte
+	Reverse       bool
+	Multiply      int
+}
+
+// BlendWipeMap performs a gradient-map-driven wipe transition between two NV12
+// frames. The gradient map is a single-channel buffer at luma resolution.
+func BlendWipeMap(ctx *Context, dst, srcA, srcB, gradMap *GPUFrame, cfg WipeMapBlendConfig) error {
+	if ctx == nil || dst == nil || srcA == nil || srcB == nil || gradMap == nil {
+		return ErrGPUNotAvailable
+	}
+
+	reverse := 0
+	if cfg.Reverse {
+		reverse = 1
+	}
+
+	rc := C.wipe_map_blend_nv12(
+		(*C.uint8_t)(unsafe.Pointer(uintptr(srcA.DevPtr))),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(srcB.DevPtr))),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(gradMap.DevPtr))),
+		(*C.uint8_t)(unsafe.Pointer(uintptr(dst.DevPtr))),
+		C.int(dst.Width), C.int(dst.Height), C.int(dst.Pitch),
+		C.int(gradMap.Pitch),
+		C.float(cfg.Position), C.float(cfg.SoftEdge), C.float(cfg.BorderWidth),
+		C.uint8_t(cfg.BorderColorY), C.uint8_t(cfg.BorderColorCb), C.uint8_t(cfg.BorderColorCr),
+		C.int(reverse), C.int(cfg.Multiply),
+		ctx.stream,
+	)
+	if rc != C.cudaSuccess {
+		return fmt.Errorf("gpu: wipe map blend failed: %d", rc)
 	}
 	return ctx.Sync()
 }

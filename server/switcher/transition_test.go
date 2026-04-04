@@ -11,6 +11,7 @@ import (
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/transition"
+	"github.com/zsiec/switchframe/server/transition/wipemap"
 )
 
 // mockTransitionCodecs returns factories that produce 4x4 mock decoders/encoders.
@@ -952,6 +953,12 @@ func (m *gpuTransitionMock) RunTransition(fromKey, toKey string, transType strin
 	})
 	return m.runTransErr
 }
+
+func (m *gpuTransitionMock) SetWipeMap(gradient []byte, config *wipemap.WipeConfig, width, height int) error {
+	return nil
+}
+
+func (m *gpuTransitionMock) ClearWipeMap() {}
 
 func (m *gpuTransitionMock) Snapshot() map[string]any {
 	return map[string]any{

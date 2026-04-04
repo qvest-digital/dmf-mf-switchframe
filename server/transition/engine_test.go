@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/zsiec/switchframe/server/internal/video"
+	"github.com/zsiec/switchframe/server/transition/wipemap"
 )
 
 func newTestEngine(t *testing.T) (*Engine, *sync.Mutex, *[][]byte, *[]bool) {
@@ -2191,4 +2192,98 @@ func TestEngineWipeDirectionAccessor(t *testing.T) {
 
 	// After stop, WipeDirection returns whatever was set.
 	require.Equal(t, WipeHRight, e.WipeDirection())
+}
+
+func TestEngineWipeMapConfig(t *testing.T) {
+	store, err := wipemap.NewWipeMapStore(t.TempDir())
+	require.NoError(t, err)
+	store.RegisterBuiltins()
+
+	wc := &wipemap.WipeConfig{
+		PatternID: "star-5",
+		SoftEdge:  0.01,
+	}
+
+	var mu sync.Mutex
+	var outputs [][]byte
+
+	e := NewEngine(EngineConfig{
+		WipeConfig:   wc,
+		WipeMapStore: store,
+		HintWidth:    4,
+		HintHeight:   4,
+		Output: func(yuv []byte, width, height int, pts int64, isKeyframe bool) {
+			mu.Lock()
+			cp := make([]byte, len(yuv))
+			copy(cp, yuv)
+			outputs = append(outputs, cp)
+			mu.Unlock()
+		},
+		OnComplete: func(aborted bool) {},
+	})
+
+	err = e.Start("cam1", "cam2", Wipe, 1000)
+	require.NoError(t, err)
+
+	// Verify wipe config is stored.
+	require.NotNil(t, e.WipeMapConfig())
+	require.Equal(t, "star-5", e.WipeMapConfig().PatternID)
+
+	// Feed raw frames from both sources. The gradient map is resolved
+	// at hint dimensions (4x4) and used for BlendWipeMap instead of BlendWipe.
+	w, h := 4, 4
+	yuvSize := w*h + 2*(w/2)*(h/2) // YUV420
+	yuvA := make([]byte, yuvSize)
+	for i := 0; i < w*h; i++ {
+		yuvA[i] = 16 // BT.709 black
+	}
+	for i := w * h; i < yuvSize; i++ {
+		yuvA[i] = 128 // neutral chroma
+	}
+	yuvB := make([]byte, yuvSize)
+	for i := 0; i < w*h; i++ {
+		yuvB[i] = 235 // BT.709 white
+	}
+	for i := w * h; i < yuvSize; i++ {
+		yuvB[i] = 128
+	}
+
+	e.IngestRawFrame("cam1", yuvA, w, h, 0)
+	e.IngestRawFrame("cam2", yuvB, w, h, 90000)
+
+	mu.Lock()
+	got := len(outputs)
+	mu.Unlock()
+	require.GreaterOrEqual(t, got, 1, "expected at least one blended output frame")
+
+	e.Stop()
+}
+
+func TestEngineWipeMapFallsBackOnInvalidPattern(t *testing.T) {
+	store, err := wipemap.NewWipeMapStore(t.TempDir())
+	require.NoError(t, err)
+	store.RegisterBuiltins()
+
+	wc := &wipemap.WipeConfig{
+		PatternID: "nonexistent-pattern",
+		SoftEdge:  0.01,
+	}
+
+	e := NewEngine(EngineConfig{
+		WipeConfig:    wc,
+		WipeMapStore:  store,
+		WipeDirection: WipeHLeft,
+		HintWidth:     4,
+		HintHeight:    4,
+		Output:        func(yuv []byte, width, height int, pts int64, isKeyframe bool) {},
+		OnComplete:    func(aborted bool) {},
+	})
+
+	err = e.Start("cam1", "cam2", Wipe, 1000)
+	require.NoError(t, err)
+
+	// Should have fallen back to nil wipeConfig due to invalid pattern.
+	require.Nil(t, e.WipeMapConfig(), "invalid pattern should clear wipeConfig")
+
+	e.Stop()
 }

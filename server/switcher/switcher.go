@@ -20,6 +20,7 @@ import (
 	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/codec"
+	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/internal/atomicutil"
@@ -28,6 +29,7 @@ import (
 	"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/stmap"
 	"github.com/zsiec/switchframe/server/transition"
+	"github.com/zsiec/switchframe/server/transition/wipemap"
 )
 
 const (
@@ -174,6 +176,7 @@ type TransitionOption func(*transitionOpts)
 type transitionOpts struct {
 	stingerData *transition.StingerData
 	easing      *transition.EasingCurve
+	wipeConfig  *wipemap.WipeConfig
 }
 
 // WithStingerData sets the stinger overlay data for a stinger transition.
@@ -184,6 +187,11 @@ func WithStingerData(sd *transition.StingerData) TransitionOption {
 // WithEasing sets the easing curve for the transition.
 func WithEasing(ec *transition.EasingCurve) TransitionOption {
 	return func(o *transitionOpts) { o.easing = ec }
+}
+
+// WithWipeConfig sets gradient-map wipe parameters for a wipe transition.
+func WithWipeConfig(wc *wipemap.WipeConfig) TransitionOption {
+	return func(o *transitionOpts) { o.wipeConfig = wc }
 }
 
 // sourceState tracks a registered source and its Relay/viewer pair.
@@ -252,6 +260,7 @@ type Switcher struct {
 	audioCut        audioCutHandler
 	transConfig     *TransitionConfig
 	transEngine     *transition.Engine
+	transTypeOrig   string // original transition type string (e.g., "dve-push-left") for GPU dispatch
 	state           State
 	audioTransition audioTransitionHandler
 	delayBuffer     *DelayBuffer
@@ -283,6 +292,9 @@ type Switcher struct {
 
 	// ST map registry — per-source lens correction applied in sourceDecoder.
 	stmapRegistry *stmap.Registry
+
+	// Wipe map store — resolves gradient maps for gradient-map-based wipe transitions.
+	wipeMapStore *wipemap.WipeMapStore
 
 	// GPU pipeline runner — when set, videoProcessingLoop routes frames through
 	// the GPU pipeline (upload → key → layout → compositor → stmap → raw sinks → encode)
@@ -909,6 +921,14 @@ func (s *Switcher) SetLayoutCompositor(lc *layout.Compositor) {
 func (s *Switcher) SetSTMapRegistry(r *stmap.Registry) {
 	s.mu.Lock()
 	s.stmapRegistry = r
+	s.mu.Unlock()
+}
+
+// SetWipeMapStore sets the wipe map store used to resolve gradient maps for
+// gradient-map-based wipe transitions.
+func (s *Switcher) SetWipeMapStore(store *wipemap.WipeMapStore) {
+	s.mu.Lock()
+	s.wipeMapStore = store
 	s.mu.Unlock()
 }
 
@@ -1990,9 +2010,16 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	}
 
 	tt := transition.Type(transType)
-	if tt != transition.Mix && tt != transition.Dip && tt != transition.Wipe && tt != transition.Stinger {
+	isDVE := dve.IsDVETransition(transType)
+	if !isDVE && tt != transition.Mix && tt != transition.Dip && tt != transition.Wipe && tt != transition.Stinger {
 		s.mu.Unlock()
 		return fmt.Errorf("unsupported transition type: %q", transType)
+	}
+	// DVE transitions use mix as the underlying engine type — the DVE compositor
+	// handles the visual effect based on position from the engine.
+	engineType := tt
+	if isDVE {
+		engineType = transition.Mix
 	}
 
 	if tt == transition.Stinger && topts.stingerData == nil {
@@ -2000,9 +2027,11 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 		return errStingerDataRequired
 	}
 
-	// Validate wipe direction when type is wipe
+	// Validate wipe direction when type is wipe.
+	// When a WipeConfig is provided, the gradient-map pattern replaces the
+	// legacy direction — no WipeDirection validation needed.
 	var wipeDir transition.WipeDirection
-	if tt == transition.Wipe {
+	if tt == transition.Wipe && topts.wipeConfig == nil {
 		wipeDir = transition.WipeDirection(wipeDirection)
 		if !transition.ValidWipeDirections[wipeDir] {
 			s.mu.Unlock()
@@ -2061,6 +2090,8 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	engine := transition.NewEngine(transition.EngineConfig{
 		DecoderFactory: decoderFactory,
 		WipeDirection:  wipeDir,
+		WipeConfig:     topts.wipeConfig,
+		WipeMapStore:   s.wipeMapStore,
 		Stinger:        topts.stingerData,
 		Easing:         topts.easing,
 		HintWidth:      hintW,
@@ -2082,13 +2113,32 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	// AutoAdvancePosition instead of wall-clock timing. This prevents position
 	// jitter from two competing clocks (wall-clock vs tick-driven).
 	if s.useRefClock.Load() {
-		engine.StartSync(fromSource, sourceKey, tt, durationMs)
-	} else if err := engine.Start(fromSource, sourceKey, tt, durationMs); err != nil {
+		engine.StartSync(fromSource, sourceKey, engineType, durationMs)
+	} else if err := engine.Start(fromSource, sourceKey, engineType, durationMs); err != nil {
 		// Roll back state since we failed to start.
 		s.mu.Lock()
 		s.transitionState(StateIdle)
 		s.mu.Unlock()
 		return fmt.Errorf("start transition: %w", err)
+	}
+
+	// Upload gradient map to GPU runner for gradient-map wipe transitions.
+	// This must happen after engine.Start (which resolves the gradient map)
+	// and before the first RunTransition call. The gradient map persists on
+	// GPU until ClearWipeMap is called at transition completion.
+	if gpuActive {
+		if h := s.gpuRunner.Load(); h != nil && h.runner != nil {
+			wipeConfig := engine.WipeMapConfig()
+			gradient := engine.WipeGradient()
+			if wipeConfig != nil && gradient != nil {
+				if err := h.runner.SetWipeMap(gradient, wipeConfig, hintW, hintH); err != nil {
+					s.log.Warn("GPU wipe map upload failed, will use legacy directional wipe",
+						"pattern", wipeConfig.PatternID, "err", err)
+				}
+			} else {
+				h.runner.ClearWipeMap()
+			}
+		}
 	}
 
 	// Phase 3: Start audio crossfade BEFORE publishing the engine.
@@ -2116,6 +2166,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	// first OnTransitionPosition from a video frame will be handled.
 	s.mu.Lock()
 	s.transEngine = engine
+	s.transTypeOrig = transType // preserve original type string for GPU DVE dispatch
 	s.previewSource = sourceKey
 	s.transitionsStarted.Add(1)
 	// Signal videoProcessingLoop to drop stale queued frames during GPU transitions.
@@ -2413,10 +2464,11 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 		}
 	}
 
-	transType := ""
-	if s.transEngine != nil {
+	transType := s.transTypeOrig
+	if transType == "" && s.transEngine != nil {
 		transType = string(s.transEngine.TransitionType())
 	}
+	s.transTypeOrig = "" // clear for next transition
 
 	if newProgram != "" {
 		s.programSource = newProgram
@@ -2444,6 +2496,11 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
+
+	// Release GPU gradient map buffer now that the transition is done.
+	if h := s.gpuRunner.Load(); h != nil && h.runner != nil {
+		h.runner.ClearWipeMap()
+	}
 
 	// Update frame sync program source after unlock.
 	// Completed: programSource was updated to destination.
@@ -3541,7 +3598,13 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 		// GPU transition path: blend both sources on GPU, bypassing CPU blend.
 		// The engine still tracks position and handles auto-complete (SkipBlend
 		// mode), but the actual pixel blend happens on GPU.
-		tt := engine.TransitionType()
+		// Use the original transition type string (not engine type, which is
+		// always "mix" for DVE transitions) so the GPU pipeline can dispatch
+		// DVE-specific compositing.
+		tt := transition.Type(s.transTypeOrig)
+		if tt == "" {
+			tt = engine.TransitionType()
+		}
 		if h := s.gpuRunner.Load(); h != nil && h.runner != nil {
 			// Feed the engine for state tracking (SkipBlend skips CPU blend).
 			engine.IngestRawFrame(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)

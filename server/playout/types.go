@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/zsiec/switchframe/server/transition/wipemap"
 )
 
 // ChannelState represents the state of a playout channel.
@@ -64,8 +66,9 @@ const (
 
 // TransitionConfig defines the transition between playlist items.
 type TransitionConfig struct {
-	Type       string `json:"type"`
-	DurationMs int    `json:"duration_ms,omitempty"`
+	Type       string             `json:"type"`
+	DurationMs int                `json:"duration_ms,omitempty"`
+	WipeConfig *wipemap.WipeConfig `json:"wipe_config,omitempty"`
 }
 
 // SCTE35EventData holds full SCTE-35 parameters for a cue secondary event.

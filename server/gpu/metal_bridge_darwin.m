@@ -365,6 +365,40 @@ MetalResult metal_downsample_alpha_to_nv12_uv(MetalQueueRef queue, MetalPipeline
 }
 
 // ============================================================================
+// Gradient map wipe blend kernels
+// ============================================================================
+
+MetalResult metal_wipe_map_blend_y(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef srcA, MetalBufferRef srcB, MetalBufferRef gradMap, MetalBufferRef dst,
+    const MetalWipeMapBlendParams* params) {
+    id<MTLBuffer> bufs[] = {
+        (id<MTLBuffer>)srcA,
+        (id<MTLBuffer>)srcB,
+        (id<MTLBuffer>)gradMap,
+        (id<MTLBuffer>)dst,
+    };
+    return dispatch_2d((id<MTLCommandQueue>)queue,
+                       (id<MTLComputePipelineState>)pipeline,
+                       bufs, 4, params, sizeof(*params), 4,
+                       params->width, params->height);
+}
+
+MetalResult metal_wipe_map_blend_uv(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef srcAUV, MetalBufferRef srcBUV, MetalBufferRef gradMap, MetalBufferRef dstUV,
+    const MetalWipeMapBlendParams* params) {
+    id<MTLBuffer> bufs[] = {
+        (id<MTLBuffer>)srcAUV,
+        (id<MTLBuffer>)srcBUV,
+        (id<MTLBuffer>)gradMap,
+        (id<MTLBuffer>)dstUV,
+    };
+    return dispatch_2d((id<MTLCommandQueue>)queue,
+                       (id<MTLComputePipelineState>)pipeline,
+                       bufs, 4, params, sizeof(*params), 4,
+                       params->width / 2, params->height / 2);
+}
+
+// ============================================================================
 // Scale kernels
 // ============================================================================
 
@@ -460,6 +494,61 @@ MetalResult metal_pip_composite_uv(MetalQueueRef queue, MetalPipelineRef pipelin
                        (id<MTLComputePipelineState>)pipeline,
                        bufs, 2, params, sizeof(*params), 2,
                        (uint32_t)params->rectCW, (uint32_t)params->rectCH);
+}
+
+// ============================================================================
+// DVE composite kernels
+// ============================================================================
+
+MetalResult metal_dve_composite_y(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dst, MetalBufferRef src, const MetalDVECompositeYParams* params) {
+    id<MTLBuffer> bufs[] = {
+        (id<MTLBuffer>)dst,
+        (id<MTLBuffer>)src,
+    };
+    return dispatch_2d((id<MTLCommandQueue>)queue,
+                       (id<MTLComputePipelineState>)pipeline,
+                       bufs, 2, params, sizeof(*params), 2,
+                       params->dstW, params->dstH);
+}
+
+MetalResult metal_dve_composite_uv(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dstUV, MetalBufferRef srcUV, const MetalDVECompositeUVParams* params) {
+    id<MTLBuffer> bufs[] = {
+        (id<MTLBuffer>)dstUV,
+        (id<MTLBuffer>)srcUV,
+    };
+    return dispatch_2d((id<MTLCommandQueue>)queue,
+                       (id<MTLComputePipelineState>)pipeline,
+                       bufs, 2, params, sizeof(*params), 2,
+                       params->dstW / 2, params->dstChromaH);
+}
+
+// ============================================================================
+// 3D DVE kernels
+
+MetalResult metal_dve3d_composite_y(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dst, MetalBufferRef src, const MetalDVE3DYParams* params) {
+    id<MTLBuffer> bufs[] = {
+        (id<MTLBuffer>)dst,
+        (id<MTLBuffer>)src,
+    };
+    return dispatch_2d((id<MTLCommandQueue>)queue,
+                       (id<MTLComputePipelineState>)pipeline,
+                       bufs, 2, params, sizeof(*params), 2,
+                       params->dstW, params->dstH);
+}
+
+MetalResult metal_dve3d_composite_uv(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dstUV, MetalBufferRef srcUV, const MetalDVE3DUVParams* params) {
+    id<MTLBuffer> bufs[] = {
+        (id<MTLBuffer>)dstUV,
+        (id<MTLBuffer>)srcUV,
+    };
+    return dispatch_2d((id<MTLCommandQueue>)queue,
+                       (id<MTLComputePipelineState>)pipeline,
+                       bufs, 2, params, sizeof(*params), 2,
+                       params->dstW / 2, params->dstChromaH);
 }
 
 // ============================================================================

@@ -1,7 +1,10 @@
 package playout
 
 import (
+	"strings"
+
 	"github.com/zsiec/switchframe/server/transition"
+	"github.com/zsiec/switchframe/server/transition/wipemap"
 )
 
 // GPUBlendFunc is the signature for GPU-accelerated blending.
@@ -16,10 +19,11 @@ type GPUBlendFunc func(a, b []byte, dst []byte, w, h int, progress float32, blen
 // produces a single blended frame given two inputs and a progress value.
 // The Scheduler owns transition progress and timing.
 type Compositor struct {
-	blender  *transition.FrameBlender
-	gpuBlend GPUBlendFunc
-	width    int
-	height   int
+	blender      *transition.FrameBlender
+	gpuBlend     GPUBlendFunc
+	wipeMapStore *wipemap.WipeMapStore
+	width        int
+	height       int
 }
 
 // NewCompositor creates a Compositor for the given frame dimensions.
@@ -86,11 +90,27 @@ func (c *Compositor) Blend(a, b *DecodedFrame, progress float64, config Transiti
 		blended = c.blender.BlendDip(a.YUV, b.YUV, progress)
 
 	case "wipe":
-		blended = c.blender.BlendWipe(a.YUV, b.YUV, progress, transition.WipeHLeft)
+		if config.WipeConfig != nil && c.wipeMapStore != nil {
+			gm, err := c.wipeMapStore.GetMap(config.WipeConfig.PatternID, c.width, c.height)
+			if err == nil {
+				blended = c.blender.BlendWipeMap(a.YUV, b.YUV, progress, gm, *config.WipeConfig)
+			} else {
+				// Fall back to directional wipe on gradient map resolve failure.
+				blended = c.blender.BlendWipe(a.YUV, b.YUV, progress, transition.WipeHLeft)
+			}
+		} else {
+			blended = c.blender.BlendWipe(a.YUV, b.YUV, progress, transition.WipeHLeft)
+		}
 
 	default:
-		// Unknown transition type — hard cut to B.
-		return c.Cut(b)
+		if strings.HasPrefix(config.Type, "dve-") {
+			// DVE spatial transitions require the GPU pipeline. In the playout
+			// CPU compositor, fall back to a mix (dissolve) for visual continuity.
+			blended = c.blender.BlendMix(a.YUV, b.YUV, progress)
+		} else {
+			// Unknown transition type — hard cut to B.
+			return c.Cut(b)
+		}
 	}
 
 	// Copy the blended output. The FrameBlender reuses its internal yuvBufOut
@@ -111,6 +131,11 @@ func (c *Compositor) Blend(a, b *DecodedFrame, progress float64, config Transiti
 // No copy is made — the caller receives the same YUV slice.
 func (c *Compositor) Cut(b *DecodedFrame) *DecodedFrame {
 	return b
+}
+
+// SetWipeMapStore sets the wipe map store for gradient-map wipe transitions.
+func (c *Compositor) SetWipeMapStore(store *wipemap.WipeMapStore) {
+	c.wipeMapStore = store
 }
 
 // Resize updates the compositor for a new frame size.

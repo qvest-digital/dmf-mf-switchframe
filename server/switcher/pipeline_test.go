@@ -16,6 +16,7 @@ import (
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/transition"
+	"github.com/zsiec/switchframe/server/transition/wipemap"
 )
 
 // sendRawFrame sends a raw YUV420 frame through handleRawVideoFrame,
@@ -785,6 +786,12 @@ func (m *mockGPUPipelineRunner) RunTransition(fromKey, toKey string, transType s
 	}
 	return nil
 }
+
+func (m *mockGPUPipelineRunner) SetWipeMap(gradient []byte, config *wipemap.WipeConfig, width, height int) error {
+	return nil
+}
+
+func (m *mockGPUPipelineRunner) ClearWipeMap() {}
 
 func (m *mockGPUPipelineRunner) Snapshot() map[string]any {
 	return map[string]any{

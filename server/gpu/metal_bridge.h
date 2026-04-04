@@ -157,6 +157,30 @@ MetalResult metal_downsample_alpha_to_nv12_uv(MetalQueueRef queue, MetalPipeline
     MetalBufferRef dst, MetalBufferRef src,
     const MetalDownsampleAlphaParams* params);
 
+// --- Gradient map wipe blend ---
+typedef struct {
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;
+    uint32_t gradPitch;
+    float position;
+    float softEdge;
+    float borderWidth;
+    uint8_t borderColorY;
+    uint8_t borderColorCb;
+    uint8_t borderColorCr;
+    int32_t reverse;
+    int32_t multiply;
+} MetalWipeMapBlendParams;
+
+MetalResult metal_wipe_map_blend_y(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef srcA, MetalBufferRef srcB, MetalBufferRef gradMap, MetalBufferRef dst,
+    const MetalWipeMapBlendParams* params);
+
+MetalResult metal_wipe_map_blend_uv(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef srcAUV, MetalBufferRef srcBUV, MetalBufferRef gradMap, MetalBufferRef dstUV,
+    const MetalWipeMapBlendParams* params);
+
 // --- Scale kernels ---
 typedef struct {
     uint32_t srcW;
@@ -525,6 +549,101 @@ MetalResult metal_stmap_warp_p210_y(MetalQueueRef queue, MetalPipelineRef pipeli
 MetalResult metal_stmap_warp_p210_uv(MetalQueueRef queue, MetalPipelineRef pipeline,
     MetalBufferRef srcUV, MetalBufferRef stmapS, MetalBufferRef stmapT,
     MetalBufferRef dstUV, const MetalSTMapP210UVParams* params);
+
+// --- DVE composite kernels ---
+typedef struct {
+    uint32_t dstW, dstH, dstPitch;
+    uint32_t srcW, srcH, srcPitch;
+    float m00, m01, m02, m10, m11, m12, m20, m21, m22;
+    int32_t slotMinX, slotMinY, slotMaxX, slotMaxY;
+    int32_t alpha256;
+    float cropTop, cropBottom, cropLeft, cropRight, cropSoftness;
+    float borderWidth;
+    uint32_t borderColorY;
+    float borderCornerRadius, borderSoftness;
+    int32_t shadowEnabled;
+    float shadowOffsetX, shadowOffsetY, shadowBlur;
+    int32_t shadowAlpha256;
+    uint32_t shadowColorY;
+    // Mirror / mosaic
+    int32_t mirrorH;
+    int32_t mirrorV;
+    int32_t mosaicSize;
+    // Color effects (Y plane)
+    float brightness;
+    float contrast;
+} MetalDVECompositeYParams;
+
+typedef struct {
+    uint32_t dstW, dstChromaH, dstPitch;
+    uint32_t srcW, srcChromaH, srcPitch;
+    float m00, m01, m02, m10, m11, m12, m20, m21, m22;
+    int32_t slotMinCX, slotMinCY, slotMaxCX, slotMaxCY;
+    int32_t alpha256;
+    float cropTop, cropBottom, cropLeft, cropRight, cropSoftness;
+    float borderWidth;
+    uint32_t borderColorCb, borderColorCr;
+    float borderCornerRadius, borderSoftness;
+    int32_t shadowEnabled;
+    float shadowOffsetX, shadowOffsetY, shadowBlur;
+    int32_t shadowAlpha256;
+    uint32_t shadowColorCb, shadowColorCr;
+    // Mirror / mosaic
+    int32_t mirrorH;
+    int32_t mirrorV;
+    int32_t mosaicSize;
+    // Color effects (UV plane)
+    float saturation;
+} MetalDVECompositeUVParams;
+
+MetalResult metal_dve_composite_y(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dst, MetalBufferRef src, const MetalDVECompositeYParams* params);
+
+MetalResult metal_dve_composite_uv(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dstUV, MetalBufferRef srcUV, const MetalDVECompositeUVParams* params);
+
+// --- 3D DVE composite kernels ---
+typedef struct {
+    uint32_t dstW, dstH, dstPitch;
+    uint32_t srcW, srcH, srcPitch;
+    float invMVP[16];   // row-major 4x4 inverse MVP matrix
+    int32_t slotMinX, slotMinY, slotMaxX, slotMaxY;
+    int32_t alpha256;
+    int32_t shape;      // 0=plane, 1=cube, 2=page_turn
+    int32_t lightEnabled;
+    float lightX, lightY, lightZ;
+    float ambient, specular;
+    float srcAspect;
+    int32_t reflectionEnabled;
+    float reflectionOpacity, reflectionFade;
+    // Page turn (shape=2)
+    float curlProgress;
+    float curlRadius;
+} MetalDVE3DYParams;
+
+typedef struct {
+    uint32_t dstW, dstChromaH, dstPitch;
+    uint32_t srcW, srcChromaH, srcPitch;
+    float invMVP[16];
+    int32_t slotMinCX, slotMinCY, slotMaxCX, slotMaxCY;
+    int32_t alpha256;
+    int32_t shape;
+    int32_t lightEnabled;
+    float lightX, lightY, lightZ;
+    float ambient, specular;
+    float srcAspect;
+    int32_t reflectionEnabled;
+    float reflectionOpacity, reflectionFade;
+    // Page turn (shape=2)
+    float curlProgress;
+    float curlRadius;
+} MetalDVE3DUVParams;
+
+MetalResult metal_dve3d_composite_y(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dst, MetalBufferRef src, const MetalDVE3DYParams* params);
+
+MetalResult metal_dve3d_composite_uv(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef dstUV, MetalBufferRef srcUV, const MetalDVE3DUVParams* params);
 
 // --- Gaussian blur kernels ---
 typedef struct {

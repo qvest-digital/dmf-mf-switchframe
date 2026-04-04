@@ -12,14 +12,18 @@ import (
 
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/caption"
+	"image"
+
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/control"
+	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/gpu"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/layout"
 	"github.com/zsiec/switchframe/server/sidecar"
 	"github.com/zsiec/switchframe/server/switcher"
+	"github.com/zsiec/switchframe/server/transition/wipemap"
 )
 
 // gpuState holds all GPU subsystem resources. Nil fields mean the GPU
@@ -657,6 +661,10 @@ type gpuPipelineRunnerImpl struct {
 	pipeline      *gpu.GPUPipeline
 	sourceManager *gpu.GPUSourceManager
 	ctx           *gpu.Context
+
+	// Gradient-map wipe state (set once per transition via SetWipeMap).
+	wipeGradientBuf *gpu.GPUFrame      // uploaded gradient map texture (Y-plane only)
+	wipeConfig      *wipemap.WipeConfig // per-frame blend parameters
 }
 
 func (r *gpuPipelineRunnerImpl) RunWithUpload(yuv []byte, width, height int, pts int64) error {
@@ -715,6 +723,61 @@ func (r *gpuPipelineRunnerImpl) Snapshot() map[string]any {
 	}
 
 	return snap
+}
+
+// SetWipeMap uploads a gradient map to the GPU for gradient-map-based wipe
+// transitions. The gradient is a single-channel (grayscale) byte buffer at
+// frame dimensions (w*h bytes). It's uploaded once at transition start and
+// reused for every frame until ClearWipeMap.
+func (r *gpuPipelineRunnerImpl) SetWipeMap(gradient []byte, config *wipemap.WipeConfig, width, height int) error {
+	// Release any previous gradient buffer.
+	r.ClearWipeMap()
+
+	if gradient == nil || config == nil || width == 0 || height == 0 {
+		return fmt.Errorf("gpu: SetWipeMap: nil gradient or config")
+	}
+
+	pool := r.pipeline.Pool()
+	frame, err := pool.Acquire()
+	if err != nil {
+		return fmt.Errorf("gpu: SetWipeMap: acquire frame: %w", err)
+	}
+
+	// Build a fake YUV420P buffer: Y=gradient, UV=128 (neutral chroma).
+	// gpu.Upload converts YUV420P → NV12, placing the gradient in the Y plane.
+	ySize := width * height
+	cbSize := (width / 2) * (height / 2)
+	crSize := cbSize
+	fakeYUV := make([]byte, ySize+cbSize+crSize)
+	copy(fakeYUV[:ySize], gradient)
+	for i := ySize; i < len(fakeYUV); i++ {
+		fakeYUV[i] = 128
+	}
+
+	if frame.Format == gpu.GPUFormatP210 {
+		err = gpu.UploadYUV420PToP210(r.ctx, frame, fakeYUV, width, height)
+	} else {
+		err = gpu.Upload(r.ctx, frame, fakeYUV, width, height)
+	}
+	if err != nil {
+		frame.Release()
+		return fmt.Errorf("gpu: SetWipeMap: upload: %w", err)
+	}
+	frame.Width = width
+	frame.Height = height
+
+	r.wipeGradientBuf = frame
+	r.wipeConfig = config
+	return nil
+}
+
+// ClearWipeMap releases the GPU gradient map buffer and clears the wipe config.
+func (r *gpuPipelineRunnerImpl) ClearWipeMap() {
+	if r.wipeGradientBuf != nil {
+		r.wipeGradientBuf.Release()
+		r.wipeGradientBuf = nil
+	}
+	r.wipeConfig = nil
 }
 
 // previewRelayDebugProvider exposes program-preview relay viewer stats
@@ -827,18 +890,37 @@ func (r *gpuPipelineRunnerImpl) RunTransition(fromKey, toKey string, transType s
 			return fmt.Errorf("gpu transition ftb_reverse: %w", err)
 		}
 	case "wipe":
-		maskBuf, maskErr := pool.Acquire()
-		if maskErr != nil {
-			dst.Release()
-			return fmt.Errorf("gpu transition wipe: acquire mask: %w", maskErr)
-		}
-		dir := gpu.WipeDirection(wipeDir)
-		if err := gpu.GPUBlendWipeDispatch(ctx, dst, frameA, frameB, maskBuf, position, dir, 4); err != nil {
+		if r.wipeConfig != nil && r.wipeGradientBuf != nil {
+			// Gradient-map wipe (new path): use the pre-uploaded gradient map.
+			cfg := gpu.WipeMapBlendConfig{
+				Position:      position,
+				SoftEdge:      r.wipeConfig.SoftEdge,
+				BorderWidth:   r.wipeConfig.BorderWidth,
+				BorderColorY:  r.wipeConfig.BorderColorY,
+				BorderColorCb: r.wipeConfig.BorderColorCb,
+				BorderColorCr: r.wipeConfig.BorderColorCr,
+				Reverse:       r.wipeConfig.Reverse,
+				Multiply:      r.wipeConfig.Multiply,
+			}
+			if err := gpu.BlendWipeMap(ctx, dst, frameA, frameB, r.wipeGradientBuf, cfg); err != nil {
+				dst.Release()
+				return fmt.Errorf("gpu transition wipe map: %w", err)
+			}
+		} else {
+			// Legacy directional wipe (fallback for transitions without gradient map).
+			maskBuf, maskErr := pool.Acquire()
+			if maskErr != nil {
+				dst.Release()
+				return fmt.Errorf("gpu transition wipe: acquire mask: %w", maskErr)
+			}
+			dir := gpu.WipeDirection(wipeDir)
+			if err := gpu.GPUBlendWipeDispatch(ctx, dst, frameA, frameB, maskBuf, position, dir, 4); err != nil {
+				maskBuf.Release()
+				dst.Release()
+				return fmt.Errorf("gpu transition wipe: %w", err)
+			}
 			maskBuf.Release()
-			dst.Release()
-			return fmt.Errorf("gpu transition wipe: %w", err)
 		}
-		maskBuf.Release()
 	case "stinger":
 		// Stinger: composite stinger overlay with per-pixel alpha onto
 		// base source (A before cut point, B after).
@@ -957,10 +1039,47 @@ func (r *gpuPipelineRunnerImpl) RunTransition(fromKey, toKey string, transType s
 			}
 		}
 	default:
-		// Unknown type — use mix as fallback.
-		if err := gpu.GPUBlendMixDispatch(ctx, dst, frameA, frameB, position); err != nil {
-			dst.Release()
-			return fmt.Errorf("gpu transition fallback: %w", err)
+		if dve.IsDVETransition(transType) {
+			// DVE transition: composite both sources with animated transforms.
+			dveFunc := dve.DVETransitionForType(transType)
+			if dveFunc == nil {
+				// Unknown DVE type — fallback to mix.
+				if err := gpu.GPUBlendMixDispatch(ctx, dst, frameA, frameB, position); err != nil {
+					dst.Release()
+					return fmt.Errorf("gpu transition dve fallback: %w", err)
+				}
+				break
+			}
+
+			fw, fh := frameA.Width, frameA.Height
+			progXf, prevXf := dveFunc(position, fw, fh)
+
+			// Fill destination with broadcast black first.
+			if err := gpu.GPUFillBlackDispatch(ctx, dst); err != nil {
+				dst.Release()
+				return fmt.Errorf("gpu transition dve: fill black: %w", err)
+			}
+
+			// Render preview first (behind), program second (on top).
+			// This works universally: for push/squeeze the program starts
+			// fullscreen covering the preview; for reveal/door/fold the
+			// program transforms away revealing the preview underneath.
+			if frameB != nil {
+				if err := compositeDVESource(ctx, dst, frameB, prevXf, fw, fh); err != nil {
+					dst.Release()
+					return fmt.Errorf("gpu transition dve: composite preview: %w", err)
+				}
+			}
+			if err := compositeDVESource(ctx, dst, frameA, progXf, fw, fh); err != nil {
+				dst.Release()
+				return fmt.Errorf("gpu transition dve: composite program: %w", err)
+			}
+		} else {
+			// Unknown type — use mix as fallback.
+			if err := gpu.GPUBlendMixDispatch(ctx, dst, frameA, frameB, position); err != nil {
+				dst.Release()
+				return fmt.Errorf("gpu transition fallback: %w", err)
+			}
 		}
 	}
 
@@ -992,6 +1111,28 @@ func (r *gpuPipelineRunnerImpl) RunTransition(fromKey, toKey string, transType s
 	}
 	dst.Release()
 	return nil
+}
+
+// compositeDVESource dispatches a single DVE source onto the destination frame,
+// choosing between 2D DVE and 3D DVE based on the transform mode.
+func compositeDVESource(ctx *gpu.Context, dst, src *gpu.GPUFrame, xf dve.Transform, frameW, frameH int) error {
+	if xf.Opacity <= 0 {
+		return nil // fully transparent, skip
+	}
+
+	if xf.Is3D() {
+		// 3D DVE: ray-cast geometry
+		aspect := float32(frameW) / float32(frameH)
+		invMVP := dve.Compute3DInverseMVP(xf.Transform3D, aspect)
+		alpha256 := int(xf.EffectiveOpacity() * 256)
+		slotRect := image.Rect(0, 0, frameW, frameH) // fullscreen
+		return gpu.DVE3DComposite(ctx, dst, src, xf.Transform3D, invMVP, src.Width, src.Height, slotRect, alpha256)
+	}
+
+	// 2D DVE: inverse transform
+	invMatrix := dve.ComputeInverseTransform(xf, src.Width, src.Height)
+	aabb := dve.ComputeAABB(xf, src.Width, src.Height, frameW, frameH)
+	return gpu.DVEComposite(ctx, dst, src, xf, invMatrix, src.Width, src.Height, aabb)
 }
 
 // --- State Adapters (bridge package-local types to gpu interfaces) ---

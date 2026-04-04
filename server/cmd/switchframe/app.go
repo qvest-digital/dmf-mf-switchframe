@@ -59,6 +59,7 @@ import (
 	"github.com/zsiec/switchframe/server/stmap"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
+	"github.com/zsiec/switchframe/server/transition/wipemap"
 )
 
 // errDiscoverExit is returned by initMXL when --mxl-discover completes
@@ -117,6 +118,7 @@ type App struct {
 	keyBridge        *graphics.KeyProcessorBridge
 	replayMgr        *replay.Manager
 	stingerStore     *stinger.Store
+	wipeMapStore     *wipemap.WipeMapStore
 	layoutCompositor *layout.Compositor
 	layoutStore      *layout.Store
 	fastCtrl         *fastctrl.Dispatcher
@@ -732,6 +734,15 @@ func (a *App) initSubsystems() error {
 	}
 	slog.Info("stinger store initialized", "path", stingerDir, "cacheDir", stingerCacheDir)
 
+	// Initialize wipe pattern store with builtin patterns.
+	wipeDir := a.statePath("wipe_patterns")
+	a.wipeMapStore, err = wipemap.NewWipeMapStore(wipeDir)
+	if err != nil {
+		return fmt.Errorf("create wipe map store: %w", err)
+	}
+	a.wipeMapStore.RegisterBuiltins()
+	slog.Info("wipe map store initialized", "path", wipeDir, "patterns", len(a.wipeMapStore.List()))
+
 	// Session manager for operator session tracking and subsystem locks.
 	a.sessionMgr = operator.NewSessionManager()
 
@@ -828,6 +839,11 @@ func (a *App) initSubsystems() error {
 
 	// Wire ST map registry to switcher for per-source correction.
 	a.sw.SetSTMapRegistry(a.stmapRegistry)
+
+	// Wire wipe map store to switcher for gradient-map wipe transitions.
+	if a.wipeMapStore != nil {
+		a.sw.SetWipeMapStore(a.wipeMapStore)
+	}
 
 	// Background pre-warm: generate mmap-cached LUTs for built-in animated effects.
 	if a.cfg.CacheDir != "" {
@@ -1526,6 +1542,7 @@ func (a *App) initAPI() error {
 		control.WithOperatorStore(a.operatorStore),
 		control.WithSessionManager(a.sessionMgr),
 		control.WithStingerStore(a.stingerStore),
+		control.WithWipeMapStore(a.wipeMapStore),
 		control.WithLayoutCompositor(a.layoutCompositor),
 		control.WithLayoutStore(a.layoutStore),
 		control.WithPerfSampler(a.perfSampler),

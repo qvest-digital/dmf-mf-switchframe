@@ -2,7 +2,12 @@
 
 package gpu
 
-import "fmt"
+import (
+	"fmt"
+	"image"
+
+	"github.com/zsiec/switchframe/server/dve"
+)
 
 // Upload returns ErrGPUNotAvailable on non-GPU builds.
 func Upload(ctx *Context, frame *GPUFrame, yuv []byte, width, height int) error {
@@ -329,5 +334,42 @@ func FillRectP210(ctx *Context, frame *GPUFrame, rect Rect, colorY, colorCb, col
 
 // DrawBorderP210 returns ErrGPUNotAvailable on non-GPU builds.
 func DrawBorderP210(ctx *Context, frame *GPUFrame, rect Rect, colorY, colorCb, colorCr uint16, thickness int) error {
+	return ErrGPUNotAvailable
+}
+
+// WipeMapBlendConfig holds parameters for a gradient-map-driven wipe blend.
+type WipeMapBlendConfig struct {
+	Position      float64
+	SoftEdge      float64
+	BorderWidth   float64
+	BorderColorY  byte
+	BorderColorCb byte
+	BorderColorCr byte
+	Reverse       bool
+	Multiply      int
+}
+
+// BlendWipeMap returns ErrGPUNotAvailable on non-GPU builds.
+func BlendWipeMap(ctx *Context, dst, srcA, srcB, gradMap *GPUFrame, cfg WipeMapBlendConfig) error {
+	return ErrGPUNotAvailable
+}
+
+// DVEComposite returns ErrGPUNotAvailable on non-GPU builds.
+func DVEComposite(ctx *Context, dst, src *GPUFrame, transform dve.Transform,
+	invMatrix dve.Matrix3x3, srcW, srcH int, aabb image.Rectangle) error {
+	return ErrGPUNotAvailable
+}
+
+// DVE3DComposite returns ErrGPUNotAvailable on non-GPU builds.
+func DVE3DComposite(ctx *Context, dst, src *GPUFrame, t3d *dve.Transform3D,
+	invMVP dve.Matrix4x4, srcW, srcH int, slotRect image.Rectangle, alpha256 int) error {
+	return ErrGPUNotAvailable
+}
+
+// DVEDefocusBlur returns ErrGPUNotAvailable on non-GPU builds.
+func DVEDefocusBlur(ctx *Context, frame *GPUFrame, defocusRadius float64) error {
+	if defocusRadius <= 0 {
+		return nil
+	}
 	return ErrGPUNotAvailable
 }

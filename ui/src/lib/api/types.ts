@@ -236,6 +236,8 @@ export interface GraphicsState {
 export interface LayoutState {
 	activePreset: string;
 	slots: LayoutSlotState[];
+	dvePresets?: DVEPresetInfo[];
+	dveAnimating?: boolean;
 }
 
 export interface LayoutSlotState {
@@ -250,6 +252,83 @@ export interface LayoutSlotState {
 	animating?: boolean;
 	scaleMode?: string;
 	cropAnchor?: [number, number];
+	dve?: DVESlotState;
+}
+
+export interface DVESlotState {
+	positionX: number;
+	positionY: number;
+	width: number;
+	height: number;
+	rotationDeg?: number;
+	anchorX?: number;
+	anchorY?: number;
+	perspectiveX?: number;
+	perspectiveY?: number;
+	cropTop?: number;
+	cropBottom?: number;
+	cropLeft?: number;
+	cropRight?: number;
+	cropSoftness?: number;
+	opacity?: number;
+	border?: DVEBorderState;
+	shadow?: DVEShadowState;
+	defocusRadius?: number;
+	mirrorH?: boolean;
+	mirrorV?: boolean;
+	mosaicSize?: number;
+	saturation?: number;
+	brightness?: number;
+	contrast?: number;
+	freeze?: boolean;
+	strobeFrames?: number;
+	mode3d?: string;
+	rotateX?: number;
+	rotateY?: number;
+	rotateZ?: number;
+	transform3d?: DVETransform3D;
+}
+
+export interface DVETransform3D {
+	rotateX?: number;
+	rotateY?: number;
+	rotateZ?: number;
+	fov?: number;
+	distance?: number;
+	shape?: string;
+	lightEnabled?: boolean;
+	lightX?: number;
+	lightY?: number;
+	ambient?: number;
+	specular?: number;
+	reflectionEnabled?: boolean;
+	reflectionOpacity?: number;
+	reflectionFade?: number;
+}
+
+export interface DVEBorderState {
+	width: number;
+	colorY: number;
+	colorCb: number;
+	colorCr: number;
+	cornerRadius?: number;
+	softness?: number;
+	innerWidth?: number;
+}
+
+export interface DVEShadowState {
+	enabled: boolean;
+	offsetX?: number;
+	offsetY?: number;
+	blur?: number;
+	opacity?: number;
+	colorY?: number;
+}
+
+export interface DVEPresetInfo {
+	id: string;
+	name: string;
+	builtin?: boolean;
 }
 
 export interface LayoutSlotConfig {
@@ -943,7 +1022,7 @@ export interface PlaylistItem {
 	out_point_ms?: number;
 	hold?: boolean;
 	loop?: boolean;
-	transition?: { type: string; duration_ms?: number };
+	transition?: { type: string; duration_ms?: number; wipe_config?: WipeConfig };
 	scheduled_time?: string;
 	secondary_events?: SecondaryEvent[];
 }
@@ -1075,6 +1154,29 @@ export interface AsRunEvent {
 
 	// Error/cache fields.
 	message?: string;
+}
+
+// ── Wipe Pattern Types ──
+
+export interface WipePattern {
+	id: string;
+	name: string;
+	category: string;
+	description?: string;
+	builtin?: boolean;
+}
+
+export interface WipeConfig {
+	pattern: string;
+	soft_edge: number;
+	border_width: number;
+	border_color_y: number;
+	border_color_cb: number;
+	border_color_cr: number;
+	reverse: boolean;
+	offset_x: number;
+	offset_y: number;
+	multiply: number;
 }
 
 // ── Health Types ──

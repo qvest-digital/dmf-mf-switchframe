@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/zsiec/prism/distribution"
+	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/scte35"
@@ -257,7 +258,7 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 		if l := a.layoutCompositor.GetLayout(); l != nil {
 			ls := &internal.LayoutState{ActivePreset: l.Name}
 			for i, slot := range l.Slots {
-				ls.Slots = append(ls.Slots, internal.LayoutSlotState{
+				slotState := internal.LayoutSlotState{
 					ID:         i,
 					SourceKey:  slot.SourceKey,
 					Enabled:    slot.Enabled,
@@ -269,8 +270,19 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 					Animating:  a.layoutCompositor.SlotAnimating(i),
 					ScaleMode:  slot.ScaleMode,
 					CropAnchor: slot.CropAnchor,
-				})
+				}
+				ls.Slots = append(ls.Slots, slotState)
 			}
+
+			// Enrich with DVE transform data when a DVE layout is active.
+			if dl := a.layoutCompositor.GetDVELayout(); dl != nil {
+				for i, dveSlot := range dl.Slots {
+					if i < len(ls.Slots) {
+						ls.Slots[i].DVE = dveSlotStateFromTransform(dveSlot.Transform)
+					}
+				}
+			}
+
 			state.Layout = ls
 		}
 	}
@@ -718,4 +730,65 @@ var upidTypeNames = map[uint8]string{
 	0x0F: "URI",
 	0x10: "UUID",
 	0x11: "SCR",
+}
+
+// dveSlotStateFromTransform converts a DVE Transform to a DVESlotState for broadcast.
+func dveSlotStateFromTransform(t dve.Transform) *internal.DVESlotState {
+	state := &internal.DVESlotState{
+		PositionX:     t.PositionX,
+		PositionY:     t.PositionY,
+		Width:         t.Width,
+		Height:        t.Height,
+		RotationDeg:   t.RotationDeg,
+		AnchorX:       t.AnchorX,
+		AnchorY:       t.AnchorY,
+		PerspectiveX:  t.PerspectiveX,
+		PerspectiveY:  t.PerspectiveY,
+		CropTop:       t.CropTop,
+		CropBottom:    t.CropBottom,
+		CropLeft:      t.CropLeft,
+		CropRight:     t.CropRight,
+		CropSoftness:  t.CropSoftness,
+		Opacity:       t.Opacity,
+		DefocusRadius: t.DefocusRadius,
+		MirrorH:       t.MirrorH,
+		MirrorV:       t.MirrorV,
+		MosaicSize:    t.MosaicSize,
+		Saturation:    t.Saturation,
+		Brightness:    t.Brightness,
+		Contrast:      t.Contrast,
+	}
+
+	if t.Border.Width > 0 || t.Border.CornerRadius > 0 {
+		state.Border = &internal.DVEBorderState{
+			Width:        t.Border.Width,
+			ColorY:       t.Border.ColorY,
+			ColorCb:      t.Border.ColorCb,
+			ColorCr:      t.Border.ColorCr,
+			CornerRadius: t.Border.CornerRadius,
+			Softness:     t.Border.Softness,
+			InnerWidth:   t.Border.InnerWidth,
+		}
+	}
+
+	if t.Shadow.Enabled {
+		state.Shadow = &internal.DVEShadowState{
+			Enabled: true,
+			OffsetX: t.Shadow.OffsetX,
+			OffsetY: t.Shadow.OffsetY,
+			Blur:    t.Shadow.Blur,
+			Opacity: t.Shadow.Opacity,
+			ColorY:  t.Shadow.ColorY,
+		}
+	}
+
+	// 3D DVE parameters.
+	if t.Is3D() {
+		state.Mode3D = t.Mode3D
+		state.RotateX = t.Transform3D.RotateX
+		state.RotateY = t.Transform3D.RotateY
+		state.RotateZ = t.Transform3D.RotateZ
+	}
+
+	return state
 }

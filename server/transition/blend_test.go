@@ -636,3 +636,167 @@ func TestNewFrameBlender_EvenDimensions(t *testing.T) {
 	require.Equal(t, 1920, fb.width)
 	require.Equal(t, 1080, fb.height)
 }
+
+// --- NAM (Non-Additive Mix) tests ---
+
+func TestBlendNAM_Position0_AllA(t *testing.T) {
+	t.Parallel()
+	fb := mustNewFrameBlender(t, 4, 4)
+	a := makeYUVFrame(4, 4, 200, 90, 240)
+	b := makeYUVFrame(4, 4, 50, 200, 60)
+
+	out := fb.BlendNAM(a, b, 0.0)
+	ySize := 4 * 4
+	uvSize := 2 * 2
+	for i := 0; i < ySize; i++ {
+		require.Equal(t, byte(200), out[i], "Y at pixel %d", i)
+	}
+	for i := 0; i < uvSize; i++ {
+		require.Equal(t, byte(90), out[ySize+i], "Cb at pixel %d", i)
+		require.Equal(t, byte(240), out[ySize+uvSize+i], "Cr at pixel %d", i)
+	}
+}
+
+func TestBlendNAM_Position1_AllB(t *testing.T) {
+	t.Parallel()
+	fb := mustNewFrameBlender(t, 4, 4)
+	a := makeYUVFrame(4, 4, 200, 90, 240)
+	b := makeYUVFrame(4, 4, 50, 200, 60)
+
+	out := fb.BlendNAM(a, b, 1.0)
+	ySize := 4 * 4
+	uvSize := 2 * 2
+	for i := 0; i < ySize; i++ {
+		require.Equal(t, byte(50), out[i], "Y at pixel %d", i)
+	}
+	for i := 0; i < uvSize; i++ {
+		require.Equal(t, byte(200), out[ySize+i], "Cb at pixel %d", i)
+		require.Equal(t, byte(60), out[ySize+uvSize+i], "Cr at pixel %d", i)
+	}
+}
+
+func TestBlendNAM_Position05_PerPixelMax(t *testing.T) {
+	t.Parallel()
+	fb := mustNewFrameBlender(t, 4, 4)
+	ySize := 4 * 4
+	uvSize := 2 * 2
+
+	a := make([]byte, ySize+2*uvSize)
+	b := make([]byte, ySize+2*uvSize)
+
+	// Set A brighter in first half of Y plane, B brighter in second half
+	for i := 0; i < 8; i++ {
+		a[i] = 200
+		b[i] = 100
+	}
+	for i := 8; i < 16; i++ {
+		a[i] = 100
+		b[i] = 200
+	}
+	// Fill chroma with 128
+	for i := ySize; i < len(a); i++ {
+		a[i] = 128
+		b[i] = 128
+	}
+
+	result := fb.BlendNAM(a, b, 0.5)
+	// At pos 0.5, equal gains: output = max(A*0.5, B*0.5) for each pixel
+	// But since gain_a and gain_b are both 0.5, whichever Y is brighter wins.
+	// For pixel 0: A=200, B=100 => A*0.5=100 > B*0.5=50 => output should be A's Y=200 scaled
+	// Actually the standard NAM: output = max(A * gain_a, B * gain_b) where
+	// gain_a = 1-position, gain_b = position. At 0.5 both gains=0.5.
+	// Per-pixel: max(200*0.5, 100*0.5) = max(100, 50) = 100
+	// But the winning pixel's luma is output at its gain-scaled value.
+	// Actually the spec says: for each pixel, compare gained values, output the larger.
+	// pixel 0: max(200*0.5, 100*0.5) = 100
+	if result[0] != 100 {
+		t.Errorf("pixel 0: got %d, want 100", result[0])
+	}
+	// pixel 8: max(100*0.5, 200*0.5) = 100
+	if result[8] != 100 {
+		t.Errorf("pixel 8: got %d, want 100", result[8])
+	}
+}
+
+func TestBlendNAM_ChromaFollowsLumaWinner(t *testing.T) {
+	t.Parallel()
+	fb := mustNewFrameBlender(t, 4, 4)
+	ySize := 4 * 4
+	uvSize := 2 * 2
+
+	// Make A uniformly brighter than B
+	a := make([]byte, ySize+2*uvSize)
+	b := make([]byte, ySize+2*uvSize)
+	for i := 0; i < ySize; i++ {
+		a[i] = 200
+		b[i] = 50
+	}
+	// A chroma: Cb=80, Cr=90
+	for i := 0; i < uvSize; i++ {
+		a[ySize+i] = 80
+		a[ySize+uvSize+i] = 90
+	}
+	// B chroma: Cb=200, Cr=210
+	for i := 0; i < uvSize; i++ {
+		b[ySize+i] = 200
+		b[ySize+uvSize+i] = 210
+	}
+
+	result := fb.BlendNAM(a, b, 0.5)
+	// A always wins (200*0.5=100 > 50*0.5=25)
+	// Chroma should follow A's contribution at gain_a scale
+	for i := 0; i < uvSize; i++ {
+		// A's chroma at gain 0.5: 80*0.5 = 40
+		require.InDelta(t, 40, int(result[ySize+i]), 1, "Cb at chroma pixel %d", i)
+		require.InDelta(t, 45, int(result[ySize+uvSize+i]), 1, "Cr at chroma pixel %d", i)
+	}
+}
+
+func TestBlendNAM_MixedPixels(t *testing.T) {
+	t.Parallel()
+	// Use a frame where different 2x2 blocks have different brightness winners
+	fb := mustNewFrameBlender(t, 4, 4)
+	ySize := 4 * 4
+
+	a := make([]byte, ySize+2*(2*2))
+	b := make([]byte, ySize+2*(2*2))
+
+	// Top-left 2x2 block: A brighter (Y=250)
+	a[0], a[1], a[4], a[5] = 250, 250, 250, 250
+	b[0], b[1], b[4], b[5] = 30, 30, 30, 30
+
+	// Top-right 2x2 block: B brighter (Y=240)
+	a[2], a[3], a[6], a[7] = 30, 30, 30, 30
+	b[2], b[3], b[6], b[7] = 240, 240, 240, 240
+
+	// Bottom blocks: fill with equal
+	for i := 8; i < 16; i++ {
+		a[i] = 128
+		b[i] = 128
+	}
+
+	// Fill chroma
+	for i := ySize; i < len(a); i++ {
+		a[i] = 128
+		b[i] = 128
+	}
+
+	result := fb.BlendNAM(a, b, 0.5)
+	// Top-left: A wins (250*0.5=125 > 30*0.5=15), output=125
+	require.InDelta(t, 125, int(result[0]), 1, "top-left pixel")
+	// Top-right: B wins (240*0.5=120 > 30*0.5=15), output=120
+	require.InDelta(t, 120, int(result[2]), 1, "top-right pixel")
+}
+
+func TestBlendNAM_ReusesBuffer(t *testing.T) {
+	t.Parallel()
+	fb := mustNewFrameBlender(t, 4, 4)
+	a := makeYUVFrame(4, 4, 100, 128, 128)
+	b := makeYUVFrame(4, 4, 200, 128, 128)
+
+	out1 := fb.BlendNAM(a, b, 0.5)
+	ptr1 := &out1[0]
+	out2 := fb.BlendNAM(a, b, 0.7)
+	ptr2 := &out2[0]
+	require.Equal(t, ptr1, ptr2, "NAM should reuse output buffer")
+}

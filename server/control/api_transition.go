@@ -5,8 +5,10 @@ import (
 	"net/http"
 
 	"github.com/zsiec/switchframe/server/control/httperr"
+	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
+	"github.com/zsiec/switchframe/server/transition/wipemap"
 )
 
 // transitionRequest is the JSON body for transition commands.
@@ -15,6 +17,7 @@ type transitionRequest struct {
 	Type          string                   `json:"type"`
 	DurationMs    int                      `json:"durationMs"`
 	WipeDirection string                   `json:"wipeDirection,omitempty"`
+	WipeConfig    *wipemap.WipeConfig      `json:"wipeConfig,omitempty"`
 	StingerName   string                   `json:"stingerName,omitempty"`
 	Easing        *transition.EasingConfig `json:"easing,omitempty"`
 }
@@ -34,15 +37,36 @@ func (a *API) handleTransition(w http.ResponseWriter, r *http.Request) {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if req.Type != "mix" && req.Type != "dip" && req.Type != "wipe" && req.Type != "stinger" {
-		httperr.Write(w, http.StatusBadRequest, "type must be 'mix', 'dip', 'wipe', or 'stinger'")
+	validTypes := map[string]bool{
+		"mix": true, "dip": true, "wipe": true, "stinger": true,
+	}
+	// Accept all DVE transitions (dve-* prefix) dynamically.
+	if !validTypes[req.Type] && !dve.IsDVETransition(req.Type) {
+		httperr.Write(w, http.StatusBadRequest, "invalid transition type")
 		return
 	}
 	if req.Type == "wipe" {
-		wd := transition.WipeDirection(req.WipeDirection)
-		if !transition.ValidWipeDirections[wd] {
-			httperr.Write(w, http.StatusBadRequest, "wipeDirection must be one of: h-left, h-right, v-top, v-bottom, box-center-out, box-edges-in")
-			return
+		if req.WipeConfig != nil {
+			// Gradient-map wipe: validate pattern ID exists in the wipe store.
+			if a.wipeStore == nil {
+				httperr.Write(w, http.StatusNotImplemented, "wipe pattern store not configured")
+				return
+			}
+			if req.WipeConfig.PatternID == "" {
+				httperr.Write(w, http.StatusBadRequest, "wipeConfig.pattern is required")
+				return
+			}
+			if _, err := a.wipeStore.GetPattern(req.WipeConfig.PatternID); err != nil {
+				httperr.Write(w, http.StatusBadRequest, "unknown wipe pattern: "+req.WipeConfig.PatternID)
+				return
+			}
+		} else {
+			// Legacy directional wipe.
+			wd := transition.WipeDirection(req.WipeDirection)
+			if !transition.ValidWipeDirections[wd] {
+				httperr.Write(w, http.StatusBadRequest, "wipeDirection must be one of: h-left, h-right, v-top, v-bottom, box-center-out, box-edges-in")
+				return
+			}
 		}
 	}
 	if req.Type == "stinger" {
@@ -89,6 +113,9 @@ func (a *API) handleTransition(w http.ResponseWriter, r *http.Request) {
 		}
 		sd := clipToStingerData(clip)
 		opts = append(opts, switcher.WithStingerData(sd))
+	}
+	if req.WipeConfig != nil {
+		opts = append(opts, switcher.WithWipeConfig(req.WipeConfig))
 	}
 
 	if err := a.switcher.StartTransition(r.Context(), req.Source, req.Type, req.DurationMs, req.WipeDirection, opts...); err != nil {
