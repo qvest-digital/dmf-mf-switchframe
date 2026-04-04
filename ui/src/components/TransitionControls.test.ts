@@ -139,7 +139,7 @@ describe('TransitionControls', () => {
 			autoBtn.click();
 			await tick();
 
-			expect(startTransition).toHaveBeenCalledWith('cam2', 'mix', 1000, undefined, undefined, undefined);
+			expect(startTransition).toHaveBeenCalledWith('cam2', 'mix', 1000, undefined, undefined, undefined, undefined);
 		});
 
 		it('should show server-driven position for manual scrubber', () => {
