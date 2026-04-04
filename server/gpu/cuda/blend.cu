@@ -583,13 +583,12 @@ struct WipeMapBlendP210Params {
 };
 
 // Y plane gradient map wipe for P210.
-// Gradient map is stored as uint16 in the Y plane of a P210 frame (original
-// 8-bit values promoted to 10-bit via <<2 during upload). We right-shift by 2
-// to recover [0, 255] range for threshold math.
+// Gradient map is uploaded as NV12 (8-bit Y plane) regardless of pool format.
+// We read it as uint8 with byte pitch — no format conversion needed.
 __global__ void wipe_map_blend_y_p210_kernel(
     const uint16_t* __restrict__ srcA,
     const uint16_t* __restrict__ srcB,
-    const uint16_t* __restrict__ gradMap,
+    const uint8_t* __restrict__ gradMap,
     uint16_t* __restrict__ dst,
     WipeMapBlendP210Params p)
 {
@@ -598,12 +597,11 @@ __global__ void wipe_map_blend_y_p210_kernel(
     if (x >= p.width || y >= p.height) return;
 
     int pitch16 = p.pitch / 2;
-    int gradPitch16 = p.gradPitch / 2;
     int idx = y * pitch16 + x;
-    int gradIdx = y * gradPitch16 + x;
+    int gradIdx = y * p.gradPitch + x;
 
-    // Read 10-bit gradient and recover 8-bit range for threshold math
-    int grad = (int)(gradMap[gradIdx] >> 2);
+    // Read 8-bit gradient directly (NV12 upload keeps it as uint8)
+    int grad = (int)gradMap[gradIdx];
     if (p.reverse) grad = 255 - grad;
     if (p.multiply > 1) grad = (grad * p.multiply) % 256;
 
@@ -628,10 +626,11 @@ __global__ void wipe_map_blend_y_p210_kernel(
 // UV plane gradient map wipe for P210 (interleaved uint16 CbCr).
 // P210 4:2:2: UV has full height, half width. Each chroma sample corresponds
 // to 2 horizontal luma pixels. We average the 2 horizontal gradient values.
+// Gradient map is NV12 uint8 with byte pitch.
 __global__ void wipe_map_blend_uv_p210_kernel(
     const uint16_t* __restrict__ srcAUV,
     const uint16_t* __restrict__ srcBUV,
-    const uint16_t* __restrict__ gradMap,
+    const uint8_t* __restrict__ gradMap,
     uint16_t* __restrict__ dstUV,
     WipeMapBlendP210Params p)
 {
@@ -642,13 +641,12 @@ __global__ void wipe_map_blend_uv_p210_kernel(
     if (cx >= chromaW || cy >= chromaH) return;
 
     int pitch16 = p.pitch / 2;
-    int gradPitch16 = p.gradPitch / 2;
     int uvIdx = cy * pitch16 + cx * 2;
 
-    // Sample gradient at luma resolution (2 horizontal pixels) and average
+    // Sample 8-bit gradient at luma resolution (2 horizontal pixels) and average
     int lumaX = cx * 2;
-    int g0 = (int)(gradMap[cy * gradPitch16 + lumaX] >> 2);
-    int g1 = (int)(gradMap[cy * gradPitch16 + min(lumaX + 1, p.width - 1)] >> 2);
+    int g0 = (int)gradMap[cy * p.gradPitch + lumaX];
+    int g1 = (int)gradMap[cy * p.gradPitch + min(lumaX + 1, p.width - 1)];
     int grad = (g0 + g1 + 1) >> 1;
 
     if (p.reverse) grad = 255 - grad;
@@ -695,7 +693,7 @@ cudaError_t wipe_map_blend_p210(
     dim3 gridY((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
     wipe_map_blend_y_p210_kernel<<<gridY, block, 0, stream>>>(
         (const uint16_t*)srcA, (const uint16_t*)srcB,
-        (const uint16_t*)gradMap, (uint16_t*)dst, p);
+        gradMap, (uint16_t*)dst, p);
 
     // UV plane (full height for 4:2:2)
     int chromaW = width / 2;
@@ -705,7 +703,7 @@ cudaError_t wipe_map_blend_p210(
     const uint16_t* srcBUV = (const uint16_t*)(srcB + pitch * height);
     uint16_t* dstUV = (uint16_t*)(dst + pitch * height);
     wipe_map_blend_uv_p210_kernel<<<gridUV, block, 0, stream>>>(
-        srcAUV, srcBUV, (const uint16_t*)gradMap, dstUV, p);
+        srcAUV, srcBUV, gradMap, dstUV, p);
 
     return cudaGetLastError();
 }

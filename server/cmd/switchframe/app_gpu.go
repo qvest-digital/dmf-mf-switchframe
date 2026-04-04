@@ -754,11 +754,11 @@ func (r *gpuPipelineRunnerImpl) SetWipeMap(gradient []byte, config *wipemap.Wipe
 		fakeYUV[i] = 128
 	}
 
-	if frame.Format == gpu.GPUFormatP210 {
-		err = gpu.UploadYUV420PToP210(r.ctx, frame, fakeYUV, width, height)
-	} else {
-		err = gpu.Upload(r.ctx, frame, fakeYUV, width, height)
-	}
+	// Always upload gradient as NV12 regardless of pool format.
+	// The gradient map is conceptually 8-bit grayscale — the P210 wipe map
+	// kernel reads it as uint8 with byte pitch. Using NV12 upload avoids
+	// the unsupported UploadYUV420PToP210 path on CUDA.
+	err = gpu.Upload(r.ctx, frame, fakeYUV, width, height)
 	if err != nil {
 		frame.Release()
 		return fmt.Errorf("gpu: SetWipeMap: upload: %w", err)
