@@ -75,8 +75,8 @@ func TestPodBoard_HighestPriorityArmed(t *testing.T) {
 
 	p1, _ := pb.CreatePod(PodConfig{Type: "quarter", DurationMs: 180000, Priority: PriorityNormal})
 	p2, _ := pb.CreatePod(PodConfig{Type: "mandatory_sponsor", DurationMs: 120000, Priority: PriorityMandatory})
-	pb.Arm(p1.ID)
-	pb.Arm(p2.ID)
+	_ = pb.Arm(p1.ID)
+	_ = pb.Arm(p2.ID)
 
 	highest := pb.HighestPriorityArmed()
 	if highest == nil {
@@ -89,7 +89,7 @@ func TestPodBoard_HighestPriorityArmed(t *testing.T) {
 
 func TestPodBoard_HighestPriorityArmed_NoneArmed(t *testing.T) {
 	pb := NewPodBoard(1)
-	pb.CreatePod(PodConfig{Type: "quarter", DurationMs: 180000, Priority: PriorityNormal})
+	_, _ = pb.CreatePod(PodConfig{Type: "quarter", DurationMs: 180000, Priority: PriorityNormal})
 
 	highest := pb.HighestPriorityArmed()
 	if highest != nil {
@@ -112,10 +112,10 @@ func TestPodBoard_FullScenario_ShortBreakThenHoldBreak(t *testing.T) {
 
 	// Create short break pod.
 	shortPod, _ := pb.CreateFromTemplate("short_break")
-	pb.Arm(shortPod.ID)
+	_ = pb.Arm(shortPod.ID)
 
 	// Fire short break.
-	pb.Fire(shortPod.ID)
+	_ = pb.Fire(shortPod.ID)
 	waitFor(t, time.Second, func() bool {
 		p, _ := pb.GetPod(shortPod.ID)
 		return p.State == PodBreakActive
@@ -129,8 +129,8 @@ func TestPodBoard_FullScenario_ShortBreakThenHoldBreak(t *testing.T) {
 
 	// Now fire a hold break pod.
 	holdPod, _ := pb.CreateFromTemplate("hold_break")
-	pb.Arm(holdPod.ID)
-	pb.Fire(holdPod.ID)
+	_ = pb.Arm(holdPod.ID)
+	_ = pb.Fire(holdPod.ID)
 
 	waitFor(t, time.Second, func() bool {
 		p, _ := pb.GetPod(holdPod.ID)
@@ -145,7 +145,7 @@ func TestPodBoard_FullScenario_ShortBreakThenHoldBreak(t *testing.T) {
 	}
 
 	// Dump out of hold break.
-	pb.DumpOut(holdPod.ID)
+	_ = pb.DumpOut(holdPod.ID)
 	waitFor(t, time.Second, func() bool {
 		p, _ := pb.GetPod(holdPod.ID)
 		return p.State == PodDumpedOut

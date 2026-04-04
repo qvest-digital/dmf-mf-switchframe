@@ -952,16 +952,16 @@ func TestManager_AliveReflectsProcessState(t *testing.T) {
 
 	require.True(t, mgr.Alive(), "should be alive after start")
 
-	mgr.Close()
+	_ = mgr.Close()
 	require.False(t, mgr.Alive(), "should not be alive after close")
 }
 
 func TestManager_DetectsFrameSocketDrop(t *testing.T) {
 	mgr, mock, _ := setupManagerWithMock(t)
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 	require.True(t, mgr.Alive())
 
-	mock.frameConn.Close()
+	_ = mock.frameConn.Close()
 
 	require.Eventually(t, func() bool {
 		return !mgr.Alive()
@@ -971,10 +971,10 @@ func TestManager_DetectsFrameSocketDrop(t *testing.T) {
 
 func TestManager_DetectsControlSocketDrop(t *testing.T) {
 	mgr, mock, _ := setupManagerWithMock(t)
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 	require.True(t, mgr.Alive())
 
-	mock.controlConn.Close()
+	_ = mock.controlConn.Close()
 
 	require.Eventually(t, func() bool {
 		return !mgr.Alive()
@@ -984,7 +984,7 @@ func TestManager_DetectsControlSocketDrop(t *testing.T) {
 
 func TestManager_ResetsBrowserPoolOnRestart(t *testing.T) {
 	mgr, mock, _ := setupManagerWithMock(t)
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	browserID, err := mgr.AllocateBrowser(1)
 	require.NoError(t, err)
@@ -1004,7 +1004,7 @@ func TestManager_ResetsBrowserPoolOnRestart(t *testing.T) {
 
 func TestManager_RestartCountIncrementsOnSocketDrop(t *testing.T) {
 	mgr, mock, _ := setupManagerWithMock(t)
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 	defer mock.close()
 
 	require.True(t, mgr.Alive())
@@ -1025,11 +1025,11 @@ func TestManager_RestartCountIncrementsOnSocketDrop(t *testing.T) {
 
 func TestManager_ConcurrentSocketDropsDoNotRace(t *testing.T) {
 	mgr, mock, _ := setupManagerWithMock(t)
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	// Close both sockets simultaneously.
-	mock.frameConn.Close()
-	mock.controlConn.Close()
+	_ = mock.frameConn.Close()
+	_ = mock.controlConn.Close()
 
 	// Should not panic or deadlock.
 	time.Sleep(500 * time.Millisecond)
@@ -1038,7 +1038,7 @@ func TestManager_ConcurrentSocketDropsDoNotRace(t *testing.T) {
 
 func TestManager_StaleReadLoopDoesNotTriggerRestart(t *testing.T) {
 	mgr, mock, _ := setupManagerWithMock(t)
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	require.True(t, mgr.Alive())
 
@@ -1063,7 +1063,7 @@ func TestManager_RestartCountAccessor(t *testing.T) {
 	comp := &mockCompositor{}
 	cfg := DefaultConfig()
 	mgr := NewManager(comp, cfg)
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	require.Equal(t, int64(0), mgr.RestartCount())
 	mgr.restartCount.Add(1)
@@ -1072,7 +1072,7 @@ func TestManager_RestartCountAccessor(t *testing.T) {
 
 func TestManager_CleansUpOldSocketDirOnRestart(t *testing.T) {
 	mgr, mock, _ := setupManagerWithMock(t)
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	// setupManagerWithMock uses connectSockets (not spawn), so socketDir is
 	// not set. Create a temp dir and inject it to simulate a real sidecar dir.
@@ -1102,7 +1102,7 @@ func TestManager_CleansUpOldSocketDirOnRestart(t *testing.T) {
 func TestManager_NotifiesStateChangeOnPoolReset(t *testing.T) {
 	mgr, mock, _ := setupManagerWithMock(t)
 	defer mock.close()
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	var called atomic.Int32
 	mgr.OnStateChange(func() {
@@ -1120,7 +1120,7 @@ func TestManager_NotifiesStateChangeOnPoolReset(t *testing.T) {
 
 func TestManager_FullCrashRestartCycle(t *testing.T) {
 	mgr, mock, _ := setupManagerWithMock(t)
-	defer mgr.Close()
+	defer func() { _ = mgr.Close() }()
 
 	// Step 1: Allocate and verify.
 	browserID, err := mgr.AllocateBrowser(1)

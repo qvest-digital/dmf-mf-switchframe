@@ -477,9 +477,9 @@ func TestLoadSequenceZIPLargeFrameSmallCrop(t *testing.T) {
 		img.SetNRGBA(100, 100, color.NRGBA{R: 255, G: uint8(i), A: 255})
 		name := fmt.Sprintf("frame_%04d.png", i+1)
 		w, _ := zw.Create(name)
-		png.Encode(w, img)
+		_ = png.Encode(w, img)
 	}
-	zw.Close()
+	_ = zw.Close()
 
 	seq, err := LoadSequenceZIP(buf.Bytes())
 	if err != nil {
@@ -511,17 +511,17 @@ func TestLoadSequenceZIPMacOSResourceForks(t *testing.T) {
 	img := image.NewNRGBA(image.Rect(0, 0, 4, 4))
 	img.SetNRGBA(1, 1, color.NRGBA{R: 255, A: 255})
 	w, _ := zw.Create("frame_0001.png")
-	png.Encode(w, img)
+	_ = png.Encode(w, img)
 
 	// macOS resource fork (would fail PNG decode)
 	w2, _ := zw.Create("__MACOSX/._frame_0001.png")
-	w2.Write([]byte("not a valid png"))
+	_, _ = w2.Write([]byte("not a valid png"))
 
 	// Another resource fork pattern
 	w3, _ := zw.Create("__MACOSX/in/._frame_0001.png")
-	w3.Write([]byte("also not valid"))
+	_, _ = w3.Write([]byte("also not valid"))
 
-	zw.Close()
+	_ = zw.Close()
 
 	seq, err := LoadSequenceZIP(buf.Bytes())
 	if err != nil {

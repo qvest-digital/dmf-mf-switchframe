@@ -219,7 +219,7 @@ func TestBroadcastWithCaptions_ModeOff_SEIBeforeVCL(t *testing.T) {
 	}
 
 	// Order: SPS < PPS < SEI < IDR.
-	if !(spsIdx < ppsIdx && ppsIdx < seiIdx && seiIdx < idrIdx) {
+	if spsIdx >= ppsIdx || ppsIdx >= seiIdx || seiIdx >= idrIdx {
 		t.Errorf("wrong NALU order: SPS=%d PPS=%d SEI=%d IDR=%d (want SPS<PPS<SEI<IDR)",
 			spsIdx, ppsIdx, seiIdx, idrIdx)
 	}

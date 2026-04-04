@@ -27,7 +27,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic("create temp dir: " + err.Error())
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// Standard SDK sidecar (sidecar connects to host).
 	binPath := filepath.Join(tmpDir, "testsidecar")
@@ -66,7 +66,7 @@ func TestHostSpawnAndReady(t *testing.T) {
 	if err := h.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer h.Close()
+	defer func() { _ = h.Close() }()
 
 	if !h.Alive() {
 		t.Error("expected Alive() == true after Start")
@@ -87,7 +87,7 @@ func TestHostSpawnBinaryNotFound(t *testing.T) {
 
 	err := h.Start(ctx)
 	if err == nil {
-		h.Close()
+		_ = h.Close()
 		t.Fatal("expected error for nonexistent binary")
 	}
 }
@@ -121,7 +121,7 @@ func TestHostSendAndReceive(t *testing.T) {
 	if err := h.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer h.Close()
+	defer func() { _ = h.Close() }()
 
 	// Send an echo command.
 	err := h.Send(&Message{Cmd: "echo", Data: "hello"})
@@ -221,7 +221,7 @@ func TestHostRestartOnCrash(t *testing.T) {
 	if err := h.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer h.Close()
+	defer func() { _ = h.Close() }()
 
 	gen1 := h.Generation()
 	if gen1 != 1 {
@@ -291,7 +291,7 @@ func TestHostRestartBackoff(t *testing.T) {
 	if err := h.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer h.Close()
+	defer func() { _ = h.Close() }()
 
 	// First crash.
 	crashTime1 := time.Now()
@@ -368,7 +368,7 @@ func TestHostRestartBackoffEscalation(t *testing.T) {
 	if err := h.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer h.Close()
+	defer func() { _ = h.Close() }()
 
 	// Crash three times and track generation progression.
 	var gens []int64
@@ -417,7 +417,7 @@ func TestHostGenerationPreventsStaleRestart(t *testing.T) {
 	if err := h.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer h.Close()
+	defer func() { _ = h.Close() }()
 
 	// Generation starts at 1.
 	if g := h.Generation(); g != 1 {
@@ -516,7 +516,7 @@ func TestHostOnStatusCalledOnLifecycleEvents(t *testing.T) {
 		t.Errorf("expected >= 3 status callbacks, got %d", count)
 	}
 
-	h.Close()
+	_ = h.Close()
 }
 
 func TestHostCleanupRemovesSocketDir(t *testing.T) {
@@ -544,7 +544,7 @@ func TestHostCleanupRemovesSocketDir(t *testing.T) {
 		t.Fatalf("socket dir should exist: %v", err)
 	}
 
-	h.Close()
+	_ = h.Close()
 
 	// Verify the dir was cleaned up.
 	if _, err := os.Stat(socketDir); !os.IsNotExist(err) {
@@ -582,7 +582,7 @@ func TestHostConcurrentSend(t *testing.T) {
 	if err := h.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer h.Close()
+	defer func() { _ = h.Close() }()
 
 	// Send 20 messages concurrently from 4 goroutines.
 	var wg sync.WaitGroup
@@ -646,7 +646,7 @@ func TestHostCustomConnectAndBuildArgs(t *testing.T) {
 	if err := h.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer h.Close()
+	defer func() { _ = h.Close() }()
 
 	if !h.Alive() {
 		t.Fatal("expected Alive after Start with custom Connect")
@@ -671,7 +671,7 @@ func TestHostCustomConnectAndBuildArgs(t *testing.T) {
 
 	// Read response (also newline-delimited JSON).
 	scanner := bufio.NewScanner(conn)
-	conn.(*net.UnixConn).SetReadDeadline(time.Now().Add(5 * time.Second))
+	_ = conn.(*net.UnixConn).SetReadDeadline(time.Now().Add(5 * time.Second))
 	if !scanner.Scan() {
 		t.Fatalf("no response: %v", scanner.Err())
 	}
@@ -723,7 +723,7 @@ func TestHostCustomConnectRestartOnCrash(t *testing.T) {
 	if err := h.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer h.Close()
+	defer func() { _ = h.Close() }()
 
 	gen1 := h.Generation()
 

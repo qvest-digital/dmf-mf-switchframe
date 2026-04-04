@@ -22,7 +22,7 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "failed to create temp dir: %v\n", err)
 		os.Exit(1)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	binPath := filepath.Join(tmpDir, "echo-sidecar")
 	cmd := exec.Command("go", "build", "-o", binPath, "./testdata/echo-sidecar")

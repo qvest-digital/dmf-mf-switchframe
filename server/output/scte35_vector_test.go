@@ -377,7 +377,7 @@ func checkTimeSignalProgramStart(t *testing.T, raw []byte) {
 	require.NoError(t, err)
 	_, ok := pkt.Cmd.(asscte.TimeSignal)
 	require.True(t, ok, "expected TimeSignal, got %T", pkt.Cmd)
-	asDesc := findAsScteSegDesc(t, pkt.Trailer.Desc)
+	asDesc := findAsScteSegDesc(t, pkt.Desc)
 	require.Equal(t, byte(0x10), asDesc.SegType)
 	require.Equal(t, []byte("SHOW001"), asDesc.UPID)
 }
@@ -404,7 +404,7 @@ func checkTimeSignalProgramEnd(t *testing.T, raw []byte) {
 	require.NoError(t, err)
 	_, ok := pkt.Cmd.(asscte.TimeSignal)
 	require.True(t, ok, "expected TimeSignal, got %T", pkt.Cmd)
-	asDesc := findAsScteSegDesc(t, pkt.Trailer.Desc)
+	asDesc := findAsScteSegDesc(t, pkt.Desc)
 	require.Equal(t, byte(0x11), asDesc.SegType)
 }
 
@@ -434,7 +434,7 @@ func checkTimeSignalBreakStart(t *testing.T, raw []byte) {
 	// as/scte decoder.
 	pkt, err := asscte.Parse(raw)
 	require.NoError(t, err)
-	asDesc := findAsScteSegDesc(t, pkt.Trailer.Desc)
+	asDesc := findAsScteSegDesc(t, pkt.Desc)
 	require.Equal(t, byte(0x22), asDesc.SegType)
 	require.True(t, asDesc.HasDuration)
 	require.Equal(t, int(expectedTicks), asDesc.Duration)
@@ -467,7 +467,7 @@ func checkTimeSignalProviderAd(t *testing.T, raw []byte) {
 	// as/scte decoder.
 	pkt, err := asscte.Parse(raw)
 	require.NoError(t, err)
-	asDesc := findAsScteSegDesc(t, pkt.Trailer.Desc)
+	asDesc := findAsScteSegDesc(t, pkt.Desc)
 	require.Equal(t, byte(0x30), asDesc.SegType)
 	require.Equal(t, []byte("AD00001"), asDesc.UPID)
 	require.Equal(t, 1, asDesc.SegNum)
@@ -516,7 +516,7 @@ func checkTimeSignalMultiDescriptor(t *testing.T, raw []byte) {
 	// as/scte decoder.
 	pkt, err := asscte.Parse(raw)
 	require.NoError(t, err)
-	asDescs := findAllAsScteSegDescs(t, pkt.Trailer.Desc)
+	asDescs := findAllAsScteSegDescs(t, pkt.Desc)
 	require.GreaterOrEqual(t, len(asDescs), 2, "expected at least 2 segment descriptors from as/scte")
 	var asFoundBreak, asFoundAd bool
 	for _, ad := range asDescs {
@@ -572,7 +572,7 @@ func checkSpliceInsertWithTier(t *testing.T, raw []byte) {
 	// as/scte decoder.
 	pkt, err := asscte.Parse(raw)
 	require.NoError(t, err)
-	require.Equal(t, 500, pkt.Header.Tier)
+	require.Equal(t, 500, pkt.Tier)
 }
 
 // ---------------------------------------------------------------------------

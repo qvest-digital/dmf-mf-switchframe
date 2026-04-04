@@ -109,7 +109,7 @@ func BenchmarkScaleBilinear10_Go_1080pTo720p(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		ScaleYUV422P10(src, srcW, srcH, dst, dstW, dstH)
+		_ = ScaleYUV422P10(src, srcW, srcH, dst, dstW, dstH)
 	}
 }
 
@@ -126,7 +126,7 @@ func BenchmarkScaleBilinear10_ASM_1080pTo720p(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		scaleBilinear10Dispatch(src, srcW, srcH, dst, dstW, dstH)
+		_ = scaleBilinear10Dispatch(src, srcW, srcH, dst, dstW, dstH)
 	}
 }
 
@@ -185,7 +185,7 @@ func BenchmarkScaleLanczos10_Go_1080pTo720p(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		ScaleYUV422P10Lanczos(src, srcW, srcH, dst, dstW, dstH)
+		_ = ScaleYUV422P10Lanczos(src, srcW, srcH, dst, dstW, dstH)
 	}
 }
 
@@ -202,7 +202,7 @@ func BenchmarkScaleLanczos10_ASM_1080pTo720p(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		scaleLanczos10Dispatch(src, srcW, srcH, dst, dstW, dstH)
+		_ = scaleLanczos10Dispatch(src, srcW, srcH, dst, dstW, dstH)
 	}
 }
 

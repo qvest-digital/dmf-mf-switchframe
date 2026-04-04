@@ -19,21 +19,21 @@ func TestWorkerSendRecv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	// Connect worker.
 	w, err := NewWorker(sock)
 	if err != nil {
 		t.Fatalf("NewWorker: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	// Accept on host side.
 	hostConn, err := ln.Accept()
 	if err != nil {
 		t.Fatalf("accept: %v", err)
 	}
-	defer hostConn.Close()
+	defer func() { _ = hostConn.Close() }()
 
 	// Worker sends a message to the host.
 	sent := &Message{Type: "status", Data: "ok"}
@@ -80,19 +80,19 @@ func TestWorkerRunShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	w, err := NewWorker(sock)
 	if err != nil {
 		t.Fatalf("NewWorker: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	hostConn, err := ln.Accept()
 	if err != nil {
 		t.Fatalf("accept: %v", err)
 	}
-	defer hostConn.Close()
+	defer func() { _ = hostConn.Close() }()
 
 	// Start Run in a goroutine.
 	runErr := make(chan error, 1)
@@ -125,19 +125,19 @@ func TestWorkerRunContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	w, err := NewWorker(sock)
 	if err != nil {
 		t.Fatalf("NewWorker: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	hostConn, err := ln.Accept()
 	if err != nil {
 		t.Fatalf("accept: %v", err)
 	}
-	defer hostConn.Close()
+	defer func() { _ = hostConn.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -169,19 +169,19 @@ func TestWorkerRunHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	w, err := NewWorker(sock)
 	if err != nil {
 		t.Fatalf("NewWorker: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	hostConn, err := ln.Accept()
 	if err != nil {
 		t.Fatalf("accept: %v", err)
 	}
-	defer hostConn.Close()
+	defer func() { _ = hostConn.Close() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -231,13 +231,13 @@ func TestWorkerReady(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	w, err := NewWorker(sock)
 	if err != nil {
 		t.Fatalf("NewWorker: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	// Capture stdout.
 	oldStdout := os.Stdout
@@ -250,12 +250,12 @@ func TestWorkerReady(t *testing.T) {
 	w.Ready()
 
 	// Restore stdout and read what was written.
-	wPipe.Close()
+	_ = wPipe.Close()
 	os.Stdout = oldStdout
 
 	var buf bytes.Buffer
-	buf.ReadFrom(r)
-	r.Close()
+	_, _ = buf.ReadFrom(r)
+	_ = r.Close()
 
 	if buf.String() != "READY\n" {
 		t.Errorf("Ready() printed %q, want %q", buf.String(), "READY\n")
@@ -270,13 +270,13 @@ func TestWorkerConn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	w, err := NewWorker(sock)
 	if err != nil {
 		t.Fatalf("NewWorker: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	if w.Conn() == nil {
 		t.Error("Conn() returned nil, want non-nil")

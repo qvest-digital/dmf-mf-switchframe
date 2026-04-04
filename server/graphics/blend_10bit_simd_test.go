@@ -186,7 +186,7 @@ func BenchmarkAlphaBlendRGBA10_Go_1080p(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		AlphaBlendRGBA10(yuv, rgba, w, h)
+		_ = AlphaBlendRGBA10(yuv, rgba, w, h)
 	}
 }
 
@@ -202,6 +202,6 @@ func BenchmarkAlphaBlendRGBA10_SIMD_1080p(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		alphaBlendRGBA10Dispatch(yuv, rgba, w, h)
+		_ = alphaBlendRGBA10Dispatch(yuv, rgba, w, h)
 	}
 }

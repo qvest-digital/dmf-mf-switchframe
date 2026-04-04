@@ -771,12 +771,12 @@ func TestChannel_FeedsSpliceCoordinator(t *testing.T) {
 	})
 
 	pl := testPlaylist(clipItem("test"))
-	ch.LoadPlaylist(pl)
-	ch.Start()
+	_ = ch.LoadPlaylist(pl)
+	_ = ch.Start()
 
 	// Start a splice to verify frames are fed.
 	time.Sleep(50 * time.Millisecond)
-	sc.BeginSplice("pod-1", true, true, 180000, 0)
+	_ = sc.BeginSplice("pod-1", true, true, 180000, 0)
 
 	// Wait for channel to finish playing.
 	waitFor(t, 3*time.Second, func() bool {
@@ -1545,11 +1545,14 @@ func TestChannel_LiveTap_GPUAlias(t *testing.T) {
 	})
 
 	// Track video output calls — should be called with nil YUV as pipeline signal.
-	var nilYUVCalls atomic.Int32
+	// We track non-nil calls separately to avoid a race between snapshotting two
+	// counters (nilYUVCalls could exceed videoOutputCalls if a callback fires
+	// between the two Load() calls).
+	var nonNilYUVCalls atomic.Int32
 	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {
 		videoOutputCalls.Add(1)
-		if len(yuv) == 0 {
-			nilYUVCalls.Add(1)
+		if len(yuv) != 0 {
+			nonNilYUVCalls.Add(1)
 		}
 	})
 
@@ -1574,9 +1577,8 @@ func TestChannel_LiveTap_GPUAlias(t *testing.T) {
 	if outputs < 3 {
 		t.Errorf("video output calls = %d, want >= 3 (signal frames for pipeline)", outputs)
 	}
-	nilCalls := nilYUVCalls.Load()
-	if nilCalls != outputs {
-		t.Errorf("nil YUV calls = %d, total calls = %d — all should be nil (GPU alias)", nilCalls, outputs)
+	if n := nonNilYUVCalls.Load(); n != 0 {
+		t.Errorf("non-nil YUV calls = %d, want 0 — all should be nil (GPU alias)", n)
 	}
 
 	// Advance past to complete.
@@ -1926,7 +1928,7 @@ func TestChannel_FRC_AudioNotDuplicated(t *testing.T) {
 
 	pl := testPlaylist(clipItem("a"))
 	require.NoError(t, ch.LoadPlaylist(pl))
-	ch.Start()
+	_ = ch.Start()
 
 	// Wait for clip to finish (~2s of content at 30fps output = ~60 ticks).
 	waitFor(t, 4*time.Second, func() bool {
@@ -2006,7 +2008,7 @@ func TestChannel_FRC_HoldModeStripsAudio(t *testing.T) {
 	holdItem.Hold = true
 	pl := testPlaylist(holdItem)
 	require.NoError(t, ch.LoadPlaylist(pl))
-	ch.Start()
+	_ = ch.Start()
 
 	// Wait for well past clip end — should get ~10 frames of content + many held frames.
 	waitFor(t, 3*time.Second, func() bool {
@@ -2074,7 +2076,7 @@ func TestChannel_FRC_LoopRewindStripsAudio(t *testing.T) {
 	loopItem.Loop = true
 	pl := testPlaylist(loopItem)
 	require.NoError(t, ch.LoadPlaylist(pl))
-	ch.Start()
+	_ = ch.Start()
 
 	// Wait for at least 2 full loops (20+ unique audio tags if no loss).
 	waitFor(t, 3*time.Second, func() bool {
@@ -2142,7 +2144,7 @@ func TestChannel_FRC_60to30(t *testing.T) {
 
 	pl := testPlaylist(clipItem("a"))
 	require.NoError(t, ch.LoadPlaylist(pl))
-	ch.Start()
+	_ = ch.Start()
 
 	// Wait for all 120 audio tags to be delivered. At 60fps source on 30fps
 	// pipeline, each tick consumes 2 source frames, so ~60 ticks = 2 seconds.
@@ -2229,7 +2231,7 @@ func TestChannel_FRC_FrameMutationSafety(t *testing.T) {
 
 	pl := testPlaylist(clipItem("a"))
 	require.NoError(t, ch.LoadPlaylist(pl))
-	ch.Start()
+	_ = ch.Start()
 
 	waitFor(t, 3*time.Second, func() bool {
 		mu.Lock()

@@ -107,6 +107,6 @@ func BenchmarkWarp10_ASM_1080p(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		p.Warp10(dst, src, w, h)
+		_ = p.Warp10(dst, src, w, h)
 	}
 }

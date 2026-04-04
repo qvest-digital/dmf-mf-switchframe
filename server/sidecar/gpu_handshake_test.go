@@ -160,7 +160,7 @@ func TestWriteReadGPUPoolHandshake(t *testing.T) {
 func TestReadGPUPoolHandshakeWrongCmd(t *testing.T) {
 	var buf bytes.Buffer
 	// Write a non-handshake message.
-	WriteMessage(&buf, &Message{Cmd: "shutdown"})
+	_ = WriteMessage(&buf, &Message{Cmd: "shutdown"})
 
 	_, err := ReadGPUPoolHandshake(&buf)
 	if err == nil {

@@ -146,7 +146,7 @@ func TestPodBoard_StateChangeCallback(t *testing.T) {
 	var called atomic.Int32
 	pb.SetOnStateChange(func() { called.Add(1) })
 
-	pb.CreatePod(PodConfig{Type: "quarter", DurationMs: 180000})
+	_, _ = pb.CreatePod(PodConfig{Type: "quarter", DurationMs: 180000})
 	if called.Load() < 1 {
 		t.Error("onStateChange should be called on create")
 	}
@@ -288,9 +288,9 @@ func TestPodBoard_PromoteDemote(t *testing.T) {
 
 func TestPodBoard_Status(t *testing.T) {
 	pb := NewPodBoard(1)
-	pb.CreatePod(PodConfig{Type: "quarter", DurationMs: 180000})
+	_, _ = pb.CreatePod(PodConfig{Type: "quarter", DurationMs: 180000})
 	pod2, _ := pb.CreatePod(PodConfig{Type: "timeout", DurationMs: 60000})
-	pb.Arm(pod2.ID)
+	_ = pb.Arm(pod2.ID)
 
 	status := pb.Status()
 	if len(status.Pods) != 2 {
@@ -321,7 +321,7 @@ func TestPodBoard_Fire(t *testing.T) {
 		AllowDumpOut: true,
 		Priority:     PriorityNormal,
 	})
-	pb.Arm(pod.ID)
+	_ = pb.Arm(pod.ID)
 
 	if err := pb.Fire(pod.ID); err != nil {
 		t.Fatalf("Fire: %v", err)
@@ -387,11 +387,11 @@ func TestPodBoard_FireAlreadyActive(t *testing.T) {
 	pb.SetSCTE35Injector(inj)
 
 	p1, _ := pb.CreatePod(PodConfig{Type: "injury", DurationMs: 0, HoldUntilManualReturn: true})
-	pb.Arm(p1.ID)
-	pb.Fire(p1.ID)
+	_ = pb.Arm(p1.ID)
+	_ = pb.Fire(p1.ID)
 
 	p2, _ := pb.CreatePod(PodConfig{Type: "quarter", DurationMs: 180000})
-	pb.Arm(p2.ID)
+	_ = pb.Arm(p2.ID)
 
 	err := pb.Fire(p2.ID)
 	if err != ErrPodAlreadyActive {
@@ -423,8 +423,8 @@ func TestPodBoard_DumpOut(t *testing.T) {
 		AutoReturn:   true,
 		AllowDumpOut: true,
 	})
-	pb.Arm(pod.ID)
-	pb.Fire(pod.ID)
+	_ = pb.Arm(pod.ID)
+	_ = pb.Fire(pod.ID)
 
 	time.Sleep(20 * time.Millisecond)
 
@@ -450,8 +450,8 @@ func TestPodBoard_DumpOutDisallowed(t *testing.T) {
 		AllowDumpOut: false,
 		Priority:     PriorityMandatory,
 	})
-	pb.Arm(pod.ID)
-	pb.Fire(pod.ID)
+	_ = pb.Arm(pod.ID)
+	_ = pb.Fire(pod.ID)
 
 	time.Sleep(20 * time.Millisecond)
 
@@ -489,8 +489,8 @@ func TestPodBoard_Hold(t *testing.T) {
 		AutoReturn:   true,
 		AllowDumpOut: true,
 	})
-	pb.Arm(pod.ID)
-	pb.Fire(pod.ID)
+	_ = pb.Arm(pod.ID)
+	_ = pb.Fire(pod.ID)
 
 	// Hold before auto-return fires.
 	if err := pb.Hold(pod.ID); err != nil {
@@ -505,7 +505,7 @@ func TestPodBoard_Hold(t *testing.T) {
 	}
 
 	// Manual dump to clean up.
-	pb.DumpOut(pod.ID)
+	_ = pb.DumpOut(pod.ID)
 	waitFor(t, time.Second, func() bool {
 		p, _ := pb.GetPod(pod.ID)
 		return p.State.IsTerminal()
@@ -523,8 +523,8 @@ func TestPodBoard_Extend(t *testing.T) {
 		AutoReturn:   true,
 		AllowDumpOut: true,
 	})
-	pb.Arm(pod.ID)
-	pb.Fire(pod.ID)
+	_ = pb.Arm(pod.ID)
+	_ = pb.Fire(pod.ID)
 
 	// Extend by 5 seconds.
 	if err := pb.Extend(pod.ID, 5000); err != nil {
@@ -544,7 +544,7 @@ func TestPodBoard_Extend(t *testing.T) {
 	}
 
 	// Dump to clean up.
-	pb.DumpOut(pod.ID)
+	_ = pb.DumpOut(pod.ID)
 	waitFor(t, time.Second, func() bool {
 		p, _ := pb.GetPod(pod.ID)
 		return p.State.IsTerminal()
@@ -569,8 +569,8 @@ func TestPodBoard_ChannelModeBreakIntegration(t *testing.T) {
 	pb.SetOnBreakStart(func() { ch.TakeBreak() })
 	pb.SetOnBreakEnd(func() { ch.ReturnFromBreak() })
 
-	ch.LoadPlaylist(testPlaylist(clipItem("a"), clipItem("b")))
-	ch.Start()
+	_ = ch.LoadPlaylist(testPlaylist(clipItem("a"), clipItem("b")))
+	_ = ch.Start()
 	defer ch.Stop()
 
 	// Wait for on-air.
@@ -583,8 +583,8 @@ func TestPodBoard_ChannelModeBreakIntegration(t *testing.T) {
 		AutoReturn:   true,
 		AllowDumpOut: true,
 	})
-	pb.Arm(pod.ID)
-	pb.Fire(pod.ID)
+	_ = pb.Arm(pod.ID)
+	_ = pb.Fire(pod.ID)
 
 	// Channel should be in ModeBreak.
 	waitFor(t, time.Second, func() bool { return ch.Mode() == ModeBreak })
@@ -605,8 +605,8 @@ func TestPodBoard_InjuryPodNoAutoReturn(t *testing.T) {
 		AllowDumpOut:          true,
 		HoldUntilManualReturn: true,
 	})
-	pb.Arm(pod.ID)
-	pb.Fire(pod.ID)
+	_ = pb.Arm(pod.ID)
+	_ = pb.Fire(pod.ID)
 
 	// Should stay in break_active (no auto-return timer).
 	time.Sleep(50 * time.Millisecond)
@@ -654,8 +654,8 @@ func TestPodBoard_Fire_UsesSpliceCoordinator(t *testing.T) {
 		AutoReturn:   true,
 		AllowDumpOut: true,
 	})
-	pb.Arm(pod.ID)
-	pb.Fire(pod.ID)
+	_ = pb.Arm(pod.ID)
+	_ = pb.Fire(pod.ID)
 
 	// With splice coordinator, cue should NOT be injected immediately.
 	if !sc.Active() {
@@ -706,8 +706,8 @@ func TestPodBoard_Fire_FallbackWithoutCoordinator(t *testing.T) {
 		DurationMs: 180000,
 		AutoReturn: true,
 	})
-	pb.Arm(pod.ID)
-	pb.Fire(pod.ID)
+	_ = pb.Arm(pod.ID)
+	_ = pb.Fire(pod.ID)
 
 	// Should inject immediately.
 	calls := inj.getCalls()
@@ -759,8 +759,8 @@ func TestPodBoard_SpliceReady_TransitionsToBreakActive(t *testing.T) {
 		DurationMs: 500,
 		AutoReturn: true,
 	})
-	pb.Arm(pod.ID)
-	pb.Fire(pod.ID)
+	_ = pb.Arm(pod.ID)
+	_ = pb.Fire(pod.ID)
 
 	// Pod is in PreRoll. Feed frames through window to trigger finalization.
 	w, h := 320, 240
@@ -783,7 +783,7 @@ func TestPodBoard_SpliceReady_TransitionsToBreakActive(t *testing.T) {
 	}
 
 	// Cleanup: dump out.
-	pb.DumpOut(pod.ID)
+	_ = pb.DumpOut(pod.ID)
 	waitFor(t, time.Second, func() bool {
 		pp, _ := pb.GetPod(pod.ID)
 		return pp.State.IsTerminal()
@@ -812,8 +812,8 @@ func TestPodBoard_DumpOut_CancelsSplice(t *testing.T) {
 		AutoReturn:   true,
 		AllowDumpOut: true,
 	})
-	pb.Arm(pod.ID)
-	pb.Fire(pod.ID)
+	_ = pb.Arm(pod.ID)
+	_ = pb.Fire(pod.ID)
 
 	// Pod should be in PodPreRoll with splice active.
 	if !sc.Active() {
@@ -844,7 +844,7 @@ func TestManager_ChannelStatesIncludePods(t *testing.T) {
 
 	pb, _ := mgr.PodBoard(1)
 	pod, _ := pb.CreatePod(PodConfig{Type: "quarter", DurationMs: 180000})
-	pb.Arm(pod.ID)
+	_ = pb.Arm(pod.ID)
 
 	states := mgr.ChannelStates()
 	if states[0].Pods == nil {

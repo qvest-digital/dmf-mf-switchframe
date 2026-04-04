@@ -480,7 +480,7 @@ func TestExistingPathStillWorks(t *testing.T) {
 	// Preview should work.
 	cam2Relay := distribution.NewRelay()
 	s.RegisterSource("cam2", cam2Relay)
-	s.SetPreview(context.Background(), "cam2")
+	_ = s.SetPreview(context.Background(), "cam2")
 	state = s.State()
 	require.Equal(t, "cam2", state.PreviewSource)
 
@@ -1144,7 +1144,7 @@ func TestSyncLoopTransitionDissolve(t *testing.T) {
 	s.mu.Unlock()
 
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
-	s.SetPreview(context.Background(), "cam2")
+	_ = s.SetPreview(context.Background(), "cam2")
 
 	viewer := newMockProgramViewer("dissolve-viewer")
 	s.programRelay.AddViewer(viewer)
@@ -1225,7 +1225,7 @@ func TestSyncLoopTransitionComplete(t *testing.T) {
 	s.mu.Unlock()
 
 	require.NoError(t, s.Cut(context.Background(), "cam1"))
-	s.SetPreview(context.Background(), "cam2")
+	_ = s.SetPreview(context.Background(), "cam2")
 
 	pool := s.framePool
 	yuvSize := 320 * 240 * 3 / 2

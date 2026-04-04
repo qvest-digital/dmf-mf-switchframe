@@ -39,7 +39,8 @@ func TestHEVC10bitEncoder_AllCandidateProfiles(t *testing.T) {
 		// a limited number of concurrent sessions, so failure may also occur
 		// due to session exhaustion.
 		{"hevc_nvenc", true},
-		{"hevc_vaapi", false},
+		// VA-API requires a hardware GPU; avcodec_open2 fails in CI (no GPU).
+		{"hevc_vaapi", true},
 		// VideoToolbox doesn't support YUV422P10LE; avcodec_open2 failure is expected.
 		{"hevc_videotoolbox", true},
 	}

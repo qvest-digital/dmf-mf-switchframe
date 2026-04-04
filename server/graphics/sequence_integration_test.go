@@ -450,7 +450,7 @@ func TestSequenceSnapshotVisibleLayers(t *testing.T) {
 	require.Equal(t, seqPhaseOut, phase, "should still be in out phase with 1 frame remaining")
 
 	// Second out frame snapshot: advances past the last out frame, layer deactivates.
-	snaps = c.SnapshotVisibleLayers()
+	_ = c.SnapshotVisibleLayers()
 	// The layer is deactivated during the write-lock advance, so the
 	// read-lock snapshot may or may not include it. Either way, verify
 	// the underlying state is done.

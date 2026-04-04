@@ -1,22 +1,9 @@
 package gpu
 
-import "github.com/zsiec/switchframe/server/internal/video"
-
 // GPU dispatch functions route to NV12 or P210 kernel variants based on the
 // GPUFrame's Format field. All callers in the pipeline nodes should use these
 // dispatch functions instead of calling NV12-only operations directly, so the
 // pipeline transparently handles both 8-bit and 10-bit frames.
-
-// cpuFrameSize returns the CPU-side planar buffer size for the given format.
-// NV12 → YUV420p (w*h*3/2). P210 → YUV422P10LE (w*h*4).
-func cpuFrameSize(w, h int, format GPUFrameFormat) int {
-	switch format {
-	case GPUFormatP210:
-		return video.YUV422_10bitFrameSize(w, h)
-	default:
-		return video.YUV420FrameSize(w, h)
-	}
-}
 
 // GPUFillBlackDispatch fills a frame with black, routing to the correct format.
 func GPUFillBlackDispatch(ctx *Context, frame *GPUFrame) error {
