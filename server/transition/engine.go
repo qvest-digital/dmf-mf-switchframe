@@ -1264,6 +1264,11 @@ func (e *Engine) StartSync(from, to string, ttype Type, durationMs int) {
 		}
 	}
 
+	// Pre-resolve gradient map for wipe-map transitions at known dimensions.
+	e.wipeConfig = e.config.WipeConfig
+	e.wipeGradient = nil
+	e.resolveWipeGradient()
+
 	// Pre-scale stinger frames eagerly.
 	e.stingerScaled = nil
 	if ttype == Stinger && e.config.Stinger != nil && len(e.config.Stinger.Frames) > 0 && e.width > 0 {
