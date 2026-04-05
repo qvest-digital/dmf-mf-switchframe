@@ -172,6 +172,7 @@
 	<!-- Zone 3: Transition editor (collapsible) -->
 	<TransitionEditor
 		currentLayout={layoutState ?? null}
+		{presets}
 		onRecallPreset={handleTransitionRecall}
 	/>
 </div>

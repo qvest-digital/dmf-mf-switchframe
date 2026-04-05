@@ -1,15 +1,16 @@
 <script lang="ts">
-	import type { LayoutState } from '$lib/api/types';
+	import type { LayoutState, DVEPresetInfo } from '$lib/api/types';
 	import InspectorSection from './InspectorSection.svelte';
 	import EasingCurveEditor from './EasingCurveEditor.svelte';
 	import { ICON_PLUS, ICON_CLOSE, ICON_PLAY, renderIcon } from '$lib/icons';
 
 	interface Props {
 		currentLayout: LayoutState | null;
+		presets: DVEPresetInfo[];
 		onRecallPreset: (id: string, durationMs: number, easing: string) => void;
 	}
 
-	let { currentLayout, onRecallPreset }: Props = $props();
+	let { currentLayout, presets, onRecallPreset }: Props = $props();
 
 	// Ephemeral state bank (session-level, not persisted)
 	interface StoredState {
@@ -30,11 +31,34 @@
 	let storeNameInput = $state('');
 	let isNaming = $state(false);
 
-	let sourceState = $derived(states.find((s) => s.id === sourceStateId) ?? null);
-	let targetState = $derived(states.find((s) => s.id === targetStateId) ?? null);
+	// Combined options: built-in/user presets + manually stored states
+	interface TransitionOption {
+		id: string;
+		label: string;
+		presetId: string; // the ID to pass to recallDVEPreset
+		isCustom: boolean;
+	}
 
-	let isCustomTarget = $derived(targetState?.presetName.startsWith('custom-') ?? false);
-	let canApply = $derived(targetState !== null && !isCustomTarget);
+	let allOptions = $derived<TransitionOption[]>([
+		...presets.map((p) => ({
+			id: `preset:${p.id}`,
+			label: p.name,
+			presetId: p.id,
+			isCustom: false,
+		})),
+		...states.map((s) => ({
+			id: `state:${s.id}`,
+			label: s.name,
+			presetId: s.presetName,
+			isCustom: s.presetName.startsWith('custom-'),
+		})),
+	]);
+
+	let sourceOption = $derived(allOptions.find((o) => o.id === sourceStateId) ?? null);
+	let targetOption = $derived(allOptions.find((o) => o.id === targetStateId) ?? null);
+
+	let isCustomTarget = $derived(targetOption?.isCustom ?? false);
+	let canApply = $derived(targetOption !== null && !isCustomTarget);
 	let easingString = $derived(`cubic-bezier(0,0,${easeX.toFixed(3)},${easeY.toFixed(3)})`);
 
 	function storeCurrent() {
@@ -81,8 +105,8 @@
 	}
 
 	function applyTransition() {
-		if (!targetState || isCustomTarget) return;
-		onRecallPreset(targetState.presetName, durationMs, easingString);
+		if (!targetOption || isCustomTarget) return;
+		onRecallPreset(targetOption.presetId, durationMs, easingString);
 	}
 
 	function handleEasingChange(x: number, y: number) {
@@ -177,9 +201,20 @@
 					title="Source state (from)"
 				>
 					<option value={null}>-- Source --</option>
-					{#each states as st (st.id)}
-						<option value={st.id}>{st.name}</option>
-					{/each}
+					{#if presets.length > 0}
+						<optgroup label="Presets">
+							{#each presets as p (p.id)}
+								<option value={`preset:${p.id}`}>{p.name}</option>
+							{/each}
+						</optgroup>
+					{/if}
+					{#if states.length > 0}
+						<optgroup label="Stored States">
+							{#each states as st (st.id)}
+								<option value={`state:${st.id}`}>{st.name}</option>
+							{/each}
+						</optgroup>
+					{/if}
 				</select>
 				<span class="arrow-sep">&rarr;</span>
 				<select
@@ -188,9 +223,20 @@
 					title="Target state (to)"
 				>
 					<option value={null}>-- Target --</option>
-					{#each states as st (st.id)}
-						<option value={st.id}>{st.name}{st.presetName.startsWith('custom-') ? ' *' : ''}</option>
-					{/each}
+					{#if presets.length > 0}
+						<optgroup label="Presets">
+							{#each presets as p (p.id)}
+								<option value={`preset:${p.id}`}>{p.name}</option>
+							{/each}
+						</optgroup>
+					{/if}
+					{#if states.length > 0}
+						<optgroup label="Stored States">
+							{#each states as st (st.id)}
+								<option value={`state:${st.id}`}>{st.name}{st.presetName.startsWith('custom-') ? ' *' : ''}</option>
+							{/each}
+						</optgroup>
+					{/if}
 				</select>
 			</div>
 		</div>
