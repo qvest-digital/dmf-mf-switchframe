@@ -14,8 +14,11 @@
 		onCaptionElReady?: (el: HTMLDivElement) => void;
 		fastControl?: FastControl | null;
 		onGraphicsLayerSelect?: (id: number) => void;
+		isDualEngine?: boolean;
+		activeEngine?: 'A' | 'B';
+		onEngineToggle?: (engine: 'A' | 'B') => void;
 	}
-	let { state: crState, showLayoutOverlay = false, showGraphicsOverlay = false, onCanvasReady, onCaptionElReady, fastControl = null, onGraphicsLayerSelect }: Props = $props();
+	let { state: crState, showLayoutOverlay = false, showGraphicsOverlay = false, onCanvasReady, onCaptionElReady, fastControl = null, onGraphicsLayerSelect, isDualEngine = false, activeEngine = 'A', onEngineToggle }: Props = $props();
 
 	let previewCanvas: HTMLCanvasElement;
 	let programCanvas: HTMLCanvasElement;
@@ -120,7 +123,23 @@
 		</div>
 	</div>
 	<div class="monitor program-monitor">
-		<div class="monitor-label program-label">PROGRAM</div>
+		<div class="monitor-label program-label">
+			PROGRAM
+			{#if isDualEngine}
+				<div class="engine-toggle">
+					<button
+						class="engine-btn"
+						class:active={activeEngine === 'A'}
+						onclick={() => onEngineToggle?.('A')}
+					>A</button>
+					<button
+						class="engine-btn"
+						class:active={activeEngine === 'B'}
+						onclick={() => onEngineToggle?.('B')}
+					>B</button>
+				</div>
+			{/if}
+		</div>
 		{#if breakEvent}
 			<div class="break-status" class:break-held={isHeld}>
 				<span class="break-icon">{isHeld ? '||' : breakEvent.autoReturn ? 'AR' : 'BR'}</span>
@@ -320,6 +339,43 @@
 		color: #fff;
 		min-width: 2.5em;
 		text-align: right;
+	}
+
+	/* A/B Engine Toggle */
+	.monitor-label {
+		display: inline-flex;
+		align-items: center;
+	}
+
+	.engine-toggle {
+		display: inline-flex;
+		gap: 1px;
+		background: var(--bg-recessed);
+		border-radius: var(--radius-sm);
+		padding: 1px;
+		margin-left: 8px;
+	}
+
+	.engine-btn {
+		padding: 1px 6px;
+		border: none;
+		border-radius: var(--radius-xs, 2px);
+		background: transparent;
+		color: var(--text-dim);
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		font-weight: 600;
+		cursor: pointer;
+		line-height: 1.2;
+	}
+
+	.engine-btn:hover {
+		color: var(--text-primary);
+	}
+
+	.engine-btn.active {
+		background: var(--bg-elevated);
+		color: var(--text-primary);
 	}
 
 </style>
