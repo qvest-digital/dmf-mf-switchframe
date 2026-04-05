@@ -12,13 +12,14 @@ import (
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/clip"
+	"github.com/zsiec/switchframe/server/cmdqueue"
 	"github.com/zsiec/switchframe/server/colorgrade"
 	"github.com/zsiec/switchframe/server/control/httperr"
 	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/htmlgfx"
 	"github.com/zsiec/switchframe/server/internal"
-"github.com/zsiec/switchframe/server/macro"
+	"github.com/zsiec/switchframe/server/macro"
 	"github.com/zsiec/switchframe/server/operator"
 	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/playout"
@@ -396,6 +397,11 @@ func WithASRManager(m ASRManager) APIOption {
 	return func(a *API) { a.asrManager = m }
 }
 
+// WithCommandQueue attaches a command queue for timed execution of cut/preview commands.
+func WithCommandQueue(q *cmdqueue.Queue) APIOption {
+	return func(a *API) { a.cmdQueue = q }
+}
+
 // WithSTMapRegistry attaches an ST map registry to the API.
 func WithSTMapRegistry(r *stmap.Registry) APIOption {
 	return func(a *API) { a.stmapRegistry = r }
@@ -519,6 +525,7 @@ type API struct {
 	uploadProgress     *internal.ClipUploadProgress
 	uploadStartTime    time.Time
 	asrConfigMu        sync.Mutex // serializes ASR config changes (prevents pile-up)
+	cmdQueue           *cmdqueue.Queue
 }
 
 // enrichFunc is the type for the state enrichment callback.
@@ -643,8 +650,8 @@ func (a *API) RegisterOnMux(mux *http.ServeMux) {
 // registerAPIRoutes registers all API route handlers on the given mux.
 func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	// Core routes (state, cut, preview) stay here
-	mux.HandleFunc("POST /api/switch/cut", a.handleCut)
-	mux.HandleFunc("POST /api/switch/preview", a.handlePreview)
+	mux.HandleFunc("POST /api/switch/cut", timedHandler(a.cmdQueue, "cut", a.handleCutInner))
+	mux.HandleFunc("POST /api/switch/preview", timedHandler(a.cmdQueue, "preview", a.handlePreviewInner))
 	mux.HandleFunc("GET /api/switch/state", a.handleState)
 
 	// Delegate to per-file route registration methods
@@ -690,11 +697,12 @@ func (a *API) registerDebugRoutes(mux *http.ServeMux) {
 	}
 }
 
-// handleCut performs a hard cut to the specified source.
-func (a *API) handleCut(w http.ResponseWriter, r *http.Request) {
+// handleCutInner performs a hard cut to the specified source.
+// body is the pre-read request body provided by timedHandler.
+func (a *API) handleCutInner(w http.ResponseWriter, r *http.Request, body []byte) {
 	a.setLastOperator(r)
 	var req switchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -710,11 +718,12 @@ func (a *API) handleCut(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }
 
-// handlePreview sets the preview source without affecting the program output.
-func (a *API) handlePreview(w http.ResponseWriter, r *http.Request) {
+// handlePreviewInner sets the preview source without affecting the program output.
+// body is the pre-read request body provided by timedHandler.
+func (a *API) handlePreviewInner(w http.ResponseWriter, r *http.Request, body []byte) {
 	a.setLastOperator(r)
 	var req switchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
