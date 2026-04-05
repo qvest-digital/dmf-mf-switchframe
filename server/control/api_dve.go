@@ -48,10 +48,10 @@ func (a *API) registerDVERoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/dve/slots/{id}", a.handleDVESlotUpdate)
 	mux.HandleFunc("POST /api/dve/slots/{id}/on", a.handleDVESlotOn)
 	mux.HandleFunc("POST /api/dve/slots/{id}/off", a.handleDVESlotOff)
+	mux.HandleFunc("GET /api/dve/presets", a.handleListDVEPresets)
+	mux.HandleFunc("PUT /api/dve/presets/{id}/recall", a.handleRecallDVEPreset)
 	if a.dvePresetStore != nil {
-		mux.HandleFunc("GET /api/dve/presets", a.handleListDVEPresets)
 		mux.HandleFunc("POST /api/dve/presets", a.handleSaveDVEPreset)
-		mux.HandleFunc("PUT /api/dve/presets/{id}/recall", a.handleRecallDVEPreset)
 		mux.HandleFunc("DELETE /api/dve/presets/{id}", a.handleDeleteDVEPreset)
 	}
 }
