@@ -181,9 +181,9 @@
 					<XYPad
 						x={dve?.positionX ?? slot.x}
 						y={dve?.positionY ?? slot.y}
-						xMin={-1920} xMax={3840}
-						yMin={-1080} yMax={2160}
-						size={56}
+						xMin={0} xMax={1920}
+						yMin={0} yMax={1080}
+						size={48}
 						label="X/Y"
 						onScrub={(vx, vy) => { handleScrub('positionX', vx); handleScrub('positionY', vy); }}
 						onCommit={(vx, vy) => { handleCommit('positionX', vx); handleCommit('positionY', vy); }}
@@ -199,7 +199,7 @@
 						<RotaryKnob
 							value={dve?.rotationDeg ?? 0}
 							min={-360} max={360}
-							size={40}
+							size={34}
 							onScrub={(v) => handleScrub('rotationDeg', v)}
 							onCommit={(v) => handleCommit('rotationDeg', v)}
 						/>
@@ -257,7 +257,7 @@
 						bottom={dve?.cropBottom ?? 0}
 						left={dve?.cropLeft ?? 0}
 						right={dve?.cropRight ?? 0}
-						size={100}
+						size={80}
 						onScrub={(field, v) => handleScrub(field, v)}
 						onCommit={(field, v) => handleCommit(field, v)}
 					/>
@@ -278,7 +278,7 @@
 						y={dve?.perspectiveY ?? 0}
 						xMin={-60} xMax={60}
 						yMin={-60} yMax={60}
-						size={56}
+						size={48}
 						label="Tilt"
 						onScrub={(vx, vy) => { handleScrub('perspectiveX', vx); handleScrub('perspectiveY', vy); }}
 						onCommit={(vx, vy) => { handleCommit('perspectiveX', vx); handleCommit('perspectiveY', vy); }}
@@ -300,7 +300,7 @@
 						style:--fill="{Math.round(((dve?.saturation ?? 1) / 2) * 100)}%"
 						oninput={(e) => handleSliderScrub('saturation', parseInt((e.target as HTMLInputElement).value) / 100)}
 						onchange={(e) => handleSliderCommit('saturation', parseInt((e.target as HTMLInputElement).value) / 100)} />
-					<span class="readout">{(dve?.saturation ?? 1).toFixed(1)}</span>
+					<span class="readout">{(dve?.saturation ?? 1).toFixed(2)}</span>
 				</div>
 				<div class="slider-row">
 					<span class="lbl">Brt</span>
@@ -308,7 +308,7 @@
 						style:--fill="{Math.round(((dve?.brightness ?? 0) + 1) / 2 * 100)}%"
 						oninput={(e) => handleSliderScrub('brightness', parseInt((e.target as HTMLInputElement).value) / 100)}
 						onchange={(e) => handleSliderCommit('brightness', parseInt((e.target as HTMLInputElement).value) / 100)} />
-					<span class="readout">{(dve?.brightness ?? 0).toFixed(1)}</span>
+					<span class="readout">{(dve?.brightness ?? 0).toFixed(2)}</span>
 				</div>
 				<div class="slider-row">
 					<span class="lbl">Con</span>
@@ -316,7 +316,7 @@
 						style:--fill="{Math.round(((dve?.contrast ?? 1) / 3) * 100)}%"
 						oninput={(e) => handleSliderScrub('contrast', parseInt((e.target as HTMLInputElement).value) / 100)}
 						onchange={(e) => handleSliderCommit('contrast', parseInt((e.target as HTMLInputElement).value) / 100)} />
-					<span class="readout">{(dve?.contrast ?? 1).toFixed(1)}</span>
+					<span class="readout">{(dve?.contrast ?? 1).toFixed(2)}</span>
 				</div>
 			</div>
 		</div>
@@ -351,7 +351,7 @@
 	/* ═══ Grid of cards ═══ */
 	.card-grid {
 		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+		grid-template-columns: repeat(auto-fill, minmax(155px, 1fr));
 		gap: 4px;
 	}
 
@@ -381,10 +381,10 @@
 	}
 
 	.card-body {
-		padding: 5px 7px 6px;
+		padding: 4px 6px 5px;
 		display: flex;
 		flex-direction: column;
-		gap: 4px;
+		gap: 3px;
 	}
 
 	/* ═══ Field 2-col grid ═══ */
@@ -529,10 +529,11 @@
 		font-size: 9px;
 		font-family: var(--font-mono);
 		color: var(--text-secondary, #999);
-		min-width: 24px;
+		min-width: 32px;
 		text-align: right;
 		user-select: none;
 		flex-shrink: 0;
+		white-space: nowrap;
 	}
 
 	/* ═══ Color swatch & dots ═══ */
