@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { LayoutSlotState, SourceInfo, DVESlotState } from '$lib/api/types';
+	import type { LayoutSlotState, SourceInfo } from '$lib/api/types';
 	import type { FastControl } from '$lib/transport/fast-control';
 	import {
 		DVE_PARAM_POSITION_X, DVE_PARAM_POSITION_Y, DVE_PARAM_WIDTH, DVE_PARAM_HEIGHT,
@@ -33,6 +33,8 @@
 	// Section expansion state
 	let positionExpanded = $state(true);
 	let borderExpanded = $state(false);
+	let geometryExpanded = $state(false);
+	let colorExpanded = $state(false);
 	let effectsExpanded = $state(false);
 	let cropExpanded = $state(false);
 	let shadowExpanded = $state(false);
@@ -136,6 +138,201 @@
 		const current = slot.cropAnchor ?? [0.5, 0.5];
 		return current[0] === anchor[0] && current[1] === anchor[1];
 	}
+
+	// ── YCbCr → RGB hex for border color swatch ──
+	function ycbcrToRgbHex(y: number, cb: number, cr: number): string {
+		const yf = (y - 16) * 255 / 219;
+		const cbf = (cb - 128) * 255 / 224;
+		const crf = (cr - 128) * 255 / 224;
+		const r = Math.round(Math.max(0, Math.min(255, yf + 1.5748 * crf)));
+		const g = Math.round(Math.max(0, Math.min(255, yf - 0.1873 * cbf - 0.4681 * crf)));
+		const b = Math.round(Math.max(0, Math.min(255, yf + 1.8556 * cbf)));
+		return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+	}
+
+	// ── Border color presets ──
+	const borderColorPresets: { label: string; y: number; cb: number; cr: number }[] = [
+		{ label: 'W', y: 235, cb: 128, cr: 128 },
+		{ label: 'B', y: 16, cb: 128, cr: 128 },
+		{ label: 'R', y: 81, cb: 90, cr: 240 },
+		{ label: 'Bl', y: 41, cb: 240, cr: 109 },
+		{ label: 'Y', y: 210, cb: 16, cr: 146 },
+	];
+
+	function applyBorderColor(y: number, cb: number, cr: number) {
+		const cur = slot.dve;
+		if (!cur) return;
+		const xf = buildTransformUpdate('border.colorY', y);
+		const border = (xf.transform as Record<string, unknown>).border as Record<string, unknown>;
+		border.colorCb = cb;
+		border.colorCr = cr;
+		onUpdate(slot.id, xf);
+	}
+
+	// ── Section reset functions ──
+	function resetPosition() {
+		const cur = slot.dve;
+		if (!cur) return;
+		const xf: Record<string, unknown> = {
+			positionX: 0,
+			positionY: 0,
+			width: 1920,
+			height: 1080,
+			rotationDeg: cur.rotationDeg ?? 0,
+			perspectiveX: cur.perspectiveX ?? 0,
+			perspectiveY: cur.perspectiveY ?? 0,
+			opacity: cur.opacity ?? 1,
+			cropTop: cur.cropTop ?? 0,
+			cropBottom: cur.cropBottom ?? 0,
+			cropLeft: cur.cropLeft ?? 0,
+			cropRight: cur.cropRight ?? 0,
+			cropSoftness: cur.cropSoftness ?? 0,
+			defocusRadius: cur.defocusRadius ?? 0,
+			anchorX: cur.anchorX ?? 0.5,
+			anchorY: cur.anchorY ?? 0.5,
+			saturation: cur.saturation ?? 1,
+			brightness: cur.brightness ?? 0,
+			contrast: cur.contrast ?? 1,
+		};
+		onUpdate(slot.id, { transform: xf });
+	}
+
+	function resetBorder() {
+		const cur = slot.dve;
+		if (!cur) return;
+		const xf = buildTransformUpdate('border.width', 0);
+		const border = (xf.transform as Record<string, unknown>).border as Record<string, unknown>;
+		border.width = 0;
+		border.cornerRadius = 0;
+		border.colorY = 235;
+		border.colorCb = 128;
+		border.colorCr = 128;
+		onUpdate(slot.id, xf);
+	}
+
+	function resetGeometry() {
+		const cur = slot.dve;
+		if (!cur) return;
+		const xf: Record<string, unknown> = {
+			positionX: cur.positionX ?? 0,
+			positionY: cur.positionY ?? 0,
+			width: cur.width ?? 1920,
+			height: cur.height ?? 1080,
+			rotationDeg: 0,
+			perspectiveX: 0,
+			perspectiveY: 0,
+			opacity: 1,
+			cropTop: cur.cropTop ?? 0,
+			cropBottom: cur.cropBottom ?? 0,
+			cropLeft: cur.cropLeft ?? 0,
+			cropRight: cur.cropRight ?? 0,
+			cropSoftness: cur.cropSoftness ?? 0,
+			defocusRadius: cur.defocusRadius ?? 0,
+			anchorX: cur.anchorX ?? 0.5,
+			anchorY: cur.anchorY ?? 0.5,
+			saturation: cur.saturation ?? 1,
+			brightness: cur.brightness ?? 0,
+			contrast: cur.contrast ?? 1,
+		};
+		onUpdate(slot.id, { transform: xf });
+	}
+
+	function resetColor() {
+		const cur = slot.dve;
+		if (!cur) return;
+		const xf: Record<string, unknown> = {
+			positionX: cur.positionX ?? 0,
+			positionY: cur.positionY ?? 0,
+			width: cur.width ?? 1920,
+			height: cur.height ?? 1080,
+			rotationDeg: cur.rotationDeg ?? 0,
+			perspectiveX: cur.perspectiveX ?? 0,
+			perspectiveY: cur.perspectiveY ?? 0,
+			opacity: cur.opacity ?? 1,
+			cropTop: cur.cropTop ?? 0,
+			cropBottom: cur.cropBottom ?? 0,
+			cropLeft: cur.cropLeft ?? 0,
+			cropRight: cur.cropRight ?? 0,
+			cropSoftness: cur.cropSoftness ?? 0,
+			defocusRadius: cur.defocusRadius ?? 0,
+			anchorX: cur.anchorX ?? 0.5,
+			anchorY: cur.anchorY ?? 0.5,
+			saturation: 1,
+			brightness: 0,
+			contrast: 1,
+			mirrorH: false,
+			mirrorV: false,
+		};
+		onUpdate(slot.id, { transform: xf });
+	}
+
+	function resetEffects() {
+		const cur = slot.dve;
+		if (!cur) return;
+		const xf: Record<string, unknown> = {
+			positionX: cur.positionX ?? 0,
+			positionY: cur.positionY ?? 0,
+			width: cur.width ?? 1920,
+			height: cur.height ?? 1080,
+			rotationDeg: cur.rotationDeg ?? 0,
+			perspectiveX: cur.perspectiveX ?? 0,
+			perspectiveY: cur.perspectiveY ?? 0,
+			opacity: cur.opacity ?? 1,
+			cropTop: cur.cropTop ?? 0,
+			cropBottom: cur.cropBottom ?? 0,
+			cropLeft: cur.cropLeft ?? 0,
+			cropRight: cur.cropRight ?? 0,
+			cropSoftness: cur.cropSoftness ?? 0,
+			defocusRadius: 0,
+			mosaicSize: 0,
+			anchorX: cur.anchorX ?? 0.5,
+			anchorY: cur.anchorY ?? 0.5,
+			saturation: cur.saturation ?? 1,
+			brightness: cur.brightness ?? 0,
+			contrast: cur.contrast ?? 1,
+		};
+		onUpdate(slot.id, { transform: xf });
+	}
+
+	function resetCrop() {
+		const cur = slot.dve;
+		if (!cur) return;
+		const xf: Record<string, unknown> = {
+			positionX: cur.positionX ?? 0,
+			positionY: cur.positionY ?? 0,
+			width: cur.width ?? 1920,
+			height: cur.height ?? 1080,
+			rotationDeg: cur.rotationDeg ?? 0,
+			perspectiveX: cur.perspectiveX ?? 0,
+			perspectiveY: cur.perspectiveY ?? 0,
+			opacity: cur.opacity ?? 1,
+			cropTop: 0,
+			cropBottom: 0,
+			cropLeft: 0,
+			cropRight: 0,
+			cropSoftness: 0,
+			defocusRadius: cur.defocusRadius ?? 0,
+			anchorX: cur.anchorX ?? 0.5,
+			anchorY: cur.anchorY ?? 0.5,
+			saturation: cur.saturation ?? 1,
+			brightness: cur.brightness ?? 0,
+			contrast: cur.contrast ?? 1,
+		};
+		onUpdate(slot.id, { transform: xf });
+	}
+
+	function resetShadow() {
+		const cur = slot.dve;
+		if (!cur) return;
+		const xf = buildTransformUpdate('shadow.enabled', false);
+		const shadow = (xf.transform as Record<string, unknown>).shadow as Record<string, unknown>;
+		shadow.enabled = false;
+		shadow.offsetX = 4;
+		shadow.offsetY = 4;
+		shadow.blur = 8;
+		shadow.opacity = 0.5;
+		onUpdate(slot.id, xf);
+	}
 </script>
 
 <div class="slot-inspector">
@@ -148,6 +345,7 @@
 				value={slot.sourceKey}
 				onchange={(e) => onSourceChange(slot.id, (e.target as HTMLSelectElement).value)}
 			>
+				<option value="">— none —</option>
 				{#each sortedSources as src (src.key)}
 					<option value={src.key}>{src.label || src.key}</option>
 				{/each}
@@ -157,7 +355,7 @@
 			<span class="field-label">Scale</span>
 			<select
 				class="inspector-select"
-				value={slot.scaleMode ?? 'fit'}
+				value={slot.scaleMode ?? 'stretch'}
 				onchange={(e) => onScaleModeChange(slot.id, (e.target as HTMLSelectElement).value)}
 			>
 				<option value="stretch">Stretch</option>
@@ -190,6 +388,7 @@
 			<ScrubInput
 				value={dve?.positionX ?? slot.x}
 				step={1}
+				suffix="px"
 				onScrub={(v) => handleScrub('positionX', v)}
 				onCommit={(v) => handleCommit('positionX', v)}
 			/>
@@ -197,6 +396,7 @@
 			<ScrubInput
 				value={dve?.positionY ?? slot.y}
 				step={1}
+				suffix="px"
 				onScrub={(v) => handleScrub('positionY', v)}
 				onCommit={(v) => handleCommit('positionY', v)}
 			/>
@@ -205,6 +405,7 @@
 				value={dve?.width ?? slot.width}
 				step={1}
 				min={2}
+				suffix="px"
 				onScrub={(v) => handleScrub('width', v)}
 				onCommit={(v) => handleCommit('width', v)}
 			/>
@@ -213,9 +414,13 @@
 				value={dve?.height ?? slot.height}
 				step={1}
 				min={2}
+				suffix="px"
 				onScrub={(v) => handleScrub('height', v)}
 				onCommit={(v) => handleCommit('height', v)}
 			/>
+		</div>
+		<div class="reset-row">
+			<button class="reset-btn" type="button" onclick={resetPosition}>Reset</button>
 		</div>
 	</InspectorSection>
 
@@ -239,6 +444,26 @@
 				onScrub={(v) => handleScrub('border.cornerRadius', v)}
 				onCommit={(v) => handleCommit('border.cornerRadius', v)}
 			/>
+			<span class="field-label">Color</span>
+			<div class="color-row">
+				<span
+					class="color-swatch"
+					style:background={ycbcrToRgbHex(
+						dve?.border?.colorY ?? 235,
+						dve?.border?.colorCb ?? 128,
+						dve?.border?.colorCr ?? 128,
+					)}
+				></span>
+				{#each borderColorPresets as preset (preset.label)}
+					<button
+						class="color-preset-btn"
+						type="button"
+						title={preset.label}
+						style:background={ycbcrToRgbHex(preset.y, preset.cb, preset.cr)}
+						onclick={() => applyBorderColor(preset.y, preset.cb, preset.cr)}
+					></button>
+				{/each}
+			</div>
 			<span class="field-label">Y</span>
 			<ScrubInput
 				value={dve?.border?.colorY ?? 235}
@@ -264,10 +489,13 @@
 				onCommit={(v) => handleCommit('border.colorCr', v)}
 			/>
 		</div>
+		<div class="reset-row">
+			<button class="reset-btn" type="button" onclick={resetBorder}>Reset</button>
+		</div>
 	</InspectorSection>
 
-	<!-- Section 4: Effects -->
-	<InspectorSection title="Effects" bind:expanded={effectsExpanded}>
+	<!-- Section 4a: Geometry -->
+	<InspectorSection title="Geometry" bind:expanded={geometryExpanded}>
 		<div class="field-grid">
 			<span class="field-label">Rotation</span>
 			<ScrubInput
@@ -281,13 +509,13 @@
 			/>
 			<span class="field-label">Opacity</span>
 			<ScrubInput
-				value={dve?.opacity ?? 1}
-				step={0.01}
+				value={(dve?.opacity ?? 1) * 100}
+				step={1}
 				min={0}
-				max={1}
-				precision={2}
-				onScrub={(v) => handleScrub('opacity', v)}
-				onCommit={(v) => handleCommit('opacity', v)}
+				max={100}
+				suffix="%"
+				onScrub={(v) => handleScrub('opacity', v / 100)}
+				onCommit={(v) => handleCommit('opacity', v / 100)}
 			/>
 			<span class="field-label">Persp X</span>
 			<ScrubInput
@@ -309,14 +537,15 @@
 				onScrub={(v) => handleScrub('perspectiveY', v)}
 				onCommit={(v) => handleCommit('perspectiveY', v)}
 			/>
-			<span class="field-label">Defocus</span>
-			<ScrubInput
-				value={dve?.defocusRadius ?? 0}
-				step={0.5}
-				min={0}
-				onScrub={(v) => handleScrub('defocusRadius', v)}
-				onCommit={(v) => handleCommit('defocusRadius', v)}
-			/>
+		</div>
+		<div class="reset-row">
+			<button class="reset-btn" type="button" onclick={resetGeometry}>Reset</button>
+		</div>
+	</InspectorSection>
+
+	<!-- Section 4b: Color -->
+	<InspectorSection title="Color" bind:expanded={colorExpanded}>
+		<div class="field-grid">
 			<span class="field-label">Saturation</span>
 			<ScrubInput
 				value={dve?.saturation ?? 1}
@@ -362,6 +591,34 @@
 				/>
 				<span>Mirror V</span>
 			</label>
+		</div>
+		<div class="reset-row">
+			<button class="reset-btn" type="button" onclick={resetColor}>Reset</button>
+		</div>
+	</InspectorSection>
+
+	<!-- Section 4c: Effects -->
+	<InspectorSection title="Effects" bind:expanded={effectsExpanded}>
+		<div class="field-grid">
+			<span class="field-label">Defocus</span>
+			<ScrubInput
+				value={dve?.defocusRadius ?? 0}
+				step={0.5}
+				min={0}
+				onScrub={(v) => handleScrub('defocusRadius', v)}
+				onCommit={(v) => handleCommit('defocusRadius', v)}
+			/>
+			<span class="field-label">Mosaic</span>
+			<ScrubInput
+				value={dve?.mosaicSize ?? 0}
+				step={1}
+				min={0}
+				max={256}
+				onCommit={(v) => handleCommit('mosaicSize', v)}
+			/>
+		</div>
+		<div class="reset-row">
+			<button class="reset-btn" type="button" onclick={resetEffects}>Reset</button>
 		</div>
 	</InspectorSection>
 
@@ -413,6 +670,9 @@
 				onCommit={(v) => handleCommit('cropSoftness', v)}
 			/>
 		</div>
+		<div class="reset-row">
+			<button class="reset-btn" type="button" onclick={resetCrop}>Reset</button>
+		</div>
 	</InspectorSection>
 
 	<!-- Section 6: Shadow -->
@@ -460,6 +720,9 @@
 				disabled={!(dve?.shadow?.enabled)}
 				onCommit={(v) => handleCommit('shadow.opacity', v)}
 			/>
+		</div>
+		<div class="reset-row">
+			<button class="reset-btn" type="button" onclick={resetShadow}>Reset</button>
 		</div>
 	</InspectorSection>
 </div>
@@ -597,5 +860,60 @@
 		margin: 0;
 		accent-color: var(--accent-gold, #d4a017);
 		cursor: pointer;
+	}
+
+	/* Reset button row */
+	.reset-row {
+		display: flex;
+		justify-content: flex-end;
+		padding: 2px 8px 4px;
+	}
+
+	.reset-btn {
+		padding: 1px 6px;
+		border: none;
+		border-radius: var(--radius-xs, 3px);
+		background: transparent;
+		color: var(--text-tertiary);
+		font-size: 9px;
+		font-family: var(--font-ui);
+		cursor: pointer;
+		line-height: 1.4;
+	}
+
+	.reset-btn:hover {
+		color: #e53e3e;
+		background: rgba(229, 62, 62, 0.1);
+	}
+
+	/* Border color swatch and presets */
+	.color-row {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+	}
+
+	.color-swatch {
+		display: inline-block;
+		width: 16px;
+		height: 16px;
+		border: 1px solid var(--border-subtle);
+		border-radius: 2px;
+		flex-shrink: 0;
+	}
+
+	.color-preset-btn {
+		width: 14px;
+		height: 14px;
+		padding: 0;
+		border: 1px solid var(--border-subtle);
+		border-radius: 2px;
+		cursor: pointer;
+		flex-shrink: 0;
+	}
+
+	.color-preset-btn:hover {
+		border-color: var(--text-secondary);
+		transform: scale(1.15);
 	}
 </style>

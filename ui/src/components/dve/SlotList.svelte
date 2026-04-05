@@ -39,6 +39,7 @@
 				onclick={() => onSelect(slot.id)}
 			>
 				<div class="tally-bar" style:background={tallyColor(slot)}></div>
+				<span class="slot-index">{slot.id}</span>
 				<span class="slot-label">{sourceLabel(slot)}</span>
 				<button
 					class="toggle-btn"
@@ -102,6 +103,15 @@
 		width: 4px;
 		align-self: stretch;
 		flex-shrink: 0;
+	}
+
+	.slot-index {
+		flex-shrink: 0;
+		padding: 0 4px 0 6px;
+		font-size: 9px;
+		font-family: var(--font-mono, monospace);
+		color: var(--text-tertiary);
+		user-select: none;
 	}
 
 	.slot-label {
