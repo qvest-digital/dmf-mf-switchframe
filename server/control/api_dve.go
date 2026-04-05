@@ -21,6 +21,11 @@ type dveSlotUpdateRequest struct {
 	Transform *dve.Transform `json:"transform,omitempty"`
 	ZOrder    *int           `json:"zOrder,omitempty"`
 	Enabled   *bool          `json:"enabled,omitempty"`
+
+	// Convenience fields for updating individual transform properties
+	// without sending the full transform object.
+	ScaleMode  *string      `json:"scaleMode,omitempty"`
+	CropAnchor *[2]float64  `json:"cropAnchor,omitempty"`
 }
 
 type dvePresetSaveRequest struct {
@@ -188,6 +193,13 @@ func (a *API) handleDVESlotUpdate(w http.ResponseWriter, r *http.Request) {
 	if req.Enabled != nil {
 		candidate.Enabled = *req.Enabled
 	}
+	// Apply convenience fields that map to transform properties.
+	if req.ScaleMode != nil {
+		candidate.Transform.ScaleMode = *req.ScaleMode
+	}
+	if req.CropAnchor != nil {
+		candidate.Transform.CropAnchor = *req.CropAnchor
+	}
 	if err := dve.ValidateSlot(candidate); err != nil {
 		httperr.Write(w, http.StatusBadRequest, err.Error())
 		return
@@ -205,6 +217,12 @@ func (a *API) handleDVESlotUpdate(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.Enabled != nil {
 			s.Enabled = *req.Enabled
+		}
+		if req.ScaleMode != nil {
+			s.Transform.ScaleMode = *req.ScaleMode
+		}
+		if req.CropAnchor != nil {
+			s.Transform.CropAnchor = *req.CropAnchor
 		}
 	})
 	a.broadcast()
