@@ -2,9 +2,12 @@
 	interface Props {
 		connectionState: 'webtransport' | 'polling' | 'disconnected';
 		syncStatus: 'ok' | 'resyncing' | 'disconnected';
+		// New optional props for dual-engine mode:
+		engineFallbackUrl?: string | null;  // URL of the other engine (null = single-engine mode)
+		servingEngine?: string | null;      // ID of the engine that served this page ('A' or 'B')
 	}
 
-	let { connectionState, syncStatus }: Props = $props();
+	let { connectionState, syncStatus, engineFallbackUrl = null, servingEngine = null }: Props = $props();
 
 	// Track whether WebTransport was ever connected so we only show
 	// the polling banner as a degradation, not on initial fallback.
@@ -20,9 +23,19 @@
 	let isPolling = $derived(
 		!isDisconnected && !isResyncing && hadWebTransport && connectionState === 'polling' && syncStatus === 'ok'
 	);
+
+	const otherEngine = $derived(servingEngine === 'A' ? 'B' : 'A');
+	const showEngineFallback = $derived(
+		engineFallbackUrl != null && connectionState === 'disconnected'
+	);
 </script>
 
-{#if isDisconnected}
+{#if showEngineFallback}
+	<div class="connection-banner engine-fallback" role="alert" aria-live="assertive">
+		Engine {servingEngine} unreachable —
+		<a href={engineFallbackUrl} class="fallback-link">Open via Engine {otherEngine}</a>
+	</div>
+{:else if isDisconnected}
 	<div class="disconnect-overlay" role="alertdialog" aria-live="assertive" aria-modal="true">
 		<div class="disconnect-content">
 			<span class="disconnect-text">CONNECTION LOST</span>
@@ -60,6 +73,22 @@
 	.connection-banner.resyncing {
 		background: #ccaa00;
 		color: #000;
+	}
+
+	.connection-banner.engine-fallback {
+		background: var(--accent-yellow-dim);
+		border-bottom: 1px solid rgba(234, 179, 8, 0.3);
+		color: var(--accent-yellow);
+	}
+
+	.fallback-link {
+		color: #fff;
+		text-decoration: underline;
+		font-weight: 600;
+	}
+
+	.fallback-link:hover {
+		color: var(--accent-yellow);
 	}
 
 	.disconnect-overlay {
