@@ -748,6 +748,7 @@ export interface ControlRoomState {
 	playout?: PlayoutState;
 	lastChangedBy?: string;
 	seq: number;
+	lastCommandSeq: number;
 	timestamp: number;
 }
 

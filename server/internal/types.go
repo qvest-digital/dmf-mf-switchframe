@@ -369,6 +369,7 @@ type ControlRoomState struct {
 	Playout              *PlayoutState           `json:"playout,omitempty"`
 	LastChangedBy        string                  `json:"lastChangedBy,omitempty"`
 	Seq                  uint64                  `json:"seq"`
+	LastCommandSeq       uint64                  `json:"lastCommandSeq"`
 	Timestamp            int64                   `json:"timestamp"`
 }
 
