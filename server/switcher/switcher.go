@@ -25,8 +25,7 @@ import (
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/internal/atomicutil"
 	"github.com/zsiec/switchframe/server/internal/video"
-	"github.com/zsiec/switchframe/server/layout"
-	"github.com/zsiec/switchframe/server/metrics"
+"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/stmap"
 	"github.com/zsiec/switchframe/server/transition"
 	"github.com/zsiec/switchframe/server/transition/wipemap"
@@ -287,8 +286,8 @@ type Switcher struct {
 	// Upstream key bridge — applies chroma/luma keys in YUV420 domain.
 	keyBridge *graphics.KeyProcessorBridge
 
-	// Layout compositor — applies PIP/split-screen/quad layouts in YUV420 domain.
-	layoutCompositor *layout.Compositor
+	// DVE compositor — applies DVE-transformed PIP/split-screen/quad layouts.
+	dveCompositor *dve.Compositor
 
 	// ST map registry — per-source lens correction applied in sourceDecoder.
 	stmapRegistry *stmap.Registry
@@ -297,7 +296,7 @@ type Switcher struct {
 	wipeMapStore *wipemap.WipeMapStore
 
 	// GPU pipeline runner — when set, videoProcessingLoop routes frames through
-	// the GPU pipeline (upload → key → layout → compositor → stmap → raw sinks → encode)
+	// the GPU pipeline (upload → key → dve → compositor → stmap → raw sinks → encode)
 	// instead of the CPU pipeline. Falls back to CPU on GPU errors.
 	// Stored via atomic pointer for lock-free reads on the hot path.
 	gpuRunner atomic.Pointer[gpuRunnerHolder]
@@ -904,13 +903,13 @@ func (s *Switcher) SetKeyBridge(kb *graphics.KeyProcessorBridge) {
 	s.rebuildPipeline()
 }
 
-// SetLayoutCompositor sets the layout compositor for PIP/split-screen/quad.
-func (s *Switcher) SetLayoutCompositor(lc *layout.Compositor) {
+// SetDVECompositor sets the DVE compositor for DVE-transformed PIP layouts.
+func (s *Switcher) SetDVECompositor(dc *dve.Compositor) {
 	s.mu.Lock()
-	s.layoutCompositor = lc
+	s.dveCompositor = dc
 	s.mu.Unlock()
-	if lc != nil {
-		lc.OnActiveChange = func() { s.rebuildPipeline() }
+	if dc != nil {
+		dc.OnActiveChange = func() { s.rebuildPipeline() }
 	}
 	s.rebuildPipeline()
 }
@@ -957,7 +956,7 @@ type gpuSourceMgrHolder struct {
 // SetGPUSourceManager registers a GPU source manager that handles per-source
 // GPU upload, ST map correction, caching, and preview encoding. When set,
 // handleRawVideoFrame routes YUV through IngestYUV instead of CPU fill paths
-// (keyBridge.IngestFillYUV, layoutCompositor.IngestSourceFrame). Also sets
+// (keyBridge.IngestFillYUV, dveCompositor.IngestSourceFrame). Also sets
 // gpuSourceActive so sourceDecoder skips redundant CPU ST map correction.
 // Pass nil to disable.
 func (s *Switcher) SetGPUSourceManager(mgr GPUSourceManagerIface) {
@@ -1028,11 +1027,11 @@ func (s *Switcher) SetPipelineVideoInfoCallback(cb func(vps, sps, pps []byte, wi
 //
 // CPU pipeline order:
 //
-//	[upstream-key → layout-compositor → compositor → stmap-program → raw-sink-mxl → raw-sink-preview → h264-encode]
+//	[upstream-key → dve-compositor → compositor → stmap-program → raw-sink-mxl → raw-sink-preview → h264-encode]
 func (s *Switcher) buildNodeList() []PipelineNode {
 	return []PipelineNode{
 		&upstreamKeyNode{bridge: s.keyBridge},
-		&layoutCompositorNode{compositor: s.layoutCompositor},
+		&dveCompositorNode{compositor: s.dveCompositor},
 		&compositorNode{compositor: s.compositorRef},
 		&stmapProgramNode{registry: s.stmapRegistry},
 		&rawSinkNode{sink: &s.rawVideoSink, name: "raw-sink-mxl"},
@@ -2956,10 +2955,10 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 
 		// Auto-dissolve any PIP slot showing the new program source.
 		s.mu.RLock()
-		layoutComp := s.layoutCompositor
+		dveComp := s.dveCompositor
 		s.mu.RUnlock()
-		if layoutComp != nil {
-			layoutComp.AutoDissolveSource(sourceKey)
+		if dveComp != nil {
+			dveComp.AutoDissolveSource(sourceKey)
 		}
 
 		// Notify mixer of program change (AFV + crossfade) outside the lock.
@@ -3530,7 +3529,7 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 	engine := s.transEngine
 	audioHandler := s.audioTransition
 	keyBridge := s.keyBridge
-	layoutComp := s.layoutCompositor
+	dveComp := s.dveCompositor
 	s.mu.RUnlock()
 
 	if !ok {
@@ -3558,26 +3557,24 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 	}
 
 	// GPU source manager: upload + ST map + cache + preview encode.
-	// When active, fills are read from GPU cache by key/layout nodes (via GPUFill),
+	// When active, fills are read from GPU cache by key/DVE nodes (via GPUFill),
 	// so CPU IngestFillYUV / IngestSourceFrame are skipped.
 	if h := s.gpuSourceMgr.Load(); h != nil && h.mgr != nil {
 		h.mgr.IngestYUV(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
 	} else {
-		// CPU fill paths — feed key bridge and layout compositor with decoded YUV.
+		// CPU fill paths — feed key bridge and DVE compositor with decoded YUV.
 		// Dispatch to format-appropriate ingest method based on pipeline color format.
 		if pf.Format == ColorYUV422_10bit {
 			if keyBridge != nil {
 				keyBridge.IngestFillYUV10(sourceKey, pf.Data, pf.Width, pf.Height)
 			}
-			if layoutComp != nil && layoutComp.NeedsSource(sourceKey) {
-				layoutComp.IngestSourceFrame10(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
-			}
 		} else {
 			if keyBridge != nil {
 				keyBridge.IngestFillYUV(sourceKey, pf.Data, pf.Width, pf.Height)
 			}
-			if layoutComp != nil && layoutComp.NeedsSource(sourceKey) {
-				layoutComp.IngestSourceFrame(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
+			// DVE compositor source frame ingestion (8-bit only).
+			if dveComp != nil && dveComp.NeedsSource(sourceKey) {
+				dveComp.IngestSourceFrame(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
 			}
 		}
 	}

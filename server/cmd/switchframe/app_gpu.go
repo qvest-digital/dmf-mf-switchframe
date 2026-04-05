@@ -20,8 +20,7 @@ import (
 	"github.com/zsiec/switchframe/server/gpu"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
-	"github.com/zsiec/switchframe/server/layout"
-	"github.com/zsiec/switchframe/server/sidecar"
+"github.com/zsiec/switchframe/server/sidecar"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition/wipemap"
 )
@@ -169,7 +168,7 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 	// Create adapter types for state interfaces.
 	keyAdapter := &keyBridgeAdapter{bridge: app.keyBridge, sourceMgr: sourceMgr}
 	compositorAdapter := &compositorStateAdapter{compositor: app.compositor}
-	layoutAdapter := &layoutStateAdapter{layout: app.layoutCompositor, sourceMgr: sourceMgr}
+	dveLayoutAdapter := &dveLayoutStateAdapter{dveComp: app.dveCompositor, sourceMgr: sourceMgr}
 
 	// Raw sinks — GPU raw sink nodes download to CPU only when active.
 	var gpuRawVideoSink atomic.Pointer[gpu.RawSinkFunc]
@@ -396,7 +395,7 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 	}
 
 	// Build GPU pipeline node chain:
-	//   gpu_key → [gpu_neural_key] → gpu_layout → gpu_compositor → [gpu_ai_segment] → gpu_colorgrade → gpu_stmap → raw_sink → gpu_preview_encode → gpu_encode
+	//   gpu_key → [gpu_neural_key] → gpu_dve → gpu_compositor → [gpu_ai_segment] → gpu_colorgrade → gpu_stmap → raw_sink → gpu_preview_encode → gpu_encode
 	// Some nodes return nil on unsupported builds (e.g. AI segment on non-TensorRT).
 	neuralKeyNode := gpu.NewGPUNeuralKeyNode(gs.ctx, gs.pool, neuralKeyAdapter, app.cfg.NeuralKeyModelPath)
 	// Inject TensorRT engine into the neural key node if available.
@@ -411,7 +410,7 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 	candidateNodes := []gpu.GPUPipelineNode{
 		gpu.NewGPUKeyNode(gs.ctx, gs.pool, keyAdapter),
 		neuralKeyNode,
-		gpu.NewGPULayoutNode(gs.ctx, gs.pool, layoutAdapter),
+		gpu.NewGPULayoutNode(gs.ctx, gs.pool, dveLayoutAdapter),
 		dskNode,
 		gpu.NewGPUAISegmentNode(gs.ctx, gs.pool, segAdapter),
 		gpu.NewGPUColorGradeNode(gs.ctx, colorGradeAdapter),
@@ -1103,7 +1102,7 @@ func (r *gpuPipelineRunnerImpl) RunTransition(fromKey, toKey string, transType s
 		}
 	}
 
-	// Run blended result through rest of GPU pipeline (key → layout →
+	// Run blended result through rest of GPU pipeline (key → dve →
 	// compositor → stmap → raw sinks → encode).
 	if err := r.pipeline.Run(dst); err != nil {
 		dst.Release()
@@ -1215,25 +1214,25 @@ func (a *compositorStateAdapter) SnapshotVisibleLayers() []gpu.VisibleLayerSnaps
 	return result
 }
 
-// layoutStateAdapter adapts layout.Compositor to gpu.LayoutState.
-type layoutStateAdapter struct {
-	layout    *layout.Compositor
+// dveLayoutStateAdapter adapts dve.Compositor to gpu.LayoutState.
+type dveLayoutStateAdapter struct {
+	dveComp   *dve.Compositor
 	sourceMgr *gpu.GPUSourceManager // nil until source manager is ready
 }
 
-func (a *layoutStateAdapter) Active() bool {
-	return a.layout.Active()
+func (a *dveLayoutStateAdapter) Active() bool {
+	return a.dveComp.Active()
 }
 
-func (a *layoutStateAdapter) GPUFill(sourceKey string) *gpu.GPUFrame {
+func (a *dveLayoutStateAdapter) GPUFill(sourceKey string) *gpu.GPUFrame {
 	if a.sourceMgr == nil {
 		return nil
 	}
 	return a.sourceMgr.GetFrame(sourceKey)
 }
 
-func (a *layoutStateAdapter) SnapshotSlots() []gpu.SlotSnapshot {
-	snaps := a.layout.SnapshotSlots()
+func (a *dveLayoutStateAdapter) SnapshotSlots() []gpu.SlotSnapshot {
+	snaps := a.dveComp.SnapshotSlots()
 	if len(snaps) == 0 {
 		return nil
 	}

@@ -56,7 +56,7 @@ Five processing nodes execute in a fixed order on a single dedicated goroutine. 
 | Node | Subsystem | In-Place | Latency | Active When |
 |------|-----------|----------|---------|-------------|
 | `upstream-key` | [`KeyProcessorBridge`](../server/graphics/key_processor_bridge.go) | Yes | 100μs | Keys enabled with cached fills |
-| `layout-compositor` | [`layout.Compositor`](../server/layout/compositor.go) | Yes | 1ms | Layout has enabled slots |
+| `dve-compositor` | [`dve.Compositor`](../server/dve/compositor.go) | Yes | 1ms | DVE has enabled slots |
 | `compositor` | [`graphics.Compositor`](../server/graphics/compositor.go) | Yes | 200μs | Graphics layers active |
 | `raw-sink-mxl` | MXL shared-memory output | No (ref-counted tap) | 50μs | MXL output connected |
 | `encode` | [`pipelineCodecs`](../server/switcher/pipeline_codecs.go) | N/A (terminal) | 10ms | Always |
@@ -239,13 +239,13 @@ Keying operates in the YUV420 domain using Cb/Cr squared distance for chroma and
 
 **File:** [`node_upstream_key.go`](../server/switcher/node_upstream_key.go) (34 lines)
 
-### layout-compositor
+### dve-compositor
 
-Wraps [`layout.Compositor.ProcessFrame()`](../server/layout/compositor.go). Composites PIP, side-by-side, or quad-split overlays onto the program frame. Active only when a layout has enabled slots.
+Wraps [`dve.Compositor.ProcessFrame()`](../server/dve/compositor.go). Composites PIP, side-by-side, quad-split, or custom multi-source overlays onto the program frame using up to 8 DVE slots. Active only when the DVE compositor has enabled slots.
 
 The compositor maintains a fill cache (`IngestSourceFrame()`) populated by `handleRawVideoFrame()` for every source matching a slot. `ProcessFrame()` deep-copies fills into per-slot snapshot buffers under a mutex, then composites without the lock — the pipeline goroutine never contends with source delivery goroutines.
 
-**File:** [`node_layout_compositor.go`](../server/switcher/node_layout_compositor.go) (34 lines)
+**File:** [`node_dve_compositor.go`](../server/switcher/node_dve_compositor.go)
 
 ### compositor
 
@@ -566,7 +566,7 @@ Browser preview and multiview always encode to H.264 8-bit regardless of the pip
 | [`pipeline_node.go`](../server/switcher/pipeline_node.go) | `PipelineNode` interface (7 methods) |
 | [`pipeline_loop.go`](../server/switcher/pipeline_loop.go) | `Pipeline` struct: Build, Run, Snapshot, Wait, Close |
 | [`node_upstream_key.go`](../server/switcher/node_upstream_key.go) | Upstream chroma/luma key node |
-| [`node_layout_compositor.go`](../server/switcher/node_layout_compositor.go) | PIP/split-screen layout node |
+| [`node_dve_compositor.go`](../server/switcher/node_dve_compositor.go) | DVE multi-source compositor node |
 | [`node_compositor.go`](../server/switcher/node_compositor.go) | DSK graphics compositor node |
 | [`node_raw_sink.go`](../server/switcher/node_raw_sink.go) | Raw video sink node (MXL) |
 | [`node_encode.go`](../server/switcher/node_encode.go) | H.264 encode node |

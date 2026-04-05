@@ -34,14 +34,14 @@ import (
 	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/debug"
 	"github.com/zsiec/switchframe/server/demo"
+	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/fastctrl"
 	"github.com/zsiec/switchframe/server/gpu"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/graphics/textrender"
 	"github.com/zsiec/switchframe/server/htmlgfx"
 	"github.com/zsiec/switchframe/server/internal"
-	"github.com/zsiec/switchframe/server/layout"
-	"github.com/zsiec/switchframe/server/macro"
+"github.com/zsiec/switchframe/server/macro"
 	"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/mxl"
 	"github.com/zsiec/switchframe/server/operator"
@@ -119,8 +119,7 @@ type App struct {
 	replayMgr        *replay.Manager
 	stingerStore     *stinger.Store
 	wipeMapStore     *wipemap.WipeMapStore
-	layoutCompositor *layout.Compositor
-	layoutStore      *layout.Store
+	dveCompositor    *dve.Compositor
 	fastCtrl         *fastctrl.Dispatcher
 	stmapRegistry    *stmap.Registry
 	stmapStore       *stmap.Store
@@ -784,14 +783,10 @@ func (a *App) initSubsystems() error {
 		// Non-fatal: server runs without HTML5 graphics.
 	}
 
-	// Layout compositor (PIP / multi-layout).
+	// DVE compositor (PIP / multi-layout).
 	format := a.sw.PipelineFormat()
-	a.layoutCompositor = layout.NewCompositor(format.Width, format.Height)
-	a.sw.SetLayoutCompositor(a.layoutCompositor)
-
-	layoutPresetPath := a.statePath("layout_presets.json")
-	a.layoutStore = layout.NewStore(layoutPresetPath)
-	slog.Info("layout store initialized", "path", layoutPresetPath)
+	a.dveCompositor = dve.NewCompositor(format.Width, format.Height)
+	a.sw.SetDVECompositor(a.dveCompositor)
 
 	// ST map registry and file store.
 	a.stmapRegistry = stmap.NewRegistry()
@@ -1546,8 +1541,7 @@ func (a *App) initAPI() error {
 		control.WithSessionManager(a.sessionMgr),
 		control.WithStingerStore(a.stingerStore),
 		control.WithWipeMapStore(a.wipeMapStore),
-		control.WithLayoutCompositor(a.layoutCompositor),
-		control.WithLayoutStore(a.layoutStore),
+		control.WithDVECompositor(a.dveCompositor),
 		control.WithPerfSampler(a.perfSampler),
 		control.WithSTMapRegistry(a.stmapRegistry),
 		control.WithSTMapStore(a.stmapStore),

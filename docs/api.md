@@ -104,17 +104,17 @@ Base URL: `https://localhost:8080` (HTTP/3, primary) or `http://localhost:8081` 
   - [POST /api/graphics/{id}/html5/next](#post-apigraphicsidhtml5next)
   - [POST /api/graphics/{id}/html5/custom](#post-apigraphicsidhtml5custom)
   - [DELETE /api/graphics/{id}/html5](#delete-apigraphicsidhtml5)
-- [Layout / PIP](#layout--pip)
-  - [GET /api/layout](#get-apilayout)
-  - [PUT /api/layout](#put-apilayout)
-  - [DELETE /api/layout](#delete-apilayout)
-  - [PUT /api/layout/slots/{id}](#put-apilayoutslotsid)
-  - [POST /api/layout/slots/{id}/on](#post-apilayoutslotsidon)
-  - [POST /api/layout/slots/{id}/off](#post-apilayoutslotsidoff)
-  - [PUT /api/layout/slots/{id}/source](#put-apilayoutslotsidsource)
-  - [GET /api/layout/presets](#get-apilayoutpresets)
-  - [POST /api/layout/presets](#post-apilayoutpresets)
-  - [DELETE /api/layout/presets/{name}](#delete-apilayoutpresetsname)
+- [DVE (Multi-Source Compositor)](#dve-multi-source-compositor)
+  - [GET /api/dve](#get-apidve)
+  - [PUT /api/dve](#put-apidve)
+  - [DELETE /api/dve](#delete-apidve)
+  - [PUT /api/dve/slots/{id}](#put-apidveslotsid)
+  - [POST /api/dve/slots/{id}/on](#post-apidveslotsidon)
+  - [POST /api/dve/slots/{id}/off](#post-apidveslotsidoff)
+  - [GET /api/dve/presets](#get-apidvepresets)
+  - [POST /api/dve/presets](#post-apidvepresets)
+  - [PUT /api/dve/presets/{id}/recall](#put-apidvepresetsidrrecall)
+  - [DELETE /api/dve/presets/{id}](#delete-apidvepresetsid)
 - [Presets](#presets)
   - [GET /api/presets](#get-apipresets)
   - [POST /api/presets](#post-apipresets)
@@ -510,7 +510,7 @@ Many endpoints return the full `ControlRoomState` object. Here is its complete s
 | `sources` | `object` | Map of source key to `SourceInfo` |
 | `presets` | `array` | List of saved preset summaries `[{id, name}]`. Omitted when empty. |
 | `graphics` | `object` or `null` | Multi-layer graphics state with `layers` array. See [GraphicsState Fields](#graphicsstate-fields). |
-| `layout` | `object` or `null` | PIP/multi-layout state. Omitted when no layout is active. |
+| `layout` | `object` or `null` | DVE multi-source compositor state. Omitted when no DVE layout is active. |
 | `replay` | `object` or `null` | Instant replay state. Omitted when replay manager is not configured. |
 | `pipelineFormat` | `object` or `null` | Current video pipeline format (`width`, `height`, `fpsNum`, `fpsDen`, `name`). Omitted when not set. |
 | `scte35` | `object` or `null` | SCTE-35 ad insertion state. Omitted when SCTE-35 is not enabled. |
@@ -3989,21 +3989,19 @@ curl -X DELETE http://localhost:8081/api/graphics/0/html5 \
 
 ---
 
-## Layout / PIP
+## DVE (Multi-Source Compositor)
 
-The layout system controls picture-in-picture (PIP) and multi-source composition layouts. A layout consists of up to 4 indexed slots (0–3), each bound to a source with a position/size rectangle. Layouts can be created from built-in presets (e.g., PIP corner, side-by-side) or defined with custom slot configurations. Layout slot positions can also be updated in real-time via WebTransport datagrams for low-latency PIP drag (see fast-control datagrams).
+The DVE (Digital Video Effects) compositor controls all multi-source composition: picture-in-picture (PIP), split-screen, quad, and custom layouts. A DVE configuration consists of up to 8 indexed slots (0–7), each bound to a source with position, size, rotation, opacity, border, and scale mode. DVE presets provide built-in configurations (e.g., PIP corner, side-by-side). DVE slot transforms can also be updated in real-time via WebTransport datagrams (0x04-0x09) for low-latency drag and parameter control (see fast-control datagrams).
 
-Slot rectangles use Go's `image.Rectangle` format with `Min` (top-left) and `Max` (bottom-right) points. All coordinates must be even-aligned (YUV420 requirement).
+### GET /api/dve
 
-### GET /api/layout
-
-Get the current layout state including all slots.
+Get the current DVE state including all slots.
 
 **Request Body:** None
 
 **Response:** `200 OK`:
 
-When a layout is active:
+When a DVE layout is active:
 
 ```json
 {
@@ -4031,7 +4029,7 @@ When a layout is active:
 }
 ```
 
-When no layout is active:
+When no DVE layout is active:
 
 ```json
 {
@@ -4046,24 +4044,24 @@ When no layout is active:
 | `sourceKey` | `string` | Source key assigned to this slot |
 | `rect` | `object` | Position rectangle `{"Min": {"X", "Y"}, "Max": {"X", "Y"}}` in pixels |
 | `zOrder` | `int` | Stacking order (higher = on top) |
-| `border` | `object` | Border config: `width` (even pixels), `colorY`/`colorCb`/`colorCr` (BT.709) |
+| `border` | `object` | Border config: `width` (pixels), `colorY`/`colorCb`/`colorCr` (BT.709) |
 | `transition` | `object` | Slot transition: `type` (`"cut"`, `"dissolve"`, `"fly"`) and `durationMs` |
 | `enabled` | `bool` | Whether the slot is visible in the composition |
-| `scaleMode` | `string` | `"stretch"` (default, may distort) or `"fill"` (crop to cover, preserves aspect ratio). Omitted when empty. |
+| `scaleMode` | `string` | `"stretch"` (default, may distort), `"fill"` (crop to cover), or `"fit"` (letterbox). Omitted when empty. |
 | `cropAnchor` | `[2]float` | `[x, y]` anchor for fill crop, range 0.0–1.0. Default center `[0.5, 0.5]`. Omitted when zero. |
 
 **Example:**
 
 ```bash
-curl http://localhost:8081/api/layout \
+curl http://localhost:8081/api/dve \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ---
 
-### PUT /api/layout
+### PUT /api/dve
 
-Set the current layout from a preset name or a custom slot array.
+Set the current DVE layout from a preset name or a custom slot array.
 
 **Request Body (preset):**
 
@@ -4095,30 +4093,30 @@ Set the current layout from a preset name or a custom slot array.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `preset` | `string` | No | Name of a built-in or saved layout preset |
-| `slots` | `array` | No | Array of `Slot` objects (max 4). One of `preset` or `slots` is required. |
+| `preset` | `string` | No | Name of a built-in or saved DVE preset |
+| `slots` | `array` | No | Array of `Slot` objects (max 8). One of `preset` or `slots` is required. |
 | `name` | `string` | No | Optional name for the custom layout |
 
-**Response:** `200 OK` with the applied `Layout` object
+**Response:** `200 OK` with the applied DVE state
 
 **Errors:**
 
 | Status | Condition |
 |--------|-----------|
-| `400` | Invalid JSON, missing both `preset` and `slots`, invalid slot configuration (odd-aligned rect, exceeds frame bounds, >4 slots, unknown scaleMode) |
+| `400` | Invalid JSON, missing both `preset` and `slots`, invalid slot configuration (>8 slots, unknown scaleMode) |
 | `404` | Preset not found |
 
 **Example:**
 
 ```bash
 # Apply a preset
-curl -X PUT http://localhost:8081/api/layout \
+curl -X PUT http://localhost:8081/api/dve \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"preset": "pip-bottom-right"}'
 
 # Apply a custom layout
-curl -X PUT http://localhost:8081/api/layout \
+curl -X PUT http://localhost:8081/api/dve \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"slots": [{"sourceKey": "cam1", "rect": {"Min": {"X": 0, "Y": 0}, "Max": {"X": 1920, "Y": 1080}}, "enabled": true, "scaleMode": "fill"}]}'
@@ -4126,9 +4124,9 @@ curl -X PUT http://localhost:8081/api/layout \
 
 ---
 
-### DELETE /api/layout
+### DELETE /api/dve
 
-Clear the current layout. All slots are disabled and the layout is deactivated, returning to single-source program output.
+Clear the current DVE layout. All slots are disabled, returning to single-source program output.
 
 **Request Body:** None
 
@@ -4137,21 +4135,21 @@ Clear the current layout. All slots are disabled and the layout is deactivated, 
 **Example:**
 
 ```bash
-curl -X DELETE http://localhost:8081/api/layout \
+curl -X DELETE http://localhost:8081/api/dve \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ---
 
-### PUT /api/layout/slots/{id}
+### PUT /api/dve/slots/{id}
 
-Update properties of a layout slot. All fields are optional; only provided fields are updated. Coordinates are even-aligned automatically.
+Update properties of a DVE slot. All fields are optional; only provided fields are updated.
 
 **URL Parameters:**
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `id` | `int` | Slot index (0–3) |
+| `id` | `int` | Slot index (0–7) |
 
 **Request Body:**
 
@@ -4172,11 +4170,11 @@ Update properties of a layout slot. All fields are optional; only provided field
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `sourceKey` | `string` | No | Source key to assign to this slot |
-| `x` | `int` | No | New X position (even-aligned) |
-| `y` | `int` | No | New Y position (even-aligned) |
-| `width` | `int` | No | New width (even-aligned) |
-| `height` | `int` | No | New height (even-aligned) |
-| `scaleMode` | `string` | No | `"stretch"` or `"fill"` |
+| `x` | `int` | No | New X position |
+| `y` | `int` | No | New Y position |
+| `width` | `int` | No | New width |
+| `height` | `int` | No | New height |
+| `scaleMode` | `string` | No | `"stretch"`, `"fill"`, or `"fit"` |
 | `cropAnchor` | `[2]float` | No | `[x, y]` anchor for fill mode, range 0.0–1.0 |
 | `border` | `object` | No | Border config: `width`, `colorY`, `colorCb`, `colorCr` |
 | `transition` | `object` | No | Slot transition: `type` and `durationMs` |
@@ -4187,12 +4185,12 @@ Update properties of a layout slot. All fields are optional; only provided field
 
 | Status | Condition |
 |--------|-----------|
-| `400` | Invalid JSON or non-integer slot ID |
+| `400` | Invalid JSON, non-integer slot ID, or slot ID out of range |
 
 **Example:**
 
 ```bash
-curl -X PUT http://localhost:8081/api/layout/slots/1 \
+curl -X PUT http://localhost:8081/api/dve/slots/1 \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"sourceKey": "cam3", "x": 100, "y": 100, "width": 640, "height": 480}'
@@ -4200,15 +4198,15 @@ curl -X PUT http://localhost:8081/api/layout/slots/1 \
 
 ---
 
-### POST /api/layout/slots/{id}/on
+### POST /api/dve/slots/{id}/on
 
-Enable a layout slot, making it visible in the composition.
+Enable a DVE slot, making it visible in the composition.
 
 **URL Parameters:**
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `id` | `int` | Slot index (0–3) |
+| `id` | `int` | Slot index (0–7) |
 
 **Request Body:** None (body is ignored if sent)
 
@@ -4218,26 +4216,26 @@ Enable a layout slot, making it visible in the composition.
 
 | Status | Condition |
 |--------|-----------|
-| `400` | Non-integer slot ID |
+| `400` | Non-integer or out-of-range slot ID |
 
 **Example:**
 
 ```bash
-curl -X POST http://localhost:8081/api/layout/slots/1/on \
+curl -X POST http://localhost:8081/api/dve/slots/1/on \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ---
 
-### POST /api/layout/slots/{id}/off
+### POST /api/dve/slots/{id}/off
 
-Disable a layout slot, removing it from the composition.
+Disable a DVE slot, removing it from the composition.
 
 **URL Parameters:**
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `id` | `int` | Slot index (0–3) |
+| `id` | `int` | Slot index (0–7) |
 
 **Request Body:** None (body is ignored if sent)
 
@@ -4247,61 +4245,20 @@ Disable a layout slot, removing it from the composition.
 
 | Status | Condition |
 |--------|-----------|
-| `400` | Non-integer slot ID |
+| `400` | Non-integer or out-of-range slot ID |
 
 **Example:**
 
 ```bash
-curl -X POST http://localhost:8081/api/layout/slots/1/off \
+curl -X POST http://localhost:8081/api/dve/slots/1/off \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ---
 
-### PUT /api/layout/slots/{id}/source
+### GET /api/dve/presets
 
-Set the source for a layout slot.
-
-**URL Parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `id` | `int` | Slot index (0–3) |
-
-**Request Body:**
-
-```json
-{
-  "source": "cam2"
-}
-```
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `source` | `string` | Yes | Source key to assign to the slot |
-
-**Response:** `204 No Content`
-
-**Errors:**
-
-| Status | Condition |
-|--------|-----------|
-| `400` | Missing `source` field, invalid JSON, or non-integer slot ID |
-
-**Example:**
-
-```bash
-curl -X PUT http://localhost:8081/api/layout/slots/1/source \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"source": "cam2"}'
-```
-
----
-
-### GET /api/layout/presets
-
-List all saved layout presets (user-saved presets only; built-in presets are resolved by name in PUT /api/layout).
+List all saved DVE presets (user-saved presets only; built-in presets are resolved by name in PUT /api/dve).
 
 **Request Body:** None
 
@@ -4314,15 +4271,15 @@ List all saved layout presets (user-saved presets only; built-in presets are res
 **Example:**
 
 ```bash
-curl http://localhost:8081/api/layout/presets \
+curl http://localhost:8081/api/dve/presets \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ---
 
-### POST /api/layout/presets
+### POST /api/dve/presets
 
-Save the current active layout as a named preset.
+Save the current active DVE layout as a named preset.
 
 **Request Body:**
 
@@ -4342,12 +4299,12 @@ Save the current active layout as a named preset.
 
 | Status | Condition |
 |--------|-----------|
-| `400` | Missing or empty `name`, or no active layout to save |
+| `400` | Missing or empty `name`, or no active DVE layout to save |
 
 **Example:**
 
 ```bash
-curl -X POST http://localhost:8081/api/layout/presets \
+curl -X POST http://localhost:8081/api/dve/presets \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"name": "my-custom-layout"}'
@@ -4355,15 +4312,27 @@ curl -X POST http://localhost:8081/api/layout/presets \
 
 ---
 
-### DELETE /api/layout/presets/{name}
+### PUT /api/dve/presets/{id}/recall
 
-Delete a saved layout preset.
+Recall a saved DVE preset, optionally with an animated transition.
 
 **URL Parameters:**
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `name` | `string` | Preset name |
+| `id` | `string` | Preset name |
+
+**Request Body:**
+
+```json
+{
+  "durationMs": 500
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `durationMs` | `int` | No | Animation duration in milliseconds. 0 = instant. |
 
 **Response:** `204 No Content`
 
@@ -4376,7 +4345,36 @@ Delete a saved layout preset.
 **Example:**
 
 ```bash
-curl -X DELETE http://localhost:8081/api/layout/presets/my-custom-layout \
+curl -X PUT http://localhost:8081/api/dve/presets/my-custom-layout/recall \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"durationMs": 300}'
+```
+
+---
+
+### DELETE /api/dve/presets/{id}
+
+Delete a saved DVE preset.
+
+**URL Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `id` | `string` | Preset name |
+
+**Response:** `204 No Content`
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `404` | Preset not found |
+
+**Example:**
+
+```bash
+curl -X DELETE http://localhost:8081/api/dve/presets/my-custom-layout \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -5585,15 +5583,15 @@ Create or update a macro. The name in the URL path takes precedence over any nam
 | `"replay_play_last"` | `{}` | Play last clip (stub) |
 | `"replay_play_clip"` | `{ "clipId": "..." }` | Play specific clip (stub) |
 
-**Layout / PIP**
+**DVE**
 
 | Action | Params | Description |
 |--------|--------|-------------|
-| `"layout_preset"` | `{ "preset": "pip-bottom-right" }` | Apply layout preset |
-| `"layout_slot_on"` | `{ "source": "0" }` | Enable layout slot |
-| `"layout_slot_off"` | `{ "source": "0" }` | Disable layout slot |
-| `"layout_slot_source"` | `{ "source": "0" }` | Set layout slot source |
-| `"layout_clear"` | `{}` | Clear layout |
+| `"dve_preset"` | `{ "preset": "pip-bottom-right" }` | Apply DVE preset |
+| `"dve_slot_on"` | `{ "source": "0" }` | Enable DVE slot |
+| `"dve_slot_off"` | `{ "source": "0" }` | Disable DVE slot |
+| `"dve_slot_source"` | `{ "source": "0" }` | Set DVE slot source |
+| `"dve_clear"` | `{}` | Clear DVE layout |
 
 **SCTE-35**
 

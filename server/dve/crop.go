@@ -1,4 +1,4 @@
-package layout
+package dve
 
 // ComputeCropRect computes the largest source sub-region that matches the
 // slot's aspect ratio. The region is positioned using anchorX/anchorY (0.0-1.0).
@@ -9,24 +9,24 @@ func ComputeCropRect(srcW, srcH, slotW, slotH int, anchorX, anchorY float64) (cr
 	}
 
 	// Compare aspect ratios using cross-multiplication to avoid float division.
-	// srcW/srcH vs slotW/slotH → srcW*slotH vs slotW*srcH
+	// srcW/srcH vs slotW/slotH -> srcW*slotH vs slotW*srcH
 	srcAspect := srcW * slotH
 	slotAspect := slotW * srcH
 
 	if srcAspect == slotAspect {
-		// Aspect ratios match — no crop needed.
+		// Aspect ratios match -- no crop needed.
 		return 0, 0, EvenAlign(srcW), EvenAlign(srcH)
 	}
 
 	if srcAspect > slotAspect {
-		// Source is wider than slot — crop horizontally.
+		// Source is wider than slot -- crop horizontally.
 		cropH = EvenAlign(srcH)
 		cropW = EvenAlign(slotW * srcH / slotH)
 		if cropW > srcW {
 			cropW = EvenAlign(srcW)
 		}
 	} else {
-		// Source is taller than slot — crop vertically.
+		// Source is taller than slot -- crop vertically.
 		cropW = EvenAlign(srcW)
 		cropH = EvenAlign(slotH * srcW / slotW)
 		if cropH > srcH {

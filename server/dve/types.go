@@ -14,7 +14,16 @@ const MaxSlots = 8
 const (
 	ScaleModeStretch = "stretch"
 	ScaleModeFill    = "fill"
+	ScaleModeFit     = "fit"
 )
+
+// Rect defines an output rectangle in pixel coordinates.
+type Rect struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+	W float64 `json:"w"`
+	H float64 `json:"h"`
+}
 
 // Transform holds all DVE parameters for a single slot.
 type Transform struct {
@@ -64,6 +73,12 @@ type Transform struct {
 	// Source Mapping
 	ScaleMode  string     `json:"scaleMode,omitempty"`
 	CropAnchor [2]float64 `json:"cropAnchor,omitempty"`
+
+	// Rect Mode — express position/size as a simple output rectangle.
+	// When RectMode is true, ResolveRect() computes PositionX/Y, Width/Height,
+	// and crop fields from OutputRect + ScaleMode + CropAnchor.
+	RectMode   bool `json:"rectMode,omitempty"`
+	OutputRect Rect `json:"outputRect,omitempty"`
 }
 
 // Transform3D holds 3D DVE parameters for mapping video onto geometry.
@@ -223,6 +238,92 @@ func (t Transform) EffectiveAnchor() (float64, float64) {
 	return clamp01(t.AnchorX), clamp01(t.AnchorY)
 }
 
+// ResolveRect returns a copy of the transform with PositionX/Y, Width/Height,
+// and crop fields computed from OutputRect + ScaleMode + CropAnchor.
+// frameW and frameH are the source resolution in pixels.
+// If RectMode is false, the transform is returned unchanged.
+func (t Transform) ResolveRect(frameW, frameH int) Transform {
+	if !t.RectMode {
+		return t
+	}
+
+	resolved := t
+	resolved.RectMode = false
+
+	// Guard: if source dimensions are unknown, fall back to stretch behavior.
+	if frameW <= 0 || frameH <= 0 {
+		resolved.PositionX = resolved.OutputRect.X
+		resolved.PositionY = resolved.OutputRect.Y
+		resolved.Width = resolved.OutputRect.W
+		resolved.Height = resolved.OutputRect.H
+		return resolved
+	}
+
+	resolved.PositionX = t.OutputRect.X
+	resolved.PositionY = t.OutputRect.Y
+	resolved.Width = t.OutputRect.W
+	resolved.Height = t.OutputRect.H
+
+	mode := t.ScaleMode
+	if mode == "" {
+		mode = ScaleModeStretch
+	}
+
+	switch mode {
+	case ScaleModeStretch:
+		// No crop needed — source stretched to fit output rect exactly.
+
+	case ScaleModeFill:
+		// Scale source to cover output rect preserving aspect ratio,
+		// crop the overflow using CropAnchor.
+		srcAspect := float64(frameW) / float64(frameH)
+		outAspect := t.OutputRect.W / t.OutputRect.H
+
+		if srcAspect > outAspect {
+			// Source is wider than output → crop left/right.
+			// The visible width in source pixels that maps to the output aspect:
+			visibleW := float64(frameH) * outAspect
+			totalCropW := float64(frameW) - visibleW
+			anchorX := t.CropAnchor[0]
+			resolved.CropLeft = totalCropW * anchorX
+			resolved.CropRight = totalCropW * (1 - anchorX)
+		} else if srcAspect < outAspect {
+			// Source is taller than output → crop top/bottom.
+			visibleH := float64(frameW) / outAspect
+			totalCropH := float64(frameH) - visibleH
+			anchorY := t.CropAnchor[1]
+			resolved.CropTop = totalCropH * anchorY
+			resolved.CropBottom = totalCropH * (1 - anchorY)
+		}
+		// If aspects match exactly, no crop needed.
+
+	case ScaleModeFit:
+		// Scale source to fit inside output rect preserving aspect ratio,
+		// center the result within the output rect (letterbox/pillarbox).
+		srcAspect := float64(frameW) / float64(frameH)
+		outAspect := t.OutputRect.W / t.OutputRect.H
+
+		var fitW, fitH float64
+		if srcAspect > outAspect {
+			// Source is wider → constrained by width, pillarbox vertically.
+			fitW = t.OutputRect.W
+			fitH = fitW / srcAspect
+		} else {
+			// Source is taller → constrained by height, letterbox horizontally.
+			fitH = t.OutputRect.H
+			fitW = fitH * srcAspect
+		}
+
+		// Center within the output rect.
+		resolved.PositionX = t.OutputRect.X + (t.OutputRect.W-fitW)/2
+		resolved.PositionY = t.OutputRect.Y + (t.OutputRect.H-fitH)/2
+		resolved.Width = fitW
+		resolved.Height = fitH
+	}
+
+	return resolved
+}
+
 // ValidateTransform checks that all transform parameters are within valid ranges.
 // Position is not bounds-checked because DVE transforms can intentionally fly
 // off-screen during animations.
@@ -293,8 +394,16 @@ func ValidateTransform(t Transform) error {
 	if t.Contrast < 0 || t.Contrast > 3 {
 		return fmt.Errorf("dve: contrast %f out of range [0.0, 3.0]", t.Contrast)
 	}
-	if t.ScaleMode != "" && t.ScaleMode != ScaleModeStretch && t.ScaleMode != ScaleModeFill {
-		return fmt.Errorf("unknown scaleMode %q (must be %q or %q)", t.ScaleMode, ScaleModeStretch, ScaleModeFill)
+	if t.ScaleMode != "" && t.ScaleMode != ScaleModeStretch && t.ScaleMode != ScaleModeFill && t.ScaleMode != ScaleModeFit {
+		return fmt.Errorf("unknown scaleMode %q (must be %q, %q, or %q)", t.ScaleMode, ScaleModeStretch, ScaleModeFill, ScaleModeFit)
+	}
+	if t.RectMode {
+		if t.OutputRect.W <= 0 {
+			return fmt.Errorf("outputRect.w must be > 0 in rectMode, got %v", t.OutputRect.W)
+		}
+		if t.OutputRect.H <= 0 {
+			return fmt.Errorf("outputRect.h must be > 0 in rectMode, got %v", t.OutputRect.H)
+		}
 	}
 	for i, v := range t.CropAnchor {
 		if v < 0 || v > 1 {

@@ -196,7 +196,7 @@ sequenceDiagram
     Note over PL: p := pipeline.Load()<br/>(atomic.Pointer, ~1ns)
 
     PL->>PIPE: p.Run(frame)
-    Note over PIPE: MakeWritable (COW)<br/>→ upstreamKeyNode<br/>→ layoutCompositorNode<br/>→ compositorNode (DSK)<br/>→ rawSinkNode(s)<br/>→ encodeNode<br/>(5–30ms total, no locks)
+    Note over PIPE: MakeWritable (COW)<br/>→ upstreamKeyNode<br/>→ dveCompositorNode<br/>→ compositorNode (DSK)<br/>→ rawSinkNode(s)<br/>→ encodeNode<br/>(5–30ms total, no locks)
 
     PIPE->>PR: BroadcastVideo(encoded)
 ```
@@ -447,7 +447,7 @@ Every mutex in the system, what it protects, and whether it's on the per-frame h
 
 | Component | Field | Type | Protects | Hot Path? |
 |-----------|-------|------|----------|-----------|
-| [Switcher](../server/switcher/switcher.go) | `s.mu` | `RWMutex` | sources, programSource, previewSource, state, transEngine, pipeCodecs, compositorRef, keyBridge, layoutCompositor | Yes (RLock) |
+| [Switcher](../server/switcher/switcher.go) | `s.mu` | `RWMutex` | sources, programSource, previewSource, state, transEngine, pipeCodecs, compositorRef, keyBridge, dveCompositor | Yes (RLock) |
 | [FramePool](../server/switcher/frame_pool.go) | `fp.mu` | `Mutex` | LIFO free list (pre-allocated YUV420 buffers), hit/miss counters | Yes |
 | [FrameSynchronizer](../server/switcher/frame_sync.go) | `fs.mu` | `Mutex` | sources map, tickNum, releases slice | Yes |
 | [syncSource](../server/switcher/frame_sync.go) | `ss.mu` | `Mutex` | per-source video/audio ring buffers, PTS tracking, audioQueue | Yes |
@@ -489,7 +489,7 @@ Every mutex in the system, what it protects, and whether it's on the per-frame h
 | [Compositor](../server/graphics/compositor.go) | `c.mu` | `RWMutex` | layers, nextID, sortedIDs, blendScratch, onStateChange | Config only |
 | [KeyProcessor](../server/graphics/key_processor.go) | `kp.mu` | `RWMutex` | keys map, onChange, spillWorkBuf, maskBuf | Config only |
 | [KeyProcessorBridge](../server/graphics/key_processor_bridge.go) | `b.mu` | `Mutex` | kp, fills map, scaledFills, scaleFunc | Config only |
-| [Layout Compositor](../server/layout/compositor.go) | `c.mu` | `Mutex` | fills, scaleBufs, cropBufs, sortedSlots, animations | Config only |
+| [DVE Compositor](../server/dve/compositor.go) | `c.mu` | `Mutex` | fills, scaleBufs, cropBufs, sortedSlots, animations | Config only |
 
 ### Replay
 
@@ -718,7 +718,7 @@ handleRawVideoFrame:
     state := s.state                     // copy to local
     engine := s.transEngine              // copy pointer
     keyBridge := s.keyBridge             // copy pointer
-    layoutComp := s.layoutCompositor     // copy pointer
+    dveComp := s.dveCompositor           // copy pointer
     s.mu.RUnlock()
     // ... process using locals, no lock held ...
 ```

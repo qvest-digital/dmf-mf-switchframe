@@ -331,21 +331,6 @@ export interface DVEPresetInfo {
 	builtin?: boolean;
 }
 
-export interface LayoutSlotConfig {
-	sourceKey: string;
-	rect: { min: { x: number; y: number }; max: { x: number; y: number } };
-	zOrder: number;
-	enabled: boolean;
-	border?: { width: number; colorY: number; colorCb: number; colorCr: number };
-	transition?: { type: 'cut' | 'dissolve' | 'fly'; durationMs: number };
-}
-
-export interface LayoutConfig {
-	preset?: string;
-	slots?: LayoutSlotConfig[];
-	name?: string;
-}
-
 export interface PresetInfo {
 	id: string;
 	name: string;

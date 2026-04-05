@@ -19,7 +19,7 @@ import (
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/correctness/testutil"
 	"github.com/zsiec/switchframe/server/graphics"
-	"github.com/zsiec/switchframe/server/layout"
+	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/playout"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
@@ -327,8 +327,8 @@ func TestRapidGraphicsToggle(t *testing.T) {
 // ==========================================================================
 // TestRapidLayoutChanges
 //
-// Creates a layout.Compositor and rapidly changes between PIP, quad,
-// side-by-side, and nil layouts 20 times, calling ProcessFrame each time.
+// Creates a dve.Compositor and rapidly changes between PIP presets
+// and nil layouts 20 times, calling ProcessFrame each time.
 // Verifies no panic and output Y values are in legal range.
 // ==========================================================================
 
@@ -338,7 +338,7 @@ func TestRapidLayoutChanges(t *testing.T) {
 	}
 	t.Parallel()
 
-	comp := layout.NewCompositor(testWidth, testHeight)
+	comp := dve.NewCompositor(testWidth, testHeight)
 
 	// Create source frames for slots.
 	srcFrame := testutil.GenerateSolidYUV420(testWidth, testHeight, 128, 128, 128)
@@ -348,12 +348,25 @@ func TestRapidLayoutChanges(t *testing.T) {
 		comp.IngestSourceFrame(src, srcFrame, testWidth, testHeight, 1000)
 	}
 
-	// Define layout factories.
-	makeLayouts := func() []*layout.Layout {
-		pip := layout.PIPPreset(testWidth, testHeight, "src1", "top-right", 0.25)
-		sbs := layout.SideBySidePreset(testWidth, testHeight, "src1", "src2", 0)
-		quad := layout.QuadPreset(testWidth, testHeight, [4]string{"src1", "src2", "src3", "src4"}, 0)
-		return []*layout.Layout{pip, sbs, quad, nil}
+	// Define layout factories using DVE presets.
+	makeLayouts := func() []*dve.Layout {
+		presetNames := []string{"pip-top-right", "side-by-side", "quad"}
+		var layouts []*dve.Layout
+		for _, name := range presetNames {
+			p := dve.ResolveBuiltinPreset(name, testWidth, testHeight)
+			if p != nil {
+				dl := &dve.Layout{Name: p.Name, Slots: p.Slots}
+				// Assign source keys to slots.
+				for i := range dl.Slots {
+					if i < len(sources) {
+						dl.Slots[i].SourceKey = sources[i]
+					}
+				}
+				layouts = append(layouts, dl)
+			}
+		}
+		layouts = append(layouts, nil)
+		return layouts
 	}
 
 	layouts := makeLayouts()
@@ -813,22 +826,24 @@ done:
 }
 
 // ==========================================================================
-// TestLayoutCompositorConcurrentIngestAndProcess
+// TestDVECompositorConcurrentIngestAndProcess
 //
 // Tests that concurrent IngestSourceFrame and ProcessFrame calls
 // don't cause races or panics.
 // ==========================================================================
 
-func TestLayoutCompositorConcurrentIngestAndProcess(t *testing.T) {
+func TestDVECompositorConcurrentIngestAndProcess(t *testing.T) {
 	if testing.Short() {
 		t.Skip("stress test")
 	}
 	t.Parallel()
 
-	comp := layout.NewCompositor(testWidth, testHeight)
+	comp := dve.NewCompositor(testWidth, testHeight)
 
-	pip := layout.PIPPreset(testWidth, testHeight, "src1", "top-right", 0.25)
-	comp.SetLayout(pip)
+	preset := dve.ResolveBuiltinPreset("pip-top-right", testWidth, testHeight)
+	dl := &dve.Layout{Name: preset.Name, Slots: preset.Slots}
+	dl.Slots[0].SourceKey = "src1"
+	comp.SetLayout(dl)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -869,7 +884,7 @@ done:
 	cancel()
 	wg.Wait()
 
-	t.Logf("Concurrent layout ingest+process: %d frames processed", processCount)
+	t.Logf("Concurrent DVE ingest+process: %d frames processed", processCount)
 }
 
 // ==========================================================================

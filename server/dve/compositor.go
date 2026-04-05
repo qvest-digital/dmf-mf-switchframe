@@ -1,4 +1,4 @@
-package layout
+package dve
 
 import (
 	"fmt"
@@ -8,10 +8,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/internal/video"
 	"github.com/zsiec/switchframe/server/transition"
 )
+
+// DefaultTransitionDurationMs is the default slot transition duration.
+const DefaultTransitionDurationMs = 300
 
 // fillEntry holds a cached source frame.
 type fillEntry struct {
@@ -31,19 +33,117 @@ type scaledCacheEntry struct {
 	pts        int64  // source PTS when scaled
 }
 
-// Compositor manages the layout composition pipeline.
+// SlotTransition configures how a slot animates on/off.
+type SlotTransition struct {
+	Type       string `json:"type"`       // "cut", "dissolve", "fly"
+	DurationMs int    `json:"durationMs"` // milliseconds
+}
+
+// TransitionDuration returns the Duration as a time.Duration.
+func (t SlotTransition) TransitionDuration() time.Duration {
+	if t.DurationMs <= 0 {
+		return time.Duration(DefaultTransitionDurationMs) * time.Millisecond
+	}
+	return time.Duration(t.DurationMs) * time.Millisecond
+}
+
+// slotAnimation represents a slot transition animation.
+type slotAnimation struct {
+	SlotIndex  int
+	StartTime  time.Time
+	Duration   time.Duration
+	FromRect   image.Rectangle
+	ToRect     image.Rectangle
+	FromAlpha  float64
+	ToAlpha    float64
+	Easing     func(float64) float64
+	OnComplete func()
+}
+
+// Progress returns the animation progress [0, 1].
+func (a *slotAnimation) Progress() float64 {
+	elapsed := time.Since(a.StartTime)
+	t := float64(elapsed) / float64(a.Duration)
+	if t >= 1.0 {
+		return 1.0
+	}
+	if t <= 0 {
+		return 0
+	}
+	if a.Easing != nil {
+		return a.Easing(t)
+	}
+	return t
+}
+
+// InterpolateRect returns the interpolated rectangle at progress t.
+func (a *slotAnimation) InterpolateRect(t float64) image.Rectangle {
+	return image.Rect(
+		EvenAlign(lerpInt(a.FromRect.Min.X, a.ToRect.Min.X, t)),
+		EvenAlign(lerpInt(a.FromRect.Min.Y, a.ToRect.Min.Y, t)),
+		EvenAlign(lerpInt(a.FromRect.Max.X, a.ToRect.Max.X, t)),
+		EvenAlign(lerpInt(a.FromRect.Max.Y, a.ToRect.Max.Y, t)),
+	)
+}
+
+// InterpolateAlpha returns the interpolated alpha at progress t.
+// Clamps to endpoint values to avoid float imprecision causing visual pops.
+func (a *slotAnimation) InterpolateAlpha(t float64) float64 {
+	alpha := a.FromAlpha + (a.ToAlpha-a.FromAlpha)*t
+	// Clamp to target endpoints to prevent 255/256 blend residue.
+	if a.ToAlpha >= 1.0 && alpha > 0.99 {
+		return 1.0
+	}
+	if a.ToAlpha <= 0.0 && alpha < 0.01 {
+		return 0.0
+	}
+	return alpha
+}
+
+func lerpInt(a, b int, t float64) int {
+	return a + int(float64(b-a)*t+0.5)
+}
+
+// flyInOrigin computes the off-screen starting position for a fly-in animation.
+// The PIP flies in from the nearest frame edge based on the rectangle's position.
+func flyInOrigin(target image.Rectangle, frameW, frameH int) image.Rectangle {
+	// Use edge distances (rectangle edge to frame edge)
+	distLeft := target.Min.X
+	distRight := frameW - target.Max.X
+	distTop := target.Min.Y
+	distBottom := frameH - target.Max.Y
+
+	minDist := distLeft
+	dx, dy := -(target.Max.X), 0 // slide fully off-screen left
+	if distRight < minDist {
+		minDist = distRight
+		dx, dy = frameW-target.Min.X, 0 // slide fully off-screen right
+	}
+	if distTop < minDist {
+		minDist = distTop
+		dx, dy = 0, -(target.Max.Y) // slide fully off-screen top
+	}
+	if distBottom < minDist {
+		dx, dy = 0, frameH-target.Min.Y // slide fully off-screen bottom
+	}
+
+	return image.Rect(
+		EvenAlign(target.Min.X+dx),
+		EvenAlign(target.Min.Y+dy),
+		EvenAlign(target.Max.X+dx),
+		EvenAlign(target.Max.Y+dy),
+	)
+}
+
+// Compositor manages the DVE composition pipeline.
 // Frame delivery via IngestSourceFrame (called from handleRawVideoFrame).
 // Compositing via ProcessFrame (called from pipeline node).
 type Compositor struct {
-	mu        sync.Mutex
-	layout    atomic.Pointer[Layout]
-	dveLayout atomic.Pointer[dve.Layout]
+	mu     sync.Mutex
+	layout atomic.Pointer[Layout]
 
 	// Per-source cached frames (8-bit YUV420)
 	fills map[string]*fillEntry
-
-	// Per-source cached frames (10-bit YUV422P10LE)
-	fills10 map[string]*fillEntry10
 
 	// Per-slot pre-allocated scale buffers
 	scaleBufs [][]byte
@@ -68,7 +168,10 @@ type Compositor struct {
 	dveAlphaBuf []byte
 
 	// Active animations
-	animations []*Animation
+	animations []*slotAnimation
+
+	// Slot-level transition configs (indexed by slot)
+	slotTransitions []SlotTransition
 
 	// Frame dimensions
 	frameW, frameH int
@@ -78,7 +181,7 @@ type Compositor struct {
 	OnActiveChange func()
 }
 
-// NewCompositor creates a new layout compositor.
+// NewCompositor creates a new DVE compositor.
 func NewCompositor(frameW, frameH int) *Compositor {
 	return &Compositor{
 		fills:  make(map[string]*fillEntry),
@@ -112,7 +215,7 @@ func (c *Compositor) SetLayout(l *Layout) {
 			}
 		}
 	} else {
-		// Layout cleared — drop all fills.
+		// Layout cleared -- drop all fills.
 		c.fills = make(map[string]*fillEntry)
 	}
 	c.layout.Store(l)
@@ -134,9 +237,11 @@ func (c *Compositor) allocateBuffers(l *Layout) {
 	c.cropBufs = make([][]byte, len(l.Slots))
 	c.grayBufs = make([][]byte, len(l.Slots))
 	c.snapBufs = make([][]byte, len(l.Slots))
+	c.slotTransitions = make([]SlotTransition, len(l.Slots))
 	for i, slot := range l.Slots {
-		w := slot.Rect.Dx()
-		h := slot.Rect.Dy()
+		rect := slot.Transform.ToRect()
+		w := rect.Dx()
+		h := rect.Dy()
 		size := video.YUV420FrameSize(w, h)
 		c.scaleBufs[i] = make([]byte, size)
 		c.grayBufs[i] = makeGrayFrame(w, h)
@@ -171,8 +276,6 @@ func (c *Compositor) Active() bool {
 }
 
 // hasEnabledSlots checks if a layout has at least one enabled slot.
-// Pure function — accepts the layout directly so callers that already
-// have the layout reference avoid a redundant atomic load.
 func (c *Compositor) hasEnabledSlots(l *Layout) bool {
 	if l == nil {
 		return false
@@ -250,7 +353,27 @@ type slotSnapshot struct {
 	fillPTS      int64             // PTS of the fill entry at snapshot time
 	cachedScaled *scaledCacheEntry // cached scaled frame (may be nil)
 	fillKey      string            // source key for cache writeback
-	dveSlot      *dve.Slot         // DVE slot (non-nil when DVE layout active, for warp path)
+	scaleMode    string            // resolved scale mode
+	cropAnchor   [2]float64        // resolved crop anchor
+}
+
+// effectiveScaleMode returns the slot's effective scale mode, defaulting to "stretch".
+func effectiveScaleMode(t Transform) string {
+	if t.ScaleMode == ScaleModeFill {
+		return ScaleModeFill
+	}
+	return ScaleModeStretch
+}
+
+// effectiveCropAnchor returns the slot's effective crop anchor, defaulting to center (0.5, 0.5).
+func effectiveCropAnchor(t Transform) (float64, float64) {
+	ax, ay := t.CropAnchor[0], t.CropAnchor[1]
+	// In fill mode, always use raw values (including [0,0] = top-left).
+	// In non-fill mode, zero-value means unset -- default to center.
+	if t.ScaleMode != ScaleModeFill && ax == 0 && ay == 0 {
+		return 0.5, 0.5
+	}
+	return clamp01(ax), clamp01(ay)
 }
 
 // ProcessFrame composites all enabled layout slots onto the frame.
@@ -262,8 +385,6 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 	}
 
 	// Compute scale factors if frame dimensions differ from configured dimensions.
-	// Layout rects are in configured (pipeline format) coordinates; scale them
-	// to actual frame coordinates when the source is at a different resolution.
 	scaleX, scaleY := 1.0, 1.0
 	needsScale := false
 	if width != c.frameW || height != c.frameH {
@@ -274,13 +395,12 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 		}
 	}
 
-	// Phase 1: Under lock — tick animations, snapshot source data, release lock.
+	// Phase 1: Under lock -- tick animations, snapshot source data, release lock.
 	c.mu.Lock()
 	c.tickAnimations()
 
 	sortedSlots := c.sortedSlots
 	if len(sortedSlots) == 0 {
-		// Fallback if sorted slots not yet computed (shouldn't happen).
 		sortedSlots = make([]int, len(l.Slots))
 		for i := range l.Slots {
 			sortedSlots[i] = i
@@ -297,7 +417,20 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 			continue
 		}
 
-		rect, alpha := c.effectiveRectAndAlpha(idx, slot)
+		// Resolve RectMode: if the slot uses rect mode, resolve the transform
+		// using cached source dimensions (or 0,0 if unknown).
+		transform := slot.Transform
+		srcW, srcH := 0, 0
+		if entry, ok := c.fills[slot.SourceKey]; ok {
+			srcW = entry.width
+			srcH = entry.height
+		}
+		if transform.RectMode {
+			transform = transform.ResolveRect(srcW, srcH)
+		}
+
+		slotRect := transform.ToRect()
+		rect, alpha := c.effectiveRectAndAlpha(idx, slotRect, slot.Enabled)
 		if rect.Dx() <= 0 || rect.Dy() <= 0 {
 			continue
 		}
@@ -327,11 +460,19 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 			continue
 		}
 
+		// Apply DVE opacity on top of animation alpha.
+		dveOpacity := transform.EffectiveOpacity()
+		if dveOpacity < 1.0 {
+			alpha *= dveOpacity
+		}
+
 		snap := slotSnapshot{
-			slot:  slot,
-			idx:   idx,
-			rect:  rect,
-			alpha: alpha,
+			slot:       slot,
+			idx:        idx,
+			rect:       rect,
+			alpha:      alpha,
+			scaleMode:  effectiveScaleMode(transform),
+			cropAnchor: [2]float64{transform.CropAnchor[0], transform.CropAnchor[1]},
 		}
 
 		if entry, ok := c.fills[slot.SourceKey]; ok {
@@ -356,15 +497,14 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 			}
 		} else if idx < len(c.grayBufs) {
 			snap.srcYUV = c.grayBufs[idx]
-			// Use the actual gray buffer dimensions, not the slot rect
-			// (they match at allocation but slot rect can change during animation).
-			grayW := slot.Rect.Dx()
-			grayH := slot.Rect.Dy()
+			// Use the actual gray buffer dimensions from the slot transform rect.
+			grayRect := slot.Transform.ToRect()
+			grayW := grayRect.Dx()
+			grayH := grayRect.Dy()
 			if len(snap.srcYUV) == video.YUV420FrameSize(grayW, grayH) {
 				snap.srcW = grayW
 				snap.srcH = grayH
 			} else {
-				// Gray buffer size doesn't match — skip to avoid scaler out-of-bounds.
 				continue
 			}
 			snap.hasGray = true
@@ -379,12 +519,10 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 		if idx < len(c.scaleBufs) && len(c.scaleBufs[idx]) >= neededSize {
 			snap.scaleBuf = c.scaleBufs[idx][:neededSize]
 		} else {
-			// Allocate once under lock; the buffer persists for future frames.
 			buf := make([]byte, neededSize)
 			if idx < len(c.scaleBufs) {
 				c.scaleBufs[idx] = buf
 			} else {
-				// Extend slice to accommodate this index.
 				for len(c.scaleBufs) <= idx {
 					c.scaleBufs = append(c.scaleBufs, nil)
 				}
@@ -394,9 +532,8 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 		}
 
 		// For fill-mode slots with a real source, allocate a crop buffer.
-		if snap.hasFill && slot.EffectiveScaleMode() == ScaleModeFill {
+		if snap.hasFill && snap.scaleMode == ScaleModeFill {
 			cropNeeded := video.YUV420FrameSize(snap.srcW, snap.srcH)
-			// Extend cropBufs slice if needed.
 			for len(c.cropBufs) <= idx {
 				c.cropBufs = append(c.cropBufs, nil)
 			}
@@ -408,38 +545,21 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 
 		c.snapCache = append(c.snapCache, snap)
 	}
-
-	// Capture DVE slot references and apply DVE opacity for Phase 2.
-	if dl := c.dveLayout.Load(); dl != nil {
-		for i := range c.snapCache {
-			snap := &c.snapCache[i]
-			if snap.idx < len(dl.Slots) {
-				ds := dl.Slots[snap.idx]
-				snap.dveSlot = &ds
-				// Apply DVE opacity on top of animation alpha.
-				dveOpacity := ds.Transform.EffectiveOpacity()
-				if dveOpacity < 1.0 {
-					snap.alpha *= dveOpacity
-				}
-			}
-		}
-	}
-
 	c.mu.Unlock()
 
-	// Phase 2: Lock-free — crop (if fill mode), scale, and composite each slot.
+	// Phase 2: Lock-free -- crop (if fill mode), scale, and composite each slot.
 	for i := range c.snapCache {
 		snap := &c.snapCache[i]
 		slotW := snap.rect.Dx()
 		slotH := snap.rect.Dy()
 
 		// Gray (no-signal) slots at full opacity: fill directly with broadcast black.
-		// Avoids scaling a uniform gray buffer through the scaler.
 		if snap.hasGray && snap.alpha >= 1.0 {
 			FillRectBlack(yuv, width, height, snap.rect)
-			if snap.slot.Border.Width > 0 {
-				color := [3]byte{snap.slot.Border.ColorY, snap.slot.Border.ColorCb, snap.slot.Border.ColorCr}
-				DrawBorderYUV(yuv, width, height, snap.rect, color, snap.slot.Border.Width)
+			borderW := int(snap.slot.Transform.Border.Width)
+			if borderW > 0 {
+				color := [3]byte{snap.slot.Transform.Border.ColorY, snap.slot.Transform.Border.ColorCb, snap.slot.Transform.Border.ColorCr}
+				DrawBorderYUV(yuv, width, height, snap.rect, color, borderW)
 			}
 			continue
 		}
@@ -450,7 +570,7 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 
 		// Crop-to-fill: extract aspect-matching sub-region before scaling.
 		if snap.cropBuf != nil {
-			anchorX, anchorY := snap.slot.EffectiveCropAnchor()
+			anchorX, anchorY := effectiveCropAnchor(snap.slot.Transform)
 			cropX, cropY, cropW, cropH := ComputeCropRect(srcW, srcH, slotW, slotH, anchorX, anchorY)
 			if cropW > 0 && cropH > 0 && (cropW != srcW || cropH != srcH) {
 				cropSize := video.YUV420FrameSize(cropW, cropH)
@@ -462,15 +582,15 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 		}
 
 		// DVE warp path: for rotated/perspective slots, use inverse-warp compositing.
-		if snap.dveSlot != nil && dveNeedsWarp(snap.dveSlot.Transform) {
-			// Update snap's srcYUV/srcW/srcH after crop for the warp function.
+		if needsWarp(snap.slot.Transform) {
 			snap.srcYUV = srcYUV
 			snap.srcW = srcW
 			snap.srcH = srcH
-			c.processSlotDVEWarp(yuv, width, height, snap, snap.dveSlot)
-			if snap.slot.Border.Width > 0 {
-				color := [3]byte{snap.slot.Border.ColorY, snap.slot.Border.ColorCb, snap.slot.Border.ColorCr}
-				DrawBorderYUV(yuv, width, height, snap.rect, color, snap.slot.Border.Width)
+			c.processSlotDVEWarp(yuv, width, height, snap)
+			borderW := int(snap.slot.Transform.Border.Width)
+			if borderW > 0 {
+				color := [3]byte{snap.slot.Transform.Border.ColorY, snap.slot.Transform.Border.ColorCb, snap.slot.Transform.Border.ColorCr}
+				DrawBorderYUV(yuv, width, height, snap.rect, color, borderW)
 			}
 			continue
 		}
@@ -481,13 +601,11 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 			snap.cachedScaled.pts == snap.fillPTS &&
 			snap.cachedScaled.srcW == srcW && snap.cachedScaled.srcH == srcH &&
 			snap.cachedScaled.dstW == slotW && snap.cachedScaled.dstH == slotH {
-			// Cache hit — reuse previously scaled frame.
 			scaled = snap.cachedScaled.yuv
 		} else if srcW == slotW && srcH == slotH {
 			scaled = srcYUV
 		} else {
-			quality := c.selectScaleQuality()
-			transition.ScaleYUV420WithQuality(srcYUV, srcW, srcH, snap.scaleBuf, slotW, slotH, quality)
+			transition.ScaleYUV420WithQuality(srcYUV, srcW, srcH, snap.scaleBuf, slotW, slotH, transition.ScaleQualityFast)
 			scaled = snap.scaleBuf
 
 			// Write scaled result back to cache (under lock since fillEntry is shared).
@@ -524,9 +642,10 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 		}
 
 		// Draw border.
-		if snap.slot.Border.Width > 0 {
-			color := [3]byte{snap.slot.Border.ColorY, snap.slot.Border.ColorCb, snap.slot.Border.ColorCr}
-			DrawBorderYUV(yuv, width, height, snap.rect, color, snap.slot.Border.Width)
+		borderW := int(snap.slot.Transform.Border.Width)
+		if borderW > 0 {
+			color := [3]byte{snap.slot.Transform.Border.ColorY, snap.slot.Transform.Border.ColorCb, snap.slot.Transform.Border.ColorCr}
+			DrawBorderYUV(yuv, width, height, snap.rect, color, borderW)
 		}
 	}
 
@@ -534,9 +653,7 @@ func (c *Compositor) ProcessFrame(yuv []byte, width, height int) []byte {
 }
 
 // selectScaleQuality always uses bilinear for PIP compositing. Lanczos-3 is
-// 5-15x slower and imperceptible at PIP overlay scale. With 4 PIP slots
-// scaling from 1080p sources, Lanczos-3 caused 400ms+ per frame (446ms
-// measured), blowing past the 33ms frame budget and causing visual artifacts.
+// 5-15x slower and imperceptible at PIP overlay scale.
 func (c *Compositor) selectScaleQuality() transition.ScaleQuality {
 	return transition.ScaleQualityFast
 }
@@ -573,10 +690,10 @@ type SlotSnap struct {
 	ScaleMode                                  string     // "stretch" (default) or "fill"
 	CropAnchor                                 [2]float64 // [x,y] 0.0-1.0, anchor point for crop (0.5,0.5 = center)
 
-	// DVE fields (populated when a DVE layout is active).
-	DVETransform  *dve.Transform // full DVE transform (nil if legacy layout)
-	DVEInvMatrix  dve.Matrix3x3  // pre-computed inverse transform matrix
-	DVEIsIdentity bool           // true if no DVE effects needed (fast path)
+	// DVE fields (always populated since this is the DVE compositor).
+	DVETransform  *Transform // full DVE transform
+	DVEInvMatrix  Matrix3x3  // pre-computed inverse transform matrix
+	DVEIsIdentity bool       // true if no DVE effects needed (fast path)
 }
 
 // SnapshotSlots returns a deep-copied snapshot of all enabled layout slots
@@ -604,9 +721,27 @@ func (c *Compositor) SnapshotSlots() []SlotSnap {
 			continue
 		}
 
-		rect, alpha := c.effectiveRectAndAlpha(idx, slot)
+		// Resolve RectMode using cached source dimensions.
+		transform := slot.Transform
+		srcW, srcH := 0, 0
+		if entry, ok := c.fills[slot.SourceKey]; ok {
+			srcW = entry.width
+			srcH = entry.height
+		}
+		if transform.RectMode {
+			transform = transform.ResolveRect(srcW, srcH)
+		}
+
+		slotRect := transform.ToRect()
+		rect, alpha := c.effectiveRectAndAlpha(idx, slotRect, slot.Enabled)
 		if rect.Dx() <= 0 || rect.Dy() <= 0 {
 			continue
+		}
+
+		// Apply DVE opacity.
+		dveOpacity := transform.EffectiveOpacity()
+		if dveOpacity < 1.0 {
+			alpha *= dveOpacity
 		}
 
 		snap := SlotSnap{
@@ -618,12 +753,14 @@ func (c *Compositor) SnapshotSlots() []SlotSnap {
 			RectW:           rect.Dx(),
 			RectH:           rect.Dy(),
 			Alpha:           float32(alpha),
-			BorderColorY:    slot.Border.ColorY,
-			BorderColorCb:   slot.Border.ColorCb,
-			BorderColorCr:   slot.Border.ColorCr,
-			BorderThickness: slot.Border.Width,
-			ScaleMode:       slot.EffectiveScaleMode(),
-			CropAnchor:      slot.CropAnchor,
+			BorderColorY:    transform.Border.ColorY,
+			BorderColorCb:   transform.Border.ColorCb,
+			BorderColorCr:   transform.Border.ColorCr,
+			BorderThickness: int(transform.Border.Width),
+			ScaleMode:       effectiveScaleMode(transform),
+			CropAnchor:      transform.CropAnchor,
+			DVETransform:    &transform,
+			DVEIsIdentity:   isSimple(transform),
 		}
 
 		if entry, ok := c.fills[slot.SourceKey]; ok {
@@ -638,12 +775,20 @@ func (c *Compositor) SnapshotSlots() []SlotSnap {
 			}
 		}
 
-		result = append(result, snap)
-	}
+		// Compute inverse matrix for GPU warp path.
+		invSrcW := snap.FillW
+		invSrcH := snap.FillH
+		if invSrcW <= 0 || invSrcH <= 0 {
+			invSrcW = int(transform.Width)
+			invSrcH = int(transform.Height)
+		}
+		if invSrcW > 0 && invSrcH > 0 {
+			snap.DVEInvMatrix = ComputeInverseTransform(transform, invSrcW, invSrcH)
+		} else {
+			snap.DVEInvMatrix = Identity()
+		}
 
-	// Enrich with DVE transform data if a DVE layout is active.
-	if dl := c.dveLayout.Load(); dl != nil {
-		result = c.enrichSnapsWithDVE(result, dl)
+		result = append(result, snap)
 	}
 
 	return result
@@ -651,7 +796,7 @@ func (c *Compositor) SnapshotSlots() []SlotSnap {
 
 // effectiveRectAndAlpha returns the current rect and alpha for a slot,
 // accounting for any active animation.
-func (c *Compositor) effectiveRectAndAlpha(slotIdx int, slot Slot) (image.Rectangle, float64) {
+func (c *Compositor) effectiveRectAndAlpha(slotIdx int, slotRect image.Rectangle, enabled bool) (image.Rectangle, float64) {
 	for _, anim := range c.animations {
 		if anim.SlotIndex == slotIdx {
 			t := anim.Progress()
@@ -663,8 +808,8 @@ func (c *Compositor) effectiveRectAndAlpha(slotIdx int, slot Slot) (image.Rectan
 			return rect, alpha
 		}
 	}
-	if slot.Enabled {
-		return slot.Rect, 1.0
+	if enabled {
+		return slotRect, 1.0
 	}
 	return image.Rectangle{}, 0.0
 }
@@ -726,10 +871,30 @@ func (c *Compositor) UpdateSlot(slotIdx int, fn func(*Slot)) {
 	c.layout.Store(updated)
 }
 
-// UpdateSlotRect updates only the position and size of a slot. This is the
-// fast path used by datagram handlers — it does NOT trigger a state broadcast,
-// allowing the compositor to pick up position changes at frame rate without
-// flooding the control channel.
+// UpdateSlotTransform applies a mutation function to a slot's Transform in the
+// current layout. The layout is updated atomically. No state broadcast is
+// triggered -- fast-control is fire-and-forget; the REST confirmation path
+// triggers broadcasts separately.
+func (c *Compositor) UpdateSlotTransform(slotIdx int, fn func(*Transform)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	l := c.layout.Load()
+	if l == nil || slotIdx < 0 || slotIdx >= len(l.Slots) {
+		return
+	}
+
+	// Deep-copy the layout so concurrent readers see a consistent snapshot.
+	updated := c.cloneLayout(l)
+	fn(&updated.Slots[slotIdx].Transform)
+	c.computeSortedSlots(updated)
+	c.layout.Store(updated)
+}
+
+// UpdateSlotRect updates only the position and size of a slot via the transform.
+// This is the fast path used by datagram handlers -- it does NOT trigger a state
+// broadcast, allowing the compositor to pick up position changes at frame rate
+// without flooding the control channel.
 func (c *Compositor) UpdateSlotRect(slotIdx int, rect image.Rectangle) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -738,7 +903,6 @@ func (c *Compositor) UpdateSlotRect(slotIdx int, rect image.Rectangle) error {
 		return fmt.Errorf("slot %d: no layout or out of range", slotIdx)
 	}
 	// Snap to even alignment for YUV420 compatibility.
-	// Round Min down and Max up so the rect never shrinks below the caller's intent.
 	rect.Min.X &^= 1
 	rect.Min.Y &^= 1
 	rect.Max.X = (rect.Max.X + 1) &^ 1
@@ -747,7 +911,10 @@ func (c *Compositor) UpdateSlotRect(slotIdx int, rect image.Rectangle) error {
 		return fmt.Errorf("rect %v exceeds frame bounds %dx%d", rect, c.frameW, c.frameH)
 	}
 	updated := c.cloneLayout(l)
-	updated.Slots[slotIdx].Rect = rect
+	updated.Slots[slotIdx].Transform.PositionX = float64(rect.Min.X)
+	updated.Slots[slotIdx].Transform.PositionY = float64(rect.Min.Y)
+	updated.Slots[slotIdx].Transform.Width = float64(rect.Dx())
+	updated.Slots[slotIdx].Transform.Height = float64(rect.Dy())
 	c.computeSortedSlots(updated)
 	c.layout.Store(updated)
 	return nil
@@ -773,25 +940,36 @@ func (c *Compositor) SlotOn(slotIdx int) {
 
 	wasAfter := c.hasEnabledSlots(updated)
 
-	switch slot.Transition.Type {
+	// Get the slot rect for animation.
+	slotRect := slot.Transform.ToRect()
+
+	// Determine transition type from slot transitions config.
+	transType := "cut"
+	var transDuration time.Duration
+	if slotIdx < len(c.slotTransitions) {
+		transType = c.slotTransitions[slotIdx].Type
+		transDuration = c.slotTransitions[slotIdx].TransitionDuration()
+	}
+
+	switch transType {
 	case "dissolve":
-		c.animations = append(c.animations, &Animation{
+		c.animations = append(c.animations, &slotAnimation{
 			SlotIndex: slotIdx,
 			StartTime: time.Now(),
-			Duration:  slot.Transition.TransitionDuration(),
-			FromRect:  slot.Rect,
-			ToRect:    slot.Rect,
+			Duration:  transDuration,
+			FromRect:  slotRect,
+			ToRect:    slotRect,
 			FromAlpha: 0.0,
 			ToAlpha:   1.0,
 		})
 	case "fly":
-		origin := FlyInOrigin(slot.Rect, c.frameW, c.frameH)
-		c.animations = append(c.animations, &Animation{
+		origin := flyInOrigin(slotRect, c.frameW, c.frameH)
+		c.animations = append(c.animations, &slotAnimation{
 			SlotIndex: slotIdx,
 			StartTime: time.Now(),
-			Duration:  slot.Transition.TransitionDuration(),
+			Duration:  transDuration,
 			FromRect:  origin,
-			ToRect:    slot.Rect,
+			ToRect:    slotRect,
 			FromAlpha: 1.0,
 			ToAlpha:   1.0,
 		})
@@ -817,16 +995,25 @@ func (c *Compositor) SlotOff(slotIdx int) {
 	wasBefore := c.hasEnabledSlots(l)
 
 	slot := l.Slots[slotIdx]
+	slotRect := slot.Transform.ToRect()
+
+	// Determine transition type from slot transitions config.
+	transType := "cut"
+	var transDuration time.Duration
+	if slotIdx < len(c.slotTransitions) {
+		transType = c.slotTransitions[slotIdx].Type
+		transDuration = c.slotTransitions[slotIdx].TransitionDuration()
+	}
 
 	var wasAfter bool
-	switch slot.Transition.Type {
+	switch transType {
 	case "dissolve":
-		c.animations = append(c.animations, &Animation{
+		c.animations = append(c.animations, &slotAnimation{
 			SlotIndex: slotIdx,
 			StartTime: time.Now(),
-			Duration:  slot.Transition.TransitionDuration(),
-			FromRect:  slot.Rect,
-			ToRect:    slot.Rect,
+			Duration:  transDuration,
+			FromRect:  slotRect,
+			ToRect:    slotRect,
 			FromAlpha: 1.0,
 			ToAlpha:   0.0,
 			OnComplete: func() {
@@ -839,15 +1026,14 @@ func (c *Compositor) SlotOff(slotIdx int) {
 				}
 			},
 		})
-		// Dissolve: slot is still enabled during animation, active state unchanged.
 		wasAfter = wasBefore
 	case "fly":
-		dest := FlyInOrigin(slot.Rect, c.frameW, c.frameH)
-		c.animations = append(c.animations, &Animation{
+		dest := flyInOrigin(slotRect, c.frameW, c.frameH)
+		c.animations = append(c.animations, &slotAnimation{
 			SlotIndex: slotIdx,
 			StartTime: time.Now(),
-			Duration:  slot.Transition.TransitionDuration(),
-			FromRect:  slot.Rect,
+			Duration:  transDuration,
+			FromRect:  slotRect,
 			ToRect:    dest,
 			FromAlpha: 1.0,
 			ToAlpha:   1.0,
@@ -861,7 +1047,6 @@ func (c *Compositor) SlotOff(slotIdx int) {
 				}
 			},
 		})
-		// Fly: slot is still enabled during animation, active state unchanged.
 		wasAfter = wasBefore
 	default: // "cut"
 		updated := c.cloneLayout(l)
@@ -876,6 +1061,16 @@ func (c *Compositor) SlotOff(slotIdx int) {
 	}
 }
 
+// SetSlotTransition configures the transition type for a slot.
+func (c *Compositor) SetSlotTransition(slotIdx int, st SlotTransition) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for len(c.slotTransitions) <= slotIdx {
+		c.slotTransitions = append(c.slotTransitions, SlotTransition{})
+	}
+	c.slotTransitions[slotIdx] = st
+}
+
 // AutoDissolveSource dissolves off any enabled slot whose source matches the given key.
 // Used when a program cut changes to match a PIP source.
 func (c *Compositor) AutoDissolveSource(sourceKey string) {
@@ -888,12 +1083,13 @@ func (c *Compositor) AutoDissolveSource(sourceKey string) {
 	for i, slot := range l.Slots {
 		if slot.Enabled && slot.SourceKey == sourceKey {
 			idx := i // capture for closure
-			c.animations = append(c.animations, &Animation{
+			slotRect := slot.Transform.ToRect()
+			c.animations = append(c.animations, &slotAnimation{
 				SlotIndex: idx,
 				StartTime: time.Now(),
 				Duration:  200 * time.Millisecond,
-				FromRect:  slot.Rect,
-				ToRect:    slot.Rect,
+				FromRect:  slotRect,
+				ToRect:    slotRect,
 				FromAlpha: 1.0,
 				ToAlpha:   0.0,
 				OnComplete: func() {
@@ -915,4 +1111,189 @@ func (c *Compositor) cloneLayout(l *Layout) *Layout {
 	cp := &Layout{Name: l.Name, Slots: make([]Slot, len(l.Slots))}
 	copy(cp.Slots, l.Slots)
 	return cp
+}
+
+// needsWarp returns true when the DVE transform has rotation or perspective
+// that requires inverse-warp compositing instead of simple rect copy.
+func needsWarp(t Transform) bool {
+	return t.RotationDeg != 0 || t.PerspectiveX != 0 || t.PerspectiveY != 0
+}
+
+// isSimple returns true when the DVE transform only uses position/size
+// (no rotation, no perspective, no crop-softness, no border corner radius,
+// no shadow, no defocus). This is the fast path that matches legacy compositing.
+func isSimple(t Transform) bool {
+	return !needsWarp(t) &&
+		t.CropSoftness == 0 &&
+		t.Border.CornerRadius == 0 &&
+		!t.Shadow.Enabled &&
+		t.DefocusRadius == 0
+}
+
+// processSlotDVEWarp handles DVE-aware compositing for slots with rotation.
+func (c *Compositor) processSlotDVEWarp(yuv []byte, width, height int, snap *slotSnapshot) {
+	tr := snap.slot.Transform
+
+	srcYUV := snap.srcYUV
+	srcW := snap.srcW
+	srcH := snap.srcH
+	rect := snap.rect
+
+	// Compute the inverse transform for this source.
+	invM := ComputeInverseTransform(tr, srcW, srcH)
+
+	// For each pixel in the AABB (rect), inverse-transform to find source coordinate,
+	// bilinear sample from source YUV, and write to output.
+	slotW := rect.Dx()
+	slotH := rect.Dy()
+	if slotW <= 0 || slotH <= 0 {
+		return
+	}
+
+	// Reuse pooled buffers (safe: called from single-threaded pipeline goroutine).
+	warpSize := video.YUV420FrameSize(slotW, slotH)
+	if len(c.dveWarpBuf) < warpSize {
+		c.dveWarpBuf = make([]byte, warpSize)
+	}
+	warpBuf := c.dveWarpBuf[:warpSize]
+
+	// Initialize to transparent (BT.709 black).
+	yPlaneSize := slotW * slotH
+	for i := 0; i < yPlaneSize; i++ {
+		warpBuf[i] = 16
+	}
+	chromaSize := (slotW / 2) * (slotH / 2)
+	for i := 0; i < chromaSize*2; i++ {
+		warpBuf[yPlaneSize+i] = 128
+	}
+
+	// Alpha mask for coverage tracking.
+	if len(c.dveAlphaBuf) < yPlaneSize {
+		c.dveAlphaBuf = make([]byte, yPlaneSize)
+	}
+	alphaMask := c.dveAlphaBuf[:yPlaneSize]
+	for i := range alphaMask {
+		alphaMask[i] = 0
+	}
+
+	// Inverse warp the Y plane.
+	srcYSize := srcW * srcH
+	fSrcW := float32(srcW)
+	fSrcH := float32(srcH)
+
+	for dy := 0; dy < slotH; dy++ {
+		outY := float32(rect.Min.Y + dy)
+		for dx := 0; dx < slotW; dx++ {
+			outX := float32(rect.Min.X + dx)
+
+			sx := invM[0]*outX + invM[1]*outY + invM[2]
+			sy := invM[3]*outX + invM[4]*outY + invM[5]
+			sw := invM[6]*outX + invM[7]*outY + invM[8]
+			if sw != 0 && sw != 1 {
+				sx /= sw
+				sy /= sw
+			}
+
+			if sx < 0 || sy < 0 || sx >= fSrcW || sy >= fSrcH {
+				continue
+			}
+
+			// Bilinear interpolation for Y plane.
+			ix := int(sx)
+			iy := int(sy)
+			fx := sx - float32(ix)
+			fy := sy - float32(iy)
+
+			ix1 := ix + 1
+			iy1 := iy + 1
+			if ix1 >= srcW {
+				ix1 = srcW - 1
+			}
+			if iy1 >= srcH {
+				iy1 = srcH - 1
+			}
+
+			y00 := float32(srcYUV[iy*srcW+ix])
+			y10 := float32(srcYUV[iy*srcW+ix1])
+			y01 := float32(srcYUV[iy1*srcW+ix])
+			y11 := float32(srcYUV[iy1*srcW+ix1])
+			yVal := y00*(1-fx)*(1-fy) + y10*fx*(1-fy) + y01*(1-fx)*fy + y11*fx*fy
+
+			warpBuf[dy*slotW+dx] = byte(yVal + 0.5)
+			alphaMask[dy*slotW+dx] = 255
+		}
+	}
+
+	// Inverse warp chroma planes (at half resolution).
+	chromaW := slotW / 2
+	chromaH := slotH / 2
+	srcChromaW := srcW / 2
+	fSrcChromaW := float32(srcChromaW)
+	fSrcChromaH := float32(srcH / 2)
+
+	for cdy := 0; cdy < chromaH; cdy++ {
+		outY := float32(rect.Min.Y+cdy*2) + 0.5
+		for cdx := 0; cdx < chromaW; cdx++ {
+			outX := float32(rect.Min.X+cdx*2) + 0.5
+
+			sx := invM[0]*outX + invM[1]*outY + invM[2]
+			sy := invM[3]*outX + invM[4]*outY + invM[5]
+			sw := invM[6]*outX + invM[7]*outY + invM[8]
+			if sw != 0 && sw != 1 {
+				sx /= sw
+				sy /= sw
+			}
+
+			scx := sx / 2
+			scy := sy / 2
+
+			if scx < 0 || scy < 0 || scx >= fSrcChromaW || scy >= fSrcChromaH {
+				continue
+			}
+
+			ix := int(scx)
+			iy := int(scy)
+			fx := scx - float32(ix)
+			fy := scy - float32(iy)
+
+			ix1 := ix + 1
+			iy1 := iy + 1
+			if ix1 >= srcChromaW {
+				ix1 = srcChromaW - 1
+			}
+			srcChromaH := srcH / 2
+			if iy1 >= srcChromaH {
+				iy1 = srcChromaH - 1
+			}
+
+			// Cb plane.
+			cbBase := srcYSize
+			cb00 := float32(srcYUV[cbBase+iy*srcChromaW+ix])
+			cb10 := float32(srcYUV[cbBase+iy*srcChromaW+ix1])
+			cb01 := float32(srcYUV[cbBase+iy1*srcChromaW+ix])
+			cb11 := float32(srcYUV[cbBase+iy1*srcChromaW+ix1])
+			cbVal := cb00*(1-fx)*(1-fy) + cb10*fx*(1-fy) + cb01*(1-fx)*fy + cb11*fx*fy
+
+			// Cr plane.
+			crBase := srcYSize + srcChromaW*(srcH/2)
+			cr00 := float32(srcYUV[crBase+iy*srcChromaW+ix])
+			cr10 := float32(srcYUV[crBase+iy*srcChromaW+ix1])
+			cr01 := float32(srcYUV[crBase+iy1*srcChromaW+ix])
+			cr11 := float32(srcYUV[crBase+iy1*srcChromaW+ix1])
+			crVal := cr00*(1-fx)*(1-fy) + cr10*fx*(1-fy) + cr01*(1-fx)*fy + cr11*fx*fy
+
+			dstCbBase := yPlaneSize
+			dstCrBase := yPlaneSize + chromaW*chromaH
+			warpBuf[dstCbBase+cdy*chromaW+cdx] = byte(cbVal + 0.5)
+			warpBuf[dstCrBase+cdy*chromaW+cdx] = byte(crVal + 0.5)
+		}
+	}
+
+	// Composite warped buffer onto output frame using the effective opacity.
+	alpha := snap.alpha
+	if alpha < 1.0 {
+		BlendRegion(yuv, width, height, warpBuf, slotW, slotH, rect, alpha)
+	} else {
+		blendWithMask(yuv, width, height, warpBuf, alphaMask, slotW, slotH, rect)
+	}
 }

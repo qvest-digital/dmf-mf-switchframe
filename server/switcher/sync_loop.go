@@ -665,22 +665,19 @@ func (s *Switcher) feedSourceSubsystems(sourceKey string, pf *ProcessingFrame) {
 	} else {
 		s.mu.RLock()
 		keyBridge := s.keyBridge
-		layoutComp := s.layoutCompositor
+		dveComp := s.dveCompositor
 		s.mu.RUnlock()
 
 		if pf.Format == ColorYUV422_10bit {
 			if keyBridge != nil {
 				keyBridge.IngestFillYUV10(sourceKey, pf.Data, pf.Width, pf.Height)
 			}
-			if layoutComp != nil && layoutComp.NeedsSource(sourceKey) {
-				layoutComp.IngestSourceFrame10(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
-			}
 		} else {
 			if keyBridge != nil {
 				keyBridge.IngestFillYUV(sourceKey, pf.Data, pf.Width, pf.Height)
 			}
-			if layoutComp != nil && layoutComp.NeedsSource(sourceKey) {
-				layoutComp.IngestSourceFrame(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
+			if dveComp != nil && dveComp.NeedsSource(sourceKey) {
+				dveComp.IngestSourceFrame(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
 			}
 		}
 	}

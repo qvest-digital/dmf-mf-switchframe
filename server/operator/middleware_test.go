@@ -71,12 +71,12 @@ func TestEndpointSubsystem(t *testing.T) {
 		{"/api/captions/mode", SubsystemCaptions, true},
 		{"/api/captions/text", SubsystemCaptions, true},
 
-		// Layout/PIP (unmapped — should be switching)
-		{"/api/layout", SubsystemSwitching, true},
-		{"/api/layout/slots/0/on", SubsystemSwitching, true},
-		{"/api/layout/slots/1/off", SubsystemSwitching, true},
-		{"/api/layout/slots/2/source", SubsystemSwitching, true},
-		{"/api/layout/presets", SubsystemSwitching, true},
+		// DVE (switching subsystem)
+		{"/api/dve", SubsystemSwitching, true},
+		{"/api/dve/slots/0", SubsystemSwitching, true},
+		{"/api/dve/slots/1/on", SubsystemSwitching, true},
+		{"/api/dve/slots/2/off", SubsystemSwitching, true},
+		{"/api/dve/presets", SubsystemSwitching, true},
 
 		// Destinations (unmapped — should be output)
 		{"/api/output/destinations", SubsystemOutput, true},
@@ -352,7 +352,7 @@ func TestEndpointSubsystem_V1Prefix(t *testing.T) {
 		{"/api/v1/replay/speed", SubsystemReplay, true},
 		{"/api/v1/replay/marks", SubsystemReplay, true},
 		{"/api/v1/recording/start", SubsystemOutput, true},
-		{"/api/v1/layout/slots/0/on", SubsystemSwitching, true},
+		{"/api/v1/dve/slots/0/on", SubsystemSwitching, true},
 		{"/api/v1/scte35/cue", SubsystemOutput, true},
 		{"/api/v1/clips/upload", SubsystemSwitching, true},
 		{"/api/v1/captions/text", SubsystemCaptions, true},

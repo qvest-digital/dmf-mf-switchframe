@@ -44,7 +44,7 @@ type VisibleLayerSnapshot struct {
 }
 
 // LayoutState provides layout compositor state to the GPU layout node.
-// Implemented by an adapter wrapping layout.Compositor.
+// Implemented by an adapter wrapping dve.Compositor.
 type LayoutState interface {
 	Active() bool
 	SnapshotSlots() []SlotSnapshot

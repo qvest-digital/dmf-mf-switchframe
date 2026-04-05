@@ -30,7 +30,7 @@
 	import CommsBar from '../components/CommsBar.svelte';
 	import BottomTabs from '../components/BottomTabs.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
-	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, checkFragmentToken, authHeaders, SwitchApiError, listMacros, runMacro, layoutSlotOn, layoutSlotOff, replayQuick, replayPause, replayResume, replayPlay, replayStop, replaySeek, replaySetSpeed, replayMarkIn, replayMarkOut, commsMute } from '$lib/api/switch-api';
+	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, checkFragmentToken, authHeaders, SwitchApiError, listMacros, runMacro, dveSlotOn, dveSlotOff, replayQuick, replayPause, replayResume, replayPlay, replayStop, replaySeek, replaySetSpeed, replayMarkIn, replayMarkOut, commsMute } from '$lib/api/switch-api';
 	import { resolveApiUrl } from '$lib/api/base-url';
 	import { wtBaseURL, fetchServerInfo } from '$lib/prism/transport-utils';
 	import * as operatorState from '$lib/state/operator.svelte';
@@ -190,7 +190,7 @@
 			const slots = store.state.layout?.slots;
 			if (slots && slots.length > 0) {
 				const slot = slots[0];
-				apiCall(slot.enabled ? layoutSlotOff(0) : layoutSlotOn(0), 'PIP toggle');
+				apiCall(slot.enabled ? dveSlotOff(0) : dveSlotOn(0), 'PIP toggle');
 			}
 		},
 		isReplayTabActive: () => activeBottomTab === 'Replay',

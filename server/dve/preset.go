@@ -296,6 +296,15 @@ func whiteBorder(width, cornerRadius float64) BorderConfig {
 	}
 }
 
+func pipRectTransform(x, y, w, h float64) Transform {
+	t := DefaultTransform(x, y, w, h)
+	t.RectMode = true
+	t.OutputRect = Rect{X: x, Y: y, W: w, H: h}
+	t.ScaleMode = ScaleModeFill
+	t.CropAnchor = [2]float64{0.5, 0.5}
+	return t
+}
+
 func builtinPIPTopRight(fw, fh float64) *Preset {
 	pipW := fw * 0.25
 	pipH := fh * 0.25
@@ -303,7 +312,7 @@ func builtinPIPTopRight(fw, fh float64) *Preset {
 	x := fw - pipW - margin
 	y := margin
 
-	t := DefaultTransform(x, y, pipW, pipH)
+	t := pipRectTransform(x, y, pipW, pipH)
 	t.Border = whiteBorder(3, 6)
 
 	return &Preset{
@@ -322,7 +331,7 @@ func builtinPIPTopLeft(fw, fh float64) *Preset {
 	x := margin
 	y := margin
 
-	t := DefaultTransform(x, y, pipW, pipH)
+	t := pipRectTransform(x, y, pipW, pipH)
 	t.Border = whiteBorder(3, 6)
 
 	return &Preset{
@@ -341,7 +350,7 @@ func builtinPIPBottomRight(fw, fh float64) *Preset {
 	x := fw - pipW - margin
 	y := fh - pipH - margin
 
-	t := DefaultTransform(x, y, pipW, pipH)
+	t := pipRectTransform(x, y, pipW, pipH)
 	t.Border = whiteBorder(3, 6)
 
 	return &Preset{
@@ -360,7 +369,7 @@ func builtinPIPBottomLeft(fw, fh float64) *Preset {
 	x := margin
 	y := fh - pipH - margin
 
-	t := DefaultTransform(x, y, pipW, pipH)
+	t := pipRectTransform(x, y, pipW, pipH)
 	t.Border = whiteBorder(3, 6)
 
 	return &Preset{
@@ -377,13 +386,8 @@ func builtinSideBySide(fw, fh float64) *Preset {
 	slotW := (fw - gap) / 2
 	slotH := fh
 
-	t0 := DefaultTransform(0, 0, slotW, slotH)
-	t0.ScaleMode = ScaleModeFill
-	t0.CropAnchor = [2]float64{0.5, 0.5}
-
-	t1 := DefaultTransform(slotW+gap, 0, slotW, slotH)
-	t1.ScaleMode = ScaleModeFill
-	t1.CropAnchor = [2]float64{0.5, 0.5}
+	t0 := pipRectTransform(0, 0, slotW, slotH)
+	t1 := pipRectTransform(slotW+gap, 0, slotW, slotH)
 
 	return &Preset{
 		ID:   "side-by-side",
@@ -403,9 +407,7 @@ func builtinQuad(fw, fh float64) *Preset {
 	slotH := (fh - gap) / 2
 
 	makeSlot := func(x, y float64) Slot {
-		t := DefaultTransform(x, y, slotW, slotH)
-		t.ScaleMode = ScaleModeFill
-		t.CropAnchor = [2]float64{0.5, 0.5}
+		t := pipRectTransform(x, y, slotW, slotH)
 		return Slot{Transform: t, ZOrder: 0, Enabled: true}
 	}
 

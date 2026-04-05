@@ -35,7 +35,7 @@ var endpointSubsystemMap = map[string]Subsystem{
 	"/api/replay/marks":               SubsystemReplay,
 	"/api/format":                     SubsystemSwitching,
 	"/api/encoder":                    SubsystemSwitching,
-	"/api/layout":                     SubsystemSwitching,
+	"/api/dve":                        SubsystemSwitching,
 	"/api/output/destinations":        SubsystemOutput,
 }
 
@@ -53,7 +53,7 @@ var endpointPrefixSubsystemMap = []struct {
 	{"/api/presets/", SubsystemSwitching},          // preset create, update, delete, recall
 	{"/api/captions/", SubsystemCaptions},          // caption mode, text, clear
 	{"/api/graphics/", SubsystemGraphics},          // layer on/off/frame/animate/fly/image
-	{"/api/layout/", SubsystemSwitching},           // PIP slots, layout presets
+	{"/api/dve/", SubsystemSwitching},              // DVE slots, presets
 	{"/api/output/destinations/", SubsystemOutput}, // multi-destination SRT
 	{"/api/clips/", SubsystemSwitching},            // clip CRUD, player controls
 	{"/api/scte35/", SubsystemOutput},              // SCTE-35 ad insertion

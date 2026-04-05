@@ -1,17 +1,19 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createFastControl, encodeSlotPosition, encodeTransitionPosition } from './fast-control';
+import { createFastControl, encodeTransitionPosition, encodeDVESlotTransform } from './fast-control';
 
-describe('encodeSlotPosition', () => {
-	it('encodes slot position correctly', () => {
-		const buf = encodeSlotPosition(2, 100, 200, 480, 270);
-		expect(buf.byteLength).toBe(10);
+describe('encodeDVESlotTransform', () => {
+	it('encodes DVE slot transform correctly', () => {
+		const buf = encodeDVESlotTransform(2, 100, 200, 480, 270, 0, 1.0);
+		expect(buf.byteLength).toBe(26);
 		const view = new DataView(buf.buffer, buf.byteOffset);
-		expect(view.getUint8(0)).toBe(0x01);
+		expect(view.getUint8(0)).toBe(0x04);
 		expect(view.getUint8(1)).toBe(2);
-		expect(view.getUint16(2)).toBe(100);
-		expect(view.getUint16(4)).toBe(200);
-		expect(view.getUint16(6)).toBe(480);
-		expect(view.getUint16(8)).toBe(270);
+		expect(Math.abs(view.getFloat32(2) - 100)).toBeLessThan(1e-6);
+		expect(Math.abs(view.getFloat32(6) - 200)).toBeLessThan(1e-6);
+		expect(Math.abs(view.getFloat32(10) - 480)).toBeLessThan(1e-6);
+		expect(Math.abs(view.getFloat32(14) - 270)).toBeLessThan(1e-6);
+		expect(Math.abs(view.getFloat32(18) - 0)).toBeLessThan(1e-6);
+		expect(Math.abs(view.getFloat32(22) - 1.0)).toBeLessThan(1e-6);
 	});
 });
 
@@ -26,7 +28,7 @@ describe('encodeTransitionPosition', () => {
 });
 
 describe('createFastControl', () => {
-	it('sends slot position datagram', () => {
+	it('sends DVE slot transform datagram', () => {
 		const writeFn = vi.fn().mockResolvedValue(undefined);
 		const mockWriter = { write: writeFn, releaseLock: vi.fn() };
 		const mockTransport = {
@@ -36,12 +38,12 @@ describe('createFastControl', () => {
 		} as unknown as WebTransport;
 
 		const fc = createFastControl(mockTransport);
-		fc.sendSlotPosition(0, 100, 200, 480, 270);
+		fc.sendDVESlotTransform(0, 100, 200, 480, 270, 0, 1.0);
 
 		expect(writeFn).toHaveBeenCalledTimes(1);
 		const sent = writeFn.mock.calls[0][0] as Uint8Array;
-		expect(sent.byteLength).toBe(10);
-		expect(sent[0]).toBe(0x01);
+		expect(sent.byteLength).toBe(26);
+		expect(sent[0]).toBe(0x04);
 	});
 
 	it('sends transition position datagram', () => {

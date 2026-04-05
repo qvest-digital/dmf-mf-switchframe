@@ -700,7 +700,7 @@ func TestEnqueueVideoWork_DroppedFrameReleasesPool(t *testing.T) {
 
 func TestBuildNodeList_Ordering(t *testing.T) {
 	// The node ordering is architecturally critical:
-	// upstream-key → layout-compositor → compositor → stmap-program → raw-sink-mxl → raw-sink-preview → h264-encode
+	// upstream-key → dve-compositor → compositor → stmap-program → raw-sink-mxl → raw-sink-preview → h264-encode
 	programRelay := newTestRelay()
 	sw := newTestSwitcher(programRelay)
 
@@ -721,7 +721,7 @@ func TestBuildNodeList_Ordering(t *testing.T) {
 	nodes := sw.buildNodeList()
 	require.Len(t, nodes, 7)
 	require.Equal(t, "upstream-key", nodes[0].Name())
-	require.Equal(t, "layout-compositor", nodes[1].Name())
+	require.Equal(t, "dve-compositor", nodes[1].Name())
 	require.Equal(t, "compositor", nodes[2].Name())
 	require.Equal(t, "stmap-program", nodes[3].Name())
 	require.Equal(t, "raw-sink-mxl", nodes[4].Name())

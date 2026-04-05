@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import type { ControlRoomState, LayoutSlotState } from '$lib/api/types';
+	import type { ControlRoomState, LayoutSlotState, DVEPresetInfo } from '$lib/api/types';
 	import {
-		setLayout, clearLayout, layoutSlotOn, layoutSlotOff,
-		setLayoutSlotSource, updateLayoutSlot,
-		listLayoutPresets, saveLayoutPreset, deleteLayoutPreset,
+		setDVELayout, deleteDVELayout, dveSlotOn, dveSlotOff,
+		updateDVESlot,
+		listDVEPresets, saveDVEPreset, deleteDVEPreset,
 		apiCall
 	} from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
@@ -18,7 +18,7 @@
 
 	let { state: crState }: Props = $props();
 
-	let presets = $state<string[]>([]);
+	let presets = $state<DVEPresetInfo[]>([]);
 	let saving = $state(false);
 	let presetName = $state('');
 	let deleteConfirmName = $state<string | null>(null);
@@ -59,46 +59,46 @@
 
 	async function loadPresets() {
 		try {
-			presets = await listLayoutPresets();
+			presets = await listDVEPresets();
 		} catch {
 			// presets may not be configured
 		}
 	}
 
 	async function applyBuiltinPreset(id: string) {
-		apiCall(setLayout({ preset: id }), 'Layout preset');
+		apiCall(setDVELayout({ preset: id }), 'Layout preset');
 	}
 
 	async function applyUserPreset(name: string) {
-		apiCall(setLayout({ preset: name }), 'Layout preset');
+		apiCall(setDVELayout({ preset: name }), 'Layout preset');
 	}
 
 	async function handleClear() {
-		apiCall(clearLayout(), 'Clear layout');
+		apiCall(deleteDVELayout(), 'Clear layout');
 	}
 
 	function toggleSlot(slot: LayoutSlotState) {
 		if (slot.enabled) {
-			apiCall(layoutSlotOff(slot.id), 'Slot off');
+			apiCall(dveSlotOff(slot.id), 'Slot off');
 		} else {
-			apiCall(layoutSlotOn(slot.id), 'Slot on');
+			apiCall(dveSlotOn(slot.id), 'Slot on');
 		}
 	}
 
 	function handleSourceChange(slotId: number, source: string) {
-		apiCall(setLayoutSlotSource(slotId, source), 'Set source');
+		apiCall(updateDVESlot(slotId, { sourceKey: source }), 'Set source');
 	}
 
 	function handleTransitionChange(slotId: number, type: string) {
 		apiCall(
-			updateLayoutSlot(slotId, { transition: { type, durationMs: 300 } }),
+			updateDVESlot(slotId, { transition: { type, durationMs: 300 } }),
 			'Set transition'
 		);
 	}
 
 	function handleScaleModeChange(slotId: number, mode: string) {
 		apiCall(
-			updateLayoutSlot(slotId, { scaleMode: mode }),
+			updateDVESlot(slotId, { scaleMode: mode }),
 			'Set scale mode'
 		);
 	}
@@ -117,7 +117,7 @@
 		};
 		const anchor = anchors[preset] ?? [0.5, 0.5];
 		apiCall(
-			updateLayoutSlot(slotId, { cropAnchor: anchor }),
+			updateDVESlot(slotId, { cropAnchor: anchor }),
 			'Set crop anchor'
 		);
 	}
@@ -141,7 +141,7 @@
 		const name = presetName.trim();
 		if (!name) return;
 		try {
-			await saveLayoutPreset(name);
+			await saveDVEPreset(name);
 			saving = false;
 			presetName = '';
 			await loadPresets();
@@ -153,7 +153,7 @@
 
 	async function handleDelete(name: string) {
 		try {
-			await deleteLayoutPreset(name);
+			await deleteDVEPreset(name);
 			deleteConfirmName = null;
 			await loadPresets();
 			notify('info', 'Layout preset deleted');
@@ -198,15 +198,15 @@
 						{preset.label}
 					</button>
 				{/each}
-				{#each presets as name}
-					<div class="user-preset-chip" class:active={activePreset === name}>
-						{#if deleteConfirmName === name}
+				{#each presets as preset}
+					<div class="user-preset-chip" class:active={activePreset === preset.id}>
+						{#if deleteConfirmName === preset.id}
 							<span class="user-preset-chip__confirm-label">Delete?</span>
 							<button
 								type="button"
 								class="icon-btn icon-btn--danger"
 								title="Confirm delete"
-								onclick={() => handleDelete(name)}
+								onclick={() => handleDelete(preset.id)}
 							>
 								<span aria-hidden="true">{@html renderIcon(ICON_CHECK, 12)}</span>
 							</button>
@@ -222,17 +222,17 @@
 							<button
 								type="button"
 								class="preset-btn preset-btn--user"
-								class:active={activePreset === name}
-								onclick={() => applyUserPreset(name)}
-								title="User preset: {name}"
+								class:active={activePreset === preset.id}
+								onclick={() => applyUserPreset(preset.name)}
+								title="User preset: {preset.name}"
 							>
-								{name}
+								{preset.name}
 							</button>
 							<button
 								type="button"
 								class="icon-btn icon-btn--ghost"
 								title="Delete preset"
-								onclick={(e) => { e.stopPropagation(); deleteConfirmName = name; }}
+								onclick={(e) => { e.stopPropagation(); deleteConfirmName = preset.id; }}
 							>
 								<span aria-hidden="true">{@html renderIcon(ICON_TRASH, 11)}</span>
 							</button>

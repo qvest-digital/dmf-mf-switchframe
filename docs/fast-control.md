@@ -14,11 +14,12 @@
 
 ## 1. Overview
 
-The fast-control channel is a low-latency binary protocol carried over [WebTransport datagrams](https://www.w3.org/TR/webtransport/#datagrams) for real-time control inputs that require sub-frame update rates. Three operations use it:
+The fast-control channel is a low-latency binary protocol carried over [WebTransport datagrams](https://www.w3.org/TR/webtransport/#datagrams) for real-time control inputs that require sub-frame update rates. Four operation categories use it:
 
 | Operation | UI Gesture | Update Rate |
 |-----------|-----------|-------------|
-| PIP slot drag/resize | Pointer drag on layout overlay | Every `pointermove` event (~60–120 Hz) |
+| DVE slot transform | Pointer drag on DVE overlay | Every `pointermove` event (~60–120 Hz) |
+| DVE slot parameters | Knob/slider on DVE controls | Every `input` event (~60 Hz) |
 | T-bar transition | Slider input on transition controls | Every `input` event (throttled) |
 | Graphics layer drag/resize | Pointer drag on graphics overlay | Every `pointermove` event (~60–120 Hz) |
 
@@ -28,7 +29,7 @@ These interactions generate dozens of position updates per second. Sending each 
 flowchart LR
     subgraph browser ["Browser"]
         style browser fill:#1a1a2e,color:#fff,stroke:#16213e
-        LO["LayoutOverlay\n(PIP drag)"]
+        DO["DVEOverlay\n(slot drag)"]
         TC["TransitionControls\n(T-bar)"]
         GO["GraphicsOverlay\n(layer drag)"]
         FC["FastControl\n(DataView encoder)"]
@@ -42,17 +43,17 @@ flowchart LR
     subgraph server ["Server"]
         style server fill:#0f3460,color:#fff,stroke:#533483
         DISP["Dispatcher\n(first-byte route)"]
-        LAYOUT["UpdateSlotRect()"]
+        DVE["DVE Compositor"]
         TRANS["SetTransitionPosition()"]
         GRAPH["UpdateLayerRect()"]
     end
 
-    LO --> FC
+    DO --> FC
     TC --> FC
     GO --> FC
     FC --> DG
     DG --> DISP
-    DISP -->|0x01| LAYOUT
+    DISP -->|0x04-0x09| DVE
     DISP -->|0x02| TRANS
     DISP -->|0x03| GRAPH
 ```
@@ -96,27 +97,20 @@ The dispatcher reads byte 0, strips it, and passes bytes 1..N to the registered 
 
 | Byte | Constant | Payload Size | Total Size |
 |:----:|----------|:------------:|:----------:|
-| `0x01` | `MsgLayoutSlotPosition` | 9 bytes | 10 bytes |
 | `0x02` | `MsgTransitionPosition` | 4 bytes | 5 bytes |
 | `0x03` | `MsgGraphicsLayerPosition` | 10 bytes | 11 bytes |
+| `0x04` | `MsgDVESlotTransform` | 25 bytes | 26 bytes |
+| `0x05` | `MsgDVESingleParam` | 7 bytes | 8 bytes |
+| `0x06` | `MsgDVESlotSource` | 2+ bytes (variable) | 3+ bytes |
+| `0x07` | `MsgDVESlotEnable` | 2 bytes | 3 bytes |
+| `0x08` | `MsgDVEScaleMode` | 10 bytes | 11 bytes |
+| `0x09` | `MsgDVEBorder` | 12 bytes | 13 bytes |
 
 The 256-element handler table (`[256]Handler`) allows O(1) dispatch with zero allocation.
 
 ---
 
 ## 4. Message Types
-
-### 0x01 — Layout Slot Position
-
-Sent during PIP slot drag or resize operations. Updates the position and size of a layout slot in the PIP compositor.
-
-| Field | Purpose | Constraints |
-|-------|---------|-------------|
-| Slot ID | Which PIP slot (0–3) | Must be < `MaxSlots` (4) |
-| X, Y | Top-left corner in output pixels | Must be even-aligned (YUV420) |
-| W, H | Width and height in output pixels | Must be even-aligned, non-zero |
-
-Even-alignment is required because YUV420 chroma planes are half-resolution — odd pixel coordinates would produce chroma artifacts. The server rejects datagrams with odd values.
 
 ### 0x02 — Transition Position
 
@@ -138,32 +132,76 @@ Sent during graphics layer drag or resize operations. Updates the position and s
 | X, Y | Top-left corner in output pixels | Must be even-aligned |
 | W, H | Width and height in output pixels | Must be even-aligned, non-zero |
 
+### 0x04 — DVE Slot Transform
+
+Sent during DVE slot drag, resize, or rotation. Updates the full transform of a DVE compositor slot (position, size, rotation, opacity).
+
+| Field | Purpose | Constraints |
+|-------|---------|-------------|
+| Slot ID | Which DVE slot (0–7) | Must be < `MaxSlots` (8) |
+| PositionX, PositionY | Center position in normalized coords | float32, no NaN/Inf |
+| Width, Height | Size in normalized coords | float32, > 0.0 |
+| Rotation | Rotation in degrees | float32, no NaN/Inf |
+| Opacity | Slot opacity | float32, range [0.0, 1.0] |
+
+### 0x05 — DVE Single Parameter
+
+Sent for individual knob or slider adjustments to a single DVE transform parameter (e.g., crop, defocus, corner radius).
+
+| Field | Purpose | Constraints |
+|-------|---------|-------------|
+| Slot ID | Which DVE slot (0–7) | Must be < `MaxSlots` (8) |
+| Param ID | Parameter identifier | uint16 (see param ID table) |
+| Value | Parameter value | float32, no NaN/Inf |
+
+**Param IDs:** `0x0000` PositionX, `0x0001` PositionY, `0x0002` Width, `0x0003` Height, `0x0004` RotationDeg, `0x0005` PerspectiveX, `0x0006` PerspectiveY, `0x0008` CropTop, `0x0009` CropBottom, `0x000A` CropLeft, `0x000B` CropRight, `0x000C` Opacity, `0x000D` DefocusRadius, `0x000E` BorderWidth, `0x000F` CornerRadius.
+
+### 0x06 — DVE Slot Source
+
+Sent to assign a source to a DVE slot.
+
+| Field | Purpose | Constraints |
+|-------|---------|-------------|
+| Slot ID | Which DVE slot (0–7) | Must be < `MaxSlots` (8) |
+| Key Length | Length of source key string | uint8 |
+| Key | Source key (UTF-8) | Variable length |
+
+### 0x07 — DVE Slot Enable
+
+Sent to enable or disable a DVE slot.
+
+| Field | Purpose | Constraints |
+|-------|---------|-------------|
+| Slot ID | Which DVE slot (0–7) | Must be < `MaxSlots` (8) |
+| Enabled | Enable/disable flag | uint8: 0 = disabled, 1 = enabled |
+
+### 0x08 — DVE Scale Mode
+
+Sent to change a DVE slot's scale mode and crop anchor.
+
+| Field | Purpose | Constraints |
+|-------|---------|-------------|
+| Slot ID | Which DVE slot (0–7) | Must be < `MaxSlots` (8) |
+| Mode | Scale mode | uint8: 0 = stretch, 1 = fill, 2 = fit |
+| AnchorX | Crop anchor X | float32, range [0.0, 1.0] |
+| AnchorY | Crop anchor Y | float32, range [0.0, 1.0] |
+
+### 0x09 — DVE Border
+
+Sent to update a DVE slot's border properties.
+
+| Field | Purpose | Constraints |
+|-------|---------|-------------|
+| Slot ID | Which DVE slot (0–7) | Must be < `MaxSlots` (8) |
+| Width | Border width in pixels | float32, >= 0.0 |
+| Radius | Corner radius in pixels | float32, >= 0.0 |
+| Y, Cb, Cr | Border color (BT.709 YCbCr) | uint8 each |
+
 ---
 
 ## 5. Binary Encoding
 
 All multi-byte integers are big-endian (network byte order). The client uses `DataView` methods which default to big-endian.
-
-### 0x01 — Layout Slot Position (10 bytes)
-
-```
-Byte   0       1         2    3       4    5       6    7       8    9
-     ┌───────┬─────────┬─────────┬─────────┬─────────┬─────────┐
-     │ 0x01  │ SlotID  │    X    │    Y    │    W    │    H    │
-     │ type  │ uint8   │ uint16  │ uint16  │ uint16  │ uint16  │
-     └───────┴─────────┴─────────┴─────────┴─────────┴─────────┘
-```
-
-| Offset | Size | Type | Field | Range |
-|:------:|:----:|------|-------|-------|
-| 0 | 1 | uint8 | Message type | `0x01` |
-| 1 | 1 | uint8 | Slot ID | 0–3 |
-| 2–3 | 2 | uint16 BE | X position | 0–65534 (even) |
-| 4–5 | 2 | uint16 BE | Y position | 0–65534 (even) |
-| 6–7 | 2 | uint16 BE | Width | 2–65534 (even, non-zero) |
-| 8–9 | 2 | uint16 BE | Height | 2–65534 (even, non-zero) |
-
-The server constructs an `image.Rectangle` as `image.Rect(X, Y, X+W, Y+H)` from the parsed values.
 
 ### 0x02 — Transition Position (5 bytes)
 
@@ -201,13 +239,128 @@ Byte   0       1    2       3    4       5    6       7    8       9   10
 | 7–8 | 2 | uint16 BE | Width | 2–65534 (even, non-zero) |
 | 9–10 | 2 | uint16 BE | Height | 2–65534 (even, non-zero) |
 
-The graphics message uses a uint16 for the layer ID (vs uint8 for layout slot ID) because the graphics system supports more layers than the 4-slot PIP layout.
+The graphics message uses a uint16 for the layer ID because the graphics system supports many independent layers.
+
+### 0x04 — DVE Slot Transform (26 bytes)
+
+```
+Byte   0       1         2    3    4    5       6    7    8    9
+     ┌───────┬─────────┬─────────────────┬─────────────────┐
+     │ 0x04  │ SlotID  │    PositionX    │    PositionY    │
+     │ type  │ uint8   │   float32 BE    │   float32 BE    │
+     ├───────┴─────────┼─────────────────┼─────────────────┤
+     │      Width      │     Height      │    Rotation     │
+     │   float32 BE    │   float32 BE    │   float32 BE    │
+     ├─────────────────┼─────────────────┼─────────────────┤
+     │     Opacity     │
+     │   float32 BE    │
+     └─────────────────┘
+```
+
+| Offset | Size | Type | Field | Range |
+|:------:|:----:|------|-------|-------|
+| 0 | 1 | uint8 | Message type | `0x04` |
+| 1 | 1 | uint8 | Slot ID | 0–7 |
+| 2–5 | 4 | float32 BE | PositionX | normalized |
+| 6–9 | 4 | float32 BE | PositionY | normalized |
+| 10–13 | 4 | float32 BE | Width | > 0.0 |
+| 14–17 | 4 | float32 BE | Height | > 0.0 |
+| 18–21 | 4 | float32 BE | Rotation | degrees |
+| 22–25 | 4 | float32 BE | Opacity | 0.0–1.0 |
+
+### 0x05 — DVE Single Parameter (8 bytes)
+
+```
+Byte   0       1         2    3       4    5    6    7
+     ┌───────┬─────────┬─────────┬─────────────────┐
+     │ 0x05  │ SlotID  │ ParamID │      Value      │
+     │ type  │ uint8   │ uint16  │   float32 BE    │
+     └───────┴─────────┴─────────┴─────────────────┘
+```
+
+| Offset | Size | Type | Field | Range |
+|:------:|:----:|------|-------|-------|
+| 0 | 1 | uint8 | Message type | `0x05` |
+| 1 | 1 | uint8 | Slot ID | 0–7 |
+| 2–3 | 2 | uint16 BE | Param ID | see param ID table |
+| 4–7 | 4 | float32 BE | Value | param-dependent |
+
+### 0x06 — DVE Slot Source (3+ bytes, variable)
+
+```
+Byte   0       1         2          3 .. 2+keyLen
+     ┌───────┬─────────┬──────────┬─────────────┐
+     │ 0x06  │ SlotID  │ KeyLen   │  Key bytes  │
+     │ type  │ uint8   │ uint8    │   UTF-8     │
+     └───────┴─────────┴──────────┴─────────────┘
+```
+
+| Offset | Size | Type | Field | Range |
+|:------:|:----:|------|-------|-------|
+| 0 | 1 | uint8 | Message type | `0x06` |
+| 1 | 1 | uint8 | Slot ID | 0–7 |
+| 2 | 1 | uint8 | Key length | 0–255 |
+| 3+ | N | bytes | Source key | UTF-8 string |
+
+### 0x07 — DVE Slot Enable (3 bytes)
+
+```
+Byte   0       1         2
+     ┌───────┬─────────┬─────────┐
+     │ 0x07  │ SlotID  │ Enabled │
+     │ type  │ uint8   │ uint8   │
+     └───────┴─────────┴─────────┘
+```
+
+| Offset | Size | Type | Field | Range |
+|:------:|:----:|------|-------|-------|
+| 0 | 1 | uint8 | Message type | `0x07` |
+| 1 | 1 | uint8 | Slot ID | 0–7 |
+| 2 | 1 | uint8 | Enabled | 0 or 1 |
+
+### 0x08 — DVE Scale Mode (11 bytes)
+
+```
+Byte   0       1         2         3    4    5    6       7    8    9   10
+     ┌───────┬─────────┬─────────┬─────────────────┬─────────────────┐
+     │ 0x08  │ SlotID  │  Mode   │    AnchorX      │    AnchorY      │
+     │ type  │ uint8   │ uint8   │   float32 BE    │   float32 BE    │
+     └───────┴─────────┴─────────┴─────────────────┴─────────────────┘
+```
+
+| Offset | Size | Type | Field | Range |
+|:------:|:----:|------|-------|-------|
+| 0 | 1 | uint8 | Message type | `0x08` |
+| 1 | 1 | uint8 | Slot ID | 0–7 |
+| 2 | 1 | uint8 | Mode | 0=stretch, 1=fill, 2=fit |
+| 3–6 | 4 | float32 BE | AnchorX | 0.0–1.0 |
+| 7–10 | 4 | float32 BE | AnchorY | 0.0–1.0 |
+
+### 0x09 — DVE Border (13 bytes)
+
+```
+Byte   0       1         2    3    4    5       6    7    8    9      10     11     12
+     ┌───────┬─────────┬─────────────────┬─────────────────┬───────┬───────┬───────┐
+     │ 0x09  │ SlotID  │     Width       │     Radius      │   Y   │  Cb   │  Cr   │
+     │ type  │ uint8   │   float32 BE    │   float32 BE    │ uint8 │ uint8 │ uint8 │
+     └───────┴─────────┴─────────────────┴─────────────────┴───────┴───────┴───────┘
+```
+
+| Offset | Size | Type | Field | Range |
+|:------:|:----:|------|-------|-------|
+| 0 | 1 | uint8 | Message type | `0x09` |
+| 1 | 1 | uint8 | Slot ID | 0–7 |
+| 2–5 | 4 | float32 BE | Border width | >= 0.0 |
+| 6–9 | 4 | float32 BE | Corner radius | >= 0.0 |
+| 10 | 1 | uint8 | Y | 0–255 |
+| 11 | 1 | uint8 | Cb | 0–255 |
+| 12 | 1 | uint8 | Cr | 0–255 |
 
 ---
 
 ## 6. Client-Side Usage
 
-The client module ([`fast-control.ts`](../ui/src/lib/transport/fast-control.ts)) provides three encoder functions and a `FastControl` interface that wraps a `WebTransport` datagram writer.
+The client module ([`fast-control.ts`](../ui/src/lib/transport/fast-control.ts)) provides encoder functions and a `FastControl` interface that wraps a `WebTransport` datagram writer.
 
 ### Creating the Fast-Control Interface
 
@@ -217,16 +370,21 @@ import { createFastControl } from '$lib/transport/fast-control';
 const fc = createFastControl(transport);
 ```
 
-`createFastControl()` acquires a writer lock on `transport.datagrams.writable` and returns an object with three send methods. Each method encodes a message into a `Uint8Array` and writes it to the datagram writer. Errors are silently caught (`.catch(() => {})`) — dropped datagrams are expected and harmless.
+`createFastControl()` acquires a writer lock on `transport.datagrams.writable` and returns an object with send methods for each message type. Each method encodes a message into a `Uint8Array` and writes it to the datagram writer. Errors are silently caught (`.catch(() => {})`) — dropped datagrams are expected and harmless.
 
 ### Encoding Functions
 
 Each encoder allocates an `ArrayBuffer`, creates a `DataView`, writes the fields, and returns a `Uint8Array`:
 
 ```typescript
-encodeSlotPosition(slotId, x, y, w, h)          // → 10 bytes
-encodeTransitionPosition(position)                // → 5 bytes
-encodeGraphicsLayerPosition(layerId, x, y, w, h) // → 11 bytes
+encodeTransitionPosition(position)                            // → 5 bytes
+encodeGraphicsLayerPosition(layerId, x, y, w, h)             // → 11 bytes
+encodeDVESlotTransform(slotId, x, y, w, h, rotation, opacity) // → 26 bytes
+encodeDVESingleParam(slotId, paramId, value)                  // → 8 bytes
+encodeDVESlotSource(slotId, sourceKey)                        // → 3+ bytes
+encodeDVESlotEnable(slotId, enabled)                          // → 3 bytes
+encodeDVEScaleMode(slotId, mode, anchorX, anchorY)            // → 11 bytes
+encodeDVEBorder(slotId, width, radius, y, cb, cr)             // → 13 bytes
 ```
 
 ### Usage in Components
@@ -236,7 +394,7 @@ The overlay components use fast-control during pointer events, falling back to t
 ```mermaid
 flowchart TD
     PM["pointermove event"] --> CHECK{"fastControl\navailable?"}
-    CHECK -->|yes| DG["sendSlotPosition()\n(datagram)"]
+    CHECK -->|yes| DG["sendDVESlotTransform()\n(datagram)"]
     CHECK -->|no| REST["throttledUpdate()\n(REST)"]
     PU["pointerup event"] --> CONFIRM["REST API call\n(authoritative)"]
 
@@ -261,7 +419,7 @@ sequenceDiagram
     participant Disp as Dispatcher
     participant Handler as Handler Function
 
-    Browser->>QUIC: DATAGRAM frame (5–11 bytes)
+    Browser->>QUIC: DATAGRAM frame (3–26 bytes)
     QUIC->>Prism: OnDatagram(streamKey, data)
     Prism->>Disp: Dispatch(data)
     Disp->>Disp: h = handlers[data[0]]
@@ -298,9 +456,14 @@ Handlers are registered at startup in [`app_fastctrl.go`](../server/cmd/switchfr
 
 | Type | Handler | Target |
 |:----:|---------|--------|
-| `0x01` | `handleFastLayoutUpdate` | `layoutCompositor.UpdateSlotRect()` |
 | `0x02` | `handleFastTransitionUpdate` | `sw.SetTransitionPosition()` |
 | `0x03` | `handleFastGraphicsUpdate` | `compositor.UpdateLayerRect()` |
+| `0x04` | `handleFastDVETransform` | `dveCompositor.UpdateSlotTransform()` |
+| `0x05` | `handleFastDVESingleParam` | `dveCompositor.UpdateSlotParam()` |
+| `0x06` | `handleFastDVESlotSource` | `dveCompositor.SetSlotSource()` |
+| `0x07` | `handleFastDVESlotEnable` | `dveCompositor.SetSlotEnabled()` |
+| `0x08` | `handleFastDVEScaleMode` | `dveCompositor.SetSlotScaleMode()` |
+| `0x09` | `handleFastDVEBorder` | `dveCompositor.SetSlotBorder()` |
 
 Each handler parses the binary payload with the appropriate `Parse*` function, validates constraints (even alignment, range checks), and calls the target subsystem method. Errors are logged at debug level — a malformed datagram does not disconnect the client.
 
@@ -329,7 +492,7 @@ sequenceDiagram
         Note over Server: No state broadcast
     end
     User->>Browser: pointer up
-    Browser->>REST: PUT /api/layout/slots/{id}<br/>(final position)
+    Browser->>REST: PUT /api/dve/slots/{id}<br/>(final position)
     REST->>REST: apply + validate
     REST->>MoQ: ControlRoomState broadcast
     MoQ->>Browser: state update (all clients)
@@ -361,16 +524,16 @@ The T-bar does not use the two-phase pattern. Transition position is inherently 
 | File | Purpose |
 |------|---------|
 | [`fastctrl/dispatcher.go`](../server/fastctrl/dispatcher.go) | `Dispatcher` struct, `Handler` type, O(1) dispatch by message type |
-| [`fastctrl/layout.go`](../server/fastctrl/layout.go) | `ParseLayoutSlotPosition()`, message type constants `0x01` and `0x02` |
 | [`fastctrl/transition.go`](../server/fastctrl/transition.go) | `ParseTransitionPosition()`, float32 range validation |
 | [`fastctrl/graphics.go`](../server/fastctrl/graphics.go) | `ParseGraphicsLayerPosition()`, message type constant `0x03` |
-| [`app_fastctrl.go`](../server/cmd/switchframe/app_fastctrl.go) | Handler registration, layout/transition/graphics handler wiring |
+| [`fastctrl/dve.go`](../server/fastctrl/dve.go) | DVE message parsers (`0x04`–`0x09`): transform, single param, source, enable, scale mode, border |
+| [`app_fastctrl.go`](../server/cmd/switchframe/app_fastctrl.go) | Handler registration, DVE/transition/graphics handler wiring |
 | [`app.go`](../server/cmd/switchframe/app.go) | `OnDatagram` callback binding to `Dispatcher.Dispatch()` |
 | [`fast-control.ts`](../ui/src/lib/transport/fast-control.ts) | Client encoder functions, `FastControl` interface, `createFastControl()` |
-| [`LayoutOverlay.svelte`](../ui/src/components/LayoutOverlay.svelte) | PIP drag: datagram on `pointermove`, REST confirm on `pointerup` |
+| [`LayoutOverlay.svelte`](../ui/src/components/LayoutOverlay.svelte) | DVE slot drag: datagram on `pointermove`, REST confirm on `pointerup` |
 | [`GraphicsOverlay.svelte`](../ui/src/components/GraphicsOverlay.svelte) | Graphics drag: datagram on `pointermove`, REST confirm on `pointerup` |
 | [`TransitionControls.svelte`](../ui/src/components/TransitionControls.svelte) | T-bar: datagram on `input`, REST fallback when no WebTransport |
-| [`layout/compositor.go`](../server/layout/compositor.go) | `UpdateSlotRect()` — fast-path position update (no state broadcast) |
+| [`dve/compositor.go`](../server/dve/compositor.go) | DVE compositor — fast-path slot updates (no state broadcast) |
 | [`graphics/compositor.go`](../server/graphics/compositor.go) | `UpdateLayerRect()` — fast-path position update (no state broadcast) |
 | [`switcher/switcher.go`](../server/switcher/switcher.go) | `SetTransitionPosition()` — T-bar position on active transition |
 

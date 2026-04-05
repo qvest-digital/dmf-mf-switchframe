@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { ControlRoomState, LayoutSlotState } from '$lib/api/types';
 	import type { FastControl } from '$lib/transport/fast-control';
-	import { updateLayoutSlot, updateDVESlot, apiCall } from '$lib/api/switch-api';
+	import { updateDVESlot, apiCall } from '$lib/api/switch-api';
 	import { throttle } from '$lib/util/throttle';
 
 	interface Props {
@@ -72,7 +72,7 @@
 	}
 
 	const throttledUpdate = throttle((slotId: number, update: Record<string, unknown>) => {
-		apiCall(updateLayoutSlot(slotId, update), 'Update slot');
+		apiCall(updateDVESlot(slotId, update), 'Update slot');
 	}, 50);
 
 	function handlePointerDown(e: PointerEvent, slot: LayoutSlotState, type: 'move' | 'resize' | 'rotate', corner?: 'tl' | 'tr' | 'bl' | 'br') {
@@ -115,19 +115,18 @@
 
 		const slot = slots.find(s => s.id === dragging!.slotId);
 		if (!slot) return;
-		const hasDVE = !!slot.dve;
 		const transform = getSlotTransform(slot);
 
 		if (dragging.type === 'move') {
-			handleMoveDrag(e, hasDVE, transform);
+			handleMoveDrag(e, transform);
 		} else if (dragging.type === 'resize') {
-			handleResizeDrag(e, hasDVE, transform);
+			handleResizeDrag(e, transform);
 		} else if (dragging.type === 'rotate') {
 			handleRotateDrag(e, transform);
 		}
 	}
 
-	function handleMoveDrag(e: PointerEvent, hasDVE: boolean, transform: ReturnType<typeof getSlotTransform>) {
+	function handleMoveDrag(e: PointerEvent, transform: ReturnType<typeof getSlotTransform>) {
 		if (!dragging) return;
 
 		let dx = (e.clientX - dragging.startX) / scaleX;
@@ -157,19 +156,17 @@
 			rotation: dragging.origRotation, opacity: transform.opacity,
 		};
 
-		if (hasDVE) {
-			fastControl?.sendDVESlotTransform(
+		if (fastControl) {
+			fastControl.sendDVESlotTransform(
 				dragging.slotId, newX, newY, dragging.origW, dragging.origH,
 				dragging.origRotation, transform.opacity,
 			);
-		} else if (fastControl) {
-			fastControl.sendSlotPosition(dragging.slotId, newX, newY, dragging.origW, dragging.origH);
 		} else {
 			throttledUpdate(dragging.slotId, { x: newX, y: newY });
 		}
 	}
 
-	function handleResizeDrag(e: PointerEvent, hasDVE: boolean, transform: ReturnType<typeof getSlotTransform>) {
+	function handleResizeDrag(e: PointerEvent, transform: ReturnType<typeof getSlotTransform>) {
 		if (!dragging) return;
 
 		const dx = (e.clientX - dragging.startX) / scaleX;
@@ -241,13 +238,11 @@
 			rotation: dragging.origRotation, opacity: transform.opacity,
 		};
 
-		if (hasDVE) {
-			fastControl?.sendDVESlotTransform(
+		if (fastControl) {
+			fastControl.sendDVESlotTransform(
 				dragging.slotId, newX, newY, newW, newH,
 				dragging.origRotation, transform.opacity,
 			);
-		} else if (fastControl) {
-			fastControl.sendSlotPosition(dragging.slotId, newX, newY, newW, newH);
 		} else {
 			throttledUpdate(dragging.slotId, { x: newX, y: newY, width: newW, height: newH });
 		}
@@ -291,41 +286,33 @@
 		if (dragging) {
 			const override = localOverrides[dragging.slotId];
 			const slot = slots.find(s => s.id === dragging!.slotId);
-			const hasDVE = slot?.dve;
 
 			if (override) {
-				if (hasDVE) {
-					// Confirm final transform via REST — send complete transform
-					// to preserve border/shadow/etc from current state.
-					const curDve = slot!.dve!;
-					apiCall(updateDVESlot(dragging.slotId, {
-						transform: {
-							positionX: override.x,
-							positionY: override.y,
-							width: override.w,
-							height: override.h,
-							rotationDeg: override.rotation,
-							opacity: override.opacity,
-							perspectiveX: curDve.perspectiveX ?? 0,
-							perspectiveY: curDve.perspectiveY ?? 0,
-							anchorX: curDve.anchorX ?? 0.5,
-							anchorY: curDve.anchorY ?? 0.5,
-							cropTop: curDve.cropTop ?? 0,
-							cropBottom: curDve.cropBottom ?? 0,
-							cropLeft: curDve.cropLeft ?? 0,
-							cropRight: curDve.cropRight ?? 0,
-							cropSoftness: curDve.cropSoftness ?? 0,
-							defocusRadius: curDve.defocusRadius ?? 0,
-							border: curDve.border ?? {},
-							shadow: curDve.shadow ?? {},
-						},
-					}), 'Confirm DVE slot transform');
-				} else if (fastControl) {
-					apiCall(updateLayoutSlot(dragging.slotId, {
-						x: override.x, y: override.y,
-						width: override.w, height: override.h,
-					}), 'Confirm slot position');
-				}
+				// Confirm final transform via REST — send complete DVE transform
+				// to preserve border/shadow/etc from current state.
+				const curDve = slot?.dve;
+				apiCall(updateDVESlot(dragging.slotId, {
+					transform: {
+						positionX: override.x,
+						positionY: override.y,
+						width: override.w,
+						height: override.h,
+						rotationDeg: override.rotation,
+						opacity: override.opacity,
+						perspectiveX: curDve?.perspectiveX ?? 0,
+						perspectiveY: curDve?.perspectiveY ?? 0,
+						anchorX: curDve?.anchorX ?? 0.5,
+						anchorY: curDve?.anchorY ?? 0.5,
+						cropTop: curDve?.cropTop ?? 0,
+						cropBottom: curDve?.cropBottom ?? 0,
+						cropLeft: curDve?.cropLeft ?? 0,
+						cropRight: curDve?.cropRight ?? 0,
+						cropSoftness: curDve?.cropSoftness ?? 0,
+						defocusRadius: curDve?.defocusRadius ?? 0,
+						border: curDve?.border ?? {},
+						shadow: curDve?.shadow ?? {},
+					},
+				}), 'Confirm DVE slot transform');
 			}
 			delete localOverrides[dragging.slotId];
 		}

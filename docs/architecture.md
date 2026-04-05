@@ -55,8 +55,8 @@ flowchart LR
 
     subgraph vidpipe ["Video Pipeline (CPU or GPU)"]
         direction LR
-        usk["Upstream<br/>Key"] --> pip["PIP /<br/>Layout"]
-        pip --> dsk["DSK<br/>Graphics"]
+        usk["Upstream<br/>Key"] --> dve["DVE<br/>Compositor"]
+        dve --> dsk["DSK<br/>Graphics"]
         dsk --> stm["ST Map /<br/>Color Grade"]
         stm --> raw["Raw Sink"]
         raw --> enc["H.264<br/>Encode"]
@@ -361,21 +361,21 @@ Between the switching engine and the H.264 encoder sits a chain of compositing n
 flowchart LR
     PF["ProcessingFrame<br/>(from FramePool)"]
     USK["upstreamKeyNode"]
-    LYT["layoutCompositorNode"]
+    DVE["dveCompositorNode"]
     DSK["compositorNode"]
     RS1["rawSinkNode<br/>(MXL output)"]
     ENC["encodeNode"]
     BV["BroadcastVideo"]
 
     PF --> USK
-    USK --> LYT
-    LYT --> DSK
+    USK --> DVE
+    DVE --> DSK
     DSK --> RS1
     RS1 --> ENC
     ENC --> BV
 
     USK -.- USKn["Per-source chroma/luma key mask<br/>(Cb/Cr distance, Y threshold, feathering)"]
-    LYT -.- LYTn["PIP, side-by-side, quad split<br/>(up to 4 slots, scale + blit + border)"]
+    DVE -.- DVEn["DVE compositor: PIP, split, quad<br/>(up to 8 slots, transform + scale + border)"]
     DSK -.- DSKn["8 independent graphics layers<br/>(RGBA → YUV alpha blend, z-ordered)"]
     RS1 -.- RS1n["Deep-copy for MXL shared-memory<br/>output (before encode)"]
     ENC -.- ENCn["H.264 encode<br/>(NVENC / VA-API / VideoToolbox / x264)"]
@@ -387,18 +387,18 @@ flowchart LR
 flowchart TD
     TOP["Final Composited Output → Encode"]
     GFX["DSK Graphics<br/>8 layers, z-ordered<br/>(fade / fly / slide / pulse animations)"]
-    PIP["PIP / Layout Overlay<br/>1–4 slots composited onto program"]
+    DVE2["DVE Compositor<br/>1–8 slots composited onto program"]
     KEY["Upstream Key<br/>Chroma/luma key applied per-source, before mix point"]
     BASE["Program Frame<br/>YUV420 from selected source"]
 
     BASE --> KEY
-    KEY --> PIP
-    PIP --> GFX
+    KEY --> DVE2
+    DVE2 --> GFX
     GFX --> TOP
 
     style BASE fill:#1a1a2e,color:#fff
     style KEY fill:#16213e,color:#fff
-    style PIP fill:#0f3460,color:#fff
+    style DVE2 fill:#0f3460,color:#fff
     style GFX fill:#533483,color:#fff
     style TOP fill:#e94560,color:#fff
 ```
@@ -411,9 +411,9 @@ The pipeline is immutable once built. When configuration changes -- compositor t
 
 Per-source chroma and luma key generation operates in YUV420 domain, matching the colorspace of hardware broadcast mixers. Chroma keying uses Cb/Cr squared distance with configurable spill replacement color. Luma keying uses Y threshold with smoothness feathering. The `KeyProcessor` runs a chain of key configs per source, applied via `KeyProcessorBridge` before the mix point -- meaning keys are composited onto the source frame before it enters the transition engine or pipeline, not after.
 
-### PIP and Layouts
+### DVE Compositor
 
-The layout compositor supports PIP (corner overlay), side-by-side (50/50 split), and quad (2x2 grid) presets, plus arbitrary custom layouts. Each slot has source assignment, on/off state, position rect, z-order, border config, and scale mode (stretch or crop-to-fill). Slot transitions support cut, dissolve, and fly-in animations. Fast-control datagrams enable live PIP drag at 60fps via WebTransport binary protocol (~7 bytes per update) -- the browser sends position updates as datagrams, the layout compositor applies them directly on its fast path without state broadcast, and a single REST call on mouse release confirms the authoritative position.
+The DVE (Digital Video Effects) compositor is the sole multi-source composition engine, handling PIP (corner overlay), side-by-side (50/50 split), quad (2x2 grid) presets, and arbitrary custom layouts. Each of up to 8 slots has source assignment, on/off state, position, size, rotation, opacity, border config, and scale mode (stretch, fill, or fit). Slot transitions support cut, dissolve, and fly-in animations. Fast-control datagrams (0x04-0x09) enable live DVE slot manipulation at 60fps via WebTransport binary protocol -- the browser sends transform updates as datagrams, the DVE compositor applies them directly on its fast path without state broadcast, and a single REST call on mouse release confirms the authoritative position.
 
 ### DSK Graphics
 
@@ -726,7 +726,7 @@ Five roles map to six lockable subsystems. Each operator receives a 64-character
 
 ### Macro System
 
-55 action types across 11 categories (switching, transitions, audio, graphics, stinger, recording, replay, SCTE-35, presets, keying/source, layout, captions). Macros are validated before save via `ValidateSteps()` -- errors block the save, while warnings are informational. The sequential executor runs steps with configurable delays and supports cancellation via context. Execution state is broadcast in real-time through the `ControlRoomState` so the UI can display step-by-step progress with per-step status (pending, running, done, failed, skipped). Only one macro can run at a time; attempting to start a second returns 409 Conflict.
+55 action types across 11 categories (switching, transitions, audio, graphics, stinger, recording, replay, SCTE-35, presets, keying/source, DVE, captions). Macros are validated before save via `ValidateSteps()` -- errors block the save, while warnings are informational. The sequential executor runs steps with configurable delays and supports cancellation via context. Execution state is broadcast in real-time through the `ControlRoomState` so the UI can display step-by-step progress with per-step status (pending, running, done, failed, skipped). Only one macro can run at a time; attempting to start a second returns 409 Conflict.
 
 ## 11. Operator Voice Comms
 
@@ -795,8 +795,8 @@ flowchart TD
 
     NODES --> UP["uploadNode<br/>(YUV420p → NV12)"]
     UP --> KEY["gpuKeyNode<br/>(chroma/luma key)"]
-    KEY --> LYT["gpuLayoutNode<br/>(PIP compositor)"]
-    LYT --> DSK["gpuCompositorNode<br/>(DSK overlay)"]
+    KEY --> GDVE["gpuDVENode<br/>(DVE compositor)"]
+    GDVE --> DSK["gpuCompositorNode<br/>(DSK overlay)"]
     DSK --> STM["gpuSTMapNode<br/>(per-pixel warp)"]
     STM --> DL["downloadNode<br/>(NV12 → YUV420p)"]
 ```

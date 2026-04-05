@@ -6,6 +6,9 @@ import (
 	"math"
 )
 
+// MsgTransitionPosition is the fast-control message type for T-bar position updates.
+const MsgTransitionPosition byte = 0x02
+
 func ParseTransitionPosition(data []byte) (float64, error) {
 	if len(data) < 4 {
 		return 0, fmt.Errorf("transition position: need 4 bytes, got %d", len(data))

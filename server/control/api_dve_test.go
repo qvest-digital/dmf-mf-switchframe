@@ -9,13 +9,12 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/switchframe/server/dve"
-	"github.com/zsiec/switchframe/server/layout"
 )
 
 func TestDVEGetReturnsNullWhenNoDVELayout(t *testing.T) {
 	_, sw := setupTestAPI(t)
-	lc := layout.NewCompositor(1920, 1080)
-	api := NewAPI(sw, WithLayoutCompositor(lc))
+	dc := dve.NewCompositor(1920, 1080)
+	api := NewAPI(sw, WithDVECompositor(dc))
 
 	req := httptest.NewRequest("GET", "/api/dve", nil)
 	rec := httptest.NewRecorder()
@@ -30,8 +29,8 @@ func TestDVEGetReturnsNullWhenNoDVELayout(t *testing.T) {
 
 func TestDVESetWithValidLayout(t *testing.T) {
 	_, sw := setupTestAPI(t)
-	lc := layout.NewCompositor(1920, 1080)
-	api := NewAPI(sw, WithLayoutCompositor(lc))
+	dc := dve.NewCompositor(1920, 1080)
+	api := NewAPI(sw, WithDVECompositor(dc))
 
 	body := `{
 		"name": "test",
@@ -56,7 +55,7 @@ func TestDVESetWithValidLayout(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 
 	// Verify the layout was stored.
-	dl := lc.GetDVELayout()
+	dl := dc.GetLayout()
 	require.NotNil(t, dl)
 	require.Len(t, dl.Slots, 1)
 	require.Equal(t, "cam1", dl.Slots[0].SourceKey)
@@ -65,8 +64,8 @@ func TestDVESetWithValidLayout(t *testing.T) {
 
 func TestDVESetWithInvalidLayout(t *testing.T) {
 	_, sw := setupTestAPI(t)
-	lc := layout.NewCompositor(1920, 1080)
-	api := NewAPI(sw, WithLayoutCompositor(lc))
+	dc := dve.NewCompositor(1920, 1080)
+	api := NewAPI(sw, WithDVECompositor(dc))
 
 	// Width <= 0 should fail validation.
 	body := `{
@@ -93,8 +92,8 @@ func TestDVESetWithInvalidLayout(t *testing.T) {
 
 func TestDVESetWithInvalidJSON(t *testing.T) {
 	_, sw := setupTestAPI(t)
-	lc := layout.NewCompositor(1920, 1080)
-	api := NewAPI(sw, WithLayoutCompositor(lc))
+	dc := dve.NewCompositor(1920, 1080)
+	api := NewAPI(sw, WithDVECompositor(dc))
 
 	req := httptest.NewRequest("PUT", "/api/dve", strings.NewReader("{bad"))
 	req.Header.Set("Content-Type", "application/json")
@@ -106,8 +105,8 @@ func TestDVESetWithInvalidJSON(t *testing.T) {
 
 func TestDVESetWithNoSlotsOrPreset(t *testing.T) {
 	_, sw := setupTestAPI(t)
-	lc := layout.NewCompositor(1920, 1080)
-	api := NewAPI(sw, WithLayoutCompositor(lc))
+	dc := dve.NewCompositor(1920, 1080)
+	api := NewAPI(sw, WithDVECompositor(dc))
 
 	req := httptest.NewRequest("PUT", "/api/dve", strings.NewReader(`{}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -119,8 +118,8 @@ func TestDVESetWithNoSlotsOrPreset(t *testing.T) {
 
 func TestDVESetWithBuiltinPreset(t *testing.T) {
 	_, sw := setupTestAPI(t)
-	lc := layout.NewCompositor(1920, 1080)
-	api := NewAPI(sw, WithLayoutCompositor(lc))
+	dc := dve.NewCompositor(1920, 1080)
+	api := NewAPI(sw, WithDVECompositor(dc))
 
 	body := `{"preset":"pip-top-right"}`
 	req := httptest.NewRequest("PUT", "/api/dve", strings.NewReader(body))
@@ -130,7 +129,7 @@ func TestDVESetWithBuiltinPreset(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
 
-	dl := lc.GetDVELayout()
+	dl := dc.GetLayout()
 	require.NotNil(t, dl)
 	require.Len(t, dl.Slots, 1)
 	require.True(t, dl.Slots[0].Enabled)
@@ -138,8 +137,8 @@ func TestDVESetWithBuiltinPreset(t *testing.T) {
 
 func TestDVESetWithUnknownPreset(t *testing.T) {
 	_, sw := setupTestAPI(t)
-	lc := layout.NewCompositor(1920, 1080)
-	api := NewAPI(sw, WithLayoutCompositor(lc))
+	dc := dve.NewCompositor(1920, 1080)
+	api := NewAPI(sw, WithDVECompositor(dc))
 
 	body := `{"preset":"nonexistent"}`
 	req := httptest.NewRequest("PUT", "/api/dve", strings.NewReader(body))
@@ -152,11 +151,11 @@ func TestDVESetWithUnknownPreset(t *testing.T) {
 
 func TestDVEDelete(t *testing.T) {
 	_, sw := setupTestAPI(t)
-	lc := layout.NewCompositor(1920, 1080)
-	api := NewAPI(sw, WithLayoutCompositor(lc))
+	dc := dve.NewCompositor(1920, 1080)
+	api := NewAPI(sw, WithDVECompositor(dc))
 
 	// Set a DVE layout first.
-	lc.SetDVELayout(&dve.Layout{
+	dc.SetLayout(&dve.Layout{
 		Name:  "test",
 		Slots: []dve.Slot{{Transform: dve.DefaultTransform(0, 0, 480, 270), Enabled: true}},
 	})
@@ -166,16 +165,16 @@ func TestDVEDelete(t *testing.T) {
 	api.Mux().ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusNoContent, rec.Code)
-	require.Nil(t, lc.GetDVELayout())
+	require.Nil(t, dc.GetLayout())
 }
 
 func TestDVESlotUpdatePartial(t *testing.T) {
 	_, sw := setupTestAPI(t)
-	lc := layout.NewCompositor(1920, 1080)
-	api := NewAPI(sw, WithLayoutCompositor(lc))
+	dc := dve.NewCompositor(1920, 1080)
+	api := NewAPI(sw, WithDVECompositor(dc))
 
 	// Set a DVE layout.
-	lc.SetDVELayout(&dve.Layout{
+	dc.SetLayout(&dve.Layout{
 		Name: "test",
 		Slots: []dve.Slot{
 			{
@@ -196,7 +195,7 @@ func TestDVESlotUpdatePartial(t *testing.T) {
 
 	require.Equal(t, http.StatusNoContent, rec.Code)
 
-	dl := lc.GetDVELayout()
+	dl := dc.GetLayout()
 	require.Equal(t, "cam2", dl.Slots[0].SourceKey)
 	// Transform should remain unchanged.
 	require.InDelta(t, 480.0, dl.Slots[0].Transform.Width, 0.01)
@@ -204,10 +203,10 @@ func TestDVESlotUpdatePartial(t *testing.T) {
 
 func TestDVESlotUpdateInvalidSlotID(t *testing.T) {
 	_, sw := setupTestAPI(t)
-	lc := layout.NewCompositor(1920, 1080)
-	api := NewAPI(sw, WithLayoutCompositor(lc))
+	dc := dve.NewCompositor(1920, 1080)
+	api := NewAPI(sw, WithDVECompositor(dc))
 
-	lc.SetDVELayout(&dve.Layout{
+	dc.SetLayout(&dve.Layout{
 		Name:  "test",
 		Slots: []dve.Slot{{Transform: dve.DefaultTransform(0, 0, 480, 270), Enabled: true}},
 	})
@@ -224,10 +223,10 @@ func TestDVESlotUpdateInvalidSlotID(t *testing.T) {
 
 func TestDVESlotOn(t *testing.T) {
 	_, sw := setupTestAPI(t)
-	lc := layout.NewCompositor(1920, 1080)
-	api := NewAPI(sw, WithLayoutCompositor(lc))
+	dc := dve.NewCompositor(1920, 1080)
+	api := NewAPI(sw, WithDVECompositor(dc))
 
-	lc.SetDVELayout(&dve.Layout{
+	dc.SetLayout(&dve.Layout{
 		Name:  "test",
 		Slots: []dve.Slot{{Transform: dve.DefaultTransform(0, 0, 480, 270), Enabled: false}},
 	})
@@ -237,15 +236,15 @@ func TestDVESlotOn(t *testing.T) {
 	api.Mux().ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusNoContent, rec.Code)
-	require.True(t, lc.GetDVELayout().Slots[0].Enabled)
+	require.True(t, dc.GetLayout().Slots[0].Enabled)
 }
 
 func TestDVESlotOff(t *testing.T) {
 	_, sw := setupTestAPI(t)
-	lc := layout.NewCompositor(1920, 1080)
-	api := NewAPI(sw, WithLayoutCompositor(lc))
+	dc := dve.NewCompositor(1920, 1080)
+	api := NewAPI(sw, WithDVECompositor(dc))
 
-	lc.SetDVELayout(&dve.Layout{
+	dc.SetLayout(&dve.Layout{
 		Name:  "test",
 		Slots: []dve.Slot{{Transform: dve.DefaultTransform(0, 0, 480, 270), Enabled: true}},
 	})
@@ -255,15 +254,15 @@ func TestDVESlotOff(t *testing.T) {
 	api.Mux().ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusNoContent, rec.Code)
-	require.False(t, lc.GetDVELayout().Slots[0].Enabled)
+	require.False(t, dc.GetLayout().Slots[0].Enabled)
 }
 
 func TestDVESlotOnOutOfRange(t *testing.T) {
 	_, sw := setupTestAPI(t)
-	lc := layout.NewCompositor(1920, 1080)
-	api := NewAPI(sw, WithLayoutCompositor(lc))
+	dc := dve.NewCompositor(1920, 1080)
+	api := NewAPI(sw, WithDVECompositor(dc))
 
-	lc.SetDVELayout(&dve.Layout{
+	dc.SetLayout(&dve.Layout{
 		Name:  "test",
 		Slots: []dve.Slot{{Transform: dve.DefaultTransform(0, 0, 480, 270), Enabled: true}},
 	})
@@ -277,8 +276,8 @@ func TestDVESlotOnOutOfRange(t *testing.T) {
 
 func TestDVESlotOffNoDVELayout(t *testing.T) {
 	_, sw := setupTestAPI(t)
-	lc := layout.NewCompositor(1920, 1080)
-	api := NewAPI(sw, WithLayoutCompositor(lc))
+	dc := dve.NewCompositor(1920, 1080)
+	api := NewAPI(sw, WithDVECompositor(dc))
 
 	// No DVE layout set.
 	req := httptest.NewRequest("POST", "/api/dve/slots/0/off", nil)
@@ -290,9 +289,9 @@ func TestDVESlotOffNoDVELayout(t *testing.T) {
 
 func TestDVEPresetStoreNilDoesNotPanic(t *testing.T) {
 	_, sw := setupTestAPI(t)
-	lc := layout.NewCompositor(1920, 1080)
+	dc := dve.NewCompositor(1920, 1080)
 	// No dvePresetStore — preset routes should not be registered.
-	api := NewAPI(sw, WithLayoutCompositor(lc))
+	api := NewAPI(sw, WithDVECompositor(dc))
 
 	endpoints := []struct {
 		method string
@@ -323,13 +322,13 @@ func TestDVEPresetStoreNilDoesNotPanic(t *testing.T) {
 
 func TestDVEPresetsCRUD(t *testing.T) {
 	_, sw := setupTestAPI(t)
-	lc := layout.NewCompositor(1920, 1080)
+	dc := dve.NewCompositor(1920, 1080)
 	store, err := dve.NewPresetStore(t.TempDir())
 	require.NoError(t, err)
-	api := NewAPI(sw, WithLayoutCompositor(lc), WithDVEPresetStore(store))
+	api := NewAPI(sw, WithDVECompositor(dc), WithDVEPresetStore(store))
 
 	// Set a DVE layout to save as a preset.
-	lc.SetDVELayout(&dve.Layout{
+	dc.SetLayout(&dve.Layout{
 		Name: "test",
 		Slots: []dve.Slot{
 			{SourceKey: "cam1", Transform: dve.DefaultTransform(0, 0, 480, 270), Enabled: true},
@@ -392,8 +391,8 @@ func TestDVEPresetsCRUD(t *testing.T) {
 
 func TestDVEGetAfterSet(t *testing.T) {
 	_, sw := setupTestAPI(t)
-	lc := layout.NewCompositor(1920, 1080)
-	api := NewAPI(sw, WithLayoutCompositor(lc))
+	dc := dve.NewCompositor(1920, 1080)
+	api := NewAPI(sw, WithDVECompositor(dc))
 
 	// Set via API.
 	body := `{
@@ -434,9 +433,9 @@ func TestDVEGetAfterSet(t *testing.T) {
 	require.InDelta(t, 0.8, dl.Slots[0].Transform.Opacity, 0.01)
 }
 
-func TestDVENoLayoutCompositor(t *testing.T) {
+func TestDVENoDVECompositor(t *testing.T) {
 	_, sw := setupTestAPI(t)
-	// No layout compositor — DVE routes should not be registered.
+	// No DVE compositor — DVE routes should not be registered.
 	api := NewAPI(sw)
 
 	req := httptest.NewRequest("GET", "/api/dve", nil)
@@ -449,10 +448,10 @@ func TestDVENoLayoutCompositor(t *testing.T) {
 
 func TestDVESlotUpdateWithTransform(t *testing.T) {
 	_, sw := setupTestAPI(t)
-	lc := layout.NewCompositor(1920, 1080)
-	api := NewAPI(sw, WithLayoutCompositor(lc))
+	dc := dve.NewCompositor(1920, 1080)
+	api := NewAPI(sw, WithDVECompositor(dc))
 
-	lc.SetDVELayout(&dve.Layout{
+	dc.SetLayout(&dve.Layout{
 		Name: "test",
 		Slots: []dve.Slot{
 			{SourceKey: "cam1", Transform: dve.DefaultTransform(0, 0, 480, 270), Enabled: true},
@@ -475,7 +474,7 @@ func TestDVESlotUpdateWithTransform(t *testing.T) {
 
 	require.Equal(t, http.StatusNoContent, rec.Code)
 
-	dl := lc.GetDVELayout()
+	dl := dc.GetLayout()
 	require.InDelta(t, 200.0, dl.Slots[0].Transform.PositionX, 0.01)
 	require.InDelta(t, 640.0, dl.Slots[0].Transform.Width, 0.01)
 	require.InDelta(t, 45.0, dl.Slots[0].Transform.RotationDeg, 0.01)
@@ -484,10 +483,10 @@ func TestDVESlotUpdateWithTransform(t *testing.T) {
 
 func TestDVESlotUpdateInvalidTransform(t *testing.T) {
 	_, sw := setupTestAPI(t)
-	lc := layout.NewCompositor(1920, 1080)
-	api := NewAPI(sw, WithLayoutCompositor(lc))
+	dc := dve.NewCompositor(1920, 1080)
+	api := NewAPI(sw, WithDVECompositor(dc))
 
-	lc.SetDVELayout(&dve.Layout{
+	dc.SetLayout(&dve.Layout{
 		Name: "test",
 		Slots: []dve.Slot{
 			{SourceKey: "cam1", Transform: dve.DefaultTransform(0, 0, 480, 270), Enabled: true},

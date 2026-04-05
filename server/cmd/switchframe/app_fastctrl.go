@@ -8,23 +8,18 @@ import (
 )
 
 // initFastControl sets up the fast-control datagram dispatcher with handlers
-// for layout slot position updates and transition position updates.
+// for transition position updates, graphics position updates, and DVE transforms.
 func (a *App) initFastControl() {
 	a.fastCtrl = fastctrl.NewDispatcher()
 
-	a.fastCtrl.Register(fastctrl.MsgLayoutSlotPosition, a.handleFastLayoutUpdate)
 	a.fastCtrl.Register(fastctrl.MsgTransitionPosition, a.handleFastTransitionUpdate)
 	a.fastCtrl.Register(fastctrl.MsgGraphicsLayerPosition, a.handleFastGraphicsUpdate)
 	a.fastCtrl.Register(fastctrl.MsgDVESlotTransform, a.handleFastDVETransform)
 	a.fastCtrl.Register(fastctrl.MsgDVESingleParam, a.handleFastDVESingleParam)
-}
-
-func (a *App) handleFastLayoutUpdate(data []byte) error {
-	slotID, rect, err := fastctrl.ParseLayoutSlotPosition(data)
-	if err != nil {
-		return err
-	}
-	return a.layoutCompositor.UpdateSlotRect(slotID, rect)
+	a.fastCtrl.Register(fastctrl.MsgDVESlotSource, a.handleFastDVESlotSource)
+	a.fastCtrl.Register(fastctrl.MsgDVESlotEnable, a.handleFastDVESlotEnable)
+	a.fastCtrl.Register(fastctrl.MsgDVEScaleMode, a.handleFastDVEScaleMode)
+	a.fastCtrl.Register(fastctrl.MsgDVEBorder, a.handleFastDVEBorder)
 }
 
 func (a *App) handleFastTransitionUpdate(data []byte) error {
@@ -48,11 +43,11 @@ func (a *App) handleFastDVETransform(data []byte) error {
 	if err != nil {
 		return err
 	}
-	dl := a.layoutCompositor.GetDVELayout()
+	dl := a.dveCompositor.GetLayout()
 	if dl == nil || t.SlotID >= len(dl.Slots) {
 		return nil // ignore if no DVE layout or slot out of range
 	}
-	a.layoutCompositor.UpdateDVESlotTransform(t.SlotID, func(xf *dve.Transform) {
+	a.dveCompositor.UpdateSlotTransform(t.SlotID, func(xf *dve.Transform) {
 		xf.PositionX = float64(t.PositionX)
 		xf.PositionY = float64(t.PositionY)
 		xf.Width = float64(t.Width)
@@ -70,11 +65,11 @@ func (a *App) handleFastDVESingleParam(data []byte) error {
 	if err != nil {
 		return err
 	}
-	dl := a.layoutCompositor.GetDVELayout()
+	dl := a.dveCompositor.GetLayout()
 	if dl == nil || p.SlotID >= len(dl.Slots) {
 		return nil
 	}
-	a.layoutCompositor.UpdateDVESlotTransform(p.SlotID, func(xf *dve.Transform) {
+	a.dveCompositor.UpdateSlotTransform(p.SlotID, func(xf *dve.Transform) {
 		v := float64(p.Value)
 		switch p.ParamID {
 		case fastctrl.DVEParamPositionX:
@@ -108,6 +103,69 @@ func (a *App) handleFastDVESingleParam(data []byte) error {
 		case fastctrl.DVEParamCornerRadius:
 			xf.Border.CornerRadius = v
 		}
+	})
+	return nil
+}
+
+func (a *App) handleFastDVESlotSource(data []byte) error {
+	src, err := fastctrl.ParseDVESlotSource(data)
+	if err != nil {
+		return err
+	}
+	dl := a.dveCompositor.GetLayout()
+	if dl == nil || src.SlotID >= len(dl.Slots) {
+		return nil
+	}
+	a.dveCompositor.UpdateSlot(src.SlotID, func(s *dve.Slot) {
+		s.SourceKey = src.SourceKey
+	})
+	return nil
+}
+
+func (a *App) handleFastDVESlotEnable(data []byte) error {
+	msg, err := fastctrl.ParseDVESlotEnable(data)
+	if err != nil {
+		return err
+	}
+	if msg.Enabled {
+		a.dveCompositor.SlotOn(msg.SlotID)
+	} else {
+		a.dveCompositor.SlotOff(msg.SlotID)
+	}
+	return nil
+}
+
+func (a *App) handleFastDVEScaleMode(data []byte) error {
+	msg, err := fastctrl.ParseDVEScaleMode(data)
+	if err != nil {
+		return err
+	}
+	dl := a.dveCompositor.GetLayout()
+	if dl == nil || msg.SlotID >= len(dl.Slots) {
+		return nil
+	}
+	a.dveCompositor.UpdateSlotTransform(msg.SlotID, func(xf *dve.Transform) {
+		xf.ScaleMode = msg.Mode
+		xf.CropAnchor = [2]float64{float64(msg.AnchorX), float64(msg.AnchorY)}
+	})
+	return nil
+}
+
+func (a *App) handleFastDVEBorder(data []byte) error {
+	msg, err := fastctrl.ParseDVEBorder(data)
+	if err != nil {
+		return err
+	}
+	dl := a.dveCompositor.GetLayout()
+	if dl == nil || msg.SlotID >= len(dl.Slots) {
+		return nil
+	}
+	a.dveCompositor.UpdateSlotTransform(msg.SlotID, func(xf *dve.Transform) {
+		xf.Border.Width = float64(msg.Width)
+		xf.Border.CornerRadius = float64(msg.Radius)
+		xf.Border.ColorY = msg.ColorY
+		xf.Border.ColorCb = msg.ColorCb
+		xf.Border.ColorCr = msg.ColorCr
 	})
 	return nil
 }

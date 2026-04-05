@@ -253,36 +253,29 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 		}
 	}
 
-	// Layout compositor state (PIP slots).
-	if a.layoutCompositor != nil {
-		if l := a.layoutCompositor.GetLayout(); l != nil {
-			ls := &internal.LayoutState{ActivePreset: l.Name}
-			for i, slot := range l.Slots {
+	// Layout compositor state (PIP slots) — built from DVE compositor.
+	if a.dveCompositor != nil {
+		if dl := a.dveCompositor.GetLayout(); dl != nil {
+			ls := &internal.LayoutState{ActivePreset: dl.Name}
+			for i, slot := range dl.Slots {
+				tr := slot.Transform
+				rect := tr.ToRect() // integer rect for backward compat
 				slotState := internal.LayoutSlotState{
 					ID:         i,
 					SourceKey:  slot.SourceKey,
 					Enabled:    slot.Enabled,
-					X:          slot.Rect.Min.X,
-					Y:          slot.Rect.Min.Y,
-					Width:      slot.Rect.Dx(),
-					Height:     slot.Rect.Dy(),
+					X:          rect.Min.X,
+					Y:          rect.Min.Y,
+					Width:      rect.Dx(),
+					Height:     rect.Dy(),
 					ZOrder:     slot.ZOrder,
-					Animating:  a.layoutCompositor.SlotAnimating(i),
-					ScaleMode:  slot.ScaleMode,
-					CropAnchor: slot.CropAnchor,
+					Animating:  a.dveCompositor.SlotAnimating(i),
+					ScaleMode:  tr.ScaleMode,
+					CropAnchor: tr.CropAnchor,
+					DVE:        dveSlotStateFromTransform(tr),
 				}
 				ls.Slots = append(ls.Slots, slotState)
 			}
-
-			// Enrich with DVE transform data when a DVE layout is active.
-			if dl := a.layoutCompositor.GetDVELayout(); dl != nil {
-				for i, dveSlot := range dl.Slots {
-					if i < len(ls.Slots) {
-						ls.Slots[i].DVE = dveSlotStateFromTransform(dveSlot.Transform)
-					}
-				}
-			}
-
 			state.Layout = ls
 		}
 	}

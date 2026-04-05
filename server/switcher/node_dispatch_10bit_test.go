@@ -150,14 +150,6 @@ func TestCompositorNode_10bit_NilInactive(t *testing.T) {
 	require.False(t, node.Active())
 }
 
-// --- layout compositor node 10-bit passthrough ---
-
-func TestLayoutCompositorNode_10bit_NilInactive(t *testing.T) {
-	// Layout compositor with nil compositor should not be Active()
-	node := &layoutCompositorNode{compositor: nil}
-	require.False(t, node.Active())
-}
-
 // --- upstream key node 10-bit passthrough ---
 
 func TestUpstreamKeyNode_10bit_NilInactive(t *testing.T) {

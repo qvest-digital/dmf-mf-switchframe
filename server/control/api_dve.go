@@ -34,7 +34,7 @@ type dvePresetRecallRequest struct {
 
 // registerDVERoutes registers DVE-related API routes on the given mux.
 func (a *API) registerDVERoutes(mux *http.ServeMux) {
-	if a.layoutCompositor == nil {
+	if a.dveCompositor == nil {
 		return
 	}
 	mux.HandleFunc("GET /api/dve", a.handleGetDVE)
@@ -52,7 +52,7 @@ func (a *API) registerDVERoutes(mux *http.ServeMux) {
 }
 
 func (a *API) handleGetDVE(w http.ResponseWriter, r *http.Request) {
-	dl := a.layoutCompositor.GetDVELayout()
+	dl := a.dveCompositor.GetLayout()
 	w.Header().Set("Content-Type", "application/json")
 	if dl == nil {
 		_ = json.NewEncoder(w).Encode(map[string]any{"layout": nil})
@@ -103,7 +103,7 @@ func (a *API) handleSetDVE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.layoutCompositor.SetDVELayout(dl)
+	a.dveCompositor.SetLayout(dl)
 	a.broadcast()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(dl)
@@ -111,7 +111,7 @@ func (a *API) handleSetDVE(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) handleDeleteDVE(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)
-	a.layoutCompositor.SetDVELayout(nil)
+	a.dveCompositor.SetLayout(nil)
 	a.broadcast()
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -125,7 +125,7 @@ func (a *API) parseDVESlotID(w http.ResponseWriter, r *http.Request) int {
 		httperr.Write(w, http.StatusBadRequest, "invalid slot id")
 		return -1
 	}
-	dl := a.layoutCompositor.GetDVELayout()
+	dl := a.dveCompositor.GetLayout()
 	if id < 0 || dl == nil || id >= len(dl.Slots) {
 		httperr.Write(w, http.StatusBadRequest, "slot id out of range")
 		return -1
@@ -139,17 +139,7 @@ func (a *API) handleDVESlotOn(w http.ResponseWriter, r *http.Request) {
 	if id < 0 {
 		return
 	}
-	dl := a.layoutCompositor.GetDVELayout()
-	if dl == nil || id >= len(dl.Slots) {
-		httperr.Write(w, http.StatusNotFound, "DVE layout changed")
-		return
-	}
-	// Deep copy to avoid mutating the live layout read by concurrent goroutines.
-	cp := *dl
-	cp.Slots = make([]dve.Slot, len(dl.Slots))
-	copy(cp.Slots, dl.Slots)
-	cp.Slots[id].Enabled = true
-	a.layoutCompositor.SetDVELayout(&cp)
+	a.dveCompositor.SlotOn(id)
 	a.broadcast()
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -160,17 +150,7 @@ func (a *API) handleDVESlotOff(w http.ResponseWriter, r *http.Request) {
 	if id < 0 {
 		return
 	}
-	dl := a.layoutCompositor.GetDVELayout()
-	if dl == nil || id >= len(dl.Slots) {
-		httperr.Write(w, http.StatusNotFound, "DVE layout changed")
-		return
-	}
-	// Deep copy to avoid mutating the live layout read by concurrent goroutines.
-	cp := *dl
-	cp.Slots = make([]dve.Slot, len(dl.Slots))
-	copy(cp.Slots, dl.Slots)
-	cp.Slots[id].Enabled = false
-	a.layoutCompositor.SetDVELayout(&cp)
+	a.dveCompositor.SlotOff(id)
 	a.broadcast()
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -188,36 +168,45 @@ func (a *API) handleDVESlotUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dl := a.layoutCompositor.GetDVELayout()
+	// Build the slot update and validate before applying.
+	// Read current slot to merge partial updates for validation.
+	dl := a.dveCompositor.GetLayout()
 	if dl == nil || id >= len(dl.Slots) {
 		httperr.Write(w, http.StatusNotFound, "DVE layout changed")
 		return
 	}
-	// Deep copy to avoid mutating the live layout read by concurrent goroutines.
-	cp := *dl
-	cp.Slots = make([]dve.Slot, len(dl.Slots))
-	copy(cp.Slots, dl.Slots)
-	slot := &cp.Slots[id]
-
+	candidate := dl.Slots[id]
 	if req.SourceKey != nil {
-		slot.SourceKey = *req.SourceKey
+		candidate.SourceKey = *req.SourceKey
 	}
 	if req.Transform != nil {
-		slot.Transform = *req.Transform
+		candidate.Transform = *req.Transform
 	}
 	if req.ZOrder != nil {
-		slot.ZOrder = *req.ZOrder
+		candidate.ZOrder = *req.ZOrder
 	}
 	if req.Enabled != nil {
-		slot.Enabled = *req.Enabled
+		candidate.Enabled = *req.Enabled
 	}
-
-	if err := dve.ValidateSlot(*slot); err != nil {
+	if err := dve.ValidateSlot(candidate); err != nil {
 		httperr.Write(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	a.layoutCompositor.SetDVELayout(&cp)
+	a.dveCompositor.UpdateSlot(id, func(s *dve.Slot) {
+		if req.SourceKey != nil {
+			s.SourceKey = *req.SourceKey
+		}
+		if req.Transform != nil {
+			s.Transform = *req.Transform
+		}
+		if req.ZOrder != nil {
+			s.ZOrder = *req.ZOrder
+		}
+		if req.Enabled != nil {
+			s.Enabled = *req.Enabled
+		}
+	})
 	a.broadcast()
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -246,7 +235,7 @@ func (a *API) handleListDVEPresets(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) handleSaveDVEPreset(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)
-	dl := a.layoutCompositor.GetDVELayout()
+	dl := a.dveCompositor.GetLayout()
 	if dl == nil {
 		httperr.Write(w, http.StatusBadRequest, "no active DVE layout to save")
 		return
@@ -314,7 +303,7 @@ func (a *API) handleRecallDVEPreset(w http.ResponseWriter, r *http.Request) {
 	// is wired up.
 
 	// Apply target layout immediately.
-	a.layoutCompositor.SetDVELayout(targetLayout)
+	a.dveCompositor.SetLayout(targetLayout)
 	a.broadcast()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(targetLayout)

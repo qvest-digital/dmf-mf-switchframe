@@ -21,8 +21,8 @@ import (
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/correctness/testutil"
 	"github.com/zsiec/switchframe/server/graphics"
-	"github.com/zsiec/switchframe/server/layout"
-	"github.com/zsiec/switchframe/server/output"
+	"github.com/zsiec/switchframe/server/dve"
+"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -48,14 +48,14 @@ type sourceColor struct {
 
 // pipelineHarness wires a real Switcher -> pipeline -> encoder -> muxer chain.
 // Frames are fed via IngestRawVideo, processed through the CPU pipeline
-// (upstream key -> layout -> compositor -> encode), and captured as MPEG-TS.
+// (upstream key -> dve -> compositor -> encode), and captured as MPEG-TS.
 type pipelineHarness struct {
 	sw           *switcher.Switcher
 	programRelay *distribution.Relay
 	muxer        *output.TSMuxer
 	mixer        *audio.Mixer
 	compositor   *graphics.Compositor
-	layoutComp   *layout.Compositor
+	dveComp      *dve.Compositor
 	keyProc      *graphics.KeyProcessor
 	keyBridge    *graphics.KeyProcessorBridge
 
@@ -214,11 +214,11 @@ func newPipelineHarness(t *testing.T, opts ...harnessOption) *pipelineHarness {
 		sw.SetCompositor(comp)
 	}
 
-	// Optional: layout compositor.
+	// Optional: DVE compositor (PIP layout).
 	if cfg.withLayout {
-		lc := layout.NewCompositor(testWidth, testHeight)
-		h.layoutComp = lc
-		sw.SetLayoutCompositor(lc)
+		dc := dve.NewCompositor(testWidth, testHeight)
+		h.dveComp = dc
+		sw.SetDVECompositor(dc)
 	}
 
 	// Optional: upstream keying.

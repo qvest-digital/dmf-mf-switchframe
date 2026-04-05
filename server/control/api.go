@@ -18,8 +18,7 @@ import (
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/htmlgfx"
 	"github.com/zsiec/switchframe/server/internal"
-	"github.com/zsiec/switchframe/server/layout"
-	"github.com/zsiec/switchframe/server/macro"
+"github.com/zsiec/switchframe/server/macro"
 	"github.com/zsiec/switchframe/server/operator"
 	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/playout"
@@ -257,14 +256,9 @@ func WithSessionManager(sm *operator.SessionManager) APIOption {
 	return func(a *API) { a.sessionMgr = sm }
 }
 
-// WithLayoutCompositor attaches a layout compositor to the API.
-func WithLayoutCompositor(lc *layout.Compositor) APIOption {
-	return func(a *API) { a.layoutCompositor = lc }
-}
-
-// WithLayoutStore attaches a layout preset store to the API.
-func WithLayoutStore(ls *layout.Store) APIOption {
-	return func(a *API) { a.layoutStore = ls }
+// WithDVECompositor attaches a DVE compositor to the API.
+func WithDVECompositor(c *dve.Compositor) APIOption {
+	return func(a *API) { a.dveCompositor = c }
 }
 
 // WithDVEPresetStore attaches a DVE preset store to the API.
@@ -491,8 +485,7 @@ type API struct {
 	sessionMgr         *operator.SessionManager
 	scte35             SCTE35API
 	scte35Rules        SCTE35RulesAPI
-	layoutCompositor   *layout.Compositor
-	layoutStore        *layout.Store
+	dveCompositor      *dve.Compositor
 	dvePresetStore     *dve.PresetStore
 	wipeStore          *wipemap.WipeMapStore
 	captionMgr         CaptionManagerAPI
@@ -671,7 +664,6 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	a.registerReplayRoutes(mux)
 	a.registerSCTE35Routes(mux)
 	a.registerCaptionRoutes(mux)
-	a.registerLayoutRoutes(mux)
 	a.registerDVERoutes(mux)
 	a.registerWipeRoutes(mux)
 	a.registerClipRoutes(mux)

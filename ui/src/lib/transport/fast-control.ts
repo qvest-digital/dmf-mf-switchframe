@@ -1,8 +1,11 @@
-const MSG_LAYOUT_SLOT_POSITION = 0x01;
 const MSG_TRANSITION_POSITION = 0x02;
 const MSG_GRAPHICS_LAYER_POSITION = 0x03;
 const MSG_DVE_SLOT_TRANSFORM = 0x04;
 const MSG_DVE_SINGLE_PARAM = 0x05;
+const MSG_DVE_SLOT_SOURCE = 0x06;
+const MSG_DVE_SLOT_ENABLE = 0x07;
+const MSG_DVE_SCALE_MODE = 0x08;
+const MSG_DVE_BORDER = 0x09;
 
 // DVE single-parameter IDs for knob/slider control.
 export const DVE_PARAM_POSITION_X = 0x0000;
@@ -22,7 +25,6 @@ export const DVE_PARAM_BORDER_WIDTH = 0x000e;
 export const DVE_PARAM_CORNER_RADIUS = 0x000f;
 
 export interface FastControl {
-	sendSlotPosition(slotId: number, x: number, y: number, w: number, h: number): void;
 	sendTransitionPosition(position: number): void;
 	sendGraphicsLayerPosition(layerId: number, x: number, y: number, w: number, h: number): void;
 	sendDVESlotTransform(
@@ -35,25 +37,18 @@ export interface FastControl {
 		opacity: number,
 	): void;
 	sendDVESingleParam(slotId: number, paramId: number, value: number): void;
+	sendDVESlotSource(slotId: number, sourceKey: string): void;
+	sendDVESlotEnable(slotId: number, enabled: boolean): void;
+	sendDVEScaleMode(slotId: number, mode: number, anchorX: number, anchorY: number): void;
+	sendDVEBorder(
+		slotId: number,
+		width: number,
+		radius: number,
+		colorY: number,
+		colorCb: number,
+		colorCr: number,
+	): void;
 	close(): void;
-}
-
-export function encodeSlotPosition(
-	slotId: number,
-	x: number,
-	y: number,
-	w: number,
-	h: number,
-): Uint8Array {
-	const buf = new ArrayBuffer(10);
-	const view = new DataView(buf);
-	view.setUint8(0, MSG_LAYOUT_SLOT_POSITION);
-	view.setUint8(1, slotId);
-	view.setUint16(2, x);
-	view.setUint16(4, y);
-	view.setUint16(6, w);
-	view.setUint16(8, h);
-	return new Uint8Array(buf);
 }
 
 export function encodeTransitionPosition(position: number): Uint8Array {
@@ -118,14 +113,67 @@ export function encodeDVESingleParam(
 	return new Uint8Array(buf);
 }
 
+export function encodeDVESlotSource(slotId: number, sourceKey: string): Uint8Array {
+	const keyBytes = new TextEncoder().encode(sourceKey);
+	const buf = new ArrayBuffer(3 + keyBytes.length);
+	const view = new DataView(buf);
+	const arr = new Uint8Array(buf);
+	view.setUint8(0, MSG_DVE_SLOT_SOURCE);
+	view.setUint8(1, slotId);
+	arr[2] = keyBytes.length;
+	arr.set(keyBytes, 3);
+	return new Uint8Array(buf);
+}
+
+export function encodeDVESlotEnable(slotId: number, enabled: boolean): Uint8Array {
+	const buf = new ArrayBuffer(3);
+	const view = new DataView(buf);
+	view.setUint8(0, MSG_DVE_SLOT_ENABLE);
+	view.setUint8(1, slotId);
+	view.setUint8(2, enabled ? 1 : 0);
+	return new Uint8Array(buf);
+}
+
+export function encodeDVEScaleMode(
+	slotId: number,
+	mode: number,
+	anchorX: number,
+	anchorY: number,
+): Uint8Array {
+	const buf = new ArrayBuffer(11);
+	const view = new DataView(buf);
+	view.setUint8(0, MSG_DVE_SCALE_MODE);
+	view.setUint8(1, slotId);
+	view.setUint8(2, mode);
+	view.setFloat32(3, anchorX);
+	view.setFloat32(7, anchorY);
+	return new Uint8Array(buf);
+}
+
+export function encodeDVEBorder(
+	slotId: number,
+	width: number,
+	radius: number,
+	colorY: number,
+	colorCb: number,
+	colorCr: number,
+): Uint8Array {
+	const buf = new ArrayBuffer(13);
+	const view = new DataView(buf);
+	view.setUint8(0, MSG_DVE_BORDER);
+	view.setUint8(1, slotId);
+	view.setFloat32(2, width);
+	view.setFloat32(6, radius);
+	view.setUint8(10, colorY);
+	view.setUint8(11, colorCb);
+	view.setUint8(12, colorCr);
+	return new Uint8Array(buf);
+}
+
 export function createFastControl(transport: WebTransport): FastControl {
 	const writer = transport.datagrams.writable.getWriter();
 
 	return {
-		sendSlotPosition(slotId: number, x: number, y: number, w: number, h: number) {
-			writer.write(encodeSlotPosition(slotId, x, y, w, h)).catch(() => {});
-		},
-
 		sendTransitionPosition(position: number) {
 			writer.write(encodeTransitionPosition(position)).catch(() => {});
 		},
@@ -150,6 +198,31 @@ export function createFastControl(transport: WebTransport): FastControl {
 
 		sendDVESingleParam(slotId: number, paramId: number, value: number) {
 			writer.write(encodeDVESingleParam(slotId, paramId, value)).catch(() => {});
+		},
+
+		sendDVESlotSource(slotId: number, sourceKey: string) {
+			writer.write(encodeDVESlotSource(slotId, sourceKey)).catch(() => {});
+		},
+
+		sendDVESlotEnable(slotId: number, enabled: boolean) {
+			writer.write(encodeDVESlotEnable(slotId, enabled)).catch(() => {});
+		},
+
+		sendDVEScaleMode(slotId: number, mode: number, anchorX: number, anchorY: number) {
+			writer.write(encodeDVEScaleMode(slotId, mode, anchorX, anchorY)).catch(() => {});
+		},
+
+		sendDVEBorder(
+			slotId: number,
+			width: number,
+			radius: number,
+			colorY: number,
+			colorCb: number,
+			colorCr: number,
+		) {
+			writer
+				.write(encodeDVEBorder(slotId, width, radius, colorY, colorCb, colorCr))
+				.catch(() => {});
 		},
 
 		close() {

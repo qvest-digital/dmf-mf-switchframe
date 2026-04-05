@@ -13,10 +13,10 @@ import (
 	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/control/httperr"
+	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
-	"github.com/zsiec/switchframe/server/layout"
-	"github.com/zsiec/switchframe/server/macro"
+"github.com/zsiec/switchframe/server/macro"
 	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/preset"
 	"github.com/zsiec/switchframe/server/replay"
@@ -130,7 +130,7 @@ func (a *API) handleRunMacro(w http.ResponseWriter, r *http.Request) {
 		clipMgr:          a.clipMgr,
 		aiSegmentMgr:     a.aiSegmentMgr,
 		colorGradeMgr:    a.colorGradeMgr,
-		layoutCompositor: a.layoutCompositor,
+		dveCompositor:    a.dveCompositor,
 		stmapRegistry:    a.stmapRegistry,
 		textAnimEngine:   a.textAnimEngine,
 		tickerEngine:     a.tickerEngine,
@@ -228,7 +228,7 @@ type apiMacroTarget struct {
 	clipMgr          *clip.Manager
 	aiSegmentMgr     AISegmentManager
 	colorGradeMgr    ColorGradeManager
-	layoutCompositor *layout.Compositor
+	dveCompositor    *dve.Compositor
 	stmapRegistry    *stmap.Registry
 	textAnimEngine   *graphics.TextAnimationEngine
 	tickerEngine     *graphics.TickerEngine
@@ -1077,57 +1077,57 @@ func (t *apiMacroTarget) execColorGradeOff() error {
 // --- Layout helpers ---
 
 func (t *apiMacroTarget) execLayoutPreset(params map[string]any) error {
-	if t.layoutCompositor == nil {
+	if t.dveCompositor == nil {
 		return nil
 	}
 	preset, _ := params["preset"].(string)
 	if preset == "" {
 		return errors.New("layout_preset requires 'preset' param")
 	}
-	w, h := t.layoutCompositor.FrameSize()
-	l := layout.ResolveBuiltinPreset(preset, w, h)
-	if l == nil {
+	w, h := t.dveCompositor.FrameSize()
+	p := dve.ResolveBuiltinPreset(preset, w, h)
+	if p == nil {
 		return fmt.Errorf("layout preset %q not found", preset)
 	}
-	t.layoutCompositor.SetLayout(l)
+	t.dveCompositor.SetLayout(dveLayoutFromPreset(p))
 	return nil
 }
 
 func (t *apiMacroTarget) execLayoutSlotOn(params map[string]any) error {
-	if t.layoutCompositor == nil {
+	if t.dveCompositor == nil {
 		return nil
 	}
 	slot := int(floatParam(params, "slot", 0))
-	t.layoutCompositor.SlotOn(slot)
+	t.dveCompositor.SlotOn(slot)
 	return nil
 }
 
 func (t *apiMacroTarget) execLayoutSlotOff(params map[string]any) error {
-	if t.layoutCompositor == nil {
+	if t.dveCompositor == nil {
 		return nil
 	}
 	slot := int(floatParam(params, "slot", 0))
-	t.layoutCompositor.SlotOff(slot)
+	t.dveCompositor.SlotOff(slot)
 	return nil
 }
 
 func (t *apiMacroTarget) execLayoutSlotSource(params map[string]any) error {
-	if t.layoutCompositor == nil {
+	if t.dveCompositor == nil {
 		return nil
 	}
 	slot := int(floatParam(params, "slot", 0))
 	source, _ := params["source"].(string)
-	t.layoutCompositor.UpdateSlot(slot, func(s *layout.Slot) {
+	t.dveCompositor.UpdateSlot(slot, func(s *dve.Slot) {
 		s.SourceKey = source
 	})
 	return nil
 }
 
 func (t *apiMacroTarget) execLayoutClear() error {
-	if t.layoutCompositor == nil {
+	if t.dveCompositor == nil {
 		return nil
 	}
-	t.layoutCompositor.SetLayout(nil)
+	t.dveCompositor.SetLayout(nil)
 	return nil
 }
 

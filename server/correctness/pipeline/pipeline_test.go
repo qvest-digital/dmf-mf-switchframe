@@ -18,8 +18,8 @@ import (
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/correctness/testutil"
 	"github.com/zsiec/switchframe/server/graphics"
-	"github.com/zsiec/switchframe/server/layout"
-	"github.com/zsiec/switchframe/server/switcher"
+	"github.com/zsiec/switchframe/server/dve"
+"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
 )
 
@@ -30,7 +30,7 @@ import (
 // them, encode to H.264, mux to MPEG-TS, verify with ffprobe and decode.
 //
 // Pipeline path: IngestRawVideo -> videoProcCh -> pipeline.Run
-//   (upstream-key -> layout -> compositor -> encode) -> broadcastToProgram
+//   (upstream-key -> dve -> compositor -> encode) -> broadcastToProgram
 //   -> captureViewer -> TSMuxer
 // ==========================================================================
 
@@ -429,7 +429,7 @@ func TestFullPipelineCutWithAudioToTS(t *testing.T) {
 // ==========================================================================
 // TestFullPipelineLayoutToTS
 //
-// Verifies that the layout compositor (PIP) produces output where the
+// Verifies that the DVE compositor (PIP) produces output where the
 // main area shows the program source and the PIP region shows the
 // secondary source.
 // ==========================================================================
@@ -445,9 +445,13 @@ func TestFullPipelineLayoutToTS(t *testing.T) {
 	h.addSource("camA", sourceA)
 	h.addSource("camB", sourceB)
 
-	// Set PIP layout: camB as PIP in top-right corner, 1/3 width.
-	pipLayout := layout.PIPPreset(testWidth, testHeight, "camB", "top-right", 0.33)
-	h.layoutComp.SetLayout(pipLayout)
+	// Set PIP layout: camB as PIP in top-right corner using DVE preset.
+	preset := dve.ResolveBuiltinPreset("pip-top-right", testWidth, testHeight)
+	require.NotNil(t, preset, "pip-top-right preset should exist")
+	dl := &dve.Layout{Name: preset.Name, Slots: preset.Slots}
+	// Assign camB to the PIP slot.
+	dl.Slots[0].SourceKey = "camB"
+	h.dveComp.SetLayout(dl)
 
 	// Rebuild pipeline after layout change.
 	require.NoError(t, h.sw.BuildPipeline())
@@ -455,9 +459,9 @@ func TestFullPipelineLayoutToTS(t *testing.T) {
 	// Cut to A (main program), feed both sources.
 	h.cut(t, "camA")
 
-	// Feed frames from both sources. The layout compositor needs source
+	// Feed frames from both sources. The DVE compositor needs source
 	// frames for camB (the PIP source) via IngestSourceFrame, which is
-	// called by handleRawVideoFrame when the layout needs the source.
+	// called by handleRawVideoFrame when the compositor needs the source.
 	for i := 0; i < 30; i++ {
 		pts := int64(90000 + i*ptsDelta)
 
@@ -472,7 +476,7 @@ func TestFullPipelineLayoutToTS(t *testing.T) {
 		}
 		h.sw.IngestRawVideo("camA", pfA)
 
-		// Feed B (PIP source) - this populates the layout compositor's fill cache.
+		// Feed B (PIP source) - this populates the DVE compositor's fill cache.
 		yuvB := testutil.GenerateSolidYUV420(testWidth, testHeight, sourceB.Y, sourceB.Cb, sourceB.Cr)
 		pfB := &switcher.ProcessingFrame{
 			Data:       yuvB,
@@ -523,7 +527,7 @@ func TestFullPipelineLayoutToTS(t *testing.T) {
 		"PIP region Y(%d) should be closer to sourceB.Y(%d) than sourceA.Y(%d); distToB=%.1f, distToA=%.1f",
 		pipYVal, sourceB.Y, sourceA.Y, distToB, distToA)
 
-	t.Logf("Pipeline layout test passed: %d frames, center Y=%d, PIP Y=%d (distToA=%.1f, distToB=%.1f)",
+	t.Logf("Pipeline DVE test passed: %d frames, center Y=%d, PIP Y=%d (distToA=%.1f, distToB=%.1f)",
 		len(decoded), centerY, pipYVal, distToA, distToB)
 }
 

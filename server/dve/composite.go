@@ -1,4 +1,4 @@
-package layout
+package dve
 
 import (
 	"image"
@@ -244,6 +244,59 @@ func BlendRegion(dst []byte, dstW, dstH int, src []byte, srcW, srcH int, rect im
 			dstRow := dst[dstOff : dstOff+chromaCopyW]
 			srcRow := src[srcOff : srcOff+chromaCopyW]
 			transition.BlendUniformBytes(dstRow, dstRow, srcRow, pos)
+		}
+	}
+}
+
+// blendWithMask composites src onto dst at the given rect, only copying pixels
+// where mask[i] > 0. This avoids overwriting background pixels where a rotated
+// source has no coverage.
+func blendWithMask(dst []byte, dstW, dstH int, src, mask []byte, srcW, srcH int, rect image.Rectangle) {
+	copyW := srcW
+	copyH := srcH
+	if rect.Min.X+copyW > dstW {
+		copyW = dstW - rect.Min.X
+	}
+	if rect.Min.Y+copyH > dstH {
+		copyH = dstH - rect.Min.Y
+	}
+	if copyW <= 0 || copyH <= 0 || rect.Min.X < 0 || rect.Min.Y < 0 {
+		return
+	}
+
+	// Y plane.
+	for y := 0; y < copyH; y++ {
+		for x := 0; x < copyW; x++ {
+			if mask[y*srcW+x] > 0 {
+				dst[(rect.Min.Y+y)*dstW+rect.Min.X+x] = src[y*srcW+x]
+			}
+		}
+	}
+
+	// Chroma planes.
+	dstYSize := dstW * dstH
+	srcYSize := srcW * srcH
+	chromaDstW := dstW / 2
+	chromaSrcW := srcW / 2
+	chromaCopyW := copyW / 2
+	chromaCopyH := copyH / 2
+	chromaX := rect.Min.X / 2
+	chromaY := rect.Min.Y / 2
+
+	for plane := 0; plane < 2; plane++ {
+		dstBase := dstYSize + plane*(chromaDstW*(dstH/2))
+		srcBase := srcYSize + plane*(chromaSrcW*(srcH/2))
+		for y := 0; y < chromaCopyH; y++ {
+			for x := 0; x < chromaCopyW; x++ {
+				// Check if any of the 4 luma pixels in this chroma block are covered.
+				ly := y * 2
+				lx := x * 2
+				if ly < copyH && lx < copyW && mask[ly*srcW+lx] > 0 {
+					dstOff := dstBase + (chromaY+y)*chromaDstW + chromaX + x
+					srcOff := srcBase + y*chromaSrcW + x
+					dst[dstOff] = src[srcOff]
+				}
+			}
 		}
 	}
 }
