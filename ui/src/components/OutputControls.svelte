@@ -22,8 +22,11 @@
 		commsActive?: boolean;
 		syncHealth?: SyncHealth | null;
 		onToggleRedundancyPanel?: () => void;
+		isDualEngine?: boolean;
+		engineBState?: ControlRoomState | null;
+		activeEngineId?: 'A' | 'B';
 	}
-	let { state: crState, connectionState = 'disconnected', switchLayout, onToggleIOPanel, ioPanelVisible = false, onToggleComms, commsActive = false, syncHealth = null, onToggleRedundancyPanel }: Props = $props();
+	let { state: crState, connectionState = 'disconnected', switchLayout, onToggleIOPanel, ioPanelVisible = false, onToggleComms, commsActive = false, syncHealth = null, onToggleRedundancyPanel, isDualEngine = false, engineBState = null, activeEngineId }: Props = $props();
 
 	let thumbKey = $state(0);
 	let thumbInterval: ReturnType<typeof setInterval> | undefined;
@@ -81,7 +84,12 @@
 			height="45"
 		/>
 	{/if}
-	<RecordingControl state={crState} />
+	<RecordingControl
+		state={crState}
+		isDualEngine={isDualEngine}
+		engineBRecording={engineBState?.recording}
+		activeEngineId={activeEngineId}
+	/>
 	<button
 		class="header-btn io-btn"
 		class:io-active={ioActive}
