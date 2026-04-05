@@ -1,7 +1,6 @@
 package wipemap
 
 import (
-	"math"
 	"testing"
 )
 
@@ -15,11 +14,6 @@ func checkBasics(t *testing.T, name string, buf []byte, w, h int) {
 	t.Helper()
 	if len(buf) != w*h {
 		t.Fatalf("%s: len=%d, want %d", name, len(buf), w*h)
-	}
-	for i, v := range buf {
-		if v > 255 { // byte can't exceed 255, but this catches future type changes
-			t.Fatalf("%s: buf[%d]=%d out of range", name, i, v)
-		}
 	}
 }
 
@@ -791,6 +785,3 @@ func BenchmarkGenClockWipe_1080p(b *testing.B) {
 		gen(1920, 1080)
 	}
 }
-
-// Ensure math is imported (used in test constants above)
-var _ = math.Pi

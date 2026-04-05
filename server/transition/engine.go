@@ -1054,7 +1054,7 @@ func (e *Engine) blend10bit(yuvA, yuvB []byte, pos float64) []byte {
 		} else {
 			e.blender.generateWipeAlpha(pos, e.wipeDirection)
 		}
-		BlendWipe10(dst, yuvA, yuvB, w, h, e.blender.wipeAlphaMap)
+		_ = BlendWipe10(dst, yuvA, yuvB, w, h, e.blender.wipeAlphaMap)
 	case Stinger:
 		sd := e.config.Stinger
 		if sd == nil || len(sd.Frames) == 0 {

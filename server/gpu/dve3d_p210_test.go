@@ -87,9 +87,10 @@ func TestDVE3DCompositeP210_ShapeMapping(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.shape, func(t *testing.T) {
 			shape := 0
-			if tt.shape == "cube" {
+			switch tt.shape {
+			case "cube":
 				shape = 1
-			} else if tt.shape == "page_turn" {
+			case "page_turn":
 				shape = 2
 			}
 			assert.Equal(t, tt.expected, shape)

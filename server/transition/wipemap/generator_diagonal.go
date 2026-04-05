@@ -118,10 +118,6 @@ func GenLetterbox(reverse bool) GeneratorFunc {
 func GenCurtain(reverse bool) GeneratorFunc {
 	return func(w, h int) []byte {
 		buf := make([]byte, w*h)
-		halfW := float64(w) / 2.0
-		if halfW < 1 {
-			halfW = 1
-		}
 		for y := 0; y < h; y++ {
 			// Cosine modulation: edge position varies with y
 			yNorm := float64(y) / float64(max(h-1, 1))

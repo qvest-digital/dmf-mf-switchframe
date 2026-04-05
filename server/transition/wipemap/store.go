@@ -384,8 +384,8 @@ func (s *WipeMapStore) DeleteCustom(id string) error {
 	}
 
 	// Remove disk files (best-effort).
-	os.Remove(filepath.Join(s.customDir, id+".bin"))
-	os.Remove(filepath.Join(s.customDir, id+".json"))
+	_ = os.Remove(filepath.Join(s.customDir, id+".bin"))
+	_ = os.Remove(filepath.Join(s.customDir, id+".json"))
 
 	delete(s.patterns, id)
 	delete(s.generators, id)

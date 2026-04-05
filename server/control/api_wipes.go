@@ -110,7 +110,7 @@ func (a *API) handleUploadCustomWipe(w http.ResponseWriter, r *http.Request) {
 		httperr.Write(w, http.StatusBadRequest, "missing 'file' field")
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	// Decode as PNG.
 	img, err := png.Decode(file)
