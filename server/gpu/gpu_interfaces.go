@@ -1,5 +1,7 @@
 package gpu
 
+import "github.com/zsiec/switchframe/server/dve"
+
 // KeyBridge provides key processor state to the GPU key node.
 // Implemented by an adapter wrapping graphics.KeyProcessorBridge.
 type KeyBridge interface {
@@ -64,6 +66,11 @@ type SlotSnapshot struct {
 	Alpha        float32
 	ScaleMode    string     // "stretch" (default) or "fill"
 	CropAnchor   [2]float64 // [x,y] 0.0-1.0, anchor point for crop (0.5,0.5 = center)
+
+	// DVE transform fields (populated when DVE layout is active).
+	DVETransform  *dve.Transform // full DVE transform (nil if simple PIP)
+	DVEInvMatrix  dve.Matrix3x3  // pre-computed inverse transform matrix
+	DVEIsIdentity bool           // true if no DVE effects needed (fast path)
 }
 
 // BorderSnapshot holds border configuration for a layout slot.

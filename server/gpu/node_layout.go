@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"sync/atomic"
 	"time"
+
+	"github.com/zsiec/switchframe/server/dve"
 )
 
 // gpuLayoutNode applies PIP/multi-layout compositing on the GPU.
@@ -102,7 +104,22 @@ func (n *gpuLayoutNode) ProcessGPU(frame *GPUFrame) error {
 }
 
 // processSlot handles a single layout slot.
+// For simple slots (no rotation/perspective/effects), uses the fast PIP composite path.
+// For slots with DVE transforms, uses the full DVE composite kernel with inverse
+// projective warp, SDF border/shadow, and per-pixel effects.
 func (n *gpuLayoutNode) processSlot(frame *GPUFrame, slot *SlotSnapshot) error {
+	// DVE warp path: rotation, perspective, or visual effects require the full
+	// DVE composite kernel with inverse projective transform.
+	if slot.DVETransform != nil && !slot.DVEIsIdentity {
+		return n.processSlotDVE(frame, slot)
+	}
+
+	// Fast PIP path: axis-aligned rectangle, no rotation.
+	return n.processSlotPIP(frame, slot)
+}
+
+// processSlotPIP handles simple rectangular compositing (no rotation).
+func (n *gpuLayoutNode) processSlotPIP(frame *GPUFrame, slot *SlotSnapshot) error {
 	rect := Rect{X: slot.Rect.X, Y: slot.Rect.Y, W: slot.Rect.W, H: slot.Rect.H}
 
 	// Compute crop rect if fill mode is active.
@@ -156,6 +173,86 @@ func (n *gpuLayoutNode) processSlot(frame *GPUFrame, slot *SlotSnapshot) error {
 	}
 
 	return nil
+}
+
+// processSlotDVE handles DVE compositing with full inverse projective transform.
+// Used when the slot has rotation, perspective, crop softness, corner radius,
+// shadow, defocus, mosaic, or color effects that require the DVE kernel.
+func (n *gpuLayoutNode) processSlotDVE(frame *GPUFrame, slot *SlotSnapshot) error {
+	transform := *slot.DVETransform
+	invMatrix := slot.DVEInvMatrix
+
+	// Determine source dimensions and get GPU fill frame.
+	srcW, srcH := slot.FillW, slot.FillH
+	var srcFrame *GPUFrame
+
+	fillGPU := n.layout.GPUFill(slot.SourceKey)
+	if fillGPU != nil {
+		defer fillGPU.Release()
+		srcFrame = fillGPU
+		srcW = fillGPU.Width
+		srcH = fillGPU.Height
+	} else if len(slot.FillYUV) > 0 && slot.FillW > 0 && slot.FillH > 0 {
+		uploaded, err := n.getOrUploadFill(slot)
+		if err != nil {
+			return err
+		}
+		srcFrame = uploaded
+	} else {
+		// No signal — fill AABB with black.
+		rect := Rect{X: slot.Rect.X, Y: slot.Rect.Y, W: slot.Rect.W, H: slot.Rect.H}
+		return GPUFillRectDispatch(n.ctx, frame, rect, ColorBlack)
+	}
+
+	// Compute the axis-aligned bounding box for the transformed slot.
+	aabb := dve.ComputeAABB(transform, srcW, srcH, frame.Width, frame.Height)
+	if aabb.Empty() {
+		return nil
+	}
+
+	// Recompute inverse matrix with actual source dimensions if they differ
+	// from what was used at snapshot time.
+	if srcW != slot.FillW || srcH != slot.FillH {
+		invMatrix = dve.ComputeInverseTransform(transform, srcW, srcH)
+	}
+
+	// Dispatch DVE composite (handles rotation, perspective, border, shadow,
+	// crop softness, mosaic, color effects — all in one kernel per plane).
+	if err := GPUDVECompositeDispatch(n.ctx, frame, srcFrame, transform,
+		invMatrix, srcW, srcH, aabb); err != nil {
+		return err
+	}
+
+	// Apply defocus blur if configured.
+	if transform.DefocusRadius > 0 {
+		if err := DVEDefocusBlur(n.ctx, frame, transform.DefocusRadius); err != nil {
+			slog.Warn("gpu_layout: defocus blur failed", "error", err)
+		}
+	}
+
+	return nil
+}
+
+// dveNeedsWarp returns true when the DVE transform has effects that require
+// the full DVE composite kernel instead of simple PIP composite.
+func dveNeedsWarp(t dve.Transform) bool {
+	return t.RotationDeg != 0 || t.PerspectiveX != 0 || t.PerspectiveY != 0
+}
+
+// dveIsSimple returns true when the DVE transform only uses position/size
+// (no rotation, no perspective, no crop-softness, no border corner radius,
+// no shadow, no defocus). This is the fast path that matches PIP compositing.
+func dveIsSimple(t dve.Transform) bool {
+	return !dveNeedsWarp(t) &&
+		t.CropSoftness == 0 &&
+		t.Border.CornerRadius == 0 &&
+		!t.Shadow.Enabled &&
+		t.DefocusRadius == 0 &&
+		t.MosaicSize == 0 &&
+		(t.Saturation == 0 || t.Saturation == 1.0) &&
+		t.Brightness == 0 &&
+		(t.Contrast == 0 || t.Contrast == 1.0) &&
+		!t.MirrorH && !t.MirrorV
 }
 
 // computeGPUCropRect computes the largest source sub-region that matches the

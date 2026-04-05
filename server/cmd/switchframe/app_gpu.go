@@ -1253,9 +1253,12 @@ func (a *dveLayoutStateAdapter) SnapshotSlots() []gpu.SlotSnapshot {
 				ColorCr:   s.BorderColorCr,
 				Thickness: s.BorderThickness,
 			},
-			Alpha:      s.Alpha,
-			ScaleMode:  s.ScaleMode,
-			CropAnchor: s.CropAnchor,
+			Alpha:         s.Alpha,
+			ScaleMode:     s.ScaleMode,
+			CropAnchor:    s.CropAnchor,
+			DVETransform:  s.DVETransform,
+			DVEInvMatrix:  s.DVEInvMatrix,
+			DVEIsIdentity: s.DVEIsIdentity,
 		}
 	}
 	return result
