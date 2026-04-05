@@ -526,6 +526,7 @@ type API struct {
 	uploadStartTime    time.Time
 	asrConfigMu        sync.Mutex // serializes ASR config changes (prevents pile-up)
 	cmdQueue           *cmdqueue.Queue
+	startTime          time.Time
 }
 
 // enrichFunc is the type for the state enrichment callback.
@@ -536,7 +537,7 @@ type broadcastFunc func()
 
 // NewAPI creates an API that delegates to sw.
 func NewAPI(sw *switcher.Switcher, opts ...APIOption) *API {
-	a := &API{switcher: sw, mux: http.NewServeMux()}
+	a := &API{switcher: sw, mux: http.NewServeMux(), startTime: time.Now()}
 	for _, opt := range opts {
 		opt(a)
 	}
@@ -681,6 +682,7 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	a.registerColorGradeRoutes(mux)
 	a.registerAISegmentRoutes(mux)
 	a.registerASRRoutes(mux)
+	mux.HandleFunc("GET /api/sync/health", a.handleSyncHealth)
 }
 
 func (a *API) registerRoutes() { a.RegisterOnMux(a.mux) }
@@ -743,4 +745,18 @@ func (a *API) handlePreviewInner(w http.ResponseWriter, r *http.Request, body []
 func (a *API) handleState(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(a.enrichedState())
+}
+
+// handleSyncHealth returns lightweight health information for redundancy monitoring.
+// Polled at 1Hz by the browser in dual-engine mode for clock sync calibration
+// and engine health detection.
+func (a *API) handleSyncHealth(w http.ResponseWriter, r *http.Request) {
+	state := a.enrichedState()
+	resp := map[string]any{
+		"ptpOffsetUs":    int64(0), // placeholder until PTP discipline is measured
+		"lastCommandSeq": state.LastCommandSeq,
+		"uptimeMs":       time.Since(a.startTime).Milliseconds(),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
