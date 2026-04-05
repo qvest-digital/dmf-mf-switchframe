@@ -1653,6 +1653,10 @@ func (a *App) initAPI() error {
 
 	a.api = control.NewAPI(a.sw, apiOpts...)
 
+	// Late-bind snapshot provider — requires API to exist first (App delegates
+	// to subsystems wired above), but the provider is a lightweight adapter.
+	a.api.SetSnapshotProvider(&snapshotProviderAdapter{app: a})
+
 	// Late-bind HTML5 graphics manager to the API.
 	if a.htmlGfxMgr != nil {
 		a.api.SetHTMLGfxManager(a.htmlGfxMgr)
