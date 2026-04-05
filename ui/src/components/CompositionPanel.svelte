@@ -1,14 +1,13 @@
 <script lang="ts">
 	import type { ControlRoomState } from '$lib/api/types';
 	import type { FastControl } from '$lib/transport/fast-control';
-	import LayoutPanel from './LayoutPanel.svelte';
+	import DVEEditor from './dve/DVEEditor.svelte';
 	import GraphicsPanel from './GraphicsPanel.svelte';
 	import KeyPanel from './KeyPanel.svelte';
-	import DVEPanel from './DVEPanel.svelte';
 
-	let { state, activeSubTab = $bindable('layout'), externalSelectedLayerId = null, fastControl = null }: {
+	let { state, activeSubTab = $bindable('dve'), externalSelectedLayerId = null, fastControl = null }: {
 		state: ControlRoomState;
-		activeSubTab?: 'layout' | 'graphics' | 'keys' | 'dve';
+		activeSubTab?: 'dve' | 'graphics' | 'keys';
 		externalSelectedLayerId?: number | null;
 		fastControl?: FastControl | null;
 	} = $props();
@@ -16,11 +15,6 @@
 
 <div class="composition-panel">
 	<div class="tab-bar">
-		<button
-			class="vp-tab"
-			class:active={activeSubTab === 'layout'}
-			onclick={() => activeSubTab = 'layout'}
-		>Layout</button>
 		<button
 			class="vp-tab"
 			class:active={activeSubTab === 'dve'}
@@ -38,10 +32,8 @@
 		>Keys</button>
 	</div>
 	<div class="tab-content">
-		{#if activeSubTab === 'layout'}
-			<LayoutPanel {state} />
-		{:else if activeSubTab === 'dve'}
-			<DVEPanel {state} {fastControl} />
+		{#if activeSubTab === 'dve'}
+			<DVEEditor state={state} {fastControl} />
 		{:else if activeSubTab === 'graphics'}
 			<GraphicsPanel {state} {externalSelectedLayerId} />
 		{:else}

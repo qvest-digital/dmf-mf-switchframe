@@ -61,7 +61,7 @@
 	let layoutTabActive = $state(false);
 	let graphicsTabActive = $state(false);
 	let activeBottomTab = $state('Audio');
-	let composeSubTab = $state<'layout' | 'graphics' | 'keys' | 'dve'>('layout');
+	let composeSubTab = $state<'dve' | 'graphics' | 'keys'>('dve');
 	let graphicsSelectedLayerId = $state<number | null>(null);
 	let layoutMode = $state<LayoutMode>(getLayoutMode());
 	let mounted = $state(false);
@@ -515,7 +515,7 @@
 	// Sync overlay visibility when compose sub-tab changes
 	$effect(() => {
 		const _subTab = composeSubTab;
-		layoutTabActive = activeBottomTab === 'Compose' && _subTab === 'layout';
+		layoutTabActive = activeBottomTab === 'Compose' && _subTab === 'dve';
 		graphicsTabActive = activeBottomTab === 'Compose' && _subTab === 'graphics';
 	});
 
@@ -716,7 +716,7 @@
 			<section class="bottom-panel">
 					<BottomTabs
 					replayActive={store.effectiveState.replay?.state === 'playing' || store.effectiveState.replay?.state === 'paused'}
-	onTabChange={(tab) => { layoutTabActive = tab === 'Compose' && composeSubTab === 'layout'; graphicsTabActive = tab === 'Compose' && composeSubTab === 'graphics'; activeBottomTab = tab; }}
+	onTabChange={(tab) => { layoutTabActive = tab === 'Compose' && composeSubTab === 'dve'; graphicsTabActive = tab === 'Compose' && composeSubTab === 'graphics'; activeBottomTab = tab; }}
 				>
 					{#snippet children(activeTab)}
 						{#if activeTab === 'Audio'}
