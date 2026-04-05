@@ -28,9 +28,11 @@
 		state: ControlRoomState;
 		visible: boolean;
 		onclose?: () => void;
+		isDualEngine?: boolean;
+		engineBState?: ControlRoomState | null;
 	}
 
-	let { state: crState, visible, onclose }: Props = $props();
+	let { state: crState, visible, onclose, isDualEngine = false, engineBState = null }: Props = $props();
 
 	// --- Section collapse state ---
 	let inputsExpanded = $state(true);
@@ -123,6 +125,16 @@
 			if (posA !== posB) return posA - posB;
 			return a.key.localeCompare(b.key);
 		});
+	}
+
+	// --- Dual-engine source presence helpers ---
+	function sourceExistsOnA(key: string): boolean {
+		return key in (crState.sources ?? {});
+	}
+
+	function sourceExistsOnB(key: string): boolean {
+		if (!engineBState) return false;
+		return key in (engineBState.sources ?? {});
 	}
 
 	// --- Toggle source row ---
@@ -490,6 +502,16 @@
 								}</span>
 								<span class="row-label">{src.label || src.key}</span>
 								<span class="status-dot {src.status}"></span>
+								{#if isDualEngine}
+									<span
+										class="dual-dots"
+										class:mismatch={sourceExistsOnA(src.key) !== sourceExistsOnB(src.key)}
+										title="Engine A / Engine B"
+									>
+										<span class="engine-dot" class:connected={sourceExistsOnA(src.key)}></span>
+										<span class="engine-dot" class:connected={sourceExistsOnB(src.key)}></span>
+									</span>
+								{/if}
 								<span class="row-detail">{sourceDetail(src)}</span>
 								<span class="row-chevron">{expandedSources.has(src.key) ? '\u25BE' : '\u25B8'}</span>
 							</button>
@@ -1151,6 +1173,33 @@
 
 	.status-dot.inactive {
 		background: var(--text-tertiary);
+	}
+
+	/* --- Dual-engine health dots --- */
+	.dual-dots {
+		display: inline-flex;
+		gap: 2px;
+		align-items: center;
+		margin-left: 4px;
+		flex-shrink: 0;
+	}
+
+	.engine-dot {
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		background: var(--text-dim, var(--text-tertiary));
+		opacity: 0.3;
+	}
+
+	.engine-dot.connected {
+		background: var(--tally-preview, #22c55e);
+		opacity: 1;
+	}
+
+	.dual-dots.mismatch .engine-dot:not(.connected) {
+		background: var(--accent-yellow, #eab308);
+		opacity: 0.8;
 	}
 
 	.row-detail {
