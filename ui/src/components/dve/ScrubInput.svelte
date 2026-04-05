@@ -162,6 +162,14 @@
 		} else if (e.key === 'Escape') {
 			isEditing = false;
 			inputEl?.blur();
+		} else if (!isEditing && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+			e.preventDefault();
+			const direction = e.key === 'ArrowUp' ? 1 : -1;
+			const multiplier = e.shiftKey ? 10 : 1;
+			const raw = value + direction * step * multiplier;
+			const clamped = clamp(roundToStep(raw));
+			onScrub?.(clamped);
+			commitValue(clamped);
 		}
 	}
 
@@ -209,6 +217,7 @@
 			value={displayValue}
 			{disabled}
 			readonly={!isEditing}
+			tabindex={disabled ? -1 : 0}
 			inputmode={isEditing ? 'decimal' : undefined}
 			onpointerdown={handlePointerDown}
 			onpointermove={handlePointerMove}

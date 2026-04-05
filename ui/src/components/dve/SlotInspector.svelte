@@ -8,6 +8,10 @@
 		DVE_PARAM_OPACITY, DVE_PARAM_DEFOCUS_RADIUS, DVE_PARAM_BORDER_WIDTH, DVE_PARAM_CORNER_RADIUS,
 	} from '$lib/transport/fast-control';
 	import ScrubInput from './ScrubInput.svelte';
+	import RotaryKnob from './RotaryKnob.svelte';
+	import XYPad from './XYPad.svelte';
+	import CropBox from './CropBox.svelte';
+	import ScaleModeSelect from './ScaleModeSelect.svelte';
 
 	interface Props {
 		slot: LayoutSlotState;
@@ -147,12 +151,8 @@
 					{/each}
 				</select>
 				<div class="pair">
-					<select class="sel sel--sm" value={slot.scaleMode ?? 'stretch'}
-						onchange={(e) => onScaleModeChange(slot.id, (e.target as HTMLSelectElement).value)}>
-						<option value="stretch">Stretch</option>
-						<option value="fill">Fill</option>
-						<option value="fit">Fit</option>
-					</select>
+					<ScaleModeSelect value={slot.scaleMode ?? 'stretch'}
+						onChange={(mode) => onScaleModeChange(slot.id, mode)} />
 					{#if slot.scaleMode === 'fill'}
 						<div class="anchor-grid">
 							{#each anchorPositions as pos (pos.label)}
@@ -177,13 +177,36 @@
 		<div class="card">
 			<div class="card-head">Position<button class="reset" onclick={resetPosition}>Reset</button></div>
 			<div class="card-body">
-				<div class="field-2col">
-					<span class="lbl">X</span><ScrubInput value={dve?.positionX ?? slot.x} step={1} suffix="px" onScrub={(v) => handleScrub('positionX', v)} onCommit={(v) => handleCommit('positionX', v)} />
-					<span class="lbl">Y</span><ScrubInput value={dve?.positionY ?? slot.y} step={1} suffix="px" onScrub={(v) => handleScrub('positionY', v)} onCommit={(v) => handleCommit('positionY', v)} />
-					<span class="lbl">W</span><ScrubInput value={dve?.width ?? slot.width} step={1} min={2} suffix="px" onScrub={(v) => handleScrub('width', v)} onCommit={(v) => handleCommit('width', v)} />
-					<span class="lbl">H</span><ScrubInput value={dve?.height ?? slot.height} step={1} min={2} suffix="px" onScrub={(v) => handleScrub('height', v)} onCommit={(v) => handleCommit('height', v)} />
-					<span class="lbl">Rot</span><ScrubInput value={dve?.rotationDeg ?? 0} step={1} min={-360} max={360} suffix="°" onScrub={(v) => handleScrub('rotationDeg', v)} onCommit={(v) => handleCommit('rotationDeg', v)} />
-					<span class="lbl">Z</span><ScrubInput value={slot.zOrder} step={1} min={0} onCommit={(v) => onUpdate(slot.id, { zOrder: v })} />
+				<div class="pos-top-row">
+					<XYPad
+						x={dve?.positionX ?? slot.x}
+						y={dve?.positionY ?? slot.y}
+						xMin={-1920} xMax={3840}
+						yMin={-1080} yMax={2160}
+						size={56}
+						label="X/Y"
+						onScrub={(vx, vy) => { handleScrub('positionX', vx); handleScrub('positionY', vy); }}
+						onCommit={(vx, vy) => { handleCommit('positionX', vx); handleCommit('positionY', vy); }}
+					/>
+					<div class="field-2col field-2col--compact">
+						<span class="lbl">W</span><ScrubInput value={dve?.width ?? slot.width} step={1} min={2} suffix="px" onScrub={(v) => handleScrub('width', v)} onCommit={(v) => handleCommit('width', v)} />
+						<span class="lbl">H</span><ScrubInput value={dve?.height ?? slot.height} step={1} min={2} suffix="px" onScrub={(v) => handleScrub('height', v)} onCommit={(v) => handleCommit('height', v)} />
+					</div>
+				</div>
+				<div class="rot-z-row">
+					<div class="rot-knob-group">
+						<span class="lbl">Rot</span>
+						<RotaryKnob
+							value={dve?.rotationDeg ?? 0}
+							min={-360} max={360}
+							size={40}
+							onScrub={(v) => handleScrub('rotationDeg', v)}
+							onCommit={(v) => handleCommit('rotationDeg', v)}
+						/>
+					</div>
+					<div class="field-2col field-2col--compact">
+						<span class="lbl">Z</span><ScrubInput value={slot.zOrder} step={1} min={0} onCommit={(v) => onUpdate(slot.id, { zOrder: v })} />
+					</div>
 				</div>
 			</div>
 		</div>
@@ -228,11 +251,18 @@
 		<div class="card">
 			<div class="card-head">Crop</div>
 			<div class="card-body">
+				<div class="crop-center">
+					<CropBox
+						top={dve?.cropTop ?? 0}
+						bottom={dve?.cropBottom ?? 0}
+						left={dve?.cropLeft ?? 0}
+						right={dve?.cropRight ?? 0}
+						size={100}
+						onScrub={(field, v) => handleScrub(field, v)}
+						onCommit={(field, v) => handleCommit(field, v)}
+					/>
+				</div>
 				<div class="field-2col">
-					<span class="lbl">T</span><ScrubInput value={dve?.cropTop ?? 0} step={1} min={0} suffix="px" onScrub={(v) => handleScrub('cropTop', v)} onCommit={(v) => handleCommit('cropTop', v)} />
-					<span class="lbl">B</span><ScrubInput value={dve?.cropBottom ?? 0} step={1} min={0} suffix="px" onScrub={(v) => handleScrub('cropBottom', v)} onCommit={(v) => handleCommit('cropBottom', v)} />
-					<span class="lbl">L</span><ScrubInput value={dve?.cropLeft ?? 0} step={1} min={0} suffix="px" onScrub={(v) => handleScrub('cropLeft', v)} onCommit={(v) => handleCommit('cropLeft', v)} />
-					<span class="lbl">R</span><ScrubInput value={dve?.cropRight ?? 0} step={1} min={0} suffix="px" onScrub={(v) => handleScrub('cropRight', v)} onCommit={(v) => handleCommit('cropRight', v)} />
 					<span class="lbl">Soft</span><ScrubInput value={dve?.cropSoftness ?? 0} step={0.1} min={0} precision={1} onCommit={(v) => handleCommit('cropSoftness', v)} />
 				</div>
 			</div>
@@ -242,10 +272,20 @@
 		<div class="card">
 			<div class="card-head">Perspective</div>
 			<div class="card-body">
-				<div class="field-2col">
-					<span class="lbl">X</span><ScrubInput value={dve?.perspectiveX ?? 0} step={1} min={-60} max={60} suffix="°" onScrub={(v) => handleScrub('perspectiveX', v)} onCommit={(v) => handleCommit('perspectiveX', v)} />
-					<span class="lbl">Y</span><ScrubInput value={dve?.perspectiveY ?? 0} step={1} min={-60} max={60} suffix="°" onScrub={(v) => handleScrub('perspectiveY', v)} onCommit={(v) => handleCommit('perspectiveY', v)} />
-					<span class="lbl">Dfcs</span><ScrubInput value={dve?.defocusRadius ?? 0} step={0.5} min={0} onScrub={(v) => handleScrub('defocusRadius', v)} onCommit={(v) => handleCommit('defocusRadius', v)} />
+				<div class="persp-top-row">
+					<XYPad
+						x={dve?.perspectiveX ?? 0}
+						y={dve?.perspectiveY ?? 0}
+						xMin={-60} xMax={60}
+						yMin={-60} yMax={60}
+						size={56}
+						label="Tilt"
+						onScrub={(vx, vy) => { handleScrub('perspectiveX', vx); handleScrub('perspectiveY', vy); }}
+						onCommit={(vx, vy) => { handleCommit('perspectiveX', vx); handleCommit('perspectiveY', vy); }}
+					/>
+					<div class="field-2col field-2col--compact">
+						<span class="lbl">Dfcs</span><ScrubInput value={dve?.defocusRadius ?? 0} step={0.5} min={0} onScrub={(v) => handleScrub('defocusRadius', v)} onCommit={(v) => handleCommit('defocusRadius', v)} />
+					</div>
 				</div>
 			</div>
 		</div>
@@ -355,6 +395,44 @@
 		align-items: center;
 	}
 
+	.field-2col--compact {
+		flex: 1;
+		min-width: 0;
+	}
+
+	/* ═══ Position card layout ═══ */
+	.pos-top-row {
+		display: flex;
+		gap: 8px;
+		align-items: flex-start;
+	}
+
+	.rot-z-row {
+		display: flex;
+		gap: 8px;
+		align-items: center;
+	}
+
+	.rot-knob-group {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 1px;
+	}
+
+	/* ═══ Perspective card layout ═══ */
+	.persp-top-row {
+		display: flex;
+		gap: 8px;
+		align-items: flex-start;
+	}
+
+	/* ═══ Crop card layout ═══ */
+	.crop-center {
+		display: flex;
+		justify-content: center;
+	}
+
 	/* ═══ Labels ═══ */
 	.lbl {
 		font-size: 9px;
@@ -380,7 +458,6 @@
 		outline: none;
 	}
 	.sel:focus { border-color: var(--border-strong, #555); }
-	.sel--sm { width: auto; }
 
 	/* ═══ Pair (scale + anchor inline) ═══ */
 	.pair {
