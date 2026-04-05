@@ -37,7 +37,8 @@
 	import { notify } from '$lib/state/notifications.svelte';
 	import { getSourceError } from '$lib/transport/source-errors.svelte';
 	import { KeyboardHandler } from '$lib/keyboard/handler';
-	import { ConnectionManager } from '$lib/transport/connection-manager';
+	import { DualConnectionManager } from '$lib/transport/dual-connection';
+	import { DualApiClient } from '$lib/api/dual-api-client';
 	import { createMediaPipeline } from '$lib/transport/media-pipeline';
 	import { PipelineManager } from '$lib/pipeline/manager';
 	import { createPFLManager } from '$lib/audio/pfl';
@@ -52,6 +53,23 @@
 	// Must run at module level, not in onMount, to avoid race conditions
 	// where API calls fire before the token is stored.
 	checkFragmentToken();
+
+	// Detect dual-engine configuration from URL parameters
+	function getEngineConfig(): Array<{ id: string; url: string }> {
+		const params = new URLSearchParams(window.location.search);
+		const engineA = params.get('engineA');
+		const engineB = params.get('engineB');
+		if (engineA && engineB) {
+			return [
+				{ id: 'A', url: engineA },
+				{ id: 'B', url: engineB },
+			];
+		}
+		return [{ id: 'A', url: window.location.origin }];
+	}
+
+	const engineConfig = getEngineConfig();
+	const isDualEngine = engineConfig.length > 1;
 
 	const store = createControlRoomStore();
 	let showOverlay = $state(false);
@@ -103,6 +121,9 @@
 		return 'ok' as const;
 	});
 
+	// Dual-engine sync health — null in single-engine mode (Tasks 2.6-2.10 use this)
+	let syncHealth = $derived(isDualEngine ? connectionManager.health : null);
+
 	function announce(msg: string) {
 		announcement = msg;
 		clearTimeout(announcementTimer);
@@ -138,16 +159,28 @@
 		onCut: () => {
 			if (store.state.previewSource) {
 				store.optimisticCut(store.state.previewSource);
-				apiCall(cut(store.state.previewSource), 'Cut failed');
+				if (isDualEngine) {
+					apiCall(dualApi.cut(store.state.previewSource), 'Cut failed');
+				} else {
+					apiCall(cut(store.state.previewSource), 'Cut failed');
+				}
 			}
 		},
 		onSetPreview: (key) => {
 			store.optimisticPreview(key);
-			apiCall(setPreview(key), 'Preview failed');
+			if (isDualEngine) {
+				apiCall(dualApi.setPreview(key), 'Preview failed');
+			} else {
+				apiCall(setPreview(key), 'Preview failed');
+			}
 		},
 		onHotPunch: (key) => {
 			store.optimisticCut(key);
-			apiCall(cut(key), 'Cut failed');
+			if (isDualEngine) {
+				apiCall(dualApi.cut(key), 'Cut failed');
+			} else {
+				apiCall(cut(key), 'Cut failed');
+			}
 		},
 		onAutoTransition: () => {
 			if (store.state.previewSource && !store.state.inTransition && !store.state.ftbActive) {
@@ -272,8 +305,9 @@
 	// connects same-origin. In dev (Vite :5173), the connection.ts WebTransport
 	// path will fail (Vite doesn't speak QUIC), which is fine: MoQ state arrives
 	// via the media pipeline's per-source MoQTransport instead.
-	const connectionManager = new ConnectionManager({
-		url: window.location.origin,
+	// DualConnectionManager handles both single-engine and dual-engine modes.
+	const connectionManager = new DualConnectionManager({
+		engines: engineConfig,
 		onStateUpdate: (update) => {
 			if (update instanceof Uint8Array) {
 				store.applyFromMoQ(update);
@@ -296,6 +330,12 @@
 			}
 			connectionError = error;
 		},
+	});
+
+	const dualApi = new DualApiClient({
+		engines: engineConfig,
+		clockSync: connectionManager.clock,
+		getCommandSeq: () => connectionManager.nextCommandSeq(),
 	});
 
 	// Media pipeline for MoQ video/audio decode
