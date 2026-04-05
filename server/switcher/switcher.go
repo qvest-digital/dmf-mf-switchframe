@@ -19,13 +19,14 @@ import (
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/clock"
+	"github.com/zsiec/switchframe/server/cmdqueue"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/internal/atomicutil"
 	"github.com/zsiec/switchframe/server/internal/video"
-"github.com/zsiec/switchframe/server/metrics"
+	"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/stmap"
 	"github.com/zsiec/switchframe/server/transition"
 	"github.com/zsiec/switchframe/server/transition/wipemap"
@@ -365,6 +366,11 @@ type Switcher struct {
 	videoProcLastNano   atomic.Int64 // last video processing time (ns)
 	videoBroadcastCount atomic.Int64 // frames sent to program relay
 	videoProcDropped    atomic.Int64 // frames dropped due to full channel
+
+	// Command queue for PTP-timed command execution (multi-region redundancy).
+	cmdQueue       *cmdqueue.Queue
+	cmdDispatcher  *cmdqueue.Dispatcher
+	lastCommandSeq atomic.Uint64
 
 	// Output FPS tracking (atomic, lock-free)
 	outputFPSCount       atomic.Int64 // frames in current 1-second window
@@ -1587,6 +1593,14 @@ func (s *Switcher) SetOnCaptionBroadcast(fn func(*ccx.CaptionFrame)) {
 	s.onCaptionBroadcast.Store(&fn)
 }
 
+// SetCommandQueue wires a PTP-timed command queue and its dispatcher into the
+// switcher. Once set, the video processing loop drains ready commands on every
+// frame tick, giving frame-level execution accuracy (~33ms at 30fps).
+func (s *Switcher) SetCommandQueue(q *cmdqueue.Queue, d *cmdqueue.Dispatcher) {
+	s.cmdQueue = q
+	s.cmdDispatcher = d
+}
+
 // ForceNextIDRPtr returns a pointer to the forceNextIDR atomic for GPU encode.
 func (s *Switcher) ForceNextIDRPtr() *atomic.Bool { return &s.forceNextIDR }
 
@@ -1708,6 +1722,23 @@ func (s *Switcher) videoProcessingLoop() {
 	}
 
 	for work := range s.videoProcCh {
+		// Drain PTP-timed commands that are now ready to execute.
+		if s.cmdQueue != nil {
+			for _, cmd := range s.cmdQueue.Drain() {
+				if s.cmdDispatcher != nil {
+					if err := s.cmdDispatcher.Dispatch(cmd); err != nil {
+						s.log.Warn("queued command dispatch failed",
+							"action", cmd.Action,
+							"seq", cmd.Seq,
+							"err", err)
+					}
+				}
+				if cmd.Seq > 0 {
+					s.lastCommandSeq.Store(cmd.Seq)
+				}
+			}
+		}
+
 		if work.yuvFrame == nil {
 			continue
 		}
@@ -3298,6 +3329,7 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 		Sources:        sources,
 		Seq:            atomic.LoadUint64(&s.seq),
 		Timestamp:      time.Now().UnixMilli(),
+		LastCommandSeq: s.lastCommandSeq.Load(),
 	}
 	if s.state.isInTransition() && s.transEngine != nil {
 		state.TransitionPosition = s.transEngine.Position()
