@@ -4,9 +4,11 @@
 	import Clock from './Clock.svelte';
 	import RecordingControl from './RecordingControl.svelte';
 	import ConnectionStatus from './ConnectionStatus.svelte';
+	import SyncIndicator from './SyncIndicator.svelte';
 	import SRTHealthDot from './SRTHealthDot.svelte';
 	import { computeOutputHealth } from '$lib/util/srt-health';
 	import { formatBadgeText } from '$lib/util/format-badge';
+	import type { SyncHealth } from '$lib/state/reconciler.svelte';
 
 	type ConnectionIndicatorState = 'webtransport' | 'polling' | 'disconnected';
 
@@ -18,8 +20,10 @@
 		ioPanelVisible?: boolean;
 		onToggleComms?: () => void;
 		commsActive?: boolean;
+		syncHealth?: SyncHealth | null;
+		onToggleRedundancyPanel?: () => void;
 	}
-	let { state: crState, connectionState = 'disconnected', switchLayout, onToggleIOPanel, ioPanelVisible = false, onToggleComms, commsActive = false }: Props = $props();
+	let { state: crState, connectionState = 'disconnected', switchLayout, onToggleIOPanel, ioPanelVisible = false, onToggleComms, commsActive = false, syncHealth = null, onToggleRedundancyPanel }: Props = $props();
 
 	let thumbKey = $state(0);
 	let thumbInterval: ReturnType<typeof setInterval> | undefined;
@@ -62,6 +66,9 @@
 <div class="output-controls">
 	<Clock />
 	<ConnectionStatus state={connectionState} />
+	{#if syncHealth}
+		<SyncIndicator health={syncHealth} onclick={() => onToggleRedundancyPanel?.()} />
+	{/if}
 	{#if badgeText}
 		<span class="format-badge">{badgeText}</span>
 	{/if}
