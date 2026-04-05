@@ -290,33 +290,48 @@ func TestDVESlotOffNoDVELayout(t *testing.T) {
 func TestDVEPresetStoreNilDoesNotPanic(t *testing.T) {
 	_, sw := setupTestAPI(t)
 	dc := dve.NewCompositor(1920, 1080)
-	// No dvePresetStore — preset routes should not be registered.
+	// No dvePresetStore — save/delete routes should not be registered,
+	// but list and recall routes work with built-in presets only.
 	api := NewAPI(sw, WithDVECompositor(dc))
 
-	endpoints := []struct {
+	// List presets works without store (returns built-ins only).
+	req := httptest.NewRequest("GET", "/api/dve/presets", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, "GET /api/dve/presets should return built-in presets")
+
+	// Recall a non-existent preset returns 404.
+	req = httptest.NewRequest("PUT", "/api/dve/presets/nonexistent/recall",
+		strings.NewReader(`{"durationMs":300}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.True(t, rec.Code >= 400 && rec.Code < 500,
+		"PUT /api/dve/presets/nonexistent/recall: expected 4xx, got %d", rec.Code)
+
+	// Save/delete require store — should be unregistered (404/405).
+	storeEndpoints := []struct {
 		method string
 		path   string
 		body   string
 	}{
-		{"GET", "/api/dve/presets", ""},
 		{"POST", "/api/dve/presets", `{"name":"test"}`},
-		{"PUT", "/api/dve/presets/test/recall", `{"durationMs":300}`},
 		{"DELETE", "/api/dve/presets/test", ""},
 	}
 
-	for _, ep := range endpoints {
-		var req *http.Request
+	for _, ep := range storeEndpoints {
+		var r *http.Request
 		if ep.body != "" {
-			req = httptest.NewRequest(ep.method, ep.path, strings.NewReader(ep.body))
-			req.Header.Set("Content-Type", "application/json")
+			r = httptest.NewRequest(ep.method, ep.path, strings.NewReader(ep.body))
+			r.Header.Set("Content-Type", "application/json")
 		} else {
-			req = httptest.NewRequest(ep.method, ep.path, nil)
+			r = httptest.NewRequest(ep.method, ep.path, nil)
 		}
-		rec := httptest.NewRecorder()
-		api.Mux().ServeHTTP(rec, req)
+		w := httptest.NewRecorder()
+		api.Mux().ServeHTTP(w, r)
 
-		require.True(t, rec.Code >= 400 && rec.Code < 500,
-			"%s %s: expected 4xx, got %d: %s", ep.method, ep.path, rec.Code, rec.Body.String())
+		require.True(t, w.Code >= 400 && w.Code < 500,
+			"%s %s: expected 4xx, got %d: %s", ep.method, ep.path, w.Code, w.Body.String())
 	}
 }
 
