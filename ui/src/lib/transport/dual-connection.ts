@@ -88,4 +88,22 @@ export class DualConnectionManager {
 	nextCommandSeq(): number {
 		return ++this._commandSeq;
 	}
+
+	/** Forward MoQ control data to the appropriate engine's connection manager. */
+	handleControlData(data: Uint8Array): void {
+		// In single-engine mode, forward to the only manager.
+		// In dual-engine mode, forward to all (the reconciler handles merging).
+		for (const mgr of this.managers.values()) {
+			mgr.handleControlData(data);
+			break; // Only the first manager needs the notification
+		}
+	}
+
+	/** Notify that MoQ is active (WebTransport connected, catalog received). */
+	notifyMoQActive(): void {
+		for (const mgr of this.managers.values()) {
+			mgr.notifyMoQActive();
+			break; // Only the first manager needs the notification
+		}
+	}
 }
