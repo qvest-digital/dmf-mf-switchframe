@@ -36,8 +36,6 @@ func TestSyncHealth_ReturnsFields(t *testing.T) {
 
 type mockSnapshotProvider struct {
 	snapshot internal.FullStateSnapshot
-	applied  *internal.FullStateSnapshot
-	warnings []string
 }
 
 func (m *mockSnapshotProvider) CaptureFullSnapshot() internal.FullStateSnapshot {

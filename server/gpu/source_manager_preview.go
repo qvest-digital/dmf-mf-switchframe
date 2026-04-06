@@ -24,8 +24,8 @@ func (m *GPUSourceManager) queuePreviewFrame(entry *gpuSourceEntry, _ []byte, _ 
 	// concurrently. The channel may be closed between our nil check and
 	// the send — recover gracefully instead of panicking.
 	defer func() {
-		if r := recover(); r != nil {
-			// Channel was closed — source is being removed. Drop the frame.
+		if r := recover(); r != nil { //nolint:staticcheck // intentional: drop frame if channel closed during removal
+			_ = r
 		}
 	}()
 

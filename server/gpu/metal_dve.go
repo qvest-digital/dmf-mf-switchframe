@@ -360,9 +360,10 @@ func DVE3DComposite(ctx *Context, dst, src *GPUFrame, t3d *dve.Transform3D,
 	mtl := ctx.mtl
 
 	shape := int32(0) // plane
-	if t3d.Shape == "cube" {
+	switch t3d.Shape {
+	case "cube":
 		shape = 1
-	} else if t3d.Shape == "page_turn" {
+	case "page_turn":
 		shape = 2
 	}
 

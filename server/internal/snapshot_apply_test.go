@@ -688,10 +688,6 @@ func TestApplyFullSnapshot_ApplyOrder(t *testing.T) {
 	ApplyFullSnapshot(ctx, snap, mock)
 
 	// Build a method-order list by first occurrence
-	type methodOrder struct {
-		method string
-		index  int
-	}
 	seen := make(map[string]int)
 	for i, c := range mock.calls {
 		if _, ok := seen[c.Method]; !ok {

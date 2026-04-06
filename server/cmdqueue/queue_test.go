@@ -11,7 +11,7 @@ import (
 
 // newClock returns a clock function whose time advances each time advance() is called.
 func newClock(start int64) (clock func() int64, advance func(int64)) {
-	var now int64 = start
+	var now = start
 	return func() int64 { return now },
 		func(delta int64) { now += delta }
 }

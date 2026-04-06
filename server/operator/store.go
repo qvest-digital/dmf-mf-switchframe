@@ -86,7 +86,7 @@ func (s *Store) Register(name string, role Role, clientID ...string) (Operator, 
 			return Operator{}, fmt.Errorf("invalid client ID length: must be 8-64 characters")
 		}
 		for _, c := range providedID {
-			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-') {
+			if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') && c != '-' {
 				return Operator{}, fmt.Errorf("invalid client ID: must be alphanumeric with hyphens")
 			}
 		}

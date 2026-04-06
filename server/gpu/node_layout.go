@@ -233,28 +233,6 @@ func (n *gpuLayoutNode) processSlotDVE(frame *GPUFrame, slot *SlotSnapshot) erro
 	return nil
 }
 
-// dveNeedsWarp returns true when the DVE transform has effects that require
-// the full DVE composite kernel instead of simple PIP composite.
-func dveNeedsWarp(t dve.Transform) bool {
-	return t.RotationDeg != 0 || t.PerspectiveX != 0 || t.PerspectiveY != 0
-}
-
-// dveIsSimple returns true when the DVE transform only uses position/size
-// (no rotation, no perspective, no crop-softness, no border corner radius,
-// no shadow, no defocus). This is the fast path that matches PIP compositing.
-func dveIsSimple(t dve.Transform) bool {
-	return !dveNeedsWarp(t) &&
-		t.CropSoftness == 0 &&
-		t.Border.CornerRadius == 0 &&
-		!t.Shadow.Enabled &&
-		t.DefocusRadius == 0 &&
-		t.MosaicSize == 0 &&
-		(t.Saturation == 0 || t.Saturation == 1.0) &&
-		t.Brightness == 0 &&
-		(t.Contrast == 0 || t.Contrast == 1.0) &&
-		!t.MirrorH && !t.MirrorV
-}
-
 // computeGPUCropRect computes the largest source sub-region that matches the
 // destination slot's aspect ratio. The region is positioned using the anchor
 // point (0.0-1.0 on each axis). All coordinates are even-aligned for YUV420.
