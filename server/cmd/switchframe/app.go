@@ -322,8 +322,9 @@ func (a *App) initPrismServer() error {
 	a.initFastControl()
 
 	config := distribution.ServerConfig{
-		Addr: a.cfg.Addr,
-		Cert: a.cert,
+		Addr:         a.cfg.Addr,
+		Cert:         a.cert,
+		ExternalCert: a.externalCert,
 		ExtraRoutes: func(mux *http.ServeMux) {
 			// Register API routes on a sub-mux so we can wrap with middleware.
 			apiSubMux := http.NewServeMux()
