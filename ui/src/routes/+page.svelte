@@ -29,10 +29,12 @@
 	import VideoProcessingPanel from '../components/VideoProcessingPanel.svelte';
 	import CommsBar from '../components/CommsBar.svelte';
 	import BottomTabs from '../components/BottomTabs.svelte';
+	import RedundancyPanel from '../components/RedundancyPanel.svelte';
+	import ProgramCompare from '../components/ProgramCompare.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
-	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, checkFragmentToken, authHeaders, SwitchApiError, listMacros, runMacro, dveSlotOn, dveSlotOff, replayQuick, replayPause, replayResume, replayPlay, replayStop, replaySeek, replaySetSpeed, replayMarkIn, replayMarkOut, commsMute } from '$lib/api/switch-api';
-	import { resolveApiUrl } from '$lib/api/base-url';
-	import { wtBaseURL, fetchServerInfo } from '$lib/prism/transport-utils';
+	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, checkFragmentToken, SwitchApiError, listMacros, runMacro, dveSlotOn, dveSlotOff, replayQuick, replayPause, replayResume, replayPlay, replayStop, replaySeek, replaySetSpeed, replayMarkIn, replayMarkOut, commsMute, setDualTimestampProvider, getDebugSnapshot, getPerfData, playoutEngineCacheStatus } from '$lib/api/switch-api';
+	import { setEngineUrls } from '$lib/api/base-url';
+	import { fetchServerInfo } from '$lib/prism/transport-utils';
 	import * as operatorState from '$lib/state/operator.svelte';
 	import { notify } from '$lib/state/notifications.svelte';
 	import { getSourceError } from '$lib/transport/source-errors.svelte';
@@ -42,9 +44,12 @@
 	import { createMediaPipeline } from '$lib/transport/media-pipeline';
 	import { PipelineManager } from '$lib/pipeline/manager';
 	import { createPFLManager } from '$lib/audio/pfl';
-	import { createPFLToggle, type PFLToggleResult } from '$lib/audio/pfl-toggle';
+	import { createPFLToggle } from '$lib/audio/pfl-toggle';
+	import { createDivergenceLog } from '$lib/state/divergence-log.svelte';
+	import { createAutoReconcile } from '$lib/state/auto-reconcile';
 	import { getLayoutMode, setLayoutMode, type LayoutMode } from '$lib/layout/preferences';
 	import { createFastControl, type FastControl } from '$lib/transport/fast-control';
+	import { createDualFastControl } from '$lib/transport/dual-fast-control';
 	import { sortedSourceKeys } from '$lib/util/sort-sources';
 	import { CaptionRenderer } from '$lib/prism/captions';
 	import type { ControlRoomState, Macro } from '$lib/api/types';
@@ -54,32 +59,23 @@
 	// where API calls fire before the token is stored.
 	checkFragmentToken();
 
-	// Detect dual-engine configuration from URL parameters
-	function getEngineConfig(): Array<{ id: string; url: string }> {
-		const params = new URLSearchParams(window.location.search);
-		const engineA = params.get('engineA');
-		const engineB = params.get('engineB');
-		if (engineA && engineB) {
-			return [
-				{ id: 'A', url: engineA },
-				{ id: 'B', url: engineB },
-			];
-		}
-		return [{ id: 'A', url: window.location.origin }];
-	}
-
-	const engineConfig = getEngineConfig();
-	const isDualEngine = engineConfig.length > 1;
+	// Engine A is always the current server. Engine B is discovered from
+	// the initial state response (engineBUrl field set by the control plane).
+	const engineConfig: Array<{ id: import('$lib/api/types').EngineId; url: string }> = [
+		{ id: 'A', url: window.location.origin },
+	];
+	let isDualEngine = $state(false);
+	let engineBDetected = false;
 
 	const store = createControlRoomStore();
 	let showOverlay = $state(false);
 	let statsPanelVisible = $state(false);
 	let pipelineGraphVisible = $state(false);
 	let ioPanelVisible = $state(false);
-	let layoutTabActive = $state(false);
-	let graphicsTabActive = $state(false);
 	let activeBottomTab = $state('Audio');
 	let composeSubTab = $state<'dve' | 'graphics' | 'keys'>('dve');
+	let layoutTabActive = $derived(activeBottomTab === 'Compose' && composeSubTab === 'dve');
+	let graphicsTabActive = $derived(activeBottomTab === 'Compose' && composeSubTab === 'graphics');
 	let graphicsSelectedLayerId = $state<number | null>(null);
 	let layoutMode = $state<LayoutMode>(getLayoutMode());
 	let mounted = $state(false);
@@ -89,9 +85,20 @@
 	let tokenRequired = $state(false);
 	let tokenInput = $state('');
 	let showOperatorRegistration = $state(false);
-	let fastControl = $state<FastControl | null>(null);
+	let fastControlA = $state<FastControl | null>(null);
+	let fastControlB = $state<FastControl | null>(null);
+	let transportChangeCount = $state(0);
+	let fastControl = $derived.by(() => {
+		if (!fastControlA) return null;
+		if (fastControlB) return createDualFastControl([fastControlA, fastControlB]);
+		if (isDualEngine) return createDualFastControl([fastControlA]);
+		return fastControlA;
+	});
 	let commsVisible = $state(false);
 	let commsDimmed = $state(false);
+	let redundancyPanelVisible = $state(false);
+	let compareMode = $state(false);
+	let activeEngine = $state<'A' | 'B'>('A');
 
 	// Caption renderer for program monitor overlay
 	let captionRenderer: CaptionRenderer | null = null;
@@ -108,11 +115,23 @@
 	// Periodic tick for sync status detection (drives time-based re-evaluation)
 	let now = $state(Date.now());
 	let syncInterval: ReturnType<typeof setInterval> | undefined;
+	// Reconciler tick interval (200ms) for time-based lagging→diverged transitions
+	let reconcilerInterval: ReturnType<typeof setInterval> | undefined;
+
+	// Forward declaration — initialized in onMount block below.
+	let connectionManager: DualConnectionManager = undefined!;
 
 	let syncStatus = $derived.by(() => {
-		// When MoQ is delivering state via the media pipeline (connectionState
-		// is 'webtransport'), trust it — state updates are event-driven, so
-		// gaps between updates during idle periods are normal and expected.
+		if (isDualEngine) {
+			// In dual-engine mode, delegate to the reconciler's health status.
+			const health = connectionManager.health;
+			if (health.status === 'synced') return 'ok' as const;
+			if (health.status === 'disconnected') return 'disconnected' as const;
+			return 'resyncing' as const;
+		}
+		// Single-engine mode: when MoQ is delivering state via the media
+		// pipeline (connectionState is 'webtransport'), trust it — state
+		// updates are event-driven, so gaps during idle periods are normal.
 		if (connectionState === 'webtransport') return 'ok' as const;
 		// Fallback: time-based detection for polling mode.
 		const elapsed = now - store.lastServerUpdate;
@@ -121,8 +140,241 @@
 		return 'ok' as const;
 	});
 
-	// Dual-engine sync health — null in single-engine mode (Tasks 2.6-2.10 use this)
+	// Dual-engine sync health — null in single-engine mode (child components use this)
 	let syncHealth = $derived(isDualEngine ? connectionManager.health : null);
+
+	// Per-engine health detail — null in single-engine mode (child components use this)
+	let engineHealth = $derived(isDualEngine ? connectionManager.engineHealth : null);
+
+	// Per-source dual health map for IOPanel (combines A + B source health into single record)
+	let ioSourceHealth = $derived.by(() => {
+		if (!engineHealth) return null;
+		const result: Record<string, { A: import('$lib/api/types').SourceHealthStatus; B: import('$lib/api/types').SourceHealthStatus }> = {};
+		const allKeys = new Set([...Object.keys(engineHealth.A.sources), ...Object.keys(engineHealth.B.sources)]);
+		for (const key of allKeys) {
+			result[key] = {
+				A: engineHealth.A.sources[key] ?? 'offline',
+				B: engineHealth.B.sources[key] ?? 'offline',
+			};
+		}
+		return result;
+	});
+
+	// SRT endpoint URLs for dual-engine info blurb
+	let ioEngineEndpoints = $derived.by(() => {
+		if (!isDualEngine) return null;
+		const stateA = store.effectiveState;
+		const ciA = stateA.connectionInfo;
+		if (!ciA) return null;
+		// Engine A URL is known from current connection; Engine B from engineBUrl
+		const portA = ciA.srtIngestPort ?? 6464;
+		const hostA = ciA.domain ?? window.location.hostname;
+		const engineBUrl = stateA.engineBUrl;
+		if (!engineBUrl) return null;
+		try {
+			const urlB = new URL(engineBUrl);
+			const hostB = urlB.hostname;
+			return { A: `srt://${hostA}:${portA}`, B: `srt://${hostB}:${portA}` };
+		} catch {
+			return null;
+		}
+	});
+
+	// Divergence log for dual-engine mode
+	const divergenceLog = createDivergenceLog();
+
+	// Auto-reconcile: watches sync status and triggers snapshot push when engines diverge
+	const autoReconcile = createAutoReconcile({
+		getSnapshot: (engine) => dualApi.getStateSnapshot(engine),
+		pushSnapshot: (engine, snapshot) => dualApi.pushStateSnapshot(engine, snapshot),
+		onRecoveryStart: () => {
+			connectionManager.setRecovering(true);
+			divergenceLog.add({ type: 'snapshot', message: 'Snapshot push started...' });
+		},
+		onRecoveryComplete: (warnings) => {
+			connectionManager.setRecovering(false);
+			divergenceLog.add({ type: 'resolved', message: 'Sync restored', warnings });
+		},
+		onRecoveryError: (error) => {
+			connectionManager.setRecovering(false);
+			divergenceLog.add({ type: 'diverged', message: `Recovery failed: ${error.message}` });
+		},
+	});
+
+	// Dual-engine connection banner status.
+	// The design doc distinguishes "unreachable" (browser can't reach engine, but it may
+	// still be running) from "offline" (engine actually down, detected by control plane).
+	// Currently we always report "unreachable" since the browser has no way to query the
+	// control plane for engine liveness. This will be improved when the control plane
+	// exposes a session health WebSocket or similar push mechanism.
+	const engineBannerStatus = $derived.by(() => {
+		if (!isDualEngine) return undefined;
+		const eA = engineHealth?.A;
+		const eB = engineHealth?.B;
+		if (!eA?.connected && !eB?.connected) return { mode: 'dual' as const };
+		if (!eB?.connected) return { mode: 'dual' as const, engineDown: 'B' as const, reason: 'unreachable' as const };
+		if (!eA?.connected) return { mode: 'dual' as const, engineDown: 'A' as const, reason: 'unreachable' as const };
+		return { mode: 'dual' as const };
+	});
+
+	// Audio drift between engines (compares peak levels across audio channels)
+	const audioDrift = $derived.by(() => {
+		if (!isDualEngine) return null;
+		const rawA = connectionManager.rawStates?.A;
+		const rawB = connectionManager.rawStates?.B;
+		if (!rawA?.audioChannels || !rawB?.audioChannels) return null;
+		let maxDelta = 0;
+		let maxChannel = '';
+		for (const [key, chA] of Object.entries(rawA.audioChannels)) {
+			const chB = rawB.audioChannels[key];
+			if (!chB) continue;
+			const delta = Math.abs(chA.peakL - chB.peakL);
+			if (delta > maxDelta) {
+				maxDelta = delta;
+				maxChannel = key;
+			}
+		}
+		if (maxDelta > 3) {
+			return { channel: maxChannel, deltaDb: Math.round(maxDelta * 10) / 10 };
+		}
+		return null;
+	});
+
+	// Engine B state for OutputControls (raw state from reconciler)
+	const engineBState = $derived.by(() => {
+		if (!isDualEngine) return null;
+		return connectionManager.rawStates?.B ?? null;
+	});
+
+	// Engine destinations for IOPanel (per-destination status from both engines)
+	const ioEngineDestinations = $derived.by(() => {
+		if (!isDualEngine) return null;
+		const rawA = connectionManager.rawStates?.A;
+		const rawB = connectionManager.rawStates?.B;
+
+		// Need both states to have destinations arrays to show comparison
+		if (!rawA?.destinations && !rawB?.destinations) return null;
+		if (!rawA?.destinations || !rawB?.destinations) return null;
+
+		const result: Record<string, { A: { state: string; bitrate?: number }; B: { state: string; bitrate?: number } }> = {};
+
+		// Index Engine B destinations by ID for O(1) lookup
+		const destBMap = new Map<string, (typeof rawB.destinations)[0]>();
+		for (const d of rawB.destinations) {
+			destBMap.set(d.id, d);
+		}
+
+		// Add all Engine A destinations
+		for (const destA of rawA.destinations) {
+			const destB = destBMap.get(destA.id);
+			result[destA.id] = {
+				A: { state: destA.state },
+				B: destB ? { state: destB.state } : { state: 'not configured' },
+			};
+			destBMap.delete(destA.id);
+		}
+
+		// Add Engine B-only destinations
+		for (const [id, destB] of destBMap) {
+			result[id] = {
+				A: { state: 'not configured' },
+				B: { state: destB.state },
+			};
+		}
+
+		return Object.keys(result).length > 0 ? result : null;
+	});
+
+	// Playout comparison for RedundancyPanel (compares channel 0 across engines)
+	const playoutComparison = $derived.by(() => {
+		if (!isDualEngine) return null;
+		const stateA = connectionManager.rawStates?.A;
+		const stateB = connectionManager.rawStates?.B;
+		if (!stateA?.playout?.channels?.[0] || !stateB?.playout?.channels?.[0]) return null;
+
+		const chA = stateA.playout.channels[0];
+		const chB = stateB.playout.channels[0];
+
+		// Only show when at least one engine is actively playing
+		if (chA.state === 'stopped' && chB.state === 'stopped') return null;
+
+		return {
+			itemA: chA.currentTitle ?? `Item ${chA.itemIndex}`,
+			itemB: chB.currentTitle ?? `Item ${chB.itemIndex}`,
+			inSync: chA.itemIndex === chB.itemIndex && chA.currentTitle === chB.currentTitle,
+			ptsFrameDelta: undefined as number | undefined,
+			cacheA: undefined as string | undefined,
+			cacheB: undefined as string | undefined,
+		};
+	});
+
+	// Audio comparison for RedundancyPanel (per-channel peak level delta)
+	const audioComparison = $derived.by(() => {
+		if (!isDualEngine || !connectionManager) return null;
+		const stateA = connectionManager.rawStates?.A;
+		const stateB = connectionManager.rawStates?.B;
+		if (!stateA?.audioChannels || !stateB?.audioChannels) return null;
+
+		const result: { channel: string; levelA: number; levelB: number; withinTolerance: boolean }[] = [];
+		for (const [key, chA] of Object.entries(stateA.audioChannels)) {
+			const chB = stateB.audioChannels[key];
+			if (!chB) continue;
+			const delta = Math.abs(chA.peakL - chB.peakL);
+			result.push({
+				channel: key,
+				levelA: chA.peakL,
+				levelB: chB.peakL,
+				withinTolerance: delta <= 3,
+			});
+		}
+		return result.length > 0 ? result : null;
+	});
+
+	// Output status for RedundancyPanel (recording + destination state per engine)
+	const outputStatus = $derived.by(() => {
+		if (!isDualEngine || !connectionManager) return null;
+		const stateA = connectionManager.rawStates?.A;
+		const stateB = connectionManager.rawStates?.B;
+
+		const recording = {
+			A: stateA?.recording?.active ?? false,
+			B: stateB?.recording?.active ?? false,
+		};
+
+		const destinations: { name: string; A: { state: string; bitrate?: number }; B: { state: string; bitrate?: number } }[] = [];
+		if (stateA?.destinations) {
+			for (const destA of stateA.destinations) {
+				const destB = stateB?.destinations?.find((d: { id: string }) => d.id === destA.id);
+				destinations.push({
+					name: destA.name ?? destA.id,
+					A: { state: destA.state },
+					B: destB ? { state: destB.state } : { state: 'unknown' },
+				});
+			}
+		}
+
+		return { recording, destinations };
+	});
+
+	// Force reconcile handler for RedundancyPanel
+	async function handleForceReconcile(direction: 'AtoB' | 'BtoA') {
+		const from = direction === 'AtoB' ? 'A' : 'B';
+		const to = direction === 'AtoB' ? 'B' : 'A';
+		try {
+			const snapshot = await dualApi.getStateSnapshot(from);
+			const result = await dualApi.pushStateSnapshot(to, snapshot);
+			divergenceLog.add({ type: 'snapshot', message: `Force reconcile ${direction} complete`, warnings: result.warnings });
+			notify('info', 'Force reconcile complete');
+		} catch (e) {
+			notify('error', `Force reconcile failed: ${e}`);
+		}
+	}
+
+	// Compare mode handler for RedundancyPanel
+	function handleCompare() {
+		compareMode = true;
+		redundancyPanelVisible = false;
+	}
 
 	function announce(msg: string) {
 		announcement = msg;
@@ -159,28 +411,16 @@
 		onCut: () => {
 			if (store.state.previewSource) {
 				store.optimisticCut(store.state.previewSource);
-				if (isDualEngine) {
-					apiCall(dualApi.cut(store.state.previewSource), 'Cut failed');
-				} else {
-					apiCall(cut(store.state.previewSource), 'Cut failed');
-				}
+				apiCall(cut(store.state.previewSource), 'Cut failed');
 			}
 		},
 		onSetPreview: (key) => {
 			store.optimisticPreview(key);
-			if (isDualEngine) {
-				apiCall(dualApi.setPreview(key), 'Preview failed');
-			} else {
-				apiCall(setPreview(key), 'Preview failed');
-			}
+			apiCall(setPreview(key), 'Preview failed');
 		},
 		onHotPunch: (key) => {
 			store.optimisticCut(key);
-			if (isDualEngine) {
-				apiCall(dualApi.cut(key), 'Cut failed');
-			} else {
-				apiCall(cut(key), 'Cut failed');
-			}
+			apiCall(cut(key), 'Cut failed');
 		},
 		onAutoTransition: () => {
 			if (store.state.previewSource && !store.state.inTransition && !store.state.ftbActive) {
@@ -306,17 +546,44 @@
 	// path will fail (Vite doesn't speak QUIC), which is fine: MoQ state arrives
 	// via the media pipeline's per-source MoQTransport instead.
 	// DualConnectionManager handles both single-engine and dual-engine modes.
-	const connectionManager = new DualConnectionManager({
+	connectionManager = new DualConnectionManager({
 		engines: engineConfig,
 		onStateUpdate: (update) => {
-			if (update instanceof Uint8Array) {
-				store.applyFromMoQ(update);
+			if (isDualEngine) {
+				// In dual mode, the reconciler already selected the authoritative
+				// state — bypass seq checking since the new authoritative engine
+				// may have a lower seq than the previous one.
+				store.forceUpdate(update);
 			} else {
-				store.applyUpdate(update as ControlRoomState);
+				store.applyUpdate(update);
+			}
+			// Auto-detect engine B from session metadata (once only).
+			if (!engineBDetected) {
+				const engineBUrl = store.state.engineBUrl;
+				if (engineBUrl) {
+					engineBDetected = true;
+					isDualEngine = true;
+					connectionManager.addEngine('B', engineBUrl);
+					dualApi.addEngine('B', engineBUrl);
+					// Enable dual-engine fan-out in switch-api request() interceptor
+					setEngineUrls([
+						{ id: 'A', url: window.location.origin },
+						{ id: 'B', url: engineBUrl },
+					]);
+					setDualTimestampProvider(() => ({
+						execute_at: connectionManager.clock.ptpNow() + connectionManager.clock.safetyMargin(),
+						command_seq: connectionManager.nextCommandSeq(),
+					}));
+					// Start reconciler tick interval for dual-engine mode.
+					if (!reconcilerInterval) {
+						reconcilerInterval = setInterval(() => { connectionManager.tick(); }, 200);
+					}
+				}
 			}
 		},
 		onConnectionStateChange: (state) => {
 			connectionState = state;
+			transportChangeCount++;
 		},
 		onInitialLoadComplete: () => {
 			initialLoading = false;
@@ -334,14 +601,13 @@
 
 	const dualApi = new DualApiClient({
 		engines: engineConfig,
-		clockSync: connectionManager.clock,
-		getCommandSeq: () => connectionManager.nextCommandSeq(),
 	});
 
 	// Media pipeline for MoQ video/audio decode
 	const pipeline = createMediaPipeline({
 		onControlState: (data) => {
-			connectionManager.handleControlData(data);
+			// Media pipeline currently connects to engine A only
+			connectionManager.handleControlData('A', data);
 		},
 		onMoQActive: () => {
 			connectionManager.notifyMoQActive();
@@ -415,6 +681,18 @@
 			e.preventDefault();
 			ioPanelVisible = !ioPanelVisible;
 		}
+		// Escape closes compare mode
+		if (e.code === 'Escape' && compareMode) {
+			e.preventDefault();
+			compareMode = false;
+			return;
+		}
+		// Escape closes redundancy panel
+		if (e.code === 'Escape' && redundancyPanelVisible) {
+			e.preventDefault();
+			redundancyPanelVisible = false;
+			return;
+		}
 		// Escape closes pipeline graph (higher priority than stats panel)
 		if (e.code === 'Escape' && pipelineGraphVisible) {
 			e.preventDefault();
@@ -433,14 +711,12 @@
 
 		let backend: Record<string, unknown> | null = null;
 		try {
-			const [debugResp, perfResp] = await Promise.all([
-				fetch('/api/debug/snapshot', { headers: authHeaders() }).catch(() => null),
-				fetch('/api/perf', { headers: authHeaders() }).catch(() => null),
+			const [debug, perf] = await Promise.all([
+				getDebugSnapshot().catch(() => null),
+				getPerfData().catch(() => null),
 			]);
-			const debug = debugResp?.ok ? await debugResp.json() : null;
-			const perf = perfResp?.ok ? await perfResp.json() : null;
 			if (debug || perf) {
-				backend = { ...debug, perf };
+				backend = { ...(debug ?? {}), perf };
 			}
 		} catch { /* ignore */ }
 
@@ -552,28 +828,135 @@
 		prevProgramError = error;
 	});
 
-	// Sync overlay visibility when compose sub-tab changes
+	// Track previous sync status to only log on transitions (not every $effect fire)
+	let prevSyncStatus: string | null = null;
+
+	// Track sustained audio drift between engines — trigger reconciliation after 10s
+	let audioDriftStart: number | null = null;
+	let audioDriftInterval: ReturnType<typeof setInterval> | undefined;
+
+	// Auto-reconcile: react to sync health status transitions
 	$effect(() => {
-		const _subTab = composeSubTab;
-		layoutTabActive = activeBottomTab === 'Compose' && _subTab === 'dve';
-		graphicsTabActive = activeBottomTab === 'Compose' && _subTab === 'graphics';
+		if (syncHealth && isDualEngine) {
+			if (syncHealth.status !== prevSyncStatus) {
+				const oldStatus = prevSyncStatus;
+				prevSyncStatus = syncHealth.status;
+				autoReconcile.onSyncStatusChange(syncHealth.status, syncHealth.authoritative);
+				if (syncHealth.status === 'lagging') {
+					divergenceLog.add({ type: 'lagging', message: 'Engine lagging behind' });
+				} else if (syncHealth.status === 'diverged') {
+					divergenceLog.add({ type: 'diverged', message: 'Engines diverged' });
+				} else if (syncHealth.status === 'mismatch') {
+					divergenceLog.add({ type: 'mismatch', message: 'Critical: program source mismatch' });
+				} else if (syncHealth.status === 'synced' && oldStatus !== null) {
+					divergenceLog.add({ type: 'resolved', message: 'Engines synced' });
+				}
+			}
+		}
 	});
 
-	// Create/destroy FastControl based on WebTransport connection state
+	// Audio drift reconciliation: trigger auto-reconcile after 10s of sustained drift.
+	// Uses setInterval so the threshold fires even if the drift value stabilizes.
 	$effect(() => {
-		if (connectionState === 'webtransport' && !fastControl) {
+		if (audioDrift && isDualEngine) {
+			if (!audioDriftStart) {
+				audioDriftStart = Date.now();
+			}
+			if (!audioDriftInterval) {
+				audioDriftInterval = setInterval(() => {
+					if (audioDriftStart && Date.now() - audioDriftStart > 10_000) {
+						autoReconcile.onSyncStatusChange('diverged', syncHealth?.authoritative ?? 'A');
+						divergenceLog.add({ type: 'diverged', message: `Audio drift > 3dB on ${audioDrift?.channel} for >10s` });
+						audioDriftStart = null;
+						clearInterval(audioDriftInterval);
+						audioDriftInterval = undefined;
+					}
+				}, 1000);
+			}
+		} else {
+			audioDriftStart = null;
+			if (audioDriftInterval) {
+				clearInterval(audioDriftInterval);
+				audioDriftInterval = undefined;
+			}
+		}
+		return () => {
+			if (audioDriftInterval) {
+				clearInterval(audioDriftInterval);
+				audioDriftInterval = undefined;
+			}
+		};
+	});
+
+	// Create/destroy FastControl for engine A based on WebTransport connection state.
+	// Both engines receive datagrams via DualFastControl when both transports are available.
+	$effect(() => {
+		if (connectionState === 'webtransport' && !fastControlA) {
 			const wt = pipeline.getSourceTransport('program');
 			if (wt) {
 				try {
-					fastControl = createFastControl(wt);
+					fastControlA = createFastControl(wt);
 				} catch {
 					// Datagrams not supported — fall back to REST
 				}
 			}
 		}
-		if (connectionState !== 'webtransport' && fastControl) {
-			fastControl.close();
-			fastControl = null;
+		if (connectionState !== 'webtransport' && fastControlA) {
+			fastControlA.close();
+			fastControlA = null;
+		}
+	});
+
+	// Create/destroy FastControl for engine B when its transport becomes available.
+	$effect(() => {
+		if (!isDualEngine) return;
+		// Read transportChangeCount to create reactive dependency — connectionManager.getTransport()
+		// is not $state, so the effect won't re-run when Engine B's WebTransport connects.
+		const _trigger = transportChangeCount;
+		const transportB = connectionManager.getTransport('B');
+		if (transportB && !fastControlB) {
+			try {
+				fastControlB = createFastControl(transportB);
+			} catch {
+				// Datagrams not supported on engine B
+			}
+		}
+		if (!transportB && fastControlB) {
+			fastControlB.close();
+			fastControlB = null;
+		}
+	});
+
+	// Compare mode: create Engine B pipeline when entering, destroy on exit.
+	// Engine A's program canvas is attached via onCanvasAReady callback;
+	// Engine B's via onCanvasBReady. Both go through PipelineManager.
+	$effect(() => {
+		if (compareMode && store.state.engineBUrl) {
+			pipelineManager.createEngineBPipeline(store.state.engineBUrl);
+			pipelineManager.connectSourceB('program');
+		}
+		return () => {
+			if (pipelineManager.hasEngineBPipeline) {
+				pipelineManager.detachCanvasB('program', 'compare-b');
+				// Always destroy — the A/B toggle effect (Effect 12) will recreate
+				// the pipeline on the next tick if activeEngine === 'B'.
+				pipelineManager.destroyEngineBPipeline();
+			}
+		};
+	});
+
+	// A/B toggle: switch program canvas between Engine A and Engine B pipelines.
+	// The PipelineManager tracks the current program canvas element internally.
+	$effect(() => {
+		if (!isDualEngine || !mounted) return;
+		if (activeEngine === 'B' && store.state.engineBUrl) {
+			if (!pipelineManager.hasEngineBPipeline) {
+				pipelineManager.createEngineBPipeline(store.state.engineBUrl);
+				pipelineManager.connectSourceB('program');
+			}
+			pipelineManager.switchProgramToEngineB();
+		} else if (activeEngine === 'A' && pipelineManager.activeEngine === 'B') {
+			pipelineManager.switchProgramToEngineA();
 		}
 	});
 
@@ -591,6 +974,8 @@
 		document.addEventListener('keydown', handleGlobalShortcuts);
 		mounted = true;
 		syncInterval = setInterval(() => { now = Date.now(); }, 1000);
+		// Reconciler tick interval is started lazily when engine B is detected
+		// (see onStateUpdate callback).
 
 		// Bootstrap: discover QUIC server address for WebTransport.
 		// API calls always use relative URLs (same-origin in prod, Vite proxy in dev).
@@ -635,8 +1020,16 @@
 	onDestroy(() => {
 		keyboard.detach();
 		document.removeEventListener('keydown', handleGlobalShortcuts);
+		clearTimeout(announcementTimer);
 		clearInterval(syncInterval);
-		fastControl?.close();
+		clearInterval(reconcilerInterval);
+		if (audioDriftInterval) {
+			clearInterval(audioDriftInterval);
+			audioDriftInterval = undefined;
+		}
+		autoReconcile.destroy();
+		fastControlA?.close();
+		fastControlB?.close();
 		captionRenderer?.destroy();
 		captionRenderer = null;
 		pflManager.destroy();
@@ -644,6 +1037,8 @@
 		connectionManager.stop();
 		pipeline.destroy();
 		operatorState.destroy();
+		setEngineUrls(null);
+		setDualTimestampProvider(null);
 		mounted = false;
 	});
 </script>
@@ -677,14 +1072,17 @@
 />
 
 <ErrorBoundary>
-	<ConnectionBanner {connectionState} {syncStatus} />
+	<ConnectionBanner {connectionState} {syncStatus} engineStatus={engineBannerStatus} />
 	<Toast />
 	{#if layoutMode === 'simple'}
 		<SimpleMode
 			crState={store.effectiveState}
 			onSwitchLayout={switchLayout}
 			{onCanvasReady}
-			onPreview={(key) => { store.optimisticPreview(key); apiCall(setPreview(key), 'Preview failed'); }}
+			onPreview={(key) => {
+				store.optimisticPreview(key);
+				apiCall(setPreview(key), 'Preview failed');
+			}}
 			onCut={() => {
 				if (store.state.previewSource) {
 					store.optimisticCut(store.state.previewSource);
@@ -706,6 +1104,11 @@
 					{ioPanelVisible}
 					onToggleComms={() => { commsVisible = !commsVisible; }}
 					commsActive={store.effectiveState.comms?.active ?? false}
+					{syncHealth}
+					{isDualEngine}
+					{engineBState}
+					activeEngineId={activeEngine}
+					onToggleRedundancyPanel={() => { redundancyPanelVisible = !redundancyPanelVisible; }}
 				/>
 					<div class="header-right">
 						<OperatorBadge state={store.effectiveState} />
@@ -725,13 +1128,37 @@
 				visible={commsVisible}
 				onToggle={() => commsVisible = !commsVisible}
 				getTransport={() => pipeline.getSourceTransport('program')}
+				getTransportForEngine={isDualEngine ? (engineId) => connectionManager.getTransport(engineId) : undefined}
+				authoritativeEngine={syncHealth?.authoritative}
 				onCommsActive={(active) => pflManager.setCommsActive(active)}
 				onDimToggle={() => { commsDimmed = !commsDimmed; pflManager.setDim(commsDimmed); }}
 				dimmed={commsDimmed}
 			/>
 
 			<section class="monitors">
-				<ProgramPreview state={store.effectiveState} {onCanvasReady} {onCaptionElReady} showLayoutOverlay={layoutTabActive} showGraphicsOverlay={graphicsTabActive} {fastControl} onGraphicsLayerSelect={(id) => { graphicsSelectedLayerId = id; }} />
+				{#if compareMode}
+					<ProgramCompare
+						engineAMeta={{ rtt: engineHealth?.A?.rtt ?? 0, seq: engineHealth?.A?.lastSeq ?? 0, healthy: engineHealth?.A?.connected ?? false }}
+						engineBMeta={{ rtt: engineHealth?.B?.rtt ?? 0, seq: engineHealth?.B?.lastSeq ?? 0, healthy: engineHealth?.B?.connected ?? false }}
+						formatWidth={store.state.pipelineFormat?.width}
+						formatHeight={store.state.pipelineFormat?.height}
+						onExit={() => compareMode = false}
+						onCanvasAReady={(canvas) => {
+							pipelineManager.syncProgramPreviewCanvases(store.effectiveState.previewSource, canvas);
+						}}
+						onCanvasBReady={(canvas) => {
+							pipelineManager.attachCanvasB('program', 'compare-b', canvas);
+						}}
+					/>
+				{:else}
+					<ProgramPreview state={store.effectiveState} {onCanvasReady} {onCaptionElReady} showLayoutOverlay={layoutTabActive} showGraphicsOverlay={graphicsTabActive} {fastControl} onGraphicsLayerSelect={(id) => { graphicsSelectedLayerId = id; }}
+						{isDualEngine}
+						{activeEngine}
+						onEngineToggle={(e) => activeEngine = e}
+						engineAConnected={engineHealth?.A?.connected ?? true}
+						engineBConnected={engineHealth?.B?.connected ?? true}
+					/>
+				{/if}
 			</section>
 
 			<section class="control-strip">
@@ -756,12 +1183,12 @@
 			<section class="bottom-panel">
 					<BottomTabs
 					replayActive={store.effectiveState.replay?.state === 'playing' || store.effectiveState.replay?.state === 'paused'}
-	onTabChange={(tab) => { layoutTabActive = tab === 'Compose' && composeSubTab === 'dve'; graphicsTabActive = tab === 'Compose' && composeSubTab === 'graphics'; activeBottomTab = tab; }}
+	onTabChange={(tab) => { activeBottomTab = tab; }}
 				>
 					{#snippet children(activeTab)}
 						{#if activeTab === 'Audio'}
 							<div class="tab-panel audio-tab">
-								<AudioMixer state={store.effectiveState} {sourceLevels} {programLevels} {pflActiveSource} pflMode={pflActiveMode} {pflManager} selectedChannel={selectedAudioChannel} onPFLToggle={handlePFLToggle} onStateUpdate={store.applyUpdate} onChannelSelect={(key) => { selectedAudioChannel = key; }} />
+								<AudioMixer state={store.effectiveState} {sourceLevels} {programLevels} {pflActiveSource} pflMode={pflActiveMode} {pflManager} selectedChannel={selectedAudioChannel} {audioDrift} onPFLToggle={handlePFLToggle} onStateUpdate={store.applyUpdate} onChannelSelect={(key) => { selectedAudioChannel = key; }} />
 							</div>
 						{:else if activeTab === 'Compose'}
 							<div class="tab-panel">
@@ -802,7 +1229,7 @@
 						{/if}
 						<!-- PlayoutPanel always mounted to preserve state across tab switches -->
 						<div class="tab-panel" style:display={activeTab === 'Playout' ? '' : 'none'}>
-							<PlayoutPanel state={store.effectiveState} />
+							<PlayoutPanel state={store.effectiveState} {isDualEngine} getCacheStatus={playoutEngineCacheStatus} />
 						</div>
 					{/snippet}
 				</BottomTabs>
@@ -817,7 +1244,22 @@
 
 <StatsPanel visible={statsPanelVisible} onclose={() => { statsPanelVisible = false; }} onopengraph={() => { pipelineGraphVisible = true; statsPanelVisible = false; }} {pipeline} pipelineCodec={store.effectiveState.pipelineFormat?.codec} pipelineColorFormat={store.effectiveState.pipelineFormat?.colorFormat} />
 <PipelineGraph visible={pipelineGraphVisible} onclose={() => { pipelineGraphVisible = false; }} {pipeline} />
-<IOPanel visible={ioPanelVisible} state={store.effectiveState} onclose={() => { ioPanelVisible = false; }} />
+<IOPanel visible={ioPanelVisible} state={store.effectiveState} onclose={() => { ioPanelVisible = false; }} {isDualEngine} engineSourceHealth={ioSourceHealth} engineEndpoints={ioEngineEndpoints} engineDestinations={ioEngineDestinations} />
+{#if isDualEngine}
+	<RedundancyPanel
+		health={syncHealth ?? { status: 'disconnected', authoritative: 'A', divergences: [], engineA: { lastSeen: 0, lastCommandSeq: 0, connected: false }, engineB: { lastSeen: 0, lastCommandSeq: 0, connected: false } }}
+		engineHealth={engineHealth ?? { A: { connected: false, rtt: 0, clockOffset: 0, lastSeq: 0, uptime: 0, lastSeen: 0, sources: {} }, B: { connected: false, rtt: 0, clockOffset: 0, lastSeq: 0, uptime: 0, lastSeen: 0, sources: {} } }}
+		divergenceLog={divergenceLog.entries}
+		visible={redundancyPanelVisible}
+		onclose={() => redundancyPanelVisible = false}
+		onforcereconcile={handleForceReconcile}
+		oncompare={handleCompare}
+		playoutComparison={playoutComparison}
+		{audioComparison}
+		{outputStatus}
+		engineBUrl={store.state.engineBUrl}
+	/>
+{/if}
 <div class="sr-only" aria-live="polite" role="status">{announcement}</div>
 
 <style>

@@ -8,6 +8,7 @@
 	import SRTHealthDot from './SRTHealthDot.svelte';
 	import { computeOutputHealth } from '$lib/util/srt-health';
 	import { formatBadgeText } from '$lib/util/format-badge';
+	import FormatPicker from './FormatPicker.svelte';
 	import type { SyncHealth } from '$lib/state/reconciler.svelte';
 
 	type ConnectionIndicatorState = 'webtransport' | 'polling' | 'disconnected';
@@ -55,6 +56,11 @@
 	const outputHealth = $derived(computeOutputHealth(crState.destinations));
 	const badgeText = $derived(formatBadgeText(crState.pipelineFormat));
 
+	// Per-engine output status — show dual dots when SRT output states differ
+	const engineASrtActive = $derived(crState.srtOutput?.active ?? false);
+	const engineBSrtActive = $derived(engineBState?.srtOutput?.active ?? false);
+	const srtStatesDiffer = $derived(isDualEngine && engineASrtActive !== engineBSrtActive);
+
 	$effect(() => {
 		if (showConfidence) {
 			thumbInterval = setInterval(() => { thumbKey++; }, 1000);
@@ -73,7 +79,7 @@
 		<SyncIndicator health={syncHealth} onclick={() => onToggleRedundancyPanel?.()} />
 	{/if}
 	{#if badgeText}
-		<span class="format-badge">{badgeText}</span>
+		<FormatPicker {badgeText} {isDualEngine} />
 	{/if}
 	{#if showConfidence}
 		<img
@@ -96,6 +102,12 @@
 		class:io-warning={ioWarning && !ioActive}
 		onclick={() => onToggleIOPanel?.()}
 	>I/O{#if outputHealth}<span class="io-dot-wrapper"><SRTHealthDot level={outputHealth} /></span>{/if}</button>
+	{#if srtStatesDiffer}
+		<span class="engine-output-status" data-testid="engine-output-status">
+			<span class="engine-out-tag">A{#if engineASrtActive}<span class="out-dot active"></span>{:else}<span class="out-dot"></span>{/if}</span>
+			<span class="engine-out-tag">B{#if engineBSrtActive}<span class="out-dot active"></span>{:else}<span class="out-dot"></span>{/if}</span>
+		</span>
+	{/if}
 	<button
 		class="header-btn comms-btn-header"
 		class:comms-active={commsActive}
@@ -185,19 +197,6 @@
 		height: 6px;
 	}
 
-	.format-badge {
-		padding: 2px 8px;
-		border: 1px solid var(--border-default);
-		border-radius: var(--radius-sm);
-		background: var(--bg-elevated);
-		color: var(--text-muted, var(--text-secondary));
-		font-family: var(--font-mono, var(--font-ui));
-		font-size: var(--text-xs);
-		letter-spacing: 0.03em;
-		white-space: nowrap;
-		opacity: 0.8;
-	}
-
 	.confidence-thumb {
 		border: 1px solid var(--border-default);
 		border-radius: var(--radius-xs);
@@ -207,5 +206,32 @@
 
 	.confidence-thumb:hover {
 		opacity: 1;
+	}
+
+	.engine-output-status {
+		display: inline-flex;
+		gap: 4px;
+		align-items: center;
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		color: var(--text-dim);
+	}
+
+	.engine-out-tag {
+		display: inline-flex;
+		align-items: center;
+		gap: 2px;
+	}
+
+	.out-dot {
+		display: inline-block;
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		background: var(--text-dim);
+	}
+
+	.out-dot.active {
+		background: var(--accent-blue, #3b82f6);
 	}
 </style>

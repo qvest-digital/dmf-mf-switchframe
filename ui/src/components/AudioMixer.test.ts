@@ -59,6 +59,7 @@ describe('AudioMixer', () => {
 			cam2: { key: 'cam2', label: 'Camera 2', type: 'demo' as const, status: 'healthy' as const },
 		},
 		seq: 1,
+		lastCommandSeq: 0,
 		timestamp: Date.now(),
 	};
 
@@ -325,6 +326,36 @@ describe('AudioMixer', () => {
 			const { container } = render(AudioMixer, { props: { state: stateNoLabels } });
 			const fader = container.querySelector('.channel-strip .fader') as HTMLInputElement;
 			expect(fader.getAttribute('aria-label')).toBe('Volume for cam1');
+		});
+	});
+
+	describe('audio drift badge', () => {
+		it('should show drift badge when audioDrift prop is present', () => {
+			const { container } = render(AudioMixer, {
+				props: { state, audioDrift: { channel: 'cam1', deltaDb: 4.2 } },
+			});
+			const badge = container.querySelector('.drift-badge');
+			expect(badge).toBeTruthy();
+			expect(badge!.textContent).toContain('drift');
+		});
+
+		it('should hide drift badge when audioDrift is null', () => {
+			const { container } = render(AudioMixer, {
+				props: { state, audioDrift: null },
+			});
+			const badge = container.querySelector('.drift-badge');
+			expect(badge).toBeFalsy();
+		});
+
+		it('should show correct tooltip text on drift badge', () => {
+			const { container } = render(AudioMixer, {
+				props: { state, audioDrift: { channel: 'cam1', deltaDb: 4.2 } },
+			});
+			const badge = container.querySelector('.drift-badge');
+			expect(badge).toBeTruthy();
+			expect(badge!.getAttribute('title')).toBe(
+				'Engine A and Engine B audio levels differ by >4.2dB on cam1',
+			);
 		});
 	});
 });

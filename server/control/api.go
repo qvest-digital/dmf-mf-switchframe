@@ -112,6 +112,8 @@ type SCTE35RulesAPI interface {
 	Create(rule scte35.Rule) (scte35.Rule, error)
 	Update(id string, rule scte35.Rule) error
 	Delete(id string) error
+	UpdateByName(name string, rule scte35.Rule) error
+	DeleteByName(name string) error
 	Reorder(ids []string) error
 	DefaultAction() scte35.RuleAction
 	SetDefaultAction(action scte35.RuleAction) error

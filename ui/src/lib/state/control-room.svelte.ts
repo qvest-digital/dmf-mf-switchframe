@@ -14,6 +14,7 @@ const EMPTY_STATE: ControlRoomState = {
 	tallyState: {},
 	sources: {},
 	seq: 0,
+	lastCommandSeq: 0,
 	timestamp: 0,
 };
 
@@ -91,6 +92,23 @@ export function createControlRoomStore() {
 		pendingAction = { previewSource: source, timestamp: Date.now() };
 	}
 
+	/** Bypass seq checking — used in dual-engine mode where the reconciler
+	 *  has already selected the authoritative state (which may have a lower seq
+	 *  than the previous authoritative engine). */
+	function forceUpdate(update: ControlRoomState) {
+		lastServerUpdate = Date.now();
+		state = update;
+		if (pendingAction) {
+			const expired = Date.now() - pendingAction.timestamp > PENDING_TIMEOUT_MS;
+			const confirmed =
+				(pendingAction.programSource && update.programSource === pendingAction.programSource) ||
+				(pendingAction.previewSource && update.previewSource === pendingAction.previewSource);
+			if (expired || confirmed) {
+				pendingAction = null;
+			}
+		}
+	}
+
 	return {
 		get state() {
 			return state;
@@ -105,6 +123,7 @@ export function createControlRoomStore() {
 			return lastServerUpdate;
 		},
 		applyUpdate,
+		forceUpdate,
 		applyFromMoQ,
 		optimisticCut,
 		optimisticPreview,

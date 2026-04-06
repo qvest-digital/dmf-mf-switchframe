@@ -21,6 +21,7 @@ const baseState = {
 		cam2: { key: 'cam2', label: 'Camera 2', type: 'demo' as const, status: 'healthy' as const },
 	},
 	seq: 1,
+	lastCommandSeq: 0,
 	timestamp: Date.now(),
 };
 
@@ -195,5 +196,67 @@ describe('OutputControls', () => {
 		expect(badge).toBeTruthy();
 		expect(badge?.textContent).toContain('HEVC');
 		expect(badge?.textContent).toContain('422 10-bit');
+	});
+
+	// --- Dual-engine per-engine output badges ---
+
+	it('should show per-engine output badges when SRT output states differ', () => {
+		const state = {
+			...baseState,
+			srtOutput: { active: true, mode: 'caller' as const, state: 'active' },
+		};
+		const engineBState = {
+			...baseState,
+			srtOutput: { active: false, mode: 'caller' as const, state: 'idle' },
+		};
+		const { container } = render(OutputControls, {
+			props: { state, isDualEngine: true, engineBState, activeEngineId: 'A' as const },
+		});
+		const outputStatus = container.querySelector('[data-testid="engine-output-status"]');
+		expect(outputStatus).toBeTruthy();
+		const dots = outputStatus!.querySelectorAll('.out-dot');
+		expect(dots).toHaveLength(2);
+		expect(dots[0].classList.contains('active')).toBe(true);
+		expect(dots[1].classList.contains('active')).toBe(false);
+	});
+
+	it('should NOT show per-engine output badges when SRT output states match', () => {
+		const state = {
+			...baseState,
+			srtOutput: { active: true, mode: 'caller' as const, state: 'active' },
+		};
+		const engineBState = {
+			...baseState,
+			srtOutput: { active: true, mode: 'caller' as const, state: 'active' },
+		};
+		const { container } = render(OutputControls, {
+			props: { state, isDualEngine: true, engineBState, activeEngineId: 'A' as const },
+		});
+		const outputStatus = container.querySelector('[data-testid="engine-output-status"]');
+		expect(outputStatus).toBeFalsy();
+	});
+
+	it('should NOT show per-engine output badges when not in dual-engine mode', () => {
+		const state = {
+			...baseState,
+			srtOutput: { active: true, mode: 'caller' as const, state: 'active' },
+		};
+		const engineBState = {
+			...baseState,
+			srtOutput: { active: false, mode: 'caller' as const, state: 'idle' },
+		};
+		const { container } = render(OutputControls, {
+			props: { state, isDualEngine: false, engineBState },
+		});
+		const outputStatus = container.querySelector('[data-testid="engine-output-status"]');
+		expect(outputStatus).toBeFalsy();
+	});
+
+	it('should NOT show per-engine output badges when both SRT inactive', () => {
+		const { container } = render(OutputControls, {
+			props: { state: baseState, isDualEngine: true, engineBState: baseState, activeEngineId: 'A' as const },
+		});
+		const outputStatus = container.querySelector('[data-testid="engine-output-status"]');
+		expect(outputStatus).toBeFalsy();
 	});
 });

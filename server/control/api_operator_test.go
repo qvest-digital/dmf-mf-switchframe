@@ -604,3 +604,64 @@ func TestOperatorInviteTokens_EmptyWhenNotConfigured(t *testing.T) {
 	_ = json.NewDecoder(rec.Body).Decode(&result)
 	require.Empty(t, result, "should return empty map when no invite tokens configured")
 }
+
+// --- Client-generated ID tests (API level) ---
+
+func TestOperatorRegister_WithClientID(t *testing.T) {
+	_, mux := setupOperatorTestAPI(t)
+
+	clientID := "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+	body := map[string]string{"id": clientID, "name": "Alice", "role": "director"}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest("POST", "/api/operator/register", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+
+	var resp map[string]any
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	require.Equal(t, clientID, resp["id"], "server should use the client-provided ID")
+	require.Equal(t, "Alice", resp["name"])
+	require.Equal(t, "director", resp["role"])
+	require.Contains(t, resp, "token")
+}
+
+func TestOperatorRegister_WithoutClientID_BackwardCompat(t *testing.T) {
+	_, mux := setupOperatorTestAPI(t)
+
+	// No "id" field — should generate one (backward compat).
+	resp := registerOperatorHelper(t, mux, "Alice", "director")
+	require.Contains(t, resp, "id")
+	require.NotEmpty(t, resp["id"])
+}
+
+func TestOperatorRegister_DuplicateClientID_Idempotent(t *testing.T) {
+	_, mux := setupOperatorTestAPI(t)
+
+	clientID := "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+	// First registration.
+	body := map[string]string{"id": clientID, "name": "Alice", "role": "director"}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest("POST", "/api/operator/register", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, "first register: %s", rec.Body.String())
+
+	var resp1 map[string]any
+	_ = json.NewDecoder(rec.Body).Decode(&resp1)
+
+	// Second registration with the same client ID (simulates dual-engine fan-out).
+	b, _ = json.Marshal(body)
+	req = httptest.NewRequest("POST", "/api/operator/register", bytes.NewReader(b))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, "second register: %s", rec.Body.String())
+
+	var resp2 map[string]any
+	_ = json.NewDecoder(rec.Body).Decode(&resp2)
+
+	require.Equal(t, resp1["id"], resp2["id"], "both should return same ID")
+	require.Equal(t, resp1["token"], resp2["token"], "both should return same token")
+}

@@ -31,6 +31,7 @@ func (a *API) registerOperatorRoutes(mux *http.ServeMux) {
 
 func (a *API) handleOperatorRegister(w http.ResponseWriter, r *http.Request) {
 	var req struct {
+		ID          string        `json:"id"`
 		Name        string        `json:"name"`
 		Role        operator.Role `json:"role"`
 		InviteToken string        `json:"inviteToken"`
@@ -65,7 +66,7 @@ func (a *API) handleOperatorRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	op, err := a.operatorStore.Register(req.Name, req.Role)
+	op, err := a.operatorStore.Register(req.Name, req.Role, req.ID)
 	if err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return

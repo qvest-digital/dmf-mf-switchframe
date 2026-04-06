@@ -279,6 +279,68 @@ func TestDeleteRollbackOnSaveFailure(t *testing.T) {
 	require.Equal(t, "Doomed", presets[0].Name, "preset name should be preserved after rollback")
 }
 
+func TestGetByName(t *testing.T) {
+	t.Parallel()
+	ps := newTestStore(t)
+
+	_, _ = ps.Create("Morning Service", testSnapshot())
+	_, _ = ps.Create("Evening Service", testSnapshot())
+
+	got, err := ps.GetByName("Morning Service")
+	require.NoError(t, err)
+	require.Equal(t, "Morning Service", got.Name)
+
+	got, err = ps.GetByName("Evening Service")
+	require.NoError(t, err)
+	require.Equal(t, "Evening Service", got.Name)
+
+	_, err = ps.GetByName("nonexistent")
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestGetByNameReturnFirstMatch(t *testing.T) {
+	t.Parallel()
+	ps := newTestStore(t)
+
+	first, _ := ps.Create("Duplicate", testSnapshot())
+	_, _ = ps.Create("Duplicate", testSnapshot())
+
+	got, err := ps.GetByName("Duplicate")
+	require.NoError(t, err)
+	require.Equal(t, first.ID, got.ID, "should return the first match")
+}
+
+func TestDeleteByName(t *testing.T) {
+	t.Parallel()
+	ps := newTestStore(t)
+
+	_, _ = ps.Create("ToDelete", testSnapshot())
+	_, _ = ps.Create("ToKeep", testSnapshot())
+
+	require.NoError(t, ps.DeleteByName("ToDelete"))
+	require.Len(t, ps.List(), 1)
+	require.Equal(t, "ToKeep", ps.List()[0].Name)
+
+	// Delete nonexistent
+	require.ErrorIs(t, ps.DeleteByName("nonexistent"), ErrNotFound)
+}
+
+func TestDeleteByNameRollbackOnSaveFailure(t *testing.T) {
+	t.Parallel()
+
+	ps := &Store{
+		filePath: "/dev/null/impossible/presets.json",
+		presets: []Preset{
+			{ID: "p1", Name: "Doomed"},
+		},
+	}
+
+	err := ps.DeleteByName("Doomed")
+	require.Error(t, err)
+	require.Len(t, ps.List(), 1, "should rollback after save failure")
+	require.Equal(t, "Doomed", ps.List()[0].Name)
+}
+
 func TestNewStoreNonexistentFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

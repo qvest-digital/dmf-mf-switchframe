@@ -12,6 +12,8 @@
 	let { state: crState, isDualEngine = false, engineBRecording = null, activeEngineId }: Props = $props();
 
 	const isActive = $derived(crState.recording?.active ?? false);
+	const engineBActive = $derived(engineBRecording?.active ?? false);
+	const statesDiffer = $derived(isDualEngine && isActive !== engineBActive);
 	const hasError = $derived(!isActive && !!crState.recording?.error);
 	const droppedPackets = $derived(crState.recording?.droppedPackets ?? 0);
 	let confirmingStop = $state(false);
@@ -63,13 +65,13 @@
 	</div>
 {/if}
 
-{#if isDualEngine}
-	<span class="engine-status">
+{#if statesDiffer}
+	<span class="engine-status" data-testid="engine-rec-status">
 		<span class="engine-tag" class:active-engine={activeEngineId === 'A'}>
-			A <span class="rec-dot-small" class:recording={isActive}></span>
+			A{#if isActive}<span class="rec-dot-small recording"></span>{:else}<span class="rec-dot-small"></span>{/if}
 		</span>
 		<span class="engine-tag" class:active-engine={activeEngineId === 'B'}>
-			B <span class="rec-dot-small" class:recording={engineBRecording?.active ?? false}></span>
+			B{#if engineBActive}<span class="rec-dot-small recording"></span>{:else}<span class="rec-dot-small"></span>{/if}
 		</span>
 	</span>
 {/if}

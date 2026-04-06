@@ -1,0 +1,602 @@
+/**
+ * Behavioral tests for the dual-engine state reconciler.
+ *
+ * These tests describe what the reconciler SHOULD do in real production
+ * scenarios, not how it's wired. Each test represents a scenario that
+ * would actually occur during dual-engine operation.
+ */
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { createReconciler } from './reconciler.svelte';
+import type { ControlRoomState, PlayoutChannelState } from '$lib/api/types';
+
+function makeState(overrides: Partial<ControlRoomState> = {}): ControlRoomState {
+	return {
+		programSource: 'cam1',
+		previewSource: 'cam2',
+		transitionType: 'cut',
+		transitionDurationMs: 500,
+		transitionPosition: 0,
+		inTransition: false,
+		ftbActive: false,
+		audioChannels: undefined,
+		masterLevel: 0,
+		programPeak: [0, 0],
+		tallyState: {},
+		sources: {},
+		seq: 1,
+		lastCommandSeq: 1,
+		timestamp: 1000,
+		...overrides,
+	};
+}
+
+describe('reconciler behavioral tests', () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	// ─── Authoritative engine selection uses ALL fields ───
+
+	describe('authoritative engine selection', () => {
+		it('returns ALL fields from the authoritative engine, not a mix of both', () => {
+			// Scenario: Engines have diverged. Engine A is authoritative (higher seq).
+			// The reconciler must return A's complete state — not mixing A's programSource
+			// with B's masterLevel or other fields.
+			const r = createReconciler();
+
+			r.ingest('A', makeState({
+				programSource: 'cam1',
+				previewSource: 'cam3',
+				masterLevel: -6,
+				inTransition: true,
+				transitionPosition: 0.5,
+				ftbActive: false,
+				lastCommandSeq: 10,
+			}));
+
+			r.ingest('B', makeState({
+				programSource: 'cam2',
+				previewSource: 'cam4',
+				masterLevel: 0,
+				inTransition: false,
+				transitionPosition: 0,
+				ftbActive: true,
+				lastCommandSeq: 5,
+			}));
+
+			// A is authoritative (higher seq)
+			expect(r.health.authoritative).toBe('A');
+
+			// ALL fields must come from A, not a mix
+			const state = r.state;
+			expect(state.programSource).toBe('cam1');
+			expect(state.previewSource).toBe('cam3');
+			expect(state.masterLevel).toBe(-6);
+			expect(state.inTransition).toBe(true);
+			expect(state.transitionPosition).toBe(0.5);
+			expect(state.ftbActive).toBe(false);
+		});
+
+		it('switches ALL fields when authoritative engine changes', () => {
+			// Scenario: B catches up and overtakes A's seq.
+			// All fields should flip to B's values atomically.
+			const r = createReconciler();
+
+			r.ingest('A', makeState({
+				programSource: 'cam1',
+				masterLevel: -6,
+				lastCommandSeq: 10,
+			}));
+			r.ingest('B', makeState({
+				programSource: 'cam2',
+				masterLevel: 0,
+				lastCommandSeq: 5,
+			}));
+			expect(r.health.authoritative).toBe('A');
+			expect(r.state.programSource).toBe('cam1');
+
+			// B catches up and passes A
+			r.ingest('B', makeState({
+				programSource: 'cam2',
+				masterLevel: -3,
+				lastCommandSeq: 12,
+			}));
+
+			expect(r.health.authoritative).toBe('B');
+			expect(r.state.programSource).toBe('cam2');
+			expect(r.state.masterLevel).toBe(-3);
+		});
+
+		it('uses RTT to break ties when lastCommandSeq is equal', () => {
+			const r = createReconciler();
+
+			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 10 }));
+			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 10 }));
+
+			// Set RTT: B is closer (lower RTT)
+			r.setRTT('A', 50);
+			r.setRTT('B', 10);
+
+			expect(r.health.authoritative).toBe('B');
+			expect(r.state.programSource).toBe('cam2');
+		});
+
+		it('falls back to A when both RTT and seq are equal', () => {
+			const r = createReconciler();
+
+			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 10 }));
+			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 10 }));
+
+			r.setRTT('A', 20);
+			r.setRTT('B', 20);
+
+			// Final tie-break: A wins
+			expect(r.health.authoritative).toBe('A');
+		});
+
+		it('switches to surviving engine when authoritative disconnects', () => {
+			const r = createReconciler();
+
+			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 10 }));
+			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 5 }));
+
+			expect(r.health.authoritative).toBe('A');
+
+			// A goes offline
+			r.disconnect('A');
+
+			// B becomes authoritative since A is disconnected
+			expect(r.health.authoritative).toBe('B');
+			expect(r.state.programSource).toBe('cam2');
+		});
+	});
+
+	// ─── Status transitions with realistic timing ───
+
+	describe('status transitions', () => {
+		it('stays synced when seq delta is under 500ms', () => {
+			const r = createReconciler();
+
+			r.ingest('A', makeState({ lastCommandSeq: 10 }));
+			r.ingest('B', makeState({ lastCommandSeq: 8 }));
+
+			// Just appeared — should still be synced (transient)
+			expect(r.health.status).toBe('synced');
+
+			// 400ms later — still under threshold
+			vi.advanceTimersByTime(400);
+			r.tick();
+			expect(r.health.status).toBe('synced');
+		});
+
+		it('transitions to lagging after 500ms of seq delta', () => {
+			const r = createReconciler();
+
+			r.ingest('A', makeState({ lastCommandSeq: 10 }));
+			r.ingest('B', makeState({ lastCommandSeq: 8 }));
+
+			vi.advanceTimersByTime(600);
+			r.tick();
+			expect(r.health.status).toBe('lagging');
+		});
+
+		it('transitions to diverged after 2000ms of seq delta', () => {
+			const r = createReconciler();
+
+			r.ingest('A', makeState({ lastCommandSeq: 10 }));
+			r.ingest('B', makeState({ lastCommandSeq: 8 }));
+
+			vi.advanceTimersByTime(2100);
+			r.tick();
+			expect(r.health.status).toBe('diverged');
+		});
+
+		it('returns to synced when seq delta resolves', () => {
+			const r = createReconciler();
+
+			r.ingest('A', makeState({ lastCommandSeq: 10 }));
+			r.ingest('B', makeState({ lastCommandSeq: 8 }));
+
+			vi.advanceTimersByTime(2100);
+			r.tick();
+			expect(r.health.status).toBe('diverged');
+
+			// B catches up
+			r.ingest('B', makeState({ lastCommandSeq: 10 }));
+			expect(r.health.status).toBe('synced');
+		});
+
+		it('detects mismatch: same seq but different programSource', () => {
+			// This is the most dangerous case — engines processed the same command
+			// but arrived at different states. Indicates a deterministic failure.
+			const r = createReconciler();
+
+			r.ingest('A', makeState({
+				programSource: 'cam1',
+				lastCommandSeq: 10,
+			}));
+			r.ingest('B', makeState({
+				programSource: 'cam2',
+				lastCommandSeq: 10,
+			}));
+
+			expect(r.health.status).toBe('mismatch');
+		});
+
+		it('does NOT report mismatch when seqs differ', () => {
+			// Different seqs = one engine is behind, not a deterministic failure.
+			const r = createReconciler();
+
+			r.ingest('A', makeState({
+				programSource: 'cam1',
+				lastCommandSeq: 10,
+			}));
+			r.ingest('B', makeState({
+				programSource: 'cam2',
+				lastCommandSeq: 8,
+			}));
+
+			// Should be synced (transient) or lagging, not mismatch
+			expect(r.health.status).not.toBe('mismatch');
+		});
+
+		it('reports diverged immediately when visible fields differ at any seq', () => {
+			// Even if the seq difference just appeared, visible field divergence
+			// should be immediately flagged as diverged.
+			const r = createReconciler();
+
+			r.ingest('A', makeState({
+				programSource: 'cam1',
+				ftbActive: true,
+				lastCommandSeq: 10,
+			}));
+			r.ingest('B', makeState({
+				programSource: 'cam1',
+				ftbActive: false,
+				lastCommandSeq: 8,
+			}));
+
+			// ftbActive differs — should be diverged immediately
+			expect(r.health.status).toBe('diverged');
+		});
+
+		it('recovering takes priority over other computed statuses', () => {
+			const r = createReconciler();
+
+			r.ingest('A', makeState({ lastCommandSeq: 10 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+			vi.advanceTimersByTime(2100);
+			r.tick();
+			expect(r.health.status).toBe('diverged');
+
+			r.setRecovering(true);
+			r.tick();
+			expect(r.health.status).toBe('recovering');
+
+			// Even if seqs match now, recovering should persist until cleared
+			r.ingest('B', makeState({ lastCommandSeq: 10 }));
+			expect(r.health.status).toBe('recovering');
+
+			r.setRecovering(false);
+			// Now should be synced since seqs match
+			r.tick();
+			expect(r.health.status).toBe('synced');
+		});
+	});
+
+	// ─── Divergence detection across all visible fields ───
+
+	describe('divergence detection', () => {
+		it('detects divergence on every DIVERGENCE_FIELDS entry', () => {
+			const r = createReconciler();
+
+			r.ingest('A', makeState({
+				programSource: 'cam1',
+				previewSource: 'cam2',
+				inTransition: false,
+				transitionPosition: 0,
+				masterLevel: 0,
+				ftbActive: false,
+				lastCommandSeq: 5,
+			}));
+
+			r.ingest('B', makeState({
+				programSource: 'cam3',
+				previewSource: 'cam4',
+				inTransition: true,
+				transitionPosition: 0.5,
+				masterLevel: -12,
+				ftbActive: true,
+				lastCommandSeq: 5,
+			}));
+
+			const fields = r.health.divergences.map(d => d.field);
+			expect(fields).toContain('programSource');
+			expect(fields).toContain('previewSource');
+			expect(fields).toContain('inTransition');
+			expect(fields).toContain('transitionPosition');
+			expect(fields).toContain('masterLevel');
+			expect(fields).toContain('ftbActive');
+		});
+
+		it('reports no divergence when engines agree on all visible fields', () => {
+			const r = createReconciler();
+
+			const shared = makeState({ lastCommandSeq: 5 });
+			r.ingest('A', { ...shared });
+			r.ingest('B', { ...shared });
+
+			expect(r.health.divergences).toHaveLength(0);
+		});
+
+		it('reports no divergence when only one engine is present', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			expect(r.health.divergences).toHaveLength(0);
+		});
+
+		it('includes correct engine-specific values in divergence report', () => {
+			const r = createReconciler();
+
+			r.ingest('A', makeState({ masterLevel: -6, lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ masterLevel: -12, lastCommandSeq: 5 }));
+
+			const levelDiv = r.health.divergences.find(d => d.field === 'masterLevel');
+			expect(levelDiv).toBeDefined();
+			expect(levelDiv!.engineA).toBe(-6);
+			expect(levelDiv!.engineB).toBe(-12);
+		});
+	});
+
+	// ─── Playout mismatch detection ───
+
+	describe('playout mismatch', () => {
+		it('detects playout currentItemId mismatch at same seq', () => {
+			const r = createReconciler();
+
+			const playoutA: { channels: PlayoutChannelState[] } = {
+				channels: [{
+					id: 0, state: 'on_air', itemIndex: 0, itemCount: 5,
+					currentItemId: 'item-1', currentTitle: 'Intro',
+				}],
+			};
+			const playoutB: { channels: PlayoutChannelState[] } = {
+				channels: [{
+					id: 0, state: 'on_air', itemIndex: 0, itemCount: 5,
+					currentItemId: 'item-2', currentTitle: 'News',
+				}],
+			};
+
+			r.ingest('A', makeState({ playout: playoutA, lastCommandSeq: 10 }));
+			r.ingest('B', makeState({ playout: playoutB, lastCommandSeq: 10 }));
+
+			expect(r.health.status).toBe('mismatch');
+		});
+
+		it('detects playout itemIndex mismatch at same seq', () => {
+			const r = createReconciler();
+
+			const playoutA: { channels: PlayoutChannelState[] } = {
+				channels: [{
+					id: 0, state: 'on_air', itemIndex: 2, itemCount: 5,
+				}],
+			};
+			const playoutB: { channels: PlayoutChannelState[] } = {
+				channels: [{
+					id: 0, state: 'on_air', itemIndex: 3, itemCount: 5,
+				}],
+			};
+
+			r.ingest('A', makeState({ playout: playoutA, lastCommandSeq: 10 }));
+			r.ingest('B', makeState({ playout: playoutB, lastCommandSeq: 10 }));
+
+			expect(r.health.status).toBe('mismatch');
+		});
+
+		it('does NOT mismatch when playout channels are empty on both sides', () => {
+			const r = createReconciler();
+
+			r.ingest('A', makeState({
+				playout: { channels: [] },
+				lastCommandSeq: 10,
+			}));
+			r.ingest('B', makeState({
+				playout: { channels: [] },
+				lastCommandSeq: 10,
+			}));
+
+			expect(r.health.status).toBe('synced');
+		});
+
+		it('does NOT mismatch when one side has no playout and other has empty channels', () => {
+			const r = createReconciler();
+
+			r.ingest('A', makeState({
+				playout: { channels: [] },
+				lastCommandSeq: 10,
+			}));
+			r.ingest('B', makeState({
+				playout: undefined,
+				lastCommandSeq: 10,
+			}));
+
+			// No playout on B means no channel comparison — should not mismatch
+			expect(r.health.status).not.toBe('mismatch');
+		});
+	});
+
+	// ─── Engine health tracking ───
+
+	describe('engine health', () => {
+		it('tracks per-engine connection state', () => {
+			const r = createReconciler();
+
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			expect(r.engineHealth.A.connected).toBe(true);
+			expect(r.engineHealth.B.connected).toBe(false);
+
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+			expect(r.engineHealth.B.connected).toBe(true);
+
+			r.disconnect('A');
+			expect(r.engineHealth.A.connected).toBe(false);
+			expect(r.engineHealth.B.connected).toBe(true);
+		});
+
+		it('tracks per-engine lastCommandSeq', () => {
+			const r = createReconciler();
+
+			r.ingest('A', makeState({ lastCommandSeq: 10 }));
+			r.ingest('B', makeState({ lastCommandSeq: 7 }));
+
+			expect(r.engineHealth.A.lastSeq).toBe(10);
+			expect(r.engineHealth.B.lastSeq).toBe(7);
+		});
+
+		it('tracks per-engine RTT', () => {
+			const r = createReconciler();
+
+			r.setRTT('A', 15);
+			r.setRTT('B', 42);
+
+			expect(r.engineHealth.A.rtt).toBe(15);
+			expect(r.engineHealth.B.rtt).toBe(42);
+		});
+
+		it('tracks per-engine clock offset', () => {
+			const r = createReconciler();
+
+			r.setClockOffset('A', 5000);
+			r.setClockOffset('B', -3000);
+
+			expect(r.engineHealth.A.clockOffset).toBe(5000);
+			expect(r.engineHealth.B.clockOffset).toBe(-3000);
+		});
+
+		it('extracts per-source health from engine state', () => {
+			const r = createReconciler();
+
+			r.ingest('A', makeState({
+				sources: {
+					cam1: { key: 'cam1', type: 'demo', status: 'healthy' },
+					cam2: { key: 'cam2', type: 'demo', status: 'stale' },
+				},
+				lastCommandSeq: 5,
+			}));
+
+			expect(r.engineHealth.A.sources.cam1).toBe('healthy');
+			expect(r.engineHealth.A.sources.cam2).toBe('stale');
+		});
+
+		it('returns empty source health for disconnected engine', () => {
+			const r = createReconciler();
+			expect(r.engineHealth.B.sources).toEqual({});
+		});
+	});
+
+	// ─── Mode detection ───
+
+	describe('mode', () => {
+		it('starts in single mode', () => {
+			const r = createReconciler();
+			expect(r.mode).toBe('single');
+		});
+
+		it('switches to dual after both engines report', () => {
+			const r = createReconciler();
+
+			r.ingest('A', makeState());
+			expect(r.mode).toBe('single');
+
+			r.ingest('B', makeState());
+			expect(r.mode).toBe('dual');
+		});
+
+		it('stays dual even after an engine disconnects', () => {
+			// Once we've seen both engines, we stay in dual mode.
+			// This prevents mode flapping on transient disconnects.
+			const r = createReconciler();
+
+			r.ingest('A', makeState());
+			r.ingest('B', makeState());
+			expect(r.mode).toBe('dual');
+
+			r.disconnect('B');
+			expect(r.mode).toBe('dual');
+		});
+	});
+
+	// ─── Raw states ───
+
+	describe('rawStates', () => {
+		it('provides per-engine states for components that need individual data', () => {
+			const r = createReconciler();
+
+			const stateA = makeState({ programSource: 'cam1', lastCommandSeq: 10 });
+			const stateB = makeState({ programSource: 'cam2', lastCommandSeq: 5 });
+
+			r.ingest('A', stateA);
+			r.ingest('B', stateB);
+
+			expect(r.rawStates.A).toEqual(stateA);
+			expect(r.rawStates.B).toEqual(stateB);
+		});
+
+		it('returns null for engines that have never reported', () => {
+			const r = createReconciler();
+			expect(r.rawStates.A).toBeNull();
+			expect(r.rawStates.B).toBeNull();
+		});
+	});
+
+	// ─── Reconnection scenarios ───
+
+	describe('disconnect and reconnect', () => {
+		it('accepts updated state after reconnection', () => {
+			const r = createReconciler();
+
+			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ programSource: 'cam1', lastCommandSeq: 5 }));
+			expect(r.health.status).toBe('synced');
+
+			// B disconnects
+			r.disconnect('B');
+			expect(r.health.status).toBe('single-engine');
+
+			// B reconnects with updated state
+			r.ingest('B', makeState({ programSource: 'cam1', lastCommandSeq: 8 }));
+			expect(r.engineHealth.B.connected).toBe(true);
+			expect(r.engineHealth.B.lastSeq).toBe(8);
+		});
+
+		it('handles both engines disconnecting', () => {
+			const r = createReconciler();
+
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+
+			r.disconnect('A');
+			r.disconnect('B');
+
+			expect(r.health.status).toBe('disconnected');
+		});
+
+		it('re-ingesting with stale seq after reconnect does not confuse authoritative selection', () => {
+			const r = createReconciler();
+
+			r.ingest('A', makeState({ lastCommandSeq: 10 }));
+			r.ingest('B', makeState({ lastCommandSeq: 10 }));
+
+			r.disconnect('B');
+
+			// B reconnects with a stale (lower) seq — maybe it restarted
+			r.ingest('B', makeState({ programSource: 'cam3', lastCommandSeq: 3 }));
+
+			// A should still be authoritative since it has higher seq
+			expect(r.health.authoritative).toBe('A');
+		});
+	});
+});

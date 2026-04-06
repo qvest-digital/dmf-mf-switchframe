@@ -5,8 +5,8 @@ import PresetPanel from './PresetPanel.svelte';
 vi.mock('$lib/api/switch-api', () => ({
 	listPresets: vi.fn().mockResolvedValue([]),
 	createPreset: vi.fn().mockResolvedValue({ id: '1', name: 'Test', programSource: 'cam1', previewSource: 'cam2', transitionType: 'cut', transitionDurMs: 0, audioChannels: {}, masterLevel: 0, createdAt: '2026-03-06T00:00:00Z' }),
-	recallPreset: vi.fn().mockResolvedValue({ preset: { id: '1', name: 'Test', programSource: 'cam1', previewSource: 'cam2', transitionType: 'cut', transitionDurMs: 0, audioChannels: {}, masterLevel: 0, createdAt: '2026-03-06T00:00:00Z' } }),
-	deletePreset: vi.fn().mockResolvedValue(undefined),
+	recallPresetByName: vi.fn().mockResolvedValue({ preset: { id: '1', name: 'Test', programSource: 'cam1', previewSource: 'cam2', transitionType: 'cut', transitionDurMs: 0, audioChannels: {}, masterLevel: 0, createdAt: '2026-03-06T00:00:00Z' } }),
+	deletePresetByName: vi.fn().mockResolvedValue(undefined),
 	apiCall: vi.fn(),
 }));
 
@@ -95,8 +95,8 @@ describe('PresetPanel', () => {
 		expect(container.textContent).toContain('Preset B');
 	});
 
-	it('calls recallPreset when preset card is clicked', async () => {
-		const { listPresets, recallPreset } = await import('$lib/api/switch-api');
+	it('calls recallPresetByName when preset card is clicked', async () => {
+		const { listPresets, recallPresetByName } = await import('$lib/api/switch-api');
 		vi.mocked(listPresets).mockResolvedValueOnce([
 			{ id: '1', name: 'Preset A', programSource: 'cam1', previewSource: 'cam2', transitionType: 'cut', transitionDurMs: 0, audioChannels: {}, masterLevel: 0, createdAt: '2026-03-06T12:00:00Z' },
 		]);
@@ -106,7 +106,7 @@ describe('PresetPanel', () => {
 		});
 		const recallBtn = container.querySelector('.preset-recall') as HTMLButtonElement;
 		await fireEvent.click(recallBtn);
-		expect(recallPreset).toHaveBeenCalledWith('1');
+		expect(recallPresetByName).toHaveBeenCalledWith('Preset A');
 	});
 
 	it('shows delete confirmation when delete button clicked', async () => {
@@ -128,8 +128,8 @@ describe('PresetPanel', () => {
 		expect(confirmNo.getAttribute('aria-label')).toBe('Cancel delete');
 	});
 
-	it('calls deletePreset when Yes clicked in confirmation', async () => {
-		const { listPresets, deletePreset } = await import('$lib/api/switch-api');
+	it('calls deletePresetByName when Yes clicked in confirmation', async () => {
+		const { listPresets, deletePresetByName } = await import('$lib/api/switch-api');
 		vi.mocked(listPresets).mockResolvedValueOnce([
 			{ id: '1', name: 'Preset A', programSource: 'cam1', previewSource: 'cam2', transitionType: 'cut', transitionDurMs: 0, audioChannels: {}, masterLevel: 0, createdAt: '2026-03-06T12:00:00Z' },
 		]);
@@ -141,11 +141,11 @@ describe('PresetPanel', () => {
 		await fireEvent.click(deleteBtn);
 		const confirmYes = container.querySelector('.delete-confirm') as HTMLButtonElement;
 		await fireEvent.click(confirmYes);
-		expect(deletePreset).toHaveBeenCalledWith('1');
+		expect(deletePresetByName).toHaveBeenCalledWith('Preset A');
 	});
 
 	it('cancels delete when No clicked in confirmation', async () => {
-		const { listPresets, deletePreset } = await import('$lib/api/switch-api');
+		const { listPresets, deletePresetByName } = await import('$lib/api/switch-api');
 		vi.mocked(listPresets).mockResolvedValueOnce([
 			{ id: '1', name: 'Preset A', programSource: 'cam1', previewSource: 'cam2', transitionType: 'cut', transitionDurMs: 0, audioChannels: {}, masterLevel: 0, createdAt: '2026-03-06T12:00:00Z' },
 		]);
@@ -157,7 +157,7 @@ describe('PresetPanel', () => {
 		await fireEvent.click(deleteBtn);
 		const confirmNo = container.querySelector('.delete-dismiss') as HTMLButtonElement;
 		await fireEvent.click(confirmNo);
-		expect(deletePreset).not.toHaveBeenCalled();
+		expect(deletePresetByName).not.toHaveBeenCalled();
 	});
 
 	it('renders Presets section label', () => {

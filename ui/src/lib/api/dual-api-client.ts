@@ -1,97 +1,87 @@
-import type { ClockSync } from '$lib/transport/clock-sync';
+import type { EngineId } from '$lib/api/types';
 
 export interface EngineConfig {
-	id: string;
+	id: EngineId;
 	url: string;
 }
 
 export interface DualApiClientConfig {
 	engines: EngineConfig[];
-	clockSync: ClockSync;
-	/** Returns a monotonically incrementing sequence number for each call. */
-	getCommandSeq: () => number;
-	authToken?: string;
 }
 
+/**
+ * Reduced client for engine-targeted snapshot operations only.
+ *
+ * All regular API commands (cut, preview, transition, audio, etc.) now go
+ * through switch-api.ts whose request() interceptor handles dual-engine
+ * fan-out automatically. This class exists solely because snapshot
+ * get/push must target a SPECIFIC engine by ID, which the generic
+ * fan-out cannot express.
+ */
 export class DualApiClient {
 	constructor(private config: DualApiClientConfig) {}
 
+	/** Late-bind a new engine (e.g., engine B discovered from initial state). */
+	addEngine(id: EngineId, url: string): void {
+		if (this.config.engines.some((e) => e.id === id)) return;
+		this.config.engines.push({ id, url });
+	}
+
 	private authHeaders(): Record<string, string> {
+		const token = typeof localStorage !== 'undefined'
+			? localStorage.getItem('switchframe_operator_token')
+			: null;
 		const headers: Record<string, string> = {};
-		if (this.config.authToken) {
-			headers['Authorization'] = `Bearer ${this.config.authToken}`;
+		if (token) {
+			headers['Authorization'] = `Bearer ${token}`;
 		}
 		return headers;
 	}
 
-	/**
-	 * Send a timed command to all engines.
-	 * The execute_at timestamp is computed as ptpNow() + safetyMargin() so that
-	 * all engines execute the command at the same logical wall-clock instant.
-	 */
-	async timedCommand(path: string, body: Record<string, unknown>): Promise<void> {
-		const executeAt = this.config.clockSync.ptpNow() + this.config.clockSync.safetyMargin();
-		const commandSeq = this.config.getCommandSeq();
-		const payload = { ...body, execute_at: executeAt, command_seq: commandSeq };
-
-		await Promise.allSettled(
-			this.config.engines.map((engine) =>
-				fetch(`${engine.url}${path}`, {
-					method: 'POST',
-					headers: {
-						'Content-Type': 'application/json',
-						...this.authHeaders(),
-					},
-					body: JSON.stringify(payload),
-				})
-			)
-		);
+	private findEngine(engineId: EngineId): EngineConfig {
+		const engine = this.config.engines.find((e) => e.id === engineId);
+		if (!engine) {
+			throw new Error(`Unknown engine: ${engineId}`);
+		}
+		return engine;
 	}
 
-	/**
-	 * Send an untimed command to all engines (config/label changes, audio levels, etc.).
-	 * No execute_at or command_seq is included.
-	 */
-	async untimedCommand(
-		path: string,
-		body: Record<string, unknown>,
-		method = 'POST'
-	): Promise<void> {
-		await Promise.allSettled(
-			this.config.engines.map((engine) =>
-				fetch(`${engine.url}${path}`, {
-					method,
-					headers: {
-						'Content-Type': 'application/json',
-						...this.authHeaders(),
-					},
-					body: JSON.stringify(body),
-				})
-			)
-		);
+	// =============================================
+	// State snapshot methods (target specific engine)
+	// =============================================
+
+	async getStateSnapshot(engineId: EngineId): Promise<unknown> {
+		const engine = this.findEngine(engineId);
+		const res = await fetch(`${engine.url}/api/sync/state-snapshot`, {
+			method: 'GET',
+			headers: {
+				...this.authHeaders(),
+			},
+		});
+		if (!res.ok) {
+			const body = await res.text().catch(() => 'unknown error');
+			throw new Error(`Failed to get snapshot from engine ${engineId}: ${res.status} ${body}`);
+		}
+		return res.json();
 	}
 
-	// --- Timed switching commands ---
-
-	async cut(source: string): Promise<void> {
-		return this.timedCommand('/api/switch/cut', { source });
-	}
-
-	async setPreview(source: string): Promise<void> {
-		return this.timedCommand('/api/switch/preview', { source });
-	}
-
-	// --- Untimed configuration commands ---
-
-	async setLevel(source: string, level: number): Promise<void> {
-		return this.untimedCommand(
-			`/api/audio/${encodeURIComponent(source)}/level`,
-			{ level },
-			'PUT'
-		);
-	}
-
-	async setMasterLevel(level: number): Promise<void> {
-		return this.untimedCommand('/api/audio/master', { level }, 'PUT');
+	async pushStateSnapshot(
+		engineId: EngineId,
+		snapshot: unknown
+	): Promise<{ warnings: string[] }> {
+		const engine = this.findEngine(engineId);
+		const res = await fetch(`${engine.url}/api/sync/state-snapshot`, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				...this.authHeaders(),
+			},
+			body: JSON.stringify(snapshot),
+		});
+		if (!res.ok) {
+			const body = await res.text().catch(() => 'unknown error');
+			throw new Error(`Failed to push snapshot to engine ${engineId}: ${res.status} ${body}`);
+		}
+		return res.json();
 	}
 }

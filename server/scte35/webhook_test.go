@@ -2,6 +2,7 @@ package scte35
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -172,6 +173,78 @@ func TestWebhook_ResponseBodyDrained(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	require.Equal(t, 5, count, "all 5 webhook events should have been delivered")
+}
+
+func TestWebhook_EngineID_Propagated(t *testing.T) {
+	t.Parallel()
+	var received WebhookEvent
+	var mu sync.Mutex
+	done := make(chan struct{})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		_ = json.NewDecoder(r.Body).Decode(&received)
+		close(done)
+	}))
+	defer srv.Close()
+
+	wh := NewWebhookDispatcher(srv.URL, 2*time.Second)
+	defer wh.Close()
+	wh.Dispatch(WebhookEvent{
+		Type:     "cue_out",
+		EventID:  99,
+		Command:  "splice_insert",
+		IsOut:    true,
+		EngineID: "A",
+	})
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		require.Fail(t, "webhook not received within timeout")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, "A", received.EngineID)
+	require.Equal(t, uint32(99), received.EventID)
+}
+
+func TestWebhook_EngineID_OmittedWhenEmpty(t *testing.T) {
+	t.Parallel()
+	var rawBody []byte
+	var mu sync.Mutex
+	done := make(chan struct{})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		rawBody, _ = io.ReadAll(r.Body)
+		close(done)
+	}))
+	defer srv.Close()
+
+	wh := NewWebhookDispatcher(srv.URL, 2*time.Second)
+	defer wh.Close()
+	wh.Dispatch(WebhookEvent{
+		Type:    "cue_out",
+		EventID: 1,
+		Command: "splice_insert",
+		IsOut:   true,
+		// EngineID intentionally empty
+	})
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		require.Fail(t, "webhook not received within timeout")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	// With omitempty, the "engineId" key should not appear in the JSON.
+	require.NotContains(t, string(rawBody), `"engineId"`)
 }
 
 func TestWebhook_ConcurrentDispatchClose_NoRace(t *testing.T) {

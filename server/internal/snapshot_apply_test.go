@@ -193,8 +193,18 @@ func TestApplyFullSnapshot_AllFieldsApplied(t *testing.T) {
 	ctx := context.Background()
 
 	warnings := ApplyFullSnapshot(ctx, snap, mock)
-	if len(warnings) > 0 {
-		t.Errorf("expected no warnings, got: %v", warnings)
+	// Expect exactly 1 warning: clip player state not restored (by design).
+	expectedClipWarning := "clip player state not restored (clip IDs may differ between engines)"
+	clipWarnings := 0
+	for _, w := range warnings {
+		if w == expectedClipWarning {
+			clipWarnings++
+		} else {
+			t.Errorf("unexpected warning: %s", w)
+		}
+	}
+	if clipWarnings != 1 {
+		t.Errorf("expected 1 clip player warning, got %d (total warnings: %v)", clipWarnings, warnings)
 	}
 
 	// 1. Transition config

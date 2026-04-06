@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { render } from '@testing-library/svelte';
+import { describe, it, expect, vi } from 'vitest';
+import { render, fireEvent } from '@testing-library/svelte';
 import ProgramPreview from './ProgramPreview.svelte';
 
 const baseState = {
@@ -19,6 +19,7 @@ const baseState = {
 		cam2: { key: 'cam2', label: 'Camera 2', type: 'demo' as const, status: 'healthy' as const },
 	},
 	seq: 1,
+	lastCommandSeq: 0,
 	timestamp: Date.now(),
 };
 
@@ -216,5 +217,119 @@ describe('ProgramPreview SCTE-35 break status', () => {
 		const { container } = render(ProgramPreview, { props: { state } });
 		const breakStatus = container.querySelector('.break-status');
 		expect(breakStatus).toBeFalsy();
+	});
+});
+
+describe('ProgramPreview A/B engine toggle', () => {
+	it('shows A/B toggle when isDualEngine is true', () => {
+		const { container } = render(ProgramPreview, {
+			props: { state: baseState, isDualEngine: true },
+		});
+		const toggle = container.querySelector('[data-testid="engine-toggle"]');
+		expect(toggle).toBeTruthy();
+		const buttons = toggle!.querySelectorAll('.engine-btn');
+		expect(buttons.length).toBe(2);
+		expect(buttons[0].textContent).toBe('A');
+		expect(buttons[1].textContent).toBe('B');
+	});
+
+	it('hides A/B toggle when isDualEngine is false', () => {
+		const { container } = render(ProgramPreview, {
+			props: { state: baseState, isDualEngine: false },
+		});
+		const toggle = container.querySelector('[data-testid="engine-toggle"]');
+		expect(toggle).toBeNull();
+	});
+
+	it('hides A/B toggle by default', () => {
+		const { container } = render(ProgramPreview, {
+			props: { state: baseState },
+		});
+		const toggle = container.querySelector('[data-testid="engine-toggle"]');
+		expect(toggle).toBeNull();
+	});
+
+	it('highlights active engine A with active class', () => {
+		const { container } = render(ProgramPreview, {
+			props: { state: baseState, isDualEngine: true, activeEngine: 'A' },
+		});
+		const buttons = container.querySelectorAll('.engine-btn');
+		expect(buttons[0].classList.contains('active')).toBe(true);
+		expect(buttons[1].classList.contains('active')).toBe(false);
+	});
+
+	it('highlights active engine B with active class', () => {
+		const { container } = render(ProgramPreview, {
+			props: { state: baseState, isDualEngine: true, activeEngine: 'B' },
+		});
+		const buttons = container.querySelectorAll('.engine-btn');
+		expect(buttons[0].classList.contains('active')).toBe(false);
+		expect(buttons[1].classList.contains('active')).toBe(true);
+	});
+
+	it('calls onEngineToggle with B when clicking B button', async () => {
+		const onToggle = vi.fn();
+		const { container } = render(ProgramPreview, {
+			props: { state: baseState, isDualEngine: true, activeEngine: 'A', onEngineToggle: onToggle },
+		});
+		const buttons = container.querySelectorAll('.engine-btn');
+		await fireEvent.click(buttons[1]);
+		expect(onToggle).toHaveBeenCalledWith('B');
+	});
+
+	it('calls onEngineToggle with A when clicking A button', async () => {
+		const onToggle = vi.fn();
+		const { container } = render(ProgramPreview, {
+			props: { state: baseState, isDualEngine: true, activeEngine: 'B', onEngineToggle: onToggle },
+		});
+		const buttons = container.querySelectorAll('.engine-btn');
+		await fireEvent.click(buttons[0]);
+		expect(onToggle).toHaveBeenCalledWith('A');
+	});
+
+	it('shows disconnected engine button as disabled with strikethrough class', () => {
+		const { container } = render(ProgramPreview, {
+			props: {
+				state: baseState,
+				isDualEngine: true,
+				activeEngine: 'A',
+				engineAConnected: true,
+				engineBConnected: false,
+			},
+		});
+		const buttons = container.querySelectorAll('.engine-btn');
+		// Engine A connected
+		expect(buttons[0].classList.contains('disconnected')).toBe(false);
+		expect((buttons[0] as HTMLButtonElement).disabled).toBe(false);
+		// Engine B disconnected
+		expect(buttons[1].classList.contains('disconnected')).toBe(true);
+		expect((buttons[1] as HTMLButtonElement).disabled).toBe(true);
+	});
+
+	it('does not call onEngineToggle when clicking a disconnected engine', async () => {
+		const onToggle = vi.fn();
+		const { container } = render(ProgramPreview, {
+			props: {
+				state: baseState,
+				isDualEngine: true,
+				activeEngine: 'A',
+				onEngineToggle: onToggle,
+				engineAConnected: true,
+				engineBConnected: false,
+			},
+		});
+		const buttons = container.querySelectorAll('.engine-btn');
+		await fireEvent.click(buttons[1]);
+		expect(onToggle).not.toHaveBeenCalled();
+	});
+
+	it('toggle is inside program monitor, not preview monitor', () => {
+		const { container } = render(ProgramPreview, {
+			props: { state: baseState, isDualEngine: true },
+		});
+		const programToggle = container.querySelector('.program-monitor [data-testid="engine-toggle"]');
+		const previewToggle = container.querySelector('.preview-monitor [data-testid="engine-toggle"]');
+		expect(programToggle).toBeTruthy();
+		expect(previewToggle).toBeNull();
 	});
 });

@@ -1,9 +1,9 @@
 <script lang="ts">
-	import type { ControlRoomState, ClipInfo, ClipPlayerState, RecordingFileInfo, ClipUploadProgress } from '$lib/api/types';
+	import type { ControlRoomState, ClipInfo, ClipPlayerState, RecordingFileInfo, EngineRecordingGroup, ClipUploadProgress } from '$lib/api/types';
 	import {
 		listClips, uploadClip, deleteClip, pinClip,
-		listRecordings, importRecording,
-		clipPlayerLoad, clipPlayerEject, clipPlayerPlay, clipPlayerPause, clipPlayerStop, clipPlayerSeek,
+		listRecordingsDualEngine, importRecordingFromEngine,
+		clipPlayerLoadByName, clipPlayerEject, clipPlayerPlay, clipPlayerPause, clipPlayerStop, clipPlayerSeek,
 		apiCall,
 	} from '$lib/api/switch-api';
 	import { resolveApiUrl } from '$lib/api/base-url';
@@ -20,7 +20,7 @@
 
 	// ── State ──
 	let clips = $state<ClipInfo[]>([]);
-	let recordings = $state<RecordingFileInfo[]>([]);
+	let recordingGroups = $state<EngineRecordingGroup[]>([]);
 	let uploading = $state(false);
 	let uploadPercent = $state(0);
 	let fileInput: HTMLInputElement | undefined = $state();
@@ -41,6 +41,8 @@
 
 	const uploadedClips = $derived(clips.filter(c => c.source === 'upload'));
 	const replayClips = $derived(clips.filter(c => c.source === 'replay'));
+	const totalRecordings = $derived(recordingGroups.reduce((sum, g) => sum + g.recordings.length, 0));
+	const isDualEngine = $derived(recordingGroups.length > 1);
 	const uploadProgress = $derived<ClipUploadProgress | undefined>(crState.clipUpload);
 
 	const stageWeights: Record<string, [number, number]> = {
@@ -148,7 +150,7 @@
 
 	async function refreshRecordings() {
 		try {
-			recordings = await listRecordings();
+			recordingGroups = await listRecordingsDualEngine();
 		} catch {
 			// ignore on load
 		}
@@ -206,8 +208,8 @@
 		await uploadSelectedFile(file);
 	}
 
-	function onClipDragStart(e: DragEvent, clipId: string) {
-		e.dataTransfer?.setData('text/plain', clipId);
+	function onClipDragStart(e: DragEvent, clipName: string) {
+		e.dataTransfer?.setData('text/plain', clipName);
 		e.dataTransfer!.effectAllowed = 'copy';
 	}
 
@@ -216,15 +218,15 @@
 		if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
 	}
 
-	function handleLoadClip(clipId: string, playerId: number) {
-		apiCall(clipPlayerLoad(playerId, clipId), 'Load clip');
+	function handleLoadClip(clipName: string, playerId: number) {
+		apiCall(clipPlayerLoadByName(playerId, clipName), 'Load clip');
 	}
 
 	function onPlayerDrop(e: DragEvent, playerId: number) {
 		e.preventDefault();
-		const clipId = e.dataTransfer?.getData('text/plain')?.trim();
+		const clipName = e.dataTransfer?.getData('text/plain')?.trim();
 		resetPlayerDropHighlight();
-		if (clipId) handleLoadClip(clipId, playerId);
+		if (clipName) handleLoadClip(clipName, playerId);
 	}
 
 	function onPlayerDragEnd() {
@@ -282,9 +284,9 @@
 		apiCall(clipPlayerSeek(playerID, pos), 'Seek');
 	}
 
-	async function handleImport(path: string) {
+	async function handleImport(engineUrl: string, path: string) {
 		try {
-			await importRecording(path);
+			await importRecordingFromEngine(engineUrl, path);
 			notify('info', 'Recording imported');
 			await refreshClips();
 			await refreshRecordings();
@@ -371,7 +373,7 @@
 										class="clip-item"
 										role="listitem"
 										draggable="true"
-										ondragstart={(e) => onClipDragStart(e, clip.id)}
+										ondragstart={(e) => onClipDragStart(e, clip.name)}
 									>
 										<div class="clip-info">
 											<span class="clip-drag-hint" aria-hidden="true">{@html renderIcon(ICON_FILM, 12)}</span>
@@ -386,7 +388,7 @@
 													draggable="false"
 													ondragstart={(e) => e.stopPropagation()}
 													title={`Load into Player ${pid}`}
-													onclick={() => handleLoadClip(clip.id, pid)}
+													onclick={() => handleLoadClip(clip.name, pid)}
 												>{pid}</button>
 											{/each}
 											<button type="button" class="icon-btn danger" draggable="false" title="Delete" ondragstart={(e) => e.stopPropagation()} onclick={() => handleDelete(clip.id)}>
@@ -421,7 +423,7 @@
 										class="clip-item"
 										role="listitem"
 										draggable="true"
-										ondragstart={(e) => onClipDragStart(e, clip.id)}
+										ondragstart={(e) => onClipDragStart(e, clip.name)}
 									>
 										<div class="clip-info">
 											<span class="clip-drag-hint" aria-hidden="true">{@html renderIcon(ICON_FILM, 12)}</span>
@@ -436,7 +438,7 @@
 													draggable="false"
 													ondragstart={(e) => e.stopPropagation()}
 													title={`Load into Player ${pid}`}
-													onclick={() => handleLoadClip(clip.id, pid)}
+													onclick={() => handleLoadClip(clip.name, pid)}
 												>{pid}</button>
 											{/each}
 											{#if clip.ephemeral}
@@ -463,24 +465,32 @@
 							{@html renderIcon(sectionOpen.recordings ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT, 12)}
 						</span>
 						<span class="section-toggle-label">Recordings</span>
-						<span class="section-badge">{recordings.length}</span>
+						<span class="section-badge">{totalRecordings}</span>
 					</button>
 					{#if sectionOpen.recordings}
 						<div class="section-body">
-							{#if recordings.length === 0}
+							{#if totalRecordings === 0}
 								<div class="empty-hint">No recordings</div>
 							{:else}
-								{#each recordings as rec (rec.path)}
-									<div class="clip-item recording-item">
-										<div class="clip-info">
-											<span class="clip-name">{rec.filename}</span>
-											<span class="clip-meta">{formatBytes(rec.byteSize)}</span>
+								{#each recordingGroups as group (group.engineId)}
+									{#if isDualEngine}
+										<div class="engine-group-label">Engine {group.engineId}</div>
+									{/if}
+									{#if isDualEngine && group.recordings.length === 0}
+										<div class="empty-hint">No recordings</div>
+									{/if}
+									{#each group.recordings as rec (rec.path)}
+										<div class="clip-item recording-item">
+											<div class="clip-info">
+												<span class="clip-name">{rec.filename}</span>
+												<span class="clip-meta">{formatBytes(rec.byteSize)}</span>
+											</div>
+											<div class="clip-actions">
+												<a href={`${group.engineUrl}/api/clips/recordings/download?path=${encodeURIComponent(rec.path)}`} download={rec.filename} class="download-btn" title="Download recording">DL</a>
+												<button type="button" class="import-btn" onclick={() => handleImport(group.engineUrl, rec.path)}>Import</button>
+											</div>
 										</div>
-										<div class="clip-actions">
-											<a href={resolveApiUrl(`/api/clips/recordings/download?path=${encodeURIComponent(rec.path)}`)} download={rec.filename} class="download-btn" title="Download recording">DL</a>
-											<button type="button" class="import-btn" onclick={() => handleImport(rec.path)}>Import</button>
-										</div>
-									</div>
+									{/each}
 								{/each}
 							{/if}
 						</div>
@@ -840,6 +850,15 @@
 		padding: 6px;
 		text-align: center;
 		font-style: italic;
+	}
+
+	.engine-group-label {
+		font-size: var(--text-2xs);
+		font-weight: 600;
+		color: var(--text-secondary);
+		padding: 4px 6px 2px;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
 	}
 
 	.clip-item {

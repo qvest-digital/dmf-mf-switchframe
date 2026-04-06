@@ -53,6 +53,11 @@ type InjectorConfig struct {
 	// WebhookTimeoutMs is the timeout for webhook POST requests in milliseconds.
 	WebhookTimeoutMs int64
 
+	// EngineID is an optional engine label (e.g. "A" or "B") included in
+	// webhook payloads so downstream systems can deduplicate events from
+	// dual-engine active-active deployments.
+	EngineID string
+
 	// DefaultTier is the default 12-bit tier value for injected cues
 	// (0x000-0xFFF). 0 means unrestricted (0xFFF). Applied to cues
 	// that don't specify their own tier.
@@ -245,6 +250,7 @@ func (inj *Injector) dispatchWebhook(eventType string, eventID uint32, cmdType u
 		Duration:  durationMs,
 		Remaining: remainingMs,
 		PTS:       pts,
+		EngineID:  inj.config.EngineID,
 	})
 }
 

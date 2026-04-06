@@ -40,7 +40,10 @@ function stopHeartbeat(): void {
 }
 
 export async function register(name: string, role: OperatorRole): Promise<void> {
-	const result = await operatorRegister(name, role);
+	// Generate a client-side ID so both engines in a dual-engine setup
+	// register the same operator ID, preventing lock divergence.
+	const clientId = crypto.randomUUID();
+	const result = await operatorRegister(name, role, clientId);
 	session = {
 		id: result.id,
 		name: result.name,

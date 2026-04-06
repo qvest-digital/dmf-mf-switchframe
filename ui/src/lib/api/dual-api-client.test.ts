@@ -1,238 +1,203 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { DualApiClient } from './dual-api-client';
-import type { ClockSync } from '$lib/transport/clock-sync';
-
-// Minimal ClockSync stub
-function makeClockSync(ptpNowValue = 1_000_000, safetyMarginValue = 66_666): ClockSync {
-	return {
-		ptpNow: vi.fn(() => ptpNowValue),
-		safetyMargin: vi.fn(() => safetyMarginValue),
-	} as unknown as ClockSync;
-}
 
 describe('DualApiClient', () => {
-	let seqCounter: number;
-	let getCommandSeq: () => number;
-
 	beforeEach(() => {
 		vi.restoreAllMocks();
-		seqCounter = 0;
-		getCommandSeq = () => ++seqCounter;
 	});
 
-	it('sends cut to both engines with timestamp', async () => {
-		const clockSync = makeClockSync(1_000_000, 66_666);
-		const mockFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
-		vi.stubGlobal('fetch', mockFetch);
+	// --- addEngine ---
 
-		const client = new DualApiClient({
-			engines: [
-				{ id: 'engine-a', url: 'https://a.example.com' },
-				{ id: 'engine-b', url: 'https://b.example.com' },
-			],
-			clockSync,
-			getCommandSeq,
-		});
-
-		await client.cut('cam1');
-
-		expect(mockFetch).toHaveBeenCalledTimes(2);
-
-		const [urlA, initA] = mockFetch.mock.calls[0] as [string, RequestInit];
-		const [urlB, initB] = mockFetch.mock.calls[1] as [string, RequestInit];
-
-		expect(urlA).toBe('https://a.example.com/api/switch/cut');
-		expect(urlB).toBe('https://b.example.com/api/switch/cut');
-
-		const bodyA = JSON.parse(initA.body as string);
-		const bodyB = JSON.parse(initB.body as string);
-
-		// Both calls get the same timed payload
-		expect(bodyA.source).toBe('cam1');
-		expect(bodyA.execute_at).toBe(1_000_000 + 66_666);
-		expect(bodyA.command_seq).toBe(1);
-
-		expect(bodyB.source).toBe('cam1');
-		expect(bodyB.execute_at).toBe(1_000_000 + 66_666);
-		expect(bodyB.command_seq).toBe(1);
-	});
-
-	it('increments command_seq on each call', async () => {
-		const clockSync = makeClockSync();
-		const mockFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
-		vi.stubGlobal('fetch', mockFetch);
-
-		const client = new DualApiClient({
-			engines: [{ id: 'engine-a', url: 'https://a.example.com' }],
-			clockSync,
-			getCommandSeq,
-		});
-
-		await client.cut('cam1');
-		await client.cut('cam2');
-
-		const body1 = JSON.parse(mockFetch.mock.calls[0][1].body as string);
-		const body2 = JSON.parse(mockFetch.mock.calls[1][1].body as string);
-
-		expect(body1.command_seq).toBe(1);
-		expect(body2.command_seq).toBe(2);
-	});
-
-	it('one engine failure does not reject', async () => {
-		const clockSync = makeClockSync();
+	it('addEngine registers a new engine', async () => {
 		const mockFetch = vi
 			.fn()
-			.mockRejectedValueOnce(new Error('engine-a timeout'))
-			.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+			.mockResolvedValue(new Response(JSON.stringify({ program: 'cam1' }), { status: 200 }));
+		vi.stubGlobal('fetch', mockFetch);
+
+		const client = new DualApiClient({
+			engines: [{ id: 'A', url: 'https://a.example.com' }],
+		});
+
+		// Before adding B, getStateSnapshot('B') should throw
+		await expect(client.getStateSnapshot('B')).rejects.toThrow('Unknown engine');
+
+		client.addEngine('B', 'https://b.example.com');
+
+		// After adding B, it should work
+		await client.getStateSnapshot('B');
+		expect(mockFetch).toHaveBeenCalledTimes(1);
+		expect(mockFetch.mock.calls[0][0]).toBe('https://b.example.com/api/sync/state-snapshot');
+	});
+
+	it('addEngine is idempotent — does not duplicate engines', async () => {
+		const mockFetch = vi
+			.fn()
+			.mockResolvedValue(new Response('{}', { status: 200 }));
+		vi.stubGlobal('fetch', mockFetch);
+
+		const client = new DualApiClient({
+			engines: [{ id: 'A', url: 'https://a.example.com' }],
+		});
+
+		client.addEngine('A', 'https://different.example.com');
+
+		// Should still use original URL
+		await client.getStateSnapshot('A');
+		expect(mockFetch.mock.calls[0][0]).toBe('https://a.example.com/api/sync/state-snapshot');
+	});
+
+	// --- getStateSnapshot ---
+
+	it('getStateSnapshot targets a single engine by id', async () => {
+		const responsePayload = { program: 'cam1', preview: 'cam2' };
+		const mockFetch = vi
+			.fn()
+			.mockResolvedValue(new Response(JSON.stringify(responsePayload), { status: 200 }));
 		vi.stubGlobal('fetch', mockFetch);
 
 		const client = new DualApiClient({
 			engines: [
-				{ id: 'engine-a', url: 'https://a.example.com' },
-				{ id: 'engine-b', url: 'https://b.example.com' },
+				{ id: 'A', url: 'https://a.example.com' },
+				{ id: 'B', url: 'https://b.example.com' },
 			],
-			clockSync,
-			getCommandSeq,
 		});
 
-		// Should not throw even though engine-a failed
-		await expect(client.cut('cam1')).resolves.toBeUndefined();
-		expect(mockFetch).toHaveBeenCalledTimes(2);
-	});
-
-	it('sends preview to both engines', async () => {
-		const clockSync = makeClockSync(2_000_000, 33_333);
-		const mockFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
-		vi.stubGlobal('fetch', mockFetch);
-
-		const client = new DualApiClient({
-			engines: [
-				{ id: 'engine-a', url: 'https://a.example.com' },
-				{ id: 'engine-b', url: 'https://b.example.com' },
-			],
-			clockSync,
-			getCommandSeq,
-		});
-
-		await client.setPreview('cam3');
-
-		expect(mockFetch).toHaveBeenCalledTimes(2);
-
-		const [urlA, initA] = mockFetch.mock.calls[0] as [string, RequestInit];
-		const [urlB] = mockFetch.mock.calls[1] as [string, RequestInit];
-
-		expect(urlA).toBe('https://a.example.com/api/switch/preview');
-		expect(urlB).toBe('https://b.example.com/api/switch/preview');
-
-		const bodyA = JSON.parse(initA.body as string);
-		expect(bodyA.source).toBe('cam3');
-		expect(bodyA.execute_at).toBe(2_000_000 + 33_333);
-		expect(bodyA.command_seq).toBe(1);
-	});
-
-	it('single engine mode sends to one engine only', async () => {
-		const clockSync = makeClockSync();
-		const mockFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
-		vi.stubGlobal('fetch', mockFetch);
-
-		const client = new DualApiClient({
-			engines: [{ id: 'engine-a', url: 'https://a.example.com' }],
-			clockSync,
-			getCommandSeq,
-		});
-
-		await client.cut('cam1');
+		const result = await client.getStateSnapshot('A');
 
 		expect(mockFetch).toHaveBeenCalledTimes(1);
-		expect(mockFetch.mock.calls[0][0]).toBe('https://a.example.com/api/switch/cut');
+		const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+		expect(url).toBe('https://a.example.com/api/sync/state-snapshot');
+		expect(init.method).toBe('GET');
+		expect(result).toEqual(responsePayload);
 	});
 
-	it('untimed commands skip execute_at', async () => {
-		const clockSync = makeClockSync();
-		const mockFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
+	it('getStateSnapshot targets engine B', async () => {
+		const mockFetch = vi
+			.fn()
+			.mockResolvedValue(new Response('{}', { status: 200 }));
 		vi.stubGlobal('fetch', mockFetch);
 
 		const client = new DualApiClient({
 			engines: [
-				{ id: 'engine-a', url: 'https://a.example.com' },
-				{ id: 'engine-b', url: 'https://b.example.com' },
+				{ id: 'A', url: 'https://a.example.com' },
+				{ id: 'B', url: 'https://b.example.com' },
 			],
-			clockSync,
-			getCommandSeq,
 		});
 
-		await client.setLevel('cam1', 0.8);
+		await client.getStateSnapshot('B');
 
-		expect(mockFetch).toHaveBeenCalledTimes(2);
-
-		const [, initA] = mockFetch.mock.calls[0] as [string, RequestInit];
-		const bodyA = JSON.parse(initA.body as string);
-
-		expect(bodyA.level).toBe(0.8);
-		expect(bodyA.execute_at).toBeUndefined();
-		expect(bodyA.command_seq).toBeUndefined();
+		expect(mockFetch).toHaveBeenCalledTimes(1);
+		expect(mockFetch.mock.calls[0][0]).toBe('https://b.example.com/api/sync/state-snapshot');
 	});
 
-	it('includes Authorization header when authToken is provided', async () => {
-		const clockSync = makeClockSync();
+	it('getStateSnapshot throws on HTTP error', async () => {
+		const mockFetch = vi
+			.fn()
+			.mockResolvedValue(new Response('not found', { status: 404, statusText: 'Not Found' }));
+		vi.stubGlobal('fetch', mockFetch);
+
+		const client = new DualApiClient({
+			engines: [{ id: 'A', url: 'https://a.example.com' }],
+		});
+
+		await expect(client.getStateSnapshot('A')).rejects.toThrow(
+			'Failed to get snapshot from engine A'
+		);
+	});
+
+	// --- pushStateSnapshot ---
+
+	it('pushStateSnapshot sends POST to specific engine', async () => {
+		const mockFetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ warnings: ['minor drift'] }), { status: 200 })
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		const client = new DualApiClient({
+			engines: [
+				{ id: 'A', url: 'https://a.example.com' },
+				{ id: 'B', url: 'https://b.example.com' },
+			],
+		});
+
+		const snapshot = { program: 'cam1', preview: 'cam2' };
+		const result = await client.pushStateSnapshot('B', snapshot);
+
+		expect(mockFetch).toHaveBeenCalledTimes(1);
+		const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+		expect(url).toBe('https://b.example.com/api/sync/state-snapshot');
+		expect(init.method).toBe('POST');
+		const body = JSON.parse(init.body as string);
+		expect(body.program).toBe('cam1');
+		expect(result.warnings).toEqual(['minor drift']);
+	});
+
+	it('pushStateSnapshot throws on HTTP error', async () => {
+		const mockFetch = vi
+			.fn()
+			.mockResolvedValue(new Response('server error', { status: 500, statusText: 'Internal Server Error' }));
+		vi.stubGlobal('fetch', mockFetch);
+
+		const client = new DualApiClient({
+			engines: [{ id: 'A', url: 'https://a.example.com' }],
+		});
+
+		await expect(client.pushStateSnapshot('A', { state: 'test' })).rejects.toThrow(
+			'Failed to push snapshot to engine A'
+		);
+	});
+
+	// --- Unknown engine ---
+
+	it('snapshot methods throw when engine id not found', async () => {
 		const mockFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
 		vi.stubGlobal('fetch', mockFetch);
 
 		const client = new DualApiClient({
-			engines: [{ id: 'engine-a', url: 'https://a.example.com' }],
-			clockSync,
-			getCommandSeq,
-			authToken: 'secret-token',
+			engines: [{ id: 'A', url: 'https://a.example.com' }],
 		});
 
-		await client.cut('cam1');
+		// Cast to bypass EngineId type — tests error path for unknown engine IDs
+		await expect(client.getStateSnapshot('Z' as 'A')).rejects.toThrow('Unknown engine');
+		await expect(client.pushStateSnapshot('Z' as 'A', {})).rejects.toThrow('Unknown engine');
+		expect(mockFetch).not.toHaveBeenCalled();
+	});
+
+	// --- Auth token ---
+
+	it('includes Authorization header when token is in localStorage', async () => {
+		const mockFetch = vi
+			.fn()
+			.mockResolvedValue(new Response('{}', { status: 200 }));
+		vi.stubGlobal('fetch', mockFetch);
+		localStorage.setItem('switchframe_operator_token', 'secret-token');
+
+		const client = new DualApiClient({
+			engines: [{ id: 'A', url: 'https://a.example.com' }],
+		});
+
+		await client.getStateSnapshot('A');
 
 		const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-		expect((init.headers as Record<string, string>)['Authorization']).toBe('Bearer secret-token');
+		expect((init.headers as Record<string, string>)['Authorization']).toBe(
+			'Bearer secret-token'
+		);
 	});
 
-	it('omits Authorization header when authToken is absent', async () => {
-		const clockSync = makeClockSync();
-		const mockFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
+	it('omits Authorization header when no token in localStorage', async () => {
+		const mockFetch = vi
+			.fn()
+			.mockResolvedValue(new Response('{}', { status: 200 }));
 		vi.stubGlobal('fetch', mockFetch);
+		localStorage.removeItem('switchframe_operator_token');
 
 		const client = new DualApiClient({
-			engines: [{ id: 'engine-a', url: 'https://a.example.com' }],
-			clockSync,
-			getCommandSeq,
+			engines: [{ id: 'A', url: 'https://a.example.com' }],
 		});
 
-		await client.cut('cam1');
+		await client.getStateSnapshot('A');
 
 		const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
 		expect((init.headers as Record<string, string>)['Authorization']).toBeUndefined();
-	});
-
-	it('setMasterLevel sends untimed PUT to all engines', async () => {
-		const clockSync = makeClockSync();
-		const mockFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
-		vi.stubGlobal('fetch', mockFetch);
-
-		const client = new DualApiClient({
-			engines: [
-				{ id: 'engine-a', url: 'https://a.example.com' },
-				{ id: 'engine-b', url: 'https://b.example.com' },
-			],
-			clockSync,
-			getCommandSeq,
-		});
-
-		await client.setMasterLevel(0.5);
-
-		expect(mockFetch).toHaveBeenCalledTimes(2);
-
-		for (const call of mockFetch.mock.calls) {
-			const [url, init] = call as [string, RequestInit];
-			expect(url).toContain('/api/audio/master');
-			expect(init.method).toBe('PUT');
-			const body = JSON.parse(init.body as string);
-			expect(body.level).toBe(0.5);
-			expect(body.execute_at).toBeUndefined();
-		}
 	});
 });

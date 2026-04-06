@@ -9,20 +9,28 @@
 		x?: number;
 		y?: number;
 		onclose: () => void;
+		engineBStats?: SRTSourceInfo | null;
 	}
 
-	let { srt, sourceLabel, x = 0, y = 0, onclose }: Props = $props();
+	let { srt, sourceLabel, x = 0, y = 0, onclose, engineBStats = null }: Props = $props();
+
+	let isDual = $derived(!!engineBStats);
+
+	const SINGLE_WIDTH = 330;
+	const DUAL_WIDTH = 580;
 
 	// Clamp position to keep popover in viewport
 	let popoverStyle = $derived.by(() => {
-		const maxX = typeof window !== 'undefined' ? window.innerWidth - 330 : x;
+		const popoverWidth = isDual ? DUAL_WIDTH : SINGLE_WIDTH;
+		const maxX = typeof window !== 'undefined' ? window.innerWidth - popoverWidth : x;
 		const maxY = typeof window !== 'undefined' ? window.innerHeight - 400 : y;
 		const clampedX = Math.max(8, Math.min(x, maxX));
 		const clampedY = Math.max(8, Math.min(y, maxY));
 		return `top: ${clampedY}px; left: ${clampedX}px;`;
 	});
 
-	let health = $derived(computeSRTHealth(srt));
+	let healthA = $derived(computeSRTHealth(srt));
+	let healthB = $derived(engineBStats ? computeSRTHealth(engineBStats) : undefined);
 
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.key === 'Escape') onclose();
@@ -56,50 +64,77 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="popover-backdrop" onclick={onclose} onkeydown={() => {}}></div>
 
-<div class="srt-popover" role="dialog" aria-label="SRT statistics for {sourceLabel}" style={popoverStyle}>
+<div class="srt-popover" class:dual-engine={isDual} role="dialog" aria-label="SRT statistics for {sourceLabel}" style={popoverStyle}>
 	<!-- Header -->
 	<div class="popover-header">
-		{#if health}
-			<SRTHealthDot level={health} />
+		{#if !isDual && healthA}
+			<SRTHealthDot level={healthA} />
 		{/if}
 		<span class="popover-title">{sourceLabel}</span>
 		<span class="popover-mode">{srt.mode}</span>
 		<button class="popover-close" onclick={onclose} aria-label="Close">&times;</button>
 	</div>
 
+	{#if isDual && engineBStats}
+		<!-- Dual-engine column layout -->
+		<div class="engine-columns">
+			<!-- Engine A column -->
+			<div class="engine-column">
+				<div class="engine-header">
+					{#if healthA}<SRTHealthDot level={healthA} />{/if}
+					<span>Engine A</span>
+				</div>
+				{@render statsColumn(srt)}
+			</div>
+			<!-- Engine B column -->
+			<div class="engine-column">
+				<div class="engine-header">
+					{#if healthB}<SRTHealthDot level={healthB} />{/if}
+					<span>Engine B</span>
+				</div>
+				{@render statsColumn(engineBStats)}
+			</div>
+		</div>
+	{:else}
+		<!-- Single-engine layout (original) -->
+		{@render statsColumn(srt)}
+	{/if}
+</div>
+
+{#snippet statsColumn(s: SRTSourceInfo)}
 	<!-- Connection -->
 	<div class="popover-section">
 		<div class="section-title">Connection</div>
-		{#if srt.remoteAddr}
+		{#if s.remoteAddr}
 			<div class="stat-row">
 				<span class="stat-label">Remote</span>
-				<span class="stat-value mono">{srt.remoteAddr}</span>
+				<span class="stat-value mono">{s.remoteAddr}</span>
 			</div>
 		{/if}
-		{#if srt.streamID}
+		{#if s.streamID}
 			<div class="stat-row">
 				<span class="stat-label">Stream ID</span>
-				<span class="stat-value mono">{srt.streamID}</span>
+				<span class="stat-value mono">{s.streamID}</span>
 			</div>
 		{/if}
 		<div class="stat-row">
 			<span class="stat-label">State</span>
-			<span class="stat-value {srt.connected ? 'val-green' : 'val-red'}">
-				{srt.connected ? 'Connected' : 'Disconnected'}
+			<span class="stat-value {s.connected ? 'val-green' : 'val-red'}">
+				{s.connected ? 'Connected' : 'Disconnected'}
 			</span>
 		</div>
 		<div class="stat-row">
 			<span class="stat-label">Latency</span>
-			<span class="stat-value mono">{srt.latencyMs}ms / {srt.negotiatedLatencyMs}ms</span>
+			<span class="stat-value mono">{s.latencyMs}ms / {s.negotiatedLatencyMs}ms</span>
 		</div>
 		<div class="stat-row">
 			<span class="stat-label">Uptime</span>
-			<span class="stat-value">{formatUptime(srt.uptimeMs)}</span>
+			<span class="stat-value">{formatUptime(s.uptimeMs)}</span>
 		</div>
-		{#if (srt.reconnectCount ?? 0) > 0}
+		{#if (s.reconnectCount ?? 0) > 0}
 			<div class="stat-row">
 				<span class="stat-label">Reconnects</span>
-				<span class="stat-value val-yellow">{srt.reconnectCount}</span>
+				<span class="stat-value val-yellow">{s.reconnectCount}</span>
 			</div>
 		{/if}
 	</div>
@@ -109,27 +144,27 @@
 		<div class="section-title">Network</div>
 		<div class="stat-row">
 			<span class="stat-label">Bitrate</span>
-			<span class="stat-value mono">{formatBitrate(srt.bitrateKbps)}</span>
+			<span class="stat-value mono">{formatBitrate(s.bitrateKbps)}</span>
 		</div>
 		<div class="stat-row">
 			<span class="stat-label">RTT</span>
-			<span class="stat-value mono {rttClass(srt.rttMs)}"
-				>{srt.rttMs.toFixed(1)}ms (&plusmn;{srt.rttVarMs.toFixed(1)}ms)</span
+			<span class="stat-value mono {rttClass(s.rttMs)}"
+				>{s.rttMs.toFixed(1)}ms (&plusmn;{s.rttVarMs.toFixed(1)}ms)</span
 			>
 		</div>
 		<div class="stat-row">
 			<span class="stat-label">Loss Rate</span>
-			<span class="stat-value mono {lossClass(srt.lossRate)}">{srt.lossRate.toFixed(2)}%</span>
+			<span class="stat-value mono {lossClass(s.lossRate)}">{s.lossRate.toFixed(2)}%</span>
 		</div>
 		<div class="stat-row">
 			<span class="stat-label">Recv Buffer</span>
-			<span class="stat-value mono {bufClass(srt.recvBufMs)}"
-				>{srt.recvBufMs.toFixed(1)}ms ({srt.recvBufPackets} pkts)</span
+			<span class="stat-value mono {bufClass(s.recvBufMs)}"
+				>{s.recvBufMs.toFixed(1)}ms ({s.recvBufPackets} pkts)</span
 			>
 		</div>
 		<div class="stat-row">
 			<span class="stat-label">Flight Size</span>
-			<span class="stat-value mono">{srt.flightSize} pkts</span>
+			<span class="stat-value mono">{s.flightSize} pkts</span>
 		</div>
 	</div>
 
@@ -138,45 +173,45 @@
 		<div class="section-title">Packets</div>
 		<div class="stat-row">
 			<span class="stat-label">Received</span>
-			<span class="stat-value mono">{srt.packetsReceived.toLocaleString()}</span>
+			<span class="stat-value mono">{s.packetsReceived.toLocaleString()}</span>
 		</div>
 		<div class="stat-row">
 			<span class="stat-label">Lost</span>
-			<span class="stat-value mono {countClass(srt.packetsLost)}"
-				>{srt.packetsLost.toLocaleString()}</span
+			<span class="stat-value mono {countClass(s.packetsLost)}"
+				>{s.packetsLost.toLocaleString()}</span
 			>
 		</div>
 		<div class="stat-row">
 			<span class="stat-label">Dropped</span>
-			<span class="stat-value mono {countClass(srt.packetsDropped)}"
-				>{srt.packetsDropped.toLocaleString()}</span
+			<span class="stat-value mono {countClass(s.packetsDropped)}"
+				>{s.packetsDropped.toLocaleString()}</span
 			>
 		</div>
 		<div class="stat-row">
 			<span class="stat-label">Retransmitted</span>
-			<span class="stat-value mono {countClass(srt.packetsRetransmitted)}"
-				>{srt.packetsRetransmitted.toLocaleString()}</span
+			<span class="stat-value mono {countClass(s.packetsRetransmitted)}"
+				>{s.packetsRetransmitted.toLocaleString()}</span
 			>
 		</div>
 		<div class="stat-row">
 			<span class="stat-label">Belated</span>
-			<span class="stat-value mono {countClass(srt.packetsBelated)}"
-				>{srt.packetsBelated.toLocaleString()}</span
+			<span class="stat-value mono {countClass(s.packetsBelated)}"
+				>{s.packetsBelated.toLocaleString()}</span
 			>
 		</div>
 	</div>
-</div>
+{/snippet}
 
 <style>
 	.popover-backdrop {
 		position: fixed;
 		inset: 0;
-		z-index: 99;
+		z-index: var(--z-overlay);
 	}
 
 	.srt-popover {
 		position: fixed;
-		z-index: 100;
+		z-index: calc(var(--z-overlay) + 1);
 		min-width: 260px;
 		max-width: 320px;
 		background: var(--bg-panel);
@@ -269,5 +304,38 @@
 
 	.val-red {
 		color: #ef4444;
+	}
+
+	/* Dual-engine layout */
+	.srt-popover.dual-engine {
+		max-width: 580px;
+	}
+
+	.engine-columns {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 0;
+	}
+
+	.engine-column {
+		min-width: 0;
+	}
+
+	.engine-column + .engine-column {
+		border-left: 1px solid var(--border-strong);
+	}
+
+	.engine-header {
+		display: flex;
+		align-items: center;
+		gap: 5px;
+		padding: 4px 10px;
+		font-size: var(--text-xs);
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		color: var(--text-secondary);
+		background: var(--bg-elevated);
+		border-bottom: 1px solid var(--border-strong);
 	}
 </style>

@@ -1,10 +1,10 @@
 import { ConnectionManager, type ConnectionStatus } from './connection-manager';
 import { ClockSync } from './clock-sync';
-import { createReconciler, type SyncHealth } from '$lib/state/reconciler.svelte';
-import type { ControlRoomState } from '$lib/api/types';
+import { createReconciler, type SyncHealth, type EngineHealthDetail } from '$lib/state/reconciler.svelte';
+import type { ControlRoomState, EngineId } from '$lib/api/types';
 
 export interface DualConnectionConfig {
-	engines: Array<{ id: string; url: string }>; // 1 or 2 entries
+	engines: Array<{ id: EngineId; url: string }>; // 1 or 2 entries
 	onStateUpdate: (state: ControlRoomState) => void;
 	onConnectionStateChange: (state: ConnectionStatus) => void;
 	onInitialLoadComplete: () => void;
@@ -13,61 +13,83 @@ export interface DualConnectionConfig {
 
 export class DualConnectionManager {
 	private managers: Map<string, ConnectionManager> = new Map();
+	private engineStates: Map<string, ConnectionStatus> = new Map();
 	private reconciler = createReconciler();
 	private clockSync = new ClockSync();
 	private _commandSeq = 0;
-	readonly isDualEngine: boolean;
+	private _isDualEngine: boolean;
+	private _started = false;
+	private _initialLoadDone = false;
+	private _initialLoadErrors = 0;
 
 	constructor(private config: DualConnectionConfig) {
-		this.isDualEngine = config.engines.length > 1;
+		this._isDualEngine = config.engines.length > 1;
 
 		for (const engine of config.engines) {
-			const mgr = new ConnectionManager({
-				url: engine.url,
-				onStateUpdate: (update) => {
-					let state: ControlRoomState;
-					const isBytes = ArrayBuffer.isView(update) || update instanceof ArrayBuffer;
-					if (isBytes) {
-						state = JSON.parse(new TextDecoder().decode(update as Uint8Array));
-					} else {
-						state = update as ControlRoomState;
-					}
+			this.createEngineManager(engine.id, engine.url);
+		}
+	}
 
-					if (this.isDualEngine) {
-						this.reconciler.ingest(engine.id as 'A' | 'B', state);
-						config.onStateUpdate(this.reconciler.state);
-					} else {
-						config.onStateUpdate(update as ControlRoomState);
-					}
-				},
-				onConnectionStateChange: (connState) => {
-					if (this.isDualEngine) {
-						// Report the best available connection status across all engines
-						const states = [...this.managers.values()].map((m) => m.getConnectionState());
-						if (states.includes('webtransport')) {
-							config.onConnectionStateChange('webtransport');
-						} else if (states.includes('polling')) {
-							config.onConnectionStateChange('polling');
-						} else {
-							config.onConnectionStateChange('disconnected');
-						}
-					} else {
-						config.onConnectionStateChange(connState);
-					}
-				},
-				onInitialLoadComplete: config.onInitialLoadComplete,
-				onInitialLoadError: config.onInitialLoadError,
-			});
-			this.managers.set(engine.id, mgr);
+	get isDualEngine(): boolean {
+		return this._isDualEngine;
+	}
+
+	/** Get the connection status for a specific engine. */
+	engineConnectionState(id: EngineId): ConnectionStatus {
+		return this.engineStates.get(id) ?? 'disconnected';
+	}
+
+	/** Report RTT measurement for an engine. Feeds both reconciler and ClockSync. */
+	reportRTT(engine: EngineId, ms: number): void {
+		this.reconciler.setRTT(engine, ms);
+		this.clockSync.updateRTT(engine, ms * 1000); // ms -> us
+	}
+
+	/** Reconciler mode: 'dual' when both engines have been seen, 'single' otherwise. */
+	get mode(): 'dual' | 'single' {
+		return this.reconciler.mode;
+	}
+
+	/** Per-engine health detail from the reconciler. */
+	get engineHealth(): { A: EngineHealthDetail; B: EngineHealthDetail } {
+		return this.reconciler.engineHealth;
+	}
+
+	/** Get the WebTransport session for a specific engine (if connected). */
+	getTransport(engineId: EngineId): WebTransport | null {
+		const mgr = this.managers.get(engineId);
+		return mgr?.transport ?? null;
+	}
+
+	/** Late-bind a new engine (e.g., engine B discovered from initial state). */
+	addEngine(id: EngineId, url: string): void {
+		if (this.managers.has(id)) return; // no duplicates
+		this.createEngineManager(id, url);
+		this._isDualEngine = this.managers.size > 1;
+
+		// Note: There is a brief window (~200ms) between setting _isDualEngine = true
+		// and the next Engine A state update where the reconciler has no state.
+		// This is harmless because the reconciler returns EMPTY_STATE as a fallback,
+		// and the UI already handles empty state gracefully (loading overlay).
+		// The next MoQ control track update from Engine A will flow through the
+		// reconciler and populate it.
+
+		// If we've already started, start the new manager immediately
+		if (this._started) {
+			const mgr = this.managers.get(id);
+			mgr?.start();
 		}
 	}
 
 	async start(): Promise<void> {
+		this._started = true;
 		const promises = [...this.managers.values()].map((m) => m.start());
 		await Promise.allSettled(promises);
 	}
 
 	stop(): void {
+		this._started = false;
+		this.clockSync.stopPeriodicSync();
 		for (const mgr of this.managers.values()) {
 			mgr.stop();
 		}
@@ -81,8 +103,23 @@ export class DualConnectionManager {
 		return this.reconciler.health;
 	}
 
+	/** Raw per-engine states for components that need individual engine data. */
+	get rawStates(): { A: ControlRoomState | null; B: ControlRoomState | null } {
+		return this.reconciler.rawStates;
+	}
+
 	get clock(): ClockSync {
 		return this.clockSync;
+	}
+
+	/** Mark the reconciler as recovering (or clear it). */
+	setRecovering(value: boolean): void {
+		this.reconciler.setRecovering(value);
+	}
+
+	/** Tick the reconciler's time-based status detection. Call every ~200ms. */
+	tick(): void {
+		this.reconciler.tick();
 	}
 
 	nextCommandSeq(): number {
@@ -90,20 +127,87 @@ export class DualConnectionManager {
 	}
 
 	/** Forward MoQ control data to the appropriate engine's connection manager. */
-	handleControlData(data: Uint8Array): void {
-		// In single-engine mode, forward to the only manager.
-		// In dual-engine mode, forward to all (the reconciler handles merging).
-		for (const mgr of this.managers.values()) {
+	handleControlData(engineId: EngineId, data: Uint8Array): void {
+		const mgr = this.managers.get(engineId);
+		if (mgr) {
 			mgr.handleControlData(data);
-			break; // Only the first manager needs the notification
+		} else {
+			console.warn(`[DualConnectionManager] unknown engineId "${engineId}", falling back to first manager`);
+			// Fallback: forward to first manager (single-engine compatibility)
+			const first = this.managers.values().next().value;
+			if (first) first.handleControlData(data);
 		}
 	}
 
 	/** Notify that MoQ is active (WebTransport connected, catalog received). */
-	notifyMoQActive(): void {
-		for (const mgr of this.managers.values()) {
-			mgr.notifyMoQActive();
-			break; // Only the first manager needs the notification
+	notifyMoQActive(engineId?: EngineId): void {
+		if (engineId) {
+			const mgr = this.managers.get(engineId);
+			if (mgr) mgr.notifyMoQActive();
+		} else {
+			// Notify all managers (backward compat)
+			for (const mgr of this.managers.values()) {
+				mgr.notifyMoQActive();
+			}
 		}
+	}
+
+	/** Create a ConnectionManager for an engine and wire up callbacks. */
+	private createEngineManager(engineId: EngineId, url: string): void {
+		const mgr = new ConnectionManager({
+			url,
+			onStateUpdate: (update) => {
+				let state: ControlRoomState;
+				const isBytes = ArrayBuffer.isView(update) || update instanceof ArrayBuffer;
+				if (isBytes) {
+					state = JSON.parse(new TextDecoder().decode(update as Uint8Array));
+				} else {
+					state = update as ControlRoomState;
+				}
+
+				if (this._isDualEngine) {
+					this.reconciler.ingest(engineId, state);
+					this.config.onStateUpdate(this.reconciler.state);
+				} else {
+					this.config.onStateUpdate(state);
+				}
+			},
+			onConnectionStateChange: (connState) => {
+				// Track per-engine state
+				this.engineStates.set(engineId, connState);
+
+				if (this._isDualEngine) {
+					// Feed disconnect/reconnect to reconciler
+					if (connState === 'disconnected') {
+						this.reconciler.disconnect(engineId);
+					}
+
+					// Report the best available connection status across all engines
+					const states = [...this.managers.values()].map((m) => m.getConnectionState());
+					if (states.includes('webtransport')) {
+						this.config.onConnectionStateChange('webtransport');
+					} else if (states.includes('polling')) {
+						this.config.onConnectionStateChange('polling');
+					} else {
+						this.config.onConnectionStateChange('disconnected');
+					}
+				} else {
+					this.config.onConnectionStateChange(connState);
+				}
+			},
+			onInitialLoadComplete: () => {
+				if (this._initialLoadDone) return;
+				this._initialLoadDone = true;
+				this.config.onInitialLoadComplete();
+			},
+			onInitialLoadError: (error, rawError) => {
+				this._initialLoadErrors++;
+				if (this._initialLoadErrors >= this.managers.size && !this._initialLoadDone) {
+					this.config.onInitialLoadError(error, rawError);
+				}
+			},
+		});
+		this.managers.set(engineId, mgr);
+		this.engineStates.set(engineId, 'disconnected');
 	}
 }

@@ -17,8 +17,10 @@
 		isDualEngine?: boolean;
 		activeEngine?: 'A' | 'B';
 		onEngineToggle?: (engine: 'A' | 'B') => void;
+		engineAConnected?: boolean;
+		engineBConnected?: boolean;
 	}
-	let { state: crState, showLayoutOverlay = false, showGraphicsOverlay = false, onCanvasReady, onCaptionElReady, fastControl = null, onGraphicsLayerSelect, isDualEngine = false, activeEngine = 'A', onEngineToggle }: Props = $props();
+	let { state: crState, showLayoutOverlay = false, showGraphicsOverlay = false, onCanvasReady, onCaptionElReady, fastControl = null, onGraphicsLayerSelect, isDualEngine = false, activeEngine = 'A', onEngineToggle, engineAConnected = true, engineBConnected = true }: Props = $props();
 
 	let previewCanvas: HTMLCanvasElement;
 	let programCanvas: HTMLCanvasElement;
@@ -126,16 +128,20 @@
 		<div class="monitor-label program-label">
 			PROGRAM
 			{#if isDualEngine}
-				<div class="engine-toggle">
+				<div class="engine-toggle" data-testid="engine-toggle">
 					<button
 						class="engine-btn"
 						class:active={activeEngine === 'A'}
-						onclick={() => onEngineToggle?.('A')}
+						class:disconnected={!engineAConnected}
+						disabled={!engineAConnected}
+						onclick={() => engineAConnected && onEngineToggle?.('A')}
 					>A</button>
 					<button
 						class="engine-btn"
 						class:active={activeEngine === 'B'}
-						onclick={() => onEngineToggle?.('B')}
+						class:disconnected={!engineBConnected}
+						disabled={!engineBConnected}
+						onclick={() => engineBConnected && onEngineToggle?.('B')}
 					>B</button>
 				</div>
 			{/if}
@@ -376,6 +382,16 @@
 	.engine-btn.active {
 		background: var(--bg-elevated);
 		color: var(--text-primary);
+	}
+
+	.engine-btn.disconnected {
+		opacity: 0.4;
+		text-decoration: line-through;
+		cursor: not-allowed;
+	}
+
+	.engine-btn.disconnected:hover {
+		color: var(--text-dim);
 	}
 
 </style>

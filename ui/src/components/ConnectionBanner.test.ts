@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render } from '@testing-library/svelte';
 import ConnectionBanner from './ConnectionBanner.svelte';
 
@@ -98,5 +98,151 @@ describe('ConnectionBanner', () => {
 		expect(banner).toBeTruthy();
 		expect(banner?.getAttribute('role')).toBe('status');
 		expect(banner?.getAttribute('aria-live')).toBe('polite');
+	});
+
+	describe('dual-engine mode', () => {
+		beforeEach(() => {
+			vi.useFakeTimers();
+		});
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		it('shows engine-specific unreachable message', () => {
+			const { container } = render(ConnectionBanner, {
+				props: {
+					connectionState: 'webtransport',
+					syncStatus: 'ok',
+					engineStatus: {
+						mode: 'dual',
+						engineDown: 'A',
+						reason: 'unreachable',
+					},
+				},
+			});
+			const banner = container.querySelector('.connection-banner.engine-warning');
+			expect(banner).toBeTruthy();
+			expect(banner?.textContent).toContain('Engine A unreachable');
+			expect(banner?.textContent).toContain('commands routing to Engine B only');
+		});
+
+		it('shows redundancy degraded for offline engine', () => {
+			const { container } = render(ConnectionBanner, {
+				props: {
+					connectionState: 'webtransport',
+					syncStatus: 'ok',
+					engineStatus: {
+						mode: 'dual',
+						engineDown: 'B',
+						reason: 'offline',
+					},
+				},
+			});
+			const banner = container.querySelector('.connection-banner.engine-warning');
+			expect(banner).toBeTruthy();
+			expect(banner?.textContent).toContain('Engine B offline');
+			expect(banner?.textContent).toContain('redundancy degraded');
+			expect(banner?.textContent).toContain('Restoring');
+		});
+
+		it('shows provisioning message', () => {
+			const { container } = render(ConnectionBanner, {
+				props: {
+					connectionState: 'webtransport',
+					syncStatus: 'ok',
+					engineStatus: {
+						mode: 'dual',
+						engineDown: 'A',
+						reason: 'offline',
+						provisioning: true,
+					},
+				},
+			});
+			const banner = container.querySelector('.connection-banner.engine-warning');
+			expect(banner).toBeTruthy();
+			expect(banner?.textContent).toContain('Engine A offline');
+			expect(banner?.textContent).toContain('provisioning replacement');
+		});
+
+		it('shows restored banner briefly then auto-dismisses', async () => {
+			const { container } = render(ConnectionBanner, {
+				props: {
+					connectionState: 'webtransport',
+					syncStatus: 'ok',
+					engineStatus: {
+						mode: 'dual',
+						restored: true,
+					},
+				},
+			});
+			// Banner should be visible immediately
+			let banner = container.querySelector('.connection-banner.engine-restored');
+			expect(banner).toBeTruthy();
+			expect(banner?.textContent).toContain('Redundancy restored');
+
+			// After 3 seconds, should auto-dismiss
+			await vi.advanceTimersByTimeAsync(3000);
+			banner = container.querySelector('.connection-banner.engine-restored');
+			expect(banner).toBeFalsy();
+		});
+
+		it('does not show dual-engine banner when mode is single', () => {
+			const { container } = render(ConnectionBanner, {
+				props: {
+					connectionState: 'webtransport',
+					syncStatus: 'ok',
+					engineStatus: {
+						mode: 'single',
+						engineDown: 'A',
+						reason: 'unreachable',
+					},
+				},
+			});
+			const banner = container.querySelector('.connection-banner.engine-warning');
+			expect(banner).toBeFalsy();
+		});
+
+		it('does not show dual-engine banner when engineStatus is undefined', () => {
+			const { container } = render(ConnectionBanner, {
+				props: {
+					connectionState: 'webtransport',
+					syncStatus: 'ok',
+				},
+			});
+			const banner = container.querySelector('.connection-banner.engine-warning');
+			expect(banner).toBeFalsy();
+			const restored = container.querySelector('.connection-banner.engine-restored');
+			expect(restored).toBeFalsy();
+		});
+
+		it('existing single-engine disconnect still works with engineStatus undefined', () => {
+			const { container } = render(ConnectionBanner, {
+				props: {
+					connectionState: 'disconnected',
+					syncStatus: 'ok',
+				},
+			});
+			const overlay = container.querySelector('.disconnect-overlay');
+			expect(overlay).toBeTruthy();
+			expect(overlay?.textContent).toContain('CONNECTION LOST');
+		});
+
+		it('shows unreachable with Engine B down, routing to A', () => {
+			const { container } = render(ConnectionBanner, {
+				props: {
+					connectionState: 'webtransport',
+					syncStatus: 'ok',
+					engineStatus: {
+						mode: 'dual',
+						engineDown: 'B',
+						reason: 'unreachable',
+					},
+				},
+			});
+			const banner = container.querySelector('.connection-banner.engine-warning');
+			expect(banner).toBeTruthy();
+			expect(banner?.textContent).toContain('Engine B unreachable');
+			expect(banner?.textContent).toContain('commands routing to Engine A only');
+		});
 	});
 });

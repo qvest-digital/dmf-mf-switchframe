@@ -71,6 +71,10 @@ export class ConnectionManager {
 		this.initialLoadDone = false;
 	}
 
+	get transport(): WebTransport | null {
+		return this.connection.transport;
+	}
+
 	getConnectionState(): ConnectionStatus {
 		return this.connectionState;
 	}

@@ -160,6 +160,38 @@ func TestEnqueue_ZeroExecuteAt_PassesThrough(t *testing.T) {
 	}
 }
 
+// TestQueue_DedupPruneKeepsRecent verifies that when the seen map exceeds
+// maxSeen, recent entries are retained (not cleared entirely).
+func TestQueue_DedupPruneKeepsRecent(t *testing.T) {
+	q := cmdqueue.New(func() int64 { return 1_000_000 })
+
+	// Enqueue maxSeen+1 commands (10001) to trigger the prune.
+	for i := uint64(1); i <= 10001; i++ {
+		if err := q.Enqueue(cmdqueue.Command{Seq: i, Action: "test"}); err != nil {
+			t.Fatalf("enqueue seq=%d: %v", i, err)
+		}
+	}
+
+	// Recent command should still be deduped (it was retained during prune).
+	err := q.Enqueue(cmdqueue.Command{Seq: 10001, Action: "test"})
+	if !errors.Is(err, cmdqueue.ErrDuplicateCommand) {
+		t.Fatalf("expected ErrDuplicateCommand for recent seq=10001, got %v", err)
+	}
+
+	// A command from around the middle should also still be deduped
+	// (minSeq = 10001 - 5000 = 5001, so seq=6000 should be retained).
+	err = q.Enqueue(cmdqueue.Command{Seq: 6000, Action: "test"})
+	if !errors.Is(err, cmdqueue.ErrDuplicateCommand) {
+		t.Fatalf("expected ErrDuplicateCommand for mid-range seq=6000, got %v", err)
+	}
+
+	// Very old command (seq=1) should have been pruned and can be re-enqueued.
+	err = q.Enqueue(cmdqueue.Command{Seq: 1, Action: "test"})
+	if err != nil {
+		t.Fatalf("expected seq=1 to be accepted after prune, got %v", err)
+	}
+}
+
 // TestPending reflects the correct in-flight count.
 func TestPending(t *testing.T) {
 	const now = int64(5_000_000)

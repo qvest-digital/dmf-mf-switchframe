@@ -70,6 +70,15 @@ describe('PrismConnection', () => {
 		expect(onConnectionChange).toHaveBeenCalledTimes(1);
 	});
 
+	it('should expose transport as null before connect', () => {
+		const conn = createPrismConnection({
+			url: 'https://localhost:8080',
+			onControlState: vi.fn(),
+			onConnectionChange: vi.fn(),
+		});
+		expect(conn.transport).toBeNull();
+	});
+
 	it('should disconnect and reset state', () => {
 		const states: string[] = [];
 		const conn = createPrismConnection({

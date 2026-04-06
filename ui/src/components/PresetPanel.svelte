@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Preset } from '$lib/api/types';
-	import { listPresets, createPreset, recallPreset, deletePreset } from '$lib/api/switch-api';
+	import { listPresets, createPreset, recallPresetByName, deletePresetByName } from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
 	import {
 		ICON_TRASH,
@@ -48,9 +48,9 @@
 		}
 	}
 
-	async function handleRecall(id: string, name: string) {
+	async function handleRecall(name: string) {
 		try {
-			await recallPreset(id);
+			await recallPresetByName(name);
 			notify('info', `Preset "${name}" recalled`);
 			onStateUpdate?.();
 		} catch (err) {
@@ -58,9 +58,9 @@
 		}
 	}
 
-	async function handleDelete(id: string) {
+	async function handleDelete(name: string) {
 		try {
-			await deletePreset(id);
+			await deletePresetByName(name);
 			deleteConfirmId = null;
 			await loadPresets();
 			notify('info', 'Preset deleted');
@@ -165,7 +165,7 @@
 									<button
 										type="button"
 										class="icon-action delete-confirm"
-										onclick={() => handleDelete(preset.id)}
+										onclick={() => handleDelete(preset.name)}
 										aria-label="Confirm delete"
 										title="Delete"
 									>
@@ -188,7 +188,7 @@
 							<button
 								type="button"
 								class="preset-recall"
-								onclick={() => handleRecall(preset.id, preset.name)}
+								onclick={() => handleRecall(preset.name)}
 								title="Recall: {preset.name}"
 							>
 								<span class="preset-name">{preset.name}</span>

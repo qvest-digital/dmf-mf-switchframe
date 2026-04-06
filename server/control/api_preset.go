@@ -32,6 +32,9 @@ func (a *API) registerPresetRoutes(mux *http.ServeMux) {
 	if a.presetStore == nil {
 		return
 	}
+	// Name-based routes registered before {id} wildcards to ensure correct matching.
+	mux.HandleFunc("POST /api/presets/recall", a.handleRecallPresetByName)
+	mux.HandleFunc("DELETE /api/presets/by-name/{name}", a.handleDeletePresetByName)
 	mux.HandleFunc("GET /api/presets", a.handleListPresets)
 	mux.HandleFunc("POST /api/presets", a.handleCreatePreset)
 	mux.HandleFunc("GET /api/presets/{id}", a.handleGetPreset)
@@ -151,6 +154,61 @@ func (a *API) handleRecallPreset(w http.ResponseWriter, r *http.Request) {
 		Preset:   p,
 		Warnings: warnings,
 	})
+}
+
+// recallPresetByNameRequest is the JSON body for recalling a preset by name.
+type recallPresetByNameRequest struct {
+	Name string `json:"name"`
+}
+
+// handleRecallPresetByName recalls a preset by name instead of ID.
+// This supports dual-engine setups where each engine generates different IDs.
+func (a *API) handleRecallPresetByName(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	var req recallPresetByNameRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if req.Name == "" {
+		httperr.Write(w, http.StatusBadRequest, "name required")
+		return
+	}
+
+	p, err := a.presetStore.GetByName(req.Name)
+	if err != nil {
+		httperr.Write(w, http.StatusNotFound, "preset not found")
+		return
+	}
+
+	target := &apiRecallTarget{
+		switcher: a.switcher,
+		mixer:    a.mixer,
+	}
+
+	warnings := preset.Recall(r.Context(), p, target)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(recallPresetResponse{
+		Preset:   p,
+		Warnings: warnings,
+	})
+}
+
+// handleDeletePresetByName deletes a preset by name instead of ID.
+// This supports dual-engine setups where each engine generates different IDs.
+func (a *API) handleDeletePresetByName(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	name := r.PathValue("name")
+	if name == "" {
+		httperr.Write(w, http.StatusBadRequest, "name required")
+		return
+	}
+	if err := a.presetStore.DeleteByName(name); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // apiRecallTarget adapts the API's switcher and mixer to the preset.RecallTarget

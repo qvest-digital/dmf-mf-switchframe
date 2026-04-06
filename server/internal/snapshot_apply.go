@@ -160,6 +160,15 @@ func ApplyFullSnapshot(ctx context.Context, snap FullStateSnapshot, target Snaps
 	// 13. ST maps — source and program assignments
 	warnings = applySTMaps(snap.STMaps, target, warnings)
 
+	// 14. Clip player state restore is skipped because clip IDs may differ
+	// between engines (each engine assigns its own IDs on upload). The clip
+	// library is not currently synchronized, so a clip loaded on Engine A may
+	// not exist on Engine B. Once name-based clip lookup is used consistently,
+	// this can be restored by loading clips by name rather than ID.
+	if len(snap.ClipPlayers) > 0 {
+		warnings = append(warnings, "clip player state not restored (clip IDs may differ between engines)")
+	}
+
 	return warnings
 }
 

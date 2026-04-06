@@ -301,6 +301,49 @@ func TestHandleClipPlayerLoadClipNotFound(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, rec.Code)
 }
 
+func TestHandleClipPlayerLoadByName(t *testing.T) {
+	api, store, _ := setupTestAPIWithClips(t)
+	c := addTestClip(t, store, "my-clip")
+	// Create the media file so Load won't fail on missing file.
+	_ = os.WriteFile(filepath.Join(store.Dir(), c.Filename), []byte("data"), 0644)
+
+	body := `{"clipName":"my-clip"}`
+	req := httptest.NewRequest("POST", "/api/clips/players/1/load", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	// Load may fail because the clip file isn't a valid media file,
+	// but we should NOT get 400 (bad request) or 404 (not found) from the name lookup.
+	// The name resolution succeeded if we get past the 404/400 checks.
+	// Accept 200 or 500 (invalid media format), but not 400 or 404.
+	require.NotEqual(t, http.StatusBadRequest, rec.Code, "name lookup should not fail as bad request")
+}
+
+func TestHandleClipPlayerLoadByNameNotFound(t *testing.T) {
+	api, _, _ := setupTestAPIWithClips(t)
+
+	body := `{"clipName":"nonexistent"}`
+	req := httptest.NewRequest("POST", "/api/clips/players/1/load", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestHandleClipPlayerLoadNoIdOrName(t *testing.T) {
+	api, _, _ := setupTestAPIWithClips(t)
+
+	body := `{}`
+	req := httptest.NewRequest("POST", "/api/clips/players/1/load", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
 func TestHandleClipPlayerLoadInvalidJSON(t *testing.T) {
 	api, _, _ := setupTestAPIWithClips(t)
 

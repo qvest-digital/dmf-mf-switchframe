@@ -24,6 +24,7 @@ type WebhookEvent struct {
 	Remaining int64  `json:"remainingMs,omitempty"`
 	Timestamp int64  `json:"timestamp"`
 	PTS       int64  `json:"pts,omitempty"`
+	EngineID  string `json:"engineId,omitempty"` // originating engine label for dual-engine dedup
 }
 
 // WebhookDispatcher sends webhook events to an external URL.

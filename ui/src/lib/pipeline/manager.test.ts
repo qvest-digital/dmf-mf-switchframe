@@ -2,6 +2,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { PipelineManager } from './manager';
 import type { MediaPipeline } from '$lib/transport/media-pipeline';
 
+// Mock createMediaPipeline so Engine B tests don't need real WebTransport.
+vi.mock('$lib/transport/media-pipeline', async (importOriginal) => {
+	const original = await importOriginal<typeof import('$lib/transport/media-pipeline')>();
+	return {
+		...original,
+		createMediaPipeline: vi.fn(() => createMockPipeline()),
+	};
+});
+import { createMediaPipeline } from '$lib/transport/media-pipeline';
+
 /** Create a mock MediaPipeline with all methods stubbed. */
 function createMockPipeline() {
 	return {
@@ -566,6 +576,215 @@ describe('PipelineManager', () => {
 			await manager.syncSources(makeSources('cam1'));
 
 			expect(pipeline.addSource).toHaveBeenCalledWith('cam1');
+		});
+	});
+
+	describe('Engine B pipeline', () => {
+		const mockedCreateMediaPipeline = vi.mocked(createMediaPipeline);
+
+		beforeEach(() => {
+			mockedCreateMediaPipeline.mockClear();
+		});
+
+		it('createEngineBPipeline creates secondary pipeline', () => {
+			manager.createEngineBPipeline('https://engine-b.example.com');
+			expect(manager.hasEngineBPipeline).toBe(true);
+			expect(mockedCreateMediaPipeline).toHaveBeenCalledWith({ engineBaseUrl: 'https://engine-b.example.com' });
+		});
+
+		it('destroyEngineBPipeline cleans up', () => {
+			manager.createEngineBPipeline('https://engine-b.example.com');
+			const bPipeline = mockedCreateMediaPipeline.mock.results[0].value;
+			manager.destroyEngineBPipeline();
+			expect(manager.hasEngineBPipeline).toBe(false);
+			expect(bPipeline.destroy).toHaveBeenCalled();
+		});
+
+		it('createEngineBPipeline is idempotent', () => {
+			manager.createEngineBPipeline('https://engine-b.example.com');
+			manager.createEngineBPipeline('https://engine-b.example.com');
+			expect(manager.hasEngineBPipeline).toBe(true);
+			expect(mockedCreateMediaPipeline).toHaveBeenCalledTimes(1);
+		});
+
+		it('connectSourceB adds and connects source on Engine B', () => {
+			manager.createEngineBPipeline('https://engine-b.example.com');
+			const bPipeline = mockedCreateMediaPipeline.mock.results[0].value;
+			manager.connectSourceB('cam1');
+			expect(bPipeline.addSource).toHaveBeenCalledWith('cam1');
+			expect(bPipeline.connectSource).toHaveBeenCalledWith('cam1');
+		});
+
+		it('connectSourceB is no-op without Engine B pipeline', () => {
+			// Should not throw
+			manager.connectSourceB('cam1');
+			expect(manager.hasEngineBPipeline).toBe(false);
+		});
+
+		it('disconnectSourceB removes source from Engine B', () => {
+			manager.createEngineBPipeline('https://engine-b.example.com');
+			const bPipeline = mockedCreateMediaPipeline.mock.results[0].value;
+			manager.disconnectSourceB('cam1');
+			expect(bPipeline.removeSource).toHaveBeenCalledWith('cam1');
+		});
+
+		it('disconnectSourceB is no-op without Engine B pipeline', () => {
+			manager.disconnectSourceB('cam1');
+			expect(manager.hasEngineBPipeline).toBe(false);
+		});
+
+		it('attachCanvasB attaches canvas to Engine B source', () => {
+			manager.createEngineBPipeline('https://engine-b.example.com');
+			const bPipeline = mockedCreateMediaPipeline.mock.results[0].value;
+			const canvas = createCanvas();
+			const result = manager.attachCanvasB('cam1', 'preview-b', canvas);
+			expect(result).toBe(true);
+			expect(bPipeline.attachCanvas).toHaveBeenCalledWith('cam1', 'preview-b', canvas);
+		});
+
+		it('attachCanvasB returns false without Engine B pipeline', () => {
+			const canvas = createCanvas();
+			const result = manager.attachCanvasB('cam1', 'preview-b', canvas);
+			expect(result).toBe(false);
+		});
+
+		it('detachCanvasB detaches canvas from Engine B source', () => {
+			manager.createEngineBPipeline('https://engine-b.example.com');
+			const bPipeline = mockedCreateMediaPipeline.mock.results[0].value;
+			manager.detachCanvasB('cam1', 'preview-b');
+			expect(bPipeline.detachCanvas).toHaveBeenCalledWith('cam1', 'preview-b');
+		});
+
+		it('detachCanvasB is no-op without Engine B pipeline', () => {
+			// Should not throw
+			manager.detachCanvasB('cam1', 'preview-b');
+		});
+
+		it('destroy cleans up Engine B pipeline', () => {
+			manager.createEngineBPipeline('https://engine-b.example.com');
+			const bPipeline = mockedCreateMediaPipeline.mock.results[0].value;
+			manager.destroy();
+			expect(bPipeline.destroy).toHaveBeenCalled();
+			expect(manager.hasEngineBPipeline).toBe(false);
+		});
+	});
+
+	describe('switchProgramToEngineB / switchProgramToEngineA', () => {
+		const mockedCreateMediaPipeline = vi.mocked(createMediaPipeline);
+
+		beforeEach(() => {
+			mockedCreateMediaPipeline.mockClear();
+		});
+
+		it('switchProgramToEngineB moves program canvas to Engine B', () => {
+			// Set up: program canvas attached on Engine A
+			const pgmCanvas = createCanvas();
+			const pvwCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, pvwCanvas);
+			pipeline.detachCanvas.mockClear();
+
+			// Create Engine B pipeline
+			manager.createEngineBPipeline('https://engine-b.example.com');
+			const bPipeline = mockedCreateMediaPipeline.mock.results[0].value;
+			manager.connectSourceB('program');
+
+			// Switch to Engine B
+			manager.switchProgramToEngineB();
+
+			// Should detach from Engine A's program source
+			expect(pipeline.detachCanvas).toHaveBeenCalledWith('program', 'program');
+			// Should attach to Engine B's program source
+			expect(bPipeline.attachCanvas).toHaveBeenCalledWith('program', 'program', pgmCanvas);
+		});
+
+		it('switchProgramToEngineA moves program canvas back to Engine A', () => {
+			// Set up: program canvas, then switch to B, then back to A
+			const pgmCanvas = createCanvas();
+			const pvwCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, pvwCanvas);
+
+			manager.createEngineBPipeline('https://engine-b.example.com');
+			const bPipeline = mockedCreateMediaPipeline.mock.results[0].value;
+			manager.connectSourceB('program');
+			manager.switchProgramToEngineB();
+
+			pipeline.detachCanvas.mockClear();
+			pipeline.attachCanvas.mockClear();
+			bPipeline.detachCanvas.mockClear();
+
+			// Switch back to Engine A
+			manager.switchProgramToEngineA();
+
+			// Should detach from Engine B
+			expect(bPipeline.detachCanvas).toHaveBeenCalledWith('program', 'program');
+			// Should re-attach to Engine A
+			expect(pipeline.attachCanvas).toHaveBeenCalledWith('program', 'program', pgmCanvas);
+		});
+
+		it('switchProgramToEngineB is no-op without Engine B pipeline', () => {
+			const pgmCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, null);
+			pipeline.detachCanvas.mockClear();
+
+			// No Engine B pipeline — should not throw or detach
+			manager.switchProgramToEngineB();
+			expect(pipeline.detachCanvas).not.toHaveBeenCalled();
+		});
+
+		it('switchProgramToEngineA is no-op without Engine B pipeline', () => {
+			// Should not throw
+			manager.switchProgramToEngineA();
+		});
+
+		it('switchProgramToEngineB is no-op without program canvas', () => {
+			manager.createEngineBPipeline('https://engine-b.example.com');
+			const bPipeline = mockedCreateMediaPipeline.mock.results[0].value;
+			manager.connectSourceB('program');
+
+			// No program canvas was ever set
+			manager.switchProgramToEngineB();
+			expect(bPipeline.attachCanvas).not.toHaveBeenCalled();
+		});
+
+		it('switchProgramToEngineA restores program-preview if available', () => {
+			// Simulate program-preview being ready (getAudioDecoder returns non-null)
+			pipeline.getAudioDecoder.mockImplementation((key: string) => {
+				if (key === 'program-preview') return { getLevels: vi.fn().mockReturnValue({ peak: [0, 0], rms: [0, 0], peakHold: [0, 0], channels: 2 }) };
+				return null;
+			});
+
+			const pgmCanvas = createCanvas();
+			const pvwCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, pvwCanvas);
+
+			manager.createEngineBPipeline('https://engine-b.example.com');
+			const bPipeline = mockedCreateMediaPipeline.mock.results[0].value;
+			manager.connectSourceB('program');
+			manager.switchProgramToEngineB();
+
+			bPipeline.detachCanvas.mockClear();
+			pipeline.attachCanvas.mockClear();
+
+			// Switch back — should use program-preview since it's available
+			manager.switchProgramToEngineA();
+
+			expect(bPipeline.detachCanvas).toHaveBeenCalledWith('program', 'program');
+			expect(pipeline.attachCanvas).toHaveBeenCalledWith('program-preview', 'program', pgmCanvas);
+		});
+
+		it('activeEngine getter reflects current state', () => {
+			expect(manager.activeEngine).toBe('A');
+
+			const pgmCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, null);
+			manager.createEngineBPipeline('https://engine-b.example.com');
+			manager.connectSourceB('program');
+
+			manager.switchProgramToEngineB();
+			expect(manager.activeEngine).toBe('B');
+
+			manager.switchProgramToEngineA();
+			expect(manager.activeEngine).toBe('A');
 		});
 	});
 });

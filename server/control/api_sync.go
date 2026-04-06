@@ -29,6 +29,9 @@ func WithSnapshotProvider(sp SnapshotProvider) APIOption {
 // This is a setter rather than an option because the provider depends on
 // the App which is initialized after the API is created.
 func (a *API) SetSnapshotProvider(sp SnapshotProvider) {
+	if a.snapshotProvider != nil {
+		return // Already configured
+	}
 	a.snapshotProvider = sp
 	// Routes were already registered conditionally — since the provider is
 	// set after construction, we register the routes now on the internal mux.
@@ -37,6 +40,10 @@ func (a *API) SetSnapshotProvider(sp SnapshotProvider) {
 
 // registerSyncRoutes registers snapshot-related routes on the given mux.
 // Called from registerAPIRoutes only when a snapshot provider is configured.
+//
+// Protected by auth middleware applied at the server level (see app.go) —
+// all /api/ routes go through the CORS -> logger -> metrics -> auth ->
+// operator -> maxbytes middleware chain before reaching these handlers.
 func (a *API) registerSyncRoutes(mux *http.ServeMux) {
 	if a.snapshotProvider == nil {
 		return

@@ -122,6 +122,39 @@ func (ps *Store) Get(id string) (Preset, bool) {
 	return Preset{}, false
 }
 
+// GetByName returns the first preset matching the given name, or ErrNotFound.
+func (ps *Store) GetByName(name string) (Preset, error) {
+	ps.mu.RLock()
+	defer ps.mu.RUnlock()
+
+	for _, p := range ps.presets {
+		if p.Name == name {
+			return p, nil
+		}
+	}
+	return Preset{}, ErrNotFound
+}
+
+// DeleteByName removes the first preset matching the given name.
+func (ps *Store) DeleteByName(name string) error {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+
+	for i, p := range ps.presets {
+		if p.Name == name {
+			deleted := ps.presets[i]
+			ps.presets = append(ps.presets[:i], ps.presets[i+1:]...)
+			if err := ps.save(); err != nil {
+				// Rollback: re-insert at original position
+				ps.presets = append(ps.presets[:i], append([]Preset{deleted}, ps.presets[i:]...)...)
+				return fmt.Errorf("save presets: %w", err)
+			}
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
 // Create saves a new preset from the given name and state snapshot.
 // Returns the created preset with a generated UUID and timestamp.
 func (ps *Store) Create(name string, state ControlRoomSnapshot) (Preset, error) {

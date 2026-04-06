@@ -68,7 +68,20 @@ func (q *Queue) Enqueue(cmd Command) error {
 	}
 	q.seen[cmd.Seq] = struct{}{}
 	if len(q.seen) > maxSeen {
-		q.seen = make(map[uint64]struct{})
+		// Seq is monotonic — keep only recent entries by rebuilding with
+		// entries above a high-water mark. This retains the most recent
+		// ~maxSeen/2 entries instead of clearing everything.
+		var minSeq uint64
+		if cmd.Seq > uint64(maxSeen/2) {
+			minSeq = cmd.Seq - uint64(maxSeen/2)
+		}
+		pruned := make(map[uint64]struct{}, maxSeen/2)
+		for seq := range q.seen {
+			if seq >= minSeq {
+				pruned[seq] = struct{}{}
+			}
+		}
+		q.seen = pruned
 	}
 
 	heap.Push(&q.h, cmd)

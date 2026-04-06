@@ -30,6 +30,7 @@ function makeState(overrides: Partial<ControlRoomState> = {}): ControlRoomState 
 			cam3: { key: 'cam3', label: 'Camera 3', type: 'demo' as const, status: 'healthy' },
 		},
 		seq: 1,
+		lastCommandSeq: 0,
 		timestamp: Date.now(),
 		...overrides,
 	};

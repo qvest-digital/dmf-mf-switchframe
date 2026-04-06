@@ -19,6 +19,7 @@ const baseState = {
 		cam2: { key: 'cam2', label: 'Camera 2', type: 'demo' as const, status: 'healthy' as const },
 	},
 	seq: 1,
+	lastCommandSeq: 0,
 	timestamp: Date.now(),
 };
 
@@ -106,5 +107,96 @@ describe('RecordingControl', () => {
 		await fireEvent.click(cancelBtn);
 		const dialog = container.querySelector('[role="alertdialog"]');
 		expect(dialog).toBeFalsy();
+	});
+
+	// --- Dual-engine per-engine recording badges ---
+
+	it('should show dual dots when recording states differ (A recording, B not)', () => {
+		const state = {
+			...baseState,
+			recording: { active: true, filename: 'out.ts', durationSecs: 10 },
+		};
+		const { container } = render(RecordingControl, {
+			props: {
+				state,
+				isDualEngine: true,
+				engineBRecording: { active: false },
+				activeEngineId: 'A' as const,
+			},
+		});
+		const engineStatus = container.querySelector('[data-testid="engine-rec-status"]');
+		expect(engineStatus).toBeTruthy();
+		// A should have recording dot, B should not
+		const dots = engineStatus!.querySelectorAll('.rec-dot-small');
+		expect(dots).toHaveLength(2);
+		expect(dots[0].classList.contains('recording')).toBe(true);
+		expect(dots[1].classList.contains('recording')).toBe(false);
+	});
+
+	it('should show dual dots when recording states differ (A not recording, B recording)', () => {
+		const state = {
+			...baseState,
+			recording: { active: false },
+		};
+		const { container } = render(RecordingControl, {
+			props: {
+				state,
+				isDualEngine: true,
+				engineBRecording: { active: true, durationSecs: 5 },
+				activeEngineId: 'A' as const,
+			},
+		});
+		const engineStatus = container.querySelector('[data-testid="engine-rec-status"]');
+		expect(engineStatus).toBeTruthy();
+		const dots = engineStatus!.querySelectorAll('.rec-dot-small');
+		expect(dots).toHaveLength(2);
+		expect(dots[0].classList.contains('recording')).toBe(false);
+		expect(dots[1].classList.contains('recording')).toBe(true);
+	});
+
+	it('should NOT show dual dots when recording states match (both recording)', () => {
+		const state = {
+			...baseState,
+			recording: { active: true, filename: 'out.ts', durationSecs: 10 },
+		};
+		const { container } = render(RecordingControl, {
+			props: {
+				state,
+				isDualEngine: true,
+				engineBRecording: { active: true, durationSecs: 10 },
+				activeEngineId: 'A' as const,
+			},
+		});
+		const engineStatus = container.querySelector('[data-testid="engine-rec-status"]');
+		expect(engineStatus).toBeFalsy();
+	});
+
+	it('should NOT show dual dots when recording states match (both idle)', () => {
+		const { container } = render(RecordingControl, {
+			props: {
+				state: baseState,
+				isDualEngine: true,
+				engineBRecording: { active: false },
+				activeEngineId: 'A' as const,
+			},
+		});
+		const engineStatus = container.querySelector('[data-testid="engine-rec-status"]');
+		expect(engineStatus).toBeFalsy();
+	});
+
+	it('should NOT show dual dots when not in dual-engine mode', () => {
+		const state = {
+			...baseState,
+			recording: { active: true, filename: 'out.ts', durationSecs: 10 },
+		};
+		const { container } = render(RecordingControl, {
+			props: {
+				state,
+				isDualEngine: false,
+				engineBRecording: { active: false },
+			},
+		});
+		const engineStatus = container.querySelector('[data-testid="engine-rec-status"]');
+		expect(engineStatus).toBeFalsy();
 	});
 });

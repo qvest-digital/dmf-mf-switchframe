@@ -266,6 +266,111 @@ func TestRulesStore_PresetTemplates(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestRulesStore_GetByName(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "rules.json")
+	store, err := LoadRulesStore(path)
+	require.NoError(t, err)
+
+	_, err = store.Create(Rule{
+		Name:       "alpha rule",
+		Enabled:    true,
+		Conditions: []RuleCondition{{Field: "command_type", Operator: "=", Value: "5"}},
+		Logic:      LogicAND,
+		Action:     ActionDelete,
+	})
+	require.NoError(t, err)
+
+	_, err = store.Create(Rule{
+		Name:       "beta rule",
+		Enabled:    true,
+		Conditions: []RuleCondition{{Field: "command_type", Operator: "=", Value: "6"}},
+		Logic:      LogicAND,
+		Action:     ActionPass,
+	})
+	require.NoError(t, err)
+
+	got, err := store.GetByName("alpha rule")
+	require.NoError(t, err)
+	require.Equal(t, "alpha rule", got.Name)
+	require.Equal(t, ActionDelete, got.Action)
+
+	got, err = store.GetByName("beta rule")
+	require.NoError(t, err)
+	require.Equal(t, "beta rule", got.Name)
+
+	_, err = store.GetByName("nonexistent")
+	require.ErrorIs(t, err, ErrRuleNotFound)
+}
+
+func TestRulesStore_UpdateByName(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "rules.json")
+	store, err := LoadRulesStore(path)
+	require.NoError(t, err)
+
+	created, err := store.Create(Rule{
+		Name:       "my rule",
+		Enabled:    true,
+		Conditions: []RuleCondition{{Field: "command_type", Operator: "=", Value: "5"}},
+		Logic:      LogicAND,
+		Action:     ActionDelete,
+	})
+	require.NoError(t, err)
+
+	updated := Rule{
+		Name:       "my rule",
+		Enabled:    false,
+		Conditions: []RuleCondition{{Field: "command_type", Operator: "=", Value: "0"}},
+		Logic:      LogicAND,
+		Action:     ActionPass,
+	}
+	require.NoError(t, store.UpdateByName("my rule", updated))
+
+	rules := store.List()
+	require.Len(t, rules, 1)
+	require.Equal(t, created.ID, rules[0].ID, "ID should be preserved")
+	require.Equal(t, ActionPass, rules[0].Action)
+	require.False(t, rules[0].Enabled)
+
+	// Update nonexistent should fail.
+	require.ErrorIs(t, store.UpdateByName("nonexistent", updated), ErrRuleNotFound)
+}
+
+func TestRulesStore_DeleteByName(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "rules.json")
+	store, err := LoadRulesStore(path)
+	require.NoError(t, err)
+
+	_, err = store.Create(Rule{
+		Name:       "to-delete",
+		Enabled:    true,
+		Conditions: []RuleCondition{{Field: "command_type", Operator: "=", Value: "5"}},
+		Logic:      LogicAND,
+		Action:     ActionDelete,
+	})
+	require.NoError(t, err)
+
+	r2, err := store.Create(Rule{
+		Name:       "to-keep",
+		Enabled:    true,
+		Conditions: []RuleCondition{{Field: "command_type", Operator: "=", Value: "6"}},
+		Logic:      LogicAND,
+		Action:     ActionPass,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, store.DeleteByName("to-delete"))
+
+	rules := store.List()
+	require.Len(t, rules, 1)
+	require.Equal(t, r2.ID, rules[0].ID)
+
+	// Delete nonexistent should fail.
+	require.ErrorIs(t, store.DeleteByName("nonexistent"), ErrRuleNotFound)
+}
+
 func TestRulesStore_EngineSync(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "rules.json")

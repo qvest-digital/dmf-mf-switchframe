@@ -2,6 +2,7 @@
 	import type {
 		ControlRoomState,
 		SourceInfo,
+		SourceHealthStatus,
 		SRTSourceStats,
 		DestinationInfo,
 		CreateSRTSourceConfig,
@@ -22,6 +23,7 @@
 	} from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
 	import { formatBytes, computeOutputHealth } from '$lib/util/srt-health';
+	import { healthDotColor } from '$lib/util/health-dots';
 	import SRTHealthDot from './SRTHealthDot.svelte';
 
 	interface Props {
@@ -30,9 +32,21 @@
 		onclose?: () => void;
 		isDualEngine?: boolean;
 		engineBState?: ControlRoomState | null;
+		engineSourceHealth?: Record<string, { A: SourceHealthStatus; B: SourceHealthStatus }> | null;
+		engineEndpoints?: { A: string; B: string } | null;
+		engineDestinations?: Record<string, { A: { state: string; bitrate?: number }; B: { state: string; bitrate?: number } }> | null;
 	}
 
-	let { state: crState, visible, onclose, isDualEngine = false, engineBState = null }: Props = $props();
+	let {
+		state: crState,
+		visible,
+		onclose,
+		isDualEngine = false,
+		engineBState = null,
+		engineSourceHealth = null,
+		engineEndpoints = null,
+		engineDestinations = null,
+	}: Props = $props();
 
 	// --- Section collapse state ---
 	let inputsExpanded = $state(true);
@@ -125,6 +139,23 @@
 			if (posA !== posB) return posA - posB;
 			return a.key.localeCompare(b.key);
 		});
+	}
+
+	/** Map destination state to a dot color */
+	function destDotColor(destState: string): string {
+		switch (destState) {
+			case 'connected':
+			case 'active':
+			case 'listening':
+				return '#22c55e';
+			case 'reconnecting':
+			case 'starting':
+				return '#f59e0b';
+			case 'error':
+				return '#ef4444';
+			default:
+				return '#6b7280';
+		}
 	}
 
 	// --- Dual-engine source presence helpers ---
@@ -501,16 +532,23 @@
 									src.type
 								}</span>
 								<span class="row-label">{src.label || src.key}</span>
-								<span class="status-dot {src.status}"></span>
-								{#if isDualEngine}
-									<span
-										class="dual-dots"
-										class:mismatch={sourceExistsOnA(src.key) !== sourceExistsOnB(src.key)}
-										title="Engine A / Engine B"
-									>
-										<span class="engine-dot" class:connected={sourceExistsOnA(src.key)}></span>
-										<span class="engine-dot" class:connected={sourceExistsOnB(src.key)}></span>
+								{#if isDualEngine && engineSourceHealth?.[src.key] && engineSourceHealth[src.key].A !== engineSourceHealth[src.key].B}
+									<span class="engine-health-dots" aria-label="Engine health: A {engineSourceHealth[src.key].A}, B {engineSourceHealth[src.key].B}">
+										<span class="engine-dot-a"><span class="engine-label">A</span><span class="engine-dot" style="background: {healthDotColor(engineSourceHealth[src.key].A)}"></span></span>
+										<span class="engine-dot-b"><span class="engine-label">B</span><span class="engine-dot" style="background: {healthDotColor(engineSourceHealth[src.key].B)}"></span></span>
 									</span>
+								{:else}
+									<span class="status-dot {src.status}"></span>
+									{#if isDualEngine}
+										<span
+											class="dual-dots"
+											class:mismatch={sourceExistsOnA(src.key) !== sourceExistsOnB(src.key)}
+											title="Engine A / Engine B"
+										>
+											<span class="engine-dot" class:connected={sourceExistsOnA(src.key)}></span>
+											<span class="engine-dot" class:connected={sourceExistsOnB(src.key)}></span>
+										</span>
+									{/if}
 								{/if}
 								<span class="row-detail">{sourceDetail(src)}</span>
 								<span class="row-chevron">{expandedSources.has(src.key) ? '\u25BE' : '\u25B8'}</span>
@@ -615,6 +653,21 @@
 						</div>
 					{/each}
 
+					<!-- Dual-engine SRT endpoints info -->
+					{#if isDualEngine && engineEndpoints}
+						<div class="dual-endpoints-info">
+							<div class="dual-endpoints-heading">Sources must push to both engines:</div>
+							<div class="dual-endpoints-row">
+								<span class="dual-endpoints-label">Engine A:</span>
+								<span class="dual-endpoints-url">{engineEndpoints.A}</span>
+							</div>
+							<div class="dual-endpoints-row">
+								<span class="dual-endpoints-label">Engine B:</span>
+								<span class="dual-endpoints-url">{engineEndpoints.B}</span>
+							</div>
+						</div>
+					{/if}
+
 					<!-- Add SRT Source -->
 					{#if !showAddSource}
 						<button class="add-btn" onclick={() => (showAddSource = true)}>+ Add SRT Source</button>
@@ -707,7 +760,23 @@
 							>
 								<span class="type-badge {destTypeBadgeClass(dest)}">{destTypeBadge(dest)}</span>
 								<span class="row-label">{destDisplayLabel(dest)}</span>
-								<SRTHealthDot level={destHealthLevel(dest)} />
+								{#if isDualEngine && engineDestinations?.[dest.id]}
+									{@const ed = engineDestinations[dest.id]}
+									<span class="dest-engine-status">
+										<span class="dest-engine-dot">
+											<span class="engine-label">A</span>
+											<span class="engine-dot" style="background: {destDotColor(ed.A.state)}"></span>
+											{#if ed.A.bitrate}<span class="dest-engine-bitrate">{fmtBitrate(ed.A.bitrate)}</span>{/if}
+										</span>
+										<span class="dest-engine-dot">
+											<span class="engine-label">B</span>
+											<span class="engine-dot" style="background: {destDotColor(ed.B.state)}"></span>
+											{#if ed.B.bitrate}<span class="dest-engine-bitrate">{fmtBitrate(ed.B.bitrate)}</span>{/if}
+										</span>
+									</span>
+								{:else}
+									<SRTHealthDot level={destHealthLevel(dest)} />
+								{/if}
 								<span class="row-detail">{dest.bytesWritten != null ? formatBytes(dest.bytesWritten) : ''}</span>
 								<span class="row-chevron">{expandedDests.has(dest.id) ? '\u25BE' : '\u25B8'}</span>
 							</button>
@@ -1720,5 +1789,105 @@
 	.reveal-btn:hover {
 		color: var(--text-secondary);
 		background: var(--bg-hover);
+	}
+
+	/* --- Dual-engine health dots (per-source) --- */
+	.engine-health-dots {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		font-size: 9px;
+		line-height: 1;
+		flex-shrink: 0;
+	}
+
+	.engine-dot-a,
+	.engine-dot-b {
+		display: inline-flex;
+		align-items: center;
+		gap: 2px;
+	}
+
+	.engine-health-dots .engine-label {
+		color: var(--text-tertiary);
+		font-family: var(--font-mono);
+		font-size: 8px;
+		font-weight: 600;
+	}
+
+	.engine-health-dots .engine-dot {
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		flex-shrink: 0;
+	}
+
+	/* --- Dual-engine SRT endpoints info --- */
+	.dual-endpoints-info {
+		padding: 8px 16px 10px;
+		border-top: 1px solid var(--border-subtle);
+		background: var(--bg-surface);
+		font-size: var(--text-2xs);
+	}
+
+	.dual-endpoints-heading {
+		color: var(--accent-blue);
+		font-weight: 500;
+		margin-bottom: 4px;
+	}
+
+	.dual-endpoints-row {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 2px 0;
+	}
+
+	.dual-endpoints-label {
+		color: var(--text-secondary);
+		font-weight: 600;
+		min-width: 64px;
+	}
+
+	.dual-endpoints-url {
+		font-family: var(--font-mono);
+		color: var(--text-primary);
+	}
+
+	/* --- Dual-engine destination status --- */
+	.dest-engine-status {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		flex-shrink: 0;
+	}
+
+	.dest-engine-dot {
+		display: inline-flex;
+		align-items: center;
+		gap: 2px;
+		font-size: 9px;
+		line-height: 1;
+	}
+
+	.dest-engine-dot .engine-label {
+		color: var(--text-tertiary);
+		font-family: var(--font-mono);
+		font-size: 8px;
+		font-weight: 600;
+	}
+
+	.dest-engine-dot .engine-dot {
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		flex-shrink: 0;
+	}
+
+	.dest-engine-bitrate {
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		color: var(--text-secondary);
+		margin-left: 2px;
 	}
 </style>

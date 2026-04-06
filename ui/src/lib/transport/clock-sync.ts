@@ -1,31 +1,57 @@
+import type { EngineId } from '$lib/api/types';
+
 const MSG_PING = 0xFE;
 const MSG_PONG = 0xFF;
 const FRAME_DURATION_US = 33_333; // 30fps
 const JITTER_MULTIPLIER = 2;
 const DEFAULT_MARGIN_US = FRAME_DURATION_US * 2;
+const EWMA_ALPHA = 0.125;
+const DEFAULT_SYNC_INTERVAL_MS = 30_000;
 
 export class ClockSync {
 	private offsets = new Map<string, number>();
 	private rtts = new Map<string, number>();
 	private jitters = new Map<string, number>();
+	private lastRawRTT = new Map<string, number>();
+	private syncInterval: ReturnType<typeof setInterval> | null = null;
+	private pingSeq = 0;
+	private trackedEngines: EngineId[] = [];
 
-	updateRTT(engineId: string, rttUS: number): void {
+	updateRTT(engineId: EngineId, rttUS: number): void {
 		const prev = this.rtts.get(engineId);
-		// Track peak RTT for safety-margin conservatism.
-		const prevPeak = this.rtts.get(engineId) ?? 0;
-		this.rtts.set(engineId, Math.max(rttUS, prevPeak));
+		const prevRaw = this.lastRawRTT.get(engineId);
+
 		if (prev !== undefined) {
-			const jitter = Math.abs(rttUS - prev);
+			// EWMA smoothing
+			this.rtts.set(engineId, prev * (1 - EWMA_ALPHA) + rttUS * EWMA_ALPHA);
+		} else {
+			// Bootstrap: first sample becomes initial value
+			this.rtts.set(engineId, rttUS);
+		}
+
+		if (prevRaw !== undefined) {
+			// Jitter: EWMA of absolute difference between consecutive raw samples
+			const jitterSample = Math.abs(rttUS - prevRaw);
 			const prevJitter = this.jitters.get(engineId) ?? 0;
-			this.jitters.set(engineId, prevJitter * 0.875 + jitter * 0.125);
+			this.jitters.set(engineId, prevJitter * (1 - EWMA_ALPHA) + jitterSample * EWMA_ALPHA);
 		} else {
 			// Bootstrap jitter from RTT: assume ~12.5% initial uncertainty.
-			this.jitters.set(engineId, rttUS * 0.125);
+			this.jitters.set(engineId, rttUS * EWMA_ALPHA);
 		}
+
+		this.lastRawRTT.set(engineId, rttUS);
 	}
 
-	updateOffset(engineId: string, offsetUS: number): void {
+	updateOffset(engineId: EngineId, offsetUS: number): void {
 		this.offsets.set(engineId, offsetUS);
+	}
+
+	getRTT(engineId: EngineId): number {
+		return this.rtts.get(engineId) ?? 0;
+	}
+
+	getOffset(engineId: EngineId): number {
+		return this.offsets.get(engineId) ?? 0;
 	}
 
 	ptpNow(): number {
@@ -45,6 +71,40 @@ export class ClockSync {
 		return maxRTT + JITTER_MULTIPLIER * maxJitter + FRAME_DURATION_US;
 	}
 
+	addEngine(engineId: EngineId): void {
+		if (!this.trackedEngines.includes(engineId)) {
+			this.trackedEngines.push(engineId);
+		}
+	}
+
+	startPeriodicSync(
+		engineIds: EngineId[],
+		sendPing: (engineId: EngineId, data: Uint8Array) => void,
+		intervalMs: number = DEFAULT_SYNC_INTERVAL_MS
+	): void {
+		this.stopPeriodicSync();
+		// Seed the tracked engine list from the provided IDs
+		for (const id of engineIds) {
+			this.addEngine(id);
+		}
+		// Fire immediately, then on interval
+		this.doPingRound(sendPing);
+		this.syncInterval = setInterval(() => this.doPingRound(sendPing), intervalMs);
+	}
+
+	private doPingRound(sendPing: (engineId: EngineId, data: Uint8Array) => void): void {
+		for (const engineId of this.trackedEngines) {
+			sendPing(engineId, this.buildPing(this.pingSeq++));
+		}
+	}
+
+	stopPeriodicSync(): void {
+		if (this.syncInterval !== null) {
+			clearInterval(this.syncInterval);
+			this.syncInterval = null;
+		}
+	}
+
 	buildPing(seq: number): Uint8Array {
 		const buf = new Uint8Array(5);
 		buf[0] = MSG_PING;
@@ -54,6 +114,12 @@ export class ClockSync {
 	}
 
 	parsePong(data: Uint8Array): number {
+		if (data.byteLength < 9) {
+			throw new Error(`parsePong: expected >= 9 bytes, got ${data.byteLength}`);
+		}
+		if (data[0] !== MSG_PONG) {
+			throw new Error(`parsePong: expected type 0x${MSG_PONG.toString(16)}, got 0x${data[0].toString(16)}`);
+		}
 		const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
 		const hi = view.getUint32(1);
 		const lo = view.getUint32(5);

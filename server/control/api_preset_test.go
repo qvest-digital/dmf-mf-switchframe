@@ -249,6 +249,92 @@ func TestRecallPresetWithWarnings(t *testing.T) {
 	require.NotEmpty(t, resp.Warnings, "expected at least 1 warning for missing source")
 }
 
+func TestRecallPresetByNameEndpoint(t *testing.T) {
+	api, sw, ps := setupPresetTestAPI(t)
+	defer sw.Close()
+
+	_, _ = ps.Create("Test Preset", preset.ControlRoomSnapshot{
+		ProgramSource: "camera2",
+		PreviewSource: "camera1",
+		MasterLevel:   -3.0,
+	})
+
+	body := `{"name":"Test Preset"}`
+	req := httptest.NewRequest("POST", "/api/presets/recall", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+
+	var resp recallPresetResponse
+	err := json.NewDecoder(rec.Body).Decode(&resp)
+	require.NoError(t, err)
+	require.Empty(t, resp.Warnings)
+	require.Equal(t, "Test Preset", resp.Preset.Name)
+
+	state := sw.State()
+	require.Equal(t, "camera2", state.ProgramSource)
+}
+
+func TestRecallPresetByNameNotFound(t *testing.T) {
+	api, _, _ := setupPresetTestAPI(t)
+
+	body := `{"name":"nonexistent"}`
+	req := httptest.NewRequest("POST", "/api/presets/recall", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestRecallPresetByNameEmptyName(t *testing.T) {
+	api, _, _ := setupPresetTestAPI(t)
+
+	body := `{"name":""}`
+	req := httptest.NewRequest("POST", "/api/presets/recall", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestRecallPresetByNameInvalidJSON(t *testing.T) {
+	api, _, _ := setupPresetTestAPI(t)
+
+	req := httptest.NewRequest("POST", "/api/presets/recall", strings.NewReader("{bad"))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestDeletePresetByNameEndpoint(t *testing.T) {
+	api, _, ps := setupPresetTestAPI(t)
+
+	_, _ = ps.Create("ToDelete", preset.ControlRoomSnapshot{ProgramSource: "camera1"})
+
+	req := httptest.NewRequest("DELETE", "/api/presets/by-name/ToDelete", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.Empty(t, ps.List())
+}
+
+func TestDeletePresetByNameNotFound(t *testing.T) {
+	api, _, _ := setupPresetTestAPI(t)
+
+	req := httptest.NewRequest("DELETE", "/api/presets/by-name/nonexistent", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
 func TestListPresetsAfterCreate(t *testing.T) {
 	api, _, _ := setupPresetTestAPI(t)
 

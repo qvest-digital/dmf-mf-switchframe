@@ -11,11 +11,13 @@
 	const label = $derived.by((): string => {
 		if (!health) return '';
 		const map: Record<SyncStatus, string> = {
-			nominal: 'SYNC',
-			lagging: 'LAG',
+			synced: 'SYNCED',
+			lagging: 'LAGGING',
 			diverged: 'DIVERGED',
-			'single-engine': '1-ENGINE',
-			disconnected: 'NO ENGINES',
+			mismatch: 'MISMATCH',
+			recovering: 'RECOVERING',
+			'single-engine': '1 ENGINE',
+			disconnected: 'OFFLINE',
 		};
 		return map[health.status];
 	});
@@ -23,9 +25,11 @@
 	const cssClass = $derived.by((): string => {
 		if (!health) return '';
 		const map: Record<SyncStatus, string> = {
-			nominal: 'sync-nominal',
+			synced: 'sync-synced',
 			lagging: 'sync-lagging',
 			diverged: 'sync-diverged',
+			mismatch: 'sync-mismatch',
+			recovering: 'sync-recovering',
 			'single-engine': 'sync-single',
 			disconnected: 'sync-disconnected',
 		};
@@ -34,7 +38,7 @@
 </script>
 
 {#if health}
-	<button class="sync-indicator {cssClass}" {onclick} title="Dual-engine sync status — click for details">
+	<button class="sync-indicator {cssClass}" {onclick} aria-live="polite" title="Dual-engine sync status — click for details">
 		<span class="dot"></span>
 		{label}
 	</button>
@@ -73,13 +77,13 @@
 		flex-shrink: 0;
 	}
 
-	/* nominal — green */
-	.sync-nominal {
+	/* synced — green */
+	.sync-synced {
 		background: rgba(22, 163, 74, 0.15);
 		border-color: var(--tally-preview-medium);
 		color: var(--tally-preview);
 	}
-	.sync-nominal .dot {
+	.sync-synced .dot {
 		background: var(--tally-preview);
 	}
 
@@ -93,15 +97,36 @@
 		background: var(--accent-yellow);
 	}
 
-	/* diverged — red */
+	/* diverged — red, static (no animation) */
 	.sync-diverged {
 		background: var(--tally-program-dim);
 		border-color: var(--tally-program-medium);
 		color: var(--tally-program);
-		animation: pulse-error 1.5s ease-in-out infinite;
 	}
 	.sync-diverged .dot {
 		background: var(--tally-program);
+	}
+
+	/* mismatch — red, fast pulse (critical) */
+	.sync-mismatch {
+		background: var(--tally-program-dim);
+		border-color: var(--tally-program-medium);
+		color: var(--tally-program);
+		animation: pulse-error 0.6s ease-in-out infinite;
+	}
+	.sync-mismatch .dot {
+		background: var(--tally-program);
+	}
+
+	/* recovering — amber pulsing */
+	.sync-recovering {
+		background: var(--accent-yellow-dim);
+		border-color: rgba(234, 179, 8, 0.3);
+		color: var(--accent-yellow);
+		animation: pulse-error 1.5s ease-in-out infinite;
+	}
+	.sync-recovering .dot {
+		background: var(--accent-yellow);
 	}
 
 	/* single-engine — gray */
