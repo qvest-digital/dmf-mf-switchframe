@@ -46,9 +46,16 @@ func (a *App) startHTTPAPIServer(ctx context.Context) (stop func(), err error) {
 	}
 
 	go func() {
-		slog.Info("HTTP API server listening", "addr", a.cfg.HTTPAddr)
-		if err := httpSrv.Serve(httpLn); err != nil && err != http.ErrServerClosed {
-			slog.Error("HTTP API server error", "err", err)
+		if a.cfg.TLSCert != "" && a.cfg.TLSKey != "" {
+			slog.Info("HTTPS fallback server listening", "addr", a.cfg.HTTPAddr)
+			if err := httpSrv.ServeTLS(httpLn, a.cfg.TLSCert, a.cfg.TLSKey); err != nil && err != http.ErrServerClosed {
+				slog.Error("HTTPS fallback server error", "err", err)
+			}
+		} else {
+			slog.Info("HTTP API server listening", "addr", a.cfg.HTTPAddr)
+			if err := httpSrv.Serve(httpLn); err != nil && err != http.ErrServerClosed {
+				slog.Error("HTTP API server error", "err", err)
+			}
 		}
 	}()
 
