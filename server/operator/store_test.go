@@ -328,3 +328,159 @@ func TestStore_GetByToken_AfterDelete(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, carol.ID, gotCarol.ID)
 }
+
+// --- Client-generated ID tests ---
+
+func TestStore_Register_WithClientID(t *testing.T) {
+	t.Parallel()
+	s, _ := NewStore(tempStorePath(t))
+
+	clientID := "abcdef1234567890abcdef1234567890" // 32 chars
+	op, err := s.Register("Alice", RoleDirector, clientID)
+	require.NoError(t, err)
+	require.Equal(t, clientID, op.ID)
+	require.Equal(t, "Alice", op.Name)
+	require.Equal(t, RoleDirector, op.Role)
+	require.NotEmpty(t, op.Token)
+}
+
+func TestStore_Register_WithoutClientID_GeneratesID(t *testing.T) {
+	t.Parallel()
+	s, _ := NewStore(tempStorePath(t))
+
+	// No client ID — should generate a random one (backward compat).
+	op, err := s.Register("Alice", RoleDirector)
+	require.NoError(t, err)
+	require.NotEmpty(t, op.ID)
+	require.Len(t, op.ID, 32) // generateID returns 16 bytes = 32 hex chars
+}
+
+func TestStore_Register_EmptyClientID_GeneratesID(t *testing.T) {
+	t.Parallel()
+	s, _ := NewStore(tempStorePath(t))
+
+	// Explicit empty string — should generate a random one.
+	op, err := s.Register("Alice", RoleDirector, "")
+	require.NoError(t, err)
+	require.NotEmpty(t, op.ID)
+	require.Len(t, op.ID, 32)
+}
+
+func TestStore_Register_ClientID_TooShort(t *testing.T) {
+	t.Parallel()
+	s, _ := NewStore(tempStorePath(t))
+
+	_, err := s.Register("Alice", RoleDirector, "short")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid client ID length")
+}
+
+func TestStore_Register_ClientID_InvalidChars(t *testing.T) {
+	t.Parallel()
+	s, _ := NewStore(tempStorePath(t))
+
+	cases := []struct {
+		name string
+		id   string
+	}{
+		{"spaces", "abcdefgh 1234567"},
+		{"underscores", "abcdefgh_1234567"},
+		{"dots", "abcdefgh.1234567"},
+		{"slashes", "abcdefgh/1234567"},
+		{"special", "abcdefgh!@#$%^&*"},
+		{"unicode", "abcdefgh\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := s.Register("Alice-"+tc.name, RoleDirector, tc.id)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "invalid client ID")
+		})
+	}
+}
+
+func TestStore_Register_ClientID_ValidChars(t *testing.T) {
+	t.Parallel()
+	s, _ := NewStore(tempStorePath(t))
+
+	// UUID format (lowercase hex + hyphens) — what crypto.randomUUID() produces.
+	uuid := "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+	op, err := s.Register("UUID-User", RoleDirector, uuid)
+	require.NoError(t, err)
+	require.Equal(t, uuid, op.ID)
+
+	// All uppercase alphanumeric.
+	upper := "ABCDEFGH-12345678"
+	op2, err := s.Register("Upper-User", RoleAudio, upper)
+	require.NoError(t, err)
+	require.Equal(t, upper, op2.ID)
+}
+
+func TestStore_Register_ClientID_TooLong(t *testing.T) {
+	t.Parallel()
+	s, _ := NewStore(tempStorePath(t))
+
+	longID := string(make([]byte, 65))
+	for i := range longID {
+		longID = longID[:i] + "a" + longID[i+1:]
+	}
+	_, err := s.Register("Alice", RoleDirector, longID)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid client ID length")
+}
+
+func TestStore_Register_DuplicateClientID_ReturnsExisting(t *testing.T) {
+	t.Parallel()
+	s, _ := NewStore(tempStorePath(t))
+
+	clientID := "abcdef1234567890abcdef1234567890"
+	op1, err := s.Register("Alice", RoleDirector, clientID)
+	require.NoError(t, err)
+
+	// Second registration with the same client ID — should return the existing
+	// operator (idempotent, for dual-engine fan-out).
+	op2, err := s.Register("Alice", RoleDirector, clientID)
+	require.NoError(t, err)
+	require.Equal(t, op1.ID, op2.ID)
+	require.Equal(t, op1.Token, op2.Token)
+	require.Equal(t, op1.Name, op2.Name)
+
+	// Only one operator should exist in the store.
+	require.Len(t, s.List(), 1)
+}
+
+func TestStore_Register_DuplicateClientID_DifferentName(t *testing.T) {
+	t.Parallel()
+	s, _ := NewStore(tempStorePath(t))
+
+	clientID := "abcdef1234567890abcdef1234567890"
+	_, err := s.Register("Alice", RoleDirector, clientID)
+	require.NoError(t, err)
+
+	// Same ID, different name/role — must fail with a consistency error.
+	_, err = s.Register("Bob", RoleAudio, clientID)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "client ID already registered")
+
+	// Same ID, same name but different role — must also fail.
+	_, err = s.Register("Alice", RoleAudio, clientID)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "client ID already registered")
+
+	// Only the original operator should exist.
+	require.Len(t, s.List(), 1)
+}
+
+func TestStore_Register_ClientID_GetByID(t *testing.T) {
+	t.Parallel()
+	s, _ := NewStore(tempStorePath(t))
+
+	clientID := "abcdef1234567890abcdef1234567890"
+	op, err := s.Register("Alice", RoleDirector, clientID)
+	require.NoError(t, err)
+
+	got, err := s.Get(clientID)
+	require.NoError(t, err)
+	require.Equal(t, op.Token, got.Token)
+}

@@ -17,6 +17,8 @@ export interface MediaPipelineConfig {
 	onMoQActive?: () => void;
 	/** Called when a caption frame arrives on the program stream. */
 	onProgramCaptionFrame?: (caption: CaptionData, timestamp: number) => void;
+	/** Base URL for connecting to a remote engine (e.g. Engine B in multi-region). */
+	engineBaseUrl?: string;
 }
 
 /** Diagnostics snapshot for a single source. */
@@ -406,7 +408,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		// ahead of multiview tiles (96) during bandwidth contention.
 		const isProgramFeed = key === "program" || key === "program-preview";
 		const videoPriority = isProgramFeed ? 16 : 96;
-		const transport = new MoQTransport(key, callbacks, videoPriority);
+		const transport = new MoQTransport(key, callbacks, videoPriority, config?.engineBaseUrl);
 		source.transport = transport;
 
 		// Connect asynchronously

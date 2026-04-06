@@ -6,17 +6,7 @@
  * and renders at that size so the compositor can composite without scaling.
  */
 import type { GraphicsTemplate } from './templates';
-import { resolveApiUrl } from '$lib/api/base-url';
-import { authHeaders } from '$lib/api/switch-api';
-
-/** Encode a Uint8Array/Uint8ClampedArray to a base64 string. */
-function uint8ArrayToBase64(bytes: Uint8Array | Uint8ClampedArray): string {
-	let binary = '';
-	for (let i = 0; i < bytes.length; i++) {
-		binary += String.fromCharCode(bytes[i]);
-	}
-	return btoa(binary);
-}
+import { getGraphicsStatus, graphicsUploadFrame } from '$lib/api/switch-api';
 
 export class GraphicsPublisher {
 	private canvas: OffscreenCanvas | null = null;
@@ -43,13 +33,8 @@ export class GraphicsPublisher {
 	 */
 	async publish(layerId: number, template: GraphicsTemplate, values: Record<string, string>): Promise<void> {
 		// Query program resolution from compositor status.
-		const statusRes = await fetch(resolveApiUrl('/api/graphics'), {
-			headers: authHeaders(),
-		});
-		if (!statusRes.ok) {
-			throw new Error(`Failed to get graphics status: HTTP ${statusRes.status}`);
-		}
-		const status = await statusRes.json();
+		// getGraphicsStatus() uses request() which fans out to both engines in dual mode.
+		const status = await getGraphicsStatus();
 		const w = status.programWidth || 1280;
 		const h = status.programHeight || 720;
 
@@ -64,25 +49,9 @@ export class GraphicsPublisher {
 		// Extract RGBA pixel data
 		const imageData = this.ctx!.getImageData(0, 0, this.width, this.height);
 
-		// Encode as base64 — Go's encoding/json decodes []byte from base64.
-		const base64 = uint8ArrayToBase64(imageData.data);
-
-		// Upload to server
-		const response = await fetch(resolveApiUrl(`/api/graphics/${layerId}/frame`), {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json', ...authHeaders() },
-			body: JSON.stringify({
-				width: this.width,
-				height: this.height,
-				template: template.id,
-				rgba: base64,
-			}),
-		});
-
-		if (!response.ok) {
-			const body = await response.json().catch(() => ({ error: 'unknown error' }));
-			throw new Error(body.error || `HTTP ${response.status}`);
-		}
+		// Upload to server — graphicsUploadFrame() uses post() which fans out
+		// to both engines in dual mode, keeping graphics overlays in sync.
+		await graphicsUploadFrame(layerId, new Uint8Array(imageData.data.buffer), this.width, this.height, template.id);
 	}
 
 	/**

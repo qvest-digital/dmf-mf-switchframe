@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { resolveApiUrl } from '$lib/api/base-url';
-	import { authHeaders } from '$lib/api/switch-api';
+	import { getPerfData } from '$lib/api/switch-api';
 	import type { MediaPipeline } from '$lib/transport/media-pipeline';
 	import type { PipelineGraph as PipelineGraphType } from './pipeline-graph/types';
 	import type { GraphLayout, NodeLayout, EdgeLayout } from './pipeline-graph/layout';
@@ -49,13 +48,7 @@
 		try {
 			abortController?.abort();
 			abortController = new AbortController();
-			const resp = await fetch(resolveApiUrl('/api/perf'), {
-				signal: abortController.signal,
-				headers: authHeaders()
-			});
-			if (resp.ok) {
-				perfData = await resp.json();
-			}
+			perfData = await getPerfData({ signal: abortController.signal });
 		} catch {
 			/* ignore network + abort errors */
 		}

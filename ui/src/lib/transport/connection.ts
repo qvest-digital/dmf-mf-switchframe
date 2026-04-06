@@ -95,6 +95,9 @@ export function createPrismConnection(config: PrismConnectionConfig) {
 		get state() {
 			return state;
 		},
+		get transport() {
+			return transport;
+		},
 		connect,
 		disconnect,
 		// Test helpers (prefixed with _)

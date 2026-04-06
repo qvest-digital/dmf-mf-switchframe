@@ -277,4 +277,89 @@ describe('PlayoutTransport', () => {
 
 		expect(stopBtn.title).toBe('Click again to confirm stop');
 	});
+
+	// ── Dual-engine cache warning tests ──
+
+	it('shows cache warning when engine has fetching items on play click', async () => {
+		const getCacheStatus = vi.fn().mockImplementation((engine: string) => {
+			if (engine === 'A') return Promise.resolve({ cacheDir: '/tmp', maxBytes: 1e9, usedBytes: 5e8, itemCount: 10, fetchingCount: 0, errorCount: 0 });
+			return Promise.resolve({ cacheDir: '/tmp', maxBytes: 1e9, usedBytes: 5e8, itemCount: 8, fetchingCount: 2, errorCount: 0 });
+		});
+		const { container } = render(PlayoutTransport, {
+			props: {
+				channel: makeChannel({ state: 'stopped' }),
+				isDualEngine: true,
+				getCacheStatus,
+			},
+		});
+		const playBtn = container.querySelector('.t-main') as HTMLButtonElement;
+		await fireEvent.click(playBtn);
+		await tick();
+
+		// Should still call play (non-blocking)
+		expect(api.apiCall).toHaveBeenCalled();
+		expect(api.playoutStart).toHaveBeenCalledWith(1);
+
+		// Should show cache warning
+		const warning = container.querySelector('.cache-warning');
+		expect(warning).toBeTruthy();
+		expect(warning!.textContent).toContain('Engine B');
+		expect(warning!.textContent).toContain('2');
+	});
+
+	it('does not show cache warning in single-engine mode', async () => {
+		const { container } = render(PlayoutTransport, {
+			props: {
+				channel: makeChannel({ state: 'stopped' }),
+				isDualEngine: false,
+			},
+		});
+		const playBtn = container.querySelector('.t-main') as HTMLButtonElement;
+		await fireEvent.click(playBtn);
+		await tick();
+
+		const warning = container.querySelector('.cache-warning');
+		expect(warning).toBeFalsy();
+	});
+
+	it('does not show cache warning when both engines have fetchingCount === 0', async () => {
+		const getCacheStatus = vi.fn().mockResolvedValue({
+			cacheDir: '/tmp', maxBytes: 1e9, usedBytes: 5e8, itemCount: 10, fetchingCount: 0, errorCount: 0,
+		});
+		const { container } = render(PlayoutTransport, {
+			props: {
+				channel: makeChannel({ state: 'stopped' }),
+				isDualEngine: true,
+				getCacheStatus,
+			},
+		});
+		const playBtn = container.querySelector('.t-main') as HTMLButtonElement;
+		await fireEvent.click(playBtn);
+		await tick();
+
+		const warning = container.querySelector('.cache-warning');
+		expect(warning).toBeFalsy();
+	});
+
+	it('shows cache warning for both engines when both are fetching', async () => {
+		const getCacheStatus = vi.fn().mockImplementation((engine: string) => {
+			if (engine === 'A') return Promise.resolve({ cacheDir: '/tmp', maxBytes: 1e9, usedBytes: 5e8, itemCount: 10, fetchingCount: 3, errorCount: 0 });
+			return Promise.resolve({ cacheDir: '/tmp', maxBytes: 1e9, usedBytes: 5e8, itemCount: 8, fetchingCount: 1, errorCount: 0 });
+		});
+		const { container } = render(PlayoutTransport, {
+			props: {
+				channel: makeChannel({ state: 'stopped' }),
+				isDualEngine: true,
+				getCacheStatus,
+			},
+		});
+		const playBtn = container.querySelector('.t-main') as HTMLButtonElement;
+		await fireEvent.click(playBtn);
+		await tick();
+
+		const warning = container.querySelector('.cache-warning');
+		expect(warning).toBeTruthy();
+		expect(warning!.textContent).toContain('Engine A');
+		expect(warning!.textContent).toContain('Engine B');
+	});
 });

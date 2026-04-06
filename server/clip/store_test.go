@@ -226,6 +226,56 @@ func TestStorePersistence(t *testing.T) {
 	}
 }
 
+func TestStoreGetByName(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := NewStore(dir, 10*1024*1024)
+
+	c1 := &Clip{Name: "alpha", Filename: "a.ts", Source: SourceUpload, Codec: "h264", ByteSize: 100}
+	_ = s.Add(c1)
+	c2 := &Clip{Name: "beta", Filename: "b.ts", Source: SourceUpload, Codec: "h264", ByteSize: 100}
+	_ = s.Add(c2)
+
+	got, err := s.GetByName("alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "alpha" {
+		t.Errorf("Name = %q, want %q", got.Name, "alpha")
+	}
+	if got.ID != c1.ID {
+		t.Errorf("ID = %q, want %q", got.ID, c1.ID)
+	}
+
+	got, err = s.GetByName("beta")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "beta" {
+		t.Errorf("Name = %q, want %q", got.Name, "beta")
+	}
+
+	_, err = s.GetByName("nonexistent")
+	if err != ErrNotFound {
+		t.Errorf("GetByName nonexistent = %v, want ErrNotFound", err)
+	}
+}
+
+func TestStoreGetByNameReturnsCopy(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := NewStore(dir, 10*1024*1024)
+
+	c := &Clip{Name: "test", Filename: "t.ts", Source: SourceUpload, Codec: "h264", ByteSize: 100}
+	_ = s.Add(c)
+
+	got, _ := s.GetByName("test")
+	got.Name = "mutated"
+
+	got2, _ := s.GetByName("test")
+	if got2.Name != "test" {
+		t.Error("GetByName should return a copy, mutation leaked")
+	}
+}
+
 func TestStoreTotalBytes(t *testing.T) {
 	dir := t.TempDir()
 	s, _ := NewStore(dir, 10*1024*1024)

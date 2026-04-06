@@ -1,6 +1,6 @@
-import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, GateSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig, ColorGradeState, CorrectorState, PlayoutChannelState, Playlist, PlaylistItem, CacheStatus, PodInfo, PodConfig, PodTemplate, AsRunEvent, ChannelHealth, SampleClip, PlayoutClip, ASRState, DVEPresetInfo, WipePattern, WipeConfig } from './types';
+import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, GateSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, EngineRecordingGroup, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig, ColorGradeState, CorrectorState, PlayoutChannelState, Playlist, PlaylistItem, CacheStatus, PodInfo, PodConfig, PodTemplate, AsRunEvent, ChannelHealth, SampleClip, PlayoutClip, ASRState, DVEPresetInfo, WipePattern, WipeConfig } from './types';
 import { notify } from '$lib/state/notifications.svelte';
-import { resolveApiUrl } from './base-url';
+import { resolveApiUrl, getEngineUrls, type EngineEndpoint } from './base-url';
 
 export class SwitchApiError extends Error {
 	constructor(
@@ -47,7 +47,238 @@ export function authHeaders(): Record<string, string> {
 	return headers;
 }
 
+// ── Dual-engine PTP timestamp injection ──
+
+let dualTimestampProvider: (() => { execute_at: number; command_seq: number }) | null = null;
+
+export function setDualTimestampProvider(provider: (() => { execute_at: number; command_seq: number }) | null): void {
+	dualTimestampProvider = provider;
+}
+
+const TIMED_PATH_EXACT = new Set([
+	'/api/switch/cut', '/api/switch/preview', '/api/switch/transition', '/api/switch/ftb',
+	'/api/replay/play', '/api/replay/stop',
+	'/api/scte35/cue', '/api/scte35/return', '/api/scte35/cancel',
+	'/api/presets/recall',
+]);
+
+const TIMED_PATH_PATTERNS = [
+	/^\/api\/graphics\/\d+\/(on|off)$/,
+	/^\/api\/presets\/[^/]+\/recall$/,
+	/^\/api\/dve\/slots\/\d+\/(on|off)$/,
+	/^\/api\/clips\/players\/\d+\/(play|pause|stop)$/,
+	/^\/api\/playout\/channels\/\d+\/(start|stop|next|previous)$/,
+	/^\/api\/playout\/channels\/\d+\/pods\/[^/]+\/(fire|dump|hold|extend)$/,
+];
+
+/**
+ * Returns true for endpoints that require PTP execute_at timestamps
+ * for frame-accurate synchronization across engines.
+ */
+function isTimedPath(path: string): boolean {
+	if (TIMED_PATH_EXACT.has(path)) return true;
+	return TIMED_PATH_PATTERNS.some(re => re.test(path));
+}
+
+// ── Dual-engine fan-out ──
+//
+// ┌─────────────────────────────────────────────────────────────┐
+// │                  Dual-Engine Request Flow                   │
+// │                                                             │
+// │  253 exported API functions                                 │
+// │       │                                                     │
+// │       ├─ JSON APIs ──► request() ──► dualRequest()          │
+// │       │                   │              │                  │
+// │       │                   │         GET/HEAD? ──► primaryWithFallback()
+// │       │                   │              │        (try A, fall back to B)
+// │       │                   │              │                  │
+// │       │                   │         POST/PUT/DELETE? ──► allSettled fan-out
+// │       │                   │              (both engines, PTP timestamps  │
+// │       │                   │               for timed paths)  │
+// │       │                   │                                 │
+// │       │              single engine? ──► normal fetch        │
+// │       │                                                     │
+// │       └─ Raw/FormData ──► dualFetch()                      │
+// │                              │                              │
+// │                         Same GET vs POST logic              │
+// │                         Returns raw Response                │
+// │                         (for blobs, streams, FormData)      │
+// │                                                             │
+// │  request()  = JSON parse + error handling (most API calls)  │
+// │  dualFetch() = raw Response (uploads, downloads, blobs)     │
+// └─────────────────────────────────────────────────────────────┘
+
+/**
+ * Sequential engine fallback for read-only requests.
+ * Tries each engine in order, returns first successful response.
+ */
+async function primaryWithFallback<T>(url: string, options: RequestInit | undefined, engines: EngineEndpoint[]): Promise<T> {
+	const opts: RequestInit = { ...options, headers: { ...authHeaders(), ...options?.headers } };
+
+	let lastHttpError: { status: number; body: Record<string, string> } | null = null;
+
+	for (const engine of engines) {
+		try {
+			const res = await fetch(`${engine.url}${url}`, opts);
+			if (res.ok) {
+				if (res.status === 202 || res.status === 204 || res.headers?.get('content-length') === '0') {
+					return undefined as T;
+				}
+				return res.json();
+			}
+			// HTTP error — record it and try next engine
+			const body = await res.json().catch(() => ({ error: 'unknown error' }));
+			lastHttpError = { status: res.status, body };
+		} catch {
+			// Network error — try next engine
+		}
+	}
+
+	// All engines failed
+	if (lastHttpError) {
+		throw new SwitchApiError(lastHttpError.status, lastHttpError.body.error || `HTTP ${lastHttpError.status}`);
+	}
+	throw new Error(`All engines failed for GET ${url}`);
+}
+
+/**
+ * JSON API fan-out. Called by request() when dual-engine is active.
+ * Routes GET/HEAD to primaryWithFallback, mutations to allSettled fan-out.
+ */
+async function dualRequest<T>(url: string, options: RequestInit | undefined, engines: EngineEndpoint[]): Promise<T> {
+	const method = (options?.method ?? 'GET').toUpperCase();
+
+	// Read-only requests: primary engine with fallback, not parallel fan-out.
+	if (method === 'GET' || method === 'HEAD') {
+		return primaryWithFallback<T>(url, options, engines);
+	}
+
+	// Mutations: fan out to all engines in parallel
+	const opts: RequestInit = { ...options, headers: { ...authHeaders(), ...options?.headers } };
+
+	// Add PTP timestamps for timed commands
+	if (isTimedPath(url) && dualTimestampProvider && opts.body && typeof opts.body === 'string') {
+		try {
+			const ts = dualTimestampProvider();
+			const parsed = JSON.parse(opts.body);
+			opts.body = JSON.stringify({ ...parsed, ...ts });
+		} catch {
+			// Clock sync not ready or body parse failed — send without timestamps
+		}
+	}
+
+	// Clone FormData/Blob if needed (each can only be consumed once by fetch)
+	const bodies: (BodyInit | null | undefined)[] = engines.map(() => {
+		if (opts.body instanceof FormData) {
+			const clone = new FormData();
+			for (const [key, value] of (opts.body as FormData).entries()) {
+				clone.append(key, value);
+			}
+			return clone;
+		}
+		if (opts.body instanceof Blob) {
+			return opts.body.slice();
+		}
+		return opts.body;
+	});
+
+	const results = await Promise.allSettled(
+		engines.map((engine, i) =>
+			fetch(`${engine.url}${url}`, { ...opts, body: bodies[i] })
+		)
+	);
+
+	// Find successful responses
+	const fulfilled = results
+		.filter((r): r is PromiseFulfilledResult<Response> => r.status === 'fulfilled');
+	const successful = fulfilled.filter(r => r.value.ok);
+
+	if (successful.length > 0) {
+		// Return first successful response
+		const res = successful[0].value;
+		if (res.status === 202 || res.status === 204 || res.headers?.get('content-length') === '0') {
+			return undefined as T;
+		}
+		return res.json();
+	}
+
+	// All failed
+	if (fulfilled.length > 0) {
+		const res = fulfilled[0].value;
+		const body = await res.json().catch(() => ({ error: 'unknown error' }));
+		throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
+	}
+
+	// All rejected (network errors)
+	const reasons = results
+		.filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+		.map(r => r.reason?.message ?? String(r.reason));
+	throw new Error(`All engines unreachable: ${reasons.join('; ')}`);
+}
+
+/**
+ * Raw Response fan-out for non-JSON APIs (uploads, downloads).
+ * Same GET-vs-mutation routing as dualRequest but returns Response
+ * instead of parsed JSON.
+ */
+async function dualFetch(url: string, options: RequestInit): Promise<Response> {
+	const engines = getEngineUrls();
+	if (engines && engines.length > 1) {
+		const method = (options.method ?? 'GET').toUpperCase();
+		const opts: RequestInit = { ...options, headers: { ...authHeaders(), ...options.headers } };
+
+		// Read-only requests: primary with fallback
+		if (method === 'GET' || method === 'HEAD') {
+			let lastResponse: Response | null = null;
+			for (const engine of engines) {
+				try {
+					const res = await fetch(`${engine.url}${url}`, opts);
+					if (res.ok) return res;
+					lastResponse = res;
+				} catch {
+					// Network error — try next engine
+				}
+			}
+			// Return the last non-OK response so callers can inspect status,
+			// rather than throwing a generic Error that loses HTTP context.
+			if (lastResponse) return lastResponse;
+			throw new Error(`All engines unreachable for ${method} ${url}`);
+		}
+
+		// Mutations: fan out to all engines in parallel
+		const bodies = engines.map(() => {
+			if (options.body instanceof FormData) {
+				const clone = new FormData();
+				for (const [key, value] of (options.body as FormData).entries()) {
+					clone.append(key, value);
+				}
+				return clone;
+			}
+			if (options.body instanceof Blob) {
+				return options.body.slice();
+			}
+			return options.body;
+		});
+		const results = await Promise.allSettled(
+			engines.map((engine, i) =>
+				fetch(`${engine.url}${url}`, { ...opts, body: bodies[i] })
+			)
+		);
+		const fulfilled = results.filter((r): r is PromiseFulfilledResult<Response> => r.status === 'fulfilled');
+		const successful = fulfilled.filter(r => r.value.ok);
+		if (successful.length > 0) return successful[0].value;
+		if (fulfilled.length > 0) return fulfilled[0].value;
+		throw new Error('All engines unreachable');
+	}
+	return fetch(resolveApiUrl(url), { ...options, headers: { ...authHeaders(), ...options.headers } });
+}
+
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
+	const engines = getEngineUrls();
+	if (engines && engines.length > 1) {
+		return dualRequest<T>(url, options, engines);
+	}
+	// Single-engine: existing behavior unchanged
 	const opts: RequestInit = {
 		...options,
 		headers: { ...authHeaders(), ...options?.headers },
@@ -57,7 +288,7 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 		const body = await res.json().catch(() => ({ error: 'unknown error' }));
 		throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
 	}
-	if (res.status === 204 || res.headers?.get('content-length') === '0') {
+	if (res.status === 202 || res.status === 204 || res.headers?.get('content-length') === '0') {
 		return undefined as T;
 	}
 	return res.json();
@@ -290,8 +521,18 @@ export function deletePreset(id: string): Promise<void> {
 	});
 }
 
+export function deletePresetByName(name: string): Promise<void> {
+	return request(`/api/presets/by-name/${encodeURIComponent(name)}`, {
+		method: 'DELETE',
+	});
+}
+
 export function recallPreset(id: string): Promise<RecallPresetResponse> {
 	return post(`/api/presets/${encodeURIComponent(id)}/recall`, {});
+}
+
+export function recallPresetByName(name: string): Promise<RecallPresetResponse> {
+	return post('/api/presets/recall', { name });
 }
 
 // --- Stinger API ---
@@ -311,14 +552,13 @@ export function setStingerCutPoint(name: string, cutPoint: number): Promise<void
 }
 
 export async function uploadStinger(name: string, file: File): Promise<void> {
-	const response = await fetch(resolveApiUrl(`/api/stinger/${encodeURIComponent(name)}/upload`), {
+	const res = await dualFetch(`/api/stinger/${encodeURIComponent(name)}/upload`, {
 		method: 'POST',
-		headers: authHeaders(),
 		body: await file.arrayBuffer(),
 	});
-	if (!response.ok) {
-		const data = await response.json();
-		throw new Error(data.error || 'Upload failed');
+	if (!res.ok) {
+		const data = await res.json().catch(() => ({ error: 'unknown error' }));
+		throw new SwitchApiError(res.status, data.error || 'Upload failed');
 	}
 }
 
@@ -491,9 +731,8 @@ export function graphicsSlide(
 export async function graphicsImageUpload(layerId: number, file: File): Promise<GraphicsState> {
 	const formData = new FormData();
 	formData.append('image', file);
-	const res = await fetch(resolveApiUrl(`/api/graphics/${layerId}/image`), {
+	const res = await dualFetch(`/api/graphics/${layerId}/image`, {
 		method: 'POST',
-		headers: authHeaders(),
 		body: formData,
 	});
 	if (!res.ok) {
@@ -504,9 +743,7 @@ export async function graphicsImageUpload(layerId: number, file: File): Promise<
 }
 
 export async function graphicsImageGet(layerId: number): Promise<Blob> {
-	const res = await fetch(resolveApiUrl(`/api/graphics/${layerId}/image`), {
-		headers: authHeaders(),
-	});
+	const res = await dualFetch(`/api/graphics/${layerId}/image`, {});
 	if (!res.ok) {
 		const body = await res.json().catch(() => ({ error: 'unknown error' }));
 		throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
@@ -515,9 +752,8 @@ export async function graphicsImageGet(layerId: number): Promise<Blob> {
 }
 
 export async function graphicsImageDelete(layerId: number): Promise<void> {
-	const res = await fetch(resolveApiUrl(`/api/graphics/${layerId}/image`), {
+	const res = await dualFetch(`/api/graphics/${layerId}/image`, {
 		method: 'DELETE',
-		headers: authHeaders(),
 	});
 	if (!res.ok) {
 		const body = await res.json().catch(() => ({ error: 'unknown error' }));
@@ -528,9 +764,8 @@ export async function graphicsImageDelete(layerId: number): Promise<void> {
 // --- Sequence API ---
 
 export async function graphicsSequenceUpload(layerId: number, file: File, fps: number): Promise<void> {
-	const res = await fetch(resolveApiUrl(`/api/graphics/${layerId}/sequence?fps=${fps}`), {
+	const res = await dualFetch(`/api/graphics/${layerId}/sequence?fps=${fps}`, {
 		method: 'POST',
-		headers: { ...authHeaders() },
 		body: file,
 	});
 	if (!res.ok) {
@@ -541,9 +776,8 @@ export async function graphicsSequenceUpload(layerId: number, file: File, fps: n
 }
 
 export async function graphicsSequenceDelete(layerId: number): Promise<GraphicsState> {
-	const res = await fetch(resolveApiUrl(`/api/graphics/${layerId}/sequence`), {
+	const res = await dualFetch(`/api/graphics/${layerId}/sequence`, {
 		method: 'DELETE',
-		headers: authHeaders(),
 	});
 	if (!res.ok) {
 		const body = await res.json().catch(() => ({ error: 'unknown error' }));
@@ -553,9 +787,9 @@ export async function graphicsSequenceDelete(layerId: number): Promise<GraphicsS
 }
 
 export async function graphicsSequenceSetSpeed(layerId: number, speed: number): Promise<GraphicsState> {
-	const res = await fetch(resolveApiUrl(`/api/graphics/${layerId}/sequence/speed`), {
+	const res = await dualFetch(`/api/graphics/${layerId}/sequence/speed`, {
 		method: 'PUT',
-		headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ speed }),
 	});
 	if (!res.ok) {
@@ -781,8 +1015,8 @@ export interface OperatorRegistration {
 	token: string;
 }
 
-export function operatorRegister(name: string, role: OperatorRole): Promise<OperatorRegistration> {
-	return post('/api/operator/register', { name, role });
+export function operatorRegister(name: string, role: OperatorRole, id?: string): Promise<OperatorRegistration> {
+	return post('/api/operator/register', { id, name, role });
 }
 
 export function operatorReconnect(): Promise<{ id: string; name: string; role: OperatorRole }> {
@@ -885,8 +1119,20 @@ export function scte35UpdateRule(id: string, rule: Partial<SCTE35Rule>): Promise
 	});
 }
 
+export function scte35UpdateRuleByName(name: string, rule: Partial<SCTE35Rule>): Promise<ControlRoomState> {
+	return request(`/api/scte35/rules/by-name/${encodeURIComponent(name)}`, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(rule),
+	});
+}
+
 export function scte35DeleteRule(id: string): Promise<ControlRoomState> {
 	return request(`/api/scte35/rules/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+export function scte35DeleteRuleByName(name: string): Promise<ControlRoomState> {
+	return request(`/api/scte35/rules/by-name/${encodeURIComponent(name)}`, { method: 'DELETE' });
 }
 
 export function scte35SetDefaultAction(action: 'pass' | 'delete'): Promise<ControlRoomState> {
@@ -953,13 +1199,13 @@ export function deleteClip(id: string): Promise<void> {
 	return request(`/api/clips/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
-export function uploadClip(file: File, onUploadProgress?: (percent: number) => void): Promise<ClipInfo> {
+function uploadClipToEngine(baseUrl: string, file: File, onUploadProgress?: (percent: number) => void): Promise<ClipInfo> {
 	return new Promise((resolve, reject) => {
 		const formData = new FormData();
 		formData.append('file', file);
 
 		const xhr = new XMLHttpRequest();
-		xhr.open('POST', resolveApiUrl('/api/clips/upload'));
+		xhr.open('POST', `${baseUrl}/api/clips/upload`);
 
 		// Set auth headers.
 		const headers = authHeaders();
@@ -999,6 +1245,28 @@ export function uploadClip(file: File, onUploadProgress?: (percent: number) => v
 	});
 }
 
+export async function uploadClip(file: File, onUploadProgress?: (percent: number) => void): Promise<ClipInfo> {
+	const engines = getEngineUrls();
+	const primaryUrl = engines && engines.length > 0
+		? engines[0].url
+		: resolveApiUrl('');
+
+	// Upload to primary engine with progress tracking
+	const result = await uploadClipToEngine(primaryUrl, file, onUploadProgress);
+
+	// Upload to secondary engine(s) in background (no progress tracking)
+	if (engines && engines.length > 1) {
+		for (let i = 1; i < engines.length; i++) {
+			const engine = engines[i];
+			uploadClipToEngine(engine.url, file).catch(err => {
+				console.warn(`Clip upload to engine ${engine.id} failed:`, err);
+			});
+		}
+	}
+
+	return result;
+}
+
 export function pinClip(id: string): Promise<ClipInfo> {
 	return post(`/api/clips/${encodeURIComponent(id)}/pin`, {});
 }
@@ -1011,12 +1279,64 @@ export function listRecordings(): Promise<RecordingFileInfo[]> {
 	return request('/api/clips/recordings');
 }
 
+/** Fetch recordings from a specific engine URL. Returns [] on failure. */
+export async function listRecordingsFromEngine(engineUrl: string): Promise<RecordingFileInfo[]> {
+	try {
+		const res = await fetch(`${engineUrl}/api/clips/recordings`, {
+			headers: authHeaders(),
+		});
+		if (!res.ok) return [];
+		return res.json();
+	} catch {
+		return [];
+	}
+}
+
+/** Fetch recordings from all engines, grouped by engine. Single-engine falls back to standard list. */
+export async function listRecordingsDualEngine(): Promise<EngineRecordingGroup[]> {
+	const engines = getEngineUrls();
+	if (!engines || engines.length <= 1) {
+		const recs = await listRecordings();
+		return [{ engineId: 'A', engineUrl: resolveApiUrl(''), recordings: recs }];
+	}
+
+	const results = await Promise.allSettled(
+		engines.map(async (eng) => ({
+			engineId: eng.id,
+			engineUrl: eng.url,
+			recordings: await listRecordingsFromEngine(eng.url),
+		}))
+	);
+
+	return results
+		.filter((r): r is PromiseFulfilledResult<EngineRecordingGroup> => r.status === 'fulfilled')
+		.map(r => r.value);
+}
+
+/** Import a recording from a specific engine. The file path is local to that engine. */
+export async function importRecordingFromEngine(engineUrl: string, path: string): Promise<ClipInfo> {
+	const res = await fetch(`${engineUrl}/api/clips/from-recording`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', ...authHeaders() },
+		body: JSON.stringify({ path }),
+	});
+	if (!res.ok) {
+		const body = await res.json().catch(() => ({ error: 'unknown error' }));
+		throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
+	}
+	return res.json();
+}
+
 export function listClipPlayers(): Promise<ClipPlayerState[]> {
 	return request('/api/clips/players');
 }
 
 export function clipPlayerLoad(player: number, clipId: string): Promise<ControlRoomState> {
 	return post(`/api/clips/players/${player}/load`, { clipId });
+}
+
+export function clipPlayerLoadByName(player: number, clipName: string): Promise<ControlRoomState> {
+	return post(`/api/clips/players/${player}/load`, { clipName });
 }
 
 export function clipPlayerEject(player: number): Promise<ControlRoomState> {
@@ -1118,9 +1438,8 @@ export function stmapGenerate(req: STMapGenerateRequest): Promise<STMapInfo> {
 }
 
 export async function stmapUpload(name: string, file: File): Promise<STMapInfo> {
-	const res = await fetch(resolveApiUrl(`/api/stmap/upload/${encodeURIComponent(name)}`), {
+	const res = await dualFetch(`/api/stmap/upload/${encodeURIComponent(name)}`, {
 		method: 'POST',
-		headers: authHeaders(),
 		body: file,
 	});
 	if (!res.ok) {
@@ -1139,9 +1458,7 @@ export function stmapDelete(name: string): Promise<void> {
 }
 
 export async function stmapDownload(name: string): Promise<ArrayBuffer> {
-	const res = await fetch(resolveApiUrl(`/api/stmap/${encodeURIComponent(name)}/download`), {
-		headers: authHeaders(),
-	});
+	const res = await dualFetch(`/api/stmap/${encodeURIComponent(name)}/download`, {});
 	if (!res.ok) throw new SwitchApiError(res.status, `download failed: ${res.status}`);
 	return res.arrayBuffer();
 }
@@ -1149,7 +1466,7 @@ export async function stmapDownload(name: string): Promise<ArrayBuffer> {
 export function stmapAssignSource(sourceKey: string, mapName: string): Promise<STMapState> {
 	return request(`/api/stmap/source/${encodeURIComponent(sourceKey)}`, {
 		method: 'PUT',
-		headers: { 'Content-Type': 'application/json', ...authHeaders() },
+		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ map: mapName }),
 	});
 }
@@ -1161,7 +1478,7 @@ export function stmapRemoveSource(sourceKey: string): Promise<void> {
 export function stmapAssignProgram(mapName: string): Promise<STMapState> {
 	return request('/api/stmap/program', {
 		method: 'PUT',
-		headers: { 'Content-Type': 'application/json', ...authHeaders() },
+		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ map: mapName }),
 	});
 }
@@ -1179,7 +1496,7 @@ export function getColorGrade(): Promise<ColorGradeState> {
 export function setColorGrade(config: { lookName?: string; lookGroup?: string; intensity?: number; enabled?: boolean }): Promise<ControlRoomState> {
 	return request('/api/colorgrade', {
 		method: 'PUT',
-		headers: { 'Content-Type': 'application/json', ...authHeaders() },
+		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(config),
 	});
 }
@@ -1188,9 +1505,8 @@ export async function uploadColorGradeLUT(name: string, file: File): Promise<Col
 	const fd = new FormData();
 	fd.append('name', name);
 	fd.append('file', file);
-	const res = await fetch(resolveApiUrl('/api/colorgrade/upload'), {
+	const res = await dualFetch('/api/colorgrade/upload', {
 		method: 'POST',
-		headers: authHeaders(),
 		body: fd,
 	});
 	if (!res.ok) {
@@ -1243,9 +1559,7 @@ export function saveCustomLook(name: string): Promise<ColorGradeState> {
 }
 
 export async function getLookSettings(name: string): Promise<CorrectorState | null> {
-	const res = await fetch(resolveApiUrl(`/api/colorgrade/looks/${encodeURIComponent(name)}/settings`), {
-		headers: authHeaders(),
-	});
+	const res = await dualFetch(`/api/colorgrade/looks/${encodeURIComponent(name)}/settings`, {});
 	if (res.status === 404) return null;
 	if (!res.ok) {
 		const body = await res.json().catch(() => ({ error: 'unknown error' }));
@@ -1293,9 +1607,9 @@ export function setASRBackendConfig(config: Record<string, unknown>): Promise<vo
 // ── AI Background Segmentation ──
 
 export function setAISegment(source: string, config: Partial<AISegmentConfig>): Promise<Response> {
-	return fetch(resolveApiUrl(`/api/sources/${encodeURIComponent(source)}/ai-segment`), {
+	return dualFetch(`/api/sources/${encodeURIComponent(source)}/ai-segment`, {
 		method: 'PUT',
-		headers: { 'Content-Type': 'application/json', ...authHeaders() },
+		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(config),
 	});
 }
@@ -1305,9 +1619,8 @@ export function getAISegment(source: string): Promise<AISegmentConfig> {
 }
 
 export function deleteAISegment(source: string): Promise<Response> {
-	return fetch(resolveApiUrl(`/api/sources/${encodeURIComponent(source)}/ai-segment`), {
+	return dualFetch(`/api/sources/${encodeURIComponent(source)}/ai-segment`, {
 		method: 'DELETE',
-		headers: authHeaders(),
 	});
 }
 
@@ -1347,6 +1660,23 @@ export function playoutReturnToAuto(channelId: number): Promise<void> {
 
 export function playoutCacheStatus(): Promise<CacheStatus> {
 	return request<CacheStatus>('/api/playout/cache/status');
+}
+
+/**
+ * Fetch cache status from a specific engine (for dual-engine cache verification).
+ * Falls back to the default single-engine path if engineUrls aren't configured
+ * or the requested engine isn't found.
+ */
+export async function playoutEngineCacheStatus(engineId: 'A' | 'B'): Promise<CacheStatus> {
+	const engines = getEngineUrls();
+	const eng = engines?.find(e => e.id === engineId);
+	const url = eng ? `${eng.url}/api/playout/cache/status` : resolveApiUrl('/api/playout/cache/status');
+	const res = await fetch(url, { headers: authHeaders() });
+	if (!res.ok) {
+		const body = await res.json().catch(() => ({ error: 'unknown error' }));
+		throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
+	}
+	return res.json();
 }
 
 export function playoutLookupCachedAsset(assetUri: string): Promise<void> {
@@ -1429,9 +1759,7 @@ export function playoutAsRun(
 }
 
 export function playoutAsRunExport(channelId: number, format: 'json' | 'bxf'): Promise<Response> {
-	return fetch(resolveApiUrl(`/api/playout/channels/${channelId}/asrun/export?format=${format}`), {
-		headers: authHeaders(),
-	});
+	return dualFetch(`/api/playout/channels/${channelId}/asrun/export?format=${format}`, {});
 }
 
 export function playoutAsRunReset(channelId: number): Promise<void> {
@@ -1447,9 +1775,9 @@ export async function playoutImportBxf(
 	if (channel != null) query.set('channel', String(channel));
 	if (name) query.set('name', name);
 	const qs = query.toString();
-	const res = await fetch(resolveApiUrl(`/api/playout/import/bxf${qs ? `?${qs}` : ''}`), {
+	const res = await dualFetch(`/api/playout/import/bxf${qs ? `?${qs}` : ''}`, {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/xml', ...authHeaders() },
+		headers: { 'Content-Type': 'application/xml' },
 		body: bxfXml,
 	});
 	if (!res.ok) {
@@ -1560,9 +1888,7 @@ export function wipeGetPattern(id: string): Promise<WipePattern> {
 }
 
 export async function wipeGetPreview(id: string): Promise<Blob> {
-	const res = await fetch(resolveApiUrl(`/api/wipes/patterns/${encodeURIComponent(id)}/preview`), {
-		headers: authHeaders(),
-	});
+	const res = await dualFetch(`/api/wipes/patterns/${encodeURIComponent(id)}/preview`, {});
 	if (!res.ok) {
 		throw new SwitchApiError(res.status, `Preview fetch failed: HTTP ${res.status}`);
 	}
@@ -1573,9 +1899,8 @@ export async function wipeUploadCustom(file: File, name?: string): Promise<WipeP
 	const formData = new FormData();
 	formData.append('file', file);
 	formData.append('name', name ?? file.name.replace(/\.\w+$/, ''));
-	const res = await fetch(resolveApiUrl('/api/wipes/custom'), {
+	const res = await dualFetch('/api/wipes/custom', {
 		method: 'POST',
-		headers: authHeaders(),
 		body: formData,
 	});
 	if (!res.ok) {
@@ -1587,5 +1912,28 @@ export async function wipeUploadCustom(file: File, name?: string): Promise<WipeP
 
 export function wipeDeleteCustom(id: string): Promise<void> {
 	return request(`/api/wipes/custom/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+// --- Debug / Perf ---
+
+export function getDebugSnapshot(opts?: { signal?: AbortSignal }): Promise<Record<string, unknown>> {
+	return request('/api/debug/snapshot', opts);
+}
+
+export function getPerfData(opts?: { baseline?: string; signal?: AbortSignal }): Promise<Record<string, unknown>> {
+	const url = opts?.baseline
+		? `/api/perf?baseline=${encodeURIComponent(opts.baseline)}`
+		: '/api/perf';
+	return request(url, { signal: opts?.signal });
+}
+
+export function savePerfBaseline(name: string): Promise<void> {
+	return post('/api/perf/baseline', { name });
+}
+
+// --- Operator (invite-based registration) ---
+
+export function operatorRegisterWithInvite(name: string, inviteToken: string, id?: string): Promise<OperatorRegistration> {
+	return post('/api/operator/register', { id, name, inviteToken });
 }
 

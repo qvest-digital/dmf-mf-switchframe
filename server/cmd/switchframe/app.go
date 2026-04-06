@@ -322,8 +322,9 @@ func (a *App) initPrismServer() error {
 	a.initFastControl()
 
 	config := distribution.ServerConfig{
-		Addr: a.cfg.Addr,
-		Cert: a.cert,
+		Addr:         a.cfg.Addr,
+		Cert:         a.cert,
+		ExternalCert: a.externalCert,
 		ExtraRoutes: func(mux *http.ServeMux) {
 			// Register API routes on a sub-mux so we can wrap with middleware.
 			apiSubMux := http.NewServeMux()
@@ -1652,6 +1653,10 @@ func (a *App) initAPI() error {
 	}
 
 	a.api = control.NewAPI(a.sw, apiOpts...)
+
+	// Late-bind snapshot provider — requires API to exist first (App delegates
+	// to subsystems wired above), but the provider is a lightweight adapter.
+	a.api.SetSnapshotProvider(&snapshotProviderAdapter{app: a})
 
 	// Late-bind HTML5 graphics manager to the API.
 	if a.htmlGfxMgr != nil {

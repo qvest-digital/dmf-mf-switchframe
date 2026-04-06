@@ -17,3 +17,20 @@ export function setApiBaseUrl(url: string): void {
 export function resolveApiUrl(path: string): string {
 	return apiBaseUrl + path;
 }
+
+// ── Dual-engine endpoint management ──
+
+export interface EngineEndpoint {
+	id: string;
+	url: string;
+}
+
+let engineUrls: EngineEndpoint[] | null = null;
+
+export function setEngineUrls(urls: EngineEndpoint[] | null): void {
+	engineUrls = urls?.map(e => ({ ...e, url: e.url.replace(/\/$/, '') })) ?? null;
+}
+
+export function getEngineUrls(): EngineEndpoint[] | null {
+	return engineUrls;
+}

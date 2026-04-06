@@ -107,6 +107,20 @@ func (s *Store) Get(id string) (*Clip, error) {
 	return &cp, nil
 }
 
+// GetByName returns the first clip matching the given name, or ErrNotFound.
+func (s *Store) GetByName(name string) (*Clip, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, c := range s.clips {
+		if c.Name == name {
+			cp := *c
+			return &cp, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
 // List returns all clips sorted by CreatedAt descending (newest first).
 func (s *Store) List() []*Clip {
 	s.mu.RLock()

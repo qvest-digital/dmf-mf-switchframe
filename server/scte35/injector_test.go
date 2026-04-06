@@ -2545,3 +2545,91 @@ func TestInjector_MaxActiveEvents_DefaultLimit(t *testing.T) {
 	_, err := inj.InjectCue(msg)
 	require.Error(t, err, "should reject at default limit")
 }
+
+func TestInjector_WebhookDispatch_EngineID(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var received []WebhookEvent
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var evt WebhookEvent
+		if err := json.NewDecoder(r.Body).Decode(&evt); err != nil {
+			t.Errorf("webhook decode error: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		received = append(received, evt)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return 0 }
+
+	inj := NewInjector(InjectorConfig{
+		HeartbeatInterval: 0,
+		WebhookURL:        ts.URL,
+		WebhookTimeoutMs:  5000,
+		EngineID:          "B",
+	}, sink, ptsFn)
+	defer inj.Close()
+
+	msg := NewSpliceInsert(0, 30*time.Second, true, true)
+	_, err := inj.InjectCue(msg)
+	require.NoError(t, err)
+
+	// Wait for async dispatch.
+	time.Sleep(200 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	require.NotEmpty(t, received, "expected at least 1 webhook event")
+	require.Equal(t, "B", received[0].EngineID, "webhook should carry engine ID from config")
+}
+
+func TestInjector_WebhookDispatch_NoEngineID(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var received []WebhookEvent
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var evt WebhookEvent
+		if err := json.NewDecoder(r.Body).Decode(&evt); err != nil {
+			t.Errorf("webhook decode error: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		received = append(received, evt)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	sink := func(data []byte) {}
+	ptsFn := func() int64 { return 0 }
+
+	// No EngineID set — field should be empty.
+	inj := NewInjector(InjectorConfig{
+		HeartbeatInterval: 0,
+		WebhookURL:        ts.URL,
+		WebhookTimeoutMs:  5000,
+	}, sink, ptsFn)
+	defer inj.Close()
+
+	msg := NewSpliceInsert(0, 30*time.Second, true, true)
+	_, err := inj.InjectCue(msg)
+	require.NoError(t, err)
+
+	// Wait for async dispatch.
+	time.Sleep(200 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	require.NotEmpty(t, received, "expected at least 1 webhook event")
+	require.Empty(t, received[0].EngineID, "webhook should omit engine ID when not configured")
+}

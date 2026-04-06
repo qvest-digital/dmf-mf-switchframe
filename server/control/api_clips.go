@@ -625,6 +625,7 @@ func (a *API) handleClipPlayersList(w http.ResponseWriter, _ *http.Request) {
 }
 
 // handleClipPlayerLoad loads a clip into a player slot.
+// Accepts either clipId (by ID) or clipName (by name) for dual-engine compatibility.
 func (a *API) handleClipPlayerLoad(w http.ResponseWriter, r *http.Request) {
 	n, err := strconv.Atoi(r.PathValue("n"))
 	if err != nil {
@@ -632,14 +633,26 @@ func (a *API) handleClipPlayerLoad(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		ClipID string `json:"clipId"`
+		ClipID   string `json:"clipId"`
+		ClipName string `json:"clipName"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+
+	// Resolve clipName to clipId if needed.
+	if req.ClipID == "" && req.ClipName != "" {
+		c, lookupErr := a.clipStore.GetByName(req.ClipName)
+		if lookupErr != nil {
+			httperr.Write(w, http.StatusNotFound, "clip not found")
+			return
+		}
+		req.ClipID = c.ID
+	}
+
 	if req.ClipID == "" {
-		httperr.Write(w, http.StatusBadRequest, "clipId required")
+		httperr.Write(w, http.StatusBadRequest, "clipId or clipName required")
 		return
 	}
 	a.setLastOperator(r)

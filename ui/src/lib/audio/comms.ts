@@ -33,6 +33,7 @@ export class CommsAudioManager {
 	private writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
 	private reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 	private running = false;
+	private reconnecting = false;
 	private sampleBuffer: Float32Array = new Float32Array(0);
 
 	// WebCodecs Opus encoder/decoder
@@ -136,6 +137,81 @@ export class CommsAudioManager {
 			this.config.onError?.(`Comms start failed: ${msg}`);
 			this.cleanup();
 			throw err;
+		}
+	}
+
+	/**
+	 * Whether comms is currently active (started and running).
+	 */
+	get isActive(): boolean {
+		return this.running;
+	}
+
+	/**
+	 * Reconnect to a new WebTransport (e.g., after authoritative engine failover).
+	 * Tears down the existing bidi stream and codecs, opens a new stream on the
+	 * provided transport, and resumes audio. Preserves mic capture and AudioContexts.
+	 */
+	async reconnect(transport: WebTransport): Promise<void> {
+		if (this.reconnecting) return;
+		if (!this.running) return;
+		this.reconnecting = true;
+
+		// Tear down existing stream + codecs (but keep mic and AudioContexts)
+		this.cleanupStream();
+
+		try {
+			// Open a new bidirectional stream
+			const bidiStream = await transport.createBidirectionalStream();
+			this.writer = bidiStream.writable.getWriter();
+			this.reader = bidiStream.readable.getReader();
+
+			// Send handshake on the new stream
+			const hello = JSON.stringify({
+				action: 'hello',
+				operatorId: this.config.operatorId,
+			});
+			const helloBytes = new TextEncoder().encode(hello);
+			const helloMsg = new Uint8Array(3 + helloBytes.length);
+			helloMsg[0] = MSG_CONTROL;
+			helloMsg[1] = (helloBytes.length >> 8) & 0xff;
+			helloMsg[2] = helloBytes.length & 0xff;
+			helloMsg.set(helloBytes, 3);
+			await this.writer.write(helloMsg);
+
+			// Reset decode timestamp for clean audio scheduling
+			this.decodeTimestamp = 0;
+			this.nextPlayTime = 0;
+
+			// Create fresh encoder/decoder
+			this.encoder = new AudioEncoder({
+				output: (chunk) => this.onEncodedChunk(chunk),
+				error: (e) => this.config.onError?.(`Opus encode error: ${e.message}`),
+			});
+			this.encoder.configure({
+				codec: 'opus',
+				sampleRate: SAMPLE_RATE,
+				numberOfChannels: 1,
+				bitrate: 32000,
+			});
+
+			this.decoder = new AudioDecoder({
+				output: (frame) => this.onDecodedFrame(frame),
+				error: (e) => this.config.onError?.(`Opus decode error: ${e.message}`),
+			});
+			this.decoder.configure({
+				codec: 'opus',
+				sampleRate: SAMPLE_RATE,
+				numberOfChannels: 1,
+			});
+
+			// Start reading from the new stream
+			this.readLoop();
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			this.config.onError?.(`Comms reconnect failed: ${msg}`);
+		} finally {
+			this.reconnecting = false;
 		}
 	}
 
@@ -362,6 +438,32 @@ export class CommsAudioManager {
 		};
 
 		source.connect(this.workletNode);
+	}
+
+	/**
+	 * Tear down just the bidi stream and codecs, preserving mic capture and AudioContexts.
+	 * Used by reconnect() to switch transports without interrupting mic capture.
+	 */
+	private cleanupStream(): void {
+		if (this.encoder) {
+			try { this.encoder.close(); } catch { /* ignore */ }
+			this.encoder = null;
+		}
+
+		if (this.decoder) {
+			try { this.decoder.close(); } catch { /* ignore */ }
+			this.decoder = null;
+		}
+
+		if (this.writer) {
+			this.writer.close().catch(() => {});
+			this.writer = null;
+		}
+
+		if (this.reader) {
+			this.reader.cancel().catch(() => {});
+			this.reader = null;
+		}
 	}
 
 	/**

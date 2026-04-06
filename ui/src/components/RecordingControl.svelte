@@ -3,10 +3,17 @@
 	import { startRecording, stopRecording, apiCall } from '$lib/api/switch-api';
 	import ConfirmDialog from './ConfirmDialog.svelte';
 
-	interface Props { state: ControlRoomState; }
-	let { state: crState }: Props = $props();
+	interface Props {
+		state: ControlRoomState;
+		isDualEngine?: boolean;
+		engineBRecording?: { active: boolean; durationSecs?: number } | null;
+		activeEngineId?: 'A' | 'B';
+	}
+	let { state: crState, isDualEngine = false, engineBRecording = null, activeEngineId }: Props = $props();
 
 	const isActive = $derived(crState.recording?.active ?? false);
+	const engineBActive = $derived(engineBRecording?.active ?? false);
+	const statesDiffer = $derived(isDualEngine && isActive !== engineBActive);
 	const hasError = $derived(!isActive && !!crState.recording?.error);
 	const droppedPackets = $derived(crState.recording?.droppedPackets ?? 0);
 	let confirmingStop = $state(false);
@@ -56,6 +63,17 @@
 	<div class="recording-control">
 		<button class="rec-start" onclick={handleStart}>REC</button>
 	</div>
+{/if}
+
+{#if statesDiffer}
+	<span class="engine-status" data-testid="engine-rec-status">
+		<span class="engine-tag" class:active-engine={activeEngineId === 'A'}>
+			A{#if isActive}<span class="rec-dot-small recording"></span>{:else}<span class="rec-dot-small"></span>{/if}
+		</span>
+		<span class="engine-tag" class:active-engine={activeEngineId === 'B'}>
+			B{#if engineBActive}<span class="rec-dot-small recording"></span>{:else}<span class="rec-dot-small"></span>{/if}
+		</span>
+	</span>
 {/if}
 
 <ConfirmDialog
@@ -171,5 +189,44 @@
 		padding: 1px 4px;
 		border: 1px solid var(--accent-amber, #f59e0b);
 		border-radius: var(--radius-sm);
+	}
+
+	.engine-status {
+		display: inline-flex;
+		gap: 4px;
+		margin-left: 6px;
+		align-items: center;
+	}
+
+	.engine-tag {
+		display: inline-flex;
+		align-items: center;
+		gap: 3px;
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+		color: var(--text-dim);
+		opacity: 0.5;
+	}
+
+	.engine-tag.active-engine {
+		opacity: 1;
+		color: var(--text-primary);
+	}
+
+	.rec-dot-small {
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		background: var(--text-dim);
+	}
+
+	.rec-dot-small.recording {
+		background: var(--tally-program);
+		animation: pulse-rec 1.5s ease-in-out infinite;
+	}
+
+	@keyframes pulse-rec {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.4; }
 	}
 </style>

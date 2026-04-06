@@ -64,6 +64,7 @@ const baseState = {
 		cam2: { key: 'cam2', label: 'Camera 2', type: 'demo' as const, status: 'healthy' as const },
 	},
 	seq: 1,
+	lastCommandSeq: 0,
 	timestamp: Date.now(),
 };
 

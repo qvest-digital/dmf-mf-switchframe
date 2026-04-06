@@ -31,6 +31,7 @@ function makeState(overrides: Partial<ControlRoomState> = {}): ControlRoomState 
 		tallyState: {},
 		sources: {},
 		seq: 1,
+		lastCommandSeq: 0,
 		timestamp: Date.now(),
 		...overrides,
 	};
@@ -65,6 +66,7 @@ function setupMocks(): {
 function createMockConnection() {
 	return {
 		state: 'disconnected' as const,
+		transport: null as WebTransport | null,
 		connect: vi.fn(),
 		disconnect: vi.fn(),
 		_handleControlData: vi.fn(),
@@ -94,6 +96,24 @@ describe('ConnectionManager', () => {
 
 		expect(manager).toBeDefined();
 		expect(mockedCreatePrismConnection).toHaveBeenCalledOnce();
+	});
+
+	it('should expose transport from underlying PrismConnection', () => {
+		const { mockConnection } = setupMocks();
+		const manager = new ConnectionManager({
+			url: 'https://localhost:8080',
+			onStateUpdate: vi.fn(),
+			onConnectionStateChange: vi.fn(),
+			onInitialLoadComplete: vi.fn(),
+			onInitialLoadError: vi.fn(),
+		});
+
+		expect(manager.transport).toBeNull();
+
+		// Simulate transport becoming available
+		const fakeTransport = {} as WebTransport;
+		mockConnection.transport = fakeTransport;
+		expect(manager.transport).toBe(fakeTransport);
 	});
 
 	it('should return disconnected as initial connection state', () => {

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/svelte';
 import SourceTile from './SourceTile.svelte';
-import type { SourceInfo, TallyStatus } from '$lib/api/types';
+import type { SourceInfo, TallyStatus, SourceHealthStatus } from '$lib/api/types';
 
 function makeSource(overrides: Partial<SourceInfo> = {}): SourceInfo {
 	return {
@@ -324,5 +324,121 @@ describe('SourceTile label editing', () => {
 		// Should exit edit mode and show original label
 		expect(container.querySelector('.tile-label-input')).toBeNull();
 		expect(container.querySelector('.tile-label')?.textContent).toBe('Camera 1');
+	});
+});
+
+describe('SourceTile dual engine health dots', () => {
+	it('shows single status when engineSourceHealth is null', () => {
+		const { container } = render(SourceTile, {
+			props: { source: makeSource({ status: 'stale' }), tally: 'idle', index: 0, engineSourceHealth: null },
+		});
+		// Should not show dual dots
+		expect(container.querySelector('.engine-health-dots')).toBeNull();
+		// Should show standard tile-status
+		const status = container.querySelector('.tile-status');
+		expect(status?.textContent).toContain('stale');
+	});
+
+	it('shows single status when engineSourceHealth is undefined', () => {
+		const { container } = render(SourceTile, {
+			props: { source: makeSource({ status: 'offline' }), tally: 'idle', index: 0 },
+		});
+		expect(container.querySelector('.engine-health-dots')).toBeNull();
+		const status = container.querySelector('.tile-status');
+		expect(status?.textContent).toContain('offline');
+	});
+
+	it('shows single status when both engines agree', () => {
+		const { container } = render(SourceTile, {
+			props: {
+				source: makeSource({ status: 'healthy' }),
+				tally: 'idle',
+				index: 0,
+				engineSourceHealth: { A: 'healthy', B: 'healthy' },
+			},
+		});
+		// Should collapse to single status (no dual dots)
+		expect(container.querySelector('.engine-health-dots')).toBeNull();
+	});
+
+	it('shows dual dots when engines disagree', () => {
+		const { container } = render(SourceTile, {
+			props: {
+				source: makeSource({ status: 'healthy' }),
+				tally: 'idle',
+				index: 0,
+				engineSourceHealth: { A: 'healthy', B: 'stale' },
+			},
+		});
+		const dots = container.querySelector('.engine-health-dots');
+		expect(dots).toBeTruthy();
+	});
+
+	it('dual dots have correct A and B labels', () => {
+		const { container } = render(SourceTile, {
+			props: {
+				source: makeSource({ status: 'healthy' }),
+				tally: 'idle',
+				index: 0,
+				engineSourceHealth: { A: 'healthy', B: 'offline' },
+			},
+		});
+		const dots = container.querySelector('.engine-health-dots');
+		expect(dots).toBeTruthy();
+		const labels = dots!.querySelectorAll('.engine-label');
+		expect(labels.length).toBe(2);
+		expect(labels[0].textContent).toBe('A');
+		expect(labels[1].textContent).toBe('B');
+	});
+
+	it('dual dots have correct colors for each engine status', () => {
+		const { container } = render(SourceTile, {
+			props: {
+				source: makeSource({ status: 'healthy' }),
+				tally: 'idle',
+				index: 0,
+				engineSourceHealth: { A: 'healthy', B: 'stale' },
+			},
+		});
+		const dotA = container.querySelector('.engine-dot-a .engine-dot');
+		const dotB = container.querySelector('.engine-dot-b .engine-dot');
+		expect(dotA).toBeTruthy();
+		expect(dotB).toBeTruthy();
+		// healthy = green (#22c55e), stale = amber (#f59e0b)
+		expect((dotA as HTMLElement).style.background).toBe('rgb(34, 197, 94)');
+		expect((dotB as HTMLElement).style.background).toBe('rgb(245, 158, 11)');
+	});
+
+	it('shows dual dots for no_signal vs offline', () => {
+		const { container } = render(SourceTile, {
+			props: {
+				source: makeSource({ status: 'no_signal' }),
+				tally: 'idle',
+				index: 0,
+				engineSourceHealth: { A: 'no_signal', B: 'offline' },
+			},
+		});
+		const dotA = container.querySelector('.engine-dot-a .engine-dot');
+		const dotB = container.querySelector('.engine-dot-b .engine-dot');
+		expect(dotA).toBeTruthy();
+		expect(dotB).toBeTruthy();
+		// no_signal = red (#ef4444), offline = gray (#6b7280)
+		expect((dotA as HTMLElement).style.background).toBe('rgb(239, 68, 68)');
+		expect((dotB as HTMLElement).style.background).toBe('rgb(107, 114, 128)');
+	});
+
+	it('hides standard tile-status when showing dual dots', () => {
+		const { container } = render(SourceTile, {
+			props: {
+				source: makeSource({ status: 'stale' }),
+				tally: 'idle',
+				index: 0,
+				engineSourceHealth: { A: 'healthy', B: 'stale' },
+			},
+		});
+		// Dual dots should be present
+		expect(container.querySelector('.engine-health-dots')).toBeTruthy();
+		// Standard tile-status should be hidden (not rendered)
+		expect(container.querySelector('.tile-status')).toBeNull();
 	});
 });

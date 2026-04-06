@@ -16,6 +16,7 @@ type Store struct {
 	mu        sync.RWMutex
 	operators []Operator
 	tokenIdx  map[string]int // token → index in operators slice
+	idIdx     map[string]int // id → index in operators slice
 	filePath  string
 }
 
@@ -27,6 +28,7 @@ func NewStore(filePath string) (*Store, error) {
 		filePath:  filePath,
 		operators: []Operator{},
 		tokenIdx:  make(map[string]int),
+		idIdx:     make(map[string]int),
 	}
 
 	data, err := os.ReadFile(filePath)
@@ -44,21 +46,27 @@ func NewStore(filePath string) (*Store, error) {
 		s.operators = []Operator{}
 	}
 
-	s.rebuildTokenIndex()
+	s.rebuildIndices()
 	return s, nil
 }
 
-// rebuildTokenIndex reconstructs the token→index map from the operators slice.
+// rebuildIndices reconstructs both the token→index and id→index maps.
 // Must be called with s.mu held.
-func (s *Store) rebuildTokenIndex() {
+func (s *Store) rebuildIndices() {
 	s.tokenIdx = make(map[string]int, len(s.operators))
+	s.idIdx = make(map[string]int, len(s.operators))
 	for i, op := range s.operators {
 		s.tokenIdx[op.Token] = i
+		s.idIdx[op.ID] = i
 	}
 }
 
 // Register creates a new operator with a per-operator bearer token.
-func (s *Store) Register(name string, role Role) (Operator, error) {
+// If clientID is non-empty, it is used as the operator ID instead of generating
+// a random one. This supports dual-engine setups where both engines must agree
+// on the operator ID. If an operator with the given clientID already exists,
+// the existing operator is returned (idempotent re-registration).
+func (s *Store) Register(name string, role Role, clientID ...string) (Operator, error) {
 	if name == "" {
 		return Operator{}, ErrEmptyName
 	}
@@ -66,7 +74,40 @@ func (s *Store) Register(name string, role Role) (Operator, error) {
 		return Operator{}, ErrInvalidRole
 	}
 
+	// Extract optional client-provided ID.
+	var providedID string
+	if len(clientID) > 0 {
+		providedID = clientID[0]
+	}
+
+	// Validate client-provided ID if present.
+	if providedID != "" {
+		if len(providedID) < 8 || len(providedID) > 64 {
+			return Operator{}, fmt.Errorf("invalid client ID length: must be 8-64 characters")
+		}
+		for _, c := range providedID {
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-') {
+				return Operator{}, fmt.Errorf("invalid client ID: must be alphanumeric with hyphens")
+			}
+		}
+	}
+
 	s.mu.Lock()
+
+	// If a client ID was provided, check for existing operator with that ID.
+	// This handles the dual-engine case: the same registration fans out to both
+	// engines, so the second engine sees an ID that already exists.
+	if providedID != "" {
+		if idx, ok := s.idIdx[providedID]; ok && idx < len(s.operators) {
+			existing := s.operators[idx]
+			if existing.Name != name || existing.Role != role {
+				s.mu.Unlock()
+				return Operator{}, fmt.Errorf("client ID already registered to operator %q with role %q", existing.Name, existing.Role)
+			}
+			s.mu.Unlock()
+			return existing, nil
+		}
+	}
 
 	// Check for duplicate name.
 	for _, op := range s.operators {
@@ -76,11 +117,18 @@ func (s *Store) Register(name string, role Role) (Operator, error) {
 		}
 	}
 
-	id, err := generateID()
-	if err != nil {
-		s.mu.Unlock()
-		return Operator{}, fmt.Errorf("generate ID: %w", err)
+	var id string
+	if providedID != "" {
+		id = providedID
+	} else {
+		var err error
+		id, err = generateID()
+		if err != nil {
+			s.mu.Unlock()
+			return Operator{}, fmt.Errorf("generate ID: %w", err)
+		}
 	}
+
 	token, err := generateToken()
 	if err != nil {
 		s.mu.Unlock()
@@ -95,20 +143,23 @@ func (s *Store) Register(name string, role Role) (Operator, error) {
 	}
 	s.operators = append(s.operators, op)
 	s.tokenIdx[op.Token] = len(s.operators) - 1
+	s.idIdx[op.ID] = len(s.operators) - 1
 
 	data, err := s.marshalLocked()
 	if err != nil {
-		// Roll back: remove the appended operator and its token index entry.
+		// Roll back: remove the appended operator and its index entries.
 		s.operators = s.operators[:len(s.operators)-1]
 		delete(s.tokenIdx, op.Token)
+		delete(s.idIdx, op.ID)
 		s.mu.Unlock()
 		return Operator{}, fmt.Errorf("save operators: %w", err)
 	}
 
 	if err := s.writeFile(data); err != nil {
-		// Roll back: remove the appended operator and its token index entry before releasing the lock.
+		// Roll back: remove the appended operator and its index entries before releasing the lock.
 		s.operators = s.operators[:len(s.operators)-1]
 		delete(s.tokenIdx, op.Token)
+		delete(s.idIdx, op.ID)
 		s.mu.Unlock()
 		return Operator{}, fmt.Errorf("save operators: %w", err)
 	}
@@ -171,7 +222,7 @@ func (s *Store) Delete(id string) error {
 	// Save a copy for rollback before mutating.
 	removed := s.operators[idx]
 	s.operators = append(s.operators[:idx], s.operators[idx+1:]...)
-	s.rebuildTokenIndex()
+	s.rebuildIndices()
 
 	data, err := s.marshalLocked()
 	if err != nil {
@@ -180,7 +231,7 @@ func (s *Store) Delete(id string) error {
 		copy(rear, s.operators[idx:])
 		s.operators = append(s.operators[:idx], removed)
 		s.operators = append(s.operators, rear...)
-		s.rebuildTokenIndex()
+		s.rebuildIndices()
 		s.mu.Unlock()
 		return fmt.Errorf("save operators: %w", err)
 	}
@@ -191,7 +242,7 @@ func (s *Store) Delete(id string) error {
 		copy(rear, s.operators[idx:])
 		s.operators = append(s.operators[:idx], removed)
 		s.operators = append(s.operators, rear...)
-		s.rebuildTokenIndex()
+		s.rebuildIndices()
 		s.mu.Unlock()
 		return fmt.Errorf("save operators: %w", err)
 	}

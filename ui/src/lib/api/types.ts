@@ -1,5 +1,6 @@
 export type TallyStatus = 'program' | 'preview' | 'idle';
 export type SourceHealthStatus = 'healthy' | 'stale' | 'no_signal' | 'offline';
+export type EngineId = 'A' | 'B';
 
 export interface SRTSourceInfo {
 	mode: 'listener' | 'caller';
@@ -574,6 +575,12 @@ export interface RecordingFileInfo {
 	modTime: string;
 }
 
+export interface EngineRecordingGroup {
+	engineId: EngineId;
+	engineUrl: string;
+	recordings: RecordingFileInfo[];
+}
+
 export interface SCTE35State {
 	enabled: boolean;
 	scte104Enabled?: boolean;
@@ -746,8 +753,10 @@ export interface ControlRoomState {
 		available: boolean;
 	};
 	playout?: PlayoutState;
+	engineBUrl?: string;
 	lastChangedBy?: string;
 	seq: number;
+	lastCommandSeq: number;
 	timestamp: number;
 }
 

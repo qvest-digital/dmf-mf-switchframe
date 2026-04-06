@@ -2,6 +2,7 @@
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
+	import { operatorRegisterWithInvite, setAuthToken } from '$lib/api/switch-api';
 
 	const roleNames: Record<string, string> = {
 		d: 'Director',
@@ -46,17 +47,11 @@
 		}
 
 		try {
-			const resp = await fetch('/api/operator/register', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ name: operatorName, inviteToken: token }),
-			});
-			if (!resp.ok) {
-				const data = await resp.json().catch(() => ({}));
-				throw new Error(data.error || 'Failed to join session');
-			}
-			const data = await resp.json();
-			localStorage.setItem('switchframe_operator_token', data.token);
+			// Generate a client-side ID so both engines in a dual-engine setup
+			// register the same operator ID, preventing lock divergence.
+			const clientId = crypto.randomUUID();
+			const data = await operatorRegisterWithInvite(operatorName, token!, clientId);
+			setAuthToken(data.token);
 			setCookie('switchframe_name', operatorName);
 			goto('/');
 		} catch (e) {

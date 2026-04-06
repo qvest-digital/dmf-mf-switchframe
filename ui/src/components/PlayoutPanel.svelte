@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
-	import type { ControlRoomState, PlayoutChannelState, Playlist, PlaylistItem, PlayoutClip, SampleClip } from '$lib/api/types';
+	import type { ControlRoomState, PlayoutChannelState, Playlist, PlaylistItem, PlayoutClip, SampleClip, CacheStatus as CacheStatusType } from '$lib/api/types';
 	import {
 		playoutPlaylist, playoutLoadPlaylist, playoutTemplateNames,
 		playoutTemplate, playoutSamples, playoutClips,
@@ -23,8 +23,10 @@
 
 	interface Props {
 		state: ControlRoomState;
+		isDualEngine?: boolean;
+		getCacheStatus?: (engine: 'A' | 'B') => Promise<CacheStatusType>;
 	}
-	let { state: crState }: Props = $props();
+	let { state: crState, isDualEngine = false, getCacheStatus }: Props = $props();
 
 	// ── Panel mode: edit vs monitor ──
 	let panelMode = $state<'edit' | 'monitor'>('edit');
@@ -578,7 +580,7 @@
 			</button>
 		{:else}
 			<!-- Monitor mode: inline transport in header -->
-			<PlayoutTransport {channel} onCueTop={workingPlaylist.items.length > 0 ? handleCueTop : undefined} />
+			<PlayoutTransport {channel} onCueTop={workingPlaylist.items.length > 0 ? handleCueTop : undefined} {isDualEngine} {getCacheStatus} />
 		{/if}
 
 		<!-- Mode toggle -->
@@ -649,7 +651,7 @@
 					</span>
 				</div>
 
-				<PlayoutTransport {channel} onCueTop={workingPlaylist.items.length > 0 ? handleCueTop : undefined} />
+				<PlayoutTransport {channel} onCueTop={workingPlaylist.items.length > 0 ? handleCueTop : undefined} {isDualEngine} {getCacheStatus} />
 
 				{#if isOnAir || isCued}
 					<div class="now-playing">

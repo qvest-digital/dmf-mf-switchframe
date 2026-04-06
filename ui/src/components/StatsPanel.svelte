@@ -1,6 +1,5 @@
 <script lang="ts">
-	import { resolveApiUrl } from '$lib/api/base-url';
-	import { setEncoderBackend, authHeaders } from '$lib/api/switch-api';
+	import { setEncoderBackend, getEncoder, getDebugSnapshot, getPerfData, savePerfBaseline } from '$lib/api/switch-api';
 	import { notify } from '$lib/state/notifications.svelte';
 	import type { EncoderInfo } from '$lib/api/types';
 	import type { MediaPipeline, SourceDiagnostics } from '$lib/transport/media-pipeline';
@@ -418,13 +417,10 @@
 
 	async function fetchEncoderInfo() {
 		try {
-			const resp = await fetch(resolveApiUrl('/api/encoder'), { headers: authHeaders() });
-			if (resp.ok) {
-				const data = await resp.json();
-				availableEncoders = data.available ?? [];
-				currentEncoder = data.current ?? '';
-				selectedEncoder = currentEncoder;
-			}
+			const data = await getEncoder();
+			availableEncoders = data.available ?? [];
+			currentEncoder = data.current ?? '';
+			selectedEncoder = currentEncoder;
 		} catch { /* ignore */ }
 	}
 
@@ -458,15 +454,9 @@
 		try {
 			abortController?.abort();
 			abortController = new AbortController();
-			const resp = await fetch(resolveApiUrl('/api/debug/snapshot'), {
-				signal: abortController.signal,
-				headers: authHeaders(),
-			});
-			if (resp.ok) {
-				snapshot = await resp.json();
-				lastUpdateTime = Date.now();
-				recordHistory();
-			}
+			snapshot = await getDebugSnapshot({ signal: abortController.signal });
+			lastUpdateTime = Date.now();
+			recordHistory();
 		} catch { /* ignore network + abort errors */ }
 	}
 
@@ -487,14 +477,11 @@
 		try {
 			abortController?.abort();
 			abortController = new AbortController();
-			const url = activeBaseline
-				? resolveApiUrl(`/api/perf?baseline=${encodeURIComponent(activeBaseline)}`)
-				: resolveApiUrl('/api/perf');
-			const resp = await fetch(url, { signal: abortController.signal, headers: authHeaders() });
-			if (resp.ok) {
-				perfData = await resp.json();
-				lastUpdateTime = Date.now();
-			}
+			perfData = await getPerfData({
+				baseline: activeBaseline || undefined,
+				signal: abortController.signal,
+			}) as unknown as PerfSnapshot;
+			lastUpdateTime = Date.now();
 		} catch { /* ignore network + abort errors */ }
 	}
 
@@ -678,11 +665,7 @@
 
 	async function saveBaseline() {
 		try {
-			await fetch(resolveApiUrl('/api/perf/baseline'), {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json', ...authHeaders() },
-				body: JSON.stringify({ name: baselineName }),
-			});
+			await savePerfBaseline(baselineName);
 			activeBaseline = baselineName;
 			baselineName = '';
 		} catch { /* ignore */ }

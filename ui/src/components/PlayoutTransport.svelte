@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onDestroy } from 'svelte';
-	import type { PlayoutChannelState } from '$lib/api/types';
+	import type { PlayoutChannelState, CacheStatus } from '$lib/api/types';
 	import {
 		playoutStart, playoutStop, playoutNext, playoutPrevious,
 		playoutTakeManual, playoutReturnToAuto, apiCall,
@@ -14,8 +14,10 @@
 	interface Props {
 		channel: PlayoutChannelState;
 		onCueTop?: () => void;
+		isDualEngine?: boolean;
+		getCacheStatus?: (engine: 'A' | 'B') => Promise<CacheStatus>;
 	}
-	let { channel, onCueTop }: Props = $props();
+	let { channel, onCueTop, isDualEngine = false, getCacheStatus }: Props = $props();
 
 	const isOnAir = $derived(channel.state === 'on_air');
 	const isCued = $derived(channel.state === 'cued');
@@ -36,7 +38,35 @@
 		confirmingStop = false;
 	}
 
+	// ── Dual-engine cache warning ──
+	interface CacheWarning {
+		engine: 'A' | 'B';
+		fetchingCount: number;
+	}
+	let cacheWarnings: CacheWarning[] = $state([]);
+
+	async function checkDualEngineCache(): Promise<void> {
+		if (!isDualEngine || !getCacheStatus) return;
+		const warnings: CacheWarning[] = [];
+		try {
+			const [statusA, statusB] = await Promise.all([
+				getCacheStatus('A'),
+				getCacheStatus('B'),
+			]);
+			if (statusA.fetchingCount > 0) {
+				warnings.push({ engine: 'A', fetchingCount: statusA.fetchingCount });
+			}
+			if (statusB.fetchingCount > 0) {
+				warnings.push({ engine: 'B', fetchingCount: statusB.fetchingCount });
+			}
+		} catch {
+			// Cache check is best-effort; don't block playback
+		}
+		cacheWarnings = warnings;
+	}
+
 	function handlePlay() {
+		checkDualEngineCache();
 		apiCall(playoutStart(channel.id), 'Playout start');
 	}
 
@@ -148,6 +178,14 @@
 		{/if}
 	</div>
 
+	{#if cacheWarnings.length > 0}
+		<div class="cache-warning">
+			{#each cacheWarnings as w}
+				<span class="cache-warning-item">Engine {w.engine}: {w.fetchingCount} item{w.fetchingCount !== 1 ? 's' : ''} still caching</span>
+			{/each}
+		</div>
+	{/if}
+
 	<div class="mode-row">
 		<span class="row-label">MODE</span>
 		<span class="mode-pill" class:auto={isAuto} class:manual={isManual} class:break-mode={isBreak}>
@@ -249,6 +287,24 @@
 		margin-left: 4px;
 		letter-spacing: 0.04em;
 		white-space: nowrap;
+	}
+
+	.cache-warning {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		padding: 3px 6px;
+		background: rgba(234, 168, 23, 0.1);
+		border: 1px solid rgba(234, 168, 23, 0.3);
+		border-radius: var(--radius-sm);
+	}
+
+	.cache-warning-item {
+		font-family: var(--font-ui);
+		font-size: 10px;
+		font-weight: 600;
+		color: var(--accent-orange);
+		letter-spacing: 0.02em;
 	}
 
 	.mode-row {

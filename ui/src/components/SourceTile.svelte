@@ -1,6 +1,7 @@
 <script lang="ts">
-	import type { SourceInfo, TallyStatus, LayoutSlotState } from '$lib/api/types';
+	import type { SourceInfo, TallyStatus, LayoutSlotState, SourceHealthStatus } from '$lib/api/types';
 	import { computeSRTHealth } from '$lib/util/srt-health';
+	import { healthDotColor } from '$lib/util/health-dots';
 	import SRTHealthDot from './SRTHealthDot.svelte';
 
 	interface Props {
@@ -9,12 +10,17 @@
 		index: number;
 		audioLevelDb?: number;
 		layoutSlots?: LayoutSlotState[];
+		engineSourceHealth?: { A: SourceHealthStatus; B: SourceHealthStatus } | null;
 		onclick?: () => void;
 		onLabelChange?: (key: string, label: string) => void;
 		onSRTClick?: (e: MouseEvent) => void;
 	}
 
-	let { source, tally, index, audioLevelDb = -96, layoutSlots, onclick, onLabelChange, onSRTClick }: Props = $props();
+	let { source, tally, index, audioLevelDb = -96, layoutSlots, engineSourceHealth, onclick, onLabelChange, onSRTClick }: Props = $props();
+
+	let showDualDots = $derived(
+		engineSourceHealth != null && engineSourceHealth.A !== engineSourceHealth.B
+	);
 
 	let isPIP = $derived(layoutSlots?.some(s => s.enabled && s.sourceKey === source.key) ?? false);
 	let srtHealth = $derived(computeSRTHealth(source.srt));
@@ -109,9 +115,16 @@
 			role={onLabelChange ? 'button' : undefined}
 		>{source.label || source.key}</span>
 	{/if}
-	<span class="tile-status" class:offline={source.status === 'offline'} class:stale={source.status === 'stale'}>
-		{#if source.isVirtual}<span class="virtual-badge">RPL</span>{:else if source.status !== 'healthy'}{source.status}{/if}
-	</span>
+	{#if showDualDots}
+		<span class="engine-health-dots" aria-label="Engine health: A {engineSourceHealth!.A}, B {engineSourceHealth!.B}">
+			<span class="engine-dot-a"><span class="engine-label">A</span><span class="engine-dot" style="background: {healthDotColor(engineSourceHealth!.A)}"></span></span>
+			<span class="engine-dot-b"><span class="engine-label">B</span><span class="engine-dot" style="background: {healthDotColor(engineSourceHealth!.B)}"></span></span>
+		</span>
+	{:else}
+		<span class="tile-status" class:offline={source.status === 'offline'} class:stale={source.status === 'stale'}>
+			{#if source.isVirtual}<span class="virtual-badge">RPL</span>{:else if source.status !== 'healthy'}{source.status}{/if}
+		</span>
+	{/if}
 
 	{#if source.delayMs && source.delayMs > 0}
 		<span class="delay-badge">D:{source.delayMs}ms</span>
@@ -253,6 +266,36 @@
 		background: var(--overlay-heavy);
 		padding: 0 2px;
 		border-radius: var(--radius-xs);
+	}
+
+	/* Dual engine health dots */
+	.engine-health-dots {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		font-size: 9px;
+		line-height: 1;
+	}
+
+	.engine-dot-a,
+	.engine-dot-b {
+		display: flex;
+		align-items: center;
+		gap: 1px;
+	}
+
+	.engine-label {
+		font-family: var(--font-mono);
+		font-weight: 600;
+		font-size: 8px;
+		opacity: 0.7;
+	}
+
+	.engine-dot {
+		display: inline-block;
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
 	}
 
 	.source-tile :global(.srt-dot) {

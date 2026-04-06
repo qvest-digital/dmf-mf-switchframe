@@ -1,10 +1,22 @@
 <script lang="ts">
+	interface EngineStatus {
+		mode: 'dual' | 'single';
+		engineDown?: 'A' | 'B';
+		reason?: 'unreachable' | 'offline';
+		provisioning?: boolean;
+		restored?: boolean;
+	}
+
 	interface Props {
 		connectionState: 'webtransport' | 'polling' | 'disconnected';
 		syncStatus: 'ok' | 'resyncing' | 'disconnected';
+		// New optional props for dual-engine mode:
+		engineFallbackUrl?: string | null;  // URL of the other engine (null = single-engine mode)
+		servingEngine?: string | null;      // ID of the engine that served this page ('A' or 'B')
+		engineStatus?: EngineStatus;
 	}
 
-	let { connectionState, syncStatus }: Props = $props();
+	let { connectionState, syncStatus, engineFallbackUrl = null, servingEngine = null, engineStatus }: Props = $props();
 
 	// Track whether WebTransport was ever connected so we only show
 	// the polling banner as a degradation, not on initial fallback.
@@ -20,9 +32,63 @@
 	let isPolling = $derived(
 		!isDisconnected && !isResyncing && hadWebTransport && connectionState === 'polling' && syncStatus === 'ok'
 	);
+
+	const otherEngine = $derived(servingEngine === 'A' ? 'B' : 'A');
+	const showEngineFallback = $derived(
+		engineFallbackUrl != null && connectionState === 'disconnected'
+	);
+
+	// Dual-engine status
+	const isDualMode = $derived(engineStatus?.mode === 'dual');
+	const survivingEngine = $derived(engineStatus?.engineDown === 'A' ? 'B' : 'A');
+
+	const showEngineWarning = $derived(
+		isDualMode && engineStatus?.engineDown != null && engineStatus?.reason != null && !engineStatus?.restored
+	);
+
+	let showRestoredBanner = $state(false);
+	$effect(() => {
+		if (isDualMode && engineStatus?.restored) {
+			showRestoredBanner = true;
+			const timer = setTimeout(() => {
+				showRestoredBanner = false;
+			}, 3000);
+			return () => clearTimeout(timer);
+		} else {
+			showRestoredBanner = false;
+		}
+	});
+
+	const engineWarningText = $derived.by(() => {
+		if (!engineStatus?.engineDown) return '';
+		const engine = engineStatus.engineDown;
+		if (engineStatus.reason === 'unreachable') {
+			return `Engine ${engine} unreachable \u2014 commands routing to Engine ${survivingEngine} only`;
+		}
+		if (engineStatus.provisioning) {
+			return `Engine ${engine} offline \u2014 provisioning replacement...`;
+		}
+		if (engineStatus.reason === 'offline') {
+			return `Engine ${engine} offline \u2014 redundancy degraded. Restoring...`;
+		}
+		return '';
+	});
 </script>
 
-{#if isDisconnected}
+{#if showRestoredBanner}
+	<div class="connection-banner engine-restored" role="status" aria-live="polite">
+		Redundancy restored
+	</div>
+{:else if showEngineWarning}
+	<div class="connection-banner engine-warning" role="alert" aria-live="assertive">
+		{engineWarningText}
+	</div>
+{:else if showEngineFallback}
+	<div class="connection-banner engine-fallback" role="alert" aria-live="assertive">
+		Engine {servingEngine} unreachable —
+		<a href={engineFallbackUrl} class="fallback-link">Open via Engine {otherEngine}</a>
+	</div>
+{:else if isDisconnected}
 	<div class="disconnect-overlay" role="alertdialog" aria-live="assertive" aria-modal="true">
 		<div class="disconnect-content">
 			<span class="disconnect-text">CONNECTION LOST</span>
@@ -58,8 +124,36 @@
 	}
 
 	.connection-banner.resyncing {
-		background: #ccaa00;
+		background: var(--accent-yellow);
 		color: #000;
+	}
+
+	.connection-banner.engine-fallback {
+		background: var(--accent-yellow-dim);
+		border-bottom: 1px solid rgba(234, 179, 8, 0.3);
+		color: var(--accent-yellow);
+	}
+
+	.connection-banner.engine-warning {
+		background: var(--accent-yellow-dim, rgba(234, 179, 8, 0.15));
+		border-bottom: 1px solid rgba(234, 179, 8, 0.3);
+		color: var(--accent-yellow, #eab308);
+	}
+
+	.connection-banner.engine-restored {
+		background: var(--tally-preview-dim);
+		border-bottom: 1px solid var(--tally-preview-medium);
+		color: var(--tally-preview);
+	}
+
+	.fallback-link {
+		color: #fff;
+		text-decoration: underline;
+		font-weight: 600;
+	}
+
+	.fallback-link:hover {
+		color: var(--accent-yellow);
 	}
 
 	.disconnect-overlay {

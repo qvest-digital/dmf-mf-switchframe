@@ -12,13 +12,14 @@ import (
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/clip"
+	"github.com/zsiec/switchframe/server/cmdqueue"
 	"github.com/zsiec/switchframe/server/colorgrade"
 	"github.com/zsiec/switchframe/server/control/httperr"
 	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/htmlgfx"
 	"github.com/zsiec/switchframe/server/internal"
-"github.com/zsiec/switchframe/server/macro"
+	"github.com/zsiec/switchframe/server/macro"
 	"github.com/zsiec/switchframe/server/operator"
 	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/playout"
@@ -111,6 +112,8 @@ type SCTE35RulesAPI interface {
 	Create(rule scte35.Rule) (scte35.Rule, error)
 	Update(id string, rule scte35.Rule) error
 	Delete(id string) error
+	UpdateByName(name string, rule scte35.Rule) error
+	DeleteByName(name string) error
 	Reorder(ids []string) error
 	DefaultAction() scte35.RuleAction
 	SetDefaultAction(action scte35.RuleAction) error
@@ -396,6 +399,11 @@ func WithASRManager(m ASRManager) APIOption {
 	return func(a *API) { a.asrManager = m }
 }
 
+// WithCommandQueue attaches a command queue for timed execution of cut/preview commands.
+func WithCommandQueue(q *cmdqueue.Queue) APIOption {
+	return func(a *API) { a.cmdQueue = q }
+}
+
 // WithSTMapRegistry attaches an ST map registry to the API.
 func WithSTMapRegistry(r *stmap.Registry) APIOption {
 	return func(a *API) { a.stmapRegistry = r }
@@ -507,6 +515,7 @@ type API struct {
 	inviteTokens       map[string]string // token -> role; nil = no invite gating
 	sessionAPIToken    string            // used to bypass invite token requirement for session owner
 	allowedOutputPorts map[int]bool      // nil = unconstrained
+	snapshotProvider   SnapshotProvider
 	mux                *http.ServeMux
 	enrichFn           atomic.Pointer[enrichFunc]
 	lastOperator       atomic.Pointer[string]
@@ -519,6 +528,8 @@ type API struct {
 	uploadProgress     *internal.ClipUploadProgress
 	uploadStartTime    time.Time
 	asrConfigMu        sync.Mutex // serializes ASR config changes (prevents pile-up)
+	cmdQueue           *cmdqueue.Queue
+	startTime          time.Time
 }
 
 // enrichFunc is the type for the state enrichment callback.
@@ -529,7 +540,7 @@ type broadcastFunc func()
 
 // NewAPI creates an API that delegates to sw.
 func NewAPI(sw *switcher.Switcher, opts ...APIOption) *API {
-	a := &API{switcher: sw, mux: http.NewServeMux()}
+	a := &API{switcher: sw, mux: http.NewServeMux(), startTime: time.Now()}
 	for _, opt := range opts {
 		opt(a)
 	}
@@ -643,8 +654,8 @@ func (a *API) RegisterOnMux(mux *http.ServeMux) {
 // registerAPIRoutes registers all API route handlers on the given mux.
 func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	// Core routes (state, cut, preview) stay here
-	mux.HandleFunc("POST /api/switch/cut", a.handleCut)
-	mux.HandleFunc("POST /api/switch/preview", a.handlePreview)
+	mux.HandleFunc("POST /api/switch/cut", timedHandler(a.cmdQueue, "cut", a.handleCutInner))
+	mux.HandleFunc("POST /api/switch/preview", timedHandler(a.cmdQueue, "preview", a.handlePreviewInner))
 	mux.HandleFunc("GET /api/switch/state", a.handleState)
 
 	// Delegate to per-file route registration methods
@@ -674,6 +685,8 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	a.registerColorGradeRoutes(mux)
 	a.registerAISegmentRoutes(mux)
 	a.registerASRRoutes(mux)
+	mux.HandleFunc("GET /api/sync/health", a.handleSyncHealth)
+	a.registerSyncRoutes(mux)
 }
 
 func (a *API) registerRoutes() { a.RegisterOnMux(a.mux) }
@@ -690,11 +703,12 @@ func (a *API) registerDebugRoutes(mux *http.ServeMux) {
 	}
 }
 
-// handleCut performs a hard cut to the specified source.
-func (a *API) handleCut(w http.ResponseWriter, r *http.Request) {
+// handleCutInner performs a hard cut to the specified source.
+// body is the pre-read request body provided by timedHandler.
+func (a *API) handleCutInner(w http.ResponseWriter, r *http.Request, body []byte) {
 	a.setLastOperator(r)
 	var req switchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -710,11 +724,12 @@ func (a *API) handleCut(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }
 
-// handlePreview sets the preview source without affecting the program output.
-func (a *API) handlePreview(w http.ResponseWriter, r *http.Request) {
+// handlePreviewInner sets the preview source without affecting the program output.
+// body is the pre-read request body provided by timedHandler.
+func (a *API) handlePreviewInner(w http.ResponseWriter, r *http.Request, body []byte) {
 	a.setLastOperator(r)
 	var req switchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -734,4 +749,18 @@ func (a *API) handlePreview(w http.ResponseWriter, r *http.Request) {
 func (a *API) handleState(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(a.enrichedState())
+}
+
+// handleSyncHealth returns lightweight health information for redundancy monitoring.
+// Polled at 1Hz by the browser in dual-engine mode for clock sync calibration
+// and engine health detection.
+func (a *API) handleSyncHealth(w http.ResponseWriter, r *http.Request) {
+	state := a.enrichedState()
+	resp := map[string]any{
+		"ptpOffsetUs":    int64(0), // placeholder until PTP discipline is measured
+		"lastCommandSeq": state.LastCommandSeq,
+		"uptimeMs":       time.Since(a.startTime).Milliseconds(),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }

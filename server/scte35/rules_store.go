@@ -82,6 +82,65 @@ func (s *RulesStore) List() []Rule {
 	return result
 }
 
+// GetByName returns the first rule matching the given name, or ErrRuleNotFound.
+func (s *RulesStore) GetByName(name string) (Rule, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, r := range s.rules {
+		if r.Name == name {
+			return r, nil
+		}
+	}
+	return Rule{}, ErrRuleNotFound
+}
+
+// UpdateByName replaces a rule found by name. The rule's ID is preserved.
+func (s *RulesStore) UpdateByName(name string, rule Rule) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := range s.rules {
+		if s.rules[i].Name == name {
+			old := s.rules[i]
+			rule.ID = old.ID
+			s.rules[i] = rule
+			s.syncEngine()
+
+			if err := s.save(); err != nil {
+				s.rules[i] = old
+				s.syncEngine()
+				return fmt.Errorf("save rules: %w", err)
+			}
+			return nil
+		}
+	}
+	return ErrRuleNotFound
+}
+
+// DeleteByName removes the first rule matching the given name.
+func (s *RulesStore) DeleteByName(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i, r := range s.rules {
+		if r.Name == name {
+			old := make([]Rule, len(s.rules))
+			copy(old, s.rules)
+			s.rules = append(s.rules[:i], s.rules[i+1:]...)
+			s.syncEngine()
+
+			if err := s.save(); err != nil {
+				s.rules = old
+				s.syncEngine()
+				return fmt.Errorf("save rules: %w", err)
+			}
+			return nil
+		}
+	}
+	return ErrRuleNotFound
+}
+
 // Create adds a new rule to the store. An 8-character hex ID is assigned.
 // The rule is appended to the end of the list. Returns the created rule
 // (with ID assigned).

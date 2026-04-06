@@ -20,6 +20,14 @@ func (m *GPUSourceManager) queuePreviewFrame(entry *gpuSourceEntry, _ []byte, _ 
 	if entry.prevCh == nil {
 		return
 	}
+	// Guard against send-on-closed-channel when source is being removed
+	// concurrently. The channel may be closed between our nil check and
+	// the send — recover gracefully instead of panicking.
+	defer func() {
+		if r := recover(); r != nil {
+			// Channel was closed — source is being removed. Drop the frame.
+		}
+	}()
 
 	// Get the current cached frame with a Ref to prevent it from being
 	// recycled while we copy. Without this, IngestYUV can swap+release

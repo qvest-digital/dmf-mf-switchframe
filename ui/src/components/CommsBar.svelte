@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { CommsState } from '$lib/api/types';
+	import type { CommsState, EngineId } from '$lib/api/types';
 	import { commsJoin, commsLeave, commsMute, apiCall } from '$lib/api/switch-api';
 	import { CommsAudioManager } from '$lib/audio/comms';
 	import { notify } from '$lib/state/notifications.svelte';
@@ -11,12 +11,16 @@
 		visible: boolean;
 		onToggle: () => void;
 		getTransport?: () => WebTransport | null;
+		/** Get transport for a specific engine (dual-engine mode). */
+		getTransportForEngine?: (engineId: EngineId) => WebTransport | null;
+		/** Which engine is authoritative (dual-engine mode). Changes trigger reconnect. */
+		authoritativeEngine?: EngineId;
 		onCommsActive?: (active: boolean) => void;
 		onDimToggle?: () => void;
 		dimmed?: boolean;
 	}
 
-	let { commsState, operatorId, operatorName, visible, onToggle, getTransport, onCommsActive, onDimToggle, dimmed = false }: Props = $props();
+	let { commsState, operatorId, operatorName, visible, onToggle, getTransport, getTransportForEngine, authoritativeEngine, onCommsActive, onDimToggle, dimmed = false }: Props = $props();
 
 	const isJoined = $derived(
 		(commsState?.participants ?? []).some((p) => p.operatorId === operatorId)
@@ -28,6 +32,23 @@
 	let commsVolume = $state(75); // 0-100, default 75% (maps to gain 1.5)
 
 	let audioManager: CommsAudioManager | null = null;
+	/** Which engine the comms audio stream is currently connected to. */
+	let connectedEngine: EngineId | null = null;
+
+	// Reconnect comms when the authoritative engine changes (dual-engine failover).
+	$effect(() => {
+		const auth = authoritativeEngine;
+		if (!auth || !connectedEngine || !audioManager?.isActive || !getTransportForEngine) return;
+		if (auth === connectedEngine) return;
+
+		const newTransport = getTransportForEngine(auth);
+		if (!newTransport) return;
+
+		connectedEngine = auth;
+		audioManager.reconnect(newTransport).catch((err) => {
+			notify('error', `Comms failover failed: ${err}`);
+		});
+	});
 
 	function handleVolumeChange(e: Event) {
 		commsVolume = parseInt((e.target as HTMLInputElement).value);
@@ -52,8 +73,12 @@
 		try {
 			await commsJoin(operatorId, operatorName);
 
-			// Start audio after REST join succeeds
-			const transport = getTransport?.();
+			// Start audio after REST join succeeds.
+			// In dual-engine mode, connect to the authoritative engine's transport.
+			const engineToConnect = authoritativeEngine ?? 'A';
+			const transport = getTransportForEngine
+				? getTransportForEngine(engineToConnect)
+				: getTransport?.();
 			if (!transport) {
 				notify('warning', 'Comms joined (no WebTransport — audio unavailable)');
 			} else {
@@ -64,6 +89,7 @@
 					onCommsActive,
 				});
 				await audioManager.start(transport);
+				connectedEngine = engineToConnect;
 				// Apply initial volume from slider
 				const normalized = commsVolume / 100;
 				audioManager.setVolume(normalized * normalized * 3.0);
@@ -81,6 +107,7 @@
 			await audioManager.stop();
 			audioManager = null;
 		}
+		connectedEngine = null;
 	}
 </script>
 

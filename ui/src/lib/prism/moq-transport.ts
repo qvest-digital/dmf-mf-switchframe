@@ -80,6 +80,17 @@ interface MoQCatalog {
 	}[];
 }
 
+/** Extract port from an address string, handling IPv6 bracket notation. */
+function extractPort(addr: string): string {
+	// IPv6 bracket format: [::1]:4443
+	const bracketMatch = addr.match(/]:(\d+)$/);
+	if (bracketMatch) return bracketMatch[1];
+	// IPv4/hostname: 0.0.0.0:4443 or :4443
+	const colonMatch = addr.match(/:(\d+)$/);
+	if (colonMatch) return colonMatch[1];
+	return '4443';
+}
+
 /**
  * MoQ Transport client implementing draft-15. Handles the WebTransport
  * connection, MoQ control handshake, catalog subscription, and incoming
@@ -114,10 +125,14 @@ export class MoQTransport {
 	/** Video subscriber priority (lower = higher priority). Default 64. */
 	private videoPriority: number;
 
-	constructor(streamKey: string, callbacks: MoQTransportCallbacks, videoPriority = 64) {
+	/** Optional base URL for connecting to a remote engine (e.g. Engine B). */
+	private baseUrl: string | null;
+
+	constructor(streamKey: string, callbacks: MoQTransportCallbacks, videoPriority = 64, baseUrl?: string) {
 		this.streamKey = streamKey;
 		this.callbacks = callbacks;
 		this.videoPriority = videoPriority;
+		this.baseUrl = baseUrl ?? null;
 	}
 
 	/** Returns the underlying WebTransport session, or null if not connected. */
@@ -126,11 +141,31 @@ export class MoQTransport {
 	}
 
 	async connect(): Promise<void> {
-		const info = await fetchServerInfo();
-		const url = `${wtBaseURL(info)}/moq?stream=${encodeURIComponent(this.streamKey)}`;
+		let certHash: Uint8Array;
+		let trusted: boolean;
+		let wtUrl: string;
+
+		if (this.baseUrl) {
+			// Remote engine: fetch cert-hash from the specified base URL
+			const resp = await fetch(`${this.baseUrl}/api/cert-hash`);
+			if (!resp.ok) throw new Error(`cert-hash fetch failed: HTTP ${resp.status}`);
+			const data = await resp.json();
+			const hashBinary = atob(data.hash);
+			certHash = Uint8Array.from(hashBinary, (c) => c.charCodeAt(0));
+			trusted = data.trusted === true;
+			const port = extractPort(data.addr ?? ":4443");
+			const hostname = new URL(this.baseUrl).hostname;
+			wtUrl = `https://${hostname}:${port}/moq?stream=${encodeURIComponent(this.streamKey)}`;
+		} else {
+			// Local engine: existing behavior (same origin)
+			const info = await fetchServerInfo();
+			wtUrl = `${wtBaseURL(info)}/moq?stream=${encodeURIComponent(this.streamKey)}`;
+			certHash = info.certHash;
+			trusted = info.trusted;
+		}
 
 		try {
-			this.transport = await connectWebTransport(url, info.certHash, info.trusted);
+			this.transport = await connectWebTransport(wtUrl, certHash, trusted);
 		} catch (err) {
 			this.callbacks.onError(`MoQ WebTransport connection failed: ${err}`);
 			return;

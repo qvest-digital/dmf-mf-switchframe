@@ -118,19 +118,28 @@ type mockSCTE35Rules struct {
 	defaultAction scte35.RuleAction
 	templates     []scte35.Rule
 
-	createCalls   []scte35.Rule
-	updateCalls   []mockUpdateCall
-	deleteCalls   []string
-	reorderCalls  [][]string
-	setDefCalls   []scte35.RuleAction
-	fromTmplCalls []string
+	createCalls       []scte35.Rule
+	updateCalls       []mockUpdateCall
+	deleteCalls       []string
+	updateByNameCalls []mockUpdateByNameCall
+	deleteByNameCalls []string
+	reorderCalls      [][]string
+	setDefCalls       []scte35.RuleAction
+	fromTmplCalls     []string
 
-	createErr   error
-	updateErr   error
-	deleteErr   error
-	reorderErr  error
-	setDefErr   error
-	fromTmplErr error
+	createErr       error
+	updateErr       error
+	deleteErr       error
+	updateByNameErr error
+	deleteByNameErr error
+	reorderErr      error
+	setDefErr       error
+	fromTmplErr     error
+}
+
+type mockUpdateByNameCall struct {
+	name string
+	rule scte35.Rule
 }
 
 type mockUpdateCall struct {
@@ -159,6 +168,16 @@ func (m *mockSCTE35Rules) Update(id string, rule scte35.Rule) error {
 func (m *mockSCTE35Rules) Delete(id string) error {
 	m.deleteCalls = append(m.deleteCalls, id)
 	return m.deleteErr
+}
+
+func (m *mockSCTE35Rules) UpdateByName(name string, rule scte35.Rule) error {
+	m.updateByNameCalls = append(m.updateByNameCalls, mockUpdateByNameCall{name, rule})
+	return m.updateByNameErr
+}
+
+func (m *mockSCTE35Rules) DeleteByName(name string) error {
+	m.deleteByNameCalls = append(m.deleteByNameCalls, name)
+	return m.deleteByNameErr
 }
 
 func (m *mockSCTE35Rules) Reorder(ids []string) error {
@@ -1014,4 +1033,68 @@ func TestBuildCueMessage_OptionalFields(t *testing.T) {
 	require.Equal(t, uint16(500), msg.UniqueProgramID)
 	require.Equal(t, uint8(1), msg.AvailNum)
 	require.Equal(t, uint8(3), msg.AvailsExpected)
+}
+
+// --- Name-based rule handler tests ---
+
+func TestHandleSCTE35UpdateRuleByName(t *testing.T) {
+	api, _, mr := setupSCTE35TestAPI(t)
+
+	body := `{"name":"my rule","enabled":true,"conditions":[{"field":"command_type","operator":"=","value":"5"}],"logic":"and","action":"delete"}`
+	req := httptest.NewRequest("PUT", "/api/scte35/rules/by-name/my%20rule", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+	require.Len(t, mr.updateByNameCalls, 1)
+	require.Equal(t, "my rule", mr.updateByNameCalls[0].name)
+	require.Equal(t, scte35.ActionDelete, mr.updateByNameCalls[0].rule.Action)
+}
+
+func TestHandleSCTE35UpdateRuleByNameNotFound(t *testing.T) {
+	api, _, mr := setupSCTE35TestAPI(t)
+	mr.updateByNameErr = scte35.ErrRuleNotFound
+
+	body := `{"name":"nope","action":"pass"}`
+	req := httptest.NewRequest("PUT", "/api/scte35/rules/by-name/nope", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestHandleSCTE35UpdateRuleByNameInvalidJSON(t *testing.T) {
+	api, _, _ := setupSCTE35TestAPI(t)
+
+	req := httptest.NewRequest("PUT", "/api/scte35/rules/by-name/test", strings.NewReader("{bad"))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestHandleSCTE35DeleteRuleByName(t *testing.T) {
+	api, _, mr := setupSCTE35TestAPI(t)
+
+	req := httptest.NewRequest("DELETE", "/api/scte35/rules/by-name/my%20rule", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+	require.Len(t, mr.deleteByNameCalls, 1)
+	require.Equal(t, "my rule", mr.deleteByNameCalls[0])
+}
+
+func TestHandleSCTE35DeleteRuleByNameNotFound(t *testing.T) {
+	api, _, mr := setupSCTE35TestAPI(t)
+	mr.deleteByNameErr = scte35.ErrRuleNotFound
+
+	req := httptest.NewRequest("DELETE", "/api/scte35/rules/by-name/nope", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotFound, rec.Code)
 }

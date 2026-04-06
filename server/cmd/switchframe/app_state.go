@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/zsiec/prism/distribution"
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
@@ -784,4 +785,257 @@ func dveSlotStateFromTransform(t dve.Transform) *internal.DVESlotState {
 	}
 
 	return state
+}
+
+// captureFullSnapshot reads from every subsystem and assembles a
+// FullStateSnapshot representing the complete restorable engine state.
+// This is used for multi-region active-active redundancy: a browser
+// detecting state divergence pulls a snapshot from the authoritative
+// engine and pushes it to the lagging one.
+func (a *App) captureFullSnapshot() internal.FullStateSnapshot {
+	state := a.sw.State()
+
+	snap := internal.FullStateSnapshot{
+		Version:    "1",
+		CapturedAt: clock.Now(),
+
+		// Switching
+		ProgramSource: state.ProgramSource,
+		PreviewSource: state.PreviewSource,
+
+		// Transition
+		TransitionType:       state.TransitionType,
+		TransitionDurationMs: state.TransitionDurationMs,
+		TransitionEasing:     state.TransitionEasing,
+		FTBActive:            state.FTBActive,
+	}
+
+	// --- Audio channels ---
+	if channels := a.mixer.ChannelStates(); len(channels) > 0 {
+		snap.AudioChannels = make(map[string]internal.AudioChannelSnapshot, len(channels))
+		for key, ch := range channels {
+			acs := internal.AudioChannelSnapshot{
+				Level:        ch.Level,
+				Trim:         ch.Trim,
+				Muted:        ch.Muted,
+				AFV:          ch.AFV,
+				PhaseInvert:  ch.PhaseInvert,
+				Balance:      ch.Balance,
+				HPFFrequency: ch.HPFFrequency,
+				HPFEnabled:   ch.HPFEnabled,
+				Compressor: internal.CompressorSnapshot{
+					Threshold:  ch.Compressor.Threshold,
+					Ratio:      ch.Compressor.Ratio,
+					Attack:     ch.Compressor.Attack,
+					Release:    ch.Compressor.Release,
+					MakeupGain: ch.Compressor.MakeupGain,
+				},
+				Gate: internal.GateSnapshot{
+					Threshold: ch.Gate.Threshold,
+					Range:     ch.Gate.Range,
+					Attack:    ch.Gate.Attack,
+					Release:   ch.Gate.Release,
+					Hold:      ch.Gate.Hold,
+					Enabled:   ch.GateEnabled,
+				},
+				AudioDelayMs: ch.AudioDelayMs,
+			}
+			for i := 0; i < 3; i++ {
+				acs.EQ[i] = internal.EQBandSnapshot{
+					Frequency: ch.EQ[i].Frequency,
+					Gain:      ch.EQ[i].Gain,
+					Q:         ch.EQ[i].Q,
+					Enabled:   ch.EQ[i].Enabled,
+				}
+			}
+			snap.AudioChannels[key] = acs
+		}
+	}
+
+	// --- Audio master bus ---
+	snap.AudioMaster.MasterLevel = a.mixer.MasterLevel()
+	if state.Limiter != nil {
+		snap.AudioMaster.LimiterThreshold = state.Limiter.Threshold
+		snap.AudioMaster.LimiterCeiling = state.Limiter.Ceiling
+	} else {
+		// Fall back to direct mixer query.
+		threshold, ceiling, _ := a.mixer.LimiterSettings()
+		snap.AudioMaster.LimiterThreshold = threshold
+		snap.AudioMaster.LimiterCeiling = ceiling
+	}
+
+	// --- Graphics (DSK layers) ---
+	gfxStatus := a.compositor.Status()
+	for _, l := range gfxStatus.Layers {
+		snap.Graphics = append(snap.Graphics, internal.GraphicsLayerSnapshot{
+			ID:        l.ID,
+			Active:    l.Active,
+			ZOrder:    l.ZOrder,
+			X:         l.Rect.X,
+			Y:         l.Rect.Y,
+			Width:     l.Rect.Width,
+			Height:    l.Rect.Height,
+			Template:  l.Template,
+			ImageName: l.ImageName,
+		})
+	}
+
+	// --- DVE / Layout ---
+	if a.dveCompositor != nil {
+		if dl := a.dveCompositor.GetLayout(); dl != nil {
+			snap.Layout.ActivePreset = dl.Name
+			for _, slot := range dl.Slots {
+				snap.Layout.Slots = append(snap.Layout.Slots, dveSlotSnapshotFromTransform(slot))
+			}
+		}
+	}
+
+	// --- Captions ---
+	if a.captionMgr != nil {
+		cs := a.captionMgr.State()
+		snap.CaptionMode = cs.Mode
+	}
+
+	// --- Clip players ---
+	if a.clipMgr != nil {
+		for _, ps := range a.clipMgr.PlayerStates() {
+			snap.ClipPlayers = append(snap.ClipPlayers, internal.ClipPlayerSnapshot{
+				ID:     ps.ID,
+				ClipID: ps.ClipID,
+				State:  string(ps.State),
+				Speed:  ps.Speed,
+				Loop:   ps.Loop,
+			})
+		}
+	}
+
+	// --- Source labels and positions ---
+	if len(state.Sources) > 0 {
+		snap.Sources = make(map[string]internal.SourceConfigSnapshot, len(state.Sources))
+		for key, info := range state.Sources {
+			snap.Sources[key] = internal.SourceConfigSnapshot{
+				Label:    info.Label,
+				Position: info.Position,
+			}
+		}
+	}
+
+	// --- Upstream keys ---
+	for key, info := range state.Sources {
+		if info.KeyConfig != nil && info.KeyConfig.Type != "" {
+			if snap.UpstreamKeys == nil {
+				snap.UpstreamKeys = make(map[string]internal.UpstreamKeySnapshot)
+			}
+			snap.UpstreamKeys[key] = internal.UpstreamKeySnapshot{
+				Type:           info.KeyConfig.Type,
+				Enabled:        info.KeyConfig.Enabled,
+				KeyColorY:      info.KeyConfig.KeyColorY,
+				KeyColorCb:     info.KeyConfig.KeyColorCb,
+				KeyColorCr:     info.KeyConfig.KeyColorCr,
+				Similarity:     info.KeyConfig.Similarity,
+				Smoothness:     info.KeyConfig.Smoothness,
+				SpillSuppress:  info.KeyConfig.SpillSuppress,
+				SpillReplaceCb: info.KeyConfig.SpillReplaceCb,
+				SpillReplaceCr: info.KeyConfig.SpillReplaceCr,
+				LowClip:        info.KeyConfig.LowClip,
+				HighClip:       info.KeyConfig.HighClip,
+				Softness:       info.KeyConfig.Softness,
+				FillSource:     info.KeyConfig.FillSource,
+			}
+		}
+	}
+
+	// --- Color grading ---
+	if a.colorGradeCtrl != nil {
+		cgState := a.colorGradeCtrl.GetState()
+		snap.ColorGrade = &internal.ColorGradeSnapshot{
+			Enabled:   cgState.Enabled,
+			LookName:  cgState.LookName,
+			LookGroup: cgState.LookGroup,
+			Intensity: cgState.Intensity,
+		}
+	}
+
+	// --- ST map assignments ---
+	if a.stmapRegistry != nil {
+		stmapState := a.stmapRegistry.State()
+		if len(stmapState.Sources) > 0 || stmapState.Program != nil {
+			stSnap := &internal.STMapSnapshot{
+				Sources: stmapState.Sources,
+			}
+			if stmapState.Program != nil {
+				stSnap.Program = stmapState.Program.Map
+			}
+			snap.STMaps = stSnap
+		}
+	}
+
+	return snap
+}
+
+// dveSlotSnapshotFromTransform converts a DVE Slot to a DVESlotSnapshot
+// for the full state snapshot.
+func dveSlotSnapshotFromTransform(slot dve.Slot) internal.DVESlotSnapshot {
+	t := slot.Transform
+	ds := internal.DVESlotSnapshot{
+		SourceKey:     slot.SourceKey,
+		Enabled:       slot.Enabled,
+		ZOrder:        slot.ZOrder,
+		PositionX:     t.PositionX,
+		PositionY:     t.PositionY,
+		Width:         t.Width,
+		Height:        t.Height,
+		RotationDeg:   t.RotationDeg,
+		AnchorX:       t.AnchorX,
+		AnchorY:       t.AnchorY,
+		PerspectiveX:  t.PerspectiveX,
+		PerspectiveY:  t.PerspectiveY,
+		CropTop:       t.CropTop,
+		CropBottom:    t.CropBottom,
+		CropLeft:      t.CropLeft,
+		CropRight:     t.CropRight,
+		CropSoftness:  t.CropSoftness,
+		Opacity:       t.Opacity,
+		ScaleMode:     t.ScaleMode,
+		CropAnchor:    t.CropAnchor,
+		DefocusRadius: t.DefocusRadius,
+		MirrorH:       t.MirrorH,
+		MirrorV:       t.MirrorV,
+		MosaicSize:    t.MosaicSize,
+		Saturation:    t.Saturation,
+		Brightness:    t.Brightness,
+		Contrast:      t.Contrast,
+	}
+
+	if t.Border.Width > 0 || t.Border.CornerRadius > 0 {
+		ds.Border = &internal.DVEBorderSnapshot{
+			Width:        t.Border.Width,
+			ColorY:       t.Border.ColorY,
+			ColorCb:      t.Border.ColorCb,
+			ColorCr:      t.Border.ColorCr,
+			CornerRadius: t.Border.CornerRadius,
+			Softness:     t.Border.Softness,
+			InnerWidth:   t.Border.InnerWidth,
+		}
+	}
+
+	if t.Shadow.Enabled {
+		ds.Shadow = &internal.DVEShadowSnapshot{
+			Enabled: true,
+			OffsetX: t.Shadow.OffsetX,
+			OffsetY: t.Shadow.OffsetY,
+			Blur:    t.Shadow.Blur,
+			Opacity: t.Shadow.Opacity,
+			ColorY:  t.Shadow.ColorY,
+		}
+	}
+
+	if t.Is3D() {
+		ds.Mode3D = t.Mode3D
+		ds.RotateX = t.Transform3D.RotateX
+		ds.RotateY = t.Transform3D.RotateY
+		ds.RotateZ = t.Transform3D.RotateZ
+	}
+
+	return ds
 }

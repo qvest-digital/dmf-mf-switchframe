@@ -28,12 +28,13 @@
 		pflMode?: PFLMode;
 		pflManager?: { setAFLGain(sourceKey: string, linearGain: number): void } | null;
 		selectedChannel?: string | null;
+		audioDrift?: { channel: string; deltaDb: number } | null;
 		onPFLToggle?: (sourceKey: string) => void;
 		onStateUpdate?: (state: ControlRoomState) => void;
 		onChannelSelect?: (sourceKey: string | null) => void;
 	}
 
-	let { state: crState, sourceLevels = {}, programLevels = { peakL: 0, peakR: 0 }, pflActiveSource = null, pflMode = 'off' as PFLMode, pflManager = null, selectedChannel = null, onPFLToggle, onStateUpdate, onChannelSelect }: Props = $props();
+	let { state: crState, sourceLevels = {}, programLevels = { peakL: 0, peakR: 0 }, pflActiveSource = null, pflMode = 'off' as PFLMode, pflManager = null, selectedChannel = null, audioDrift = null, onPFLToggle, onStateUpdate, onChannelSelect }: Props = $props();
 
 	let ui = $state({ collapsed: false });
 
@@ -256,6 +257,9 @@
 	<button class="collapse-toggle" onclick={() => ui = { ...ui, collapsed: !ui.collapsed }} title={ui.collapsed ? 'Expand audio mixer' : 'Collapse audio mixer'}>
 		<span class="toggle-arrow">{ui.collapsed ? '\u25B6' : '\u25BC'}</span>
 		<span class="toggle-label">AUDIO</span>
+		{#if audioDrift}
+			<span class="drift-badge" title={`Engine A and Engine B audio levels differ by >${audioDrift.deltaDb}dB on ${audioDrift.channel}`}>&#9888; drift</span>
+		{/if}
 	</button>
 	<!-- Channel strips -->
 	{#each sortedKeys as key (key)}
@@ -732,6 +736,9 @@
 	<button class="collapse-toggle" onclick={() => ui = { ...ui, collapsed: !ui.collapsed }} title={ui.collapsed ? 'Expand audio mixer' : 'Collapse audio mixer'}>
 		<span class="toggle-arrow">{ui.collapsed ? '\u25B6' : '\u25BC'}</span>
 		<span class="toggle-label">AUDIO</span>
+		{#if audioDrift}
+			<span class="drift-badge" title={`Engine A and Engine B audio levels differ by >${audioDrift.deltaDb}dB on ${audioDrift.channel}`}>&#9888; drift</span>
+		{/if}
 	</button>
 	{/if}
 </div>
@@ -1113,6 +1120,21 @@
 
 	.toggle-arrow {
 		font-size: var(--text-xs);
+	}
+
+	.drift-badge {
+		display: inline-flex;
+		align-items: center;
+		padding: 1px 5px;
+		background: rgba(245, 158, 11, 0.15);
+		color: #f59e0b;
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.03em;
+		border: 1px solid rgba(245, 158, 11, 0.3);
+		border-radius: 3px;
+		line-height: 1.2;
+		cursor: help;
 	}
 
 	@media (max-width: 1023px) {

@@ -17,6 +17,7 @@ function makeState(overrides: Partial<ControlRoomState> = {}): ControlRoomState 
 		tallyState: {},
 		sources: {},
 		seq: 0,
+		lastCommandSeq: 0,
 		timestamp: 0,
 		...overrides,
 	};

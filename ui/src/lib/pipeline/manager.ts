@@ -1,4 +1,5 @@
 import type { MediaPipeline } from '$lib/transport/media-pipeline';
+import { createMediaPipeline } from '$lib/transport/media-pipeline';
 
 /** Audio peak levels for a single channel (linear 0..1). */
 export interface PeakLevels {
@@ -22,6 +23,9 @@ export class PipelineManager {
 	private pipeline: MediaPipeline;
 	private getSourceKeys: () => string[];
 	private onLevelsUpdate?: (sourceLevels: Record<string, PeakLevels>, programLevels: PeakLevels) => void;
+
+	/** Secondary pipeline for Engine B (compare mode / A/B toggle). */
+	private pipelineB: MediaPipeline | null = null;
 
 	/** Track which sources are connected to avoid duplicate work. */
 	private connectedSources = new Set<string>();
@@ -263,9 +267,96 @@ export class PipelineManager {
 		};
 	}
 
+	/** Create Engine B media pipeline for compare mode / A/B toggle. */
+	createEngineBPipeline(engineBUrl: string): void {
+		if (this.pipelineB) return;
+		this.pipelineB = createMediaPipeline({ engineBaseUrl: engineBUrl });
+	}
+
+	/** Destroy Engine B pipeline. */
+	destroyEngineBPipeline(): void {
+		this.pipelineB?.destroy();
+		this.pipelineB = null;
+	}
+
+	/** Connect a source on Engine B's pipeline. */
+	connectSourceB(key: string): void {
+		if (!this.pipelineB) return;
+		this.pipelineB.addSource(key);
+		this.pipelineB.connectSource(key);
+	}
+
+	/** Disconnect a source on Engine B. */
+	disconnectSourceB(key: string): void {
+		if (!this.pipelineB) return;
+		this.pipelineB.removeSource(key);
+	}
+
+	/** Attach a canvas to Engine B's source. */
+	attachCanvasB(sourceKey: string, canvasId: string, canvas: HTMLCanvasElement): boolean {
+		return this.pipelineB?.attachCanvas(sourceKey, canvasId, canvas) ?? false;
+	}
+
+	/** Detach canvas from Engine B's source. */
+	detachCanvasB(sourceKey: string, canvasId: string): void {
+		this.pipelineB?.detachCanvas(sourceKey, canvasId);
+	}
+
+	/** Check if Engine B pipeline exists. */
+	get hasEngineBPipeline(): boolean {
+		return this.pipelineB !== null;
+	}
+
+	/** Track which engine is currently rendering the program canvas. */
+	private _activeEngine: 'A' | 'B' = 'A';
+
+	/** Which engine currently owns the program canvas. */
+	get activeEngine(): 'A' | 'B' {
+		return this._activeEngine;
+	}
+
+	/**
+	 * Move the program canvas from Engine A to Engine B.
+	 * Requires an active Engine B pipeline and a program canvas element.
+	 */
+	switchProgramToEngineB(): void {
+		if (!this.pipelineB || !this.currentProgramCanvasEl) return;
+
+		// Detach from Engine A (whichever source key is currently showing)
+		if (this.currentProgramCanvas) {
+			this.pipeline.detachCanvas(this.currentProgramCanvas, 'program');
+		}
+
+		// Attach to Engine B's program source
+		this.pipelineB.attachCanvas('program', 'program', this.currentProgramCanvasEl);
+		this._activeEngine = 'B';
+	}
+
+	/**
+	 * Move the program canvas back from Engine B to Engine A.
+	 * Re-evaluates whether program-preview is available (preferred over full program).
+	 */
+	switchProgramToEngineA(): void {
+		if (!this.pipelineB) return;
+
+		// Detach from Engine B
+		this.pipelineB.detachCanvas('program', 'program');
+
+		// Re-attach to Engine A, preferring program-preview if available
+		if (this.currentProgramCanvasEl) {
+			const previewReady = this.pipeline.getAudioDecoder('program-preview') !== null;
+			const programKey = previewReady ? 'program-preview' : 'program';
+			this.pipeline.attachCanvas(programKey, 'program', this.currentProgramCanvasEl);
+			this.currentProgramCanvas = programKey;
+		}
+		this._activeEngine = 'A';
+	}
+
 	/** Clean up all state. */
 	destroy(): void {
 		this.stopMetering();
+		this.destroyEngineBPipeline();
+		this.pipeline.destroy();
 		this.connectedSources = new Set<string>();
 		this.attachedCanvases = new Set<string>();
 		this.currentProgramCanvas = null;
@@ -275,6 +366,7 @@ export class PipelineManager {
 		this.pendingPreview = null;
 		this.sourceLevels = {};
 		this.programLevels = { peakL: 0, peakR: 0 };
+		this._activeEngine = 'A';
 	}
 
 	/** rAF callback that samples audio decoder levels at display refresh rate. */

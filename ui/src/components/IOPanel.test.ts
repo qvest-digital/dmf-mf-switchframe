@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import IOPanel from './IOPanel.svelte';
-import type { ControlRoomState } from '$lib/api/types';
+import type { ControlRoomState, SourceHealthStatus } from '$lib/api/types';
 
 vi.mock('$lib/api/switch-api', () => ({
 	createSRTSource: vi.fn().mockResolvedValue({ key: 'srt:newcam' }),
@@ -426,5 +426,131 @@ describe('IOPanel', () => {
 		const options = select!.querySelectorAll('option');
 		const optionValues = Array.from(options).map((o) => o.value);
 		expect(optionValues).toContain('rtmp');
+	});
+});
+
+describe('IOPanel dual-engine features', () => {
+	it('shows dual SRT endpoints info blurb when isDualEngine is true', () => {
+		const { container } = render(IOPanel, {
+			props: {
+				state: makeState(),
+				visible: true,
+				isDualEngine: true,
+				engineEndpoints: { A: 'srt://10.0.1.1:6464', B: 'srt://10.0.2.1:6464' },
+			},
+		});
+		expect(container.textContent).toContain('Sources must push to both engines');
+		expect(container.textContent).toContain('Engine A:');
+		expect(container.textContent).toContain('srt://10.0.1.1:6464');
+		expect(container.textContent).toContain('Engine B:');
+		expect(container.textContent).toContain('srt://10.0.2.1:6464');
+	});
+
+	it('does not show dual SRT endpoints when not in dual-engine mode', () => {
+		const { container } = render(IOPanel, {
+			props: {
+				state: makeState(),
+				visible: true,
+				isDualEngine: false,
+				engineEndpoints: { A: 'srt://10.0.1.1:6464', B: 'srt://10.0.2.1:6464' },
+			},
+		});
+		expect(container.textContent).not.toContain('Sources must push to both engines');
+	});
+
+	it('does not show dual SRT endpoints when engineEndpoints is null', () => {
+		const { container } = render(IOPanel, {
+			props: {
+				state: makeState(),
+				visible: true,
+				isDualEngine: true,
+				engineEndpoints: null,
+			},
+		});
+		expect(container.textContent).not.toContain('Sources must push to both engines');
+	});
+
+	it('shows dual health dots on sources with differing health', () => {
+		const engineSourceHealth: Record<string, { A: SourceHealthStatus; B: SourceHealthStatus }> = {
+			cam1: { A: 'healthy', B: 'stale' },
+			cam2: { A: 'healthy', B: 'healthy' },
+		};
+		const { container } = render(IOPanel, {
+			props: {
+				state: makeState(),
+				visible: true,
+				isDualEngine: true,
+				engineSourceHealth,
+			},
+		});
+		// Find cam1 row — should have dual health dots (engines disagree)
+		const sourceRows = container.querySelectorAll('.source-row');
+		let cam1Row: Element | null = null;
+		let cam2Row: Element | null = null;
+		sourceRows.forEach((row) => {
+			if (row.textContent?.includes('Camera 1')) cam1Row = row;
+			if (row.textContent?.includes('Camera 2')) cam2Row = row;
+		});
+		expect(cam1Row).toBeTruthy();
+		expect(cam2Row).toBeTruthy();
+		// cam1 disagrees — should show engine-health-dots
+		const cam1Dots = cam1Row!.querySelector('.engine-health-dots');
+		expect(cam1Dots).toBeTruthy();
+		expect(cam1Dots!.textContent).toContain('A');
+		expect(cam1Dots!.textContent).toContain('B');
+		// cam2 agrees — should NOT show engine-health-dots
+		const cam2Dots = cam2Row!.querySelector('.engine-health-dots');
+		expect(cam2Dots).toBeNull();
+	});
+
+	it('does not show dual health dots when engineSourceHealth is null', () => {
+		const { container } = render(IOPanel, {
+			props: {
+				state: makeState(),
+				visible: true,
+				isDualEngine: true,
+				engineSourceHealth: null,
+			},
+		});
+		const dots = container.querySelectorAll('.engine-health-dots');
+		expect(dots.length).toBe(0);
+	});
+
+	it('shows per-engine output status on destinations', () => {
+		const engineDestinations: Record<string, { A: { state: string; bitrate?: number }; B: { state: string; bitrate?: number } }> = {
+			'dest-1': { A: { state: 'connected', bitrate: 5000 }, B: { state: 'reconnecting', bitrate: 0 } },
+		};
+		const { container } = render(IOPanel, {
+			props: {
+				state: makeState(),
+				visible: true,
+				isDualEngine: true,
+				engineDestinations,
+			},
+		});
+		// Find dest row
+		const destRows = container.querySelectorAll('.dest-row');
+		expect(destRows.length).toBeGreaterThanOrEqual(1);
+		const ytRow = Array.from(destRows).find((r) => r.textContent?.includes('YouTube'));
+		expect(ytRow).toBeTruthy();
+		// Should show dual engine status
+		const engineStatus = ytRow!.querySelector('.dest-engine-status');
+		expect(engineStatus).toBeTruthy();
+		expect(engineStatus!.textContent).toContain('A');
+		expect(engineStatus!.textContent).toContain('B');
+		expect(engineStatus!.textContent).toContain('5.0 Mbps');
+	});
+
+	it('does not show per-engine output status when engineDestinations is null', () => {
+		const { container } = render(IOPanel, {
+			props: {
+				state: makeState(),
+				visible: true,
+				isDualEngine: true,
+				engineDestinations: null,
+			},
+		});
+		const engineStatus = container.querySelectorAll('.dest-engine-status');
+		expect(engineStatus.length).toBe(0);
 	});
 });

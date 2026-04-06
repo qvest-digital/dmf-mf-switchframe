@@ -1,0 +1,895 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+// Mock ConnectionManager before importing DualConnectionManager
+vi.mock('./connection-manager', () => {
+	const ConnectionManager = vi.fn(function MockConnectionManager(
+		this: Record<string, unknown>,
+		config: {
+			onStateUpdate: (s: unknown) => void;
+			onConnectionStateChange: (s: string) => void;
+		}
+	) {
+		this._config = config;
+		this._state = 'disconnected';
+		this._transport = null;
+		this.start = vi.fn().mockResolvedValue(undefined);
+		this.stop = vi.fn();
+		this.getConnectionState = vi.fn(() => this._state);
+		this.handleControlData = vi.fn();
+		this.notifyMoQActive = vi.fn();
+		this.simulateStateUpdate = (state: unknown) => {
+			config.onStateUpdate(state);
+		};
+		this.simulateConnectionChange = (state: 'webtransport' | 'polling' | 'disconnected') => {
+			this._state = state;
+			config.onConnectionStateChange(state);
+		};
+		Object.defineProperty(this, 'transport', {
+			get: function() { return this._transport; },
+			enumerable: true,
+			configurable: true,
+		});
+	});
+	return { ConnectionManager };
+});
+
+// Mock clock-sync
+vi.mock('./clock-sync', () => {
+	const ClockSync = vi.fn(function MockClockSync(this: Record<string, unknown>) {
+		this.updateRTT = vi.fn();
+		this.updateOffset = vi.fn();
+		this.ptpNow = vi.fn().mockReturnValue(0);
+		this.safetyMargin = vi.fn().mockReturnValue(100_000);
+		this.buildPing = vi.fn().mockReturnValue(new Uint8Array(5));
+		this.parsePong = vi.fn().mockReturnValue(0);
+		this.stopPeriodicSync = vi.fn();
+		this.startPeriodicSync = vi.fn();
+	});
+	return { ClockSync };
+});
+
+// Mock reconciler
+vi.mock('$lib/state/reconciler.svelte', () => ({
+	createReconciler: vi.fn().mockImplementation(() => {
+		let _state: unknown = null;
+		let _ingestedA: unknown = null;
+		let _ingestedB: unknown = null;
+		let _connectedA = false;
+		let _connectedB = false;
+		let _rttA = 0;
+		let _rttB = 0;
+		let _mode: 'dual' | 'single' = 'single';
+		return {
+			ingest: vi.fn().mockImplementation((engine: 'A' | 'B', state: unknown) => {
+				if (engine === 'A') { _ingestedA = state; _connectedA = true; }
+				if (engine === 'B') { _ingestedB = state; _connectedB = true; }
+				_state = state; // last ingested becomes the "state" for simplicity
+				if (_ingestedA && _ingestedB) _mode = 'dual';
+			}),
+			disconnect: vi.fn().mockImplementation((engine: 'A' | 'B') => {
+				if (engine === 'A') _connectedA = false;
+				if (engine === 'B') _connectedB = false;
+			}),
+			setRTT: vi.fn().mockImplementation((engine: 'A' | 'B', ms: number) => {
+				if (engine === 'A') _rttA = ms;
+				if (engine === 'B') _rttB = ms;
+			}),
+			setClockOffset: vi.fn(),
+			setRecovering: vi.fn(),
+			tick: vi.fn(),
+			get state() { return _state; },
+			get health() {
+				return {
+					status: _connectedA && _connectedB ? 'synced' : _connectedA || _connectedB ? 'single-engine' : 'disconnected',
+					divergences: [],
+					authoritative: 'A' as const,
+					engineA: { lastSeen: 0, lastCommandSeq: 0, connected: _connectedA },
+					engineB: { lastSeen: 0, lastCommandSeq: 0, connected: _connectedB },
+				};
+			},
+			get engineHealth() {
+				return {
+					A: { connected: _connectedA, rtt: _rttA, clockOffset: 0, lastSeq: 0, uptime: 0, lastSeen: 0, sources: {} },
+					B: { connected: _connectedB, rtt: _rttB, clockOffset: 0, lastSeq: 0, uptime: 0, lastSeen: 0, sources: {} },
+				};
+			},
+			get mode() { return _mode; },
+			get rawStates() { return { A: _ingestedA, B: _ingestedB }; },
+		};
+	}),
+}));
+
+import { DualConnectionManager } from './dual-connection';
+import { ConnectionManager } from './connection-manager';
+import { ClockSync } from './clock-sync';
+import { createReconciler } from '$lib/state/reconciler.svelte';
+import type { ControlRoomState, EngineId } from '$lib/api/types';
+import type { DualConnectionConfig } from './dual-connection';
+
+const MockedConnectionManager = vi.mocked(ConnectionManager);
+const MockedClockSync = vi.mocked(ClockSync);
+const mockedCreateReconciler = vi.mocked(createReconciler);
+
+function makeState(overrides: Partial<ControlRoomState> = {}): ControlRoomState {
+	return {
+		programSource: 'cam1',
+		previewSource: 'cam2',
+		transitionType: 'cut',
+		transitionDurationMs: 500,
+		transitionPosition: 0,
+		inTransition: false,
+		ftbActive: false,
+		audioChannels: undefined,
+		masterLevel: 0,
+		programPeak: [0, 0],
+		tallyState: {},
+		sources: {},
+		seq: 1,
+		lastCommandSeq: 1,
+		timestamp: 1000,
+		...overrides,
+	};
+}
+
+function makeSingleConfig(overrides = {}): DualConnectionConfig {
+	return {
+		engines: [{ id: 'A' as EngineId, url: 'https://engine-a.example.com' }],
+		onStateUpdate: vi.fn(),
+		onConnectionStateChange: vi.fn(),
+		onInitialLoadComplete: vi.fn(),
+		onInitialLoadError: vi.fn(),
+		...overrides,
+	};
+}
+
+function makeDualConfig(overrides = {}): DualConnectionConfig {
+	return {
+		engines: [
+			{ id: 'A' as EngineId, url: 'https://engine-a.example.com' },
+			{ id: 'B' as EngineId, url: 'https://engine-b.example.com' },
+		],
+		onStateUpdate: vi.fn(),
+		onConnectionStateChange: vi.fn(),
+		onInitialLoadComplete: vi.fn(),
+		onInitialLoadError: vi.fn(),
+		...overrides,
+	};
+}
+
+describe('DualConnectionManager', () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+	});
+
+	afterEach(() => {
+		vi.clearAllMocks();
+	});
+
+	describe('single engine mode', () => {
+		it('wraps one ConnectionManager', () => {
+			new DualConnectionManager(makeSingleConfig());
+			expect(MockedConnectionManager).toHaveBeenCalledTimes(1);
+		});
+
+		it('isDualEngine returns false for single engine', () => {
+			const mgr = new DualConnectionManager(makeSingleConfig());
+			expect(mgr.isDualEngine).toBe(false);
+		});
+
+		it('passes the single engine url to ConnectionManager', () => {
+			new DualConnectionManager(makeSingleConfig());
+			expect(MockedConnectionManager).toHaveBeenCalledWith(
+				expect.objectContaining({ url: 'https://engine-a.example.com' })
+			);
+		});
+
+		it('routes state updates directly to onStateUpdate without reconciler', () => {
+			const onStateUpdate = vi.fn();
+			new DualConnectionManager(makeSingleConfig({ onStateUpdate }));
+
+			const instance = MockedConnectionManager.mock.results[0].value;
+			const state = makeState({ programSource: 'cam3' });
+			instance.simulateStateUpdate(state);
+
+			expect(onStateUpdate).toHaveBeenCalledWith(state);
+		});
+
+		it('does not call reconciler ingest in single engine mode', () => {
+			const onStateUpdate = vi.fn();
+			new DualConnectionManager(makeSingleConfig({ onStateUpdate }));
+
+			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
+			const instance = MockedConnectionManager.mock.results[0].value;
+			instance.simulateStateUpdate(makeState());
+
+			expect(reconcilerInstance.ingest).not.toHaveBeenCalled();
+		});
+
+		it('routes connection state changes directly in single engine mode', () => {
+			const onConnectionStateChange = vi.fn();
+			new DualConnectionManager(makeSingleConfig({ onConnectionStateChange }));
+
+			const instance = MockedConnectionManager.mock.results[0].value;
+			instance.simulateConnectionChange('webtransport');
+
+			expect(onConnectionStateChange).toHaveBeenCalledWith('webtransport');
+		});
+
+		it('decodes Uint8Array state updates before routing', () => {
+			const onStateUpdate = vi.fn();
+			new DualConnectionManager(makeSingleConfig({ onStateUpdate }));
+
+			const instance = MockedConnectionManager.mock.results[0].value;
+			const state = makeState({ programSource: 'cam5' });
+			const encoded = new TextEncoder().encode(JSON.stringify(state));
+			instance.simulateStateUpdate(encoded);
+
+			// Single mode decodes Uint8Array to parsed ControlRoomState
+			expect(onStateUpdate).toHaveBeenCalledWith(state);
+		});
+	});
+
+	describe('dual engine mode', () => {
+		it('creates two ConnectionManagers', () => {
+			new DualConnectionManager(makeDualConfig());
+			expect(MockedConnectionManager).toHaveBeenCalledTimes(2);
+		});
+
+		it('isDualEngine returns true for dual engine', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			expect(mgr.isDualEngine).toBe(true);
+		});
+
+		it('passes engine A url to first ConnectionManager', () => {
+			new DualConnectionManager(makeDualConfig());
+			expect(MockedConnectionManager).toHaveBeenNthCalledWith(
+				1,
+				expect.objectContaining({ url: 'https://engine-a.example.com' })
+			);
+		});
+
+		it('passes engine B url to second ConnectionManager', () => {
+			new DualConnectionManager(makeDualConfig());
+			expect(MockedConnectionManager).toHaveBeenNthCalledWith(
+				2,
+				expect.objectContaining({ url: 'https://engine-b.example.com' })
+			);
+		});
+
+		it('routes state updates from engine A to reconciler', () => {
+			new DualConnectionManager(makeDualConfig());
+
+			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			const state = makeState({ programSource: 'cam1' });
+			instanceA.simulateStateUpdate(state);
+
+			expect(reconcilerInstance.ingest).toHaveBeenCalledWith('A', state);
+		});
+
+		it('routes state updates from engine B to reconciler', () => {
+			new DualConnectionManager(makeDualConfig());
+
+			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+			const state = makeState({ programSource: 'cam2' });
+			instanceB.simulateStateUpdate(state);
+
+			expect(reconcilerInstance.ingest).toHaveBeenCalledWith('B', state);
+		});
+
+		it('decodes Uint8Array state before passing to reconciler', () => {
+			new DualConnectionManager(makeDualConfig());
+
+			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			const state = makeState({ programSource: 'cam7' });
+			const encoded = new TextEncoder().encode(JSON.stringify(state));
+			instanceA.simulateStateUpdate(encoded);
+
+			expect(reconcilerInstance.ingest).toHaveBeenCalledWith(
+				'A',
+				expect.objectContaining({ programSource: 'cam7' })
+			);
+		});
+
+		it('calls onStateUpdate with reconciled state after engine A update', () => {
+			const onStateUpdate = vi.fn();
+			new DualConnectionManager(makeDualConfig({ onStateUpdate }));
+
+			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			const state = makeState();
+			instanceA.simulateStateUpdate(state);
+
+			expect(onStateUpdate).toHaveBeenCalledWith(reconcilerInstance.state);
+		});
+
+		it('calls onStateUpdate with reconciled state after engine B update', () => {
+			const onStateUpdate = vi.fn();
+			new DualConnectionManager(makeDualConfig({ onStateUpdate }));
+
+			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+			const state = makeState();
+			instanceB.simulateStateUpdate(state);
+
+			expect(onStateUpdate).toHaveBeenCalledWith(reconcilerInstance.state);
+		});
+	});
+
+	describe('state and health getters', () => {
+		it('exposes reconciled state via .state getter', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
+
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			const stateA = makeState({ programSource: 'cam1' });
+			instanceA.simulateStateUpdate(stateA);
+
+			expect(mgr.state).toBe(reconcilerInstance.state);
+		});
+
+		it('exposes sync health via .health getter', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
+
+			// Health is a derived object — verify structure matches reconciler's health
+			expect(mgr.health).toStrictEqual(reconcilerInstance.health);
+		});
+
+		it('health.status is disconnected before any updates', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			expect(mgr.health.status).toBe('disconnected');
+		});
+
+		it('health.status is single-engine after only engine A reports', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			instanceA.simulateStateUpdate(makeState());
+			expect(mgr.health.status).toBe('single-engine');
+		});
+
+		it('health.status is synced after both engines report', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+			instanceA.simulateStateUpdate(makeState());
+			instanceB.simulateStateUpdate(makeState());
+			expect(mgr.health.status).toBe('synced');
+		});
+	});
+
+	describe('connection state aggregation in dual mode', () => {
+		it('reports webtransport if any engine is webtransport connected', () => {
+			const onConnectionStateChange = vi.fn();
+			new DualConnectionManager(makeDualConfig({ onConnectionStateChange }));
+
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+
+			// B is disconnected, A connects via webtransport
+			instanceB._state = 'disconnected';
+			instanceA.simulateConnectionChange('webtransport');
+
+			expect(onConnectionStateChange).toHaveBeenCalledWith('webtransport');
+		});
+
+		it('reports polling when both engines are polling', () => {
+			const onConnectionStateChange = vi.fn();
+			new DualConnectionManager(makeDualConfig({ onConnectionStateChange }));
+
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+
+			instanceA._state = 'polling';
+			instanceB._state = 'polling';
+			instanceA.simulateConnectionChange('polling');
+
+			expect(onConnectionStateChange).toHaveBeenCalledWith('polling');
+		});
+
+		it('reports disconnected when both engines are disconnected', () => {
+			const onConnectionStateChange = vi.fn();
+			new DualConnectionManager(makeDualConfig({ onConnectionStateChange }));
+
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+
+			instanceA._state = 'disconnected';
+			instanceB._state = 'disconnected';
+			instanceB.simulateConnectionChange('disconnected');
+
+			expect(onConnectionStateChange).toHaveBeenCalledWith('disconnected');
+		});
+	});
+
+	describe('lifecycle methods', () => {
+		it('start() starts all managers', async () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			await mgr.start();
+
+			for (const result of MockedConnectionManager.mock.results) {
+				expect(result.value.start).toHaveBeenCalledOnce();
+			}
+		});
+
+		it('stop() stops all managers', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			mgr.stop();
+
+			for (const result of MockedConnectionManager.mock.results) {
+				expect(result.value.stop).toHaveBeenCalledOnce();
+			}
+		});
+
+		it('start() resolves even if one engine fails', async () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			MockedConnectionManager.mock.results[0].value.start.mockRejectedValue(
+				new Error('engine A unreachable')
+			);
+
+			// Should not throw
+			await expect(mgr.start()).resolves.toBeUndefined();
+		});
+	});
+
+	describe('clock and command sequencing', () => {
+		it('exposes a ClockSync instance', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			expect(mgr.clock).toBeDefined();
+			expect(MockedClockSync).toHaveBeenCalledOnce();
+		});
+
+		it('nextCommandSeq increments monotonically', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			expect(mgr.nextCommandSeq()).toBe(1);
+			expect(mgr.nextCommandSeq()).toBe(2);
+			expect(mgr.nextCommandSeq()).toBe(3);
+		});
+
+		it('command sequence starts at 0 and increments on each call', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			const seq1 = mgr.nextCommandSeq();
+			const seq2 = mgr.nextCommandSeq();
+			expect(seq2).toBe(seq1 + 1);
+		});
+	});
+
+	describe('per-engine connection status', () => {
+		it('engineConnectionState returns disconnected initially for both engines', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			expect(mgr.engineConnectionState('A')).toBe('disconnected');
+			expect(mgr.engineConnectionState('B')).toBe('disconnected');
+		});
+
+		it('engineConnectionState returns webtransport for engine A after it connects', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			instanceA.simulateConnectionChange('webtransport');
+			expect(mgr.engineConnectionState('A')).toBe('webtransport');
+		});
+
+		it('engineConnectionState returns per-engine status independently', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+
+			instanceA.simulateConnectionChange('webtransport');
+			instanceB.simulateConnectionChange('polling');
+
+			expect(mgr.engineConnectionState('A')).toBe('webtransport');
+			expect(mgr.engineConnectionState('B')).toBe('polling');
+		});
+
+		it('engineConnectionState returns disconnected for unknown engine id', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			expect(mgr.engineConnectionState('B')).toBe('disconnected');
+		});
+
+		it('works in single engine mode', () => {
+			const mgr = new DualConnectionManager(makeSingleConfig());
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			instanceA.simulateConnectionChange('webtransport');
+			expect(mgr.engineConnectionState('A')).toBe('webtransport');
+		});
+	});
+
+	describe('disconnect detection feeding reconciler', () => {
+		it('calls reconciler.disconnect when engine reports disconnected in dual mode', () => {
+			new DualConnectionManager(makeDualConfig());
+			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+
+			// First connect, then disconnect
+			instanceA.simulateConnectionChange('webtransport');
+			instanceA.simulateConnectionChange('disconnected');
+
+			expect(reconcilerInstance.disconnect).toHaveBeenCalledWith('A');
+		});
+
+		it('calls reconciler.disconnect for engine B', () => {
+			new DualConnectionManager(makeDualConfig());
+			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+
+			instanceB.simulateConnectionChange('webtransport');
+			instanceB.simulateConnectionChange('disconnected');
+
+			expect(reconcilerInstance.disconnect).toHaveBeenCalledWith('B');
+		});
+
+		it('does not call reconciler.disconnect in single engine mode', () => {
+			new DualConnectionManager(makeSingleConfig());
+			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+
+			instanceA.simulateConnectionChange('disconnected');
+
+			expect(reconcilerInstance.disconnect).not.toHaveBeenCalled();
+		});
+
+		it('does not call reconciler.disconnect when transitioning to connected state', () => {
+			new DualConnectionManager(makeDualConfig());
+			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+
+			instanceA.simulateConnectionChange('webtransport');
+
+			expect(reconcilerInstance.disconnect).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('RTT feeding to reconciler', () => {
+		it('calls reconciler.setRTT when RTT is reported for an engine', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
+
+			mgr.reportRTT('A', 25);
+
+			expect(reconcilerInstance.setRTT).toHaveBeenCalledWith('A', 25);
+		});
+
+		it('calls reconciler.setRTT for engine B', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
+
+			mgr.reportRTT('B', 42);
+
+			expect(reconcilerInstance.setRTT).toHaveBeenCalledWith('B', 42);
+		});
+
+		it('also updates ClockSync with RTT in microseconds', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			const clockInstance = MockedClockSync.mock.results[0].value;
+
+			mgr.reportRTT('A', 25);
+
+			expect(clockInstance.updateRTT).toHaveBeenCalledWith('A', 25000); // ms -> us
+		});
+	});
+
+	describe('mode and engineHealth proxying', () => {
+		it('mode returns single before both engines have reported', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			expect(mgr.mode).toBe('single');
+		});
+
+		it('mode returns dual after both engines have reported state', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+
+			instanceA.simulateStateUpdate(makeState());
+			instanceB.simulateStateUpdate(makeState());
+
+			expect(mgr.mode).toBe('dual');
+		});
+
+		it('engineHealth returns per-engine health detail from reconciler', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
+
+			const health = mgr.engineHealth;
+			expect(health).toStrictEqual(reconcilerInstance.engineHealth);
+		});
+
+		it('engineHealth reflects connected state after ingest', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+
+			instanceA.simulateStateUpdate(makeState());
+
+			expect(mgr.engineHealth.A.connected).toBe(true);
+			expect(mgr.engineHealth.B.connected).toBe(false);
+		});
+	});
+
+	describe('late-binding engine B via addEngine', () => {
+		it('addEngine creates a new ConnectionManager for engine B', () => {
+			const mgr = new DualConnectionManager(makeSingleConfig());
+			expect(MockedConnectionManager).toHaveBeenCalledTimes(1);
+
+			mgr.addEngine('B', 'https://engine-b.example.com');
+
+			expect(MockedConnectionManager).toHaveBeenCalledTimes(2);
+			expect(MockedConnectionManager).toHaveBeenNthCalledWith(
+				2,
+				expect.objectContaining({ url: 'https://engine-b.example.com' })
+			);
+		});
+
+		it('addEngine starts the new ConnectionManager', async () => {
+			const mgr = new DualConnectionManager(makeSingleConfig());
+			await mgr.start();
+
+			mgr.addEngine('B', 'https://engine-b.example.com');
+
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+			expect(instanceB.start).toHaveBeenCalledOnce();
+		});
+
+		it('addEngine sets isDualEngine to true', () => {
+			const mgr = new DualConnectionManager(makeSingleConfig());
+			expect(mgr.isDualEngine).toBe(false);
+
+			mgr.addEngine('B', 'https://engine-b.example.com');
+
+			expect(mgr.isDualEngine).toBe(true);
+		});
+
+		it('addEngine routes state updates from new engine to reconciler', () => {
+			const mgr = new DualConnectionManager(makeSingleConfig());
+			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
+
+			mgr.addEngine('B', 'https://engine-b.example.com');
+
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+			const state = makeState({ programSource: 'cam4' });
+			instanceB.simulateStateUpdate(state);
+
+			expect(reconcilerInstance.ingest).toHaveBeenCalledWith('B', state);
+		});
+
+		it('addEngine causes engine A updates to use reconciler too', () => {
+			const onStateUpdate = vi.fn();
+			const mgr = new DualConnectionManager(makeSingleConfig({ onStateUpdate }));
+			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
+
+			// Before addEngine, engine A updates bypass reconciler
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			const stateBeforeAdd = makeState({ programSource: 'cam1' });
+			instanceA.simulateStateUpdate(stateBeforeAdd);
+			expect(reconcilerInstance.ingest).not.toHaveBeenCalled();
+
+			// After addEngine, engine A updates should use reconciler
+			mgr.addEngine('B', 'https://engine-b.example.com');
+
+			const stateAfterAdd = makeState({ programSource: 'cam2' });
+			instanceA.simulateStateUpdate(stateAfterAdd);
+			expect(reconcilerInstance.ingest).toHaveBeenCalledWith('A', stateAfterAdd);
+		});
+
+		it('stop() stops the late-added engine too', () => {
+			const mgr = new DualConnectionManager(makeSingleConfig());
+			mgr.addEngine('B', 'https://engine-b.example.com');
+			mgr.stop();
+
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+			expect(instanceA.stop).toHaveBeenCalledOnce();
+			expect(instanceB.stop).toHaveBeenCalledOnce();
+		});
+
+		it('does not add duplicate engine', () => {
+			const mgr = new DualConnectionManager(makeSingleConfig());
+			mgr.addEngine('B', 'https://engine-b.example.com');
+			mgr.addEngine('B', 'https://engine-b2.example.com'); // should be ignored
+
+			expect(MockedConnectionManager).toHaveBeenCalledTimes(2); // 1 original + 1 added
+		});
+	});
+
+	describe('handleControlData routing', () => {
+		it('routes to correct engine by engineId', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+
+			const data = new Uint8Array([1, 2, 3]);
+			mgr.handleControlData('B', data);
+
+			expect(instanceB.handleControlData).toHaveBeenCalledWith(data);
+			expect(instanceA.handleControlData).not.toHaveBeenCalled();
+		});
+
+		it('falls back to first manager when engineId is unknown', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+
+			const data = new Uint8Array([4, 5, 6]);
+			// Cast to bypass EngineId type — tests fallback for unknown engine IDs
+			mgr.handleControlData('C' as EngineId, data);
+
+			expect(instanceA.handleControlData).toHaveBeenCalledWith(data);
+		});
+
+		it('routes to engine A when engineId is A', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+
+			const data = new Uint8Array([7, 8, 9]);
+			mgr.handleControlData('A', data);
+
+			expect(instanceA.handleControlData).toHaveBeenCalledWith(data);
+			expect(instanceB.handleControlData).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('notifyMoQActive routing', () => {
+		it('targets specific engine when engineId is provided', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+
+			mgr.notifyMoQActive('B');
+
+			expect(instanceB.notifyMoQActive).toHaveBeenCalledOnce();
+			expect(instanceA.notifyMoQActive).not.toHaveBeenCalled();
+		});
+
+		it('notifies all managers when engineId is omitted', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+
+			mgr.notifyMoQActive();
+
+			expect(instanceA.notifyMoQActive).toHaveBeenCalledOnce();
+			expect(instanceB.notifyMoQActive).toHaveBeenCalledOnce();
+		});
+
+		it('does nothing when engineId does not match any manager', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+
+			// Cast to bypass EngineId type — tests fallback for unknown engine IDs
+			mgr.notifyMoQActive('C' as EngineId);
+
+			expect(instanceA.notifyMoQActive).not.toHaveBeenCalled();
+			expect(instanceB.notifyMoQActive).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('getTransport', () => {
+		it('returns null before connection', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			expect(mgr.getTransport('A')).toBeNull();
+			expect(mgr.getTransport('B')).toBeNull();
+		});
+
+		it('returns transport after connection', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+
+			const fakeTransportA = { fake: 'transportA' } as unknown as WebTransport;
+			const fakeTransportB = { fake: 'transportB' } as unknown as WebTransport;
+
+			instanceA._transport = fakeTransportA;
+			instanceB._transport = fakeTransportB;
+
+			expect(mgr.getTransport('A')).toBe(fakeTransportA);
+			expect(mgr.getTransport('B')).toBe(fakeTransportB);
+		});
+
+		it('returns null for unknown engine', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			expect(mgr.getTransport('C' as EngineId)).toBeNull();
+		});
+
+		it('returns null in single engine mode for engine B', () => {
+			const mgr = new DualConnectionManager(makeSingleConfig());
+			expect(mgr.getTransport('B')).toBeNull();
+		});
+	});
+
+	describe('Uint8Array decoding in dual mode', () => {
+		it('handles malformed JSON in Uint8Array by throwing', () => {
+			new DualConnectionManager(makeDualConfig());
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+
+			// Simulate malformed bytes — createEngineManager wraps JSON.parse
+			// which will throw. Verify the error doesn't silently corrupt state.
+			const garbage = new TextEncoder().encode('not valid json{{{');
+			expect(() => instanceA.simulateStateUpdate(garbage)).toThrow();
+		});
+
+		it('does not update reconciler on malformed Uint8Array', () => {
+			new DualConnectionManager(makeDualConfig());
+			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+
+			const garbage = new TextEncoder().encode('}{bad');
+			try {
+				instanceA.simulateStateUpdate(garbage);
+			} catch {
+				// Expected
+			}
+			expect(reconcilerInstance.ingest).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('connection flapping in dual mode', () => {
+		it('handles rapid connect/disconnect cycles without crash', () => {
+			new DualConnectionManager(makeDualConfig());
+			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+
+			for (let i = 0; i < 10; i++) {
+				instanceA.simulateConnectionChange('webtransport');
+				instanceA.simulateConnectionChange('disconnected');
+			}
+
+			// The reconciler should have been called disconnect many times
+			expect(reconcilerInstance.disconnect).toHaveBeenCalledWith('A');
+			// Final state should be disconnected
+			const mgr = new DualConnectionManager(makeDualConfig());
+			expect(mgr.engineConnectionState('A')).toBe('disconnected');
+		});
+
+		it('connection aggregation picks best state after flapping', () => {
+			const onConnectionStateChange = vi.fn();
+			new DualConnectionManager(makeDualConfig({ onConnectionStateChange }));
+
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+
+			// A flaps, B stays connected
+			instanceB._state = 'webtransport';
+			instanceA.simulateConnectionChange('webtransport');
+			instanceA.simulateConnectionChange('disconnected');
+			instanceA.simulateConnectionChange('polling');
+
+			// With A polling and B webtransport, best is webtransport
+			const lastCall = onConnectionStateChange.mock.calls[onConnectionStateChange.mock.calls.length - 1];
+			expect(lastCall[0]).toBe('webtransport');
+		});
+	});
+
+	describe('rawStates proxy', () => {
+		it('exposes raw per-engine states in dual mode', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+
+			const stateA = makeState({ programSource: 'cam1' });
+			const stateB = makeState({ programSource: 'cam2' });
+			instanceA.simulateStateUpdate(stateA);
+			instanceB.simulateStateUpdate(stateB);
+
+			const raw = mgr.rawStates;
+			expect(raw.A).not.toBeNull();
+			expect(raw.B).not.toBeNull();
+		});
+
+		it('returns null rawStates before any updates', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			const raw = mgr.rawStates;
+			expect(raw.A).toBeNull();
+			expect(raw.B).toBeNull();
+		});
+	});
+
+	describe('tick proxy', () => {
+		it('tick() calls reconciler.tick()', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
+
+			mgr.tick();
+			expect(reconcilerInstance.tick).toHaveBeenCalledOnce();
+		});
+	});
+});

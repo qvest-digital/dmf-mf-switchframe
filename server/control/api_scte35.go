@@ -76,6 +76,8 @@ func (a *API) registerSCTE35Routes(mux *http.ServeMux) {
 		mux.HandleFunc("POST /api/scte35/rules/reorder", a.handleSCTE35ReorderRules)
 		mux.HandleFunc("GET /api/scte35/rules/templates", a.handleSCTE35Templates)
 		mux.HandleFunc("POST /api/scte35/rules/from-template", a.handleSCTE35FromTemplate)
+		mux.HandleFunc("PUT /api/scte35/rules/by-name/{name}", a.handleSCTE35UpdateRuleByName)
+		mux.HandleFunc("DELETE /api/scte35/rules/by-name/{name}", a.handleSCTE35DeleteRuleByName)
 		mux.HandleFunc("GET /api/scte35/rules", a.handleSCTE35ListRules)
 		mux.HandleFunc("POST /api/scte35/rules", a.handleSCTE35CreateRule)
 		mux.HandleFunc("PUT /api/scte35/rules/{id}", a.handleSCTE35UpdateRule)
@@ -403,6 +405,60 @@ func (a *API) handleSCTE35DeleteRule(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
 	if err := a.scte35Rules.Delete(id); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
+}
+
+// handleSCTE35UpdateRuleByName handles PUT /api/scte35/rules/by-name/{name}.
+// This supports dual-engine setups where each engine generates different rule IDs.
+func (a *API) handleSCTE35UpdateRuleByName(w http.ResponseWriter, r *http.Request) {
+	if a.scte35Rules == nil {
+		httperr.Write(w, http.StatusNotImplemented, "scte35 not enabled")
+		return
+	}
+	a.setLastOperator(r)
+
+	name := r.PathValue("name")
+	if name == "" {
+		httperr.Write(w, http.StatusBadRequest, "name required")
+		return
+	}
+
+	var rule scte35.Rule
+	if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+
+	if err := a.scte35Rules.UpdateByName(name, rule); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
+}
+
+// handleSCTE35DeleteRuleByName handles DELETE /api/scte35/rules/by-name/{name}.
+// This supports dual-engine setups where each engine generates different rule IDs.
+func (a *API) handleSCTE35DeleteRuleByName(w http.ResponseWriter, r *http.Request) {
+	if a.scte35Rules == nil {
+		httperr.Write(w, http.StatusNotImplemented, "scte35 not enabled")
+		return
+	}
+	a.setLastOperator(r)
+
+	name := r.PathValue("name")
+	if name == "" {
+		httperr.Write(w, http.StatusBadRequest, "name required")
+		return
+	}
+
+	if err := a.scte35Rules.DeleteByName(name); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}

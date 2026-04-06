@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { cut, setPreview, setLabel, getState, getSources, setLevel, setMute, setAFV, setMasterLevel, startTransition, setTransitionPosition, fadeToBlack, startRecording, stopRecording, getRecordingStatus, startSRTOutput, stopSRTOutput, getSRTOutputStatus, setAuthToken, checkFragmentToken, apiCall, SwitchApiError, scte35Cue, scte35Return, scte35Hold, scte35Extend, scte35Cancel, scte35Status, scte35Log, scte35ListRules, scte35CreateRule, scte35DeleteRule, createSRTSource, deleteSRTSource, getSRTSourceStats, updateSRTLatency } from './switch-api';
+import { cut, setPreview, setLabel, getState, getSources, setLevel, setMute, setAFV, setMasterLevel, startTransition, setTransitionPosition, fadeToBlack, startRecording, stopRecording, getRecordingStatus, startSRTOutput, stopSRTOutput, getSRTOutputStatus, setAuthToken, checkFragmentToken, apiCall, SwitchApiError, scte35Cue, scte35Return, scte35Hold, scte35Extend, scte35Cancel, scte35Status, scte35Log, scte35ListRules, scte35CreateRule, scte35DeleteRule, createSRTSource, deleteSRTSource, getSRTSourceStats, updateSRTLatency, setDualTimestampProvider, graphicsOn, graphicsOff, recallPreset, dveSlotOn, clipPlayerPlay, clipPlayerStop, listRecordingsDualEngine, listRecordingsFromEngine, importRecordingFromEngine, graphicsSequenceUpload } from './switch-api';
+import { setEngineUrls } from './base-url';
 import * as notifications from '$lib/state/notifications.svelte';
 import type { SRTOutputConfig, SCTE35CueRequest, CreateSRTSourceConfig } from './types';
 
@@ -846,5 +847,674 @@ describe('checkFragmentToken', () => {
 
 		expect(localStorage.getItem('switchframe_operator_token')).toBe('abc-123_XYZ.456');
 		expect(window.location.hash).toBe('');
+	});
+});
+
+describe('dual-engine request interceptor', () => {
+	beforeEach(() => {
+		vi.restoreAllMocks();
+		localStorage.clear();
+		setEngineUrls(null);
+		setDualTimestampProvider(null);
+	});
+
+	it('fans out to both engines when engineUrls set', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://engine-a.example.com' },
+			{ id: 'B', url: 'https://engine-b.example.com' },
+		]);
+		const mockFetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ programSource: 'cam2' }), { status: 200 }),
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		await cut('cam2');
+
+		expect(mockFetch).toHaveBeenCalledTimes(2);
+		expect(mockFetch.mock.calls[0][0]).toContain('engine-a');
+		expect(mockFetch.mock.calls[1][0]).toContain('engine-b');
+	});
+
+	it('adds PTP timestamps to timed paths', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+		setDualTimestampProvider(() => ({ execute_at: 12345, command_seq: 1 }));
+
+		const mockFetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({}), { status: 200 }),
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		await cut('cam2');
+
+		const bodyA = JSON.parse(mockFetch.mock.calls[0][1].body);
+		expect(bodyA.execute_at).toBe(12345);
+		expect(bodyA.command_seq).toBe(1);
+		// Original body fields preserved
+		expect(bodyA.source).toBe('cam2');
+	});
+
+	it('adds PTP timestamps to setPreview (timed path)', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+		setDualTimestampProvider(() => ({ execute_at: 99999, command_seq: 42 }));
+
+		const mockFetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({}), { status: 200 }),
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		await setPreview('cam3');
+
+		const bodyA = JSON.parse(mockFetch.mock.calls[0][1].body);
+		expect(bodyA.execute_at).toBe(99999);
+		expect(bodyA.source).toBe('cam3');
+	});
+
+	it('adds PTP timestamps to fadeToBlack (timed path)', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+		setDualTimestampProvider(() => ({ execute_at: 50000, command_seq: 5 }));
+
+		const mockFetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({}), { status: 200 }),
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		await fadeToBlack();
+
+		const bodyA = JSON.parse(mockFetch.mock.calls[0][1].body);
+		expect(bodyA.execute_at).toBe(50000);
+	});
+
+	it('adds PTP timestamps to graphics on/off (regex timed path)', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+		setDualTimestampProvider(() => ({ execute_at: 77777, command_seq: 10 }));
+
+		const mockFetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({}), { status: 200 }),
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		await graphicsOn(1);
+
+		const bodyA = JSON.parse(mockFetch.mock.calls[0][1].body);
+		expect(bodyA.execute_at).toBe(77777);
+	});
+
+	it('does not add timestamps to untimed paths', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+		setDualTimestampProvider(() => ({ execute_at: 12345, command_seq: 1 }));
+
+		const mockFetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({}), { status: 200 }),
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		await setLabel('cam1', 'Camera 1');
+
+		const bodyA = JSON.parse(mockFetch.mock.calls[0][1].body);
+		expect(bodyA.execute_at).toBeUndefined();
+		expect(bodyA.label).toBe('Camera 1');
+	});
+
+	it('does not add timestamps when no provider set', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+		// No timestamp provider set
+
+		const mockFetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({}), { status: 200 }),
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		await cut('cam2');
+
+		const bodyA = JSON.parse(mockFetch.mock.calls[0][1].body);
+		expect(bodyA.execute_at).toBeUndefined();
+		expect(bodyA.source).toBe('cam2');
+	});
+
+	it('single-engine unchanged when no engineUrls', async () => {
+		// Don't set engineUrls
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ programSource: 'cam2' }),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		await cut('cam2');
+
+		expect(mockFetch).toHaveBeenCalledTimes(1);
+		// Should use resolveApiUrl (same-origin), not engine URLs
+		expect(mockFetch.mock.calls[0][0]).toBe('/api/switch/cut');
+	});
+
+	it('throws when all engines fail with HTTP errors', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+
+		const mockFetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ error: 'server error' }), { status: 500 }),
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		await expect(cut('cam2')).rejects.toThrow(SwitchApiError);
+	});
+
+	it('throws when all engines are unreachable', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+
+		const mockFetch = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+		vi.stubGlobal('fetch', mockFetch);
+
+		await expect(cut('cam2')).rejects.toThrow('All engines unreachable');
+	});
+
+	it('succeeds when one engine fails and other succeeds', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+
+		const mockFetch = vi.fn()
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ error: 'fail' }), { status: 500 }),
+			)
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ programSource: 'cam2' }), { status: 200 }),
+			);
+		vi.stubGlobal('fetch', mockFetch);
+
+		const result = await cut('cam2');
+		expect(result).toBeDefined();
+		expect(result.programSource).toBe('cam2');
+	});
+
+	it('handles 204 No Content response in dual mode', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+
+		const mockFetch = vi.fn().mockResolvedValue(
+			new Response(null, { status: 204 }),
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		const result = await setLabel('cam1', 'Camera 1');
+		expect(result).toBeUndefined();
+	});
+
+	it('GET requests use primary-with-fallback, not parallel fan-out', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+
+		const mockFetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ programSource: 'cam1', seq: 1 }), { status: 200 }),
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		await getState();
+
+		// Only the primary engine should be called when it succeeds
+		expect(mockFetch).toHaveBeenCalledTimes(1);
+		expect(mockFetch.mock.calls[0][0]).toBe('https://a.example.com/api/switch/state');
+	});
+
+	it('GET falls back to second engine on HTTP error from primary', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+
+		const mockFetch = vi.fn()
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ error: 'internal error' }), { status: 500 }),
+			)
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ programSource: 'cam1' }), { status: 200 }),
+			);
+		vi.stubGlobal('fetch', mockFetch);
+
+		const result = await getState();
+
+		expect(mockFetch).toHaveBeenCalledTimes(2);
+		expect(mockFetch.mock.calls[0][0]).toContain('a.example.com');
+		expect(mockFetch.mock.calls[1][0]).toContain('b.example.com');
+		expect(result.programSource).toBe('cam1');
+	});
+
+	it('GET throws SwitchApiError when all engines return HTTP errors', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+
+		const mockFetch = vi.fn()
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ error: 'engine A down' }), { status: 500 }),
+			)
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ error: 'engine B overloaded' }), { status: 503 }),
+			);
+		vi.stubGlobal('fetch', mockFetch);
+
+		const err = await getState().catch(e => e);
+		expect(err).toBeInstanceOf(SwitchApiError);
+		// Should return the last HTTP error (engine B)
+		expect(err.status).toBe(503);
+		expect(err.message).toBe('engine B overloaded');
+	});
+
+	it('GET throws generic error when all engines have network errors', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+
+		const mockFetch = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+		vi.stubGlobal('fetch', mockFetch);
+
+		await expect(getState()).rejects.toThrow('All engines failed for GET /api/switch/state');
+	});
+
+	it('DELETE requests still fan out to both engines', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+
+		const mockFetch = vi.fn().mockResolvedValue(
+			new Response(null, { status: 204 }),
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		await deleteSRTSource('srt:cam1');
+
+		// DELETE is a mutation — should fan out to both
+		expect(mockFetch).toHaveBeenCalledTimes(2);
+	});
+
+	it('PUT requests still fan out to both engines', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+
+		const mockFetch = vi.fn().mockResolvedValue(
+			new Response(null, { status: 204 }),
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		await updateSRTLatency('srt:cam1', 250);
+
+		// PUT is a mutation — should fan out to both
+		expect(mockFetch).toHaveBeenCalledTimes(2);
+	});
+
+	it('GET requests do not receive PTP timestamps', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+		setDualTimestampProvider(() => ({ execute_at: 99999, command_seq: 1 }));
+		const mockFetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({}), { status: 200 }),
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		await getState();
+
+		// GET request has no body — verify no body was sent
+		const callOpts = mockFetch.mock.calls[0][1];
+		expect(callOpts.body).toBeUndefined();
+	});
+
+	it('succeeds when one engine is unreachable and other responds', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+
+		const mockFetch = vi.fn()
+			.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ programSource: 'cam1' }), { status: 200 }),
+			);
+		vi.stubGlobal('fetch', mockFetch);
+
+		const result = await getState();
+		expect(result.programSource).toBe('cam1');
+	});
+});
+
+describe('dual-engine recordings', () => {
+	beforeEach(() => {
+		vi.restoreAllMocks();
+		localStorage.clear();
+		setEngineUrls(null);
+		setDualTimestampProvider(null);
+	});
+
+	it('listRecordingsDualEngine merges recordings from both engines', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://engine-a.example.com' },
+			{ id: 'B', url: 'https://engine-b.example.com' },
+		]);
+
+		const recsA = [{ filename: 'rec-a.ts', path: '/data/rec-a.ts', byteSize: 1000, modTime: '2026-04-05T01:00:00Z' }];
+		const recsB = [{ filename: 'rec-b.ts', path: '/data/rec-b.ts', byteSize: 2000, modTime: '2026-04-05T02:00:00Z' }];
+
+		const mockFetch = vi.fn().mockImplementation((url: string) => {
+			if (url.includes('engine-a')) {
+				return Promise.resolve(new Response(JSON.stringify(recsA), { status: 200 }));
+			}
+			return Promise.resolve(new Response(JSON.stringify(recsB), { status: 200 }));
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const groups = await listRecordingsDualEngine();
+		expect(groups).toHaveLength(2);
+		expect(groups[0].engineId).toBe('A');
+		expect(groups[0].recordings).toEqual(recsA);
+		expect(groups[1].engineId).toBe('B');
+		expect(groups[1].recordings).toEqual(recsB);
+	});
+
+	it('listRecordingsDualEngine falls back to single-engine list', async () => {
+		// No engine URLs set — single-engine mode
+		const recs = [{ filename: 'rec.ts', path: '/data/rec.ts', byteSize: 500, modTime: '2026-04-05T00:00:00Z' }];
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve(recs),
+			status: 200,
+			headers: new Headers(),
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const groups = await listRecordingsDualEngine();
+		expect(groups).toHaveLength(1);
+		expect(groups[0].engineId).toBe('A');
+		expect(groups[0].recordings).toEqual(recs);
+	});
+
+	it('listRecordingsFromEngine returns empty on failure', async () => {
+		const mockFetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ error: 'fail' }), { status: 500 }),
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		const recs = await listRecordingsFromEngine('https://engine-a.example.com');
+		expect(recs).toEqual([]);
+	});
+
+	it('listRecordingsFromEngine returns empty on network error', async () => {
+		const mockFetch = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+		vi.stubGlobal('fetch', mockFetch);
+
+		const recs = await listRecordingsFromEngine('https://engine-a.example.com');
+		expect(recs).toEqual([]);
+	});
+
+	it('importRecordingFromEngine targets specific engine', async () => {
+		const clip = { id: 'clip1', name: 'rec.ts', source: 'recording' };
+		const mockFetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify(clip), { status: 200 }),
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		const result = await importRecordingFromEngine('https://engine-b.example.com', '/data/rec.ts');
+		expect(mockFetch).toHaveBeenCalledTimes(1);
+		expect(mockFetch.mock.calls[0][0]).toBe('https://engine-b.example.com/api/clips/from-recording');
+		const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+		expect(body.path).toBe('/data/rec.ts');
+		expect(result).toEqual(clip);
+	});
+
+	it('importRecordingFromEngine throws on error', async () => {
+		const mockFetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ error: 'not found' }), { status: 404 }),
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		await expect(importRecordingFromEngine('https://engine-b.example.com', '/data/missing.ts'))
+			.rejects.toThrow(SwitchApiError);
+	});
+
+	it('listRecordingsDualEngine handles one engine failing', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://engine-a.example.com' },
+			{ id: 'B', url: 'https://engine-b.example.com' },
+		]);
+
+		const recsA = [{ filename: 'rec-a.ts', path: '/data/rec-a.ts', byteSize: 1000, modTime: '2026-04-05T01:00:00Z' }];
+
+		const mockFetch = vi.fn().mockImplementation((url: string) => {
+			if (url.includes('engine-a')) {
+				return Promise.resolve(new Response(JSON.stringify(recsA), { status: 200 }));
+			}
+			return Promise.reject(new TypeError('Failed to fetch'));
+		});
+		vi.stubGlobal('fetch', mockFetch);
+
+		const groups = await listRecordingsDualEngine();
+		// Both groups should be present — engine B returns empty due to catch
+		expect(groups).toHaveLength(2);
+		expect(groups[0].recordings).toEqual(recsA);
+		expect(groups[1].recordings).toEqual([]);
+	});
+});
+
+describe('dual-engine interceptor edge cases', () => {
+	beforeEach(() => {
+		vi.restoreAllMocks();
+		localStorage.clear();
+		setEngineUrls(null);
+		setDualTimestampProvider(null);
+	});
+
+	it('returns first successful response when both engines succeed', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+
+		const mockFetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ programSource: 'cam2', seq: 10 }), { status: 200 }),
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		const result = await cut('cam2');
+		// Both engines should have been called
+		expect(mockFetch).toHaveBeenCalledTimes(2);
+		// Result should have the expected data
+		expect(result.programSource).toBe('cam2');
+		expect(result.seq).toBe(10);
+	});
+
+	it('succeeds for POST mutation when engine A network fails but B succeeds', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+
+		const mockFetch = vi.fn()
+			.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+			.mockResolvedValueOnce(
+				new Response(JSON.stringify({ programSource: 'cam1' }), { status: 200 }),
+			);
+		vi.stubGlobal('fetch', mockFetch);
+
+		const result = await cut('cam1');
+		expect(result.programSource).toBe('cam1');
+	});
+
+	it('adds PTP timestamps to startTransition (timed path)', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+		setDualTimestampProvider(() => ({ execute_at: 88888, command_seq: 7 }));
+
+		const mockFetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ inTransition: true }), { status: 200 }),
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		await startTransition('cam2', 'mix', 1000);
+
+		const bodyA = JSON.parse(mockFetch.mock.calls[0][1].body);
+		expect(bodyA.execute_at).toBe(88888);
+		expect(bodyA.command_seq).toBe(7);
+		expect(bodyA.source).toBe('cam2');
+		expect(bodyA.type).toBe('mix');
+	});
+
+	it('adds PTP timestamps to recallPreset (timed path)', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+		setDualTimestampProvider(() => ({ execute_at: 11111, command_seq: 2 }));
+
+		const mockFetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({}), { status: 200 }),
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		await recallPreset('my-preset');
+
+		const bodyA = JSON.parse(mockFetch.mock.calls[0][1].body);
+		expect(bodyA.execute_at).toBe(11111);
+	});
+
+	it('adds PTP timestamps to dveSlotOn (regex timed path)', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+		setDualTimestampProvider(() => ({ execute_at: 22222, command_seq: 3 }));
+
+		const mockFetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({}), { status: 200 }),
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		await dveSlotOn(0);
+
+		const bodyA = JSON.parse(mockFetch.mock.calls[0][1].body);
+		expect(bodyA.execute_at).toBe(22222);
+	});
+
+	it('adds PTP timestamps to clipPlayerPlay (regex timed path)', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+		setDualTimestampProvider(() => ({ execute_at: 33333, command_seq: 4 }));
+
+		const mockFetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({}), { status: 200 }),
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		await clipPlayerPlay(0);
+
+		const bodyA = JSON.parse(mockFetch.mock.calls[0][1].body);
+		expect(bodyA.execute_at).toBe(33333);
+	});
+
+	it('adds PTP timestamps to clipPlayerStop (regex timed path)', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+		setDualTimestampProvider(() => ({ execute_at: 44444, command_seq: 5 }));
+
+		const mockFetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({}), { status: 200 }),
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		await clipPlayerStop(0);
+
+		const bodyA = JSON.parse(mockFetch.mock.calls[0][1].body);
+		expect(bodyA.execute_at).toBe(44444);
+	});
+
+	it('both engines receive identical bodies for mutations', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+		setDualTimestampProvider(() => ({ execute_at: 55555, command_seq: 8 }));
+
+		const mockFetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({}), { status: 200 }),
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		await cut('cam3');
+
+		const bodyA = JSON.parse(mockFetch.mock.calls[0][1].body);
+		const bodyB = JSON.parse(mockFetch.mock.calls[1][1].body);
+		expect(bodyA).toEqual(bodyB);
+	});
+
+	it('GET falls back from A network error to B network error then throws', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+
+		const mockFetch = vi.fn()
+			.mockRejectedValueOnce(new TypeError('A is down'))
+			.mockRejectedValueOnce(new TypeError('B is also down'));
+		vi.stubGlobal('fetch', mockFetch);
+
+		await expect(getState()).rejects.toThrow('All engines failed');
+	});
+
+	it('clones Blob body for each engine in dual mode', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+		const mockFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 202 }));
+		vi.stubGlobal('fetch', mockFetch);
+
+		// graphicsSequenceUpload calls dualFetch with a File body
+		await graphicsSequenceUpload(1, new File(['test data'], 'seq.zip'), 30);
+
+		expect(mockFetch).toHaveBeenCalledTimes(2);
+		// Both engines should receive non-empty Blob bodies (File extends Blob)
+		const bodyA = mockFetch.mock.calls[0][1].body;
+		const bodyB = mockFetch.mock.calls[1][1].body;
+		expect(bodyA).toBeInstanceOf(Blob);
+		expect(bodyB).toBeInstanceOf(Blob);
+		// The two bodies should be distinct objects (cloned, not the same reference)
+		expect(bodyA).not.toBe(bodyB);
 	});
 });
