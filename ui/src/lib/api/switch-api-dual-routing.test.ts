@@ -15,6 +15,7 @@ import {
 	cut, setPreview, getState, fadeToBlack,
 	setMasterLevel, startTransition,
 	setDualTimestampProvider, setPartialFailureCallback, authHeaders,
+	resetPreferredEngine,
 } from './switch-api';
 
 // Track all fetch calls for inspection
@@ -84,6 +85,7 @@ describe('switch-api dual-engine routing', () => {
 		setDualTimestampProvider(null);
 		setPartialFailureCallback(null);
 		setExpectDualEngine(false);
+		resetPreferredEngine();
 	});
 
 	// ─── Single-engine mode (no engines configured) ───
@@ -705,6 +707,184 @@ describe('switch-api dual-engine routing', () => {
 			);
 
 			warnSpy.mockRestore();
+		});
+	});
+
+	// ─── Sticky engine routing after failover ───
+
+	describe('sticky engine routing', () => {
+		beforeEach(() => {
+			setEngineUrls([
+				{ id: 'A', url: 'https://engine-a.example.com' },
+				{ id: 'B', url: 'https://engine-b.example.com' },
+			]);
+			resetPreferredEngine();
+		});
+
+		it('after Engine A failure + B success, subsequent GETs go to B first', async () => {
+			// First request: Engine A fails, Engine B succeeds
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-a')) {
+					return Promise.reject(new Error('network error'));
+				}
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
+			});
+
+			await getState();
+			expect(fetchCalls).toHaveLength(2);
+			expect(fetchCalls[0].url).toContain('engine-a');
+			expect(fetchCalls[1].url).toContain('engine-b');
+
+			// Second request: both engines are up, but B should be tried first
+			fetchCalls = [];
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam2' }));
+			});
+
+			await getState();
+			// Should only have called one engine (B, since it's preferred and succeeds)
+			expect(fetchCalls).toHaveLength(1);
+			expect(fetchCalls[0].url).toContain('engine-b');
+		});
+
+		it('after 30s TTL expires, GETs go back to A first', async () => {
+			const realNow = Date.now;
+			let currentTime = realNow();
+			vi.spyOn(Date, 'now').mockImplementation(() => currentTime);
+
+			// First request: Engine A fails, Engine B succeeds → sets preference
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-a')) {
+					return Promise.reject(new Error('network error'));
+				}
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
+			});
+
+			await getState();
+
+			// Advance time past TTL (31 seconds)
+			currentTime += 31_000;
+
+			// Both engines now healthy
+			fetchCalls = [];
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam2' }));
+			});
+
+			await getState();
+			// Should go back to A first (default order)
+			expect(fetchCalls).toHaveLength(1);
+			expect(fetchCalls[0].url).toContain('engine-a');
+
+			vi.spyOn(Date, 'now').mockRestore();
+		});
+
+		it('sticky preference does not interfere with mutation fan-out', async () => {
+			// Set up preference: Engine A fails, B succeeds on GET
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-a')) {
+					return Promise.reject(new Error('network error'));
+				}
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
+			});
+
+			await getState();  // Sets B as preferred
+
+			// Now send a mutation — should still fan out to both engines
+			fetchCalls = [];
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
+			});
+
+			await cut('cam1');
+			// Mutations always fan out to all available engines
+			expect(fetchCalls).toHaveLength(2);
+			const urls = fetchCalls.map(c => c.url);
+			expect(urls).toContain('https://engine-a.example.com/api/switch/cut');
+			expect(urls).toContain('https://engine-b.example.com/api/switch/cut');
+		});
+
+		it('sticky preference survives across multiple GET requests within TTL', async () => {
+			// Engine A fails, B succeeds → sets preference
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-a')) {
+					return Promise.reject(new Error('network error'));
+				}
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
+			});
+
+			await getState();
+
+			// Multiple subsequent GETs should all go to B first
+			for (let i = 0; i < 3; i++) {
+				fetchCalls = [];
+				mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+					fetchCalls.push({ url, opts: opts ?? {} });
+					return Promise.resolve(defaultOkResponse({ programSource: 'cam2' }));
+				});
+
+				await getState();
+				expect(fetchCalls).toHaveLength(1);
+				expect(fetchCalls[0].url).toContain('engine-b');
+			}
+		});
+
+		it('Engine A HTTP error also triggers sticky routing to B', async () => {
+			// Engine A returns 500, Engine B succeeds
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-a')) {
+					return Promise.resolve(errorResponse(500, 'internal error'));
+				}
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
+			});
+
+			await getState();
+
+			// Next GET should go to B first
+			fetchCalls = [];
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam2' }));
+			});
+
+			await getState();
+			expect(fetchCalls).toHaveLength(1);
+			expect(fetchCalls[0].url).toContain('engine-b');
+		});
+
+		it('resetPreferredEngine clears sticky preference', async () => {
+			// Engine A fails, B succeeds → sets preference
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-a')) {
+					return Promise.reject(new Error('network error'));
+				}
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
+			});
+
+			await getState();
+
+			// Reset preference
+			resetPreferredEngine();
+
+			// Next GET should go back to A first
+			fetchCalls = [];
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam2' }));
+			});
+
+			await getState();
+			expect(fetchCalls).toHaveLength(1);
+			expect(fetchCalls[0].url).toContain('engine-a');
 		});
 	});
 });

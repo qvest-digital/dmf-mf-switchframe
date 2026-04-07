@@ -94,6 +94,30 @@ function recordSuccess(engineUrl: string): void {
 	circuitBreakers.delete(engineUrl);
 }
 
+// ── Sticky engine routing after failover ──
+// After failover to a secondary engine, keep routing GETs there for a TTL
+// to avoid thundering herd when the primary recovers.
+
+let preferredEngine: string | null = null;
+let preferredUntil = 0;
+
+function setPreferredEngine(engineUrl: string, durationMs: number = 30_000): void {
+	preferredEngine = engineUrl;
+	preferredUntil = Date.now() + durationMs;
+}
+
+function getPreferredEngine(): string | null {
+	if (preferredEngine && Date.now() < preferredUntil) return preferredEngine;
+	preferredEngine = null;
+	return null;
+}
+
+/** Reset sticky engine preference (for testing). */
+export function resetPreferredEngine(): void {
+	preferredEngine = null;
+	preferredUntil = 0;
+}
+
 // ── Partial failure callback ──
 // Called when a mutation succeeds on some engines but fails on others,
 // allowing the reconciler to trigger an early divergence check.
@@ -179,13 +203,30 @@ async function primaryWithFallback<T>(url: string, options: RequestInit | undefi
 		availableEngines = [...engines];
 	}
 
-	let lastHttpError: { status: number; body: Record<string, string> } | null = null;
+	// Sticky routing: if we recently failed over to an engine, try it first
+	// to avoid thundering herd when the primary recovers.
+	const preferred = getPreferredEngine();
+	if (preferred) {
+		const prefIdx = availableEngines.findIndex(e => e.url === preferred);
+		if (prefIdx > 0) {
+			const [prefEngine] = availableEngines.splice(prefIdx, 1);
+			availableEngines.unshift(prefEngine);
+		}
+	}
 
-	for (const engine of availableEngines) {
+	let lastHttpError: { status: number; body: Record<string, string> } | null = null;
+	const isFirstEngine = (engineUrl: string) => engines.length > 0 && engines[0].url === engineUrl;
+
+	for (let i = 0; i < availableEngines.length; i++) {
+		const engine = availableEngines[i];
 		try {
 			const res = await fetch(`${engine.url}${url}`, opts);
 			if (res.ok) {
 				recordSuccess(engine.url);
+				// If a non-primary engine succeeded after failover, make it sticky
+				if (i > 0 || (!isFirstEngine(engine.url) && !preferred)) {
+					setPreferredEngine(engine.url);
+				}
 				if (res.status === 202 || res.status === 204 || res.headers?.get('content-length') === '0') {
 					return undefined as T;
 				}
@@ -367,13 +408,31 @@ async function dualFetch(url: string, options: RequestInit): Promise<Response> {
 		const method = (options.method ?? 'GET').toUpperCase();
 		const opts: RequestInit = { ...options, headers: { ...authHeaders(), ...options.headers } };
 
-		// Read-only requests: primary with fallback
+		// Read-only requests: primary with fallback (with sticky routing)
 		if (method === 'GET' || method === 'HEAD') {
+			let orderedEngines = [...engines];
+			const preferred = getPreferredEngine();
+			if (preferred) {
+				const prefIdx = orderedEngines.findIndex(e => e.url === preferred);
+				if (prefIdx > 0) {
+					const [prefEngine] = orderedEngines.splice(prefIdx, 1);
+					orderedEngines.unshift(prefEngine);
+				}
+			}
+
 			let lastResponse: Response | null = null;
-			for (const engine of engines) {
+			for (let i = 0; i < orderedEngines.length; i++) {
+				const engine = orderedEngines[i];
 				try {
 					const res = await fetch(`${engine.url}${url}`, opts);
-					if (res.ok) return res;
+					if (res.ok) {
+						// If a non-primary engine succeeded after failover, make it sticky
+						const isFirstEngine = engines.length > 0 && engines[0].url === engine.url;
+						if (i > 0 || (!isFirstEngine && !preferred)) {
+							setPreferredEngine(engine.url);
+						}
+						return res;
+					}
 					lastResponse = res;
 				} catch {
 					// Network error — try next engine
