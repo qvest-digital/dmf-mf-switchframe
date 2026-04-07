@@ -888,6 +888,36 @@
 		};
 	});
 
+	// Auto video failover: switch the entire media pipeline to Engine B when
+	// Engine A disconnects. The reconciler drives syncHealth.status to
+	// 'single-engine' with authoritative='B' when only Engine B is reachable.
+	// When both engines come back in sync, restore to Engine A.
+	let videoFailoverActive = false;
+	$effect(() => {
+		if (!isDualEngine || !mounted) return;
+		const status = syncHealth?.status;
+		const auth = syncHealth?.authoritative;
+
+		// Failover: single-engine with B authoritative, currently showing A
+		if (status === 'single-engine' && auth === 'B' && pipelineManager.activeEngine === 'A' && !videoFailoverActive) {
+			const engineBUrl = store.state.engineBUrl;
+			if (engineBUrl) {
+				videoFailoverActive = true;
+				pipelineManager.failoverToEngineB(engineBUrl, Object.keys(store.state.sources ?? {}))
+					.then(() => notify('warning', 'Video switched to Engine B'))
+					.catch(err => console.warn('Video failover failed:', err));
+			}
+		}
+
+		// Restore: when synced and currently on B, switch back to A
+		if (status === 'synced' && pipelineManager.activeEngine === 'B' && videoFailoverActive) {
+			videoFailoverActive = false;
+			pipelineManager.restoreToEngineA(Object.keys(store.state.sources ?? {}))
+				.then(() => notify('info', 'Video restored to Engine A'))
+				.catch(err => console.warn('Video restore failed:', err));
+		}
+	});
+
 	// Create/destroy FastControl for engine A based on WebTransport connection state.
 	// Both engines receive datagrams via DualFastControl when both transports are available.
 	$effect(() => {

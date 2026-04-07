@@ -787,4 +787,201 @@ describe('PipelineManager', () => {
 			expect(manager.activeEngine).toBe('A');
 		});
 	});
+
+	describe('failoverToEngineB / restoreToEngineA', () => {
+		const mockedCreateMediaPipeline = vi.mocked(createMediaPipeline);
+
+		beforeEach(() => {
+			vi.useFakeTimers();
+			mockedCreateMediaPipeline.mockClear();
+		});
+
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		it('failoverToEngineB creates pipeline B and switches activeEngine', async () => {
+			// Set up: program canvas on Engine A
+			const pgmCanvas = createCanvas();
+			const pvwCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, pvwCanvas);
+
+			// Add sources to track attached canvases
+			await manager.syncSources(makeSources('cam1', 'cam2'));
+
+			// Make the mock pipeline B return a ready audio decoder for program
+			const bPipelineMock = createMockPipeline();
+			bPipelineMock.getAudioDecoder.mockImplementation((key: string) => {
+				if (key === 'program') return { getLevels: vi.fn().mockReturnValue({ peak: [0, 0] }) } as any;
+				return null;
+			});
+			mockedCreateMediaPipeline.mockReturnValueOnce(bPipelineMock);
+
+			expect(manager.activeEngine).toBe('A');
+
+			const failoverPromise = manager.failoverToEngineB('https://engine-b:8080', ['cam1', 'cam2']);
+			// Advance timers to let readiness polling resolve
+			await vi.advanceTimersByTimeAsync(250);
+			await failoverPromise;
+
+			expect(manager.activeEngine).toBe('B');
+			expect(manager.hasEngineBPipeline).toBe(true);
+
+			// Verify Engine B has sources connected
+			expect(bPipelineMock.addSource).toHaveBeenCalledWith('cam1');
+			expect(bPipelineMock.addSource).toHaveBeenCalledWith('cam2');
+			expect(bPipelineMock.addSource).toHaveBeenCalledWith('program');
+			expect(bPipelineMock.addSource).toHaveBeenCalledWith('program-preview');
+			expect(bPipelineMock.connectSource).toHaveBeenCalledWith('program');
+		});
+
+		it('restoreToEngineA switches back and destroys pipeline B', async () => {
+			const pgmCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, null);
+			await manager.syncSources(makeSources('cam1'));
+
+			// Failover to B first
+			const bPipelineMock = createMockPipeline();
+			bPipelineMock.getAudioDecoder.mockReturnValue({ getLevels: vi.fn().mockReturnValue({ peak: [0, 0] }) } as any);
+			mockedCreateMediaPipeline.mockReturnValueOnce(bPipelineMock);
+
+			const failoverPromise = manager.failoverToEngineB('https://engine-b:8080', ['cam1']);
+			await vi.advanceTimersByTimeAsync(250);
+			await failoverPromise;
+			expect(manager.activeEngine).toBe('B');
+
+			// Now restore to A
+			await manager.restoreToEngineA(['cam1']);
+
+			expect(manager.activeEngine).toBe('A');
+			expect(manager.hasEngineBPipeline).toBe(false);
+			expect(bPipelineMock.destroy).toHaveBeenCalled();
+		});
+
+		it('failoverToEngineB is idempotent when already on B', async () => {
+			const pgmCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, null);
+
+			const bPipelineMock = createMockPipeline();
+			bPipelineMock.getAudioDecoder.mockReturnValue({ getLevels: vi.fn().mockReturnValue({ peak: [0, 0] }) } as any);
+			mockedCreateMediaPipeline.mockReturnValueOnce(bPipelineMock);
+
+			const p1 = manager.failoverToEngineB('https://engine-b:8080', ['cam1']);
+			await vi.advanceTimersByTimeAsync(250);
+			await p1;
+			expect(manager.activeEngine).toBe('B');
+
+			// Second failover should be a no-op (returns immediately)
+			mockedCreateMediaPipeline.mockClear();
+			await manager.failoverToEngineB('https://engine-b:8080', ['cam1']);
+
+			expect(manager.activeEngine).toBe('B');
+			// Should NOT have created another pipeline
+			expect(mockedCreateMediaPipeline).not.toHaveBeenCalled();
+		});
+
+		it('restoreToEngineA is idempotent when already on A', async () => {
+			expect(manager.activeEngine).toBe('A');
+
+			// Should be a no-op
+			await manager.restoreToEngineA(['cam1', 'cam2']);
+
+			expect(manager.activeEngine).toBe('A');
+		});
+
+		it('failoverToEngineB times out and proceeds when pipeline B is slow', async () => {
+			const pgmCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, null);
+
+			// Pipeline B never becomes ready (getAudioDecoder always returns null)
+			const bPipelineMock = createMockPipeline();
+			mockedCreateMediaPipeline.mockReturnValueOnce(bPipelineMock);
+
+			const failoverPromise = manager.failoverToEngineB('https://engine-b:8080', ['cam1']);
+
+			// Advance past the 3-second timeout
+			await vi.advanceTimersByTimeAsync(3200);
+			await failoverPromise;
+
+			// Should still complete (timeout proceeds anyway)
+			expect(manager.activeEngine).toBe('B');
+		});
+
+		it('failoverToEngineB swaps tile canvases to pipeline B', async () => {
+			// Set up pipeline A with tile canvases
+			await manager.syncSources(makeSources('cam1'));
+
+			const pgmCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, null);
+
+			const bPipelineMock = createMockPipeline();
+			bPipelineMock.getAudioDecoder.mockReturnValue({ getLevels: vi.fn().mockReturnValue({ peak: [0, 0] }) } as any);
+			mockedCreateMediaPipeline.mockReturnValueOnce(bPipelineMock);
+
+			const failoverPromise = manager.failoverToEngineB('https://engine-b:8080', ['cam1']);
+			await vi.advanceTimersByTimeAsync(250);
+			await failoverPromise;
+
+			// Pipeline A should have tile detached
+			expect(pipeline.detachCanvas).toHaveBeenCalledWith('cam1', 'tile-cam1');
+			// Pipeline B should have tile attached
+			expect(bPipelineMock.attachCanvas).toHaveBeenCalledWith(
+				'cam1',
+				'tile-cam1',
+				expect.any(HTMLCanvasElement),
+			);
+		});
+
+		it('failoverToEngineB swaps preview canvas to pipeline B', async () => {
+			const pgmCanvas = createCanvas();
+			const pvwCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam2', pgmCanvas, pvwCanvas);
+
+			const bPipelineMock = createMockPipeline();
+			bPipelineMock.getAudioDecoder.mockReturnValue({ getLevels: vi.fn().mockReturnValue({ peak: [0, 0] }) } as any);
+			mockedCreateMediaPipeline.mockReturnValueOnce(bPipelineMock);
+
+			const failoverPromise = manager.failoverToEngineB('https://engine-b:8080', ['cam1', 'cam2']);
+			await vi.advanceTimersByTimeAsync(250);
+			await failoverPromise;
+
+			// Preview should be detached from A and attached to B
+			expect(pipeline.detachCanvas).toHaveBeenCalledWith('cam2', 'preview');
+			expect(bPipelineMock.attachCanvas).toHaveBeenCalledWith(
+				'cam2',
+				'preview',
+				pvwCanvas,
+			);
+		});
+
+		it('restoreToEngineA swaps canvases back and re-attaches to A', async () => {
+			const pgmCanvas = createCanvas();
+			const pvwCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam2', pgmCanvas, pvwCanvas);
+			await manager.syncSources(makeSources('cam1'));
+
+			const bPipelineMock = createMockPipeline();
+			bPipelineMock.getAudioDecoder.mockReturnValue({ getLevels: vi.fn().mockReturnValue({ peak: [0, 0] }) } as any);
+			mockedCreateMediaPipeline.mockReturnValueOnce(bPipelineMock);
+
+			const failoverPromise = manager.failoverToEngineB('https://engine-b:8080', ['cam1']);
+			await vi.advanceTimersByTimeAsync(250);
+			await failoverPromise;
+
+			// Clear mocks to track restore-specific calls
+			pipeline.attachCanvas.mockClear();
+			pipeline.detachCanvas.mockClear();
+			bPipelineMock.detachCanvas.mockClear();
+
+			await manager.restoreToEngineA(['cam1']);
+
+			// Tile canvases should move back from B to A
+			expect(bPipelineMock.detachCanvas).toHaveBeenCalledWith('cam1', 'tile-cam1');
+			expect(pipeline.attachCanvas).toHaveBeenCalledWith(
+				'cam1',
+				'tile-cam1',
+				expect.any(HTMLCanvasElement),
+			);
+		});
+	});
 });

@@ -352,6 +352,112 @@ export class PipelineManager {
 		this._activeEngine = 'A';
 	}
 
+	/**
+	 * Full pipeline failover: move all canvases (tiles, program, preview)
+	 * from Engine A to Engine B. Creates Engine B pipeline if needed,
+	 * connects all sources, waits for readiness, then swaps every canvas.
+	 *
+	 * Called automatically when Engine A disconnects in dual-engine mode.
+	 */
+	async failoverToEngineB(engineBUrl: string, sourceKeys: string[]): Promise<void> {
+		if (this._activeEngine === 'B') return;
+
+		// Create Engine B pipeline
+		this.createEngineBPipeline(engineBUrl);
+		if (!this.pipelineB) return;
+
+		// Connect all sources on Engine B
+		for (const key of sourceKeys) {
+			this.pipelineB.addSource(key);
+			this.pipelineB.connectSource(key);
+		}
+		// Also connect program streams
+		this.pipelineB.addSource('program');
+		this.pipelineB.connectSource('program');
+		this.pipelineB.addSource('program-preview');
+		this.pipelineB.connectSource('program-preview');
+
+		// Wait for Engine B to have media (up to 3s)
+		await this.waitForPipelineReady(this.pipelineB, 3000);
+
+		// Swap program canvas
+		this.switchProgramToEngineB();
+
+		// Swap all tile canvases
+		for (const key of this.attachedCanvases) {
+			const canvas = document.getElementById(`tile-${key}`) as HTMLCanvasElement | null;
+			if (canvas) {
+				this.pipeline.detachCanvas(key, `tile-${key}`);
+				this.pipelineB!.attachCanvas(key, `tile-${key}`, canvas);
+			}
+		}
+
+		// Swap preview canvas
+		if (this.currentPreviewCanvas && this.currentPreviewCanvasEl) {
+			this.pipeline.detachCanvas(this.currentPreviewCanvas, 'preview');
+			this.pipelineB!.attachCanvas(this.currentPreviewCanvas, 'preview', this.currentPreviewCanvasEl);
+		}
+
+		this._activeEngine = 'B';
+	}
+
+	/**
+	 * Reverse failover: move all canvases back from Engine B to Engine A
+	 * and destroy the Engine B pipeline.
+	 *
+	 * Called when Engine A reconnects and sync is restored.
+	 */
+	async restoreToEngineA(sourceKeys: string[]): Promise<void> {
+		if (this._activeEngine === 'A') return;
+		if (!this.pipelineB) return;
+
+		// Swap program canvas back to A
+		this.switchProgramToEngineA();
+
+		// Swap all tile canvases back to A
+		for (const key of this.attachedCanvases) {
+			const canvas = document.getElementById(`tile-${key}`) as HTMLCanvasElement | null;
+			if (canvas) {
+				this.pipelineB.detachCanvas(key, `tile-${key}`);
+				this.pipeline.attachCanvas(key, `tile-${key}`, canvas);
+			}
+		}
+
+		// Swap preview back to A
+		if (this.currentPreviewCanvas && this.currentPreviewCanvasEl) {
+			this.pipelineB.detachCanvas(this.currentPreviewCanvas, 'preview');
+			this.pipeline.attachCanvas(this.currentPreviewCanvas, 'preview', this.currentPreviewCanvasEl);
+		}
+
+		this._activeEngine = 'A';
+
+		// Clean up Engine B pipeline
+		this.destroyEngineBPipeline();
+	}
+
+	/**
+	 * Poll until the pipeline has a configured audio decoder for 'program' or
+	 * 'program-preview' (indicating MoQ catalog arrival), or timeout expires.
+	 */
+	private waitForPipelineReady(pipeline: MediaPipeline, timeoutMs: number): Promise<void> {
+		return new Promise((resolve) => {
+			const start = Date.now();
+			const check = () => {
+				// Check if program source has been configured (audio decoder exists)
+				if (pipeline.getAudioDecoder('program') || pipeline.getAudioDecoder('program-preview')) {
+					resolve();
+					return;
+				}
+				if (Date.now() - start > timeoutMs) {
+					resolve(); // timeout — proceed anyway with whatever we have
+					return;
+				}
+				setTimeout(check, 200);
+			};
+			check();
+		});
+	}
+
 	/** Clean up all state. */
 	destroy(): void {
 		this.stopMetering();
