@@ -169,6 +169,9 @@ func run() error {
 	if err := app.initCoreEngine(); err != nil {
 		return err
 	}
+	if err := app.initCommandQueue(); err != nil {
+		return err
+	}
 	if err := app.initOutput(); err != nil {
 		return err
 	}

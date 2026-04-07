@@ -28,6 +28,7 @@ import (
 	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/clock"
+	"github.com/zsiec/switchframe/server/cmdqueue"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/colorgrade"
 	"github.com/zsiec/switchframe/server/comms"
@@ -100,8 +101,11 @@ type App struct {
 	programPreviewEnc *preview.Encoder
 
 	// Core engine
-	sw    *switcher.Switcher
-	mixer *audio.Mixer
+	sw             *switcher.Switcher
+	mixer          *audio.Mixer
+	cmdQueue       *cmdqueue.Queue
+	cmdDispatcher  *cmdqueue.Dispatcher
+	cmdQueueWAL    *cmdqueue.WAL
 
 	// Output
 	outputMgr     *output.Manager
@@ -1537,6 +1541,7 @@ func (a *App) initAPI() error {
 		control.WithCompositor(a.compositor),
 		control.WithMacroStore(a.macroStore),
 		control.WithKeyer(a.keyProcessor),
+		control.WithCommandQueue(a.cmdQueue),
 		control.WithKeyBridge(a.keyBridge),
 		control.WithOperatorStore(a.operatorStore),
 		control.WithSessionManager(a.sessionMgr),
@@ -2006,6 +2011,10 @@ func (a *App) closeSubsystems() {
 
 	if a.perfSampler != nil {
 		a.perfSampler.Stop()
+	}
+
+	if a.cmdQueueWAL != nil {
+		_ = a.cmdQueueWAL.Close()
 	}
 
 	if a.scte35Injector != nil {
