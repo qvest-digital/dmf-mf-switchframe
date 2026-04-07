@@ -10,11 +10,11 @@ import (
 	"sync"
 )
 
-// maxAge is the maximum age of a command before it is considered stale (2 seconds in µs).
-const maxAge = int64(2_000_000)
+// DefaultMaxAge is the default staleness threshold (2 seconds in µs).
+const DefaultMaxAge = int64(2_000_000)
 
 // maxSeen is the maximum number of seen Seq values before the dedup map is pruned.
-const maxSeen = 10_000
+const maxSeen = 100_000
 
 // Sentinel errors returned by Enqueue.
 var (
@@ -30,22 +30,54 @@ type Command struct {
 	Payload   json.RawMessage `json:"payload"`
 }
 
+// Option configures a Queue at construction time.
+type Option func(*Queue)
+
+// WithMaxAge sets the staleness threshold in microseconds. Commands whose
+// ExecuteAt is more than maxAge µs in the past are rejected as stale.
+// Default: DefaultMaxAge (2s). For active-active mode use 10_000_000 (10s).
+func WithMaxAge(maxAge int64) Option {
+	return func(q *Queue) { q.maxAge = maxAge }
+}
+
+// WithWAL attaches a write-ahead log for crash recovery. When set, Enqueue
+// appends commands to the WAL before adding them to the heap, and Drain
+// marks executed entries. On construction, un-executed WAL entries are replayed.
+func WithWAL(w *WAL) Option {
+	return func(q *Queue) { q.wal = w }
+}
+
 // Queue holds pending commands sorted by ExecuteAt and drains them when the
 // injected clock reaches their scheduled time.
 type Queue struct {
-	mu    sync.Mutex
-	h     cmdHeap
-	seen  map[uint64]struct{}
-	clock func() int64
+	mu     sync.Mutex
+	h      cmdHeap
+	seen   map[uint64]struct{}
+	clock  func() int64
+	maxAge int64
+	wal    *WAL
 }
 
 // New creates a ready-to-use Queue. clock is called on every Enqueue and Drain
 // to obtain the current PTP time in microseconds.
-func New(clock func() int64) *Queue {
-	return &Queue{
-		seen:  make(map[uint64]struct{}),
-		clock: clock,
+func New(clock func() int64, opts ...Option) *Queue {
+	q := &Queue{
+		seen:   make(map[uint64]struct{}),
+		clock:  clock,
+		maxAge: DefaultMaxAge,
 	}
+	for _, opt := range opts {
+		opt(q)
+	}
+	// Replay WAL if attached — re-enqueue commands that were not yet executed.
+	if q.wal != nil {
+		if cmds, err := q.wal.Replay(q.maxAge); err == nil {
+			for _, cmd := range cmds {
+				_ = q.Enqueue(cmd) // ignore dup errors from replay
+			}
+		}
+	}
+	return q
 }
 
 // Enqueue adds cmd to the queue. It returns ErrStaleCommand if the command's
@@ -55,7 +87,7 @@ func (q *Queue) Enqueue(cmd Command) error {
 	now := q.clock()
 
 	// Staleness check — only applies when ExecuteAt is non-zero.
-	if cmd.ExecuteAt != 0 && now-cmd.ExecuteAt > maxAge {
+	if cmd.ExecuteAt != 0 && now-cmd.ExecuteAt > q.maxAge {
 		return ErrStaleCommand
 	}
 
@@ -84,6 +116,13 @@ func (q *Queue) Enqueue(cmd Command) error {
 		q.seen = pruned
 	}
 
+	// Persist to WAL before committing to heap.
+	if q.wal != nil {
+		if err := q.wal.Append(cmd); err != nil {
+			return err
+		}
+	}
+
 	heap.Push(&q.h, cmd)
 	return nil
 }
@@ -106,6 +145,18 @@ func (q *Queue) Drain() []Command {
 		heap.Pop(&q.h)
 		out = append(out, top)
 	}
+
+	// Mark drained commands as executed in WAL.
+	if q.wal != nil && len(out) > 0 {
+		for _, cmd := range out {
+			_ = q.wal.MarkExecuted(cmd.Seq)
+		}
+		// Truncate WAL when heap is empty (all commands executed).
+		if q.h.Len() == 0 {
+			_ = q.wal.Truncate()
+		}
+	}
+
 	return out
 }
 

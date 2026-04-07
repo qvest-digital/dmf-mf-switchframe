@@ -25,11 +25,16 @@ func TestSyncHealth_ReturnsFields(t *testing.T) {
 	var resp struct {
 		PTPOffsetUS    int64  `json:"ptpOffsetUs"`
 		LastCommandSeq uint64 `json:"lastCommandSeq"`
+		LastExecSeq    uint64 `json:"lastExecutedSeq"`
+		LastExecErr    string `json:"lastExecutedErr"`
 		UptimeMS       int64  `json:"uptimeMs"`
 	}
 	err := json.NewDecoder(rec.Body).Decode(&resp)
 	require.NoError(t, err)
 	require.True(t, resp.UptimeMS >= 0, "uptime should be non-negative")
+	// New fields should be present (zero-valued for fresh state).
+	require.Equal(t, uint64(0), resp.LastExecSeq)
+	require.Equal(t, "", resp.LastExecErr)
 }
 
 // --- Mock SnapshotProvider ---
