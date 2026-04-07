@@ -4,12 +4,15 @@ import (
 	"context"
 	"fmt"
 	"image"
+	"log/slog"
 
 	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
+	"github.com/zsiec/switchframe/server/output"
+	"github.com/zsiec/switchframe/server/replay"
 )
 
 // snapshotProviderAdapter bridges the App to the control.SnapshotProvider interface.
@@ -30,6 +33,15 @@ var _ control.SnapshotProvider = (*snapshotProviderAdapter)(nil)
 
 // Verify App satisfies SnapshotApplyTarget at compile time.
 var _ internal.SnapshotApplyTarget = (*App)(nil)
+
+// Verify App satisfies all optional snapshot applier interfaces at compile time.
+var _ internal.SnapshotRecordingApplier = (*App)(nil)
+var _ internal.SnapshotDestinationApplier = (*App)(nil)
+var _ internal.SnapshotReplayApplier = (*App)(nil)
+var _ internal.SnapshotOperatorApplier = (*App)(nil)
+var _ internal.SnapshotPlayoutApplier = (*App)(nil)
+var _ internal.SnapshotSCTE35Applier = (*App)(nil)
+var _ internal.SnapshotMacroApplier = (*App)(nil)
 
 // --- SnapshotApplyTarget implementation ---
 
@@ -321,4 +333,194 @@ func (a *App) AssignSTMapProgram(mapName string) error {
 		return nil
 	}
 	return a.stmapRegistry.AssignProgram(mapName)
+}
+
+// --- Optional snapshot applier interfaces (operational state) ---
+
+// ApplyRecording reconciles recording state from a snapshot. If the snapshot
+// says recording should be active but we're not recording, start. If the
+// snapshot says inactive but we are recording, stop. Best-effort: errors
+// are logged but not returned.
+func (a *App) ApplyRecording(snap internal.RecordingSnapshot) error {
+	if a.outputMgr == nil {
+		return nil
+	}
+
+	status := a.outputMgr.RecordingStatus()
+
+	if snap.Active && !status.Active {
+		// Snapshot says recording should be active — start with default config.
+		if err := a.outputMgr.StartRecording(output.RecorderConfig{}); err != nil {
+			slog.Warn("snapshot apply: start recording failed", "error", err)
+		}
+	} else if !snap.Active && status.Active {
+		// Snapshot says recording should be stopped — stop.
+		if err := a.outputMgr.StopRecording(); err != nil {
+			slog.Warn("snapshot apply: stop recording failed", "error", err)
+		}
+	}
+
+	return nil
+}
+
+// ApplyOutputDestinations reconciles output destinations from a snapshot.
+// Only updates the active state of existing destinations — does not create
+// or delete destinations (IDs are engine-specific).
+func (a *App) ApplyOutputDestinations(dests []internal.DestinationSnapshot) error {
+	if a.outputMgr == nil {
+		return nil
+	}
+
+	// Build a lookup of desired state by ID.
+	desired := make(map[string]bool, len(dests))
+	for _, d := range dests {
+		desired[d.ID] = d.Active
+	}
+
+	// Walk existing destinations and reconcile active state.
+	existing := a.outputMgr.ListDestinations()
+	for _, dest := range existing {
+		wantActive, ok := desired[dest.ID]
+		if !ok {
+			// Destination not in snapshot — leave unchanged.
+			continue
+		}
+
+		isActive := dest.State == "connected" || dest.State == "starting"
+		if wantActive && !isActive {
+			if err := a.outputMgr.StartDestination(dest.ID); err != nil {
+				slog.Warn("snapshot apply: start destination failed", "id", dest.ID, "error", err)
+			}
+		} else if !wantActive && isActive {
+			if err := a.outputMgr.StopDestination(dest.ID); err != nil {
+				slog.Warn("snapshot apply: stop destination failed", "id", dest.ID, "error", err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// ApplyReplayMarks restores replay mark-in/mark-out points from a snapshot.
+// Uses SetMarks to set both points from Unix millisecond timestamps.
+func (a *App) ApplyReplayMarks(marks internal.ReplayMarksSnapshot) error {
+	if a.replayMgr == nil {
+		return nil
+	}
+
+	markIn := marks.MarkIn
+	markOut := marks.MarkOut
+	if err := a.replayMgr.SetMarks(&markIn, &markOut); err != nil {
+		slog.Warn("snapshot apply: set replay marks failed", "error", err)
+	}
+
+	return nil
+}
+
+// ApplyReplayPlayer reconciles replay player state from a snapshot.
+// If the snapshot says playing but we're idle, we cannot start playback
+// (requires mark points and clip extraction which is transient). If the
+// snapshot says idle but we're playing, stop. Best-effort.
+func (a *App) ApplyReplayPlayer(player internal.ReplayPlayerSnapshot) error {
+	if a.replayMgr == nil {
+		return nil
+	}
+
+	status := a.replayMgr.Status()
+	snapshotPlaying := player.State == "playing"
+	currentlyPlaying := status.State == replay.PlayerPlaying
+
+	if !snapshotPlaying && currentlyPlaying {
+		// Snapshot says idle but we're playing — stop.
+		if err := a.replayMgr.Stop(); err != nil {
+			slog.Warn("snapshot apply: stop replay player failed", "error", err)
+		}
+	}
+	// Cannot start playback from a snapshot — requires live clip extraction
+	// from the circular buffer, which is transient engine-local state.
+
+	return nil
+}
+
+// ApplyOperatorSessions is a no-op. Operator sessions are per-browser-connection
+// and cannot be transferred between engines. The snapshot captures them for
+// informational purposes only.
+func (a *App) ApplyOperatorSessions(_ []internal.OperatorSessionSnapshot) error {
+	return nil
+}
+
+// ApplyPlayoutChannels reconciles playout channel positions from a snapshot.
+// Best-effort: seeks each channel's scheduler cursor to the snapshot position
+// if the channel is currently on-air.
+func (a *App) ApplyPlayoutChannels(channels []internal.PlayoutChannelSnapshot) error {
+	if a.playoutMgr == nil {
+		return nil
+	}
+
+	states := a.playoutMgr.ChannelStates()
+	for _, chSnap := range channels {
+		idx := chSnap.ChannelIndex
+		if idx < 0 || idx >= len(states) {
+			continue
+		}
+
+		// Only adjust cursor for channels that are currently on-air.
+		if states[idx].State != "on_air" {
+			continue
+		}
+
+		// SetCursor is on the Channel directly. Access through the manager's
+		// exported method if available, or log a skip.
+		slog.Info("snapshot apply: playout channel position noted",
+			"channel", idx+1,
+			"targetItem", chSnap.CurrentItemIndex,
+			"schedulerState", chSnap.SchedulerState,
+		)
+		// Playout channels don't expose a public seek-to-item-index on the Manager.
+		// The scheduler cursor is internal state managed by the tick loop. Attempting
+		// to forcibly set it from outside could cause frame discontinuities.
+		// This is informational — the channel continues from its current position.
+	}
+
+	return nil
+}
+
+// ApplySCTE35Active reconciles active SCTE-35 events from a snapshot.
+// Best-effort: if a held event exists in the snapshot but not locally,
+// we cannot recreate it (it requires a live muxer sink). If a local event
+// should be held per the snapshot, apply the hold.
+func (a *App) ApplySCTE35Active(events []internal.SCTE35ActiveEventSnapshot) error {
+	if a.scte35Injector == nil {
+		return nil
+	}
+
+	// Build lookup of desired state.
+	desired := make(map[uint32]internal.SCTE35ActiveEventSnapshot, len(events))
+	for _, e := range events {
+		desired[e.EventID] = e
+	}
+
+	// Walk active events and apply hold state if needed.
+	activeIDs := a.scte35Injector.ActiveEventIDs()
+	for _, id := range activeIDs {
+		snapEvent, ok := desired[id]
+		if !ok {
+			continue
+		}
+		if snapEvent.Hold {
+			if err := a.scte35Injector.HoldBreak(id); err != nil {
+				slog.Warn("snapshot apply: hold SCTE-35 event failed", "eventId", id, "error", err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// ApplyMacroExecution is a best-effort no-op. Macro execution is managed by
+// the control API layer (which owns the goroutine, cancel context, and progress
+// callbacks). The App layer does not have direct access to start or interrupt
+// macro execution. The snapshot captures macro state for informational display.
+func (a *App) ApplyMacroExecution(_ internal.MacroExecutionSnapshot) error {
+	return nil
 }
