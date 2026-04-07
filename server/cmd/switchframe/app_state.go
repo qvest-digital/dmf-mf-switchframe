@@ -970,6 +970,152 @@ func (a *App) captureFullSnapshot() internal.FullStateSnapshot {
 		}
 	}
 
+	// --- Recording ---
+	if recStatus := a.outputMgr.RecordingStatus(); recStatus.Active {
+		snap.Recording = &internal.RecordingSnapshot{Active: true}
+	}
+
+	// --- Output destinations ---
+	if dests := a.outputMgr.ListDestinations(); len(dests) > 0 {
+		snap.OutputDestinations = make([]internal.DestinationSnapshot, 0, len(dests))
+		for _, d := range dests {
+			snap.OutputDestinations = append(snap.OutputDestinations, internal.DestinationSnapshot{
+				ID: d.ID,
+				Config: internal.DestinationSnapshotConfig{
+					Type:     d.Config.Type,
+					Address:  d.Config.Address,
+					Port:     d.Config.Port,
+					URL:      d.Config.URL,
+					Latency:  d.Config.Latency,
+					StreamID: d.Config.StreamID,
+					Name:     d.Config.Name,
+					Engine:   d.Config.Engine,
+				},
+				Active: d.State == "connected" || d.State == "starting",
+			})
+		}
+	}
+
+	// --- Replay marks & player ---
+	if a.replayMgr != nil {
+		rs := a.replayMgr.Status()
+		if rs.MarkIn != nil || rs.MarkOut != nil {
+			snap.ReplayMarks = &internal.ReplayMarksSnapshot{
+				Source: rs.MarkSource,
+			}
+			if rs.MarkIn != nil {
+				snap.ReplayMarks.MarkIn = rs.MarkIn.UnixMilli()
+			}
+			if rs.MarkOut != nil {
+				snap.ReplayMarks.MarkOut = rs.MarkOut.UnixMilli()
+			}
+		}
+		if rs.State != "idle" {
+			snap.ReplayPlayer = &internal.ReplayPlayerSnapshot{
+				Source: rs.Source,
+				State:  string(rs.State),
+				Speed:  rs.Speed,
+			}
+		}
+	}
+
+	// --- Macro execution ---
+	if ms := a.api.MacroState(); ms != nil && ms.Running {
+		snap.MacroExecution = &internal.MacroExecutionSnapshot{
+			MacroID:   ms.MacroName,
+			StepIndex: ms.CurrentStep,
+			State:     "running",
+		}
+	}
+
+	// --- Operator sessions ---
+	if sessions := a.sessionMgr.ActiveSessions(); len(sessions) > 0 {
+		locks := a.sessionMgr.ActiveLocks()
+		snap.OperatorSessions = make([]internal.OperatorSessionSnapshot, 0, len(sessions))
+		for _, s := range sessions {
+			os := internal.OperatorSessionSnapshot{
+				OperatorID: s.OperatorID,
+				Name:       s.Name,
+				Role:       string(s.Role),
+			}
+			for sub, info := range locks {
+				if info.HolderID == s.OperatorID {
+					os.LockedSubsystems = append(os.LockedSubsystems, string(sub))
+				}
+			}
+			snap.OperatorSessions = append(snap.OperatorSessions, os)
+		}
+	}
+
+	// --- Comms participants ---
+	if a.commsMgr != nil {
+		if cs := a.commsMgr.State(); cs != nil && cs.Active {
+			names := make([]string, 0, len(cs.Participants))
+			for _, p := range cs.Participants {
+				names = append(names, p.Name)
+			}
+			snap.CommsParticipants = names
+		}
+	}
+
+	// --- Playout channels ---
+	if a.playoutMgr != nil {
+		states := a.playoutMgr.ChannelStates()
+		for i, s := range states {
+			if s.State == "idle" && s.PlaylistName == "" {
+				continue
+			}
+			snap.PlayoutChannels = append(snap.PlayoutChannels, internal.PlayoutChannelSnapshot{
+				ChannelIndex:     i,
+				CurrentItemIndex: s.ItemIndex,
+				ElapsedMs:        s.ItemRemainMs, // remaining ms from current item
+				SchedulerState:   s.State,
+			})
+		}
+	}
+
+	// --- SCTE-35 active events ---
+	if a.scte35Injector != nil {
+		s := a.scte35Injector.State()
+		for _, ae := range s.ActiveEvents {
+			remainMs := int64(0)
+			if ae.RemainingMs != nil {
+				remainMs = *ae.RemainingMs
+			}
+			snap.SCTE35Active = append(snap.SCTE35Active, internal.SCTE35ActiveEventSnapshot{
+				EventID:     ae.EventID,
+				Type:        ae.CommandType,
+				RemainingMs: remainMs,
+				Hold:        ae.Held,
+			})
+		}
+	}
+
+	// --- Stinger loaded ---
+	if a.stingerStore != nil {
+		if names := a.stingerStore.List(); len(names) > 0 {
+			snap.StingerLoaded = names
+		}
+	}
+
+	// --- Clip player positions (name-based for cross-engine lookup) ---
+	if a.clipMgr != nil {
+		for _, ps := range a.clipMgr.PlayerStates() {
+			if ps.ClipName == "" {
+				continue
+			}
+			posMs := int64(ps.Position * 1000) // position is 0.0-1.0 progress; convert to approx ms
+			snap.ClipPlayerPositions = append(snap.ClipPlayerPositions, internal.ClipPositionSnapshot{
+				ClipName:    ps.ClipName,
+				PlayerIndex: ps.ID - 1, // 1-based ID to 0-based index
+				PositionMs:  posMs,
+				State:       string(ps.State),
+				Speed:       ps.Speed,
+				Loop:        ps.Loop,
+			})
+		}
+	}
+
 	return snap
 }
 
