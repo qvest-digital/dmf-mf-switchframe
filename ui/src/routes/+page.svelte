@@ -1000,6 +1000,14 @@
 	}
 
 	onMount(async () => {
+		// Register service worker for offline SPA cache resilience.
+		// If the engine goes down, a browser refresh still loads the cached app shell.
+		if ('serviceWorker' in navigator) {
+			navigator.serviceWorker.register('/sw.js').catch(err => {
+				console.warn('[SW] Registration failed:', err);
+			});
+		}
+
 		keyboard.attach();
 		document.addEventListener('keydown', handleGlobalShortcuts);
 		mounted = true;

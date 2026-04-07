@@ -754,6 +754,7 @@ export interface ControlRoomState {
 		available: boolean;
 	};
 	playout?: PlayoutState;
+	sessionId?: string;
 	engineBUrl?: string;
 	lastChangedBy?: string;
 	seq: number;
