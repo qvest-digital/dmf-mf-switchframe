@@ -32,8 +32,8 @@
 	import RedundancyPanel from '../components/RedundancyPanel.svelte';
 	import ProgramCompare from '../components/ProgramCompare.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
-	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, checkFragmentToken, SwitchApiError, listMacros, runMacro, dveSlotOn, dveSlotOff, replayQuick, replayPause, replayResume, replayPlay, replayStop, replaySeek, replaySetSpeed, replayMarkIn, replayMarkOut, commsMute, setDualTimestampProvider, getDebugSnapshot, getPerfData, playoutEngineCacheStatus } from '$lib/api/switch-api';
-	import { setEngineUrls } from '$lib/api/base-url';
+	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, checkFragmentToken, SwitchApiError, listMacros, runMacro, dveSlotOn, dveSlotOff, replayQuick, replayPause, replayResume, replayPlay, replayStop, replaySeek, replaySetSpeed, replayMarkIn, replayMarkOut, commsMute, setDualTimestampProvider, setPartialFailureCallback, getDebugSnapshot, getPerfData, playoutEngineCacheStatus } from '$lib/api/switch-api';
+	import { setEngineUrls, setExpectDualEngine } from '$lib/api/base-url';
 	import { fetchServerInfo } from '$lib/prism/transport-utils';
 	import * as operatorState from '$lib/state/operator.svelte';
 	import { notify } from '$lib/state/notifications.svelte';
@@ -66,6 +66,11 @@
 	];
 	let isDualEngine = $state(false);
 	let engineBDetected = false;
+
+	// Speculatively enable command buffering for engine B discovery.
+	// If engine B is never discovered (standalone mode), buffered commands
+	// simply expire after 5s with no side effects.
+	setExpectDualEngine(true);
 
 	const store = createControlRoomStore();
 	let showOverlay = $state(false);
@@ -574,6 +579,10 @@
 						execute_at: connectionManager.clock.ptpNow() + connectionManager.clock.safetyMargin(),
 						command_seq: connectionManager.nextCommandSeq(),
 					}));
+					// On partial command failure, trigger early reconciler check
+					setPartialFailureCallback(() => {
+						connectionManager.requestCheck();
+					});
 					// Start reconciler tick interval for dual-engine mode.
 					if (!reconcilerInterval) {
 						reconcilerInterval = setInterval(() => { connectionManager.tick(); }, 200);
@@ -1077,6 +1086,7 @@
 		operatorState.destroy();
 		setEngineUrls(null);
 		setDualTimestampProvider(null);
+		setPartialFailureCallback(null);
 		mounted = false;
 	});
 </script>

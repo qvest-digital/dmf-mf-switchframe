@@ -122,6 +122,11 @@ export class DualConnectionManager {
 		this.reconciler.tick();
 	}
 
+	/** Request immediate reconciler check (e.g. after partial command failure). */
+	requestCheck(): void {
+		this.reconciler.requestCheck();
+	}
+
 	nextCommandSeq(): number {
 		return ++this._commandSeq;
 	}

@@ -10,11 +10,11 @@
  * - Error handling preserves HTTP status codes
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { setEngineUrls, getEngineUrls, setApiBaseUrl } from './base-url';
+import { setEngineUrls, getEngineUrls, setApiBaseUrl, setExpectDualEngine } from './base-url';
 import {
 	cut, setPreview, getState, fadeToBlack,
 	setMasterLevel, startTransition,
-	setDualTimestampProvider, authHeaders,
+	setDualTimestampProvider, setPartialFailureCallback, authHeaders,
 } from './switch-api';
 
 // Track all fetch calls for inspection
@@ -82,6 +82,8 @@ describe('switch-api dual-engine routing', () => {
 		vi.unstubAllGlobals();
 		setEngineUrls(null);
 		setDualTimestampProvider(null);
+		setPartialFailureCallback(null);
+		setExpectDualEngine(false);
 	});
 
 	// ─── Single-engine mode (no engines configured) ───
@@ -412,6 +414,297 @@ describe('switch-api dual-engine routing', () => {
 				const headers = call.opts.headers as Record<string, string>;
 				expect(headers['Authorization']).toBeUndefined();
 			}
+		});
+	});
+
+	// ─── Pending command buffer during engine B discovery ───
+
+	describe('pending command buffer', () => {
+		it('buffers mutations for engine B when dual-engine expected but only one engine known', async () => {
+			// Simulate: we expect dual-engine, no engine URLs set yet
+			// (single-engine mode, request() falls through to same-origin fetch)
+			setExpectDualEngine(true);
+
+			// Send a mutation — goes to same-origin (engine A) immediately
+			await cut('cam1');
+
+			// Engine A got the request via same-origin path
+			expect(fetchCalls).toHaveLength(1);
+			expect(fetchCalls[0].url).toBe('/api/switch/cut');
+
+			// Now engine B is discovered — set both engines, flush pending buffer
+			fetchCalls = [];
+			setEngineUrls([
+				{ id: 'A', url: 'https://engine-a.example.com' },
+				{ id: 'B', url: 'https://engine-b.example.com' },
+			]);
+
+			// Wait for async flush
+			await vi.waitFor(() => {
+				const engineBCalls = fetchCalls.filter(c => c.url.includes('engine-b'));
+				expect(engineBCalls).toHaveLength(1);
+			});
+
+			// Verify the replayed request to engine B has the correct path and body
+			const engineBCalls = fetchCalls.filter(c => c.url.includes('engine-b'));
+			expect(engineBCalls[0].url).toBe('https://engine-b.example.com/api/switch/cut');
+			const body = JSON.parse(engineBCalls[0].opts.body as string);
+			expect(body.source).toBe('cam1');
+		});
+
+		it('does not buffer when dual-engine is not expected', async () => {
+			// Single-engine mode (default) — no buffering
+			setEngineUrls(null);
+
+			await cut('cam1');
+			expect(fetchCalls).toHaveLength(1);
+
+			// Adding engines later should NOT replay anything
+			fetchCalls = [];
+			setEngineUrls([
+				{ id: 'A', url: 'https://engine-a.example.com' },
+				{ id: 'B', url: 'https://engine-b.example.com' },
+			]);
+
+			// Give async flush time to run (it shouldn't)
+			await new Promise(r => setTimeout(r, 10));
+			expect(fetchCalls).toHaveLength(0);
+		});
+
+		it('does not buffer GET requests', async () => {
+			setExpectDualEngine(true);
+			setEngineUrls([{ id: 'A', url: 'https://engine-a.example.com' }]);
+
+			await getState();
+
+			// Adding engine B should not replay any GETs
+			fetchCalls = [];
+			setEngineUrls([
+				{ id: 'A', url: 'https://engine-a.example.com' },
+				{ id: 'B', url: 'https://engine-b.example.com' },
+			]);
+
+			await new Promise(r => setTimeout(r, 10));
+			expect(fetchCalls).toHaveLength(0);
+		});
+
+		it('limits buffer to 10 items (FIFO)', async () => {
+			setExpectDualEngine(true);
+			setEngineUrls([{ id: 'A', url: 'https://engine-a.example.com' }]);
+
+			// Send 12 mutations — only the last 10 should be buffered
+			for (let i = 0; i < 12; i++) {
+				await cut(`cam${i}`);
+			}
+
+			fetchCalls = [];
+			setEngineUrls([
+				{ id: 'A', url: 'https://engine-a.example.com' },
+				{ id: 'B', url: 'https://engine-b.example.com' },
+			]);
+
+			await vi.waitFor(() => {
+				const engineBCalls = fetchCalls.filter(c => c.url.includes('engine-b'));
+				expect(engineBCalls).toHaveLength(10);
+			});
+
+			// First replayed command should be cam2 (cam0 and cam1 were evicted)
+			const engineBCalls = fetchCalls.filter(c => c.url.includes('engine-b'));
+			const firstBody = JSON.parse(engineBCalls[0].opts.body as string);
+			expect(firstBody.source).toBe('cam2');
+		});
+
+		it('drops commands older than 5 seconds', async () => {
+			setExpectDualEngine(true);
+			setEngineUrls([{ id: 'A', url: 'https://engine-a.example.com' }]);
+
+			// Mock Date.now to control time
+			const realNow = Date.now;
+			let currentTime = realNow();
+			vi.spyOn(Date, 'now').mockImplementation(() => currentTime);
+
+			await cut('cam1');
+
+			// Advance time by 6 seconds
+			currentTime += 6000;
+
+			fetchCalls = [];
+			setEngineUrls([
+				{ id: 'A', url: 'https://engine-a.example.com' },
+				{ id: 'B', url: 'https://engine-b.example.com' },
+			]);
+
+			// Give async flush time to run
+			await new Promise(r => setTimeout(r, 10));
+
+			// Stale command should have been dropped
+			const engineBCalls = fetchCalls.filter(c => c.url.includes('engine-b'));
+			expect(engineBCalls).toHaveLength(0);
+
+			vi.spyOn(Date, 'now').mockRestore();
+		});
+
+		it('flushes multiple buffered commands to new engine', async () => {
+			setExpectDualEngine(true);
+			setEngineUrls([{ id: 'A', url: 'https://engine-a.example.com' }]);
+
+			await cut('cam1');
+			await setPreview('cam2');
+			await fadeToBlack();
+
+			fetchCalls = [];
+			setEngineUrls([
+				{ id: 'A', url: 'https://engine-a.example.com' },
+				{ id: 'B', url: 'https://engine-b.example.com' },
+			]);
+
+			await vi.waitFor(() => {
+				const engineBCalls = fetchCalls.filter(c => c.url.includes('engine-b'));
+				expect(engineBCalls).toHaveLength(3);
+			});
+
+			const engineBCalls = fetchCalls.filter(c => c.url.includes('engine-b'));
+			expect(engineBCalls[0].url).toContain('/api/switch/cut');
+			expect(engineBCalls[1].url).toContain('/api/switch/preview');
+			expect(engineBCalls[2].url).toContain('/api/switch/ftb');
+		});
+
+		it('stops buffering once both engines are known', async () => {
+			setExpectDualEngine(true);
+			setEngineUrls([{ id: 'A', url: 'https://engine-a.example.com' }]);
+
+			await cut('cam1');  // buffered
+
+			// Engine B discovered
+			setEngineUrls([
+				{ id: 'A', url: 'https://engine-a.example.com' },
+				{ id: 'B', url: 'https://engine-b.example.com' },
+			]);
+
+			// Wait for flush
+			await vi.waitFor(() => {
+				const engineBCalls = fetchCalls.filter(c => c.url.includes('engine-b'));
+				expect(engineBCalls.length).toBeGreaterThanOrEqual(1);
+			});
+
+			fetchCalls = [];
+
+			// Now send another mutation — should go to BOTH engines directly
+			await cut('cam2');
+
+			const engineACalls = fetchCalls.filter(c => c.url.includes('engine-a'));
+			const engineBCalls = fetchCalls.filter(c => c.url.includes('engine-b'));
+			expect(engineACalls).toHaveLength(1);
+			expect(engineBCalls).toHaveLength(1);
+		});
+	});
+
+	// ─── Partial failure detection ───
+
+	describe('partial failure callback', () => {
+		beforeEach(() => {
+			setEngineUrls([
+				{ id: 'A', url: 'https://engine-a.example.com' },
+				{ id: 'B', url: 'https://engine-b.example.com' },
+			]);
+		});
+
+		it('fires callback when one engine succeeds and the other returns HTTP error', async () => {
+			const onPartialFailure = vi.fn();
+			setPartialFailureCallback(onPartialFailure);
+
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-b')) {
+					return Promise.resolve(errorResponse(500, 'engine B crashed'));
+				}
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
+			});
+
+			await cut('cam1');
+			expect(onPartialFailure).toHaveBeenCalledTimes(1);
+		});
+
+		it('fires callback when one engine succeeds and the other has network error', async () => {
+			const onPartialFailure = vi.fn();
+			setPartialFailureCallback(onPartialFailure);
+
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-b')) {
+					return Promise.reject(new Error('network error'));
+				}
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
+			});
+
+			await cut('cam1');
+			expect(onPartialFailure).toHaveBeenCalledTimes(1);
+		});
+
+		it('does NOT fire callback when both engines succeed', async () => {
+			const onPartialFailure = vi.fn();
+			setPartialFailureCallback(onPartialFailure);
+
+			await cut('cam1');
+			expect(onPartialFailure).not.toHaveBeenCalled();
+		});
+
+		it('does NOT fire callback when both engines fail', async () => {
+			const onPartialFailure = vi.fn();
+			setPartialFailureCallback(onPartialFailure);
+
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				return Promise.resolve(errorResponse(500, 'engine down'));
+			});
+
+			await expect(cut('cam1')).rejects.toThrow();
+			expect(onPartialFailure).not.toHaveBeenCalled();
+		});
+
+		it('does NOT fire callback for GET requests (no fan-out)', async () => {
+			const onPartialFailure = vi.fn();
+			setPartialFailureCallback(onPartialFailure);
+
+			// GET uses primary-with-fallback, not allSettled — no partial failure possible
+			await getState();
+			expect(onPartialFailure).not.toHaveBeenCalled();
+		});
+
+		it('does not fire when no callback is set', async () => {
+			setPartialFailureCallback(null);
+
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-b')) {
+					return Promise.resolve(errorResponse(500, 'engine B crashed'));
+				}
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
+			});
+
+			// Should not throw even though there's a partial failure
+			const state = await cut('cam1');
+			expect(state.programSource).toBe('cam1');
+		});
+
+		it('logs a warning on partial failure', async () => {
+			const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+			setPartialFailureCallback(() => {});
+
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-b')) {
+					return Promise.resolve(errorResponse(500, 'engine B crashed'));
+				}
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
+			});
+
+			await cut('cam1');
+			expect(warnSpy).toHaveBeenCalledWith(
+				expect.stringContaining('[dual-api] Partial failure')
+			);
+
+			warnSpy.mockRestore();
 		});
 	});
 });

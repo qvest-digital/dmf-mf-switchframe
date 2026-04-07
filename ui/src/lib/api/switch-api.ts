@@ -1,6 +1,6 @@
 import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, GateSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, EngineRecordingGroup, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig, ColorGradeState, CorrectorState, PlayoutChannelState, Playlist, PlaylistItem, CacheStatus, PodInfo, PodConfig, PodTemplate, AsRunEvent, ChannelHealth, SampleClip, PlayoutClip, ASRState, DVEPresetInfo, WipePattern, WipeConfig } from './types';
 import { notify } from '$lib/state/notifications.svelte';
-import { resolveApiUrl, getEngineUrls, type EngineEndpoint } from './base-url';
+import { resolveApiUrl, getEngineUrls, bufferPendingCommand, type EngineEndpoint } from './base-url';
 
 export class SwitchApiError extends Error {
 	constructor(
@@ -92,6 +92,16 @@ function recordFailure(engineUrl: string): void {
 
 function recordSuccess(engineUrl: string): void {
 	circuitBreakers.delete(engineUrl);
+}
+
+// ── Partial failure callback ──
+// Called when a mutation succeeds on some engines but fails on others,
+// allowing the reconciler to trigger an early divergence check.
+
+let partialFailureCallback: (() => void) | null = null;
+
+export function setPartialFailureCallback(cb: (() => void) | null): void {
+	partialFailureCallback = cb;
 }
 
 // ── Dual-engine PTP timestamp injection ──
@@ -312,7 +322,16 @@ async function dualRequest<T>(url: string, options: RequestInit | undefined, eng
 	// Find successful responses
 	const fulfilled = results
 		.filter((r): r is PromiseFulfilledResult<Response> => r.status === 'fulfilled');
+	const rejected = results
+		.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
 	const successful = fulfilled.filter(r => r.value.ok);
+	const failed = [...rejected, ...fulfilled.filter(r => !r.value.ok)];
+
+	// Detect partial failure: some engines succeeded, some failed
+	if (successful.length > 0 && failed.length > 0) {
+		console.warn(`[dual-api] Partial failure: ${successful.length} ok, ${failed.length} failed for ${method} ${url}`);
+		partialFailureCallback?.();
+	}
 
 	if (successful.length > 0) {
 		// Return first successful response
@@ -386,10 +405,28 @@ async function dualFetch(url: string, options: RequestInit): Promise<Response> {
 			)
 		);
 		const fulfilled = results.filter((r): r is PromiseFulfilledResult<Response> => r.status === 'fulfilled');
+		const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
 		const successful = fulfilled.filter(r => r.value.ok);
+		const failed = [...rejected, ...fulfilled.filter(r => !r.value.ok)];
+
+		// Detect partial failure: some engines succeeded, some failed
+		if (successful.length > 0 && failed.length > 0) {
+			const method = (options.method ?? 'GET').toUpperCase();
+			console.warn(`[dual-api] Partial failure: ${successful.length} ok, ${failed.length} failed for ${method} ${url}`);
+			partialFailureCallback?.();
+		}
+
 		if (successful.length > 0) return successful[0].value;
 		if (fulfilled.length > 0) return fulfilled[0].value;
 		throw new Error('All engines unreachable');
+	}
+	// Single-engine fallback — buffer mutations for engine B discovery race
+	const method = (options.method ?? 'GET').toUpperCase();
+	if (method !== 'GET' && method !== 'HEAD') {
+		bufferPendingCommand(url, {
+			...options,
+			headers: { ...authHeaders(), ...options.headers },
+		});
 	}
 	return fetch(resolveApiUrl(url), { ...options, headers: { ...authHeaders(), ...options.headers } });
 }
@@ -398,6 +435,14 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 	const engines = getEngineUrls();
 	if (engines && engines.length > 1) {
 		return dualRequest<T>(url, options, engines);
+	}
+	// Single-engine path — buffer mutations for engine B discovery race
+	const method = (options?.method ?? 'GET').toUpperCase();
+	if (method !== 'GET' && method !== 'HEAD') {
+		bufferPendingCommand(url, {
+			...options,
+			headers: { ...authHeaders(), ...options?.headers },
+		});
 	}
 	// Single-engine: existing behavior unchanged
 	const opts: RequestInit = {

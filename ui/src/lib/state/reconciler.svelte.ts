@@ -288,6 +288,19 @@ export function createReconciler() {
 		tickedStatus = computeStatus(now);
 	}
 
+	/**
+	 * Request an immediate status recheck, e.g. after a partial command failure.
+	 * Skips the normal transient grace period so divergence surfaces faster.
+	 */
+	function requestCheck() {
+		// Jump the seq-delta clock backward so elapsed time exceeds the
+		// diverged threshold immediately on the next tick.
+		if (seqDeltaSince > 0) {
+			seqDeltaSince = Date.now() - DIVERGED_THRESHOLD_MS - 1;
+		}
+		tick();
+	}
+
 	function setRTT(engine: EngineId, ms: number) {
 		if (engine === 'A') rttA = ms;
 		else rttB = ms;
@@ -371,6 +384,7 @@ export function createReconciler() {
 	return {
 		ingest,
 		tick,
+		requestCheck,
 		setRTT,
 		setClockOffset,
 		disconnect,

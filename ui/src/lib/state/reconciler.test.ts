@@ -809,4 +809,43 @@ describe('createReconciler', () => {
 			expect(fields).toContain('transitionPosition');
 		});
 	});
+
+	// ── requestCheck (partial failure fast-path) ──
+
+	describe('requestCheck', () => {
+		it('immediately transitions lagging to diverged when seq delta exists', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 3 }));
+			r.tick();
+			// Normally would be 'synced' or 'lagging' because not enough time passed
+			const statusBefore = r.health.status;
+			expect(statusBefore === 'synced' || statusBefore === 'lagging').toBe(true);
+
+			// requestCheck forces immediate re-evaluation past the threshold
+			r.requestCheck();
+			expect(r.health.status).toBe('diverged');
+		});
+
+		it('does nothing when engines are already synced', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+			r.tick();
+			expect(r.health.status).toBe('synced');
+
+			r.requestCheck();
+			expect(r.health.status).toBe('synced');
+		});
+
+		it('does nothing when only one engine is connected', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.tick();
+			expect(r.health.status).toBe('single-engine');
+
+			r.requestCheck();
+			expect(r.health.status).toBe('single-engine');
+		});
+	});
 });
