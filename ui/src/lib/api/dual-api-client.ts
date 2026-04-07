@@ -84,4 +84,32 @@ export class DualApiClient {
 		}
 		return res.json();
 	}
+
+	// =============================================
+	// Reconcile lock methods (target specific engine)
+	// =============================================
+
+	async acquireReconcileLock(
+		engineId: EngineId
+	): Promise<{ acquired: boolean; lockId?: string; holder?: string }> {
+		const engine = this.findEngine(engineId);
+		const res = await fetch(`${engine.url}/api/sync/reconcile-lock`, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				...this.authHeaders(),
+			},
+			body: JSON.stringify({ holder: `browser-${Date.now()}` }),
+		});
+		if (!res.ok) return { acquired: false };
+		return res.json();
+	}
+
+	async releaseReconcileLock(engineId: EngineId, lockId: string): Promise<void> {
+		const engine = this.findEngine(engineId);
+		await fetch(`${engine.url}/api/sync/reconcile-lock/${lockId}`, {
+			method: 'DELETE',
+			headers: this.authHeaders(),
+		}).catch(() => {}); // best-effort
+	}
 }

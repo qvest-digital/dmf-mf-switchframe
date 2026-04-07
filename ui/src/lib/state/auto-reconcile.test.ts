@@ -422,6 +422,261 @@ describe('createAutoReconcile', () => {
 		reconcile.destroy();
 	});
 
+	// ── Transition guard ──
+
+	describe('transition guard', () => {
+		it('defers push during inTransition', async () => {
+			let transitionActive = true;
+			const config = makeConfig({
+				getAuthoritativeState: () => ({ inTransition: transitionActive }),
+			});
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			// Push should be deferred while inTransition is true
+			await vi.advanceTimersByTimeAsync(0);
+			expect(config.getSnapshot).not.toHaveBeenCalled();
+
+			// End transition after 300ms
+			vi.advanceTimersByTime(200);
+			transitionActive = false;
+			await vi.advanceTimersByTimeAsync(100);
+
+			expect(config.getSnapshot).toHaveBeenCalledWith('A');
+			expect(config.onRecoveryComplete).toHaveBeenCalled();
+
+			reconcile.destroy();
+		});
+
+		it('times out transition guard after 5s', async () => {
+			const config = makeConfig({
+				getAuthoritativeState: () => ({ inTransition: true }), // never ends
+			});
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			// Advance past 5s timeout
+			await vi.advanceTimersByTimeAsync(5100);
+
+			// Should have proceeded despite transition still active
+			expect(config.getSnapshot).toHaveBeenCalledWith('A');
+
+			reconcile.destroy();
+		});
+
+		it('proceeds immediately when no transition is active', async () => {
+			const config = makeConfig({
+				getAuthoritativeState: () => ({ inTransition: false }),
+			});
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+
+			expect(config.getSnapshot).toHaveBeenCalledWith('A');
+
+			reconcile.destroy();
+		});
+
+		it('proceeds when getAuthoritativeState is not provided', async () => {
+			const config = makeConfig(); // no getAuthoritativeState
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+
+			expect(config.getSnapshot).toHaveBeenCalledWith('A');
+
+			reconcile.destroy();
+		});
+	});
+
+	// ── Per-engine cooldown ──
+
+	describe('per-engine cooldown', () => {
+		it('allows push to different engine while one is in cooldown', async () => {
+			const config = makeConfig();
+			const reconcile = createAutoReconcile(config);
+
+			// Push to B (authoritative=A, target=B)
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(1);
+			expect(config.pushSnapshot).toHaveBeenCalledWith('B', expect.anything());
+
+			// Immediately push to A (authoritative=B, target=A) — different target, no cooldown
+			reconcile.onSyncStatusChange('mismatch', 'B');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(2);
+			expect(config.pushSnapshot).toHaveBeenLastCalledWith('A', expect.anything());
+
+			reconcile.destroy();
+		});
+	});
+
+	// ── Retry on failed push ──
+
+	describe('retry on failed push', () => {
+		it('retries once after push failure', async () => {
+			let callCount = 0;
+			const config = makeConfig({
+				pushSnapshot: vi.fn().mockImplementation(() => {
+					callCount++;
+					if (callCount === 1) return Promise.reject(new Error('push failed'));
+					return Promise.resolve({ warnings: [] });
+				}),
+			});
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(config.onRecoveryError).toHaveBeenCalledOnce();
+
+			// Retry fires after 2s + jitter (up to 3s)
+			await vi.advanceTimersByTimeAsync(3100);
+			expect(config.onRecoveryComplete).toHaveBeenCalledOnce();
+
+			reconcile.destroy();
+		});
+
+		it('does not retry more than once', async () => {
+			const config = makeConfig({
+				pushSnapshot: vi.fn().mockRejectedValue(new Error('persistent failure')),
+			});
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(config.onRecoveryError).toHaveBeenCalledTimes(1);
+
+			// Wait for retry
+			await vi.advanceTimersByTimeAsync(3100);
+			expect(config.onRecoveryError).toHaveBeenCalledTimes(2);
+
+			// No further retries
+			await vi.advanceTimersByTimeAsync(10000);
+			expect(config.onRecoveryError).toHaveBeenCalledTimes(2);
+
+			reconcile.destroy();
+		});
+	});
+
+	// ── Partial apply detection ──
+
+	describe('partial apply detection', () => {
+		it('re-pushes when critical divergence persists after warnings', async () => {
+			let pushCount = 0;
+			const config = makeConfig({
+				pushSnapshot: vi.fn().mockImplementation(() => {
+					pushCount++;
+					if (pushCount === 1) return Promise.resolve({ warnings: ['audio state skipped'] });
+					return Promise.resolve({ warnings: [] });
+				}),
+				checkCriticalDivergence: vi.fn()
+					.mockReturnValueOnce(true) // first check: still diverged
+					.mockReturnValueOnce(false), // after re-push: resolved
+			});
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(config.onRecoveryComplete).toHaveBeenCalledTimes(1);
+
+			// After 500ms, checkCriticalDivergence is called and re-push triggered
+			await vi.advanceTimersByTimeAsync(600);
+			expect(config.checkCriticalDivergence).toHaveBeenCalled();
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(2);
+
+			reconcile.destroy();
+		});
+
+		it('does not re-push when no critical divergence after warnings', async () => {
+			const config = makeConfig({
+				pushSnapshot: vi.fn().mockResolvedValue({ warnings: ['minor issue'] }),
+				checkCriticalDivergence: vi.fn().mockReturnValue(false),
+			});
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(config.onRecoveryComplete).toHaveBeenCalledTimes(1);
+
+			// After 500ms, check happens but no re-push
+			await vi.advanceTimersByTimeAsync(600);
+			expect(config.checkCriticalDivergence).toHaveBeenCalled();
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(1);
+
+			reconcile.destroy();
+		});
+	});
+
+	// ── Reconcile lock ──
+
+	describe('reconcile lock', () => {
+		it('skips push when lock cannot be acquired', async () => {
+			const config = makeConfig({
+				acquireLock: vi.fn().mockResolvedValue({ acquired: false }),
+				releaseLock: vi.fn().mockResolvedValue(undefined),
+			});
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+
+			expect(config.acquireLock).toHaveBeenCalledWith('B');
+			expect(config.getSnapshot).not.toHaveBeenCalled();
+
+			reconcile.destroy();
+		});
+
+		it('acquires and releases lock around push', async () => {
+			const config = makeConfig({
+				acquireLock: vi.fn().mockResolvedValue({ acquired: true, lockId: 'lock-123' }),
+				releaseLock: vi.fn().mockResolvedValue(undefined),
+			});
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+
+			expect(config.acquireLock).toHaveBeenCalledWith('B');
+			expect(config.getSnapshot).toHaveBeenCalledWith('A');
+			expect(config.pushSnapshot).toHaveBeenCalledWith('B', expect.anything());
+			expect(config.releaseLock).toHaveBeenCalledWith('B', 'lock-123');
+
+			reconcile.destroy();
+		});
+
+		it('releases lock even on push failure', async () => {
+			const config = makeConfig({
+				pushSnapshot: vi.fn().mockRejectedValue(new Error('push failed')),
+				acquireLock: vi.fn().mockResolvedValue({ acquired: true, lockId: 'lock-456' }),
+				releaseLock: vi.fn().mockResolvedValue(undefined),
+			});
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+
+			expect(config.releaseLock).toHaveBeenCalledWith('B', 'lock-456');
+
+			reconcile.destroy();
+		});
+
+		it('proceeds without lock when acquireLock not provided', async () => {
+			const config = makeConfig(); // no lock functions
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+
+			expect(config.getSnapshot).toHaveBeenCalledWith('A');
+			expect(config.pushSnapshot).toHaveBeenCalled();
+
+			reconcile.destroy();
+		});
+	});
+
 	it('mismatch with authoritative B gets B snapshot and pushes to A', async () => {
 		const config = makeConfig();
 		const reconcile = createAutoReconcile(config);

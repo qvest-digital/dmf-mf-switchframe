@@ -224,12 +224,16 @@ describe('auto-reconcile integration', () => {
 			const ar = createAutoReconcile(config);
 
 			ar.onSyncStatusChange('mismatch', 'A');
-			await vi.runAllTimersAsync();
+			await vi.advanceTimersByTimeAsync(0);
 
-			expect(config.onRecoveryError).toHaveBeenCalledOnce();
+			expect(config.onRecoveryError).toHaveBeenCalledTimes(1);
 			expect(config.onRecoveryError.mock.calls[0][0].message).toBe('engine A unreachable');
 			// pushSnapshot should NOT have been called
 			expect(config.pushSnapshot).not.toHaveBeenCalled();
+
+			// Retry fires after 2-3s and fails again
+			await vi.advanceTimersByTimeAsync(3100);
+			expect(config.onRecoveryError).toHaveBeenCalledTimes(2);
 		});
 
 		it('calls onRecoveryError when pushSnapshot fails', async () => {
@@ -239,10 +243,14 @@ describe('auto-reconcile integration', () => {
 			const ar = createAutoReconcile(config);
 
 			ar.onSyncStatusChange('mismatch', 'A');
-			await vi.runAllTimersAsync();
+			await vi.advanceTimersByTimeAsync(0);
 
-			expect(config.onRecoveryError).toHaveBeenCalledOnce();
+			expect(config.onRecoveryError).toHaveBeenCalledTimes(1);
 			expect(config.onRecoveryError.mock.calls[0][0].message).toBe('engine B rejected snapshot');
+
+			// Retry fires after 2-3s and fails again
+			await vi.advanceTimersByTimeAsync(3100);
+			expect(config.onRecoveryError).toHaveBeenCalledTimes(2);
 		});
 
 		it('wraps non-Error rejections in Error', async () => {
@@ -252,9 +260,9 @@ describe('auto-reconcile integration', () => {
 			const ar = createAutoReconcile(config);
 
 			ar.onSyncStatusChange('mismatch', 'A');
-			await vi.runAllTimersAsync();
+			await vi.advanceTimersByTimeAsync(0);
 
-			expect(config.onRecoveryError).toHaveBeenCalledOnce();
+			expect(config.onRecoveryError).toHaveBeenCalledTimes(1);
 			const err = config.onRecoveryError.mock.calls[0][0];
 			expect(err).toBeInstanceOf(Error);
 			expect(err.message).toBe('string error');
@@ -270,15 +278,11 @@ describe('auto-reconcile integration', () => {
 
 			// First attempt fails
 			ar.onSyncStatusChange('mismatch', 'A');
-			await vi.runAllTimersAsync();
-			expect(config.onRecoveryError).toHaveBeenCalledOnce();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(config.onRecoveryError).toHaveBeenCalledTimes(1);
 
-			// Wait for cooldown
-			vi.advanceTimersByTime(5100);
-
-			// Retry succeeds
-			ar.onSyncStatusChange('mismatch', 'A');
-			await vi.runAllTimersAsync();
+			// Auto-retry fires after 2-3s and succeeds (second call resolves)
+			await vi.advanceTimersByTimeAsync(3100);
 			expect(config.onRecoveryComplete).toHaveBeenCalledOnce();
 		});
 	});

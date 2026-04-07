@@ -134,11 +134,31 @@ export function createReconciler() {
 		}
 	}
 
-	/** Which engine is authoritative: higher lastCommandSeq wins; RTT tie-break; A wins final ties. */
+	/** Count sources that are not offline or no_signal. */
+	function countHealthySources(state: ControlRoomState): number {
+		if (!state.sources) return 0;
+		return Object.values(state.sources).filter(
+			s => s.status !== 'offline' && s.status !== 'no_signal'
+		).length;
+	}
+
+	/** Which engine is authoritative: source health → higher lastCommandSeq → RTT tie-break → A wins final ties. */
 	const authoritative = $derived.by((): EngineId => {
 		if (!stateA && !stateB) return 'A';
 		if (!stateA || !connectedA) return 'B';
 		if (!stateB || !connectedB) return 'A';
+
+		// Source health scoring: if one engine has >50% sources degraded and other doesn't, healthier wins
+		const healthyA = countHealthySources(stateA);
+		const healthyB = countHealthySources(stateB);
+		const totalA = Object.keys(stateA.sources ?? {}).length;
+		const totalB = Object.keys(stateB.sources ?? {}).length;
+		const degradedA = totalA > 0 && healthyA / totalA < 0.5;
+		const degradedB = totalB > 0 && healthyB / totalB < 0.5;
+		if (degradedA && !degradedB) return 'B';
+		if (degradedB && !degradedA) return 'A';
+
+		// Fall back to seq-based logic
 		const seqA = stateA.lastCommandSeq ?? 0;
 		const seqB = stateB.lastCommandSeq ?? 0;
 		if (seqA > seqB) return 'A';
