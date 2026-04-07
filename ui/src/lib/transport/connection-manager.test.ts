@@ -315,9 +315,9 @@ describe('ConnectionManager', () => {
 
 			expect(onStateUpdate).not.toHaveBeenCalled();
 
-			// Next poll should still work
+			// Next poll uses exponential backoff (500ms * 2 = 1000ms after failure)
 			mockedGetState.mockResolvedValue(makeState({ seq: 5 }));
-			await vi.advanceTimersByTimeAsync(500);
+			await vi.advanceTimersByTimeAsync(1000);
 			expect(onStateUpdate).toHaveBeenCalledOnce();
 		});
 

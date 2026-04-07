@@ -47,6 +47,53 @@ export function authHeaders(): Record<string, string> {
 	return headers;
 }
 
+// ── Circuit breaker: per-engine failure tracking ──
+
+interface CircuitState {
+	failures: number;
+	firstFailure: number;
+	openUntil: number; // 0 = closed
+}
+const circuitBreakers = new Map<string, CircuitState>();
+
+const CIRCUIT_FAILURE_THRESHOLD = 5;
+const CIRCUIT_FAILURE_WINDOW_MS = 30_000;
+const CIRCUIT_OPEN_DURATION_MS = 30_000;
+
+function isCircuitOpen(engineUrl: string): boolean {
+	const state = circuitBreakers.get(engineUrl);
+	if (!state) return false;
+	if (state.openUntil > 0) {
+		if (Date.now() < state.openUntil) return true;
+		// Half-open: allow one probe
+		state.openUntil = 0;
+		state.failures = 0;
+		state.firstFailure = 0;
+	}
+	return false;
+}
+
+function recordFailure(engineUrl: string): void {
+	let state = circuitBreakers.get(engineUrl);
+	if (!state) {
+		state = { failures: 0, firstFailure: Date.now(), openUntil: 0 };
+		circuitBreakers.set(engineUrl, state);
+	}
+	// Reset window if expired
+	if (Date.now() - state.firstFailure > CIRCUIT_FAILURE_WINDOW_MS) {
+		state.failures = 0;
+		state.firstFailure = Date.now();
+	}
+	state.failures++;
+	if (state.failures >= CIRCUIT_FAILURE_THRESHOLD) {
+		state.openUntil = Date.now() + CIRCUIT_OPEN_DURATION_MS;
+	}
+}
+
+function recordSuccess(engineUrl: string): void {
+	circuitBreakers.delete(engineUrl);
+}
+
 // ── Dual-engine PTP timestamp injection ──
 
 let dualTimestampProvider: (() => { execute_at: number; command_seq: number }) | null = null;
@@ -115,22 +162,32 @@ function isTimedPath(path: string): boolean {
 async function primaryWithFallback<T>(url: string, options: RequestInit | undefined, engines: EngineEndpoint[]): Promise<T> {
 	const opts: RequestInit = { ...options, headers: { ...authHeaders(), ...options?.headers } };
 
+	// Filter out engines with open circuits
+	let availableEngines = engines.filter(e => !isCircuitOpen(e.url));
+	if (availableEngines.length === 0) {
+		// All circuits open — try all engines anyway (half-open probe)
+		availableEngines = [...engines];
+	}
+
 	let lastHttpError: { status: number; body: Record<string, string> } | null = null;
 
-	for (const engine of engines) {
+	for (const engine of availableEngines) {
 		try {
 			const res = await fetch(`${engine.url}${url}`, opts);
 			if (res.ok) {
+				recordSuccess(engine.url);
 				if (res.status === 202 || res.status === 204 || res.headers?.get('content-length') === '0') {
 					return undefined as T;
 				}
 				return res.json();
 			}
 			// HTTP error — record it and try next engine
+			recordFailure(engine.url);
 			const body = await res.json().catch(() => ({ error: 'unknown error' }));
 			lastHttpError = { status: res.status, body };
 		} catch {
 			// Network error — try next engine
+			recordFailure(engine.url);
 		}
 	}
 
@@ -202,6 +259,13 @@ async function dualRequest<T>(url: string, options: RequestInit | undefined, eng
 	// Mutations: fan out to all engines in parallel
 	const opts: RequestInit = { ...options, headers: { ...authHeaders(), ...options?.headers } };
 
+	// Filter out engines with open circuits for mutations
+	let availableEngines = engines.filter(e => !isCircuitOpen(e.url));
+	if (availableEngines.length === 0) {
+		// All circuits open — try all engines anyway (half-open probe)
+		availableEngines = [...engines];
+	}
+
 	// Add PTP timestamps for timed commands
 	if (isTimedPath(url) && dualTimestampProvider && opts.body && typeof opts.body === 'string') {
 		try {
@@ -214,7 +278,7 @@ async function dualRequest<T>(url: string, options: RequestInit | undefined, eng
 	}
 
 	// Clone FormData/Blob if needed (each can only be consumed once by fetch)
-	const bodies: (BodyInit | null | undefined)[] = engines.map(() => {
+	const bodies: (BodyInit | null | undefined)[] = availableEngines.map(() => {
 		if (opts.body instanceof FormData) {
 			const clone = new FormData();
 			for (const [key, value] of (opts.body as FormData).entries()) {
@@ -229,10 +293,21 @@ async function dualRequest<T>(url: string, options: RequestInit | undefined, eng
 	});
 
 	const results = await Promise.allSettled(
-		engines.map((engine, i) =>
+		availableEngines.map((engine, i) =>
 			fetch(`${engine.url}${url}`, { ...opts, body: bodies[i] })
 		)
 	);
+
+	// Track circuit breaker state for each engine
+	results.forEach((result, i) => {
+		const engineUrl = availableEngines[i]?.url;
+		if (!engineUrl) return;
+		if (result.status === 'fulfilled' && result.value.ok) {
+			recordSuccess(engineUrl);
+		} else {
+			recordFailure(engineUrl);
+		}
+	});
 
 	// Find successful responses
 	const fulfilled = results

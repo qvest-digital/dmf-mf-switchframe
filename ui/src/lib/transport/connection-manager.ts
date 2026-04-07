@@ -14,7 +14,7 @@ export interface ConnectionManagerConfig {
 
 export class ConnectionManager {
 	private connectionState: ConnectionStatus = 'disconnected';
-	private pollInterval: ReturnType<typeof setInterval> | undefined;
+	private pollInterval: ReturnType<typeof setTimeout> | undefined;
 	private retryTimer: ReturnType<typeof setTimeout> | undefined;
 	private readonly config: ConnectionManagerConfig;
 	private readonly connection: ReturnType<typeof createPrismConnection>;
@@ -22,6 +22,9 @@ export class ConnectionManager {
 	private hasMoQPipeline = false;
 	/** True after the first successful state fetch (initial or polling). */
 	private initialLoadDone = false;
+	private pollDelay = 500;
+	private readonly POLL_MIN = 500;
+	private readonly POLL_MAX = 5000;
 
 	constructor(config: ConnectionManagerConfig) {
 		this.config = config;
@@ -110,17 +113,25 @@ export class ConnectionManager {
 
 	private startPolling(): void {
 		if (this.pollInterval) return;
-		this.pollInterval = setInterval(async () => {
+		const poll = async () => {
 			try {
 				const state = await getState();
 				this.config.onStateUpdate(state);
+				this.pollDelay = this.POLL_MIN; // reset on success
 				// Clear loading overlay if initial fetch failed but polling succeeds.
 				if (!this.initialLoadDone) {
 					this.initialLoadDone = true;
 					this.config.onInitialLoadComplete();
 				}
-			} catch { /* ignore */ }
-		}, 500);
+			} catch {
+				// Backoff on failure
+				this.pollDelay = Math.min(this.pollDelay * 2, this.POLL_MAX);
+			}
+			if (this.pollInterval) {
+				this.pollInterval = setTimeout(poll, this.pollDelay);
+			}
+		};
+		this.pollInterval = setTimeout(poll, this.pollDelay);
 		// Reflect polling state (WebTransport callbacks will override to 'webtransport' if it connects)
 		if (this.connectionState !== 'webtransport') {
 			this.setConnectionState('polling');
@@ -129,9 +140,10 @@ export class ConnectionManager {
 
 	private stopPolling(): void {
 		if (this.pollInterval) {
-			clearInterval(this.pollInterval);
+			clearTimeout(this.pollInterval);
 			this.pollInterval = undefined;
 		}
+		this.pollDelay = this.POLL_MIN; // reset
 	}
 
 	private async fetchInitialState(): Promise<void> {
