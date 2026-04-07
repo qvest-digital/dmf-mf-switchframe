@@ -12,6 +12,7 @@ function makeSyncHealth(overrides: Partial<SyncHealth> & { status?: SyncStatus }
 		authoritative: 'A',
 		engineA: { lastSeen: Date.now(), lastCommandSeq: 42, connected: true },
 		engineB: { lastSeen: Date.now(), lastCommandSeq: 42, connected: true },
+		warnings: [],
 		...overrides,
 	};
 }

@@ -52,6 +52,7 @@ export interface SyncHealth {
 	authoritative: EngineId;
 	engineA: EngineHealth;
 	engineB: EngineHealth;
+	warnings: string[];
 }
 
 /** Deep-ish equality for field comparison (handles nested objects via JSON). */
@@ -102,6 +103,7 @@ export function createReconciler() {
 	let everSeenA = $state(false);
 	let everSeenB = $state(false);
 	let recovering = $state(false);
+	let clockDiverged = $state(false);
 
 	// Track when seq delta first appeared for time-based detection
 	let seqDeltaSince = $state(0);
@@ -325,6 +327,10 @@ export function createReconciler() {
 		recovering = value;
 	}
 
+	function setClockDiverged(diverged: boolean) {
+		clockDiverged = diverged;
+	}
+
 	const engineHealthDerived = $derived.by((): { A: EngineHealthDetail; B: EngineHealthDetail } => {
 		// Use lastTickTime (updated every ~200ms by tick()) instead of Date.now()
 		// so uptime display updates smoothly on each tick rather than only when
@@ -365,6 +371,12 @@ export function createReconciler() {
 		return everSeenA && everSeenB ? 'dual' : 'single';
 	});
 
+	const warnings = $derived.by((): string[] => {
+		const w: string[] = [];
+		if (clockDiverged) w.push('clock_diverged');
+		return w;
+	});
+
 	const health = $derived.by((): SyncHealth => ({
 		status: tickedStatus,
 		divergences,
@@ -379,6 +391,7 @@ export function createReconciler() {
 			lastCommandSeq: stateB?.lastCommandSeq ?? 0,
 			connected: connectedB,
 		},
+		warnings,
 	}));
 
 	return {
@@ -389,6 +402,7 @@ export function createReconciler() {
 		setClockOffset,
 		disconnect,
 		setRecovering,
+		setClockDiverged,
 		get state() {
 			return currentState;
 		},

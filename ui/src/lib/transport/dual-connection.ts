@@ -136,6 +136,8 @@ export class DualConnectionManager {
 		// Intercept clock sync pong messages
 		if (data.length >= 9 && data[0] === 0xFF) {
 			this.clockSync.handlePong(engineId, data);
+			// Check if clock offset divergence exceeds safety margin
+			this.reconciler.setClockDiverged(this.clockSync.isClockDiverged());
 			return; // don't forward pong to connection manager
 		}
 

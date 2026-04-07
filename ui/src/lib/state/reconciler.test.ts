@@ -810,6 +810,47 @@ describe('createReconciler', () => {
 		});
 	});
 
+	// ── Clock divergence warnings ──
+
+	describe('clock divergence warnings', () => {
+		it('health.warnings is empty by default', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+			expect(r.health.warnings).toEqual([]);
+		});
+
+		it('includes clock_diverged warning when setClockDiverged(true)', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+			r.setClockDiverged(true);
+			expect(r.health.warnings).toContain('clock_diverged');
+		});
+
+		it('clears clock_diverged warning when setClockDiverged(false)', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+			r.setClockDiverged(true);
+			expect(r.health.warnings).toContain('clock_diverged');
+			r.setClockDiverged(false);
+			expect(r.health.warnings).not.toContain('clock_diverged');
+			expect(r.health.warnings).toEqual([]);
+		});
+
+		it('warnings do not affect sync status', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+			r.setClockDiverged(true);
+			r.tick();
+			// Status should still be synced despite clock warning
+			expect(r.health.status).toBe('synced');
+			expect(r.health.warnings).toContain('clock_diverged');
+		});
+	});
+
 	// ── requestCheck (partial failure fast-path) ──
 
 	describe('requestCheck', () => {

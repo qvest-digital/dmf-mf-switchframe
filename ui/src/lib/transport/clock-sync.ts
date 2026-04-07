@@ -91,6 +91,12 @@ export class ClockSync {
 		return Math.abs(offsets[0] - offsets[1]);
 	}
 
+	isClockDiverged(): boolean {
+		const div = this.getOffsetDivergence();
+		if (div === 0) return false; // No divergence data
+		return div > this.safetyMargin();
+	}
+
 	safetyMargin(): number {
 		const rttValues = [...this.rtts.values()];
 		const jitterValues = [...this.jitters.values()];

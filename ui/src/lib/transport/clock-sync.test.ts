@@ -425,6 +425,63 @@ describe('ClockSync', () => {
 		});
 	});
 
+	describe('isClockDiverged', () => {
+		it('returns false when fewer than 2 engines have offsets', () => {
+			const sync = new ClockSync();
+			expect(sync.isClockDiverged()).toBe(false);
+
+			sync.updateOffset('A', 5_000_000);
+			expect(sync.isClockDiverged()).toBe(false);
+		});
+
+		it('returns false when divergence is within safety margin', () => {
+			const sync = new ClockSync();
+			// Set RTTs so safetyMargin is computed from real data
+			sync.updateRTT('A', 10_000);
+			sync.updateRTT('B', 10_000);
+
+			// safetyMargin = maxRTT(10000) + 2*maxJitter(1250) + frame(33333) = 45833
+			// Set offsets with small divergence (1000 µs) -- well within margin
+			sync.updateOffset('A', 100_000);
+			sync.updateOffset('B', 101_000);
+			expect(sync.isClockDiverged()).toBe(false);
+		});
+
+		it('returns true when divergence exceeds safety margin', () => {
+			const sync = new ClockSync();
+			sync.updateRTT('A', 10_000);
+			sync.updateRTT('B', 10_000);
+
+			// safetyMargin = 10000 + 2*1250 + 33333 = 45833
+			// Set offsets with huge divergence (500_000 µs)
+			sync.updateOffset('A', 100_000);
+			sync.updateOffset('B', 600_000);
+			expect(sync.isClockDiverged()).toBe(true);
+		});
+
+		it('returns false when offsets are equal (divergence is 0)', () => {
+			const sync = new ClockSync();
+			sync.updateRTT('A', 10_000);
+			sync.updateRTT('B', 10_000);
+			sync.updateOffset('A', 100_000);
+			sync.updateOffset('B', 100_000);
+			expect(sync.isClockDiverged()).toBe(false);
+		});
+
+		it('uses default margin when no RTT data exists', () => {
+			const sync = new ClockSync();
+			// Default margin = 4 frames = 133_332 µs
+			// Set divergence just above the default margin
+			sync.updateOffset('A', 0);
+			sync.updateOffset('B', 140_000);
+			expect(sync.isClockDiverged()).toBe(true);
+
+			// Set divergence just below the default margin
+			sync.updateOffset('B', 130_000);
+			expect(sync.isClockDiverged()).toBe(false);
+		});
+	});
+
 	describe('constants', () => {
 		it('DEFAULT_SYNC_INTERVAL_MS is 10000', () => {
 			vi.useFakeTimers();

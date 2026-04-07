@@ -10,6 +10,7 @@ function makeHealth(status: SyncStatus): SyncHealth {
 		authoritative: 'A',
 		engineA: { lastSeen: Date.now(), lastCommandSeq: 1, connected: true },
 		engineB: { lastSeen: Date.now(), lastCommandSeq: 1, connected: true },
+		warnings: [],
 	};
 }
 
