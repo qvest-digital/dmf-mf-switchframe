@@ -73,6 +73,20 @@ type FullStateSnapshot struct {
 	// --- ST map assignments ---
 
 	STMaps *STMapSnapshot `json:"stmaps,omitempty"`
+
+	// --- Operational state (recording, output, replay, playout, etc.) ---
+
+	Recording           *RecordingSnapshot          `json:"recording,omitempty"`
+	OutputDestinations  []DestinationSnapshot       `json:"outputDestinations,omitempty"`
+	ReplayMarks         *ReplayMarksSnapshot        `json:"replayMarks,omitempty"`
+	ReplayPlayer        *ReplayPlayerSnapshot       `json:"replayPlayer,omitempty"`
+	MacroExecution      *MacroExecutionSnapshot     `json:"macroExecution,omitempty"`
+	OperatorSessions    []OperatorSessionSnapshot   `json:"operatorSessions,omitempty"`
+	CommsParticipants   []string                    `json:"commsParticipants,omitempty"`
+	PlayoutChannels     []PlayoutChannelSnapshot    `json:"playoutChannels,omitempty"`
+	SCTE35Active        []SCTE35ActiveEventSnapshot `json:"scte35Active,omitempty"`
+	StingerLoaded       []string                    `json:"stingerLoaded,omitempty"`
+	ClipPlayerPositions []ClipPositionSnapshot      `json:"clipPlayerPositions,omitempty"`
 }
 
 // AudioChannelSnapshot captures the restorable audio state for a single channel.
@@ -259,4 +273,88 @@ type STMapSnapshot struct {
 	Sources map[string]string `json:"sources,omitempty"`
 	// Program is the program-level ST map name (empty if none).
 	Program string `json:"program,omitempty"`
+}
+
+// RecordingSnapshot captures recording state.
+type RecordingSnapshot struct {
+	Active bool   `json:"active"`
+	Engine string `json:"engine,omitempty"`
+}
+
+// DestinationSnapshotConfig captures output destination configuration
+// without importing the output package (avoids circular imports).
+type DestinationSnapshotConfig struct {
+	Type     string `json:"type"`
+	Address  string `json:"address,omitempty"`
+	Port     int    `json:"port,omitempty"`
+	URL      string `json:"url,omitempty"`
+	Latency  int    `json:"latency,omitempty"`
+	StreamID string `json:"streamID,omitempty"`
+	Name     string `json:"name,omitempty"`
+	Engine   string `json:"engine,omitempty"`
+}
+
+// DestinationSnapshot captures an output destination's config and state.
+type DestinationSnapshot struct {
+	ID     string                    `json:"id"`
+	Config DestinationSnapshotConfig `json:"config"`
+	Active bool                      `json:"active"`
+}
+
+// ReplayMarksSnapshot captures the replay mark-in/mark-out points.
+type ReplayMarksSnapshot struct {
+	Source  string `json:"source"`
+	MarkIn  int64  `json:"markIn"`
+	MarkOut int64  `json:"markOut"`
+}
+
+// ReplayPlayerSnapshot captures the replay player's current playback state.
+type ReplayPlayerSnapshot struct {
+	Source string  `json:"source"`
+	State  string  `json:"state"` // "idle", "playing", "paused"
+	Speed  float64 `json:"speed"`
+}
+
+// MacroExecutionSnapshot captures a running macro's position.
+type MacroExecutionSnapshot struct {
+	MacroID   string `json:"macroId"`
+	StepIndex int    `json:"stepIndex"`
+	State     string `json:"state"` // "running", "paused"
+}
+
+// OperatorSessionSnapshot captures an operator's session and lock state.
+type OperatorSessionSnapshot struct {
+	OperatorID       string   `json:"operatorId"`
+	Name             string   `json:"name"`
+	Role             string   `json:"role"`
+	LockedSubsystems []string `json:"lockedSubsystems,omitempty"`
+}
+
+// PlayoutChannelSnapshot captures a playout channel's position in its playlist.
+type PlayoutChannelSnapshot struct {
+	ChannelIndex       int     `json:"channelIndex"`
+	CurrentItemIndex   int     `json:"currentItemIndex"`
+	ElapsedMs          int64   `json:"elapsedMs"`
+	SchedulerState     string  `json:"schedulerState"` // "idle", "playing", "transitioning"
+	TransitionProgress float64 `json:"transitionProgress,omitempty"`
+}
+
+// SCTE35ActiveEventSnapshot captures an in-flight SCTE-35 event.
+type SCTE35ActiveEventSnapshot struct {
+	EventID      uint32 `json:"eventId"`
+	Type         string `json:"type"`
+	RemainingMs  int64  `json:"remainingMs"`
+	Hold         bool   `json:"hold"`
+	AutoReturnMs int64  `json:"autoReturnMs,omitempty"`
+}
+
+// ClipPositionSnapshot captures a clip player's playback position (name-based
+// so that the receiving engine can look up the clip by name rather than ID).
+type ClipPositionSnapshot struct {
+	ClipName    string  `json:"clipName"`
+	PlayerIndex int     `json:"playerIndex"`
+	PositionMs  int64   `json:"positionMs"`
+	State       string  `json:"state"`
+	Speed       float64 `json:"speed"`
+	Loop        bool    `json:"loop"`
 }
