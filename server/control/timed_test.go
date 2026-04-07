@@ -71,3 +71,86 @@ func TestTimedHandler_NilQueue_ExecutesImmediately(t *testing.T) {
 	require.True(t, called, "inner handler should be called when queue is nil")
 	require.Equal(t, http.StatusOK, rec.Code)
 }
+
+func TestTimedHandlerWithPath_NoTimestamp_ExecutesImmediately(t *testing.T) {
+	var receivedBody []byte
+	inner := func(w http.ResponseWriter, r *http.Request, body []byte) {
+		receivedBody = body
+		w.WriteHeader(http.StatusOK)
+	}
+
+	q := cmdqueue.New(func() int64 { return 1_000_000_000 })
+	h := timedHandlerWithPath(q, "audio_eq", []string{"source"}, inner)
+
+	body := `{"band":0,"frequency":1000}`
+	req := httptest.NewRequest(http.MethodPut, "/api/audio/camera1/eq", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, body, string(receivedBody), "body should be passed through unchanged")
+}
+
+func TestTimedHandlerWithPath_WithTimestamp_InjectsPathValues(t *testing.T) {
+	called := false
+	inner := func(w http.ResponseWriter, r *http.Request, body []byte) {
+		called = true
+	}
+
+	now := int64(1_000_000_000)
+	future := now + 500_000
+	clockNow := now
+	q := cmdqueue.New(func() int64 { return clockNow })
+	h := timedHandlerWithPath(q, "audio_eq", []string{"source"}, inner)
+
+	body := fmt.Sprintf(`{"band":0,"frequency":1000,"execute_at":%d,"command_seq":2}`, future)
+	// Use a real ServeMux to test path value extraction.
+	mux := http.NewServeMux()
+	mux.HandleFunc("PUT /api/audio/{source}/eq", h)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/audio/camera1/eq", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	require.False(t, called, "inner handler should NOT be called when execute_at is present")
+	require.Equal(t, http.StatusAccepted, rec.Code)
+	require.Equal(t, 1, q.Pending())
+
+	// Advance clock past the execute_at time and drain.
+	clockNow = future + 1
+	cmds := q.Drain()
+	require.Len(t, cmds, 1)
+	require.Contains(t, string(cmds[0].Payload), `"_path_source":"camera1"`)
+	require.Contains(t, string(cmds[0].Payload), `"band":`)
+}
+
+func TestTimedHandlerWithPath_EmptyBody_InjectsPathValues(t *testing.T) {
+	called := false
+	inner := func(w http.ResponseWriter, r *http.Request, body []byte) {
+		called = true
+	}
+
+	now := int64(1_000_000_000)
+	future := now + 500_000
+	clockNow := now
+	q := cmdqueue.New(func() int64 { return clockNow })
+	h := timedHandlerWithPath(q, "key_delete", []string{"source"}, inner)
+
+	// Empty body with only timed fields
+	body := fmt.Sprintf(`{"execute_at":%d,"command_seq":3}`, future)
+	mux := http.NewServeMux()
+	mux.HandleFunc("DELETE /api/sources/{source}/key", h)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/sources/camera1/key", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	require.False(t, called)
+	require.Equal(t, http.StatusAccepted, rec.Code)
+	require.Equal(t, 1, q.Pending())
+
+	clockNow = future + 1
+	cmds := q.Drain()
+	require.Len(t, cmds, 1)
+	require.Contains(t, string(cmds[0].Payload), `"_path_source":"camera1"`)
+}

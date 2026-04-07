@@ -51,3 +51,50 @@ func timedHandler(q *cmdqueue.Queue, action string, handler immediateHandlerFunc
 		handler(w, r, body)
 	}
 }
+
+// timedHandlerWithPath wraps a command handler, injecting URL path values into
+// the JSON payload before enqueueing. This ensures that when the dispatcher
+// replays the command (without an HTTP request), path-derived values like
+// {source} or {id} are available in the payload as "_path_<key>".
+func timedHandlerWithPath(q *cmdqueue.Queue, action string, pathKeys []string, handler immediateHandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			httperr.Write(w, http.StatusBadRequest, "failed to read body")
+			return
+		}
+
+		var timed timedRequest
+		_ = json.Unmarshal(body, &timed) // ignore error — fields are optional
+
+		if timed.ExecuteAt > 0 && q != nil {
+			// Inject path values into payload for deferred execution.
+			var payload map[string]interface{}
+			if len(body) > 0 {
+				_ = json.Unmarshal(body, &payload)
+			}
+			if payload == nil {
+				payload = make(map[string]interface{})
+			}
+			for _, key := range pathKeys {
+				payload["_path_"+key] = r.PathValue(key)
+			}
+			enriched, _ := json.Marshal(payload)
+
+			cmd := cmdqueue.Command{
+				ExecuteAt: timed.ExecuteAt,
+				Seq:       timed.CommandSeq,
+				Action:    action,
+				Payload:   json.RawMessage(enriched),
+			}
+			if err := q.Enqueue(cmd); err != nil {
+				httperr.Write(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+
+		handler(w, r, body)
+	}
+}

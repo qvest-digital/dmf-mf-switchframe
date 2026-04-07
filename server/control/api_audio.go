@@ -129,35 +129,36 @@ type limiterResponse struct {
 
 // registerAudioRoutes registers audio-related API routes on the given mux.
 func (a *API) registerAudioRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("POST /api/audio/trim", a.handleAudioTrim)
-	mux.HandleFunc("POST /api/audio/level", a.handleAudioLevel)
-	mux.HandleFunc("POST /api/audio/mute", a.handleAudioMute)
-	mux.HandleFunc("POST /api/audio/afv", a.handleAudioAFV)
-	mux.HandleFunc("POST /api/audio/phase", a.handleAudioPhase)
-	mux.HandleFunc("POST /api/audio/balance", a.handleAudioBalance)
-	mux.HandleFunc("POST /api/audio/master", a.handleAudioMaster)
-	mux.HandleFunc("PUT /api/audio/{source}/eq", a.handleSetEQ)
+	mux.HandleFunc("POST /api/audio/trim", timedHandler(a.cmdQueue, "audio_trim", a.handleAudioTrimInner))
+	mux.HandleFunc("POST /api/audio/level", timedHandler(a.cmdQueue, "audio_level", a.handleAudioLevelInner))
+	mux.HandleFunc("POST /api/audio/mute", timedHandler(a.cmdQueue, "audio_mute", a.handleAudioMuteInner))
+	mux.HandleFunc("POST /api/audio/afv", timedHandler(a.cmdQueue, "audio_afv", a.handleAudioAFVInner))
+	mux.HandleFunc("POST /api/audio/phase", timedHandler(a.cmdQueue, "audio_phase", a.handleAudioPhaseInner))
+	mux.HandleFunc("POST /api/audio/balance", timedHandler(a.cmdQueue, "audio_balance", a.handleAudioBalanceInner))
+	mux.HandleFunc("POST /api/audio/master", timedHandler(a.cmdQueue, "audio_master", a.handleAudioMasterInner))
+	mux.HandleFunc("PUT /api/audio/{source}/eq", timedHandlerWithPath(a.cmdQueue, "audio_eq", []string{"source"}, a.handleSetEQInner))
 	mux.HandleFunc("GET /api/audio/{source}/eq", a.handleGetEQ)
-	mux.HandleFunc("PUT /api/audio/{source}/compressor", a.handleSetCompressor)
+	mux.HandleFunc("PUT /api/audio/{source}/compressor", timedHandlerWithPath(a.cmdQueue, "audio_compressor", []string{"source"}, a.handleSetCompressorInner))
 	mux.HandleFunc("GET /api/audio/{source}/compressor", a.handleGetCompressor)
-	mux.HandleFunc("PUT /api/audio/{source}/hpf", a.handleSetHPF)
+	mux.HandleFunc("PUT /api/audio/{source}/hpf", timedHandlerWithPath(a.cmdQueue, "audio_hpf", []string{"source"}, a.handleSetHPFInner))
 	mux.HandleFunc("GET /api/audio/{source}/hpf", a.handleGetHPF)
-	mux.HandleFunc("PUT /api/audio/{source}/gate", a.handleSetGate)
+	mux.HandleFunc("PUT /api/audio/{source}/gate", timedHandlerWithPath(a.cmdQueue, "audio_gate", []string{"source"}, a.handleSetGateInner))
 	mux.HandleFunc("GET /api/audio/{source}/gate", a.handleGetGate)
-	mux.HandleFunc("PUT /api/audio/{source}/audio-delay", a.handleSetAudioDelay)
-	mux.HandleFunc("PUT /api/audio/limiter", a.handleSetLimiter)
+	mux.HandleFunc("PUT /api/audio/{source}/audio-delay", timedHandlerWithPath(a.cmdQueue, "audio_delay", []string{"source"}, a.handleSetAudioDelayInner))
+	mux.HandleFunc("PUT /api/audio/limiter", timedHandler(a.cmdQueue, "audio_limiter", a.handleSetLimiterInner))
 	mux.HandleFunc("GET /api/audio/limiter", a.handleGetLimiter)
 }
 
-// handleAudioTrim sets the input trim for a source channel.
-func (a *API) handleAudioTrim(w http.ResponseWriter, r *http.Request) {
+// handleAudioTrimInner sets the input trim for a source channel.
+// body is the pre-read request body provided by timedHandler.
+func (a *API) handleAudioTrimInner(w http.ResponseWriter, r *http.Request, body []byte) {
 	a.setLastOperator(r)
 	if a.mixer == nil {
 		httperr.Write(w, http.StatusNotImplemented, "audio mixer not configured")
 		return
 	}
 	var req audioTrimRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -177,15 +178,16 @@ func (a *API) handleAudioTrim(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }
 
-// handleAudioLevel sets the audio level for a source channel.
-func (a *API) handleAudioLevel(w http.ResponseWriter, r *http.Request) {
+// handleAudioLevelInner sets the audio level for a source channel.
+// body is the pre-read request body provided by timedHandler.
+func (a *API) handleAudioLevelInner(w http.ResponseWriter, r *http.Request, body []byte) {
 	a.setLastOperator(r)
 	if a.mixer == nil {
 		httperr.Write(w, http.StatusNotImplemented, "audio mixer not configured")
 		return
 	}
 	var req audioLevelRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -205,15 +207,16 @@ func (a *API) handleAudioLevel(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }
 
-// handleAudioMute sets the mute state for a source channel.
-func (a *API) handleAudioMute(w http.ResponseWriter, r *http.Request) {
+// handleAudioMuteInner sets the mute state for a source channel.
+// body is the pre-read request body provided by timedHandler.
+func (a *API) handleAudioMuteInner(w http.ResponseWriter, r *http.Request, body []byte) {
 	a.setLastOperator(r)
 	if a.mixer == nil {
 		httperr.Write(w, http.StatusNotImplemented, "audio mixer not configured")
 		return
 	}
 	var req audioMuteRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -229,15 +232,16 @@ func (a *API) handleAudioMute(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }
 
-// handleAudioAFV sets the audio-follow-video state for a source channel.
-func (a *API) handleAudioAFV(w http.ResponseWriter, r *http.Request) {
+// handleAudioAFVInner sets the audio-follow-video state for a source channel.
+// body is the pre-read request body provided by timedHandler.
+func (a *API) handleAudioAFVInner(w http.ResponseWriter, r *http.Request, body []byte) {
 	a.setLastOperator(r)
 	if a.mixer == nil {
 		httperr.Write(w, http.StatusNotImplemented, "audio mixer not configured")
 		return
 	}
 	var req audioAFVRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -253,15 +257,16 @@ func (a *API) handleAudioAFV(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }
 
-// handleAudioPhase sets the phase invert state for a source channel.
-func (a *API) handleAudioPhase(w http.ResponseWriter, r *http.Request) {
+// handleAudioPhaseInner sets the phase invert state for a source channel.
+// body is the pre-read request body provided by timedHandler.
+func (a *API) handleAudioPhaseInner(w http.ResponseWriter, r *http.Request, body []byte) {
 	a.setLastOperator(r)
 	if a.mixer == nil {
 		httperr.Write(w, http.StatusNotImplemented, "audio mixer not configured")
 		return
 	}
 	var req audioPhaseRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -277,15 +282,16 @@ func (a *API) handleAudioPhase(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }
 
-// handleAudioBalance sets the stereo balance for a source channel.
-func (a *API) handleAudioBalance(w http.ResponseWriter, r *http.Request) {
+// handleAudioBalanceInner sets the stereo balance for a source channel.
+// body is the pre-read request body provided by timedHandler.
+func (a *API) handleAudioBalanceInner(w http.ResponseWriter, r *http.Request, body []byte) {
 	a.setLastOperator(r)
 	if a.mixer == nil {
 		httperr.Write(w, http.StatusNotImplemented, "audio mixer not configured")
 		return
 	}
 	var req audioBalanceRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -305,15 +311,16 @@ func (a *API) handleAudioBalance(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }
 
-// handleAudioMaster sets the master output level.
-func (a *API) handleAudioMaster(w http.ResponseWriter, r *http.Request) {
+// handleAudioMasterInner sets the master output level.
+// body is the pre-read request body provided by timedHandler.
+func (a *API) handleAudioMasterInner(w http.ResponseWriter, r *http.Request, body []byte) {
 	a.setLastOperator(r)
 	if a.mixer == nil {
 		httperr.Write(w, http.StatusNotImplemented, "audio mixer not configured")
 		return
 	}
 	var req audioMasterRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -329,8 +336,9 @@ func (a *API) handleAudioMaster(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }
 
-// handleSetEQ sets a single EQ band for a source channel.
-func (a *API) handleSetEQ(w http.ResponseWriter, r *http.Request) {
+// handleSetEQInner sets a single EQ band for a source channel.
+// body is the pre-read request body provided by timedHandlerWithPath.
+func (a *API) handleSetEQInner(w http.ResponseWriter, r *http.Request, body []byte) {
 	a.setLastOperator(r)
 	if a.mixer == nil {
 		httperr.Write(w, http.StatusNotImplemented, "audio mixer not configured")
@@ -342,7 +350,7 @@ func (a *API) handleSetEQ(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req eqRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -386,8 +394,9 @@ func (a *API) handleGetEQ(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(bands)
 }
 
-// handleSetCompressor sets the compressor parameters for a source channel.
-func (a *API) handleSetCompressor(w http.ResponseWriter, r *http.Request) {
+// handleSetCompressorInner sets the compressor parameters for a source channel.
+// body is the pre-read request body provided by timedHandlerWithPath.
+func (a *API) handleSetCompressorInner(w http.ResponseWriter, r *http.Request, body []byte) {
 	a.setLastOperator(r)
 	if a.mixer == nil {
 		httperr.Write(w, http.StatusNotImplemented, "audio mixer not configured")
@@ -399,7 +408,7 @@ func (a *API) handleSetCompressor(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req compressorRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -458,8 +467,9 @@ func (a *API) handleGetCompressor(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleSetHPF sets the high-pass filter parameters for a source channel.
-func (a *API) handleSetHPF(w http.ResponseWriter, r *http.Request) {
+// handleSetHPFInner sets the high-pass filter parameters for a source channel.
+// body is the pre-read request body provided by timedHandlerWithPath.
+func (a *API) handleSetHPFInner(w http.ResponseWriter, r *http.Request, body []byte) {
 	a.setLastOperator(r)
 	if a.mixer == nil {
 		httperr.Write(w, http.StatusNotImplemented, "audio mixer not configured")
@@ -471,7 +481,7 @@ func (a *API) handleSetHPF(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req hpfRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -506,8 +516,9 @@ func (a *API) handleGetHPF(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleSetGate sets the noise gate parameters for a source channel.
-func (a *API) handleSetGate(w http.ResponseWriter, r *http.Request) {
+// handleSetGateInner sets the noise gate parameters for a source channel.
+// body is the pre-read request body provided by timedHandlerWithPath.
+func (a *API) handleSetGateInner(w http.ResponseWriter, r *http.Request, body []byte) {
 	a.setLastOperator(r)
 	if a.mixer == nil {
 		httperr.Write(w, http.StatusNotImplemented, "audio mixer not configured")
@@ -519,7 +530,7 @@ func (a *API) handleSetGate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req gateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -579,8 +590,9 @@ func (a *API) handleGetGate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleSetAudioDelay sets the audio delay in milliseconds for a source channel.
-func (a *API) handleSetAudioDelay(w http.ResponseWriter, r *http.Request) {
+// handleSetAudioDelayInner sets the audio delay in milliseconds for a source channel.
+// body is the pre-read request body provided by timedHandlerWithPath.
+func (a *API) handleSetAudioDelayInner(w http.ResponseWriter, r *http.Request, body []byte) {
 	a.setLastOperator(r)
 	if a.mixer == nil {
 		httperr.Write(w, http.StatusNotImplemented, "audio mixer not configured")
@@ -592,7 +604,7 @@ func (a *API) handleSetAudioDelay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req audioDelayRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -608,15 +620,16 @@ func (a *API) handleSetAudioDelay(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }
 
-// handleSetLimiter sets the master limiter threshold and ceiling.
-func (a *API) handleSetLimiter(w http.ResponseWriter, r *http.Request) {
+// handleSetLimiterInner sets the master limiter threshold and ceiling.
+// body is the pre-read request body provided by timedHandler.
+func (a *API) handleSetLimiterInner(w http.ResponseWriter, r *http.Request, body []byte) {
 	a.setLastOperator(r)
 	if a.mixer == nil {
 		httperr.Write(w, http.StatusNotImplemented, "audio mixer not configured")
 		return
 	}
 	var req limiterRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}

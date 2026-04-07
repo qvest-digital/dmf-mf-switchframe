@@ -38,8 +38,8 @@ func (a *API) registerGraphicsRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/graphics", a.handleGraphicsStatus)
 	mux.HandleFunc("DELETE /api/graphics/{id}", a.handleGraphicsRemoveLayer)
 	mux.HandleFunc("POST /api/graphics/{id}/frame", a.handleGraphicsFrame)
-	mux.HandleFunc("POST /api/graphics/{id}/on", a.handleGraphicsOn)
-	mux.HandleFunc("POST /api/graphics/{id}/off", a.handleGraphicsOff)
+	mux.HandleFunc("POST /api/graphics/{id}/on", timedHandlerWithPath(a.cmdQueue, "graphics_on", []string{"id"}, a.handleGraphicsOnInner))
+	mux.HandleFunc("POST /api/graphics/{id}/off", timedHandlerWithPath(a.cmdQueue, "graphics_off", []string{"id"}, a.handleGraphicsOffInner))
 	mux.HandleFunc("POST /api/graphics/{id}/auto-on", a.handleGraphicsAutoOn)
 	mux.HandleFunc("POST /api/graphics/{id}/auto-off", a.handleGraphicsAutoOff)
 	mux.HandleFunc("POST /api/graphics/{id}/animate", a.handleGraphicsAnimate)
@@ -103,8 +103,9 @@ func (a *API) handleGraphicsRemoveLayer(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleGraphicsOn activates a layer immediately (CUT ON).
-func (a *API) handleGraphicsOn(w http.ResponseWriter, r *http.Request) {
+// handleGraphicsOnInner activates a layer immediately (CUT ON).
+// body is the pre-read request body provided by timedHandlerWithPath.
+func (a *API) handleGraphicsOnInner(w http.ResponseWriter, r *http.Request, _ []byte) {
 	a.setLastOperator(r)
 	id, err := parseLayerID(r)
 	if err != nil {
@@ -119,8 +120,9 @@ func (a *API) handleGraphicsOn(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(a.compositor.Status())
 }
 
-// handleGraphicsOff deactivates a layer immediately (CUT OFF).
-func (a *API) handleGraphicsOff(w http.ResponseWriter, r *http.Request) {
+// handleGraphicsOffInner deactivates a layer immediately (CUT OFF).
+// body is the pre-read request body provided by timedHandlerWithPath.
+func (a *API) handleGraphicsOffInner(w http.ResponseWriter, r *http.Request, _ []byte) {
 	a.setLastOperator(r)
 	id, err := parseLayerID(r)
 	if err != nil {

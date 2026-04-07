@@ -24,16 +24,17 @@ type transitionRequest struct {
 
 // registerTransitionRoutes registers transition-related API routes on the given mux.
 func (a *API) registerTransitionRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("POST /api/switch/transition", a.handleTransition)
-	mux.HandleFunc("POST /api/switch/transition/position", a.handleTransitionPosition)
-	mux.HandleFunc("POST /api/switch/ftb", a.handleFTB)
+	mux.HandleFunc("POST /api/switch/transition", timedHandler(a.cmdQueue, "transition", a.handleTransitionInner))
+	mux.HandleFunc("POST /api/switch/transition/position", timedHandler(a.cmdQueue, "transition_position", a.handleTransitionPositionInner))
+	mux.HandleFunc("POST /api/switch/ftb", timedHandler(a.cmdQueue, "ftb", a.handleFTBInner))
 }
 
-// handleTransition starts a mix, dip, wipe, or stinger transition to the specified source.
-func (a *API) handleTransition(w http.ResponseWriter, r *http.Request) {
+// handleTransitionInner starts a mix, dip, wipe, or stinger transition to the specified source.
+// body is the pre-read request body provided by timedHandler.
+func (a *API) handleTransitionInner(w http.ResponseWriter, r *http.Request, body []byte) {
 	a.setLastOperator(r)
 	var req transitionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -131,11 +132,12 @@ type transitionPositionRequest struct {
 	Position float64 `json:"position"`
 }
 
-// handleTransitionPosition sets the T-bar position during an active transition.
-func (a *API) handleTransitionPosition(w http.ResponseWriter, r *http.Request) {
+// handleTransitionPositionInner sets the T-bar position during an active transition.
+// body is the pre-read request body provided by timedHandler.
+func (a *API) handleTransitionPositionInner(w http.ResponseWriter, r *http.Request, body []byte) {
 	a.setLastOperator(r)
 	var req transitionPositionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -151,8 +153,9 @@ func (a *API) handleTransitionPosition(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }
 
-// handleFTB starts or toggles a Fade to Black transition.
-func (a *API) handleFTB(w http.ResponseWriter, r *http.Request) {
+// handleFTBInner starts or toggles a Fade to Black transition.
+// body is the pre-read request body provided by timedHandler.
+func (a *API) handleFTBInner(w http.ResponseWriter, r *http.Request, _ []byte) {
 	a.setLastOperator(r)
 	if err := a.switcher.FadeToBlack(r.Context()); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)

@@ -13,16 +13,17 @@ func (a *API) registerKeyRoutes(mux *http.ServeMux) {
 	if a.keyer == nil {
 		return
 	}
-	mux.HandleFunc("PUT /api/sources/{source}/key", a.handleSetSourceKey)
+	mux.HandleFunc("PUT /api/sources/{source}/key", timedHandlerWithPath(a.cmdQueue, "key_set", []string{"source"}, a.handleSetSourceKeyInner))
 	mux.HandleFunc("GET /api/sources/{source}/key", a.handleGetSourceKey)
-	mux.HandleFunc("DELETE /api/sources/{source}/key", a.handleDeleteSourceKey)
+	mux.HandleFunc("DELETE /api/sources/{source}/key", timedHandlerWithPath(a.cmdQueue, "key_delete", []string{"source"}, a.handleDeleteSourceKeyInner))
 }
 
-// handleSetSourceKey configures an upstream key for a source.
-func (a *API) handleSetSourceKey(w http.ResponseWriter, r *http.Request) {
+// handleSetSourceKeyInner configures an upstream key for a source.
+// body is the pre-read request body provided by timedHandlerWithPath.
+func (a *API) handleSetSourceKeyInner(w http.ResponseWriter, r *http.Request, body []byte) {
 	source := r.PathValue("source")
 	var cfg graphics.KeyConfig
-	if err := json.NewDecoder(r.Body).Decode(&cfg); err != nil {
+	if err := json.Unmarshal(body, &cfg); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -47,8 +48,9 @@ func (a *API) handleGetSourceKey(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(cfg)
 }
 
-// handleDeleteSourceKey removes the key configuration for a source.
-func (a *API) handleDeleteSourceKey(w http.ResponseWriter, r *http.Request) {
+// handleDeleteSourceKeyInner removes the key configuration for a source.
+// body is the pre-read request body provided by timedHandlerWithPath.
+func (a *API) handleDeleteSourceKeyInner(w http.ResponseWriter, r *http.Request, _ []byte) {
 	source := r.PathValue("source")
 	a.keyer.RemoveKey(source)
 	if a.keyBridge != nil {

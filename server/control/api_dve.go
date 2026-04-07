@@ -43,13 +43,13 @@ func (a *API) registerDVERoutes(mux *http.ServeMux) {
 		return
 	}
 	mux.HandleFunc("GET /api/dve", a.handleGetDVE)
-	mux.HandleFunc("PUT /api/dve", a.handleSetDVE)
+	mux.HandleFunc("PUT /api/dve", timedHandler(a.cmdQueue, "dve_set", a.handleSetDVEInner))
 	mux.HandleFunc("DELETE /api/dve", a.handleDeleteDVE)
-	mux.HandleFunc("PUT /api/dve/slots/{id}", a.handleDVESlotUpdate)
-	mux.HandleFunc("POST /api/dve/slots/{id}/on", a.handleDVESlotOn)
-	mux.HandleFunc("POST /api/dve/slots/{id}/off", a.handleDVESlotOff)
+	mux.HandleFunc("PUT /api/dve/slots/{id}", timedHandlerWithPath(a.cmdQueue, "dve_slot_update", []string{"id"}, a.handleDVESlotUpdateInner))
+	mux.HandleFunc("POST /api/dve/slots/{id}/on", timedHandlerWithPath(a.cmdQueue, "dve_slot_on", []string{"id"}, a.handleDVESlotOnInner))
+	mux.HandleFunc("POST /api/dve/slots/{id}/off", timedHandlerWithPath(a.cmdQueue, "dve_slot_off", []string{"id"}, a.handleDVESlotOffInner))
 	mux.HandleFunc("GET /api/dve/presets", a.handleListDVEPresets)
-	mux.HandleFunc("PUT /api/dve/presets/{id}/recall", a.handleRecallDVEPreset)
+	mux.HandleFunc("PUT /api/dve/presets/{id}/recall", timedHandlerWithPath(a.cmdQueue, "dve_preset_recall", []string{"id"}, a.handleRecallDVEPresetInner))
 	if a.dvePresetStore != nil {
 		mux.HandleFunc("POST /api/dve/presets", a.handleSaveDVEPreset)
 		mux.HandleFunc("DELETE /api/dve/presets/{id}", a.handleDeleteDVEPreset)
@@ -66,10 +66,10 @@ func (a *API) handleGetDVE(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(dl)
 }
 
-func (a *API) handleSetDVE(w http.ResponseWriter, r *http.Request) {
+func (a *API) handleSetDVEInner(w http.ResponseWriter, r *http.Request, body []byte) {
 	a.setLastOperator(r)
 	var req dveLayoutRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -138,7 +138,7 @@ func (a *API) parseDVESlotID(w http.ResponseWriter, r *http.Request) int {
 	return id
 }
 
-func (a *API) handleDVESlotOn(w http.ResponseWriter, r *http.Request) {
+func (a *API) handleDVESlotOnInner(w http.ResponseWriter, r *http.Request, _ []byte) {
 	a.setLastOperator(r)
 	id := a.parseDVESlotID(w, r)
 	if id < 0 {
@@ -149,7 +149,7 @@ func (a *API) handleDVESlotOn(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (a *API) handleDVESlotOff(w http.ResponseWriter, r *http.Request) {
+func (a *API) handleDVESlotOffInner(w http.ResponseWriter, r *http.Request, _ []byte) {
 	a.setLastOperator(r)
 	id := a.parseDVESlotID(w, r)
 	if id < 0 {
@@ -160,7 +160,7 @@ func (a *API) handleDVESlotOff(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (a *API) handleDVESlotUpdate(w http.ResponseWriter, r *http.Request) {
+func (a *API) handleDVESlotUpdateInner(w http.ResponseWriter, r *http.Request, body []byte) {
 	a.setLastOperator(r)
 	id := a.parseDVESlotID(w, r)
 	if id < 0 {
@@ -168,7 +168,7 @@ func (a *API) handleDVESlotUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req dveSlotUpdateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -285,12 +285,12 @@ func (a *API) handleSaveDVEPreset(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 }
 
-func (a *API) handleRecallDVEPreset(w http.ResponseWriter, r *http.Request) {
+func (a *API) handleRecallDVEPresetInner(w http.ResponseWriter, r *http.Request, body []byte) {
 	a.setLastOperator(r)
 	id := r.PathValue("id")
 
 	var req dvePresetRecallRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}
