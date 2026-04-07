@@ -371,6 +371,8 @@ type ControlRoomState struct {
 	LastChangedBy        string                  `json:"lastChangedBy,omitempty"`
 	Seq                  uint64                  `json:"seq"`
 	LastCommandSeq       uint64                  `json:"lastCommandSeq"`
+	LastExecutedSeq      uint64                  `json:"lastExecutedSeq"`
+	LastExecutedErr      string                  `json:"lastExecutedErr,omitempty"`
 	Timestamp            int64                   `json:"timestamp"`
 }
 

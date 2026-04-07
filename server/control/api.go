@@ -757,9 +757,11 @@ func (a *API) handleState(w http.ResponseWriter, r *http.Request) {
 func (a *API) handleSyncHealth(w http.ResponseWriter, r *http.Request) {
 	state := a.enrichedState()
 	resp := map[string]any{
-		"ptpOffsetUs":    int64(0), // placeholder until PTP discipline is measured
-		"lastCommandSeq": state.LastCommandSeq,
-		"uptimeMs":       time.Since(a.startTime).Milliseconds(),
+		"ptpOffsetUs":     int64(0), // placeholder until PTP discipline is measured
+		"lastCommandSeq":  state.LastCommandSeq,
+		"lastExecutedSeq": state.LastExecutedSeq,
+		"lastExecutedErr": state.LastExecutedErr,
+		"uptimeMs":        time.Since(a.startTime).Milliseconds(),
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)

@@ -161,34 +161,73 @@ func TestEnqueue_ZeroExecuteAt_PassesThrough(t *testing.T) {
 }
 
 // TestQueue_DedupPruneKeepsRecent verifies that when the seen map exceeds
-// maxSeen, recent entries are retained (not cleared entirely).
+// maxSeen (100_000), recent entries are retained (not cleared entirely).
 func TestQueue_DedupPruneKeepsRecent(t *testing.T) {
 	q := cmdqueue.New(func() int64 { return 1_000_000 })
 
-	// Enqueue maxSeen+1 commands (10001) to trigger the prune.
-	for i := uint64(1); i <= 10001; i++ {
+	// Enqueue maxSeen+1 commands (100001) to trigger the prune.
+	for i := uint64(1); i <= 100_001; i++ {
 		if err := q.Enqueue(cmdqueue.Command{Seq: i, Action: "test"}); err != nil {
 			t.Fatalf("enqueue seq=%d: %v", i, err)
 		}
 	}
 
 	// Recent command should still be deduped (it was retained during prune).
-	err := q.Enqueue(cmdqueue.Command{Seq: 10001, Action: "test"})
+	err := q.Enqueue(cmdqueue.Command{Seq: 100_001, Action: "test"})
 	if !errors.Is(err, cmdqueue.ErrDuplicateCommand) {
-		t.Fatalf("expected ErrDuplicateCommand for recent seq=10001, got %v", err)
+		t.Fatalf("expected ErrDuplicateCommand for recent seq=100001, got %v", err)
 	}
 
 	// A command from around the middle should also still be deduped
-	// (minSeq = 10001 - 5000 = 5001, so seq=6000 should be retained).
-	err = q.Enqueue(cmdqueue.Command{Seq: 6000, Action: "test"})
+	// (minSeq = 100001 - 50000 = 50001, so seq=60000 should be retained).
+	err = q.Enqueue(cmdqueue.Command{Seq: 60_000, Action: "test"})
 	if !errors.Is(err, cmdqueue.ErrDuplicateCommand) {
-		t.Fatalf("expected ErrDuplicateCommand for mid-range seq=6000, got %v", err)
+		t.Fatalf("expected ErrDuplicateCommand for mid-range seq=60000, got %v", err)
 	}
 
 	// Very old command (seq=1) should have been pruned and can be re-enqueued.
 	err = q.Enqueue(cmdqueue.Command{Seq: 1, Action: "test"})
 	if err != nil {
 		t.Fatalf("expected seq=1 to be accepted after prune, got %v", err)
+	}
+}
+
+// TestQueue_ConfigurableMaxAge verifies that WithMaxAge overrides the default
+// staleness threshold so that commands older than 2s but within the custom
+// maxAge are accepted, and commands outside the custom maxAge are rejected.
+func TestQueue_ConfigurableMaxAge(t *testing.T) {
+	const now = int64(20_000_000) // 20s (µs)
+	clock, _ := newClock(now)
+
+	// Custom maxAge of 10 seconds (active-active mode).
+	q := cmdqueue.New(clock, cmdqueue.WithMaxAge(10_000_000))
+
+	// Command 5s old — would be stale with default 2s, but fine with 10s.
+	ok := cmdqueue.Command{
+		ExecuteAt: now - 5_000_000,
+		Seq:       1,
+		Action:    "cut",
+	}
+	if err := q.Enqueue(ok); err != nil {
+		t.Fatalf("expected 5s-old command to be accepted with 10s maxAge, got %v", err)
+	}
+
+	// Command 11s old — stale even with 10s maxAge.
+	stale := cmdqueue.Command{
+		ExecuteAt: now - 11_000_000,
+		Seq:       2,
+		Action:    "cut",
+	}
+	err := q.Enqueue(stale)
+	if !errors.Is(err, cmdqueue.ErrStaleCommand) {
+		t.Fatalf("expected ErrStaleCommand for 11s-old command with 10s maxAge, got %v", err)
+	}
+
+	// Default maxAge queue — 5s old command should be stale.
+	qDefault := cmdqueue.New(clock)
+	err = qDefault.Enqueue(ok)
+	if !errors.Is(err, cmdqueue.ErrStaleCommand) {
+		t.Fatalf("expected ErrStaleCommand for 5s-old command with default maxAge, got %v", err)
 	}
 }
 

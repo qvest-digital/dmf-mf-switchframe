@@ -368,9 +368,11 @@ type Switcher struct {
 	videoProcDropped    atomic.Int64 // frames dropped due to full channel
 
 	// Command queue for PTP-timed command execution (multi-region redundancy).
-	cmdQueue       *cmdqueue.Queue
-	cmdDispatcher  *cmdqueue.Dispatcher
-	lastCommandSeq atomic.Uint64
+	cmdQueue        *cmdqueue.Queue
+	cmdDispatcher   *cmdqueue.Dispatcher
+	lastCommandSeq  atomic.Uint64
+	lastExecutedSeq atomic.Uint64
+	lastExecutedErr atomic.Pointer[string]
 
 	// Output FPS tracking (atomic, lock-free)
 	outputFPSCount       atomic.Int64 // frames in current 1-second window
@@ -1725,16 +1727,25 @@ func (s *Switcher) videoProcessingLoop() {
 		// Drain PTP-timed commands that are now ready to execute.
 		if s.cmdQueue != nil {
 			for _, cmd := range s.cmdQueue.Drain() {
+				var dispatchErr error
 				if s.cmdDispatcher != nil {
-					if err := s.cmdDispatcher.Dispatch(cmd); err != nil {
+					dispatchErr = s.cmdDispatcher.Dispatch(cmd)
+					if dispatchErr != nil {
 						s.log.Warn("queued command dispatch failed",
 							"action", cmd.Action,
 							"seq", cmd.Seq,
-							"err", err)
+							"err", dispatchErr)
 					}
 				}
 				if cmd.Seq > 0 {
 					s.lastCommandSeq.Store(cmd.Seq)
+					s.lastExecutedSeq.Store(cmd.Seq)
+					if dispatchErr != nil {
+						errStr := dispatchErr.Error()
+						s.lastExecutedErr.Store(&errStr)
+					} else {
+						s.lastExecutedErr.Store(nil)
+					}
 				}
 			}
 		}
@@ -3329,7 +3340,11 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 		Sources:        sources,
 		Seq:            atomic.LoadUint64(&s.seq),
 		Timestamp:      time.Now().UnixMilli(),
-		LastCommandSeq: s.lastCommandSeq.Load(),
+		LastCommandSeq:  s.lastCommandSeq.Load(),
+		LastExecutedSeq: s.lastExecutedSeq.Load(),
+	}
+	if errPtr := s.lastExecutedErr.Load(); errPtr != nil {
+		state.LastExecutedErr = *errPtr
 	}
 	if s.state.isInTransition() && s.transEngine != nil {
 		state.TransitionPosition = s.transEngine.Position()
