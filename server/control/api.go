@@ -77,6 +77,7 @@ type OutputManagerAPI interface {
 	StopDestination(id string) error
 	ListDestinations() []output.DestinationStatus
 	GetDestination(id string) (output.DestinationStatus, error)
+	ReassignDestinationEngine(id, engine string) error
 	CBRStatus() *output.CBRPacerStatus
 }
 

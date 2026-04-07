@@ -103,6 +103,10 @@ type Manager struct {
 	// SRT stats manager for tracking per-output SRT connection metrics.
 	// When set, ConnStats entries are created/removed with SRT adapter lifecycle.
 	srtStatsManager *srt.StatsManager
+
+	// engineLabel identifies which engine this manager belongs to ("a", "b", or "").
+	// When set, newly added destinations default their Engine field to this label.
+	engineLabel string
 }
 
 // NewManager creates an output Manager. Frames are delivered via
@@ -213,6 +217,39 @@ func (m *Manager) OnMuxerStart(fn func()) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.onMuxStart = fn
+}
+
+// SetEngineLabel sets the engine identifier for this manager ("a", "b", or "").
+// Newly added destinations will default their Engine field to this label.
+func (m *Manager) SetEngineLabel(label string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.engineLabel = label
+}
+
+// ReassignDestinationEngine changes the engine assignment for a destination.
+// Valid values are "a", "b", or "" (local engine).
+func (m *Manager) ReassignDestinationEngine(id, engine string) error {
+	if engine != "a" && engine != "b" && engine != "" {
+		return fmt.Errorf("output: engine must be 'a', 'b', or empty")
+	}
+	m.mu.Lock()
+	dest, ok := m.destinations[id]
+	if !ok {
+		m.mu.Unlock()
+		return ErrDestinationNotFound
+	}
+	dest.mu.Lock()
+	dest.config.Engine = engine
+	dest.mu.Unlock()
+
+	fn := m.onState
+	m.mu.Unlock()
+
+	if fn != nil {
+		fn()
+	}
+	return nil
 }
 
 // StartRecording begins recording program output to a file.
@@ -465,6 +502,13 @@ func (m *Manager) AddDestination(config DestinationConfig) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported destination type: %s", config.Type)
 	}
+
+	// Default engine label from manager if not explicitly set.
+	m.mu.Lock()
+	if config.Engine == "" {
+		config.Engine = m.engineLabel
+	}
+	m.mu.Unlock()
 
 	id := generateDestinationID()
 	dest := &Destination{

@@ -165,6 +165,7 @@ export interface DestinationConfig {
 	maxConns?: number;
 	name?: string;
 	scte35Enabled?: boolean;
+	engine?: string; // "a", "b", or "" (default = local engine)
 }
 
 export interface DestinationInfo {
