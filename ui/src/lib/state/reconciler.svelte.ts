@@ -54,6 +54,15 @@ export interface SyncHealth {
 	engineB: EngineHealth;
 }
 
+/** Deep-ish equality for field comparison (handles nested objects via JSON). */
+export function fieldEquals(a: unknown, b: unknown): boolean {
+	if (a === b) return true;
+	if (a == null || b == null) return a == b;
+	if (typeof a !== typeof b) return false;
+	if (typeof a === 'object') return JSON.stringify(a) === JSON.stringify(b);
+	return false;
+}
+
 /** Fields considered program-visible for divergence comparison. */
 const DIVERGENCE_FIELDS: (keyof ControlRoomState)[] = [
 	'programSource',
@@ -62,11 +71,15 @@ const DIVERGENCE_FIELDS: (keyof ControlRoomState)[] = [
 	'transitionPosition',
 	'masterLevel',
 	'ftbActive',
+	'transitionType',
+	'transitionDurationMs',
 ];
 
 /** Critical fields: mismatch at same seq = deterministic failure. */
 const MISMATCH_FIELDS: (keyof ControlRoomState)[] = [
 	'programSource',
+	'previewSource',
+	'ftbActive',
 ];
 
 /** Thresholds for time-based status detection. */
@@ -190,9 +203,13 @@ export function createReconciler() {
 		for (const field of DIVERGENCE_FIELDS) {
 			const a = stateA[field];
 			const b = stateB[field];
-			if (a !== b) {
+			if (!fieldEquals(a, b)) {
 				result.push({ field, engineA: a, engineB: b });
 			}
+		}
+		// Check recording state divergence (nested object, not in DIVERGENCE_FIELDS)
+		if (stateA.recording?.active !== stateB.recording?.active) {
+			result.push({ field: 'recording', engineA: stateA.recording, engineB: stateB.recording });
 		}
 		return result;
 	});
@@ -206,7 +223,7 @@ export function createReconciler() {
 
 		// Check programSource and other mismatch fields
 		for (const field of MISMATCH_FIELDS) {
-			if (stateA[field] !== stateB[field]) return true;
+			if (!fieldEquals(stateA[field], stateB[field])) return true;
 		}
 
 		// Check playout channel divergence (currentItemId, itemIndex, currentTitle)

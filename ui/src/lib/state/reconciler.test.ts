@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createReconciler } from './reconciler.svelte';
+import { createReconciler, fieldEquals } from './reconciler.svelte';
 import type { ControlRoomState } from '$lib/api/types';
 
 function makeState(overrides: Partial<ControlRoomState> = {}): ControlRoomState {
@@ -632,6 +632,141 @@ describe('createReconciler', () => {
 			r.ingest('B', makeState({ lastCommandSeq: 5, sources: {} }));
 			// No sources = not degraded, falls through to A wins tie
 			expect(r.health.authoritative).toBe('A');
+		});
+	});
+
+	// ── Expanded MISMATCH_FIELDS ──
+
+	describe('expanded mismatch fields', () => {
+		it('reports mismatch when ftbActive differs at same seq', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ ftbActive: false, lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ ftbActive: true, lastCommandSeq: 5 }));
+			r.tick();
+			expect(r.health.status).toBe('mismatch');
+		});
+
+		it('reports mismatch when previewSource differs at same seq', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ previewSource: 'cam1', lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ previewSource: 'cam3', lastCommandSeq: 5 }));
+			r.tick();
+			expect(r.health.status).toBe('mismatch');
+		});
+
+		it('does not report mismatch when ftbActive and previewSource agree', () => {
+			const r = createReconciler();
+			const s = makeState({ ftbActive: true, previewSource: 'cam2', lastCommandSeq: 5 });
+			r.ingest('A', s);
+			r.ingest('B', { ...s });
+			r.tick();
+			expect(r.health.status).not.toBe('mismatch');
+		});
+	});
+
+	// ── Recording divergence ──
+
+	describe('recording divergence', () => {
+		it('detects divergence when recording.active differs', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				recording: { active: true, filename: 'rec1.ts' },
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 5,
+				recording: { active: false },
+			}));
+			const divs = r.health.divergences;
+			const recDiv = divs.find(d => d.field === 'recording');
+			expect(recDiv).toBeDefined();
+			expect((recDiv?.engineA as any)?.active).toBe(true);
+			expect((recDiv?.engineB as any)?.active).toBe(false);
+		});
+
+		it('no recording divergence when both active', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				recording: { active: true, filename: 'rec1.ts' },
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 5,
+				recording: { active: true, filename: 'rec2.ts' },
+			}));
+			const divs = r.health.divergences;
+			const recDiv = divs.find(d => d.field === 'recording');
+			expect(recDiv).toBeUndefined();
+		});
+
+		it('no recording divergence when both undefined', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+			const divs = r.health.divergences;
+			const recDiv = divs.find(d => d.field === 'recording');
+			expect(recDiv).toBeUndefined();
+		});
+	});
+
+	// ── fieldEquals ──
+
+	describe('fieldEquals', () => {
+		it('returns true for identical primitives', () => {
+			expect(fieldEquals(1, 1)).toBe(true);
+			expect(fieldEquals('a', 'a')).toBe(true);
+			expect(fieldEquals(true, true)).toBe(true);
+		});
+
+		it('returns false for different primitives', () => {
+			expect(fieldEquals(1, 2)).toBe(false);
+			expect(fieldEquals('a', 'b')).toBe(false);
+			expect(fieldEquals(true, false)).toBe(false);
+		});
+
+		it('handles null and undefined', () => {
+			expect(fieldEquals(null, null)).toBe(true);
+			expect(fieldEquals(undefined, undefined)).toBe(true);
+			expect(fieldEquals(null, undefined)).toBe(true);
+			expect(fieldEquals(undefined, null)).toBe(true);
+			expect(fieldEquals(null, 0)).toBe(false);
+			expect(fieldEquals(undefined, '')).toBe(false);
+		});
+
+		it('compares nested objects via JSON', () => {
+			expect(fieldEquals({ a: 1, b: 2 }, { a: 1, b: 2 })).toBe(true);
+			expect(fieldEquals({ a: 1 }, { a: 2 })).toBe(false);
+		});
+
+		it('compares arrays correctly', () => {
+			expect(fieldEquals([1, 2], [1, 2])).toBe(true);
+			expect(fieldEquals([1, 2], [1, 3])).toBe(false);
+			expect(fieldEquals([1, 2], [1, 2, 3])).toBe(false);
+		});
+
+		it('returns false for different types', () => {
+			expect(fieldEquals(1, '1')).toBe(false);
+			expect(fieldEquals(true, 1)).toBe(false);
+		});
+	});
+
+	// ── Expanded DIVERGENCE_FIELDS ──
+
+	describe('expanded divergence fields', () => {
+		it('detects transitionType divergence', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ transitionType: 'cut', lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ transitionType: 'dissolve', lastCommandSeq: 5 }));
+			const fields = r.health.divergences.map(d => d.field);
+			expect(fields).toContain('transitionType');
+		});
+
+		it('detects transitionDurationMs divergence', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ transitionDurationMs: 500, lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ transitionDurationMs: 1000, lastCommandSeq: 5 }));
+			const fields = r.health.divergences.map(d => d.field);
+			expect(fields).toContain('transitionDurationMs');
 		});
 	});
 
