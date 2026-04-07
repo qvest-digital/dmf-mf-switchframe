@@ -11,6 +11,7 @@ function makeHealth(status: SyncStatus): SyncHealth {
 		engineA: { lastSeen: Date.now(), lastCommandSeq: 1, connected: true },
 		engineB: { lastSeen: Date.now(), lastCommandSeq: 1, connected: true },
 		warnings: [],
+		staleEngines: [],
 	};
 }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createReconciler, fieldEquals } from './reconciler.svelte';
+import { createReconciler, fieldEquals, STALE_THRESHOLD_MS } from './reconciler.svelte';
 import type { ControlRoomState } from '$lib/api/types';
 
 function makeState(overrides: Partial<ControlRoomState> = {}): ControlRoomState {
@@ -887,6 +887,133 @@ describe('createReconciler', () => {
 
 			r.requestCheck();
 			expect(r.health.status).toBe('single-engine');
+		});
+	});
+
+	// ── Stale engine detection ──
+
+	describe('stale engine detection', () => {
+		beforeEach(() => {
+			vi.useFakeTimers();
+		});
+
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		it('reports single-engine B authoritative when A is stale for 5s', () => {
+			const r = createReconciler();
+			const s = makeState({ lastCommandSeq: 5 });
+			r.ingest('A', { ...s });
+			r.ingest('B', { ...s });
+			expect(r.health.status).toBe('synced');
+
+			// Advance past stale threshold, only B sends updates
+			vi.advanceTimersByTime(STALE_THRESHOLD_MS + 100);
+			r.ingest('B', makeState({ lastCommandSeq: 6 }));
+			r.tick();
+
+			expect(r.health.status).toBe('single-engine');
+			expect(r.health.authoritative).toBe('B');
+			expect(r.health.staleEngines).toContain('A');
+			expect(r.health.staleEngines).not.toContain('B');
+		});
+
+		it('reports single-engine A authoritative when B is stale for 5s', () => {
+			const r = createReconciler();
+			const s = makeState({ lastCommandSeq: 5 });
+			r.ingest('A', { ...s });
+			r.ingest('B', { ...s });
+			expect(r.health.status).toBe('synced');
+
+			// Advance past stale threshold, only A sends updates
+			vi.advanceTimersByTime(STALE_THRESHOLD_MS + 100);
+			r.ingest('A', makeState({ lastCommandSeq: 6 }));
+			r.tick();
+
+			expect(r.health.status).toBe('single-engine');
+			expect(r.health.authoritative).toBe('A');
+			expect(r.health.staleEngines).toContain('B');
+			expect(r.health.staleEngines).not.toContain('A');
+		});
+
+		it('reports disconnected when both engines are stale', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+			expect(r.health.status).toBe('synced');
+
+			// Neither engine sends updates for >5s
+			vi.advanceTimersByTime(STALE_THRESHOLD_MS + 100);
+			r.tick();
+
+			expect(r.health.status).toBe('disconnected');
+			expect(r.health.staleEngines).toContain('A');
+			expect(r.health.staleEngines).toContain('B');
+		});
+
+		it('reports normal status when neither engine is stale', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+			r.tick();
+
+			expect(r.health.status).toBe('synced');
+			expect(r.health.staleEngines).toHaveLength(0);
+		});
+
+		it('recovers from stale when engine resumes sending updates', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+
+			// A goes stale
+			vi.advanceTimersByTime(STALE_THRESHOLD_MS + 100);
+			r.ingest('B', makeState({ lastCommandSeq: 6 }));
+			r.tick();
+			expect(r.health.status).toBe('single-engine');
+			expect(r.health.staleEngines).toContain('A');
+
+			// A comes back
+			r.ingest('A', makeState({ lastCommandSeq: 6 }));
+			r.tick();
+			expect(r.health.status).toBe('synced');
+			expect(r.health.staleEngines).toHaveLength(0);
+		});
+
+		it('stale engine not counted in staleEngines if already disconnected', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+
+			r.disconnect('A');
+			vi.advanceTimersByTime(STALE_THRESHOLD_MS + 100);
+			r.ingest('B', makeState({ lastCommandSeq: 6 }));
+			r.tick();
+
+			// A is disconnected, not stale (stale requires connected=true)
+			expect(r.health.staleEngines).not.toContain('A');
+			expect(r.health.status).toBe('single-engine');
+		});
+
+		it('stale detection uses 5000ms threshold', () => {
+			expect(STALE_THRESHOLD_MS).toBe(5000);
+
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+
+			// At 4900ms (just under threshold) — should still be synced
+			vi.advanceTimersByTime(4900);
+			r.tick();
+			expect(r.health.status).toBe('synced');
+			expect(r.health.staleEngines).toHaveLength(0);
+
+			// At 5100ms (just over threshold) — both stale → disconnected
+			vi.advanceTimersByTime(200);
+			r.tick();
+			expect(r.health.status).toBe('disconnected');
+			expect(r.health.staleEngines).toHaveLength(2);
 		});
 	});
 });

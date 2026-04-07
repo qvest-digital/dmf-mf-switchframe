@@ -53,6 +53,7 @@ export interface SyncHealth {
 	engineA: EngineHealth;
 	engineB: EngineHealth;
 	warnings: string[];
+	staleEngines: EngineId[];
 }
 
 /** Deep-ish equality for field comparison (handles nested objects via JSON). */
@@ -86,6 +87,9 @@ const MISMATCH_FIELDS: (keyof ControlRoomState)[] = [
 /** Thresholds for time-based status detection. */
 const TRANSIENT_THRESHOLD_MS = 500;
 const DIVERGED_THRESHOLD_MS = 2000;
+
+/** If no state update for this long, treat engine as stale/disconnected. */
+export const STALE_THRESHOLD_MS = 5000;
 
 export function createReconciler() {
 	let stateA = $state<ControlRoomState | null>(null);
@@ -161,11 +165,16 @@ export function createReconciler() {
 		).length;
 	}
 
-	/** Which engine is authoritative: source health → higher lastCommandSeq → RTT tie-break → A wins final ties. */
+	/** Which engine is authoritative: stale → source health → higher lastCommandSeq → RTT tie-break → A wins final ties. */
 	const authoritative = $derived.by((): EngineId => {
 		if (!stateA && !stateB) return 'A';
-		if (!stateA || !connectedA) return 'B';
-		if (!stateB || !connectedB) return 'A';
+		// Treat stale engines as effectively disconnected for authority selection
+		const now = lastTickTime;
+		const effectiveA = stateA !== null && connectedA && !(lastSeenA > 0 && now - lastSeenA > STALE_THRESHOLD_MS);
+		const effectiveB = stateB !== null && connectedB && !(lastSeenB > 0 && now - lastSeenB > STALE_THRESHOLD_MS);
+		if (!effectiveA && !effectiveB) return 'A';
+		if (!effectiveA) return 'B';
+		if (!effectiveB) return 'A';
 
 		// Source health scoring: if one engine has >50% sources degraded and other doesn't, healthier wins
 		const healthyA = countHealthySources(stateA);
@@ -256,6 +265,17 @@ export function createReconciler() {
 		if (!stateA && !stateB) return 'disconnected';
 		// Disconnected trumps recovering: can't recover if both engines are offline
 		if (!hasA && !hasB) return 'disconnected';
+
+		// Stale engine detection: no state update for STALE_THRESHOLD_MS
+		const staleA = hasA && (now - lastSeenA > STALE_THRESHOLD_MS);
+		const staleB = hasB && (now - lastSeenB > STALE_THRESHOLD_MS);
+
+		if (staleA && staleB) return 'disconnected';
+		if (staleA && !hasB) return 'disconnected';
+		if (staleB && !hasA) return 'disconnected';
+		if (staleA) return 'single-engine';
+		if (staleB) return 'single-engine';
+
 		if (!hasA || !hasB) return 'single-engine';
 
 		// Check critical mismatch before recovering — mismatches must surface
@@ -377,6 +397,14 @@ export function createReconciler() {
 		return w;
 	});
 
+	const staleEngines = $derived.by((): EngineId[] => {
+		const now = lastTickTime;
+		const result: EngineId[] = [];
+		if (connectedA && lastSeenA > 0 && (now - lastSeenA > STALE_THRESHOLD_MS)) result.push('A');
+		if (connectedB && lastSeenB > 0 && (now - lastSeenB > STALE_THRESHOLD_MS)) result.push('B');
+		return result;
+	});
+
 	const health = $derived.by((): SyncHealth => ({
 		status: tickedStatus,
 		divergences,
@@ -392,6 +420,7 @@ export function createReconciler() {
 			connected: connectedB,
 		},
 		warnings,
+		staleEngines,
 	}));
 
 	return {
