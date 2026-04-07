@@ -496,6 +496,145 @@ describe('createReconciler', () => {
 		});
 	});
 
+	// ── Source health in authority selection ──
+
+	describe('source health in authority selection', () => {
+		it('authority prefers healthy engine when one has >50% degraded sources', () => {
+			const r = createReconciler();
+			// Engine A: 1 healthy, 2 offline => 33% healthy (<50%)
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				sources: {
+					cam1: { key: 'cam1', type: 'demo', status: 'healthy' },
+					cam2: { key: 'cam2', type: 'demo', status: 'offline' },
+					cam3: { key: 'cam3', type: 'demo', status: 'no_signal' },
+				},
+			}));
+			// Engine B: 3 healthy => 100% healthy
+			r.ingest('B', makeState({
+				lastCommandSeq: 5,
+				sources: {
+					cam1: { key: 'cam1', type: 'demo', status: 'healthy' },
+					cam2: { key: 'cam2', type: 'demo', status: 'healthy' },
+					cam3: { key: 'cam3', type: 'demo', status: 'healthy' },
+				},
+			}));
+			expect(r.health.authoritative).toBe('B');
+		});
+
+		it('authority prefers A when B has >50% degraded', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				sources: {
+					cam1: { key: 'cam1', type: 'demo', status: 'healthy' },
+					cam2: { key: 'cam2', type: 'demo', status: 'healthy' },
+				},
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 5,
+				sources: {
+					cam1: { key: 'cam1', type: 'demo', status: 'offline' },
+					cam2: { key: 'cam2', type: 'demo', status: 'offline' },
+				},
+			}));
+			expect(r.health.authoritative).toBe('A');
+		});
+
+		it('falls back to seq when both engines have similar health', () => {
+			const r = createReconciler();
+			// Both healthy but B has higher seq
+			r.ingest('A', makeState({
+				lastCommandSeq: 3,
+				sources: {
+					cam1: { key: 'cam1', type: 'demo', status: 'healthy' },
+					cam2: { key: 'cam2', type: 'demo', status: 'healthy' },
+				},
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 7,
+				sources: {
+					cam1: { key: 'cam1', type: 'demo', status: 'healthy' },
+					cam2: { key: 'cam2', type: 'demo', status: 'healthy' },
+				},
+			}));
+			expect(r.health.authoritative).toBe('B');
+		});
+
+		it('falls back to seq when both engines are equally degraded', () => {
+			const r = createReconciler();
+			// Both >50% degraded — health tie, fall through to seq
+			r.ingest('A', makeState({
+				lastCommandSeq: 10,
+				sources: {
+					cam1: { key: 'cam1', type: 'demo', status: 'offline' },
+					cam2: { key: 'cam2', type: 'demo', status: 'offline' },
+					cam3: { key: 'cam3', type: 'demo', status: 'healthy' },
+				},
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 5,
+				sources: {
+					cam1: { key: 'cam1', type: 'demo', status: 'offline' },
+					cam2: { key: 'cam2', type: 'demo', status: 'offline' },
+					cam3: { key: 'cam3', type: 'demo', status: 'healthy' },
+				},
+			}));
+			// Both degraded so health doesn't break it — seq wins (A=10 > B=5)
+			expect(r.health.authoritative).toBe('A');
+		});
+
+		it('ignores health when neither engine is majorly degraded', () => {
+			const r = createReconciler();
+			// A: 67% healthy, B: 100% healthy. Neither <50%, so seq wins.
+			r.ingest('A', makeState({
+				lastCommandSeq: 10,
+				sources: {
+					cam1: { key: 'cam1', type: 'demo', status: 'healthy' },
+					cam2: { key: 'cam2', type: 'demo', status: 'offline' },
+					cam3: { key: 'cam3', type: 'demo', status: 'healthy' },
+				},
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 5,
+				sources: {
+					cam1: { key: 'cam1', type: 'demo', status: 'healthy' },
+					cam2: { key: 'cam2', type: 'demo', status: 'healthy' },
+					cam3: { key: 'cam3', type: 'demo', status: 'healthy' },
+				},
+			}));
+			expect(r.health.authoritative).toBe('A');
+		});
+
+		it('treats stale sources as healthy for authority', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				sources: {
+					cam1: { key: 'cam1', type: 'demo', status: 'stale' },
+					cam2: { key: 'cam2', type: 'demo', status: 'stale' },
+				},
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 5,
+				sources: {
+					cam1: { key: 'cam1', type: 'demo', status: 'healthy' },
+					cam2: { key: 'cam2', type: 'demo', status: 'healthy' },
+				},
+			}));
+			// Both >50% healthy, falls through to A wins tie
+			expect(r.health.authoritative).toBe('A');
+		});
+
+		it('handles engines with no sources gracefully', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5, sources: {} }));
+			r.ingest('B', makeState({ lastCommandSeq: 5, sources: {} }));
+			// No sources = not degraded, falls through to A wins tie
+			expect(r.health.authoritative).toBe('A');
+		});
+	});
+
 	// ── Edge cases in state ──
 
 	describe('edge cases', () => {
