@@ -67,6 +67,45 @@ type SnapshotApplyTarget interface {
 	AssignSTMapProgram(mapName string) error
 }
 
+// Optional applier interfaces for operational state. Targets may implement
+// any subset of these — ApplyFullSnapshot uses type assertions to check.
+
+// SnapshotRecordingApplier is optionally implemented for recording state.
+type SnapshotRecordingApplier interface {
+	ApplyRecording(snap RecordingSnapshot) error
+}
+
+// SnapshotDestinationApplier is optionally implemented for output destinations.
+type SnapshotDestinationApplier interface {
+	ApplyOutputDestinations(dests []DestinationSnapshot) error
+}
+
+// SnapshotReplayApplier is optionally implemented for replay marks and player state.
+type SnapshotReplayApplier interface {
+	ApplyReplayMarks(marks ReplayMarksSnapshot) error
+	ApplyReplayPlayer(player ReplayPlayerSnapshot) error
+}
+
+// SnapshotOperatorApplier is optionally implemented for operator sessions.
+type SnapshotOperatorApplier interface {
+	ApplyOperatorSessions(sessions []OperatorSessionSnapshot) error
+}
+
+// SnapshotPlayoutApplier is optionally implemented for playout channel state.
+type SnapshotPlayoutApplier interface {
+	ApplyPlayoutChannels(channels []PlayoutChannelSnapshot) error
+}
+
+// SnapshotSCTE35Applier is optionally implemented for active SCTE-35 events.
+type SnapshotSCTE35Applier interface {
+	ApplySCTE35Active(events []SCTE35ActiveEventSnapshot) error
+}
+
+// SnapshotMacroApplier is optionally implemented for macro execution state.
+type SnapshotMacroApplier interface {
+	ApplyMacroExecution(exec MacroExecutionSnapshot) error
+}
+
 // ApplyFullSnapshot restores engine state from a FullStateSnapshot. It is
 // best-effort: individual failures are collected as warning strings rather
 // than aborting the entire apply. This is the inverse of state capture.
@@ -168,6 +207,92 @@ func ApplyFullSnapshot(ctx context.Context, snap FullStateSnapshot, target Snaps
 	if len(snap.ClipPlayers) > 0 {
 		warnings = append(warnings, "clip player state not restored (clip IDs may differ between engines)")
 	}
+
+	// --- Operational state (optional applier interfaces) ---
+
+	// 15. Output destinations
+	if snap.OutputDestinations != nil {
+		if applier, ok := target.(SnapshotDestinationApplier); ok {
+			if err := applier.ApplyOutputDestinations(snap.OutputDestinations); err != nil {
+				slog.Warn("snapshot apply: output destinations failed", "error", err)
+				warnings = append(warnings, fmt.Sprintf("output destinations: %v", err))
+			}
+		}
+	}
+
+	// 16. Recording
+	if snap.Recording != nil {
+		if applier, ok := target.(SnapshotRecordingApplier); ok {
+			if err := applier.ApplyRecording(*snap.Recording); err != nil {
+				slog.Warn("snapshot apply: recording failed", "error", err)
+				warnings = append(warnings, fmt.Sprintf("recording: %v", err))
+			}
+		}
+	}
+
+	// 17. Replay marks
+	if snap.ReplayMarks != nil {
+		if applier, ok := target.(SnapshotReplayApplier); ok {
+			if err := applier.ApplyReplayMarks(*snap.ReplayMarks); err != nil {
+				slog.Warn("snapshot apply: replay marks failed", "error", err)
+				warnings = append(warnings, fmt.Sprintf("replay marks: %v", err))
+			}
+		}
+	}
+
+	// 18. Replay player
+	if snap.ReplayPlayer != nil {
+		if applier, ok := target.(SnapshotReplayApplier); ok {
+			if err := applier.ApplyReplayPlayer(*snap.ReplayPlayer); err != nil {
+				slog.Warn("snapshot apply: replay player failed", "error", err)
+				warnings = append(warnings, fmt.Sprintf("replay player: %v", err))
+			}
+		}
+	}
+
+	// 19. Playout channels
+	if snap.PlayoutChannels != nil {
+		if applier, ok := target.(SnapshotPlayoutApplier); ok {
+			if err := applier.ApplyPlayoutChannels(snap.PlayoutChannels); err != nil {
+				slog.Warn("snapshot apply: playout channels failed", "error", err)
+				warnings = append(warnings, fmt.Sprintf("playout channels: %v", err))
+			}
+		}
+	}
+
+	// 20. SCTE-35 active events
+	if snap.SCTE35Active != nil {
+		if applier, ok := target.(SnapshotSCTE35Applier); ok {
+			if err := applier.ApplySCTE35Active(snap.SCTE35Active); err != nil {
+				slog.Warn("snapshot apply: scte-35 events failed", "error", err)
+				warnings = append(warnings, fmt.Sprintf("scte-35 events: %v", err))
+			}
+		}
+	}
+
+	// 21. Operator sessions
+	if snap.OperatorSessions != nil {
+		if applier, ok := target.(SnapshotOperatorApplier); ok {
+			if err := applier.ApplyOperatorSessions(snap.OperatorSessions); err != nil {
+				slog.Warn("snapshot apply: operator sessions failed", "error", err)
+				warnings = append(warnings, fmt.Sprintf("operator sessions: %v", err))
+			}
+		}
+	}
+
+	// 22. Macro execution
+	if snap.MacroExecution != nil {
+		if applier, ok := target.(SnapshotMacroApplier); ok {
+			if err := applier.ApplyMacroExecution(*snap.MacroExecution); err != nil {
+				slog.Warn("snapshot apply: macro execution failed", "error", err)
+				warnings = append(warnings, fmt.Sprintf("macro execution: %v", err))
+			}
+		}
+	}
+
+	// Note: CommsParticipants and StingerLoaded are informational — no apply
+	// action needed. Comms requires re-joining the WebTransport stream, and
+	// stingers are pre-cached by name on both engines.
 
 	return warnings
 }
