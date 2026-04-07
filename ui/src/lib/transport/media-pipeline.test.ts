@@ -1,5 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createMediaPipeline, type SourceDiagnostics, type MediaPipelineConfig } from './media-pipeline';
+import { isSourceStalled, clearAllStalls } from './source-errors.svelte';
 
 // Mock all Prism modules since they use Web Workers, WebCodecs,
 // AudioWorklet, and SharedArrayBuffer -- none available in jsdom.
@@ -305,5 +306,145 @@ describe('MediaPipeline', () => {
 		const diag = await pipeline.getAllDiagnostics();
 		// Transport getDiagnostics was called (mock returns {} + group skip fields)
 		expect(diag['cam1'].transport).toEqual({ groupSkips: 0, latestGroupID: 0 });
+	});
+});
+
+describe('MediaPipeline stall detection', () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		clearAllStalls();
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+		clearAllStalls();
+	});
+
+	it('should not mark source as stalled when frames arrive regularly', () => {
+		const pipeline = createMediaPipeline();
+		pipeline.addSource('cam1');
+
+		pipeline.startStallDetection();
+
+		// Feed a frame
+		const desc = new Uint8Array([0, 0, 0, 1]);
+		pipeline.feedVideoFrame('cam1', new Uint8Array([1, 2, 3]), true, 1000, desc);
+
+		// Advance 2s (under 3s threshold)
+		vi.advanceTimersByTime(2000);
+
+		expect(isSourceStalled('cam1')).toBe(false);
+
+		pipeline.stopStallDetection();
+		pipeline.destroy();
+	});
+
+	it('should mark source as stalled after 3s without frames', () => {
+		const pipeline = createMediaPipeline();
+		pipeline.addSource('cam1');
+
+		// Feed initial frame to establish lastFrameTime
+		const desc = new Uint8Array([0, 0, 0, 1]);
+		pipeline.feedVideoFrame('cam1', new Uint8Array([1, 2, 3]), true, 1000, desc);
+
+		pipeline.startStallDetection();
+
+		// Advance past stall threshold (3s) + one check interval
+		vi.advanceTimersByTime(4000);
+
+		expect(isSourceStalled('cam1')).toBe(true);
+
+		pipeline.stopStallDetection();
+		pipeline.destroy();
+	});
+
+	it('should clear stall when frame arrives after stall', () => {
+		const pipeline = createMediaPipeline();
+		pipeline.addSource('cam1');
+
+		const desc = new Uint8Array([0, 0, 0, 1]);
+		pipeline.feedVideoFrame('cam1', new Uint8Array([1, 2, 3]), true, 1000, desc);
+
+		pipeline.startStallDetection();
+
+		// Stall: no frames for 4s
+		vi.advanceTimersByTime(4000);
+		expect(isSourceStalled('cam1')).toBe(true);
+
+		// Resume: feed another frame
+		pipeline.feedVideoFrame('cam1', new Uint8Array([4, 5, 6]), false, 2000, null);
+		expect(isSourceStalled('cam1')).toBe(false);
+
+		pipeline.stopStallDetection();
+		pipeline.destroy();
+	});
+
+	it('should not report stalls for removed sources', () => {
+		const pipeline = createMediaPipeline();
+		pipeline.addSource('cam1');
+
+		const desc = new Uint8Array([0, 0, 0, 1]);
+		pipeline.feedVideoFrame('cam1', new Uint8Array([1, 2, 3]), true, 1000, desc);
+
+		pipeline.startStallDetection();
+
+		// Remove source before stall triggers
+		pipeline.removeSource('cam1');
+
+		// Advance past threshold
+		vi.advanceTimersByTime(4000);
+
+		expect(isSourceStalled('cam1')).toBe(false);
+
+		pipeline.stopStallDetection();
+		pipeline.destroy();
+	});
+
+	it('should stop stall detection on destroy', () => {
+		const pipeline = createMediaPipeline();
+		pipeline.addSource('cam1');
+
+		const desc = new Uint8Array([0, 0, 0, 1]);
+		pipeline.feedVideoFrame('cam1', new Uint8Array([1, 2, 3]), true, 1000, desc);
+
+		pipeline.startStallDetection();
+		pipeline.destroy();
+
+		// Advance timers — should not throw or set stalls
+		vi.advanceTimersByTime(10000);
+		expect(isSourceStalled('cam1')).toBe(false);
+	});
+
+	it('should track multiple sources independently', () => {
+		const pipeline = createMediaPipeline();
+		pipeline.addSource('cam1');
+		pipeline.addSource('cam2');
+
+		const desc = new Uint8Array([0, 0, 0, 1]);
+		pipeline.feedVideoFrame('cam1', new Uint8Array([1]), true, 1000, desc);
+		pipeline.feedVideoFrame('cam2', new Uint8Array([2]), true, 1000, desc);
+
+		pipeline.startStallDetection();
+
+		// Advance 2s, feed cam1 only
+		vi.advanceTimersByTime(2000);
+		pipeline.feedVideoFrame('cam1', new Uint8Array([3]), false, 2000, null);
+
+		// Advance another 2s — cam2 total is 4s, cam1 is 2s
+		vi.advanceTimersByTime(2000);
+
+		expect(isSourceStalled('cam1')).toBe(false);
+		expect(isSourceStalled('cam2')).toBe(true);
+
+		pipeline.stopStallDetection();
+		pipeline.destroy();
+	});
+
+	it('should be idempotent for startStallDetection', () => {
+		const pipeline = createMediaPipeline();
+		pipeline.startStallDetection();
+		pipeline.startStallDetection(); // should not create second interval
+		pipeline.stopStallDetection();
+		pipeline.destroy();
 	});
 });

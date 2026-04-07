@@ -36,3 +36,43 @@ export function getSourceErrors(): Map<string, string> {
 export function clearAllErrors(): void {
 	errors = new Map();
 }
+
+// --- Frame stall detection ---
+
+/** Per-source stall state: true means the source has stalled (no frames for > threshold). */
+let stalls = $state<Map<string, boolean>>(new Map());
+
+/** Mark a source as stalled. */
+export function setSourceStalled(key: string): void {
+	if (stalls.get(key) === true) return;
+	const newMap = new Map(stalls);
+	newMap.set(key, true);
+	stalls = newMap;
+}
+
+/** Clear the stall state for a source (frames resumed). */
+export function clearSourceStall(key: string): void {
+	if (!stalls.has(key) || stalls.get(key) === false) return;
+	const newMap = new Map(stalls);
+	newMap.delete(key);
+	stalls = newMap;
+}
+
+/** Check if a source is currently stalled. */
+export function isSourceStalled(key: string): boolean {
+	return stalls.get(key) === true;
+}
+
+/** Get all stalled source keys. */
+export function getStalledSources(): Set<string> {
+	const result = new Set<string>();
+	for (const [key, stalled] of stalls) {
+		if (stalled) result.add(key);
+	}
+	return result;
+}
+
+/** Clear all stall states. */
+export function clearAllStalls(): void {
+	stalls = new Map();
+}

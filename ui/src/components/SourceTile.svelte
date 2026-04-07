@@ -2,6 +2,7 @@
 	import type { SourceInfo, TallyStatus, LayoutSlotState, SourceHealthStatus } from '$lib/api/types';
 	import { computeSRTHealth } from '$lib/util/srt-health';
 	import { healthDotColor } from '$lib/util/health-dots';
+	import { isSourceStalled } from '$lib/transport/source-errors.svelte';
 	import SRTHealthDot from './SRTHealthDot.svelte';
 
 	interface Props {
@@ -24,6 +25,7 @@
 
 	let isPIP = $derived(layoutSlots?.some(s => s.enabled && s.sourceKey === source.key) ?? false);
 	let srtHealth = $derived(computeSRTHealth(source.srt));
+	let stalled = $derived(isSourceStalled(source.key));
 
 	let editing = $state(false);
 	let editValue = $state('');
@@ -121,8 +123,8 @@
 			<span class="engine-dot-b"><span class="engine-label">B</span><span class="engine-dot" style="background: {healthDotColor(engineSourceHealth!.B)}"></span></span>
 		</span>
 	{:else}
-		<span class="tile-status" class:offline={source.status === 'offline'} class:stale={source.status === 'stale'}>
-			{#if source.isVirtual}<span class="virtual-badge">RPL</span>{:else if source.status !== 'healthy'}{source.status}{/if}
+		<span class="tile-status" class:offline={source.status === 'offline'} class:stale={source.status === 'stale' || stalled}>
+			{#if stalled}<span class="stall-badge">STALL</span>{:else if source.isVirtual}<span class="virtual-badge">RPL</span>{:else if source.status !== 'healthy'}{source.status}{/if}
 		</span>
 	{/if}
 
@@ -254,6 +256,18 @@
 		color: var(--accent-purple, #a78bfa);
 		font-weight: 700;
 		letter-spacing: 0.06em;
+	}
+
+	.stall-badge {
+		color: var(--tally-program, #ef4444);
+		font-weight: 700;
+		letter-spacing: 0.06em;
+		animation: pulse-stall-text 1.5s ease-in-out infinite;
+	}
+
+	@keyframes pulse-stall-text {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.5; }
 	}
 
 	.delay-badge {

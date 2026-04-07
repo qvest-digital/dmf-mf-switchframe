@@ -5,6 +5,11 @@ import {
 	getSourceError,
 	getSourceErrors,
 	clearAllErrors,
+	setSourceStalled,
+	clearSourceStall,
+	isSourceStalled,
+	getStalledSources,
+	clearAllStalls,
 } from './source-errors.svelte';
 
 describe('source-errors', () => {
@@ -60,5 +65,62 @@ describe('source-errors', () => {
 		clearSourceError('cam1');
 		expect(getSourceError('cam1')).toBeNull();
 		expect(getSourceError('cam2')).toBe('audio decode error');
+	});
+});
+
+describe('source stall tracking', () => {
+	beforeEach(() => {
+		clearAllStalls();
+	});
+
+	it('returns false for unknown source', () => {
+		expect(isSourceStalled('cam1')).toBe(false);
+	});
+
+	it('marks source as stalled', () => {
+		setSourceStalled('cam1');
+		expect(isSourceStalled('cam1')).toBe(true);
+	});
+
+	it('clears stall state', () => {
+		setSourceStalled('cam1');
+		clearSourceStall('cam1');
+		expect(isSourceStalled('cam1')).toBe(false);
+	});
+
+	it('clearSourceStall is no-op for non-stalled key', () => {
+		clearSourceStall('cam99'); // should not throw
+		expect(isSourceStalled('cam99')).toBe(false);
+	});
+
+	it('getStalledSources returns all stalled keys', () => {
+		setSourceStalled('cam1');
+		setSourceStalled('cam3');
+		const stalled = getStalledSources();
+		expect(stalled.size).toBe(2);
+		expect(stalled.has('cam1')).toBe(true);
+		expect(stalled.has('cam3')).toBe(true);
+	});
+
+	it('clearAllStalls removes everything', () => {
+		setSourceStalled('cam1');
+		setSourceStalled('cam2');
+		clearAllStalls();
+		expect(getStalledSources().size).toBe(0);
+	});
+
+	it('setSourceStalled is idempotent', () => {
+		setSourceStalled('cam1');
+		setSourceStalled('cam1');
+		expect(isSourceStalled('cam1')).toBe(true);
+		expect(getStalledSources().size).toBe(1);
+	});
+
+	it('stalls and errors are independent', () => {
+		setSourceError('cam1', 'decode error');
+		setSourceStalled('cam1');
+		clearSourceError('cam1');
+		expect(isSourceStalled('cam1')).toBe(true);
+		expect(getSourceError('cam1')).toBeNull();
 	});
 });

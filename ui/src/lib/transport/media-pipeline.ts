@@ -5,6 +5,7 @@ import { PrismAudioDecoder } from '$lib/prism/audio-decoder';
 import { PrismRenderer } from '$lib/prism/renderer';
 import type { TrackInfo } from '$lib/prism/transport';
 import type { CaptionData } from '$lib/prism/protocol';
+import { setSourceStalled, clearSourceStall, clearAllStalls } from '$lib/transport/source-errors.svelte';
 /** Configuration for the media pipeline. */
 export interface MediaPipelineConfig {
 	/** Called when MoQ control track delivers state data. */
@@ -107,6 +108,10 @@ export interface MediaPipeline {
 	hasSource(sourceKey: string): boolean;
 	/** Get diagnostics from all active sources for debug snapshot. */
 	getAllDiagnostics(): Promise<Record<string, SourceDiagnostics>>;
+	/** Start periodic frame stall detection (checks every 1s, stall after 3s without frames). */
+	startStallDetection(): void;
+	/** Stop the stall detection interval. */
+	stopStallDetection(): void;
 }
 
 /**
@@ -118,8 +123,17 @@ export interface MediaPipeline {
  * is called, subscribes to its video/audio tracks, and routes decoded
  * frames through PrismVideoDecoder -> VideoRenderBuffer -> PrismRenderer.
  */
+/** How long (ms) without a video frame before a source is considered stalled. */
+const STALL_THRESHOLD_MS = 3000;
+/** How often (ms) to check for stalled sources. */
+const STALL_CHECK_INTERVAL_MS = 1000;
+
 export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline {
 	const sources = new Map<string, SourceMedia>();
+	/** Per-source last video frame arrival time (performance.now()). */
+	const lastFrameTime = new Map<string, number>();
+	/** Interval handle for stall detection. */
+	let stallCheckInterval: ReturnType<typeof setInterval> | null = null;
 
 	function createSourceMedia(key: string): SourceMedia {
 		const videoBuffer = new VideoRenderBuffer();
@@ -323,6 +337,11 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		const source = sources.get(sourceKey);
 		if (!source) return;
 
+		// Track frame arrival for stall detection
+		lastFrameTime.set(sourceKey, performance.now());
+		// If this source was previously marked as stalled, clear it
+		clearSourceStall(sourceKey);
+
 		// Configure decoder on first frame with description (avcC config record).
 		// description is often a subarray (view into a larger extensions buffer),
 		// so we must slice() to get an owned copy — .buffer would return the
@@ -378,6 +397,10 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 	function removeSource(key: string): void {
 		const source = sources.get(key);
 		if (!source) return;
+
+		// Clean up stall tracking
+		lastFrameTime.delete(key);
+		clearSourceStall(key);
 
 		// Clean up transport
 		if (source.transport) {
@@ -497,12 +520,37 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		}
 	}
 
+	function startStallDetection(): void {
+		if (stallCheckInterval !== null) return;
+		stallCheckInterval = setInterval(() => {
+			const now = performance.now();
+			for (const [key, lastTime] of lastFrameTime) {
+				// Only check sources that are still in the pipeline
+				if (!sources.has(key)) continue;
+				const elapsed = now - lastTime;
+				if (elapsed > STALL_THRESHOLD_MS) {
+					setSourceStalled(key);
+				}
+			}
+		}, STALL_CHECK_INTERVAL_MS);
+	}
+
+	function stopStallDetection(): void {
+		if (stallCheckInterval !== null) {
+			clearInterval(stallCheckInterval);
+			stallCheckInterval = null;
+		}
+		clearAllStalls();
+	}
+
 	function destroy(): void {
+		stopStallDetection();
 		document.removeEventListener("visibilitychange", handleVisibilityChange);
 		window.removeEventListener("focus", handleWindowFocus);
 		for (const key of Array.from(sources.keys())) {
 			removeSource(key);
 		}
+		lastFrameTime.clear();
 	}
 
 	function handleVisibilityChange(): void {
@@ -629,5 +677,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		resetRendererSync,
 		hasSource,
 		getAllDiagnostics,
+		startStallDetection,
+		stopStallDetection,
 	};
 }

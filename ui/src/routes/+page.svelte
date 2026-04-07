@@ -1063,6 +1063,9 @@
 		// Start audio metering rAF loop
 		pipelineManager.startMetering();
 
+		// Start frame stall detection (alerts when a source stops sending frames)
+		pipeline.startStallDetection();
+
 		// Load macro list for keyboard shortcuts
 		refreshMacros();
 

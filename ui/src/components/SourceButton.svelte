@@ -2,6 +2,7 @@
 	import type { SourceInfo, TallyStatus, LayoutSlotState } from '$lib/api/types';
 	import { setupHiDPICanvas } from '$lib/video/canvas-utils';
 	import { computeSRTHealth } from '$lib/util/srt-health';
+	import { isSourceStalled } from '$lib/transport/source-errors.svelte';
 	import SRTHealthDot from './SRTHealthDot.svelte';
 	import SRTStatsPopover from './SRTStatsPopover.svelte';
 
@@ -21,6 +22,7 @@
 
 	let isPIP = $derived(layoutSlots?.some(s => s.enabled && s.sourceKey === source.key) ?? false);
 	let srtHealth = $derived(computeSRTHealth(source.srt));
+	let stalled = $derived(isSourceStalled(source.key));
 
 	let canvasEl: HTMLCanvasElement;
 	let wrapEl: HTMLDivElement;
@@ -121,7 +123,9 @@
 >
 	<div class="thumb-wrap" bind:this={wrapEl}>
 		<canvas class="thumb-canvas" id="tile-{source.key}" bind:this={canvasEl}></canvas>
-		{#if source.status === 'stale'}
+		{#if stalled}
+			<div class="health-overlay frame-stall"><span class="health-text">STALL</span></div>
+		{:else if source.status === 'stale'}
 			<div class="health-overlay stale"></div>
 		{:else if source.status === 'no_signal'}
 			<div class="health-overlay no-signal"><span class="health-text">NO SIG</span></div>
@@ -242,6 +246,12 @@
 		align-items: center;
 		justify-content: center;
 		pointer-events: none;
+	}
+
+	.health-overlay.frame-stall {
+		background: rgba(200, 30, 30, 0.45);
+		border: 1px solid var(--tally-program);
+		animation: pulse-stall 1.5s ease-in-out infinite;
 	}
 
 	.health-overlay.stale {
@@ -369,5 +379,10 @@
 	@keyframes pulse-stale {
 		0%, 100% { border-color: var(--color-warning); box-shadow: none; }
 		50% { border-color: #ffaa33; box-shadow: 0 0 4px rgba(204, 136, 34, 0.4); }
+	}
+
+	@keyframes pulse-stall {
+		0%, 100% { background: rgba(200, 30, 30, 0.45); }
+		50% { background: rgba(200, 30, 30, 0.25); }
 	}
 </style>
