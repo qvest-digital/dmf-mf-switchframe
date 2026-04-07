@@ -167,6 +167,15 @@ func (m *mockOutputManager) GetDestination(id string) (output.DestinationStatus,
 	return output.DestinationStatus{}, output.ErrDestinationNotFound
 }
 
+func (m *mockOutputManager) ReassignDestinationEngine(id, engine string) error {
+	if d, ok := m.destinations[id]; ok {
+		d.Config.Engine = engine
+		m.destinations[id] = d
+		return nil
+	}
+	return output.ErrDestinationNotFound
+}
+
 func (m *mockOutputManager) CBRStatus() *output.CBRPacerStatus {
 	return m.cbrStatus
 }
@@ -1017,4 +1026,70 @@ func TestAddDestination_AllowedOutputPorts(t *testing.T) {
 
 		require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
 	})
+}
+
+// --- Engine reassignment tests ---
+
+func TestHandleReassignDestinationEngine_Success(t *testing.T) {
+	api, mock := setupOutputTestAPI(t)
+
+	// Pre-populate a destination.
+	mock.destinations = map[string]output.DestinationStatus{
+		"dest-1": {
+			ID:     "dest-1",
+			Config: output.DestinationConfig{Type: "srt-caller", Address: "10.0.0.1", Port: 5000, Engine: "a"},
+			State:  "stopped",
+		},
+	}
+
+	body := `{"engine":"b"}`
+	req := httptest.NewRequest("PUT", "/api/output/destinations/dest-1/engine", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+
+	var status output.DestinationStatus
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &status))
+	require.Equal(t, "b", status.Config.Engine)
+}
+
+func TestHandleReassignDestinationEngine_NotFound(t *testing.T) {
+	api, _ := setupOutputTestAPI(t)
+
+	body := `{"engine":"a"}`
+	req := httptest.NewRequest("PUT", "/api/output/destinations/nonexistent/engine", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestHandleReassignDestinationEngine_InvalidJSON(t *testing.T) {
+	api, mock := setupOutputTestAPI(t)
+
+	mock.destinations = map[string]output.DestinationStatus{
+		"dest-1": {ID: "dest-1", Config: output.DestinationConfig{Type: "srt-caller"}, State: "stopped"},
+	}
+
+	req := httptest.NewRequest("PUT", "/api/output/destinations/dest-1/engine", strings.NewReader("{bad"))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestHandleReassignDestinationEngine_NoManager(t *testing.T) {
+	api := setupOutputTestAPINoManager(t)
+
+	body := `{"engine":"a"}`
+	req := httptest.NewRequest("PUT", "/api/output/destinations/dest-1/engine", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotImplemented, rec.Code)
 }

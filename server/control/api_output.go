@@ -36,6 +36,7 @@ func (a *API) registerOutputRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/output/destinations/{id}", a.handleRemoveDestination)
 	mux.HandleFunc("POST /api/output/destinations/{id}/start", a.handleStartDestination)
 	mux.HandleFunc("POST /api/output/destinations/{id}/stop", a.handleStopDestination)
+	mux.HandleFunc("PUT /api/output/destinations/{id}/engine", a.handleReassignDestinationEngine)
 }
 
 // handleRecordingStart begins recording program output to a file.
@@ -326,6 +327,30 @@ func (a *API) handleStopDestination(w http.ResponseWriter, r *http.Request) {
 	}
 	id := r.PathValue("id")
 	if err := a.outputMgr.StopDestination(id); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	status, _ := a.outputMgr.GetDestination(id)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(status)
+}
+
+// handleReassignDestinationEngine changes the engine assignment for a destination.
+func (a *API) handleReassignDestinationEngine(w http.ResponseWriter, r *http.Request) {
+	a.setLastOperator(r)
+	if a.outputMgr == nil {
+		httperr.Write(w, http.StatusNotImplemented, "output manager not configured")
+		return
+	}
+	id := r.PathValue("id")
+	var body struct {
+		Engine string `json:"engine"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := a.outputMgr.ReassignDestinationEngine(id, body.Engine); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}

@@ -29,6 +29,7 @@ type DestinationConfig struct {
 	MaxConns      int    `json:"maxConns,omitempty"`      // listener only
 	Name          string `json:"name,omitempty"`          // user-friendly label
 	SCTE35Enabled bool   `json:"scte35Enabled,omitempty"` // default true; false strips SCTE-35
+	Engine        string `json:"engine,omitempty"`        // "a", "b", or "" (default = local engine)
 }
 
 // DestinationStatus is the runtime status of a destination.
