@@ -162,6 +162,17 @@
 	// Per-engine health detail — null in single-engine mode (child components use this)
 	let engineHealth = $derived(isDualEngine ? connectionManager.engineHealth : null);
 
+	// Per-engine connection state for ConnectionBanner indicators.
+	// Keyed on transportChangeCount so Svelte re-derives when any engine's state changes.
+	let perEngineState = $derived.by(() => {
+		void transportChangeCount; // reactive dependency
+		if (!isDualEngine) return undefined;
+		return {
+			A: connectionManager.engineConnectionState('A'),
+			B: connectionManager.engineConnectionState('B'),
+		};
+	});
+
 	// Per-source dual health map for IOPanel (combines A + B source health into single record)
 	let ioSourceHealth = $derived.by(() => {
 		if (!engineHealth) return null;
@@ -1134,7 +1145,7 @@
 />
 
 <ErrorBoundary>
-	<ConnectionBanner {connectionState} {syncStatus} engineStatus={engineBannerStatus} />
+	<ConnectionBanner {connectionState} {syncStatus} engineStatus={engineBannerStatus} {perEngineState} />
 	<Toast />
 	{#if layoutMode === 'simple'}
 		<SimpleMode

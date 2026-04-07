@@ -7,6 +7,11 @@
 		restored?: boolean;
 	}
 
+	interface PerEngineState {
+		A: 'webtransport' | 'polling' | 'disconnected';
+		B: 'webtransport' | 'polling' | 'disconnected';
+	}
+
 	interface Props {
 		connectionState: 'webtransport' | 'polling' | 'disconnected';
 		syncStatus: 'ok' | 'resyncing' | 'disconnected';
@@ -14,9 +19,12 @@
 		engineFallbackUrl?: string | null;  // URL of the other engine (null = single-engine mode)
 		servingEngine?: string | null;      // ID of the engine that served this page ('A' or 'B')
 		engineStatus?: EngineStatus;
+		perEngineState?: PerEngineState;
 	}
 
-	let { connectionState, syncStatus, engineFallbackUrl = null, servingEngine = null, engineStatus }: Props = $props();
+	let { connectionState, syncStatus, engineFallbackUrl = null, servingEngine = null, engineStatus, perEngineState }: Props = $props();
+
+	const showPerEngineDots = $derived(isDualMode && perEngineState != null);
 
 	// Track whether WebTransport was ever connected so we only show
 	// the polling banner as a degradation, not on initial fallback.
@@ -74,6 +82,25 @@
 		return '';
 	});
 </script>
+
+{#if showPerEngineDots}
+	<div class="engine-status-strip" role="status" aria-label="Per-engine connection status">
+		<span
+			class="engine-dot"
+			class:healthy={perEngineState?.A === 'webtransport'}
+			class:degraded={perEngineState?.A === 'polling'}
+			class:offline={perEngineState?.A === 'disconnected'}
+			title="Engine A: {perEngineState?.A}"
+		>A</span>
+		<span
+			class="engine-dot"
+			class:healthy={perEngineState?.B === 'webtransport'}
+			class:degraded={perEngineState?.B === 'polling'}
+			class:offline={perEngineState?.B === 'disconnected'}
+			title="Engine B: {perEngineState?.B}"
+		>B</span>
+	</div>
+{/if}
 
 {#if showRestoredBanner}
 	<div class="connection-banner engine-restored" role="status" aria-live="polite">
@@ -154,6 +181,42 @@
 
 	.fallback-link:hover {
 		color: var(--accent-yellow);
+	}
+
+	.engine-status-strip {
+		position: fixed;
+		top: 6px;
+		right: 8px;
+		z-index: var(--z-banner);
+		display: flex;
+		gap: 4px;
+		align-items: center;
+	}
+
+	.engine-dot {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 20px;
+		height: 20px;
+		border-radius: 4px;
+		font-size: 0.65rem;
+		font-weight: 700;
+		line-height: 1;
+		color: #fff;
+		background: #555;
+	}
+
+	.engine-dot.healthy {
+		background: var(--tally-preview, #22c55e);
+	}
+
+	.engine-dot.degraded {
+		background: var(--accent-yellow, #eab308);
+	}
+
+	.engine-dot.offline {
+		background: #ef4444;
 	}
 
 	.disconnect-overlay {

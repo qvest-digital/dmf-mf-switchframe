@@ -245,4 +245,110 @@ describe('ConnectionBanner', () => {
 			expect(banner?.textContent).toContain('commands routing to Engine A only');
 		});
 	});
+
+	describe('per-engine connection indicators', () => {
+		it('shows per-engine dots when dual mode and both healthy', () => {
+			const { container } = render(ConnectionBanner, {
+				props: {
+					connectionState: 'webtransport',
+					syncStatus: 'ok',
+					engineStatus: { mode: 'dual' },
+					perEngineState: { A: 'webtransport', B: 'webtransport' },
+				},
+			});
+			const dots = container.querySelectorAll('.engine-dot');
+			expect(dots.length).toBe(2);
+			expect(dots[0].textContent).toBe('A');
+			expect(dots[1].textContent).toBe('B');
+			expect(dots[0].classList.contains('healthy')).toBe(true);
+			expect(dots[1].classList.contains('healthy')).toBe(true);
+		});
+
+		it('shows degraded dot for engine on polling', () => {
+			const { container } = render(ConnectionBanner, {
+				props: {
+					connectionState: 'webtransport',
+					syncStatus: 'ok',
+					engineStatus: { mode: 'dual' },
+					perEngineState: { A: 'webtransport', B: 'polling' },
+				},
+			});
+			const dots = container.querySelectorAll('.engine-dot');
+			expect(dots.length).toBe(2);
+			expect(dots[0].classList.contains('healthy')).toBe(true);
+			expect(dots[1].classList.contains('degraded')).toBe(true);
+		});
+
+		it('shows offline dot for disconnected engine', () => {
+			const { container } = render(ConnectionBanner, {
+				props: {
+					connectionState: 'webtransport',
+					syncStatus: 'ok',
+					engineStatus: { mode: 'dual' },
+					perEngineState: { A: 'webtransport', B: 'disconnected' },
+				},
+			});
+			const dots = container.querySelectorAll('.engine-dot');
+			expect(dots.length).toBe(2);
+			expect(dots[0].classList.contains('healthy')).toBe(true);
+			expect(dots[1].classList.contains('offline')).toBe(true);
+		});
+
+		it('does not show dots in single-engine mode', () => {
+			const { container } = render(ConnectionBanner, {
+				props: {
+					connectionState: 'webtransport',
+					syncStatus: 'ok',
+				},
+			});
+			const dots = container.querySelectorAll('.engine-dot');
+			expect(dots.length).toBe(0);
+		});
+
+		it('does not show dots when engineStatus mode is single', () => {
+			const { container } = render(ConnectionBanner, {
+				props: {
+					connectionState: 'webtransport',
+					syncStatus: 'ok',
+					engineStatus: { mode: 'single' },
+					perEngineState: { A: 'webtransport', B: 'webtransport' },
+				},
+			});
+			const dots = container.querySelectorAll('.engine-dot');
+			expect(dots.length).toBe(0);
+		});
+
+		it('shows dots alongside engine warning banner', () => {
+			const { container } = render(ConnectionBanner, {
+				props: {
+					connectionState: 'webtransport',
+					syncStatus: 'ok',
+					engineStatus: {
+						mode: 'dual',
+						engineDown: 'B',
+						reason: 'unreachable',
+					},
+					perEngineState: { A: 'webtransport', B: 'disconnected' },
+				},
+			});
+			// Warning banner should be visible
+			const banner = container.querySelector('.connection-banner.engine-warning');
+			expect(banner).toBeTruthy();
+			// Per-engine dots should also be visible
+			const dots = container.querySelectorAll('.engine-dot');
+			expect(dots.length).toBe(2);
+		});
+
+		it('handles missing perEngineState gracefully in dual mode', () => {
+			const { container } = render(ConnectionBanner, {
+				props: {
+					connectionState: 'webtransport',
+					syncStatus: 'ok',
+					engineStatus: { mode: 'dual' },
+				},
+			});
+			const dots = container.querySelectorAll('.engine-dot');
+			expect(dots.length).toBe(0);
+		});
+	});
 });
