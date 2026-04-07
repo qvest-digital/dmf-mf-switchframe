@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createFastControl, encodeTransitionPosition, encodeDVESlotTransform } from './fast-control';
+import { createFastControl, encodeTransitionPosition, encodeDVESlotTransform, type WriteErrorCallback } from './fast-control';
 
 describe('encodeDVESlotTransform', () => {
 	it('encodes DVE slot transform correctly', () => {
@@ -76,5 +76,78 @@ describe('createFastControl', () => {
 		const fc = createFastControl(mockTransport);
 		fc.close();
 		expect(releaseLock).toHaveBeenCalled();
+	});
+
+	it('calls onWriteError callback on write failure', async () => {
+		const onWriteError = vi.fn();
+		const writeFn = vi.fn().mockRejectedValue(new Error('transport closed'));
+		const mockWriter = { write: writeFn, releaseLock: vi.fn() };
+		const mockTransport = {
+			datagrams: {
+				writable: { getWriter: () => mockWriter },
+			},
+		} as unknown as WebTransport;
+
+		const fc = createFastControl(mockTransport, { onWriteError });
+		fc.sendTransitionPosition(0.5);
+
+		// Let the microtask queue flush so .catch() fires
+		await vi.waitFor(() => {
+			expect(onWriteError).toHaveBeenCalledWith('transition_position');
+		});
+	});
+
+	it('calls onWriteError with correct message type for each method', async () => {
+		const onWriteError = vi.fn();
+		const writeFn = vi.fn().mockRejectedValue(new Error('transport closed'));
+		const mockWriter = { write: writeFn, releaseLock: vi.fn() };
+		const mockTransport = {
+			datagrams: {
+				writable: { getWriter: () => mockWriter },
+			},
+		} as unknown as WebTransport;
+
+		const fc = createFastControl(mockTransport, { onWriteError });
+
+		fc.sendTransitionPosition(0.5);
+		fc.sendGraphicsLayerPosition(1, 10, 20, 100, 50);
+		fc.sendDVESlotTransform(0, 0, 0, 1, 1, 0, 1);
+		fc.sendDVESingleParam(0, 0x0002, 480);
+		fc.sendDVESlotSource(0, 'cam1');
+		fc.sendDVESlotEnable(0, true);
+		fc.sendDVEScaleMode(0, 1, 0.5, 0.5);
+		fc.sendDVEBorder(0, 2, 4, 128, 128, 128);
+
+		await vi.waitFor(() => {
+			expect(onWriteError).toHaveBeenCalledTimes(8);
+		});
+
+		const types = onWriteError.mock.calls.map((c: [string]) => c[0]);
+		expect(types).toEqual([
+			'transition_position',
+			'graphics_layer_position',
+			'dve_slot_transform',
+			'dve_single_param',
+			'dve_slot_source',
+			'dve_slot_enable',
+			'dve_scale_mode',
+			'dve_border',
+		]);
+	});
+
+	it('does not throw when no onWriteError callback is provided', async () => {
+		const writeFn = vi.fn().mockRejectedValue(new Error('transport closed'));
+		const mockWriter = { write: writeFn, releaseLock: vi.fn() };
+		const mockTransport = {
+			datagrams: {
+				writable: { getWriter: () => mockWriter },
+			},
+		} as unknown as WebTransport;
+
+		const fc = createFastControl(mockTransport);
+		fc.sendTransitionPosition(0.5);
+
+		// Flush microtasks — should not throw
+		await new Promise((r) => setTimeout(r, 10));
 	});
 });

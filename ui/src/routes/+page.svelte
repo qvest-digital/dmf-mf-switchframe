@@ -99,6 +99,17 @@
 		if (isDualEngine) return createDualFastControl([fastControlA]);
 		return fastControlA;
 	});
+	// Debounced warning for FastControl write failures — at most once per second per message type.
+	const _fcErrTimestamps = new Map<string, number>();
+	function handleFastControlWriteError(msgType: string) {
+		const now = Date.now();
+		const last = _fcErrTimestamps.get(msgType) ?? 0;
+		if (now - last > 1000) {
+			_fcErrTimestamps.set(msgType, now);
+			console.warn(`[FastControl] datagram write failed: ${msgType}`);
+		}
+	}
+
 	let commsVisible = $state(false);
 	let commsDimmed = $state(false);
 	let redundancyPanelVisible = $state(false);
@@ -934,7 +945,7 @@
 			const wt = pipeline.getSourceTransport('program');
 			if (wt) {
 				try {
-					fastControlA = createFastControl(wt);
+					fastControlA = createFastControl(wt, { onWriteError: handleFastControlWriteError });
 				} catch {
 					// Datagrams not supported — fall back to REST
 				}
@@ -955,7 +966,7 @@
 		const transportB = connectionManager.getTransport('B');
 		if (transportB && !fastControlB) {
 			try {
-				fastControlB = createFastControl(transportB);
+				fastControlB = createFastControl(transportB, { onWriteError: handleFastControlWriteError });
 			} catch {
 				// Datagrams not supported on engine B
 			}

@@ -24,6 +24,8 @@ export const DVE_PARAM_DEFOCUS_RADIUS = 0x000d;
 export const DVE_PARAM_BORDER_WIDTH = 0x000e;
 export const DVE_PARAM_CORNER_RADIUS = 0x000f;
 
+export type WriteErrorCallback = (msgType: string) => void;
+
 export interface FastControl {
 	sendTransitionPosition(position: number): void;
 	sendGraphicsLayerPosition(layerId: number, x: number, y: number, w: number, h: number): void;
@@ -49,6 +51,10 @@ export interface FastControl {
 		colorCr: number,
 	): void;
 	close(): void;
+}
+
+export interface FastControlOptions {
+	onWriteError?: WriteErrorCallback;
 }
 
 export function encodeTransitionPosition(position: number): Uint8Array {
@@ -170,16 +176,21 @@ export function encodeDVEBorder(
 	return new Uint8Array(buf);
 }
 
-export function createFastControl(transport: WebTransport): FastControl {
+export function createFastControl(transport: WebTransport, opts?: FastControlOptions): FastControl {
 	const writer = transport.datagrams.writable.getWriter();
+	const onErr = opts?.onWriteError;
 
 	return {
 		sendTransitionPosition(position: number) {
-			writer.write(encodeTransitionPosition(position)).catch(() => {});
+			writer.write(encodeTransitionPosition(position)).catch(() => {
+				onErr?.('transition_position');
+			});
 		},
 
 		sendGraphicsLayerPosition(layerId: number, x: number, y: number, w: number, h: number) {
-			writer.write(encodeGraphicsLayerPosition(layerId, x, y, w, h)).catch(() => {});
+			writer.write(encodeGraphicsLayerPosition(layerId, x, y, w, h)).catch(() => {
+				onErr?.('graphics_layer_position');
+			});
 		},
 
 		sendDVESlotTransform(
@@ -193,23 +204,33 @@ export function createFastControl(transport: WebTransport): FastControl {
 		) {
 			writer
 				.write(encodeDVESlotTransform(slotId, posX, posY, width, height, rotation, opacity))
-				.catch(() => {});
+				.catch(() => {
+					onErr?.('dve_slot_transform');
+				});
 		},
 
 		sendDVESingleParam(slotId: number, paramId: number, value: number) {
-			writer.write(encodeDVESingleParam(slotId, paramId, value)).catch(() => {});
+			writer.write(encodeDVESingleParam(slotId, paramId, value)).catch(() => {
+				onErr?.('dve_single_param');
+			});
 		},
 
 		sendDVESlotSource(slotId: number, sourceKey: string) {
-			writer.write(encodeDVESlotSource(slotId, sourceKey)).catch(() => {});
+			writer.write(encodeDVESlotSource(slotId, sourceKey)).catch(() => {
+				onErr?.('dve_slot_source');
+			});
 		},
 
 		sendDVESlotEnable(slotId: number, enabled: boolean) {
-			writer.write(encodeDVESlotEnable(slotId, enabled)).catch(() => {});
+			writer.write(encodeDVESlotEnable(slotId, enabled)).catch(() => {
+				onErr?.('dve_slot_enable');
+			});
 		},
 
 		sendDVEScaleMode(slotId: number, mode: number, anchorX: number, anchorY: number) {
-			writer.write(encodeDVEScaleMode(slotId, mode, anchorX, anchorY)).catch(() => {});
+			writer.write(encodeDVEScaleMode(slotId, mode, anchorX, anchorY)).catch(() => {
+				onErr?.('dve_scale_mode');
+			});
 		},
 
 		sendDVEBorder(
@@ -222,7 +243,9 @@ export function createFastControl(transport: WebTransport): FastControl {
 		) {
 			writer
 				.write(encodeDVEBorder(slotId, width, radius, colorY, colorCb, colorCr))
-				.catch(() => {});
+				.catch(() => {
+					onErr?.('dve_border');
+				});
 		},
 
 		close() {
