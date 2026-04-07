@@ -47,6 +47,7 @@ import (
 	"github.com/zsiec/switchframe/server/mxl"
 	"github.com/zsiec/switchframe/server/operator"
 	"github.com/zsiec/switchframe/server/output"
+	"github.com/zsiec/switchframe/server/peer"
 	"github.com/zsiec/switchframe/server/perf"
 	"github.com/zsiec/switchframe/server/playout"
 	"github.com/zsiec/switchframe/server/preset"
@@ -218,6 +219,9 @@ type App struct {
 	// decodable. Set true by broadcastOwnedToProgram (video path) on the
 	// first IDR; checked by the mixer output callback (audio path).
 	programRelayVideoStarted atomic.Bool
+
+	// Peer health monitoring
+	peerPoller *peer.HealthPoller
 
 	// Performance monitoring
 	perfSampler *perf.Sampler
@@ -1907,6 +1911,13 @@ func (a *App) Run(ctx context.Context) error {
 		}
 	}
 
+	// Start peer engine health poller if a peer URL is configured.
+	if a.cfg.PeerEngineURL != "" {
+		a.peerPoller = peer.NewHealthPoller(a.cfg.PeerEngineURL)
+		a.peerPoller.Start()
+		slog.Info("peer health poller started", "peerURL", a.cfg.PeerEngineURL)
+	}
+
 	// Start admin server (Prometheus metrics, health, readiness, pprof, cert-hash).
 	stopAdmin, _ := StartAdminServer(ctx, a.cfg.AdminAddr, a.cfg.Addr, a.cert.FingerprintBase64(), a.externalCert, a.cfg.AdminToken)
 	defer stopAdmin()
@@ -2019,6 +2030,9 @@ func (a *App) closeSubsystems() {
 		_ = a.srtListener.Close()
 	}
 
+	if a.peerPoller != nil {
+		a.peerPoller.Stop()
+	}
 	if a.perfSampler != nil {
 		a.perfSampler.Stop()
 	}

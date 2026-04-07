@@ -686,6 +686,7 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	a.registerColorGradeRoutes(mux)
 	a.registerAISegmentRoutes(mux)
 	a.registerASRRoutes(mux)
+	a.registerPeerRoutes(mux)
 	mux.HandleFunc("GET /api/sync/health", a.handleSyncHealth)
 	a.registerSyncRoutes(mux)
 }

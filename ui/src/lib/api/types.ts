@@ -754,6 +754,8 @@ export interface ControlRoomState {
 		available: boolean;
 	};
 	playout?: PlayoutState;
+	peerReachable?: boolean;       // nil/undefined when no peer configured
+	peerLastSeenMs?: number;
 	sessionId?: string;
 	engineBUrl?: string;
 	lastChangedBy?: string;

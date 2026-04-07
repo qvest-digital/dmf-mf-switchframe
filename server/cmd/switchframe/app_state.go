@@ -442,6 +442,15 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 		state.ConnectionInfo = ci
 	}
 
+	// Peer engine health status (nil = no peer configured).
+	if a.peerPoller != nil {
+		reachable := a.peerPoller.PeerReachable()
+		state.PeerReachable = &reachable
+		if lastSeen := a.peerPoller.PeerLastSeen(); !lastSeen.IsZero() {
+			state.PeerLastSeenMs = lastSeen.UnixMilli()
+		}
+	}
+
 	return state
 }
 
