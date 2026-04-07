@@ -38,12 +38,14 @@ vi.mock('./clock-sync', () => {
 	const ClockSync = vi.fn(function MockClockSync(this: Record<string, unknown>) {
 		this.updateRTT = vi.fn();
 		this.updateOffset = vi.fn();
+		this.handlePong = vi.fn();
 		this.ptpNow = vi.fn().mockReturnValue(0);
 		this.safetyMargin = vi.fn().mockReturnValue(100_000);
 		this.buildPing = vi.fn().mockReturnValue(new Uint8Array(5));
 		this.parsePong = vi.fn().mockReturnValue(0);
 		this.stopPeriodicSync = vi.fn();
 		this.startPeriodicSync = vi.fn();
+		this.getOffsetDivergence = vi.fn().mockReturnValue(0);
 	});
 	return { ClockSync };
 });

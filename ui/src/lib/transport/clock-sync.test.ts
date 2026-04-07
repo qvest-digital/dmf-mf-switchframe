@@ -1,6 +1,17 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { ClockSync } from './clock-sync';
 
+function buildPongHelper(timestampUS: number): Uint8Array {
+	const buf = new Uint8Array(9);
+	buf[0] = 0xFF;
+	const view = new DataView(buf.buffer);
+	const hi = Math.floor(timestampUS / (2 ** 32));
+	const lo = timestampUS % (2 ** 32);
+	view.setUint32(1, hi);
+	view.setUint32(5, lo);
+	return buf;
+}
+
 describe('ClockSync', () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
@@ -120,8 +131,8 @@ describe('ClockSync', () => {
 		it('returns default margin when no engines synced', () => {
 			const sync = new ClockSync();
 			const margin = sync.safetyMargin();
-			// Default: 2 frames = 66_666
-			expect(margin).toBe(66_666);
+			// Default: 4 frames = 133_332
+			expect(margin).toBe(133_332);
 		});
 
 		it('reflects jitter from RTT variation', () => {
@@ -137,17 +148,28 @@ describe('ClockSync', () => {
 	});
 
 	describe('ptpNow', () => {
-		it('computes PTP time from average offset', () => {
+		it('computes PTP time from average offset via handlePong', () => {
+			vi.useFakeTimers({ now: 1_000_000 });
 			const sync = new ClockSync();
-			sync.updateOffset('A', 5_000_000); // 5s offset
-			sync.updateOffset('B', 3_000_000); // 3s offset
 
-			const before = Date.now() * 1000 + 4_000_000;
+			const sendPing = vi.fn();
+			sync.startPeriodicSync(['A', 'B'], sendPing, 120_000);
+			// sentAt for both = 1_000_000_000 µs
+
+			vi.advanceTimersByTime(5);
+			const sentAt = 1_000_000_000;
+			const rtt = 5_000;
+			// A offset = 5_000_000, B offset = 3_000_000
+			sync.handlePong('A', buildPongHelper(sentAt + rtt / 2 + 5_000_000));
+			sync.handlePong('B', buildPongHelper(sentAt + rtt / 2 + 3_000_000));
+
+			// Average offset = 4_000_000
+			const localUS = Date.now() * 1000;
 			const ptp = sync.ptpNow();
-			const after = Date.now() * 1000 + 4_000_000;
+			expect(ptp).toBe(Math.round(localUS + 4_000_000));
 
-			expect(ptp).toBeGreaterThanOrEqual(before - 100_000);
-			expect(ptp).toBeLessThanOrEqual(after + 100_000);
+			sync.stopPeriodicSync();
+			vi.useRealTimers();
 		});
 
 		it('returns local time when no offsets known', () => {
@@ -197,6 +219,239 @@ describe('ClockSync', () => {
 			const bad = new Uint8Array(9);
 			bad[0] = 0xFE; // PING type, not PONG
 			expect(() => sync.parsePong(bad)).toThrow('expected type 0xff, got 0xfe');
+		});
+	});
+
+	describe('handlePong', () => {
+		function buildPong(timestampUS: number): Uint8Array {
+			const buf = new Uint8Array(9);
+			buf[0] = 0xFF;
+			const view = new DataView(buf.buffer);
+			const hi = Math.floor(timestampUS / (2 ** 32));
+			const lo = timestampUS % (2 ** 32);
+			view.setUint32(1, hi);
+			view.setUint32(5, lo);
+			return buf;
+		}
+
+		it('computes offset correctly from ping/pong round trip', () => {
+			vi.useFakeTimers({ now: 1_000_000 }); // Date.now() = 1_000_000 ms
+			const sync = new ClockSync();
+
+			const sendPing = vi.fn();
+			sync.startPeriodicSync(['A'], sendPing, 60_000);
+			// doPingRound records lastPingSentAt for A = Date.now() * 1000 = 1_000_000_000 µs
+
+			// Advance 10ms to simulate network delay
+			vi.advanceTimersByTime(10);
+
+			// sentAt = 1_000_000 ms * 1000 = 1_000_000_000 µs
+			// now = 1_000_010 ms * 1000 = 1_000_010_000 µs
+			// rtt = now - sentAt = 10_000 µs
+			// If server is 5_000_000 µs ahead, serverTs = sentAt + rtt/2 + 5_000_000
+			const sentAt = 1_000_000_000;
+			const rtt = 10_000;
+			const knownOffset = 5_000_000;
+			const serverTs = sentAt + rtt / 2 + knownOffset;
+
+			const pong = buildPong(serverTs);
+			sync.handlePong('A', pong);
+
+			// offset = serverTs - (sentAt + rtt/2) = knownOffset = 5_000_000
+			expect(sync.getOffset('A')).toBe(knownOffset);
+
+			sync.stopPeriodicSync();
+			vi.useRealTimers();
+		});
+
+		it('ignores pong when no pending ping exists', () => {
+			const sync = new ClockSync();
+			// Never started periodic sync, so no lastPingSentAt recorded
+			const pong = buildPong(1_000_000_000_000);
+			sync.handlePong('A', pong);
+
+			// Offset should remain 0 (default)
+			expect(sync.getOffset('A')).toBe(0);
+		});
+
+		it('updates RTT from pong round trip', () => {
+			vi.useFakeTimers({ now: 1_000_000 });
+			const sync = new ClockSync();
+
+			const sendPing = vi.fn();
+			sync.startPeriodicSync(['A'], sendPing, 60_000);
+
+			// Advance 20ms
+			vi.advanceTimersByTime(20);
+
+			// sentAt = 1_000_000 ms * 1000 = 1_000_000_000 µs
+			// now = 1_000_020 ms * 1000 = 1_000_020_000 µs
+			// rtt = 20_000 µs
+			const sentAt = 1_000_000_000;
+			const rtt = 20_000; // 20ms in µs
+			const serverTs = sentAt + rtt / 2; // zero offset
+			const pong = buildPong(serverTs);
+			sync.handlePong('A', pong);
+
+			// RTT should be bootstrapped to 20_000 µs
+			expect(sync.getRTT('A')).toBe(rtt);
+
+			sync.stopPeriodicSync();
+			vi.useRealTimers();
+		});
+	});
+
+	describe('ptpNow staleness filtering', () => {
+		it('excludes stale offsets older than 60s', () => {
+			vi.useFakeTimers({ now: 1_000_000 }); // Date.now() = 1_000_000 ms
+			const sync = new ClockSync();
+
+			const sendPing = vi.fn();
+			sync.startPeriodicSync(['A'], sendPing, 120_000);
+			// sentAt for A = 1_000_000 * 1000 = 1_000_000_000 µs
+
+			// Simulate pong after 5ms
+			vi.advanceTimersByTime(5);
+			// now = 1_000_005 ms, nowUs = 1_000_005_000
+			// rtt = 5_000 µs, offset we want = 100_000 µs
+			const sentAt = 1_000_000_000;
+			const rtt = 5_000;
+			const pongA = buildPongHelper(sentAt + rtt / 2 + 100_000);
+			sync.handlePong('A', pongA);
+
+			// Offset is valid, ptpNow should include it
+			const ptpBefore = sync.ptpNow();
+			const localBefore = Date.now() * 1000;
+			expect(ptpBefore).toBe(Math.round(localBefore + 100_000));
+
+			// Advance 61s to make the offset stale
+			vi.advanceTimersByTime(61_000);
+
+			// Now ptpNow should fall back to local time (no valid offsets)
+			const ptpAfter = sync.ptpNow();
+			const localAfter = Date.now() * 1000;
+			expect(ptpAfter).toBe(localAfter);
+
+			sync.stopPeriodicSync();
+			vi.useRealTimers();
+		});
+
+		it('averages only valid (non-stale) offsets', () => {
+			vi.useFakeTimers({ now: 1_000_000 }); // Date.now() = 1_000_000 ms
+			const sync = new ClockSync();
+
+			// Use updateOffset + offsetAge directly for precise control
+			// Set offset for A with current age
+			sync.updateOffset('A', 100_000);
+			sync.updateOffset('B', 200_000);
+
+			// ptpNow without any offsetAge entries means offsets are unaged
+			// (no handlePong was called, so offsetAge is empty -> offsets are excluded)
+			const ptpNoAge = sync.ptpNow();
+			const localNoAge = Date.now() * 1000;
+			// With no valid offsetAge, both offsets are excluded
+			expect(ptpNoAge).toBe(localNoAge);
+
+			// Now use handlePong to set A's offset with proper age tracking
+			const sendPing = vi.fn();
+			sync.startPeriodicSync(['A', 'B'], sendPing, 120_000);
+			// sentAt for both = 1_000_000 * 1000 = 1_000_000_000 µs
+
+			vi.advanceTimersByTime(5);
+			const sentAt = 1_000_000_000;
+			const rtt = 5_000;
+			// Set offset for A = 100_000
+			sync.handlePong('A', buildPongHelper(sentAt + rtt / 2 + 100_000));
+			// Set offset for B = 200_000
+			sync.handlePong('B', buildPongHelper(sentAt + rtt / 2 + 200_000));
+
+			// Both valid: average = 150_000
+			const ptpBoth = sync.ptpNow();
+			const localBoth = Date.now() * 1000;
+			expect(ptpBoth).toBe(Math.round(localBoth + 150_000));
+
+			// Advance 55s, then refresh only B via a new ping round
+			vi.advanceTimersByTime(55_000);
+
+			// Manually trigger a fresh pong for B only
+			// We need a fresh lastPingSentAt for B. The periodic sync at 120s hasn't fired.
+			// Use addEngine or direct approach: call doPingRound indirectly by restarting sync
+			// Simplest: stop and restart to get fresh sentAt for B
+			sync.stopPeriodicSync();
+			sync.startPeriodicSync(['B'], sendPing, 120_000);
+			// New sentAt for B = Date.now() * 1000
+
+			vi.advanceTimersByTime(5);
+			const newSentAt = (Date.now() - 5) * 1000; // sentAt recorded before advanceTimersByTime
+			const newRtt = 5_000;
+			sync.handlePong('B', buildPongHelper(newSentAt + newRtt / 2 + 200_000));
+
+			// Now A's age is ~55s (still valid), B's age is fresh
+			// Wait 6 more seconds to push A past 60s
+			vi.advanceTimersByTime(6_000);
+
+			// A's age is now ~61s (stale), B's age is ~6s (valid)
+			const ptpOnlyB = sync.ptpNow();
+			const localOnlyB = Date.now() * 1000;
+			const bOffset = sync.getOffset('B');
+			expect(ptpOnlyB).toBe(Math.round(localOnlyB + bOffset));
+
+			sync.stopPeriodicSync();
+			vi.useRealTimers();
+		});
+	});
+
+	describe('getOffsetDivergence', () => {
+		it('returns 0 with fewer than 2 engines', () => {
+			const sync = new ClockSync();
+			expect(sync.getOffsetDivergence()).toBe(0);
+
+			sync.updateOffset('A', 5_000_000);
+			expect(sync.getOffsetDivergence()).toBe(0);
+		});
+
+		it('returns absolute difference between two engine offsets', () => {
+			const sync = new ClockSync();
+			sync.updateOffset('A', 10_000_000);
+			sync.updateOffset('B', 15_000_000);
+			expect(sync.getOffsetDivergence()).toBe(5_000_000);
+		});
+
+		it('returns absolute difference regardless of sign', () => {
+			const sync = new ClockSync();
+			sync.updateOffset('A', -5_000_000);
+			sync.updateOffset('B', 5_000_000);
+			expect(sync.getOffsetDivergence()).toBe(10_000_000);
+		});
+	});
+
+	describe('constants', () => {
+		it('DEFAULT_SYNC_INTERVAL_MS is 10000', () => {
+			vi.useFakeTimers();
+			const sync = new ClockSync();
+			const sendPing = vi.fn();
+			sync.startPeriodicSync(['A'], sendPing);
+
+			// Immediate fire: 1 ping
+			expect(sendPing).toHaveBeenCalledTimes(1);
+
+			// At 9s, no additional ping
+			vi.advanceTimersByTime(9_000);
+			expect(sendPing).toHaveBeenCalledTimes(1);
+
+			// At 10s, interval fires
+			vi.advanceTimersByTime(1_000);
+			expect(sendPing).toHaveBeenCalledTimes(2);
+
+			sync.stopPeriodicSync();
+			vi.useRealTimers();
+		});
+
+		it('DEFAULT_MARGIN_US is 4 frames', () => {
+			const sync = new ClockSync();
+			// With no engines tracked, safetyMargin returns DEFAULT_MARGIN_US
+			// 4 frames at 30fps = 4 * 33_333 = 133_332
+			expect(sync.safetyMargin()).toBe(133_332);
 		});
 	});
 
@@ -265,7 +520,7 @@ describe('ClockSync', () => {
 			vi.useRealTimers();
 		});
 
-		it('uses 30s default interval', () => {
+		it('uses 10s default interval', () => {
 			vi.useFakeTimers();
 			const sync = new ClockSync();
 
@@ -275,11 +530,11 @@ describe('ClockSync', () => {
 			// Immediate fire: 1 ping
 			expect(sendPing).toHaveBeenCalledTimes(1);
 
-			// At 29s, no additional ping
-			vi.advanceTimersByTime(29_000);
+			// At 9s, no additional ping
+			vi.advanceTimersByTime(9_000);
 			expect(sendPing).toHaveBeenCalledTimes(1);
 
-			// At 30s, interval fires
+			// At 10s, interval fires
 			vi.advanceTimersByTime(1_000);
 			expect(sendPing).toHaveBeenCalledTimes(2);
 

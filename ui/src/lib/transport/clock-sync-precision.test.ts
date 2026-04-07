@@ -8,6 +8,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ClockSync } from './clock-sync';
 
+function buildPongHelper(timestampUS: number): Uint8Array {
+	const buf = new Uint8Array(9);
+	buf[0] = 0xFF;
+	const view = new DataView(buf.buffer);
+	const hi = Math.floor(timestampUS / (2 ** 32));
+	const lo = timestampUS % (2 ** 32);
+	view.setUint32(1, hi);
+	view.setUint32(5, lo);
+	return buf;
+}
+
 describe('ClockSync precision', () => {
 	beforeEach(() => {
 		vi.useFakeTimers();
@@ -116,10 +127,10 @@ describe('ClockSync precision', () => {
 	// ─── Safety margin ───
 
 	describe('safetyMargin', () => {
-		it('returns default (2 frames) when no engines tracked', () => {
+		it('returns default (4 frames) when no engines tracked', () => {
 			const sync = new ClockSync();
-			// DEFAULT_MARGIN_US = 33_333 * 2 = 66_666
-			expect(sync.safetyMargin()).toBe(66_666);
+			// DEFAULT_MARGIN_US = 33_333 * 4 = 133_332
+			expect(sync.safetyMargin()).toBe(133_332);
 		});
 
 		it('includes maxRTT + 2*maxJitter + frameDuration', () => {
@@ -163,42 +174,64 @@ describe('ClockSync precision', () => {
 		});
 
 		it('applies single offset correctly', () => {
+			// Use handlePong to set offset with proper age tracking
 			const sync = new ClockSync();
-			sync.updateOffset('A', 5_000_000); // +5 seconds
+			const sendPing = vi.fn();
+			const sentAt = Date.now() * 1000; // capture before startPeriodicSync
+			sync.startPeriodicSync(['A'], sendPing, 120_000);
 
-			const before = Date.now() * 1000;
+			vi.advanceTimersByTime(5);
+			// rtt = 5_000 µs, desired offset = +5_000_000
+			const rtt = 5_000;
+			sync.handlePong('A', buildPongHelper(sentAt + rtt / 2 + 5_000_000));
+
+			const localUS = Date.now() * 1000;
 			const ptp = sync.ptpNow();
-			const after = Date.now() * 1000;
 
-			// PTP should be local time + 5s offset
-			expect(ptp).toBeGreaterThanOrEqual(before + 5_000_000 - 100);
-			expect(ptp).toBeLessThanOrEqual(after + 5_000_000 + 100);
+			// PTP should be local time + 5_000_000 offset
+			expect(ptp).toBe(Math.round(localUS + 5_000_000));
+
+			sync.stopPeriodicSync();
 		});
 
 		it('averages offsets from multiple engines', () => {
 			const sync = new ClockSync();
-			sync.updateOffset('A', 10_000_000); // +10s
-			sync.updateOffset('B', 20_000_000); // +20s
+			const sendPing = vi.fn();
+			const sentAt = Date.now() * 1000;
+			sync.startPeriodicSync(['A', 'B'], sendPing, 120_000);
 
-			const before = Date.now() * 1000;
+			vi.advanceTimersByTime(5);
+			const rtt = 5_000;
+			// A offset = 10_000_000, B offset = 20_000_000
+			sync.handlePong('A', buildPongHelper(sentAt + rtt / 2 + 10_000_000));
+			sync.handlePong('B', buildPongHelper(sentAt + rtt / 2 + 20_000_000));
+
+			const localUS = Date.now() * 1000;
 			const ptp = sync.ptpNow();
-			const after = Date.now() * 1000;
 
 			// Average offset = 15_000_000
-			expect(ptp).toBeGreaterThanOrEqual(before + 15_000_000 - 100);
-			expect(ptp).toBeLessThanOrEqual(after + 15_000_000 + 100);
+			expect(ptp).toBe(Math.round(localUS + 15_000_000));
+
+			sync.stopPeriodicSync();
 		});
 
 		it('handles negative offsets (local clock ahead of PTP)', () => {
 			const sync = new ClockSync();
-			sync.updateOffset('A', -2_000_000); // local is 2s ahead
+			const sendPing = vi.fn();
+			const sentAt = Date.now() * 1000;
+			sync.startPeriodicSync(['A'], sendPing, 120_000);
 
-			const before = Date.now() * 1000;
+			vi.advanceTimersByTime(5);
+			const rtt = 5_000;
+			// We want offset = -2_000_000, so serverTs = sentAt + rtt/2 - 2_000_000
+			sync.handlePong('A', buildPongHelper(sentAt + rtt / 2 - 2_000_000));
+
+			const localUS = Date.now() * 1000;
 			const ptp = sync.ptpNow();
-			const after = Date.now() * 1000;
 
-			expect(ptp).toBeGreaterThanOrEqual(before - 2_000_000 - 100);
-			expect(ptp).toBeLessThanOrEqual(after - 2_000_000 + 100);
+			expect(ptp).toBe(Math.round(localUS - 2_000_000));
+
+			sync.stopPeriodicSync();
 		});
 	});
 

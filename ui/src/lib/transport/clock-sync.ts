@@ -4,15 +4,17 @@ const MSG_PING = 0xFE;
 const MSG_PONG = 0xFF;
 const FRAME_DURATION_US = 33_333; // 30fps
 const JITTER_MULTIPLIER = 2;
-const DEFAULT_MARGIN_US = FRAME_DURATION_US * 2;
+const DEFAULT_MARGIN_US = FRAME_DURATION_US * 4;
 const EWMA_ALPHA = 0.125;
-const DEFAULT_SYNC_INTERVAL_MS = 30_000;
+const DEFAULT_SYNC_INTERVAL_MS = 10_000;
 
 export class ClockSync {
 	private offsets = new Map<string, number>();
 	private rtts = new Map<string, number>();
 	private jitters = new Map<string, number>();
 	private lastRawRTT = new Map<string, number>();
+	private lastPingSentAt = new Map<string, number>(); // engineId -> µs timestamp
+	private offsetAge = new Map<string, number>(); // engineId -> last update time (Date.now())
 	private syncInterval: ReturnType<typeof setInterval> | null = null;
 	private pingSeq = 0;
 	private trackedEngines: EngineId[] = [];
@@ -54,12 +56,39 @@ export class ClockSync {
 		return this.offsets.get(engineId) ?? 0;
 	}
 
+	handlePong(engineId: EngineId, data: Uint8Array): void {
+		const serverTimestamp = this.parsePong(data);
+		const now = Date.now() * 1000;
+		const sentAt = this.lastPingSentAt.get(engineId);
+		if (sentAt === undefined) return; // no pending ping
+
+		const rtt = now - sentAt;
+		const offset = serverTimestamp - (sentAt + rtt / 2);
+
+		this.updateRTT(engineId, rtt);
+		this.updateOffset(engineId, offset);
+		this.offsetAge.set(engineId, Date.now());
+	}
+
 	ptpNow(): number {
 		const localUS = Date.now() * 1000;
-		const offsets = [...this.offsets.values()];
-		if (offsets.length === 0) return localUS;
-		const avgOffset = offsets.reduce((a, b) => a + b, 0) / offsets.length;
+		const now = Date.now();
+		const validOffsets: number[] = [];
+		for (const [engineId, offset] of this.offsets) {
+			const age = this.offsetAge.get(engineId);
+			if (age !== undefined && now - age <= 60_000) {
+				validOffsets.push(offset);
+			}
+		}
+		if (validOffsets.length === 0) return localUS;
+		const avgOffset = validOffsets.reduce((a, b) => a + b, 0) / validOffsets.length;
 		return Math.round(localUS + avgOffset);
+	}
+
+	getOffsetDivergence(): number {
+		const offsets = [...this.offsets.values()];
+		if (offsets.length < 2) return 0;
+		return Math.abs(offsets[0] - offsets[1]);
 	}
 
 	safetyMargin(): number {
@@ -94,6 +123,7 @@ export class ClockSync {
 
 	private doPingRound(sendPing: (engineId: EngineId, data: Uint8Array) => void): void {
 		for (const engineId of this.trackedEngines) {
+			this.lastPingSentAt.set(engineId, Date.now() * 1000); // µs
 			sendPing(engineId, this.buildPing(this.pingSeq++));
 		}
 	}
