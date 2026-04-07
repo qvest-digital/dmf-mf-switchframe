@@ -1,5 +1,9 @@
 import type { ControlRoomState, SourceHealthStatus, EngineId } from '$lib/api/types';
 
+/** Default thresholds for audio drift reconciliation (configurable). */
+export const AUDIO_DRIFT_DB_THRESHOLD = 3;
+export const AUDIO_DRIFT_DURATION_MS = 10_000;
+
 const EMPTY_STATE: ControlRoomState = {
 	programSource: '',
 	previewSource: '',

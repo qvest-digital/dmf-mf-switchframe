@@ -368,6 +368,7 @@ type ControlRoomState struct {
 	ColorGrade           *ColorGradeState        `json:"colorGrade,omitempty"`
 	Playout              *PlayoutState           `json:"playout,omitempty"`
 	EngineBURL           string                  `json:"engineBUrl,omitempty"`
+	SessionID            string                  `json:"sessionId,omitempty"`
 	LastChangedBy        string                  `json:"lastChangedBy,omitempty"`
 	Seq                  uint64                  `json:"seq"`
 	LastCommandSeq       uint64                  `json:"lastCommandSeq"`

@@ -276,6 +276,10 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 
 			onError(err: string) {
 				console.warn(`[MediaPipeline] source "${key}" error:`, err);
+				const source = sources.get(key);
+				if (source?.transport) {
+					source.transport.close();
+				}
 			},
 		};
 	}
@@ -301,6 +305,12 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		const c = avcC[2].toString(16).padStart(2, '0');
 		const l = avcC[3].toString(16).padStart(2, '0');
 		return `avc1.${p}${c}${l}`;
+	}
+
+	function fallbackCodecString(width: number, height: number): string {
+		if (height >= 1080) return 'avc1.640028'; // High Profile L4.0 (1080p)
+		if (height >= 720) return 'avc1.64001f';   // High Profile L3.1 (720p)
+		return 'avc1.640015';                       // High Profile L2.1 (480p/lower)
 	}
 
 	function feedVideoFrame(
@@ -329,7 +339,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		// live) would reconfigure the decoder with a stale codec string,
 		// causing WebCodecs to silently drop frames.
 		if (description && !source.configured) {
-			const codec = codecStringFromAvcC(description) || source.videoCodec || 'avc1.64001f';
+			const codec = codecStringFromAvcC(description) || source.videoCodec || fallbackCodecString(source.videoWidth, source.videoHeight);
 			const width = source.videoWidth || 1920;
 			const height = source.videoHeight || 1080;
 			source.lastDescription = description.slice(); // retained copy
@@ -337,7 +347,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 			source.configured = true;
 		} else if (description && source.configured && !descriptionEqual(source.lastDescription, description)) {
 			// Reconfigure: derive codec string from the NEW avcC, not stale catalog.
-			const codec = codecStringFromAvcC(description) || source.videoCodec || 'avc1.64001f';
+			const codec = codecStringFromAvcC(description) || source.videoCodec || fallbackCodecString(source.videoWidth, source.videoHeight);
 			const width = source.videoWidth || 1920;
 			const height = source.videoHeight || 1080;
 			source.lastDescription = description.slice(); // retained copy
