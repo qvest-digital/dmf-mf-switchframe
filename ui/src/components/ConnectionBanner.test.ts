@@ -569,7 +569,7 @@ describe('ConnectionBanner', () => {
 			expect(link).toBeFalsy();
 		});
 
-		it('shows fallback link after 15 seconds of disconnect', async () => {
+		it('shows fallback link after 3 seconds of disconnect', async () => {
 			const { container } = render(ConnectionBanner, {
 				props: {
 					connectionState: 'disconnected',
@@ -577,7 +577,7 @@ describe('ConnectionBanner', () => {
 					sessionFallbackUrl: 'https://control-plane.switchframe.dev/session/abc123',
 				},
 			});
-			await vi.advanceTimersByTimeAsync(15000);
+			await vi.advanceTimersByTimeAsync(3000);
 			const link = container.querySelector('.cp-fallback-link');
 			expect(link).toBeTruthy();
 			expect(link?.getAttribute('href')).toBe('https://control-plane.switchframe.dev/session/abc123');
@@ -592,7 +592,7 @@ describe('ConnectionBanner', () => {
 					sessionFallbackUrl: null,
 				},
 			});
-			await vi.advanceTimersByTimeAsync(15000);
+			await vi.advanceTimersByTimeAsync(3000);
 			const link = container.querySelector('.cp-fallback-link');
 			expect(link).toBeFalsy();
 		});
@@ -605,7 +605,7 @@ describe('ConnectionBanner', () => {
 					sessionFallbackUrl: 'https://control-plane.switchframe.dev/session/abc123',
 				},
 			});
-			await vi.advanceTimersByTimeAsync(15000);
+			await vi.advanceTimersByTimeAsync(3000);
 			expect(container.querySelector('.cp-fallback-link')).toBeTruthy();
 
 			await rerender({ connectionState: 'webtransport', syncStatus: 'ok', sessionFallbackUrl: 'https://control-plane.switchframe.dev/session/abc123' });
@@ -622,7 +622,7 @@ describe('ConnectionBanner', () => {
 					sessionFallbackUrl: 'https://control-plane.switchframe.dev/session/abc123',
 				},
 			});
-			await vi.advanceTimersByTimeAsync(15000);
+			await vi.advanceTimersByTimeAsync(3000);
 			// Engine fallback takes priority; disconnect timer should not run
 			const link = container.querySelector('.cp-fallback-link');
 			expect(link).toBeFalsy();

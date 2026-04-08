@@ -101,7 +101,7 @@
 	});
 
 	const showControlPlaneFallback = $derived(
-		disconnectedDuration >= 8 && sessionFallbackUrl != null
+		disconnectedDuration >= 3 && sessionFallbackUrl != null
 	);
 
 	let showRestoredBanner = $state(false);
