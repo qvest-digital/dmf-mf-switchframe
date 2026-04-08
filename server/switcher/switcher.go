@@ -1606,8 +1606,9 @@ func (s *Switcher) SetCommandQueue(q *cmdqueue.Queue, d *cmdqueue.Dispatcher) {
 	s.cmdDispatcher = d
 }
 
-// SetOnCommandExecuted registers a callback that fires after each successful
-// command dispatch in drainCommandQueue. Used by the app layer to trigger
+// SetOnCommandExecuted registers a callback that fires after each command
+// dispatch attempt in drainCommandQueue (including failures, since error state
+// changes are also relevant to browsers). Used by the app layer to trigger
 // state broadcasts so browsers see state changes from timed commands.
 func (s *Switcher) SetOnCommandExecuted(fn func()) {
 	s.onCommandExecuted = fn
