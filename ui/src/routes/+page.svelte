@@ -244,6 +244,9 @@
 		checkCriticalDivergence: () => {
 			return connectionManager.health.status === 'mismatch';
 		},
+		checkAnyDivergence: () => {
+			return (connectionManager.health.divergences?.length ?? 0) > 0;
+		},
 		onRecoveryStart: () => {
 			connectionManager.setRecovering(true);
 			divergenceLog.add({ type: 'snapshot', message: 'Snapshot push started...' });

@@ -6,6 +6,7 @@ export interface AutoReconcileConfig {
 	pushSnapshot: (engine: EngineId, snapshot: unknown) => Promise<{ warnings: string[] }>;
 	getAuthoritativeState?: () => { inTransition?: boolean } | null;
 	checkCriticalDivergence?: () => boolean;
+	checkAnyDivergence?: () => boolean;
 	acquireLock?: (engine: EngineId) => Promise<{ acquired: boolean; lockId?: string }>;
 	releaseLock?: (engine: EngineId, lockId: string) => Promise<void>;
 	onRecoveryStart?: () => void;
@@ -109,12 +110,17 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 			retryCount = 0; // reset on success
 			config.onRecoveryComplete?.(result.warnings);
 
-			// Partial apply detection: if warnings and critical divergence persists, re-push
-			if (result.warnings.length > 0 && config.checkCriticalDivergence) {
+			// Partial apply detection: if warnings present, check for remaining divergence
+			if (result.warnings.length > 0) {
 				setTimeout(() => {
+					// First check critical (re-push immediately, bypass cooldown)
 					if (config.checkCriticalDivergence?.()) {
-						// Critical fields still diverged — re-push (bypass cooldown for this target)
 						lastPushTimes.delete(target);
+						executeSnapshotPush(currentAuthoritative);
+						return;
+					}
+					// Then check any divergence (re-push with normal cooldown)
+					if (config.checkAnyDivergence?.()) {
 						executeSnapshotPush(currentAuthoritative);
 					}
 				}, 500);

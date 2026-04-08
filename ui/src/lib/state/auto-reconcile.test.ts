@@ -590,10 +590,11 @@ describe('createAutoReconcile', () => {
 			reconcile.destroy();
 		});
 
-		it('does not re-push when no critical divergence after warnings', async () => {
+		it('does not re-push when no critical divergence and no any divergence after warnings', async () => {
 			const config = makeConfig({
 				pushSnapshot: vi.fn().mockResolvedValue({ warnings: ['minor issue'] }),
 				checkCriticalDivergence: vi.fn().mockReturnValue(false),
+				checkAnyDivergence: vi.fn().mockReturnValue(false),
 			});
 			const reconcile = createAutoReconcile(config);
 
@@ -601,10 +602,90 @@ describe('createAutoReconcile', () => {
 			await vi.advanceTimersByTimeAsync(0);
 			expect(config.onRecoveryComplete).toHaveBeenCalledTimes(1);
 
-			// After 500ms, check happens but no re-push
+			// After 500ms, both checks happen but no re-push
+			await vi.advanceTimersByTimeAsync(600);
+			expect(config.checkCriticalDivergence).toHaveBeenCalled();
+			expect(config.checkAnyDivergence).toHaveBeenCalled();
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(1);
+
+			reconcile.destroy();
+		});
+
+		it('re-pushes with normal cooldown when non-critical divergence persists after warnings', async () => {
+			let pushCount = 0;
+			const config = makeConfig({
+				pushSnapshot: vi.fn().mockImplementation(() => {
+					pushCount++;
+					if (pushCount === 1) return Promise.resolve({ warnings: ['audio_skipped'] });
+					return Promise.resolve({ warnings: [] });
+				}),
+				checkCriticalDivergence: vi.fn().mockReturnValue(false),
+				checkAnyDivergence: vi.fn()
+					.mockReturnValueOnce(true)   // first check: still diverged on non-critical fields
+					.mockReturnValueOnce(false),  // after re-push: resolved
+			});
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(config.onRecoveryComplete).toHaveBeenCalledTimes(1);
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(1);
+
+			// After 500ms, checkAnyDivergence triggers re-push (respects cooldown)
+			await vi.advanceTimersByTimeAsync(600);
+			expect(config.checkCriticalDivergence).toHaveBeenCalled();
+			expect(config.checkAnyDivergence).toHaveBeenCalled();
+			// Re-push is scheduled but cooldown is active (5s), so it's deferred
+			// Advance past the cooldown remaining (~4.4s after the 600ms)
+			await vi.advanceTimersByTimeAsync(4500);
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(2);
+
+			reconcile.destroy();
+		});
+
+		it('does not re-push on warnings when checkAnyDivergence is not provided', async () => {
+			const config = makeConfig({
+				pushSnapshot: vi.fn().mockResolvedValue({ warnings: ['audio_skipped'] }),
+				checkCriticalDivergence: vi.fn().mockReturnValue(false),
+				// checkAnyDivergence not provided
+			});
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(config.onRecoveryComplete).toHaveBeenCalledTimes(1);
+
+			// After 500ms, critical check runs but no any-divergence check available
 			await vi.advanceTimersByTimeAsync(600);
 			expect(config.checkCriticalDivergence).toHaveBeenCalled();
 			expect(config.pushSnapshot).toHaveBeenCalledTimes(1);
+
+			reconcile.destroy();
+		});
+
+		it('critical divergence takes priority over any-divergence and bypasses cooldown', async () => {
+			let pushCount = 0;
+			const config = makeConfig({
+				pushSnapshot: vi.fn().mockImplementation(() => {
+					pushCount++;
+					if (pushCount === 1) return Promise.resolve({ warnings: ['audio_skipped'] });
+					return Promise.resolve({ warnings: [] });
+				}),
+				checkCriticalDivergence: vi.fn().mockReturnValueOnce(true).mockReturnValue(false),
+				checkAnyDivergence: vi.fn().mockReturnValue(true),
+			});
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(1);
+
+			// After 500ms, critical divergence found — should bypass cooldown and re-push
+			await vi.advanceTimersByTimeAsync(600);
+			expect(config.checkCriticalDivergence).toHaveBeenCalled();
+			// checkAnyDivergence should NOT be called because critical took priority
+			expect(config.checkAnyDivergence).not.toHaveBeenCalled();
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(2);
 
 			reconcile.destroy();
 		});
