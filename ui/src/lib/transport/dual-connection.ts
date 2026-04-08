@@ -21,6 +21,7 @@ export class DualConnectionManager {
 	private _started = false;
 	private _initialLoadDone = false;
 	private _initialLoadErrors = 0;
+	private _pendingEngineStarts: string[] = [];
 
 	constructor(private config: DualConnectionConfig) {
 		this._isDualEngine = config.engines.length > 1;
@@ -74,10 +75,18 @@ export class DualConnectionManager {
 		// The next MoQ control track update from Engine A will flow through the
 		// reconciler and populate it.
 
-		// If we've already started, start the new manager immediately
+		// If we've already started, start the new manager — but only after the
+		// initial load completes to prevent Engine B from briefly becoming
+		// authoritative before Engine A's state has been ingested.
 		if (this._started) {
-			const mgr = this.managers.get(id);
-			mgr?.start();
+			if (this._initialLoadDone) {
+				// Safe to start immediately — initial load is complete
+				const mgr = this.managers.get(id);
+				mgr?.start();
+			} else {
+				// Defer until initial load completes
+				this._pendingEngineStarts.push(id);
+			}
 		}
 
 		this.startClockSync();
@@ -240,6 +249,12 @@ export class DualConnectionManager {
 				if (this._initialLoadDone) return;
 				this._initialLoadDone = true;
 				this.config.onInitialLoadComplete();
+				// Flush any engines that were deferred during initial load
+				for (const pendingId of this._pendingEngineStarts) {
+					const pendingMgr = this.managers.get(pendingId);
+					pendingMgr?.start();
+				}
+				this._pendingEngineStarts = [];
 			},
 			onInitialLoadError: (error, rawError) => {
 				this._initialLoadErrors++;

@@ -659,9 +659,13 @@ describe('DualConnectionManager', () => {
 			);
 		});
 
-		it('addEngine starts the new ConnectionManager', async () => {
+		it('addEngine starts the new ConnectionManager immediately when initial load is done', async () => {
 			const mgr = new DualConnectionManager(makeSingleConfig());
 			await mgr.start();
+
+			// Simulate initial load completion from engine A
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			instanceA._config.onInitialLoadComplete();
 
 			mgr.addEngine('B', 'https://engine-b.example.com');
 
@@ -719,6 +723,44 @@ describe('DualConnectionManager', () => {
 			const instanceB = MockedConnectionManager.mock.results[1].value;
 			expect(instanceA.stop).toHaveBeenCalledOnce();
 			expect(instanceB.stop).toHaveBeenCalledOnce();
+		});
+
+		it('addEngine defers start when initial load is not done', async () => {
+			const mgr = new DualConnectionManager(makeSingleConfig());
+			await mgr.start();
+
+			// Do NOT trigger onInitialLoadComplete — initial load still in progress
+			mgr.addEngine('B', 'https://engine-b.example.com');
+
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+			expect(instanceB.start).not.toHaveBeenCalled();
+		});
+
+		it('deferred engine starts when initial load completes', async () => {
+			const mgr = new DualConnectionManager(makeSingleConfig());
+			await mgr.start();
+
+			// Add engine B while initial load is still in progress
+			mgr.addEngine('B', 'https://engine-b.example.com');
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+			expect(instanceB.start).not.toHaveBeenCalled();
+
+			// Now simulate initial load completion from engine A
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			instanceA._config.onInitialLoadComplete();
+
+			// Engine B should now be started
+			expect(instanceB.start).toHaveBeenCalledOnce();
+		});
+
+		it('does not start engine before start() is called even if initial load done', () => {
+			const mgr = new DualConnectionManager(makeSingleConfig());
+			// Don't call start() — engine B should not be started
+
+			mgr.addEngine('B', 'https://engine-b.example.com');
+
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+			expect(instanceB.start).not.toHaveBeenCalled();
 		});
 
 		it('does not add duplicate engine', () => {
