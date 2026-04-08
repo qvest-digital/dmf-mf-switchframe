@@ -56,12 +56,24 @@ export interface SyncHealth {
 	staleEngines: EngineId[];
 }
 
-/** Deep-ish equality for field comparison (handles nested objects via JSON). */
+/**
+ * Key-order-independent JSON serialization for deep comparison.
+ * Object keys are sorted recursively so {a:1, b:2} === {b:2, a:1}.
+ * Array element order is preserved (semantically meaningful).
+ */
+function sortedStringify(obj: unknown): string {
+	if (obj === null || typeof obj !== 'object') return JSON.stringify(obj);
+	if (Array.isArray(obj)) return '[' + obj.map(sortedStringify).join(',') + ']';
+	const sorted = Object.keys(obj as Record<string, unknown>).sort();
+	return '{' + sorted.map(k => JSON.stringify(k) + ':' + sortedStringify((obj as Record<string, unknown>)[k])).join(',') + '}';
+}
+
+/** Deep-ish equality for field comparison (handles nested objects, key-order-independent). */
 export function fieldEquals(a: unknown, b: unknown): boolean {
 	if (a === b) return true;
 	if (a == null || b == null) return a == b;
 	if (typeof a !== typeof b) return false;
-	if (typeof a === 'object') return JSON.stringify(a) === JSON.stringify(b);
+	if (typeof a === 'object') return sortedStringify(a) === sortedStringify(b);
 	return false;
 }
 

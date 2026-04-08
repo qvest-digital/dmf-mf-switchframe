@@ -738,6 +738,30 @@ describe('createReconciler', () => {
 			expect(fieldEquals({ a: 1 }, { a: 2 })).toBe(false);
 		});
 
+		it('treats objects with different key ordering as equal', () => {
+			expect(fieldEquals({ a: 1, b: 2 }, { b: 2, a: 1 })).toBe(true);
+		});
+
+		it('treats deeply nested objects with different key ordering as equal', () => {
+			const objA = { outer: { x: 1, y: 2 }, z: 3 };
+			const objB = { z: 3, outer: { y: 2, x: 1 } };
+			expect(fieldEquals(objA, objB)).toBe(true);
+		});
+
+		it('treats objects with different values as not equal regardless of key order', () => {
+			expect(fieldEquals({ a: 1, b: 2 }, { b: 3, a: 1 })).toBe(false);
+		});
+
+		it('handles nested arrays inside objects with different key ordering', () => {
+			const objA = { items: [1, 2, 3], name: 'test' };
+			const objB = { name: 'test', items: [1, 2, 3] };
+			expect(fieldEquals(objA, objB)).toBe(true);
+		});
+
+		it('does not sort arrays (order matters)', () => {
+			expect(fieldEquals([2, 1], [1, 2])).toBe(false);
+		});
+
 		it('compares arrays correctly', () => {
 			expect(fieldEquals([1, 2], [1, 2])).toBe(true);
 			expect(fieldEquals([1, 2], [1, 3])).toBe(false);
