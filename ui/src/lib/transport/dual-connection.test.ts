@@ -46,6 +46,7 @@ vi.mock('./clock-sync', () => {
 		this.stopPeriodicSync = vi.fn();
 		this.startPeriodicSync = vi.fn();
 		this.getOffsetDivergence = vi.fn().mockReturnValue(0);
+		this.isClockDiverged = vi.fn().mockReturnValue(false);
 	});
 	return { ClockSync };
 });
@@ -761,6 +762,36 @@ describe('DualConnectionManager', () => {
 
 			expect(instanceA.handleControlData).toHaveBeenCalledWith(data);
 			expect(instanceB.handleControlData).not.toHaveBeenCalled();
+		});
+
+		it('intercepts exact 9-byte payload starting with 0xFF as pong', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			const clockInstance = MockedClockSync.mock.results[0].value;
+
+			// A valid pong: exactly 9 bytes, first byte 0xFF
+			const pong = new Uint8Array(9);
+			pong[0] = 0xFF;
+			mgr.handleControlData('A', pong);
+
+			// Should be intercepted — not forwarded to ConnectionManager
+			expect(clockInstance.handlePong).toHaveBeenCalledWith('A', pong);
+			expect(instanceA.handleControlData).not.toHaveBeenCalled();
+		});
+
+		it('does not intercept non-9-byte payloads starting with 0xFF as pong', () => {
+			const mgr = new DualConnectionManager(makeDualConfig());
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			const clockInstance = MockedClockSync.mock.results[0].value;
+
+			// 12-byte payload with first byte 0xFF — should NOT be treated as pong
+			const data = new Uint8Array(12);
+			data[0] = 0xFF;
+			mgr.handleControlData('A', data);
+
+			// Should be forwarded to ConnectionManager, not intercepted as pong
+			expect(clockInstance.handlePong).not.toHaveBeenCalled();
+			expect(instanceA.handleControlData).toHaveBeenCalledWith(data);
 		});
 	});
 

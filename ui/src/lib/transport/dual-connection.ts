@@ -134,7 +134,7 @@ export class DualConnectionManager {
 	/** Forward MoQ control data to the appropriate engine's connection manager. */
 	handleControlData(engineId: EngineId, data: Uint8Array): void {
 		// Intercept clock sync pong messages
-		if (data.length >= 9 && data[0] === 0xFF) {
+		if (data.length === 9 && data[0] === 0xFF) {
 			this.clockSync.handlePong(engineId, data);
 			// Check if clock offset divergence exceeds safety margin
 			this.reconciler.setClockDiverged(this.clockSync.isClockDiverged());
