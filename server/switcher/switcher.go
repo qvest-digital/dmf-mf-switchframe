@@ -370,9 +370,9 @@ type Switcher struct {
 	// Command queue for PTP-timed command execution (multi-region redundancy).
 	cmdQueue        *cmdqueue.Queue
 	cmdDispatcher   *cmdqueue.Dispatcher
-	lastCommandSeq  atomic.Uint64
-	lastExecutedSeq atomic.Uint64
-	lastExecutedErr atomic.Pointer[string]
+	lastCommandSeq  atomic.Uint64       // highest enqueued seq (set at enqueue time via TrackCommandSeq)
+	lastExecutedSeq atomic.Uint64       // highest seq actually executed in the drain loop
+	lastExecutedErr atomic.Pointer[string] // error from the last executed command, nil on success
 
 	// Output FPS tracking (atomic, lock-free)
 	outputFPSCount       atomic.Int64 // frames in current 1-second window
@@ -1603,6 +1603,20 @@ func (s *Switcher) SetCommandQueue(q *cmdqueue.Queue, d *cmdqueue.Dispatcher) {
 	s.cmdDispatcher = d
 }
 
+// TrackCommandSeq updates lastCommandSeq to the given value if it's higher
+// than the current value. Uses CAS loop for lock-free thread safety.
+func (s *Switcher) TrackCommandSeq(seq uint64) {
+	for {
+		old := s.lastCommandSeq.Load()
+		if seq <= old {
+			return
+		}
+		if s.lastCommandSeq.CompareAndSwap(old, seq) {
+			return
+		}
+	}
+}
+
 // ForceNextIDRPtr returns a pointer to the forceNextIDR atomic for GPU encode.
 func (s *Switcher) ForceNextIDRPtr() *atomic.Bool { return &s.forceNextIDR }
 
@@ -1738,7 +1752,6 @@ func (s *Switcher) videoProcessingLoop() {
 					}
 				}
 				if cmd.Seq > 0 {
-					s.lastCommandSeq.Store(cmd.Seq)
 					s.lastExecutedSeq.Store(cmd.Seq)
 					if dispatchErr != nil {
 						errStr := dispatchErr.Error()

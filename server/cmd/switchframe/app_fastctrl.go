@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/fastctrl"
 )
@@ -11,6 +12,7 @@ import (
 // for transition position updates, graphics position updates, and DVE transforms.
 func (a *App) initFastControl() {
 	a.fastCtrl = fastctrl.NewDispatcher()
+	a.fastCtrlPongCh = make(chan []byte, 16)
 
 	a.fastCtrl.Register(fastctrl.MsgTransitionPosition, a.handleFastTransitionUpdate)
 	a.fastCtrl.Register(fastctrl.MsgGraphicsLayerPosition, a.handleFastGraphicsUpdate)
@@ -20,6 +22,7 @@ func (a *App) initFastControl() {
 	a.fastCtrl.Register(fastctrl.MsgDVESlotEnable, a.handleFastDVESlotEnable)
 	a.fastCtrl.Register(fastctrl.MsgDVEScaleMode, a.handleFastDVEScaleMode)
 	a.fastCtrl.Register(fastctrl.MsgDVEBorder, a.handleFastDVEBorder)
+	a.fastCtrl.Register(fastctrl.MsgPing, a.handleFastPing)
 }
 
 func (a *App) handleFastTransitionUpdate(data []byte) error {
@@ -167,5 +170,15 @@ func (a *App) handleFastDVEBorder(data []byte) error {
 		xf.Border.ColorCb = msg.ColorCb
 		xf.Border.ColorCr = msg.ColorCr
 	})
+	return nil
+}
+
+func (a *App) handleFastPing(data []byte) error {
+	seq, _ := fastctrl.ParsePing(data)
+	pong := fastctrl.BuildPong(clock.Now(), seq)
+	select {
+	case a.fastCtrlPongCh <- pong:
+	default: // drop if full
+	}
 	return nil
 }

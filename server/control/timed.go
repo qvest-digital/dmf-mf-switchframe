@@ -22,7 +22,9 @@ type immediateHandlerFunc func(w http.ResponseWriter, r *http.Request, body []by
 // If execute_at is present and a command queue is configured, the command is
 // enqueued for timed execution (202 Accepted).
 // If absent, zero, or no queue is configured, the inner handler executes immediately.
-func timedHandler(q *cmdqueue.Queue, action string, handler immediateHandlerFunc) http.HandlerFunc {
+// seqTracker, when non-nil, is called after successful enqueue to update the
+// highest-enqueued sequence number (for staleness detection in state broadcasts).
+func timedHandler(q *cmdqueue.Queue, action string, seqTracker func(uint64), handler immediateHandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -43,6 +45,9 @@ func timedHandler(q *cmdqueue.Queue, action string, handler immediateHandlerFunc
 			if err := q.Enqueue(cmd); err != nil {
 				httperr.Write(w, http.StatusBadRequest, err.Error())
 				return
+			}
+			if seqTracker != nil && timed.CommandSeq > 0 {
+				seqTracker(timed.CommandSeq)
 			}
 			w.WriteHeader(http.StatusAccepted)
 			return

@@ -42,7 +42,7 @@ import (
 	"github.com/zsiec/switchframe/server/graphics/textrender"
 	"github.com/zsiec/switchframe/server/htmlgfx"
 	"github.com/zsiec/switchframe/server/internal"
-"github.com/zsiec/switchframe/server/macro"
+	"github.com/zsiec/switchframe/server/macro"
 	"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/mxl"
 	"github.com/zsiec/switchframe/server/operator"
@@ -102,33 +102,34 @@ type App struct {
 	programPreviewEnc *preview.Encoder
 
 	// Core engine
-	sw             *switcher.Switcher
-	mixer          *audio.Mixer
-	cmdQueue       *cmdqueue.Queue
-	cmdDispatcher  *cmdqueue.Dispatcher
-	cmdQueueWAL    *cmdqueue.WAL
+	sw            *switcher.Switcher
+	mixer         *audio.Mixer
+	cmdQueue      *cmdqueue.Queue
+	cmdDispatcher *cmdqueue.Dispatcher
+	cmdQueueWAL   *cmdqueue.WAL
 
 	// Output
 	outputMgr     *output.Manager
 	confidenceMon *output.ConfidenceMonitor
 
 	// Subsystems
-	debugCollector   *debug.Collector
-	presetStore      *preset.Store
-	macroStore       *macro.Store
-	operatorStore    *operator.Store
-	sessionMgr       *operator.SessionManager
-	compositor       *graphics.Compositor
-	keyProcessor     *graphics.KeyProcessor
-	keyBridge        *graphics.KeyProcessorBridge
-	replayMgr        *replay.Manager
-	stingerStore     *stinger.Store
-	wipeMapStore     *wipemap.WipeMapStore
-	dveCompositor    *dve.Compositor
-	dvePresetStore   *dve.PresetStore
-	fastCtrl         *fastctrl.Dispatcher
-	stmapRegistry    *stmap.Registry
-	stmapStore       *stmap.Store
+	debugCollector *debug.Collector
+	presetStore    *preset.Store
+	macroStore     *macro.Store
+	operatorStore  *operator.Store
+	sessionMgr     *operator.SessionManager
+	compositor     *graphics.Compositor
+	keyProcessor   *graphics.KeyProcessor
+	keyBridge      *graphics.KeyProcessorBridge
+	replayMgr      *replay.Manager
+	stingerStore   *stinger.Store
+	wipeMapStore   *wipemap.WipeMapStore
+	dveCompositor  *dve.Compositor
+	dvePresetStore *dve.PresetStore
+	fastCtrl       *fastctrl.Dispatcher
+	fastCtrlPongCh chan []byte
+	stmapRegistry  *stmap.Registry
+	stmapStore     *stmap.Store
 
 	// Color grading
 	colorGradeCtrl   *colorGradeController

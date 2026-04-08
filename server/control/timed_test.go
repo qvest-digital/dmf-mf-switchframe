@@ -19,7 +19,7 @@ func TestTimedHandler_NoTimestamp_ExecutesImmediately(t *testing.T) {
 	}
 
 	q := cmdqueue.New(func() int64 { return 1_000_000_000 })
-	h := timedHandler(q, "cut", inner)
+	h := timedHandler(q, "cut", nil, inner)
 
 	body := `{"source":"camera1"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/switch/cut", strings.NewReader(body))
@@ -41,7 +41,7 @@ func TestTimedHandler_WithTimestamp_Enqueues(t *testing.T) {
 	now := int64(1_000_000_000)
 	future := now + 500_000 // 500ms in the future
 	q := cmdqueue.New(func() int64 { return now })
-	h := timedHandler(q, "cut", inner)
+	h := timedHandler(q, "cut", nil, inner)
 
 	body := fmt.Sprintf(`{"source":"camera1","execute_at":%d,"command_seq":1}`, future)
 	req := httptest.NewRequest(http.MethodPost, "/api/switch/cut", strings.NewReader(body))
@@ -61,7 +61,7 @@ func TestTimedHandler_NilQueue_ExecutesImmediately(t *testing.T) {
 	}
 
 	// Even with execute_at present, nil queue means execute immediately.
-	h := timedHandler(nil, "cut", inner)
+	h := timedHandler(nil, "cut", nil, inner)
 
 	body := `{"source":"camera1","execute_at":9999999999,"command_seq":1}`
 	req := httptest.NewRequest(http.MethodPost, "/api/switch/cut", strings.NewReader(body))
@@ -153,4 +153,49 @@ func TestTimedHandlerWithPath_EmptyBody_InjectsPathValues(t *testing.T) {
 	cmds := q.Drain()
 	require.Len(t, cmds, 1)
 	require.Contains(t, string(cmds[0].Payload), `"_path_source":"camera1"`)
+}
+
+func TestTimedHandler_SeqTracker_CalledOnEnqueue(t *testing.T) {
+	inner := func(w http.ResponseWriter, r *http.Request, body []byte) {
+		w.WriteHeader(http.StatusOK)
+	}
+
+	now := int64(1_000_000_000)
+	future := now + 500_000
+	q := cmdqueue.New(func() int64 { return now })
+
+	var trackedSeq uint64
+	tracker := func(seq uint64) { trackedSeq = seq }
+	h := timedHandler(q, "cut", tracker, inner)
+
+	body := fmt.Sprintf(`{"source":"camera1","execute_at":%d,"command_seq":42}`, future)
+	req := httptest.NewRequest(http.MethodPost, "/api/switch/cut", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusAccepted, rec.Code)
+	require.Equal(t, uint64(42), trackedSeq, "seqTracker should be called with command_seq")
+}
+
+func TestTimedHandler_SeqTracker_NotCalledForZeroSeq(t *testing.T) {
+	inner := func(w http.ResponseWriter, r *http.Request, body []byte) {
+		w.WriteHeader(http.StatusOK)
+	}
+
+	now := int64(1_000_000_000)
+	future := now + 500_000
+	q := cmdqueue.New(func() int64 { return now })
+
+	trackerCalled := false
+	tracker := func(seq uint64) { trackerCalled = true }
+	h := timedHandler(q, "cut", tracker, inner)
+
+	// command_seq=0 should not trigger the tracker
+	body := fmt.Sprintf(`{"source":"camera1","execute_at":%d,"command_seq":0}`, future)
+	req := httptest.NewRequest(http.MethodPost, "/api/switch/cut", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusAccepted, rec.Code)
+	require.False(t, trackerCalled, "seqTracker should not be called when command_seq is 0")
 }

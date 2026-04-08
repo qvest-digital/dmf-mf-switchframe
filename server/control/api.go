@@ -405,6 +405,12 @@ func WithCommandQueue(q *cmdqueue.Queue) APIOption {
 	return func(a *API) { a.cmdQueue = q }
 }
 
+// WithSeqTracker sets a callback invoked after successful timed command enqueue
+// to track the highest enqueued command sequence number.
+func WithSeqTracker(fn func(uint64)) APIOption {
+	return func(a *API) { a.seqTracker = fn }
+}
+
 // WithSTMapRegistry attaches an ST map registry to the API.
 func WithSTMapRegistry(r *stmap.Registry) APIOption {
 	return func(a *API) { a.stmapRegistry = r }
@@ -530,6 +536,7 @@ type API struct {
 	uploadStartTime    time.Time
 	asrConfigMu        sync.Mutex // serializes ASR config changes (prevents pile-up)
 	cmdQueue           *cmdqueue.Queue
+	seqTracker         func(uint64)
 	startTime          time.Time
 	reconcileLock      reconcileLockState
 }
@@ -656,8 +663,8 @@ func (a *API) RegisterOnMux(mux *http.ServeMux) {
 // registerAPIRoutes registers all API route handlers on the given mux.
 func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	// Core routes (state, cut, preview) stay here
-	mux.HandleFunc("POST /api/switch/cut", timedHandler(a.cmdQueue, "cut", a.handleCutInner))
-	mux.HandleFunc("POST /api/switch/preview", timedHandler(a.cmdQueue, "preview", a.handlePreviewInner))
+	mux.HandleFunc("POST /api/switch/cut", timedHandler(a.cmdQueue, "cut", a.seqTracker, a.handleCutInner))
+	mux.HandleFunc("POST /api/switch/preview", timedHandler(a.cmdQueue, "preview", a.seqTracker, a.handlePreviewInner))
 	mux.HandleFunc("GET /api/switch/state", a.handleState)
 
 	// Delegate to per-file route registration methods

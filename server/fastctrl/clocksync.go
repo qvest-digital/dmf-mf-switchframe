@@ -7,12 +7,14 @@ const (
 	MsgPong byte = 0xFF
 )
 
-// BuildPong creates a pong datagram with the engine's PTP timestamp.
-// Format: [0xFF][8 bytes: PTP µs big-endian]
-func BuildPong(ptpMicroseconds int64) []byte {
-	buf := make([]byte, 9)
+// BuildPong creates a pong datagram with the engine's PTP timestamp and
+// the echoed ping sequence number for RTT correlation.
+// Format: [0xFF][4 bytes: seq BE][8 bytes: PTP µs big-endian] = 13 bytes
+func BuildPong(ptpMicroseconds int64, seq uint32) []byte {
+	buf := make([]byte, 13)
 	buf[0] = MsgPong
-	binary.BigEndian.PutUint64(buf[1:9], uint64(ptpMicroseconds))
+	binary.BigEndian.PutUint32(buf[1:5], seq)
+	binary.BigEndian.PutUint64(buf[5:13], uint64(ptpMicroseconds))
 	return buf
 }
 

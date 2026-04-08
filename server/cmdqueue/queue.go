@@ -16,6 +16,9 @@ const DefaultMaxAge = int64(2_000_000)
 // maxSeen is the maximum number of seen Seq values before the dedup map is pruned.
 const maxSeen = 100_000
 
+// MaxDrainPerCall limits commands drained per call to prevent clock-jump bursts.
+const MaxDrainPerCall = 32
+
 // Sentinel errors returned by Enqueue.
 var (
 	ErrStaleCommand     = errors.New("cmdqueue: command is too old (stale)")
@@ -24,7 +27,7 @@ var (
 
 // Command is a single schedulable control action.
 type Command struct {
-	ExecuteAt int64           `json:"execute_at"` // PTP microseconds; 0 = execute immediately
+	ExecuteAt int64           `json:"execute_at"`  // PTP microseconds; 0 = execute immediately
 	Seq       uint64          `json:"command_seq"` // monotonic sequence for dedup
 	Action    string          `json:"action"`      // "cut", "preview", etc.
 	Payload   json.RawMessage `json:"payload"`
@@ -94,26 +97,28 @@ func (q *Queue) Enqueue(cmd Command) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	// Dedup by Seq.
-	if _, seen := q.seen[cmd.Seq]; seen {
-		return ErrDuplicateCommand
-	}
-	q.seen[cmd.Seq] = struct{}{}
-	if len(q.seen) > maxSeen {
-		// Seq is monotonic — keep only recent entries by rebuilding with
-		// entries above a high-water mark. This retains the most recent
-		// ~maxSeen/2 entries instead of clearing everything.
-		var minSeq uint64
-		if cmd.Seq > uint64(maxSeen/2) {
-			minSeq = cmd.Seq - uint64(maxSeen/2)
+	// Dedup by Seq (skip when Seq is 0 — untimed/legacy commands).
+	if cmd.Seq > 0 {
+		if _, seen := q.seen[cmd.Seq]; seen {
+			return ErrDuplicateCommand
 		}
-		pruned := make(map[uint64]struct{}, maxSeen/2)
-		for seq := range q.seen {
-			if seq >= minSeq {
-				pruned[seq] = struct{}{}
+		q.seen[cmd.Seq] = struct{}{}
+		if len(q.seen) > maxSeen {
+			// Seq is monotonic — keep only recent entries by rebuilding with
+			// entries above a high-water mark. This retains the most recent
+			// ~maxSeen/2 entries instead of clearing everything.
+			var minSeq uint64
+			if cmd.Seq > uint64(maxSeen/2) {
+				minSeq = cmd.Seq - uint64(maxSeen/2)
 			}
+			pruned := make(map[uint64]struct{}, maxSeen/2)
+			for seq := range q.seen {
+				if seq >= minSeq {
+					pruned[seq] = struct{}{}
+				}
+			}
+			q.seen = pruned
 		}
-		q.seen = pruned
 	}
 
 	// Persist to WAL before committing to heap.
@@ -137,7 +142,7 @@ func (q *Queue) Drain() []Command {
 	defer q.mu.Unlock()
 
 	var out []Command
-	for q.h.Len() > 0 {
+	for q.h.Len() > 0 && len(out) < MaxDrainPerCall {
 		top := q.h[0]
 		if top.ExecuteAt != 0 && top.ExecuteAt > now {
 			break

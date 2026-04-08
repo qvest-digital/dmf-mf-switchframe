@@ -231,6 +231,62 @@ func TestQueue_ConfigurableMaxAge(t *testing.T) {
 	}
 }
 
+// TestDrain_MaxBurstLimit verifies that Drain returns at most MaxDrainPerCall
+// commands per invocation, even when more are ready.
+func TestDrain_MaxBurstLimit(t *testing.T) {
+	clock, _ := newClock(0)
+	q := cmdqueue.New(clock)
+
+	// Enqueue 50 commands with ExecuteAt=0 (immediate).
+	for i := uint64(1); i <= 50; i++ {
+		if err := q.Enqueue(cmdqueue.Command{Seq: i, Action: "test"}); err != nil {
+			t.Fatalf("enqueue seq=%d: %v", i, err)
+		}
+	}
+
+	// First drain: exactly MaxDrainPerCall (32).
+	drained := q.Drain()
+	if len(drained) != cmdqueue.MaxDrainPerCall {
+		t.Fatalf("expected %d commands on first drain, got %d", cmdqueue.MaxDrainPerCall, len(drained))
+	}
+
+	// Second drain: remaining 18.
+	drained = q.Drain()
+	if len(drained) != 18 {
+		t.Fatalf("expected 18 commands on second drain, got %d", len(drained))
+	}
+
+	// Third drain: nothing left.
+	drained = q.Drain()
+	if len(drained) != 0 {
+		t.Fatalf("expected 0 commands on third drain, got %d", len(drained))
+	}
+}
+
+// TestEnqueue_ZeroSeq_SkipsDedup verifies that commands with Seq=0 bypass
+// dedup and are all accepted.
+func TestEnqueue_ZeroSeq_SkipsDedup(t *testing.T) {
+	clock, _ := newClock(0)
+	q := cmdqueue.New(clock)
+
+	cmd := cmdqueue.Command{
+		ExecuteAt: 0,
+		Seq:       0,
+		Action:    "cut",
+	}
+	if err := q.Enqueue(cmd); err != nil {
+		t.Fatalf("first enqueue with Seq=0: %v", err)
+	}
+	if err := q.Enqueue(cmd); err != nil {
+		t.Fatalf("second enqueue with Seq=0 should succeed (no dedup), got: %v", err)
+	}
+
+	drained := q.Drain()
+	if len(drained) != 2 {
+		t.Fatalf("expected 2 commands with Seq=0, got %d", len(drained))
+	}
+}
+
 // TestPending reflects the correct in-flight count.
 func TestPending(t *testing.T) {
 	const now = int64(5_000_000)
