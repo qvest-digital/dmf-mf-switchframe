@@ -122,7 +122,7 @@ describe('createFastControl', () => {
 
 	it('close releases writer lock', () => {
 		const releaseLock = vi.fn();
-		const mockWriter = { write: vi.fn(), releaseLock };
+		const mockWriter = { write: vi.fn().mockResolvedValue(undefined), releaseLock };
 		const mockTransport = {
 			datagrams: {
 				writable: { getWriter: () => mockWriter },
@@ -132,6 +132,56 @@ describe('createFastControl', () => {
 		const fc = createFastControl(mockTransport);
 		fc.close();
 		expect(releaseLock).toHaveBeenCalled();
+	});
+
+	it('close drains pending write before releasing lock', async () => {
+		let resolveWrite!: () => void;
+		const writePromise = new Promise<void>((resolve) => { resolveWrite = resolve; });
+		const releaseLock = vi.fn();
+		const mockWriter = { write: vi.fn().mockReturnValue(writePromise), releaseLock };
+		const mockTransport = {
+			datagrams: {
+				writable: { getWriter: () => mockWriter },
+			},
+		} as unknown as WebTransport;
+
+		const fc = createFastControl(mockTransport);
+		fc.sendTransitionPosition(0.5);
+
+		// Close while write is still in flight
+		fc.close();
+		expect(releaseLock).not.toHaveBeenCalled();
+
+		// Resolve the pending write
+		resolveWrite();
+		await vi.waitFor(() => {
+			expect(releaseLock).toHaveBeenCalledOnce();
+		});
+	});
+
+	it('sends are no-ops after close', () => {
+		const writeFn = vi.fn().mockResolvedValue(undefined);
+		const mockWriter = { write: writeFn, releaseLock: vi.fn() };
+		const mockTransport = {
+			datagrams: {
+				writable: { getWriter: () => mockWriter },
+			},
+		} as unknown as WebTransport;
+
+		const fc = createFastControl(mockTransport);
+		fc.close();
+		writeFn.mockClear();
+
+		fc.sendTransitionPosition(0.5);
+		fc.sendGraphicsLayerPosition(1, 10, 20, 100, 50);
+		fc.sendDVESlotTransform(0, 0, 0, 1, 1, 0, 1);
+		fc.sendDVESingleParam(0, 0x0002, 480);
+		fc.sendDVESlotSource(0, 'cam1');
+		fc.sendDVESlotEnable(0, true);
+		fc.sendDVEScaleMode(0, 1, 0.5, 0.5);
+		fc.sendDVEBorder(0, 2, 4, 128, 128, 128);
+
+		expect(writeFn).not.toHaveBeenCalled();
 	});
 
 	it('calls onWriteError callback on write failure', async () => {

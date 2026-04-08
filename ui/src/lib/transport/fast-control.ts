@@ -180,6 +180,8 @@ export function encodeDVEBorder(
 export function createFastControl(transport: WebTransport, opts?: FastControlOptions): FastControl {
 	const writer = transport.datagrams.writable.getWriter();
 	const onErr = opts?.onWriteError;
+	let closed = false;
+	let pendingWrite: Promise<void> | null = null;
 
 	function withTimestamp(data: Uint8Array): Uint8Array {
 		if (!opts?.ptpNow) return data;
@@ -196,8 +198,11 @@ export function createFastControl(transport: WebTransport, opts?: FastControlOpt
 	}
 
 	function write(data: Uint8Array, msgType: string) {
-		writer.write(withTimestamp(data)).catch(() => {
+		if (closed) return;
+		pendingWrite = writer.write(withTimestamp(data)).catch(() => {
 			onErr?.(msgType);
+		}).finally(() => {
+			pendingWrite = null;
 		});
 	}
 
@@ -250,7 +255,14 @@ export function createFastControl(transport: WebTransport, opts?: FastControlOpt
 		},
 
 		close() {
-			writer.releaseLock();
+			closed = true;
+			if (pendingWrite) {
+				pendingWrite.catch(() => {}).finally(() => {
+					writer.releaseLock();
+				});
+			} else {
+				writer.releaseLock();
+			}
 		},
 	};
 }
