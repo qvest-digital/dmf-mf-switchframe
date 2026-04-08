@@ -103,6 +103,24 @@ func (w *WAL) Replay(maxAge int64) ([]Command, error) {
 	return cmds, nil
 }
 
+// ReplayExecutedSeqs returns Seq values of all executed commands in the WAL.
+// Used at startup to seed the dedup map so already-executed commands are rejected.
+func (w *WAL) ReplayExecutedSeqs() ([]uint64, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	entries, err := w.readEntriesLocked()
+	if err != nil {
+		return nil, err
+	}
+	var seqs []uint64
+	for _, e := range entries {
+		if e.Executed && e.Command.Seq > 0 {
+			seqs = append(seqs, e.Command.Seq)
+		}
+	}
+	return seqs, nil
+}
+
 // Truncate clears the WAL file (called when all entries are executed).
 func (w *WAL) Truncate() error {
 	w.mu.Lock()

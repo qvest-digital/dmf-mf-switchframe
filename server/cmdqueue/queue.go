@@ -86,11 +86,17 @@ func New(clock func() int64, opts ...Option) *Queue {
 	for _, opt := range opts {
 		opt(q)
 	}
-	// Replay WAL if attached — re-enqueue commands that were not yet executed.
 	if q.wal != nil {
+		// Seed dedup map from executed commands to prevent re-execution after crash.
+		if seqs, err := q.wal.ReplayExecutedSeqs(); err == nil {
+			for _, seq := range seqs {
+				q.seen[seq] = struct{}{}
+			}
+		}
+		// Replay un-executed commands.
 		if cmds, err := q.wal.Replay(q.maxAge); err == nil {
 			for _, cmd := range cmds {
-				_ = q.Enqueue(cmd) // ignore dup errors from replay
+				_ = q.Enqueue(cmd)
 			}
 		}
 	}

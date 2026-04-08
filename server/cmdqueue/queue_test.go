@@ -3,6 +3,7 @@ package cmdqueue_test
 import (
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -472,5 +473,42 @@ func TestDrain_SameExecuteAtZero_OrderedBySeq(t *testing.T) {
 	}
 	if out[0].Seq != 10 || out[1].Seq != 20 || out[2].Seq != 30 {
 		t.Errorf("seq order [%d,%d,%d], want [10,20,30]", out[0].Seq, out[1].Seq, out[2].Seq)
+	}
+}
+
+// ── Task 6: WAL dedup seeding ────────────────────────────────────────────────
+
+func TestQueue_WALReplay_SeedsDedupFromExecuted(t *testing.T) {
+	dir := t.TempDir()
+	walPath := filepath.Join(dir, "test.wal")
+
+	wal1, err := cmdqueue.NewWAL(walPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = wal1.Append(cmdqueue.Command{ExecuteAt: 0, Seq: 1, Action: "cut"})
+	_ = wal1.Append(cmdqueue.Command{ExecuteAt: 0, Seq: 2, Action: "cut"})
+	_ = wal1.MarkExecuted(1)
+	_ = wal1.Close()
+
+	wal2, err := cmdqueue.NewWAL(walPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wal2.Close()
+
+	now := int64(100_000_000)
+	q := cmdqueue.New(func() int64 { return now }, cmdqueue.WithWAL(wal2))
+
+	// Seq 1 was executed — should be rejected as duplicate
+	err = q.Enqueue(cmdqueue.Command{ExecuteAt: 0, Seq: 1, Action: "cut"})
+	if err != cmdqueue.ErrDuplicateCommand {
+		t.Fatalf("expected ErrDuplicateCommand for executed seq 1, got: %v", err)
+	}
+
+	// Seq 2 was replayed from WAL
+	out := q.Drain()
+	if len(out) != 1 || out[0].Seq != 2 {
+		t.Fatalf("expected [seq=2], got: %v", out)
 	}
 }
