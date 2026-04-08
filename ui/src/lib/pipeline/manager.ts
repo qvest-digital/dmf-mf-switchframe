@@ -33,6 +33,9 @@ export class PipelineManager {
 	/** Whether warm standby was enabled (proactive Engine B pipeline). */
 	private _warmStandbyActive = false;
 
+	/** Last time warm standby health check found a valid decoder (ms since epoch). */
+	private _warmStandbyLastHealthy = 0;
+
 	/** Track which sources are connected to avoid duplicate work. */
 	private connectedSources = new Set<string>();
 	/** Track which tile canvases are attached. */
@@ -288,6 +291,7 @@ export class PipelineManager {
 		this.pipelineB = null;
 		this.connectedSourcesB = new Set<string>();
 		this._warmStandbyActive = false;
+		this._warmStandbyLastHealthy = 0;
 	}
 
 	/**
@@ -321,11 +325,23 @@ export class PipelineManager {
 	syncWarmStandby(sourceKeys: string[]): void {
 		if (!this.pipelineB || !this._warmStandbyActive || this._activeEngine !== 'A') return;
 
+		const sourceKeySet = new Set(sourceKeys);
+
+		// Add new sources
 		for (const key of sourceKeys) {
 			if (!this.connectedSourcesB.has(key)) {
 				this.pipelineB.addSource(key);
 				this.pipelineB.connectSource(key);
 				this.connectedSourcesB.add(key);
+			}
+		}
+
+		// Remove stale sources (keep program/program-preview)
+		for (const key of this.connectedSourcesB) {
+			if (key === 'program' || key === 'program-preview') continue;
+			if (!sourceKeySet.has(key)) {
+				this.pipelineB.removeSource(key);
+				this.connectedSourcesB.delete(key);
 			}
 		}
 	}
@@ -360,6 +376,9 @@ export class PipelineManager {
 
 	/** Track which engine is currently rendering the program canvas. */
 	private _activeEngine: 'A' | 'B' = 'A';
+
+	/** Guard against concurrent failover/restore calls. */
+	private _failoverInProgress = false;
 
 	/** Which engine currently owns the program canvas. */
 	get activeEngine(): 'A' | 'B' {
@@ -432,51 +451,55 @@ export class PipelineManager {
 	 * Called automatically when Engine A disconnects in dual-engine mode.
 	 */
 	async failoverToEngineB(engineBUrl: string, sourceKeys: string[], options?: { onControlState?: (data: Uint8Array) => void }): Promise<void> {
-		if (this._activeEngine === 'B') return;
+		if (this._activeEngine === 'B' || this._failoverInProgress) return;
+		this._failoverInProgress = true;
+		try {
+			if (this.pipelineB && this._warmStandbyActive) {
+				// Warm standby path: pipeline B already exists with sources
+				// connected — skip creation, source connection, AND the 3s wait.
+				// Go straight to canvas swapping below.
+			} else {
+				// Cold path: create Engine B pipeline on-demand.
+				this.createEngineBPipeline(engineBUrl, options);
+				if (!this.pipelineB) return;
 
-		if (this.pipelineB && this._warmStandbyActive) {
-			// Warm standby path: pipeline B already exists with sources
-			// connected — skip creation, source connection, AND the 3s wait.
-			// Go straight to canvas swapping below.
-		} else {
-			// Cold path: create Engine B pipeline on-demand.
-			this.createEngineBPipeline(engineBUrl, options);
-			if (!this.pipelineB) return;
+				// Connect all sources on Engine B
+				for (const key of sourceKeys) {
+					this.pipelineB.addSource(key);
+					this.pipelineB.connectSource(key);
+				}
+				// Also connect program streams
+				this.pipelineB.addSource('program');
+				this.pipelineB.connectSource('program');
+				this.pipelineB.addSource('program-preview');
+				this.pipelineB.connectSource('program-preview');
 
-			// Connect all sources on Engine B
-			for (const key of sourceKeys) {
-				this.pipelineB.addSource(key);
-				this.pipelineB.connectSource(key);
+				// Wait for Engine B to have media (up to 3s)
+				await this.waitForPipelineReady(this.pipelineB, 3000);
 			}
-			// Also connect program streams
-			this.pipelineB.addSource('program');
-			this.pipelineB.connectSource('program');
-			this.pipelineB.addSource('program-preview');
-			this.pipelineB.connectSource('program-preview');
 
-			// Wait for Engine B to have media (up to 3s)
-			await this.waitForPipelineReady(this.pipelineB, 3000);
-		}
+			// Swap program canvas
+			this.switchProgramToEngineB();
 
-		// Swap program canvas
-		this.switchProgramToEngineB();
-
-		// Swap all tile canvases
-		for (const key of this.attachedCanvases) {
-			const canvas = document.getElementById(`tile-${key}`) as HTMLCanvasElement | null;
-			if (canvas) {
-				this.pipeline.detachCanvas(key, `tile-${key}`);
-				this.pipelineB!.attachCanvas(key, `tile-${key}`, canvas);
+			// Swap all tile canvases
+			for (const key of this.attachedCanvases) {
+				const canvas = document.getElementById(`tile-${key}`) as HTMLCanvasElement | null;
+				if (canvas) {
+					this.pipeline.detachCanvas(key, `tile-${key}`);
+					this.pipelineB!.attachCanvas(key, `tile-${key}`, canvas);
+				}
 			}
-		}
 
-		// Swap preview canvas
-		if (this.currentPreviewCanvas && this.currentPreviewCanvasEl) {
-			this.pipeline.detachCanvas(this.currentPreviewCanvas, 'preview');
-			this.pipelineB!.attachCanvas(this.currentPreviewCanvas, 'preview', this.currentPreviewCanvasEl);
-		}
+			// Swap preview canvas
+			if (this.currentPreviewCanvas && this.currentPreviewCanvasEl) {
+				this.pipeline.detachCanvas(this.currentPreviewCanvas, 'preview');
+				this.pipelineB!.attachCanvas(this.currentPreviewCanvas, 'preview', this.currentPreviewCanvasEl);
+			}
 
-		this._activeEngine = 'B';
+			this._activeEngine = 'B';
+		} finally {
+			this._failoverInProgress = false;
+		}
 	}
 
 	/**
@@ -486,31 +509,36 @@ export class PipelineManager {
 	 * Called when Engine A reconnects and sync is restored.
 	 */
 	async restoreToEngineA(sourceKeys: string[]): Promise<void> {
-		if (this._activeEngine === 'A') return;
-		if (!this.pipelineB) return;
+		if (this._activeEngine === 'A' || this._failoverInProgress) return;
+		this._failoverInProgress = true;
+		try {
+			if (!this.pipelineB) return;
 
-		// Swap program canvas back to A
-		this.switchProgramToEngineA();
+			// Swap program canvas back to A
+			this.switchProgramToEngineA();
 
-		// Swap all tile canvases back to A
-		for (const key of this.attachedCanvases) {
-			const canvas = document.getElementById(`tile-${key}`) as HTMLCanvasElement | null;
-			if (canvas) {
-				this.pipelineB.detachCanvas(key, `tile-${key}`);
-				this.pipeline.attachCanvas(key, `tile-${key}`, canvas);
+			// Swap all tile canvases back to A
+			for (const key of this.attachedCanvases) {
+				const canvas = document.getElementById(`tile-${key}`) as HTMLCanvasElement | null;
+				if (canvas) {
+					this.pipelineB.detachCanvas(key, `tile-${key}`);
+					this.pipeline.attachCanvas(key, `tile-${key}`, canvas);
+				}
 			}
+
+			// Swap preview back to A
+			if (this.currentPreviewCanvas && this.currentPreviewCanvasEl) {
+				this.pipelineB.detachCanvas(this.currentPreviewCanvas, 'preview');
+				this.pipeline.attachCanvas(this.currentPreviewCanvas, 'preview', this.currentPreviewCanvasEl);
+			}
+
+			this._activeEngine = 'A';
+
+			// Clean up Engine B pipeline
+			this.destroyEngineBPipeline();
+		} finally {
+			this._failoverInProgress = false;
 		}
-
-		// Swap preview back to A
-		if (this.currentPreviewCanvas && this.currentPreviewCanvasEl) {
-			this.pipelineB.detachCanvas(this.currentPreviewCanvas, 'preview');
-			this.pipeline.attachCanvas(this.currentPreviewCanvas, 'preview', this.currentPreviewCanvasEl);
-		}
-
-		this._activeEngine = 'A';
-
-		// Clean up Engine B pipeline
-		this.destroyEngineBPipeline();
 	}
 
 	/**
@@ -544,8 +572,15 @@ export class PipelineManager {
 	/** Whether warm standby pipeline has an active MoQ connection (receiving media). */
 	get warmStandbyHealthy(): boolean {
 		if (!this._warmStandbyActive || !this.pipelineB) return false;
-		return this.pipelineB.getAudioDecoder('program') !== null
+		const hasDecoder = this.pipelineB.getAudioDecoder('program') !== null
 			|| this.pipelineB.getAudioDecoder('program-preview') !== null;
+		if (hasDecoder) {
+			this._warmStandbyLastHealthy = Date.now();
+			return true;
+		}
+		// If decoder was recently present (within 5s), still consider healthy
+		// (decoder may be briefly null during stream renegotiation)
+		return Date.now() - this._warmStandbyLastHealthy < 5000;
 	}
 
 	/** Clean up all state. */
@@ -557,6 +592,7 @@ export class PipelineManager {
 		this.attachedCanvases = new Set<string>();
 		this.connectedSourcesB = new Set<string>();
 		this._warmStandbyActive = false;
+		this._warmStandbyLastHealthy = 0;
 		this.currentProgramCanvas = null;
 		this.currentProgramCanvasEl = null;
 		this.currentPreviewCanvas = null;
@@ -569,9 +605,12 @@ export class PipelineManager {
 
 	/** rAF callback that samples audio decoder levels at display refresh rate. */
 	private meterLoop = (_timestamp: DOMHighResTimeStamp): void => {
+		const activePipeline = this._activeEngine === 'B' && this.pipelineB
+			? this.pipelineB : this.pipeline;
+
 		const levels: Record<string, PeakLevels> = {};
 		for (const key of this.getSourceKeys()) {
-			const decoder = this.pipeline.getAudioDecoder(key);
+			const decoder = activePipeline.getAudioDecoder(key);
 			if (decoder) {
 				const l = decoder.getLevels();
 				levels[key] = { peakL: l.peak[0] ?? 0, peakR: l.peak[1] ?? 0 };
@@ -579,16 +618,13 @@ export class PipelineManager {
 		}
 		this.sourceLevels = levels;
 
-		// Sample program output peak from the active program audio decoder.
-		// Prefer program-preview (low-bitrate) over program (full-quality).
-		const programDecoder = this.pipeline.getAudioDecoder('program-preview')
-			?? this.pipeline.getAudioDecoder('program');
+		const programDecoder = activePipeline.getAudioDecoder('program-preview')
+			?? activePipeline.getAudioDecoder('program');
 		if (programDecoder) {
 			const pl = programDecoder.getLevels();
 			this.programLevels = { peakL: pl.peak[0] ?? 0, peakR: pl.peak[1] ?? 0 };
 		}
 
-		// Push levels to subscriber on each rAF tick (no polling delay)
 		if (this.onLevelsUpdate) {
 			this.onLevelsUpdate(this.sourceLevels, this.programLevels);
 		}
