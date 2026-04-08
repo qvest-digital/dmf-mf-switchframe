@@ -5,7 +5,7 @@ import { PrismAudioDecoder } from '$lib/prism/audio-decoder';
 import { PrismRenderer } from '$lib/prism/renderer';
 import type { TrackInfo } from '$lib/prism/transport';
 import type { CaptionData } from '$lib/prism/protocol';
-import { setSourceStalled, clearSourceStall, clearAllStalls } from '$lib/transport/source-errors.svelte';
+import { setSourceStalled, clearSourceStall, clearAllStalls, isSourceStalled } from '$lib/transport/source-errors.svelte';
 /** Configuration for the media pipeline. */
 export interface MediaPipelineConfig {
 	/** Called when MoQ control track delivers state data. */
@@ -20,6 +20,12 @@ export interface MediaPipelineConfig {
 	onProgramCaptionFrame?: (caption: CaptionData, timestamp: number) => void;
 	/** Base URL for connecting to a remote engine (e.g. Engine B in multi-region). */
 	engineBaseUrl?: string;
+	/**
+	 * Called when stall detection marks a source as stalled (no frames for STALL_THRESHOLD_MS).
+	 * Useful for triggering media failover when program video freezes but the state
+	 * transport remains alive (partial failure).
+	 */
+	onSourceStalled?: (key: string) => void;
 }
 
 /** Diagnostics snapshot for a single source. */
@@ -532,7 +538,12 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 				if (!sources.has(key)) continue;
 				const elapsed = now - lastTime;
 				if (elapsed > STALL_THRESHOLD_MS) {
+					// Fire the callback only on the transition to stalled (not on every check)
+					const wasAlreadyStalled = isSourceStalled(key);
 					setSourceStalled(key);
+					if (!wasAlreadyStalled) {
+						config?.onSourceStalled?.(key);
+					}
 				}
 			}
 		}, STALL_CHECK_INTERVAL_MS);

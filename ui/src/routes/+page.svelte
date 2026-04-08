@@ -699,6 +699,18 @@
 		onProgramCaptionFrame: (caption, _timestamp) => {
 			captionRenderer?.show(caption);
 		},
+		onSourceStalled: (key) => {
+			// Only trigger failover for program sources — tile stalls don't warrant
+			// switching the entire media pipeline to Engine B.
+			if (key !== 'program' && key !== 'program-preview') return;
+			if (!isDualEngine || pipelineManager.activeEngine !== 'A') return;
+			if (!store.state.engineBUrl || videoFailoverActive) return;
+
+			videoFailoverActive = true;
+			pipelineManager.failoverToEngineB(store.state.engineBUrl, Object.keys(store.state.sources ?? {}))
+				.then(() => notify('warning', 'Video switched to Engine B (media stall)'))
+				.catch(err => console.warn('Media stall failover failed:', err));
+		},
 	});
 	// Pre-register "program" source so ProgramPreview's $effect can attach
 	// the canvas renderer before onMount (which connects the MoQ transport).
@@ -972,6 +984,26 @@
 		};
 	});
 
+	// Enable warm standby when dual-engine mode is detected: proactively create
+	// Engine B's media pipeline and connect all sources (no canvases). This way
+	// failover only needs to swap canvases instead of creating the pipeline and
+	// waiting up to 3s for MoQ readiness.
+	$effect(() => {
+		if (isDualEngine && store.state.engineBUrl && mounted) {
+			const sourceKeys = Object.keys(store.state.sources ?? {});
+			pipelineManager.enableWarmStandby(store.state.engineBUrl, sourceKeys, {
+				onControlState: (data) => connectionManager.handleControlData('B', data),
+			});
+		}
+	});
+
+	// Sync warm standby sources when sources change (add new cameras, etc.)
+	$effect(() => {
+		if (isDualEngine && pipelineManager.hasEngineBPipeline && pipelineManager.activeEngine === 'A') {
+			pipelineManager.syncWarmStandby(Object.keys(store.state.sources ?? {}));
+		}
+	});
+
 	// Auto video failover: switch the entire media pipeline to Engine B when
 	// Engine A disconnects. The reconciler drives syncHealth.status to
 	// 'single-engine' with authoritative='B' when only Engine B is reachable.
@@ -999,6 +1031,39 @@
 			pipelineManager.restoreToEngineA(Object.keys(store.state.sources ?? {}))
 				.then(() => notify('info', 'Video restored to Engine A'))
 				.catch(err => console.warn('Video restore failed:', err));
+		}
+	});
+
+	// Auto-recover from manual A/B toggle when active engine disconnects.
+	// The reconciler-driven failover above only fires when syncHealth reports
+	// 'single-engine'. But if the operator manually toggled to Engine B and B
+	// dies, the reconciler may still think A is authoritative — leaving the
+	// operator stuck watching a dead B feed. This effect reacts directly to
+	// connection state for immediate recovery.
+	$effect(() => {
+		if (!isDualEngine || !mounted) return;
+		// Skip if the reconciler-driven failover is already handling things
+		if (videoFailoverActive) return;
+
+		// Read transportChangeCount so Svelte re-runs when engine state changes
+		void transportChangeCount;
+
+		const active = pipelineManager.activeEngine;
+		const activeConnected = connectionManager.engineConnectionState(active) !== 'disconnected';
+		const other = active === 'A' ? 'B' : 'A';
+		const otherConnected = connectionManager.engineConnectionState(other) !== 'disconnected';
+
+		if (!activeConnected && otherConnected) {
+			if (active === 'B') {
+				pipelineManager.restoreToEngineA(Object.keys(store.state.sources ?? {}))
+					.then(() => notify('info', 'Switched back to Engine A (B disconnected)'))
+					.catch(err => console.warn('A/B auto-recover to A failed:', err));
+			} else if (active === 'A' && store.state.engineBUrl) {
+				videoFailoverActive = true;
+				pipelineManager.failoverToEngineB(store.state.engineBUrl, Object.keys(store.state.sources ?? {}))
+					.then(() => notify('info', 'Switched to Engine B (A disconnected)'))
+					.catch(err => console.warn('A/B auto-recover to B failed:', err));
+			}
 		}
 	});
 

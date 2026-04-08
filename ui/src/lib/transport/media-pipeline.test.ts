@@ -447,4 +447,122 @@ describe('MediaPipeline stall detection', () => {
 		pipeline.stopStallDetection();
 		pipeline.destroy();
 	});
+
+	it('should invoke onSourceStalled callback when a source stalls', () => {
+		const onSourceStalled = vi.fn();
+		const pipeline = createMediaPipeline({ onSourceStalled });
+		pipeline.addSource('program');
+
+		const desc = new Uint8Array([0, 0, 0, 1]);
+		pipeline.feedVideoFrame('program', new Uint8Array([1, 2, 3]), true, 1000, desc);
+
+		pipeline.startStallDetection();
+
+		// Advance past stall threshold
+		vi.advanceTimersByTime(4000);
+
+		expect(onSourceStalled).toHaveBeenCalledWith('program');
+
+		pipeline.stopStallDetection();
+		pipeline.destroy();
+	});
+
+	it('should invoke onSourceStalled for each stalled source independently', () => {
+		const onSourceStalled = vi.fn();
+		const pipeline = createMediaPipeline({ onSourceStalled });
+		pipeline.addSource('cam1');
+		pipeline.addSource('cam2');
+
+		const desc = new Uint8Array([0, 0, 0, 1]);
+		pipeline.feedVideoFrame('cam1', new Uint8Array([1]), true, 1000, desc);
+		pipeline.feedVideoFrame('cam2', new Uint8Array([2]), true, 1000, desc);
+
+		pipeline.startStallDetection();
+
+		// Feed cam1 at 2s to keep it alive
+		vi.advanceTimersByTime(2000);
+		pipeline.feedVideoFrame('cam1', new Uint8Array([3]), false, 2000, null);
+
+		// At 4s total, cam2 has been stale for 4s (stalled), cam1 only 2s (ok)
+		vi.advanceTimersByTime(2000);
+
+		expect(onSourceStalled).toHaveBeenCalledWith('cam2');
+		expect(onSourceStalled).not.toHaveBeenCalledWith('cam1');
+
+		pipeline.stopStallDetection();
+		pipeline.destroy();
+	});
+
+	it('should invoke onSourceStalled callback only once per stall event', () => {
+		const onSourceStalled = vi.fn();
+		const pipeline = createMediaPipeline({ onSourceStalled });
+		pipeline.addSource('cam1');
+
+		const desc = new Uint8Array([0, 0, 0, 1]);
+		pipeline.feedVideoFrame('cam1', new Uint8Array([1]), true, 1000, desc);
+
+		pipeline.startStallDetection();
+
+		// Stall fires at first check past threshold
+		vi.advanceTimersByTime(4000);
+		expect(onSourceStalled).toHaveBeenCalledTimes(1);
+
+		// Additional check intervals while still stalled should NOT fire again
+		vi.advanceTimersByTime(3000);
+		expect(onSourceStalled).toHaveBeenCalledTimes(1);
+
+		pipeline.stopStallDetection();
+		pipeline.destroy();
+	});
+
+	it('should not invoke onSourceStalled callback after source resumes', () => {
+		const onSourceStalled = vi.fn();
+		const pipeline = createMediaPipeline({ onSourceStalled });
+		pipeline.addSource('cam1');
+
+		const desc = new Uint8Array([0, 0, 0, 1]);
+		pipeline.feedVideoFrame('cam1', new Uint8Array([1]), true, 1000, desc);
+
+		pipeline.startStallDetection();
+
+		// Stall
+		vi.advanceTimersByTime(4000);
+		expect(onSourceStalled).toHaveBeenCalledTimes(1);
+
+		// Resume with a new frame
+		pipeline.feedVideoFrame('cam1', new Uint8Array([2]), false, 2000, null);
+		onSourceStalled.mockClear();
+
+		// Advance 2s — under threshold since last frame
+		vi.advanceTimersByTime(2000);
+		expect(onSourceStalled).not.toHaveBeenCalled();
+
+		pipeline.stopStallDetection();
+		pipeline.destroy();
+	});
+
+	it('should fire onSourceStalled again after recovery and re-stall', () => {
+		const onSourceStalled = vi.fn();
+		const pipeline = createMediaPipeline({ onSourceStalled });
+		pipeline.addSource('cam1');
+
+		const desc = new Uint8Array([0, 0, 0, 1]);
+		pipeline.feedVideoFrame('cam1', new Uint8Array([1]), true, 1000, desc);
+
+		pipeline.startStallDetection();
+
+		// First stall
+		vi.advanceTimersByTime(4000);
+		expect(onSourceStalled).toHaveBeenCalledTimes(1);
+
+		// Recover
+		pipeline.feedVideoFrame('cam1', new Uint8Array([2]), false, 2000, null);
+
+		// Second stall
+		vi.advanceTimersByTime(4000);
+		expect(onSourceStalled).toHaveBeenCalledTimes(2);
+
+		pipeline.stopStallDetection();
+		pipeline.destroy();
+	});
 });
