@@ -24,8 +24,8 @@ type dveSlotUpdateRequest struct {
 
 	// Convenience fields for updating individual transform properties
 	// without sending the full transform object.
-	ScaleMode  *string      `json:"scaleMode,omitempty"`
-	CropAnchor *[2]float64  `json:"cropAnchor,omitempty"`
+	ScaleMode  *string     `json:"scaleMode,omitempty"`
+	CropAnchor *[2]float64 `json:"cropAnchor,omitempty"`
 }
 
 type dvePresetSaveRequest struct {
@@ -43,7 +43,7 @@ func (a *API) registerDVERoutes(mux *http.ServeMux) {
 		return
 	}
 	mux.HandleFunc("GET /api/dve", a.handleGetDVE)
-	mux.HandleFunc("PUT /api/dve", timedHandler(a.cmdQueue, "dve_set", a.handleSetDVEInner))
+	mux.HandleFunc("PUT /api/dve", timedHandler(a.cmdQueue, "dve_set", a.seqTracker, a.handleSetDVEInner))
 	mux.HandleFunc("DELETE /api/dve", a.handleDeleteDVE)
 	mux.HandleFunc("PUT /api/dve/slots/{id}", timedHandlerWithPath(a.cmdQueue, "dve_slot_update", []string{"id"}, a.handleDVESlotUpdateInner))
 	mux.HandleFunc("POST /api/dve/slots/{id}/on", timedHandlerWithPath(a.cmdQueue, "dve_slot_on", []string{"id"}, a.handleDVESlotOnInner))

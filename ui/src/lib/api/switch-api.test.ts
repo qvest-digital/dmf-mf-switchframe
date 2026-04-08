@@ -880,7 +880,8 @@ describe('dual-engine request interceptor', () => {
 			{ id: 'A', url: 'https://a.example.com' },
 			{ id: 'B', url: 'https://b.example.com' },
 		]);
-		setDualTimestampProvider(() => ({ execute_at: 12345, command_seq: 1 }));
+		const realisticTs = Date.now() * 1000 + 1_000_000; // 1s in the future
+		setDualTimestampProvider(() => ({ execute_at: realisticTs, command_seq: 1 }));
 
 		const mockFetch = vi.fn().mockResolvedValue(
 			new Response(JSON.stringify({}), { status: 200 }),
@@ -890,7 +891,7 @@ describe('dual-engine request interceptor', () => {
 		await cut('cam2');
 
 		const bodyA = JSON.parse(mockFetch.mock.calls[0][1].body);
-		expect(bodyA.execute_at).toBe(12345);
+		expect(bodyA.execute_at).toBe(realisticTs);
 		expect(bodyA.command_seq).toBe(1);
 		// Original body fields preserved
 		expect(bodyA.source).toBe('cam2');
@@ -901,7 +902,8 @@ describe('dual-engine request interceptor', () => {
 			{ id: 'A', url: 'https://a.example.com' },
 			{ id: 'B', url: 'https://b.example.com' },
 		]);
-		setDualTimestampProvider(() => ({ execute_at: 99999, command_seq: 42 }));
+		const realisticTs = Date.now() * 1000 + 2_000_000;
+		setDualTimestampProvider(() => ({ execute_at: realisticTs, command_seq: 42 }));
 
 		const mockFetch = vi.fn().mockResolvedValue(
 			new Response(JSON.stringify({}), { status: 200 }),
@@ -911,7 +913,7 @@ describe('dual-engine request interceptor', () => {
 		await setPreview('cam3');
 
 		const bodyA = JSON.parse(mockFetch.mock.calls[0][1].body);
-		expect(bodyA.execute_at).toBe(99999);
+		expect(bodyA.execute_at).toBe(realisticTs);
 		expect(bodyA.source).toBe('cam3');
 	});
 
@@ -920,7 +922,8 @@ describe('dual-engine request interceptor', () => {
 			{ id: 'A', url: 'https://a.example.com' },
 			{ id: 'B', url: 'https://b.example.com' },
 		]);
-		setDualTimestampProvider(() => ({ execute_at: 50000, command_seq: 5 }));
+		const realisticTs = Date.now() * 1000 + 3_000_000;
+		setDualTimestampProvider(() => ({ execute_at: realisticTs, command_seq: 5 }));
 
 		const mockFetch = vi.fn().mockResolvedValue(
 			new Response(JSON.stringify({}), { status: 200 }),
@@ -930,7 +933,7 @@ describe('dual-engine request interceptor', () => {
 		await fadeToBlack();
 
 		const bodyA = JSON.parse(mockFetch.mock.calls[0][1].body);
-		expect(bodyA.execute_at).toBe(50000);
+		expect(bodyA.execute_at).toBe(realisticTs);
 	});
 
 	it('adds PTP timestamps to graphics on/off (regex timed path)', async () => {
@@ -938,7 +941,8 @@ describe('dual-engine request interceptor', () => {
 			{ id: 'A', url: 'https://a.example.com' },
 			{ id: 'B', url: 'https://b.example.com' },
 		]);
-		setDualTimestampProvider(() => ({ execute_at: 77777, command_seq: 10 }));
+		const realisticTs = Date.now() * 1000 + 4_000_000;
+		setDualTimestampProvider(() => ({ execute_at: realisticTs, command_seq: 10 }));
 
 		const mockFetch = vi.fn().mockResolvedValue(
 			new Response(JSON.stringify({}), { status: 200 }),
@@ -948,7 +952,7 @@ describe('dual-engine request interceptor', () => {
 		await graphicsOn(1);
 
 		const bodyA = JSON.parse(mockFetch.mock.calls[0][1].body);
-		expect(bodyA.execute_at).toBe(77777);
+		expect(bodyA.execute_at).toBe(realisticTs);
 	});
 
 	it('does not add timestamps to untimed paths', async () => {
@@ -956,7 +960,7 @@ describe('dual-engine request interceptor', () => {
 			{ id: 'A', url: 'https://a.example.com' },
 			{ id: 'B', url: 'https://b.example.com' },
 		]);
-		setDualTimestampProvider(() => ({ execute_at: 12345, command_seq: 1 }));
+		setDualTimestampProvider(() => ({ execute_at: Date.now() * 1000 + 5_000_000, command_seq: 1 }));
 
 		const mockFetch = vi.fn().mockResolvedValue(
 			new Response(JSON.stringify({}), { status: 200 }),
@@ -1376,7 +1380,8 @@ describe('dual-engine interceptor edge cases', () => {
 			{ id: 'A', url: 'https://a.example.com' },
 			{ id: 'B', url: 'https://b.example.com' },
 		]);
-		setDualTimestampProvider(() => ({ execute_at: 88888, command_seq: 7 }));
+		const realisticTs = Date.now() * 1000 + 6_000_000;
+		setDualTimestampProvider(() => ({ execute_at: realisticTs, command_seq: 7 }));
 
 		const mockFetch = vi.fn().mockResolvedValue(
 			new Response(JSON.stringify({ inTransition: true }), { status: 200 }),
@@ -1386,7 +1391,7 @@ describe('dual-engine interceptor edge cases', () => {
 		await startTransition('cam2', 'mix', 1000);
 
 		const bodyA = JSON.parse(mockFetch.mock.calls[0][1].body);
-		expect(bodyA.execute_at).toBe(88888);
+		expect(bodyA.execute_at).toBe(realisticTs);
 		expect(bodyA.command_seq).toBe(7);
 		expect(bodyA.source).toBe('cam2');
 		expect(bodyA.type).toBe('mix');
@@ -1397,7 +1402,8 @@ describe('dual-engine interceptor edge cases', () => {
 			{ id: 'A', url: 'https://a.example.com' },
 			{ id: 'B', url: 'https://b.example.com' },
 		]);
-		setDualTimestampProvider(() => ({ execute_at: 11111, command_seq: 2 }));
+		const realisticTs = Date.now() * 1000 + 7_000_000;
+		setDualTimestampProvider(() => ({ execute_at: realisticTs, command_seq: 2 }));
 
 		const mockFetch = vi.fn().mockResolvedValue(
 			new Response(JSON.stringify({}), { status: 200 }),
@@ -1407,7 +1413,7 @@ describe('dual-engine interceptor edge cases', () => {
 		await recallPreset('my-preset');
 
 		const bodyA = JSON.parse(mockFetch.mock.calls[0][1].body);
-		expect(bodyA.execute_at).toBe(11111);
+		expect(bodyA.execute_at).toBe(realisticTs);
 	});
 
 	it('adds PTP timestamps to dveSlotOn (regex timed path)', async () => {
@@ -1415,7 +1421,8 @@ describe('dual-engine interceptor edge cases', () => {
 			{ id: 'A', url: 'https://a.example.com' },
 			{ id: 'B', url: 'https://b.example.com' },
 		]);
-		setDualTimestampProvider(() => ({ execute_at: 22222, command_seq: 3 }));
+		const realisticTs = Date.now() * 1000 + 8_000_000;
+		setDualTimestampProvider(() => ({ execute_at: realisticTs, command_seq: 3 }));
 
 		const mockFetch = vi.fn().mockResolvedValue(
 			new Response(JSON.stringify({}), { status: 200 }),
@@ -1425,7 +1432,7 @@ describe('dual-engine interceptor edge cases', () => {
 		await dveSlotOn(0);
 
 		const bodyA = JSON.parse(mockFetch.mock.calls[0][1].body);
-		expect(bodyA.execute_at).toBe(22222);
+		expect(bodyA.execute_at).toBe(realisticTs);
 	});
 
 	it('adds PTP timestamps to clipPlayerPlay (regex timed path)', async () => {
@@ -1433,7 +1440,8 @@ describe('dual-engine interceptor edge cases', () => {
 			{ id: 'A', url: 'https://a.example.com' },
 			{ id: 'B', url: 'https://b.example.com' },
 		]);
-		setDualTimestampProvider(() => ({ execute_at: 33333, command_seq: 4 }));
+		const realisticTs = Date.now() * 1000 + 9_000_000;
+		setDualTimestampProvider(() => ({ execute_at: realisticTs, command_seq: 4 }));
 
 		const mockFetch = vi.fn().mockResolvedValue(
 			new Response(JSON.stringify({}), { status: 200 }),
@@ -1443,7 +1451,7 @@ describe('dual-engine interceptor edge cases', () => {
 		await clipPlayerPlay(0);
 
 		const bodyA = JSON.parse(mockFetch.mock.calls[0][1].body);
-		expect(bodyA.execute_at).toBe(33333);
+		expect(bodyA.execute_at).toBe(realisticTs);
 	});
 
 	it('adds PTP timestamps to clipPlayerStop (regex timed path)', async () => {
@@ -1451,7 +1459,8 @@ describe('dual-engine interceptor edge cases', () => {
 			{ id: 'A', url: 'https://a.example.com' },
 			{ id: 'B', url: 'https://b.example.com' },
 		]);
-		setDualTimestampProvider(() => ({ execute_at: 44444, command_seq: 5 }));
+		const realisticTs = Date.now() * 1000 + 10_000_000;
+		setDualTimestampProvider(() => ({ execute_at: realisticTs, command_seq: 5 }));
 
 		const mockFetch = vi.fn().mockResolvedValue(
 			new Response(JSON.stringify({}), { status: 200 }),
@@ -1461,7 +1470,7 @@ describe('dual-engine interceptor edge cases', () => {
 		await clipPlayerStop(0);
 
 		const bodyA = JSON.parse(mockFetch.mock.calls[0][1].body);
-		expect(bodyA.execute_at).toBe(44444);
+		expect(bodyA.execute_at).toBe(realisticTs);
 	});
 
 	it('both engines receive identical bodies for mutations', async () => {
@@ -1469,7 +1478,7 @@ describe('dual-engine interceptor edge cases', () => {
 			{ id: 'A', url: 'https://a.example.com' },
 			{ id: 'B', url: 'https://b.example.com' },
 		]);
-		setDualTimestampProvider(() => ({ execute_at: 55555, command_seq: 8 }));
+		setDualTimestampProvider(() => ({ execute_at: Date.now() * 1000 + 11_000_000, command_seq: 8 }));
 
 		const mockFetch = vi.fn().mockResolvedValue(
 			new Response(JSON.stringify({}), { status: 200 }),

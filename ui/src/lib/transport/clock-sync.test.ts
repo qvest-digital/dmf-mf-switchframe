@@ -1,14 +1,15 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { ClockSync } from './clock-sync';
 
-function buildPongHelper(timestampUS: number): Uint8Array {
-	const buf = new Uint8Array(9);
+function buildPongHelper(seq: number, timestampUS: number): Uint8Array {
+	const buf = new Uint8Array(13);
 	buf[0] = 0xFF;
 	const view = new DataView(buf.buffer);
+	view.setUint32(1, seq);
 	const hi = Math.floor(timestampUS / (2 ** 32));
 	const lo = timestampUS % (2 ** 32);
-	view.setUint32(1, hi);
-	view.setUint32(5, lo);
+	view.setUint32(5, hi);
+	view.setUint32(9, lo);
 	return buf;
 }
 
@@ -159,9 +160,9 @@ describe('ClockSync', () => {
 			vi.advanceTimersByTime(5);
 			const sentAt = 0; // performance.now() was 0 at ping time
 			const rtt = 5_000; // 5ms = 5_000 µs
-			// A offset = 5_000_000, B offset = 3_000_000
-			sync.handlePong('A', buildPongHelper(sentAt + rtt / 2 + 5_000_000));
-			sync.handlePong('B', buildPongHelper(sentAt + rtt / 2 + 3_000_000));
+			// A offset = 5_000_000, B offset = 3_000_000 (seq 0=A, 1=B from first ping round)
+			sync.handlePong('A', buildPongHelper(0, sentAt + rtt / 2 + 5_000_000));
+			sync.handlePong('B', buildPongHelper(1, sentAt + rtt / 2 + 3_000_000));
 
 			// Average offset = 4_000_000
 			const localUS = Date.now() * 1000;
@@ -288,14 +289,15 @@ describe('ClockSync', () => {
 	});
 
 	describe('handlePong', () => {
-		function buildPong(timestampUS: number): Uint8Array {
-			const buf = new Uint8Array(9);
+		function buildPong(seq: number, timestampUS: number): Uint8Array {
+			const buf = new Uint8Array(13);
 			buf[0] = 0xFF;
 			const view = new DataView(buf.buffer);
+			view.setUint32(1, seq);
 			const hi = Math.floor(timestampUS / (2 ** 32));
 			const lo = timestampUS % (2 ** 32);
-			view.setUint32(1, hi);
-			view.setUint32(5, lo);
+			view.setUint32(5, hi);
+			view.setUint32(9, lo);
 			return buf;
 		}
 
@@ -305,21 +307,17 @@ describe('ClockSync', () => {
 
 			const sendPing = vi.fn();
 			sync.startPeriodicSync(['A'], sendPing, 60_000);
-			// doPingRound records lastPingSentAt for A = nowMicros() = performance.now() * 1000 = 0 µs
+			// doPingRound records pingSentTimes for seq 0 (A)
 
 			// Advance 10ms to simulate network delay
 			vi.advanceTimersByTime(10);
 
-			// sentAt = 0 µs (performance.now() was 0 at ping time)
-			// now = performance.now() * 1000 = 10_000 µs (after 10ms advance)
-			// rtt = now - sentAt = 10_000 µs
-			// If server is 5_000_000 µs ahead, serverTs = sentAt + rtt/2 + 5_000_000
 			const sentAt = 0;
 			const rtt = 10_000;
 			const knownOffset = 5_000_000;
 			const serverTs = sentAt + rtt / 2 + knownOffset;
 
-			const pong = buildPong(serverTs);
+			const pong = buildPong(0, serverTs); // seq 0 = A
 			sync.handlePong('A', pong);
 
 			// offset = serverTs - (sentAt + rtt/2) = knownOffset = 5_000_000
@@ -331,8 +329,8 @@ describe('ClockSync', () => {
 
 		it('ignores pong when no pending ping exists', () => {
 			const sync = new ClockSync();
-			// Never started periodic sync, so no lastPingSentAt recorded
-			const pong = buildPong(1_000_000_000_000);
+			// Never started periodic sync, so no pingSentTimes recorded
+			const pong = buildPong(99, 1_000_000_000_000); // unknown seq
 			sync.handlePong('A', pong);
 
 			// Offset should remain 0 (default)
@@ -349,13 +347,10 @@ describe('ClockSync', () => {
 			// Advance 20ms
 			vi.advanceTimersByTime(20);
 
-			// sentAt = 0 µs (performance.now() was 0 at ping time)
-			// now = performance.now() * 1000 = 20_000 µs
-			// rtt = 20_000 µs
 			const sentAt = 0;
 			const rtt = 20_000; // 20ms in µs
 			const serverTs = sentAt + rtt / 2; // zero offset
-			const pong = buildPong(serverTs);
+			const pong = buildPong(0, serverTs); // seq 0 = A
 			sync.handlePong('A', pong);
 
 			// RTT should be bootstrapped to 20_000 µs
@@ -366,11 +361,6 @@ describe('ClockSync', () => {
 		});
 
 		it('uses sub-millisecond precision for RTT', () => {
-			// Verify that RTT measurement uses performance.now() rather than Date.now().
-			// With fake timers, performance.now() starts at 0 and advances with the clock,
-			// while Date.now() starts at whatever the fake timer's `now` is set to.
-			// A sentAt of 0 (performance.now()-based) differs from 1_000_000_000 (Date.now()-based),
-			// confirming performance.now() is in use.
 			vi.useFakeTimers({ now: 1_000_000 }); // Date.now() = 1_000_000 ms
 			const sync = new ClockSync();
 
@@ -379,16 +369,11 @@ describe('ClockSync', () => {
 
 			vi.advanceTimersByTime(10);
 
-			// sentAt was recorded using nowMicros() = Math.round(performance.now() * 1000)
-			// With fake timers, performance.now() starts at 0, so sentAt = 0 µs
-			// RTT = nowMicros() - sentAt = 10_000 - 0 = 10_000 µs
-			// If this were Date.now()-based, sentAt = 1_000_000_000 and RTT would be 10_000 too,
-			// but the offset calculation differs (serverTs is built relative to sentAt = 0 here).
 			const sentAt = 0;
 			const rtt = 10_000;
 			const knownOffset = 1_000;
 			const serverTs = sentAt + rtt / 2 + knownOffset;
-			sync.handlePong('A', buildPong(serverTs));
+			sync.handlePong('A', buildPong(0, serverTs)); // seq 0 = A
 
 			expect(sync.getOffset('A')).toBe(knownOffset);
 			expect(sync.getRTT('A')).toBe(rtt);
@@ -407,13 +392,11 @@ describe('ClockSync', () => {
 			sync.startPeriodicSync(['A'], sendPing, 120_000);
 			// sentAt for A = nowMicros() = performance.now() * 1000 = 0 µs
 
-			// Simulate pong after 5ms
+			// Simulate pong after 5ms (seq 0 = A from first ping round)
 			vi.advanceTimersByTime(5);
-			// performance.now() = 5, nowMicros() = 5_000
-			// rtt = 5_000 µs, offset we want = 100_000 µs
 			const sentAt = 0; // performance.now() was 0 at ping time
 			const rtt = 5_000;
-			const pongA = buildPongHelper(sentAt + rtt / 2 + 100_000);
+			const pongA = buildPongHelper(0, sentAt + rtt / 2 + 100_000);
 			sync.handlePong('A', pongA);
 
 			// Offset is valid, ptpNow should include it
@@ -436,29 +419,28 @@ describe('ClockSync', () => {
 			vi.useFakeTimers({ now: 1_000_000 }); // Date.now() = 1_000_000 ms
 			const sync = new ClockSync();
 
-			// Use updateOffset + offsetAge directly for precise control
-			// Set offset for A with current age
+			// updateOffset now sets offsetAge, so offsets are immediately valid
 			sync.updateOffset('A', 100_000);
 			sync.updateOffset('B', 200_000);
 
-			// ptpNow without any offsetAge entries means offsets are unaged
-			// (no handlePong was called, so offsetAge is empty -> offsets are excluded)
-			const ptpNoAge = sync.ptpNow();
-			// With no valid offsetAge, both offsets are excluded -> returns 0
-			expect(ptpNoAge).toBe(0);
+			// Both offsets have valid age -> average = 150_000
+			const ptpWithAge = sync.ptpNow();
+			const localWithAge = Date.now() * 1000;
+			expect(ptpWithAge).toBe(Math.round(localWithAge + 150_000));
 
-			// Now use handlePong to set A's offset with proper age tracking
+			// Use handlePong to set offsets via the ping/pong flow
 			const sendPing = vi.fn();
 			sync.startPeriodicSync(['A', 'B'], sendPing, 120_000);
 			// sentAt for both = nowMicros() = performance.now() * 1000 = 0 µs
+			// A gets seq 0, B gets seq 1
 
 			vi.advanceTimersByTime(5);
 			const sentAt = 0; // performance.now() was 0 at ping time
 			const rtt = 5_000;
-			// Set offset for A = 100_000
-			sync.handlePong('A', buildPongHelper(sentAt + rtt / 2 + 100_000));
-			// Set offset for B = 200_000
-			sync.handlePong('B', buildPongHelper(sentAt + rtt / 2 + 200_000));
+			// Set offset for A = 100_000 (seq 0)
+			sync.handlePong('A', buildPongHelper(0, sentAt + rtt / 2 + 100_000));
+			// Set offset for B = 200_000 (seq 1)
+			sync.handlePong('B', buildPongHelper(1, sentAt + rtt / 2 + 200_000));
 
 			// Both valid: average = 150_000
 			const ptpBoth = sync.ptpNow();
@@ -468,20 +450,16 @@ describe('ClockSync', () => {
 			// Advance 55s, then refresh only B via a new ping round
 			vi.advanceTimersByTime(55_000);
 
-			// Manually trigger a fresh pong for B only
-			// We need a fresh lastPingSentAt for B. The periodic sync at 120s hasn't fired.
-			// Use addEngine or direct approach: call doPingRound indirectly by restarting sync
-			// Simplest: stop and restart to get fresh sentAt for B
+			// Restart sync for B only to get a fresh pingSentTimes entry
 			sync.stopPeriodicSync();
 			sync.startPeriodicSync(['B'], sendPing, 120_000);
-			// New sentAt for B = nowMicros() = performance.now() * 1000
-			// At this point performance.now() = 5 + 55_000 = 55_005 ms
+			// B gets seq 2 (pingSeq continues from 2)
 
 			vi.advanceTimersByTime(5);
 			// performance.now() before this advance was 55_005, so sentAt = 55_005_000 µs
-			const newSentAt = 55_005_000; // performance.now() was 55_005 at new ping time
+			const newSentAt = 55_005_000;
 			const newRtt = 5_000;
-			sync.handlePong('B', buildPongHelper(newSentAt + newRtt / 2 + 200_000));
+			sync.handlePong('B', buildPongHelper(2, newSentAt + newRtt / 2 + 200_000));
 
 			// Now A's age is ~55s (still valid), B's age is fresh
 			// Wait 6 more seconds to push A past 60s

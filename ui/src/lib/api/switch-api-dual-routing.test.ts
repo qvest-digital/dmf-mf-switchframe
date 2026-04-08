@@ -239,8 +239,9 @@ describe('switch-api dual-engine routing', () => {
 		});
 
 		it('injects execute_at and command_seq on timed paths', async () => {
+			const realisticTs = Date.now() * 1000 + 500_000; // 500ms in the future
 			setDualTimestampProvider(() => ({
-				execute_at: 1_700_000_000_000_000,
+				execute_at: realisticTs,
 				command_seq: 42,
 			}));
 
@@ -249,26 +250,28 @@ describe('switch-api dual-engine routing', () => {
 			// Both engines should get the timestamp
 			for (const call of fetchCalls) {
 				const body = JSON.parse(call.opts.body as string);
-				expect(body.execute_at).toBe(1_700_000_000_000_000);
+				expect(body.execute_at).toBe(realisticTs);
 				expect(body.command_seq).toBe(42);
 				expect(body.source).toBe('cam1'); // original body preserved
 			}
 		});
 
 		it('injects on /api/switch/preview', async () => {
-			setDualTimestampProvider(() => ({ execute_at: 123, command_seq: 1 }));
+			const realisticTs = Date.now() * 1000 + 1_000_000;
+			setDualTimestampProvider(() => ({ execute_at: realisticTs, command_seq: 1 }));
 			await setPreview('cam2');
 
 			const body = JSON.parse(fetchCalls[0].opts.body as string);
-			expect(body.execute_at).toBe(123);
+			expect(body.execute_at).toBe(realisticTs);
 		});
 
 		it('injects on /api/switch/ftb', async () => {
-			setDualTimestampProvider(() => ({ execute_at: 456, command_seq: 2 }));
+			const realisticTs = Date.now() * 1000 + 2_000_000;
+			setDualTimestampProvider(() => ({ execute_at: realisticTs, command_seq: 2 }));
 			await fadeToBlack();
 
 			const body = JSON.parse(fetchCalls[0].opts.body as string);
-			expect(body.execute_at).toBe(456);
+			expect(body.execute_at).toBe(realisticTs);
 		});
 
 		it('does NOT inject on non-timed paths like /api/audio', async () => {

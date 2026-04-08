@@ -8,14 +8,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ClockSync } from './clock-sync';
 
-function buildPongHelper(timestampUS: number): Uint8Array {
-	const buf = new Uint8Array(9);
+function buildPongHelper(seq: number, timestampUS: number): Uint8Array {
+	const buf = new Uint8Array(13);
 	buf[0] = 0xFF;
 	const view = new DataView(buf.buffer);
+	view.setUint32(1, seq);
 	const hi = Math.floor(timestampUS / (2 ** 32));
 	const lo = timestampUS % (2 ** 32);
-	view.setUint32(1, hi);
-	view.setUint32(5, lo);
+	view.setUint32(5, hi);
+	view.setUint32(9, lo);
 	return buf;
 }
 
@@ -181,7 +182,7 @@ describe('ClockSync precision', () => {
 			vi.advanceTimersByTime(5);
 			// rtt = 5_000 µs, desired offset = +5_000_000
 			const rtt = 5_000;
-			sync.handlePong('A', buildPongHelper(sentAt + rtt / 2 + 5_000_000));
+			sync.handlePong('A', buildPongHelper(0, sentAt + rtt / 2 + 5_000_000));
 
 			const localUS = Date.now() * 1000;
 			const ptp = sync.ptpNow();
@@ -203,8 +204,8 @@ describe('ClockSync precision', () => {
 			vi.advanceTimersByTime(5);
 			const rtt = 5_000;
 			// A offset = 10_000_000, B offset = 20_000_000
-			sync.handlePong('A', buildPongHelper(sentAt + rtt / 2 + 10_000_000));
-			sync.handlePong('B', buildPongHelper(sentAt + rtt / 2 + 20_000_000));
+			sync.handlePong('A', buildPongHelper(0, sentAt + rtt / 2 + 10_000_000));
+			sync.handlePong('B', buildPongHelper(1, sentAt + rtt / 2 + 20_000_000));
 
 			const localUS = Date.now() * 1000;
 			const ptp = sync.ptpNow();
@@ -229,7 +230,7 @@ describe('ClockSync precision', () => {
 			const rtt = 5_000;
 			// We want offset = -2_000_000, so serverTs = sentAt + rtt/2 - 2_000_000
 			// = 10_000_000 + 2_500 - 2_000_000 = 8_002_500 (positive, safe to serialize)
-			sync.handlePong('A', buildPongHelper(sentAt + rtt / 2 - 2_000_000));
+			sync.handlePong('A', buildPongHelper(0, sentAt + rtt / 2 - 2_000_000));
 
 			const localUS = Date.now() * 1000;
 			const ptp = sync.ptpNow();

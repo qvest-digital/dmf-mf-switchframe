@@ -24,9 +24,9 @@ type transitionRequest struct {
 
 // registerTransitionRoutes registers transition-related API routes on the given mux.
 func (a *API) registerTransitionRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("POST /api/switch/transition", timedHandler(a.cmdQueue, "transition", a.handleTransitionInner))
-	mux.HandleFunc("POST /api/switch/transition/position", timedHandler(a.cmdQueue, "transition_position", a.handleTransitionPositionInner))
-	mux.HandleFunc("POST /api/switch/ftb", timedHandler(a.cmdQueue, "ftb", a.handleFTBInner))
+	mux.HandleFunc("POST /api/switch/transition", timedHandler(a.cmdQueue, "transition", a.seqTracker, a.handleTransitionInner))
+	mux.HandleFunc("POST /api/switch/transition/position", timedHandler(a.cmdQueue, "transition_position", a.seqTracker, a.handleTransitionPositionInner))
+	mux.HandleFunc("POST /api/switch/ftb", timedHandler(a.cmdQueue, "ftb", a.seqTracker, a.handleFTBInner))
 }
 
 // handleTransitionInner starts a mix, dip, wipe, or stinger transition to the specified source.

@@ -129,13 +129,13 @@ type limiterResponse struct {
 
 // registerAudioRoutes registers audio-related API routes on the given mux.
 func (a *API) registerAudioRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("POST /api/audio/trim", timedHandler(a.cmdQueue, "audio_trim", a.handleAudioTrimInner))
-	mux.HandleFunc("POST /api/audio/level", timedHandler(a.cmdQueue, "audio_level", a.handleAudioLevelInner))
-	mux.HandleFunc("POST /api/audio/mute", timedHandler(a.cmdQueue, "audio_mute", a.handleAudioMuteInner))
-	mux.HandleFunc("POST /api/audio/afv", timedHandler(a.cmdQueue, "audio_afv", a.handleAudioAFVInner))
-	mux.HandleFunc("POST /api/audio/phase", timedHandler(a.cmdQueue, "audio_phase", a.handleAudioPhaseInner))
-	mux.HandleFunc("POST /api/audio/balance", timedHandler(a.cmdQueue, "audio_balance", a.handleAudioBalanceInner))
-	mux.HandleFunc("POST /api/audio/master", timedHandler(a.cmdQueue, "audio_master", a.handleAudioMasterInner))
+	mux.HandleFunc("POST /api/audio/trim", timedHandler(a.cmdQueue, "audio_trim", a.seqTracker, a.handleAudioTrimInner))
+	mux.HandleFunc("POST /api/audio/level", timedHandler(a.cmdQueue, "audio_level", a.seqTracker, a.handleAudioLevelInner))
+	mux.HandleFunc("POST /api/audio/mute", timedHandler(a.cmdQueue, "audio_mute", a.seqTracker, a.handleAudioMuteInner))
+	mux.HandleFunc("POST /api/audio/afv", timedHandler(a.cmdQueue, "audio_afv", a.seqTracker, a.handleAudioAFVInner))
+	mux.HandleFunc("POST /api/audio/phase", timedHandler(a.cmdQueue, "audio_phase", a.seqTracker, a.handleAudioPhaseInner))
+	mux.HandleFunc("POST /api/audio/balance", timedHandler(a.cmdQueue, "audio_balance", a.seqTracker, a.handleAudioBalanceInner))
+	mux.HandleFunc("POST /api/audio/master", timedHandler(a.cmdQueue, "audio_master", a.seqTracker, a.handleAudioMasterInner))
 	mux.HandleFunc("PUT /api/audio/{source}/eq", timedHandlerWithPath(a.cmdQueue, "audio_eq", []string{"source"}, a.handleSetEQInner))
 	mux.HandleFunc("GET /api/audio/{source}/eq", a.handleGetEQ)
 	mux.HandleFunc("PUT /api/audio/{source}/compressor", timedHandlerWithPath(a.cmdQueue, "audio_compressor", []string{"source"}, a.handleSetCompressorInner))
@@ -145,7 +145,7 @@ func (a *API) registerAudioRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/audio/{source}/gate", timedHandlerWithPath(a.cmdQueue, "audio_gate", []string{"source"}, a.handleSetGateInner))
 	mux.HandleFunc("GET /api/audio/{source}/gate", a.handleGetGate)
 	mux.HandleFunc("PUT /api/audio/{source}/audio-delay", timedHandlerWithPath(a.cmdQueue, "audio_delay", []string{"source"}, a.handleSetAudioDelayInner))
-	mux.HandleFunc("PUT /api/audio/limiter", timedHandler(a.cmdQueue, "audio_limiter", a.handleSetLimiterInner))
+	mux.HandleFunc("PUT /api/audio/limiter", timedHandler(a.cmdQueue, "audio_limiter", a.seqTracker, a.handleSetLimiterInner))
 	mux.HandleFunc("GET /api/audio/limiter", a.handleGetLimiter)
 }
 
