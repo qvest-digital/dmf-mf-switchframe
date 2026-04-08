@@ -1004,4 +1004,107 @@ describe('DualConnectionManager', () => {
 			expect(reconcilerInstance.tick).toHaveBeenCalledOnce();
 		});
 	});
+
+	describe('onDualEngineReady callback', () => {
+		it('fires after both engines send state updates', () => {
+			const onDualEngineReady = vi.fn();
+			new DualConnectionManager(makeDualConfig({ onDualEngineReady }));
+
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+
+			instanceA.simulateStateUpdate(makeState());
+			expect(onDualEngineReady).not.toHaveBeenCalled();
+
+			instanceB.simulateStateUpdate(makeState());
+			expect(onDualEngineReady).toHaveBeenCalledOnce();
+		});
+
+		it('fires after both engines send state updates (B first)', () => {
+			const onDualEngineReady = vi.fn();
+			new DualConnectionManager(makeDualConfig({ onDualEngineReady }));
+
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+
+			instanceB.simulateStateUpdate(makeState());
+			expect(onDualEngineReady).not.toHaveBeenCalled();
+
+			instanceA.simulateStateUpdate(makeState());
+			expect(onDualEngineReady).toHaveBeenCalledOnce();
+		});
+
+		it('fires only once even with repeated state updates', () => {
+			const onDualEngineReady = vi.fn();
+			new DualConnectionManager(makeDualConfig({ onDualEngineReady }));
+
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+
+			instanceA.simulateStateUpdate(makeState());
+			instanceB.simulateStateUpdate(makeState());
+			instanceA.simulateStateUpdate(makeState());
+			instanceB.simulateStateUpdate(makeState());
+
+			expect(onDualEngineReady).toHaveBeenCalledOnce();
+		});
+
+		it('does not fire in single engine mode', () => {
+			const onDualEngineReady = vi.fn();
+			new DualConnectionManager(makeSingleConfig({ onDualEngineReady }));
+
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			instanceA.simulateStateUpdate(makeState());
+			instanceA.simulateStateUpdate(makeState());
+
+			expect(onDualEngineReady).not.toHaveBeenCalled();
+		});
+
+		it('does not fire when only one engine has reported', () => {
+			const onDualEngineReady = vi.fn();
+			new DualConnectionManager(makeDualConfig({ onDualEngineReady }));
+
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			instanceA.simulateStateUpdate(makeState());
+			instanceA.simulateStateUpdate(makeState());
+			instanceA.simulateStateUpdate(makeState());
+
+			expect(onDualEngineReady).not.toHaveBeenCalled();
+		});
+
+		it('fires for late-bound engine B via addEngine', () => {
+			const onDualEngineReady = vi.fn();
+			const mgr = new DualConnectionManager(makeSingleConfig({ onDualEngineReady }));
+
+			// Engine A reports state in single mode
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			instanceA.simulateStateUpdate(makeState());
+			expect(onDualEngineReady).not.toHaveBeenCalled();
+
+			// Late-bind engine B
+			mgr.addEngine('B', 'https://engine-b.example.com');
+
+			// Engine A re-reports (now dual mode) — sets _engineALoaded
+			instanceA.simulateStateUpdate(makeState());
+			expect(onDualEngineReady).not.toHaveBeenCalled();
+
+			// Engine B reports — both loaded
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+			instanceB.simulateStateUpdate(makeState());
+			expect(onDualEngineReady).toHaveBeenCalledOnce();
+		});
+
+		it('is safe when callback is not provided', () => {
+			// No onDualEngineReady in config — should not throw
+			new DualConnectionManager(makeDualConfig());
+
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+
+			expect(() => {
+				instanceA.simulateStateUpdate(makeState());
+				instanceB.simulateStateUpdate(makeState());
+			}).not.toThrow();
+		});
+	});
 });

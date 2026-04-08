@@ -111,6 +111,17 @@
 			_fcErrTimestamps.set(msgType, now);
 			console.warn(`[FastControl] datagram write failed: ${msgType}`);
 		}
+		// Force close stale writers — the reactive effects will recreate them
+		// when the transport reconnects. We close both because the error callback
+		// doesn't indicate which engine's transport died.
+		if (fastControlA) {
+			try { fastControlA.close(); } catch { /* already closed */ }
+			fastControlA = null;
+		}
+		if (fastControlB) {
+			try { fastControlB.close(); } catch { /* already closed */ }
+			fastControlB = null;
+		}
 	}
 
 	let commsVisible = $state(false);
@@ -1396,7 +1407,7 @@
 					{#snippet children(activeTab)}
 						{#if activeTab === 'Audio'}
 							<div class="tab-panel audio-tab">
-								<AudioMixer state={store.effectiveState} {sourceLevels} {programLevels} {pflActiveSource} pflMode={pflActiveMode} {pflManager} selectedChannel={selectedAudioChannel} {audioDrift} onPFLToggle={handlePFLToggle} onStateUpdate={store.applyUpdate} onChannelSelect={(key) => { selectedAudioChannel = key; }} />
+								<AudioMixer state={store.effectiveState} {sourceLevels} {programLevels} {pflActiveSource} pflMode={pflActiveMode} {pflManager} selectedChannel={selectedAudioChannel} {audioDrift} {isDualEngine} engineBAudioChannels={engineBState?.audioChannels ?? null} onPFLToggle={handlePFLToggle} onStateUpdate={store.applyUpdate} onChannelSelect={(key) => { selectedAudioChannel = key; }} />
 							</div>
 						{:else if activeTab === 'Compose'}
 							<div class="tab-panel">

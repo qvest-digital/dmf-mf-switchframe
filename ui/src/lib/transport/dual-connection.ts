@@ -9,6 +9,7 @@ export interface DualConnectionConfig {
 	onConnectionStateChange: (state: ConnectionStatus) => void;
 	onInitialLoadComplete: () => void;
 	onInitialLoadError: (error: string, rawError?: unknown) => void;
+	onDualEngineReady?: () => void;
 }
 
 export class DualConnectionManager {
@@ -22,6 +23,9 @@ export class DualConnectionManager {
 	private _initialLoadDone = false;
 	private _initialLoadErrors = 0;
 	private _pendingEngineStarts: string[] = [];
+	private _engineALoaded = false;
+	private _engineBLoaded = false;
+	private _dualReadyFired = false;
 
 	constructor(private config: DualConnectionConfig) {
 		this._isDualEngine = config.engines.length > 1;
@@ -213,6 +217,14 @@ export class DualConnectionManager {
 					this.config.onStateUpdate(this.reconciler.state);
 				} else {
 					this.config.onStateUpdate(state);
+				}
+
+				// Track per-engine load state for dual-engine readiness
+				if (engineId === 'A') this._engineALoaded = true;
+				if (engineId === 'B') this._engineBLoaded = true;
+				if (this._isDualEngine && this._engineALoaded && this._engineBLoaded && !this._dualReadyFired) {
+					this._dualReadyFired = true;
+					this.config.onDualEngineReady?.();
 				}
 			},
 			onConnectionStateChange: (connState) => {
