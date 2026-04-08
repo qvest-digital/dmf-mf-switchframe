@@ -36,7 +36,7 @@ type formatRequest struct {
 // registerFormatRoutes registers format-related API routes on the given mux.
 func (a *API) registerFormatRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/format", a.handleGetFormat)
-	mux.HandleFunc("PUT /api/format", a.handleSetFormat)
+	mux.HandleFunc("PUT /api/format", timedHandler(a.cmdQueue, "format_set", a.seqTracker, a.handleSetFormatInner))
 }
 
 // handleGetFormat returns the current pipeline format and available presets.
@@ -63,11 +63,12 @@ func (a *API) handleGetFormat(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-// handleSetFormat changes the pipeline format using a preset name or custom dimensions.
-func (a *API) handleSetFormat(w http.ResponseWriter, r *http.Request) {
+// handleSetFormatInner changes the pipeline format using a preset name or custom dimensions.
+// body is the pre-read request body provided by timedHandler.
+func (a *API) handleSetFormatInner(w http.ResponseWriter, r *http.Request, body []byte) {
 	a.setLastOperator(r)
 	var req formatRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}

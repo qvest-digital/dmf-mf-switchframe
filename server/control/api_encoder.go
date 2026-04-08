@@ -22,7 +22,7 @@ type encoderRequest struct {
 // registerEncoderRoutes registers encoder-related API routes on the given mux.
 func (a *API) registerEncoderRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/encoder", a.handleGetEncoder)
-	mux.HandleFunc("PUT /api/encoder", a.handleSetEncoder)
+	mux.HandleFunc("PUT /api/encoder", timedHandler(a.cmdQueue, "encoder_set", a.seqTracker, a.handleSetEncoderInner))
 }
 
 // handleGetEncoder returns the current encoder and available encoder options.
@@ -35,11 +35,12 @@ func (a *API) handleGetEncoder(w http.ResponseWriter, _ *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-// handleSetEncoder switches the video encoder at runtime.
-func (a *API) handleSetEncoder(w http.ResponseWriter, r *http.Request) {
+// handleSetEncoderInner switches the video encoder at runtime.
+// body is the pre-read request body provided by timedHandler.
+func (a *API) handleSetEncoderInner(w http.ResponseWriter, r *http.Request, body []byte) {
 	a.setLastOperator(r)
 	var req encoderRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		httperr.Write(w, http.StatusBadRequest, "invalid json")
 		return
 	}

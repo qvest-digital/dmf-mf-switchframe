@@ -59,6 +59,8 @@ func (a *App) initCommandQueue() error {
 	a.registerKeyActions(dispatcher)
 	a.registerDVEActions(dispatcher)
 	a.registerSourceActions(dispatcher)
+	a.registerFormatActions(dispatcher)
+	a.registerEncoderActions(dispatcher)
 	a.cmdDispatcher = dispatcher
 
 	// Wire into the switcher's frame-loop drain so queued commands execute
@@ -611,6 +613,62 @@ func (a *App) registerSourceActions(d *cmdqueue.Dispatcher) {
 			return err
 		}
 		return a.sw.SetSourcePosition(req.PathKey, req.Position)
+	})
+}
+
+// registerFormatActions registers the format_set dispatch action.
+func (a *App) registerFormatActions(d *cmdqueue.Dispatcher) {
+	d.Register("format_set", func(payload json.RawMessage) error {
+		var req struct {
+			Format string `json:"format,omitempty"`
+			Width  int    `json:"width,omitempty"`
+			Height int    `json:"height,omitempty"`
+			FPSNum int    `json:"fpsNum,omitempty"`
+			FPSDen int    `json:"fpsDen,omitempty"`
+		}
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return err
+		}
+
+		var f switcher.PipelineFormat
+		switch {
+		case req.Format != "":
+			preset, ok := switcher.FormatPresets[req.Format]
+			if !ok {
+				return fmt.Errorf("unknown format preset: %s", req.Format)
+			}
+			f = preset
+		case req.Width > 0 || req.Height > 0 || req.FPSNum > 0 || req.FPSDen > 0:
+			f = switcher.PipelineFormat{
+				Width:  req.Width,
+				Height: req.Height,
+				FPSNum: req.FPSNum,
+				FPSDen: req.FPSDen,
+			}
+		default:
+			return fmt.Errorf("provide format preset or width/height/fpsNum/fpsDen")
+		}
+
+		if err := a.sw.SetPipelineFormat(f); err != nil {
+			return err
+		}
+		if a.compositor != nil {
+			a.compositor.SetPipelineFPS(f.FPSNum, f.FPSDen)
+		}
+		return nil
+	})
+}
+
+// registerEncoderActions registers the encoder_set dispatch action.
+func (a *App) registerEncoderActions(d *cmdqueue.Dispatcher) {
+	d.Register("encoder_set", func(payload json.RawMessage) error {
+		var req struct {
+			Encoder string `json:"encoder"`
+		}
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return err
+		}
+		return a.sw.SetEncoder(req.Encoder)
 	})
 }
 
