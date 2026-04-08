@@ -58,6 +58,7 @@ export function setFlushTimestampInjector(injector: FlushTimestampInjector | nul
 const TIMED_PATH_EXACT = new Set([
 	'/api/switch/cut', '/api/switch/preview', '/api/switch/transition', '/api/switch/ftb',
 	'/api/replay/play', '/api/replay/stop',
+	'/api/replay/mark-in', '/api/replay/mark-out',
 	'/api/scte35/cue', '/api/scte35/return', '/api/scte35/cancel',
 	'/api/presets/recall',
 	'/api/format',
