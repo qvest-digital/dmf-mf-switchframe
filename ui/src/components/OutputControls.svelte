@@ -88,6 +88,11 @@
 	{#if syncHealth}
 		<SyncIndicator health={syncHealth} onclick={() => onToggleRedundancyPanel?.()} />
 	{/if}
+	{#if syncHealth?.warnings?.includes('clock_diverged')}
+		<span class="clock-warn" title="Engine clocks diverged beyond safety margin — command timing may be inaccurate">
+			CLOCK
+		</span>
+	{/if}
 	{#if isDualEngine}
 		<span class="dual-badge"
 			class:synced={syncHealth?.status === 'synced'}
@@ -273,6 +278,21 @@
 
 	.dual-badge.error {
 		background: #ef4444;
+	}
+
+	.clock-warn {
+		background: var(--accent-yellow, #eab308);
+		color: #000;
+		font-size: 0.65rem;
+		font-weight: 700;
+		padding: 2px 6px;
+		border-radius: 3px;
+		animation: pulse-warn 2s ease-in-out infinite;
+	}
+
+	@keyframes pulse-warn {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.6; }
 	}
 
 	.auth-badge {

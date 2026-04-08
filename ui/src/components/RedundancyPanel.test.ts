@@ -493,6 +493,41 @@ describe('RedundancyPanel', () => {
 		expect(placeholders[1].textContent).toBe('No signal');
 	});
 
+	// --- Clock divergence warning ---
+
+	it('shows clock divergence warning when warnings include clock_diverged', () => {
+		const { container } = render(RedundancyPanel, {
+			props: makeDefaultProps({
+				health: makeSyncHealth({ warnings: ['clock_diverged'] }),
+			}),
+		});
+		const warning = container.querySelector('.clock-divergence-warning');
+		expect(warning).toBeTruthy();
+		const text = warning?.textContent ?? '';
+		expect(text).toContain('Clock Divergence');
+		expect(text).toContain('Commands may execute at slightly different times');
+	});
+
+	it('does not show clock divergence warning when warnings is empty', () => {
+		const { container } = render(RedundancyPanel, {
+			props: makeDefaultProps({
+				health: makeSyncHealth({ warnings: [] }),
+			}),
+		});
+		const warning = container.querySelector('.clock-divergence-warning');
+		expect(warning).toBeFalsy();
+	});
+
+	it('does not show clock divergence warning when other warnings present but not clock_diverged', () => {
+		const { container } = render(RedundancyPanel, {
+			props: makeDefaultProps({
+				health: makeSyncHealth({ warnings: ['some_other_warning'] }),
+			}),
+		});
+		const warning = container.querySelector('.clock-divergence-warning');
+		expect(warning).toBeFalsy();
+	});
+
 	it('calls oncompare when Full Compare button is clicked', async () => {
 		const oncompare = vi.fn();
 		const { container } = render(RedundancyPanel, {

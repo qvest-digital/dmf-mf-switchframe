@@ -333,6 +333,35 @@ describe('OutputControls', () => {
 		expect(badge?.classList.contains('synced')).toBe(false);
 	});
 
+	// --- Clock divergence warning ---
+
+	it('shows CLOCK warning when syncHealth has clock_diverged warning', () => {
+		const health = mockSyncHealth('synced');
+		health.warnings = ['clock_diverged'];
+		const { container } = render(OutputControls, {
+			props: { state: baseState, syncHealth: health },
+		});
+		const clockWarn = container.querySelector('.clock-warn');
+		expect(clockWarn).toBeTruthy();
+		expect(clockWarn?.textContent?.trim()).toBe('CLOCK');
+	});
+
+	it('does not show CLOCK warning when syncHealth has no clock_diverged warning', () => {
+		const { container } = render(OutputControls, {
+			props: { state: baseState, syncHealth: mockSyncHealth('synced') },
+		});
+		const clockWarn = container.querySelector('.clock-warn');
+		expect(clockWarn).toBeFalsy();
+	});
+
+	it('does not show CLOCK warning when syncHealth is null', () => {
+		const { container } = render(OutputControls, {
+			props: { state: baseState, syncHealth: null },
+		});
+		const clockWarn = container.querySelector('.clock-warn');
+		expect(clockWarn).toBeFalsy();
+	});
+
 	it('DUAL badge has synced class when syncHealth status is synced', () => {
 		const { container } = render(OutputControls, {
 			props: {

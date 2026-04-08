@@ -317,6 +317,14 @@
 			</div>
 		</section>
 
+		<!-- Clock Divergence Warning -->
+		{#if health?.warnings?.includes('clock_diverged')}
+			<div class="clock-divergence-warning">
+				<strong>Clock Divergence</strong>
+				<p>Engine clocks are diverged beyond the safety margin. Commands may execute at slightly different times on each engine.</p>
+			</div>
+		{/if}
+
 		<!-- 2. Program Compare -->
 		<section class="section">
 			<div class="section-label">PROGRAM COMPARE</div>
@@ -706,6 +714,30 @@
 		background: rgba(113, 113, 122, 0.15);
 		border-color: rgba(113, 113, 122, 0.3);
 		color: var(--text-muted, #71717a);
+	}
+
+	/* Clock divergence warning */
+	.clock-divergence-warning {
+		background: rgba(234, 179, 8, 0.1);
+		border: 1px solid rgba(234, 179, 8, 0.4);
+		border-radius: var(--radius-sm);
+		padding: 10px 12px;
+		color: var(--accent-yellow, #eab308);
+		font-family: var(--font-ui);
+		font-size: var(--text-xs);
+		line-height: 1.4;
+	}
+
+	.clock-divergence-warning strong {
+		display: block;
+		font-size: var(--text-sm);
+		margin-bottom: 4px;
+		letter-spacing: 0.03em;
+	}
+
+	.clock-divergence-warning p {
+		margin: 0;
+		opacity: 0.85;
 	}
 
 	/* Engine cards */
