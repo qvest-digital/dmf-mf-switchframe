@@ -7,7 +7,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createReconciler } from './reconciler.svelte';
-import type { ControlRoomState, PlayoutChannelState } from '$lib/api/types';
+import type { ControlRoomState, PlayoutChannelState, AudioChannel } from '$lib/api/types';
 
 function makeState(overrides: Partial<ControlRoomState> = {}): ControlRoomState {
 	return {
@@ -597,6 +597,220 @@ describe('reconciler behavioral tests', () => {
 
 			// A should still be authoritative since it has higher seq
 			expect(r.health.authoritative).toBe('A');
+		});
+	});
+
+	// ─── Audio channel divergence detection ───
+
+	function makeAudioChannel(overrides: Partial<AudioChannel> = {}): AudioChannel {
+		return {
+			level: 0,
+			trim: 0,
+			muted: false,
+			afv: false,
+			peakL: -60,
+			peakR: -60,
+			eq: [
+				{ frequency: 100, gain: 0, q: 1, enabled: false },
+				{ frequency: 1000, gain: 0, q: 1, enabled: false },
+				{ frequency: 10000, gain: 0, q: 1, enabled: false },
+			],
+			compressor: { threshold: -20, ratio: 4, attack: 10, release: 100, makeupGain: 0 },
+			gainReduction: 0,
+			gate: { threshold: -50, range: -80, attack: 0.5, release: 50, hold: 10 },
+			...overrides,
+		};
+	}
+
+	describe('audio channel divergence', () => {
+		it('detects audioChannels divergence when muted differs', () => {
+			const r = createReconciler();
+
+			r.ingest('A', makeState({
+				audioChannels: { cam1: makeAudioChannel({ muted: true }) },
+				lastCommandSeq: 5,
+			}));
+			r.ingest('B', makeState({
+				audioChannels: { cam1: makeAudioChannel({ muted: false }) },
+				lastCommandSeq: 5,
+			}));
+
+			const fields = r.health.divergences.map(d => d.field);
+			expect(fields).toContain('audioChannels');
+		});
+
+		it('detects audioChannels divergence when afv differs', () => {
+			const r = createReconciler();
+
+			r.ingest('A', makeState({
+				audioChannels: { cam1: makeAudioChannel({ afv: true }) },
+				lastCommandSeq: 5,
+			}));
+			r.ingest('B', makeState({
+				audioChannels: { cam1: makeAudioChannel({ afv: false }) },
+				lastCommandSeq: 5,
+			}));
+
+			const fields = r.health.divergences.map(d => d.field);
+			expect(fields).toContain('audioChannels');
+		});
+
+		it('detects audioChannels divergence when level differs', () => {
+			const r = createReconciler();
+
+			r.ingest('A', makeState({
+				audioChannels: { cam1: makeAudioChannel({ level: -6 }) },
+				lastCommandSeq: 5,
+			}));
+			r.ingest('B', makeState({
+				audioChannels: { cam1: makeAudioChannel({ level: 0 }) },
+				lastCommandSeq: 5,
+			}));
+
+			const fields = r.health.divergences.map(d => d.field);
+			expect(fields).toContain('audioChannels');
+		});
+
+		it('reports no audioChannels divergence when channels match', () => {
+			const r = createReconciler();
+
+			const channels = { cam1: makeAudioChannel({ muted: true, afv: false, level: -6 }) };
+			r.ingest('A', makeState({ audioChannels: channels, lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ audioChannels: { ...channels }, lastCommandSeq: 5 }));
+
+			const fields = r.health.divergences.map(d => d.field);
+			expect(fields).not.toContain('audioChannels');
+		});
+
+		it('reports no audioChannels divergence when both are undefined', () => {
+			const r = createReconciler();
+
+			r.ingest('A', makeState({ audioChannels: undefined, lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ audioChannels: undefined, lastCommandSeq: 5 }));
+
+			const fields = r.health.divergences.map(d => d.field);
+			expect(fields).not.toContain('audioChannels');
+		});
+	});
+
+	describe('audio mute/afv critical mismatch', () => {
+		it('detects mismatch when audio muted differs at same seq', () => {
+			// Scenario: same command seq, but one engine has cam1 muted and the other doesn't.
+			// This is critical — audience hears audio on one engine but not the other.
+			const r = createReconciler();
+
+			r.ingest('A', makeState({
+				audioChannels: { cam1: makeAudioChannel({ muted: true }) },
+				lastCommandSeq: 10,
+			}));
+			r.ingest('B', makeState({
+				audioChannels: { cam1: makeAudioChannel({ muted: false }) },
+				lastCommandSeq: 10,
+			}));
+
+			expect(r.health.status).toBe('mismatch');
+		});
+
+		it('detects mismatch when audio afv differs at same seq', () => {
+			const r = createReconciler();
+
+			r.ingest('A', makeState({
+				audioChannels: { cam1: makeAudioChannel({ afv: true }) },
+				lastCommandSeq: 10,
+			}));
+			r.ingest('B', makeState({
+				audioChannels: { cam1: makeAudioChannel({ afv: false }) },
+				lastCommandSeq: 10,
+			}));
+
+			expect(r.health.status).toBe('mismatch');
+		});
+
+		it('does NOT mismatch when audio channels agree at same seq', () => {
+			const r = createReconciler();
+
+			const channels = { cam1: makeAudioChannel({ muted: true, afv: false }) };
+			r.ingest('A', makeState({ audioChannels: channels, lastCommandSeq: 10 }));
+			r.ingest('B', makeState({ audioChannels: { ...channels }, lastCommandSeq: 10 }));
+
+			expect(r.health.status).not.toBe('mismatch');
+		});
+
+		it('does NOT mismatch when one engine has no audioChannels', () => {
+			// If one engine hasn't reported audio yet, we can't call it a mismatch.
+			const r = createReconciler();
+
+			r.ingest('A', makeState({
+				audioChannels: { cam1: makeAudioChannel({ muted: true }) },
+				lastCommandSeq: 10,
+			}));
+			r.ingest('B', makeState({
+				audioChannels: undefined,
+				lastCommandSeq: 10,
+			}));
+
+			expect(r.health.status).not.toBe('mismatch');
+		});
+
+		it('does NOT mismatch on audio when seqs differ', () => {
+			// Different seqs = one engine is behind. Not a deterministic failure.
+			const r = createReconciler();
+
+			r.ingest('A', makeState({
+				audioChannels: { cam1: makeAudioChannel({ muted: true }) },
+				lastCommandSeq: 10,
+			}));
+			r.ingest('B', makeState({
+				audioChannels: { cam1: makeAudioChannel({ muted: false }) },
+				lastCommandSeq: 8,
+			}));
+
+			expect(r.health.status).not.toBe('mismatch');
+		});
+
+		it('checks all channels, not just the first', () => {
+			const r = createReconciler();
+
+			r.ingest('A', makeState({
+				audioChannels: {
+					cam1: makeAudioChannel({ muted: false }),
+					cam2: makeAudioChannel({ muted: true }),
+				},
+				lastCommandSeq: 10,
+			}));
+			r.ingest('B', makeState({
+				audioChannels: {
+					cam1: makeAudioChannel({ muted: false }),
+					cam2: makeAudioChannel({ muted: false }),
+				},
+				lastCommandSeq: 10,
+			}));
+
+			expect(r.health.status).toBe('mismatch');
+		});
+
+		it('skips channels only present on one engine', () => {
+			// If engine A has cam3 but B doesn't, that's not a mismatch — it's
+			// just a source that hasn't been registered on one engine yet.
+			const r = createReconciler();
+
+			r.ingest('A', makeState({
+				audioChannels: {
+					cam1: makeAudioChannel({ muted: false }),
+					cam3: makeAudioChannel({ muted: true }),
+				},
+				lastCommandSeq: 10,
+			}));
+			r.ingest('B', makeState({
+				audioChannels: {
+					cam1: makeAudioChannel({ muted: false }),
+				},
+				lastCommandSeq: 10,
+			}));
+
+			// cam3 only on A — should NOT trigger mismatch for muted/afv
+			// (but audioChannels divergence will be detected since the objects differ)
+			expect(r.health.status).not.toBe('mismatch');
 		});
 	});
 });

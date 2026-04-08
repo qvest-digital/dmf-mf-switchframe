@@ -858,19 +858,21 @@ describe('createReconciler', () => {
 			expect(r.engineHealth.A.sources).toEqual({});
 		});
 
-		it('divergence detection ignores audioChannels (not in DIVERGENCE_FIELDS)', () => {
+		it('divergence detection includes audioChannels (in DIVERGENCE_FIELDS)', () => {
 			const r = createReconciler();
 			r.ingest('A', makeState({
 				lastCommandSeq: 5,
-				audioChannels: [{ source: 'cam1', level: -6, muted: false, afv: false }] as any,
+				audioChannels: { cam1: { level: -6, muted: false, afv: false } } as any,
 			}));
 			r.ingest('B', makeState({
 				lastCommandSeq: 5,
-				audioChannels: [{ source: 'cam1', level: -12, muted: true, afv: true }] as any,
+				audioChannels: { cam1: { level: -12, muted: true, afv: true } } as any,
 			}));
-			// audioChannels is not in DIVERGENCE_FIELDS, so should be synced
-			expect(r.health.divergences).toHaveLength(0);
-			expect(r.health.status).toBe('synced');
+			// audioChannels IS in DIVERGENCE_FIELDS, so divergence should be detected
+			const fields = r.health.divergences.map(d => d.field);
+			expect(fields).toContain('audioChannels');
+			// muted/afv differ at same seq → critical mismatch (stronger than diverged)
+			expect(r.health.status).toBe('mismatch');
 		});
 
 		it('transitionPosition difference is detected as divergence', () => {

@@ -92,6 +92,7 @@ const DIVERGENCE_FIELDS: (keyof ControlRoomState)[] = [
 	'ftbActive',
 	'transitionType',
 	'transitionDurationMs',
+	'audioChannels',
 ];
 
 /** Critical fields: mismatch at same seq = deterministic failure. */
@@ -270,6 +271,17 @@ export function createReconciler() {
 		return result;
 	});
 
+	/** Check if audio mute/afv state differs between engines. */
+	function hasAudioMismatch(): boolean {
+		if (!stateA?.audioChannels || !stateB?.audioChannels) return false;
+		for (const [key, chA] of Object.entries(stateA.audioChannels)) {
+			const chB = stateB.audioChannels[key];
+			if (!chB) continue;
+			if (chA.muted !== chB.muted || chA.afv !== chB.afv) return true;
+		}
+		return false;
+	}
+
 	/** Check if critical fields mismatch at same lastCommandSeq. */
 	function hasCriticalMismatch(): boolean {
 		if (!stateA || !stateB || !connectedA || !connectedB) return false;
@@ -281,6 +293,9 @@ export function createReconciler() {
 		for (const field of MISMATCH_FIELDS) {
 			if (!fieldEquals(stateA[field], stateB[field])) return true;
 		}
+
+		// Audio mute/afv mismatch is critical — one engine muted while other isn't
+		if (hasAudioMismatch()) return true;
 
 		// Check playout channel divergence (currentItemId, itemIndex, currentTitle)
 		const playoutA = stateA?.playout;
