@@ -765,13 +765,13 @@ describe('DualConnectionManager', () => {
 			expect(instanceB.handleControlData).not.toHaveBeenCalled();
 		});
 
-		it('intercepts exact 9-byte payload starting with 0xFF as pong', () => {
+		it('intercepts 13-byte pong payload starting with 0xFF', () => {
 			const mgr = new DualConnectionManager(makeDualConfig());
 			const instanceA = MockedConnectionManager.mock.results[0].value;
 			const clockInstance = MockedClockSync.mock.results[0].value;
 
-			// A valid pong: exactly 9 bytes, first byte 0xFF
-			const pong = new Uint8Array(9);
+			// A valid pong: 13 bytes [0xFF][4B seq][8B timestamp]
+			const pong = new Uint8Array(13);
 			pong[0] = 0xFF;
 			mgr.handleControlData('A', pong);
 
@@ -780,13 +780,13 @@ describe('DualConnectionManager', () => {
 			expect(instanceA.handleControlData).not.toHaveBeenCalled();
 		});
 
-		it('does not intercept non-9-byte payloads starting with 0xFF as pong', () => {
+		it('does not intercept short payloads starting with 0xFF as pong', () => {
 			const mgr = new DualConnectionManager(makeDualConfig());
 			const instanceA = MockedConnectionManager.mock.results[0].value;
 			const clockInstance = MockedClockSync.mock.results[0].value;
 
-			// 12-byte payload with first byte 0xFF — should NOT be treated as pong
-			const data = new Uint8Array(12);
+			// 9-byte payload with first byte 0xFF — too short for new pong format
+			const data = new Uint8Array(9);
 			data[0] = 0xFF;
 			mgr.handleControlData('A', data);
 

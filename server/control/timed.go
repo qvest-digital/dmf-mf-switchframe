@@ -61,7 +61,7 @@ func timedHandler(q *cmdqueue.Queue, action string, seqTracker func(uint64), han
 // the JSON payload before enqueueing. This ensures that when the dispatcher
 // replays the command (without an HTTP request), path-derived values like
 // {source} or {id} are available in the payload as "_path_<key>".
-func timedHandlerWithPath(q *cmdqueue.Queue, action string, pathKeys []string, handler immediateHandlerFunc) http.HandlerFunc {
+func timedHandlerWithPath(q *cmdqueue.Queue, action string, seqTracker func(uint64), pathKeys []string, handler immediateHandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -95,6 +95,9 @@ func timedHandlerWithPath(q *cmdqueue.Queue, action string, pathKeys []string, h
 			if err := q.Enqueue(cmd); err != nil {
 				httperr.Write(w, http.StatusBadRequest, err.Error())
 				return
+			}
+			if seqTracker != nil && timed.CommandSeq > 0 {
+				seqTracker(timed.CommandSeq)
 			}
 			w.WriteHeader(http.StatusAccepted)
 			return

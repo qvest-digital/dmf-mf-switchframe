@@ -1556,6 +1556,7 @@ func (a *App) initAPI() error {
 		control.WithMacroStore(a.macroStore),
 		control.WithKeyer(a.keyProcessor),
 		control.WithCommandQueue(a.cmdQueue),
+		control.WithSeqTracker(a.sw.TrackCommandSeq),
 		control.WithKeyBridge(a.keyBridge),
 		control.WithOperatorStore(a.operatorStore),
 		control.WithSessionManager(a.sessionMgr),

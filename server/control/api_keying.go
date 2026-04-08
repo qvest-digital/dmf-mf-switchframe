@@ -13,9 +13,9 @@ func (a *API) registerKeyRoutes(mux *http.ServeMux) {
 	if a.keyer == nil {
 		return
 	}
-	mux.HandleFunc("PUT /api/sources/{source}/key", timedHandlerWithPath(a.cmdQueue, "key_set", []string{"source"}, a.handleSetSourceKeyInner))
+	mux.HandleFunc("PUT /api/sources/{source}/key", timedHandlerWithPath(a.cmdQueue, "key_set", a.seqTracker, []string{"source"}, a.handleSetSourceKeyInner))
 	mux.HandleFunc("GET /api/sources/{source}/key", a.handleGetSourceKey)
-	mux.HandleFunc("DELETE /api/sources/{source}/key", timedHandlerWithPath(a.cmdQueue, "key_delete", []string{"source"}, a.handleDeleteSourceKeyInner))
+	mux.HandleFunc("DELETE /api/sources/{source}/key", timedHandlerWithPath(a.cmdQueue, "key_delete", a.seqTracker, []string{"source"}, a.handleDeleteSourceKeyInner))
 }
 
 // handleSetSourceKeyInner configures an upstream key for a source.

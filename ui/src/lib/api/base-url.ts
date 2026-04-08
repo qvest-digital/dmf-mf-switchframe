@@ -141,32 +141,6 @@ export function setEngineUrls(urls: EngineEndpoint[] | null): void {
 	}
 }
 
-function flushPendingCommands(newEngines: EngineEndpoint[]): void {
-	const commands = pendingForNewEngine.splice(0);
-	const now = Date.now();
-
-	for (const cmd of commands) {
-		// Drop stale commands (older than 5 seconds)
-		if (now - cmd.timestamp > PENDING_MAX_AGE_MS) continue;
-
-		// Inject fresh PTP timestamps for timed paths
-		let options = cmd.options;
-		if (flushTimestampInjector && isTimedPath(cmd.path) && options.body && typeof options.body === 'string') {
-			try {
-				const injectedBody = flushTimestampInjector(cmd.path, options.body);
-				options = { ...options, body: injectedBody };
-			} catch {
-				// Injector failed — send without timestamps
-			}
-		}
-
-		for (const engine of newEngines) {
-			const fullUrl = `${engine.url}${cmd.path}`;
-			fetch(fullUrl, options).catch(() => {});
-		}
-	}
-}
-
 export function getEngineUrls(): EngineEndpoint[] | null {
 	return engineUrls;
 }

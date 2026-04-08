@@ -80,7 +80,7 @@ func TestTimedHandlerWithPath_NoTimestamp_ExecutesImmediately(t *testing.T) {
 	}
 
 	q := cmdqueue.New(func() int64 { return 1_000_000_000 })
-	h := timedHandlerWithPath(q, "audio_eq", []string{"source"}, inner)
+	h := timedHandlerWithPath(q, "audio_eq", nil, []string{"source"}, inner)
 
 	body := `{"band":0,"frequency":1000}`
 	req := httptest.NewRequest(http.MethodPut, "/api/audio/camera1/eq", strings.NewReader(body))
@@ -101,7 +101,7 @@ func TestTimedHandlerWithPath_WithTimestamp_InjectsPathValues(t *testing.T) {
 	future := now + 500_000
 	clockNow := now
 	q := cmdqueue.New(func() int64 { return clockNow })
-	h := timedHandlerWithPath(q, "audio_eq", []string{"source"}, inner)
+	h := timedHandlerWithPath(q, "audio_eq", nil, []string{"source"}, inner)
 
 	body := fmt.Sprintf(`{"band":0,"frequency":1000,"execute_at":%d,"command_seq":2}`, future)
 	// Use a real ServeMux to test path value extraction.
@@ -134,7 +134,7 @@ func TestTimedHandlerWithPath_EmptyBody_InjectsPathValues(t *testing.T) {
 	future := now + 500_000
 	clockNow := now
 	q := cmdqueue.New(func() int64 { return clockNow })
-	h := timedHandlerWithPath(q, "key_delete", []string{"source"}, inner)
+	h := timedHandlerWithPath(q, "key_delete", nil, []string{"source"}, inner)
 
 	// Empty body with only timed fields
 	body := fmt.Sprintf(`{"execute_at":%d,"command_seq":3}`, future)
