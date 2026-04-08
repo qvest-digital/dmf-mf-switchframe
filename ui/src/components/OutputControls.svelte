@@ -78,6 +78,14 @@
 	{#if syncHealth}
 		<SyncIndicator health={syncHealth} onclick={() => onToggleRedundancyPanel?.()} />
 	{/if}
+	{#if isDualEngine}
+		<span class="dual-badge"
+			class:synced={syncHealth?.status === 'synced'}
+			class:warning={syncHealth?.status === 'lagging' || syncHealth?.status === 'diverged' || syncHealth?.status === 'recovering'}
+			class:error={syncHealth?.status === 'mismatch' || syncHealth?.status === 'disconnected'}>
+			DUAL
+		</span>
+	{/if}
 	{#if badgeText}
 		<FormatPicker {badgeText} {isDualEngine} />
 	{/if}
@@ -233,5 +241,24 @@
 
 	.out-dot.active {
 		background: var(--accent-blue, #3b82f6);
+	}
+
+	.dual-badge {
+		font-size: 0.6rem;
+		font-weight: 700;
+		padding: 2px 5px;
+		border-radius: 3px;
+		background: var(--tally-preview, #22c55e);
+		color: #fff;
+		letter-spacing: 0.05em;
+	}
+
+	.dual-badge.warning {
+		background: var(--accent-yellow, #eab308);
+		color: #000;
+	}
+
+	.dual-badge.error {
+		background: #ef4444;
 	}
 </style>

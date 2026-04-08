@@ -259,4 +259,77 @@ describe('OutputControls', () => {
 		const outputStatus = container.querySelector('[data-testid="engine-output-status"]');
 		expect(outputStatus).toBeFalsy();
 	});
+
+	// --- DUAL badge ---
+
+	it('shows DUAL badge when isDualEngine is true', () => {
+		const { container } = render(OutputControls, {
+			props: { state: baseState, isDualEngine: true },
+		});
+		const badge = container.querySelector('.dual-badge');
+		expect(badge).toBeTruthy();
+		expect(badge?.textContent?.trim()).toBe('DUAL');
+	});
+
+	it('does not show DUAL badge when isDualEngine is false', () => {
+		const { container } = render(OutputControls, {
+			props: { state: baseState, isDualEngine: false },
+		});
+		const badge = container.querySelector('.dual-badge');
+		expect(badge).toBeFalsy();
+	});
+
+	it('DUAL badge has warning class when syncHealth status is lagging', () => {
+		const { container } = render(OutputControls, {
+			props: {
+				state: baseState,
+				isDualEngine: true,
+				syncHealth: { status: 'lagging' },
+			},
+		});
+		const badge = container.querySelector('.dual-badge');
+		expect(badge).toBeTruthy();
+		expect(badge?.classList.contains('warning')).toBe(true);
+	});
+
+	it('DUAL badge has error class when syncHealth status is mismatch', () => {
+		const { container } = render(OutputControls, {
+			props: {
+				state: baseState,
+				isDualEngine: true,
+				syncHealth: { status: 'mismatch' },
+			},
+		});
+		const badge = container.querySelector('.dual-badge');
+		expect(badge).toBeTruthy();
+		expect(badge?.classList.contains('error')).toBe(true);
+	});
+
+	it('DUAL badge has no status class when syncHealth is null', () => {
+		const { container } = render(OutputControls, {
+			props: {
+				state: baseState,
+				isDualEngine: true,
+				syncHealth: null,
+			},
+		});
+		const badge = container.querySelector('.dual-badge');
+		expect(badge).toBeTruthy();
+		expect(badge?.classList.contains('warning')).toBe(false);
+		expect(badge?.classList.contains('error')).toBe(false);
+		expect(badge?.classList.contains('synced')).toBe(false);
+	});
+
+	it('DUAL badge has synced class when syncHealth status is synced', () => {
+		const { container } = render(OutputControls, {
+			props: {
+				state: baseState,
+				isDualEngine: true,
+				syncHealth: { status: 'synced' },
+			},
+		});
+		const badge = container.querySelector('.dual-badge');
+		expect(badge).toBeTruthy();
+		expect(badge?.classList.contains('synced')).toBe(true);
+	});
 });
