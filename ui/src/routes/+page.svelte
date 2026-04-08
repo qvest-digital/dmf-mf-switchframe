@@ -791,6 +791,12 @@
 						}
 						// Try failover after brief delay for connection setup
 						setTimeout(() => {
+							if (!canFailover()) {
+								console.warn('[failover] Circuit breaker: max failovers reached in window');
+								notify('warning', 'Video failover suppressed — both engines may be degraded');
+								return;
+							}
+							recordFailover();
 							videoFailoverActive = true;
 							pipelineManager.failoverToEngineB(inferred, Object.keys(store.state.sources ?? {}))
 								.then(() => {
@@ -806,6 +812,12 @@
 					return;
 				}
 
+				if (!canFailover()) {
+					console.warn('[failover] Circuit breaker: max failovers reached in window');
+					notify('warning', 'Video failover suppressed — both engines may be degraded');
+					return;
+				}
+				recordFailover();
 				videoFailoverActive = true;
 				pipelineManager.failoverToEngineB(store.state.engineBUrl, Object.keys(store.state.sources ?? {}))
 					.then(() => {
@@ -816,6 +828,12 @@
 			} else if (pipelineManager.activeEngine === 'B') {
 				// Engine B is stalling — try restoring to Engine A if reconnected
 				if (connectionManager.engineConnectionState('A') !== 'disconnected') {
+					if (!canFailover()) {
+						console.warn('[failover] Circuit breaker: max failovers reached in window');
+						notify('warning', 'Video failover suppressed — both engines may be degraded');
+						return;
+					}
+					recordFailover();
 					videoFailoverActive = true;
 					pipelineManager.restoreToEngineA(Object.keys(store.state.sources ?? {}))
 						.then(() => {
@@ -1128,6 +1146,20 @@
 	// 'single-engine' with authoritative='B' when only Engine B is reachable.
 	// When both engines come back in sync, restore to Engine A.
 	let videoFailoverActive = false;
+	let failoverTimestamps: number[] = [];
+	const FAILOVER_MAX_COUNT = 2;
+	const FAILOVER_WINDOW_MS = 30_000;
+
+	function canFailover(): boolean {
+		const now = Date.now();
+		failoverTimestamps = failoverTimestamps.filter(t => now - t < FAILOVER_WINDOW_MS);
+		return failoverTimestamps.length < FAILOVER_MAX_COUNT;
+	}
+
+	function recordFailover(): void {
+		failoverTimestamps.push(Date.now());
+	}
+
 	$effect(() => {
 		if (!isDualEngine || !mounted) return;
 		const status = syncHealth?.status;
@@ -1137,6 +1169,12 @@
 		if (status === 'single-engine' && auth === 'B' && pipelineManager.activeEngine === 'A' && !videoFailoverActive) {
 			const engineBUrl = store.state.engineBUrl;
 			if (engineBUrl) {
+				if (!canFailover()) {
+					console.warn('[failover] Circuit breaker: max failovers reached in window');
+					notify('warning', 'Video failover suppressed — both engines may be degraded');
+					return;
+				}
+				recordFailover();
 				videoFailoverActive = true;
 				pipelineManager.failoverToEngineB(engineBUrl, Object.keys(store.state.sources ?? {}))
 					.then(() => {
@@ -1149,6 +1187,12 @@
 
 		// Restore: when synced and currently on B, switch back to A
 		if (status === 'synced' && pipelineManager.activeEngine === 'B' && videoFailoverActive) {
+			if (!canFailover()) {
+				console.warn('[failover] Circuit breaker: max failovers reached in window');
+				notify('warning', 'Video failover suppressed — both engines may be degraded');
+				return;
+			}
+			recordFailover();
 			videoFailoverActive = false;
 			pipelineManager.restoreToEngineA(Object.keys(store.state.sources ?? {}))
 				.then(() => {
@@ -1179,6 +1223,12 @@
 		const otherConnected = connectionManager.engineConnectionState(other) !== 'disconnected';
 
 		if (!activeConnected && otherConnected) {
+			if (!canFailover()) {
+				console.warn('[failover] Circuit breaker: max failovers reached in window');
+				notify('warning', 'Video failover suppressed — both engines may be degraded');
+				return;
+			}
+			recordFailover();
 			if (active === 'B') {
 				pipelineManager.restoreToEngineA(Object.keys(store.state.sources ?? {}))
 					.then(() => {
