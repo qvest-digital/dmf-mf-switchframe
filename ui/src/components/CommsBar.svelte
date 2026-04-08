@@ -45,9 +45,16 @@
 		if (!newTransport) return;
 
 		connectedEngine = auth;
-		audioManager.reconnect(newTransport).catch((err) => {
-			notify('error', `Comms failover failed: ${err}`);
-		});
+		audioManager.reconnect(newTransport)
+			.then(() => {
+				// Re-sync mute state to the new engine after reconnect
+				if (isMuted) {
+					commsMute(operatorId, true).catch(() => {});
+				}
+			})
+			.catch((err) => {
+				notify('error', `Comms failover failed: ${err}`);
+			});
 	});
 
 	function handleVolumeChange(e: Event) {
