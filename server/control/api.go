@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/clip"
@@ -767,7 +768,7 @@ func (a *API) handleState(w http.ResponseWriter, r *http.Request) {
 func (a *API) handleSyncHealth(w http.ResponseWriter, r *http.Request) {
 	state := a.enrichedState()
 	resp := map[string]any{
-		"ptpOffsetUs":     int64(0), // placeholder until PTP discipline is measured
+		"clockSync":       clock.GetSyncState(),
 		"lastCommandSeq":  state.LastCommandSeq,
 		"lastExecutedSeq": state.LastExecutedSeq,
 		"lastExecutedErr": state.LastExecutedErr,

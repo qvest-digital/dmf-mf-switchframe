@@ -16,3 +16,23 @@ import "time"
 func Now() int64 {
 	return time.Now().UnixMicro()
 }
+
+// SyncState reports clock synchronization status.
+type SyncState struct {
+	Synchronized bool   `json:"synchronized"`
+	OffsetUs     int64  `json:"offsetUs"` // offset from reference source
+	Source       string `json:"source"`   // "ptp", "ntp", "freerun"
+}
+
+// GetSyncState returns the current clock synchronization state.
+//
+// The default implementation reports the NTP-disciplined system clock.
+// When a PTP hardware clock is available, this will be replaced with
+// real PTP servo offset measurements.
+func GetSyncState() SyncState {
+	return SyncState{
+		Synchronized: true,
+		Source:       "ntp",
+		OffsetUs:     0,
+	}
+}

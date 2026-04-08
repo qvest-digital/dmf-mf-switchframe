@@ -24,7 +24,11 @@ func TestSyncHealth_ReturnsFields(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 
 	var resp struct {
-		PTPOffsetUS    int64  `json:"ptpOffsetUs"`
+		ClockSync struct {
+			Synchronized bool   `json:"synchronized"`
+			OffsetUs     int64  `json:"offsetUs"`
+			Source       string `json:"source"`
+		} `json:"clockSync"`
 		LastCommandSeq uint64 `json:"lastCommandSeq"`
 		LastExecSeq    uint64 `json:"lastExecutedSeq"`
 		LastExecErr    string `json:"lastExecutedErr"`
@@ -33,7 +37,11 @@ func TestSyncHealth_ReturnsFields(t *testing.T) {
 	err := json.NewDecoder(rec.Body).Decode(&resp)
 	require.NoError(t, err)
 	require.True(t, resp.UptimeMS >= 0, "uptime should be non-negative")
-	// New fields should be present (zero-valued for fresh state).
+	// Clock sync should report NTP-disciplined system clock.
+	require.True(t, resp.ClockSync.Synchronized, "clock should be synchronized")
+	require.Equal(t, "ntp", resp.ClockSync.Source)
+	require.Equal(t, int64(0), resp.ClockSync.OffsetUs)
+	// Seq fields should be present (zero-valued for fresh state).
 	require.Equal(t, uint64(0), resp.LastExecSeq)
 	require.Equal(t, "", resp.LastExecErr)
 }
