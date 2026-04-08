@@ -425,7 +425,19 @@ async function dualRequest<T>(url: string, options: RequestInit | undefined, eng
 				return ok ? null : availableEngines[i]?.id ?? 'unknown';
 			})
 			.filter((id): id is string => id !== null);
-		partialFailureNotify?.(`Command failed on Engine ${failedEngineIds.join(', ')} — syncing...`);
+		partialFailureNotify?.(`Command failed on Engine ${failedEngineIds.join(', ')} — retrying...`);
+
+		// Retry failed engines once after 500ms (best-effort)
+		setTimeout(async () => {
+			for (let i = 0; i < results.length; i++) {
+				const ok = results[i].status === 'fulfilled' && (results[i] as PromiseFulfilledResult<Response>).value.ok;
+				if (!ok) {
+					try {
+						await fetch(`${availableEngines[i].url}${url}`, { ...opts, body: bodies[i] });
+					} catch { /* retry is best-effort */ }
+				}
+			}
+		}, 500);
 	}
 
 	if (successful.length > 0) {
@@ -559,7 +571,19 @@ async function dualFetch(url: string, options: RequestInit): Promise<Response> {
 					return ok ? null : availableEngines[i]?.id ?? 'unknown';
 				})
 				.filter((id): id is string => id !== null);
-			partialFailureNotify?.(`Command failed on Engine ${failedEngineIds.join(', ')} — syncing...`);
+			partialFailureNotify?.(`Command failed on Engine ${failedEngineIds.join(', ')} — retrying...`);
+
+			// Retry failed engines once after 500ms (best-effort)
+			setTimeout(async () => {
+				for (let i = 0; i < results.length; i++) {
+					const ok = results[i].status === 'fulfilled' && (results[i] as PromiseFulfilledResult<Response>).value.ok;
+					if (!ok) {
+						try {
+							await fetch(`${availableEngines[i].url}${url}`, { ...opts, body: bodies[i] });
+						} catch { /* retry is best-effort */ }
+					}
+				}
+			}, 500);
 		}
 
 		if (successful.length > 0) return successful[0].value;

@@ -687,6 +687,164 @@ describe('switch-api dual-engine routing', () => {
 		});
 	});
 
+	// ─── Partial failure retry ───
+
+	describe('partial failure retry', () => {
+		beforeEach(() => {
+			vi.useFakeTimers();
+			setEngineUrls([
+				{ id: 'A', url: 'https://engine-a.example.com' },
+				{ id: 'B', url: 'https://engine-b.example.com' },
+			]);
+		});
+
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		it('retries failed engine once after 500ms on HTTP error', async () => {
+			let callCount = 0;
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				callCount++;
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-b') && callCount <= 2) {
+					// First fan-out call to engine-b fails
+					return Promise.resolve(errorResponse(500, 'engine B crashed'));
+				}
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
+			});
+
+			await cut('cam1');
+
+			// Initial fan-out: 2 calls (A success, B fail)
+			const initialCalls = fetchCalls.filter(c => c.url.includes('/api/switch/cut'));
+			expect(initialCalls).toHaveLength(2);
+
+			// Advance timer to trigger retry
+			await vi.advanceTimersByTimeAsync(500);
+
+			// Retry: 1 additional call to engine-b only
+			const allCutCalls = fetchCalls.filter(c => c.url.includes('/api/switch/cut'));
+			expect(allCutCalls).toHaveLength(3);
+			expect(allCutCalls[2].url).toContain('engine-b');
+		});
+
+		it('retries failed engine once after 500ms on network error', async () => {
+			let callCount = 0;
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				callCount++;
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-b') && callCount <= 2) {
+					return Promise.reject(new Error('network error'));
+				}
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
+			});
+
+			await cut('cam1');
+
+			// Initial fan-out: 2 calls attempted (A success, B rejected but still recorded by mock)
+			const initialCalls = fetchCalls.filter(c => c.url.includes('/api/switch/cut'));
+			expect(initialCalls).toHaveLength(2);
+
+			// Advance timer to trigger retry
+			await vi.advanceTimersByTimeAsync(500);
+
+			// Retry call to engine-b (third call)
+			const allCutCalls = fetchCalls.filter(c => c.url.includes('/api/switch/cut'));
+			expect(allCutCalls).toHaveLength(3);
+			expect(allCutCalls[2].url).toContain('engine-b');
+		});
+
+		it('does not retry when both engines succeed', async () => {
+			await cut('cam1');
+
+			const initialCalls = fetchCalls.filter(c => c.url.includes('/api/switch/cut'));
+			expect(initialCalls).toHaveLength(2);
+
+			await vi.advanceTimersByTimeAsync(500);
+
+			// No additional calls
+			const allCutCalls = fetchCalls.filter(c => c.url.includes('/api/switch/cut'));
+			expect(allCutCalls).toHaveLength(2);
+		});
+
+		it('does not retry when both engines fail', async () => {
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				return Promise.resolve(errorResponse(500, 'engine down'));
+			});
+
+			await expect(cut('cam1')).rejects.toThrow();
+
+			const initialCalls = fetchCalls.filter(c => c.url.includes('/api/switch/cut'));
+			expect(initialCalls).toHaveLength(2);
+
+			await vi.advanceTimersByTimeAsync(500);
+
+			// No retry when all engines failed
+			const allCutCalls = fetchCalls.filter(c => c.url.includes('/api/switch/cut'));
+			expect(allCutCalls).toHaveLength(2);
+		});
+
+		it('retry failure is silently ignored (best-effort)', async () => {
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-b')) {
+					return Promise.reject(new Error('still broken'));
+				}
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
+			});
+
+			// Initial call succeeds (A ok, B fail)
+			const result = await cut('cam1');
+			expect(result.programSource).toBe('cam1');
+
+			// Advance timer — retry also fails but should not throw
+			await vi.advanceTimersByTimeAsync(500);
+
+			// No unhandled promise rejection — test passes if we get here
+		});
+
+		it('notify message says retrying (not syncing)', async () => {
+			const notifySpy = vi.fn();
+			setPartialFailureNotify(notifySpy);
+
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-b')) {
+					return Promise.resolve(errorResponse(500, 'engine B crashed'));
+				}
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
+			});
+
+			await cut('cam1');
+			expect(notifySpy).toHaveBeenCalledWith(expect.stringContaining('retrying'));
+		});
+
+		it('only retries the failed engine, not the successful one', async () => {
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-a') && url.includes('/api/switch/cut')) {
+					return Promise.resolve(errorResponse(500, 'engine A crashed'));
+				}
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
+			});
+
+			await cut('cam1');
+
+			// Initial: 2 calls
+			const initialCalls = fetchCalls.filter(c => c.url.includes('/api/switch/cut'));
+			expect(initialCalls).toHaveLength(2);
+
+			await vi.advanceTimersByTimeAsync(500);
+
+			// Retry only engine-a
+			const allCutCalls = fetchCalls.filter(c => c.url.includes('/api/switch/cut'));
+			expect(allCutCalls).toHaveLength(3);
+			expect(allCutCalls[2].url).toContain('engine-a');
+		});
+	});
+
 	// ─── Sticky engine routing after failover ───
 
 	describe('sticky engine routing', () => {
