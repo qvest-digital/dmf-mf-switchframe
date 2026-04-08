@@ -268,9 +268,12 @@ export class PipelineManager {
 	}
 
 	/** Create Engine B media pipeline for compare mode / A/B toggle. */
-	createEngineBPipeline(engineBUrl: string): void {
+	createEngineBPipeline(engineBUrl: string, options?: { onControlState?: (data: Uint8Array) => void }): void {
 		if (this.pipelineB) return;
-		this.pipelineB = createMediaPipeline({ engineBaseUrl: engineBUrl });
+		this.pipelineB = createMediaPipeline({
+			engineBaseUrl: engineBUrl,
+			...(options?.onControlState ? { onControlState: options.onControlState } : {}),
+		});
 	}
 
 	/** Destroy Engine B pipeline. */
@@ -359,11 +362,11 @@ export class PipelineManager {
 	 *
 	 * Called automatically when Engine A disconnects in dual-engine mode.
 	 */
-	async failoverToEngineB(engineBUrl: string, sourceKeys: string[]): Promise<void> {
+	async failoverToEngineB(engineBUrl: string, sourceKeys: string[], options?: { onControlState?: (data: Uint8Array) => void }): Promise<void> {
 		if (this._activeEngine === 'B') return;
 
 		// Create Engine B pipeline
-		this.createEngineBPipeline(engineBUrl);
+		this.createEngineBPipeline(engineBUrl, options);
 		if (!this.pipelineB) return;
 
 		// Connect all sources on Engine B

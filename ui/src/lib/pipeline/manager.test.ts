@@ -594,6 +594,15 @@ describe('PipelineManager', () => {
 			expect(mockedCreateMediaPipeline).toHaveBeenCalledWith({ engineBaseUrl: 'https://engine-b.example.com' });
 		});
 
+		it('createEngineBPipeline passes onControlState callback', () => {
+			const onControlState = vi.fn();
+			manager.createEngineBPipeline('https://engine-b.example.com', { onControlState });
+			expect(mockedCreateMediaPipeline).toHaveBeenCalledWith({
+				engineBaseUrl: 'https://engine-b.example.com',
+				onControlState,
+			});
+		});
+
 		it('destroyEngineBPipeline cleans up', () => {
 			manager.createEngineBPipeline('https://engine-b.example.com');
 			const bPipeline = mockedCreateMediaPipeline.mock.results[0].value;
@@ -880,6 +889,25 @@ describe('PipelineManager', () => {
 			expect(manager.activeEngine).toBe('B');
 			// Should NOT have created another pipeline
 			expect(mockedCreateMediaPipeline).not.toHaveBeenCalled();
+		});
+
+		it('failoverToEngineB passes onControlState callback to pipeline creation', async () => {
+			const pgmCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, null);
+
+			const bPipelineMock = createMockPipeline();
+			bPipelineMock.getAudioDecoder.mockReturnValue({ getLevels: vi.fn().mockReturnValue({ peak: [0, 0] }) } as any);
+			mockedCreateMediaPipeline.mockReturnValueOnce(bPipelineMock);
+
+			const onControlState = vi.fn();
+			const failoverPromise = manager.failoverToEngineB('https://engine-b:8080', ['cam1'], { onControlState });
+			await vi.advanceTimersByTimeAsync(250);
+			await failoverPromise;
+
+			expect(mockedCreateMediaPipeline).toHaveBeenCalledWith({
+				engineBaseUrl: 'https://engine-b:8080',
+				onControlState,
+			});
 		});
 
 		it('restoreToEngineA is idempotent when already on A', async () => {
