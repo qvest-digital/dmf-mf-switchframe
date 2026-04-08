@@ -417,7 +417,7 @@ export function createReconciler() {
 		// Audio mute/afv mismatch is critical — one engine muted while other isn't
 		if (hasAudioMismatch()) return true;
 
-		// Check playout channel divergence (currentItemId, itemIndex, currentTitle)
+		// Check playout channel divergence (itemIndex with drift tolerance, currentTitle)
 		const playoutA = stateA?.playout;
 		const playoutB = stateB?.playout;
 		if (playoutA?.channels?.length && playoutB?.channels?.length) {
@@ -428,9 +428,11 @@ export function createReconciler() {
 				const chA = channelsA[i];
 				const chB = channelsB[i];
 				if (!chA || !chB) continue;
-				if (chA.currentItemId !== undefined && chB.currentItemId !== undefined && chA.currentItemId !== chB.currentItemId) return true;
-				if (chA.itemIndex !== chB.itemIndex) return true;
-				if (chA.currentTitle !== undefined && chB.currentTitle !== undefined && chA.currentTitle !== chB.currentTitle) return true;
+				// Tolerate <=1 item index difference (natural scheduler drift)
+				const indexDelta = Math.abs((chA.itemIndex ?? 0) - (chB.itemIndex ?? 0));
+				if (indexDelta > 1) return true;
+				// Only flag title mismatch if index delta is 0 (same item, different title = real mismatch)
+				if (indexDelta === 0 && chA.currentTitle !== undefined && chB.currentTitle !== undefined && chA.currentTitle !== chB.currentTitle) return true;
 			}
 		}
 
