@@ -1014,4 +1014,155 @@ describe('PipelineManager', () => {
 			);
 		});
 	});
+
+	describe('warm standby', () => {
+		const mockedCreateMediaPipeline = vi.mocked(createMediaPipeline);
+
+		beforeEach(() => {
+			vi.useFakeTimers();
+			mockedCreateMediaPipeline.mockClear();
+		});
+
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		it('enableWarmStandby creates Engine B pipeline', () => {
+			manager.enableWarmStandby('https://engine-b.example.com', ['cam1', 'cam2']);
+
+			expect(manager.hasEngineBPipeline).toBe(true);
+			expect(manager.warmStandbyActive).toBe(true);
+			expect(mockedCreateMediaPipeline).toHaveBeenCalledWith({
+				engineBaseUrl: 'https://engine-b.example.com',
+			});
+
+			const bPipeline = mockedCreateMediaPipeline.mock.results[0].value;
+			// Should connect all source keys plus program and program-preview
+			expect(bPipeline.addSource).toHaveBeenCalledWith('cam1');
+			expect(bPipeline.addSource).toHaveBeenCalledWith('cam2');
+			expect(bPipeline.addSource).toHaveBeenCalledWith('program');
+			expect(bPipeline.addSource).toHaveBeenCalledWith('program-preview');
+			expect(bPipeline.connectSource).toHaveBeenCalledWith('cam1');
+			expect(bPipeline.connectSource).toHaveBeenCalledWith('cam2');
+			expect(bPipeline.connectSource).toHaveBeenCalledWith('program');
+			expect(bPipeline.connectSource).toHaveBeenCalledWith('program-preview');
+		});
+
+		it('enableWarmStandby is idempotent (calling twice is safe)', () => {
+			manager.enableWarmStandby('https://engine-b.example.com', ['cam1']);
+			const bPipeline = mockedCreateMediaPipeline.mock.results[0].value;
+			bPipeline.addSource.mockClear();
+			bPipeline.connectSource.mockClear();
+
+			// Call again with same sources — should not re-create or re-connect
+			manager.enableWarmStandby('https://engine-b.example.com', ['cam1']);
+
+			expect(mockedCreateMediaPipeline).toHaveBeenCalledTimes(1);
+			expect(bPipeline.addSource).not.toHaveBeenCalled();
+			expect(bPipeline.connectSource).not.toHaveBeenCalled();
+		});
+
+		it('enableWarmStandby passes onControlState callback', () => {
+			const onControlState = vi.fn();
+			manager.enableWarmStandby('https://engine-b.example.com', ['cam1'], { onControlState });
+
+			expect(mockedCreateMediaPipeline).toHaveBeenCalledWith({
+				engineBaseUrl: 'https://engine-b.example.com',
+				onControlState,
+			});
+		});
+
+		it('failoverToEngineB skips wait when warm standby active', async () => {
+			// Set up program canvas on Engine A
+			const pgmCanvas = createCanvas();
+			const pvwCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, pvwCanvas);
+			await manager.syncSources(makeSources('cam1', 'cam2'));
+
+			// Enable warm standby first
+			manager.enableWarmStandby('https://engine-b.example.com', ['cam1', 'cam2']);
+			const bPipeline = mockedCreateMediaPipeline.mock.results[0].value;
+			bPipeline.addSource.mockClear();
+			bPipeline.connectSource.mockClear();
+
+			// Failover should complete instantly (no 3s wait)
+			const start = Date.now();
+			await manager.failoverToEngineB('https://engine-b.example.com', ['cam1', 'cam2']);
+			const elapsed = Date.now() - start;
+
+			expect(manager.activeEngine).toBe('B');
+			// Should NOT have re-added sources (warm standby already connected them)
+			expect(bPipeline.addSource).not.toHaveBeenCalledWith('cam1');
+			expect(bPipeline.addSource).not.toHaveBeenCalledWith('cam2');
+			expect(bPipeline.addSource).not.toHaveBeenCalledWith('program');
+			// Should be instant (no timer-based wait)
+			expect(elapsed).toBeLessThan(100);
+		});
+
+		it('failoverToEngineB still waits when no warm standby', async () => {
+			// Set up program canvas on Engine A
+			const pgmCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, null);
+
+			// Pipeline B never becomes ready (cold path)
+			const bPipelineMock = createMockPipeline();
+			mockedCreateMediaPipeline.mockReturnValueOnce(bPipelineMock);
+
+			const failoverPromise = manager.failoverToEngineB('https://engine-b:8080', ['cam1']);
+
+			// Must advance timers past the 3-second timeout (cold path)
+			await vi.advanceTimersByTimeAsync(3200);
+			await failoverPromise;
+
+			expect(manager.activeEngine).toBe('B');
+		});
+
+		it('syncWarmStandby adds new sources to B', () => {
+			manager.enableWarmStandby('https://engine-b.example.com', ['cam1']);
+			const bPipeline = mockedCreateMediaPipeline.mock.results[0].value;
+			bPipeline.addSource.mockClear();
+			bPipeline.connectSource.mockClear();
+
+			// New source appears
+			manager.syncWarmStandby(['cam1', 'cam2']);
+
+			// cam1 already connected (skip), cam2 is new
+			expect(bPipeline.addSource).toHaveBeenCalledWith('cam2');
+			expect(bPipeline.connectSource).toHaveBeenCalledWith('cam2');
+			expect(bPipeline.addSource).not.toHaveBeenCalledWith('cam1');
+		});
+
+		it('syncWarmStandby is no-op without warm standby', () => {
+			// No warm standby enabled — should not throw or do anything
+			manager.syncWarmStandby(['cam1', 'cam2']);
+			expect(manager.hasEngineBPipeline).toBe(false);
+		});
+
+		it('syncWarmStandby is no-op when active engine is B', async () => {
+			// Set up and failover to B
+			const pgmCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, null);
+			await manager.syncSources(makeSources('cam1'));
+
+			manager.enableWarmStandby('https://engine-b.example.com', ['cam1']);
+			const bPipeline = mockedCreateMediaPipeline.mock.results[0].value;
+
+			await manager.failoverToEngineB('https://engine-b.example.com', ['cam1']);
+			bPipeline.addSource.mockClear();
+			bPipeline.connectSource.mockClear();
+
+			// syncWarmStandby should be no-op because active engine is B
+			manager.syncWarmStandby(['cam1', 'cam2']);
+			expect(bPipeline.addSource).not.toHaveBeenCalled();
+		});
+
+		it('destroyEngineBPipeline resets warm standby state', () => {
+			manager.enableWarmStandby('https://engine-b.example.com', ['cam1']);
+			expect(manager.warmStandbyActive).toBe(true);
+
+			manager.destroyEngineBPipeline();
+			expect(manager.warmStandbyActive).toBe(false);
+			expect(manager.hasEngineBPipeline).toBe(false);
+		});
+	});
 });

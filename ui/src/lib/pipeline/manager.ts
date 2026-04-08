@@ -27,6 +27,12 @@ export class PipelineManager {
 	/** Secondary pipeline for Engine B (compare mode / A/B toggle). */
 	private pipelineB: MediaPipeline | null = null;
 
+	/** Track which sources are connected on Engine B (warm standby + compare). */
+	private connectedSourcesB = new Set<string>();
+
+	/** Whether warm standby was enabled (proactive Engine B pipeline). */
+	private _warmStandbyActive = false;
+
 	/** Track which sources are connected to avoid duplicate work. */
 	private connectedSources = new Set<string>();
 	/** Track which tile canvases are attached. */
@@ -280,6 +286,48 @@ export class PipelineManager {
 	destroyEngineBPipeline(): void {
 		this.pipelineB?.destroy();
 		this.pipelineB = null;
+		this.connectedSourcesB = new Set<string>();
+		this._warmStandbyActive = false;
+	}
+
+	/**
+	 * Proactively create and maintain a warm Engine B pipeline.
+	 * Connects all sources plus 'program' and 'program-preview' on B,
+	 * but does NOT attach any canvases. MoQ transports stay running so
+	 * failover only needs to swap canvases (instant, no 3s wait).
+	 */
+	enableWarmStandby(engineBUrl: string, sourceKeys: string[], options?: { onControlState?: (data: Uint8Array) => void }): void {
+		// Create Engine B pipeline if not exists
+		this.createEngineBPipeline(engineBUrl, options);
+		if (!this.pipelineB) return;
+
+		this._warmStandbyActive = true;
+
+		// Connect all source keys
+		const allKeys = [...sourceKeys, 'program', 'program-preview'];
+		for (const key of allKeys) {
+			if (!this.connectedSourcesB.has(key)) {
+				this.pipelineB.addSource(key);
+				this.pipelineB.connectSource(key);
+				this.connectedSourcesB.add(key);
+			}
+		}
+	}
+
+	/**
+	 * Keep Engine B's source list in sync as sources come and go.
+	 * Only operates when warm standby is active and Engine A is primary.
+	 */
+	syncWarmStandby(sourceKeys: string[]): void {
+		if (!this.pipelineB || !this._warmStandbyActive || this._activeEngine !== 'A') return;
+
+		for (const key of sourceKeys) {
+			if (!this.connectedSourcesB.has(key)) {
+				this.pipelineB.addSource(key);
+				this.pipelineB.connectSource(key);
+				this.connectedSourcesB.add(key);
+			}
+		}
 	}
 
 	/** Connect a source on Engine B's pipeline. */
@@ -386,23 +434,29 @@ export class PipelineManager {
 	async failoverToEngineB(engineBUrl: string, sourceKeys: string[], options?: { onControlState?: (data: Uint8Array) => void }): Promise<void> {
 		if (this._activeEngine === 'B') return;
 
-		// Create Engine B pipeline
-		this.createEngineBPipeline(engineBUrl, options);
-		if (!this.pipelineB) return;
+		if (this.pipelineB && this._warmStandbyActive) {
+			// Warm standby path: pipeline B already exists with sources
+			// connected — skip creation, source connection, AND the 3s wait.
+			// Go straight to canvas swapping below.
+		} else {
+			// Cold path: create Engine B pipeline on-demand.
+			this.createEngineBPipeline(engineBUrl, options);
+			if (!this.pipelineB) return;
 
-		// Connect all sources on Engine B
-		for (const key of sourceKeys) {
-			this.pipelineB.addSource(key);
-			this.pipelineB.connectSource(key);
+			// Connect all sources on Engine B
+			for (const key of sourceKeys) {
+				this.pipelineB.addSource(key);
+				this.pipelineB.connectSource(key);
+			}
+			// Also connect program streams
+			this.pipelineB.addSource('program');
+			this.pipelineB.connectSource('program');
+			this.pipelineB.addSource('program-preview');
+			this.pipelineB.connectSource('program-preview');
+
+			// Wait for Engine B to have media (up to 3s)
+			await this.waitForPipelineReady(this.pipelineB, 3000);
 		}
-		// Also connect program streams
-		this.pipelineB.addSource('program');
-		this.pipelineB.connectSource('program');
-		this.pipelineB.addSource('program-preview');
-		this.pipelineB.connectSource('program-preview');
-
-		// Wait for Engine B to have media (up to 3s)
-		await this.waitForPipelineReady(this.pipelineB, 3000);
 
 		// Swap program canvas
 		this.switchProgramToEngineB();
@@ -482,6 +536,11 @@ export class PipelineManager {
 		});
 	}
 
+	/** Whether warm standby is active (Engine B pipeline running proactively). */
+	get warmStandbyActive(): boolean {
+		return this._warmStandbyActive;
+	}
+
 	/** Clean up all state. */
 	destroy(): void {
 		this.stopMetering();
@@ -489,6 +548,8 @@ export class PipelineManager {
 		this.pipeline.destroy();
 		this.connectedSources = new Set<string>();
 		this.attachedCanvases = new Set<string>();
+		this.connectedSourcesB = new Set<string>();
+		this._warmStandbyActive = false;
 		this.currentProgramCanvas = null;
 		this.currentProgramCanvasEl = null;
 		this.currentPreviewCanvas = null;
