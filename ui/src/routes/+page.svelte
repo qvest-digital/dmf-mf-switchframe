@@ -47,6 +47,7 @@
 	import { createPFLToggle } from '$lib/audio/pfl-toggle';
 	import { createDivergenceLog } from '$lib/state/divergence-log.svelte';
 	import { createAutoReconcile } from '$lib/state/auto-reconcile';
+	import { detectAudioConfigDrift } from '$lib/util/audio-drift';
 	import { getLayoutMode, setLayoutMode, type LayoutMode } from '$lib/layout/preferences';
 	import { createFastControl, type FastControl } from '$lib/transport/fast-control';
 	import { createDualFastControl } from '$lib/transport/dual-fast-control';
@@ -244,27 +245,13 @@
 		return { mode: 'dual' as const };
 	});
 
-	// Audio drift between engines (compares peak levels across audio channels)
+	// Audio drift between engines (compares configuration, not transient peaks)
 	const audioDrift = $derived.by(() => {
 		if (!isDualEngine) return null;
 		const rawA = connectionManager.rawStates?.A;
 		const rawB = connectionManager.rawStates?.B;
 		if (!rawA?.audioChannels || !rawB?.audioChannels) return null;
-		let maxDelta = 0;
-		let maxChannel = '';
-		for (const [key, chA] of Object.entries(rawA.audioChannels)) {
-			const chB = rawB.audioChannels[key];
-			if (!chB) continue;
-			const delta = Math.abs(chA.peakL - chB.peakL);
-			if (delta > maxDelta) {
-				maxDelta = delta;
-				maxChannel = key;
-			}
-		}
-		if (maxDelta > 3) {
-			return { channel: maxChannel, deltaDb: Math.round(maxDelta * 10) / 10 };
-		}
-		return null;
+		return detectAudioConfigDrift(rawA.audioChannels, rawB.audioChannels);
 	});
 
 	// Engine B state for OutputControls (raw state from reconciler)
@@ -897,7 +884,7 @@
 				audioDriftInterval = setInterval(() => {
 					if (audioDriftStart && Date.now() - audioDriftStart > 10_000) {
 						autoReconcile.onSyncStatusChange('diverged', syncHealth?.authoritative ?? 'A');
-						divergenceLog.add({ type: 'diverged', message: `Audio drift > 3dB on ${audioDrift?.channel} for >10s` });
+						divergenceLog.add({ type: 'diverged', message: `Audio config drift on ${audioDrift?.channel} for >10s` });
 						audioDriftStart = null;
 						clearInterval(audioDriftInterval);
 						audioDriftInterval = undefined;

@@ -332,7 +332,7 @@ describe('AudioMixer', () => {
 	describe('audio drift badge', () => {
 		it('should show drift badge when audioDrift prop is present', () => {
 			const { container } = render(AudioMixer, {
-				props: { state, audioDrift: { channel: 'cam1', deltaDb: 4.2 } },
+				props: { state, audioDrift: { channel: 'cam1', reason: 'config' } },
 			});
 			const badge = container.querySelector('.drift-badge');
 			expect(badge).toBeTruthy();
@@ -349,12 +349,12 @@ describe('AudioMixer', () => {
 
 		it('should show correct tooltip text on drift badge', () => {
 			const { container } = render(AudioMixer, {
-				props: { state, audioDrift: { channel: 'cam1', deltaDb: 4.2 } },
+				props: { state, audioDrift: { channel: 'cam1', reason: 'config' } },
 			});
 			const badge = container.querySelector('.drift-badge');
 			expect(badge).toBeTruthy();
 			expect(badge!.getAttribute('title')).toBe(
-				'Engine A and Engine B audio levels differ by >4.2dB on cam1',
+				'Engine A and Engine B audio config differs on cam1',
 			);
 		});
 	});

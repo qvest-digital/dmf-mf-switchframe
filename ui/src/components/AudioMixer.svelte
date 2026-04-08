@@ -28,7 +28,7 @@
 		pflMode?: PFLMode;
 		pflManager?: { setAFLGain(sourceKey: string, linearGain: number): void } | null;
 		selectedChannel?: string | null;
-		audioDrift?: { channel: string; deltaDb: number } | null;
+		audioDrift?: { channel: string; reason: string } | null;
 		onPFLToggle?: (sourceKey: string) => void;
 		onStateUpdate?: (state: ControlRoomState) => void;
 		onChannelSelect?: (sourceKey: string | null) => void;
@@ -258,7 +258,7 @@
 		<span class="toggle-arrow">{ui.collapsed ? '\u25B6' : '\u25BC'}</span>
 		<span class="toggle-label">AUDIO</span>
 		{#if audioDrift}
-			<span class="drift-badge" title={`Engine A and Engine B audio levels differ by >${audioDrift.deltaDb}dB on ${audioDrift.channel}`}>&#9888; drift</span>
+			<span class="drift-badge" title={`Engine A and Engine B audio config differs on ${audioDrift.channel}`}>&#9888; drift</span>
 		{/if}
 	</button>
 	<!-- Channel strips -->
@@ -737,7 +737,7 @@
 		<span class="toggle-arrow">{ui.collapsed ? '\u25B6' : '\u25BC'}</span>
 		<span class="toggle-label">AUDIO</span>
 		{#if audioDrift}
-			<span class="drift-badge" title={`Engine A and Engine B audio levels differ by >${audioDrift.deltaDb}dB on ${audioDrift.channel}`}>&#9888; drift</span>
+			<span class="drift-badge" title={`Engine A and Engine B audio config differs on ${audioDrift.channel}`}>&#9888; drift</span>
 		{/if}
 	</button>
 	{/if}
