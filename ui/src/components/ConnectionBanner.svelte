@@ -330,7 +330,7 @@
 		position: fixed;
 		top: 6px;
 		right: 8px;
-		z-index: var(--z-banner);
+		z-index: calc(var(--z-banner) + 1);
 		display: flex;
 		gap: 4px;
 		align-items: center;
