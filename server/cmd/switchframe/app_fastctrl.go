@@ -178,6 +178,7 @@ func (a *App) handleFastPing(data []byte) error {
 	pong := fastctrl.BuildPong(clock.Now(), seq)
 	select {
 	case a.fastCtrlPongCh <- pong:
+		a.fastCtrl.RecordPongSent()
 	default: // drop if full
 	}
 	return nil

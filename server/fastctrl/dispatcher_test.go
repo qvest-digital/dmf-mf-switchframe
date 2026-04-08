@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -130,4 +131,35 @@ func TestDispatch_PTPTimestamp_OutOfRangeNotStripped(t *testing.T) {
 	err := d.Dispatch(datagram)
 	// datagram[0]=0x00, no handler → ErrUnknownType (no strip occurred)
 	require.ErrorIs(t, err, ErrUnknownType)
+}
+
+func TestDispatcher_LastPongSentUs_InitiallyZero(t *testing.T) {
+	d := NewDispatcher()
+	require.Equal(t, int64(0), d.LastPongSentUs(), "should be zero before any pong is sent")
+}
+
+func TestDispatcher_RecordPongSent(t *testing.T) {
+	d := NewDispatcher()
+
+	before := time.Now().UnixMicro()
+	d.RecordPongSent()
+	after := time.Now().UnixMicro()
+
+	ts := d.LastPongSentUs()
+	require.GreaterOrEqual(t, ts, before, "pong timestamp should be >= before")
+	require.LessOrEqual(t, ts, after, "pong timestamp should be <= after")
+}
+
+func TestDispatcher_RecordPongSent_Successive(t *testing.T) {
+	d := NewDispatcher()
+
+	d.RecordPongSent()
+	first := d.LastPongSentUs()
+
+	time.Sleep(time.Microsecond)
+
+	d.RecordPongSent()
+	second := d.LastPongSentUs()
+
+	require.Greater(t, second, first, "successive pong timestamps should increase")
 }

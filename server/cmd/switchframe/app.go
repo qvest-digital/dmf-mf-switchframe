@@ -1567,6 +1567,7 @@ func (a *App) initAPI() error {
 		control.WithPerfSampler(a.perfSampler),
 		control.WithSTMapRegistry(a.stmapRegistry),
 		control.WithSTMapStore(a.stmapStore),
+		control.WithLastPongSentFn(a.fastCtrl.LastPongSentUs),
 	}
 	if a.cfg.CacheDir != "" {
 		stmapCacheBase := filepath.Join(a.cfg.CacheDir, "stmap")

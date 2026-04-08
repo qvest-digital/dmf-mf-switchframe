@@ -46,6 +46,43 @@ func TestSyncHealth_ReturnsFields(t *testing.T) {
 	require.Equal(t, "", resp.LastExecErr)
 }
 
+func TestSyncHealth_IncludesLastPongSentUs(t *testing.T) {
+	programRelay := distribution.NewRelay()
+	sw := switcher.NewTestSwitcher(programRelay)
+	r1 := distribution.NewRelay()
+	sw.RegisterSource("camera1", r1)
+
+	pongTs := int64(1_700_000_000_000_000)
+	api := NewAPI(sw, WithLastPongSentFn(func() int64 { return pongTs }))
+
+	req := httptest.NewRequest("GET", "/api/sync/health", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	err := json.NewDecoder(rec.Body).Decode(&resp)
+	require.NoError(t, err)
+	require.Contains(t, resp, "lastPongSentUs")
+	require.InDelta(t, float64(pongTs), resp["lastPongSentUs"].(float64), 1.0)
+}
+
+func TestSyncHealth_OmitsLastPongSentUs_WhenNotConfigured(t *testing.T) {
+	api, _ := setupTestAPI(t) // no WithLastPongSentFn
+	req := httptest.NewRequest("GET", "/api/sync/health", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	err := json.NewDecoder(rec.Body).Decode(&resp)
+	require.NoError(t, err)
+	_, present := resp["lastPongSentUs"]
+	require.False(t, present, "lastPongSentUs should not be present when no fn configured")
+}
+
 // --- Mock SnapshotProvider ---
 
 type mockSnapshotProvider struct {

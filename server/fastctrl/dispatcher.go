@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"log/slog"
+	"sync/atomic"
+	"time"
 )
 
 var (
@@ -14,8 +16,9 @@ var (
 type Handler func(data []byte) error
 
 type Dispatcher struct {
-	handlers [256]Handler
-	log      *slog.Logger
+	handlers     [256]Handler
+	log          *slog.Logger
+	lastPongSent atomic.Int64 // Unix microseconds of last pong response
 }
 
 // NewDispatcher creates a new fast-control datagram dispatcher.
@@ -54,4 +57,16 @@ func (d *Dispatcher) Dispatch(data []byte) error {
 		return ErrUnknownType
 	}
 	return h(data[1:])
+}
+
+// RecordPongSent stores the current wall-clock time as the last pong
+// timestamp. Call this from the ping handler after sending a pong response.
+func (d *Dispatcher) RecordPongSent() {
+	d.lastPongSent.Store(time.Now().UnixMicro())
+}
+
+// LastPongSentUs returns the Unix-microsecond timestamp of the most recent
+// pong response, or 0 if no pong has been sent yet.
+func (d *Dispatcher) LastPongSentUs() int64 {
+	return d.lastPongSent.Load()
 }

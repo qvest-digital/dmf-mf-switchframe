@@ -412,6 +412,13 @@ func WithSeqTracker(fn func(uint64)) APIOption {
 	return func(a *API) { a.seqTracker = fn }
 }
 
+// WithLastPongSentFn provides the sync-health endpoint with a transport-level
+// liveness indicator: the Unix-microsecond timestamp of the last pong response
+// sent by the FastControl dispatcher.
+func WithLastPongSentFn(fn func() int64) APIOption {
+	return func(a *API) { a.lastPongSentFn = fn }
+}
+
 // WithSTMapRegistry attaches an ST map registry to the API.
 func WithSTMapRegistry(r *stmap.Registry) APIOption {
 	return func(a *API) { a.stmapRegistry = r }
@@ -538,6 +545,7 @@ type API struct {
 	asrConfigMu        sync.Mutex // serializes ASR config changes (prevents pile-up)
 	cmdQueue           *cmdqueue.Queue
 	seqTracker         func(uint64)
+	lastPongSentFn     func() int64 // returns Unix µs of last fast-control pong
 	startTime          time.Time
 	reconcileLock      reconcileLockState
 }
@@ -773,6 +781,9 @@ func (a *API) handleSyncHealth(w http.ResponseWriter, r *http.Request) {
 		"lastExecutedSeq": state.LastExecutedSeq,
 		"lastExecutedErr": state.LastExecutedErr,
 		"uptimeMs":        time.Since(a.startTime).Milliseconds(),
+	}
+	if a.lastPongSentFn != nil {
+		resp["lastPongSentUs"] = a.lastPongSentFn()
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
