@@ -535,6 +535,11 @@ export function createReconciler() {
 		if (errA && connectedA) w.push(`engine_a_cmd_error: ${errA}`);
 		if (errB && connectedB) w.push(`engine_b_cmd_error: ${errB}`);
 		if (errA && errB && errA !== errB) w.push('cmd_error_divergence');
+		// Surface late commands (arrived after their PTP target time)
+		const lateA = stateA?.lateCommands;
+		const lateB = stateB?.lateCommands;
+		if (lateA && lateA > 0 && connectedA) w.push(`${lateA} commands arrived late on Engine A`);
+		if (lateB && lateB > 0 && connectedB) w.push(`${lateB} commands arrived late on Engine B`);
 		return w;
 	});
 

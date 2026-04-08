@@ -1107,6 +1107,50 @@ describe('createReconciler', () => {
 		});
 	});
 
+	// ── Late command warnings ──
+
+	describe('late command warnings', () => {
+		it('surfaces late commands from engine A as a warning', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5, lateCommands: 3 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+			expect(r.health.warnings).toContain('3 commands arrived late on Engine A');
+		});
+
+		it('surfaces late commands from engine B as a warning', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5, lateCommands: 7 }));
+			expect(r.health.warnings).toContain('7 commands arrived late on Engine B');
+		});
+
+		it('surfaces late commands from both engines', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5, lateCommands: 2 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5, lateCommands: 4 }));
+			expect(r.health.warnings).toContain('2 commands arrived late on Engine A');
+			expect(r.health.warnings).toContain('4 commands arrived late on Engine B');
+		});
+
+		it('does not warn when lateCommands is zero', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5, lateCommands: 0 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5, lateCommands: 0 }));
+			const lateWarnings = r.health.warnings.filter(w => w.includes('late'));
+			expect(lateWarnings).toHaveLength(0);
+		});
+
+		it('does not surface late commands from disconnected engines', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5, lateCommands: 3 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+			expect(r.health.warnings).toContain('3 commands arrived late on Engine A');
+			r.disconnect('A');
+			const lateWarnings = r.health.warnings.filter(w => w.includes('late'));
+			expect(lateWarnings).toHaveLength(0);
+		});
+	});
+
 	// ── requestCheck (partial failure fast-path) ──
 
 	describe('requestCheck', () => {

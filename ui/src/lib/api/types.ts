@@ -763,6 +763,7 @@ export interface ControlRoomState {
 	lastCommandSeq: number;
 	lastExecutedSeq?: number;
 	lastExecutedErr?: string;
+	lateCommands?: number;
 	timestamp: number;
 }
 

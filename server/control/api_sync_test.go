@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/distribution"
+	"github.com/zsiec/switchframe/server/cmdqueue"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/switcher"
 )
@@ -81,6 +82,38 @@ func TestSyncHealth_OmitsLastPongSentUs_WhenNotConfigured(t *testing.T) {
 	require.NoError(t, err)
 	_, present := resp["lastPongSentUs"]
 	require.False(t, present, "lastPongSentUs should not be present when no fn configured")
+}
+
+func TestSyncHealth_IncludesLateCommands(t *testing.T) {
+	programRelay := distribution.NewRelay()
+	sw := switcher.NewTestSwitcher(programRelay)
+	r1 := distribution.NewRelay()
+	sw.RegisterSource("camera1", r1)
+
+	// Wire a command queue with a fixed clock so we can trigger a late command.
+	now := int64(100_000_000) // PTP microseconds
+	q := cmdqueue.New(func() int64 { return now }, cmdqueue.WithMaxAge(2_000_000))
+	sw.SetCommandQueue(q, nil)
+
+	// Enqueue a command whose ExecuteAt is past the maxAge threshold but within
+	// 2*maxAge — this triggers late promotion (ExecuteAt zeroed, counter bumped).
+	_ = q.Enqueue(cmdqueue.Command{ExecuteAt: now - 3_000_000, Seq: 1, Action: "cut"})
+	// Drain the promoted command.
+	q.Drain()
+
+	api := NewAPI(sw)
+	req := httptest.NewRequest("GET", "/api/sync/health", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp map[string]any
+	err := json.NewDecoder(rec.Body).Decode(&resp)
+	require.NoError(t, err)
+	require.Contains(t, resp, "lateCommands")
+	require.InDelta(t, 1.0, resp["lateCommands"].(float64), 0.1,
+		"lateCommands should reflect the 1 late command")
 }
 
 // --- Mock SnapshotProvider ---

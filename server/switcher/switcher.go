@@ -3362,6 +3362,9 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 	if errPtr := s.lastExecutedErr.Load(); errPtr != nil {
 		state.LastExecutedErr = *errPtr
 	}
+	if s.cmdQueue != nil {
+		state.LateCommands = s.cmdQueue.LateCommands()
+	}
 	if s.recentCmdErrors != nil {
 		if errs := s.recentCmdErrors.snapshot(); len(errs) > 0 {
 			state.RecentCommandErrors = make([]internal.CommandError, len(errs))

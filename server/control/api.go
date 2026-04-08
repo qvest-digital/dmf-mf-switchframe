@@ -780,6 +780,7 @@ func (a *API) handleSyncHealth(w http.ResponseWriter, r *http.Request) {
 		"lastCommandSeq":  state.LastCommandSeq,
 		"lastExecutedSeq": state.LastExecutedSeq,
 		"lastExecutedErr": state.LastExecutedErr,
+		"lateCommands":    state.LateCommands,
 		"uptimeMs":        time.Since(a.startTime).Milliseconds(),
 	}
 	if a.lastPongSentFn != nil {
