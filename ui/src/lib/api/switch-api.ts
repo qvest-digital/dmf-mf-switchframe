@@ -71,9 +71,9 @@ interface CircuitState {
 }
 const circuitBreakers = new Map<string, CircuitState>();
 
-const CIRCUIT_FAILURE_THRESHOLD = 5;
-const CIRCUIT_FAILURE_WINDOW_MS = 30_000;
-const CIRCUIT_OPEN_DURATION_MS = 30_000;
+const CIRCUIT_FAILURE_THRESHOLD = 3;
+const CIRCUIT_FAILURE_WINDOW_MS = 15_000;
+const CIRCUIT_OPEN_DURATION_MS = 10_000;
 
 function isCircuitOpen(engineUrl: string): boolean {
 	const state = circuitBreakers.get(engineUrl);

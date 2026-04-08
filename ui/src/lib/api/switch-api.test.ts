@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { cut, setPreview, setLabel, getState, getSources, setLevel, setMute, setAFV, setMasterLevel, startTransition, setTransitionPosition, fadeToBlack, startRecording, stopRecording, getRecordingStatus, startSRTOutput, stopSRTOutput, getSRTOutputStatus, setAuthToken, checkFragmentToken, getAuthToken, apiCall, SwitchApiError, scte35Cue, scte35Return, scte35Hold, scte35Extend, scte35Cancel, scte35Status, scte35Log, scte35ListRules, scte35CreateRule, scte35DeleteRule, createSRTSource, deleteSRTSource, getSRTSourceStats, updateSRTLatency, setDualTimestampProvider, graphicsOn, graphicsOff, recallPreset, dveSlotOn, clipPlayerPlay, clipPlayerStop, listRecordingsDualEngine, listRecordingsFromEngine, importRecordingFromEngine, graphicsSequenceUpload, runMacro, setSourceKey, setFormat, setEncoderBackend } from './switch-api';
+import { cut, setPreview, setLabel, getState, getSources, setLevel, setMute, setAFV, setMasterLevel, startTransition, setTransitionPosition, fadeToBlack, startRecording, stopRecording, getRecordingStatus, startSRTOutput, stopSRTOutput, getSRTOutputStatus, setAuthToken, checkFragmentToken, getAuthToken, apiCall, SwitchApiError, scte35Cue, scte35Return, scte35Hold, scte35Extend, scte35Cancel, scte35Status, scte35Log, scte35ListRules, scte35CreateRule, scte35DeleteRule, createSRTSource, deleteSRTSource, getSRTSourceStats, updateSRTLatency, setDualTimestampProvider, graphicsOn, graphicsOff, recallPreset, dveSlotOn, clipPlayerPlay, clipPlayerStop, listRecordingsDualEngine, listRecordingsFromEngine, importRecordingFromEngine, graphicsSequenceUpload, runMacro, setSourceKey, setFormat, setEncoderBackend, resetCircuitBreakers } from './switch-api';
 import { setEngineUrls } from './base-url';
 import * as notifications from '$lib/state/notifications.svelte';
 import type { SRTOutputConfig, SCTE35CueRequest, CreateSRTSourceConfig } from './types';
@@ -860,6 +860,7 @@ describe('dual-engine request interceptor', () => {
 		localStorage.clear();
 		setEngineUrls(null);
 		setDualTimestampProvider(null);
+		resetCircuitBreakers();
 	});
 
 	it('fans out to both engines when engineUrls set', async () => {
@@ -1224,6 +1225,7 @@ describe('dual-engine recordings', () => {
 		localStorage.clear();
 		setEngineUrls(null);
 		setDualTimestampProvider(null);
+		resetCircuitBreakers();
 	});
 
 	it('listRecordingsDualEngine merges recordings from both engines', async () => {
@@ -1341,6 +1343,7 @@ describe('dual-engine interceptor edge cases', () => {
 		localStorage.clear();
 		setEngineUrls(null);
 		setDualTimestampProvider(null);
+		resetCircuitBreakers();
 	});
 
 	it('returns first successful response when both engines succeed', async () => {
