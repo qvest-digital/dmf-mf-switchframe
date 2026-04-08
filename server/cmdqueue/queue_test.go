@@ -449,9 +449,9 @@ func TestEnqueue_VeryStaleCommand_StillDropped(t *testing.T) {
 func TestDrain_SameExecuteAt_OrderedBySeq(t *testing.T) {
 	now := int64(100_000_000)
 	q := cmdqueue.New(func() int64 { return now })
-	q.Enqueue(cmdqueue.Command{ExecuteAt: now - 100, Seq: 30, Action: "c"})
-	q.Enqueue(cmdqueue.Command{ExecuteAt: now - 100, Seq: 10, Action: "a"})
-	q.Enqueue(cmdqueue.Command{ExecuteAt: now - 100, Seq: 20, Action: "b"})
+	_ = q.Enqueue(cmdqueue.Command{ExecuteAt: now - 100, Seq: 30, Action: "c"})
+	_ = q.Enqueue(cmdqueue.Command{ExecuteAt: now - 100, Seq: 10, Action: "a"})
+	_ = q.Enqueue(cmdqueue.Command{ExecuteAt: now - 100, Seq: 20, Action: "b"})
 	out := q.Drain()
 	if len(out) != 3 {
 		t.Fatalf("expected 3, got %d", len(out))
@@ -464,9 +464,9 @@ func TestDrain_SameExecuteAt_OrderedBySeq(t *testing.T) {
 func TestDrain_SameExecuteAtZero_OrderedBySeq(t *testing.T) {
 	now := int64(100_000_000)
 	q := cmdqueue.New(func() int64 { return now })
-	q.Enqueue(cmdqueue.Command{ExecuteAt: 0, Seq: 30, Action: "c"})
-	q.Enqueue(cmdqueue.Command{ExecuteAt: 0, Seq: 10, Action: "a"})
-	q.Enqueue(cmdqueue.Command{ExecuteAt: 0, Seq: 20, Action: "b"})
+	_ = q.Enqueue(cmdqueue.Command{ExecuteAt: 0, Seq: 30, Action: "c"})
+	_ = q.Enqueue(cmdqueue.Command{ExecuteAt: 0, Seq: 10, Action: "a"})
+	_ = q.Enqueue(cmdqueue.Command{ExecuteAt: 0, Seq: 20, Action: "b"})
 	out := q.Drain()
 	if len(out) != 3 {
 		t.Fatalf("expected 3, got %d", len(out))
@@ -495,7 +495,7 @@ func TestQueue_WALReplay_SeedsDedupFromExecuted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer wal2.Close()
+	defer func() { _ = wal2.Close() }()
 
 	now := int64(100_000_000)
 	q := cmdqueue.New(func() int64 { return now }, cmdqueue.WithWAL(wal2))
