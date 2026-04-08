@@ -50,10 +50,17 @@
 	});
 
 	// ── Lifecycle ──
+	// Built-in preset IDs (hardcoded in PresetStrip) — filter them from server response
+	// to avoid rendering duplicates.
+	const BUILTIN_IDS = new Set([
+		'pip-top-right', 'pip-top-left', 'pip-bottom-right', 'pip-bottom-left',
+		'side-by-side', 'quad', 'three-box', 'over-shoulder',
+	]);
+
 	onMount(() => {
 		listDVEPresets()
 			.then((p) => {
-				presets = p;
+				presets = p.filter(preset => !BUILTIN_IDS.has(preset.id));
 			})
 			.catch(() => {});
 	});
@@ -69,12 +76,12 @@
 
 	async function handleSavePreset(name: string) {
 		await saveDVEPreset(name);
-		presets = await listDVEPresets();
+		presets = (await listDVEPresets()).filter(p => !BUILTIN_IDS.has(p.id));
 	}
 
 	async function handleDeletePreset(id: string) {
 		await deleteDVEPreset(id);
-		presets = await listDVEPresets();
+		presets = (await listDVEPresets()).filter(p => !BUILTIN_IDS.has(p.id));
 	}
 
 	function handleClear() {

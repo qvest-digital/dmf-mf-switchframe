@@ -139,7 +139,12 @@ func (s *PresetStore) List() ([]PresetInfo, error) {
 		if err := json.Unmarshal(data, &p); err != nil {
 			continue
 		}
-		infos = append(infos, PresetInfo{ID: p.ID, Name: p.Name})
+		// Fallback: derive ID from filename if missing (legacy presets saved without id field).
+		id := p.ID
+		if id == "" {
+			id = strings.TrimSuffix(e.Name(), ".json")
+		}
+		infos = append(infos, PresetInfo{ID: id, Name: p.Name})
 	}
 
 	sort.Slice(infos, func(i, j int) bool {
