@@ -226,10 +226,10 @@ describe('Recording API', () => {
 		vi.stubGlobal('fetch', mockFetch);
 
 		const result = await startRecording();
-		expect(mockFetch).toHaveBeenCalledWith('/api/recording/start', {
+		expect(mockFetch).toHaveBeenCalledWith('/api/output/recording/start', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({}),
+			body: JSON.stringify({ engine: 'A' }),
 		});
 		expect(result.active).toBe(true);
 		expect(result.filename).toBe('rec-2026.ts');
@@ -243,10 +243,10 @@ describe('Recording API', () => {
 		vi.stubGlobal('fetch', mockFetch);
 
 		const result = await startRecording({ outputDir: '/tmp' });
-		expect(mockFetch).toHaveBeenCalledWith('/api/recording/start', {
+		expect(mockFetch).toHaveBeenCalledWith('/api/output/recording/start', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ outputDir: '/tmp' }),
+			body: JSON.stringify({ outputDir: '/tmp', engine: 'A' }),
 		});
 		expect(result.active).toBe(true);
 	});
@@ -259,10 +259,10 @@ describe('Recording API', () => {
 		vi.stubGlobal('fetch', mockFetch);
 
 		const result = await stopRecording();
-		expect(mockFetch).toHaveBeenCalledWith('/api/recording/stop', {
+		expect(mockFetch).toHaveBeenCalledWith('/api/output/recording/stop', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({}),
+			body: JSON.stringify({ engine: 'A' }),
 		});
 		expect(result.active).toBe(false);
 		expect(result.bytesWritten).toBe(1024000);

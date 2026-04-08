@@ -14,8 +14,9 @@ import { setEngineUrls, getEngineUrls, setApiBaseUrl, setExpectDualEngine } from
 import {
 	cut, setPreview, getState, fadeToBlack,
 	setMasterLevel, startTransition,
-	setDualTimestampProvider, setPartialFailureCallback, authHeaders,
+	setDualTimestampProvider, setPartialFailureCallback, setPartialFailureNotify, authHeaders,
 	resetPreferredEngine, resetCircuitBreakers, uploadStinger,
+	startRecording, stopRecording,
 } from './switch-api';
 
 // Track all fetch calls for inspection
@@ -84,6 +85,7 @@ describe('switch-api dual-engine routing', () => {
 		setEngineUrls(null);
 		setDualTimestampProvider(null);
 		setPartialFailureCallback(null);
+		setPartialFailureNotify(null);
 		setExpectDualEngine(false);
 		resetPreferredEngine();
 		resetCircuitBreakers();
@@ -990,6 +992,154 @@ describe('switch-api dual-engine routing', () => {
 			const urls = fetchCalls.map(c => c.url);
 			expect(urls.some(u => u.includes('engine-a'))).toBe(true);
 			expect(urls.some(u => u.includes('engine-b'))).toBe(true);
+		});
+	});
+
+	// ─── Recording targets primary engine only ───
+
+	describe('recording engine targeting', () => {
+		beforeEach(() => {
+			setEngineUrls([
+				{ id: 'A', url: 'https://engine-a.example.com' },
+				{ id: 'B', url: 'https://engine-b.example.com' },
+			]);
+		});
+
+		it('startRecording targets primary engine only', async () => {
+			await startRecording();
+
+			// Only engine A should receive the request
+			expect(fetchCalls).toHaveLength(1);
+			expect(fetchCalls[0].url).toBe('https://engine-a.example.com/api/output/recording/start');
+		});
+
+		it('stopRecording targets primary engine only', async () => {
+			await stopRecording();
+
+			// Only engine A should receive the request
+			expect(fetchCalls).toHaveLength(1);
+			expect(fetchCalls[0].url).toBe('https://engine-a.example.com/api/output/recording/stop');
+		});
+
+		it('startRecording sends engine field in body', async () => {
+			await startRecording({ outputDir: '/tmp/rec', rotateAfterMins: 60 });
+
+			const body = JSON.parse(fetchCalls[0].opts.body as string);
+			expect(body.engine).toBe('A');
+			expect(body.outputDir).toBe('/tmp/rec');
+			expect(body.rotateAfterMins).toBe(60);
+		});
+
+		it('stopRecording sends engine field in body', async () => {
+			await stopRecording();
+
+			const body = JSON.parse(fetchCalls[0].opts.body as string);
+			expect(body.engine).toBe('A');
+		});
+
+		it('startRecording does not fan out to engine B', async () => {
+			await startRecording();
+
+			const engineBCalls = fetchCalls.filter(c => c.url.includes('engine-b'));
+			expect(engineBCalls).toHaveLength(0);
+		});
+	});
+
+	// ─── Partial failure notify ───
+
+	describe('partial failure notify', () => {
+		beforeEach(() => {
+			setEngineUrls([
+				{ id: 'A', url: 'https://engine-a.example.com' },
+				{ id: 'B', url: 'https://engine-b.example.com' },
+			]);
+		});
+
+		it('calls partialFailureNotify on partial mutation failure (HTTP error)', async () => {
+			const notifySpy = vi.fn();
+			setPartialFailureNotify(notifySpy);
+
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-b')) {
+					return Promise.resolve(errorResponse(500, 'engine B crashed'));
+				}
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
+			});
+
+			await cut('cam1');
+			expect(notifySpy).toHaveBeenCalledTimes(1);
+			expect(notifySpy).toHaveBeenCalledWith(expect.stringContaining('Engine'));
+		});
+
+		it('calls partialFailureNotify on partial mutation failure (network error)', async () => {
+			const notifySpy = vi.fn();
+			setPartialFailureNotify(notifySpy);
+
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-b')) {
+					return Promise.reject(new Error('network error'));
+				}
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
+			});
+
+			await cut('cam1');
+			expect(notifySpy).toHaveBeenCalledTimes(1);
+			expect(notifySpy).toHaveBeenCalledWith(expect.stringContaining('Engine'));
+		});
+
+		it('notify message includes failed engine ID', async () => {
+			const notifySpy = vi.fn();
+			setPartialFailureNotify(notifySpy);
+
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-b')) {
+					return Promise.resolve(errorResponse(500, 'engine B crashed'));
+				}
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
+			});
+
+			await cut('cam1');
+			expect(notifySpy).toHaveBeenCalledWith(expect.stringContaining('B'));
+		});
+
+		it('does NOT call notify when both engines succeed', async () => {
+			const notifySpy = vi.fn();
+			setPartialFailureNotify(notifySpy);
+
+			await cut('cam1');
+			expect(notifySpy).not.toHaveBeenCalled();
+		});
+
+		it('does NOT call notify when both engines fail', async () => {
+			const notifySpy = vi.fn();
+			setPartialFailureNotify(notifySpy);
+
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				return Promise.resolve(errorResponse(500, 'engine down'));
+			});
+
+			await expect(cut('cam1')).rejects.toThrow();
+			expect(notifySpy).not.toHaveBeenCalled();
+		});
+
+		it('does not throw when no notify callback is set', async () => {
+			setPartialFailureNotify(null);
+
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-b')) {
+					return Promise.resolve(errorResponse(500, 'engine B crashed'));
+				}
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
+			});
+
+			// Should not throw
+			const state = await cut('cam1');
+			expect(state.programSource).toBe('cam1');
 		});
 	});
 });

@@ -138,6 +138,12 @@ export function setPartialFailureCallback(cb: (() => void) | null): void {
 	partialFailureCallback = cb;
 }
 
+let partialFailureNotify: ((msg: string) => void) | null = null;
+
+export function setPartialFailureNotify(cb: ((msg: string) => void) | null): void {
+	partialFailureNotify = cb;
+}
+
 // ── Dual-engine PTP timestamp injection ──
 
 let dualTimestampProvider: (() => { execute_at: number; command_seq: number }) | null = null;
@@ -393,6 +399,13 @@ async function dualRequest<T>(url: string, options: RequestInit | undefined, eng
 	if (successful.length > 0 && failed.length > 0) {
 		console.warn(`[dual-api] Partial failure: ${successful.length} ok, ${failed.length} failed for ${method} ${url}`);
 		partialFailureCallback?.();
+		const failedEngineIds = results
+			.map((r, i) => {
+				const ok = r.status === 'fulfilled' && r.value.ok;
+				return ok ? null : availableEngines[i]?.id ?? 'unknown';
+			})
+			.filter((id): id is string => id !== null);
+		partialFailureNotify?.(`Command failed on Engine ${failedEngineIds.join(', ')} — syncing...`);
 	}
 
 	if (successful.length > 0) {
@@ -513,6 +526,13 @@ async function dualFetch(url: string, options: RequestInit): Promise<Response> {
 			const method = (options.method ?? 'GET').toUpperCase();
 			console.warn(`[dual-api] Partial failure: ${successful.length} ok, ${failed.length} failed for ${method} ${url}`);
 			partialFailureCallback?.();
+			const failedEngineIds = results
+				.map((r, i) => {
+					const ok = r.status === 'fulfilled' && r.value.ok;
+					return ok ? null : availableEngines[i]?.id ?? 'unknown';
+				})
+				.filter((id): id is string => id !== null);
+			partialFailureNotify?.(`Command failed on Engine ${failedEngineIds.join(', ')} — syncing...`);
 		}
 
 		if (successful.length > 0) return successful[0].value;
@@ -703,11 +723,11 @@ export function startRecording(options?: {
 	rotateAfterMins?: number;
 	maxFileSizeMB?: number;
 }): Promise<RecordingStatus> {
-	return post('/api/recording/start', options ?? {});
+	return post('/api/output/recording/start', { ...(options ?? {}), engine: 'A' });
 }
 
 export function stopRecording(): Promise<RecordingStatus> {
-	return post('/api/recording/stop', {});
+	return post('/api/output/recording/stop', { engine: 'A' });
 }
 
 export function getRecordingStatus(): Promise<RecordingStatus> {
