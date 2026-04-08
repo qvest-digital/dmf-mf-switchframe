@@ -83,12 +83,17 @@ const DIVERGENCE_FIELDS: (keyof ControlRoomState)[] = [
 	'programSource',
 	'previewSource',
 	'inTransition',
+	'transitionPosition',
 	'masterLevel',
 	'ftbActive',
 	'transitionType',
 	'transitionDurationMs',
 	'encoder',
 	'captions',
+	'scte35',
+	'macroExecution',
+	'colorGrade',
+	'stmap',
 ];
 
 /** Audio channel fields that are settings (not real-time metering). */
@@ -132,6 +137,8 @@ export const STALE_THRESHOLD_MS = 5_000;
 const STALE_TRANSPORT_ALIVE_MS = 15_000;
 /** Pong freshness window: 30s = 3x the 10s ping interval. */
 export const PONG_FRESH_MS = 30_000;
+/** Max time without a state update before engine is stale, even if pongs are fresh. */
+export const STATE_UPDATE_STALE_MS = 20_000;
 
 export function createReconciler() {
 	let stateA = $state<ControlRoomState | null>(null);
@@ -155,6 +162,10 @@ export function createReconciler() {
 	let lastPongA = $state(0);
 	let lastPongB = $state(0);
 
+	// Lock authority to the engine that was authoritative when a transition started,
+	// to prevent mid-transition UI jumps if authority would otherwise flip.
+	let transitionLockEngine = $state<EngineId | null>(null);
+
 	// Track when seq delta first appeared for time-based detection
 	let seqDeltaSince = $state(0);
 
@@ -166,6 +177,8 @@ export function createReconciler() {
 
 	function ingest(engine: EngineId, update: ControlRoomState) {
 		const now = Date.now();
+		// Capture previous inTransition state for transition lock tracking
+		const prevInTransition = (engine === 'A' ? stateA : stateB)?.inTransition ?? false;
 		if (engine === 'A') {
 			stateA = update;
 			lastSeenA = now;
@@ -182,6 +195,13 @@ export function createReconciler() {
 				everSeenB = true;
 				firstSeenB = now;
 			}
+		}
+		// Track transition lock: lock authority when transition starts, release when it ends
+		if (update.inTransition && !prevInTransition && transitionLockEngine === null) {
+			transitionLockEngine = authoritative;
+		}
+		if (!update.inTransition && prevInTransition) {
+			transitionLockEngine = null;
 		}
 		// Re-evaluate seq delta tracking
 		updateSeqDeltaTracking(now);
@@ -221,6 +241,17 @@ export function createReconciler() {
 		if (!effectiveA && !effectiveB) return 'A';
 		if (!effectiveA) return 'B';
 		if (!effectiveB) return 'A';
+
+		// Lock authority during active transitions to prevent mid-transition jumps
+		const aInTransition = stateA?.inTransition ?? false;
+		const bInTransition = stateB?.inTransition ?? false;
+		if (aInTransition || bInTransition) {
+			if (transitionLockEngine !== null) {
+				// Verify the locked engine is still reachable
+				const lockedEffective = transitionLockEngine === 'A' ? effectiveA : effectiveB;
+				if (lockedEffective) return transitionLockEngine;
+			}
+		}
 
 		// TypeScript can't narrow through effectiveA/B guards, but we returned above if null
 		const sA = stateA!;
@@ -339,6 +370,14 @@ export function createReconciler() {
 		if (stateA.replay?.state !== stateB.replay?.state) {
 			result.push({ field: 'replay', engineA: stateA.replay, engineB: stateB.replay });
 		}
+		// DVE layout divergence (full object comparison, not just activePreset)
+		if (!fieldEquals(stateA.layout, stateB.layout)) {
+			result.push({ field: 'layout', engineA: stateA.layout, engineB: stateB.layout });
+		}
+		// Upstream key config divergence
+		if (!fieldEquals(stateA.keyConfig, stateB.keyConfig)) {
+			result.push({ field: 'keyConfig', engineA: stateA.keyConfig, engineB: stateB.keyConfig });
+		}
 		return result;
 	});
 
@@ -395,17 +434,26 @@ export function createReconciler() {
 
 		// Stale detection: mark engine as single-engine if no state updates received.
 		// If transport is alive AND pongs are fresh (within 30s = 3x the 10s ping interval),
-		// the engine is provably alive — never mark stale regardless of state update freshness.
+		// the engine is provably alive — but if state updates stopped for STATE_UPDATE_STALE_MS,
+		// the application is hung and the engine should still be marked stale.
 		if (hasA && lastSeenA > 0) {
 			const pongFreshA = transportAliveA && lastPongA > 0 && (now - lastPongA < PONG_FRESH_MS);
-			if (!pongFreshA) {
+			const stateUpdateFreshA = now - lastSeenA < STATE_UPDATE_STALE_MS;
+			if (pongFreshA && !stateUpdateFreshA) {
+				// Pongs arrive but state updates stopped — engine application is hung
+				hasA = false;
+			} else if (!pongFreshA) {
 				const thresholdA = transportAliveA ? STALE_TRANSPORT_ALIVE_MS : STALE_THRESHOLD_MS;
 				if (now - lastSeenA > thresholdA) hasA = false;
 			}
 		}
 		if (hasB && lastSeenB > 0) {
 			const pongFreshB = transportAliveB && lastPongB > 0 && (now - lastPongB < PONG_FRESH_MS);
-			if (!pongFreshB) {
+			const stateUpdateFreshB = now - lastSeenB < STATE_UPDATE_STALE_MS;
+			if (pongFreshB && !stateUpdateFreshB) {
+				// Pongs arrive but state updates stopped — engine application is hung
+				hasB = false;
+			} else if (!pongFreshB) {
 				const thresholdB = transportAliveB ? STALE_TRANSPORT_ALIVE_MS : STALE_THRESHOLD_MS;
 				if (now - lastSeenB > thresholdB) hasB = false;
 			}
@@ -573,6 +621,10 @@ export function createReconciler() {
 		const result: EngineId[] = [];
 		const pongFreshA = transportAliveA && lastPongA > 0 && (now - lastPongA < PONG_FRESH_MS);
 		const pongFreshB = transportAliveB && lastPongB > 0 && (now - lastPongB < PONG_FRESH_MS);
+		// Stale if pongs are fresh but state updates stopped (hung application)
+		if (connectedA && pongFreshA && lastSeenA > 0 && (now - lastSeenA >= STATE_UPDATE_STALE_MS)) result.push('A');
+		if (connectedB && pongFreshB && lastSeenB > 0 && (now - lastSeenB >= STATE_UPDATE_STALE_MS)) result.push('B');
+		// Stale if transport is not alive and no recent state updates
 		if (connectedA && !pongFreshA && !transportAliveA && lastSeenA > 0 && (now - lastSeenA > STALE_THRESHOLD_MS)) result.push('A');
 		if (connectedB && !pongFreshB && !transportAliveB && lastSeenB > 0 && (now - lastSeenB > STALE_THRESHOLD_MS)) result.push('B');
 		return result;

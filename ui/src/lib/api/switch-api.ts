@@ -1,6 +1,6 @@
 import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, GateSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, EngineRecordingGroup, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig, ColorGradeState, CorrectorState, PlayoutChannelState, Playlist, PlaylistItem, CacheStatus, PodInfo, PodConfig, PodTemplate, AsRunEvent, ChannelHealth, SampleClip, PlayoutClip, ASRState, DVEPresetInfo, WipePattern, WipeConfig } from './types';
 import { notify } from '$lib/state/notifications.svelte';
-import { resolveApiUrl, getEngineUrls, bufferPendingCommand, setFlushTimestampInjector, type EngineEndpoint } from './base-url';
+import { resolveApiUrl, getEngineUrls, bufferPendingCommand, setFlushTimestampInjector, isNonIdempotent, type EngineEndpoint } from './base-url';
 
 export class SwitchApiError extends Error {
 	constructor(
@@ -184,14 +184,18 @@ const TIMED_PATH_EXACT = new Set([
 
 const TIMED_PATH_PATTERNS = [
 	/^\/api\/graphics\/\d+\/(on|off)$/,
+	/^\/api\/graphics\/\d+\/rect$/,
+	/^\/api\/graphics\/\d+\/zorder$/,
 	/^\/api\/presets\/[^/]+\/recall$/,
 	/^\/api\/dve\/slots\/\d+\/(on|off)$/,
+	/^\/api\/dve\/slots\/\d+$/,
 	/^\/api\/clips\/players\/\d+\/(play|pause|stop)$/,
 	/^\/api\/playout\/channels\/\d+\/(start|stop|next|previous)$/,
 	/^\/api\/playout\/channels\/\d+\/pods\/[^/]+\/(fire|dump|hold|extend)$/,
 	/^\/api\/audio\/.+$/,
 	/^\/api\/macros\/[^/]+\/run$/,
 	/^\/api\/sources\/[^/]+\/key$/,
+	/^\/api\/captions\/(text|newline|clear)$/,
 ];
 
 /**
@@ -386,7 +390,7 @@ async function dualRequest<T>(url: string, options: RequestInit | undefined, eng
 				try {
 					const ts = dualTimestampProvider(engine.id);
 					const nowUs = Date.now() * 1000;
-					if (ts.execute_at > nowUs - 60_000_000 && ts.execute_at < nowUs + 60_000_000) {
+					if (ts.execute_at > nowUs - 5_000_000 && ts.execute_at < nowUs + 5_000_000) {
 						const parsed = JSON.parse(engineBody as string);
 						engineBody = JSON.stringify({ ...parsed, ...ts });
 					}
@@ -432,28 +436,34 @@ async function dualRequest<T>(url: string, options: RequestInit | undefined, eng
 				return ok ? null : availableEngines[i]?.id ?? 'unknown';
 			})
 			.filter((id): id is string => id !== null);
-		partialFailureNotify?.(`Command failed on Engine ${failedEngineIds.join(', ')} — retrying...`);
+		if (!isNonIdempotent(url)) {
+			partialFailureNotify?.(`Command failed on Engine ${failedEngineIds.join(', ')} — retrying...`);
 
-		// Retry failed engines once after 500ms (best-effort) with fresh PTP timestamps
-		setTimeout(async () => {
-			for (let i = 0; i < results.length; i++) {
-				const ok = results[i].status === 'fulfilled' && (results[i] as PromiseFulfilledResult<Response>).value.ok;
-				if (!ok) {
-					let retryBody = bodies[i];
-					// Re-inject fresh PTP timestamp for timed paths (original may be stale)
-					if (isTimedPath(url) && dualTimestampProvider && retryBody && typeof retryBody === 'string') {
+			// Retry failed engines once after 500ms (best-effort) with fresh PTP timestamps
+			setTimeout(async () => {
+				for (let i = 0; i < results.length; i++) {
+					const ok = results[i].status === 'fulfilled' && (results[i] as PromiseFulfilledResult<Response>).value.ok;
+					if (!ok) {
+						let retryBody = bodies[i];
+						// Re-inject fresh PTP timestamp for timed paths (original may be stale)
+						if (isTimedPath(url) && dualTimestampProvider && retryBody && typeof retryBody === 'string') {
+							try {
+								const ts = dualTimestampProvider(availableEngines[i].id);
+								const parsed = JSON.parse(retryBody as string);
+								retryBody = JSON.stringify({ ...parsed, ...ts });
+							} catch { /* send without fresh timestamps */ }
+						}
 						try {
-							const ts = dualTimestampProvider(availableEngines[i].id);
-							const parsed = JSON.parse(retryBody as string);
-							retryBody = JSON.stringify({ ...parsed, ...ts });
-						} catch { /* send without fresh timestamps */ }
+							await fetchWithTimeout(`${availableEngines[i].url}${url}`, { ...opts, body: retryBody });
+						} catch { /* retry is best-effort */ }
 					}
-					try {
-						await fetchWithTimeout(`${availableEngines[i].url}${url}`, { ...opts, body: retryBody });
-					} catch { /* retry is best-effort */ }
 				}
-			}
-		}, 500);
+			}, 500);
+		} else {
+			// Non-idempotent: skip retry, rely on snapshot push for state reconciliation
+			partialFailureNotify?.(`Command failed on Engine ${failedEngineIds.join(', ')} (no retry for non-idempotent operation)`);
+			console.warn(`[dual-api] Skipping retry for non-idempotent path: ${url}`);
+		}
 	}
 
 	if (successful.length > 0) {
@@ -555,7 +565,7 @@ async function dualFetch(url: string, options: RequestInit): Promise<Response> {
 					try {
 						const ts = dualTimestampProvider(engine.id);
 						const nowUs = Date.now() * 1000;
-						if (ts.execute_at > nowUs - 60_000_000 && ts.execute_at < nowUs + 60_000_000) {
+						if (ts.execute_at > nowUs - 5_000_000 && ts.execute_at < nowUs + 5_000_000) {
 							const parsed = JSON.parse(engineBody as string);
 							engineBody = JSON.stringify({ ...parsed, ...ts });
 						}
@@ -599,27 +609,33 @@ async function dualFetch(url: string, options: RequestInit): Promise<Response> {
 					return ok ? null : availableEngines[i]?.id ?? 'unknown';
 				})
 				.filter((id): id is string => id !== null);
-			partialFailureNotify?.(`Command failed on Engine ${failedEngineIds.join(', ')} — retrying...`);
+			if (!isNonIdempotent(url)) {
+				partialFailureNotify?.(`Command failed on Engine ${failedEngineIds.join(', ')} — retrying...`);
 
-			// Retry failed engines once after 500ms (best-effort) with fresh PTP timestamps
-			setTimeout(async () => {
-				for (let i = 0; i < results.length; i++) {
-					const ok = results[i].status === 'fulfilled' && (results[i] as PromiseFulfilledResult<Response>).value.ok;
-					if (!ok) {
-						let retryBody = bodies[i];
-						if (isTimedPath(url) && dualTimestampProvider && retryBody && typeof retryBody === 'string') {
+				// Retry failed engines once after 500ms (best-effort) with fresh PTP timestamps
+				setTimeout(async () => {
+					for (let i = 0; i < results.length; i++) {
+						const ok = results[i].status === 'fulfilled' && (results[i] as PromiseFulfilledResult<Response>).value.ok;
+						if (!ok) {
+							let retryBody = bodies[i];
+							if (isTimedPath(url) && dualTimestampProvider && retryBody && typeof retryBody === 'string') {
+								try {
+									const ts = dualTimestampProvider(availableEngines[i].id);
+									const parsed = JSON.parse(retryBody as string);
+									retryBody = JSON.stringify({ ...parsed, ...ts });
+								} catch { /* send without fresh timestamps */ }
+							}
 							try {
-								const ts = dualTimestampProvider(availableEngines[i].id);
-								const parsed = JSON.parse(retryBody as string);
-								retryBody = JSON.stringify({ ...parsed, ...ts });
-							} catch { /* send without fresh timestamps */ }
+								await fetchWithTimeout(`${availableEngines[i].url}${url}`, { ...opts, body: retryBody });
+							} catch { /* retry is best-effort */ }
 						}
-						try {
-							await fetchWithTimeout(`${availableEngines[i].url}${url}`, { ...opts, body: retryBody });
-						} catch { /* retry is best-effort */ }
 					}
-				}
-			}, 500);
+				}, 500);
+			} else {
+				// Non-idempotent: skip retry, rely on snapshot push for state reconciliation
+				partialFailureNotify?.(`Command failed on Engine ${failedEngineIds.join(', ')} (no retry for non-idempotent operation)`);
+				console.warn(`[dual-api] Skipping retry for non-idempotent path: ${url}`);
+			}
 		}
 
 		if (successful.length > 0) return successful[0].value;
@@ -828,8 +844,13 @@ export function startRecording(options?: {
 	outputDir?: string;
 	rotateAfterMins?: number;
 	maxFileSizeMB?: number;
+	filenamePrefix?: string;
 }): Promise<RecordingStatus> {
-	return post('/api/recording/start', { ...(options ?? {}) });
+	const opts = { ...(options ?? {}) };
+	if (!opts.filenamePrefix) {
+		opts.filenamePrefix = `rec-${Date.now()}`;
+	}
+	return post('/api/recording/start', opts);
 }
 
 export function stopRecording(): Promise<RecordingStatus> {

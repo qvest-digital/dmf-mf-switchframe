@@ -102,6 +102,50 @@ func TestFileRecorder_FilenameFormat(t *testing.T) {
 	require.Regexp(t, `^program_\d{8}_\d{6}_001\.ts$`, name)
 }
 
+func TestFileRecorder_FilenamePrefix(t *testing.T) {
+	dir := t.TempDir()
+	r := NewFileRecorder(RecorderConfig{Dir: dir, FilenamePrefix: "rec-1712345678"})
+	require.NoError(t, r.Start(context.TODO()))
+	defer func() { _ = r.Close() }()
+	name := r.Filename()
+	require.Regexp(t, `^rec-1712345678_\d{8}_\d{6}_001\.ts$`, name)
+}
+
+func TestFileRecorder_FilenamePrefixDefault(t *testing.T) {
+	dir := t.TempDir()
+	r := NewFileRecorder(RecorderConfig{Dir: dir})
+	require.NoError(t, r.Start(context.TODO()))
+	defer func() { _ = r.Close() }()
+	name := r.Filename()
+	// Default prefix is "program".
+	require.Contains(t, name, "program_")
+}
+
+func TestFileRecorder_FilenamePrefixRotation(t *testing.T) {
+	dir := t.TempDir()
+	r := NewFileRecorder(RecorderConfig{
+		Dir:            dir,
+		FilenamePrefix: "myshow",
+		MaxFileSize:    188,
+	})
+	require.NoError(t, r.Start(context.TODO()))
+	defer func() { _ = r.Close() }()
+
+	data := makeTSPacket(0x100, true) // keyframe
+	files := map[string]bool{}
+	files[r.Filename()] = true
+
+	for i := 0; i < 5; i++ {
+		_, _ = r.Write(data)
+		files[r.Filename()] = true
+	}
+
+	for name := range files {
+		require.Regexp(t, `^myshow_\d{8}_\d{6}_\d{3}\.ts$`, name,
+			"all filenames must use custom prefix")
+	}
+}
+
 func TestFileRecorder_RecordingStatusSnapshot(t *testing.T) {
 	dir := t.TempDir()
 	r := NewFileRecorder(RecorderConfig{Dir: dir})

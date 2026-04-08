@@ -607,6 +607,71 @@ describe('ClockSync', () => {
 		});
 	});
 
+	describe('isConverged', () => {
+		it('returns false when no engines are tracked', () => {
+			const sync = new ClockSync();
+			expect(sync.isConverged()).toBe(false);
+		});
+
+		it('returns false when fewer than 2 engines are tracked', () => {
+			const sync = new ClockSync();
+			sync.addEngine('A');
+			sync.updateRTT('A', 10_000);
+			sync.updateOffset('A', 5_000);
+			expect(sync.isConverged()).toBe(false);
+		});
+
+		it('returns false when RTT is missing for one engine', () => {
+			const sync = new ClockSync();
+			sync.addEngine('A');
+			sync.addEngine('B');
+			sync.updateRTT('A', 10_000);
+			sync.updateOffset('A', 5_000);
+			// B has no RTT
+			sync.updateOffset('B', 6_000);
+			expect(sync.isConverged()).toBe(false);
+		});
+
+		it('returns false when offset is missing for one engine', () => {
+			const sync = new ClockSync();
+			sync.addEngine('A');
+			sync.addEngine('B');
+			sync.updateRTT('A', 10_000);
+			sync.updateRTT('B', 10_000);
+			sync.updateOffset('A', 5_000);
+			// B has no offset
+			expect(sync.isConverged()).toBe(false);
+		});
+
+		it('returns true when all engines have RTT and offset', () => {
+			const sync = new ClockSync();
+			sync.addEngine('A');
+			sync.addEngine('B');
+			sync.updateRTT('A', 10_000);
+			sync.updateRTT('B', 10_000);
+			sync.updateOffset('A', 5_000);
+			sync.updateOffset('B', 6_000);
+			expect(sync.isConverged()).toBe(true);
+		});
+
+		it('returns false when an offset is stale (>60s)', () => {
+			vi.useFakeTimers();
+			const sync = new ClockSync();
+			sync.addEngine('A');
+			sync.addEngine('B');
+			sync.updateRTT('A', 10_000);
+			sync.updateRTT('B', 10_000);
+			sync.updateOffset('A', 5_000);
+			sync.updateOffset('B', 6_000);
+			expect(sync.isConverged()).toBe(true);
+
+			// Advance past stale threshold (60s)
+			vi.advanceTimersByTime(61_000);
+			expect(sync.isConverged()).toBe(false);
+			vi.useRealTimers();
+		});
+	});
+
 	describe('periodic sync', () => {
 		it('sends pings to all engines from provided ID list', () => {
 			vi.useFakeTimers();

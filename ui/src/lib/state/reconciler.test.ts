@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createReconciler, fieldEquals, STALE_THRESHOLD_MS, PONG_FRESH_MS, sortedStringify } from './reconciler.svelte';
+import { createReconciler, fieldEquals, STALE_THRESHOLD_MS, PONG_FRESH_MS, STATE_UPDATE_STALE_MS, sortedStringify } from './reconciler.svelte';
 import type { ControlRoomState } from '$lib/api/types';
 
 function makeState(overrides: Partial<ControlRoomState> = {}): ControlRoomState {
@@ -964,6 +964,75 @@ describe('createReconciler', () => {
 			const fields = r.health.divergences.map(d => d.field);
 			expect(fields).toContain('transitionDurationMs');
 		});
+
+		it('detects SCTE-35 state divergence', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5, scte35: { active: true } as any }));
+			r.ingest('B', makeState({ lastCommandSeq: 5, scte35: { active: false } as any }));
+			r.tick();
+			expect(r.health.divergences.some(d => d.field === 'scte35')).toBe(true);
+		});
+
+		it('detects macroExecution divergence', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5, macroExecution: { running: true, macroId: 'm1' } as any }));
+			r.ingest('B', makeState({ lastCommandSeq: 5, macroExecution: undefined as any }));
+			const fields = r.health.divergences.map(d => d.field);
+			expect(fields).toContain('macroExecution');
+		});
+
+		it('detects colorGrade divergence', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5, colorGrade: { preset: 'warm' } as any }));
+			r.ingest('B', makeState({ lastCommandSeq: 5, colorGrade: { preset: 'cool' } as any }));
+			const fields = r.health.divergences.map(d => d.field);
+			expect(fields).toContain('colorGrade');
+		});
+
+		it('detects stmap divergence', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5, stmap: { active: true } as any }));
+			r.ingest('B', makeState({ lastCommandSeq: 5, stmap: { active: false } as any }));
+			const fields = r.health.divergences.map(d => d.field);
+			expect(fields).toContain('stmap');
+		});
+
+		it('detects DVE layout divergence (full object)', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				layout: { activePreset: 'pip', slots: [{ id: 0, sourceKey: 'cam1' }] } as any,
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 5,
+				layout: { activePreset: 'pip', slots: [{ id: 0, sourceKey: 'cam2' }] } as any,
+			}));
+			const fields = r.health.divergences.map(d => d.field);
+			expect(fields).toContain('layout');
+		});
+
+		it('detects upstream keyConfig divergence', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				keyConfig: { cam1: { type: 'chroma', hue: 120 } } as any,
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 5,
+				keyConfig: { cam1: { type: 'luma', threshold: 0.5 } } as any,
+			}));
+			const fields = r.health.divergences.map(d => d.field);
+			expect(fields).toContain('keyConfig');
+		});
+
+		it('no keyConfig divergence when both engines match', () => {
+			const r = createReconciler();
+			const keyConfig = { cam1: { type: 'chroma', hue: 120 } } as any;
+			r.ingest('A', makeState({ lastCommandSeq: 5, keyConfig }));
+			r.ingest('B', makeState({ lastCommandSeq: 5, keyConfig: { ...keyConfig } }));
+			const fields = r.health.divergences.map(d => d.field);
+			expect(fields).not.toContain('keyConfig');
+		});
 	});
 
 	// ── Edge cases in state ──
@@ -999,12 +1068,12 @@ describe('createReconciler', () => {
 			expect(r.health.status).toBe('mismatch');
 		});
 
-		it('transitionPosition difference is NOT detected as divergence (excluded to avoid false positives during transitions)', () => {
+		it('transitionPosition difference IS detected as divergence', () => {
 			const r = createReconciler();
 			r.ingest('A', makeState({ transitionPosition: 0.5, lastCommandSeq: 5 }));
 			r.ingest('B', makeState({ transitionPosition: 0.0, lastCommandSeq: 5 }));
 			const fields = r.health.divergences.map(d => d.field);
-			expect(fields).not.toContain('transitionPosition');
+			expect(fields).toContain('transitionPosition');
 		});
 	});
 
@@ -1561,23 +1630,22 @@ describe('createReconciler', () => {
 			vi.useRealTimers();
 		});
 
-		it('does not mark engine stale when pongs are fresh despite no state updates', () => {
+		it('does not mark engine stale when pongs are fresh and state updates are within 20s', () => {
 			const r = createReconciler();
 			r.ingest('A', makeState({ lastCommandSeq: 5 }));
 			r.ingest('B', makeState({ lastCommandSeq: 5 }));
 			r.setTransportAlive('A', true);
 			r.setTransportAlive('B', true);
 
-			// Simulate pongs arriving every 10s while no state updates come
+			// Simulate pongs arriving every 10s with state updates within 20s window
 			vi.advanceTimersByTime(10_000);
 			r.recordPong('A');
 			r.recordPong('B');
 
-			vi.advanceTimersByTime(10_000);
+			vi.advanceTimersByTime(8_000); // 18s total, within STATE_UPDATE_STALE_MS (20s)
 			r.recordPong('A');
 			r.recordPong('B');
 
-			// Now 20s since last state update, well past STALE_TRANSPORT_ALIVE_MS (15s)
 			r.tick();
 			expect(r.health.status).toBe('synced');
 			expect(r.health.staleEngines).toHaveLength(0);
@@ -1602,18 +1670,23 @@ describe('createReconciler', () => {
 			expect(r.health.status).not.toBe('synced');
 		});
 
-		it('keeps engine alive with periodic pongs over long idle period', () => {
+		it('keeps engine alive with periodic pongs and state updates over long idle period', () => {
 			const r = createReconciler();
 			r.ingest('A', makeState({ lastCommandSeq: 5 }));
 			r.ingest('B', makeState({ lastCommandSeq: 5 }));
 			r.setTransportAlive('A', true);
 			r.setTransportAlive('B', true);
 
-			// Simulate 2 minutes of idle with pongs every 10s
+			// Simulate 2 minutes of operation with pongs every 10s and state updates every 15s
 			for (let i = 0; i < 12; i++) {
 				vi.advanceTimersByTime(10_000);
 				r.recordPong('A');
 				r.recordPong('B');
+				// Re-ingest state updates periodically to keep them fresh (< 20s)
+				if (i % 2 === 0) {
+					r.ingest('A', makeState({ lastCommandSeq: 5 }));
+					r.ingest('B', makeState({ lastCommandSeq: 5 }));
+				}
 				r.tick();
 				expect(r.health.status).toBe('synced');
 				expect(r.health.staleEngines).toHaveLength(0);
@@ -1627,14 +1700,16 @@ describe('createReconciler', () => {
 			r.setTransportAlive('A', true);
 			r.setTransportAlive('B', true);
 
-			// Only A receives pongs, B stops
+			// Only A receives pongs AND state updates, B stops both
 			vi.advanceTimersByTime(10_000);
 			r.recordPong('A');
+			r.ingest('A', makeState({ lastCommandSeq: 5 })); // keep A's state fresh
 
 			vi.advanceTimersByTime(10_000);
 			r.recordPong('A');
+			r.ingest('A', makeState({ lastCommandSeq: 5 })); // keep A's state fresh
 
-			// 20s since last state update. B has no pongs, A has fresh pongs.
+			// 20s since B's last state update. B has no pongs, A has fresh pongs + state.
 			// B should fall back to STALE_TRANSPORT_ALIVE_MS (15s) and be marked stale.
 			r.tick();
 			expect(r.health.status).toBe('single-engine');
@@ -1643,6 +1718,53 @@ describe('createReconciler', () => {
 
 		it('PONG_FRESH_MS is 30000', () => {
 			expect(PONG_FRESH_MS).toBe(30_000);
+		});
+
+		it('marks engine stale when state updates stop despite fresh pongs', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 1 }));
+			r.ingest('B', makeState({ lastCommandSeq: 1 }));
+			r.setTransportAlive('A', true);
+			r.setTransportAlive('B', true);
+			r.recordPong('A');
+			r.recordPong('B');
+
+			// Advance time: B's state update is old but pongs are fresh
+			vi.advanceTimersByTime(STATE_UPDATE_STALE_MS + 1);
+			r.recordPong('A');
+			r.recordPong('B');
+			// Only A sends a state update
+			r.ingest('A', makeState({ lastCommandSeq: 2 }));
+			r.tick();
+
+			// B should be stale because no state updates for 20s
+			expect(r.health.staleEngines).toContain('B');
+			expect(r.health.staleEngines).not.toContain('A');
+			expect(r.health.status).toBe('single-engine');
+		});
+
+		it('does not mark engine stale when both pongs and state updates are fresh', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 1 }));
+			r.ingest('B', makeState({ lastCommandSeq: 1 }));
+			r.setTransportAlive('A', true);
+			r.setTransportAlive('B', true);
+			r.recordPong('A');
+			r.recordPong('B');
+
+			// Advance just under the state update stale threshold
+			vi.advanceTimersByTime(STATE_UPDATE_STALE_MS - 1000);
+			r.recordPong('A');
+			r.recordPong('B');
+			r.tick();
+
+			// Both should still be alive
+			expect(r.health.staleEngines).toHaveLength(0);
+			expect(r.health.status).toBe('synced');
+		});
+
+		it('STATE_UPDATE_STALE_MS is 20000', () => {
+			expect(STATE_UPDATE_STALE_MS).toBe(20_000);
 		});
 
 		it('pong freshness requires transport to be alive', () => {
@@ -1661,6 +1783,88 @@ describe('createReconciler', () => {
 
 			// Should still be disconnected because transport is not alive
 			expect(r.health.status).toBe('disconnected');
+		});
+	});
+
+	// ── Transition lock ──
+
+	describe('transition authority lock', () => {
+		it('authority stays locked during transition even if B has better RTT', () => {
+			const r = createReconciler();
+			// A is authoritative (default winner at equal seq, no RTT set)
+			r.ingest('A', makeState({ lastCommandSeq: 5, inTransition: false }));
+			r.ingest('B', makeState({ lastCommandSeq: 5, inTransition: false }));
+			expect(r.health.authoritative).toBe('A');
+
+			// Transition starts on A (current authoritative)
+			r.ingest('A', makeState({ lastCommandSeq: 5, inTransition: true, transitionPosition: 0.3 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5, inTransition: true, transitionPosition: 0.7 }));
+
+			// Now B gets much better RTT (would normally win)
+			r.setRTT('A', 200);
+			r.setRTT('B', 50);
+			r.tick();
+
+			// Authority should stay locked to A since A was auth before transition
+			expect(r.health.authoritative).toBe('A');
+		});
+
+		it('lock is released when transition ends', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5, inTransition: false }));
+			r.ingest('B', makeState({ lastCommandSeq: 5, inTransition: false }));
+			expect(r.health.authoritative).toBe('A');
+
+			// Transition starts
+			r.ingest('A', makeState({ lastCommandSeq: 5, inTransition: true, transitionPosition: 0.5 }));
+			r.setRTT('A', 200);
+			r.setRTT('B', 50);
+
+			// Locked to A
+			expect(r.health.authoritative).toBe('A');
+
+			// Transition ends
+			r.ingest('A', makeState({ lastCommandSeq: 6, inTransition: false }));
+			r.ingest('B', makeState({ lastCommandSeq: 6, inTransition: false }));
+			r.tick();
+
+			// Now B should win by RTT since lock is released
+			expect(r.health.authoritative).toBe('B');
+		});
+
+		it('lock falls back if locked engine becomes unreachable', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5, inTransition: false }));
+			r.ingest('B', makeState({ lastCommandSeq: 5, inTransition: false }));
+			expect(r.health.authoritative).toBe('A');
+
+			// Transition starts, locked to A
+			r.ingest('A', makeState({ lastCommandSeq: 5, inTransition: true, transitionPosition: 0.3 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5, inTransition: true, transitionPosition: 0.3 }));
+
+			// A disconnects
+			r.disconnect('A');
+			r.tick();
+
+			// Lock should not prevent fallback to B
+			expect(r.health.authoritative).toBe('B');
+		});
+
+		it('does not lock when transition is already in progress at first ingest', () => {
+			const r = createReconciler();
+			// Both engines report already in-transition on first ingest
+			r.ingest('A', makeState({ lastCommandSeq: 5, inTransition: true, transitionPosition: 0.5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5, inTransition: true, transitionPosition: 0.5 }));
+
+			// B has clearly better RTT — should still go to B since lock was set
+			// to A (the authoritative at the time the transition was detected)
+			r.setRTT('A', 300);
+			r.setRTT('B', 50);
+			r.tick();
+
+			// Lock was set to A (authoritative when first transition was detected),
+			// so A stays authoritative despite B having better RTT
+			expect(r.health.authoritative).toBe('A');
 		});
 	});
 });

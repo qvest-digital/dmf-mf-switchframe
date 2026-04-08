@@ -21,9 +21,10 @@
 		engineStatus?: EngineStatus;
 		perEngineState?: PerEngineState;
 		sessionFallbackUrl?: string | null; // Control plane session recovery URL
+		inTransition?: boolean;             // Block auto-redirect during active transition
 	}
 
-	let { connectionState, syncStatus, engineFallbackUrl = null, servingEngine = null, engineStatus, perEngineState, sessionFallbackUrl = null }: Props = $props();
+	let { connectionState, syncStatus, engineFallbackUrl = null, servingEngine = null, engineStatus, perEngineState, sessionFallbackUrl = null, inTransition = false }: Props = $props();
 
 	// Track whether WebTransport was ever connected so we only show
 	// the polling banner as a degradation, not on initial fallback.
@@ -116,7 +117,7 @@
 		try {
 			return (parseInt(sessionStorage.getItem('sf:redirect-attempts') || '0', 10) > 0);
 		} catch {
-			return false;
+			return true; // Default to true to prevent infinite redirect loops in private browsing
 		}
 	});
 
@@ -131,7 +132,7 @@
 	});
 
 	const shouldAutoRedirect = $derived(
-		showEngineFallback && !hasRedirectedBefore && !isSelfRedirect
+		showEngineFallback && !hasRedirectedBefore && !isSelfRedirect && !inTransition
 	);
 
 	let redirectCountdown = $state(0);

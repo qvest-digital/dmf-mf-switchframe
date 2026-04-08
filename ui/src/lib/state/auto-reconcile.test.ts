@@ -770,4 +770,119 @@ describe('createAutoReconcile', () => {
 
 		reconcile.destroy();
 	});
+
+	// ── Cooldown race prevention ──
+
+	describe('cooldown race prevention', () => {
+		it('does not allow concurrent pushes during cooldown retry', async () => {
+			let pushCount = 0;
+			const config = makeConfig({
+				getSnapshot: vi.fn().mockImplementation(async () => { pushCount++; return {}; }),
+				pushSnapshot: vi.fn().mockResolvedValue({ warnings: [] }),
+			});
+			const reconcile = createAutoReconcile(config);
+
+			// First push
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(pushCount).toBe(1);
+
+			// Second trigger during cooldown — should NOT start a concurrent push
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(100);
+			expect(pushCount).toBe(1); // still 1, blocked by pushInFlight during cooldown
+
+			// After cooldown expires, the scheduled retry runs
+			await vi.advanceTimersByTimeAsync(5000);
+			expect(pushCount).toBeLessThanOrEqual(2); // at most 2
+
+			reconcile.destroy();
+		});
+
+		it('releases pushInFlight when cooldown timer is cancelled by new mismatch', async () => {
+			const config = makeConfig();
+			const reconcile = createAutoReconcile(config);
+
+			// First push
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(1);
+
+			// Trigger during cooldown — schedules cooldown retry timer with pushInFlight=true
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(1); // blocked by cooldown
+
+			// New mismatch cancels the cooldown timer, clearing pushInFlight,
+			// then tries to push again (but cooldown is still active, so re-schedules)
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(1); // still blocked by cooldown
+
+			// Wait for cooldown to expire — the re-scheduled timer fires
+			await vi.advanceTimersByTimeAsync(5100);
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(2);
+
+			reconcile.destroy();
+		});
+	});
+
+	// ── Push timeout ──
+
+	describe('push timeout', () => {
+		it('times out if getSnapshot hangs for more than 10s', async () => {
+			const config = makeConfig({
+				getSnapshot: vi.fn().mockImplementation(() => new Promise(() => {})), // never resolves
+			});
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(config.onRecoveryStart).toHaveBeenCalledOnce();
+
+			// Advance past 10s timeout
+			await vi.advanceTimersByTimeAsync(10_100);
+
+			expect(config.onRecoveryError).toHaveBeenCalledOnce();
+			const err = (config.onRecoveryError as ReturnType<typeof vi.fn>).mock.calls[0][0];
+			expect(err.message).toBe('Snapshot push timed out');
+			expect(config.onRecoveryComplete).not.toHaveBeenCalled();
+
+			reconcile.destroy();
+		});
+
+		it('times out if pushSnapshot hangs for more than 10s', async () => {
+			const config = makeConfig({
+				pushSnapshot: vi.fn().mockImplementation(() => new Promise(() => {})), // never resolves
+			});
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(config.onRecoveryStart).toHaveBeenCalledOnce();
+
+			// Advance past 10s timeout
+			await vi.advanceTimersByTimeAsync(10_100);
+
+			expect(config.onRecoveryError).toHaveBeenCalledOnce();
+			const err = (config.onRecoveryError as ReturnType<typeof vi.fn>).mock.calls[0][0];
+			expect(err.message).toBe('Snapshot push timed out');
+			expect(config.onRecoveryComplete).not.toHaveBeenCalled();
+
+			reconcile.destroy();
+		});
+
+		it('does not time out when push completes within 10s', async () => {
+			const config = makeConfig();
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+
+			expect(config.onRecoveryComplete).toHaveBeenCalledOnce();
+			expect(config.onRecoveryError).not.toHaveBeenCalled();
+
+			reconcile.destroy();
+		});
+	});
 });

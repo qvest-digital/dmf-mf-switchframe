@@ -66,19 +66,42 @@ const TIMED_PATH_EXACT = new Set([
 
 const TIMED_PATH_PATTERNS = [
 	/^\/api\/graphics\/\d+\/(on|off)$/,
+	/^\/api\/graphics\/\d+\/rect$/,
+	/^\/api\/graphics\/\d+\/zorder$/,
 	/^\/api\/presets\/[^/]+\/recall$/,
 	/^\/api\/dve\/slots\/\d+\/(on|off)$/,
+	/^\/api\/dve\/slots\/\d+$/,
 	/^\/api\/clips\/players\/\d+\/(play|pause|stop)$/,
 	/^\/api\/playout\/channels\/\d+\/(start|stop|next|previous)$/,
 	/^\/api\/playout\/channels\/\d+\/pods\/[^/]+\/(fire|dump|hold|extend)$/,
 	/^\/api\/audio\/.+$/,
 	/^\/api\/macros\/[^/]+\/run$/,
 	/^\/api\/sources\/[^/]+\/key$/,
+	/^\/api\/captions\/(text|newline|clear)$/,
 ];
 
-function isTimedPath(path: string): boolean {
+export function isTimedPath(path: string): boolean {
 	if (TIMED_PATH_EXACT.has(path)) return true;
 	return TIMED_PATH_PATTERNS.some(re => re.test(path));
+}
+
+/** Paths where retry after partial failure could cause duplicate side effects. */
+const NON_IDEMPOTENT_PATHS = new Set([
+	'/api/recording/start',
+	'/api/recording/stop',
+	'/api/output/srt/start',
+	'/api/output/srt/stop',
+	'/api/output/destinations',
+]);
+
+const NON_IDEMPOTENT_PATTERNS = [
+	/^\/api\/macros\/[^/]+\/run$/,
+	/^\/api\/scte35\/cue$/,
+];
+
+export function isNonIdempotent(path: string): boolean {
+	if (NON_IDEMPOTENT_PATHS.has(path)) return true;
+	return NON_IDEMPOTENT_PATTERNS.some(re => re.test(path));
 }
 
 // ── Pending command buffer for engine B discovery race ──

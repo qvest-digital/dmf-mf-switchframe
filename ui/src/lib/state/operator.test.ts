@@ -8,12 +8,13 @@ vi.mock('$lib/api/switch-api', () => ({
 	setAuthToken: vi.fn(),
 }));
 
-import { operatorReconnect, operatorHeartbeat } from '$lib/api/switch-api';
+import { operatorRegister, operatorReconnect, operatorHeartbeat } from '$lib/api/switch-api';
 
 describe('operator state', () => {
 	beforeEach(() => {
 		vi.useFakeTimers();
 		localStorage.clear();
+		sessionStorage.clear();
 		vi.resetModules();
 	});
 
@@ -52,6 +53,93 @@ describe('operator state', () => {
 		vi.mocked(operatorHeartbeat).mockClear();
 		await vi.advanceTimersByTimeAsync(30_000);
 		expect(operatorHeartbeat).not.toHaveBeenCalled();
+	});
+
+	it('caches session in sessionStorage on register', async () => {
+		const mod = await import('./operator.svelte');
+
+		vi.mocked(operatorRegister).mockResolvedValueOnce({
+			id: 'op1',
+			name: 'Alice',
+			role: 'director' as const,
+			token: 'tok-1',
+		});
+		await mod.register('Alice', 'director');
+
+		const cached = sessionStorage.getItem('switchframe_operator_session');
+		expect(cached).toBeTruthy();
+		const parsed = JSON.parse(cached!);
+		expect(parsed.id).toBe('op1');
+		expect(parsed.name).toBe('Alice');
+		expect(parsed.role).toBe('director');
+	});
+
+	it('caches session in sessionStorage on successful reconnect', async () => {
+		const mod = await import('./operator.svelte');
+		localStorage.setItem('switchframe_operator_token', 'test-token');
+
+		vi.mocked(operatorReconnect).mockResolvedValueOnce({
+			id: 'op2',
+			name: 'Bob',
+			role: 'operator' as const,
+		});
+		await mod.reconnect();
+
+		const cached = sessionStorage.getItem('switchframe_operator_session');
+		expect(cached).toBeTruthy();
+		const parsed = JSON.parse(cached!);
+		expect(parsed.id).toBe('op2');
+		expect(parsed.name).toBe('Bob');
+		expect(parsed.role).toBe('operator');
+	});
+
+	it('uses cached session for instant display during reconnect', async () => {
+		const mod = await import('./operator.svelte');
+		localStorage.setItem('switchframe_operator_token', 'test-token');
+
+		// Pre-populate session cache
+		sessionStorage.setItem('switchframe_operator_session', JSON.stringify({
+			id: 'cached-id', name: 'Cached', role: 'director',
+		}));
+
+		// Make reconnect hang (never resolves) to test the instant display
+		let resolveReconnect!: (v: any) => void;
+		vi.mocked(operatorReconnect).mockImplementation(() => new Promise(r => { resolveReconnect = r; }));
+
+		const promise = mod.reconnect();
+
+		// Session should be populated from cache immediately
+		const session = mod.getSession();
+		expect(session).toBeTruthy();
+		expect(session!.name).toBe('Cached');
+		expect(session!.id).toBe('cached-id');
+
+		// Resolve reconnect with fresh data
+		resolveReconnect({ id: 'fresh-id', name: 'Fresh', role: 'operator' });
+		await promise;
+
+		// Session should now have fresh data
+		const updated = mod.getSession();
+		expect(updated!.id).toBe('fresh-id');
+		expect(updated!.name).toBe('Fresh');
+	});
+
+	it('clears session cache on reconnect failure', async () => {
+		const mod = await import('./operator.svelte');
+		localStorage.setItem('switchframe_operator_token', 'test-token');
+
+		// Pre-populate session cache
+		sessionStorage.setItem('switchframe_operator_session', JSON.stringify({
+			id: 'cached-id', name: 'Cached', role: 'director',
+		}));
+
+		vi.mocked(operatorReconnect).mockRejectedValueOnce(new Error('network error'));
+		await mod.reconnect();
+
+		// Cache should be cleared
+		expect(sessionStorage.getItem('switchframe_operator_session')).toBeNull();
+		// Session should be null
+		expect(mod.getSession()).toBeNull();
 	});
 
 	it('disconnect stops heartbeat timer', async () => {

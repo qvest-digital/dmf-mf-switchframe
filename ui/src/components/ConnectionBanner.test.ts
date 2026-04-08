@@ -409,6 +409,91 @@ describe('ConnectionBanner', () => {
 			expect(banner).toBeFalsy();
 		});
 
+		it('does NOT auto-redirect during an active transition', () => {
+			const { container } = render(ConnectionBanner, {
+				props: {
+					connectionState: 'disconnected',
+					syncStatus: 'ok',
+					engineFallbackUrl: 'https://engine-b.example.com',
+					servingEngine: 'A',
+					inTransition: true,
+				},
+			});
+			// Should show manual fallback, not countdown — transition blocks auto-redirect
+			const banner = container.querySelector('.connection-banner.engine-fallback');
+			expect(banner).toBeTruthy();
+			expect(banner?.textContent).not.toContain('redirecting');
+			expect(banner?.textContent).toContain('Reload from Engine B');
+		});
+
+		it('auto-redirects when transition completes', async () => {
+			const { container, rerender } = render(ConnectionBanner, {
+				props: {
+					connectionState: 'disconnected',
+					syncStatus: 'ok',
+					engineFallbackUrl: 'https://engine-b.example.com',
+					servingEngine: 'A',
+					inTransition: true,
+				},
+			});
+			// During transition — no auto-redirect
+			expect(container.querySelector('.connection-banner.engine-fallback')?.textContent).not.toContain('redirecting');
+
+			// Transition ends
+			await rerender({
+				connectionState: 'disconnected',
+				syncStatus: 'ok',
+				engineFallbackUrl: 'https://engine-b.example.com',
+				servingEngine: 'A',
+				inTransition: false,
+			});
+			const banner = container.querySelector('.connection-banner.engine-fallback');
+			expect(banner?.textContent).toContain('redirecting');
+		});
+
+		it('treats sessionStorage exception as already-redirected (private browsing safety)', () => {
+			// Simulate private browsing by replacing the global sessionStorage
+			// with a proxy that throws on getItem. This ensures the component
+			// sees the throwing behavior during its $derived evaluation.
+			const realSessionStorage = globalThis.sessionStorage;
+			const throwingStorage = {
+				...realSessionStorage,
+				getItem: () => { throw new DOMException('Access denied'); },
+				setItem: () => { throw new DOMException('Access denied'); },
+				removeItem: () => { throw new DOMException('Access denied'); },
+				clear: () => { throw new DOMException('Access denied'); },
+				key: () => null,
+				length: 0,
+			};
+			Object.defineProperty(globalThis, 'sessionStorage', {
+				value: throwingStorage,
+				writable: true,
+				configurable: true,
+			});
+
+			try {
+				const { container } = render(ConnectionBanner, {
+					props: {
+						connectionState: 'disconnected',
+						syncStatus: 'ok',
+						engineFallbackUrl: 'https://engine-b.example.com',
+						servingEngine: 'A',
+					},
+				});
+				// Should show manual fallback, not countdown — private browsing blocks auto-redirect
+				const banner = container.querySelector('.connection-banner.engine-fallback');
+				expect(banner).toBeTruthy();
+				expect(banner?.textContent).not.toContain('redirecting');
+				expect(banner?.textContent).toContain('Reload from Engine B');
+			} finally {
+				Object.defineProperty(globalThis, 'sessionStorage', {
+					value: realSessionStorage,
+					writable: true,
+					configurable: true,
+				});
+			}
+		});
+
 		it('does NOT redirect to self (fallbackUrl === window.location.origin)', () => {
 			const { container } = render(ConnectionBanner, {
 				props: {

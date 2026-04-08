@@ -2,6 +2,7 @@ import type { OperatorRole } from '$lib/api/types';
 import { operatorRegister, operatorReconnect, operatorHeartbeat, setAuthToken } from '$lib/api/switch-api';
 
 const STORAGE_KEY = 'switchframe_operator_token';
+const SESSION_CACHE_KEY = 'switchframe_operator_session';
 const HEARTBEAT_INTERVAL = 10_000; // 10s
 
 export interface OperatorSession {
@@ -21,6 +22,25 @@ function getStoredToken(): string | null {
 
 function clearStoredToken(): void {
 	localStorage.removeItem(STORAGE_KEY);
+}
+
+function cacheSession(s: OperatorSession): void {
+	try {
+		sessionStorage.setItem(SESSION_CACHE_KEY, JSON.stringify({
+			id: s.id, name: s.name, role: s.role,
+		}));
+	} catch { /* private browsing — ignore */ }
+}
+
+function getCachedSession(): Partial<OperatorSession> | null {
+	try {
+		const raw = sessionStorage.getItem(SESSION_CACHE_KEY);
+		return raw ? JSON.parse(raw) : null;
+	} catch { return null; }
+}
+
+function clearCachedSession(): void {
+	try { sessionStorage.removeItem(SESSION_CACHE_KEY); } catch { /* ignore */ }
 }
 
 function startHeartbeat(): void {
@@ -51,12 +71,19 @@ export async function register(name: string, role: OperatorRole): Promise<void> 
 		token: result.token,
 	};
 	setAuthToken(result.token);
+	cacheSession(session);
 	startHeartbeat();
 }
 
 export async function reconnect(): Promise<boolean> {
 	const token = getStoredToken();
 	if (!token) return false;
+
+	// Instant display from cache while API reconnects
+	const cached = getCachedSession();
+	if (cached?.id && cached?.name && cached?.role) {
+		session = { id: cached.id, name: cached.name, role: cached.role as OperatorRole, token };
+	}
 
 	// Set as auth token before reconnecting
 	setAuthToken(token);
@@ -69,6 +96,7 @@ export async function reconnect(): Promise<boolean> {
 			role: result.role,
 			token,
 		};
+		cacheSession(session);
 		startHeartbeat();
 		return true;
 	} catch {
@@ -77,6 +105,7 @@ export async function reconnect(): Promise<boolean> {
 		// all subsequent API calls to fail with 401.
 		stopHeartbeat();
 		session = null;
+		clearCachedSession();
 		return false;
 	}
 }

@@ -628,12 +628,17 @@
 						{ id: 'A', url: window.location.origin },
 						{ id: 'B', url: engineBUrl },
 					]);
-					setDualTimestampProvider((engineId?: string) => ({
-						execute_at: engineId
-							? connectionManager.clock.ptpNowForEngine(engineId as any) + connectionManager.clock.safetyMargin()
-							: connectionManager.clock.ptpNow() + connectionManager.clock.safetyMargin(),
-						command_seq: connectionManager.nextCommandSeq(),
-					}));
+					setDualTimestampProvider((engineId?: string) => {
+						if (!connectionManager.clock.isConverged()) {
+							return { execute_at: 0, command_seq: connectionManager.nextCommandSeq() };
+						}
+						return {
+							execute_at: engineId
+								? connectionManager.clock.ptpNowForEngine(engineId as any) + connectionManager.clock.safetyMargin()
+								: connectionManager.clock.ptpNow() + connectionManager.clock.safetyMargin(),
+							command_seq: connectionManager.nextCommandSeq(),
+						};
+					});
 					// On partial command failure, trigger early reconciler check
 					setPartialFailureCallback(() => {
 						connectionManager.requestCheck();
@@ -645,6 +650,12 @@
 					if (!reconcilerInterval) {
 						reconcilerInterval = setInterval(() => { connectionManager.tick(); }, 200);
 					}
+					// Start warm standby immediately — don't wait for mounted $effect.
+					// This closes the 200-500ms gap between engine B detection and mount
+					// during which a failover would have no warm pipeline ready.
+					pipelineManager.enableWarmStandby(engineBUrl, Object.keys(store.state.sources ?? {}), {
+						onControlState: (data) => connectionManager.handleControlData('B', data),
+					});
 				}
 			}
 		},
@@ -662,11 +673,24 @@
 		onInitialLoadError: (error, rawError) => {
 			initialLoadRetries++;
 
-			// On first error, try control plane discovery (faster than DNS inference)
+			// On first error, try BOTH control plane discovery AND DNS inference in
+			// parallel. Whichever resolves first wins. Previously DNS inference only
+			// kicked in at retry #3 (9+ seconds), delaying failover.
 			if (initialLoadRetries === 1 && !engineBDetected) {
 				const discovery = new ControlPlaneDiscovery(window.location.hostname);
-				discovery.fetchEngineUrls().then((result) => {
-					if (result && !engineBDetected) {
+				const inferred = inferEngineBUrl(window.location.hostname, window.location.protocol);
+
+				const candidates: Promise<{ engineBUrl: string; source: string }>[] = [
+					discovery.fetchEngineUrls().then(r =>
+						r ? { engineBUrl: r.engineBUrl, source: 'control-plane' } : Promise.reject(new Error('no result'))
+					),
+				];
+				if (inferred) {
+					candidates.push(Promise.resolve({ engineBUrl: inferred, source: 'dns-inference' }));
+				}
+
+				Promise.any(candidates).then(result => {
+					if (!engineBDetected && result) {
 						engineBDetected = true;
 						isDualEngine = true;
 						connectionManager.addEngine('B', result.engineBUrl);
@@ -675,12 +699,17 @@
 							{ id: 'A', url: window.location.origin },
 							{ id: 'B', url: result.engineBUrl },
 						]);
-						setDualTimestampProvider((engineId?: string) => ({
-							execute_at: engineId
-								? connectionManager.clock.ptpNowForEngine(engineId as any) + connectionManager.clock.safetyMargin()
-								: connectionManager.clock.ptpNow() + connectionManager.clock.safetyMargin(),
-							command_seq: connectionManager.nextCommandSeq(),
-						}));
+						setDualTimestampProvider((engineId?: string) => {
+							if (!connectionManager.clock.isConverged()) {
+								return { execute_at: 0, command_seq: connectionManager.nextCommandSeq() };
+							}
+							return {
+								execute_at: engineId
+									? connectionManager.clock.ptpNowForEngine(engineId as any) + connectionManager.clock.safetyMargin()
+									: connectionManager.clock.ptpNow() + connectionManager.clock.safetyMargin(),
+								command_seq: connectionManager.nextCommandSeq(),
+							};
+						});
 						setPartialFailureCallback(() => {
 							connectionManager.requestCheck();
 						});
@@ -691,38 +720,7 @@
 							reconcilerInterval = setInterval(() => { connectionManager.tick(); }, 200);
 						}
 					}
-				});
-			}
-
-			// After 3 failures, try to infer Engine B from DNS naming convention.
-			// {sessionId}.engines.switchframe.dev → {sessionId}-b.engines.switchframe.dev
-			if (initialLoadRetries >= 3 && !engineBDetected) {
-				const inferred = inferEngineBUrl(window.location.hostname, window.location.protocol);
-				if (inferred) {
-					engineBDetected = true;
-					isDualEngine = true;
-					connectionManager.addEngine('B', inferred);
-					dualApi.addEngine('B', inferred);
-					setEngineUrls([
-						{ id: 'A', url: window.location.origin },
-						{ id: 'B', url: inferred },
-					]);
-					setDualTimestampProvider((engineId?: string) => ({
-						execute_at: engineId
-							? connectionManager.clock.ptpNowForEngine(engineId as any) + connectionManager.clock.safetyMargin()
-							: connectionManager.clock.ptpNow() + connectionManager.clock.safetyMargin(),
-						command_seq: connectionManager.nextCommandSeq(),
-					}));
-					setPartialFailureCallback(() => {
-						connectionManager.requestCheck();
-					});
-					setPartialFailureNotify((msg) => {
-						notify('warning', msg);
-					});
-					if (!reconcilerInterval) {
-						reconcilerInterval = setInterval(() => { connectionManager.tick(); }, 200);
-					}
-				}
+				}).catch(() => { /* Both failed — will retry on next error */ });
 			}
 
 			console.warn('Failed to fetch initial state:', error);
@@ -755,7 +753,36 @@
 			// switching the entire media pipeline to Engine B.
 			if (key !== 'program' && key !== 'program-preview') return;
 			if (!isDualEngine || pipelineManager.activeEngine !== 'A') return;
-			if (!store.state.engineBUrl || videoFailoverActive) return;
+			if (videoFailoverActive) return;
+
+			if (!store.state.engineBUrl) {
+				// Attempt emergency engine B discovery via DNS inference
+				const inferred = inferEngineBUrl(window.location.hostname, window.location.protocol);
+				if (inferred && !engineBDetected) {
+					engineBDetected = true;
+					isDualEngine = true;
+					connectionManager.addEngine('B', inferred);
+					dualApi.addEngine('B', inferred);
+					setEngineUrls([
+						{ id: 'A', url: window.location.origin },
+						{ id: 'B', url: inferred },
+					]);
+					// Try failover after brief delay for connection setup
+					setTimeout(() => {
+						videoFailoverActive = true;
+						pipelineManager.failoverToEngineB(inferred, Object.keys(store.state.sources ?? {}))
+							.then(() => {
+								activeEngine = 'B';
+								notify('warning', 'Video switched to Engine B (media stall + emergency discovery)');
+							})
+							.catch(err => {
+								videoFailoverActive = false;
+								console.warn('Emergency failover failed:', err);
+							});
+					}, 500);
+				}
+				return;
+			}
 
 			videoFailoverActive = true;
 			pipelineManager.failoverToEngineB(store.state.engineBUrl, Object.keys(store.state.sources ?? {}))
@@ -1043,7 +1070,7 @@
 	// failover only needs to swap canvases instead of creating the pipeline and
 	// waiting up to 3s for MoQ readiness.
 	$effect(() => {
-		if (isDualEngine && store.state.engineBUrl && mounted) {
+		if (isDualEngine && store.state.engineBUrl && mounted && !pipelineManager.warmStandbyActive) {
 			const sourceKeys = Object.keys(store.state.sources ?? {});
 			pipelineManager.enableWarmStandby(store.state.engineBUrl, sourceKeys, {
 				onControlState: (data) => connectionManager.handleControlData('B', data),
@@ -1343,7 +1370,7 @@
 />
 
 <ErrorBoundary>
-	<ConnectionBanner {connectionState} {syncStatus} engineStatus={engineBannerStatus} {perEngineState} {sessionFallbackUrl} engineFallbackUrl={store.state.engineBUrl} servingEngine={servingEngine} />
+	<ConnectionBanner {connectionState} {syncStatus} engineStatus={engineBannerStatus} {perEngineState} {sessionFallbackUrl} engineFallbackUrl={store.state.engineBUrl} servingEngine={servingEngine} inTransition={store.state.inTransition} />
 	<Toast />
 	{#if layoutMode === 'simple'}
 		<SimpleMode

@@ -15,9 +15,10 @@ import (
 
 // RecorderConfig configures a FileRecorder.
 type RecorderConfig struct {
-	Dir         string        // Output directory for recording files.
-	RotateAfter time.Duration // Rotate after this duration; default 1h, 0 = disabled.
-	MaxFileSize int64         // Rotate after this many bytes; default 0 (unlimited).
+	Dir            string        // Output directory for recording files.
+	RotateAfter    time.Duration // Rotate after this duration; default 1h, 0 = disabled.
+	MaxFileSize    int64         // Rotate after this many bytes; default 0 (unlimited).
+	FilenamePrefix string        // Optional prefix for recording files; default "program".
 }
 
 // syncBytesThreshold is the number of bytes written between periodic fsync
@@ -93,7 +94,11 @@ func (r *FileRecorder) Start(_ context.Context) error {
 
 // openFileLocked creates a new file for recording. Must be called with r.mu held.
 func (r *FileRecorder) openFileLocked(now time.Time) error {
-	r.filename = fmt.Sprintf("program_%s_%03d.ts", r.baseTimestamp, r.fileIndex)
+	prefix := r.config.FilenamePrefix
+	if prefix == "" {
+		prefix = "program"
+	}
+	r.filename = fmt.Sprintf("%s_%s_%03d.ts", prefix, r.baseTimestamp, r.fileIndex)
 	path := filepath.Join(r.config.Dir, r.filename)
 
 	if err := os.MkdirAll(r.config.Dir, 0o755); err != nil {

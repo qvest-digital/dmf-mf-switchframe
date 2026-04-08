@@ -16,6 +16,7 @@ export interface AutoReconcileConfig {
 
 const DIVERGE_DELAY_MS = 2000;
 const COOLDOWN_MS = 5000;
+const PUSH_TIMEOUT_MS = 10_000;
 
 function otherEngine(engine: EngineId): EngineId {
 	return engine === 'A' ? 'B' : 'A';
@@ -29,6 +30,7 @@ function toError(err: unknown): Error {
 export function createAutoReconcile(config: AutoReconcileConfig) {
 	let pendingTimer: ReturnType<typeof setTimeout> | null = null;
 	let pushInFlight = false;
+	let cooldownHoldingFlight = false; // true when pushInFlight was set by cooldown scheduling
 	let destroyed = false;
 	// Per-engine cooldown tracking
 	const lastPushTimes = new Map<EngineId, number>();
@@ -41,6 +43,12 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 		if (pendingTimer !== null) {
 			clearTimeout(pendingTimer);
 			pendingTimer = null;
+			// If the cancelled timer held the pushInFlight flag (cooldown retry),
+			// release it so future pushes aren't permanently blocked.
+			if (cooldownHoldingFlight) {
+				pushInFlight = false;
+				cooldownHoldingFlight = false;
+			}
 		}
 	}
 
@@ -80,10 +88,16 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 		const target = otherEngine(authoritative);
 		const remaining = COOLDOWN_MS - (Date.now() - (lastPushTimes.get(target) ?? 0));
 		if (remaining > 0) {
-			// Cooldown active — schedule a retry so the push isn't lost
-			if (pendingTimer === null) {
+			// Cooldown active — schedule a retry so the push isn't lost.
+			// Set pushInFlight to prevent concurrent calls from racing past
+			// the cooldown check while the timer is pending.
+			if (pendingTimer === null && !pushInFlight) {
+				pushInFlight = true;
+				cooldownHoldingFlight = true;
 				pendingTimer = setTimeout(() => {
 					pendingTimer = null;
+					pushInFlight = false;
+					cooldownHoldingFlight = false;
 					executeSnapshotPush(currentAuthoritative);
 				}, remaining);
 			}
@@ -103,10 +117,25 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 
 		pushInFlight = true;
 
+		const timeoutController = new AbortController();
+		const timeoutTimer = setTimeout(() => timeoutController.abort(), PUSH_TIMEOUT_MS);
 		try {
 			config.onRecoveryStart?.();
-			const snapshot = await config.getSnapshot(authoritative);
-			const result = await config.pushSnapshot(target, snapshot);
+			const snapshot = await Promise.race([
+				config.getSnapshot(authoritative),
+				new Promise<never>((_, reject) => {
+					timeoutController.signal.addEventListener('abort', () =>
+						reject(new Error('Snapshot push timed out')));
+				}),
+			]);
+			const result = await Promise.race([
+				config.pushSnapshot(target, snapshot),
+				new Promise<never>((_, reject) => {
+					timeoutController.signal.addEventListener('abort', () =>
+						reject(new Error('Snapshot push timed out')));
+				}),
+			]);
+			clearTimeout(timeoutTimer);
 			retryCount = 0; // reset on success
 			config.onRecoveryComplete?.(result.warnings);
 
@@ -126,6 +155,7 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 				}, 500);
 			}
 		} catch (err) {
+			clearTimeout(timeoutTimer);
 			config.onRecoveryError?.(toError(err));
 			// Retry once after 2s + jitter
 			if (retryCount < 1) {

@@ -10,14 +10,14 @@
  * - Error handling preserves HTTP status codes
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { setEngineUrls, getEngineUrls, setApiBaseUrl, setExpectDualEngine, setOnNewEngineDiscovered } from './base-url';
+import { setEngineUrls, getEngineUrls, setApiBaseUrl, setExpectDualEngine, setOnNewEngineDiscovered, isNonIdempotent, isTimedPath } from './base-url';
 import {
 	cut, setPreview, getState, fadeToBlack,
 	setMasterLevel, setMute, startTransition, runMacro, setSourceKey,
 	setFormat, setEncoderBackend,
 	setDualTimestampProvider, setPartialFailureCallback, setPartialFailureNotify, authHeaders,
 	resetPreferredEngine, resetCircuitBreakers, uploadStinger,
-	startRecording, stopRecording,
+	startRecording, stopRecording, addDestination,
 } from './switch-api';
 
 // Track all fetch calls for inspection
@@ -295,7 +295,7 @@ describe('switch-api dual-engine routing', () => {
 		});
 
 		it('injects on /api/macros/{name}/run', async () => {
-			const realisticTs = Date.now() * 1000 + 5_000_000;
+			const realisticTs = Date.now() * 1000 + 1_000_000;
 			setDualTimestampProvider(() => ({ execute_at: realisticTs, command_seq: 5 }));
 			await runMacro('my-macro');
 
@@ -304,7 +304,7 @@ describe('switch-api dual-engine routing', () => {
 		});
 
 		it('injects on /api/sources/{source}/key', async () => {
-			const realisticTs = Date.now() * 1000 + 6_000_000;
+			const realisticTs = Date.now() * 1000 + 1_200_000;
 			setDualTimestampProvider(() => ({ execute_at: realisticTs, command_seq: 6 }));
 			await setSourceKey('cam1', { type: 'chroma', enabled: true } as any);
 
@@ -313,7 +313,7 @@ describe('switch-api dual-engine routing', () => {
 		});
 
 		it('injects on /api/format', async () => {
-			const realisticTs = Date.now() * 1000 + 7_000_000;
+			const realisticTs = Date.now() * 1000 + 1_400_000;
 			setDualTimestampProvider(() => ({ execute_at: realisticTs, command_seq: 7 }));
 			await setFormat('1080p30');
 
@@ -322,7 +322,7 @@ describe('switch-api dual-engine routing', () => {
 		});
 
 		it('injects on /api/encoder', async () => {
-			const realisticTs = Date.now() * 1000 + 8_000_000;
+			const realisticTs = Date.now() * 1000 + 1_600_000;
 			setDualTimestampProvider(() => ({ execute_at: realisticTs, command_seq: 8 }));
 			await setEncoderBackend('nvenc');
 
@@ -1456,6 +1456,190 @@ describe('switch-api dual-engine routing', () => {
 			// Should not throw
 			const state = await cut('cam1');
 			expect(state.programSource).toBe('cam1');
+		});
+	});
+
+	// ─── Non-idempotent retry skip (Task 1) ───
+
+	describe('non-idempotent retry skip', () => {
+		it('isNonIdempotent classifies recording paths', () => {
+			expect(isNonIdempotent('/api/recording/start')).toBe(true);
+			expect(isNonIdempotent('/api/recording/stop')).toBe(true);
+		});
+
+		it('isNonIdempotent classifies output paths', () => {
+			expect(isNonIdempotent('/api/output/srt/start')).toBe(true);
+			expect(isNonIdempotent('/api/output/srt/stop')).toBe(true);
+			expect(isNonIdempotent('/api/output/destinations')).toBe(true);
+		});
+
+		it('isNonIdempotent classifies macro run', () => {
+			expect(isNonIdempotent('/api/macros/my-macro/run')).toBe(true);
+			expect(isNonIdempotent('/api/macros/another-one/run')).toBe(true);
+		});
+
+		it('isNonIdempotent classifies scte35 cue', () => {
+			expect(isNonIdempotent('/api/scte35/cue')).toBe(true);
+		});
+
+		it('isNonIdempotent returns false for idempotent paths', () => {
+			expect(isNonIdempotent('/api/switch/cut')).toBe(false);
+			expect(isNonIdempotent('/api/switch/preview')).toBe(false);
+			expect(isNonIdempotent('/api/audio/master')).toBe(false);
+			expect(isNonIdempotent('/api/graphics/1/on')).toBe(false);
+		});
+
+		describe('retry behavior with non-idempotent paths', () => {
+			beforeEach(() => {
+				vi.useFakeTimers();
+				setEngineUrls([
+					{ id: 'A', url: 'https://engine-a.example.com' },
+					{ id: 'B', url: 'https://engine-b.example.com' },
+				]);
+			});
+
+			afterEach(() => {
+				vi.useRealTimers();
+			});
+
+			it('idempotent paths DO get retried on partial failure', async () => {
+				mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+					fetchCalls.push({ url, opts: opts ?? {} });
+					if (url.includes('engine-b')) {
+						return Promise.resolve(errorResponse(500, 'engine B crashed'));
+					}
+					return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
+				});
+
+				await cut('cam1'); // /api/switch/cut is idempotent
+
+				const initialCalls = fetchCalls.filter(c => c.url.includes('/api/switch/cut'));
+				expect(initialCalls).toHaveLength(2);
+
+				await vi.advanceTimersByTimeAsync(500);
+
+				// Should have retried engine B
+				const allCutCalls = fetchCalls.filter(c => c.url.includes('/api/switch/cut'));
+				expect(allCutCalls).toHaveLength(3);
+				expect(allCutCalls[2].url).toContain('engine-b');
+			});
+
+			it('non-idempotent paths do NOT get retried on partial failure (startRecording)', async () => {
+				mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+					fetchCalls.push({ url, opts: opts ?? {} });
+					if (url.includes('engine-b')) {
+						return Promise.resolve(errorResponse(500, 'engine B crashed'));
+					}
+					return Promise.resolve(defaultOkResponse({}));
+				});
+
+				await startRecording();
+
+				const initialCalls = fetchCalls.filter(c => c.url.includes('/api/recording/start'));
+				expect(initialCalls).toHaveLength(2);
+
+				await vi.advanceTimersByTimeAsync(500);
+
+				// Should NOT have retried — still only 2 calls
+				const allCalls = fetchCalls.filter(c => c.url.includes('/api/recording/start'));
+				expect(allCalls).toHaveLength(2);
+			});
+
+			it('non-idempotent paths do NOT get retried on partial failure (addDestination)', async () => {
+				mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+					fetchCalls.push({ url, opts: opts ?? {} });
+					if (url.includes('engine-b')) {
+						return Promise.resolve(errorResponse(500, 'engine B crashed'));
+					}
+					return Promise.resolve(defaultOkResponse({ id: 'dest-1', state: 'running' }));
+				});
+
+				await addDestination({ type: 'srt-caller', address: '1.2.3.4', port: 9000 } as any);
+
+				const initialCalls = fetchCalls.filter(c => c.url.includes('/api/output/destinations'));
+				expect(initialCalls).toHaveLength(2);
+
+				await vi.advanceTimersByTimeAsync(500);
+
+				// Should NOT have retried
+				const allCalls = fetchCalls.filter(c => c.url.includes('/api/output/destinations'));
+				expect(allCalls).toHaveLength(2);
+			});
+
+			it('notify message says "no retry" for non-idempotent paths', async () => {
+				const notifySpy = vi.fn();
+				setPartialFailureNotify(notifySpy);
+
+				mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+					fetchCalls.push({ url, opts: opts ?? {} });
+					if (url.includes('engine-b')) {
+						return Promise.resolve(errorResponse(500, 'engine B crashed'));
+					}
+					return Promise.resolve(defaultOkResponse({}));
+				});
+
+				await startRecording();
+				expect(notifySpy).toHaveBeenCalledWith(expect.stringContaining('no retry'));
+			});
+
+			it('notify message says "retrying" for idempotent paths', async () => {
+				const notifySpy = vi.fn();
+				setPartialFailureNotify(notifySpy);
+
+				mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+					fetchCalls.push({ url, opts: opts ?? {} });
+					if (url.includes('engine-b')) {
+						return Promise.resolve(errorResponse(500, 'engine B crashed'));
+					}
+					return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
+				});
+
+				await cut('cam1');
+				expect(notifySpy).toHaveBeenCalledWith(expect.stringContaining('retrying'));
+			});
+		});
+	});
+
+	// ─── Missing timed paths (Task 4) ───
+
+	describe('timed path coverage', () => {
+		it('graphics rect is a timed path', () => {
+			expect(isTimedPath('/api/graphics/1/rect')).toBe(true);
+			expect(isTimedPath('/api/graphics/0/rect')).toBe(true);
+			expect(isTimedPath('/api/graphics/99/rect')).toBe(true);
+		});
+
+		it('graphics zorder is a timed path', () => {
+			expect(isTimedPath('/api/graphics/1/zorder')).toBe(true);
+			expect(isTimedPath('/api/graphics/0/zorder')).toBe(true);
+		});
+
+		it('caption text is a timed path', () => {
+			expect(isTimedPath('/api/captions/text')).toBe(true);
+		});
+
+		it('caption newline is a timed path', () => {
+			expect(isTimedPath('/api/captions/newline')).toBe(true);
+		});
+
+		it('caption clear is a timed path', () => {
+			expect(isTimedPath('/api/captions/clear')).toBe(true);
+		});
+
+		it('caption mode is NOT a timed path', () => {
+			expect(isTimedPath('/api/captions/mode')).toBe(false);
+		});
+
+		it('DVE slot update is a timed path', () => {
+			expect(isTimedPath('/api/dve/slots/0')).toBe(true);
+			expect(isTimedPath('/api/dve/slots/3')).toBe(true);
+		});
+
+		it('existing timed paths still work', () => {
+			expect(isTimedPath('/api/switch/cut')).toBe(true);
+			expect(isTimedPath('/api/graphics/1/on')).toBe(true);
+			expect(isTimedPath('/api/audio/master')).toBe(true);
+			expect(isTimedPath('/api/macros/my-macro/run')).toBe(true);
 		});
 	});
 });

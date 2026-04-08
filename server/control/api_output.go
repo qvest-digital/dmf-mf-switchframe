@@ -18,6 +18,7 @@ type recordingStartRequest struct {
 	OutputDir       string `json:"outputDir"`
 	RotateAfterMins int    `json:"rotateAfterMins,omitempty"`
 	MaxFileSizeMB   int    `json:"maxFileSizeMB,omitempty"`
+	FilenamePrefix  string `json:"filenamePrefix,omitempty"`
 }
 
 // registerOutputRoutes registers output/recording/SRT-related API routes on the given mux.
@@ -71,8 +72,9 @@ func (a *API) handleRecordingStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	config := output.RecorderConfig{
-		Dir:         outDir,
-		RotateAfter: time.Hour,
+		Dir:            outDir,
+		RotateAfter:    time.Hour,
+		FilenamePrefix: req.FilenamePrefix,
 	}
 	if req.RotateAfterMins > 0 {
 		config.RotateAfter = time.Duration(req.RotateAfterMins) * time.Minute

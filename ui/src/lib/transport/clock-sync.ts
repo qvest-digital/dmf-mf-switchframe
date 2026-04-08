@@ -121,6 +121,20 @@ export class ClockSync {
 		return this.getOffsetDivergence() > this.safetyMargin();
 	}
 
+	/** True when all tracked engines have valid (non-stale) RTT and offset data. */
+	isConverged(): boolean {
+		if (this.trackedEngines.length < 2) return false;
+		const now = Date.now();
+		for (const id of this.trackedEngines) {
+			const rtt = this.rtts.get(id);
+			const offset = this.offsets.get(id);
+			const age = this.offsetAge.get(id);
+			if (rtt === undefined || offset === undefined) return false;
+			if (age !== undefined && now - age > STALE_OFFSET_MS) return false;
+		}
+		return true;
+	}
+
 	addEngine(engineId: EngineId): void {
 		if (!this.trackedEngines.includes(engineId)) {
 			this.trackedEngines.push(engineId);

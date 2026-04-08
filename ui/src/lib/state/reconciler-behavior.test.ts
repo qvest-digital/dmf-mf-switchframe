@@ -820,13 +820,13 @@ describe('reconciler behavioral tests', () => {
 			expect(audioDivs).toHaveLength(1);
 		});
 
-		it('transitionPosition does NOT cause divergence during transition', () => {
+		it('transitionPosition causes divergence when positions differ', () => {
 			const r = createReconciler();
 			r.ingest('A', makeState({ lastCommandSeq: 5, inTransition: true, transitionPosition: 0.45 }));
 			r.ingest('B', makeState({ lastCommandSeq: 5, inTransition: true, transitionPosition: 0.48 }));
 
 			const posDivs = r.health.divergences.filter(d => d.field === 'transitionPosition');
-			expect(posDivs).toHaveLength(0);
+			expect(posDivs).toHaveLength(1);
 		});
 
 		it('detects audioChannels divergence when muted differs', () => {
