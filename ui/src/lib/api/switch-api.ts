@@ -52,6 +52,16 @@ export function getAuthHeaders(): Record<string, string> {
 	return authHeaders();
 }
 
+// ── Per-engine fetch timeout for dual fan-out ──
+
+const ENGINE_FETCH_TIMEOUT_MS = 3_000;
+
+function fetchWithTimeout(url: string, opts: RequestInit, timeoutMs: number = ENGINE_FETCH_TIMEOUT_MS): Promise<Response> {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), timeoutMs);
+	return fetch(url, { ...opts, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
 // ── Circuit breaker: per-engine failure tracking ──
 
 interface CircuitState {
@@ -382,7 +392,7 @@ async function dualRequest<T>(url: string, options: RequestInit | undefined, eng
 					}
 				} catch { /* send without timestamps */ }
 			}
-			return fetch(`${engine.url}${url}`, { ...opts, body: engineBody });
+			return fetchWithTimeout(`${engine.url}${url}`, { ...opts, body: engineBody });
 		})
 	);
 
@@ -424,13 +434,22 @@ async function dualRequest<T>(url: string, options: RequestInit | undefined, eng
 			.filter((id): id is string => id !== null);
 		partialFailureNotify?.(`Command failed on Engine ${failedEngineIds.join(', ')} — retrying...`);
 
-		// Retry failed engines once after 500ms (best-effort)
+		// Retry failed engines once after 500ms (best-effort) with fresh PTP timestamps
 		setTimeout(async () => {
 			for (let i = 0; i < results.length; i++) {
 				const ok = results[i].status === 'fulfilled' && (results[i] as PromiseFulfilledResult<Response>).value.ok;
 				if (!ok) {
+					let retryBody = bodies[i];
+					// Re-inject fresh PTP timestamp for timed paths (original may be stale)
+					if (isTimedPath(url) && dualTimestampProvider && retryBody && typeof retryBody === 'string') {
+						try {
+							const ts = dualTimestampProvider(availableEngines[i].id);
+							const parsed = JSON.parse(retryBody as string);
+							retryBody = JSON.stringify({ ...parsed, ...ts });
+						} catch { /* send without fresh timestamps */ }
+					}
 					try {
-						await fetch(`${availableEngines[i].url}${url}`, { ...opts, body: bodies[i] });
+						await fetchWithTimeout(`${availableEngines[i].url}${url}`, { ...opts, body: retryBody });
 					} catch { /* retry is best-effort */ }
 				}
 			}
@@ -529,9 +548,21 @@ async function dualFetch(url: string, options: RequestInit): Promise<Response> {
 			return options.body;
 		});
 		const results = await Promise.allSettled(
-			availableEngines.map((engine, i) =>
-				fetch(`${engine.url}${url}`, { ...opts, body: bodies[i] })
-			)
+			availableEngines.map((engine, i) => {
+				let engineBody = bodies[i];
+				// Per-engine PTP timestamp injection (mirrors dualRequest)
+				if (isTimedPath(url) && dualTimestampProvider && engineBody && typeof engineBody === 'string') {
+					try {
+						const ts = dualTimestampProvider(engine.id);
+						const nowUs = Date.now() * 1000;
+						if (ts.execute_at > nowUs - 60_000_000 && ts.execute_at < nowUs + 60_000_000) {
+							const parsed = JSON.parse(engineBody as string);
+							engineBody = JSON.stringify({ ...parsed, ...ts });
+						}
+					} catch { /* send without timestamps */ }
+				}
+				return fetchWithTimeout(`${engine.url}${url}`, { ...opts, body: engineBody });
+			})
 		);
 
 		// Track circuit breaker state for each engine.
@@ -570,13 +601,21 @@ async function dualFetch(url: string, options: RequestInit): Promise<Response> {
 				.filter((id): id is string => id !== null);
 			partialFailureNotify?.(`Command failed on Engine ${failedEngineIds.join(', ')} — retrying...`);
 
-			// Retry failed engines once after 500ms (best-effort)
+			// Retry failed engines once after 500ms (best-effort) with fresh PTP timestamps
 			setTimeout(async () => {
 				for (let i = 0; i < results.length; i++) {
 					const ok = results[i].status === 'fulfilled' && (results[i] as PromiseFulfilledResult<Response>).value.ok;
 					if (!ok) {
+						let retryBody = bodies[i];
+						if (isTimedPath(url) && dualTimestampProvider && retryBody && typeof retryBody === 'string') {
+							try {
+								const ts = dualTimestampProvider(availableEngines[i].id);
+								const parsed = JSON.parse(retryBody as string);
+								retryBody = JSON.stringify({ ...parsed, ...ts });
+							} catch { /* send without fresh timestamps */ }
+						}
 						try {
-							await fetch(`${availableEngines[i].url}${url}`, { ...opts, body: bodies[i] });
+							await fetchWithTimeout(`${availableEngines[i].url}${url}`, { ...opts, body: retryBody });
 						} catch { /* retry is best-effort */ }
 					}
 				}
@@ -1614,18 +1653,25 @@ export async function uploadClip(file: File, onUploadProgress?: (percent: number
 	// Upload to primary engine with progress tracking
 	const result = await uploadClipToEngine(primaryUrl, file, onUploadProgress);
 
-	// Upload to secondary engine(s) in background (no progress tracking)
+	// Upload to secondary engine(s) — wait up to 10s for confirmation
 	if (engines && engines.length > 1) {
-		for (let i = 1; i < engines.length; i++) {
-			const engine = engines[i];
-			uploadClipToEngine(engine.url, file).catch(async () => {
+		const secondaryUploads = engines.slice(1).map(async (engine) => {
+			try {
+				await uploadClipToEngine(engine.url, file);
+			} catch {
 				// Retry once after 2s
 				await new Promise(r => setTimeout(r, 2000));
-				uploadClipToEngine(engine.url, file).catch(() => {
+				try {
+					await uploadClipToEngine(engine.url, file);
+				} catch {
 					partialFailureNotify?.(`Clip upload failed on Engine ${engine.id} — clip only on primary`);
-				});
-			});
-		}
+				}
+			}
+		});
+		await Promise.race([
+			Promise.allSettled(secondaryUploads),
+			new Promise(resolve => setTimeout(resolve, 10_000)),
+		]);
 	}
 
 	return result;
