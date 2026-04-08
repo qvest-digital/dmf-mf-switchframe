@@ -759,7 +759,10 @@
 
 			videoFailoverActive = true;
 			pipelineManager.failoverToEngineB(store.state.engineBUrl, Object.keys(store.state.sources ?? {}))
-				.then(() => notify('warning', 'Video switched to Engine B (media stall)'))
+				.then(() => {
+					activeEngine = 'B';
+					notify('warning', 'Video switched to Engine B (media stall)');
+				})
 				.catch(err => console.warn('Media stall failover failed:', err));
 		},
 	});
@@ -1071,7 +1074,10 @@
 			if (engineBUrl) {
 				videoFailoverActive = true;
 				pipelineManager.failoverToEngineB(engineBUrl, Object.keys(store.state.sources ?? {}))
-					.then(() => notify('warning', 'Video switched to Engine B'))
+					.then(() => {
+						activeEngine = 'B';
+						notify('warning', 'Video switched to Engine B');
+					})
 					.catch(err => console.warn('Video failover failed:', err));
 			}
 		}
@@ -1080,7 +1086,10 @@
 		if (status === 'synced' && pipelineManager.activeEngine === 'B' && videoFailoverActive) {
 			videoFailoverActive = false;
 			pipelineManager.restoreToEngineA(Object.keys(store.state.sources ?? {}))
-				.then(() => notify('info', 'Video restored to Engine A'))
+				.then(() => {
+					activeEngine = 'A';
+					notify('info', 'Video restored to Engine A');
+				})
 				.catch(err => console.warn('Video restore failed:', err));
 		}
 	});
@@ -1107,12 +1116,18 @@
 		if (!activeConnected && otherConnected) {
 			if (active === 'B') {
 				pipelineManager.restoreToEngineA(Object.keys(store.state.sources ?? {}))
-					.then(() => notify('info', 'Switched back to Engine A (B disconnected)'))
+					.then(() => {
+						activeEngine = 'A';
+						notify('info', 'Switched back to Engine A (B disconnected)');
+					})
 					.catch(err => console.warn('A/B auto-recover to A failed:', err));
 			} else if (active === 'A' && store.state.engineBUrl) {
 				videoFailoverActive = true;
 				pipelineManager.failoverToEngineB(store.state.engineBUrl, Object.keys(store.state.sources ?? {}))
-					.then(() => notify('info', 'Switched to Engine B (A disconnected)'))
+					.then(() => {
+						activeEngine = 'B';
+						notify('info', 'Switched to Engine B (A disconnected)');
+					})
 					.catch(err => console.warn('A/B auto-recover to B failed:', err));
 			}
 		}
