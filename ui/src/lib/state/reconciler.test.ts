@@ -303,6 +303,20 @@ describe('createReconciler', () => {
 			r.tick();
 			expect(r.health.status).toBe('synced');
 		});
+
+		it('reports mismatch when recording.active differs at same seq', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				recording: { active: true, filename: 'rec1.ts' },
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 5,
+				recording: { active: false },
+			}));
+			r.tick();
+			expect(r.health.status).toBe('mismatch');
+		});
 	});
 
 	// ── Recovering status ──
@@ -1878,6 +1892,58 @@ describe('createReconciler', () => {
 			// Lock was set to A (authoritative when first transition was detected),
 			// so A stays authoritative despite B having better RTT
 			expect(r.health.authoritative).toBe('A');
+		});
+
+		it('clears orphaned transition lock when locked engine goes stale', () => {
+			vi.useFakeTimers();
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5, inTransition: false }));
+			r.ingest('B', makeState({ lastCommandSeq: 5, inTransition: false }));
+			expect(r.health.authoritative).toBe('A');
+
+			// Transition starts, locked to A
+			r.ingest('A', makeState({ lastCommandSeq: 5, inTransition: true, transitionPosition: 0.3 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5, inTransition: true, transitionPosition: 0.3 }));
+
+			// Set B as clearly better RTT — currently locked to A
+			r.setRTT('A', 300);
+			r.setRTT('B', 30);
+			expect(r.health.authoritative).toBe('A');
+
+			// A goes stale (no updates for >5s), B keeps sending
+			vi.advanceTimersByTime(STALE_THRESHOLD_MS + 100);
+			r.ingest('B', makeState({ lastCommandSeq: 6, inTransition: false }));
+			r.tick();
+
+			// Lock should be cleared because A is stale, B is now authoritative
+			expect(r.health.authoritative).toBe('B');
+			vi.useRealTimers();
+		});
+
+		it('clears orphaned transition lock when locked engine disconnects', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5, inTransition: false }));
+			r.ingest('B', makeState({ lastCommandSeq: 5, inTransition: false }));
+			expect(r.health.authoritative).toBe('A');
+
+			// Transition starts, locked to A
+			r.ingest('A', makeState({ lastCommandSeq: 5, inTransition: true, transitionPosition: 0.3 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5, inTransition: true, transitionPosition: 0.3 }));
+
+			// Set B as clearly better RTT — currently locked to A
+			r.setRTT('A', 300);
+			r.setRTT('B', 30);
+			expect(r.health.authoritative).toBe('A');
+
+			// A disconnects
+			r.disconnect('A');
+
+			// B sends update ending transition
+			r.ingest('B', makeState({ lastCommandSeq: 6, inTransition: false }));
+			r.tick();
+
+			// Lock should be cleared because A disconnected, B is authoritative
+			expect(r.health.authoritative).toBe('B');
 		});
 	});
 });

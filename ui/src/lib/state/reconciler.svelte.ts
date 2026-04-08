@@ -418,6 +418,9 @@ export function createReconciler() {
 		// Audio mute/afv mismatch is critical — one engine muted while other isn't
 		if (hasAudioMismatch()) return true;
 
+		// Recording mismatch is critical — one engine recording while other isn't
+		if (stateA.recording?.active !== stateB.recording?.active) return true;
+
 		// Check playout channel divergence (itemIndex with drift tolerance, currentTitle)
 		const playoutA = stateA?.playout;
 		const playoutB = stateB?.playout;
@@ -518,6 +521,16 @@ export function createReconciler() {
 	function tick() {
 		const now = Date.now();
 		lastTickTime = now;
+
+		// Clear orphaned transition lock if locked engine is stale or disconnected
+		if (transitionLockEngine !== null) {
+			const lockedLastSeen = transitionLockEngine === 'A' ? lastSeenA : lastSeenB;
+			const lockedConnected = transitionLockEngine === 'A' ? connectedA : connectedB;
+			if (!lockedConnected || (lockedLastSeen > 0 && now - lockedLastSeen > STALE_THRESHOLD_MS)) {
+				transitionLockEngine = null;
+			}
+		}
+
 		tickedStatus = computeStatus(now);
 	}
 
@@ -549,6 +562,10 @@ export function createReconciler() {
 			connectedA = false;
 		} else {
 			connectedB = false;
+		}
+		// Clear transition lock if disconnected engine holds it
+		if (transitionLockEngine === engine) {
+			transitionLockEngine = null;
 		}
 		// Re-evaluate status
 		tickedStatus = computeStatus(Date.now());
