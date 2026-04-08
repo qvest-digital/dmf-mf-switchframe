@@ -24,7 +24,7 @@ export const DVE_PARAM_DEFOCUS_RADIUS = 0x000d;
 export const DVE_PARAM_BORDER_WIDTH = 0x000e;
 export const DVE_PARAM_CORNER_RADIUS = 0x000f;
 
-export type WriteErrorCallback = (msgType: string) => void;
+export type WriteErrorCallback = (msgType: string, engineId?: string) => void;
 
 export interface FastControl {
 	sendTransitionPosition(position: number): void;
@@ -58,6 +58,7 @@ export interface FastControl {
 export interface FastControlOptions {
 	onWriteError?: WriteErrorCallback;
 	ptpNow?: () => number;
+	engineId?: string;
 }
 
 export function encodeTransitionPosition(position: number): Uint8Array {
@@ -202,7 +203,7 @@ export function createFastControl(transport: WebTransport, opts?: FastControlOpt
 	function write(data: Uint8Array, msgType: string) {
 		if (closed) return;
 		pendingWrite = writer.write(withTimestamp(data)).catch(() => {
-			onErr?.(msgType);
+			onErr?.(msgType, opts?.engineId);
 		}).finally(() => {
 			pendingWrite = null;
 		});

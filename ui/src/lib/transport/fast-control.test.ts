@@ -199,7 +199,25 @@ describe('createFastControl', () => {
 
 		// Let the microtask queue flush so .catch() fires
 		await vi.waitFor(() => {
-			expect(onWriteError).toHaveBeenCalledWith('transition_position');
+			expect(onWriteError).toHaveBeenCalledWith('transition_position', undefined);
+		});
+	});
+
+	it('passes engineId to onWriteError callback on write failure', async () => {
+		const onWriteError = vi.fn();
+		const writeFn = vi.fn().mockRejectedValue(new Error('transport closed'));
+		const mockWriter = { write: writeFn, releaseLock: vi.fn() };
+		const mockTransport = {
+			datagrams: {
+				writable: { getWriter: () => mockWriter },
+			},
+		} as unknown as WebTransport;
+
+		const fc = createFastControl(mockTransport, { onWriteError, engineId: 'B' });
+		fc.sendTransitionPosition(0.5);
+
+		await vi.waitFor(() => {
+			expect(onWriteError).toHaveBeenCalledWith('transition_position', 'B');
 		});
 	});
 

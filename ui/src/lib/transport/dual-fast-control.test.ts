@@ -12,6 +12,7 @@ function createMockFastControl(): FastControl {
 		sendDVESlotEnable: vi.fn(),
 		sendDVEScaleMode: vi.fn(),
 		sendDVEBorder: vi.fn(),
+		writeDatagram: vi.fn(),
 		close: vi.fn(),
 	};
 }
@@ -94,6 +95,17 @@ describe('createDualFastControl', () => {
 		dual.sendDVEBorder(3, 2.5, 8, 235, 128, 128);
 		expect(a.sendDVEBorder).toHaveBeenCalledWith(3, 2.5, 8, 235, 128, 128);
 		expect(b.sendDVEBorder).toHaveBeenCalledWith(3, 2.5, 8, 235, 128, 128);
+	});
+
+	it('forwards writeDatagram to all controls', () => {
+		const a = createMockFastControl();
+		const b = createMockFastControl();
+		const dual = createDualFastControl([a, b]);
+
+		const data = new Uint8Array([0x01, 0x02, 0x03]);
+		dual.writeDatagram(data);
+		expect(a.writeDatagram).toHaveBeenCalledWith(data);
+		expect(b.writeDatagram).toHaveBeenCalledWith(data);
 	});
 
 	it('continues sending to B even when A throws', () => {

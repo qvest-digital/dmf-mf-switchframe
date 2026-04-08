@@ -105,23 +105,25 @@
 	});
 	// Debounced warning for FastControl write failures — at most once per second per message type.
 	const _fcErrTimestamps = new Map<string, number>();
-	function handleFastControlWriteError(msgType: string) {
+	function handleFastControlWriteError(msgType: string, engineId?: string) {
 		const now = Date.now();
 		const last = _fcErrTimestamps.get(msgType) ?? 0;
 		if (now - last > 1000) {
 			_fcErrTimestamps.set(msgType, now);
-			console.warn(`[FastControl] datagram write failed: ${msgType}`);
+			console.warn(`[FastControl] datagram write failed: ${msgType} (engine ${engineId ?? 'unknown'})`);
 		}
-		// Force close stale writers — the reactive effects will recreate them
-		// when the transport reconnects. We close both because the error callback
-		// doesn't indicate which engine's transport died.
-		if (fastControlA) {
-			try { fastControlA.close(); } catch { /* already closed */ }
-			fastControlA = null;
+		// Close only the failed engine's writer, not both
+		if (engineId === 'A' || !engineId) {
+			if (fastControlA) {
+				try { fastControlA.close(); } catch { /* already closed */ }
+				fastControlA = null;
+			}
 		}
-		if (fastControlB) {
-			try { fastControlB.close(); } catch { /* already closed */ }
-			fastControlB = null;
+		if (engineId === 'B' || !engineId) {
+			if (fastControlB) {
+				try { fastControlB.close(); } catch { /* already closed */ }
+				fastControlB = null;
+			}
 		}
 	}
 
@@ -1189,6 +1191,7 @@
 					fastControlA = createFastControl(wt, {
 						onWriteError: handleFastControlWriteError,
 						ptpNow: isDualEngine ? () => connectionManager.clock.ptpNow() : undefined,
+						engineId: 'A',
 					});
 					// Route clock sync pings through FastControl's shared writer
 					connectionManager.setDatagramSender('A', (data) => fastControlA?.writeDatagram(data));
@@ -1216,6 +1219,7 @@
 				fastControlB = createFastControl(transportB, {
 					onWriteError: handleFastControlWriteError,
 					ptpNow: () => connectionManager.clock.ptpNow(),
+					engineId: 'B',
 				});
 				connectionManager.setDatagramSender('B', (data) => fastControlB?.writeDatagram(data));
 			} catch {

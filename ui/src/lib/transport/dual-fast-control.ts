@@ -64,6 +64,10 @@ export function createDualFastControl(controls: FastControl[]): FastControl {
 			safeCall(controls, c => c.sendDVEBorder(slotId, width, radius, colorY, colorCb, colorCr));
 		},
 
+		writeDatagram(data: Uint8Array) {
+			safeCall(controls, c => c.writeDatagram(data));
+		},
+
 		close() {
 			safeCall(controls, c => c.close());
 		},
