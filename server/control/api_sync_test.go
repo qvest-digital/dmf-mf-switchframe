@@ -579,7 +579,7 @@ func TestReconcileLock_Refresh(t *testing.T) {
 }
 
 func TestReconcileLock_RefreshWrongID(t *testing.T) {
-	lock := reconcileLockState{expiry: 5 * time.Second}
+	lock := reconcileLockState{expiry: 15 * time.Second}
 	lock.tryAcquire("tab-1")
 	ok := lock.refresh("wrong-id")
 	if ok {

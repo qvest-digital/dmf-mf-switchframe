@@ -25,9 +25,9 @@ type reconcileLockState struct {
 	deadline time.Time
 }
 
-// newReconcileLockState returns an initialized lock with a 5s default expiry.
+// newReconcileLockState returns an initialized lock with a 15s default expiry.
 func newReconcileLockState() reconcileLockState {
-	return reconcileLockState{expiry: 5 * time.Second}
+	return reconcileLockState{expiry: 15 * time.Second}
 }
 
 // tryAcquire attempts to acquire the lock for the given holder.
