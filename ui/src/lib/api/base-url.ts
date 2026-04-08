@@ -41,6 +41,41 @@ export function getExpectDualEngine(): boolean {
 	return expectDualEngine;
 }
 
+// ── Flush timestamp injection ──
+// Callback to inject PTP timestamps into flushed pending commands.
+// Set by switch-api.ts to avoid circular imports (switch-api imports base-url).
+
+export type FlushTimestampInjector = (path: string, body: string) => string;
+
+let flushTimestampInjector: FlushTimestampInjector | null = null;
+
+export function setFlushTimestampInjector(injector: FlushTimestampInjector | null): void {
+	flushTimestampInjector = injector;
+}
+
+// Paths that require PTP execute_at timestamps for frame-accurate sync.
+// Duplicated from switch-api.ts to avoid circular imports.
+const TIMED_PATH_EXACT = new Set([
+	'/api/switch/cut', '/api/switch/preview', '/api/switch/transition', '/api/switch/ftb',
+	'/api/replay/play', '/api/replay/stop',
+	'/api/scte35/cue', '/api/scte35/return', '/api/scte35/cancel',
+	'/api/presets/recall',
+]);
+
+const TIMED_PATH_PATTERNS = [
+	/^\/api\/graphics\/\d+\/(on|off)$/,
+	/^\/api\/presets\/[^/]+\/recall$/,
+	/^\/api\/dve\/slots\/\d+\/(on|off)$/,
+	/^\/api\/clips\/players\/\d+\/(play|pause|stop)$/,
+	/^\/api\/playout\/channels\/\d+\/(start|stop|next|previous)$/,
+	/^\/api\/playout\/channels\/\d+\/pods\/[^/]+\/(fire|dump|hold|extend)$/,
+];
+
+function isTimedPath(path: string): boolean {
+	if (TIMED_PATH_EXACT.has(path)) return true;
+	return TIMED_PATH_PATTERNS.some(re => re.test(path));
+}
+
 // ── Pending command buffer for engine B discovery race ──
 
 const PENDING_BUFFER_MAX = 10;
@@ -100,9 +135,20 @@ function flushPendingCommands(newEngines: EngineEndpoint[]): void {
 		// Drop stale commands (older than 5 seconds)
 		if (now - cmd.timestamp > PENDING_MAX_AGE_MS) continue;
 
+		// Inject fresh PTP timestamps for timed paths
+		let options = cmd.options;
+		if (flushTimestampInjector && isTimedPath(cmd.path) && options.body && typeof options.body === 'string') {
+			try {
+				const injectedBody = flushTimestampInjector(cmd.path, options.body);
+				options = { ...options, body: injectedBody };
+			} catch {
+				// Injector failed — send without timestamps
+			}
+		}
+
 		for (const engine of newEngines) {
 			const fullUrl = `${engine.url}${cmd.path}`;
-			fetch(fullUrl, cmd.options).catch(() => {});
+			fetch(fullUrl, options).catch(() => {});
 		}
 	}
 }

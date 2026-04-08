@@ -1,6 +1,6 @@
 import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, GateSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, EngineRecordingGroup, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig, ColorGradeState, CorrectorState, PlayoutChannelState, Playlist, PlaylistItem, CacheStatus, PodInfo, PodConfig, PodTemplate, AsRunEvent, ChannelHealth, SampleClip, PlayoutClip, ASRState, DVEPresetInfo, WipePattern, WipeConfig } from './types';
 import { notify } from '$lib/state/notifications.svelte';
-import { resolveApiUrl, getEngineUrls, bufferPendingCommand, type EngineEndpoint } from './base-url';
+import { resolveApiUrl, getEngineUrls, bufferPendingCommand, setFlushTimestampInjector, type EngineEndpoint } from './base-url';
 
 export class SwitchApiError extends Error {
 	constructor(
@@ -139,6 +139,17 @@ let dualTimestampProvider: (() => { execute_at: number; command_seq: number }) |
 
 export function setDualTimestampProvider(provider: (() => { execute_at: number; command_seq: number }) | null): void {
 	dualTimestampProvider = provider;
+
+	// Wire flush injector so pending commands get PTP timestamps when flushed to new engines
+	if (provider) {
+		setFlushTimestampInjector((_path: string, body: string) => {
+			const ts = provider();
+			const parsed = JSON.parse(body);
+			return JSON.stringify({ ...parsed, ...ts });
+		});
+	} else {
+		setFlushTimestampInjector(null);
+	}
 }
 
 const TIMED_PATH_EXACT = new Set([
