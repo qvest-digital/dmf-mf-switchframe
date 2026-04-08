@@ -693,17 +693,17 @@ func TestApplyFullSnapshot_ApplyOrder(t *testing.T) {
 	}{
 		{"SetTransitionConfig", "Cut"},
 		{"SetTransitionConfig", "SetPreview"},
-		{"SetLevel", "Cut"},          // audio channels before program source
-		{"SetMasterLevel", "Cut"},    // audio master before program source
-		{"Cut", "SetPreview"},        // program before preview
-		{"SetPreview", "SetFTB"},     // preview before FTB
-		{"SetFTB", "SetGraphicsLayerActive"}, // FTB before graphics
-		{"SetGraphicsLayerActive", "SetDVELayout"},    // graphics before DVE
-		{"SetDVELayout", "SetSourceLabel"},             // DVE before source config
-		{"SetSourceLabel", "SetUpstreamKey"},           // source config before keys
-		{"SetUpstreamKey", "SetCaptionMode"},           // keys before captions
-		{"SetCaptionMode", "SetColorGrade"},            // captions before color grade
-		{"SetColorGrade", "AssignSTMapSource"},         // color grade before ST maps
+		{"SetLevel", "Cut"},                        // audio channels before program source
+		{"SetMasterLevel", "Cut"},                  // audio master before program source
+		{"Cut", "SetPreview"},                      // program before preview
+		{"SetPreview", "SetFTB"},                   // preview before FTB
+		{"SetFTB", "SetGraphicsLayerActive"},       // FTB before graphics
+		{"SetGraphicsLayerActive", "SetDVELayout"}, // graphics before DVE
+		{"SetDVELayout", "SetSourceLabel"},         // DVE before source config
+		{"SetSourceLabel", "SetUpstreamKey"},       // source config before keys
+		{"SetUpstreamKey", "SetCaptionMode"},       // keys before captions
+		{"SetCaptionMode", "SetColorGrade"},        // captions before color grade
+		{"SetColorGrade", "AssignSTMapSource"},     // color grade before ST maps
 	}
 
 	for _, check := range orderChecks {
@@ -774,9 +774,9 @@ func TestApplyFullSnapshot_AudioChannelDeterministicOrder(t *testing.T) {
 		Version:    "1",
 		CapturedAt: 1234567890,
 		AudioChannels: map[string]AudioChannelSnapshot{
-			"zzz":  {Level: -1.0},
-			"aaa":  {Level: -2.0},
-			"mmm":  {Level: -3.0},
+			"zzz": {Level: -1.0},
+			"aaa": {Level: -2.0},
+			"mmm": {Level: -3.0},
 		},
 	}
 	ctx := context.Background()

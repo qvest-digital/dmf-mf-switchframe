@@ -166,25 +166,25 @@ type LayoutSnapshot struct {
 // DVESlotSnapshot captures the full DVE transform for a single layout slot.
 // Omits transient data (Animating flag).
 type DVESlotSnapshot struct {
-	SourceKey    string  `json:"sourceKey"`
-	Enabled      bool    `json:"enabled"`
-	ZOrder       int     `json:"zOrder"`
-	PositionX    float64 `json:"positionX"`
-	PositionY    float64 `json:"positionY"`
-	Width        float64 `json:"width"`
-	Height       float64 `json:"height"`
-	RotationDeg  float64 `json:"rotationDeg,omitempty"`
-	AnchorX      float64 `json:"anchorX,omitempty"`
-	AnchorY      float64 `json:"anchorY,omitempty"`
-	PerspectiveX float64 `json:"perspectiveX,omitempty"`
-	PerspectiveY float64 `json:"perspectiveY,omitempty"`
-	CropTop      float64 `json:"cropTop,omitempty"`
-	CropBottom   float64 `json:"cropBottom,omitempty"`
-	CropLeft     float64 `json:"cropLeft,omitempty"`
-	CropRight    float64 `json:"cropRight,omitempty"`
-	CropSoftness float64 `json:"cropSoftness,omitempty"`
-	Opacity      float64 `json:"opacity,omitempty"`
-	ScaleMode    string  `json:"scaleMode,omitempty"`
+	SourceKey    string             `json:"sourceKey"`
+	Enabled      bool               `json:"enabled"`
+	ZOrder       int                `json:"zOrder"`
+	PositionX    float64            `json:"positionX"`
+	PositionY    float64            `json:"positionY"`
+	Width        float64            `json:"width"`
+	Height       float64            `json:"height"`
+	RotationDeg  float64            `json:"rotationDeg,omitempty"`
+	AnchorX      float64            `json:"anchorX,omitempty"`
+	AnchorY      float64            `json:"anchorY,omitempty"`
+	PerspectiveX float64            `json:"perspectiveX,omitempty"`
+	PerspectiveY float64            `json:"perspectiveY,omitempty"`
+	CropTop      float64            `json:"cropTop,omitempty"`
+	CropBottom   float64            `json:"cropBottom,omitempty"`
+	CropLeft     float64            `json:"cropLeft,omitempty"`
+	CropRight    float64            `json:"cropRight,omitempty"`
+	CropSoftness float64            `json:"cropSoftness,omitempty"`
+	Opacity      float64            `json:"opacity,omitempty"`
+	ScaleMode    string             `json:"scaleMode,omitempty"`
 	CropAnchor   [2]float64         `json:"cropAnchor,omitempty"`
 	Border       *DVEBorderSnapshot `json:"border,omitempty"`
 	Shadow       *DVEShadowSnapshot `json:"shadow,omitempty"`

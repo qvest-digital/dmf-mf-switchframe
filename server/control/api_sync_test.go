@@ -74,22 +74,22 @@ func (m *mockApplyTarget) SetCompressor(_ string, _, _, _, _, _ float64) error  
 func (m *mockApplyTarget) SetGate(_ string, _, _, _, _, _ float64, _ bool) error {
 	return nil
 }
-func (m *mockApplyTarget) SetAudioDelay(_ string, _ int) error                        { return nil }
-func (m *mockApplyTarget) SetMasterLevel(_ float64) error                             { return nil }
-func (m *mockApplyTarget) SetLimiterThreshold(_ float64) error                        { return nil }
-func (m *mockApplyTarget) SetLimiterCeiling(_ float64) error                          { return nil }
-func (m *mockApplyTarget) SetGraphicsLayerActive(_ int, _ bool) error                 { return nil }
-func (m *mockApplyTarget) SetGraphicsLayerZOrder(_ int, _ int) error                  { return nil }
-func (m *mockApplyTarget) SetGraphicsLayerRect(_ int, _, _, _, _ int) error           { return nil }
-func (m *mockApplyTarget) SetDVELayout(_ internal.LayoutSnapshot) error               { return nil }
-func (m *mockApplyTarget) SetSourceLabel(_ context.Context, _, _ string) error        { return nil }
-func (m *mockApplyTarget) SetSourcePosition(_ string, _ int) error                    { return nil }
+func (m *mockApplyTarget) SetAudioDelay(_ string, _ int) error                           { return nil }
+func (m *mockApplyTarget) SetMasterLevel(_ float64) error                                { return nil }
+func (m *mockApplyTarget) SetLimiterThreshold(_ float64) error                           { return nil }
+func (m *mockApplyTarget) SetLimiterCeiling(_ float64) error                             { return nil }
+func (m *mockApplyTarget) SetGraphicsLayerActive(_ int, _ bool) error                    { return nil }
+func (m *mockApplyTarget) SetGraphicsLayerZOrder(_ int, _ int) error                     { return nil }
+func (m *mockApplyTarget) SetGraphicsLayerRect(_ int, _, _, _, _ int) error              { return nil }
+func (m *mockApplyTarget) SetDVELayout(_ internal.LayoutSnapshot) error                  { return nil }
+func (m *mockApplyTarget) SetSourceLabel(_ context.Context, _, _ string) error           { return nil }
+func (m *mockApplyTarget) SetSourcePosition(_ string, _ int) error                       { return nil }
 func (m *mockApplyTarget) SetUpstreamKey(_ string, _ internal.UpstreamKeySnapshot) error { return nil }
-func (m *mockApplyTarget) SetCaptionMode(_ string) error                              { return nil }
-func (m *mockApplyTarget) SetColorGrade(_ string, _ float32) error                    { return nil }
-func (m *mockApplyTarget) DisableColorGrade() error                                   { return nil }
-func (m *mockApplyTarget) AssignSTMapSource(_, _ string) error                        { return nil }
-func (m *mockApplyTarget) AssignSTMapProgram(_ string) error                          { return nil }
+func (m *mockApplyTarget) SetCaptionMode(_ string) error                                 { return nil }
+func (m *mockApplyTarget) SetColorGrade(_ string, _ float32) error                       { return nil }
+func (m *mockApplyTarget) DisableColorGrade() error                                      { return nil }
+func (m *mockApplyTarget) AssignSTMapSource(_, _ string) error                           { return nil }
+func (m *mockApplyTarget) AssignSTMapProgram(_ string) error                             { return nil }
 
 // --- Helpers ---
 

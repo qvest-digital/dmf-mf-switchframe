@@ -18,10 +18,10 @@ import (
 // reconcileLockState holds an in-memory lock that prevents two browser tabs
 // from reconciling engine state simultaneously on the same engine.
 type reconcileLockState struct {
-	mu     sync.Mutex
-	holder string
-	lockID string
-	expiry time.Duration
+	mu       sync.Mutex
+	holder   string
+	lockID   string
+	expiry   time.Duration
 	deadline time.Time
 }
 

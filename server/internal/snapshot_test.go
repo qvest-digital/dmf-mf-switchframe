@@ -786,39 +786,39 @@ func TestFullStateSnapshot_NewFields_OmitEmpty(t *testing.T) {
 type mockBaseTarget struct{}
 
 func (m *mockBaseTarget) Cut(ctx context.Context, source string) error             { return nil }
-func (m *mockBaseTarget) SetPreview(ctx context.Context, source string) error       { return nil }
-func (m *mockBaseTarget) SetTransitionConfig(string, int, string) error             { return nil }
-func (m *mockBaseTarget) SetFTB(bool) error                                         { return nil }
-func (m *mockBaseTarget) SetLevel(string, float64) error                            { return nil }
-func (m *mockBaseTarget) SetTrim(string, float64) error                             { return nil }
-func (m *mockBaseTarget) SetMuted(string, bool) error                               { return nil }
-func (m *mockBaseTarget) SetAFV(string, bool) error                                 { return nil }
-func (m *mockBaseTarget) SetPhaseInvert(string, bool) error                         { return nil }
-func (m *mockBaseTarget) SetBalance(string, float64) error                          { return nil }
-func (m *mockBaseTarget) SetHPF(string, float64, bool) error                        { return nil }
-func (m *mockBaseTarget) SetEQ(string, int, float64, float64, float64, bool) error  { return nil }
+func (m *mockBaseTarget) SetPreview(ctx context.Context, source string) error      { return nil }
+func (m *mockBaseTarget) SetTransitionConfig(string, int, string) error            { return nil }
+func (m *mockBaseTarget) SetFTB(bool) error                                        { return nil }
+func (m *mockBaseTarget) SetLevel(string, float64) error                           { return nil }
+func (m *mockBaseTarget) SetTrim(string, float64) error                            { return nil }
+func (m *mockBaseTarget) SetMuted(string, bool) error                              { return nil }
+func (m *mockBaseTarget) SetAFV(string, bool) error                                { return nil }
+func (m *mockBaseTarget) SetPhaseInvert(string, bool) error                        { return nil }
+func (m *mockBaseTarget) SetBalance(string, float64) error                         { return nil }
+func (m *mockBaseTarget) SetHPF(string, float64, bool) error                       { return nil }
+func (m *mockBaseTarget) SetEQ(string, int, float64, float64, float64, bool) error { return nil }
 func (m *mockBaseTarget) SetCompressor(string, float64, float64, float64, float64, float64) error {
 	return nil
 }
 func (m *mockBaseTarget) SetGate(string, float64, float64, float64, float64, float64, bool) error {
 	return nil
 }
-func (m *mockBaseTarget) SetAudioDelay(string, int) error                           { return nil }
-func (m *mockBaseTarget) SetMasterLevel(float64) error                              { return nil }
-func (m *mockBaseTarget) SetLimiterThreshold(float64) error                         { return nil }
-func (m *mockBaseTarget) SetLimiterCeiling(float64) error                           { return nil }
-func (m *mockBaseTarget) SetGraphicsLayerActive(int, bool) error                    { return nil }
-func (m *mockBaseTarget) SetGraphicsLayerZOrder(int, int) error                     { return nil }
-func (m *mockBaseTarget) SetGraphicsLayerRect(int, int, int, int, int) error        { return nil }
-func (m *mockBaseTarget) SetDVELayout(LayoutSnapshot) error                         { return nil }
-func (m *mockBaseTarget) SetSourceLabel(context.Context, string, string) error      { return nil }
-func (m *mockBaseTarget) SetSourcePosition(string, int) error                       { return nil }
-func (m *mockBaseTarget) SetUpstreamKey(string, UpstreamKeySnapshot) error          { return nil }
-func (m *mockBaseTarget) SetCaptionMode(string) error                               { return nil }
-func (m *mockBaseTarget) SetColorGrade(string, float32) error                       { return nil }
-func (m *mockBaseTarget) DisableColorGrade() error                                  { return nil }
-func (m *mockBaseTarget) AssignSTMapSource(string, string) error                    { return nil }
-func (m *mockBaseTarget) AssignSTMapProgram(string) error                           { return nil }
+func (m *mockBaseTarget) SetAudioDelay(string, int) error                      { return nil }
+func (m *mockBaseTarget) SetMasterLevel(float64) error                         { return nil }
+func (m *mockBaseTarget) SetLimiterThreshold(float64) error                    { return nil }
+func (m *mockBaseTarget) SetLimiterCeiling(float64) error                      { return nil }
+func (m *mockBaseTarget) SetGraphicsLayerActive(int, bool) error               { return nil }
+func (m *mockBaseTarget) SetGraphicsLayerZOrder(int, int) error                { return nil }
+func (m *mockBaseTarget) SetGraphicsLayerRect(int, int, int, int, int) error   { return nil }
+func (m *mockBaseTarget) SetDVELayout(LayoutSnapshot) error                    { return nil }
+func (m *mockBaseTarget) SetSourceLabel(context.Context, string, string) error { return nil }
+func (m *mockBaseTarget) SetSourcePosition(string, int) error                  { return nil }
+func (m *mockBaseTarget) SetUpstreamKey(string, UpstreamKeySnapshot) error     { return nil }
+func (m *mockBaseTarget) SetCaptionMode(string) error                          { return nil }
+func (m *mockBaseTarget) SetColorGrade(string, float32) error                  { return nil }
+func (m *mockBaseTarget) DisableColorGrade() error                             { return nil }
+func (m *mockBaseTarget) AssignSTMapSource(string, string) error               { return nil }
+func (m *mockBaseTarget) AssignSTMapProgram(string) error                      { return nil }
 
 // mockExtendedTarget extends mockBaseTarget with all optional applier interfaces.
 type mockExtendedTarget struct {
