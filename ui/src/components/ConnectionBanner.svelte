@@ -91,7 +91,7 @@
 	});
 
 	const showControlPlaneFallback = $derived(
-		disconnectedDuration >= 15 && sessionFallbackUrl != null
+		disconnectedDuration >= 8 && sessionFallbackUrl != null
 	);
 
 	let showRestoredBanner = $state(false);
@@ -153,7 +153,10 @@
 {:else if showEngineFallback}
 	<div class="connection-banner engine-fallback" role="alert" aria-live="assertive">
 		Engine {servingEngine} unreachable —
-		<a href={fallbackHref} class="fallback-link">Open via Engine {otherEngine}</a>
+		<a href={fallbackHref} class="fallback-link">
+			Reload from Engine {otherEngine}
+			<span class="fallback-hint">(opens new page)</span>
+		</a>
 	</div>
 {:else if isDisconnected}
 	<div class="disconnect-overlay" role="alertdialog" aria-live="assertive" aria-modal="true">
@@ -224,6 +227,11 @@
 
 	.fallback-link:hover {
 		color: var(--accent-yellow);
+	}
+
+	.fallback-hint {
+		font-size: 0.75em;
+		opacity: 0.7;
 	}
 
 	.engine-status-strip {
