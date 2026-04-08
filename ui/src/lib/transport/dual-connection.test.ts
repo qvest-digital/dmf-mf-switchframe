@@ -82,6 +82,7 @@ vi.mock('$lib/state/reconciler.svelte', () => ({
 			setClockDiverged: vi.fn(),
 			setRecovering: vi.fn(),
 			setTransportAlive: vi.fn(),
+			recordPong: vi.fn(),
 			tick: vi.fn(),
 			get state() { return _state; },
 			get health() {
