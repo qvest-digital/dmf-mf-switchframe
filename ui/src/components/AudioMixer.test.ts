@@ -358,4 +358,37 @@ describe('AudioMixer', () => {
 			);
 		});
 	});
+
+	describe('audio drift warning strip', () => {
+		it('shows warning strip with channel and reason when audioDrift is set', () => {
+			const { container } = render(AudioMixer, {
+				props: { state, audioDrift: { channel: 'cam1', reason: 'EQ mismatch' } },
+			});
+			const warning = container.querySelector('.audio-drift-warning');
+			expect(warning).toBeTruthy();
+			expect(warning?.getAttribute('role')).toBe('alert');
+			expect(warning?.textContent).toContain('cam1');
+			expect(warning?.textContent).toContain('EQ mismatch');
+		});
+
+		it('does not show warning strip when audioDrift is null', () => {
+			const { container } = render(AudioMixer, {
+				props: { state, audioDrift: null },
+			});
+			const warning = container.querySelector('.audio-drift-warning');
+			expect(warning).toBeFalsy();
+		});
+
+		it('warning strip shows even when mixer is collapsed', async () => {
+			const { container } = render(AudioMixer, {
+				props: { state, audioDrift: { channel: 'cam2', reason: 'level mismatch' } },
+			});
+			// Collapse the mixer
+			const toggle = container.querySelector('.collapse-toggle') as HTMLButtonElement;
+			await fireEvent.click(toggle);
+			// Warning strip should still be visible
+			const warning = container.querySelector('.audio-drift-warning');
+			expect(warning).toBeTruthy();
+		});
+	});
 });

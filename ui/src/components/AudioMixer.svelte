@@ -252,6 +252,11 @@
 </script>
 
 <div class="audio-mixer" class:collapsed={ui.collapsed}>
+	{#if audioDrift}
+		<div class="audio-drift-warning" role="alert">
+			Audio drift: {audioDrift.channel} — {audioDrift.reason}
+		</div>
+	{/if}
 	{#if !ui.collapsed}
 	<div class="mixer-strips">
 	<button class="collapse-toggle" onclick={() => ui = { ...ui, collapsed: !ui.collapsed }} title={ui.collapsed ? 'Expand audio mixer' : 'Collapse audio mixer'}>
@@ -1135,6 +1140,18 @@
 		border-radius: 3px;
 		line-height: 1.2;
 		cursor: help;
+	}
+
+	.audio-drift-warning {
+		background: rgba(234, 179, 8, 0.15);
+		border: 1px solid rgba(234, 179, 8, 0.3);
+		color: var(--accent-yellow, #eab308);
+		padding: 4px 8px;
+		font-size: 0.75rem;
+		font-weight: 600;
+		text-align: center;
+		border-radius: 4px;
+		margin-bottom: 4px;
 	}
 
 	@media (max-width: 1023px) {
