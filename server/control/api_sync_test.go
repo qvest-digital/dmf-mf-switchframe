@@ -596,3 +596,71 @@ func TestReconcileLock_RefreshExpiredLock(t *testing.T) {
 		t.Fatal("expected refresh to fail on expired lock")
 	}
 }
+
+// TestGetStateSnapshot_SeqCapturedBeforeSnapshot verifies that the envelope's
+// seq reflects the state BEFORE CaptureFullSnapshot() is called. If a command
+// executes between enrichedState() and CaptureFullSnapshot(), the seq must be
+// <= the snapshot's actual state (not >, which would make a stale snapshot
+// look current to the receiving engine).
+func TestGetStateSnapshot_SeqCapturedBeforeSnapshot(t *testing.T) {
+	programRelay := distribution.NewRelay()
+	sw := switcher.NewTestSwitcher(programRelay)
+	r1 := distribution.NewRelay()
+	sw.RegisterSource("camera1", r1)
+
+	// Start with seq=5 so we have a known baseline.
+	sw.TrackCommandSeq(5)
+
+	// seqAtSnapshotTime records the seq at the moment CaptureFullSnapshot is called.
+	// If the code correctly calls enrichedState() first, the envelope's seq
+	// will be <= seqAtSnapshotTime (captured before the snapshot provider runs).
+	var seqAtSnapshotTime uint64
+	provider := &seqTrackingSnapshotProvider{
+		snapshot: internal.FullStateSnapshot{
+			Version:       "1",
+			ProgramSource: "camera1",
+		},
+		onCapture: func() {
+			// Simulate a command executing between the two calls by
+			// advancing the switcher's command seq. If enrichedState() is
+			// called AFTER CaptureFullSnapshot, the envelope seq will
+			// reflect this bump and be too high.
+			sw.TrackCommandSeq(10)
+			seqAtSnapshotTime = 10
+		},
+	}
+	api := NewAPI(sw, WithSnapshotProvider(provider))
+
+	req := httptest.NewRequest("GET", "/api/sync/state-snapshot", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var env struct {
+		Seq uint64 `json:"seq"`
+	}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&env))
+
+	// The envelope seq must be strictly less than the seq at snapshot time,
+	// proving enrichedState() was called BEFORE CaptureFullSnapshot().
+	require.Less(t, env.Seq, seqAtSnapshotTime,
+		"envelope seq should be captured BEFORE CaptureFullSnapshot (seq race fix)")
+}
+
+// seqTrackingSnapshotProvider calls onCapture during CaptureFullSnapshot.
+type seqTrackingSnapshotProvider struct {
+	snapshot  internal.FullStateSnapshot
+	onCapture func()
+}
+
+func (s *seqTrackingSnapshotProvider) CaptureFullSnapshot() internal.FullStateSnapshot {
+	if s.onCapture != nil {
+		s.onCapture()
+	}
+	return s.snapshot
+}
+
+func (s *seqTrackingSnapshotProvider) ApplyTarget() internal.SnapshotApplyTarget {
+	return &mockApplyTarget{}
+}

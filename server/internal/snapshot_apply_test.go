@@ -1293,3 +1293,156 @@ func TestApplyFullSnapshot_EncoderUnavailable(t *testing.T) {
 		t.Fatal("expected warning for unavailable encoder")
 	}
 }
+
+// --- Mid-transition guard tests ---
+
+// mockTransitionTarget embeds mockApplyTarget and implements SnapshotTransitionChecker.
+type mockTransitionTarget struct {
+	*mockApplyTarget
+	inTransition bool
+}
+
+func newMockTransitionTarget(inTransition bool) *mockTransitionTarget {
+	return &mockTransitionTarget{
+		mockApplyTarget: newMockApplyTarget(),
+		inTransition:    inTransition,
+	}
+}
+
+func (m *mockTransitionTarget) IsInTransition() bool {
+	return m.inTransition
+}
+
+func TestApplyFullSnapshot_SkipsCutWhenMidTransition(t *testing.T) {
+	target := newMockTransitionTarget(true) // mid-transition
+
+	snap := FullStateSnapshot{
+		Version:       "1",
+		CapturedAt:    1234567890,
+		ProgramSource: "cam1",
+		PreviewSource: "cam2",
+	}
+
+	warnings := ApplyFullSnapshot(context.Background(), snap, target)
+
+	// Cut and SetPreview should NOT be called during a transition.
+	if target.wasCalled("Cut") {
+		t.Error("Cut should NOT have been called when target is mid-transition")
+	}
+	if target.wasCalled("SetPreview") {
+		t.Error("SetPreview should NOT have been called when target is mid-transition")
+	}
+
+	// Should have a warning about skipping due to transition.
+	joined := strings.Join(warnings, "\n")
+	if !strings.Contains(joined, "mid-transition") {
+		t.Errorf("expected warning about mid-transition, got: %v", warnings)
+	}
+}
+
+func TestApplyFullSnapshot_CutsWhenNotInTransition(t *testing.T) {
+	target := newMockTransitionTarget(false) // NOT mid-transition
+
+	snap := FullStateSnapshot{
+		Version:       "1",
+		CapturedAt:    1234567890,
+		ProgramSource: "cam1",
+		PreviewSource: "cam2",
+	}
+
+	warnings := ApplyFullSnapshot(context.Background(), snap, target)
+
+	// Cut and SetPreview should proceed normally.
+	if !target.wasCalled("Cut") {
+		t.Error("Cut should have been called when target is NOT mid-transition")
+	}
+	if !target.wasCalled("SetPreview") {
+		t.Error("SetPreview should have been called when target is NOT mid-transition")
+	}
+
+	// No mid-transition warning expected.
+	for _, w := range warnings {
+		if strings.Contains(w, "mid-transition") {
+			t.Errorf("unexpected mid-transition warning: %s", w)
+		}
+	}
+}
+
+func TestApplyFullSnapshot_CutsWhenNoTransitionChecker(t *testing.T) {
+	// Base mockApplyTarget does NOT implement SnapshotTransitionChecker.
+	target := newMockApplyTarget()
+
+	snap := FullStateSnapshot{
+		Version:       "1",
+		CapturedAt:    1234567890,
+		ProgramSource: "cam1",
+		PreviewSource: "cam2",
+	}
+
+	warnings := ApplyFullSnapshot(context.Background(), snap, target)
+
+	// Without the checker interface, should proceed as before.
+	if !target.wasCalled("Cut") {
+		t.Error("Cut should have been called when target has no transition checker")
+	}
+	if !target.wasCalled("SetPreview") {
+		t.Error("SetPreview should have been called when target has no transition checker")
+	}
+
+	// No mid-transition warning.
+	for _, w := range warnings {
+		if strings.Contains(w, "mid-transition") {
+			t.Errorf("unexpected mid-transition warning: %s", w)
+		}
+	}
+}
+
+func TestApplyFullSnapshot_MidTransitionStillAppliesOtherState(t *testing.T) {
+	// When mid-transition, only Cut/SetPreview should be skipped.
+	// Everything else (audio, FTB, graphics, etc.) should still apply.
+	target := newMockTransitionTarget(true)
+
+	snap := populatedSnapshot()
+
+	warnings := ApplyFullSnapshot(context.Background(), snap, target)
+
+	// Verify Cut and SetPreview were skipped
+	if target.wasCalled("Cut") {
+		t.Error("Cut should be skipped during transition")
+	}
+	if target.wasCalled("SetPreview") {
+		t.Error("SetPreview should be skipped during transition")
+	}
+
+	// But everything else should still be applied
+	if !target.wasCalled("SetTransitionConfig") {
+		t.Error("SetTransitionConfig should be called even during transition")
+	}
+	if !target.wasCalled("SetLevel") {
+		t.Error("SetLevel should be called even during transition")
+	}
+	if !target.wasCalled("SetMasterLevel") {
+		t.Error("SetMasterLevel should be called even during transition")
+	}
+	if !target.wasCalled("SetFTB") {
+		t.Error("SetFTB should be called even during transition")
+	}
+	if !target.wasCalled("SetGraphicsLayerActive") {
+		t.Error("SetGraphicsLayerActive should be called even during transition")
+	}
+	if !target.wasCalled("SetDVELayout") {
+		t.Error("SetDVELayout should be called even during transition")
+	}
+	if !target.wasCalled("SetSourceLabel") {
+		t.Error("SetSourceLabel should be called even during transition")
+	}
+	if !target.wasCalled("SetCaptionMode") {
+		t.Error("SetCaptionMode should be called even during transition")
+	}
+
+	// Verify the mid-transition warning is present
+	joined := strings.Join(warnings, "\n")
+	if !strings.Contains(joined, "mid-transition") {
+		t.Errorf("expected mid-transition warning, got: %v", warnings)
+	}
+}

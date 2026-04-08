@@ -143,13 +143,17 @@ type snapshotEnvelope struct {
 // in a snapshotEnvelope with staleness metadata. Used by browsers to pull
 // a snapshot from the authoritative engine during redundancy reconciliation.
 func (a *API) handleGetStateSnapshot(w http.ResponseWriter, r *http.Request) {
+	// Capture seq FIRST, before the snapshot. A command could execute between
+	// these two calls — by reading enrichedState first, the envelope seq is
+	// guaranteed to be <= the snapshot's actual state. The receiving engine
+	// will see a seq that is at-or-behind the snapshot, never ahead of it.
+	state := a.enrichedState()
 	snap := a.snapshotProvider.CaptureFullSnapshot()
 	snapJSON, err := json.Marshal(snap)
 	if err != nil {
 		httperr.Write(w, http.StatusInternalServerError, "marshal failed")
 		return
 	}
-	state := a.enrichedState()
 	env := snapshotEnvelope{
 		Snapshot:  snapJSON,
 		Seq:       state.LastCommandSeq,

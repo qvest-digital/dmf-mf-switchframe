@@ -74,6 +74,14 @@ type SnapshotSourceValidator interface {
 	HasSource(key string) bool
 }
 
+// SnapshotTransitionChecker can optionally be implemented by the apply target
+// to indicate whether the engine is currently mid-transition (e.g., dissolving
+// between two sources). When mid-transition, ApplyFullSnapshot skips Cut and
+// SetPreview to avoid a visible flash on program output.
+type SnapshotTransitionChecker interface {
+	IsInTransition() bool
+}
+
 // Optional applier interfaces for operational state. Targets may implement
 // any subset of these — ApplyFullSnapshot uses type assertions to check.
 
@@ -165,8 +173,19 @@ func ApplyFullSnapshot(ctx context.Context, snap FullStateSnapshot, target Snaps
 		warnings = append(warnings, fmt.Sprintf("limiter ceiling: %v", err))
 	}
 
+	// Check if the target is mid-transition (e.g., dissolving between sources).
+	// If so, skip Cut/SetPreview to avoid a visible flash on program output.
+	targetInTransition := false
+	if checker, ok := target.(SnapshotTransitionChecker); ok {
+		targetInTransition = checker.IsInTransition()
+	}
+	if targetInTransition {
+		slog.Warn("snapshot apply: target is mid-transition, skipping Cut/SetPreview")
+		warnings = append(warnings, "target is mid-transition — skipped Cut/SetPreview to avoid live glitch")
+	}
+
 	// 4. Program source (Cut) — validate availability if the target supports it
-	if snap.ProgramSource != "" {
+	if snap.ProgramSource != "" && !targetInTransition {
 		skipCut := false
 		if validator, ok := target.(SnapshotSourceValidator); ok {
 			if !validator.HasSource(snap.ProgramSource) {
@@ -187,7 +206,7 @@ func ApplyFullSnapshot(ctx context.Context, snap FullStateSnapshot, target Snaps
 	}
 
 	// 5. Preview source — validate availability if the target supports it
-	if snap.PreviewSource != "" {
+	if snap.PreviewSource != "" && !targetInTransition {
 		skipPreview := false
 		if validator, ok := target.(SnapshotSourceValidator); ok {
 			if !validator.HasSource(snap.PreviewSource) {
