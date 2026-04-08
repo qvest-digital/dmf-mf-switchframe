@@ -95,6 +95,9 @@
 			class:error={syncHealth?.status === 'mismatch' || syncHealth?.status === 'disconnected'}>
 			DUAL
 		</span>
+		<span class="auth-badge" title="Commands routing to Engine {syncHealth?.authoritative ?? 'A'}">
+			{syncHealth?.authoritative ?? 'A'}
+		</span>
 	{/if}
 	{#if badgeText}
 		<FormatPicker {badgeText} {isDualEngine} />
@@ -270,5 +273,19 @@
 
 	.dual-badge.error {
 		background: #ef4444;
+	}
+
+	.auth-badge {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 1.2em;
+		height: 1.2em;
+		border-radius: 3px;
+		font-size: 0.7em;
+		font-weight: 700;
+		background: var(--surface-2, #333);
+		color: var(--text-primary, #fff);
+		margin-left: -1px;
 	}
 </style>
