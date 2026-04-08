@@ -376,7 +376,14 @@ type ControlRoomState struct {
 	LastCommandSeq       uint64                  `json:"lastCommandSeq"`
 	LastExecutedSeq      uint64                  `json:"lastExecutedSeq"`
 	LastExecutedErr      string                  `json:"lastExecutedErr,omitempty"`
+	RecentCommandErrors  []CommandError          `json:"recentCommandErrors,omitempty"`
 	Timestamp            int64                   `json:"timestamp"`
+}
+
+// CommandError records a single failed command execution (sequence + error string).
+type CommandError struct {
+	Seq   uint64 `json:"seq"`
+	Error string `json:"error"`
 }
 
 // MacroExecutionState represents the progress of a running macro.

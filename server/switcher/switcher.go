@@ -373,6 +373,7 @@ type Switcher struct {
 	lastCommandSeq  atomic.Uint64       // highest enqueued seq (set at enqueue time via TrackCommandSeq)
 	lastExecutedSeq atomic.Uint64       // highest seq actually executed in the drain loop
 	lastExecutedErr atomic.Pointer[string] // error from the last executed command, nil on success
+	recentCmdErrors *recentErrors          // ring buffer of recent per-sequence command errors
 
 	// Output FPS tracking (atomic, lock-free)
 	outputFPSCount       atomic.Int64 // frames in current 1-second window
@@ -560,6 +561,7 @@ func New(programRelay *distribution.Relay) *Switcher {
 	}
 	s.frameBudgetNs.Store(defaultFmt.FrameBudgetNs())
 	s.pipelineFormat.Store(&defaultFmt)
+	s.recentCmdErrors = newRecentErrors(8)
 	s.delayBuffer = NewDelayBuffer(s)
 	go s.videoProcessingLoop()
 	return s
@@ -1756,6 +1758,7 @@ func (s *Switcher) videoProcessingLoop() {
 					if dispatchErr != nil {
 						errStr := dispatchErr.Error()
 						s.lastExecutedErr.Store(&errStr)
+						s.recentCmdErrors.record(cmd.Seq, errStr)
 					} else {
 						s.lastExecutedErr.Store(nil)
 					}
@@ -3358,6 +3361,14 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 	}
 	if errPtr := s.lastExecutedErr.Load(); errPtr != nil {
 		state.LastExecutedErr = *errPtr
+	}
+	if s.recentCmdErrors != nil {
+		if errs := s.recentCmdErrors.snapshot(); len(errs) > 0 {
+			state.RecentCommandErrors = make([]internal.CommandError, len(errs))
+			for i, e := range errs {
+				state.RecentCommandErrors[i] = internal.CommandError{Seq: e.Seq, Error: e.Error}
+			}
+		}
 	}
 	if s.state.isInTransition() && s.transEngine != nil {
 		state.TransitionPosition = s.transEngine.Position()
