@@ -229,7 +229,7 @@ describe('Recording API', () => {
 		expect(mockFetch).toHaveBeenCalledWith('/api/recording/start', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ engine: 'A' }),
+			body: JSON.stringify({}),
 		});
 		expect(result.active).toBe(true);
 		expect(result.filename).toBe('rec-2026.ts');
@@ -246,7 +246,7 @@ describe('Recording API', () => {
 		expect(mockFetch).toHaveBeenCalledWith('/api/recording/start', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ outputDir: '/tmp', engine: 'A' }),
+			body: JSON.stringify({ outputDir: '/tmp' }),
 		});
 		expect(result.active).toBe(true);
 	});
@@ -262,7 +262,7 @@ describe('Recording API', () => {
 		expect(mockFetch).toHaveBeenCalledWith('/api/recording/stop', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ engine: 'A' }),
+			body: JSON.stringify({}),
 		});
 		expect(result.active).toBe(false);
 		expect(result.bytesWritten).toBe(1024000);

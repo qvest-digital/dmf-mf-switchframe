@@ -1152,9 +1152,9 @@ describe('switch-api dual-engine routing', () => {
 		});
 	});
 
-	// ─── Recording targets primary engine only ───
+	// ─── Recording fans out to both engines ───
 
-	describe('recording engine targeting', () => {
+	describe('recording dual-engine fan-out', () => {
 		beforeEach(() => {
 			setEngineUrls([
 				{ id: 'A', url: 'https://engine-a.example.com' },
@@ -1162,43 +1162,44 @@ describe('switch-api dual-engine routing', () => {
 			]);
 		});
 
-		it('startRecording targets primary engine only', async () => {
+		it('startRecording fans out to both engines', async () => {
 			await startRecording();
 
-			// Only engine A should receive the request
-			expect(fetchCalls).toHaveLength(1);
-			expect(fetchCalls[0].url).toBe('https://engine-a.example.com/api/recording/start');
+			// Both engines should receive the request
+			expect(fetchCalls).toHaveLength(2);
+			const urls = fetchCalls.map(c => c.url).sort();
+			expect(urls).toEqual([
+				'https://engine-a.example.com/api/recording/start',
+				'https://engine-b.example.com/api/recording/start',
+			]);
 		});
 
-		it('stopRecording targets primary engine only', async () => {
+		it('stopRecording fans out to both engines', async () => {
 			await stopRecording();
 
-			// Only engine A should receive the request
-			expect(fetchCalls).toHaveLength(1);
-			expect(fetchCalls[0].url).toBe('https://engine-a.example.com/api/recording/stop');
+			// Both engines should receive the request
+			expect(fetchCalls).toHaveLength(2);
+			const urls = fetchCalls.map(c => c.url).sort();
+			expect(urls).toEqual([
+				'https://engine-a.example.com/api/recording/stop',
+				'https://engine-b.example.com/api/recording/stop',
+			]);
 		});
 
-		it('startRecording sends engine field in body', async () => {
+		it('startRecording does not include engine field in body', async () => {
 			await startRecording({ outputDir: '/tmp/rec', rotateAfterMins: 60 });
 
 			const body = JSON.parse(fetchCalls[0].opts.body as string);
-			expect(body.engine).toBe('A');
+			expect(body.engine).toBeUndefined();
 			expect(body.outputDir).toBe('/tmp/rec');
 			expect(body.rotateAfterMins).toBe(60);
 		});
 
-		it('stopRecording sends engine field in body', async () => {
+		it('stopRecording does not include engine field in body', async () => {
 			await stopRecording();
 
 			const body = JSON.parse(fetchCalls[0].opts.body as string);
-			expect(body.engine).toBe('A');
-		});
-
-		it('startRecording does not fan out to engine B', async () => {
-			await startRecording();
-
-			const engineBCalls = fetchCalls.filter(c => c.url.includes('engine-b'));
-			expect(engineBCalls).toHaveLength(0);
+			expect(body.engine).toBeUndefined();
 		});
 	});
 
