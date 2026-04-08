@@ -366,8 +366,18 @@ export function createReconciler() {
 		if (playingA !== playingB) {
 			result.push({ field: 'clipPlayers', engineA: `${playingA} playing`, engineB: `${playingB} playing` });
 		}
-		// Replay state divergence
-		if (stateA.replay?.state !== stateB.replay?.state) {
+		// Replay divergence: state, source, and speed
+		if (stateA.replay && stateB.replay) {
+			if (stateA.replay.state !== stateB.replay.state) {
+				result.push({ field: 'replay.state', engineA: stateA.replay.state, engineB: stateB.replay.state });
+			}
+			if (stateA.replay.source !== stateB.replay.source) {
+				result.push({ field: 'replay.source', engineA: stateA.replay.source, engineB: stateB.replay.source });
+			}
+			if (stateA.replay.speed !== stateB.replay.speed) {
+				result.push({ field: 'replay.speed', engineA: stateA.replay.speed, engineB: stateB.replay.speed });
+			}
+		} else if (stateA.replay?.state !== stateB.replay?.state) {
 			result.push({ field: 'replay', engineA: stateA.replay, engineB: stateB.replay });
 		}
 		// DVE layout divergence (full object comparison, not just activePreset)
