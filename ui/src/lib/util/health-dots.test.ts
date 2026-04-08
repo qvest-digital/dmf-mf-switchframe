@@ -19,6 +19,10 @@ describe('healthDotColor', () => {
 		expect(healthDotColor('offline')).toBe('#6b7280');
 	});
 
+	it('returns dark gray for not_present', () => {
+		expect(healthDotColor('not_present')).toBe('#666');
+	});
+
 	it('covers all SourceHealthStatus values', () => {
 		const allStatuses: SourceHealthStatus[] = ['healthy', 'stale', 'no_signal', 'offline'];
 		for (const status of allStatuses) {

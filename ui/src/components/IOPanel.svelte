@@ -33,7 +33,7 @@
 		onclose?: () => void;
 		isDualEngine?: boolean;
 		engineBState?: ControlRoomState | null;
-		engineSourceHealth?: Record<string, { A: SourceHealthStatus; B: SourceHealthStatus }> | null;
+		engineSourceHealth?: Record<string, { A: SourceHealthStatus | 'not_present'; B: SourceHealthStatus | 'not_present' }> | null;
 		engineEndpoints?: { A: string; B: string } | null;
 		engineDestinations?: Record<string, { A: { state: string; bitrate?: number }; B: { state: string; bitrate?: number } }> | null;
 	}
@@ -542,7 +542,7 @@
 								}</span>
 								<span class="row-label">{src.label || src.key}</span>
 								{#if isDualEngine && engineSourceHealth?.[src.key] && engineSourceHealth[src.key].A !== engineSourceHealth[src.key].B}
-									<span class="engine-health-dots" aria-label="Engine health: A {engineSourceHealth[src.key].A}, B {engineSourceHealth[src.key].B}">
+									<span class="engine-health-dots" aria-label="Engine health: A {engineSourceHealth[src.key].A === 'not_present' ? '\u2014' : engineSourceHealth[src.key].A}, B {engineSourceHealth[src.key].B === 'not_present' ? '\u2014' : engineSourceHealth[src.key].B}">
 										<span class="engine-dot-a"><span class="engine-label">A</span><span class="engine-dot" style="background: {healthDotColor(engineSourceHealth[src.key].A)}"></span></span>
 										<span class="engine-dot-b"><span class="engine-label">B</span><span class="engine-dot" style="background: {healthDotColor(engineSourceHealth[src.key].B)}"></span></span>
 									</span>

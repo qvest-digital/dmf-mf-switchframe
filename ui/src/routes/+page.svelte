@@ -208,12 +208,12 @@
 	// Per-source dual health map for IOPanel (combines A + B source health into single record)
 	let ioSourceHealth = $derived.by(() => {
 		if (!engineHealth) return null;
-		const result: Record<string, { A: import('$lib/api/types').SourceHealthStatus; B: import('$lib/api/types').SourceHealthStatus }> = {};
+		const result: Record<string, { A: import('$lib/api/types').SourceHealthStatus | 'not_present'; B: import('$lib/api/types').SourceHealthStatus | 'not_present' }> = {};
 		const allKeys = new Set([...Object.keys(engineHealth.A.sources), ...Object.keys(engineHealth.B.sources)]);
 		for (const key of allKeys) {
 			result[key] = {
-				A: engineHealth.A.sources[key] ?? 'offline',
-				B: engineHealth.B.sources[key] ?? 'offline',
+				A: engineHealth.A.sources[key] ?? 'not_present',
+				B: engineHealth.B.sources[key] ?? 'not_present',
 			};
 		}
 		return result;
@@ -648,6 +648,9 @@
 		onConnectionStateChange: (state) => {
 			connectionState = state;
 			transportChangeCount++;
+			if (state !== 'disconnected') {
+				try { sessionStorage.removeItem('sf:redirect-attempts'); } catch {}
+			}
 		},
 		onInitialLoadComplete: () => {
 			initialLoading = false;
