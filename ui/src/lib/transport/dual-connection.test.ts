@@ -77,7 +77,9 @@ vi.mock('$lib/state/reconciler.svelte', () => ({
 				if (engine === 'B') _rttB = ms;
 			}),
 			setClockOffset: vi.fn(),
+			setClockDiverged: vi.fn(),
 			setRecovering: vi.fn(),
+			setTransportAlive: vi.fn(),
 			tick: vi.fn(),
 			get state() { return _state; },
 			get health() {
@@ -539,6 +541,39 @@ describe('DualConnectionManager', () => {
 			instanceA.simulateConnectionChange('webtransport');
 
 			expect(reconcilerInstance.disconnect).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('transport-alive feeding to reconciler', () => {
+		it('calls setTransportAlive(true) when engine transitions to webtransport', () => {
+			new DualConnectionManager(makeDualConfig());
+			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+
+			instanceA.simulateConnectionChange('webtransport');
+
+			expect(reconcilerInstance.setTransportAlive).toHaveBeenCalledWith('A', true);
+		});
+
+		it('calls setTransportAlive(false) when engine disconnects', () => {
+			new DualConnectionManager(makeDualConfig());
+			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+
+			instanceA.simulateConnectionChange('webtransport');
+			instanceA.simulateConnectionChange('disconnected');
+
+			expect(reconcilerInstance.setTransportAlive).toHaveBeenCalledWith('A', false);
+		});
+
+		it('does not call setTransportAlive in single engine mode', () => {
+			new DualConnectionManager(makeSingleConfig());
+			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+
+			instanceA.simulateConnectionChange('webtransport');
+
+			expect(reconcilerInstance.setTransportAlive).not.toHaveBeenCalled();
 		});
 	});
 

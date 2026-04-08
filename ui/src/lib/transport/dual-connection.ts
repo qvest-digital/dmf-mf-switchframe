@@ -195,6 +195,14 @@ export class DualConnectionManager {
 						this.reconciler.disconnect(engineId);
 					}
 
+					// Update transport-alive flag so reconciler doesn't falsely
+					// mark an idle-but-connected engine as stale.
+					if (connState === 'webtransport') {
+						this.reconciler.setTransportAlive(engineId, true);
+					} else if (connState === 'disconnected') {
+						this.reconciler.setTransportAlive(engineId, false);
+					}
+
 					// Report the best available connection status across all engines
 					const states = [...this.managers.values()].map((m) => m.getConnectionState());
 					if (states.includes('webtransport')) {

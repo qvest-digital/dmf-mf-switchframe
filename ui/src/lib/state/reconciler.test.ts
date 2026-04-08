@@ -1232,4 +1232,87 @@ describe('createReconciler', () => {
 			expect(layoutDiv?.engineB).toBeUndefined();
 		});
 	});
+
+	// ── Transport-alive awareness ──
+
+	describe('transport-alive stale detection', () => {
+		beforeEach(() => {
+			vi.useFakeTimers();
+		});
+
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		it('does not report stale when transport is alive but idle', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+
+			// Mark both transports alive (WebTransport connected)
+			r.setTransportAlive('A', true);
+			r.setTransportAlive('B', true);
+
+			// Advance past the stale threshold with no new state updates
+			vi.advanceTimersByTime(STALE_THRESHOLD_MS + 1000);
+			r.tick();
+
+			// Should NOT be stale while transport is alive
+			expect(r.health.status).toBe('synced');
+			expect(r.health.staleEngines).toHaveLength(0);
+		});
+
+		it('reports stale when transport is dead and no updates', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+
+			// Transport is NOT alive (polling or disconnected)
+			r.setTransportAlive('A', false);
+			r.setTransportAlive('B', false);
+
+			// Advance past the stale threshold
+			vi.advanceTimersByTime(STALE_THRESHOLD_MS + 1000);
+			r.tick();
+
+			// Both stale → disconnected
+			expect(r.health.status).toBe('disconnected');
+		});
+
+		it('reports single-engine when only one transport goes stale', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+
+			// Only B's transport dies
+			r.setTransportAlive('A', true);
+			r.setTransportAlive('B', false);
+
+			vi.advanceTimersByTime(STALE_THRESHOLD_MS + 1000);
+			r.tick();
+
+			// B is stale, A is alive → single-engine
+			expect(r.health.status).toBe('single-engine');
+			expect(r.health.staleEngines).toContain('B');
+			expect(r.health.staleEngines).not.toContain('A');
+		});
+
+		it('transitions from synced to stale when transport dies', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+			r.setTransportAlive('A', true);
+			r.setTransportAlive('B', true);
+
+			vi.advanceTimersByTime(STALE_THRESHOLD_MS + 1000);
+			r.tick();
+			expect(r.health.status).toBe('synced');
+
+			// Transport dies
+			r.setTransportAlive('B', false);
+			r.tick();
+
+			expect(r.health.staleEngines).toContain('B');
+		});
+	});
 });

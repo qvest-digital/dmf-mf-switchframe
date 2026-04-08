@@ -123,6 +123,8 @@ export function createReconciler() {
 	let everSeenB = $state(false);
 	let recovering = $state(false);
 	let clockDiverged = $state(false);
+	let transportAliveA = $state(false);
+	let transportAliveB = $state(false);
 
 	// Track when seq delta first appeared for time-based detection
 	let seqDeltaSince = $state(0);
@@ -305,9 +307,10 @@ export function createReconciler() {
 		// Disconnected trumps recovering: can't recover if both engines are offline
 		if (!hasA && !hasB) return 'disconnected';
 
-		// Stale engine detection: no state update for STALE_THRESHOLD_MS
-		const staleA = hasA && (now - lastSeenA > STALE_THRESHOLD_MS);
-		const staleB = hasB && (now - lastSeenB > STALE_THRESHOLD_MS);
+		// Stale engine detection: no state update for STALE_THRESHOLD_MS.
+		// Don't mark stale if transport is alive (WebTransport connected but engine may just be idle).
+		const staleA = hasA && !transportAliveA && (now - lastSeenA > STALE_THRESHOLD_MS);
+		const staleB = hasB && !transportAliveB && (now - lastSeenB > STALE_THRESHOLD_MS);
 
 		if (staleA && staleB) return 'disconnected';
 		if (staleA && !hasB) return 'disconnected';
@@ -390,6 +393,11 @@ export function createReconciler() {
 		clockDiverged = diverged;
 	}
 
+	function setTransportAlive(engine: EngineId, alive: boolean) {
+		if (engine === 'A') transportAliveA = alive;
+		else transportAliveB = alive;
+	}
+
 	const engineHealthDerived = $derived.by((): { A: EngineHealthDetail; B: EngineHealthDetail } => {
 		// Use lastTickTime (updated every ~200ms by tick()) instead of Date.now()
 		// so uptime display updates smoothly on each tick rather than only when
@@ -439,8 +447,8 @@ export function createReconciler() {
 	const staleEngines = $derived.by((): EngineId[] => {
 		const now = lastTickTime;
 		const result: EngineId[] = [];
-		if (connectedA && lastSeenA > 0 && (now - lastSeenA > STALE_THRESHOLD_MS)) result.push('A');
-		if (connectedB && lastSeenB > 0 && (now - lastSeenB > STALE_THRESHOLD_MS)) result.push('B');
+		if (connectedA && !transportAliveA && lastSeenA > 0 && (now - lastSeenA > STALE_THRESHOLD_MS)) result.push('A');
+		if (connectedB && !transportAliveB && lastSeenB > 0 && (now - lastSeenB > STALE_THRESHOLD_MS)) result.push('B');
 		return result;
 	});
 
@@ -471,6 +479,7 @@ export function createReconciler() {
 		disconnect,
 		setRecovering,
 		setClockDiverged,
+		setTransportAlive,
 		get state() {
 			return currentState;
 		},
