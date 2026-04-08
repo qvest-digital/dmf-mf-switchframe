@@ -113,6 +113,11 @@ type SnapshotClipApplier interface {
 	LoadClipByName(slotIndex int, clipName string) error
 }
 
+// SnapshotGraphicsHTML5Applier is optionally implemented for HTML5 graphics overlay reload.
+type SnapshotGraphicsHTML5Applier interface {
+	LoadGraphicsHTML5(layerID int, url string) error
+}
+
 // ApplyFullSnapshot restores engine state from a FullStateSnapshot. It is
 // best-effort: individual failures are collected as warning strings rather
 // than aborting the entire apply. This is the inverse of state capture.
@@ -179,6 +184,14 @@ func ApplyFullSnapshot(ctx context.Context, snap FullStateSnapshot, target Snaps
 		if err := target.SetGraphicsLayerRect(layer.ID, layer.X, layer.Y, layer.Width, layer.Height); err != nil {
 			slog.Warn("snapshot apply: graphics layer rect failed", "id", layer.ID, "error", err)
 			warnings = append(warnings, fmt.Sprintf("graphics layer %d rect: %v", layer.ID, err))
+		}
+		if layer.HTML5URL != "" {
+			if applier, ok := target.(SnapshotGraphicsHTML5Applier); ok {
+				if err := applier.LoadGraphicsHTML5(layer.ID, layer.HTML5URL); err != nil {
+					slog.Warn("snapshot apply: graphics layer HTML5 reload failed", "id", layer.ID, "url", layer.HTML5URL, "error", err)
+					warnings = append(warnings, fmt.Sprintf("graphics layer %d: load HTML5 %q: %v", layer.ID, layer.HTML5URL, err))
+				}
+			}
 		}
 	}
 

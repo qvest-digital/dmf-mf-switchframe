@@ -941,3 +941,120 @@ func TestApplyFullSnapshot_ClipPlayerSkipsEmptyNames(t *testing.T) {
 		t.Errorf("expected intro.mp4, got %q", mock.clipLoads[0].ClipName)
 	}
 }
+
+// --- HTML5 graphics layer reload tests ---
+
+// mockHTML5ApplyTarget embeds mockApplyTarget and additionally implements SnapshotGraphicsHTML5Applier.
+type mockHTML5ApplyTarget struct {
+	*mockApplyTarget
+	html5Loaded map[int]string // layerID → URL
+	html5Errors map[int]error  // layerID → error to return
+}
+
+func newMockHTML5ApplyTarget() *mockHTML5ApplyTarget {
+	return &mockHTML5ApplyTarget{
+		mockApplyTarget: newMockApplyTarget(),
+		html5Loaded:     make(map[int]string),
+		html5Errors:     make(map[int]error),
+	}
+}
+
+func (m *mockHTML5ApplyTarget) LoadGraphicsHTML5(layerID int, url string) error {
+	m.html5Loaded[layerID] = url
+	if err, ok := m.html5Errors[layerID]; ok {
+		return err
+	}
+	return nil
+}
+
+func TestApplyFullSnapshot_HTML5Layer(t *testing.T) {
+	target := newMockHTML5ApplyTarget()
+	snap := FullStateSnapshot{
+		Version:    "1",
+		CapturedAt: 1234567890,
+		Graphics: []GraphicsLayerSnapshot{
+			{ID: 0, Active: true, HTML5URL: "http://example.com/overlay.html"},
+		},
+	}
+	ctx := context.Background()
+
+	warnings := ApplyFullSnapshot(ctx, snap, target)
+	if len(warnings) > 0 {
+		t.Errorf("expected no warnings, got: %v", warnings)
+	}
+	if got := target.html5Loaded[0]; got != "http://example.com/overlay.html" {
+		t.Errorf("html5Loaded[0]: got %q, want %q", got, "http://example.com/overlay.html")
+	}
+}
+
+func TestApplyFullSnapshot_HTML5LayerSkippedWithoutApplier(t *testing.T) {
+	// Base mockApplyTarget does NOT implement SnapshotGraphicsHTML5Applier.
+	target := newMockApplyTarget()
+	snap := FullStateSnapshot{
+		Version:    "1",
+		CapturedAt: 1234567890,
+		Graphics: []GraphicsLayerSnapshot{
+			{ID: 0, Active: true, HTML5URL: "http://example.com/overlay.html"},
+		},
+	}
+	ctx := context.Background()
+
+	// Should not panic — just skip HTML5 reload gracefully.
+	warnings := ApplyFullSnapshot(ctx, snap, target)
+	if len(warnings) > 0 {
+		t.Errorf("expected no warnings when no HTML5 applier, got: %v", warnings)
+	}
+}
+
+func TestApplyFullSnapshot_HTML5LayerEmptyURLSkipped(t *testing.T) {
+	target := newMockHTML5ApplyTarget()
+	snap := FullStateSnapshot{
+		Version:    "1",
+		CapturedAt: 1234567890,
+		Graphics: []GraphicsLayerSnapshot{
+			{ID: 0, Active: true, HTML5URL: ""},
+		},
+	}
+	ctx := context.Background()
+
+	warnings := ApplyFullSnapshot(ctx, snap, target)
+	if len(warnings) > 0 {
+		t.Errorf("expected no warnings, got: %v", warnings)
+	}
+	if len(target.html5Loaded) != 0 {
+		t.Errorf("LoadGraphicsHTML5 should not be called when URL is empty, got: %v", target.html5Loaded)
+	}
+}
+
+func TestApplyFullSnapshot_HTML5LayerErrorWarns(t *testing.T) {
+	target := newMockHTML5ApplyTarget()
+	target.html5Errors[1] = fmt.Errorf("CEF sidecar unavailable")
+
+	snap := FullStateSnapshot{
+		Version:    "1",
+		CapturedAt: 1234567890,
+		Graphics: []GraphicsLayerSnapshot{
+			{ID: 0, Active: true, HTML5URL: "http://example.com/lower-third.html"},
+			{ID: 1, Active: false, HTML5URL: "http://example.com/scorebug.html"},
+		},
+	}
+	ctx := context.Background()
+
+	warnings := ApplyFullSnapshot(ctx, snap, target)
+
+	// One warning for the failed layer
+	if len(warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %d: %v", len(warnings), warnings)
+	}
+	if !strings.Contains(warnings[0], "graphics layer 1") {
+		t.Errorf("warning should mention layer 1, got: %s", warnings[0])
+	}
+	if !strings.Contains(warnings[0], "CEF sidecar unavailable") {
+		t.Errorf("warning should mention error, got: %s", warnings[0])
+	}
+
+	// Layer 0 should still have been loaded successfully (best-effort)
+	if got := target.html5Loaded[0]; got != "http://example.com/lower-third.html" {
+		t.Errorf("html5Loaded[0]: got %q, want %q", got, "http://example.com/lower-third.html")
+	}
+}

@@ -111,6 +111,7 @@ func populatedSnapshot() FullStateSnapshot {
 				Height:    280,
 				Template:  "lower-third",
 				ImageName: "guest_name.png",
+				HTML5URL:  "http://example.com/lower-third.html",
 			},
 			{
 				ID:        2,

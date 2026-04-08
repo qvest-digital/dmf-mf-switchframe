@@ -142,7 +142,8 @@ type AudioMasterSnapshot struct {
 }
 
 // GraphicsLayerSnapshot captures the restorable state of a single DSK layer.
-// Omits transient data (FadePosition, AnimationState, HTML5 status/data, sequence state).
+// Omits transient data (FadePosition, AnimationState, sequence state).
+// HTML5URL is configuration (not transient status), so it is included.
 type GraphicsLayerSnapshot struct {
 	ID        int    `json:"id"`
 	Active    bool   `json:"active"`
@@ -153,6 +154,7 @@ type GraphicsLayerSnapshot struct {
 	Height    int    `json:"height"`
 	Template  string `json:"template,omitempty"`
 	ImageName string `json:"imageName,omitempty"`
+	HTML5URL  string `json:"html5Url,omitempty"`
 }
 
 // LayoutSnapshot captures the full DVE layout configuration.
