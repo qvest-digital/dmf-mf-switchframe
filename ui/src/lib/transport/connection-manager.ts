@@ -1,5 +1,5 @@
 import { createPrismConnection } from '$lib/transport/connection';
-import { getState } from '$lib/api/switch-api';
+import { getAuthHeaders, SwitchApiError } from '$lib/api/switch-api';
 import type { ControlRoomState } from '$lib/api/types';
 
 export type ConnectionStatus = 'webtransport' | 'polling' | 'disconnected';
@@ -115,7 +115,11 @@ export class ConnectionManager {
 		if (this.pollInterval) return;
 		const poll = async () => {
 			try {
-				const state = await getState();
+				const res = await fetch(`${this.config.url}/api/switch/state`, {
+					headers: getAuthHeaders(),
+				});
+				if (!res.ok) throw new Error(`Poll failed: ${res.status}`);
+				const state = await res.json() as ControlRoomState;
 				this.config.onStateUpdate(state);
 				this.pollDelay = this.POLL_MIN; // reset on success
 				// Clear loading overlay if initial fetch failed but polling succeeds.
@@ -148,7 +152,14 @@ export class ConnectionManager {
 
 	private async fetchInitialState(): Promise<void> {
 		try {
-			const state = await getState();
+			const res = await fetch(`${this.config.url}/api/switch/state`, {
+				headers: getAuthHeaders(),
+			});
+			if (!res.ok) {
+				const body = await res.text().catch(() => '');
+				throw new SwitchApiError(res.status, body || `${res.status}`);
+			}
+			const state = await res.json() as ControlRoomState;
 			this.config.onStateUpdate(state);
 			if (!this.initialLoadDone) {
 				this.initialLoadDone = true;

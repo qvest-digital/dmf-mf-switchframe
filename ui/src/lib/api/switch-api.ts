@@ -47,6 +47,11 @@ export function authHeaders(): Record<string, string> {
 	return headers;
 }
 
+/** Public alias for authHeaders — used by ConnectionManager for engine-specific fetches. */
+export function getAuthHeaders(): Record<string, string> {
+	return authHeaders();
+}
+
 // ── Circuit breaker: per-engine failure tracking ──
 
 interface CircuitState {

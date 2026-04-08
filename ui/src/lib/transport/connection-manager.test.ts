@@ -6,16 +6,16 @@ vi.mock('$lib/transport/connection', () => ({
 }));
 
 vi.mock('$lib/api/switch-api', () => ({
-	getState: vi.fn(),
+	getAuthHeaders: vi.fn().mockReturnValue({}),
 }));
 
 import { ConnectionManager } from './connection-manager';
 import { createPrismConnection } from '$lib/transport/connection';
-import { getState } from '$lib/api/switch-api';
+import { getAuthHeaders } from '$lib/api/switch-api';
 import type { ControlRoomState } from '$lib/api/types';
 
 const mockedCreatePrismConnection = vi.mocked(createPrismConnection);
-const mockedGetState = vi.mocked(getState);
+const mockedGetAuthHeaders = vi.mocked(getAuthHeaders);
 
 function makeState(overrides: Partial<ControlRoomState> = {}): ControlRoomState {
 	return {
@@ -35,6 +35,23 @@ function makeState(overrides: Partial<ControlRoomState> = {}): ControlRoomState 
 		timestamp: Date.now(),
 		...overrides,
 	};
+}
+
+function makeOkFetch(state: ControlRoomState) {
+	return vi.fn().mockResolvedValue({
+		ok: true,
+		json: () => Promise.resolve(state),
+		text: () => Promise.resolve(JSON.stringify(state)),
+	} as unknown as Response);
+}
+
+function makeFailFetch(status = 500, body = 'Internal Server Error') {
+	return vi.fn().mockResolvedValue({
+		ok: false,
+		status,
+		text: () => Promise.resolve(body),
+		json: () => Promise.resolve({ error: body }),
+	} as unknown as Response);
 }
 
 // Capture the callbacks that ConnectionManager passes to createPrismConnection
@@ -78,10 +95,12 @@ describe('ConnectionManager', () => {
 	beforeEach(() => {
 		vi.useFakeTimers();
 		vi.clearAllMocks();
+		mockedGetAuthHeaders.mockReturnValue({});
 	});
 
 	afterEach(() => {
 		vi.useRealTimers();
+		vi.restoreAllMocks();
 	});
 
 	it('should create a ConnectionManager instance', () => {
@@ -129,11 +148,104 @@ describe('ConnectionManager', () => {
 		expect(manager.getConnectionState()).toBe('disconnected');
 	});
 
+	// ─── Engine-specific URL test (TDD: write first) ───
+
+	describe('engine-specific URL polling', () => {
+		it('fetches from the engine-specific URL, not global getState', async () => {
+			setupMocks();
+			const state = makeState();
+			const mockFetch = makeOkFetch(state);
+			vi.stubGlobal('fetch', mockFetch);
+
+			const onStateUpdate = vi.fn();
+			const manager = new ConnectionManager({
+				url: 'https://engine-a.example.com',
+				onStateUpdate,
+				onConnectionStateChange: vi.fn(),
+				onInitialLoadComplete: vi.fn(),
+				onInitialLoadError: vi.fn(),
+			});
+
+			await manager.start();
+
+			// All fetch calls should target the engine-specific URL
+			for (const call of mockFetch.mock.calls) {
+				expect(call[0]).toBe('https://engine-a.example.com/api/switch/state');
+			}
+			expect(mockFetch).toHaveBeenCalled();
+		});
+
+		it('polling also uses the engine-specific URL', async () => {
+			setupMocks();
+			const state = makeState();
+			const mockFetch = makeOkFetch(state);
+			vi.stubGlobal('fetch', mockFetch);
+
+			const manager = new ConnectionManager({
+				url: 'https://engine-b.example.com',
+				onStateUpdate: vi.fn(),
+				onConnectionStateChange: vi.fn(),
+				onInitialLoadComplete: vi.fn(),
+				onInitialLoadError: vi.fn(),
+			});
+
+			await manager.start();
+			mockFetch.mockClear();
+
+			// Advance past one poll interval
+			await vi.advanceTimersByTimeAsync(500);
+
+			expect(mockFetch).toHaveBeenCalledOnce();
+			expect(mockFetch.mock.calls[0][0]).toBe('https://engine-b.example.com/api/switch/state');
+		});
+
+		it('two managers with different URLs each fetch their own engine', async () => {
+			setupMocks();
+
+			const stateA = makeState({ programSource: 'cam-a' });
+			const stateB = makeState({ programSource: 'cam-b' });
+
+			const mockFetch = vi.fn().mockImplementation((url: string) => {
+				if (url.includes('engine-a')) {
+					return Promise.resolve({ ok: true, json: () => Promise.resolve(stateA), text: () => Promise.resolve('') } as unknown as Response);
+				}
+				return Promise.resolve({ ok: true, json: () => Promise.resolve(stateB), text: () => Promise.resolve('') } as unknown as Response);
+			});
+			vi.stubGlobal('fetch', mockFetch);
+
+			const onStateUpdateA = vi.fn();
+			const managerA = new ConnectionManager({
+				url: 'https://engine-a.example.com',
+				onStateUpdate: onStateUpdateA,
+				onConnectionStateChange: vi.fn(),
+				onInitialLoadComplete: vi.fn(),
+				onInitialLoadError: vi.fn(),
+			});
+
+			const onStateUpdateB = vi.fn();
+			const managerB = new ConnectionManager({
+				url: 'https://engine-b.example.com',
+				onStateUpdate: onStateUpdateB,
+				onConnectionStateChange: vi.fn(),
+				onInitialLoadComplete: vi.fn(),
+				onInitialLoadError: vi.fn(),
+			});
+
+			await managerA.start();
+			await managerB.start();
+
+			// A received cam-a state, B received cam-b state
+			expect(onStateUpdateA).toHaveBeenCalledWith(stateA);
+			expect(onStateUpdateB).toHaveBeenCalledWith(stateB);
+		});
+	});
+
 	describe('start()', () => {
 		it('should fetch initial state on start', async () => {
 			setupMocks();
 			const state = makeState();
-			mockedGetState.mockResolvedValue(state);
+			const mockFetch = makeOkFetch(state);
+			vi.stubGlobal('fetch', mockFetch);
 
 			const onStateUpdate = vi.fn();
 			const onInitialLoadComplete = vi.fn();
@@ -147,15 +259,18 @@ describe('ConnectionManager', () => {
 
 			await manager.start();
 
-			expect(mockedGetState).toHaveBeenCalledOnce();
+			expect(mockFetch).toHaveBeenCalledWith(
+				'https://localhost:8080/api/switch/state',
+				expect.objectContaining({ headers: {} })
+			);
 			expect(onStateUpdate).toHaveBeenCalledWith(state);
 			expect(onInitialLoadComplete).toHaveBeenCalledOnce();
 		});
 
 		it('should fire onInitialLoadError and retry on fetch failure', async () => {
 			setupMocks();
-			const error = new Error('Network error');
-			mockedGetState.mockRejectedValue(error);
+			const mockFetch = makeFailFetch(503, 'Service Unavailable');
+			vi.stubGlobal('fetch', mockFetch);
 
 			const onInitialLoadError = vi.fn();
 			const onInitialLoadComplete = vi.fn();
@@ -169,23 +284,23 @@ describe('ConnectionManager', () => {
 
 			await manager.start();
 
-			expect(onInitialLoadError).toHaveBeenCalledWith('Network error', expect.any(Error));
+			expect(onInitialLoadError).toHaveBeenCalledOnce();
 			expect(onInitialLoadComplete).not.toHaveBeenCalled();
 
 			// Now make it succeed on retry
 			const state = makeState();
-			mockedGetState.mockResolvedValue(state);
+			mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve(state), text: () => Promise.resolve('') } as unknown as Response);
 
 			// Advance timer past 3-second retry
 			await vi.advanceTimersByTimeAsync(3000);
 
-			// getState is also called by polling (every 500ms), so we just verify the retry succeeded
 			expect(onInitialLoadComplete).toHaveBeenCalledOnce();
 		});
 
-		it('should fire onInitialLoadError with string error message', async () => {
+		it('should fire onInitialLoadError when fetch rejects (network error)', async () => {
 			setupMocks();
-			mockedGetState.mockRejectedValue('string error');
+			const mockFetch = vi.fn().mockRejectedValue(new Error('Network error'));
+			vi.stubGlobal('fetch', mockFetch);
 
 			const onInitialLoadError = vi.fn();
 			const manager = new ConnectionManager({
@@ -198,13 +313,14 @@ describe('ConnectionManager', () => {
 
 			await manager.start();
 
-			expect(onInitialLoadError).toHaveBeenCalledWith('string error', 'string error');
+			expect(onInitialLoadError).toHaveBeenCalledWith('Network error', expect.any(Error));
 		});
 
 		it('should begin polling after start', async () => {
 			setupMocks();
 			const state = makeState();
-			mockedGetState.mockResolvedValue(state);
+			const mockFetch = makeOkFetch(state);
+			vi.stubGlobal('fetch', mockFetch);
 
 			const onStateUpdate = vi.fn();
 			const manager = new ConnectionManager({
@@ -219,21 +335,22 @@ describe('ConnectionManager', () => {
 
 			// Reset to track only polling calls
 			onStateUpdate.mockClear();
-			mockedGetState.mockClear();
+			mockFetch.mockClear();
 
 			const pollingState = makeState({ seq: 2 });
-			mockedGetState.mockResolvedValue(pollingState);
+			mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve(pollingState), text: () => Promise.resolve('') } as unknown as Response);
 
 			// Advance past one polling interval (500ms)
 			await vi.advanceTimersByTimeAsync(500);
 
-			expect(mockedGetState).toHaveBeenCalledOnce();
+			expect(mockFetch).toHaveBeenCalledOnce();
 			expect(onStateUpdate).toHaveBeenCalledWith(pollingState);
 		});
 
 		it('should start WebTransport connection', async () => {
 			const { mockConnection } = setupMocks();
-			mockedGetState.mockResolvedValue(makeState());
+			const mockFetch = makeOkFetch(makeState());
+			vi.stubGlobal('fetch', mockFetch);
 
 			const manager = new ConnectionManager({
 				url: 'https://localhost:8080',
@@ -250,7 +367,8 @@ describe('ConnectionManager', () => {
 
 		it('should set connection state to polling on start', async () => {
 			setupMocks();
-			mockedGetState.mockResolvedValue(makeState());
+			const mockFetch = makeOkFetch(makeState());
+			vi.stubGlobal('fetch', mockFetch);
 
 			const onConnectionStateChange = vi.fn();
 			const manager = new ConnectionManager({
@@ -269,9 +387,10 @@ describe('ConnectionManager', () => {
 	});
 
 	describe('polling', () => {
-		it('should call getState repeatedly at 500ms intervals', async () => {
+		it('should fetch repeatedly at 500ms intervals', async () => {
 			setupMocks();
-			mockedGetState.mockResolvedValue(makeState());
+			const mockFetch = makeOkFetch(makeState());
+			vi.stubGlobal('fetch', mockFetch);
 
 			const manager = new ConnectionManager({
 				url: 'https://localhost:8080',
@@ -282,20 +401,21 @@ describe('ConnectionManager', () => {
 			});
 
 			await manager.start();
-			mockedGetState.mockClear();
+			mockFetch.mockClear();
 
-			mockedGetState.mockResolvedValue(makeState({ seq: 2 }));
+			mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve(makeState({ seq: 2 })), text: () => Promise.resolve('') } as unknown as Response);
 			await vi.advanceTimersByTimeAsync(500);
-			expect(mockedGetState).toHaveBeenCalledTimes(1);
+			expect(mockFetch).toHaveBeenCalledTimes(1);
 
-			mockedGetState.mockResolvedValue(makeState({ seq: 3 }));
+			mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve(makeState({ seq: 3 })), text: () => Promise.resolve('') } as unknown as Response);
 			await vi.advanceTimersByTimeAsync(500);
-			expect(mockedGetState).toHaveBeenCalledTimes(2);
+			expect(mockFetch).toHaveBeenCalledTimes(2);
 		});
 
 		it('should silently ignore polling errors', async () => {
 			setupMocks();
-			mockedGetState.mockResolvedValue(makeState());
+			const mockFetch = makeOkFetch(makeState());
+			vi.stubGlobal('fetch', mockFetch);
 
 			const onStateUpdate = vi.fn();
 			const manager = new ConnectionManager({
@@ -310,20 +430,22 @@ describe('ConnectionManager', () => {
 			onStateUpdate.mockClear();
 
 			// Polling error should not crash
-			mockedGetState.mockRejectedValue(new Error('Poll failed'));
+			mockFetch.mockRejectedValue(new Error('Poll failed'));
 			await vi.advanceTimersByTimeAsync(500);
 
 			expect(onStateUpdate).not.toHaveBeenCalled();
 
 			// Next poll uses exponential backoff (500ms * 2 = 1000ms after failure)
-			mockedGetState.mockResolvedValue(makeState({ seq: 5 }));
+			const nextState = makeState({ seq: 5 });
+			mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve(nextState), text: () => Promise.resolve('') } as unknown as Response);
 			await vi.advanceTimersByTimeAsync(1000);
 			expect(onStateUpdate).toHaveBeenCalledOnce();
 		});
 
 		it('should not start polling twice', async () => {
 			setupMocks();
-			mockedGetState.mockResolvedValue(makeState());
+			const mockFetch = makeOkFetch(makeState());
+			vi.stubGlobal('fetch', mockFetch);
 
 			const onStateUpdate = vi.fn();
 			const manager = new ConnectionManager({
@@ -340,21 +462,21 @@ describe('ConnectionManager', () => {
 			await manager.start();
 
 			// Clear call counts after both starts have completed
-			mockedGetState.mockClear();
+			mockFetch.mockClear();
 			onStateUpdate.mockClear();
 
-			mockedGetState.mockResolvedValue(makeState({ seq: 10 }));
+			mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve(makeState({ seq: 10 })), text: () => Promise.resolve('') } as unknown as Response);
 			await vi.advanceTimersByTimeAsync(500);
 
 			// Should only fire once per interval (one poll, not two)
-			expect(mockedGetState).toHaveBeenCalledTimes(1);
+			expect(mockFetch).toHaveBeenCalledTimes(1);
 		});
 	});
 
 	describe('WebTransport connection state changes', () => {
 		it('should update connectionState to webtransport when connected', async () => {
 			const { callbacks } = setupMocks();
-			mockedGetState.mockResolvedValue(makeState());
+			vi.stubGlobal('fetch', makeOkFetch(makeState()));
 
 			const onConnectionStateChange = vi.fn();
 			const manager = new ConnectionManager({
@@ -376,7 +498,7 @@ describe('ConnectionManager', () => {
 
 		it('should fall back to polling when WebTransport disconnects', async () => {
 			const { callbacks } = setupMocks();
-			mockedGetState.mockResolvedValue(makeState());
+			vi.stubGlobal('fetch', makeOkFetch(makeState()));
 
 			const onConnectionStateChange = vi.fn();
 			const manager = new ConnectionManager({
@@ -402,7 +524,7 @@ describe('ConnectionManager', () => {
 
 		it('should fall back to polling when WebTransport errors', async () => {
 			const { callbacks } = setupMocks();
-			mockedGetState.mockResolvedValue(makeState());
+			vi.stubGlobal('fetch', makeOkFetch(makeState()));
 
 			const onConnectionStateChange = vi.fn();
 			const manager = new ConnectionManager({
@@ -427,7 +549,8 @@ describe('ConnectionManager', () => {
 	describe('MoQ state callback', () => {
 		it('should stop polling when MoQ delivers state', async () => {
 			const { callbacks } = setupMocks();
-			mockedGetState.mockResolvedValue(makeState());
+			const mockFetch = makeOkFetch(makeState());
+			vi.stubGlobal('fetch', mockFetch);
 
 			const onStateUpdate = vi.fn();
 			const manager = new ConnectionManager({
@@ -439,7 +562,7 @@ describe('ConnectionManager', () => {
 			});
 
 			await manager.start();
-			mockedGetState.mockClear();
+			mockFetch.mockClear();
 			onStateUpdate.mockClear();
 
 			// Simulate MoQ delivering state
@@ -448,15 +571,15 @@ describe('ConnectionManager', () => {
 			callbacks.onControlState(data);
 
 			// Polling should be stopped - advance time and verify no poll calls
-			mockedGetState.mockResolvedValue(makeState({ seq: 20 }));
+			mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve(makeState({ seq: 20 })), text: () => Promise.resolve('') } as unknown as Response);
 			await vi.advanceTimersByTimeAsync(1000);
 
-			expect(mockedGetState).not.toHaveBeenCalled();
+			expect(mockFetch).not.toHaveBeenCalled();
 		});
 
 		it('should update connection state to webtransport when MoQ delivers', async () => {
 			const { callbacks } = setupMocks();
-			mockedGetState.mockResolvedValue(makeState());
+			vi.stubGlobal('fetch', makeOkFetch(makeState()));
 
 			const onConnectionStateChange = vi.fn();
 			const manager = new ConnectionManager({
@@ -479,7 +602,7 @@ describe('ConnectionManager', () => {
 
 		it('should fire onStateUpdate with MoQ data', async () => {
 			const { callbacks } = setupMocks();
-			mockedGetState.mockResolvedValue(makeState());
+			vi.stubGlobal('fetch', makeOkFetch(makeState()));
 
 			const onStateUpdate = vi.fn();
 			const manager = new ConnectionManager({
@@ -503,7 +626,8 @@ describe('ConnectionManager', () => {
 	describe('handleControlData()', () => {
 		it('should dispatch state update and stop polling', async () => {
 			setupMocks();
-			mockedGetState.mockResolvedValue(makeState());
+			const mockFetch = makeOkFetch(makeState());
+			vi.stubGlobal('fetch', mockFetch);
 
 			const onStateUpdate = vi.fn();
 			const manager = new ConnectionManager({
@@ -515,7 +639,7 @@ describe('ConnectionManager', () => {
 			});
 
 			await manager.start();
-			mockedGetState.mockClear();
+			mockFetch.mockClear();
 			onStateUpdate.mockClear();
 
 			const data = new TextEncoder().encode(JSON.stringify(makeState({ seq: 10 })));
@@ -526,7 +650,7 @@ describe('ConnectionManager', () => {
 
 			// Polling should be stopped
 			await vi.advanceTimersByTimeAsync(1000);
-			expect(mockedGetState).not.toHaveBeenCalled();
+			expect(mockFetch).not.toHaveBeenCalled();
 		});
 
 		it('should work before start() is called', () => {
@@ -552,7 +676,8 @@ describe('ConnectionManager', () => {
 	describe('stop()', () => {
 		it('should stop polling', async () => {
 			setupMocks();
-			mockedGetState.mockResolvedValue(makeState());
+			const mockFetch = makeOkFetch(makeState());
+			vi.stubGlobal('fetch', mockFetch);
 
 			const manager = new ConnectionManager({
 				url: 'https://localhost:8080',
@@ -563,19 +688,19 @@ describe('ConnectionManager', () => {
 			});
 
 			await manager.start();
-			mockedGetState.mockClear();
+			mockFetch.mockClear();
 
 			manager.stop();
 
-			mockedGetState.mockResolvedValue(makeState({ seq: 99 }));
+			mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve(makeState({ seq: 99 })), text: () => Promise.resolve('') } as unknown as Response);
 			await vi.advanceTimersByTimeAsync(1000);
 
-			expect(mockedGetState).not.toHaveBeenCalled();
+			expect(mockFetch).not.toHaveBeenCalled();
 		});
 
 		it('should disconnect WebTransport', async () => {
 			const { mockConnection } = setupMocks();
-			mockedGetState.mockResolvedValue(makeState());
+			vi.stubGlobal('fetch', makeOkFetch(makeState()));
 
 			const manager = new ConnectionManager({
 				url: 'https://localhost:8080',
@@ -593,7 +718,8 @@ describe('ConnectionManager', () => {
 
 		it('should clear retry timers', async () => {
 			setupMocks();
-			mockedGetState.mockRejectedValue(new Error('fail'));
+			const mockFetch = vi.fn().mockRejectedValue(new Error('fail'));
+			vi.stubGlobal('fetch', mockFetch);
 
 			const onInitialLoadError = vi.fn();
 			const manager = new ConnectionManager({
@@ -609,19 +735,19 @@ describe('ConnectionManager', () => {
 			// There's a retry timer scheduled. Stop should clear it.
 			manager.stop();
 
-			mockedGetState.mockClear();
+			mockFetch.mockClear();
 			onInitialLoadError.mockClear();
 
 			// Advance past the retry timer (3s)
 			await vi.advanceTimersByTimeAsync(5000);
 
-			// getState should NOT have been called again after stop
-			expect(mockedGetState).not.toHaveBeenCalled();
+			// fetch should NOT have been called again after stop
+			expect(mockFetch).not.toHaveBeenCalled();
 		});
 
 		it('should be safe to call stop multiple times', async () => {
 			const { mockConnection } = setupMocks();
-			mockedGetState.mockResolvedValue(makeState());
+			vi.stubGlobal('fetch', makeOkFetch(makeState()));
 
 			const manager = new ConnectionManager({
 				url: 'https://localhost:8080',
