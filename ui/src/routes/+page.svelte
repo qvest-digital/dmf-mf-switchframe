@@ -165,6 +165,14 @@
 	// Per-engine health detail — null in single-engine mode (child components use this)
 	let engineHealth = $derived(isDualEngine ? connectionManager.engineHealth : null);
 
+	// Control plane session recovery URL — derived from hostname (e.g. abc123.switchframe.dev → abc123)
+	const sessionFallbackUrl = $derived.by(() => {
+		const parts = window.location.hostname.split('.');
+		if (parts.length < 3) return null;
+		const sessionId = parts[0].replace(/-b$/, '');
+		return `https://control-plane.switchframe.dev/session/${sessionId}`;
+	});
+
 	// Per-engine connection state for ConnectionBanner indicators.
 	// Keyed on transportChangeCount so Svelte re-derives when any engine's state changes.
 	let perEngineState = $derived.by(() => {
@@ -1194,7 +1202,7 @@
 />
 
 <ErrorBoundary>
-	<ConnectionBanner {connectionState} {syncStatus} engineStatus={engineBannerStatus} {perEngineState} />
+	<ConnectionBanner {connectionState} {syncStatus} engineStatus={engineBannerStatus} {perEngineState} {sessionFallbackUrl} />
 	<Toast />
 	{#if layoutMode === 'simple'}
 		<SimpleMode

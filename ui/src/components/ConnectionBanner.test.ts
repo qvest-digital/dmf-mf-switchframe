@@ -351,4 +351,84 @@ describe('ConnectionBanner', () => {
 			expect(dots.length).toBe(0);
 		});
 	});
+
+	describe('control plane fallback link', () => {
+		beforeEach(() => {
+			vi.useFakeTimers();
+		});
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		it('does not show fallback link immediately on disconnect', () => {
+			const { container } = render(ConnectionBanner, {
+				props: {
+					connectionState: 'disconnected',
+					syncStatus: 'ok',
+					sessionFallbackUrl: 'https://control-plane.switchframe.dev/session/abc123',
+				},
+			});
+			const link = container.querySelector('.cp-fallback-link');
+			expect(link).toBeFalsy();
+		});
+
+		it('shows fallback link after 15 seconds of disconnect', async () => {
+			const { container } = render(ConnectionBanner, {
+				props: {
+					connectionState: 'disconnected',
+					syncStatus: 'ok',
+					sessionFallbackUrl: 'https://control-plane.switchframe.dev/session/abc123',
+				},
+			});
+			await vi.advanceTimersByTimeAsync(15000);
+			const link = container.querySelector('.cp-fallback-link');
+			expect(link).toBeTruthy();
+			expect(link?.getAttribute('href')).toBe('https://control-plane.switchframe.dev/session/abc123');
+			expect(link?.textContent).toContain('session recovery');
+		});
+
+		it('does not show fallback link when sessionFallbackUrl is null', async () => {
+			const { container } = render(ConnectionBanner, {
+				props: {
+					connectionState: 'disconnected',
+					syncStatus: 'ok',
+					sessionFallbackUrl: null,
+				},
+			});
+			await vi.advanceTimersByTimeAsync(15000);
+			const link = container.querySelector('.cp-fallback-link');
+			expect(link).toBeFalsy();
+		});
+
+		it('hides fallback link when connection is restored', async () => {
+			const { container, rerender } = render(ConnectionBanner, {
+				props: {
+					connectionState: 'disconnected',
+					syncStatus: 'ok',
+					sessionFallbackUrl: 'https://control-plane.switchframe.dev/session/abc123',
+				},
+			});
+			await vi.advanceTimersByTimeAsync(15000);
+			expect(container.querySelector('.cp-fallback-link')).toBeTruthy();
+
+			await rerender({ connectionState: 'webtransport', syncStatus: 'ok', sessionFallbackUrl: 'https://control-plane.switchframe.dev/session/abc123' });
+			expect(container.querySelector('.cp-fallback-link')).toBeFalsy();
+		});
+
+		it('does not show fallback link when engine fallback is active', async () => {
+			const { container } = render(ConnectionBanner, {
+				props: {
+					connectionState: 'disconnected',
+					syncStatus: 'ok',
+					engineFallbackUrl: 'https://engine-b.example.com',
+					servingEngine: 'A',
+					sessionFallbackUrl: 'https://control-plane.switchframe.dev/session/abc123',
+				},
+			});
+			await vi.advanceTimersByTimeAsync(15000);
+			// Engine fallback takes priority; disconnect timer should not run
+			const link = container.querySelector('.cp-fallback-link');
+			expect(link).toBeFalsy();
+		});
+	});
 });

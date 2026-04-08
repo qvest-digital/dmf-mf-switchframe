@@ -20,9 +20,10 @@
 		servingEngine?: string | null;      // ID of the engine that served this page ('A' or 'B')
 		engineStatus?: EngineStatus;
 		perEngineState?: PerEngineState;
+		sessionFallbackUrl?: string | null; // Control plane session recovery URL
 	}
 
-	let { connectionState, syncStatus, engineFallbackUrl = null, servingEngine = null, engineStatus, perEngineState }: Props = $props();
+	let { connectionState, syncStatus, engineFallbackUrl = null, servingEngine = null, engineStatus, perEngineState, sessionFallbackUrl = null }: Props = $props();
 
 	const showPerEngineDots = $derived(isDualMode && perEngineState != null);
 
@@ -52,6 +53,33 @@
 
 	const showEngineWarning = $derived(
 		isDualMode && engineStatus?.engineDown != null && engineStatus?.reason != null && !engineStatus?.restored
+	);
+
+	let disconnectedDuration = $state(0);
+	let disconnectTimer: ReturnType<typeof setInterval> | undefined;
+
+	$effect(() => {
+		if (isDisconnected && !showEngineFallback && !showEngineWarning) {
+			if (!disconnectTimer) {
+				disconnectedDuration = 0;
+				disconnectTimer = setInterval(() => {
+					disconnectedDuration++;
+				}, 1000);
+			}
+		} else {
+			if (disconnectTimer) {
+				clearInterval(disconnectTimer);
+				disconnectTimer = undefined;
+			}
+			disconnectedDuration = 0;
+		}
+		return () => {
+			if (disconnectTimer) clearInterval(disconnectTimer);
+		};
+	});
+
+	const showControlPlaneFallback = $derived(
+		disconnectedDuration >= 15 && sessionFallbackUrl != null
 	);
 
 	let showRestoredBanner = $state(false);
@@ -120,6 +148,9 @@
 		<div class="disconnect-content">
 			<span class="disconnect-text">CONNECTION LOST</span>
 			<span class="disconnect-sub">Reconnecting...</span>
+			{#if showControlPlaneFallback}
+				<a href={sessionFallbackUrl} class="cp-fallback-link">Open session recovery page</a>
+			{/if}
 		</div>
 	</div>
 {:else if isResyncing}
@@ -245,5 +276,12 @@
 	.disconnect-sub {
 		color: #aaa;
 		font-size: var(--text-base);
+	}
+
+	.cp-fallback-link {
+		color: #6ea8fe;
+		text-decoration: underline;
+		font-size: var(--text-sm);
+		margin-top: 12px;
 	}
 </style>
