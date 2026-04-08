@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createReconciler, fieldEquals, STALE_THRESHOLD_MS, PONG_FRESH_MS, STATE_UPDATE_STALE_MS, sortedStringify } from './reconciler.svelte';
+import { createReconciler, fieldEquals, STALE_THRESHOLD_MS, PONG_FRESH_MS, STATE_UPDATE_STALE_MS, AUTHORITY_HOLD_MS, sortedStringify } from './reconciler.svelte';
 import type { ControlRoomState } from '$lib/api/types';
 
 function makeState(overrides: Partial<ControlRoomState> = {}): ControlRoomState {
@@ -141,7 +141,8 @@ describe('createReconciler', () => {
 			expect(r.health.authoritative).toBe('B');
 		});
 
-		it('returns to A when RTTs converge within hysteresis', () => {
+		it('returns to A when RTTs converge within hysteresis (after hold-time)', () => {
+			vi.useFakeTimers();
 			const r = createReconciler();
 			// Start: A=180, B=30 → delta=150 > 100ms → B is authoritative
 			r.setRTT('A', 180);
@@ -151,9 +152,15 @@ describe('createReconciler', () => {
 			expect(r.health.authoritative).toBe('B');
 
 			// RTTs converge: A=80, B=40 → delta=40 < 100ms → A wins (default)
+			// But hold-time prevents immediate switch — must wait 500ms
 			r.setRTT('A', 80);
 			r.setRTT('B', 40);
-			expect(r.health.authoritative).toBe('A');
+			expect(r.health.authoritative).toBe('B'); // still held to B
+
+			vi.advanceTimersByTime(500);
+			r.tick();
+			expect(r.health.authoritative).toBe('A'); // hold-time elapsed, switches to A
+			vi.useRealTimers();
 		});
 	});
 
@@ -523,16 +530,23 @@ describe('createReconciler', () => {
 			expect(r.health.authoritative).toBe('A');
 		});
 
-		it('last ingest wins for authoritative when seq advances', () => {
+		it('last ingest wins for authoritative when seq advances (after hold-time)', () => {
+			vi.useFakeTimers();
 			const r = createReconciler();
 			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 1 }));
 			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 2 }));
 			expect(r.health.authoritative).toBe('B');
 			expect(r.state.programSource).toBe('cam2');
 
+			// A now has higher seq — but hold-time prevents immediate switch
 			r.ingest('A', makeState({ programSource: 'cam3', lastCommandSeq: 3 }));
-			expect(r.health.authoritative).toBe('A');
+			expect(r.health.authoritative).toBe('B'); // still held to B
+
+			vi.advanceTimersByTime(500);
+			r.tick();
+			expect(r.health.authoritative).toBe('A'); // hold-time elapsed
 			expect(r.state.programSource).toBe('cam3');
+			vi.useRealTimers();
 		});
 	});
 
@@ -1000,12 +1014,12 @@ describe('createReconciler', () => {
 			expect(r.health.divergences.some(d => d.field === 'scte35')).toBe(true);
 		});
 
-		it('detects macroExecution divergence', () => {
+		it('detects macro divergence', () => {
 			const r = createReconciler();
-			r.ingest('A', makeState({ lastCommandSeq: 5, macroExecution: { running: true, macroId: 'm1' } as any }));
-			r.ingest('B', makeState({ lastCommandSeq: 5, macroExecution: undefined as any }));
+			r.ingest('A', makeState({ lastCommandSeq: 5, macro: { running: true, macroId: 'm1' } as any }));
+			r.ingest('B', makeState({ lastCommandSeq: 5, macro: undefined as any }));
 			const fields = r.health.divergences.map(d => d.field);
-			expect(fields).toContain('macroExecution');
+			expect(fields).toContain('macro');
 		});
 
 		it('detects colorGrade divergence', () => {
@@ -1059,6 +1073,38 @@ describe('createReconciler', () => {
 			r.ingest('B', makeState({ lastCommandSeq: 5, keyConfig: { ...keyConfig } }));
 			const fields = r.health.divergences.map(d => d.field);
 			expect(fields).not.toContain('keyConfig');
+		});
+
+		it('detects limiter divergence', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5, limiter: { threshold: -1, enabled: true } as any }));
+			r.ingest('B', makeState({ lastCommandSeq: 5, limiter: { threshold: -3, enabled: true } as any }));
+			const fields = r.health.divergences.map(d => d.field);
+			expect(fields).toContain('limiter');
+		});
+
+		it('detects pipelineFormat divergence', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5, pipelineFormat: { width: 1920, height: 1080 } as any }));
+			r.ingest('B', makeState({ lastCommandSeq: 5, pipelineFormat: { width: 1280, height: 720 } as any }));
+			const fields = r.health.divergences.map(d => d.field);
+			expect(fields).toContain('pipelineFormat');
+		});
+
+		it('detects cbr divergence', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5, cbr: { enabled: true, bitrate: 5000000 } as any }));
+			r.ingest('B', makeState({ lastCommandSeq: 5, cbr: { enabled: false, bitrate: 5000000 } as any }));
+			const fields = r.health.divergences.map(d => d.field);
+			expect(fields).toContain('cbr');
+		});
+
+		it('detects aiSegmentation divergence', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5, aiSegmentation: { cam1: { enabled: true } } as any }));
+			r.ingest('B', makeState({ lastCommandSeq: 5, aiSegmentation: { cam1: { enabled: false } } as any }));
+			const fields = r.health.divergences.map(d => d.field);
+			expect(fields).toContain('aiSegmentation');
 		});
 	});
 
@@ -1707,19 +1753,19 @@ describe('createReconciler', () => {
 			vi.useRealTimers();
 		});
 
-		it('does not mark engine stale when pongs are fresh and state updates are within 20s', () => {
+		it('does not mark engine stale when pongs are fresh and state updates are within STATE_UPDATE_STALE_MS', () => {
 			const r = createReconciler();
 			r.ingest('A', makeState({ lastCommandSeq: 5 }));
 			r.ingest('B', makeState({ lastCommandSeq: 5 }));
 			r.setTransportAlive('A', true);
 			r.setTransportAlive('B', true);
 
-			// Simulate pongs arriving every 10s with state updates within 20s window
-			vi.advanceTimersByTime(10_000);
+			// Simulate pongs arriving every 5s with state updates within threshold
+			vi.advanceTimersByTime(5_000);
 			r.recordPong('A');
 			r.recordPong('B');
 
-			vi.advanceTimersByTime(8_000); // 18s total, within STATE_UPDATE_STALE_MS (20s)
+			vi.advanceTimersByTime(5_000); // 10s total, within STATE_UPDATE_STALE_MS (12s)
 			r.recordPong('A');
 			r.recordPong('B');
 
@@ -1840,8 +1886,8 @@ describe('createReconciler', () => {
 			expect(r.health.status).toBe('synced');
 		});
 
-		it('STATE_UPDATE_STALE_MS is 20000', () => {
-			expect(STATE_UPDATE_STALE_MS).toBe(20_000);
+		it('STATE_UPDATE_STALE_MS is 12000', () => {
+			expect(STATE_UPDATE_STALE_MS).toBe(12_000);
 		});
 
 		it('pong freshness requires transport to be alive', () => {
@@ -1886,7 +1932,8 @@ describe('createReconciler', () => {
 			expect(r.health.authoritative).toBe('A');
 		});
 
-		it('lock is released when transition ends', () => {
+		it('lock is released when transition ends (authority switches after hold-time)', () => {
+			vi.useFakeTimers();
 			const r = createReconciler();
 			r.ingest('A', makeState({ lastCommandSeq: 5, inTransition: false }));
 			r.ingest('B', makeState({ lastCommandSeq: 5, inTransition: false }));
@@ -1900,13 +1947,17 @@ describe('createReconciler', () => {
 			// Locked to A
 			expect(r.health.authoritative).toBe('A');
 
-			// Transition ends
+			// Transition ends — B is the candidate but hold-time applies
 			r.ingest('A', makeState({ lastCommandSeq: 6, inTransition: false }));
 			r.ingest('B', makeState({ lastCommandSeq: 6, inTransition: false }));
 			r.tick();
+			expect(r.health.authoritative).toBe('A'); // still held to A
 
-			// Now B should win by RTT since lock is released
+			// After hold-time, B takes over
+			vi.advanceTimersByTime(500);
+			r.tick();
 			expect(r.health.authoritative).toBe('B');
+			vi.useRealTimers();
 		});
 
 		it('lock falls back if locked engine becomes unreachable', () => {
@@ -2035,6 +2086,282 @@ describe('createReconciler', () => {
 			expect(r.health.authoritative).toBe('A');
 
 			vi.useRealTimers();
+		});
+	});
+
+	// ── Authority hold-time ──
+
+	describe('authority hold-time', () => {
+		beforeEach(() => {
+			vi.useFakeTimers();
+		});
+
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		it('AUTHORITY_HOLD_MS is 500', () => {
+			expect(AUTHORITY_HOLD_MS).toBe(500);
+		});
+
+		it('does not flip authority within 500ms when both engines are effective', () => {
+			const r = createReconciler();
+			// Establish A as authority (first dual-engine eval)
+			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 5 }));
+			expect(r.health.authoritative).toBe('A');
+
+			// B gets higher seq — candidate switches to B
+			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 10 }));
+			// Authority should NOT flip yet (hold-time)
+			expect(r.health.authoritative).toBe('A');
+
+			// Advance 200ms — still within hold-time
+			vi.advanceTimersByTime(200);
+			r.tick();
+			expect(r.health.authoritative).toBe('A');
+
+			// Advance to 499ms — still within hold-time
+			vi.advanceTimersByTime(299);
+			r.tick();
+			expect(r.health.authoritative).toBe('A');
+		});
+
+		it('flips authority after 500ms hold-time elapses', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 5 }));
+			expect(r.health.authoritative).toBe('A');
+
+			// B gets higher seq
+			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 10 }));
+			expect(r.health.authoritative).toBe('A'); // held
+
+			// Advance past hold-time
+			vi.advanceTimersByTime(500);
+			r.tick();
+			expect(r.health.authoritative).toBe('B'); // switched
+		});
+
+		it('resets hold-time if candidate flaps back before hold-time elapses', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 5 }));
+			expect(r.health.authoritative).toBe('A');
+
+			// B gets higher seq — candidate switches to B
+			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 10 }));
+			expect(r.health.authoritative).toBe('A');
+
+			// Advance 300ms
+			vi.advanceTimersByTime(300);
+			r.tick();
+
+			// A catches up — candidate flaps back to A (same seq, A wins ties)
+			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 10 }));
+			expect(r.health.authoritative).toBe('A');
+
+			// B gets higher seq again — hold-time resets
+			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 15 }));
+			expect(r.health.authoritative).toBe('A');
+
+			// Only 200ms — not enough even though B had higher seq 300ms before
+			vi.advanceTimersByTime(200);
+			r.tick();
+			expect(r.health.authoritative).toBe('A');
+
+			// Full 500ms from the RESET point
+			vi.advanceTimersByTime(300);
+			r.tick();
+			expect(r.health.authoritative).toBe('B');
+		});
+
+		it('switches immediately when current authority is stale (no hold-time)', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 5 }));
+			expect(r.health.authoritative).toBe('A');
+
+			// A goes stale (no updates for >5s)
+			vi.advanceTimersByTime(STALE_THRESHOLD_MS + 100);
+			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 6 }));
+			r.tick();
+
+			// Should switch to B immediately — no hold-time because A is stale (not effective)
+			expect(r.health.authoritative).toBe('B');
+		});
+
+		it('switches immediately when current authority disconnects (no hold-time)', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 10 }));
+			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 5 }));
+			expect(r.health.authoritative).toBe('A');
+
+			// A disconnects — immediate fallback to B
+			r.disconnect('A');
+			expect(r.health.authoritative).toBe('B');
+		});
+
+		it('first dual-engine eval applies immediately without hold-time', () => {
+			const r = createReconciler();
+			// B has clearly better RTT
+			r.setRTT('A', 200);
+			r.setRTT('B', 30);
+			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 5 }));
+			// First dual-engine eval should apply immediately (B wins by RTT)
+			expect(r.health.authoritative).toBe('B');
+		});
+	});
+
+	// ── Enhanced clip player divergence ──
+
+	describe('enhanced clip player divergence', () => {
+		it('detects divergence when clip names differ at same slot', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				clipPlayers: [
+					{ state: 'playing', clipName: 'intro.mp4' },
+					{ state: 'stopped', clipName: '' },
+				],
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 5,
+				clipPlayers: [
+					{ state: 'playing', clipName: 'outro.mp4' },
+					{ state: 'stopped', clipName: '' },
+				],
+			}));
+			const divs = r.health.divergences;
+			const clipDiv = divs.find(d => d.field === 'clipPlayers');
+			expect(clipDiv).toBeDefined();
+			expect(clipDiv?.engineA).toBe('intro.mp4:playing');
+			expect(clipDiv?.engineB).toBe('outro.mp4:playing');
+		});
+
+		it('detects divergence when clip states differ at same slot', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				clipPlayers: [
+					{ state: 'playing', clipName: 'clip1.ts' },
+				],
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 5,
+				clipPlayers: [
+					{ state: 'paused', clipName: 'clip1.ts' },
+				],
+			}));
+			const divs = r.health.divergences;
+			const clipDiv = divs.find(d => d.field === 'clipPlayers');
+			expect(clipDiv).toBeDefined();
+			expect(clipDiv?.engineA).toBe('clip1.ts:playing');
+			expect(clipDiv?.engineB).toBe('clip1.ts:paused');
+		});
+
+		it('detects divergence when slot counts differ', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				clipPlayers: [
+					{ state: 'playing', clipName: 'clip1.ts' },
+					{ state: 'stopped', clipName: '' },
+				],
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 5,
+				clipPlayers: [
+					{ state: 'playing', clipName: 'clip1.ts' },
+				],
+			}));
+			const divs = r.health.divergences;
+			const clipDiv = divs.find(d => d.field === 'clipPlayers');
+			expect(clipDiv).toBeDefined();
+			expect(clipDiv?.engineA).toBe('2 slots');
+			expect(clipDiv?.engineB).toBe('1 slots');
+		});
+
+		it('no clip divergence when all slots match', () => {
+			const r = createReconciler();
+			const clips = [
+				{ state: 'playing', clipName: 'clip1.ts' },
+				{ state: 'stopped', clipName: '' },
+			];
+			r.ingest('A', makeState({ lastCommandSeq: 5, clipPlayers: clips }));
+			r.ingest('B', makeState({ lastCommandSeq: 5, clipPlayers: [...clips] }));
+			const divs = r.health.divergences;
+			const clipDiv = divs.find(d => d.field === 'clipPlayers');
+			expect(clipDiv).toBeUndefined();
+		});
+
+		it('no clip divergence when both undefined', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+			const divs = r.health.divergences;
+			const clipDiv = divs.find(d => d.field === 'clipPlayers');
+			expect(clipDiv).toBeUndefined();
+		});
+	});
+
+	// ── Comms divergence ──
+
+	describe('comms divergence', () => {
+		it('detects divergence when comms.active differs', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				comms: { active: true, participants: [] } as any,
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 5,
+				comms: { active: false, participants: [] } as any,
+			}));
+			const divs = r.health.divergences;
+			const commsDiv = divs.find(d => d.field === 'comms.active');
+			expect(commsDiv).toBeDefined();
+			expect(commsDiv?.engineA).toBe(true);
+			expect(commsDiv?.engineB).toBe(false);
+		});
+
+		it('no comms divergence when both active', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				comms: { active: true, participants: [{ name: 'op1', audioLevel: 0.5 }] } as any,
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 5,
+				comms: { active: true, participants: [{ name: 'op1', audioLevel: 0.8 }] } as any,
+			}));
+			const divs = r.health.divergences;
+			const commsDiv = divs.find(d => d.field === 'comms.active');
+			expect(commsDiv).toBeUndefined();
+		});
+
+		it('no comms divergence when both undefined', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+			const divs = r.health.divergences;
+			const commsDiv = divs.find(d => d.field === 'comms.active');
+			expect(commsDiv).toBeUndefined();
+		});
+
+		it('detects divergence when one engine has comms and other does not', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				comms: { active: true, participants: [] } as any,
+			}));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+			const divs = r.health.divergences;
+			const commsDiv = divs.find(d => d.field === 'comms.active');
+			expect(commsDiv).toBeDefined();
+			expect(commsDiv?.engineA).toBe(true);
+			expect(commsDiv?.engineB).toBeUndefined();
 		});
 	});
 });

@@ -1,12 +1,14 @@
 /**
  * Discovers engine URLs by polling the control plane session health endpoint.
- * Tertiary discovery mechanism for when:
- * 1. Serving engine dies before delivering engineBUrl in state
+ * Used for:
+ * 1. Initial discovery when serving engine dies before delivering engineBUrl in state
  * 2. DNS inference hasn't found engineB yet
+ * 3. Mid-session re-discovery when an engine becomes unreachable
  */
 export class ControlPlaneDiscovery {
 	readonly sessionId: string | null;
 	readonly controlPlaneUrl: string | null;
+	private _pollInterval: ReturnType<typeof setInterval> | null = null;
 
 	constructor(hostname: string) {
 		const parts = hostname.split('.');
@@ -52,6 +54,31 @@ export class ControlPlaneDiscovery {
 			return null;
 		} finally {
 			clearTimeout(timeout);
+		}
+	}
+
+	/**
+	 * Start periodic polling for engine health. Calls the callback when
+	 * engine URLs are discovered. Useful for mid-session re-discovery
+	 * when an engine becomes unreachable and may be replaced.
+	 */
+	startPolling(
+		intervalMs: number,
+		onEngineUrls: (urls: { engineAUrl: string; engineBUrl: string }) => void,
+	): void {
+		this.stopPolling();
+		if (!this.sessionId || !this.controlPlaneUrl) return;
+		this._pollInterval = setInterval(async () => {
+			const urls = await this.fetchEngineUrls();
+			if (urls) onEngineUrls(urls);
+		}, intervalMs);
+	}
+
+	/** Stop periodic polling. */
+	stopPolling(): void {
+		if (this._pollInterval !== null) {
+			clearInterval(this._pollInterval);
+			this._pollInterval = null;
 		}
 	}
 }

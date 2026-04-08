@@ -497,6 +497,11 @@ export class PipelineManager {
 			}
 
 			this._activeEngine = 'B';
+
+			// Resume audio contexts on the new pipeline — browser autoplay policy
+			// suspends AudioContexts that weren't created from a user gesture.
+			// Without this, audio goes mute after automatic failover.
+			this.pipelineB!.resumeAllAudio().catch(() => {});
 		} finally {
 			this._failoverInProgress = false;
 		}
@@ -533,6 +538,9 @@ export class PipelineManager {
 			}
 
 			this._activeEngine = 'A';
+
+			// Resume audio contexts on Engine A — may have been suspended during failover.
+			this.pipeline.resumeAllAudio().catch(() => {});
 
 			// Clean up Engine B pipeline
 			this.destroyEngineBPipeline();
@@ -574,13 +582,29 @@ export class PipelineManager {
 		if (!this._warmStandbyActive || !this.pipelineB) return false;
 		const hasDecoder = this.pipelineB.getAudioDecoder('program') !== null
 			|| this.pipelineB.getAudioDecoder('program-preview') !== null;
-		if (hasDecoder) {
+		// Also check that video frames have arrived recently (within 3s).
+		// Audio decoder presence alone doesn't prove video is flowing —
+		// the video subscription could be stalled while audio works fine.
+		const now = performance.now();
+		const lastProgramFrame = this.pipelineB.getLastFrameTime('program');
+		const lastPreviewFrame = this.pipelineB.getLastFrameTime('program-preview');
+		const latestFrame = Math.max(lastProgramFrame, lastPreviewFrame);
+		const hasRecentVideo = latestFrame > 0 && (now - latestFrame) < 3000;
+		if (hasDecoder && hasRecentVideo) {
 			this._warmStandbyLastHealthy = Date.now();
 			return true;
 		}
-		// If decoder was recently present (within 5s), still consider healthy
-		// (decoder may be briefly null during stream renegotiation)
+		// If was recently healthy (within 5s), still consider healthy
+		// (decoder or video may be briefly absent during stream renegotiation)
 		return Date.now() - this._warmStandbyLastHealthy < 5000;
+	}
+
+	/** Resume audio on whichever pipeline is currently active.
+	 *  Used after automatic failover when a user gesture is available. */
+	resumeActiveAudio(): void {
+		const activePipeline = this._activeEngine === 'B' && this.pipelineB
+			? this.pipelineB : this.pipeline;
+		activePipeline.resumeAllAudio().catch(() => {});
 	}
 
 	/** Clean up all state. */

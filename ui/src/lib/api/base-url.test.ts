@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { getApiBaseUrl, setApiBaseUrl, resolveApiUrl, setEngineUrls, getEngineUrls, setExpectDualEngine, bufferPendingCommand, setFlushTimestampInjector, setOnNewEngineDiscovered, isTimedPath } from './base-url';
+import { getApiBaseUrl, setApiBaseUrl, resolveApiUrl, setEngineUrls, getEngineUrls, setExpectDualEngine, setFlushTimestampInjector, setOnNewEngineDiscovered, isTimedPath, isNonIdempotent } from './base-url';
 
 describe('base-url', () => {
 	beforeEach(() => {
@@ -107,28 +107,6 @@ describe('onNewEngineDiscovered callback', () => {
 		]);
 	});
 
-	it('discards pending command buffer when new engine is discovered', () => {
-		const fetchSpy = vi.fn().mockResolvedValue(new Response('ok'));
-		vi.stubGlobal('fetch', fetchSpy);
-
-		setExpectDualEngine(true);
-		setEngineUrls([{ id: 'A', url: 'https://engine-a.example.com' }]);
-		bufferPendingCommand('/api/switch/cut', {
-			method: 'POST',
-			body: JSON.stringify({ source: 'cam1' }),
-		});
-
-		// Discover engine B — pending buffer should be discarded, no replay
-		setEngineUrls([
-			{ id: 'A', url: 'https://engine-a.example.com' },
-			{ id: 'B', url: 'https://engine-b.example.com' },
-		]);
-
-		// No fetch calls from buffer replay (callback approach replaces replay)
-		expect(fetchSpy).not.toHaveBeenCalled();
-		vi.unstubAllGlobals();
-	});
-
 	it('calls callback for each new engine discovered simultaneously', () => {
 		const cb = vi.fn();
 		setOnNewEngineDiscovered(cb);
@@ -175,6 +153,10 @@ describe('isTimedPath — upload paths (H5)', () => {
 		expect(isTimedPath('/api/captions/mode')).toBe(true);
 	});
 
+	it('recognizes transition position as timed', () => {
+		expect(isTimedPath('/api/switch/transition/position')).toBe(true);
+	});
+
 	it('still recognizes existing timed paths', () => {
 		expect(isTimedPath('/api/switch/cut')).toBe(true);
 		expect(isTimedPath('/api/switch/preview')).toBe(true);
@@ -188,25 +170,35 @@ describe('isTimedPath — upload paths (H5)', () => {
 	});
 });
 
-describe('pending buffer max (M7)', () => {
-	beforeEach(() => {
-		setEngineUrls(null);
-		setExpectDualEngine(true);
-		// Set single engine so buffering activates
-		setEngineUrls([{ id: 'A', url: 'https://engine-a.example.com' }]);
+describe('isNonIdempotent — playout pod operations', () => {
+	it('recognizes fire as non-idempotent', () => {
+		expect(isNonIdempotent('/api/playout/channels/0/pods/pod1/fire')).toBe(true);
 	});
 
-	afterEach(() => {
-		setExpectDualEngine(false);
-		setEngineUrls(null);
+	it('recognizes dump as non-idempotent', () => {
+		expect(isNonIdempotent('/api/playout/channels/1/pods/my-pod/dump')).toBe(true);
 	});
 
-	it('accepts up to 50 pending commands without eviction', () => {
-		for (let i = 0; i < 50; i++) {
-			bufferPendingCommand('/api/switch/cut', { method: 'POST', body: JSON.stringify({ i }) });
-		}
-		// If buffer max were 10, earlier commands would have been evicted.
-		// We can't directly inspect the buffer, but we can verify no error occurs at 50.
-		// The real validation is that PENDING_BUFFER_MAX = 50 in the source.
+	it('recognizes hold as non-idempotent', () => {
+		expect(isNonIdempotent('/api/playout/channels/0/pods/pod-a/hold')).toBe(true);
+	});
+
+	it('recognizes extend as non-idempotent', () => {
+		expect(isNonIdempotent('/api/playout/channels/2/pods/pod-b/extend')).toBe(true);
+	});
+
+	it('recognizes macro run as non-idempotent', () => {
+		expect(isNonIdempotent('/api/macros/my-macro/run')).toBe(true);
+	});
+
+	it('recognizes scte35 cue as non-idempotent', () => {
+		expect(isNonIdempotent('/api/scte35/cue')).toBe(true);
+	});
+
+	it('does not match non-idempotent for regular paths', () => {
+		expect(isNonIdempotent('/api/switch/cut')).toBe(false);
+		expect(isNonIdempotent('/api/switch/state')).toBe(false);
 	});
 });
+
+// Pending command buffer removed — snapshot push replaces command replay.

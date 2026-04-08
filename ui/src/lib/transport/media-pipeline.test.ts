@@ -355,8 +355,8 @@ describe('MediaPipeline stall detection', () => {
 		const desc = new Uint8Array([0, 0, 0, 1]);
 		pipeline.feedVideoFrame('cam1', new Uint8Array([1, 2, 3]), true, 1000, desc);
 
-		// Advance 2s (under 3s threshold)
-		vi.advanceTimersByTime(2000);
+		// Advance 1s (under 1.5s threshold)
+		vi.advanceTimersByTime(1000);
 
 		expect(isSourceStalled('cam1')).toBe(false);
 
@@ -364,7 +364,7 @@ describe('MediaPipeline stall detection', () => {
 		pipeline.destroy();
 	});
 
-	it('should mark source as stalled after 3s without frames', () => {
+	it('should mark source as stalled after 1.5s without frames', () => {
 		const pipeline = createMediaPipeline();
 		pipeline.addSource('cam1');
 
@@ -374,8 +374,8 @@ describe('MediaPipeline stall detection', () => {
 
 		pipeline.startStallDetection();
 
-		// Advance past stall threshold (3s) + one check interval
-		vi.advanceTimersByTime(4000);
+		// Advance past stall threshold (1.5s) + one check interval (500ms)
+		vi.advanceTimersByTime(2000);
 
 		expect(isSourceStalled('cam1')).toBe(true);
 
@@ -392,8 +392,8 @@ describe('MediaPipeline stall detection', () => {
 
 		pipeline.startStallDetection();
 
-		// Stall: no frames for 4s
-		vi.advanceTimersByTime(4000);
+		// Stall: no frames for 2s (exceeds 1.5s threshold)
+		vi.advanceTimersByTime(2000);
 		expect(isSourceStalled('cam1')).toBe(true);
 
 		// Resume: feed another frame
@@ -451,12 +451,12 @@ describe('MediaPipeline stall detection', () => {
 
 		pipeline.startStallDetection();
 
-		// Advance 2s, feed cam1 only
-		vi.advanceTimersByTime(2000);
+		// Advance 1s, feed cam1 only (cam2 at 1s, under 1.5s threshold)
+		vi.advanceTimersByTime(1000);
 		pipeline.feedVideoFrame('cam1', new Uint8Array([3]), false, 2000, null);
 
-		// Advance another 2s — cam2 total is 4s, cam1 is 2s
-		vi.advanceTimersByTime(2000);
+		// Advance another 1s — cam2 total 2s > 1.5s (stalled), cam1 at 1s (ok)
+		vi.advanceTimersByTime(1000);
 
 		expect(isSourceStalled('cam1')).toBe(false);
 		expect(isSourceStalled('cam2')).toBe(true);
@@ -483,8 +483,8 @@ describe('MediaPipeline stall detection', () => {
 
 		pipeline.startStallDetection();
 
-		// Advance past stall threshold
-		vi.advanceTimersByTime(4000);
+		// Advance past stall threshold (1.5s) + check interval (500ms)
+		vi.advanceTimersByTime(2000);
 
 		expect(onSourceStalled).toHaveBeenCalledWith('program');
 
@@ -504,12 +504,12 @@ describe('MediaPipeline stall detection', () => {
 
 		pipeline.startStallDetection();
 
-		// Feed cam1 at 2s to keep it alive
-		vi.advanceTimersByTime(2000);
+		// Feed cam1 at 1s to keep it alive
+		vi.advanceTimersByTime(1000);
 		pipeline.feedVideoFrame('cam1', new Uint8Array([3]), false, 2000, null);
 
-		// At 4s total, cam2 has been stale for 4s (stalled), cam1 only 2s (ok)
-		vi.advanceTimersByTime(2000);
+		// At 2s total, cam2 has been stale for 2s > 1.5s (stalled), cam1 only 1s (ok)
+		vi.advanceTimersByTime(1000);
 
 		expect(onSourceStalled).toHaveBeenCalledWith('cam2');
 		expect(onSourceStalled).not.toHaveBeenCalledWith('cam1');
@@ -528,12 +528,12 @@ describe('MediaPipeline stall detection', () => {
 
 		pipeline.startStallDetection();
 
-		// Stall fires at first check past threshold
-		vi.advanceTimersByTime(4000);
+		// Stall fires at first check past threshold (1.5s)
+		vi.advanceTimersByTime(2000);
 		expect(onSourceStalled).toHaveBeenCalledTimes(1);
 
 		// Additional check intervals while still stalled should NOT fire again
-		vi.advanceTimersByTime(3000);
+		vi.advanceTimersByTime(2000);
 		expect(onSourceStalled).toHaveBeenCalledTimes(1);
 
 		pipeline.stopStallDetection();
@@ -550,16 +550,16 @@ describe('MediaPipeline stall detection', () => {
 
 		pipeline.startStallDetection();
 
-		// Stall
-		vi.advanceTimersByTime(4000);
+		// Stall (1.5s threshold)
+		vi.advanceTimersByTime(2000);
 		expect(onSourceStalled).toHaveBeenCalledTimes(1);
 
 		// Resume with a new frame
 		pipeline.feedVideoFrame('cam1', new Uint8Array([2]), false, 2000, null);
 		onSourceStalled.mockClear();
 
-		// Advance 2s — under threshold since last frame
-		vi.advanceTimersByTime(2000);
+		// Advance 1s — under 1.5s threshold since last frame
+		vi.advanceTimersByTime(1000);
 		expect(onSourceStalled).not.toHaveBeenCalled();
 
 		pipeline.stopStallDetection();
@@ -576,15 +576,15 @@ describe('MediaPipeline stall detection', () => {
 
 		pipeline.startStallDetection();
 
-		// First stall
-		vi.advanceTimersByTime(4000);
+		// First stall (1.5s threshold)
+		vi.advanceTimersByTime(2000);
 		expect(onSourceStalled).toHaveBeenCalledTimes(1);
 
 		// Recover
 		pipeline.feedVideoFrame('cam1', new Uint8Array([2]), false, 2000, null);
 
 		// Second stall
-		vi.advanceTimersByTime(4000);
+		vi.advanceTimersByTime(2000);
 		expect(onSourceStalled).toHaveBeenCalledTimes(2);
 
 		pipeline.stopStallDetection();

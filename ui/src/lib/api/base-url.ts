@@ -32,9 +32,6 @@ let expectDualEngine = false;
 
 export function setExpectDualEngine(value: boolean): void {
 	expectDualEngine = value;
-	if (!value) {
-		pendingForNewEngine.length = 0;
-	}
 }
 
 export function getExpectDualEngine(): boolean {
@@ -57,6 +54,7 @@ export function setFlushTimestampInjector(injector: FlushTimestampInjector | nul
 // Duplicated from switch-api.ts to avoid circular imports.
 const TIMED_PATH_EXACT = new Set([
 	'/api/switch/cut', '/api/switch/preview', '/api/switch/transition', '/api/switch/ftb',
+	'/api/switch/transition/position',
 	'/api/replay/play', '/api/replay/stop',
 	'/api/replay/mark-in', '/api/replay/mark-out',
 	'/api/scte35/cue', '/api/scte35/return', '/api/scte35/cancel',
@@ -104,7 +102,7 @@ const NON_IDEMPOTENT_PATHS = new Set([
 const NON_IDEMPOTENT_PATTERNS = [
 	/^\/api\/macros\/[^/]+\/run$/,
 	/^\/api\/scte35\/cue$/,
-	/^\/api\/playout\/channels\/\d+\/pods\/[^/]+\/fire$/,
+	/^\/api\/playout\/channels\/\d+\/pods\/[^/]+\/(fire|dump|hold|extend)$/,
 ];
 
 export function isNonIdempotent(path: string): boolean {
@@ -122,36 +120,6 @@ export function setAuthoritativeEngineProvider(provider: (() => string | null) |
 
 export function getAuthoritativeEngine(): string | null {
 	return authoritativeEngineProvider?.() ?? null;
-}
-
-// ── Pending command buffer for engine B discovery race ──
-
-const PENDING_BUFFER_MAX = 50;
-const PENDING_MAX_AGE_MS = 5_000;
-
-interface PendingCommand {
-	path: string;
-	options: RequestInit;
-	timestamp: number;
-}
-
-let pendingForNewEngine: PendingCommand[] = [];
-
-/**
- * Queue a mutation command for replay when a new engine is discovered.
- * Only buffers when we expect dual-engine mode but only have one engine.
- * FIFO eviction at 50 items.
- */
-export function bufferPendingCommand(path: string, options: RequestInit): void {
-	if (!expectDualEngine) return;
-	if (engineUrls && engineUrls.length > 1) return;
-
-	pendingForNewEngine.push({ path, options, timestamp: Date.now() });
-
-	// FIFO eviction: keep only the last PENDING_BUFFER_MAX items
-	if (pendingForNewEngine.length > PENDING_BUFFER_MAX) {
-		pendingForNewEngine = pendingForNewEngine.slice(-PENDING_BUFFER_MAX);
-	}
 }
 
 // ── New engine discovery callback ──
@@ -181,8 +149,6 @@ export function setEngineUrls(urls: EngineEndpoint[] | null): void {
 		: engineUrls.slice(1);
 
 	if (newEngines.length > 0) {
-		// Discard pending command buffer — snapshot push is more reliable than replay
-		pendingForNewEngine.length = 0;
 		for (const engine of newEngines) {
 			onNewEngineDiscovered?.(engine.id);
 		}

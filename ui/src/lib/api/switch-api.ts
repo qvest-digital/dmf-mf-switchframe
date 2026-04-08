@@ -1,6 +1,6 @@
 import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, GateSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, EngineRecordingGroup, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig, ColorGradeState, CorrectorState, PlayoutChannelState, Playlist, PlaylistItem, CacheStatus, PodInfo, PodConfig, PodTemplate, AsRunEvent, ChannelHealth, SampleClip, PlayoutClip, ASRState, DVEPresetInfo, WipePattern, WipeConfig } from './types';
 import { notify } from '$lib/state/notifications.svelte';
-import { resolveApiUrl, getEngineUrls, bufferPendingCommand, setFlushTimestampInjector, isNonIdempotent, isTimedPath, getAuthoritativeEngine, type EngineEndpoint } from './base-url';
+import { resolveApiUrl, getEngineUrls, setFlushTimestampInjector, isNonIdempotent, isTimedPath, getAuthoritativeEngine, type EngineEndpoint } from './base-url';
 
 export class SwitchApiError extends Error {
 	constructor(
@@ -68,6 +68,7 @@ interface CircuitState {
 	failures: number;
 	firstFailure: number;
 	openUntil: number; // 0 = closed
+	wasOpen: boolean;  // true after transitioning from open→half-open
 }
 const circuitBreakers = new Map<string, CircuitState>();
 
@@ -80,10 +81,12 @@ function isCircuitOpen(engineUrl: string): boolean {
 	if (!state) return false;
 	if (state.openUntil > 0) {
 		if (Date.now() < state.openUntil) return true;
-		// Half-open: allow one probe
+		// Half-open: allow one probe. Mark that we're transitioning
+		// so recordSuccess can trigger a sync check.
 		state.openUntil = 0;
 		state.failures = 0;
 		state.firstFailure = 0;
+		state.wasOpen = true;
 	}
 	return false;
 }
@@ -91,7 +94,7 @@ function isCircuitOpen(engineUrl: string): boolean {
 function recordFailure(engineUrl: string): void {
 	let state = circuitBreakers.get(engineUrl);
 	if (!state) {
-		state = { failures: 0, firstFailure: Date.now(), openUntil: 0 };
+		state = { failures: 0, firstFailure: Date.now(), openUntil: 0, wasOpen: false };
 		circuitBreakers.set(engineUrl, state);
 	}
 	// Reset window if expired
@@ -106,6 +109,12 @@ function recordFailure(engineUrl: string): void {
 }
 
 function recordSuccess(engineUrl: string): void {
+	const prev = circuitBreakers.get(engineUrl);
+	if (prev?.wasOpen) {
+		// Engine recovered from circuit-open state — it missed commands
+		// during the open window. Trigger reconciler check to detect divergence.
+		partialFailureCallback?.();
+	}
 	circuitBreakers.delete(engineUrl);
 }
 
@@ -479,13 +488,30 @@ async function dualFetch(url: string, options: RequestInit): Promise<Response> {
 
 		// Read-only requests: primary with fallback (with sticky routing)
 		if (method === 'GET' || method === 'HEAD') {
-			let orderedEngines = [...engines];
+			// Filter out engines with open circuits
+			let orderedEngines = engines.filter(e => !isCircuitOpen(e.url));
+			if (orderedEngines.length === 0) {
+				// All circuits open — try all engines anyway (half-open probe)
+				orderedEngines = [...engines];
+			}
+
 			const preferred = getPreferredEngine();
 			if (preferred) {
 				const prefIdx = orderedEngines.findIndex(e => e.url === preferred);
 				if (prefIdx > 0) {
 					const [prefEngine] = orderedEngines.splice(prefIdx, 1);
 					orderedEngines.unshift(prefEngine);
+				}
+			}
+
+			// Reconciler authority: prefer the engine the reconciler considers authoritative.
+			// Only applies when there's no sticky preference (sticky = recent failover = trust it).
+			const authEngine = getAuthoritativeEngine();
+			if (authEngine && !preferred) {
+				const authIdx = orderedEngines.findIndex(e => e.id === authEngine);
+				if (authIdx > 0) {
+					const [authEng] = orderedEngines.splice(authIdx, 1);
+					orderedEngines.unshift(authEng);
 				}
 			}
 
@@ -617,14 +643,6 @@ async function dualFetch(url: string, options: RequestInit): Promise<Response> {
 		if (fulfilled.length > 0) return fulfilled[0].value;
 		throw new Error('All engines unreachable');
 	}
-	// Single-engine fallback — buffer mutations for engine B discovery race
-	const method = (options.method ?? 'GET').toUpperCase();
-	if (method !== 'GET' && method !== 'HEAD') {
-		bufferPendingCommand(url, {
-			...options,
-			headers: { ...authHeaders(), ...options.headers },
-		});
-	}
 	return fetch(resolveApiUrl(url), { ...options, headers: { ...authHeaders(), ...options.headers } });
 }
 
@@ -632,14 +650,6 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 	const engines = getEngineUrls();
 	if (engines && engines.length > 1) {
 		return dualRequest<T>(url, options, engines);
-	}
-	// Single-engine path — buffer mutations for engine B discovery race
-	const method = (options?.method ?? 'GET').toUpperCase();
-	if (method !== 'GET' && method !== 'HEAD') {
-		bufferPendingCommand(url, {
-			...options,
-			headers: { ...authHeaders(), ...options?.headers },
-		});
 	}
 	// Single-engine: existing behavior unchanged
 	const opts: RequestInit = {

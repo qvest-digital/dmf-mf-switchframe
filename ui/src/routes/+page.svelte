@@ -33,7 +33,7 @@
 	import ProgramCompare from '../components/ProgramCompare.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
 	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, checkFragmentToken, SwitchApiError, listMacros, runMacro, dveSlotOn, dveSlotOff, replayQuick, replayPause, replayResume, replayPlay, replayStop, replaySeek, replaySetSpeed, replayMarkIn, replayMarkOut, commsMute, setDualTimestampProvider, setPartialFailureCallback, setPartialFailureNotify, getDebugSnapshot, getPerfData, playoutEngineCacheStatus, setTransitionPosition, updateDVESlot } from '$lib/api/switch-api';
-	import { setEngineUrls, setExpectDualEngine, setOnNewEngineDiscovered, setAuthoritativeEngineProvider } from '$lib/api/base-url';
+	import { setEngineUrls, getEngineUrls, setExpectDualEngine, setOnNewEngineDiscovered, setAuthoritativeEngineProvider } from '$lib/api/base-url';
 	import { fetchServerInfo } from '$lib/prism/transport-utils';
 	import * as operatorState from '$lib/state/operator.svelte';
 	import { notify } from '$lib/state/notifications.svelte';
@@ -187,14 +187,30 @@
 		return `https://control-plane.switchframe.dev/session/${sessionId}`;
 	});
 
-	// Which engine is serving this page — derived from origin URL vs engineBUrl
+	// Which engine served this page — derived from our origin vs the known
+	// engine URL list. Uses getEngineUrls() (static, set during discovery)
+	// rather than store.state.engineBUrl (reactive, changes with authoritative
+	// engine and could point to the dead engine).
 	const servingEngine = $derived.by((): 'A' | 'B' => {
-		if (!isDualEngine || !store.state.engineBUrl) return 'A';
+		if (!isDualEngine) return 'A';
+		const engines = getEngineUrls();
+		if (!engines || engines.length < 2) return 'A';
+		const engineB = engines.find(e => e.id === 'B');
+		if (!engineB) return 'A';
 		try {
-			const bOrigin = new URL(store.state.engineBUrl).origin;
-			if (window.location.origin === bOrigin) return 'B';
+			if (new URL(engineB.url).origin === window.location.origin) return 'B';
 		} catch { /* fall through */ }
 		return 'A';
+	});
+
+	// Fallback URL for ConnectionBanner redirect — uses engine URL list
+	// rather than store.state.engineBUrl which changes meaning with authority.
+	const engineFallbackUrl = $derived.by((): string | null => {
+		if (!isDualEngine) return null;
+		const engines = getEngineUrls();
+		if (!engines || engines.length < 2) return null;
+		const otherId = servingEngine === 'A' ? 'B' : 'A';
+		return engines.find(e => e.id === otherId)?.url ?? null;
 	});
 
 	// Per-engine connection state for ConnectionBanner indicators.
@@ -817,7 +833,8 @@
 							pipelineManager.failoverToEngineB(inferred, Object.keys(store.state.sources ?? {}))
 								.then(() => {
 									activeEngine = 'B';
-									notify('warning', 'Video switched to Engine B (media stall + emergency discovery)');
+									notify('warning', 'Video switched to Engine B — click to resume audio');
+									requestAudioResumeAfterFailover();
 								})
 								.catch(err => {
 									videoFailoverActive = false;
@@ -838,24 +855,21 @@
 				pipelineManager.failoverToEngineB(store.state.engineBUrl, Object.keys(store.state.sources ?? {}))
 					.then(() => {
 						activeEngine = 'B';
-						notify('warning', 'Video switched to Engine B (media stall)');
+						notify('warning', 'Video switched to Engine B — click to resume audio');
+						requestAudioResumeAfterFailover();
 					})
 					.catch(err => console.warn('Media stall failover failed:', err));
 			} else if (pipelineManager.activeEngine === 'B') {
-				// Engine B is stalling — try restoring to Engine A if reconnected
+				// Engine B is stalling — try restoring to Engine A if reconnected.
+				// Restoring to Engine A is safe — do NOT consume circuit breaker budget.
 				if (connectionManager.engineConnectionState('A') !== 'disconnected') {
-					if (!canFailover()) {
-						console.warn('[failover] Circuit breaker: max failovers reached in window');
-						notify('warning', 'Video failover suppressed — both engines may be degraded');
-						return;
-					}
-					recordFailover();
 					videoFailoverActive = true;
 					pipelineManager.restoreToEngineA(Object.keys(store.state.sources ?? {}))
 						.then(() => {
 							activeEngine = 'A';
 							videoFailoverActive = false;
-							notify('warning', 'Video restored to Engine A (Engine B media stall)');
+							notify('warning', 'Video restored to Engine A — click to resume audio');
+							requestAudioResumeAfterFailover();
 						})
 						.catch(err => {
 							videoFailoverActive = false;
@@ -1165,6 +1179,35 @@
 		connectionManager.setWarmStandbyDegraded(degraded);
 	});
 
+	// Mid-session control plane re-discovery: when an engine becomes unreachable,
+	// periodically poll the control plane for updated engine URLs. This catches
+	// cases where an engine VM is replaced (new IP) while the session is live.
+	const cpDiscovery = new ControlPlaneDiscovery(window.location.hostname);
+	$effect(() => {
+		if (!isDualEngine || !mounted) return;
+		const status = syncHealth?.status;
+		if (status === 'single-engine' || status === 'disconnected') {
+			cpDiscovery.startPolling(10_000, (urls) => {
+				// If a new engine B URL is discovered, update the engine list
+				const currentEngines = getEngineUrls();
+				const currentBUrl = currentEngines?.find(e => e.id === 'B')?.url;
+				if (urls.engineBUrl && urls.engineBUrl !== currentBUrl) {
+					// Engine B URL changed (VM replacement) — update the engine list
+					setEngineUrls([
+						{ id: 'A', url: urls.engineAUrl },
+						{ id: 'B', url: urls.engineBUrl },
+					]);
+					connectionManager.addEngine('B', urls.engineBUrl);
+					dualApi.addEngine('B', urls.engineBUrl);
+					notify('info', 'Engine B re-discovered via control plane');
+				}
+			});
+		} else {
+			cpDiscovery.stopPolling();
+		}
+		return () => cpDiscovery.stopPolling();
+	});
+
 	// Auto video failover: switch the entire media pipeline to Engine B when
 	// Engine A disconnects. The reconciler drives syncHealth.status to
 	// 'single-engine' with authoritative='B' when only Engine B is reachable.
@@ -1182,6 +1225,20 @@
 
 	function recordFailover(): void {
 		failoverTimestamps.push(Date.now());
+	}
+
+	/** After automatic failover, register a one-time user gesture listener
+	 *  to resume audio (browser autoplay policy blocks AudioContext.resume()
+	 *  without a user gesture). */
+	function requestAudioResumeAfterFailover() {
+		const handler = () => {
+			pipelineManager.resumeActiveAudio();
+			pflManager.resumeContext();
+			document.removeEventListener('click', handler);
+			document.removeEventListener('keydown', handler);
+		};
+		document.addEventListener('click', handler, { once: true });
+		document.addEventListener('keydown', handler, { once: true });
 	}
 
 	$effect(() => {
@@ -1203,25 +1260,23 @@
 				pipelineManager.failoverToEngineB(engineBUrl, Object.keys(store.state.sources ?? {}))
 					.then(() => {
 						activeEngine = 'B';
-						notify('warning', 'Video switched to Engine B');
+						notify('warning', 'Video switched to Engine B — click to resume audio');
+						requestAudioResumeAfterFailover();
 					})
 					.catch(err => console.warn('Video failover failed:', err));
 			}
 		}
 
-		// Restore: when synced and currently on B, switch back to A
+		// Restore: when synced and currently on B, switch back to A.
+		// Restoring to Engine A is a safe operation — do NOT consume
+		// the failover circuit breaker budget.
 		if (status === 'synced' && pipelineManager.activeEngine === 'B' && videoFailoverActive) {
-			if (!canFailover()) {
-				console.warn('[failover] Circuit breaker: max failovers reached in window');
-				notify('warning', 'Video failover suppressed — both engines may be degraded');
-				return;
-			}
-			recordFailover();
 			videoFailoverActive = false;
 			pipelineManager.restoreToEngineA(Object.keys(store.state.sources ?? {}))
 				.then(() => {
 					activeEngine = 'A';
-					notify('info', 'Video restored to Engine A');
+					notify('info', 'Video restored to Engine A — click to resume audio');
+					requestAudioResumeAfterFailover();
 				})
 				.catch(err => console.warn('Video restore failed:', err));
 		}
@@ -1247,25 +1302,28 @@
 		const otherConnected = connectionManager.engineConnectionState(other) !== 'disconnected';
 
 		if (!activeConnected && otherConnected) {
-			if (!canFailover()) {
-				console.warn('[failover] Circuit breaker: max failovers reached in window');
-				notify('warning', 'Video failover suppressed — both engines may be degraded');
-				return;
-			}
-			recordFailover();
 			if (active === 'B') {
+				// Restoring to Engine A is safe — do NOT consume circuit breaker budget
 				pipelineManager.restoreToEngineA(Object.keys(store.state.sources ?? {}))
 					.then(() => {
 						activeEngine = 'A';
-						notify('info', 'Switched back to Engine A (B disconnected)');
+						notify('info', 'Switched back to Engine A — click to resume audio');
+						requestAudioResumeAfterFailover();
 					})
 					.catch(err => console.warn('A/B auto-recover to A failed:', err));
 			} else if (active === 'A' && store.state.engineBUrl) {
+				if (!canFailover()) {
+					console.warn('[failover] Circuit breaker: max failovers reached in window');
+					notify('warning', 'Video failover suppressed — both engines may be degraded');
+					return;
+				}
+				recordFailover();
 				videoFailoverActive = true;
 				pipelineManager.failoverToEngineB(store.state.engineBUrl, Object.keys(store.state.sources ?? {}))
 					.then(() => {
 						activeEngine = 'B';
-						notify('info', 'Switched to Engine B (A disconnected)');
+						notify('warning', 'Switched to Engine B — click to resume audio');
+						requestAudioResumeAfterFailover();
 					})
 					.catch(err => console.warn('A/B auto-recover to B failed:', err));
 			}
@@ -1332,9 +1390,9 @@
 		}
 	});
 
-	// Compare mode: create Engine B pipeline when entering, destroy on exit.
-	// Engine A's program canvas is attached via onCanvasAReady callback;
-	// Engine B's via onCanvasBReady. Both go through PipelineManager.
+	// Compare mode: create Engine B pipeline when entering, detach compare canvas on exit.
+	// If warm standby is active, preserve the pipeline (only detach the compare canvas).
+	// If warm standby is not active, destroy the pipeline entirely.
 	$effect(() => {
 		if (compareMode && store.state.engineBUrl) {
 			pipelineManager.createEngineBPipeline(store.state.engineBUrl);
@@ -1343,9 +1401,11 @@
 		return () => {
 			if (pipelineManager.hasEngineBPipeline) {
 				pipelineManager.detachCanvasB('program', 'compare-b');
-				// Always destroy — the A/B toggle effect (Effect 12) will recreate
-				// the pipeline on the next tick if activeEngine === 'B'.
-				pipelineManager.destroyEngineBPipeline();
+				if (!pipelineManager.warmStandbyActive) {
+					// No warm standby — safe to destroy entirely.
+					// The A/B toggle effect will recreate if activeEngine === 'B'.
+					pipelineManager.destroyEngineBPipeline();
+				}
 			}
 		};
 	});
@@ -1445,6 +1505,7 @@
 			audioDriftInterval = undefined;
 		}
 		setOnNewEngineDiscovered(null);
+		cpDiscovery.stopPolling();
 		autoReconcile.destroy();
 		fastControlA?.close();
 		fastControlB?.close();
@@ -1492,7 +1553,7 @@
 />
 
 <ErrorBoundary>
-	<ConnectionBanner {connectionState} {syncStatus} engineStatus={engineBannerStatus} {perEngineState} {sessionFallbackUrl} engineFallbackUrl={store.state.engineBUrl} servingEngine={servingEngine} inTransition={store.state.inTransition} />
+	<ConnectionBanner {connectionState} {syncStatus} engineStatus={engineBannerStatus} {perEngineState} {sessionFallbackUrl} {engineFallbackUrl} servingEngine={servingEngine} inTransition={store.state.inTransition} />
 	<Toast />
 	{#if layoutMode === 'simple'}
 		<SimpleMode

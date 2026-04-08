@@ -7,6 +7,7 @@ import (
 	"container/heap"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 )
@@ -71,6 +72,8 @@ type Queue struct {
 	maxSize         int
 	wal             *WAL
 	lateCommands    atomic.Int64
+	lastDrainClock  int64 // last clock value seen by Drain, for backward jump detection
+	clockJumps      atomic.Int64
 }
 
 // LateCommands returns the number of late commands that were promoted to immediate execution.
@@ -172,11 +175,26 @@ func (q *Queue) Enqueue(cmd Command) error {
 	return nil
 }
 
+// ClockJumps returns the number of backward clock jumps detected during Drain.
+func (q *Queue) ClockJumps() int64 { return q.clockJumps.Load() }
+
 // Drain removes and returns all commands whose ExecuteAt is <= the current
 // clock value. Commands are returned in ascending ExecuteAt order.
 // Commands with ExecuteAt=0 are always returned.
 func (q *Queue) Drain() []Command {
 	now := q.clock()
+
+	// Detect backward clock jump (NTP/PTP correction).
+	// Only warn — don't drop commands. They'll drain naturally when the clock
+	// catches back up, and MaxDrainPerCall prevents burst-executing a backlog.
+	prev := atomic.LoadInt64(&q.lastDrainClock)
+	if prev > 0 && now < prev {
+		jump := prev - now
+		q.clockJumps.Add(1)
+		slog.Warn("cmdqueue: backward clock jump detected",
+			"jump_us", jump, "prev_us", prev, "now_us", now)
+	}
+	atomic.StoreInt64(&q.lastDrainClock, now)
 
 	q.mu.Lock()
 	defer q.mu.Unlock()

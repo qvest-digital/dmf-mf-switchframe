@@ -303,6 +303,60 @@ func TestDrain_MaxBurstLimit(t *testing.T) {
 	}
 }
 
+// TestDrain_BackwardClockJumpDetection verifies that backward clock jumps
+// are detected and counted without dropping commands.
+func TestDrain_BackwardClockJumpDetection(t *testing.T) {
+	var now int64 = 1_000_000
+	clock := func() int64 { return now }
+	q := cmdqueue.New(clock)
+
+	// Initially no jumps.
+	if got := q.ClockJumps(); got != 0 {
+		t.Fatalf("expected 0 initial clock jumps, got %d", got)
+	}
+
+	// Drain at t=1_000_000 — establishes baseline.
+	q.Drain()
+
+	// Forward progression — no jump.
+	now = 2_000_000
+	q.Drain()
+	if got := q.ClockJumps(); got != 0 {
+		t.Fatalf("expected 0 clock jumps after forward progression, got %d", got)
+	}
+
+	// Backward jump: clock goes from 2M to 1.5M.
+	now = 1_500_000
+	q.Drain()
+	if got := q.ClockJumps(); got != 1 {
+		t.Fatalf("expected 1 clock jump after backward step, got %d", got)
+	}
+
+	// Another forward progression — no additional jump.
+	now = 3_000_000
+	q.Drain()
+	if got := q.ClockJumps(); got != 1 {
+		t.Fatalf("expected 1 clock jump (still), got %d", got)
+	}
+
+	// Second backward jump.
+	now = 2_500_000
+	q.Drain()
+	if got := q.ClockJumps(); got != 2 {
+		t.Fatalf("expected 2 clock jumps after second backward step, got %d", got)
+	}
+
+	// Verify commands queued during backward jump still drain when clock catches up.
+	if err := q.Enqueue(cmdqueue.Command{Seq: 1, Action: "test", ExecuteAt: 2_800_000}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	now = 3_000_000
+	drained := q.Drain()
+	if len(drained) != 1 {
+		t.Fatalf("expected 1 command after clock catches up, got %d", len(drained))
+	}
+}
+
 // TestEnqueue_ZeroSeq_SkipsDedup verifies that commands with Seq=0 bypass
 // dedup and are all accepted.
 func TestEnqueue_ZeroSeq_SkipsDedup(t *testing.T) {

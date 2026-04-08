@@ -114,10 +114,12 @@ export interface MediaPipeline {
 	hasSource(sourceKey: string): boolean;
 	/** Get diagnostics from all active sources for debug snapshot. */
 	getAllDiagnostics(): Promise<Record<string, SourceDiagnostics>>;
-	/** Start periodic frame stall detection (checks every 1s, stall after 3s without frames). */
+	/** Start periodic frame stall detection (checks every 500ms, stall after 1.5s without frames). */
 	startStallDetection(): void;
 	/** Stop the stall detection interval. */
 	stopStallDetection(): void;
+	/** Get the last video frame arrival time (performance.now()) for a source, or 0 if never seen. */
+	getLastFrameTime(sourceKey: string): number;
 }
 
 /**
@@ -130,9 +132,9 @@ export interface MediaPipeline {
  * frames through PrismVideoDecoder -> VideoRenderBuffer -> PrismRenderer.
  */
 /** How long (ms) without a video frame before a source is considered stalled. */
-const STALL_THRESHOLD_MS = 3000;
+const STALL_THRESHOLD_MS = 1500;
 /** How often (ms) to check for stalled sources. */
-const STALL_CHECK_INTERVAL_MS = 1000;
+const STALL_CHECK_INTERVAL_MS = 500;
 
 export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline {
 	const sources = new Map<string, SourceMedia>();
@@ -294,6 +296,19 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 				if (source) {
 					source.transport = null;
 					source.latestGroupID = 0;
+
+					// Flush decoder to prevent stale frames lingering in the render
+					// buffer during engine failover. Without this, the renderer shows
+					// the last decoded frame frozen for up to 3 seconds (stall threshold)
+					// before failover triggers.
+					if (source.videoDecoder) {
+						try { source.videoDecoder.flush(); } catch { /* decoder may be in error state */ }
+					}
+					// Clear secondary buffers (program/preview canvases) to avoid
+					// showing stale frames from the dead engine.
+					for (const buf of source.secondaryBuffers.values()) {
+						buf.clear();
+					}
 				}
 			},
 
@@ -589,6 +604,24 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 				}
 			}
 		}
+		if (hidden) {
+			// Pause stall detection while tab is hidden — no frames arrive
+			// when decoders are paused, so stall detection would false-positive.
+			if (stallCheckInterval !== null) {
+				clearInterval(stallCheckInterval);
+				stallCheckInterval = null;
+			}
+		} else {
+			// Reset frame arrival times so resumed sources aren't immediately stalled
+			const now = performance.now();
+			for (const key of lastFrameTime.keys()) {
+				lastFrameTime.set(key, now);
+			}
+			// Clear any stalls that were set just before the tab was hidden
+			clearAllStalls();
+			// Restart stall detection
+			startStallDetection();
+		}
 	}
 
 	function handleWindowFocus(): void {
@@ -678,6 +711,10 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		return source?.transport?.getTransport() ?? null;
 	}
 
+	function getLastFrameTime(sourceKey: string): number {
+		return lastFrameTime.get(sourceKey) ?? 0;
+	}
+
 	return {
 		addSource,
 		removeSource,
@@ -698,5 +735,6 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		getAllDiagnostics,
 		startStallDetection,
 		stopStallDetection,
+		getLastFrameTime,
 	};
 }

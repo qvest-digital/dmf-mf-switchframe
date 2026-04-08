@@ -9,6 +9,7 @@ export interface AutoReconcileConfig {
 	checkAnyDivergence?: () => boolean;
 	acquireLock?: (engine: EngineId) => Promise<{ acquired: boolean; lockId?: string }>;
 	releaseLock?: (engine: EngineId, lockId: string) => Promise<void>;
+	refreshLock?: (engine: EngineId, lockId: string) => Promise<void>;
 	onRecoveryStart?: () => void;
 	onRecoveryComplete?: (warnings: string[]) => void;
 	onRecoveryError?: (error: Error) => void;
@@ -104,18 +105,39 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 			return;
 		}
 
-		// Acquire lock before push
+		// Acquire lock before push (with timeout)
 		let lockId: string | undefined;
 		if (config.acquireLock) {
-			const lock = await config.acquireLock(target);
-			if (!lock.acquired) {
-				// Another browser is reconciling — skip this cycle
+			try {
+				const lockPromise = config.acquireLock(target);
+				const lock = await Promise.race([
+					lockPromise,
+					new Promise<{ acquired: false }>((resolve) =>
+						setTimeout(() => resolve({ acquired: false }), 5000)
+					),
+				]);
+				if (!lock.acquired) {
+					return;
+				}
+				lockId = lock.lockId;
+			} catch {
+				// Lock acquisition failed (engine unreachable) — skip this cycle.
+				// The next sync status change will retry.
 				return;
 			}
-			lockId = lock.lockId;
 		}
 
 		pushInFlight = true;
+
+		// Start periodic lock refresh to prevent expiry during long operations
+		let lockRefreshInterval: ReturnType<typeof setInterval> | null = null;
+		if (lockId && config.refreshLock) {
+			lockRefreshInterval = setInterval(() => {
+				config.refreshLock!(target, lockId!).catch(() => {
+					// Lock lost — abort will happen via timeout
+				});
+			}, 5000); // Refresh every 5s (lock TTL is 15s)
+		}
 
 		const timeoutController = new AbortController();
 		const timeoutTimer = setTimeout(() => timeoutController.abort(), PUSH_TIMEOUT_MS);
@@ -170,6 +192,9 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 				}, delay);
 			}
 		} finally {
+			if (lockRefreshInterval) {
+				clearInterval(lockRefreshInterval);
+			}
 			pushInFlight = false;
 			lastPushTimes.set(target, Date.now());
 			if (lockId && config.releaseLock) {

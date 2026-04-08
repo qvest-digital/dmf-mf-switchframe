@@ -3,6 +3,10 @@ import type { ControlRoomState, SourceHealthStatus, EngineId } from '$lib/api/ty
 /** Minimum RTT delta (ms) required to switch authority based on RTT alone. Prevents jitter flapping. */
 export const RTT_HYSTERESIS_MS = 100;
 
+/** Minimum hold-time (ms) before authority can switch when both engines are effective.
+ * Prevents jitter-driven A→B→A→B flapping during transient network glitches. */
+export const AUTHORITY_HOLD_MS = 500;
+
 const EMPTY_STATE: ControlRoomState = {
 	programSource: '',
 	previewSource: '',
@@ -88,12 +92,17 @@ const DIVERGENCE_FIELDS: (keyof ControlRoomState)[] = [
 	'ftbActive',
 	'transitionType',
 	'transitionDurationMs',
+	'transitionEasing',
 	'encoder',
 	'captions',
 	'scte35',
-	'macroExecution',
+	'macro',
 	'colorGrade',
 	'stmap',
+	'limiter',
+	'pipelineFormat',
+	'cbr',
+	'aiSegmentation',
 ];
 
 /** Audio channel fields that are settings (not real-time metering). */
@@ -138,7 +147,7 @@ const STALE_TRANSPORT_ALIVE_MS = 15_000;
 /** Pong freshness window: 30s = 3x the 10s ping interval. */
 export const PONG_FRESH_MS = 30_000;
 /** Max time without a state update before engine is stale, even if pongs are fresh. */
-export const STATE_UPDATE_STALE_MS = 20_000;
+export const STATE_UPDATE_STALE_MS = 12_000;
 
 export function createReconciler() {
 	let stateA = $state<ControlRoomState | null>(null);
@@ -166,6 +175,15 @@ export function createReconciler() {
 	// Lock authority to the engine that was authoritative when a transition started,
 	// to prevent mid-transition UI jumps if authority would otherwise flip.
 	let transitionLockEngine = $state<EngineId | null>(null);
+
+	// Hold-time tracking: prevents authority from flapping during transient glitches.
+	// Only switch authority if the new candidate has been the winner for AUTHORITY_HOLD_MS.
+	// These are plain variables (not $state) because they are updated imperatively in
+	// tick()/ingest(), not reactively. The $state heldAuthority drives the $derived.
+	let lastAuthorityCandidate: EngineId = 'A';
+	let lastAuthorityCandidateSince = 0;
+	let authorityEstablished = false;
+	let heldAuthority = $state<EngineId>('A');
 
 	// Track when seq delta first appeared for time-based detection
 	let seqDeltaSince = $state(0);
@@ -218,6 +236,8 @@ export function createReconciler() {
 		}
 		// Re-evaluate seq delta tracking
 		updateSeqDeltaTracking(now);
+		// Update authority with hold-time logic
+		updateHeldAuthority(now);
 		// Recompute status immediately so health reflects the new state
 		tickedStatus = computeStatus(now);
 	}
@@ -244,16 +264,15 @@ export function createReconciler() {
 		).length;
 	}
 
-	/** Which engine is authoritative: stale → source health → higher lastCommandSeq → RTT tie-break → A wins final ties. */
-	const authoritative = $derived.by((): EngineId => {
-		if (!stateA && !stateB) return 'A';
+	/** Compute the raw authority candidate without hold-time. Used by the derived and by hold-time logic. */
+	function computeRawAuthority(now: number): { candidate: EngineId; bothEffective: boolean } {
+		if (!stateA && !stateB) return { candidate: 'A', bothEffective: false };
 		// Treat stale engines as effectively disconnected for authority selection
-		const now = lastTickTime;
 		const effectiveA = stateA !== null && connectedA && !(lastSeenA > 0 && now - lastSeenA > STALE_THRESHOLD_MS);
 		const effectiveB = stateB !== null && connectedB && !(lastSeenB > 0 && now - lastSeenB > STALE_THRESHOLD_MS);
-		if (!effectiveA && !effectiveB) return 'A';
-		if (!effectiveA) return 'B';
-		if (!effectiveB) return 'A';
+		if (!effectiveA && !effectiveB) return { candidate: 'A', bothEffective: false };
+		if (!effectiveA) return { candidate: 'B', bothEffective: false };
+		if (!effectiveB) return { candidate: 'A', bothEffective: false };
 
 		// Lock authority during active transitions to prevent mid-transition jumps
 		const aInTransition = stateA?.inTransition ?? false;
@@ -262,7 +281,7 @@ export function createReconciler() {
 			if (transitionLockEngine !== null) {
 				// Verify the locked engine is still reachable
 				const lockedEffective = transitionLockEngine === 'A' ? effectiveA : effectiveB;
-				if (lockedEffective) return transitionLockEngine;
+				if (lockedEffective) return { candidate: transitionLockEngine, bothEffective: true };
 			}
 		}
 
@@ -277,8 +296,8 @@ export function createReconciler() {
 			const progHealthB = sB.sources?.[programKey]?.status;
 			const progDegradedA = progHealthA === 'offline' || progHealthA === 'no_signal';
 			const progDegradedB = progHealthB === 'offline' || progHealthB === 'no_signal';
-			if (progDegradedA && !progDegradedB) return 'B';
-			if (progDegradedB && !progDegradedA) return 'A';
+			if (progDegradedA && !progDegradedB) return { candidate: 'B', bothEffective: true };
+			if (progDegradedB && !progDegradedA) return { candidate: 'A', bothEffective: true };
 		}
 
 		// Source health scoring: if one engine has >50% sources degraded and other doesn't, healthier wins
@@ -288,24 +307,80 @@ export function createReconciler() {
 		const totalB = Object.keys(sB.sources ?? {}).length;
 		const degradedA = totalA > 0 && healthyA / totalA < 0.5;
 		const degradedB = totalB > 0 && healthyB / totalB < 0.5;
-		if (degradedA && !degradedB) return 'B';
-		if (degradedB && !degradedA) return 'A';
+		if (degradedA && !degradedB) return { candidate: 'B', bothEffective: true };
+		if (degradedB && !degradedA) return { candidate: 'A', bothEffective: true };
 
 		// Fall back to seq-based logic
 		const seqA = sA.lastCommandSeq ?? 0;
 		const seqB = sB.lastCommandSeq ?? 0;
-		if (seqA > seqB) return 'A';
-		if (seqB > seqA) return 'B';
+		if (seqA > seqB) return { candidate: 'A', bothEffective: true };
+		if (seqB > seqA) return { candidate: 'B', bothEffective: true };
 		// Equal seq: prefer lower RTT only if the delta clearly exceeds hysteresis.
 		// Small fluctuations (< RTT_HYSTERESIS_MS) keep A as authority to prevent jitter flapping.
 		if (rttA > 0 && rttB > 0) {
 			const delta = rttA - rttB;
 			if (Math.abs(delta) > RTT_HYSTERESIS_MS) {
-				return delta > 0 ? 'B' : 'A'; // prefer whichever has clearly lower RTT
+				return { candidate: delta > 0 ? 'B' : 'A', bothEffective: true };
 			}
 		}
 		// Final tie (and within hysteresis): A wins
-		return 'A';
+		return { candidate: 'A', bothEffective: true };
+	}
+
+	/** Update heldAuthority with hold-time logic. Called from tick() and ingest().
+	 * Hold-time: only switch authority if the new candidate has been the winner
+	 * for at least AUTHORITY_HOLD_MS. Prevents jitter-driven A→B→A→B flapping.
+	 * Exception: switch immediately if the current authority is stale/disconnected. */
+	function updateHeldAuthority(now: number) {
+		const { candidate, bothEffective } = computeRawAuthority(now);
+
+		// If only one engine is effective, switch immediately (no hold-time)
+		if (!bothEffective) {
+			heldAuthority = candidate;
+			lastAuthorityCandidate = candidate;
+			lastAuthorityCandidateSince = now;
+			authorityEstablished = false;
+			return;
+		}
+
+		// First dual-engine evaluation: apply immediately (no warm-up period)
+		if (!authorityEstablished) {
+			authorityEstablished = true;
+			heldAuthority = candidate;
+			lastAuthorityCandidate = candidate;
+			lastAuthorityCandidateSince = now;
+			return;
+		}
+
+		if (candidate === heldAuthority) {
+			// No change — reset candidate tracking
+			lastAuthorityCandidate = candidate;
+			lastAuthorityCandidateSince = now;
+			return;
+		}
+
+		// Candidate differs from current authority
+		if (candidate !== lastAuthorityCandidate) {
+			// New candidate just appeared — start timing
+			lastAuthorityCandidate = candidate;
+			lastAuthorityCandidateSince = now;
+			return;
+		}
+
+		// Same candidate has been winning — check if hold-time has elapsed
+		if (now - lastAuthorityCandidateSince >= AUTHORITY_HOLD_MS) {
+			heldAuthority = candidate;
+		}
+		// Otherwise: still within hold-time — keep current heldAuthority
+	}
+
+	/** Which engine is authoritative. Reads the hold-time-stabilized value
+	 * computed by updateHeldAuthority() in tick()/ingest(). */
+	const authoritative = $derived.by((): EngineId => {
+		// Read heldAuthority (the $state variable updated imperatively).
+		// Also read lastTickTime to ensure reactivity triggers on tick().
+		void lastTickTime;
+		return heldAuthority;
 	});
 
 	/** The merged state from the authoritative engine. */
@@ -374,10 +449,15 @@ export function createReconciler() {
 		// Clip player state divergence
 		const clipsA = stateA.clipPlayers ?? [];
 		const clipsB = stateB.clipPlayers ?? [];
-		const playingA = clipsA.filter((c) => c.state === 'playing').length;
-		const playingB = clipsB.filter((c) => c.state === 'playing').length;
-		if (playingA !== playingB) {
-			result.push({ field: 'clipPlayers', engineA: `${playingA} playing`, engineB: `${playingB} playing` });
+		if (clipsA.length !== clipsB.length) {
+			result.push({ field: 'clipPlayers', engineA: `${clipsA.length} slots`, engineB: `${clipsB.length} slots` });
+		} else {
+			for (let i = 0; i < clipsA.length; i++) {
+				if (clipsA[i].state !== clipsB[i].state || clipsA[i].clipName !== clipsB[i].clipName) {
+					result.push({ field: 'clipPlayers', engineA: `${clipsA[i].clipName}:${clipsA[i].state}`, engineB: `${clipsB[i].clipName}:${clipsB[i].state}` });
+					break;
+				}
+			}
 		}
 		// Replay divergence: state, source, and speed
 		if (stateA.replay && stateB.replay) {
@@ -400,6 +480,13 @@ export function createReconciler() {
 		// Upstream key config divergence
 		if (!fieldEquals(stateA.keyConfig, stateB.keyConfig)) {
 			result.push({ field: 'keyConfig', engineA: stateA.keyConfig, engineB: stateB.keyConfig });
+		}
+		// Comms participant muted state divergence (targeted check, not full object
+		// comparison — avoids noise from transient fields like participant audio levels)
+		const commsA = stateA.comms;
+		const commsB = stateB.comms;
+		if (commsA?.active !== commsB?.active) {
+			result.push({ field: 'comms.active', engineA: commsA?.active, engineB: commsB?.active });
 		}
 		return result;
 	});
@@ -548,6 +635,9 @@ export function createReconciler() {
 			}
 		}
 
+		// Re-evaluate authority with hold-time (may promote a pending candidate)
+		updateHeldAuthority(now);
+
 		tickedStatus = computeStatus(now);
 	}
 
@@ -567,6 +657,8 @@ export function createReconciler() {
 	function setRTT(engine: EngineId, ms: number) {
 		if (engine === 'A') rttA = ms;
 		else rttB = ms;
+		// Re-evaluate authority since RTT affects tie-breaking
+		updateHeldAuthority(Date.now());
 	}
 
 	function setClockOffset(engine: EngineId, us: number) {
@@ -584,8 +676,11 @@ export function createReconciler() {
 		if (transitionLockEngine === engine) {
 			transitionLockEngine = null;
 		}
+		// Re-evaluate authority (disconnection bypasses hold-time)
+		const now = Date.now();
+		updateHeldAuthority(now);
 		// Re-evaluate status
-		tickedStatus = computeStatus(Date.now());
+		tickedStatus = computeStatus(now);
 	}
 
 	function setRecovering(value: boolean) {

@@ -105,6 +105,10 @@ describe('reconciler behavioral tests', () => {
 				lastCommandSeq: 12,
 			}));
 
+			// Authority hold-time: must wait 500ms before authority switches
+			vi.advanceTimersByTime(500);
+			r.tick();
+
 			expect(r.health.authoritative).toBe('B');
 			expect(r.state.programSource).toBe('cam2');
 			expect(r.state.masterLevel).toBe(-3);
@@ -119,6 +123,10 @@ describe('reconciler behavioral tests', () => {
 			// Set RTT: B is closer (lower RTT), delta=110 > 100ms hysteresis
 			r.setRTT('A', 120);
 			r.setRTT('B', 10);
+
+			// Authority hold-time: must wait 500ms before authority switches
+			vi.advanceTimersByTime(500);
+			r.tick();
 
 			expect(r.health.authoritative).toBe('B');
 			expect(r.state.programSource).toBe('cam2');
