@@ -4,6 +4,9 @@ import type { ControlRoomState, SourceHealthStatus, EngineId } from '$lib/api/ty
 export const AUDIO_DRIFT_DB_THRESHOLD = 3;
 export const AUDIO_DRIFT_DURATION_MS = 10_000;
 
+/** Minimum RTT delta (ms) required to switch authority based on RTT alone. Prevents jitter flapping. */
+export const RTT_HYSTERESIS_MS = 10;
+
 const EMPTY_STATE: ControlRoomState = {
 	programSource: '',
 	previewSource: '',
@@ -203,12 +206,15 @@ export function createReconciler() {
 		const seqB = stateB.lastCommandSeq ?? 0;
 		if (seqA > seqB) return 'A';
 		if (seqB > seqA) return 'B';
-		// Equal seq: prefer lower RTT
+		// Equal seq: prefer lower RTT only if the delta clearly exceeds hysteresis.
+		// Small fluctuations (< RTT_HYSTERESIS_MS) keep A as authority to prevent jitter flapping.
 		if (rttA > 0 && rttB > 0) {
-			if (rttB < rttA) return 'B';
-			if (rttA < rttB) return 'A';
+			const delta = rttA - rttB;
+			if (Math.abs(delta) > RTT_HYSTERESIS_MS) {
+				return delta > 0 ? 'B' : 'A'; // prefer whichever has clearly lower RTT
+			}
 		}
-		// Final tie: A wins
+		// Final tie (and within hysteresis): A wins
 		return 'A';
 	});
 
@@ -233,6 +239,27 @@ export function createReconciler() {
 		// Check recording state divergence (nested object, not in DIVERGENCE_FIELDS)
 		if (stateA.recording?.active !== stateB.recording?.active) {
 			result.push({ field: 'recording', engineA: stateA.recording, engineB: stateB.recording });
+		}
+		// Graphics layer health divergence (active state or html5Status differs)
+		const layersA = stateA.graphics?.layers ?? [];
+		const layersB = stateB.graphics?.layers ?? [];
+		const maxLayers = Math.max(layersA.length, layersB.length);
+		for (let i = 0; i < maxLayers; i++) {
+			const lA = layersA[i];
+			const lB = layersB[i];
+			if (!lA || !lB) continue;
+			if (lA.active !== lB.active || lA.html5Status !== lB.html5Status) {
+				result.push({ field: 'graphics.layers', engineA: lA, engineB: lB });
+				break; // one divergence entry is sufficient
+			}
+		}
+		// Layout preset divergence
+		if (!fieldEquals(stateA.layout?.activePreset, stateB.layout?.activePreset)) {
+			result.push({
+				field: 'layout.activePreset',
+				engineA: stateA.layout?.activePreset,
+				engineB: stateB.layout?.activePreset,
+			});
 		}
 		return result;
 	});

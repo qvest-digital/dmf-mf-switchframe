@@ -115,6 +115,46 @@ describe('createReconciler', () => {
 			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 5 }));
 			expect(r.health.authoritative).toBe('A');
 		});
+
+		it('does not flip authority on small RTT changes at equal seq (within hysteresis)', () => {
+			const r = createReconciler();
+			// Delta = 5ms < 10ms hysteresis → A wins by default
+			r.setRTT('A', 30);
+			r.setRTT('B', 35);
+			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 5 }));
+			expect(r.health.authoritative).toBe('A');
+
+			// Flip RTTs: now A=35, B=30 (delta still only 5ms) → still A
+			r.setRTT('A', 35);
+			r.setRTT('B', 30);
+			expect(r.health.authoritative).toBe('A');
+		});
+
+		it('flips authority when RTT difference exceeds hysteresis', () => {
+			const r = createReconciler();
+			// Delta = 20ms > 10ms hysteresis → B wins (lower RTT)
+			r.setRTT('A', 50);
+			r.setRTT('B', 30);
+			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 5 }));
+			expect(r.health.authoritative).toBe('B');
+		});
+
+		it('returns to A when RTTs converge within hysteresis', () => {
+			const r = createReconciler();
+			// Start: A=50, B=30 → delta=20 > 10ms → B is authoritative
+			r.setRTT('A', 50);
+			r.setRTT('B', 30);
+			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 5 }));
+			expect(r.health.authoritative).toBe('B');
+
+			// RTTs converge: A=31, B=30 → delta=1 < 10ms → A wins (default)
+			r.setRTT('A', 31);
+			r.setRTT('B', 30);
+			expect(r.health.authoritative).toBe('A');
+		});
 	});
 
 	// ── Time-aware status detection ──
@@ -1038,6 +1078,158 @@ describe('createReconciler', () => {
 			r.tick();
 			expect(r.health.status).toBe('disconnected');
 			expect(r.health.staleEngines).toHaveLength(2);
+		});
+	});
+
+	// ── Graphics layer divergence ──
+
+	describe('graphics layer divergence', () => {
+		it('detects graphics layer html5Status divergence', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				graphics: {
+					layers: [{ id: 1, active: true, zOrder: 0, x: 0, y: 0, width: 1920, height: 1080, html5Status: 'playing' }],
+				},
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 5,
+				graphics: {
+					layers: [{ id: 1, active: true, zOrder: 0, x: 0, y: 0, width: 1920, height: 1080, html5Status: 'error' }],
+				},
+			}));
+			const divs = r.health.divergences;
+			const graphicsDiv = divs.find((d) => d.field === 'graphics.layers');
+			expect(graphicsDiv).toBeDefined();
+		});
+
+		it('detects graphics layer active state divergence', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				graphics: {
+					layers: [{ id: 1, active: true, zOrder: 0, x: 0, y: 0, width: 1920, height: 1080 }],
+				},
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 5,
+				graphics: {
+					layers: [{ id: 1, active: false, zOrder: 0, x: 0, y: 0, width: 1920, height: 1080 }],
+				},
+			}));
+			const divs = r.health.divergences;
+			const graphicsDiv = divs.find((d) => d.field === 'graphics.layers');
+			expect(graphicsDiv).toBeDefined();
+			expect((graphicsDiv?.engineA as any)?.active).toBe(true);
+			expect((graphicsDiv?.engineB as any)?.active).toBe(false);
+		});
+
+		it('does not report divergence when graphics layers match', () => {
+			const r = createReconciler();
+			const layer = { id: 1, active: true, zOrder: 0, x: 0, y: 0, width: 1920, height: 1080, html5Status: 'playing' as const };
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				graphics: { layers: [layer] },
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 5,
+				graphics: { layers: [{ ...layer }] },
+			}));
+			const divs = r.health.divergences;
+			const graphicsDiv = divs.find((d) => d.field === 'graphics.layers');
+			expect(graphicsDiv).toBeUndefined();
+		});
+
+		it('does not report divergence when both engines have no graphics state', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+			const divs = r.health.divergences;
+			const graphicsDiv = divs.find((d) => d.field === 'graphics.layers');
+			expect(graphicsDiv).toBeUndefined();
+		});
+
+		it('skips layer pairs where one engine has no matching layer index', () => {
+			const r = createReconciler();
+			// A has 2 layers, B has 1 layer — index 1 has no counterpart in B
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				graphics: {
+					layers: [
+						{ id: 1, active: true, zOrder: 0, x: 0, y: 0, width: 1920, height: 1080 },
+						{ id: 2, active: true, zOrder: 1, x: 0, y: 0, width: 1920, height: 1080 },
+					],
+				},
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 5,
+				graphics: {
+					layers: [{ id: 1, active: true, zOrder: 0, x: 0, y: 0, width: 1920, height: 1080 }],
+				},
+			}));
+			// Extra layer in A but B has no counterpart — should not report divergence
+			const divs = r.health.divergences;
+			const graphicsDiv = divs.find((d) => d.field === 'graphics.layers');
+			expect(graphicsDiv).toBeUndefined();
+		});
+	});
+
+	// ── Layout activePreset divergence ──
+
+	describe('layout activePreset divergence', () => {
+		it('detects layout activePreset divergence', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				layout: { activePreset: 'pip', slots: [] },
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 5,
+				layout: { activePreset: 'side-by-side', slots: [] },
+			}));
+			const divs = r.health.divergences;
+			const layoutDiv = divs.find((d) => d.field === 'layout.activePreset');
+			expect(layoutDiv).toBeDefined();
+			expect(layoutDiv?.engineA).toBe('pip');
+			expect(layoutDiv?.engineB).toBe('side-by-side');
+		});
+
+		it('does not report layout divergence when activePreset matches', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				layout: { activePreset: 'pip', slots: [] },
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 5,
+				layout: { activePreset: 'pip', slots: [] },
+			}));
+			const divs = r.health.divergences;
+			const layoutDiv = divs.find((d) => d.field === 'layout.activePreset');
+			expect(layoutDiv).toBeUndefined();
+		});
+
+		it('does not report layout divergence when both engines have no layout state', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+			const divs = r.health.divergences;
+			const layoutDiv = divs.find((d) => d.field === 'layout.activePreset');
+			expect(layoutDiv).toBeUndefined();
+		});
+
+		it('detects divergence when one engine has layout and other does not', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				layout: { activePreset: 'pip', slots: [] },
+			}));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+			const divs = r.health.divergences;
+			const layoutDiv = divs.find((d) => d.field === 'layout.activePreset');
+			expect(layoutDiv).toBeDefined();
+			expect(layoutDiv?.engineA).toBe('pip');
+			expect(layoutDiv?.engineB).toBeUndefined();
 		});
 	});
 });
