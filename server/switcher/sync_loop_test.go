@@ -2,6 +2,7 @@ package switcher
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/clock"
+	"github.com/zsiec/switchframe/server/cmdqueue"
 	"github.com/zsiec/switchframe/server/transition"
 	"github.com/zsiec/switchframe/server/transition/wipemap"
 )
@@ -98,6 +100,7 @@ func newSyncTestSwitcher(t *testing.T) (*Switcher, *clock.ReferenceClock) {
 	}
 	s.frameBudgetNs.Store(testFmt.FrameBudgetNs())
 	s.pipelineFormat.Store(&testFmt)
+	s.recentCmdErrors = newRecentErrors(8)
 	s.delayBuffer = NewDelayBuffer(s)
 
 	// Create non-realtime reference clock at 30fps.
@@ -1932,6 +1935,7 @@ func newSyncTestSwitcherBufferOnly(t *testing.T) (*Switcher, *clock.ReferenceClo
 	}
 	s.frameBudgetNs.Store(testFmt.FrameBudgetNs())
 	s.pipelineFormat.Store(&testFmt)
+	s.recentCmdErrors = newRecentErrors(8)
 	s.delayBuffer = NewDelayBuffer(s)
 
 	rc := clock.NewReferenceClock(30, 1, 48000, 0, false)
@@ -2082,4 +2086,171 @@ func TestSyncLoopBufferOnlyNoTimerRace(t *testing.T) {
 	close(stopIngest)
 	rc.Stop()
 	s.syncLoopWg.Wait()
+}
+
+func TestSyncLoopProcessTickDrainsCommandQueue(t *testing.T) {
+	// Verify that processTick drains the command queue before audio/video processing.
+	s, _ := newSyncTestSwitcher(t)
+	defer s.Close()
+
+	// Register source and cut so processTick has something to work with.
+	cam1Relay := distribution.NewRelay()
+	s.RegisterSource("cam1", cam1Relay)
+	s.mu.Lock()
+	s.frameSync.AddSource("cam1")
+	s.mu.Unlock()
+	require.NoError(t, s.Cut(context.Background(), "cam1"))
+
+	// Create a command queue with a clock that always returns "now".
+	q := cmdqueue.New(clock.Now)
+	d := cmdqueue.NewDispatcher()
+
+	// Track dispatched actions.
+	var dispatched []string
+	var mu sync.Mutex
+	d.Register("cut", func(payload json.RawMessage) error {
+		mu.Lock()
+		dispatched = append(dispatched, "cut")
+		mu.Unlock()
+		return nil
+	})
+	d.Register("preview", func(payload json.RawMessage) error {
+		mu.Lock()
+		dispatched = append(dispatched, "preview")
+		mu.Unlock()
+		return nil
+	})
+
+	s.SetCommandQueue(q, d)
+
+	// Enqueue two commands with ExecuteAt=0 (immediate).
+	require.NoError(t, q.Enqueue(cmdqueue.Command{
+		ExecuteAt: 0, Seq: 1, Action: "cut",
+		Payload: json.RawMessage(`{"source":"cam1"}`),
+	}))
+	require.NoError(t, q.Enqueue(cmdqueue.Command{
+		ExecuteAt: 0, Seq: 2, Action: "preview",
+		Payload: json.RawMessage(`{"source":"cam1"}`),
+	}))
+
+	// Process a single tick — should drain both commands.
+	tick := clock.Tick{
+		Number:        0,
+		VideoPTS:      0,
+		AudioSamples:  1600,
+		FrameDuration: 33333 * time.Microsecond,
+	}
+	s.processTick(tick)
+
+	mu.Lock()
+	require.Equal(t, []string{"cut", "preview"}, dispatched, "processTick should drain all ready commands")
+	mu.Unlock()
+
+	// Verify lastExecutedSeq was updated.
+	require.Equal(t, uint64(2), s.lastExecutedSeq.Load(), "lastExecutedSeq should track highest executed seq")
+
+	// Verify queue is now empty.
+	require.Equal(t, 0, q.Pending(), "queue should be empty after drain")
+}
+
+func TestSyncLoopDrainCommandQueueCallsOnCommandExecuted(t *testing.T) {
+	// Verify that onCommandExecuted fires after each command dispatch, not once per batch.
+	s, _ := newSyncTestSwitcher(t)
+	defer s.Close()
+
+	q := cmdqueue.New(clock.Now)
+	d := cmdqueue.NewDispatcher()
+	d.Register("noop", func(payload json.RawMessage) error { return nil })
+	s.SetCommandQueue(q, d)
+
+	var callCount atomic.Int32
+	s.SetOnCommandExecuted(func() {
+		callCount.Add(1)
+	})
+
+	// Enqueue 3 commands.
+	for i := uint64(1); i <= 3; i++ {
+		require.NoError(t, q.Enqueue(cmdqueue.Command{
+			ExecuteAt: 0, Seq: i, Action: "noop",
+		}))
+	}
+
+	s.drainCommandQueue()
+	require.Equal(t, int32(3), callCount.Load(), "onCommandExecuted should fire once per command, not once per batch")
+}
+
+func TestSyncLoopDrainCommandQueueTracksErrors(t *testing.T) {
+	// Verify that dispatch errors are tracked in lastExecutedErr and recentCmdErrors.
+	s, _ := newSyncTestSwitcher(t)
+	defer s.Close()
+
+	q := cmdqueue.New(clock.Now)
+	d := cmdqueue.NewDispatcher()
+	d.Register("fail", func(payload json.RawMessage) error {
+		return fmt.Errorf("simulated failure")
+	})
+	s.SetCommandQueue(q, d)
+
+	require.NoError(t, q.Enqueue(cmdqueue.Command{
+		ExecuteAt: 0, Seq: 42, Action: "fail",
+	}))
+
+	s.drainCommandQueue()
+
+	// Check lastExecutedSeq.
+	require.Equal(t, uint64(42), s.lastExecutedSeq.Load())
+
+	// Check lastExecutedErr is set.
+	errPtr := s.lastExecutedErr.Load()
+	require.NotNil(t, errPtr, "lastExecutedErr should be set on failure")
+	require.Equal(t, "simulated failure", *errPtr)
+
+	// Check recentCmdErrors has the entry.
+	errors := s.recentCmdErrors.snapshot()
+	require.Len(t, errors, 1)
+	require.Equal(t, uint64(42), errors[0].Seq)
+	require.Equal(t, "simulated failure", errors[0].Error)
+}
+
+func TestSyncLoopDrainCommandQueueClearsErrOnSuccess(t *testing.T) {
+	// Verify that a successful dispatch after a failure clears lastExecutedErr.
+	s, _ := newSyncTestSwitcher(t)
+	defer s.Close()
+
+	q := cmdqueue.New(clock.Now)
+	d := cmdqueue.NewDispatcher()
+
+	var shouldFail atomic.Bool
+	shouldFail.Store(true)
+	d.Register("maybe_fail", func(payload json.RawMessage) error {
+		if shouldFail.Load() {
+			return fmt.Errorf("fail")
+		}
+		return nil
+	})
+	s.SetCommandQueue(q, d)
+
+	// First command fails.
+	require.NoError(t, q.Enqueue(cmdqueue.Command{
+		ExecuteAt: 0, Seq: 1, Action: "maybe_fail",
+	}))
+	s.drainCommandQueue()
+	require.NotNil(t, s.lastExecutedErr.Load(), "should have error after failed dispatch")
+
+	// Second command succeeds.
+	shouldFail.Store(false)
+	require.NoError(t, q.Enqueue(cmdqueue.Command{
+		ExecuteAt: 0, Seq: 2, Action: "maybe_fail",
+	}))
+	s.drainCommandQueue()
+	require.Nil(t, s.lastExecutedErr.Load(), "successful dispatch should clear lastExecutedErr")
+}
+
+func TestSyncLoopDrainCommandQueueNilQueueNoOp(t *testing.T) {
+	// Verify drainCommandQueue is a no-op when no queue is configured.
+	s, _ := newSyncTestSwitcher(t)
+	defer s.Close()
+
+	// cmdQueue is nil by default — should not panic.
+	s.drainCommandQueue()
 }

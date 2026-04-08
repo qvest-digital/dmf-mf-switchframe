@@ -368,12 +368,13 @@ type Switcher struct {
 	videoProcDropped    atomic.Int64 // frames dropped due to full channel
 
 	// Command queue for PTP-timed command execution (multi-region redundancy).
-	cmdQueue        *cmdqueue.Queue
-	cmdDispatcher   *cmdqueue.Dispatcher
-	lastCommandSeq  atomic.Uint64       // highest enqueued seq (set at enqueue time via TrackCommandSeq)
-	lastExecutedSeq atomic.Uint64       // highest seq actually executed in the drain loop
-	lastExecutedErr atomic.Pointer[string] // error from the last executed command, nil on success
-	recentCmdErrors *recentErrors          // ring buffer of recent per-sequence command errors
+	cmdQueue           *cmdqueue.Queue
+	cmdDispatcher      *cmdqueue.Dispatcher
+	onCommandExecuted  func()                 // called after each successful command dispatch (state broadcast)
+	lastCommandSeq     atomic.Uint64          // highest enqueued seq (set at enqueue time via TrackCommandSeq)
+	lastExecutedSeq    atomic.Uint64          // highest seq actually executed in the drain loop
+	lastExecutedErr    atomic.Pointer[string] // error from the last executed command, nil on success
+	recentCmdErrors    *recentErrors          // ring buffer of recent per-sequence command errors
 
 	// Output FPS tracking (atomic, lock-free)
 	outputFPSCount       atomic.Int64 // frames in current 1-second window
@@ -1605,6 +1606,48 @@ func (s *Switcher) SetCommandQueue(q *cmdqueue.Queue, d *cmdqueue.Dispatcher) {
 	s.cmdDispatcher = d
 }
 
+// SetOnCommandExecuted registers a callback that fires after each successful
+// command dispatch in drainCommandQueue. Used by the app layer to trigger
+// state broadcasts so browsers see state changes from timed commands.
+func (s *Switcher) SetOnCommandExecuted(fn func()) {
+	s.onCommandExecuted = fn
+}
+
+// drainCommandQueue pops all ready commands from the PTP-timed queue and
+// dispatches them. Tracks lastExecutedSeq, lastExecutedErr, and
+// recentCmdErrors for sync health reporting. Fires onCommandExecuted after
+// each command dispatch so the app layer can broadcast updated state.
+func (s *Switcher) drainCommandQueue() {
+	if s.cmdQueue == nil {
+		return
+	}
+	for _, cmd := range s.cmdQueue.Drain() {
+		var dispatchErr error
+		if s.cmdDispatcher != nil {
+			dispatchErr = s.cmdDispatcher.Dispatch(cmd)
+			if dispatchErr != nil {
+				s.log.Warn("queued command dispatch failed",
+					"action", cmd.Action,
+					"seq", cmd.Seq,
+					"err", dispatchErr)
+			}
+		}
+		if cmd.Seq > 0 {
+			s.lastExecutedSeq.Store(cmd.Seq)
+			if dispatchErr != nil {
+				errStr := dispatchErr.Error()
+				s.lastExecutedErr.Store(&errStr)
+				s.recentCmdErrors.record(cmd.Seq, errStr)
+			} else {
+				s.lastExecutedErr.Store(nil)
+			}
+		}
+		if s.onCommandExecuted != nil {
+			s.onCommandExecuted()
+		}
+	}
+}
+
 // TrackCommandSeq updates lastCommandSeq to the given value if it's higher
 // than the current value. Uses CAS loop for lock-free thread safety.
 func (s *Switcher) TrackCommandSeq(seq uint64) {
@@ -1741,30 +1784,7 @@ func (s *Switcher) videoProcessingLoop() {
 
 	for work := range s.videoProcCh {
 		// Drain PTP-timed commands that are now ready to execute.
-		if s.cmdQueue != nil {
-			for _, cmd := range s.cmdQueue.Drain() {
-				var dispatchErr error
-				if s.cmdDispatcher != nil {
-					dispatchErr = s.cmdDispatcher.Dispatch(cmd)
-					if dispatchErr != nil {
-						s.log.Warn("queued command dispatch failed",
-							"action", cmd.Action,
-							"seq", cmd.Seq,
-							"err", dispatchErr)
-					}
-				}
-				if cmd.Seq > 0 {
-					s.lastExecutedSeq.Store(cmd.Seq)
-					if dispatchErr != nil {
-						errStr := dispatchErr.Error()
-						s.lastExecutedErr.Store(&errStr)
-						s.recentCmdErrors.record(cmd.Seq, errStr)
-					} else {
-						s.lastExecutedErr.Store(nil)
-					}
-				}
-			}
-		}
+		s.drainCommandQueue()
 
 		if work.yuvFrame == nil {
 			continue

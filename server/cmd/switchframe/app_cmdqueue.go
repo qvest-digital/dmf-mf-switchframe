@@ -67,6 +67,12 @@ func (a *App) initCommandQueue() error {
 	// with frame-level accuracy (~33ms at 30fps).
 	a.sw.SetCommandQueue(a.cmdQueue, a.cmdDispatcher)
 
+	// Broadcast state after each dispatched command so browsers see changes
+	// from PTP-timed commands immediately.
+	a.sw.SetOnCommandExecuted(func() {
+		a.broadcastState(nil)
+	})
+
 	slog.Info("command queue initialized",
 		"max_age_us", maxAge,
 		"wal", a.cmdQueueWAL != nil)
