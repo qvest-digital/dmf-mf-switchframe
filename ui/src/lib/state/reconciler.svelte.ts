@@ -195,18 +195,21 @@ export function createReconciler() {
 		if (!effectiveB) return 'A';
 
 		// Source health scoring: if one engine has >50% sources degraded and other doesn't, healthier wins
-		const healthyA = countHealthySources(stateA);
-		const healthyB = countHealthySources(stateB);
-		const totalA = Object.keys(stateA.sources ?? {}).length;
-		const totalB = Object.keys(stateB.sources ?? {}).length;
+		// TypeScript can't narrow through effectiveA/B guards, but we returned above if null
+		const sA = stateA!;
+		const sB = stateB!;
+		const healthyA = countHealthySources(sA);
+		const healthyB = countHealthySources(sB);
+		const totalA = Object.keys(sA.sources ?? {}).length;
+		const totalB = Object.keys(sB.sources ?? {}).length;
 		const degradedA = totalA > 0 && healthyA / totalA < 0.5;
 		const degradedB = totalB > 0 && healthyB / totalB < 0.5;
 		if (degradedA && !degradedB) return 'B';
 		if (degradedB && !degradedA) return 'A';
 
 		// Fall back to seq-based logic
-		const seqA = stateA.lastCommandSeq ?? 0;
-		const seqB = stateB.lastCommandSeq ?? 0;
+		const seqA = sA.lastCommandSeq ?? 0;
+		const seqB = sB.lastCommandSeq ?? 0;
 		if (seqA > seqB) return 'A';
 		if (seqB > seqA) return 'B';
 		// Equal seq: prefer lower RTT only if the delta clearly exceeds hysteresis.

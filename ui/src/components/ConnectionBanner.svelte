@@ -25,8 +25,6 @@
 
 	let { connectionState, syncStatus, engineFallbackUrl = null, servingEngine = null, engineStatus, perEngineState, sessionFallbackUrl = null }: Props = $props();
 
-	const showPerEngineDots = $derived(isDualMode && perEngineState != null);
-
 	// Track whether WebTransport was ever connected so we only show
 	// the polling banner as a degradation, not on initial fallback.
 	let hadWebTransport = $state(false);
@@ -62,6 +60,7 @@
 
 	// Dual-engine status
 	const isDualMode = $derived(engineStatus?.mode === 'dual');
+	const showPerEngineDots = $derived(isDualMode && perEngineState != null);
 	const survivingEngine = $derived(engineStatus?.engineDown === 'A' ? 'B' : 'A');
 
 	const showEngineWarning = $derived(

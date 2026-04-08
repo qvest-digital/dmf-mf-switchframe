@@ -1377,7 +1377,7 @@
 <IOPanel visible={ioPanelVisible} state={store.effectiveState} onclose={() => { ioPanelVisible = false; }} {isDualEngine} engineSourceHealth={ioSourceHealth} engineEndpoints={ioEngineEndpoints} engineDestinations={ioEngineDestinations} />
 {#if isDualEngine}
 	<RedundancyPanel
-		health={syncHealth ?? { status: 'disconnected', authoritative: 'A', divergences: [], engineA: { lastSeen: 0, lastCommandSeq: 0, connected: false }, engineB: { lastSeen: 0, lastCommandSeq: 0, connected: false } }}
+		health={syncHealth ?? { status: 'disconnected', authoritative: 'A', divergences: [], engineA: { lastSeen: 0, lastCommandSeq: 0, connected: false }, engineB: { lastSeen: 0, lastCommandSeq: 0, connected: false }, warnings: [], staleEngines: [] }}
 		engineHealth={engineHealth ?? { A: { connected: false, rtt: 0, clockOffset: 0, lastSeq: 0, uptime: 0, lastSeen: 0, sources: {} }, B: { connected: false, rtt: 0, clockOffset: 0, lastSeq: 0, uptime: 0, lastSeen: 0, sources: {} } }}
 		divergenceLog={divergenceLog.entries}
 		visible={redundancyPanelVisible}

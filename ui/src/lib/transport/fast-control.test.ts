@@ -178,7 +178,7 @@ describe('createFastControl', () => {
 			expect(onWriteError).toHaveBeenCalledTimes(8);
 		});
 
-		const types = onWriteError.mock.calls.map((c: [string]) => c[0]);
+		const types = onWriteError.mock.calls.map((c: unknown[]) => c[0]);
 		expect(types).toEqual([
 			'transition_position',
 			'graphics_layer_position',

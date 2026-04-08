@@ -3,6 +3,19 @@ import { render } from '@testing-library/svelte';
 import { fireEvent } from '@testing-library/svelte';
 import OutputControls from './OutputControls.svelte';
 import { getConfirmMode, setConfirmMode } from '$lib/state/preferences.svelte';
+import type { SyncHealth, SyncStatus } from '$lib/state/reconciler.svelte';
+
+function mockSyncHealth(status: SyncStatus): SyncHealth {
+	return {
+		status,
+		divergences: [],
+		authoritative: 'A',
+		engineA: { lastSeen: 0, lastCommandSeq: 0, connected: true },
+		engineB: { lastSeen: 0, lastCommandSeq: 0, connected: true },
+		warnings: [],
+		staleEngines: [],
+	};
+}
 
 const baseState = {
 	programSource: 'cam1',
@@ -284,7 +297,7 @@ describe('OutputControls', () => {
 			props: {
 				state: baseState,
 				isDualEngine: true,
-				syncHealth: { status: 'lagging' },
+				syncHealth: mockSyncHealth('lagging'),
 			},
 		});
 		const badge = container.querySelector('.dual-badge');
@@ -297,7 +310,7 @@ describe('OutputControls', () => {
 			props: {
 				state: baseState,
 				isDualEngine: true,
-				syncHealth: { status: 'mismatch' },
+				syncHealth: mockSyncHealth('mismatch'),
 			},
 		});
 		const badge = container.querySelector('.dual-badge');
@@ -325,7 +338,7 @@ describe('OutputControls', () => {
 			props: {
 				state: baseState,
 				isDualEngine: true,
-				syncHealth: { status: 'synced' },
+				syncHealth: mockSyncHealth('synced'),
 			},
 		});
 		const badge = container.querySelector('.dual-badge');
