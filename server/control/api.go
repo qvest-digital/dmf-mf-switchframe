@@ -15,6 +15,7 @@ import (
 	"github.com/zsiec/switchframe/server/clip"
 	"github.com/zsiec/switchframe/server/cmdqueue"
 	"github.com/zsiec/switchframe/server/colorgrade"
+	"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/control/httperr"
 	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/graphics"
@@ -484,6 +485,16 @@ func WithRecordingDir(dir string) APIOption {
 	return func(a *API) { a.recordingDir.Store(&dir) }
 }
 
+// WithAppMetrics attaches Prometheus metrics for snapshot instrumentation.
+func WithAppMetrics(m *metrics.Metrics) APIOption {
+	return func(a *API) { a.appMetrics = m }
+}
+
+// SetAppMetrics sets the Prometheus metrics after API construction.
+func (a *API) SetAppMetrics(m *metrics.Metrics) {
+	a.appMetrics = m
+}
+
 // API wraps a Switcher and exposes it over HTTP.
 type API struct {
 	switcher           *switcher.Switcher
@@ -531,6 +542,7 @@ type API struct {
 	sessionAPIToken    string            // used to bypass invite token requirement for session owner
 	allowedOutputPorts map[int]bool      // nil = unconstrained
 	snapshotProvider   SnapshotProvider
+	appMetrics         *metrics.Metrics
 	mux                *http.ServeMux
 	enrichFn           atomic.Pointer[enrichFunc]
 	lastOperator       atomic.Pointer[string]

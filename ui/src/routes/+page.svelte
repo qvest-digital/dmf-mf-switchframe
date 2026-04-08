@@ -839,6 +839,7 @@
 								.catch(err => {
 									videoFailoverActive = false;
 									console.warn('Emergency failover failed:', err);
+									notify('error', 'Video failover to Engine B failed');
 								});
 						}, 500);
 					}
@@ -858,7 +859,10 @@
 						notify('warning', 'Video switched to Engine B — click to resume audio');
 						requestAudioResumeAfterFailover();
 					})
-					.catch(err => console.warn('Media stall failover failed:', err));
+					.catch(err => {
+						console.warn('Media stall failover failed:', err);
+						notify('error', 'Video failover to Engine B failed');
+					});
 			} else if (pipelineManager.activeEngine === 'B') {
 				// Engine B is stalling — try restoring to Engine A if reconnected.
 				// Restoring to Engine A is safe — do NOT consume circuit breaker budget.
@@ -874,6 +878,7 @@
 						.catch(err => {
 							videoFailoverActive = false;
 							console.warn('Restore to A after B stall failed:', err);
+							notify('error', 'Video restore to Engine A failed');
 						});
 				}
 			}
@@ -1263,7 +1268,10 @@
 						notify('warning', 'Video switched to Engine B — click to resume audio');
 						requestAudioResumeAfterFailover();
 					})
-					.catch(err => console.warn('Video failover failed:', err));
+					.catch(err => {
+						console.warn('Video failover failed:', err);
+						notify('error', 'Video failover to Engine B failed');
+					});
 			}
 		}
 
@@ -1278,7 +1286,10 @@
 					notify('info', 'Video restored to Engine A — click to resume audio');
 					requestAudioResumeAfterFailover();
 				})
-				.catch(err => console.warn('Video restore failed:', err));
+				.catch(err => {
+					console.warn('Video restore failed:', err);
+					notify('error', 'Video restore to Engine A failed');
+				});
 		}
 	});
 
@@ -1310,7 +1321,10 @@
 						notify('info', 'Switched back to Engine A — click to resume audio');
 						requestAudioResumeAfterFailover();
 					})
-					.catch(err => console.warn('A/B auto-recover to A failed:', err));
+					.catch(err => {
+						console.warn('A/B auto-recover to A failed:', err);
+						notify('error', 'Auto-recover to Engine A failed');
+					});
 			} else if (active === 'A' && store.state.engineBUrl) {
 				if (!canFailover()) {
 					console.warn('[failover] Circuit breaker: max failovers reached in window');
@@ -1325,7 +1339,10 @@
 						notify('warning', 'Switched to Engine B — click to resume audio');
 						requestAudioResumeAfterFailover();
 					})
-					.catch(err => console.warn('A/B auto-recover to B failed:', err));
+					.catch(err => {
+						console.warn('A/B auto-recover to B failed:', err);
+						notify('error', 'Auto-recover to Engine B failed');
+					});
 			}
 		}
 	});

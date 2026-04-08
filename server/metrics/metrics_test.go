@@ -154,6 +154,96 @@ func TestMetrics_NodeProcessDuration(t *testing.T) {
 	require.True(t, found, "NodeProcessDuration should be registered")
 }
 
+func TestNewMetrics_CmdQueueMetrics(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewMetrics(reg)
+
+	// Gauge should start at zero.
+	require.Equal(t, float64(0), testutil.ToFloat64(m.CmdQueueDepth))
+
+	m.CmdQueueDepth.Set(5)
+	require.Equal(t, float64(5), testutil.ToFloat64(m.CmdQueueDepth))
+
+	m.CmdQueueDrainedTotal.Add(3)
+	require.Equal(t, float64(3), testutil.ToFloat64(m.CmdQueueDrainedTotal))
+
+	m.CmdQueueLateTotal.Inc()
+	require.Equal(t, float64(1), testutil.ToFloat64(m.CmdQueueLateTotal))
+
+	m.CmdQueueStaleTotal.Inc()
+	m.CmdQueueStaleTotal.Inc()
+	require.Equal(t, float64(2), testutil.ToFloat64(m.CmdQueueStaleTotal))
+
+	m.CmdQueueDuplicateTotal.Inc()
+	require.Equal(t, float64(1), testutil.ToFloat64(m.CmdQueueDuplicateTotal))
+
+	m.CmdQueueClockJumpsTotal.Inc()
+	require.Equal(t, float64(1), testutil.ToFloat64(m.CmdQueueClockJumpsTotal))
+}
+
+func TestNewMetrics_SnapshotMetrics(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := NewMetrics(reg)
+
+	// CounterVec labels.
+	m.SnapshotApplyTotal.WithLabelValues("success").Inc()
+	m.SnapshotApplyTotal.WithLabelValues("partial").Inc()
+	m.SnapshotApplyTotal.WithLabelValues("error").Inc()
+	m.SnapshotApplyTotal.WithLabelValues("error").Inc()
+
+	require.Equal(t, float64(1), testutil.ToFloat64(m.SnapshotApplyTotal.WithLabelValues("success")))
+	require.Equal(t, float64(1), testutil.ToFloat64(m.SnapshotApplyTotal.WithLabelValues("partial")))
+	require.Equal(t, float64(2), testutil.ToFloat64(m.SnapshotApplyTotal.WithLabelValues("error")))
+
+	// Histograms should accept observations without panic.
+	m.SnapshotApplyDuration.Observe(0.005)
+	m.SnapshotApplyDuration.Observe(0.05)
+	m.SnapshotSizeBytes.Observe(4096)
+	m.SnapshotSizeBytes.Observe(65536)
+
+	families, err := reg.Gather()
+	require.NoError(t, err)
+
+	wantNames := map[string]bool{
+		"switchframe_snapshot_apply_total":            false,
+		"switchframe_snapshot_apply_duration_seconds": false,
+		"switchframe_snapshot_size_bytes":             false,
+	}
+	for _, fam := range families {
+		if _, ok := wantNames[fam.GetName()]; ok {
+			wantNames[fam.GetName()] = true
+		}
+	}
+	for name, found := range wantNames {
+		require.True(t, found, "expected metric %q not found", name)
+	}
+}
+
+func TestNewMetrics_CmdQueueMetricsGatherable(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	_ = NewMetrics(reg)
+
+	families, err := reg.Gather()
+	require.NoError(t, err)
+
+	wantNames := map[string]bool{
+		"switchframe_cmdqueue_depth":            false,
+		"switchframe_cmdqueue_drained_total":    false,
+		"switchframe_cmdqueue_late_total":       false,
+		"switchframe_cmdqueue_stale_total":      false,
+		"switchframe_cmdqueue_duplicate_total":  false,
+		"switchframe_cmdqueue_clock_jumps_total": false,
+	}
+	for _, fam := range families {
+		if _, ok := wantNames[fam.GetName()]; ok {
+			wantNames[fam.GetName()] = true
+		}
+	}
+	for name, found := range wantNames {
+		require.True(t, found, "expected metric %q not found", name)
+	}
+}
+
 func TestNewMetrics_SeparateRegistries(t *testing.T) {
 	reg1 := prometheus.NewRegistry()
 	reg2 := prometheus.NewRegistry()

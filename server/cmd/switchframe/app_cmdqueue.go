@@ -34,6 +34,27 @@ func (a *App) initCommandQueue() error {
 	// Cap queue size to prevent unbounded growth from misbehaving clients.
 	opts = append(opts, cmdqueue.WithMaxSize(10_000))
 
+	// Wire Prometheus metrics callbacks when metrics are available.
+	if a.appMetrics != nil {
+		opts = append(opts, cmdqueue.WithMetrics(&cmdqueue.MetricsCallbacks{
+			OnDrain: func(count int) {
+				a.appMetrics.CmdQueueDrainedTotal.Add(float64(count))
+			},
+			OnLate: func() {
+				a.appMetrics.CmdQueueLateTotal.Inc()
+			},
+			OnStale: func() {
+				a.appMetrics.CmdQueueStaleTotal.Inc()
+			},
+			OnDup: func() {
+				a.appMetrics.CmdQueueDuplicateTotal.Inc()
+			},
+			OnClockJump: func() {
+				a.appMetrics.CmdQueueClockJumpsTotal.Inc()
+			},
+		}))
+	}
+
 	// Attach WAL for crash recovery if we have a state directory.
 	if a.cfg.StateDir != "" {
 		walPath := filepath.Join(a.cfg.StateDir, "cmdqueue.wal")
@@ -68,8 +89,11 @@ func (a *App) initCommandQueue() error {
 	a.sw.SetCommandQueue(a.cmdQueue, a.cmdDispatcher)
 
 	// Broadcast state after each dispatched command so browsers see changes
-	// from PTP-timed commands immediately.
+	// from PTP-timed commands immediately. Also update the depth gauge.
 	a.sw.SetOnCommandExecuted(func() {
+		if a.appMetrics != nil {
+			a.appMetrics.CmdQueueDepth.Set(float64(a.cmdQueue.Pending()))
+		}
 		a.broadcastState(nil)
 	})
 

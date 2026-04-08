@@ -9,10 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/switchframe/server/cmdqueue"
 	"github.com/zsiec/switchframe/server/internal"
+	"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/switcher"
 )
 
@@ -664,4 +667,82 @@ func (s *seqTrackingSnapshotProvider) CaptureFullSnapshot() internal.FullStateSn
 
 func (s *seqTrackingSnapshotProvider) ApplyTarget() internal.SnapshotApplyTarget {
 	return &mockApplyTarget{}
+}
+
+// --- Snapshot Metrics Tests ---
+
+func TestApplyStateSnapshot_MetricsSuccess(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := metrics.NewMetrics(reg)
+
+	provider := &mockSnapshotProvider{}
+	api := setupTestAPIWithSnapshot(t, provider)
+	api.SetAppMetrics(m)
+
+	body := `{"version":"1","capturedAt":1234567890,"programSource":"camera1","captionMode":"off"}`
+	req := httptest.NewRequest("POST", "/api/sync/state-snapshot", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	// Verify success counter incremented.
+	val := testutil.ToFloat64(m.SnapshotApplyTotal.WithLabelValues("success"))
+	require.Equal(t, float64(1), val, "expected 1 successful apply")
+
+	// Verify size was recorded.
+	families, err := reg.Gather()
+	require.NoError(t, err)
+	var found bool
+	for _, f := range families {
+		if f.GetName() == "switchframe_snapshot_size_bytes" {
+			found = true
+			hist := f.GetMetric()[0].GetHistogram()
+			require.Equal(t, uint64(1), hist.GetSampleCount())
+		}
+	}
+	require.True(t, found, "snapshot_size_bytes metric not found")
+
+	// Verify duration was recorded.
+	for _, f := range families {
+		if f.GetName() == "switchframe_snapshot_apply_duration_seconds" {
+			hist := f.GetMetric()[0].GetHistogram()
+			require.Equal(t, uint64(1), hist.GetSampleCount())
+		}
+	}
+}
+
+func TestApplyStateSnapshot_MetricsError(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := metrics.NewMetrics(reg)
+
+	provider := &mockSnapshotProvider{}
+	api := setupTestAPIWithSnapshot(t, provider)
+	api.SetAppMetrics(m)
+
+	// Invalid JSON should increment error counter.
+	req := httptest.NewRequest("POST", "/api/sync/state-snapshot", strings.NewReader("{invalid"))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	val := testutil.ToFloat64(m.SnapshotApplyTotal.WithLabelValues("error"))
+	require.Equal(t, float64(1), val, "expected 1 error apply")
+}
+
+func TestApplyStateSnapshot_MetricsWithoutMetrics(t *testing.T) {
+	// Verify no panic when metrics are not configured.
+	provider := &mockSnapshotProvider{}
+	api := setupTestAPIWithSnapshot(t, provider)
+	// No SetAppMetrics call.
+
+	body := `{"version":"1","capturedAt":1234567890,"captionMode":"off"}`
+	req := httptest.NewRequest("POST", "/api/sync/state-snapshot", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
 }

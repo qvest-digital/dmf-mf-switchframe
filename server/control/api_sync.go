@@ -173,10 +173,20 @@ func (a *API) handleGetStateSnapshot(w http.ResponseWriter, r *http.Request) {
 // When an envelope is provided and its Seq is behind the current engine's
 // LastCommandSeq, a staleness warning is added.
 func (a *API) handleApplyStateSnapshot(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+
 	raw, err := io.ReadAll(r.Body)
 	if err != nil {
 		httperr.Write(w, http.StatusBadRequest, "could not read body")
+		if a.appMetrics != nil {
+			a.appMetrics.SnapshotApplyTotal.WithLabelValues("error").Inc()
+		}
 		return
+	}
+
+	// Record snapshot size.
+	if a.appMetrics != nil {
+		a.appMetrics.SnapshotSizeBytes.Observe(float64(len(raw)))
 	}
 
 	var snap internal.FullStateSnapshot
@@ -191,6 +201,9 @@ func (a *API) handleApplyStateSnapshot(w http.ResponseWriter, r *http.Request) {
 		// Envelope format.
 		if err := json.Unmarshal(probe.Snapshot, &snap); err != nil {
 			httperr.Write(w, http.StatusBadRequest, "invalid snapshot JSON")
+			if a.appMetrics != nil {
+				a.appMetrics.SnapshotApplyTotal.WithLabelValues("error").Inc()
+			}
 			return
 		}
 		// Staleness check: warn if the snapshot's seq is behind the engine's.
@@ -204,11 +217,24 @@ func (a *API) handleApplyStateSnapshot(w http.ResponseWriter, r *http.Request) {
 		// Raw FullStateSnapshot (backward compat or direct push).
 		if err := json.Unmarshal(raw, &snap); err != nil {
 			httperr.Write(w, http.StatusBadRequest, "invalid snapshot JSON")
+			if a.appMetrics != nil {
+				a.appMetrics.SnapshotApplyTotal.WithLabelValues("error").Inc()
+			}
 			return
 		}
 	}
 
 	warnings = append(warnings, internal.ApplyFullSnapshot(r.Context(), snap, a.snapshotProvider.ApplyTarget())...)
+
+	// Record apply duration and result.
+	if a.appMetrics != nil {
+		a.appMetrics.SnapshotApplyDuration.Observe(time.Since(start).Seconds())
+		if len(warnings) > 0 {
+			a.appMetrics.SnapshotApplyTotal.WithLabelValues("partial").Inc()
+		} else {
+			a.appMetrics.SnapshotApplyTotal.WithLabelValues("success").Inc()
+		}
+	}
 
 	resp := struct {
 		Applied  bool     `json:"applied"`

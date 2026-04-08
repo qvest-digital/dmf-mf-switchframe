@@ -95,6 +95,19 @@ type Metrics struct {
 
 	// Health
 	SourceStatusChangesTotal *prometheus.CounterVec // labels: source, from_status, to_status
+
+	// Command Queue (active-active)
+	CmdQueueDepth           prometheus.Gauge
+	CmdQueueDrainedTotal    prometheus.Counter
+	CmdQueueLateTotal       prometheus.Counter
+	CmdQueueStaleTotal      prometheus.Counter
+	CmdQueueDuplicateTotal  prometheus.Counter
+	CmdQueueClockJumpsTotal prometheus.Counter
+
+	// Snapshot Sync (active-active)
+	SnapshotApplyTotal    *prometheus.CounterVec // labels: result (success, partial, error)
+	SnapshotApplyDuration prometheus.Histogram
+	SnapshotSizeBytes     prometheus.Histogram
 }
 
 // NewMetrics creates and registers all Switchframe metrics on the given
@@ -251,6 +264,66 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Name:      "source_status_changes_total",
 			Help:      "Total source health status transitions.",
 		}, []string{"source", "from_status", "to_status"}),
+
+		// Command Queue (active-active)
+		CmdQueueDepth: prometheus.NewGauge(prometheus.GaugeOpts{
+			Namespace: "switchframe",
+			Subsystem: "cmdqueue",
+			Name:      "depth",
+			Help:      "Current number of commands pending in the PTP-timed queue.",
+		}),
+		CmdQueueDrainedTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "switchframe",
+			Subsystem: "cmdqueue",
+			Name:      "drained_total",
+			Help:      "Total commands drained (executed) from the queue.",
+		}),
+		CmdQueueLateTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "switchframe",
+			Subsystem: "cmdqueue",
+			Name:      "late_total",
+			Help:      "Total commands promoted to immediate execution (late but not stale).",
+		}),
+		CmdQueueStaleTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "switchframe",
+			Subsystem: "cmdqueue",
+			Name:      "stale_total",
+			Help:      "Total commands rejected as stale (too old to execute).",
+		}),
+		CmdQueueDuplicateTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "switchframe",
+			Subsystem: "cmdqueue",
+			Name:      "duplicate_total",
+			Help:      "Total commands rejected as duplicate (same command_seq).",
+		}),
+		CmdQueueClockJumpsTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Namespace: "switchframe",
+			Subsystem: "cmdqueue",
+			Name:      "clock_jumps_total",
+			Help:      "Total backward clock jumps detected during drain.",
+		}),
+
+		// Snapshot Sync (active-active)
+		SnapshotApplyTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "switchframe",
+			Subsystem: "snapshot",
+			Name:      "apply_total",
+			Help:      "Total snapshot apply operations by result.",
+		}, []string{"result"}),
+		SnapshotApplyDuration: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Namespace: "switchframe",
+			Subsystem: "snapshot",
+			Name:      "apply_duration_seconds",
+			Help:      "Duration of snapshot apply operations.",
+			Buckets:   []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0},
+		}),
+		SnapshotSizeBytes: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Namespace: "switchframe",
+			Subsystem: "snapshot",
+			Name:      "size_bytes",
+			Help:      "Size of applied state snapshots in bytes.",
+			Buckets:   []float64{1024, 4096, 16384, 65536, 262144, 1048576},
+		}),
 	}
 
 	reg.MustRegister(
@@ -277,6 +350,15 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		m.CBRRealBytesTotal,
 		m.CBRPadBytesTotal,
 		m.CBRBurstTicksTotal,
+		m.CmdQueueDepth,
+		m.CmdQueueDrainedTotal,
+		m.CmdQueueLateTotal,
+		m.CmdQueueStaleTotal,
+		m.CmdQueueDuplicateTotal,
+		m.CmdQueueClockJumpsTotal,
+		m.SnapshotApplyTotal,
+		m.SnapshotApplyDuration,
+		m.SnapshotSizeBytes,
 	)
 
 	return m

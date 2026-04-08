@@ -60,6 +60,21 @@ func WithWAL(w *WAL) Option {
 	return func(q *Queue) { q.wal = w }
 }
 
+// MetricsCallbacks provides event hooks for Prometheus metric instrumentation.
+// All function fields are optional; nil callbacks are silently skipped.
+type MetricsCallbacks struct {
+	OnDrain     func(count int) // called after each Drain with the number of commands executed
+	OnLate      func()          // called when a late command is promoted to immediate
+	OnStale     func()          // called when a stale command is rejected
+	OnDup       func()          // called when a duplicate command is rejected
+	OnClockJump func()          // called when a backward clock jump is detected
+}
+
+// WithMetrics attaches metric callbacks to the queue.
+func WithMetrics(cb *MetricsCallbacks) Option {
+	return func(q *Queue) { q.metricsCB = cb }
+}
+
 // Queue holds pending commands sorted by ExecuteAt and drains them when the
 // injected clock reaches their scheduled time.
 type Queue struct {
@@ -71,6 +86,7 @@ type Queue struct {
 	maxAge          int64
 	maxSize         int
 	wal             *WAL
+	metricsCB       *MetricsCallbacks
 	lateCommands    atomic.Int64
 	lastDrainClock  int64 // last clock value seen by Drain, for backward jump detection
 	clockJumps      atomic.Int64
@@ -117,11 +133,17 @@ func (q *Queue) Enqueue(cmd Command) error {
 	if cmd.ExecuteAt != 0 {
 		lateness := now - cmd.ExecuteAt
 		if lateness > q.maxAge*2 {
+			if q.metricsCB != nil && q.metricsCB.OnStale != nil {
+				q.metricsCB.OnStale()
+			}
 			return ErrStaleCommand
 		}
 		if lateness > q.maxAge {
 			cmd.ExecuteAt = 0
 			q.lateCommands.Add(1)
+			if q.metricsCB != nil && q.metricsCB.OnLate != nil {
+				q.metricsCB.OnLate()
+			}
 		}
 	}
 
@@ -139,9 +161,15 @@ func (q *Queue) Enqueue(cmd Command) error {
 		// After pruning, these Seq values are no longer in the seen map but
 		// must still be rejected to prevent double execution of retransmits.
 		if cmd.Seq <= q.prunedHighWater {
+			if q.metricsCB != nil && q.metricsCB.OnDup != nil {
+				q.metricsCB.OnDup()
+			}
 			return ErrDuplicateCommand
 		}
 		if _, seen := q.seen[cmd.Seq]; seen {
+			if q.metricsCB != nil && q.metricsCB.OnDup != nil {
+				q.metricsCB.OnDup()
+			}
 			return ErrDuplicateCommand
 		}
 		q.seen[cmd.Seq] = struct{}{}
@@ -191,6 +219,9 @@ func (q *Queue) Drain() []Command {
 	if prev > 0 && now < prev {
 		jump := prev - now
 		q.clockJumps.Add(1)
+		if q.metricsCB != nil && q.metricsCB.OnClockJump != nil {
+			q.metricsCB.OnClockJump()
+		}
 		slog.Warn("cmdqueue: backward clock jump detected",
 			"jump_us", jump, "prev_us", prev, "now_us", now)
 	}
@@ -218,6 +249,10 @@ func (q *Queue) Drain() []Command {
 		if q.h.Len() == 0 {
 			_ = q.wal.Truncate()
 		}
+	}
+
+	if len(out) > 0 && q.metricsCB != nil && q.metricsCB.OnDrain != nil {
+		q.metricsCB.OnDrain(len(out))
 	}
 
 	return out

@@ -605,3 +605,114 @@ func TestQueue_WALReplay_SeedsDedupFromExecuted(t *testing.T) {
 		t.Fatalf("expected [seq=2], got: %v", out)
 	}
 }
+
+// ── Metrics callbacks ──────────────────────────────────────────────────────
+
+func TestMetricsCallbacks_OnDrain(t *testing.T) {
+	var drainCount int
+	cb := &cmdqueue.MetricsCallbacks{
+		OnDrain: func(count int) { drainCount += count },
+	}
+	clock, _ := newClock(0)
+	q := cmdqueue.New(clock, cmdqueue.WithMetrics(cb))
+
+	_ = q.Enqueue(cmdqueue.Command{Seq: 1, Action: "cut"})
+	_ = q.Enqueue(cmdqueue.Command{Seq: 2, Action: "cut"})
+	q.Drain()
+
+	if drainCount != 2 {
+		t.Fatalf("expected OnDrain count=2, got %d", drainCount)
+	}
+}
+
+func TestMetricsCallbacks_OnDrain_NotCalledWhenEmpty(t *testing.T) {
+	called := false
+	cb := &cmdqueue.MetricsCallbacks{
+		OnDrain: func(count int) { called = true },
+	}
+	clock, _ := newClock(0)
+	q := cmdqueue.New(clock, cmdqueue.WithMetrics(cb))
+
+	q.Drain() // empty queue
+	if called {
+		t.Fatal("OnDrain should not be called when no commands are drained")
+	}
+}
+
+func TestMetricsCallbacks_OnLate(t *testing.T) {
+	var lateCount int
+	cb := &cmdqueue.MetricsCallbacks{
+		OnLate: func() { lateCount++ },
+	}
+	now := int64(100_000_000)
+	q := cmdqueue.New(func() int64 { return now }, cmdqueue.WithMaxAge(2_000_000), cmdqueue.WithMetrics(cb))
+
+	// Late but not stale (between maxAge and 2*maxAge).
+	_ = q.Enqueue(cmdqueue.Command{ExecuteAt: now - 3_000_000, Seq: 1, Action: "cut"})
+	if lateCount != 1 {
+		t.Fatalf("expected OnLate count=1, got %d", lateCount)
+	}
+}
+
+func TestMetricsCallbacks_OnStale(t *testing.T) {
+	var staleCount int
+	cb := &cmdqueue.MetricsCallbacks{
+		OnStale: func() { staleCount++ },
+	}
+	now := int64(100_000_000)
+	q := cmdqueue.New(func() int64 { return now }, cmdqueue.WithMaxAge(2_000_000), cmdqueue.WithMetrics(cb))
+
+	// Very stale (beyond 2*maxAge).
+	_ = q.Enqueue(cmdqueue.Command{ExecuteAt: now - 5_000_000, Seq: 1, Action: "cut"})
+	if staleCount != 1 {
+		t.Fatalf("expected OnStale count=1, got %d", staleCount)
+	}
+}
+
+func TestMetricsCallbacks_OnDup(t *testing.T) {
+	var dupCount int
+	cb := &cmdqueue.MetricsCallbacks{
+		OnDup: func() { dupCount++ },
+	}
+	clock, _ := newClock(0)
+	q := cmdqueue.New(clock, cmdqueue.WithMetrics(cb))
+
+	_ = q.Enqueue(cmdqueue.Command{Seq: 42, Action: "cut"})
+	_ = q.Enqueue(cmdqueue.Command{Seq: 42, Action: "cut"}) // duplicate
+	if dupCount != 1 {
+		t.Fatalf("expected OnDup count=1, got %d", dupCount)
+	}
+}
+
+func TestMetricsCallbacks_OnClockJump(t *testing.T) {
+	var jumpCount int
+	cb := &cmdqueue.MetricsCallbacks{
+		OnClockJump: func() { jumpCount++ },
+	}
+	var now int64 = 2_000_000
+	q := cmdqueue.New(func() int64 { return now }, cmdqueue.WithMetrics(cb))
+
+	q.Drain() // establish baseline
+	now = 1_000_000 // backward jump
+	q.Drain()
+
+	if jumpCount != 1 {
+		t.Fatalf("expected OnClockJump count=1, got %d", jumpCount)
+	}
+}
+
+func TestMetricsCallbacks_NilCallbacksSafe(t *testing.T) {
+	// Ensure that a MetricsCallbacks with all nil fields doesn't panic.
+	cb := &cmdqueue.MetricsCallbacks{}
+	now := int64(100_000_000)
+	q := cmdqueue.New(func() int64 { return now }, cmdqueue.WithMaxAge(2_000_000), cmdqueue.WithMetrics(cb))
+
+	// Trigger all callback paths with nil functions.
+	_ = q.Enqueue(cmdqueue.Command{ExecuteAt: now - 3_000_000, Seq: 1, Action: "cut"}) // late
+	_ = q.Enqueue(cmdqueue.Command{ExecuteAt: now - 5_000_000, Seq: 2, Action: "cut"}) // stale
+	_ = q.Enqueue(cmdqueue.Command{Seq: 3, Action: "cut"})
+	_ = q.Enqueue(cmdqueue.Command{Seq: 3, Action: "cut"}) // dup
+	q.Drain()
+
+	// If we get here without panicking, the test passes.
+}
