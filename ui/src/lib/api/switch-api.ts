@@ -283,8 +283,8 @@ async function primaryWithFallback<T>(url: string, options: RequestInit | undefi
 
 const ENGINE_SCOPED_PATHS = new Set([
 	'/api/output/destinations',
-	'/api/output/recording/start',
-	'/api/output/recording/stop',
+	'/api/recording/start',
+	'/api/recording/stop',
 ]);
 
 function isEngineScopedPath(path: string): boolean {
@@ -726,11 +726,11 @@ export function startRecording(options?: {
 	rotateAfterMins?: number;
 	maxFileSizeMB?: number;
 }): Promise<RecordingStatus> {
-	return post('/api/output/recording/start', { ...(options ?? {}), engine: 'A' });
+	return post('/api/recording/start', { ...(options ?? {}), engine: 'A' });
 }
 
 export function stopRecording(): Promise<RecordingStatus> {
-	return post('/api/output/recording/stop', { engine: 'A' });
+	return post('/api/recording/stop', { engine: 'A' });
 }
 
 export function getRecordingStatus(): Promise<RecordingStatus> {

@@ -981,7 +981,7 @@ describe('switch-api dual-engine routing', () => {
 
 			// Only engine A should receive the request
 			expect(fetchCalls).toHaveLength(1);
-			expect(fetchCalls[0].url).toBe('https://engine-a.example.com/api/output/recording/start');
+			expect(fetchCalls[0].url).toBe('https://engine-a.example.com/api/recording/start');
 		});
 
 		it('stopRecording targets primary engine only', async () => {
@@ -989,7 +989,7 @@ describe('switch-api dual-engine routing', () => {
 
 			// Only engine A should receive the request
 			expect(fetchCalls).toHaveLength(1);
-			expect(fetchCalls[0].url).toBe('https://engine-a.example.com/api/output/recording/stop');
+			expect(fetchCalls[0].url).toBe('https://engine-a.example.com/api/recording/stop');
 		});
 
 		it('startRecording sends engine field in body', async () => {
