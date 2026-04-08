@@ -749,6 +749,130 @@ describe('createReconciler', () => {
 		});
 	});
 
+	describe('destination divergence', () => {
+		it('detects divergence when active destination count differs', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				destinations: [
+					{ id: 'd1', type: 'srt-caller', state: 'running' },
+					{ id: 'd2', type: 'srt-listener', state: 'running' },
+				],
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 5,
+				destinations: [
+					{ id: 'd1', type: 'srt-caller', state: 'running' },
+					{ id: 'd2', type: 'srt-listener', state: 'stopped' },
+				],
+			}));
+			const divs = r.health.divergences;
+			const destDiv = divs.find(d => d.field === 'destinations');
+			expect(destDiv).toBeDefined();
+			expect(destDiv?.engineA).toBe('2 active');
+			expect(destDiv?.engineB).toBe('1 active');
+		});
+
+		it('no destination divergence when active counts match', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				destinations: [
+					{ id: 'd1', type: 'srt-caller', state: 'running' },
+				],
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 5,
+				destinations: [
+					{ id: 'd1', type: 'srt-caller', state: 'connected' },
+				],
+			}));
+			const divs = r.health.divergences;
+			const destDiv = divs.find(d => d.field === 'destinations');
+			expect(destDiv).toBeUndefined();
+		});
+
+		it('no destination divergence when both undefined', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+			const divs = r.health.divergences;
+			const destDiv = divs.find(d => d.field === 'destinations');
+			expect(destDiv).toBeUndefined();
+		});
+
+		it('detects divergence when one engine has destinations and other has none', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				destinations: [
+					{ id: 'd1', type: 'srt-caller', state: 'running' },
+				],
+			}));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+			const divs = r.health.divergences;
+			const destDiv = divs.find(d => d.field === 'destinations');
+			expect(destDiv).toBeDefined();
+			expect(destDiv?.engineA).toBe('1 active');
+			expect(destDiv?.engineB).toBe('0 active');
+		});
+	});
+
+	describe('srtOutput divergence', () => {
+		it('detects divergence when srtOutput.active differs', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				srtOutput: { active: true, mode: 'listener', port: 9000 },
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 5,
+				srtOutput: { active: false },
+			}));
+			const divs = r.health.divergences;
+			const srtDiv = divs.find(d => d.field === 'srtOutput');
+			expect(srtDiv).toBeDefined();
+			expect((srtDiv?.engineA as any)?.active).toBe(true);
+			expect((srtDiv?.engineB as any)?.active).toBe(false);
+		});
+
+		it('no srtOutput divergence when both active', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				srtOutput: { active: true, mode: 'listener', port: 9000 },
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 5,
+				srtOutput: { active: true, mode: 'caller', address: '1.2.3.4', port: 9001 },
+			}));
+			const divs = r.health.divergences;
+			const srtDiv = divs.find(d => d.field === 'srtOutput');
+			expect(srtDiv).toBeUndefined();
+		});
+
+		it('no srtOutput divergence when both undefined', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+			const divs = r.health.divergences;
+			const srtDiv = divs.find(d => d.field === 'srtOutput');
+			expect(srtDiv).toBeUndefined();
+		});
+
+		it('detects divergence when one engine has srtOutput and other does not', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				srtOutput: { active: true, mode: 'listener', port: 9000 },
+			}));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+			const divs = r.health.divergences;
+			const srtDiv = divs.find(d => d.field === 'srtOutput');
+			expect(srtDiv).toBeDefined();
+		});
+	});
+
 	// ── fieldEquals ──
 
 	describe('fieldEquals', () => {

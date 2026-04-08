@@ -276,6 +276,22 @@ export function createReconciler() {
 				break; // one divergence entry is sufficient
 			}
 		}
+		// Destination divergence: compare count of active (non-error, non-empty state) destinations
+		const destsA = stateA.destinations ?? [];
+		const destsB = stateB.destinations ?? [];
+		const activeDestsA = destsA.filter((d) => d.state === 'running' || d.state === 'connected').length;
+		const activeDestsB = destsB.filter((d) => d.state === 'running' || d.state === 'connected').length;
+		if (activeDestsA !== activeDestsB) {
+			result.push({
+				field: 'destinations',
+				engineA: `${activeDestsA} active`,
+				engineB: `${activeDestsB} active`,
+			});
+		}
+		// SRT output divergence: compare active state
+		if (stateA.srtOutput?.active !== stateB.srtOutput?.active) {
+			result.push({ field: 'srtOutput', engineA: stateA.srtOutput, engineB: stateB.srtOutput });
+		}
 		// Layout preset divergence
 		if (!fieldEquals(stateA.layout?.activePreset, stateB.layout?.activePreset)) {
 			result.push({
