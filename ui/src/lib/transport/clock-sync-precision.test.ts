@@ -173,7 +173,9 @@ describe('ClockSync precision', () => {
 			// Use handlePong to set offset with proper age tracking
 			const sync = new ClockSync();
 			const sendPing = vi.fn();
-			const sentAt = Date.now() * 1000; // capture before startPeriodicSync
+			// sentAt is recorded via nowMicros() = Math.round(performance.now() * 1000)
+			// With vi.useFakeTimers(), performance.now() starts at 0, so sentAt = 0 µs
+			const sentAt = Math.round(performance.now() * 1000); // = 0 µs
 			sync.startPeriodicSync(['A'], sendPing, 120_000);
 
 			vi.advanceTimersByTime(5);
@@ -193,7 +195,9 @@ describe('ClockSync precision', () => {
 		it('averages offsets from multiple engines', () => {
 			const sync = new ClockSync();
 			const sendPing = vi.fn();
-			const sentAt = Date.now() * 1000;
+			// sentAt is recorded via nowMicros() = Math.round(performance.now() * 1000)
+			// With vi.useFakeTimers(), performance.now() starts at 0, so sentAt = 0 µs
+			const sentAt = Math.round(performance.now() * 1000); // = 0 µs
 			sync.startPeriodicSync(['A', 'B'], sendPing, 120_000);
 
 			vi.advanceTimersByTime(5);
@@ -214,12 +218,17 @@ describe('ClockSync precision', () => {
 		it('handles negative offsets (local clock ahead of PTP)', () => {
 			const sync = new ClockSync();
 			const sendPing = vi.fn();
-			const sentAt = Date.now() * 1000;
+			// Advance time first so performance.now() is large enough that
+			// sentAt + rtt/2 - 2_000_000 stays positive (avoids pong serializer overflow).
+			vi.advanceTimersByTime(10_000); // performance.now() = 10_000 ms now
+			// sentAt is recorded via nowMicros() = Math.round(performance.now() * 1000)
+			const sentAt = Math.round(performance.now() * 1000); // = 10_000_000 µs
 			sync.startPeriodicSync(['A'], sendPing, 120_000);
 
 			vi.advanceTimersByTime(5);
 			const rtt = 5_000;
 			// We want offset = -2_000_000, so serverTs = sentAt + rtt/2 - 2_000_000
+			// = 10_000_000 + 2_500 - 2_000_000 = 8_002_500 (positive, safe to serialize)
 			sync.handlePong('A', buildPongHelper(sentAt + rtt / 2 - 2_000_000));
 
 			const localUS = Date.now() * 1000;

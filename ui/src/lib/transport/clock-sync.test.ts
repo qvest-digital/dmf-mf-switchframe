@@ -154,11 +154,11 @@ describe('ClockSync', () => {
 
 			const sendPing = vi.fn();
 			sync.startPeriodicSync(['A', 'B'], sendPing, 120_000);
-			// sentAt for both = 1_000_000_000 µs
+			// sentAt for both = performance.now() * 1000 = 0 µs (fake timer starts at 0)
 
 			vi.advanceTimersByTime(5);
-			const sentAt = 1_000_000_000;
-			const rtt = 5_000;
+			const sentAt = 0; // performance.now() was 0 at ping time
+			const rtt = 5_000; // 5ms = 5_000 µs
 			// A offset = 5_000_000, B offset = 3_000_000
 			sync.handlePong('A', buildPongHelper(sentAt + rtt / 2 + 5_000_000));
 			sync.handlePong('B', buildPongHelper(sentAt + rtt / 2 + 3_000_000));
@@ -236,16 +236,16 @@ describe('ClockSync', () => {
 
 			const sendPing = vi.fn();
 			sync.startPeriodicSync(['A'], sendPing, 60_000);
-			// doPingRound records lastPingSentAt for A = Date.now() * 1000 = 1_000_000_000 µs
+			// doPingRound records lastPingSentAt for A = nowMicros() = performance.now() * 1000 = 0 µs
 
 			// Advance 10ms to simulate network delay
 			vi.advanceTimersByTime(10);
 
-			// sentAt = 1_000_000 ms * 1000 = 1_000_000_000 µs
-			// now = 1_000_010 ms * 1000 = 1_000_010_000 µs
+			// sentAt = 0 µs (performance.now() was 0 at ping time)
+			// now = performance.now() * 1000 = 10_000 µs (after 10ms advance)
 			// rtt = now - sentAt = 10_000 µs
 			// If server is 5_000_000 µs ahead, serverTs = sentAt + rtt/2 + 5_000_000
-			const sentAt = 1_000_000_000;
+			const sentAt = 0;
 			const rtt = 10_000;
 			const knownOffset = 5_000_000;
 			const serverTs = sentAt + rtt / 2 + knownOffset;
@@ -280,16 +280,48 @@ describe('ClockSync', () => {
 			// Advance 20ms
 			vi.advanceTimersByTime(20);
 
-			// sentAt = 1_000_000 ms * 1000 = 1_000_000_000 µs
-			// now = 1_000_020 ms * 1000 = 1_000_020_000 µs
+			// sentAt = 0 µs (performance.now() was 0 at ping time)
+			// now = performance.now() * 1000 = 20_000 µs
 			// rtt = 20_000 µs
-			const sentAt = 1_000_000_000;
+			const sentAt = 0;
 			const rtt = 20_000; // 20ms in µs
 			const serverTs = sentAt + rtt / 2; // zero offset
 			const pong = buildPong(serverTs);
 			sync.handlePong('A', pong);
 
 			// RTT should be bootstrapped to 20_000 µs
+			expect(sync.getRTT('A')).toBe(rtt);
+
+			sync.stopPeriodicSync();
+			vi.useRealTimers();
+		});
+
+		it('uses sub-millisecond precision for RTT', () => {
+			// Verify that RTT measurement uses performance.now() rather than Date.now().
+			// With fake timers, performance.now() starts at 0 and advances with the clock,
+			// while Date.now() starts at whatever the fake timer's `now` is set to.
+			// A sentAt of 0 (performance.now()-based) differs from 1_000_000_000 (Date.now()-based),
+			// confirming performance.now() is in use.
+			vi.useFakeTimers({ now: 1_000_000 }); // Date.now() = 1_000_000 ms
+			const sync = new ClockSync();
+
+			const sendPing = vi.fn();
+			sync.startPeriodicSync(['A'], sendPing, 60_000);
+
+			vi.advanceTimersByTime(10);
+
+			// sentAt was recorded using nowMicros() = Math.round(performance.now() * 1000)
+			// With fake timers, performance.now() starts at 0, so sentAt = 0 µs
+			// RTT = nowMicros() - sentAt = 10_000 - 0 = 10_000 µs
+			// If this were Date.now()-based, sentAt = 1_000_000_000 and RTT would be 10_000 too,
+			// but the offset calculation differs (serverTs is built relative to sentAt = 0 here).
+			const sentAt = 0;
+			const rtt = 10_000;
+			const knownOffset = 1_000;
+			const serverTs = sentAt + rtt / 2 + knownOffset;
+			sync.handlePong('A', buildPong(serverTs));
+
+			expect(sync.getOffset('A')).toBe(knownOffset);
 			expect(sync.getRTT('A')).toBe(rtt);
 
 			sync.stopPeriodicSync();
@@ -304,13 +336,13 @@ describe('ClockSync', () => {
 
 			const sendPing = vi.fn();
 			sync.startPeriodicSync(['A'], sendPing, 120_000);
-			// sentAt for A = 1_000_000 * 1000 = 1_000_000_000 µs
+			// sentAt for A = nowMicros() = performance.now() * 1000 = 0 µs
 
 			// Simulate pong after 5ms
 			vi.advanceTimersByTime(5);
-			// now = 1_000_005 ms, nowUs = 1_000_005_000
+			// performance.now() = 5, nowMicros() = 5_000
 			// rtt = 5_000 µs, offset we want = 100_000 µs
-			const sentAt = 1_000_000_000;
+			const sentAt = 0; // performance.now() was 0 at ping time
 			const rtt = 5_000;
 			const pongA = buildPongHelper(sentAt + rtt / 2 + 100_000);
 			sync.handlePong('A', pongA);
@@ -349,10 +381,10 @@ describe('ClockSync', () => {
 			// Now use handlePong to set A's offset with proper age tracking
 			const sendPing = vi.fn();
 			sync.startPeriodicSync(['A', 'B'], sendPing, 120_000);
-			// sentAt for both = 1_000_000 * 1000 = 1_000_000_000 µs
+			// sentAt for both = nowMicros() = performance.now() * 1000 = 0 µs
 
 			vi.advanceTimersByTime(5);
-			const sentAt = 1_000_000_000;
+			const sentAt = 0; // performance.now() was 0 at ping time
 			const rtt = 5_000;
 			// Set offset for A = 100_000
 			sync.handlePong('A', buildPongHelper(sentAt + rtt / 2 + 100_000));
@@ -373,10 +405,12 @@ describe('ClockSync', () => {
 			// Simplest: stop and restart to get fresh sentAt for B
 			sync.stopPeriodicSync();
 			sync.startPeriodicSync(['B'], sendPing, 120_000);
-			// New sentAt for B = Date.now() * 1000
+			// New sentAt for B = nowMicros() = performance.now() * 1000
+			// At this point performance.now() = 5 + 55_000 = 55_005 ms
 
 			vi.advanceTimersByTime(5);
-			const newSentAt = (Date.now() - 5) * 1000; // sentAt recorded before advanceTimersByTime
+			// performance.now() before this advance was 55_005, so sentAt = 55_005_000 µs
+			const newSentAt = 55_005_000; // performance.now() was 55_005 at new ping time
 			const newRtt = 5_000;
 			sync.handlePong('B', buildPongHelper(newSentAt + newRtt / 2 + 200_000));
 

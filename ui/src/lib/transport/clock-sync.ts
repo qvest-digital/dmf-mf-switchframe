@@ -1,5 +1,10 @@
 import type { EngineId } from '$lib/api/types';
 
+/** Microsecond-precision monotonic timestamp for RTT measurement. */
+function nowMicros(): number {
+	return Math.round(performance.now() * 1000);
+}
+
 const MSG_PING = 0xFE;
 const MSG_PONG = 0xFF;
 const FRAME_DURATION_US = 33_333; // 30fps
@@ -58,7 +63,7 @@ export class ClockSync {
 
 	handlePong(engineId: EngineId, data: Uint8Array): void {
 		const serverTimestamp = this.parsePong(data);
-		const now = Date.now() * 1000;
+		const now = nowMicros();
 		const sentAt = this.lastPingSentAt.get(engineId);
 		if (sentAt === undefined) return; // no pending ping
 
@@ -129,7 +134,7 @@ export class ClockSync {
 
 	private doPingRound(sendPing: (engineId: EngineId, data: Uint8Array) => void): void {
 		for (const engineId of this.trackedEngines) {
-			this.lastPingSentAt.set(engineId, Date.now() * 1000); // µs
+			this.lastPingSentAt.set(engineId, nowMicros()); // µs
 			sendPing(engineId, this.buildPing(this.pingSeq++));
 		}
 	}
