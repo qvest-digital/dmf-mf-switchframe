@@ -988,7 +988,10 @@
 			const wt = pipeline.getSourceTransport('program');
 			if (wt) {
 				try {
-					fastControlA = createFastControl(wt, { onWriteError: handleFastControlWriteError });
+					fastControlA = createFastControl(wt, {
+						onWriteError: handleFastControlWriteError,
+						ptpNow: isDualEngine ? () => connectionManager.clock.ptpNow() : undefined,
+					});
 				} catch {
 					// Datagrams not supported — fall back to REST
 				}
@@ -1009,7 +1012,10 @@
 		const transportB = connectionManager.getTransport('B');
 		if (transportB && !fastControlB) {
 			try {
-				fastControlB = createFastControl(transportB, { onWriteError: handleFastControlWriteError });
+				fastControlB = createFastControl(transportB, {
+					onWriteError: handleFastControlWriteError,
+					ptpNow: () => connectionManager.clock.ptpNow(),
+				});
 			} catch {
 				// Datagrams not supported on engine B
 			}

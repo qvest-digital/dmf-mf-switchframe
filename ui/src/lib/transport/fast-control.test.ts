@@ -150,4 +150,48 @@ describe('createFastControl', () => {
 		// Flush microtasks — should not throw
 		await new Promise((r) => setTimeout(r, 10));
 	});
+
+	it('prepends 8-byte PTP timestamp when ptpNow option is set', async () => {
+		const writeFn = vi.fn().mockResolvedValue(undefined);
+		const mockWriter = { write: writeFn, releaseLock: vi.fn() };
+		const mockTransport = {
+			datagrams: {
+				writable: { getWriter: () => mockWriter },
+			},
+		} as unknown as WebTransport;
+
+		const ptpTs = 1234567890;
+		const fc = createFastControl(mockTransport, { ptpNow: () => ptpTs });
+		fc.sendTransitionPosition(0.5);
+
+		expect(writeFn).toHaveBeenCalledTimes(1);
+		const sent = writeFn.mock.calls[0][0] as Uint8Array;
+		// 8 bytes timestamp + 5 bytes transition position payload = 13 bytes
+		expect(sent.byteLength).toBe(13);
+		const view = new DataView(sent.buffer, sent.byteOffset);
+		const hi = view.getUint32(0);
+		const lo = view.getUint32(4);
+		expect(hi * 0x100000000 + lo).toBe(ptpTs);
+		// Payload byte after timestamp should still be MSG_TRANSITION_POSITION (0x02)
+		expect(sent[8]).toBe(0x02);
+	});
+
+	it('does not prepend timestamp when ptpNow is not set', async () => {
+		const writeFn = vi.fn().mockResolvedValue(undefined);
+		const mockWriter = { write: writeFn, releaseLock: vi.fn() };
+		const mockTransport = {
+			datagrams: {
+				writable: { getWriter: () => mockWriter },
+			},
+		} as unknown as WebTransport;
+
+		const fc = createFastControl(mockTransport);
+		fc.sendTransitionPosition(0.5);
+
+		expect(writeFn).toHaveBeenCalledTimes(1);
+		const sent = writeFn.mock.calls[0][0] as Uint8Array;
+		// No timestamp: exactly 5 bytes
+		expect(sent.byteLength).toBe(5);
+		expect(sent[0]).toBe(0x02);
+	});
 });

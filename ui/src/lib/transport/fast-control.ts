@@ -55,6 +55,7 @@ export interface FastControl {
 
 export interface FastControlOptions {
 	onWriteError?: WriteErrorCallback;
+	ptpNow?: () => number;
 }
 
 export function encodeTransitionPosition(position: number): Uint8Array {
@@ -180,17 +181,31 @@ export function createFastControl(transport: WebTransport, opts?: FastControlOpt
 	const writer = transport.datagrams.writable.getWriter();
 	const onErr = opts?.onWriteError;
 
+	function withTimestamp(data: Uint8Array): Uint8Array {
+		if (!opts?.ptpNow) return data;
+		const ts = opts.ptpNow();
+		const buf = new Uint8Array(8 + data.length);
+		const view = new DataView(buf.buffer);
+		// Write 64-bit PTP timestamp as two big-endian uint32 (hi, lo)
+		view.setUint32(0, Math.floor(ts / 0x100000000));
+		view.setUint32(4, ts >>> 0);
+		buf.set(data, 8);
+		return buf;
+	}
+
+	function write(data: Uint8Array, msgType: string) {
+		writer.write(withTimestamp(data)).catch(() => {
+			onErr?.(msgType);
+		});
+	}
+
 	return {
 		sendTransitionPosition(position: number) {
-			writer.write(encodeTransitionPosition(position)).catch(() => {
-				onErr?.('transition_position');
-			});
+			write(encodeTransitionPosition(position), 'transition_position');
 		},
 
 		sendGraphicsLayerPosition(layerId: number, x: number, y: number, w: number, h: number) {
-			writer.write(encodeGraphicsLayerPosition(layerId, x, y, w, h)).catch(() => {
-				onErr?.('graphics_layer_position');
-			});
+			write(encodeGraphicsLayerPosition(layerId, x, y, w, h), 'graphics_layer_position');
 		},
 
 		sendDVESlotTransform(
@@ -202,35 +217,23 @@ export function createFastControl(transport: WebTransport, opts?: FastControlOpt
 			rotation: number,
 			opacity: number,
 		) {
-			writer
-				.write(encodeDVESlotTransform(slotId, posX, posY, width, height, rotation, opacity))
-				.catch(() => {
-					onErr?.('dve_slot_transform');
-				});
+			write(encodeDVESlotTransform(slotId, posX, posY, width, height, rotation, opacity), 'dve_slot_transform');
 		},
 
 		sendDVESingleParam(slotId: number, paramId: number, value: number) {
-			writer.write(encodeDVESingleParam(slotId, paramId, value)).catch(() => {
-				onErr?.('dve_single_param');
-			});
+			write(encodeDVESingleParam(slotId, paramId, value), 'dve_single_param');
 		},
 
 		sendDVESlotSource(slotId: number, sourceKey: string) {
-			writer.write(encodeDVESlotSource(slotId, sourceKey)).catch(() => {
-				onErr?.('dve_slot_source');
-			});
+			write(encodeDVESlotSource(slotId, sourceKey), 'dve_slot_source');
 		},
 
 		sendDVESlotEnable(slotId: number, enabled: boolean) {
-			writer.write(encodeDVESlotEnable(slotId, enabled)).catch(() => {
-				onErr?.('dve_slot_enable');
-			});
+			write(encodeDVESlotEnable(slotId, enabled), 'dve_slot_enable');
 		},
 
 		sendDVEScaleMode(slotId: number, mode: number, anchorX: number, anchorY: number) {
-			writer.write(encodeDVEScaleMode(slotId, mode, anchorX, anchorY)).catch(() => {
-				onErr?.('dve_scale_mode');
-			});
+			write(encodeDVEScaleMode(slotId, mode, anchorX, anchorY), 'dve_scale_mode');
 		},
 
 		sendDVEBorder(
@@ -241,11 +244,7 @@ export function createFastControl(transport: WebTransport, opts?: FastControlOpt
 			colorCb: number,
 			colorCr: number,
 		) {
-			writer
-				.write(encodeDVEBorder(slotId, width, radius, colorY, colorCb, colorCr))
-				.catch(() => {
-					onErr?.('dve_border');
-				});
+			write(encodeDVEBorder(slotId, width, radius, colorY, colorCb, colorCr), 'dve_border');
 		},
 
 		close() {
