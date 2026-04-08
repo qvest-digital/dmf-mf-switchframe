@@ -373,7 +373,7 @@ describe('ConnectionBanner', () => {
 			const banner = container.querySelector('.connection-banner.engine-fallback');
 			expect(banner).toBeTruthy();
 			expect(banner?.textContent).toContain('redirecting to Engine B');
-			expect(banner?.textContent).toContain('10s');
+			expect(banner?.textContent).toContain('5s');
 			expect(banner?.textContent).toContain('Go now');
 			expect(banner?.textContent).toContain('Cancel');
 		});

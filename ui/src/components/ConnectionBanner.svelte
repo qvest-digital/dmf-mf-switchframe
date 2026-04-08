@@ -149,7 +149,7 @@
 
 	$effect(() => {
 		if (shouldAutoRedirect && fallbackHref) {
-			redirectCountdown = 10;
+			redirectCountdown = 5;
 			redirectTimer = setInterval(() => {
 				redirectCountdown--;
 				if (redirectCountdown <= 0) {
