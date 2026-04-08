@@ -465,6 +465,11 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 
 		source.transport.close();
 		source.transport = null;
+
+		// Flush decoder to prevent stale frames during failover
+		if (source.videoDecoder) {
+			try { source.videoDecoder.flush(); } catch { /* decoder may be in error state */ }
+		}
 	}
 
 	function getVideoBuffer(sourceKey: string): VideoRenderBuffer | null {

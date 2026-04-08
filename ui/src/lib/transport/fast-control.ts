@@ -53,12 +53,20 @@ export interface FastControl {
 	/** Write raw datagram bytes through this control's shared writer (for clock sync). */
 	writeDatagram(data: Uint8Array): void;
 	close(): void;
+	/** REST commit for reliable final transition position on mouseup/touchend. */
+	commitTransitionPosition?(position: number): void;
+	/** REST commit for reliable final DVE slot transform on mouseup/touchend. */
+	commitDVESlotTransform?(slotId: number, posX: number, posY: number, width: number, height: number, rotation: number, opacity: number): void;
 }
 
 export interface FastControlOptions {
 	onWriteError?: WriteErrorCallback;
 	ptpNow?: () => number;
 	engineId?: string;
+	/** REST commit callback for reliable final transition position delivery. */
+	commitTransitionPosition?: (position: number) => void;
+	/** REST commit callback for reliable final DVE slot transform delivery. */
+	commitDVESlotTransform?: (slotId: number, posX: number, posY: number, width: number, height: number, rotation: number, opacity: number) => void;
 }
 
 export function encodeTransitionPosition(position: number): Uint8Array {
@@ -261,6 +269,9 @@ export function createFastControl(transport: WebTransport, opts?: FastControlOpt
 			if (closed) return;
 			writer.write(data).catch(() => {});
 		},
+
+		commitTransitionPosition: opts?.commitTransitionPosition,
+		commitDVESlotTransform: opts?.commitDVESlotTransform,
 
 		close() {
 			closed = true;

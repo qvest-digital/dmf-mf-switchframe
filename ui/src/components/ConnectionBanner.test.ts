@@ -186,6 +186,62 @@ describe('ConnectionBanner', () => {
 			expect(banner).toBeFalsy();
 		});
 
+		it('shows engine fallback when one engine is down in dual mode even with webtransport alive', () => {
+			const { container } = render(ConnectionBanner, {
+				props: {
+					connectionState: 'webtransport',
+					syncStatus: 'ok',
+					engineFallbackUrl: 'https://engine-b.example.com',
+					servingEngine: 'A',
+					engineStatus: {
+						mode: 'dual',
+						engineDown: 'A',
+						reason: 'unreachable',
+					},
+				},
+			});
+			const banner = container.querySelector('.connection-banner.engine-fallback');
+			expect(banner).toBeTruthy();
+			expect(banner?.textContent).toContain('Engine A unreachable');
+		});
+
+		it('does not show engine fallback when engine is restored', () => {
+			const { container } = render(ConnectionBanner, {
+				props: {
+					connectionState: 'webtransport',
+					syncStatus: 'ok',
+					engineFallbackUrl: 'https://engine-b.example.com',
+					servingEngine: 'A',
+					engineStatus: {
+						mode: 'dual',
+						engineDown: 'A',
+						reason: 'unreachable',
+						restored: true,
+					},
+				},
+			});
+			const banner = container.querySelector('.connection-banner.engine-fallback');
+			expect(banner).toBeFalsy();
+		});
+
+		it('does not show engine fallback for single-mode even with engineDown', () => {
+			const { container } = render(ConnectionBanner, {
+				props: {
+					connectionState: 'webtransport',
+					syncStatus: 'ok',
+					engineFallbackUrl: 'https://engine-b.example.com',
+					servingEngine: 'A',
+					engineStatus: {
+						mode: 'single',
+						engineDown: 'A',
+						reason: 'unreachable',
+					},
+				},
+			});
+			const banner = container.querySelector('.connection-banner.engine-fallback');
+			expect(banner).toBeFalsy();
+		});
+
 		it('does not show dual-engine banner when mode is single', () => {
 			const { container } = render(ConnectionBanner, {
 				props: {

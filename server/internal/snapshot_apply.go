@@ -51,6 +51,7 @@ type SnapshotApplyTarget interface {
 	// Source config
 	SetSourceLabel(ctx context.Context, sourceKey, label string) error
 	SetSourcePosition(sourceKey string, position int) error
+	SetSourceDelay(sourceKey string, delayMs int) error
 
 	// Upstream keys
 	SetUpstreamKey(sourceKey string, config UpstreamKeySnapshot) error
@@ -477,6 +478,12 @@ func applySourceConfig(ctx context.Context, sources map[string]SourceConfigSnaps
 		if err := target.SetSourcePosition(key, src.Position); err != nil {
 			slog.Warn("snapshot apply: source position failed", "source", key, "error", err)
 			warnings = append(warnings, fmt.Sprintf("source %q position: %v", key, err))
+		}
+		if src.DelayMs > 0 {
+			if err := target.SetSourceDelay(key, src.DelayMs); err != nil {
+				slog.Warn("snapshot apply: source delay failed", "source", key, "error", err)
+				warnings = append(warnings, fmt.Sprintf("source %q delay: %v", key, err))
+			}
 		}
 	}
 

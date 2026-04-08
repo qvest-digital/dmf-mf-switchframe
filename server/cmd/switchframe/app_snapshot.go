@@ -265,6 +265,10 @@ func (a *App) SetSourcePosition(sourceKey string, position int) error {
 	return a.sw.SetSourcePosition(sourceKey, position)
 }
 
+func (a *App) SetSourceDelay(sourceKey string, delayMs int) error {
+	return a.sw.SetSourceDelay(sourceKey, delayMs)
+}
+
 // --- Upstream keys ---
 
 func (a *App) SetUpstreamKey(sourceKey string, config internal.UpstreamKeySnapshot) error {

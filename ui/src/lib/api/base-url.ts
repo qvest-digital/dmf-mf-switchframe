@@ -63,6 +63,8 @@ const TIMED_PATH_EXACT = new Set([
 	'/api/presets/recall',
 	'/api/format',
 	'/api/encoder',
+	'/api/stingers',
+	'/api/color-grade/lut',
 ]);
 
 const TIMED_PATH_PATTERNS = [
@@ -78,7 +80,11 @@ const TIMED_PATH_PATTERNS = [
 	/^\/api\/audio\/.+$/,
 	/^\/api\/macros\/[^/]+\/run$/,
 	/^\/api\/sources\/[^/]+\/key$/,
-	/^\/api\/captions\/(text|newline|clear)$/,
+	/^\/api\/captions\/(text|newline|clear|mode)$/,
+	/^\/api\/graphics\/\d+\/image$/,
+	/^\/api\/graphics\/\d+\/sequence$/,
+	/^\/api\/stmaps\/[^/]+\/upload$/,
+	/^\/api\/sources\/[^/]+\/ai-segment$/,
 ];
 
 export function isTimedPath(path: string): boolean {
@@ -120,7 +126,7 @@ export function getAuthoritativeEngine(): string | null {
 
 // ── Pending command buffer for engine B discovery race ──
 
-const PENDING_BUFFER_MAX = 10;
+const PENDING_BUFFER_MAX = 50;
 const PENDING_MAX_AGE_MS = 5_000;
 
 interface PendingCommand {
@@ -134,7 +140,7 @@ let pendingForNewEngine: PendingCommand[] = [];
 /**
  * Queue a mutation command for replay when a new engine is discovered.
  * Only buffers when we expect dual-engine mode but only have one engine.
- * FIFO eviction at 10 items.
+ * FIFO eviction at 50 items.
  */
 export function bufferPendingCommand(path: string, options: RequestInit): void {
 	if (!expectDualEngine) return;

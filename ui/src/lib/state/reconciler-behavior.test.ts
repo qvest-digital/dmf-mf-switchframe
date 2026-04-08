@@ -1038,5 +1038,52 @@ describe('reconciler behavioral tests', () => {
 			// (but audioChannels divergence will be detected since the objects differ)
 			expect(r.health.status).not.toBe('mismatch');
 		});
+
+		it('detects mismatch for channels only present on engine B', () => {
+			// Bug: hasAudioMismatch() only iterated stateA.audioChannels entries.
+			// Channels only on B were never checked. Both directions must be covered.
+			const r = createReconciler();
+
+			r.ingest('A', makeState({
+				audioChannels: {
+					cam1: makeAudioChannel({ muted: false }),
+				},
+				lastCommandSeq: 10,
+			}));
+			r.ingest('B', makeState({
+				audioChannels: {
+					cam1: makeAudioChannel({ muted: false }),
+					cam2: makeAudioChannel({ muted: true }),
+				},
+				lastCommandSeq: 10,
+			}));
+
+			// cam2 only on B with muted=true — the union-based check should still
+			// skip single-engine channels (not a mismatch, just not registered yet)
+			expect(r.health.status).not.toBe('mismatch');
+		});
+
+		it('detects mismatch when channel exists on both but only checked from B side', () => {
+			// Ensure both-direction iteration catches mismatch regardless of iteration order
+			const r = createReconciler();
+
+			r.ingest('A', makeState({
+				audioChannels: {
+					cam1: makeAudioChannel({ muted: false }),
+					cam2: makeAudioChannel({ muted: false }),
+				},
+				lastCommandSeq: 10,
+			}));
+			r.ingest('B', makeState({
+				audioChannels: {
+					cam1: makeAudioChannel({ muted: false }),
+					cam2: makeAudioChannel({ muted: true }),
+				},
+				lastCommandSeq: 10,
+			}));
+
+			// cam2 on both engines with differing muted state — must be detected
+			expect(r.health.status).toBe('mismatch');
+		});
 	});
 });

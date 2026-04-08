@@ -821,6 +821,51 @@ describe('switch-api dual-engine routing', () => {
 			expect(notifySpy).toHaveBeenCalledWith(expect.stringContaining('retrying'));
 		});
 
+		it('retry uses original body — does NOT regenerate PTP timestamps (H1)', async () => {
+			let timestampCallCount = 0;
+			setDualTimestampProvider((engineId: string) => {
+				timestampCallCount++;
+				return { execute_at: Date.now() * 1000 + timestampCallCount * 1000, engine_id: engineId };
+			});
+
+			let callCount = 0;
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				callCount++;
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-b') && callCount <= 2) {
+					return Promise.resolve(errorResponse(500, 'engine B crashed'));
+				}
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
+			});
+
+			await cut('cam1');
+
+			// Record timestamp call count after initial fan-out
+			const initialTimestampCalls = timestampCallCount;
+			expect(initialTimestampCalls).toBe(2); // one per engine
+
+			// Initial fan-out: 2 calls
+			const initialCalls = fetchCalls.filter(c => c.url.includes('/api/switch/cut'));
+			expect(initialCalls).toHaveLength(2);
+
+			// Capture the body sent to engine B initially
+			const engineBCall = initialCalls.find(c => c.url.includes('engine-b'));
+			const originalBody = engineBCall?.opts.body;
+
+			await vi.advanceTimersByTimeAsync(500);
+
+			// Retry should NOT have called the timestamp provider again
+			expect(timestampCallCount).toBe(initialTimestampCalls);
+
+			// Retry body should match original
+			const allCutCalls = fetchCalls.filter(c => c.url.includes('/api/switch/cut'));
+			expect(allCutCalls).toHaveLength(3);
+			const retryCall = allCutCalls[2];
+			expect(retryCall.opts.body).toBe(originalBody);
+
+			setDualTimestampProvider(null);
+		});
+
 		it('only retries the failed engine, not the successful one', async () => {
 			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
 				fetchCalls.push({ url, opts: opts ?? {} });
@@ -1626,8 +1671,8 @@ describe('switch-api dual-engine routing', () => {
 			expect(isTimedPath('/api/captions/clear')).toBe(true);
 		});
 
-		it('caption mode is NOT a timed path', () => {
-			expect(isTimedPath('/api/captions/mode')).toBe(false);
+		it('caption mode IS a timed path', () => {
+			expect(isTimedPath('/api/captions/mode')).toBe(true);
 		});
 
 		it('DVE slot update is a timed path', () => {

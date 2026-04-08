@@ -928,6 +928,7 @@ func (a *App) captureFullSnapshot() internal.FullStateSnapshot {
 			snap.Sources[key] = internal.SourceConfigSnapshot{
 				Label:    info.Label,
 				Position: info.Position,
+				DelayMs:  info.DelayMs,
 			}
 		}
 	}

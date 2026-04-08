@@ -186,10 +186,49 @@ func TestQueue_DedupPruneKeepsRecent(t *testing.T) {
 		t.Fatalf("expected ErrDuplicateCommand for mid-range seq=60000, got %v", err)
 	}
 
-	// Very old command (seq=1) should have been pruned and can be re-enqueued.
+	// Very old command (seq=1) was pruned from the map but must still be
+	// rejected — the prunedHighWater mark prevents re-acceptance.
 	err = q.Enqueue(cmdqueue.Command{Seq: 1, Action: "test"})
+	if !errors.Is(err, cmdqueue.ErrDuplicateCommand) {
+		t.Fatalf("expected ErrDuplicateCommand for pruned seq=1, got %v", err)
+	}
+}
+
+// TestQueue_DedupAfterPrune verifies that commands at or below the pruned
+// high-water mark are rejected, preventing double execution of retransmitted
+// commands whose Seq was pruned from the seen map.
+func TestQueue_DedupAfterPrune(t *testing.T) {
+	q := cmdqueue.New(func() int64 { return 1_000_000 })
+
+	// Enqueue maxSeen+10 commands to trigger pruning.
+	// maxSeen = 100_000, so we enqueue 100_010 commands.
+	const count = 100_010
+	for i := uint64(1); i <= count; i++ {
+		if err := q.Enqueue(cmdqueue.Command{Seq: i, Action: "test"}); err != nil {
+			t.Fatalf("enqueue seq=%d: %v", i, err)
+		}
+	}
+
+	// After pruning, minSeq = 100010 - 50000 = 50010.
+	// Commands at or below that threshold must be rejected.
+	for _, seq := range []uint64{1, 5, 100, 1000, 50_010} {
+		err := q.Enqueue(cmdqueue.Command{Seq: seq, Action: "retry"})
+		if !errors.Is(err, cmdqueue.ErrDuplicateCommand) {
+			t.Errorf("seq=%d: expected ErrDuplicateCommand, got %v", seq, err)
+		}
+	}
+
+	// Commands above the high-water mark that are new should still succeed.
+	err := q.Enqueue(cmdqueue.Command{Seq: count + 1, Action: "new"})
 	if err != nil {
-		t.Fatalf("expected seq=1 to be accepted after prune, got %v", err)
+		t.Fatalf("expected new command seq=%d to succeed, got %v", count+1, err)
+	}
+
+	// Commands above the high-water mark that are in the seen map should
+	// still be rejected as duplicates.
+	err = q.Enqueue(cmdqueue.Command{Seq: count, Action: "dup"})
+	if !errors.Is(err, cmdqueue.ErrDuplicateCommand) {
+		t.Fatalf("expected ErrDuplicateCommand for recent seq=%d, got %v", count, err)
 	}
 }
 

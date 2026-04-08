@@ -1481,9 +1481,55 @@ describe('createReconciler', () => {
 			expect(graphicsDiv).toBeUndefined();
 		});
 
-		it('skips layer pairs where one engine has no matching layer index', () => {
+		it('detects divergence when layer counts differ', () => {
 			const r = createReconciler();
-			// A has 2 layers, B has 1 layer — index 1 has no counterpart in B
+			// A has 3 layers, B has 1 layer — layer count mismatch is a divergence
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				graphics: {
+					layers: [
+						{ id: 1, active: true, zOrder: 0, x: 0, y: 0, width: 1920, height: 1080 },
+						{ id: 2, active: true, zOrder: 1, x: 0, y: 0, width: 1920, height: 1080 },
+						{ id: 3, active: false, zOrder: 2, x: 0, y: 0, width: 1920, height: 1080 },
+					],
+				},
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 5,
+				graphics: {
+					layers: [{ id: 1, active: true, zOrder: 0, x: 0, y: 0, width: 1920, height: 1080 }],
+				},
+			}));
+			const divs = r.health.divergences;
+			const graphicsDiv = divs.find((d) => d.field === 'graphics.layers');
+			expect(graphicsDiv).toBeDefined();
+			expect(graphicsDiv?.engineA).toBe('3 layers');
+			expect(graphicsDiv?.engineB).toBe('1 layers');
+		});
+
+		it('detects divergence when A has layers but B has none', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 5,
+				graphics: {
+					layers: [
+						{ id: 1, active: true, zOrder: 0, x: 0, y: 0, width: 1920, height: 1080 },
+					],
+				},
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 5,
+				graphics: { layers: [] },
+			}));
+			const divs = r.health.divergences;
+			const graphicsDiv = divs.find((d) => d.field === 'graphics.layers');
+			expect(graphicsDiv).toBeDefined();
+			expect(graphicsDiv?.engineA).toBe('1 layers');
+			expect(graphicsDiv?.engineB).toBe('0 layers');
+		});
+
+		it('still detects per-layer divergence when counts match', () => {
+			const r = createReconciler();
 			r.ingest('A', makeState({
 				lastCommandSeq: 5,
 				graphics: {
@@ -1496,13 +1542,17 @@ describe('createReconciler', () => {
 			r.ingest('B', makeState({
 				lastCommandSeq: 5,
 				graphics: {
-					layers: [{ id: 1, active: true, zOrder: 0, x: 0, y: 0, width: 1920, height: 1080 }],
+					layers: [
+						{ id: 1, active: true, zOrder: 0, x: 0, y: 0, width: 1920, height: 1080 },
+						{ id: 2, active: false, zOrder: 1, x: 0, y: 0, width: 1920, height: 1080 },
+					],
 				},
 			}));
-			// Extra layer in A but B has no counterpart — should not report divergence
 			const divs = r.health.divergences;
 			const graphicsDiv = divs.find((d) => d.field === 'graphics.layers');
-			expect(graphicsDiv).toBeUndefined();
+			expect(graphicsDiv).toBeDefined();
+			expect((graphicsDiv?.engineA as any)?.active).toBe(true);
+			expect((graphicsDiv?.engineB as any)?.active).toBe(false);
 		});
 	});
 
@@ -1944,6 +1994,47 @@ describe('createReconciler', () => {
 
 			// Lock should be cleared because A disconnected, B is authoritative
 			expect(r.health.authoritative).toBe('B');
+		});
+
+		it('transition lock uses fresh timestamp, not stale lastTickTime', () => {
+			vi.useFakeTimers();
+			const r = createReconciler();
+
+			// Both engines connected, B is clearly more qualified (higher seq)
+			r.ingest('A', makeState({ lastCommandSeq: 5, inTransition: false }));
+			r.ingest('B', makeState({ lastCommandSeq: 10, inTransition: false }));
+			r.tick();
+			expect(r.health.authoritative).toBe('B');
+
+			// Advance time well past stale threshold so lastTickTime is old.
+			// DO NOT call tick() — this leaves lastTickTime stale.
+			vi.advanceTimersByTime(STALE_THRESHOLD_MS + 1000);
+
+			// Engine A sends a fresh update at the new time (Date.now() is current).
+			// But lastTickTime is 6+ seconds ago, so the $derived `authoritative`
+			// would consider A stale (lastSeenA was set before the time advance).
+			// Then B sends transition start.
+			r.ingest('A', makeState({ lastCommandSeq: 10, inTransition: false }));
+			// Now A's lastSeenA is fresh (just set by ingest).
+
+			// B starts transition — lock should use Date.now() to evaluate authority,
+			// seeing both engines as fresh (A was just ingested, B is being ingested now).
+			r.ingest('B', makeState({ lastCommandSeq: 10, inTransition: true, transitionPosition: 0.1 }));
+
+			// With both engines fresh at equal seq (no RTT set), A wins ties.
+			// If the lock used the stale lastTickTime ($derived `authoritative`),
+			// it might have computed authority wrong (e.g., thinking A was stale).
+			// The inline Date.now() computation should correctly determine both are fresh.
+			//
+			// Now trigger tick to update lastTickTime and check final authority.
+			// The lock was set correctly at ingest time, so it should stick.
+			r.tick();
+
+			// At equal seq with no RTT, A wins. The transition lock should have
+			// been set to A (both engines effective, A wins tie-break).
+			expect(r.health.authoritative).toBe('A');
+
+			vi.useRealTimers();
 		});
 	});
 });

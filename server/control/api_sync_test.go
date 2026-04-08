@@ -162,6 +162,7 @@ func (m *mockApplyTarget) SetGraphicsLayerRect(_ int, _, _, _, _ int) error     
 func (m *mockApplyTarget) SetDVELayout(_ internal.LayoutSnapshot) error                  { return nil }
 func (m *mockApplyTarget) SetSourceLabel(_ context.Context, _, _ string) error           { return nil }
 func (m *mockApplyTarget) SetSourcePosition(_ string, _ int) error                       { return nil }
+func (m *mockApplyTarget) SetSourceDelay(_ string, _ int) error                          { return nil }
 func (m *mockApplyTarget) SetUpstreamKey(_ string, _ internal.UpstreamKeySnapshot) error { return nil }
 func (m *mockApplyTarget) SetCaptionMode(_ string) error                                 { return nil }
 func (m *mockApplyTarget) SetColorGrade(_ string, _ float32) error                       { return nil }

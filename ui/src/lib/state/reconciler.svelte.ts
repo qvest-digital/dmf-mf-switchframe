@@ -197,9 +197,21 @@ export function createReconciler() {
 				firstSeenB = now;
 			}
 		}
-		// Track transition lock: lock authority when transition starts, release when it ends
+		// Track transition lock: lock authority when transition starts, release when it ends.
+		// Compute authority inline using Date.now() instead of reading the $derived `authoritative`
+		// which depends on lastTickTime (updated every 200ms). Between ticks, the derived could
+		// use a stale timestamp for staleness checks.
 		if (update.inTransition && !prevInTransition && transitionLockEngine === null) {
-			transitionLockEngine = authoritative;
+			const lockNow = Date.now();
+			const effectiveA = stateA !== null && connectedA && !(lastSeenA > 0 && lockNow - lastSeenA > STALE_THRESHOLD_MS);
+			const effectiveB = stateB !== null && connectedB && !(lastSeenB > 0 && lockNow - lastSeenB > STALE_THRESHOLD_MS);
+			if (effectiveA && !effectiveB) transitionLockEngine = 'A';
+			else if (effectiveB && !effectiveA) transitionLockEngine = 'B';
+			else {
+				const seqA = stateA?.lastCommandSeq ?? 0;
+				const seqB = stateB?.lastCommandSeq ?? 0;
+				transitionLockEngine = seqA >= seqB ? 'A' : 'B';
+			}
 		}
 		if (!update.inTransition && prevInTransition) {
 			transitionLockEngine = null;
@@ -322,17 +334,17 @@ export function createReconciler() {
 		if (stateA.recording?.active !== stateB.recording?.active) {
 			result.push({ field: 'recording', engineA: stateA.recording, engineB: stateB.recording });
 		}
-		// Graphics layer health divergence (active state or html5Status differs)
+		// Graphics layer health divergence (layer count or active state/html5Status differs)
 		const layersA = stateA.graphics?.layers ?? [];
 		const layersB = stateB.graphics?.layers ?? [];
-		const maxLayers = Math.max(layersA.length, layersB.length);
-		for (let i = 0; i < maxLayers; i++) {
-			const lA = layersA[i];
-			const lB = layersB[i];
-			if (!lA || !lB) continue;
-			if (lA.active !== lB.active || lA.html5Status !== lB.html5Status) {
-				result.push({ field: 'graphics.layers', engineA: lA, engineB: lB });
-				break; // one divergence entry is sufficient
+		if (layersA.length !== layersB.length) {
+			result.push({ field: 'graphics.layers', engineA: `${layersA.length} layers`, engineB: `${layersB.length} layers` });
+		} else {
+			for (let i = 0; i < layersA.length; i++) {
+				if (layersA[i].active !== layersB[i].active || layersA[i].html5Status !== layersB[i].html5Status) {
+					result.push({ field: 'graphics.layers', engineA: layersA[i], engineB: layersB[i] });
+					break; // one divergence entry is sufficient
+				}
 			}
 		}
 		// Destination divergence: compare count of active (non-error, non-empty state) destinations
@@ -392,12 +404,17 @@ export function createReconciler() {
 		return result;
 	});
 
-	/** Check if audio mute/afv state differs between engines. */
+	/** Check if audio mute/afv state differs between engines (union of both channel sets). */
 	function hasAudioMismatch(): boolean {
 		if (!stateA?.audioChannels || !stateB?.audioChannels) return false;
-		for (const [key, chA] of Object.entries(stateA.audioChannels)) {
+		const allKeys = new Set([
+			...Object.keys(stateA.audioChannels),
+			...Object.keys(stateB.audioChannels),
+		]);
+		for (const key of allKeys) {
+			const chA = stateA.audioChannels[key];
 			const chB = stateB.audioChannels[key];
-			if (!chB) continue;
+			if (!chA || !chB) continue;
 			if (chA.muted !== chB.muted || chA.afv !== chB.afv) return true;
 		}
 		return false;

@@ -194,14 +194,25 @@ describe('ClockSync', () => {
 			expect(sync.getOffsetDivergence()).toBe(3_000_000);
 		});
 
-		it('returns 0 when one offset is stale (>60s)', () => {
+		it('returns 0 when one offset is stale (>20s)', () => {
 			vi.useFakeTimers();
 			const sync = new ClockSync();
 			sync.updateOffset('A', 5_000_000);
-			// Advance past 60s to make A stale
-			vi.advanceTimersByTime(61_000);
+			// Advance past 20s to make A stale
+			vi.advanceTimersByTime(21_000);
 			sync.updateOffset('B', 8_000_000);
 			expect(sync.getOffsetDivergence()).toBe(0);
+			vi.useRealTimers();
+		});
+
+		it('considers offsets valid at exactly 20s', () => {
+			vi.useFakeTimers();
+			const sync = new ClockSync();
+			sync.updateOffset('A', 5_000_000);
+			vi.advanceTimersByTime(20_000);
+			sync.updateOffset('B', 8_000_000);
+			// A is exactly 20s old — still valid (<=)
+			expect(sync.getOffsetDivergence()).toBe(3_000_000);
 			vi.useRealTimers();
 		});
 	});
@@ -213,14 +224,14 @@ describe('ClockSync', () => {
 			expect(sync.isClockDiverged()).toBe(false);
 		});
 
-		it('returns false when one offset is stale (>60s)', () => {
+		it('returns false when one offset is stale (>20s)', () => {
 			vi.useFakeTimers();
 			const sync = new ClockSync();
 			sync.updateRTT('A', 10_000);
 			sync.updateRTT('B', 10_000);
 			sync.updateOffset('A', 5_000_000);
-			// Advance past 60s to make A stale
-			vi.advanceTimersByTime(61_000);
+			// Advance past 20s to make A stale
+			vi.advanceTimersByTime(21_000);
 			sync.updateOffset('B', 100_000_000); // big divergence but A is stale
 			expect(sync.isClockDiverged()).toBe(false);
 			vi.useRealTimers();
@@ -384,7 +395,7 @@ describe('ClockSync', () => {
 	});
 
 	describe('ptpNow staleness filtering', () => {
-		it('excludes stale offsets older than 60s', () => {
+		it('excludes stale offsets older than 20s', () => {
 			vi.useFakeTimers({ now: 1_000_000 }); // Date.now() = 1_000_000 ms
 			const sync = new ClockSync();
 
@@ -404,8 +415,8 @@ describe('ClockSync', () => {
 			const localBefore = Date.now() * 1000;
 			expect(ptpBefore).toBe(Math.round(localBefore + 100_000));
 
-			// Advance 61s to make the offset stale
-			vi.advanceTimersByTime(61_000);
+			// Advance 21s to make the offset stale
+			vi.advanceTimersByTime(21_000);
 
 			// Now ptpNow should return 0 (no valid offsets, safer than stale time)
 			const ptpAfter = sync.ptpNow();
@@ -447,8 +458,8 @@ describe('ClockSync', () => {
 			const localBoth = Date.now() * 1000;
 			expect(ptpBoth).toBe(Math.round(localBoth + 150_000));
 
-			// Advance 55s, then refresh only B via a new ping round
-			vi.advanceTimersByTime(55_000);
+			// Advance 15s, then refresh only B via a new ping round
+			vi.advanceTimersByTime(15_000);
 
 			// Restart sync for B only to get a fresh pingSentTimes entry
 			sync.stopPeriodicSync();
@@ -456,16 +467,16 @@ describe('ClockSync', () => {
 			// B gets seq 2 (pingSeq continues from 2)
 
 			vi.advanceTimersByTime(5);
-			// performance.now() before this advance was 55_005, so sentAt = 55_005_000 µs
-			const newSentAt = 55_005_000;
+			// performance.now() before this advance was 15_005, so sentAt = 15_005_000 µs
+			const newSentAt = 15_005_000;
 			const newRtt = 5_000;
 			sync.handlePong('B', buildPongHelper(2, newSentAt + newRtt / 2 + 200_000));
 
-			// Now A's age is ~55s (still valid), B's age is fresh
-			// Wait 6 more seconds to push A past 60s
+			// Now A's age is ~15s (still valid), B's age is fresh
+			// Wait 6 more seconds to push A past 20s
 			vi.advanceTimersByTime(6_000);
 
-			// A's age is now ~61s (stale), B's age is ~6s (valid)
+			// A's age is now ~21s (stale), B's age is ~6s (valid)
 			const ptpOnlyB = sync.ptpNow();
 			const localOnlyB = Date.now() * 1000;
 			const bOffset = sync.getOffset('B');
@@ -497,6 +508,26 @@ describe('ClockSync', () => {
 			sync.updateOffset('A', -5_000_000);
 			sync.updateOffset('B', 5_000_000);
 			expect(sync.getOffsetDivergence()).toBe(10_000_000);
+		});
+
+		it('uses max-min for 3+ engines (not hardcoded for 2)', () => {
+			const sync = new ClockSync();
+			sync.updateOffset('A', 1_000_000);
+			sync.updateOffset('B', 5_000_000);
+			sync.updateOffset('C' as any, 3_000_000);
+			// max(5M) - min(1M) = 4M, not abs(A-B) = 4M (coincidentally same)
+			// Use offset values where max-min differs from abs(first-second)
+			expect(sync.getOffsetDivergence()).toBe(4_000_000);
+		});
+
+		it('returns max-min divergence for 3 engines where order matters', () => {
+			const sync = new ClockSync();
+			// If we used abs(validOffsets[0] - validOffsets[1]) we'd get abs(1M - 3M) = 2M
+			// But correct max-min should be 5M - 1M = 4M
+			sync.updateOffset('A', 1_000_000);
+			sync.updateOffset('B', 3_000_000);
+			sync.updateOffset('C' as any, 5_000_000);
+			expect(sync.getOffsetDivergence()).toBe(4_000_000);
 		});
 	});
 
@@ -654,7 +685,7 @@ describe('ClockSync', () => {
 			expect(sync.isConverged()).toBe(true);
 		});
 
-		it('returns false when an offset is stale (>60s)', () => {
+		it('returns false when an offset is stale (>20s)', () => {
 			vi.useFakeTimers();
 			const sync = new ClockSync();
 			sync.addEngine('A');
@@ -665,8 +696,8 @@ describe('ClockSync', () => {
 			sync.updateOffset('B', 6_000);
 			expect(sync.isConverged()).toBe(true);
 
-			// Advance past stale threshold (60s)
-			vi.advanceTimersByTime(61_000);
+			// Advance past stale threshold (20s)
+			vi.advanceTimersByTime(21_000);
 			expect(sync.isConverged()).toBe(false);
 			vi.useRealTimers();
 		});

@@ -361,21 +361,27 @@ async function dualRequest<T>(url: string, options: RequestInit | undefined, eng
 		return opts.body;
 	});
 
+	// Per-engine PTP timestamp injection (before fan-out so bodies[] has final values for retry)
+	for (let i = 0; i < availableEngines.length; i++) {
+		const engine = availableEngines[i];
+		const engineBody = bodies[i];
+		if (isTimedPath(url) && dualTimestampProvider && engineBody && typeof engineBody === 'string') {
+			try {
+				const ts = dualTimestampProvider(engine.id);
+				const nowUs = Date.now() * 1000;
+				if (ts.execute_at > nowUs - 5_000_000 && ts.execute_at < nowUs + 5_000_000) {
+					const parsed = JSON.parse(engineBody as string);
+					bodies[i] = JSON.stringify({ ...parsed, ...ts });
+				} else if (ts.execute_at === 0) {
+					console.warn(`[dual-api] Clock sync not converged for engine ${engine.id} — sending ${url} without PTP timestamp`);
+				}
+			} catch { /* send without timestamps */ }
+		}
+	}
+
 	const results = await Promise.allSettled(
 		availableEngines.map((engine, i) => {
-			let engineBody = bodies[i];
-			// Per-engine PTP timestamp injection
-			if (isTimedPath(url) && dualTimestampProvider && engineBody && typeof engineBody === 'string') {
-				try {
-					const ts = dualTimestampProvider(engine.id);
-					const nowUs = Date.now() * 1000;
-					if (ts.execute_at > nowUs - 5_000_000 && ts.execute_at < nowUs + 5_000_000) {
-						const parsed = JSON.parse(engineBody as string);
-						engineBody = JSON.stringify({ ...parsed, ...ts });
-					}
-				} catch { /* send without timestamps */ }
-			}
-			return fetchWithTimeout(`${engine.url}${url}`, { ...opts, body: engineBody });
+			return fetchWithTimeout(`${engine.url}${url}`, { ...opts, body: bodies[i] });
 		})
 	);
 
@@ -418,22 +424,14 @@ async function dualRequest<T>(url: string, options: RequestInit | undefined, eng
 		if (!isNonIdempotent(url)) {
 			partialFailureNotify?.(`Command failed on Engine ${failedEngineIds.join(', ')} — retrying...`);
 
-			// Retry failed engines once after 500ms (best-effort) with fresh PTP timestamps
+			// Retry failed engines once after 500ms (best-effort) using original body
+			// (preserves the original PTP timestamp to avoid frame drift)
 			setTimeout(async () => {
 				for (let i = 0; i < results.length; i++) {
 					const ok = results[i].status === 'fulfilled' && (results[i] as PromiseFulfilledResult<Response>).value.ok;
 					if (!ok) {
-						let retryBody = bodies[i];
-						// Re-inject fresh PTP timestamp for timed paths (original may be stale)
-						if (isTimedPath(url) && dualTimestampProvider && retryBody && typeof retryBody === 'string') {
-							try {
-								const ts = dualTimestampProvider(availableEngines[i].id);
-								const parsed = JSON.parse(retryBody as string);
-								retryBody = JSON.stringify({ ...parsed, ...ts });
-							} catch { /* send without fresh timestamps */ }
-						}
 						try {
-							await fetchWithTimeout(`${availableEngines[i].url}${url}`, { ...opts, body: retryBody });
+							await fetchWithTimeout(`${availableEngines[i].url}${url}`, { ...opts, body: bodies[i] });
 						} catch { /* retry is best-effort */ }
 					}
 				}
@@ -536,21 +534,26 @@ async function dualFetch(url: string, options: RequestInit): Promise<Response> {
 			}
 			return options.body;
 		});
+		// Per-engine PTP timestamp injection (before fan-out so bodies[] has final values for retry)
+		for (let i = 0; i < availableEngines.length; i++) {
+			const engine = availableEngines[i];
+			const engineBody = bodies[i];
+			if (isTimedPath(url) && dualTimestampProvider && engineBody && typeof engineBody === 'string') {
+				try {
+					const ts = dualTimestampProvider(engine.id);
+					const nowUs = Date.now() * 1000;
+					if (ts.execute_at > nowUs - 5_000_000 && ts.execute_at < nowUs + 5_000_000) {
+						const parsed = JSON.parse(engineBody as string);
+						bodies[i] = JSON.stringify({ ...parsed, ...ts });
+					} else if (ts.execute_at === 0) {
+						console.warn(`[dual-api] Clock sync not converged for engine ${engine.id} — sending ${url} without PTP timestamp`);
+					}
+				} catch { /* send without timestamps */ }
+			}
+		}
 		const results = await Promise.allSettled(
 			availableEngines.map((engine, i) => {
-				let engineBody = bodies[i];
-				// Per-engine PTP timestamp injection (mirrors dualRequest)
-				if (isTimedPath(url) && dualTimestampProvider && engineBody && typeof engineBody === 'string') {
-					try {
-						const ts = dualTimestampProvider(engine.id);
-						const nowUs = Date.now() * 1000;
-						if (ts.execute_at > nowUs - 5_000_000 && ts.execute_at < nowUs + 5_000_000) {
-							const parsed = JSON.parse(engineBody as string);
-							engineBody = JSON.stringify({ ...parsed, ...ts });
-						}
-					} catch { /* send without timestamps */ }
-				}
-				return fetchWithTimeout(`${engine.url}${url}`, { ...opts, body: engineBody });
+				return fetchWithTimeout(`${engine.url}${url}`, { ...opts, body: bodies[i] });
 			})
 		);
 
@@ -591,21 +594,14 @@ async function dualFetch(url: string, options: RequestInit): Promise<Response> {
 			if (!isNonIdempotent(url)) {
 				partialFailureNotify?.(`Command failed on Engine ${failedEngineIds.join(', ')} — retrying...`);
 
-				// Retry failed engines once after 500ms (best-effort) with fresh PTP timestamps
+				// Retry failed engines once after 500ms (best-effort) using original body
+				// (preserves the original PTP timestamp to avoid frame drift)
 				setTimeout(async () => {
 					for (let i = 0; i < results.length; i++) {
 						const ok = results[i].status === 'fulfilled' && (results[i] as PromiseFulfilledResult<Response>).value.ok;
 						if (!ok) {
-							let retryBody = bodies[i];
-							if (isTimedPath(url) && dualTimestampProvider && retryBody && typeof retryBody === 'string') {
-								try {
-									const ts = dualTimestampProvider(availableEngines[i].id);
-									const parsed = JSON.parse(retryBody as string);
-									retryBody = JSON.stringify({ ...parsed, ...ts });
-								} catch { /* send without fresh timestamps */ }
-							}
 							try {
-								await fetchWithTimeout(`${availableEngines[i].url}${url}`, { ...opts, body: retryBody });
+								await fetchWithTimeout(`${availableEngines[i].url}${url}`, { ...opts, body: bodies[i] });
 							} catch { /* retry is best-effort */ }
 						}
 					}

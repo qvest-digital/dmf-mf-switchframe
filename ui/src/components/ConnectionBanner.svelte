@@ -45,7 +45,10 @@
 
 	const otherEngine = $derived(servingEngine === 'A' ? 'B' : 'A');
 	const showEngineFallback = $derived(
-		engineFallbackUrl != null && connectionState === 'disconnected'
+		engineFallbackUrl != null && (
+			connectionState === 'disconnected' ||
+			(isDualMode && engineStatus?.engineDown != null && !engineStatus?.restored)
+		)
 	);
 
 	// Build full fallback URL preserving current query params and hash.
@@ -74,7 +77,7 @@
 	const survivingEngine = $derived(engineStatus?.engineDown === 'A' ? 'B' : 'A');
 
 	const showEngineWarning = $derived(
-		isDualMode && engineStatus?.engineDown != null && engineStatus?.reason != null && !engineStatus?.restored
+		isDualMode && engineStatus?.engineDown != null && engineStatus?.reason != null && !engineStatus?.restored && !showEngineFallback
 	);
 
 	let disconnectedDuration = $state(0);

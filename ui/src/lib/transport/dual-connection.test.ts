@@ -1123,4 +1123,94 @@ describe('DualConnectionManager', () => {
 			}).not.toThrow();
 		});
 	});
+
+	describe('initial load timeout', () => {
+		beforeEach(() => {
+			vi.useFakeTimers();
+		});
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		it('fires onInitialLoadError after 15s when no engines respond', async () => {
+			const onInitialLoadError = vi.fn();
+			const mgr = new DualConnectionManager(makeDualConfig({ onInitialLoadError }));
+			await mgr.start();
+
+			expect(onInitialLoadError).not.toHaveBeenCalled();
+
+			vi.advanceTimersByTime(15_000);
+
+			expect(onInitialLoadError).toHaveBeenCalledOnce();
+			expect(onInitialLoadError).toHaveBeenCalledWith('All engines timed out after 15 seconds');
+		});
+
+		it('does not fire timeout if initial load completes before 15s', async () => {
+			const onInitialLoadError = vi.fn();
+			const onInitialLoadComplete = vi.fn();
+			const mgr = new DualConnectionManager(makeDualConfig({ onInitialLoadError, onInitialLoadComplete }));
+			await mgr.start();
+
+			// Engine A loads successfully
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			instanceA._config.onInitialLoadComplete();
+
+			expect(onInitialLoadComplete).toHaveBeenCalledOnce();
+
+			// Advance past timeout
+			vi.advanceTimersByTime(15_000);
+
+			// Error should NOT fire — initial load already succeeded
+			expect(onInitialLoadError).not.toHaveBeenCalled();
+		});
+
+		it('completes load via timeout if only one engine loaded within 15s', async () => {
+			const onInitialLoadError = vi.fn();
+			const onInitialLoadComplete = vi.fn();
+			const mgr = new DualConnectionManager(makeDualConfig({ onInitialLoadError, onInitialLoadComplete }));
+			await mgr.start();
+
+			// Only engine A sends a state update (counts as loaded), but never fires onInitialLoadComplete
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			instanceA.simulateStateUpdate(makeState());
+
+			vi.advanceTimersByTime(15_000);
+
+			// Should have completed (not errored) since one engine loaded
+			expect(onInitialLoadComplete).toHaveBeenCalledOnce();
+			expect(onInitialLoadError).not.toHaveBeenCalled();
+		});
+
+		it('clears timeout on stop()', async () => {
+			const onInitialLoadError = vi.fn();
+			const mgr = new DualConnectionManager(makeDualConfig({ onInitialLoadError }));
+			await mgr.start();
+
+			mgr.stop();
+			vi.advanceTimersByTime(15_000);
+
+			expect(onInitialLoadError).not.toHaveBeenCalled();
+		});
+
+		it('starts pending engines when timeout completes load', async () => {
+			const onInitialLoadComplete = vi.fn();
+			const mgr = new DualConnectionManager(makeSingleConfig({ onInitialLoadComplete }));
+			await mgr.start();
+
+			// Engine A sends state (loaded) but onInitialLoadComplete never fires from ConnectionManager
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			instanceA.simulateStateUpdate(makeState());
+
+			// Late-bind engine B while initial load is still "in progress"
+			mgr.addEngine('B', 'https://engine-b.example.com');
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+			expect(instanceB.start).not.toHaveBeenCalled();
+
+			// Timeout fires, completes load, flushes pending starts
+			vi.advanceTimersByTime(15_000);
+
+			expect(onInitialLoadComplete).toHaveBeenCalledOnce();
+			expect(instanceB.start).toHaveBeenCalledOnce();
+		});
+	});
 });

@@ -68,6 +68,18 @@ export function createDualFastControl(controls: FastControl[]): FastControl {
 			safeCall(controls, c => c.writeDatagram(data));
 		},
 
+		commitTransitionPosition(position: number) {
+			for (const c of controls) {
+				try { c.commitTransitionPosition?.(position); } catch { /* engine down */ }
+			}
+		},
+
+		commitDVESlotTransform(slotId: number, posX: number, posY: number, width: number, height: number, rotation: number, opacity: number) {
+			for (const c of controls) {
+				try { c.commitDVESlotTransform?.(slotId, posX, posY, width, height, rotation, opacity); } catch { /* engine down */ }
+			}
+		},
+
 		close() {
 			safeCall(controls, c => c.close());
 		},

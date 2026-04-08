@@ -5,6 +5,8 @@ import { isSourceStalled, clearAllStalls } from './source-errors.svelte';
 // Mock all Prism modules since they use Web Workers, WebCodecs,
 // AudioWorklet, and SharedArrayBuffer -- none available in jsdom.
 
+const mockVideoDecoderInstances: Array<{ flush: ReturnType<typeof vi.fn>; reset: ReturnType<typeof vi.fn> }> = [];
+
 vi.mock('$lib/prism/video-decoder', () => {
 	return {
 		PrismVideoDecoder: class MockPrismVideoDecoder {
@@ -12,7 +14,11 @@ vi.mock('$lib/prism/video-decoder', () => {
 			configure = vi.fn();
 			decode = vi.fn();
 			reset = vi.fn();
+			flush = vi.fn();
 			getDiagnostics = vi.fn().mockResolvedValue({});
+			constructor() {
+				mockVideoDecoderInstances.push(this);
+			}
 		},
 	};
 });
@@ -77,6 +83,7 @@ vi.mock('$lib/prism/moq-transport', () => {
 describe('MediaPipeline', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		mockVideoDecoderInstances.length = 0;
 	});
 
 	it('should create a pipeline', () => {
@@ -193,12 +200,30 @@ describe('MediaPipeline', () => {
 		// Should not throw
 	});
 
-	it('should disconnect source transport', () => {
+	it('should disconnect source transport and flush decoder', () => {
 		const pipeline = createMediaPipeline();
 		pipeline.addSource('cam1');
 		pipeline.connectSource('cam1');
+
+		const decoder = mockVideoDecoderInstances[0];
+		expect(decoder.flush).not.toHaveBeenCalled();
+
 		pipeline.disconnectSource('cam1');
-		// Should not throw
+
+		expect(decoder.flush).toHaveBeenCalledTimes(1);
+	});
+
+	it('should tolerate decoder flush error during disconnect', () => {
+		const pipeline = createMediaPipeline();
+		pipeline.addSource('cam1');
+		pipeline.connectSource('cam1');
+
+		const decoder = mockVideoDecoderInstances[0];
+		decoder.flush.mockImplementation(() => { throw new Error('decoder closed'); });
+
+		// Should not throw even when flush fails
+		pipeline.disconnectSource('cam1');
+		expect(decoder.flush).toHaveBeenCalledTimes(1);
 	});
 
 	it('should be safe to disconnect unconnected source', () => {

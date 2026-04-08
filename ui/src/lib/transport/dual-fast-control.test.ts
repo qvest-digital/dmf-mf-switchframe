@@ -160,4 +160,66 @@ describe('createDualFastControl', () => {
 		expect(() => dual.close()).not.toThrow();
 		expect(b.close).toHaveBeenCalled();
 	});
+
+	it('fans out commitTransitionPosition to all controls', () => {
+		const a = createMockFastControl();
+		const b = createMockFastControl();
+		a.commitTransitionPosition = vi.fn();
+		b.commitTransitionPosition = vi.fn();
+		const dual = createDualFastControl([a, b]);
+
+		dual.commitTransitionPosition(0.75);
+		expect(a.commitTransitionPosition).toHaveBeenCalledWith(0.75);
+		expect(b.commitTransitionPosition).toHaveBeenCalledWith(0.75);
+	});
+
+	it('fans out commitDVESlotTransform to all controls', () => {
+		const a = createMockFastControl();
+		const b = createMockFastControl();
+		a.commitDVESlotTransform = vi.fn();
+		b.commitDVESlotTransform = vi.fn();
+		const dual = createDualFastControl([a, b]);
+
+		dual.commitDVESlotTransform(1, 0.1, 0.2, 0.5, 0.5, 45, 0.8);
+		expect(a.commitDVESlotTransform).toHaveBeenCalledWith(1, 0.1, 0.2, 0.5, 0.5, 45, 0.8);
+		expect(b.commitDVESlotTransform).toHaveBeenCalledWith(1, 0.1, 0.2, 0.5, 0.5, 45, 0.8);
+	});
+
+	it('commit continues to B even when A throws', () => {
+		const a = createMockFastControl();
+		const b = createMockFastControl();
+		a.commitTransitionPosition = vi.fn().mockImplementation(() => {
+			throw new Error('A is dead');
+		});
+		b.commitTransitionPosition = vi.fn();
+		const dual = createDualFastControl([a, b]);
+
+		expect(() => dual.commitTransitionPosition(0.5)).not.toThrow();
+		expect(a.commitTransitionPosition).toHaveBeenCalledWith(0.5);
+		expect(b.commitTransitionPosition).toHaveBeenCalledWith(0.5);
+	});
+
+	it('commitDVESlotTransform continues to B even when A throws', () => {
+		const a = createMockFastControl();
+		const b = createMockFastControl();
+		a.commitDVESlotTransform = vi.fn().mockImplementation(() => {
+			throw new Error('A is dead');
+		});
+		b.commitDVESlotTransform = vi.fn();
+		const dual = createDualFastControl([a, b]);
+
+		expect(() => dual.commitDVESlotTransform(0, 0, 0, 1, 1, 0, 1)).not.toThrow();
+		expect(a.commitDVESlotTransform).toHaveBeenCalledWith(0, 0, 0, 1, 1, 0, 1);
+		expect(b.commitDVESlotTransform).toHaveBeenCalledWith(0, 0, 0, 1, 1, 0, 1);
+	});
+
+	it('commit works when controls have no commit methods (optional)', () => {
+		const a = createMockFastControl();
+		const b = createMockFastControl();
+		// Neither a nor b have commit methods — should not throw
+		const dual = createDualFastControl([a, b]);
+
+		expect(() => dual.commitTransitionPosition(0.5)).not.toThrow();
+		expect(() => dual.commitDVESlotTransform(0, 0, 0, 1, 1, 0, 1)).not.toThrow();
+	});
 });

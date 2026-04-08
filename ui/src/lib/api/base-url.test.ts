@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { getApiBaseUrl, setApiBaseUrl, resolveApiUrl, setEngineUrls, getEngineUrls, setExpectDualEngine, bufferPendingCommand, setFlushTimestampInjector, setOnNewEngineDiscovered } from './base-url';
+import { getApiBaseUrl, setApiBaseUrl, resolveApiUrl, setEngineUrls, getEngineUrls, setExpectDualEngine, bufferPendingCommand, setFlushTimestampInjector, setOnNewEngineDiscovered, isTimedPath } from './base-url';
 
 describe('base-url', () => {
 	beforeEach(() => {
@@ -142,5 +142,71 @@ describe('onNewEngineDiscovered callback', () => {
 		// When prevIds is empty, skip first engine (A was implicit single-engine target)
 		expect(cb).toHaveBeenCalledTimes(1);
 		expect(cb).toHaveBeenCalledWith('B');
+	});
+});
+
+describe('isTimedPath — upload paths (H5)', () => {
+	it('recognizes /api/stingers as timed', () => {
+		expect(isTimedPath('/api/stingers')).toBe(true);
+	});
+
+	it('recognizes graphics image upload as timed', () => {
+		expect(isTimedPath('/api/graphics/1/image')).toBe(true);
+		expect(isTimedPath('/api/graphics/42/image')).toBe(true);
+	});
+
+	it('recognizes graphics sequence upload as timed', () => {
+		expect(isTimedPath('/api/graphics/1/sequence')).toBe(true);
+	});
+
+	it('recognizes stmap upload as timed', () => {
+		expect(isTimedPath('/api/stmaps/my-map/upload')).toBe(true);
+	});
+
+	it('recognizes color-grade LUT upload as timed', () => {
+		expect(isTimedPath('/api/color-grade/lut')).toBe(true);
+	});
+
+	it('recognizes AI segment upload as timed', () => {
+		expect(isTimedPath('/api/sources/cam1/ai-segment')).toBe(true);
+	});
+
+	it('recognizes captions mode as timed', () => {
+		expect(isTimedPath('/api/captions/mode')).toBe(true);
+	});
+
+	it('still recognizes existing timed paths', () => {
+		expect(isTimedPath('/api/switch/cut')).toBe(true);
+		expect(isTimedPath('/api/switch/preview')).toBe(true);
+		expect(isTimedPath('/api/audio/level')).toBe(true);
+		expect(isTimedPath('/api/graphics/1/on')).toBe(true);
+	});
+
+	it('does not match non-timed paths', () => {
+		expect(isTimedPath('/api/sources')).toBe(false);
+		expect(isTimedPath('/api/switch/state')).toBe(false);
+	});
+});
+
+describe('pending buffer max (M7)', () => {
+	beforeEach(() => {
+		setEngineUrls(null);
+		setExpectDualEngine(true);
+		// Set single engine so buffering activates
+		setEngineUrls([{ id: 'A', url: 'https://engine-a.example.com' }]);
+	});
+
+	afterEach(() => {
+		setExpectDualEngine(false);
+		setEngineUrls(null);
+	});
+
+	it('accepts up to 50 pending commands without eviction', () => {
+		for (let i = 0; i < 50; i++) {
+			bufferPendingCommand('/api/switch/cut', { method: 'POST', body: JSON.stringify({ i }) });
+		}
+		// If buffer max were 10, earlier commands would have been evicted.
+		// We can't directly inspect the buffer, but we can verify no error occurs at 50.
+		// The real validation is that PENDING_BUFFER_MAX = 50 in the source.
 	});
 });

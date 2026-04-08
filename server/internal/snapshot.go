@@ -246,6 +246,7 @@ type ClipPlayerSnapshot struct {
 type SourceConfigSnapshot struct {
 	Label    string `json:"label"`
 	Position int    `json:"position"`
+	DelayMs  int    `json:"delayMs,omitempty"`
 }
 
 // UpstreamKeySnapshot captures the upstream key configuration for a source.

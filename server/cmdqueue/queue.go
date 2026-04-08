@@ -62,14 +62,15 @@ func WithWAL(w *WAL) Option {
 // Queue holds pending commands sorted by ExecuteAt and drains them when the
 // injected clock reaches their scheduled time.
 type Queue struct {
-	mu      sync.Mutex
-	h       cmdHeap
-	seen    map[uint64]struct{}
-	clock   func() int64
-	maxAge       int64
-	maxSize      int
-	wal          *WAL
-	lateCommands atomic.Int64
+	mu              sync.Mutex
+	h               cmdHeap
+	seen            map[uint64]struct{}
+	prunedHighWater uint64 // highest Seq evicted during prune; rejects retransmits
+	clock           func() int64
+	maxAge          int64
+	maxSize         int
+	wal             *WAL
+	lateCommands    atomic.Int64
 }
 
 // LateCommands returns the number of late commands that were promoted to immediate execution.
@@ -131,6 +132,12 @@ func (q *Queue) Enqueue(cmd Command) error {
 
 	// Dedup by Seq (skip when Seq is 0 — untimed/legacy commands).
 	if cmd.Seq > 0 {
+		// Reject commands at or below the pruned high-water mark.
+		// After pruning, these Seq values are no longer in the seen map but
+		// must still be rejected to prevent double execution of retransmits.
+		if cmd.Seq <= q.prunedHighWater {
+			return ErrDuplicateCommand
+		}
 		if _, seen := q.seen[cmd.Seq]; seen {
 			return ErrDuplicateCommand
 		}
@@ -150,6 +157,7 @@ func (q *Queue) Enqueue(cmd Command) error {
 				}
 			}
 			q.seen = pruned
+			q.prunedHighWater = minSeq
 		}
 	}
 

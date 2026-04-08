@@ -27,6 +27,7 @@ export class DualConnectionManager {
 	private _engineBLoaded = false;
 	private _dualReadyFired = false;
 	private _datagramSenders = new Map<string, (data: Uint8Array) => void>();
+	private _initialLoadTimeout: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(private config: DualConnectionConfig) {
 		this._isDualEngine = config.engines.length > 1;
@@ -107,10 +108,30 @@ export class DualConnectionManager {
 		const promises = [...this.managers.values()].map((m) => m.start());
 		await Promise.allSettled(promises);
 		this.startClockSync();
+
+		if (!this._initialLoadDone) {
+			this._initialLoadTimeout = setTimeout(() => {
+				if (this._initialLoadDone) return;
+				if (this._engineALoaded || this._engineBLoaded) {
+					this._initialLoadDone = true;
+					this.config.onInitialLoadComplete();
+					for (const pendingId of this._pendingEngineStarts) {
+						this.managers.get(pendingId)?.start();
+					}
+					this._pendingEngineStarts = [];
+				} else {
+					this.config.onInitialLoadError('All engines timed out after 15 seconds');
+				}
+			}, 15_000);
+		}
 	}
 
 	stop(): void {
 		this._started = false;
+		if (this._initialLoadTimeout) {
+			clearTimeout(this._initialLoadTimeout);
+			this._initialLoadTimeout = undefined;
+		}
 		this.clockSync.stopPeriodicSync();
 		for (const mgr of this.managers.values()) {
 			mgr.stop();
@@ -288,6 +309,10 @@ export class DualConnectionManager {
 			onInitialLoadComplete: () => {
 				if (this._initialLoadDone) return;
 				this._initialLoadDone = true;
+				if (this._initialLoadTimeout) {
+					clearTimeout(this._initialLoadTimeout);
+					this._initialLoadTimeout = undefined;
+				}
 				this.config.onInitialLoadComplete();
 				// Flush any engines that were deferred during initial load
 				for (const pendingId of this._pendingEngineStarts) {

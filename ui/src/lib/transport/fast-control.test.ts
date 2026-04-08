@@ -259,6 +259,50 @@ describe('createFastControl', () => {
 		]);
 	});
 
+	it('passes commitTransitionPosition from options', () => {
+		const writeFn = vi.fn().mockResolvedValue(undefined);
+		const mockWriter = { write: writeFn, releaseLock: vi.fn() };
+		const mockTransport = {
+			datagrams: {
+				writable: { getWriter: () => mockWriter },
+			},
+		} as unknown as WebTransport;
+
+		const commitFn = vi.fn();
+		const fc = createFastControl(mockTransport, { commitTransitionPosition: commitFn });
+		fc.commitTransitionPosition!(0.75);
+		expect(commitFn).toHaveBeenCalledWith(0.75);
+	});
+
+	it('passes commitDVESlotTransform from options', () => {
+		const writeFn = vi.fn().mockResolvedValue(undefined);
+		const mockWriter = { write: writeFn, releaseLock: vi.fn() };
+		const mockTransport = {
+			datagrams: {
+				writable: { getWriter: () => mockWriter },
+			},
+		} as unknown as WebTransport;
+
+		const commitFn = vi.fn();
+		const fc = createFastControl(mockTransport, { commitDVESlotTransform: commitFn });
+		fc.commitDVESlotTransform!(1, 0.1, 0.2, 0.5, 0.5, 45, 0.8);
+		expect(commitFn).toHaveBeenCalledWith(1, 0.1, 0.2, 0.5, 0.5, 45, 0.8);
+	});
+
+	it('commit methods are undefined when not provided in options', () => {
+		const writeFn = vi.fn().mockResolvedValue(undefined);
+		const mockWriter = { write: writeFn, releaseLock: vi.fn() };
+		const mockTransport = {
+			datagrams: {
+				writable: { getWriter: () => mockWriter },
+			},
+		} as unknown as WebTransport;
+
+		const fc = createFastControl(mockTransport);
+		expect(fc.commitTransitionPosition).toBeUndefined();
+		expect(fc.commitDVESlotTransform).toBeUndefined();
+	});
+
 	it('does not throw when no onWriteError callback is provided', async () => {
 		const writeFn = vi.fn().mockRejectedValue(new Error('transport closed'));
 		const mockWriter = { write: writeFn, releaseLock: vi.fn() };

@@ -13,7 +13,7 @@ const DEFAULT_MARGIN_US = FRAME_DURATION_US * 4;
 const EWMA_ALPHA = 0.125;
 const DEFAULT_SYNC_INTERVAL_MS = 10_000;
 
-const STALE_OFFSET_MS = 60_000;
+const STALE_OFFSET_MS = 20_000;
 
 export class ClockSync {
 	private offsets = new Map<string, number>();
@@ -109,7 +109,7 @@ export class ClockSync {
 			}
 		}
 		if (validOffsets.length < 2) return 0;
-		return Math.abs(validOffsets[0] - validOffsets[1]);
+		return Math.max(...validOffsets) - Math.min(...validOffsets);
 	}
 
 	isClockDiverged(): boolean {

@@ -196,9 +196,9 @@ func populatedSnapshot() FullStateSnapshot {
 
 		// Source config
 		Sources: map[string]SourceConfigSnapshot{
-			"cam1": {Label: "Camera 1", Position: 1},
+			"cam1": {Label: "Camera 1", Position: 1, DelayMs: 100},
 			"cam2": {Label: "Camera 2", Position: 2},
-			"cam3": {Label: "Replay", Position: 3},
+			"cam3": {Label: "Replay", Position: 3, DelayMs: 250},
 		},
 
 		// Upstream keys
@@ -813,6 +813,7 @@ func (m *mockBaseTarget) SetGraphicsLayerRect(int, int, int, int, int) error   {
 func (m *mockBaseTarget) SetDVELayout(LayoutSnapshot) error                    { return nil }
 func (m *mockBaseTarget) SetSourceLabel(context.Context, string, string) error { return nil }
 func (m *mockBaseTarget) SetSourcePosition(string, int) error                  { return nil }
+func (m *mockBaseTarget) SetSourceDelay(string, int) error                     { return nil }
 func (m *mockBaseTarget) SetUpstreamKey(string, UpstreamKeySnapshot) error     { return nil }
 func (m *mockBaseTarget) SetCaptionMode(string) error                          { return nil }
 func (m *mockBaseTarget) SetColorGrade(string, float32) error                  { return nil }

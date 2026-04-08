@@ -163,6 +163,10 @@ func (m *mockApplyTarget) SetSourcePosition(sourceKey string, position int) erro
 	return m.record("SetSourcePosition", sourceKey, position)
 }
 
+func (m *mockApplyTarget) SetSourceDelay(sourceKey string, delayMs int) error {
+	return m.record("SetSourceDelay", sourceKey, delayMs)
+}
+
 func (m *mockApplyTarget) SetUpstreamKey(sourceKey string, config UpstreamKeySnapshot) error {
 	return m.record("SetUpstreamKey", sourceKey, config)
 }
@@ -314,6 +318,10 @@ func TestApplyFullSnapshot_AllFieldsApplied(t *testing.T) {
 	}
 	if mock.callCount("SetSourcePosition") != 3 {
 		t.Errorf("SetSourcePosition: expected 3 calls, got %d", mock.callCount("SetSourcePosition"))
+	}
+	// cam1 has DelayMs=100, cam3 has DelayMs=250, cam2 has 0 → 2 calls
+	if mock.callCount("SetSourceDelay") != 2 {
+		t.Errorf("SetSourceDelay: expected 2 calls, got %d", mock.callCount("SetSourceDelay"))
 	}
 
 	// 10. Upstream keys (cam1)
@@ -1444,5 +1452,106 @@ func TestApplyFullSnapshot_MidTransitionStillAppliesOtherState(t *testing.T) {
 	joined := strings.Join(warnings, "\n")
 	if !strings.Contains(joined, "mid-transition") {
 		t.Errorf("expected mid-transition warning, got: %v", warnings)
+	}
+}
+
+// --- Source delay restore tests ---
+
+func TestApplyFullSnapshot_SourceDelayApplied(t *testing.T) {
+	mock := newMockApplyTarget()
+	snap := FullStateSnapshot{
+		Version:    "1",
+		CapturedAt: 1234567890,
+		Sources: map[string]SourceConfigSnapshot{
+			"cam1": {Label: "Camera 1", Position: 1, DelayMs: 100},
+			"cam2": {Label: "Camera 2", Position: 2, DelayMs: 250},
+		},
+	}
+	ctx := context.Background()
+
+	warnings := ApplyFullSnapshot(ctx, snap, mock)
+	if len(warnings) > 0 {
+		t.Errorf("expected no warnings, got: %v", warnings)
+	}
+
+	// SetSourceDelay should be called for both sources (both have non-zero delay)
+	if mock.callCount("SetSourceDelay") != 2 {
+		t.Fatalf("SetSourceDelay: expected 2 calls, got %d", mock.callCount("SetSourceDelay"))
+	}
+
+	// Verify values (sorted order: cam1 then cam2)
+	calls := mock.callsFor("SetSourceDelay")
+	if calls[0].Args[0] != "cam1" || calls[0].Args[1] != 100 {
+		t.Errorf("SetSourceDelay[0] args: got %v, want [cam1 100]", calls[0].Args)
+	}
+	if calls[1].Args[0] != "cam2" || calls[1].Args[1] != 250 {
+		t.Errorf("SetSourceDelay[1] args: got %v, want [cam2 250]", calls[1].Args)
+	}
+}
+
+func TestApplyFullSnapshot_SourceDelaySkippedWhenZero(t *testing.T) {
+	mock := newMockApplyTarget()
+	snap := FullStateSnapshot{
+		Version:    "1",
+		CapturedAt: 1234567890,
+		Sources: map[string]SourceConfigSnapshot{
+			"cam1": {Label: "Camera 1", Position: 1, DelayMs: 0},
+			"cam2": {Label: "Camera 2", Position: 2},
+		},
+	}
+	ctx := context.Background()
+
+	warnings := ApplyFullSnapshot(ctx, snap, mock)
+	if len(warnings) > 0 {
+		t.Errorf("expected no warnings, got: %v", warnings)
+	}
+
+	// SetSourceDelay should NOT be called when DelayMs == 0
+	if mock.callCount("SetSourceDelay") != 0 {
+		t.Errorf("SetSourceDelay: expected 0 calls for zero delays, got %d", mock.callCount("SetSourceDelay"))
+	}
+
+	// But labels and positions should still be set
+	if mock.callCount("SetSourceLabel") != 2 {
+		t.Errorf("SetSourceLabel: expected 2 calls, got %d", mock.callCount("SetSourceLabel"))
+	}
+	if mock.callCount("SetSourcePosition") != 2 {
+		t.Errorf("SetSourcePosition: expected 2 calls, got %d", mock.callCount("SetSourcePosition"))
+	}
+}
+
+func TestApplyFullSnapshot_SourceDelayErrorWarns(t *testing.T) {
+	mock := newMockApplyTarget()
+	mock.errors["SetSourceDelay"] = fmt.Errorf("delay buffer full")
+
+	snap := FullStateSnapshot{
+		Version:    "1",
+		CapturedAt: 1234567890,
+		Sources: map[string]SourceConfigSnapshot{
+			"cam1": {Label: "Camera 1", Position: 1, DelayMs: 200},
+		},
+	}
+	ctx := context.Background()
+
+	warnings := ApplyFullSnapshot(ctx, snap, mock)
+
+	// Should have a warning
+	if len(warnings) == 0 {
+		t.Fatal("expected warning for source delay error")
+	}
+	joined := strings.Join(warnings, "\n")
+	if !strings.Contains(joined, `source "cam1" delay`) {
+		t.Errorf("expected warning about source delay, got: %v", warnings)
+	}
+	if !strings.Contains(joined, "delay buffer full") {
+		t.Errorf("expected warning to contain error message, got: %v", warnings)
+	}
+
+	// Labels and positions should still be applied (best-effort)
+	if !mock.wasCalled("SetSourceLabel") {
+		t.Error("SetSourceLabel not called (best-effort violated)")
+	}
+	if !mock.wasCalled("SetSourcePosition") {
+		t.Error("SetSourcePosition not called (best-effort violated)")
 	}
 }
