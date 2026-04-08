@@ -90,7 +90,7 @@ describe('createReconciler', () => {
 	describe('RTT-based tie-breaking', () => {
 		it('prefers engine B when B has lower RTT at equal seq', () => {
 			const r = createReconciler();
-			r.setRTT('A', 50);
+			r.setRTT('A', 120);
 			r.setRTT('B', 20);
 			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 5 }));
 			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 5 }));
@@ -118,24 +118,24 @@ describe('createReconciler', () => {
 
 		it('does not flip authority on small RTT changes at equal seq (within hysteresis)', () => {
 			const r = createReconciler();
-			// Delta = 5ms < 10ms hysteresis → A wins by default
-			r.setRTT('A', 30);
-			r.setRTT('B', 35);
+			// Delta = 30ms < 50ms hysteresis → A wins by default
+			r.setRTT('A', 80);
+			r.setRTT('B', 110);
 			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 5 }));
 			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 5 }));
 			expect(r.health.authoritative).toBe('A');
 
-			// Flip RTTs: now A=35, B=30 (delta still only 5ms) → still A
-			r.setRTT('A', 35);
-			r.setRTT('B', 30);
+			// Flip RTTs: now A=110, B=80 (delta still only 30ms) → still A
+			r.setRTT('A', 110);
+			r.setRTT('B', 80);
 			expect(r.health.authoritative).toBe('A');
 		});
 
 		it('flips authority when RTT difference exceeds hysteresis', () => {
 			const r = createReconciler();
-			// Delta = 20ms > 10ms hysteresis → B wins (lower RTT)
-			r.setRTT('A', 50);
-			r.setRTT('B', 30);
+			// Delta = 80ms > 50ms hysteresis → B wins (lower RTT)
+			r.setRTT('A', 120);
+			r.setRTT('B', 40);
 			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 5 }));
 			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 5 }));
 			expect(r.health.authoritative).toBe('B');
@@ -143,16 +143,16 @@ describe('createReconciler', () => {
 
 		it('returns to A when RTTs converge within hysteresis', () => {
 			const r = createReconciler();
-			// Start: A=50, B=30 → delta=20 > 10ms → B is authoritative
-			r.setRTT('A', 50);
-			r.setRTT('B', 30);
+			// Start: A=120, B=40 → delta=80 > 50ms → B is authoritative
+			r.setRTT('A', 120);
+			r.setRTT('B', 40);
 			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 5 }));
 			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 5 }));
 			expect(r.health.authoritative).toBe('B');
 
-			// RTTs converge: A=31, B=30 → delta=1 < 10ms → A wins (default)
-			r.setRTT('A', 31);
-			r.setRTT('B', 30);
+			// RTTs converge: A=51, B=40 → delta=11 < 50ms → A wins (default)
+			r.setRTT('A', 51);
+			r.setRTT('B', 40);
 			expect(r.health.authoritative).toBe('A');
 		});
 	});

@@ -5,7 +5,7 @@ export const AUDIO_DRIFT_DB_THRESHOLD = 3;
 export const AUDIO_DRIFT_DURATION_MS = 10_000;
 
 /** Minimum RTT delta (ms) required to switch authority based on RTT alone. Prevents jitter flapping. */
-export const RTT_HYSTERESIS_MS = 10;
+export const RTT_HYSTERESIS_MS = 50;
 
 const EMPTY_STATE: ControlRoomState = {
 	programSource: '',
@@ -195,10 +195,22 @@ export function createReconciler() {
 		if (!effectiveA) return 'B';
 		if (!effectiveB) return 'A';
 
-		// Source health scoring: if one engine has >50% sources degraded and other doesn't, healthier wins
 		// TypeScript can't narrow through effectiveA/B guards, but we returned above if null
 		const sA = stateA!;
 		const sB = stateB!;
+
+		// Check program source health: if program is unhealthy on one engine, prefer the other
+		const programKey = sA.programSource || sB.programSource;
+		if (programKey) {
+			const progHealthA = sA.sources?.[programKey]?.status;
+			const progHealthB = sB.sources?.[programKey]?.status;
+			const progDegradedA = progHealthA === 'offline' || progHealthA === 'no_signal';
+			const progDegradedB = progHealthB === 'offline' || progHealthB === 'no_signal';
+			if (progDegradedA && !progDegradedB) return 'B';
+			if (progDegradedB && !progDegradedA) return 'A';
+		}
+
+		// Source health scoring: if one engine has >50% sources degraded and other doesn't, healthier wins
 		const healthyA = countHealthySources(sA);
 		const healthyB = countHealthySources(sB);
 		const totalA = Object.keys(sA.sources ?? {}).length;

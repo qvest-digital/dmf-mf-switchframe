@@ -6,7 +6,7 @@
  * would actually occur during dual-engine operation.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createReconciler } from './reconciler.svelte';
+import { createReconciler, RTT_HYSTERESIS_MS } from './reconciler.svelte';
 import type { ControlRoomState, PlayoutChannelState, AudioChannel } from '$lib/api/types';
 
 function makeState(overrides: Partial<ControlRoomState> = {}): ControlRoomState {
@@ -116,8 +116,8 @@ describe('reconciler behavioral tests', () => {
 			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 10 }));
 			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 10 }));
 
-			// Set RTT: B is closer (lower RTT)
-			r.setRTT('A', 50);
+			// Set RTT: B is closer (lower RTT), delta=110 > 50ms hysteresis
+			r.setRTT('A', 120);
 			r.setRTT('B', 10);
 
 			expect(r.health.authoritative).toBe('B');
@@ -151,6 +151,164 @@ describe('reconciler behavioral tests', () => {
 			// B becomes authoritative since A is disconnected
 			expect(r.health.authoritative).toBe('B');
 			expect(r.state.programSource).toBe('cam2');
+		});
+
+		it('RTT_HYSTERESIS_MS is 50ms for cross-region stability', () => {
+			// Cross-region deployments have RTTs of 50-200ms with 20-30ms fluctuations.
+			// The old value of 10ms caused unnecessary authority flapping.
+			expect(RTT_HYSTERESIS_MS).toBe(50);
+		});
+
+		it('does not flap authority on typical cross-region RTT fluctuations', () => {
+			// Scenario: US-East ↔ US-West with ~80ms RTT that fluctuates by ±25ms.
+			// Authority should stay stable despite the jitter.
+			const r = createReconciler();
+
+			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 10 }));
+			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 10 }));
+
+			// Initial: A=80ms, B=100ms, delta=20ms < 50ms hysteresis → A wins (default)
+			r.setRTT('A', 80);
+			r.setRTT('B', 100);
+			expect(r.health.authoritative).toBe('A');
+
+			// Jitter: A spikes to 105ms, B drops to 75ms. Delta=30ms < 50ms → still A
+			r.setRTT('A', 105);
+			r.setRTT('B', 75);
+			expect(r.health.authoritative).toBe('A');
+
+			// More jitter: A=90ms, B=115ms. Delta=25ms < 50ms → still A
+			r.setRTT('A', 90);
+			r.setRTT('B', 115);
+			expect(r.health.authoritative).toBe('A');
+		});
+
+		it('switches authority when program source is degraded on one engine', () => {
+			// Scenario: cam1 is on program. Engine A lost connectivity to cam1 (offline),
+			// but Engine B can still see cam1 fine. Even though only 1/8 sources is degraded
+			// (well below 50%), authority should switch to B because the PROGRAM source matters most.
+			const r = createReconciler();
+
+			r.ingest('A', makeState({
+				programSource: 'cam1',
+				lastCommandSeq: 10,
+				sources: {
+					cam1: { key: 'cam1', type: 'demo', status: 'offline' },
+					cam2: { key: 'cam2', type: 'demo', status: 'healthy' },
+					cam3: { key: 'cam3', type: 'demo', status: 'healthy' },
+					cam4: { key: 'cam4', type: 'demo', status: 'healthy' },
+				},
+			}));
+			r.ingest('B', makeState({
+				programSource: 'cam1',
+				lastCommandSeq: 10,
+				sources: {
+					cam1: { key: 'cam1', type: 'demo', status: 'healthy' },
+					cam2: { key: 'cam2', type: 'demo', status: 'healthy' },
+					cam3: { key: 'cam3', type: 'demo', status: 'healthy' },
+					cam4: { key: 'cam4', type: 'demo', status: 'healthy' },
+				},
+			}));
+
+			// B should be authoritative because cam1 (program source) is offline on A
+			expect(r.health.authoritative).toBe('B');
+		});
+
+		it('switches authority when program source has no_signal on one engine', () => {
+			const r = createReconciler();
+
+			r.ingest('A', makeState({
+				programSource: 'cam1',
+				lastCommandSeq: 10,
+				sources: {
+					cam1: { key: 'cam1', type: 'demo', status: 'healthy' },
+					cam2: { key: 'cam2', type: 'demo', status: 'healthy' },
+				},
+			}));
+			r.ingest('B', makeState({
+				programSource: 'cam1',
+				lastCommandSeq: 10,
+				sources: {
+					cam1: { key: 'cam1', type: 'demo', status: 'no_signal' },
+					cam2: { key: 'cam2', type: 'demo', status: 'healthy' },
+				},
+			}));
+
+			// A should be authoritative because cam1 (program) has no_signal on B
+			expect(r.health.authoritative).toBe('A');
+		});
+
+		it('does not switch authority when program source is degraded on BOTH engines', () => {
+			const r = createReconciler();
+
+			r.ingest('A', makeState({
+				programSource: 'cam1',
+				lastCommandSeq: 10,
+				sources: {
+					cam1: { key: 'cam1', type: 'demo', status: 'offline' },
+					cam2: { key: 'cam2', type: 'demo', status: 'healthy' },
+				},
+			}));
+			r.ingest('B', makeState({
+				programSource: 'cam1',
+				lastCommandSeq: 10,
+				sources: {
+					cam1: { key: 'cam1', type: 'demo', status: 'offline' },
+					cam2: { key: 'cam2', type: 'demo', status: 'healthy' },
+				},
+			}));
+
+			// Both degraded → no preference, falls through to seq/RTT/A-wins
+			expect(r.health.authoritative).toBe('A');
+		});
+
+		it('does not switch authority when program source is stale (not offline/no_signal)', () => {
+			// 'stale' is a transient condition, not as severe as offline/no_signal
+			const r = createReconciler();
+
+			r.ingest('A', makeState({
+				programSource: 'cam1',
+				lastCommandSeq: 10,
+				sources: {
+					cam1: { key: 'cam1', type: 'demo', status: 'stale' },
+					cam2: { key: 'cam2', type: 'demo', status: 'healthy' },
+				},
+			}));
+			r.ingest('B', makeState({
+				programSource: 'cam1',
+				lastCommandSeq: 10,
+				sources: {
+					cam1: { key: 'cam1', type: 'demo', status: 'healthy' },
+					cam2: { key: 'cam2', type: 'demo', status: 'healthy' },
+				},
+			}));
+
+			// stale is not offline or no_signal, so program source check doesn't trigger
+			// Falls through to seq/RTT → A wins (default tie-break)
+			expect(r.health.authoritative).toBe('A');
+		});
+
+		it('program source health check uses programSource from either engine', () => {
+			// Edge case: engines might disagree on programSource. Use whichever is set.
+			const r = createReconciler();
+
+			r.ingest('A', makeState({
+				programSource: '',
+				lastCommandSeq: 10,
+				sources: {
+					cam1: { key: 'cam1', type: 'demo', status: 'offline' },
+				},
+			}));
+			r.ingest('B', makeState({
+				programSource: 'cam1',
+				lastCommandSeq: 10,
+				sources: {
+					cam1: { key: 'cam1', type: 'demo', status: 'healthy' },
+				},
+			}));
+
+			// programKey = '' || 'cam1' = 'cam1'. cam1 is offline on A, healthy on B → B wins
+			expect(r.health.authoritative).toBe('B');
 		});
 	});
 
