@@ -509,6 +509,44 @@ describe('ConnectionBanner', () => {
 			expect(banner?.textContent).not.toContain('redirecting');
 			expect(banner?.textContent).toContain('Reload from Engine B');
 		});
+
+		it('includes auth token in fallback URL hash', () => {
+			localStorage.setItem('switchframe_operator_token', 'test-token-abc');
+			const { container } = render(ConnectionBanner, {
+				props: {
+					connectionState: 'disconnected',
+					syncStatus: 'ok',
+					engineFallbackUrl: 'https://engine-b.example.com',
+					servingEngine: 'A',
+				},
+			});
+			const link = container.querySelector('.fallback-link') as HTMLAnchorElement;
+			expect(link).toBeTruthy();
+			expect(link.href).toContain('#token=test-token-abc');
+		});
+
+		it('preserves original hash when no auth token exists', () => {
+			localStorage.removeItem('switchframe_operator_token');
+			// Set a hash on the window to verify it's preserved
+			const origHash = window.location.hash;
+			window.location.hash = '#somehash';
+			try {
+				sessionStorage.setItem('sf:redirect-attempts', '1');
+				const { container } = render(ConnectionBanner, {
+					props: {
+						connectionState: 'disconnected',
+						syncStatus: 'ok',
+						engineFallbackUrl: 'https://engine-b.example.com',
+						servingEngine: 'A',
+					},
+				});
+				const link = container.querySelector('.fallback-link') as HTMLAnchorElement;
+				expect(link).toBeTruthy();
+				expect(link.href).toContain('#somehash');
+			} finally {
+				window.location.hash = origHash;
+			}
+		});
 	});
 
 	describe('control plane fallback link', () => {

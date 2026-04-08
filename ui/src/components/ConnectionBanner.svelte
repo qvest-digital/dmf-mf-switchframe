@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { getAuthToken } from '$lib/api/switch-api';
+
 	interface EngineStatus {
 		mode: 'dual' | 'single';
 		engineDown?: 'A' | 'B';
@@ -46,13 +48,20 @@
 		engineFallbackUrl != null && connectionState === 'disconnected'
 	);
 
-	// Build full fallback URL preserving current query params and hash
+	// Build full fallback URL preserving current query params and hash.
+	// Inject auth token so Engine B can authenticate without re-login
+	// (localStorage is origin-specific, so the token would be lost).
 	const fallbackHref = $derived((() => {
 		if (!engineFallbackUrl) return '';
 		try {
 			const url = new URL(engineFallbackUrl);
 			url.search = window.location.search;
-			url.hash = window.location.hash;
+			const token = getAuthToken();
+			if (token) {
+				url.hash = `token=${token}`;
+			} else {
+				url.hash = window.location.hash;
+			}
 			return url.toString();
 		} catch {
 			return engineFallbackUrl;
