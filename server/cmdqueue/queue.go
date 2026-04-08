@@ -205,18 +205,18 @@ type cmdHeap []Command
 func (h cmdHeap) Len() int { return len(h) }
 
 func (h cmdHeap) Less(i, j int) bool {
-	// Treat ExecuteAt=0 as smallest (drain immediately) but keep heap consistent
-	// when both are zero by using index as tiebreaker (stable relative to Push order).
 	ti, tj := h[i].ExecuteAt, h[j].ExecuteAt
 	switch {
 	case ti == 0 && tj == 0:
-		return false // equal; heap stability handled by Go's sort
+		return h[i].Seq < h[j].Seq
 	case ti == 0:
 		return true
 	case tj == 0:
 		return false
-	default:
+	case ti != tj:
 		return ti < tj
+	default:
+		return h[i].Seq < h[j].Seq
 	}
 }
 

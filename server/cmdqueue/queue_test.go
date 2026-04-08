@@ -442,3 +442,35 @@ func TestEnqueue_VeryStaleCommand_StillDropped(t *testing.T) {
 		t.Fatalf("expected ErrStaleCommand, got: %v", err)
 	}
 }
+
+// ── Task 4: Deterministic ordering by (ExecuteAt, Seq) ──────────────────────
+
+func TestDrain_SameExecuteAt_OrderedBySeq(t *testing.T) {
+	now := int64(100_000_000)
+	q := cmdqueue.New(func() int64 { return now })
+	q.Enqueue(cmdqueue.Command{ExecuteAt: now - 100, Seq: 30, Action: "c"})
+	q.Enqueue(cmdqueue.Command{ExecuteAt: now - 100, Seq: 10, Action: "a"})
+	q.Enqueue(cmdqueue.Command{ExecuteAt: now - 100, Seq: 20, Action: "b"})
+	out := q.Drain()
+	if len(out) != 3 {
+		t.Fatalf("expected 3, got %d", len(out))
+	}
+	if out[0].Seq != 10 || out[1].Seq != 20 || out[2].Seq != 30 {
+		t.Errorf("seq order [%d,%d,%d], want [10,20,30]", out[0].Seq, out[1].Seq, out[2].Seq)
+	}
+}
+
+func TestDrain_SameExecuteAtZero_OrderedBySeq(t *testing.T) {
+	now := int64(100_000_000)
+	q := cmdqueue.New(func() int64 { return now })
+	q.Enqueue(cmdqueue.Command{ExecuteAt: 0, Seq: 30, Action: "c"})
+	q.Enqueue(cmdqueue.Command{ExecuteAt: 0, Seq: 10, Action: "a"})
+	q.Enqueue(cmdqueue.Command{ExecuteAt: 0, Seq: 20, Action: "b"})
+	out := q.Drain()
+	if len(out) != 3 {
+		t.Fatalf("expected 3, got %d", len(out))
+	}
+	if out[0].Seq != 10 || out[1].Seq != 20 || out[2].Seq != 30 {
+		t.Errorf("seq order [%d,%d,%d], want [10,20,30]", out[0].Seq, out[1].Seq, out[2].Seq)
+	}
+}
