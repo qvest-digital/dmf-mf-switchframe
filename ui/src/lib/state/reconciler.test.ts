@@ -812,6 +812,14 @@ describe('createReconciler', () => {
 			expect(fieldEquals(1, '1')).toBe(false);
 			expect(fieldEquals(true, 1)).toBe(false);
 		});
+
+		it('treats objects with different key order as equal', () => {
+			expect(fieldEquals({ b: 2, a: 1 }, { a: 1, b: 2 })).toBe(true);
+		});
+
+		it('treats nested objects with different key order as equal', () => {
+			expect(fieldEquals({ x: { b: 2, a: 1 } }, { x: { a: 1, b: 2 } })).toBe(true);
+		});
 	});
 
 	// ── Expanded DIVERGENCE_FIELDS ──

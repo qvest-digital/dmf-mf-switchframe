@@ -65,8 +65,9 @@ export interface SyncHealth {
  * Array element order is preserved (semantically meaningful).
  */
 function sortedStringify(obj: unknown): string {
-	if (obj === null || typeof obj !== 'object') return JSON.stringify(obj);
-	if (Array.isArray(obj)) return '[' + obj.map(sortedStringify).join(',') + ']';
+	if (obj === null || obj === undefined) return String(obj);
+	if (typeof obj !== 'object') return JSON.stringify(obj);
+	if (Array.isArray(obj)) return '[' + (obj as unknown[]).map(sortedStringify).join(',') + ']';
 	const sorted = Object.keys(obj as Record<string, unknown>).sort();
 	return '{' + sorted.map(k => JSON.stringify(k) + ':' + sortedStringify((obj as Record<string, unknown>)[k])).join(',') + '}';
 }
