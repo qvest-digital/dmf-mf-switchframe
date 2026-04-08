@@ -32,7 +32,7 @@
 	import RedundancyPanel from '../components/RedundancyPanel.svelte';
 	import ProgramCompare from '../components/ProgramCompare.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
-	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, checkFragmentToken, SwitchApiError, listMacros, runMacro, dveSlotOn, dveSlotOff, replayQuick, replayPause, replayResume, replayPlay, replayStop, replaySeek, replaySetSpeed, replayMarkIn, replayMarkOut, commsMute, setDualTimestampProvider, setPartialFailureCallback, setPartialFailureNotify, getDebugSnapshot, getPerfData, playoutEngineCacheStatus } from '$lib/api/switch-api';
+	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, checkFragmentToken, SwitchApiError, listMacros, runMacro, dveSlotOn, dveSlotOff, replayQuick, replayPause, replayResume, replayPlay, replayStop, replaySeek, replaySetSpeed, replayMarkIn, replayMarkOut, commsMute, setDualTimestampProvider, setPartialFailureCallback, setPartialFailureNotify, getDebugSnapshot, getPerfData, playoutEngineCacheStatus, setTransitionPosition, updateDVESlot } from '$lib/api/switch-api';
 	import { setEngineUrls, setExpectDualEngine, setOnNewEngineDiscovered, setAuthoritativeEngineProvider } from '$lib/api/base-url';
 	import { fetchServerInfo } from '$lib/prism/transport-utils';
 	import * as operatorState from '$lib/state/operator.svelte';
@@ -1283,6 +1283,10 @@
 						onWriteError: handleFastControlWriteError,
 						ptpNow: isDualEngine ? () => connectionManager.clock.ptpNow() : undefined,
 						engineId: 'A',
+						commitTransitionPosition: isDualEngine ? (pos) => { setTransitionPosition(pos).catch(() => {}); } : undefined,
+						commitDVESlotTransform: isDualEngine ? (slotId, posX, posY, width, height, rotation, opacity) => {
+							updateDVESlot(slotId, { positionX: posX, positionY: posY, width, height, rotationDeg: rotation, opacity }).catch(() => {});
+						} : undefined,
 					});
 					// Route clock sync pings through FastControl's shared writer
 					connectionManager.setDatagramSender('A', (data) => fastControlA?.writeDatagram(data));
@@ -1311,6 +1315,10 @@
 					onWriteError: handleFastControlWriteError,
 					ptpNow: () => connectionManager.clock.ptpNow(),
 					engineId: 'B',
+					commitTransitionPosition: (pos) => { setTransitionPosition(pos).catch(() => {}); },
+					commitDVESlotTransform: (slotId, posX, posY, width, height, rotation, opacity) => {
+						updateDVESlot(slotId, { positionX: posX, positionY: posY, width, height, rotationDeg: rotation, opacity }).catch(() => {});
+					},
 				});
 				connectionManager.setDatagramSender('B', (data) => fastControlB?.writeDatagram(data));
 			} catch {
