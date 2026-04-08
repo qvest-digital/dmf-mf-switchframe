@@ -106,7 +106,7 @@ function recordSuccess(engineUrl: string): void {
 let preferredEngine: string | null = null;
 let preferredUntil = 0;
 
-function setPreferredEngine(engineUrl: string, durationMs: number = 30_000): void {
+function setPreferredEngine(engineUrl: string, durationMs: number = 5_000): void {
 	preferredEngine = engineUrl;
 	preferredUntil = Date.now() + durationMs;
 }
@@ -250,8 +250,11 @@ async function primaryWithFallback<T>(url: string, options: RequestInit | undefi
 			const res = await fetch(`${engine.url}${url}`, opts);
 			if (res.ok) {
 				recordSuccess(engine.url);
-				// If a non-primary engine succeeded after failover, make it sticky
-				if (i > 0 || (!isFirstEngine(engine.url) && !preferred)) {
+				if (isFirstEngine(engine.url)) {
+					// Primary recovered — clear any sticky failover preference
+					resetPreferredEngine();
+				} else if (i > 0 || (!isFirstEngine(engine.url) && !preferred)) {
+					// Non-primary succeeded after failover — make it sticky
 					setPreferredEngine(engine.url);
 				}
 				if (res.status === 202 || res.status === 204 || res.headers?.get('content-length') === '0') {

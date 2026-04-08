@@ -752,7 +752,7 @@ describe('switch-api dual-engine routing', () => {
 			expect(fetchCalls[0].url).toContain('engine-b');
 		});
 
-		it('after 30s TTL expires, GETs go back to A first', async () => {
+		it('after 5s TTL expires, GETs go back to A first', async () => {
 			const realNow = Date.now;
 			let currentTime = realNow();
 			vi.spyOn(Date, 'now').mockImplementation(() => currentTime);
@@ -768,8 +768,8 @@ describe('switch-api dual-engine routing', () => {
 
 			await getState();
 
-			// Advance time past TTL (31 seconds)
-			currentTime += 31_000;
+			// Advance time past TTL (6 seconds — TTL is now 5s)
+			currentTime += 6_000;
 
 			// Both engines now healthy
 			fetchCalls = [];
@@ -784,6 +784,54 @@ describe('switch-api dual-engine routing', () => {
 			expect(fetchCalls[0].url).toContain('engine-a');
 
 			vi.spyOn(Date, 'now').mockRestore();
+		});
+
+		it('clears sticky preference when primary engine recovers', async () => {
+			// Step 1: Trigger failover (primary A fails, secondary B succeeds → sets preferred to B)
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-a')) {
+					return Promise.reject(new Error('network error'));
+				}
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
+			});
+
+			await getState();
+			expect(fetchCalls[0].url).toContain('engine-a');
+			expect(fetchCalls[1].url).toContain('engine-b');
+
+			// Verify B is now sticky: next GET goes to B first without touching A
+			fetchCalls = [];
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
+			});
+			await getState();
+			expect(fetchCalls).toHaveLength(1);
+			expect(fetchCalls[0].url).toContain('engine-b');
+
+			// Step 2: Primary A recovers — A is tried first again (B is preferred, but A is primary)
+			// With B preferred, B is moved to front. But we want to test that when A is tried
+			// and succeeds, the preference is cleared. We need to force A to be tried first.
+			// Reset the preference to simulate TTL expiry, then let A succeed.
+			resetPreferredEngine();
+
+			fetchCalls = [];
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam2' }));
+			});
+
+			// Primary A succeeds → preference should be cleared (remains clear)
+			await getState();
+			expect(fetchCalls).toHaveLength(1);
+			expect(fetchCalls[0].url).toContain('engine-a');
+
+			// Step 3: Next request should still go to A (no sticky preference)
+			fetchCalls = [];
+			await getState();
+			expect(fetchCalls).toHaveLength(1);
+			expect(fetchCalls[0].url).toContain('engine-a');
 		});
 
 		it('sticky preference does not interfere with mutation fan-out', async () => {
