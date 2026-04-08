@@ -184,11 +184,13 @@ export function createFastControl(transport: WebTransport, opts?: FastControlOpt
 	function withTimestamp(data: Uint8Array): Uint8Array {
 		if (!opts?.ptpNow) return data;
 		const ts = opts.ptpNow();
+		if (ts <= 0) return data;
 		const buf = new Uint8Array(8 + data.length);
 		const view = new DataView(buf.buffer);
-		// Write 64-bit PTP timestamp as two big-endian uint32 (hi, lo)
-		view.setUint32(0, Math.floor(ts / 0x100000000));
-		view.setUint32(4, ts >>> 0);
+		const hi = Math.floor(ts / 2 ** 32);
+		const lo = ts % 2 ** 32;
+		view.setUint32(0, hi);
+		view.setUint32(4, lo);
 		buf.set(data, 8);
 		return buf;
 	}

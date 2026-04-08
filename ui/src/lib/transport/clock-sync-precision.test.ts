@@ -272,28 +272,30 @@ describe('ClockSync precision', () => {
 	});
 
 	describe('pong parsing', () => {
-		function buildPong(timestampUS: number): Uint8Array {
-			const buf = new Uint8Array(9);
+		function buildPong(seq: number, timestampUS: number): Uint8Array {
+			const buf = new Uint8Array(13);
 			buf[0] = 0xFF; // MSG_PONG
 			const view = new DataView(buf.buffer);
+			view.setUint32(1, seq);
 			const hi = Math.floor(timestampUS / (2 ** 32));
 			const lo = timestampUS % (2 ** 32);
-			view.setUint32(1, hi);
-			view.setUint32(5, lo);
+			view.setUint32(5, hi);
+			view.setUint32(9, lo);
 			return buf;
 		}
 
-		it('parses valid pong with known timestamp', () => {
+		it('parses valid pong with seq and known timestamp', () => {
 			const sync = new ClockSync();
 			const ts = 1_700_000_000_000_000; // ~2023 in microseconds
 
-			const pong = buildPong(ts);
+			const pong = buildPong(42, ts);
 			const parsed = sync.parsePong(pong);
 
-			expect(parsed).toBe(ts);
+			expect(parsed.seq).toBe(42);
+			expect(parsed.serverTimestamp).toBe(ts);
 		});
 
-		it('throws on truncated pong (< 9 bytes)', () => {
+		it('throws on truncated pong (< 13 bytes)', () => {
 			const sync = new ClockSync();
 			const short = new Uint8Array([0xFF, 0, 0, 0]);
 
@@ -307,7 +309,7 @@ describe('ClockSync precision', () => {
 
 		it('throws on wrong message type', () => {
 			const sync = new ClockSync();
-			const badType = new Uint8Array(9);
+			const badType = new Uint8Array(13);
 			badType[0] = 0x01; // not MSG_PONG
 
 			expect(() => sync.parsePong(badType)).toThrow();
@@ -315,8 +317,9 @@ describe('ClockSync precision', () => {
 
 		it('parses timestamp 0 (edge case)', () => {
 			const sync = new ClockSync();
-			const pong = buildPong(0);
-			expect(sync.parsePong(pong)).toBe(0);
+			const pong = buildPong(0, 0);
+			expect(sync.parsePong(pong).serverTimestamp).toBe(0);
+			expect(sync.parsePong(pong).seq).toBe(0);
 		});
 
 		it('round-trips through buildPing → server would build pong → parsePong', () => {
@@ -325,11 +328,12 @@ describe('ClockSync precision', () => {
 			const serverTimestamp = 1_700_000_000_000_000;
 
 			const _ping = sync.buildPing(7);
-			// Server would read the ping, then respond:
-			const pong = buildPong(serverTimestamp);
+			// Server would read the ping, then respond with seq and timestamp:
+			const pong = buildPong(7, serverTimestamp);
 
 			const parsed = sync.parsePong(pong);
-			expect(parsed).toBe(serverTimestamp);
+			expect(parsed.seq).toBe(7);
+			expect(parsed.serverTimestamp).toBe(serverTimestamp);
 		});
 	});
 

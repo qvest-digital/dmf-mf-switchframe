@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createFastControl, encodeTransitionPosition, encodeDVESlotTransform, type WriteErrorCallback } from './fast-control';
+import { createFastControl, encodeTransitionPosition, encodeDVESlotTransform, type FastControlOptions, type WriteErrorCallback } from './fast-control';
 
 describe('encodeDVESlotTransform', () => {
 	it('encodes DVE slot transform correctly', () => {
@@ -62,6 +62,62 @@ describe('createFastControl', () => {
 		const sent = writeFn.mock.calls[0][0] as Uint8Array;
 		expect(sent.byteLength).toBe(5);
 		expect(sent[0]).toBe(0x02);
+	});
+
+	it('prepends 8-byte timestamp when ptpNow returns a valid value', () => {
+		const writeFn = vi.fn().mockResolvedValue(undefined);
+		const mockWriter = { write: writeFn, releaseLock: vi.fn() };
+		const mockTransport = {
+			datagrams: {
+				writable: { getWriter: () => mockWriter },
+			},
+		} as unknown as WebTransport;
+
+		const fc = createFastControl(mockTransport, { ptpNow: () => 1_700_000_000_000_000 });
+		fc.sendTransitionPosition(0.5);
+
+		expect(writeFn).toHaveBeenCalledTimes(1);
+		const sent = writeFn.mock.calls[0][0] as Uint8Array;
+		// 8 bytes timestamp prefix + 5 bytes transition position
+		expect(sent.byteLength).toBe(13);
+		// The payload starts at offset 8
+		expect(sent[8]).toBe(0x02);
+	});
+
+	it('does NOT prepend timestamp when ptpNow returns 0 (no clock sync)', () => {
+		const writeFn = vi.fn().mockResolvedValue(undefined);
+		const mockWriter = { write: writeFn, releaseLock: vi.fn() };
+		const mockTransport = {
+			datagrams: {
+				writable: { getWriter: () => mockWriter },
+			},
+		} as unknown as WebTransport;
+
+		const fc = createFastControl(mockTransport, { ptpNow: () => 0 });
+		fc.sendTransitionPosition(0.5);
+
+		expect(writeFn).toHaveBeenCalledTimes(1);
+		const sent = writeFn.mock.calls[0][0] as Uint8Array;
+		// No timestamp prefix — same length as without ptpNow
+		expect(sent.byteLength).toBe(5);
+		expect(sent[0]).toBe(0x02);
+	});
+
+	it('does NOT prepend timestamp when ptpNow is not provided', () => {
+		const writeFn = vi.fn().mockResolvedValue(undefined);
+		const mockWriter = { write: writeFn, releaseLock: vi.fn() };
+		const mockTransport = {
+			datagrams: {
+				writable: { getWriter: () => mockWriter },
+			},
+		} as unknown as WebTransport;
+
+		const fc = createFastControl(mockTransport);
+		fc.sendTransitionPosition(0.5);
+
+		expect(writeFn).toHaveBeenCalledTimes(1);
+		const sent = writeFn.mock.calls[0][0] as Uint8Array;
+		expect(sent.byteLength).toBe(5);
 	});
 
 	it('close releases writer lock', () => {

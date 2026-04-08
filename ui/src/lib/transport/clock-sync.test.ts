@@ -179,6 +179,73 @@ describe('ClockSync', () => {
 		});
 	});
 
+	describe('getOffsetDivergence', () => {
+		it('returns 0 when fewer than 2 valid offsets exist', () => {
+			const sync = new ClockSync();
+			sync.updateOffset('A', 5_000_000);
+			expect(sync.getOffsetDivergence()).toBe(0);
+		});
+
+		it('returns absolute difference between 2 valid offsets', () => {
+			const sync = new ClockSync();
+			sync.updateOffset('A', 5_000_000);
+			sync.updateOffset('B', 8_000_000);
+			expect(sync.getOffsetDivergence()).toBe(3_000_000);
+		});
+
+		it('returns 0 when one offset is stale (>60s)', () => {
+			vi.useFakeTimers();
+			const sync = new ClockSync();
+			sync.updateOffset('A', 5_000_000);
+			// Advance past 60s to make A stale
+			vi.advanceTimersByTime(61_000);
+			sync.updateOffset('B', 8_000_000);
+			expect(sync.getOffsetDivergence()).toBe(0);
+			vi.useRealTimers();
+		});
+	});
+
+	describe('isClockDiverged', () => {
+		it('returns false when fewer than 2 valid offsets exist', () => {
+			const sync = new ClockSync();
+			sync.updateOffset('A', 5_000_000);
+			expect(sync.isClockDiverged()).toBe(false);
+		});
+
+		it('returns false when one offset is stale (>60s)', () => {
+			vi.useFakeTimers();
+			const sync = new ClockSync();
+			sync.updateRTT('A', 10_000);
+			sync.updateRTT('B', 10_000);
+			sync.updateOffset('A', 5_000_000);
+			// Advance past 60s to make A stale
+			vi.advanceTimersByTime(61_000);
+			sync.updateOffset('B', 100_000_000); // big divergence but A is stale
+			expect(sync.isClockDiverged()).toBe(false);
+			vi.useRealTimers();
+		});
+
+		it('returns true when divergence exceeds safety margin', () => {
+			const sync = new ClockSync();
+			sync.updateRTT('A', 10_000);
+			sync.updateRTT('B', 10_000);
+			// Safety margin is ~45833 us, so set divergence well above that
+			sync.updateOffset('A', 0);
+			sync.updateOffset('B', 1_000_000); // 1s divergence
+			expect(sync.isClockDiverged()).toBe(true);
+		});
+
+		it('returns false when divergence is within safety margin', () => {
+			const sync = new ClockSync();
+			sync.updateRTT('A', 10_000);
+			sync.updateRTT('B', 10_000);
+			// Safety margin is ~45833 us, set divergence below that
+			sync.updateOffset('A', 0);
+			sync.updateOffset('B', 100); // 100 us divergence
+			expect(sync.isClockDiverged()).toBe(false);
+		});
+	});
+
 	describe('buildPing / parsePong', () => {
 		it('builds ping datagram', () => {
 			const sync = new ClockSync();
@@ -190,29 +257,31 @@ describe('ClockSync', () => {
 			expect(view.getUint32(1)).toBe(42);
 		});
 
-		it('parses pong datagram', () => {
+		it('parses 13-byte pong datagram with seq and timestamp', () => {
 			const sync = new ClockSync();
-			const pong = new Uint8Array(9);
+			const pong = new Uint8Array(13);
 			pong[0] = 0xFF;
 			const view = new DataView(pong.buffer);
+			view.setUint32(1, 42); // seq
 			const hi = Math.floor(1_700_000_000_000_000 / 2 ** 32);
 			const lo = 1_700_000_000_000_000 % 2 ** 32;
-			view.setUint32(1, hi);
-			view.setUint32(5, lo);
+			view.setUint32(5, hi);
+			view.setUint32(9, lo);
 
-			const serverTime = sync.parsePong(pong);
-			expect(serverTime).toBe(1_700_000_000_000_000);
+			const { seq, serverTimestamp } = sync.parsePong(pong);
+			expect(seq).toBe(42);
+			expect(serverTimestamp).toBe(1_700_000_000_000_000);
 		});
 
 		it('throws on too-short pong data', () => {
 			const sync = new ClockSync();
-			expect(() => sync.parsePong(new Uint8Array(8))).toThrow('expected >= 9 bytes, got 8');
-			expect(() => sync.parsePong(new Uint8Array(0))).toThrow('expected >= 9 bytes, got 0');
+			expect(() => sync.parsePong(new Uint8Array(12))).toThrow('expected >= 13 bytes, got 12');
+			expect(() => sync.parsePong(new Uint8Array(0))).toThrow('expected >= 13 bytes, got 0');
 		});
 
 		it('throws on wrong message type in pong', () => {
 			const sync = new ClockSync();
-			const bad = new Uint8Array(9);
+			const bad = new Uint8Array(13);
 			bad[0] = 0xFE; // PING type, not PONG
 			expect(() => sync.parsePong(bad)).toThrow('expected type 0xff, got 0xfe');
 		});

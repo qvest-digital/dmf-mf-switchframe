@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createReconciler, fieldEquals, STALE_THRESHOLD_MS } from './reconciler.svelte';
+import { createReconciler, fieldEquals, STALE_THRESHOLD_MS, sortedStringify } from './reconciler.svelte';
 import type { ControlRoomState } from '$lib/api/types';
 
 function makeState(overrides: Partial<ControlRoomState> = {}): ControlRoomState {
@@ -1322,5 +1322,52 @@ describe('createReconciler', () => {
 
 			expect(r.health.staleEngines).toContain('B');
 		});
+	});
+});
+
+describe('sortedStringify', () => {
+	it('handles null and undefined', () => {
+		expect(sortedStringify(null)).toBe('null');
+		expect(sortedStringify(undefined)).toBe('undefined');
+	});
+
+	it('handles primitives', () => {
+		expect(sortedStringify(42)).toBe('42');
+		expect(sortedStringify('hello')).toBe('"hello"');
+		expect(sortedStringify(true)).toBe('true');
+	});
+
+	it('sorts object keys deterministically', () => {
+		const a = sortedStringify({ z: 1, a: 2 });
+		const b = sortedStringify({ a: 2, z: 1 });
+		expect(a).toBe(b);
+		expect(a).toBe('{"a":2,"z":1}');
+	});
+
+	it('handles arrays preserving order', () => {
+		expect(sortedStringify([3, 1, 2])).toBe('[3,1,2]');
+	});
+
+	it('handles nested objects with sorted keys', () => {
+		const result = sortedStringify({ b: { d: 1, c: 2 }, a: 3 });
+		expect(result).toBe('{"a":3,"b":{"c":2,"d":1}}');
+	});
+
+	it('serializes Date objects as ISO strings', () => {
+		const date = new Date('2026-04-07T12:00:00.000Z');
+		const result = sortedStringify(date);
+		expect(result).toBe('"2026-04-07T12:00:00.000Z"');
+	});
+
+	it('handles Date inside an object', () => {
+		const date = new Date('2026-01-01T00:00:00.000Z');
+		const result = sortedStringify({ ts: date, name: 'test' });
+		expect(result).toBe('{"name":"test","ts":"2026-01-01T00:00:00.000Z"}');
+	});
+
+	it('handles Date inside an array', () => {
+		const date = new Date('2026-06-15T08:30:00.000Z');
+		const result = sortedStringify([date, 42]);
+		expect(result).toBe('["2026-06-15T08:30:00.000Z",42]');
 	});
 });

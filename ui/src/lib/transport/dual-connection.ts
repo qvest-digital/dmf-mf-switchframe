@@ -79,12 +79,15 @@ export class DualConnectionManager {
 			const mgr = this.managers.get(id);
 			mgr?.start();
 		}
+
+		this.startClockSync();
 	}
 
 	async start(): Promise<void> {
 		this._started = true;
 		const promises = [...this.managers.values()].map((m) => m.start());
 		await Promise.allSettled(promises);
+		this.startClockSync();
 	}
 
 	stop(): void {
@@ -165,6 +168,22 @@ export class DualConnectionManager {
 		}
 	}
 
+	/** Start periodic clock sync pings if in dual-engine mode. */
+	private startClockSync(): void {
+		if (!this._isDualEngine) return;
+		const engineIds = [...this.managers.keys()] as EngineId[];
+		this.clockSync.startPeriodicSync(
+			engineIds,
+			(engineId, data) => {
+				const transport = this.getTransport(engineId);
+				if (transport) {
+					const writer = transport.datagrams.writable.getWriter();
+					writer.write(data).catch(() => {}).finally(() => writer.releaseLock());
+				}
+			}
+		);
+	}
+
 	/** Create a ConnectionManager for an engine and wire up callbacks. */
 	private createEngineManager(engineId: EngineId, url: string): void {
 		const mgr = new ConnectionManager({
@@ -195,11 +214,10 @@ export class DualConnectionManager {
 						this.reconciler.disconnect(engineId);
 					}
 
-					// Update transport-alive flag so reconciler doesn't falsely
-					// mark an idle-but-connected engine as stale.
+					// Feed transport-alive state to reconciler for hung-engine detection
 					if (connState === 'webtransport') {
 						this.reconciler.setTransportAlive(engineId, true);
-					} else if (connState === 'disconnected') {
+					} else {
 						this.reconciler.setTransportAlive(engineId, false);
 					}
 

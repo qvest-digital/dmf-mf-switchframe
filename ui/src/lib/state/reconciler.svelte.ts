@@ -103,6 +103,18 @@ const MISMATCH_FIELDS: (keyof ControlRoomState)[] = [
 /** Thresholds for time-based status detection. */
 const TRANSIENT_THRESHOLD_MS = 500;
 const DIVERGED_THRESHOLD_MS = 2000;
+const STALE_THRESHOLD_MS = 5_000;
+const STALE_TRANSPORT_ALIVE_MS = 15_000;
+
+/** Deterministic JSON stringification with sorted keys, for deep equality comparison. */
+export function sortedStringify(obj: unknown): string {
+	if (obj === null || obj === undefined) return String(obj);
+	if (obj instanceof Date) return JSON.stringify(obj.toISOString());
+	if (typeof obj !== 'object') return JSON.stringify(obj);
+	if (Array.isArray(obj)) return '[' + (obj as unknown[]).map(sortedStringify).join(',') + ']';
+	const sorted = Object.keys(obj as Record<string, unknown>).sort();
+	return '{' + sorted.map(k => JSON.stringify(k) + ':' + sortedStringify((obj as Record<string, unknown>)[k])).join(',') + '}';
+}
 
 /** If no state update for this long, treat engine as stale/disconnected. */
 export const STALE_THRESHOLD_MS = 5000;
@@ -299,10 +311,25 @@ export function createReconciler() {
 		return false;
 	}
 
+	function setTransportAlive(engine: EngineId, alive: boolean) {
+		if (engine === 'A') transportAliveA = alive;
+		else transportAliveB = alive;
+	}
+
 	/** Compute sync status based on current state + elapsed time. */
 	function computeStatus(now: number): SyncStatus {
-		const hasA = stateA !== null && connectedA;
-		const hasB = stateB !== null && connectedB;
+		let hasA = stateA !== null && connectedA;
+		let hasB = stateB !== null && connectedB;
+
+		// Stale detection: mark engine as single-engine if no state updates received
+		if (hasA && lastSeenA > 0) {
+			const thresholdA = transportAliveA ? STALE_TRANSPORT_ALIVE_MS : STALE_THRESHOLD_MS;
+			if (now - lastSeenA > thresholdA) hasA = false;
+		}
+		if (hasB && lastSeenB > 0) {
+			const thresholdB = transportAliveB ? STALE_TRANSPORT_ALIVE_MS : STALE_THRESHOLD_MS;
+			if (now - lastSeenB > thresholdB) hasB = false;
+		}
 
 		if (!stateA && !stateB) return 'disconnected';
 		// Disconnected trumps recovering: can't recover if both engines are offline
