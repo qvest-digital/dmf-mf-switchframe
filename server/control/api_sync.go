@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -114,26 +116,82 @@ func (a *API) registerSyncRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/sync/reconcile-lock/{lockId}", a.handleReleaseReconcileLock)
 }
 
-// handleGetStateSnapshot returns the full restorable engine state as JSON.
-// Used by browsers to pull a snapshot from the authoritative engine during
-// redundancy reconciliation.
-func (a *API) handleGetStateSnapshot(w http.ResponseWriter, r *http.Request) {
-	snap := a.snapshotProvider.CaptureFullSnapshot()
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(snap)
+// snapshotEnvelope wraps a FullStateSnapshot with staleness metadata.
+// Seq is the engine's LastCommandSeq at capture time, used by the receiving
+// engine to warn when a stale snapshot is being applied (seq is behind
+// current engine state). Timestamp is Unix microseconds for wall-clock age.
+type snapshotEnvelope struct {
+	Snapshot  json.RawMessage `json:"snapshot"`
+	Seq       uint64          `json:"seq"`
+	Timestamp int64           `json:"timestamp"` // Unix microseconds
 }
 
-// handleApplyStateSnapshot accepts a FullStateSnapshot and applies it to
-// restore the engine to the given state. Returns whether the apply succeeded
-// and any warnings for subsystems that could not be fully restored.
+// handleGetStateSnapshot returns the full restorable engine state wrapped
+// in a snapshotEnvelope with staleness metadata. Used by browsers to pull
+// a snapshot from the authoritative engine during redundancy reconciliation.
+func (a *API) handleGetStateSnapshot(w http.ResponseWriter, r *http.Request) {
+	snap := a.snapshotProvider.CaptureFullSnapshot()
+	snapJSON, err := json.Marshal(snap)
+	if err != nil {
+		httperr.Write(w, http.StatusInternalServerError, "marshal failed")
+		return
+	}
+	state := a.enrichedState()
+	env := snapshotEnvelope{
+		Snapshot:  snapJSON,
+		Seq:       state.LastCommandSeq,
+		Timestamp: time.Now().UnixMicro(),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(env)
+}
+
+// handleApplyStateSnapshot accepts a FullStateSnapshot (or a snapshotEnvelope
+// wrapping one) and applies it to restore the engine to the given state.
+// Returns whether the apply succeeded and any warnings for subsystems that
+// could not be fully restored.
+//
+// Backward compatibility: if the body has a "snapshot" key it is decoded as a
+// snapshotEnvelope; otherwise it is decoded directly as a FullStateSnapshot.
+// When an envelope is provided and its Seq is behind the current engine's
+// LastCommandSeq, a staleness warning is added.
 func (a *API) handleApplyStateSnapshot(w http.ResponseWriter, r *http.Request) {
-	var snap internal.FullStateSnapshot
-	if err := json.NewDecoder(r.Body).Decode(&snap); err != nil {
-		httperr.Write(w, http.StatusBadRequest, "invalid snapshot JSON")
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		httperr.Write(w, http.StatusBadRequest, "could not read body")
 		return
 	}
 
-	warnings := internal.ApplyFullSnapshot(r.Context(), snap, a.snapshotProvider.ApplyTarget())
+	var snap internal.FullStateSnapshot
+	var warnings []string
+
+	// Detect envelope vs raw snapshot by probing for the "snapshot" key.
+	var probe struct {
+		Snapshot json.RawMessage `json:"snapshot"`
+		Seq      uint64          `json:"seq"`
+	}
+	if json.Unmarshal(raw, &probe) == nil && probe.Snapshot != nil {
+		// Envelope format.
+		if err := json.Unmarshal(probe.Snapshot, &snap); err != nil {
+			httperr.Write(w, http.StatusBadRequest, "invalid snapshot JSON")
+			return
+		}
+		// Staleness check: warn if the snapshot's seq is behind the engine's.
+		if probe.Seq > 0 {
+			currentSeq := a.enrichedState().LastCommandSeq
+			if currentSeq > probe.Seq {
+				warnings = append(warnings, fmt.Sprintf("snapshot seq %d is behind engine seq %d", probe.Seq, currentSeq))
+			}
+		}
+	} else {
+		// Raw FullStateSnapshot (backward compat or direct push).
+		if err := json.Unmarshal(raw, &snap); err != nil {
+			httperr.Write(w, http.StatusBadRequest, "invalid snapshot JSON")
+			return
+		}
+	}
+
+	warnings = append(warnings, internal.ApplyFullSnapshot(r.Context(), snap, a.snapshotProvider.ApplyTarget())...)
 
 	resp := struct {
 		Applied  bool     `json:"applied"`
