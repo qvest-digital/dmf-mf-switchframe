@@ -5,7 +5,7 @@ export const AUDIO_DRIFT_DB_THRESHOLD = 3;
 export const AUDIO_DRIFT_DURATION_MS = 10_000;
 
 /** Minimum RTT delta (ms) required to switch authority based on RTT alone. Prevents jitter flapping. */
-export const RTT_HYSTERESIS_MS = 50;
+export const RTT_HYSTERESIS_MS = 100;
 
 const EMPTY_STATE: ControlRoomState = {
 	programSource: '',

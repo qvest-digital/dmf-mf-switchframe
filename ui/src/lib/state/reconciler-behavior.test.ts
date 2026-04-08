@@ -116,7 +116,7 @@ describe('reconciler behavioral tests', () => {
 			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 10 }));
 			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 10 }));
 
-			// Set RTT: B is closer (lower RTT), delta=110 > 50ms hysteresis
+			// Set RTT: B is closer (lower RTT), delta=110 > 100ms hysteresis
 			r.setRTT('A', 120);
 			r.setRTT('B', 10);
 
@@ -153,10 +153,10 @@ describe('reconciler behavioral tests', () => {
 			expect(r.state.programSource).toBe('cam2');
 		});
 
-		it('RTT_HYSTERESIS_MS is 50ms for cross-region stability', () => {
-			// Cross-region deployments have RTTs of 50-200ms with 20-30ms fluctuations.
-			// The old value of 10ms caused unnecessary authority flapping.
-			expect(RTT_HYSTERESIS_MS).toBe(50);
+		it('RTT_HYSTERESIS_MS is 100ms for cross-region stability', () => {
+			// Cross-region deployments have RTTs of 50-200ms with 30-80ms fluctuations.
+			// The old value of 50ms caused unnecessary authority flapping.
+			expect(RTT_HYSTERESIS_MS).toBe(100);
 		});
 
 		it('does not flap authority on typical cross-region RTT fluctuations', () => {
@@ -167,19 +167,19 @@ describe('reconciler behavioral tests', () => {
 			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 10 }));
 			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 10 }));
 
-			// Initial: A=80ms, B=100ms, delta=20ms < 50ms hysteresis → A wins (default)
+			// Initial: A=80ms, B=100ms, delta=20ms < 100ms hysteresis → A wins (default)
 			r.setRTT('A', 80);
 			r.setRTT('B', 100);
 			expect(r.health.authoritative).toBe('A');
 
-			// Jitter: A spikes to 105ms, B drops to 75ms. Delta=30ms < 50ms → still A
-			r.setRTT('A', 105);
+			// Jitter: A spikes to 140ms, B drops to 75ms. Delta=65ms < 100ms → still A
+			r.setRTT('A', 140);
 			r.setRTT('B', 75);
 			expect(r.health.authoritative).toBe('A');
 
-			// More jitter: A=90ms, B=115ms. Delta=25ms < 50ms → still A
+			// More jitter: A=90ms, B=170ms. Delta=80ms < 100ms → still A
 			r.setRTT('A', 90);
-			r.setRTT('B', 115);
+			r.setRTT('B', 170);
 			expect(r.health.authoritative).toBe('A');
 		});
 
