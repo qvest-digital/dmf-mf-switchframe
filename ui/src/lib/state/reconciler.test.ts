@@ -231,21 +231,21 @@ describe('createReconciler', () => {
 			expect(r.health.status).toBe('mismatch');
 		});
 
-		it('reports mismatch when playout currentItemId differs at same seq', () => {
+		it('reports mismatch when playout title differs at same itemIndex', () => {
 			const r = createReconciler();
 			r.ingest('A', makeState({
 				lastCommandSeq: 5,
-				playout: { channels: [{ id: 0, state: 'on_air', currentItemId: 'item-1', itemIndex: 0, itemCount: 1 }] },
+				playout: { channels: [{ id: 0, state: 'on_air', currentTitle: 'Interview', itemIndex: 0, itemCount: 1 }] },
 			}));
 			r.ingest('B', makeState({
 				lastCommandSeq: 5,
-				playout: { channels: [{ id: 0, state: 'on_air', currentItemId: 'item-2', itemIndex: 0, itemCount: 1 }] },
+				playout: { channels: [{ id: 0, state: 'on_air', currentTitle: 'Bumper', itemIndex: 0, itemCount: 1 }] },
 			}));
 			r.tick();
 			expect(r.health.status).toBe('mismatch');
 		});
 
-		it('reports mismatch when playout current items differ at same seq', () => {
+		it('tolerates <=1 item index drift in playout (natural scheduler drift)', () => {
 			const r = createReconciler();
 			r.ingest('A', makeState({
 				lastCommandSeq: 10,
@@ -254,6 +254,19 @@ describe('createReconciler', () => {
 			r.ingest('B', makeState({
 				lastCommandSeq: 10,
 				playout: { channels: [{ id: 0, state: 'on_air', itemIndex: 3, itemCount: 15, currentTitle: 'Bumper' }] },
+			}));
+			expect(r.health.status).toBe('synced');
+		});
+
+		it('reports mismatch when playout index drift exceeds 1', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 10,
+				playout: { channels: [{ id: 0, state: 'on_air', itemIndex: 2, itemCount: 15 }] },
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 10,
+				playout: { channels: [{ id: 0, state: 'on_air', itemIndex: 5, itemCount: 15 }] },
 			}));
 			expect(r.health.status).toBe('mismatch');
 		});

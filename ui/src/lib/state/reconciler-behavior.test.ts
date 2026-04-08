@@ -533,7 +533,7 @@ describe('reconciler behavioral tests', () => {
 			expect(r.health.status).toBe('mismatch');
 		});
 
-		it('detects playout itemIndex mismatch at same seq', () => {
+		it('tolerates <=1 item index drift between engines', () => {
 			const r = createReconciler();
 
 			const playoutA: { channels: PlayoutChannelState[] } = {
@@ -544,6 +544,26 @@ describe('reconciler behavioral tests', () => {
 			const playoutB: { channels: PlayoutChannelState[] } = {
 				channels: [{
 					id: 0, state: 'on_air', itemIndex: 3, itemCount: 5,
+				}],
+			};
+
+			r.ingest('A', makeState({ playout: playoutA, lastCommandSeq: 10 }));
+			r.ingest('B', makeState({ playout: playoutB, lastCommandSeq: 10 }));
+
+			expect(r.health.status).toBe('synced');
+		});
+
+		it('detects playout itemIndex mismatch when drift exceeds 1', () => {
+			const r = createReconciler();
+
+			const playoutA: { channels: PlayoutChannelState[] } = {
+				channels: [{
+					id: 0, state: 'on_air', itemIndex: 2, itemCount: 5,
+				}],
+			};
+			const playoutB: { channels: PlayoutChannelState[] } = {
+				channels: [{
+					id: 0, state: 'on_air', itemIndex: 4, itemCount: 5,
 				}],
 			};
 
