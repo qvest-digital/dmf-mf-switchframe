@@ -287,6 +287,104 @@ func TestEnqueue_ZeroSeq_SkipsDedup(t *testing.T) {
 	}
 }
 
+// TestWithMaxSize_RejectsAtLimit verifies that when the queue is at capacity,
+// further enqueue attempts return ErrQueueFull.
+func TestWithMaxSize_RejectsAtLimit(t *testing.T) {
+	clock, _ := newClock(0)
+	q := cmdqueue.New(clock, cmdqueue.WithMaxSize(3))
+
+	// Fill to capacity.
+	for i := uint64(1); i <= 3; i++ {
+		if err := q.Enqueue(cmdqueue.Command{Seq: i, Action: "test"}); err != nil {
+			t.Fatalf("enqueue seq=%d: %v", i, err)
+		}
+	}
+
+	// Next enqueue should be rejected.
+	err := q.Enqueue(cmdqueue.Command{Seq: 4, Action: "test"})
+	if !errors.Is(err, cmdqueue.ErrQueueFull) {
+		t.Fatalf("expected ErrQueueFull, got %v", err)
+	}
+
+	// Pending should still be 3 (rejected command not added).
+	if q.Pending() != 3 {
+		t.Errorf("expected 3 pending, got %d", q.Pending())
+	}
+}
+
+// TestWithMaxSize_AcceptsUnderLimit verifies that commands are accepted when
+// the queue is below the max size.
+func TestWithMaxSize_AcceptsUnderLimit(t *testing.T) {
+	clock, _ := newClock(0)
+	q := cmdqueue.New(clock, cmdqueue.WithMaxSize(5))
+
+	for i := uint64(1); i <= 5; i++ {
+		if err := q.Enqueue(cmdqueue.Command{Seq: i, Action: "test"}); err != nil {
+			t.Fatalf("enqueue seq=%d should succeed under limit: %v", i, err)
+		}
+	}
+
+	if q.Pending() != 5 {
+		t.Errorf("expected 5 pending, got %d", q.Pending())
+	}
+}
+
+// TestWithMaxSize_AcceptsAfterDrain verifies that draining commands frees
+// space so new commands can be enqueued again.
+func TestWithMaxSize_AcceptsAfterDrain(t *testing.T) {
+	clock, _ := newClock(0)
+	q := cmdqueue.New(clock, cmdqueue.WithMaxSize(2))
+
+	// Fill to capacity.
+	for i := uint64(1); i <= 2; i++ {
+		if err := q.Enqueue(cmdqueue.Command{Seq: i, Action: "test"}); err != nil {
+			t.Fatalf("enqueue seq=%d: %v", i, err)
+		}
+	}
+
+	// Drain all.
+	drained := q.Drain()
+	if len(drained) != 2 {
+		t.Fatalf("expected 2 drained, got %d", len(drained))
+	}
+
+	// Should accept new commands now.
+	if err := q.Enqueue(cmdqueue.Command{Seq: 3, Action: "test"}); err != nil {
+		t.Fatalf("enqueue after drain should succeed: %v", err)
+	}
+	if q.Pending() != 1 {
+		t.Errorf("expected 1 pending after drain+enqueue, got %d", q.Pending())
+	}
+}
+
+// TestWithMaxSize_ZeroDisablesLimit verifies that WithMaxSize(0) — or omitting
+// the option entirely — allows unbounded growth (backward compatible).
+func TestWithMaxSize_ZeroDisablesLimit(t *testing.T) {
+	clock, _ := newClock(0)
+
+	// Explicit WithMaxSize(0).
+	q := cmdqueue.New(clock, cmdqueue.WithMaxSize(0))
+	for i := uint64(1); i <= 100; i++ {
+		if err := q.Enqueue(cmdqueue.Command{Seq: i, Action: "test"}); err != nil {
+			t.Fatalf("enqueue seq=%d with maxSize=0: %v", i, err)
+		}
+	}
+	if q.Pending() != 100 {
+		t.Errorf("expected 100 pending with maxSize=0, got %d", q.Pending())
+	}
+
+	// No WithMaxSize option at all (default).
+	q2 := cmdqueue.New(clock)
+	for i := uint64(101); i <= 200; i++ {
+		if err := q2.Enqueue(cmdqueue.Command{Seq: i, Action: "test"}); err != nil {
+			t.Fatalf("enqueue seq=%d with default (no limit): %v", i, err)
+		}
+	}
+	if q2.Pending() != 100 {
+		t.Errorf("expected 100 pending with default, got %d", q2.Pending())
+	}
+}
+
 // TestPending reflects the correct in-flight count.
 func TestPending(t *testing.T) {
 	const now = int64(5_000_000)

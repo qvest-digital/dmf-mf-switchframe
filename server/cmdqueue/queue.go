@@ -23,6 +23,7 @@ const MaxDrainPerCall = 32
 var (
 	ErrStaleCommand     = errors.New("cmdqueue: command is too old (stale)")
 	ErrDuplicateCommand = errors.New("cmdqueue: duplicate command_seq")
+	ErrQueueFull        = errors.New("cmdqueue: queue is full")
 )
 
 // Command is a single schedulable control action.
@@ -43,6 +44,13 @@ func WithMaxAge(maxAge int64) Option {
 	return func(q *Queue) { q.maxAge = maxAge }
 }
 
+// WithMaxSize sets the maximum number of commands the queue will hold.
+// When set to a positive value, Enqueue returns ErrQueueFull if the heap
+// is at capacity. Default 0 means no limit (backward compatible).
+func WithMaxSize(n int) Option {
+	return func(q *Queue) { q.maxSize = n }
+}
+
 // WithWAL attaches a write-ahead log for crash recovery. When set, Enqueue
 // appends commands to the WAL before adding them to the heap, and Drain
 // marks executed entries. On construction, un-executed WAL entries are replayed.
@@ -53,12 +61,13 @@ func WithWAL(w *WAL) Option {
 // Queue holds pending commands sorted by ExecuteAt and drains them when the
 // injected clock reaches their scheduled time.
 type Queue struct {
-	mu     sync.Mutex
-	h      cmdHeap
-	seen   map[uint64]struct{}
-	clock  func() int64
-	maxAge int64
-	wal    *WAL
+	mu      sync.Mutex
+	h       cmdHeap
+	seen    map[uint64]struct{}
+	clock   func() int64
+	maxAge  int64
+	maxSize int
+	wal     *WAL
 }
 
 // New creates a ready-to-use Queue. clock is called on every Enqueue and Drain
@@ -96,6 +105,11 @@ func (q *Queue) Enqueue(cmd Command) error {
 
 	q.mu.Lock()
 	defer q.mu.Unlock()
+
+	// Size limit check — reject before mutating any state.
+	if q.maxSize > 0 && len(q.h) >= q.maxSize {
+		return ErrQueueFull
+	}
 
 	// Dedup by Seq (skip when Seq is 0 — untimed/legacy commands).
 	if cmd.Seq > 0 {

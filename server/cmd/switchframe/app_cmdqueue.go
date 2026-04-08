@@ -31,6 +31,9 @@ func (a *App) initCommandQueue() error {
 	maxAge := cmdqueue.DefaultMaxAge // 2s
 	opts = append(opts, cmdqueue.WithMaxAge(maxAge))
 
+	// Cap queue size to prevent unbounded growth from misbehaving clients.
+	opts = append(opts, cmdqueue.WithMaxSize(10_000))
+
 	// Attach WAL for crash recovery if we have a state directory.
 	if a.cfg.StateDir != "" {
 		walPath := filepath.Join(a.cfg.StateDir, "cmdqueue.wal")
