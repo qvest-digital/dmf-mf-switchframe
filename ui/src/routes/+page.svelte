@@ -173,6 +173,16 @@
 		return `https://control-plane.switchframe.dev/session/${sessionId}`;
 	});
 
+	// Which engine is serving this page — derived from origin URL vs engineBUrl
+	const servingEngine = $derived.by((): 'A' | 'B' => {
+		if (!isDualEngine || !store.state.engineBUrl) return 'A';
+		try {
+			const bOrigin = new URL(store.state.engineBUrl).origin;
+			if (window.location.origin === bOrigin) return 'B';
+		} catch { /* fall through */ }
+		return 'A';
+	});
+
 	// Per-engine connection state for ConnectionBanner indicators.
 	// Keyed on transportChangeCount so Svelte re-derives when any engine's state changes.
 	let perEngineState = $derived.by(() => {
@@ -1202,7 +1212,7 @@
 />
 
 <ErrorBoundary>
-	<ConnectionBanner {connectionState} {syncStatus} engineStatus={engineBannerStatus} {perEngineState} {sessionFallbackUrl} engineFallbackUrl={store.state.engineBUrl} servingEngine="A" />
+	<ConnectionBanner {connectionState} {syncStatus} engineStatus={engineBannerStatus} {perEngineState} {sessionFallbackUrl} engineFallbackUrl={store.state.engineBUrl} servingEngine={servingEngine} />
 	<Toast />
 	{#if layoutMode === 'simple'}
 		<SimpleMode
