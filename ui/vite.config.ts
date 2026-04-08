@@ -18,6 +18,13 @@ function crossOriginIsolation(): Plugin {
 
 export default defineConfig({
 	plugins: [crossOriginIsolation(), sveltekit(), svelteTesting()],
+	build: {
+		rollupOptions: {
+			output: {
+				inlineDynamicImports: true,
+			},
+		},
+	},
 	test: {
 		include: ['src/**/*.test.ts'],
 		environment: 'jsdom',
