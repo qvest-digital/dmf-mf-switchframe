@@ -53,6 +53,7 @@
 	import { createDualFastControl } from '$lib/transport/dual-fast-control';
 	import { sortedSourceKeys } from '$lib/util/sort-sources';
 	import { inferEngineBUrl } from '$lib/util/engine-url';
+	import { ControlPlaneDiscovery } from '$lib/transport/control-plane-discovery';
 	import { CaptionRenderer } from '$lib/prism/captions';
 	import type { ControlRoomState, Macro } from '$lib/api/types';
 
@@ -658,6 +659,36 @@
 		},
 		onInitialLoadError: (error, rawError) => {
 			initialLoadRetries++;
+
+			// On first error, try control plane discovery (faster than DNS inference)
+			if (initialLoadRetries === 1 && !engineBDetected) {
+				const discovery = new ControlPlaneDiscovery(window.location.hostname);
+				discovery.fetchEngineUrls().then((result) => {
+					if (result && !engineBDetected) {
+						engineBDetected = true;
+						isDualEngine = true;
+						connectionManager.addEngine('B', result.engineBUrl);
+						dualApi.addEngine('B', result.engineBUrl);
+						setEngineUrls([
+							{ id: 'A', url: window.location.origin },
+							{ id: 'B', url: result.engineBUrl },
+						]);
+						setDualTimestampProvider(() => ({
+							execute_at: connectionManager.clock.ptpNow() + connectionManager.clock.safetyMargin(),
+							command_seq: connectionManager.nextCommandSeq(),
+						}));
+						setPartialFailureCallback(() => {
+							connectionManager.requestCheck();
+						});
+						setPartialFailureNotify((msg) => {
+							notify('warning', msg);
+						});
+						if (!reconcilerInterval) {
+							reconcilerInterval = setInterval(() => { connectionManager.tick(); }, 200);
+						}
+					}
+				});
+			}
 
 			// After 3 failures, try to infer Engine B from DNS naming convention.
 			// {sessionId}.engines.switchframe.dev → {sessionId}-b.engines.switchframe.dev
