@@ -93,6 +93,8 @@ const DIVERGENCE_FIELDS: (keyof ControlRoomState)[] = [
 	'transitionType',
 	'transitionDurationMs',
 	'audioChannels',
+	'encoder',
+	'captions',
 ];
 
 /** Critical fields: mismatch at same seq = deterministic failure. */
@@ -299,6 +301,18 @@ export function createReconciler() {
 				engineA: stateA.layout?.activePreset,
 				engineB: stateB.layout?.activePreset,
 			});
+		}
+		// Clip player state divergence
+		const clipsA = stateA.clipPlayers ?? [];
+		const clipsB = stateB.clipPlayers ?? [];
+		const playingA = clipsA.filter((c) => c.state === 'playing').length;
+		const playingB = clipsB.filter((c) => c.state === 'playing').length;
+		if (playingA !== playingB) {
+			result.push({ field: 'clipPlayers', engineA: `${playingA} playing`, engineB: `${playingB} playing` });
+		}
+		// Replay state divergence
+		if (stateA.replay?.playing !== stateB.replay?.playing) {
+			result.push({ field: 'replay', engineA: stateA.replay, engineB: stateB.replay });
 		}
 		return result;
 	});

@@ -696,6 +696,25 @@ export function getSRTSourceStats(key: string): Promise<SRTSourceStats> {
 	return request(`/api/sources/${encodeURIComponent(key)}/srt/stats`);
 }
 
+/** Fetch SRT stats from both engines in parallel. Returns null for unavailable engines. */
+export async function getSRTSourceStatsDual(key: string): Promise<{ A: SRTSourceStats | null; B: SRTSourceStats | null }> {
+	const engines = getEngineUrls();
+	if (!engines || engines.length < 2) {
+		const stats = await getSRTSourceStats(key).catch(() => null);
+		return { A: stats, B: null };
+	}
+	const url = `/api/sources/${encodeURIComponent(key)}/srt/stats`;
+	const opts: RequestInit = { headers: authHeaders() };
+	const [a, b] = await Promise.allSettled([
+		fetch(`${engines[0].url}${url}`, opts).then(r => r.ok ? r.json() as Promise<SRTSourceStats> : null),
+		fetch(`${engines[1].url}${url}`, opts).then(r => r.ok ? r.json() as Promise<SRTSourceStats> : null),
+	]);
+	return {
+		A: a.status === 'fulfilled' ? a.value : null,
+		B: b.status === 'fulfilled' ? b.value : null,
+	};
+}
+
 export function updateSRTLatency(key: string, latencyMs: number): Promise<void> {
 	return request(`/api/sources/${encodeURIComponent(key)}/srt`, {
 		method: 'PUT',

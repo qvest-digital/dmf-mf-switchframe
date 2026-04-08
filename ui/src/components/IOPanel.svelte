@@ -12,6 +12,7 @@
 		createSRTSource,
 		deleteSRTSource,
 		getSRTSourceStats,
+		getSRTSourceStatsDual,
 		updateSRTLatency,
 		setSourceDelay,
 		addDestination,
@@ -59,6 +60,7 @@
 
 	// --- SRT stats polling ---
 	let srtStats = $state<Record<string, SRTSourceStats>>({});
+	let srtStatsDual = $state<Record<string, { A: SRTSourceStats | null; B: SRTSourceStats | null }>>({});
 	let srtPollIntervals = $state<Record<string, ReturnType<typeof setInterval>>>({});
 
 	// --- Add forms ---
@@ -216,8 +218,15 @@
 
 	async function fetchSRTStats(key: string) {
 		try {
-			const stats = await getSRTSourceStats(key);
-			srtStats = { ...srtStats, [key]: stats };
+			if (isDualEngine) {
+				const dual = await getSRTSourceStatsDual(key);
+				srtStatsDual = { ...srtStatsDual, [key]: dual };
+				// Use Engine A stats as primary display (backward compat)
+				if (dual.A) srtStats = { ...srtStats, [key]: dual.A };
+			} else {
+				const stats = await getSRTSourceStats(key);
+				srtStats = { ...srtStats, [key]: stats };
+			}
 		} catch {
 			// Ignore errors silently
 		}
@@ -579,7 +588,16 @@
 
 										{#if srtStats[src.key]}
 											{@const stats = srtStats[src.key]}
-											{#if isDualEngine}
+											{#if isDualEngine && srtStatsDual[src.key]}
+												{@const dual = srtStatsDual[src.key]}
+												<div class="detail-row srt-engine-note-row">
+													<span class="srt-engine-note">
+														A: {dual.A?.connected ? '✓' : '✗'}{#if dual.A?.rttMs != null} ({dual.A.rttMs.toFixed(0)}ms){/if}
+														&nbsp;·&nbsp;
+														B: {dual.B?.connected ? '✓' : '✗'}{#if dual.B?.rttMs != null} ({dual.B.rttMs.toFixed(0)}ms){/if}
+													</span>
+												</div>
+											{:else if isDualEngine}
 												<div class="detail-row srt-engine-note-row">
 													<span class="srt-engine-note" title="Stats from primary engine only">Engine A stats only</span>
 												</div>
