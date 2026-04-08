@@ -26,6 +26,7 @@ export class DualConnectionManager {
 	private _engineALoaded = false;
 	private _engineBLoaded = false;
 	private _dualReadyFired = false;
+	private _datagramSenders = new Map<string, (data: Uint8Array) => void>();
 
 	constructor(private config: DualConnectionConfig) {
 		this._isDualEngine = config.engines.length > 1;
@@ -195,6 +196,14 @@ export class DualConnectionManager {
 		this.clockSync.startPeriodicSync(
 			engineIds,
 			(engineId, data) => {
+				// Route through FastControl's shared writer when available
+				// to avoid WritableStream lock conflict.
+				const sender = this._datagramSenders.get(engineId);
+				if (sender) {
+					sender(data);
+					return;
+				}
+				// Fallback: acquire/release writer (only before FastControl is created)
 				const transport = this.getTransport(engineId);
 				if (transport) {
 					const writer = transport.datagrams.writable.getWriter();
@@ -202,6 +211,15 @@ export class DualConnectionManager {
 				}
 			}
 		);
+	}
+
+	/** Register a datagram sender for an engine (routes clock sync through FastControl's writer). */
+	setDatagramSender(engineId: EngineId, sender: ((data: Uint8Array) => void) | null): void {
+		if (sender) {
+			this._datagramSenders.set(engineId, sender);
+		} else {
+			this._datagramSenders.delete(engineId);
+		}
 	}
 
 	/** Create a ConnectionManager for an engine and wire up callbacks. */

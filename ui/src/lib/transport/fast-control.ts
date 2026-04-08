@@ -50,6 +50,8 @@ export interface FastControl {
 		colorCb: number,
 		colorCr: number,
 	): void;
+	/** Write raw datagram bytes through this control's shared writer (for clock sync). */
+	writeDatagram(data: Uint8Array): void;
 	close(): void;
 }
 
@@ -252,6 +254,11 @@ export function createFastControl(transport: WebTransport, opts?: FastControlOpt
 			colorCr: number,
 		) {
 			write(encodeDVEBorder(slotId, width, radius, colorY, colorCb, colorCr), 'dve_border');
+		},
+
+		writeDatagram(data: Uint8Array) {
+			if (closed) return;
+			writer.write(data).catch(() => {});
 		},
 
 		close() {

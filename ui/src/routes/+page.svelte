@@ -1144,12 +1144,15 @@
 						onWriteError: handleFastControlWriteError,
 						ptpNow: isDualEngine ? () => connectionManager.clock.ptpNow() : undefined,
 					});
+					// Route clock sync pings through FastControl's shared writer
+					connectionManager.setDatagramSender('A', (data) => fastControlA?.writeDatagram(data));
 				} catch {
 					// Datagrams not supported — fall back to REST
 				}
 			}
 		}
 		if (connectionState !== 'webtransport' && fastControlA) {
+			connectionManager.setDatagramSender('A', null);
 			fastControlA.close();
 			fastControlA = null;
 		}
@@ -1168,11 +1171,13 @@
 					onWriteError: handleFastControlWriteError,
 					ptpNow: () => connectionManager.clock.ptpNow(),
 				});
+				connectionManager.setDatagramSender('B', (data) => fastControlB?.writeDatagram(data));
 			} catch {
 				// Datagrams not supported on engine B
 			}
 		}
 		if (!transportB && fastControlB) {
+			connectionManager.setDatagramSender('B', null);
 			fastControlB.close();
 			fastControlB = null;
 		}
