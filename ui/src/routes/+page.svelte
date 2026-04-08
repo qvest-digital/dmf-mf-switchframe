@@ -217,6 +217,13 @@
 		pushSnapshot: (engine, snapshot) => dualApi.pushStateSnapshot(engine, snapshot),
 		acquireLock: (engine) => dualApi.acquireReconcileLock(engine),
 		releaseLock: (engine, lockId) => dualApi.releaseReconcileLock(engine, lockId),
+		getAuthoritativeState: () => {
+			const s = connectionManager.state;
+			return s ? { inTransition: s.inTransition } : null;
+		},
+		checkCriticalDivergence: () => {
+			return connectionManager.health.status === 'mismatch';
+		},
 		onRecoveryStart: () => {
 			connectionManager.setRecovering(true);
 			divergenceLog.add({ type: 'snapshot', message: 'Snapshot push started...' });

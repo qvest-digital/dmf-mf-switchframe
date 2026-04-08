@@ -350,6 +350,126 @@ describe('auto-reconcile integration', () => {
 		});
 	});
 
+	// ─── Transition guard (getAuthoritativeState) ───
+
+	describe('transition guard', () => {
+		it('defers snapshot push when getAuthoritativeState returns inTransition: true', async () => {
+			let transitioning = true;
+			const config = createTestConfig({
+				getAuthoritativeState: vi.fn(() => ({ inTransition: transitioning })),
+			});
+			const ar = createAutoReconcile(config);
+
+			ar.onSyncStatusChange('mismatch', 'A');
+			// Transition guard fires immediately — push should not happen yet
+			await vi.advanceTimersByTimeAsync(0);
+			expect(config.pushSnapshot).not.toHaveBeenCalled();
+
+			// Transition ends — guard polling resolves
+			transitioning = false;
+			await vi.advanceTimersByTimeAsync(200);
+			expect(config.pushSnapshot).toHaveBeenCalledOnce();
+		});
+
+		it('proceeds immediately when getAuthoritativeState returns inTransition: false', async () => {
+			const config = createTestConfig({
+				getAuthoritativeState: vi.fn(() => ({ inTransition: false })),
+			});
+			const ar = createAutoReconcile(config);
+
+			ar.onSyncStatusChange('mismatch', 'A');
+			await vi.runAllTimersAsync();
+
+			expect(config.pushSnapshot).toHaveBeenCalledOnce();
+		});
+
+		it('proceeds immediately when getAuthoritativeState returns null', async () => {
+			const config = createTestConfig({
+				getAuthoritativeState: vi.fn(() => null),
+			});
+			const ar = createAutoReconcile(config);
+
+			ar.onSyncStatusChange('mismatch', 'A');
+			await vi.runAllTimersAsync();
+
+			expect(config.pushSnapshot).toHaveBeenCalledOnce();
+		});
+
+		it('proceeds after timeout even if transition never ends', async () => {
+			const config = createTestConfig({
+				getAuthoritativeState: vi.fn(() => ({ inTransition: true })),
+			});
+			const ar = createAutoReconcile(config);
+
+			ar.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(config.pushSnapshot).not.toHaveBeenCalled();
+
+			// After 5s timeout, guard gives up and proceeds
+			await vi.advanceTimersByTimeAsync(5100);
+			expect(config.pushSnapshot).toHaveBeenCalledOnce();
+		});
+	});
+
+	// ─── Partial apply re-check (checkCriticalDivergence) ───
+
+	describe('checkCriticalDivergence', () => {
+		it('re-pushes when warnings returned and checkCriticalDivergence returns true', async () => {
+			// checkCriticalDivergence returns true once, then false so the loop terminates
+			let callCount = 0;
+			const config = createTestConfig({
+				pushSnapshot: vi.fn().mockResolvedValue({ warnings: ['some field skipped'] }),
+				checkCriticalDivergence: vi.fn(() => callCount++ === 0),
+			});
+			const ar = createAutoReconcile(config);
+
+			ar.onSyncStatusChange('mismatch', 'A');
+			// Flush the mismatch → getSnapshot → pushSnapshot microtasks (but not the 500ms re-check timer)
+			await vi.advanceTimersByTimeAsync(0);
+
+			// First push completed with warnings
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(1);
+
+			// Advance past the 500ms re-check window (cooldown bypassed via lastPushTimes.delete)
+			await vi.advanceTimersByTimeAsync(600);
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(2);
+		});
+
+		it('does not re-push when warnings returned but checkCriticalDivergence returns false', async () => {
+			const config = createTestConfig({
+				pushSnapshot: vi.fn().mockResolvedValue({ warnings: ['some field skipped'] }),
+				checkCriticalDivergence: vi.fn(() => false),
+			});
+			const ar = createAutoReconcile(config);
+
+			ar.onSyncStatusChange('mismatch', 'A');
+			await vi.runAllTimersAsync();
+
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(1);
+
+			await vi.advanceTimersByTimeAsync(600);
+			// No re-push since divergence resolved
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(1);
+		});
+
+		it('does not re-push when no warnings even if checkCriticalDivergence returns true', async () => {
+			const config = createTestConfig({
+				pushSnapshot: vi.fn().mockResolvedValue({ warnings: [] }),
+				checkCriticalDivergence: vi.fn(() => true),
+			});
+			const ar = createAutoReconcile(config);
+
+			ar.onSyncStatusChange('mismatch', 'A');
+			await vi.runAllTimersAsync();
+
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(1);
+
+			await vi.advanceTimersByTimeAsync(600);
+			// No re-push since no partial-apply warnings
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(1);
+		});
+	});
+
 	// ─── Timer interaction edge cases ───
 
 	describe('timer edge cases', () => {
