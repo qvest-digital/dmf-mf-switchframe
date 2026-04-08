@@ -1,12 +1,72 @@
 package control
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/zsiec/switchframe/server/control/httperr"
 	"github.com/zsiec/switchframe/server/internal"
 )
+
+// reconcileLockState holds an in-memory lock that prevents two browser tabs
+// from reconciling engine state simultaneously on the same engine.
+type reconcileLockState struct {
+	mu     sync.Mutex
+	holder string
+	lockID string
+	expiry time.Duration
+	deadline time.Time
+}
+
+// newReconcileLockState returns an initialized lock with a 10s default expiry.
+func newReconcileLockState() reconcileLockState {
+	return reconcileLockState{expiry: 10 * time.Second}
+}
+
+// tryAcquire attempts to acquire the lock for the given holder.
+// Returns (lockID, true) on success, or (holder, false) if already held.
+func (l *reconcileLockState) tryAcquire(holder string) (string, string, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	now := time.Now()
+
+	// If a lock is held and not yet expired, reject.
+	if l.lockID != "" && now.Before(l.deadline) {
+		return "", l.holder, false
+	}
+
+	// Grant the lock.
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	l.lockID = hex.EncodeToString(b)
+	l.holder = holder
+	l.deadline = now.Add(l.expiry)
+	return l.lockID, "", true
+}
+
+// release clears the lock if the lockID matches. Returns true if released.
+func (l *reconcileLockState) release(lockID string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.lockID == "" {
+		// No lock held — idempotent success.
+		return true
+	}
+	if l.lockID != lockID {
+		return false
+	}
+	l.lockID = ""
+	l.holder = ""
+	l.deadline = time.Time{}
+	return true
+}
 
 // SnapshotProvider captures and applies full engine state snapshots for
 // multi-region active-active redundancy. A browser detecting sustained state
@@ -50,6 +110,8 @@ func (a *API) registerSyncRoutes(mux *http.ServeMux) {
 	}
 	mux.HandleFunc("GET /api/sync/state-snapshot", a.handleGetStateSnapshot)
 	mux.HandleFunc("POST /api/sync/state-snapshot", a.handleApplyStateSnapshot)
+	mux.HandleFunc("POST /api/sync/reconcile-lock", a.handleAcquireReconcileLock)
+	mux.HandleFunc("DELETE /api/sync/reconcile-lock/{lockId}", a.handleReleaseReconcileLock)
 }
 
 // handleGetStateSnapshot returns the full restorable engine state as JSON.
@@ -82,4 +144,57 @@ func (a *API) handleApplyStateSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// handleAcquireReconcileLock attempts to acquire the per-engine reconcile lock.
+// This prevents multiple browser tabs from reconciling engine state simultaneously.
+// Body: {"holder": "browser-tab-id"}
+// Returns: {"acquired": true, "lockId": "uuid"} or {"acquired": false, "holder": "existing-holder"}
+func (a *API) handleAcquireReconcileLock(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Holder string `json:"holder"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	lockID, holder, acquired := a.reconcileLock.tryAcquire(body.Holder)
+
+	resp := struct {
+		Acquired bool   `json:"acquired"`
+		LockID   string `json:"lockId,omitempty"`
+		Holder   string `json:"holder,omitempty"`
+	}{
+		Acquired: acquired,
+	}
+	if acquired {
+		resp.LockID = lockID
+	} else {
+		resp.Holder = holder
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// handleReleaseReconcileLock releases a previously acquired reconcile lock.
+// The lockId in the URL path must match the one returned from acquire.
+func (a *API) handleReleaseReconcileLock(w http.ResponseWriter, r *http.Request) {
+	lockID := r.PathValue("lockId")
+	if lockID == "" {
+		// Fallback: extract from URL path for Go <1.22 mux compatibility.
+		parts := strings.Split(r.URL.Path, "/")
+		if len(parts) > 0 {
+			lockID = parts[len(parts)-1]
+		}
+	}
+
+	if !a.reconcileLock.release(lockID) {
+		httperr.Write(w, http.StatusConflict, "lock ID does not match")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"released":true}`))
 }

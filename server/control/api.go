@@ -531,6 +531,7 @@ type API struct {
 	asrConfigMu        sync.Mutex // serializes ASR config changes (prevents pile-up)
 	cmdQueue           *cmdqueue.Queue
 	startTime          time.Time
+	reconcileLock      reconcileLockState
 }
 
 // enrichFunc is the type for the state enrichment callback.
@@ -541,7 +542,7 @@ type broadcastFunc func()
 
 // NewAPI creates an API that delegates to sw.
 func NewAPI(sw *switcher.Switcher, opts ...APIOption) *API {
-	a := &API{switcher: sw, mux: http.NewServeMux(), startTime: time.Now()}
+	a := &API{switcher: sw, mux: http.NewServeMux(), startTime: time.Now(), reconcileLock: newReconcileLockState()}
 	for _, opt := range opts {
 		opt(a)
 	}

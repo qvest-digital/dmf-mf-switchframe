@@ -215,6 +215,8 @@
 	const autoReconcile = createAutoReconcile({
 		getSnapshot: (engine) => dualApi.getStateSnapshot(engine),
 		pushSnapshot: (engine, snapshot) => dualApi.pushStateSnapshot(engine, snapshot),
+		acquireLock: (engine) => dualApi.acquireReconcileLock(engine),
+		releaseLock: (engine, lockId) => dualApi.releaseReconcileLock(engine, lockId),
 		onRecoveryStart: () => {
 			connectionManager.setRecovering(true);
 			divergenceLog.add({ type: 'snapshot', message: 'Snapshot push started...' });

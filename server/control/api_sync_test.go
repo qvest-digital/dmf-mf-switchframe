@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/zsiec/prism/distribution"
@@ -185,4 +186,185 @@ func TestGetStateSnapshot_NotConfigured(t *testing.T) {
 	api.Mux().ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// --- Reconcile Lock Tests ---
+
+func TestReconcileLock_AcquireWhenFree(t *testing.T) {
+	provider := &mockSnapshotProvider{}
+	api := setupTestAPIWithSnapshot(t, provider)
+
+	body := `{"holder":"browser-tab-1"}`
+	req := httptest.NewRequest("POST", "/api/sync/reconcile-lock", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp struct {
+		Acquired bool   `json:"acquired"`
+		LockID   string `json:"lockId,omitempty"`
+		Holder   string `json:"holder,omitempty"`
+	}
+	err := json.NewDecoder(rec.Body).Decode(&resp)
+	require.NoError(t, err)
+	require.True(t, resp.Acquired)
+	require.NotEmpty(t, resp.LockID)
+}
+
+func TestReconcileLock_AcquireWhenHeld(t *testing.T) {
+	provider := &mockSnapshotProvider{}
+	api := setupTestAPIWithSnapshot(t, provider)
+
+	// First acquire
+	body := `{"holder":"browser-tab-1"}`
+	req := httptest.NewRequest("POST", "/api/sync/reconcile-lock", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	// Second acquire — should fail
+	body2 := `{"holder":"browser-tab-2"}`
+	req2 := httptest.NewRequest("POST", "/api/sync/reconcile-lock", strings.NewReader(body2))
+	req2.Header.Set("Content-Type", "application/json")
+	rec2 := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec2, req2)
+
+	require.Equal(t, http.StatusOK, rec2.Code)
+
+	var resp struct {
+		Acquired bool   `json:"acquired"`
+		LockID   string `json:"lockId,omitempty"`
+		Holder   string `json:"holder,omitempty"`
+	}
+	err := json.NewDecoder(rec2.Body).Decode(&resp)
+	require.NoError(t, err)
+	require.False(t, resp.Acquired)
+	require.Equal(t, "browser-tab-1", resp.Holder)
+}
+
+func TestReconcileLock_ReleaseAndReacquire(t *testing.T) {
+	provider := &mockSnapshotProvider{}
+	api := setupTestAPIWithSnapshot(t, provider)
+
+	// Acquire
+	body := `{"holder":"browser-tab-1"}`
+	req := httptest.NewRequest("POST", "/api/sync/reconcile-lock", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var acq struct {
+		Acquired bool   `json:"acquired"`
+		LockID   string `json:"lockId"`
+	}
+	err := json.NewDecoder(rec.Body).Decode(&acq)
+	require.NoError(t, err)
+	require.True(t, acq.Acquired)
+
+	// Release
+	relReq := httptest.NewRequest("DELETE", "/api/sync/reconcile-lock/"+acq.LockID, nil)
+	relRec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(relRec, relReq)
+	require.Equal(t, http.StatusOK, relRec.Code)
+
+	// Re-acquire by another browser
+	body2 := `{"holder":"browser-tab-2"}`
+	req2 := httptest.NewRequest("POST", "/api/sync/reconcile-lock", strings.NewReader(body2))
+	req2.Header.Set("Content-Type", "application/json")
+	rec2 := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec2, req2)
+	require.Equal(t, http.StatusOK, rec2.Code)
+
+	var acq2 struct {
+		Acquired bool `json:"acquired"`
+	}
+	err = json.NewDecoder(rec2.Body).Decode(&acq2)
+	require.NoError(t, err)
+	require.True(t, acq2.Acquired)
+}
+
+func TestReconcileLock_ReleaseWrongID(t *testing.T) {
+	provider := &mockSnapshotProvider{}
+	api := setupTestAPIWithSnapshot(t, provider)
+
+	// Acquire
+	body := `{"holder":"browser-tab-1"}`
+	req := httptest.NewRequest("POST", "/api/sync/reconcile-lock", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	// Release with wrong ID
+	relReq := httptest.NewRequest("DELETE", "/api/sync/reconcile-lock/wrong-id", nil)
+	relRec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(relRec, relReq)
+	require.Equal(t, http.StatusConflict, relRec.Code)
+}
+
+func TestReconcileLock_ExpiresAfterTimeout(t *testing.T) {
+	provider := &mockSnapshotProvider{}
+	api := setupTestAPIWithSnapshot(t, provider)
+
+	// Override the lock expiry for testing (use the internal field).
+	api.reconcileLock.expiry = 50 * time.Millisecond
+
+	// Acquire
+	body := `{"holder":"browser-tab-1"}`
+	req := httptest.NewRequest("POST", "/api/sync/reconcile-lock", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var acq struct {
+		Acquired bool `json:"acquired"`
+	}
+	err := json.NewDecoder(rec.Body).Decode(&acq)
+	require.NoError(t, err)
+	require.True(t, acq.Acquired)
+
+	// Wait for expiry
+	time.Sleep(100 * time.Millisecond)
+
+	// Second acquire should succeed (lock expired)
+	body2 := `{"holder":"browser-tab-2"}`
+	req2 := httptest.NewRequest("POST", "/api/sync/reconcile-lock", strings.NewReader(body2))
+	req2.Header.Set("Content-Type", "application/json")
+	rec2 := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec2, req2)
+	require.Equal(t, http.StatusOK, rec2.Code)
+
+	var acq2 struct {
+		Acquired bool `json:"acquired"`
+	}
+	err = json.NewDecoder(rec2.Body).Decode(&acq2)
+	require.NoError(t, err)
+	require.True(t, acq2.Acquired)
+}
+
+func TestReconcileLock_ReleaseNoLockHeld(t *testing.T) {
+	provider := &mockSnapshotProvider{}
+	api := setupTestAPIWithSnapshot(t, provider)
+
+	// Release with no lock held
+	relReq := httptest.NewRequest("DELETE", "/api/sync/reconcile-lock/some-id", nil)
+	relRec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(relRec, relReq)
+	require.Equal(t, http.StatusOK, relRec.Code)
+}
+
+func TestReconcileLock_InvalidBody(t *testing.T) {
+	provider := &mockSnapshotProvider{}
+	api := setupTestAPIWithSnapshot(t, provider)
+
+	req := httptest.NewRequest("POST", "/api/sync/reconcile-lock", strings.NewReader("{bad"))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
