@@ -178,7 +178,10 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 
 				// Notify once that MoQ is active (catalog received = WebTransport
 				// + MoQ handshake succeeded, control data will flow on state changes).
-				if (!moqActiveNotified) {
+				// Only fire for program/program-preview — these are the critical sources
+				// that gate the polling→MoQ transition. A tile connecting first must not
+				// suppress REST polling before the program feed is confirmed working.
+				if (!moqActiveNotified && (key === 'program' || key === 'program-preview')) {
 					moqActiveNotified = true;
 					config?.onMoQActive?.();
 				}
