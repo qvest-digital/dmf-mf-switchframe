@@ -52,6 +52,7 @@
 	import { createFastControl, type FastControl } from '$lib/transport/fast-control';
 	import { createDualFastControl } from '$lib/transport/dual-fast-control';
 	import { sortedSourceKeys } from '$lib/util/sort-sources';
+	import { inferEngineBUrl } from '$lib/util/engine-url';
 	import { CaptionRenderer } from '$lib/prism/captions';
 	import type { ControlRoomState, Macro } from '$lib/api/types';
 
@@ -67,6 +68,7 @@
 	];
 	let isDualEngine = $state(false);
 	let engineBDetected = false;
+	let initialLoadRetries = 0;
 
 	// Speculatively enable command buffering for engine B discovery.
 	// If engine B is never discovered (standalone mode), buffered commands
@@ -617,6 +619,34 @@
 			connectionError = null;
 		},
 		onInitialLoadError: (error, rawError) => {
+			initialLoadRetries++;
+
+			// After 3 failures, try to infer Engine B from DNS naming convention.
+			// {sessionId}.engines.switchframe.dev → {sessionId}-b.engines.switchframe.dev
+			if (initialLoadRetries >= 3 && !engineBDetected) {
+				const inferred = inferEngineBUrl(window.location.hostname, window.location.protocol);
+				if (inferred) {
+					engineBDetected = true;
+					isDualEngine = true;
+					connectionManager.addEngine('B', inferred);
+					dualApi.addEngine('B', inferred);
+					setEngineUrls([
+						{ id: 'A', url: window.location.origin },
+						{ id: 'B', url: inferred },
+					]);
+					setDualTimestampProvider(() => ({
+						execute_at: connectionManager.clock.ptpNow() + connectionManager.clock.safetyMargin(),
+						command_seq: connectionManager.nextCommandSeq(),
+					}));
+					setPartialFailureCallback(() => {
+						connectionManager.requestCheck();
+					});
+					if (!reconcilerInterval) {
+						reconcilerInterval = setInterval(() => { connectionManager.tick(); }, 200);
+					}
+				}
+			}
+
 			console.warn('Failed to fetch initial state:', error);
 			if (rawError instanceof SwitchApiError && rawError.status === 401) {
 				tokenRequired = true;
