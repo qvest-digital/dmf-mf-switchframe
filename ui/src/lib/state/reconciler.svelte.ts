@@ -107,6 +107,8 @@ const TRANSIENT_THRESHOLD_MS = 500;
 const DIVERGED_THRESHOLD_MS = 2000;
 export const STALE_THRESHOLD_MS = 5_000;
 const STALE_TRANSPORT_ALIVE_MS = 15_000;
+/** Pong freshness window: 30s = 3x the 10s ping interval. */
+export const PONG_FRESH_MS = 30_000;
 
 export function createReconciler() {
 	let stateA = $state<ControlRoomState | null>(null);
@@ -127,6 +129,8 @@ export function createReconciler() {
 	let clockDiverged = $state(false);
 	let transportAliveA = $state(false);
 	let transportAliveB = $state(false);
+	let lastPongA = $state(0);
+	let lastPongB = $state(0);
 
 	// Track when seq delta first appeared for time-based detection
 	let seqDeltaSince = $state(0);
@@ -334,14 +338,22 @@ export function createReconciler() {
 		let hasA = stateA !== null && connectedA;
 		let hasB = stateB !== null && connectedB;
 
-		// Stale detection: mark engine as single-engine if no state updates received
+		// Stale detection: mark engine as single-engine if no state updates received.
+		// If transport is alive AND pongs are fresh (within 30s = 3x the 10s ping interval),
+		// the engine is provably alive — never mark stale regardless of state update freshness.
 		if (hasA && lastSeenA > 0) {
-			const thresholdA = transportAliveA ? STALE_TRANSPORT_ALIVE_MS : STALE_THRESHOLD_MS;
-			if (now - lastSeenA > thresholdA) hasA = false;
+			const pongFreshA = transportAliveA && lastPongA > 0 && (now - lastPongA < PONG_FRESH_MS);
+			if (!pongFreshA) {
+				const thresholdA = transportAliveA ? STALE_TRANSPORT_ALIVE_MS : STALE_THRESHOLD_MS;
+				if (now - lastSeenA > thresholdA) hasA = false;
+			}
 		}
 		if (hasB && lastSeenB > 0) {
-			const thresholdB = transportAliveB ? STALE_TRANSPORT_ALIVE_MS : STALE_THRESHOLD_MS;
-			if (now - lastSeenB > thresholdB) hasB = false;
+			const pongFreshB = transportAliveB && lastPongB > 0 && (now - lastPongB < PONG_FRESH_MS);
+			if (!pongFreshB) {
+				const thresholdB = transportAliveB ? STALE_TRANSPORT_ALIVE_MS : STALE_THRESHOLD_MS;
+				if (now - lastSeenB > thresholdB) hasB = false;
+			}
 		}
 
 		if (!stateA && !stateB) return 'disconnected';
@@ -439,6 +451,11 @@ export function createReconciler() {
 		else transportAliveB = alive;
 	}
 
+	function recordPong(engine: EngineId): void {
+		if (engine === 'A') lastPongA = Date.now();
+		else lastPongB = Date.now();
+	}
+
 	const engineHealthDerived = $derived.by((): { A: EngineHealthDetail; B: EngineHealthDetail } => {
 		// Use lastTickTime (updated every ~200ms by tick()) instead of Date.now()
 		// so uptime display updates smoothly on each tick rather than only when
@@ -488,8 +505,10 @@ export function createReconciler() {
 	const staleEngines = $derived.by((): EngineId[] => {
 		const now = lastTickTime;
 		const result: EngineId[] = [];
-		if (connectedA && !transportAliveA && lastSeenA > 0 && (now - lastSeenA > STALE_THRESHOLD_MS)) result.push('A');
-		if (connectedB && !transportAliveB && lastSeenB > 0 && (now - lastSeenB > STALE_THRESHOLD_MS)) result.push('B');
+		const pongFreshA = transportAliveA && lastPongA > 0 && (now - lastPongA < PONG_FRESH_MS);
+		const pongFreshB = transportAliveB && lastPongB > 0 && (now - lastPongB < PONG_FRESH_MS);
+		if (connectedA && !pongFreshA && !transportAliveA && lastSeenA > 0 && (now - lastSeenA > STALE_THRESHOLD_MS)) result.push('A');
+		if (connectedB && !pongFreshB && !transportAliveB && lastSeenB > 0 && (now - lastSeenB > STALE_THRESHOLD_MS)) result.push('B');
 		return result;
 	});
 
@@ -521,6 +540,7 @@ export function createReconciler() {
 		setRecovering,
 		setClockDiverged,
 		setTransportAlive,
+		recordPong,
 		get state() {
 			return currentState;
 		},

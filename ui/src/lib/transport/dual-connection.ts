@@ -141,6 +141,8 @@ export class DualConnectionManager {
 			this.clockSync.handlePong(engineId, data);
 			// Check if clock offset divergence exceeds safety margin
 			this.reconciler.setClockDiverged(this.clockSync.isClockDiverged());
+			// Record pong as proof-of-life for stale detection
+			this.reconciler.recordPong(engineId);
 			return; // don't forward pong to connection manager
 		}
 

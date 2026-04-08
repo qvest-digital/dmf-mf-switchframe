@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createReconciler, fieldEquals, STALE_THRESHOLD_MS, sortedStringify } from './reconciler.svelte';
+import { createReconciler, fieldEquals, STALE_THRESHOLD_MS, PONG_FRESH_MS, sortedStringify } from './reconciler.svelte';
 import type { ControlRoomState } from '$lib/api/types';
 
 function makeState(overrides: Partial<ControlRoomState> = {}): ControlRoomState {
@@ -1323,6 +1323,118 @@ describe('createReconciler', () => {
 			r.tick();
 
 			expect(r.health.staleEngines).toContain('B');
+		});
+	});
+
+	describe('pong-based freshness', () => {
+		beforeEach(() => {
+			vi.useFakeTimers();
+		});
+
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		it('does not mark engine stale when pongs are fresh despite no state updates', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+			r.setTransportAlive('A', true);
+			r.setTransportAlive('B', true);
+
+			// Simulate pongs arriving every 10s while no state updates come
+			vi.advanceTimersByTime(10_000);
+			r.recordPong('A');
+			r.recordPong('B');
+
+			vi.advanceTimersByTime(10_000);
+			r.recordPong('A');
+			r.recordPong('B');
+
+			// Now 20s since last state update, well past STALE_TRANSPORT_ALIVE_MS (15s)
+			r.tick();
+			expect(r.health.status).toBe('synced');
+			expect(r.health.staleEngines).toHaveLength(0);
+		});
+
+		it('marks engine stale when pongs stop arriving', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+			r.setTransportAlive('A', true);
+			r.setTransportAlive('B', true);
+
+			// One pong received
+			r.recordPong('A');
+			r.recordPong('B');
+
+			// Advance past pong freshness window (30s) without new pongs
+			vi.advanceTimersByTime(PONG_FRESH_MS + 1000);
+			r.tick();
+
+			// Pongs expired, falls back to STALE_TRANSPORT_ALIVE_MS which is also exceeded
+			expect(r.health.status).not.toBe('synced');
+		});
+
+		it('keeps engine alive with periodic pongs over long idle period', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+			r.setTransportAlive('A', true);
+			r.setTransportAlive('B', true);
+
+			// Simulate 2 minutes of idle with pongs every 10s
+			for (let i = 0; i < 12; i++) {
+				vi.advanceTimersByTime(10_000);
+				r.recordPong('A');
+				r.recordPong('B');
+				r.tick();
+				expect(r.health.status).toBe('synced');
+				expect(r.health.staleEngines).toHaveLength(0);
+			}
+		});
+
+		it('marks only the engine without pongs as stale', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+			r.setTransportAlive('A', true);
+			r.setTransportAlive('B', true);
+
+			// Only A receives pongs, B stops
+			vi.advanceTimersByTime(10_000);
+			r.recordPong('A');
+
+			vi.advanceTimersByTime(10_000);
+			r.recordPong('A');
+
+			// 20s since last state update. B has no pongs, A has fresh pongs.
+			// B should fall back to STALE_TRANSPORT_ALIVE_MS (15s) and be marked stale.
+			r.tick();
+			expect(r.health.status).toBe('single-engine');
+			expect(r.health.staleEngines).not.toContain('A');
+		});
+
+		it('PONG_FRESH_MS is 30000', () => {
+			expect(PONG_FRESH_MS).toBe(30_000);
+		});
+
+		it('pong freshness requires transport to be alive', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+
+			// Transport is NOT alive, but pongs somehow recorded
+			r.setTransportAlive('A', false);
+			r.setTransportAlive('B', false);
+			r.recordPong('A');
+			r.recordPong('B');
+
+			vi.advanceTimersByTime(STALE_THRESHOLD_MS + 1000);
+			r.tick();
+
+			// Should still be disconnected because transport is not alive
+			expect(r.health.status).toBe('disconnected');
 		});
 	});
 });
