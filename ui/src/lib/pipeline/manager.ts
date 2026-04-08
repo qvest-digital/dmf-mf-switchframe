@@ -321,6 +321,9 @@ export class PipelineManager {
 	/**
 	 * Move the program canvas from Engine A to Engine B.
 	 * Requires an active Engine B pipeline and a program canvas element.
+	 *
+	 * Also disconnects Engine A's MoQ transports to stop headless decoding
+	 * of frames nobody is viewing (saves bandwidth and CPU).
 	 */
 	switchProgramToEngineB(): void {
 		if (!this.pipelineB || !this.currentProgramCanvasEl) return;
@@ -330,6 +333,16 @@ export class PipelineManager {
 			this.pipeline.detachCanvas(this.currentProgramCanvas, 'program');
 		}
 
+		// Disconnect Engine A's MoQ transports to stop headless decoding.
+		// Use disconnectSource (not removeSource) so decode state is preserved
+		// for quick restore if we switch back to Engine A.
+		for (const key of this.connectedSources) {
+			this.pipeline.disconnectSource(key);
+		}
+		// Also disconnect program/program-preview streams
+		this.pipeline.disconnectSource('program');
+		this.pipeline.disconnectSource('program-preview');
+
 		// Attach to Engine B's program source
 		this.pipelineB.attachCanvas('program', 'program', this.currentProgramCanvasEl);
 		this._activeEngine = 'B';
@@ -338,12 +351,20 @@ export class PipelineManager {
 	/**
 	 * Move the program canvas back from Engine B to Engine A.
 	 * Re-evaluates whether program-preview is available (preferred over full program).
+	 * Reconnects Engine A's MoQ transports that were paused during failover.
 	 */
 	switchProgramToEngineA(): void {
 		if (!this.pipelineB) return;
 
 		// Detach from Engine B
 		this.pipelineB.detachCanvas('program', 'program');
+
+		// Reconnect Engine A's MoQ transports (paused during switchProgramToEngineB)
+		for (const key of this.connectedSources) {
+			this.pipeline.connectSource(key);
+		}
+		this.pipeline.connectSource('program');
+		this.pipeline.connectSource('program-preview');
 
 		// Re-attach to Engine A, preferring program-preview if available
 		if (this.currentProgramCanvasEl) {

@@ -10,6 +10,7 @@
 	import { formatBadgeText } from '$lib/util/format-badge';
 	import FormatPicker from './FormatPicker.svelte';
 	import type { SyncHealth } from '$lib/state/reconciler.svelte';
+	import { getEngineUrls } from '$lib/api/base-url';
 
 	type ConnectionIndicatorState = 'webtransport' | 'polling' | 'disconnected';
 
@@ -61,6 +62,15 @@
 	const engineBSrtActive = $derived(engineBState?.srtOutput?.active ?? false);
 	const srtStatesDiffer = $derived(isDualEngine && engineASrtActive !== engineBSrtActive);
 
+	// Derive base URL for confidence monitor so it routes to the authoritative engine
+	const confidenceBaseUrl = $derived((() => {
+		const engines = getEngineUrls();
+		if (engines && engines.length > 0) {
+			return engines[0].url; // Primary/authoritative engine
+		}
+		return ''; // Same-origin for single-engine mode
+	})());
+
 	$effect(() => {
 		if (showConfidence) {
 			thumbInterval = setInterval(() => { thumbKey++; }, 1000);
@@ -92,7 +102,7 @@
 	{#if showConfidence}
 		<img
 			class="confidence-thumb"
-			src="/api/output/confidence?t={thumbKey}"
+			src="{confidenceBaseUrl}/api/output/confidence?t={thumbKey}"
 			alt="Program output"
 			width="80"
 			height="45"

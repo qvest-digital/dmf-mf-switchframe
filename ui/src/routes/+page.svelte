@@ -1202,7 +1202,7 @@
 />
 
 <ErrorBoundary>
-	<ConnectionBanner {connectionState} {syncStatus} engineStatus={engineBannerStatus} {perEngineState} {sessionFallbackUrl} />
+	<ConnectionBanner {connectionState} {syncStatus} engineStatus={engineBannerStatus} {perEngineState} {sessionFallbackUrl} engineFallbackUrl={store.state.engineBUrl} servingEngine="A" />
 	<Toast />
 	{#if layoutMode === 'simple'}
 		<SimpleMode

@@ -351,8 +351,12 @@ async function dualRequest<T>(url: string, options: RequestInit | undefined, eng
 	if (isTimedPath(url) && dualTimestampProvider && opts.body && typeof opts.body === 'string') {
 		try {
 			const ts = dualTimestampProvider();
-			const parsed = JSON.parse(opts.body);
-			opts.body = JSON.stringify({ ...parsed, ...ts });
+			const nowUs = Date.now() * 1000;
+			// Only inject if execute_at is within 60s of now (guards against garbage clock values)
+			if (ts.execute_at > nowUs - 60_000_000 && ts.execute_at < nowUs + 60_000_000) {
+				const parsed = JSON.parse(opts.body);
+				opts.body = JSON.stringify({ ...parsed, ...ts });
+			}
 		} catch {
 			// Clock sync not ready or body parse failed — send without timestamps
 		}

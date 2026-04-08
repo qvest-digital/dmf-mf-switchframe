@@ -47,6 +47,19 @@
 		engineFallbackUrl != null && connectionState === 'disconnected'
 	);
 
+	// Build full fallback URL preserving current query params and hash
+	const fallbackHref = $derived((() => {
+		if (!engineFallbackUrl) return '';
+		try {
+			const url = new URL(engineFallbackUrl);
+			url.search = window.location.search;
+			url.hash = window.location.hash;
+			return url.toString();
+		} catch {
+			return engineFallbackUrl;
+		}
+	})());
+
 	// Dual-engine status
 	const isDualMode = $derived(engineStatus?.mode === 'dual');
 	const survivingEngine = $derived(engineStatus?.engineDown === 'A' ? 'B' : 'A');
@@ -141,7 +154,7 @@
 {:else if showEngineFallback}
 	<div class="connection-banner engine-fallback" role="alert" aria-live="assertive">
 		Engine {servingEngine} unreachable —
-		<a href={engineFallbackUrl} class="fallback-link">Open via Engine {otherEngine}</a>
+		<a href={fallbackHref} class="fallback-link">Open via Engine {otherEngine}</a>
 	</div>
 {:else if isDisconnected}
 	<div class="disconnect-overlay" role="alertdialog" aria-live="assertive" aria-modal="true">
