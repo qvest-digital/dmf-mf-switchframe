@@ -34,6 +34,7 @@
 	let audioManager: CommsAudioManager | null = null;
 	/** Which engine the comms audio stream is currently connected to. */
 	let connectedEngine: EngineId | null = null;
+	let lastCommsReconnectTime = 0;
 
 	// Reconnect comms when the authoritative engine changes (dual-engine failover).
 	$effect(() => {
@@ -95,8 +96,12 @@
 					onError: (msg) => notify('error', msg),
 					onCommsActive,
 					onStreamError: () => {
-						// Stream broke — try reconnecting to the other engine
+						// Stream broke — try reconnecting to the other engine.
+						// Debounce: skip if last reconnect was <5s ago to prevent loops.
 						if (!getTransportForEngine || !audioManager?.isActive) return;
+						const now = Date.now();
+						if (now - lastCommsReconnectTime < 5000) return;
+						lastCommsReconnectTime = now;
 						const otherEngine = connectedEngine === 'A' ? 'B' : 'A';
 						const transport = getTransportForEngine(otherEngine);
 						if (transport) {

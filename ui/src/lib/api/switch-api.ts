@@ -2111,7 +2111,9 @@ export async function playoutNextWithCacheCheck(channelId: number): Promise<void
 				const engineIds = uncached.map(u => u.engine).join(', ');
 				partialFailureNotify?.(`Warning: next item not cached on Engine ${engineIds} — advance may cause visual divergence`);
 			}
-		} catch { /* best-effort check, proceed anyway */ }
+		} catch (err) {
+			console.warn('[playout] Cache readiness check failed:', err);
+		}
 	}
 	return post(`/api/playout/channels/${channelId}/next`, {});
 }
@@ -2197,11 +2199,16 @@ export async function podFireWithLock(
 		return post(`/api/playout/channels/${channelId}/pods/${encodeURIComponent(podId)}/fire`, {});
 	}
 
-	// Dual engine: acquire locks, then fire, then release
+	// Dual engine: acquire locks (with 5s timeout), then fire, then release
 	const locks: { engine: string; lockId: string }[] = [];
 	try {
 		for (const engine of engines) {
-			const result = await acquireLock(engine.id);
+			const result = await Promise.race([
+				acquireLock(engine.id),
+				new Promise<{ acquired: false }>((resolve) =>
+					setTimeout(() => resolve({ acquired: false }), 5000)
+				),
+			]);
 			if (!result.acquired) {
 				throw new Error(`Could not acquire lock on Engine ${engine.id}`);
 			}
