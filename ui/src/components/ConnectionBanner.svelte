@@ -107,16 +107,20 @@
 		}
 	});
 
-	// Auto-redirect loop prevention
-	const hasRedirectedBefore = $derived((() => {
+	// Auto-redirect loop prevention — uses reactive $state flag so cancelRedirect()
+	// immediately prevents re-triggering even if connection flaps.
+	let userCancelledRedirect = $state(false);
+
+	const hasRedirectedBefore = $derived.by(() => {
+		if (userCancelledRedirect) return true;
 		try {
 			return (parseInt(sessionStorage.getItem('sf:redirect-attempts') || '0', 10) > 0);
 		} catch {
 			return false;
 		}
-	})());
+	});
 
-	const isSelfRedirect = $derived((() => {
+	const isSelfRedirect = $derived.by(() => {
 		if (!fallbackHref) return false;
 		try {
 			const fallbackOrigin = new URL(fallbackHref).origin;
@@ -124,7 +128,7 @@
 		} catch {
 			return false;
 		}
-	})());
+	});
 
 	const shouldAutoRedirect = $derived(
 		showEngineFallback && !hasRedirectedBefore && !isSelfRedirect
@@ -167,6 +171,7 @@
 			clearInterval(redirectTimer);
 			redirectTimer = undefined;
 		}
+		userCancelledRedirect = true;
 		try { sessionStorage.setItem('sf:redirect-attempts', '1'); } catch {}
 		redirectCountdown = 0;
 	}
@@ -217,7 +222,7 @@
 {:else if shouldAutoRedirect}
 	<div class="connection-banner engine-fallback" role="alert" aria-live="assertive">
 		Engine {servingEngine} unreachable — redirecting to Engine {otherEngine} in {redirectCountdown}s
-		<a href={fallbackHref} class="fallback-link">Go now</a>
+		<a href={fallbackHref} class="fallback-link" onclick={() => { try { sessionStorage.setItem('sf:redirect-attempts', '1'); } catch {} }}>Go now</a>
 		<button class="cancel-redirect" onclick={cancelRedirect}>Cancel</button>
 	</div>
 {:else if showEngineFallback}

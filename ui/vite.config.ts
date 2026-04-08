@@ -21,7 +21,11 @@ export default defineConfig({
 	build: {
 		rollupOptions: {
 			output: {
-				inlineDynamicImports: true,
+				// Multi-region resilience: bundle everything into one chunk so lazy-loaded
+			// modules don't fail when the serving engine dies. This is a pure SPA
+			// (ssr=false, prerender=false) so single-output mode is safe. Adding
+			// SSR or additional routes would require removing this setting.
+			inlineDynamicImports: true,
 			},
 		},
 	},
