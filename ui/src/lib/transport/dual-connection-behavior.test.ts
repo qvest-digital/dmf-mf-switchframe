@@ -287,7 +287,7 @@ describe('DualConnectionManager behavior', () => {
 
 			// Simulate initial load completion via ConnectionManager callback
 			const managers = getCreatedManagers();
-			const onInitialLoadComplete = managers[0]._config.onInitialLoadComplete as () => void;
+			const onInitialLoadComplete = (managers[0]._config as unknown as { onInitialLoadComplete: () => void }).onInitialLoadComplete;
 			onInitialLoadComplete();
 
 			dcm.addEngine('B', 'https://b.example.com');

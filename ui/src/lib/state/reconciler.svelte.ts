@@ -311,7 +311,7 @@ export function createReconciler() {
 			result.push({ field: 'clipPlayers', engineA: `${playingA} playing`, engineB: `${playingB} playing` });
 		}
 		// Replay state divergence
-		if (stateA.replay?.playing !== stateB.replay?.playing) {
+		if (stateA.replay?.state !== stateB.replay?.state) {
 			result.push({ field: 'replay', engineA: stateA.replay, engineB: stateB.replay });
 		}
 		return result;
