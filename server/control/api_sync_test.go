@@ -523,3 +523,43 @@ func TestReconcileLock_InvalidBody(t *testing.T) {
 	api.Mux().ServeHTTP(rec, req)
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 }
+
+func TestReconcileLock_Refresh(t *testing.T) {
+	lock := reconcileLockState{expiry: 500 * time.Millisecond}
+	lockID, _, acquired := lock.tryAcquire("tab-1")
+	if !acquired {
+		t.Fatal("expected lock acquired")
+	}
+
+	time.Sleep(300 * time.Millisecond)
+	ok := lock.refresh(lockID)
+	if !ok {
+		t.Fatal("expected refresh to succeed")
+	}
+
+	// Should still be held past original expiry
+	time.Sleep(300 * time.Millisecond)
+	_, _, acquired2 := lock.tryAcquire("tab-2")
+	if acquired2 {
+		t.Fatal("expected lock still held after refresh")
+	}
+}
+
+func TestReconcileLock_RefreshWrongID(t *testing.T) {
+	lock := reconcileLockState{expiry: 5 * time.Second}
+	lock.tryAcquire("tab-1")
+	ok := lock.refresh("wrong-id")
+	if ok {
+		t.Fatal("expected refresh to fail with wrong ID")
+	}
+}
+
+func TestReconcileLock_RefreshExpiredLock(t *testing.T) {
+	lock := reconcileLockState{expiry: 100 * time.Millisecond}
+	lockID, _, _ := lock.tryAcquire("tab-1")
+	time.Sleep(150 * time.Millisecond)
+	ok := lock.refresh(lockID)
+	if ok {
+		t.Fatal("expected refresh to fail on expired lock")
+	}
+}

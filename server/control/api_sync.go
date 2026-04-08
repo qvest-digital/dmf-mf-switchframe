@@ -25,9 +25,9 @@ type reconcileLockState struct {
 	deadline time.Time
 }
 
-// newReconcileLockState returns an initialized lock with a 10s default expiry.
+// newReconcileLockState returns an initialized lock with a 5s default expiry.
 func newReconcileLockState() reconcileLockState {
-	return reconcileLockState{expiry: 10 * time.Second}
+	return reconcileLockState{expiry: 5 * time.Second}
 }
 
 // tryAcquire attempts to acquire the lock for the given holder.
@@ -67,6 +67,18 @@ func (l *reconcileLockState) release(lockID string) bool {
 	l.lockID = ""
 	l.holder = ""
 	l.deadline = time.Time{}
+	return true
+}
+
+// refresh extends the deadline of a held lock. Returns true if the lockID matches
+// and the lock has not expired.
+func (l *reconcileLockState) refresh(lockID string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.lockID == "" || l.lockID != lockID || time.Now().After(l.deadline) {
+		return false
+	}
+	l.deadline = time.Now().Add(l.expiry)
 	return true
 }
 
@@ -113,6 +125,7 @@ func (a *API) registerSyncRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/sync/state-snapshot", a.handleGetStateSnapshot)
 	mux.HandleFunc("POST /api/sync/state-snapshot", a.handleApplyStateSnapshot)
 	mux.HandleFunc("POST /api/sync/reconcile-lock", a.handleAcquireReconcileLock)
+	mux.HandleFunc("PUT /api/sync/reconcile-lock/{lockId}", a.handleRefreshReconcileLock)
 	mux.HandleFunc("DELETE /api/sync/reconcile-lock/{lockId}", a.handleReleaseReconcileLock)
 }
 
@@ -255,4 +268,22 @@ func (a *API) handleReleaseReconcileLock(w http.ResponseWriter, r *http.Request)
 
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"released":true}`))
+}
+
+// handleRefreshReconcileLock extends the deadline of a held reconcile lock.
+// The lockId in the URL path must match the one returned from acquire.
+func (a *API) handleRefreshReconcileLock(w http.ResponseWriter, r *http.Request) {
+	lockID := r.PathValue("lockId")
+	if lockID == "" {
+		parts := strings.Split(r.URL.Path, "/")
+		if len(parts) > 0 {
+			lockID = parts[len(parts)-1]
+		}
+	}
+	if !a.reconcileLock.refresh(lockID) {
+		httperr.Write(w, http.StatusConflict, "lock ID does not match or lock expired")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"refreshed":true}`))
 }
