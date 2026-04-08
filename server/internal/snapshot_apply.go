@@ -106,6 +106,13 @@ type SnapshotMacroApplier interface {
 	ApplyMacroExecution(exec MacroExecutionSnapshot) error
 }
 
+// SnapshotClipApplier is optionally implemented for loading clips by name
+// into player slots during cross-engine snapshot restore. Clip IDs differ
+// between engines, so name-based lookup is used instead.
+type SnapshotClipApplier interface {
+	LoadClipByName(slotIndex int, clipName string) error
+}
+
 // ApplyFullSnapshot restores engine state from a FullStateSnapshot. It is
 // best-effort: individual failures are collected as warning strings rather
 // than aborting the entire apply. This is the inverse of state capture.
@@ -199,13 +206,20 @@ func ApplyFullSnapshot(ctx context.Context, snap FullStateSnapshot, target Snaps
 	// 13. ST maps — source and program assignments
 	warnings = applySTMaps(snap.STMaps, target, warnings)
 
-	// 14. Clip player state restore is skipped because clip IDs may differ
-	// between engines (each engine assigns its own IDs on upload). The clip
-	// library is not currently synchronized, so a clip loaded on Engine A may
-	// not exist on Engine B. Once name-based clip lookup is used consistently,
-	// this can be restored by loading clips by name rather than ID.
-	if len(snap.ClipPlayers) > 0 {
-		warnings = append(warnings, "clip player state not restored (clip IDs may differ between engines)")
+	// 14. Clip player state — load clips by name (IDs differ between engines).
+	if len(snap.ClipPlayerPositions) > 0 {
+		if applier, ok := target.(SnapshotClipApplier); ok {
+			for _, cp := range snap.ClipPlayerPositions {
+				if cp.ClipName == "" {
+					continue
+				}
+				if err := applier.LoadClipByName(cp.PlayerIndex, cp.ClipName); err != nil {
+					slog.Warn("snapshot apply: clip player load failed",
+						"slot", cp.PlayerIndex, "clipName", cp.ClipName, "error", err)
+					warnings = append(warnings, fmt.Sprintf("clip player slot %d (%q): %v", cp.PlayerIndex, cp.ClipName, err))
+				}
+			}
+		}
 	}
 
 	// --- Operational state (optional applier interfaces) ---

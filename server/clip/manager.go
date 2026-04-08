@@ -174,6 +174,17 @@ func (m *Manager) Load(playerID int, clipID string) error {
 	return nil
 }
 
+// LoadByName resolves a clip name to its ID via the store and loads it
+// into the given player slot. Used for cross-engine snapshot restore where
+// clip IDs differ between engines but names are consistent.
+func (m *Manager) LoadByName(playerID int, clipName string) error {
+	c, err := m.store.GetByName(clipName)
+	if err != nil {
+		return fmt.Errorf("clip %q: %w", clipName, err)
+	}
+	return m.Load(playerID, c.ID)
+}
+
 // Eject stops the player if active, calls onPlayerStop if it was playing,
 // and clears the slot to empty state.
 func (m *Manager) Eject(playerID int) error {

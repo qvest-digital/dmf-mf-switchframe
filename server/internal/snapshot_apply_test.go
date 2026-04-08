@@ -193,18 +193,9 @@ func TestApplyFullSnapshot_AllFieldsApplied(t *testing.T) {
 	ctx := context.Background()
 
 	warnings := ApplyFullSnapshot(ctx, snap, mock)
-	// Expect exactly 1 warning: clip player state not restored (by design).
-	expectedClipWarning := "clip player state not restored (clip IDs may differ between engines)"
-	clipWarnings := 0
-	for _, w := range warnings {
-		if w == expectedClipWarning {
-			clipWarnings++
-		} else {
-			t.Errorf("unexpected warning: %s", w)
-		}
-	}
-	if clipWarnings != 1 {
-		t.Errorf("expected 1 clip player warning, got %d (total warnings: %v)", clipWarnings, warnings)
+	// populatedSnapshot() has no ClipPlayerPositions, so no clip warnings expected.
+	if len(warnings) > 0 {
+		t.Errorf("expected no warnings, got: %v", warnings)
 	}
 
 	// 1. Transition config
@@ -812,5 +803,141 @@ func TestApplyFullSnapshot_AudioChannelDeterministicOrder(t *testing.T) {
 			t.Errorf("audio channels not in sorted order: got %v, want %v", keys, sorted)
 			break
 		}
+	}
+}
+
+// --- Clip player restore tests ---
+
+// mockClipApplyTarget embeds mockApplyTarget and additionally implements SnapshotClipApplier.
+type mockClipApplyTarget struct {
+	*mockApplyTarget
+	clipLoads []struct {
+		SlotIndex int
+		ClipName  string
+	}
+	clipErrors map[string]error // clipName → error
+}
+
+func newMockClipApplyTarget() *mockClipApplyTarget {
+	return &mockClipApplyTarget{
+		mockApplyTarget: newMockApplyTarget(),
+		clipErrors:      make(map[string]error),
+	}
+}
+
+func (m *mockClipApplyTarget) LoadClipByName(slotIndex int, clipName string) error {
+	m.clipLoads = append(m.clipLoads, struct {
+		SlotIndex int
+		ClipName  string
+	}{slotIndex, clipName})
+	if err, ok := m.clipErrors[clipName]; ok {
+		return err
+	}
+	return nil
+}
+
+func TestApplyFullSnapshot_ClipPlayersByName(t *testing.T) {
+	mock := newMockClipApplyTarget()
+	snap := FullStateSnapshot{
+		Version:    "1",
+		CapturedAt: 1234567890,
+		ClipPlayerPositions: []ClipPositionSnapshot{
+			{ClipName: "intro.mp4", PlayerIndex: 1, State: "playing", Speed: 1.0},
+			{ClipName: "bumper.ts", PlayerIndex: 3, State: "paused", Speed: 0.5},
+		},
+	}
+	ctx := context.Background()
+
+	warnings := ApplyFullSnapshot(ctx, snap, mock)
+	if len(warnings) > 0 {
+		t.Errorf("expected no warnings, got: %v", warnings)
+	}
+
+	if len(mock.clipLoads) != 2 {
+		t.Fatalf("expected 2 LoadClipByName calls, got %d", len(mock.clipLoads))
+	}
+	if mock.clipLoads[0].SlotIndex != 1 || mock.clipLoads[0].ClipName != "intro.mp4" {
+		t.Errorf("clip load 0: got slot=%d name=%q", mock.clipLoads[0].SlotIndex, mock.clipLoads[0].ClipName)
+	}
+	if mock.clipLoads[1].SlotIndex != 3 || mock.clipLoads[1].ClipName != "bumper.ts" {
+		t.Errorf("clip load 1: got slot=%d name=%q", mock.clipLoads[1].SlotIndex, mock.clipLoads[1].ClipName)
+	}
+}
+
+func TestApplyFullSnapshot_ClipPlayerMissingClipWarns(t *testing.T) {
+	mock := newMockClipApplyTarget()
+	mock.clipErrors["missing.mp4"] = fmt.Errorf("clip not found")
+
+	snap := FullStateSnapshot{
+		Version:    "1",
+		CapturedAt: 1234567890,
+		ClipPlayerPositions: []ClipPositionSnapshot{
+			{ClipName: "intro.mp4", PlayerIndex: 1, State: "playing"},
+			{ClipName: "missing.mp4", PlayerIndex: 2, State: "paused"},
+		},
+	}
+	ctx := context.Background()
+
+	warnings := ApplyFullSnapshot(ctx, snap, mock)
+
+	// Should have 1 warning for the missing clip
+	if len(warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %d: %v", len(warnings), warnings)
+	}
+	if !strings.Contains(warnings[0], "missing.mp4") {
+		t.Errorf("warning should mention clip name, got: %s", warnings[0])
+	}
+	if !strings.Contains(warnings[0], "clip not found") {
+		t.Errorf("warning should mention error, got: %s", warnings[0])
+	}
+
+	// Both clips should have been attempted (best-effort)
+	if len(mock.clipLoads) != 2 {
+		t.Errorf("expected 2 LoadClipByName calls (best-effort), got %d", len(mock.clipLoads))
+	}
+}
+
+func TestApplyFullSnapshot_ClipPlayerSkipsWithoutApplier(t *testing.T) {
+	// Base mockApplyTarget does NOT implement SnapshotClipApplier.
+	mock := newMockApplyTarget()
+	snap := FullStateSnapshot{
+		Version:    "1",
+		CapturedAt: 1234567890,
+		ClipPlayerPositions: []ClipPositionSnapshot{
+			{ClipName: "intro.mp4", PlayerIndex: 1, State: "playing"},
+		},
+	}
+	ctx := context.Background()
+
+	// Should not panic — just skip clip restoration gracefully.
+	warnings := ApplyFullSnapshot(ctx, snap, mock)
+	if len(warnings) > 0 {
+		t.Errorf("expected no warnings when no clip applier, got: %v", warnings)
+	}
+}
+
+func TestApplyFullSnapshot_ClipPlayerSkipsEmptyNames(t *testing.T) {
+	mock := newMockClipApplyTarget()
+	snap := FullStateSnapshot{
+		Version:    "1",
+		CapturedAt: 1234567890,
+		ClipPlayerPositions: []ClipPositionSnapshot{
+			{ClipName: "", PlayerIndex: 1, State: "empty"},
+			{ClipName: "intro.mp4", PlayerIndex: 2, State: "playing"},
+		},
+	}
+	ctx := context.Background()
+
+	warnings := ApplyFullSnapshot(ctx, snap, mock)
+	if len(warnings) > 0 {
+		t.Errorf("expected no warnings, got: %v", warnings)
+	}
+
+	// Only the non-empty name should have been loaded
+	if len(mock.clipLoads) != 1 {
+		t.Fatalf("expected 1 LoadClipByName call, got %d", len(mock.clipLoads))
+	}
+	if mock.clipLoads[0].ClipName != "intro.mp4" {
+		t.Errorf("expected intro.mp4, got %q", mock.clipLoads[0].ClipName)
 	}
 }

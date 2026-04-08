@@ -35,6 +35,7 @@ var _ control.SnapshotProvider = (*snapshotProviderAdapter)(nil)
 var _ internal.SnapshotApplyTarget = (*App)(nil)
 
 // Verify App satisfies all optional snapshot applier interfaces at compile time.
+var _ internal.SnapshotClipApplier = (*App)(nil)
 var _ internal.SnapshotRecordingApplier = (*App)(nil)
 var _ internal.SnapshotDestinationApplier = (*App)(nil)
 var _ internal.SnapshotReplayApplier = (*App)(nil)
@@ -333,6 +334,18 @@ func (a *App) AssignSTMapProgram(mapName string) error {
 		return nil
 	}
 	return a.stmapRegistry.AssignProgram(mapName)
+}
+
+// --- Clip player restore ---
+
+// LoadClipByName resolves a clip name to its ID via the store and loads it
+// into the given player slot. Used for cross-engine snapshot restore where
+// clip IDs differ between engines but names are consistent.
+func (a *App) LoadClipByName(slotIndex int, clipName string) error {
+	if a.clipMgr == nil {
+		return nil
+	}
+	return a.clipMgr.LoadByName(slotIndex, clipName)
 }
 
 // --- Optional snapshot applier interfaces (operational state) ---
