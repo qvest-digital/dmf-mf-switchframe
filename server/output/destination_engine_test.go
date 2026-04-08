@@ -6,7 +6,7 @@ import (
 
 func TestAddDestination_DefaultsEngine(t *testing.T) {
 	m := NewManager()
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.SetEngineLabel("a")
 
@@ -30,7 +30,7 @@ func TestAddDestination_DefaultsEngine(t *testing.T) {
 
 func TestAddDestination_ExplicitEnginePreserved(t *testing.T) {
 	m := NewManager()
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	m.SetEngineLabel("a")
 
@@ -55,7 +55,7 @@ func TestAddDestination_ExplicitEnginePreserved(t *testing.T) {
 
 func TestReassignDestinationEngine_Success(t *testing.T) {
 	m := NewManager()
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	id, err := m.AddDestination(DestinationConfig{
 		Type:    "srt-caller",
@@ -82,7 +82,7 @@ func TestReassignDestinationEngine_Success(t *testing.T) {
 
 func TestReassignDestinationEngine_ClearEngine(t *testing.T) {
 	m := NewManager()
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	id, err := m.AddDestination(DestinationConfig{
 		Type:    "srt-caller",
@@ -109,7 +109,7 @@ func TestReassignDestinationEngine_ClearEngine(t *testing.T) {
 
 func TestReassignDestinationEngine_NotFound(t *testing.T) {
 	m := NewManager()
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	err := m.ReassignDestinationEngine("nonexistent", "a")
 	if err != ErrDestinationNotFound {
@@ -119,7 +119,7 @@ func TestReassignDestinationEngine_NotFound(t *testing.T) {
 
 func TestReassignDestinationEngine_InvalidEngine(t *testing.T) {
 	m := NewManager()
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	id, err := m.AddDestination(DestinationConfig{
 		Type:    "srt-caller",
@@ -138,7 +138,7 @@ func TestReassignDestinationEngine_InvalidEngine(t *testing.T) {
 
 func TestReassignDestinationEngine_TriggersStateCallback(t *testing.T) {
 	m := NewManager()
-	defer m.Close()
+	defer func() { _ = m.Close() }()
 
 	called := false
 	m.OnStateChange(func() { called = true })

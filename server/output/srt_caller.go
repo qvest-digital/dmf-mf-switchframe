@@ -254,7 +254,9 @@ func (c *SRTCaller) reconnectLoop() {
 		default:
 		}
 
+		c.mu.Lock()
 		wait := c.bo.Next()
+		c.mu.Unlock()
 		slog.Info("SRT reconnecting", "backoff", wait, "address", c.config.Address)
 
 		select {
@@ -293,7 +295,9 @@ func (c *SRTCaller) reconnectLoop() {
 
 		c.state.Store(ptrTo(StateActive))
 		c.lastError.Store(ptrTo(""))
+		c.mu.Lock()
 		c.bo.Reset()
+		c.mu.Unlock()
 
 		slog.Info("SRT reconnected", "address", c.config.Address, "overflowed", overflowed)
 

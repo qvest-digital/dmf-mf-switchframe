@@ -22,7 +22,7 @@ func TestHealthPoller_PeerReachable(t *testing.T) {
 			LastCommandSeq: 42,
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer srv.Close()
 
@@ -81,7 +81,7 @@ func TestHealthPoller_RecoveryAfterFailure(t *testing.T) {
 			UptimeMs: 999,
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer srv.Close()
 
@@ -139,7 +139,7 @@ func TestHealthPoller_StopIdempotent(t *testing.T) {
 func TestHealthPoller_InvalidJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte("not json"))
+		_, _ = w.Write([]byte("not json"))
 	}))
 	defer srv.Close()
 

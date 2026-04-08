@@ -172,7 +172,7 @@ func (p *HealthPoller) poll(ctx context.Context) {
 		p.recordFailure(fmt.Sprintf("request failed: %v", err))
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		p.recordFailure(fmt.Sprintf("status %d", resp.StatusCode))

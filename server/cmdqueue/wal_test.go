@@ -23,7 +23,7 @@ func TestWAL_AppendAndReplay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWAL: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	now := time.Now().UnixMicro()
 
@@ -67,7 +67,7 @@ func TestWAL_MarkExecuted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWAL: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	now := time.Now().UnixMicro()
 
@@ -106,7 +106,7 @@ func TestWAL_StaleFiltering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWAL: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	now := time.Now().UnixMicro()
 
@@ -143,7 +143,7 @@ func TestWAL_Truncate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWAL: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	now := time.Now().UnixMicro()
 	cmd := cmdqueue.Command{ExecuteAt: now + 500_000, Seq: 1, Action: "cut"}
@@ -178,14 +178,14 @@ func TestWAL_PersistAcrossReopen(t *testing.T) {
 	if err := w.Append(cmd); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
-	w.Close()
+	_ = w.Close()
 
 	// Reopen.
 	w2, err := cmdqueue.NewWAL(path)
 	if err != nil {
 		t.Fatalf("NewWAL reopen: %v", err)
 	}
-	defer w2.Close()
+	defer func() { _ = w2.Close() }()
 
 	cmds, err := w2.Replay(cmdqueue.DefaultMaxAge)
 	if err != nil {
@@ -214,14 +214,14 @@ func TestQueue_WithWAL_IntegrationTest(t *testing.T) {
 	if err := w1.Append(cmd); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
-	w1.Close()
+	_ = w1.Close()
 
 	// Phase 2: Reopen WAL and create Queue — the command should be replayed.
 	w2, err := cmdqueue.NewWAL(path)
 	if err != nil {
 		t.Fatalf("NewWAL reopen: %v", err)
 	}
-	defer w2.Close()
+	defer func() { _ = w2.Close() }()
 
 	q := cmdqueue.New(func() int64 { return now }, cmdqueue.WithWAL(w2))
 
@@ -249,13 +249,13 @@ func TestQueue_WithWAL_DuplicateSkipped(t *testing.T) {
 	cmd := cmdqueue.Command{ExecuteAt: 0, Seq: 5, Action: "cut"}
 	_ = w.Append(cmd)
 	_ = w.Append(cmd)
-	w.Close()
+	_ = w.Close()
 
 	w2, err := cmdqueue.NewWAL(path)
 	if err != nil {
 		t.Fatalf("NewWAL reopen: %v", err)
 	}
-	defer w2.Close()
+	defer func() { _ = w2.Close() }()
 
 	q := cmdqueue.New(func() int64 { return now }, cmdqueue.WithWAL(w2))
 
@@ -274,13 +274,13 @@ func TestWAL_EmptyFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	f.Close()
+	_ = f.Close()
 
 	w, err := cmdqueue.NewWAL(path)
 	if err != nil {
 		t.Fatalf("NewWAL: %v", err)
 	}
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	cmds, err := w.Replay(cmdqueue.DefaultMaxAge)
 	if err != nil {
