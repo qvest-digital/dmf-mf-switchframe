@@ -107,6 +107,70 @@
 		}
 	});
 
+	// Auto-redirect loop prevention
+	const hasRedirectedBefore = $derived((() => {
+		try {
+			return (parseInt(sessionStorage.getItem('sf:redirect-attempts') || '0', 10) > 0);
+		} catch {
+			return false;
+		}
+	})());
+
+	const isSelfRedirect = $derived((() => {
+		if (!fallbackHref) return false;
+		try {
+			const fallbackOrigin = new URL(fallbackHref).origin;
+			return fallbackOrigin === window.location.origin;
+		} catch {
+			return false;
+		}
+	})());
+
+	const shouldAutoRedirect = $derived(
+		showEngineFallback && !hasRedirectedBefore && !isSelfRedirect
+	);
+
+	let redirectCountdown = $state(0);
+	let redirectTimer: ReturnType<typeof setInterval> | undefined;
+
+	$effect(() => {
+		if (shouldAutoRedirect && fallbackHref) {
+			redirectCountdown = 10;
+			redirectTimer = setInterval(() => {
+				redirectCountdown--;
+				if (redirectCountdown <= 0) {
+					if (redirectTimer) {
+						clearInterval(redirectTimer);
+						redirectTimer = undefined;
+					}
+					try { sessionStorage.setItem('sf:redirect-attempts', '1'); } catch {}
+					window.location.replace(fallbackHref);
+				}
+			}, 1000);
+		} else {
+			if (redirectTimer) {
+				clearInterval(redirectTimer);
+				redirectTimer = undefined;
+			}
+			redirectCountdown = 0;
+		}
+		return () => {
+			if (redirectTimer) {
+				clearInterval(redirectTimer);
+				redirectTimer = undefined;
+			}
+		};
+	});
+
+	function cancelRedirect() {
+		if (redirectTimer) {
+			clearInterval(redirectTimer);
+			redirectTimer = undefined;
+		}
+		try { sessionStorage.setItem('sf:redirect-attempts', '1'); } catch {}
+		redirectCountdown = 0;
+	}
+
 	const engineWarningText = $derived.by(() => {
 		if (!engineStatus?.engineDown) return '';
 		const engine = engineStatus.engineDown;
@@ -149,6 +213,12 @@
 {:else if showEngineWarning}
 	<div class="connection-banner engine-warning" role="alert" aria-live="assertive">
 		{engineWarningText}
+	</div>
+{:else if shouldAutoRedirect}
+	<div class="connection-banner engine-fallback" role="alert" aria-live="assertive">
+		Engine {servingEngine} unreachable — redirecting to Engine {otherEngine} in {redirectCountdown}s
+		<a href={fallbackHref} class="fallback-link">Go now</a>
+		<button class="cancel-redirect" onclick={cancelRedirect}>Cancel</button>
 	</div>
 {:else if showEngineFallback}
 	<div class="connection-banner engine-fallback" role="alert" aria-live="assertive">
@@ -232,6 +302,23 @@
 	.fallback-hint {
 		font-size: 0.75em;
 		opacity: 0.7;
+	}
+
+	.cancel-redirect {
+		background: none;
+		border: none;
+		color: inherit;
+		text-decoration: underline;
+		cursor: pointer;
+		font-size: inherit;
+		font-weight: inherit;
+		padding: 0;
+		margin-left: 8px;
+		opacity: 0.8;
+	}
+
+	.cancel-redirect:hover {
+		opacity: 1;
 	}
 
 	.engine-status-strip {

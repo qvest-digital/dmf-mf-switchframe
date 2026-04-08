@@ -352,6 +352,80 @@ describe('ConnectionBanner', () => {
 		});
 	});
 
+	describe('auto-redirect on engine death', () => {
+		beforeEach(() => {
+			vi.useFakeTimers();
+			sessionStorage.clear();
+		});
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+
+		it('shows countdown text when fallback URL is available and disconnected', () => {
+			const { container } = render(ConnectionBanner, {
+				props: {
+					connectionState: 'disconnected',
+					syncStatus: 'ok',
+					engineFallbackUrl: 'https://engine-b.example.com',
+					servingEngine: 'A',
+				},
+			});
+			const banner = container.querySelector('.connection-banner.engine-fallback');
+			expect(banner).toBeTruthy();
+			expect(banner?.textContent).toContain('redirecting to Engine B');
+			expect(banner?.textContent).toContain('10s');
+			expect(banner?.textContent).toContain('Go now');
+			expect(banner?.textContent).toContain('Cancel');
+		});
+
+		it('does NOT auto-redirect if sessionStorage sf:redirect-attempts is already 1 (loop prevention)', () => {
+			sessionStorage.setItem('sf:redirect-attempts', '1');
+			const { container } = render(ConnectionBanner, {
+				props: {
+					connectionState: 'disconnected',
+					syncStatus: 'ok',
+					engineFallbackUrl: 'https://engine-b.example.com',
+					servingEngine: 'A',
+				},
+			});
+			// Should show manual fallback, not countdown
+			const banner = container.querySelector('.connection-banner.engine-fallback');
+			expect(banner).toBeTruthy();
+			expect(banner?.textContent).not.toContain('redirecting');
+			expect(banner?.textContent).toContain('Reload from Engine B');
+		});
+
+		it('does NOT show redirect for single-engine mode (no engineFallbackUrl)', () => {
+			const { container } = render(ConnectionBanner, {
+				props: {
+					connectionState: 'disconnected',
+					syncStatus: 'ok',
+				},
+			});
+			// Should show standard disconnect overlay, not auto-redirect
+			const overlay = container.querySelector('.disconnect-overlay');
+			expect(overlay).toBeTruthy();
+			const banner = container.querySelector('.connection-banner.engine-fallback');
+			expect(banner).toBeFalsy();
+		});
+
+		it('does NOT redirect to self (fallbackUrl === window.location.origin)', () => {
+			const { container } = render(ConnectionBanner, {
+				props: {
+					connectionState: 'disconnected',
+					syncStatus: 'ok',
+					engineFallbackUrl: window.location.origin,
+					servingEngine: 'A',
+				},
+			});
+			// Self-redirect blocked, should show manual fallback
+			const banner = container.querySelector('.connection-banner.engine-fallback');
+			expect(banner).toBeTruthy();
+			expect(banner?.textContent).not.toContain('redirecting');
+			expect(banner?.textContent).toContain('Reload from Engine B');
+		});
+	});
+
 	describe('control plane fallback link', () => {
 		beforeEach(() => {
 			vi.useFakeTimers();
