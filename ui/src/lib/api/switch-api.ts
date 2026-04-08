@@ -1554,8 +1554,12 @@ export async function uploadClip(file: File, onUploadProgress?: (percent: number
 	if (engines && engines.length > 1) {
 		for (let i = 1; i < engines.length; i++) {
 			const engine = engines[i];
-			uploadClipToEngine(engine.url, file).catch(err => {
-				console.warn(`Clip upload to engine ${engine.id} failed:`, err);
+			uploadClipToEngine(engine.url, file).catch(async () => {
+				// Retry once after 2s
+				await new Promise(r => setTimeout(r, 2000));
+				uploadClipToEngine(engine.url, file).catch(() => {
+					partialFailureNotify?.(`Clip upload failed on Engine ${engine.id} — clip only on primary`);
+				});
 			});
 		}
 	}
