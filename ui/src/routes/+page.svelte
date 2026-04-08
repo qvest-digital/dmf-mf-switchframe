@@ -601,6 +601,11 @@
 		getSourceKeys: () => store.sourceKeys,
 	});
 
+	// Speculatively discover Engine B in parallel with the initial state fetch.
+	// This is assigned after the connectionManager constructor but the closure
+	// inside onInitialLoadError captures it by reference, so the timing works.
+	let speculativeEngineB: Promise<{ engineBUrl: string; source: string } | null> | null = null;
+
 	// URL is the page origin — in production (embedded UI on :8080), WebTransport
 	// connects same-origin. In dev (Vite :5173), the connection.ts WebTransport
 	// path will fail (Vite doesn't speak QUIC), which is fine: MoQ state arrives
@@ -676,23 +681,11 @@
 		onInitialLoadError: (error, rawError) => {
 			initialLoadRetries++;
 
-			// On first error, try BOTH control plane discovery AND DNS inference in
-			// parallel. Whichever resolves first wins. Previously DNS inference only
-			// kicked in at retry #3 (9+ seconds), delaying failover.
-			if (initialLoadRetries === 1 && !engineBDetected) {
-				const discovery = new ControlPlaneDiscovery(window.location.hostname);
-				const inferred = inferEngineBUrl(window.location.hostname, window.location.protocol);
-
-				const candidates: Promise<{ engineBUrl: string; source: string }>[] = [
-					discovery.fetchEngineUrls().then(r =>
-						r ? { engineBUrl: r.engineBUrl, source: 'control-plane' } : Promise.reject(new Error('no result'))
-					),
-				];
-				if (inferred) {
-					candidates.push(Promise.resolve({ engineBUrl: inferred, source: 'dns-inference' }));
-				}
-
-				Promise.any(candidates).then(result => {
+			// Use the speculative Engine B discovery that was started in parallel
+			// with the initial state fetch. On first error, consume the result
+			// immediately — no need to start a new discovery round.
+			if (!engineBDetected && speculativeEngineB) {
+				speculativeEngineB.then(result => {
 					if (!engineBDetected && result) {
 						engineBDetected = true;
 						isDualEngine = true;
@@ -724,7 +717,7 @@
 							reconcilerInterval = setInterval(() => { connectionManager.tick(); }, 200);
 						}
 					}
-				}).catch(() => { /* Both failed — will retry on next error */ });
+				}).catch(() => { /* Speculative discovery failed — standalone mode */ });
 			}
 
 			console.warn('Failed to fetch initial state:', error);
@@ -735,6 +728,29 @@
 			connectionError = error;
 		},
 	});
+
+	// Kick off speculative Engine B discovery in parallel with the initial state
+	// fetch. If Engine A responds with engineBUrl in state, that takes priority
+	// (see onStateUpdate). If Engine A dies before responding, onInitialLoadError
+	// consumes this promise so the fallback URL is already available.
+	if (!engineBDetected) {
+		const discovery = new ControlPlaneDiscovery(window.location.hostname);
+		const inferred = inferEngineBUrl(window.location.hostname, window.location.protocol);
+		const candidates: Promise<{ engineBUrl: string; source: string }>[] = [];
+		if (discovery.sessionId) {
+			candidates.push(
+				discovery.fetchEngineUrls().then(r =>
+					r ? { engineBUrl: r.engineBUrl, source: 'control-plane' } : Promise.reject(new Error('no result'))
+				)
+			);
+		}
+		if (inferred) {
+			candidates.push(Promise.resolve({ engineBUrl: inferred, source: 'dns-inference' }));
+		}
+		if (candidates.length > 0) {
+			speculativeEngineB = Promise.any(candidates).catch(() => null);
+		}
+	}
 
 	const dualApi = new DualApiClient({
 		engines: engineConfig,
