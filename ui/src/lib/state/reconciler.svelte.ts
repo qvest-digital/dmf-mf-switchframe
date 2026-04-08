@@ -1,9 +1,5 @@
 import type { ControlRoomState, SourceHealthStatus, EngineId } from '$lib/api/types';
 
-/** Default thresholds for audio drift reconciliation (configurable). */
-export const AUDIO_DRIFT_DB_THRESHOLD = 3;
-export const AUDIO_DRIFT_DURATION_MS = 10_000;
-
 /** Minimum RTT delta (ms) required to switch authority based on RTT alone. Prevents jitter flapping. */
 export const RTT_HYSTERESIS_MS = 100;
 
@@ -87,15 +83,40 @@ const DIVERGENCE_FIELDS: (keyof ControlRoomState)[] = [
 	'programSource',
 	'previewSource',
 	'inTransition',
-	'transitionPosition',
 	'masterLevel',
 	'ftbActive',
 	'transitionType',
 	'transitionDurationMs',
-	'audioChannels',
 	'encoder',
 	'captions',
 ];
+
+/** Audio channel fields that are settings (not real-time metering). */
+const AUDIO_SETTING_KEYS: string[] = [
+	'level', 'trim', 'muted', 'afv', 'phaseInvert', 'balance',
+	'hpfFrequency', 'hpfEnabled', 'eq', 'compressor', 'gate',
+	'gateEnabled', 'audioDelayMs',
+];
+
+/** Compare audio channels excluding metering fields (peakL, peakR, gainReduction, gateReduction). */
+function audioChannelsSettingsEqual(
+	a: Record<string, any> | undefined,
+	b: Record<string, any> | undefined,
+): boolean {
+	if (a === b) return true;
+	if (!a || !b) return a == b;
+	const keysA = Object.keys(a).sort();
+	const keysB = Object.keys(b).sort();
+	if (keysA.length !== keysB.length || keysA.some((k, i) => k !== keysB[i])) return false;
+	for (const key of keysA) {
+		const chA = a[key];
+		const chB = b[key];
+		for (const field of AUDIO_SETTING_KEYS) {
+			if (!fieldEquals(chA[field], chB[field])) return false;
+		}
+	}
+	return true;
+}
 
 /** Critical fields: mismatch at same seq = deterministic failure. */
 const MISMATCH_FIELDS: (keyof ControlRoomState)[] = [
@@ -260,6 +281,10 @@ export function createReconciler() {
 			if (!fieldEquals(a, b)) {
 				result.push({ field, engineA: a, engineB: b });
 			}
+		}
+		// Audio channels: compare settings only (exclude metering)
+		if (!audioChannelsSettingsEqual(stateA.audioChannels, stateB.audioChannels)) {
+			result.push({ field: 'audioChannels', engineA: 'settings differ', engineB: 'settings differ' });
 		}
 		// Check recording state divergence (nested object, not in DIVERGENCE_FIELDS)
 		if (stateA.recording?.active !== stateB.recording?.active) {
