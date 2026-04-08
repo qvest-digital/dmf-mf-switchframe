@@ -172,14 +172,10 @@ describe('ClockSync', () => {
 			vi.useRealTimers();
 		});
 
-		it('returns local time when no offsets known', () => {
+		it('returns 0 when no offsets known', () => {
 			const sync = new ClockSync();
-			const before = Date.now() * 1000;
 			const ptp = sync.ptpNow();
-			const after = Date.now() * 1000;
-
-			expect(ptp).toBeGreaterThanOrEqual(before - 1000);
-			expect(ptp).toBeLessThanOrEqual(after + 1000);
+			expect(ptp).toBe(0);
 		});
 	});
 
@@ -327,10 +323,9 @@ describe('ClockSync', () => {
 			// Advance 61s to make the offset stale
 			vi.advanceTimersByTime(61_000);
 
-			// Now ptpNow should fall back to local time (no valid offsets)
+			// Now ptpNow should return 0 (no valid offsets, safer than stale time)
 			const ptpAfter = sync.ptpNow();
-			const localAfter = Date.now() * 1000;
-			expect(ptpAfter).toBe(localAfter);
+			expect(ptpAfter).toBe(0);
 
 			sync.stopPeriodicSync();
 			vi.useRealTimers();
@@ -348,9 +343,8 @@ describe('ClockSync', () => {
 			// ptpNow without any offsetAge entries means offsets are unaged
 			// (no handlePong was called, so offsetAge is empty -> offsets are excluded)
 			const ptpNoAge = sync.ptpNow();
-			const localNoAge = Date.now() * 1000;
-			// With no valid offsetAge, both offsets are excluded
-			expect(ptpNoAge).toBe(localNoAge);
+			// With no valid offsetAge, both offsets are excluded -> returns 0
+			expect(ptpNoAge).toBe(0);
 
 			// Now use handlePong to set A's offset with proper age tracking
 			const sendPing = vi.fn();

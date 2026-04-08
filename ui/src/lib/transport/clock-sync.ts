@@ -80,7 +80,7 @@ export class ClockSync {
 				validOffsets.push(offset);
 			}
 		}
-		if (validOffsets.length === 0) return localUS;
+		if (validOffsets.length === 0) return 0;
 		const avgOffset = validOffsets.reduce((a, b) => a + b, 0) / validOffsets.length;
 		return Math.round(localUS + avgOffset);
 	}

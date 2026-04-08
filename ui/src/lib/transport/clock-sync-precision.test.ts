@@ -163,14 +163,10 @@ describe('ClockSync precision', () => {
 	// ─── PTP timestamp generation ───
 
 	describe('ptpNow', () => {
-		it('returns local time when no offsets are known', () => {
+		it('returns 0 when no offsets are known', () => {
 			const sync = new ClockSync();
-			const before = Date.now() * 1000;
 			const ptp = sync.ptpNow();
-			const after = Date.now() * 1000;
-
-			expect(ptp).toBeGreaterThanOrEqual(before);
-			expect(ptp).toBeLessThanOrEqual(after);
+			expect(ptp).toBe(0);
 		});
 
 		it('applies single offset correctly', () => {
