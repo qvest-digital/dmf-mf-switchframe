@@ -2179,6 +2179,42 @@ export function podFire(channelId: number, podId: string): Promise<void> {
 	return post(`/api/playout/channels/${channelId}/pods/${podId}/fire`, {});
 }
 
+/**
+ * Fire a pod with dual-engine coordination.
+ * In dual mode, acquires reconcile locks on both engines before firing
+ * to prevent split-brain execution.
+ */
+export async function podFireWithLock(
+	channelId: number,
+	podId: string,
+	acquireLock?: (engine: string) => Promise<{ acquired: boolean; lockId?: string }>,
+	releaseLock?: (engine: string, lockId: string) => Promise<void>,
+): Promise<void> {
+	const engines = getEngineUrls();
+
+	// Single engine or no lock functions: fire normally
+	if (!engines || engines.length <= 1 || !acquireLock) {
+		return post(`/api/playout/channels/${channelId}/pods/${encodeURIComponent(podId)}/fire`, {});
+	}
+
+	// Dual engine: acquire locks, then fire, then release
+	const locks: { engine: string; lockId: string }[] = [];
+	try {
+		for (const engine of engines) {
+			const result = await acquireLock(engine.id);
+			if (!result.acquired) {
+				throw new Error(`Could not acquire lock on Engine ${engine.id}`);
+			}
+			if (result.lockId) locks.push({ engine: engine.id, lockId: result.lockId });
+		}
+		return post(`/api/playout/channels/${channelId}/pods/${encodeURIComponent(podId)}/fire`, {});
+	} finally {
+		for (const lock of locks) {
+			releaseLock?.(lock.engine, lock.lockId).catch(() => {});
+		}
+	}
+}
+
 export function podDump(channelId: number, podId: string): Promise<void> {
 	return post(`/api/playout/channels/${channelId}/pods/${podId}/dump`, {});
 }
