@@ -754,64 +754,81 @@
 		},
 		onSourceStalled: (key) => {
 			// Only trigger failover for program sources — tile stalls don't warrant
-			// switching the entire media pipeline to Engine B.
+			// switching the entire media pipeline to another engine.
 			if (key !== 'program' && key !== 'program-preview') return;
-			if (!isDualEngine || pipelineManager.activeEngine !== 'A') return;
+			if (!isDualEngine) return;
 			if (videoFailoverActive) return;
 
-			if (!store.state.engineBUrl) {
-				// Attempt emergency engine B discovery via DNS inference
-				const inferred = inferEngineBUrl(window.location.hostname, window.location.protocol);
-				if (inferred && !engineBDetected) {
-					engineBDetected = true;
-					isDualEngine = true;
-					connectionManager.addEngine('B', inferred);
-					dualApi.addEngine('B', inferred);
-					setEngineUrls([
-						{ id: 'A', url: window.location.origin },
-						{ id: 'B', url: inferred },
-					]);
-					setDualTimestampProvider((engineId?: string) => {
-						if (!connectionManager.clock.isConverged()) {
-							return { execute_at: 0, command_seq: connectionManager.nextCommandSeq() };
+			if (pipelineManager.activeEngine === 'A') {
+				if (!store.state.engineBUrl) {
+					// Attempt emergency engine B discovery via DNS inference
+					const inferred = inferEngineBUrl(window.location.hostname, window.location.protocol);
+					if (inferred && !engineBDetected) {
+						engineBDetected = true;
+						isDualEngine = true;
+						connectionManager.addEngine('B', inferred);
+						dualApi.addEngine('B', inferred);
+						setEngineUrls([
+							{ id: 'A', url: window.location.origin },
+							{ id: 'B', url: inferred },
+						]);
+						setDualTimestampProvider((engineId?: string) => {
+							if (!connectionManager.clock.isConverged()) {
+								return { execute_at: 0, command_seq: connectionManager.nextCommandSeq() };
+							}
+							return {
+								execute_at: engineId
+									? connectionManager.clock.ptpNowForEngine(engineId as any) + connectionManager.clock.safetyMargin()
+									: connectionManager.clock.ptpNow() + connectionManager.clock.safetyMargin(),
+								command_seq: connectionManager.nextCommandSeq(),
+							};
+						});
+						setPartialFailureCallback(() => { connectionManager.requestCheck(); });
+						setPartialFailureNotify((msg) => { notify('warning', msg); });
+						setAuthoritativeEngineProvider(() => connectionManager.health.authoritative);
+						if (!reconcilerInterval) {
+							reconcilerInterval = setInterval(() => { connectionManager.tick(); }, 200);
 						}
-						return {
-							execute_at: engineId
-								? connectionManager.clock.ptpNowForEngine(engineId as any) + connectionManager.clock.safetyMargin()
-								: connectionManager.clock.ptpNow() + connectionManager.clock.safetyMargin(),
-							command_seq: connectionManager.nextCommandSeq(),
-						};
-					});
-					setPartialFailureCallback(() => { connectionManager.requestCheck(); });
-					setPartialFailureNotify((msg) => { notify('warning', msg); });
-					setAuthoritativeEngineProvider(() => connectionManager.health.authoritative);
-					if (!reconcilerInterval) {
-						reconcilerInterval = setInterval(() => { connectionManager.tick(); }, 200);
+						// Try failover after brief delay for connection setup
+						setTimeout(() => {
+							videoFailoverActive = true;
+							pipelineManager.failoverToEngineB(inferred, Object.keys(store.state.sources ?? {}))
+								.then(() => {
+									activeEngine = 'B';
+									notify('warning', 'Video switched to Engine B (media stall + emergency discovery)');
+								})
+								.catch(err => {
+									videoFailoverActive = false;
+									console.warn('Emergency failover failed:', err);
+								});
+						}, 500);
 					}
-					// Try failover after brief delay for connection setup
-					setTimeout(() => {
-						videoFailoverActive = true;
-						pipelineManager.failoverToEngineB(inferred, Object.keys(store.state.sources ?? {}))
-							.then(() => {
-								activeEngine = 'B';
-								notify('warning', 'Video switched to Engine B (media stall + emergency discovery)');
-							})
-							.catch(err => {
-								videoFailoverActive = false;
-								console.warn('Emergency failover failed:', err);
-							});
-					}, 500);
+					return;
 				}
-				return;
-			}
 
-			videoFailoverActive = true;
-			pipelineManager.failoverToEngineB(store.state.engineBUrl, Object.keys(store.state.sources ?? {}))
-				.then(() => {
-					activeEngine = 'B';
-					notify('warning', 'Video switched to Engine B (media stall)');
-				})
-				.catch(err => console.warn('Media stall failover failed:', err));
+				videoFailoverActive = true;
+				pipelineManager.failoverToEngineB(store.state.engineBUrl, Object.keys(store.state.sources ?? {}))
+					.then(() => {
+						activeEngine = 'B';
+						notify('warning', 'Video switched to Engine B (media stall)');
+					})
+					.catch(err => console.warn('Media stall failover failed:', err));
+			} else if (pipelineManager.activeEngine === 'B') {
+				// Engine B is stalling — try restoring to Engine A if reconnected
+				if (connectionManager.engineConnectionState('A') !== 'disconnected') {
+					videoFailoverActive = true;
+					pipelineManager.restoreToEngineA(Object.keys(store.state.sources ?? {}))
+						.then(() => {
+							activeEngine = 'A';
+							videoFailoverActive = false;
+							notify('warning', 'Video restored to Engine A (Engine B media stall)');
+						})
+						.catch(err => {
+							videoFailoverActive = false;
+							console.warn('Restore to A after B stall failed:', err);
+						});
+				}
+			}
 		},
 	});
 	// Pre-register "program" source so ProgramPreview's $effect can attach
