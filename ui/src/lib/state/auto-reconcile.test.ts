@@ -663,6 +663,57 @@ describe('createAutoReconcile', () => {
 			reconcile.destroy();
 		});
 
+		it('does not run post-push callback after destroy()', async () => {
+			const config = makeConfig({
+				pushSnapshot: vi.fn().mockResolvedValue({ warnings: ['audio_skipped'] }),
+				checkCriticalDivergence: vi.fn().mockReturnValue(true),
+				checkAnyDivergence: vi.fn().mockReturnValue(true),
+			});
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(config.onRecoveryComplete).toHaveBeenCalledTimes(1);
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(1);
+
+			// Destroy before the 500ms post-push callback fires
+			reconcile.destroy();
+			await vi.advanceTimersByTimeAsync(600);
+
+			// Neither divergence check should have been called — destroyed guard prevents it
+			expect(config.checkCriticalDivergence).not.toHaveBeenCalled();
+			expect(config.checkAnyDivergence).not.toHaveBeenCalled();
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(1);
+		});
+
+		it('pushInFlight prevents bidirectional push when authority flips mid-flight', async () => {
+			let resolvePush!: (value: { warnings: string[] }) => void;
+			const config = makeConfig({
+				pushSnapshot: vi.fn().mockImplementation(() => new Promise((r) => { resolvePush = r; })),
+			});
+			const reconcile = createAutoReconcile(config);
+
+			// First mismatch: A authoritative, push to B
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(1);
+			expect(config.pushSnapshot).toHaveBeenCalledWith('B', expect.anything());
+
+			// Authority flips to B while push is in flight — should NOT start reverse push
+			reconcile.onSyncStatusChange('mismatch', 'B');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(1); // still 1, blocked by pushInFlight
+
+			// Resolve the first push
+			resolvePush({ warnings: [] });
+			await vi.advanceTimersByTimeAsync(0);
+			expect(config.onRecoveryComplete).toHaveBeenCalledTimes(1);
+			// No second push was initiated — no bidirectional push occurred
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(1);
+
+			reconcile.destroy();
+		});
+
 		it('critical divergence takes priority over any-divergence and bypasses cooldown', async () => {
 			let pushCount = 0;
 			const config = makeConfig({

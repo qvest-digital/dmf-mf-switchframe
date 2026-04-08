@@ -142,6 +142,7 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 			// Partial apply detection: if warnings present, check for remaining divergence
 			if (result.warnings.length > 0) {
 				setTimeout(() => {
+					if (destroyed) return;
 					// First check critical (re-push immediately, bypass cooldown)
 					if (config.checkCriticalDivergence?.()) {
 						lastPushTimes.delete(target);
