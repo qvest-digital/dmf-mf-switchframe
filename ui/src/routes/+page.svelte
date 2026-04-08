@@ -1141,6 +1141,14 @@
 		}
 	});
 
+	// Track warm standby health — surface a warning when Engine B's pipeline is
+	// active but not receiving media (e.g. MoQ subscription dropped silently).
+	$effect(() => {
+		if (!isDualEngine || !mounted) return;
+		const degraded = pipelineManager.warmStandbyActive && !pipelineManager.warmStandbyHealthy;
+		connectionManager.setWarmStandbyDegraded(degraded);
+	});
+
 	// Auto video failover: switch the entire media pipeline to Engine B when
 	// Engine A disconnects. The reconciler drives syncHealth.status to
 	// 'single-engine' with authoritative='B' when only Engine B is reachable.

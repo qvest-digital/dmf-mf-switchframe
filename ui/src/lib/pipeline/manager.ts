@@ -541,6 +541,13 @@ export class PipelineManager {
 		return this._warmStandbyActive;
 	}
 
+	/** Whether warm standby pipeline has an active MoQ connection (receiving media). */
+	get warmStandbyHealthy(): boolean {
+		if (!this._warmStandbyActive || !this.pipelineB) return false;
+		return this.pipelineB.getAudioDecoder('program') !== null
+			|| this.pipelineB.getAudioDecoder('program-preview') !== null;
+	}
+
 	/** Clean up all state. */
 	destroy(): void {
 		this.stopMetering();

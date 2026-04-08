@@ -157,6 +157,7 @@ export function createReconciler() {
 	let everSeenB = $state(false);
 	let recovering = $state(false);
 	let clockDiverged = $state(false);
+	let warmStandbyDegraded = $state(false);
 	let transportAliveA = $state(false);
 	let transportAliveB = $state(false);
 	let lastPongA = $state(0);
@@ -561,6 +562,10 @@ export function createReconciler() {
 		clockDiverged = diverged;
 	}
 
+	function setWarmStandbyDegraded(degraded: boolean) {
+		warmStandbyDegraded = degraded;
+	}
+
 	function setTransportAlive(engine: EngineId, alive: boolean) {
 		if (engine === 'A') transportAliveA = alive;
 		else transportAliveB = alive;
@@ -620,6 +625,7 @@ export function createReconciler() {
 		if (errA && connectedA) w.push(`engine_a_cmd_error: ${errA}`);
 		if (errB && connectedB) w.push(`engine_b_cmd_error: ${errB}`);
 		if (errA && errB && errA !== errB) w.push('cmd_error_divergence');
+		if (warmStandbyDegraded) w.push('warm_standby_degraded');
 		// Surface late commands (arrived after their PTP target time)
 		const lateA = stateA?.lateCommands;
 		const lateB = stateB?.lateCommands;
@@ -669,6 +675,7 @@ export function createReconciler() {
 		disconnect,
 		setRecovering,
 		setClockDiverged,
+		setWarmStandbyDegraded,
 		setTransportAlive,
 		recordPong,
 		get state() {

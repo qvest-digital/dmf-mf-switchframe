@@ -139,6 +139,11 @@ export class DualConnectionManager {
 		this.reconciler.setRecovering(value);
 	}
 
+	/** Mark warm standby as degraded (Engine B pipeline not receiving media). */
+	setWarmStandbyDegraded(degraded: boolean): void {
+		this.reconciler.setWarmStandbyDegraded(degraded);
+	}
+
 	/** Tick the reconciler's time-based status detection. Call every ~200ms. */
 	tick(): void {
 		this.reconciler.tick();
