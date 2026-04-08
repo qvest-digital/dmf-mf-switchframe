@@ -1,6 +1,15 @@
 import type { EngineId } from '$lib/api/types';
 
-/** Microsecond-precision monotonic timestamp for RTT measurement. */
+/**
+ * Monotonic timestamp in nominal microseconds for RTT measurement.
+ *
+ * Browser `performance.now()` typically has ~1ms resolution (some browsers
+ * offer sub-millisecond), so multiplying by 1000 does not yield true
+ * microsecond precision. For cross-region RTTs of 50-100ms, the ~1ms
+ * quantization error is only 1-2% — acceptable for our purposes. The EWMA
+ * smoothing in `updateRTT()` further reduces the impact of timer quantization
+ * across successive samples.
+ */
 function nowMicros(): number {
 	return Math.round(performance.now() * 1000);
 }
@@ -162,7 +171,14 @@ export class ClockSync {
 			this.pingSentTimes.set(seq, nowMicros());
 			sendPing(engineId, this.buildPing(seq));
 		}
-		// Prune old entries (keep last 100)
+		// Prune stale entries by time (pongs that will never arrive)
+		const staleThreshold = nowMicros() - 30_000_000; // 30s in µs
+		for (const [seq, sentAt] of this.pingSentTimes) {
+			if (sentAt < staleThreshold) {
+				this.pingSentTimes.delete(seq);
+			}
+		}
+		// Secondary safety net: keep last 100 entries
 		if (this.pingSentTimes.size > 100) {
 			const entries = [...this.pingSentTimes.entries()].sort((a, b) => a[0] - b[0]);
 			for (const [key] of entries.slice(0, entries.length - 100)) {
@@ -200,6 +216,24 @@ export class ClockSync {
 		return { seq, serverTimestamp: hi * 2 ** 32 + lo };
 	}
 
+	/**
+	 * Process a pong response and update RTT + clock offset for this engine.
+	 *
+	 * The offset calculation (`serverTimestamp - (sentAt + rtt / 2)`) assumes
+	 * symmetric network paths — i.e., that the one-way latency is exactly half
+	 * the round-trip time. GCP cross-region links can exhibit ±20-30% asymmetry,
+	 * meaning if the true one-way delays are A (client→server) and B
+	 * (server→client), the measured RTT is A+B but we estimate A = B = RTT/2.
+	 * An asymmetry of X ms causes an offset error of X/2 ms.
+	 *
+	 * The `safetyMargin()` compensates partially by adding RTT + 2*jitter +
+	 * one frame duration, which absorbs moderate asymmetry but does not
+	 * eliminate the bias in the offset estimate itself.
+	 *
+	 * Future improvement: track min-RTT samples per engine to detect persistent
+	 * asymmetry (the minimum RTT is least affected by queuing and gives the
+	 * tightest bound on true one-way delay).
+	 */
 	handlePong(engineId: EngineId, data: Uint8Array): void {
 		const { seq, serverTimestamp } = this.parsePong(data);
 		const now = nowMicros();

@@ -158,3 +158,17 @@ export function setEngineUrls(urls: EngineEndpoint[] | null): void {
 export function getEngineUrls(): EngineEndpoint[] | null {
 	return engineUrls;
 }
+
+// ── Emergency fallback URL for Engine B ──
+// Set before full dual-engine wiring is established.
+// Used by request()/dualFetch() to send commands when the primary engine is unreachable.
+
+let emergencyEngineBUrl: string | null = null;
+
+export function setEmergencyEngineBUrl(url: string | null): void {
+	emergencyEngineBUrl = url?.replace(/\/$/, '') ?? null;
+}
+
+export function getEmergencyEngineBUrl(): string | null {
+	return emergencyEngineBUrl;
+}

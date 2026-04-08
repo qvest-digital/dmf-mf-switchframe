@@ -32,8 +32,8 @@
 	import RedundancyPanel from '../components/RedundancyPanel.svelte';
 	import ProgramCompare from '../components/ProgramCompare.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
-	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, checkFragmentToken, SwitchApiError, listMacros, runMacro, dveSlotOn, dveSlotOff, replayQuick, replayPause, replayResume, replayPlay, replayStop, replaySeek, replaySetSpeed, replayMarkIn, replayMarkOut, commsMute, setDualTimestampProvider, setPartialFailureCallback, setPartialFailureNotify, getDebugSnapshot, getPerfData, playoutEngineCacheStatus, setTransitionPosition, updateDVESlot } from '$lib/api/switch-api';
-	import { setEngineUrls, getEngineUrls, setExpectDualEngine, setOnNewEngineDiscovered, setAuthoritativeEngineProvider } from '$lib/api/base-url';
+	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, checkFragmentToken, SwitchApiError, listMacros, runMacro, dveSlotOn, dveSlotOff, replayQuick, replayPause, replayResume, replayPlay, replayStop, replaySeek, replaySetSpeed, replayMarkIn, replayMarkOut, commsMute, setDualTimestampProvider, setPartialFailureCallback, setPartialFailureNotify, setNonIdempotentFailureCallback, getDebugSnapshot, getPerfData, playoutEngineCacheStatus, setTransitionPosition, updateDVESlot } from '$lib/api/switch-api';
+	import { setEngineUrls, getEngineUrls, setExpectDualEngine, setOnNewEngineDiscovered, setAuthoritativeEngineProvider, setEmergencyEngineBUrl } from '$lib/api/base-url';
 	import { fetchServerInfo } from '$lib/prism/transport-utils';
 	import * as operatorState from '$lib/state/operator.svelte';
 	import { notify } from '$lib/state/notifications.svelte';
@@ -670,6 +670,12 @@
 						notify('warning', msg);
 					});
 					setAuthoritativeEngineProvider(() => connectionManager.health.authoritative);
+					// Set emergency fallback URL for API calls before full dual wiring
+					setEmergencyEngineBUrl(engineBUrl);
+					// Wire non-idempotent failure callback for divergence logging
+					setNonIdempotentFailureCallback((url, failedEngines) => {
+						divergenceLog.add({ type: 'mismatch', message: `Non-idempotent ${url} failed on ${failedEngines.join(', ')}` });
+					});
 					// Start reconciler tick interval for dual-engine mode.
 					if (!reconcilerInterval) {
 						reconcilerInterval = setInterval(() => { connectionManager.tick(); }, 200);
@@ -729,6 +735,10 @@
 							notify('warning', msg);
 						});
 						setAuthoritativeEngineProvider(() => connectionManager.health.authoritative);
+						setEmergencyEngineBUrl(result.engineBUrl);
+						setNonIdempotentFailureCallback((url, failedEngines) => {
+							divergenceLog.add({ type: 'mismatch', message: `Non-idempotent ${url} failed on ${failedEngines.join(', ')}` });
+						});
 						if (!reconcilerInterval) {
 							reconcilerInterval = setInterval(() => { connectionManager.tick(); }, 200);
 						}
@@ -765,6 +775,14 @@
 		}
 		if (candidates.length > 0) {
 			speculativeEngineB = Promise.any(candidates).catch(() => null);
+			// Set emergency fallback URL as soon as any candidate resolves,
+			// even before full dual-engine wiring. This allows API calls to
+			// fall back to Engine B if Engine A dies during initial load.
+			speculativeEngineB.then(result => {
+				if (result && !engineBDetected) {
+					setEmergencyEngineBUrl(result.engineBUrl);
+				}
+			}).catch(() => {});
 		}
 	}
 
@@ -818,6 +836,10 @@
 						setPartialFailureCallback(() => { connectionManager.requestCheck(); });
 						setPartialFailureNotify((msg) => { notify('warning', msg); });
 						setAuthoritativeEngineProvider(() => connectionManager.health.authoritative);
+						setEmergencyEngineBUrl(inferred);
+						setNonIdempotentFailureCallback((url, failedEngines) => {
+							divergenceLog.add({ type: 'mismatch', message: `Non-idempotent ${url} failed on ${failedEngines.join(', ')}` });
+						});
 						if (!reconcilerInterval) {
 							reconcilerInterval = setInterval(() => { connectionManager.tick(); }, 200);
 						}
@@ -1184,6 +1206,42 @@
 		connectionManager.setWarmStandbyDegraded(degraded);
 	});
 
+	// Clean up warm standby when Engine B disappears for good.
+	// If the reconciler status is 'single-engine' and Engine B has been
+	// disconnected for >30s, tear down Engine B pipeline to reclaim resources.
+	let engineBGoneTimer: ReturnType<typeof setTimeout> | undefined;
+	$effect(() => {
+		if (!isDualEngine || !mounted) return;
+		const bState = connectionManager.engineConnectionState('B');
+		const status = syncHealth?.status;
+
+		if (bState === 'disconnected' && (status === 'single-engine' || status === 'disconnected')) {
+			if (!engineBGoneTimer) {
+				engineBGoneTimer = setTimeout(() => {
+					// Re-check conditions after timeout (state may have changed)
+					const currentBState = connectionManager.engineConnectionState('B');
+					if (currentBState === 'disconnected' && pipelineManager.warmStandbyActive) {
+						pipelineManager.destroyEngineBPipeline();
+						connectionManager.setWarmStandbyDegraded(false);
+						notify('info', 'Engine B offline — warm standby disabled');
+					}
+				}, 30_000);
+			}
+		} else {
+			if (engineBGoneTimer) {
+				clearTimeout(engineBGoneTimer);
+				engineBGoneTimer = undefined;
+			}
+		}
+
+		return () => {
+			if (engineBGoneTimer) {
+				clearTimeout(engineBGoneTimer);
+				engineBGoneTimer = undefined;
+			}
+		};
+	});
+
 	// Mid-session control plane re-discovery: when an engine becomes unreachable,
 	// periodically poll the control plane for updated engine URLs. This catches
 	// cases where an engine VM is replaced (new IP) while the session is live.
@@ -1245,6 +1303,20 @@
 		document.addEventListener('click', handler, { once: true });
 		document.addEventListener('keydown', handler, { once: true });
 	}
+
+	// Pre-warm audio contexts on first user interaction so automatic
+	// failover can resume audio without requiring another gesture.
+	// AudioContext.resume() needs a user gesture — do it once, early.
+	let audioPreWarmed = false;
+	function preWarmAudioOnGesture() {
+		if (audioPreWarmed) return;
+		audioPreWarmed = true;
+		pipelineManager.preWarmAudioContexts();
+		document.removeEventListener('click', preWarmAudioOnGesture);
+		document.removeEventListener('keydown', preWarmAudioOnGesture);
+	}
+	document.addEventListener('click', preWarmAudioOnGesture, { once: false });
+	document.addEventListener('keydown', preWarmAudioOnGesture, { once: false });
 
 	$effect(() => {
 		if (!isDualEngine || !mounted) return;
@@ -1514,6 +1586,8 @@
 	onDestroy(() => {
 		keyboard.detach();
 		document.removeEventListener('keydown', handleGlobalShortcuts);
+		document.removeEventListener('click', preWarmAudioOnGesture);
+		document.removeEventListener('keydown', preWarmAudioOnGesture);
 		clearTimeout(announcementTimer);
 		clearInterval(syncInterval);
 		clearInterval(reconcilerInterval);
@@ -1570,7 +1644,7 @@
 />
 
 <ErrorBoundary>
-	<ConnectionBanner {connectionState} {syncStatus} engineStatus={engineBannerStatus} {perEngineState} {sessionFallbackUrl} {engineFallbackUrl} servingEngine={servingEngine} inTransition={store.state.inTransition} />
+	<ConnectionBanner {connectionState} {syncStatus} engineStatus={engineBannerStatus} {perEngineState} {sessionFallbackUrl} {engineFallbackUrl} servingEngine={servingEngine} />
 	<Toast />
 	{#if layoutMode === 'simple'}
 		<SimpleMode

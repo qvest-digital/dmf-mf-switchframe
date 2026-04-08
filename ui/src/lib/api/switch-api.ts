@@ -1,6 +1,6 @@
 import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, GateSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, EngineRecordingGroup, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig, ColorGradeState, CorrectorState, PlayoutChannelState, Playlist, PlaylistItem, CacheStatus, PodInfo, PodConfig, PodTemplate, AsRunEvent, ChannelHealth, SampleClip, PlayoutClip, ASRState, DVEPresetInfo, WipePattern, WipeConfig } from './types';
 import { notify } from '$lib/state/notifications.svelte';
-import { resolveApiUrl, getEngineUrls, setFlushTimestampInjector, isNonIdempotent, isTimedPath, getAuthoritativeEngine, type EngineEndpoint } from './base-url';
+import { resolveApiUrl, getEngineUrls, setFlushTimestampInjector, isNonIdempotent, isTimedPath, getAuthoritativeEngine, getEmergencyEngineBUrl, type EngineEndpoint } from './base-url';
 
 export class SwitchApiError extends Error {
 	constructor(
@@ -163,6 +163,12 @@ export function setPartialFailureNotify(cb: ((msg: string) => void) | null): voi
 	partialFailureNotify = cb;
 }
 
+let nonIdempotentFailureCallback: ((url: string, failedEngines: string[]) => void) | null = null;
+
+export function setNonIdempotentFailureCallback(cb: ((url: string, failedEngines: string[]) => void) | null): void {
+	nonIdempotentFailureCallback = cb;
+}
+
 // ── Dual-engine PTP timestamp injection ──
 
 let dualTimestampProvider: ((engineId?: string) => { execute_at: number; command_seq: number }) | null = null;
@@ -263,6 +269,7 @@ async function primaryWithFallback<T>(url: string, options: RequestInit | undefi
 				} else if (i > 0 || (!isFirstEngine(engine.url) && !preferred)) {
 					// Non-primary succeeded after failover — make it sticky
 					setPreferredEngine(engine.url);
+					console.info(`[dual-api] GET ${url} served by fallback engine ${engine.id}`);
 				}
 				if (res.status === 202 || res.status === 204 || res.headers?.get('content-length') === '0') {
 					return undefined as T;
@@ -447,8 +454,9 @@ async function dualRequest<T>(url: string, options: RequestInit | undefined, eng
 			}, 500);
 		} else {
 			// Non-idempotent: skip retry, rely on snapshot push for state reconciliation
-			partialFailureNotify?.(`Command failed on Engine ${failedEngineIds.join(', ')} (no retry for non-idempotent operation)`);
+			partialFailureNotify?.(`${failedEngineIds.join(', ')}: non-idempotent operation diverged — check Redundancy panel`);
 			console.warn(`[dual-api] Skipping retry for non-idempotent path: ${url}`);
+			nonIdempotentFailureCallback?.(url, failedEngineIds);
 		}
 	}
 
@@ -634,8 +642,9 @@ async function dualFetch(url: string, options: RequestInit): Promise<Response> {
 				}, 500);
 			} else {
 				// Non-idempotent: skip retry, rely on snapshot push for state reconciliation
-				partialFailureNotify?.(`Command failed on Engine ${failedEngineIds.join(', ')} (no retry for non-idempotent operation)`);
+				partialFailureNotify?.(`${failedEngineIds.join(', ')}: non-idempotent operation diverged — check Redundancy panel`);
 				console.warn(`[dual-api] Skipping retry for non-idempotent path: ${url}`);
+				nonIdempotentFailureCallback?.(url, failedEngineIds);
 			}
 		}
 
@@ -643,7 +652,17 @@ async function dualFetch(url: string, options: RequestInit): Promise<Response> {
 		if (fulfilled.length > 0) return fulfilled[0].value;
 		throw new Error('All engines unreachable');
 	}
-	return fetch(resolveApiUrl(url), { ...options, headers: { ...authHeaders(), ...options.headers } });
+	// Single-engine mode (includes pre-discovery period)
+	try {
+		return await fetch(resolveApiUrl(url), { ...options, headers: { ...authHeaders(), ...options.headers } });
+	} catch (err) {
+		// Primary engine unreachable — try emergency Engine B URL if available
+		const emergencyUrl = getEmergencyEngineBUrl();
+		if (emergencyUrl) {
+			return fetch(`${emergencyUrl}${url}`, { ...options, headers: { ...authHeaders(), ...options.headers } });
+		}
+		throw err;
+	}
 }
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
@@ -651,20 +670,38 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 	if (engines && engines.length > 1) {
 		return dualRequest<T>(url, options, engines);
 	}
-	// Single-engine: existing behavior unchanged
+	// Single-engine mode (includes pre-discovery period)
 	const opts: RequestInit = {
 		...options,
 		headers: { ...authHeaders(), ...options?.headers },
 	};
-	const res = await fetch(resolveApiUrl(url), opts);
-	if (!res.ok) {
-		const body = await res.json().catch(() => ({ error: 'unknown error' }));
-		throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
+	try {
+		const res = await fetch(resolveApiUrl(url), opts);
+		if (!res.ok) {
+			const body = await res.json().catch(() => ({ error: 'unknown error' }));
+			throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
+		}
+		if (res.status === 202 || res.status === 204 || res.headers?.get('content-length') === '0') {
+			return undefined as T;
+		}
+		return res.json();
+	} catch (err) {
+		// Primary engine unreachable — try emergency Engine B URL if available
+		if (err instanceof SwitchApiError) throw err;
+		const emergencyUrl = getEmergencyEngineBUrl();
+		if (emergencyUrl) {
+			const res = await fetch(`${emergencyUrl}${url}`, opts);
+			if (!res.ok) {
+				const body = await res.json().catch(() => ({ error: 'unknown error' }));
+				throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
+			}
+			if (res.status === 202 || res.status === 204 || res.headers?.get('content-length') === '0') {
+				return undefined as T;
+			}
+			return res.json();
+		}
+		throw err;
 	}
-	if (res.status === 202 || res.status === 204 || res.headers?.get('content-length') === '0') {
-		return undefined as T;
-	}
-	return res.json();
 }
 
 function post<T>(url: string, body: unknown): Promise<T> {

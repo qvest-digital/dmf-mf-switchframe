@@ -232,7 +232,21 @@ export function createReconciler() {
 			}
 		}
 		if (!update.inTransition && prevInTransition) {
-			transitionLockEngine = null;
+			// Only release lock when the locked engine finishes AND the other engine
+			// also reports inTransition=false (or isn't connected).
+			if (transitionLockEngine === engine) {
+				const otherState = engine === 'A' ? stateB : stateA;
+				const otherConnected = engine === 'A' ? connectedB : connectedA;
+				if (!otherConnected || !otherState?.inTransition) {
+					transitionLockEngine = null;
+				}
+			} else if (transitionLockEngine !== null) {
+				// Non-locked engine finished — check if locked engine also finished
+				const lockedState = transitionLockEngine === 'A' ? stateA : stateB;
+				if (!lockedState?.inTransition) {
+					transitionLockEngine = null;
+				}
+			}
 		}
 		// Re-evaluate seq delta tracking
 		updateSeqDeltaTracking(now);
@@ -771,9 +785,15 @@ export function createReconciler() {
 		// Stale if pongs are fresh but state updates stopped (hung application)
 		if (connectedA && pongFreshA && lastSeenA > 0 && (now - lastSeenA >= STATE_UPDATE_STALE_MS)) result.push('A');
 		if (connectedB && pongFreshB && lastSeenB > 0 && (now - lastSeenB >= STATE_UPDATE_STALE_MS)) result.push('B');
-		// Stale if transport is not alive and no recent state updates
-		if (connectedA && !pongFreshA && !transportAliveA && lastSeenA > 0 && (now - lastSeenA > STALE_THRESHOLD_MS)) result.push('A');
-		if (connectedB && !pongFreshB && !transportAliveB && lastSeenB > 0 && (now - lastSeenB > STALE_THRESHOLD_MS)) result.push('B');
+		// Stale if pongs are not fresh: use transport-aware threshold (matches computeStatus logic)
+		if (connectedA && !pongFreshA && lastSeenA > 0) {
+			const thresholdA = transportAliveA ? STALE_TRANSPORT_ALIVE_MS : STALE_THRESHOLD_MS;
+			if (now - lastSeenA > thresholdA) result.push('A');
+		}
+		if (connectedB && !pongFreshB && lastSeenB > 0) {
+			const thresholdB = transportAliveB ? STALE_TRANSPORT_ALIVE_MS : STALE_THRESHOLD_MS;
+			if (now - lastSeenB > thresholdB) result.push('B');
+		}
 		return result;
 	});
 

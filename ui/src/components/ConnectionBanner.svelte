@@ -28,6 +28,9 @@
 
 	let { connectionState, syncStatus, engineFallbackUrl = null, servingEngine = null, engineStatus, perEngineState, sessionFallbackUrl = null, inTransition = false }: Props = $props();
 
+	// In-memory fallback for when sessionStorage is unavailable (private browsing)
+	let memoryRedirectFlag = false;
+
 	// Track whether WebTransport was ever connected so we only show
 	// the polling banner as a degradation, not on initial fallback.
 	let hadWebTransport = $state(false);
@@ -125,7 +128,7 @@
 	let userCancelledRedirect = $state(false);
 
 	const hasRedirectedBefore = $derived.by(() => {
-		if (userCancelledRedirect) return true;
+		if (userCancelledRedirect || memoryRedirectFlag) return true;
 		try {
 			return (parseInt(sessionStorage.getItem('sf:redirect-attempts') || '0', 10) > 0);
 		} catch {
@@ -143,8 +146,11 @@
 		}
 	});
 
+	// Note: inTransition is intentionally NOT checked here. If showEngineFallback is true,
+	// the serving engine is unreachable and can never complete the transition — so blocking
+	// redirect on inTransition would freeze the user on a dead engine forever.
 	const shouldAutoRedirect = $derived(
-		showEngineFallback && !hasRedirectedBefore && !isSelfRedirect && !inTransition
+		showEngineFallback && !hasRedirectedBefore && !isSelfRedirect
 	);
 
 	let redirectCountdown = $state(0);
@@ -161,7 +167,13 @@
 						redirectTimer = undefined;
 					}
 					try { sessionStorage.setItem('sf:redirect-attempts', '1'); } catch {}
-					window.location.replace(fallbackHref);
+					memoryRedirectFlag = true;
+					try {
+						window.location.replace(fallbackHref);
+					} catch {
+						// Navigation failed — clear token from URL fragment to avoid exposure
+						try { window.location.hash = ''; } catch {}
+					}
 				}
 			}, 1000);
 		} else {
@@ -186,6 +198,7 @@
 		}
 		userCancelledRedirect = true;
 		try { sessionStorage.setItem('sf:redirect-attempts', '1'); } catch {}
+		memoryRedirectFlag = true;
 		redirectCountdown = 0;
 	}
 
@@ -235,7 +248,7 @@
 {:else if shouldAutoRedirect}
 	<div class="connection-banner engine-fallback" role="alert" aria-live="assertive">
 		Engine {servingEngine} unreachable — redirecting to Engine {otherEngine} in {redirectCountdown}s
-		<a href={fallbackHref} class="fallback-link" onclick={() => { try { sessionStorage.setItem('sf:redirect-attempts', '1'); } catch {} }}>Go now</a>
+		<a href={fallbackHref} class="fallback-link" onclick={() => { try { sessionStorage.setItem('sf:redirect-attempts', '1'); } catch {} memoryRedirectFlag = true; }}>Go now</a>
 		<button class="cancel-redirect" onclick={cancelRedirect}>Cancel</button>
 	</div>
 {:else if showEngineFallback}

@@ -1624,7 +1624,7 @@ describe('switch-api dual-engine routing', () => {
 				});
 
 				await startRecording();
-				expect(notifySpy).toHaveBeenCalledWith(expect.stringContaining('no retry'));
+				expect(notifySpy).toHaveBeenCalledWith(expect.stringContaining('non-idempotent operation diverged'));
 			});
 
 			it('notify message says "retrying" for idempotent paths', async () => {

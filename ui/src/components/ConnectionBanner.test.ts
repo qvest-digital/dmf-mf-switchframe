@@ -465,7 +465,7 @@ describe('ConnectionBanner', () => {
 			expect(banner).toBeFalsy();
 		});
 
-		it('does NOT auto-redirect during an active transition', () => {
+		it('auto-redirects even during active transition (dead engine cannot complete it)', () => {
 			const { container } = render(ConnectionBanner, {
 				props: {
 					connectionState: 'disconnected',
@@ -475,35 +475,9 @@ describe('ConnectionBanner', () => {
 					inTransition: true,
 				},
 			});
-			// Should show manual fallback, not countdown — transition blocks auto-redirect
+			// When the serving engine is dead, the transition is stuck — redirect anyway
 			const banner = container.querySelector('.connection-banner.engine-fallback');
 			expect(banner).toBeTruthy();
-			expect(banner?.textContent).not.toContain('redirecting');
-			expect(banner?.textContent).toContain('Reload from Engine B');
-		});
-
-		it('auto-redirects when transition completes', async () => {
-			const { container, rerender } = render(ConnectionBanner, {
-				props: {
-					connectionState: 'disconnected',
-					syncStatus: 'ok',
-					engineFallbackUrl: 'https://engine-b.example.com',
-					servingEngine: 'A',
-					inTransition: true,
-				},
-			});
-			// During transition — no auto-redirect
-			expect(container.querySelector('.connection-banner.engine-fallback')?.textContent).not.toContain('redirecting');
-
-			// Transition ends
-			await rerender({
-				connectionState: 'disconnected',
-				syncStatus: 'ok',
-				engineFallbackUrl: 'https://engine-b.example.com',
-				servingEngine: 'A',
-				inTransition: false,
-			});
-			const banner = container.querySelector('.connection-banner.engine-fallback');
 			expect(banner?.textContent).toContain('redirecting');
 		});
 

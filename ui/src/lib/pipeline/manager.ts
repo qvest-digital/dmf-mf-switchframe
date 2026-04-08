@@ -213,7 +213,9 @@ export class PipelineManager {
 	 * the previous source doesn't produce transient sync swings.
 	 */
 	notifyProgramSourceChange(): void {
-		this.pipeline.resetRendererSync('program');
+		const activePipeline = this._activeEngine === 'B' && this.pipelineB
+			? this.pipelineB : this.pipeline;
+		activePipeline.resetRendererSync('program');
 	}
 
 	/**
@@ -458,6 +460,10 @@ export class PipelineManager {
 				// Warm standby path: pipeline B already exists with sources
 				// connected — skip creation, source connection, AND the 3s wait.
 				// Go straight to canvas swapping below.
+			} else if (this.pipelineB && this.pipelineB.getAudioDecoder('program')) {
+				// Pipeline B exists and has media flowing — treat as warm.
+				// This covers the gap between enableWarmStandby() being called
+				// and _warmStandbyActive propagating (200-500ms window).
 			} else {
 				// Cold path: create Engine B pipeline on-demand.
 				this.createEngineBPipeline(engineBUrl, options);
@@ -474,8 +480,8 @@ export class PipelineManager {
 				this.pipelineB.addSource('program-preview');
 				this.pipelineB.connectSource('program-preview');
 
-				// Wait for Engine B to have media (up to 3s)
-				await this.waitForPipelineReady(this.pipelineB, 3000);
+				// Wait for Engine B to have media (up to 1.5s)
+				await this.waitForPipelineReady(this.pipelineB, 1500);
 			}
 
 			// Swap program canvas
@@ -597,6 +603,16 @@ export class PipelineManager {
 		// If was recently healthy (within 5s), still consider healthy
 		// (decoder or video may be briefly absent during stream renegotiation)
 		return Date.now() - this._warmStandbyLastHealthy < 5000;
+	}
+
+	/** Pre-warm audio contexts on both pipelines.
+	 *  Call from a user gesture handler so AudioContext.resume() works
+	 *  during automatic failover without requiring another gesture. */
+	preWarmAudioContexts(): void {
+		this.pipeline.resumeAllAudio().catch(() => {});
+		if (this.pipelineB) {
+			this.pipelineB.resumeAllAudio().catch(() => {});
+		}
 	}
 
 	/** Resume audio on whichever pipeline is currently active.
