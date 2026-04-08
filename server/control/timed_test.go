@@ -177,6 +177,26 @@ func TestTimedHandler_SeqTracker_CalledOnEnqueue(t *testing.T) {
 	require.Equal(t, uint64(42), trackedSeq, "seqTracker should be called with command_seq")
 }
 
+func TestTimedHandler_ImmediateCallTracksSeq(t *testing.T) {
+	var trackedSeq uint64
+	tracker := func(seq uint64) {
+		trackedSeq = seq
+	}
+
+	handler := timedHandler(nil, "test_action", tracker, func(w http.ResponseWriter, r *http.Request, body []byte) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	body := `{"command_seq": 42}`
+	req := httptest.NewRequest("POST", "/test", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, uint64(42), trackedSeq, "expected seqTracker called with 42")
+}
+
 func TestTimedHandler_SeqTracker_NotCalledForZeroSeq(t *testing.T) {
 	inner := func(w http.ResponseWriter, r *http.Request, body []byte) {
 		w.WriteHeader(http.StatusOK)

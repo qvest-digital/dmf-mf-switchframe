@@ -54,6 +54,12 @@ func timedHandler(q *cmdqueue.Queue, action string, seqTracker func(uint64), han
 		}
 
 		handler(w, r, body)
+
+		// Track command_seq for immediate execution too, so the sync health
+		// endpoint detects all state changes, not just queued ones.
+		if seqTracker != nil && timed.CommandSeq > 0 {
+			seqTracker(timed.CommandSeq)
+		}
 	}
 }
 
@@ -104,5 +110,11 @@ func timedHandlerWithPath(q *cmdqueue.Queue, action string, seqTracker func(uint
 		}
 
 		handler(w, r, body)
+
+		// Track command_seq for immediate execution too, so the sync health
+		// endpoint detects all state changes, not just queued ones.
+		if seqTracker != nil && timed.CommandSeq > 0 {
+			seqTracker(timed.CommandSeq)
+		}
 	}
 }
