@@ -106,16 +106,26 @@ export function bufferPendingCommand(path: string, options: RequestInit): void {
 	}
 }
 
+// ── New engine discovery callback ──
+// Called when a new engine is discovered (e.g., engine B URL becomes known).
+// More reliable than command buffer replay: triggers a full snapshot push.
+
+let onNewEngineDiscovered: ((engineId: string) => void) | null = null;
+
+export function setOnNewEngineDiscovered(cb: ((engineId: string) => void) | null): void {
+	onNewEngineDiscovered = cb;
+}
+
 export function setEngineUrls(urls: EngineEndpoint[] | null): void {
 	const prevIds = new Set((engineUrls ?? []).map(e => e.id));
 	engineUrls = urls?.map(e => ({ ...e, url: e.url.replace(/\/$/, '') })) ?? null;
 
-	if (!engineUrls || pendingForNewEngine.length === 0) return;
+	if (!engineUrls) return;
 
 	// Find engines that weren't in the previous set.
 	// When transitioning from null/single-engine to dual-engine, the
 	// "primary" engine (A) was already receiving commands via same-origin
-	// fetch, so we only replay to genuinely new engines.
+	// fetch, so we only notify for genuinely new engines.
 	// When prevIds is empty (null→[A,B]), skip the first engine (A)
 	// since it was the implicit single-engine target.
 	const newEngines = prevIds.size > 0
@@ -123,7 +133,11 @@ export function setEngineUrls(urls: EngineEndpoint[] | null): void {
 		: engineUrls.slice(1);
 
 	if (newEngines.length > 0) {
-		flushPendingCommands(newEngines);
+		// Discard pending command buffer — snapshot push is more reliable than replay
+		pendingForNewEngine.length = 0;
+		for (const engine of newEngines) {
+			onNewEngineDiscovered?.(engine.id);
+		}
 	}
 }
 

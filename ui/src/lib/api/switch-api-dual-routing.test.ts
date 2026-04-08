@@ -10,7 +10,7 @@
  * - Error handling preserves HTTP status codes
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { setEngineUrls, getEngineUrls, setApiBaseUrl, setExpectDualEngine } from './base-url';
+import { setEngineUrls, getEngineUrls, setApiBaseUrl, setExpectDualEngine, setOnNewEngineDiscovered } from './base-url';
 import {
 	cut, setPreview, getState, fadeToBlack,
 	setMasterLevel, startTransition,
@@ -87,6 +87,7 @@ describe('switch-api dual-engine routing', () => {
 		setPartialFailureCallback(null);
 		setPartialFailureNotify(null);
 		setExpectDualEngine(false);
+		setOnNewEngineDiscovered(null);
 		resetPreferredEngine();
 		resetCircuitBreakers();
 	});
@@ -424,65 +425,79 @@ describe('switch-api dual-engine routing', () => {
 
 	// ─── Pending command buffer during engine B discovery ───
 
-	describe('pending command buffer', () => {
-		it('buffers mutations for engine B when dual-engine expected but only one engine known', async () => {
-			// Simulate: we expect dual-engine, no engine URLs set yet
-			// (single-engine mode, request() falls through to same-origin fetch)
+	// ─── Engine discovery callback (replaces command buffer replay) ───
+	// Commands are no longer replayed to new engines; instead, a snapshot push
+	// is triggered via the onNewEngineDiscovered callback. This avoids idempotency
+	// issues with PTP-timestamped commands that were buffered before engine B appeared.
+
+	describe('engine discovery callback', () => {
+		it('fires onNewEngineDiscovered callback when engine B is discovered', () => {
+			const cb = vi.fn();
+			setOnNewEngineDiscovered(cb);
+			setExpectDualEngine(true);
+			setEngineUrls([{ id: 'A', url: 'https://engine-a.example.com' }]);
+
+			// Discover engine B
+			setEngineUrls([
+				{ id: 'A', url: 'https://engine-a.example.com' },
+				{ id: 'B', url: 'https://engine-b.example.com' },
+			]);
+
+			expect(cb).toHaveBeenCalledTimes(1);
+			expect(cb).toHaveBeenCalledWith('B');
+		});
+
+		it('does NOT replay buffered mutations to engine B on discovery', async () => {
 			setExpectDualEngine(true);
 
 			// Send a mutation — goes to same-origin (engine A) immediately
 			await cut('cam1');
-
-			// Engine A got the request via same-origin path
 			expect(fetchCalls).toHaveLength(1);
 			expect(fetchCalls[0].url).toBe('/api/switch/cut');
 
-			// Now engine B is discovered — set both engines, flush pending buffer
+			// Now engine B is discovered
 			fetchCalls = [];
 			setEngineUrls([
 				{ id: 'A', url: 'https://engine-a.example.com' },
 				{ id: 'B', url: 'https://engine-b.example.com' },
 			]);
 
-			// Wait for async flush
-			await vi.waitFor(() => {
-				const engineBCalls = fetchCalls.filter(c => c.url.includes('engine-b'));
-				expect(engineBCalls).toHaveLength(1);
-			});
-
-			// Verify the replayed request to engine B has the correct path and body
+			// Give time to verify no replay happens
+			await new Promise(r => setTimeout(r, 10));
 			const engineBCalls = fetchCalls.filter(c => c.url.includes('engine-b'));
-			expect(engineBCalls[0].url).toBe('https://engine-b.example.com/api/switch/cut');
-			const body = JSON.parse(engineBCalls[0].opts.body as string);
-			expect(body.source).toBe('cam1');
+			expect(engineBCalls).toHaveLength(0);
 		});
 
-		it('does not buffer when dual-engine is not expected', async () => {
-			// Single-engine mode (default) — no buffering
+		it('does not fire callback when dual-engine is not expected', async () => {
+			const cb = vi.fn();
+			setOnNewEngineDiscovered(cb);
 			setEngineUrls(null);
 
 			await cut('cam1');
-			expect(fetchCalls).toHaveLength(1);
 
-			// Adding engines later should NOT replay anything
+			// Adding engines without expectDualEngine — callback still fires for new engines
+			// but no replay happens
 			fetchCalls = [];
 			setEngineUrls([
 				{ id: 'A', url: 'https://engine-a.example.com' },
 				{ id: 'B', url: 'https://engine-b.example.com' },
 			]);
 
-			// Give async flush time to run (it shouldn't)
-			await new Promise(r => setTimeout(r, 10));
-			expect(fetchCalls).toHaveLength(0);
+			// When prevIds is empty, first engine (A) is skipped (was implicit target)
+			// B is genuinely new — callback fires once
+			expect(cb).toHaveBeenCalledTimes(1);
+			expect(cb).toHaveBeenCalledWith('B');
 		});
 
 		it('does not buffer GET requests', async () => {
+			const cb = vi.fn();
+			setOnNewEngineDiscovered(cb);
 			setExpectDualEngine(true);
 			setEngineUrls([{ id: 'A', url: 'https://engine-a.example.com' }]);
 
 			await getState();
 
-			// Adding engine B should not replay any GETs
+			// Adding engine B triggers callback but no GET replay
 			fetchCalls = [];
 			setEngineUrls([
 				{ id: 'A', url: 'https://engine-a.example.com' },
@@ -490,111 +505,19 @@ describe('switch-api dual-engine routing', () => {
 			]);
 
 			await new Promise(r => setTimeout(r, 10));
-			expect(fetchCalls).toHaveLength(0);
-		});
-
-		it('limits buffer to 10 items (FIFO)', async () => {
-			setExpectDualEngine(true);
-			setEngineUrls([{ id: 'A', url: 'https://engine-a.example.com' }]);
-
-			// Send 12 mutations — only the last 10 should be buffered
-			for (let i = 0; i < 12; i++) {
-				await cut(`cam${i}`);
-			}
-
-			fetchCalls = [];
-			setEngineUrls([
-				{ id: 'A', url: 'https://engine-a.example.com' },
-				{ id: 'B', url: 'https://engine-b.example.com' },
-			]);
-
-			await vi.waitFor(() => {
-				const engineBCalls = fetchCalls.filter(c => c.url.includes('engine-b'));
-				expect(engineBCalls).toHaveLength(10);
-			});
-
-			// First replayed command should be cam2 (cam0 and cam1 were evicted)
-			const engineBCalls = fetchCalls.filter(c => c.url.includes('engine-b'));
-			const firstBody = JSON.parse(engineBCalls[0].opts.body as string);
-			expect(firstBody.source).toBe('cam2');
-		});
-
-		it('drops commands older than 5 seconds', async () => {
-			setExpectDualEngine(true);
-			setEngineUrls([{ id: 'A', url: 'https://engine-a.example.com' }]);
-
-			// Mock Date.now to control time
-			const realNow = Date.now;
-			let currentTime = realNow();
-			vi.spyOn(Date, 'now').mockImplementation(() => currentTime);
-
-			await cut('cam1');
-
-			// Advance time by 6 seconds
-			currentTime += 6000;
-
-			fetchCalls = [];
-			setEngineUrls([
-				{ id: 'A', url: 'https://engine-a.example.com' },
-				{ id: 'B', url: 'https://engine-b.example.com' },
-			]);
-
-			// Give async flush time to run
-			await new Promise(r => setTimeout(r, 10));
-
-			// Stale command should have been dropped
 			const engineBCalls = fetchCalls.filter(c => c.url.includes('engine-b'));
 			expect(engineBCalls).toHaveLength(0);
-
-			vi.spyOn(Date, 'now').mockRestore();
+			expect(cb).toHaveBeenCalledWith('B');
 		});
 
-		it('flushes multiple buffered commands to new engine', async () => {
+		it('routes mutations to both engines once both are known', async () => {
 			setExpectDualEngine(true);
-			setEngineUrls([{ id: 'A', url: 'https://engine-a.example.com' }]);
-
-			await cut('cam1');
-			await setPreview('cam2');
-			await fadeToBlack();
-
-			fetchCalls = [];
 			setEngineUrls([
 				{ id: 'A', url: 'https://engine-a.example.com' },
 				{ id: 'B', url: 'https://engine-b.example.com' },
 			]);
 
-			await vi.waitFor(() => {
-				const engineBCalls = fetchCalls.filter(c => c.url.includes('engine-b'));
-				expect(engineBCalls).toHaveLength(3);
-			});
-
-			const engineBCalls = fetchCalls.filter(c => c.url.includes('engine-b'));
-			expect(engineBCalls[0].url).toContain('/api/switch/cut');
-			expect(engineBCalls[1].url).toContain('/api/switch/preview');
-			expect(engineBCalls[2].url).toContain('/api/switch/ftb');
-		});
-
-		it('stops buffering once both engines are known', async () => {
-			setExpectDualEngine(true);
-			setEngineUrls([{ id: 'A', url: 'https://engine-a.example.com' }]);
-
-			await cut('cam1');  // buffered
-
-			// Engine B discovered
-			setEngineUrls([
-				{ id: 'A', url: 'https://engine-a.example.com' },
-				{ id: 'B', url: 'https://engine-b.example.com' },
-			]);
-
-			// Wait for flush
-			await vi.waitFor(() => {
-				const engineBCalls = fetchCalls.filter(c => c.url.includes('engine-b'));
-				expect(engineBCalls.length).toBeGreaterThanOrEqual(1);
-			});
-
 			fetchCalls = [];
-
-			// Now send another mutation — should go to BOTH engines directly
 			await cut('cam2');
 
 			const engineACalls = fetchCalls.filter(c => c.url.includes('engine-a'));

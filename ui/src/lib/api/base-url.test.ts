@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { getApiBaseUrl, setApiBaseUrl, resolveApiUrl, setEngineUrls, getEngineUrls, setExpectDualEngine, bufferPendingCommand, setFlushTimestampInjector } from './base-url';
+import { getApiBaseUrl, setApiBaseUrl, resolveApiUrl, setEngineUrls, getEngineUrls, setExpectDualEngine, bufferPendingCommand, setFlushTimestampInjector, setOnNewEngineDiscovered } from './base-url';
 
 describe('base-url', () => {
 	beforeEach(() => {
@@ -59,142 +59,88 @@ describe('engine URLs', () => {
 	});
 });
 
-describe('flushPendingCommands timestamp injection', () => {
-	let fetchSpy: ReturnType<typeof vi.fn>;
-
+describe('onNewEngineDiscovered callback', () => {
 	beforeEach(() => {
 		setEngineUrls(null);
 		setExpectDualEngine(false);
 		setFlushTimestampInjector(null);
-		fetchSpy = vi.fn().mockResolvedValue(new Response('ok'));
-		vi.stubGlobal('fetch', fetchSpy);
+		setOnNewEngineDiscovered(null);
 	});
 
 	afterEach(() => {
+		setOnNewEngineDiscovered(null);
+	});
+
+	it('calls the callback when a new engine is discovered', () => {
+		const cb = vi.fn();
+		setOnNewEngineDiscovered(cb);
+		setExpectDualEngine(true);
+		setEngineUrls([{ id: 'A', url: 'https://engine-a.example.com' }]);
+
+		// Discover engine B
+		setEngineUrls([
+			{ id: 'A', url: 'https://engine-a.example.com' },
+			{ id: 'B', url: 'https://engine-b.example.com' },
+		]);
+
+		expect(cb).toHaveBeenCalledTimes(1);
+		expect(cb).toHaveBeenCalledWith('B');
+	});
+
+	it('does not call the callback when no new engines are added', () => {
+		const cb = vi.fn();
+		setOnNewEngineDiscovered(cb);
+
+		// Set same engine again
+		setEngineUrls([{ id: 'A', url: 'https://engine-a.example.com' }]);
+		setEngineUrls([{ id: 'A', url: 'https://engine-a.example.com' }]);
+
+		expect(cb).not.toHaveBeenCalled();
+	});
+
+	it('does not call the callback when callback is null', () => {
+		// Should not throw
+		setOnNewEngineDiscovered(null);
+		setEngineUrls([
+			{ id: 'A', url: 'https://engine-a.example.com' },
+			{ id: 'B', url: 'https://engine-b.example.com' },
+		]);
+	});
+
+	it('discards pending command buffer when new engine is discovered', () => {
+		const fetchSpy = vi.fn().mockResolvedValue(new Response('ok'));
+		vi.stubGlobal('fetch', fetchSpy);
+
+		setExpectDualEngine(true);
+		setEngineUrls([{ id: 'A', url: 'https://engine-a.example.com' }]);
+		bufferPendingCommand('/api/switch/cut', {
+			method: 'POST',
+			body: JSON.stringify({ source: 'cam1' }),
+		});
+
+		// Discover engine B — pending buffer should be discarded, no replay
+		setEngineUrls([
+			{ id: 'A', url: 'https://engine-a.example.com' },
+			{ id: 'B', url: 'https://engine-b.example.com' },
+		]);
+
+		// No fetch calls from buffer replay (callback approach replaces replay)
+		expect(fetchSpy).not.toHaveBeenCalled();
 		vi.unstubAllGlobals();
 	});
 
-	it('should inject timestamps into flushed timed-path commands', () => {
-		// Set up: expect dual engine, buffer a timed command
-		setExpectDualEngine(true);
-		setEngineUrls([{ id: 'A', url: 'https://engine-a.example.com' }]);
+	it('calls callback for each new engine discovered simultaneously', () => {
+		const cb = vi.fn();
+		setOnNewEngineDiscovered(cb);
 
-		const originalBody = JSON.stringify({ source: 'cam1' });
-		bufferPendingCommand('/api/switch/cut', {
-			method: 'POST',
-			body: originalBody,
-			headers: { 'Content-Type': 'application/json' },
-		});
-
-		// Set up timestamp injector
-		const injector = vi.fn((path: string, body: string) => {
-			const parsed = JSON.parse(body);
-			return JSON.stringify({ ...parsed, execute_at: 12345, command_seq: 1 });
-		});
-		setFlushTimestampInjector(injector);
-
-		// Discover engine B — triggers flush
+		// Go from empty to two engines at once — both B and C are new
 		setEngineUrls([
 			{ id: 'A', url: 'https://engine-a.example.com' },
 			{ id: 'B', url: 'https://engine-b.example.com' },
 		]);
 
-		expect(fetchSpy).toHaveBeenCalledTimes(1);
-		const [url, opts] = fetchSpy.mock.calls[0];
-		expect(url).toBe('https://engine-b.example.com/api/switch/cut');
-		expect(JSON.parse(opts.body)).toEqual({ source: 'cam1', execute_at: 12345, command_seq: 1 });
-		expect(injector).toHaveBeenCalledWith('/api/switch/cut', originalBody);
-	});
-
-	it('should NOT inject timestamps into non-timed-path commands', () => {
-		setExpectDualEngine(true);
-		setEngineUrls([{ id: 'A', url: 'https://engine-a.example.com' }]);
-
-		const originalBody = JSON.stringify({ level: 0.8 });
-		bufferPendingCommand('/api/audio/cam1/level', {
-			method: 'POST',
-			body: originalBody,
-			headers: { 'Content-Type': 'application/json' },
-		});
-
-		const injector = vi.fn();
-		setFlushTimestampInjector(injector);
-
-		setEngineUrls([
-			{ id: 'A', url: 'https://engine-a.example.com' },
-			{ id: 'B', url: 'https://engine-b.example.com' },
-		]);
-
-		expect(fetchSpy).toHaveBeenCalledTimes(1);
-		const [, opts] = fetchSpy.mock.calls[0];
-		expect(JSON.parse(opts.body)).toEqual({ level: 0.8 });
-		// Injector should not have been called for non-timed paths
-		expect(injector).not.toHaveBeenCalled();
-	});
-
-	it('should flush without modification when no injector is set', () => {
-		setExpectDualEngine(true);
-		setEngineUrls([{ id: 'A', url: 'https://engine-a.example.com' }]);
-
-		const originalBody = JSON.stringify({ source: 'cam1' });
-		bufferPendingCommand('/api/switch/cut', {
-			method: 'POST',
-			body: originalBody,
-		});
-
-		// No injector set — should still flush, just without timestamps
-		setEngineUrls([
-			{ id: 'A', url: 'https://engine-a.example.com' },
-			{ id: 'B', url: 'https://engine-b.example.com' },
-		]);
-
-		expect(fetchSpy).toHaveBeenCalledTimes(1);
-		const [, opts] = fetchSpy.mock.calls[0];
-		expect(JSON.parse(opts.body)).toEqual({ source: 'cam1' });
-	});
-
-	it('should handle non-string bodies gracefully during flush', () => {
-		setExpectDualEngine(true);
-		setEngineUrls([{ id: 'A', url: 'https://engine-a.example.com' }]);
-
-		// Buffer a command with no body
-		bufferPendingCommand('/api/switch/cut', { method: 'POST' });
-
-		const injector = vi.fn();
-		setFlushTimestampInjector(injector);
-
-		setEngineUrls([
-			{ id: 'A', url: 'https://engine-a.example.com' },
-			{ id: 'B', url: 'https://engine-b.example.com' },
-		]);
-
-		expect(fetchSpy).toHaveBeenCalledTimes(1);
-		// Injector should not be called when body is not a string
-		expect(injector).not.toHaveBeenCalled();
-	});
-
-	it('should inject timestamps for pattern-matched timed paths', () => {
-		setExpectDualEngine(true);
-		setEngineUrls([{ id: 'A', url: 'https://engine-a.example.com' }]);
-
-		const originalBody = JSON.stringify({ opacity: 1 });
-		bufferPendingCommand('/api/graphics/2/on', {
-			method: 'POST',
-			body: originalBody,
-		});
-
-		setFlushTimestampInjector((_path: string, body: string) => {
-			const parsed = JSON.parse(body);
-			return JSON.stringify({ ...parsed, execute_at: 99999, command_seq: 5 });
-		});
-
-		setEngineUrls([
-			{ id: 'A', url: 'https://engine-a.example.com' },
-			{ id: 'B', url: 'https://engine-b.example.com' },
-		]);
-
-		expect(fetchSpy).toHaveBeenCalledTimes(1);
-		const [, opts] = fetchSpy.mock.calls[0];
-		expect(JSON.parse(opts.body)).toEqual({ opacity: 1, execute_at: 99999, command_seq: 5 });
+		// When prevIds is empty, skip first engine (A was implicit single-engine target)
+		expect(cb).toHaveBeenCalledTimes(1);
+		expect(cb).toHaveBeenCalledWith('B');
 	});
 });

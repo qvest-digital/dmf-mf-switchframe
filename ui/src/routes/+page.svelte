@@ -33,7 +33,7 @@
 	import ProgramCompare from '../components/ProgramCompare.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
 	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, checkFragmentToken, SwitchApiError, listMacros, runMacro, dveSlotOn, dveSlotOff, replayQuick, replayPause, replayResume, replayPlay, replayStop, replaySeek, replaySetSpeed, replayMarkIn, replayMarkOut, commsMute, setDualTimestampProvider, setPartialFailureCallback, setPartialFailureNotify, getDebugSnapshot, getPerfData, playoutEngineCacheStatus } from '$lib/api/switch-api';
-	import { setEngineUrls, setExpectDualEngine } from '$lib/api/base-url';
+	import { setEngineUrls, setExpectDualEngine, setOnNewEngineDiscovered } from '$lib/api/base-url';
 	import { fetchServerInfo } from '$lib/prism/transport-utils';
 	import * as operatorState from '$lib/state/operator.svelte';
 	import { notify } from '$lib/state/notifications.svelte';
@@ -1117,6 +1117,15 @@
 			await operatorState.reconnect();
 		}
 
+		// Wire engine discovery callback: when a new engine becomes known,
+		// trigger a snapshot push after a brief delay (1s) to let it settle.
+		// This replaces the old command-buffer replay which had idempotency issues.
+		setOnNewEngineDiscovered((_engineId) => {
+			setTimeout(() => {
+				autoReconcile.onSyncStatusChange('diverged', syncHealth?.authoritative ?? 'A');
+			}, 1000);
+		});
+
 		// Fetch initial state, start polling, and attempt WebTransport connection
 		await connectionManager.start();
 	});
@@ -1131,6 +1140,7 @@
 			clearInterval(audioDriftInterval);
 			audioDriftInterval = undefined;
 		}
+		setOnNewEngineDiscovered(null);
 		autoReconcile.destroy();
 		fastControlA?.close();
 		fastControlB?.close();
