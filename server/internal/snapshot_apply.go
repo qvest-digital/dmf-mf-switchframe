@@ -67,6 +67,13 @@ type SnapshotApplyTarget interface {
 	AssignSTMapProgram(mapName string) error
 }
 
+// SnapshotSourceValidator can optionally be implemented by the apply target
+// to check source availability before Cut operations. This prevents applying
+// audio levels for a source that will fail to cut.
+type SnapshotSourceValidator interface {
+	HasSource(key string) bool
+}
+
 // Optional applier interfaces for operational state. Targets may implement
 // any subset of these — ApplyFullSnapshot uses type assertions to check.
 
@@ -158,16 +165,46 @@ func ApplyFullSnapshot(ctx context.Context, snap FullStateSnapshot, target Snaps
 		warnings = append(warnings, fmt.Sprintf("limiter ceiling: %v", err))
 	}
 
-	// 4. Program source (Cut)
-	if err := target.Cut(ctx, snap.ProgramSource); err != nil {
-		slog.Warn("snapshot apply: program source failed", "source", snap.ProgramSource, "error", err)
-		warnings = append(warnings, fmt.Sprintf("program source %q: %v", snap.ProgramSource, err))
+	// 4. Program source (Cut) — validate availability if the target supports it
+	if snap.ProgramSource != "" {
+		skipCut := false
+		if validator, ok := target.(SnapshotSourceValidator); ok {
+			if !validator.HasSource(snap.ProgramSource) {
+				slog.Warn("snapshot apply: program source not available on target",
+					"source", snap.ProgramSource)
+				warnings = append(warnings, fmt.Sprintf(
+					"program source %q not available on target — skipping Cut (source may still be connecting)",
+					snap.ProgramSource))
+				skipCut = true
+			}
+		}
+		if !skipCut {
+			if err := target.Cut(ctx, snap.ProgramSource); err != nil {
+				slog.Warn("snapshot apply: program source failed", "source", snap.ProgramSource, "error", err)
+				warnings = append(warnings, fmt.Sprintf("cut to %q: %v", snap.ProgramSource, err))
+			}
+		}
 	}
 
-	// 5. Preview source
-	if err := target.SetPreview(ctx, snap.PreviewSource); err != nil {
-		slog.Warn("snapshot apply: preview source failed", "source", snap.PreviewSource, "error", err)
-		warnings = append(warnings, fmt.Sprintf("preview source %q: %v", snap.PreviewSource, err))
+	// 5. Preview source — validate availability if the target supports it
+	if snap.PreviewSource != "" {
+		skipPreview := false
+		if validator, ok := target.(SnapshotSourceValidator); ok {
+			if !validator.HasSource(snap.PreviewSource) {
+				slog.Warn("snapshot apply: preview source not available on target",
+					"source", snap.PreviewSource)
+				warnings = append(warnings, fmt.Sprintf(
+					"preview source %q not available on target — skipping SetPreview",
+					snap.PreviewSource))
+				skipPreview = true
+			}
+		}
+		if !skipPreview {
+			if err := target.SetPreview(ctx, snap.PreviewSource); err != nil {
+				slog.Warn("snapshot apply: preview source failed", "source", snap.PreviewSource, "error", err)
+				warnings = append(warnings, fmt.Sprintf("set preview %q: %v", snap.PreviewSource, err))
+			}
+		}
 	}
 
 	// 6. FTB — fade to black state

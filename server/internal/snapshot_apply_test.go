@@ -399,7 +399,7 @@ func TestApplyFullSnapshot_BestEffort(t *testing.T) {
 	// Verify specific warnings exist
 	joined := strings.Join(warnings, "\n")
 	expectedSubstrings := []string{
-		"program source",
+		"cut to",
 		"source not found",
 		"audio channel",
 		"channel not found",
@@ -1063,6 +1063,203 @@ func TestApplyFullSnapshot_HTML5LayerErrorWarns(t *testing.T) {
 	// Layer 0 should still have been loaded successfully (best-effort)
 	if got := target.html5Loaded[0]; got != "http://example.com/lower-third.html" {
 		t.Errorf("html5Loaded[0]: got %q, want %q", got, "http://example.com/lower-third.html")
+	}
+}
+
+// --- Source validation tests ---
+
+// mockValidatingTarget embeds mockApplyTarget and additionally implements SnapshotSourceValidator.
+type mockValidatingTarget struct {
+	*mockApplyTarget
+	availableSources map[string]bool
+}
+
+func newMockValidatingTarget(sources ...string) *mockValidatingTarget {
+	avail := make(map[string]bool, len(sources))
+	for _, s := range sources {
+		avail[s] = true
+	}
+	return &mockValidatingTarget{
+		mockApplyTarget:  newMockApplyTarget(),
+		availableSources: avail,
+	}
+}
+
+func (m *mockValidatingTarget) HasSource(key string) bool {
+	return m.availableSources[key]
+}
+
+func TestApplyFullSnapshot_ValidatesSourceBeforeCut(t *testing.T) {
+	// Target implements SnapshotSourceValidator but does NOT have "cam1".
+	target := newMockValidatingTarget("cam2", "cam3")
+
+	snap := FullStateSnapshot{
+		Version:       "1",
+		CapturedAt:    1234567890,
+		ProgramSource: "cam1",
+		PreviewSource: "cam1",
+	}
+
+	warnings := ApplyFullSnapshot(context.Background(), snap, target)
+
+	if target.wasCalled("Cut") {
+		t.Error("Cut should NOT have been called when source is unavailable")
+	}
+	if target.wasCalled("SetPreview") {
+		t.Error("SetPreview should NOT have been called when source is unavailable")
+	}
+
+	// Should have warnings for both program and preview
+	joined := strings.Join(warnings, "\n")
+	if !strings.Contains(joined, `program source "cam1" not available`) {
+		t.Errorf("expected warning about program source unavailable, got warnings: %v", warnings)
+	}
+	if !strings.Contains(joined, `preview source "cam1" not available`) {
+		t.Errorf("expected warning about preview source unavailable, got warnings: %v", warnings)
+	}
+}
+
+func TestApplyFullSnapshot_CutsWhenSourceAvailable(t *testing.T) {
+	// Target implements SnapshotSourceValidator and HAS "cam1".
+	target := newMockValidatingTarget("cam1")
+
+	snap := FullStateSnapshot{
+		Version:       "1",
+		CapturedAt:    1234567890,
+		ProgramSource: "cam1",
+		PreviewSource: "cam1",
+	}
+
+	warnings := ApplyFullSnapshot(context.Background(), snap, target)
+
+	if !target.wasCalled("Cut") {
+		t.Error("Cut should have been called when source is available")
+	}
+	cutCalls := target.callsFor("Cut")
+	if len(cutCalls) != 1 || cutCalls[0].Args[0] != "cam1" {
+		t.Errorf("Cut called with wrong source: %v", cutCalls)
+	}
+
+	if !target.wasCalled("SetPreview") {
+		t.Error("SetPreview should have been called when source is available")
+	}
+	pvCalls := target.callsFor("SetPreview")
+	if len(pvCalls) != 1 || pvCalls[0].Args[0] != "cam1" {
+		t.Errorf("SetPreview called with wrong source: %v", pvCalls)
+	}
+
+	// No source-availability warnings expected
+	for _, w := range warnings {
+		if strings.Contains(w, "not available") {
+			t.Errorf("unexpected availability warning: %s", w)
+		}
+	}
+}
+
+func TestApplyFullSnapshot_CutsWhenNoValidator(t *testing.T) {
+	// Target does NOT implement SnapshotSourceValidator — backward compat.
+	target := newMockApplyTarget()
+
+	snap := FullStateSnapshot{
+		Version:       "1",
+		CapturedAt:    1234567890,
+		ProgramSource: "cam1",
+		PreviewSource: "cam2",
+	}
+
+	warnings := ApplyFullSnapshot(context.Background(), snap, target)
+
+	if !target.wasCalled("Cut") {
+		t.Error("Cut should have been called when target has no validator")
+	}
+	if !target.wasCalled("SetPreview") {
+		t.Error("SetPreview should have been called when target has no validator")
+	}
+
+	cutCalls := target.callsFor("Cut")
+	if len(cutCalls) != 1 || cutCalls[0].Args[0] != "cam1" {
+		t.Errorf("Cut called with wrong source: %v", cutCalls)
+	}
+	pvCalls := target.callsFor("SetPreview")
+	if len(pvCalls) != 1 || pvCalls[0].Args[0] != "cam2" {
+		t.Errorf("SetPreview called with wrong source: %v", pvCalls)
+	}
+
+	// No source-availability warnings
+	for _, w := range warnings {
+		if strings.Contains(w, "not available") {
+			t.Errorf("unexpected availability warning: %s", w)
+		}
+	}
+}
+
+func TestApplyFullSnapshot_MixedAvailability(t *testing.T) {
+	// Program source available, preview source not.
+	target := newMockValidatingTarget("cam1")
+
+	snap := FullStateSnapshot{
+		Version:       "1",
+		CapturedAt:    1234567890,
+		ProgramSource: "cam1",
+		PreviewSource: "cam99",
+	}
+
+	warnings := ApplyFullSnapshot(context.Background(), snap, target)
+
+	if !target.wasCalled("Cut") {
+		t.Error("Cut should have been called (cam1 is available)")
+	}
+	if target.wasCalled("SetPreview") {
+		t.Error("SetPreview should NOT have been called (cam99 is unavailable)")
+	}
+
+	joined := strings.Join(warnings, "\n")
+	if !strings.Contains(joined, `preview source "cam99" not available`) {
+		t.Errorf("expected warning about preview source cam99 unavailable, got: %v", warnings)
+	}
+}
+
+func TestApplyFullSnapshot_SkipsCutForEmptySource(t *testing.T) {
+	// When sources are empty, neither Cut nor SetPreview should be called.
+	target := newMockValidatingTarget()
+
+	snap := FullStateSnapshot{
+		Version:       "1",
+		CapturedAt:    1234567890,
+		ProgramSource: "",
+		PreviewSource: "",
+	}
+
+	_ = ApplyFullSnapshot(context.Background(), snap, target)
+
+	if target.wasCalled("Cut") {
+		t.Error("Cut should NOT have been called for empty program source")
+	}
+	if target.wasCalled("SetPreview") {
+		t.Error("SetPreview should NOT have been called for empty preview source")
+	}
+}
+
+func TestApplyFullSnapshot_CutErrorReturnsWarning(t *testing.T) {
+	// Validator says source is available, but Cut itself fails.
+	target := newMockValidatingTarget("cam1")
+	target.errors["Cut"] = fmt.Errorf("decoder not ready")
+
+	snap := FullStateSnapshot{
+		Version:       "1",
+		CapturedAt:    1234567890,
+		ProgramSource: "cam1",
+	}
+
+	warnings := ApplyFullSnapshot(context.Background(), snap, target)
+
+	if !target.wasCalled("Cut") {
+		t.Error("Cut should have been called")
+	}
+
+	joined := strings.Join(warnings, "\n")
+	if !strings.Contains(joined, "decoder not ready") {
+		t.Errorf("expected Cut error warning, got: %v", warnings)
 	}
 }
 
