@@ -1,6 +1,6 @@
 import type { ControlRoomState, SourceInfo, RecordingStatus, SRTOutputConfig, SRTOutputStatus, Preset, RecallPresetResponse, GraphicsState, GraphicsLayerState, EQBand, CompressorSettings, GateSettings, Macro, KeyConfig, ReplayState, ReplayBufferInfo, OperatorRole, OperatorInfo, DestinationConfig, DestinationStatus, EasingConfig, PipelineFormatInfo, EncoderState, SCTE35CueRequest, SCTE35State, SCTE35Event, SCTE35Rule, CaptionState, CaptionMode, ClipPlayerState, ClipInfo, RecordingFileInfo, EngineRecordingGroup, CreateSRTSourceConfig, SRTSourceStats, CommsState, STMapState, STMapInfo, STMapGeneratorInfo, STMapGenerateRequest, AISegmentConfig, ColorGradeState, CorrectorState, PlayoutChannelState, Playlist, PlaylistItem, CacheStatus, PodInfo, PodConfig, PodTemplate, AsRunEvent, ChannelHealth, SampleClip, PlayoutClip, ASRState, DVEPresetInfo, WipePattern, WipeConfig } from './types';
 import { notify } from '$lib/state/notifications.svelte';
-import { resolveApiUrl, getEngineUrls, bufferPendingCommand, setFlushTimestampInjector, isNonIdempotent, type EngineEndpoint } from './base-url';
+import { resolveApiUrl, getEngineUrls, bufferPendingCommand, setFlushTimestampInjector, isNonIdempotent, isTimedPath, getAuthoritativeEngine, type EngineEndpoint } from './base-url';
 
 export class SwitchApiError extends Error {
 	constructor(
@@ -173,39 +173,7 @@ export function setDualTimestampProvider(provider: ((engineId?: string) => { exe
 	}
 }
 
-const TIMED_PATH_EXACT = new Set([
-	'/api/switch/cut', '/api/switch/preview', '/api/switch/transition', '/api/switch/ftb',
-	'/api/replay/play', '/api/replay/stop',
-	'/api/scte35/cue', '/api/scte35/return', '/api/scte35/cancel',
-	'/api/presets/recall',
-	'/api/format',
-	'/api/encoder',
-]);
-
-const TIMED_PATH_PATTERNS = [
-	/^\/api\/graphics\/\d+\/(on|off)$/,
-	/^\/api\/graphics\/\d+\/rect$/,
-	/^\/api\/graphics\/\d+\/zorder$/,
-	/^\/api\/presets\/[^/]+\/recall$/,
-	/^\/api\/dve\/slots\/\d+\/(on|off)$/,
-	/^\/api\/dve\/slots\/\d+$/,
-	/^\/api\/clips\/players\/\d+\/(play|pause|stop)$/,
-	/^\/api\/playout\/channels\/\d+\/(start|stop|next|previous)$/,
-	/^\/api\/playout\/channels\/\d+\/pods\/[^/]+\/(fire|dump|hold|extend)$/,
-	/^\/api\/audio\/.+$/,
-	/^\/api\/macros\/[^/]+\/run$/,
-	/^\/api\/sources\/[^/]+\/key$/,
-	/^\/api\/captions\/(text|newline|clear)$/,
-];
-
-/**
- * Returns true for endpoints that require PTP execute_at timestamps
- * for frame-accurate synchronization across engines.
- */
-function isTimedPath(path: string): boolean {
-	if (TIMED_PATH_EXACT.has(path)) return true;
-	return TIMED_PATH_PATTERNS.some(re => re.test(path));
-}
+// isTimedPath imported from base-url.ts — single source of truth for timed path classification
 
 // ── Dual-engine fan-out ──
 //
@@ -257,6 +225,17 @@ async function primaryWithFallback<T>(url: string, options: RequestInit | undefi
 		if (prefIdx > 0) {
 			const [prefEngine] = availableEngines.splice(prefIdx, 1);
 			availableEngines.unshift(prefEngine);
+		}
+	}
+
+	// Reconciler authority: prefer the engine the reconciler considers authoritative.
+	// Only applies when there's no sticky preference (sticky = recent failover = trust it).
+	const authEngine = getAuthoritativeEngine();
+	if (authEngine && !preferred) {
+		const authIdx = availableEngines.findIndex(e => e.id === authEngine);
+		if (authIdx > 0) {
+			const [authEng] = availableEngines.splice(authIdx, 1);
+			availableEngines.unshift(authEng);
 		}
 	}
 

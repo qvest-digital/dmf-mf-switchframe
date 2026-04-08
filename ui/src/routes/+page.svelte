@@ -33,7 +33,7 @@
 	import ProgramCompare from '../components/ProgramCompare.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
 	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, checkFragmentToken, SwitchApiError, listMacros, runMacro, dveSlotOn, dveSlotOff, replayQuick, replayPause, replayResume, replayPlay, replayStop, replaySeek, replaySetSpeed, replayMarkIn, replayMarkOut, commsMute, setDualTimestampProvider, setPartialFailureCallback, setPartialFailureNotify, getDebugSnapshot, getPerfData, playoutEngineCacheStatus } from '$lib/api/switch-api';
-	import { setEngineUrls, setExpectDualEngine, setOnNewEngineDiscovered } from '$lib/api/base-url';
+	import { setEngineUrls, setExpectDualEngine, setOnNewEngineDiscovered, setAuthoritativeEngineProvider } from '$lib/api/base-url';
 	import { fetchServerInfo } from '$lib/prism/transport-utils';
 	import * as operatorState from '$lib/state/operator.svelte';
 	import { notify } from '$lib/state/notifications.svelte';
@@ -646,6 +646,7 @@
 					setPartialFailureNotify((msg) => {
 						notify('warning', msg);
 					});
+					setAuthoritativeEngineProvider(() => connectionManager.health.authoritative);
 					// Start reconciler tick interval for dual-engine mode.
 					if (!reconcilerInterval) {
 						reconcilerInterval = setInterval(() => { connectionManager.tick(); }, 200);
@@ -716,6 +717,7 @@
 						setPartialFailureNotify((msg) => {
 							notify('warning', msg);
 						});
+						setAuthoritativeEngineProvider(() => connectionManager.health.authoritative);
 						if (!reconcilerInterval) {
 							reconcilerInterval = setInterval(() => { connectionManager.tick(); }, 200);
 						}
@@ -767,6 +769,23 @@
 						{ id: 'A', url: window.location.origin },
 						{ id: 'B', url: inferred },
 					]);
+					setDualTimestampProvider((engineId?: string) => {
+						if (!connectionManager.clock.isConverged()) {
+							return { execute_at: 0, command_seq: connectionManager.nextCommandSeq() };
+						}
+						return {
+							execute_at: engineId
+								? connectionManager.clock.ptpNowForEngine(engineId as any) + connectionManager.clock.safetyMargin()
+								: connectionManager.clock.ptpNow() + connectionManager.clock.safetyMargin(),
+							command_seq: connectionManager.nextCommandSeq(),
+						};
+					});
+					setPartialFailureCallback(() => { connectionManager.requestCheck(); });
+					setPartialFailureNotify((msg) => { notify('warning', msg); });
+					setAuthoritativeEngineProvider(() => connectionManager.health.authoritative);
+					if (!reconcilerInterval) {
+						reconcilerInterval = setInterval(() => { connectionManager.tick(); }, 200);
+					}
 					// Try failover after brief delay for connection setup
 					setTimeout(() => {
 						videoFailoverActive = true;

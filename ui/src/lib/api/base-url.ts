@@ -97,11 +97,24 @@ const NON_IDEMPOTENT_PATHS = new Set([
 const NON_IDEMPOTENT_PATTERNS = [
 	/^\/api\/macros\/[^/]+\/run$/,
 	/^\/api\/scte35\/cue$/,
+	/^\/api\/playout\/channels\/\d+\/pods\/[^/]+\/fire$/,
 ];
 
 export function isNonIdempotent(path: string): boolean {
 	if (NON_IDEMPOTENT_PATHS.has(path)) return true;
 	return NON_IDEMPOTENT_PATTERNS.some(re => re.test(path));
+}
+
+// ── Authoritative engine provider for GET routing ──
+
+let authoritativeEngineProvider: (() => string | null) | null = null;
+
+export function setAuthoritativeEngineProvider(provider: (() => string | null) | null): void {
+	authoritativeEngineProvider = provider;
+}
+
+export function getAuthoritativeEngine(): string | null {
+	return authoritativeEngineProvider?.() ?? null;
 }
 
 // ── Pending command buffer for engine B discovery race ──
