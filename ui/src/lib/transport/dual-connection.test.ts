@@ -770,6 +770,22 @@ describe('DualConnectionManager', () => {
 
 			expect(MockedConnectionManager).toHaveBeenCalledTimes(2); // 1 original + 1 added
 		});
+
+		it('starts engine B immediately if all initial engines have failed', async () => {
+			const mgr = new DualConnectionManager(makeSingleConfig());
+			await mgr.start();
+
+			// Simulate engine A initial load failure
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			instanceA._config.onInitialLoadError('connection refused', new Error('connection refused'));
+
+			// Now discover engine B
+			mgr.addEngine('B', 'https://engine-b.example.com');
+
+			// Engine B should start immediately — not be deferred
+			const instanceB = MockedConnectionManager.mock.results[1].value;
+			expect(instanceB.start).toHaveBeenCalledOnce();
+		});
 	});
 
 	describe('handleControlData routing', () => {

@@ -87,6 +87,11 @@ export class DualConnectionManager {
 				// Safe to start immediately — initial load is complete
 				const mgr = this.managers.get(id);
 				mgr?.start();
+			} else if (this._initialLoadErrors > 0 && this._initialLoadErrors >= this.managers.size - 1) {
+				// All previously-known engines have failed initial load.
+				// Start the new engine immediately — it's our best hope.
+				const mgr = this.managers.get(id);
+				mgr?.start();
 			} else {
 				// Defer until initial load completes
 				this._pendingEngineStarts.push(id);
