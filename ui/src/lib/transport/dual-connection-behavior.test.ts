@@ -281,14 +281,19 @@ describe('DualConnectionManager behavior', () => {
 			expect(getCreatedManagers()).toHaveLength(1);
 		});
 
-		it('starts new engine immediately if already started', async () => {
+		it('starts new engine immediately if already started and initial load done', async () => {
 			const dcm = createDualManager([{ id: 'A', url: 'https://a.example.com' }]);
 			await dcm.start();
 
+			// Simulate initial load completion via ConnectionManager callback
+			const managers = getCreatedManagers();
+			const onInitialLoadComplete = managers[0]._config.onInitialLoadComplete as () => void;
+			onInitialLoadComplete();
+
 			dcm.addEngine('B', 'https://b.example.com');
 
-			const managers = getCreatedManagers();
-			expect(managers[1].start).toHaveBeenCalled();
+			const allManagers = getCreatedManagers();
+			expect(allManagers[1].start).toHaveBeenCalled();
 		});
 
 		it('does not auto-start new engine if not yet started', () => {
