@@ -22,6 +22,8 @@ export interface CommsConfig {
 	onError?: (error: string) => void;
 	/** Called when comms audio activity changes (for program audio ducking). */
 	onCommsActive?: (active: boolean) => void;
+	/** Called when the bidi stream breaks — signals that reconnect is needed. */
+	onStreamError?: () => void;
 }
 
 export class CommsAudioManager {
@@ -263,6 +265,7 @@ export class CommsAudioManager {
 			if (this.running) {
 				const msg = err instanceof Error ? err.message : String(err);
 				this.config.onError?.(`Comms send error: ${msg}`);
+				this.config.onStreamError?.();
 			}
 		});
 	}
@@ -361,6 +364,7 @@ export class CommsAudioManager {
 			if (this.running) {
 				const msg = err instanceof Error ? err.message : String(err);
 				this.config.onError?.(`Comms read error: ${msg}`);
+				this.config.onStreamError?.();
 			}
 		}
 	}

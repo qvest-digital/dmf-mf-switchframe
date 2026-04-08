@@ -94,6 +94,16 @@
 					operatorName,
 					onError: (msg) => notify('error', msg),
 					onCommsActive,
+					onStreamError: () => {
+						// Stream broke — try reconnecting to the other engine
+						if (!getTransportForEngine || !audioManager?.isActive) return;
+						const otherEngine = connectedEngine === 'A' ? 'B' : 'A';
+						const transport = getTransportForEngine(otherEngine);
+						if (transport) {
+							connectedEngine = otherEngine;
+							audioManager.reconnect(transport).catch(() => {});
+						}
+					},
 				});
 				await audioManager.start(transport);
 				connectedEngine = engineToConnect;

@@ -318,6 +318,85 @@ describe('CommsAudioManager', () => {
 		expect(mgr.isActive).toBe(false);
 	});
 
+	it('onStreamError is called when readLoop errors', async () => {
+		const onStreamError = vi.fn();
+		const onError = vi.fn();
+
+		// Create a reader whose read() rejects to simulate a broken stream
+		const errorReader = {
+			read: vi.fn().mockRejectedValue(new Error('stream reset')),
+			cancel: vi.fn().mockResolvedValue(undefined),
+			releaseLock: vi.fn(),
+		};
+		const errorWriter = createMockWriter();
+		const errorBidi = {
+			writable: { getWriter: () => errorWriter },
+			readable: { getReader: () => errorReader },
+		};
+		const errorTransport = {
+			createBidirectionalStream: vi.fn().mockResolvedValue(errorBidi),
+			closed: new Promise<void>(() => {}),
+		} as unknown as WebTransport;
+
+		const mgr = new CommsAudioManager({
+			operatorId: 'op1',
+			operatorName: 'Alice',
+			onError: (msg) => onError(msg),
+			onStreamError,
+		});
+
+		await mgr.start(errorTransport);
+
+		// readLoop runs asynchronously — give it a tick to hit the error
+		await new Promise((r) => setTimeout(r, 10));
+
+		expect(onStreamError).toHaveBeenCalled();
+		expect(onError).toHaveBeenCalledWith(expect.stringContaining('Comms read error'));
+
+		await mgr.stop();
+	});
+
+	it('onStreamError is called when writer.write fails', async () => {
+		const onStreamError = vi.fn();
+		const onError = vi.fn();
+
+		const mgr = new CommsAudioManager({
+			operatorId: 'op1',
+			operatorName: 'Alice',
+			onError: (msg) => onError(msg),
+			onStreamError,
+		});
+
+		// Start with a working transport
+		await mgr.start(transportA);
+		onStreamError.mockClear();
+		onError.mockClear();
+
+		// Now make writes fail
+		writerA.write.mockRejectedValue(new Error('pipe broken'));
+
+		// Trigger the onEncodedChunk callback by getting the encoder's output callback.
+		// The AudioEncoder mock stores the constructor args.
+		const encoderCalls = (globalThis.AudioEncoder as unknown as ReturnType<typeof vi.fn>).mock.calls;
+		const lastEncoderInit = encoderCalls[encoderCalls.length - 1][0] as { output: (chunk: EncodedAudioChunk) => void };
+
+		// Create a mock EncodedAudioChunk
+		const mockChunk = {
+			byteLength: 10,
+			copyTo: vi.fn((dest: Uint8Array) => dest.fill(0)),
+		} as unknown as EncodedAudioChunk;
+
+		lastEncoderInit.output(mockChunk);
+
+		// The write rejection is async — give it a tick
+		await new Promise((r) => setTimeout(r, 10));
+
+		expect(onStreamError).toHaveBeenCalled();
+		expect(onError).toHaveBeenCalledWith(expect.stringContaining('Comms send error'));
+
+		await mgr.stop();
+	});
+
 	it('reconnect tolerates old writer close failure', async () => {
 		const failingWriter = createMockWriter();
 		failingWriter.close.mockRejectedValue(new Error('already closed'));
