@@ -64,6 +64,17 @@ export class ClockSync {
 		return this.offsets.get(engineId) ?? 0;
 	}
 
+	ptpNowForEngine(engineId: EngineId): number {
+		const now = Date.now();
+		const localUS = now * 1000;
+		const offset = this.offsets.get(engineId);
+		const age = this.offsetAge.get(engineId);
+		if (offset !== undefined && age !== undefined && now - age <= STALE_OFFSET_MS) {
+			return Math.round(localUS + offset);
+		}
+		return this.ptpNow();
+	}
+
 	ptpNow(): number {
 		const now = Date.now();
 		const localUS = now * 1000;

@@ -628,8 +628,10 @@
 						{ id: 'A', url: window.location.origin },
 						{ id: 'B', url: engineBUrl },
 					]);
-					setDualTimestampProvider(() => ({
-						execute_at: connectionManager.clock.ptpNow() + connectionManager.clock.safetyMargin(),
+					setDualTimestampProvider((engineId?: string) => ({
+						execute_at: engineId
+							? connectionManager.clock.ptpNowForEngine(engineId as any) + connectionManager.clock.safetyMargin()
+							: connectionManager.clock.ptpNow() + connectionManager.clock.safetyMargin(),
 						command_seq: connectionManager.nextCommandSeq(),
 					}));
 					// On partial command failure, trigger early reconciler check
@@ -673,8 +675,10 @@
 							{ id: 'A', url: window.location.origin },
 							{ id: 'B', url: result.engineBUrl },
 						]);
-						setDualTimestampProvider(() => ({
-							execute_at: connectionManager.clock.ptpNow() + connectionManager.clock.safetyMargin(),
+						setDualTimestampProvider((engineId?: string) => ({
+							execute_at: engineId
+								? connectionManager.clock.ptpNowForEngine(engineId as any) + connectionManager.clock.safetyMargin()
+								: connectionManager.clock.ptpNow() + connectionManager.clock.safetyMargin(),
 							command_seq: connectionManager.nextCommandSeq(),
 						}));
 						setPartialFailureCallback(() => {
@@ -703,8 +707,10 @@
 						{ id: 'A', url: window.location.origin },
 						{ id: 'B', url: inferred },
 					]);
-					setDualTimestampProvider(() => ({
-						execute_at: connectionManager.clock.ptpNow() + connectionManager.clock.safetyMargin(),
+					setDualTimestampProvider((engineId?: string) => ({
+						execute_at: engineId
+							? connectionManager.clock.ptpNowForEngine(engineId as any) + connectionManager.clock.safetyMargin()
+							: connectionManager.clock.ptpNow() + connectionManager.clock.safetyMargin(),
 						command_seq: connectionManager.nextCommandSeq(),
 					}));
 					setPartialFailureCallback(() => {

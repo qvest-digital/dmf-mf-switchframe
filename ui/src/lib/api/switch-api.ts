@@ -146,9 +146,9 @@ export function setPartialFailureNotify(cb: ((msg: string) => void) | null): voi
 
 // ── Dual-engine PTP timestamp injection ──
 
-let dualTimestampProvider: (() => { execute_at: number; command_seq: number }) | null = null;
+let dualTimestampProvider: ((engineId?: string) => { execute_at: number; command_seq: number }) | null = null;
 
-export function setDualTimestampProvider(provider: (() => { execute_at: number; command_seq: number }) | null): void {
+export function setDualTimestampProvider(provider: ((engineId?: string) => { execute_at: number; command_seq: number }) | null): void {
 	dualTimestampProvider = provider;
 
 	// Wire flush injector so pending commands get PTP timestamps when flushed to new engines
@@ -353,21 +353,6 @@ async function dualRequest<T>(url: string, options: RequestInit | undefined, eng
 		availableEngines = [...engines];
 	}
 
-	// Add PTP timestamps for timed commands
-	if (isTimedPath(url) && dualTimestampProvider && opts.body && typeof opts.body === 'string') {
-		try {
-			const ts = dualTimestampProvider();
-			const nowUs = Date.now() * 1000;
-			// Only inject if execute_at is within 60s of now (guards against garbage clock values)
-			if (ts.execute_at > nowUs - 60_000_000 && ts.execute_at < nowUs + 60_000_000) {
-				const parsed = JSON.parse(opts.body);
-				opts.body = JSON.stringify({ ...parsed, ...ts });
-			}
-		} catch {
-			// Clock sync not ready or body parse failed — send without timestamps
-		}
-	}
-
 	// Clone FormData/Blob if needed (each can only be consumed once by fetch)
 	const bodies: (BodyInit | null | undefined)[] = availableEngines.map(() => {
 		if (opts.body instanceof FormData) {
@@ -384,9 +369,21 @@ async function dualRequest<T>(url: string, options: RequestInit | undefined, eng
 	});
 
 	const results = await Promise.allSettled(
-		availableEngines.map((engine, i) =>
-			fetch(`${engine.url}${url}`, { ...opts, body: bodies[i] })
-		)
+		availableEngines.map((engine, i) => {
+			let engineBody = bodies[i];
+			// Per-engine PTP timestamp injection
+			if (isTimedPath(url) && dualTimestampProvider && engineBody && typeof engineBody === 'string') {
+				try {
+					const ts = dualTimestampProvider(engine.id);
+					const nowUs = Date.now() * 1000;
+					if (ts.execute_at > nowUs - 60_000_000 && ts.execute_at < nowUs + 60_000_000) {
+						const parsed = JSON.parse(engineBody as string);
+						engineBody = JSON.stringify({ ...parsed, ...ts });
+					}
+				} catch { /* send without timestamps */ }
+			}
+			return fetch(`${engine.url}${url}`, { ...opts, body: engineBody });
+		})
 	);
 
 	// Track circuit breaker state for each engine.

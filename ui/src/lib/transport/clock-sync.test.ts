@@ -557,6 +557,26 @@ describe('ClockSync', () => {
 		});
 	});
 
+	describe('ptpNowForEngine', () => {
+		it('returns per-engine adjusted timestamp', () => {
+			const cs = new ClockSync();
+			cs.updateOffset('A' as any, 1000);
+			cs.updateOffset('B' as any, -500);
+
+			const nowA = cs.ptpNowForEngine('A' as any);
+			const nowB = cs.ptpNowForEngine('B' as any);
+			expect(nowA - nowB).toBeCloseTo(1500, -2);
+		});
+
+		it('falls back to ptpNow for unknown engine', () => {
+			const cs = new ClockSync();
+			cs.updateOffset('A' as any, 1000);
+			const now = cs.ptpNowForEngine('C' as any);
+			const fallback = cs.ptpNow();
+			expect(Math.abs(now - fallback)).toBeLessThan(100);
+		});
+	});
+
 	describe('constants', () => {
 		it('DEFAULT_SYNC_INTERVAL_MS is 10000', () => {
 			vi.useFakeTimers();
