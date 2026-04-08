@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { cut, setPreview, setLabel, getState, getSources, setLevel, setMute, setAFV, setMasterLevel, startTransition, setTransitionPosition, fadeToBlack, startRecording, stopRecording, getRecordingStatus, startSRTOutput, stopSRTOutput, getSRTOutputStatus, setAuthToken, checkFragmentToken, apiCall, SwitchApiError, scte35Cue, scte35Return, scte35Hold, scte35Extend, scte35Cancel, scte35Status, scte35Log, scte35ListRules, scte35CreateRule, scte35DeleteRule, createSRTSource, deleteSRTSource, getSRTSourceStats, updateSRTLatency, setDualTimestampProvider, graphicsOn, graphicsOff, recallPreset, dveSlotOn, clipPlayerPlay, clipPlayerStop, listRecordingsDualEngine, listRecordingsFromEngine, importRecordingFromEngine, graphicsSequenceUpload } from './switch-api';
+import { cut, setPreview, setLabel, getState, getSources, setLevel, setMute, setAFV, setMasterLevel, startTransition, setTransitionPosition, fadeToBlack, startRecording, stopRecording, getRecordingStatus, startSRTOutput, stopSRTOutput, getSRTOutputStatus, setAuthToken, checkFragmentToken, apiCall, SwitchApiError, scte35Cue, scte35Return, scte35Hold, scte35Extend, scte35Cancel, scte35Status, scte35Log, scte35ListRules, scte35CreateRule, scte35DeleteRule, createSRTSource, deleteSRTSource, getSRTSourceStats, updateSRTLatency, setDualTimestampProvider, graphicsOn, graphicsOff, recallPreset, dveSlotOn, clipPlayerPlay, clipPlayerStop, listRecordingsDualEngine, listRecordingsFromEngine, importRecordingFromEngine, graphicsSequenceUpload, runMacro, setSourceKey, setFormat, setEncoderBackend } from './switch-api';
 import { setEngineUrls } from './base-url';
 import * as notifications from '$lib/state/notifications.svelte';
 import type { SRTOutputConfig, SCTE35CueRequest, CreateSRTSourceConfig } from './types';
@@ -1471,6 +1471,104 @@ describe('dual-engine interceptor edge cases', () => {
 
 		const bodyA = JSON.parse(mockFetch.mock.calls[0][1].body);
 		expect(bodyA.execute_at).toBe(realisticTs);
+	});
+
+	it('adds PTP timestamps to setMasterLevel (audio timed path)', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+		const realisticTs = Date.now() * 1000 + 11_000_000;
+		setDualTimestampProvider(() => ({ execute_at: realisticTs, command_seq: 20 }));
+
+		const mockFetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({}), { status: 200 }),
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		await setMasterLevel(-6);
+
+		const bodyA = JSON.parse(mockFetch.mock.calls[0][1].body);
+		expect(bodyA.execute_at).toBe(realisticTs);
+		expect(bodyA.level).toBe(-6);
+	});
+
+	it('adds PTP timestamps to runMacro (macro timed path)', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+		const realisticTs = Date.now() * 1000 + 12_000_000;
+		setDualTimestampProvider(() => ({ execute_at: realisticTs, command_seq: 21 }));
+
+		const mockFetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ status: 'running' }), { status: 200 }),
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		await runMacro('my-macro');
+
+		const bodyA = JSON.parse(mockFetch.mock.calls[0][1].body);
+		expect(bodyA.execute_at).toBe(realisticTs);
+	});
+
+	it('adds PTP timestamps to setSourceKey (keying timed path)', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+		const realisticTs = Date.now() * 1000 + 13_000_000;
+		setDualTimestampProvider(() => ({ execute_at: realisticTs, command_seq: 22 }));
+
+		const mockFetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({ type: 'chroma', enabled: true }), { status: 200 }),
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		await setSourceKey('cam1', { type: 'chroma', enabled: true } as any);
+
+		const bodyA = JSON.parse(mockFetch.mock.calls[0][1].body);
+		expect(bodyA.execute_at).toBe(realisticTs);
+	});
+
+	it('adds PTP timestamps to setFormat (format timed path)', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+		const realisticTs = Date.now() * 1000 + 14_000_000;
+		setDualTimestampProvider(() => ({ execute_at: realisticTs, command_seq: 23 }));
+
+		const mockFetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({}), { status: 200 }),
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		await setFormat('1080p30');
+
+		const bodyA = JSON.parse(mockFetch.mock.calls[0][1].body);
+		expect(bodyA.execute_at).toBe(realisticTs);
+		expect(bodyA.format).toBe('1080p30');
+	});
+
+	it('adds PTP timestamps to setEncoderBackend (encoder timed path)', async () => {
+		setEngineUrls([
+			{ id: 'A', url: 'https://a.example.com' },
+			{ id: 'B', url: 'https://b.example.com' },
+		]);
+		const realisticTs = Date.now() * 1000 + 15_000_000;
+		setDualTimestampProvider(() => ({ execute_at: realisticTs, command_seq: 24 }));
+
+		const mockFetch = vi.fn().mockResolvedValue(
+			new Response(JSON.stringify({}), { status: 200 }),
+		);
+		vi.stubGlobal('fetch', mockFetch);
+
+		await setEncoderBackend('nvenc');
+
+		const bodyA = JSON.parse(mockFetch.mock.calls[0][1].body);
+		expect(bodyA.execute_at).toBe(realisticTs);
+		expect(bodyA.encoder).toBe('nvenc');
 	});
 
 	it('both engines receive identical bodies for mutations', async () => {

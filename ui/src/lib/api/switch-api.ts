@@ -168,6 +168,8 @@ const TIMED_PATH_EXACT = new Set([
 	'/api/replay/play', '/api/replay/stop',
 	'/api/scte35/cue', '/api/scte35/return', '/api/scte35/cancel',
 	'/api/presets/recall',
+	'/api/format',
+	'/api/encoder',
 ]);
 
 const TIMED_PATH_PATTERNS = [
@@ -177,6 +179,9 @@ const TIMED_PATH_PATTERNS = [
 	/^\/api\/clips\/players\/\d+\/(play|pause|stop)$/,
 	/^\/api\/playout\/channels\/\d+\/(start|stop|next|previous)$/,
 	/^\/api\/playout\/channels\/\d+\/pods\/[^/]+\/(fire|dump|hold|extend)$/,
+	/^\/api\/audio\/.+$/,
+	/^\/api\/macros\/[^/]+\/run$/,
+	/^\/api\/sources\/[^/]+\/key$/,
 ];
 
 /**
@@ -262,8 +267,11 @@ async function primaryWithFallback<T>(url: string, options: RequestInit | undefi
 				}
 				return res.json();
 			}
-			// HTTP error — record it and try next engine
-			recordFailure(engine.url);
+			// HTTP error — only count server errors (5xx) as circuit breaker failures.
+			// 4xx errors (e.g. 401 Unauthorized) are client issues, not engine health problems.
+			if (res.status >= 500) {
+				recordFailure(engine.url);
+			}
 			const body = await res.json().catch(() => ({ error: 'unknown error' }));
 			lastHttpError = { status: res.status, body };
 		} catch {
@@ -383,15 +391,22 @@ async function dualRequest<T>(url: string, options: RequestInit | undefined, eng
 		)
 	);
 
-	// Track circuit breaker state for each engine
+	// Track circuit breaker state for each engine.
+	// Only count 5xx server errors and network errors as failures.
+	// 4xx client errors (e.g. 401 Unauthorized) are not engine health problems.
 	results.forEach((result, i) => {
 		const engineUrl = availableEngines[i]?.url;
 		if (!engineUrl) return;
 		if (result.status === 'fulfilled' && result.value.ok) {
 			recordSuccess(engineUrl);
-		} else {
+		} else if (result.status === 'rejected') {
+			// Network error
+			recordFailure(engineUrl);
+		} else if (result.status === 'fulfilled' && result.value.status >= 500) {
+			// Server error
 			recordFailure(engineUrl);
 		}
+		// 4xx errors: don't record as circuit breaker failure
 	});
 
 	// Find successful responses
@@ -512,15 +527,22 @@ async function dualFetch(url: string, options: RequestInit): Promise<Response> {
 			)
 		);
 
-		// Track circuit breaker state for each engine
+		// Track circuit breaker state for each engine.
+		// Only count 5xx server errors and network errors as failures.
+		// 4xx client errors (e.g. 401 Unauthorized) are not engine health problems.
 		results.forEach((result, i) => {
 			const engineUrl = availableEngines[i]?.url;
 			if (!engineUrl) return;
 			if (result.status === 'fulfilled' && result.value.ok) {
 				recordSuccess(engineUrl);
-			} else {
+			} else if (result.status === 'rejected') {
+				// Network error
+				recordFailure(engineUrl);
+			} else if (result.status === 'fulfilled' && result.value.status >= 500) {
+				// Server error
 				recordFailure(engineUrl);
 			}
+			// 4xx errors: don't record as circuit breaker failure
 		});
 
 		const fulfilled = results.filter((r): r is PromiseFulfilledResult<Response> => r.status === 'fulfilled');

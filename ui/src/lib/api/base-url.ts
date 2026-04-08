@@ -60,6 +60,8 @@ const TIMED_PATH_EXACT = new Set([
 	'/api/replay/play', '/api/replay/stop',
 	'/api/scte35/cue', '/api/scte35/return', '/api/scte35/cancel',
 	'/api/presets/recall',
+	'/api/format',
+	'/api/encoder',
 ]);
 
 const TIMED_PATH_PATTERNS = [
@@ -69,6 +71,9 @@ const TIMED_PATH_PATTERNS = [
 	/^\/api\/clips\/players\/\d+\/(play|pause|stop)$/,
 	/^\/api\/playout\/channels\/\d+\/(start|stop|next|previous)$/,
 	/^\/api\/playout\/channels\/\d+\/pods\/[^/]+\/(fire|dump|hold|extend)$/,
+	/^\/api\/audio\/.+$/,
+	/^\/api\/macros\/[^/]+\/run$/,
+	/^\/api\/sources\/[^/]+\/key$/,
 ];
 
 function isTimedPath(path: string): boolean {

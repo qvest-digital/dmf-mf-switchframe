@@ -13,7 +13,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { setEngineUrls, getEngineUrls, setApiBaseUrl, setExpectDualEngine, setOnNewEngineDiscovered } from './base-url';
 import {
 	cut, setPreview, getState, fadeToBlack,
-	setMasterLevel, startTransition,
+	setMasterLevel, setMute, startTransition, runMacro, setSourceKey,
+	setFormat, setEncoderBackend,
 	setDualTimestampProvider, setPartialFailureCallback, setPartialFailureNotify, authHeaders,
 	resetPreferredEngine, resetCircuitBreakers, uploadStinger,
 	startRecording, stopRecording,
@@ -274,12 +275,59 @@ describe('switch-api dual-engine routing', () => {
 			expect(body.execute_at).toBe(realisticTs);
 		});
 
-		it('does NOT inject on non-timed paths like /api/audio', async () => {
-			setDualTimestampProvider(() => ({ execute_at: 999, command_seq: 99 }));
+		it('injects on /api/audio/* paths (master level)', async () => {
+			const realisticTs = Date.now() * 1000 + 3_000_000;
+			setDualTimestampProvider(() => ({ execute_at: realisticTs, command_seq: 3 }));
 			await setMasterLevel(-6);
 
 			const body = JSON.parse(fetchCalls[0].opts.body as string);
-			expect(body.execute_at).toBeUndefined();
+			expect(body.execute_at).toBe(realisticTs);
+			expect(body.command_seq).toBe(3);
+		});
+
+		it('injects on /api/audio/mute', async () => {
+			const realisticTs = Date.now() * 1000 + 4_000_000;
+			setDualTimestampProvider(() => ({ execute_at: realisticTs, command_seq: 4 }));
+			await setMute('cam1', true);
+
+			const body = JSON.parse(fetchCalls[0].opts.body as string);
+			expect(body.execute_at).toBe(realisticTs);
+		});
+
+		it('injects on /api/macros/{name}/run', async () => {
+			const realisticTs = Date.now() * 1000 + 5_000_000;
+			setDualTimestampProvider(() => ({ execute_at: realisticTs, command_seq: 5 }));
+			await runMacro('my-macro');
+
+			const body = JSON.parse(fetchCalls[0].opts.body as string);
+			expect(body.execute_at).toBe(realisticTs);
+		});
+
+		it('injects on /api/sources/{source}/key', async () => {
+			const realisticTs = Date.now() * 1000 + 6_000_000;
+			setDualTimestampProvider(() => ({ execute_at: realisticTs, command_seq: 6 }));
+			await setSourceKey('cam1', { type: 'chroma', enabled: true } as any);
+
+			const body = JSON.parse(fetchCalls[0].opts.body as string);
+			expect(body.execute_at).toBe(realisticTs);
+		});
+
+		it('injects on /api/format', async () => {
+			const realisticTs = Date.now() * 1000 + 7_000_000;
+			setDualTimestampProvider(() => ({ execute_at: realisticTs, command_seq: 7 }));
+			await setFormat('1080p30');
+
+			const body = JSON.parse(fetchCalls[0].opts.body as string);
+			expect(body.execute_at).toBe(realisticTs);
+		});
+
+		it('injects on /api/encoder', async () => {
+			const realisticTs = Date.now() * 1000 + 8_000_000;
+			setDualTimestampProvider(() => ({ execute_at: realisticTs, command_seq: 8 }));
+			await setEncoderBackend('nvenc');
+
+			const body = JSON.parse(fetchCalls[0].opts.body as string);
+			expect(body.execute_at).toBe(realisticTs);
 		});
 
 		it('does NOT inject when no timestamp provider set', async () => {
@@ -966,6 +1014,119 @@ describe('switch-api dual-engine routing', () => {
 			const urls = fetchCalls.map(c => c.url);
 			expect(urls.some(u => u.includes('engine-a'))).toBe(true);
 			expect(urls.some(u => u.includes('engine-b'))).toBe(true);
+		});
+	});
+
+	// ─── 4xx errors should NOT trip circuit breaker ───
+
+	describe('4xx errors do not trip circuit breaker', () => {
+		beforeEach(() => {
+			setEngineUrls([
+				{ id: 'A', url: 'https://engine-a.example.com' },
+				{ id: 'B', url: 'https://engine-b.example.com' },
+			]);
+		});
+
+		it('401 errors on GET do not open circuit breaker', async () => {
+			// Make engine A return 401 Unauthorized for every request
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-a')) {
+					return Promise.resolve(errorResponse(401, 'token expired'));
+				}
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1', seq: 1 }));
+			});
+
+			// Send 10 GETs — all should hit engine A first (401), then fall back to B
+			for (let i = 0; i < 10; i++) {
+				await getState();
+			}
+
+			// Engine A should still be tried on every request (circuit NOT open)
+			const engineACalls = fetchCalls.filter(c => c.url.includes('engine-a'));
+			expect(engineACalls.length).toBe(10);
+		});
+
+		it('500 errors on GET do open circuit breaker after threshold', async () => {
+			// Make engine A return 500 for every request
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-a')) {
+					return Promise.resolve(errorResponse(500, 'internal server error'));
+				}
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1', seq: 1 }));
+			});
+
+			// Send 6 GETs — after 5 failures engine A circuit should open
+			for (let i = 0; i < 6; i++) {
+				await getState();
+			}
+
+			// Engine A should have been tried 5 times (then circuit opens, 6th skips it)
+			const engineACalls = fetchCalls.filter(c => c.url.includes('engine-a'));
+			expect(engineACalls.length).toBe(5);
+		});
+
+		it('401 errors on mutations do not open circuit breaker', async () => {
+			// Make engine A return 401, engine B return 200
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-a')) {
+					return Promise.resolve(errorResponse(401, 'unauthorized'));
+				}
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
+			});
+
+			// Send 6 mutations — engine A returns 401 each time
+			for (let i = 0; i < 6; i++) {
+				await cut('cam1');
+			}
+
+			// Engine A should still be called on every mutation (circuit NOT open)
+			const engineACalls = fetchCalls.filter(c => c.url.includes('engine-a'));
+			// Each cut() fans out to both engines, so engine A gets one call per cut
+			expect(engineACalls.length).toBe(6);
+		});
+
+		it('403 errors do not open circuit breaker', async () => {
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-a')) {
+					return Promise.resolve(errorResponse(403, 'forbidden'));
+				}
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1', seq: 1 }));
+			});
+
+			// Send 10 GETs with 403 from engine A
+			for (let i = 0; i < 10; i++) {
+				await getState();
+			}
+
+			// Engine A should still be tried every time (circuit NOT open)
+			const engineACalls = fetchCalls.filter(c => c.url.includes('engine-a'));
+			expect(engineACalls.length).toBe(10);
+		});
+
+		it('dualFetch 401 errors do not open circuit breaker', async () => {
+			// Make engine A return 401 on dualFetch mutations
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-a')) {
+					return Promise.resolve(errorResponse(401, 'unauthorized'));
+				}
+				return Promise.resolve(defaultOkResponse());
+			});
+
+			const mockFile = new File(['test'], 'test.zip', { type: 'application/zip' });
+
+			// Send 6 dualFetch mutations — engine A returns 401 each time
+			for (let i = 0; i < 6; i++) {
+				await uploadStinger('test', mockFile);
+			}
+
+			// Engine A should still be called on every request (circuit NOT open)
+			const engineACalls = fetchCalls.filter(c => c.url.includes('engine-a'));
+			expect(engineACalls.length).toBe(6);
 		});
 	});
 
