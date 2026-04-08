@@ -29,12 +29,14 @@
 		pflManager?: { setAFLGain(sourceKey: string, linearGain: number): void } | null;
 		selectedChannel?: string | null;
 		audioDrift?: { channel: string; reason: string } | null;
+		isDualEngine?: boolean;
+		engineBAudioChannels?: Record<string, import('$lib/api/types').AudioChannel> | null;
 		onPFLToggle?: (sourceKey: string) => void;
 		onStateUpdate?: (state: ControlRoomState) => void;
 		onChannelSelect?: (sourceKey: string | null) => void;
 	}
 
-	let { state: crState, sourceLevels = {}, programLevels = { peakL: 0, peakR: 0 }, pflActiveSource = null, pflMode = 'off' as PFLMode, pflManager = null, selectedChannel = null, audioDrift = null, onPFLToggle, onStateUpdate, onChannelSelect }: Props = $props();
+	let { state: crState, sourceLevels = {}, programLevels = { peakL: 0, peakR: 0 }, pflActiveSource = null, pflMode = 'off' as PFLMode, pflManager = null, selectedChannel = null, audioDrift = null, isDualEngine = false, engineBAudioChannels = null, onPFLToggle, onStateUpdate, onChannelSelect }: Props = $props();
 
 	let ui = $state({ collapsed: false });
 
@@ -207,6 +209,15 @@
 	let shortTermLufs = $derived(crState.shortTermLufs ?? -Infinity);
 	let integratedLufs = $derived(crState.integratedLufs ?? -Infinity);
 
+	/** Check if a specific boolean field differs between Engine A and Engine B for a channel. */
+	function isDesyncedBool(key: string, field: 'muted' | 'afv'): boolean {
+		if (!isDualEngine || !engineBAudioChannels) return false;
+		const chA = crState.audioChannels?.[key];
+		const chB = engineBAudioChannels[key];
+		if (!chA || !chB) return false;
+		return chA[field] !== chB[field];
+	}
+
 	/** Sorted source keys for consistent channel strip order. */
 	let sortedKeys = $derived(
 		crState.audioChannels != null
@@ -360,6 +371,9 @@
 					title="Mute"
 				>
 					MUTE
+					{#if isDesyncedBool(key, 'muted')}
+						<span class="desync-dot" title="Mute state differs between engines">!</span>
+					{/if}
 				</button>
 				<button
 					class="strip-btn afv-btn"
@@ -368,6 +382,9 @@
 					title="Audio Follows Video"
 				>
 					AFV
+					{#if isDesyncedBool(key, 'afv')}
+						<span class="desync-dot" title="AFV state differs between engines">!</span>
+					{/if}
 				</button>
 				<button
 					class="strip-btn phase-btn"
@@ -1045,6 +1062,29 @@
 		background: var(--tally-preview-dim);
 		color: var(--color-success);
 		border-color: rgba(34, 197, 94, 0.4);
+	}
+
+	.desync-dot {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 10px;
+		height: 10px;
+		border-radius: 50%;
+		background: #f59e0b;
+		color: #000;
+		font-size: 7px;
+		font-weight: 800;
+		line-height: 1;
+		margin-left: 2px;
+		vertical-align: middle;
+		flex-shrink: 0;
+		animation: desync-pulse 1.5s ease-in-out infinite;
+	}
+
+	@keyframes desync-pulse {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.5; }
 	}
 
 	.phase-btn.active {

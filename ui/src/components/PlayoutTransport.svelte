@@ -179,7 +179,10 @@
 	</div>
 
 	{#if cacheWarnings.length > 0}
-		<div class="cache-warning">
+		<div class="cache-warning" class:cache-warning-on-air={isOnAir}>
+			{#if isOnAir}
+				<span class="cache-warning-alert">CACHE NOT READY</span>
+			{/if}
 			{#each cacheWarnings as w}
 				<span class="cache-warning-item">Engine {w.engine}: {w.fetchingCount} item{w.fetchingCount !== 1 ? 's' : ''} still caching</span>
 			{/each}
@@ -299,12 +302,35 @@
 		border-radius: var(--radius-sm);
 	}
 
+	.cache-warning-on-air {
+		background: rgba(220, 38, 38, 0.12);
+		border-color: rgba(220, 38, 38, 0.5);
+		animation: cache-alert-pulse 1s ease-in-out infinite;
+	}
+
+	@keyframes cache-alert-pulse {
+		0%, 100% { background: rgba(220, 38, 38, 0.12); }
+		50% { background: rgba(220, 38, 38, 0.25); }
+	}
+
+	.cache-warning-alert {
+		font-family: var(--font-ui);
+		font-size: 9px;
+		font-weight: 800;
+		color: var(--tally-program);
+		letter-spacing: 0.08em;
+	}
+
 	.cache-warning-item {
 		font-family: var(--font-ui);
 		font-size: 10px;
 		font-weight: 600;
 		color: var(--accent-orange);
 		letter-spacing: 0.02em;
+	}
+
+	.cache-warning-on-air .cache-warning-item {
+		color: var(--tally-program);
 	}
 
 	.mode-row {

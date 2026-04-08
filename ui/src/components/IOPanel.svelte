@@ -579,6 +579,11 @@
 
 										{#if srtStats[src.key]}
 											{@const stats = srtStats[src.key]}
+											{#if isDualEngine}
+												<div class="detail-row srt-engine-note-row">
+													<span class="srt-engine-note" title="Stats from primary engine only">Engine A stats only</span>
+												</div>
+											{/if}
 											<div class="detail-row">
 												<span class="detail-label">RTT</span>
 												<span class="detail-value mono">{stats.rttMs.toFixed(1)} ms</span>
@@ -1368,6 +1373,24 @@
 
 	.val-red {
 		color: #ef4444;
+	}
+
+	/* --- SRT engine note (dual-engine mode) --- */
+	.srt-engine-note-row {
+		justify-content: flex-start;
+		padding: 2px 0;
+	}
+
+	.srt-engine-note {
+		font-family: var(--font-ui);
+		font-size: 9px;
+		font-weight: 600;
+		color: #f59e0b;
+		letter-spacing: 0.04em;
+		padding: 1px 5px;
+		background: rgba(245, 158, 11, 0.1);
+		border: 1px solid rgba(245, 158, 11, 0.25);
+		border-radius: var(--radius-sm);
 	}
 
 	/* --- Editable fields --- */
