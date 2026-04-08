@@ -836,6 +836,38 @@ export function stopRecording(): Promise<RecordingStatus> {
 	return post('/api/recording/stop', {});
 }
 
+export async function startRecordingOnEngine(engineId: string): Promise<void> {
+	const engines = getEngineUrls();
+	if (!engines) return post('/api/recording/start', {});
+	const engine = engines.find(e => e.id === engineId);
+	if (!engine) throw new Error(`Engine ${engineId} not found`);
+	const res = await fetch(`${engine.url}/api/recording/start`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', ...authHeaders() },
+		body: '{}',
+	});
+	if (!res.ok) {
+		const body = await res.json().catch(() => ({ error: 'unknown' }));
+		throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
+	}
+}
+
+export async function stopRecordingOnEngine(engineId: string): Promise<void> {
+	const engines = getEngineUrls();
+	if (!engines) return post('/api/recording/stop', {});
+	const engine = engines.find(e => e.id === engineId);
+	if (!engine) throw new Error(`Engine ${engineId} not found`);
+	const res = await fetch(`${engine.url}/api/recording/stop`, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json', ...authHeaders() },
+		body: '{}',
+	});
+	if (!res.ok) {
+		const body = await res.json().catch(() => ({ error: 'unknown' }));
+		throw new SwitchApiError(res.status, body.error || `HTTP ${res.status}`);
+	}
+}
+
 export function getRecordingStatus(): Promise<RecordingStatus> {
 	return request('/api/recording/status');
 }

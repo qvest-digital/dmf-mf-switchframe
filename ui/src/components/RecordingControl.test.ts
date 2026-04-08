@@ -184,6 +184,50 @@ describe('RecordingControl', () => {
 		expect(engineStatus).toBeFalsy();
 	});
 
+	it('should show per-engine fix buttons when states differ (A recording, B not)', () => {
+		const state = {
+			...baseState,
+			recording: { active: true, filename: 'out.ts', durationSecs: 10 },
+		};
+		const { container } = render(RecordingControl, {
+			props: {
+				state,
+				isDualEngine: true,
+				engineBRecording: { active: false },
+				activeEngineId: 'A' as const,
+			},
+		});
+		const engineStatus = container.querySelector('[data-testid="engine-rec-status"]');
+		expect(engineStatus).toBeTruthy();
+		const fixBtns = engineStatus!.querySelectorAll('.engine-fix-btn');
+		expect(fixBtns).toHaveLength(2);
+		// A is recording -> STOP button; B is idle -> REC button
+		expect(fixBtns[0].textContent).toBe('STOP');
+		expect(fixBtns[1].textContent).toBe('REC');
+	});
+
+	it('should show per-engine fix buttons when states differ (A idle, B recording)', () => {
+		const state = {
+			...baseState,
+			recording: { active: false },
+		};
+		const { container } = render(RecordingControl, {
+			props: {
+				state,
+				isDualEngine: true,
+				engineBRecording: { active: true, durationSecs: 5 },
+				activeEngineId: 'A' as const,
+			},
+		});
+		const engineStatus = container.querySelector('[data-testid="engine-rec-status"]');
+		expect(engineStatus).toBeTruthy();
+		const fixBtns = engineStatus!.querySelectorAll('.engine-fix-btn');
+		expect(fixBtns).toHaveLength(2);
+		// A is idle -> REC button; B is recording -> STOP button
+		expect(fixBtns[0].textContent).toBe('REC');
+		expect(fixBtns[1].textContent).toBe('STOP');
+	});
+
 	it('should NOT show dual dots when not in dual-engine mode', () => {
 		const state = {
 			...baseState,

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { ControlRoomState } from '$lib/api/types';
-	import { startRecording, stopRecording, apiCall } from '$lib/api/switch-api';
+	import { startRecording, stopRecording, startRecordingOnEngine, stopRecordingOnEngine, apiCall } from '$lib/api/switch-api';
 	import ConfirmDialog from './ConfirmDialog.svelte';
 
 	interface Props {
@@ -69,9 +69,19 @@
 	<span class="engine-status" data-testid="engine-rec-status">
 		<span class="engine-tag" class:active-engine={activeEngineId === 'A'}>
 			A{#if isActive}<span class="rec-dot-small recording"></span>{:else}<span class="rec-dot-small"></span>{/if}
+			{#if !isActive}
+				<button class="engine-fix-btn" onclick={() => apiCall(startRecordingOnEngine('A'), 'Start on A failed')}>REC</button>
+			{:else}
+				<button class="engine-fix-btn" onclick={() => apiCall(stopRecordingOnEngine('A'), 'Stop on A failed')}>STOP</button>
+			{/if}
 		</span>
 		<span class="engine-tag" class:active-engine={activeEngineId === 'B'}>
 			B{#if engineBActive}<span class="rec-dot-small recording"></span>{:else}<span class="rec-dot-small"></span>{/if}
+			{#if !engineBActive}
+				<button class="engine-fix-btn" onclick={() => apiCall(startRecordingOnEngine('B'), 'Start on B failed')}>REC</button>
+			{:else}
+				<button class="engine-fix-btn" onclick={() => apiCall(stopRecordingOnEngine('B'), 'Stop on B failed')}>STOP</button>
+			{/if}
 		</span>
 	</span>
 {/if}
@@ -223,6 +233,24 @@
 	.rec-dot-small.recording {
 		background: var(--tally-program);
 		animation: pulse-rec 1.5s ease-in-out infinite;
+	}
+
+	.engine-fix-btn {
+		padding: 1px 4px;
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		background: var(--bg-elevated);
+		color: var(--text-secondary);
+		cursor: pointer;
+		font-family: var(--font-mono);
+		font-size: 0.6rem;
+		font-weight: 600;
+		margin-left: 2px;
+	}
+
+	.engine-fix-btn:hover {
+		border-color: var(--tally-program);
+		color: var(--tally-program);
 	}
 
 	@keyframes pulse-rec {
