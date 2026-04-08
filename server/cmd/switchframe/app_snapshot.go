@@ -43,6 +43,7 @@ var _ internal.SnapshotOperatorApplier = (*App)(nil)
 var _ internal.SnapshotPlayoutApplier = (*App)(nil)
 var _ internal.SnapshotSCTE35Applier = (*App)(nil)
 var _ internal.SnapshotMacroApplier = (*App)(nil)
+var _ internal.SnapshotEncoderApplier = (*App)(nil)
 
 // --- SnapshotApplyTarget implementation ---
 
@@ -536,4 +537,16 @@ func (a *App) ApplySCTE35Active(events []internal.SCTE35ActiveEventSnapshot) err
 // macro execution. The snapshot captures macro state for informational display.
 func (a *App) ApplyMacroExecution(_ internal.MacroExecutionSnapshot) error {
 	return nil
+}
+
+// SetEncoderIfAvailable switches to the named encoder if it is available on
+// this engine. Used during cross-engine snapshot reconciliation so that both
+// engines converge on the same encoder.
+func (a *App) SetEncoderIfAvailable(name string) error {
+	for _, enc := range a.sw.AvailableEncoders() {
+		if enc.Name == name {
+			return a.sw.SetEncoder(name)
+		}
+	}
+	return fmt.Errorf("encoder %q not available on this engine", name)
 }

@@ -118,6 +118,11 @@ type SnapshotGraphicsHTML5Applier interface {
 	LoadGraphicsHTML5(layerID int, url string) error
 }
 
+// SnapshotEncoderApplier is optionally implemented for encoder switching.
+type SnapshotEncoderApplier interface {
+	SetEncoderIfAvailable(name string) error
+}
+
 // ApplyFullSnapshot restores engine state from a FullStateSnapshot. It is
 // best-effort: individual failures are collected as warning strings rather
 // than aborting the entire apply. This is the inverse of state capture.
@@ -211,6 +216,16 @@ func ApplyFullSnapshot(ctx context.Context, snap FullStateSnapshot, target Snaps
 	if err := target.SetCaptionMode(snap.CaptionMode); err != nil {
 		slog.Warn("snapshot apply: caption mode failed", "error", err)
 		warnings = append(warnings, fmt.Sprintf("caption mode: %v", err))
+	}
+
+	// 11.5. Encoder — switch if available on target
+	if snap.Encoder != "" {
+		if applier, ok := target.(SnapshotEncoderApplier); ok {
+			if err := applier.SetEncoderIfAvailable(snap.Encoder); err != nil {
+				slog.Warn("snapshot apply: encoder switch failed", "encoder", snap.Encoder, "error", err)
+				warnings = append(warnings, fmt.Sprintf("encoder %q: %v", snap.Encoder, err))
+			}
+		}
 	}
 
 	// 12. Color grading

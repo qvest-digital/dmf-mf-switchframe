@@ -18,8 +18,10 @@ type mockCall struct {
 
 // mockApplyTarget records all calls and optionally returns errors for specific methods.
 type mockApplyTarget struct {
-	calls  []mockCall
-	errors map[string]error // method name → error to return
+	calls      []mockCall
+	errors     map[string]error // method name → error to return
+	encoderSet string
+	encoderErr error
 }
 
 func newMockApplyTarget() *mockApplyTarget {
@@ -183,6 +185,11 @@ func (m *mockApplyTarget) AssignSTMapSource(sourceKey, mapName string) error {
 
 func (m *mockApplyTarget) AssignSTMapProgram(mapName string) error {
 	return m.record("AssignSTMapProgram", mapName)
+}
+
+func (m *mockApplyTarget) SetEncoderIfAvailable(name string) error {
+	m.encoderSet = name
+	return m.encoderErr
 }
 
 // --- Tests ---
@@ -1056,5 +1063,36 @@ func TestApplyFullSnapshot_HTML5LayerErrorWarns(t *testing.T) {
 	// Layer 0 should still have been loaded successfully (best-effort)
 	if got := target.html5Loaded[0]; got != "http://example.com/lower-third.html" {
 		t.Errorf("html5Loaded[0]: got %q, want %q", got, "http://example.com/lower-third.html")
+	}
+}
+
+// --- Encoder snapshot apply tests ---
+
+func TestApplyFullSnapshot_Encoder(t *testing.T) {
+	target := &mockApplyTarget{}
+	snap := FullStateSnapshot{
+		ProgramSource: "cam1",
+		Encoder:       "h264_nvenc",
+	}
+	warnings := ApplyFullSnapshot(context.Background(), snap, target)
+	if target.encoderSet != "h264_nvenc" {
+		t.Fatalf("expected encoder h264_nvenc, got %q", target.encoderSet)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+}
+
+func TestApplyFullSnapshot_EncoderUnavailable(t *testing.T) {
+	target := &mockApplyTarget{
+		encoderErr: fmt.Errorf("encoder not available"),
+	}
+	snap := FullStateSnapshot{
+		ProgramSource: "cam1",
+		Encoder:       "h264_nvenc",
+	}
+	warnings := ApplyFullSnapshot(context.Background(), snap, target)
+	if len(warnings) == 0 {
+		t.Fatal("expected warning for unavailable encoder")
 	}
 }

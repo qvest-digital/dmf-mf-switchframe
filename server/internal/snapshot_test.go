@@ -1134,3 +1134,22 @@ func TestApplyFullSnapshot_CollectsWarningsFromFailingAppliers(t *testing.T) {
 		}
 	}
 }
+
+func TestFullStateSnapshot_EncoderField(t *testing.T) {
+	snap := FullStateSnapshot{
+		Version:       "1",
+		ProgramSource: "cam1",
+		Encoder:       "h264_nvenc",
+	}
+	data, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded FullStateSnapshot
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Encoder != "h264_nvenc" {
+		t.Fatalf("expected encoder h264_nvenc, got %q", decoded.Encoder)
+	}
+}

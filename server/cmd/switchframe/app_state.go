@@ -817,6 +817,9 @@ func (a *App) captureFullSnapshot() internal.FullStateSnapshot {
 		TransitionDurationMs: state.TransitionDurationMs,
 		TransitionEasing:     state.TransitionEasing,
 		FTBActive:            state.FTBActive,
+
+		// Encoder
+		Encoder: a.sw.EncoderName(),
 	}
 
 	// --- Audio channels ---

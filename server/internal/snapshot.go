@@ -30,6 +30,12 @@ type FullStateSnapshot struct {
 	TransitionEasing     string `json:"transitionEasing"`
 	FTBActive            bool   `json:"ftbActive,omitempty"`
 
+	// --- Encoder ---
+
+	// Encoder is the active video encoder name (e.g., "libx264", "h264_nvenc").
+	// Applied only if the target engine has this encoder available.
+	Encoder string `json:"encoder,omitempty"`
+
 	// --- Audio (per-channel) ---
 
 	// AudioChannels maps source key to its audio channel configuration.
