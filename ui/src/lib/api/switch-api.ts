@@ -12,7 +12,7 @@ export class SwitchApiError extends Error {
 	}
 }
 
-function getAuthToken(): string | null {
+export function getAuthToken(): string | null {
 	if (typeof localStorage === 'undefined') return null;
 	return localStorage.getItem('switchframe_operator_token');
 }
@@ -1651,10 +1651,13 @@ export async function uploadClip(file: File, onUploadProgress?: (percent: number
 		: resolveApiUrl('');
 
 	// Upload to primary engine with progress tracking
+	const uploadStart = Date.now();
 	const result = await uploadClipToEngine(primaryUrl, file, onUploadProgress);
+	const primaryDuration = Date.now() - uploadStart;
 
-	// Upload to secondary engine(s) — wait up to 10s for confirmation
+	// Upload to secondary engine(s) — timeout scales with primary upload duration
 	if (engines && engines.length > 1) {
+		const secondaryTimeout = Math.max(primaryDuration * 2, 30_000);
 		const secondaryUploads = engines.slice(1).map(async (engine) => {
 			try {
 				await uploadClipToEngine(engine.url, file);
@@ -1670,7 +1673,7 @@ export async function uploadClip(file: File, onUploadProgress?: (percent: number
 		});
 		await Promise.race([
 			Promise.allSettled(secondaryUploads),
-			new Promise(resolve => setTimeout(resolve, 10_000)),
+			new Promise(resolve => setTimeout(resolve, secondaryTimeout)),
 		]);
 	}
 
