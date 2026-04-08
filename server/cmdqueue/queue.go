@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sync"
+	"sync/atomic"
 )
 
 // DefaultMaxAge is the default staleness threshold (2 seconds in µs).
@@ -65,10 +66,14 @@ type Queue struct {
 	h       cmdHeap
 	seen    map[uint64]struct{}
 	clock   func() int64
-	maxAge  int64
-	maxSize int
-	wal     *WAL
+	maxAge       int64
+	maxSize      int
+	wal          *WAL
+	lateCommands atomic.Int64
 }
+
+// LateCommands returns the number of late commands that were promoted to immediate execution.
+func (q *Queue) LateCommands() int64 { return q.lateCommands.Load() }
 
 // New creates a ready-to-use Queue. clock is called on every Enqueue and Drain
 // to obtain the current PTP time in microseconds.
@@ -98,9 +103,16 @@ func New(clock func() int64, opts ...Option) *Queue {
 func (q *Queue) Enqueue(cmd Command) error {
 	now := q.clock()
 
-	// Staleness check — only applies when ExecuteAt is non-zero.
-	if cmd.ExecuteAt != 0 && now-cmd.ExecuteAt > q.maxAge {
-		return ErrStaleCommand
+	// Grace period — late commands execute immediately, truly stale ones are dropped.
+	if cmd.ExecuteAt != 0 {
+		lateness := now - cmd.ExecuteAt
+		if lateness > q.maxAge*2 {
+			return ErrStaleCommand
+		}
+		if lateness > q.maxAge {
+			cmd.ExecuteAt = 0
+			q.lateCommands.Add(1)
+		}
 	}
 
 	q.mu.Lock()

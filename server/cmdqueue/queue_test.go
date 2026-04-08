@@ -85,7 +85,7 @@ func TestEnqueue_DedupBySeq(t *testing.T) {
 	}
 }
 
-// TestEnqueue_StaleCommandDropped verifies that a command older than 2 seconds
+// TestEnqueue_StaleCommandDropped verifies that a command older than 2x maxAge
 // returns ErrStaleCommand and is not queued.
 func TestEnqueue_StaleCommandDropped(t *testing.T) {
 	const now = int64(10_000_000) // 10 s (µs)
@@ -93,7 +93,7 @@ func TestEnqueue_StaleCommandDropped(t *testing.T) {
 	q := cmdqueue.New(clock)
 
 	stale := cmdqueue.Command{
-		ExecuteAt: now - 2_000_001, // just over 2 s old
+		ExecuteAt: now - 4_000_001, // just over 2x default maxAge (4s)
 		Seq:       99,
 		Action:    "cut",
 	}
@@ -212,15 +212,15 @@ func TestQueue_ConfigurableMaxAge(t *testing.T) {
 		t.Fatalf("expected 5s-old command to be accepted with 10s maxAge, got %v", err)
 	}
 
-	// Command 11s old — stale even with 10s maxAge.
+	// Command 21s old — stale even with 10s maxAge (beyond 2x grace period).
 	stale := cmdqueue.Command{
-		ExecuteAt: now - 11_000_000,
+		ExecuteAt: now - 21_000_000,
 		Seq:       2,
 		Action:    "cut",
 	}
 	err := q.Enqueue(stale)
 	if !errors.Is(err, cmdqueue.ErrStaleCommand) {
-		t.Fatalf("expected ErrStaleCommand for 11s-old command with 10s maxAge, got %v", err)
+		t.Fatalf("expected ErrStaleCommand for 21s-old command with 10s maxAge, got %v", err)
 	}
 
 	// Default maxAge queue — 5s old command should be stale.
@@ -403,5 +403,42 @@ func TestPending(t *testing.T) {
 	q.Drain() // nothing should drain
 	if q.Pending() != 1 {
 		t.Errorf("expected still 1 pending after premature drain, got %d", q.Pending())
+	}
+}
+
+// ── Task 2: Late command grace period ────────────────────────────────────────
+
+func TestEnqueue_LateButNotStale_ExecutesImmediately(t *testing.T) {
+	now := int64(100_000_000)
+	q := cmdqueue.New(func() int64 { return now }, cmdqueue.WithMaxAge(2_000_000))
+	cmd := cmdqueue.Command{ExecuteAt: now - 3_000_000, Seq: 1, Action: "cut"}
+	err := q.Enqueue(cmd)
+	if err != nil {
+		t.Fatalf("expected late command accepted, got: %v", err)
+	}
+	out := q.Drain()
+	if len(out) != 1 {
+		t.Fatalf("expected 1, got %d", len(out))
+	}
+	if out[0].ExecuteAt != 0 {
+		t.Errorf("expected ExecuteAt=0, got %d", out[0].ExecuteAt)
+	}
+}
+
+func TestEnqueue_LateCommandCountsAsLate(t *testing.T) {
+	now := int64(100_000_000)
+	q := cmdqueue.New(func() int64 { return now }, cmdqueue.WithMaxAge(2_000_000))
+	_ = q.Enqueue(cmdqueue.Command{ExecuteAt: now - 3_000_000, Seq: 1, Action: "cut"})
+	if q.LateCommands() != 1 {
+		t.Errorf("expected 1 late, got %d", q.LateCommands())
+	}
+}
+
+func TestEnqueue_VeryStaleCommand_StillDropped(t *testing.T) {
+	now := int64(100_000_000)
+	q := cmdqueue.New(func() int64 { return now }, cmdqueue.WithMaxAge(2_000_000))
+	err := q.Enqueue(cmdqueue.Command{ExecuteAt: now - 5_000_000, Seq: 1, Action: "cut"})
+	if err != cmdqueue.ErrStaleCommand {
+		t.Fatalf("expected ErrStaleCommand, got: %v", err)
 	}
 }
