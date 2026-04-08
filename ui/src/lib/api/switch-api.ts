@@ -118,6 +118,11 @@ export function resetPreferredEngine(): void {
 	preferredUntil = 0;
 }
 
+/** Reset all circuit breakers (for testing). */
+export function resetCircuitBreakers(): void {
+	circuitBreakers.clear();
+}
+
 // ── Partial failure callback ──
 // Called when a mutation succeeds on some engines but fails on others,
 // allowing the reconciler to trigger an early divergence check.
@@ -444,8 +449,15 @@ async function dualFetch(url: string, options: RequestInit): Promise<Response> {
 			throw new Error(`All engines unreachable for ${method} ${url}`);
 		}
 
-		// Mutations: fan out to all engines in parallel
-		const bodies = engines.map(() => {
+		// Mutations: fan out to available engines in parallel
+		// Filter out engines with open circuits for mutations
+		let availableEngines = engines.filter(e => !isCircuitOpen(e.url));
+		if (availableEngines.length === 0) {
+			// All circuits open — try all engines anyway (half-open probe)
+			availableEngines = [...engines];
+		}
+
+		const bodies = availableEngines.map(() => {
 			if (options.body instanceof FormData) {
 				const clone = new FormData();
 				for (const [key, value] of (options.body as FormData).entries()) {
@@ -459,10 +471,22 @@ async function dualFetch(url: string, options: RequestInit): Promise<Response> {
 			return options.body;
 		});
 		const results = await Promise.allSettled(
-			engines.map((engine, i) =>
+			availableEngines.map((engine, i) =>
 				fetch(`${engine.url}${url}`, { ...opts, body: bodies[i] })
 			)
 		);
+
+		// Track circuit breaker state for each engine
+		results.forEach((result, i) => {
+			const engineUrl = availableEngines[i]?.url;
+			if (!engineUrl) return;
+			if (result.status === 'fulfilled' && result.value.ok) {
+				recordSuccess(engineUrl);
+			} else {
+				recordFailure(engineUrl);
+			}
+		});
+
 		const fulfilled = results.filter((r): r is PromiseFulfilledResult<Response> => r.status === 'fulfilled');
 		const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
 		const successful = fulfilled.filter(r => r.value.ok);

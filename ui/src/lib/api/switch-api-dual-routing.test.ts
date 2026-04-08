@@ -15,7 +15,7 @@ import {
 	cut, setPreview, getState, fadeToBlack,
 	setMasterLevel, startTransition,
 	setDualTimestampProvider, setPartialFailureCallback, authHeaders,
-	resetPreferredEngine,
+	resetPreferredEngine, resetCircuitBreakers, uploadStinger,
 } from './switch-api';
 
 // Track all fetch calls for inspection
@@ -86,6 +86,7 @@ describe('switch-api dual-engine routing', () => {
 		setPartialFailureCallback(null);
 		setExpectDualEngine(false);
 		resetPreferredEngine();
+		resetCircuitBreakers();
 	});
 
 	// ─── Single-engine mode (no engines configured) ───
@@ -885,6 +886,110 @@ describe('switch-api dual-engine routing', () => {
 			await getState();
 			expect(fetchCalls).toHaveLength(1);
 			expect(fetchCalls[0].url).toContain('engine-a');
+		});
+	});
+
+	// ─── dualFetch circuit breaker filtering ───
+
+	describe('dualFetch circuit breaker filtering', () => {
+		beforeEach(() => {
+			setEngineUrls([
+				{ id: 'A', url: 'https://engine-a.example.com' },
+				{ id: 'B', url: 'https://engine-b.example.com' },
+			]);
+		});
+
+		it('skips engine with open circuit on dualFetch mutations', async () => {
+			// First: open the circuit for engine A by sending 5 failures
+			// We'll use dualRequest (cut) to trigger recordFailure on engine A
+			let callCount = 0;
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-a')) {
+					return Promise.resolve(errorResponse(500, 'engine A down'));
+				}
+				return Promise.resolve(defaultOkResponse({ programSource: 'cam1' }));
+			});
+
+			// Send 5 mutations through dualRequest to trip the circuit breaker for engine A
+			for (let i = 0; i < 5; i++) {
+				await cut('cam1');
+			}
+
+			// Now engine A's circuit should be open. Clear tracking.
+			fetchCalls = [];
+
+			// Use uploadStinger which goes through dualFetch for mutations
+			const mockFile = new File(['test'], 'test.zip', { type: 'application/zip' });
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				return Promise.resolve(defaultOkResponse());
+			});
+
+			await uploadStinger('test', mockFile);
+
+			// With circuit breaker filtering in dualFetch, only engine B should be called
+			const mutationUrls = fetchCalls.map(c => c.url);
+			expect(mutationUrls.every(u => u.includes('engine-b'))).toBe(true);
+			expect(mutationUrls.some(u => u.includes('engine-a'))).toBe(false);
+		});
+
+		it('records success/failure for dualFetch mutations', async () => {
+			// Make engine B fail on dualFetch mutation
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				if (url.includes('engine-b')) {
+					return Promise.resolve(errorResponse(500, 'engine B down'));
+				}
+				return Promise.resolve(defaultOkResponse());
+			});
+
+			const mockFile = new File(['test'], 'test.zip', { type: 'application/zip' });
+
+			// Send 5 mutations through dualFetch to trip the circuit breaker for engine B
+			for (let i = 0; i < 5; i++) {
+				await uploadStinger('test', mockFile);
+			}
+
+			// Now clear and try again - engine B should be skipped
+			fetchCalls = [];
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				return Promise.resolve(defaultOkResponse());
+			});
+
+			await uploadStinger('test', mockFile);
+
+			const mutationUrls = fetchCalls.map(c => c.url);
+			expect(mutationUrls.every(u => u.includes('engine-a'))).toBe(true);
+			expect(mutationUrls.some(u => u.includes('engine-b'))).toBe(false);
+		});
+
+		it('tries all engines when all circuits are open (half-open probe)', async () => {
+			// Trip circuit breakers for both engines via dualRequest
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				return Promise.resolve(errorResponse(500, 'engine down'));
+			});
+
+			for (let i = 0; i < 5; i++) {
+				try { await cut('cam1'); } catch { /* expected */ }
+			}
+
+			// Both circuits should be open now. Clear tracking.
+			fetchCalls = [];
+			mockFetch.mockImplementation((url: string, opts?: RequestInit) => {
+				fetchCalls.push({ url, opts: opts ?? {} });
+				return Promise.resolve(defaultOkResponse());
+			});
+
+			const mockFile = new File(['test'], 'test.zip', { type: 'application/zip' });
+			await uploadStinger('test', mockFile);
+
+			// With all circuits open, dualFetch should try all engines (half-open probe)
+			const urls = fetchCalls.map(c => c.url);
+			expect(urls.some(u => u.includes('engine-a'))).toBe(true);
+			expect(urls.some(u => u.includes('engine-b'))).toBe(true);
 		});
 	});
 });
