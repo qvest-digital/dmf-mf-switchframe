@@ -515,6 +515,12 @@ export function createReconciler() {
 	const warnings = $derived.by((): string[] => {
 		const w: string[] = [];
 		if (clockDiverged) w.push('clock_diverged');
+		// Surface per-engine command dispatch errors
+		const errA = stateA?.lastExecutedErr;
+		const errB = stateB?.lastExecutedErr;
+		if (errA && connectedA) w.push(`engine_a_cmd_error: ${errA}`);
+		if (errB && connectedB) w.push(`engine_b_cmd_error: ${errB}`);
+		if (errA && errB && errA !== errB) w.push('cmd_error_divergence');
 		return w;
 	});
 

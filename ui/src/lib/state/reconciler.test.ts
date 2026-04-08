@@ -1049,6 +1049,64 @@ describe('createReconciler', () => {
 		});
 	});
 
+	// ── Command dispatch error warnings ──
+
+	describe('command dispatch error warnings', () => {
+		it('surfaces lastExecutedErr from engine A as a warning', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5, lastExecutedErr: 'source not found' }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+			expect(r.health.warnings).toContain('engine_a_cmd_error: source not found');
+		});
+
+		it('surfaces lastExecutedErr from engine B as a warning', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5 }));
+			r.ingest('B', makeState({ lastCommandSeq: 5, lastExecutedErr: 'transition in progress' }));
+			expect(r.health.warnings).toContain('engine_b_cmd_error: transition in progress');
+		});
+
+		it('surfaces errors from both engines and flags divergence', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5, lastExecutedErr: 'error A' }));
+			r.ingest('B', makeState({ lastCommandSeq: 5, lastExecutedErr: 'error B' }));
+			expect(r.health.warnings).toContain('engine_a_cmd_error: error A');
+			expect(r.health.warnings).toContain('engine_b_cmd_error: error B');
+			expect(r.health.warnings).toContain('cmd_error_divergence');
+		});
+
+		it('does not flag cmd_error_divergence when both engines have the same error', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5, lastExecutedErr: 'same error' }));
+			r.ingest('B', makeState({ lastCommandSeq: 5, lastExecutedErr: 'same error' }));
+			expect(r.health.warnings).toContain('engine_a_cmd_error: same error');
+			expect(r.health.warnings).toContain('engine_b_cmd_error: same error');
+			expect(r.health.warnings).not.toContain('cmd_error_divergence');
+		});
+
+		it('clears error warnings when state updates without errors', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5, lastExecutedErr: 'temp error' }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+			expect(r.health.warnings).toContain('engine_a_cmd_error: temp error');
+			// Error clears on next successful command
+			r.ingest('A', makeState({ lastCommandSeq: 6 }));
+			r.ingest('B', makeState({ lastCommandSeq: 6 }));
+			const cmdWarnings = r.health.warnings.filter(w => w.includes('cmd_error'));
+			expect(cmdWarnings).toHaveLength(0);
+		});
+
+		it('does not surface errors from disconnected engines', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({ lastCommandSeq: 5, lastExecutedErr: 'error A' }));
+			r.ingest('B', makeState({ lastCommandSeq: 5 }));
+			expect(r.health.warnings).toContain('engine_a_cmd_error: error A');
+			r.disconnect('A');
+			const cmdWarnings = r.health.warnings.filter(w => w.includes('cmd_error'));
+			expect(cmdWarnings).toHaveLength(0);
+		});
+	});
+
 	// ── requestCheck (partial failure fast-path) ──
 
 	describe('requestCheck', () => {
