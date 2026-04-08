@@ -2091,6 +2091,31 @@ export function playoutNext(channelId: number): Promise<void> {
 	return post(`/api/playout/channels/${channelId}/next`, {});
 }
 
+/**
+ * Check if the next playout item is cached on all engines before advancing.
+ * Shows a warning notification if any engine is not ready.
+ */
+export async function playoutNextWithCacheCheck(channelId: number): Promise<void> {
+	const engines = getEngineUrls();
+	if (engines && engines.length > 1) {
+		try {
+			const results = await Promise.allSettled(
+				engines.map(e => fetch(`${e.url}/api/playout/channels/${channelId}/cache-status`, {
+					headers: authHeaders(),
+				}).then(r => r.ok ? r.json() : null))
+			);
+			const uncached = results
+				.map((r, i) => ({ engine: engines[i].id, cached: r.status === 'fulfilled' && r.value?.nextItemCached !== false }))
+				.filter(r => !r.cached);
+			if (uncached.length > 0) {
+				const engineIds = uncached.map(u => u.engine).join(', ');
+				partialFailureNotify?.(`Warning: next item not cached on Engine ${engineIds} — advance may cause visual divergence`);
+			}
+		} catch { /* best-effort check, proceed anyway */ }
+	}
+	return post(`/api/playout/channels/${channelId}/next`, {});
+}
+
 export function playoutPrevious(channelId: number): Promise<void> {
 	return post(`/api/playout/channels/${channelId}/previous`, {});
 }
