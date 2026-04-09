@@ -467,6 +467,93 @@ func (c *Channel) JumpTo(itemID string) error {
 	return c.scheduler.JumpTo(itemID)
 }
 
+// SeekToItem repositions the channel to a specific playlist item at a given
+// elapsed offset. Used by snapshot-driven sync to align a standby engine's
+// playout cursor with the active engine's state. For clip items, the existing
+// iterator is closed and re-opened, then seeked to the target frame. For live
+// and slate items, only the scheduler cursor is updated.
+func (c *Channel) SeekToItem(itemIndex int, elapsedMs int64) error {
+	c.mu.Lock()
+
+	// Must be on-air (or at least cued with a playlist).
+	pl := c.schedulerPlaylist()
+	if pl == nil {
+		c.mu.Unlock()
+		return ErrNoPlaylist
+	}
+	if itemIndex < 0 || itemIndex >= len(pl.Items) {
+		c.mu.Unlock()
+		return ErrInvalidItem
+	}
+
+	item := pl.Items[itemIndex]
+	mode := c.scheduler.Mode()
+	elapsed := time.Duration(elapsedMs) * time.Millisecond
+
+	// Update scheduler cursor with elapsed time.
+	c.scheduler.SetCursor(itemIndex, mode, elapsed)
+
+	// Close existing clip iterator since we're changing position.
+	if c.clipIter != nil {
+		c.clipIter.Close()
+		c.clipIter = nil
+	}
+	c.clipItemID = ""
+	c.clipFrame = 0
+	c.clipOutputFrame = 0
+	c.clipLastFrame = nil
+
+	// For clip items, open a new iterator and seek to the target frame.
+	if item.Type == ItemClip && c.config.AssetProvider != nil {
+		iter, err := c.config.AssetProvider.Open(item.AssetURI)
+		if err == nil {
+			// Wrap with trim if in/out points set.
+			var frameSource FrameIterator = iter
+			if item.InPointMs > 0 || item.OutPointMs > 0 {
+				frameSource = NewTrimIterator(iter, item.InPointMs, item.OutPointMs)
+			}
+
+			c.clipIter = frameSource
+			c.clipItemID = item.ID
+			c.clipFPS = frameSource.EstimateFPS()
+			c.clipTotal = frameSource.TotalFrames()
+			c.clipStartTime = time.Now().Add(-elapsed)
+
+			// Calculate target frame from elapsed time.
+			fps := c.clipFPS
+			if fps <= 0 {
+				fps = 30.0
+			}
+			targetFrame := int(float64(elapsedMs) * fps / 1000.0)
+
+			// Seek the iterator if it supports seeking.
+			if seeker, ok := frameSource.(interface{ Seek(int) error }); ok && targetFrame > 0 {
+				if err := seeker.Seek(targetFrame); err != nil {
+					slog.Warn("playout: SeekToItem seek failed, starting from beginning",
+						"item", item.ID, "targetFrame", targetFrame, "error", err)
+				} else {
+					c.clipFrame = targetFrame
+					c.clipOutputFrame = targetFrame
+				}
+			}
+		}
+	}
+
+	// For live items, update the active live source.
+	if item.Type == ItemLive && item.Source != "" {
+		c.activeLiveSource = item.Source
+	}
+
+	// Update progress atomics.
+	c.itemProgress.Store(0)
+	c.itemRemainMs.Store(item.DurationMs - elapsedMs)
+	c.secondaryItemID = item.ID
+	c.itemStartTime = time.Now().Add(-elapsed)
+
+	c.mu.Unlock()
+	return nil
+}
+
 // TakeManual pauses playlist advancement.
 func (c *Channel) TakeManual() {
 	c.mu.Lock()

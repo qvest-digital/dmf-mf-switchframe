@@ -837,3 +837,140 @@ func TestScheduler_CurrentItem(t *testing.T) {
 		t.Errorf("CurrentItem = %v, want item a", item)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// SetCursor tests
+// ---------------------------------------------------------------------------
+
+func TestScheduler_SetCursor_MovesCursorAndState(t *testing.T) {
+	s := NewScheduler()
+	pl := schedPlaylist(
+		schedSlateItem("s0", 5000),
+		schedSlateItem("s1", 3000),
+		schedClipItem("c2", 10000),
+	)
+	if err := s.LoadPlaylist(pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	s.Start()
+
+	// Move to item 2 with 500ms elapsed.
+	s.SetCursor(2, ModeManual, 500*time.Millisecond)
+
+	snap := s.StatusSnapshot()
+	if snap.Cursor != 2 {
+		t.Errorf("Cursor = %d, want 2", snap.Cursor)
+	}
+	if snap.Mode != ModeManual {
+		t.Errorf("Mode = %v, want ModeManual", snap.Mode)
+	}
+	if snap.State != SchedPlaying {
+		t.Errorf("State = %v, want SchedPlaying", snap.State)
+	}
+	// ItemStartTime should be ~500ms in the past.
+	elapsed := time.Since(snap.ItemStartTime)
+	if elapsed < 400*time.Millisecond || elapsed > 1*time.Second {
+		t.Errorf("elapsed since ItemStartTime = %v, want ~500ms", elapsed)
+	}
+
+	// Tick should return the correct item.
+	decision := s.Tick(time.Now())
+	if decision.Item == nil || decision.Item.ID != "c2" {
+		t.Errorf("Tick item = %v, want c2", decision.Item)
+	}
+}
+
+func TestScheduler_SetCursor_NoPlaylist(t *testing.T) {
+	s := NewScheduler()
+	// Should be a no-op, not panic.
+	s.SetCursor(0, ModeAutomated, 0)
+	if s.Cursor() != 0 {
+		t.Errorf("Cursor = %d after SetCursor with no playlist", s.Cursor())
+	}
+}
+
+func TestScheduler_SetCursor_OutOfRange(t *testing.T) {
+	s := NewScheduler()
+	pl := schedPlaylist(schedSlateItem("s0", 5000))
+	if err := s.LoadPlaylist(pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	s.Start()
+
+	// Index too high — should be a no-op.
+	s.SetCursor(5, ModeAutomated, 0)
+	if s.Cursor() != 0 {
+		t.Errorf("Cursor = %d, want 0 (unchanged) after out-of-range SetCursor", s.Cursor())
+	}
+
+	// Negative index — should be a no-op.
+	s.SetCursor(-1, ModeAutomated, 0)
+	if s.Cursor() != 0 {
+		t.Errorf("Cursor = %d, want 0 (unchanged) after negative SetCursor", s.Cursor())
+	}
+}
+
+func TestScheduler_SetCursor_SetsItemDuration(t *testing.T) {
+	s := NewScheduler()
+	pl := schedPlaylist(
+		schedSlateItem("s0", 5000),
+		schedSlateItem("s1", 3000),
+	)
+	if err := s.LoadPlaylist(pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	s.Start()
+
+	// Move to item 1 (3000ms duration slate).
+	s.SetCursor(1, ModeAutomated, 0)
+
+	// Verify itemDurationMs was set correctly.
+	s.mu.Lock()
+	dur := s.itemDurationMs
+	s.mu.Unlock()
+	if dur != 3000 {
+		t.Errorf("itemDurationMs = %d, want 3000", dur)
+	}
+}
+
+func TestScheduler_SetCursor_ClearsFlags(t *testing.T) {
+	s := NewScheduler()
+	pl := schedPlaylist(
+		schedSlateItem("s0", 5000),
+		schedSlateItem("s1", 3000),
+	)
+	if err := s.LoadPlaylist(pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	s.Start()
+
+	// Set some flags that should get cleared.
+	s.mu.Lock()
+	s.itemComplete = true
+	s.advancePend = true
+	s.holdComplete = true
+	s.idleWaiting = true
+	s.mu.Unlock()
+
+	s.SetCursor(1, ModeAutomated, 0)
+
+	s.mu.Lock()
+	ic := s.itemComplete
+	ap := s.advancePend
+	hc := s.holdComplete
+	iw := s.idleWaiting
+	s.mu.Unlock()
+
+	if ic {
+		t.Error("itemComplete should be false after SetCursor")
+	}
+	if ap {
+		t.Error("advancePend should be false after SetCursor")
+	}
+	if hc {
+		t.Error("holdComplete should be false after SetCursor")
+	}
+	if iw {
+		t.Error("idleWaiting should be false after SetCursor")
+	}
+}

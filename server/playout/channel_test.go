@@ -2349,3 +2349,148 @@ func TestChannel_ItemElapsedMs_Playing(t *testing.T) {
 		t.Errorf("ItemElapsedMs() = %d, implausibly large", elapsed)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// SeekToItem tests
+// ---------------------------------------------------------------------------
+
+func TestChannel_SeekToItem_SlatePlaylist(t *testing.T) {
+	provider := fakeProvider(90)
+	ch := NewChannel(1, ChannelConfig{AssetProvider: provider})
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {})
+
+	pl := testPlaylist(
+		slateItem("s0", 5000),
+		slateItem("s1", 3000),
+		slateItem("s2", 4000),
+	)
+	require.NoError(t, ch.LoadPlaylist(pl))
+	require.NoError(t, ch.Start())
+
+	// Wait for on-air.
+	waitFor(t, 2*time.Second, func() bool {
+		return ch.State() == StateOnAir
+	})
+
+	// Seek to item 2 with 1000ms elapsed.
+	err := ch.SeekToItem(2, 1000)
+	require.NoError(t, err)
+
+	// Verify cursor moved.
+	snap := ch.scheduler.StatusSnapshot()
+	if snap.Cursor != 2 {
+		t.Errorf("scheduler cursor = %d, want 2", snap.Cursor)
+	}
+
+	// Verify elapsed time is approximately 1000ms.
+	elapsedSinceStart := time.Since(snap.ItemStartTime)
+	if elapsedSinceStart < 900*time.Millisecond || elapsedSinceStart > 2*time.Second {
+		t.Errorf("elapsed since item start = %v, want ~1000ms", elapsedSinceStart)
+	}
+
+	ch.Stop()
+}
+
+func TestChannel_SeekToItem_NoPlaylist(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{})
+
+	err := ch.SeekToItem(0, 0)
+	if err != ErrNoPlaylist {
+		t.Errorf("SeekToItem with no playlist: got %v, want ErrNoPlaylist", err)
+	}
+}
+
+func TestChannel_SeekToItem_InvalidIndex(t *testing.T) {
+	provider := fakeProvider(30)
+	ch := NewChannel(1, ChannelConfig{AssetProvider: provider})
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {})
+
+	pl := testPlaylist(slateItem("s0", 5000))
+	require.NoError(t, ch.LoadPlaylist(pl))
+	require.NoError(t, ch.Start())
+
+	waitFor(t, 2*time.Second, func() bool {
+		return ch.State() == StateOnAir
+	})
+
+	// Negative index.
+	err := ch.SeekToItem(-1, 0)
+	if err != ErrInvalidItem {
+		t.Errorf("SeekToItem(-1): got %v, want ErrInvalidItem", err)
+	}
+
+	// Index beyond range.
+	err = ch.SeekToItem(5, 0)
+	if err != ErrInvalidItem {
+		t.Errorf("SeekToItem(5): got %v, want ErrInvalidItem", err)
+	}
+
+	ch.Stop()
+}
+
+func TestChannel_SeekToItem_LiveItem(t *testing.T) {
+	provider := fakeProvider(30)
+	ch := NewChannel(1, ChannelConfig{AssetProvider: provider})
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {})
+
+	pl := testPlaylist(
+		slateItem("s0", 5000),
+		liveItem("live1", "cam-1"),
+	)
+	require.NoError(t, ch.LoadPlaylist(pl))
+	require.NoError(t, ch.Start())
+
+	waitFor(t, 2*time.Second, func() bool {
+		return ch.State() == StateOnAir
+	})
+
+	// Seek to the live item.
+	err := ch.SeekToItem(1, 500)
+	require.NoError(t, err)
+
+	// Verify the active live source was updated.
+	ch.mu.Lock()
+	active := ch.activeLiveSource
+	ch.mu.Unlock()
+	if active != "cam-1" {
+		t.Errorf("activeLiveSource = %q, want %q", active, "cam-1")
+	}
+
+	ch.Stop()
+}
+
+func TestChannel_SeekToItem_ClosesExistingIterator(t *testing.T) {
+	provider := fakeProvider(90)
+	ch := NewChannel(1, ChannelConfig{AssetProvider: provider})
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {})
+
+	pl := testPlaylist(clipItem("a"), slateItem("s1", 5000))
+	require.NoError(t, ch.LoadPlaylist(pl))
+	require.NoError(t, ch.Start())
+
+	waitFor(t, 2*time.Second, func() bool {
+		return ch.State() == StateOnAir
+	})
+
+	// Let the clip start playing.
+	time.Sleep(50 * time.Millisecond)
+
+	// Seek to the slate item — should close any existing clip iterator.
+	err := ch.SeekToItem(1, 0)
+	require.NoError(t, err)
+
+	// Verify clip state was cleaned up.
+	ch.mu.Lock()
+	clipIter := ch.clipIter
+	clipItemID := ch.clipItemID
+	ch.mu.Unlock()
+
+	if clipIter != nil {
+		t.Error("clipIter should be nil after seeking to non-clip item")
+	}
+	if clipItemID != "" {
+		t.Errorf("clipItemID = %q, want empty", clipItemID)
+	}
+
+	ch.Stop()
+}

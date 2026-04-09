@@ -747,3 +747,93 @@ func TestManager_ChannelElapsedMs_Playing(t *testing.T) {
 		t.Errorf("ChannelElapsedMs(1) = %d, want > 0 when playing", elapsed)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// SeekToItem tests
+// ---------------------------------------------------------------------------
+
+func TestManager_SeekToItem_InvalidChannel(t *testing.T) {
+	m := NewManager(ManagerConfig{AssetProvider: fakeProvider(30)})
+	defer m.Close()
+
+	err := m.SeekToItem(0, 0, 0)
+	if err != ErrInvalidChannel {
+		t.Errorf("SeekToItem(0, ...): got %v, want ErrInvalidChannel", err)
+	}
+
+	err = m.SeekToItem(MaxChannels+1, 0, 0)
+	if err != ErrInvalidChannel {
+		t.Errorf("SeekToItem(%d, ...): got %v, want ErrInvalidChannel", MaxChannels+1, err)
+	}
+}
+
+func TestManager_SeekToItem_NoPlaylist(t *testing.T) {
+	m := NewManager(ManagerConfig{AssetProvider: fakeProvider(30)})
+	defer m.Close()
+
+	err := m.SeekToItem(1, 0, 0)
+	if err != ErrNoPlaylist {
+		t.Errorf("SeekToItem with no playlist: got %v, want ErrNoPlaylist", err)
+	}
+}
+
+func TestManager_SeekToItem_MovesSlate(t *testing.T) {
+	m := NewManager(ManagerConfig{AssetProvider: fakeProvider(90)})
+	defer m.Close()
+
+	pl := testPlaylist(
+		slateItem("s0", 5000),
+		slateItem("s1", 3000),
+		slateItem("s2", 4000),
+	)
+	if err := m.LoadPlaylist(1, pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	if err := m.Start(1); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		states := m.ChannelStates()
+		return states[0].State == "on_air"
+	})
+
+	// Seek to item 2.
+	err := m.SeekToItem(1, 2, 500)
+	if err != nil {
+		t.Fatalf("SeekToItem: %v", err)
+	}
+
+	// Verify cursor moved via channel states.
+	states := m.ChannelStates()
+	if states[0].ItemIndex != 2 {
+		t.Errorf("ItemIndex = %d, want 2", states[0].ItemIndex)
+	}
+
+	m.Stop(1)
+}
+
+func TestManager_SeekToItem_InvalidIndex(t *testing.T) {
+	m := NewManager(ManagerConfig{AssetProvider: fakeProvider(30)})
+	defer m.Close()
+
+	pl := testPlaylist(slateItem("s0", 5000))
+	if err := m.LoadPlaylist(1, pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+	if err := m.Start(1); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		states := m.ChannelStates()
+		return states[0].State == "on_air"
+	})
+
+	err := m.SeekToItem(1, 5, 0)
+	if err != ErrInvalidItem {
+		t.Errorf("SeekToItem with invalid index: got %v, want ErrInvalidItem", err)
+	}
+
+	m.Stop(1)
+}

@@ -354,6 +354,19 @@ func (m *Manager) ChannelElapsedMs(channelID int) int64 {
 	return ch.ItemElapsedMs()
 }
 
+// SeekToItem repositions a channel to a specific playlist item at a given
+// elapsed offset. Used by snapshot-driven sync to align a standby engine's
+// playout cursor with the active engine's state.
+func (m *Manager) SeekToItem(channelID, itemIndex int, elapsedMs int64) error {
+	if err := m.validateChannelID(channelID); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	ch := m.channels[channelID-1]
+	m.mu.Unlock()
+	return ch.SeekToItem(itemIndex, elapsedMs)
+}
+
 // ChannelStates returns the status of all playout channels.
 func (m *Manager) ChannelStates() []ChannelStatus {
 	m.mu.Lock()

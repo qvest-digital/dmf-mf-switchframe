@@ -359,6 +359,31 @@ func (s *Scheduler) StatusSnapshot() SchedulerSnapshot {
 	}
 }
 
+// SetCursor restores the scheduler to a specific item position with mode and
+// elapsed time. Used by snapshot-driven sync to align a standby engine's
+// playout cursor with the active engine's state.
+func (s *Scheduler) SetCursor(index int, mode OnAirMode, elapsed time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.playlist == nil || index < 0 || index >= len(s.playlist.Items) {
+		return
+	}
+	s.cursor = index
+	s.mode = mode
+	s.state = SchedPlaying
+	s.itemStartTime = time.Now().Add(-elapsed)
+	s.itemComplete = false
+	s.advancePend = false
+	s.holdComplete = false
+	s.idleWaiting = false
+	item := s.playlist.Items[index]
+	if item.DurationMs > 0 {
+		s.itemDurationMs = int64(item.DurationMs)
+	} else {
+		s.itemDurationMs = 0
+	}
+}
+
 // Playlist returns the loaded playlist, or nil. The returned pointer is
 // the scheduler's internal reference; the caller must not mutate it.
 func (s *Scheduler) Playlist() *Playlist {
