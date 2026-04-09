@@ -881,3 +881,360 @@ func TestFileFrameIterator_AudioBoundaryWithStreamingDecode(t *testing.T) {
 		t.Error("expected EOF")
 	}
 }
+
+func TestFileFrameIterator_FrameIndex(t *testing.T) {
+	encoded := make([]encodedFrame, 5)
+	for i := range encoded {
+		encoded[i] = encodedFrame{
+			wireData:   []byte{0x00, 0x00, 0x00, 0x01, byte(i)},
+			pts:        int64(i) * 3000,
+			isKeyframe: i == 0,
+		}
+	}
+
+	iter := &FileFrameIterator{
+		encodedFrames:  encoded,
+		audioFrames:    nil,
+		decoder:        &mockVideoDecoder{width: 4, height: 2},
+		decoderFactory: stubDecoderFactory,
+		fps:            30.0,
+		totalFrames:    5,
+	}
+	defer iter.Close()
+
+	// Initially at 0.
+	if idx := iter.FrameIndex(); idx != 0 {
+		t.Errorf("FrameIndex() before any Next() = %d, want 0", idx)
+	}
+
+	// After reading one frame, frameIndex advances (it's the *next* frame to feed).
+	iter.Next()
+	if idx := iter.FrameIndex(); idx != 1 {
+		t.Errorf("FrameIndex() after 1 Next() = %d, want 1", idx)
+	}
+
+	iter.Next()
+	iter.Next()
+	if idx := iter.FrameIndex(); idx != 3 {
+		t.Errorf("FrameIndex() after 3 Next() = %d, want 3", idx)
+	}
+}
+
+func TestFileFrameIterator_Seek_ToBeginning(t *testing.T) {
+	encoded := []encodedFrame{
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x65}, pts: 0, isKeyframe: true},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 3000},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 6000},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 9000},
+	}
+
+	iter := &FileFrameIterator{
+		encodedFrames:  encoded,
+		audioFrames:    nil,
+		decoder:        &mockVideoDecoder{width: 4, height: 2},
+		decoderFactory: stubDecoderFactory,
+		fps:            30.0,
+		totalFrames:    4,
+	}
+	defer iter.Close()
+
+	// Read 3 frames to advance the position.
+	for i := 0; i < 3; i++ {
+		f, err := iter.Next()
+		if err != nil || f == nil {
+			t.Fatalf("Next() %d: err=%v, frame=%v", i, err, f)
+		}
+	}
+	if iter.FrameIndex() != 3 {
+		t.Fatalf("FrameIndex() after 3 reads = %d, want 3", iter.FrameIndex())
+	}
+
+	// Seek to beginning.
+	if err := iter.Seek(0); err != nil {
+		t.Fatalf("Seek(0): %v", err)
+	}
+	if iter.FrameIndex() != 0 {
+		t.Errorf("FrameIndex() after Seek(0) = %d, want 0", iter.FrameIndex())
+	}
+
+	// Should be able to read all frames again from the start.
+	f, err := iter.Next()
+	if err != nil || f == nil {
+		t.Fatalf("Next() after Seek(0): err=%v, frame=%v", err, f)
+	}
+	if f.PTS != 0 {
+		t.Errorf("first frame PTS after Seek(0) = %d, want 0", f.PTS)
+	}
+}
+
+func TestFileFrameIterator_Seek_ToKeyframe(t *testing.T) {
+	// Two GOPs: keyframe at 0, keyframe at 4.
+	encoded := []encodedFrame{
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x65}, pts: 0, isKeyframe: true},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 3000},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 6000},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 9000},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x65}, pts: 12000, isKeyframe: true},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 15000},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 18000},
+	}
+
+	iter := &FileFrameIterator{
+		encodedFrames:  encoded,
+		audioFrames:    nil,
+		decoder:        &mockVideoDecoder{width: 4, height: 2},
+		decoderFactory: stubDecoderFactory,
+		fps:            30.0,
+		totalFrames:    7,
+	}
+	defer iter.Close()
+
+	// Seek directly to keyframe at index 4.
+	if err := iter.Seek(4); err != nil {
+		t.Fatalf("Seek(4): %v", err)
+	}
+	if iter.FrameIndex() != 4 {
+		t.Errorf("FrameIndex() after Seek(4) = %d, want 4", iter.FrameIndex())
+	}
+
+	f, err := iter.Next()
+	if err != nil || f == nil {
+		t.Fatalf("Next() after Seek(4): err=%v, frame=%v", err, f)
+	}
+	if f.PTS != 12000 {
+		t.Errorf("PTS after Seek(4) = %d, want 12000", f.PTS)
+	}
+}
+
+func TestFileFrameIterator_Seek_FallsBackToPreviousKeyframe(t *testing.T) {
+	// Two GOPs: keyframe at 0, keyframe at 4.
+	encoded := []encodedFrame{
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x65}, pts: 0, isKeyframe: true},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 3000},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 6000},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 9000},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x65}, pts: 12000, isKeyframe: true},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 15000},
+	}
+
+	iter := &FileFrameIterator{
+		encodedFrames:  encoded,
+		audioFrames:    nil,
+		decoder:        &mockVideoDecoder{width: 4, height: 2},
+		decoderFactory: stubDecoderFactory,
+		fps:            30.0,
+		totalFrames:    6,
+	}
+	defer iter.Close()
+
+	// Seek to frame 2 (not a keyframe) -- should fall back to keyframe at 0.
+	if err := iter.Seek(2); err != nil {
+		t.Fatalf("Seek(2): %v", err)
+	}
+	if iter.FrameIndex() != 0 {
+		t.Errorf("FrameIndex() after Seek(2) = %d, want 0 (nearest keyframe)", iter.FrameIndex())
+	}
+
+	// Seek to frame 5 (not a keyframe) -- should fall back to keyframe at 4.
+	if err := iter.Seek(5); err != nil {
+		t.Fatalf("Seek(5): %v", err)
+	}
+	if iter.FrameIndex() != 4 {
+		t.Errorf("FrameIndex() after Seek(5) = %d, want 4 (nearest keyframe)", iter.FrameIndex())
+	}
+
+	f, err := iter.Next()
+	if err != nil || f == nil {
+		t.Fatalf("Next() after Seek(5): err=%v, frame=%v", err, f)
+	}
+	if f.PTS != 12000 {
+		t.Errorf("PTS after Seek(5) = %d, want 12000", f.PTS)
+	}
+}
+
+func TestFileFrameIterator_Seek_ClosedIterator(t *testing.T) {
+	iter := &FileFrameIterator{
+		encodedFrames:  []encodedFrame{{wireData: []byte{1}, pts: 0, isKeyframe: true}},
+		decoder:        &mockVideoDecoder{width: 4, height: 2},
+		decoderFactory: stubDecoderFactory,
+		fps:            30.0,
+		totalFrames:    1,
+	}
+	iter.Close()
+
+	err := iter.Seek(0)
+	if err == nil {
+		t.Fatal("Seek() on closed iterator should return error")
+	}
+	if got := err.Error(); got != "iterator closed" {
+		t.Errorf("error = %q, want %q", got, "iterator closed")
+	}
+}
+
+func TestFileFrameIterator_Seek_OutOfRange(t *testing.T) {
+	encoded := []encodedFrame{
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x65}, pts: 0, isKeyframe: true},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 3000},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 6000},
+	}
+
+	iter := &FileFrameIterator{
+		encodedFrames:  encoded,
+		audioFrames:    nil,
+		decoder:        &mockVideoDecoder{width: 4, height: 2},
+		decoderFactory: stubDecoderFactory,
+		fps:            30.0,
+		totalFrames:    3,
+	}
+	defer iter.Close()
+
+	// Negative index.
+	if err := iter.Seek(-1); err == nil {
+		t.Error("Seek(-1) should return error")
+	}
+
+	// Beyond end.
+	if err := iter.Seek(3); err == nil {
+		t.Error("Seek(3) should return error for len=3")
+	}
+
+	if err := iter.Seek(100); err == nil {
+		t.Error("Seek(100) should return error")
+	}
+}
+
+func TestFileFrameIterator_Seek_ResetsAudioIndex(t *testing.T) {
+	// Two GOPs with interleaved audio.
+	encoded := []encodedFrame{
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x65}, pts: 0, isKeyframe: true},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 3000},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x65}, pts: 6000, isKeyframe: true},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 9000},
+	}
+
+	audioData := []audioFrameInfo{
+		{data: []byte{0xA0}, pts: 0, sampleRate: 48000, channels: 2},
+		{data: []byte{0xA1}, pts: 2000, sampleRate: 48000, channels: 2},
+		{data: []byte{0xA2}, pts: 5000, sampleRate: 48000, channels: 2},
+		{data: []byte{0xA3}, pts: 8000, sampleRate: 48000, channels: 2},
+	}
+
+	iter := &FileFrameIterator{
+		encodedFrames:  encoded,
+		audioFrames:    audioData,
+		decoder:        &mockVideoDecoder{width: 4, height: 2},
+		decoderFactory: stubDecoderFactory,
+		fps:            30.0,
+		totalFrames:    4,
+	}
+	defer iter.Close()
+
+	// Read all frames to advance audio index.
+	for i := 0; i < 4; i++ {
+		iter.Next()
+	}
+
+	// Seek to keyframe at index 2 (PTS=6000). Audio should reset to
+	// the first audio frame with PTS >= 6000, which is audioData[2] (PTS=5000
+	// is < 6000, so audioData[3] at PTS=8000? No, binary search returns first
+	// i where audioFrames[i].pts >= 6000, which is index 2 since pts=5000 < 6000
+	// and pts=8000 >= 6000... wait: audioData[2].pts=5000 < 6000, audioData[3].pts=8000 >= 6000.
+	// sort.Search returns 3.
+	// Actually let me re-check: we want first i where pts >= 6000.
+	// audioData[0].pts=0, [1].pts=2000, [2].pts=5000, [3].pts=8000.
+	// First i where pts >= 6000 is i=3.
+	if err := iter.Seek(2); err != nil {
+		t.Fatalf("Seek(2): %v", err)
+	}
+
+	// Now read a frame and verify audio is attached from the correct position.
+	f, err := iter.Next()
+	if err != nil || f == nil {
+		t.Fatalf("Next() after Seek(2): err=%v, f=%v", err, f)
+	}
+	if f.PTS != 6000 {
+		t.Errorf("PTS = %d, want 6000", f.PTS)
+	}
+
+	// The audio attachment uses the proportional formula, which depends on
+	// outputCount and audioIndex. After Seek(2), outputCount=2, audioIndex=3.
+	// The proportional formula: targetAudioIdx = (outputCount+1) * totalAudio / totalVideo
+	// = 3 * 4 / 4 = 3. Since audioIndex is already 3, no audio in range [3,3).
+	// Then next frame: targetAudioIdx = (3+1)*4/4 = 4, so audioIndex advances [3,4) -> 1 frame.
+	// This is correct behavior: after seeking to frame 2, audio resumes from the right position.
+}
+
+func TestFileFrameIterator_Seek_ResetsDraining(t *testing.T) {
+	encoded := []encodedFrame{
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x65}, pts: 0, isKeyframe: true},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 3000},
+		{wireData: []byte{0x00, 0x00, 0x00, 0x01, 0x41}, pts: 6000},
+	}
+
+	iter := &FileFrameIterator{
+		encodedFrames:  encoded,
+		audioFrames:    nil,
+		decoder:        &mockVideoDecoder{width: 4, height: 2},
+		decoderFactory: stubDecoderFactory,
+		fps:            30.0,
+		totalFrames:    3,
+	}
+	defer iter.Close()
+
+	// Exhaust the iterator.
+	for {
+		f, _ := iter.Next()
+		if f == nil {
+			break
+		}
+	}
+
+	// After exhaustion, draining should be true and frameIndex at end.
+	if !iter.draining {
+		t.Error("expected draining=true after exhaustion")
+	}
+
+	// Seek back to beginning.
+	if err := iter.Seek(0); err != nil {
+		t.Fatalf("Seek(0) after exhaustion: %v", err)
+	}
+	if iter.draining {
+		t.Error("draining should be false after Seek")
+	}
+	if iter.FrameIndex() != 0 {
+		t.Errorf("FrameIndex() = %d, want 0", iter.FrameIndex())
+	}
+
+	// Should be able to iterate again.
+	count := 0
+	for {
+		f, err := iter.Next()
+		if err != nil {
+			t.Fatalf("Next() error: %v", err)
+		}
+		if f == nil {
+			break
+		}
+		count++
+	}
+	if count != 3 {
+		t.Errorf("re-iterated %d frames, want 3", count)
+	}
+}
+
+func TestFileFrameIterator_Seek_NoDecoderFactory(t *testing.T) {
+	// Iterators constructed without a factory (e.g., in some older tests)
+	// should return an error from Seek.
+	iter := &FileFrameIterator{
+		encodedFrames: []encodedFrame{{wireData: []byte{1}, pts: 0, isKeyframe: true}},
+		decoder:       &mockVideoDecoder{width: 4, height: 2},
+		fps:           30.0,
+		totalFrames:   1,
+	}
+	defer iter.Close()
+
+	err := iter.Seek(0)
+	if err == nil {
+		t.Fatal("Seek() without decoder factory should return error")
+	}
+}

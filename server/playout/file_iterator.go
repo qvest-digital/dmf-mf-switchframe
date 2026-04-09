@@ -2,6 +2,7 @@ package playout
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/zsiec/switchframe/server/clip"
@@ -64,10 +65,11 @@ type FileFrameIterator struct {
 	audioFrames   []audioFrameInfo
 
 	// Decode state.
-	decoder    VideoDecoder // kept alive across Next() calls
-	draining   bool         // true after all encoded frames have been fed
-	frameIndex int          // next encoded frame to feed
-	audioIndex int          // next audio frame to consider
+	decoder        VideoDecoder   // kept alive across Next() calls
+	decoderFactory DecoderFactory // for creating fresh decoders on Seek
+	draining       bool           // true after all encoded frames have been fed
+	frameIndex     int            // next encoded frame to feed
+	audioIndex     int            // next audio frame to consider
 
 	// Output tracking for PTS estimation during drain.
 	outputCount int   // number of decoded frames returned so far
@@ -183,11 +185,12 @@ func NewFileFrameIteratorWithDecoder(path string, factory DecoderFactory) (*File
 	// generates 1s@30fps with zerolatency tune (no B-frames), so encoded==decoded.
 
 	return &FileFrameIterator{
-		encodedFrames: encoded,
-		audioFrames:   audio,
-		decoder:       decoder,
-		fps:           fps,
-		totalFrames:   len(encoded),
+		encodedFrames:  encoded,
+		audioFrames:    audio,
+		decoder:        decoder,
+		decoderFactory: factory,
+		fps:            fps,
+		totalFrames:    len(encoded),
 	}, nil
 }
 
@@ -336,6 +339,59 @@ func (f *FileFrameIterator) EstimateFPS() float64 {
 // decoded frames may differ slightly due to B-frame reordering drain.
 func (f *FileFrameIterator) TotalFrames() int {
 	return f.totalFrames
+}
+
+// FrameIndex returns the current position in the encoded frame list.
+func (f *FileFrameIterator) FrameIndex() int {
+	return f.frameIndex
+}
+
+// Seek repositions the iterator to the nearest keyframe at or before targetFrame.
+// The old decoder is closed and a fresh one is created so decoding restarts
+// cleanly from the keyframe's SPS/PPS headers.
+func (f *FileFrameIterator) Seek(targetFrame int) error {
+	if f.closed {
+		return fmt.Errorf("iterator closed")
+	}
+	if targetFrame < 0 || targetFrame >= len(f.encodedFrames) {
+		return fmt.Errorf("seek target %d out of range [0, %d)", targetFrame, len(f.encodedFrames))
+	}
+	if f.decoderFactory == nil {
+		return fmt.Errorf("seek: no decoder factory available")
+	}
+
+	// Find nearest keyframe at or before targetFrame.
+	seekIdx := targetFrame
+	for seekIdx > 0 && !f.encodedFrames[seekIdx].isKeyframe {
+		seekIdx--
+	}
+
+	// Close old decoder, create fresh one.
+	if f.decoder != nil {
+		f.decoder.Close()
+	}
+	dec, err := f.decoderFactory()
+	if err != nil {
+		return fmt.Errorf("seek: create decoder: %w", err)
+	}
+	f.decoder = dec
+
+	// Reset state to keyframe position.
+	f.frameIndex = seekIdx
+	f.outputCount = seekIdx
+	f.draining = false
+	f.lastPTS = 0
+	f.prevPTS = 0
+
+	// Reset audio index to match video position by PTS.
+	if seekIdx < len(f.encodedFrames) {
+		targetPTS := f.encodedFrames[seekIdx].pts
+		f.audioIndex = sort.Search(len(f.audioFrames), func(i int) bool {
+			return f.audioFrames[i].pts >= targetPTS
+		})
+	}
+
+	return nil
 }
 
 // Close releases the decoder resources.
