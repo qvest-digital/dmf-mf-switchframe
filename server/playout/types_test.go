@@ -280,18 +280,19 @@ func TestMaxChannels(t *testing.T) {
 
 func TestChannelStatus_JSON(t *testing.T) {
 	status := ChannelStatus{
-		ID:            1,
-		State:         StateStopped.String(),
-		Mode:          ModeAutomated.String(),
-		PlaylistName:  "Evening News",
-		CurrentItemID: "item-001",
-		CurrentTitle:  "Opening",
-		NextItemID:    "item-002",
-		NextTitle:     "Headlines",
-		ItemIndex:     0,
-		ItemCount:     10,
-		ItemProgress:  0.45,
-		ItemRemainMs:  5500,
+		ID:             1,
+		State:          StateStopped.String(),
+		SchedulerState: "playing",
+		Mode:           ModeAutomated.String(),
+		PlaylistName:   "Evening News",
+		CurrentItemID:  "item-001",
+		CurrentTitle:   "Opening",
+		NextItemID:     "item-002",
+		NextTitle:      "Headlines",
+		ItemIndex:      0,
+		ItemCount:      10,
+		ItemProgress:   0.45,
+		ItemRemainMs:   5500,
 	}
 
 	data, err := json.Marshal(status)
@@ -309,6 +310,9 @@ func TestChannelStatus_JSON(t *testing.T) {
 	}
 	if got.State != "stopped" {
 		t.Errorf("State = %q, want %q", got.State, "stopped")
+	}
+	if got.SchedulerState != "playing" {
+		t.Errorf("SchedulerState = %q, want %q", got.SchedulerState, "playing")
 	}
 	if got.Mode != "automated" {
 		t.Errorf("Mode = %q, want %q", got.Mode, "automated")

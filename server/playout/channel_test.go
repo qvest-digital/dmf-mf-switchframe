@@ -474,6 +474,49 @@ func TestChannel_Status(t *testing.T) {
 	}
 }
 
+func TestChannel_Status_SchedulerState(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{
+		AssetProvider: fakeProvider(30),
+	})
+
+	// Stopped channel should report scheduler state "idle".
+	status := ch.Status()
+	if status.SchedulerState != "idle" {
+		t.Errorf("stopped: SchedulerState = %q, want %q", status.SchedulerState, "idle")
+	}
+
+	// Load and start — scheduler should move to "playing".
+	pl := testPlaylist(clipItem("a"), clipItem("b"))
+	_ = ch.LoadPlaylist(pl)
+	_ = ch.Start()
+
+	// Wait for the scheduler to advance into playing state.
+	waitFor(t, 2*time.Second, func() bool {
+		return ch.Status().SchedulerState == "playing"
+	})
+
+	status = ch.Status()
+	if status.SchedulerState != "playing" {
+		t.Errorf("on_air: SchedulerState = %q, want %q", status.SchedulerState, "playing")
+	}
+
+	// Critically: SchedulerState must NOT be a channel state like "on_air".
+	if status.SchedulerState == "on_air" {
+		t.Error("SchedulerState is 'on_air' (channel state leaked into scheduler state)")
+	}
+
+	ch.Stop()
+
+	// After stop, scheduler goes back to idle.
+	waitFor(t, 2*time.Second, func() bool {
+		return ch.Status().SchedulerState == "idle"
+	})
+	status = ch.Status()
+	if status.SchedulerState != "idle" {
+		t.Errorf("after stop: SchedulerState = %q, want %q", status.SchedulerState, "idle")
+	}
+}
+
 func TestChannel_StopCallback(t *testing.T) {
 	ch := NewChannel(1, ChannelConfig{
 		AssetProvider: fakeProvider(3),

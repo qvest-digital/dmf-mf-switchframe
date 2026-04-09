@@ -176,19 +176,20 @@ type Playlist struct {
 
 // ChannelStatus is the broadcast state of a playout channel.
 type ChannelStatus struct {
-	ID            int             `json:"id"`
-	State         string          `json:"state"`
-	Mode          string          `json:"mode,omitempty"`
-	PlaylistName  string          `json:"playlistName,omitempty"`
-	CurrentItemID string          `json:"currentItemId,omitempty"`
-	CurrentTitle  string          `json:"currentTitle,omitempty"`
-	NextItemID    string          `json:"nextItemId,omitempty"`
-	NextTitle     string          `json:"nextTitle,omitempty"`
-	ItemIndex     int             `json:"itemIndex"`
-	ItemCount     int             `json:"itemCount"`
-	ItemProgress  float64         `json:"itemProgress,omitempty"`
-	ItemRemainMs  int64           `json:"itemRemainMs,omitempty"`
-	Pods          *PodBoardStatus `json:"pods,omitempty"`
+	ID             int             `json:"id"`
+	State          string          `json:"state"`
+	SchedulerState string          `json:"schedulerState,omitempty"`
+	Mode           string          `json:"mode,omitempty"`
+	PlaylistName   string          `json:"playlistName,omitempty"`
+	CurrentItemID  string          `json:"currentItemId,omitempty"`
+	CurrentTitle   string          `json:"currentTitle,omitempty"`
+	NextItemID     string          `json:"nextItemId,omitempty"`
+	NextTitle      string          `json:"nextTitle,omitempty"`
+	ItemIndex      int             `json:"itemIndex"`
+	ItemCount      int             `json:"itemCount"`
+	ItemProgress   float64         `json:"itemProgress,omitempty"`
+	ItemRemainMs   int64           `json:"itemRemainMs,omitempty"`
+	Pods           *PodBoardStatus `json:"pods,omitempty"`
 }
 
 // MaxChannels is the maximum number of playout channels.

@@ -1078,13 +1078,17 @@ func (a *App) captureFullSnapshot() internal.FullStateSnapshot {
 			if s.State == "idle" && s.PlaylistName == "" {
 				continue
 			}
+			schedState := s.SchedulerState
+			if schedState == "" {
+				schedState = s.State // fallback for non-on-air channels
+			}
 			snap.PlayoutChannels = append(snap.PlayoutChannels, internal.PlayoutChannelSnapshot{
 				ChannelIndex:     i,
 				ChannelState:     s.State,
 				CurrentItemIndex: s.ItemIndex,
 				CurrentItemID:    s.CurrentItemID,
 				ElapsedMs:        a.playoutMgr.ChannelElapsedMs(i + 1),
-				SchedulerState:   s.State,
+				SchedulerState:   schedState,
 				SchedulerMode:    s.Mode,
 				PlaylistHash:     a.playoutMgr.PlaylistHash(i + 1),
 			})

@@ -203,6 +203,8 @@ func (c *Channel) Status() ChannelStatus {
 	// Take a consistent snapshot of scheduler state under one lock.
 	snap := c.scheduler.StatusSnapshot()
 
+	st.SchedulerState = snap.State.String()
+
 	if c.state == StateOnAir {
 		st.Mode = snap.Mode.String()
 	}
