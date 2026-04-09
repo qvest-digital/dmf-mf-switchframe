@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/comms"
 	"github.com/zsiec/switchframe/server/control"
 	"github.com/zsiec/switchframe/server/srt"
@@ -62,6 +63,12 @@ type AppConfig struct {
 	PreviewResolution    string // Preview resolution (e.g. "480p", "360p")
 	PreviewBitrate       int    // Preview bitrate in bps (default 500000)
 	PreviewFrameInterval int    // Encode every Nth frame (1=all, 2=half rate). Default 1.
+
+	// Program output encoder settings.
+	OutputBitrate  int    // --output-bitrate (bps, 0 = auto from resolution)
+	OutputGOPSecs  int    // --output-gop-secs (1, 2, or 4)
+	OutputPreset   string // --output-preset (low-latency, balanced, quality)
+	OutputTimecode bool   // --output-timecode (SMPTE 12M timecode insertion)
 
 	// SCTE-35 signaling.
 	SCTE35            bool   // Enable SCTE-35 insertion
@@ -262,6 +269,12 @@ func parseConfig() (AppConfig, error) {
 	previewBitrateFlag := flag.Int("preview-bitrate", 500000, "Preview encode bitrate in bps")
 	previewFrameIntervalFlag := flag.Int("preview-frame-interval", 1, "Preview encode every Nth frame (1=all, 2=half rate)")
 
+	// Program output encoder flags.
+	outputBitrateFlag := flag.Int("output-bitrate", 0, "Program output encoder bitrate in bps (0 = auto from resolution)")
+	outputGOPSecsFlag := flag.Int("output-gop-secs", 0, "Program output GOP/keyframe interval in seconds (1, 2, or 4; 0 = default 2)")
+	outputPresetFlag := flag.String("output-preset", "", "Program output encoder preset (low-latency, balanced, quality; empty = balanced)")
+	outputTimecodeFlag := flag.Bool("output-timecode", false, "Enable SMPTE 12M timecode insertion in program output")
+
 	// SCTE-35 flags.
 	scte35Flag := flag.Bool("scte35", false, "Enable SCTE-35 insertion")
 	scte35PIDFlag := flag.Int("scte35-pid", 0x102, "SCTE-35 PID in MPEG-TS output")
@@ -361,6 +374,17 @@ func parseConfig() (AppConfig, error) {
 		}
 	}
 
+	// Validate output encoder options.
+	encOpts := codec.EncoderOptions{
+		Bitrate:  *outputBitrateFlag,
+		GOPSecs:  *outputGOPSecsFlag,
+		Preset:   codec.OutputPreset(*outputPresetFlag),
+		Timecode: *outputTimecodeFlag,
+	}
+	if err := encOpts.Validate(); err != nil {
+		return AppConfig{}, err
+	}
+
 	// MXL sources: CLI flag takes precedence over environment variable.
 	var mxlSources []string
 	if *mxlSourcesFlag != "" {
@@ -438,6 +462,10 @@ func parseConfig() (AppConfig, error) {
 		PreviewResolution:    *previewResolutionFlag,
 		PreviewBitrate:       *previewBitrateFlag,
 		PreviewFrameInterval: *previewFrameIntervalFlag,
+		OutputBitrate:        *outputBitrateFlag,
+		OutputGOPSecs:        *outputGOPSecsFlag,
+		OutputPreset:         *outputPresetFlag,
+		OutputTimecode:       *outputTimecodeFlag,
 		SCTE35:               *scte35Flag,
 		SCTE35PID:            uint16(*scte35PIDFlag),
 		SCTE35PreRollMs:      int64(*scte35PreRollFlag),
