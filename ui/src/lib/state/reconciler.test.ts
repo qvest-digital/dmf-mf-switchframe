@@ -302,6 +302,48 @@ describe('createReconciler', () => {
 			expect(r.health.status).not.toBe('mismatch');
 		});
 
+		it('reports mismatch when playout elapsed time diverges > 5s on same item', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 10,
+				playout: { channels: [{ id: 0, state: 'on_air', itemIndex: 2, itemCount: 15, currentTitle: 'Interview', itemRemainMs: 25000 }] },
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 10,
+				playout: { channels: [{ id: 0, state: 'on_air', itemIndex: 2, itemCount: 15, currentTitle: 'Interview', itemRemainMs: 19000 }] },
+			}));
+			r.tick();
+			expect(r.health.status).toBe('mismatch');
+		});
+
+		it('tolerates playout elapsed time divergence <= 5s', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 10,
+				playout: { channels: [{ id: 0, state: 'on_air', itemIndex: 2, itemCount: 15, currentTitle: 'Interview', itemRemainMs: 25000 }] },
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 10,
+				playout: { channels: [{ id: 0, state: 'on_air', itemIndex: 2, itemCount: 15, currentTitle: 'Interview', itemRemainMs: 22000 }] },
+			}));
+			r.tick();
+			expect(r.health.status).toBe('synced');
+		});
+
+		it('skips playout elapsed check when channels not on-air', () => {
+			const r = createReconciler();
+			r.ingest('A', makeState({
+				lastCommandSeq: 10,
+				playout: { channels: [{ id: 0, state: 'stopped', itemIndex: 2, itemCount: 15, itemRemainMs: 25000 }] },
+			}));
+			r.ingest('B', makeState({
+				lastCommandSeq: 10,
+				playout: { channels: [{ id: 0, state: 'stopped', itemIndex: 2, itemCount: 15, itemRemainMs: 8000 }] },
+			}));
+			r.tick();
+			expect(r.health.status).toBe('synced');
+		});
+
 		it('does not report mismatch when fields agree at same seq', () => {
 			const r = createReconciler();
 			const s = makeState({ lastCommandSeq: 5 });

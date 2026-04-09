@@ -611,6 +611,73 @@ describe('reconciler behavioral tests', () => {
 			// No playout on B means no channel comparison — should not mismatch
 			expect(r.health.status).not.toBe('mismatch');
 		});
+
+		it('detects playout elapsed divergence > 5s on same item', () => {
+			const r = createReconciler();
+
+			const playoutA: { channels: PlayoutChannelState[] } = {
+				channels: [{
+					id: 0, state: 'on_air', itemIndex: 3, itemCount: 10,
+					currentTitle: 'Interview', itemRemainMs: 20000,
+				}],
+			};
+			const playoutB: { channels: PlayoutChannelState[] } = {
+				channels: [{
+					id: 0, state: 'on_air', itemIndex: 3, itemCount: 10,
+					currentTitle: 'Interview', itemRemainMs: 14000,
+				}],
+			};
+
+			r.ingest('A', makeState({ playout: playoutA, lastCommandSeq: 10 }));
+			r.ingest('B', makeState({ playout: playoutB, lastCommandSeq: 10 }));
+
+			expect(r.health.status).toBe('mismatch');
+		});
+
+		it('tolerates playout elapsed divergence <= 5s', () => {
+			const r = createReconciler();
+
+			const playoutA: { channels: PlayoutChannelState[] } = {
+				channels: [{
+					id: 0, state: 'on_air', itemIndex: 3, itemCount: 10,
+					currentTitle: 'Interview', itemRemainMs: 20000,
+				}],
+			};
+			const playoutB: { channels: PlayoutChannelState[] } = {
+				channels: [{
+					id: 0, state: 'on_air', itemIndex: 3, itemCount: 10,
+					currentTitle: 'Interview', itemRemainMs: 17000,
+				}],
+			};
+
+			r.ingest('A', makeState({ playout: playoutA, lastCommandSeq: 10 }));
+			r.ingest('B', makeState({ playout: playoutB, lastCommandSeq: 10 }));
+
+			expect(r.health.status).toBe('synced');
+		});
+
+		it('skips elapsed check when channels not on-air', () => {
+			const r = createReconciler();
+
+			const playoutA: { channels: PlayoutChannelState[] } = {
+				channels: [{
+					id: 0, state: 'stopped', itemIndex: 3, itemCount: 10,
+					itemRemainMs: 20000,
+				}],
+			};
+			const playoutB: { channels: PlayoutChannelState[] } = {
+				channels: [{
+					id: 0, state: 'stopped', itemIndex: 3, itemCount: 10,
+					itemRemainMs: 8000,
+				}],
+			};
+
+			r.ingest('A', makeState({ playout: playoutA, lastCommandSeq: 10 }));
+			r.ingest('B', makeState({ playout: playoutB, lastCommandSeq: 10 }));
+
+			// Both stopped — elapsed time difference should be ignored
+			expect(r.health.status).toBe('synced');
+		});
 	});
 
 	// ─── Engine health tracking ───
