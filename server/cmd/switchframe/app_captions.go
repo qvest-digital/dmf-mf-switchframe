@@ -10,6 +10,27 @@ import (
 	"github.com/zsiec/switchframe/server/switcher"
 )
 
+// initPicTiming configures pic_timing SEI injection for the program output.
+// Runs independently of --captions: SMPTE 12M timecode is an output encoder
+// setting, not a caption feature.
+func (a *App) initPicTiming() {
+	pf := a.sw.PipelineFormat()
+	var ptCfg caption.PicTimingConfig
+	if pf.Color.Codec == switcher.CodecHEVC {
+		ptCfg = caption.DefaultHEVCPicTimingConfig()
+	} else {
+		ptCfg = caption.DefaultPicTimingConfig()
+	}
+	ptCfg.TimecodeEnabled = a.cfg.OutputTimecode
+	ptCfg.FPSNum = pf.FPSNum
+	ptCfg.FPSDen = pf.FPSDen
+	a.sw.SetPicTimingConfig(&ptCfg)
+
+	if a.cfg.OutputTimecode {
+		slog.Info("SMPTE 12M timecode enabled in program output")
+	}
+}
+
 // initCaptions sets up the caption manager when --captions is enabled.
 // Creates the manager, wires it to the switcher for SEI injection,
 // and optionally sets up VANC output for MXL SDI.
@@ -23,21 +44,6 @@ func (a *App) initCaptions() error {
 
 	// Wire caption manager to switcher for SEI injection.
 	a.sw.SetCaptionManager(mgr)
-
-	// Enable pic_timing SEI injection for broadcast decoder compatibility.
-	// Downstream equipment (Evertz, Harmonic, etc.) requires pic_timing to
-	// precede user_data_registered_itu_t_t35 (caption SEI) in each access unit.
-	pf := a.sw.PipelineFormat()
-	var ptCfg caption.PicTimingConfig
-	if pf.Color.Codec == switcher.CodecHEVC {
-		ptCfg = caption.DefaultHEVCPicTimingConfig()
-	} else {
-		ptCfg = caption.DefaultPicTimingConfig()
-	}
-	ptCfg.TimecodeEnabled = true
-	ptCfg.FPSNum = pf.FPSNum
-	ptCfg.FPSDen = pf.FPSDen
-	a.sw.SetPicTimingConfig(&ptCfg)
 
 	// Wire state change callback to trigger broadcast.
 	mgr.OnStateChange(func() {

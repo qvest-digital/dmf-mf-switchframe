@@ -203,6 +203,7 @@ func run() error {
 	if err := app.initSCTE104(); err != nil {
 		return err
 	}
+	app.initPicTiming()
 	if err := app.initCaptions(); err != nil {
 		return err
 	}
