@@ -420,6 +420,13 @@ func WithLastPongSentFn(fn func() int64) APIOption {
 	return func(a *API) { a.lastPongSentFn = fn }
 }
 
+// WithConnectionCounter provides the /api/internal/connections endpoint with
+// a callback that returns the current number of active connections by type.
+// Called by sf-agent on loopback for idle session detection.
+func WithConnectionCounter(fn func() (webtransport, srt, moq int)) APIOption {
+	return func(a *API) { a.connectionCounter = fn }
+}
+
 // WithSTMapRegistry attaches an ST map registry to the API.
 func WithSTMapRegistry(r *stmap.Registry) APIOption {
 	return func(a *API) { a.stmapRegistry = r }
@@ -557,7 +564,8 @@ type API struct {
 	asrConfigMu        sync.Mutex // serializes ASR config changes (prevents pile-up)
 	cmdQueue           *cmdqueue.Queue
 	seqTracker         func(uint64)
-	lastPongSentFn     func() int64 // returns Unix µs of last fast-control pong
+	lastPongSentFn     func() int64                       // returns Unix µs of last fast-control pong
+	connectionCounter  func() (webtransport, srt, moq int) // returns active connection counts by type
 	startTime          time.Time
 	reconcileLock      reconcileLockState
 }
@@ -717,6 +725,7 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	a.registerASRRoutes(mux)
 	a.registerPeerRoutes(mux)
 	mux.HandleFunc("GET /api/sync/health", a.handleSyncHealth)
+	mux.HandleFunc("GET /api/internal/connections", a.handleInternalConnections)
 	a.registerSyncRoutes(mux)
 }
 
@@ -800,4 +809,22 @@ func (a *API) handleSyncHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// handleInternalConnections returns the current active connection counts
+// by transport type. Called by sf-agent on loopback to include connection
+// data in health responses for idle session detection.
+func (a *API) handleInternalConnections(w http.ResponseWriter, r *http.Request) {
+	stats := struct {
+		WebTransport int `json:"webtransport"`
+		SRT          int `json:"srt"`
+		MoQ          int `json:"moq"`
+		Total        int `json:"total"`
+	}{}
+	if a.connectionCounter != nil {
+		stats.WebTransport, stats.SRT, stats.MoQ = a.connectionCounter()
+		stats.Total = stats.WebTransport + stats.SRT + stats.MoQ
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(stats)
 }

@@ -966,3 +966,56 @@ func TestCreateRuleReturns201(t *testing.T) {
 
 	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
 }
+
+func TestInternalConnections_NoCounter(t *testing.T) {
+	api, _ := setupTestAPI(t) // no WithConnectionCounter
+	req := httptest.NewRequest("GET", "/api/internal/connections", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var resp struct {
+		WebTransport int `json:"webtransport"`
+		SRT          int `json:"srt"`
+		MoQ          int `json:"moq"`
+		Total        int `json:"total"`
+	}
+	err := json.NewDecoder(rec.Body).Decode(&resp)
+	require.NoError(t, err)
+	require.Equal(t, 0, resp.WebTransport)
+	require.Equal(t, 0, resp.SRT)
+	require.Equal(t, 0, resp.MoQ)
+	require.Equal(t, 0, resp.Total)
+}
+
+func TestInternalConnections_WithCounter(t *testing.T) {
+	programRelay := distribution.NewRelay()
+	sw := switcher.NewTestSwitcher(programRelay)
+	r1 := distribution.NewRelay()
+	sw.RegisterSource("camera1", r1)
+
+	api := NewAPI(sw, WithConnectionCounter(func() (int, int, int) {
+		return 3, 1, 5
+	}))
+
+	req := httptest.NewRequest("GET", "/api/internal/connections", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+
+	var resp struct {
+		WebTransport int `json:"webtransport"`
+		SRT          int `json:"srt"`
+		MoQ          int `json:"moq"`
+		Total        int `json:"total"`
+	}
+	err := json.NewDecoder(rec.Body).Decode(&resp)
+	require.NoError(t, err)
+	require.Equal(t, 3, resp.WebTransport)
+	require.Equal(t, 1, resp.SRT)
+	require.Equal(t, 5, resp.MoQ)
+	require.Equal(t, 9, resp.Total)
+}
