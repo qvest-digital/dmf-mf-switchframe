@@ -342,10 +342,14 @@ type OperatorSessionSnapshot struct {
 // PlayoutChannelSnapshot captures a playout channel's position in its playlist.
 type PlayoutChannelSnapshot struct {
 	ChannelIndex       int     `json:"channelIndex"`
+	ChannelState       string  `json:"channelState,omitempty"`
 	CurrentItemIndex   int     `json:"currentItemIndex"`
+	CurrentItemID      string  `json:"currentItemID,omitempty"`
 	ElapsedMs          int64   `json:"elapsedMs"`
 	SchedulerState     string  `json:"schedulerState"` // "idle", "playing", "transitioning"
+	SchedulerMode      string  `json:"schedulerMode,omitempty"`
 	TransitionProgress float64 `json:"transitionProgress,omitempty"`
+	PlaylistHash       string  `json:"playlistHash,omitempty"`
 }
 
 // SCTE35ActiveEventSnapshot captures an in-flight SCTE-35 event.
