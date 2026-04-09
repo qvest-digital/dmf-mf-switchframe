@@ -340,6 +340,101 @@ func TestPipelineCodecs_SmallBitrateChangeKeepsEncoder(t *testing.T) {
 	require.Equal(t, 1, encoderCreateCount, "encoder should NOT be recreated for small bitrate change above floor")
 }
 
+func TestPipelineCodecs_BitrateOverride(t *testing.T) {
+	// When encoderOpts.Bitrate > 0, the encoder factory must receive that
+	// bitrate instead of the resolution default. When Bitrate == 0, the
+	// resolution default is used.
+
+	t.Run("explicit bitrate overrides resolution default", func(t *testing.T) {
+		var capturedBitrate int
+		pc := &pipelineCodecs{
+			encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+				capturedBitrate = bitrate
+				return transition.NewMockEncoder(), nil
+			},
+			encoderOpts: &codec.EncoderOptions{Bitrate: 8_000_000},
+		}
+
+		// Use 1280x720 (resolution default = 6 Mbps) so we can confirm override.
+		pf := &ProcessingFrame{
+			Data: make([]byte, ColorYUV420_8bit.FrameSize(1280, 720)), Width: 1280, Height: 720,
+			PTS: 1000, IsKeyframe: true, Codec: "h264",
+		}
+		_, err := pc.encode(pf, true)
+		require.NoError(t, err)
+		require.Equal(t, 8_000_000, capturedBitrate,
+			"encoder factory must receive user-configured bitrate, not resolution default")
+	})
+
+	t.Run("zero bitrate uses resolution default", func(t *testing.T) {
+		var capturedBitrate int
+		pc := &pipelineCodecs{
+			encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+				capturedBitrate = bitrate
+				return transition.NewMockEncoder(), nil
+			},
+			encoderOpts: &codec.EncoderOptions{Bitrate: 0},
+		}
+
+		pf := &ProcessingFrame{
+			Data: make([]byte, ColorYUV420_8bit.FrameSize(1280, 720)), Width: 1280, Height: 720,
+			PTS: 1000, IsKeyframe: true, Codec: "h264",
+		}
+		_, err := pc.encode(pf, true)
+		require.NoError(t, err)
+		require.Equal(t, 6_000_000, capturedBitrate,
+			"encoder factory must receive resolution default when bitrate is 0 (auto)")
+	})
+
+	t.Run("nil encoderOpts uses resolution default", func(t *testing.T) {
+		var capturedBitrate int
+		pc := &pipelineCodecs{
+			encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+				capturedBitrate = bitrate
+				return transition.NewMockEncoder(), nil
+			},
+			encoderOpts: nil,
+		}
+
+		pf := &ProcessingFrame{
+			Data: make([]byte, ColorYUV420_8bit.FrameSize(1920, 1080)), Width: 1920, Height: 1080,
+			PTS: 1000, IsKeyframe: true, Codec: "h264",
+		}
+		_, err := pc.encode(pf, true)
+		require.NoError(t, err)
+		require.Equal(t, 10_000_000, capturedBitrate,
+			"encoder factory must receive resolution default when encoderOpts is nil")
+	})
+
+	t.Run("explicit bitrate skips source-driven invalidation", func(t *testing.T) {
+		encoderCreateCount := 0
+		pc := &pipelineCodecs{
+			encoderFactory: func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+				encoderCreateCount++
+				return transition.NewMockEncoder(), nil
+			},
+			encoderOpts: &codec.EncoderOptions{Bitrate: 8_000_000},
+		}
+
+		pf := &ProcessingFrame{
+			Data: make([]byte, ColorYUV420_8bit.FrameSize(1280, 720)), Width: 1280, Height: 720,
+			PTS: 1000, IsKeyframe: true, Codec: "h264",
+		}
+		_, err := pc.encode(pf, true)
+		require.NoError(t, err)
+		require.Equal(t, 1, encoderCreateCount)
+
+		// Simulate a high-bitrate source that would normally trigger invalidation.
+		pc.updateSourceStats(float64(20_000_000)/(30*8), 30)
+
+		pf.PTS = 2000
+		_, err = pc.encode(pf, true)
+		require.NoError(t, err)
+		require.Equal(t, 1, encoderCreateCount,
+			"encoder must NOT be recreated when user has set explicit bitrate")
+	})
+}
+
 // buildAnnexBKeyframe constructs Annex B data containing SPS, PPS, and IDR
 // NALUs with 4-byte start codes, matching what a real H.264 encoder produces.
 func buildAnnexBKeyframe(spsPayload, ppsPayload []byte) []byte {

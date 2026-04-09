@@ -943,8 +943,8 @@ func (a *App) initSubsystems() error {
 			Timecode: a.cfg.OutputTimecode,
 		}
 	}
-	a.sw.SetPipelineCodecs(encoderFactoryForCodecWithOpts(pipelineCodec, encOpts, pipelineColor.ColorFormat), pipelineCodec)
 	a.sw.SetEncoderOpts(encOpts)
+	a.sw.SetPipelineCodecs(encoderFactoryForCodecWithOpts(pipelineCodec, encOpts, pipelineColor.ColorFormat), pipelineCodec)
 	a.sw.SetPipelineVideoInfoCallback(a.videoInfoCallback("pipeline"))
 	if err := a.sw.BuildPipeline(); err != nil {
 		return fmt.Errorf("build pipeline: %w", err)

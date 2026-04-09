@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 
@@ -215,6 +216,13 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 		pc.encWidth = pf.Width
 		pc.encHeight = pf.Height
 		pc.createdBitrate = bitrate
+
+		// Warn if user-configured bitrate is below the format-appropriate floor.
+		if pc.encoderOpts != nil {
+			if warn := pc.encoderOpts.BitrateWarning(pf.Width, pf.Height, fpsNum, fpsDen); warn != "" {
+				slog.Warn(warn)
+			}
+		}
 	}
 
 	// Encode under lock — prevents invalidateEncoder() from closing the
