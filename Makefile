@@ -2,6 +2,13 @@
 
 EMBED_LINK := server/cmd/switchframe/ui
 
+# Suppress macOS linker warnings about duplicate FFmpeg libraries
+# (multiple cgo packages link the same libs; harmless but noisy)
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+  export CGO_LDFLAGS += -Wl,-no_warn_duplicate_libraries
+endif
+
 # UI build
 ui-install:
 	cd ui && npm ci

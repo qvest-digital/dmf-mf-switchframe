@@ -81,7 +81,7 @@ describe('operator state', () => {
 		vi.mocked(operatorReconnect).mockResolvedValueOnce({
 			id: 'op2',
 			name: 'Bob',
-			role: 'operator' as const,
+			role: 'director' as const,
 		});
 		await mod.reconnect();
 
@@ -90,7 +90,7 @@ describe('operator state', () => {
 		const parsed = JSON.parse(cached!);
 		expect(parsed.id).toBe('op2');
 		expect(parsed.name).toBe('Bob');
-		expect(parsed.role).toBe('operator');
+		expect(parsed.role).toBe('director');
 	});
 
 	it('uses cached session for instant display during reconnect', async () => {

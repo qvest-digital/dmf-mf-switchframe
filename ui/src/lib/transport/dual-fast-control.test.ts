@@ -168,7 +168,7 @@ describe('createDualFastControl', () => {
 		b.commitTransitionPosition = vi.fn();
 		const dual = createDualFastControl([a, b]);
 
-		dual.commitTransitionPosition(0.75);
+		dual.commitTransitionPosition!(0.75);
 		expect(a.commitTransitionPosition).toHaveBeenCalledWith(0.75);
 		expect(b.commitTransitionPosition).toHaveBeenCalledWith(0.75);
 	});
@@ -180,7 +180,7 @@ describe('createDualFastControl', () => {
 		b.commitDVESlotTransform = vi.fn();
 		const dual = createDualFastControl([a, b]);
 
-		dual.commitDVESlotTransform(1, 0.1, 0.2, 0.5, 0.5, 45, 0.8);
+		dual.commitDVESlotTransform!(1, 0.1, 0.2, 0.5, 0.5, 45, 0.8);
 		expect(a.commitDVESlotTransform).toHaveBeenCalledWith(1, 0.1, 0.2, 0.5, 0.5, 45, 0.8);
 		expect(b.commitDVESlotTransform).toHaveBeenCalledWith(1, 0.1, 0.2, 0.5, 0.5, 45, 0.8);
 	});
@@ -194,7 +194,7 @@ describe('createDualFastControl', () => {
 		b.commitTransitionPosition = vi.fn();
 		const dual = createDualFastControl([a, b]);
 
-		expect(() => dual.commitTransitionPosition(0.5)).not.toThrow();
+		expect(() => dual.commitTransitionPosition!(0.5)).not.toThrow();
 		expect(a.commitTransitionPosition).toHaveBeenCalledWith(0.5);
 		expect(b.commitTransitionPosition).toHaveBeenCalledWith(0.5);
 	});
@@ -208,7 +208,7 @@ describe('createDualFastControl', () => {
 		b.commitDVESlotTransform = vi.fn();
 		const dual = createDualFastControl([a, b]);
 
-		expect(() => dual.commitDVESlotTransform(0, 0, 0, 1, 1, 0, 1)).not.toThrow();
+		expect(() => dual.commitDVESlotTransform!(0, 0, 0, 1, 1, 0, 1)).not.toThrow();
 		expect(a.commitDVESlotTransform).toHaveBeenCalledWith(0, 0, 0, 1, 1, 0, 1);
 		expect(b.commitDVESlotTransform).toHaveBeenCalledWith(0, 0, 0, 1, 1, 0, 1);
 	});
@@ -219,7 +219,7 @@ describe('createDualFastControl', () => {
 		// Neither a nor b have commit methods — should not throw
 		const dual = createDualFastControl([a, b]);
 
-		expect(() => dual.commitTransitionPosition(0.5)).not.toThrow();
-		expect(() => dual.commitDVESlotTransform(0, 0, 0, 1, 1, 0, 1)).not.toThrow();
+		expect(() => dual.commitTransitionPosition!(0.5)).not.toThrow();
+		expect(() => dual.commitDVESlotTransform!(0, 0, 0, 1, 1, 0, 1)).not.toThrow();
 	});
 });

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createReconciler, fieldEquals, STALE_THRESHOLD_MS, PONG_FRESH_MS, STATE_UPDATE_STALE_MS, AUTHORITY_HOLD_MS, sortedStringify } from './reconciler.svelte';
-import type { ControlRoomState } from '$lib/api/types';
+import type { ControlRoomState, ClipPlayerState } from '$lib/api/types';
 
 function makeState(overrides: Partial<ControlRoomState> = {}): ControlRoomState {
 	return {
@@ -1092,29 +1092,6 @@ describe('createReconciler', () => {
 			}));
 			const fields = r.health.divergences.map(d => d.field);
 			expect(fields).toContain('layout');
-		});
-
-		it('detects upstream keyConfig divergence', () => {
-			const r = createReconciler();
-			r.ingest('A', makeState({
-				lastCommandSeq: 5,
-				keyConfig: { cam1: { type: 'chroma', hue: 120 } } as any,
-			}));
-			r.ingest('B', makeState({
-				lastCommandSeq: 5,
-				keyConfig: { cam1: { type: 'luma', threshold: 0.5 } } as any,
-			}));
-			const fields = r.health.divergences.map(d => d.field);
-			expect(fields).toContain('keyConfig');
-		});
-
-		it('no keyConfig divergence when both engines match', () => {
-			const r = createReconciler();
-			const keyConfig = { cam1: { type: 'chroma', hue: 120 } } as any;
-			r.ingest('A', makeState({ lastCommandSeq: 5, keyConfig }));
-			r.ingest('B', makeState({ lastCommandSeq: 5, keyConfig: { ...keyConfig } }));
-			const fields = r.health.divergences.map(d => d.field);
-			expect(fields).not.toContain('keyConfig');
 		});
 
 		it('detects limiter divergence', () => {
@@ -2264,15 +2241,15 @@ describe('createReconciler', () => {
 			r.ingest('A', makeState({
 				lastCommandSeq: 5,
 				clipPlayers: [
-					{ state: 'playing', clipName: 'intro.mp4' },
-					{ state: 'stopped', clipName: '' },
+					{ id: 0, state: 'playing', clipName: 'intro.mp4' },
+					{ id: 1, state: 'empty', clipName: '' },
 				],
 			}));
 			r.ingest('B', makeState({
 				lastCommandSeq: 5,
 				clipPlayers: [
-					{ state: 'playing', clipName: 'outro.mp4' },
-					{ state: 'stopped', clipName: '' },
+					{ id: 0, state: 'playing', clipName: 'outro.mp4' },
+					{ id: 1, state: 'empty', clipName: '' },
 				],
 			}));
 			const divs = r.health.divergences;
@@ -2287,13 +2264,13 @@ describe('createReconciler', () => {
 			r.ingest('A', makeState({
 				lastCommandSeq: 5,
 				clipPlayers: [
-					{ state: 'playing', clipName: 'clip1.ts' },
+					{ id: 0, state: 'playing', clipName: 'clip1.ts' },
 				],
 			}));
 			r.ingest('B', makeState({
 				lastCommandSeq: 5,
 				clipPlayers: [
-					{ state: 'paused', clipName: 'clip1.ts' },
+					{ id: 0, state: 'paused', clipName: 'clip1.ts' },
 				],
 			}));
 			const divs = r.health.divergences;
@@ -2308,14 +2285,14 @@ describe('createReconciler', () => {
 			r.ingest('A', makeState({
 				lastCommandSeq: 5,
 				clipPlayers: [
-					{ state: 'playing', clipName: 'clip1.ts' },
-					{ state: 'stopped', clipName: '' },
+					{ id: 0, state: 'playing', clipName: 'clip1.ts' },
+					{ id: 1, state: 'empty', clipName: '' },
 				],
 			}));
 			r.ingest('B', makeState({
 				lastCommandSeq: 5,
 				clipPlayers: [
-					{ state: 'playing', clipName: 'clip1.ts' },
+					{ id: 0, state: 'playing', clipName: 'clip1.ts' },
 				],
 			}));
 			const divs = r.health.divergences;
@@ -2327,9 +2304,9 @@ describe('createReconciler', () => {
 
 		it('no clip divergence when all slots match', () => {
 			const r = createReconciler();
-			const clips = [
-				{ state: 'playing', clipName: 'clip1.ts' },
-				{ state: 'stopped', clipName: '' },
+			const clips: ClipPlayerState[] = [
+				{ id: 0, state: 'playing', clipName: 'clip1.ts' },
+				{ id: 1, state: 'empty', clipName: '' },
 			];
 			r.ingest('A', makeState({ lastCommandSeq: 5, clipPlayers: clips }));
 			r.ingest('B', makeState({ lastCommandSeq: 5, clipPlayers: [...clips] }));

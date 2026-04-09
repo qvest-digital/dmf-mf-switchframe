@@ -881,10 +881,10 @@ describe('reconciler behavioral tests', () => {
 				cam1: {
 					level: -6, trim: 0, muted: false, afv: false,
 					peakL, peakR,
-					eq: [{freq: 100, gain: 0, q: 1}, {freq: 1000, gain: 0, q: 1}, {freq: 10000, gain: 0, q: 1}],
+					eq: [{frequency: 100, gain: 0, q: 1, enabled: true}, {frequency: 1000, gain: 0, q: 1, enabled: true}, {frequency: 10000, gain: 0, q: 1, enabled: true}] as [import('$lib/api/types').EQBand, import('$lib/api/types').EQBand, import('$lib/api/types').EQBand],
 					compressor: { threshold: -20, ratio: 4, attack: 10, release: 100, makeupGain: 0 },
 					gainReduction: gr,
-					gate: { threshold: -40, range: -80, attack: 0.5, release: 50 },
+					gate: { threshold: -40, range: -80, attack: 0.5, release: 50, hold: 0 },
 				},
 			});
 
@@ -901,10 +901,10 @@ describe('reconciler behavioral tests', () => {
 				cam1: {
 					level, trim: 0, muted: false, afv: false,
 					peakL: -12, peakR: -14,
-					eq: [{freq: 100, gain: 0, q: 1}, {freq: 1000, gain: 0, q: 1}, {freq: 10000, gain: 0, q: 1}],
+					eq: [{frequency: 100, gain: 0, q: 1, enabled: true}, {frequency: 1000, gain: 0, q: 1, enabled: true}, {frequency: 10000, gain: 0, q: 1, enabled: true}] as [import('$lib/api/types').EQBand, import('$lib/api/types').EQBand, import('$lib/api/types').EQBand],
 					compressor: { threshold: -20, ratio: 4, attack: 10, release: 100, makeupGain: 0 },
 					gainReduction: -3,
-					gate: { threshold: -40, range: -80, attack: 0.5, release: 50 },
+					gate: { threshold: -40, range: -80, attack: 0.5, release: 50, hold: 0 },
 				},
 			});
 

@@ -823,9 +823,9 @@ describe('switch-api dual-engine routing', () => {
 
 		it('retry uses original body — does NOT regenerate PTP timestamps (H1)', async () => {
 			let timestampCallCount = 0;
-			setDualTimestampProvider((engineId: string) => {
+			setDualTimestampProvider((engineId?: string) => {
 				timestampCallCount++;
-				return { execute_at: Date.now() * 1000 + timestampCallCount * 1000, engine_id: engineId };
+				return { execute_at: Date.now() * 1000 + timestampCallCount * 1000, command_seq: timestampCallCount };
 			});
 
 			let callCount = 0;

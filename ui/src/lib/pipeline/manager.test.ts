@@ -34,6 +34,7 @@ function createMockPipeline() {
 		getSourceTransport: vi.fn().mockReturnValue(null),
 		startStallDetection: vi.fn(),
 		stopStallDetection: vi.fn(),
+		getLastFrameTime: vi.fn().mockReturnValue(0),
 	} satisfies MediaPipeline;
 }
 

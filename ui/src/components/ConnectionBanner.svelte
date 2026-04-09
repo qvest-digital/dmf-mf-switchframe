@@ -48,6 +48,7 @@
 	);
 
 	const otherEngine = $derived(servingEngine === 'A' ? 'B' : 'A');
+	const isDualMode = $derived(engineStatus?.mode === 'dual');
 	const showEngineFallback = $derived(
 		engineFallbackUrl != null && (
 			connectionState === 'disconnected' ||
@@ -75,8 +76,6 @@
 		}
 	})());
 
-	// Dual-engine status
-	const isDualMode = $derived(engineStatus?.mode === 'dual');
 	const showPerEngineDots = $derived(isDualMode && perEngineState != null);
 	const survivingEngine = $derived(engineStatus?.engineDown === 'A' ? 'B' : 'A');
 

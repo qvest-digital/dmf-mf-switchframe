@@ -491,10 +491,6 @@ export function createReconciler() {
 		if (!fieldEquals(stateA.layout, stateB.layout)) {
 			result.push({ field: 'layout', engineA: stateA.layout, engineB: stateB.layout });
 		}
-		// Upstream key config divergence
-		if (!fieldEquals(stateA.keyConfig, stateB.keyConfig)) {
-			result.push({ field: 'keyConfig', engineA: stateA.keyConfig, engineB: stateB.keyConfig });
-		}
 		// Comms participant muted state divergence (targeted check, not full object
 		// comparison — avoids noise from transient fields like participant audio levels)
 		const commsA = stateA.comms;
