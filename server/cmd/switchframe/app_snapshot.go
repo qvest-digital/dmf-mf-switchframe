@@ -469,35 +469,52 @@ func (a *App) ApplyOperatorSessions(_ []internal.OperatorSessionSnapshot) error 
 
 // ApplyPlayoutChannels reconciles playout channel positions from a snapshot.
 // Best-effort: seeks each channel's scheduler cursor to the snapshot position
-// if the channel is currently on-air.
+// if the channel is currently on-air and the playlist hash matches.
 func (a *App) ApplyPlayoutChannels(channels []internal.PlayoutChannelSnapshot) error {
 	if a.playoutMgr == nil {
 		return nil
 	}
 
-	states := a.playoutMgr.ChannelStates()
 	for _, chSnap := range channels {
-		idx := chSnap.ChannelIndex
-		if idx < 0 || idx >= len(states) {
+		channelID := chSnap.ChannelIndex + 1 // 0-indexed snapshot → 1-indexed manager
+
+		// Only seek channels that are on-air.
+		if chSnap.ChannelState != "on_air" && chSnap.SchedulerState != "playing" {
+			slog.Info("snapshot apply: playout channel not on-air, skipping",
+				"channel", channelID, "state", chSnap.ChannelState)
 			continue
 		}
 
-		// Only adjust cursor for channels that are currently on-air.
-		if states[idx].State != "on_air" {
+		// Verify playlist hash matches (both engines must have the same playlist).
+		if chSnap.PlaylistHash != "" {
+			localHash := a.playoutMgr.PlaylistHash(channelID)
+			if localHash != "" && localHash != chSnap.PlaylistHash {
+				slog.Warn("snapshot apply: playout playlist mismatch, skipping seek",
+					"channel", channelID,
+					"local", localHash,
+					"remote", chSnap.PlaylistHash)
+				continue
+			}
+		}
+
+		// If transitioning, commit the cut (seek to incoming item at elapsed=0).
+		elapsedMs := chSnap.ElapsedMs
+		if chSnap.SchedulerState == "transitioning" {
+			elapsedMs = 0
+		}
+
+		if err := a.playoutMgr.SeekToItem(channelID, chSnap.CurrentItemIndex, elapsedMs); err != nil {
+			slog.Warn("snapshot apply: playout seek failed",
+				"channel", channelID,
+				"targetItem", chSnap.CurrentItemIndex,
+				"error", err)
 			continue
 		}
 
-		// SetCursor is on the Channel directly. Access through the manager's
-		// exported method if available, or log a skip.
-		slog.Info("snapshot apply: playout channel position noted",
-			"channel", idx+1,
-			"targetItem", chSnap.CurrentItemIndex,
-			"schedulerState", chSnap.SchedulerState,
-		)
-		// Playout channels don't expose a public seek-to-item-index on the Manager.
-		// The scheduler cursor is internal state managed by the tick loop. Attempting
-		// to forcibly set it from outside could cause frame discontinuities.
-		// This is informational — the channel continues from its current position.
+		slog.Info("snapshot apply: playout channel seeked",
+			"channel", channelID,
+			"item", chSnap.CurrentItemIndex,
+			"elapsedMs", elapsedMs)
 	}
 
 	return nil
