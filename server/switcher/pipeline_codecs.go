@@ -74,6 +74,10 @@ type pipelineCodecs struct {
 	// Points to the Switcher's atomic PipelineFormat pointer for lock-free reads.
 	formatRef *atomic.Pointer[PipelineFormat]
 
+	// User-configurable encoder options (bitrate, GOP, preset, timecode).
+	// When non-nil and Bitrate > 0, overrides the resolution-based bitrate default.
+	encoderOpts *codec.EncoderOptions
+
 	// Source-derived encoder parameters (updated via updateSourceStats).
 	sourceBitrate  int     // estimated bitrate from program source (bytes/sec * 8)
 	sourceFPS      float32 // estimated FPS from program source
@@ -164,7 +168,10 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 	// source bitrate exceeds the current createdBitrate by >20% (pulling
 	// it above the resolution floor). Low source bitrates are clamped to the
 	// floor and won't trigger invalidation.
-	if pc.encoder != nil && pc.sourceBitrate > 0 && pc.createdBitrate > 0 {
+	// Skip source-driven invalidation when the user has set a fixed bitrate —
+	// the encoder always uses the configured value regardless of source.
+	userBitrate := pc.encoderOpts != nil && pc.encoderOpts.Bitrate > 0
+	if pc.encoder != nil && pc.sourceBitrate > 0 && pc.createdBitrate > 0 && !userBitrate {
 		resDefault := defaultBitrateForResolution(pc.encWidth, pc.encHeight)
 		effectiveBitrate := resDefault
 		if pc.sourceBitrate > effectiveBitrate {
@@ -178,16 +185,18 @@ func (pc *pipelineCodecs) encode(pf *ProcessingFrame, forceIDR bool) (*media.Vid
 	}
 
 	if pc.encoder == nil {
-		// Use the higher of resolution-based default and source bitrate.
-		// The resolution default is a quality floor — re-encoding always
-		// needs at least this many bits to look clean at the given resolution.
-		// Source bitrate can exceed the floor (e.g., high-quality 1080p at
-		// 12 Mbps) but should never pull the encoder below it (e.g., a
-		// low-bitrate 720p source at 1.6 Mbps would look terrible re-encoded
-		// at 1.6 Mbps due to generation loss).
-		bitrate := defaultBitrateForResolution(pf.Width, pf.Height)
-		if pc.sourceBitrate > bitrate {
-			bitrate = pc.sourceBitrate
+		// Use user-configured bitrate if provided. Otherwise use the higher of
+		// resolution-based default and source bitrate. The resolution default
+		// is a quality floor — re-encoding always needs at least this many bits
+		// to look clean at the given resolution.
+		var bitrate int
+		if pc.encoderOpts != nil && pc.encoderOpts.Bitrate > 0 {
+			bitrate = pc.encoderOpts.Bitrate
+		} else {
+			bitrate = defaultBitrateForResolution(pf.Width, pf.Height)
+			if pc.sourceBitrate > bitrate {
+				bitrate = pc.sourceBitrate
+			}
 		}
 		// Read pipeline format for FPS
 		fpsNum := 30000

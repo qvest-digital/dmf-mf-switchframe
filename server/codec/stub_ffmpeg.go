@@ -20,7 +20,7 @@ func init() {
 type FFmpegEncoder struct{}
 
 // NewFFmpegEncoder returns an error when FFmpeg is not available.
-func NewFFmpegEncoder(codecName string, width, height, bitrate, fpsNum, fpsDen, gopSecs int, hwDeviceCtx unsafe.Pointer) (*FFmpegEncoder, error) {
+func NewFFmpegEncoder(codecName string, width, height, bitrate, fpsNum, fpsDen, gopSecs int, hwDeviceCtx unsafe.Pointer, opts ...*EncoderOptions) (*FFmpegEncoder, error) {
 	return nil, errFFmpegDisabled
 }
 
@@ -138,7 +138,7 @@ func NewFFmpegPreviewEncoder(width, height, bitrate, fpsNum, fpsDen, gopSecs int
 
 // NewVideoEncoder is a stub that returns an error when FFmpeg is not available.
 // When FFmpeg is available, the real implementation auto-selects the best encoder.
-func NewVideoEncoder(width, height, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+func NewVideoEncoder(width, height, bitrate, fpsNum, fpsDen int, opts ...*EncoderOptions) (transition.VideoEncoder, error) {
 	return nil, errFFmpegDisabled
 }
 
@@ -199,12 +199,12 @@ func NewVideoDecoderForCodecSingleThread(codec string) (transition.VideoDecoder,
 }
 
 // NewHEVCVideoEncoder is a stub that returns an error when FFmpeg is not available.
-func NewHEVCVideoEncoder(width, height, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+func NewHEVCVideoEncoder(width, height, bitrate, fpsNum, fpsDen int, opts ...*EncoderOptions) (transition.VideoEncoder, error) {
 	return nil, errFFmpegDisabled
 }
 
 // NewHEVCVideoEncoder10bit is a stub that returns an error when FFmpeg is not available.
-func NewHEVCVideoEncoder10bit(width, height, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+func NewHEVCVideoEncoder10bit(width, height, bitrate, fpsNum, fpsDen int, opts ...*EncoderOptions) (transition.VideoEncoder, error) {
 	return nil, errFFmpegDisabled
 }
 

@@ -17,9 +17,16 @@ import (
 // The encoder always uses constrained VBR (cVBR): ABR with a tight 1.2x VBV
 // ceiling for predictable SRT output. Transport-level CBR padding is handled
 // by the output layer's CBR pacer.
-func NewVideoEncoder(width, height, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+func NewVideoEncoder(width, height, bitrate, fpsNum, fpsDen int, opts ...*EncoderOptions) (transition.VideoEncoder, error) {
 	enc, _ := ProbeEncoders()
 	gopSecs := transition.DefaultGOPSecs
+	var encOpts *EncoderOptions
+	if len(opts) > 0 {
+		encOpts = opts[0]
+	}
+	if encOpts != nil && encOpts.GOPSecs > 0 {
+		gopSecs = encOpts.GOPSecs
+	}
 	switch enc {
 	case "openh264":
 		return NewOpenH264Encoder(width, height, bitrate, fpsNum, fpsDen)
@@ -28,7 +35,7 @@ func NewVideoEncoder(width, height, bitrate, fpsNum, fpsDen int) (transition.Vid
 	default:
 		// Pass nil hwDeviceCtx so the encoder creates its own CUDA context.
 		// See NewPreviewEncoder comment for thread-safety rationale.
-		return NewFFmpegEncoder(enc, width, height, bitrate, fpsNum, fpsDen, gopSecs, nil)
+		return NewFFmpegEncoder(enc, width, height, bitrate, fpsNum, fpsDen, gopSecs, nil, encOpts)
 	}
 }
 
@@ -180,23 +187,37 @@ func NewVideoDecoderForCodecNative10bitSingleThread(codec string) (transition.Vi
 // NewHEVCVideoEncoder creates an HEVC video encoder using the best available backend.
 // The first call triggers HEVC codec probing (via ProbeHEVCEncoders) which tests
 // available hardware and software encoders in priority order.
-func NewHEVCVideoEncoder(width, height, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+func NewHEVCVideoEncoder(width, height, bitrate, fpsNum, fpsDen int, opts ...*EncoderOptions) (transition.VideoEncoder, error) {
 	enc, _ := ProbeHEVCEncoders()
 	if enc == "none" {
 		return nil, errors.New("no HEVC encoder available")
 	}
 	gopSecs := transition.DefaultGOPSecs
-	return NewFFmpegEncoder(enc, width, height, bitrate, fpsNum, fpsDen, gopSecs, nil)
+	var encOpts *EncoderOptions
+	if len(opts) > 0 {
+		encOpts = opts[0]
+	}
+	if encOpts != nil && encOpts.GOPSecs > 0 {
+		gopSecs = encOpts.GOPSecs
+	}
+	return NewFFmpegEncoder(enc, width, height, bitrate, fpsNum, fpsDen, gopSecs, nil, encOpts)
 }
 
 // NewHEVCVideoEncoder10bit creates an HEVC encoder configured for 10-bit YUV422P10LE
 // input. Probes for available HEVC encoders and selects the best one.
 // For libx265: uses main422-10 profile. For NVENC: uses main10 profile.
-func NewHEVCVideoEncoder10bit(width, height, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+func NewHEVCVideoEncoder10bit(width, height, bitrate, fpsNum, fpsDen int, opts ...*EncoderOptions) (transition.VideoEncoder, error) {
 	enc, _ := ProbeHEVCEncoders()
 	if enc == "none" {
 		return nil, errors.New("no HEVC encoder available for 10-bit")
 	}
 	gopSecs := transition.DefaultGOPSecs
-	return NewFFmpegEncoder10bit(enc, width, height, bitrate, fpsNum, fpsDen, gopSecs, nil)
+	var encOpts *EncoderOptions
+	if len(opts) > 0 {
+		encOpts = opts[0]
+	}
+	if encOpts != nil && encOpts.GOPSecs > 0 {
+		gopSecs = encOpts.GOPSecs
+	}
+	return NewFFmpegEncoder10bit(enc, width, height, bitrate, fpsNum, fpsDen, gopSecs, nil, encOpts)
 }

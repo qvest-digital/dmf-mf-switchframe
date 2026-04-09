@@ -42,7 +42,8 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
                       int width, int height, int bitrate,
                       int fps_num, int fps_den,
                       int gop_secs, void* hwDeviceCtx,
-                      int pix_fmt_10bit) {
+                      int pix_fmt_10bit,
+                      const char* preset_override) {
 	memset(h, 0, sizeof(ffenc_t));
 	h->pix_fmt_10bit = pix_fmt_10bit;
 
@@ -122,7 +123,8 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 
 	// --- H.264 (AVC) codec-specific options ---
 	if (strcmp(codec_name, "libx264") == 0) {
-		av_opt_set(h->ctx->priv_data, "preset", "superfast", 0);
+		av_opt_set(h->ctx->priv_data, "preset",
+			(preset_override && preset_override[0]) ? preset_override : "superfast", 0);
 		av_opt_set(h->ctx->priv_data, "profile", "high", 0);
 		// zerolatency: sliced threading (zero frame buffer), no mbtree,
 		// sync-lookahead=0, rc-lookahead=0, force-cfr=1.
@@ -149,7 +151,8 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 		// per-frame reference analysis that costs ~5-10% CPU — unaffordable
 		// when sharing cores with 4+ source decoder goroutines at 60fps.
 	} else if (strcmp(codec_name, "h264_nvenc") == 0) {
-		av_opt_set(h->ctx->priv_data, "preset", "p4", 0);
+		av_opt_set(h->ctx->priv_data, "preset",
+			(preset_override && preset_override[0]) ? preset_override : "p4", 0);
 		av_opt_set(h->ctx->priv_data, "profile", "high", 0);
 		av_opt_set(h->ctx->priv_data, "delay", "0", 0);
 		av_opt_set_int(h->ctx->priv_data, "spatial-aq", 1, 0);
@@ -183,7 +186,8 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 	else if (strcmp(codec_name, "libx265") == 0) {
 		// superfast matches our libx264 preset. With zerolatency tune, the quality
 		// delta between ultrafast and superfast is real but the speed cost is <5%.
-		av_opt_set(h->ctx->priv_data, "preset", "superfast", 0);
+		av_opt_set(h->ctx->priv_data, "preset",
+			(preset_override && preset_override[0]) ? preset_override : "superfast", 0);
 		// zerolatency: disables frame parallelism (zero internal buffer), uses
 		// sliced threading via thread_count. Eliminates encoder buffering latency.
 		av_opt_set(h->ctx->priv_data, "tune", "zerolatency", 0);
@@ -206,7 +210,8 @@ static int ffenc_open(ffenc_t* h, const char* codec_name,
 			, 0);
 		av_opt_set_int(h->ctx->priv_data, "level-idc", hevc_level, 0);
 	} else if (strcmp(codec_name, "hevc_nvenc") == 0) {
-		av_opt_set(h->ctx->priv_data, "preset", "p4", 0);
+		av_opt_set(h->ctx->priv_data, "preset",
+			(preset_override && preset_override[0]) ? preset_override : "p4", 0);
 		av_opt_set(h->ctx->priv_data, "profile", pix_fmt_10bit ? "main10" : "main", 0);
 		av_opt_set(h->ctx->priv_data, "delay", "0", 0);
 		av_opt_set_int(h->ctx->priv_data, "spatial-aq", 1, 0);
@@ -490,6 +495,7 @@ import "C"
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"unsafe"
 
@@ -522,7 +528,7 @@ type FFmpegEncoder struct {
 // ceiling. This produces predictable bitrate for SRT transport while preserving
 // per-frame quality flexibility. Transport-level CBR padding is handled by the
 // CBR pacer in the output layer, not by the encoder.
-func NewFFmpegEncoder(codecName string, width, height, bitrate, fpsNum, fpsDen, gopSecs int, hwDeviceCtx unsafe.Pointer) (*FFmpegEncoder, error) {
+func NewFFmpegEncoder(codecName string, width, height, bitrate, fpsNum, fpsDen, gopSecs int, hwDeviceCtx unsafe.Pointer, opts ...*EncoderOptions) (*FFmpegEncoder, error) {
 	initFFmpegLogLevel()
 
 	if width <= 0 || height <= 0 {
@@ -538,8 +544,35 @@ func NewFFmpegEncoder(codecName string, width, height, bitrate, fpsNum, fpsDen, 
 	cName := C.CString(codecName)
 	defer C.free(unsafe.Pointer(cName))
 
+	// Apply opts overrides.
+	var encOpts *EncoderOptions
+	if len(opts) > 0 {
+		encOpts = opts[0]
+	}
+	if encOpts != nil && encOpts.GOPSecs > 0 {
+		gopSecs = encOpts.GOPSecs
+	}
+
 	if gopSecs <= 0 {
 		return nil, fmt.Errorf("invalid gopSecs: %d", gopSecs)
+	}
+
+	// Resolve preset override for the codec.
+	var cPreset *C.char
+	if encOpts != nil && encOpts.Preset != "" {
+		var presetStr string
+		switch {
+		case strings.HasSuffix(codecName, "_nvenc"):
+			presetStr = encOpts.Preset.NVENCPreset()
+		case codecName == "libx264":
+			presetStr = encOpts.Preset.X264Preset()
+		case codecName == "libx265":
+			presetStr = encOpts.Preset.X265Preset()
+		}
+		if presetStr != "" {
+			cPreset = C.CString(presetStr)
+			defer C.free(unsafe.Pointer(cPreset))
+		}
 	}
 
 	e := &FFmpegEncoder{}
@@ -547,7 +580,7 @@ func NewFFmpegEncoder(codecName string, width, height, bitrate, fpsNum, fpsDen, 
 	rc := C.ffenc_open(&e.handle, cName,
 		C.int(width), C.int(height), C.int(bitrate),
 		C.int(fpsNum), C.int(fpsDen),
-		C.int(gopSecs), hwDeviceCtx, C.int(0))
+		C.int(gopSecs), hwDeviceCtx, C.int(0), cPreset)
 	FFmpegOpenMu.Unlock()
 	if rc != 0 {
 		desc := map[int]string{
@@ -571,7 +604,7 @@ func NewFFmpegEncoder(codecName string, width, height, bitrate, fpsNum, fpsDen, 
 // Uses the same codec selection as NewFFmpegEncoder but configures the encoder
 // for 10-bit 4:2:2 input (professional pipeline profile).
 // For libx265: profile=main422-10. For NVENC: profile=main10.
-func NewFFmpegEncoder10bit(codecName string, width, height, bitrate, fpsNum, fpsDen, gopSecs int, hwDeviceCtx unsafe.Pointer) (*FFmpegEncoder, error) {
+func NewFFmpegEncoder10bit(codecName string, width, height, bitrate, fpsNum, fpsDen, gopSecs int, hwDeviceCtx unsafe.Pointer, opts ...*EncoderOptions) (*FFmpegEncoder, error) {
 	initFFmpegLogLevel()
 
 	if width <= 0 || height <= 0 {
@@ -583,6 +616,16 @@ func NewFFmpegEncoder10bit(codecName string, width, height, bitrate, fpsNum, fps
 	if fpsNum <= 0 || fpsDen <= 0 {
 		return nil, fmt.Errorf("invalid fps: %d/%d", fpsNum, fpsDen)
 	}
+
+	// Apply opts overrides.
+	var encOpts *EncoderOptions
+	if len(opts) > 0 {
+		encOpts = opts[0]
+	}
+	if encOpts != nil && encOpts.GOPSecs > 0 {
+		gopSecs = encOpts.GOPSecs
+	}
+
 	if gopSecs <= 0 {
 		return nil, fmt.Errorf("invalid gopSecs: %d", gopSecs)
 	}
@@ -590,12 +633,28 @@ func NewFFmpegEncoder10bit(codecName string, width, height, bitrate, fpsNum, fps
 	cName := C.CString(codecName)
 	defer C.free(unsafe.Pointer(cName))
 
+	// Resolve preset override for the codec.
+	var cPreset *C.char
+	if encOpts != nil && encOpts.Preset != "" {
+		var presetStr string
+		switch {
+		case strings.HasSuffix(codecName, "_nvenc"):
+			presetStr = encOpts.Preset.NVENCPreset()
+		case codecName == "libx265":
+			presetStr = encOpts.Preset.X265Preset()
+		}
+		if presetStr != "" {
+			cPreset = C.CString(presetStr)
+			defer C.free(unsafe.Pointer(cPreset))
+		}
+	}
+
 	e := &FFmpegEncoder{}
 	FFmpegOpenMu.Lock()
 	rc := C.ffenc_open(&e.handle, cName,
 		C.int(width), C.int(height), C.int(bitrate),
 		C.int(fpsNum), C.int(fpsDen),
-		C.int(gopSecs), hwDeviceCtx, C.int(1))
+		C.int(gopSecs), hwDeviceCtx, C.int(1), cPreset)
 	FFmpegOpenMu.Unlock()
 	if rc != 0 {
 		desc := map[int]string{

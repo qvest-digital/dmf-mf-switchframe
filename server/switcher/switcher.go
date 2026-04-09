@@ -488,6 +488,11 @@ type Switcher struct {
 	availableEncoders         []codec.EncoderInfo
 	availableEncodersInternal []internal.EncoderInfo // cached conversion for state broadcast
 
+	// Encoder options — user-configurable output encoding parameters (bitrate,
+	// GOP, preset, timecode). Stored for use by SetEncoder() when rebuilding
+	// the encoder factory at runtime. Set via SetEncoderOpts().
+	encoderOpts *codec.EncoderOptions
+
 	// Async video processing: frames are sent to videoProcCh and processed
 	// in a dedicated goroutine, decoupling the source relay's delivery
 	// goroutine from the 30-100ms decode+encode overhead. Without this,
@@ -673,6 +678,9 @@ func (s *Switcher) SetEncoder(name string) error {
 	}
 
 	// Build factory for the requested encoder.
+	// Capture encoder opts so user preferences (bitrate/GOP/preset) are
+	// preserved across runtime encoder switches.
+	encOpts := s.encoderOpts
 	var factory transition.EncoderFactory
 	if name == "openh264" {
 		factory = func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
@@ -681,8 +689,12 @@ func (s *Switcher) SetEncoder(name string) error {
 	} else {
 		codecName := name
 		factory = func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+			gopSecs := transition.DefaultGOPSecs
+			if encOpts != nil && encOpts.GOPSecs > 0 {
+				gopSecs = encOpts.GOPSecs
+			}
 			return codec.NewFFmpegEncoder(codecName, w, h, bitrate, fpsNum, fpsDen,
-				transition.DefaultGOPSecs, codec.HWDeviceCtx())
+				gopSecs, codec.HWDeviceCtx(), encOpts)
 		}
 	}
 
@@ -715,6 +727,15 @@ func (s *Switcher) SetEncoder(name string) error {
 	s.notifyStateChange(snapshot)
 
 	return nil
+}
+
+// SetEncoderOpts stores the user-configurable encoder options. These are used
+// by SetEncoder() when rebuilding the encoder factory at runtime, so the
+// user's bitrate/GOP/preset preferences are preserved across encoder switches.
+func (s *Switcher) SetEncoderOpts(opts *codec.EncoderOptions) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.encoderOpts = opts
 }
 
 // SetRawVideoSink sets or clears the raw video output tap.
@@ -1015,6 +1036,7 @@ func (s *Switcher) SetPipelineCodecs(encoderFactory transition.EncoderFactory, p
 		encoderFactory: encoderFactory,
 		pipelineCodec:  pc,
 		formatRef:      &s.pipelineFormat,
+		encoderOpts:    s.encoderOpts,
 	}
 }
 

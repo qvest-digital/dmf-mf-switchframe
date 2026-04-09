@@ -32,8 +32,14 @@ func decoderFactoryForColorFormat(colorFmt switcher.PipelineColorFormat) transit
 // encoderFactory returns a factory that creates AVC (H.264) video encoders using
 // the auto-detected codec. The encoder always uses cVBR (ABR + tight VBV).
 func encoderFactory() transition.EncoderFactory {
+	return encoderFactoryWithOpts(nil)
+}
+
+// encoderFactoryWithOpts returns a factory that creates AVC (H.264) video encoders
+// with the given encoder options. nil opts uses defaults.
+func encoderFactoryWithOpts(opts *codec.EncoderOptions) transition.EncoderFactory {
 	return func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
-		return codec.NewVideoEncoder(w, h, bitrate, fpsNum, fpsDen)
+		return codec.NewVideoEncoder(w, h, bitrate, fpsNum, fpsDen, opts)
 	}
 }
 
@@ -42,18 +48,24 @@ func encoderFactory() transition.EncoderFactory {
 // encoder factory. For HEVC with 8-bit, a standard HEVC factory. For AVC
 // (default), the standard H.264 encoder factory.
 func encoderFactoryForCodec(pipelineCodec switcher.PipelineCodec, colorFmt ...switcher.PipelineColorFormat) transition.EncoderFactory {
+	return encoderFactoryForCodecWithOpts(pipelineCodec, nil, colorFmt...)
+}
+
+// encoderFactoryForCodecWithOpts returns an encoder factory for the specified pipeline
+// codec, color format, and encoder options. nil opts uses defaults.
+func encoderFactoryForCodecWithOpts(pipelineCodec switcher.PipelineCodec, opts *codec.EncoderOptions, colorFmt ...switcher.PipelineColorFormat) transition.EncoderFactory {
 	if pipelineCodec == switcher.CodecHEVC {
 		// Check if 10-bit mode is requested.
 		if len(colorFmt) > 0 && colorFmt[0] == switcher.ColorYUV422_10bit {
 			return func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
-				return codec.NewHEVCVideoEncoder10bit(w, h, bitrate, fpsNum, fpsDen)
+				return codec.NewHEVCVideoEncoder10bit(w, h, bitrate, fpsNum, fpsDen, opts)
 			}
 		}
 		return func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
-			return codec.NewHEVCVideoEncoder(w, h, bitrate, fpsNum, fpsDen)
+			return codec.NewHEVCVideoEncoder(w, h, bitrate, fpsNum, fpsDen, opts)
 		}
 	}
-	return encoderFactory()
+	return encoderFactoryWithOpts(opts)
 }
 
 // audioDecoderFactory returns a factory that creates FDK AAC decoders.

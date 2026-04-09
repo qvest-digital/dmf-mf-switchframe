@@ -934,7 +934,17 @@ func (a *App) initSubsystems() error {
 	// appropriate encoder: AVC 8-bit, HEVC 8-bit, or HEVC 10-bit 4:2:2.
 	pipelineColor := a.sw.PipelineFormat().Color
 	pipelineCodec := pipelineColor.Codec
-	a.sw.SetPipelineCodecs(encoderFactoryForCodec(pipelineCodec, pipelineColor.ColorFormat), pipelineCodec)
+	var encOpts *codec.EncoderOptions
+	if a.cfg.OutputBitrate != 0 || a.cfg.OutputGOPSecs != 0 || a.cfg.OutputPreset != "" || a.cfg.OutputTimecode {
+		encOpts = &codec.EncoderOptions{
+			Bitrate:  a.cfg.OutputBitrate,
+			GOPSecs:  a.cfg.OutputGOPSecs,
+			Preset:   codec.OutputPreset(a.cfg.OutputPreset),
+			Timecode: a.cfg.OutputTimecode,
+		}
+	}
+	a.sw.SetPipelineCodecs(encoderFactoryForCodecWithOpts(pipelineCodec, encOpts, pipelineColor.ColorFormat), pipelineCodec)
+	a.sw.SetEncoderOpts(encOpts)
 	a.sw.SetPipelineVideoInfoCallback(a.videoInfoCallback("pipeline"))
 	if err := a.sw.BuildPipeline(); err != nil {
 		return fmt.Errorf("build pipeline: %w", err)
