@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { getAuthToken } from '$lib/api/switch-api';
+	import EngineDot from './EngineDot.svelte';
 
 	interface EngineStatus {
 		mode: 'dual' | 'single';
@@ -220,20 +221,16 @@
 
 {#if showPerEngineDots}
 	<div class="engine-status-strip" role="status" aria-label="Per-engine connection status">
-		<span
-			class="engine-dot"
-			class:healthy={perEngineState?.A === 'webtransport'}
-			class:degraded={perEngineState?.A === 'polling'}
-			class:offline={perEngineState?.A === 'disconnected'}
+		<EngineDot
+			status={perEngineState?.A === 'webtransport' ? 'healthy' : perEngineState?.A === 'polling' ? 'degraded' : 'offline'}
+			label="A"
 			title="Engine A: {perEngineState?.A}"
-		>A</span>
-		<span
-			class="engine-dot"
-			class:healthy={perEngineState?.B === 'webtransport'}
-			class:degraded={perEngineState?.B === 'polling'}
-			class:offline={perEngineState?.B === 'disconnected'}
+		/>
+		<EngineDot
+			status={perEngineState?.B === 'webtransport' ? 'healthy' : perEngineState?.B === 'polling' ? 'degraded' : 'offline'}
+			label="B"
 			title="Engine B: {perEngineState?.B}"
-		>B</span>
+		/>
 	</div>
 {/if}
 
@@ -360,32 +357,6 @@
 		display: flex;
 		gap: 4px;
 		align-items: center;
-	}
-
-	.engine-dot {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: 20px;
-		height: 20px;
-		border-radius: 4px;
-		font-size: 0.65rem;
-		font-weight: 700;
-		line-height: 1;
-		color: #fff;
-		background: #555;
-	}
-
-	.engine-dot.healthy {
-		background: var(--tally-preview, #22c55e);
-	}
-
-	.engine-dot.degraded {
-		background: var(--accent-yellow, #eab308);
-	}
-
-	.engine-dot.offline {
-		background: #ef4444;
 	}
 
 	.disconnect-overlay {

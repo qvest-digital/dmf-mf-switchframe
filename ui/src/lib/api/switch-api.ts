@@ -62,6 +62,27 @@ function fetchWithTimeout(url: string, opts: RequestInit, timeoutMs: number = EN
 	return fetch(url, { ...opts, signal: controller.signal }).finally(() => clearTimeout(timer));
 }
 
+/** Best-effort retry of failed engines after 500ms delay. Uses original bodies
+ *  (preserving PTP timestamps) to avoid frame drift on timed commands. */
+function retryFailedEngines(
+	results: PromiseSettledResult<Response>[],
+	availableEngines: EngineEndpoint[],
+	url: string,
+	opts: RequestInit,
+	bodies: (BodyInit | null | undefined)[],
+): void {
+	setTimeout(async () => {
+		for (let i = 0; i < results.length; i++) {
+			const ok = results[i].status === 'fulfilled' && (results[i] as PromiseFulfilledResult<Response>).value.ok;
+			if (!ok) {
+				try {
+					await fetchWithTimeout(`${availableEngines[i].url}${url}`, { ...opts, body: bodies[i] });
+				} catch { /* retry is best-effort */ }
+			}
+		}
+	}, 500);
+}
+
 // ── Circuit breaker: per-engine failure tracking ──
 
 interface CircuitState {
@@ -202,7 +223,7 @@ export function setDualTimestampProvider(provider: ((engineId?: string) => { exe
 // │       │                   │         GET/HEAD? ──► primaryWithFallback()
 // │       │                   │              │        (try A, fall back to B)
 // │       │                   │              │                  │
-// │       │                   │         POST/PUT/DELETE? ──► allSettled fan-out
+// │       │                   │         POST/PUT/DELETE? ──► fanOutMutation()
 // │       │                   │              (both engines, PTP timestamps  │
 // │       │                   │               for timed paths)  │
 // │       │                   │                                 │
@@ -217,6 +238,117 @@ export function setDualTimestampProvider(provider: ((engineId?: string) => { exe
 // │  request()  = JSON parse + error handling (most API calls)  │
 // │  dualFetch() = raw Response (uploads, downloads, blobs)     │
 // └─────────────────────────────────────────────────────────────┘
+
+interface FanOutResult {
+	results: PromiseSettledResult<Response>[];
+	successful: PromiseFulfilledResult<Response>[];
+	failed: (PromiseRejectedResult | PromiseFulfilledResult<Response>)[];
+	availableEngines: EngineEndpoint[];
+}
+
+/** Core mutation fan-out: filter engines, clone bodies, inject PTP timestamps,
+ *  dispatch in parallel, record circuit state, handle partial failures. */
+async function fanOutMutation(
+	url: string,
+	opts: RequestInit,
+	engines: EngineEndpoint[],
+): Promise<FanOutResult> {
+	// Filter out engines with open circuits for mutations
+	let availableEngines = engines.filter(e => !isCircuitOpen(e.url));
+	if (availableEngines.length === 0) {
+		// All circuits open — try all engines anyway (half-open probe)
+		availableEngines = [...engines];
+	}
+
+	// Clone FormData/Blob if needed (each can only be consumed once by fetch)
+	const bodies: (BodyInit | null | undefined)[] = availableEngines.map(() => {
+		if (opts.body instanceof FormData) {
+			const clone = new FormData();
+			for (const [key, value] of (opts.body as FormData).entries()) {
+				clone.append(key, value);
+			}
+			return clone;
+		}
+		if (opts.body instanceof Blob) {
+			return opts.body.slice();
+		}
+		return opts.body;
+	});
+
+	// Per-engine PTP timestamp injection (before fan-out so bodies[] has final values for retry)
+	for (let i = 0; i < availableEngines.length; i++) {
+		const engine = availableEngines[i];
+		const engineBody = bodies[i];
+		if (isTimedPath(url) && dualTimestampProvider && engineBody && typeof engineBody === 'string') {
+			try {
+				const ts = dualTimestampProvider(engine.id);
+				const nowUs = Date.now() * 1000;
+				if (ts.execute_at > nowUs - 5_000_000 && ts.execute_at < nowUs + 5_000_000) {
+					const parsed = JSON.parse(engineBody as string);
+					bodies[i] = JSON.stringify({ ...parsed, ...ts });
+				} else if (ts.execute_at === 0) {
+					console.warn(`[dual-api] Clock sync not converged for engine ${engine.id} — sending ${url} without PTP timestamp`);
+				}
+			} catch { /* send without timestamps */ }
+		}
+	}
+
+	const results = await Promise.allSettled(
+		availableEngines.map((engine, i) => {
+			return fetchWithTimeout(`${engine.url}${url}`, { ...opts, body: bodies[i] });
+		})
+	);
+
+	// Track circuit breaker state for each engine.
+	// Only count 5xx server errors and network errors as failures.
+	// 4xx client errors (e.g. 401 Unauthorized) are not engine health problems.
+	results.forEach((result, i) => {
+		const engineUrl = availableEngines[i]?.url;
+		if (!engineUrl) return;
+		if (result.status === 'fulfilled' && result.value.ok) {
+			recordSuccess(engineUrl);
+		} else if (result.status === 'rejected') {
+			// Network error
+			recordFailure(engineUrl);
+		} else if (result.status === 'fulfilled' && result.value.status >= 500) {
+			// Server error
+			recordFailure(engineUrl);
+		}
+		// 4xx errors: don't record as circuit breaker failure
+	});
+
+	// Find successful responses
+	const fulfilled = results
+		.filter((r): r is PromiseFulfilledResult<Response> => r.status === 'fulfilled');
+	const rejected = results
+		.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+	const successful = fulfilled.filter(r => r.value.ok);
+	const failed = [...rejected, ...fulfilled.filter(r => !r.value.ok)];
+
+	// Detect partial failure: some engines succeeded, some failed
+	if (successful.length > 0 && failed.length > 0) {
+		const method = (opts.method ?? 'GET').toUpperCase();
+		console.warn(`[dual-api] Partial failure: ${successful.length} ok, ${failed.length} failed for ${method} ${url}`);
+		partialFailureCallback?.();
+		const failedEngineIds = results
+			.map((r, i) => {
+				const ok = r.status === 'fulfilled' && r.value.ok;
+				return ok ? null : availableEngines[i]?.id ?? 'unknown';
+			})
+			.filter((id): id is string => id !== null);
+		if (!isNonIdempotent(url)) {
+			partialFailureNotify?.(`Command failed on Engine ${failedEngineIds.join(', ')} — retrying...`);
+			retryFailedEngines(results, availableEngines, url, opts, bodies);
+		} else {
+			// Non-idempotent: skip retry, rely on snapshot push for state reconciliation
+			partialFailureNotify?.(`${failedEngineIds.join(', ')}: non-idempotent operation diverged — check Redundancy panel`);
+			console.warn(`[dual-api] Skipping retry for non-idempotent path: ${url}`);
+			nonIdempotentFailureCallback?.(url, failedEngineIds);
+		}
+	}
+
+	return { results, successful, failed, availableEngines };
+}
 
 /**
  * Sequential engine fallback for read-only requests.
@@ -354,111 +486,7 @@ async function dualRequest<T>(url: string, options: RequestInit | undefined, eng
 
 	// Mutations: fan out to all engines in parallel
 	const opts: RequestInit = { ...options, headers: { ...authHeaders(), ...options?.headers } };
-
-	// Filter out engines with open circuits for mutations
-	let availableEngines = engines.filter(e => !isCircuitOpen(e.url));
-	if (availableEngines.length === 0) {
-		// All circuits open — try all engines anyway (half-open probe)
-		availableEngines = [...engines];
-	}
-
-	// Clone FormData/Blob if needed (each can only be consumed once by fetch)
-	const bodies: (BodyInit | null | undefined)[] = availableEngines.map(() => {
-		if (opts.body instanceof FormData) {
-			const clone = new FormData();
-			for (const [key, value] of (opts.body as FormData).entries()) {
-				clone.append(key, value);
-			}
-			return clone;
-		}
-		if (opts.body instanceof Blob) {
-			return opts.body.slice();
-		}
-		return opts.body;
-	});
-
-	// Per-engine PTP timestamp injection (before fan-out so bodies[] has final values for retry)
-	for (let i = 0; i < availableEngines.length; i++) {
-		const engine = availableEngines[i];
-		const engineBody = bodies[i];
-		if (isTimedPath(url) && dualTimestampProvider && engineBody && typeof engineBody === 'string') {
-			try {
-				const ts = dualTimestampProvider(engine.id);
-				const nowUs = Date.now() * 1000;
-				if (ts.execute_at > nowUs - 5_000_000 && ts.execute_at < nowUs + 5_000_000) {
-					const parsed = JSON.parse(engineBody as string);
-					bodies[i] = JSON.stringify({ ...parsed, ...ts });
-				} else if (ts.execute_at === 0) {
-					console.warn(`[dual-api] Clock sync not converged for engine ${engine.id} — sending ${url} without PTP timestamp`);
-				}
-			} catch { /* send without timestamps */ }
-		}
-	}
-
-	const results = await Promise.allSettled(
-		availableEngines.map((engine, i) => {
-			return fetchWithTimeout(`${engine.url}${url}`, { ...opts, body: bodies[i] });
-		})
-	);
-
-	// Track circuit breaker state for each engine.
-	// Only count 5xx server errors and network errors as failures.
-	// 4xx client errors (e.g. 401 Unauthorized) are not engine health problems.
-	results.forEach((result, i) => {
-		const engineUrl = availableEngines[i]?.url;
-		if (!engineUrl) return;
-		if (result.status === 'fulfilled' && result.value.ok) {
-			recordSuccess(engineUrl);
-		} else if (result.status === 'rejected') {
-			// Network error
-			recordFailure(engineUrl);
-		} else if (result.status === 'fulfilled' && result.value.status >= 500) {
-			// Server error
-			recordFailure(engineUrl);
-		}
-		// 4xx errors: don't record as circuit breaker failure
-	});
-
-	// Find successful responses
-	const fulfilled = results
-		.filter((r): r is PromiseFulfilledResult<Response> => r.status === 'fulfilled');
-	const rejected = results
-		.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
-	const successful = fulfilled.filter(r => r.value.ok);
-	const failed = [...rejected, ...fulfilled.filter(r => !r.value.ok)];
-
-	// Detect partial failure: some engines succeeded, some failed
-	if (successful.length > 0 && failed.length > 0) {
-		console.warn(`[dual-api] Partial failure: ${successful.length} ok, ${failed.length} failed for ${method} ${url}`);
-		partialFailureCallback?.();
-		const failedEngineIds = results
-			.map((r, i) => {
-				const ok = r.status === 'fulfilled' && r.value.ok;
-				return ok ? null : availableEngines[i]?.id ?? 'unknown';
-			})
-			.filter((id): id is string => id !== null);
-		if (!isNonIdempotent(url)) {
-			partialFailureNotify?.(`Command failed on Engine ${failedEngineIds.join(', ')} — retrying...`);
-
-			// Retry failed engines once after 500ms (best-effort) using original body
-			// (preserves the original PTP timestamp to avoid frame drift)
-			setTimeout(async () => {
-				for (let i = 0; i < results.length; i++) {
-					const ok = results[i].status === 'fulfilled' && (results[i] as PromiseFulfilledResult<Response>).value.ok;
-					if (!ok) {
-						try {
-							await fetchWithTimeout(`${availableEngines[i].url}${url}`, { ...opts, body: bodies[i] });
-						} catch { /* retry is best-effort */ }
-					}
-				}
-			}, 500);
-		} else {
-			// Non-idempotent: skip retry, rely on snapshot push for state reconciliation
-			partialFailureNotify?.(`${failedEngineIds.join(', ')}: non-idempotent operation diverged — check Redundancy panel`);
-			console.warn(`[dual-api] Skipping retry for non-idempotent path: ${url}`);
-			nonIdempotentFailureCallback?.(url, failedEngineIds);
-		}
-	}
+	const { results, successful } = await fanOutMutation(url, opts, engines);
 
 	if (successful.length > 0) {
 		// Return first successful response
@@ -470,6 +498,8 @@ async function dualRequest<T>(url: string, options: RequestInit | undefined, eng
 	}
 
 	// All failed
+	const fulfilled = results
+		.filter((r): r is PromiseFulfilledResult<Response> => r.status === 'fulfilled');
 	if (fulfilled.length > 0) {
 		const res = fulfilled[0].value;
 		const body = await res.json().catch(() => ({ error: 'unknown error' }));
@@ -548,107 +578,10 @@ async function dualFetch(url: string, options: RequestInit): Promise<Response> {
 		}
 
 		// Mutations: fan out to available engines in parallel
-		// Filter out engines with open circuits for mutations
-		let availableEngines = engines.filter(e => !isCircuitOpen(e.url));
-		if (availableEngines.length === 0) {
-			// All circuits open — try all engines anyway (half-open probe)
-			availableEngines = [...engines];
-		}
-
-		const bodies = availableEngines.map(() => {
-			if (options.body instanceof FormData) {
-				const clone = new FormData();
-				for (const [key, value] of (options.body as FormData).entries()) {
-					clone.append(key, value);
-				}
-				return clone;
-			}
-			if (options.body instanceof Blob) {
-				return options.body.slice();
-			}
-			return options.body;
-		});
-		// Per-engine PTP timestamp injection (before fan-out so bodies[] has final values for retry)
-		for (let i = 0; i < availableEngines.length; i++) {
-			const engine = availableEngines[i];
-			const engineBody = bodies[i];
-			if (isTimedPath(url) && dualTimestampProvider && engineBody && typeof engineBody === 'string') {
-				try {
-					const ts = dualTimestampProvider(engine.id);
-					const nowUs = Date.now() * 1000;
-					if (ts.execute_at > nowUs - 5_000_000 && ts.execute_at < nowUs + 5_000_000) {
-						const parsed = JSON.parse(engineBody as string);
-						bodies[i] = JSON.stringify({ ...parsed, ...ts });
-					} else if (ts.execute_at === 0) {
-						console.warn(`[dual-api] Clock sync not converged for engine ${engine.id} — sending ${url} without PTP timestamp`);
-					}
-				} catch { /* send without timestamps */ }
-			}
-		}
-		const results = await Promise.allSettled(
-			availableEngines.map((engine, i) => {
-				return fetchWithTimeout(`${engine.url}${url}`, { ...opts, body: bodies[i] });
-			})
-		);
-
-		// Track circuit breaker state for each engine.
-		// Only count 5xx server errors and network errors as failures.
-		// 4xx client errors (e.g. 401 Unauthorized) are not engine health problems.
-		results.forEach((result, i) => {
-			const engineUrl = availableEngines[i]?.url;
-			if (!engineUrl) return;
-			if (result.status === 'fulfilled' && result.value.ok) {
-				recordSuccess(engineUrl);
-			} else if (result.status === 'rejected') {
-				// Network error
-				recordFailure(engineUrl);
-			} else if (result.status === 'fulfilled' && result.value.status >= 500) {
-				// Server error
-				recordFailure(engineUrl);
-			}
-			// 4xx errors: don't record as circuit breaker failure
-		});
-
-		const fulfilled = results.filter((r): r is PromiseFulfilledResult<Response> => r.status === 'fulfilled');
-		const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
-		const successful = fulfilled.filter(r => r.value.ok);
-		const failed = [...rejected, ...fulfilled.filter(r => !r.value.ok)];
-
-		// Detect partial failure: some engines succeeded, some failed
-		if (successful.length > 0 && failed.length > 0) {
-			const method = (options.method ?? 'GET').toUpperCase();
-			console.warn(`[dual-api] Partial failure: ${successful.length} ok, ${failed.length} failed for ${method} ${url}`);
-			partialFailureCallback?.();
-			const failedEngineIds = results
-				.map((r, i) => {
-					const ok = r.status === 'fulfilled' && r.value.ok;
-					return ok ? null : availableEngines[i]?.id ?? 'unknown';
-				})
-				.filter((id): id is string => id !== null);
-			if (!isNonIdempotent(url)) {
-				partialFailureNotify?.(`Command failed on Engine ${failedEngineIds.join(', ')} — retrying...`);
-
-				// Retry failed engines once after 500ms (best-effort) using original body
-				// (preserves the original PTP timestamp to avoid frame drift)
-				setTimeout(async () => {
-					for (let i = 0; i < results.length; i++) {
-						const ok = results[i].status === 'fulfilled' && (results[i] as PromiseFulfilledResult<Response>).value.ok;
-						if (!ok) {
-							try {
-								await fetchWithTimeout(`${availableEngines[i].url}${url}`, { ...opts, body: bodies[i] });
-							} catch { /* retry is best-effort */ }
-						}
-					}
-				}, 500);
-			} else {
-				// Non-idempotent: skip retry, rely on snapshot push for state reconciliation
-				partialFailureNotify?.(`${failedEngineIds.join(', ')}: non-idempotent operation diverged — check Redundancy panel`);
-				console.warn(`[dual-api] Skipping retry for non-idempotent path: ${url}`);
-				nonIdempotentFailureCallback?.(url, failedEngineIds);
-			}
-		}
+		const { results, successful } = await fanOutMutation(url, opts, engines);
 
 		if (successful.length > 0) return successful[0].value;
+		const fulfilled = results.filter((r): r is PromiseFulfilledResult<Response> => r.status === 'fulfilled');
 		if (fulfilled.length > 0) return fulfilled[0].value;
 		throw new Error('All engines unreachable');
 	}

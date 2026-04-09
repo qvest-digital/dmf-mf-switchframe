@@ -21,6 +21,8 @@ const JITTER_MULTIPLIER = 2;
 const DEFAULT_MARGIN_US = FRAME_DURATION_US * 4;
 const EWMA_ALPHA = 0.125;
 const DEFAULT_SYNC_INTERVAL_MS = 10_000;
+const STALE_PING_THRESHOLD_US = 30_000_000; // 30s — 3× the sync interval
+const MAX_PENDING_PINGS = 100;
 
 const STALE_OFFSET_MS = 20_000;
 
@@ -172,16 +174,16 @@ export class ClockSync {
 			sendPing(engineId, this.buildPing(seq));
 		}
 		// Prune stale entries by time (pongs that will never arrive)
-		const staleThreshold = nowMicros() - 30_000_000; // 30s in µs
+		const staleThreshold = nowMicros() - STALE_PING_THRESHOLD_US;
 		for (const [seq, sentAt] of this.pingSentTimes) {
 			if (sentAt < staleThreshold) {
 				this.pingSentTimes.delete(seq);
 			}
 		}
-		// Secondary safety net: keep last 100 entries
-		if (this.pingSentTimes.size > 100) {
+		// Secondary safety net: keep last MAX_PENDING_PINGS entries
+		if (this.pingSentTimes.size > MAX_PENDING_PINGS) {
 			const entries = [...this.pingSentTimes.entries()].sort((a, b) => a[0] - b[0]);
-			for (const [key] of entries.slice(0, entries.length - 100)) {
+			for (const [key] of entries.slice(0, entries.length - MAX_PENDING_PINGS)) {
 				this.pingSentTimes.delete(key);
 			}
 		}

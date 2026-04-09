@@ -561,37 +561,33 @@ export function createReconciler() {
 		return false;
 	}
 
+	/** Check if an engine should be considered stale (unavailable for authority/status). */
+	function isEngineEffectivelyStale(
+		now: number,
+		connected: boolean,
+		lastSeen: number,
+		lastPong: number,
+		transportAlive: boolean,
+	): boolean {
+		if (!connected || lastSeen === 0) return false;
+		const pongFresh = transportAlive && lastPong > 0 && (now - lastPong < PONG_FRESH_MS);
+		const stateUpdateFresh = now - lastSeen < STATE_UPDATE_STALE_MS;
+		if (pongFresh && !stateUpdateFresh) return true; // hung application
+		if (!pongFresh) {
+			const threshold = transportAlive ? STALE_TRANSPORT_ALIVE_MS : STALE_THRESHOLD_MS;
+			return now - lastSeen > threshold;
+		}
+		return false;
+	}
+
 	/** Compute sync status based on current state + elapsed time. */
 	function computeStatus(now: number): SyncStatus {
 		let hasA = stateA !== null && connectedA;
 		let hasB = stateB !== null && connectedB;
 
-		// Stale detection: mark engine as single-engine if no state updates received.
-		// If transport is alive AND pongs are fresh (within 30s = 3x the 10s ping interval),
-		// the engine is provably alive — but if state updates stopped for STATE_UPDATE_STALE_MS,
-		// the application is hung and the engine should still be marked stale.
-		if (hasA && lastSeenA > 0) {
-			const pongFreshA = transportAliveA && lastPongA > 0 && (now - lastPongA < PONG_FRESH_MS);
-			const stateUpdateFreshA = now - lastSeenA < STATE_UPDATE_STALE_MS;
-			if (pongFreshA && !stateUpdateFreshA) {
-				// Pongs arrive but state updates stopped — engine application is hung
-				hasA = false;
-			} else if (!pongFreshA) {
-				const thresholdA = transportAliveA ? STALE_TRANSPORT_ALIVE_MS : STALE_THRESHOLD_MS;
-				if (now - lastSeenA > thresholdA) hasA = false;
-			}
-		}
-		if (hasB && lastSeenB > 0) {
-			const pongFreshB = transportAliveB && lastPongB > 0 && (now - lastPongB < PONG_FRESH_MS);
-			const stateUpdateFreshB = now - lastSeenB < STATE_UPDATE_STALE_MS;
-			if (pongFreshB && !stateUpdateFreshB) {
-				// Pongs arrive but state updates stopped — engine application is hung
-				hasB = false;
-			} else if (!pongFreshB) {
-				const thresholdB = transportAliveB ? STALE_TRANSPORT_ALIVE_MS : STALE_THRESHOLD_MS;
-				if (now - lastSeenB > thresholdB) hasB = false;
-			}
-		}
+		// Stale detection: mark engine as unavailable if no fresh state updates.
+		if (hasA && isEngineEffectivelyStale(now, connectedA, lastSeenA, lastPongA, transportAliveA)) hasA = false;
+		if (hasB && isEngineEffectivelyStale(now, connectedB, lastSeenB, lastPongB, transportAliveB)) hasB = false;
 
 		if (!stateA && !stateB) return 'disconnected';
 		// Disconnected trumps recovering: can't recover if both engines are offline
@@ -780,20 +776,8 @@ export function createReconciler() {
 	const staleEngines = $derived.by((): EngineId[] => {
 		const now = lastTickTime;
 		const result: EngineId[] = [];
-		const pongFreshA = transportAliveA && lastPongA > 0 && (now - lastPongA < PONG_FRESH_MS);
-		const pongFreshB = transportAliveB && lastPongB > 0 && (now - lastPongB < PONG_FRESH_MS);
-		// Stale if pongs are fresh but state updates stopped (hung application)
-		if (connectedA && pongFreshA && lastSeenA > 0 && (now - lastSeenA >= STATE_UPDATE_STALE_MS)) result.push('A');
-		if (connectedB && pongFreshB && lastSeenB > 0 && (now - lastSeenB >= STATE_UPDATE_STALE_MS)) result.push('B');
-		// Stale if pongs are not fresh: use transport-aware threshold (matches computeStatus logic)
-		if (connectedA && !pongFreshA && lastSeenA > 0) {
-			const thresholdA = transportAliveA ? STALE_TRANSPORT_ALIVE_MS : STALE_THRESHOLD_MS;
-			if (now - lastSeenA > thresholdA) result.push('A');
-		}
-		if (connectedB && !pongFreshB && lastSeenB > 0) {
-			const thresholdB = transportAliveB ? STALE_TRANSPORT_ALIVE_MS : STALE_THRESHOLD_MS;
-			if (now - lastSeenB > thresholdB) result.push('B');
-		}
+		if (connectedA && isEngineEffectivelyStale(now, connectedA, lastSeenA, lastPongA, transportAliveA)) result.push('A');
+		if (connectedB && isEngineEffectivelyStale(now, connectedB, lastSeenB, lastPongB, transportAliveB)) result.push('B');
 		return result;
 	});
 

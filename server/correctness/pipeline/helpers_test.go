@@ -20,9 +20,9 @@ import (
 	"github.com/zsiec/switchframe/server/clock"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/correctness/testutil"
-	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/dve"
-"github.com/zsiec/switchframe/server/output"
+	"github.com/zsiec/switchframe/server/graphics"
+	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
 )

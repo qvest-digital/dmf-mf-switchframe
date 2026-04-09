@@ -20,7 +20,7 @@ import (
 	"github.com/zsiec/switchframe/server/gpu"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
-"github.com/zsiec/switchframe/server/sidecar"
+	"github.com/zsiec/switchframe/server/sidecar"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition/wipemap"
 )

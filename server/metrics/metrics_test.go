@@ -227,11 +227,11 @@ func TestNewMetrics_CmdQueueMetricsGatherable(t *testing.T) {
 	require.NoError(t, err)
 
 	wantNames := map[string]bool{
-		"switchframe_cmdqueue_depth":            false,
-		"switchframe_cmdqueue_drained_total":    false,
-		"switchframe_cmdqueue_late_total":       false,
-		"switchframe_cmdqueue_stale_total":      false,
-		"switchframe_cmdqueue_duplicate_total":  false,
+		"switchframe_cmdqueue_depth":             false,
+		"switchframe_cmdqueue_drained_total":     false,
+		"switchframe_cmdqueue_late_total":        false,
+		"switchframe_cmdqueue_stale_total":       false,
+		"switchframe_cmdqueue_duplicate_total":   false,
 		"switchframe_cmdqueue_clock_jumps_total": false,
 	}
 	for _, fam := range families {

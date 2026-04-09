@@ -16,7 +16,7 @@ import (
 	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
-"github.com/zsiec/switchframe/server/macro"
+	"github.com/zsiec/switchframe/server/macro"
 	"github.com/zsiec/switchframe/server/output"
 	"github.com/zsiec/switchframe/server/preset"
 	"github.com/zsiec/switchframe/server/replay"
@@ -117,23 +117,23 @@ func (a *API) handleRunMacro(w http.ResponseWriter, r *http.Request) {
 	a.macroMu.Unlock()
 
 	target := &apiMacroTarget{
-		switcher:         a.switcher,
-		mixer:            a.mixer,
-		compositor:       a.compositor,
-		keyer:            a.keyer,
-		replayMgr:        a.replayMgr,
-		presetStore:      a.presetStore,
-		outputMgr:        a.outputMgr,
-		stingerStore:     a.stingerStore,
-		scte35:           a.scte35,
-		captionMgr:       a.captionMgr,
-		clipMgr:          a.clipMgr,
-		aiSegmentMgr:     a.aiSegmentMgr,
-		colorGradeMgr:    a.colorGradeMgr,
-		dveCompositor:    a.dveCompositor,
-		stmapRegistry:    a.stmapRegistry,
-		textAnimEngine:   a.textAnimEngine,
-		tickerEngine:     a.tickerEngine,
+		switcher:       a.switcher,
+		mixer:          a.mixer,
+		compositor:     a.compositor,
+		keyer:          a.keyer,
+		replayMgr:      a.replayMgr,
+		presetStore:    a.presetStore,
+		outputMgr:      a.outputMgr,
+		stingerStore:   a.stingerStore,
+		scte35:         a.scte35,
+		captionMgr:     a.captionMgr,
+		clipMgr:        a.clipMgr,
+		aiSegmentMgr:   a.aiSegmentMgr,
+		colorGradeMgr:  a.colorGradeMgr,
+		dveCompositor:  a.dveCompositor,
+		stmapRegistry:  a.stmapRegistry,
+		textAnimEngine: a.textAnimEngine,
+		tickerEngine:   a.tickerEngine,
 	}
 
 	onProgress := func(state macro.ExecutionState) {
@@ -215,23 +215,23 @@ func (a *API) handleCancelMacro(w http.ResponseWriter, r *http.Request) {
 // apiMacroTarget adapts the API's subsystems to the macro.Target
 // interface so Run() can execute macro steps without knowing concrete types.
 type apiMacroTarget struct {
-	switcher         *switcher.Switcher
-	mixer            AudioMixerAPI
-	compositor       *graphics.Compositor
-	keyer            *graphics.KeyProcessor
-	replayMgr        *replay.Manager
-	presetStore      *preset.Store
-	outputMgr        OutputManagerAPI
-	stingerStore     *stinger.Store
-	scte35           SCTE35API
-	captionMgr       CaptionManagerAPI
-	clipMgr          *clip.Manager
-	aiSegmentMgr     AISegmentManager
-	colorGradeMgr    ColorGradeManager
-	dveCompositor    *dve.Compositor
-	stmapRegistry    *stmap.Registry
-	textAnimEngine   *graphics.TextAnimationEngine
-	tickerEngine     *graphics.TickerEngine
+	switcher       *switcher.Switcher
+	mixer          AudioMixerAPI
+	compositor     *graphics.Compositor
+	keyer          *graphics.KeyProcessor
+	replayMgr      *replay.Manager
+	presetStore    *preset.Store
+	outputMgr      OutputManagerAPI
+	stingerStore   *stinger.Store
+	scte35         SCTE35API
+	captionMgr     CaptionManagerAPI
+	clipMgr        *clip.Manager
+	aiSegmentMgr   AISegmentManager
+	colorGradeMgr  ColorGradeManager
+	dveCompositor  *dve.Compositor
+	stmapRegistry  *stmap.Registry
+	textAnimEngine *graphics.TextAnimationEngine
+	tickerEngine   *graphics.TickerEngine
 }
 
 func (t *apiMacroTarget) Cut(ctx context.Context, source string) error {

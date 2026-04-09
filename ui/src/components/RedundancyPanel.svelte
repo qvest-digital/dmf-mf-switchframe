@@ -2,6 +2,7 @@
 	import type { SyncHealth, SyncStatus, EngineHealthDetail } from '$lib/state/reconciler.svelte';
 	import type { DivergenceLogEntry } from '$lib/state/divergence-log.svelte';
 	import { authHeaders } from '$lib/api/switch-api';
+	import EngineDot from './EngineDot.svelte';
 
 	interface AudioChannelComparison {
 		channel: string;
@@ -292,7 +293,10 @@
 								<span class="auth-star" title="Authoritative">{'\u2605'}</span>
 							{/if}
 							<span class="engine-name">Engine {id}</span>
-							<span class="conn-dot" class:connected={eh.connected}></span>
+							<EngineDot
+								status={eh.connected ? 'healthy' : 'offline'}
+								size="md"
+							/>
 						</div>
 						<div class="engine-stats">
 							<div class="stat-row">
@@ -779,19 +783,6 @@
 		color: var(--accent-yellow, #eab308);
 		font-size: 11px;
 		line-height: 1;
-	}
-
-	.conn-dot {
-		display: inline-block;
-		width: 7px;
-		height: 7px;
-		border-radius: 50%;
-		background: var(--tally-program, #dc2626);
-		margin-left: auto;
-	}
-
-	.conn-dot.connected {
-		background: var(--tally-preview, #16a34a);
 	}
 
 	.engine-stats {

@@ -208,10 +208,10 @@ describe('RedundancyPanel', () => {
 				},
 			}),
 		});
-		const dots = container.querySelectorAll('.conn-dot');
+		const dots = container.querySelectorAll('.engine-dot');
 		expect(dots.length).toBe(2);
-		expect(dots[0].classList.contains('connected')).toBe(true);
-		expect(dots[1].classList.contains('connected')).toBe(false);
+		expect(dots[0].classList.contains('healthy')).toBe(true);
+		expect(dots[1].classList.contains('offline')).toBe(true);
 	});
 
 	it('shows RTT values', () => {

@@ -487,20 +487,8 @@ export class PipelineManager {
 			// Swap program canvas
 			this.switchProgramToEngineB();
 
-			// Swap all tile canvases
-			for (const key of this.attachedCanvases) {
-				const canvas = document.getElementById(`tile-${key}`) as HTMLCanvasElement | null;
-				if (canvas) {
-					this.pipeline.detachCanvas(key, `tile-${key}`);
-					this.pipelineB!.attachCanvas(key, `tile-${key}`, canvas);
-				}
-			}
-
-			// Swap preview canvas
-			if (this.currentPreviewCanvas && this.currentPreviewCanvasEl) {
-				this.pipeline.detachCanvas(this.currentPreviewCanvas, 'preview');
-				this.pipelineB!.attachCanvas(this.currentPreviewCanvas, 'preview', this.currentPreviewCanvasEl);
-			}
+			// Swap tile + preview canvases from A → B
+			this.swapTileAndPreviewCanvases(this.pipeline, this.pipelineB!);
 
 			this._activeEngine = 'B';
 
@@ -528,20 +516,8 @@ export class PipelineManager {
 			// Swap program canvas back to A
 			this.switchProgramToEngineA();
 
-			// Swap all tile canvases back to A
-			for (const key of this.attachedCanvases) {
-				const canvas = document.getElementById(`tile-${key}`) as HTMLCanvasElement | null;
-				if (canvas) {
-					this.pipelineB.detachCanvas(key, `tile-${key}`);
-					this.pipeline.attachCanvas(key, `tile-${key}`, canvas);
-				}
-			}
-
-			// Swap preview back to A
-			if (this.currentPreviewCanvas && this.currentPreviewCanvasEl) {
-				this.pipelineB.detachCanvas(this.currentPreviewCanvas, 'preview');
-				this.pipeline.attachCanvas(this.currentPreviewCanvas, 'preview', this.currentPreviewCanvasEl);
-			}
+			// Swap tile + preview canvases from B → A
+			this.swapTileAndPreviewCanvases(this.pipelineB, this.pipeline);
 
 			this._activeEngine = 'A';
 
@@ -552,6 +528,21 @@ export class PipelineManager {
 			this.destroyEngineBPipeline();
 		} finally {
 			this._failoverInProgress = false;
+		}
+	}
+
+	/** Swap tile and preview canvases between two pipelines. */
+	private swapTileAndPreviewCanvases(from: MediaPipeline, to: MediaPipeline): void {
+		for (const key of this.attachedCanvases) {
+			const canvas = document.getElementById(`tile-${key}`) as HTMLCanvasElement | null;
+			if (canvas) {
+				from.detachCanvas(key, `tile-${key}`);
+				to.attachCanvas(key, `tile-${key}`, canvas);
+			}
+		}
+		if (this.currentPreviewCanvas && this.currentPreviewCanvasEl) {
+			from.detachCanvas(this.currentPreviewCanvas, 'preview');
+			to.attachCanvas(this.currentPreviewCanvas, 'preview', this.currentPreviewCanvasEl);
 		}
 	}
 

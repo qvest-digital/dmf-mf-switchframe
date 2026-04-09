@@ -367,7 +367,7 @@ type ControlRoomState struct {
 	Macro                *MacroExecutionState    `json:"macro,omitempty"`
 	ColorGrade           *ColorGradeState        `json:"colorGrade,omitempty"`
 	Playout              *PlayoutState           `json:"playout,omitempty"`
-	PeerReachable        *bool                   `json:"peerReachable,omitempty"`    // nil when no peer configured
+	PeerReachable        *bool                   `json:"peerReachable,omitempty"` // nil when no peer configured
 	PeerLastSeenMs       int64                   `json:"peerLastSeenMs,omitempty"`
 	EngineBURL           string                  `json:"engineBUrl,omitempty"`
 	SessionID            string                  `json:"sessionId,omitempty"`

@@ -17,9 +17,9 @@ import (
 	"github.com/zsiec/switchframe/server/audio"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/correctness/testutil"
-	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/dve"
-"github.com/zsiec/switchframe/server/switcher"
+	"github.com/zsiec/switchframe/server/graphics"
+	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition"
 )
 

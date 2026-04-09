@@ -17,7 +17,7 @@ func TestBuiltinPIPPresetsRectMode(t *testing.T) {
 	)
 
 	tests := []struct {
-		id   string
+		id           string
 		wantX, wantY float64
 	}{
 		{"pip-top-right", fw - pipW - margin, margin},
@@ -145,9 +145,9 @@ func TestBuiltinSideBySideRectMode(t *testing.T) {
 	}
 
 	const (
-		fw   = 1920.0
-		fh   = 1080.0
-		gap  = 4.0
+		fw    = 1920.0
+		fh    = 1080.0
+		gap   = 4.0
 		slotW = (fw - gap) / 2 // 958
 		slotH = fh             // 1080
 	)
@@ -232,9 +232,9 @@ func TestBuiltinQuadRectMode(t *testing.T) {
 	expected := []struct {
 		x, y float64
 	}{
-		{0, 0},                    // top-left
-		{slotW + gap, 0},         // top-right
-		{0, slotH + gap},         // bottom-left
+		{0, 0},                     // top-left
+		{slotW + gap, 0},           // top-right
+		{0, slotH + gap},           // bottom-left
 		{slotW + gap, slotH + gap}, // bottom-right
 	}
 

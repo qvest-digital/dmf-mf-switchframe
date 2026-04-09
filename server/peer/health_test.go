@@ -16,9 +16,9 @@ func TestHealthPoller_PeerReachable(t *testing.T) {
 	// Healthy peer endpoint.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := HealthResponse{
-			Status:        "ok",
-			UptimeMs:      12345,
-			ProgramSource: "cam1",
+			Status:         "ok",
+			UptimeMs:       12345,
+			ProgramSource:  "cam1",
 			LastCommandSeq: 42,
 		}
 		w.Header().Set("Content-Type", "application/json")

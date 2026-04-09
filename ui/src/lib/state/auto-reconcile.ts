@@ -18,6 +18,13 @@ export interface AutoReconcileConfig {
 const DIVERGE_DELAY_MS = 2000;
 const COOLDOWN_MS = 5000;
 const PUSH_TIMEOUT_MS = 10_000;
+const TRANSITION_POLL_MS = 100;
+const TRANSITION_WAIT_TIMEOUT_MS = 5000;
+const LOCK_ACQUIRE_TIMEOUT_MS = 5000;
+const LOCK_REFRESH_INTERVAL_MS = 5000; // Lock TTL is 15s
+const PARTIAL_RECHECK_DELAY_MS = 500;
+const RETRY_BASE_DELAY_MS = 2000;
+const RETRY_JITTER_MS = 1000;
 
 function otherEngine(engine: EngineId): EngineId {
 	return engine === 'A' ? 'B' : 'A';
@@ -63,7 +70,7 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 					resolve();
 					return;
 				}
-				setTimeout(check, 100);
+				setTimeout(check, TRANSITION_POLL_MS);
 			};
 			check();
 		});
@@ -76,7 +83,7 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 		const state = config.getAuthoritativeState?.();
 		if (state?.inTransition) {
 			pushInFlight = true;
-			await waitForTransitionEnd(5000);
+			await waitForTransitionEnd(TRANSITION_WAIT_TIMEOUT_MS);
 			if (destroyed) {
 				pushInFlight = false;
 				return;
@@ -113,7 +120,7 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 				const lock = await Promise.race([
 					lockPromise,
 					new Promise<{ acquired: false }>((resolve) =>
-						setTimeout(() => resolve({ acquired: false }), 5000)
+						setTimeout(() => resolve({ acquired: false }), LOCK_ACQUIRE_TIMEOUT_MS)
 					),
 				]);
 				if (!lock.acquired) {
@@ -136,7 +143,7 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 				config.refreshLock!(target, lockId!).catch(() => {
 					// Lock lost — abort will happen via timeout
 				});
-			}, 5000); // Refresh every 5s (lock TTL is 15s)
+			}, LOCK_REFRESH_INTERVAL_MS);
 		}
 
 		const timeoutController = new AbortController();
@@ -175,7 +182,7 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 					if (config.checkAnyDivergence?.()) {
 						executeSnapshotPush(currentAuthoritative);
 					}
-				}, 500);
+				}, PARTIAL_RECHECK_DELAY_MS);
 			}
 		} catch (err) {
 			clearTimeout(timeoutTimer);
@@ -183,7 +190,7 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 			// Retry once after 2s + jitter
 			if (retryCount < 1) {
 				retryCount++;
-				const delay = 2000 + Math.random() * 1000;
+				const delay = RETRY_BASE_DELAY_MS + Math.random() * RETRY_JITTER_MS;
 				const retryTarget = target;
 				setTimeout(() => {
 					// Clear cooldown for the target so retry can proceed

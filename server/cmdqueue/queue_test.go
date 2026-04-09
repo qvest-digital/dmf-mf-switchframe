@@ -692,7 +692,7 @@ func TestMetricsCallbacks_OnClockJump(t *testing.T) {
 	var now int64 = 2_000_000
 	q := cmdqueue.New(func() int64 { return now }, cmdqueue.WithMetrics(cb))
 
-	q.Drain() // establish baseline
+	q.Drain()       // establish baseline
 	now = 1_000_000 // backward jump
 	q.Drain()
 
