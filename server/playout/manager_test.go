@@ -675,3 +675,75 @@ func TestManager_LoadPlaylist_IdleAsset(t *testing.T) {
 		t.Errorf("idle asset URI = %q, want %q", idleURI, "local:///idle/bars.ts")
 	}
 }
+
+func TestManager_PlaylistHash(t *testing.T) {
+	m := NewManager(ManagerConfig{AssetProvider: fakeProvider(3)})
+	defer m.Close()
+
+	// No playlist loaded — should return empty.
+	if got := m.PlaylistHash(1); got != "" {
+		t.Errorf("PlaylistHash(1) = %q, want empty for no playlist", got)
+	}
+
+	// Invalid channel — should return empty.
+	if got := m.PlaylistHash(0); got != "" {
+		t.Errorf("PlaylistHash(0) = %q, want empty for invalid channel", got)
+	}
+
+	// Load playlist — should return non-empty hash.
+	pl := testPlaylist(clipItem("a"), clipItem("b"))
+	if err := m.LoadPlaylist(1, pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+
+	got := m.PlaylistHash(1)
+	if got == "" {
+		t.Fatal("PlaylistHash(1) = empty, want non-empty after loading playlist")
+	}
+	if len(got) < len("sha256:")+64 {
+		t.Errorf("PlaylistHash(1) = %q, want sha256: prefix + 64-char hex", got)
+	}
+}
+
+func TestManager_ChannelElapsedMs_Stopped(t *testing.T) {
+	m := NewManager(ManagerConfig{AssetProvider: fakeProvider(3)})
+	defer m.Close()
+
+	// Stopped channel — should return 0.
+	if got := m.ChannelElapsedMs(1); got != 0 {
+		t.Errorf("ChannelElapsedMs(1) = %d, want 0 when stopped", got)
+	}
+
+	// Invalid channel — should return 0.
+	if got := m.ChannelElapsedMs(0); got != 0 {
+		t.Errorf("ChannelElapsedMs(0) = %d, want 0 for invalid channel", got)
+	}
+}
+
+func TestManager_ChannelElapsedMs_Playing(t *testing.T) {
+	m := NewManager(ManagerConfig{AssetProvider: fakeProvider(90)})
+	defer m.Close()
+
+	pl := testPlaylist(clipItem("a"))
+	if err := m.LoadPlaylist(1, pl); err != nil {
+		t.Fatalf("LoadPlaylist: %v", err)
+	}
+
+	if err := m.Start(1); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Wait for on-air.
+	waitFor(t, 2*time.Second, func() bool {
+		states := m.ChannelStates()
+		return states[0].State == "on_air"
+	})
+
+	// Allow some frames to be emitted.
+	time.Sleep(100 * time.Millisecond)
+
+	elapsed := m.ChannelElapsedMs(1)
+	if elapsed <= 0 {
+		t.Errorf("ChannelElapsedMs(1) = %d, want > 0 when playing", elapsed)
+	}
+}

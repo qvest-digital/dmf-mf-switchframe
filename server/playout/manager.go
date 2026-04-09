@@ -330,6 +330,30 @@ func (m *Manager) PlaylistItems(channelID int) ([]PlaylistItem, error) {
 	return ch.PlaylistItems(), nil
 }
 
+// PlaylistHash returns the SHA-256 hash of the playlist items for a channel.
+// Returns empty string if the channel ID is invalid or no playlist is loaded.
+func (m *Manager) PlaylistHash(channelID int) string {
+	if err := m.validateChannelID(channelID); err != nil {
+		return ""
+	}
+	m.mu.Lock()
+	ch := m.channels[channelID-1]
+	m.mu.Unlock()
+	return ch.PlaylistHash()
+}
+
+// ChannelElapsedMs returns the elapsed milliseconds of the current item for a channel.
+// Returns 0 if the channel ID is invalid or the channel is not on-air.
+func (m *Manager) ChannelElapsedMs(channelID int) int64 {
+	if err := m.validateChannelID(channelID); err != nil {
+		return 0
+	}
+	m.mu.Lock()
+	ch := m.channels[channelID-1]
+	m.mu.Unlock()
+	return ch.ItemElapsedMs()
+}
+
 // ChannelStates returns the status of all playout channels.
 func (m *Manager) ChannelStates() []ChannelStatus {
 	m.mu.Lock()

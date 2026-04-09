@@ -1080,9 +1080,13 @@ func (a *App) captureFullSnapshot() internal.FullStateSnapshot {
 			}
 			snap.PlayoutChannels = append(snap.PlayoutChannels, internal.PlayoutChannelSnapshot{
 				ChannelIndex:     i,
+				ChannelState:     s.State,
 				CurrentItemIndex: s.ItemIndex,
-				ElapsedMs:        s.ItemRemainMs, // remaining ms from current item
+				CurrentItemID:    s.CurrentItemID,
+				ElapsedMs:        a.playoutMgr.ChannelElapsedMs(i + 1),
 				SchedulerState:   s.State,
+				SchedulerMode:    s.Mode,
+				PlaylistHash:     a.playoutMgr.PlaylistHash(i + 1),
 			})
 		}
 	}

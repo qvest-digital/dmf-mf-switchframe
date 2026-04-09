@@ -341,9 +341,10 @@ func (s *Scheduler) Cursor() int {
 
 // SchedulerSnapshot captures mode, cursor, and state under one lock.
 type SchedulerSnapshot struct {
-	State  SchedulerState
-	Mode   OnAirMode
-	Cursor int
+	State         SchedulerState
+	Mode          OnAirMode
+	Cursor        int
+	ItemStartTime time.Time // when the current item started playing
 }
 
 // StatusSnapshot returns mode, cursor, and state under a single lock acquisition.
@@ -351,9 +352,10 @@ func (s *Scheduler) StatusSnapshot() SchedulerSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return SchedulerSnapshot{
-		State:  s.state,
-		Mode:   s.mode,
-		Cursor: s.cursor,
+		State:         s.state,
+		Mode:          s.mode,
+		Cursor:        s.cursor,
+		ItemStartTime: s.itemStartTime,
 	}
 }
 

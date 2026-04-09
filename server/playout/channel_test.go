@@ -1,7 +1,11 @@
 package playout
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -2247,5 +2251,101 @@ func TestChannel_FRC_FrameMutationSafety(t *testing.T) {
 			t.Errorf("frame %d AudioFrames mutated: was %d, now %d",
 				i, originalAudioCounts[i], len(f.AudioFrames))
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PlaylistHash tests
+// ---------------------------------------------------------------------------
+
+func TestChannel_PlaylistHash_NoPlaylist(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{})
+	got := ch.PlaylistHash()
+	if got != "" {
+		t.Errorf("PlaylistHash() = %q, want empty string for no playlist", got)
+	}
+}
+
+func TestChannel_PlaylistHash_Deterministic(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{})
+	pl := testPlaylist(clipItem("a"), clipItem("b"))
+	require.NoError(t, ch.LoadPlaylist(pl))
+
+	h1 := ch.PlaylistHash()
+	h2 := ch.PlaylistHash()
+
+	if h1 == "" {
+		t.Fatal("PlaylistHash() returned empty string for loaded playlist")
+	}
+	if !strings.HasPrefix(h1, "sha256:") {
+		t.Errorf("PlaylistHash() = %q, want sha256: prefix", h1)
+	}
+	if h1 != h2 {
+		t.Errorf("PlaylistHash() not deterministic: %q != %q", h1, h2)
+	}
+
+	// Verify it matches manual computation.
+	data, err := json.Marshal(pl.Items)
+	require.NoError(t, err)
+	sum := sha256.Sum256(data)
+	want := "sha256:" + hex.EncodeToString(sum[:])
+	if h1 != want {
+		t.Errorf("PlaylistHash() = %q, want %q", h1, want)
+	}
+}
+
+func TestChannel_PlaylistHash_DifferentPlaylists(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{})
+
+	pl1 := testPlaylist(clipItem("a"))
+	require.NoError(t, ch.LoadPlaylist(pl1))
+	h1 := ch.PlaylistHash()
+
+	pl2 := testPlaylist(clipItem("a"), clipItem("b"))
+	require.NoError(t, ch.LoadPlaylist(pl2))
+	h2 := ch.PlaylistHash()
+
+	if h1 == h2 {
+		t.Error("PlaylistHash() should differ for different playlists")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ItemElapsedMs tests
+// ---------------------------------------------------------------------------
+
+func TestChannel_ItemElapsedMs_Stopped(t *testing.T) {
+	ch := NewChannel(1, ChannelConfig{})
+	got := ch.ItemElapsedMs()
+	if got != 0 {
+		t.Errorf("ItemElapsedMs() = %d, want 0 when stopped", got)
+	}
+}
+
+func TestChannel_ItemElapsedMs_Playing(t *testing.T) {
+	provider := fakeProvider(90) // 3 seconds at 30fps
+	ch := NewChannel(1, ChannelConfig{AssetProvider: provider})
+	ch.SetRawVideoOutput(func(yuv []byte, w, h int, pts int64, isKeyframe bool) {})
+
+	pl := testPlaylist(clipItem("a"))
+	require.NoError(t, ch.LoadPlaylist(pl))
+	require.NoError(t, ch.Start())
+	defer ch.Stop()
+
+	// Wait for on-air.
+	waitFor(t, 2*time.Second, func() bool {
+		return ch.State() == StateOnAir
+	})
+
+	// Allow some frames to be emitted.
+	time.Sleep(100 * time.Millisecond)
+
+	elapsed := ch.ItemElapsedMs()
+	if elapsed <= 0 {
+		t.Errorf("ItemElapsedMs() = %d, want > 0 when playing", elapsed)
+	}
+	// Sanity: should be at least 50ms but less than 5 seconds.
+	if elapsed > 5000 {
+		t.Errorf("ItemElapsedMs() = %d, implausibly large", elapsed)
 	}
 }

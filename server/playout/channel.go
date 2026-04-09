@@ -2,6 +2,9 @@ package playout
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -259,6 +262,41 @@ func (c *Channel) PlaylistItems() []PlaylistItem {
 	items := make([]PlaylistItem, len(pl.Items))
 	copy(items, pl.Items)
 	return items
+}
+
+// PlaylistHash returns a deterministic SHA-256 hash of the playlist items,
+// prefixed with "sha256:". Returns an empty string if no playlist is loaded.
+func (c *Channel) PlaylistHash() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	pl := c.schedulerPlaylist()
+	if pl == nil || len(pl.Items) == 0 {
+		return ""
+	}
+	data, err := json.Marshal(pl.Items)
+	if err != nil {
+		return ""
+	}
+	h := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(h[:])
+}
+
+// ItemElapsedMs returns the number of milliseconds since the current item
+// started playing. Returns 0 if the channel is not on-air or no item is active.
+func (c *Channel) ItemElapsedMs() int64 {
+	c.mu.Lock()
+	state := c.state
+	c.mu.Unlock()
+
+	if state != StateOnAir {
+		return 0
+	}
+
+	snap := c.scheduler.StatusSnapshot()
+	if snap.ItemStartTime.IsZero() {
+		return 0
+	}
+	return time.Since(snap.ItemStartTime).Milliseconds()
 }
 
 // schedulerPlaylist returns the scheduler's playlist. Returns nil if no
