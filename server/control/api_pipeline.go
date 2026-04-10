@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/zsiec/switchframe/server/control/httperr"
 	"github.com/zsiec/switchframe/server/switcher"
@@ -27,12 +28,31 @@ func (a *API) registerPipelineRoutes(mux *http.ServeMux) {
 // pipelineNodeResponse is the JSON representation of a single pipeline node.
 type pipelineNodeResponse struct {
 	Name      string `json:"name"`
+	Category  string `json:"category"`
 	Active    bool   `json:"active"`
 	Bypassed  bool   `json:"bypassed"`
 	LastNs    int64  `json:"lastNs"`
 	MaxNs     int64  `json:"maxNs"`
 	LatencyUs int64  `json:"latencyUs"`
 	Health    string `json:"health"`
+}
+
+// nodeCategory derives a UI category from the pipeline node name.
+func nodeCategory(name string) string {
+	switch {
+	case strings.HasPrefix(name, "gpu_"):
+		return "gpu"
+	case strings.HasPrefix(name, "srt:") || strings.HasPrefix(name, "cam") || strings.HasPrefix(name, "mxl:") || strings.HasPrefix(name, "clip"):
+		return "source"
+	case name == "program_output":
+		return "output"
+	case name == "h264-encode" || name == "gpu_encode":
+		return "output"
+	case name == "raw-sink-mxl" || name == "gpu_raw_sink":
+		return "output"
+	default:
+		return "decode"
+	}
 }
 
 // pipelineSnapshotResponse is the JSON representation of the pipeline state.
@@ -81,6 +101,7 @@ func buildSnapshotResponse(raw map[string]any, sourceKeys []string) pipelineSnap
 		}
 		if v, ok := n["name"].(string); ok {
 			node.Name = v
+			node.Category = nodeCategory(v)
 		}
 		if v, ok := n["bypassed"].(bool); ok {
 			node.Bypassed = v

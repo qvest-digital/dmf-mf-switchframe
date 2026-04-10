@@ -102,13 +102,18 @@ func TestBypassUnknownNodeReturnsError(t *testing.T) {
 
 func TestBypassProtectedNodeReturnsError(t *testing.T) {
 	enc := &countingNode{name: "gpu_encode", active: true}
+	sink := &countingNode{name: "gpu_raw_sink", active: true}
 
 	p := &Pipeline{}
-	require.NoError(t, p.Build(DefaultFormat, nil, []PipelineNode{enc}))
+	require.NoError(t, p.Build(DefaultFormat, nil, []PipelineNode{enc, sink}))
 
 	err := p.SetBypass("gpu_encode", true)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "protected")
+
+	err2 := p.SetBypass("gpu_raw_sink", true)
+	require.Error(t, err2)
+	require.Contains(t, err2.Error(), "protected")
 }
 
 func TestBypassReenableResumesProcessing(t *testing.T) {

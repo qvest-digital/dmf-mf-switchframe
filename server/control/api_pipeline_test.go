@@ -73,7 +73,7 @@ func TestPipelineSnapshotEndpoint(t *testing.T) {
 
 	// Check node structure
 	node0 := nodes[0].(map[string]any)
-	for _, key := range []string{"name", "active", "bypassed", "lastNs", "maxNs", "latencyUs", "health"} {
+	for _, key := range []string{"name", "category", "active", "bypassed", "lastNs", "maxNs", "latencyUs", "health"} {
 		if _, ok := node0[key]; !ok {
 			t.Errorf("node missing key %q", key)
 		}

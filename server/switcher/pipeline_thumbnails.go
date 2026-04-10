@@ -2,6 +2,7 @@ package switcher
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	"image/jpeg"
 	"sync"
@@ -121,6 +122,10 @@ func (tc *ThumbnailCache) ClearRequest() {
 // to (dstW x dstH), converts to RGB, and encodes as JPEG at quality 60.
 // Follows the same pattern as the confidence monitor (output/confidence.go).
 func ScaleAndEncodeJPEG(yuv []byte, srcW, srcH, dstW, dstH int) ([]byte, error) {
+	if srcW <= 0 || srcH <= 0 || dstW <= 0 || dstH <= 0 {
+		return nil, fmt.Errorf("invalid dimensions: src=%dx%d dst=%dx%d", srcW, srcH, dstW, dstH)
+	}
+
 	// Scale YUV420 to destination size
 	dstSize := video.YUV420FrameSize(dstW, dstH)
 	var scaledYUV []byte

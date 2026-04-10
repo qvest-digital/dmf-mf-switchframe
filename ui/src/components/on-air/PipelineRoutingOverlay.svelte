@@ -215,6 +215,13 @@
 				onclose();
 			}
 		}
+		switch (e.code) {
+			case 'KeyR':
+				e.preventDefault();
+				fetchSnapshot();
+				fetchThumbnails();
+				break;
+		}
 	}
 
 	// ── SVG dimensions ──
@@ -245,7 +252,7 @@
 			if (res.ok) {
 				const data = await res.json();
 				if (data.nodes) nodes = data.nodes;
-				if (data.edges) edges = data.edges;
+				if (data.connections) edges = data.connections;
 			}
 		} catch {
 			// API unavailable, keep mock/current data
@@ -257,7 +264,14 @@
 			const res = await fetch(resolveApiUrl('/api/pipeline/thumbnails'));
 			if (res.ok) {
 				const data = await res.json();
-				thumbnails = data.nodes ?? {};
+				const nodes = data.nodes ?? {};
+				const mapped: Record<string, string> = {};
+				for (const [id, info] of Object.entries(nodes)) {
+					if ((info as any).jpeg) {
+						mapped[id] = `data:image/jpeg;base64,${(info as any).jpeg}`;
+					}
+				}
+				thumbnails = mapped;
 			}
 		} catch {
 			// API unavailable, keep empty thumbnails

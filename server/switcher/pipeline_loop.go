@@ -121,7 +121,11 @@ func (p *Pipeline) SetMetrics(m *metrics.Metrics) {
 // Run() skips the node's Process() call — the frame passes through unchanged.
 // Returns an error if the node name is "gpu_encode" (protected) or unknown.
 func (p *Pipeline) SetBypass(nodeName string, bypass bool) error {
-	if nodeName == "gpu_encode" {
+	protectedNodes := map[string]bool{
+		"gpu_encode":   true,
+		"gpu_raw_sink": true,
+	}
+	if protectedNodes[nodeName] {
 		return fmt.Errorf("node %q is protected and cannot be bypassed", nodeName)
 	}
 	flag, ok := p.bypassFlags[nodeName]
