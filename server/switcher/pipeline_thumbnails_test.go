@@ -5,6 +5,10 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/zsiec/prism/distribution"
+	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/transition"
 )
 
 func TestThumbnailCacheStoreAndGet(t *testing.T) {
@@ -173,6 +177,324 @@ func TestThumbnailCacheConcurrent(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+func TestSourceDecoderThumbnailCapture(t *testing.T) {
+	cache := NewThumbnailCache()
+	cache.RequestCapture()
+
+	factory := func() (transition.VideoDecoder, error) {
+		return transition.NewMockDecoder(320, 240), nil
+	}
+
+	var mu sync.Mutex
+	var received []*ProcessingFrame
+	callback := func(sourceKey string, pf *ProcessingFrame) {
+		mu.Lock()
+		received = append(received, pf)
+		mu.Unlock()
+	}
+
+	sd := newSourceDecoder("cam1", factory, callback, nil, nil, nil, nil)
+	sd.thumbnailCache = cache
+	defer sd.Close()
+
+	// Send a keyframe
+	frame := &media.VideoFrame{
+		PTS:        90000,
+		DTS:        90000,
+		IsKeyframe: true,
+		WireData:   []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0xAA},
+		SPS:        []byte{0x67, 0x42, 0x00, 0x1e},
+		PPS:        []byte{0x68, 0xce, 0x38, 0x80},
+		Codec:      "h264",
+		GroupID:    1,
+	}
+	sd.Send(frame, time.Now().UnixNano())
+
+	// Wait for decode + thumbnail goroutine to complete
+	deadline := time.After(3 * time.Second)
+	for {
+		info, ok := cache.Get("cam1")
+		if ok && len(info.JPEG) > 0 {
+			// Verify it's a valid JPEG (SOI marker)
+			if info.JPEG[0] != 0xFF || info.JPEG[1] != 0xD8 {
+				t.Fatalf("thumbnail not valid JPEG: got %02x %02x", info.JPEG[0], info.JPEG[1])
+			}
+			if info.Width != thumbnailWidth || info.Height != thumbnailHeight {
+				t.Fatalf("thumbnail dimensions: got %dx%d, want %dx%d",
+					info.Width, info.Height, thumbnailWidth, thumbnailHeight)
+			}
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timeout waiting for thumbnail capture")
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
+func TestSourceDecoderThumbnailNotCapturedWhenNotRequested(t *testing.T) {
+	cache := NewThumbnailCache()
+	// Don't call RequestCapture — ShouldCapture() returns false
+
+	factory := func() (transition.VideoDecoder, error) {
+		return transition.NewMockDecoder(320, 240), nil
+	}
+
+	var mu sync.Mutex
+	var received []*ProcessingFrame
+	callback := func(sourceKey string, pf *ProcessingFrame) {
+		mu.Lock()
+		received = append(received, pf)
+		mu.Unlock()
+	}
+
+	sd := newSourceDecoder("cam1", factory, callback, nil, nil, nil, nil)
+	sd.thumbnailCache = cache
+	defer sd.Close()
+
+	// Send a keyframe
+	frame := &media.VideoFrame{
+		PTS:        90000,
+		DTS:        90000,
+		IsKeyframe: true,
+		WireData:   []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0xAA},
+		SPS:        []byte{0x67, 0x42, 0x00, 0x1e},
+		PPS:        []byte{0x68, 0xce, 0x38, 0x80},
+		Codec:      "h264",
+		GroupID:    1,
+	}
+	sd.Send(frame, time.Now().UnixNano())
+
+	// Wait for decode to complete
+	deadline := time.After(2 * time.Second)
+	for {
+		mu.Lock()
+		n := len(received)
+		mu.Unlock()
+		if n >= 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timeout waiting for callback")
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	// Small delay to let any async thumbnail goroutine run (if it incorrectly did)
+	time.Sleep(50 * time.Millisecond)
+
+	_, ok := cache.Get("cam1")
+	if ok {
+		t.Fatal("thumbnail should NOT be captured when ShouldCapture() is false")
+	}
+}
+
+func TestSourceDecoderThumbnailNilCacheIsNoop(t *testing.T) {
+	// Ensure no panic when thumbnailCache is nil
+	factory := func() (transition.VideoDecoder, error) {
+		return transition.NewMockDecoder(320, 240), nil
+	}
+
+	var mu sync.Mutex
+	var received []*ProcessingFrame
+	callback := func(sourceKey string, pf *ProcessingFrame) {
+		mu.Lock()
+		received = append(received, pf)
+		mu.Unlock()
+	}
+
+	sd := newSourceDecoder("cam1", factory, callback, nil, nil, nil, nil)
+	// thumbnailCache is nil by default
+	defer sd.Close()
+
+	frame := &media.VideoFrame{
+		PTS:        90000,
+		DTS:        90000,
+		IsKeyframe: true,
+		WireData:   []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0xAA},
+		SPS:        []byte{0x67, 0x42, 0x00, 0x1e},
+		PPS:        []byte{0x68, 0xce, 0x38, 0x80},
+		Codec:      "h264",
+		GroupID:    1,
+	}
+	sd.Send(frame, time.Now().UnixNano())
+
+	// Wait for decode to complete
+	deadline := time.After(2 * time.Second)
+	for {
+		mu.Lock()
+		n := len(received)
+		mu.Unlock()
+		if n >= 1 {
+			return // success — no panic
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timeout waiting for callback")
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+}
+
+func TestSwitcherThumbnailCacheAccessor(t *testing.T) {
+	relay := distribution.NewRelay()
+	sw := New(relay)
+	defer sw.Close()
+
+	tc := sw.ThumbnailCache()
+	if tc == nil {
+		t.Fatal("ThumbnailCache() returned nil")
+	}
+
+	// Verify it's functional
+	tc.Store("test", []byte{0xFF}, 1, 1)
+	info, ok := tc.Get("test")
+	if !ok {
+		t.Fatal("stored thumbnail not retrievable")
+	}
+	if len(info.JPEG) != 1 {
+		t.Fatalf("JPEG length: got %d, want 1", len(info.JPEG))
+	}
+}
+
+func TestSwitcherThumbnailCachePassedToDecoders(t *testing.T) {
+	relay := distribution.NewRelay()
+	sw := New(relay)
+	defer sw.Close()
+
+	// Set up a decoder factory so RegisterSource creates sourceDecoders
+	sw.SetSourceDecoderFactory(func() (transition.VideoDecoder, error) {
+		return transition.NewMockDecoder(320, 240), nil
+	})
+
+	sourceRelay := distribution.NewRelay()
+	sw.RegisterSource("cam1", sourceRelay)
+
+	// Verify the decoder got the thumbnail cache
+	sw.mu.RLock()
+	ss, ok := sw.sources["cam1"]
+	sw.mu.RUnlock()
+	if !ok || ss == nil {
+		t.Fatal("source not registered")
+	}
+	if ss.viewer == nil {
+		t.Fatal("viewer not set")
+	}
+	dec := ss.viewer.srcDecoder.Load()
+	if dec == nil {
+		t.Fatal("sourceDecoder not created")
+	}
+	if dec.thumbnailCache == nil {
+		t.Fatal("sourceDecoder.thumbnailCache should be set")
+	}
+	if dec.thumbnailCache != sw.thumbnailCache {
+		t.Fatal("sourceDecoder.thumbnailCache should match switcher's cache")
+	}
+}
+
+func TestProgramOutputThumbnailCapture(t *testing.T) {
+	relay := distribution.NewRelay()
+	sw := New(relay)
+	defer sw.Close()
+
+	tc := sw.ThumbnailCache()
+	tc.RequestCapture()
+
+	// Create a synthetic YUV420 frame and push it through the video processing
+	// channel to simulate the program output path.
+	w, h := 320, 240
+	yuvSize := w * h * 3 / 2
+	yuv := make([]byte, yuvSize)
+	for i := 0; i < w*h; i++ {
+		yuv[i] = 128 // gray Y
+	}
+	for i := w * h; i < yuvSize; i++ {
+		yuv[i] = 128 // neutral chroma
+	}
+
+	pf := &ProcessingFrame{
+		Data:   yuv,
+		Format: ColorYUV420_8bit,
+		Width:  w,
+		Height: h,
+		PTS:    90000,
+	}
+	pf.SetRefs(1)
+
+	// Enqueue to video processing channel
+	sw.videoProcCh <- videoProcWork{
+		yuvFrame:    pf,
+		epoch:       sw.programEpoch.Load(),
+		enqueueNano: time.Now().UnixNano(),
+	}
+
+	// Wait for the program output thumbnail to appear
+	deadline := time.After(3 * time.Second)
+	for {
+		info, ok := tc.Get("program_output")
+		if ok && len(info.JPEG) > 0 {
+			if info.JPEG[0] != 0xFF || info.JPEG[1] != 0xD8 {
+				t.Fatalf("program thumbnail not valid JPEG: got %02x %02x", info.JPEG[0], info.JPEG[1])
+			}
+			if info.Width != thumbnailWidth || info.Height != thumbnailHeight {
+				t.Fatalf("program thumbnail dimensions: got %dx%d, want %dx%d",
+					info.Width, info.Height, thumbnailWidth, thumbnailHeight)
+			}
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timeout waiting for program output thumbnail")
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
+func TestProgramOutputThumbnailNotCapturedWhenNotRequested(t *testing.T) {
+	relay := distribution.NewRelay()
+	sw := New(relay)
+	defer sw.Close()
+
+	tc := sw.ThumbnailCache()
+	// Don't call RequestCapture
+
+	w, h := 320, 240
+	yuvSize := w * h * 3 / 2
+	yuv := make([]byte, yuvSize)
+	for i := range yuv {
+		yuv[i] = 128
+	}
+
+	pf := &ProcessingFrame{
+		Data:   yuv,
+		Format: ColorYUV420_8bit,
+		Width:  w,
+		Height: h,
+		PTS:    90000,
+	}
+	pf.SetRefs(1)
+
+	sw.videoProcCh <- videoProcWork{
+		yuvFrame:    pf,
+		epoch:       sw.programEpoch.Load(),
+		enqueueNano: time.Now().UnixNano(),
+	}
+
+	// Give the processing loop time to handle the frame
+	time.Sleep(100 * time.Millisecond)
+
+	_, ok := tc.Get("program_output")
+	if ok {
+		t.Fatal("program output thumbnail should NOT be captured when ShouldCapture() is false")
+	}
 }
 
 func TestScaleAndEncodeJPEG(t *testing.T) {

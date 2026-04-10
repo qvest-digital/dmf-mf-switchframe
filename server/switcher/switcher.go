@@ -293,6 +293,11 @@ type Switcher struct {
 	// ST map registry — per-source lens correction applied in sourceDecoder.
 	stmapRegistry *stmap.Registry
 
+	// Thumbnail cache — pipeline routing view JPEG thumbnails.
+	// Created in New(), passed to each sourceDecoder and tapped in
+	// videoProcessingLoop for program output capture.
+	thumbnailCache *ThumbnailCache
+
 	// Wipe map store — resolves gradient maps for gradient-map-based wipe transitions.
 	wipeMapStore *wipemap.WipeMapStore
 
@@ -557,13 +562,14 @@ var _ frameHandler = (*Switcher)(nil)
 func New(programRelay *distribution.Relay) *Switcher {
 	defaultFmt := DefaultFormat
 	s := &Switcher{
-		log:           slog.With("component", "switcher"),
-		sources:       make(map[string]*sourceState),
-		programRelay:  programRelay,
-		health:        newHealthMonitor(),
-		videoProcCh:   make(chan videoProcWork, 8),
-		videoProcDone: make(chan struct{}),
-		framePool:     NewFramePool(512, defaultFmt.Width, defaultFmt.Height, defaultFmt.Color.ColorFormat),
+		log:            slog.With("component", "switcher"),
+		sources:        make(map[string]*sourceState),
+		programRelay:   programRelay,
+		health:         newHealthMonitor(),
+		videoProcCh:    make(chan videoProcWork, 8),
+		videoProcDone:  make(chan struct{}),
+		framePool:      NewFramePool(512, defaultFmt.Width, defaultFmt.Height, defaultFmt.Color.ColorFormat),
+		thumbnailCache: NewThumbnailCache(),
 	}
 	s.frameBudgetNs.Store(defaultFmt.FrameBudgetNs())
 	s.pipelineFormat.Store(&defaultFmt)
@@ -588,6 +594,12 @@ func (s *Switcher) SetMixer(m audioStateProvider) {
 	if handler, ok := m.(audioTransitionHandler); ok {
 		s.audioTransition = handler
 	}
+}
+
+// ThumbnailCache returns the switcher's thumbnail cache for pipeline routing
+// view JPEG captures. Never nil — created in New().
+func (s *Switcher) ThumbnailCache() *ThumbnailCache {
+	return s.thumbnailCache
 }
 
 // SetMetrics attaches Prometheus metrics to the switcher for production
@@ -1913,6 +1925,26 @@ func (s *Switcher) videoProcessingLoop() {
 				work.yuvFrame = p.Run(work.yuvFrame)
 			}
 		}
+
+		// Program output thumbnail capture: async JPEG encode on background
+		// goroutine. Captures the final processed YUV before encode/release.
+		// Only 8-bit YUV420 is supported by ScaleAndEncodeJPEG.
+		if s.thumbnailCache != nil && s.thumbnailCache.ShouldCapture() &&
+			work.yuvFrame != nil && work.yuvFrame.Format == ColorYUV420_8bit &&
+			len(work.yuvFrame.Data) > 0 {
+			yuvCopy := make([]byte, len(work.yuvFrame.Data))
+			copy(yuvCopy, work.yuvFrame.Data)
+			fw, fh := work.yuvFrame.Width, work.yuvFrame.Height
+			tc := s.thumbnailCache
+			go func() {
+				jpegData, err := ScaleAndEncodeJPEG(yuvCopy, fw, fh, thumbnailWidth, thumbnailHeight)
+				if err == nil {
+					tc.Store("program_output", jpegData, thumbnailWidth, thumbnailHeight)
+				}
+			}()
+			tc.ClearRequest()
+		}
+
 		work.yuvFrame.ReleaseYUV()
 
 		dur := time.Since(start).Nanoseconds()
@@ -2748,6 +2780,7 @@ func (s *Switcher) RegisterSource(key string, relay *distribution.Relay) {
 		cb := s.makeDecoderCallback(key)
 		sd := newSourceDecoder(key, s.sourceDecoderFactory, cb, s.framePool, &s.pipelineFormat, s.stmapRegistry, &s.gpuSourceActive)
 		if sd != nil {
+			sd.thumbnailCache = s.thumbnailCache
 			viewer.srcDecoder.Store(sd)
 			useRaw = true
 		}
