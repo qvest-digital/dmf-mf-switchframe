@@ -1,4 +1,9 @@
 <script lang="ts">
+	import RoutingNode from './RoutingNode.svelte';
+	import RoutingEdge from './RoutingEdge.svelte';
+	import RoutingDetailPopover from './RoutingDetailPopover.svelte';
+	import { resolveApiUrl } from '$lib/api/base-url';
+
 	interface PipelineNodeInfo {
 		name: string;
 		category: 'source' | 'decode' | 'gpu' | 'output' | 'transport' | 'audio';
@@ -38,7 +43,7 @@
 		TRANSPORT: 920,
 	};
 
-	// ── Mock data ──
+	// ── Mock data (fallback when API unavailable) ──
 
 	const mockNodes: PipelineNodeInfo[] = [
 		{ name: 'cam1', category: 'source', active: true, bypassed: false, lastNs: 120000, maxNs: 300000, latencyUs: 120, health: 'healthy' },
@@ -72,10 +77,17 @@
 		{ from: 'gpu_encode', to: 'moq_relay', active: true },
 	];
 
-	// ── Local state (will become server-driven) ──
+	// ── Local state ──
 
 	let nodes = $state<PipelineNodeInfo[]>(mockNodes);
 	let edges = $state<PipelineEdge[]>(mockEdges);
+	let thumbnails = $state<Record<string, string>>({});
+
+	// ── Selected node for detail popover ──
+
+	let selectedNode = $state<PipelineNodeInfo | null>(null);
+	let popoverX = $state(0);
+	let popoverY = $state(0);
 
 	// ── Column mapping ──
 
@@ -96,8 +108,6 @@
 
 	const NODE_W = 180;
 	const NODE_H = 130;
-	const THUMB_W = 160;
-	const THUMB_H = 90;
 	const ROW_GAP = 20;
 
 	function nodeY(col: Column, index: number): number {
@@ -127,12 +137,44 @@
 		};
 	}
 
-	// ── Bypass toggle ──
+	// ── Bypass toggle (API-first, fallback to local) ──
 
-	function toggleBypass(name: string) {
+	async function toggleBypass(name: string) {
+		const node = nodes.find(n => n.name === name);
+		if (!node) return;
+
+		try {
+			const method = node.bypassed ? 'DELETE' : 'PUT';
+			const res = await fetch(resolveApiUrl(`/api/pipeline/nodes/${name}/bypass`), { method });
+			if (res.ok) {
+				const data = await res.json();
+				if (data.nodes) {
+					nodes = data.nodes;
+					return;
+				}
+			}
+		} catch {
+			// API unavailable, fall through to local toggle
+		}
+
+		// Local fallback
 		nodes = nodes.map(n =>
 			n.name === name ? { ...n, bypassed: !n.bypassed } : n
 		);
+	}
+
+	// ── Node click → open detail popover ──
+
+	function handleNodeClick(node: PipelineNodeInfo, event?: MouseEvent) {
+		const clickX = event?.clientX ?? 400;
+		const clickY = event?.clientY ?? 300;
+		popoverX = clickX + 10;
+		popoverY = clickY - 20;
+		selectedNode = node;
+	}
+
+	function closePopover() {
+		selectedNode = null;
 	}
 
 	// ── Derived ──
@@ -160,7 +202,11 @@
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.key === 'Escape') {
 			e.preventDefault();
-			onclose();
+			if (selectedNode) {
+				closePopover();
+			} else {
+				onclose();
+			}
 		}
 	}
 
@@ -184,12 +230,42 @@
 		return `${us}us`;
 	}
 
-	// ── Polling stub ──
+	// ── API polling ──
+
+	async function fetchSnapshot() {
+		try {
+			const res = await fetch(resolveApiUrl('/api/pipeline/snapshot'));
+			if (res.ok) {
+				const data = await res.json();
+				if (data.nodes) nodes = data.nodes;
+				if (data.edges) edges = data.edges;
+			}
+		} catch {
+			// API unavailable, keep mock/current data
+		}
+	}
+
+	async function fetchThumbnails() {
+		try {
+			const res = await fetch(resolveApiUrl('/api/pipeline/thumbnails'));
+			if (res.ok) {
+				const data = await res.json();
+				thumbnails = data.nodes ?? {};
+			}
+		} catch {
+			// API unavailable, keep empty thumbnails
+		}
+	}
 
 	$effect(() => {
 		if (!visible) return;
-		// TODO: Replace with real API polling
-		// Will poll GET /api/pipeline/snapshot and /api/pipeline/thumbnails at 1Hz
+		fetchSnapshot();
+		fetchThumbnails();
+		const id = setInterval(() => {
+			fetchSnapshot();
+			fetchThumbnails();
+		}, 1000);
+		return () => clearInterval(id);
 	});
 </script>
 
@@ -241,15 +317,13 @@
 				{#each edges as edge}
 					{@const pts = edgeEndpoints(edge)}
 					{#if pts}
-						<line
+						<RoutingEdge
 							x1={pts.x1}
 							y1={pts.y1}
 							x2={pts.x2}
 							y2={pts.y2}
-							class="routing-edge"
-							class:edge-active={edge.active}
-							class:edge-inactive={!edge.active}
-							stroke-width={edge.active ? 2 : 1}
+							active={edge.active}
+							isProgram={edge.active}
 						/>
 					{/if}
 				{/each}
@@ -257,86 +331,19 @@
 				<!-- Nodes -->
 				{#each COLUMNS as col}
 					{#each nodesInColumn(col) as node, idx}
-						{@const x = nodeX(col)}
-						{@const y = nodeY(col, idx)}
-						<g class="routing-node" data-node={node.name}>
-							<!-- Background rect -->
-							<rect
-								x={x}
-								y={y}
-								width={NODE_W}
-								height={NODE_H}
-								rx="6"
-								ry="6"
-								class="node-bg"
-								class:node-bypassed={node.bypassed}
-								class:node-error={node.health === 'error'}
-								class:node-program={node.active && !node.bypassed}
-							/>
-
-							<!-- Thumbnail area -->
-							<rect
-								x={x + 10}
-								y={y + 6}
-								width={THUMB_W}
-								height={THUMB_H}
-								rx="3"
-								ry="3"
-								class="node-thumb"
-							/>
-
-							<!-- Node name -->
-							<text
-								x={x + 10}
-								y={y + THUMB_H + 18}
-								class="node-name"
-							>
-								{node.name}
-							</text>
-
-							<!-- Latency -->
-							<text
-								x={x + NODE_W - 10}
-								y={y + THUMB_H + 18}
-								text-anchor="end"
-								class="node-latency"
-							>
-								{node.active ? formatLatency(node.latencyUs) : '--'}
-							</text>
-
-							<!-- Health dot -->
-							<circle
-								cx={x + NODE_W - 14}
-								cy={y + 14}
-								r="4"
-								fill={healthColor(node.health)}
-								class="node-health-dot"
-							/>
-
-							<!-- Bypass toggle -->
-							<!-- svelte-ignore a11y_click_events_have_key_events -->
-							<rect
-								x={x + NODE_W - 36}
-								y={y + 4}
-								width="20"
-								height="14"
-								rx="3"
-								ry="3"
-								class="bypass-toggle"
-								class:bypass-active={node.bypassed}
-								role="button"
-								tabindex="0"
-								onclick={(e: MouseEvent) => { e.stopPropagation(); toggleBypass(node.name); }}
-							/>
-							<text
-								x={x + NODE_W - 26}
-								y={y + 14}
-								text-anchor="middle"
-								class="bypass-label"
-							>
-								{node.bypassed ? 'B' : ''}
-							</text>
-						</g>
+						<RoutingNode
+							x={nodeX(col)}
+							y={nodeY(col, idx)}
+							name={node.name}
+							category={node.category}
+							thumbnail={thumbnails[node.name]}
+							latencyNs={node.lastNs}
+							health={node.health}
+							bypassed={node.bypassed}
+							isProgram={node.active && !node.bypassed}
+							onBypassToggle={() => toggleBypass(node.name)}
+							onclick={(e?: MouseEvent) => handleNodeClick(node, e)}
+						/>
 					{/each}
 				{/each}
 			</svg>
@@ -351,6 +358,26 @@
 			</span>
 		</footer>
 	</div>
+
+	{#if selectedNode}
+		<RoutingDetailPopover
+			visible={true}
+			x={popoverX}
+			y={popoverY}
+			node={{
+				name: selectedNode.name,
+				category: selectedNode.category,
+				health: selectedNode.health,
+				bypassed: selectedNode.bypassed,
+				latencyNs: selectedNode.lastNs,
+				maxNs: selectedNode.maxNs,
+				error: selectedNode.error,
+				thumbnail: thumbnails[selectedNode.name],
+			}}
+			onclose={closePopover}
+			onBypassToggle={() => { toggleBypass(selectedNode!.name); }}
+		/>
+	{/if}
 {/if}
 
 <style>
@@ -458,88 +485,6 @@
 		font-weight: 700;
 		letter-spacing: 0.12em;
 		fill: var(--text-secondary, #6b7280);
-	}
-
-	/* ── Edges ── */
-	.routing-edge.edge-active {
-		stroke: #06B6D4;
-	}
-
-	.routing-edge.edge-inactive {
-		stroke: var(--border-subtle, #333);
-		stroke-dasharray: 4 4;
-	}
-
-	/* ── Nodes ── */
-	.node-bg {
-		fill: var(--bg-elevated, #1c1c21);
-		stroke: var(--border-default, #2a2a3a);
-		stroke-width: 1;
-		transition: stroke 150ms, stroke-width 150ms;
-	}
-
-	.node-bg.node-program {
-		stroke: #06B6D4;
-		stroke-width: 2;
-	}
-
-	.node-bg.node-bypassed {
-		stroke: var(--accent-yellow, #eab308);
-		stroke-width: 2;
-		stroke-dasharray: 6 3;
-	}
-
-	.node-bg.node-error {
-		stroke: var(--tally-program, #dc2626);
-		stroke-width: 2;
-	}
-
-	.node-thumb {
-		fill: var(--bg-canvas, #111118);
-	}
-
-	.node-name {
-		font-family: var(--font-ui, -apple-system, sans-serif);
-		font-size: 11px;
-		font-weight: 600;
-		fill: var(--text-primary, #e0e0e8);
-	}
-
-	.node-latency {
-		font-family: var(--font-mono, monospace);
-		font-size: 10px;
-		fill: var(--text-secondary, #6b7280);
-	}
-
-	.node-health-dot {
-		transition: fill 300ms;
-	}
-
-	/* ── Bypass toggle ── */
-	.bypass-toggle {
-		fill: var(--bg-control, #2a2a30);
-		stroke: var(--border-subtle, #333);
-		stroke-width: 1;
-		cursor: pointer;
-		transition: fill 120ms, stroke 120ms;
-	}
-
-	.bypass-toggle:hover {
-		fill: var(--bg-hover, #333);
-		stroke: var(--border-default, #444);
-	}
-
-	.bypass-toggle.bypass-active {
-		fill: rgba(234, 179, 8, 0.2);
-		stroke: var(--accent-yellow, #eab308);
-	}
-
-	.bypass-label {
-		font-family: var(--font-mono, monospace);
-		font-size: 8px;
-		font-weight: 700;
-		fill: var(--accent-yellow, #eab308);
-		pointer-events: none;
 	}
 
 	/* ── Footer ── */
