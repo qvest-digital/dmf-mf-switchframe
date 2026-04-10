@@ -79,7 +79,7 @@
 		font-family: var(--font-ui);
 		font-size: 11px;
 		font-weight: 600;
-		color: rgba(255, 255, 255, 0.9);
+		color: var(--text-on-color);
 		background: rgba(0, 0, 0, 0.55);
 		padding: 2px 8px;
 		border-radius: var(--radius-xs);

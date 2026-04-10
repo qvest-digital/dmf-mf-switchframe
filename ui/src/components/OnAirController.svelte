@@ -1,5 +1,6 @@
 <script lang="ts">
-	import type { ControlRoomState } from '$lib/api/types';
+	import type { ControlRoomState, PlaylistItem } from '$lib/api/types';
+	import { playoutPlaylist } from '$lib/api/switch-api';
 	import { setupHiDPICanvas } from '$lib/video/canvas-utils';
 	import OAStatusBar from './on-air/OAStatusBar.svelte';
 	import OAProgramMonitor from './on-air/OAProgramMonitor.svelte';
@@ -114,6 +115,33 @@
 		playoutChannel?.nextTitle ?? 'No item cued'
 	);
 
+	// ── Playlist items fetch ──
+
+	let playlistItems = $state<PlaylistItem[]>([]);
+	let lastFetchKey = $state('');
+	let activeFetchKey = '';
+
+	$effect(() => {
+		const ch = playoutChannel;
+		const count = ch?.itemCount ?? 0;
+		const fetchKey = `0:${count}`;
+		if (fetchKey === lastFetchKey) return;
+		lastFetchKey = fetchKey;
+		activeFetchKey = fetchKey;
+		if (count <= 0) {
+			playlistItems = [];
+			return;
+		}
+		const myFetchKey = fetchKey;
+		playoutPlaylist(0).then(items => {
+			if (activeFetchKey === myFetchKey) {
+				playlistItems = items;
+			}
+		}).catch(() => {
+			if (activeFetchKey === myFetchKey) playlistItems = [];
+		});
+	});
+
 	// ── Slide-out and modal state ──
 
 	let audioSlideOut = $state(false);
@@ -216,6 +244,7 @@
 				{#if hasPlaylist && playoutChannel}
 					<OASchedulePanel
 						playoutChannel={playoutChannel}
+						items={playlistItems}
 					/>
 				{:else}
 					<OASourceGrid
@@ -234,7 +263,7 @@
 				{captionMode}
 				{podArmed}
 				inBreak={scteState === 'in_break'}
-				holdActive={false}
+				holdActive={playoutChannel?.mode === 'manual'}
 				{onBugToggle}
 				{onFirePod}
 				{onReturnToLive}

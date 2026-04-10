@@ -188,7 +188,7 @@
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
 		padding: 2px 6px;
-		border-radius: 3px;
+		border-radius: var(--radius-sm);
 		white-space: nowrap;
 		flex-shrink: 0;
 	}

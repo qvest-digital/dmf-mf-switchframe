@@ -33,21 +33,12 @@
 		team: 'Team panel content',
 	};
 
-	function handleKeydown(e: KeyboardEvent) {
-		if (visible && e.code === 'Escape') {
-			e.preventDefault();
-			onclose();
-		}
-	}
-
 	function handleBackdropClick(e: MouseEvent) {
 		if (e.target === e.currentTarget) {
 			onclose();
 		}
 	}
 </script>
-
-<svelte:window onkeydown={handleKeydown} />
 
 {#if visible}
 	<!-- svelte-ignore a11y_no_static_element_interactions -->

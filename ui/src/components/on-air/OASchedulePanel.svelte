@@ -71,7 +71,7 @@
 		</div>
 	</div>
 
-	<div class="schedule-list" bind:this={scrollContainer} role="list">
+	<div class="schedule-list" bind:this={scrollContainer} role="list" aria-label="Playout schedule">
 		{#if items.length === 0}
 			<div class="empty-state">No items in schedule</div>
 		{:else}

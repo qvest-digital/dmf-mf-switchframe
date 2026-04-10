@@ -331,6 +331,183 @@ describe('OnAirController', () => {
 		expect(bugFn).toHaveBeenCalled();
 	});
 
+	it('calls onHold via H keyboard shortcut in playout mode', async () => {
+		const holdFn = vi.fn();
+		render(OnAirController, {
+			props: {
+				crState: makeState({
+					playout: {
+						channels: [{
+							id: 0,
+							state: 'on_air',
+							itemIndex: 0,
+							itemCount: 3,
+						}],
+					},
+				}),
+				onCanvasReady: vi.fn(),
+				onSwitchLayout: vi.fn(),
+				onHold: holdFn,
+			},
+		});
+		await fireEvent.keyDown(window, { code: 'KeyH' });
+		expect(holdFn).toHaveBeenCalled();
+	});
+
+	it('does not call onHold via H keyboard shortcut in live mode', async () => {
+		const holdFn = vi.fn();
+		render(OnAirController, {
+			props: {
+				crState: makeState(),
+				onCanvasReady: vi.fn(),
+				onSwitchLayout: vi.fn(),
+				onHold: holdFn,
+			},
+		});
+		await fireEvent.keyDown(window, { code: 'KeyH' });
+		expect(holdFn).not.toHaveBeenCalled();
+	});
+
+	it('calls onSkip via S keyboard shortcut in playout mode', async () => {
+		const skipFn = vi.fn();
+		render(OnAirController, {
+			props: {
+				crState: makeState({
+					playout: {
+						channels: [{
+							id: 0,
+							state: 'on_air',
+							itemIndex: 0,
+							itemCount: 3,
+						}],
+					},
+				}),
+				onCanvasReady: vi.fn(),
+				onSwitchLayout: vi.fn(),
+				onSkip: skipFn,
+			},
+		});
+		await fireEvent.keyDown(window, { code: 'KeyS' });
+		expect(skipFn).toHaveBeenCalled();
+	});
+
+	it('does not call onSkip via S keyboard shortcut in live mode', async () => {
+		const skipFn = vi.fn();
+		render(OnAirController, {
+			props: {
+				crState: makeState(),
+				onCanvasReady: vi.fn(),
+				onSwitchLayout: vi.fn(),
+				onSkip: skipFn,
+			},
+		});
+		await fireEvent.keyDown(window, { code: 'KeyS' });
+		expect(skipFn).not.toHaveBeenCalled();
+	});
+
+	it('calls onTakeNext via N keyboard shortcut in playout mode', async () => {
+		const takeNextFn = vi.fn();
+		render(OnAirController, {
+			props: {
+				crState: makeState({
+					playout: {
+						channels: [{
+							id: 0,
+							state: 'on_air',
+							itemIndex: 0,
+							itemCount: 3,
+						}],
+					},
+				}),
+				onCanvasReady: vi.fn(),
+				onSwitchLayout: vi.fn(),
+				onTakeNext: takeNextFn,
+			},
+		});
+		await fireEvent.keyDown(window, { code: 'KeyN' });
+		expect(takeNextFn).toHaveBeenCalled();
+	});
+
+	it('does not call onTakeNext via N keyboard shortcut in live mode', async () => {
+		const takeNextFn = vi.fn();
+		render(OnAirController, {
+			props: {
+				crState: makeState(),
+				onCanvasReady: vi.fn(),
+				onSwitchLayout: vi.fn(),
+				onTakeNext: takeNextFn,
+			},
+		});
+		await fireEvent.keyDown(window, { code: 'KeyN' });
+		expect(takeNextFn).not.toHaveBeenCalled();
+	});
+
+	it('calls onCut with source key via digit shortcut in live mode', async () => {
+		const cutFn = vi.fn();
+		render(OnAirController, {
+			props: {
+				crState: makeState(),
+				onCanvasReady: vi.fn(),
+				onSwitchLayout: vi.fn(),
+				onCut: cutFn,
+			},
+		});
+		await fireEvent.keyDown(window, { code: 'Digit1' });
+		expect(cutFn).toHaveBeenCalledWith('cam1');
+	});
+
+	it('calls onCut with third source via Digit3 in live mode', async () => {
+		const cutFn = vi.fn();
+		render(OnAirController, {
+			props: {
+				crState: makeState(),
+				onCanvasReady: vi.fn(),
+				onSwitchLayout: vi.fn(),
+				onCut: cutFn,
+			},
+		});
+		await fireEvent.keyDown(window, { code: 'Digit3' });
+		expect(cutFn).toHaveBeenCalledWith('cam3');
+	});
+
+	it('does not call onCut via digit shortcut in playout mode', async () => {
+		const cutFn = vi.fn();
+		render(OnAirController, {
+			props: {
+				crState: makeState({
+					playout: {
+						channels: [{
+							id: 0,
+							state: 'on_air',
+							itemIndex: 0,
+							itemCount: 3,
+						}],
+					},
+				}),
+				onCanvasReady: vi.fn(),
+				onSwitchLayout: vi.fn(),
+				onCut: cutFn,
+			},
+		});
+		await fireEvent.keyDown(window, { code: 'Digit1' });
+		expect(cutFn).not.toHaveBeenCalled();
+	});
+
+	it('ignores digit shortcut for out-of-range source index', async () => {
+		const cutFn = vi.fn();
+		render(OnAirController, {
+			props: {
+				crState: makeState(),
+				onCanvasReady: vi.fn(),
+				onSwitchLayout: vi.fn(),
+				onCut: cutFn,
+			},
+		});
+		// Only 3 sources, Digit9 is index 8 which is out of range
+		await fireEvent.keyDown(window, { code: 'Digit9' });
+		expect(cutFn).not.toHaveBeenCalled();
+	});
+
 	it('calls onSourceClick with source key when source tile clicked', async () => {
 		const cutFn = vi.fn();
 		render(OnAirController, {

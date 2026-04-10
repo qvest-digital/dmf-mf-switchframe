@@ -13,8 +13,7 @@
 </script>
 
 {#if visible}
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="oa-slideout-backdrop" onclick={onclose}></div>
+	<div class="oa-slideout-backdrop" role="presentation" onclick={onclose}></div>
 	<div class="oa-slideout" style:width="{width}px">
 		<header class="oa-slideout-header">
 			<span class="oa-slideout-title">{title}</span>

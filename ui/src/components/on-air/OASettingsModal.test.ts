@@ -88,13 +88,14 @@ describe('OASettingsModal', () => {
 		expect(closeFn).not.toHaveBeenCalled();
 	});
 
-	it('escape key closes', async () => {
+	it('escape key is handled by parent, not OASettingsModal', async () => {
 		const closeFn = vi.fn();
 		render(OASettingsModal, {
 			props: defaultProps({ onclose: closeFn }),
 		});
 		await fireEvent.keyDown(window, { code: 'Escape' });
-		expect(closeFn).toHaveBeenCalledOnce();
+		// Escape is handled by OnAirController parent, not this component
+		expect(closeFn).not.toHaveBeenCalled();
 	});
 
 	it('shows SETTINGS title', () => {
