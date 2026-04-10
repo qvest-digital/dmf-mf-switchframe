@@ -5,6 +5,7 @@ package peer
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -82,6 +83,9 @@ func NewHealthPoller(peerURL string, opts ...Option) *HealthPoller {
 		failureThreshold: 3,
 		client: &http.Client{
 			Timeout: 3 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // peer engines use self-signed certs
+			},
 		},
 		done: make(chan struct{}),
 	}
