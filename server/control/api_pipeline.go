@@ -40,16 +40,19 @@ type pipelineNodeResponse struct {
 // nodeCategory derives a UI category from the pipeline node name.
 func nodeCategory(name string) string {
 	switch {
-	case strings.HasPrefix(name, "gpu_"):
-		return "gpu"
-	case strings.HasPrefix(name, "srt:") || strings.HasPrefix(name, "cam") || strings.HasPrefix(name, "mxl:") || strings.HasPrefix(name, "clip"):
+	case strings.HasPrefix(name, "srt:") || strings.HasPrefix(name, "cam") ||
+		strings.HasPrefix(name, "mxl:") || strings.HasPrefix(name, "clip"):
 		return "source"
-	case name == "program_output":
-		return "output"
-	case name == "h264-encode" || name == "gpu_encode":
+	case name == "h264-encode" || name == "gpu_encode" || name == "gpu_preview_encode":
 		return "output"
 	case name == "raw-sink-mxl" || name == "gpu_raw_sink":
 		return "output"
+	case name == "program_output":
+		return "output"
+	case strings.HasPrefix(name, "gpu_"):
+		return "gpu"
+	case name == "dve-compositor" || name == "compositor":
+		return "gpu"
 	default:
 		return "decode"
 	}
@@ -71,8 +74,9 @@ type connectionResponse struct {
 	Active bool   `json:"active"`
 }
 
-// buildSnapshotResponse converts the raw pipeline snapshot map into a typed response.
-func buildSnapshotResponse(raw map[string]any, sourceKeys []string) pipelineSnapshotResponse {
+// buildSnapshotResponse converts the combined pipeline snapshot into a typed response.
+// The snapshot contains cpu_pipeline, gpu_pipeline, and sources sections.
+func buildSnapshotResponse(raw map[string]any) pipelineSnapshotResponse {
 	resp := pipelineSnapshotResponse{
 		Nodes:       []pipelineNodeResponse{},
 		Connections: []connectionResponse{},
@@ -82,67 +86,137 @@ func buildSnapshotResponse(raw map[string]any, sourceKeys []string) pipelineSnap
 		return resp
 	}
 
-	if v, ok := raw["epoch"]; ok {
-		if epoch, ok := v.(uint64); ok {
-			resp.Epoch = epoch
-		}
-	}
-	if v, ok := raw["total_latency_us"]; ok {
-		if lat, ok := v.(int64); ok {
-			resp.TotalLatencyUs = lat
+	// ── Source nodes ──
+	if srcMap, ok := raw["sources"].(map[string]map[string]any); ok {
+		for key, info := range srcMap {
+			health := "healthy"
+			if h, ok := info["health"].(string); ok {
+				switch h {
+				case "stale":
+					health = "degraded"
+				case "no_signal", "offline":
+					health = "error"
+				}
+			}
+			resp.Nodes = append(resp.Nodes, pipelineNodeResponse{
+				Name:     key,
+				Category: "source",
+				Active:   health != "error",
+				Health:   health,
+			})
 		}
 	}
 
-	activeNodes, _ := raw["active_nodes"].([]map[string]any)
-	for _, n := range activeNodes {
-		node := pipelineNodeResponse{
-			Active: true,
-			Health: "healthy",
+	// ── GPU pipeline nodes (preferred — this is where the real processing happens) ──
+	var gpuNodeNames []string
+	if gpuPipeline, ok := raw["gpu_pipeline"].(map[string]any); ok {
+		if v, ok := gpuPipeline["total_latency_us"].(int64); ok {
+			resp.TotalLatencyUs = v
 		}
-		if v, ok := n["name"].(string); ok {
-			node.Name = v
-			node.Category = nodeCategory(v)
-		}
-		if v, ok := n["bypassed"].(bool); ok {
-			node.Bypassed = v
-			if v {
-				resp.BypassCount++
+		if nodes, ok := gpuPipeline["active_nodes"].([]map[string]any); ok {
+			for _, n := range nodes {
+				node := pipelineNodeResponse{
+					Active: true,
+					Health: "healthy",
+				}
+				if v, ok := n["name"].(string); ok {
+					node.Name = v
+					node.Category = nodeCategory(v)
+				}
+				if v, ok := n["last_ns"].(int64); ok {
+					node.LastNs = v
+				}
+				if v, ok := n["max_ns"].(int64); ok {
+					node.MaxNs = v
+				}
+				if v, ok := n["latency_us"].(int64); ok {
+					node.LatencyUs = v
+				}
+				if _, ok := n["last_error"]; ok {
+					node.Health = "error"
+				}
+				resp.Nodes = append(resp.Nodes, node)
+				gpuNodeNames = append(gpuNodeNames, node.Name)
 			}
 		}
-		if v, ok := n["last_ns"].(int64); ok {
-			node.LastNs = v
-		}
-		if v, ok := n["max_ns"].(int64); ok {
-			node.MaxNs = v
-		}
-		if v, ok := n["latency_us"].(int64); ok {
-			node.LatencyUs = v
-		}
-		if _, ok := n["last_error"]; ok {
-			node.Health = "error"
-		}
-		resp.Nodes = append(resp.Nodes, node)
 	}
 
-	// Build static topology connections:
-	// sources -> first node, sequential chaining, last node -> outputs
-	if len(resp.Nodes) > 0 {
-		firstNode := resp.Nodes[0].Name
-		for _, src := range sourceKeys {
+	// ── CPU pipeline nodes (fallback when no GPU pipeline is active) ──
+	if len(gpuNodeNames) == 0 {
+		if cpuPipeline, ok := raw["cpu_pipeline"].(map[string]any); ok {
+			if v, ok := cpuPipeline["epoch"].(uint64); ok {
+				resp.Epoch = v
+			}
+			if v, ok := cpuPipeline["total_latency_us"].(int64); ok {
+				resp.TotalLatencyUs = v
+			}
+			if nodes, ok := cpuPipeline["active_nodes"].([]map[string]any); ok {
+				for _, n := range nodes {
+					node := pipelineNodeResponse{
+						Active: true,
+						Health: "healthy",
+					}
+					if v, ok := n["name"].(string); ok {
+						node.Name = v
+						node.Category = nodeCategory(v)
+					}
+					if v, ok := n["bypassed"].(bool); ok {
+						node.Bypassed = v
+						if v {
+							resp.BypassCount++
+						}
+					}
+					if v, ok := n["last_ns"].(int64); ok {
+						node.LastNs = v
+					}
+					if v, ok := n["max_ns"].(int64); ok {
+						node.MaxNs = v
+					}
+					if v, ok := n["latency_us"].(int64); ok {
+						node.LatencyUs = v
+					}
+					if _, ok := n["last_error"]; ok {
+						node.Health = "error"
+					}
+					resp.Nodes = append(resp.Nodes, node)
+				}
+			}
+		}
+	}
+
+	// ── Build topology connections ──
+
+	// Collect source and processing nodes.
+	var sourceNames []string
+	var processingNodes []pipelineNodeResponse
+	for _, n := range resp.Nodes {
+		if n.Category == "source" {
+			sourceNames = append(sourceNames, n.Name)
+		} else {
+			processingNodes = append(processingNodes, n)
+		}
+	}
+
+	// Sources → first processing node.
+	if len(processingNodes) > 0 {
+		firstNode := processingNodes[0].Name
+		for _, src := range sourceNames {
 			resp.Connections = append(resp.Connections, connectionResponse{
-				From:   "source:" + src,
+				From:   src,
 				To:     firstNode,
 				Active: true,
 			})
 		}
-		for i := 0; i < len(resp.Nodes)-1; i++ {
+		// Sequential chaining of processing nodes.
+		for i := 0; i < len(processingNodes)-1; i++ {
 			resp.Connections = append(resp.Connections, connectionResponse{
-				From:   resp.Nodes[i].Name,
-				To:     resp.Nodes[i+1].Name,
+				From:   processingNodes[i].Name,
+				To:     processingNodes[i+1].Name,
 				Active: true,
 			})
 		}
-		lastNode := resp.Nodes[len(resp.Nodes)-1].Name
+		// Last processing node → program output.
+		lastNode := processingNodes[len(processingNodes)-1].Name
 		resp.Connections = append(resp.Connections, connectionResponse{
 			From:   lastNode,
 			To:     "output:program",
@@ -156,7 +230,7 @@ func buildSnapshotResponse(raw map[string]any, sourceKeys []string) pipelineSnap
 // handlePipelineSnapshot returns the current pipeline state as JSON.
 func (a *API) handlePipelineSnapshot(w http.ResponseWriter, r *http.Request) {
 	raw := a.switcher.PipelineSnapshot()
-	resp := buildSnapshotResponse(raw, a.switcher.SourceKeys())
+	resp := buildSnapshotResponse(raw)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }
@@ -173,7 +247,7 @@ func (a *API) handlePipelineBypassSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	raw := a.switcher.PipelineSnapshot()
-	resp := buildSnapshotResponse(raw, a.switcher.SourceKeys())
+	resp := buildSnapshotResponse(raw)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }
@@ -190,7 +264,7 @@ func (a *API) handlePipelineBypassClear(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	raw := a.switcher.PipelineSnapshot()
-	resp := buildSnapshotResponse(raw, a.switcher.SourceKeys())
+	resp := buildSnapshotResponse(raw)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }

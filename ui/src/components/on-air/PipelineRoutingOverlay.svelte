@@ -44,44 +44,10 @@
 		TRANSPORT: 920,
 	};
 
-	// ── Mock data (fallback when API unavailable) ──
-
-	const mockNodes: PipelineNodeInfo[] = [
-		{ name: 'cam1', category: 'source', active: true, bypassed: false, lastNs: 120000, maxNs: 300000, latencyUs: 120, health: 'healthy' },
-		{ name: 'cam2', category: 'source', active: true, bypassed: false, lastNs: 115000, maxNs: 290000, latencyUs: 115, health: 'healthy' },
-		{ name: 'cam3', category: 'source', active: true, bypassed: false, lastNs: 130000, maxNs: 310000, latencyUs: 130, health: 'degraded' },
-		{ name: 'cam4', category: 'source', active: false, bypassed: false, lastNs: 0, maxNs: 0, latencyUs: 0, health: 'error', error: 'No signal' },
-		{ name: 'h264_decode', category: 'decode', active: true, bypassed: false, lastNs: 450000, maxNs: 800000, latencyUs: 450, health: 'healthy' },
-		{ name: 'gpu_key', category: 'gpu', active: true, bypassed: false, lastNs: 80000, maxNs: 150000, latencyUs: 80, health: 'healthy' },
-		{ name: 'gpu_layout', category: 'gpu', active: true, bypassed: false, lastNs: 95000, maxNs: 180000, latencyUs: 95, health: 'healthy' },
-		{ name: 'gpu_dsk', category: 'gpu', active: true, bypassed: false, lastNs: 60000, maxNs: 120000, latencyUs: 60, health: 'healthy' },
-		{ name: 'gpu_colorgrade', category: 'gpu', active: false, bypassed: true, lastNs: 0, maxNs: 0, latencyUs: 0, health: 'healthy' },
-		{ name: 'gpu_stmap', category: 'gpu', active: false, bypassed: true, lastNs: 0, maxNs: 0, latencyUs: 0, health: 'healthy' },
-		{ name: 'gpu_encode', category: 'output', active: true, bypassed: false, lastNs: 200000, maxNs: 500000, latencyUs: 200, health: 'healthy' },
-		{ name: 'srt_out', category: 'transport', active: true, bypassed: false, lastNs: 50000, maxNs: 100000, latencyUs: 50, health: 'healthy' },
-		{ name: 'moq_relay', category: 'transport', active: true, bypassed: false, lastNs: 30000, maxNs: 80000, latencyUs: 30, health: 'healthy' },
-	];
-
-	const mockEdges: PipelineEdge[] = [
-		{ from: 'cam1', to: 'h264_decode', active: true },
-		{ from: 'cam2', to: 'h264_decode', active: true },
-		{ from: 'cam3', to: 'h264_decode', active: true },
-		{ from: 'cam4', to: 'h264_decode', active: false },
-		{ from: 'h264_decode', to: 'gpu_key', active: true },
-		{ from: 'gpu_key', to: 'gpu_layout', active: true },
-		{ from: 'gpu_layout', to: 'gpu_dsk', active: true },
-		{ from: 'gpu_dsk', to: 'gpu_colorgrade', active: false },
-		{ from: 'gpu_dsk', to: 'gpu_encode', active: true },
-		{ from: 'gpu_colorgrade', to: 'gpu_stmap', active: false },
-		{ from: 'gpu_stmap', to: 'gpu_encode', active: false },
-		{ from: 'gpu_encode', to: 'srt_out', active: true },
-		{ from: 'gpu_encode', to: 'moq_relay', active: true },
-	];
-
 	// ── Local state ──
 
-	let nodes = $state<PipelineNodeInfo[]>(mockNodes);
-	let edges = $state<PipelineEdge[]>(mockEdges);
+	let nodes = $state<PipelineNodeInfo[]>([]);
+	let edges = $state<PipelineEdge[]>([]);
 	let thumbnails = $state<Record<string, string>>({});
 
 	// ── Selected node for detail popover ──
@@ -255,7 +221,7 @@
 				if (data.connections) edges = data.connections;
 			}
 		} catch {
-			// API unavailable, keep mock/current data
+			// API unavailable, keep current data
 		}
 	}
 

@@ -66,17 +66,30 @@ func TestPipelineSnapshotEndpoint(t *testing.T) {
 		t.Fatalf("nodes should be an array, got %T", resp["nodes"])
 	}
 
-	// With a built pipeline, the encode node should be present
-	if len(nodes) == 0 {
-		t.Fatal("expected at least one pipeline node")
+	// With a built pipeline + 2 sources, should have at least 3 nodes
+	if len(nodes) < 3 {
+		t.Fatalf("expected at least 3 nodes (2 sources + 1 pipeline), got %d", len(nodes))
 	}
 
-	// Check node structure
+	// Check node structure: every node must have these fields
 	node0 := nodes[0].(map[string]any)
 	for _, key := range []string{"name", "category", "active", "bypassed", "lastNs", "maxNs", "latencyUs", "health"} {
 		if _, ok := node0[key]; !ok {
 			t.Errorf("node missing key %q", key)
 		}
+	}
+
+	// Verify sources are included
+	foundSource := false
+	for _, n := range nodes {
+		nm := n.(map[string]any)
+		if nm["category"] == "source" {
+			foundSource = true
+			break
+		}
+	}
+	if !foundSource {
+		t.Error("expected at least one source node in response")
 	}
 
 	// connections should exist
@@ -92,7 +105,7 @@ func TestPipelineSnapshotEndpoint(t *testing.T) {
 func TestPipelineBypassEndpoint(t *testing.T) {
 	api, _ := setupPipelineTestAPI(t)
 
-	// Get the snapshot to find a bypassable node (not gpu_encode)
+	// Get the snapshot to find a bypassable pipeline node (not gpu_encode, not source)
 	req := httptest.NewRequest("GET", "/api/pipeline/snapshot", nil)
 	w := httptest.NewRecorder()
 	api.Mux().ServeHTTP(w, req)
@@ -105,18 +118,20 @@ func TestPipelineBypassEndpoint(t *testing.T) {
 		t.Fatal("no pipeline nodes available")
 	}
 
-	// Find a non-encode node to bypass
+	// Find a pipeline (non-source, non-encode, non-protected) node to bypass
 	var nodeName string
 	for _, n := range nodes {
 		nm := n.(map[string]any)
 		name := nm["name"].(string)
-		if name != "gpu_encode" {
-			nodeName = name
-			break
+		cat := nm["category"].(string)
+		if cat == "source" || name == "gpu_encode" || name == "gpu_raw_sink" {
+			continue
 		}
+		nodeName = name
+		break
 	}
 	if nodeName == "" {
-		t.Skip("no bypassable node found")
+		t.Skip("no bypassable pipeline node found")
 	}
 
 	// PUT bypass
@@ -156,7 +171,7 @@ func TestPipelineBypassEndpoint(t *testing.T) {
 func TestPipelineBypassClearEndpoint(t *testing.T) {
 	api, _ := setupPipelineTestAPI(t)
 
-	// Get snapshot to find a bypassable node
+	// Get snapshot to find a bypassable pipeline node (not source, not protected)
 	req := httptest.NewRequest("GET", "/api/pipeline/snapshot", nil)
 	w := httptest.NewRecorder()
 	api.Mux().ServeHTTP(w, req)
@@ -173,13 +188,15 @@ func TestPipelineBypassClearEndpoint(t *testing.T) {
 	for _, n := range nodes {
 		nm := n.(map[string]any)
 		name := nm["name"].(string)
-		if name != "gpu_encode" {
-			nodeName = name
-			break
+		cat := nm["category"].(string)
+		if cat == "source" || name == "gpu_encode" || name == "gpu_raw_sink" {
+			continue
 		}
+		nodeName = name
+		break
 	}
 	if nodeName == "" {
-		t.Skip("no bypassable node found")
+		t.Skip("no bypassable pipeline node found")
 	}
 
 	// First bypass it
@@ -299,6 +316,170 @@ func TestPipelineThumbnailsEndpoint_Empty(t *testing.T) {
 	}
 	if len(nodesMap) != 0 {
 		t.Errorf("expected empty nodes map, got %d entries", len(nodesMap))
+	}
+}
+
+func TestBuildSnapshotResponse_GPUPipeline(t *testing.T) {
+	// Test buildSnapshotResponse with a combined snapshot containing
+	// GPU pipeline nodes and sources.
+	raw := map[string]any{
+		"sources": map[string]map[string]any{
+			"cam1":       {"health": "healthy"},
+			"cam2":       {"health": "healthy"},
+			"srt:sintel": {"health": "stale"},
+			"mxl:raw1":   {"health": "offline"},
+		},
+		"gpu_pipeline": map[string]any{
+			"gpu":              true,
+			"backend":          "metal",
+			"total_latency_us": int64(500),
+			"active_nodes": []map[string]any{
+				{"name": "gpu_key", "last_ns": int64(80000), "max_ns": int64(150000), "latency_us": int64(80)},
+				{"name": "gpu_layout", "last_ns": int64(95000), "max_ns": int64(180000), "latency_us": int64(95)},
+				{"name": "gpu_dsk", "last_ns": int64(60000), "max_ns": int64(120000), "latency_us": int64(60)},
+				{"name": "gpu_encode", "last_ns": int64(200000), "max_ns": int64(500000), "latency_us": int64(200)},
+			},
+		},
+		// CPU pipeline also present but should be ignored when GPU is active.
+		"cpu_pipeline": map[string]any{
+			"epoch":            uint64(1),
+			"total_latency_us": int64(100),
+			"active_nodes": []map[string]any{
+				{"name": "h264-encode", "last_ns": int64(0), "max_ns": int64(0), "latency_us": int64(100)},
+			},
+		},
+	}
+
+	resp := buildSnapshotResponse(raw)
+
+	// Should have 4 sources + 4 GPU nodes = 8 nodes total.
+	if len(resp.Nodes) != 8 {
+		t.Fatalf("expected 8 nodes, got %d", len(resp.Nodes))
+	}
+
+	// Verify source nodes.
+	sourceCount := 0
+	for _, n := range resp.Nodes {
+		if n.Category == "source" {
+			sourceCount++
+			switch n.Name {
+			case "cam1", "cam2":
+				if n.Health != "healthy" {
+					t.Errorf("expected healthy for %s, got %s", n.Name, n.Health)
+				}
+			case "srt:sintel":
+				if n.Health != "degraded" {
+					t.Errorf("expected degraded for stale source, got %s", n.Health)
+				}
+			case "mxl:raw1":
+				if n.Health != "error" {
+					t.Errorf("expected error for offline source, got %s", n.Health)
+				}
+				if n.Active {
+					t.Error("expected offline source to be inactive")
+				}
+			}
+		}
+	}
+	if sourceCount != 4 {
+		t.Errorf("expected 4 source nodes, got %d", sourceCount)
+	}
+
+	// Verify GPU nodes (not CPU nodes).
+	gpuCount := 0
+	for _, n := range resp.Nodes {
+		if n.Category == "gpu" || n.Category == "output" {
+			gpuCount++
+		}
+	}
+	if gpuCount != 4 {
+		t.Errorf("expected 4 GPU pipeline nodes, got %d", gpuCount)
+	}
+
+	// GPU total latency should be used (not CPU).
+	if resp.TotalLatencyUs != 500 {
+		t.Errorf("expected total latency 500, got %d", resp.TotalLatencyUs)
+	}
+
+	// Connections should exist: 4 sources → gpu_key, plus 3 node-to-node, plus 1 to output.
+	if len(resp.Connections) == 0 {
+		t.Fatal("expected connections")
+	}
+}
+
+func TestBuildSnapshotResponse_CPUFallback(t *testing.T) {
+	// When no GPU pipeline is present, CPU pipeline nodes should be used.
+	raw := map[string]any{
+		"sources": map[string]map[string]any{
+			"cam1": {"health": "healthy"},
+		},
+		"cpu_pipeline": map[string]any{
+			"epoch":            uint64(5),
+			"total_latency_us": int64(100),
+			"active_nodes": []map[string]any{
+				{"name": "dve-compositor", "last_ns": int64(50000), "max_ns": int64(100000), "latency_us": int64(50), "bypassed": false},
+				{"name": "h264-encode", "last_ns": int64(100000), "max_ns": int64(200000), "latency_us": int64(100), "bypassed": false},
+			},
+		},
+	}
+
+	resp := buildSnapshotResponse(raw)
+
+	// 1 source + 2 CPU pipeline nodes = 3.
+	if len(resp.Nodes) != 3 {
+		t.Fatalf("expected 3 nodes, got %d", len(resp.Nodes))
+	}
+
+	// Epoch should come from CPU pipeline.
+	if resp.Epoch != 5 {
+		t.Errorf("expected epoch 5, got %d", resp.Epoch)
+	}
+
+	if resp.TotalLatencyUs != 100 {
+		t.Errorf("expected total latency 100, got %d", resp.TotalLatencyUs)
+	}
+}
+
+func TestBuildSnapshotResponse_NilSnapshot(t *testing.T) {
+	resp := buildSnapshotResponse(nil)
+	if len(resp.Nodes) != 0 {
+		t.Errorf("expected 0 nodes for nil input, got %d", len(resp.Nodes))
+	}
+	if len(resp.Connections) != 0 {
+		t.Errorf("expected 0 connections for nil input, got %d", len(resp.Connections))
+	}
+}
+
+func TestNodeCategory(t *testing.T) {
+	tests := []struct {
+		name     string
+		expected string
+	}{
+		{"cam1", "source"},
+		{"cam2", "source"},
+		{"srt:sintel", "source"},
+		{"mxl:raw1", "source"},
+		{"clip1", "source"},
+		{"gpu_key", "gpu"},
+		{"gpu_layout", "gpu"},
+		{"gpu_dsk", "gpu"},
+		{"gpu_colorgrade", "gpu"},
+		{"gpu_stmap", "gpu"},
+		{"gpu_encode", "output"},
+		{"gpu_preview_encode", "output"},
+		{"gpu_raw_sink", "output"},
+		{"h264-encode", "output"},
+		{"raw-sink-mxl", "output"},
+		{"program_output", "output"},
+		{"dve-compositor", "gpu"},
+		{"compositor", "gpu"},
+	}
+
+	for _, tt := range tests {
+		got := nodeCategory(tt.name)
+		if got != tt.expected {
+			t.Errorf("nodeCategory(%q) = %q, want %q", tt.name, got, tt.expected)
+		}
 	}
 }
 

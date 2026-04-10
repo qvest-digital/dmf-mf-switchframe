@@ -46,14 +46,12 @@ describe('PipelineRoutingOverlay', () => {
 		expect(onclose).toHaveBeenCalledOnce();
 	});
 
-	it('renders nodes in SVG', () => {
+	it('renders SVG graph area', () => {
 		const { container } = render(PipelineRoutingOverlay, {
 			props: { visible: true, onclose: () => {} },
 		});
 		const svg = container.querySelector('svg');
 		expect(svg).toBeTruthy();
-		const nodeGroups = container.querySelectorAll('.routing-node');
-		expect(nodeGroups.length).toBeGreaterThan(0);
 	});
 
 	it('shows bypass count in footer', () => {
@@ -72,15 +70,14 @@ describe('PipelineRoutingOverlay', () => {
 		expect(container.textContent).toContain('LIVE');
 	});
 
-	it('calls onBypassCountChange with initial bypass count when visible', async () => {
+	it('starts with zero bypass count when no API data', async () => {
 		const bypassCountFn = vi.fn();
 		render(PipelineRoutingOverlay, {
 			props: { visible: true, onclose: () => {}, onBypassCountChange: bypassCountFn },
 		});
-		// The mock data has 2 bypassed nodes (gpu_colorgrade and gpu_stmap)
-		// The callback should be called with the initial count
+		// Without API data, bypass count should be 0
 		await vi.waitFor(() => {
-			expect(bypassCountFn).toHaveBeenCalledWith(2);
+			expect(bypassCountFn).toHaveBeenCalledWith(0);
 		});
 	});
 });

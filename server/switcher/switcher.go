@@ -3404,14 +3404,34 @@ func (s *Switcher) SourceKeys() []string {
 	return keys
 }
 
-// PipelineSnapshot returns the current pipeline's per-node snapshot.
-// Returns nil if no pipeline is loaded.
+// PipelineSnapshot returns a combined snapshot of all pipeline stages:
+// CPU pipeline nodes, GPU pipeline nodes, and registered sources with health.
+// The response is structured for the routing overlay UI.
 func (s *Switcher) PipelineSnapshot() map[string]any {
-	p := s.pipeline.Load()
-	if p == nil {
-		return nil
+	result := make(map[string]any)
+
+	// CPU pipeline nodes.
+	if p := s.pipeline.Load(); p != nil {
+		result["cpu_pipeline"] = p.Snapshot()
 	}
-	return p.Snapshot()
+
+	// GPU pipeline nodes (when active, provides GPU node timings and source manager state).
+	if h := s.gpuRunner.Load(); h != nil {
+		result["gpu_pipeline"] = h.runner.Snapshot()
+	}
+
+	// Source info with health status.
+	s.mu.RLock()
+	sources := make(map[string]map[string]any, len(s.sources))
+	for key := range s.sources {
+		sources[key] = map[string]any{
+			"health": string(s.health.rawStatus(key)),
+		}
+	}
+	s.mu.RUnlock()
+	result["sources"] = sources
+
+	return result
 }
 
 // SetPipelineBypass toggles the bypass flag for the named pipeline node.
