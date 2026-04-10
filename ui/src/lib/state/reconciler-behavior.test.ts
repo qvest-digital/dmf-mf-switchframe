@@ -6,7 +6,7 @@
  * would actually occur during dual-engine operation.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createReconciler, RTT_HYSTERESIS_MS } from './reconciler.svelte';
+import { createReconciler, RTT_HYSTERESIS_MS, AUTHORITY_HOLD_MS } from './reconciler.svelte';
 import type { ControlRoomState, PlayoutChannelState, AudioChannel } from '$lib/api/types';
 
 function makeState(overrides: Partial<ControlRoomState> = {}): ControlRoomState {
@@ -95,6 +95,7 @@ describe('reconciler behavioral tests', () => {
 				masterLevel: 0,
 				lastCommandSeq: 5,
 			}));
+			// First dual-engine evaluation always picks A for stability
 			expect(r.health.authoritative).toBe('A');
 			expect(r.state.programSource).toBe('cam1');
 
@@ -105,8 +106,8 @@ describe('reconciler behavioral tests', () => {
 				lastCommandSeq: 12,
 			}));
 
-			// Authority hold-time: must wait 500ms before authority switches
-			vi.advanceTimersByTime(500);
+			// Authority hold-time: must wait AUTHORITY_HOLD_MS before authority switches
+			vi.advanceTimersByTime(AUTHORITY_HOLD_MS);
 			r.tick();
 
 			expect(r.health.authoritative).toBe('B');
@@ -120,12 +121,17 @@ describe('reconciler behavioral tests', () => {
 			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 10 }));
 			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 10 }));
 
+			// First dual-engine evaluation always picks A for stability
+			expect(r.health.authoritative).toBe('A');
+
 			// Set RTT: B is closer (lower RTT), delta=110 > 100ms hysteresis
 			r.setRTT('A', 120);
 			r.setRTT('B', 10);
 
-			// Authority hold-time: must wait 500ms before authority switches
-			vi.advanceTimersByTime(500);
+			// First tick introduces B as challenger and starts hold-time clock.
+			r.tick();
+			// After hold-time elapses, B takes over.
+			vi.advanceTimersByTime(AUTHORITY_HOLD_MS);
 			r.tick();
 
 			expect(r.health.authoritative).toBe('B');
@@ -218,7 +224,15 @@ describe('reconciler behavioral tests', () => {
 				},
 			}));
 
-			// B should be authoritative because cam1 (program source) is offline on A
+			// First dual-engine evaluation always picks A for stability
+			expect(r.health.authoritative).toBe('A');
+
+			// B should become authoritative because cam1 (program source) is offline on A.
+			// First tick introduces B as challenger and starts hold-time clock.
+			r.tick();
+			// After hold-time elapses, B takes over.
+			vi.advanceTimersByTime(AUTHORITY_HOLD_MS);
+			r.tick();
 			expect(r.health.authoritative).toBe('B');
 		});
 
@@ -315,7 +329,15 @@ describe('reconciler behavioral tests', () => {
 				},
 			}));
 
-			// programKey = '' || 'cam1' = 'cam1'. cam1 is offline on A, healthy on B → B wins
+			// First dual-engine evaluation always picks A for stability
+			expect(r.health.authoritative).toBe('A');
+
+			// programKey = '' || 'cam1' = 'cam1'. cam1 is offline on A, healthy on B → B wins after hold-time.
+			// First tick introduces B as challenger and starts hold-time clock.
+			r.tick();
+			// After hold-time elapses, B takes over.
+			vi.advanceTimersByTime(AUTHORITY_HOLD_MS);
+			r.tick();
 			expect(r.health.authoritative).toBe('B');
 		});
 	});

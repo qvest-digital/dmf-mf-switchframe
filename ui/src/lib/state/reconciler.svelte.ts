@@ -5,7 +5,7 @@ export const RTT_HYSTERESIS_MS = 100;
 
 /** Minimum hold-time (ms) before authority can switch when both engines are effective.
  * Prevents jitter-driven A→B→A→B flapping during transient network glitches. */
-export const AUTHORITY_HOLD_MS = 500;
+export const AUTHORITY_HOLD_MS = 2000;
 
 const EMPTY_STATE: ControlRoomState = {
 	programSource: '',
@@ -357,33 +357,34 @@ export function createReconciler() {
 			return;
 		}
 
-		// First dual-engine evaluation: apply immediately (no warm-up period)
+		// First dual-engine evaluation: pick A as stable default (no warm-up flip)
 		if (!authorityEstablished) {
 			authorityEstablished = true;
-			heldAuthority = candidate;
-			lastAuthorityCandidate = candidate;
+			heldAuthority = 'A';
+			lastAuthorityCandidate = 'A';
 			lastAuthorityCandidateSince = now;
 			return;
 		}
 
 		if (candidate === heldAuthority) {
-			// No change — reset candidate tracking
+			// Current authority is still winning — track it as the candidate
+			// but do NOT reset the timer (that would defeat hold-time for challengers)
 			lastAuthorityCandidate = candidate;
-			lastAuthorityCandidateSince = now;
 			return;
 		}
 
 		// Candidate differs from current authority
 		if (candidate !== lastAuthorityCandidate) {
-			// New candidate just appeared — start timing
+			// New challenger just appeared — start hold-time clock
 			lastAuthorityCandidate = candidate;
 			lastAuthorityCandidateSince = now;
 			return;
 		}
 
-		// Same candidate has been winning — check if hold-time has elapsed
+		// Same challenger has been winning consistently — check hold-time
 		if (now - lastAuthorityCandidateSince >= AUTHORITY_HOLD_MS) {
 			heldAuthority = candidate;
+			// Don't reset tracking — challenger has proven stable
 		}
 		// Otherwise: still within hold-time — keep current heldAuthority
 	}

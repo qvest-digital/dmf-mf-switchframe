@@ -89,13 +89,22 @@ describe('createReconciler', () => {
 
 	describe('RTT-based tie-breaking', () => {
 		it('prefers engine B when B has lower RTT at equal seq', () => {
+			vi.useFakeTimers();
 			const r = createReconciler();
 			r.setRTT('A', 150);
 			r.setRTT('B', 20);
 			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 5 }));
 			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 5 }));
+			// First dual-engine evaluation always picks A for stability
+			expect(r.health.authoritative).toBe('A');
+
+			// After hold-time, B wins by lower RTT
+			r.tick(); // introduce B as challenger
+			vi.advanceTimersByTime(AUTHORITY_HOLD_MS);
+			r.tick();
 			expect(r.health.authoritative).toBe('B');
 			expect(r.state.programSource).toBe('cam2');
+			vi.useRealTimers();
 		});
 
 		it('still prefers higher seq over lower RTT', () => {
@@ -132,32 +141,49 @@ describe('createReconciler', () => {
 		});
 
 		it('flips authority when RTT difference exceeds hysteresis', () => {
+			vi.useFakeTimers();
 			const r = createReconciler();
 			// Delta = 150ms > 100ms hysteresis → B wins (lower RTT)
 			r.setRTT('A', 180);
 			r.setRTT('B', 30);
 			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 5 }));
 			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 5 }));
+			// First dual-engine evaluation always picks A for stability
+			expect(r.health.authoritative).toBe('A');
+
+			// After hold-time, B wins by lower RTT
+			r.tick(); // introduce B as challenger
+			vi.advanceTimersByTime(AUTHORITY_HOLD_MS);
+			r.tick();
 			expect(r.health.authoritative).toBe('B');
+			vi.useRealTimers();
 		});
 
 		it('returns to A when RTTs converge within hysteresis (after hold-time)', () => {
 			vi.useFakeTimers();
 			const r = createReconciler();
-			// Start: A=180, B=30 → delta=150 > 100ms → B is authoritative
+			// Start: A=180, B=30 → delta=150 > 100ms → B would win by RTT
 			r.setRTT('A', 180);
 			r.setRTT('B', 30);
 			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 5 }));
 			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 5 }));
+			// First dual-engine evaluation always picks A for stability
+			expect(r.health.authoritative).toBe('A');
+
+			// Let B become authoritative via hold-time
+			r.tick(); // introduce B as challenger
+			vi.advanceTimersByTime(AUTHORITY_HOLD_MS);
+			r.tick();
 			expect(r.health.authoritative).toBe('B');
 
 			// RTTs converge: A=80, B=40 → delta=40 < 100ms → A wins (default)
-			// But hold-time prevents immediate switch — must wait 500ms
+			// But hold-time prevents immediate switch
 			r.setRTT('A', 80);
 			r.setRTT('B', 40);
+			r.tick(); // introduce A as challenger
 			expect(r.health.authoritative).toBe('B'); // still held to B
 
-			vi.advanceTimersByTime(500);
+			vi.advanceTimersByTime(AUTHORITY_HOLD_MS);
 			r.tick();
 			expect(r.health.authoritative).toBe('A'); // hold-time elapsed, switches to A
 			vi.useRealTimers();
@@ -512,14 +538,23 @@ describe('createReconciler', () => {
 		});
 
 		it('authoritative falls back to A when B disconnects', () => {
+			vi.useFakeTimers();
 			const r = createReconciler();
 			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 3 }));
 			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 10 }));
+			// First dual-engine evaluation always picks A for stability
+			expect(r.health.authoritative).toBe('A');
+
+			// Let B become authoritative via hold-time
+			r.tick(); // introduce B as challenger
+			vi.advanceTimersByTime(AUTHORITY_HOLD_MS);
+			r.tick();
 			expect(r.health.authoritative).toBe('B');
 
 			r.disconnect('B');
 			expect(r.health.authoritative).toBe('A');
 			expect(r.state.programSource).toBe('cam1');
+			vi.useRealTimers();
 		});
 
 		it('re-ingest after disconnect restores connected status', () => {
@@ -577,6 +612,13 @@ describe('createReconciler', () => {
 			const r = createReconciler();
 			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 1 }));
 			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 2 }));
+			// First dual-engine evaluation always picks A for stability
+			expect(r.health.authoritative).toBe('A');
+
+			// Let B become authoritative via hold-time (B has higher seq)
+			r.tick(); // introduce B as challenger
+			vi.advanceTimersByTime(AUTHORITY_HOLD_MS);
+			r.tick();
 			expect(r.health.authoritative).toBe('B');
 			expect(r.state.programSource).toBe('cam2');
 
@@ -584,7 +626,7 @@ describe('createReconciler', () => {
 			r.ingest('A', makeState({ programSource: 'cam3', lastCommandSeq: 3 }));
 			expect(r.health.authoritative).toBe('B'); // still held to B
 
-			vi.advanceTimersByTime(500);
+			vi.advanceTimersByTime(AUTHORITY_HOLD_MS);
 			r.tick();
 			expect(r.health.authoritative).toBe('A'); // hold-time elapsed
 			expect(r.state.programSource).toBe('cam3');
@@ -623,6 +665,7 @@ describe('createReconciler', () => {
 
 	describe('source health in authority selection', () => {
 		it('authority prefers healthy engine when one has >50% degraded sources', () => {
+			vi.useFakeTimers();
 			const r = createReconciler();
 			// Engine A: 1 healthy, 2 offline => 33% healthy (<50%)
 			r.ingest('A', makeState({
@@ -642,7 +685,15 @@ describe('createReconciler', () => {
 					cam3: { key: 'cam3', type: 'demo', status: 'healthy' },
 				},
 			}));
+			// First dual-engine evaluation always picks A for stability
+			expect(r.health.authoritative).toBe('A');
+
+			// After hold-time, B wins by health
+			r.tick(); // introduce B as challenger
+			vi.advanceTimersByTime(AUTHORITY_HOLD_MS);
+			r.tick();
 			expect(r.health.authoritative).toBe('B');
+			vi.useRealTimers();
 		});
 
 		it('authority prefers A when B has >50% degraded', () => {
@@ -665,6 +716,7 @@ describe('createReconciler', () => {
 		});
 
 		it('falls back to seq when both engines have similar health', () => {
+			vi.useFakeTimers();
 			const r = createReconciler();
 			// Both healthy but B has higher seq
 			r.ingest('A', makeState({
@@ -681,7 +733,15 @@ describe('createReconciler', () => {
 					cam2: { key: 'cam2', type: 'demo', status: 'healthy' },
 				},
 			}));
+			// First dual-engine evaluation always picks A for stability
+			expect(r.health.authoritative).toBe('A');
+
+			// After hold-time, B wins by higher seq
+			r.tick(); // introduce B as challenger
+			vi.advanceTimersByTime(AUTHORITY_HOLD_MS);
+			r.tick();
 			expect(r.health.authoritative).toBe('B');
+			vi.useRealTimers();
 		});
 
 		it('falls back to seq when both engines are equally degraded', () => {
@@ -1973,7 +2033,7 @@ describe('createReconciler', () => {
 			expect(r.health.authoritative).toBe('A'); // still held to A
 
 			// After hold-time, B takes over
-			vi.advanceTimersByTime(500);
+			vi.advanceTimersByTime(AUTHORITY_HOLD_MS);
 			r.tick();
 			expect(r.health.authoritative).toBe('B');
 			vi.useRealTimers();
@@ -2073,6 +2133,12 @@ describe('createReconciler', () => {
 			// Both engines connected, B is clearly more qualified (higher seq)
 			r.ingest('A', makeState({ lastCommandSeq: 5, inTransition: false }));
 			r.ingest('B', makeState({ lastCommandSeq: 10, inTransition: false }));
+			// First dual-engine evaluation always picks A for stability
+			expect(r.health.authoritative).toBe('A');
+
+			// Let B become authoritative via hold-time
+			r.tick(); // introduce B as challenger
+			vi.advanceTimersByTime(AUTHORITY_HOLD_MS);
 			r.tick();
 			expect(r.health.authoritative).toBe('B');
 
@@ -2119,13 +2185,13 @@ describe('createReconciler', () => {
 			vi.useRealTimers();
 		});
 
-		it('AUTHORITY_HOLD_MS is 500', () => {
-			expect(AUTHORITY_HOLD_MS).toBe(500);
+		it('AUTHORITY_HOLD_MS is 2000', () => {
+			expect(AUTHORITY_HOLD_MS).toBe(2000);
 		});
 
-		it('does not flip authority within 500ms when both engines are effective', () => {
+		it('does not flip authority within hold-time when both engines are effective', () => {
 			const r = createReconciler();
-			// Establish A as authority (first dual-engine eval)
+			// Establish A as authority (first dual-engine eval always picks A)
 			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 5 }));
 			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 5 }));
 			expect(r.health.authoritative).toBe('A');
@@ -2135,18 +2201,18 @@ describe('createReconciler', () => {
 			// Authority should NOT flip yet (hold-time)
 			expect(r.health.authoritative).toBe('A');
 
-			// Advance 200ms — still within hold-time
-			vi.advanceTimersByTime(200);
+			// Advance 1000ms — still within 2000ms hold-time
+			vi.advanceTimersByTime(1000);
 			r.tick();
 			expect(r.health.authoritative).toBe('A');
 
-			// Advance to 499ms — still within hold-time
-			vi.advanceTimersByTime(299);
+			// Advance to 1999ms — still within hold-time
+			vi.advanceTimersByTime(999);
 			r.tick();
 			expect(r.health.authoritative).toBe('A');
 		});
 
-		it('flips authority after 500ms hold-time elapses', () => {
+		it('flips authority after hold-time elapses', () => {
 			const r = createReconciler();
 			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 5 }));
 			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 5 }));
@@ -2156,8 +2222,8 @@ describe('createReconciler', () => {
 			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 10 }));
 			expect(r.health.authoritative).toBe('A'); // held
 
-			// Advance past hold-time
-			vi.advanceTimersByTime(500);
+			// Advance past hold-time (2000ms)
+			vi.advanceTimersByTime(2000);
 			r.tick();
 			expect(r.health.authoritative).toBe('B'); // switched
 		});
@@ -2172,8 +2238,8 @@ describe('createReconciler', () => {
 			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 10 }));
 			expect(r.health.authoritative).toBe('A');
 
-			// Advance 300ms
-			vi.advanceTimersByTime(300);
+			// Advance 1000ms
+			vi.advanceTimersByTime(1000);
 			r.tick();
 
 			// A catches up — candidate flaps back to A (same seq, A wins ties)
@@ -2184,13 +2250,13 @@ describe('createReconciler', () => {
 			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 15 }));
 			expect(r.health.authoritative).toBe('A');
 
-			// Only 200ms — not enough even though B had higher seq 300ms before
-			vi.advanceTimersByTime(200);
+			// Only 1000ms — not enough
+			vi.advanceTimersByTime(1000);
 			r.tick();
 			expect(r.health.authoritative).toBe('A');
 
-			// Full 500ms from the RESET point
-			vi.advanceTimersByTime(300);
+			// Full 2000ms from the RESET point
+			vi.advanceTimersByTime(1000);
 			r.tick();
 			expect(r.health.authoritative).toBe('B');
 		});
@@ -2221,14 +2287,20 @@ describe('createReconciler', () => {
 			expect(r.health.authoritative).toBe('B');
 		});
 
-		it('first dual-engine eval applies immediately without hold-time', () => {
+		it('first dual-engine eval always picks A for stability', () => {
 			const r = createReconciler();
-			// B has clearly better RTT
+			// B has clearly better RTT — but first eval always picks A
 			r.setRTT('A', 200);
 			r.setRTT('B', 30);
 			r.ingest('A', makeState({ programSource: 'cam1', lastCommandSeq: 5 }));
 			r.ingest('B', makeState({ programSource: 'cam2', lastCommandSeq: 5 }));
-			// First dual-engine eval should apply immediately (B wins by RTT)
+			expect(r.health.authoritative).toBe('A');
+
+			// First tick introduces B as challenger and starts hold-time clock
+			r.tick();
+			// After hold-time, B wins by RTT
+			vi.advanceTimersByTime(AUTHORITY_HOLD_MS);
+			r.tick();
 			expect(r.health.authoritative).toBe('B');
 		});
 	});
