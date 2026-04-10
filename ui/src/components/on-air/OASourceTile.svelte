@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { healthDotColor } from '$lib/util/health-dots';
+	import { setupHiDPICanvas } from '$lib/video/canvas-utils';
 	import type { SourceHealthStatus } from '$lib/api/types';
 
 	interface Props {
@@ -26,6 +27,42 @@
 		onClick,
 	}: Props = $props();
 
+	let canvasEl: HTMLCanvasElement;
+	let wrapEl: HTMLDivElement;
+	let hasVideo = $state(false);
+
+	// Track whether canvas has received video frames
+	$effect(() => {
+		if (!canvasEl) return;
+		const obs = new MutationObserver(() => {
+			// Canvas dimensions change when pipeline attaches a renderer
+			if (canvasEl.width > 0 && canvasEl.height > 0) {
+				hasVideo = true;
+			}
+		});
+		obs.observe(canvasEl, { attributes: true, attributeFilter: ['width', 'height'] });
+
+		// Also poll briefly to detect renderer attachment
+		const id = setInterval(() => {
+			if (canvasEl.width > 0 && canvasEl.height > 0) {
+				hasVideo = true;
+			}
+		}, 500);
+
+		return () => { obs.disconnect(); clearInterval(id); };
+	});
+
+	// Hi-DPI canvas sizing via ResizeObserver
+	$effect(() => {
+		if (!canvasEl || !wrapEl) return;
+		const obs = new ResizeObserver(([entry]) => {
+			const { width, height } = entry.contentRect;
+			if (width > 0 && height > 0) setupHiDPICanvas(canvasEl, width, height);
+		});
+		obs.observe(wrapEl);
+		return () => obs.disconnect();
+	});
+
 	let healthLabel = $derived(
 		health === 'no_signal' ? 'no signal' : (health ?? 'healthy')
 	);
@@ -47,9 +84,16 @@
 	onclick={onClick}
 	data-source-key={sourceKey}
 >
-	<!-- Thumbnail placeholder -->
-	<div class="thumbnail">
-		<span class="no-signal-text">NO SIGNAL</span>
+	<!-- Thumbnail with live canvas -->
+	<div class="thumbnail" bind:this={wrapEl}>
+		<canvas
+			class="thumb-canvas"
+			id="tile-{sourceKey}"
+			bind:this={canvasEl}
+		></canvas>
+		{#if !hasVideo}
+			<span class="no-signal-text">NO SIGNAL</span>
+		{/if}
 	</div>
 
 	<!-- Label + tally badge -->
@@ -139,20 +183,32 @@
 
 	/* Thumbnail area */
 	.thumbnail {
+		position: relative;
 		aspect-ratio: 16 / 9;
 		background: var(--bg-canvas);
-		display: flex;
-		align-items: center;
-		justify-content: center;
+		overflow: hidden;
+		border-radius: var(--radius-xs);
+	}
+
+	.thumb-canvas {
+		width: 100%;
+		height: 100%;
+		display: block;
 	}
 
 	.no-signal-text {
+		position: absolute;
+		inset: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
 		font-family: var(--font-mono);
 		font-size: 10px;
 		font-weight: 500;
 		color: var(--text-secondary);
 		letter-spacing: 0.06em;
 		opacity: 0.5;
+		pointer-events: none;
 	}
 
 	/* Label row */
@@ -254,7 +310,7 @@
 	}
 
 	.oa-source-tile.compact .thumbnail {
-		height: 85px;
+		height: 84px;
 		aspect-ratio: auto;
 	}
 

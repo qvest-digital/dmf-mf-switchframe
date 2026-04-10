@@ -195,9 +195,19 @@ describe('OASourceGrid', () => {
 		expect(tiles[2].getAttribute('data-source-key')).toBe('cam_c');
 	});
 
-	it('renders NO SIGNAL placeholder in thumbnail', () => {
+	it('renders NO SIGNAL placeholder in thumbnail when no video', () => {
 		render(OASourceGrid, { props: defaultProps() });
 		const noSignals = screen.getAllByText('NO SIGNAL');
 		expect(noSignals.length).toBe(4);
+	});
+
+	it('renders canvas elements with pipeline-compatible IDs', () => {
+		const { container } = render(OASourceGrid, { props: defaultProps() });
+		const sources = makeSources(4);
+		for (const key of Object.keys(sources)) {
+			const canvas = container.querySelector(`#tile-${key}`);
+			expect(canvas).toBeTruthy();
+			expect(canvas!.tagName).toBe('CANVAS');
+		}
 	});
 });

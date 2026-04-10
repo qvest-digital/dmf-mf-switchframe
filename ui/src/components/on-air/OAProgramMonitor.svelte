@@ -68,7 +68,7 @@
 
 	.oa-canvas-container {
 		position: relative;
-		width: 100%;
+		max-width: 100%;
 		max-height: 100%;
 		aspect-ratio: 16 / 9;
 	}

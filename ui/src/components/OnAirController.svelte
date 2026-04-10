@@ -657,6 +657,7 @@
 		flex-direction: column;
 		background: var(--bg-base);
 		min-height: 0;
+		overflow: hidden;
 	}
 
 	.oa-content-column {
