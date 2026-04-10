@@ -227,7 +227,10 @@ describe('OnAirController', () => {
 		});
 		const audioBtn = screen.getByTitle('Toggle audio panel');
 		await fireEvent.click(audioBtn);
-		expect(screen.getByText('Audio mixer will be wired here')).toBeTruthy();
+		// Slide-out renders with AUDIO title in the header
+		const audioHeaders = screen.getAllByText('AUDIO');
+		// At least 2: the button and the slide-out header
+		expect(audioHeaders.length).toBeGreaterThanOrEqual(2);
 	});
 
 	it('opens I/O slide-out when I/O button clicked', async () => {
@@ -240,7 +243,10 @@ describe('OnAirController', () => {
 		});
 		const ioBtn = screen.getByTitle('Toggle I/O panel');
 		await fireEvent.click(ioBtn);
-		expect(screen.getByText('I/O panel will be wired here')).toBeTruthy();
+		// Slide-out renders with I/O title in the header
+		const ioHeaders = screen.getAllByText('I/O');
+		// At least 2: the button and the slide-out header
+		expect(ioHeaders.length).toBeGreaterThanOrEqual(2);
 	});
 
 	it('opens settings modal when SETTINGS button clicked', async () => {
@@ -558,5 +564,52 @@ describe('OnAirController', () => {
 		});
 		// OANextMonitor renders NEXT label
 		expect(screen.getAllByText('NEXT').length).toBeGreaterThanOrEqual(1);
+	});
+
+	it('shows panel buttons for GFX, SCTE, CC, REPLAY, CLIPS, MACRO', () => {
+		render(OnAirController, {
+			props: {
+				crState: makeState(),
+				onCanvasReady: vi.fn(),
+				onSwitchLayout: vi.fn(),
+			},
+		});
+		expect(screen.getByTitle('Toggle graphics/compose panel')).toBeTruthy();
+		expect(screen.getByTitle('Toggle SCTE-35 panel')).toBeTruthy();
+		expect(screen.getByTitle('Toggle captions panel')).toBeTruthy();
+		expect(screen.getByTitle('Toggle replay panel')).toBeTruthy();
+		expect(screen.getByTitle('Toggle clips panel')).toBeTruthy();
+		expect(screen.getByTitle('Toggle macros panel')).toBeTruthy();
+	});
+
+	it('opens graphics slide-out when GFX button clicked', async () => {
+		render(OnAirController, {
+			props: {
+				crState: makeState(),
+				onCanvasReady: vi.fn(),
+				onSwitchLayout: vi.fn(),
+			},
+		});
+		const gfxBtn = screen.getByTitle('Toggle graphics/compose panel');
+		await fireEvent.click(gfxBtn);
+		// CompositionPanel renders tab bar with DVE, Graphics, Keys
+		expect(screen.getByText('DVE')).toBeTruthy();
+		expect(screen.getByText('Graphics')).toBeTruthy();
+		expect(screen.getByText('Keys')).toBeTruthy();
+	});
+
+	it('opens macros slide-out when MACRO button clicked', async () => {
+		render(OnAirController, {
+			props: {
+				crState: makeState(),
+				onCanvasReady: vi.fn(),
+				onSwitchLayout: vi.fn(),
+			},
+		});
+		const macroBtn = screen.getByTitle('Toggle macros panel');
+		await fireEvent.click(macroBtn);
+		// Slide-out header + MacroPanel's own title both say MACROS
+		const macroHeaders = screen.getAllByText('MACROS');
+		expect(macroHeaders.length).toBeGreaterThanOrEqual(2);
 	});
 });

@@ -21,6 +21,12 @@
 		onAudioToggle?: () => void;
 		onIOToggle?: () => void;
 		onSettingsOpen?: () => void;
+		onGraphicsToggle?: () => void;
+		onScteToggle?: () => void;
+		onCaptionsToggle?: () => void;
+		onReplayToggle?: () => void;
+		onClipsToggle?: () => void;
+		onMacrosToggle?: () => void;
 	}
 
 	let {
@@ -45,6 +51,12 @@
 		onAudioToggle,
 		onIOToggle,
 		onSettingsOpen,
+		onGraphicsToggle,
+		onScteToggle,
+		onCaptionsToggle,
+		onReplayToggle,
+		onClipsToggle,
+		onMacrosToggle,
 	}: Props = $props();
 
 	const captionLabel = $derived.by((): string => {
@@ -135,6 +147,27 @@
 			</button>
 			<button class="btn btn-utility" onclick={onSettingsOpen} title="Open settings">
 				SETTINGS
+			</button>
+		</div>
+		<!-- Panels row -->
+		<div class="action-row panels-row">
+			<button class="btn btn-panel" onclick={onGraphicsToggle} title="Toggle graphics/compose panel">
+				GFX
+			</button>
+			<button class="btn btn-panel" onclick={onScteToggle} title="Toggle SCTE-35 panel">
+				SCTE
+			</button>
+			<button class="btn btn-panel" onclick={onCaptionsToggle} title="Toggle captions panel">
+				CC
+			</button>
+			<button class="btn btn-panel" onclick={onReplayToggle} title="Toggle replay panel">
+				REPLAY
+			</button>
+			<button class="btn btn-panel" onclick={onClipsToggle} title="Toggle clips panel">
+				CLIPS
+			</button>
+			<button class="btn btn-panel" onclick={onMacrosToggle} title="Toggle macros panel">
+				MACRO
 			</button>
 		</div>
 	</div>
@@ -313,5 +346,26 @@
 	.hold-btn.hold-active:hover {
 		background: rgba(234, 179, 8, 0.2);
 		border-color: rgba(234, 179, 8, 0.6);
+	}
+
+	/* ── Panel buttons row ── */
+	.panels-row {
+		justify-content: flex-end;
+		flex-wrap: wrap;
+	}
+
+	.btn-panel {
+		font-family: var(--font-ui);
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.05em;
+		padding: 3px 8px;
+		color: var(--text-tertiary);
+		border-color: var(--border-subtle);
+	}
+
+	.btn-panel:hover {
+		color: var(--text-primary);
+		border-color: var(--border-default);
 	}
 </style>

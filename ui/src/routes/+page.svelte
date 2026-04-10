@@ -1663,6 +1663,9 @@
 			onTakeNext={() => {
 				apiCall(playoutNext(0), 'Take next failed');
 			}}
+			onStateUpdate={store.applyUpdate}
+			{pipeline}
+			{fastControl}
 		/>
 	{:else}
 		<div class="control-room">

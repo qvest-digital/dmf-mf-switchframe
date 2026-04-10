@@ -1,6 +1,8 @@
 <script lang="ts">
 	import type { ControlRoomState, PlaylistItem } from '$lib/api/types';
-	import { playoutPlaylist } from '$lib/api/switch-api';
+	import type { MediaPipeline } from '$lib/transport/media-pipeline';
+	import type { FastControl } from '$lib/transport/fast-control';
+	import { playoutPlaylist, setCaptionMode } from '$lib/api/switch-api';
 	import { setupHiDPICanvas } from '$lib/video/canvas-utils';
 	import OAStatusBar from './on-air/OAStatusBar.svelte';
 	import OAProgramMonitor from './on-air/OAProgramMonitor.svelte';
@@ -10,6 +12,14 @@
 	import OAActionControls from './on-air/OAActionControls.svelte';
 	import OASlideOut from './on-air/OASlideOut.svelte';
 	import OASettingsModal from './on-air/OASettingsModal.svelte';
+	import AudioMixer from './AudioMixer.svelte';
+	import IOPanel from './IOPanel.svelte';
+	import CompositionPanel from './CompositionPanel.svelte';
+	import SCTE35Panel from './SCTE35Panel.svelte';
+	import CaptionsPanel from './CaptionsPanel.svelte';
+	import ReplayPanel from './ReplayPanel.svelte';
+	import ClipsPanel from './ClipsPanel.svelte';
+	import MacroPanel from './MacroPanel.svelte';
 
 	interface Props {
 		crState: ControlRoomState;
@@ -26,6 +36,9 @@
 		onHold?: () => void;
 		onSkip?: () => void;
 		onTakeNext?: () => void;
+		onStateUpdate?: (state: ControlRoomState) => void;
+		pipeline?: MediaPipeline | null;
+		fastControl?: FastControl | null;
 	}
 
 	let {
@@ -43,6 +56,9 @@
 		onHold,
 		onSkip,
 		onTakeNext,
+		onStateUpdate,
+		pipeline = null,
+		fastControl = null,
 	}: Props = $props();
 
 	let previewCanvas: HTMLCanvasElement;
@@ -151,7 +167,32 @@
 
 	let audioSlideOut = $state(false);
 	let ioSlideOut = $state(false);
+	let graphicsSlideOut = $state(false);
+	let scteSlideOut = $state(false);
+	let captionsSlideOut = $state(false);
+	let replaySlideOut = $state(false);
+	let clipsSlideOut = $state(false);
+	let macrosSlideOut = $state(false);
 	let settingsVisible = $state(false);
+
+	function closeAllSlideOuts() {
+		audioSlideOut = false;
+		ioSlideOut = false;
+		graphicsSlideOut = false;
+		scteSlideOut = false;
+		captionsSlideOut = false;
+		replaySlideOut = false;
+		clipsSlideOut = false;
+		macrosSlideOut = false;
+	}
+
+	/** Cycle caption mode: off → passthrough → author → off */
+	function handleCaptionCycle() {
+		const modes = ['off', 'passthrough', 'author'] as const;
+		const currentIndex = modes.indexOf(captionMode as typeof modes[number]);
+		const nextMode = modes[(currentIndex + 1) % modes.length];
+		setCaptionMode(nextMode).catch(() => {});
+	}
 
 	// ── Keyboard shortcuts ──
 
@@ -204,8 +245,7 @@
 				break;
 			}
 			case 'Escape':
-				audioSlideOut = false;
-				ioSlideOut = false;
+				closeAllSlideOuts();
 				settingsVisible = false;
 				break;
 		}
@@ -291,17 +331,75 @@
 				onAudioToggle={() => { audioSlideOut = !audioSlideOut; }}
 				onIOToggle={() => { ioSlideOut = !ioSlideOut; }}
 				onSettingsOpen={() => { settingsVisible = true; }}
+				onCaptionCycle={handleCaptionCycle}
+				onGraphicsToggle={() => { graphicsSlideOut = !graphicsSlideOut; }}
+				onScteToggle={() => { scteSlideOut = !scteSlideOut; }}
+				onCaptionsToggle={() => { captionsSlideOut = !captionsSlideOut; }}
+				onReplayToggle={() => { replaySlideOut = !replaySlideOut; }}
+				onClipsToggle={() => { clipsSlideOut = !clipsSlideOut; }}
+				onMacrosToggle={() => { macrosSlideOut = !macrosSlideOut; }}
 			/>
 		</section>
 	</div>
 
 	<!-- Slide-outs -->
-	<OASlideOut visible={audioSlideOut} title="AUDIO" onclose={() => { audioSlideOut = false; }}>
-		<p style="padding: 12px; color: var(--text-secondary)">Audio mixer will be wired here</p>
+	<OASlideOut visible={audioSlideOut} title="AUDIO" onclose={() => { audioSlideOut = false; }} width={560}>
+		<AudioMixer
+			state={crState}
+			onStateUpdate={(s) => onStateUpdate?.(s)}
+		/>
 	</OASlideOut>
 
-	<OASlideOut visible={ioSlideOut} title="I/O" onclose={() => { ioSlideOut = false; }}>
-		<p style="padding: 12px; color: var(--text-secondary)">I/O panel will be wired here</p>
+	<OASlideOut visible={ioSlideOut} title="I/O" onclose={() => { ioSlideOut = false; }} width={480}>
+		<IOPanel
+			state={crState}
+			visible={ioSlideOut}
+			onclose={() => { ioSlideOut = false; }}
+			{isDualEngine}
+		/>
+	</OASlideOut>
+
+	<OASlideOut visible={graphicsSlideOut} title="COMPOSE" onclose={() => { graphicsSlideOut = false; }} width={480}>
+		<CompositionPanel
+			state={crState}
+			{fastControl}
+		/>
+	</OASlideOut>
+
+	<OASlideOut visible={scteSlideOut} title="SCTE-35" onclose={() => { scteSlideOut = false; }} width={420}>
+		{#if crState.scte35?.enabled}
+			<SCTE35Panel
+				state={crState}
+				onStateUpdate={(s) => onStateUpdate?.(s)}
+			/>
+		{:else}
+			<div class="panel-disabled">SCTE-35 not enabled on server</div>
+		{/if}
+	</OASlideOut>
+
+	<OASlideOut visible={captionsSlideOut} title="CAPTIONS" onclose={() => { captionsSlideOut = false; }} width={420}>
+		<CaptionsPanel
+			state={crState}
+		/>
+	</OASlideOut>
+
+	<OASlideOut visible={replaySlideOut} title="REPLAY" onclose={() => { replaySlideOut = false; }} width={480}>
+		<ReplayPanel
+			state={crState}
+			{pipeline}
+		/>
+	</OASlideOut>
+
+	<OASlideOut visible={clipsSlideOut} title="CLIPS" onclose={() => { clipsSlideOut = false; }} width={420}>
+		<ClipsPanel
+			state={crState}
+		/>
+	</OASlideOut>
+
+	<OASlideOut visible={macrosSlideOut} title="MACROS" onclose={() => { macrosSlideOut = false; }} width={420}>
+		<MacroPanel
+			state={crState}
+		/>
 	</OASlideOut>
 
 	<OASettingsModal visible={settingsVisible} onclose={() => { settingsVisible = false; }} {crState} />
@@ -386,5 +484,13 @@
 			min-height: 44px;
 			min-width: 44px;
 		}
+	}
+
+	/* ── Panel disabled ── */
+	.panel-disabled {
+		padding: 24px 16px;
+		text-align: center;
+		color: var(--text-tertiary);
+		font-size: var(--text-sm);
 	}
 </style>
