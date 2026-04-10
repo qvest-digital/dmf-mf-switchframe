@@ -71,4 +71,16 @@ describe('PipelineRoutingOverlay', () => {
 		});
 		expect(container.textContent).toContain('LIVE');
 	});
+
+	it('calls onBypassCountChange with initial bypass count when visible', async () => {
+		const bypassCountFn = vi.fn();
+		render(PipelineRoutingOverlay, {
+			props: { visible: true, onclose: () => {}, onBypassCountChange: bypassCountFn },
+		});
+		// The mock data has 2 bypassed nodes (gpu_colorgrade and gpu_stmap)
+		// The callback should be called with the initial count
+		await vi.waitFor(() => {
+			expect(bypassCountFn).toHaveBeenCalledWith(2);
+		});
+	});
 });

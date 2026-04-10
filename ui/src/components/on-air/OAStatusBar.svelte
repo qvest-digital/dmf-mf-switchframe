@@ -16,8 +16,10 @@
 		recordingDuration?: number;
 		programPeakL?: number;
 		programPeakR?: number;
+		bypassCount?: number;
 		onSyncClick?: () => void;
 		onBugToggle?: () => void;
+		onBypassClick?: () => void;
 		onModeMenu?: () => void;
 		onRecordToggle?: () => void;
 	}
@@ -39,8 +41,10 @@
 		recordingDuration = 0,
 		programPeakL = -60,
 		programPeakR = -60,
+		bypassCount,
 		onSyncClick,
 		onBugToggle,
+		onBypassClick,
 		onModeMenu,
 		onRecordToggle,
 	}: Props = $props();
@@ -172,6 +176,12 @@
 				<span class="bug-off">OFF</span>
 			{/if}
 		</button>
+
+		{#if (bypassCount ?? 0) > 0}
+			<button class="bypass-badge" onclick={onBypassClick} title="Pipeline nodes bypassed — click to view routing">
+				⚠ BYPASS ({bypassCount})
+			</button>
+		{/if}
 
 		<button
 			class="rec-indicator"
@@ -534,6 +544,26 @@
 		min-height: 1px;
 		border-radius: 1px;
 		transition: height 80ms linear, background 80ms linear;
+	}
+
+	/* ── Bypass badge ── */
+	.bypass-badge {
+		padding: 2px 8px;
+		border: 1px solid var(--accent-yellow);
+		border-radius: var(--radius-sm);
+		background: var(--accent-yellow-dim);
+		color: var(--accent-yellow);
+		font-family: var(--font-ui);
+		font-size: var(--text-xs);
+		font-weight: 700;
+		letter-spacing: 0.04em;
+		cursor: pointer;
+		animation: pulse-warn 2s ease-in-out infinite;
+	}
+
+	@keyframes pulse-warn {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.6; }
 	}
 
 	/* ── Spacer ── */

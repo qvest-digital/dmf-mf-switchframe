@@ -25,9 +25,10 @@
 	interface Props {
 		visible: boolean;
 		onclose: () => void;
+		onBypassCountChange?: (count: number) => void;
 	}
 
-	let { visible, onclose }: Props = $props();
+	let { visible, onclose, onBypassCountChange }: Props = $props();
 
 	// ── Column definitions ──
 
@@ -180,6 +181,12 @@
 	// ── Derived ──
 
 	const bypassCount = $derived(nodes.filter(n => n.bypassed).length);
+
+	// Notify parent when bypass count changes (only while overlay is open)
+	$effect(() => {
+		if (!visible) return;
+		onBypassCountChange?.(bypassCount);
+	});
 
 	const totalLatencyUs = $derived(
 		nodes

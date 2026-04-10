@@ -567,6 +567,50 @@ describe('OnAirController', () => {
 		expect(screen.getAllByText('NEXT').length).toBeGreaterThanOrEqual(1);
 	});
 
+	it('does not show bypass badge when bypassCount is 0', () => {
+		const { container } = render(OnAirController, {
+			props: {
+				crState: makeState(),
+				onCanvasReady: vi.fn(),
+				onSwitchLayout: vi.fn(),
+			},
+		});
+		const badge = container.querySelector('.bypass-badge');
+		expect(badge).toBeNull();
+	});
+
+	it('passes bypassCount and onBypassClick to status bar', async () => {
+		// The PipelineRoutingOverlay mock data has 2 bypassed nodes.
+		// When the overlay opens, it calls onBypassCountChange(2),
+		// which should propagate to the status bar badge.
+		const { container } = render(OnAirController, {
+			props: {
+				crState: makeState(),
+				onCanvasReady: vi.fn(),
+				onSwitchLayout: vi.fn(),
+			},
+		});
+
+		// First, open the routing overlay via the ROUTING button
+		const routingBtn = screen.getByTitle('Toggle routing overlay');
+		await fireEvent.click(routingBtn);
+
+		// The routing overlay should be visible now
+		expect(container.querySelector('.routing-overlay')).toBeTruthy();
+
+		// Close the overlay
+		const closeBtn = container.querySelector('.routing-close') as HTMLElement;
+		await fireEvent.click(closeBtn);
+
+		// After the overlay closes, bypassCount should have been set from the overlay's data
+		// The status bar should now show the bypass badge
+		await vi.waitFor(() => {
+			const badge = container.querySelector('.bypass-badge');
+			expect(badge).toBeTruthy();
+			expect(badge?.textContent).toContain('BYPASS');
+		});
+	});
+
 	it('shows panel buttons for GFX, SCTE, CC, REPLAY, CLIPS, MACRO', () => {
 		render(OnAirController, {
 			props: {

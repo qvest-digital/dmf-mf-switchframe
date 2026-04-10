@@ -192,4 +192,41 @@ describe('OAStatusBar', () => {
 		const scteEl = container.querySelector('.scte-in_break');
 		expect(scteEl).toBeTruthy();
 	});
+
+	it('shows bypass badge when bypassCount > 0', () => {
+		const { container } = render(OAStatusBar, {
+			props: { ...defaultProps(), bypassCount: 2 },
+		});
+		const badge = container.querySelector('.bypass-badge');
+		expect(badge).toBeTruthy();
+		expect(badge?.textContent).toContain('BYPASS');
+		expect(badge?.textContent).toContain('2');
+	});
+
+	it('hides bypass badge when bypassCount is 0', () => {
+		const { container } = render(OAStatusBar, {
+			props: { ...defaultProps(), bypassCount: 0 },
+		});
+		const badge = container.querySelector('.bypass-badge');
+		expect(badge).toBeNull();
+	});
+
+	it('hides bypass badge when bypassCount is not provided', () => {
+		const { container } = render(OAStatusBar, {
+			props: defaultProps(),
+		});
+		const badge = container.querySelector('.bypass-badge');
+		expect(badge).toBeNull();
+	});
+
+	it('bypass badge click calls onBypassClick', async () => {
+		const bypassClickFn = vi.fn();
+		const { container } = render(OAStatusBar, {
+			props: { ...defaultProps(), bypassCount: 3, onBypassClick: bypassClickFn },
+		});
+		const badge = container.querySelector('.bypass-badge') as HTMLElement;
+		expect(badge).toBeTruthy();
+		await fireEvent.click(badge);
+		expect(bypassClickFn).toHaveBeenCalledOnce();
+	});
 });

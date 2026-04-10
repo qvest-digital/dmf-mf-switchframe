@@ -3,6 +3,7 @@
 	import type { MediaPipeline } from '$lib/transport/media-pipeline';
 	import type { FastControl } from '$lib/transport/fast-control';
 	import { playoutPlaylist, playoutAsRun, setCaptionMode } from '$lib/api/switch-api';
+	import { resolveApiUrl } from '$lib/api/base-url';
 	import { setupHiDPICanvas } from '$lib/video/canvas-utils';
 	import OAStatusBar from './on-air/OAStatusBar.svelte';
 	import OAProgramMonitor from './on-air/OAProgramMonitor.svelte';
@@ -281,6 +282,7 @@
 	let asRunSlideOut = $state(false);
 	let settingsVisible = $state(false);
 	let routingOverlayVisible = $state(false);
+	let bypassCount = $state(0);
 
 	// ── As-run log data ──
 
@@ -299,6 +301,24 @@
 		asRunSlideOut = false;
 		routingOverlayVisible = false;
 	}
+
+	// ── Bypass count polling (when overlay is closed) ──
+
+	$effect(() => {
+		if (routingOverlayVisible) return; // overlay does its own polling
+		const id = setInterval(async () => {
+			try {
+				const res = await fetch(resolveApiUrl('/api/pipeline/snapshot'));
+				if (res.ok) {
+					const data = await res.json();
+					bypassCount = data.bypassCount ?? 0;
+				}
+			} catch {
+				// API unavailable, keep current count
+			}
+		}, 5000);
+		return () => clearInterval(id);
+	});
 
 	/** Cycle caption mode: off → passthrough → author → off */
 	function handleCaptionCycle() {
@@ -390,6 +410,8 @@
 		{programPeakL}
 		{programPeakR}
 		{onRecordToggle}
+		{bypassCount}
+		onBypassClick={() => routingOverlayVisible = true}
 	/>
 
 	<div class="oa-main">
@@ -585,6 +607,7 @@
 	<PipelineRoutingOverlay
 		visible={routingOverlayVisible}
 		onclose={() => { routingOverlayVisible = false; }}
+		onBypassCountChange={(count) => { bypassCount = count; }}
 	/>
 
 	<OASettingsModal
