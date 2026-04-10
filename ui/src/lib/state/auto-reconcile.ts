@@ -166,10 +166,11 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 			]);
 			clearTimeout(timeoutTimer);
 			retryCount = 0; // reset on success
-			config.onRecoveryComplete?.(result.warnings);
+			const warnings = result.warnings ?? [];
+			config.onRecoveryComplete?.(warnings);
 
 			// Partial apply detection: if warnings present, check for remaining divergence
-			if (result.warnings.length > 0) {
+			if (warnings.length > 0) {
 				setTimeout(() => {
 					if (destroyed) return;
 					// First check critical (re-push immediately, bypass cooldown)
