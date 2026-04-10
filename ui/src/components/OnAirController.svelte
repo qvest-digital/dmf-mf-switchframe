@@ -2,7 +2,7 @@
 	import type { ControlRoomState, PlaylistItem } from '$lib/api/types';
 	import type { MediaPipeline } from '$lib/transport/media-pipeline';
 	import type { FastControl } from '$lib/transport/fast-control';
-	import { playoutPlaylist, setCaptionMode } from '$lib/api/switch-api';
+	import { playoutPlaylist, playoutAsRun, setCaptionMode } from '$lib/api/switch-api';
 	import { setupHiDPICanvas } from '$lib/video/canvas-utils';
 	import OAStatusBar from './on-air/OAStatusBar.svelte';
 	import OAProgramMonitor from './on-air/OAProgramMonitor.svelte';
@@ -20,25 +20,40 @@
 	import ReplayPanel from './ReplayPanel.svelte';
 	import ClipsPanel from './ClipsPanel.svelte';
 	import MacroPanel from './MacroPanel.svelte';
+	import CommsBar from './CommsBar.svelte';
+	import * as operatorState from '$lib/state/operator.svelte';
 
 	interface Props {
 		crState: ControlRoomState;
 		onCanvasReady: (preview: HTMLCanvasElement, program: HTMLCanvasElement) => void;
 		onSwitchLayout: () => void;
 		isDualEngine?: boolean;
+		engineAHealthy?: boolean;
+		engineBHealthy?: boolean;
+		activeEngine?: 'A' | 'B';
+		authoritativeEngine?: 'A' | 'B';
+		onEngineToggle?: (engine: 'A' | 'B') => void;
 		syncStatus?: string;
 		onSyncClick?: () => void;
 		onCut?: (source: string) => void;
 		onAuto?: (source: string) => void;
 		onBugToggle?: () => void;
+		onSlate?: () => void;
+		onScteInsert?: () => void;
+		onScteReturn?: () => void;
 		onFirePod?: () => void;
 		onReturnToLive?: () => void;
 		onHold?: () => void;
 		onSkip?: () => void;
 		onTakeNext?: () => void;
 		onStateUpdate?: (state: ControlRoomState) => void;
+		onTransitionTypeChange?: (type: string) => void;
+		onTransitionDurationChange?: (ms: number) => void;
+		transitionType?: string;
+		transitionDuration?: number;
 		pipeline?: MediaPipeline | null;
 		fastControl?: FastControl | null;
+		getTransport?: () => WebTransport | null;
 	}
 
 	let {
@@ -46,19 +61,32 @@
 		onCanvasReady,
 		onSwitchLayout,
 		isDualEngine = false,
+		engineAHealthy = true,
+		engineBHealthy = true,
+		activeEngine = 'A' as 'A' | 'B',
+		authoritativeEngine = 'A' as 'A' | 'B',
+		onEngineToggle,
 		syncStatus = 'disconnected',
 		onSyncClick,
 		onCut,
 		onAuto,
 		onBugToggle,
+		onSlate,
+		onScteInsert,
+		onScteReturn,
 		onFirePod,
 		onReturnToLive,
 		onHold,
 		onSkip,
 		onTakeNext,
 		onStateUpdate,
+		onTransitionTypeChange,
+		onTransitionDurationChange,
+		transitionType = 'mix',
+		transitionDuration = 1000,
 		pipeline = null,
 		fastControl = null,
+		getTransport,
 	}: Props = $props();
 
 	let previewCanvas: HTMLCanvasElement;
@@ -87,6 +115,18 @@
 
 		return () => observers.forEach((obs) => obs.disconnect());
 	});
+
+	// ── Uptime counter ──
+
+	let uptimeStart = $state(Date.now());
+	let uptimeNow = $state(Date.now());
+
+	$effect(() => {
+		const id = setInterval(() => { uptimeNow = Date.now(); }, 1000);
+		return () => clearInterval(id);
+	});
+
+	const uptimeSeconds = $derived(Math.floor((uptimeNow - uptimeStart) / 1000));
 
 	// ── Derived state ──
 
@@ -126,6 +166,36 @@
 	const captionMode = $derived(
 		(crState.captions?.mode ?? 'off') as 'off' | 'passthrough' | 'author'
 	);
+
+	// ── Segment timing from playout channel ──
+
+	const segmentElapsed = $derived.by((): number | undefined => {
+		const ch = playoutChannel;
+		if (!ch || ch.itemProgress == null || ch.itemRemainMs == null) return undefined;
+		if (ch.itemProgress <= 0 || ch.itemProgress >= 1) return undefined;
+		const totalMs = ch.itemRemainMs / (1 - ch.itemProgress);
+		return Math.floor((totalMs - ch.itemRemainMs) / 1000);
+	});
+
+	const segmentDuration = $derived.by((): number | undefined => {
+		const ch = playoutChannel;
+		if (!ch || ch.itemProgress == null || ch.itemRemainMs == null) return undefined;
+		if (ch.itemProgress <= 0) return undefined;
+		const totalMs = ch.itemRemainMs / (1 - ch.itemProgress);
+		return Math.floor(totalMs / 1000);
+	});
+
+	// ── Recording state ──
+
+	const isRecording = $derived(crState.recording?.active ?? false);
+	const recordingDuration = $derived(
+		crState.recording?.active ? Math.floor(crState.recording?.durationSecs ?? 0) : 0
+	);
+
+	// ── Audio peak levels ──
+
+	const programPeakL = $derived(crState.programPeak?.[0] ?? -60);
+	const programPeakR = $derived(crState.programPeak?.[1] ?? -60);
 
 	const podArmed = $derived(
 		(playoutChannel?.podsArmed ?? 0) > 0
@@ -173,7 +243,13 @@
 	let replaySlideOut = $state(false);
 	let clipsSlideOut = $state(false);
 	let macrosSlideOut = $state(false);
+	let commsSlideOut = $state(false);
+	let asRunSlideOut = $state(false);
 	let settingsVisible = $state(false);
+
+	// ── As-run log data ──
+
+	let asRunEvents = $state<import('$lib/api/types').AsRunEvent[]>([]);
 
 	function closeAllSlideOuts() {
 		audioSlideOut = false;
@@ -184,6 +260,8 @@
 		replaySlideOut = false;
 		clipsSlideOut = false;
 		macrosSlideOut = false;
+		commsSlideOut = false;
+		asRunSlideOut = false;
 	}
 
 	/** Cycle caption mode: off → passthrough → author → off */
@@ -260,12 +338,21 @@
 		{bugActive}
 		{scteState}
 		{scteCountdown}
+		{segmentElapsed}
+		{segmentDuration}
 		{isDualEngine}
+		{engineAHealthy}
+		{engineBHealthy}
 		{syncStatus}
 		{onSyncClick}
 		{onBugToggle}
 		onModeMenu={onSwitchLayout}
 		showUptime={!hasPlaylist}
+		{uptimeSeconds}
+		{isRecording}
+		{recordingDuration}
+		{programPeakL}
+		{programPeakR}
 	/>
 
 	<div class="oa-main">
@@ -273,6 +360,9 @@
 			<OAProgramMonitor
 				programSource={programSourceLabel}
 				{isDualEngine}
+				{activeEngine}
+				{authoritativeEngine}
+				{onEngineToggle}
 				onCanvasReady={(canvas) => {
 					programCanvas = canvas;
 				}}
@@ -300,6 +390,12 @@
 					<OASchedulePanel
 						playoutChannel={playoutChannel}
 						items={playlistItems}
+						onShowAsRun={() => {
+							asRunSlideOut = true;
+							playoutAsRun(playoutChannel?.id ?? 1, { limit: 100 })
+								.then(events => { asRunEvents = events; })
+								.catch(() => { asRunEvents = []; });
+						}}
 					/>
 				{:else}
 					<!-- Full source grid -->
@@ -320,7 +416,14 @@
 				{podArmed}
 				inBreak={scteState === 'in_break'}
 				holdActive={playoutChannel?.mode === 'manual'}
+				{transitionType}
+				{transitionDuration}
+				{onTransitionTypeChange}
+				{onTransitionDurationChange}
 				{onBugToggle}
+				{onSlate}
+				{onScteInsert}
+				{onScteReturn}
 				{onFirePod}
 				{onReturnToLive}
 				{onHold}
@@ -338,6 +441,7 @@
 				onReplayToggle={() => { replaySlideOut = !replaySlideOut; }}
 				onClipsToggle={() => { clipsSlideOut = !clipsSlideOut; }}
 				onMacrosToggle={() => { macrosSlideOut = !macrosSlideOut; }}
+				onCommsToggle={() => { commsSlideOut = !commsSlideOut; }}
 			/>
 		</section>
 	</div>
@@ -402,7 +506,48 @@
 		/>
 	</OASlideOut>
 
-	<OASettingsModal visible={settingsVisible} onclose={() => { settingsVisible = false; }} {crState} />
+	<OASlideOut visible={commsSlideOut} title="COMMS" onclose={() => { commsSlideOut = false; }} width={350}>
+		<CommsBar
+			commsState={crState.comms}
+			operatorId={operatorState.getSession()?.id ?? ''}
+			operatorName={operatorState.getSession()?.name ?? ''}
+			visible={commsSlideOut}
+			onToggle={() => { commsSlideOut = !commsSlideOut; }}
+			getTransport={getTransport}
+		/>
+	</OASlideOut>
+
+	<OASlideOut visible={asRunSlideOut} title="AS-RUN LOG" onclose={() => { asRunSlideOut = false; }} width={480}>
+		<div class="as-run-log">
+			{#if asRunEvents.length === 0}
+				<div class="as-run-empty">No as-run events recorded</div>
+			{:else}
+				<div class="as-run-list">
+					{#each asRunEvents as event}
+						<div class="as-run-event">
+							<span class="as-run-time">{new Date(event.ts).toLocaleTimeString()}</span>
+							<span class="as-run-type as-run-type-{event.type}">{event.type.replace(/_/g, ' ')}</span>
+							{#if event.title}
+								<span class="as-run-title">{event.title}</span>
+							{/if}
+							{#if event.delta_ms != null}
+								<span class="as-run-delta" class:as-run-delta-late={event.delta_ms > 500}>
+									{event.delta_ms > 0 ? '+' : ''}{event.delta_ms}ms
+								</span>
+							{/if}
+						</div>
+					{/each}
+				</div>
+			{/if}
+		</div>
+	</OASlideOut>
+
+	<OASettingsModal
+		visible={settingsVisible}
+		onclose={() => { settingsVisible = false; }}
+		{crState}
+		onOpenGraphics={() => { settingsVisible = false; graphicsSlideOut = true; }}
+	/>
 </div>
 
 <style>
@@ -492,5 +637,87 @@
 		text-align: center;
 		color: var(--text-tertiary);
 		font-size: var(--text-sm);
+	}
+
+	/* ── As-run log ── */
+	.as-run-log {
+		padding: 8px;
+		height: 100%;
+		overflow-y: auto;
+	}
+
+	.as-run-empty {
+		padding: 24px 12px;
+		text-align: center;
+		font-size: 12px;
+		color: var(--text-secondary);
+	}
+
+	.as-run-list {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.as-run-event {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 4px 8px;
+		border-radius: var(--radius-xs);
+		font-size: 11px;
+		background: var(--bg-elevated);
+	}
+
+	.as-run-time {
+		font-family: var(--font-mono);
+		font-size: 10px;
+		color: var(--text-secondary);
+		flex-shrink: 0;
+	}
+
+	.as-run-type {
+		font-weight: 600;
+		text-transform: uppercase;
+		font-size: 9px;
+		letter-spacing: 0.06em;
+		padding: 1px 4px;
+		border-radius: 2px;
+		background: var(--bg-recessed);
+		color: var(--text-secondary);
+		flex-shrink: 0;
+	}
+
+	.as-run-type-item_start {
+		color: var(--accent-green);
+		background: rgba(34, 197, 94, 0.1);
+	}
+
+	.as-run-type-item_end {
+		color: var(--text-tertiary);
+	}
+
+	.as-run-type-error {
+		color: var(--color-error);
+		background: var(--tally-program-dim);
+	}
+
+	.as-run-title {
+		color: var(--text-primary);
+		flex: 1;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.as-run-delta {
+		font-family: var(--font-mono);
+		font-size: 10px;
+		color: var(--text-tertiary);
+		flex-shrink: 0;
+	}
+
+	.as-run-delta-late {
+		color: var(--accent-yellow);
 	}
 </style>

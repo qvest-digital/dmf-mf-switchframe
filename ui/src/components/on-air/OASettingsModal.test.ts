@@ -6,7 +6,10 @@ function defaultProps(overrides: Record<string, unknown> = {}) {
 	return {
 		visible: true,
 		onclose: vi.fn(),
-		crState: {},
+		crState: {
+			encoder: { current: 'x264', available: [{ name: 'x264', displayName: 'x264 (Software)', isDefault: true }] },
+			pipelineFormat: { width: 1920, height: 1080, fpsNum: 30, fpsDen: 1, name: '1080p30' },
+		},
 		...overrides,
 	};
 }
@@ -42,20 +45,32 @@ describe('OASettingsModal', () => {
 		render(OASettingsModal, { props: defaultProps() });
 		const presetsTab = screen.getByRole('tab', { name: 'Presets' });
 		expect(presetsTab.getAttribute('aria-selected')).toBe('true');
-		expect(screen.getByText('Presets panel content')).toBeTruthy();
 	});
 
-	it('clicking tab changes content', async () => {
+	it('DVE tab shows redirect message', async () => {
 		render(OASettingsModal, { props: defaultProps() });
-		expect(screen.getByText('Presets panel content')).toBeTruthy();
-
 		await fireEvent.click(screen.getByRole('tab', { name: 'DVE' }));
-		expect(screen.getByText('DVE panel content')).toBeTruthy();
-		expect(screen.queryByText('Presets panel content')).toBeNull();
+		expect(screen.getByText('DVE controls are available in the GFX panel.')).toBeTruthy();
+		expect(screen.getByText('Open GFX Panel')).toBeTruthy();
+	});
 
-		await fireEvent.click(screen.getByRole('tab', { name: 'Team' }));
-		expect(screen.getByText('Team panel content')).toBeTruthy();
-		expect(screen.queryByText('DVE panel content')).toBeNull();
+	it('Keys tab shows redirect message', async () => {
+		render(OASettingsModal, { props: defaultProps() });
+		await fireEvent.click(screen.getByRole('tab', { name: 'Keys' }));
+		expect(screen.getByText('Key controls are available in the GFX panel.')).toBeTruthy();
+		expect(screen.getByText('Open GFX Panel')).toBeTruthy();
+	});
+
+	it('Encoder tab shows current encoder', async () => {
+		render(OASettingsModal, { props: defaultProps() });
+		await fireEvent.click(screen.getByRole('tab', { name: 'Encoder' }));
+		expect(screen.getByText('x264')).toBeTruthy();
+	});
+
+	it('Format tab shows pipeline format', async () => {
+		render(OASettingsModal, { props: defaultProps() });
+		await fireEvent.click(screen.getByRole('tab', { name: 'Format' }));
+		expect(screen.getByText('1080p30')).toBeTruthy();
 	});
 
 	it('close button calls onclose', async () => {
@@ -103,21 +118,13 @@ describe('OASettingsModal', () => {
 		expect(screen.getByText('SETTINGS')).toBeTruthy();
 	});
 
-	it('each tab shows its content', async () => {
+	it('each tab renders without error', async () => {
 		render(OASettingsModal, { props: defaultProps() });
-		const tabContent: Record<string, string> = {
-			Presets: 'Presets panel content',
-			DVE: 'DVE panel content',
-			Keys: 'Keys panel content',
-			Video: 'Video processing panel content',
-			Encoder: 'Encoder panel content',
-			Format: 'Format panel content',
-			Team: 'Team panel content',
-		};
+		const tabNames = ['Presets', 'DVE', 'Keys', 'Video', 'Encoder', 'Format', 'Team'];
 
-		for (const [tabName, content] of Object.entries(tabContent)) {
+		for (const tabName of tabNames) {
 			await fireEvent.click(screen.getByRole('tab', { name: tabName }));
-			expect(screen.getByText(content)).toBeTruthy();
+			expect(screen.getByRole('tab', { name: tabName }).getAttribute('aria-selected')).toBe('true');
 		}
 	});
 
@@ -127,5 +134,23 @@ describe('OASettingsModal', () => {
 		expect(screen.getByRole('tab', { name: 'Encoder' }).getAttribute('aria-selected')).toBe('true');
 		expect(screen.getByRole('tab', { name: 'Presets' }).getAttribute('aria-selected')).toBe('false');
 		expect(screen.getByRole('tab', { name: 'Team' }).getAttribute('aria-selected')).toBe('false');
+	});
+
+	it('DVE tab redirect button calls onOpenGraphics and closes modal', async () => {
+		const closeFn = vi.fn();
+		const openGfxFn = vi.fn();
+		render(OASettingsModal, {
+			props: defaultProps({ onclose: closeFn, onOpenGraphics: openGfxFn }),
+		});
+		await fireEvent.click(screen.getByRole('tab', { name: 'DVE' }));
+		await fireEvent.click(screen.getByText('Open GFX Panel'));
+		expect(closeFn).toHaveBeenCalledOnce();
+		expect(openGfxFn).toHaveBeenCalledOnce();
+	});
+
+	it('encoder tab shows available encoders', async () => {
+		render(OASettingsModal, { props: defaultProps() });
+		await fireEvent.click(screen.getByRole('tab', { name: 'Encoder' }));
+		expect(screen.getByText('x264 (Software)')).toBeTruthy();
 	});
 });

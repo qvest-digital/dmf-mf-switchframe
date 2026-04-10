@@ -33,7 +33,7 @@
 	import RedundancyPanel from '../components/RedundancyPanel.svelte';
 	import ProgramCompare from '../components/ProgramCompare.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
-	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, checkFragmentToken, SwitchApiError, listMacros, runMacro, dveSlotOn, dveSlotOff, replayQuick, replayPause, replayResume, replayPlay, replayStop, replaySeek, replaySetSpeed, replayMarkIn, replayMarkOut, commsMute, setDualTimestampProvider, setPartialFailureCallback, setPartialFailureNotify, setNonIdempotentFailureCallback, getDebugSnapshot, getPerfData, playoutEngineCacheStatus, setTransitionPosition, updateDVESlot, scte35Return, podFire, playoutNext, playoutTakeManual } from '$lib/api/switch-api';
+	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, checkFragmentToken, SwitchApiError, listMacros, runMacro, dveSlotOn, dveSlotOff, replayQuick, replayPause, replayResume, replayPlay, replayStop, replaySeek, replaySetSpeed, replayMarkIn, replayMarkOut, commsMute, setDualTimestampProvider, setPartialFailureCallback, setPartialFailureNotify, setNonIdempotentFailureCallback, getDebugSnapshot, getPerfData, playoutEngineCacheStatus, setTransitionPosition, updateDVESlot, scte35Cue, scte35Return, podFire, playoutNext, playoutJump, playoutTakeManual, playoutPlaylist as fetchPlaylist } from '$lib/api/switch-api';
 	import { setEngineUrls, getEngineUrls, setExpectDualEngine, setOnNewEngineDiscovered, setAuthoritativeEngineProvider, setEmergencyEngineBUrl } from '$lib/api/base-url';
 	import { fetchServerInfo } from '$lib/prism/transport-utils';
 	import * as operatorState from '$lib/state/operator.svelte';
@@ -497,8 +497,8 @@
 		else layoutMode = 'traditional';
 		setLayoutMode(layoutMode);
 	}
-	let transitionType: 'mix' | 'dip' = 'mix';
-	let transitionDuration = 1000;
+	let transitionType = $state<string>('mix');
+	let transitionDuration = $state(1000);
 	let selectedAudioChannel = $state<string | null>(null);
 
 	const keyboard = new KeyboardHandler({
@@ -1621,6 +1621,11 @@
 			{onCanvasReady}
 			onSwitchLayout={switchLayout}
 			{isDualEngine}
+			engineAHealthy={engineHealth?.A?.connected ?? true}
+			engineBHealthy={engineHealth?.B?.connected ?? true}
+			{activeEngine}
+			authoritativeEngine={syncHealth?.authoritative ?? 'A'}
+			onEngineToggle={(e) => activeEngine = e}
 			syncStatus={syncHealth?.status ?? 'disconnected'}
 			onSyncClick={() => { redundancyPanelVisible = true; }}
 			onCut={(source) => {
@@ -1631,9 +1636,13 @@
 			}}
 			onAuto={(source) => {
 				if (source) {
-					apiCall(startTransition(source, 'mix', 1000), 'Transition failed');
+					apiCall(startTransition(source, transitionType, transitionDuration), 'Transition failed');
 				}
 			}}
+			{transitionType}
+			{transitionDuration}
+			onTransitionTypeChange={(type) => { transitionType = type; }}
+			onTransitionDurationChange={(ms) => { transitionDuration = ms; }}
 			onBugToggle={() => {
 				const gfxLayers = store.state.graphics?.layers ?? [];
 				if (gfxLayers.some((l) => l.active)) {
@@ -1642,6 +1651,20 @@
 				} else if (gfxLayers.length > 0) {
 					apiCall(graphicsOn(gfxLayers[0].id), 'Bug toggle failed');
 				}
+			}}
+			onSlate={() => {
+				const slateKey = Object.entries(store.effectiveState.sources ?? {})
+					.find(([_, s]) => s.label?.toLowerCase().includes('slate'))?.[0];
+				if (slateKey) {
+					store.optimisticCut(slateKey);
+					apiCall(cut(slateKey), 'Slate failed');
+				}
+			}}
+			onScteInsert={() => {
+				apiCall(scte35Cue({ commandType: 'splice_insert', isOut: true, durationMs: 60000, autoReturn: true }), 'SCTE insert failed');
+			}}
+			onScteReturn={() => {
+				apiCall(scte35Return(), 'SCTE return failed');
 			}}
 			onFirePod={() => {
 				const channel = store.effectiveState.playout?.channels?.[0];
@@ -1658,7 +1681,11 @@
 				apiCall(playoutTakeManual(0), 'Hold failed');
 			}}
 			onSkip={() => {
-				apiCall(playoutNext(0), 'Skip failed');
+				const channel = store.effectiveState.playout?.channels?.[0];
+				const nextTitle = channel?.nextTitle ?? 'the next item';
+				if (window.confirm(`Skip "${nextTitle}"? This will advance past it without playing.`)) {
+					apiCall(playoutNext(0), 'Skip failed');
+				}
 			}}
 			onTakeNext={() => {
 				apiCall(playoutNext(0), 'Take next failed');
@@ -1666,6 +1693,7 @@
 			onStateUpdate={store.applyUpdate}
 			{pipeline}
 			{fastControl}
+			getTransport={() => pipeline.getSourceTransport('program')}
 		/>
 	{:else}
 		<div class="control-room">

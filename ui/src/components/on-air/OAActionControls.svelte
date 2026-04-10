@@ -6,6 +6,10 @@
 		podArmed: boolean;
 		inBreak: boolean;
 		holdActive: boolean;
+		transitionType?: string;
+		transitionDuration?: number;
+		onTransitionTypeChange?: (type: string) => void;
+		onTransitionDurationChange?: (ms: number) => void;
 		onFirePod?: () => void;
 		onReturnToLive?: () => void;
 		onBugToggle?: () => void;
@@ -27,6 +31,7 @@
 		onReplayToggle?: () => void;
 		onClipsToggle?: () => void;
 		onMacrosToggle?: () => void;
+		onCommsToggle?: () => void;
 	}
 
 	let {
@@ -36,6 +41,10 @@
 		podArmed,
 		inBreak,
 		holdActive,
+		transitionType = 'mix',
+		transitionDuration = 1000,
+		onTransitionTypeChange,
+		onTransitionDurationChange,
 		onFirePod,
 		onReturnToLive,
 		onBugToggle,
@@ -57,6 +66,7 @@
 		onReplayToggle,
 		onClipsToggle,
 		onMacrosToggle,
+		onCommsToggle,
 	}: Props = $props();
 
 	const captionLabel = $derived.by((): string => {
@@ -110,6 +120,25 @@
 			<div class="action-row primary-row">
 				<button class="btn btn-primary cut-btn" onclick={onCut}>CUT</button>
 				<button class="btn btn-primary auto-btn" onclick={onAuto}>AUTO</button>
+				<select
+					class="transition-select"
+					value={transitionType}
+					onchange={(e) => onTransitionTypeChange?.(e.currentTarget.value)}
+				>
+					<option value="mix">Mix</option>
+					<option value="dip">Dip</option>
+					<option value="wipe">Wipe</option>
+				</select>
+				<input
+					type="number"
+					class="transition-duration"
+					value={transitionDuration}
+					min="100"
+					max="5000"
+					step="100"
+					title="Transition duration (ms)"
+					onchange={(e) => onTransitionDurationChange?.(parseInt(e.currentTarget.value))}
+				/>
 			</div>
 			<!-- Live-monitor secondary row -->
 			<div class="action-row secondary-row">
@@ -144,6 +173,9 @@
 			</button>
 			<button class="btn btn-utility" onclick={onIOToggle} title="Toggle I/O panel">
 				I/O
+			</button>
+			<button class="btn btn-utility" onclick={onCommsToggle} title="Toggle comms panel">
+				COMMS
 			</button>
 			<button class="btn btn-utility" onclick={onSettingsOpen} title="Open settings">
 				SETTINGS
@@ -367,5 +399,43 @@
 	.btn-panel:hover {
 		color: var(--text-primary);
 		border-color: var(--border-default);
+	}
+
+	/* ── Transition selector ── */
+	.transition-select {
+		font-family: var(--font-ui);
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.03em;
+		padding: 4px 6px;
+		background: var(--bg-control);
+		color: var(--text-primary);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+		transition: border-color var(--transition-fast);
+	}
+
+	.transition-select:hover {
+		border-color: var(--border-strong);
+	}
+
+	.transition-duration {
+		font-family: var(--font-mono);
+		font-size: 11px;
+		font-weight: 600;
+		padding: 4px 6px;
+		width: 60px;
+		background: var(--bg-control);
+		color: var(--text-primary);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-sm);
+		transition: border-color var(--transition-fast);
+	}
+
+	.transition-duration:hover,
+	.transition-duration:focus {
+		border-color: var(--border-strong);
+		outline: none;
 	}
 </style>

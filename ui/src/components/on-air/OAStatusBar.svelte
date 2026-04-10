@@ -12,6 +12,10 @@
 		engineAHealthy?: boolean;
 		engineBHealthy?: boolean;
 		syncStatus?: string;
+		isRecording?: boolean;
+		recordingDuration?: number;
+		programPeakL?: number;
+		programPeakR?: number;
 		onSyncClick?: () => void;
 		onBugToggle?: () => void;
 		onModeMenu?: () => void;
@@ -30,10 +34,27 @@
 		engineAHealthy = true,
 		engineBHealthy = true,
 		syncStatus = 'disconnected',
+		isRecording = false,
+		recordingDuration = 0,
+		programPeakL = -60,
+		programPeakR = -60,
 		onSyncClick,
 		onBugToggle,
 		onModeMenu,
 	}: Props = $props();
+
+	// ── Audio level helpers ──
+
+	function peakToPercent(dbfs: number): number {
+		// Map -60..0 dBFS to 0..100%
+		return Math.max(0, Math.min(100, ((dbfs + 60) / 60) * 100));
+	}
+
+	function peakColor(dbfs: number): string {
+		if (dbfs > -3) return 'var(--tally-program)';
+		if (dbfs > -12) return 'var(--accent-yellow)';
+		return 'var(--accent-green)';
+	}
 
 	// ── Wall clock ──
 	let clockText = $state('');
@@ -149,6 +170,19 @@
 				<span class="bug-off">OFF</span>
 			{/if}
 		</button>
+
+		{#if isRecording}
+			<span class="rec-indicator">
+				<span class="rec-dot"></span>
+				<span class="rec-label">REC</span>
+				<span class="rec-duration">{formatMMSS(recordingDuration)}</span>
+			</span>
+		{/if}
+
+		<span class="audio-meters" title="Program audio L/R">
+			<span class="meter-bar" style:height="{peakToPercent(programPeakL)}%" style:background={peakColor(programPeakL)}></span>
+			<span class="meter-bar" style:height="{peakToPercent(programPeakR)}%" style:background={peakColor(programPeakR)}></span>
+		</span>
 
 		<button class="mode-btn" onclick={onModeMenu} title="Switch layout mode">MODE</button>
 	</div>
@@ -380,6 +414,10 @@
 
 	.scte-in_break .scte-value {
 		color: var(--tally-program);
+		background: var(--tally-program-dim);
+		padding: 1px 6px;
+		border-radius: var(--radius-sm);
+		border: 1px solid var(--tally-program-medium);
 	}
 
 	.scte-idle .scte-value {
@@ -407,6 +445,63 @@
 		border-color: var(--border-strong);
 		color: var(--text-primary);
 		background: var(--bg-hover);
+	}
+
+	/* ── Recording indicator ── */
+	.rec-indicator {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
+		padding: 2px 8px;
+		border-radius: var(--radius-sm);
+		background: var(--tally-program-dim);
+		border: 1px solid var(--tally-program-medium);
+	}
+
+	.rec-dot {
+		display: inline-block;
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		background: var(--tally-program);
+		box-shadow: 0 0 6px rgba(220, 38, 38, 0.5);
+		animation: rec-pulse 1.2s ease-in-out infinite;
+	}
+
+	@keyframes rec-pulse {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.25; }
+	}
+
+	.rec-label {
+		font-family: var(--font-ui);
+		font-size: 11px;
+		font-weight: 700;
+		letter-spacing: 0.06em;
+		color: var(--tally-program);
+	}
+
+	.rec-duration {
+		font-family: var(--font-mono);
+		font-size: 11px;
+		font-weight: 500;
+		color: var(--text-primary);
+	}
+
+	/* ── Audio peak meters ── */
+	.audio-meters {
+		display: inline-flex;
+		align-items: flex-end;
+		gap: 2px;
+		height: 20px;
+		padding: 0 4px;
+	}
+
+	.meter-bar {
+		width: 4px;
+		min-height: 1px;
+		border-radius: 1px;
+		transition: height 80ms linear, background 80ms linear;
 	}
 
 	/* ── Spacer ── */
