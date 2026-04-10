@@ -267,4 +267,38 @@
 		overflow: hidden;
 		pointer-events: none;
 	}
+
+	/* ── Responsive: Tablet (768-1023px) ── */
+	@media (max-width: 1023px) {
+		.oa-main {
+			grid-template-columns: 1fr;
+		}
+
+		.oa-monitor-column {
+			border-right: none;
+			border-bottom: 1px solid var(--border-default);
+			max-height: 40vh;
+		}
+	}
+
+	/* ── Responsive: Mobile (<768px) ── */
+	@media (max-width: 767px) {
+		.oa-monitor-column {
+			max-height: 30vh;
+		}
+
+		.oa-monitor-column :global(.oa-next-monitor) {
+			display: none;
+		}
+	}
+
+	/* ── Touch devices ── */
+	@media (pointer: coarse) {
+		.oa-main :global(.btn),
+		.oa-main :global(.oa-source-tile),
+		.oa-main :global(.grid-action-btn) {
+			min-height: 44px;
+			min-width: 44px;
+		}
+	}
 </style>
