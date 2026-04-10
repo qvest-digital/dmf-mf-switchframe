@@ -105,7 +105,7 @@
 		right: 8px;
 		display: inline-flex;
 		gap: 1px;
-		background: var(--bg-recessed);
+		background: var(--bg-recessed, #1a1a1a);
 		border-radius: var(--radius-sm);
 		padding: 1px;
 		z-index: var(--z-above);
@@ -116,7 +116,7 @@
 		border: none;
 		border-radius: var(--radius-xs, 2px);
 		background: transparent;
-		color: var(--text-dim);
+		color: var(--text-dim, var(--text-secondary));
 		font-family: var(--font-mono);
 		font-size: 11px;
 		font-weight: 600;

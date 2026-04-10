@@ -33,7 +33,7 @@
 	import RedundancyPanel from '../components/RedundancyPanel.svelte';
 	import ProgramCompare from '../components/ProgramCompare.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
-	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, checkFragmentToken, SwitchApiError, listMacros, runMacro, dveSlotOn, dveSlotOff, replayQuick, replayPause, replayResume, replayPlay, replayStop, replaySeek, replaySetSpeed, replayMarkIn, replayMarkOut, commsMute, setDualTimestampProvider, setPartialFailureCallback, setPartialFailureNotify, setNonIdempotentFailureCallback, getDebugSnapshot, getPerfData, playoutEngineCacheStatus, setTransitionPosition, updateDVESlot, scte35Cue, scte35Return, podFire, playoutNext, playoutJump, playoutTakeManual, playoutPlaylist as fetchPlaylist } from '$lib/api/switch-api';
+	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, checkFragmentToken, SwitchApiError, listMacros, runMacro, dveSlotOn, dveSlotOff, replayQuick, replayPause, replayResume, replayPlay, replayStop, replaySeek, replaySetSpeed, replayMarkIn, replayMarkOut, commsMute, setDualTimestampProvider, setPartialFailureCallback, setPartialFailureNotify, setNonIdempotentFailureCallback, getDebugSnapshot, getPerfData, playoutEngineCacheStatus, setTransitionPosition, updateDVESlot, scte35Cue, scte35Return, podFire, playoutNext, playoutJump, playoutTakeManual, playoutReturnToAuto, startRecording, stopRecording, playoutPlaylist as fetchPlaylist } from '$lib/api/switch-api';
 	import { setEngineUrls, getEngineUrls, setExpectDualEngine, setOnNewEngineDiscovered, setAuthoritativeEngineProvider, setEmergencyEngineBUrl } from '$lib/api/base-url';
 	import { fetchServerInfo } from '$lib/prism/transport-utils';
 	import * as operatorState from '$lib/state/operator.svelte';
@@ -1658,6 +1658,8 @@
 				if (slateKey) {
 					store.optimisticCut(slateKey);
 					apiCall(cut(slateKey), 'Slate failed');
+				} else {
+					notify('warning', 'No source with "slate" label found');
 				}
 			}}
 			onScteInsert={() => {
@@ -1671,24 +1673,32 @@
 				const pods = channel?.pods ?? [];
 				const armedPod = pods.find((p: any) => p.armed);
 				if (armedPod) {
-					apiCall(podFire(0, armedPod.id), 'Fire pod failed');
+					apiCall(podFire(1, armedPod.id), 'Fire pod failed');
 				}
 			}}
 			onReturnToLive={() => {
 				apiCall(scte35Return(), 'Return to live failed');
 			}}
 			onHold={() => {
-				apiCall(playoutTakeManual(0), 'Hold failed');
+				const ch = store.effectiveState.playout?.channels?.find(c => c.id === 1) ?? store.effectiveState.playout?.channels?.[0];
+					if (ch?.mode === 'manual') {
+						apiCall(playoutReturnToAuto(1), 'Return to auto failed');
+					} else {
+						apiCall(playoutTakeManual(1), 'Hold failed');
+					}
 			}}
 			onSkip={() => {
-				const channel = store.effectiveState.playout?.channels?.[0];
-				const nextTitle = channel?.nextTitle ?? 'the next item';
-				if (window.confirm(`Skip "${nextTitle}"? This will advance past it without playing.`)) {
-					apiCall(playoutNext(0), 'Skip failed');
-				}
+				apiCall(playoutNext(1), 'Skip failed');
 			}}
 			onTakeNext={() => {
-				apiCall(playoutNext(0), 'Take next failed');
+				apiCall(playoutNext(1), 'Take next failed');
+			}}
+			onRecordToggle={() => {
+				if (store.effectiveState.recording?.active) {
+					apiCall(stopRecording(), 'Stop recording failed');
+				} else {
+					apiCall(startRecording(), 'Start recording failed');
+				}
 			}}
 			onStateUpdate={store.applyUpdate}
 			{pipeline}

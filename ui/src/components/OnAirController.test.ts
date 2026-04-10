@@ -398,9 +398,9 @@ describe('OnAirController', () => {
 		expect(holdFn).not.toHaveBeenCalled();
 	});
 
-	it('calls onSkip via S keyboard shortcut in playout mode', async () => {
+	it('shows skip confirmation dialog via S keyboard shortcut in playout mode', async () => {
 		const skipFn = vi.fn();
-		render(OnAirController, {
+		const { container } = render(OnAirController, {
 			props: {
 				crState: makeState({
 					playout: {
@@ -418,7 +418,8 @@ describe('OnAirController', () => {
 			},
 		});
 		await fireEvent.keyDown(window, { code: 'KeyS' });
-		expect(skipFn).toHaveBeenCalled();
+		// S key opens confirmation dialog, not direct skip
+		expect(container.querySelector('.skip-confirm-backdrop')).toBeTruthy();
 	});
 
 	it('does not call onSkip via S keyboard shortcut in live mode', async () => {

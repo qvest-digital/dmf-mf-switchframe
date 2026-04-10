@@ -19,6 +19,7 @@
 		onSyncClick?: () => void;
 		onBugToggle?: () => void;
 		onModeMenu?: () => void;
+		onRecordToggle?: () => void;
 	}
 
 	let {
@@ -41,6 +42,7 @@
 		onSyncClick,
 		onBugToggle,
 		onModeMenu,
+		onRecordToggle,
 	}: Props = $props();
 
 	// ── Audio level helpers ──
@@ -171,13 +173,18 @@
 			{/if}
 		</button>
 
-		{#if isRecording}
-			<span class="rec-indicator">
-				<span class="rec-dot"></span>
-				<span class="rec-label">REC</span>
+		<button
+			class="rec-indicator"
+			class:rec-active={isRecording}
+			onclick={onRecordToggle}
+			title={isRecording ? 'Stop recording' : 'Start recording'}
+		>
+			<span class="rec-dot"></span>
+			<span class="rec-label">REC</span>
+			{#if isRecording}
 				<span class="rec-duration">{formatMMSS(recordingDuration)}</span>
-			</span>
-		{/if}
+			{/if}
+		</button>
 
 		<span class="audio-meters" title="Program audio L/R">
 			<span class="meter-bar" style:height="{peakToPercent(programPeakL)}%" style:background={peakColor(programPeakL)}></span>
@@ -454,8 +461,24 @@
 		gap: 5px;
 		padding: 2px 8px;
 		border-radius: var(--radius-sm);
+		background: var(--bg-elevated, #1c1c21);
+		border: 1px solid var(--border-default);
+		cursor: pointer;
+		transition: background var(--transition-fast), border-color var(--transition-fast);
+	}
+
+	.rec-indicator:hover {
+		background: var(--bg-hover);
+		border-color: var(--border-strong);
+	}
+
+	.rec-indicator.rec-active {
 		background: var(--tally-program-dim);
-		border: 1px solid var(--tally-program-medium);
+		border-color: var(--tally-program-medium);
+	}
+
+	.rec-indicator.rec-active:hover {
+		background: rgba(220, 38, 38, 0.15);
 	}
 
 	.rec-dot {
@@ -463,6 +486,11 @@
 		width: 7px;
 		height: 7px;
 		border-radius: 50%;
+		background: var(--text-secondary);
+		transition: background var(--transition-fast);
+	}
+
+	.rec-active .rec-dot {
 		background: var(--tally-program);
 		box-shadow: 0 0 6px rgba(220, 38, 38, 0.5);
 		animation: rec-pulse 1.2s ease-in-out infinite;
@@ -478,6 +506,10 @@
 		font-size: 11px;
 		font-weight: 700;
 		letter-spacing: 0.06em;
+		color: var(--text-secondary);
+	}
+
+	.rec-active .rec-label {
 		color: var(--tally-program);
 	}
 

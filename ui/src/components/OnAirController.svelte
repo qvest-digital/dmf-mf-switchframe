@@ -46,6 +46,7 @@
 		onHold?: () => void;
 		onSkip?: () => void;
 		onTakeNext?: () => void;
+		onRecordToggle?: () => void;
 		onStateUpdate?: (state: ControlRoomState) => void;
 		onTransitionTypeChange?: (type: string) => void;
 		onTransitionDurationChange?: (ms: number) => void;
@@ -79,6 +80,7 @@
 		onHold,
 		onSkip,
 		onTakeNext,
+		onRecordToggle,
 		onStateUpdate,
 		onTransitionTypeChange,
 		onTransitionDurationChange,
@@ -115,6 +117,23 @@
 
 		return () => observers.forEach((obs) => obs.disconnect());
 	});
+
+	// ── Skip confirmation dialog ──
+
+	let skipConfirmVisible = $state(false);
+
+	function requestSkip() {
+		skipConfirmVisible = true;
+	}
+
+	function confirmSkip() {
+		skipConfirmVisible = false;
+		onSkip?.();
+	}
+
+	function cancelSkip() {
+		skipConfirmVisible = false;
+	}
 
 	// ── Uptime counter ──
 
@@ -203,6 +222,20 @@
 
 	const nextItemTitle = $derived(
 		playoutChannel?.nextTitle ?? 'No item cued'
+	);
+
+	const nextPlaylistItem = $derived.by(() => {
+		const nextId = playoutChannel?.nextItemId;
+		if (!nextId || playlistItems.length === 0) return undefined;
+		return playlistItems.find(item => item.id === nextId);
+	});
+
+	const nextItemDuration = $derived(
+		nextPlaylistItem?.duration_ms != null ? Math.floor(nextPlaylistItem.duration_ms / 1000) : undefined
+	);
+
+	const nextItemType = $derived(
+		nextPlaylistItem?.type as 'live' | 'clip' | 'pod' | 'slate' | undefined
 	);
 
 	// ── Playlist items fetch ──
@@ -301,7 +334,7 @@
 			case 'KeyS':
 				if (hasPlaylist) {
 					e.preventDefault();
-					onSkip?.();
+					requestSkip();
 				}
 				break;
 			case 'KeyN':
@@ -353,6 +386,7 @@
 		{recordingDuration}
 		{programPeakL}
 		{programPeakR}
+		{onRecordToggle}
 	/>
 
 	<div class="oa-main">
@@ -371,6 +405,8 @@
 			<canvas bind:this={previewCanvas} class="hidden-canvas"></canvas>
 			<OANextMonitor
 				nextItemTitle={nextItemTitle}
+				{nextItemDuration}
+				{nextItemType}
 			/>
 		</section>
 
@@ -427,7 +463,7 @@
 				{onFirePod}
 				{onReturnToLive}
 				{onHold}
-				{onSkip}
+				onSkip={requestSkip}
 				{onTakeNext}
 				onCut={() => onCut?.(crState.previewSource)}
 				onAuto={() => onAuto?.(crState.previewSource)}
@@ -548,6 +584,21 @@
 		{crState}
 		onOpenGraphics={() => { settingsVisible = false; graphicsSlideOut = true; }}
 	/>
+
+	{#if skipConfirmVisible}
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div class="skip-confirm-backdrop" onclick={cancelSkip} onkeydown={(e) => { if (e.code === 'Escape') cancelSkip(); }}>
+			<!-- svelte-ignore a11y_no_static_element_interactions -->
+			<!-- svelte-ignore a11y_click_events_have_key_events -->
+			<div class="skip-confirm-dialog" onclick={(e) => e.stopPropagation()}>
+				<p class="skip-confirm-text">Skip to next item?</p>
+				<div class="skip-confirm-buttons">
+					<button class="btn btn-cancel" onclick={cancelSkip}>Cancel</button>
+					<button class="btn btn-confirm" onclick={confirmSkip}>Skip</button>
+				</div>
+			</div>
+		</div>
+	{/if}
 </div>
 
 <style>
@@ -719,5 +770,70 @@
 
 	.as-run-delta-late {
 		color: var(--accent-yellow);
+	}
+
+	/* ── Skip confirm dialog ── */
+	.skip-confirm-backdrop {
+		position: fixed;
+		inset: 0;
+		background: rgba(0, 0, 0, 0.6);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		z-index: 9999;
+	}
+
+	.skip-confirm-dialog {
+		background: var(--bg-elevated, #1c1c21);
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-md, 6px);
+		padding: 20px 24px;
+		min-width: 260px;
+		text-align: center;
+	}
+
+	.skip-confirm-text {
+		margin: 0 0 16px;
+		font-family: var(--font-ui);
+		font-size: 14px;
+		font-weight: 500;
+		color: var(--text-primary);
+	}
+
+	.skip-confirm-buttons {
+		display: flex;
+		gap: 8px;
+		justify-content: center;
+	}
+
+	.skip-confirm-buttons .btn {
+		padding: 6px 16px;
+		font-family: var(--font-ui);
+		font-size: 12px;
+		font-weight: 600;
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+		border: 1px solid var(--border-default);
+	}
+
+	.btn-cancel {
+		background: var(--bg-control, #2a2a30);
+		color: var(--text-secondary);
+	}
+
+	.btn-cancel:hover {
+		background: var(--bg-hover);
+		color: var(--text-primary);
+	}
+
+	.btn-confirm {
+		background: var(--tally-program-dim, rgba(220, 38, 38, 0.1));
+		border-color: rgba(220, 38, 38, 0.4);
+		color: var(--tally-program, #dc2626);
+	}
+
+	.btn-confirm:hover {
+		background: rgba(220, 38, 38, 0.2);
+		border-color: rgba(220, 38, 38, 0.6);
 	}
 </style>
