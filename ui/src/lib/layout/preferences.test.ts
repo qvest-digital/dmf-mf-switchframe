@@ -34,6 +34,16 @@ describe('Layout Preferences', () => {
 			expect(getLayoutMode()).toBe('simple');
 		});
 
+		it('returns on-air when URL param mode=on-air', () => {
+			window.history.replaceState({}, '', '/?mode=on-air');
+			expect(getLayoutMode()).toBe('on-air');
+		});
+
+		it('reads on-air from localStorage when no URL param', () => {
+			localStorage.setItem('switchframe-layout', 'on-air');
+			expect(getLayoutMode()).toBe('on-air');
+		});
+
 		it('returns traditional for invalid localStorage value', () => {
 			localStorage.setItem('switchframe-layout', 'garbage');
 			expect(getLayoutMode()).toBe('traditional');
@@ -51,9 +61,19 @@ describe('Layout Preferences', () => {
 			expect(localStorage.getItem('switchframe-layout')).toBe('traditional');
 		});
 
+		it('persists on-air to localStorage', () => {
+			setLayoutMode('on-air');
+			expect(localStorage.getItem('switchframe-layout')).toBe('on-air');
+		});
+
 		it('value is readable by getLayoutMode', () => {
 			setLayoutMode('simple');
 			expect(getLayoutMode()).toBe('simple');
+		});
+
+		it('on-air value is readable by getLayoutMode', () => {
+			setLayoutMode('on-air');
+			expect(getLayoutMode()).toBe('on-air');
 		});
 	});
 });
