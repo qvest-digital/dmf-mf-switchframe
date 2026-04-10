@@ -117,12 +117,94 @@ describe('RoutingNode', () => {
 		expect(overlay?.textContent).toBe('BYPASSED');
 	});
 
-	it('renders thumbnail image when provided', () => {
+	it('renders thumbnail image when provided for non-source nodes', () => {
 		const { container } = render(RoutingNode, {
-			props: { ...defaultProps(), thumbnail: 'data:image/jpeg;base64,abc123' },
+			props: { ...defaultProps(), category: 'gpu' as const, thumbnail: 'data:image/jpeg;base64,abc123' },
 		});
 		const img = container.querySelector('.node-thumb-image');
 		expect(img).toBeTruthy();
 		expect(img?.getAttribute('href')).toBe('data:image/jpeg;base64,abc123');
+	});
+
+	it('renders live canvas via foreignObject for source nodes', () => {
+		const { container } = render(RoutingNode, {
+			props: defaultProps(),
+		});
+		const canvas = container.querySelector('canvas#tile-cam1');
+		expect(canvas).toBeTruthy();
+	});
+
+	it('source nodes use canvas even when thumbnail is provided', () => {
+		const { container } = render(RoutingNode, {
+			props: { ...defaultProps(), thumbnail: 'data:image/jpeg;base64,abc123' },
+		});
+		// Source nodes always use foreignObject canvas, never <image>
+		const img = container.querySelector('.node-thumb-image');
+		expect(img).toBeNull();
+		const canvas = container.querySelector('canvas#tile-cam1');
+		expect(canvas).toBeTruthy();
+	});
+
+	it('shows PGM tally badge on program source', () => {
+		const { container } = render(RoutingNode, {
+			props: { ...defaultProps(), isProgramSource: true },
+		});
+		const badge = container.querySelector('.tally-badge-text');
+		expect(badge).toBeTruthy();
+		expect(badge?.textContent).toBe('PGM');
+	});
+
+	it('shows PVW tally badge on preview source', () => {
+		const { container } = render(RoutingNode, {
+			props: { ...defaultProps(), isPreviewSource: true },
+		});
+		const badge = container.querySelector('.tally-badge-text');
+		expect(badge).toBeTruthy();
+		expect(badge?.textContent).toBe('PVW');
+	});
+
+	it('renders sparkline when data provided', () => {
+		const { container } = render(RoutingNode, {
+			props: { ...defaultProps(), sparkline: [100000, 200000, 150000] },
+		});
+		const polyline = container.querySelector('polyline');
+		expect(polyline).toBeTruthy();
+		expect(polyline?.getAttribute('fill')).toBe('none');
+	});
+
+	it('renders heat bar when frame budget is consumed', () => {
+		const { container } = render(RoutingNode, {
+			props: { ...defaultProps(), latencyNs: 10000000, frameBudgetNs: 41666666 },
+		});
+		// 10M / 41.67M = ~24% -> should show yellow heat
+		const rects = container.querySelectorAll('rect');
+		// Heat bar is the last rect before the bypass toggle area
+		const heatRects = Array.from(rects).filter(
+			r => r.getAttribute('fill')?.includes('accent-yellow') || r.getAttribute('fill')?.includes('accent-green')
+		);
+		expect(heatRects.length).toBeGreaterThan(0);
+	});
+
+	it('renders frame count when provided', () => {
+		const { container } = render(RoutingNode, {
+			props: { ...defaultProps(), frameCount: 12345 },
+		});
+		const frameText = container.querySelector('.frame-count');
+		expect(frameText).toBeTruthy();
+		expect(frameText?.textContent).toContain('12,345');
+	});
+
+	it('renders audio VU bars when peaks provided', () => {
+		const { container } = render(RoutingNode, {
+			props: { ...defaultProps(), category: 'audio' as const, audioPeakL: -12, audioPeakR: -6 },
+		});
+		// Should have VU bar rects (green/yellow fills)
+		const rects = Array.from(container.querySelectorAll('rect')).filter(
+			r => {
+				const fill = r.getAttribute('fill');
+				return fill === '#22c55e' || fill === '#eab308' || fill === '#ef4444';
+			}
+		);
+		expect(rects.length).toBe(2);
 	});
 });

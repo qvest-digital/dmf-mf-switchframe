@@ -27,9 +27,14 @@
 		onclose: () => void;
 		onBypassCountChange?: (count: number) => void;
 		onSourceCut?: (sourceKey: string) => void;
+		// Enhancement 8: Source tally state
+		programSource?: string;
+		previewSource?: string;
+		// Enhancement 5: Audio peak levels (dBFS, [L, R])
+		programPeak?: [number, number];
 	}
 
-	let { visible, onclose, onBypassCountChange, onSourceCut }: Props = $props();
+	let { visible, onclose, onBypassCountChange, onSourceCut, programSource, previewSource, programPeak }: Props = $props();
 
 	// ── Column definitions ──
 
@@ -50,6 +55,12 @@
 	let nodes = $state<PipelineNodeInfo[]>([]);
 	let edges = $state<PipelineEdge[]>([]);
 	let thumbnails = $state<Record<string, string>>({});
+
+	// Enhancement 2: Sparkline history (60 samples at 1Hz)
+	let sparklineData = $state<Record<string, number[]>>({});
+
+	// Enhancement 4: Frame budget (41.67ms for 24fps — reasonable default)
+	const FRAME_BUDGET_NS = 41_666_666;
 
 	// ── Selected node for detail popover ──
 
@@ -358,7 +369,15 @@
 			const res = await fetch(resolveApiUrl('/api/pipeline/snapshot'));
 			if (res.ok) {
 				const data = await res.json();
-				if (data.nodes) nodes = data.nodes;
+				if (data.nodes) {
+					nodes = data.nodes;
+					// Enhancement 2: Accumulate sparkline samples
+					for (const node of nodes) {
+						if (!sparklineData[node.name]) sparklineData[node.name] = [];
+						sparklineData[node.name].push(node.lastNs);
+						if (sparklineData[node.name].length > 60) sparklineData[node.name].shift();
+					}
+				}
 				if (data.connections) edges = data.connections;
 			}
 		} catch {
@@ -482,6 +501,12 @@
 							onDrop={handleDrop}
 							isDropTarget={dropTargetNode === node.name}
 							willBeBypassed={nodesToBypass.includes(node.name)}
+							sparkline={sparklineData[node.name] ?? []}
+							frameBudgetNs={FRAME_BUDGET_NS}
+							isProgramSource={node.category === 'source' && node.name === programSource}
+							isPreviewSource={node.category === 'source' && node.name === previewSource}
+							audioPeakL={node.category === 'audio' && programPeak ? programPeak[0] : undefined}
+							audioPeakR={node.category === 'audio' && programPeak ? programPeak[1] : undefined}
 						/>
 					{/each}
 				{/each}

@@ -20,6 +20,21 @@
 		onDrop?: (nodeName: string) => void;
 		isDropTarget?: boolean;
 		willBeBypassed?: boolean;
+		// Enhancement 2: Latency sparkline (60s rolling history)
+		sparkline?: number[];
+		// Enhancement 4: Node heat coloring (frame budget usage)
+		frameBudgetNs?: number;
+		// Enhancement 5: Audio VU bars (dBFS, -60..0)
+		audioPeakL?: number;
+		audioPeakR?: number;
+		// Enhancement 6: Frame counter
+		frameCount?: number;
+		// Enhancement 7: SRT stats
+		bitrateMbps?: number;
+		rttMs?: number;
+		// Enhancement 8: Source tally
+		isProgramSource?: boolean;
+		isPreviewSource?: boolean;
 	}
 
 	let {
@@ -43,6 +58,15 @@
 		onDrop,
 		isDropTarget = false,
 		willBeBypassed = false,
+		sparkline,
+		frameBudgetNs,
+		audioPeakL,
+		audioPeakR,
+		frameCount,
+		bitrateMbps,
+		rttMs,
+		isProgramSource = false,
+		isPreviewSource = false,
 	}: Props = $props();
 
 	function handleOutputPointerDown(e: PointerEvent) {
@@ -67,6 +91,35 @@
 		return `${(ns / 1e6).toFixed(3)}ms`;
 	}
 
+	// Enhancement 4: Heat color based on frame budget usage
+	const heatColor = $derived.by(() => {
+		if (!frameBudgetNs || latencyNs <= 0) return null;
+		const pct = latencyNs / frameBudgetNs;
+		if (pct < 0.05) return null;
+		if (pct < 0.15) return 'var(--accent-green, #22c55e)';
+		if (pct < 0.40) return 'var(--accent-yellow, #eab308)';
+		return 'var(--tally-program, #dc2626)';
+	});
+
+	const heatWidth = $derived.by(() => {
+		if (!frameBudgetNs || latencyNs <= 0) return 0;
+		return NODE_W * Math.min(1, latencyNs / frameBudgetNs);
+	});
+
+	// Enhancement 5: VU meter color
+	function vuColor(dbfs: number): string {
+		if (dbfs > -3) return '#ef4444';
+		if (dbfs > -12) return '#eab308';
+		return '#22c55e';
+	}
+
+	// Enhancement 8: Border color for tally
+	const borderColor = $derived.by(() => {
+		if (isProgramSource) return 'var(--tally-program, #dc2626)';
+		if (isPreviewSource) return 'var(--tally-preview, #22c55e)';
+		return null;
+	});
+
 	const label = $derived(displayName ?? name);
 </script>
 
@@ -85,9 +138,12 @@
 		class:node-program={isProgram}
 		class:node-error={health === 'error'}
 		class:node-will-bypass={willBeBypassed}
+		class:node-tally-program={isProgramSource}
+		class:node-tally-preview={isPreviewSource}
 		role="button"
 		tabindex="0"
 		onclick={onclick}
+		style={borderColor ? `stroke: ${borderColor}; stroke-width: 2;` : ''}
 	/>
 
 	<!-- Input connector (left edge, vertically centered) -->
@@ -116,7 +172,18 @@
 	/>
 
 	<!-- Thumbnail area -->
-	{#if thumbnail}
+	<!-- Enhancement 1: Live canvas for source nodes via foreignObject -->
+	{#if category === 'source'}
+		<foreignObject x={x + 10} y={y + 5} width={THUMB_W} height={THUMB_H}>
+			<canvas
+				xmlns="http://www.w3.org/1999/xhtml"
+				id="tile-{name}"
+				width={THUMB_W * 2}
+				height={THUMB_H * 2}
+				style="width: {THUMB_W}px; height: {THUMB_H}px; background: var(--bg-canvas, #050507); display: block; border-radius: 3px;"
+			></canvas>
+		</foreignObject>
+	{:else if thumbnail}
 		<image
 			x={x + 10}
 			y={y + 5}
@@ -146,6 +213,17 @@
 		</text>
 	{/if}
 
+	<!-- Enhancement 5: Audio VU bars for audio nodes -->
+	{#if audioPeakL != null && audioPeakR != null}
+		{@const barH = THUMB_H * 0.8}
+		{@const normL = Math.max(0, Math.min(1, (audioPeakL + 60) / 60))}
+		{@const normR = Math.max(0, Math.min(1, (audioPeakR + 60) / 60))}
+		<rect x={x + 10 + THUMB_W - 10} y={y + 5 + THUMB_H - normL * barH}
+			width={3} height={normL * barH} fill={vuColor(audioPeakL)} rx={1} opacity={0.9} />
+		<rect x={x + 10 + THUMB_W - 5} y={y + 5 + THUMB_H - normR * barH}
+			width={3} height={normR * barH} fill={vuColor(audioPeakR)} rx={1} opacity={0.9} />
+	{/if}
+
 	<!-- Bypass overlay when bypassed -->
 	{#if bypassed}
 		<rect
@@ -167,6 +245,15 @@
 		</text>
 	{/if}
 
+	<!-- Enhancement 8: Tally badge for source nodes -->
+	{#if isProgramSource}
+		<rect x={x + 10} y={y + 5} width={26} height={12} rx={2} fill="var(--tally-program, #dc2626)" />
+		<text x={x + 23} y={y + 14} text-anchor="middle" class="tally-badge-text">PGM</text>
+	{:else if isPreviewSource}
+		<rect x={x + 10} y={y + 5} width={26} height={12} rx={2} fill="var(--tally-preview, #22c55e)" />
+		<text x={x + 23} y={y + 14} text-anchor="middle" class="tally-badge-text">PVW</text>
+	{/if}
+
 	<!-- Node name -->
 	<text
 		x={x + 10}
@@ -175,6 +262,14 @@
 	>
 		{label}
 	</text>
+
+	<!-- Enhancement 6: Frame counter -->
+	{#if frameCount != null && frameCount > 0}
+		<text x={x + NODE_W - 5} y={y + NODE_H - 26} text-anchor="end"
+			class="frame-count" font-size="8" fill="var(--text-secondary, #6b7280)" opacity="0.5">
+			{frameCount.toLocaleString()} frames
+		</text>
+	{/if}
 
 	<!-- Latency -->
 	<text
@@ -186,6 +281,25 @@
 		{formatLatency(latencyNs)}
 	</text>
 
+	<!-- Enhancement 2: Latency sparkline -->
+	{#if sparkline && sparkline.length > 1}
+		{@const sparkW = 40}
+		{@const sparkH = 12}
+		{@const sparkX = x + NODE_W - sparkW - 5}
+		{@const sparkY = y + NODE_H - sparkH - 2}
+		{@const maxVal = Math.max(...sparkline, 1)}
+		{@const points = sparkline.map((v, i) =>
+			`${sparkX + (i / (sparkline.length - 1)) * sparkW},${sparkY + sparkH - (v / maxVal) * sparkH}`
+		).join(' ')}
+		<polyline
+			{points}
+			fill="none"
+			stroke={healthColor(health)}
+			stroke-width={1}
+			opacity={0.7}
+		/>
+	{/if}
+
 	<!-- Health dot -->
 	<circle
 		cx={x + NODE_W - 10}
@@ -194,6 +308,19 @@
 		fill={healthColor(health)}
 		class="node-health-dot"
 	/>
+
+	<!-- Enhancement 7: SRT stats -->
+	{#if bitrateMbps != null}
+		<text x={x + 5} y={y + NODE_H - 2} font-size="8" fill="var(--text-secondary, #6b7280)"
+			font-family="var(--font-mono, monospace)" class="srt-stats-text">
+			{bitrateMbps.toFixed(1)} Mbps{rttMs != null ? ` RTT ${rttMs.toFixed(0)}ms` : ''}
+		</text>
+	{/if}
+
+	<!-- Enhancement 4: Heat bar at bottom of node -->
+	{#if heatColor}
+		<rect x={x} y={y + NODE_H - 2} width={heatWidth} height={2} fill={heatColor} rx={1} />
+	{/if}
 
 	<!-- Bypass toggle -->
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -229,6 +356,16 @@
 
 	.node-bg.node-program {
 		stroke: var(--tally-program, #dc2626);
+		stroke-width: 2;
+	}
+
+	.node-bg.node-tally-program {
+		stroke: var(--tally-program, #dc2626);
+		stroke-width: 2;
+	}
+
+	.node-bg.node-tally-preview {
+		stroke: var(--tally-preview, #22c55e);
 		stroke-width: 2;
 	}
 
@@ -360,5 +497,29 @@
 
 	.node-will-bypass {
 		opacity: 0.4;
+	}
+
+	/* ── Enhancement 8: Tally badge ── */
+
+	.tally-badge-text {
+		font-family: var(--font-ui, -apple-system, sans-serif);
+		font-size: 8px;
+		font-weight: 700;
+		letter-spacing: 0.04em;
+		fill: #fff;
+		pointer-events: none;
+	}
+
+	/* ── Enhancement 6: Frame count ── */
+
+	.frame-count {
+		font-family: var(--font-mono, monospace);
+		pointer-events: none;
+	}
+
+	/* ── Enhancement 7: SRT stats ── */
+
+	.srt-stats-text {
+		pointer-events: none;
 	}
 </style>

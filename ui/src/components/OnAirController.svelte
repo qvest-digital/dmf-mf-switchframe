@@ -609,6 +609,9 @@
 		onclose={() => { routingOverlayVisible = false; }}
 		onBypassCountChange={(count) => { bypassCount = count; }}
 		onSourceCut={(key) => onCut?.(key)}
+		programSource={crState.programSource}
+		previewSource={crState.previewSource}
+		programPeak={crState.programPeak}
 	/>
 
 	<OASettingsModal

@@ -12,6 +12,8 @@
 
 	// Bezier control points: offset 40% of the horizontal distance
 	const cx = $derived((x2 - x1) * 0.4);
+
+	const pathD = $derived(`M${x1},${y1} C${x1 + cx},${y1} ${x2 - cx},${y2} ${x2},${y2}`);
 </script>
 
 <defs>
@@ -30,14 +32,31 @@
 	</marker>
 </defs>
 
+<!-- Base edge path -->
 <path
-	d="M{x1},{y1} C{x1 + cx},{y1} {x2 - cx},{y2} {x2},{y2}"
+	d={pathD}
 	class="routing-edge"
 	class:edge-active={active}
 	class:edge-inactive={!active}
 	stroke-width={isProgram ? 2 : 1}
-	marker-end="url(#arrowhead-{x1}-{y1}-{x2}-{y2})"
+	fill="none"
+	opacity={active ? 0.3 : 1}
+	marker-end={active ? undefined : `url(#arrowhead-${x1}-${y1}-${x2}-${y2})`}
 />
+
+<!-- Animated flow overlay for active edges -->
+{#if active}
+	<path
+		d={pathD}
+		class="edge-flow"
+		stroke="#06B6D4"
+		stroke-width={isProgram ? 2 : 1}
+		fill="none"
+		stroke-dasharray="8 4"
+		opacity={0.8}
+		marker-end="url(#arrowhead-{x1}-{y1}-{x2}-{y2})"
+	/>
+{/if}
 
 <style>
 	.routing-edge {
@@ -52,5 +71,14 @@
 	.routing-edge.edge-inactive {
 		stroke: var(--border-subtle, #333);
 		stroke-dasharray: 4 4;
+	}
+
+	.edge-flow {
+		animation: flow 1s linear infinite;
+	}
+
+	@keyframes flow {
+		from { stroke-dashoffset: 12; }
+		to { stroke-dashoffset: 0; }
 	}
 </style>

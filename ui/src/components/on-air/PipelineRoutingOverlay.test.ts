@@ -109,4 +109,27 @@ describe('PipelineRoutingOverlay', () => {
 		// SVG should be present and accept pointer events
 		expect(svg?.getAttribute('role')).toBe('img');
 	});
+
+	it('accepts programSource and previewSource props without error', () => {
+		const { container } = render(PipelineRoutingOverlay, {
+			props: {
+				visible: true,
+				onclose: () => {},
+				programSource: 'cam1',
+				previewSource: 'cam2',
+			},
+		});
+		expect(container.querySelector('.routing-overlay')).toBeTruthy();
+	});
+
+	it('accepts programPeak prop without error', () => {
+		const { container } = render(PipelineRoutingOverlay, {
+			props: {
+				visible: true,
+				onclose: () => {},
+				programPeak: [-12, -6] as [number, number],
+			},
+		});
+		expect(container.querySelector('.routing-overlay')).toBeTruthy();
+	});
 });
