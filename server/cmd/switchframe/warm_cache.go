@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/zsiec/switchframe/server/playout"
 	"github.com/zsiec/switchframe/server/stmap"
 )
 
@@ -73,9 +74,25 @@ func warmCache(cfg AppConfig) error {
 		}
 	}
 
-	slog.Info("warm-cache: complete",
+	slog.Info("warm-cache: ST maps complete",
 		"effects", len(effects),
 		"resolutions", len(resolutions),
 		"duration", time.Since(start).Round(time.Millisecond))
+
+	// Pre-generate playout sample clips via ffmpeg.
+	sampleDir := filepath.Join(cacheDir, "playout")
+	slog.Info("warm-cache: generating playout sample clips", "dir", sampleDir)
+	sampleStart := time.Now()
+	clips := playout.GenerateSampleClips(sampleDir)
+	slog.Info("warm-cache: playout samples complete",
+		"clips", len(clips),
+		"duration", time.Since(sampleStart).Round(time.Millisecond))
+
+	// Pre-compile TensorRT .plan files (no-op on non-GPU builds).
+	warmTensorRT(cfg.AIModelsDir)
+	warmNeuralKeyPlan(cfg.NeuralKeyModelPath)
+
+	slog.Info("warm-cache: all caches complete",
+		"total_duration", time.Since(start).Round(time.Millisecond))
 	return nil
 }
