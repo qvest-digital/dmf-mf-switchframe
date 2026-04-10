@@ -138,17 +138,21 @@
 				const data = await res.json();
 				if (data.nodes) {
 					nodes = data.nodes;
+					// Re-find selected node in updated array so popover stays current
+					if (selectedNode) {
+						selectedNode = nodes.find(n => n.name === selectedNode!.name) ?? null;
+					}
 					return;
 				}
 			}
+			// Server rejected (400 for protected node) — don't toggle locally
+			return;
 		} catch {
-			// API unavailable, fall through to local toggle
+			// Network error only — local fallback
+			nodes = nodes.map(n =>
+				n.name === name ? { ...n, bypassed: !n.bypassed } : n
+			);
 		}
-
-		// Local fallback
-		nodes = nodes.map(n =>
-			n.name === name ? { ...n, bypassed: !n.bypassed } : n
-		);
 	}
 
 	// ── Node click → open detail popover ──

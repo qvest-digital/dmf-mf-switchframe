@@ -35,6 +35,7 @@ type pipelineNodeResponse struct {
 	MaxNs     int64  `json:"maxNs"`
 	LatencyUs int64  `json:"latencyUs"`
 	Health    string `json:"health"`
+	Error     string `json:"error,omitempty"`
 }
 
 // nodeCategory derives a UI category from the pipeline node name.
@@ -138,8 +139,9 @@ func buildSnapshotResponse(raw map[string]any) pipelineSnapshotResponse {
 				if v, ok := n["latency_us"].(int64); ok {
 					node.LatencyUs = v
 				}
-				if _, ok := n["last_error"]; ok {
+				if errStr, ok := n["last_error"].(string); ok {
 					node.Health = "error"
+					node.Error = errStr
 				}
 				resp.Nodes = append(resp.Nodes, node)
 				gpuNodeNames = append(gpuNodeNames, node.Name)
