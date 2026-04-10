@@ -1622,6 +1622,27 @@
 			onSwitchLayout={switchLayout}
 			{isDualEngine}
 			syncStatus={syncHealth?.status ?? 'disconnected'}
+			onSyncClick={() => { redundancyPanelVisible = true; }}
+			onCut={(source) => {
+				if (source) {
+					store.optimisticCut(source);
+					apiCall(cut(source), 'Cut failed');
+				}
+			}}
+			onAuto={(source) => {
+				if (source) {
+					apiCall(startTransition(source, 'mix', 1000), 'Transition failed');
+				}
+			}}
+			onBugToggle={() => {
+				const gfxLayers = store.state.graphics?.layers ?? [];
+				if (gfxLayers.some((l) => l.active)) {
+					const offs = gfxLayers.filter((l) => l.active).map((l) => graphicsOff(l.id));
+					apiCall(Promise.all(offs).then((r) => r[0]), 'Bug toggle failed');
+				} else if (gfxLayers.length > 0) {
+					apiCall(graphicsOn(gfxLayers[0].id), 'Bug toggle failed');
+				}
+			}}
 		/>
 	{:else}
 		<div class="control-room">

@@ -33,7 +33,7 @@ describe('OnAirController', () => {
 		vi.clearAllMocks();
 	});
 
-	it('renders the ON AIR badge', () => {
+	it('renders the status bar with program source', () => {
 		render(OnAirController, {
 			props: {
 				crState: makeState(),
@@ -41,43 +41,11 @@ describe('OnAirController', () => {
 				onSwitchLayout: vi.fn(),
 			},
 		});
-		expect(screen.getByText('ON AIR')).toBeTruthy();
+		// Camera 1 appears in status bar, program monitor, and source grid
+		expect(screen.getAllByText('Camera 1').length).toBeGreaterThanOrEqual(1);
 	});
 
-	it('renders SwitchFrame brand', () => {
-		render(OnAirController, {
-			props: {
-				crState: makeState(),
-				onCanvasReady: vi.fn(),
-				onSwitchLayout: vi.fn(),
-			},
-		});
-		expect(screen.getByText('SwitchFrame')).toBeTruthy();
-	});
-
-	it('renders PROGRAM monitor label', () => {
-		render(OnAirController, {
-			props: {
-				crState: makeState(),
-				onCanvasReady: vi.fn(),
-				onSwitchLayout: vi.fn(),
-			},
-		});
-		expect(screen.getByText('PROGRAM')).toBeTruthy();
-	});
-
-	it('shows program source label', () => {
-		render(OnAirController, {
-			props: {
-				crState: makeState(),
-				onCanvasReady: vi.fn(),
-				onSwitchLayout: vi.fn(),
-			},
-		});
-		expect(screen.getByText('Camera 1')).toBeTruthy();
-	});
-
-	it('shows SOURCES panel when no playlist loaded', () => {
+	it('renders SOURCES panel when no playlist loaded', () => {
 		render(OnAirController, {
 			props: {
 				crState: makeState(),
@@ -86,7 +54,19 @@ describe('OnAirController', () => {
 			},
 		});
 		expect(screen.getByText('SOURCES')).toBeTruthy();
-		expect(screen.getByText('3 sources available')).toBeTruthy();
+	});
+
+	it('renders source tiles in source grid', () => {
+		render(OnAirController, {
+			props: {
+				crState: makeState(),
+				onCanvasReady: vi.fn(),
+				onSwitchLayout: vi.fn(),
+			},
+		});
+		// OASourceGrid renders OASourceTile for each source
+		expect(screen.getByText('Camera 2')).toBeTruthy();
+		expect(screen.getByText('Camera 3')).toBeTruthy();
 	});
 
 	it('shows PLAYOUT SCHEDULE panel when playlist loaded', () => {
@@ -109,7 +89,19 @@ describe('OnAirController', () => {
 		expect(screen.getByText('PLAYOUT SCHEDULE')).toBeTruthy();
 	});
 
-	it('shows channel state when playlist loaded', () => {
+	it('shows CUT and AUTO buttons in live-monitor mode', () => {
+		render(OnAirController, {
+			props: {
+				crState: makeState(),
+				onCanvasReady: vi.fn(),
+				onSwitchLayout: vi.fn(),
+			},
+		});
+		expect(screen.getByText('CUT')).toBeTruthy();
+		expect(screen.getByText('AUTO')).toBeTruthy();
+	});
+
+	it('shows FIRE POD button in playout mode', () => {
 		render(OnAirController, {
 			props: {
 				crState: makeState({
@@ -126,21 +118,121 @@ describe('OnAirController', () => {
 				onSwitchLayout: vi.fn(),
 			},
 		});
-		expect(screen.getByText('Channel state: on_air')).toBeTruthy();
+		expect(screen.getByText('FIRE POD')).toBeTruthy();
 	});
 
-	it('gear button fires layout switch callback', async () => {
-		const switchFn = vi.fn();
+	it('calls onCut when CUT button clicked', async () => {
+		const cutFn = vi.fn();
 		render(OnAirController, {
 			props: {
 				crState: makeState(),
 				onCanvasReady: vi.fn(),
-				onSwitchLayout: switchFn,
+				onSwitchLayout: vi.fn(),
+				onCut: cutFn,
 			},
 		});
-		const gearBtn = screen.getByTitle('Switch layout mode');
-		await fireEvent.click(gearBtn);
-		expect(switchFn).toHaveBeenCalled();
+		const cutBtn = screen.getByText('CUT');
+		await fireEvent.click(cutBtn);
+		expect(cutFn).toHaveBeenCalledWith('cam2');
+	});
+
+	it('calls onAuto when AUTO button clicked', async () => {
+		const autoFn = vi.fn();
+		render(OnAirController, {
+			props: {
+				crState: makeState(),
+				onCanvasReady: vi.fn(),
+				onSwitchLayout: vi.fn(),
+				onAuto: autoFn,
+			},
+		});
+		const autoBtn = screen.getByText('AUTO');
+		await fireEvent.click(autoBtn);
+		expect(autoFn).toHaveBeenCalledWith('cam2');
+	});
+
+	it('calls onBugToggle when BUG button clicked', async () => {
+		const bugFn = vi.fn();
+		render(OnAirController, {
+			props: {
+				crState: makeState(),
+				onCanvasReady: vi.fn(),
+				onSwitchLayout: vi.fn(),
+				onBugToggle: bugFn,
+			},
+		});
+		const bugBtn = screen.getByText('BUG: OFF');
+		await fireEvent.click(bugBtn);
+		expect(bugFn).toHaveBeenCalled();
+	});
+
+	it('shows BUG: ON when graphics layer is active', () => {
+		render(OnAirController, {
+			props: {
+				crState: makeState({
+					graphics: {
+						layers: [{ id: 0, active: true, zOrder: 0, x: 0, y: 0, width: 1920, height: 1080 }],
+					},
+				}),
+				onCanvasReady: vi.fn(),
+				onSwitchLayout: vi.fn(),
+			},
+		});
+		expect(screen.getByText('BUG: ON')).toBeTruthy();
+	});
+
+	it('shows AUDIO and I/O utility buttons', () => {
+		render(OnAirController, {
+			props: {
+				crState: makeState(),
+				onCanvasReady: vi.fn(),
+				onSwitchLayout: vi.fn(),
+			},
+		});
+		expect(screen.getByTitle('Toggle audio panel')).toBeTruthy();
+		expect(screen.getByTitle('Toggle I/O panel')).toBeTruthy();
+	});
+
+	it('opens audio slide-out when AUDIO button clicked', async () => {
+		render(OnAirController, {
+			props: {
+				crState: makeState(),
+				onCanvasReady: vi.fn(),
+				onSwitchLayout: vi.fn(),
+			},
+		});
+		const audioBtn = screen.getByTitle('Toggle audio panel');
+		await fireEvent.click(audioBtn);
+		expect(screen.getByText('Audio mixer will be wired here')).toBeTruthy();
+	});
+
+	it('opens I/O slide-out when I/O button clicked', async () => {
+		render(OnAirController, {
+			props: {
+				crState: makeState(),
+				onCanvasReady: vi.fn(),
+				onSwitchLayout: vi.fn(),
+			},
+		});
+		const ioBtn = screen.getByTitle('Toggle I/O panel');
+		await fireEvent.click(ioBtn);
+		expect(screen.getByText('I/O panel will be wired here')).toBeTruthy();
+	});
+
+	it('opens settings modal when SETTINGS button clicked', async () => {
+		render(OnAirController, {
+			props: {
+				crState: makeState(),
+				onCanvasReady: vi.fn(),
+				onSwitchLayout: vi.fn(),
+			},
+		});
+		const settingsBtn = screen.getByText('SETTINGS');
+		await fireEvent.click(settingsBtn);
+		// OASettingsModal renders a "SETTINGS" title in the modal header
+		const settingsElements = screen.getAllByText('SETTINGS');
+		// At least 2: the button and the modal title
+		expect(settingsElements.length).toBeGreaterThanOrEqual(2);
 	});
 
 	it('shows sync indicator in dual-engine mode', () => {
@@ -150,26 +242,13 @@ describe('OnAirController', () => {
 				onCanvasReady: vi.fn(),
 				onSwitchLayout: vi.fn(),
 				isDualEngine: true,
-				syncStatus: 'ok',
+				syncStatus: 'synced',
 			},
 		});
 		expect(screen.getByText('SYNC')).toBeTruthy();
 	});
 
-	it('shows RESYNC when sync status is resyncing', () => {
-		render(OnAirController, {
-			props: {
-				crState: makeState(),
-				onCanvasReady: vi.fn(),
-				onSwitchLayout: vi.fn(),
-				isDualEngine: true,
-				syncStatus: 'resyncing',
-			},
-		});
-		expect(screen.getByText('RESYNC')).toBeTruthy();
-	});
-
-	it('shows NO SYNC when sync status is disconnected', () => {
+	it('shows OFFLINE when sync status is disconnected', () => {
 		render(OnAirController, {
 			props: {
 				crState: makeState(),
@@ -179,7 +258,7 @@ describe('OnAirController', () => {
 				syncStatus: 'disconnected',
 			},
 		});
-		expect(screen.getByText('NO SYNC')).toBeTruthy();
+		expect(screen.getByText('OFFLINE')).toBeTruthy();
 	});
 
 	it('hides sync indicator in single-engine mode', () => {
@@ -192,8 +271,7 @@ describe('OnAirController', () => {
 			},
 		});
 		expect(screen.queryByText('SYNC')).toBeNull();
-		expect(screen.queryByText('RESYNC')).toBeNull();
-		expect(screen.queryByText('NO SYNC')).toBeNull();
+		expect(screen.queryByText('OFFLINE')).toBeNull();
 	});
 
 	it('calls onCanvasReady with canvas elements', () => {
@@ -211,7 +289,65 @@ describe('OnAirController', () => {
 		);
 	});
 
-	it('renders Actions placeholder in action bar', () => {
+	it('calls onCut via space keyboard shortcut in live mode', async () => {
+		const cutFn = vi.fn();
+		render(OnAirController, {
+			props: {
+				crState: makeState(),
+				onCanvasReady: vi.fn(),
+				onSwitchLayout: vi.fn(),
+				onCut: cutFn,
+			},
+		});
+		await fireEvent.keyDown(window, { code: 'Space' });
+		expect(cutFn).toHaveBeenCalledWith('cam2');
+	});
+
+	it('calls onAuto via enter keyboard shortcut in live mode', async () => {
+		const autoFn = vi.fn();
+		render(OnAirController, {
+			props: {
+				crState: makeState(),
+				onCanvasReady: vi.fn(),
+				onSwitchLayout: vi.fn(),
+				onAuto: autoFn,
+			},
+		});
+		await fireEvent.keyDown(window, { code: 'Enter' });
+		expect(autoFn).toHaveBeenCalledWith('cam2');
+	});
+
+	it('calls onBugToggle via B keyboard shortcut', async () => {
+		const bugFn = vi.fn();
+		render(OnAirController, {
+			props: {
+				crState: makeState(),
+				onCanvasReady: vi.fn(),
+				onSwitchLayout: vi.fn(),
+				onBugToggle: bugFn,
+			},
+		});
+		await fireEvent.keyDown(window, { code: 'KeyB' });
+		expect(bugFn).toHaveBeenCalled();
+	});
+
+	it('calls onSourceClick with source key when source tile clicked', async () => {
+		const cutFn = vi.fn();
+		render(OnAirController, {
+			props: {
+				crState: makeState(),
+				onCanvasReady: vi.fn(),
+				onSwitchLayout: vi.fn(),
+				onCut: cutFn,
+			},
+		});
+		// Source tiles are rendered as buttons by OASourceTile
+		const cam3Btn = screen.getByText('Camera 3');
+		await fireEvent.click(cam3Btn);
+		expect(cutFn).toHaveBeenCalledWith('cam3');
+	});
+
+	it('shows NEXT monitor', () => {
 		render(OnAirController, {
 			props: {
 				crState: makeState(),
@@ -219,6 +355,7 @@ describe('OnAirController', () => {
 				onSwitchLayout: vi.fn(),
 			},
 		});
-		expect(screen.getByText('Actions')).toBeTruthy();
+		// OANextMonitor renders NEXT label
+		expect(screen.getAllByText('NEXT').length).toBeGreaterThanOrEqual(1);
 	});
 });
