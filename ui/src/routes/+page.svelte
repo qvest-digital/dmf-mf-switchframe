@@ -33,7 +33,7 @@
 	import RedundancyPanel from '../components/RedundancyPanel.svelte';
 	import ProgramCompare from '../components/ProgramCompare.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
-	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, checkFragmentToken, SwitchApiError, listMacros, runMacro, dveSlotOn, dveSlotOff, replayQuick, replayPause, replayResume, replayPlay, replayStop, replaySeek, replaySetSpeed, replayMarkIn, replayMarkOut, commsMute, setDualTimestampProvider, setPartialFailureCallback, setPartialFailureNotify, setNonIdempotentFailureCallback, getDebugSnapshot, getPerfData, playoutEngineCacheStatus, setTransitionPosition, updateDVESlot, scte35Cue, scte35Return, podFire, playoutNext, playoutJump, playoutTakeManual, playoutReturnToAuto, startRecording, stopRecording, playoutPlaylist as fetchPlaylist } from '$lib/api/switch-api';
+	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, graphicsAutoOn, graphicsAutoOff, apiCall, setAuthToken, checkFragmentToken, SwitchApiError, listMacros, runMacro, dveSlotOn, dveSlotOff, replayQuick, replayPause, replayResume, replayPlay, replayStop, replaySeek, replaySetSpeed, replayMarkIn, replayMarkOut, commsMute, setDualTimestampProvider, setPartialFailureCallback, setPartialFailureNotify, setNonIdempotentFailureCallback, getDebugSnapshot, getPerfData, playoutEngineCacheStatus, setTransitionPosition, updateDVESlot, scte35Cue, scte35Return, podFire, playoutNext, playoutJump, playoutTakeManual, playoutReturnToAuto, startRecording, stopRecording, playoutPlaylist as fetchPlaylist } from '$lib/api/switch-api';
 	import { setEngineUrls, getEngineUrls, setExpectDualEngine, setOnNewEngineDiscovered, setAuthoritativeEngineProvider, setEmergencyEngineBUrl } from '$lib/api/base-url';
 	import { fetchServerInfo } from '$lib/prism/transport-utils';
 	import * as operatorState from '$lib/state/operator.svelte';
@@ -1646,10 +1646,10 @@
 			onBugToggle={() => {
 				const gfxLayers = store.state.graphics?.layers ?? [];
 				if (gfxLayers.some((l) => l.active)) {
-					const offs = gfxLayers.filter((l) => l.active).map((l) => graphicsOff(l.id));
+					const offs = gfxLayers.filter((l) => l.active).map((l) => graphicsAutoOff(l.id));
 					apiCall(Promise.all(offs).then((r) => r[0]), 'Bug toggle failed');
 				} else if (gfxLayers.length > 0) {
-					apiCall(graphicsOn(gfxLayers[0].id), 'Bug toggle failed');
+					apiCall(graphicsAutoOn(gfxLayers[0].id), 'Bug toggle failed');
 				}
 			}}
 			onSlate={() => {
