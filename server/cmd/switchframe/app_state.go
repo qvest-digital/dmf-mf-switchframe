@@ -449,6 +449,9 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 		if lastSeen := a.peerPoller.PeerLastSeen(); !lastSeen.IsZero() {
 			state.PeerLastSeenMs = lastSeen.UnixMilli()
 		}
+		if a.cfg.PeerEngineURL != "" {
+			state.EngineBURL = a.cfg.PeerEngineURL
+		}
 	}
 
 	return state
