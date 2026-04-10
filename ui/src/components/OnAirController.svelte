@@ -21,6 +21,7 @@
 	import ClipsPanel from './ClipsPanel.svelte';
 	import MacroPanel from './MacroPanel.svelte';
 	import CommsBar from './CommsBar.svelte';
+	import PipelineRoutingOverlay from './on-air/PipelineRoutingOverlay.svelte';
 	import * as operatorState from '$lib/state/operator.svelte';
 
 	interface Props {
@@ -279,6 +280,7 @@
 	let commsSlideOut = $state(false);
 	let asRunSlideOut = $state(false);
 	let settingsVisible = $state(false);
+	let routingOverlayVisible = $state(false);
 
 	// ── As-run log data ──
 
@@ -295,6 +297,7 @@
 		macrosSlideOut = false;
 		commsSlideOut = false;
 		asRunSlideOut = false;
+		routingOverlayVisible = false;
 	}
 
 	/** Cycle caption mode: off → passthrough → author → off */
@@ -478,6 +481,7 @@
 				onClipsToggle={() => { clipsSlideOut = !clipsSlideOut; }}
 				onMacrosToggle={() => { macrosSlideOut = !macrosSlideOut; }}
 				onCommsToggle={() => { commsSlideOut = !commsSlideOut; }}
+			onRoutingToggle={() => { routingOverlayVisible = !routingOverlayVisible; }}
 			/>
 		</section>
 	</div>
@@ -577,6 +581,11 @@
 			{/if}
 		</div>
 	</OASlideOut>
+
+	<PipelineRoutingOverlay
+		visible={routingOverlayVisible}
+		onclose={() => { routingOverlayVisible = false; }}
+	/>
 
 	<OASettingsModal
 		visible={settingsVisible}

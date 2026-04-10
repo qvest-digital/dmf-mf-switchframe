@@ -32,6 +32,7 @@
 		onClipsToggle?: () => void;
 		onMacrosToggle?: () => void;
 		onCommsToggle?: () => void;
+		onRoutingToggle?: () => void;
 	}
 
 	let {
@@ -67,6 +68,7 @@
 		onClipsToggle,
 		onMacrosToggle,
 		onCommsToggle,
+		onRoutingToggle,
 	}: Props = $props();
 
 	const captionLabel = $derived.by((): string => {
@@ -200,6 +202,9 @@
 			</button>
 			<button class="btn btn-panel" onclick={onMacrosToggle} title="Toggle macros panel">
 				MACRO
+			</button>
+			<button class="btn btn-panel" onclick={onRoutingToggle} title="Toggle routing overlay">
+				ROUTING
 			</button>
 		</div>
 	</div>

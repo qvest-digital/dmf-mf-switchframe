@@ -3371,6 +3371,26 @@ func (s *Switcher) SourceKeys() []string {
 	return keys
 }
 
+// PipelineSnapshot returns the current pipeline's per-node snapshot.
+// Returns nil if no pipeline is loaded.
+func (s *Switcher) PipelineSnapshot() map[string]any {
+	p := s.pipeline.Load()
+	if p == nil {
+		return nil
+	}
+	return p.Snapshot()
+}
+
+// SetPipelineBypass toggles the bypass flag for the named pipeline node.
+// Returns an error if the node is protected or unknown.
+func (s *Switcher) SetPipelineBypass(name string, bypass bool) error {
+	p := s.pipeline.Load()
+	if p == nil {
+		return fmt.Errorf("no pipeline loaded")
+	}
+	return p.SetBypass(name, bypass)
+}
+
 // buildStateLocked constructs a ControlRoomState snapshot. Caller must hold
 // at least s.mu.RLock().
 func (s *Switcher) buildStateLocked() internal.ControlRoomState {

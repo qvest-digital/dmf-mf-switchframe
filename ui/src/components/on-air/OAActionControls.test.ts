@@ -332,4 +332,31 @@ describe('OAActionControls', () => {
 		await fireEvent.click(screen.getByTitle('Open settings'));
 		expect(fn).toHaveBeenCalledOnce();
 	});
+
+	// ── ROUTING button ──
+
+	it('shows ROUTING button in panels row', () => {
+		const { container } = render(OAActionControls, {
+			props: liveProps(),
+		});
+		const allPanelBtns = container.querySelectorAll('.btn-panel');
+		const routingFound = Array.from(allPanelBtns).some(
+			(btn) => btn.textContent?.trim() === 'ROUTING'
+		);
+		expect(routingFound).toBe(true);
+	});
+
+	it('ROUTING toggle callback fires', async () => {
+		const fn = vi.fn();
+		const { container } = render(OAActionControls, {
+			props: liveProps({ onRoutingToggle: fn }),
+		});
+		const allPanelBtns = container.querySelectorAll('.btn-panel');
+		const routingBtn = Array.from(allPanelBtns).find(
+			(btn) => btn.textContent?.trim() === 'ROUTING'
+		) as HTMLElement;
+		expect(routingBtn).toBeTruthy();
+		await fireEvent.click(routingBtn);
+		expect(fn).toHaveBeenCalledOnce();
+	});
 });
