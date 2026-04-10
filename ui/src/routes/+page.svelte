@@ -975,11 +975,27 @@
 			}
 		} catch { /* ignore */ }
 
-		const snapshot = {
+		const snapshot: Record<string, unknown> = {
 			timestamp: new Date().toISOString(),
 			frontend,
 			backend,
 		};
+
+		if (isDualEngine) {
+			snapshot.dualEngine = {
+				reconciler: connectionManager.dualEngineStats,
+				autoReconcile: autoReconcile.stats,
+				videoFailoverCount: failoverTimestamps.length,
+				engineA: {
+					state: engineHealth?.A?.connected ? 'connected' : 'disconnected',
+					rtt: engineHealth?.A?.rtt ?? 0,
+				},
+				engineB: {
+					state: engineHealth?.B?.connected ? 'connected' : 'disconnected',
+					rtt: engineHealth?.B?.rtt ?? 0,
+				},
+			};
+		}
 
 		const json = JSON.stringify(snapshot, null, 2);
 		try {

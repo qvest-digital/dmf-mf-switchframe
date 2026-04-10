@@ -172,6 +172,12 @@ export function createReconciler() {
 	let lastPongA = $state(0);
 	let lastPongB = $state(0);
 
+	// Dual-engine telemetry
+	let authoritySwitchCount = $state(0);
+	let authorityHoldRejects = $state(0);
+	let authorityHeldSince = $state(0);
+	let lastAuthoritySwitchReason = $state('');
+
 	// Lock authority to the engine that was authoritative when a transition started,
 	// to prevent mid-transition UI jumps if authority would otherwise flip.
 	let transitionLockEngine = $state<EngineId | null>(null);
@@ -279,14 +285,14 @@ export function createReconciler() {
 	}
 
 	/** Compute the raw authority candidate without hold-time. Used by the derived and by hold-time logic. */
-	function computeRawAuthority(now: number): { candidate: EngineId; bothEffective: boolean } {
-		if (!stateA && !stateB) return { candidate: 'A', bothEffective: false };
+	function computeRawAuthority(now: number): { candidate: EngineId; bothEffective: boolean; reason: string } {
+		if (!stateA && !stateB) return { candidate: 'A', bothEffective: false, reason: 'disconnect' };
 		// Treat stale engines as effectively disconnected for authority selection
 		const effectiveA = stateA !== null && connectedA && !(lastSeenA > 0 && now - lastSeenA > STALE_THRESHOLD_MS);
 		const effectiveB = stateB !== null && connectedB && !(lastSeenB > 0 && now - lastSeenB > STALE_THRESHOLD_MS);
-		if (!effectiveA && !effectiveB) return { candidate: 'A', bothEffective: false };
-		if (!effectiveA) return { candidate: 'B', bothEffective: false };
-		if (!effectiveB) return { candidate: 'A', bothEffective: false };
+		if (!effectiveA && !effectiveB) return { candidate: 'A', bothEffective: false, reason: 'disconnect' };
+		if (!effectiveA) return { candidate: 'B', bothEffective: false, reason: connectedA ? 'stale' : 'disconnect' };
+		if (!effectiveB) return { candidate: 'A', bothEffective: false, reason: connectedB ? 'stale' : 'disconnect' };
 
 		// Lock authority during active transitions to prevent mid-transition jumps
 		const aInTransition = stateA?.inTransition ?? false;
@@ -295,7 +301,7 @@ export function createReconciler() {
 			if (transitionLockEngine !== null) {
 				// Verify the locked engine is still reachable
 				const lockedEffective = transitionLockEngine === 'A' ? effectiveA : effectiveB;
-				if (lockedEffective) return { candidate: transitionLockEngine, bothEffective: true };
+				if (lockedEffective) return { candidate: transitionLockEngine, bothEffective: true, reason: 'transition_lock' };
 			}
 		}
 
@@ -310,8 +316,8 @@ export function createReconciler() {
 			const progHealthB = sB.sources?.[programKey]?.status;
 			const progDegradedA = progHealthA === 'offline' || progHealthA === 'no_signal';
 			const progDegradedB = progHealthB === 'offline' || progHealthB === 'no_signal';
-			if (progDegradedA && !progDegradedB) return { candidate: 'B', bothEffective: true };
-			if (progDegradedB && !progDegradedA) return { candidate: 'A', bothEffective: true };
+			if (progDegradedA && !progDegradedB) return { candidate: 'B', bothEffective: true, reason: 'health' };
+			if (progDegradedB && !progDegradedA) return { candidate: 'A', bothEffective: true, reason: 'health' };
 		}
 
 		// Source health scoring: if one engine has >50% sources degraded and other doesn't, healthier wins
@@ -321,24 +327,24 @@ export function createReconciler() {
 		const totalB = Object.keys(sB.sources ?? {}).length;
 		const degradedA = totalA > 0 && healthyA / totalA < 0.5;
 		const degradedB = totalB > 0 && healthyB / totalB < 0.5;
-		if (degradedA && !degradedB) return { candidate: 'B', bothEffective: true };
-		if (degradedB && !degradedA) return { candidate: 'A', bothEffective: true };
+		if (degradedA && !degradedB) return { candidate: 'B', bothEffective: true, reason: 'health' };
+		if (degradedB && !degradedA) return { candidate: 'A', bothEffective: true, reason: 'health' };
 
 		// Fall back to seq-based logic
 		const seqA = sA.lastCommandSeq ?? 0;
 		const seqB = sB.lastCommandSeq ?? 0;
-		if (seqA > seqB) return { candidate: 'A', bothEffective: true };
-		if (seqB > seqA) return { candidate: 'B', bothEffective: true };
+		if (seqA > seqB) return { candidate: 'A', bothEffective: true, reason: 'seq' };
+		if (seqB > seqA) return { candidate: 'B', bothEffective: true, reason: 'seq' };
 		// Equal seq: prefer lower RTT only if the delta clearly exceeds hysteresis.
 		// Small fluctuations (< RTT_HYSTERESIS_MS) keep A as authority to prevent jitter flapping.
 		if (rttA > 0 && rttB > 0) {
 			const delta = rttA - rttB;
 			if (Math.abs(delta) > RTT_HYSTERESIS_MS) {
-				return { candidate: delta > 0 ? 'B' : 'A', bothEffective: true };
+				return { candidate: delta > 0 ? 'B' : 'A', bothEffective: true, reason: 'rtt' };
 			}
 		}
 		// Final tie (and within hysteresis): A wins
-		return { candidate: 'A', bothEffective: true };
+		return { candidate: 'A', bothEffective: true, reason: 'tie' };
 	}
 
 	/** Update heldAuthority with hold-time logic. Called from tick() and ingest().
@@ -346,10 +352,15 @@ export function createReconciler() {
 	 * for at least AUTHORITY_HOLD_MS. Prevents jitter-driven A→B→A→B flapping.
 	 * Exception: switch immediately if the current authority is stale/disconnected. */
 	function updateHeldAuthority(now: number) {
-		const { candidate, bothEffective } = computeRawAuthority(now);
+		const { candidate, bothEffective, reason } = computeRawAuthority(now);
 
 		// If only one engine is effective, switch immediately (no hold-time)
 		if (!bothEffective) {
+			if (heldAuthority !== candidate) {
+				authoritySwitchCount++;
+				authorityHeldSince = now;
+				lastAuthoritySwitchReason = reason;
+			}
 			heldAuthority = candidate;
 			lastAuthorityCandidate = candidate;
 			lastAuthorityCandidateSince = now;
@@ -363,6 +374,7 @@ export function createReconciler() {
 			heldAuthority = 'A';
 			lastAuthorityCandidate = 'A';
 			lastAuthorityCandidateSince = now;
+			authorityHeldSince = now;
 			return;
 		}
 
@@ -383,10 +395,15 @@ export function createReconciler() {
 
 		// Same challenger has been winning consistently — check hold-time
 		if (now - lastAuthorityCandidateSince >= AUTHORITY_HOLD_MS) {
+			authoritySwitchCount++;
+			authorityHeldSince = now;
+			lastAuthoritySwitchReason = reason;
 			heldAuthority = candidate;
 			// Don't reset tracking — challenger has proven stable
+		} else {
+			// Still within hold-time — keep current heldAuthority
+			authorityHoldRejects++;
 		}
-		// Otherwise: still within hold-time — keep current heldAuthority
 	}
 
 	/** Which engine is authoritative. Reads the hold-time-stabilized value
@@ -830,6 +847,21 @@ export function createReconciler() {
 		/** Raw per-engine states for components that need individual engine data. */
 		get rawStates() {
 			return { A: stateA, B: stateB };
+		},
+		get dualEngineStats() {
+			return {
+				authoritySwitchCount,
+				authorityHoldRejects,
+				authorityHeldSinceMs: authorityHeldSince > 0 ? Date.now() - authorityHeldSince : 0,
+				lastSwitchReason: lastAuthoritySwitchReason,
+				currentAuthority: heldAuthority,
+				rttA,
+				rttB,
+				connectedA,
+				connectedB,
+				lastSeenAgoA: lastSeenA > 0 ? Date.now() - lastSeenA : -1,
+				lastSeenAgoB: lastSeenB > 0 ? Date.now() - lastSeenB : -1,
+			};
 		},
 	};
 }

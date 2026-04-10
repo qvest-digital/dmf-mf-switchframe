@@ -151,6 +151,11 @@ export class DualConnectionManager {
 		return this.reconciler.rawStates;
 	}
 
+	/** Dual-engine telemetry stats from the reconciler. */
+	get dualEngineStats() {
+		return this.reconciler.dualEngineStats;
+	}
+
 	get clock(): ClockSync {
 		return this.clockSync;
 	}

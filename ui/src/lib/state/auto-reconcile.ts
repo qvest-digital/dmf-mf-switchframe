@@ -47,6 +47,13 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 	// current value, not the one captured when the timer was created.
 	let currentAuthoritative: EngineId = 'A';
 
+	// Telemetry counters
+	let pushTotal = 0;
+	let pushSuccesses = 0;
+	let pushErrors = 0;
+	let lastError = '';
+	let divergenceDetectedTotal = 0;
+
 	function clearPendingTimer() {
 		if (pendingTimer !== null) {
 			clearTimeout(pendingTimer);
@@ -135,6 +142,7 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 		}
 
 		pushInFlight = true;
+		pushTotal++;
 
 		// Start periodic lock refresh to prevent expiry during long operations
 		let lockRefreshInterval: ReturnType<typeof setInterval> | null = null;
@@ -166,6 +174,7 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 			]);
 			clearTimeout(timeoutTimer);
 			retryCount = 0; // reset on success
+			pushSuccesses++;
 			const warnings = result.warnings ?? [];
 			config.onRecoveryComplete?.(warnings);
 
@@ -187,6 +196,8 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 			}
 		} catch (err) {
 			clearTimeout(timeoutTimer);
+			pushErrors++;
+			lastError = toError(err).message;
 			config.onRecoveryError?.(toError(err));
 			// Retry once after 2s + jitter
 			if (retryCount < 1) {
@@ -218,12 +229,14 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 		currentAuthoritative = authoritative;
 
 		if (status === 'mismatch') {
+			divergenceDetectedTotal++;
 			clearPendingTimer();
 			executeSnapshotPush(authoritative);
 			return;
 		}
 
 		if (status === 'diverged') {
+			divergenceDetectedTotal++;
 			// Only start a timer if one isn't already pending
 			if (pendingTimer === null) {
 				pendingTimer = setTimeout(() => {
@@ -252,5 +265,16 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 		onSyncStatusChange,
 		cancel,
 		destroy,
+		get stats() {
+			return {
+				pushTotal,
+				pushSuccesses,
+				pushErrors,
+				lastError,
+				lastPushAgoMs: lastPushTimes.size > 0 ? Date.now() - Math.max(...lastPushTimes.values()) : -1,
+				cooldownActive: pushInFlight,
+				divergenceDetectedTotal,
+			};
+		},
 	};
 }
