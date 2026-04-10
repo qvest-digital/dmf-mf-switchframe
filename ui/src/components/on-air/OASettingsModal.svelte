@@ -1,8 +1,10 @@
 <script lang="ts">
+	import type { ControlRoomState } from '$lib/api/types';
+
 	interface Props {
 		visible: boolean;
 		onclose: () => void;
-		crState: any;
+		crState: ControlRoomState;
 	}
 
 	let { visible, onclose, crState }: Props = $props();
@@ -49,7 +51,7 @@
 
 {#if visible}
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="settings-backdrop" onclick={handleBackdropClick} onkeydown={() => {}}>
+	<div class="settings-backdrop" onclick={handleBackdropClick}>
 		<div
 			class="settings-modal"
 			role="dialog"
@@ -94,8 +96,6 @@
 		position: fixed;
 		inset: 0;
 		background: var(--overlay-heavy);
-		backdrop-filter: blur(4px);
-		-webkit-backdrop-filter: blur(4px);
 		display: flex;
 		align-items: center;
 		justify-content: center;

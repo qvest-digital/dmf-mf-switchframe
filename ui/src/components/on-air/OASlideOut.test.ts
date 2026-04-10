@@ -68,12 +68,13 @@ describe('OASlideOut', () => {
 		expect(panel.style.width).toBe('400px');
 	});
 
-	it('escape key calls onclose', async () => {
+	it('escape key is handled by parent (not by OASlideOut)', async () => {
 		const onclose = vi.fn();
 		render(OASlideOut, {
 			props: { visible: true, title: 'Test', onclose },
 		});
 		await fireEvent.keyDown(window, { key: 'Escape' });
-		expect(onclose).toHaveBeenCalledOnce();
+		// Escape is now handled by the parent OnAirController, not by OASlideOut
+		expect(onclose).not.toHaveBeenCalled();
 	});
 });

@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
 	import type { Snippet } from 'svelte';
 
 	interface Props {
@@ -11,23 +10,6 @@
 	}
 
 	let { visible, title, onclose, width = 400, children }: Props = $props();
-
-	function handleKeydown(e: KeyboardEvent) {
-		if (e.key === 'Escape') {
-			onclose();
-		}
-	}
-
-	let cleanup: (() => void) | undefined;
-
-	onMount(() => {
-		window.addEventListener('keydown', handleKeydown);
-		cleanup = () => window.removeEventListener('keydown', handleKeydown);
-	});
-
-	onDestroy(() => {
-		cleanup?.();
-	});
 </script>
 
 {#if visible}
@@ -64,7 +46,7 @@
 		background: var(--bg-panel);
 		border-left: 1px solid var(--border-strong);
 		z-index: var(--z-overlay);
-		animation: oa-slide-in 250ms ease forwards;
+		animation: oa-slide-in 150ms ease forwards;
 	}
 
 	@keyframes oa-slide-in {

@@ -95,8 +95,8 @@
 		flex-direction: column;
 		height: 100%;
 		overflow: hidden;
-		background: var(--surface-secondary, rgba(255, 255, 255, 0.02));
-		border-radius: 4px;
+		background: var(--bg-surface);
+		border-radius: var(--radius-sm);
 	}
 
 	.schedule-header {
@@ -136,7 +136,7 @@
 
 	.header-btn:hover {
 		background: rgba(255, 255, 255, 0.1);
-		color: var(--text-primary, #e4e4e7);
+		color: var(--text-primary);
 	}
 
 	.schedule-list {

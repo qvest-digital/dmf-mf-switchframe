@@ -178,12 +178,12 @@
 
 	.tally-pgm {
 		background: var(--tally-program);
-		color: #fff;
+		color: var(--text-on-color);
 	}
 
 	.tally-pvw {
 		background: var(--tally-preview);
-		color: #fff;
+		color: var(--text-on-color);
 	}
 
 	/* Health row */

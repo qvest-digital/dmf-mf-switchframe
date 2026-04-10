@@ -33,7 +33,7 @@
 	import RedundancyPanel from '../components/RedundancyPanel.svelte';
 	import ProgramCompare from '../components/ProgramCompare.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
-	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, checkFragmentToken, SwitchApiError, listMacros, runMacro, dveSlotOn, dveSlotOff, replayQuick, replayPause, replayResume, replayPlay, replayStop, replaySeek, replaySetSpeed, replayMarkIn, replayMarkOut, commsMute, setDualTimestampProvider, setPartialFailureCallback, setPartialFailureNotify, setNonIdempotentFailureCallback, getDebugSnapshot, getPerfData, playoutEngineCacheStatus, setTransitionPosition, updateDVESlot } from '$lib/api/switch-api';
+	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, checkFragmentToken, SwitchApiError, listMacros, runMacro, dveSlotOn, dveSlotOff, replayQuick, replayPause, replayResume, replayPlay, replayStop, replaySeek, replaySetSpeed, replayMarkIn, replayMarkOut, commsMute, setDualTimestampProvider, setPartialFailureCallback, setPartialFailureNotify, setNonIdempotentFailureCallback, getDebugSnapshot, getPerfData, playoutEngineCacheStatus, setTransitionPosition, updateDVESlot, scte35Return, podFire, playoutNext, playoutTakeManual } from '$lib/api/switch-api';
 	import { setEngineUrls, getEngineUrls, setExpectDualEngine, setOnNewEngineDiscovered, setAuthoritativeEngineProvider, setEmergencyEngineBUrl } from '$lib/api/base-url';
 	import { fetchServerInfo } from '$lib/prism/transport-utils';
 	import * as operatorState from '$lib/state/operator.svelte';
@@ -1642,6 +1642,26 @@
 				} else if (gfxLayers.length > 0) {
 					apiCall(graphicsOn(gfxLayers[0].id), 'Bug toggle failed');
 				}
+			}}
+			onFirePod={() => {
+				const channel = store.effectiveState.playout?.channels?.[0];
+				const pods = channel?.pods ?? [];
+				const armedPod = pods.find((p) => p.state === 'armed');
+				if (armedPod) {
+					apiCall(podFire(0, armedPod.id), 'Fire pod failed');
+				}
+			}}
+			onReturnToLive={() => {
+				apiCall(scte35Return(), 'Return to live failed');
+			}}
+			onHold={() => {
+				apiCall(playoutTakeManual(0), 'Hold failed');
+			}}
+			onSkip={() => {
+				apiCall(playoutNext(0), 'Skip failed');
+			}}
+			onTakeNext={() => {
+				apiCall(playoutNext(0), 'Take next failed');
 			}}
 		/>
 	{:else}

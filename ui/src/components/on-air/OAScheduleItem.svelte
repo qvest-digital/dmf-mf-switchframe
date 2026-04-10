@@ -160,7 +160,7 @@
 		font-family: var(--font-ui);
 		font-size: 13px;
 		font-weight: 500;
-		color: var(--text-primary, #e4e4e7);
+		color: var(--text-primary);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
@@ -194,27 +194,28 @@
 	}
 
 	.badge-on-air {
-		background: rgba(220, 38, 38, 0.15);
-		color: #dc2626;
-		border: 1px solid rgba(220, 38, 38, 0.3);
+		background: var(--tally-program-dim);
+		color: var(--tally-program);
+		border: 1px solid var(--tally-program-medium);
 	}
 
 	.badge-armed {
-		background: rgba(234, 179, 8, 0.15);
-		color: #eab308;
+		background: var(--accent-yellow-dim);
+		color: var(--accent-yellow);
 		border: 1px solid rgba(234, 179, 8, 0.3);
 	}
 
 	.badge-ready {
 		background: rgba(255, 255, 255, 0.05);
-		color: #85858f;
-		border: 1px solid transparent;
+		color: var(--text-secondary);
+		border: 1px solid var(--border-default);
 	}
 
 	.badge-done {
 		background: transparent;
-		color: #55555c;
+		color: var(--text-secondary);
 		border: 1px solid transparent;
+		opacity: 0.6;
 	}
 
 	.progress-bar {

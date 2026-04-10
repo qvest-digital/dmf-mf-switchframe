@@ -1,6 +1,4 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
-
 	interface Props {
 		programSource: string;
 		bugActive: boolean;
@@ -39,7 +37,6 @@
 
 	// ── Wall clock ──
 	let clockText = $state('');
-	let clockInterval: ReturnType<typeof setInterval> | undefined;
 
 	function formatClock(): string {
 		const now = new Date();
@@ -52,15 +49,10 @@
 		return `${h}:${m}:${s} ${tz}`;
 	}
 
-	onMount(() => {
+	$effect(() => {
 		clockText = formatClock();
-		clockInterval = setInterval(() => {
-			clockText = formatClock();
-		}, 1000);
-	});
-
-	onDestroy(() => {
-		if (clockInterval) clearInterval(clockInterval);
+		const id = setInterval(() => { clockText = formatClock(); }, 1000);
+		return () => clearInterval(id);
 	});
 
 	// ── Formatting helpers ──
@@ -234,11 +226,11 @@
 	}
 
 	.dot-healthy {
-		background: #22c55e;
+		background: var(--accent-green);
 	}
 
 	.dot-offline {
-		background: #ef4444;
+		background: var(--color-error);
 	}
 
 	/* ── Sync badge ── */
@@ -347,14 +339,14 @@
 		font-family: var(--font-mono);
 		font-size: 13px;
 		font-weight: 700;
-		color: #22c55e;
+		color: var(--accent-green);
 	}
 
 	.bug-off {
 		font-family: var(--font-mono);
 		font-size: 13px;
 		font-weight: 700;
-		color: #85858f;
+		color: var(--text-secondary);
 	}
 
 	/* ── Timing ── */
@@ -385,15 +377,15 @@
 	}
 
 	.scte-content .scte-value {
-		color: #22c55e;
+		color: var(--accent-green);
 	}
 
 	.scte-in_break .scte-value {
-		color: #DC2626;
+		color: var(--tally-program);
 	}
 
 	.scte-idle .scte-value {
-		color: #85858f;
+		color: var(--text-secondary);
 	}
 
 	/* ── Mode button ── */

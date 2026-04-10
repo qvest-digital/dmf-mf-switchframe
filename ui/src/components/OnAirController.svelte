@@ -22,6 +22,9 @@
 		onBugToggle?: () => void;
 		onFirePod?: () => void;
 		onReturnToLive?: () => void;
+		onHold?: () => void;
+		onSkip?: () => void;
+		onTakeNext?: () => void;
 	}
 
 	let {
@@ -36,6 +39,9 @@
 		onBugToggle,
 		onFirePod,
 		onReturnToLive,
+		onHold,
+		onSkip,
+		onTakeNext,
 	}: Props = $props();
 
 	let previewCanvas: HTMLCanvasElement;
@@ -82,6 +88,8 @@
 	const scteState = $derived.by((): 'content' | 'in_break' | 'idle' => {
 		const active = crState.scte35?.activeEvents ?? {};
 		if (Object.keys(active).length > 0) return 'in_break';
+		// If SCTE-35 is not enabled, show idle
+		if (!crState.scte35?.enabled) return 'idle';
 		return 'content';
 	});
 
@@ -132,6 +140,36 @@
 				e.preventDefault();
 				onBugToggle?.();
 				break;
+			case 'KeyH':
+				if (hasPlaylist) {
+					e.preventDefault();
+					onHold?.();
+				}
+				break;
+			case 'KeyS':
+				if (hasPlaylist) {
+					e.preventDefault();
+					onSkip?.();
+				}
+				break;
+			case 'KeyN':
+				if (hasPlaylist) {
+					e.preventDefault();
+					onTakeNext?.();
+				}
+				break;
+			case 'Digit1': case 'Digit2': case 'Digit3': case 'Digit4':
+			case 'Digit5': case 'Digit6': case 'Digit7': case 'Digit8': case 'Digit9': {
+				if (!hasPlaylist) {
+					e.preventDefault();
+					const index = parseInt(e.code.replace('Digit', '')) - 1;
+					const sourceKeys = Object.keys(crState.sources ?? {});
+					if (index < sourceKeys.length) {
+						onCut?.(sourceKeys[index]);
+					}
+				}
+				break;
+			}
 			case 'Escape':
 				audioSlideOut = false;
 				ioSlideOut = false;
@@ -200,6 +238,9 @@
 				{onBugToggle}
 				{onFirePod}
 				{onReturnToLive}
+				{onHold}
+				{onSkip}
+				{onTakeNext}
 				onCut={() => onCut?.(crState.previewSource)}
 				onAuto={() => onAuto?.(crState.previewSource)}
 				onAudioToggle={() => { audioSlideOut = !audioSlideOut; }}

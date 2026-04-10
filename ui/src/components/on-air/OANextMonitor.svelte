@@ -19,9 +19,7 @@
 </script>
 
 <div class="oa-next-monitor">
-	<div class="next-thumbnail">
-		<span class="next-thumb-label">NEXT</span>
-	</div>
+	<div class="next-thumbnail"></div>
 
 	<div class="next-info">
 		<span class="next-label">NEXT</span>
@@ -54,15 +52,6 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-	}
-
-	.next-thumb-label {
-		font-family: var(--font-mono);
-		font-size: 10px;
-		font-weight: 500;
-		color: var(--text-secondary);
-		letter-spacing: 0.08em;
-		opacity: 0.5;
 	}
 
 	/* ── Info block ── */
