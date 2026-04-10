@@ -123,6 +123,12 @@ func buildSnapshotResponse(raw map[string]any) pipelineSnapshotResponse {
 					node.Name = v
 					node.Category = nodeCategory(v)
 				}
+				if v, ok := n["bypassed"].(bool); ok {
+					node.Bypassed = v
+					if v {
+						resp.BypassCount++
+					}
+				}
 				if v, ok := n["last_ns"].(int64); ok {
 					node.LastNs = v
 				}

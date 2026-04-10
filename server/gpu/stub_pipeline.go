@@ -43,6 +43,12 @@ func (p *GPUPipeline) RunWithUpload(yuv []byte, width, height int, pts int64) (*
 // Snapshot returns empty stats on non-GPU builds.
 func (p *GPUPipeline) Snapshot() map[string]any { return map[string]any{"gpu": false} }
 
+// SetBypass returns ErrGPUNotAvailable on non-GPU builds.
+func (p *GPUPipeline) SetBypass(nodeName string, bypass bool) error { return ErrGPUNotAvailable }
+
+// BypassState returns empty state on non-GPU builds.
+func (p *GPUPipeline) BypassState() map[string]bool { return nil }
+
 // Wait is a no-op on non-GPU builds.
 func (p *GPUPipeline) Wait() {}
 

@@ -779,6 +779,11 @@ func (r *gpuPipelineRunnerImpl) ClearWipeMap() {
 	r.wipeConfig = nil
 }
 
+// SetBypass delegates to the underlying GPU pipeline's bypass support.
+func (r *gpuPipelineRunnerImpl) SetBypass(nodeName string, bypass bool) error {
+	return r.pipeline.SetBypass(nodeName, bypass)
+}
+
 // previewRelayDebugProvider exposes program-preview relay viewer stats
 // and GPU preview encode counters in the debug snapshot.
 type previewRelayDebugProvider struct {

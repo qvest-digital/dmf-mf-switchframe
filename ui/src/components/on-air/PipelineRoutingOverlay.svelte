@@ -71,14 +71,35 @@
 		return nodes.filter(n => categoryToColumn[n.category] === col);
 	}
 
-	// ── Node dimensions ──
+	// ── Dynamic node dimensions based on viewport ──
 
-	const NODE_W = 180;
-	const NODE_H = 130;
-	const ROW_GAP = 20;
+	let viewportHeight = $state(typeof window !== 'undefined' ? window.innerHeight : 800);
+
+	$effect(() => {
+		if (!visible) return;
+		function onResize() {
+			viewportHeight = window.innerHeight;
+		}
+		window.addEventListener('resize', onResize);
+		return () => window.removeEventListener('resize', onResize);
+	});
+
+	const maxNodesInColumn = $derived.by(() => {
+		let max = 1;
+		for (const col of COLUMNS) {
+			const count = nodesInColumn(col).length;
+			if (count > max) max = count;
+		}
+		return max;
+	});
+
+	// Scale node dimensions to fit viewport. Reserve 100px for header+footer.
+	const NODE_H = $derived(Math.max(60, Math.min(130, (viewportHeight - 100) / maxNodesInColumn - 8)));
+	const NODE_W = $derived(Math.min(180, NODE_H * 1.4));
+	const ROW_GAP = $derived(Math.min(8, Math.max(4, (viewportHeight - 100 - maxNodesInColumn * NODE_H) / (maxNodesInColumn + 1))));
 
 	function nodeY(col: Column, index: number): number {
-		return 60 + index * (NODE_H + ROW_GAP);
+		return 50 + index * (NODE_H + ROW_GAP);
 	}
 
 	function nodeX(col: Column): number {
@@ -194,14 +215,7 @@
 
 	const svgWidth = 1140;
 
-	const svgHeight = $derived.by(() => {
-		let maxRows = 0;
-		for (const col of COLUMNS) {
-			const count = nodesInColumn(col).length;
-			if (count > maxRows) maxRows = count;
-		}
-		return 60 + maxRows * (NODE_H + ROW_GAP) + 40;
-	});
+	const svgHeight = $derived(50 + maxNodesInColumn * (NODE_H + ROW_GAP) + 20);
 
 	// ── Format latency ──
 
@@ -283,8 +297,7 @@
 			<svg
 				class="routing-svg"
 				viewBox="0 0 {svgWidth} {svgHeight}"
-				width={svgWidth}
-				height={svgHeight}
+				preserveAspectRatio="xMidYMid meet"
 				role="img"
 				aria-label="Pipeline routing graph"
 			>
@@ -328,6 +341,8 @@
 							health={node.health}
 							bypassed={node.bypassed}
 							isProgram={node.active && !node.bypassed}
+							nodeWidth={NODE_W}
+							nodeHeight={NODE_H}
 							onBypassToggle={() => toggleBypass(node.name)}
 							onclick={(e?: MouseEvent) => handleNodeClick(node, e)}
 						/>
@@ -454,7 +469,10 @@
 	/* ── Graph area ── */
 	.routing-graph-area {
 		flex: 1;
-		overflow: auto;
+		overflow: hidden;
+		display: flex;
+		align-items: center;
+		justify-content: center;
 		background:
 			radial-gradient(circle, rgba(26, 26, 36, 0.8) 1px, transparent 1px);
 		background-size: 20px 20px;
@@ -462,7 +480,8 @@
 
 	.routing-svg {
 		display: block;
-		margin: 0 auto;
+		width: 100%;
+		height: 100%;
 	}
 
 	/* ── Column headers ── */

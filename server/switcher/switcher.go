@@ -3435,13 +3435,39 @@ func (s *Switcher) PipelineSnapshot() map[string]any {
 }
 
 // SetPipelineBypass toggles the bypass flag for the named pipeline node.
-// Returns an error if the node is protected or unknown.
+// When the GPU pipeline is active, bypass is set there (GPU nodes have names
+// like gpu_key, gpu_layout, etc). Falls back to the CPU pipeline for CPU node
+// names. Returns an error if the node is protected or unknown in both pipelines.
 func (s *Switcher) SetPipelineBypass(name string, bypass bool) error {
+	// Try GPU pipeline first (active when gpu runner is set).
+	if h := s.gpuRunner.Load(); h != nil {
+		if gp, ok := h.runner.(interface {
+			SetBypass(string, bool) error
+		}); ok {
+			err := gp.SetBypass(name, bypass)
+			if err == nil {
+				return nil
+			}
+			// If node not found in GPU pipeline, fall through to CPU pipeline.
+			// Protected node errors should propagate immediately.
+			if !isNodeNotFoundError(err) {
+				return err
+			}
+		}
+	}
+
+	// CPU pipeline fallback.
 	p := s.pipeline.Load()
 	if p == nil {
 		return fmt.Errorf("no pipeline loaded")
 	}
 	return p.SetBypass(name, bypass)
+}
+
+// isNodeNotFoundError checks if the error indicates a node was not found
+// (vs. a protected node error which should be returned immediately).
+func isNodeNotFoundError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "not found")
 }
 
 // buildStateLocked constructs a ControlRoomState snapshot. Caller must hold

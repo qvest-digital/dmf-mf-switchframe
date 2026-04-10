@@ -334,10 +334,10 @@ func TestBuildSnapshotResponse_GPUPipeline(t *testing.T) {
 			"backend":          "metal",
 			"total_latency_us": int64(500),
 			"active_nodes": []map[string]any{
-				{"name": "gpu_key", "last_ns": int64(80000), "max_ns": int64(150000), "latency_us": int64(80)},
-				{"name": "gpu_layout", "last_ns": int64(95000), "max_ns": int64(180000), "latency_us": int64(95)},
-				{"name": "gpu_dsk", "last_ns": int64(60000), "max_ns": int64(120000), "latency_us": int64(60)},
-				{"name": "gpu_encode", "last_ns": int64(200000), "max_ns": int64(500000), "latency_us": int64(200)},
+				{"name": "gpu_key", "last_ns": int64(80000), "max_ns": int64(150000), "latency_us": int64(80), "bypassed": true},
+				{"name": "gpu_layout", "last_ns": int64(95000), "max_ns": int64(180000), "latency_us": int64(95), "bypassed": false},
+				{"name": "gpu_dsk", "last_ns": int64(60000), "max_ns": int64(120000), "latency_us": int64(60), "bypassed": false},
+				{"name": "gpu_encode", "last_ns": int64(200000), "max_ns": int64(500000), "latency_us": int64(200), "bypassed": false},
 			},
 		},
 		// CPU pipeline also present but should be ignored when GPU is active.
@@ -399,6 +399,11 @@ func TestBuildSnapshotResponse_GPUPipeline(t *testing.T) {
 	// GPU total latency should be used (not CPU).
 	if resp.TotalLatencyUs != 500 {
 		t.Errorf("expected total latency 500, got %d", resp.TotalLatencyUs)
+	}
+
+	// Bypass count should reflect GPU pipeline bypass state (gpu_key is bypassed).
+	if resp.BypassCount != 1 {
+		t.Errorf("expected bypassCount 1 (gpu_key bypassed), got %d", resp.BypassCount)
 	}
 
 	// Connections should exist: 4 sources → gpu_key, plus 3 node-to-node, plus 1 to output.

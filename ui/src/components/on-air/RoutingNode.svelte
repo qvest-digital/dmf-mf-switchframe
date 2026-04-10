@@ -10,6 +10,8 @@
 		health: 'healthy' | 'degraded' | 'error';
 		bypassed: boolean;
 		isProgram: boolean;
+		nodeWidth?: number;
+		nodeHeight?: number;
 		onBypassToggle: () => void;
 		onclick: () => void;
 	}
@@ -25,14 +27,16 @@
 		health,
 		bypassed,
 		isProgram,
+		nodeWidth = 180,
+		nodeHeight = 130,
 		onBypassToggle,
 		onclick,
 	}: Props = $props();
 
-	const NODE_W = 180;
-	const NODE_H = 130;
-	const THUMB_W = 160;
-	const THUMB_H = 90;
+	const NODE_W = $derived(nodeWidth);
+	const NODE_H = $derived(nodeHeight);
+	const THUMB_W = $derived(NODE_W - 20);
+	const THUMB_H = $derived(NODE_H - 40);
 
 	function healthColor(h: Props['health']): string {
 		switch (h) {
@@ -89,6 +93,14 @@
 			ry="3"
 			class="node-thumb"
 		/>
+		<text
+			x={x + 10 + THUMB_W / 2}
+			y={y + 5 + THUMB_H / 2 + 3}
+			text-anchor="middle"
+			class="node-no-preview"
+		>
+			No preview
+		</text>
 	{/if}
 
 	<!-- Bypass overlay when bypassed -->
@@ -115,7 +127,7 @@
 	<!-- Node name -->
 	<text
 		x={x + 10}
-		y={y + 105}
+		y={y + NODE_H - 15}
 		class="node-name"
 	>
 		{label}
@@ -123,8 +135,8 @@
 
 	<!-- Latency -->
 	<text
-		x={x + 130}
-		y={y + 105}
+		x={x + NODE_W - 30}
+		y={y + NODE_H - 15}
 		text-anchor="end"
 		class="node-latency"
 	>
@@ -133,8 +145,8 @@
 
 	<!-- Health dot -->
 	<circle
-		cx={x + 170}
-		cy={y + 107}
+		cx={x + NODE_W - 10}
+		cy={y + NODE_H - 13}
 		r="3"
 		fill={healthColor(health)}
 		class="node-health-dot"
@@ -143,7 +155,7 @@
 	<!-- Bypass toggle -->
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<rect
-		x={x + 160}
+		x={x + NODE_W - 20}
 		y={y + 5}
 		width="15"
 		height="15"
@@ -156,7 +168,7 @@
 		onclick={(e: MouseEvent) => { e.stopPropagation(); onBypassToggle(); }}
 	/>
 	<text
-		x={x + 167.5}
+		x={x + NODE_W - 12.5}
 		y={y + 15}
 		text-anchor="middle"
 		class="bypass-toggle-icon"
@@ -190,6 +202,14 @@
 
 	.node-thumb {
 		fill: var(--bg-canvas, #111118);
+	}
+
+	.node-no-preview {
+		font-family: var(--font-ui, -apple-system, sans-serif);
+		font-size: 9px;
+		font-weight: 500;
+		fill: var(--text-secondary, #6b7280);
+		pointer-events: none;
 	}
 
 	.node-thumb-image {
