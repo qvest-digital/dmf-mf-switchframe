@@ -11,6 +11,7 @@
 	import ConnectionBanner from '../components/ConnectionBanner.svelte';
 	import ProgramHealthBanner from '../components/ProgramHealthBanner.svelte';
 	import SimpleMode from '../components/SimpleMode.svelte';
+	import OnAirController from '../components/OnAirController.svelte';
 	import ErrorBoundary from '../components/ErrorBoundary.svelte';
 	import Toast from '../components/Toast.svelte';
 	import StatsPanel from '../components/StatsPanel.svelte';
@@ -491,7 +492,9 @@
 		pipelineManager.onLayoutChange();
 		programCanvas = null;
 		previewCanvas = null;
-		layoutMode = layoutMode === 'traditional' ? 'simple' : 'traditional';
+		if (layoutMode === 'traditional') layoutMode = 'simple';
+		else if (layoutMode === 'simple') layoutMode = 'on-air';
+		else layoutMode = 'traditional';
 		setLayoutMode(layoutMode);
 	}
 	let transitionType: 'mix' | 'dip' = 'mix';
@@ -1611,6 +1614,14 @@
 					apiCall(startTransition(store.state.previewSource, 'mix', 1000), 'Dissolve failed');
 				}
 			}}
+		/>
+	{:else if layoutMode === 'on-air'}
+		<OnAirController
+			crState={store.effectiveState}
+			{onCanvasReady}
+			onSwitchLayout={switchLayout}
+			{isDualEngine}
+			syncStatus={syncHealth?.status ?? 'disconnected'}
 		/>
 	{:else}
 		<div class="control-room">
