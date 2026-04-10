@@ -112,7 +112,7 @@
 		min-height: 100vh;
 		background: var(--bg-base, #09090b);
 		color: var(--text-primary, #e4e4e8);
-		font-family: var(--font-ui, 'Sora', system-ui, sans-serif);
+		font-family: var(--font-ui, 'Inter', system-ui, sans-serif);
 	}
 
 	.joining {
