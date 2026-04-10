@@ -139,6 +139,9 @@ type AppConfig struct {
 
 	// Reference clock: single clock source drives synchronous A/V processing.
 	RefClock bool // --ref-clock (experimental)
+
+	// Cache warming (AMI build).
+	WarmCache bool // --warm-cache (generate caches and exit)
 }
 
 func main() {
@@ -165,6 +168,11 @@ func run() error {
 	if cfg.Demo {
 		cfg.PlayoutEnabled = true
 		cfg.SCTE35 = true
+	}
+
+	// --warm-cache: pre-generate caches and exit (used during AMI build).
+	if cfg.WarmCache {
+		return warmCache(cfg)
 	}
 
 	app := &App{cfg: cfg}
@@ -344,6 +352,9 @@ func parseConfig() (AppConfig, error) {
 	// Reference clock (experimental).
 	refClockFlag := flag.Bool("ref-clock", false, "Use reference clock for synchronous A/V processing (experimental)")
 
+	// Cache warming (for AMI build).
+	warmCacheFlag := flag.Bool("warm-cache", false, "Pre-generate caches (ST map LUTs) for all resolutions and exit")
+
 	flag.Parse()
 
 	// Parse SRT output port range if provided.
@@ -508,6 +519,7 @@ func parseConfig() (AppConfig, error) {
 		ST2110NMOSPort:       *st2110NMOSPortFlag,
 		PeerEngineURL:        resolveEnvOrFlag(*peerEngineURLFlag, "SWITCHFRAME_PEER_ENGINE_URL"),
 		RefClock:             *refClockFlag,
+		WarmCache:            *warmCacheFlag,
 	}, nil
 }
 
