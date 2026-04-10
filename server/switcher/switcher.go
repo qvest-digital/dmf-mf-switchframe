@@ -296,7 +296,8 @@ type Switcher struct {
 	// Thumbnail cache — pipeline routing view JPEG thumbnails.
 	// Created in New(), passed to each sourceDecoder and tapped in
 	// videoProcessingLoop for program output capture.
-	thumbnailCache *ThumbnailCache
+	thumbnailCache         *ThumbnailCache
+	lastProgramThumbTime   time.Time
 
 	// Wipe map store — resolves gradient maps for gradient-map-based wipe transitions.
 	wipeMapStore *wipemap.WipeMapStore
@@ -1931,7 +1932,8 @@ func (s *Switcher) videoProcessingLoop() {
 		// Only 8-bit YUV420 is supported by ScaleAndEncodeJPEG.
 		if s.thumbnailCache != nil && s.thumbnailCache.ShouldCapture() &&
 			work.yuvFrame != nil && work.yuvFrame.Format == ColorYUV420_8bit &&
-			len(work.yuvFrame.Data) > 0 {
+			len(work.yuvFrame.Data) > 0 && time.Since(s.lastProgramThumbTime) >= time.Second {
+			s.lastProgramThumbTime = time.Now()
 			yuvCopy := make([]byte, len(work.yuvFrame.Data))
 			copy(yuvCopy, work.yuvFrame.Data)
 			fw, fh := work.yuvFrame.Width, work.yuvFrame.Height
@@ -1942,7 +1944,9 @@ func (s *Switcher) videoProcessingLoop() {
 					tc.Store("program_output", jpegData, thumbnailWidth, thumbnailHeight)
 				}
 			}()
-			tc.ClearRequest()
+			// Don't call ClearRequest() here — let each source decoder
+			// capture independently on their own goroutines. The 5s idle
+			// timeout in ShouldCapture() auto-disables when no one polls.
 		}
 
 		work.yuvFrame.ReleaseYUV()

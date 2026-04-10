@@ -65,7 +65,8 @@ type sourceDecoder struct {
 	// Thumbnail cache — when set, decoded frames are captured as JPEG
 	// thumbnails (on a background goroutine) when ShouldCapture() is true.
 	// Nil-safe: no capture when nil.
-	thumbnailCache *ThumbnailCache
+	thumbnailCache    *ThumbnailCache
+	lastThumbnailTime time.Time // per-source rate limiter (1 capture/sec)
 
 	// Frame stats (EMA of H.264 frame size/FPS for encoder params).
 	// Written by Send() (relay goroutine), read by Stats() (decoder goroutine
@@ -426,7 +427,9 @@ func (sd *sourceDecoder) decodeLoop() {
 		// Only captures when a client is actively polling (ShouldCapture).
 		// Only 8-bit YUV420 is supported by ScaleAndEncodeJPEG; 10-bit
 		// frames are skipped (they go through the pipeline for program output).
-		if sd.thumbnailCache != nil && sd.thumbnailCache.ShouldCapture() && outputFormat == ColorYUV420_8bit {
+		if sd.thumbnailCache != nil && sd.thumbnailCache.ShouldCapture() && outputFormat == ColorYUV420_8bit &&
+			time.Since(sd.lastThumbnailTime) >= time.Second {
+			sd.lastThumbnailTime = time.Now()
 			yuvCopy := make([]byte, yuvSize)
 			copy(yuvCopy, buf[:yuvSize])
 			thumbW, thumbH := w, h
