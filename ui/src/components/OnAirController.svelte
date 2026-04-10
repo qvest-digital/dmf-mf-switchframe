@@ -74,8 +74,12 @@
 
 	// ── Derived state ──
 
+	const playoutChannelState = $derived(
+		crState.playout?.channels?.find(c => c.id === 1) ?? crState.playout?.channels?.[0]
+	);
+
 	const hasPlaylist = $derived(
-		(crState.playout?.channels?.[0]?.itemCount ?? 0) > 0
+		(playoutChannelState?.itemCount ?? 0) > 0
 	);
 
 	const programSourceLabel = $derived(
@@ -101,7 +105,7 @@
 		return Math.max(0, first.remainingMs / 1000);
 	});
 
-	const playoutChannel = $derived(crState.playout?.channels?.[0]);
+	const playoutChannel = $derived(playoutChannelState);
 
 	const captionMode = $derived(
 		(crState.captions?.mode ?? 'off') as 'off' | 'passthrough' | 'author'
@@ -123,8 +127,9 @@
 
 	$effect(() => {
 		const ch = playoutChannel;
+		const channelId = ch?.id ?? 1;
 		const count = ch?.itemCount ?? 0;
-		const fetchKey = `0:${count}`;
+		const fetchKey = `${channelId}:${count}`;
 		if (fetchKey === lastFetchKey) return;
 		lastFetchKey = fetchKey;
 		activeFetchKey = fetchKey;
@@ -133,7 +138,7 @@
 			return;
 		}
 		const myFetchKey = fetchKey;
-		playoutPlaylist(0).then(items => {
+		playoutPlaylist(channelId).then(items => {
 			if (activeFetchKey === myFetchKey) {
 				playlistItems = items;
 			}
@@ -242,11 +247,22 @@
 		<section class="oa-content-column">
 			<div class="oa-content-area">
 				{#if hasPlaylist && playoutChannel}
+					<!-- Sources strip at top (compact) -->
+					<OASourceGrid
+						sources={crState.sources ?? {}}
+						tallyState={crState.tallyState ?? {}}
+						{isDualEngine}
+						onSourceClick={(key) => onCut?.(key)}
+						onOpenIO={() => { ioSlideOut = true; }}
+						compact={true}
+					/>
+					<!-- Schedule below -->
 					<OASchedulePanel
 						playoutChannel={playoutChannel}
 						items={playlistItems}
 					/>
 				{:else}
+					<!-- Full source grid -->
 					<OASourceGrid
 						sources={crState.sources ?? {}}
 						tallyState={crState.tallyState ?? {}}

@@ -27,29 +27,31 @@
 </script>
 
 <div class="oa-program-wrap">
-	<canvas
-		bind:this={canvasEl}
-		class="oa-program-canvas"
-		width="1920"
-		height="1080"
-	></canvas>
+	<div class="oa-canvas-container">
+		<canvas
+			bind:this={canvasEl}
+			class="oa-program-canvas"
+			width="1920"
+			height="1080"
+		></canvas>
 
-	<div class="source-label">{programSource}</div>
+		<div class="source-label">{programSource}</div>
 
-	{#if isDualEngine}
-		<div class="engine-toggle">
-			<button
-				class="engine-btn"
-				class:active={activeEngine === 'A'}
-				onclick={() => onEngineToggle?.('A')}
-			>{authoritativeEngine === 'A' ? '\u2605 ' : ''}A</button>
-			<button
-				class="engine-btn"
-				class:active={activeEngine === 'B'}
-				onclick={() => onEngineToggle?.('B')}
-			>{authoritativeEngine === 'B' ? '\u2605 ' : ''}B</button>
-		</div>
-	{/if}
+		{#if isDualEngine}
+			<div class="engine-toggle">
+				<button
+					class="engine-btn"
+					class:active={activeEngine === 'A'}
+					onclick={() => onEngineToggle?.('A')}
+				>{authoritativeEngine === 'A' ? '\u2605 ' : ''}A</button>
+				<button
+					class="engine-btn"
+					class:active={activeEngine === 'B'}
+					onclick={() => onEngineToggle?.('B')}
+				>{authoritativeEngine === 'B' ? '\u2605 ' : ''}B</button>
+			</div>
+		{/if}
+	</div>
 </div>
 
 <style>
@@ -61,12 +63,20 @@
 		justify-content: center;
 		background: var(--bg-canvas);
 		overflow: hidden;
+		min-height: 0;
+	}
+
+	.oa-canvas-container {
+		position: relative;
+		width: 100%;
+		max-height: 100%;
+		aspect-ratio: 16 / 9;
 	}
 
 	.oa-program-canvas {
 		width: 100%;
 		height: 100%;
-		object-fit: contain;
+		display: block;
 		border: 2px solid var(--tally-program);
 		box-shadow: var(--tally-program-glow);
 	}

@@ -149,6 +149,8 @@
 				<span class="bug-off">OFF</span>
 			{/if}
 		</button>
+
+		<button class="mode-btn" onclick={onModeMenu} title="Switch layout mode">MODE</button>
 	</div>
 
 	<!-- Row 2 -->
@@ -171,10 +173,6 @@
 			<span class="label">SCTE:</span>
 			<span class="scte-value">{scteLabel}</span>
 		</span>
-
-		<button class="mode-btn" onclick={onModeMenu} title="Switch mode">
-			&#8942;
-		</button>
 	</div>
 </header>
 
@@ -391,22 +389,24 @@
 	/* ── Mode button ── */
 	.mode-btn {
 		margin-left: auto;
-		background: none;
+		padding: 4px 10px;
 		border: 1px solid var(--border-default);
-		color: var(--text-secondary);
-		font-size: 16px;
-		cursor: pointer;
-		padding: 2px 8px;
 		border-radius: var(--radius-sm);
-		line-height: 1;
-		transition:
-			color var(--transition-fast),
-			border-color var(--transition-fast);
+		background: var(--bg-elevated);
+		color: var(--text-secondary);
+		cursor: pointer;
+		font-family: var(--font-ui);
+		font-weight: 600;
+		font-size: var(--text-sm);
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		transition: border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
 	}
 
 	.mode-btn:hover {
-		color: var(--text-primary);
 		border-color: var(--border-strong);
+		color: var(--text-primary);
+		background: var(--bg-hover);
 	}
 
 	/* ── Spacer ── */

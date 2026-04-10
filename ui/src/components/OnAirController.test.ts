@@ -75,7 +75,7 @@ describe('OnAirController', () => {
 				crState: makeState({
 					playout: {
 						channels: [{
-							id: 0,
+							id: 1,
 							state: 'on_air',
 							itemIndex: 0,
 							itemCount: 5,
@@ -87,6 +87,30 @@ describe('OnAirController', () => {
 			},
 		});
 		expect(screen.getByText('PLAYOUT SCHEDULE')).toBeTruthy();
+	});
+
+	it('shows both compact sources and schedule when playlist loaded', () => {
+		const { container } = render(OnAirController, {
+			props: {
+				crState: makeState({
+					playout: {
+						channels: [{
+							id: 1,
+							state: 'on_air',
+							itemIndex: 0,
+							itemCount: 5,
+						}],
+					},
+				}),
+				onCanvasReady: vi.fn(),
+				onSwitchLayout: vi.fn(),
+			},
+		});
+		// Both the compact source strip and schedule panel should be visible
+		expect(screen.getByText('PLAYOUT SCHEDULE')).toBeTruthy();
+		expect(container.querySelector('.compact')).toBeTruthy();
+		// Source tiles should still be rendered (may appear in multiple places)
+		expect(screen.getAllByText('Camera 1').length).toBeGreaterThanOrEqual(1);
 	});
 
 	it('shows CUT and AUTO buttons in live-monitor mode', () => {
@@ -107,7 +131,7 @@ describe('OnAirController', () => {
 				crState: makeState({
 					playout: {
 						channels: [{
-							id: 0,
+							id: 1,
 							state: 'on_air',
 							itemIndex: 0,
 							itemCount: 3,
@@ -338,7 +362,7 @@ describe('OnAirController', () => {
 				crState: makeState({
 					playout: {
 						channels: [{
-							id: 0,
+							id: 1,
 							state: 'on_air',
 							itemIndex: 0,
 							itemCount: 3,
@@ -375,7 +399,7 @@ describe('OnAirController', () => {
 				crState: makeState({
 					playout: {
 						channels: [{
-							id: 0,
+							id: 1,
 							state: 'on_air',
 							itemIndex: 0,
 							itemCount: 3,
@@ -412,7 +436,7 @@ describe('OnAirController', () => {
 				crState: makeState({
 					playout: {
 						channels: [{
-							id: 0,
+							id: 1,
 							state: 'on_air',
 							itemIndex: 0,
 							itemCount: 3,
@@ -477,7 +501,7 @@ describe('OnAirController', () => {
 				crState: makeState({
 					playout: {
 						channels: [{
-							id: 0,
+							id: 1,
 							state: 'on_air',
 							itemIndex: 0,
 							itemCount: 3,

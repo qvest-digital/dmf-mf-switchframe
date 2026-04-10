@@ -10,6 +10,7 @@
 		isDualEngine?: boolean;
 		engineAHealth?: SourceHealthStatus;
 		engineBHealth?: SourceHealthStatus;
+		compact?: boolean;
 		onClick: () => void;
 	}
 
@@ -21,6 +22,7 @@
 		isDualEngine = false,
 		engineAHealth,
 		engineBHealth,
+		compact = false,
 		onClick,
 	}: Props = $props();
 
@@ -41,6 +43,7 @@
 	class="oa-source-tile"
 	class:program={tallyState === 'program'}
 	class:preview={tallyState === 'preview'}
+	class:compact
 	onclick={onClick}
 	data-source-key={sourceKey}
 >
@@ -59,28 +62,34 @@
 		{/if}
 	</div>
 
-	<!-- Health indicators -->
-	<div class="health-row">
-		{#if isDualEngine && engineAHealth != null && engineBHealth != null}
-			<div class="engine-health" data-testid="engine-health-dual">
-				<span class="engine-line">
-					<span class="engine-id">A:</span>
-					<span class="health-dot" style="background: {engineAColor}" aria-label="Engine A {engineAHealth}"></span>
-					<span class="health-text">{engineAHealth}</span>
+	<!-- Health indicators (hidden in compact mode) -->
+	{#if !compact}
+		<div class="health-row">
+			{#if isDualEngine && engineAHealth != null && engineBHealth != null}
+				<div class="engine-health" data-testid="engine-health-dual">
+					<span class="engine-line">
+						<span class="engine-id">A:</span>
+						<span class="health-dot" style="background: {engineAColor}" aria-label="Engine A {engineAHealth}"></span>
+						<span class="health-text">{engineAHealth}</span>
+					</span>
+					<span class="engine-line">
+						<span class="engine-id">B:</span>
+						<span class="health-dot" style="background: {engineBColor}" aria-label="Engine B {engineBHealth}"></span>
+						<span class="health-text">{engineBHealth}</span>
+					</span>
+				</div>
+			{:else}
+				<span class="single-health" class:warning={isWarning} class:offline={health === 'offline'} data-testid="source-health">
+					<span class="health-dot" style="background: {healthColor}" aria-label="{healthLabel}"></span>
+					<span class="health-text">{healthLabel}</span>
 				</span>
-				<span class="engine-line">
-					<span class="engine-id">B:</span>
-					<span class="health-dot" style="background: {engineBColor}" aria-label="Engine B {engineBHealth}"></span>
-					<span class="health-text">{engineBHealth}</span>
-				</span>
-			</div>
-		{:else}
-			<span class="single-health" class:warning={isWarning} class:offline={health === 'offline'} data-testid="source-health">
-				<span class="health-dot" style="background: {healthColor}" aria-label="{healthLabel}"></span>
-				<span class="health-text">{healthLabel}</span>
-			</span>
-		{/if}
-	</div>
+			{/if}
+		</div>
+	{:else}
+		<div class="health-row compact-health">
+			<span class="health-dot" style="background: {healthColor}" aria-label="{healthLabel}"></span>
+		</div>
+	{/if}
 </button>
 
 <style>
@@ -236,5 +245,33 @@
 
 	.single-health.offline .health-text {
 		color: var(--tally-program);
+	}
+
+	/* ── Compact mode ── */
+	.oa-source-tile.compact {
+		width: 150px;
+		flex-shrink: 0;
+	}
+
+	.oa-source-tile.compact .thumbnail {
+		height: 85px;
+		aspect-ratio: auto;
+	}
+
+	.oa-source-tile.compact .label-row {
+		padding: 3px 6px 1px;
+	}
+
+	.oa-source-tile.compact .source-label {
+		font-size: 10px;
+	}
+
+	.oa-source-tile.compact .tally-badge {
+		font-size: 8px;
+		padding: 0 3px;
+	}
+
+	.compact-health {
+		padding: 1px 6px 3px;
 	}
 </style>

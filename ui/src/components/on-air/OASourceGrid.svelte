@@ -7,6 +7,7 @@
 		sources: Record<string, SourceInfo>;
 		tallyState: Record<string, TallyStatus>;
 		isDualEngine?: boolean;
+		compact?: boolean;
 		onSourceClick: (sourceKey: string) => void;
 		onAddSRT?: () => void;
 		onOpenIO?: () => void;
@@ -16,6 +17,7 @@
 		sources,
 		tallyState,
 		isDualEngine = false,
+		compact = false,
 		onSourceClick,
 		onAddSRT,
 		onOpenIO,
@@ -24,26 +26,28 @@
 	let sortedKeys = $derived(sortedSourceKeys(sources));
 </script>
 
-<div class="oa-source-grid-container">
-	<!-- Header -->
-	<div class="grid-header">
-		<h3 class="grid-title">SOURCES</h3>
-		<div class="grid-actions">
-			{#if onAddSRT}
-				<button class="grid-action-btn" onclick={onAddSRT} title="Add SRT source">
-					+ Add SRT
-				</button>
-			{/if}
-			{#if onOpenIO}
-				<button class="grid-action-btn" onclick={onOpenIO} title="Open I/O panel">
-					I/O
-				</button>
-			{/if}
+<div class="oa-source-grid-container" class:compact>
+	{#if !compact}
+		<!-- Header -->
+		<div class="grid-header">
+			<h3 class="grid-title">SOURCES</h3>
+			<div class="grid-actions">
+				{#if onAddSRT}
+					<button class="grid-action-btn" onclick={onAddSRT} title="Add SRT source">
+						+ Add SRT
+					</button>
+				{/if}
+				{#if onOpenIO}
+					<button class="grid-action-btn" onclick={onOpenIO} title="Open I/O panel">
+						I/O
+					</button>
+				{/if}
+			</div>
 		</div>
-	</div>
+	{/if}
 
-	<!-- Grid -->
-	<div class="source-grid">
+	<!-- Grid / Strip -->
+	<div class={compact ? 'source-strip' : 'source-grid'}>
 		{#each sortedKeys as key (key)}
 			{@const src = sources[key]}
 			<OASourceTile
@@ -52,6 +56,7 @@
 				tallyState={tallyState[key] ?? 'idle'}
 				health={src.status}
 				{isDualEngine}
+				{compact}
 				onClick={() => onSourceClick(key)}
 			/>
 		{/each}
@@ -118,5 +123,21 @@
 		padding: 0 12px 12px;
 		overflow-y: auto;
 		flex: 1;
+	}
+
+	/* ── Compact mode ── */
+	.oa-source-grid-container.compact {
+		height: auto;
+		flex: none;
+		border-bottom: 1px solid var(--border-default);
+		border-top: 1px solid var(--border-default);
+	}
+
+	.source-strip {
+		display: flex;
+		gap: 6px;
+		padding: 8px 12px;
+		overflow-x: auto;
+		overflow-y: hidden;
 	}
 </style>

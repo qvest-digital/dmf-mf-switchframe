@@ -152,7 +152,7 @@ describe('OAStatusBar', () => {
 		render(OAStatusBar, {
 			props: { ...defaultProps(), onModeMenu: modeFn },
 		});
-		const modeBtn = screen.getByTitle('Switch mode');
+		const modeBtn = screen.getByTitle('Switch layout mode');
 		await fireEvent.click(modeBtn);
 		expect(modeFn).toHaveBeenCalledOnce();
 	});
