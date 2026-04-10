@@ -22,6 +22,13 @@
 		active: boolean;
 	}
 
+	interface ThumbnailApiEntry {
+		jpeg?: string;
+		width?: number;
+		height?: number;
+		capturedAtMs?: number;
+	}
+
 	interface Props {
 		visible: boolean;
 		onclose: () => void;
@@ -393,8 +400,9 @@
 				const nodes = data.nodes ?? {};
 				const mapped: Record<string, string> = {};
 				for (const [id, info] of Object.entries(nodes)) {
-					if ((info as any).jpeg) {
-						mapped[id] = `data:image/jpeg;base64,${(info as any).jpeg}`;
+					const entry = info as ThumbnailApiEntry;
+					if (entry.jpeg) {
+						mapped[id] = `data:image/jpeg;base64,${entry.jpeg}`;
 					}
 				}
 				thumbnails = mapped;
@@ -566,7 +574,7 @@
 	.routing-overlay {
 		position: fixed;
 		inset: 0;
-		z-index: 9999;
+		z-index: var(--z-fullscreen);
 		background: var(--bg-base, #0f0f13);
 		display: flex;
 		flex-direction: column;

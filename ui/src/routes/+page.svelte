@@ -1671,7 +1671,7 @@
 			onFirePod={() => {
 				const channel = store.effectiveState.playout?.channels?.[0];
 				const pods = channel?.pods ?? [];
-				const armedPod = pods.find((p: any) => p.armed);
+				const armedPod = pods.find((p) => p.armed);
 				if (armedPod) {
 					apiCall(podFire(1, armedPod.id), 'Fire pod failed');
 				}

@@ -99,7 +99,7 @@
 <style>
 	.routing-detail-popover {
 		position: fixed;
-		z-index: 10000;
+		z-index: var(--z-system);
 		min-width: 280px;
 		max-width: 360px;
 		background: var(--bg-panel, #1a1a22);
