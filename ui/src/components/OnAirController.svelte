@@ -608,6 +608,7 @@
 		visible={routingOverlayVisible}
 		onclose={() => { routingOverlayVisible = false; }}
 		onBypassCountChange={(count) => { bypassCount = count; }}
+		onSourceCut={(key) => onCut?.(key)}
 	/>
 
 	<OASettingsModal

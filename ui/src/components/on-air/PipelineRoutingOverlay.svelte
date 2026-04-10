@@ -26,9 +26,10 @@
 		visible: boolean;
 		onclose: () => void;
 		onBypassCountChange?: (count: number) => void;
+		onSourceCut?: (sourceKey: string) => void;
 	}
 
-	let { visible, onclose, onBypassCountChange }: Props = $props();
+	let { visible, onclose, onBypassCountChange, onSourceCut }: Props = $props();
 
 	// ── Column definitions ──
 
@@ -169,6 +170,126 @@
 		selectedNode = null;
 	}
 
+	// ── Drag-and-drop state ──
+
+	let isDragging = $state(false);
+	let dragFromNode = $state<string | null>(null);
+	let dragFromCategory = $state<string | null>(null);
+	let dragLineEnd = $state<{x: number, y: number} | null>(null);
+	let dropTargetNode = $state<string | null>(null);
+	let nodesToBypass = $state<string[]>([]);
+
+	function svgPoint(svg: SVGSVGElement, clientX: number, clientY: number): { x: number; y: number } {
+		const pt = svg.createSVGPoint();
+		pt.x = clientX;
+		pt.y = clientY;
+		const ctm = svg.getScreenCTM();
+		if (!ctm) return { x: clientX, y: clientY };
+		const svgPt = pt.matrixTransform(ctm.inverse());
+		return { x: svgPt.x, y: svgPt.y };
+	}
+
+	function handleDragStart(nodeName: string, event: PointerEvent) {
+		isDragging = true;
+		dragFromNode = nodeName;
+		const node = nodes.find(n => n.name === nodeName);
+		dragFromCategory = node?.category ?? null;
+
+		const svg = (event.currentTarget as Element)?.closest('svg') as SVGSVGElement | null;
+		if (svg) {
+			dragLineEnd = svgPoint(svg, event.clientX, event.clientY);
+		}
+	}
+
+	function handlePointerMove(event: PointerEvent) {
+		if (!isDragging) return;
+		const svg = event.currentTarget as SVGSVGElement;
+		dragLineEnd = svgPoint(svg, event.clientX, event.clientY);
+	}
+
+	function handleDragEnter(nodeName: string) {
+		if (!isDragging || !dragFromNode) return;
+
+		const fromNode = nodes.find(n => n.name === dragFromNode);
+		const toNode = nodes.find(n => n.name === nodeName);
+		if (!fromNode || !toNode) return;
+
+		// Source -> GPU head: valid if dragging from a source to the first GPU node
+		if (fromNode.category === 'source' && toNode.category === 'gpu') {
+			dropTargetNode = nodeName;
+			nodesToBypass = [];
+			return;
+		}
+
+		// GPU -> GPU: valid if toNode is downstream (higher index in chain)
+		if (fromNode.category === 'gpu' && toNode.category === 'gpu') {
+			const gpuNodes = nodes.filter(n => n.category === 'gpu');
+			const fromIdx = gpuNodes.findIndex(n => n.name === dragFromNode);
+			const toIdx = gpuNodes.findIndex(n => n.name === nodeName);
+			if (toIdx > fromIdx + 1) {
+				dropTargetNode = nodeName;
+				nodesToBypass = gpuNodes.slice(fromIdx + 1, toIdx).map(n => n.name);
+				return;
+			}
+		}
+
+		// Invalid drop target
+		dropTargetNode = null;
+		nodesToBypass = [];
+	}
+
+	function handleDragLeave() {
+		dropTargetNode = null;
+		nodesToBypass = [];
+	}
+
+	async function handleDrop(nodeName: string) {
+		if (!isDragging || !dragFromNode) { cancelDrag(); return; }
+
+		const fromNode = nodes.find(n => n.name === dragFromNode);
+
+		// Source -> GPU: this is a cut to program
+		if (fromNode?.category === 'source') {
+			onSourceCut?.(dragFromNode);
+			cancelDrag();
+			return;
+		}
+
+		// GPU -> GPU: bypass nodes in between
+		if (nodesToBypass.length > 0) {
+			for (const bypassName of nodesToBypass) {
+				await toggleBypass(bypassName);
+			}
+		}
+
+		cancelDrag();
+	}
+
+	function cancelDrag() {
+		isDragging = false;
+		dragFromNode = null;
+		dragFromCategory = null;
+		dragLineEnd = null;
+		dropTargetNode = null;
+		nodesToBypass = [];
+	}
+
+	// ── Drag line geometry ──
+
+	function dragLineStart(): { x: number; y: number } | null {
+		if (!dragFromNode) return null;
+		const fromNode = nodes.find(n => n.name === dragFromNode);
+		if (!fromNode) return null;
+		const col = categoryToColumn[fromNode.category];
+		const colNodes = nodesInColumn(col);
+		const idx = colNodes.indexOf(fromNode);
+		if (idx < 0) return null;
+		return {
+			x: nodeX(col) + NODE_W,
+			y: nodeY(col, idx) + NODE_H / 2,
+		};
+	}
+
 	// ── Derived ──
 
 	const bypassCount = $derived(nodes.filter(n => n.bypassed).length);
@@ -200,7 +321,9 @@
 	function handleKeydown(e: KeyboardEvent) {
 		if (e.key === 'Escape') {
 			e.preventDefault();
-			if (selectedNode) {
+			if (isDragging) {
+				cancelDrag();
+			} else if (selectedNode) {
 				closePopover();
 			} else {
 				onclose();
@@ -304,6 +427,10 @@
 				preserveAspectRatio="xMidYMid meet"
 				role="img"
 				aria-label="Pipeline routing graph"
+				onpointermove={handlePointerMove}
+				onpointerup={cancelDrag}
+				onpointerleave={cancelDrag}
+				style:cursor={isDragging ? 'grabbing' : 'default'}
 			>
 				<!-- Column headers -->
 				{#each COLUMNS as col}
@@ -349,9 +476,33 @@
 							nodeHeight={NODE_H}
 							onBypassToggle={() => toggleBypass(node.name)}
 							onclick={(e?: MouseEvent) => handleNodeClick(node, e)}
+							onDragStart={handleDragStart}
+							onDragEnter={handleDragEnter}
+							onDragLeave={handleDragLeave}
+							onDrop={handleDrop}
+							isDropTarget={dropTargetNode === node.name}
+							willBeBypassed={nodesToBypass.includes(node.name)}
 						/>
 					{/each}
 				{/each}
+
+				<!-- Drag preview line -->
+				{#if isDragging && dragLineEnd}
+					{@const start = dragLineStart()}
+					{#if start}
+						<line
+							x1={start.x}
+							y1={start.y}
+							x2={dragLineEnd.x}
+							y2={dragLineEnd.y}
+							stroke="#06B6D4"
+							stroke-width={2}
+							stroke-dasharray="6 4"
+							opacity={0.8}
+							class="drag-preview-line"
+						/>
+					{/if}
+				{/if}
 			</svg>
 		</div>
 
@@ -520,5 +671,10 @@
 		font-family: var(--font-mono, monospace);
 		font-size: 11px;
 		color: var(--text-secondary, #6b7280);
+	}
+
+	/* ── Drag preview ── */
+	.drag-preview-line {
+		pointer-events: none;
 	}
 </style>

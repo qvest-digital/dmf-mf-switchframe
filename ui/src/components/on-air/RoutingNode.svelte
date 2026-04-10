@@ -14,6 +14,12 @@
 		nodeHeight?: number;
 		onBypassToggle: () => void;
 		onclick: () => void;
+		onDragStart?: (nodeName: string, event: PointerEvent) => void;
+		onDragEnter?: (nodeName: string) => void;
+		onDragLeave?: () => void;
+		onDrop?: (nodeName: string) => void;
+		isDropTarget?: boolean;
+		willBeBypassed?: boolean;
 	}
 
 	let {
@@ -31,7 +37,18 @@
 		nodeHeight = 130,
 		onBypassToggle,
 		onclick,
+		onDragStart,
+		onDragEnter,
+		onDragLeave,
+		onDrop,
+		isDropTarget = false,
+		willBeBypassed = false,
 	}: Props = $props();
+
+	function handleOutputPointerDown(e: PointerEvent) {
+		e.stopPropagation();
+		onDragStart?.(name, e);
+	}
 
 	const NODE_W = $derived(nodeWidth);
 	const NODE_H = $derived(nodeHeight);
@@ -53,7 +70,7 @@
 	const label = $derived(displayName ?? name);
 </script>
 
-<g class="routing-node" data-node={name}>
+<g class="routing-node" class:node-will-bypass={willBeBypassed} data-node={name}>
 	<!-- Background rect / clickable body -->
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<rect
@@ -67,9 +84,35 @@
 		class:node-bypassed={bypassed}
 		class:node-program={isProgram}
 		class:node-error={health === 'error'}
+		class:node-will-bypass={willBeBypassed}
 		role="button"
 		tabindex="0"
 		onclick={onclick}
+	/>
+
+	<!-- Input connector (left edge, vertically centered) -->
+	<circle
+		class="connector connector-input"
+		class:connector-drop-target={isDropTarget}
+		cx={x}
+		cy={y + NODE_H / 2}
+		r={5}
+		data-connector="input"
+		data-node={name}
+		onpointerenter={() => onDragEnter?.(name)}
+		onpointerleave={() => onDragLeave?.()}
+		onpointerup={() => onDrop?.(name)}
+	/>
+
+	<!-- Output connector (right edge, vertically centered) -->
+	<circle
+		class="connector connector-output"
+		cx={x + NODE_W}
+		cy={y + NODE_H / 2}
+		r={5}
+		data-connector="output"
+		data-node={name}
+		onpointerdown={handleOutputPointerDown}
 	/>
 
 	<!-- Thumbnail area -->
@@ -268,5 +311,54 @@
 		font-size: 8px;
 		fill: var(--text-secondary, #6b7280);
 		pointer-events: none;
+	}
+
+	/* ── Connectors ── */
+
+	.connector {
+		fill: var(--bg-control, #2a2a30);
+		stroke: var(--border-strong, #444);
+		stroke-width: 1;
+		transition: r 120ms, fill 120ms, stroke 120ms;
+	}
+
+	.connector-input {
+		pointer-events: all;
+	}
+
+	.connector-output {
+		pointer-events: all;
+		cursor: grab;
+	}
+
+	.connector:hover {
+		r: 7;
+		stroke: #06B6D4;
+	}
+
+	.connector-drop-target {
+		fill: var(--accent-green, #22c55e);
+		stroke: var(--accent-green, #22c55e);
+		stroke-width: 2;
+		r: 7;
+		animation: connector-pulse 800ms ease-in-out infinite;
+	}
+
+	@keyframes connector-pulse {
+		0%, 100% { opacity: 1; }
+		50% { opacity: 0.5; }
+	}
+
+	/* ── Will-be-bypassed state ── */
+
+	.node-bg.node-will-bypass {
+		opacity: 0.4;
+		stroke: var(--accent-yellow, #eab308);
+		stroke-dasharray: 6 4;
+		stroke-width: 2;
+	}
+
+	.node-will-bypass {
+		opacity: 0.4;
 	}
 </style>
