@@ -1115,6 +1115,10 @@ func (s *Switcher) BuildPipeline() error {
 
 	format := s.PipelineFormat()
 	p := &Pipeline{}
+	// Preserve bypass flags from the old pipeline across rebuild.
+	if old := s.pipeline.Load(); old != nil {
+		p.RestoreBypass(old.BypassState())
+	}
 	if err := p.Build(format, s.framePool, nodes); err != nil {
 		return err
 	}
@@ -1166,6 +1170,10 @@ func (s *Switcher) rebuildPipeline() {
 
 	format := s.PipelineFormat()
 	p := &Pipeline{}
+	// Preserve bypass flags from the old pipeline across rebuild.
+	if old := s.pipeline.Load(); old != nil {
+		p.RestoreBypass(old.BypassState())
+	}
 	if err := p.Build(format, s.framePool, nodes); err != nil {
 		s.log.Warn("pipeline rebuild failed", "error", err)
 		return

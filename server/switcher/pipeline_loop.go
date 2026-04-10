@@ -43,6 +43,16 @@ type Pipeline struct {
 
 	// In-flight tracking for safe cleanup (atomic swap drain)
 	inflight sync.WaitGroup
+
+	// Per-node bypass flags. Keyed by node Name(). When a flag is true,
+	// Run() skips that node's Process() call — the frame passes through
+	// unchanged. Initialized by Build() for every node in allNodes.
+	bypassFlags map[string]*atomic.Bool
+
+	// bypassSet holds bypass state to restore during Build().
+	// Set via RestoreBypass() before Build() to carry bypass flags
+	// across pipeline rebuilds. Consumed and cleared by Build().
+	bypassSet map[string]bool
 }
 
 // PipelineEpoch captures the pipeline's identity at a point in time.
@@ -76,13 +86,59 @@ func (p *Pipeline) Build(format PipelineFormat, pool *FramePool, nodes []Pipelin
 
 	p.nodeTiming = make([]atomic.Int64, len(p.activeNodes))
 	p.nodeMaxNs = make([]atomic.Int64, len(p.activeNodes))
+
+	// Initialize per-node bypass flags for every node in allNodes.
+	p.bypassFlags = make(map[string]*atomic.Bool, len(nodes))
+	for _, n := range nodes {
+		flag := &atomic.Bool{}
+		// Restore bypass state from prior pipeline if available.
+		if p.bypassSet != nil {
+			if val, ok := p.bypassSet[n.Name()]; ok {
+				flag.Store(val)
+			}
+		}
+		p.bypassFlags[n.Name()] = flag
+	}
+	p.bypassSet = nil // consumed
+
 	return nil
+}
+
+// RestoreBypass saves bypass state to apply during the next Build() call.
+// Used to carry bypass flags across pipeline rebuilds. Must be called
+// before Build(). Only restores flags for nodes that exist in the new pipeline.
+func (p *Pipeline) RestoreBypass(state map[string]bool) {
+	p.bypassSet = state
 }
 
 // SetMetrics sets the Prometheus metrics instance for per-node observations.
 // Must be called after Build() but before Run(). Nil is safe (no observations).
 func (p *Pipeline) SetMetrics(m *metrics.Metrics) {
 	p.metrics = m
+}
+
+// SetBypass toggles the bypass flag for the named node. When bypassed,
+// Run() skips the node's Process() call — the frame passes through unchanged.
+// Returns an error if the node name is "gpu_encode" (protected) or unknown.
+func (p *Pipeline) SetBypass(nodeName string, bypass bool) error {
+	if nodeName == "gpu_encode" {
+		return fmt.Errorf("node %q is protected and cannot be bypassed", nodeName)
+	}
+	flag, ok := p.bypassFlags[nodeName]
+	if !ok {
+		return fmt.Errorf("node %q not found in pipeline", nodeName)
+	}
+	flag.Store(bypass)
+	return nil
+}
+
+// BypassState returns the current bypass state for all nodes.
+func (p *Pipeline) BypassState() map[string]bool {
+	state := make(map[string]bool, len(p.bypassFlags))
+	for name, flag := range p.bypassFlags {
+		state[name] = flag.Load()
+	}
+	return state
 }
 
 // Run processes a single frame through all active nodes.
@@ -101,6 +157,10 @@ func (p *Pipeline) Run(frame *ProcessingFrame) *ProcessingFrame {
 
 	start := time.Now().UnixNano()
 	for i, node := range p.activeNodes {
+		if flag, ok := p.bypassFlags[node.Name()]; ok && flag.Load() {
+			p.nodeTiming[i].Store(0)
+			continue
+		}
 		t0 := time.Now().UnixNano()
 		frame = node.Process(nil, frame)
 		dur := time.Now().UnixNano() - t0
@@ -128,11 +188,16 @@ func (p *Pipeline) TotalLatency() time.Duration {
 func (p *Pipeline) Snapshot() map[string]any {
 	nodes := make([]map[string]any, len(p.activeNodes))
 	for i, n := range p.activeNodes {
+		bypassed := false
+		if flag, ok := p.bypassFlags[n.Name()]; ok {
+			bypassed = flag.Load()
+		}
 		nodes[i] = map[string]any{
 			"name":       n.Name(),
 			"last_ns":    p.nodeTiming[i].Load(),
 			"max_ns":     p.nodeMaxNs[i].Load(),
 			"latency_us": n.Latency().Microseconds(),
+			"bypassed":   bypassed,
 		}
 		if err := n.Err(); err != nil {
 			nodes[i]["last_error"] = err.Error()
