@@ -55,18 +55,19 @@ func (m *mockThumbnailStore) getStoreCount() int {
 func TestNV12ToJPEG(t *testing.T) {
 	w, h := thumbW, thumbH
 	ySize := w * h
-	uvSize := w * (h / 2)
-	nv12 := make([]byte, ySize+uvSize)
+	cbSize := (w / 2) * (h / 2)
+	crSize := cbSize
+	yuv := make([]byte, ySize+cbSize+crSize)
 
-	// Fill Y with 128 (mid-gray), UV with 128 (neutral chroma)
+	// Fill Y with 128 (mid-gray), Cb and Cr with 128 (neutral chroma)
 	for i := 0; i < ySize; i++ {
-		nv12[i] = 128
+		yuv[i] = 128
 	}
-	for i := ySize; i < ySize+uvSize; i++ {
-		nv12[i] = 128
+	for i := ySize; i < ySize+cbSize+crSize; i++ {
+		yuv[i] = 128
 	}
 
-	jpeg := nv12ToJPEG(nv12, w, h)
+	jpeg := nv12ToJPEG(yuv, w, h)
 	if jpeg == nil {
 		t.Fatal("nv12ToJPEG returned nil")
 	}

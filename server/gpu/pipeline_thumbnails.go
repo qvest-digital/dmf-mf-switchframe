@@ -200,17 +200,22 @@ func (ts *thumbnailState) close() {
 	}
 }
 
-// nv12ToJPEG converts an NV12 buffer (non-pitched, contiguous) to JPEG.
-// The conversion is NV12 → RGB → JPEG, done entirely on CPU.
-func nv12ToJPEG(nv12 []byte, w, h int) []byte {
+// yuv420pToJPEG converts a YUV420p planar buffer to JPEG.
+// Download() produces YUV420p (Y plane, then Cb plane, then Cr plane — each separate).
+// The conversion is YUV420p → BT.709 RGB → JPEG, done entirely on CPU.
+func nv12ToJPEG(yuv []byte, w, h int) []byte {
 	ySize := w * h
-	uvSize := w * (h / 2)
-	if len(nv12) < ySize+uvSize {
+	chromaW := w / 2
+	chromaH := h / 2
+	cbSize := chromaW * chromaH
+	crSize := cbSize
+	if len(yuv) < ySize+cbSize+crSize {
 		return nil
 	}
 
-	yPlane := nv12[:ySize]
-	uvPlane := nv12[ySize : ySize+uvSize]
+	yPlane := yuv[:ySize]
+	cbPlane := yuv[ySize : ySize+cbSize]
+	crPlane := yuv[ySize+cbSize : ySize+cbSize+crSize]
 
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	pix := img.Pix
@@ -218,10 +223,9 @@ func nv12ToJPEG(nv12 []byte, w, h int) []byte {
 	for row := 0; row < h; row++ {
 		for col := 0; col < w; col++ {
 			y := int(yPlane[row*w+col])
-			uvRow := row / 2
-			uvCol := (col / 2) * 2
-			cb := int(uvPlane[uvRow*w+uvCol])
-			cr := int(uvPlane[uvRow*w+uvCol+1])
+			chromaIdx := (row/2)*chromaW + (col / 2)
+			cb := int(cbPlane[chromaIdx])
+			cr := int(crPlane[chromaIdx])
 
 			// BT.709 limited range → full range RGB
 			yf := float64(y-16) * (255.0 / 219.0)
