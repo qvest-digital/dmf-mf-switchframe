@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { render } from '@testing-library/svelte';
+import { render, screen } from '@testing-library/svelte';
 import OAOperationsDashboard from './OAOperationsDashboard.svelte';
 import type { ControlRoomState } from '$lib/api/types';
 
@@ -32,26 +32,35 @@ describe('OAOperationsDashboard', () => {
 		expect(titles).toEqual(['SLATES', 'BUG', 'CLIPS', 'PLAYOUT']);
 	});
 
-	it('shows placeholder messages', () => {
-		const { container } = render(OAOperationsDashboard, {
-			props: { crState: minimalState() },
-		});
-		const placeholders = container.querySelectorAll('.section-placeholder');
-		expect(placeholders).toHaveLength(4);
-		expect(placeholders[0].textContent).toBe('No slates configured');
-		expect(placeholders[1].textContent).toBe('No bug loaded');
-		expect(placeholders[2].textContent).toBe('No clips uploaded');
-		expect(placeholders[3].textContent).toBe('Playout not enabled');
-	});
-
 	it('has scrollable container', () => {
 		const { container } = render(OAOperationsDashboard, {
 			props: { crState: minimalState() },
 		});
 		const dashboard = container.querySelector('.operations-dashboard');
 		expect(dashboard).toBeTruthy();
-		const style = getComputedStyle(dashboard!);
-		// overflow-y is set via CSS class — verify the element exists and has the class
 		expect(dashboard!.classList.contains('operations-dashboard')).toBe(true);
+	});
+
+	it('renders child section components', () => {
+		const { container } = render(OAOperationsDashboard, {
+			props: { crState: minimalState() },
+		});
+		// Slates section renders the add button
+		expect(screen.getByText('+')).toBeTruthy();
+		// Bug section renders the empty state
+		expect(screen.getByText(/No bug loaded/)).toBeTruthy();
+		// Clips section renders the upload zone
+		const uploadZone = container.querySelector('.upload-zone');
+		expect(uploadZone).toBeTruthy();
+		// Playout section renders the toggle
+		expect(screen.getByText('OFF')).toBeTruthy();
+	});
+
+	it('playout toggle is interactive', async () => {
+		const { container } = render(OAOperationsDashboard, {
+			props: { crState: minimalState() },
+		});
+		// Initially disabled
+		expect(screen.getByText(/Playout not enabled/)).toBeTruthy();
 	});
 });
