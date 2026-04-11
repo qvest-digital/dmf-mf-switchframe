@@ -116,12 +116,18 @@ func (ts *thumbnailState) captureNode(ctx *Context, idx int, src *GPUFrame) {
 		return
 	}
 	dst := ts.scratchFrames[idx]
-	// Only capture NV12 frames (P210 requires format conversion; skip for now)
-	if src.Format != GPUFormatNV12 {
-		return
-	}
-	if err := ScaleBilinearOn(ctx, dst, src, ts.workQueue); err != nil {
-		slog.Debug("gpu: thumbnail scale failed", "node_idx", idx, "err", err)
+	switch src.Format {
+	case GPUFormatNV12:
+		if err := ScaleBilinearOn(ctx, dst, src, ts.workQueue); err != nil {
+			slog.Debug("gpu: thumbnail scale failed", "node_idx", idx, "err", err)
+		}
+	case GPUFormatP210:
+		// 10-bit 4:2:2 → 8-bit NV12 thumbnail via cross-format scale
+		if err := ScaleP210ToNV12On(ctx, dst, src, ts.workQueue); err != nil {
+			slog.Debug("gpu: thumbnail P210 scale failed", "node_idx", idx, "err", err)
+		}
+	default:
+		return // unsupported format
 	}
 }
 
