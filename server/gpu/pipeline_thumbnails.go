@@ -305,8 +305,3 @@ func (p *GPUPipeline) closeThumbnails() {
 	}
 }
 
-// Compile-time assertion: GPUPipeline must have thumbState field.
-var _ = func() {
-	var p GPUPipeline
-	_ = p.thumbState
-}

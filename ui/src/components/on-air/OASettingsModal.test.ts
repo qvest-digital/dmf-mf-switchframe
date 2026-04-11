@@ -9,7 +9,7 @@ function defaultProps(overrides: Record<string, unknown> = {}) {
 		crState: {
 			encoder: { current: 'x264', available: [{ name: 'x264', displayName: 'x264 (Software)', isDefault: true }] },
 			pipelineFormat: { width: 1920, height: 1080, fpsNum: 30, fpsDen: 1, name: '1080p30' },
-		},
+		} as any,
 		...overrides,
 	};
 }

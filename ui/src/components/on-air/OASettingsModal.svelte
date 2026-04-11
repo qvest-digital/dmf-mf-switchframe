@@ -36,9 +36,9 @@
 		encoderChanging = true;
 		try {
 			await setEncoderBackend(name);
-			notify('Encoder changed to ' + name, 'success');
+			notify('info', 'Encoder changed to ' + name);
 		} catch {
-			notify('Failed to change encoder', 'error');
+			notify('error', 'Failed to change encoder');
 		} finally {
 			encoderChanging = false;
 		}
@@ -60,9 +60,9 @@
 	async function handleFormatChange(preset: string) {
 		try {
 			await setFormat(preset);
-			notify('Format changed to ' + preset, 'success');
+			notify('info', 'Format changed to ' + preset);
 		} catch {
-			notify('Failed to change format', 'error');
+			notify('error', 'Failed to change format');
 		}
 	}
 
