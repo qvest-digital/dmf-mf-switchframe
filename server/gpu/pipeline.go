@@ -72,6 +72,10 @@ type GPUPipeline struct {
 	// Run() skips that node's ProcessGPU() call — the frame passes through
 	// unchanged. Initialized by Build() for every node.
 	bypassFlags map[string]*atomic.Bool
+
+	// Per-node thumbnail capture (rate-limited, async JPEG encode).
+	// Set via SetThumbnailStore(). Nil when no capture is active.
+	thumbState atomic.Pointer[thumbnailState]
 }
 
 // NewGPUPipeline creates a GPU pipeline with the given context and frame pool.
@@ -125,6 +129,9 @@ func (p *GPUPipeline) Run(frame *GPUFrame) error {
 	p.inflight.Add(1)
 	defer p.inflight.Done()
 
+	// Check if we should capture thumbnails this frame (rate-limited to 1/sec).
+	ts := p.shouldCaptureThisFrame()
+
 	start := time.Now().UnixNano()
 	for i, node := range p.activeNodes {
 		if flag, ok := p.bypassFlags[node.Name()]; ok && flag.Load() {
@@ -139,12 +146,26 @@ func (p *GPUPipeline) Run(frame *GPUFrame) error {
 		dur := time.Now().UnixNano() - t0
 		p.nodeTiming[i].Store(dur)
 		atomicutil.UpdateMax(&p.nodeMaxNs[i], dur)
+
+		// After each node, enqueue a GPU downsample to the scratch buffer.
+		// The scale dispatch is pipelined — it does not block the next node.
+		if ts != nil {
+			ts.captureNode(p.ctx, i, frame)
+		}
 	}
 
 	total := time.Now().UnixNano() - start
 	p.lastRunNs.Store(total)
 	p.runCount.Add(1)
 	atomicutil.UpdateMax(&p.maxRunNs, total)
+
+	// After the pipeline completes, readback all scratch buffers and
+	// submit JPEG encode requests to the background goroutine.
+	if ts != nil {
+		ts.lastCapture = time.Now()
+		ts.readbackAndEncode(p.ctx)
+	}
+
 	return nil
 }
 
@@ -238,6 +259,7 @@ func (p *GPUPipeline) Wait() { p.inflight.Wait() }
 // Close waits for in-flight frames, then closes all nodes.
 func (p *GPUPipeline) Close() error {
 	p.inflight.Wait()
+	p.closeThumbnails()
 	var firstErr error
 	for _, n := range p.allNodes {
 		if err := n.Close(); err != nil && firstErr == nil {

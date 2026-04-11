@@ -86,8 +86,41 @@
 		audio: 'PROCESSING',
 	};
 
+	// Stable ordering for GPU processing and output nodes (pipeline order).
+	// Source/decode nodes sort alphabetically for consistency.
+	const PIPELINE_ORDER: Record<string, number> = {
+		// GPU processing chain order
+		'gpu_key': 0,
+		'gpu_neural_key': 1,
+		'gpu_ai_segment': 2,
+		'gpu_layout': 3,
+		'gpu_dsk': 4,
+		'gpu_colorgrade': 5,
+		'gpu_sharpness': 6,
+		'gpu_stmap': 7,
+		// Output nodes order
+		'gpu_raw_sink': 0,
+		'gpu_preview_encode': 1,
+		'gpu_encode': 2,
+		// CPU pipeline equivalents
+		'upstream-key': 0,
+		'dve-compositor': 1,
+		'compositor': 2,
+		'raw-sink-mxl': 0,
+		'h264-encode': 1,
+	};
+
 	function nodesInColumn(col: Column): PipelineNodeInfo[] {
-		return nodes.filter(n => categoryToColumn[n.category] === col);
+		return nodes
+			.filter(n => categoryToColumn[n.category] === col)
+			.sort((a, b) => {
+				const oa = PIPELINE_ORDER[a.name];
+				const ob = PIPELINE_ORDER[b.name];
+				if (oa !== undefined && ob !== undefined) return oa - ob;
+				if (oa !== undefined) return -1;
+				if (ob !== undefined) return 1;
+				return a.name.localeCompare(b.name);
+			});
 	}
 
 	// ── Dynamic node dimensions based on viewport ──

@@ -132,4 +132,16 @@ describe('PipelineRoutingOverlay', () => {
 		});
 		expect(container.querySelector('.routing-overlay')).toBeTruthy();
 	});
+
+	it('defines PIPELINE_ORDER for stable node sorting', () => {
+		// Render the overlay to ensure the PIPELINE_ORDER constant is used
+		// without runtime errors during column rendering
+		const { container } = render(PipelineRoutingOverlay, {
+			props: { visible: true, onclose: () => {} },
+		});
+		// The overlay renders columns; if PIPELINE_ORDER caused issues,
+		// the SVG would not render
+		const svg = container.querySelector('svg');
+		expect(svg).toBeTruthy();
+	});
 });

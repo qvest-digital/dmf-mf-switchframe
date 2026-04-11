@@ -55,6 +55,16 @@ func (p *GPUPipeline) Wait() {}
 // Close is a no-op on non-GPU builds.
 func (p *GPUPipeline) Close() error { return nil }
 
+// ThumbnailStore is the callback interface for storing per-node JPEG thumbnails.
+// Stub definition for non-GPU builds.
+type ThumbnailStore interface {
+	ShouldCapture() bool
+	Store(nodeID string, jpeg []byte, width, height int)
+}
+
+// SetThumbnailStore is a no-op on non-GPU builds.
+func (p *GPUPipeline) SetThumbnailStore(store ThumbnailStore) {}
+
 // RawSinkFunc is a callback for raw YUV420p frames.
 type RawSinkFunc func(yuv []byte, width, height int)
 
