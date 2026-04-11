@@ -86,22 +86,8 @@
 		audio: 'PROCESSING',
 	};
 
-	// Stable sort order for nodes within each column (prevents reordering on poll)
-	const GPU_NODE_ORDER: Record<string, number> = {
-		'gpu_key': 0, 'gpu_layout': 1, 'gpu_dsk': 2, 'gpu_colorgrade': 3,
-		'gpu_stmap': 4, 'gpu_raw_sink': 0, 'gpu_preview_encode': 1, 'gpu_encode': 2,
-	};
-
 	function nodesInColumn(col: Column): PipelineNodeInfo[] {
-		return nodes
-			.filter(n => categoryToColumn[n.category] === col)
-			.sort((a, b) => {
-				// Use predefined order for GPU nodes, alphabetical for sources
-				const orderA = GPU_NODE_ORDER[a.name] ?? 0;
-				const orderB = GPU_NODE_ORDER[b.name] ?? 0;
-				if (orderA !== orderB) return orderA - orderB;
-				return a.name.localeCompare(b.name);
-			});
+		return nodes.filter(n => categoryToColumn[n.category] === col);
 	}
 
 	// ── Dynamic node dimensions based on viewport ──
@@ -534,7 +520,7 @@
 							y={nodeY(col, idx)}
 							name={node.name}
 							category={node.category}
-							thumbnail={thumbnails[node.name] ?? (node.category === 'gpu' || node.category === 'output' ? thumbnails['program_output'] : undefined)}
+							thumbnail={thumbnails[node.name]}
 							latencyNs={node.lastNs}
 							health={node.health}
 							bypassed={node.bypassed}
