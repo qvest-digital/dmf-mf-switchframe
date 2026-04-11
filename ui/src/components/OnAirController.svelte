@@ -8,8 +8,8 @@
 	import OAStatusBar from './on-air/OAStatusBar.svelte';
 	import OAProgramMonitor from './on-air/OAProgramMonitor.svelte';
 	import OANextMonitor from './on-air/OANextMonitor.svelte';
-	import OASchedulePanel from './on-air/OASchedulePanel.svelte';
 	import OASourceGrid from './on-air/OASourceGrid.svelte';
+	import OAOperationsDashboard from './on-air/OAOperationsDashboard.svelte';
 	import OAActionControls from './on-air/OAActionControls.svelte';
 	import OASlideOut from './on-air/OASlideOut.svelte';
 	import OASettingsModal from './on-air/OASettingsModal.svelte';
@@ -437,37 +437,20 @@
 
 		<section class="oa-content-column">
 			<div class="oa-content-area">
-				{#if hasPlaylist && playoutChannel}
-					<!-- Sources strip at top (compact) -->
-					<OASourceGrid
-						sources={crState.sources ?? {}}
-						tallyState={crState.tallyState ?? {}}
-						{isDualEngine}
-						onSourceClick={(key) => onCut?.(key)}
-						onOpenIO={() => { ioSlideOut = true; }}
-						compact={true}
-					/>
-					<!-- Schedule below -->
-					<OASchedulePanel
-						playoutChannel={playoutChannel}
-						items={playlistItems}
-						onShowAsRun={() => {
-							asRunSlideOut = true;
-							playoutAsRun(playoutChannel?.id ?? 1, { limit: 100 })
-								.then(events => { asRunEvents = events; })
-								.catch(() => { asRunEvents = []; });
-						}}
-					/>
-				{:else}
-					<!-- Full source grid -->
-					<OASourceGrid
-						sources={crState.sources ?? {}}
-						tallyState={crState.tallyState ?? {}}
-						{isDualEngine}
-						onSourceClick={(key) => onCut?.(key)}
-						onOpenIO={() => { ioSlideOut = true; }}
-					/>
-				{/if}
+				<!-- Always show compact source strip + operations dashboard -->
+				<OASourceGrid
+					sources={crState.sources ?? {}}
+					tallyState={crState.tallyState ?? {}}
+					{isDualEngine}
+					onSourceClick={(key) => onCut?.(key)}
+					onOpenIO={() => { ioSlideOut = true; }}
+					compact={true}
+				/>
+				<OAOperationsDashboard
+					{crState}
+					onCut={(key) => onCut?.(key)}
+					{onBugToggle}
+				/>
 			</div>
 
 			<OAActionControls

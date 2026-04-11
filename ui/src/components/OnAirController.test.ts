@@ -45,15 +45,17 @@ describe('OnAirController', () => {
 		expect(screen.getAllByText('Camera 1').length).toBeGreaterThanOrEqual(1);
 	});
 
-	it('renders SOURCES panel when no playlist loaded', () => {
-		render(OnAirController, {
+	it('renders operations dashboard when no playlist loaded', () => {
+		const { container } = render(OnAirController, {
 			props: {
 				crState: makeState(),
 				onCanvasReady: vi.fn(),
 				onSwitchLayout: vi.fn(),
 			},
 		});
-		expect(screen.getByText('SOURCES')).toBeTruthy();
+		// Source strip is always compact, dashboard is always present
+		expect(container.querySelector('.compact')).toBeTruthy();
+		expect(container.querySelector('.operations-dashboard')).toBeTruthy();
 	});
 
 	it('renders source tiles in source grid', () => {
@@ -69,27 +71,7 @@ describe('OnAirController', () => {
 		expect(screen.getByText('Camera 3')).toBeTruthy();
 	});
 
-	it('shows PLAYOUT SCHEDULE panel when playlist loaded', () => {
-		render(OnAirController, {
-			props: {
-				crState: makeState({
-					playout: {
-						channels: [{
-							id: 1,
-							state: 'on_air',
-							itemIndex: 0,
-							itemCount: 5,
-						}],
-					},
-				}),
-				onCanvasReady: vi.fn(),
-				onSwitchLayout: vi.fn(),
-			},
-		});
-		expect(screen.getByText('PLAYOUT SCHEDULE')).toBeTruthy();
-	});
-
-	it('shows both compact sources and schedule when playlist loaded', () => {
+	it('shows operations dashboard with PLAYOUT section when playlist loaded', () => {
 		const { container } = render(OnAirController, {
 			props: {
 				crState: makeState({
@@ -106,8 +88,29 @@ describe('OnAirController', () => {
 				onSwitchLayout: vi.fn(),
 			},
 		});
-		// Both the compact source strip and schedule panel should be visible
-		expect(screen.getByText('PLAYOUT SCHEDULE')).toBeTruthy();
+		expect(container.querySelector('.operations-dashboard')).toBeTruthy();
+		expect(screen.getByText('PLAYOUT')).toBeTruthy();
+	});
+
+	it('shows compact sources and operations dashboard when playlist loaded', () => {
+		const { container } = render(OnAirController, {
+			props: {
+				crState: makeState({
+					playout: {
+						channels: [{
+							id: 1,
+							state: 'on_air',
+							itemIndex: 0,
+							itemCount: 5,
+						}],
+					},
+				}),
+				onCanvasReady: vi.fn(),
+				onSwitchLayout: vi.fn(),
+			},
+		});
+		// Compact source strip + operations dashboard are always visible
+		expect(container.querySelector('.operations-dashboard')).toBeTruthy();
 		expect(container.querySelector('.compact')).toBeTruthy();
 		// Source tiles should still be rendered (may appear in multiple places)
 		expect(screen.getAllByText('Camera 1').length).toBeGreaterThanOrEqual(1);
