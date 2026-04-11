@@ -43,11 +43,27 @@ func (p *GPUPipeline) RunWithUpload(yuv []byte, width, height int, pts int64) (*
 // Snapshot returns empty stats on non-GPU builds.
 func (p *GPUPipeline) Snapshot() map[string]any { return map[string]any{"gpu": false} }
 
+// SetBypass returns ErrGPUNotAvailable on non-GPU builds.
+func (p *GPUPipeline) SetBypass(nodeName string, bypass bool) error { return ErrGPUNotAvailable }
+
+// BypassState returns empty state on non-GPU builds.
+func (p *GPUPipeline) BypassState() map[string]bool { return nil }
+
 // Wait is a no-op on non-GPU builds.
 func (p *GPUPipeline) Wait() {}
 
 // Close is a no-op on non-GPU builds.
 func (p *GPUPipeline) Close() error { return nil }
+
+// ThumbnailStore is the callback interface for storing per-node JPEG thumbnails.
+// Stub definition for non-GPU builds.
+type ThumbnailStore interface {
+	ShouldCapture() bool
+	Store(nodeID string, jpeg []byte, width, height int)
+}
+
+// SetThumbnailStore is a no-op on non-GPU builds.
+func (p *GPUPipeline) SetThumbnailStore(store ThumbnailStore) {}
 
 // RawSinkFunc is a callback for raw YUV420p frames.
 type RawSinkFunc func(yuv []byte, width, height int)

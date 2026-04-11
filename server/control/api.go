@@ -548,6 +548,7 @@ type API struct {
 	inviteTokens       map[string]string // token -> role; nil = no invite gating
 	sessionAPIToken    string            // used to bypass invite token requirement for session owner
 	allowedOutputPorts map[int]bool      // nil = unconstrained
+	thumbnailCache     *switcher.ThumbnailCache
 	snapshotProvider   SnapshotProvider
 	appMetrics         *metrics.Metrics
 	mux                *http.ServeMux
@@ -724,6 +725,7 @@ func (a *API) registerAPIRoutes(mux *http.ServeMux) {
 	a.registerAISegmentRoutes(mux)
 	a.registerASRRoutes(mux)
 	a.registerPeerRoutes(mux)
+	a.registerPipelineRoutes(mux)
 	mux.HandleFunc("GET /api/sync/health", a.handleSyncHealth)
 	mux.HandleFunc("GET /api/internal/connections", a.handleInternalConnections)
 	a.registerSyncRoutes(mux)

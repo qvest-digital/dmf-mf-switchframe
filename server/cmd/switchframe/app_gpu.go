@@ -114,6 +114,11 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 	gpuPipeline := gpu.NewGPUPipeline(gs.ctx, gs.pool)
 	gs.pipeline = gpuPipeline
 
+	// Wire per-node thumbnail capture to the switcher's ThumbnailCache.
+	// The GPU pipeline will downsample after each node (rate-limited to 1/sec)
+	// and JPEG encode on a background goroutine — zero hot-path impact.
+	gpuPipeline.SetThumbnailStore(sw.ThumbnailCache())
+
 	// Create GPU source manager for per-source upload, ST map, caching,
 	// and (future) preview encoding. Sources auto-register on first
 	// IngestYUV call from handleRawVideoFrame.
@@ -777,6 +782,11 @@ func (r *gpuPipelineRunnerImpl) ClearWipeMap() {
 		r.wipeGradientBuf = nil
 	}
 	r.wipeConfig = nil
+}
+
+// SetBypass delegates to the underlying GPU pipeline's bypass support.
+func (r *gpuPipelineRunnerImpl) SetBypass(nodeName string, bypass bool) error {
+	return r.pipeline.SetBypass(nodeName, bypass)
 }
 
 // previewRelayDebugProvider exposes program-preview relay viewer stats

@@ -1579,6 +1579,7 @@ func (a *App) initAPI() error {
 		control.WithSTMapStore(a.stmapStore),
 		control.WithLastPongSentFn(a.fastCtrl.LastPongSentUs),
 		control.WithAppMetrics(a.appMetrics),
+		control.WithThumbnailCache(a.sw.ThumbnailCache()),
 	}
 	if a.cfg.CacheDir != "" {
 		stmapCacheBase := filepath.Join(a.cfg.CacheDir, "stmap")

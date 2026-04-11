@@ -67,6 +67,15 @@ type GPUPipeline struct {
 
 	// In-flight tracking for safe cleanup
 	inflight sync.WaitGroup
+
+	// Per-node bypass flags. Keyed by node Name(). When a flag is true,
+	// Run() skips that node's ProcessGPU() call — the frame passes through
+	// unchanged. Initialized by Build() for every node.
+	bypassFlags map[string]*atomic.Bool
+
+	// Per-node thumbnail capture (rate-limited, async JPEG encode).
+	// Set via SetThumbnailStore(). Nil when no capture is active.
+	thumbState atomic.Pointer[thumbnailState]
 }
 
 // NewGPUPipeline creates a GPU pipeline with the given context and frame pool.
@@ -100,6 +109,12 @@ func (p *GPUPipeline) Build(width, height, pitch int, nodes []GPUPipelineNode) e
 	p.nodeTiming = make([]atomic.Int64, len(p.activeNodes))
 	p.nodeMaxNs = make([]atomic.Int64, len(p.activeNodes))
 
+	// Initialize per-node bypass flags.
+	p.bypassFlags = make(map[string]*atomic.Bool, len(nodes))
+	for _, n := range nodes {
+		p.bypassFlags[n.Name()] = &atomic.Bool{}
+	}
+
 	names := make([]string, len(p.activeNodes))
 	for i, n := range p.activeNodes {
 		names[i] = n.Name()
@@ -114,8 +129,15 @@ func (p *GPUPipeline) Run(frame *GPUFrame) error {
 	p.inflight.Add(1)
 	defer p.inflight.Done()
 
+	// Check if we should capture thumbnails this frame (rate-limited to 1/sec).
+	ts := p.shouldCaptureThisFrame()
+
 	start := time.Now().UnixNano()
 	for i, node := range p.activeNodes {
+		if flag, ok := p.bypassFlags[node.Name()]; ok && flag.Load() {
+			p.nodeTiming[i].Store(0)
+			continue
+		}
 		t0 := time.Now().UnixNano()
 		if err := node.ProcessGPU(frame); err != nil {
 			slog.Warn("gpu pipeline: node error", "node", node.Name(), "err", err)
@@ -124,12 +146,26 @@ func (p *GPUPipeline) Run(frame *GPUFrame) error {
 		dur := time.Now().UnixNano() - t0
 		p.nodeTiming[i].Store(dur)
 		atomicutil.UpdateMax(&p.nodeMaxNs[i], dur)
+
+		// After each node, enqueue a GPU downsample to the scratch buffer.
+		// The scale dispatch is pipelined — it does not block the next node.
+		if ts != nil {
+			ts.captureNode(p.ctx, i, frame)
+		}
 	}
 
 	total := time.Now().UnixNano() - start
 	p.lastRunNs.Store(total)
 	p.runCount.Add(1)
 	atomicutil.UpdateMax(&p.maxRunNs, total)
+
+	// After the pipeline completes, readback all scratch buffers and
+	// submit JPEG encode requests to the background goroutine.
+	if ts != nil {
+		ts.lastCapture = time.Now()
+		ts.readbackAndEncode(p.ctx)
+	}
+
 	return nil
 }
 
@@ -162,11 +198,16 @@ func (p *GPUPipeline) RunWithUpload(yuv []byte, width, height int, pts int64) (*
 func (p *GPUPipeline) Snapshot() map[string]any {
 	nodes := make([]map[string]any, len(p.activeNodes))
 	for i, n := range p.activeNodes {
+		bypassed := false
+		if flag, ok := p.bypassFlags[n.Name()]; ok {
+			bypassed = flag.Load()
+		}
 		entry := map[string]any{
 			"name":       n.Name(),
 			"last_ns":    p.nodeTiming[i].Load(),
 			"max_ns":     p.nodeMaxNs[i].Load(),
 			"latency_us": n.Latency().Microseconds(),
+			"bypassed":   bypassed,
 		}
 		if err := n.Err(); err != nil {
 			entry["last_error"] = err.Error()
@@ -184,12 +225,41 @@ func (p *GPUPipeline) Snapshot() map[string]any {
 	}
 }
 
+// SetBypass toggles the bypass flag for the named node. When bypassed,
+// Run() skips the node's ProcessGPU() call — the frame passes through unchanged.
+// Returns an error if the node name is protected or unknown.
+func (p *GPUPipeline) SetBypass(nodeName string, bypass bool) error {
+	protectedNodes := map[string]bool{
+		"gpu_encode":   true,
+		"gpu_raw_sink": true,
+	}
+	if protectedNodes[nodeName] {
+		return fmt.Errorf("node %q is protected and cannot be bypassed", nodeName)
+	}
+	flag, ok := p.bypassFlags[nodeName]
+	if !ok {
+		return fmt.Errorf("node %q not found in GPU pipeline", nodeName)
+	}
+	flag.Store(bypass)
+	return nil
+}
+
+// BypassState returns the current bypass state for all nodes.
+func (p *GPUPipeline) BypassState() map[string]bool {
+	state := make(map[string]bool, len(p.bypassFlags))
+	for name, flag := range p.bypassFlags {
+		state[name] = flag.Load()
+	}
+	return state
+}
+
 // Wait blocks until all in-flight Run() calls complete.
 func (p *GPUPipeline) Wait() { p.inflight.Wait() }
 
 // Close waits for in-flight frames, then closes all nodes.
 func (p *GPUPipeline) Close() error {
 	p.inflight.Wait()
+	p.closeThumbnails()
 	var firstErr error
 	for _, n := range p.allNodes {
 		if err := n.Close(); err != nil && firstErr == nil {

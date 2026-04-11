@@ -11,6 +11,7 @@
 	import ConnectionBanner from '../components/ConnectionBanner.svelte';
 	import ProgramHealthBanner from '../components/ProgramHealthBanner.svelte';
 	import SimpleMode from '../components/SimpleMode.svelte';
+	import OnAirController from '../components/OnAirController.svelte';
 	import ErrorBoundary from '../components/ErrorBoundary.svelte';
 	import Toast from '../components/Toast.svelte';
 	import StatsPanel from '../components/StatsPanel.svelte';
@@ -32,7 +33,7 @@
 	import RedundancyPanel from '../components/RedundancyPanel.svelte';
 	import ProgramCompare from '../components/ProgramCompare.svelte';
 	import { createControlRoomStore } from '$lib/state/control-room.svelte';
-	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, apiCall, setAuthToken, checkFragmentToken, SwitchApiError, listMacros, runMacro, dveSlotOn, dveSlotOff, replayQuick, replayPause, replayResume, replayPlay, replayStop, replaySeek, replaySetSpeed, replayMarkIn, replayMarkOut, commsMute, setDualTimestampProvider, setPartialFailureCallback, setPartialFailureNotify, setNonIdempotentFailureCallback, getDebugSnapshot, getPerfData, playoutEngineCacheStatus, setTransitionPosition, updateDVESlot } from '$lib/api/switch-api';
+	import { cut, setPreview, setLabel, startTransition, fadeToBlack, graphicsOn, graphicsOff, graphicsAutoOn, graphicsAutoOff, apiCall, setAuthToken, checkFragmentToken, SwitchApiError, listMacros, runMacro, dveSlotOn, dveSlotOff, replayQuick, replayPause, replayResume, replayPlay, replayStop, replaySeek, replaySetSpeed, replayMarkIn, replayMarkOut, commsMute, setDualTimestampProvider, setPartialFailureCallback, setPartialFailureNotify, setNonIdempotentFailureCallback, getDebugSnapshot, getPerfData, playoutEngineCacheStatus, setTransitionPosition, updateDVESlot, scte35Cue, scte35Return, podFire, playoutNext, playoutJump, playoutTakeManual, playoutReturnToAuto, startRecording, stopRecording, playoutPlaylist as fetchPlaylist } from '$lib/api/switch-api';
 	import { setEngineUrls, getEngineUrls, setExpectDualEngine, setOnNewEngineDiscovered, setAuthoritativeEngineProvider, setEmergencyEngineBUrl } from '$lib/api/base-url';
 	import { fetchServerInfo } from '$lib/prism/transport-utils';
 	import * as operatorState from '$lib/state/operator.svelte';
@@ -491,11 +492,13 @@
 		pipelineManager.onLayoutChange();
 		programCanvas = null;
 		previewCanvas = null;
-		layoutMode = layoutMode === 'traditional' ? 'simple' : 'traditional';
+		if (layoutMode === 'traditional') layoutMode = 'simple';
+		else if (layoutMode === 'simple') layoutMode = 'on-air';
+		else layoutMode = 'traditional';
 		setLayoutMode(layoutMode);
 	}
-	let transitionType: 'mix' | 'dip' = 'mix';
-	let transitionDuration = 1000;
+	let transitionType = $state<string>('mix');
+	let transitionDuration = $state(1000);
 	let selectedAudioChannel = $state<string | null>(null);
 
 	const keyboard = new KeyboardHandler({
@@ -1627,6 +1630,86 @@
 					apiCall(startTransition(store.state.previewSource, 'mix', 1000), 'Dissolve failed');
 				}
 			}}
+		/>
+	{:else if layoutMode === 'on-air'}
+		<OnAirController
+			crState={store.effectiveState}
+			{onCanvasReady}
+			onSwitchLayout={switchLayout}
+			{isDualEngine}
+			engineAHealthy={engineHealth?.A?.connected ?? true}
+			engineBHealthy={engineHealth?.B?.connected ?? true}
+			{activeEngine}
+			authoritativeEngine={syncHealth?.authoritative ?? 'A'}
+			onEngineToggle={(e) => activeEngine = e}
+			syncStatus={syncHealth?.status ?? 'disconnected'}
+			onSyncClick={() => { redundancyPanelVisible = true; }}
+			onCut={(source) => {
+				if (source) {
+					store.optimisticCut(source);
+					apiCall(cut(source), 'Cut failed');
+				}
+			}}
+			onAuto={(source) => {
+				if (source) {
+					apiCall(startTransition(source, transitionType, transitionDuration), 'Transition failed');
+				}
+			}}
+			{transitionType}
+			{transitionDuration}
+			onTransitionTypeChange={(type) => { transitionType = type; }}
+			onTransitionDurationChange={(ms) => { transitionDuration = ms; }}
+			onBugToggle={() => {
+				const gfxLayers = store.state.graphics?.layers ?? [];
+				if (gfxLayers.some((l) => l.active)) {
+					const offs = gfxLayers.filter((l) => l.active).map((l) => graphicsAutoOff(l.id));
+					apiCall(Promise.all(offs).then((r) => r[0]), 'Bug toggle failed');
+				} else if (gfxLayers.length > 0) {
+					apiCall(graphicsAutoOn(gfxLayers[0].id), 'Bug toggle failed');
+				}
+			}}
+			onScteInsert={() => {
+				apiCall(scte35Cue({ commandType: 'splice_insert', isOut: true, durationMs: 60000, autoReturn: true }), 'SCTE insert failed');
+			}}
+			onScteReturn={() => {
+				apiCall(scte35Return(), 'SCTE return failed');
+			}}
+			onFirePod={() => {
+				const channel = store.effectiveState.playout?.channels?.[0];
+				const pods = channel?.pods ?? [];
+				const armedPod = pods.find((p) => p.armed);
+				if (armedPod) {
+					apiCall(podFire(1, armedPod.id), 'Fire pod failed');
+				}
+			}}
+			onReturnToLive={() => {
+				apiCall(scte35Return(), 'Return to live failed');
+			}}
+			onHold={() => {
+				const ch = store.effectiveState.playout?.channels?.find(c => c.id === 1) ?? store.effectiveState.playout?.channels?.[0];
+					if (ch?.mode === 'manual') {
+						apiCall(playoutReturnToAuto(1), 'Return to auto failed');
+					} else {
+						apiCall(playoutTakeManual(1), 'Hold failed');
+					}
+			}}
+			onSkip={() => {
+				apiCall(playoutNext(1), 'Skip failed');
+			}}
+			onTakeNext={() => {
+				apiCall(playoutNext(1), 'Take next failed');
+			}}
+			onRecordToggle={() => {
+				if (store.effectiveState.recording?.active) {
+					apiCall(stopRecording(), 'Stop recording failed');
+				} else {
+					apiCall(startRecording(), 'Start recording failed');
+				}
+			}}
+			onStateUpdate={store.applyUpdate}
+			{pipeline}
+			{fastControl}
+			getTransport={() => pipeline.getSourceTransport('program')}
 		/>
 	{:else}
 		<div class="control-room">

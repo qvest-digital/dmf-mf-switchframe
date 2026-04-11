@@ -293,6 +293,12 @@ type Switcher struct {
 	// ST map registry — per-source lens correction applied in sourceDecoder.
 	stmapRegistry *stmap.Registry
 
+	// Thumbnail cache — pipeline routing view JPEG thumbnails.
+	// Created in New(), passed to each sourceDecoder and tapped in
+	// videoProcessingLoop for program output capture.
+	thumbnailCache         *ThumbnailCache
+	lastProgramThumbTime   time.Time
+
 	// Wipe map store — resolves gradient maps for gradient-map-based wipe transitions.
 	wipeMapStore *wipemap.WipeMapStore
 
@@ -557,13 +563,14 @@ var _ frameHandler = (*Switcher)(nil)
 func New(programRelay *distribution.Relay) *Switcher {
 	defaultFmt := DefaultFormat
 	s := &Switcher{
-		log:           slog.With("component", "switcher"),
-		sources:       make(map[string]*sourceState),
-		programRelay:  programRelay,
-		health:        newHealthMonitor(),
-		videoProcCh:   make(chan videoProcWork, 8),
-		videoProcDone: make(chan struct{}),
-		framePool:     NewFramePool(512, defaultFmt.Width, defaultFmt.Height, defaultFmt.Color.ColorFormat),
+		log:            slog.With("component", "switcher"),
+		sources:        make(map[string]*sourceState),
+		programRelay:   programRelay,
+		health:         newHealthMonitor(),
+		videoProcCh:    make(chan videoProcWork, 8),
+		videoProcDone:  make(chan struct{}),
+		framePool:      NewFramePool(512, defaultFmt.Width, defaultFmt.Height, defaultFmt.Color.ColorFormat),
+		thumbnailCache: NewThumbnailCache(),
 	}
 	s.frameBudgetNs.Store(defaultFmt.FrameBudgetNs())
 	s.pipelineFormat.Store(&defaultFmt)
@@ -588,6 +595,12 @@ func (s *Switcher) SetMixer(m audioStateProvider) {
 	if handler, ok := m.(audioTransitionHandler); ok {
 		s.audioTransition = handler
 	}
+}
+
+// ThumbnailCache returns the switcher's thumbnail cache for pipeline routing
+// view JPEG captures. Never nil — created in New().
+func (s *Switcher) ThumbnailCache() *ThumbnailCache {
+	return s.thumbnailCache
 }
 
 // SetMetrics attaches Prometheus metrics to the switcher for production
@@ -1115,6 +1128,10 @@ func (s *Switcher) BuildPipeline() error {
 
 	format := s.PipelineFormat()
 	p := &Pipeline{}
+	// Preserve bypass flags from the old pipeline across rebuild.
+	if old := s.pipeline.Load(); old != nil {
+		p.RestoreBypass(old.BypassState())
+	}
 	if err := p.Build(format, s.framePool, nodes); err != nil {
 		return err
 	}
@@ -1166,6 +1183,10 @@ func (s *Switcher) rebuildPipeline() {
 
 	format := s.PipelineFormat()
 	p := &Pipeline{}
+	// Preserve bypass flags from the old pipeline across rebuild.
+	if old := s.pipeline.Load(); old != nil {
+		p.RestoreBypass(old.BypassState())
+	}
 	if err := p.Build(format, s.framePool, nodes); err != nil {
 		s.log.Warn("pipeline rebuild failed", "error", err)
 		return
@@ -1905,6 +1926,29 @@ func (s *Switcher) videoProcessingLoop() {
 				work.yuvFrame = p.Run(work.yuvFrame)
 			}
 		}
+
+		// Program output thumbnail capture: async JPEG encode on background
+		// goroutine. Captures the final processed YUV before encode/release.
+		// Only 8-bit YUV420 is supported by ScaleAndEncodeJPEG.
+		if s.thumbnailCache != nil && s.thumbnailCache.ShouldCapture() &&
+			work.yuvFrame != nil && work.yuvFrame.Format == ColorYUV420_8bit &&
+			len(work.yuvFrame.Data) > 0 && time.Since(s.lastProgramThumbTime) >= time.Second {
+			s.lastProgramThumbTime = time.Now()
+			yuvCopy := make([]byte, len(work.yuvFrame.Data))
+			copy(yuvCopy, work.yuvFrame.Data)
+			fw, fh := work.yuvFrame.Width, work.yuvFrame.Height
+			tc := s.thumbnailCache
+			go func() {
+				jpegData, err := ScaleAndEncodeJPEG(yuvCopy, fw, fh, thumbnailWidth, thumbnailHeight)
+				if err == nil {
+					tc.Store("program_output", jpegData, thumbnailWidth, thumbnailHeight)
+				}
+			}()
+			// Don't call ClearRequest() here — let each source decoder
+			// capture independently on their own goroutines. The 5s idle
+			// timeout in ShouldCapture() auto-disables when no one polls.
+		}
+
 		work.yuvFrame.ReleaseYUV()
 
 		dur := time.Since(start).Nanoseconds()
@@ -2740,6 +2784,7 @@ func (s *Switcher) RegisterSource(key string, relay *distribution.Relay) {
 		cb := s.makeDecoderCallback(key)
 		sd := newSourceDecoder(key, s.sourceDecoderFactory, cb, s.framePool, &s.pipelineFormat, s.stmapRegistry, &s.gpuSourceActive)
 		if sd != nil {
+			sd.thumbnailCache = s.thumbnailCache
 			viewer.srcDecoder.Store(sd)
 			useRaw = true
 		}
@@ -3361,6 +3406,72 @@ func (s *Switcher) SourceKeys() []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// PipelineSnapshot returns a combined snapshot of all pipeline stages:
+// CPU pipeline nodes, GPU pipeline nodes, and registered sources with health.
+// The response is structured for the routing overlay UI.
+func (s *Switcher) PipelineSnapshot() map[string]any {
+	result := make(map[string]any)
+
+	// CPU pipeline nodes.
+	if p := s.pipeline.Load(); p != nil {
+		result["cpu_pipeline"] = p.Snapshot()
+	}
+
+	// GPU pipeline nodes (when active, provides GPU node timings and source manager state).
+	if h := s.gpuRunner.Load(); h != nil {
+		result["gpu_pipeline"] = h.runner.Snapshot()
+	}
+
+	// Source info with health status.
+	s.mu.RLock()
+	sources := make(map[string]map[string]any, len(s.sources))
+	for key := range s.sources {
+		sources[key] = map[string]any{
+			"health": string(s.health.rawStatus(key)),
+		}
+	}
+	s.mu.RUnlock()
+	result["sources"] = sources
+
+	return result
+}
+
+// SetPipelineBypass toggles the bypass flag for the named pipeline node.
+// When the GPU pipeline is active, bypass is set there (GPU nodes have names
+// like gpu_key, gpu_layout, etc). Falls back to the CPU pipeline for CPU node
+// names. Returns an error if the node is protected or unknown in both pipelines.
+func (s *Switcher) SetPipelineBypass(name string, bypass bool) error {
+	// Try GPU pipeline first (active when gpu runner is set).
+	if h := s.gpuRunner.Load(); h != nil {
+		if gp, ok := h.runner.(interface {
+			SetBypass(string, bool) error
+		}); ok {
+			err := gp.SetBypass(name, bypass)
+			if err == nil {
+				return nil
+			}
+			// If node not found in GPU pipeline, fall through to CPU pipeline.
+			// Protected node errors should propagate immediately.
+			if !isNodeNotFoundError(err) {
+				return err
+			}
+		}
+	}
+
+	// CPU pipeline fallback.
+	p := s.pipeline.Load()
+	if p == nil {
+		return fmt.Errorf("no pipeline loaded")
+	}
+	return p.SetBypass(name, bypass)
+}
+
+// isNodeNotFoundError checks if the error indicates a node was not found
+// (vs. a protected node error which should be returned immediately).
+func isNodeNotFoundError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "not found")
 }
 
 // buildStateLocked constructs a ControlRoomState snapshot. Caller must hold
