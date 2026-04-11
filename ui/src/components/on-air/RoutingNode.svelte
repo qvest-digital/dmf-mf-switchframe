@@ -172,18 +172,7 @@
 	/>
 
 	<!-- Thumbnail area -->
-	<!-- Enhancement 1: Live canvas for source nodes via foreignObject -->
-	{#if category === 'source'}
-		<foreignObject x={x + 10} y={y + 5} width={THUMB_W} height={THUMB_H}>
-			<canvas
-				xmlns="http://www.w3.org/1999/xhtml"
-				id="tile-{name}"
-				width={THUMB_W * 2}
-				height={THUMB_H * 2}
-				style="width: {THUMB_W}px; height: {THUMB_H}px; background: var(--bg-canvas, #050507); display: block; border-radius: 3px;"
-			></canvas>
-		</foreignObject>
-	{:else if thumbnail}
+	{#if thumbnail}
 		<image
 			x={x + 10}
 			y={y + 5}

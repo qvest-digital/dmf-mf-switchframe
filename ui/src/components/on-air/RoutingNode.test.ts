@@ -126,23 +126,19 @@ describe('RoutingNode', () => {
 		expect(img?.getAttribute('href')).toBe('data:image/jpeg;base64,abc123');
 	});
 
-	it('renders live canvas via foreignObject for source nodes', () => {
-		const { container } = render(RoutingNode, {
-			props: defaultProps(),
-		});
-		const canvas = container.querySelector('canvas#tile-cam1');
-		expect(canvas).toBeTruthy();
-	});
-
-	it('source nodes use canvas even when thumbnail is provided', () => {
+	it('renders thumbnail image when provided for source nodes', () => {
 		const { container } = render(RoutingNode, {
 			props: { ...defaultProps(), thumbnail: 'data:image/jpeg;base64,abc123' },
 		});
-		// Source nodes always use foreignObject canvas, never <image>
 		const img = container.querySelector('.node-thumb-image');
-		expect(img).toBeNull();
-		const canvas = container.querySelector('canvas#tile-cam1');
-		expect(canvas).toBeTruthy();
+		expect(img).toBeTruthy();
+	});
+
+	it('shows No preview when source has no thumbnail', () => {
+		const { container } = render(RoutingNode, {
+			props: defaultProps(),
+		});
+		expect(container.textContent).toContain('No preview');
 	});
 
 	it('shows PGM tally badge on program source', () => {
