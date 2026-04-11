@@ -1652,16 +1652,6 @@
 					apiCall(graphicsAutoOn(gfxLayers[0].id), 'Bug toggle failed');
 				}
 			}}
-			onSlate={() => {
-				const slateKey = Object.entries(store.effectiveState.sources ?? {})
-					.find(([_, s]) => s.label?.toLowerCase().includes('slate'))?.[0];
-				if (slateKey) {
-					store.optimisticCut(slateKey);
-					apiCall(cut(slateKey), 'Slate failed');
-				} else {
-					notify('warning', 'No source with "slate" label found');
-				}
-			}}
 			onScteInsert={() => {
 				apiCall(scte35Cue({ commandType: 'splice_insert', isOut: true, durationMs: 60000, autoReturn: true }), 'SCTE insert failed');
 			}}

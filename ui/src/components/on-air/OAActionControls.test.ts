@@ -35,7 +35,11 @@ describe('OAActionControls', () => {
 		expect(screen.getByText('HOLD')).toBeTruthy();
 		expect(screen.getByText('SKIP')).toBeTruthy();
 		expect(screen.getByText('TAKE NEXT')).toBeTruthy();
-		expect(screen.getByText('SLATE')).toBeTruthy();
+	});
+
+	it('does not render SLATE button in playout mode (slates are in dashboard now)', () => {
+		render(OAActionControls, { props: playoutProps() });
+		expect(screen.queryByText('SLATE')).toBeNull();
 	});
 
 	it('does not render live-monitor buttons in playout mode', () => {
@@ -62,6 +66,10 @@ describe('OAActionControls', () => {
 		expect(screen.queryByText('HOLD')).toBeNull();
 		expect(screen.queryByText('SKIP')).toBeNull();
 		expect(screen.queryByText('TAKE NEXT')).toBeNull();
+	});
+
+	it('does not render SLATE in live-monitor mode', () => {
+		render(OAActionControls, { props: liveProps() });
 		expect(screen.queryByText('SLATE')).toBeNull();
 	});
 
@@ -252,15 +260,6 @@ describe('OAActionControls', () => {
 		expect(fn).toHaveBeenCalledOnce();
 	});
 
-	it('SLATE callback fires', async () => {
-		const fn = vi.fn();
-		render(OAActionControls, {
-			props: playoutProps({ onSlate: fn }),
-		});
-		await fireEvent.click(screen.getByText('SLATE'));
-		expect(fn).toHaveBeenCalledOnce();
-	});
-
 	it('CAPTIONS callback fires', async () => {
 		const fn = vi.fn();
 		render(OAActionControls, {
@@ -358,5 +357,16 @@ describe('OAActionControls', () => {
 		expect(routingBtn).toBeTruthy();
 		await fireEvent.click(routingBtn);
 		expect(fn).toHaveBeenCalledOnce();
+	});
+
+	// ── No onSlate prop (removed) ──
+
+	it('does not accept onSlate prop (slate handled by dashboard)', () => {
+		// Just confirm the component renders without onSlate
+		render(OAActionControls, {
+			props: playoutProps(),
+		});
+		// No SLATE button should exist
+		expect(screen.queryByText('SLATE')).toBeNull();
 	});
 });

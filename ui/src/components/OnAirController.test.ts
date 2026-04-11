@@ -28,6 +28,13 @@ function makeState(overrides: Partial<ControlRoomState> = {}): ControlRoomState 
 	};
 }
 
+/** Click the playout ON/OFF toggle in the dashboard */
+function clickPlayoutToggle(container: HTMLElement) {
+	const toggle = container.querySelector('.playout-section .toggle-btn') as HTMLElement;
+	if (!toggle) throw new Error('Playout toggle not found');
+	return fireEvent.click(toggle);
+}
+
 describe('OnAirController', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -128,23 +135,16 @@ describe('OnAirController', () => {
 		expect(screen.getByText('AUTO')).toBeTruthy();
 	});
 
-	it('shows FIRE POD button in playout mode', () => {
-		render(OnAirController, {
+	it('shows FIRE POD button in playout mode', async () => {
+		const { container } = render(OnAirController, {
 			props: {
-				crState: makeState({
-					playout: {
-						channels: [{
-							id: 1,
-							state: 'on_air',
-							itemIndex: 0,
-							itemCount: 3,
-						}],
-					},
-				}),
+				crState: makeState(),
 				onCanvasReady: vi.fn(),
 				onSwitchLayout: vi.fn(),
 			},
 		});
+		// Activate playout mode via the dashboard toggle
+		await clickPlayoutToggle(container);
 		expect(screen.getByText('FIRE POD')).toBeTruthy();
 	});
 
@@ -366,23 +366,16 @@ describe('OnAirController', () => {
 
 	it('calls onHold via H keyboard shortcut in playout mode', async () => {
 		const holdFn = vi.fn();
-		render(OnAirController, {
+		const { container } = render(OnAirController, {
 			props: {
-				crState: makeState({
-					playout: {
-						channels: [{
-							id: 1,
-							state: 'on_air',
-							itemIndex: 0,
-							itemCount: 3,
-						}],
-					},
-				}),
+				crState: makeState(),
 				onCanvasReady: vi.fn(),
 				onSwitchLayout: vi.fn(),
 				onHold: holdFn,
 			},
 		});
+		// Activate playout mode via the dashboard toggle
+		await clickPlayoutToggle(container);
 		await fireEvent.keyDown(window, { code: 'KeyH' });
 		expect(holdFn).toHaveBeenCalled();
 	});
@@ -405,21 +398,14 @@ describe('OnAirController', () => {
 		const skipFn = vi.fn();
 		const { container } = render(OnAirController, {
 			props: {
-				crState: makeState({
-					playout: {
-						channels: [{
-							id: 1,
-							state: 'on_air',
-							itemIndex: 0,
-							itemCount: 3,
-						}],
-					},
-				}),
+				crState: makeState(),
 				onCanvasReady: vi.fn(),
 				onSwitchLayout: vi.fn(),
 				onSkip: skipFn,
 			},
 		});
+		// Activate playout mode via the dashboard toggle
+		await clickPlayoutToggle(container);
 		await fireEvent.keyDown(window, { code: 'KeyS' });
 		// S key opens confirmation dialog, not direct skip
 		expect(container.querySelector('.skip-confirm-backdrop')).toBeTruthy();
@@ -441,23 +427,16 @@ describe('OnAirController', () => {
 
 	it('calls onTakeNext via N keyboard shortcut in playout mode', async () => {
 		const takeNextFn = vi.fn();
-		render(OnAirController, {
+		const { container } = render(OnAirController, {
 			props: {
-				crState: makeState({
-					playout: {
-						channels: [{
-							id: 1,
-							state: 'on_air',
-							itemIndex: 0,
-							itemCount: 3,
-						}],
-					},
-				}),
+				crState: makeState(),
 				onCanvasReady: vi.fn(),
 				onSwitchLayout: vi.fn(),
 				onTakeNext: takeNextFn,
 			},
 		});
+		// Activate playout mode via the dashboard toggle
+		await clickPlayoutToggle(container);
 		await fireEvent.keyDown(window, { code: 'KeyN' });
 		expect(takeNextFn).toHaveBeenCalled();
 	});
@@ -506,23 +485,16 @@ describe('OnAirController', () => {
 
 	it('does not call onCut via digit shortcut in playout mode', async () => {
 		const cutFn = vi.fn();
-		render(OnAirController, {
+		const { container } = render(OnAirController, {
 			props: {
-				crState: makeState({
-					playout: {
-						channels: [{
-							id: 1,
-							state: 'on_air',
-							itemIndex: 0,
-							itemCount: 3,
-						}],
-					},
-				}),
+				crState: makeState(),
 				onCanvasReady: vi.fn(),
 				onSwitchLayout: vi.fn(),
 				onCut: cutFn,
 			},
 		});
+		// Activate playout mode via the dashboard toggle
+		await clickPlayoutToggle(container);
 		await fireEvent.keyDown(window, { code: 'Digit1' });
 		expect(cutFn).not.toHaveBeenCalled();
 	});

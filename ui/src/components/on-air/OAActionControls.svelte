@@ -17,7 +17,6 @@
 		onSkip?: () => void;
 		onTakeNext?: () => void;
 		onCaptionCycle?: () => void;
-		onSlate?: () => void;
 		onCut?: () => void;
 		onAuto?: () => void;
 		onScteInsert?: () => void;
@@ -53,7 +52,6 @@
 		onSkip,
 		onTakeNext,
 		onCaptionCycle,
-		onSlate,
 		onCut,
 		onAuto,
 		onScteInsert,
@@ -160,9 +158,6 @@
 			>
 				{bugActive ? 'BUG: ON' : 'BUG: OFF'}
 			</button>
-			{#if mode === 'playout'}
-				<button class="btn btn-secondary" onclick={onSlate}>SLATE</button>
-			{/if}
 			<button class="btn btn-secondary caption-btn" onclick={onCaptionCycle}>
 				CAPTIONS: {captionLabel}
 			</button>

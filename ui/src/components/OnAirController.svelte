@@ -40,7 +40,6 @@
 		onCut?: (source: string) => void;
 		onAuto?: (source: string) => void;
 		onBugToggle?: () => void;
-		onSlate?: () => void;
 		onScteInsert?: () => void;
 		onScteReturn?: () => void;
 		onFirePod?: () => void;
@@ -74,7 +73,6 @@
 		onCut,
 		onAuto,
 		onBugToggle,
-		onSlate,
 		onScteInsert,
 		onScteReturn,
 		onFirePod,
@@ -136,6 +134,10 @@
 	function cancelSkip() {
 		skipConfirmVisible = false;
 	}
+
+	// ── Playout mode (driven by dashboard toggle) ──
+
+	let playoutEnabled = $state(false);
 
 	// ── Uptime counter ──
 
@@ -336,12 +338,12 @@
 		switch (e.code) {
 			case 'Space':
 				e.preventDefault();
-				if (hasPlaylist) onFirePod?.();
+				if (playoutEnabled) onFirePod?.();
 				else onCut?.(crState.previewSource);
 				break;
 			case 'Enter':
 				e.preventDefault();
-				if (hasPlaylist) onReturnToLive?.();
+				if (playoutEnabled) onReturnToLive?.();
 				else onAuto?.(crState.previewSource);
 				break;
 			case 'KeyB':
@@ -349,26 +351,26 @@
 				onBugToggle?.();
 				break;
 			case 'KeyH':
-				if (hasPlaylist) {
+				if (playoutEnabled) {
 					e.preventDefault();
 					onHold?.();
 				}
 				break;
 			case 'KeyS':
-				if (hasPlaylist) {
+				if (playoutEnabled) {
 					e.preventDefault();
 					requestSkip();
 				}
 				break;
 			case 'KeyN':
-				if (hasPlaylist) {
+				if (playoutEnabled) {
 					e.preventDefault();
 					onTakeNext?.();
 				}
 				break;
 			case 'Digit1': case 'Digit2': case 'Digit3': case 'Digit4':
 			case 'Digit5': case 'Digit6': case 'Digit7': case 'Digit8': case 'Digit9': {
-				if (!hasPlaylist) {
+				if (!playoutEnabled) {
 					e.preventDefault();
 					const index = parseInt(e.code.replace('Digit', '')) - 1;
 					const sourceKeys = Object.keys(crState.sources ?? {});
@@ -403,7 +405,7 @@
 		{onSyncClick}
 		{onBugToggle}
 		onModeMenu={onSwitchLayout}
-		showUptime={!hasPlaylist}
+		showUptime={!playoutEnabled}
 		{uptimeSeconds}
 		{isRecording}
 		{recordingDuration}
@@ -450,11 +452,15 @@
 					{crState}
 					onCut={(key) => onCut?.(key)}
 					{onBugToggle}
+					playoutChannel={playoutChannel}
+					{playlistItems}
+					onShowAsRun={() => { asRunSlideOut = true; }}
+					onPlayoutToggle={(enabled) => { playoutEnabled = enabled; }}
 				/>
 			</div>
 
 			<OAActionControls
-				mode={hasPlaylist ? 'playout' : 'live-monitor'}
+				mode={playoutEnabled ? 'playout' : 'live-monitor'}
 				{bugActive}
 				{captionMode}
 				{podArmed}
@@ -465,7 +471,6 @@
 				{onTransitionTypeChange}
 				{onTransitionDurationChange}
 				{onBugToggle}
-				{onSlate}
 				{onScteInsert}
 				{onScteReturn}
 				{onFirePod}
