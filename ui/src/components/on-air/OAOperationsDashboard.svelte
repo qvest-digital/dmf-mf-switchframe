@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import type { ControlRoomState } from '$lib/api/types';
 	import {
 		listClips, deleteClip, uploadClip,
@@ -6,8 +7,9 @@
 		cut,
 		graphicsImageUpload, graphicsAddLayer,
 		playoutSavedList, playoutImportBxf,
+		playoutLoadPlaylist, playoutSavedGet,
 	} from '$lib/api/switch-api';
-	import { resolveApiUrl } from '$lib/api/base-url';
+	import { notify } from '$lib/state/notifications.svelte';
 	import OASlatesSection from './OASlatesSection.svelte';
 	import OABugSection from './OABugSection.svelte';
 	import OAClipsSection from './OAClipsSection.svelte';
@@ -16,7 +18,6 @@
 	interface SlateInfo {
 		clipId: string;
 		name: string;
-		isOnAir?: boolean;
 	}
 
 	interface ClipItem {
@@ -53,19 +54,33 @@
 
 	let slates = $state<SlateInfo[]>(loadSlates());
 
+	// Track which clip player each slate was loaded into
+	let slatePlayerMap = $state<Record<string, number>>({});
+
+	const slatesWithOnAir = $derived(
+		slates.map(s => ({
+			...s,
+			isOnAir: slatePlayerMap[s.clipId] != null &&
+				crState.programSource === `clip:${slatePlayerMap[s.clipId]}`
+		}))
+	);
+
 	async function fireSlate(clipId: string, name: string) {
 		const players = crState.clipPlayers ?? [];
-		let playerIdx = players.findIndex(p => !p.clipId || p.state === 'empty' || p.state === 'loaded');
-		if (playerIdx < 0) playerIdx = 0; // fallback to player 1
+		const playerIdx = players.findIndex(p => !p.clipId || p.state === 'empty' || p.state === 'loaded');
+		if (playerIdx < 0) {
+			notify('warning', 'No clip player available — stop a player first');
+			return;
+		}
 		const playerNum = playerIdx + 1;
 
 		try {
 			await clipPlayerLoad(playerNum, clipId);
 			await clipPlayerPlay(playerNum, 1, true);
 			await cut(`clip:${playerNum}`);
-			slates = slates.map(s => ({ ...s, isOnAir: s.clipId === clipId }));
+			slatePlayerMap = { ...slatePlayerMap, [clipId]: playerNum };
 		} catch {
-			// silently handle error
+			notify('error', 'Failed to fire slate');
 		}
 	}
 
@@ -114,7 +129,7 @@
 			const { id: layerId } = await graphicsAddLayer();
 			await graphicsImageUpload(layerId, files[0]);
 		} catch {
-			// silently handle error
+			notify('error', 'Bug upload failed');
 		}
 	}
 
@@ -123,14 +138,16 @@
 	let clips = $state<ClipItem[]>([]);
 	let uploadProgress = $state<{ filename: string; percent: number } | null>(null);
 
-	$effect(() => {
+	onMount(() => {
 		listClips().then(result => {
 			clips = result.map(c => ({
 				id: c.id,
 				name: c.name,
 				durationMs: c.durationMs,
 			}));
-		}).catch(() => {});
+		}).catch(() => {
+			notify('warning', 'Failed to load clip library');
+		});
 	});
 
 	async function handleUploadClip(files: FileList) {
@@ -152,6 +169,7 @@
 			}));
 			setTimeout(() => { uploadProgress = null; }, 2000);
 		} catch {
+			notify('error', 'Clip upload failed');
 			uploadProgress = null;
 		}
 	}
@@ -164,7 +182,7 @@
 			slates = slates.filter(s => s.clipId !== id);
 			saveSlates(slates);
 		} catch {
-			// silently handle error
+			notify('error', 'Failed to delete clip');
 		}
 	}
 
@@ -195,37 +213,27 @@
 		const text = await file.text();
 		if (file.name.endsWith('.bxf') || file.name.endsWith('.xml')) {
 			try {
-				await playoutImportBxf(1, text);
+				await playoutImportBxf(text, 1);
 			} catch {
-				// silently handle error
+				notify('error', 'Failed to load playlist file');
 			}
 		} else {
 			// JSON playlist
 			try {
-				await fetch(resolveApiUrl('/api/playout/channels/1/load'), {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: text,
-				});
+				const playlist = JSON.parse(text);
+				await playoutLoadPlaylist(1, playlist);
 			} catch {
-				// silently handle error
+				notify('error', 'Failed to load playlist file');
 			}
 		}
 	}
 
 	async function handleLoadSaved(name: string) {
 		try {
-			const playlist = await fetch(resolveApiUrl(`/api/playout/saved/${encodeURIComponent(name)}`));
-			if (playlist.ok) {
-				const data = await playlist.json();
-				await fetch(resolveApiUrl('/api/playout/channels/1/load'), {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify(data),
-				});
-			}
+			const data = await playoutSavedGet(name);
+			await playoutLoadPlaylist(1, data);
 		} catch {
-			// silently handle error
+			notify('error', 'Failed to load saved playlist');
 		}
 	}
 </script>
@@ -238,7 +246,7 @@
 		</header>
 		<div class="section-content">
 			<OASlatesSection
-				{slates}
+				slates={slatesWithOnAir}
 				onFireSlate={fireSlate}
 				onAddSlate={addSlate}
 				onRemoveSlate={removeSlate}

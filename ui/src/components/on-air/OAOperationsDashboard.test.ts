@@ -15,10 +15,12 @@ vi.mock('$lib/api/switch-api', () => ({
 	graphicsAddLayer: vi.fn().mockResolvedValue({ id: 5 }),
 	playoutSavedList: vi.fn().mockResolvedValue([]),
 	playoutImportBxf: vi.fn().mockResolvedValue(undefined),
+	playoutLoadPlaylist: vi.fn().mockResolvedValue(undefined),
+	playoutSavedGet: vi.fn().mockResolvedValue({ items: [] }),
 }));
 
-vi.mock('$lib/api/base-url', () => ({
-	resolveApiUrl: vi.fn((path: string) => `http://test${path}`),
+vi.mock('$lib/state/notifications.svelte', () => ({
+	notify: vi.fn(),
 }));
 
 import {
@@ -205,7 +207,8 @@ describe('OAOperationsDashboard', () => {
 		expect(cut).toHaveBeenCalledWith('clip:1');
 	});
 
-	it('falls back to player 1 when all players are busy', async () => {
+	it('shows warning and does not fire when all players are busy', async () => {
+		const { notify } = await import('$lib/state/notifications.svelte');
 		const slates = [{ clipId: 'slate-clip', name: 'BRB' }];
 		localStorage.setItem('switchframe-slates', JSON.stringify(slates));
 
@@ -224,9 +227,10 @@ describe('OAOperationsDashboard', () => {
 
 		await fireEvent.click(screen.getByText('BRB'));
 
-		await vi.waitFor(() => {
-			expect(clipPlayerLoad).toHaveBeenCalledWith(1, 'slate-clip');
-		});
+		// Should NOT attempt to load any player
+		expect(clipPlayerLoad).not.toHaveBeenCalled();
+		// Should show a warning notification
+		expect(notify).toHaveBeenCalledWith('warning', expect.stringContaining('No clip player'));
 	});
 
 	// ── Clips: load on mount ──
