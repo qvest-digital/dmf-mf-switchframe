@@ -397,18 +397,44 @@
 			const res = await fetch(resolveApiUrl('/api/pipeline/thumbnails'));
 			if (res.ok) {
 				const data = await res.json();
-				const nodes = data.nodes ?? {};
+				const apiNodes = data.nodes ?? {};
 				const mapped: Record<string, string> = {};
-				for (const [id, info] of Object.entries(nodes)) {
+				for (const [id, info] of Object.entries(apiNodes)) {
 					const entry = info as ThumbnailApiEntry;
 					if (entry.jpeg) {
 						mapped[id] = `data:image/jpeg;base64,${entry.jpeg}`;
 					}
 				}
+				// For source nodes missing server thumbnails, capture from browser canvases.
+				// The On-Air source tiles render live video to canvases with id="tile-{key}".
+				for (const node of nodes) {
+					if (node.category === 'source' && !mapped[node.name]) {
+						const canvas = document.getElementById(`tile-${node.name}`) as HTMLCanvasElement | null;
+						if (canvas && canvas.width > 0 && canvas.height > 0) {
+							try {
+								mapped[node.name] = canvas.toDataURL('image/jpeg', 0.5);
+							} catch {
+								// Canvas may be tainted or empty
+							}
+						}
+					}
+				}
 				thumbnails = mapped;
 			}
 		} catch {
-			// API unavailable, keep empty thumbnails
+			// API unavailable — still try browser canvases
+			const mapped: Record<string, string> = {};
+			for (const node of nodes) {
+				if (node.category === 'source') {
+					const canvas = document.getElementById(`tile-${node.name}`) as HTMLCanvasElement | null;
+					if (canvas && canvas.width > 0 && canvas.height > 0) {
+						try {
+							mapped[node.name] = canvas.toDataURL('image/jpeg', 0.5);
+						} catch { /* tainted */ }
+					}
+				}
+			}
+			if (Object.keys(mapped).length > 0) thumbnails = mapped;
 		}
 	}
 
