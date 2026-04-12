@@ -224,7 +224,7 @@ describe('PrismRenderer', () => {
 	describe('queue-pressure desync recovery', () => {
 		it('recovers from 800ms offset via PTS discontinuity detection', () => {
 			// 800ms > 500ms threshold triggers PTS discontinuity recovery —
-			// re-anchors clock and draws instead of freezing.
+			// re-anchors wall-clock sync and draws.
 			const audioClock = { getPlaybackPTS: () => 1_000_000 };
 			const renderer = new PrismRenderer(canvas, buffer, audioClock);
 			renderer.externallyDriven = true;
@@ -239,28 +239,34 @@ describe('PrismRenderer', () => {
 			expect(diag.framesDrawn).toBe(1);
 		});
 
-		it('draws frames when video is within 150ms of audio (normal operation)', () => {
-			// Video PTS slightly ahead of audio — within look-ahead tolerance.
+		it('draws frames as wall clock advances past video PTS', () => {
+			// With wall-clock pacing, video frames slightly ahead of audio
+			// are drawn as wall time naturally advances.
 			let audioPTS = 10_000_000;
 			const audioClock = { getPlaybackPTS: () => audioPTS };
 			const renderer = new PrismRenderer(canvas, buffer, audioClock);
 			renderer.externallyDriven = true;
 
-			const PTS_OFFSET = 50_000; // 50ms video-ahead (typical)
+			const mockNow = vi.spyOn(performance, 'now');
+			const baseTime = 1000;
 
-			// Simulate steady-state: add one frame, render, advance audio
 			let totalDrawn = 0;
 			for (let tick = 0; tick < 8; tick++) {
-				const framePTS = audioPTS + PTS_OFFSET;
+				// Wall clock advances 33ms per tick
+				mockNow.mockReturnValue(baseTime + tick * 33);
+
+				const framePTS = audioPTS + 50_000; // 50ms ahead
 				buffer.addFrame(new MockVideoFrame(framePTS) as unknown as VideoFrame);
 				renderer.renderOnce();
-				audioPTS += 33_333; // advance audio by one frame interval
-				const diag = renderer.getDiagnostics();
-				totalDrawn = diag.framesDrawn;
+				audioPTS += 33_333;
+				totalDrawn = renderer.getDiagnostics().framesDrawn;
 			}
 
-			// Should draw frames as audio catches up to video PTS
-			expect(totalDrawn).toBeGreaterThanOrEqual(5);
+			// Wall-clock advances ~33ms per tick; frames 50ms ahead are reached
+			// within 2 ticks. After 8 ticks of 33ms, most frames should be drawn.
+			expect(totalDrawn).toBeGreaterThanOrEqual(4);
+
+			mockNow.mockRestore();
 		});
 	});
 
@@ -268,8 +274,8 @@ describe('PrismRenderer', () => {
 		it('skips to newest frame when buffer exceeds target depth', () => {
 			const buffer = new VideoRenderBuffer();
 			const closeFns: ReturnType<typeof vi.fn>[] = [];
-			// Add 22 frames — exceeds target depth of 20
-			for (let i = 0; i < 22; i++) {
+			// Add 12 frames — exceeds target depth of 9
+			for (let i = 0; i < 12; i++) {
 				const close = vi.fn();
 				closeFns.push(close);
 				buffer.addFrame({
@@ -288,8 +294,8 @@ describe('PrismRenderer', () => {
 
 			renderer.renderOnce();
 
-			// Frames 0-20 should be closed (skipped), frame 21 displayed
-			for (let i = 0; i < 21; i++) {
+			// Frames 0-10 should be closed (skipped), frame 11 displayed
+			for (let i = 0; i < 11; i++) {
 				expect(closeFns[i]).toHaveBeenCalled();
 			}
 
@@ -394,141 +400,110 @@ describe('PrismRenderer', () => {
 		});
 	});
 
-	describe('A/V sync feedback loop', () => {
-		it('gradually corrects when video is persistently ahead of audio', () => {
-			// Simulate video 600ms ahead of audio. The 600ms gap exceeds the
-			// 500ms PTS discontinuity threshold, so frames are drawn immediately
-			// (no need to wait for live-edge skips). Each draw triggers the
-			// feedback loop's coarse correction (offset > 200ms).
-			let audioPTS = 1_000_000; // 1s in microseconds
-			const audioClock = { getPlaybackPTS: () => audioPTS };
-			const renderer = new PrismRenderer(canvas, buffer, audioClock);
-			renderer.externallyDriven = true;
-
-			// First: establish video PTS by drawing a frame at audio PTS.
-			buffer.addFrame(new MockVideoFrame(1_000_000) as unknown as VideoFrame);
-			renderer.renderOnce();
-
-			// Now simulate ticks where video is consistently 600ms ahead.
-			// Each frame triggers PTS discontinuity draw → feedback loop fires.
-			for (let tick = 0; tick < 30; tick++) {
-				audioPTS += 33_333;
-				buffer.addFrame(new MockVideoFrame(audioPTS + 600_000) as unknown as VideoFrame);
-				renderer.renderOnce();
-			}
-
-			const diag = renderer.getDiagnostics();
-			// After 30 coarse corrections at 600ms offset, correction should
-			// converge toward ~300ms (half of 600ms).
-			expect(diag.avSyncCorrectionMs).toBeGreaterThan(200);
-		});
-
-		it('applies coarse correction for large offsets (>200ms)', () => {
-			// When the measured offset exceeds 200ms, the loop should apply
-			// an immediate step correction instead of slow EMA convergence.
-			// Frame must be >500ms ahead to trigger PTS discontinuity draw
-			// (audio-driven mode has no look-ahead for smaller gaps).
+	describe('wall-clock drift correction', () => {
+		it('reports drift in diagnostics', () => {
+			const mockNow = vi.spyOn(performance, 'now');
 			let audioPTS = 1_000_000;
 			const audioClock = { getPlaybackPTS: () => audioPTS };
 			const renderer = new PrismRenderer(canvas, buffer, audioClock);
 			renderer.externallyDriven = true;
 
-			// Establish initial sync
+			// Tick 0: anchor wall-clock sync
+			mockNow.mockReturnValue(1000);
 			buffer.addFrame(new MockVideoFrame(1_000_000) as unknown as VideoFrame);
 			renderer.renderOnce();
 
-			// Feed a frame 600ms ahead — triggers PTS discontinuity detection
-			// (gap > 500ms), which draws it immediately
+			// Tick 1: advance wall clock 33ms, advance audio 33ms → drift ≈ 0
+			mockNow.mockReturnValue(1033);
 			audioPTS += 33_333;
-			buffer.addFrame(new MockVideoFrame(audioPTS + 600_000) as unknown as VideoFrame);
+			buffer.addFrame(new MockVideoFrame(audioPTS) as unknown as VideoFrame);
 			renderer.renderOnce();
 
 			const diag = renderer.getDiagnostics();
-			// Coarse correction should jump to ~half the measured offset immediately
-			expect(diag.avSyncCorrectionMs).toBeGreaterThan(200);
+			// avSyncCorrectionMs now reflects smoothedDrift, which should be near 0
+			expect(Math.abs(diag.avSyncCorrectionMs)).toBeLessThan(10);
+
+			mockNow.mockRestore();
 		});
 
-		it('does not over-correct past ±500ms clamp', () => {
+		it('hard resyncs on drift exceeding 500ms', () => {
+			const mockNow = vi.spyOn(performance, 'now');
 			let audioPTS = 1_000_000;
 			const audioClock = { getPlaybackPTS: () => audioPTS };
 			const renderer = new PrismRenderer(canvas, buffer, audioClock);
 			renderer.externallyDriven = true;
 
+			// Tick 0: anchor
+			mockNow.mockReturnValue(1000);
 			buffer.addFrame(new MockVideoFrame(1_000_000) as unknown as VideoFrame);
 			renderer.renderOnce();
 
-			// Simulate extreme video-ahead (1 second)
-			for (let tick = 0; tick < 100; tick++) {
-				audioPTS += 33_333;
-				buffer.addFrame(new MockVideoFrame(audioPTS + 1_000_000) as unknown as VideoFrame);
-				renderer.renderOnce();
-			}
+			// Tick 1: audio jumps 600ms ahead but wall clock only advances 33ms
+			// → drift = 600_000 - 33_000 = 567_000 > 500_000 → hard resync
+			mockNow.mockReturnValue(1033);
+			audioPTS += 600_000;
+			buffer.addFrame(new MockVideoFrame(audioPTS) as unknown as VideoFrame);
+			renderer.renderOnce();
 
 			const diag = renderer.getDiagnostics();
-			// Correction should be clamped at 500ms
-			expect(diag.avSyncCorrectionMs).toBeLessThanOrEqual(500);
-			expect(diag.avSyncCorrectionMs).toBeGreaterThan(400);
+			// After hard resync, drift resets to 0
+			expect(diag.avSyncCorrectionMs).toBe(0);
+			expect(diag.framesDrawn).toBe(2);
+
+			mockNow.mockRestore();
 		});
 
-		it('resets correction on resetSync()', () => {
+		it('resets drift on resetSync()', () => {
+			const mockNow = vi.spyOn(performance, 'now');
 			let audioPTS = 1_000_000;
 			const audioClock = { getPlaybackPTS: () => audioPTS };
 			const renderer = new PrismRenderer(canvas, buffer, audioClock);
 			renderer.externallyDriven = true;
 
-			// Build up correction via PTS discontinuity (>500ms gap draws frame)
+			mockNow.mockReturnValue(1000);
 			buffer.addFrame(new MockVideoFrame(1_000_000) as unknown as VideoFrame);
 			renderer.renderOnce();
 
-			audioPTS += 33_333;
-			buffer.addFrame(new MockVideoFrame(audioPTS + 600_000) as unknown as VideoFrame);
-			renderer.renderOnce();
-
-			// Verify correction built up (coarse: 600ms * 0.5 = ~300ms)
-			expect(renderer.getDiagnostics().avSyncCorrectionMs).toBeGreaterThan(100);
-
-			// Reset — simulates source change
 			renderer.resetSync();
 
-			expect(renderer.getDiagnostics().avSyncCorrectionMs).toBe(0);
+			const diag = renderer.getDiagnostics();
+			expect(diag.avSyncCorrectionMs).toBe(0);
+			expect(diag.currentVideoPTS).toBe(-1);
+			expect(diag.currentAudioPTS).toBe(-1);
+
+			mockNow.mockRestore();
 		});
 
-		it('converges toward zero offset with feedback loop applied', () => {
-			// The feedback loop adjusts targetPTS, which changes which video
-			// frame the binary search selects. Over time, the drawn video PTS
-			// should converge toward audio PTS (syncMs → 0).
+		it('gently corrects small drift via EMA', () => {
+			const mockNow = vi.spyOn(performance, 'now');
 			let audioPTS = 1_000_000;
 			const audioClock = { getPlaybackPTS: () => audioPTS };
 			const renderer = new PrismRenderer(canvas, buffer, audioClock);
 			renderer.externallyDriven = true;
 
+			// Tick 0: anchor
+			mockNow.mockReturnValue(1000);
 			buffer.addFrame(new MockVideoFrame(1_000_000) as unknown as VideoFrame);
 			renderer.renderOnce();
 
-			// Feed frames at several PTS values so binary search has choices.
-			// Audio advances at 33ms, video frames are 200ms ahead.
-			const syncMsValues: number[] = [];
-			for (let tick = 0; tick < 90; tick++) {
-				audioPTS += 33_333;
-				// Add multiple frames spanning the range
-				const basePTS = audioPTS - 100_000;
-				for (let f = 0; f < 6; f++) {
-					buffer.addFrame(new MockVideoFrame(basePTS + f * 50_000) as unknown as VideoFrame);
-				}
+			// Simulate audio drifting slightly faster than wall clock (2% speed ratio).
+			// Over 30 ticks of 33ms, audio advances 33_333 * 1.02 = 34_000 per tick.
+			// Wall clock advances 33_000 per tick. Drift accumulates ~1ms per tick.
+			for (let tick = 1; tick <= 30; tick++) {
+				mockNow.mockReturnValue(1000 + tick * 33);
+				audioPTS += 34_000; // slightly faster than wall clock
+				buffer.addFrame(new MockVideoFrame(audioPTS) as unknown as VideoFrame);
 				renderer.renderOnce();
-				const diag = renderer.getDiagnostics();
-				if (diag.avSyncMs !== 0 && diag.currentAudioPTS >= 0 && diag.currentVideoPTS >= 0) {
-					syncMsValues.push(diag.avSyncMs);
-				}
 			}
 
-			// The absolute sync offset at end should be no worse than at start.
-			// Use <= to avoid flaking when both windows land on the same quantized offset.
-			if (syncMsValues.length > 20) {
-				const earlyAvg = syncMsValues.slice(0, 10).reduce((a, b) => a + Math.abs(b), 0) / 10;
-				const lateAvg = syncMsValues.slice(-10).reduce((a, b) => a + Math.abs(b), 0) / 10;
-				expect(lateAvg).toBeLessThanOrEqual(earlyAvg);
-			}
+			const diag = renderer.getDiagnostics();
+			// smoothedDrift should have accumulated a positive value (audio ahead)
+			// Total raw drift ≈ 30ms, correction factor 0.05 → smoothed ≈ few ms
+			expect(diag.avSyncCorrectionMs).toBeGreaterThan(0);
+			// But well under the 500ms hard resync threshold
+			expect(Math.abs(diag.avSyncCorrectionMs)).toBeLessThan(50);
+
+			mockNow.mockRestore();
 		});
 	});
 
