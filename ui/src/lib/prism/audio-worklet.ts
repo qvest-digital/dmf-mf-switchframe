@@ -22,16 +22,28 @@ const SharedStates = {
 const MAX_CHANNELS = 8;
 const RMS_BASE = SharedStates.PEAK_BASE + MAX_CHANNELS;
 
-// Default adaptive rate control constants (can be overridden per-instance via config).
-// ±2% range is imperceptible (<0.3 semitones). Broadcast systems use
-// ±0.1-0.5%; we allow more for WebTransport jitter.
-const DEFAULT_TARGET_BUFFER_MS = 100;
-const DEFAULT_LOW_WATER_MS = 50;
-const DEFAULT_HIGH_WATER_MS = 200;
-const DEFAULT_MAX_SPEED_RATIO = 1.02;
-const DEFAULT_MIN_SPEED_RATIO = 0.98;
+// Adaptive rate control: when buffer is between LOW and HIGH, consume at 1x.
+// Below LOW, slow down consumption; above HIGH, speed up. Drift is
+// compensated by skipping or repeating ~3 samples per 128-sample quantum
+// (~60µs, perceptually transparent) — no resampling or interpolation.
+//
+// The ±2% range is chosen to be imperceptible. Broadcast systems use
+// ±0.1-0.5%, but we allow slightly more to handle WebTransport jitter.
+// At ±2%, pitch shift is <0.3 semitones — well below audibility threshold.
+// The previous ±10% caused noticeable pitch changes and garbling.
+//
+// Buffer depth directly determines A/V sync offset: video displays immediately
+// but audio plays through the buffer, so avSyncMs ≈ buffer depth. Targets are
+// set to keep steady-state depth at ~80-120ms for smooth, glitch-free audio.
+const TARGET_BUFFER_MS = 100;
+const LOW_WATER_MS = 50;
+const HIGH_WATER_MS = 200;
+const MAX_SPEED_RATIO = 1.02;
+const MIN_SPEED_RATIO = 0.98;
 // Above this threshold, hard-flush the ring buffer to TARGET_BUFFER_MS.
-const DEFAULT_HARD_FLUSH_MS = 400;
+// Set high enough that normal jitter doesn't trigger it, but delivery
+// stalls (network hiccup, tab backgrounded) are caught quickly.
+const HARD_FLUSH_MS = 400;
 
 function writePTS(states: Int32Array, pts: number): void {
 	const intPart = Math.trunc(pts);
@@ -53,20 +65,12 @@ class PrismAudioWorkletProcessor extends AudioWorkletProcessor {
 
 	private fractionalAccum = 0;
 
-	// Configurable rate-control knobs (runtime-updatable via "update-config" message)
-	private lowWaterMs = DEFAULT_LOW_WATER_MS;
-	private highWaterMs = DEFAULT_HIGH_WATER_MS;
-	private targetBufferMs = DEFAULT_TARGET_BUFFER_MS;
-	private maxSpeedRatio = DEFAULT_MAX_SPEED_RATIO;
-	private minSpeedRatio = DEFAULT_MIN_SPEED_RATIO;
-	private hardFlushMs = DEFAULT_HARD_FLUSH_MS;
-
 	constructor() {
 		super();
 		this.port.onmessage = (ev: MessageEvent) => this.handleMessage(ev.data);
 	}
 
-	private handleMessage(msg: { type: string; sab?: SharedArrayBuffer[]; commBuffer?: SharedArrayBuffer; numChannels?: number; sampleRate?: number; pts?: number; sampleOffset?: number; config?: { lowWaterMs?: number; highWaterMs?: number; targetBufferMs?: number; maxSpeedRatio?: number; minSpeedRatio?: number; hardFlushMs?: number } }): void {
+	private handleMessage(msg: { type: string; sab?: SharedArrayBuffer[]; commBuffer?: SharedArrayBuffer; numChannels?: number; sampleRate?: number; pts?: number; sampleOffset?: number }): void {
 		if (msg.type === "init") {
 			this.sharedStates = new Int32Array(msg.commBuffer!);
 			this.numChannels = msg.numChannels!;
@@ -76,24 +80,12 @@ class PrismAudioWorkletProcessor extends AudioWorkletProcessor {
 				this.floatViews.push(new Float32Array(msg.sab![c]));
 			}
 			this.ringSize = this.floatViews[0].length;
-			if (msg.config) this.applyConfig(msg.config);
 		} else if (msg.type === "set-pts") {
 			this.basePTS = msg.pts!;
 			this.sampleOffset = msg.sampleOffset ?? 0;
 			this.samplesConsumed = 0;
 			this.samplesOutput = 0;
-		} else if (msg.type === "update-config") {
-			if (msg.config) this.applyConfig(msg.config);
 		}
-	}
-
-	private applyConfig(cfg: { lowWaterMs?: number; highWaterMs?: number; targetBufferMs?: number; maxSpeedRatio?: number; minSpeedRatio?: number; hardFlushMs?: number }): void {
-		if (cfg.lowWaterMs != null) this.lowWaterMs = cfg.lowWaterMs;
-		if (cfg.highWaterMs != null) this.highWaterMs = cfg.highWaterMs;
-		if (cfg.targetBufferMs != null) this.targetBufferMs = cfg.targetBufferMs;
-		if (cfg.maxSpeedRatio != null) this.maxSpeedRatio = cfg.maxSpeedRatio;
-		if (cfg.minSpeedRatio != null) this.minSpeedRatio = cfg.minSpeedRatio;
-		if (cfg.hardFlushMs != null) this.hardFlushMs = cfg.hardFlushMs;
 	}
 
 	process(_inputs: Float32Array[][], outputs: Float32Array[][], _parameters: Record<string, Float32Array>): boolean {
@@ -136,17 +128,17 @@ class PrismAudioWorkletProcessor extends AudioWorkletProcessor {
 		Atomics.store(this.sharedStates, SharedStates.BUFFER_DEPTH_MS, Math.round(bufferMs));
 
 		// Hard flush: if buffer exceeds threshold (extreme stall recovery),
-		// skip forward to target. Adjust sampleOffset so PTS
+		// skip forward to TARGET_BUFFER_MS. Adjust sampleOffset so PTS
 		// jumps to match the new ring position.
-		if (bufferMs > this.hardFlushMs) {
-			const targetSamples = Math.round((this.targetBufferMs / 1000) * this.localSampleRate);
+		if (bufferMs > HARD_FLUSH_MS) {
+			const targetSamples = Math.round((TARGET_BUFFER_MS / 1000) * this.localSampleRate);
 			const skipSamples = available - targetSamples;
 			if (skipSamples > 0) {
 				start = (start + skipSamples) % this.ringSize;
 				Atomics.store(this.sharedStates, SharedStates.BUFF_START, start);
 				this.sampleOffset += skipSamples;
 				available = targetSamples;
-				bufferMs = this.targetBufferMs;
+				bufferMs = TARGET_BUFFER_MS;
 			}
 		}
 
@@ -197,15 +189,16 @@ class PrismAudioWorkletProcessor extends AudioWorkletProcessor {
 	}
 
 	private computeSpeedRatio(bufferMs: number): number {
-		if (bufferMs < this.lowWaterMs) {
+		if (bufferMs < LOW_WATER_MS) {
 			// Buffer is getting dangerously low -- slow down consumption
-			const t = bufferMs / this.lowWaterMs;
-			return this.minSpeedRatio + t * (1.0 - this.minSpeedRatio);
-		} else if (bufferMs > this.highWaterMs) {
+			const t = bufferMs / LOW_WATER_MS;
+			return MIN_SPEED_RATIO + t * (1.0 - MIN_SPEED_RATIO);
+		} else if (bufferMs > HIGH_WATER_MS) {
 			// Buffer is too full -- speed up consumption to drain
-			const excess = bufferMs - this.highWaterMs;
-			const t = Math.min(excess / this.targetBufferMs, 1.0);
-			return 1.0 + t * (this.maxSpeedRatio - 1.0);
+			const excess = bufferMs - HIGH_WATER_MS;
+			const range = TARGET_BUFFER_MS;
+			const t = Math.min(excess / range, 1.0);
+			return 1.0 + t * (MAX_SPEED_RATIO - 1.0);
 		}
 		return 1.0;
 	}

@@ -1,25 +1,18 @@
 import { VideoRenderBuffer } from "./video-render-buffer";
 
-// Allow up to 9 frames (~300ms at 30fps) before live-edge skip.
-// Lower threshold catches up faster on high-RTT connections (5G, etc.)
-// where bursty delivery causes frame accumulation. Group-level skip
-// in media-pipeline handles keyframe-aware stall recovery.
-const LIVE_EDGE_TARGET_DEPTH = 9;
+// Allow up to 20 frames (~667ms at 30fps) before live-edge skip.
+// Group-level skip (in media-pipeline) handles keyframe-aware stall
+// recovery; this is the safety net for extreme accumulation. Must be
+// high enough to tolerate normal WebTransport delivery bursts without
+// triggering spurious skips that cause choppy playback.
+const LIVE_EDGE_TARGET_DEPTH = 20;
 const RAF_THROTTLE_THRESHOLD_MS = 50;
 const RAF_THROTTLE_COUNT = 3; // consecutive slow frames before switching
 const RAF_NORMAL_COUNT = 5; // consecutive normal frames before switching back
 
 /** Provides the current audio playback PTS for A/V sync. Returns -1 when audio is unavailable. */
-export interface AudioClock {
+interface AudioClock {
 	getPlaybackPTS(): number;
-}
-
-/** Sync configuration knobs for A/V sync timing. All fields are optional; missing fields keep current values. */
-export interface SyncConfig {
-	audioStaleMs?: number;
-	driftThresholdUs?: number;
-	driftCorrectionFactor?: number;
-	freeRunSkipThreshold?: number;
 }
 
 /** Lightweight per-frame stats emitted on each render tick for the HUD and metrics store. */
@@ -67,10 +60,6 @@ export interface RendererDiagnostics {
  * either by an audio clock (for A/V sync) or by a wall-clock free-run
  * mode when audio is unavailable. Collects timing diagnostics for the
  * perf overlay.
- *
- * Uses wall-clock pacing with gentle drift correction toward audio PTS,
- * rather than directly chasing audio PTS. This produces smooth, regular
- * frame intervals regardless of audio PTS quantization jitter.
  */
 export class PrismRenderer {
 	private canvas: HTMLCanvasElement;
@@ -84,7 +73,6 @@ export class PrismRenderer {
 	private currentAudioPTS = -1;
 	private lastDrawnFrame: VideoFrame | null = null;
 	private onStats: ((stats: RendererStats) => void) | null = null;
-	private afterDraw: ((ctx: CanvasRenderingContext2D, frame: VideoFrame) => void) | null = null;
 	private freeRunStart = -1;
 	private freeRunBasePTS = -1;
 	/** @deprecated freeRunOnly is no longer used; audioClock returns -1 dynamically when unavailable */
@@ -96,17 +84,6 @@ export class PrismRenderer {
 	private lastAudioAdvanceTime = 0;
 	private audioStallFreeRunStart = -1;
 	private audioStallFreeRunBasePTS = -1;
-
-	// Wall-clock sync: paces video at wall-clock rate with gentle drift correction toward audio PTS
-	private wallClockSyncStart = -1;
-	private wallClockSyncBasePTS = -1;
-	private smoothedDrift = 0;
-
-	// --- sync config (runtime-updatable) ---
-	private _audioStaleMs = 200;
-	private _driftThresholdUs = 500_000;
-	private _driftCorrectionFactor = 0.05;
-	private _freeRunSkipThreshold = 9;
 
 	// --- diagnostics ---
 	private _diagRafCount = 0;
@@ -130,6 +107,13 @@ export class PrismRenderer {
 	private _diagEmptyBufferHits = 0;
 	private _diagLiveEdgeSkips = 0;
 
+	// --- A/V sync feedback loop ---
+	// Tracks the running average of video-ahead offset (μs). Subtracted
+	// from targetPTS to gradually eliminate measured A/V desync.
+	// EMA α=0.03 for fine correction (<200ms), immediate step for coarse
+	// correction (>200ms). Capped at ±500ms to prevent runaway.
+	private _avSyncCorrectionUs = 0;
+
 	// --- rAF throttle detection ---
 	private _slowRafCount = 0;
 	private _normalRafCount = 0;
@@ -149,13 +133,6 @@ export class PrismRenderer {
 		this.onStats = onStats ?? null;
 	}
 
-	updateSyncConfig(config: SyncConfig): void {
-		if (config.audioStaleMs != null) this._audioStaleMs = config.audioStaleMs;
-		if (config.driftThresholdUs != null) this._driftThresholdUs = config.driftThresholdUs;
-		if (config.driftCorrectionFactor != null) this._driftCorrectionFactor = config.driftCorrectionFactor;
-		if (config.freeRunSkipThreshold != null) this._freeRunSkipThreshold = config.freeRunSkipThreshold;
-	}
-
 	set freeRunOnly(v: boolean) {
 		this._freeRunOnly = v;
 	}
@@ -166,19 +143,6 @@ export class PrismRenderer {
 
 	set externallyDriven(v: boolean) {
 		this._externallyDriven = v;
-	}
-
-	setAudioClock(clock: AudioClock): void {
-		this.audioClock = clock;
-		// Reset free-run state so audio sync takes over
-		this.freeRunStart = -1;
-		this.freeRunBasePTS = -1;
-		this.audioStallFreeRunStart = -1;
-		this.audioStallFreeRunBasePTS = -1;
-		this.lastAudioAdvanceTime = 0;
-		this.wallClockSyncStart = -1;
-		this.wallClockSyncBasePTS = -1;
-		this.smoothedDrift = 0;
 	}
 
 	getVideoBuffer(): VideoRenderBuffer {
@@ -271,13 +235,13 @@ export class PrismRenderer {
 
 				this.currentVideoPTS = skipResult.frame.timestamp;
 
-				// Sample audio clock so A/V sync diagnostics can measure the gap.
+				// Sample audio clock so A/V sync feedback can measure the gap.
 				const skipAudioPTS = this.audioClock.getPlaybackPTS();
 				if (skipAudioPTS >= 0) {
 					this.currentAudioPTS = skipAudioPTS;
 				}
 
-				// Re-anchor any freerun/wall-clock clocks to the new PTS
+				// Re-anchor any freerun clocks to the new PTS
 				if (this.freeRunStart >= 0) {
 					this.freeRunStart = now;
 					this.freeRunBasePTS = skipResult.frame.timestamp;
@@ -286,13 +250,12 @@ export class PrismRenderer {
 					this.audioStallFreeRunStart = now;
 					this.audioStallFreeRunBasePTS = skipResult.frame.timestamp;
 				}
-				if (this.wallClockSyncStart >= 0) {
-					this.wallClockSyncStart = now;
-					this.wallClockSyncBasePTS = skipResult.frame.timestamp;
-					this.smoothedDrift = 0;
-				}
 
-				this.updateAvSyncDiagnostics();
+				// Update A/V sync feedback loop on live-edge skips too.
+				// Without this, the feedback never fires because audio-driven
+				// mode with no look-ahead means frames only get drawn via
+				// live-edge skips when video is persistently ahead.
+				this.updateAvSyncCorrection();
 
 				this.reportStats(now);
 				return;
@@ -300,21 +263,37 @@ export class PrismRenderer {
 		}
 
 		let targetPTS: number;
-		const audioPTS = this._freeRunOnly ? -1 : this.audioClock.getPlaybackPTS();
+		let audioDriven = false;
+		// Always check the audio clock — it returns -1 dynamically when
+		// unavailable (audioDecoder not yet configured, not playing, etc.).
+		// This allows the renderer to transition from freerun to audio-driven
+		// mode once audio becomes available, rather than being locked out.
+		const audioPTS = this.audioClock.getPlaybackPTS();
+
+		const AUDIO_STALE_MS = 200;
 
 		if (audioPTS >= 0) {
-			// Audio PTS jumped backward >30s — stream restart. Clear everything.
 			if (this.currentAudioPTS >= 0 && this.currentVideoPTS >= 0 &&
 				this.currentAudioPTS - audioPTS > 30_000_000) {
 				this.videoBuffer.clear();
 				this.currentVideoPTS = -1;
-				this.wallClockSyncStart = -1;
-				this.wallClockSyncBasePTS = -1;
-				this.smoothedDrift = 0;
 			}
 
 			const audioAdvanced = this.currentAudioPTS < 0 || audioPTS !== this.currentAudioPTS;
-			if (audioAdvanced) {
+
+			// Detect A/V PTS divergence: video buffer frames are far ahead
+			// of audio PTS. Happens after source transitions where the mixer
+			// has an audio gap (e.g., clip→live), creating permanent desync.
+			// Threshold: 3 seconds (3,000,000 μs).
+			const peekDiverge = this.videoBuffer.peekFirstFrame();
+			const avDiverged = peekDiverge != null && audioPTS >= 0 &&
+				peekDiverge.timestamp - audioPTS > 3_000_000 &&
+				this.videoBuffer.getStats().queueSize > 10;
+
+			// Only reset audio-stall tracking when audio advances AND
+			// A/V PTS are reasonably aligned. During divergence, keep
+			// the wall-clock pacing stable.
+			if (audioAdvanced && !avDiverged) {
 				this.lastAudioAdvanceTime = now;
 				this.audioStallFreeRunStart = -1;
 				this.audioStallFreeRunBasePTS = -1;
@@ -324,10 +303,11 @@ export class PrismRenderer {
 			this.freeRunBasePTS = -1;
 
 			const audioStale = this.lastAudioAdvanceTime > 0 &&
-				(now - this.lastAudioAdvanceTime) > this._audioStaleMs;
+				(now - this.lastAudioAdvanceTime) > AUDIO_STALE_MS;
 
-			if (audioStale && this.videoBuffer.getStats().queueSize > 0) {
+			if ((audioStale || avDiverged) && this.videoBuffer.getStats().queueSize > 0) {
 				// Audio clock has stalled — pace video using wall clock
+				// anchored from when the stall was first detected.
 				if (this.audioStallFreeRunStart < 0) {
 					this.audioStallFreeRunStart = now;
 					this.audioStallFreeRunBasePTS = this.currentVideoPTS >= 0
@@ -341,35 +321,37 @@ export class PrismRenderer {
 					targetPTS = -1;
 				}
 			} else {
-				// Wall-clock-paced rendering with gentle drift correction toward audio PTS.
-				// Video frames arrive at ~1x real-time from MoQ, but the audio worklet's
-				// adaptive speed ratio (0.98x–1.02x) causes audio PTS to drift from wall
-				// clock. Using audio PTS directly causes visible frame skips; instead we
-				// pace at wall-clock rate and smoothly correct toward the audio timeline.
-				if (this.wallClockSyncStart < 0) {
-					this.wallClockSyncStart = now;
-					this.wallClockSyncBasePTS = audioPTS;
-					this.smoothedDrift = 0;
-				}
+				const avDelta = this.currentVideoPTS >= 0
+					? Math.abs(audioPTS - this.currentVideoPTS)
+					: 0;
 
-				const wallTarget = this.wallClockSyncBasePTS + (now - this.wallClockSyncStart) * 1000;
-				const rawDrift = audioPTS - wallTarget;
-
-				if (Math.abs(rawDrift) > this._driftThresholdUs) {
-					// >500ms drift: hard resync (reconnect, stream restart, etc.)
-					this.wallClockSyncStart = now;
-					this.wallClockSyncBasePTS = audioPTS;
-					this.smoothedDrift = 0;
-					targetPTS = audioPTS;
+				if (avDelta > 30_000_000 || (this.currentVideoPTS >= 0 && audioPTS - this.currentVideoPTS > 150_000)) {
+					// A/V desync: audio clock is too far from video. Switch to
+					// wall-clock free-run pacing anchored to the video buffer
+					// instead of blind takeNextFrame (which causes frame bursts).
+					const peek = this.videoBuffer.peekFirstFrame();
+					if (peek) {
+						if (this.audioStallFreeRunStart < 0) {
+							this.audioStallFreeRunStart = now;
+							this.audioStallFreeRunBasePTS = this.currentVideoPTS >= 0
+								? this.currentVideoPTS : peek.timestamp;
+						}
+						targetPTS = this.audioStallFreeRunBasePTS +
+							(now - this.audioStallFreeRunStart) * 1000;
+					} else {
+						targetPTS = -1;
+					}
 				} else {
-					this.smoothedDrift += (rawDrift - this.smoothedDrift) * this._driftCorrectionFactor;
-					targetPTS = wallTarget + this.smoothedDrift;
+					targetPTS = audioPTS - this._avSyncCorrectionUs;
+					audioDriven = true;
 				}
 			}
 		} else {
 			const firstFrame = this.videoBuffer.peekFirstFrame();
 			if (!firstFrame) {
 				this._diagEmptyBufferHits++;
+				// Reset free-run clock so the next burst of frames starts fresh
+				// rather than being treated as stale relative to the old clock.
 				this.freeRunStart = -1;
 				this.freeRunBasePTS = -1;
 				this.reportStats(now);
@@ -377,21 +359,6 @@ export class PrismRenderer {
 			}
 			if (this.freeRunStart < 0) {
 				this.freeRunStart = now;
-
-				const stats = this.videoBuffer.getStats();
-				if (stats.queueSize > this._freeRunSkipThreshold) {
-					const skip = this.videoBuffer.getFrameByTimestamp(Infinity);
-					if (skip.frame) {
-						if (this.lastDrawnFrame) this.lastDrawnFrame.close();
-						this.lastDrawnFrame = skip.frame;
-						this.currentVideoPTS = skip.frame.timestamp;
-						this.freeRunBasePTS = skip.frame.timestamp;
-						this.drawFrame(skip.frame);
-						this.reportStats(now);
-						return;
-					}
-				}
-
 				this.freeRunBasePTS = firstFrame.timestamp;
 			}
 			targetPTS = this.freeRunBasePTS + (now - this.freeRunStart) * 1000;
@@ -400,32 +367,78 @@ export class PrismRenderer {
 		let frame: VideoFrame | null = null;
 
 		if (targetPTS < 0) {
-			frame = this.videoBuffer.takeNextFrame();
-		} else {
+			// No valid clock reference. Use wall-clock pacing anchored to the
+			// first available frame so we don't burn through bursts unpaced.
+			const peek = this.videoBuffer.peekFirstFrame();
+			if (peek) {
+				if (this.freeRunStart < 0) {
+					this.freeRunStart = now;
+					this.freeRunBasePTS = peek.timestamp;
+				}
+				targetPTS = this.freeRunBasePTS + (now - this.freeRunStart) * 1000;
+			} else {
+				this._diagEmptyBufferHits++;
+				this.reportStats(now);
+				return;
+			}
+		}
+
+		if (targetPTS >= 0) {
 			const result = this.videoBuffer.getFrameByTimestamp(targetPTS);
 			frame = result.frame;
 
-			// PTS discontinuity recovery: if binary search found nothing but
-			// buffer has frames far ahead of target, re-anchor and draw.
-			// Handles source transitions where video PTS jumps.
+			// PTS discontinuity detection for freerun mode: if binary search
+			// found nothing but the buffer has frames, all frames are "in the
+			// future" — reset the freerun clock to catch up immediately.
+			if (!frame && this.freeRunStart >= 0) {
+				const peek = this.videoBuffer.peekFirstFrame();
+				if (peek && Math.abs(peek.timestamp - targetPTS) > 500_000) {
+					this.freeRunStart = now;
+					this.freeRunBasePTS = peek.timestamp;
+					targetPTS = peek.timestamp;
+					const retry = this.videoBuffer.getFrameByTimestamp(targetPTS);
+					frame = retry.frame;
+				}
+			}
+
+			// Look-ahead + PTS discontinuity recovery.
+			// In audio-driven mode: NO look-ahead. Let the binary search find
+			// frames naturally. If video PTS is ahead of audio PTS, the frame
+			// stays in the buffer until audio catches up. This prevents the
+			// renderer from displaying video ahead of audio.
+			// In free-run/stall mode: use 150ms look-ahead for smooth playback.
 			if (!frame) {
 				const peek = this.videoBuffer.peekFirstFrame();
-				if (peek && peek.timestamp - targetPTS > 500_000) {
-					if (this.wallClockSyncStart >= 0) {
-						this.wallClockSyncStart = now;
-						this.wallClockSyncBasePTS = peek.timestamp;
-						this.smoothedDrift = 0;
+				if (peek && peek.timestamp > targetPTS) {
+					const gap = peek.timestamp - targetPTS;
+					if (!audioDriven && gap < 150_000) {
+						// Free-run jitter tolerance — display slightly-ahead frame
+						frame = this.videoBuffer.takeNextFrame();
+					} else if (gap > 500_000) {
+						// PTS discontinuity (source cut) — re-anchor clock to
+						// the new PTS timeline and display the frame.
+						if (this.audioStallFreeRunStart >= 0) {
+							this.audioStallFreeRunStart = now;
+							this.audioStallFreeRunBasePTS = peek.timestamp;
+						}
+						if (this.freeRunStart >= 0) {
+							this.freeRunStart = now;
+							this.freeRunBasePTS = peek.timestamp;
+						}
+						frame = this.videoBuffer.takeNextFrame();
 					}
-					if (this.freeRunStart >= 0) {
-						this.freeRunStart = now;
-						this.freeRunBasePTS = peek.timestamp;
-					}
-					frame = this.videoBuffer.takeNextFrame();
 				}
 			}
 		}
 
 		if (frame) {
+			// If the drawn frame's PTS is far from targetPTS, re-anchor the
+			// freerun clock so subsequent frames don't drift or freeze.
+			if (this.freeRunStart >= 0 && Math.abs(frame.timestamp - targetPTS) > 500_000) {
+				this.freeRunStart = now;
+				this.freeRunBasePTS = frame.timestamp;
+			}
+
 			if (this.lastDrawnFrame) {
 				this.lastDrawnFrame.close();
 			}
@@ -448,7 +461,7 @@ export class PrismRenderer {
 
 			this.currentVideoPTS = frame.timestamp;
 
-			this.updateAvSyncDiagnostics();
+			this.updateAvSyncCorrection();
 		} else {
 			this._diagFramesSkipped++;
 		}
@@ -456,8 +469,13 @@ export class PrismRenderer {
 		this.reportStats(now);
 	}
 
-	/** Update A/V sync diagnostics (measurement only, no feedback correction). */
-	private updateAvSyncDiagnostics(): void {
+	/**
+	 * Measure A/V sync offset and update the feedback loop correction.
+	 * Called from both the normal frame draw path and the live-edge skip
+	 * path — without the latter, the feedback loop would never fire when
+	 * video is persistently ahead (audio-driven mode has no look-ahead).
+	 */
+	private updateAvSyncCorrection(): void {
 		if (this.currentAudioPTS >= 0 && this.currentVideoPTS >= 0) {
 			const delta = Math.abs(this.currentVideoPTS - this.currentAudioPTS);
 			if (delta < 30_000_000) {
@@ -467,38 +485,77 @@ export class PrismRenderer {
 				this._diagAvSyncCount++;
 				if (syncMs < this._diagAvSyncMin) this._diagAvSyncMin = syncMs;
 				if (syncMs > this._diagAvSyncMax) this._diagAvSyncMax = syncMs;
+
+				// A/V sync feedback loop: measure the actual offset and
+				// gradually adjust targetPTS to eliminate it.
+				const syncUs = syncMs * 1000;
+				const absSyncUs = Math.abs(syncUs);
+				if (absSyncUs > 200_000) {
+					this._avSyncCorrectionUs = syncUs * 0.5;
+				} else {
+					this._avSyncCorrectionUs = this._avSyncCorrectionUs * 0.97 + syncUs * 0.03;
+				}
+				// Clamp to ±500ms to prevent runaway
+				this._avSyncCorrectionUs = Math.max(-500_000,
+					Math.min(500_000, this._avSyncCorrectionUs));
 			}
 		}
 	}
 
-	private cachedCanvasW = 0;
-	private cachedCanvasH = 0;
+	// Cached draw rect — used to avoid redundant fillRect calls for
+	// letterbox/pillarbox bars when the layout hasn't changed.
+	private lastDraw = { cw: 0, ch: 0, dx: 0, dy: 0, dw: 0, dh: 0 };
 
 	/**
-	 * Draw a video frame to the canvas. Sets the canvas backing store to
-	 * match the video frame dimensions (or maxResolution), then draws at
-	 * 1:1. CSS handles display scaling — this avoids per-frame GPU scaling
-	 * inside drawImage and lets the browser compositor handle it efficiently.
+	 * Draw a video frame centered within the canvas, maintaining the
+	 * video's aspect ratio. The canvas backing store dimensions are
+	 * controlled by setupHiDPICanvas (via ResizeObserver), NOT by the
+	 * video frame — this prevents the canvas from fighting CSS layout
+	 * and ensures consistent centering across resize.
 	 */
 	private drawFrame(frame: VideoFrame): void {
-		let targetW = frame.displayWidth;
-		let targetH = frame.displayHeight;
-		if (this._maxResolution > 0) {
-			const scale = Math.min(1, this._maxResolution / Math.max(targetW, targetH));
-			targetW = Math.round(targetW * scale);
-			targetH = Math.round(targetH * scale);
-		}
-		if (this.cachedCanvasW !== targetW || this.cachedCanvasH !== targetH) {
-			this.canvas.width = targetW;
-			this.canvas.height = targetH;
-			this.cachedCanvasW = targetW;
-			this.cachedCanvasH = targetH;
-		}
-		this.ctx.drawImage(frame, 0, 0, targetW, targetH);
+		const cw = this.canvas.width;
+		const ch = this.canvas.height;
+		if (cw === 0 || ch === 0) return;
 
-		if (this.afterDraw) {
-			this.afterDraw(this.ctx, frame);
+		const fw = frame.displayWidth;
+		const fh = frame.displayHeight;
+		const videoAspect = fw / fh;
+		const canvasAspect = cw / ch;
+
+		let dx: number, dy: number, dw: number, dh: number;
+		if (Math.abs(videoAspect - canvasAspect) < 0.01) {
+			// Aspect ratios match — fill entire canvas (common case)
+			dx = 0; dy = 0; dw = cw; dh = ch;
+		} else if (videoAspect > canvasAspect) {
+			// Video wider than canvas — fit to width, bars top/bottom
+			dw = cw;
+			dh = Math.round(cw / videoAspect);
+			dx = 0;
+			dy = Math.round((ch - dh) / 2);
+		} else {
+			// Video taller than canvas — fit to height, bars left/right
+			dh = ch;
+			dw = Math.round(ch * videoAspect);
+			dx = Math.round((cw - dw) / 2);
+			dy = 0;
 		}
+
+		// Clear letterbox/pillarbox bars only when the draw rect changes
+		// (canvas resize or video aspect ratio change). The video area
+		// itself is overwritten by drawImage each frame.
+		const needsBars = dw !== cw || dh !== ch;
+		if (needsBars && (
+			cw !== this.lastDraw.cw || ch !== this.lastDraw.ch ||
+			dx !== this.lastDraw.dx || dy !== this.lastDraw.dy ||
+			dw !== this.lastDraw.dw || dh !== this.lastDraw.dh
+		)) {
+			this.ctx.fillStyle = '#000';
+			this.ctx.fillRect(0, 0, cw, ch);
+		}
+		this.lastDraw = { cw, ch, dx, dy, dw, dh };
+
+		this.ctx.drawImage(frame, 0, 0, fw, fh, dx, dy, dw, dh);
 	}
 
 	private reportStats(now: number): void {
@@ -529,14 +586,12 @@ export class PrismRenderer {
 		this.lastAudioAdvanceTime = 0;
 		this.audioStallFreeRunStart = -1;
 		this.audioStallFreeRunBasePTS = -1;
-		this.wallClockSyncStart = -1;
-		this.wallClockSyncBasePTS = -1;
-		this.smoothedDrift = 0;
 		this._diagAvSyncSum = 0;
 		this._diagAvSyncCount = 0;
 		this._diagAvSyncMin = Infinity;
 		this._diagAvSyncMax = -Infinity;
 		this._diagLastAvSync = 0;
+		this._avSyncCorrectionUs = 0;
 		// Reset RAF timing stats so the background gap doesn't pollute them
 		this._diagLastRafTime = 0;
 		this._diagRafIntervalMax = 0;
@@ -562,7 +617,7 @@ export class PrismRenderer {
 			avSyncMin: this._diagAvSyncMin === Infinity ? 0 : this._diagAvSyncMin,
 			avSyncMax: this._diagAvSyncMax === -Infinity ? 0 : this._diagAvSyncMax,
 			avSyncAvg: this._diagAvSyncCount > 0 ? this._diagAvSyncSum / this._diagAvSyncCount : 0,
-			clockMode: (this.freeRunStart >= 0 || this._freeRunOnly) ? "freerun"
+			clockMode: this.freeRunStart >= 0 ? "freerun"
 				: this.audioStallFreeRunStart >= 0 ? "audio-stall-freerun"
 				: "audio",
 			liveEdgeSkips: this._diagLiveEdgeSkips,
@@ -573,7 +628,7 @@ export class PrismRenderer {
 			videoQueueMs: vStats.queueLengthMs,
 			videoTotalDiscarded: vStats.totalDiscarded,
 			useSetTimeoutFallback: this._useSetTimeoutFallback,
-			avSyncCorrectionMs: this.smoothedDrift / 1000,
+			avSyncCorrectionMs: this._avSyncCorrectionUs / 1000,
 		};
 	}
 

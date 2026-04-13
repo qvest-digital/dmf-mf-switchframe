@@ -1,8 +1,11 @@
-// Default render buffer: 90 frames (~3s at 30fps). Large enough to absorb
-// network jitter and bursty delivery on high-RTT connections. The live-edge
-// skip at 9 frames prevents latency accumulation, so the larger buffer
-// provides resilience without adding steady-state latency.
-const DEFAULT_MAX_ELEMENTS = 90;
+// Cap render buffer to 30 frames (~1s at 30fps). Large enough to absorb
+// decode bursts and PTS discontinuities during source cuts, while keeping
+// latency bounded (was 90 = 3s which caused persistent A/V desync).
+// Allow up to 60 frames (~2s at 30fps). Large enough for the A/V sync
+// feedback loop to hold video while audio PTS catches up (~400ms = 12
+// frames), plus headroom for jitter. The live-edge skip at 30 frames
+// provides the safety limit for runaway accumulation.
+const MAX_ELEMENTS = 60;
 
 /** Result of a timestamp-based frame lookup, including the selected frame and discard statistics. */
 interface VideoRenderResult {
@@ -24,16 +27,11 @@ export class VideoRenderBuffer {
 	private len = 0;
 	private totalDiscarded = 0;
 	private totalLengthMs = 0;
-	private _maxElements: number;
-
-	constructor(maxFrames?: number) {
-		this._maxElements = maxFrames && maxFrames > 0 ? maxFrames : DEFAULT_MAX_ELEMENTS;
-	}
 
 	private get tail(): number { return this.head + this.len; }
 
 	addFrame(frame: VideoFrame): boolean {
-		if (this.len >= this._maxElements) {
+		if (this.len >= MAX_ELEMENTS) {
 			const oldest = this.frames[this.head]!;
 			this.totalLengthMs -= (oldest.duration ?? 0) / 1000;
 			oldest.close();

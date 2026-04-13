@@ -372,10 +372,16 @@ describe('PrismAudioDecoder', () => {
 		});
 	});
 
-	describe('getPlaybackPTS', () => {
-		it('should return raw PTS from ring buffer without compensation', async () => {
+	describe('getPlaybackPTS output latency compensation', () => {
+		it('should subtract ring buffer depth + AudioContext output latency from playback PTS', async () => {
+			// Create context with known latency values
+			const ctxWithLatency = {
+				...mockContext,
+				baseLatency: 0.006, // 6ms
+				outputLatency: 0.032, // 32ms
+			};
 			const decoder = new PrismAudioDecoder();
-			await decoder.configure('mp4a.40.2', 48000, 2, mockContext);
+			await decoder.configure('mp4a.40.2', 48000, 2, ctxWithLatency);
 
 			// Start playback by feeding frames
 			if (decoderOutputCb) {
@@ -401,17 +407,50 @@ describe('PrismAudioDecoder', () => {
 			ringBuf.readPTS.mockReturnValue(rawPTS);
 
 			const pts = decoder.getPlaybackPTS();
-			// Wall-clock pacing handles sync; no compensation applied
-			expect(pts).toBe(rawPTS);
+			// readBufferDepthMs=100, outputLatency=32ms, serverNudge=60ms
+			// compensation = (100 + 32 + 60) * 1000 = 192,000 µs
+			expect(pts).toBe(rawPTS - 192_000);
 		});
 
-		it('should return -1 when not playing', async () => {
-			const decoder = new PrismAudioDecoder();
-			await decoder.configure('mp4a.40.2', 48000, 2, mockContext);
+		it('should return raw PTS when no output latency info available', async () => {
+			// Context without latency properties (Safari-like)
+			const ctxNoLatency = {
+				...mockContext,
+			};
+			delete (ctxNoLatency as any).baseLatency;
+			delete (ctxNoLatency as any).outputLatency;
 
-			// Don't feed frames → not playing
+			const decoder = new PrismAudioDecoder();
+			await decoder.configure('mp4a.40.2', 48000, 2, ctxNoLatency);
+
+			// Start playback
+			if (decoderOutputCb) {
+				const mockAudioData = {
+					numberOfFrames: 1024,
+					sampleRate: 48000,
+					timestamp: 10_000_000,
+					duration: 21333,
+					numberOfChannels: 2,
+					format: 'f32-planar',
+					copyTo: vi.fn(),
+					clone: vi.fn(),
+					close: vi.fn(),
+				};
+				for (let i = 0; i < 30; i++) {
+					decoderOutputCb(mockAudioData as unknown as AudioData);
+				}
+			}
+
+			// Override readPTS to return a realistic value
+			const rawPTS = 5_000_000;
+			const ringBuf = (decoder as any).ringBuffer;
+			ringBuf.readPTS.mockReturnValue(rawPTS);
+
+			// No outputLatency → ring buffer depth + server nudge
+			// readBufferDepthMs=100, outputLatency=0, serverNudge=60ms
+			// compensation = (100 + 0 + 60) * 1000 = 160,000 µs
 			const pts = decoder.getPlaybackPTS();
-			expect(pts).toBe(-1);
+			expect(pts).toBe(rawPTS - 160_000);
 		});
 	});
 });

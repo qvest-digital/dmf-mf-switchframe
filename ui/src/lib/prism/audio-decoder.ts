@@ -278,12 +278,29 @@ export class PrismAudioDecoder {
 
 	getPlaybackPTS(): number {
 		if (!this.ringBuffer || !this.playing) return -1;
-		// Return raw PTS from the AudioWorklet. The renderer uses wall-clock
-		// pacing with drift correction, so it treats this as a reference
-		// signal rather than a direct pacing clock. No buffer depth or
-		// output latency compensation needed — both video and audio share
-		// the same pipeline delay, maintaining relative sync.
-		return this.ringBuffer.readPTS();
+		const pts = this.ringBuffer.readPTS();
+		if (pts <= 0) return pts;
+
+		// Compensate for audio pipeline latency beyond PTS tracking.
+		// readPTS() reports what the AudioWorklet has OUTPUT, but the audio
+		// still travels through two more buffers before reaching ears:
+		//   1. Ring buffer depth: decoded audio queued ahead of playback
+		//   2. AudioContext output latency: hardware output pipeline
+		//
+		// The remaining server-side content age gap (~264ms) is handled by
+		// the renderer's adaptive feedback loop (not here), because a large
+		// static PTS subtraction causes video frames to pile up past the
+		// live-edge threshold, triggering skips that make sync worse.
+		const bufferDepthMs = this.ringBuffer.readBufferDepthMs();
+		const ctx = this.context as AudioContext & { outputLatency?: number };
+		const outputLatencyMs = (ctx?.outputLatency ?? 0) * 1000;
+		// Small static nudge for server-side content age gap: video uses
+		// newest-wins (zero FIFO) while audio traverses mixer ring buffer,
+		// making video content slightly newer at the same wall-clock PTS.
+		const serverContentNudgeMs = 60;
+		const compensationUs = (bufferDepthMs + outputLatencyMs + serverContentNudgeMs) * 1000;
+
+		return pts - compensationUs;
 	}
 
 	getLevels(): AudioLevels {
