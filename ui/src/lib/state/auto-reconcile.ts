@@ -1,6 +1,21 @@
 import type { SyncStatus } from './reconciler.svelte';
 import type { EngineId } from '$lib/api/types';
 
+/**
+ * Thrown by pushSnapshot when the target engine has advanced past the
+ * snapshot's captured seq (HTTP 409). The auto-reconcile loop treats this
+ * differently from transport errors: fresh pull + single retry, then escalate.
+ */
+export class SnapshotStaleError extends Error {
+	constructor(
+		public snapshotSeq: number,
+		public currentSeq: number,
+	) {
+		super(`snapshot stale: captured at seq=${snapshotSeq}, engine at seq=${currentSeq}`);
+		this.name = 'SnapshotStaleError';
+	}
+}
+
 export interface AutoReconcileConfig {
 	getSnapshot: (engine: EngineId) => Promise<unknown>;
 	pushSnapshot: (engine: EngineId, snapshot: unknown) => Promise<{ warnings: string[] }>;
@@ -13,6 +28,9 @@ export interface AutoReconcileConfig {
 	onRecoveryStart?: () => void;
 	onRecoveryComplete?: (warnings: string[]) => void;
 	onRecoveryError?: (error: Error) => void;
+	/** Called when two consecutive pushes to the same target return 409 stale.
+	 * Signals that engines can't be reconciled automatically — operator action needed. */
+	onStaleConflict?: (target: EngineId, snapshotSeq: number, currentSeq: number) => void;
 }
 
 const DIVERGE_DELAY_MS = 2000;
@@ -158,20 +176,38 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 		const timeoutTimer = setTimeout(() => timeoutController.abort(), PUSH_TIMEOUT_MS);
 		try {
 			config.onRecoveryStart?.();
-			const snapshot = await Promise.race([
-				config.getSnapshot(authoritative),
+			const timeoutRace = <T,>(p: Promise<T>): Promise<T> => Promise.race([
+				p,
 				new Promise<never>((_, reject) => {
 					timeoutController.signal.addEventListener('abort', () =>
 						reject(new Error('Snapshot push timed out')));
 				}),
 			]);
-			const result = await Promise.race([
-				config.pushSnapshot(target, snapshot),
-				new Promise<never>((_, reject) => {
-					timeoutController.signal.addEventListener('abort', () =>
-						reject(new Error('Snapshot push timed out')));
-				}),
-			]);
+
+			let snapshot = await timeoutRace(config.getSnapshot(authoritative));
+			let result: { warnings: string[] };
+			try {
+				result = await timeoutRace(config.pushSnapshot(target, snapshot));
+			} catch (pushErr) {
+				if (pushErr instanceof SnapshotStaleError) {
+					// Target engine has advanced past our snapshot. Force-pull a
+					// fresh snapshot from source and retry once. If that also
+					// returns 409, engines are truly divergent — escalate.
+					snapshot = await timeoutRace(config.getSnapshot(authoritative));
+					try {
+						result = await timeoutRace(config.pushSnapshot(target, snapshot));
+					} catch (retryErr) {
+						if (retryErr instanceof SnapshotStaleError) {
+							clearTimeout(timeoutTimer);
+							config.onStaleConflict?.(target, retryErr.snapshotSeq, retryErr.currentSeq);
+							return;
+						}
+						throw retryErr;
+					}
+				} else {
+					throw pushErr;
+				}
+			}
 			clearTimeout(timeoutTimer);
 			retryCount = 0; // reset on success
 			pushSuccesses++;

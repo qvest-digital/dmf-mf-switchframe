@@ -305,6 +305,12 @@
 			connectionManager.setRecovering(false);
 			divergenceLog.add({ type: 'diverged', message: `Recovery failed: ${error.message}` });
 		},
+		onStaleConflict: (target, snapshotSeq, currentSeq) => {
+			connectionManager.setRecovering(false);
+			const msg = `Multi-region sync degraded — manually reconcile or restart engine (${target}: snapshot seq ${snapshotSeq} < engine seq ${currentSeq})`;
+			divergenceLog.add({ type: 'diverged', message: msg });
+			notify('error', msg);
+		},
 	});
 
 	// Dual-engine connection banner status.

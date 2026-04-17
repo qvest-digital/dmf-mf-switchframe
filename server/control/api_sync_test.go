@@ -746,3 +746,118 @@ func TestApplyStateSnapshot_MetricsWithoutMetrics(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 }
+
+func TestApplySnapshot_RejectsStale(t *testing.T) {
+	programRelay := distribution.NewRelay()
+	sw := switcher.NewTestSwitcher(programRelay)
+	r1 := distribution.NewRelay()
+	sw.RegisterSource("camera1", r1)
+	// Advance engine's LastCommandSeq to 105 so an incoming snapshot at seq=100
+	// is strictly behind.
+	sw.TrackCommandSeq(105)
+
+	provider := &mockSnapshotProvider{}
+	api := NewAPI(sw, WithSnapshotProvider(provider))
+
+	snapJSON := `{"version":"1","capturedAt":9999,"captionMode":"off"}`
+	env := map[string]any{
+		"snapshot":  json.RawMessage(snapJSON),
+		"seq":       uint64(100),
+		"timestamp": time.Now().UnixMicro(),
+	}
+	bodyBytes, err := json.Marshal(env)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest("POST", "/api/sync/state-snapshot", strings.NewReader(string(bodyBytes)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusConflict, rec.Code)
+	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+
+	var resp struct {
+		Error       string `json:"error"`
+		SnapshotSeq uint64 `json:"snapshot_seq"`
+		CurrentSeq  uint64 `json:"current_seq"`
+	}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	require.Equal(t, "snapshot stale", resp.Error)
+	require.Equal(t, uint64(100), resp.SnapshotSeq)
+	require.Equal(t, uint64(105), resp.CurrentSeq)
+}
+
+func TestApplySnapshot_AcceptsForward(t *testing.T) {
+	programRelay := distribution.NewRelay()
+	sw := switcher.NewTestSwitcher(programRelay)
+	r1 := distribution.NewRelay()
+	sw.RegisterSource("camera1", r1)
+	// Engine at seq=100, incoming snapshot also at seq=100 — not behind.
+	sw.TrackCommandSeq(100)
+
+	provider := &mockSnapshotProvider{}
+	api := NewAPI(sw, WithSnapshotProvider(provider))
+
+	snapJSON := `{"version":"1","capturedAt":9999,"captionMode":"off"}`
+	env := map[string]any{
+		"snapshot":  json.RawMessage(snapJSON),
+		"seq":       uint64(100),
+		"timestamp": time.Now().UnixMicro(),
+	}
+	bodyBytes, err := json.Marshal(env)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest("POST", "/api/sync/state-snapshot", strings.NewReader(string(bodyBytes)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp struct {
+		Applied bool `json:"applied"`
+	}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	require.True(t, resp.Applied)
+}
+
+func TestApplySnapshot_AcceptsForceOverride(t *testing.T) {
+	programRelay := distribution.NewRelay()
+	sw := switcher.NewTestSwitcher(programRelay)
+	r1 := distribution.NewRelay()
+	sw.RegisterSource("camera1", r1)
+	sw.TrackCommandSeq(105)
+
+	provider := &mockSnapshotProvider{}
+	api := NewAPI(sw, WithSnapshotProvider(provider))
+
+	snapJSON := `{"version":"1","capturedAt":9999,"captionMode":"off"}`
+	env := map[string]any{
+		"snapshot":  json.RawMessage(snapJSON),
+		"seq":       uint64(100),
+		"timestamp": time.Now().UnixMicro(),
+	}
+	bodyBytes, err := json.Marshal(env)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest("POST", "/api/sync/state-snapshot?force=true", strings.NewReader(string(bodyBytes)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	var resp struct {
+		Applied  bool     `json:"applied"`
+		Warnings []string `json:"warnings,omitempty"`
+	}
+	require.NoError(t, json.NewDecoder(rec.Body).Decode(&resp))
+	require.True(t, resp.Applied)
+	// Force-override should surface a warning indicating staleness was bypassed.
+	var hasForceWarning bool
+	for _, w := range resp.Warnings {
+		if strings.Contains(w, "force") || strings.Contains(w, "behind") {
+			hasForceWarning = true
+			break
+		}
+	}
+	require.True(t, hasForceWarning, "expected a warning flagging the forced stale apply, got: %v", resp.Warnings)
+}

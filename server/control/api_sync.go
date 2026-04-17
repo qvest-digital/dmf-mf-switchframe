@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -170,8 +171,12 @@ func (a *API) handleGetStateSnapshot(w http.ResponseWriter, r *http.Request) {
 //
 // Backward compatibility: if the body has a "snapshot" key it is decoded as a
 // snapshotEnvelope; otherwise it is decoded directly as a FullStateSnapshot.
-// When an envelope is provided and its Seq is behind the current engine's
-// LastCommandSeq, a staleness warning is added.
+//
+// Staleness: when an envelope is provided and its Seq is strictly behind the
+// engine's current LastCommandSeq, the request is rejected with HTTP 409 and
+// a JSON body {error, snapshot_seq, current_seq}. Applying a stale snapshot
+// would silently regress state and drop commands. The `?force=true` query
+// parameter overrides the check for admin-driven recovery.
 func (a *API) handleApplyStateSnapshot(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
@@ -192,6 +197,8 @@ func (a *API) handleApplyStateSnapshot(w http.ResponseWriter, r *http.Request) {
 	var snap internal.FullStateSnapshot
 	var warnings []string
 
+	force := r.URL.Query().Get("force") == "true"
+
 	// Detect envelope vs raw snapshot by probing for the "snapshot" key.
 	var probe struct {
 		Snapshot json.RawMessage `json:"snapshot"`
@@ -206,11 +213,34 @@ func (a *API) handleApplyStateSnapshot(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		// Staleness check: warn if the snapshot's seq is behind the engine's.
+		// Staleness check: reject with 409 if the snapshot's seq is behind the
+		// engine's current seq. Applying a stale snapshot would regress state
+		// and silently drop commands executed between snapshot capture and
+		// apply. `?force=true` is an admin escape hatch (e.g. crash recovery).
 		if probe.Seq > 0 {
 			currentSeq := a.enrichedState().LastCommandSeq
 			if currentSeq > probe.Seq {
-				warnings = append(warnings, fmt.Sprintf("snapshot seq %d is behind engine seq %d", probe.Seq, currentSeq))
+				slog.Warn("snapshot apply: stale seq",
+					"snapshot_seq", probe.Seq,
+					"current_seq", currentSeq,
+					"force", force)
+				if !force {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusConflict)
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"error":        "snapshot stale",
+						"snapshot_seq": probe.Seq,
+						"current_seq":  currentSeq,
+					})
+					if a.appMetrics != nil {
+						a.appMetrics.SnapshotApplyTotal.WithLabelValues("stale").Inc()
+					}
+					return
+				}
+				slog.Warn("snapshot apply: forcing stale snapshot override",
+					"snapshot_seq", probe.Seq,
+					"current_seq", currentSeq)
+				warnings = append(warnings, fmt.Sprintf("forced apply: snapshot seq %d is behind engine seq %d", probe.Seq, currentSeq))
 			}
 		}
 	} else {

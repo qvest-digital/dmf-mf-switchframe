@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { SyncStatus } from './reconciler.svelte';
-import { createAutoReconcile, type AutoReconcileConfig } from './auto-reconcile';
+import { createAutoReconcile, SnapshotStaleError, type AutoReconcileConfig } from './auto-reconcile';
 
 function makeConfig(overrides: Partial<AutoReconcileConfig> = {}): AutoReconcileConfig {
 	return {
@@ -931,6 +931,60 @@ describe('createAutoReconcile', () => {
 			await vi.advanceTimersByTimeAsync(0);
 
 			expect(config.onRecoveryComplete).toHaveBeenCalledOnce();
+			expect(config.onRecoveryError).not.toHaveBeenCalled();
+
+			reconcile.destroy();
+		});
+	});
+
+	describe('stale snapshot (409) retry', () => {
+		it('force-pulls and retries once when push returns stale conflict', async () => {
+			let pushCount = 0;
+			let getSnapshotCount = 0;
+			const config = makeConfig({
+				getSnapshot: vi.fn().mockImplementation(() => {
+					getSnapshotCount++;
+					return Promise.resolve({ programSource: 'cam1', fetch: getSnapshotCount });
+				}),
+				pushSnapshot: vi.fn().mockImplementation(() => {
+					pushCount++;
+					if (pushCount === 1) {
+						return Promise.reject(new SnapshotStaleError(100, 105));
+					}
+					return Promise.resolve({ warnings: [] });
+				}),
+			});
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+
+			// Flush any pending microtasks from the retry chain.
+			await vi.advanceTimersByTimeAsync(10);
+
+			expect(getSnapshotCount).toBe(2);
+			expect(pushCount).toBe(2);
+			expect(config.onRecoveryComplete).toHaveBeenCalledOnce();
+			expect(config.onRecoveryError).not.toHaveBeenCalled();
+
+			reconcile.destroy();
+		});
+
+		it('escalates via notification when retry also returns stale conflict', async () => {
+			const onStaleConflict = vi.fn();
+			const config = makeConfig({
+				pushSnapshot: vi.fn().mockRejectedValue(new SnapshotStaleError(100, 110)),
+				onStaleConflict,
+			});
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+			await vi.advanceTimersByTimeAsync(10);
+
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(2);
+			expect(onStaleConflict).toHaveBeenCalledOnce();
+			// No generic error: stale is handled, not a transport failure.
 			expect(config.onRecoveryError).not.toHaveBeenCalled();
 
 			reconcile.destroy();

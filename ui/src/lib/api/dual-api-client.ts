@@ -1,4 +1,5 @@
 import type { EngineId } from '$lib/api/types';
+import { SnapshotStaleError } from '$lib/state/auto-reconcile';
 
 export interface EngineConfig {
 	id: EngineId;
@@ -78,6 +79,12 @@ export class DualApiClient {
 			},
 			body: JSON.stringify(snapshot),
 		});
+		if (res.status === 409) {
+			// Stale snapshot: engine has advanced past our captured seq.
+			const body = await res.json().catch(() => null) as
+				{ error?: string; snapshot_seq?: number; current_seq?: number } | null;
+			throw new SnapshotStaleError(body?.snapshot_seq ?? 0, body?.current_seq ?? 0);
+		}
 		if (!res.ok) {
 			const body = await res.text().catch(() => 'unknown error');
 			throw new Error(`Failed to push snapshot to engine ${engineId}: ${res.status} ${body}`);
