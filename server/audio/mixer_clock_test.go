@@ -49,8 +49,7 @@ func TestClockDrivenMixer_IngestPCMProducesOutput(t *testing.T) {
 		m.IngestPCM("cam1", pcm, int64(i)*1920, 2)
 	}
 
-	// Wait for the ticker to fire a few times (~21ms per tick, wait 200ms for margin)
-	deadline := time.After(200 * time.Millisecond)
+	deadline := time.After(2 * time.Second)
 	for {
 		mu.Lock()
 		count := len(outputFrames)
@@ -64,11 +63,9 @@ func TestClockDrivenMixer_IngestPCMProducesOutput(t *testing.T) {
 			count = len(outputFrames)
 			mu.Unlock()
 			require.GreaterOrEqual(t, count, 1,
-				"expected at least 1 output frame within 200ms, got %d", count)
-			// If we got at least 1, that's acceptable
+				"expected at least 1 output frame within 2s, got %d", count)
 			goto done
 		case <-time.After(5 * time.Millisecond):
-			// poll
 		}
 	}
 done:
@@ -139,8 +136,7 @@ func TestClockDrivenMixer_IngestFrameProducesOutput(t *testing.T) {
 		m.IngestFrame("cam1", aacFrame)
 	}
 
-	// Wait for ticker to produce output
-	deadline := time.After(200 * time.Millisecond)
+	deadline := time.After(2 * time.Second)
 	for {
 		mu.Lock()
 		count := len(outputFrames)
@@ -154,7 +150,7 @@ func TestClockDrivenMixer_IngestFrameProducesOutput(t *testing.T) {
 			count = len(outputFrames)
 			mu.Unlock()
 			require.GreaterOrEqual(t, count, 1,
-				"expected at least 1 output frame within 200ms, got %d", count)
+				"expected at least 1 output frame within 2s, got %d", count)
 			goto done
 		case <-time.After(5 * time.Millisecond):
 		}

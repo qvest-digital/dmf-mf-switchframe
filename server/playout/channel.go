@@ -510,7 +510,7 @@ func (c *Channel) SeekToItem(itemIndex int, elapsedMs int64) error {
 		iter, err := c.config.AssetProvider.Open(item.AssetURI)
 		if err == nil {
 			// Wrap with trim if in/out points set.
-			var frameSource FrameIterator = iter
+			frameSource := iter
 			if item.InPointMs > 0 || item.OutPointMs > 0 {
 				frameSource = NewTrimIterator(iter, item.InPointMs, item.OutPointMs)
 			}

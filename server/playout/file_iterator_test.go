@@ -908,13 +908,19 @@ func TestFileFrameIterator_FrameIndex(t *testing.T) {
 	}
 
 	// After reading one frame, frameIndex advances (it's the *next* frame to feed).
-	iter.Next()
+	if _, err := iter.Next(); err != nil {
+		t.Fatalf("Next: %v", err)
+	}
 	if idx := iter.FrameIndex(); idx != 1 {
 		t.Errorf("FrameIndex() after 1 Next() = %d, want 1", idx)
 	}
 
-	iter.Next()
-	iter.Next()
+	if _, err := iter.Next(); err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+	if _, err := iter.Next(); err != nil {
+		t.Fatalf("Next: %v", err)
+	}
 	if idx := iter.FrameIndex(); idx != 3 {
 		t.Errorf("FrameIndex() after 3 Next() = %d, want 3", idx)
 	}
@@ -1131,7 +1137,9 @@ func TestFileFrameIterator_Seek_ResetsAudioIndex(t *testing.T) {
 
 	// Read all frames to advance audio index.
 	for i := 0; i < 4; i++ {
-		iter.Next()
+		if _, err := iter.Next(); err != nil {
+			t.Fatalf("Next: %v", err)
+		}
 	}
 
 	// Seek to keyframe at index 2 (PTS=6000). Audio should reset to

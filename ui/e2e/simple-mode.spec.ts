@@ -24,13 +24,14 @@ test.describe('Simple Mode', () => {
 		await expect(page.locator('text=PROGRAM BUS')).not.toBeVisible();
 	});
 
-	test('gear icon switches back to traditional mode', async ({ page }) => {
+	test('gear icon cycles layout back to traditional mode', async ({ page }) => {
 		await page.goto('/?mode=simple');
 		await expect(page.locator('text=CUT')).toBeVisible();
 		await dismissOverlays(page);
-		// Click gear icon to switch to traditional
+		// Layout cycle: simple → on-air → traditional. Click twice to reach traditional.
 		await page.locator('[title="Switch to traditional mode"]').click();
-		// Traditional mode elements should now be visible
+		await dismissOverlays(page);
+		await page.locator('[title="Switch layout mode"]').click();
 		await expect(page.locator('.control-room')).toBeVisible();
 	});
 

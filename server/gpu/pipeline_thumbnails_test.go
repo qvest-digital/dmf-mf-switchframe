@@ -46,12 +46,6 @@ func (m *mockThumbnailStore) getStored() map[string][]byte {
 	return cp
 }
 
-func (m *mockThumbnailStore) getStoreCount() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.storeCount
-}
-
 func TestNV12ToJPEG(t *testing.T) {
 	w, h := thumbW, thumbH
 	ySize := w * h

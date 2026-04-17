@@ -41,16 +41,34 @@ func loadPeerEpoch(path string) (uint64, error) {
 }
 
 // savePeerEpoch atomically writes the epoch to path. Uses write-to-temp +
-// rename so a crash mid-write cannot leave a truncated file that parses
-// as epoch 0 on next load (which would silently undo the force-leader).
+// fsync + rename + parent-dir fsync so a crash mid-write cannot leave a
+// truncated file that parses as epoch 0 on next load (which would silently
+// undo the force-leader). The tmp-file fsync is required before rename:
+// on xfs/btrfs/ext4-writeback the dirent can survive a power loss pointing
+// to unwritten data blocks, yielding an empty file on reboot.
 func savePeerEpoch(path string, epoch uint64) error {
 	data, err := json.Marshal(peerEpochFile{Epoch: epoch})
 	if err != nil {
 		return err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", tmp, err)
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
 		return fmt.Errorf("write %s: %w", tmp, err)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("fsync %s: %w", tmp, err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("close %s: %w", tmp, err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)

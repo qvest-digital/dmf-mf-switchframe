@@ -107,30 +107,51 @@ func (e *Encoder) IngestText(text string) {
 
 	e.ensureInit()
 
-	var bytesOut []byte
+	// Pair-aware packer. A 2-byte special/extended code (prefix 0x11/0x12/0x13
+	// in byte[0], data in byte[1]) must occupy a single transmitted CC pair per
+	// CEA-608-E §8.5.4–5.6. Conformant decoders identify these codes by
+	// inspecting byte[0]; if the prefix lands in byte[1] the code is dropped or
+	// rendered as garbage. So we buffer one pending basic byte and, when a
+	// 2-byte code appears at an odd position, pad with 0x80 to realign.
+	var pending byte
+	hasPending := false
+	emitBasic := func(b byte) {
+		if hasPending {
+			e.queue = append(e.queue, CCPair{Data: [2]byte{oddParity(pending), oddParity(b)}})
+			hasPending = false
+			return
+		}
+		pending = b
+		hasPending = true
+	}
+	emitTwoByte := func(prefix, data byte) {
+		if hasPending {
+			e.queue = append(e.queue, CCPair{Data: [2]byte{oddParity(pending), 0x80}})
+			hasPending = false
+		}
+		e.queue = append(e.queue, CCPair{Data: [2]byte{oddParity(prefix), oddParity(data)}})
+	}
+
 	var unsupported []rune
 	for _, r := range text {
 		m := lookupRune(r)
 		switch m.kind {
 		case runeKindBasic:
-			bytesOut = append(bytesOut, m.basic)
+			emitBasic(m.basic)
 		case runeKindAsciiSeq:
-			bytesOut = append(bytesOut, []byte(m.asciiSeq)...)
+			for i := 0; i < len(m.asciiSeq); i++ {
+				emitBasic(m.asciiSeq[i])
+			}
 		case runeKindSpecial, runeKindExtended:
-			bytesOut = append(bytesOut, m.twoByte[0], m.twoByte[1])
+			emitTwoByte(m.twoByte[0], m.twoByte[1])
 		case runeKindUnsupported:
-			bytesOut = append(bytesOut, '?')
+			emitBasic('?')
 			unsupported = append(unsupported, r)
 		case runeKindSkip:
 		}
 	}
-
-	for i := 0; i < len(bytesOut); i += 2 {
-		if i+1 < len(bytesOut) {
-			e.queue = append(e.queue, CCPair{Data: [2]byte{oddParity(bytesOut[i]), oddParity(bytesOut[i+1])}})
-		} else {
-			e.queue = append(e.queue, CCPair{Data: [2]byte{oddParity(bytesOut[i]), 0x80}})
-		}
+	if hasPending {
+		e.queue = append(e.queue, CCPair{Data: [2]byte{oddParity(pending), 0x80}})
 	}
 
 	if len(unsupported) > 0 && time.Since(e.lastSubWarnAt) >= subWarnInterval {

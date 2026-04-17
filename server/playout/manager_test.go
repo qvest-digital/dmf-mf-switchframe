@@ -810,7 +810,9 @@ func TestManager_SeekToItem_MovesSlate(t *testing.T) {
 		t.Errorf("ItemIndex = %d, want 2", states[0].ItemIndex)
 	}
 
-	m.Stop(1)
+	if err := m.Stop(1); err != nil {
+		t.Errorf("Stop: %v", err)
+	}
 }
 
 func TestManager_SeekToItem_InvalidIndex(t *testing.T) {
@@ -835,5 +837,7 @@ func TestManager_SeekToItem_InvalidIndex(t *testing.T) {
 		t.Errorf("SeekToItem with invalid index: got %v, want ErrInvalidItem", err)
 	}
 
-	m.Stop(1)
+	if err := m.Stop(1); err != nil {
+		t.Errorf("Stop: %v", err)
+	}
 }

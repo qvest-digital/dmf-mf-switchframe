@@ -130,7 +130,7 @@ func TestMuxer_WriteVideo_KeyframeSEIOrdering_SPS_PPS_SEI_IDR(t *testing.T) {
 	require.GreaterOrEqual(t, seiIdx, 0, "SEI missing")
 	require.GreaterOrEqual(t, idrIdx, 0, "IDR missing")
 
-	if !(spsIdx < ppsIdx && ppsIdx < seiIdx && seiIdx < idrIdx) {
+	if spsIdx >= ppsIdx || ppsIdx >= seiIdx || seiIdx >= idrIdx {
 		t.Errorf("ordering wrong: SPS(%d) PPS(%d) SEI(%d) IDR(%d), want SPS<PPS<SEI<IDR", spsIdx, ppsIdx, seiIdx, idrIdx)
 	}
 }

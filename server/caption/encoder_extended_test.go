@@ -164,21 +164,58 @@ func TestEncoder_LatinExtendedMappedToCEA608Extended(t *testing.T) {
 }
 
 func TestEncoder_ExtendedSequenceInsideText(t *testing.T) {
-	// "Hüt" — H basic, ü extended, t basic.
+	// "Hüt" — H basic, ü extended (0x12 0x25), t basic.
+	// Per CEA-608-E §8.5.4–5.6, the 2-byte extended code must occupy a
+	// single transmitted pair with 0x12 in byte[0]. Because 'H' is a
+	// single basic byte (odd position), the encoder must pad it with 0x80
+	// before emitting the extended pair, otherwise the 0x12 prefix would
+	// land in byte[1] and conformant decoders would drop/garble the 'ü'.
 	enc := NewEncoder(2)
 	enc.IngestText("Hüt")
 
 	pairs := drainEncoder(enc, 3)
 	got := flattenPairs(pairs)
 
-	// Expect: H, 0x12, 0x25, t — packed into pairs.
 	want := []byte{
-		oddParity('H'), oddParity(0x12),
-		oddParity(0x25), oddParity('t'),
+		oddParity('H'), 0x80,
+		oddParity(0x12), oddParity(0x25),
+		oddParity('t'), 0x80,
 	}
 
 	if !bytes.Equal(got, want) {
 		t.Fatalf("Hüt bytes = % 02X, want % 02X", got, want)
+	}
+}
+
+func TestEncoder_TwoByteCodeAlwaysInPairByteZero(t *testing.T) {
+	// For every extended/special code emitted, the control prefix (0x11/0x12/0x13)
+	// must sit in byte[0] of a transmitted pair. Exercise multiple basic/extended
+	// interleavings so both odd- and even-position extended codes are covered.
+	inputs := []string{
+		"Hüt",    // single extended mid-word, odd position
+		"aßz",    // extended at odd position (different table, 0x13)
+		"©abc",   // extended at position 0 (already even)
+		"ab©cd",  // extended at even position
+		"a©b©c",  // multiple extendeds
+		"Hüllö",  // multiple extendeds, mixed
+		"¿Hola?", // special at start, basic rest
+	}
+	controlPrefixes := map[byte]bool{0x11: true, 0x12: true, 0x13: true}
+
+	for _, in := range inputs {
+		t.Run(in, func(t *testing.T) {
+			enc := NewEncoder(2)
+			enc.IngestText(in)
+
+			pairs := drainEncoder(enc, 3)
+			for i, p := range pairs {
+				b1 := p.Data[1] & 0x7F
+				if controlPrefixes[b1] {
+					t.Errorf("pair %d: control prefix 0x%02X found in byte[1] of pair (% 02X); "+
+						"spec requires it in byte[0]", i, b1, p.Data)
+				}
+			}
+		})
 	}
 }
 

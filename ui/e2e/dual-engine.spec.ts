@@ -45,10 +45,9 @@ test.describe('Dual-Engine Mode', () => {
 
 		test('redundancy panel is not visible by default', async ({ page }) => {
 			await page.goto('/');
-			// The redundancy panel should not be visible (it is toggled by the
-			// SyncIndicator click, which itself is hidden in single-engine mode).
-			const panel = page.locator('.redundancy-panel');
-			await expect(panel).not.toHaveClass(/visible/);
+			// In single-engine mode, the redundancy panel is not rendered at all
+			// (gated by {#if isDualEngine}).
+			await expect(page.locator('.redundancy-panel')).not.toBeVisible();
 		});
 	});
 
