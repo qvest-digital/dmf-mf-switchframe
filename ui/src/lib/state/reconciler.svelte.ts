@@ -148,6 +148,14 @@ const STALE_TRANSPORT_ALIVE_MS = 15_000;
 export const PONG_FRESH_MS = 30_000;
 /** Max time without a state update before engine is stale, even if pongs are fresh. */
 export const STATE_UPDATE_STALE_MS = 12_000;
+/** Staleness threshold for the transition authority lock. Wider than the general
+ * STALE_THRESHOLD_MS so transient state-transport hiccups during a dissolve or
+ * stinger don't flip authority mid-transition. Kept decoupled so future tuning
+ * of STALE_THRESHOLD_MS doesn't silently narrow this grace window. */
+export const TRANSITION_LOCK_STALE_THRESHOLD_MS = 5_000;
+/** Hard upper bound on how long the transition lock may be held. Prevents a
+ * stuck lock if the locked engine keeps reporting inTransition=true forever. */
+export const TRANSITION_LOCK_MAX_HOLD_MS = 10_000;
 
 export function createReconciler() {
 	let stateA = $state<ControlRoomState | null>(null);
@@ -181,6 +189,7 @@ export function createReconciler() {
 	// Lock authority to the engine that was authoritative when a transition started,
 	// to prevent mid-transition UI jumps if authority would otherwise flip.
 	let transitionLockEngine = $state<EngineId | null>(null);
+	let transitionLockAcquiredAt = 0;
 
 	// Hold-time tracking: prevents authority from flapping during transient glitches.
 	// Only switch authority if the new candidate has been the winner for AUTHORITY_HOLD_MS.
@@ -236,6 +245,7 @@ export function createReconciler() {
 				const seqB = stateB?.lastCommandSeq ?? 0;
 				transitionLockEngine = seqA >= seqB ? 'A' : 'B';
 			}
+			transitionLockAcquiredAt = lockNow;
 		}
 		if (!update.inTransition && prevInTransition) {
 			// Only release lock when the locked engine finishes AND the other engine
@@ -245,12 +255,14 @@ export function createReconciler() {
 				const otherConnected = engine === 'A' ? connectedB : connectedA;
 				if (!otherConnected || !otherState?.inTransition) {
 					transitionLockEngine = null;
+					transitionLockAcquiredAt = 0;
 				}
 			} else if (transitionLockEngine !== null) {
 				// Non-locked engine finished — check if locked engine also finished
 				const lockedState = transitionLockEngine === 'A' ? stateA : stateB;
 				if (!lockedState?.inTransition) {
 					transitionLockEngine = null;
+					transitionLockAcquiredAt = 0;
 				}
 			}
 		}
@@ -299,9 +311,14 @@ export function createReconciler() {
 		const bInTransition = stateB?.inTransition ?? false;
 		if (aInTransition || bInTransition) {
 			if (transitionLockEngine !== null) {
-				// Verify the locked engine is still reachable
-				const lockedEffective = transitionLockEngine === 'A' ? effectiveA : effectiveB;
-				if (lockedEffective) return { candidate: transitionLockEngine, bothEffective: true, reason: 'transition_lock' };
+				const lockedConnected = transitionLockEngine === 'A' ? connectedA : connectedB;
+				const lockedLastSeen = transitionLockEngine === 'A' ? lastSeenA : lastSeenB;
+				const lockedFresh = lockedLastSeen > 0 && now - lockedLastSeen <= TRANSITION_LOCK_STALE_THRESHOLD_MS;
+				const lockedStateNonNull = (transitionLockEngine === 'A' ? stateA : stateB) !== null;
+				const withinMaxHold = transitionLockAcquiredAt === 0 || now - transitionLockAcquiredAt <= TRANSITION_LOCK_MAX_HOLD_MS;
+				if (lockedConnected && lockedFresh && lockedStateNonNull && withinMaxHold) {
+					return { candidate: transitionLockEngine, bothEffective: true, reason: 'transition_lock' };
+				}
 			}
 		}
 
@@ -657,12 +674,16 @@ export function createReconciler() {
 		const now = Date.now();
 		lastTickTime = now;
 
-		// Clear orphaned transition lock if locked engine is stale or disconnected
+		// Clear orphaned transition lock if locked engine is stale, disconnected,
+		// or has held the lock past the hard upper bound.
 		if (transitionLockEngine !== null) {
 			const lockedLastSeen = transitionLockEngine === 'A' ? lastSeenA : lastSeenB;
 			const lockedConnected = transitionLockEngine === 'A' ? connectedA : connectedB;
-			if (!lockedConnected || (lockedLastSeen > 0 && now - lockedLastSeen > STALE_THRESHOLD_MS)) {
+			const stale = lockedLastSeen > 0 && now - lockedLastSeen > TRANSITION_LOCK_STALE_THRESHOLD_MS;
+			const maxHoldExceeded = transitionLockAcquiredAt > 0 && now - transitionLockAcquiredAt > TRANSITION_LOCK_MAX_HOLD_MS;
+			if (!lockedConnected || stale || maxHoldExceeded) {
 				transitionLockEngine = null;
+				transitionLockAcquiredAt = 0;
 			}
 		}
 
@@ -706,6 +727,7 @@ export function createReconciler() {
 		// Clear transition lock if disconnected engine holds it
 		if (transitionLockEngine === engine) {
 			transitionLockEngine = null;
+			transitionLockAcquiredAt = 0;
 		}
 		// Re-evaluate authority (disconnection bypasses hold-time)
 		const now = Date.now();
