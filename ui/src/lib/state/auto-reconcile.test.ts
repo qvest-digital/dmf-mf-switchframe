@@ -59,6 +59,88 @@ describe('createAutoReconcile', () => {
 		reconcile.destroy();
 	});
 
+	describe('forceSnapshotPush', () => {
+		it('pushes snapshot immediately (no 2s divergence delay)', async () => {
+			const config = makeConfig();
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.forceSnapshotPush('A');
+
+			// Immediate — only microtask flush, no 2s wait
+			await vi.advanceTimersByTimeAsync(0);
+
+			expect(config.onRecoveryStart).toHaveBeenCalledOnce();
+			expect(config.getSnapshot).toHaveBeenCalledWith('A');
+			expect(config.pushSnapshot).toHaveBeenCalledWith('B', { programSource: 'cam1', previewSource: 'cam2' });
+
+			reconcile.destroy();
+		});
+
+		it('pushes to opposite engine when B is authoritative', async () => {
+			const config = makeConfig();
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.forceSnapshotPush('B');
+			await vi.advanceTimersByTimeAsync(0);
+
+			expect(config.getSnapshot).toHaveBeenCalledWith('B');
+			expect(config.pushSnapshot).toHaveBeenCalledWith('A', expect.anything());
+
+			reconcile.destroy();
+		});
+
+		it('bypasses cooldown between pushes', async () => {
+			const config = makeConfig();
+			const reconcile = createAutoReconcile(config);
+
+			// First push
+			reconcile.forceSnapshotPush('A');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(1);
+
+			// Second push, no cooldown wait — should fire
+			reconcile.forceSnapshotPush('A');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(2);
+
+			reconcile.destroy();
+		});
+
+		it('cancels a pending 2s divergence timer when forced', async () => {
+			const config = makeConfig();
+			const reconcile = createAutoReconcile(config);
+
+			// Queue a pending divergence push
+			reconcile.onSyncStatusChange('diverged', 'A');
+			await vi.advanceTimersByTimeAsync(500);
+			expect(config.pushSnapshot).not.toHaveBeenCalled();
+
+			// Force push takes over
+			reconcile.forceSnapshotPush('A');
+			await vi.advanceTimersByTimeAsync(0);
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(1);
+
+			// Advance past the original 2s — no additional push
+			await vi.advanceTimersByTimeAsync(2000);
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(1);
+
+			reconcile.destroy();
+		});
+
+		it('is a no-op after destroy()', async () => {
+			const config = makeConfig();
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.destroy();
+
+			reconcile.forceSnapshotPush('A');
+			await vi.advanceTimersByTimeAsync(0);
+
+			expect(config.getSnapshot).not.toHaveBeenCalled();
+			expect(config.pushSnapshot).not.toHaveBeenCalled();
+		});
+	});
+
 	it('does NOT trigger on lagging status', async () => {
 		const config = makeConfig();
 		const reconcile = createAutoReconcile(config);

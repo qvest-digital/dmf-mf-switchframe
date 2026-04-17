@@ -1540,13 +1540,11 @@
 			await operatorState.reconnect();
 		}
 
-		// Wire engine discovery callback: when a new engine becomes known,
-		// trigger a snapshot push after a brief delay (1s) to let it settle.
-		// This replaces the old command-buffer replay which had idempotency issues.
+		// Push immediately on discovery so the new engine catches up on
+		// commands missed during the pre-discovery window, rather than waiting
+		// for the reconciler's next 2s divergence tick.
 		setOnNewEngineDiscovered((_engineId) => {
-			setTimeout(() => {
-				autoReconcile.onSyncStatusChange('diverged', syncHealth?.authoritative ?? 'A');
-			}, 1000);
+			autoReconcile.forceSnapshotPush(syncHealth?.authoritative ?? 'A');
 		});
 
 		// Fetch initial state, start polling, and attempt WebTransport connection

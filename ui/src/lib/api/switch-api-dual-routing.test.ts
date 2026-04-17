@@ -576,6 +576,74 @@ describe('switch-api dual-engine routing', () => {
 			expect(engineACalls).toHaveLength(1);
 			expect(engineBCalls).toHaveLength(1);
 		});
+
+		it('command dispatched pre-discovery goes only to engine A even if B is discovered mid-fetch', async () => {
+			setExpectDualEngine(true);
+			// Start in single-engine mode
+			setEngineUrls(null);
+
+			// Hold the first fetch pending so we can flip engines mid-await
+			let releasePreDiscoveryFetch: (() => void) | null = null;
+			const preDiscoveryFetchStarted = new Promise<void>(resolve => {
+				mockFetch.mockImplementationOnce((url: string, opts?: RequestInit) => {
+					fetchCalls.push({ url, opts: opts ?? {} });
+					resolve();
+					return new Promise<Response>(res => {
+						releasePreDiscoveryFetch = () => res(defaultOkResponse({ programSource: 'cam1' }));
+					});
+				});
+			});
+
+			// T=0: issue cut while single-engine
+			const firstCut = cut('cam1');
+			await preDiscoveryFetchStarted;
+
+			// Snapshot the fetch calls made before discovery
+			const preDiscoveryCalls = fetchCalls.length;
+			expect(preDiscoveryCalls).toBe(1);
+			expect(fetchCalls[0].url).toBe('/api/switch/cut');
+
+			// T=mid-await: discover engine B
+			setEngineUrls([
+				{ id: 'A', url: 'https://engine-a.example.com' },
+				{ id: 'B', url: 'https://engine-b.example.com' },
+			]);
+
+			// Release the original fetch
+			releasePreDiscoveryFetch!();
+			await firstCut;
+
+			// Pre-discovery command must not have been fanned out to B
+			const engineBCalls = fetchCalls.filter(c => c.url.includes('engine-b'));
+			expect(engineBCalls).toHaveLength(0);
+			// And still only one call total for the pre-discovery cut
+			expect(fetchCalls).toHaveLength(1);
+		});
+
+		it('post-discovery command routes to both engines after single→dual transition', async () => {
+			setExpectDualEngine(true);
+			// Start single
+			setEngineUrls(null);
+
+			// First cut in single mode
+			await cut('cam1');
+			expect(fetchCalls).toHaveLength(1);
+			expect(fetchCalls[0].url).toBe('/api/switch/cut');
+
+			// Discover engine B
+			fetchCalls = [];
+			setEngineUrls([
+				{ id: 'A', url: 'https://engine-a.example.com' },
+				{ id: 'B', url: 'https://engine-b.example.com' },
+			]);
+
+			// Post-discovery cut fans out to both
+			await cut('cam2');
+			const engineACalls = fetchCalls.filter(c => c.url.includes('engine-a'));
+			const engineBCalls = fetchCalls.filter(c => c.url.includes('engine-b'));
+			expect(engineACalls).toHaveLength(1);
+			expect(engineBCalls).toHaveLength(1);
+		});
 	});
 
 	// ─── Partial failure detection ───

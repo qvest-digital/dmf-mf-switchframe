@@ -303,8 +303,20 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 		clearPendingTimer();
 	}
 
+	/** Immediate push that bypasses the 2s divergence timer and per-target
+	 *  cooldown. Used on engine discovery so the newly discovered engine
+	 *  catches up on commands it missed during the pre-discovery window. */
+	function forceSnapshotPush(authoritative: EngineId) {
+		if (destroyed) return;
+		currentAuthoritative = authoritative;
+		clearPendingTimer();
+		lastPushTimes.delete(otherEngine(authoritative));
+		executeSnapshotPush(authoritative);
+	}
+
 	return {
 		onSyncStatusChange,
+		forceSnapshotPush,
 		cancel,
 		destroy,
 		get stats() {
