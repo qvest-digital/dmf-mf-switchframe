@@ -629,6 +629,11 @@ func (a *App) initSwitcherCommon() error {
 // confidence monitor.
 func (a *App) initOutput() error {
 	a.outputMgr = output.NewManager()
+	// SetEngineLabel MUST run before any AddDestination / RestoreDestinations
+	// call: the engine-label guard on the manager short-circuits on empty
+	// label, and destinations added before the label is set are stamped
+	// with an empty Engine field.
+	a.outputMgr.SetEngineLabel(a.cfg.EngineLabel)
 	a.outputMgr.SetSRTWiring(output.SRTConnect, output.SRTAcceptLoop)
 	a.outputMgr.SetMetrics(a.appMetrics)
 	if pf := a.sw.PipelineFormat(); pf.Width > 0 && pf.Height > 0 {
@@ -1560,8 +1565,18 @@ func (a *App) initAPI() error {
 		return result
 	})
 
+	// Construct the peer health poller (not yet started) so the API can
+	// expose this engine's label/epoch on /api/peer/health from startup.
+	// Start() runs later, once the HTTP listener is up.
+	if a.cfg.PeerEngineURL != "" {
+		a.peerPoller = peer.NewHealthPoller(a.cfg.PeerEngineURL,
+			peer.WithLocalIdentity(a.cfg.EngineLabel),
+		)
+	}
+
 	apiOpts := []control.APIOption{
 		control.WithMixer(a.mixer),
+		control.WithPeerPoller(a.peerPoller),
 		control.WithOutputManager(a.outputMgr),
 		control.WithDebugCollector(a.debugCollector),
 		control.WithPresetStore(a.presetStore),
@@ -1929,11 +1944,13 @@ func (a *App) Run(ctx context.Context) error {
 		}
 	}
 
-	// Start peer engine health poller if a peer URL is configured.
-	if a.cfg.PeerEngineURL != "" {
-		a.peerPoller = peer.NewHealthPoller(a.cfg.PeerEngineURL)
+	// Start peer engine health poller (constructed earlier so API could
+	// advertise our label/epoch from startup).
+	if a.peerPoller != nil {
 		a.peerPoller.Start()
-		slog.Info("peer health poller started", "peerURL", a.cfg.PeerEngineURL)
+		slog.Info("peer health poller started",
+			"peerURL", a.cfg.PeerEngineURL,
+			"engineLabel", a.cfg.EngineLabel)
 	}
 
 	// Start admin server (Prometheus metrics, health, readiness, pprof, cert-hash).

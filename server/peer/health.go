@@ -15,11 +15,17 @@ import (
 )
 
 // HealthResponse is the JSON payload returned by /api/peer/health.
+//
+// EngineLabel and Epoch carry the responding engine's active-active identity.
+// Empty EngineLabel means the peer is running in single-engine (standalone)
+// mode; Role computation treats it as the conservative follower case.
 type HealthResponse struct {
 	Status         string `json:"status"`
 	UptimeMs       int64  `json:"uptimeMs"`
 	ProgramSource  string `json:"programSource"`
 	LastCommandSeq uint64 `json:"lastCommandSeq"`
+	EngineLabel    string `json:"engineLabel,omitempty"`
+	Epoch          uint64 `json:"epoch,omitempty"`
 }
 
 // PeerStatus holds the current peer health state, safe to read from any
@@ -31,6 +37,8 @@ type PeerStatus struct {
 	ProgramSource  string
 	LastCommandSeq uint64
 	UptimeMs       int64
+	PeerLabel      string
+	PeerEpoch      uint64
 }
 
 // Option configures a HealthPoller.
@@ -52,6 +60,20 @@ func WithHTTPClient(c *http.Client) Option {
 	return func(p *HealthPoller) { p.client = c }
 }
 
+// WithLocalIdentity sets the local engine label used by Role() to decide
+// leader/follower status. Pass "" for standalone (Role always returns
+// RoleStandalone and Gate() is a no-op).
+func WithLocalIdentity(label string) Option {
+	return func(p *HealthPoller) { p.localLabel = label }
+}
+
+// WithInitialEpoch seeds the local epoch at construction. Callers restoring
+// persisted epoch after restart should pass the prior value so force-
+// takeover state survives process death.
+func WithInitialEpoch(e uint64) Option {
+	return func(p *HealthPoller) { p.localEpoch.Store(e) }
+}
+
 // HealthPoller periodically polls a peer engine's health endpoint and
 // tracks whether the peer is reachable.
 type HealthPoller struct {
@@ -60,6 +82,12 @@ type HealthPoller struct {
 	failureThreshold int
 	client           *http.Client
 
+	// localLabel is immutable after construction. Empty means standalone.
+	localLabel string
+
+	// localEpoch is bumped by BumpEpoch and read by Role. Lock-free.
+	localEpoch atomic.Uint64
+
 	mu             sync.RWMutex
 	reachable      bool
 	lastSeen       time.Time
@@ -67,6 +95,8 @@ type HealthPoller struct {
 	programSource  string
 	lastCommandSeq uint64
 	uptimeMs       int64
+	peerLabel      string
+	peerEpoch      uint64
 
 	cancel  context.CancelFunc
 	stopped atomic.Bool
@@ -137,7 +167,99 @@ func (p *HealthPoller) Status() PeerStatus {
 		ProgramSource:  p.programSource,
 		LastCommandSeq: p.lastCommandSeq,
 		UptimeMs:       p.uptimeMs,
+		PeerLabel:      p.peerLabel,
+		PeerEpoch:      p.peerEpoch,
 	}
+}
+
+// LocalLabel returns this engine's configured label ("", "a", or "b").
+func (p *HealthPoller) LocalLabel() string {
+	if p == nil {
+		return ""
+	}
+	return p.localLabel
+}
+
+// LocalEpoch returns the current local epoch, incremented by each BumpEpoch.
+func (p *HealthPoller) LocalEpoch() uint64 {
+	if p == nil {
+		return 0
+	}
+	return p.localEpoch.Load()
+}
+
+// BumpEpoch atomically increments the local epoch and returns the new value.
+// Used by the control-plane-authenticated force-leader endpoint (Phase 3).
+// A nil receiver returns 0 — consistent with LocalEpoch's nil-safety so the
+// force-leader handler can nil-check via the return path.
+func (p *HealthPoller) BumpEpoch() uint64 {
+	if p == nil {
+		return 0
+	}
+	return p.localEpoch.Add(1)
+}
+
+// Role reports this engine's current authority class for non-idempotent
+// commands. See the Role type comment for the tiebreak rules.
+//
+// A nil receiver returns RoleStandalone — callers can therefore skip a nil
+// check on code paths where the poller is optional.
+func (p *HealthPoller) Role() Role {
+	if p == nil || p.localLabel == "" {
+		return RoleStandalone
+	}
+
+	p.mu.RLock()
+	peerReachable := p.reachable
+	peerLabel := p.peerLabel
+	peerEpoch := p.peerEpoch
+	// Load localEpoch inside the RLock region so the Role snapshot is
+	// linearizable relative to recordSuccess's write of peerEpoch —
+	// otherwise a concurrent BumpEpoch can cause transient role flicker.
+	localEpoch := p.localEpoch.Load()
+	p.mu.RUnlock()
+
+	// Epoch precedes label in the tiebreak — a forced-leader bump dominates
+	// the default lexical ordering whether we're reachable or partitioned.
+	if localEpoch > peerEpoch {
+		return RoleLeader
+	}
+	if peerEpoch > localEpoch {
+		if peerReachable {
+			return RoleFollowerHealthy
+		}
+		return RoleFollowerPartitioned
+	}
+
+	// Equal epochs: lexical label wins. "a" < "b".
+	if peerReachable {
+		if p.localLabel < peerLabel {
+			return RoleLeader
+		}
+		return RoleFollowerHealthy
+	}
+
+	// Partition with no peer label yet → we've never heard from peer.
+	// Default to follower so we don't double-fire non-idempotent commands
+	// against an assumed-dead peer that might actually be healthy and we're
+	// the one who's partitioned.
+	if peerLabel == "" {
+		return RoleFollowerPartitioned
+	}
+	if p.localLabel < peerLabel {
+		return RoleLeader
+	}
+	return RoleFollowerPartitioned
+}
+
+// setPeerStateForTest lets tests inject peer-poll results without running
+// the HTTP loop. Not part of the public API contract — kept unexported.
+func (p *HealthPoller) setPeerStateForTest(reachable bool, label string, epoch uint64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.reachable = reachable
+	p.peerLabel = label
+	p.peerEpoch = epoch
 }
 
 func (p *HealthPoller) loop(ctx context.Context) {
@@ -199,9 +321,25 @@ func (p *HealthPoller) recordSuccess(health HealthResponse) {
 	p.programSource = health.ProgramSource
 	p.lastCommandSeq = health.LastCommandSeq
 	p.uptimeMs = health.UptimeMs
+	p.peerLabel = health.EngineLabel
+	p.peerEpoch = health.Epoch
 
 	if wasUnreachable {
-		slog.Info("peer engine recovered", "url", p.peerURL)
+		slog.Info("peer engine recovered",
+			"url", p.peerURL,
+			"peerLabel", health.EngineLabel,
+			"peerEpoch", health.Epoch,
+			"localEpoch", p.localEpoch.Load())
+	}
+
+	// Misconfiguration guard: both engines reporting the same label
+	// collapses the lexical tiebreak (both become followers under
+	// partition, both become leaders with swapped labels). Surface
+	// loudly so ops can fix before Phase 2 gating strands commands.
+	if p.localLabel != "" && health.EngineLabel == p.localLabel {
+		slog.Error("peer reports same engine label as local — active-active tiebreak will collapse; fix --engine-label on one engine",
+			"localLabel", p.localLabel,
+			"peerURL", p.peerURL)
 	}
 }
 
@@ -218,4 +356,7 @@ func (p *HealthPoller) recordFailure(reason string) {
 			"reason", reason,
 		)
 	}
+	// peerLabel / peerEpoch are intentionally NOT reset on transition
+	// to unreachable — Role() uses their last-known values to preserve
+	// the forced-takeover outcome through a partition.
 }

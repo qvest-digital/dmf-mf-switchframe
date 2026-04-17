@@ -369,6 +369,8 @@ type ControlRoomState struct {
 	Playout              *PlayoutState           `json:"playout,omitempty"`
 	PeerReachable        *bool                   `json:"peerReachable,omitempty"` // nil when no peer configured
 	PeerLastSeenMs       int64                   `json:"peerLastSeenMs,omitempty"`
+	EngineLabel          string                  `json:"engineLabel,omitempty"`          // "" (standalone), "a", or "b"
+	Role                 string                  `json:"role,omitempty"`                 // "standalone" | "leader" | "follower-healthy" | "follower-partitioned"
 	EngineBURL           string                  `json:"engineBUrl,omitempty"`
 	SessionID            string                  `json:"sessionId,omitempty"`
 	LastChangedBy        string                  `json:"lastChangedBy,omitempty"`

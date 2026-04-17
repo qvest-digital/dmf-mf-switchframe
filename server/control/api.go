@@ -24,6 +24,7 @@ import (
 	"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/operator"
 	"github.com/zsiec/switchframe/server/output"
+	"github.com/zsiec/switchframe/server/peer"
 	"github.com/zsiec/switchframe/server/playout"
 	"github.com/zsiec/switchframe/server/preset"
 	"github.com/zsiec/switchframe/server/replay"
@@ -427,6 +428,13 @@ func WithConnectionCounter(fn func() (webtransport, srt, moq int)) APIOption {
 	return func(a *API) { a.connectionCounter = fn }
 }
 
+// WithPeerPoller attaches the peer.HealthPoller so /api/peer/health can
+// advertise this engine's label and epoch to its peer. Required for Role
+// computation on the remote side.
+func WithPeerPoller(p *peer.HealthPoller) APIOption {
+	return func(a *API) { a.peerPoller = p }
+}
+
 // WithSTMapRegistry attaches an ST map registry to the API.
 func WithSTMapRegistry(r *stmap.Registry) APIOption {
 	return func(a *API) { a.stmapRegistry = r }
@@ -567,6 +575,7 @@ type API struct {
 	seqTracker         func(uint64)
 	lastPongSentFn     func() int64                       // returns Unix µs of last fast-control pong
 	connectionCounter  func() (webtransport, srt, moq int) // returns active connection counts by type
+	peerPoller         *peer.HealthPoller                  // local identity + role for /api/peer/health
 	startTime          time.Time
 	reconcileLock      reconcileLockState
 }

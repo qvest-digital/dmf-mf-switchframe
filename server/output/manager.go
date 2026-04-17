@@ -227,6 +227,13 @@ func (m *Manager) SetEngineLabel(label string) {
 	m.engineLabel = label
 }
 
+// EngineLabel returns the manager's configured engine label.
+func (m *Manager) EngineLabel() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.engineLabel
+}
+
 // ReassignDestinationEngine changes the engine assignment for a destination.
 // Valid values are "a", "b", or "" (local engine).
 func (m *Manager) ReassignDestinationEngine(id, engine string) error {

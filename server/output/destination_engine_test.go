@@ -6,6 +6,23 @@ import (
 	"testing"
 )
 
+func TestEngineLabel_SetAndGet(t *testing.T) {
+	m := NewManager()
+	defer func() { _ = m.Close() }()
+
+	if got := m.EngineLabel(); got != "" {
+		t.Errorf("EngineLabel() on fresh manager = %q, want \"\"", got)
+	}
+	m.SetEngineLabel("a")
+	if got := m.EngineLabel(); got != "a" {
+		t.Errorf("EngineLabel() after SetEngineLabel(a) = %q, want \"a\"", got)
+	}
+	m.SetEngineLabel("")
+	if got := m.EngineLabel(); got != "" {
+		t.Errorf("EngineLabel() after SetEngineLabel(\"\") = %q, want \"\"", got)
+	}
+}
+
 func TestAddDestination_DefaultsEngine(t *testing.T) {
 	m := NewManager()
 	defer func() { _ = m.Close() }()

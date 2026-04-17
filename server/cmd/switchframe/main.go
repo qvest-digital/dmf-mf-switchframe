@@ -137,6 +137,10 @@ type AppConfig struct {
 	// Inter-engine peer health monitoring.
 	PeerEngineURL string // --peer-engine-url (URL of the other engine for health polling)
 
+	// EngineLabel identifies this engine in an active-active pair ("a" or "b").
+	// Empty means single-engine mode; all peer-role logic no-ops in that mode.
+	EngineLabel string // --engine-label or SWITCHFRAME_ENGINE_LABEL
+
 	// Reference clock: single clock source drives synchronous A/V processing.
 	RefClock bool // --ref-clock (experimental)
 
@@ -154,6 +158,10 @@ func main() {
 func run() error {
 	cfg, err := parseConfig()
 	if err != nil {
+		return err
+	}
+
+	if err := validateEngineLabel(cfg.EngineLabel); err != nil {
 		return err
 	}
 
@@ -348,6 +356,7 @@ func parseConfig() (AppConfig, error) {
 
 	// Peer engine health monitoring.
 	peerEngineURLFlag := flag.String("peer-engine-url", "", "URL of the peer engine for inter-engine health monitoring (e.g., https://engine-b:8080)")
+	engineLabelFlag := flag.String("engine-label", "", "engine label for active-active pairs (\"a\" or \"b\"); empty = single-engine")
 
 	// Reference clock (experimental).
 	refClockFlag := flag.Bool("ref-clock", false, "Use reference clock for synchronous A/V processing (experimental)")
@@ -518,9 +527,23 @@ func parseConfig() (AppConfig, error) {
 		ST2110PTP:            *st2110PTPFlag,
 		ST2110NMOSPort:       *st2110NMOSPortFlag,
 		PeerEngineURL:        resolveEnvOrFlag(*peerEngineURLFlag, "SWITCHFRAME_PEER_ENGINE_URL"),
+		EngineLabel:          resolveEnvOrFlag(*engineLabelFlag, "SWITCHFRAME_ENGINE_LABEL"),
 		RefClock:             *refClockFlag,
 		WarmCache:            *warmCacheFlag,
 	}, nil
+}
+
+// validateEngineLabel returns an error if label is not one of "", "a", "b".
+// Accepted at startup; any other value (including uppercase or whitespace)
+// is rejected so misconfiguration surfaces immediately rather than causing
+// silent split-brain under partition.
+func validateEngineLabel(label string) error {
+	switch label {
+	case "", "a", "b":
+		return nil
+	default:
+		return fmt.Errorf("--engine-label must be \"\", \"a\", or \"b\"; got %q", label)
+	}
 }
 
 // resolveEnvOrFlag returns the flag value if non-empty, else the env var value.

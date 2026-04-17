@@ -12,6 +12,7 @@ import (
 	"github.com/zsiec/switchframe/server/dve"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
+	"github.com/zsiec/switchframe/server/peer"
 	"github.com/zsiec/switchframe/server/scte35"
 	"github.com/zsiec/switchframe/server/stmap"
 )
@@ -443,6 +444,7 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 	}
 
 	// Peer engine health status (nil = no peer configured).
+	state.EngineLabel = a.cfg.EngineLabel
 	if a.peerPoller != nil {
 		reachable := a.peerPoller.PeerReachable()
 		state.PeerReachable = &reachable
@@ -452,6 +454,9 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 		if a.cfg.PeerEngineURL != "" {
 			state.EngineBURL = a.cfg.PeerEngineURL
 		}
+		state.Role = a.peerPoller.Role().String()
+	} else {
+		state.Role = peer.RoleStandalone.String()
 	}
 
 	return state

@@ -26,6 +26,12 @@ func (a *API) handlePeerHealth(w http.ResponseWriter, r *http.Request) {
 		ProgramSource:  state.ProgramSource,
 		LastCommandSeq: state.LastCommandSeq,
 	}
+	// Defensive nil guard: handler is unauthenticated, so a latent
+	// nil-deref on an accessor refactor would be a remote DoS.
+	if a.peerPoller != nil {
+		resp.EngineLabel = a.peerPoller.LocalLabel()
+		resp.Epoch = a.peerPoller.LocalEpoch()
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }

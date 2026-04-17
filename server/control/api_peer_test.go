@@ -38,3 +38,25 @@ func TestPeerHealthAuthExempt(t *testing.T) {
 	assert.True(t, authExemptPaths["/api/peer/health"])
 	assert.True(t, authExemptPaths["/api/v1/peer/health"])
 }
+
+func TestHandlePeerHealth_AdvertisesLabelAndEpoch(t *testing.T) {
+	programRelay := distribution.NewRelay()
+	sw := switcher.NewTestSwitcher(programRelay)
+	poller := peer.NewHealthPoller("http://unused",
+		peer.WithLocalIdentity("a"),
+		peer.WithInitialEpoch(3),
+	)
+	api := NewAPI(sw, WithPeerPoller(poller))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/peer/health", nil)
+	w := httptest.NewRecorder()
+	api.Mux().ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var resp peer.HealthResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+
+	assert.Equal(t, "a", resp.EngineLabel)
+	assert.Equal(t, uint64(3), resp.Epoch)
+}
