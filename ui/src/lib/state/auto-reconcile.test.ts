@@ -989,5 +989,29 @@ describe('createAutoReconcile', () => {
 
 			reconcile.destroy();
 		});
+
+		it('does not escalate when the seq gap is narrowing between retry attempts', async () => {
+			const onStaleConflict = vi.fn();
+			const config = makeConfig({
+				// First push: gap = 110 - 100 = 10. Retry: gap = 108 - 105 = 3 (narrower).
+				// Engines are converging; retry should return without firing the banner.
+				pushSnapshot: vi
+					.fn()
+					.mockRejectedValueOnce(new SnapshotStaleError(100, 110))
+					.mockRejectedValueOnce(new SnapshotStaleError(105, 108)),
+				onStaleConflict,
+			});
+			const reconcile = createAutoReconcile(config);
+
+			reconcile.onSyncStatusChange('mismatch', 'A');
+			await vi.advanceTimersByTimeAsync(0);
+			await vi.advanceTimersByTimeAsync(10);
+
+			expect(config.pushSnapshot).toHaveBeenCalledTimes(2);
+			expect(onStaleConflict).not.toHaveBeenCalled();
+			expect(config.onRecoveryError).not.toHaveBeenCalled();
+
+			reconcile.destroy();
+		});
 	});
 });

@@ -190,16 +190,22 @@ export function createAutoReconcile(config: AutoReconcileConfig) {
 				result = await timeoutRace(config.pushSnapshot(target, snapshot));
 			} catch (pushErr) {
 				if (pushErr instanceof SnapshotStaleError) {
-					// Target engine has advanced past our snapshot. Force-pull a
-					// fresh snapshot from source and retry once. If that also
-					// returns 409, engines are truly divergent — escalate.
+					// Target advanced past our snapshot. Pull fresh from source and retry.
+					const firstGap = pushErr.currentSeq - pushErr.snapshotSeq;
 					snapshot = await timeoutRace(config.getSnapshot(authoritative));
 					try {
 						result = await timeoutRace(config.pushSnapshot(target, snapshot));
 					} catch (retryErr) {
 						if (retryErr instanceof SnapshotStaleError) {
 							clearTimeout(timeoutTimer);
-							config.onStaleConflict?.(target, retryErr.snapshotSeq, retryErr.currentSeq);
+							// Only escalate if the gap didn't narrow. A narrowing gap means
+							// engines are still converging (fan-out latency during a busy
+							// show can 409 a snapshot on arrival without indicating
+							// genuine divergence). Stagnant or widening gap means divergence.
+							const retryGap = retryErr.currentSeq - retryErr.snapshotSeq;
+							if (retryGap >= firstGap) {
+								config.onStaleConflict?.(target, retryErr.snapshotSeq, retryErr.currentSeq);
+							}
 							return;
 						}
 						throw retryErr;

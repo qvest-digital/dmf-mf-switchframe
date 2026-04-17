@@ -105,7 +105,7 @@ type Metrics struct {
 	CmdQueueClockJumpsTotal prometheus.Counter
 
 	// Snapshot Sync (active-active)
-	SnapshotApplyTotal    *prometheus.CounterVec // labels: result (success, partial, error)
+	SnapshotApplyTotal    *prometheus.CounterVec // labels: result (success, partial, error, stale)
 	SnapshotApplyDuration prometheus.Histogram
 	SnapshotSizeBytes     prometheus.Histogram
 }
