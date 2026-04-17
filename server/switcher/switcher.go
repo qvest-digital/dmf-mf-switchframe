@@ -2311,7 +2311,12 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	s.mu.Lock()
 	s.transEngine = engine
 	s.transTypeOrig = transType // preserve original type string for GPU DVE dispatch
-	s.previewSource = sourceKey
+	// Swap preview to old program at transition start (matches CUT's
+	// program/preview swap semantic). This lets operators queue the next
+	// cut during an in-flight AUTO; the completion handler below
+	// deliberately does NOT reassert this value so their mid-transition
+	// SetPreview is preserved.
+	s.previewSource = fromSource
 	s.transitionsStarted.Add(1)
 	// Signal videoProcessingLoop to drop stale queued frames during GPU transitions.
 	if gpuActive {
@@ -2598,11 +2603,10 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 
 	audioHandler := s.audioTransition
 	var audioCut audioCutHandler
-	var newProgram, oldProgram string
+	var newProgram string
 
 	if !aborted && s.transEngine != nil {
 		newProgram = s.transEngine.ToSource()
-		oldProgram = s.programSource
 		if newProgram != "" {
 			audioCut = s.audioCut
 		}
@@ -2616,7 +2620,10 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 
 	if newProgram != "" {
 		s.programSource = newProgram
-		s.previewSource = oldProgram
+		// previewSource was swapped to oldProgram at transition start (see
+		// StartTransition). Don't reassert it here — an operator who called
+		// SetPreview during the transition to queue the next cut would see
+		// their choice clobbered.
 		// Bump program epoch so in-flight frames from the transition
 		// engine or old program source are discarded.
 		s.programEpoch.Add(1)
@@ -3516,6 +3523,18 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 	}
 	if s.programSource != "" {
 		tally[s.programSource] = string(TallyProgram)
+	}
+	// During a transition, the destination is going-to-air via the blend —
+	// SMPTE broadcast-safe tally marks both source and destination as
+	// program ("live") so the operator can see at a glance which cameras
+	// are on air. Without this, the destination has no tally (preview is
+	// suppressed above because previewSource == programSource post-swap).
+	if s.state.isInTransition() && s.transEngine != nil {
+		if to := s.transEngine.ToSource(); to != "" {
+			if _, ok := s.sources[to]; ok {
+				tally[to] = string(TallyProgram)
+			}
+		}
 	}
 	transType := "cut"
 	if s.state.isInTransition() && s.transEngine != nil {

@@ -113,7 +113,113 @@ func TestSwitcherStartTransition(t *testing.T) {
 	state := sw.State()
 	require.True(t, state.InTransition)
 	require.Equal(t, "mix", state.TransitionType)
-	require.Equal(t, "cam2", state.PreviewSource)
+	// Preview swaps to old program at start (matches CUT semantics); the
+	// destination is what's "about to be on air," not what's next-up-next.
+	require.Equal(t, "cam1", state.PreviewSource)
+}
+
+// AUTO must swap preview to the old program at transition start (matching
+// CUT semantics), not wait until completion. This lets operators queue up
+// the next cut during the AUTO instead of being locked out until the
+// transition finishes.
+func TestSwitcherStartTransition_SwapsPreviewToOldProgramAtStart(t *testing.T) {
+	sw, _ := setupSwitcherWithTransition(t)
+	defer sw.Close()
+
+	// Pre-state: PGM=cam1, PVW=cam2 (set up by the fixture).
+	require.Equal(t, "cam1", sw.State().ProgramSource)
+	require.Equal(t, "cam2", sw.State().PreviewSource)
+
+	// Long-duration transition so we can inspect mid-transition state.
+	err := sw.StartTransition(context.Background(), "cam2", "mix", 60000, "")
+	require.NoError(t, err)
+
+	state := sw.State()
+	require.True(t, state.InTransition, "transition should be active")
+	require.Equal(t, "cam1", state.ProgramSource,
+		"programSource stays cam1 until completion — output is still the blend")
+	require.Equal(t, "cam1", state.PreviewSource,
+		"previewSource swaps to old program at start, same as CUT semantics")
+}
+
+// During a transition, both the from-source and the destination are
+// going-to-air (blended on program output). SMPTE broadcast-safe tally
+// marks both as "program" so the operator sees which cameras are live.
+// Pre-fix, cam2 carried the "preview" tally during the transition, which
+// understated the safety picture — that source was actually going on
+// air. Post-fix, both carry "program".
+func TestSwitcherStartTransition_TallyDuringTransition(t *testing.T) {
+	sw, _ := setupSwitcherWithTransition(t)
+	defer sw.Close()
+
+	err := sw.StartTransition(context.Background(), "cam2", "mix", 60000, "")
+	require.NoError(t, err)
+
+	state := sw.State()
+	require.True(t, state.InTransition)
+	require.Equal(t, string(TallyProgram), state.TallyState["cam1"],
+		"from-source (current program) keeps program tally during transition")
+	require.Equal(t, string(TallyProgram), state.TallyState["cam2"],
+		"destination (going-to-air via blend) also gets program tally during transition")
+}
+
+// AbortTransition is operator-initiated; it does not revert previewSource
+// to its pre-transition value. After abort, state is whatever the most
+// recent mutation left it — which for a just-started AUTO means
+// previewSource == programSource (the start-of-transition swap). This
+// test pins that choice so a future change to AbortTransition can't
+// silently reintroduce a pre-transition-PVW restore without reviewing
+// the intent.
+func TestSwitcherAbortTransition_LeavesPreviewAtOldProgram(t *testing.T) {
+	sw, _ := setupSwitcherWithTransition(t)
+	defer sw.Close()
+
+	err := sw.StartTransition(context.Background(), "cam2", "mix", 60000, "")
+	require.NoError(t, err)
+	require.Equal(t, "cam1", sw.State().PreviewSource, "precondition: PVW swapped to old program at start")
+
+	sw.AbortTransition()
+	time.Sleep(20 * time.Millisecond)
+
+	state := sw.State()
+	require.False(t, state.InTransition, "abort should return to idle")
+	require.Equal(t, "cam1", state.ProgramSource, "program unchanged on abort")
+	require.Equal(t, "cam1", state.PreviewSource,
+		"abort does NOT restore pre-transition preview; operator re-sets if needed")
+}
+
+// An operator may change preview during a running AUTO to queue the next
+// cut. That choice must survive transition completion — the completion
+// handler must not clobber previewSource back to the start-of-transition
+// oldProgram.
+func TestTransitionCompletion_PreservesOperatorPreviewChangeDuringTransition(t *testing.T) {
+	sw, _ := setupSwitcherWithTransition(t)
+	defer sw.Close()
+
+	// Register a third camera so we can redirect preview to it mid-transition.
+	cam3Relay := newTestRelay()
+	sw.RegisterSource("cam3", cam3Relay)
+
+	// Start a long transition cam1 -> cam2.
+	err := sw.StartTransition(context.Background(), "cam2", "mix", 60000, "")
+	require.NoError(t, err)
+
+	// Mid-transition: operator queues cam3 as the next cut target.
+	require.NoError(t, sw.SetPreview(context.Background(), "cam3"))
+	require.Equal(t, "cam3", sw.State().PreviewSource,
+		"SetPreview during transition must take effect immediately")
+
+	// Complete the transition via SetPosition(1.0).
+	require.NoError(t, sw.SetTransitionPosition(context.Background(), 1.0))
+	time.Sleep(20 * time.Millisecond) // let completion callback settle
+
+	state := sw.State()
+	require.False(t, state.InTransition, "transition should be complete")
+	require.Equal(t, "cam2", state.ProgramSource,
+		"programSource swaps to destination on completion")
+	require.Equal(t, "cam3", state.PreviewSource,
+		"operator's mid-transition preview choice (cam3) must survive completion — "+
+			"completion handler must not reassert oldProgram as preview")
 }
 
 func TestSwitcherStartTransitionNoPreview(t *testing.T) {
