@@ -435,6 +435,14 @@ func WithPeerPoller(p *peer.HealthPoller) APIOption {
 	return func(a *API) { a.peerPoller = p }
 }
 
+// WithControlPlaneSecret enables POST /api/peer/force-leader by setting
+// the shared secret the control plane uses (via X-Control-Plane-Secret
+// header) to authorize force-takeover. Empty disables the endpoint — it
+// returns 501 in that case, which is the default.
+func WithControlPlaneSecret(secret string) APIOption {
+	return func(a *API) { a.controlPlaneSecret = secret }
+}
+
 // WithSTMapRegistry attaches an ST map registry to the API.
 func WithSTMapRegistry(r *stmap.Registry) APIOption {
 	return func(a *API) { a.stmapRegistry = r }
@@ -576,6 +584,7 @@ type API struct {
 	lastPongSentFn     func() int64                       // returns Unix µs of last fast-control pong
 	connectionCounter  func() (webtransport, srt, moq int) // returns active connection counts by type
 	peerPoller         *peer.HealthPoller                  // local identity + role for /api/peer/health
+	controlPlaneSecret string                              // enables /api/peer/force-leader when non-empty
 	startTime          time.Time
 	reconcileLock      reconcileLockState
 }

@@ -74,6 +74,15 @@ func WithInitialEpoch(e uint64) Option {
 	return func(p *HealthPoller) { p.localEpoch.Store(e) }
 }
 
+// WithEpochPersist installs a callback invoked on every BumpEpoch with the
+// new epoch value. Intended for writing to disk so force-leader survives
+// restart. A non-nil error from the callback is logged but does not
+// prevent the in-memory epoch from incrementing — the process-local
+// state is still authoritative for as long as this engine runs.
+func WithEpochPersist(fn func(uint64) error) Option {
+	return func(p *HealthPoller) { p.epochPersist = fn }
+}
+
 // HealthPoller periodically polls a peer engine's health endpoint and
 // tracks whether the peer is reachable.
 type HealthPoller struct {
@@ -87,6 +96,16 @@ type HealthPoller struct {
 
 	// localEpoch is bumped by BumpEpoch and read by Role. Lock-free.
 	localEpoch atomic.Uint64
+
+	// epochPersist is called on BumpEpoch with the new epoch so callers
+	// can persist to disk. Optional — nil disables persistence.
+	epochPersist func(uint64) error
+
+	// epochMu serializes BumpEpoch + epochPersist so concurrent force-
+	// leader calls cannot race the on-disk value. `localEpoch.Add` alone
+	// is atomic, but the (bump, persist) pair must be atomic too or a
+	// later restart can observe a lower epoch than the logical truth.
+	epochMu sync.Mutex
 
 	// coldStartWarnOnce fires a one-time log when the poller has failed
 	// enough times to declare the peer unreachable AND has never heard
@@ -197,11 +216,25 @@ func (p *HealthPoller) LocalEpoch() uint64 {
 // Used by the control-plane-authenticated force-leader endpoint (Phase 3).
 // A nil receiver returns 0 — consistent with LocalEpoch's nil-safety so the
 // force-leader handler can nil-check via the return path.
+//
+// If WithEpochPersist was provided, the callback is invoked with the new
+// epoch. A non-nil error is logged but does not affect the return value
+// or the in-memory epoch — the force-leader operator has authoritatively
+// promoted this engine regardless of disk state.
 func (p *HealthPoller) BumpEpoch() uint64 {
 	if p == nil {
 		return 0
 	}
-	return p.localEpoch.Add(1)
+	p.epochMu.Lock()
+	defer p.epochMu.Unlock()
+	newEpoch := p.localEpoch.Add(1)
+	if p.epochPersist != nil {
+		if err := p.epochPersist(newEpoch); err != nil {
+			slog.Error("peer: failed to persist new epoch; restart will revert",
+				"epoch", newEpoch, "error", err)
+		}
+	}
+	return newEpoch
 }
 
 // Role reports this engine's current authority class for non-idempotent
@@ -322,6 +355,7 @@ func (p *HealthPoller) recordSuccess(health HealthResponse) {
 	defer p.mu.Unlock()
 
 	wasUnreachable := !p.reachable && p.consecFailures > 0
+	priorPeerEpoch := p.peerEpoch
 	p.reachable = true
 	p.lastSeen = time.Now()
 	p.consecFailures = 0
@@ -337,6 +371,17 @@ func (p *HealthPoller) recordSuccess(health HealthResponse) {
 			"peerLabel", health.EngineLabel,
 			"peerEpoch", health.Epoch,
 			"localEpoch", p.localEpoch.Load())
+	}
+	// Yielding path: if the peer's epoch exceeds ours, this engine must
+	// yield authority. Emit once per observed epoch increase (tracked via
+	// peerEpoch already being the prior value at this point) whether or
+	// not we crossed a reachability edge — peer operators can force-leader
+	// on a peer that never went down.
+	if health.Epoch > priorPeerEpoch && health.Epoch > p.localEpoch.Load() {
+		slog.Warn("peer reports higher epoch — yielding leader role",
+			"url", p.peerURL,
+			"localEpoch", p.localEpoch.Load(),
+			"peerEpoch", health.Epoch)
 	}
 
 	// Misconfiguration guard: both engines reporting the same label

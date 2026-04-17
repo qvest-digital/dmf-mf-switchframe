@@ -24,6 +24,8 @@ var authExemptPaths = map[string]bool{
 	"/api/v1/operator/heartbeat": true,
 	"/api/peer/health":           true,
 	"/api/v1/peer/health":        true,
+	"/api/peer/force-leader":     true, // secret-authenticated (X-Control-Plane-Secret), not API key
+	"/api/v1/peer/force-leader":  true,
 }
 
 // OperatorTokenChecker checks if a token belongs to a registered operator.

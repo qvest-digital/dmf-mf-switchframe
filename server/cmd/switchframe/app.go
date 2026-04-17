@@ -1569,14 +1569,36 @@ func (a *App) initAPI() error {
 	// expose this engine's label/epoch on /api/peer/health from startup.
 	// Start() runs later, once the HTTP listener is up.
 	if a.cfg.PeerEngineURL != "" {
-		a.peerPoller = peer.NewHealthPoller(a.cfg.PeerEngineURL,
+		pollerOpts := []peer.Option{
 			peer.WithLocalIdentity(a.cfg.EngineLabel),
-		)
+		}
+		if a.cfg.StateDir != "" {
+			epochPath := a.statePath("peer_epoch.json")
+			e, err := loadPeerEpoch(epochPath)
+			switch {
+			case err != nil:
+				// A malformed file is louder than missing-file: the whole
+				// point of persistence is to preserve force-leader across
+				// restart, and silently falling back to 0 would undo it.
+				// Don't abort startup — a degraded engine is better than
+				// no engine — but surface the fact loudly so ops can fix.
+				slog.Error("peer epoch file unreadable; starting at epoch 0 (force-leader state will be lost until re-bumped)",
+					"path", epochPath, "error", err)
+			case e > 0:
+				pollerOpts = append(pollerOpts, peer.WithInitialEpoch(e))
+				slog.Info("restored peer epoch from disk", "epoch", e, "path", epochPath)
+			}
+			pollerOpts = append(pollerOpts, peer.WithEpochPersist(func(e uint64) error {
+				return savePeerEpoch(epochPath, e)
+			}))
+		}
+		a.peerPoller = peer.NewHealthPoller(a.cfg.PeerEngineURL, pollerOpts...)
 	}
 
 	apiOpts := []control.APIOption{
 		control.WithMixer(a.mixer),
 		control.WithPeerPoller(a.peerPoller),
+		control.WithControlPlaneSecret(a.cfg.ControlPlaneSecret),
 		control.WithOutputManager(a.outputMgr),
 		control.WithDebugCollector(a.debugCollector),
 		control.WithPresetStore(a.presetStore),

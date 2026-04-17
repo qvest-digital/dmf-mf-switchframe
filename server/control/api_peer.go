@@ -10,9 +10,11 @@ import (
 
 // registerPeerRoutes registers the peer health endpoint on the given mux.
 // The /api/peer/health endpoint is unauthenticated so peer engines can
-// call it without API tokens.
+// call it without API tokens. /api/peer/force-leader is authenticated
+// via a separate control-plane shared secret.
 func (a *API) registerPeerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/peer/health", a.handlePeerHealth)
+	mux.HandleFunc("POST /api/peer/force-leader", a.handleForceLeader)
 }
 
 // handlePeerHealth returns lightweight health information for peer engine

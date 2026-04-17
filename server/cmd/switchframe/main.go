@@ -141,6 +141,11 @@ type AppConfig struct {
 	// Empty means single-engine mode; all peer-role logic no-ops in that mode.
 	EngineLabel string // --engine-label or SWITCHFRAME_ENGINE_LABEL
 
+	// ControlPlaneSecret enables POST /api/peer/force-leader. The control
+	// plane presents this value in the X-Control-Plane-Secret header to
+	// authorize force-takeover. Empty disables the endpoint (returns 501).
+	ControlPlaneSecret string // --control-plane-secret or SWITCHFRAME_CONTROL_PLANE_SECRET
+
 	// Reference clock: single clock source drives synchronous A/V processing.
 	RefClock bool // --ref-clock (experimental)
 
@@ -357,6 +362,7 @@ func parseConfig() (AppConfig, error) {
 	// Peer engine health monitoring.
 	peerEngineURLFlag := flag.String("peer-engine-url", "", "URL of the peer engine for inter-engine health monitoring (e.g., https://engine-b:8080)")
 	engineLabelFlag := flag.String("engine-label", "", "engine label for active-active pairs (\"a\" or \"b\"); empty = single-engine")
+	controlPlaneSecretFlag := flag.String("control-plane-secret", "", "shared secret authorizing POST /api/peer/force-leader; empty disables the endpoint")
 
 	// Reference clock (experimental).
 	refClockFlag := flag.Bool("ref-clock", false, "Use reference clock for synchronous A/V processing (experimental)")
@@ -528,6 +534,7 @@ func parseConfig() (AppConfig, error) {
 		ST2110NMOSPort:       *st2110NMOSPortFlag,
 		PeerEngineURL:        resolveEnvOrFlag(*peerEngineURLFlag, "SWITCHFRAME_PEER_ENGINE_URL"),
 		EngineLabel:          resolveEnvOrFlag(*engineLabelFlag, "SWITCHFRAME_ENGINE_LABEL"),
+		ControlPlaneSecret:   resolveEnvOrFlag(*controlPlaneSecretFlag, "SWITCHFRAME_CONTROL_PLANE_SECRET"),
 		RefClock:             *refClockFlag,
 		WarmCache:            *warmCacheFlag,
 	}, nil
