@@ -701,6 +701,13 @@ func (inj *Injector) ReturnToProgram(eventID uint32) error {
 		return fmt.Errorf("event %d not active", eventID)
 	}
 
+	// fireDueAutoReturns drops the lock between snapshotting due IDs and
+	// calling here, so a Hold can land in between. Don't fire if held.
+	if ae.Held {
+		inj.mu.Unlock()
+		return nil
+	}
+
 	ae.autoReturnPending = false
 	if ae.preRollCancel != nil {
 		ae.preRollCancel()
