@@ -66,7 +66,7 @@ func ptsDelta(newer, older int64) int64 {
 // the tick may be slightly before or after the source frame window.
 func ptsSignedDelta(pts, ref int64) int64 {
 	d := (pts - ref) & ptsMask33
-	if d >= (1 << 32) {
+	if d >= ptsHalfRange {
 		// Upper half of 33-bit range: interpret as negative
 		return d - (int64(1) << 33)
 	}

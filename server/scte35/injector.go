@@ -195,12 +195,15 @@ type Injector struct {
 // so firing latency is at most one tick past the scheduled PTS.
 const autoReturnTickInterval = 15 * time.Millisecond
 
+// ptsHalfRange is half of the 33-bit PTS space. A masked forward delta below
+// this value means the target is ahead; at or above means it has wrapped behind.
+const ptsHalfRange = int64(1) << 32
+
 // ptsReached reports whether current has reached or passed scheduled in the
-// 33-bit MPEG-TS PTS domain. Treats the first half of the 33-bit range as
-// "forward" (reached), the second half as "scheduled still in the future".
+// 33-bit MPEG-TS PTS domain.
 func ptsReached(current, scheduled int64) bool {
 	delta := (current - scheduled) & 0x1FFFFFFFF
-	return delta < (1 << 32)
+	return delta < ptsHalfRange
 }
 
 // maskPTS33 masks a PTS value to the 33-bit range used by MPEG-TS.

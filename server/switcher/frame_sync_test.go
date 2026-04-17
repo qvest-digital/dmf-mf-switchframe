@@ -2812,7 +2812,7 @@ func TestFrameSync_PTSCorrectionDelta_SignedAcrossWrap(t *testing.T) {
 
 	// Simulate what deliverRelease computes (signed delta).
 	delta = (ss.lastReleasedPTS - ss.lastSourcePTS) & ptsMask33
-	if delta >= (1 << 32) {
+	if delta >= ptsHalfRange {
 		delta -= (int64(1) << 33)
 	}
 	ss.ptsCorrectionDelta.Store(delta)
@@ -2833,7 +2833,7 @@ func TestFrameSync_PTSCorrectionDelta_SignedAcrossWrap(t *testing.T) {
 	ss.mu.Unlock()
 
 	delta = (ss.lastReleasedPTS - ss.lastSourcePTS) & ptsMask33
-	if delta >= (1 << 32) {
+	if delta >= ptsHalfRange {
 		delta -= (int64(1) << 33)
 	}
 	ss.ptsCorrectionDelta.Store(delta)
@@ -3072,4 +3072,54 @@ func TestFrameSync_DeliveryRefReleasedWithoutDelayBuffer(t *testing.T) {
 	// With the bug, refs would be 1 (orphaned delivery ref).
 	require.Equal(t, int32(0), pf1.Refs(),
 		"first frame refs should reach 0 — delivery ref leaked (got %d)", pf1.Refs())
+}
+
+func TestPTSAfter_EqualValuesNotAfter(t *testing.T) {
+	require.False(t, ptsAfter(0, 0))
+	require.False(t, ptsAfter(12345, 12345))
+	require.False(t, ptsAfter(ptsMask33, ptsMask33))
+}
+
+func TestPTSAfter_SmallForwardIsAfter(t *testing.T) {
+	require.True(t, ptsAfter(1, 0))
+	require.True(t, ptsAfter(1000, 999))
+	require.True(t, ptsAfter(90000, 0))
+}
+
+func TestPTSAfter_SmallBackwardNotAfter(t *testing.T) {
+	require.False(t, ptsAfter(0, 1))
+	require.False(t, ptsAfter(999, 1000))
+	require.False(t, ptsAfter(0, 90000))
+}
+
+func TestPTSAfter_WrapForwardIsAfter(t *testing.T) {
+	// a=0 is one tick forward of b=2^33-1 (fresh frame after wrap).
+	require.True(t, ptsAfter(0, ptsMask33))
+	// a=10 is genuinely after b=(2^33-100) across the wrap boundary.
+	require.True(t, ptsAfter(10, ptsMask33-89))
+}
+
+func TestPTSAfter_WrapBackwardNotAfter(t *testing.T) {
+	// a=2^33-1 is one tick BEFORE b=0 (wrapped behind).
+	require.False(t, ptsAfter(ptsMask33, 0))
+	// a=(2^33-100) is behind b=10 across the wrap boundary.
+	require.False(t, ptsAfter(ptsMask33-89, 10))
+}
+
+func TestPTSAfter_HalfRangeBoundary(t *testing.T) {
+	// Just inside the forward half (halfRange - 1): a is after b.
+	require.True(t, ptsAfter(ptsHalfRange-1, 0))
+	// Exactly halfRange: ambiguous forward/backward — treated as NOT after.
+	require.False(t, ptsAfter(ptsHalfRange, 0))
+	// Just past halfRange: treated as wrapped-behind, NOT after.
+	require.False(t, ptsAfter(ptsHalfRange+1, 0))
+}
+
+func TestPTSAfter_HalfRangeReversed(t *testing.T) {
+	// a=0, b just under halfRange: a is NOT after b (b is in forward half from a).
+	require.False(t, ptsAfter(0, ptsHalfRange-1))
+	// a=0, b=halfRange: ambiguous — NOT after.
+	require.False(t, ptsAfter(0, ptsHalfRange))
+	// a=0, b just past halfRange: a IS after b (b is in the backward half from a).
+	require.True(t, ptsAfter(0, ptsHalfRange+1))
 }

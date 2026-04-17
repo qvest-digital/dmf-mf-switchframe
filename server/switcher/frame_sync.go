@@ -15,12 +15,21 @@ const mpegtsClock = 90000
 // ptsMask33 masks a PTS value to 33 bits (MPEG-TS PTS range).
 const ptsMask33 = (int64(1) << 33) - 1
 
-// ptsAfter returns true if a is "after" b in 33-bit PTS space,
-// handling wraparound. Uses signed comparison on the delta.
+// ptsHalfRange is half of the 33-bit PTS space (2^32). A forward delta that
+// fits in the lower half means a is after b; a delta in the upper half means
+// a has wrapped behind b. Named constant documents the wrap-tolerant split.
+const ptsHalfRange = int64(1) << 32
+
+// ptsAfter returns true if a is strictly after b in 33-bit PTS space, treating
+// the 33-bit range as a circular timeline. The forward distance (a-b modulo
+// 2^33) is in the lower half when a is after b; values in the upper half
+// indicate a is wrapped behind b. Equal values return false.
 func ptsAfter(a, b int64) bool {
 	delta := (a - b) & ptsMask33
-	// If delta is in the lower half of the 33-bit range, a is after b.
-	return delta > 0 && delta < (1<<32)
+	if delta == 0 {
+		return false
+	}
+	return delta < ptsHalfRange
 }
 
 const (
@@ -1362,7 +1371,7 @@ func (fs *FrameSynchronizer) deliverRelease(r *pendingRelease, tickIntervalPTS, 
 			// the upper half of the range (> 2^32) are correctly interpreted as
 			// negative deltas, preventing A/V desync at the 33-bit wraparound.
 			delta := (r.ss.lastReleasedPTS - r.ss.lastSourcePTS) & ptsMask33
-			if delta >= (1 << 32) {
+			if delta >= ptsHalfRange {
 				delta -= (int64(1) << 33)
 			}
 			r.ss.ptsCorrectionDelta.Store(delta)
@@ -1401,7 +1410,7 @@ func (fs *FrameSynchronizer) deliverRelease(r *pendingRelease, tickIntervalPTS, 
 				vf.PTS = r.ss.lastReleasedPTS
 			}
 			delta := (r.ss.lastReleasedPTS - r.ss.lastSourcePTS) & ptsMask33
-			if delta >= (1 << 32) {
+			if delta >= ptsHalfRange {
 				delta -= (int64(1) << 33)
 			}
 			r.ss.ptsCorrectionDelta.Store(delta)
