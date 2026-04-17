@@ -881,28 +881,39 @@ func (m *TSMuxer) init(_ int64) error {
 // SEI NALU (H.264 type 6 / HEVC PREFIX_SEI 39) carrying user_data_registered_itu_t_t35
 // (payload_type 4). Used to avoid double-injecting caption SEI when the
 // encode pipeline already inserted one.
+//
+// Walks the SEI message list per ITU-T H.264 §7.3.2.3 (variable-length
+// payload_type + payload_size, repeating until trailing bits) so a combined
+// pic_timing+caption SEI is correctly detected.
 func hasCaptionSEI(annexB []byte, videoCodec string) bool {
 	isHEVC := videoCodec == "h265"
-	for i := 0; i+4 < len(annexB); i++ {
-		if annexB[i] != 0x00 || annexB[i+1] != 0x00 {
-			continue
-		}
-		var scLen, hdrLen int
+	i := 0
+	for i+3 < len(annexB) {
+		var scLen int
 		switch {
-		case i+3 < len(annexB) && annexB[i+2] == 0x00 && annexB[i+3] == 0x01:
+		case annexB[i] == 0x00 && annexB[i+1] == 0x00 && annexB[i+2] == 0x00 && annexB[i+3] == 0x01:
 			scLen = 4
-		case annexB[i+2] == 0x01:
+		case annexB[i] == 0x00 && annexB[i+1] == 0x00 && annexB[i+2] == 0x01:
 			scLen = 3
 		default:
+			i++
 			continue
 		}
 		body := i + scLen
 		if body >= len(annexB) {
 			return false
 		}
+		end := len(annexB)
+		for j := body; j+2 < len(annexB); j++ {
+			if annexB[j] == 0x00 && annexB[j+1] == 0x00 && (annexB[j+2] == 0x00 || annexB[j+2] == 0x01) {
+				end = j
+				break
+			}
+		}
+		var hdrLen int
 		isSEI := false
 		if isHEVC {
-			if body+1 < len(annexB) && (annexB[body]>>1)&0x3F == 39 {
+			if body+1 < end && (annexB[body]>>1)&0x3F == 39 {
 				isSEI = true
 				hdrLen = 2
 			}
@@ -912,10 +923,65 @@ func hasCaptionSEI(annexB []byte, videoCodec string) bool {
 				hdrLen = 1
 			}
 		}
-		if isSEI && body+hdrLen < len(annexB) && annexB[body+hdrLen] == 0x04 {
+		if isSEI && walkSEIForT35(annexB[body+hdrLen:end]) {
 			return true
 		}
-		i = body
+		i = end
+	}
+	return false
+}
+
+// walkSEIForT35 walks the SEI NALU body and reports whether any contained SEI
+// message has payload_type == 4 (user_data_registered_itu_t_t35). Strips
+// emulation-prevention bytes inline.
+func walkSEIForT35(body []byte) bool {
+	stripped := make([]byte, 0, len(body))
+	zeros := 0
+	for k := 0; k < len(body); k++ {
+		b := body[k]
+		if zeros >= 2 && b == 0x03 && k+1 < len(body) && body[k+1] <= 0x03 {
+			zeros = 0
+			continue
+		}
+		stripped = append(stripped, b)
+		if b == 0x00 {
+			zeros++
+		} else {
+			zeros = 0
+		}
+	}
+	pos := 0
+	for pos < len(stripped) {
+		if stripped[pos] == 0x80 {
+			return false
+		}
+		pt := 0
+		for pos < len(stripped) && stripped[pos] == 0xFF {
+			pt += 255
+			pos++
+		}
+		if pos >= len(stripped) {
+			return false
+		}
+		pt += int(stripped[pos])
+		pos++
+		ps := 0
+		for pos < len(stripped) && stripped[pos] == 0xFF {
+			ps += 255
+			pos++
+		}
+		if pos >= len(stripped) {
+			return false
+		}
+		ps += int(stripped[pos])
+		pos++
+		if pt == 4 {
+			return true
+		}
+		if pos+ps > len(stripped) {
+			return false
+		}
+		pos += ps
 	}
 	return false
 }

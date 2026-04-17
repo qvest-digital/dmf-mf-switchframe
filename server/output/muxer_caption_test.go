@@ -224,13 +224,152 @@ func TestMuxer_WriteVideo_DoesNotDoubleInjectSEI_WhenWireDataAlreadyHasCaptionSE
 	require.NoError(t, m.WriteVideo(idr))
 
 	es := collectVideoPESPayload(t, output)
-	count := 0
-	for i := 0; i+5 < len(es); i++ {
-		if es[i] == 0x00 && es[i+1] == 0x00 && es[i+2] == 0x00 && es[i+3] == 0x01 && es[i+4] == 0x06 && es[i+5] == 0x04 {
-			count++
-		}
-	}
+	count := countT35SEIMessages(es, "h264")
 	if count != 1 {
 		t.Errorf("expected exactly 1 caption SEI NALU in ES (no double-injection), got %d", count)
+	}
+}
+
+// countT35SEIMessages walks every SEI NALU in an Annex B elementary stream and
+// counts how many SEI messages have payload_type == 4 (user_data_registered_itu_t_t35).
+// Walks the standard ITU-T H.264 §7.3.2.3 / H.265 §7.3.2.4 SEI message list and
+// strips emulation-prevention bytes inline.
+func countT35SEIMessages(es []byte, videoCodec string) int {
+	isHEVC := videoCodec == "h265"
+	count := 0
+	i := 0
+	for i+3 < len(es) {
+		var scLen int
+		switch {
+		case es[i] == 0x00 && es[i+1] == 0x00 && es[i+2] == 0x00 && es[i+3] == 0x01:
+			scLen = 4
+		case es[i] == 0x00 && es[i+1] == 0x00 && es[i+2] == 0x01:
+			scLen = 3
+		default:
+			i++
+			continue
+		}
+		body := i + scLen
+		if body >= len(es) {
+			break
+		}
+		end := len(es)
+		for j := body; j+2 < len(es); j++ {
+			if es[j] == 0x00 && es[j+1] == 0x00 && (es[j+2] == 0x00 || es[j+2] == 0x01) {
+				end = j
+				break
+			}
+		}
+		isSEI := false
+		hdrLen := 0
+		if isHEVC {
+			if body+1 < end && (es[body]>>1)&0x3F == 39 {
+				isSEI = true
+				hdrLen = 2
+			}
+		} else {
+			if es[body]&0x1F == 6 {
+				isSEI = true
+				hdrLen = 1
+			}
+		}
+		if !isSEI {
+			i = end
+			continue
+		}
+		raw := append([]byte{}, es[body+hdrLen:end]...)
+		stripped := raw[:0]
+		zeros := 0
+		for k := 0; k < len(raw); k++ {
+			b := raw[k]
+			if zeros >= 2 && b == 0x03 && k+1 < len(raw) && raw[k+1] <= 0x03 {
+				zeros = 0
+				continue
+			}
+			stripped = append(stripped, b)
+			if b == 0x00 {
+				zeros++
+			} else {
+				zeros = 0
+			}
+		}
+		pos := 0
+		for pos < len(stripped) {
+			pt := 0
+			for pos < len(stripped) && stripped[pos] == 0xFF {
+				pt += 255
+				pos++
+			}
+			if pos >= len(stripped) {
+				break
+			}
+			pt += int(stripped[pos])
+			pos++
+			ps := 0
+			for pos < len(stripped) && stripped[pos] == 0xFF {
+				ps += 255
+				pos++
+			}
+			if pos >= len(stripped) {
+				break
+			}
+			ps += int(stripped[pos])
+			pos++
+			if pt == 4 {
+				count++
+			}
+			if pos+ps > len(stripped) {
+				break
+			}
+			pos += ps
+			if pos < len(stripped) && stripped[pos] == 0x80 {
+				break
+			}
+		}
+		i = end
+	}
+	return count
+}
+
+func TestMuxer_WriteVideo_DoesNotDoubleInject_WithCombinedPicTimingCaptionSEI(t *testing.T) {
+	m := NewTSMuxer()
+	mgr := caption.NewManager()
+	mgr.SetMode(caption.ModeAuthor)
+	mgr.IngestText("HELLO")
+	m.SetCaptionManager(mgr)
+
+	var output []byte
+	m.SetOutput(func(data []byte) { output = append(output, data...) })
+
+	combinedSEI := caption.BuildPicTimingAndCaptionSEI(
+		[]caption.CCPair{{Data: [2]byte{'C', 'D'}}},
+		caption.DefaultPicTimingConfig(),
+		0,
+		nil,
+		"h264",
+	)
+	require.NotEmpty(t, combinedSEI)
+	require.Equal(t, byte(0x06), combinedSEI[4], "combined SEI must use H.264 SEI NALU header (0x06)")
+	require.Equal(t, byte(0x01), combinedSEI[5], "combined SEI must start with pic_timing payload_type=1, not T.35 (this exposes the precheck bug)")
+
+	wire := []byte{}
+	seiBody := combinedSEI[4:]
+	wire = append(wire, byte(len(seiBody)>>24), byte(len(seiBody)>>16), byte(len(seiBody)>>8), byte(len(seiBody)))
+	wire = append(wire, seiBody...)
+	wire = append(wire, 0x00, 0x00, 0x00, 0x05, 0x65, 0x88, 0x80, 0x40, 0x00)
+
+	idr := &media.VideoFrame{
+		PTS: 90000, DTS: 90000, IsKeyframe: true,
+		SPS:      []byte{0x67, 0x42, 0xC0, 0x1E},
+		PPS:      []byte{0x68, 0xCE, 0x38, 0x80},
+		WireData: wire,
+		Codec:    "h264",
+	}
+	require.NoError(t, m.WriteVideo(idr))
+
+	es := collectVideoPESPayload(t, output)
+	got := countT35SEIMessages(es, "h264")
+	if got != 1 {
+		t.Errorf("expected exactly 1 T.35 caption SEI in ES (precheck must detect combined pic_timing+caption SEI), got %d", got)
 	}
 }
