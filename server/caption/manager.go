@@ -381,3 +381,31 @@ func (m *Manager) ConsumeForFrameWithVANC() []CCPair {
 
 	return pairs
 }
+
+// PendingPair returns the next caption pair to embed in the current video frame.
+// All modes (including ModeOff) emit a continuous null pair so downstream
+// CEA-608/708 decoders detect the channel from the very first frame.
+func (m *Manager) PendingPair() (CCPair, bool) {
+	m.mu.Lock()
+	pairs := m.consumeForFrameLocked()
+	m.mu.Unlock()
+	if len(pairs) == 0 {
+		return CCPair{}, false
+	}
+	return pairs[0], true
+}
+
+// PendingCaptionSEI returns an Annex B SEI NALU carrying the next caption pair,
+// framed for the given codec ("h264" or "h265"). Returns nil only when the
+// manager itself is nil — null pairs are still wrapped in a SEI to maintain
+// continuous ATSC A/53 cc_data presence in the stream.
+func (m *Manager) PendingCaptionSEI(codec string) []byte {
+	if m == nil {
+		return nil
+	}
+	pair, ok := m.PendingPair()
+	if !ok {
+		return nil
+	}
+	return BuildSEINALU([]CCPair{pair}, codec)
+}

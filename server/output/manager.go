@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/srt"
 )
@@ -107,6 +108,8 @@ type Manager struct {
 	// engineLabel identifies which engine this manager belongs to ("a", "b", or "").
 	// When set, newly added destinations default their Engine field to this label.
 	engineLabel string
+
+	captionMgr *caption.Manager
 }
 
 // NewManager creates an output Manager. Frames are delivered via
@@ -232,6 +235,19 @@ func (m *Manager) EngineLabel() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.engineLabel
+}
+
+// SetCaptionManager attaches a caption manager for per-frame SEI injection in
+// the underlying TSMuxer. Applies immediately when a muxer is already running
+// and propagates to muxers created later.
+func (m *Manager) SetCaptionManager(cm *caption.Manager) {
+	m.mu.Lock()
+	m.captionMgr = cm
+	mux := m.directMuxer.Load()
+	m.mu.Unlock()
+	if mux != nil {
+		mux.SetCaptionManager(cm)
+	}
 }
 
 // ReassignDestinationEngine changes the engine assignment for a destination.
@@ -1160,6 +1176,9 @@ func (m *Manager) ensureMuxerLocked() bool {
 	}
 	if m.scte35PID != 0 {
 		muxer.SetSCTE35PID(m.scte35PID)
+	}
+	if m.captionMgr != nil {
+		muxer.SetCaptionManager(m.captionMgr)
 	}
 	muxer.SetOutput(func(tsData []byte) {
 		// Path 1: Direct adapters (recorder, non-SRT) get raw TS.

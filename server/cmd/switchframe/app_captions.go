@@ -45,6 +45,10 @@ func (a *App) initCaptions() error {
 	// Wire caption manager to switcher for SEI injection.
 	a.sw.SetCaptionManager(mgr)
 
+	if a.outputMgr != nil {
+		a.outputMgr.SetCaptionManager(mgr)
+	}
+
 	// Wire state change callback to trigger broadcast.
 	mgr.OnStateChange(func() {
 		a.broadcastState(nil)

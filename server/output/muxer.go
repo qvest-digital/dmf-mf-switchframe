@@ -12,6 +12,7 @@ import (
 
 	astits "github.com/asticode/go-astits"
 	"github.com/zsiec/prism/media"
+	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/internal/mpegts"
 )
@@ -99,6 +100,11 @@ type TSMuxer struct {
 	lastNITPTS int64
 	sdtCC      uint8 // continuity counter for SDT PID
 	nitCC      uint8 // continuity counter for NIT PID
+
+	// Optional. When set, WriteVideo prepends an ATSC A/53 SEI NALU per
+	// frame; encode-time injection upstream still takes effect when present.
+	captionMgr       *caption.Manager
+	captionInjectBuf []byte
 }
 
 // NewTSMuxer creates an uninitialized TSMuxer. Call SetOutput before
@@ -153,6 +159,15 @@ func (m *TSMuxer) SetSCTE35PID(pid uint16) {
 	defer m.mu.Unlock()
 	m.scte35PID = pid
 	m.scte35CC = 0
+}
+
+// SetCaptionManager attaches a caption manager so WriteVideo can inject
+// per-frame ATSC A/53 SEI NALUs into the H.264/HEVC elementary stream.
+// Pass nil to disable muxer-level caption injection.
+func (m *TSMuxer) SetCaptionManager(cm *caption.Manager) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.captionMgr = cm
 }
 
 // maxBitrateBytes returns the max bitrate in bytes/sec for the PMT descriptor.
@@ -582,6 +597,13 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 		annexB = m.prependBuf
 	}
 
+	if m.captionMgr != nil && !hasCaptionSEI(annexB, m.videoCodec) {
+		if sei := m.captionMgr.PendingCaptionSEI(m.videoCodec); len(sei) > 0 {
+			m.captionInjectBuf = caption.InsertSEIBeforeVCLInto(sei, annexB, m.captionInjectBuf[:0], m.videoCodec)
+			annexB = m.captionInjectBuf
+		}
+	}
+
 	// Build PES data for video.
 	ptsRef := &astits.ClockReference{Base: muxerPTS}
 	// No B-frames: DTS always equals PTS.
@@ -717,6 +739,7 @@ func (m *TSMuxer) Close() error {
 	m.lastPCRPTS = 0
 	m.ptsBase = 0
 	m.ptsBaseSet = false
+	m.captionInjectBuf = m.captionInjectBuf[:0]
 	return nil
 }
 
@@ -852,6 +875,49 @@ func (m *TSMuxer) init(_ int64) error {
 	// PAT/PMT + buffered audio remain in the buffer and will be flushed
 	// alongside the first keyframe.
 	return nil
+}
+
+// hasCaptionSEI reports whether the Annex B bitstream already contains a
+// SEI NALU (H.264 type 6 / HEVC PREFIX_SEI 39) carrying user_data_registered_itu_t_t35
+// (payload_type 4). Used to avoid double-injecting caption SEI when the
+// encode pipeline already inserted one.
+func hasCaptionSEI(annexB []byte, videoCodec string) bool {
+	isHEVC := videoCodec == "h265"
+	for i := 0; i+4 < len(annexB); i++ {
+		if annexB[i] != 0x00 || annexB[i+1] != 0x00 {
+			continue
+		}
+		var scLen, hdrLen int
+		switch {
+		case i+3 < len(annexB) && annexB[i+2] == 0x00 && annexB[i+3] == 0x01:
+			scLen = 4
+		case annexB[i+2] == 0x01:
+			scLen = 3
+		default:
+			continue
+		}
+		body := i + scLen
+		if body >= len(annexB) {
+			return false
+		}
+		isSEI := false
+		if isHEVC {
+			if body+1 < len(annexB) && (annexB[body]>>1)&0x3F == 39 {
+				isSEI = true
+				hdrLen = 2
+			}
+		} else {
+			if annexB[body]&0x1F == 6 {
+				isSEI = true
+				hdrLen = 1
+			}
+		}
+		if isSEI && body+hdrLen < len(annexB) && annexB[body+hdrLen] == 0x04 {
+			return true
+		}
+		i = body
+	}
+	return false
 }
 
 // flush sends buffered TS data to the output callback and resets the
