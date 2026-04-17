@@ -64,9 +64,13 @@ func (l *Limiter) Process(samples []float32) float64 {
 		l.gainReductionBits.Store(0)
 	}
 
-	threshold := l.threshold
+	// Brickwall target is whichever of threshold/ceiling is lower; gain is applied once against it.
+	target := l.threshold
+	if l.ceiling < target {
+		target = l.ceiling
+	}
 	env := l.envelope
-	threshF32 := float32(threshold)
+	targetF32 := float32(target)
 	ch := l.channels
 
 	for i := 0; i < len(samples); i += ch {
@@ -88,33 +92,25 @@ func (l *Limiter) Process(samples []float32) float64 {
 		}
 
 		var gain float32 = 1.0
-		if env > threshold {
-			gain = float32(threshold / env)
+		if env > target {
+			gain = float32(target / env)
 		}
 
 		for j := 0; j < ch && i+j < len(samples); j++ {
 			samples[i+j] *= gain
-			if samples[i+j] > threshF32 {
-				samples[i+j] = threshF32
-			} else if samples[i+j] < -threshF32 {
-				samples[i+j] = -threshF32
+			if samples[i+j] > targetF32 {
+				samples[i+j] = targetF32
+			} else if samples[i+j] < -targetF32 {
+				samples[i+j] = -targetF32
 			}
 		}
 	}
 
 	l.envelope = env
 
-	// Apply output ceiling
-	if l.ceiling < 1.0 {
-		ceil := float32(l.ceiling)
-		for i := range samples {
-			samples[i] *= ceil
-		}
-	}
-
 	var gr float64
-	if env > threshold {
-		gr = 20 * math.Log10(env/threshold)
+	if env > target {
+		gr = 20 * math.Log10(env/target)
 	}
 	l.gainReductionBits.Store(math.Float64bits(gr))
 
