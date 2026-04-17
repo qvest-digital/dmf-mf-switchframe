@@ -88,6 +88,11 @@ type HealthPoller struct {
 	// localEpoch is bumped by BumpEpoch and read by Role. Lock-free.
 	localEpoch atomic.Uint64
 
+	// coldStartWarnOnce fires a one-time log when the poller has failed
+	// enough times to declare the peer unreachable AND has never heard
+	// from the peer. Intended to surface misconfigured --peer-engine-url.
+	coldStartWarnOnce sync.Once
+
 	mu             sync.RWMutex
 	reachable      bool
 	lastSeen       time.Time
@@ -252,9 +257,11 @@ func (p *HealthPoller) Role() Role {
 	return RoleFollowerPartitioned
 }
 
-// setPeerStateForTest lets tests inject peer-poll results without running
-// the HTTP loop. Not part of the public API contract — kept unexported.
-func (p *HealthPoller) setPeerStateForTest(reachable bool, label string, epoch uint64) {
+// SetPeerStateForTest lets tests inject peer-poll results without running
+// the HTTP loop. Exported (with Test in the name) so tests in other
+// packages — control/ in particular — can exercise the role-dependent
+// handlers without standing up an httptest peer.
+func (p *HealthPoller) SetPeerStateForTest(reachable bool, label string, epoch uint64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.reachable = reachable
@@ -345,10 +352,9 @@ func (p *HealthPoller) recordSuccess(health HealthResponse) {
 
 func (p *HealthPoller) recordFailure(reason string) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	p.consecFailures++
-	if p.consecFailures >= p.failureThreshold && p.reachable {
+	justWentDown := p.consecFailures >= p.failureThreshold && p.reachable
+	if justWentDown {
 		p.reachable = false
 		slog.Warn("peer engine unreachable",
 			"url", p.peerURL,
@@ -359,4 +365,17 @@ func (p *HealthPoller) recordFailure(reason string) {
 	// peerLabel / peerEpoch are intentionally NOT reset on transition
 	// to unreachable — Role() uses their last-known values to preserve
 	// the forced-takeover outcome through a partition.
+	neverSeenPeer := p.peerLabel == "" && p.consecFailures >= p.failureThreshold && p.localLabel != ""
+	p.mu.Unlock()
+
+	// Cold-start misconfiguration warn. Fires once per process lifetime
+	// when we're configured with a label + peer URL but have never
+	// successfully polled — usually a bad --peer-engine-url.
+	if neverSeenPeer {
+		p.coldStartWarnOnce.Do(func() {
+			slog.Warn("peer never reached on startup — non-idempotent REST endpoints (recording.start, output.srt.start) will return 409 on this engine until the peer responds; check --peer-engine-url or force-promote via POST /api/peer/force-leader",
+				"peerURL", p.peerURL,
+				"localLabel", p.localLabel)
+		})
+	}
 }

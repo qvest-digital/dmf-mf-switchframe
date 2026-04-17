@@ -43,6 +43,10 @@ func (a *API) registerOutputRoutes(mux *http.ServeMux) {
 // handleRecordingStart begins recording program output to a file.
 func (a *API) handleRecordingStart(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)
+	if err := a.peerPoller.Gate(); err != nil {
+		httperr.Write(w, http.StatusConflict, err.Error())
+		return
+	}
 	if a.outputMgr == nil {
 		httperr.Write(w, http.StatusNotImplemented, "output manager not configured")
 		return
@@ -121,6 +125,10 @@ func (a *API) handleRecordingStatus(w http.ResponseWriter, r *http.Request) {
 // handleSRTStart begins SRT output with the given configuration.
 func (a *API) handleSRTStart(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)
+	if err := a.peerPoller.Gate(); err != nil {
+		httperr.Write(w, http.StatusConflict, err.Error())
+		return
+	}
 	if a.outputMgr == nil {
 		httperr.Write(w, http.StatusNotImplemented, "output manager not configured")
 		return

@@ -55,7 +55,7 @@ func TestRole_Matrix(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			p := NewHealthPoller("http://peer", WithLocalIdentity(tc.in.localLabel))
-			p.setPeerStateForTest(tc.in.peerReachable, tc.in.peerLabel, tc.in.peerEpoch)
+			p.SetPeerStateForTest(tc.in.peerReachable, tc.in.peerLabel, tc.in.peerEpoch)
 			p.localEpoch.Store(tc.in.localEpoch)
 
 			if got := p.Role(); got != tc.want {
@@ -93,7 +93,7 @@ func TestLocalIdentity_EmptyMeansStandalone(t *testing.T) {
 	// in standalone mode — the label is the enabler for peer-role logic.
 	p := NewHealthPoller("http://peer")
 	p.BumpEpoch()
-	p.setPeerStateForTest(true, "b", 0)
+	p.SetPeerStateForTest(true, "b", 0)
 	if got := p.Role(); got != RoleStandalone {
 		t.Errorf("Role() with empty label = %v, want RoleStandalone", got)
 	}
