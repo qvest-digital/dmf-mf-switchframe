@@ -1245,13 +1245,16 @@
 				const currentEngines = getEngineUrls();
 				const currentBUrl = currentEngines?.find(e => e.id === 'B')?.url;
 				if (urls.engineBUrl && urls.engineBUrl !== currentBUrl) {
-					// Engine B URL changed (VM replacement) — update the engine list
+					// setEngineUrls() fires onNewEngineDiscovered synchronously, which
+					// triggers forceSnapshotPush('A') → acquireLock('B'). dualApi must
+					// know about B before that runs or the lock throws and the force is
+					// silently dropped. Register with the managers first.
+					connectionManager.addEngine('B', urls.engineBUrl);
+					dualApi.addEngine('B', urls.engineBUrl);
 					setEngineUrls([
 						{ id: 'A', url: urls.engineAUrl },
 						{ id: 'B', url: urls.engineBUrl },
 					]);
-					connectionManager.addEngine('B', urls.engineBUrl);
-					dualApi.addEngine('B', urls.engineBUrl);
 					notify('info', 'Engine B re-discovered via control plane');
 				}
 			});
