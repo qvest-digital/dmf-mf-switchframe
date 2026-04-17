@@ -17,6 +17,7 @@ import (
 	"github.com/zsiec/prism/distribution"
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/codec"
+	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
 	"github.com/zsiec/switchframe/server/internal/atomicutil"
 	"github.com/zsiec/switchframe/server/transition"
@@ -1804,4 +1805,91 @@ func TestSwitcher_SetEncoder_RejectsDuringTransition(t *testing.T) {
 	// SetEncoder during transition should be rejected.
 	err = sw.SetEncoder("h264_nvenc")
 	require.ErrorIs(t, err, ErrFormatDuringTransition)
+}
+
+func TestState_KeyFillTally(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := newTestSwitcher(programRelay)
+	defer sw.Close()
+
+	cam1Relay := newTestRelay()
+	cam2Relay := newTestRelay()
+	cam3Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	sw.RegisterSource("cam2", cam2Relay)
+	sw.RegisterSource("cam3", cam3Relay)
+
+	kp := graphics.NewKeyProcessor()
+	bridge := graphics.NewKeyProcessorBridge(kp)
+	sw.SetKeyBridge(bridge)
+
+	kp.SetKey("cam1", graphics.KeyConfig{
+		Type:       graphics.KeyTypeChroma,
+		Enabled:    true,
+		FillSource: "cam3",
+	})
+
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+	require.NoError(t, sw.SetPreview(context.Background(), "cam2"))
+
+	state := sw.State()
+	require.Equal(t, string(TallyProgram), state.TallyState["cam1"],
+		"cam1 is on program; program must take precedence over key_alpha")
+	require.Equal(t, string(TallyPreview), state.TallyState["cam2"])
+	require.Equal(t, string(TallyKeyFill), state.TallyState["cam3"],
+		"cam3 is fill for enabled key, must be tallied as key_fill (RED)")
+}
+
+func TestState_KeyFillSelfFillSourceTallied(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := newTestSwitcher(programRelay)
+	defer sw.Close()
+
+	cam1Relay := newTestRelay()
+	cam2Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	sw.RegisterSource("cam2", cam2Relay)
+
+	kp := graphics.NewKeyProcessor()
+	bridge := graphics.NewKeyProcessorBridge(kp)
+	sw.SetKeyBridge(bridge)
+
+	// cam1 has no explicit FillSource — itself acts as fill and alpha.
+	kp.SetKey("cam1", graphics.KeyConfig{Type: graphics.KeyTypeChroma, Enabled: true})
+
+	require.NoError(t, sw.Cut(context.Background(), "cam2"))
+
+	state := sw.State()
+	require.Equal(t, string(TallyKeyFill), state.TallyState["cam1"],
+		"cam1 is self-fill for its enabled key, must be tallied as key_fill (RED)")
+}
+
+func TestState_KeyAlphaTallied(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := newTestSwitcher(programRelay)
+	defer sw.Close()
+
+	cam1Relay := newTestRelay()
+	cam2Relay := newTestRelay()
+	cam3Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	sw.RegisterSource("cam2", cam2Relay)
+	sw.RegisterSource("cam3", cam3Relay)
+
+	kp := graphics.NewKeyProcessor()
+	bridge := graphics.NewKeyProcessorBridge(kp)
+	sw.SetKeyBridge(bridge)
+
+	kp.SetKey("cam1", graphics.KeyConfig{
+		Type:       graphics.KeyTypeChroma,
+		Enabled:    true,
+		FillSource: "cam3",
+	})
+
+	require.NoError(t, sw.Cut(context.Background(), "cam2"))
+
+	state := sw.State()
+	require.Equal(t, string(TallyKeyAlpha), state.TallyState["cam1"],
+		"cam1 is the alpha input of an enabled key, must be tallied as key_alpha (amber)")
+	require.Equal(t, string(TallyKeyFill), state.TallyState["cam3"])
 }

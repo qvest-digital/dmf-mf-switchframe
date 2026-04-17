@@ -143,6 +143,57 @@ func (kp *KeyProcessor) EnabledSources() map[string]KeyConfig {
 	return result
 }
 
+// KeyFills returns the deduplicated set of source IDs acting as fill inputs
+// for any enabled key. A key's fill is cfg.FillSource when non-empty, otherwise
+// the source-key itself (self-fill). Used by the tally publisher to mark these
+// sources RED: an enabled USK puts the fill on air once composited, so the
+// operator must see the fill as live.
+func (kp *KeyProcessor) KeyFills() []string {
+	kp.mu.RLock()
+	defer kp.mu.RUnlock()
+	seen := make(map[string]struct{}, len(kp.keys))
+	out := make([]string, 0, len(kp.keys))
+	for source, cfg := range kp.keys {
+		if !cfg.Enabled {
+			continue
+		}
+		fill := cfg.FillSource
+		if fill == "" {
+			fill = source
+		}
+		if _, dup := seen[fill]; dup {
+			continue
+		}
+		seen[fill] = struct{}{}
+		out = append(out, fill)
+	}
+	return out
+}
+
+// KeyAlphas returns the deduplicated set of source IDs acting as alpha/cut
+// inputs for any enabled key. An alpha is reported only when cfg.FillSource is
+// non-empty — without an explicit fill, the source-key is both fill and alpha
+// and is reported via KeyFills instead. Used by the tally publisher to mark
+// these sources AMBER (auxiliary): alpha signals do not appear on air but are
+// actively contributing to the program composite.
+func (kp *KeyProcessor) KeyAlphas() []string {
+	kp.mu.RLock()
+	defer kp.mu.RUnlock()
+	seen := make(map[string]struct{}, len(kp.keys))
+	out := make([]string, 0, len(kp.keys))
+	for source, cfg := range kp.keys {
+		if !cfg.Enabled || cfg.FillSource == "" {
+			continue
+		}
+		if _, dup := seen[source]; dup {
+			continue
+		}
+		seen[source] = struct{}{}
+		out = append(out, source)
+	}
+	return out
+}
+
 // Process applies all enabled upstream keys to the background frame.
 // fills maps source keys to their YUV420 fill data. The background frame
 // is modified in-place and returned.

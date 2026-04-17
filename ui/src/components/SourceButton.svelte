@@ -115,11 +115,12 @@
 
 <button
 	class="source-btn"
-	class:program={tally === 'program'}
+	class:program={tally === 'program' || tally === 'key_fill'}
 	class:preview={tally === 'preview'}
-	class:pip={isPIP && tally !== 'program' && tally !== 'preview'}
+	class:key-alpha={tally === 'key_alpha'}
+	class:pip={isPIP && tally !== 'program' && tally !== 'preview' && tally !== 'key_fill' && tally !== 'key_alpha'}
 	onclick={handleClick}
-	title={tally === 'program' ? `${source.label || source.key} (PGM)` : tally === 'preview' ? `${source.label || source.key} (PVW)` : `Click: Preview · Dbl-click: Cut`}
+	title={tally === 'program' ? `${source.label || source.key} (PGM)` : tally === 'key_fill' ? `${source.label || source.key} (KEY FILL — on air)` : tally === 'preview' ? `${source.label || source.key} (PVW)` : tally === 'key_alpha' ? `${source.label || source.key} (KEY ALPHA)` : `Click: Preview · Dbl-click: Cut`}
 >
 	<div class="thumb-wrap" bind:this={wrapEl}>
 		<canvas class="thumb-canvas" id="tile-{source.key}" bind:this={canvasEl}></canvas>
@@ -221,6 +222,11 @@
 	.source-btn.pip {
 		border-color: var(--accent-gold);
 		box-shadow: 0 0 6px var(--accent-gold-medium);
+	}
+
+	.source-btn.key-alpha {
+		border-color: var(--accent-orange, #f59e0b);
+		box-shadow: 0 0 6px rgba(245, 158, 11, 0.45);
 	}
 
 	.thumb-wrap {

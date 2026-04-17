@@ -78,6 +78,26 @@ describe('SourceTile', () => {
 		expect(button?.classList.contains('preview')).toBe(false);
 	});
 
+	it('applies program (red) class when tally is key_fill', () => {
+		const { container } = render(SourceTile, {
+			props: { source: makeSource(), tally: 'key_fill', index: 0 },
+		});
+		const button = container.querySelector('.source-tile');
+		expect(button?.classList.contains('program')).toBe(true);
+		expect(button?.classList.contains('preview')).toBe(false);
+		expect(button?.classList.contains('key-alpha')).toBe(false);
+	});
+
+	it('applies key-alpha class when tally is key_alpha', () => {
+		const { container } = render(SourceTile, {
+			props: { source: makeSource(), tally: 'key_alpha', index: 0 },
+		});
+		const button = container.querySelector('.source-tile');
+		expect(button?.classList.contains('key-alpha')).toBe(true);
+		expect(button?.classList.contains('program')).toBe(false);
+		expect(button?.classList.contains('preview')).toBe(false);
+	});
+
 	it('should fire onclick callback when clicked', async () => {
 		const handleClick = vi.fn();
 		const { container } = render(SourceTile, {

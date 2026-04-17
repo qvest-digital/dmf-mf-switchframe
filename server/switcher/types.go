@@ -4,9 +4,11 @@ package switcher
 type TallyStatus string
 
 const (
-	TallyProgram TallyStatus = "program"
-	TallyPreview TallyStatus = "preview"
-	TallyIdle    TallyStatus = "idle"
+	TallyProgram  TallyStatus = "program"
+	TallyPreview  TallyStatus = "preview"
+	TallyKeyFill  TallyStatus = "key_fill"
+	TallyKeyAlpha TallyStatus = "key_alpha"
+	TallyIdle     TallyStatus = "idle"
 )
 
 // SourceHealthStatus represents the health/connectivity state of a video source.

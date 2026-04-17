@@ -164,6 +164,13 @@ func (b *KeyProcessorBridge) HasEnabledKeys() bool {
 	return b.kp.HasEnabledKeys()
 }
 
+// KeyProcessor returns the underlying key processor. Intended for read-only
+// access to key-role metadata (KeyFills/KeyAlphas) — callers must not mutate
+// key configurations through this handle outside of the normal SetKey path.
+func (b *KeyProcessorBridge) KeyProcessor() *KeyProcessor {
+	return b.kp
+}
+
 // ProcessYUV applies upstream keys to a raw YUV420 buffer in-place.
 // This is the codec-free processor used by the pipeline coordinator.
 // When no keys are enabled or no fills are cached, returns yuv unchanged.

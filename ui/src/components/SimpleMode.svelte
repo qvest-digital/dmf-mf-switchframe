@@ -126,8 +126,9 @@
 
 	function tallyClass(key: string): string {
 		const tally = crState.tallyState[key];
-		if (tally === 'program') return 'tally-program';
+		if (tally === 'program' || tally === 'key_fill') return 'tally-program';
 		if (tally === 'preview') return 'tally-preview';
+		if (tally === 'key_alpha') return 'tally-key-alpha';
 		return '';
 	}
 </script>
@@ -398,6 +399,12 @@
 		border-color: var(--tally-program);
 		background: var(--tally-program-dim);
 		box-shadow: var(--tally-program-glow);
+	}
+
+	.tally-key-alpha {
+		border-color: var(--accent-orange, #f59e0b);
+		background: rgba(245, 158, 11, 0.15);
+		box-shadow: 0 0 6px rgba(245, 158, 11, 0.45);
 	}
 
 	.action-buttons {

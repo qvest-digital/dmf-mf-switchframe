@@ -3490,11 +3490,32 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 			IsVirtual: ss.isVirtual,
 		}
 	}
-	if s.programSource != "" {
-		tally[s.programSource] = string(TallyProgram)
+	// Broadcast-safe tally precedence:
+	//   program > key_fill > preview > key_alpha > idle
+	// Key fills must outrank preview because an enabled USK puts the fill on
+	// the air once composited — the operator must see the fill as live.
+	if s.keyBridge != nil {
+		kp := s.keyBridge.KeyProcessor()
+		if kp != nil {
+			for _, src := range kp.KeyAlphas() {
+				if _, ok := s.sources[src]; ok {
+					tally[src] = string(TallyKeyAlpha)
+				}
+			}
+			for _, src := range kp.KeyFills() {
+				if _, ok := s.sources[src]; ok {
+					tally[src] = string(TallyKeyFill)
+				}
+			}
+		}
 	}
 	if s.previewSource != "" && s.previewSource != s.programSource {
-		tally[s.previewSource] = string(TallyPreview)
+		if tally[s.previewSource] != string(TallyKeyFill) {
+			tally[s.previewSource] = string(TallyPreview)
+		}
+	}
+	if s.programSource != "" {
+		tally[s.programSource] = string(TallyProgram)
 	}
 	transType := "cut"
 	if s.state.isInTransition() && s.transEngine != nil {

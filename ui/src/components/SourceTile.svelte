@@ -93,9 +93,10 @@
 
 <button
 	class="source-tile"
-	class:program={tally === 'program'}
+	class:program={tally === 'program' || tally === 'key_fill'}
 	class:preview={tally === 'preview'}
-	class:pip={isPIP && tally !== 'program' && tally !== 'preview'}
+	class:key-alpha={tally === 'key_alpha'}
+	class:pip={isPIP && tally !== 'program' && tally !== 'preview' && tally !== 'key_fill' && tally !== 'key_alpha'}
 	{onclick}
 >
 	<span class="tile-number">{index + 1}</span>
@@ -198,6 +199,13 @@
 		background: var(--accent-gold-dim);
 		color: var(--text-on-color);
 		box-shadow: 0 0 6px var(--accent-gold-medium);
+	}
+
+	.source-tile.key-alpha {
+		border-color: var(--accent-orange, #f59e0b);
+		background: rgba(245, 158, 11, 0.15);
+		color: var(--text-on-color);
+		box-shadow: 0 0 6px rgba(245, 158, 11, 0.45);
 	}
 
 	.tile-number {

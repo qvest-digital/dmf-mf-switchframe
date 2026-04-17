@@ -1,12 +1,12 @@
 <script lang="ts">
 	import { healthDotColor } from '$lib/util/health-dots';
 	import { setupHiDPICanvas } from '$lib/video/canvas-utils';
-	import type { SourceHealthStatus } from '$lib/api/types';
+	import type { SourceHealthStatus, TallyStatus } from '$lib/api/types';
 
 	interface Props {
 		sourceKey: string;
 		label: string;
-		tallyState: 'program' | 'preview' | 'idle';
+		tallyState: TallyStatus;
 		health?: SourceHealthStatus;
 		isDualEngine?: boolean;
 		engineAHealth?: SourceHealthStatus;
@@ -78,8 +78,9 @@
 
 <button
 	class="oa-source-tile"
-	class:program={tallyState === 'program'}
+	class:program={tallyState === 'program' || tallyState === 'key_fill'}
 	class:preview={tallyState === 'preview'}
+	class:key-alpha={tallyState === 'key_alpha'}
 	class:compact
 	onclick={onClick}
 	data-source-key={sourceKey}
@@ -101,8 +102,12 @@
 		<span class="source-label" title={label}>{label}</span>
 		{#if tallyState === 'program'}
 			<span class="tally-badge tally-pgm" aria-label="On program">PGM</span>
+		{:else if tallyState === 'key_fill'}
+			<span class="tally-badge tally-pgm" aria-label="Key fill on air">KEY</span>
 		{:else if tallyState === 'preview'}
 			<span class="tally-badge tally-pvw" aria-label="On preview">PVW</span>
+		{:else if tallyState === 'key_alpha'}
+			<span class="tally-badge tally-key-alpha" aria-label="Key alpha input">ALP</span>
 		{/if}
 	</div>
 
@@ -181,6 +186,15 @@
 		border-color: var(--tally-preview);
 	}
 
+	.oa-source-tile.key-alpha {
+		border-color: var(--accent-orange, #f59e0b);
+		box-shadow: 0 0 6px rgba(245, 158, 11, 0.45);
+	}
+
+	.oa-source-tile.key-alpha:hover {
+		border-color: var(--accent-orange, #f59e0b);
+	}
+
 	/* Thumbnail area */
 	.thumbnail {
 		position: relative;
@@ -248,6 +262,11 @@
 
 	.tally-pvw {
 		background: var(--tally-preview);
+		color: var(--text-on-color);
+	}
+
+	.tally-key-alpha {
+		background: var(--accent-orange, #f59e0b);
 		color: var(--text-on-color);
 	}
 

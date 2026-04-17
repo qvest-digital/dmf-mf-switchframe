@@ -1,4 +1,4 @@
-export type TallyStatus = 'program' | 'preview' | 'idle';
+export type TallyStatus = 'program' | 'preview' | 'key_fill' | 'key_alpha' | 'idle';
 export type SourceHealthStatus = 'healthy' | 'stale' | 'no_signal' | 'offline';
 export type EngineId = 'A' | 'B';
 

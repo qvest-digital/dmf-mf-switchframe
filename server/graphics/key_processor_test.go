@@ -611,3 +611,53 @@ func TestKeyProcessorBridge_ProcessYUV10_NoFillsPassthrough(t *testing.T) {
 	result := bridge.ProcessYUV10(program, w, h)
 	require.Equal(t, original, result, "no fills should return program unchanged")
 }
+
+func TestKeyProcessor_KeyFillsSelfFill(t *testing.T) {
+	kp := NewKeyProcessor()
+	kp.SetKey("cam1", KeyConfig{Type: KeyTypeChroma, Enabled: true})
+
+	require.ElementsMatch(t, []string{"cam1"}, kp.KeyFills())
+	require.Empty(t, kp.KeyAlphas())
+}
+
+func TestKeyProcessor_KeyFillsExplicitFillSource(t *testing.T) {
+	kp := NewKeyProcessor()
+	kp.SetKey("cam1", KeyConfig{
+		Type:       KeyTypeChroma,
+		Enabled:    true,
+		FillSource: "cam3",
+	})
+
+	require.ElementsMatch(t, []string{"cam3"}, kp.KeyFills())
+	require.ElementsMatch(t, []string{"cam1"}, kp.KeyAlphas())
+}
+
+func TestKeyProcessor_KeyFillsDisabledKeyIgnored(t *testing.T) {
+	kp := NewKeyProcessor()
+	kp.SetKey("cam1", KeyConfig{
+		Type:       KeyTypeChroma,
+		Enabled:    false,
+		FillSource: "cam3",
+	})
+
+	require.Empty(t, kp.KeyFills())
+	require.Empty(t, kp.KeyAlphas())
+}
+
+func TestKeyProcessor_KeyFillsMultipleKeysDeduplicated(t *testing.T) {
+	kp := NewKeyProcessor()
+	kp.SetKey("cam1", KeyConfig{Type: KeyTypeChroma, Enabled: true})
+	kp.SetKey("cam2", KeyConfig{
+		Type:       KeyTypeLuma,
+		Enabled:    true,
+		FillSource: "cam3",
+	})
+	kp.SetKey("cam4", KeyConfig{
+		Type:       KeyTypeChroma,
+		Enabled:    true,
+		FillSource: "cam3",
+	})
+
+	require.ElementsMatch(t, []string{"cam1", "cam3"}, kp.KeyFills())
+	require.ElementsMatch(t, []string{"cam2", "cam4"}, kp.KeyAlphas())
+}
