@@ -5,6 +5,7 @@
 	import RecordingControl from './RecordingControl.svelte';
 	import ConnectionStatus from './ConnectionStatus.svelte';
 	import SyncIndicator from './SyncIndicator.svelte';
+	import EngineRoleBadge from './EngineRoleBadge.svelte';
 	import SRTHealthDot from './SRTHealthDot.svelte';
 	import { computeOutputHealth } from '$lib/util/srt-health';
 	import { formatBadgeText } from '$lib/util/format-badge';
@@ -103,6 +104,10 @@
 		<span class="auth-badge" title="Commands routing to Engine {syncHealth?.authoritative ?? 'A'}">
 			{syncHealth?.authoritative ?? 'A'}
 		</span>
+	{/if}
+	<EngineRoleBadge engineLabel={crState.engineLabel} role={crState.role} />
+	{#if isDualEngine && engineBState}
+		<EngineRoleBadge engineLabel={engineBState.engineLabel} role={engineBState.role} />
 	{/if}
 	{#if badgeText}
 		<FormatPicker {badgeText} {isDualEngine} />

@@ -1796,8 +1796,29 @@ export function clipPlayerLoop(player: number, loop: boolean): Promise<ControlRo
  * Callers needing programmatic error handling should await the promise
  * directly instead of using this wrapper.
  */
+/**
+ * isPeerGatedError returns true when the error came from the active-active
+ * Gate (HTTP 409 with the backend's sentinel prefix). Useful for showing
+ * actionable recovery copy instead of a generic "409 conflict" toast.
+ */
+export function isPeerGatedError(err: unknown): boolean {
+	return err instanceof SwitchApiError &&
+		err.status === 409 &&
+		err.message.includes('peer: action gated');
+}
+
 export function apiCall(promise: Promise<unknown>, context?: string): void {
 	promise.catch((err) => {
+		if (isPeerGatedError(err)) {
+			notify(
+				'error',
+				context
+					? `${context}: engine is partitioned from its peer. Retry on the other engine or ask admin to force takeover.`
+					: 'Engine partitioned — action blocked until peer recovers.',
+			);
+			console.warn('API call gated by peer role:', err);
+			return;
+		}
 		const msg = err instanceof SwitchApiError ? err.message : 'Network error';
 		notify('error', context ? `${context}: ${msg}` : msg);
 		console.warn('API call failed:', err);

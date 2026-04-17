@@ -1,6 +1,7 @@
 export type TallyStatus = 'program' | 'preview' | 'key_fill' | 'key_alpha' | 'idle';
 export type SourceHealthStatus = 'healthy' | 'stale' | 'no_signal' | 'offline';
 export type EngineId = 'A' | 'B';
+export type EngineRole = 'standalone' | 'leader' | 'follower-healthy' | 'follower-partitioned';
 
 export interface SRTSourceInfo {
 	mode: 'listener' | 'caller';
@@ -756,6 +757,8 @@ export interface ControlRoomState {
 	playout?: PlayoutState;
 	peerReachable?: boolean;       // nil/undefined when no peer configured
 	peerLastSeenMs?: number;
+	engineLabel?: string;          // "" (standalone), "a", or "b"
+	role?: EngineRole;             // standalone | leader | follower-healthy | follower-partitioned
 	sessionId?: string;
 	engineBUrl?: string;
 	lastChangedBy?: string;

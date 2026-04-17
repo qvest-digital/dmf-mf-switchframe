@@ -429,6 +429,36 @@ describe('apiCall', () => {
 
 		expect(notifySpy).toHaveBeenCalledWith('error', 'not found');
 	});
+
+	it('rewrites peer-gated 409 into actionable recovery copy', async () => {
+		const notifySpy = vi.spyOn(notifications, 'notify');
+		const err = new SwitchApiError(
+			409,
+			'peer: action gated — local engine is partitioned follower: action=recording.start',
+		);
+		apiCall(Promise.reject(err), 'Start recording');
+
+		await new Promise((r) => setTimeout(r, 0));
+
+		expect(notifySpy).toHaveBeenCalledTimes(1);
+		const [level, message] = notifySpy.mock.calls[0];
+		expect(level).toBe('error');
+		expect(message).toContain('Start recording');
+		expect(message).toContain('partitioned');
+		expect(message).toContain('force takeover');
+		// Must NOT leak the backend sentinel verbatim into the user-facing toast.
+		expect(message).not.toContain('peer: action gated');
+	});
+
+	it('leaves non-peer-gated 409s on their original message', async () => {
+		const notifySpy = vi.spyOn(notifications, 'notify');
+		const err = new SwitchApiError(409, 'session already in progress');
+		apiCall(Promise.reject(err), 'Create session');
+
+		await new Promise((r) => setTimeout(r, 0));
+
+		expect(notifySpy).toHaveBeenCalledWith('error', 'Create session: session already in progress');
+	});
 });
 
 describe('Auth token', () => {
