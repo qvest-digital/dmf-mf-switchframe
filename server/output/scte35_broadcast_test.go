@@ -213,8 +213,7 @@ func TestBroadcast_PTSWrap33Bit(t *testing.T) {
 	h.initInjector(t)
 	h.initMuxer(t)
 
-	// Set PTS near the 33-bit wrap point: 2^33 - 1 second (90000 ticks).
-	h.currentPTS = (1 << 33) - 90000
+	h.currentPTS.Store((1 << 33) - 90000)
 
 	// Schedule with 5000ms pre-roll — the splice PTS will wrap past 2^33.
 	msg := scte35.NewSpliceInsert(700, 60*time.Second, true, true)
@@ -302,7 +301,7 @@ func TestBroadcast_InterleavedAudioVideo(t *testing.T) {
 	h.output = nil
 
 	err = h.muxer.WriteAudio(&media.AudioFrame{
-		PTS:        h.currentPTS + 1500,
+		PTS:        h.currentPTS.Load() + 1500,
 		Data:       []byte{0xDE, 0x04, 0x00, 0x26, 0x20, 0x54, 0xE5, 0x00},
 		SampleRate: 48000,
 		Channels:   2,

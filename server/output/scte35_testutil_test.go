@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"sync/atomic"
 	"testing"
 
 	astits "github.com/asticode/go-astits"
@@ -13,12 +14,11 @@ import (
 	"github.com/zsiec/switchframe/server/scte35"
 )
 
-// testHarness wires an Injector → TSMuxer pipeline for correctness testing.
 type testHarness struct {
 	muxer      *TSMuxer
 	injector   *scte35.Injector
 	output     []byte
-	currentPTS int64
+	currentPTS atomic.Int64
 }
 
 // newTestHarness creates a wired Injector → TSMuxer with captured output.
@@ -54,14 +54,12 @@ func newTestHarnessWithConfig(t *testing.T, config scte35.InjectorConfig) *testH
 	h.injector = scte35.NewInjector(config, func(data []byte) {
 		_ = h.muxer.WriteSCTE35(data)
 	}, func() int64 {
-		return h.currentPTS
+		return h.currentPTS.Load()
 	})
 
 	return h
 }
 
-// initInjector creates the injector with default config. Call after
-// newTestHarness if you don't need a custom config.
 func (h *testHarness) initInjector(t *testing.T) {
 	t.Helper()
 	if h.injector != nil {
@@ -72,7 +70,7 @@ func (h *testHarness) initInjector(t *testing.T) {
 	}, func(data []byte) {
 		_ = h.muxer.WriteSCTE35(data)
 	}, func() int64 {
-		return h.currentPTS
+		return h.currentPTS.Load()
 	})
 }
 
@@ -90,7 +88,7 @@ func (h *testHarness) initMuxer(t *testing.T) {
 	}
 	err := h.muxer.WriteVideo(idr)
 	require.NoError(t, err, "initMuxer keyframe")
-	h.currentPTS = 90000
+	h.currentPTS.Store(90000)
 	h.output = nil
 }
 
@@ -100,7 +98,7 @@ func (h *testHarness) feedGOP(t *testing.T, n int) int64 {
 	t.Helper()
 	require.Greater(t, n, 0, "feedGOP requires at least 1 frame")
 
-	idrPTS := h.currentPTS + 3000
+	idrPTS := h.currentPTS.Load() + 3000
 	idr := &media.VideoFrame{
 		PTS: idrPTS, DTS: idrPTS, IsKeyframe: true,
 		SPS:      []byte{0x67, 0x42, 0xC0, 0x1E, 0xD9, 0x00, 0xA0, 0x47, 0xFE, 0x88},
@@ -110,12 +108,12 @@ func (h *testHarness) feedGOP(t *testing.T, n int) int64 {
 	}
 	err := h.muxer.WriteVideo(idr)
 	require.NoError(t, err, "feedGOP IDR")
-	h.currentPTS = idrPTS
+	h.currentPTS.Store(idrPTS)
 
 	for i := 1; i < n; i++ {
-		h.currentPTS += 3000
+		next := h.currentPTS.Add(3000)
 		p := &media.VideoFrame{
-			PTS: h.currentPTS, DTS: h.currentPTS, IsKeyframe: false,
+			PTS: next, DTS: next, IsKeyframe: false,
 			WireData: []byte{0x00, 0x00, 0x00, 0x04, 0x61, 0x88, 0x80, 0x40},
 			Codec:    "h264",
 		}
@@ -126,13 +124,12 @@ func (h *testHarness) feedGOP(t *testing.T, n int) int64 {
 	return idrPTS
 }
 
-// feedPFrames writes n P-frames (non-keyframes) at 3000 ticks each.
 func (h *testHarness) feedPFrames(t *testing.T, n int) {
 	t.Helper()
 	for i := 0; i < n; i++ {
-		h.currentPTS += 3000
+		next := h.currentPTS.Add(3000)
 		p := &media.VideoFrame{
-			PTS: h.currentPTS, DTS: h.currentPTS, IsKeyframe: false,
+			PTS: next, DTS: next, IsKeyframe: false,
 			WireData: []byte{0x00, 0x00, 0x00, 0x04, 0x61, 0x88, 0x80, 0x40},
 			Codec:    "h264",
 		}

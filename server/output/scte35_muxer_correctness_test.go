@@ -60,8 +60,7 @@ func TestMuxerCorrectness_SpliceInsert_Scheduled_SpliceTimePTS(t *testing.T) {
 	h.initInjector(t)
 	h.initMuxer(t)
 
-	// Record currentPTS before scheduling.
-	ptsBeforeSchedule := h.currentPTS
+	ptsBeforeSchedule := h.currentPTS.Load()
 
 	// Schedule a cue-out with 5000ms pre-roll.
 	msg := scte35.NewSpliceInsert(200, 60*time.Second, true, true)
