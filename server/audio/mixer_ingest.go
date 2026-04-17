@@ -72,19 +72,27 @@ func (m *Mixer) ingestFrameInner(sourceKey string, frame *media.AudioFrame) {
 		return
 	}
 
-	// FDK-AAC-LC silently discards one priming frame while the MDCT overlap
+	// FDK-AAC-LC silently discards 1–2 priming frames while the MDCT overlap
 	// buffer fills. Without compensation, valid PCM lands in the ring buffer
 	// earlier than the source timeline expects — audio plays ahead of video.
-	// On the first valid emission after a priming skip, prepend one frame of
-	// silence so the ring buffer timeline matches the source timeline.
+	// On the first valid emission, prepend one silence frame per observed
+	// priming skip, scaled to mixer channels and (when the source rate differs
+	// from the mixer rate) the mixer's sample rate. Silence pushed before the
+	// real PCM, so the ring-buffer timeline matches the source timeline.
 	if len(pcm) == 0 {
-		ch.primingSkipped = true
+		if !ch.primingOffsetApplied {
+			ch.primingSkipCount++
+		}
 		m.mu.Unlock()
 		return
 	}
-	if ch.primingSkipped && !ch.primingOffsetApplied {
+	if ch.primingSkipCount > 0 && !ch.primingOffsetApplied {
 		ch.primingOffsetApplied = true
-		ch.ringBuf.Push(make([]float32, aacPrimingSamples*m.numChannels))
+		silencePerFrame := aacPrimingSamples
+		if frame.SampleRate != 0 && frame.SampleRate != m.sampleRate {
+			silencePerFrame = aacPrimingSamples * m.sampleRate / frame.SampleRate
+		}
+		ch.ringBuf.Push(make([]float32, silencePerFrame*m.numChannels*ch.primingSkipCount))
 	}
 
 	// Resample if source rate doesn't match mixer rate.

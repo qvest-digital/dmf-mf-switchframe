@@ -113,9 +113,9 @@ func TestIngestFrame_PrimingOffsetAppliedOncePerSource(t *testing.T) {
 		Channels:   channels,
 	}
 
-	// Ingest 10 frames. The first two are priming; only the 3rd produces PCM
-	// and triggers the one-time compensation. Subsequent valid frames must
-	// NOT re-apply the offset.
+	// Ingest 10 frames. The first two are priming; the 3rd produces PCM and
+	// triggers the one-time compensation scaled to the number of observed
+	// priming skips (2). Subsequent valid frames must NOT re-apply.
 	for i := 0; i < 10; i++ {
 		m.IngestFrame("cam1", frame)
 	}
@@ -125,11 +125,13 @@ func TestIngestFrame_PrimingOffsetAppliedOncePerSource(t *testing.T) {
 	ringLen := ch.ringBuf.Len()
 	m.mu.RUnlock()
 
-	// 10 ingested - 2 priming = 8 valid decodes * framePairs = 8*2048 sample values,
-	// plus the one-time compensation of 1 frame of silence (2048 values) = 9 frames total.
-	expected := 9 * samplesPerFrame * channels
+	// 10 ingested - 2 priming = 8 valid decodes, plus 2 frames of compensation
+	// silence (one per priming skip) = 10 frames total.
+	expected := 10 * samplesPerFrame * channels
 	require.Equal(t, expected, ringLen,
-		"compensation should be applied exactly once per source, not on every valid decode")
+		"compensation should be 1 silence frame per observed priming skip, applied once per source")
+	require.True(t, ch.primingOffsetApplied, "offset should be marked applied after first valid emission")
+	require.Equal(t, 2, ch.primingSkipCount, "skip count should equal the number of empty decodes observed")
 }
 
 func TestIngestPCM_DoesNotApplyPrimingOffset(t *testing.T) {
@@ -164,6 +166,8 @@ func TestIngestPCM_DoesNotApplyPrimingOffset(t *testing.T) {
 
 	require.Equal(t, len(pcm), ringLen,
 		"IngestPCM path must not insert priming silence — raw PCM has no decoder priming")
+	require.Zero(t, ch.primingSkipCount, "IngestPCM must never observe a priming skip")
+	require.False(t, ch.primingOffsetApplied, "IngestPCM must never mark the offset applied")
 }
 
 func TestIngestFrame_PrimingOffsetReappliedAfterReconnect(t *testing.T) {

@@ -81,7 +81,7 @@ type Channel struct {
 	active               bool
 	decoder              Decoder        // lazy init on first IngestFrame
 	decoderOnce          sync.Once      // ensures decoder factory is called at most once
-	primingSkipped       bool           // true after the decoder has returned at least one empty (priming) frame
+	primingSkipCount     int            // number of empty (priming) frames the decoder has returned before first valid PCM
 	primingOffsetApplied bool           // true once per-source AAC priming silence has been pushed to ringBuf
 	peakL                float64        // linear amplitude [0,1] — updated on every decoded frame
 	peakR                float64        // linear amplitude [0,1]
