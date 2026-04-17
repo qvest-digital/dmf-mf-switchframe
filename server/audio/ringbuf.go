@@ -13,18 +13,32 @@ type PCMRingBuffer struct {
 	wr        int       // write position
 	count     int       // current number of samples in buffer
 	cap       int       // total capacity in samples
+	channels  int       // interleaved channel count (>=1)
 	lastFrame []float32 // last successfully popped frame (for freeze-repeat)
 }
 
 // NewPCMRingBuffer creates a ring buffer with the given capacity in samples.
 // For stereo 48kHz with 10 frames of buffer: 10 * 1024 * 2 = 20480 samples.
+// The channel count defaults to 1, so FrameCount() == Len() until callers
+// use NewPCMRingBufferWithChannels.
 func NewPCMRingBuffer(capacitySamples int) *PCMRingBuffer {
+	return NewPCMRingBufferWithChannels(capacitySamples, 1)
+}
+
+// NewPCMRingBufferWithChannels creates a ring buffer that knows its
+// interleaved channel count. FrameCount() returns samples/channels so
+// time conversions don't leak channel arithmetic into callers.
+func NewPCMRingBufferWithChannels(capacitySamples, channels int) *PCMRingBuffer {
 	if capacitySamples < 2048 {
 		capacitySamples = 2048
 	}
+	if channels < 1 {
+		channels = 1
+	}
 	return &PCMRingBuffer{
-		buf: make([]float32, capacitySamples),
-		cap: capacitySamples,
+		buf:      make([]float32, capacitySamples),
+		cap:      capacitySamples,
+		channels: channels,
 	}
 }
 
@@ -207,9 +221,19 @@ func (rb *PCMRingBuffer) PopDriftCompensated(n, targetDepth, channels int) []flo
 	return out
 }
 
-// Len returns the current number of buffered samples.
+// Len returns the current number of buffered samples (interleaved values).
 func (rb *PCMRingBuffer) Len() int {
 	return rb.count
+}
+
+// FrameCount returns the current number of buffered frames (samples / channels).
+// Prefer this over Len() for time-domain math — it avoids callers redoing
+// channel division themselves and getting it wrong for non-stereo configs.
+func (rb *PCMRingBuffer) FrameCount() int {
+	if rb.channels <= 1 {
+		return rb.count
+	}
+	return rb.count / rb.channels
 }
 
 // Reset clears all buffered samples but preserves lastFrame for freeze-repeat.

@@ -109,18 +109,17 @@ func (m *Mixer) produceSamplesLocked(totalValues int) []float32 {
 	// Measure ring buffer depth of active channels before reading.
 	// With drift compensation, depth stays near the 2-frame target.
 	// This measurement is retained for diagnostics and debug snapshot.
-	var maxRingDepth int
+	var maxFrameDepth int
 	for _, ch := range m.channels {
 		if ch.active && !ch.muted && ch.ringBuf != nil {
-			depth := ch.ringBuf.Len()
-			if depth > maxRingDepth {
-				maxRingDepth = depth
+			depth := ch.ringBuf.FrameCount()
+			if depth > maxFrameDepth {
+				maxFrameDepth = depth
 			}
 		}
 	}
-	if maxRingDepth > 0 {
-		// Convert samples to 90kHz ticks: samples / channels / sampleRate * 90000
-		latency90k := int64(maxRingDepth) * 90000 / int64(m.numChannels) / int64(m.sampleRate)
+	if maxFrameDepth > 0 {
+		latency90k := int64(maxFrameDepth) * 90000 / int64(m.sampleRate)
 		m.ringBufLatency90k.Store(latency90k)
 	}
 

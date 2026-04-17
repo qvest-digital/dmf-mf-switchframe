@@ -489,7 +489,7 @@ func (m *Mixer) AddChannel(sourceKey string) {
 
 // newChannelRingBuf creates a PCM ring buffer for a mixer channel.
 func (m *Mixer) newChannelRingBuf() *PCMRingBuffer {
-	return NewPCMRingBuffer(10 * 1024 * m.numChannels)
+	return NewPCMRingBufferWithChannels(10*1024*m.numChannels, m.numChannels)
 }
 
 // driftTarget returns the target ring buffer depth in total sample values
