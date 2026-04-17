@@ -1,9 +1,13 @@
 package caption
 
 import (
+	"log/slog"
 	"math/bits"
 	"sync"
+	"time"
 )
+
+const subWarnInterval = time.Minute
 
 // CEA-608 control code constants for CC1 (field 1, channel 1).
 const (
@@ -41,10 +45,11 @@ func oddParity(b byte) byte {
 // upward line by line. Rate is limited to 2 bytes per frame at 29.97fps
 // (~60 displayable characters per second).
 type Encoder struct {
-	mu         sync.Mutex
-	queue      []CCPair
-	rollUpRows int
-	inited     bool
+	mu            sync.Mutex
+	queue         []CCPair
+	rollUpRows    int
+	inited        bool
+	lastSubWarnAt time.Time
 }
 
 // NewEncoder creates a CEA-608 encoder in roll-up mode.
@@ -93,34 +98,47 @@ func (e *Encoder) ensureInit() {
 	e.queue = append(e.queue, CCPair{Data: [2]byte{oddParity(cc608Ctrl), oddParity(0x60)}})
 }
 
-// IngestText queues character pairs for the given text.
-// ASCII printable characters (0x20-0x7F) map directly to CEA-608.
-// Characters are queued as pairs — the encoder emits one pair per frame.
+// IngestText queues CEA-608 byte pairs for the given UTF-8 text.
+// Runes are decoded and mapped via lookupRune; unmapped non-Latin runes
+// become '?' and a rate-limited warning is emitted.
 func (e *Encoder) IngestText(text string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	e.ensureInit()
 
-	// Build character byte slice from printable ASCII (0x20-0x7E).
-	// CEA-608 character set excludes 0x7F (DEL).
-	var chars []byte
-	for i := 0; i < len(text); i++ {
-		ch := text[i]
-		if ch >= 0x20 && ch <= 0x7E {
-			chars = append(chars, ch)
+	var bytesOut []byte
+	var unsupported []rune
+	for _, r := range text {
+		m := lookupRune(r)
+		switch m.kind {
+		case runeKindBasic:
+			bytesOut = append(bytesOut, m.basic)
+		case runeKindAsciiSeq:
+			bytesOut = append(bytesOut, []byte(m.asciiSeq)...)
+		case runeKindSpecial, runeKindExtended:
+			bytesOut = append(bytesOut, m.twoByte[0], m.twoByte[1])
+		case runeKindUnsupported:
+			bytesOut = append(bytesOut, '?')
+			unsupported = append(unsupported, r)
+		case runeKindSkip:
 		}
 	}
 
-	// Pack characters into pairs with odd parity.
-	// CEA-608 allows two characters per pair.
-	for i := 0; i < len(chars); i += 2 {
-		if i+1 < len(chars) {
-			e.queue = append(e.queue, CCPair{Data: [2]byte{oddParity(chars[i]), oddParity(chars[i+1])}})
+	for i := 0; i < len(bytesOut); i += 2 {
+		if i+1 < len(bytesOut) {
+			e.queue = append(e.queue, CCPair{Data: [2]byte{oddParity(bytesOut[i]), oddParity(bytesOut[i+1])}})
 		} else {
-			// Odd character — pad second byte with null.
-			e.queue = append(e.queue, CCPair{Data: [2]byte{oddParity(chars[i]), 0x80}})
+			e.queue = append(e.queue, CCPair{Data: [2]byte{oddParity(bytesOut[i]), 0x80}})
 		}
+	}
+
+	if len(unsupported) > 0 && time.Since(e.lastSubWarnAt) >= subWarnInterval {
+		e.lastSubWarnAt = time.Now()
+		slog.Warn("caption: characters substituted",
+			"count", len(unsupported),
+			"sample", string(unsupported[:min(len(unsupported), 8)]),
+			"hint", "CEA-608 supports Latin scripts only; use CEA-708 native or EBU-TT-D for full Unicode")
 	}
 }
 
