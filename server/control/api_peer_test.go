@@ -60,3 +60,41 @@ func TestHandlePeerHealth_AdvertisesLabelAndEpoch(t *testing.T) {
 	assert.Equal(t, "a", resp.EngineLabel)
 	assert.Equal(t, uint64(3), resp.Epoch)
 }
+
+// Regression guard: /api/peer/health must report the enqueued seq
+// (lastCommandSeq), not the executed seq. With the drain loop idle
+// the two diverge, so a regression that reroutes this field to
+// lastExecutedSeq reports 0 and fails the test.
+func TestHandlePeerHealth_ReportsEnqueuedSeqBeforeExecution(t *testing.T) {
+	programRelay := distribution.NewRelay()
+	sw := switcher.NewTestSwitcher(programRelay)
+	sw.TrackCommandSeq(42)
+
+	api := NewAPI(sw)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/peer/health", nil)
+	w := httptest.NewRecorder()
+	api.Mux().ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var resp peer.HealthResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, uint64(42), resp.LastCommandSeq, "peer health must carry enqueued seq, not executed seq")
+
+	// Cross-check on /api/sync/health, which exposes both fields, to
+	// confirm the two are genuinely distinct in this state — otherwise
+	// this test would pass trivially regardless of wiring.
+	syncReq := httptest.NewRequest(http.MethodGet, "/api/sync/health", nil)
+	syncW := httptest.NewRecorder()
+	api.Mux().ServeHTTP(syncW, syncReq)
+	require.Equal(t, http.StatusOK, syncW.Code)
+
+	var syncResp struct {
+		LastCommandSeq  uint64 `json:"lastCommandSeq"`
+		LastExecutedSeq uint64 `json:"lastExecutedSeq"`
+	}
+	require.NoError(t, json.Unmarshal(syncW.Body.Bytes(), &syncResp))
+	assert.Equal(t, uint64(42), syncResp.LastCommandSeq)
+	assert.Equal(t, uint64(0), syncResp.LastExecutedSeq, "drain is idle — executed seq must still be 0")
+}
