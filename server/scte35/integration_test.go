@@ -2,6 +2,7 @@ package scte35
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -109,8 +110,6 @@ func TestIntegration_RulesEngine_ReplaceDuration(t *testing.T) {
 
 func TestIntegration_AutoReturn_SendsCueIn(t *testing.T) {
 	t.Parallel()
-	// Inject cue-out with 100ms duration, wait 300ms,
-	// verify cue-in was auto-injected (2+ sink calls).
 	var mu sync.Mutex
 	callCount := 0
 	var lastData []byte
@@ -120,7 +119,8 @@ func TestIntegration_AutoReturn_SendsCueIn(t *testing.T) {
 		lastData = append([]byte(nil), data...)
 		mu.Unlock()
 	}
-	ptsFn := func() int64 { return 0 }
+	var curPTS atomic.Int64
+	ptsFn := func() int64 { return curPTS.Load() }
 
 	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
 	defer inj.Close()
@@ -129,7 +129,12 @@ func TestIntegration_AutoReturn_SendsCueIn(t *testing.T) {
 	_, err := inj.InjectCue(msg)
 	require.NoError(t, err)
 
-	time.Sleep(300 * time.Millisecond)
+	curPTS.Store(100*90 + 1)
+
+	require.Eventually(t, func() bool {
+		return len(inj.ActiveEventIDs()) == 0
+	}, 500*time.Millisecond, 10*time.Millisecond,
+		"expected no active events after PTS crosses scheduled auto-return")
 
 	mu.Lock()
 	c := callCount
@@ -137,9 +142,7 @@ func TestIntegration_AutoReturn_SendsCueIn(t *testing.T) {
 	mu.Unlock()
 
 	require.GreaterOrEqual(t, c, 2, "expected at least 2 sink calls (cue-out + cue-in)")
-	require.Empty(t, inj.ActiveEventIDs(), "expected no active events after auto-return")
 
-	// Verify the last sink call was a cue-in (IsOut=false)
 	decoded, err := Decode(data)
 	require.NoError(t, err)
 	require.False(t, decoded.IsOut, "expected cue-in (IsOut=false) from auto-return")

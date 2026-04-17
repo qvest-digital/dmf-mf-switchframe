@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -179,17 +180,21 @@ func TestInjector_AutoReturn(t *testing.T) {
 		callCount++
 		mu.Unlock()
 	}
-	ptsFn := func() int64 { return 0 }
+	var curPTS atomic.Int64
+	ptsFn := func() int64 { return curPTS.Load() }
 
 	inj := NewInjector(InjectorConfig{HeartbeatInterval: 0}, sink, ptsFn)
 	defer inj.Close()
 
-	msg := NewSpliceInsert(0, 100*time.Millisecond, true, true) // auto-return after 100ms
+	msg := NewSpliceInsert(0, 100*time.Millisecond, true, true)
 	_, _ = inj.InjectCue(msg)
 
-	time.Sleep(300 * time.Millisecond) // wait for auto-return to fire
+	curPTS.Store(100*90 + 1) // 1 tick past scheduled
 
-	require.Len(t, inj.ActiveEventIDs(), 0, "expected auto-return to clear active events")
+	require.Eventually(t, func() bool {
+		return len(inj.ActiveEventIDs()) == 0
+	}, 500*time.Millisecond, 10*time.Millisecond,
+		"expected auto-return to clear active events once PTS crosses scheduled value")
 	mu.Lock()
 	c := callCount
 	mu.Unlock()
@@ -1195,12 +1200,13 @@ func TestInjector_TimeSignal_AutoReturn(t *testing.T) {
 		sinkCalls++
 		mu.Unlock()
 	}
-	ptsFn := func() int64 { return 90000 }
+	var curPTS atomic.Int64
+	curPTS.Store(90000)
+	ptsFn := func() int64 { return curPTS.Load() }
 
 	inj := NewInjector(InjectorConfig{}, sink, ptsFn)
 	defer inj.Close()
 
-	// Inject a time_signal with a short duration (100ms) so auto-return fires quickly.
 	ticks := scte35lib.DurationToTicks(100 * time.Millisecond)
 	msg := &CueMessage{
 		CommandType: CommandTimeSignal,
@@ -1208,7 +1214,7 @@ func TestInjector_TimeSignal_AutoReturn(t *testing.T) {
 		Descriptors: []SegmentationDescriptor{
 			{
 				SegEventID:       500,
-				SegmentationType: 0x34, // Provider Placement Opportunity Start
+				SegmentationType: 0x34,
 				DurationTicks:    &ticks,
 			},
 		},
@@ -1218,7 +1224,6 @@ func TestInjector_TimeSignal_AutoReturn(t *testing.T) {
 	require.NoError(t, err)
 	require.NotZero(t, eventID)
 
-	// Verify event is active and has AutoReturn set.
 	ids := inj.ActiveEventIDs()
 	require.NotEmpty(t, ids, "expected active events")
 
@@ -1227,14 +1232,13 @@ func TestInjector_TimeSignal_AutoReturn(t *testing.T) {
 	require.True(t, ok, "event %d not in active events", eventID)
 	require.True(t, ae.AutoReturn, "AutoReturn should be true for time_signal with duration")
 
-	// Wait for auto-return to fire.
-	time.Sleep(300 * time.Millisecond)
+	curPTS.Store(90000 + int64(ticks) + 10)
 
-	// Event should be cleared.
-	ids = inj.ActiveEventIDs()
-	require.Len(t, ids, 0, "expected no active events after auto-return")
+	require.Eventually(t, func() bool {
+		return len(inj.ActiveEventIDs()) == 0
+	}, 500*time.Millisecond, 10*time.Millisecond,
+		"expected no active events once PTS crosses scheduled value")
 
-	// Check the log contains both "injected" and "returned" entries.
 	log := inj.EventLog()
 	var foundInjected, foundReturned bool
 	for _, e := range log {
@@ -1246,7 +1250,7 @@ func TestInjector_TimeSignal_AutoReturn(t *testing.T) {
 		}
 	}
 	require.True(t, foundInjected, "expected 'injected' log entry")
-	require.True(t, foundReturned, "expected 'returned' log entry from auto-return timer")
+	require.True(t, foundReturned, "expected 'returned' log entry from auto-return")
 }
 
 func TestInjector_TimeSignal_NoDuration_NoAutoReturn(t *testing.T) {

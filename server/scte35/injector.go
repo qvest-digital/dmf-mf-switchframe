@@ -72,20 +72,22 @@ type InjectorConfig struct {
 
 // activeEvent tracks an in-progress SCTE-35 event (internal, not exported).
 type activeEvent struct {
-	EventID         uint32
-	CommandType     uint8
-	IsOut           bool
-	Duration        time.Duration
-	StartedAt       time.Time
-	AutoReturn      bool
-	Held            bool
-	SpliceTimePTS   int64
-	Descriptors     []SegmentationDescriptor
-	Source          string // origin of this cue ("api", "macro", "scte104", etc.)
-	PreRollMs       int64  // pre-roll duration in ms (0 for immediate cues)
-	returnTimer     *time.Timer
-	preRollCancel   context.CancelFunc // cancels pre-roll repetition goroutine
-	lastEncodedData []byte             // encoded SCTE-35 data (for pre-roll repetition)
+	EventID            uint32
+	CommandType        uint8
+	IsOut              bool
+	Duration           time.Duration
+	StartedAt          time.Time
+	AutoReturn         bool
+	Held               bool
+	SpliceTimePTS      int64
+	Descriptors        []SegmentationDescriptor
+	Source             string
+	PreRollMs          int64
+	anchorPTS          int64
+	scheduledReturnPTS int64
+	autoReturnPending  bool
+	preRollCancel      context.CancelFunc
+	lastEncodedData    []byte
 }
 
 // ActiveEventState is the serializable snapshot of an active event, used by
@@ -172,19 +174,33 @@ func (cl *circularLog) list() []EventLogEntry {
 
 // Injector manages the lifecycle of SCTE-35 splice events.
 type Injector struct {
-	config         InjectorConfig
-	activeEvents   map[uint32]*activeEvent
-	eventIDCounter atomic.Uint32
-	eventLog       *circularLog
-	rules          *RuleEngine
-	webhook        *WebhookDispatcher
-	muxerSink      func([]byte)
-	scte104Sink    func(*CueMessage)
-	ptsFn          func() int64
-	onStateChange  func()
-	heartbeatStop  chan struct{}
-	closed         atomic.Bool
-	mu             sync.Mutex
+	config          InjectorConfig
+	activeEvents    map[uint32]*activeEvent
+	eventIDCounter  atomic.Uint32
+	eventLog        *circularLog
+	rules           *RuleEngine
+	webhook         *WebhookDispatcher
+	muxerSink       func([]byte)
+	scte104Sink     func(*CueMessage)
+	ptsFn           func() int64
+	onStateChange   func()
+	heartbeatStop   chan struct{}
+	autoReturnTick  time.Duration
+	closed          atomic.Bool
+	mu              sync.Mutex
+}
+
+// autoReturnTickInterval is how often the injector polls the program PTS clock
+// to evaluate pending auto-returns. Fine-grained relative to video frame rates
+// so firing latency is at most one tick past the scheduled PTS.
+const autoReturnTickInterval = 15 * time.Millisecond
+
+// ptsReached reports whether current has reached or passed scheduled in the
+// 33-bit MPEG-TS PTS domain. Treats the first half of the 33-bit range as
+// "forward" (reached), the second half as "scheduled still in the future".
+func ptsReached(current, scheduled int64) bool {
+	delta := (current - scheduled) & 0x1FFFFFFFF
+	return delta < (1 << 32)
 }
 
 // maskPTS33 masks a PTS value to the 33-bit range used by MPEG-TS.
@@ -213,12 +229,13 @@ func NewInjector(config InjectorConfig, muxerSink func([]byte), ptsFn func() int
 	}
 
 	inj := &Injector{
-		config:        config,
-		activeEvents:  make(map[uint32]*activeEvent),
-		eventLog:      newCircularLog(config.MaxEventLog),
-		muxerSink:     muxerSink,
-		ptsFn:         ptsFn,
-		heartbeatStop: make(chan struct{}),
+		config:         config,
+		activeEvents:   make(map[uint32]*activeEvent),
+		eventLog:       newCircularLog(config.MaxEventLog),
+		muxerSink:      muxerSink,
+		ptsFn:          ptsFn,
+		heartbeatStop:  make(chan struct{}),
+		autoReturnTick: autoReturnTickInterval,
 	}
 	inj.eventIDCounter.Store(startID)
 
@@ -234,7 +251,48 @@ func NewInjector(config InjectorConfig, muxerSink func([]byte), ptsFn func() int
 		go inj.heartbeatLoop()
 	}
 
+	go inj.autoReturnLoop()
+
 	return inj
+}
+
+// autoReturnLoop polls the program PTS clock and fires auto-return for any
+// active event whose scheduledReturnPTS has been reached.
+func (inj *Injector) autoReturnLoop() {
+	ticker := time.NewTicker(inj.autoReturnTick)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-inj.heartbeatStop:
+			return
+		case <-ticker.C:
+			inj.fireDueAutoReturns()
+		}
+	}
+}
+
+func (inj *Injector) fireDueAutoReturns() {
+	if inj.closed.Load() {
+		return
+	}
+	currentPTS := maskPTS33(inj.ptsFn())
+
+	inj.mu.Lock()
+	var due []uint32
+	for id, ae := range inj.activeEvents {
+		if !ae.autoReturnPending || ae.Held {
+			continue
+		}
+		if ptsReached(currentPTS, ae.scheduledReturnPTS) {
+			due = append(due, id)
+		}
+	}
+	inj.mu.Unlock()
+
+	for _, id := range due {
+		_ = inj.ReturnToProgram(id)
+	}
 }
 
 // dispatchWebhook sends a webhook event if a dispatcher is configured.
@@ -390,28 +448,16 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 		ae.Descriptors = append([]SegmentationDescriptor(nil), msg.Descriptors...)
 		ae.lastEncodedData = append([]byte(nil), data...) // for pre-roll repetition
 
-		// Start auto-return timer if configured.
+		anchorPTS := maskPTS33(inj.ptsFn())
+		if msg.SpliceTimePTS != nil {
+			anchorPTS = maskPTS33(*msg.SpliceTimePTS)
+		}
+		ae.anchorPTS = anchorPTS
+
 		if msg.AutoReturn && msg.BreakDuration != nil && *msg.BreakDuration > 0 {
-			dur := *msg.BreakDuration
-			// If the splice point is in the future (scheduled with pre-roll),
-			// add the pre-roll time to the auto-return delay so the return
-			// fires relative to the splice point, not the injection time.
-			// Uses modular 33-bit arithmetic to handle PTS wrap at 2^33.
-			if msg.SpliceTimePTS != nil {
-				currentPTS := inj.ptsFn()
-				if currentPTS > 0 {
-					delta := maskPTS33(*msg.SpliceTimePTS - currentPTS)
-					// If delta is in the lower half of the 33-bit range,
-					// the splice point is in the future.
-					if delta > 0 && delta < (1<<32) {
-						dur += time.Duration(delta) * time.Second / 90000
-					}
-				}
-			}
-			eid := msg.EventID
-			ae.returnTimer = time.AfterFunc(dur, func() {
-				_ = inj.ReturnToProgram(eid)
-			})
+			durTicks := int64(*msg.BreakDuration) * 90000 / int64(time.Second)
+			ae.scheduledReturnPTS = maskPTS33(anchorPTS + durTicks)
+			ae.autoReturnPending = true
 		}
 
 		inj.activeEvents[msg.EventID] = ae
@@ -465,16 +511,25 @@ func (inj *Injector) InjectCue(msg *CueMessage) (uint32, error) {
 			}
 		}
 
-		// Start auto-return timer for time_signal events with a known duration.
-		// The timer fires ReturnToProgram on the first cue-out descriptor, which
-		// cleans up all sibling events via removeSiblingEventsLocked.
-		if firstCueOutID != 0 && effectiveDuration > 0 {
-			eid := firstCueOutID
-			ae := inj.activeEvents[eid]
-			ae.AutoReturn = true
-			ae.returnTimer = time.AfterFunc(effectiveDuration, func() {
-				_ = inj.ReturnToProgram(eid)
-			})
+		if firstCueOutID != 0 {
+			anchorPTS := maskPTS33(inj.ptsFn())
+			if msg.SpliceTimePTS != nil {
+				anchorPTS = maskPTS33(*msg.SpliceTimePTS)
+			}
+			for _, d := range msg.Descriptors {
+				if isSegCueOut(d.SegmentationType) {
+					if sib, ok := inj.activeEvents[d.SegEventID]; ok {
+						sib.anchorPTS = anchorPTS
+					}
+				}
+			}
+			if effectiveDuration > 0 {
+				ae := inj.activeEvents[firstCueOutID]
+				ae.AutoReturn = true
+				durTicks := int64(effectiveDuration) * 90000 / int64(time.Second)
+				ae.scheduledReturnPTS = maskPTS33(anchorPTS + durTicks)
+				ae.autoReturnPending = true
+			}
 		}
 	}
 
@@ -646,20 +701,13 @@ func (inj *Injector) ReturnToProgram(eventID uint32) error {
 		return fmt.Errorf("event %d not active", eventID)
 	}
 
-	// Stop the auto-return timer if running.
-	if ae.returnTimer != nil {
-		ae.returnTimer.Stop()
-	}
-	// Stop pre-roll repetition if running.
+	ae.autoReturnPending = false
 	if ae.preRollCancel != nil {
 		ae.preRollCancel()
 	}
 
-	// Build and send the appropriate return message based on the event type.
 	var returnMsg *CueMessage
 	if ae.CommandType == CommandTimeSignal && len(ae.Descriptors) > 0 {
-		// For time_signal events, send a time_signal with matching End
-		// segmentation types (per SCTE-35 Table 22: Start+1 = End).
 		var endDescs []SegmentationDescriptor
 		for _, d := range ae.Descriptors {
 			if isSegCueOut(d.SegmentationType) {
@@ -744,11 +792,7 @@ func (inj *Injector) CancelEvent(eventID uint32) error {
 		return fmt.Errorf("event %d not active", eventID)
 	}
 
-	// Stop the auto-return timer if running.
-	if ae.returnTimer != nil {
-		ae.returnTimer.Stop()
-	}
-	// Stop pre-roll repetition if running.
+	ae.autoReturnPending = false
 	if ae.preRollCancel != nil {
 		ae.preRollCancel()
 	}
@@ -891,12 +935,7 @@ func (inj *Injector) HoldBreak(eventID uint32) error {
 		return fmt.Errorf("event %d not active", eventID)
 	}
 
-	// Stop the auto-return timer.
-	if ae.returnTimer != nil {
-		ae.returnTimer.Stop()
-		ae.returnTimer = nil
-	}
-	// Stop pre-roll repetition if running.
+	ae.autoReturnPending = false
 	if ae.preRollCancel != nil {
 		ae.preRollCancel()
 		ae.preRollCancel = nil
@@ -945,29 +984,21 @@ func (inj *Injector) ExtendBreak(eventID uint32, newDurationMs int64) error {
 		return fmt.Errorf("event %d not active", eventID)
 	}
 
-	// Stop existing timer.
-	if ae.returnTimer != nil {
-		ae.returnTimer.Stop()
-		ae.returnTimer = nil
-	}
-	// Stop pre-roll repetition if running.
 	if ae.preRollCancel != nil {
 		ae.preRollCancel()
 		ae.preRollCancel = nil
 	}
 
-	// Update duration.
 	newDur := time.Duration(newDurationMs) * time.Millisecond
 	ae.Duration = newDur
 	ae.Held = false
 
-	// Calculate remaining duration from when the event started.
-	elapsed := time.Since(ae.StartedAt)
-	remaining := newDur - elapsed
-	if remaining > 0 && ae.AutoReturn {
-		ae.returnTimer = time.AfterFunc(remaining, func() {
-			_ = inj.ReturnToProgram(eventID)
-		})
+	if ae.AutoReturn {
+		durTicks := int64(newDur) * 90000 / int64(time.Second)
+		ae.scheduledReturnPTS = maskPTS33(ae.anchorPTS + durTicks)
+		ae.autoReturnPending = true
+	} else {
+		ae.autoReturnPending = false
 	}
 
 	// Send updated message with new duration, matching the original command type.
@@ -1184,7 +1215,8 @@ func (inj *Injector) SetSCTE104Sink(fn func(*CueMessage)) {
 	inj.scte104Sink = fn
 }
 
-// Close stops the heartbeat, all auto-return timers, and the webhook dispatcher.
+// Close stops the heartbeat loop, auto-return poller, pre-roll repetition, and
+// the webhook dispatcher.
 func (inj *Injector) Close() {
 	if inj.closed.Swap(true) {
 		return // already closed
@@ -1195,9 +1227,7 @@ func (inj *Injector) Close() {
 	inj.mu.Lock()
 	wh := inj.webhook
 	for _, ae := range inj.activeEvents {
-		if ae.returnTimer != nil {
-			ae.returnTimer.Stop()
-		}
+		ae.autoReturnPending = false
 		if ae.preRollCancel != nil {
 			ae.preRollCancel()
 		}
@@ -1254,9 +1284,7 @@ func (inj *Injector) removeSiblingEventsLocked(eventID uint32, ae *activeEvent) 
 	for _, d := range ae.Descriptors {
 		if d.SegEventID != eventID {
 			if sibling, ok := inj.activeEvents[d.SegEventID]; ok {
-				if sibling.returnTimer != nil {
-					sibling.returnTimer.Stop()
-				}
+				sibling.autoReturnPending = false
 				if sibling.preRollCancel != nil {
 					sibling.preRollCancel()
 				}
