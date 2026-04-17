@@ -10,9 +10,10 @@ import (
 
 // Sentinel errors for destination operations.
 var (
-	ErrDestinationNotFound = errors.New("output: destination not found")
-	ErrDestinationActive   = errors.New("output: destination already active")
-	ErrDestinationStopped  = errors.New("output: destination not active")
+	ErrDestinationNotFound    = errors.New("output: destination not found")
+	ErrDestinationActive      = errors.New("output: destination already active")
+	ErrDestinationStopped     = errors.New("output: destination not active")
+	ErrDestinationWrongEngine = errors.New("output: destination assigned to different engine")
 )
 
 // DestinationConfig configures a single output destination.

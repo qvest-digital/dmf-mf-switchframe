@@ -63,6 +63,7 @@ var errorMappings = []errorMapping{
 	{output.ErrDestinationNotFound, http.StatusNotFound},
 	{output.ErrDestinationActive, http.StatusConflict},
 	{output.ErrDestinationStopped, http.StatusConflict},
+	{output.ErrDestinationWrongEngine, http.StatusConflict},
 	{stinger.ErrAlreadyExists, http.StatusConflict},
 	{stinger.ErrMaxClipsReached, http.StatusConflict},
 	{graphics.ErrAlreadyActive, http.StatusConflict},

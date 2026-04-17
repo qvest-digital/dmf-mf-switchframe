@@ -604,6 +604,13 @@ func (m *Manager) StartDestination(id string) error {
 	}
 
 	dest.mu.Lock()
+	if m.engineLabel != "" && dest.config.Engine != "" && dest.config.Engine != m.engineLabel {
+		configured := dest.config.Engine
+		dest.mu.Unlock()
+		m.mu.Unlock()
+		return fmt.Errorf("%w: destination %q is assigned to engine %q, not local engine %q",
+			ErrDestinationWrongEngine, id, configured, m.engineLabel)
+	}
 	if dest.active {
 		dest.mu.Unlock()
 		m.mu.Unlock()
@@ -778,6 +785,18 @@ func (m *Manager) StopDestination(id string) error {
 
 	dest.mu.Lock()
 	if !dest.active {
+		// Distinguish "genuinely stopped" from "stopped locally because this
+		// destination runs on a different engine" — the latter is a routing
+		// error that a plain ErrDestinationStopped would hide. An active
+		// mismatched destination (legacy state) is still stoppable here as
+		// a recovery path.
+		if m.engineLabel != "" && dest.config.Engine != "" && dest.config.Engine != m.engineLabel {
+			configured := dest.config.Engine
+			dest.mu.Unlock()
+			m.mu.Unlock()
+			return fmt.Errorf("%w: destination %q is assigned to engine %q, not local engine %q",
+				ErrDestinationWrongEngine, id, configured, m.engineLabel)
+		}
 		dest.mu.Unlock()
 		m.mu.Unlock()
 		return ErrDestinationStopped
