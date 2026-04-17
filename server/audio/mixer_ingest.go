@@ -5,6 +5,10 @@ import (
 	"github.com/zsiec/switchframe/server/codec"
 )
 
+// aacPrimingSamples is the number of PCM samples FDK-AAC-LC silently discards
+// before emitting valid output (one full MDCT frame).
+const aacPrimingSamples = 1024
+
 // IngestFrame processes an AAC audio frame from a source. Decodes to PCM,
 // applies the per-channel processing chain (trim -> EQ -> compressor), and
 // pushes the processed result into the channel's ring buffer for clock-driven
@@ -66,6 +70,21 @@ func (m *Mixer) ingestFrameInner(sourceKey string, frame *media.AudioFrame) {
 		m.mu.Unlock()
 		m.log.Warn("decode error", "source", sourceKey, "err", err)
 		return
+	}
+
+	// FDK-AAC-LC silently discards one priming frame while the MDCT overlap
+	// buffer fills. Without compensation, valid PCM lands in the ring buffer
+	// earlier than the source timeline expects — audio plays ahead of video.
+	// On the first valid emission after a priming skip, prepend one frame of
+	// silence so the ring buffer timeline matches the source timeline.
+	if len(pcm) == 0 {
+		ch.primingSkipped = true
+		m.mu.Unlock()
+		return
+	}
+	if ch.primingSkipped && !ch.primingOffsetApplied {
+		ch.primingOffsetApplied = true
+		ch.ringBuf.Push(make([]float32, aacPrimingSamples*m.numChannels))
 	}
 
 	// Resample if source rate doesn't match mixer rate.

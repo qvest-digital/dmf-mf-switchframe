@@ -68,32 +68,34 @@ type GateState struct {
 
 // Channel tracks per-source audio state.
 type Channel struct {
-	sourceKey        string
-	level            float64 // dB (-inf to +12), fader level
-	levelLinear      float32 // cached linear gain from level (avoids per-frame math.Pow)
-	trim             float64 // dB (-20 to +20), input gain/trim
-	trimLinear       float32 // cached linear gain from trim (avoids per-frame math.Pow)
-	hpf              *HPF    // high-pass filter (always initialized)
-	gate             *Gate   // noise gate (always initialized)
-	phaseInvert      bool
-	muted            bool
-	afv              bool
-	active           bool
-	decoder          Decoder        // lazy init on first IngestFrame
-	decoderOnce      sync.Once      // ensures decoder factory is called at most once
-	peakL            float64        // linear amplitude [0,1] — updated on every decoded frame
-	peakR            float64        // linear amplitude [0,1]
-	eq               *EQ            // 3-band parametric EQ (always initialized)
-	compressor       *Compressor    // single-band compressor (always initialized)
-	balance          float64        // -1.0 (hard left) to +1.0 (hard right), 0.0 = center
-	balL             float32        // cached left gain from BalanceGains()
-	balR             float32        // cached right gain from BalanceGains()
-	audioDelay       *DelayBuffer   // per-source audio delay for lip-sync correction
-	isPCM            bool           // true if this channel receives raw PCM (not AAC)
-	sampleRateWarned bool           // true after first sample rate mismatch log (once per channel)
-	resampler        *Resampler     // nil when source rate matches mixer rate; lazy-init on mismatch
-	resamplerSrcRate int            // source rate the resampler was created for (detect rate changes)
-	ringBuf          *PCMRingBuffer // processed PCM ring buffer for clock-driven output
+	sourceKey            string
+	level                float64 // dB (-inf to +12), fader level
+	levelLinear          float32 // cached linear gain from level (avoids per-frame math.Pow)
+	trim                 float64 // dB (-20 to +20), input gain/trim
+	trimLinear           float32 // cached linear gain from trim (avoids per-frame math.Pow)
+	hpf                  *HPF    // high-pass filter (always initialized)
+	gate                 *Gate   // noise gate (always initialized)
+	phaseInvert          bool
+	muted                bool
+	afv                  bool
+	active               bool
+	decoder              Decoder        // lazy init on first IngestFrame
+	decoderOnce          sync.Once      // ensures decoder factory is called at most once
+	primingSkipped       bool           // true after the decoder has returned at least one empty (priming) frame
+	primingOffsetApplied bool           // true once per-source AAC priming silence has been pushed to ringBuf
+	peakL                float64        // linear amplitude [0,1] — updated on every decoded frame
+	peakR                float64        // linear amplitude [0,1]
+	eq                   *EQ            // 3-band parametric EQ (always initialized)
+	compressor           *Compressor    // single-band compressor (always initialized)
+	balance              float64        // -1.0 (hard left) to +1.0 (hard right), 0.0 = center
+	balL                 float32        // cached left gain from BalanceGains()
+	balR                 float32        // cached right gain from BalanceGains()
+	audioDelay           *DelayBuffer   // per-source audio delay for lip-sync correction
+	isPCM                bool           // true if this channel receives raw PCM (not AAC)
+	sampleRateWarned     bool           // true after first sample rate mismatch log (once per channel)
+	resampler            *Resampler     // nil when source rate matches mixer rate; lazy-init on mismatch
+	resamplerSrcRate     int            // source rate the resampler was created for (detect rate changes)
+	ringBuf              *PCMRingBuffer // processed PCM ring buffer for clock-driven output
 
 	// Reusable work buffers (hot-path allocation elimination)
 	trimBuf   []float32
