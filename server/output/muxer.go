@@ -152,6 +152,7 @@ func (m *TSMuxer) SetSCTE35PID(pid uint16) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.scte35PID = pid
+	m.scte35CC = 0
 }
 
 // maxBitrateBytes returns the max bitrate in bytes/sec for the PMT descriptor.
@@ -727,6 +728,14 @@ func (m *TSMuxer) init(_ int64) error {
 
 	m.buf = &bytes.Buffer{}
 	m.muxer = astits.NewMuxer(ctx, m.buf)
+
+	// Manually-managed CCs (go-astits' own CCs reset with NewMuxer above).
+	m.scte35CC = 0
+	m.sdtCC = 0
+	m.nitCC = 0
+	m.lastSDTPTS = 0
+	m.lastNITPTS = 0
+	m.diagPrevMuxerPTS = 0
 
 	// Register video elementary stream with codec-appropriate stream type
 	// and ES-level descriptors for broadcast metadata.
