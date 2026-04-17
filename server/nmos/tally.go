@@ -14,11 +14,16 @@ import "sync"
 // enabled upstream key — rendered as AMBER in the UI because it is
 // contributing to the composite but is not itself visible.
 type TallyEvent struct {
-	SourceID  string `json:"source_id"`
-	Program   bool   `json:"program"`
-	Preview   bool   `json:"preview"`
-	KeyFill   bool   `json:"key_fill,omitempty"`
-	Auxiliary bool   `json:"auxiliary,omitempty"`
+	SourceID string `json:"source_id"`
+	Program  bool   `json:"program"`
+	Preview  bool   `json:"preview"`
+
+	// KeyFill / Auxiliary are UI-only and must NEVER appear on the IS-07 wire:
+	// no json tags so a future bridge that `json.Marshal`s TallyEvent directly
+	// cannot accidentally leak them. Consumers who need the fields access them
+	// through struct fields; the IS-07 bridge should build its own DTO.
+	KeyFill   bool `json:"-"`
+	Auxiliary bool `json:"-"`
 }
 
 // TallyPublisher tracks program/preview/key-role state and emits events on change.

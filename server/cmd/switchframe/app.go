@@ -892,9 +892,12 @@ func (a *App) initSubsystems() error {
 	a.sw.SetKeyBridge(a.keyBridge)
 
 	// Key processor changes trigger pipeline rebuild so Active() filtering
-	// reflects whether any upstream keys are configured.
+	// reflects whether any upstream keys are configured. Broadcast state so
+	// the UI sees the updated key-fill tally immediately without waiting for
+	// an unrelated mutation to trigger a state push.
 	a.keyProcessor.OnChange(func() {
 		a.sw.RebuildPipeline()
+		a.broadcastState(nil)
 	})
 
 	// Register program preview relay early so wireGPUPipeline can use it

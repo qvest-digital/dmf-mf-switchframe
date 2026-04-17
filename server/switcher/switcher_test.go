@@ -1864,6 +1864,36 @@ func TestState_KeyFillSelfFillSourceTallied(t *testing.T) {
 		"cam1 is self-fill for its enabled key, must be tallied as key_fill (RED)")
 }
 
+func TestState_KeyFillOnPreviewIsRedNotGreen(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := newTestSwitcher(programRelay)
+	defer sw.Close()
+
+	cam1Relay := newTestRelay()
+	cam2Relay := newTestRelay()
+	cam3Relay := newTestRelay()
+	sw.RegisterSource("cam1", cam1Relay)
+	sw.RegisterSource("cam2", cam2Relay)
+	sw.RegisterSource("cam3", cam3Relay)
+
+	kp := graphics.NewKeyProcessor()
+	bridge := graphics.NewKeyProcessorBridge(kp)
+	sw.SetKeyBridge(bridge)
+
+	kp.SetKey("cam2", graphics.KeyConfig{
+		Type:       graphics.KeyTypeChroma,
+		Enabled:    true,
+		FillSource: "cam3",
+	})
+
+	require.NoError(t, sw.Cut(context.Background(), "cam1"))
+	require.NoError(t, sw.SetPreview(context.Background(), "cam3"))
+
+	state := sw.State()
+	require.Equal(t, string(TallyKeyFill), state.TallyState["cam3"],
+		"cam3 is both on preview and a key fill; key_fill must win (RED not GREEN) because it's visibly on-air via the enabled key")
+}
+
 func TestState_KeyAlphaTallied(t *testing.T) {
 	programRelay := newTestRelay()
 	sw := newTestSwitcher(programRelay)
