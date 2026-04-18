@@ -494,10 +494,11 @@ func drawAnnexClock(buf []byte, f video.Format, width, height, annexY0 int, r *t
 		fontSize = 14
 	}
 	opts := textrender.TextOptions{
-		Text:     now.Format("15:04:05 UTC"),
-		FontSize: fontSize,
-		Bold:     true,
-		Color:    color.RGBA{R: 255, G: 255, B: 255, A: 255},
+		Text:      now.Format("15:04:05 UTC"),
+		FontSize:  fontSize,
+		Bold:      true,
+		Monospace: true, // fixed-width digits so the clock text doesn't shift each second
+		Color:     color.RGBA{R: 255, G: 255, B: 255, A: 255},
 	}
 	w, h := r.MeasureText(opts)
 	if w <= 0 || h <= 0 {
@@ -514,9 +515,16 @@ func drawAnnexClock(buf []byte, f video.Format, width, height, annexY0 int, r *t
 }
 
 // drawAnnexSprite draws a short horizontal colored bar in the middle of the
-// annex that moves left-to-right on a 2-second loop, proving to a downstream
-// operator that the signal is live even when the reference pattern itself
-// is static.
+// annex that moves left-to-right on a 2-second loop, proving to a
+// downstream operator that the signal is live even when the reference
+// pattern itself is static.
+//
+// The sprite's travel range runs from fully off-screen on the left
+// (x=-spriteW) to fully off-screen on the right (x=width). This makes
+// the wrap a natural "exit-then-reenter" rather than a right-to-left
+// teleport — the sprite is off-screen for one frame's worth of
+// travel before reappearing on the left, so the viewer sees continuous
+// forward motion with no apparent backward jump at cycle boundaries.
 func drawAnnexSprite(buf []byte, f video.Format, width, height, annexY0 int, elapsed time.Duration) {
 	if annexY0 >= height {
 		return
@@ -539,11 +547,11 @@ func drawAnnexSprite(buf []byte, f video.Format, width, height, annexY0 int, ela
 
 	period := 2 * time.Second
 	frac := float64(elapsed%period) / float64(period)
-	travel := width - spriteW
-	if travel < 0 {
-		travel = 0
-	}
-	x0 := int(frac * float64(travel))
+	// Travel range goes from fully off-screen left to fully off-screen
+	// right, so the sprite enters the visible region from the left, exits
+	// on the right, and wraps cleanly with no on-screen teleport.
+	travelRange := width + spriteW
+	x0 := -spriteW + int(frac*float64(travelRange))
 	x0 &^= 1
 	x1 := x0 + spriteW
 

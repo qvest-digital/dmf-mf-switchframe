@@ -153,7 +153,7 @@ func TestWordWrap(t *testing.T) {
 	require.NoError(t, err)
 
 	r.mu.Lock()
-	face, err := r.faceLocked(24, false)
+	face, err := r.faceLocked(24, false, false)
 	r.mu.Unlock()
 	require.NoError(t, err)
 
@@ -171,25 +171,79 @@ func TestFontFaceCache(t *testing.T) {
 	r.mu.Lock()
 
 	// First call creates a new face
-	face1, err := r.faceLocked(24, false)
+	face1, err := r.faceLocked(24, false, false)
 	require.NoError(t, err)
 
 	// Second call should return the same cached face
-	face2, err := r.faceLocked(24, false)
+	face2, err := r.faceLocked(24, false, false)
 	require.NoError(t, err)
 	require.Equal(t, face1, face2, "same size should return cached face")
 
 	// Different size should create a new face
-	face3, err := r.faceLocked(48, false)
+	face3, err := r.faceLocked(48, false, false)
 	require.NoError(t, err)
 	require.NotEqual(t, face1, face3, "different size should create new face")
 
 	// Bold variant should be separate
-	face4, err := r.faceLocked(24, true)
+	face4, err := r.faceLocked(24, true, false)
 	require.NoError(t, err)
 	require.NotEqual(t, face1, face4, "bold should be separate from regular")
 
+	// Monospace variant should be separate from the proportional Inter face
+	// at the same size and weight.
+	face5, err := r.faceLocked(24, false, true)
+	require.NoError(t, err)
+	require.NotEqual(t, face1, face5, "monospace should be separate from regular")
+	face6, err := r.faceLocked(24, true, true)
+	require.NoError(t, err)
+	require.NotEqual(t, face4, face6, "monospace bold should be separate from proportional bold")
+	require.NotEqual(t, face5, face6, "monospace bold should be separate from monospace regular")
+
 	r.mu.Unlock()
+}
+
+// TestMonospaceDigitsSameWidth pins the broadcast clock requirement: every
+// digit in the monospace face produces the same pixel advance, so a
+// burned-in HH:MM:SS clock rendered with TextOptions.Monospace=true does
+// not jitter left/right as digits change each second.
+func TestMonospaceDigitsSameWidth(t *testing.T) {
+	r, err := NewRenderer()
+	require.NoError(t, err)
+
+	widths := make(map[rune]int)
+	for _, ch := range "0123456789" {
+		w, _ := r.MeasureText(TextOptions{
+			Text:      string(ch),
+			FontSize:  24,
+			Monospace: true,
+		})
+		widths[ch] = w
+	}
+
+	// All digit widths identical.
+	first := widths['0']
+	for ch, w := range widths {
+		require.Equal(t, first, w, "monospace digit %q width %d != %d", ch, w, first)
+	}
+
+	// Sanity: the proportional Inter face is NOT all the same width
+	// (otherwise the Monospace flag wouldn't be doing anything new).
+	var propWidths [10]int
+	for i, ch := range "0123456789" {
+		w, _ := r.MeasureText(TextOptions{
+			Text:     string(ch),
+			FontSize: 24,
+		})
+		propWidths[i] = w
+	}
+	allSame := true
+	for i := 1; i < 10; i++ {
+		if propWidths[i] != propWidths[0] {
+			allSame = false
+			break
+		}
+	}
+	require.False(t, allSame, "sanity check: Inter digits should not all have identical width; test premise is wrong")
 }
 
 func BenchmarkRenderText(b *testing.B) {

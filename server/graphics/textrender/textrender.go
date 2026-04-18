@@ -11,6 +11,8 @@ import (
 	"sync"
 
 	"golang.org/x/image/font"
+	"golang.org/x/image/font/gofont/gomono"
+	"golang.org/x/image/font/gofont/gomonobold"
 	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/math/fixed"
 )
@@ -28,20 +30,32 @@ type TextOptions struct {
 	Bold     bool
 	Color    color.RGBA // default: white
 	MaxWidth int        // 0 = no wrapping
+
+	// Monospace selects the Go Mono typeface (fixed-width slab-serif from
+	// the Go font family) instead of Inter. Use for burned-in clocks,
+	// timecode, and other fields where digit width must be stable so the
+	// text baseline doesn't shift when digits change each second.
+	Monospace bool
 }
 
-// Renderer rasterizes text into RGBA images using embedded Inter fonts.
+// Renderer rasterizes text into RGBA images using embedded Inter fonts
+// and Go Mono (monospace) fonts.
 type Renderer struct {
-	regularFont *opentype.Font
-	boldFont    *opentype.Font
+	regularFont  *opentype.Font
+	boldFont     *opentype.Font
+	monoFont     *opentype.Font
+	monoBoldFont *opentype.Font
 
-	// Font face cache: size -> face (regular and bold cached separately).
+	// Font face cache: size -> face. One cache per (weight, monospace) pair.
 	mu           sync.Mutex
 	regularFaces map[float64]font.Face
 	boldFaces    map[float64]font.Face
+	monoFaces    map[float64]font.Face
+	monoBoldFace map[float64]font.Face
 }
 
-// NewRenderer parses the embedded Inter fonts and returns a ready-to-use renderer.
+// NewRenderer parses the embedded Inter fonts plus Go Mono (for monospace
+// text) and returns a ready-to-use renderer.
 func NewRenderer() (*Renderer, error) {
 	regular, err := opentype.Parse(interRegularData)
 	if err != nil {
@@ -51,11 +65,23 @@ func NewRenderer() (*Renderer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse Inter-Bold: %w", err)
 	}
+	mono, err := opentype.Parse(gomono.TTF)
+	if err != nil {
+		return nil, fmt.Errorf("parse Go Mono: %w", err)
+	}
+	monoBold, err := opentype.Parse(gomonobold.TTF)
+	if err != nil {
+		return nil, fmt.Errorf("parse Go Mono Bold: %w", err)
+	}
 	return &Renderer{
 		regularFont:  regular,
 		boldFont:     bold,
+		monoFont:     mono,
+		monoBoldFont: monoBold,
 		regularFaces: make(map[float64]font.Face),
 		boldFaces:    make(map[float64]font.Face),
+		monoFaces:    make(map[float64]font.Face),
+		monoBoldFace: make(map[float64]font.Face),
 	}, nil
 }
 
@@ -65,23 +91,28 @@ func (r *Renderer) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	for size, face := range r.regularFaces {
-		_ = face.Close()
-		delete(r.regularFaces, size)
-	}
-	for size, face := range r.boldFaces {
-		_ = face.Close()
-		delete(r.boldFaces, size)
+	for _, cache := range []map[float64]font.Face{r.regularFaces, r.boldFaces, r.monoFaces, r.monoBoldFace} {
+		for size, face := range cache {
+			_ = face.Close()
+			delete(cache, size)
+		}
 	}
 	return nil
 }
 
 // faceLocked returns a cached font.Face for the given size and weight.
 // Must be called with r.mu held.
-func (r *Renderer) faceLocked(size float64, bold bool) (font.Face, error) {
+func (r *Renderer) faceLocked(size float64, bold, monospace bool) (font.Face, error) {
 	cache := r.regularFaces
 	f := r.regularFont
-	if bold {
+	switch {
+	case monospace && bold:
+		cache = r.monoBoldFace
+		f = r.monoBoldFont
+	case monospace:
+		cache = r.monoFaces
+		f = r.monoFont
+	case bold:
 		cache = r.boldFaces
 		f = r.boldFont
 	}
@@ -114,7 +145,7 @@ func (r *Renderer) MeasureText(opts TextOptions) (width, height int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	face, err := r.faceLocked(opts.FontSize, opts.Bold)
+	face, err := r.faceLocked(opts.FontSize, opts.Bold, opts.Monospace)
 	if err != nil {
 		return 0, 0
 	}
@@ -167,7 +198,7 @@ func (r *Renderer) RenderText(width, height int, opts TextOptions) (*image.RGBA,
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	face, err := r.faceLocked(opts.FontSize, opts.Bold)
+	face, err := r.faceLocked(opts.FontSize, opts.Bold, opts.Monospace)
 	if err != nil {
 		return nil, nil, err
 	}
