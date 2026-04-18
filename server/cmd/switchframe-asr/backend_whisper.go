@@ -20,16 +20,23 @@ import (
 	"github.com/zsiec/switchframe/server/asr"
 )
 
+// maxPromptWords caps the rolling window of confirmed words sent back to
+// whisper as initial_prompt. Whisper docs recommend ~half of n_text_ctx
+// (typically 224 / 2 = ~110), and broader real-world implementations
+// settle at ~200; the model truncates internally if we go over.
+const maxPromptWords = 200
+
 // whisperASRBackend wraps whisper.cpp via cgo as an asrBackend.
 type whisperASRBackend struct {
-	ctx       *C.struct_whisper_context
-	modelsDir string
-	modelName string
-	models    []string
-	useGPU    bool
-	nThreads  int
-	language  string // recognition language (default "en")
-	translate bool   // translate non-English to English (default true)
+	ctx         *C.struct_whisper_context
+	modelsDir   string
+	modelName   string
+	models      []string
+	useGPU      bool
+	nThreads    int
+	language    string   // recognition language (default "en")
+	translate   bool     // translate non-English to English (default true)
+	promptWords []string // rolling window of recently confirmed words
 }
 
 func newWhisperASRBackend(modelsDir string, useGPU bool, nThreads int) (*whisperASRBackend, error) {
@@ -85,6 +92,7 @@ func (b *whisperASRBackend) loadModel(name string) error {
 
 	b.ctx = ctx
 	b.modelName = name
+	b.promptWords = b.promptWords[:0] // discard cross-model context
 	return nil
 }
 
@@ -104,6 +112,12 @@ func (b *whisperASRBackend) Transcribe(audio []float32) []asr.TranscriptWord {
 	lang := C.CString(opts.Language)
 	defer C.free(unsafe.Pointer(lang))
 
+	var promptPtr *C.char
+	if prompt := promptContextToString(b.promptWords); prompt != "" {
+		promptPtr = C.CString(prompt)
+		defer C.free(unsafe.Pointer(promptPtr))
+	}
+
 	params.language = lang
 	params.translate = C.bool(opts.Translate)
 	params.n_threads = C.int(opts.NThreads)
@@ -115,6 +129,7 @@ func (b *whisperASRBackend) Transcribe(audio []float32) []asr.TranscriptWord {
 	params.suppress_blank = C.bool(opts.SuppressBlank)
 	params.suppress_nst = C.bool(opts.SuppressNonSpeech)
 	params.token_timestamps = C.bool(opts.TokenTimestamps)
+	params.initial_prompt = promptPtr
 	params.audio_ctx = C.int(computeAudioCtx(len(audio), 16000))
 	params.print_progress = C.bool(false)
 	params.print_realtime = C.bool(false)
@@ -154,7 +169,24 @@ func (b *whisperASRBackend) Transcribe(audio []float32) []asr.TranscriptWord {
 		}
 	}
 
-	return filterWords(words)
+	out := filterWords(words)
+
+	// Roll the confirmed words into the prompt context for the next call.
+	// (Phase 7 LocalAgreement-2 will tighten "confirmed" to mean "committed
+	// across two consecutive overlapping hypotheses"; until then we treat
+	// every emitted word as confirmed since each Transcribe call covers a
+	// distinct VAD-gated speech segment.)
+	if len(out) > 0 {
+		newWords := make([]string, 0, len(out))
+		for _, w := range out {
+			if w.Text != "" {
+				newWords = append(newWords, w.Text)
+			}
+		}
+		b.promptWords = updatePromptContext(b.promptWords, newWords, maxPromptWords)
+	}
+
+	return out
 }
 
 func (b *whisperASRBackend) Name() string      { return "whisper" }
