@@ -1572,6 +1572,14 @@ func (a *App) initAPI() error {
 		pollerOpts := []peer.Option{
 			peer.WithLocalIdentity(a.cfg.EngineLabel),
 		}
+		if a.cfg.PeerCertHash != "" {
+			pinned, err := peer.NewPinnedHTTPClient(a.cfg.PeerCertHash, 3*time.Second)
+			if err != nil {
+				return fmt.Errorf("peer cert-hash pinning: %w", err)
+			}
+			pollerOpts = append(pollerOpts, peer.WithHTTPClient(pinned))
+			slog.Info("peer TLS pinning active", "peerURL", a.cfg.PeerEngineURL)
+		}
 		if a.cfg.StateDir != "" {
 			epochPath := a.statePath("peer_epoch.json")
 			e, err := loadPeerEpoch(epochPath)

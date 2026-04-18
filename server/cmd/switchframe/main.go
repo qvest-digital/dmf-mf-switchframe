@@ -16,6 +16,7 @@ import (
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/comms"
 	"github.com/zsiec/switchframe/server/control"
+	"github.com/zsiec/switchframe/server/peer"
 	"github.com/zsiec/switchframe/server/srt"
 )
 
@@ -138,6 +139,13 @@ type AppConfig struct {
 	// Inter-engine peer health monitoring.
 	PeerEngineURL string // --peer-engine-url (URL of the other engine for health polling)
 
+	// PeerCertHash is a comma-separated list of hex SHA-256 leaf-certificate
+	// fingerprints accepted when TLS-connecting to the peer engine. Required
+	// when PeerEngineURL uses an RFC 1918 IP (standard LE certs only cover
+	// FQDNs). Ignored when the URL host is a DNS name. A two-element list
+	// enables cert rotation without dropping connectivity.
+	PeerCertHash string // --peer-cert-hash or SWITCHFRAME_PEER_CERT_HASH
+
 	// EngineLabel identifies this engine in an active-active pair ("a" or "b").
 	// Empty means single-engine mode; all peer-role logic no-ops in that mode.
 	EngineLabel string // --engine-label or SWITCHFRAME_ENGINE_LABEL
@@ -168,6 +176,10 @@ func run() error {
 	}
 
 	if err := validateEngineLabel(cfg.EngineLabel); err != nil {
+		return err
+	}
+
+	if err := peer.ValidatePeerTLSConfig(cfg.PeerEngineURL, cfg.PeerCertHash); err != nil {
 		return err
 	}
 
@@ -363,6 +375,7 @@ func parseConfig() (AppConfig, error) {
 
 	// Peer engine health monitoring.
 	peerEngineURLFlag := flag.String("peer-engine-url", "", "URL of the peer engine for inter-engine health monitoring (e.g., https://engine-b:8080)")
+	peerCertHashFlag := flag.String("peer-cert-hash", "", "SHA-256 hex of the peer engine's leaf cert DER (comma-separated pair during rotation); required when --peer-engine-url uses a private IP")
 	engineLabelFlag := flag.String("engine-label", "", "engine label for active-active pairs (\"a\" or \"b\"); empty = single-engine")
 	controlPlaneSecretFlag := flag.String("control-plane-secret", "", "shared secret authorizing POST /api/peer/force-leader; empty disables the endpoint")
 
@@ -536,6 +549,7 @@ func parseConfig() (AppConfig, error) {
 		ST2110PTP:            *st2110PTPFlag,
 		ST2110NMOSPort:       *st2110NMOSPortFlag,
 		PeerEngineURL:        resolveEnvOrFlag(*peerEngineURLFlag, "SWITCHFRAME_PEER_ENGINE_URL"),
+		PeerCertHash:         resolveEnvOrFlag(*peerCertHashFlag, "SWITCHFRAME_PEER_CERT_HASH"),
 		EngineLabel:          resolveEnvOrFlag(*engineLabelFlag, "SWITCHFRAME_ENGINE_LABEL"),
 		ControlPlaneSecret:   resolveEnvOrFlag(*controlPlaneSecretFlag, "SWITCHFRAME_CONTROL_PLANE_SECRET"),
 		RefClock:             *refClockFlag,
