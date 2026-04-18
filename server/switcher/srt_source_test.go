@@ -17,7 +17,7 @@ func TestRegisterSRTSource(t *testing.T) {
 	sw.RegisterSRTSource("srt:cam1")
 
 	state := sw.State()
-	require.Len(t, state.Sources, 1)
+	require.Len(t, state.Sources, 1+builtinSourceCount)
 	src, ok := state.Sources["srt:cam1"]
 	require.True(t, ok, "Sources should contain 'srt:cam1'")
 	require.Equal(t, "srt:cam1", src.Key)
@@ -55,8 +55,9 @@ func TestRegisterSRTSource_Position(t *testing.T) {
 	sw.RegisterSRTSource("srt:cam1")
 
 	state := sw.State()
-	require.Len(t, state.Sources, 2)
-	require.Equal(t, 2, state.Sources["srt:cam1"].Position,
+	require.Len(t, state.Sources, 2+builtinSourceCount)
+	// Registration order: built-ins (1,2) → camera1 (3) → srt:cam1 (4).
+	require.Equal(t, 2+builtinSourceCount, state.Sources["srt:cam1"].Position,
 		"SRT source should get next position after existing sources")
 }
 
@@ -85,7 +86,8 @@ func TestSRTSource_UnregisterSafe(t *testing.T) {
 	}, "UnregisterSource should not panic for SRT sources with nil relay/viewer")
 
 	state := sw.State()
-	require.Empty(t, state.Sources, "SRT source should be removed after UnregisterSource")
+	require.Len(t, state.Sources, builtinSourceCount,
+		"SRT source removed, only built-ins remain")
 }
 
 func TestSRTSource_IngestRawVideo(t *testing.T) {

@@ -250,12 +250,15 @@ func (ss *sourceState) getFrameCount() int {
 // on-program (live output) and which is on-preview, maintains tally state,
 // and routes frames from the program source to the program Relay.
 type Switcher struct {
-	log             *slog.Logger
-	mu              sync.RWMutex
-	sources         map[string]*sourceState
-	programSource   string
-	previewSource   string
-	programRelay    *distribution.Relay
+	log                 *slog.Logger
+	mu                  sync.RWMutex
+	sources             map[string]*sourceState
+	builtinSources      map[string]*builtinSource // always-registered virtual sources (source:black, source:colorbars)
+	builtinProducerStop chan struct{}             // closed by Close() to shut down the built-in producer goroutine
+	builtinProducerDone chan struct{}             // closed by the producer loop on exit
+	programSource       string
+	previewSource       string
+	programRelay        *distribution.Relay
 	seq             uint64 // always use atomic ops, even under s.mu, to prevent races on lock-free read paths
 	stateCallbacks  []func(internal.ControlRoomState)
 	health          *healthMonitor
@@ -582,7 +585,9 @@ func New(programRelay *distribution.Relay) *Switcher {
 	s.pipelineFormat.Store(&defaultFmt)
 	s.recentCmdErrors = newRecentErrors(8)
 	s.delayBuffer = NewDelayBuffer(s)
+	s.registerBuiltinSourcesLocked()
 	go s.videoProcessingLoop()
+	s.startBuiltinProducer()
 	return s
 }
 
@@ -813,6 +818,7 @@ func (s *Switcher) GetRawPreviewSink() RawVideoSink {
 
 // Close stops the health monitor, delay buffer, frame sync, and unregisters all sources.
 func (s *Switcher) Close() {
+	s.stopBuiltinProducer()
 	s.health.stop()
 	s.delayBuffer.Close()
 
@@ -1356,6 +1362,7 @@ func (s *Switcher) SetPipelineFormat(f PipelineFormat) error {
 
 	s.pipelineFormat.Store(&f)
 	s.frameBudgetNs.Store(f.FrameBudgetNs())
+	s.invalidateBuiltinSources()
 
 	// Recreate frame pool at new dimensions. Old pool drains naturally —
 	// Release() discards wrong-sized buffers via cap check.
@@ -3518,10 +3525,18 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 	sources := make(map[string]internal.SourceInfo, len(s.sources))
 	for key, ss := range s.sources {
 		tally[key] = string(TallyIdle)
+		// Built-in reference sources are backed by an internal generator,
+		// not an ingest feed that can go stale — their health is reported
+		// as healthy regardless of whether the producer is currently
+		// feeding frames (only happens when selected on PGM/PVW).
+		status := s.health.status(key)
+		if isBuiltinSource(key) {
+			status = SourceHealthy
+		}
 		sources[key] = internal.SourceInfo{
 			Key:       key,
 			Label:     ss.label,
-			Status:    string(s.health.status(key)),
+			Status:    string(status),
 			Position:  ss.position,
 			DelayMs:   int(s.delayBuffer.GetDelay(key) / time.Millisecond),
 			IsVirtual: ss.isVirtual,

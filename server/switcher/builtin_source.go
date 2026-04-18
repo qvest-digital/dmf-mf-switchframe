@@ -1,0 +1,589 @@
+package switcher
+
+import (
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"image"
+	"image/color"
+	"log/slog"
+	"sync"
+	"time"
+
+	"github.com/zsiec/switchframe/server/graphics/textrender"
+	"github.com/zsiec/switchframe/server/internal/video"
+	"github.com/zsiec/switchframe/server/transition"
+)
+
+// Canonical keys for the always-present virtual sources every engine exposes.
+// Operators can CUT or PREVIEW to these without any external feed configured.
+const (
+	BuiltinSourceKeyBlack     = "source:black"
+	BuiltinSourceKeyColorbars = "source:colorbars"
+)
+
+// BuiltinSourceCount is the number of virtual sources Switcher.New
+// auto-registers. Exposed so downstream tests across packages can
+// `len(userSources) + switcher.BuiltinSourceCount` without drifting when
+// the set grows.
+const BuiltinSourceCount = 2
+
+// ErrBuiltinSourceUnknown is returned from BuiltinSourceFrame for a key
+// that isn't a registered built-in virtual source.
+var ErrBuiltinSourceUnknown = errors.New("switcher: unknown built-in source")
+
+// builtinSource is an always-available reference-signal generator. The bars
+// pattern is cached per (width, height, color format); the annex band (logo
+// / clock / sprite) redraws every frame so operators visually confirm signal
+// motion even when the pattern itself is a nominally static reference.
+type builtinSource struct {
+	key      string
+	renderer *textrender.Renderer // shared across all built-ins; nil-safe
+
+	mu        sync.Mutex
+	width     int
+	height    int
+	format    video.Format // color format the static + work buffers were built for
+	static    []byte       // cached YUV pattern at (width,height,format) before annex overlay
+	annexY0   int          // y where annex band starts (height if annex disabled)
+	work      []byte       // reusable output buffer; deep-copied into static then overlaid
+	startTime time.Time
+}
+
+// Frame returns a YUV frame at (width, height) in the requested pixel format
+// for this built-in source. Cached pattern is regenerated if any of the
+// three parameters differ from the previous call; the annex is always
+// redrawn so clock/sprite advance per call. The returned slice is reused on
+// the next Frame call — callers that retain the bytes must copy.
+func (b *builtinSource) Frame(width, height int, f video.Format) []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if width <= 0 || height <= 0 {
+		return nil
+	}
+	// Even dimensions required for YUV chroma alignment.
+	width &^= 1
+	height &^= 1
+	if width != b.width || height != b.height || f != b.format || b.static == nil {
+		b.regenerateStaticLocked(width, height, f)
+		b.width = width
+		b.height = height
+		b.format = f
+	}
+	size := f.FrameSize(width, height)
+	if cap(b.work) < size {
+		b.work = make([]byte, size)
+	} else {
+		b.work = b.work[:size]
+	}
+	copy(b.work, b.static)
+	if b.annexY0 < height {
+		b.drawAnnexLocked(b.work, width, height, f)
+	}
+	return b.work
+}
+
+func (b *builtinSource) regenerateStaticLocked(width, height int, f video.Format) {
+	size := f.FrameSize(width, height)
+	if cap(b.static) < size {
+		b.static = make([]byte, size)
+	} else {
+		b.static = b.static[:size]
+	}
+
+	switch b.key {
+	case BuiltinSourceKeyBlack:
+		video.FillBlack(b.static, f, width, height)
+		b.annexY0 = height // no annex for the pure-black fallback source
+		return
+
+	case BuiltinSourceKeyColorbars:
+		// Annex occupies the bottom ~20% of the frame. Chroma subsampling
+		// in YUV420 requires the boundary to be on an even row; use even
+		// alignment for 4:2:2 too (harmless; keeps both paths simple).
+		annex := (height * 4) / 5
+		annex &^= 1
+		if annex < 0 || annex > height {
+			annex = height
+		}
+		b.annexY0 = annex
+		drawSMPTE75Bars(b.static, f, width, height, annex)
+		fillAnnexBlack(b.static, f, width, height, annex)
+		bakeLogo(b.static, f, width, height, annex, b.renderer)
+		return
+	}
+}
+
+func (b *builtinSource) drawAnnexLocked(buf []byte, width, height int, f video.Format) {
+	if b.startTime.IsZero() {
+		b.startTime = time.Now()
+	}
+	elapsed := time.Since(b.startTime)
+	drawAnnexClock(buf, f, width, height, b.annexY0, b.renderer, time.Now().UTC())
+	drawAnnexSprite(buf, f, width, height, b.annexY0, elapsed)
+}
+
+// BuiltinSourceFrame returns a frame from the named built-in source at the
+// current pipeline format (dimensions + color format). Returns
+// ErrBuiltinSourceUnknown for non-built-in keys. Frame regenerates on format
+// change; professional (YUV422 10-bit) and standard (YUV420 8-bit) modes
+// are both supported.
+func (s *Switcher) BuiltinSourceFrame(key string) ([]byte, int, int, error) {
+	bs, ok := s.builtinSources[key]
+	if !ok {
+		return nil, 0, 0, fmt.Errorf("%w: %q", ErrBuiltinSourceUnknown, key)
+	}
+	pf := s.PipelineFormat()
+	yuv := bs.Frame(pf.Width, pf.Height, pf.Color.ColorFormat)
+	return yuv, pf.Width & ^1, pf.Height & ^1, nil
+}
+
+// registerBuiltinSourcesLocked wires source:black and source:colorbars into
+// the switcher's source map with isVirtual=true. Called from Switcher.New
+// under s.mu.Lock; no broadcast here — New's caller is responsible. The
+// builtinSources map is initialized once and never mutated afterward, so
+// subsequent lock-free reads (BuiltinSourceFrame, builtinProducerLoop) are
+// safe.
+func (s *Switcher) registerBuiltinSourcesLocked() {
+	renderer, err := textrender.NewRenderer()
+	if err != nil {
+		// Text rendering failure is non-fatal: we can still render bars
+		// and black, just without the logo/clock. Log and continue.
+		slog.Warn("built-in source text renderer unavailable; logo/clock disabled",
+			"error", err)
+		renderer = nil
+	}
+	keys := []string{BuiltinSourceKeyBlack, BuiltinSourceKeyColorbars}
+	s.builtinSources = make(map[string]*builtinSource, len(keys))
+	for _, key := range keys {
+		s.builtinSources[key] = &builtinSource{
+			key:      key,
+			renderer: renderer,
+		}
+		s.sources[key] = &sourceState{
+			key:       key,
+			label:     builtinLabel(key),
+			position:  len(s.sources) + 1,
+			isVirtual: true,
+		}
+		s.health.registerSource(key)
+	}
+}
+
+// isBuiltinSource reports whether key is one of the always-available virtual
+// sources. buildStateLocked uses this to overwrite the per-source health
+// status with SourceHealthy — built-ins are reference sources backed by an
+// internal generator, not an ingest feed that can go stale.
+func isBuiltinSource(key string) bool {
+	return key == BuiltinSourceKeyBlack || key == BuiltinSourceKeyColorbars
+}
+
+// invalidateBuiltinSources forces every built-in to regenerate its static
+// layer on the next Frame call. Called from SetPipelineFormat after the
+// new format is stored. Caller holds s.mu.
+func (s *Switcher) invalidateBuiltinSources() {
+	for _, bs := range s.builtinSources {
+		bs.mu.Lock()
+		bs.static = nil
+		bs.width = 0
+		bs.height = 0
+		bs.mu.Unlock()
+	}
+}
+
+// startBuiltinProducer spawns the goroutine that pushes built-in frames at
+// the pipeline rate when a built-in is on program or preview. One-shot —
+// do not call twice on the same switcher.
+func (s *Switcher) startBuiltinProducer() {
+	s.builtinProducerStop = make(chan struct{})
+	s.builtinProducerDone = make(chan struct{})
+	go s.builtinProducerLoop()
+}
+
+func (s *Switcher) stopBuiltinProducer() {
+	if s.builtinProducerStop == nil {
+		return
+	}
+	select {
+	case <-s.builtinProducerStop:
+	default:
+		close(s.builtinProducerStop)
+	}
+	<-s.builtinProducerDone
+}
+
+func (s *Switcher) builtinProducerLoop() {
+	defer close(s.builtinProducerDone)
+
+	// Initial tick at the current pipeline format's FrameDuration. Only
+	// Reset the ticker if the format changes mid-loop, to avoid cancelling
+	// in-flight ticks and the attendant coalescing behavior every tick.
+	lastDur := s.PipelineFormat().FrameDuration()
+	if lastDur <= 0 {
+		lastDur = 33333 * time.Microsecond
+	}
+	tick := time.NewTicker(lastDur)
+	defer tick.Stop()
+
+	// PTS anchored to wall-clock elapsed since producer start, scaled to
+	// the 90 kHz MPEG clock. Keeps PTS drift-free for non-integer frame
+	// durations (e.g. 59.94 fps) instead of accumulating per-frame rounding.
+	start := time.Now()
+	for {
+		select {
+		case <-s.builtinProducerStop:
+			return
+		case <-tick.C:
+		}
+
+		pf := s.PipelineFormat()
+		if d := pf.FrameDuration(); d > 0 && d != lastDur {
+			tick.Reset(d)
+			lastDur = d
+		}
+
+		s.mu.RLock()
+		program := s.programSource
+		preview := s.previewSource
+		s.mu.RUnlock()
+
+		pts := time.Since(start).Nanoseconds() * 90 / int64(time.Millisecond)
+		for key, bs := range s.builtinSources {
+			if key != program && key != preview {
+				continue
+			}
+			frame := bs.Frame(pf.Width, pf.Height, pf.Color.ColorFormat)
+			if frame == nil {
+				continue
+			}
+			// Deep-copy: bs.Frame reuses its internal buffer on the next
+			// call, while downstream consumers (frame-sync ring, pipeline
+			// work channel) retain references past that.
+			buf := make([]byte, len(frame))
+			copy(buf, frame)
+			pframe := &ProcessingFrame{
+				Data:   buf,
+				Format: pf.Color.ColorFormat,
+				Width:  pf.Width & ^1,
+				Height: pf.Height & ^1,
+				PTS:    pts,
+				DTS:    pts,
+			}
+			s.IngestRawVideo(key, pframe)
+		}
+	}
+}
+
+func builtinLabel(key string) string {
+	switch key {
+	case BuiltinSourceKeyBlack:
+		return "BLACK"
+	case BuiltinSourceKeyColorbars:
+		return "BARS"
+	}
+	return key
+}
+
+// ---- YUV fills (format-agnostic) ---------------------------------------
+
+// fillYUVRect paints a rectangular region with a uniform YCbCr triple. For
+// 10-bit formats, callers pass pre-scaled values (e.g. Y=180<<2=720). The
+// rectangle is clamped to the frame and quantized to even coordinates so
+// chroma subsampling stays consistent across 4:2:0 and 4:2:2.
+func fillYUVRect(buf []byte, f video.Format, width, height, x0, y0, x1, y1 int, y, cb, cr uint16) {
+	if x0 < 0 {
+		x0 = 0
+	}
+	if y0 < 0 {
+		y0 = 0
+	}
+	if x1 > width {
+		x1 = width
+	}
+	if y1 > height {
+		y1 = height
+	}
+	if x0 >= x1 || y0 >= y1 {
+		return
+	}
+	x0 &^= 1
+	y0 &^= 1
+	x1 &^= 1
+	y1 &^= 1
+
+	yOff := 0
+	cbOff := f.CbOffset(width, height)
+	crOff := f.CrOffset(width, height)
+	chromaW := f.ChromaWidth(width)  // w/2 for both 420 and 422
+	chromaStep := 1
+	if f == video.YUV422_10bit {
+		chromaStep = 1 // 4:2:2: chroma row == luma row
+	} else {
+		chromaStep = 2 // 4:2:0: chroma row every 2 luma rows
+	}
+
+	if f == video.YUV422_10bit {
+		// 10-bit LE uint16 samples; Y plane stride in bytes = width*2.
+		for row := y0; row < y1; row++ {
+			rowOff := yOff + row*width*2
+			for col := x0; col < x1; col++ {
+				binary.LittleEndian.PutUint16(buf[rowOff+col*2:], y)
+			}
+		}
+		for row := y0; row < y1; row += chromaStep {
+			chromaRow := row
+			rowCbOff := cbOff + chromaRow*chromaW*2
+			rowCrOff := crOff + chromaRow*chromaW*2
+			for col := x0; col < x1; col += 2 {
+				uvCol := col / 2
+				binary.LittleEndian.PutUint16(buf[rowCbOff+uvCol*2:], cb)
+				binary.LittleEndian.PutUint16(buf[rowCrOff+uvCol*2:], cr)
+			}
+		}
+		return
+	}
+
+	// 8-bit 4:2:0.
+	y8, cb8, cr8 := byte(y), byte(cb), byte(cr)
+	for row := y0; row < y1; row++ {
+		off := yOff + row*width
+		for col := x0; col < x1; col++ {
+			buf[off+col] = y8
+		}
+	}
+	for row := y0; row < y1; row += chromaStep {
+		chromaRow := row / 2
+		rowCbOff := cbOff + chromaRow*chromaW
+		rowCrOff := crOff + chromaRow*chromaW
+		for col := x0; col < x1; col += 2 {
+			uvCol := col / 2
+			buf[rowCbOff+uvCol] = cb8
+			buf[rowCrOff+uvCol] = cr8
+		}
+	}
+}
+
+// drawSMPTE75Bars fills rows [0, barsBottom) with 8 vertical 75% SMPTE RP 219
+// bars: gray / yellow / cyan / green / magenta / red / blue / black. Column
+// widths round to even for chroma alignment; any width not divisible by 8
+// leaves a few extra pixels on the last bar.
+//
+// NOTE on interpretation: we treat "75% bars" as 75% of the RGB primary
+// (R=G=B=191), then run through BT.709 limited-range conversion. For 10-bit
+// output, the 8-bit YCbCr is left-shifted by 2 — the canonical 8-bit legal
+// range [16,235] maps cleanly to 10-bit [64,940].
+func drawSMPTE75Bars(buf []byte, f video.Format, width, height, barsBottom int) {
+	if barsBottom <= 0 {
+		return
+	}
+	const v = 191 // 75% × 255, rounded
+	rgbs := [8][3]uint8{
+		{v, v, v}, // gray
+		{v, v, 0}, // yellow
+		{0, v, v}, // cyan
+		{0, v, 0}, // green
+		{v, 0, v}, // magenta
+		{v, 0, 0}, // red
+		{0, 0, v}, // blue
+		{0, 0, 0}, // black
+	}
+	barW := width / 8
+	barW &^= 1
+	if barW < 2 {
+		barW = 2
+	}
+	for i := 0; i < 8; i++ {
+		x0 := i * barW
+		x1 := x0 + barW
+		if i == 7 {
+			x1 = width // final bar sweeps to the right edge
+		}
+		y8, cb8, cr8 := transition.RGBToYUV_BT709Limited(rgbs[i][0], rgbs[i][1], rgbs[i][2])
+		y, cb, cr := scaleYUVToFormat(f, y8, cb8, cr8)
+		fillYUVRect(buf, f, width, height, x0, 0, x1, barsBottom, y, cb, cr)
+	}
+}
+
+// scaleYUVToFormat scales 8-bit BT.709 legal-range YCbCr to the requested
+// pipeline format. For 10-bit output, left-shift by 2 maps [16,235]→[64,940]
+// and [16,240]→[64,960] with no quantization change beyond the implicit
+// 2-bit zero-fill at the LSB.
+func scaleYUVToFormat(f video.Format, y8, cb8, cr8 uint8) (y, cb, cr uint16) {
+	if f == video.YUV422_10bit {
+		return uint16(y8) << 2, uint16(cb8) << 2, uint16(cr8) << 2
+	}
+	return uint16(y8), uint16(cb8), uint16(cr8)
+}
+
+// fillAnnexBlack paints the annex band with legal-range black so sprite /
+// logo / clock stand out against a neutral backdrop.
+func fillAnnexBlack(buf []byte, f video.Format, width, height, annexY0 int) {
+	if annexY0 >= height {
+		return
+	}
+	y := uint16(f.BlackY())
+	c := uint16(f.NeutralChroma())
+	fillYUVRect(buf, f, width, height, 0, annexY0, width, height, y, c, c)
+}
+
+// bakeLogo renders SWITCHFRAME into the left side of the annex band, once
+// per format. Renderer may be nil on systems where the embedded Inter font
+// fails to parse; in that case the annex just shows clock + sprite.
+func bakeLogo(buf []byte, f video.Format, width, height, annexY0 int, r *textrender.Renderer) {
+	if r == nil || annexY0 >= height {
+		return
+	}
+	annexH := height - annexY0
+	fontSize := float64(annexH) * 0.55
+	if fontSize < 14 {
+		fontSize = 14
+	}
+	opts := textrender.TextOptions{
+		Text:     "SWITCHFRAME",
+		FontSize: fontSize,
+		Bold:     true,
+		Color:    color.RGBA{R: 230, G: 230, B: 230, A: 255},
+	}
+	w, h := r.MeasureText(opts)
+	if w <= 0 || h <= 0 {
+		return
+	}
+	img, _, err := r.RenderText(w, h, opts)
+	if err != nil {
+		slog.Warn("builtin source: logo render failed", "error", err)
+		return
+	}
+	margin := annexH / 4
+	blitRGBAToYUV(buf, f, width, height, margin, annexY0+(annexH-h)/2, img)
+}
+
+// drawAnnexClock burns a UTC HH:MM:SS digital clock on the right side of
+// the annex. Drawn every frame; the text string changes once per second so
+// the rendered glyph image is stable for ~30 successive frames at 30fps.
+func drawAnnexClock(buf []byte, f video.Format, width, height, annexY0 int, r *textrender.Renderer, now time.Time) {
+	if r == nil || annexY0 >= height {
+		return
+	}
+	annexH := height - annexY0
+	fontSize := float64(annexH) * 0.55
+	if fontSize < 14 {
+		fontSize = 14
+	}
+	opts := textrender.TextOptions{
+		Text:     now.Format("15:04:05 UTC"),
+		FontSize: fontSize,
+		Bold:     true,
+		Color:    color.RGBA{R: 255, G: 255, B: 255, A: 255},
+	}
+	w, h := r.MeasureText(opts)
+	if w <= 0 || h <= 0 {
+		return
+	}
+	img, _, err := r.RenderText(w, h, opts)
+	if err != nil {
+		return
+	}
+	margin := annexH / 4
+	x := width - margin - w
+	y := annexY0 + (annexH-h)/2
+	blitRGBAToYUV(buf, f, width, height, x, y, img)
+}
+
+// drawAnnexSprite draws a short horizontal colored bar in the middle of the
+// annex that moves left-to-right on a 2-second loop, proving to a downstream
+// operator that the signal is live even when the reference pattern itself
+// is static.
+func drawAnnexSprite(buf []byte, f video.Format, width, height, annexY0 int, elapsed time.Duration) {
+	if annexY0 >= height {
+		return
+	}
+	annexH := height - annexY0
+	spriteH := annexH / 3
+	if spriteH < 2 {
+		spriteH = 2
+	}
+	spriteH &^= 1
+	spriteW := width / 20
+	if spriteW < 16 {
+		spriteW = 16
+	}
+	spriteW &^= 1
+
+	trackY0 := annexY0 + (annexH-spriteH)/2
+	trackY0 &^= 1
+	trackY1 := trackY0 + spriteH
+
+	period := 2 * time.Second
+	frac := float64(elapsed%period) / float64(period)
+	travel := width - spriteW
+	if travel < 0 {
+		travel = 0
+	}
+	x0 := int(frac * float64(travel))
+	x0 &^= 1
+	x1 := x0 + spriteW
+
+	// 75% yellow sprite — bright against the black annex, matches one of
+	// the reference bars.
+	const v = 191
+	y8, cb8, cr8 := transition.RGBToYUV_BT709Limited(v, v, 0)
+	y, cb, cr := scaleYUVToFormat(f, y8, cb8, cr8)
+	fillYUVRect(buf, f, width, height, x0, trackY0, x1, trackY1, y, cb, cr)
+}
+
+// blitRGBAToYUV rasterizes an RGBA image into a YUV buffer using BT.709
+// legal-range conversion, respecting alpha. Pixels with alpha below 8 are
+// skipped (preserves the annex background for sub-pixel anti-aliased glyph
+// edges). Supports both YUV420 8-bit and YUV422 10-bit destinations.
+func blitRGBAToYUV(buf []byte, f video.Format, width, height, dstX, dstY int, src *image.RGBA) {
+	if src == nil {
+		return
+	}
+	sr := src.Bounds()
+	cbOff := f.CbOffset(width, height)
+	crOff := f.CrOffset(width, height)
+	chromaW := f.ChromaWidth(width)
+	tenBit := f == video.YUV422_10bit
+
+	for row := 0; row < sr.Dy(); row++ {
+		dstRow := dstY + row
+		if dstRow < 0 || dstRow >= height {
+			continue
+		}
+		srcLine := src.Pix[row*src.Stride:]
+		for col := 0; col < sr.Dx(); col++ {
+			dstCol := dstX + col
+			if dstCol < 0 || dstCol >= width {
+				continue
+			}
+			r := srcLine[col*4+0]
+			g := srcLine[col*4+1]
+			b := srcLine[col*4+2]
+			a := srcLine[col*4+3]
+			if a < 8 {
+				continue
+			}
+			y8, cb8, cr8 := transition.RGBToYUV_BT709Limited(r, g, b)
+
+			if tenBit {
+				yVal := uint16(y8) << 2
+				cbVal := uint16(cb8) << 2
+				crVal := uint16(cr8) << 2
+				binary.LittleEndian.PutUint16(buf[(dstRow*width+dstCol)*2:], yVal)
+				// 4:2:2 — chroma row tracks luma row exactly.
+				uvRow := dstRow
+				uvCol := dstCol / 2
+				binary.LittleEndian.PutUint16(buf[cbOff+(uvRow*chromaW+uvCol)*2:], cbVal)
+				binary.LittleEndian.PutUint16(buf[crOff+(uvRow*chromaW+uvCol)*2:], crVal)
+				continue
+			}
+
+			// 8-bit 4:2:0.
+			buf[dstRow*width+dstCol] = y8
+			uvRow := dstRow / 2
+			uvCol := dstCol / 2
+			buf[cbOff+uvRow*chromaW+uvCol] = cb8
+			buf[crOff+uvRow*chromaW+uvCol] = cr8
+		}
+	}
+}

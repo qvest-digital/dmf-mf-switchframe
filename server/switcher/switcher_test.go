@@ -88,6 +88,11 @@ func (m *mockProgramViewer) VideoFrames() []*media.VideoFrame {
 	return out
 }
 
+// builtinSourceCount is how many virtual sources Switcher.New auto-registers
+// (source:black + source:colorbars). Test assertions on the length of
+// state.Sources add this to the user-registered count.
+const builtinSourceCount = 2
+
 func TestNewSwitcher(t *testing.T) {
 	programRelay := newTestRelay()
 	sw := newTestSwitcher(programRelay)
@@ -96,7 +101,8 @@ func TestNewSwitcher(t *testing.T) {
 	require.Equal(t, "", state.ProgramSource)
 	require.Equal(t, "", state.PreviewSource)
 	require.Equal(t, "cut", state.TransitionType)
-	require.Empty(t, state.Sources)
+	require.Len(t, state.Sources, builtinSourceCount,
+		"only the two built-in virtual sources (black, colorbars) before any RegisterSource call")
 }
 
 func TestRegisterSource(t *testing.T) {
@@ -107,7 +113,7 @@ func TestRegisterSource(t *testing.T) {
 	sw.RegisterSource("camera1", cam1Relay)
 
 	state := sw.State()
-	require.Len(t, state.Sources, 1)
+	require.Len(t, state.Sources, 1+builtinSourceCount)
 	src, ok := state.Sources["camera1"]
 	require.True(t, ok, "Sources missing 'camera1'")
 	// Newly registered source with no frames yet shows as offline.
@@ -124,7 +130,8 @@ func TestUnregisterSource(t *testing.T) {
 	sw.UnregisterSource("camera1")
 
 	state := sw.State()
-	require.Empty(t, state.Sources)
+	require.Len(t, state.Sources, builtinSourceCount,
+		"only the built-ins remain after user source unregistered")
 }
 
 func TestRegisterVirtualSource(t *testing.T) {
@@ -135,7 +142,7 @@ func TestRegisterVirtualSource(t *testing.T) {
 	sw.RegisterVirtualSource("replay", replayRelay)
 
 	state := sw.State()
-	require.Len(t, state.Sources, 1)
+	require.Len(t, state.Sources, 1+builtinSourceCount)
 	src, ok := state.Sources["replay"]
 	require.True(t, ok, "Sources should contain 'replay'")
 	require.True(t, src.IsVirtual, "replay source should be virtual")
@@ -166,7 +173,8 @@ func TestRegisterVirtualSource_UnregisterCleanup(t *testing.T) {
 	sw.UnregisterSource("replay")
 
 	state := sw.State()
-	require.Len(t, state.Sources, 0, "virtual source should be removed after UnregisterSource")
+	require.Len(t, state.Sources, builtinSourceCount,
+		"only built-ins remain after virtual source unregistered")
 }
 
 func TestRegisterVirtualSource_UnregisterClearsProgram(t *testing.T) {
@@ -197,7 +205,7 @@ func TestRegisterVirtualSource_DoubleRegisterCleansUp(t *testing.T) {
 	sw.RegisterVirtualSource("replay", replayRelay)
 
 	state := sw.State()
-	require.Len(t, state.Sources, 1, "should still have exactly one replay source")
+	require.Len(t, state.Sources, 1+builtinSourceCount, "replay + built-ins only")
 	require.True(t, state.Sources["replay"].IsVirtual)
 }
 
@@ -223,7 +231,8 @@ func TestUnregisterSource_BroadcastsState(t *testing.T) {
 
 	select {
 	case s := <-stateCh:
-		require.Empty(t, s.Sources, "broadcast should show source removed")
+		require.Len(t, s.Sources, builtinSourceCount,
+			"broadcast should show only the built-ins after user source removed")
 	case <-time.After(1 * time.Second):
 		require.Fail(t, "no state broadcast on UnregisterSource")
 	}
@@ -658,9 +667,12 @@ func TestSourceKeys(t *testing.T) {
 	sw.RegisterSource("camera2", cam2Relay)
 
 	keys := sw.SourceKeys()
-	require.Len(t, keys, 2)
+	// 2 user sources + 2 built-ins.
+	require.Len(t, keys, 2+builtinSourceCount)
 	require.Contains(t, keys, "camera1")
 	require.Contains(t, keys, "camera2")
+	require.Contains(t, keys, BuiltinSourceKeyBlack)
+	require.Contains(t, keys, BuiltinSourceKeyColorbars)
 }
 
 func TestAllAudioRoutedToMixer(t *testing.T) {
@@ -720,7 +732,8 @@ func TestSwitcher_DebugSnapshot(t *testing.T) {
 
 	sources, ok := snap["sources"].(map[string]any)
 	require.True(t, ok, "sources should be map[string]any")
-	require.Len(t, sources, 0)
+	// 2 built-ins are always present on a fresh switcher.
+	require.Len(t, sources, builtinSourceCount)
 
 	// Register sources and cut.
 	cam1Relay := newTestRelay()
@@ -734,7 +747,7 @@ func TestSwitcher_DebugSnapshot(t *testing.T) {
 	require.Equal(t, int64(1), snap["cuts_total"])
 
 	sources = snap["sources"].(map[string]any)
-	require.Len(t, sources, 2)
+	require.Len(t, sources, 2+builtinSourceCount)
 
 	cam1Info, ok := sources["cam1"].(map[string]any)
 	require.True(t, ok)
@@ -1274,7 +1287,7 @@ func TestRegisterReplaySource(t *testing.T) {
 	sw.RegisterReplaySource("replay")
 
 	state := sw.State()
-	require.Len(t, state.Sources, 1)
+	require.Len(t, state.Sources, 1+builtinSourceCount)
 	src, ok := state.Sources["replay"]
 	require.True(t, ok)
 	require.True(t, src.IsVirtual, "replay source should be virtual")
@@ -1289,7 +1302,7 @@ func TestRegisterReplaySource_CleansUpOld(t *testing.T) {
 	sw.RegisterReplaySource("replay")
 
 	state := sw.State()
-	require.Len(t, state.Sources, 1)
+	require.Len(t, state.Sources, 1+builtinSourceCount)
 }
 
 func TestIngestReplayVideo_RoutesToPipeline(t *testing.T) {

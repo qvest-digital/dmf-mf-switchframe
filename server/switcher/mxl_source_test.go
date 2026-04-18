@@ -18,7 +18,7 @@ func TestRegisterMXLSource(t *testing.T) {
 	sw.RegisterMXLSource("mxl-cam1")
 
 	state := sw.State()
-	require.Len(t, state.Sources, 1)
+	require.Len(t, state.Sources, 1+builtinSourceCount)
 	src, ok := state.Sources["mxl-cam1"]
 	require.True(t, ok, "Sources should contain 'mxl-cam1'")
 	require.Equal(t, "mxl-cam1", src.Key)
@@ -42,8 +42,9 @@ func TestRegisterMXLSource_Position(t *testing.T) {
 	sw.RegisterMXLSource("mxl-cam1")
 
 	state := sw.State()
-	require.Len(t, state.Sources, 2)
-	require.Equal(t, 2, state.Sources["mxl-cam1"].Position,
+	require.Len(t, state.Sources, 2+builtinSourceCount)
+	// Registration order: built-ins (1,2) → camera1 (3) → mxl-cam1 (4).
+	require.Equal(t, 2+builtinSourceCount, state.Sources["mxl-cam1"].Position,
 		"MXL source should get next position after existing sources")
 }
 
@@ -226,7 +227,8 @@ func TestMXLSource_UnregisterSafe(t *testing.T) {
 	}, "UnregisterSource should not panic for MXL sources with nil relay/viewer")
 
 	state := sw.State()
-	require.Empty(t, state.Sources, "MXL source should be removed after UnregisterSource")
+	require.Len(t, state.Sources, builtinSourceCount,
+		"MXL source removed, only built-ins remain")
 }
 
 func TestIngestRawVideo_KeyingApplied(t *testing.T) {

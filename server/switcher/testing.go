@@ -42,7 +42,9 @@ func NewTestSwitcher(programRelay *distribution.Relay) *Switcher {
 	s.frameBudgetNs.Store(testFmt.FrameBudgetNs())
 	s.pipelineFormat.Store(&testFmt)
 	s.delayBuffer = NewDelayBuffer(s)
+	s.registerBuiltinSourcesLocked()
 	go s.videoProcessingLoop()
+	s.startBuiltinProducer()
 	return s
 }
 
@@ -74,6 +76,7 @@ func newTestSwitcherDirect(programRelay *distribution.Relay) *Switcher {
 	s.frameBudgetNs.Store(testFmt.FrameBudgetNs())
 	s.pipelineFormat.Store(&testFmt)
 	s.delayBuffer = NewDelayBuffer(s)
+	s.registerBuiltinSourcesLocked()
 	// No videoProcessingLoop started — caller drains videoProcCh directly.
 	return s
 }
@@ -82,6 +85,7 @@ func newTestSwitcherDirect(programRelay *distribution.Relay) *Switcher {
 // Unlike Close(), it does not wait on videoProcDone since no processing
 // loop was started.
 func (s *Switcher) closeDirect() {
+	s.stopBuiltinProducer()
 	s.health.stop()
 	s.delayBuffer.Close()
 	if s.framePool != nil {

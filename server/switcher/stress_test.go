@@ -203,7 +203,9 @@ func TestStress_20Sources(t *testing.T) {
 
 	// Verify all 20 sources appear in state.
 	state := sw.State()
-	require.Len(t, state.Sources, numSources, "should have 20 sources registered")
+	// Built-in virtual sources (source:black, source:colorbars) are always
+	// auto-registered — add them to the expected count.
+	require.Len(t, state.Sources, numSources+2, "should have 20 user sources + 2 built-ins")
 
 	for i := 0; i < numSources; i++ {
 		key := fmt.Sprintf("cam%02d", i+1)

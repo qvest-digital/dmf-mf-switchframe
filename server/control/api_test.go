@@ -316,7 +316,9 @@ func TestSourcesEndpoint(t *testing.T) {
 	var sources map[string]internal.SourceInfo
 	err := json.NewDecoder(rec.Body).Decode(&sources)
 	require.NoError(t, err)
-	require.Len(t, sources, 2)
+	// Built-in virtual sources (source:black, source:colorbars) are always
+	// auto-registered, on top of the 2 user sources setupTestAPI installs.
+	require.Len(t, sources, 4)
 }
 
 // --- Audio API tests ---
@@ -950,7 +952,8 @@ func TestAPIv1AliasSources(t *testing.T) {
 	var sources map[string]internal.SourceInfo
 	err := json.NewDecoder(rec.Body).Decode(&sources)
 	require.NoError(t, err)
-	require.Len(t, sources, 2)
+	// 2 user sources installed by setupTestAPI + 2 built-in virtual sources.
+	require.Len(t, sources, 4)
 }
 
 // --- SCTE-35 Rules API tests ---

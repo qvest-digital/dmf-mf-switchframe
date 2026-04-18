@@ -165,12 +165,16 @@ func TestPerfSample_FrameSyncFields(t *testing.T) {
 	// Enable frame sync
 	sw.SetFrameSync(true, 33*time.Millisecond)
 
-	// Register a relay-based source (has viewer → gets added to frame sync)
+	// Register a relay-based source (has viewer → gets added to frame sync).
+	// SetFrameSync also adds the 2 built-in virtual sources (source:black,
+	// source:colorbars) to the synchronizer so their producer-fed frames
+	// route through the same tick loop.
 	sourceRelay := newTestRelay()
 	sw.RegisterSource("cam1", sourceRelay)
 
 	sample = sw.PerfSample()
-	require.Equal(t, 1, sample.FrameSyncSourceCount, "frame sync source count should be 1 after adding relay source")
+	require.Equal(t, 1+builtinSourceCount, sample.FrameSyncSourceCount,
+		"frame sync source count: cam1 + 2 built-ins")
 }
 
 func TestFrameSynchronizer_ReleaseFPS(t *testing.T) {
