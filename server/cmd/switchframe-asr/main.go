@@ -282,9 +282,12 @@ func main() {
 	var speechStart, lastStep time.Time
 	streamState := newStreamingState()
 	const (
-		stepInterval = 1 * time.Second  // re-transcribe every 1s for partial commits
-		maxUtterance = 25 * time.Second // force flush + restart before whisper truncates at 30s
+		stepInterval     = 1 * time.Second  // re-transcribe every 1s for partial commits
+		maxUtterance     = 25 * time.Second // force flush + restart before whisper truncates at 30s
+		prerollMs        = 1000             // 1s pre-roll, prepended to each new utterance
+		prerollSampleCnt = 16000 * prerollMs / 1000
 	)
+	preroll := newPrerollBuffer(prerollSampleCnt)
 
 	for {
 		select {
@@ -300,6 +303,10 @@ func main() {
 			if len(mono16k) == 0 {
 				continue
 			}
+
+			// Always feed the preroll ring -- even silence below the gate
+			// counts as context for whatever speech follows.
+			preroll.Write(mono16k)
 
 			// Quick energy gate.
 			if computeRMS(mono16k) < *energyThreshold {
@@ -317,13 +324,15 @@ func main() {
 
 			switch {
 			case nowSpeaking && !wasSpeaking:
-				// Speech started.
+				// Speech started. Prepend the preroll ring so we don't clip
+				// the first phoneme; preroll already includes the just-
+				// captured mono16k since we wrote it above.
 				speechBuf = speechBuf[:0]
 				speechStart = time.Now()
 				lastStep = speechStart
 				streamState.reset()
 				wasSpeaking = true
-				speechBuf = append(speechBuf, mono16k...)
+				speechBuf = append(speechBuf, preroll.Snapshot()...)
 
 			case nowSpeaking:
 				// Speech continues.
@@ -387,6 +396,7 @@ func main() {
 				speechBuf = speechBuf[:0]
 				wasSpeaking = false
 				streamState.reset()
+				preroll.Reset()
 			case "set_config":
 				var cfg map[string]interface{}
 				if err := json.Unmarshal(msg.Config, &cfg); err != nil {
