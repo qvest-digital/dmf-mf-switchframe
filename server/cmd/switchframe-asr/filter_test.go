@@ -47,6 +47,36 @@ func TestFilterWords_LowConfidence(t *testing.T) {
 	}
 }
 
+func TestFilterWords_ConfidenceBelowZeroPointFourDropped(t *testing.T) {
+	// Live broadcast threshold: drop tokens below 0.4. 0.35 is the boundary
+	// case that the previous 0.3 threshold would have kept.
+	words := []asr.TranscriptWord{
+		{Text: "hello", Confidence: 0.9},
+		{Text: "shaky", Confidence: 0.35},
+		{Text: "world", Confidence: 0.8},
+	}
+	got := filterWords(words)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 words after dropping 0.35-confidence token, got %d: %+v", len(got), got)
+	}
+	if got[0].Text != "hello" || got[1].Text != "world" {
+		t.Errorf("expected [hello, world], got %+v", got)
+	}
+}
+
+func TestFilterWords_ConfidenceAtZeroPointFourKept(t *testing.T) {
+	// 0.4 itself is the inclusive lower bound -- keep it.
+	words := []asr.TranscriptWord{
+		{Text: "hello", Confidence: 0.9},
+		{Text: "borderline", Confidence: 0.4},
+		{Text: "world", Confidence: 0.8},
+	}
+	got := filterWords(words)
+	if len(got) != 3 {
+		t.Fatalf("expected 3 words, got %d: %+v", len(got), got)
+	}
+}
+
 func TestFilterWords_ZeroConfidenceNotFiltered(t *testing.T) {
 	// Confidence of 0.0 means "not set" — should not be filtered by the < 0.3 check.
 	words := []asr.TranscriptWord{
