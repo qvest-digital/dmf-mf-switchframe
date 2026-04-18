@@ -42,14 +42,12 @@ func TestBuildWhisperFullOpts_LiveBroadcastDefaults(t *testing.T) {
 	if !o.SuppressBlank {
 		t.Error("SuppressBlank = false, want true")
 	}
-	// SuppressNonSpeech true: whisper-cli defaults it to false but the
-	// eval showed false drops the first WORD ("Good evening..." -> just
-	// "evening..." on the short fixture, "That's incredible..." -> just
-	// "said..." on the punctuation fixture). Forcing it true preserves
-	// the leading word at the cost of slightly more aggressive
-	// hallucination filtering, which we want for broadcast captions.
-	if !o.SuppressNonSpeech {
-		t.Error("SuppressNonSpeech = false, want true (preserves leading words)")
+	// SuppressNonSpeech matches whisper-cli's default (false). With
+	// per-call state reset fixing the cross-utterance pollution issue
+	// that originally pushed us to true, false is now safe and matches
+	// whisper-cli accuracy on the eval corpus.
+	if o.SuppressNonSpeech {
+		t.Error("SuppressNonSpeech = true, want false (matches whisper-cli)")
 	}
 	if !o.TokenTimestamps {
 		t.Error("TokenTimestamps = false, want true (per-word confidence + timing)")

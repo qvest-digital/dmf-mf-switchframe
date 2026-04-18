@@ -52,7 +52,7 @@ func buildWhisperFullOpts(req whisperRequest) whisperFullOpts {
 		Temperature:       0,
 		TemperatureInc:    0.2,
 		SuppressBlank:     true,
-		SuppressNonSpeech: true,
+		SuppressNonSpeech: false,
 		TokenTimestamps:   true,
 	}
 }
