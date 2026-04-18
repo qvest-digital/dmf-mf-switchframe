@@ -2,7 +2,7 @@
 
 > **Where you are:** [docs](../../README.md) → reference → api
 > **Read this first:** [architecture.md](../architecture.md)
-> **See also:** [state-broadcast.md](state-broadcast.md) · [fast-control.md](../fast-control.md) · [subsystems/control-plane.md](../subsystems/control-plane.md)
+> **See also:** [state-broadcast.md](state-broadcast.md) · [fast-control.md](../reference/fast-control.md) · [subsystems/control-plane.md](../subsystems/control-plane.md)
 
 **TL;DR** The Switchframe REST API exposes the full state and command surface of the switcher over HTTP/3 (with HTTP/1.1 fallback). Every UI button, macro action, and automation hook ultimately lands on one of the 291 endpoints documented here (plus one `/api/v1/` wildcard compatibility route). Endpoints are grouped by subsystem — switching, audio, transition, graphics, DVE, clips, playout, replay, SCTE-35, operator, captions, comms, ST map, color grade, AI segmentation, ASR, output, peer, sync, pipeline, and debug — and share a common auth, error, and state-broadcast model. This is the biggest doc in the project; drill into the per-section files below rather than reading end-to-end.
 
@@ -140,7 +140,7 @@ Every authenticated mutating handler calls `(*API).setLastOperator(r)` which res
 
 ## Related docs
 
-- **Concepts:** [pipeline.md](../pipeline.md) · [locking-and-concurrency.md](../locking-and-concurrency.md) · [frame-sync-and-timing.md](../frame-sync-and-timing.md)
-- **Reference:** [state-broadcast.md](state-broadcast.md) · [fast-control.md](../fast-control.md) · [metrics.md](metrics.md)
+- **Concepts:** [pipeline.md](../concepts/pipeline.md) · [locking-and-concurrency.md](../concepts/locking-and-concurrency.md) · [frame-sync-and-timing.md](../concepts/frame-sync-and-timing.md)
+- **Reference:** [state-broadcast.md](state-broadcast.md) · [fast-control.md](../reference/fast-control.md) · [metrics.md](metrics.md)
 - **Subsystems:** [control-plane.md](../subsystems/control-plane.md) · [switcher.md](../subsystems/switcher.md) · [output.md](../subsystems/output.md)
 - **Integration:** [ui-server-contract.md](../integration/ui-server-contract.md)

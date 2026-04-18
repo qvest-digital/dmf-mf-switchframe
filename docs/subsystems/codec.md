@@ -2,7 +2,7 @@
 
 > **Where you are:** [docs](../README.md) → subsystems → codec
 > **Read this first:** [architecture.md](../architecture.md)
-> **See also:** [output.md](output.md) · [srt-ingest.md](srt-ingest.md) · [mxl.md](mxl.md) · [gpu.md](../gpu.md) · [pipeline.md](../pipeline.md) · [clips.md](../clips.md)
+> **See also:** [output.md](output.md) · [srt-ingest.md](srt-ingest.md) · [mxl.md](mxl.md) · [gpu.md](../concepts/gpu.md) · [pipeline.md](../concepts/pipeline.md) · [clips.md](../clips.md)
 
 **TL;DR** The `codec` package is Switchframe's glue around every H.264 and HEVC encoder and decoder in the tree. At startup, [`ProbeEncoders()`](#probeencoders-startup-auto-detection) tests a priority-ordered list of candidates — NVENC, VA-API, VideoToolbox, libx264 — and picks the first one that opens and produces a real frame. The rest of the system uses factory functions ([`NewVideoEncoder`](#encoder-factories), [`NewVideoDecoder`](#decoder-factories), and their HEVC and 10-bit variants) that dispatch through the probe result so callers never know which backend they got. Underneath, [`FFmpegEncoder`](#ffmpeg-encoder-and-decoder) and [`FFmpegDecoder`](#ffmpeg-encoder-and-decoder) wrap libavcodec via cgo with constrained-VBR rate control tuned for SRT transport, [`OpenH264`](#openh264-fallback) is the pure-software fallback when FFmpeg isn't linked, [`ffmpeg_probe_file`](#file-probe) and [`ffmpeg_transcode`](#c-transcode) provide avformat-backed file probing and format normalization for clip uploads, and [`nalu.go`](#nalu-and-adts-helpers) / [`adts.go`](#nalu-and-adts-helpers) provide AVC1↔Annex B conversion and ADTS header construction. Stubs under `!cgo || noffmpeg` keep non-FFmpeg builds compiling.
 
@@ -81,7 +81,7 @@ Colorspace is always set: BT.709 primaries/matrix/TRC, `AVCOL_RANGE_MPEG` (limit
 
 [`FFmpegDecoder`](../../server/codec/ffmpeg_decoder.go) is the decoder half. Factory functions dispatch on `thread_count`: auto (default `ncpu` clamped 2–4, used for source decoders) or 1 (used for clip and replay decoders where frame threading's N-frame output delay would corrupt per-frame timing). `error_concealment = FF_EC_GUESS_MVS | FF_EC_DEBLOCK` asks the decoder to use neighboring motion vectors to mask damaged macroblocks during transition warmup or source changes — produces visibly fewer glitches than simple frame copy.
 
-Hardware acceleration wires `hw_device_ctx` when non-nil; the decoder then attempts to decode into CUDA/VAAPI frames. Downloads to CPU memory are on demand — the SRT decoder, for example, stays on the GPU when NVDEC is active and hands decoded device pointers to the pipeline (see [gpu.md](../gpu.md) for the CUDA path).
+Hardware acceleration wires `hw_device_ctx` when non-nil; the decoder then attempts to decode into CUDA/VAAPI frames. Downloads to CPU memory are on demand — the SRT decoder, for example, stays on the GPU when NVDEC is active and hands decoded device pointers to the pipeline (see [gpu.md](../concepts/gpu.md) for the CUDA path).
 
 `FFmpegOpenMu` in [`ffmpeg_cgo.go`](../../server/codec/ffmpeg_cgo.go) serializes `avcodec_open2` and `avformat_open_input` calls. NVENC initializes the CUDA runtime inside `avcodec_open2`, and if the SRT decoder's `avformat_open_input` runs concurrently — which calls into the same CUDA driver — the driver SEGVs. This mutex is held briefly during codec opening and dropped immediately; once opened, encode/decode operations are safe to run concurrently per-context. It's a package-level `sync.Mutex` used by every codec initialization in the tree.
 
@@ -168,7 +168,7 @@ The `cgo.go` and `openh264_cgo.go` files isolate the cgo link directives so `#cg
 
 ## Related docs
 
-- **Concepts:** [pipeline.md](../pipeline.md) · [media-path.md](../concepts/media-path.md) · [gpu.md](../gpu.md)
-- **Reference:** [config-and-flags.md](../reference/config-and-flags.md) · [file-formats.md](../reference/file-formats.md) · [api.md](../api.md)
+- **Concepts:** [pipeline.md](../concepts/pipeline.md) · [media-path.md](../concepts/media-path.md) · [gpu.md](../concepts/gpu.md)
+- **Reference:** [config-and-flags.md](../reference/config-and-flags.md) · [file-formats.md](../reference/file-formats.md) · [api.md](../reference/api.md)
 - **Subsystems:** [output.md](output.md) · [srt-ingest.md](srt-ingest.md) · [mxl.md](mxl.md) · [switcher.md](switcher.md) · [replay.md](replay.md) · [clips.md](../clips.md)
-- **Operations:** [deployment.md](../deployment.md)
+- **Operations:** [deployment.md](../operations/deployment.md)

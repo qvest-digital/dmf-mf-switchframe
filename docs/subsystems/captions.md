@@ -112,8 +112,8 @@ flowchart TB
 
 ## Related docs
 
-- **Concepts:** [pipeline](../pipeline.md) · [media-path](../concepts/media-path.md) · [locking-and-concurrency](../locking-and-concurrency.md) · [frame-sync-and-timing](../concepts/frame-sync-and-timing.md)
-- **Reference:** [api](../api.md) · [state-broadcast](../reference/state-broadcast.md) · [file-formats](../reference/file-formats.md) · [metrics](../reference/metrics.md)
+- **Concepts:** [pipeline](../concepts/pipeline.md) · [media-path](../concepts/media-path.md) · [locking-and-concurrency](../concepts/locking-and-concurrency.md) · [frame-sync-and-timing](../concepts/frame-sync-and-timing.md)
+- **Reference:** [api](../reference/api.md) · [state-broadcast](../reference/state-broadcast.md) · [file-formats](../reference/file-formats.md) · [metrics](../reference/metrics.md)
 - **Subsystems:** [audio](audio.md) · [comms](comms.md) · [switcher](switcher.md) · [codec](codec.md) · [output](output.md) · [mxl](mxl.md)
 - **Integration:** [asr-sidecar](../integration/asr-sidecar.md) · [ui-server-contract](../integration/ui-server-contract.md)
-- **Operations:** [deployment](../deployment.md)
+- **Operations:** [deployment](../operations/deployment.md)

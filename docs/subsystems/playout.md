@@ -2,7 +2,7 @@
 
 > **Where you are:** [docs](../README.md) → subsystems → playout
 > **Read this first:** [architecture.md](../architecture.md)
-> **See also:** [clips.md](./clips.md) · [replay.md](./replay.md) · [../scte35.md](../scte35.md)
+> **See also:** [clips.md](./clips.md) · [replay.md](./replay.md) · [../scte35.md](./scte35.md)
 
 **TL;DR** Playout turns the production switcher into a production-playout hybrid. Two independent channels each run their own tick-driven frame router that reads a validated playlist of clip, live, and slate items, opens a streaming decoder per item, blends through a CPU/GPU compositor at item transitions, and exposes itself to the switcher as a virtual source (`playout:1`, `playout:2`). A pure state-machine scheduler (Idle / Playing / Transitioning) decides what to render every tick; an idle loop auto-rewinds a fallback asset when the playlist is exhausted; a pod board layers commercial-break scheduling with SCTE-35 injection and frame-accurate splice coordination on top. Asset pipeline is LRU disk cache + scheme-dispatched fetcher + schedule-aware prefetcher + FFmpeg transcoder, with a splice coordinator that watches the luma of incoming frames for black to time break entry exactly. A watchdog monitors frame cadence with auto-recovery; an as-run logger captures every item start / end / secondary event / pod operation into a ring buffer and JSONL file; a BXF importer/exporter speaks SMPTE S22 broadcast exchange format; a crash-recovery persister atomically snapshots state for re-cue on restart.
 
@@ -143,7 +143,7 @@ Each `PlaylistItem` can carry `SecondaryEvents` that fire at elapsed offsets anc
 - `graphics_on`, `graphics_off`, `graphics_update` — dispatch to the graphics subsystem.
 - `audio_level`, `audio_mute`, `audio_afv` — per-source mixer controls.
 - `caption_mode`, `caption_text` — caption subsystem state.
-- `scte35_cue` — on-the-fly SCTE-35 cue with full parameters (see [../scte35.md](../scte35.md)).
+- `scte35_cue` — on-the-fly SCTE-35 cue with full parameters (see [../scte35.md](./scte35.md)).
 
 The channel calls `BeginItem` when an item change is detected and `Tick(elapsedMs)` on every subsequent tick of the same item; `EndItem` fires on item change or cleanup to discard pending events.
 
@@ -230,7 +230,7 @@ The `persist.go` docstring documents a planned 1+1 active/standby protocol using
 
 ## Related docs
 
-- **Concepts:** [../pipeline.md](../pipeline.md) (playout channels register as switcher sources and share the same video/audio pipeline), [../locking-and-concurrency.md](../locking-and-concurrency.md) (mutex boundaries between Manager, Channel, Scheduler, and PodBoard), [../gpu.md](../gpu.md) (the GPU alias path and preview encoder used by playout slots).
-- **Reference:** [../api.md](../api.md) (REST endpoints for playout channel control, pod CRUD, playlist upload, BXF import, as-run query), [../fast-control.md](../fast-control.md) (datagram protocol on the same WebTransport connection).
-- **Subsystems:** [clips.md](./clips.md) (same transcode machinery for unsupported source formats; the clip library is where replay exports land as ephemeral items), [replay.md](./replay.md) (shares PTS anchoring via the same program PTS provider), [../scte35.md](../scte35.md) (pod fire injects cue-out / cue-in through the SCTE-35 injector; rules engine and message construction covered there), [../mxl.md](../mxl.md) (live source pass-through — `ItemLive` can tap an MXL source), [../html5-graphics.md](../html5-graphics.md) (secondary graphics events dispatch to the graphics subsystem).
-- **Integration / Operations:** [../deployment.md](../deployment.md) (`--playout-cache-max-gb`, `StateDir` layout, watchdog timing), [../asr.md](../asr.md) (secondary caption events can drive the ASR / caption subsystem).
+- **Concepts:** [../pipeline.md](../concepts/pipeline.md) (playout channels register as switcher sources and share the same video/audio pipeline), [../locking-and-concurrency.md](../concepts/locking-and-concurrency.md) (mutex boundaries between Manager, Channel, Scheduler, and PodBoard), [../gpu.md](../concepts/gpu.md) (the GPU alias path and preview encoder used by playout slots).
+- **Reference:** [../api.md](../reference/api.md) (REST endpoints for playout channel control, pod CRUD, playlist upload, BXF import, as-run query), [../fast-control.md](../reference/fast-control.md) (datagram protocol on the same WebTransport connection).
+- **Subsystems:** [clips.md](./clips.md) (same transcode machinery for unsupported source formats; the clip library is where replay exports land as ephemeral items), [replay.md](./replay.md) (shares PTS anchoring via the same program PTS provider), [../scte35.md](./scte35.md) (pod fire injects cue-out / cue-in through the SCTE-35 injector; rules engine and message construction covered there), [../mxl.md](./mxl.md) (live source pass-through — `ItemLive` can tap an MXL source), [../html5-graphics.md](../integration/cef-protocol.md) (secondary graphics events dispatch to the graphics subsystem).
+- **Integration / Operations:** [../deployment.md](../operations/deployment.md) (`--playout-cache-max-gb`, `StateDir` layout, watchdog timing), [../asr.md](../integration/asr-sidecar.md) (secondary caption events can drive the ASR / caption subsystem).

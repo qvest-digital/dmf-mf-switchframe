@@ -2,7 +2,7 @@
 
 > **Where you are:** [docs](../../../README.md) → reference → api → dve
 > **Read this first:** [api.md](../api.md)
-> **See also:** [subsystems/graphics-and-dve.md](../../subsystems/graphics-and-dve.md) · [fast-control.md](../../fast-control.md)
+> **See also:** [subsystems/graphics-and-dve.md](../../subsystems/graphics-and-dve.md) · [fast-control.md](../fast-control.md)
 
 **TL;DR** Eight endpoints configure the Digital Video Effects (DVE) compositor: get/set/delete the current layout, per-slot update and on/off, and preset CRUD. Real-time transform scrubbing (during drag) flows through fast-control datagrams; the REST endpoints here are used for discrete changes and preset recall.
 
@@ -130,5 +130,5 @@ Any field may be omitted. Convenience fields: `scaleMode` and `cropAnchor` map t
 
 ## Related docs
 
-- **Reference:** [api.md](../api.md) · [fast-control.md](../../fast-control.md) · [state-broadcast.md](../state-broadcast.md#layoutstate)
+- **Reference:** [api.md](../api.md) · [fast-control.md](../fast-control.md) · [state-broadcast.md](../state-broadcast.md#layoutstate)
 - **Subsystems:** [graphics-and-dve.md](../../subsystems/graphics-and-dve.md)

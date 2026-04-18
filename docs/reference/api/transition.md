@@ -55,7 +55,7 @@
 
 ### `POST /api/switch/transition/position`
 
-**Purpose:** set the T-bar position (0.0-1.0) during an active transition. The browser throttles this to roughly 60 Hz when the user drags the slider; fast-control datagrams are preferred for low-latency scrubbing (see [fast-control.md](../../fast-control.md)) but the REST endpoint is available as a fallback.
+**Purpose:** set the T-bar position (0.0-1.0) during an active transition. The browser throttles this to roughly 60 Hz when the user drags the slider; fast-control datagrams are preferred for low-latency scrubbing (see [fast-control.md](../fast-control.md)) but the REST endpoint is available as a fallback.
 **Auth:** required.
 **Handler:** [`control/api_transition.go`](../../../server/control/api_transition.go) → `(*API).handleTransitionPositionInner` (wrapped by `timedHandler`).
 
@@ -80,7 +80,7 @@
 
 **Emits:** state broadcast with updated `TransitionPosition`.
 
-**Related:** [fast-control.md](../../fast-control.md) · [subsystems/transition.md](../../subsystems/transition.md)
+**Related:** [fast-control.md](../fast-control.md) · [subsystems/transition.md](../../subsystems/transition.md)
 
 ---
 
@@ -107,5 +107,5 @@
 ## Related docs
 
 - **Concepts:** [pipeline.md](../../pipeline.md)
-- **Reference:** [api.md](../api.md) · [api/transition-wipes.md](transition-wipes.md) · [fast-control.md](../../fast-control.md)
+- **Reference:** [api.md](../api.md) · [api/transition-wipes.md](transition-wipes.md) · [fast-control.md](../fast-control.md)
 - **Subsystems:** [transition.md](../../subsystems/transition.md) · [switcher.md](../../subsystems/switcher.md)

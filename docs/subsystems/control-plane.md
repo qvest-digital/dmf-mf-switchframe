@@ -242,8 +242,8 @@ Dismiss (`DELETE /api/macros/execution`) explicitly cancels any running macro to
 
 ## Related docs
 
-- **Concepts:** [pipeline.md](../pipeline.md) · [locking-and-concurrency.md](../locking-and-concurrency.md)
-- **Reference:** [api.md](../reference/api.md) · [state-broadcast.md](../reference/state-broadcast.md) · [fast-control.md](../fast-control.md)
+- **Concepts:** [pipeline.md](../concepts/pipeline.md) · [locking-and-concurrency.md](../concepts/locking-and-concurrency.md)
+- **Reference:** [api.md](../reference/api.md) · [state-broadcast.md](../reference/state-broadcast.md) · [fast-control.md](../reference/fast-control.md)
 - **Subsystems:** [switcher.md](switcher.md) · [output.md](output.md) · [graphics-and-dve.md](graphics-and-dve.md) · [playout.md](playout.md)
 - **Integration:** [ui-server-contract.md](../integration/ui-server-contract.md)
-- **Operations:** [deployment.md](../deployment.md)
+- **Operations:** [deployment.md](../operations/deployment.md)

@@ -2,7 +2,7 @@
 
 > **Where you are:** [docs](../README.md) → subsystems → audio
 > **Read this first:** [architecture.md](../architecture.md)
-> **See also:** [captions](captions.md) · [comms](comms.md) · [pipeline](../pipeline.md) · [output](output.md) · [mxl](mxl.md)
+> **See also:** [captions](captions.md) · [comms](comms.md) · [pipeline](../concepts/pipeline.md) · [output](output.md) · [mxl](mxl.md)
 
 **TL;DR** The audio mixer is a clock-driven multi-source mixing engine that runs on its own ticker at roughly one AAC frame per tick (~21.3 ms at 48 kHz). Each source has a processed PCM ring buffer populated by the ingest path — the ticker pops exactly 1024 samples per frame, applies fader and crossfade gains, sums them into a single mix bus, and then runs master gain, BS.1770-4 LUFS metering, a brickwall limiter at -1 dBFS, and FDK-AAC encoding before handing the finished frame to the output callback. The pipeline is clock-driven so audio output is independent of how bursty the source frames arrive over SRT or MoQ, and so it stays aligned with video by seeding PTS from the first video frame and gently nudging toward wall-clock afterward.
 
@@ -110,8 +110,8 @@ flowchart LR
 
 ## Related docs
 
-- **Concepts:** [pipeline](../pipeline.md) · [frame-sync-and-timing](../concepts/frame-sync-and-timing.md) · [locking-and-concurrency](../locking-and-concurrency.md) · [media-path](../concepts/media-path.md)
-- **Reference:** [api](../api.md) · [state-broadcast](../reference/state-broadcast.md) · [metrics](../reference/metrics.md) · [config-and-flags](../reference/config-and-flags.md)
+- **Concepts:** [pipeline](../concepts/pipeline.md) · [frame-sync-and-timing](../concepts/frame-sync-and-timing.md) · [locking-and-concurrency](../concepts/locking-and-concurrency.md) · [media-path](../concepts/media-path.md)
+- **Reference:** [api](../reference/api.md) · [state-broadcast](../reference/state-broadcast.md) · [metrics](../reference/metrics.md) · [config-and-flags](../reference/config-and-flags.md)
 - **Subsystems:** [captions](captions.md) · [comms](comms.md) · [switcher](switcher.md) · [transition](transition.md) · [output](output.md) · [srt-ingest](srt-ingest.md) · [mxl](mxl.md) · [codec](codec.md) · [playout](playout.md)
 - **Integration:** [ui-server-contract](../integration/ui-server-contract.md) · [asr-sidecar](../integration/asr-sidecar.md)
-- **Operations:** [deployment](../deployment.md)
+- **Operations:** [deployment](../operations/deployment.md)

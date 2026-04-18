@@ -67,7 +67,7 @@ Listener mode is the right choice when the remote must initiate (e.g. behind a N
 
 `Start(ctx)` creates a [`StreamDecoder`](#the-ffmpeg-avio-bridge) via the injected `decoderFactory` (overridable for tests) with the SRT conn as the `Reader` and callbacks that forward to the `Source.OnRaw*` fields. Three goroutines spin up: one that runs `dec.Run()` (blocking decode loop), one that watches ctx and calls `dec.Stop()` on cancel, and one that polls `srtgo.Conn.Stats()` every second and updates `ConnStats`. When the decode loop returns (EOF, error, or stop), `OnStopped` fires so the app can clean up pipeline state and, for caller mode, trigger the reconnect.
 
-The fan-out in `handleVideoFrame` and `handleAudioFrame` is trivial: it just forwards the key and payload to the callback. The interesting work happens in the app layer's [`wireSRTSource`](../../server/cmd/switchframe/app_srt.go) which builds the callbacks — three buffered channels (pipeline, relay video, relay audio) drain into three dedicated goroutines so the FFmpeg decode loop never blocks on downstream work. See [pipeline.md](../pipeline.md) for why that matters (a single blocking callback stalls the entire read loop, creating bursty 100–1500 ms A/V gaps).
+The fan-out in `handleVideoFrame` and `handleAudioFrame` is trivial: it just forwards the key and payload to the callback. The interesting work happens in the app layer's [`wireSRTSource`](../../server/cmd/switchframe/app_srt.go) which builds the callbacks — three buffered channels (pipeline, relay video, relay audio) drain into three dedicated goroutines so the FFmpeg decode loop never blocks on downstream work. See [pipeline.md](../concepts/pipeline.md) for why that matters (a single blocking callback stalls the entire read loop, creating bursty 100–1500 ms A/V gaps).
 
 ### The FFmpeg AVIO bridge
 
@@ -111,7 +111,7 @@ The output package uses the same `ConnStats` infrastructure for its SRT push and
 - The FFmpeg decode loop is single-threaded by design. `av_read_frame` → decode → callback → `av_read_frame`. If any callback blocks, the whole loop stalls — you lose video *and* audio until the block clears. All production callbacks must deep-copy and non-block into a channel; the heavy work happens in separate goroutines. See [`app_srt.go`](../../server/cmd/switchframe/app_srt.go) for the canonical three-goroutine fan-out pattern.
 - The AVIO `Reader` callback must return `AVERROR_EOF` (not generic error) on clean end-of-stream. Returning -1 causes FFmpeg to treat the disconnect as a decode failure and emit spurious errors in the log.
 - StreamID-to-key mapping is stable — the same remote reconnecting produces the same key. That's deliberate: labels, delay, and UI position must survive reconnects. If you need to force a fresh key, change the streamid.
-- NVDEC paths deliver CUDA device pointers via `OnRawVideoGPU`; the CPU `OnRawVideo` callback *never fires* when NVDEC is active. The GPU frame is valid only during the callback — downstream consumers must immediately copy into a pool frame (see [gpu.md](../gpu.md)). The CPU path, by contrast, lets callbacks retain the YUV slice because the `videoGoBuf` is reused on the *next* frame, not during the current call.
+- NVDEC paths deliver CUDA device pointers via `OnRawVideoGPU`; the CPU `OnRawVideo` callback *never fires* when NVDEC is active. The GPU frame is valid only during the callback — downstream consumers must immediately copy into a pool frame (see [gpu.md](../concepts/gpu.md)). The CPU path, by contrast, lets callbacks retain the YUV slice because the `videoGoBuf` is reused on the *next* frame, not during the current call.
 - Probe size is capped at 5000 TS packets (~940 KB) and analyze duration at 5 seconds. HEVC streams with 2–4 second GOPs need the 5-second ceiling to find the first keyframe with SPS/VPS/PPS — shorter values cause `avformat_find_stream_info` to fail intermittently with "missing codec parameters."
 - Audio is force-resampled to stereo float32 48 kHz by `swresample`. Sources at 44.1 kHz, 5.1, etc. are normalized at the edge so the mixer sees a uniform format. If you need a different target, change it in `srtdec_open` — propagating it as a config option has not been needed.
 - Caller pulls auto-reconnect forever. If you want a pull to stay stopped across restarts, call `Caller.Stop(key)` explicitly — it deletes the config from the store. Simply SIGINT'ing the server and restarting will re-establish the pull.
@@ -119,7 +119,7 @@ The output package uses the same `ConnStats` infrastructure for its SRT push and
 
 ## Related docs
 
-- **Concepts:** [pipeline.md](../pipeline.md) · [media-path.md](../concepts/media-path.md) · [frame-sync-and-timing.md](../concepts/frame-sync-and-timing.md)
-- **Reference:** [api.md](../api.md) · [state-broadcast.md](../reference/state-broadcast.md) · [config-and-flags.md](../reference/config-and-flags.md)
+- **Concepts:** [pipeline.md](../concepts/pipeline.md) · [media-path.md](../concepts/media-path.md) · [frame-sync-and-timing.md](../concepts/frame-sync-and-timing.md)
+- **Reference:** [api.md](../reference/api.md) · [state-broadcast.md](../reference/state-broadcast.md) · [config-and-flags.md](../reference/config-and-flags.md)
 - **Subsystems:** [output.md](output.md) · [codec.md](codec.md) · [mxl.md](mxl.md) · [switcher.md](switcher.md) · [audio.md](audio.md) · [captions.md](captions.md) · [scte35.md](../scte35.md)
-- **Operations:** [deployment.md](../deployment.md)
+- **Operations:** [deployment.md](../operations/deployment.md)

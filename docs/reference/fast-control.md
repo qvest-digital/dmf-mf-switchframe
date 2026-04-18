@@ -379,7 +379,7 @@ The writer's `onWriteError` callback is invoked when the underlying write reject
 
 ## Related docs
 
-- **Concepts:** [pipeline.md](../pipeline.md) · [locking-and-concurrency.md](../locking-and-concurrency.md)
+- **Concepts:** [pipeline.md](../concepts/pipeline.md) · [locking-and-concurrency.md](../concepts/locking-and-concurrency.md)
 - **Reference:** [api.md](api.md) · [state-broadcast.md](state-broadcast.md) · [metrics.md](metrics.md)
 - **Subsystems:** [switcher.md](../subsystems/switcher.md) · [graphics-and-dve.md](../subsystems/graphics-and-dve.md) · [transition.md](../subsystems/transition.md) · [output.md](../subsystems/output.md)
 - **Integration:** [ui-server-contract.md](../integration/ui-server-contract.md)

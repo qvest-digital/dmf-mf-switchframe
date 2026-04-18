@@ -2,7 +2,7 @@
 
 > **Where you are:** [docs](../README.md) → subsystems → replay
 > **Read this first:** [architecture.md](../architecture.md)
-> **See also:** [clips.md](./clips.md) · [playout.md](./playout.md) · [../pipeline.md](../pipeline.md)
+> **See also:** [clips.md](./clips.md) · [playout.md](./playout.md) · [../pipeline.md](../concepts/pipeline.md)
 
 **TL;DR** Instant replay keeps a per-source, GOP-aligned circular buffer of encoded video plus matching AAC audio tagged with wall-clock time. Operators mark an in-point and out-point, and a replayer extracts that slice, decodes it GOP-by-GOP, duplicates or interpolates frames for 0.25×–1.0× slow motion, re-encodes to a browser-friendly H.264 stream, and pushes the result through a dedicated `replay` relay and the switcher's raw video ingest. Audio is time-stretched with a phase vocoder (STFT-based, pitch-preserved) — falling back to WSOLA and then linear interpolation — so slow motion still sounds like music and voices rather than tape-slowed drones. The same Manager also exports the marked slice as an MPEG-TS temp file, which the [clip library](./clips.md) picks up as an ephemeral clip.
 
@@ -97,9 +97,9 @@ Per output frame the player:
 
 - `blendInterpolator` — linear alpha blend across all YUV420 bytes. Cheap, always-correct, but motion looks smeared.
 - `holdCrossfadeInterpolator` (the default via `InterpolationHoldCrossfade`) — holds frame A for `alpha < 0.625` then crossfades to B with an eased curve in the remaining slot. Produces clean, artifact-free frames with a brief dissolve at every neighbor transition — no motion estimation needed.
-- `MCFIState` (via `InterpolationMCFI`) — motion-compensated frame interpolation reusing the switcher's [frame rate conversion](../pipeline.md) kernels (`server/switcher/mcfi_interpolate.go`, SAD in assembly).
+- `MCFIState` (via `InterpolationMCFI`) — motion-compensated frame interpolation reusing the switcher's [frame rate conversion](../concepts/pipeline.md) kernels (`server/switcher/mcfi_interpolate.go`, SAD in assembly).
 
-When replay runs on a GPU host with NVIDIA Optical Flow (NVOFA), `SetGPUReplay` attaches a `gpu.FRUC` instance and `Play` routes to `newGPUReplayPlayer` instead. The GPU player adds a configurable shutter angle (180° default) for film-style motion blur. See [../gpu.md](../gpu.md) for the GPU pipeline.
+When replay runs on a GPU host with NVIDIA Optical Flow (NVOFA), `SetGPUReplay` attaches a `gpu.FRUC` instance and `Play` routes to `newGPUReplayPlayer` instead. The GPU player adds a configurable shutter angle (180° default) for film-style motion blur. See [../gpu.md](../concepts/gpu.md) for the GPU pipeline.
 
 ### Time-stretching: phase vocoder, WSOLA, and linear fallback
 
@@ -160,7 +160,7 @@ After `ExtractClip` succeeds, `Play` spawns a background goroutine that muxes th
 
 ## Related docs
 
-- **Concepts:** [../pipeline.md](../pipeline.md) (video processing pipeline the replay output joins), [../locking-and-concurrency.md](../locking-and-concurrency.md) (where the replay mutex fits in the lock order), [../gpu.md](../gpu.md) (NVOFA replay path).
-- **Reference:** [../api.md](../api.md) (REST handlers for mark-in/out, play, speed, quick-replay), [../fast-control.md](../fast-control.md) (datagram channel reuse).
+- **Concepts:** [../pipeline.md](../concepts/pipeline.md) (video processing pipeline the replay output joins), [../locking-and-concurrency.md](../concepts/locking-and-concurrency.md) (where the replay mutex fits in the lock order), [../gpu.md](../concepts/gpu.md) (NVOFA replay path).
+- **Reference:** [../api.md](../reference/api.md) (REST handlers for mark-in/out, play, speed, quick-replay), [../fast-control.md](../reference/fast-control.md) (datagram channel reuse).
 - **Subsystems:** [clips.md](./clips.md) (receives exported replay clips as ephemeral entries), [playout.md](./playout.md) (also anchors PTS to the program timeline via the same provider), and the top-level [../switchframe-ui.png](../switchframe-ui.png) (operator view).
-- **Operations:** [../deployment.md](../deployment.md) (`--replay-buffer-secs`, tmpfs configuration, GPU replay flags).
+- **Operations:** [../deployment.md](../operations/deployment.md) (`--replay-buffer-secs`, tmpfs configuration, GPU replay flags).

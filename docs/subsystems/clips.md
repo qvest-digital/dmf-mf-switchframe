@@ -2,7 +2,7 @@
 
 > **Where you are:** [docs](../README.md) → subsystems → clips
 > **Read this first:** [architecture.md](../architecture.md)
-> **See also:** [replay.md](./replay.md) · [playout.md](./playout.md) · [../pipeline.md](../pipeline.md)
+> **See also:** [replay.md](./replay.md) · [playout.md](./playout.md) · [../pipeline.md](../concepts/pipeline.md)
 
 **TL;DR** The clip library stores MPEG-TS / MP4 / MOV media files and plays them through one of four virtual player slots that register with the switcher as `clip:1`…`clip:4`. Uploads are probed and validated (container + test-decode of the first GOP), transcoded to H.264 MPEG-TS if needed, and recorded in a JSON store with path-traversal protection. A format-dispatching demuxer produces `BufferedFrame` / `BufferedAudioFrame` slices — TS is read with `go-astits`, MP4/M4V/MOV is parsed by walking the `go-mp4` box tree and assembling samples from the `stbl` tables. The player decodes each frame to YUV420, re-encodes to a browser-friendly 8-bit H.264 stream, and supports pause, seek, variable speed (0.25×–2.0×), loop, and hold-last-frame — emitting raw YUV to the switcher pipeline and wire data to a per-slot MoQ relay. Ephemeral clips (replay exports) are auto-pruned; loaded clips are protected.
 
@@ -126,7 +126,7 @@ After the last frame, `DrainableDecoder` support drains buffered B-frame tail vi
 
 ### Per-player MoQ relay
 
-Each slot has a dedicated relay registered at startup via `server.RegisterStream("clip:N")`. The app's `SetVideoOutput` callback wraps each frame in a `media.VideoFrame` with a monotonically increasing group ID that bumps on every keyframe (starting at 1 because Prism uses 0 as a "not damaged" sentinel). `SetVideoInfo` is called on every keyframe with fresh SPS/PPS — clip resolution may vary between plays, so the MoQ catalog stays current. Audio is broadcast on the same relay plus fed to the mixer via `IngestFrame`. See the MoQ / distribution layer in [../pipeline.md](../pipeline.md).
+Each slot has a dedicated relay registered at startup via `server.RegisterStream("clip:N")`. The app's `SetVideoOutput` callback wraps each frame in a `media.VideoFrame` with a monotonically increasing group ID that bumps on every keyframe (starting at 1 because Prism uses 0 as a "not damaged" sentinel). `SetVideoInfo` is called on every keyframe with fresh SPS/PPS — clip resolution may vary between plays, so the MoQ catalog stays current. Audio is broadcast on the same relay plus fed to the mixer via `IngestFrame`. See the MoQ / distribution layer in [../pipeline.md](../concepts/pipeline.md).
 
 ### Replay → clip export bridge
 
@@ -160,7 +160,7 @@ When a replay is played, the replay Manager spawns a background goroutine that m
 
 ## Related docs
 
-- **Concepts:** [../pipeline.md](../pipeline.md) (the switcher ingests `clip:N` as a virtual raw YUV source and routes frames through the same pipeline as live cameras), [../locking-and-concurrency.md](../locking-and-concurrency.md) (the Manager's mutex boundaries and why callbacks are captured under lock then called without it).
-- **Reference:** [../api.md](../api.md) (REST endpoints for upload, list, load, play, pause, seek, stop), [../fast-control.md](../fast-control.md) (datagram protocol used elsewhere in the same operator stack).
-- **Subsystems:** [replay.md](./replay.md) (the replay export bridge produces ephemeral clips), [playout.md](./playout.md) (the playout asset cache uses the same transcode detour for unsupported formats), [../mxl.md](../mxl.md) (the MXL source layer similarly wraps into virtual source keys).
-- **Integration / Operations:** [../deployment.md](../deployment.md) (`--clip-storage-max`, `--clip-ephemeral-ttl`, and `StateDir` layout), [../gpu.md](../gpu.md) (GPU preview encoder used by clip slots when available).
+- **Concepts:** [../pipeline.md](../concepts/pipeline.md) (the switcher ingests `clip:N` as a virtual raw YUV source and routes frames through the same pipeline as live cameras), [../locking-and-concurrency.md](../concepts/locking-and-concurrency.md) (the Manager's mutex boundaries and why callbacks are captured under lock then called without it).
+- **Reference:** [../api.md](../reference/api.md) (REST endpoints for upload, list, load, play, pause, seek, stop), [../fast-control.md](../reference/fast-control.md) (datagram protocol used elsewhere in the same operator stack).
+- **Subsystems:** [replay.md](./replay.md) (the replay export bridge produces ephemeral clips), [playout.md](./playout.md) (the playout asset cache uses the same transcode detour for unsupported formats), [../mxl.md](./mxl.md) (the MXL source layer similarly wraps into virtual source keys).
+- **Integration / Operations:** [../deployment.md](../operations/deployment.md) (`--clip-storage-max`, `--clip-ephemeral-ttl`, and `StateDir` layout), [../gpu.md](../concepts/gpu.md) (GPU preview encoder used by clip slots when available).

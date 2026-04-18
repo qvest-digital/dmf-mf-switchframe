@@ -193,7 +193,7 @@ When the MoQ subscription hasn't attached (early in startup, or on reconnection)
 
 ## Related docs
 
-- **Concepts:** [pipeline.md](../pipeline.md) · [locking-and-concurrency.md](../locking-and-concurrency.md)
+- **Concepts:** [pipeline.md](../concepts/pipeline.md) · [locking-and-concurrency.md](../concepts/locking-and-concurrency.md)
 - **Reference:** [api.md](api.md) · [fast-control.md](fast-control.md)
 - **Subsystems:** [control-plane.md](../subsystems/control-plane.md) · [switcher.md](../subsystems/switcher.md)
 - **Integration:** [ui-server-contract.md](../integration/ui-server-contract.md)

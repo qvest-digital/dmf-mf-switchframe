@@ -2,7 +2,7 @@
 
 > **Where you are:** [docs](../README.md) → subsystems → comms
 > **Read this first:** [architecture.md](../architecture.md)
-> **See also:** [audio](audio.md) · [captions](captions.md) · [control-plane](control-plane.md) · [fast-control](../fast-control.md)
+> **See also:** [audio](audio.md) · [captions](captions.md) · [control-plane](control-plane.md) · [fast-control](../reference/fast-control.md)
 
 **TL;DR** Comms is an N-1 party-line voice channel that lets up to six operators hear each other in real time while they're running the show. Each browser opens a WebTransport bidirectional stream to the server, sends Opus-encoded microphone audio in 20 ms frames, and receives a personalized mix back — "N minus 1" meaning each participant's mix sums every *other* participant's PCM but excludes their own, so nobody hears themselves echoed. The server runs one 20 ms mix loop, does all encoding and decoding with libopus via cgo, and scales to six participants by keeping everything per-frame and lock-free on the hot path. A simple RMS-threshold VAD drives the "speaking" indicator surfaced in the control-room state.
 
@@ -118,8 +118,8 @@ flowchart TB
 
 ## Related docs
 
-- **Concepts:** [media-path](../concepts/media-path.md) · [locking-and-concurrency](../locking-and-concurrency.md) · [pipeline](../pipeline.md)
-- **Reference:** [api](../api.md) · [state-broadcast](../reference/state-broadcast.md) · [fast-control](../fast-control.md) · [metrics](../reference/metrics.md)
+- **Concepts:** [media-path](../concepts/media-path.md) · [locking-and-concurrency](../concepts/locking-and-concurrency.md) · [pipeline](../concepts/pipeline.md)
+- **Reference:** [api](../reference/api.md) · [state-broadcast](../reference/state-broadcast.md) · [fast-control](../reference/fast-control.md) · [metrics](../reference/metrics.md)
 - **Subsystems:** [audio](audio.md) · [captions](captions.md) · [control-plane](control-plane.md) · [switcher](switcher.md)
 - **Integration:** [ui-server-contract](../integration/ui-server-contract.md)
-- **Operations:** [deployment](../deployment.md)
+- **Operations:** [deployment](../operations/deployment.md)

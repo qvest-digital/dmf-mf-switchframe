@@ -95,5 +95,5 @@ A sibling endpoint, `GET /api/sync/health`, is registered alongside the core swi
 ## Related docs
 
 - **Concepts:** [pipeline.md](../../pipeline.md)
-- **Reference:** [api.md](../api.md) · [state-broadcast.md](../state-broadcast.md) · [fast-control.md](../../fast-control.md)
+- **Reference:** [api.md](../api.md) · [state-broadcast.md](../state-broadcast.md) · [fast-control.md](../fast-control.md)
 - **Subsystems:** [switcher.md](../../subsystems/switcher.md) · [control-plane.md](../../subsystems/control-plane.md)
