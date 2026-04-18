@@ -89,6 +89,7 @@ func (b *builtinSource) Frame(width, height int, f video.Format) []byte {
 	if b.annexY0 < height {
 		drawAnnexClock(out, f, width, height, b.annexY0, b.renderer, time.Now().UTC())
 		drawAnnexSprite(out, f, width, height, b.annexY0, b.frameIndex)
+		drawAnnexFrameNumber(out, f, width, height, b.annexY0, b.renderer, b.frameIndex)
 	}
 	b.frameIndex++
 	return out
@@ -528,6 +529,48 @@ func drawAnnexClock(buf []byte, f video.Format, width, height, annexY0 int, r *t
 	margin := annexH / 4
 	x := width - margin - w
 	y := annexY0 + (annexH-h)/2
+	blitRGBAToYUV(buf, f, width, height, x, y, img)
+}
+
+// drawAnnexFrameNumber burns the source-side monotonic frame counter into
+// the top-center of the annex. Intended as a diagnostic: a decoder that
+// reorders frames, repeats old content, or races with newer content will
+// show a non-monotonic number sequence on playback; strictly increasing
+// integers rule reorder in or out.
+func drawAnnexFrameNumber(buf []byte, f video.Format, width, height, annexY0 int, r *textrender.Renderer, frameIndex int64) {
+	if r == nil || annexY0 >= height {
+		return
+	}
+	annexH := height - annexY0
+	fontSize := float64(annexH) * 0.45
+	if fontSize < 12 {
+		fontSize = 12
+	}
+	opts := textrender.TextOptions{
+		Text:      fmt.Sprintf("F:%07d", frameIndex),
+		FontSize:  fontSize,
+		Bold:      true,
+		Monospace: true,
+		// White; keeping yellow-exclusive to the sprite preserves the
+		// Cb-based sprite detection in TestSwitcher_SpriteMotionIsMonotonic.
+		Color: color.RGBA{R: 255, G: 255, B: 255, A: 255},
+	}
+	w, h := r.MeasureText(opts)
+	if w <= 0 || h <= 0 {
+		return
+	}
+	img, _, err := r.RenderText(w, h, opts)
+	if err != nil {
+		return
+	}
+	x := (width - w) / 2
+	x &^= 1
+	// Place just above the sprite track so it doesn't overlap the moving
+	// sprite; the bottom half of the annex is the sprite track.
+	y := annexY0 + (annexH-h)/4
+	if y < annexY0 {
+		y = annexY0
+	}
 	blitRGBAToYUV(buf, f, width, height, x, y, img)
 }
 
