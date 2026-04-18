@@ -14,6 +14,7 @@ export interface DualConnectionConfig {
 
 export class DualConnectionManager {
 	private managers: Map<string, ConnectionManager> = new Map();
+	private engineUrls: Map<string, string> = new Map();
 	private engineStates: Map<string, ConnectionStatus> = new Map();
 	private reconciler = createReconciler();
 	private clockSync = new ClockSync();
@@ -68,9 +69,21 @@ export class DualConnectionManager {
 		return mgr?.transport ?? null;
 	}
 
-	/** Late-bind a new engine (e.g., engine B discovered from initial state). */
+	/** Late-bind a new engine (e.g., engine B discovered from initial state).
+	 * If the engine id already exists and the URL differs, tears down the old
+	 * ConnectionManager and creates a fresh subscription at the new URL. Used
+	 * when an engine is re-provisioned at a new URL after crash (control-plane
+	 * re-issue). Identical URL for an existing id is a no-op. */
 	addEngine(id: EngineId, url: string): void {
-		if (this.managers.has(id)) return; // no duplicates
+		const existingUrl = this.engineUrls.get(id);
+		if (existingUrl !== undefined) {
+			if (existingUrl === url) return; // identical — no-op
+			// URL changed — tear down the old subscription and re-subscribe.
+			// This is how we recover when the control plane provisions a
+			// replacement engine at a new address.
+			this.replaceEngineManager(id, url);
+			return;
+		}
 		this.createEngineManager(id, url);
 		this._isDualEngine = this.managers.size > 1;
 
@@ -253,6 +266,42 @@ export class DualConnectionManager {
 		}
 	}
 
+	/** Tear down the existing ConnectionManager for an engine id and replace
+	 * it with a fresh subscription at the new URL. Preserves started/initial-
+	 * load state so the replacement manager starts immediately if the session
+	 * was already running. */
+	private replaceEngineManager(engineId: EngineId, url: string): void {
+		const oldMgr = this.managers.get(engineId);
+		if (oldMgr) {
+			oldMgr.stop();
+		}
+		this.engineStates.set(engineId, 'disconnected');
+		// Notify the reconciler the old subscription is gone so authority
+		// doesn't stay stuck on the dead engine while we reconnect.
+		if (this._isDualEngine) {
+			this.reconciler.disconnect(engineId);
+		}
+
+		this.createEngineManager(engineId, url);
+
+		const newMgr = this.managers.get(engineId);
+		if (!newMgr) return;
+
+		// Preserve the started/initial-load state machine: if we had already
+		// started the session AND initial load is done (or all other engines
+		// failed initial load), start the replacement manager immediately.
+		// Otherwise, defer — matching the logic of addEngine for new ids.
+		if (this._started) {
+			if (this._initialLoadDone) {
+				newMgr.start();
+			} else if (this._initialLoadErrors > 0 && this._initialLoadErrors >= this.managers.size - 1) {
+				newMgr.start();
+			} else {
+				this._pendingEngineStarts.push(engineId);
+			}
+		}
+	}
+
 	/** Create a ConnectionManager for an engine and wire up callbacks. */
 	private createEngineManager(engineId: EngineId, url: string): void {
 		const mgr = new ConnectionManager({
@@ -334,6 +383,7 @@ export class DualConnectionManager {
 			},
 		});
 		this.managers.set(engineId, mgr);
+		this.engineUrls.set(engineId, url);
 		this.engineStates.set(engineId, 'disconnected');
 	}
 }

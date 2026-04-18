@@ -22,9 +22,18 @@ export interface DualApiClientConfig {
 export class DualApiClient {
 	constructor(private config: DualApiClientConfig) {}
 
-	/** Late-bind a new engine (e.g., engine B discovered from initial state). */
+	/** Late-bind a new engine (e.g., engine B discovered from initial state).
+	 * If the engine id already exists and the URL differs, updates the target
+	 * URL in place — used when an engine is re-provisioned at a new URL after
+	 * crash. Identical URL for an existing id is a no-op. */
 	addEngine(id: EngineId, url: string): void {
-		if (this.config.engines.some((e) => e.id === id)) return;
+		const existing = this.config.engines.find((e) => e.id === id);
+		if (existing) {
+			if (existing.url !== url) {
+				existing.url = url;
+			}
+			return;
+		}
 		this.config.engines.push({ id, url });
 	}
 

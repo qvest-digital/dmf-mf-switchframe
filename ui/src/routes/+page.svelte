@@ -805,7 +805,7 @@
 		onSourceStalled: (key) => {
 			// Only trigger failover for program sources — tile stalls don't warrant
 			// switching the entire media pipeline to another engine.
-			if (key !== 'program' && key !== 'program-preview') return;
+			if (key !== 'program-preview') return;
 			if (!isDualEngine) return;
 			if (videoFailoverActive) return;
 
@@ -880,12 +880,10 @@
 			}
 		},
 	});
-	// Pre-register "program" source so ProgramPreview's $effect can attach
-	// the canvas renderer before onMount (which connects the MoQ transport).
-	pipeline.setSourceMuted('program', false);
-	pipeline.addSource('program');
-	// Program preview: low-bitrate H.264 (3 Mbps) for browser monitoring.
-	// Preferred over full-quality "program" (10 Mbps) to reduce bandwidth.
+	// Pre-register the program-preview source so ProgramPreview's $effect can
+	// attach the canvas renderer before onMount (which connects the MoQ
+	// transport). The UI renders exclusively from program-preview (low-bitrate,
+	// ~3 Mbps); full-quality `program` is reserved for SRT / file output.
 	pipeline.setSourceMuted('program-preview', false);
 	pipeline.addSource('program-preview');
 
@@ -1172,8 +1170,13 @@
 	// Engine B's media pipeline and connect all sources (no canvases). This way
 	// failover only needs to swap canvases instead of creating the pipeline and
 	// waiting up to 3s for MoQ readiness.
+	//
+	// Also reacts to Engine B URL changes — if the control plane re-provisions
+	// Engine B at a new URL (after crash), enableWarmStandby's underlying
+	// createEngineBPipeline detects the URL change and rebuilds the pipeline
+	// against the new URL. Identical URLs fast-path to no-op.
 	$effect(() => {
-		if (isDualEngine && store.state.engineBUrl && mounted && !pipelineManager.warmStandbyActive) {
+		if (isDualEngine && store.state.engineBUrl && mounted) {
 			const sourceKeys = Object.keys(store.state.sources ?? {});
 			pipelineManager.enableWarmStandby(store.state.engineBUrl, sourceKeys, {
 				onControlState: (data) => connectionManager.handleControlData('B', data),
@@ -1251,6 +1254,14 @@
 					// silently dropped. Register with the managers first.
 					connectionManager.addEngine('B', urls.engineBUrl);
 					dualApi.addEngine('B', urls.engineBUrl);
+					// Rebuild the warm-standby MediaPipeline immediately against the
+					// new URL. The enableWarmStandby $effect alone would lag until
+					// `store.state.engineBUrl` (authoritative state) catches up, which
+					// races the 30s engine-gone timer. Driving the rebuild from the
+					// discovery callback closes that gap.
+					pipelineManager.enableWarmStandby(urls.engineBUrl, Object.keys(store.state.sources ?? {}), {
+						onControlState: (data) => connectionManager.handleControlData('B', data),
+					});
 					setEngineUrls([
 						{ id: 'A', url: urls.engineAUrl },
 						{ id: 'B', url: urls.engineBUrl },
@@ -1396,7 +1407,7 @@
 	// Both engines receive datagrams via DualFastControl when both transports are available.
 	$effect(() => {
 		if (connectionState === 'webtransport' && !fastControlA) {
-			const wt = pipeline.getSourceTransport('program');
+			const wt = pipeline.getSourceTransport('program-preview');
 			if (wt) {
 				try {
 					fastControlA = createFastControl(wt, {
@@ -1458,11 +1469,11 @@
 	$effect(() => {
 		if (compareMode && store.state.engineBUrl) {
 			pipelineManager.createEngineBPipeline(store.state.engineBUrl);
-			pipelineManager.connectSourceB('program');
+			pipelineManager.connectSourceB('program-preview');
 		}
 		return () => {
 			if (pipelineManager.hasEngineBPipeline) {
-				pipelineManager.detachCanvasB('program', 'compare-b');
+				pipelineManager.detachCanvasB('program-preview', 'compare-b');
 				if (!pipelineManager.warmStandbyActive) {
 					// No warm standby — safe to destroy entirely.
 					// The A/B toggle effect will recreate if activeEngine === 'B'.
@@ -1479,7 +1490,7 @@
 		if (activeEngine === 'B' && store.state.engineBUrl) {
 			if (!pipelineManager.hasEngineBPipeline) {
 				pipelineManager.createEngineBPipeline(store.state.engineBUrl);
-				pipelineManager.connectSourceB('program');
+				pipelineManager.connectSourceB('program-preview');
 			}
 			pipelineManager.switchProgramToEngineB();
 		} else if (activeEngine === 'A' && pipelineManager.activeEngine === 'B') {
@@ -1514,9 +1525,9 @@
 			// Will retry via connection manager
 		}
 
-		// Connect the "program" MoQ stream (source was added during init
-		// so the canvas can attach before onMount via ProgramPreview's $effect).
-		pipeline.connectSource('program');
+		// Connect the program-preview MoQ stream (source was added during
+		// init so the canvas can attach before onMount via ProgramPreview's
+		// $effect).
 		pipeline.connectSource('program-preview');
 
 		// Resume AudioContexts on first user gesture (browser autoplay policy).
@@ -1716,7 +1727,7 @@
 			onStateUpdate={store.applyUpdate}
 			{pipeline}
 			{fastControl}
-			getTransport={() => pipeline.getSourceTransport('program')}
+			getTransport={() => pipeline.getSourceTransport('program-preview')}
 		/>
 	{:else}
 		<div class="control-room">
@@ -1750,7 +1761,7 @@
 				operatorName={operatorState.getSession()?.name ?? ''}
 				visible={commsVisible}
 				onToggle={() => commsVisible = !commsVisible}
-				getTransport={() => pipeline.getSourceTransport('program')}
+				getTransport={() => pipeline.getSourceTransport('program-preview')}
 				getTransportForEngine={isDualEngine ? (engineId) => connectionManager.getTransport(engineId) : undefined}
 				authoritativeEngine={syncHealth?.authoritative}
 				onCommsActive={(active) => pflManager.setCommsActive(active)}
@@ -1770,7 +1781,7 @@
 							pipelineManager.syncProgramPreviewCanvases(store.effectiveState.previewSource, canvas);
 						}}
 						onCanvasBReady={(canvas) => {
-							pipelineManager.attachCanvasB('program', 'compare-b', canvas);
+							pipelineManager.attachCanvasB('program-preview', 'compare-b', canvas);
 						}}
 					/>
 				{:else}

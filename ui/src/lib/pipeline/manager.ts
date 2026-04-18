@@ -27,6 +27,11 @@ export class PipelineManager {
 	/** Secondary pipeline for Engine B (compare mode / A/B toggle). */
 	private pipelineB: MediaPipeline | null = null;
 
+	/** Track the URL that `pipelineB` was built for. Used to detect a
+	 * replacement Engine B (control plane re-provisioned at new URL) and
+	 * rebuild the WebTransport subscriptions. */
+	private engineBUrl: string | null = null;
+
 	/** Track which sources are connected on Engine B (warm standby + compare). */
 	private connectedSourcesB = new Set<string>();
 
@@ -141,10 +146,10 @@ export class PipelineManager {
 		programCanvasEl?: HTMLCanvasElement | null,
 		previewCanvasEl?: HTMLCanvasElement | null,
 	): void {
-		// Prefer low-bitrate program-preview (3 Mbps) over full-quality program
-		// (10 Mbps) once its MoQ catalog has arrived (audio decoder configured).
-		const previewReady = this.pipeline.getAudioDecoder('program-preview') !== null;
-		const programKey = previewReady ? 'program-preview' : 'program';
+		// UI renders from program-preview (low-bitrate, ~3 Mbps). The
+		// full-quality `program` MoQ source is reserved for SRT / file
+		// recording output and is never subscribed from the browser.
+		const programKey = 'program-preview';
 
 		// Program canvas: render the program MoQ stream (shows transitions).
 		// Re-attach if the canvas element changed (HMR, layout switch) even if
@@ -161,14 +166,6 @@ export class PipelineManager {
 				this.pipeline.attachCanvas(programKey, 'program', programCanvasEl);
 				this.currentProgramCanvas = programKey;
 				this.currentProgramCanvasEl = programCanvasEl;
-				// Disconnect and mute full-quality program when preview is active.
-				// Stops wasting ~10 Mbps bandwidth and prevents the program
-				// AudioContext from outputting silence (which can interfere
-				// with program-preview's audio on some systems).
-				if (programKey === 'program-preview') {
-					this.pipeline.disconnectSource('program');
-					this.pipeline.setSourceMuted('program', true);
-				}
 			} else {
 				this.currentProgramCanvas = null;
 				this.currentProgramCanvasEl = null;
@@ -215,7 +212,7 @@ export class PipelineManager {
 	notifyProgramSourceChange(): void {
 		const activePipeline = this._activeEngine === 'B' && this.pipelineB
 			? this.pipelineB : this.pipeline;
-		activePipeline.resetRendererSync('program');
+		activePipeline.resetRendererSync('program-preview');
 	}
 
 	/**
@@ -278,19 +275,70 @@ export class PipelineManager {
 		};
 	}
 
-	/** Create Engine B media pipeline for compare mode / A/B toggle. */
+	/** Create Engine B media pipeline for compare mode / A/B toggle.
+	 * If pipelineB exists and URL matches, no-op. If pipelineB exists but the
+	 * URL has changed (Engine B re-provisioned), destroys the old pipeline,
+	 * rebuilds against the new URL, and — if we were currently failed over
+	 * to Engine B — re-attaches tile/program/preview canvases to the new
+	 * pipeline so the program canvas doesn't go permanently black. */
 	createEngineBPipeline(engineBUrl: string, options?: { onControlState?: (data: Uint8Array) => void }): void {
-		if (this.pipelineB) return;
+		if (this.pipelineB && this.engineBUrl === engineBUrl) return;
+		const wasFailedOver = this.pipelineB !== null && this._activeEngine === 'B';
+		if (this.pipelineB) {
+			this.pipelineB.destroy();
+			this.pipelineB = null;
+			this.connectedSourcesB = new Set<string>();
+		}
 		this.pipelineB = createMediaPipeline({
 			engineBaseUrl: engineBUrl,
 			...(options?.onControlState ? { onControlState: options.onControlState } : {}),
 		});
+		this.engineBUrl = engineBUrl;
+
+		// Mid-failover URL replacement: the destroyed pipeline had canvases
+		// attached. The DOM canvas elements survive, but their renderers are
+		// gone. Re-attach them to the fresh pipelineB so the operator gets
+		// video back once media flows. Sources will be re-subscribed by the
+		// enableWarmStandby / failover caller.
+		if (wasFailedOver) {
+			for (const key of this.attachedCanvases) {
+				const canvas = document.getElementById(`tile-${key}`) as HTMLCanvasElement | null;
+				if (canvas) {
+					this.pipelineB.addSource(key);
+					this.pipelineB.connectSource(key);
+					this.connectedSourcesB.add(key);
+					this.pipelineB.attachCanvas(key, `tile-${key}`, canvas);
+				}
+			}
+			if (this.currentProgramCanvasEl) {
+				// UI subscribes only to program-preview (low-bitrate copy).
+				// Full-quality `program` is for SRT/recording output, never
+				// for browser delivery.
+				this.pipelineB.addSource('program-preview');
+				this.pipelineB.connectSource('program-preview');
+				this.connectedSourcesB.add('program-preview');
+				this.pipelineB.attachCanvas('program-preview', 'program', this.currentProgramCanvasEl);
+			}
+			if (this.currentPreviewCanvas && this.currentPreviewCanvasEl) {
+				// Preview binds to one of the tile sources, but don't assume —
+				// defensively subscribe before attaching so a future preview
+				// source outside `attachedCanvases` doesn't silently fail
+				// (attachCanvas returns false on an unknown source).
+				if (!this.connectedSourcesB.has(this.currentPreviewCanvas)) {
+					this.pipelineB.addSource(this.currentPreviewCanvas);
+					this.pipelineB.connectSource(this.currentPreviewCanvas);
+					this.connectedSourcesB.add(this.currentPreviewCanvas);
+				}
+				this.pipelineB.attachCanvas(this.currentPreviewCanvas, 'preview', this.currentPreviewCanvasEl);
+			}
+		}
 	}
 
 	/** Destroy Engine B pipeline. */
 	destroyEngineBPipeline(): void {
 		this.pipelineB?.destroy();
 		this.pipelineB = null;
+		this.engineBUrl = null;
 		this.connectedSourcesB = new Set<string>();
 		this._warmStandbyActive = false;
 		this._warmStandbyLastHealthy = 0;
@@ -298,19 +346,34 @@ export class PipelineManager {
 
 	/**
 	 * Proactively create and maintain a warm Engine B pipeline.
-	 * Connects all sources plus 'program' and 'program-preview' on B,
+	 * Connects all sources plus 'program-preview' on B,
 	 * but does NOT attach any canvases. MoQ transports stay running so
 	 * failover only needs to swap canvases (instant, no 3s wait).
+	 *
+	 * Safe to call repeatedly. If the engine B URL changes (re-provisioning),
+	 * the existing pipelineB is torn down and re-created against the new URL
+	 * via createEngineBPipeline — connectedSourcesB is cleared as part of
+	 * that teardown, so sources are re-subscribed on the fresh pipeline.
 	 */
 	enableWarmStandby(engineBUrl: string, sourceKeys: string[], options?: { onControlState?: (data: Uint8Array) => void }): void {
-		// Create Engine B pipeline if not exists
+		// Fast path: URL unchanged and warm standby already running. Steady-
+		// state source churn is driven by `syncWarmStandby` on its own
+		// $effect. Returning early here prevents an O(N_sources) sweep on
+		// every state tick when a caller (the warm-standby $effect) re-runs
+		// because `store.state.sources` identity changed.
+		if (this.pipelineB && this.engineBUrl === engineBUrl && this._warmStandbyActive) return;
+
+		// createEngineBPipeline handles both first-time creation and the URL-
+		// changed rebuild case. After it returns, connectedSourcesB reflects
+		// which sources are subscribed on the current pipelineB.
 		this.createEngineBPipeline(engineBUrl, options);
 		if (!this.pipelineB) return;
 
 		this._warmStandbyActive = true;
 
-		// Connect all source keys
-		const allKeys = [...sourceKeys, 'program', 'program-preview'];
+		// Connect all source keys plus program-preview. Full-quality `program`
+		// is never subscribed from the browser — it's for SRT / record output.
+		const allKeys = [...sourceKeys, 'program-preview'];
 		for (const key of allKeys) {
 			if (!this.connectedSourcesB.has(key)) {
 				this.pipelineB.addSource(key);
@@ -338,9 +401,9 @@ export class PipelineManager {
 			}
 		}
 
-		// Remove stale sources (keep program/program-preview)
+		// Remove stale sources (keep program-preview)
 		for (const key of this.connectedSourcesB) {
-			if (key === 'program' || key === 'program-preview') continue;
+			if (key === 'program-preview') continue;
 			if (!sourceKeySet.has(key)) {
 				this.pipelineB.removeSource(key);
 				this.connectedSourcesB.delete(key);
@@ -408,39 +471,35 @@ export class PipelineManager {
 		for (const key of this.connectedSources) {
 			this.pipeline.disconnectSource(key);
 		}
-		// Also disconnect program/program-preview streams
-		this.pipeline.disconnectSource('program');
 		this.pipeline.disconnectSource('program-preview');
 
-		// Attach to Engine B's program source
-		this.pipelineB.attachCanvas('program', 'program', this.currentProgramCanvasEl);
+		// Attach to Engine B's program-preview (UI never subscribes to
+		// full-quality `program`).
+		this.pipelineB.attachCanvas('program-preview', 'program', this.currentProgramCanvasEl);
+		this.currentProgramCanvas = 'program-preview';
 		this._activeEngine = 'B';
 	}
 
 	/**
-	 * Move the program canvas back from Engine B to Engine A.
-	 * Re-evaluates whether program-preview is available (preferred over full program).
-	 * Reconnects Engine A's MoQ transports that were paused during failover.
+	 * Move the program canvas back from Engine B to Engine A. Reconnects
+	 * Engine A's MoQ transports that were paused during failover.
 	 */
 	switchProgramToEngineA(): void {
 		if (!this.pipelineB) return;
 
 		// Detach from Engine B
-		this.pipelineB.detachCanvas('program', 'program');
+		this.pipelineB.detachCanvas('program-preview', 'program');
 
 		// Reconnect Engine A's MoQ transports (paused during switchProgramToEngineB)
 		for (const key of this.connectedSources) {
 			this.pipeline.connectSource(key);
 		}
-		this.pipeline.connectSource('program');
 		this.pipeline.connectSource('program-preview');
 
-		// Re-attach to Engine A, preferring program-preview if available
+		// Re-attach to Engine A's program-preview.
 		if (this.currentProgramCanvasEl) {
-			const previewReady = this.pipeline.getAudioDecoder('program-preview') !== null;
-			const programKey = previewReady ? 'program-preview' : 'program';
-			this.pipeline.attachCanvas(programKey, 'program', this.currentProgramCanvasEl);
-			this.currentProgramCanvas = programKey;
+			this.pipeline.attachCanvas('program-preview', 'program', this.currentProgramCanvasEl);
+			this.currentProgramCanvas = 'program-preview';
 		}
 		this._activeEngine = 'A';
 	}
@@ -460,7 +519,7 @@ export class PipelineManager {
 				// Warm standby path: pipeline B already exists with sources
 				// connected — skip creation, source connection, AND the 3s wait.
 				// Go straight to canvas swapping below.
-			} else if (this.pipelineB && this.pipelineB.getAudioDecoder('program')) {
+			} else if (this.pipelineB && this.pipelineB.getAudioDecoder('program-preview')) {
 				// Pipeline B exists and has media flowing — treat as warm.
 				// This covers the gap between enableWarmStandby() being called
 				// and _warmStandbyActive propagating (200-500ms window).
@@ -469,14 +528,12 @@ export class PipelineManager {
 				this.createEngineBPipeline(engineBUrl, options);
 				if (!this.pipelineB) return;
 
-				// Connect all sources on Engine B
+				// Connect source tiles + program-preview on Engine B. Full-
+				// quality `program` is never subscribed from the browser.
 				for (const key of sourceKeys) {
 					this.pipelineB.addSource(key);
 					this.pipelineB.connectSource(key);
 				}
-				// Also connect program streams
-				this.pipelineB.addSource('program');
-				this.pipelineB.connectSource('program');
 				this.pipelineB.addSource('program-preview');
 				this.pipelineB.connectSource('program-preview');
 
@@ -547,15 +604,14 @@ export class PipelineManager {
 	}
 
 	/**
-	 * Poll until the pipeline has a configured audio decoder for 'program' or
+	 * Poll until the pipeline has a configured audio decoder for
 	 * 'program-preview' (indicating MoQ catalog arrival), or timeout expires.
 	 */
 	private waitForPipelineReady(pipeline: MediaPipeline, timeoutMs: number): Promise<void> {
 		return new Promise((resolve) => {
 			const start = Date.now();
 			const check = () => {
-				// Check if program source has been configured (audio decoder exists)
-				if (pipeline.getAudioDecoder('program') || pipeline.getAudioDecoder('program-preview')) {
+				if (pipeline.getAudioDecoder('program-preview')) {
 					resolve();
 					return;
 				}
@@ -577,16 +633,13 @@ export class PipelineManager {
 	/** Whether warm standby pipeline has an active MoQ connection (receiving media). */
 	get warmStandbyHealthy(): boolean {
 		if (!this._warmStandbyActive || !this.pipelineB) return false;
-		const hasDecoder = this.pipelineB.getAudioDecoder('program') !== null
-			|| this.pipelineB.getAudioDecoder('program-preview') !== null;
+		const hasDecoder = this.pipelineB.getAudioDecoder('program-preview') !== null;
 		// Also check that video frames have arrived recently (within 3s).
 		// Audio decoder presence alone doesn't prove video is flowing —
 		// the video subscription could be stalled while audio works fine.
 		const now = performance.now();
-		const lastProgramFrame = this.pipelineB.getLastFrameTime('program');
 		const lastPreviewFrame = this.pipelineB.getLastFrameTime('program-preview');
-		const latestFrame = Math.max(lastProgramFrame, lastPreviewFrame);
-		const hasRecentVideo = latestFrame > 0 && (now - latestFrame) < 3000;
+		const hasRecentVideo = lastPreviewFrame > 0 && (now - lastPreviewFrame) < 3000;
 		if (hasDecoder && hasRecentVideo) {
 			this._warmStandbyLastHealthy = Date.now();
 			return true;
@@ -649,8 +702,7 @@ export class PipelineManager {
 		}
 		this.sourceLevels = levels;
 
-		const programDecoder = activePipeline.getAudioDecoder('program-preview')
-			?? activePipeline.getAudioDecoder('program');
+		const programDecoder = activePipeline.getAudioDecoder('program-preview');
 		if (programDecoder) {
 			const pl = programDecoder.getLevels();
 			this.programLevels = { peakL: pl.peak[0] ?? 0, peakR: pl.peak[1] ?? 0 };

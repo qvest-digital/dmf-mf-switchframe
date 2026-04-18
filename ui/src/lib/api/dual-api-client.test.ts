@@ -29,7 +29,7 @@ describe('DualApiClient', () => {
 		expect(mockFetch.mock.calls[0][0]).toBe('https://b.example.com/api/sync/state-snapshot');
 	});
 
-	it('addEngine is idempotent — does not duplicate engines', async () => {
+	it('addEngine with identical URL for existing id is a no-op', async () => {
 		const mockFetch = vi
 			.fn()
 			.mockResolvedValue(new Response('{}', { status: 200 }));
@@ -39,11 +39,31 @@ describe('DualApiClient', () => {
 			engines: [{ id: 'A', url: 'https://a.example.com' }],
 		});
 
-		client.addEngine('A', 'https://different.example.com');
+		client.addEngine('A', 'https://a.example.com');
 
-		// Should still use original URL
 		await client.getStateSnapshot('A');
 		expect(mockFetch.mock.calls[0][0]).toBe('https://a.example.com/api/sync/state-snapshot');
+	});
+
+	it('addEngine with new URL for existing id updates the target URL', async () => {
+		// When an engine is re-provisioned at a new URL, subsequent snapshot
+		// targets must go to the new URL, not the dead one.
+		const mockFetch = vi
+			.fn()
+			.mockResolvedValue(new Response('{}', { status: 200 }));
+		vi.stubGlobal('fetch', mockFetch);
+
+		const client = new DualApiClient({
+			engines: [
+				{ id: 'A', url: 'https://a.example.com' },
+				{ id: 'B', url: 'https://b-old.example.com' },
+			],
+		});
+
+		client.addEngine('B', 'https://b-new.example.com');
+
+		await client.getStateSnapshot('B');
+		expect(mockFetch.mock.calls[0][0]).toBe('https://b-new.example.com/api/sync/state-snapshot');
 	});
 
 	// --- getStateSnapshot ---

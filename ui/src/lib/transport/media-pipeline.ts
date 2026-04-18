@@ -186,10 +186,11 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 
 				// Notify once that MoQ is active (catalog received = WebTransport
 				// + MoQ handshake succeeded, control data will flow on state changes).
-				// Only fire for program/program-preview — these are the critical sources
-				// that gate the polling→MoQ transition. A tile connecting first must not
-				// suppress REST polling before the program feed is confirmed working.
-				if (!moqActiveNotified && (key === 'program' || key === 'program-preview')) {
+				// Fire only for program-preview (the browser-visible program feed);
+				// full-quality `program` is never subscribed from the browser. A tile
+				// connecting first must not suppress REST polling before the program
+				// feed is confirmed working.
+				if (!moqActiveNotified && key === 'program-preview') {
 					moqActiveNotified = true;
 					config?.onMoQActive?.();
 				}
@@ -273,7 +274,7 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 			},
 
 			onCaptionFrame(caption: CaptionData, timestamp: number) {
-				if ((key === 'program' || key === 'program-preview') && config?.onProgramCaptionFrame) {
+				if (key === 'program-preview' && config?.onProgramCaptionFrame) {
 					config.onProgramCaptionFrame(caption, timestamp);
 				}
 			},
@@ -461,10 +462,9 @@ export function createMediaPipeline(config?: MediaPipelineConfig): MediaPipeline
 		if (source.transport) return; // already connected
 
 		const callbacks = makeCallbacks(key);
-		// Program/program-preview get high priority (16) so QUIC schedules them
+		// program-preview gets high priority (16) so QUIC schedules it
 		// ahead of multiview tiles (96) during bandwidth contention.
-		const isProgramFeed = key === "program" || key === "program-preview";
-		const videoPriority = isProgramFeed ? 16 : 96;
+		const videoPriority = key === "program-preview" ? 16 : 96;
 		const transport = new MoQTransport(key, callbacks, videoPriority, config?.engineBaseUrl);
 		source.transport = transport;
 

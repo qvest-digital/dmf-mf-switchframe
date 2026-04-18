@@ -763,12 +763,61 @@ describe('DualConnectionManager', () => {
 			expect(instanceB.start).not.toHaveBeenCalled();
 		});
 
-		it('does not add duplicate engine', () => {
+		it('addEngine with identical URL for existing id is a no-op', () => {
 			const mgr = new DualConnectionManager(makeSingleConfig());
 			mgr.addEngine('B', 'https://engine-b.example.com');
-			mgr.addEngine('B', 'https://engine-b2.example.com'); // should be ignored
+			const countAfterFirstAdd = MockedConnectionManager.mock.calls.length;
 
-			expect(MockedConnectionManager).toHaveBeenCalledTimes(2); // 1 original + 1 added
+			mgr.addEngine('B', 'https://engine-b.example.com'); // same URL
+
+			expect(MockedConnectionManager).toHaveBeenCalledTimes(countAfterFirstAdd);
+		});
+
+		it('addEngine with new URL for existing id replaces the ConnectionManager', () => {
+			// When an engine is re-provisioned at a new URL (crash +
+			// control-plane re-issue), addEngine must tear down the old
+			// subscription and connect to the new URL so the UI doesn't stay
+			// pinned to the dead address.
+			const mgr = new DualConnectionManager(makeSingleConfig());
+			mgr.addEngine('B', 'https://engine-b-old.example.com');
+			const oldInstance = MockedConnectionManager.mock.results[1].value;
+
+			mgr.addEngine('B', 'https://engine-b-new.example.com');
+
+			// Old manager stopped
+			expect(oldInstance.stop).toHaveBeenCalledOnce();
+			// New ConnectionManager created with the new URL
+			expect(MockedConnectionManager).toHaveBeenCalledTimes(3);
+			expect(MockedConnectionManager).toHaveBeenNthCalledWith(
+				3,
+				expect.objectContaining({ url: 'https://engine-b-new.example.com' })
+			);
+		});
+
+		it('addEngine replacement starts the new manager if session is already started', async () => {
+			const mgr = new DualConnectionManager(makeSingleConfig());
+			await mgr.start();
+			const instanceA = MockedConnectionManager.mock.results[0].value;
+			instanceA._config.onInitialLoadComplete();
+
+			mgr.addEngine('B', 'https://engine-b-old.example.com');
+			const newInstanceB1 = MockedConnectionManager.mock.results[1].value;
+			expect(newInstanceB1.start).toHaveBeenCalledOnce();
+
+			mgr.addEngine('B', 'https://engine-b-new.example.com');
+			const newInstanceB2 = MockedConnectionManager.mock.results[2].value;
+			expect(newInstanceB2.start).toHaveBeenCalledOnce();
+		});
+
+		it('addEngine replacement disconnects the old engine in the reconciler', () => {
+			const mgr = new DualConnectionManager(makeSingleConfig());
+			const reconcilerInstance = mockedCreateReconciler.mock.results[0].value;
+			mgr.addEngine('B', 'https://engine-b-old.example.com');
+			reconcilerInstance.disconnect.mockClear();
+
+			mgr.addEngine('B', 'https://engine-b-new.example.com');
+
+			expect(reconcilerInstance.disconnect).toHaveBeenCalledWith('B');
 		});
 
 		it('starts engine B immediately if all initial engines have failed', async () => {

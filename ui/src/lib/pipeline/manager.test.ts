@@ -162,16 +162,33 @@ describe('PipelineManager', () => {
 	});
 
 	describe('syncProgramPreviewCanvases', () => {
-		it('should attach program canvas when provided', () => {
+		it('should attach program canvas to program-preview source when provided', () => {
+			// UI renders exclusively from program-preview; full-quality
+			// `program` is never subscribed from the browser.
 			const pgmCanvas = createCanvas();
 			const pvwCanvas = createCanvas();
 			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, pvwCanvas);
 
 			expect(pipeline.attachCanvas).toHaveBeenCalledWith(
-				'program',
+				'program-preview',
 				'program',
 				pgmCanvas,
 			);
+		});
+
+		it('never subscribes to or attaches the full-quality `program` source', () => {
+			const pgmCanvas = createCanvas();
+			const pvwCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, pvwCanvas);
+
+			// The UI must not touch the full-quality `program` MoQ source in
+			// any way — no addSource, no connectSource, no attachCanvas.
+			const programSourceCalls = pipeline.attachCanvas.mock.calls.filter(
+				(c: unknown[]) => c[0] === 'program',
+			);
+			expect(programSourceCalls).toHaveLength(0);
+			expect(pipeline.addSource).not.toHaveBeenCalledWith('program');
+			expect(pipeline.connectSource).not.toHaveBeenCalledWith('program');
 		});
 
 		it('should attach preview canvas for the preview source', () => {
@@ -195,7 +212,7 @@ describe('PipelineManager', () => {
 			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, pvwCanvas);
 
 			const programCalls = pipeline.attachCanvas.mock.calls.filter(
-				(c: unknown[]) => c[0] === 'program' && c[1] === 'program',
+				(c: unknown[]) => c[0] === 'program-preview' && c[1] === 'program',
 			);
 			expect(programCalls).toHaveLength(0);
 		});
@@ -255,9 +272,9 @@ describe('PipelineManager', () => {
 			const pgmCanvas = createCanvas();
 			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, null);
 
-			// Program should be attached
+			// Program-preview should be attached to the program canvas slot.
 			expect(pipeline.attachCanvas).toHaveBeenCalledWith(
-				'program',
+				'program-preview',
 				'program',
 				pgmCanvas,
 			);
@@ -274,7 +291,7 @@ describe('PipelineManager', () => {
 
 			// Program should not be attached (no canvas)
 			const programCalls = pipeline.attachCanvas.mock.calls.filter(
-				(c: unknown[]) => c[0] === 'program' && c[1] === 'program',
+				(c: unknown[]) => c[1] === 'program',
 			);
 			expect(programCalls).toHaveLength(0);
 			// Preview should be attached
@@ -393,7 +410,7 @@ describe('PipelineManager', () => {
 
 			manager.onLayoutChange();
 
-			expect(pipeline.detachCanvas).toHaveBeenCalledWith('program', 'program');
+			expect(pipeline.detachCanvas).toHaveBeenCalledWith('program-preview', 'program');
 		});
 
 		it('should detach preview canvas', async () => {
@@ -428,7 +445,7 @@ describe('PipelineManager', () => {
 				expect.any(HTMLCanvasElement),
 			);
 			expect(pipeline.attachCanvas).toHaveBeenCalledWith(
-				'program',
+				'program-preview',
 				'program',
 				newPgm,
 			);
@@ -498,7 +515,7 @@ describe('PipelineManager', () => {
 				getLevels: vi.fn().mockReturnValue({ peak: [0.8, 0.6], rms: [0, 0], peakHold: [0, 0], channels: 2 }),
 			};
 			pipeline.getAudioDecoder.mockImplementation((key: string) => {
-				if (key === 'program') return mockProgramDecoder;
+				if (key === 'program-preview') return mockProgramDecoder;
 				return null;
 			});
 
@@ -612,11 +629,80 @@ describe('PipelineManager', () => {
 			expect(bPipeline.destroy).toHaveBeenCalled();
 		});
 
-		it('createEngineBPipeline is idempotent', () => {
+		it('createEngineBPipeline with identical URL is idempotent', () => {
 			manager.createEngineBPipeline('https://engine-b.example.com');
 			manager.createEngineBPipeline('https://engine-b.example.com');
 			expect(manager.hasEngineBPipeline).toBe(true);
 			expect(mockedCreateMediaPipeline).toHaveBeenCalledTimes(1);
+		});
+
+		it('createEngineBPipeline with new URL rebuilds the pipeline', () => {
+			// Engine B re-provisioned at a new URL — the existing pipelineB
+			// points at the dead URL and must be torn down and rebuilt.
+			manager.createEngineBPipeline('https://engine-b-old.example.com');
+			const oldPipeline = mockedCreateMediaPipeline.mock.results[0].value;
+
+			manager.createEngineBPipeline('https://engine-b-new.example.com');
+
+			expect(oldPipeline.destroy).toHaveBeenCalled();
+			expect(mockedCreateMediaPipeline).toHaveBeenCalledTimes(2);
+			expect(mockedCreateMediaPipeline).toHaveBeenNthCalledWith(2, {
+				engineBaseUrl: 'https://engine-b-new.example.com',
+			});
+			expect(manager.hasEngineBPipeline).toBe(true);
+		});
+
+		it('createEngineBPipeline URL replacement mid-failover re-attaches program canvas', async () => {
+			// Edge case: Engine B dies while we are actively failed over to
+			// it. Both engines briefly unreachable, control plane provisions
+			// a replacement B, cpDiscovery surfaces the new URL, addEngine
+			// fires createEngineBPipeline with the new URL. The destroyed
+			// pipelineB had the program canvas attached — it must be
+			// re-attached to the new pipelineB or the operator sees a
+			// permanently black program.
+			sourceKeys = ['cam1'];
+			await manager.syncSources(makeSources('cam1'));
+
+			const programCanvas = createCanvas();
+			manager.syncProgramPreviewCanvases('cam1', programCanvas, null);
+
+			// Warm standby + failover to B.
+			manager.enableWarmStandby('https://engine-b-old.example.com', ['cam1']);
+			const oldPipeline = mockedCreateMediaPipeline.mock.results[0].value;
+			// Make old pipeline appear ready for failover.
+			oldPipeline.getAudioDecoder.mockReturnValue({});
+			await manager.failoverToEngineB('https://engine-b-old.example.com', ['cam1']);
+			expect(manager.activeEngine).toBe('B');
+
+			// B is re-provisioned at a new URL — cpDiscovery path triggers
+			// createEngineBPipeline(newUrl). The rebuild must re-attach the
+			// program canvas to the fresh pipelineB.
+			manager.createEngineBPipeline('https://engine-b-new.example.com');
+
+			const newPipeline = mockedCreateMediaPipeline.mock.results[1].value;
+			// Re-attach program canvas to program-preview (UI never connects to
+			// full-quality `program`; that channel is for SRT/record output).
+			expect(newPipeline.attachCanvas).toHaveBeenCalledWith('program-preview', 'program', programCanvas);
+			// Tile canvases also re-attach from the attachedCanvases set.
+			expect(newPipeline.attachCanvas).toHaveBeenCalledWith('cam1', 'tile-cam1', expect.any(HTMLCanvasElement));
+		});
+
+		it('enableWarmStandby with new URL rebuilds pipelineB and re-connects sources', () => {
+			manager.enableWarmStandby('https://engine-b-old.example.com', ['cam1', 'cam2']);
+			const oldPipeline = mockedCreateMediaPipeline.mock.results[0].value;
+			expect(oldPipeline.connectSource).toHaveBeenCalledWith('cam1');
+			expect(oldPipeline.connectSource).toHaveBeenCalledWith('cam2');
+
+			manager.enableWarmStandby('https://engine-b-new.example.com', ['cam1', 'cam2']);
+
+			expect(oldPipeline.destroy).toHaveBeenCalled();
+			const newPipeline = mockedCreateMediaPipeline.mock.results[1].value;
+			// Source tiles + program-preview must be connected on the new pipeline.
+			expect(newPipeline.addSource).toHaveBeenCalledWith('cam1');
+			expect(newPipeline.connectSource).toHaveBeenCalledWith('cam1');
+			expect(newPipeline.addSource).toHaveBeenCalledWith('cam2');
+			expect(newPipeline.connectSource).toHaveBeenCalledWith('cam2');
+			expect(newPipeline.addSource).toHaveBeenCalledWith('program-preview');
 		});
 
 		it('connectSourceB adds and connects source on Engine B', () => {
@@ -698,15 +784,15 @@ describe('PipelineManager', () => {
 			// Create Engine B pipeline
 			manager.createEngineBPipeline('https://engine-b.example.com');
 			const bPipeline = mockedCreateMediaPipeline.mock.results[0].value;
-			manager.connectSourceB('program');
+			manager.connectSourceB('program-preview');
 
 			// Switch to Engine B
 			manager.switchProgramToEngineB();
 
-			// Should detach from Engine A's program source
-			expect(pipeline.detachCanvas).toHaveBeenCalledWith('program', 'program');
-			// Should attach to Engine B's program source
-			expect(bPipeline.attachCanvas).toHaveBeenCalledWith('program', 'program', pgmCanvas);
+			// Should detach from Engine A's program-preview (UI-visible program feed)
+			expect(pipeline.detachCanvas).toHaveBeenCalledWith('program-preview', 'program');
+			// Should attach to Engine B's program-preview
+			expect(bPipeline.attachCanvas).toHaveBeenCalledWith('program-preview', 'program', pgmCanvas);
 		});
 
 		it('switchProgramToEngineA moves program canvas back to Engine A', () => {
@@ -727,10 +813,10 @@ describe('PipelineManager', () => {
 			// Switch back to Engine A
 			manager.switchProgramToEngineA();
 
-			// Should detach from Engine B
-			expect(bPipeline.detachCanvas).toHaveBeenCalledWith('program', 'program');
-			// Should re-attach to Engine A
-			expect(pipeline.attachCanvas).toHaveBeenCalledWith('program', 'program', pgmCanvas);
+			// Should detach from Engine B's program-preview
+			expect(bPipeline.detachCanvas).toHaveBeenCalledWith('program-preview', 'program');
+			// Should re-attach to Engine A's program-preview
+			expect(pipeline.attachCanvas).toHaveBeenCalledWith('program-preview', 'program', pgmCanvas);
 		});
 
 		it('switchProgramToEngineB is no-op without Engine B pipeline', () => {
@@ -751,36 +837,29 @@ describe('PipelineManager', () => {
 		it('switchProgramToEngineB is no-op without program canvas', () => {
 			manager.createEngineBPipeline('https://engine-b.example.com');
 			const bPipeline = mockedCreateMediaPipeline.mock.results[0].value;
-			manager.connectSourceB('program');
+			manager.connectSourceB('program-preview');
 
 			// No program canvas was ever set
 			manager.switchProgramToEngineB();
 			expect(bPipeline.attachCanvas).not.toHaveBeenCalled();
 		});
 
-		it('switchProgramToEngineA restores program-preview if available', () => {
-			// Simulate program-preview being ready (getAudioDecoder returns non-null)
-			pipeline.getAudioDecoder.mockImplementation((key: string) => {
-				if (key === 'program-preview') return { getLevels: vi.fn().mockReturnValue({ peak: [0, 0], rms: [0, 0], peakHold: [0, 0], channels: 2 }) };
-				return null;
-			});
-
+		it('switchProgramToEngineA always attaches program-preview', () => {
 			const pgmCanvas = createCanvas();
 			const pvwCanvas = createCanvas();
 			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, pvwCanvas);
 
 			manager.createEngineBPipeline('https://engine-b.example.com');
 			const bPipeline = mockedCreateMediaPipeline.mock.results[0].value;
-			manager.connectSourceB('program');
+			manager.connectSourceB('program-preview');
 			manager.switchProgramToEngineB();
 
 			bPipeline.detachCanvas.mockClear();
 			pipeline.attachCanvas.mockClear();
 
-			// Switch back — should use program-preview since it's available
 			manager.switchProgramToEngineA();
 
-			expect(bPipeline.detachCanvas).toHaveBeenCalledWith('program', 'program');
+			expect(bPipeline.detachCanvas).toHaveBeenCalledWith('program-preview', 'program');
 			expect(pipeline.attachCanvas).toHaveBeenCalledWith('program-preview', 'program', pgmCanvas);
 		});
 
@@ -790,7 +869,7 @@ describe('PipelineManager', () => {
 			const pgmCanvas = createCanvas();
 			manager.syncProgramPreviewCanvases('cam1', pgmCanvas, null);
 			manager.createEngineBPipeline('https://engine-b.example.com');
-			manager.connectSourceB('program');
+			manager.connectSourceB('program-preview');
 
 			manager.switchProgramToEngineB();
 			expect(manager.activeEngine).toBe('B');
@@ -821,10 +900,11 @@ describe('PipelineManager', () => {
 			// Add sources to track attached canvases
 			await manager.syncSources(makeSources('cam1', 'cam2'));
 
-			// Make the mock pipeline B return a ready audio decoder for program
+			// Make the mock pipeline B return a ready audio decoder for
+			// program-preview (the browser-visible program feed).
 			const bPipelineMock = createMockPipeline();
 			bPipelineMock.getAudioDecoder.mockImplementation((key: string) => {
-				if (key === 'program') return { getLevels: vi.fn().mockReturnValue({ peak: [0, 0] }) } as any;
+				if (key === 'program-preview') return { getLevels: vi.fn().mockReturnValue({ peak: [0, 0] }) } as any;
 				return null;
 			});
 			mockedCreateMediaPipeline.mockReturnValueOnce(bPipelineMock);
@@ -839,12 +919,14 @@ describe('PipelineManager', () => {
 			expect(manager.activeEngine).toBe('B');
 			expect(manager.hasEngineBPipeline).toBe(true);
 
-			// Verify Engine B has sources connected
+			// Verify Engine B has source tiles + program-preview connected.
+			// Full-quality `program` is never subscribed from the browser.
 			expect(bPipelineMock.addSource).toHaveBeenCalledWith('cam1');
 			expect(bPipelineMock.addSource).toHaveBeenCalledWith('cam2');
-			expect(bPipelineMock.addSource).toHaveBeenCalledWith('program');
 			expect(bPipelineMock.addSource).toHaveBeenCalledWith('program-preview');
-			expect(bPipelineMock.connectSource).toHaveBeenCalledWith('program');
+			expect(bPipelineMock.connectSource).toHaveBeenCalledWith('program-preview');
+			expect(bPipelineMock.addSource).not.toHaveBeenCalledWith('program');
+			expect(bPipelineMock.connectSource).not.toHaveBeenCalledWith('program');
 		});
 
 		it('restoreToEngineA switches back and destroys pipeline B', async () => {
@@ -1038,15 +1120,16 @@ describe('PipelineManager', () => {
 			});
 
 			const bPipeline = mockedCreateMediaPipeline.mock.results[0].value;
-			// Should connect all source keys plus program and program-preview
+			// Should connect source tiles plus program-preview. The full-quality
+			// `program` MoQ source is never subscribed from the browser.
 			expect(bPipeline.addSource).toHaveBeenCalledWith('cam1');
 			expect(bPipeline.addSource).toHaveBeenCalledWith('cam2');
-			expect(bPipeline.addSource).toHaveBeenCalledWith('program');
 			expect(bPipeline.addSource).toHaveBeenCalledWith('program-preview');
 			expect(bPipeline.connectSource).toHaveBeenCalledWith('cam1');
 			expect(bPipeline.connectSource).toHaveBeenCalledWith('cam2');
-			expect(bPipeline.connectSource).toHaveBeenCalledWith('program');
 			expect(bPipeline.connectSource).toHaveBeenCalledWith('program-preview');
+			expect(bPipeline.addSource).not.toHaveBeenCalledWith('program');
+			expect(bPipeline.connectSource).not.toHaveBeenCalledWith('program');
 		});
 
 		it('enableWarmStandby is idempotent (calling twice is safe)', () => {
