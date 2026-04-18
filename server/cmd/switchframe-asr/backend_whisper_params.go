@@ -23,21 +23,33 @@ type whisperFullOpts struct {
 	TokenTimestamps   bool
 }
 
-// buildWhisperFullOpts returns the broadcast-tuned defaults for live captioning.
-// All values chosen to favor low, predictable latency over peak accuracy on
-// long-form audio: greedy decode, no temperature fallback, no cross-chunk
-// context (use initial_prompt for coherence instead), single segment per call,
-// hard token cap.
+// buildWhisperFullOpts returns the live-broadcast tuned full-params.
+// Optimised for batch-per-utterance: one Transcribe call per VAD-bounded
+// utterance, audio length up to ~8 seconds (forced flush) or whatever
+// VAD reports as utterance end.
+//
+// Calibration notes from the eval harness (see asr_eval_test.go):
+//   - SingleSegment is false. With it true, long utterances get
+//     truncated; letting whisper segment naturally is more accurate.
+//   - NoContext is false (whisper.cpp default). Disabling cross-call
+//     KV-cache reuse looked attractive but the eval reproduced it
+//     dropping the first half of multi-sentence utterances on fast
+//     and long fixtures. We get cross-utterance coherence via
+//     initial_prompt explicitly instead.
+//   - MaxTokens stays 0 (no cap). 32 was tuned for ~1s streaming
+//     chunks; in batch we want the full output.
+//   - TemperatureInc=0.2 keeps whisper's fallback ladder enabled so a
+//     greedy-decode repetition loop can recover. Cost is rare.
 func buildWhisperFullOpts(req whisperRequest) whisperFullOpts {
 	return whisperFullOpts{
 		Language:          req.Language,
 		Translate:         req.Translate,
 		NThreads:          req.NThreads,
-		NoContext:         true,
-		SingleSegment:     true,
-		MaxTokens:         32,
+		NoContext:         false,
+		SingleSegment:     false,
+		MaxTokens:         0,
 		Temperature:       0,
-		TemperatureInc:    0,
+		TemperatureInc:    0.2,
 		SuppressBlank:     true,
 		SuppressNonSpeech: true,
 		TokenTimestamps:   true,
@@ -65,6 +77,12 @@ func resolveWhisperThreads(requested, numCPU int) int {
 	return numCPU
 }
 
+// whisperMaxAudioCtx is the upper bound on whisper_full_params.audio_ctx.
+// All current whisper models report n_audio_ctx = 1500. Going past this
+// makes whisper_full return rc=-5 ("audio_ctx is larger than the maximum
+// allowed").
+const whisperMaxAudioCtx = 1500
+
 // computeAudioCtx returns the encoder context size to use for a chunk of
 // the given length, expressed as the audio_ctx whisper_full_params field
 // (positions in the encoder's downsampled frame grid). Whisper's encoder
@@ -76,7 +94,9 @@ func resolveWhisperThreads(requested, numCPU int) int {
 // going lower triggers repeat-token glitches because of how far the
 // runtime context deviates from the model's training distribution.
 //
-// The returned value is rounded up to a multiple of 64 (encoder block size).
+// The returned value is rounded up to a multiple of 64 (encoder block
+// size) and then clamped at whisperMaxAudioCtx so chunks in the 28-30s
+// window don't overshoot the model.
 func computeAudioCtx(samples, sampleRate int) int {
 	if samples <= 0 || sampleRate <= 0 {
 		return 0
@@ -89,7 +109,11 @@ func computeAudioCtx(samples, sampleRate int) int {
 		seconds = 5.0
 	}
 	raw := int(seconds/30.0*1500.0) + 128
-	return ((raw + 63) / 64) * 64
+	rounded := ((raw + 63) / 64) * 64
+	if rounded > whisperMaxAudioCtx {
+		return whisperMaxAudioCtx
+	}
+	return rounded
 }
 
 // DTW alignment-heads preset constants. Values mirror the

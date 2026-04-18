@@ -55,6 +55,15 @@ func newStreamingState() *streamingState {
 // the words that have crossed the agreement threshold since the last
 // call. The first call always returns nothing -- it just establishes the
 // baseline for the next comparison.
+//
+// committedCount is monotonically non-decreasing: once we've emitted
+// the first N words downstream, no later hypothesis can un-emit them
+// even if whisper revises them (e.g. "fox" -> "brown fox" between
+// hypotheses). Without this guarantee, a contradicting hypothesis would
+// roll committedCount back, then the next agreeing hypothesis would
+// re-emit the already-spoken audio under different words -- producing
+// the duplicated output the eval harness reproduced
+// ("the quick fox jumps... quick brown fox jumps...").
 func (s *streamingState) acceptHypothesis(hyp []asr.TranscriptWord) []asr.TranscriptWord {
 	common := longestCommonPrefix(s.prevHyp, hyp)
 	var emit []asr.TranscriptWord
@@ -62,8 +71,8 @@ func (s *streamingState) acceptHypothesis(hyp []asr.TranscriptWord) []asr.Transc
 		// Take from the new hypothesis (more accurate confidence/timing
 		// than the prev hyp's view of the same word).
 		emit = append(emit, hyp[s.committedCount:common]...)
+		s.committedCount = common
 	}
-	s.committedCount = common
 	s.prevHyp = hyp
 	return emit
 }
@@ -79,6 +88,23 @@ func (s *streamingState) flushFinal(finalHyp []asr.TranscriptWord) []asr.Transcr
 	s.committedCount = len(finalHyp)
 	s.prevHyp = finalHyp
 	return emit
+}
+
+// committedSoFar returns the words committed in the current utterance up
+// to this point. Caller may use this to roll into the cross-utterance
+// prompt window once the utterance ends. Must not be called concurrently
+// with acceptHypothesis or flushFinal.
+func (s *streamingState) committedSoFar() []asr.TranscriptWord {
+	if s.committedCount == 0 || len(s.prevHyp) == 0 {
+		return nil
+	}
+	n := s.committedCount
+	if n > len(s.prevHyp) {
+		n = len(s.prevHyp)
+	}
+	out := make([]asr.TranscriptWord, n)
+	copy(out, s.prevHyp[:n])
+	return out
 }
 
 // reset clears state for a new utterance.

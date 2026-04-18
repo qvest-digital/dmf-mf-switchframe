@@ -130,7 +130,14 @@ func (b *whisperASRBackend) Transcribe(audio []float32) []asr.TranscriptWord {
 	params.suppress_nst = C.bool(opts.SuppressNonSpeech)
 	params.token_timestamps = C.bool(opts.TokenTimestamps)
 	params.initial_prompt = promptPtr
-	params.audio_ctx = C.int(computeAudioCtx(len(audio), 16000))
+	// audio_ctx = 0 matches whisper-cli's default behavior. We reproduced
+	// whisper-cli's perfect transcription on every fixture only when the
+	// auto-scaling was off; with it on, some fixtures dropped early
+	// audio and the gains on others didn't justify the regressions.
+	// computeAudioCtx is kept (and tested) for a future streaming-mode
+	// pipeline where the per-call speedup matters.
+	_ = computeAudioCtx
+	params.audio_ctx = 0
 	params.print_progress = C.bool(false)
 	params.print_realtime = C.bool(false)
 	params.print_special = C.bool(false)

@@ -145,6 +145,73 @@ func TestStreamingCommit_FinalFlushReturnsUncommittedTail(t *testing.T) {
 	}
 }
 
+func TestStreamingState_NeverEmitsAlreadyCommittedWord(t *testing.T) {
+	// Whisper sometimes revises an early word between hypotheses
+	// (e.g. "fox" -> "brown fox"). The previous prefix-rollback bug
+	// emitted words past the (now-shorter) common prefix on the NEXT
+	// hypothesis, duplicating already-emitted text downstream.
+	s := newStreamingState()
+	s.acceptHypothesis(words("a", "b", "c"))         // baseline
+	c1 := s.acceptHypothesis(words("a", "b", "c"))   // commits a, b, c
+	if len(c1) != 3 {
+		t.Fatalf("expected 3 commits, got %v", textsOf(c1))
+	}
+	// Whisper revises position 1: b -> X. Our committed prefix
+	// already said "b" downstream; we cannot un-say it. The new
+	// hypothesis disagrees at position 1, so common = 1 < 3 = committed.
+	// We must NOT rewind committed back to 1 -- that would let the
+	// next hypothesis re-emit the same audio under different words.
+	c2 := s.acceptHypothesis(words("a", "X", "c", "d"))
+	if len(c2) != 0 {
+		t.Errorf("a contradicting hypothesis must not emit anything (rollback bug), got %v", textsOf(c2))
+	}
+	// Next hypothesis agrees with the previous one through "d" -- the
+	// only NEW committed word should be "d", not [X, c, d].
+	c3 := s.acceptHypothesis(words("a", "X", "c", "d", "e"))
+	if !slicesEqualText(textsOf(c3), []string{"d"}) {
+		t.Errorf("got %v, want [d] (must not re-emit positions already covered)", textsOf(c3))
+	}
+}
+
+func TestStreamingState_CommittedSoFarReturnsAllPriorCommits(t *testing.T) {
+	s := newStreamingState()
+	if got := s.committedSoFar(); len(got) != 0 {
+		t.Errorf("empty state should return no committed words, got %v", textsOf(got))
+	}
+	s.acceptHypothesis(words("a", "b", "c"))
+	if got := s.committedSoFar(); len(got) != 0 {
+		t.Errorf("after first hyp, nothing committed yet, got %v", textsOf(got))
+	}
+	s.acceptHypothesis(words("a", "b", "c")) // commits a, b, c
+	got := s.committedSoFar()
+	if !slicesEqualText(textsOf(got), []string{"a", "b", "c"}) {
+		t.Errorf("got %v, want [a b c]", textsOf(got))
+	}
+}
+
+func TestStreamingState_CommittedSoFarIncludesFinalFlushTail(t *testing.T) {
+	s := newStreamingState()
+	s.acceptHypothesis(words("a", "b"))
+	s.acceptHypothesis(words("a", "b")) // commits a, b
+	s.flushFinal(words("a", "b", "c", "d"))
+	got := s.committedSoFar()
+	if !slicesEqualText(textsOf(got), []string{"a", "b", "c", "d"}) {
+		t.Errorf("after flushFinal, got %v, want [a b c d]", textsOf(got))
+	}
+}
+
+func slicesEqualText(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestStreamingCommit_ResetClearsState(t *testing.T) {
 	s := newStreamingState()
 	s.acceptHypothesis(words("a", "b"))

@@ -49,8 +49,10 @@ type promptContextual interface {
 	AppendPromptContext(words []string)
 }
 
-// extendPromptContext forwards committed words to the backend's prompt
-// rolling window if it supports one.
+// extendPromptContext forwards an utterance's words to the backend's
+// initial_prompt rolling window if it supports one. Called once per
+// utterance (after batch transcribe) so the next utterance has prior
+// context for coherence.
 func extendPromptContext(b asrBackend, committed []asr.TranscriptWord) {
 	if len(committed) == 0 {
 		return
@@ -279,12 +281,14 @@ func main() {
 	running := true
 	var speechBuf []float32
 	var wasSpeaking bool
-	var speechStart, lastStep time.Time
-	streamState := newStreamingState()
+	var speechStart time.Time
 	const (
-		stepInterval     = 1 * time.Second  // re-transcribe every 1s for partial commits
-		maxUtterance     = 25 * time.Second // force flush + restart before whisper truncates at 30s
-		prerollMs        = 1000             // 1s pre-roll, prepended to each new utterance
+		// Force flush every maxUtterance even if VAD never reports
+		// speech-end -- bounds latency for long monologues. 8s is the
+		// sweet spot from the eval: long enough for whisper to have
+		// useful context, short enough that captions stay current.
+		maxUtterance     = 8 * time.Second
+		prerollMs        = 1000 // 1s pre-roll prepended to each new utterance
 		prerollSampleCnt = 16000 * prerollMs / 1000
 	)
 	preroll := newPrerollBuffer(prerollSampleCnt)
@@ -325,57 +329,41 @@ func main() {
 			switch {
 			case nowSpeaking && !wasSpeaking:
 				// Speech started. Prepend the preroll ring so we don't clip
-				// the first phoneme; preroll already includes the just-
-				// captured mono16k since we wrote it above.
+				// the first phoneme.
 				speechBuf = speechBuf[:0]
 				speechStart = time.Now()
-				lastStep = speechStart
-				streamState.reset()
 				wasSpeaking = true
 				speechBuf = append(speechBuf, preroll.Snapshot()...)
 
 			case nowSpeaking:
-				// Speech continues.
+				// Speech continues. Forced flush every maxUtterance keeps
+				// long monologues from waiting on a silence that never
+				// comes -- it also prevents feeding whisper > 25s (its
+				// hard encoder limit).
 				speechBuf = append(speechBuf, mono16k...)
-
-				if activeBackend == nil {
-					break
-				}
-
-				// Forced flush before whisper context truncation.
-				if time.Since(speechStart) >= maxUtterance {
-					hyp := activeBackend.Transcribe(speechBuf)
-					committed := streamState.flushFinal(hyp)
-					emitWords(conn, committed, true)
-					extendPromptContext(activeBackend, committed)
+				if activeBackend != nil && time.Since(speechStart) >= maxUtterance {
+					words := activeBackend.Transcribe(speechBuf)
+					emitWords(conn, words, true)
+					extendPromptContext(activeBackend, words)
 					speechBuf = speechBuf[:0]
 					speechStart = time.Now()
-					lastStep = speechStart
-					streamState.reset()
-					break
-				}
-
-				// Step transcribe + LocalAgreement-2 commit.
-				if time.Since(lastStep) >= stepInterval {
-					hyp := activeBackend.Transcribe(speechBuf)
-					committed := streamState.acceptHypothesis(hyp)
-					emitWords(conn, committed, false)
-					extendPromptContext(activeBackend, committed)
-					lastStep = time.Now()
 				}
 
 			case !nowSpeaking && wasSpeaking:
-				// Speech ended -- final pass, flush uncommitted tail.
+				// Speech ended -- single batched transcribe of the whole
+				// utterance. The eval harness showed this beats the
+				// per-step LocalAgreement-2 streaming approach by ~18
+				// percentage points of WER on long content (cumulative
+				// chunks confuse whisper's segmenter into duplicating
+				// already-committed audio under different words).
 				speechBuf = append(speechBuf, mono16k...)
 				wasSpeaking = false
 				if activeBackend != nil {
-					hyp := activeBackend.Transcribe(speechBuf)
-					committed := streamState.flushFinal(hyp)
-					emitWords(conn, committed, true)
-					extendPromptContext(activeBackend, committed)
+					words := activeBackend.Transcribe(speechBuf)
+					emitWords(conn, words, true)
+					extendPromptContext(activeBackend, words)
 				}
 				speechBuf = speechBuf[:0]
-				streamState.reset()
 			}
 
 		case msg := <-controlCh:
@@ -395,7 +383,6 @@ func main() {
 				}
 				speechBuf = speechBuf[:0]
 				wasSpeaking = false
-				streamState.reset()
 				preroll.Reset()
 			case "set_config":
 				var cfg map[string]interface{}

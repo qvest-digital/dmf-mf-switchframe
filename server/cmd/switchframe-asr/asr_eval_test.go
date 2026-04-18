@@ -167,9 +167,12 @@ func runEvalFixture(b *whisperASRBackend, f evalFixture) (evalResult, error) {
 	// Reset prompt context so prior fixtures don't leak across.
 	b.promptWords = b.promptWords[:0]
 
-	state := newStreamingState()
-	const stepSamples = evalSampleRate * 1 // 1s, mirrors main.go
+	const (
+		stepSamples         = evalSampleRate * 1  // 1s step, mirrors main.go
+		maxUtteranceSamples = evalSampleRate * 25 // 25s force flush
+	)
 
+	state := newStreamingState()
 	var committed []asr.TranscriptWord
 	var commitMs []int
 	var inferTotal time.Duration
@@ -177,11 +180,10 @@ func runEvalFixture(b *whisperASRBackend, f evalFixture) (evalResult, error) {
 	partialCount := 0
 	firstWordMs := -1
 
-	emit := func(words []asr.TranscriptWord, atMs int, partial bool) {
+	recordCommits := func(words []asr.TranscriptWord, atMs int, partial bool) {
 		if len(words) == 0 {
 			return
 		}
-		texts := make([]string, 0, len(words))
 		for _, w := range words {
 			if firstWordMs < 0 {
 				firstWordMs = atMs
@@ -191,6 +193,12 @@ func runEvalFixture(b *whisperASRBackend, f evalFixture) (evalResult, error) {
 			if partial {
 				partialCount++
 			}
+		}
+	}
+
+	rollPromptOnUtteranceEnd := func() {
+		texts := make([]string, 0)
+		for _, w := range state.committedSoFar() {
 			if w.Text != "" {
 				texts = append(texts, w.Text)
 			}
@@ -198,22 +206,46 @@ func runEvalFixture(b *whisperASRBackend, f evalFixture) (evalResult, error) {
 		b.AppendPromptContext(texts)
 	}
 
-	for end := stepSamples; end < len(samples); end += stepSamples {
+	// Streaming mode is selected via env. The eval supports both so we
+	// can compare:
+	//   ASR_EVAL_MODE=stream  (default) -- per-step LocalAgreement-2
+	//   ASR_EVAL_MODE=batch            -- single Transcribe at utterance end
+	mode := envOr("ASR_EVAL_MODE", "stream")
+
+	utteranceStart := 0
+	for utteranceStart < len(samples) {
+		utteranceEnd := utteranceStart + maxUtteranceSamples
+		if utteranceEnd > len(samples) {
+			utteranceEnd = len(samples)
+		}
+
+		if mode == "stream" {
+			// Per-step LA-2 commits.
+			stepEnd := utteranceStart + stepSamples
+			for stepEnd < utteranceEnd {
+				t0 := time.Now()
+				hyp := b.Transcribe(samples[utteranceStart:stepEnd])
+				inferTotal += time.Since(t0)
+				nInf++
+				atMs := stepEnd * 1000 / evalSampleRate
+				recordCommits(state.acceptHypothesis(hyp), atMs, true)
+				stepEnd += stepSamples
+			}
+		}
+
+		// Final pass for the utterance.
 		t0 := time.Now()
-		hyp := b.Transcribe(samples[:end])
+		hyp := b.Transcribe(samples[utteranceStart:utteranceEnd])
 		inferTotal += time.Since(t0)
 		nInf++
-		atMs := end * 1000 / evalSampleRate
-		emit(state.acceptHypothesis(hyp), atMs, true)
-	}
+		atMs := utteranceEnd * 1000 / evalSampleRate
+		recordCommits(state.flushFinal(hyp), atMs, false)
+		rollPromptOnUtteranceEnd()
 
-	// Final flush over the whole utterance.
-	t0 := time.Now()
-	hyp := b.Transcribe(samples)
-	inferTotal += time.Since(t0)
-	nInf++
+		state.reset()
+		utteranceStart = utteranceEnd
+	}
 	finalMs := len(samples) * 1000 / evalSampleRate
-	emit(state.flushFinal(hyp), finalMs, false)
 
 	parts := make([]string, len(committed))
 	for i, w := range committed {

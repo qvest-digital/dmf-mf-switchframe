@@ -9,20 +9,34 @@ func TestBuildWhisperFullOpts_LiveBroadcastDefaults(t *testing.T) {
 		NThreads:  4,
 	})
 
-	if !o.NoContext {
-		t.Error("NoContext = false, want true (avoid cross-chunk hallucination contagion)")
+	// no_context is off (whisper.cpp default). It looks tempting in
+	// streaming setups to disable cross-call state, but the eval shows
+	// no_context=true causes whisper to drop the first half of long
+	// utterances on some fixtures. We use initial_prompt explicitly for
+	// cross-utterance coherence instead.
+	if o.NoContext {
+		t.Error("NoContext = true, want false (caused dropped-first-half on fast/long fixtures)")
 	}
-	if !o.SingleSegment {
-		t.Error("SingleSegment = false, want true (one segment per chunk for streaming)")
+	// In batch mode (one Transcribe per utterance), let whisper segment
+	// naturally. single_segment forces a single segment which truncates
+	// long utterances and can lose the start of the audio.
+	if o.SingleSegment {
+		t.Error("SingleSegment = true, want false (let whisper segment batched utterances)")
 	}
-	if o.MaxTokens != 32 {
-		t.Errorf("MaxTokens = %d, want 32 (worst-case latency bound per chunk)", o.MaxTokens)
+	// No hard token cap: max_tokens=32 worked for ~1s UFAL-style chunks
+	// but truncates output on our cumulative chunks (up to 25s).
+	if o.MaxTokens != 0 {
+		t.Errorf("MaxTokens = %d, want 0 (no truncation)", o.MaxTokens)
 	}
 	if o.Temperature != 0 {
-		t.Errorf("Temperature = %f, want 0 (deterministic decode)", o.Temperature)
+		t.Errorf("Temperature = %f, want 0 (start deterministic)", o.Temperature)
 	}
-	if o.TemperatureInc != 0 {
-		t.Errorf("TemperatureInc = %f, want 0 (disable 6-step fallback)", o.TemperatureInc)
+	// Re-enable the temperature_inc safety net. Disabling it removes
+	// whisper's fallback path when greedy decode locks into a repetition
+	// loop ("the other the other...") on degenerate audio. The fallback
+	// only fires on detect-bad-decode, so its latency cost is rare.
+	if o.TemperatureInc == 0 {
+		t.Error("TemperatureInc = 0, want non-zero (recover from greedy decode loops)")
 	}
 	if !o.SuppressBlank {
 		t.Error("SuppressBlank = false, want true")
@@ -104,11 +118,24 @@ func TestComputeAudioCtx(t *testing.T) {
 	}
 }
 
-func TestComputeAudioCtx_AlwaysMultipleOf64OrZero(t *testing.T) {
+func TestComputeAudioCtx_NeverExceedsModelMax(t *testing.T) {
+	// whisper.cpp rejects audio_ctx > n_audio_ctx (1500 for all current
+	// whisper models). The eval harness exposed values up to 1600 for
+	// chunks in the 28-30s window, which whisper rejects with rc=-5.
+	for samples := 0; samples <= 16000*35; samples += 16000 / 4 {
+		got := computeAudioCtx(samples, 16000)
+		if got > 1500 {
+			t.Errorf("computeAudioCtx(%d samples) = %d, exceeds whisper's max of 1500",
+				samples, got)
+		}
+	}
+}
+
+func TestComputeAudioCtx_AlwaysMultipleOf64OrZeroOrCapped(t *testing.T) {
 	for samples := 0; samples <= 16000*30; samples += 16000 {
 		got := computeAudioCtx(samples, 16000)
-		if got != 0 && got%64 != 0 {
-			t.Errorf("computeAudioCtx(%d) = %d, not multiple of 64", samples, got)
+		if got != 0 && got != whisperMaxAudioCtx && got%64 != 0 {
+			t.Errorf("computeAudioCtx(%d) = %d, not multiple of 64 nor cap", samples, got)
 		}
 	}
 }

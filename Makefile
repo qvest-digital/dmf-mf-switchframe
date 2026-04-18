@@ -107,12 +107,14 @@ ASR_EVAL_FIXTURES_DIR ?= test/asr-fixtures
 ASR_EVAL_MODELS_DIR   ?= /opt/whisper.cpp/models
 ASR_EVAL_MODEL        ?=
 ASR_EVAL_THREADS      ?= 0
+ASR_EVAL_MODE         ?= stream
 asr-eval:
 	@cd server && \
 	  ASR_EVAL_FIXTURES_DIR="$(CURDIR)/$(ASR_EVAL_FIXTURES_DIR)" \
 	  ASR_EVAL_MODELS_DIR="$(ASR_EVAL_MODELS_DIR)" \
 	  ASR_EVAL_MODEL="$(ASR_EVAL_MODEL)" \
 	  ASR_EVAL_THREADS="$(ASR_EVAL_THREADS)" \
+	  ASR_EVAL_MODE="$(ASR_EVAL_MODE)" \
 	  go test -count=1 -tags whisper -v -timeout 10m \
 	    -run TestASREvalFixtures ./cmd/switchframe-asr
 
