@@ -33,8 +33,11 @@ import (
 )
 
 const (
-	maxDelayMs      = 500  // maximum source delay for lip-sync correction
-	defaultFTBDurMs = 1000 // default FTB transition duration in milliseconds
+	maxDelayMs = 500 // maximum source delay for lip-sync correction
+
+	minFTBDurationMs     = 100
+	maxFTBDurationMs     = 5000
+	defaultFTBDurationMs = 1000
 )
 
 // Sentinel errors for the switcher package.
@@ -46,6 +49,7 @@ var (
 	ErrNoTransition            = errors.New("switcher: no active transition")
 	ErrFormatDuringTransition  = errors.New("switcher: cannot change pipeline format during active transition")
 	ErrEncoderNotAvailable     = errors.New("switcher: encoder not available")
+	ErrInvalidFTBDuration      = errors.New("switcher: ftb duration must be 100-5000ms")
 	errTransitionNotConfigured = errors.New("transition not configured")
 	errNoProgramSource         = errors.New("no program source set")
 	errNoTargetSource          = errors.New("no target source specified")
@@ -262,6 +266,7 @@ type Switcher struct {
 	transEngine     *transition.Engine
 	transTypeOrig   string // original transition type string (e.g., "dve-push-left") for GPU dispatch
 	state           State
+	ftbDurationMs   int
 	audioTransition audioTransitionHandler
 	delayBuffer     *DelayBuffer
 	frameSync       *FrameSynchronizer
@@ -571,6 +576,7 @@ func New(programRelay *distribution.Relay) *Switcher {
 		videoProcDone:  make(chan struct{}),
 		framePool:      NewFramePool(512, defaultFmt.Width, defaultFmt.Height, defaultFmt.Color.ColorFormat),
 		thumbnailCache: NewThumbnailCache(),
+		ftbDurationMs:  defaultFTBDurationMs,
 	}
 	s.frameBudgetNs.Store(defaultFmt.FrameBudgetNs())
 	s.pipelineFormat.Store(&defaultFmt)
@@ -2393,6 +2399,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		ftbPF := s.pipelineFormat.Load()
 		ftbHintW, ftbHintH := ftbPF.Width, ftbPF.Height
 		ftbRevDecoderFactory := s.transConfig.DecoderFactory
+		ftbRevDurMs := s.ftbDurationMs
 
 		// Mark transition as starting, then release lock.
 		s.transitionState(StateFTBReversing)
@@ -2425,7 +2432,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 			engine.SetColorFormat(video.YUV422_10bit)
 		}
 
-		if err := engine.Start(fromSource, "", transition.FTBReverse, defaultFTBDurMs); err != nil {
+		if err := engine.Start(fromSource, "", transition.FTBReverse, ftbRevDurMs); err != nil {
 			s.mu.Lock()
 			s.transitionState(StateFTB) // Roll back to StateFTB
 			s.mu.Unlock()
@@ -2438,7 +2445,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		s.mu.RUnlock()
 		if audioHandler != nil {
 			audioHandler.SetProgramMute(false)
-			audioHandler.OnTransitionStart(fromSource, "", audio.FadeIn, defaultFTBDurMs)
+			audioHandler.OnTransitionStart(fromSource, "", audio.FadeIn, ftbRevDurMs)
 		}
 
 		// Now publish the engine.
@@ -2451,7 +2458,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		s.mu.Unlock()
 
 		s.log.Info("transition started",
-			"type", "ftb_reverse", "from", fromSource, "to", "", "duration_ms", defaultFTBDurMs)
+			"type", "ftb_reverse", "from", fromSource, "to", "", "duration_ms", ftbRevDurMs)
 
 		s.notifyStateChange(snapshot)
 		return nil
@@ -2466,6 +2473,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	ftbFwdPF := s.pipelineFormat.Load()
 	ftbFwdHintW, ftbFwdHintH := ftbFwdPF.Width, ftbFwdPF.Height
 	ftbFwdDecoderFactory := s.transConfig.DecoderFactory
+	ftbFwdDurMs := s.ftbDurationMs
 
 	// Mark transition as starting, then release lock.
 	s.transitionState(StateFTBTransitioning)
@@ -2498,7 +2506,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		engine.SetColorFormat(video.YUV422_10bit)
 	}
 
-	if err := engine.Start(fromSource, "", transition.FTB, defaultFTBDurMs); err != nil {
+	if err := engine.Start(fromSource, "", transition.FTB, ftbFwdDurMs); err != nil {
 		s.mu.Lock()
 		s.transitionState(StateIdle)
 		s.mu.Unlock()
@@ -2510,7 +2518,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	audioHandler := s.audioTransition
 	s.mu.RUnlock()
 	if audioHandler != nil {
-		audioHandler.OnTransitionStart(fromSource, "", audio.FadeOut, defaultFTBDurMs)
+		audioHandler.OnTransitionStart(fromSource, "", audio.FadeOut, ftbFwdDurMs)
 	}
 
 	// Now publish the engine.
@@ -2523,8 +2531,30 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	s.mu.Unlock()
 
 	s.log.Info("transition started",
-		"type", "ftb", "from", fromSource, "to", "", "duration_ms", defaultFTBDurMs)
+		"type", "ftb", "from", fromSource, "to", "", "duration_ms", ftbFwdDurMs)
 
+	s.notifyStateChange(snapshot)
+	return nil
+}
+
+func (s *Switcher) FTBDurationMs() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.ftbDurationMs
+}
+
+// SetFTBDuration updates the fade-to-black duration in ms. Range [100, 5000].
+// The change applies to the next FadeToBlack trigger; an in-flight leg keeps
+// its original rate (duration is captured under lock at FadeToBlack entry).
+func (s *Switcher) SetFTBDuration(durationMs int) error {
+	if durationMs < minFTBDurationMs || durationMs > maxFTBDurationMs {
+		return ErrInvalidFTBDuration
+	}
+	s.mu.Lock()
+	s.ftbDurationMs = durationMs
+	atomic.AddUint64(&s.seq, 1)
+	snapshot := s.buildStateLocked()
+	s.mu.Unlock()
 	s.notifyStateChange(snapshot)
 	return nil
 }
@@ -3546,6 +3576,7 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 		TransitionType:  transType,
 		InTransition:    s.state.isInTransition(),
 		FTBActive:       s.state.isFTBActive(),
+		FTBDurationMs:   s.ftbDurationMs,
 		TallyState:      tally,
 		Sources:         sources,
 		Seq:             atomic.LoadUint64(&s.seq),

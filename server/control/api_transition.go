@@ -27,6 +27,7 @@ func (a *API) registerTransitionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/switch/transition", timedHandler(a.cmdQueue, "transition", a.seqTracker, a.handleTransitionInner))
 	mux.HandleFunc("POST /api/switch/transition/position", timedHandler(a.cmdQueue, "transition_position", a.seqTracker, a.handleTransitionPositionInner))
 	mux.HandleFunc("POST /api/switch/ftb", timedHandler(a.cmdQueue, "ftb", a.seqTracker, a.handleFTBInner))
+	mux.HandleFunc("PUT /api/switch/ftb-duration", timedHandler(a.cmdQueue, "ftb_duration_set", a.seqTracker, a.handleSetFTBDurationInner))
 }
 
 // handleTransitionInner starts a mix, dip, wipe, or stinger transition to the specified source.
@@ -158,6 +159,28 @@ func (a *API) handleTransitionPositionInner(w http.ResponseWriter, r *http.Reque
 func (a *API) handleFTBInner(w http.ResponseWriter, r *http.Request, _ []byte) {
 	a.setLastOperator(r)
 	if err := a.switcher.FadeToBlack(r.Context()); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
+}
+
+// ftbDurationRequest is the JSON body for PUT /api/switch/ftb-duration.
+type ftbDurationRequest struct {
+	DurationMs int `json:"durationMs"`
+}
+
+// handleSetFTBDurationInner sets the fade-to-black transition duration.
+// body is the pre-read request body provided by timedHandler.
+func (a *API) handleSetFTBDurationInner(w http.ResponseWriter, r *http.Request, body []byte) {
+	a.setLastOperator(r)
+	var req ftbDurationRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := a.switcher.SetFTBDuration(req.DurationMs); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}

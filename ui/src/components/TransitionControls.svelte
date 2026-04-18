@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { ControlRoomState, EasingConfig, WipeConfig } from '$lib/api/types';
 	import type { FastControl } from '$lib/transport/fast-control';
-	import { cut, startTransition, setTransitionPosition, fadeToBlack, listStingers, uploadStinger, deleteStinger, wipeGetPreview, apiCall } from '$lib/api/switch-api';
+	import { cut, startTransition, setTransitionPosition, fadeToBlack, setFTBDuration, listStingers, uploadStinger, deleteStinger, wipeGetPreview, apiCall } from '$lib/api/switch-api';
 	import { AutoAnimation } from './auto-animation.svelte';
 	import { throttle } from '$lib/util/throttle';
 	import { scrubberPosition, applyKeyStep } from '$lib/util/tbar';
@@ -208,6 +208,25 @@
 		apiCall(fadeToBlack(), 'FTB failed');
 	}
 
+	let ftbDurationInput = $state(1000);
+	$effect(() => {
+		const v = crState.ftbDurationMs;
+		if (typeof v === 'number' && v !== ftbDurationInput) {
+			ftbDurationInput = v;
+		}
+	});
+
+	function commitFTBDuration() {
+		if (typeof ftbDurationInput !== 'number' || !Number.isFinite(ftbDurationInput)) {
+			ftbDurationInput = crState.ftbDurationMs ?? 1000;
+			return;
+		}
+		const clamped = Math.max(100, Math.min(5000, Math.round(ftbDurationInput)));
+		if (clamped !== ftbDurationInput) ftbDurationInput = clamped;
+		if (clamped === crState.ftbDurationMs) return;
+		apiCall(setFTBDuration(clamped), 'FTB duration failed');
+	}
+
 	async function handleUpload() {
 		const file = fileInput?.files?.[0];
 		if (!file) return;
@@ -380,6 +399,19 @@
 			<button class="btn cut" class:confirming={pendingConfirm === 'cut'} onclick={() => apiCall(cut(crState.previewSource), 'Cut failed')} disabled={!crState.previewSource}>CUT</button>
 			<button class="btn auto" onclick={handleAuto} disabled={autoDisabled}>AUTO</button>
 			<button class="btn ftb" class:active={crState.ftbActive} onclick={handleFTB} disabled={ftbDisabled}>FTB</button>
+			<label class="ftb-duration" title="Fade-to-black duration (100-5000ms)">
+				<input
+					type="number"
+					min="100"
+					max="5000"
+					step="100"
+					bind:value={ftbDurationInput}
+					onblur={commitFTBDuration}
+					onkeydown={(e) => { if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur(); }}
+					aria-label="FTB duration in milliseconds"
+				/>
+				<span class="ftb-duration-unit">ms</span>
+			</label>
 		</div>
 		<div class="type-selector" role="radiogroup" aria-label="Transition type">
 			<label class="type-option" class:selected={transType === 'mix'}>
@@ -601,6 +633,35 @@
 		color: #000;
 		border-color: var(--accent-orange);
 		box-shadow: 0 0 12px rgba(245, 158, 11, 0.4);
+	}
+
+	.ftb-duration {
+		display: inline-flex;
+		align-items: center;
+		gap: 2px;
+		margin-left: 4px;
+		font-size: var(--text-xs);
+		color: var(--text-dim);
+	}
+
+	.ftb-duration input {
+		width: 4.2em;
+		padding: 2px 4px;
+		border: 1px solid var(--border-default);
+		border-radius: var(--radius-xs);
+		background: var(--bg-elevated);
+		color: var(--text-primary);
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+	}
+
+	.ftb-duration input:focus {
+		border-color: var(--accent-orange);
+		outline: none;
+	}
+
+	.ftb-duration-unit {
+		font-family: var(--font-mono);
 	}
 
 	.type-specific:empty {

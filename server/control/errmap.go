@@ -94,6 +94,7 @@ var errorMappings = []errorMapping{
 	{switcher.ErrAlreadyOnProgram, http.StatusBadRequest},
 	{switcher.ErrInvalidDelay, http.StatusBadRequest},
 	{switcher.ErrInvalidPosition, http.StatusBadRequest},
+	{switcher.ErrInvalidFTBDuration, http.StatusBadRequest},
 	{audio.ErrInvalidTrim, http.StatusBadRequest},
 	{audio.ErrInvalidBand, http.StatusBadRequest},
 	{audio.ErrInvalidFrequency, http.StatusBadRequest},
