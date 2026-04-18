@@ -1909,7 +1909,18 @@ func (s *Switcher) videoProcessingLoop() {
 		// Previously, wallClockVideoPTS was called in broadcastToProgram
 		// (after the encode node), so raw sinks received the raw source PTS
 		// which was in a different domain than the mixer's audio PTS.
-		work.yuvFrame.PTS = s.wallClockVideoPTS(work.yuvFrame.PTS)
+		//
+		// Built-in virtual sources (source:black, source:colorbars) already
+		// produce strictly CFR PTS from an internal frame counter in their
+		// producer; feeding them through wallClockVideoPTS adds the drift-
+		// nudging feedback loop on top, which introduces ±frameDur/2 PTS
+		// steps whenever videoProcessingLoop backs up briefly — visible as
+		// the sprite animation jittering on the program output. Skip the
+		// rewrite for built-ins; their PTS is already in a monotonic CFR
+		// domain compatible with the mixer's wall-clock audio PTS.
+		if !isBuiltinSource(work.sourceKey) {
+			work.yuvFrame.PTS = s.wallClockVideoPTS(work.yuvFrame.PTS)
+		}
 
 		// Route through GPU pipeline if available, fall back to CPU.
 		gpuUsed := false

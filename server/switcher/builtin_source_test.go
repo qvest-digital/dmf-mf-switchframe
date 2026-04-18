@@ -413,6 +413,19 @@ func TestSwitcher_SpriteMotionIsMonotonic(t *testing.T) {
 	sw := newTestSwitcher(programRelay)
 	defer sw.Close()
 
+	// Stop the background producer so its concurrent Frame() calls don't
+	// race our test's pulls on the shared frameIndex counter; this test
+	// asserts a per-call invariant and needs exclusive control over the
+	// sequence of calls.
+	sw.stopBuiltinProducer()
+	// Reset the sprite counters so wherever the producer happened to be
+	// stopped doesn't bias the sequence we measure.
+	for _, bs := range sw.builtinSources {
+		bs.mu.Lock()
+		bs.frameIndex = 0
+		bs.mu.Unlock()
+	}
+
 	// Use a fixed, large format so the sprite travels far enough between
 	// frames to produce a distinct leftmost x per step.
 	fmt := PipelineFormat{Width: 1920, Height: 1080, FPSNum: 30, FPSDen: 1}
