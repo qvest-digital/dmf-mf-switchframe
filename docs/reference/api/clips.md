@@ -2,7 +2,7 @@
 
 > **Where you are:** [docs](../../../README.md) → reference → api → clips
 > **Read this first:** [api.md](../api.md)
-> **See also:** [subsystems/clips.md](../../subsystems/clips.md) · [clips.md](../../clips.md)
+> **See also:** [subsystems/clips.md](../../subsystems/clips.md) · [clips.md](../../subsystems/clips.md)
 
 **TL;DR** Eighteen endpoints manage the clip library (upload, CRUD, pin for lifecycle retention, import from recordings) and the four player slots (load, eject, play/pause/stop, seek, speed, loop). Uploads go through a transcode pipeline; progress is broadcast via `ClipUploadProgress` so the UI can show a status bar.
 
@@ -58,7 +58,7 @@
 
 **Emits:** state broadcast with progressing `ClipUpload`, then final `Sources` entry if the clip is a source.
 
-**Related:** [subsystems/clips.md#upload-pipeline](../../subsystems/clips.md#upload-pipeline)
+**Related:** [subsystems/clips.md](../../subsystems/clips.md)
 
 ---
 
@@ -172,6 +172,6 @@ Four numbered player slots live at `/api/clips/players/{n}` (n = 1-4). Each slot
 
 ## Related docs
 
-- **Concepts:** [clips.md](../../clips.md)
-- **Reference:** [api.md](../api.md) · [state-broadcast.md](../state-broadcast.md#clipplayerinfo)
+- **Concepts:** [clips.md](../../subsystems/clips.md)
+- **Reference:** [api.md](../api.md) · [state-broadcast.md](../state-broadcast.md#replay-and-clips)
 - **Subsystems:** [clips.md](../../subsystems/clips.md)

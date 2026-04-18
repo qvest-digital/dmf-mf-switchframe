@@ -177,5 +177,5 @@ State ownership: `fs.mu` guards the sources map and lifecycle flags. Each `syncS
 
 - **Concepts:** [pipeline](pipeline.md), [media-path](media-path.md), [locking-and-concurrency](locking-and-concurrency.md)
 - **Subsystems:** [switcher](../subsystems/switcher.md), [transition](../subsystems/transition.md), [audio](../subsystems/audio.md), [replay](../subsystems/replay.md), [codec](../subsystems/codec.md)
-- **Reference:** [metrics](../reference/metrics.md#framesync), [config-and-flags](../reference/config-and-flags.md)
+- **Reference:** [metrics](../reference/metrics.md#switcher-metrics), [config-and-flags](../reference/config-and-flags.md)
 - **Integration:** [ui-server-contract](../integration/ui-server-contract.md)

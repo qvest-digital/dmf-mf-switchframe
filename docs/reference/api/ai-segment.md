@@ -2,7 +2,7 @@
 
 > **Where you are:** [docs](../../../README.md) → reference → api → ai-segment
 > **Read this first:** [api.md](../api.md)
-> **See also:** [gpu.md](../../gpu.md) · [api/keying.md](keying.md)
+> **See also:** [gpu.md](../../concepts/gpu.md) · [api/keying.md](keying.md)
 
 **TL;DR** Four endpoints configure per-source AI-driven background segmentation (people/foreground detection) with transparent, blurred, or solid-color backgrounds. Requires a GPU build with TensorRT; these endpoints are only registered when the segmentation engine is available. In non-GPU builds the registration is a no-op.
 
@@ -64,5 +64,5 @@ Defaults: sensitivity 0.7, edgeSmooth 0.5, background `""`.
 
 ## Related docs
 
-- **Concepts:** [gpu.md](../../gpu.md)
-- **Reference:** [api.md](../api.md) · [api/keying.md](keying.md) · [state-broadcast.md](../state-broadcast.md#aisegmentationstate)
+- **Concepts:** [gpu.md](../../concepts/gpu.md)
+- **Reference:** [api.md](../api.md) · [api/keying.md](keying.md) · [state-broadcast.md](../state-broadcast.md#effects)

@@ -2,7 +2,7 @@
 
 > **Where you are:** [docs](../../../README.md) → reference → api → format-encoder
 > **Read this first:** [api.md](../api.md)
-> **See also:** [subsystems/codec.md](../../subsystems/codec.md) · [deployment.md](../../deployment.md) · [subsystems/switcher.md](../../subsystems/switcher.md)
+> **See also:** [subsystems/codec.md](../../subsystems/codec.md) · [deployment.md](../../operations/deployment.md) · [subsystems/switcher.md](../../subsystems/switcher.md)
 
 **TL;DR** Two tiny REST surfaces cover the overall pipeline format (resolution and fps) and the live video encoder choice. Format is a shared invariant — changing it rebuilds decoders/encoders across the whole pipeline — so it's blocked while a transition is in flight. Encoder selection is hot-swappable across the detected backends (x264, NVENC, VideoToolbox, VA-API, OpenH264).
 
@@ -29,7 +29,7 @@
 
 **Emits:** nothing.
 
-**Related:** [subsystems/switcher.md#pipeline-format](../../subsystems/switcher.md#pipeline-format)
+**Related:** [subsystems/switcher.md](../../subsystems/switcher.md)
 
 ---
 
@@ -70,7 +70,7 @@ or
 
 **Emits:** state broadcast with updated `PipelineFormat`. The switcher rebuilds its encoder pool, preview streams, and pipeline codecs internally — this is an expensive operation (tens of ms) so avoid toggling mid-show.
 
-**Related:** [subsystems/switcher.md#pipeline-format](../../subsystems/switcher.md#pipeline-format) · [deployment.md](../../deployment.md)
+**Related:** [subsystems/switcher.md](../../subsystems/switcher.md) · [deployment.md](../../operations/deployment.md)
 
 ---
 
@@ -100,7 +100,7 @@ or
 
 **Emits:** nothing.
 
-**Related:** [subsystems/codec.md#probe](../../subsystems/codec.md#probe) · [deployment.md](../../deployment.md)
+**Related:** [subsystems/codec.md](../../subsystems/codec.md) · [deployment.md](../../operations/deployment.md)
 
 ---
 
@@ -134,7 +134,7 @@ or
 
 ## Related docs
 
-- **Concepts:** [gpu.md](../../gpu.md) · [pipeline.md](../../pipeline.md)
+- **Concepts:** [gpu.md](../../concepts/gpu.md) · [pipeline.md](../../concepts/pipeline.md)
 - **Reference:** [api.md](../api.md) · [state-broadcast.md](../state-broadcast.md)
 - **Subsystems:** [codec.md](../../subsystems/codec.md) · [switcher.md](../../subsystems/switcher.md)
-- **Operations:** [deployment.md](../../deployment.md)
+- **Operations:** [deployment.md](../../operations/deployment.md)

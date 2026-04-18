@@ -2,7 +2,7 @@
 
 > **Where you are:** [docs](../README.md) → subsystems → output
 > **Read this first:** [architecture.md](../architecture.md)
-> **See also:** [srt-ingest.md](srt-ingest.md) · [codec.md](codec.md) · [mxl.md](mxl.md) · [scte35.md](../scte35.md) · [captions.md](captions.md)
+> **See also:** [srt-ingest.md](srt-ingest.md) · [codec.md](codec.md) · [mxl.md](mxl.md) · [scte35.md](./scte35.md) · [captions.md](captions.md)
 
 **TL;DR** The output engine is the wide end of the funnel: it takes the program video and audio that the switcher and mixer have produced and hands them to every destination the operator has configured — an on-disk recording, one or more SRT streams (push or pull), an RTMP ingest, or all of the above simultaneously. A single `output.Manager` owns the MPEG-TS muxer and a dynamic set of `Adapter` instances (plus a separate `FrameAdapter` path for RTMP direct FLV). The muxer is lazily created on first use and torn down when the last destination goes away, so an idle rig consumes zero CPU on output. A [CBR pacer](#cbr-pacing) inserts null packets to give SRT destinations a rock-steady muxrate, an [async adapter](#backpressure-and-async-writes) shields the hot path from slow disk or network, and a [confidence monitor](#confidence-monitoring) emits a 1 fps JPEG thumbnail for the UI.
 
@@ -58,11 +58,11 @@ flowchart TB
 
 Once initialized, `WriteVideo()` does the heavy lifting: it converts 4-byte length-prefixed wire-format NALUs to Annex B, prepends SPS/PPS (or VPS+SPS+PPS for HEVC) on keyframes, optionally injects a caption SEI NALU before the first VCL NALU (from [`caption.Manager.PendingCaptionSEI()`](../../server/caption/sei.go) — see `hasCaptionSEI` which walks the SEI message list to avoid double injection), computes a PCR-on-keyframe adaptation field, rebases the upstream wall-clock PTS to a near-zero base (for SRT TSBPD compatibility), adds the current lip-sync offset to video PTS only (see [pipeline.md](../concepts/pipeline.md) and [frame-sync-and-timing.md](../concepts/frame-sync-and-timing.md) for why video gets offset and not audio), and finally writes the PES via `astits.Muxer.WriteData()`. Periodic NIT and SDT re-emission every 10 s and 2 s respectively keeps metadata fresh for late-joining viewers.
 
-The muxer also maintains a small `pendingIDRSCTE35` queue. Calls to `WriteSCTE35()` after initialization buffer sections here instead of writing them immediately; they flush on the next keyframe (or after a 120-frame timeout) so SCTE-35 cues are co-located with the IDR they reference. See [scte35.md](../scte35.md) for the full cue lifecycle.
+The muxer also maintains a small `pendingIDRSCTE35` queue. Calls to `WriteSCTE35()` after initialization buffer sections here instead of writing them immediately; they flush on the next keyframe (or after a 120-frame timeout) so SCTE-35 cues are co-located with the IDR they reference. See [scte35.md](./scte35.md) for the full cue lifecycle.
 
 ### Multi-destination model
 
-Each destination has a config (`DestinationConfig` — type, address/port or URL, latency, encryption, per-destination `MaxBW`, `SCTE35Enabled`, optional `Engine` label for [multi-engine redundancy](../multi-region.md)) and a runtime `Destination` struct with its own lock, its own adapter, an optional `AsyncAdapter` wrapper, and a `status()` method that reports live bytes-written, state, dropped packets, and overflow count. See [`destination.go`](../../server/output/destination.go).
+Each destination has a config (`DestinationConfig` — type, address/port or URL, latency, encryption, per-destination `MaxBW`, `SCTE35Enabled`, optional `Engine` label for multi-engine redundancy) and a runtime `Destination` struct with its own lock, its own adapter, an optional `AsyncAdapter` wrapper, and a `status()` method that reports live bytes-written, state, dropped packets, and overflow count. See [`destination.go`](../../server/output/destination.go).
 
 `AddDestination()` validates and creates the Destination but does not start it — the operator explicitly calls `StartDestination()`. This mirrors the UI: you configure a bunch of destinations in advance, then arm them one at a time. `ReassignDestinationEngine()` lets you move a destination between engines A and B at runtime without deleting the config. The `Engine` field gates whether a given engine actually opens the connection — when a destination is pinned to engine B, engine A refuses to start it with `ErrDestinationWrongEngine`.
 
@@ -102,7 +102,7 @@ Before the direct-write hot path, the manager used a [`Viewer`](../../server/out
 
 ### SCTE-35 packet filtering
 
-[`scte35Filter`](../../server/output/scte35_filter.go) wraps an `Adapter` and strips TS packets matching the configured SCTE-35 PID before forwarding. It's used when a destination has `SCTE35Enabled: false` — for example, a YouTube RTMP relay doesn't want splice cues. The filter has a fast path that scans for a PID match without allocating (SCTE-35 packets are rare) and only copies when it has to strip. See [scte35.md](../scte35.md) for how cues get into the TS in the first place.
+[`scte35Filter`](../../server/output/scte35_filter.go) wraps an `Adapter` and strips TS packets matching the configured SCTE-35 PID before forwarding. It's used when a destination has `SCTE35Enabled: false` — for example, a YouTube RTMP relay doesn't want splice cues. The filter has a fast path that scans for a PID match without allocating (SCTE-35 packets are rare) and only copies when it has to strip. See [scte35.md](./scte35.md) for how cues get into the TS in the first place.
 
 ### Engine lifecycle and lip-sync
 
@@ -139,5 +139,5 @@ Before the direct-write hot path, the manager used a [`Viewer`](../../server/out
 
 - **Concepts:** [pipeline.md](../concepts/pipeline.md) · [frame-sync-and-timing.md](../concepts/frame-sync-and-timing.md) · [locking-and-concurrency.md](../concepts/locking-and-concurrency.md)
 - **Reference:** [fast-control.md](../reference/fast-control.md) · [api.md](../reference/api.md) · [state-broadcast.md](../reference/state-broadcast.md) · [metrics.md](../reference/metrics.md)
-- **Subsystems:** [srt-ingest.md](srt-ingest.md) · [codec.md](codec.md) · [mxl.md](mxl.md) · [captions.md](captions.md) · [scte35.md](../scte35.md) · [switcher.md](switcher.md) · [audio.md](audio.md)
+- **Subsystems:** [srt-ingest.md](srt-ingest.md) · [codec.md](codec.md) · [mxl.md](mxl.md) · [captions.md](captions.md) · [scte35.md](./scte35.md) · [switcher.md](switcher.md) · [audio.md](audio.md)
 - **Integration:** [ui-server-contract.md](../integration/ui-server-contract.md)

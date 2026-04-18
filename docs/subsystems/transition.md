@@ -144,7 +144,7 @@ When a GPU pipeline is attached and supports transitions, the CPU engine is conf
 
 - `blendAndOutput` short-circuits after incrementing `framesBlended` — no CPU pixel blend runs.
 - Position, easing, auto-complete timing, and state are still tracked.
-- The GPU pipeline ([`gpu/gpu_nodes.go`](../../server/gpu/gpu_nodes.go) and its Metal/CUDA backends) reads the engine's state (position, transition type, wipe direction, stinger frame data via `StingerFrameAt`) and performs the blend on GPU.
+- The GPU pipeline ([`gpu/gpu_nodes.go`](../../server/gpu/pipeline_nodes.go) and its Metal/CUDA backends) reads the engine's state (position, transition type, wipe direction, stinger frame data via `StingerFrameAt`) and performs the blend on GPU.
 - The transition completes via `ForceComplete()` from the GPU trigger path after the blend frame is produced — deliberately AFTER so the last blended frame reaches the encoder before `programSource` changes.
 
 `SkipBlend` cuts CPU cost during a transition to near-zero (just state tracking) while preserving the exact same timing and easing behavior for the operator.
@@ -203,5 +203,5 @@ State guards: the engine has its own `sync.RWMutex` (`Engine.mu`). It never acqu
 
 - **Concepts:** [pipeline](../concepts/pipeline.md), [media-path](../concepts/media-path.md), [frame-sync-and-timing](../concepts/frame-sync-and-timing.md), [gpu](../concepts/gpu.md), [locking-and-concurrency](../concepts/locking-and-concurrency.md)
 - **Subsystems:** [switcher](switcher.md), [graphics-and-dve](graphics-and-dve.md), [audio](audio.md), [codec](codec.md), [replay](replay.md), [playout](playout.md)
-- **Reference:** [api](../reference/api.md#switcher-transition), [fast-control](../reference/fast-control.md#transition-position), [file-formats](../reference/file-formats.md#stinger), [metrics](../reference/metrics.md#transition)
+- **Reference:** [api](../reference/api/transition.md), [fast-control](../reference/fast-control.md), [file-formats](../reference/file-formats.md), [metrics](../reference/metrics.md)
 - **Integration:** [ui-server-contract](../integration/ui-server-contract.md)

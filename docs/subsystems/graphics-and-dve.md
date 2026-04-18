@@ -60,7 +60,7 @@ Fade-in and fade-out animations (`AutoOn`, `AutoOff`) run in a dedicated gorouti
 
 Each layer can also carry a persisted PNG via `SetImage` / `GetImage` / `DeleteImage`. The original PNG bytes stay in the layer for retrieval, and a decoded RGBA buffer is used for compositing. Setting an image also activates the layer and sizes the rect to the image's native dimensions (capped to program resolution, even-aligned for YUV420).
 
-For GPU pipelines, `Compositor.SnapshotVisibleLayers()` returns a deep-copied `[]VisibleLayerSnap` under lock. The GPU compositor node ([`gpu/gpu_nodes.go`](../../server/gpu/gpu_nodes.go)) calls this once per frame, uploads overlay RGBA to GPU memory (or re-uses cached uploads when `VisibleLayerSnap.Gen` matches last frame), and dispatches Metal/CUDA blend kernels. The generation counter (`layer.overlayGen`) is the only piece of shared state the GPU path actually needs to invalidate.
+For GPU pipelines, `Compositor.SnapshotVisibleLayers()` returns a deep-copied `[]VisibleLayerSnap` under lock. The GPU compositor node ([`gpu/gpu_nodes.go`](../../server/gpu/pipeline_nodes.go)) calls this once per frame, uploads overlay RGBA to GPU memory (or re-uses cached uploads when `VisibleLayerSnap.Gen` matches last frame), and dispatches Metal/CUDA blend kernels. The generation counter (`layer.overlayGen`) is the only piece of shared state the GPU path actually needs to invalidate.
 
 ### Upstream key chain
 

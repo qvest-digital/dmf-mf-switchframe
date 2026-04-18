@@ -2,7 +2,7 @@
 
 > **Where you are:** [docs](../../../README.md) → reference → api → asr
 > **Read this first:** [api.md](../api.md)
-> **See also:** [asr.md](../../asr.md) · [integration/asr-sidecar.md](../../integration/asr-sidecar.md) · [api/captions.md](captions.md)
+> **See also:** [asr.md](../../integration/asr-sidecar.md) · [integration/asr-sidecar.md](../../integration/asr-sidecar.md) · [api/captions.md](captions.md)
 
 **TL;DR** Five endpoints expose the ASR subsystem: status, pacing/confidence config, available models per backend, and per-backend opaque config (JSON pass-through). ASR drives automatic captions — see [api/captions.md](captions.md) for human-authored caption control. ASR endpoints are always registered; behavior degrades gracefully when no ASR manager is configured.
 
@@ -77,6 +77,6 @@ Accepted values:
 
 ## Related docs
 
-- **Concepts:** [asr.md](../../asr.md)
-- **Reference:** [api.md](../api.md) · [api/captions.md](captions.md) · [state-broadcast.md](../state-broadcast.md#asrstate)
+- **Concepts:** [asr.md](../../integration/asr-sidecar.md)
+- **Reference:** [api.md](../api.md) · [api/captions.md](captions.md) · [state-broadcast.md](../state-broadcast.md#captions-and-comms)
 - **Integration:** [asr-sidecar.md](../../integration/asr-sidecar.md)

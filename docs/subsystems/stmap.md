@@ -139,7 +139,7 @@ All three emit the same [`*STMap`](../../server/stmap/types.go) and feed the sam
 
 ### GPU integration
 
-The GPU pipeline uses a parallel code path that skips the CPU processor entirely. `Registry.ProgramGPUSnapshot()` returns an atomic read of the current program map with the `S` and `T` float32 arrays (pointers into the mmap'd cache for animated maps). The GPU stmap node ([`gpu/gpu_nodes.go`](../../server/gpu/gpu_nodes.go)) uploads S/T as a texture and dispatches the warp kernel from [`gpu/metal/stmap.metal`](../../server/gpu/metal/stmap.metal) or the CUDA equivalent, which does bilinear sampling on the GPU. Per-source ST maps use `SourceSTArrays(sourceKey)` and the per-source GPU cache. The mmap-backed `.st` cache files keep GPU upload bandwidth stable across pipeline format changes — zero runtime generation.
+The GPU pipeline uses a parallel code path that skips the CPU processor entirely. `Registry.ProgramGPUSnapshot()` returns an atomic read of the current program map with the `S` and `T` float32 arrays (pointers into the mmap'd cache for animated maps). The GPU stmap node ([`gpu/gpu_nodes.go`](../../server/gpu/pipeline_nodes.go)) uploads S/T as a texture and dispatches the warp kernel from [`gpu/metal/stmap.metal`](../../server/gpu/metal/stmap.metal) or the CUDA equivalent, which does bilinear sampling on the GPU. Per-source ST maps use `SourceSTArrays(sourceKey)` and the per-source GPU cache. The mmap-backed `.st` cache files keep GPU upload bandwidth stable across pipeline format changes — zero runtime generation.
 
 ## Key types and entry points
 

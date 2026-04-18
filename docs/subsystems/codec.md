@@ -2,7 +2,7 @@
 
 > **Where you are:** [docs](../README.md) → subsystems → codec
 > **Read this first:** [architecture.md](../architecture.md)
-> **See also:** [output.md](output.md) · [srt-ingest.md](srt-ingest.md) · [mxl.md](mxl.md) · [gpu.md](../concepts/gpu.md) · [pipeline.md](../concepts/pipeline.md) · [clips.md](../clips.md)
+> **See also:** [output.md](output.md) · [srt-ingest.md](srt-ingest.md) · [mxl.md](mxl.md) · [gpu.md](../concepts/gpu.md) · [pipeline.md](../concepts/pipeline.md) · [clips.md](./clips.md)
 
 **TL;DR** The `codec` package is Switchframe's glue around every H.264 and HEVC encoder and decoder in the tree. At startup, [`ProbeEncoders()`](#probeencoders-startup-auto-detection) tests a priority-ordered list of candidates — NVENC, VA-API, VideoToolbox, libx264 — and picks the first one that opens and produces a real frame. The rest of the system uses factory functions ([`NewVideoEncoder`](#encoder-factories), [`NewVideoDecoder`](#decoder-factories), and their HEVC and 10-bit variants) that dispatch through the probe result so callers never know which backend they got. Underneath, [`FFmpegEncoder`](#ffmpeg-encoder-and-decoder) and [`FFmpegDecoder`](#ffmpeg-encoder-and-decoder) wrap libavcodec via cgo with constrained-VBR rate control tuned for SRT transport, [`OpenH264`](#openh264-fallback) is the pure-software fallback when FFmpeg isn't linked, [`ffmpeg_probe_file`](#file-probe) and [`ffmpeg_transcode`](#c-transcode) provide avformat-backed file probing and format normalization for clip uploads, and [`nalu.go`](#nalu-and-adts-helpers) / [`adts.go`](#nalu-and-adts-helpers) provide AVC1↔Annex B conversion and ADTS header construction. Stubs under `!cgo || noffmpeg` keep non-FFmpeg builds compiling.
 
@@ -93,7 +93,7 @@ The stub in [`stub_codec.go`](../../server/codec/stub_codec.go) returns `errOpen
 
 ### File probe
 
-[`ProbeFile(path)`](../../server/codec/ffmpeg_probe_file.go) opens a media file with `avformat_open_input`, calls `avformat_find_stream_info`, and returns a `FileProbeResult` with `VideoCodecID`, `AudioCodecID`, `Width`, `Height`, `HasVideo`, `HasAudio`. The clip upload path uses this to decide whether an uploaded file needs transcoding (see [clips.md](../clips.md) and [`validator.go`](../../server/clip/validator.go)). The `IsH264()` / `IsHEVC()` helpers map codec IDs to the two codec strings Switchframe natively carries.
+[`ProbeFile(path)`](../../server/codec/ffmpeg_probe_file.go) opens a media file with `avformat_open_input`, calls `avformat_find_stream_info`, and returns a `FileProbeResult` with `VideoCodecID`, `AudioCodecID`, `Width`, `Height`, `HasVideo`, `HasAudio`. The clip upload path uses this to decide whether an uploaded file needs transcoding (see [clips.md](./clips.md) and [`validator.go`](../../server/clip/validator.go)). The `IsH264()` / `IsHEVC()` helpers map codec IDs to the two codec strings Switchframe natively carries.
 
 Width/height validation guards against empty or truncated files: FFmpeg can sometimes probe a zero-byte truncated TS as `h264` with `width=0`, and the `HasVideo` flag only gets set if dimensions are plausible.
 
@@ -103,7 +103,7 @@ Width/height validation guards against empty or truncated files: FFmpeg can some
 
 The C function `ff_transcode_file` does the full loop: open input, find decoder, open output context (format `mpegts`), create H.264 encoder (via FFmpeg's encoder API) and AAC encoder, probe and configure SwsContext for pixel-format conversion and SwrContext for sample rate/channel conversion, then run `avcodec_send_packet` / `avcodec_receive_frame` / sws_scale / swr_convert / encode / write loop until EOF. Progress reporting writes a 0–100 integer into a caller-owned `progress_pct` pointer so the UI can show a progress bar during long transcodes.
 
-`TranscodeFileWithProgress` is the Go-friendly wrapper that takes an `*int32` updated from the C side. See [clips.md](../clips.md) for the full clip upload and validation flow.
+`TranscodeFileWithProgress` is the Go-friendly wrapper that takes an `*int32` updated from the C side. See [clips.md](./clips.md) for the full clip upload and validation flow.
 
 ### NALU and ADTS helpers
 
@@ -170,5 +170,5 @@ The `cgo.go` and `openh264_cgo.go` files isolate the cgo link directives so `#cg
 
 - **Concepts:** [pipeline.md](../concepts/pipeline.md) · [media-path.md](../concepts/media-path.md) · [gpu.md](../concepts/gpu.md)
 - **Reference:** [config-and-flags.md](../reference/config-and-flags.md) · [file-formats.md](../reference/file-formats.md) · [api.md](../reference/api.md)
-- **Subsystems:** [output.md](output.md) · [srt-ingest.md](srt-ingest.md) · [mxl.md](mxl.md) · [switcher.md](switcher.md) · [replay.md](replay.md) · [clips.md](../clips.md)
+- **Subsystems:** [output.md](output.md) · [srt-ingest.md](srt-ingest.md) · [mxl.md](mxl.md) · [switcher.md](switcher.md) · [replay.md](replay.md) · [clips.md](./clips.md)
 - **Operations:** [deployment.md](../operations/deployment.md)

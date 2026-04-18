@@ -54,5 +54,5 @@ Valid types: `chroma`, `luma`, `neural`. See `graphics.KeyConfig` for all fields
 
 ## Related docs
 
-- **Reference:** [api.md](../api.md) · [api/source.md](source.md) · [state-broadcast.md](../state-broadcast.md#sourcekeyconfig)
+- **Reference:** [api.md](../api.md) · [api/source.md](source.md) · [state-broadcast.md](../state-broadcast.md#effects)
 - **Subsystems:** [graphics-and-dve.md](../../subsystems/graphics-and-dve.md)

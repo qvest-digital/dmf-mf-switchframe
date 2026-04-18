@@ -46,5 +46,5 @@
 
 ## Related docs
 
-- **Reference:** [api.md](../api.md) · [state-broadcast.md](../state-broadcast.md#commsstate) · [api/operator.md](operator.md)
+- **Reference:** [api.md](../api.md) · [state-broadcast.md](../state-broadcast.md#captions-and-comms) · [api/operator.md](operator.md)
 - **Subsystems:** [comms.md](../../subsystems/comms.md)

@@ -130,5 +130,5 @@ Any field may be omitted. Convenience fields: `scaleMode` and `cropAnchor` map t
 
 ## Related docs
 
-- **Reference:** [api.md](../api.md) · [fast-control.md](../fast-control.md) · [state-broadcast.md](../state-broadcast.md#layoutstate)
+- **Reference:** [api.md](../api.md) · [fast-control.md](../fast-control.md) · [state-broadcast.md](../state-broadcast.md#graphics-and-composition)
 - **Subsystems:** [graphics-and-dve.md](../../subsystems/graphics-and-dve.md)

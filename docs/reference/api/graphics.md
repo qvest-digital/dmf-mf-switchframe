@@ -2,7 +2,7 @@
 
 > **Where you are:** [docs](../../../README.md) → reference → api → graphics
 > **Read this first:** [api.md](../api.md)
-> **See also:** [subsystems/graphics-and-dve.md](../../subsystems/graphics-and-dve.md) · [api/graphics-html5.md](graphics-html5.md) · [html5-graphics.md](../../html5-graphics.md)
+> **See also:** [subsystems/graphics-and-dve.md](../../subsystems/graphics-and-dve.md) · [api/graphics-html5.md](graphics-html5.md) · [html5-graphics.md](../../integration/cef-protocol.md)
 
 **TL;DR** Thirty-two endpoints cover downstream-key (DSK) graphics: layer CRUD, frame upload, cut/auto on/off, programmatic animation (pulse, transition, fly-in/out/on, slide), static image upload, animated PNG-sequence upload, server-side text animation (typewriter + fade-word), scrolling ticker, and the stinger clip library. Per-layer HTML5-browser endpoints are documented separately in [graphics-html5.md](graphics-html5.md).
 
@@ -334,6 +334,6 @@ Stinger transitions use pre-rendered PNG sequences with a cut point. These endpo
 
 ## Related docs
 
-- **Reference:** [api.md](../api.md) · [api/graphics-html5.md](graphics-html5.md) · [state-broadcast.md](../state-broadcast.md#graphicsstate)
+- **Reference:** [api.md](../api.md) · [api/graphics-html5.md](graphics-html5.md) · [state-broadcast.md](../state-broadcast.md#graphics-and-composition)
 - **Subsystems:** [graphics-and-dve.md](../../subsystems/graphics-and-dve.md)
-- **Concepts:** [html5-graphics.md](../../html5-graphics.md)
+- **Concepts:** [html5-graphics.md](../../integration/cef-protocol.md)

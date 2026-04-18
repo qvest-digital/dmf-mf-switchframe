@@ -147,7 +147,7 @@
 
 **Emits:** state broadcast with `Sources[key].DelayMs`.
 
-**Related:** [subsystems/switcher.md#per-source-delay](../../subsystems/switcher.md#per-source-delay)
+**Related:** [subsystems/switcher.md](../../subsystems/switcher.md)
 
 ---
 

@@ -58,4 +58,4 @@ Returns zeroed stats when no connection counter is registered.
 
 - **Reference:** [api.md](../api.md) · [metrics.md](../metrics.md)
 - **Subsystems:** [control-plane.md](../../subsystems/control-plane.md)
-- **Operations:** [deployment.md](../../deployment.md)
+- **Operations:** [deployment.md](../../operations/deployment.md)

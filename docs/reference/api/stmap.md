@@ -2,7 +2,7 @@
 
 > **Where you are:** [docs](../../../README.md) → reference → api → stmap
 > **Read this first:** [api.md](../api.md)
-> **See also:** [subsystems/stmap.md](../../subsystems/stmap.md) · [stmap.md](../../stmap.md)
+> **See also:** [subsystems/stmap.md](../../subsystems/stmap.md) · [stmap.md](../../subsystems/stmap.md)
 
 **TL;DR** Twelve endpoints manage the per-pixel coordinate-remapping subsystem (lens correction, creative warps). Maps can be uploaded from EXR/PNG/raw-float32 files, generated from parameterized templates, or assigned per-source or globally on the program bus.
 
@@ -131,6 +131,6 @@
 
 ## Related docs
 
-- **Concepts:** [stmap.md](../../stmap.md)
-- **Reference:** [api.md](../api.md) · [state-broadcast.md](../state-broadcast.md#stmapstate)
+- **Concepts:** [stmap.md](../../subsystems/stmap.md)
+- **Reference:** [api.md](../api.md) · [state-broadcast.md](../state-broadcast.md#effects)
 - **Subsystems:** [stmap.md](../../subsystems/stmap.md)

@@ -115,7 +115,7 @@ When the server fails a command that went through the sequenced command queue (`
 
 ### Timed command queue
 
-A subset of state-mutating endpoints (all cut/preview/transition/audio-fader/graphics-on-off/source-label-delay-position routes, plus format/encoder) are wrapped in `timedHandler` or `timedHandlerWithPath`. These handlers pre-read the body, assign a sequence number, and either execute inline or defer to the command queue so commands carrying a `scheduledUs` header can be timed against the synchronized clock for dual-engine execution. See [subsystems/control-plane.md](../subsystems/control-plane.md#command-queue) for the full lifecycle. On a single-engine deployment these wrappers behave as plain handlers — the sequence number is bumped and the body is read once.
+A subset of state-mutating endpoints (all cut/preview/transition/audio-fader/graphics-on-off/source-label-delay-position routes, plus format/encoder) are wrapped in `timedHandler` or `timedHandlerWithPath`. These handlers pre-read the body, assign a sequence number, and either execute inline or defer to the command queue so commands carrying a `scheduledUs` header can be timed against the synchronized clock for dual-engine execution. See [subsystems/control-plane.md](../subsystems/control-plane.md#timed-command-queue) for the full lifecycle. On a single-engine deployment these wrappers behave as plain handlers — the sequence number is bumped and the body is read once.
 
 ### State broadcast emission
 

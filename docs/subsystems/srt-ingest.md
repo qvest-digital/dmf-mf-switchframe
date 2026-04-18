@@ -2,7 +2,7 @@
 
 > **Where you are:** [docs](../README.md) → subsystems → srt-ingest
 > **Read this first:** [architecture.md](../architecture.md)
-> **See also:** [output.md](output.md) · [codec.md](codec.md) · [switcher.md](switcher.md) · [audio.md](audio.md) · [scte35.md](../scte35.md)
+> **See also:** [output.md](output.md) · [codec.md](codec.md) · [switcher.md](switcher.md) · [audio.md](audio.md) · [scte35.md](./scte35.md)
 
 **TL;DR** SRT is Switchframe's "bring any encoder" input path: point a camera, hardware encoder, or another switcher at us over the public internet, and we'll demux MPEG-TS, decode whatever codec it carries via FFmpeg, and deliver raw YUV420p + float32 PCM to the switcher pipeline and mixer in real time. The package runs in two directions — a [`Listener`](#listener-inbound-push) accepts inbound pushes, a [`Caller`](#caller-outbound-pull) dials outbound pulls — and both deposit connections into a common [`Source`](#source-orchestrator) orchestrator that owns a single [`StreamDecoder`](#the-ffmpeg-avio-bridge). Source configurations persist to a JSON [`Store`](#persistence-and-stats) so caller pulls survive restarts, and per-connection [`ConnStats`](#persistence-and-stats) are polled every second for the UI and the `/debug/snapshot` endpoint.
 
@@ -83,7 +83,7 @@ The main decode loop `srtdec_run` is `av_read_frame` → classify by `stream_ind
 
 CEA-608/708 captions hitchhike in H.264 SEI NALUs; FFmpeg surfaces them as `AV_FRAME_DATA_A53_CC` side data on decoded frames. `srtdec_process_video` checks for side data after each frame and forwards it via `goOnCaptionData` → `OnCaptions`. The [`caption.Manager`](../../server/caption/) ingests these for passthrough or author-mode rendering on the program output (see [captions.md](captions.md)).
 
-SCTE-35 arrives on a separate MPEG-TS data PID. `av_find_best_stream(AVMEDIA_TYPE_DATA)` finds it at open; packets on that stream index are forwarded raw (no decoder) via `goOnSCTE35Data` → `OnSCTE35`. The [`scte35` package](../../server/scte35/) parses and re-injects them on the program output, preserving ad markers through the switcher (see [scte35.md](../scte35.md)).
+SCTE-35 arrives on a separate MPEG-TS data PID. `av_find_best_stream(AVMEDIA_TYPE_DATA)` finds it at open; packets on that stream index are forwarded raw (no decoder) via `goOnSCTE35Data` → `OnSCTE35`. The [`scte35` package](../../server/scte35/) parses and re-injects them on the program output, preserving ad markers through the switcher (see [scte35.md](./scte35.md)).
 
 The stub [`stub_decoder.go`](../../server/srt/stub_decoder.go) returns `ErrFFmpegNotAvailable` when cgo or FFmpeg are compiled out. The real decoder requires both.
 
@@ -121,5 +121,5 @@ The output package uses the same `ConnStats` infrastructure for its SRT push and
 
 - **Concepts:** [pipeline.md](../concepts/pipeline.md) · [media-path.md](../concepts/media-path.md) · [frame-sync-and-timing.md](../concepts/frame-sync-and-timing.md)
 - **Reference:** [api.md](../reference/api.md) · [state-broadcast.md](../reference/state-broadcast.md) · [config-and-flags.md](../reference/config-and-flags.md)
-- **Subsystems:** [output.md](output.md) · [codec.md](codec.md) · [mxl.md](mxl.md) · [switcher.md](switcher.md) · [audio.md](audio.md) · [captions.md](captions.md) · [scte35.md](../scte35.md)
+- **Subsystems:** [output.md](output.md) · [codec.md](codec.md) · [mxl.md](mxl.md) · [switcher.md](switcher.md) · [audio.md](audio.md) · [captions.md](captions.md) · [scte35.md](./scte35.md)
 - **Operations:** [deployment.md](../operations/deployment.md)

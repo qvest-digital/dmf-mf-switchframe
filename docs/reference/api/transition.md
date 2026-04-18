@@ -100,12 +100,12 @@
 |---|---|
 | 409 | `transition.ErrActive` — a non-FTB transition is running |
 
-**Emits:** state broadcast with updated `FTBActive`. Amber tally applied to all sources during FTB. The fade duration is server-configured (see [deployment.md](../../deployment.md)).
+**Emits:** state broadcast with updated `FTBActive`. Amber tally applied to all sources during FTB. The fade duration is server-configured (see [deployment.md](../../operations/deployment.md)).
 
 **Related:** [subsystems/transition.md](../../subsystems/transition.md)
 
 ## Related docs
 
-- **Concepts:** [pipeline.md](../../pipeline.md)
+- **Concepts:** [pipeline.md](../../concepts/pipeline.md)
 - **Reference:** [api.md](../api.md) · [api/transition-wipes.md](transition-wipes.md) · [fast-control.md](../fast-control.md)
 - **Subsystems:** [transition.md](../../subsystems/transition.md) · [switcher.md](../../subsystems/switcher.md)

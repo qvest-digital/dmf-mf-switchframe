@@ -2,7 +2,7 @@
 
 > **Where you are:** [docs](../../../README.md) → reference → api → playout
 > **Read this first:** [api.md](../api.md)
-> **See also:** [playout.md](../../playout.md) · [subsystems/playout.md](../../subsystems/playout.md)
+> **See also:** [playout.md](../../subsystems/playout.md) · [subsystems/playout.md](../../subsystems/playout.md)
 
 **TL;DR** Forty-seven endpoints drive the playout channel engine: channel transport (start/stop/next/previous/jump), manual vs. auto mode, playlist loading, pod boards (20 endpoints for pod CRUD and lifecycle), pod templates (CRUD), BXF import, as-run logs (query / export / reset), asset-cache inspection and eviction, health and recovery, and sample/clip/template/saved-playlist discovery. Channels are addressed as `1..N` (capped by `playout.MaxChannels`); pod IDs are strings assigned by the pod board.
 
@@ -225,7 +225,7 @@
 
 ## Pod boards
 
-Pods are timed secondary events (cut-ins, squeezebacks, overlays) associated with a primary playlist item. The pod board manages their lifecycle: arm → fire → hold → extend → dump. See [playout.md#pods](../../playout.md#pods) for the state machine.
+Pods are timed secondary events (cut-ins, squeezebacks, overlays) associated with a primary playlist item. The pod board manages their lifecycle: arm → fire → hold → extend → dump. See [playout.md#pods](../../subsystems/playout.md) for the state machine.
 
 ### `GET /api/playout/channels/{n}/pods`
 
@@ -360,6 +360,6 @@ Pods are timed secondary events (cut-ins, squeezebacks, overlays) associated wit
 
 ## Related docs
 
-- **Concepts:** [playout.md](../../playout.md)
-- **Reference:** [api.md](../api.md) · [state-broadcast.md](../state-broadcast.md#playoutstate)
+- **Concepts:** [playout.md](../../subsystems/playout.md)
+- **Reference:** [api.md](../api.md) · [state-broadcast.md](../state-broadcast.md#playout)
 - **Subsystems:** [playout.md](../../subsystems/playout.md)

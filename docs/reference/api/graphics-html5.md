@@ -2,7 +2,7 @@
 
 > **Where you are:** [docs](../../../README.md) → reference → api → graphics-html5
 > **Read this first:** [api.md](../api.md)
-> **See also:** [html5-graphics.md](../../html5-graphics.md) · [integration/cef-protocol.md](../../integration/cef-protocol.md) · [api/graphics.md](graphics.md)
+> **See also:** [html5-graphics.md](../../integration/cef-protocol.md) · [integration/cef-protocol.md](../../integration/cef-protocol.md) · [api/graphics.md](graphics.md)
 
 **TL;DR** Eight endpoints drive the out-of-process CEF (Chromium Embedded Framework) sidecar for browser-rendered graphics. A template catalog is exposed for discovery; per-layer load/play/stop/next/custom/data-update and unload endpoints wire one browser instance to one graphics layer. Returns empty responses when the CEF sidecar is not configured.
 
@@ -28,7 +28,7 @@
 { "url": "https://example.com/lowerthird.html", "data": { "title": "John Doe" } }
 ```
 
-The `data` field is forwarded to the sidecar which passes it to the template via the OGraf adapter. See [html5-graphics.md](../../html5-graphics.md).
+The `data` field is forwarded to the sidecar which passes it to the template via the OGraf adapter. See [html5-graphics.md](../../integration/cef-protocol.md).
 
 **Errors:** 400 (bad id, invalid JSON), 501 (sidecar not configured / not started), plus any CEF allocation failure.
 
@@ -84,4 +84,4 @@ The `data` field is forwarded to the sidecar which passes it to the template via
 
 - **Reference:** [api.md](../api.md) · [api/graphics.md](graphics.md)
 - **Integration:** [cef-protocol.md](../../integration/cef-protocol.md)
-- **Concepts:** [html5-graphics.md](../../html5-graphics.md)
+- **Concepts:** [html5-graphics.md](../../integration/cef-protocol.md)

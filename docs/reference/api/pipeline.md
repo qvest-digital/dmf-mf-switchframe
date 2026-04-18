@@ -2,7 +2,7 @@
 
 > **Where you are:** [docs](../../../README.md) → reference → api → pipeline
 > **Read this first:** [api.md](../api.md)
-> **See also:** [pipeline.md](../../pipeline.md) · [subsystems/switcher.md](../../subsystems/switcher.md)
+> **See also:** [pipeline.md](../../concepts/pipeline.md) · [subsystems/switcher.md](../../subsystems/switcher.md)
 
 **TL;DR** Four endpoints expose the switcher's video pipeline for introspection and per-node bypass toggles: a snapshot of the node graph with health and latency, a per-node thumbnail endpoint for routing-view UIs, and set/clear bypass on individual pipeline nodes.
 
@@ -44,6 +44,6 @@
 
 ## Related docs
 
-- **Concepts:** [pipeline.md](../../pipeline.md)
+- **Concepts:** [pipeline.md](../../concepts/pipeline.md)
 - **Reference:** [api.md](../api.md)
 - **Subsystems:** [switcher.md](../../subsystems/switcher.md)

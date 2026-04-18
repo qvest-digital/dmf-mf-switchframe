@@ -2,7 +2,7 @@
 
 > **Where you are:** [docs](../../../README.md) → reference → api → output
 > **Read this first:** [api.md](../api.md)
-> **See also:** [subsystems/output.md](../../subsystems/output.md) · [state-broadcast.md](../state-broadcast.md) · [deployment.md](../../deployment.md)
+> **See also:** [subsystems/output.md](../../subsystems/output.md) · [state-broadcast.md](../state-broadcast.md) · [deployment.md](../../operations/deployment.md)
 
 **TL;DR** Sixteen endpoints cover recording, SRT output, multi-destination streaming (SRT caller, SRT listener, RTMP), the CBR pacer status, and the confidence thumbnail. Legacy single-stream SRT output (`/api/output/srt/*`) coexists with the newer multi-destination API (`/api/output/destinations/*`); new integrations should prefer destinations.
 
@@ -39,7 +39,7 @@
 
 **Emits:** state broadcast with updated `Recording`. Sets the recording directory used by the clip-import endpoint.
 
-**Related:** [subsystems/output.md#recording](../../subsystems/output.md#recording) · [api/clips.md#clip-from-recording](clips.md)
+**Related:** [subsystems/output.md#recording](../../subsystems/output.md) · [api/clips.md#clip-from-recording](clips.md)
 
 ---
 
@@ -207,7 +207,7 @@ Per-type requirements:
 
 ## Related docs
 
-- **Concepts:** [pipeline.md](../../pipeline.md)
+- **Concepts:** [pipeline.md](../../concepts/pipeline.md)
 - **Reference:** [api.md](../api.md) · [state-broadcast.md](../state-broadcast.md)
 - **Subsystems:** [output.md](../../subsystems/output.md)
-- **Operations:** [deployment.md](../../deployment.md)
+- **Operations:** [deployment.md](../../operations/deployment.md)

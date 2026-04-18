@@ -94,5 +94,5 @@
 
 ## Related docs
 
-- **Reference:** [api.md](../api.md) · [api/source.md](source.md) · [state-broadcast.md](../state-broadcast.md#colorgradestate)
+- **Reference:** [api.md](../api.md) · [api/source.md](source.md) · [state-broadcast.md](../state-broadcast.md#effects)
 - **Subsystems:** [control-plane.md](../../subsystems/control-plane.md)

@@ -2,7 +2,7 @@
 
 > **Where you are:** [docs](../../../README.md) → reference → api → operator
 > **Read this first:** [api.md](../api.md)
-> **See also:** [subsystems/control-plane.md#operators](../../subsystems/control-plane.md#operators) · [api/comms.md](comms.md)
+> **See also:** [subsystems/control-plane.md#operators](../../subsystems/control-plane.md#operators-sessions-and-locks) · [api/comms.md](comms.md)
 
 **TL;DR** Nine endpoints manage multi-operator production: register (optionally via invite token), reconnect with a saved token, heartbeat, list operators with connection flags, acquire/release/force-release per-subsystem locks, delete (self or by director), and list invite tokens (director only). Registered operators get their own bearer tokens and show up in `ControlRoomState.Operators` with live connection status.
 
@@ -50,7 +50,7 @@ Roles: `director`, `audio`, `graphics`, `captioner`, `viewer` — see `operator.
 
 **Errors:** 401.
 
-**Related:** [subsystems/control-plane.md#operators](../../subsystems/control-plane.md#operators)
+**Related:** [subsystems/control-plane.md#operators](../../subsystems/control-plane.md#operators-sessions-and-locks)
 
 ---
 
@@ -116,5 +116,5 @@ Valid subsystems: `switching`, `audio`, `graphics`, `replay`, `output`, `caption
 
 ## Related docs
 
-- **Reference:** [api.md](../api.md) · [state-broadcast.md](../state-broadcast.md#operatorinfo) · [api/comms.md](comms.md)
+- **Reference:** [api.md](../api.md) · [state-broadcast.md](../state-broadcast.md#operators) · [api/comms.md](comms.md)
 - **Subsystems:** [control-plane.md](../../subsystems/control-plane.md)

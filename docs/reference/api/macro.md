@@ -88,5 +88,5 @@ Valid actions are listed in `macro.allActions` (~60 actions covering cut, previe
 
 ## Related docs
 
-- **Reference:** [api.md](../api.md) · [state-broadcast.md](../state-broadcast.md#macroexecutionstate) · [api/preset.md](preset.md)
+- **Reference:** [api.md](../api.md) · [state-broadcast.md](../state-broadcast.md#macros) · [api/preset.md](preset.md)
 - **Subsystems:** [control-plane.md](../../subsystems/control-plane.md)

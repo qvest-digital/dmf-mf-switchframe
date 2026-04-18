@@ -2,7 +2,7 @@
 
 > **Where you are:** [docs](../../../README.md) → reference → api → captions
 > **Read this first:** [api.md](../api.md)
-> **See also:** [subsystems/captions.md](../../subsystems/captions.md) · [asr.md](../../asr.md) · [api/asr.md](asr.md)
+> **See also:** [subsystems/captions.md](../../subsystems/captions.md) · [asr.md](../../integration/asr-sidecar.md) · [api/asr.md](asr.md)
 
 **TL;DR** Three endpoints control closed captioning: set mode (`off`/`passthrough`/`author`), feed author-mode text, and read current state. ASR-driven captions flow through a separate backend (see [api/asr.md](asr.md)); these endpoints are for human-authored captions and pass-through from source SEI.
 
@@ -67,6 +67,6 @@ or
 
 ## Related docs
 
-- **Reference:** [api.md](../api.md) · [api/asr.md](asr.md) · [state-broadcast.md](../state-broadcast.md#captionstate)
+- **Reference:** [api.md](../api.md) · [api/asr.md](asr.md) · [state-broadcast.md](../state-broadcast.md#captions-and-comms)
 - **Subsystems:** [captions.md](../../subsystems/captions.md)
-- **Concepts:** [asr.md](../../asr.md)
+- **Concepts:** [asr.md](../../integration/asr-sidecar.md)

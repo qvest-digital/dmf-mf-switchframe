@@ -2,7 +2,7 @@
 
 > **Where you are:** [docs](../README.md) → subsystems → mxl
 > **Read this first:** [architecture.md](../architecture.md)
-> **See also:** [output.md](output.md) · [srt-ingest.md](srt-ingest.md) · [codec.md](codec.md) · [gpu.md](../concepts/gpu.md) · [captions.md](captions.md) · [scte35.md](../scte35.md)
+> **See also:** [output.md](output.md) · [srt-ingest.md](srt-ingest.md) · [codec.md](codec.md) · [gpu.md](../concepts/gpu.md) · [captions.md](captions.md) · [scte35.md](./scte35.md)
 
 **TL;DR** MXL is the path for uncompressed, broadcast-grade media: V210 10-bit 4:2:2 video and float32 PCM flowing through POSIX shared memory with wall-clock indexing. When Switchframe runs alongside another MXL application (a baseband ingest, an SDI capture, a graphics engine), sources and outputs appear as files in a domain directory (typically `/dev/shm/mxl`), NMOS IS-04 JSON flow definitions describe their format, and the MXL SDK gives everyone ring-buffered zero-copy access. Our [`Reader`](#reader-lifecycle) drains video, audio, and optional data flows into Go channels; our [`Writer`](#writer-lifecycle) publishes the program output at a steady tick rate with latest-frame-wins semantics; our [`Source`](#source-fan-out) and [`Output`](#output-program-to-shared-memory) wire those to the switcher, mixer, browser relay, and SCTE-104 data grains. All of it lives behind the `mxl` build tag — without it, the package is a stub that returns `ErrMXLNotAvailable` so dev builds stay portable.
 
@@ -182,5 +182,5 @@ flowchart TB
 
 - **Concepts:** [pipeline.md](../concepts/pipeline.md) · [media-path.md](../concepts/media-path.md) · [frame-sync-and-timing.md](../concepts/frame-sync-and-timing.md) · [gpu.md](../concepts/gpu.md)
 - **Reference:** [config-and-flags.md](../reference/config-and-flags.md) · [file-formats.md](../reference/file-formats.md)
-- **Subsystems:** [output.md](output.md) · [srt-ingest.md](srt-ingest.md) · [codec.md](codec.md) · [switcher.md](switcher.md) · [audio.md](audio.md) · [captions.md](captions.md) · [scte35.md](../scte35.md)
+- **Subsystems:** [output.md](output.md) · [srt-ingest.md](srt-ingest.md) · [codec.md](codec.md) · [switcher.md](switcher.md) · [audio.md](audio.md) · [captions.md](captions.md) · [scte35.md](./scte35.md)
 - **Operations:** [deployment.md](../operations/deployment.md)

@@ -153,5 +153,5 @@ State guarded by `Switcher.mu` (write lock for mutations, read lock for per-fram
 
 - **Concepts:** [media-path](media-path.md), [frame-sync-and-timing](frame-sync-and-timing.md), [locking-and-concurrency](locking-and-concurrency.md), [gpu](gpu.md)
 - **Subsystems:** [switcher](../subsystems/switcher.md), [transition](../subsystems/transition.md), [graphics-and-dve](../subsystems/graphics-and-dve.md), [codec](../subsystems/codec.md), [stmap](../subsystems/stmap.md)
-- **Reference:** [metrics](../reference/metrics.md#pipeline), [config-and-flags](../reference/config-and-flags.md), [api](../reference/api.md)
+- **Reference:** [metrics](../reference/metrics.md#pipeline-metrics), [config-and-flags](../reference/config-and-flags.md), [api](../reference/api.md)
 - **Integration:** [ui-server-contract](../integration/ui-server-contract.md)

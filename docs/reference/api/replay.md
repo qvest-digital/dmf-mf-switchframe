@@ -150,5 +150,5 @@ All replay endpoints return 501 when the replay manager isn't configured.
 
 ## Related docs
 
-- **Reference:** [api.md](../api.md) · [api/clips.md](clips.md) · [state-broadcast.md](../state-broadcast.md#replaystate)
+- **Reference:** [api.md](../api.md) · [api/clips.md](clips.md) · [state-broadcast.md](../state-broadcast.md#replay-and-clips)
 - **Subsystems:** [replay.md](../../subsystems/replay.md)

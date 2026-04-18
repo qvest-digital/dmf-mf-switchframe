@@ -192,5 +192,5 @@ CEA-608/708 captions ride in the same SEI NALUs as `pic_timing`. The [`caption.M
 
 - **Concepts:** [pipeline](pipeline.md), [frame-sync-and-timing](frame-sync-and-timing.md), [locking-and-concurrency](locking-and-concurrency.md), [gpu](gpu.md)
 - **Subsystems:** [switcher](../subsystems/switcher.md), [transition](../subsystems/transition.md), [audio](../subsystems/audio.md), [captions](../subsystems/captions.md), [output](../subsystems/output.md), [srt-ingest](../subsystems/srt-ingest.md), [mxl](../subsystems/mxl.md), [codec](../subsystems/codec.md)
-- **Reference:** [metrics](../reference/metrics.md#pipeline), [api](../reference/api.md), [fast-control](../reference/fast-control.md)
+- **Reference:** [metrics](../reference/metrics.md#pipeline-metrics), [api](../reference/api.md), [fast-control](../reference/fast-control.md)
 - **Integration:** [ui-server-contract](../integration/ui-server-contract.md)

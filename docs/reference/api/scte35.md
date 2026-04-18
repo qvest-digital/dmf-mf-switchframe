@@ -2,7 +2,7 @@
 
 > **Where you are:** [docs](../../../README.md) → reference → api → scte35
 > **Read this first:** [api.md](../api.md)
-> **See also:** [scte35.md](../../scte35.md) · [subsystems/scte35.md](../../subsystems/scte35.md)
+> **See also:** [scte35.md](../../subsystems/scte35.md) · [subsystems/scte35.md](../../subsystems/scte35.md)
 
 **TL;DR** Twenty endpoints cover ad-insertion signalling: inject cues (splice_insert / time_signal), return to program, cancel, hold (block auto-return), extend a break, and manage the rules engine (CRUD + default action + reorder + templates). Cue-state endpoints are only registered when the SCTE-35 injector is configured; rules endpoints require a separate rules store.
 
@@ -46,7 +46,7 @@ Each descriptor has `segmentationType`, `segEventId`, `durationMs`, `upidType`, 
 
 **Emits:** state broadcast with the event added to `SCTE35.ActiveEvents` / `EventLog`.
 
-**Related:** [scte35.md](../../scte35.md)
+**Related:** [scte35.md](../../subsystems/scte35.md)
 
 ---
 
@@ -199,6 +199,6 @@ The rules engine conditions incoming SCTE-35 signals before they hit the injecto
 
 ## Related docs
 
-- **Concepts:** [scte35.md](../../scte35.md)
-- **Reference:** [api.md](../api.md) · [state-broadcast.md](../state-broadcast.md#scte35state)
+- **Concepts:** [scte35.md](../../subsystems/scte35.md)
+- **Reference:** [api.md](../api.md) · [state-broadcast.md](../state-broadcast.md#scte-35)
 - **Subsystems:** [scte35.md](../../subsystems/scte35.md)

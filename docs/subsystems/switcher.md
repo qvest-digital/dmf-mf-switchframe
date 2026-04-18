@@ -96,7 +96,7 @@ The viewer has three atomic pointers: `delayBuffer`, `frameSync`, and `srcDecode
 3. Otherwise, if `delayBuffer` is non-nil, it goes to the delay buffer.
 4. Otherwise, directly to the handler.
 
-`SendAudio` is simpler — it never goes through frame sync (see [why](../concepts/frame-sync-and-timing.md#audio-never-flows-through-the-frame-sync)), only through delay buffer if set. `SendCaptions` is similar.
+`SendAudio` is simpler — it never goes through frame sync (see [why](../concepts/frame-sync-and-timing.md)), only through delay buffer if set. `SendCaptions` is similar.
 
 Cache-line padding between the atomic send counters (`videoSent`, `audioSent`, `captionSent`) prevents false sharing when multiple relays deliver frames concurrently.
 
@@ -223,5 +223,5 @@ State protection: `Switcher.mu` guards `sources`, `programSource`, `previewSourc
 
 - **Concepts:** [pipeline](../concepts/pipeline.md), [media-path](../concepts/media-path.md), [frame-sync-and-timing](../concepts/frame-sync-and-timing.md), [locking-and-concurrency](../concepts/locking-and-concurrency.md), [gpu](../concepts/gpu.md)
 - **Subsystems:** [transition](transition.md), [graphics-and-dve](graphics-and-dve.md), [audio](audio.md), [captions](captions.md), [output](output.md), [replay](replay.md), [stmap](stmap.md), [codec](codec.md), [srt-ingest](srt-ingest.md), [mxl](mxl.md), [control-plane](control-plane.md)
-- **Reference:** [api](../reference/api.md#switcher-cut), [metrics](../reference/metrics.md#switcher), [state-broadcast](../reference/state-broadcast.md), [config-and-flags](../reference/config-and-flags.md)
+- **Reference:** [api](../reference/api/switching.md), [metrics](../reference/metrics.md#switcher-metrics), [state-broadcast](../reference/state-broadcast.md), [config-and-flags](../reference/config-and-flags.md)
 - **Integration:** [ui-server-contract](../integration/ui-server-contract.md)

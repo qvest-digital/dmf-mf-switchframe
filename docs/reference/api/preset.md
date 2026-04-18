@@ -86,5 +86,5 @@ Warnings are surfaced to the operator in the UI.
 
 ## Related docs
 
-- **Reference:** [api.md](../api.md) · [state-broadcast.md](../state-broadcast.md#presetinfo) · [api/macro.md](macro.md)
+- **Reference:** [api.md](../api.md) · [state-broadcast.md](../state-broadcast.md#presets) · [api/macro.md](macro.md)
 - **Subsystems:** [control-plane.md](../../subsystems/control-plane.md)
