@@ -533,27 +533,31 @@ func drawAnnexClock(buf []byte, f video.Format, width, height, annexY0 int, r *t
 }
 
 // drawAnnexFrameNumber burns the source-side monotonic frame counter into
-// the top-center of the annex. Intended as a diagnostic: a decoder that
-// reorders frames, repeats old content, or races with newer content will
-// show a non-monotonic number sequence on playback; strictly increasing
-// integers rule reorder in or out.
+// the top-left corner of the frame (above the bars region, outside the
+// annex band, so it can't overlap the logo/clock layout). Intended as a
+// diagnostic: a decoder that reorders frames, repeats old content, or
+// races with newer content will show a non-monotonic number sequence on
+// playback; strictly increasing integers rule reorder in or out.
+//
+// Drawn on top of the leftmost gray bar (that region tolerates white
+// text overlay since gray is already near-white luma). Small font with a
+// black letterbox drawn behind it for legibility.
 func drawAnnexFrameNumber(buf []byte, f video.Format, width, height, annexY0 int, r *textrender.Renderer, frameIndex int64) {
-	if r == nil || annexY0 >= height {
+	if r == nil {
 		return
 	}
-	annexH := height - annexY0
-	fontSize := float64(annexH) * 0.45
-	if fontSize < 12 {
-		fontSize = 12
+	// Place in the top-left of the bars region (NOT in the annex band).
+	// That keeps it off the logo + clock layout.
+	fontSize := float64(height) * 0.04
+	if fontSize < 14 {
+		fontSize = 14
 	}
 	opts := textrender.TextOptions{
 		Text:      fmt.Sprintf("F:%07d", frameIndex),
 		FontSize:  fontSize,
 		Bold:      true,
 		Monospace: true,
-		// White; keeping yellow-exclusive to the sprite preserves the
-		// Cb-based sprite detection in TestSwitcher_SpriteMotionIsMonotonic.
-		Color: color.RGBA{R: 255, G: 255, B: 255, A: 255},
+		Color:     color.RGBA{R: 255, G: 255, B: 255, A: 255},
 	}
 	w, h := r.MeasureText(opts)
 	if w <= 0 || h <= 0 {
@@ -563,14 +567,14 @@ func drawAnnexFrameNumber(buf []byte, f video.Format, width, height, annexY0 int
 	if err != nil {
 		return
 	}
-	x := (width - w) / 2
+	pad := 8
+	x := pad
 	x &^= 1
-	// Place just above the sprite track so it doesn't overlap the moving
-	// sprite; the bottom half of the annex is the sprite track.
-	y := annexY0 + (annexH-h)/4
-	if y < annexY0 {
-		y = annexY0
-	}
+	y := pad
+	y &^= 1
+	// Black rectangle behind the text for legibility against the bars.
+	fillYUVRect(buf, f, width, height, x-pad/2, y-pad/2, x+w+pad/2, y+h+pad/2,
+		uint16(f.BlackY()), uint16(f.NeutralChroma()), uint16(f.NeutralChroma()))
 	blitRGBAToYUV(buf, f, width, height, x, y, img)
 }
 
