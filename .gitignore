@@ -6,6 +6,13 @@ server/switchframe
 server/switchframe-asr
 node_modules/
 docs/*
+!docs/concepts/
+!docs/reference/
+!docs/subsystems/
+!docs/integration/
+!docs/operations/
+!docs/README.md
+!docs/architecture.md
 
 # OS files
 .DS_Store
