@@ -128,17 +128,24 @@ Press **?** for the full shortcut overlay. Append `?mode=simple` for a volunteer
 
 ## Documentation
 
-| | |
+Start at **[docs/README.md](docs/README.md)** for the full index, or **[docs/architecture.md](docs/architecture.md)** for the narrative spine.
+
+| Entry point | What's there |
 |---|---|
-| **[API Reference](docs/api.md)** | REST endpoints with request/response examples |
-| **[Architecture](docs/architecture.md)** | System design, data flow, design decisions |
-| **[Deployment](docs/deployment.md)** | CLI flags, Docker, TLS, monitoring |
-| **[Pipeline](docs/pipeline.md)** | Processing nodes, frame pool, atomic swap |
-| **[Concurrency](docs/locking-and-concurrency.md)** | Lock inventory, frame flow, ordering rules |
-| **[SCTE-35](docs/scte35.md)** | Ad insertion, rules engine, SCTE-104 |
-| **[MXL](docs/mxl.md)** | Shared-memory transport, V210, NMOS |
-| **[GPU Acceleration](docs/gpu.md)** | Metal, CUDA, SIMD kernels, TensorRT |
-| **[AI Captions](docs/asr.md)** | Whisper.cpp, VAD, caption pacing |
+| **[Docs index](docs/README.md)** | Full table of contents across concepts / reference / subsystems / integration / operations |
+| **[Architecture](docs/architecture.md)** | The whole engine at a glance — component diagram, media-path sequence, state-broadcast fan-out |
+| **[API reference](docs/reference/api.md)** | 291 REST endpoints, grouped by subsystem under [`docs/reference/api/`](docs/reference/api/) |
+| **[Pipeline](docs/concepts/pipeline.md)** | Always-decode-per-source, atomic graph swap, processing frames, frame pool |
+| **[Media path](docs/concepts/media-path.md)** | End-to-end: source → switcher → pipeline → output fan-out |
+| **[Concurrency](docs/concepts/locking-and-concurrency.md)** | Lock inventory, frame flow, ordering rules, lock-free hot path |
+| **[GPU acceleration](docs/concepts/gpu.md)** | Metal / CUDA backends, kernel catalog, unified memory |
+| **[Deployment](docs/operations/deployment.md)** | Build, run, ports, HTTPS/HTTP-3 certs, GPU setup, Docker |
+| **[Fast-control protocol](docs/reference/fast-control.md)** | WebTransport datagram binary protocol |
+| **[State broadcast](docs/reference/state-broadcast.md)** | `ControlRoomState` schema, push cadence, delivery |
+
+**Per-subsystem deep dives** live under [`docs/subsystems/`](docs/subsystems/) — one doc per Go package (switcher, transition, graphics-and-dve, stmap, audio, captions, comms, output, srt-ingest, mxl, codec, control-plane, replay, clips, playout, scte35).
+
+**Cross-tier contracts** (what a client needs to implement) live under [`docs/integration/`](docs/integration/): [ui-server-contract](docs/integration/ui-server-contract.md), [cef-protocol](docs/integration/cef-protocol.md), [asr-sidecar](docs/integration/asr-sidecar.md).
 
 ## Development
 
