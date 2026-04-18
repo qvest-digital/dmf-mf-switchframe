@@ -241,6 +241,36 @@ MetalResult metal_luma_key(MetalQueueRef queue, MetalPipelineRef pipeline,
     MetalBufferRef nv12, MetalBufferRef mask, MetalBufferRef lut,
     const MetalLumaKeyParams* params);
 
+// --- P210 (10-bit 4:2:2) key kernels ---
+typedef struct {
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;
+    uint32_t maskPitch;
+    uint32_t uvOffsetU16;     // start of UV plane in uint16 indices (= pitch * height / 2)
+    uint16_t keyCb;           // 10-bit
+    uint16_t keyCr;           // 10-bit
+    int32_t simDistSq;
+    int32_t totalDistSq;
+    float spillSuppress;
+    uint16_t spillReplaceCb;  // 10-bit
+    uint16_t spillReplaceCr;  // 10-bit
+} MetalChromaKeyP210Params;
+
+typedef struct {
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;
+    uint32_t maskPitch;
+} MetalLumaKeyP210Params;
+
+MetalResult metal_chroma_key_p210(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef p210, MetalBufferRef mask, const MetalChromaKeyP210Params* params);
+
+MetalResult metal_luma_key_p210(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef p210, MetalBufferRef mask, MetalBufferRef lut,
+    const MetalLumaKeyP210Params* params);
+
 // --- Composite kernels ---
 typedef struct {
     uint32_t dstW; uint32_t dstH; uint32_t dstPitch;

@@ -468,6 +468,32 @@ MetalResult metal_luma_key(MetalQueueRef queue, MetalPipelineRef pipeline,
                        params->width, params->height);
 }
 
+MetalResult metal_chroma_key_p210(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef p210, MetalBufferRef mask, const MetalChromaKeyP210Params* params) {
+    id<MTLBuffer> bufs[] = {
+        (id<MTLBuffer>)p210,
+        (id<MTLBuffer>)mask,
+    };
+    return dispatch_2d((id<MTLCommandQueue>)queue,
+                       (id<MTLComputePipelineState>)pipeline,
+                       bufs, 2, params, sizeof(*params), 2,
+                       params->width, params->height);
+}
+
+MetalResult metal_luma_key_p210(MetalQueueRef queue, MetalPipelineRef pipeline,
+    MetalBufferRef p210, MetalBufferRef mask, MetalBufferRef lut,
+    const MetalLumaKeyP210Params* params) {
+    id<MTLBuffer> bufs[] = {
+        (id<MTLBuffer>)p210,
+        (id<MTLBuffer>)mask,
+        (id<MTLBuffer>)lut,
+    };
+    return dispatch_2d((id<MTLCommandQueue>)queue,
+                       (id<MTLComputePipelineState>)pipeline,
+                       bufs, 3, params, sizeof(*params), 3,
+                       params->width, params->height);
+}
+
 // ============================================================================
 // Composite kernels
 // ============================================================================

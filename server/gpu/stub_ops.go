@@ -139,6 +139,16 @@ func LumaKey(ctx *Context, frame *GPUFrame, maskBuf *GPUFrame, lut [256]byte) er
 	return ErrGPUNotAvailable
 }
 
+// ChromaKeyP210 returns ErrGPUNotAvailable on non-GPU builds.
+func ChromaKeyP210(ctx *Context, frame *GPUFrame, maskBuf *GPUFrame, cfg ChromaKeyConfig) error {
+	return ErrGPUNotAvailable
+}
+
+// LumaKeyP210 returns ErrGPUNotAvailable on non-GPU builds.
+func LumaKeyP210(ctx *Context, frame *GPUFrame, maskBuf *GPUFrame, lut [256]byte) error {
+	return ErrGPUNotAvailable
+}
+
 // BuildLumaKeyLUT creates a 256-byte lookup table for luma keying.
 func BuildLumaKeyLUT(lowClip, highClip, softness float32) [256]byte { return [256]byte{} }
 

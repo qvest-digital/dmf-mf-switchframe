@@ -12,6 +12,83 @@ import (
 	"github.com/zsiec/switchframe/server/internal/video"
 )
 
+// TestSourceManager_P210Pool_PerSourceSTMap_HorizontalFlip mirrors
+// TestGPUSourceManager_STMapCorrection (NV12) but against a P210 pool.
+//
+// Before the source-manager STMap dispatch fix, applySourceSTMap called
+// the NV12-only STMapWarp kernel on P210 frames, producing green-tinted
+// garbage or outright crashing depending on how the Metal/CUDA backend
+// reacted to the format mismatch. This test validates that per-source
+// STMap correction in 10-bit 4:2:2 mode actually applies the warp.
+func TestSourceManager_P210Pool_PerSourceSTMap_HorizontalFlip(t *testing.T) {
+	const w, h = 32, 32
+	ctx := testContext(t)
+
+	pool, err := NewP210FramePool(ctx, w, h, 12) // extra frames for stmap tmp
+	require.NoError(t, err)
+	defer pool.Close()
+
+	// Horizontal flip ST map: each pixel reads from (w-1-x, y).
+	s := make([]float32, w*h)
+	tArr := make([]float32, w*h)
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			s[y*w+x] = float32(w-1-x) / float32(w-1)
+			tArr[y*w+x] = float32(y) / float32(h-1)
+		}
+	}
+
+	provider := &mockSourceSTMapProvider{
+		names:  map[string]string{"cam1": "hflip"},
+		arrays: map[string][2][]float32{"cam1": {s, tArr}},
+	}
+
+	mgr := NewGPUSourceManager(ctx, pool, provider)
+	defer mgr.Close()
+
+	// Build a 10-bit 4:2:2 gradient: bright left (Y=880 ~= white), dark right
+	// (Y=80 ~= black). Chroma at neutral 10-bit (512).
+	yuv := make([]byte, video.YUV422_10bitFrameSize(w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			var yv uint16 = 80
+			if x < w/2 {
+				yv = 880
+			}
+			binary.LittleEndian.PutUint16(yuv[(y*w+x)*2:], yv)
+		}
+	}
+	ySize := w * h * 2
+	chromaPlaneSize := (w / 2) * h * 2
+	for i := 0; i < chromaPlaneSize; i += 2 {
+		binary.LittleEndian.PutUint16(yuv[ySize+i:], 512)
+		binary.LittleEndian.PutUint16(yuv[ySize+chromaPlaneSize+i:], 512)
+	}
+
+	mgr.IngestYUV("cam1", yuv, w, h, 90000)
+
+	frame := mgr.GetFrame("cam1")
+	require.NotNil(t, frame)
+	defer frame.Release()
+	assert.Equal(t, GPUFormatP210, frame.Format, "expected P210 format")
+
+	// Download and confirm the horizontal flip took effect.
+	out := make([]byte, p210DownloadSize(w, h))
+	require.NoError(t, Download10(ctx, frame, out, w, h))
+
+	midY := h / 2
+	leftPix := binary.LittleEndian.Uint16(out[(midY*w+2)*2:])
+	rightPix := binary.LittleEndian.Uint16(out[(midY*w+(w-1-2))*2:])
+
+	assert.Less(t, int(leftPix), 300,
+		"after hflip, left pixel should be dark (was bright 880); got %d", leftPix)
+	assert.Greater(t, int(rightPix), 600,
+		"after hflip, right pixel should be bright (was dark 80); got %d", rightPix)
+
+	t.Logf("P210 per-source STMap hflip: left=%d (want <300), right=%d (want >600)",
+		leftPix, rightPix)
+}
+
 func TestSourceManager_P210Pool_IngestYUV(t *testing.T) {
 	ctx := testContext(t)
 

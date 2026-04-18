@@ -101,7 +101,7 @@ func (n *gpuKeyNode) Close() error {
 // For each key:
 //  1. Upload the fill YUV420p to GPU (cached per source, invalidated on dimension change).
 //  2. Scale fill to frame dimensions if needed.
-//  3. Generate an alpha mask (ChromaKey or LumaKey).
+//  3. Generate an alpha mask (ChromaKey or LumaKey, dispatched per format).
 //  4. Composite the fill onto the program frame using BlendStinger.
 func (n *gpuKeyNode) ProcessGPU(frame *GPUFrame) error {
 	keys := n.bridge.SnapshotEnabledKeys()
@@ -174,12 +174,12 @@ func (n *gpuKeyNode) applyKey(frame, fillGPU *GPUFrame, key *EnabledKeySnapshot)
 			SpillReplaceCb: key.SpillReplaceCb,
 			SpillReplaceCr: key.SpillReplaceCr,
 		}
-		if err := ChromaKey(n.ctx, fillGPU, n.maskBuf, cfg); err != nil {
+		if err := GPUChromaKeyDispatch(n.ctx, fillGPU, n.maskBuf, cfg); err != nil {
 			return err
 		}
 	case "luma":
 		lut := BuildLumaKeyLUT(key.LowClip, key.HighClip, key.Softness)
-		if err := LumaKey(n.ctx, fillGPU, n.maskBuf, lut); err != nil {
+		if err := GPULumaKeyDispatch(n.ctx, fillGPU, n.maskBuf, lut); err != nil {
 			return err
 		}
 	default:

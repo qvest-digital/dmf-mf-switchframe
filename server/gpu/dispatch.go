@@ -137,6 +137,25 @@ func GPUPIPCompositeWithCropDispatch(ctx *Context, dst, src *GPUFrame, rect Rect
 	}
 }
 
+// GPUChromaKeyDispatch generates an alpha mask, picking the chroma key
+// kernel by frame format. P210 program frames go through the 10-bit
+// kernel; everything else through the legacy NV12 kernel.
+func GPUChromaKeyDispatch(ctx *Context, frame, maskBuf *GPUFrame, cfg ChromaKeyConfig) error {
+	if frame != nil && frame.Format == GPUFormatP210 {
+		return ChromaKeyP210(ctx, frame, maskBuf, cfg)
+	}
+	return ChromaKey(ctx, frame, maskBuf, cfg)
+}
+
+// GPULumaKeyDispatch generates an alpha mask, picking the luma key
+// kernel by frame format.
+func GPULumaKeyDispatch(ctx *Context, frame, maskBuf *GPUFrame, lut [256]byte) error {
+	if frame != nil && frame.Format == GPUFormatP210 {
+		return LumaKeyP210(ctx, frame, maskBuf, lut)
+	}
+	return LumaKey(ctx, frame, maskBuf, lut)
+}
+
 // GPUSTMapWarpDispatch applies an ST map warp, dispatching to the P210 or NV12
 // variant based on the source frame's format.
 func GPUSTMapWarpDispatch(ctx *Context, dst, src *GPUFrame, stmap *GPUSTMap) error {

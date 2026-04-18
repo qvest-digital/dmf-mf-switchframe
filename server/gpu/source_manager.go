@@ -583,7 +583,11 @@ func (m *GPUSourceManager) applySourceSTMap(sourceKey string, entry *gpuSourceEn
 	}
 
 	entry.stmapTmp.PTS = frame.PTS
-	if err := STMapWarp(m.ctx, entry.stmapTmp, frame, entry.stmap); err != nil {
+	// Use the format-aware dispatch so P210 (10-bit 4:2:2) frames get
+	// routed to STMapWarpP210Map. Calling STMapWarp directly here would
+	// run the NV12 kernel on P210 memory, which produces green-tinted
+	// garbage and can crash the pipeline downstream.
+	if err := GPUSTMapWarpDispatch(m.ctx, entry.stmapTmp, frame, entry.stmap); err != nil {
 		slog.Warn("gpu: source manager: stmap warp failed",
 			"source", sourceKey, "error", err)
 		return

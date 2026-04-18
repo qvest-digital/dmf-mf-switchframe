@@ -448,15 +448,21 @@ func DSKCompositeRectP210(ctx *Context, frame *GPUFrame, overlay *GPUOverlay, re
 	return ctx.Sync()
 }
 
-// ChromaKeyP210 generates an 8-bit alpha mask from a P210 frame's chroma values.
-// keyCb/keyCr are the target chroma values to key (10-bit range 0-1023).
-// simDistSq is the similarity distance squared, totalDistSq is the total distance squared.
-// spillSuppress controls spill suppression strength (0.0 = off, 1.0 = full).
-func ChromaKeyP210(ctx *Context, frame *GPUFrame, mask *GPUFrame,
-	keyCb, keyCr uint16, simDistSq, totalDistSq int,
-	spillSuppress float32, spillReplaceCb, spillReplaceCr uint16) error {
+// ChromaKeyP210 generates an 8-bit alpha mask from a P210 frame's chroma
+// values. The 8-bit ChromaKeyConfig values are promoted to 10-bit (×4)
+// before dispatch and Similarity/Smoothness are scaled to the 10-bit
+// chroma distance range, matching the Metal P210 keyer's interpretation.
+func ChromaKeyP210(ctx *Context, frame *GPUFrame, mask *GPUFrame, cfg ChromaKeyConfig) error {
 	if ctx == nil || frame == nil || mask == nil {
 		return ErrGPUNotAvailable
+	}
+
+	simDist := cfg.Similarity * 1023.0
+	totalDist := (cfg.Similarity + cfg.Smoothness) * 1023.0
+	simDistSq := int(simDist * simDist)
+	totalDistSq := int(totalDist * totalDist)
+	if totalDistSq <= simDistSq {
+		totalDistSq = simDistSq + 1
 	}
 
 	rc := C.chroma_key_p210(
@@ -464,16 +470,26 @@ func ChromaKeyP210(ctx *Context, frame *GPUFrame, mask *GPUFrame,
 		(*C.uint8_t)(unsafe.Pointer(uintptr(mask.DevPtr))),
 		C.int(frame.Width), C.int(frame.Height),
 		C.int(frame.Pitch), C.int(mask.Pitch),
-		C.uint16_t(keyCb), C.uint16_t(keyCr),
+		C.uint16_t(uint16(cfg.KeyCb)<<2), C.uint16_t(uint16(cfg.KeyCr)<<2),
 		C.int(simDistSq), C.int(totalDistSq),
-		C.float(spillSuppress),
-		C.uint16_t(spillReplaceCb), C.uint16_t(spillReplaceCr),
+		C.float(cfg.SpillSuppress),
+		C.uint16_t(uint16(cfg.SpillReplaceCb)<<2),
+		C.uint16_t(uint16(cfg.SpillReplaceCr)<<2),
 		ctx.stream,
 	)
 	if rc != C.cudaSuccess {
 		return fmt.Errorf("gpu: chroma key p210 failed: %d", rc)
 	}
 	return ctx.Sync()
+}
+
+// LumaKeyP210 generates an 8-bit alpha mask from a P210 frame's Y plane
+// using a 256-entry LUT. The kernel shifts the 10-bit Y down to 8 bits
+// to index into the LUT (matches Metal's behaviour). Falls back to
+// ErrGPUNotAvailable until a CUDA kernel is wired in -- callers should
+// route via GPULumaKeyDispatch which handles missing P210 paths.
+func LumaKeyP210(ctx *Context, frame *GPUFrame, mask *GPUFrame, lut [256]byte) error {
+	return fmt.Errorf("gpu: LumaKeyP210 not yet implemented for CUDA backend")
 }
 
 // STMapWarpP210Map warps a P210 frame using a pre-uploaded GPUSTMap.
