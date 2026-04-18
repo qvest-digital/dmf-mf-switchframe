@@ -92,19 +92,94 @@ func computeAudioCtx(samples, sampleRate int) int {
 	return ((raw + 63) / 64) * 64
 }
 
+// DTW alignment-heads preset constants. Values mirror the
+// whisper_alignment_heads_preset enum in whisper.h -- order must stay in
+// sync. Kept as Go ints so the mapping logic is testable without cgo.
+const (
+	dtwAheadsNone         = 0
+	dtwAheadsNTopMost     = 1
+	dtwAheadsCustom       = 2
+	dtwAheadsTinyEN       = 3
+	dtwAheadsTiny         = 4
+	dtwAheadsBaseEN       = 5
+	dtwAheadsBase         = 6
+	dtwAheadsSmallEN      = 7
+	dtwAheadsSmall        = 8
+	dtwAheadsMediumEN     = 9
+	dtwAheadsMedium       = 10
+	dtwAheadsLargeV1      = 11
+	dtwAheadsLargeV2      = 12
+	dtwAheadsLargeV3      = 13
+	dtwAheadsLargeV3Turbo = 14
+)
+
+// dtwAheadsForModel maps a model name (as extracted from ggml-NAME.bin) to
+// the matching DTW alignment-heads preset. Quantized variants
+// (-q5_0, -q5_1, -q8_0, -q4_0, -q4_1) strip the suffix before matching.
+// Unknown models fall back to N_TOP_MOST -- DTW still works, just less
+// accurately than a model-specific preset.
+func dtwAheadsForModel(name string) int {
+	base := name
+	for _, suffix := range []string{"-q5_0", "-q5_1", "-q8_0", "-q4_0", "-q4_1"} {
+		if len(base) > len(suffix) && base[len(base)-len(suffix):] == suffix {
+			base = base[:len(base)-len(suffix)]
+			break
+		}
+	}
+
+	switch base {
+	case "tiny.en":
+		return dtwAheadsTinyEN
+	case "tiny":
+		return dtwAheadsTiny
+	case "base.en":
+		return dtwAheadsBaseEN
+	case "base":
+		return dtwAheadsBase
+	case "small.en":
+		return dtwAheadsSmallEN
+	case "small", "small.en-tdrz":
+		return dtwAheadsSmall
+	case "medium.en":
+		return dtwAheadsMediumEN
+	case "medium":
+		return dtwAheadsMedium
+	case "large-v1":
+		return dtwAheadsLargeV1
+	case "large-v2":
+		return dtwAheadsLargeV2
+	case "large-v3", "large":
+		return dtwAheadsLargeV3
+	case "large-v3-turbo":
+		return dtwAheadsLargeV3Turbo
+	default:
+		return dtwAheadsNTopMost
+	}
+}
+
 // whisperContextOpts mirrors the subset of whisper_context_params we set.
 type whisperContextOpts struct {
-	UseGPU    bool
-	FlashAttn bool
+	UseGPU             bool
+	FlashAttn          bool
+	DTWTokenTimestamps bool
+	DTWAheadsPreset    int
+	DTWMemSize         int // bytes of scratch memory for DTW
 }
 
 // buildWhisperContextOpts returns the context init flags. flash_attn is
 // roughly a 2x attention speedup on both CUDA and Metal and is keep-on by
 // default in modern whisper.cpp; we set it explicitly so the value isn't
 // silently flipped by an upstream default change.
-func buildWhisperContextOpts(useGPU bool) whisperContextOpts {
+//
+// DTW token timestamps are enabled with a model-specific aheads preset --
+// gives ~50ms word boundaries (vs ~500ms without DTW), needed for
+// frame-accurate CEA-608 emit timing.
+func buildWhisperContextOpts(useGPU bool, modelName string) whisperContextOpts {
 	return whisperContextOpts{
-		UseGPU:    useGPU,
-		FlashAttn: true,
+		UseGPU:             useGPU,
+		FlashAttn:          true,
+		DTWTokenTimestamps: true,
+		DTWAheadsPreset:    dtwAheadsForModel(modelName),
+		DTWMemSize:         128 * 1024 * 1024, // 128 MiB, generous; deprecated upstream
 	}
 }

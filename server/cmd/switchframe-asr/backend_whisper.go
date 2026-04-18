@@ -70,10 +70,13 @@ func (b *whisperASRBackend) loadModel(name string) error {
 	cPath := C.CString(path)
 	defer C.free(unsafe.Pointer(cPath))
 
-	opts := buildWhisperContextOpts(b.useGPU)
+	opts := buildWhisperContextOpts(b.useGPU, name)
 	params := C.whisper_context_default_params()
 	params.use_gpu = C.bool(opts.UseGPU)
 	params.flash_attn = C.bool(opts.FlashAttn)
+	params.dtw_token_timestamps = C.bool(opts.DTWTokenTimestamps)
+	params.dtw_aheads_preset = uint32(opts.DTWAheadsPreset)
+	params.dtw_mem_size = C.size_t(opts.DTWMemSize)
 
 	ctx := C.whisper_init_from_file_with_params(cPath, params)
 	if ctx == nil {

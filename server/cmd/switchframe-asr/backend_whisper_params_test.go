@@ -114,7 +114,7 @@ func TestComputeAudioCtx_AlwaysMultipleOf64OrZero(t *testing.T) {
 }
 
 func TestBuildWhisperContextOpts_FlashAttnAndGPU(t *testing.T) {
-	o := buildWhisperContextOpts(true)
+	o := buildWhisperContextOpts(true, "base.en")
 	if !o.FlashAttn {
 		t.Error("FlashAttn = false, want true (~2x attention speedup, both CUDA and Metal)")
 	}
@@ -122,11 +122,69 @@ func TestBuildWhisperContextOpts_FlashAttnAndGPU(t *testing.T) {
 		t.Error("UseGPU = false, want true when requested")
 	}
 
-	o2 := buildWhisperContextOpts(false)
+	o2 := buildWhisperContextOpts(false, "base.en")
 	if o2.UseGPU {
 		t.Error("UseGPU = true, want false when GPU disabled")
 	}
 	if !o2.FlashAttn {
 		t.Error("FlashAttn should still be true even on CPU (cheap, sometimes a small win)")
+	}
+}
+
+func TestBuildWhisperContextOpts_EnablesDTWForKnownModels(t *testing.T) {
+	o := buildWhisperContextOpts(true, "base.en")
+	if !o.DTWTokenTimestamps {
+		t.Error("DTWTokenTimestamps = false, want true (gives ±50ms word timestamps)")
+	}
+	if o.DTWAheadsPreset != dtwAheadsBaseEN {
+		t.Errorf("DTWAheadsPreset = %d, want %d (base.en preset)", o.DTWAheadsPreset, dtwAheadsBaseEN)
+	}
+	if o.DTWMemSize <= 0 {
+		t.Errorf("DTWMemSize = %d, want positive (DTW needs scratch memory)", o.DTWMemSize)
+	}
+}
+
+func TestBuildWhisperContextOpts_UnknownModelFallsBackToNTopMost(t *testing.T) {
+	o := buildWhisperContextOpts(true, "some-future-model-name")
+	if o.DTWAheadsPreset != dtwAheadsNTopMost {
+		t.Errorf("unknown model preset = %d, want %d (N_TOP_MOST fallback)",
+			o.DTWAheadsPreset, dtwAheadsNTopMost)
+	}
+}
+
+func TestDTWAheadsForModel(t *testing.T) {
+	tests := []struct {
+		model string
+		want  int
+	}{
+		{"tiny.en", dtwAheadsTinyEN},
+		{"tiny", dtwAheadsTiny},
+		{"base.en", dtwAheadsBaseEN},
+		{"base", dtwAheadsBase},
+		{"small.en", dtwAheadsSmallEN},
+		{"small", dtwAheadsSmall},
+		{"small.en-tdrz", dtwAheadsSmall}, // tdrz is a small variant
+		{"medium.en", dtwAheadsMediumEN},
+		{"medium", dtwAheadsMedium},
+		{"large-v1", dtwAheadsLargeV1},
+		{"large-v2", dtwAheadsLargeV2},
+		{"large-v3", dtwAheadsLargeV3},
+		{"large", dtwAheadsLargeV3}, // alias for v3
+		{"large-v3-turbo", dtwAheadsLargeV3Turbo},
+		// Quantized variants strip the suffix.
+		{"base.en-q5_0", dtwAheadsBaseEN},
+		{"large-v3-turbo-q5_0", dtwAheadsLargeV3Turbo},
+		{"medium.en-q8_0", dtwAheadsMediumEN},
+		// Unknown model falls back to N_TOP_MOST.
+		{"unknown-model", dtwAheadsNTopMost},
+		{"", dtwAheadsNTopMost},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			got := dtwAheadsForModel(tt.model)
+			if got != tt.want {
+				t.Errorf("dtwAheadsForModel(%q) = %d, want %d", tt.model, got, tt.want)
+			}
+		})
 	}
 }
