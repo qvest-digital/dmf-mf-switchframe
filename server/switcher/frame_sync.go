@@ -644,6 +644,23 @@ func (fs *FrameSynchronizer) SetFRCQuality(q FRCQuality) {
 	defer fs.mu.Unlock()
 	fs.frcQuality = q
 	for key, ss := range fs.sources {
+		// Built-in virtual sources (source:black, source:colorbars) run an
+		// internal producer pinned to the pipeline frame rate. MCFI
+		// motion-compensated interpolation on a source that's already at
+		// tick rate produces nothing useful; any motion-estimation misfire
+		// (e.g., the periodic yellow sprite getting mistracked across
+		// cycle wraps) shows up as visible sprite jitter on the program
+		// output. Force FRC off for built-ins regardless of the global
+		// quality setting.
+		if isBuiltinSource(key) {
+			ss.mu.Lock()
+			if ss.frc != nil {
+				ss.frc.reset()
+				ss.frc = nil
+			}
+			ss.mu.Unlock()
+			continue
+		}
 		ss.mu.Lock()
 		if q == FRCNone {
 			if ss.frc != nil {
@@ -685,6 +702,18 @@ func (fs *FrameSynchronizer) SetSourceFRCQuality(key string, q FRCQuality) {
 	defer fs.mu.Unlock()
 	ss, ok := fs.sources[key]
 	if !ok {
+		return
+	}
+	// Built-in virtual sources are exempt — they run their own producer at
+	// pipeline rate; any motion-estimation misfire on synthetic content
+	// shows up as sprite jitter. See SetFRCQuality for the rationale.
+	if isBuiltinSource(key) {
+		ss.mu.Lock()
+		if ss.frc != nil {
+			ss.frc.reset()
+			ss.frc = nil
+		}
+		ss.mu.Unlock()
 		return
 	}
 	ss.mu.Lock()
