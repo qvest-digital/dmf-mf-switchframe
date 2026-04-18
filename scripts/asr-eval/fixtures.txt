@@ -1,0 +1,15 @@
+# Format: name|rate|voice|text
+# Rate is words/min for `say -r`. Voice "Alex" is the high-quality US English
+# diphone voice if installed; falls back to system default otherwise.
+# Text may contain `[[slnc N]]` for N-millisecond pauses.
+
+normal|150|Alex|The quick brown fox jumps over the lazy dog. Pack my box with five dozen liquor jugs. The five boxing wizards jump quickly.
+fast|240|Alex|Breaking news this hour from the financial markets. Stocks tumbled in afternoon trading as investors weighed inflation data against corporate earnings reports. The Dow fell three hundred and twelve points while the Nasdaq slipped one and a half percent on the day.
+slow|90|Alex|This is a deliberate test of slower speech. Each word should land clearly. The system must not get ahead of the speaker, and it must not lag.
+pauses|150|Alex|The first sentence ends here. [[slnc 1500]] After a pause, the second sentence begins. [[slnc 800]] And then a shorter pause before this third one.
+runon|180|Alex|And then he walked into the room without looking at anyone and went straight to the kitchen and opened the fridge and grabbed a soda and walked back out without saying a single word to anyone in the whole apartment.
+numbers|150|Alex|Call us at five five five, one two three, four five six seven. The launch is scheduled for March fourteenth, twenty twenty six, at nine thirty in the morning. The price is three thousand four hundred ninety nine dollars.
+disfluencies|150|Alex|So um, what I was, uh, trying to say is that, you know, the project is, well it's basically on track. I mean, there are some, some issues, but nothing we can't, uh, work through.
+punctuation|150|Alex|"That's incredible," she said, pausing for effect. "But is it really, you know, the right call? After everything that happened?" He looked away, considering.
+short|150|Alex|Good evening from London.
+long|150|Alex|Welcome to the evening news. I'm reporting live from the studio tonight. We have several major stories developing this hour. First, an update on the ongoing trade negotiations between the major economies, which have entered a critical phase this week. Officials confirmed that talks will continue through the weekend with the goal of reaching a preliminary agreement by Monday morning. In other news, the weather service has issued a severe storm warning for the northern coast, with high winds and heavy rain expected to arrive within the next twenty four hours. Residents in affected areas are being advised to prepare accordingly. Stay with us for more on these stories and others as they develop.

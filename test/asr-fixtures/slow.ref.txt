@@ -1,0 +1,1 @@
+This is a deliberate test of slower speech. Each word should land clearly. The system must not get ahead of the speaker, and it must not lag.

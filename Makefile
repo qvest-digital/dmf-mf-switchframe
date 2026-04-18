@@ -1,4 +1,4 @@
-.PHONY: build build-server build-server-mxl build-asr-sidecar build-asr-sidecar-whisper dev demo demo-captions mxl-demo ui-install ui-build ui-test ui-e2e test test-mxl test-all docker docker-cuda clean sync-prism-ts lint format setup-mkcert metal-shaders
+.PHONY: build build-server build-server-mxl build-asr-sidecar build-asr-sidecar-whisper dev demo demo-captions mxl-demo ui-install ui-build ui-test ui-e2e test test-mxl test-all docker docker-cuda clean sync-prism-ts lint format setup-mkcert metal-shaders asr-eval-fixtures asr-eval
 
 EMBED_LINK := server/cmd/switchframe/ui
 
@@ -95,6 +95,26 @@ demo: build-server node_modules_check
 		fi; \
 		cd ui && npm run dev & \
 		wait
+
+# Generate synthetic ASR test fixtures (macOS only -- uses `say`).
+asr-eval-fixtures:
+	@bash scripts/asr-eval/gen-fixtures.sh
+
+# Run the streaming ASR pipeline against the fixture corpus and print
+# WER, latency, and commit-stability metrics. Requires the whisper-tag
+# build path to be linkable (whisper.cpp at /opt/whisper.cpp).
+ASR_EVAL_FIXTURES_DIR ?= test/asr-fixtures
+ASR_EVAL_MODELS_DIR   ?= /opt/whisper.cpp/models
+ASR_EVAL_MODEL        ?=
+ASR_EVAL_THREADS      ?= 0
+asr-eval:
+	@cd server && \
+	  ASR_EVAL_FIXTURES_DIR="$(CURDIR)/$(ASR_EVAL_FIXTURES_DIR)" \
+	  ASR_EVAL_MODELS_DIR="$(ASR_EVAL_MODELS_DIR)" \
+	  ASR_EVAL_MODEL="$(ASR_EVAL_MODEL)" \
+	  ASR_EVAL_THREADS="$(ASR_EVAL_THREADS)" \
+	  go test -count=1 -tags whisper -v -timeout 10m \
+	    -run TestASREvalFixtures ./cmd/switchframe-asr
 
 # Demo with live AI captions: same as demo, plus the whisper.cpp ASR sidecar.
 # Requires /opt/whisper.cpp built with -DGGML_METAL=ON (macOS) or -DGGML_CUDA=ON (Linux)
