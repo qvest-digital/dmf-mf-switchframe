@@ -1,4 +1,4 @@
-.PHONY: build build-server build-server-mxl build-asr-sidecar dev demo mxl-demo ui-install ui-build ui-test ui-e2e test test-mxl test-all docker docker-cuda clean sync-prism-ts lint format setup-mkcert metal-shaders
+.PHONY: build build-server build-server-mxl build-asr-sidecar build-asr-sidecar-whisper dev demo mxl-demo ui-install ui-build ui-test ui-e2e test test-mxl test-all docker docker-cuda clean sync-prism-ts lint format setup-mkcert metal-shaders
 
 EMBED_LINK := server/cmd/switchframe/ui
 
@@ -40,9 +40,19 @@ build: $(EMBED_LINK) metal-shaders
 build-server: metal-shaders
 	cd server && go build -o ../bin/switchframe ./cmd/switchframe
 
-# ASR sidecar binary
+# ASR sidecar binary (stub backends only -- no GPU/cgo)
 build-asr-sidecar:
 	cd server && go build -o ../bin/switchframe-asr ./cmd/switchframe-asr
+
+# ASR sidecar with whisper.cpp linked.
+# Requires whisper.cpp built and installed at /opt/whisper.cpp.
+# Platform-specific tags: Linux pulls in CUDA + TensorRT; Darwin uses Metal only.
+build-asr-sidecar-whisper:
+ifeq ($(UNAME_S),Darwin)
+	cd server && go build -tags whisper -o ../bin/switchframe-asr ./cmd/switchframe-asr
+else
+	cd server && go build -tags cuda,tensorrt,whisper -o ../bin/switchframe-asr ./cmd/switchframe-asr
+endif
 
 # Go tests
 test:
