@@ -10,7 +10,7 @@ import (
 
 type whisperASRBackend struct{}
 
-func newWhisperASRBackend(modelsDir string, useGPU bool) (*whisperASRBackend, error) {
+func newWhisperASRBackend(modelsDir string, useGPU bool, nThreads int) (*whisperASRBackend, error) {
 	return nil, fmt.Errorf("whisper not available (non-cgo build)")
 }
 
@@ -23,4 +23,5 @@ func (b *whisperASRBackend) SetModel(string) error {
 }
 func (b *whisperASRBackend) Config() map[string]interface{}   { return nil }
 func (b *whisperASRBackend) SetConfig(map[string]interface{}) {}
+func (b *whisperASRBackend) AppendPromptContext([]string)     {}
 func (b *whisperASRBackend) Close()                           {}

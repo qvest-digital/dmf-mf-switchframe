@@ -26,8 +26,10 @@ func filterWords(words []asr.TranscriptWord) []asr.TranscriptWord {
 			}
 		}
 
-		// Skip very low confidence words.
-		if w.Confidence > 0 && w.Confidence < 0.3 {
+		// Skip low-confidence tokens. Threshold tuned for live broadcast:
+		// the user-perceived cost of a wrong word then correction is worse
+		// than a brief omission. Pairs with LocalAgreement-2 commit upstream.
+		if w.Confidence > 0 && w.Confidence < 0.4 {
 			continue
 		}
 

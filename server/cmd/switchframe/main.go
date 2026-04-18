@@ -123,6 +123,7 @@ type AppConfig struct {
 	ASRSidecarModelDir  string // path to streaming model directory
 	ASRWhisperModelsDir string // Whisper GGML models directory for ASR sidecar
 	ASRDefaultBackend   string // default ASR backend (parakeet or whisper)
+	ASRWhisperThreads   int    // whisper.cpp inference threads (0 = auto)
 
 	// Persistent cache directory for mmap'd LUTs and decoded assets.
 	CacheDir string
@@ -348,6 +349,7 @@ func parseConfig() (AppConfig, error) {
 	asrSidecarModelDirFlag := flag.String("asr-sidecar-model-dir", "", "Path to streaming ASR model directory")
 	asrWhisperModelsDirFlag := flag.String("asr-whisper-models-dir", "", "Whisper GGML models directory for ASR sidecar")
 	asrDefaultBackendFlag := flag.String("asr-default-backend", "parakeet", "Default ASR backend (parakeet or whisper)")
+	asrWhisperThreadsFlag := flag.Int("asr-whisper-threads", 0, "Whisper inference threads (0 = auto: min(NumCPU, 8))")
 
 	// Persistent cache directory.
 	cacheDirFlag := flag.String("cache-dir", defaultCacheDir(), "persistent cache directory for mmap'd LUTs and decoded assets")
@@ -526,6 +528,7 @@ func parseConfig() (AppConfig, error) {
 		ASRSidecarModelDir:   *asrSidecarModelDirFlag,
 		ASRWhisperModelsDir:  *asrWhisperModelsDirFlag,
 		ASRDefaultBackend:    *asrDefaultBackendFlag,
+		ASRWhisperThreads:    *asrWhisperThreadsFlag,
 		CacheDir:             *cacheDirFlag,
 		ST2110Port:           *st2110PortFlag,
 		ST2110IP:             *st2110IPFlag,

@@ -39,11 +39,40 @@ func TestDefaultWhisperModel(t *testing.T) {
 		models []string
 		want   string
 	}{
-		{"prefer medium.en", []string{"base", "medium.en", "large"}, "medium.en"},
+		{
+			"prefer large-v3-turbo-q5_0 over everything",
+			[]string{"base.en", "medium.en", "large-v3", "large-v3-turbo-q5_0"},
+			"large-v3-turbo-q5_0",
+		},
+		{
+			"prefer turbo non-quantized when quant absent",
+			[]string{"base.en", "medium.en", "large-v3", "large-v3-turbo"},
+			"large-v3-turbo",
+		},
+		{
+			"prefer turbo q8_0 over large-v3",
+			[]string{"large-v3", "large-v3-turbo-q8_0"},
+			"large-v3-turbo-q8_0",
+		},
+		{
+			"fall to large-v3 when no turbo",
+			[]string{"medium.en", "large-v3"},
+			"large-v3",
+		},
+		{
+			"fall to large-v2 when no large-v3 family present",
+			[]string{"base", "medium.en", "large-v2"},
+			"large-v2",
+		},
+		{
+			"medium.en preferred when no large family at all",
+			[]string{"base", "medium.en", "small"},
+			"medium.en",
+		},
 		{"prefer medium over base", []string{"base", "medium"}, "medium"},
 		{"fallback to base.en", []string{"tiny", "base.en"}, "base.en"},
 		{"fallback to base", []string{"tiny", "base"}, "base"},
-		{"fallback to first", []string{"large-v3", "tiny"}, "large-v3"},
+		{"fallback to first when nothing matches", []string{"tiny.en", "tiny"}, "tiny.en"},
 		{"empty", nil, ""},
 	}
 	for _, tt := range tests {

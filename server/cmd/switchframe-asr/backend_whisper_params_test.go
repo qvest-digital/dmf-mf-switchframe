@@ -1,0 +1,231 @@
+package main
+
+import "testing"
+
+func TestBuildWhisperFullOpts_LiveBroadcastDefaults(t *testing.T) {
+	o := buildWhisperFullOpts(whisperRequest{
+		Language:  "en",
+		Translate: false,
+		NThreads:  4,
+	})
+
+	// no_context is OFF. whisper.cpp's default for no_context is true,
+	// but the eval surfaced significant accuracy regressions on long-
+	// form fixtures with that default (first-half drops, "fast" missing
+	// "Breaking", "long" missing 25-second prefix). With no_context=false
+	// whisper uses prior-utterance KV state for continuity, which
+	// hurts independence across very different utterances but that
+	// turned out to be a smaller cost than the long-form drops.
+	if o.NoContext {
+		t.Error("NoContext = true, want false (long-form prefix drops outweigh cross-call independence)")
+	}
+	// SingleSegment=false: let whisper segment naturally. Forcing
+	// single segment truncates long utterances.
+	if o.SingleSegment {
+		t.Error("SingleSegment = true, want false (let whisper segment naturally)")
+	}
+	// No hard token cap: max_tokens=32 worked for ~1s UFAL-style chunks
+	// but truncates output on our cumulative chunks (up to 25s).
+	if o.MaxTokens != 0 {
+		t.Errorf("MaxTokens = %d, want 0 (no truncation)", o.MaxTokens)
+	}
+	if o.Temperature != 0 {
+		t.Errorf("Temperature = %f, want 0 (start deterministic)", o.Temperature)
+	}
+	// Re-enable the temperature_inc safety net. Disabling it removes
+	// whisper's fallback path when greedy decode locks into a repetition
+	// loop ("the other the other...") on degenerate audio. The fallback
+	// only fires on detect-bad-decode, so its latency cost is rare.
+	if o.TemperatureInc == 0 {
+		t.Error("TemperatureInc = 0, want non-zero (recover from greedy decode loops)")
+	}
+	if !o.SuppressBlank {
+		t.Error("SuppressBlank = false, want true")
+	}
+	// SuppressNonSpeech matches whisper-cli's default (false). With
+	// per-call state reset fixing the cross-utterance pollution issue
+	// that originally pushed us to true, false is now safe and matches
+	// whisper-cli accuracy on the eval corpus.
+	if o.SuppressNonSpeech {
+		t.Error("SuppressNonSpeech = true, want false (matches whisper-cli)")
+	}
+	if !o.TokenTimestamps {
+		t.Error("TokenTimestamps = false, want true (per-word confidence + timing)")
+	}
+	if o.NThreads != 4 {
+		t.Errorf("NThreads = %d, want 4 (passthrough)", o.NThreads)
+	}
+	if o.Language != "en" {
+		t.Errorf("Language = %q, want en", o.Language)
+	}
+	if o.Translate {
+		t.Error("Translate = true, want false (passthrough)")
+	}
+}
+
+func TestBuildWhisperFullOpts_PassesThroughTranslate(t *testing.T) {
+	o := buildWhisperFullOpts(whisperRequest{Language: "fr", Translate: true, NThreads: 2})
+	if !o.Translate {
+		t.Error("Translate = false, want true when requested")
+	}
+	if o.Language != "fr" {
+		t.Errorf("Language = %q, want fr", o.Language)
+	}
+}
+
+func TestResolveWhisperThreads(t *testing.T) {
+	tests := []struct {
+		name      string
+		requested int
+		numCPU    int
+		want      int
+	}{
+		{"explicit positive passes through", 6, 16, 6},
+		{"zero falls back to numCPU clamped at 8", 0, 16, 8},
+		{"zero on small box uses numCPU", 0, 4, 4},
+		{"zero on tiny box gets at least 1", 0, 0, 1},
+		{"negative clamped to at least 1", -3, 16, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveWhisperThreads(tt.requested, tt.numCPU)
+			if got != tt.want {
+				t.Errorf("resolveWhisperThreads(%d, %d) = %d, want %d", tt.requested, tt.numCPU, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestComputeAudioCtx(t *testing.T) {
+	tests := []struct {
+		name      string
+		samples   int
+		want      int
+		comment   string
+	}{
+		{"empty audio returns default (0)", 0, 0, "defensive"},
+		{"1s rounds up from 5s floor", 16000, 384, "5s -> 378 -> 384"},
+		{"5s exact returns 384", 16000 * 5, 384, "(5/30)*1500+128=378 -> 384"},
+		{"10s returns 640", 16000 * 10, 640, "(10/30)*1500+128=628 -> 640"},
+		{"15s returns 896", 16000 * 15, 896, "(15/30)*1500+128=878 -> 896"},
+		{"20s returns 1152", 16000 * 20, 1152, "(20/30)*1500+128=1128 -> 1152"},
+		{"25s returns 1408", 16000 * 25, 1408, "(25/30)*1500+128=1378 -> 1408"},
+		{"30s returns 0 (use whisper default)", 16000 * 30, 0, "no truncation needed"},
+		{"40s returns 0", 16000 * 40, 0, "above default already"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := computeAudioCtx(tt.samples, 16000)
+			if got != tt.want {
+				t.Errorf("computeAudioCtx(%d samples) = %d, want %d (%s)", tt.samples, got, tt.want, tt.comment)
+			}
+		})
+	}
+}
+
+func TestComputeAudioCtx_NeverExceedsModelMax(t *testing.T) {
+	// whisper.cpp rejects audio_ctx > n_audio_ctx (1500 for all current
+	// whisper models). The eval harness exposed values up to 1600 for
+	// chunks in the 28-30s window, which whisper rejects with rc=-5.
+	for samples := 0; samples <= 16000*35; samples += 16000 / 4 {
+		got := computeAudioCtx(samples, 16000)
+		if got > 1500 {
+			t.Errorf("computeAudioCtx(%d samples) = %d, exceeds whisper's max of 1500",
+				samples, got)
+		}
+	}
+}
+
+func TestComputeAudioCtx_AlwaysMultipleOf64OrZeroOrCapped(t *testing.T) {
+	for samples := 0; samples <= 16000*30; samples += 16000 {
+		got := computeAudioCtx(samples, 16000)
+		if got != 0 && got != whisperMaxAudioCtx && got%64 != 0 {
+			t.Errorf("computeAudioCtx(%d) = %d, not multiple of 64 nor cap", samples, got)
+		}
+	}
+}
+
+func TestBuildWhisperContextOpts_FlashAttnAndGPU(t *testing.T) {
+	o := buildWhisperContextOpts(true, "base.en")
+	if !o.FlashAttn {
+		t.Error("FlashAttn = false, want true (~2x attention speedup, both CUDA and Metal)")
+	}
+	if !o.UseGPU {
+		t.Error("UseGPU = false, want true when requested")
+	}
+
+	o2 := buildWhisperContextOpts(false, "base.en")
+	if o2.UseGPU {
+		t.Error("UseGPU = true, want false when GPU disabled")
+	}
+	if !o2.FlashAttn {
+		t.Error("FlashAttn should still be true even on CPU (cheap, sometimes a small win)")
+	}
+}
+
+func TestBuildWhisperContextOpts_DTWSuppressedWhenFlashAttnOn(t *testing.T) {
+	o := buildWhisperContextOpts(true, "base.en")
+	// Whisper.cpp currently can't run DTW with flash_attn -- it logs a
+	// "DTW disabled" warning on every model load if we ask for both.
+	// flash_attn is the bigger runtime win, so we suppress the DTW request.
+	if !o.FlashAttn {
+		t.Error("FlashAttn = false, want true (chosen over DTW)")
+	}
+	if o.DTWTokenTimestamps {
+		t.Error("DTWTokenTimestamps = true, want false (suppressed because flash_attn is on)")
+	}
+	// The aheads preset is still computed so DTW Just Works if the user
+	// disables flash_attn out-of-band.
+	if o.DTWAheadsPreset != dtwAheadsBaseEN {
+		t.Errorf("DTWAheadsPreset = %d, want %d (preset still set for future use)",
+			o.DTWAheadsPreset, dtwAheadsBaseEN)
+	}
+	if o.DTWMemSize <= 0 {
+		t.Errorf("DTWMemSize = %d, want positive", o.DTWMemSize)
+	}
+}
+
+func TestBuildWhisperContextOpts_UnknownModelFallsBackToNTopMost(t *testing.T) {
+	o := buildWhisperContextOpts(true, "some-future-model-name")
+	if o.DTWAheadsPreset != dtwAheadsNTopMost {
+		t.Errorf("unknown model preset = %d, want %d (N_TOP_MOST fallback)",
+			o.DTWAheadsPreset, dtwAheadsNTopMost)
+	}
+}
+
+func TestDTWAheadsForModel(t *testing.T) {
+	tests := []struct {
+		model string
+		want  int
+	}{
+		{"tiny.en", dtwAheadsTinyEN},
+		{"tiny", dtwAheadsTiny},
+		{"base.en", dtwAheadsBaseEN},
+		{"base", dtwAheadsBase},
+		{"small.en", dtwAheadsSmallEN},
+		{"small", dtwAheadsSmall},
+		{"small.en-tdrz", dtwAheadsSmall}, // tdrz is a small variant
+		{"medium.en", dtwAheadsMediumEN},
+		{"medium", dtwAheadsMedium},
+		{"large-v1", dtwAheadsLargeV1},
+		{"large-v2", dtwAheadsLargeV2},
+		{"large-v3", dtwAheadsLargeV3},
+		{"large", dtwAheadsLargeV3}, // alias for v3
+		{"large-v3-turbo", dtwAheadsLargeV3Turbo},
+		// Quantized variants strip the suffix.
+		{"base.en-q5_0", dtwAheadsBaseEN},
+		{"large-v3-turbo-q5_0", dtwAheadsLargeV3Turbo},
+		{"medium.en-q8_0", dtwAheadsMediumEN},
+		// Unknown model falls back to N_TOP_MOST.
+		{"unknown-model", dtwAheadsNTopMost},
+		{"", dtwAheadsNTopMost},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			got := dtwAheadsForModel(tt.model)
+			if got != tt.want {
+				t.Errorf("dtwAheadsForModel(%q) = %d, want %d", tt.model, got, tt.want)
+			}
+		})
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 	"unsafe"
@@ -41,7 +42,35 @@ func dbToNoiseFloor(db float64) string {
 	return "noisy"
 }
 
-func emitWords(conn net.Conn, words []asr.TranscriptWord) {
+// promptContextual is implemented by backends that maintain an internal
+// initial_prompt rolling window (currently only whisper). Other backends
+// just no-op via type assertion failure.
+type promptContextual interface {
+	AppendPromptContext(words []string)
+}
+
+// extendPromptContext forwards an utterance's words to the backend's
+// initial_prompt rolling window if it supports one. Called once per
+// utterance (after batch transcribe) so the next utterance has prior
+// context for coherence.
+func extendPromptContext(b asrBackend, committed []asr.TranscriptWord) {
+	if len(committed) == 0 {
+		return
+	}
+	pc, ok := b.(promptContextual)
+	if !ok {
+		return
+	}
+	texts := make([]string, 0, len(committed))
+	for _, w := range committed {
+		if w.Text != "" {
+			texts = append(texts, w.Text)
+		}
+	}
+	pc.AppendPromptContext(texts)
+}
+
+func emitWords(conn net.Conn, words []asr.TranscriptWord, isFinal bool) {
 	if len(words) == 0 {
 		return
 	}
@@ -56,7 +85,7 @@ func emitWords(conn net.Conn, words []asr.TranscriptWord) {
 	if err := asripc.WriteMessage(conn, &asripc.Message{
 		Type:    "transcript",
 		Words:   ipcWords,
-		IsFinal: true,
+		IsFinal: isFinal,
 	}); err != nil {
 		slog.Warn("failed to write transcript", "error", err)
 	}
@@ -90,6 +119,7 @@ func main() {
 	device := flag.Int("device", 0, "GPU device ID")
 	energyThreshold := flag.Float64("energy-threshold", 0.005, "RMS energy gate threshold")
 	vadModelPath := flag.String("vad-model", "", "Silero VAD ONNX model path (auto-detected from model-dir)")
+	whisperThreads := flag.Int("whisper-threads", 0, "Whisper inference thread count (0 = auto: min(NumCPU, 8))")
 	buildEngines := flag.Bool("build-engines", false, "Build TRT engine plans from ONNX models and exit")
 	flag.Parse()
 
@@ -159,7 +189,8 @@ func main() {
 			if whisperDir == "" {
 				return nil, fmt.Errorf("whisper: --whisper-models-dir not set")
 			}
-			return newWhisperASRBackend(whisperDir, true)
+			threads := resolveWhisperThreads(*whisperThreads, runtime.NumCPU())
+			return newWhisperASRBackend(whisperDir, true, threads)
 		default:
 			return nil, fmt.Errorf("unknown backend %q", name)
 		}
@@ -250,8 +281,20 @@ func main() {
 	running := true
 	var speechBuf []float32
 	var wasSpeaking bool
-	var speechStart time.Time
-	maxAccum := 5 * time.Second
+	var speechStart, lastStep time.Time
+	streamState := newStreamingState()
+	const (
+		// Step transcribe every stepInterval to commit words via
+		// LocalAgreement-2 mid-utterance -- gives ~2s first-word
+		// latency vs ~8s for batch-on-utterance-end.
+		stepInterval = 1 * time.Second
+		// Force flush every maxUtterance even if VAD never reports
+		// speech-end. 25s is just under whisper's 30s encoder limit.
+		maxUtterance     = 25 * time.Second
+		prerollMs        = 1000 // 1s pre-roll prepended to each new utterance
+		prerollSampleCnt = 16000 * prerollMs / 1000
+	)
+	preroll := newPrerollBuffer(prerollSampleCnt)
 
 	for {
 		select {
@@ -267,6 +310,10 @@ func main() {
 			if len(mono16k) == 0 {
 				continue
 			}
+
+			// Always feed the preroll ring -- even silence below the gate
+			// counts as context for whatever speech follows.
+			preroll.Write(mono16k)
 
 			// Quick energy gate.
 			if computeRMS(mono16k) < *energyThreshold {
@@ -284,32 +331,51 @@ func main() {
 
 			switch {
 			case nowSpeaking && !wasSpeaking:
-				// Speech started.
+				// Speech started. Prepend the preroll ring so we don't clip
+				// the first phoneme.
 				speechBuf = speechBuf[:0]
 				speechStart = time.Now()
+				lastStep = speechStart
+				streamState.reset()
 				wasSpeaking = true
-				speechBuf = append(speechBuf, mono16k...)
+				speechBuf = append(speechBuf, preroll.Snapshot()...)
 
 			case nowSpeaking:
 				// Speech continues.
 				speechBuf = append(speechBuf, mono16k...)
-				// Max accumulation: forced transcription.
-				if time.Since(speechStart) >= maxAccum && activeBackend != nil {
-					words := activeBackend.Transcribe(speechBuf)
-					emitWords(conn, words)
+				if activeBackend == nil {
+					break
+				}
+				// Forced flush before whisper's 30s encoder limit.
+				if time.Since(speechStart) >= maxUtterance {
+					hyp := activeBackend.Transcribe(speechBuf)
+					emitWords(conn, streamState.flushFinal(hyp), true)
+					extendPromptContext(activeBackend, streamState.committedSoFar())
 					speechBuf = speechBuf[:0]
 					speechStart = time.Now()
+					lastStep = speechStart
+					streamState.reset()
+					break
+				}
+				// Step transcribe + LocalAgreement-2 commit every stepInterval.
+				if time.Since(lastStep) >= stepInterval {
+					hyp := activeBackend.Transcribe(speechBuf)
+					emitWords(conn, streamState.acceptHypothesis(hyp), false)
+					lastStep = time.Now()
 				}
 
 			case !nowSpeaking && wasSpeaking:
-				// Speech ended.
+				// Speech ended -- final pass, flush the uncommitted tail
+				// then roll the whole utterance into cross-utterance prompt.
 				speechBuf = append(speechBuf, mono16k...)
 				wasSpeaking = false
 				if activeBackend != nil {
-					words := activeBackend.Transcribe(speechBuf)
-					emitWords(conn, words)
+					hyp := activeBackend.Transcribe(speechBuf)
+					emitWords(conn, streamState.flushFinal(hyp), true)
+					extendPromptContext(activeBackend, streamState.committedSoFar())
 				}
 				speechBuf = speechBuf[:0]
+				streamState.reset()
 			}
 
 		case msg := <-controlCh:
@@ -329,6 +395,8 @@ func main() {
 				}
 				speechBuf = speechBuf[:0]
 				wasSpeaking = false
+				streamState.reset()
+				preroll.Reset()
 			case "set_config":
 				var cfg map[string]interface{}
 				if err := json.Unmarshal(msg.Config, &cfg); err != nil {
