@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
-	"strings"
 	"unsafe"
 
 	"github.com/zsiec/switchframe/server/asr"
@@ -152,31 +151,26 @@ func (b *whisperASRBackend) Transcribe(audio []float32) []asr.TranscriptWord {
 	nSegments := int(C.whisper_full_n_segments(b.ctx))
 	eot := C.whisper_token_eot(b.ctx)
 
-	var words []asr.TranscriptWord
+	// Collect raw tokens (preserving leading-space word boundaries) from
+	// every segment, then group them into whole words. Doing the grouping
+	// outside the cgo loop keeps it pure-Go and unit-testable.
+	var rawTokens []rawToken
 	for s := 0; s < nSegments; s++ {
 		nTokens := int(C.whisper_full_n_tokens(b.ctx, C.int(s)))
 		for tok := 0; tok < nTokens; tok++ {
 			id := C.whisper_full_get_token_id(b.ctx, C.int(s), C.int(tok))
 			if id >= eot {
-				continue // skip special tokens
+				continue // skip special tokens (<|endoftext|> etc.)
 			}
-
 			cText := C.whisper_full_get_token_text(b.ctx, C.int(s), C.int(tok))
-			text := strings.TrimSpace(C.GoString(cText))
-			if text == "" {
-				continue
-			}
-
-			prob := float32(C.whisper_full_get_token_p(b.ctx, C.int(s), C.int(tok)))
-
-			words = append(words, asr.TranscriptWord{
-				Text:       text,
-				Confidence: prob,
+			rawTokens = append(rawTokens, rawToken{
+				Text: C.GoString(cText),
+				Prob: float32(C.whisper_full_get_token_p(b.ctx, C.int(s), C.int(tok))),
 			})
 		}
 	}
 
-	return filterWords(words)
+	return filterWords(dedupePhraseRuns(tokensToWords(rawTokens)))
 }
 
 // AppendPromptContext extends the rolling prompt window with words that
