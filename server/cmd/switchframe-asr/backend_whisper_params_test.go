@@ -131,16 +131,25 @@ func TestBuildWhisperContextOpts_FlashAttnAndGPU(t *testing.T) {
 	}
 }
 
-func TestBuildWhisperContextOpts_EnablesDTWForKnownModels(t *testing.T) {
+func TestBuildWhisperContextOpts_DTWSuppressedWhenFlashAttnOn(t *testing.T) {
 	o := buildWhisperContextOpts(true, "base.en")
-	if !o.DTWTokenTimestamps {
-		t.Error("DTWTokenTimestamps = false, want true (gives ±50ms word timestamps)")
+	// Whisper.cpp currently can't run DTW with flash_attn -- it logs a
+	// "DTW disabled" warning on every model load if we ask for both.
+	// flash_attn is the bigger runtime win, so we suppress the DTW request.
+	if !o.FlashAttn {
+		t.Error("FlashAttn = false, want true (chosen over DTW)")
 	}
+	if o.DTWTokenTimestamps {
+		t.Error("DTWTokenTimestamps = true, want false (suppressed because flash_attn is on)")
+	}
+	// The aheads preset is still computed so DTW Just Works if the user
+	// disables flash_attn out-of-band.
 	if o.DTWAheadsPreset != dtwAheadsBaseEN {
-		t.Errorf("DTWAheadsPreset = %d, want %d (base.en preset)", o.DTWAheadsPreset, dtwAheadsBaseEN)
+		t.Errorf("DTWAheadsPreset = %d, want %d (preset still set for future use)",
+			o.DTWAheadsPreset, dtwAheadsBaseEN)
 	}
 	if o.DTWMemSize <= 0 {
-		t.Errorf("DTWMemSize = %d, want positive (DTW needs scratch memory)", o.DTWMemSize)
+		t.Errorf("DTWMemSize = %d, want positive", o.DTWMemSize)
 	}
 }
 

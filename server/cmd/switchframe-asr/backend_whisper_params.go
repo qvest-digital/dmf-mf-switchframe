@@ -167,18 +167,20 @@ type whisperContextOpts struct {
 }
 
 // buildWhisperContextOpts returns the context init flags. flash_attn is
-// roughly a 2x attention speedup on both CUDA and Metal and is keep-on by
-// default in modern whisper.cpp; we set it explicitly so the value isn't
-// silently flipped by an upstream default change.
+// roughly a 2x attention speedup on both CUDA and Metal and is the bigger
+// runtime win for live broadcast use, so we keep it on.
 //
-// DTW token timestamps are enabled with a model-specific aheads preset --
-// gives ~50ms word boundaries (vs ~500ms without DTW), needed for
-// frame-accurate CEA-608 emit timing.
+// whisper.cpp currently disables dtw_token_timestamps when flash_attn is
+// enabled (no fused-attention DTW kernel), so we suppress the request --
+// otherwise whisper logs a noisy "DTW disabled" warning on every model
+// load. The dtw_aheads_preset is still set so DTW would Just Work if the
+// user explicitly disables flash_attn or upstream lifts the restriction.
 func buildWhisperContextOpts(useGPU bool, modelName string) whisperContextOpts {
+	const flashAttn = true
 	return whisperContextOpts{
 		UseGPU:             useGPU,
-		FlashAttn:          true,
-		DTWTokenTimestamps: true,
+		FlashAttn:          flashAttn,
+		DTWTokenTimestamps: !flashAttn, // mutually exclusive in current whisper.cpp
 		DTWAheadsPreset:    dtwAheadsForModel(modelName),
 		DTWMemSize:         128 * 1024 * 1024, // 128 MiB, generous; deprecated upstream
 	}
