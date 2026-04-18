@@ -15,14 +15,23 @@ import (
 
 // Errors returned by Compositor methods.
 var (
-	ErrAlreadyActive      = errors.New("graphics: overlay already active")
-	ErrNotActive          = errors.New("graphics: overlay not active")
-	ErrNoOverlay          = errors.New("graphics: no overlay frame uploaded")
-	ErrFadeActive         = errors.New("graphics: fade transition in progress")
-	ErrCompositorClosed   = errors.New("compositor: closed")
-	ErrLayerNotFound      = errors.New("graphics: layer not found")
-	ErrTooManyLayers      = errors.New("graphics: maximum layers reached")
-	ErrSequenceProcessing = errors.New("graphics: sequence still processing")
+	ErrAlreadyActive          = errors.New("graphics: overlay already active")
+	ErrNotActive              = errors.New("graphics: overlay not active")
+	ErrNoOverlay              = errors.New("graphics: no overlay frame uploaded")
+	ErrFadeActive             = errors.New("graphics: fade transition in progress")
+	ErrCompositorClosed       = errors.New("compositor: closed")
+	ErrLayerNotFound          = errors.New("graphics: layer not found")
+	ErrTooManyLayers          = errors.New("graphics: maximum layers reached")
+	ErrSequenceProcessing     = errors.New("graphics: sequence still processing")
+	ErrInvalidDSKFadeDuration = errors.New("graphics: DSK fade duration must be in [100, 5000] ms")
+)
+
+// DSK on/off fade duration limits. Broadcast operators usually want 0.5–2s
+// so lower-thirds glide while a program CUT/AUTO happens on its own clock.
+const (
+	minDSKFadeDurationMs     = 100
+	maxDSKFadeDurationMs     = 5000
+	defaultDSKFadeDurationMs = 1000
 )
 
 // DefaultMaxLayers is the maximum number of graphics layers.
@@ -76,9 +85,10 @@ type RectState struct {
 
 // State represents the current graphics compositor state.
 type State struct {
-	Layers        []LayerState `json:"layers"`
-	ProgramWidth  int          `json:"programWidth,omitempty"`
-	ProgramHeight int          `json:"programHeight,omitempty"`
+	Layers            []LayerState `json:"layers"`
+	ProgramWidth      int          `json:"programWidth,omitempty"`
+	ProgramHeight     int          `json:"programHeight,omitempty"`
+	DSKFadeDurationMs int          `json:"dskFadeDurationMs,omitempty"`
 }
 
 // graphicsLayer holds per-layer overlay state.
@@ -190,14 +200,21 @@ type Compositor struct {
 
 	// Sequence engine for animated PNG sequence delegation.
 	sequenceEngine *SequenceEngine
+
+	// dskFadeDurationMs governs the DSK on/off fade rate (AutoOn/AutoOff
+	// when called by the graphics REST API). Captured at the moment the
+	// fade is triggered — mid-flight changes do not retime an in-flight
+	// ramp. Range enforced in SetDSKFadeDuration.
+	dskFadeDurationMs int
 }
 
 // NewCompositor creates a new multi-layer graphics compositor.
 func NewCompositor() *Compositor {
 	return &Compositor{
-		log:       slog.With("component", "graphics"),
-		layers:    make(map[int]*graphicsLayer),
-		maxLayers: DefaultMaxLayers,
+		log:               slog.With("component", "graphics"),
+		layers:            make(map[int]*graphicsLayer),
+		maxLayers:         DefaultMaxLayers,
+		dskFadeDurationMs: defaultDSKFadeDurationMs,
 	}
 }
 
@@ -660,6 +677,32 @@ func (c *Compositor) Status() State {
 		s.ProgramWidth, s.ProgramHeight = c.resolutionProvider()
 	}
 	return s
+}
+
+// DSKFadeDurationMs returns the currently-configured DSK on/off fade
+// duration in milliseconds. Default 1000.
+func (c *Compositor) DSKFadeDurationMs() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.dskFadeDurationMs
+}
+
+// SetDSKFadeDuration updates the DSK on/off fade duration in ms. Range
+// [100, 5000]. Does not retime an in-flight fade — the new rate applies to
+// the next AutoOn/AutoOff only.
+func (c *Compositor) SetDSKFadeDuration(durationMs int) error {
+	if durationMs < minDSKFadeDurationMs || durationMs > maxDSKFadeDurationMs {
+		return ErrInvalidDSKFadeDuration
+	}
+	c.mu.Lock()
+	c.dskFadeDurationMs = durationMs
+	state := c.buildStateLocked()
+	cb := c.onStateChange
+	c.mu.Unlock()
+	if cb != nil {
+		cb(state)
+	}
+	return nil
 }
 
 // SetResolutionProvider sets a callback that returns the current program
@@ -1685,7 +1728,8 @@ func (c *Compositor) recomputeSortedIDsLocked() {
 // Must be called with mu held (read or write).
 func (c *Compositor) buildStateLocked() State {
 	s := State{
-		Layers: make([]LayerState, 0, len(c.sortedIDs)),
+		Layers:            make([]LayerState, 0, len(c.sortedIDs)),
+		DSKFadeDurationMs: c.dskFadeDurationMs,
 	}
 	for _, id := range c.sortedIDs {
 		layer := c.layers[id]

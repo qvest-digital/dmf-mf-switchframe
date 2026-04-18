@@ -12,6 +12,7 @@
 		graphicsHTML5Play, graphicsHTML5Stop, graphicsHTML5Next,
 		graphicsUnloadHTML5, graphicsHTML5Custom,
 		graphicsSequenceUpload, graphicsSequenceDelete, graphicsSequenceSetSpeed,
+		setDSKFadeDuration,
 		apiCall,
 	} from '$lib/api/switch-api';
 	import { GraphicsPublisher } from '$lib/graphics/publisher';
@@ -409,6 +410,25 @@
 			notify('error', 'Failed to set speed');
 		}
 	}
+
+	let dskFadeDurationInput = $state(1000);
+	$effect(() => {
+		const v = crState.dskFadeDurationMs;
+		if (typeof v === 'number' && v !== dskFadeDurationInput) {
+			dskFadeDurationInput = v;
+		}
+	});
+
+	function commitDSKFadeDuration() {
+		if (typeof dskFadeDurationInput !== 'number' || !Number.isFinite(dskFadeDurationInput)) {
+			dskFadeDurationInput = crState.dskFadeDurationMs ?? 1000;
+			return;
+		}
+		const clamped = Math.max(100, Math.min(5000, Math.round(dskFadeDurationInput)));
+		if (clamped !== dskFadeDurationInput) dskFadeDurationInput = clamped;
+		if (clamped === crState.dskFadeDurationMs) return;
+		apiCall(setDSKFadeDuration(clamped), 'DSK fade duration failed');
+	}
 </script>
 
 <div class="graphics-panel">
@@ -417,6 +437,20 @@
 			<span class="gfx-icon">{@html renderIcon(ICON_LAYERS, 12, 'stroke')}</span>
 			<span>DSK GRAPHICS</span>
 		</div>
+		<label class="dsk-fade-duration" title="DSK AUTO on/off fade duration (100-5000ms)">
+			<span class="dsk-fade-label">FADE</span>
+			<input
+				type="number"
+				min="100"
+				max="5000"
+				step="100"
+				bind:value={dskFadeDurationInput}
+				onblur={commitDSKFadeDuration}
+				onkeydown={(e) => { if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur(); }}
+				aria-label="DSK fade duration in milliseconds"
+			/>
+			<span class="dsk-fade-unit">ms</span>
+		</label>
 		<span class="gfx-status" class:on-air={anyActive}>
 			{anyActive ? 'ON AIR' : 'OFF'}
 		</span>
@@ -524,6 +558,43 @@
 
 	.gfx-icon {
 		display: flex;
+		color: var(--text-tertiary);
+	}
+
+	.dsk-fade-duration {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		margin-left: auto;
+		margin-right: 8px;
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		color: var(--text-tertiary);
+	}
+
+	.dsk-fade-label {
+		font-weight: 600;
+		letter-spacing: 0.08em;
+	}
+
+	.dsk-fade-duration input {
+		width: 54px;
+		padding: 1px 4px;
+		background: var(--bg-surface);
+		color: var(--text-primary);
+		border: 1px solid var(--border-subtle);
+		border-radius: var(--radius-sm);
+		font-family: var(--font-mono);
+		font-size: var(--text-2xs);
+		text-align: right;
+	}
+
+	.dsk-fade-duration input:focus {
+		outline: none;
+		border-color: var(--accent);
+	}
+
+	.dsk-fade-unit {
 		color: var(--text-tertiary);
 	}
 

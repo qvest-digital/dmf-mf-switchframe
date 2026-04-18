@@ -718,6 +718,7 @@ export interface ControlRoomState {
 	inTransition: boolean;
 	ftbActive: boolean;
 	ftbDurationMs?: number;
+	dskFadeDurationMs?: number;
 	audioChannels?: Record<string, AudioChannel>;
 	masterLevel: number;
 	programPeak: [number, number];

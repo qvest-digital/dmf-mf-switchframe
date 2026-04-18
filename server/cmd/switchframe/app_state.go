@@ -117,6 +117,10 @@ func (a *App) enrichState(state internal.ControlRoomState, gfxOverride *graphics
 	} else {
 		gfxStatus = a.compositor.Status()
 	}
+	// DSK fade duration is a top-level field: surface it regardless of
+	// whether any layers exist so the UI can render the control from an
+	// empty-compositor starting state.
+	state.DSKFadeDurationMs = gfxStatus.DSKFadeDurationMs
 	if len(gfxStatus.Layers) > 0 || gfxStatus.ProgramWidth > 0 {
 		gfxState := &internal.GraphicsState{
 			ProgramWidth:  gfxStatus.ProgramWidth,

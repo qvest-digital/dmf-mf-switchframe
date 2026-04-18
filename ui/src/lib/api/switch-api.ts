@@ -1060,6 +1060,14 @@ export function graphicsAutoOff(layerId: number): Promise<GraphicsState> {
 	return post(`/api/graphics/${layerId}/auto-off`, {});
 }
 
+export function setDSKFadeDuration(durationMs: number): Promise<ControlRoomState> {
+	return request('/api/graphics/dsk-fade-duration', {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ durationMs }),
+	});
+}
+
 export function getGraphicsStatus(): Promise<GraphicsState> {
 	return request('/api/graphics');
 }

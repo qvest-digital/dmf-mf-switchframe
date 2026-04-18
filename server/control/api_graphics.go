@@ -42,6 +42,7 @@ func (a *API) registerGraphicsRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/graphics/{id}/off", timedHandlerWithPath(a.cmdQueue, "graphics_off", a.seqTracker, []string{"id"}, a.handleGraphicsOffInner))
 	mux.HandleFunc("POST /api/graphics/{id}/auto-on", a.handleGraphicsAutoOn)
 	mux.HandleFunc("POST /api/graphics/{id}/auto-off", a.handleGraphicsAutoOff)
+	mux.HandleFunc("PUT /api/graphics/dsk-fade-duration", timedHandler(a.cmdQueue, "dsk_fade_duration_set", a.seqTracker, a.handleSetDSKFadeDurationInner))
 	mux.HandleFunc("POST /api/graphics/{id}/animate", a.handleGraphicsAnimate)
 	mux.HandleFunc("POST /api/graphics/{id}/animate/stop", a.handleGraphicsAnimateStop)
 	mux.HandleFunc("PUT /api/graphics/{id}/rect", a.handleGraphicsLayerRect)
@@ -137,7 +138,9 @@ func (a *API) handleGraphicsOffInner(w http.ResponseWriter, r *http.Request, _ [
 	_ = json.NewEncoder(w).Encode(a.compositor.Status())
 }
 
-// handleGraphicsAutoOn starts a 500ms fade-in transition (AUTO ON).
+// handleGraphicsAutoOn starts a fade-in transition (AUTO ON). The fade rate
+// is read from Compositor.DSKFadeDurationMs at trigger time so mid-fade
+// rate changes do not retime an in-flight ramp.
 func (a *API) handleGraphicsAutoOn(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)
 	id, err := parseLayerID(r)
@@ -145,7 +148,8 @@ func (a *API) handleGraphicsAutoOn(w http.ResponseWriter, r *http.Request) {
 		httperr.Write(w, http.StatusBadRequest, "invalid layer id")
 		return
 	}
-	if err := a.compositor.AutoOn(id, 500*time.Millisecond); err != nil {
+	dur := time.Duration(a.compositor.DSKFadeDurationMs()) * time.Millisecond
+	if err := a.compositor.AutoOn(id, dur); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}
@@ -153,7 +157,8 @@ func (a *API) handleGraphicsAutoOn(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(a.compositor.Status())
 }
 
-// handleGraphicsAutoOff starts a 500ms fade-out transition (AUTO OFF).
+// handleGraphicsAutoOff starts a fade-out transition (AUTO OFF) at the
+// configured DSK fade rate.
 func (a *API) handleGraphicsAutoOff(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)
 	id, err := parseLayerID(r)
@@ -161,12 +166,35 @@ func (a *API) handleGraphicsAutoOff(w http.ResponseWriter, r *http.Request) {
 		httperr.Write(w, http.StatusBadRequest, "invalid layer id")
 		return
 	}
-	if err := a.compositor.AutoOff(id, 500*time.Millisecond); err != nil {
+	dur := time.Duration(a.compositor.DSKFadeDurationMs()) * time.Millisecond
+	if err := a.compositor.AutoOff(id, dur); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(a.compositor.Status())
+}
+
+// dskFadeDurationRequest is the JSON body for PUT /api/graphics/dsk-fade-duration.
+type dskFadeDurationRequest struct {
+	DurationMs int `json:"durationMs"`
+}
+
+// handleSetDSKFadeDurationInner sets the DSK on/off fade duration.
+// body is the pre-read request body provided by timedHandler.
+func (a *API) handleSetDSKFadeDurationInner(w http.ResponseWriter, r *http.Request, body []byte) {
+	a.setLastOperator(r)
+	var req dskFadeDurationRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := a.compositor.SetDSKFadeDuration(req.DurationMs); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
 }
 
 // handleGraphicsStatus returns the current graphics compositor state.

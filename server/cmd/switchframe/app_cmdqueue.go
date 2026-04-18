@@ -434,6 +434,19 @@ func (a *App) registerGraphicsActions(d *cmdqueue.Dispatcher) {
 		}
 		return a.compositor.Off(id)
 	})
+
+	d.Register("dsk_fade_duration_set", func(payload json.RawMessage) error {
+		if a.compositor == nil {
+			return nil
+		}
+		var req struct {
+			DurationMs int `json:"durationMs"`
+		}
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return err
+		}
+		return a.compositor.SetDSKFadeDuration(req.DurationMs)
+	})
 }
 
 // registerKeyActions registers upstream key set/delete dispatch actions.
