@@ -1,4 +1,4 @@
-//go:build !cgo || !cuda || !tensorrt
+//go:build !cgo || !whisper
 
 package main
 

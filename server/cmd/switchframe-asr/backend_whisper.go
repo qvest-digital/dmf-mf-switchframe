@@ -1,10 +1,9 @@
-//go:build cgo && cuda && tensorrt
+//go:build cgo && whisper
 
 package main
 
 /*
 #cgo CFLAGS: -I/opt/whisper.cpp/include -I/opt/whisper.cpp/ggml/include
-#cgo LDFLAGS: -L/opt/whisper.cpp/build/src -lwhisper -L/opt/whisper.cpp/build/ggml/src -lggml -lggml-base -lggml-cpu -L/opt/whisper.cpp/build/ggml/src/ggml-cuda -lggml-cuda -L/usr/local/cuda/lib64 -lcudart -lcublas -lstdc++ -lm -lgomp
 
 #include <whisper.h>
 #include <stdlib.h>
