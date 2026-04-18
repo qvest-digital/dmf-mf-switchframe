@@ -13,10 +13,7 @@ func TestUpdatePromptContext_AppendWithinLimit(t *testing.T) {
 }
 
 func TestUpdatePromptContext_TrimsOldestWhenOverLimit(t *testing.T) {
-	prev := make([]string, 0, 3)
-	for _, w := range []string{"a", "b", "c"} {
-		prev = append(prev, w)
-	}
+	prev := []string{"a", "b", "c"}
 	got := updatePromptContext(prev, []string{"d", "e"}, 3)
 	if len(got) != 3 {
 		t.Fatalf("expected 3 words, got %d: %v", len(got), got)
