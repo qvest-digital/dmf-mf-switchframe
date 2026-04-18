@@ -281,13 +281,16 @@ func main() {
 	running := true
 	var speechBuf []float32
 	var wasSpeaking bool
-	var speechStart time.Time
+	var speechStart, lastStep time.Time
+	streamState := newStreamingState()
 	const (
+		// Step transcribe every stepInterval to commit words via
+		// LocalAgreement-2 mid-utterance -- gives ~2s first-word
+		// latency vs ~8s for batch-on-utterance-end.
+		stepInterval = 1 * time.Second
 		// Force flush every maxUtterance even if VAD never reports
-		// speech-end -- bounds latency for long monologues. 8s is the
-		// sweet spot from the eval: long enough for whisper to have
-		// useful context, short enough that captions stay current.
-		maxUtterance     = 8 * time.Second
+		// speech-end. 25s is just under whisper's 30s encoder limit.
+		maxUtterance     = 25 * time.Second
 		prerollMs        = 1000 // 1s pre-roll prepended to each new utterance
 		prerollSampleCnt = 16000 * prerollMs / 1000
 	)
@@ -332,38 +335,47 @@ func main() {
 				// the first phoneme.
 				speechBuf = speechBuf[:0]
 				speechStart = time.Now()
+				lastStep = speechStart
+				streamState.reset()
 				wasSpeaking = true
 				speechBuf = append(speechBuf, preroll.Snapshot()...)
 
 			case nowSpeaking:
-				// Speech continues. Forced flush every maxUtterance keeps
-				// long monologues from waiting on a silence that never
-				// comes -- it also prevents feeding whisper > 25s (its
-				// hard encoder limit).
+				// Speech continues.
 				speechBuf = append(speechBuf, mono16k...)
-				if activeBackend != nil && time.Since(speechStart) >= maxUtterance {
-					words := activeBackend.Transcribe(speechBuf)
-					emitWords(conn, words, true)
-					extendPromptContext(activeBackend, words)
+				if activeBackend == nil {
+					break
+				}
+				// Forced flush before whisper's 30s encoder limit.
+				if time.Since(speechStart) >= maxUtterance {
+					hyp := activeBackend.Transcribe(speechBuf)
+					emitWords(conn, streamState.flushFinal(hyp), true)
+					extendPromptContext(activeBackend, streamState.committedSoFar())
 					speechBuf = speechBuf[:0]
 					speechStart = time.Now()
+					lastStep = speechStart
+					streamState.reset()
+					break
+				}
+				// Step transcribe + LocalAgreement-2 commit every stepInterval.
+				if time.Since(lastStep) >= stepInterval {
+					hyp := activeBackend.Transcribe(speechBuf)
+					emitWords(conn, streamState.acceptHypothesis(hyp), false)
+					lastStep = time.Now()
 				}
 
 			case !nowSpeaking && wasSpeaking:
-				// Speech ended -- single batched transcribe of the whole
-				// utterance. The eval harness showed this beats the
-				// per-step LocalAgreement-2 streaming approach by ~18
-				// percentage points of WER on long content (cumulative
-				// chunks confuse whisper's segmenter into duplicating
-				// already-committed audio under different words).
+				// Speech ended -- final pass, flush the uncommitted tail
+				// then roll the whole utterance into cross-utterance prompt.
 				speechBuf = append(speechBuf, mono16k...)
 				wasSpeaking = false
 				if activeBackend != nil {
-					words := activeBackend.Transcribe(speechBuf)
-					emitWords(conn, words, true)
-					extendPromptContext(activeBackend, words)
+					hyp := activeBackend.Transcribe(speechBuf)
+					emitWords(conn, streamState.flushFinal(hyp), true)
+					extendPromptContext(activeBackend, streamState.committedSoFar())
 				}
 				speechBuf = speechBuf[:0]
+				streamState.reset()
 			}
 
 		case msg := <-controlCh:
@@ -383,6 +395,7 @@ func main() {
 				}
 				speechBuf = speechBuf[:0]
 				wasSpeaking = false
+				streamState.reset()
 				preroll.Reset()
 			case "set_config":
 				var cfg map[string]interface{}
