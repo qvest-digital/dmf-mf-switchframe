@@ -1,4 +1,4 @@
-.PHONY: build build-server build-server-mxl build-asr-sidecar dev demo mxl-demo ui-install ui-build ui-test ui-e2e test test-mxl test-all docker docker-cuda clean sync-prism-ts lint format setup-mkcert metal-shaders
+.PHONY: build build-server build-server-mxl build-asr-sidecar build-asr-sidecar-whisper dev demo demo-captions mxl-demo ui-install ui-build ui-test ui-e2e test test-mxl test-all docker docker-cuda clean sync-prism-ts lint format setup-mkcert metal-shaders
 
 EMBED_LINK := server/cmd/switchframe/ui
 
@@ -40,9 +40,19 @@ build: $(EMBED_LINK) metal-shaders
 build-server: metal-shaders
 	cd server && go build -o ../bin/switchframe ./cmd/switchframe
 
-# ASR sidecar binary
+# ASR sidecar binary (stub backends only -- no GPU/cgo)
 build-asr-sidecar:
 	cd server && go build -o ../bin/switchframe-asr ./cmd/switchframe-asr
+
+# ASR sidecar with whisper.cpp linked.
+# Requires whisper.cpp built and installed at /opt/whisper.cpp.
+# Platform-specific tags: Linux pulls in CUDA + TensorRT; Darwin uses Metal only.
+build-asr-sidecar-whisper:
+ifeq ($(UNAME_S),Darwin)
+	cd server && go build -tags whisper -o ../bin/switchframe-asr ./cmd/switchframe-asr
+else
+	cd server && go build -tags cuda,tensorrt,whisper -o ../bin/switchframe-asr ./cmd/switchframe-asr
+endif
 
 # Go tests
 test:
@@ -82,6 +92,30 @@ demo: build-server node_modules_check
 			./bin/switchframe --demo --demo-video test/clips --srt-listen :6464 --srt-output-ports 7464-7467 --format 1080p24 --frame-sync --frc-quality mcfi --scte35 --captions --preview-proxy $$CF_FLAG $$CERT_FLAGS & \
 		else \
 			./bin/switchframe --demo --srt-listen :6464 --srt-output-ports 7464-7467 --format 1080p24 --frame-sync --frc-quality mcfi --scte35 --captions --preview-proxy $$CF_FLAG $$CERT_FLAGS & \
+		fi; \
+		cd ui && npm run dev & \
+		wait
+
+# Demo with live AI captions: same as demo, plus the whisper.cpp ASR sidecar.
+# Requires /opt/whisper.cpp built with -DGGML_METAL=ON (macOS) or -DGGML_CUDA=ON (Linux)
+# and at least one ggml-*.bin model under /opt/whisper.cpp/models.
+WHISPER_MODELS_DIR ?= /opt/whisper.cpp/models
+demo-captions: build-server build-asr-sidecar-whisper node_modules_check
+	@echo ""
+	@echo "  SwitchFrame Demo + AI Captions (whisper.cpp on $(UNAME_S))"
+	@echo "  Open http://localhost:5173 in your browser"
+	@echo "  Captions: live ASR via whisper sidecar (Captions tab in bottom panel)"
+	@echo "  Press Ctrl+C to stop"
+	@echo ""
+	@trap 'kill 0' EXIT; \
+		CERT_FLAGS="--http-fallback"; \
+		ASR_FLAGS="--asr-sidecar ./bin/switchframe-asr --asr-whisper-models-dir $(WHISPER_MODELS_DIR) --asr-default-backend whisper"; \
+		echo "  Self-signed cert (WebTransport draft-02 + TCP fallback for Vite proxy)"; \
+		echo ""; \
+		if [ -d test/clips ]; then \
+			./bin/switchframe --demo --demo-video test/clips --srt-listen :6464 --srt-output-ports 7464-7467 --format 1080p24 --frame-sync --frc-quality mcfi --scte35 --captions --preview-proxy $$ASR_FLAGS $$CERT_FLAGS & \
+		else \
+			./bin/switchframe --demo --srt-listen :6464 --srt-output-ports 7464-7467 --format 1080p24 --frame-sync --frc-quality mcfi --scte35 --captions --preview-proxy $$ASR_FLAGS $$CERT_FLAGS & \
 		fi; \
 		cd ui && npm run dev & \
 		wait

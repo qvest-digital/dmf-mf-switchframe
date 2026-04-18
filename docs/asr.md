@@ -59,10 +59,38 @@ Audio enters from the mixer's raw audio sink. The ASR engine resamples to 16kHz 
 
 ### Prerequisites
 
-- **Build tags:** `cgo && whisper` (the stub returns `ErrASRNotAvailable` otherwise)
+- **Build tags:** `cgo && whisper` (the stub returns `ErrASRNotAvailable` otherwise). Linker flags split per platform: `backend_whisper_cuda.go` (Linux) and `backend_whisper_metal.go` (Darwin).
 - **Captions enabled:** `--captions` flag is required (ASR feeds into the caption manager)
 - **whisper.cpp:** Compiled and installed at `/opt/whisper.cpp` (the cgo flags reference this path)
-- **CUDA (optional):** For GPU acceleration, whisper.cpp must be built with CUDA support. The cgo LDFLAGS link against `-lcublas -lcublasLt -lcudart`.
+- **GPU acceleration:** Linux builds link CUDA (`-lcublas -lcudart`); macOS builds link Metal + Accelerate frameworks. CPU-only fallback is automatic at runtime if GPU init fails.
+
+### Building whisper.cpp
+
+**Linux (CUDA):**
+
+```bash
+sudo git clone https://github.com/ggerganov/whisper.cpp /opt/whisper.cpp
+cd /opt/whisper.cpp
+sudo cmake -B build -DGGML_CUDA=ON
+sudo cmake --build build -j --config Release
+```
+
+**macOS (Metal):**
+
+```bash
+sudo git clone https://github.com/ggerganov/whisper.cpp /opt/whisper.cpp
+cd /opt/whisper.cpp
+sudo cmake -B build -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON
+sudo cmake --build build -j --config Release
+```
+
+`GGML_METAL_EMBED_LIBRARY=ON` bakes the Metal shader library into `libggml-metal.a`, so the runtime does not need to find a `default.metallib` next to the binary.
+
+Then build the sidecar with the right tags for your platform:
+
+```bash
+make build-asr-sidecar-whisper   # auto-selects CUDA on Linux, Metal on macOS
+```
 
 ### Model download
 
