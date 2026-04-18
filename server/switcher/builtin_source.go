@@ -15,6 +15,12 @@ import (
 	"github.com/zsiec/switchframe/server/transition"
 )
 
+// BuiltinFrameTap is an external observer for built-in source frames. The
+// app layer installs this to route raw YUV into a per-source MoQ-published
+// preview encoder so the browser multiview tile has content. Tap runs on
+// the producer goroutine — callers must not block.
+type BuiltinFrameTap func(key string, yuv []byte, width, height int, pts int64, format video.Format)
+
 // Canonical keys for the always-present virtual sources every engine exposes.
 // Operators can CUT or PREVIEW to these without any external feed configured.
 const (
@@ -187,9 +193,22 @@ func (s *Switcher) invalidateBuiltinSources() {
 	}
 }
 
+// SetBuiltinFrameTap installs a callback that fires for every built-in
+// frame the producer generates. Pass nil to remove the tap. Safe to call
+// from any goroutine. The app layer uses this to feed per-source MoQ
+// preview encoders so browser multiview tiles render thumbnails for
+// BLACK / BARS. The tap runs on the producer goroutine; handlers must
+// not block.
+func (s *Switcher) SetBuiltinFrameTap(fn BuiltinFrameTap) {
+	if fn == nil {
+		s.builtinFrameTap.Store(nil)
+		return
+	}
+	s.builtinFrameTap.Store(&fn)
+}
+
 // startBuiltinProducer spawns the goroutine that pushes built-in frames at
-// the pipeline rate when a built-in is on program or preview. One-shot —
-// do not call twice on the same switcher.
+// the pipeline rate. One-shot — do not call twice on the same switcher.
 func (s *Switcher) startBuiltinProducer() {
 	s.builtinProducerStop = make(chan struct{})
 	s.builtinProducerDone = make(chan struct{})
@@ -248,20 +267,33 @@ func (s *Switcher) builtinProducerLoop() {
 		}
 
 		pts := time.Since(start).Nanoseconds() * 90 / int64(time.Millisecond)
+		var tap BuiltinFrameTap
+		if p := s.builtinFrameTap.Load(); p != nil {
+			tap = *p
+		}
 		for key, bs := range s.builtinSources {
 			frame := bs.Frame(pf.Width, pf.Height, pf.Color.ColorFormat)
 			if frame == nil {
 				continue
 			}
+			w := pf.Width & ^1
+			h := pf.Height & ^1
 			pframe := &ProcessingFrame{
 				Data:   frame,
 				Format: pf.Color.ColorFormat,
-				Width:  pf.Width & ^1,
-				Height: pf.Height & ^1,
+				Width:  w,
+				Height: h,
 				PTS:    pts,
 				DTS:    pts,
 			}
 			s.IngestRawVideo(key, pframe)
+			if tap != nil {
+				// Tap sees the same bytes Frame() returned. Frame()
+				// allocates a fresh slice per call, so tap consumers
+				// that retain the buffer are safe against the next
+				// tick's overwrite.
+				tap(key, frame, w, h, pts, pf.Color.ColorFormat)
+			}
 		}
 	}
 }

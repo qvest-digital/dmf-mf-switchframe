@@ -253,9 +253,10 @@ type Switcher struct {
 	log                 *slog.Logger
 	mu                  sync.RWMutex
 	sources             map[string]*sourceState
-	builtinSources      map[string]*builtinSource // always-registered virtual sources (source:black, source:colorbars)
-	builtinProducerStop chan struct{}             // closed by Close() to shut down the built-in producer goroutine
-	builtinProducerDone chan struct{}             // closed by the producer loop on exit
+	builtinSources      map[string]*builtinSource       // always-registered virtual sources (source:black, source:colorbars)
+	builtinProducerStop chan struct{}                   // closed by Close() to shut down the built-in producer goroutine
+	builtinProducerDone chan struct{}                   // closed by the producer loop on exit
+	builtinFrameTap     atomic.Pointer[BuiltinFrameTap] // app-installed observer routing built-in frames to per-source MoQ preview encoders
 	programSource       string
 	previewSource       string
 	programRelay        *distribution.Relay

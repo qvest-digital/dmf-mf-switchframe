@@ -222,6 +222,9 @@ func run() error {
 	if err := app.initSubsystems(); err != nil {
 		return err
 	}
+	if err := app.initBuiltinSourcePreview(); err != nil {
+		return err
+	}
 	if err := app.initMXL(); err != nil {
 		if err == errDiscoverExit {
 			return nil // clean exit after --mxl-discover

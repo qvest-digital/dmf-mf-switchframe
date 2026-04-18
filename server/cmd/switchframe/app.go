@@ -101,6 +101,12 @@ type App struct {
 	// Program preview encoder (low-bitrate H.264 for browser program monitor)
 	programPreviewEnc *preview.Encoder
 
+	// Preview encoders for built-in virtual sources (source:black,
+	// source:colorbars). Each encoder is wired to a MoQ-published
+	// per-source relay so browser multiview tiles render BARS/BLACK
+	// thumbnails even before the operator routes them to PGM/PVW.
+	builtinPreviewEncoders map[string]*preview.Encoder
+
 	// Core engine
 	sw            *switcher.Switcher
 	mixer         *audio.Mixer
@@ -2074,6 +2080,12 @@ func (a *App) closeWithContext(ctx context.Context) {
 func (a *App) closeSubsystems() {
 	// Wait for background goroutines (metering ticker) to exit.
 	a.bgWG.Wait()
+
+	// Tear down built-in source preview encoders. Must happen before the
+	// switcher is closed so the tap is detached before the producer tries
+	// to invoke a closed encoder. The switcher's own Close() will stop
+	// the producer goroutine afterward.
+	a.closeBuiltinSourcePreview()
 
 	// ST 2110 cleanup (before core engine).
 	a.closeST2110()

@@ -2,6 +2,7 @@ package switcher
 
 import (
 	"encoding/binary"
+	"sync"
 	"testing"
 	"time"
 
@@ -223,6 +224,35 @@ func TestSwitcher_BuiltinSourcesAlwaysProduce(t *testing.T) {
 			sw.health.lastFrameAgoMs(BuiltinSourceKeyColorbars) >= 0
 	}, 2*time.Second, 25*time.Millisecond,
 		"built-ins must push frames without being on PGM or PVW (multiview needs thumbnails)")
+}
+
+// TestSwitcher_BuiltinFrameTapReceivesFrames pins the multiview-publish
+// contract: the app layer installs a per-source tap (via
+// SetBuiltinFrameTap) to feed a MoQ-published preview encoder for each
+// built-in. The producer must invoke the tap for every frame it generates,
+// for both built-ins, regardless of selection.
+func TestSwitcher_BuiltinFrameTapReceivesFrames(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := newTestSwitcher(programRelay)
+	defer sw.Close()
+
+	var mu sync.Mutex
+	counts := make(map[string]int)
+	sw.SetBuiltinFrameTap(func(key string, yuv []byte, w, h int, pts int64, fmt video.Format) {
+		mu.Lock()
+		counts[key]++
+		mu.Unlock()
+		// Sanity: frame dimensions and byte count match what we asked for.
+		require.Equal(t, fmt.FrameSize(w, h), len(yuv),
+			"tap %q frame byte count matches declared dimensions + format", key)
+	})
+
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return counts[BuiltinSourceKeyBlack] > 0 && counts[BuiltinSourceKeyColorbars] > 0
+	}, 2*time.Second, 25*time.Millisecond,
+		"tap must receive at least one frame for each built-in")
 }
 
 // TestSwitcher_BuiltinSourcesHealthyImmediately — AC #2: built-ins appear
