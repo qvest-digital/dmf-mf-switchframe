@@ -198,6 +198,33 @@ func TestSwitcher_ColorbarsAnnexLivesBelowBars(t *testing.T) {
 		annexStart, h)
 }
 
+// TestSwitcher_BuiltinSourcesAlwaysProduce pins the multiview-tile
+// contract: the producer goroutine pushes frames for both built-ins
+// unconditionally, regardless of whether either is on program or preview.
+// Rationale: Switchframe's multiview subscribes to per-source preview
+// MoQ tracks so operators can see thumbnails before routing. If the
+// producer only fires when selected, the BARS/BLACK tiles show as
+// empty — operators can't confirm what they're about to cut to.
+//
+// We probe the underlying health monitor's raw last-frame timestamp
+// (buildStateLocked overrides the computed status to healthy regardless,
+// so that path can't distinguish "ever produced" from "never produced").
+func TestSwitcher_BuiltinSourcesAlwaysProduce(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := newTestSwitcher(programRelay)
+	defer sw.Close()
+
+	require.Empty(t, sw.State().ProgramSource, "must not be selected")
+	require.Empty(t, sw.State().PreviewSource, "must not be selected")
+
+	require.Eventually(t, func() bool {
+		// lastFrameAgoMs returns -1 if no frame has ever been recorded.
+		return sw.health.lastFrameAgoMs(BuiltinSourceKeyBlack) >= 0 &&
+			sw.health.lastFrameAgoMs(BuiltinSourceKeyColorbars) >= 0
+	}, 2*time.Second, 25*time.Millisecond,
+		"built-ins must push frames without being on PGM or PVW (multiview needs thumbnails)")
+}
+
 // TestSwitcher_BuiltinSourcesHealthyImmediately — AC #2: built-ins appear
 // with health=healthy, not offline. The produced state for a fresh switcher
 // (no frames pushed yet) must report them as healthy because they're

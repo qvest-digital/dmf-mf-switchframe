@@ -43,18 +43,19 @@ type builtinSource struct {
 	mu        sync.Mutex
 	width     int
 	height    int
-	format    video.Format // color format the static + work buffers were built for
+	format    video.Format // color format the static buffer was built for
 	static    []byte       // cached YUV pattern at (width,height,format) before annex overlay
 	annexY0   int          // y where annex band starts (height if annex disabled)
-	work      []byte       // reusable output buffer; deep-copied into static then overlaid
 	startTime time.Time
 }
 
 // Frame returns a YUV frame at (width, height) in the requested pixel format
-// for this built-in source. Cached pattern is regenerated if any of the
-// three parameters differ from the previous call; the annex is always
-// redrawn so clock/sprite advance per call. The returned slice is reused on
-// the next Frame call — callers that retain the bytes must copy.
+// for this built-in source. Each call allocates and returns a fresh slice
+// so the caller owns the buffer for its full lifetime — callers may hand
+// the slice to downstream consumers (frame sync ring, pipeline work chan)
+// without an additional copy. The cached static pattern is regenerated if
+// any of (width, height, format) differ from the previous call; the annex
+// is always redrawn so clock/sprite advance per call.
 func (b *builtinSource) Frame(width, height int, f video.Format) []byte {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -70,17 +71,12 @@ func (b *builtinSource) Frame(width, height int, f video.Format) []byte {
 		b.height = height
 		b.format = f
 	}
-	size := f.FrameSize(width, height)
-	if cap(b.work) < size {
-		b.work = make([]byte, size)
-	} else {
-		b.work = b.work[:size]
-	}
-	copy(b.work, b.static)
+	out := make([]byte, f.FrameSize(width, height))
+	copy(out, b.static)
 	if b.annexY0 < height {
-		b.drawAnnexLocked(b.work, width, height, f)
+		b.drawAnnexLocked(out, width, height, f)
 	}
-	return b.work
+	return out
 }
 
 func (b *builtinSource) regenerateStaticLocked(width, height int, f video.Format) {
@@ -229,6 +225,15 @@ func (s *Switcher) builtinProducerLoop() {
 	// the 90 kHz MPEG clock. Keeps PTS drift-free for non-integer frame
 	// durations (e.g. 59.94 fps) instead of accumulating per-frame rounding.
 	start := time.Now()
+
+	// Push frames unconditionally at pipeline FPS, independent of whether
+	// a built-in is currently on program or preview. The multiview tiles
+	// in the UI subscribe to each source's per-source preview MoQ track,
+	// and those tracks need a frame stream or the operator sees a blank
+	// thumbnail for BLACK/BARS and can't confirm what they're about to
+	// cut to. CPU cost at 1080p30 for both built-ins is ~20% of one core —
+	// on par with a single real ingest source — and matches how every
+	// broadcast mixer (ATEM, vMix, TriCaster) runs its color generators.
 	for {
 		select {
 		case <-s.builtinProducerStop:
@@ -242,27 +247,14 @@ func (s *Switcher) builtinProducerLoop() {
 			lastDur = d
 		}
 
-		s.mu.RLock()
-		program := s.programSource
-		preview := s.previewSource
-		s.mu.RUnlock()
-
 		pts := time.Since(start).Nanoseconds() * 90 / int64(time.Millisecond)
 		for key, bs := range s.builtinSources {
-			if key != program && key != preview {
-				continue
-			}
 			frame := bs.Frame(pf.Width, pf.Height, pf.Color.ColorFormat)
 			if frame == nil {
 				continue
 			}
-			// Deep-copy: bs.Frame reuses its internal buffer on the next
-			// call, while downstream consumers (frame-sync ring, pipeline
-			// work channel) retain references past that.
-			buf := make([]byte, len(frame))
-			copy(buf, frame)
 			pframe := &ProcessingFrame{
-				Data:   buf,
+				Data:   frame,
 				Format: pf.Color.ColorFormat,
 				Width:  pf.Width & ^1,
 				Height: pf.Height & ^1,
