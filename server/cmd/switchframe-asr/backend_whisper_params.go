@@ -21,6 +21,7 @@ type whisperFullOpts struct {
 	SuppressBlank     bool
 	SuppressNonSpeech bool
 	TokenTimestamps   bool
+	NoSpeechThold     float32 // 0 = whisper default (0.6)
 }
 
 // buildWhisperFullOpts returns the live-broadcast tuned full-params.

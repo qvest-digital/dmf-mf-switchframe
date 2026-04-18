@@ -1,0 +1,1 @@
+The kernel module attaches a netfilter hook on the post-routing chain. Packets matching the source IP are forwarded to the encrypted tunnel via the WireGuard interface.

@@ -80,9 +80,17 @@ func (b *whisperASRBackend) loadModel(name string) error {
 	params := C.whisper_context_default_params()
 	params.use_gpu = C.bool(opts.UseGPU)
 	params.flash_attn = C.bool(opts.FlashAttn)
-	params.dtw_token_timestamps = C.bool(opts.DTWTokenTimestamps)
-	params.dtw_aheads_preset = uint32(opts.DTWAheadsPreset)
-	params.dtw_mem_size = C.size_t(opts.DTWMemSize)
+	// Only touch DTW context fields when we actually want DTW. whisper-cli
+	// sets dtw_aheads_preset only inside `if (params.dtw != "")`, and
+	// matching that behaviour fixed our pipeline producing empty output
+	// on multi-second-utterance fixtures (eval reproduced "long" first
+	// 25s coming back blank purely because we'd set the preset enum
+	// without enabling DTW).
+	if opts.DTWTokenTimestamps {
+		params.dtw_token_timestamps = C.bool(true)
+		params.dtw_aheads_preset = uint32(opts.DTWAheadsPreset)
+		params.dtw_mem_size = C.size_t(opts.DTWMemSize)
+	}
 
 	ctx := C.whisper_init_from_file_with_params(cPath, params)
 	if ctx == nil {
@@ -127,6 +135,9 @@ func (b *whisperASRBackend) Transcribe(audio []float32) []asr.TranscriptWord {
 	params.temperature_inc = C.float(opts.TemperatureInc)
 	params.suppress_blank = C.bool(opts.SuppressBlank)
 	params.suppress_nst = C.bool(opts.SuppressNonSpeech)
+	if opts.NoSpeechThold > 0 {
+		params.no_speech_thold = C.float(opts.NoSpeechThold)
+	}
 	params.token_timestamps = C.bool(opts.TokenTimestamps)
 	params.initial_prompt = promptPtr
 	// audio_ctx = 0 matches whisper-cli's default behavior. We reproduced

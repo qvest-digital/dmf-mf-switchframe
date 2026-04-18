@@ -13,3 +13,25 @@ disfluencies|150|Alex|So um, what I was, uh, trying to say is that, you know, th
 punctuation|150|Alex|"That's incredible," she said, pausing for effect. "But is it really, you know, the right call? After everything that happened?" He looked away, considering.
 short|150|Alex|Good evening from London.
 long|150|Alex|Welcome to the evening news. I'm reporting live from the studio tonight. We have several major stories developing this hour. First, an update on the ongoing trade negotiations between the major economies, which have entered a critical phase this week. Officials confirmed that talks will continue through the weekend with the goal of reaching a preliminary agreement by Monday morning. In other news, the weather service has issued a severe storm warning for the northern coast, with high winds and heavy rain expected to arrive within the next twenty four hours. Residents in affected areas are being advised to prepare accordingly. Stay with us for more on these stories and others as they develop.
+
+# Same script, different voices -- catches voice-specific failures.
+voice_samantha|150|Samantha|Welcome to the evening news. We have several stories tonight. Officials are negotiating new trade agreements between countries.
+voice_daniel|150|Daniel|Welcome to the evening news. We have several stories tonight. Officials are negotiating new trade agreements between countries.
+voice_karen|150|Karen|Welcome to the evening news. We have several stories tonight. Officials are negotiating new trade agreements between countries.
+
+# Accented English (UK/AU voices on the same script).
+accent_uk|150|Daniel|The Prime Minister addressed Parliament this morning regarding the upcoming budget. Members from across the political spectrum responded with varying degrees of enthusiasm.
+accent_au|150|Karen|The Prime Minister addressed Parliament this morning regarding the upcoming budget. Members from across the political spectrum responded with varying degrees of enthusiasm.
+
+# Conversational / Q&A style with multiple short turns and intonation.
+qa|150|Alex|And what about the impact on consumers? Well, that's the key question. Most analysts expect prices to rise gradually. But by how much? Estimates vary wildly. Some say five percent, others fifteen.
+
+# Long monologue near the 25-second flush boundary -- exercises the
+# multi-utterance batching path.
+monologue|150|Alex|This is a continuous monologue intended to push past the twenty five second utterance boundary so the streaming engine has to flush mid-thought and begin a new utterance with the previous transcript as initial prompt context. The point of this fixture is to verify that the seam between two consecutive batched inferences does not produce a duplicated phrase, a missed word, or a hallucinated transition that the listener would notice.
+
+# Sports commentary cadence.
+sports|180|Alex|And he's got it, drives down the lane, pulls up for the jumper. Good! Top of the key, three pointer. Yes! What a shot. He's on fire tonight.
+
+# Technical jargon -- whisper's domain knowledge varies by topic.
+technical|150|Alex|The kernel module attaches a netfilter hook on the post-routing chain. Packets matching the source IP are forwarded to the encrypted tunnel via the WireGuard interface.

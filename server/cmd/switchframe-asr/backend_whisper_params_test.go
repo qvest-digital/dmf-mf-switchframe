@@ -9,19 +9,20 @@ func TestBuildWhisperFullOpts_LiveBroadcastDefaults(t *testing.T) {
 		NThreads:  4,
 	})
 
-	// no_context is off (whisper.cpp default). It looks tempting in
-	// streaming setups to disable cross-call state, but the eval shows
-	// no_context=true causes whisper to drop the first half of long
-	// utterances on some fixtures. We use initial_prompt explicitly for
-	// cross-utterance coherence instead.
+	// no_context is OFF. whisper.cpp's default for no_context is true,
+	// but the eval surfaced significant accuracy regressions on long-
+	// form fixtures with that default (first-half drops, "fast" missing
+	// "Breaking", "long" missing 25-second prefix). With no_context=false
+	// whisper uses prior-utterance KV state for continuity, which
+	// hurts independence across very different utterances but that
+	// turned out to be a smaller cost than the long-form drops.
 	if o.NoContext {
-		t.Error("NoContext = true, want false (caused dropped-first-half on fast/long fixtures)")
+		t.Error("NoContext = true, want false (long-form prefix drops outweigh cross-call independence)")
 	}
-	// In batch mode (one Transcribe per utterance), let whisper segment
-	// naturally. single_segment forces a single segment which truncates
-	// long utterances and can lose the start of the audio.
+	// SingleSegment=false: let whisper segment naturally. Forcing
+	// single segment truncates long utterances.
 	if o.SingleSegment {
-		t.Error("SingleSegment = true, want false (let whisper segment batched utterances)")
+		t.Error("SingleSegment = true, want false (let whisper segment naturally)")
 	}
 	// No hard token cap: max_tokens=32 worked for ~1s UFAL-style chunks
 	// but truncates output on our cumulative chunks (up to 25s).
