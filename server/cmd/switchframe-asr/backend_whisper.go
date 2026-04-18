@@ -68,12 +68,10 @@ func (b *whisperASRBackend) loadModel(name string) error {
 	cPath := C.CString(path)
 	defer C.free(unsafe.Pointer(cPath))
 
+	opts := buildWhisperContextOpts(b.useGPU)
 	params := C.whisper_context_default_params()
-	if b.useGPU {
-		params.use_gpu = C.bool(true)
-	} else {
-		params.use_gpu = C.bool(false)
-	}
+	params.use_gpu = C.bool(opts.UseGPU)
+	params.flash_attn = C.bool(opts.FlashAttn)
 
 	ctx := C.whisper_init_from_file_with_params(cPath, params)
 	if ctx == nil {
@@ -90,15 +88,28 @@ func (b *whisperASRBackend) Transcribe(audio []float32) []asr.TranscriptWord {
 		return nil
 	}
 
+	opts := buildWhisperFullOpts(whisperRequest{
+		Language:  b.language,
+		Translate: b.translate,
+		NThreads:  4,
+	})
+
 	params := C.whisper_full_default_params(C.WHISPER_SAMPLING_GREEDY)
 
-	lang := C.CString(b.language)
+	lang := C.CString(opts.Language)
 	defer C.free(unsafe.Pointer(lang))
 
 	params.language = lang
-	params.translate = C.bool(b.translate)
-	params.n_threads = 4
-	params.token_timestamps = C.bool(true)
+	params.translate = C.bool(opts.Translate)
+	params.n_threads = C.int(opts.NThreads)
+	params.no_context = C.bool(opts.NoContext)
+	params.single_segment = C.bool(opts.SingleSegment)
+	params.max_tokens = C.int(opts.MaxTokens)
+	params.temperature = C.float(opts.Temperature)
+	params.temperature_inc = C.float(opts.TemperatureInc)
+	params.suppress_blank = C.bool(opts.SuppressBlank)
+	params.suppress_nst = C.bool(opts.SuppressNonSpeech)
+	params.token_timestamps = C.bool(opts.TokenTimestamps)
 	params.print_progress = C.bool(false)
 	params.print_realtime = C.bool(false)
 	params.print_special = C.bool(false)
