@@ -717,6 +717,7 @@ export interface ControlRoomState {
 	transitionEasing?: string;
 	inTransition: boolean;
 	ftbActive: boolean;
+	ftbDurationMs?: number;
 	audioChannels?: Record<string, AudioChannel>;
 	masterLevel: number;
 	programPeak: [number, number];

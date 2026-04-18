@@ -19,6 +19,7 @@ func TestEndpointSubsystem(t *testing.T) {
 		{"/api/switch/preview", SubsystemSwitching, true},
 		{"/api/switch/transition", SubsystemSwitching, true},
 		{"/api/switch/ftb", SubsystemSwitching, true},
+		{"/api/switch/ftb-duration", SubsystemSwitching, true},
 
 		// Audio (exact + prefix)
 		{"/api/audio/level", SubsystemAudio, true},

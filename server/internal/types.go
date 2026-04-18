@@ -331,6 +331,7 @@ type ControlRoomState struct {
 	TransitionEasing     string                  `json:"transitionEasing,omitempty"`
 	InTransition         bool                    `json:"inTransition,omitempty"`
 	FTBActive            bool                    `json:"ftbActive,omitempty"`
+	FTBDurationMs        int                     `json:"ftbDurationMs,omitempty"`
 	AudioChannels        map[string]AudioChannel `json:"audioChannels"`
 	MasterLevel          float64                 `json:"masterLevel"`
 	ProgramPeak          [2]float64              `json:"programPeak"`

@@ -795,6 +795,14 @@ export function fadeToBlack(): Promise<ControlRoomState> {
 	return post('/api/switch/ftb', {});
 }
 
+export function setFTBDuration(durationMs: number): Promise<ControlRoomState> {
+	return request('/api/switch/ftb-duration', {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ durationMs }),
+	});
+}
+
 export function startRecording(options?: {
 	outputDir?: string;
 	rotateAfterMins?: number;

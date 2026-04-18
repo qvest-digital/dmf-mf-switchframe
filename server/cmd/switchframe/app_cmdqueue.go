@@ -185,6 +185,16 @@ func (a *App) registerTransitionActions(d *cmdqueue.Dispatcher) {
 	d.Register("ftb", func(payload json.RawMessage) error {
 		return a.sw.FadeToBlack(context.Background())
 	})
+
+	d.Register("ftb_duration_set", func(payload json.RawMessage) error {
+		var req struct {
+			DurationMs int `json:"durationMs"`
+		}
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return err
+		}
+		return a.sw.SetFTBDuration(req.DurationMs)
+	})
 }
 
 // registerAudioActions registers all audio dispatch actions.
