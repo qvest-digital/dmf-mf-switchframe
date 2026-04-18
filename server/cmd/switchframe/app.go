@@ -1784,33 +1784,15 @@ func (a *App) Run(ctx context.Context) error {
 	// Start SRT listener and restore persisted caller pulls.
 	a.startSRT(ctx)
 
-	demoStats := demo.NewStats()
 	if a.cfg.Demo {
-		const nCams = 4
-		slog.Info("demo mode: starting simulated camera sources", "count", nCams, "videoDir", a.cfg.DemoVideoDir)
-
-		// Demo sources always use the standard Prism relay → sourceViewer path.
-		// Preview proxy encoding only applies to SRT/MXL sources where
-		// the relay encode path is independent of the switcher pipeline.
-		relays := make([]*distribution.Relay, nCams)
-		for i := range nCams {
-			key := fmt.Sprintf("cam%d", i+1)
-			relays[i] = a.server.RegisterStream(key)
-			if a.cfg.DemoVideoDir == "" {
-				relays[i].SetVideoInfo(distribution.VideoInfo{
-					Codec:  "avc1.42C01E",
-					Width:  320,
-					Height: 240,
-				})
-			}
-		}
-		stopDemo := demo.StartSources(ctx, a.sw, relays, demoStats, a.cfg.DemoVideoDir, a.sw.PipelineFormat().FrameDuration())
-		defer stopDemo()
-
-		// Copy video info from first source to program relay.
-		if len(relays) > 0 {
-			a.programRelay.SetVideoInfo(relays[0].VideoInfo())
-		}
+		// Synthetic cam1-cam4 SRT cameras are retired — each was a full
+		// encode+relay pipeline that saturated the program loop on busy
+		// hosts and made the built-in source:colorbars sprite visibly
+		// stutter when selected on program. MXL demo flows (below) and
+		// SRT clip pushers (below) remain — they exercise the real MXL
+		// and SRT ingest code paths and are valuable for end-to-end
+		// validation. For a minimal "no external feeds configured" runtime,
+		// operators can cut to source:black or source:colorbars.
 
 		// Add raw MXL demo sources (exercises IngestRawVideo/IngestPCM path).
 		stopMXLDemo := a.startMXLDemo(ctx)
@@ -1899,7 +1881,6 @@ func (a *App) Run(ctx context.Context) error {
 			}
 		}
 	}
-	a.debugCollector.Register("demo", demoStats)
 
 	// Program preview encoder — low-bitrate H.264 for browser program monitor.
 	// Browsers subscribe to "program-preview" instead of the full-quality

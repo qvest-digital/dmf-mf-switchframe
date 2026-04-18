@@ -21,6 +21,14 @@ const (
 	reconnectDelay = time.Second
 )
 
+// sleepCtx sleeps for d or until ctx is done, whichever comes first.
+func sleepCtx(ctx context.Context, d time.Duration) {
+	select {
+	case <-time.After(d):
+	case <-ctx.Done():
+	}
+}
+
 // StartSRTSources pushes test clips over SRT to a local listener.
 // Each clip gets its own SRT connection with a unique streamid.
 // Blocks until ctx is cancelled.
