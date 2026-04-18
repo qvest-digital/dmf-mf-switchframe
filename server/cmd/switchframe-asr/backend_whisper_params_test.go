@@ -54,6 +54,29 @@ func TestBuildWhisperFullOpts_PassesThroughTranslate(t *testing.T) {
 	}
 }
 
+func TestResolveWhisperThreads(t *testing.T) {
+	tests := []struct {
+		name      string
+		requested int
+		numCPU    int
+		want      int
+	}{
+		{"explicit positive passes through", 6, 16, 6},
+		{"zero falls back to numCPU clamped at 8", 0, 16, 8},
+		{"zero on small box uses numCPU", 0, 4, 4},
+		{"zero on tiny box gets at least 1", 0, 0, 1},
+		{"negative clamped to at least 1", -3, 16, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveWhisperThreads(tt.requested, tt.numCPU)
+			if got != tt.want {
+				t.Errorf("resolveWhisperThreads(%d, %d) = %d, want %d", tt.requested, tt.numCPU, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBuildWhisperContextOpts_FlashAttnAndGPU(t *testing.T) {
 	o := buildWhisperContextOpts(true)
 	if !o.FlashAttn {

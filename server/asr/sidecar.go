@@ -26,6 +26,7 @@ type SidecarConfig struct {
 	WhisperModelsDir string // directory containing ggml-*.bin Whisper models
 	DefaultBackend   string // default ASR backend (parakeet or whisper)
 	Device           int    // GPU device ID
+	WhisperThreads   int    // whisper.cpp inference threads (0 = auto: min(NumCPU, 8))
 }
 
 // SidecarBackend implements the Backend interface by spawning an ASR sidecar
@@ -125,6 +126,9 @@ func (s *SidecarBackend) Start(onTranscript func([]TranscriptWord, bool)) error 
 			}
 			if s.cfg.DefaultBackend != "" {
 				args = append(args, "--default-backend", s.cfg.DefaultBackend)
+			}
+			if s.cfg.WhisperThreads > 0 {
+				args = append(args, "--whisper-threads", strconv.Itoa(s.cfg.WhisperThreads))
 			}
 			return args
 		},

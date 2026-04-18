@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 	"unsafe"
@@ -90,6 +91,7 @@ func main() {
 	device := flag.Int("device", 0, "GPU device ID")
 	energyThreshold := flag.Float64("energy-threshold", 0.005, "RMS energy gate threshold")
 	vadModelPath := flag.String("vad-model", "", "Silero VAD ONNX model path (auto-detected from model-dir)")
+	whisperThreads := flag.Int("whisper-threads", 0, "Whisper inference thread count (0 = auto: min(NumCPU, 8))")
 	buildEngines := flag.Bool("build-engines", false, "Build TRT engine plans from ONNX models and exit")
 	flag.Parse()
 
@@ -159,7 +161,8 @@ func main() {
 			if whisperDir == "" {
 				return nil, fmt.Errorf("whisper: --whisper-models-dir not set")
 			}
-			return newWhisperASRBackend(whisperDir, true)
+			threads := resolveWhisperThreads(*whisperThreads, runtime.NumCPU())
+			return newWhisperASRBackend(whisperDir, true, threads)
 		default:
 			return nil, fmt.Errorf("unknown backend %q", name)
 		}

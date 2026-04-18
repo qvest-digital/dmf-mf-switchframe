@@ -36,6 +36,7 @@ func (a *App) initASR() error {
 			WhisperModelsDir: a.cfg.ASRWhisperModelsDir,
 			DefaultBackend:   a.cfg.ASRDefaultBackend,
 			Device:           0,
+			WhisperThreads:   a.cfg.ASRWhisperThreads,
 		},
 	}
 

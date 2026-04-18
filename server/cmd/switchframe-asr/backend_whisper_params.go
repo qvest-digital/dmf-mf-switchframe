@@ -44,6 +44,27 @@ func buildWhisperFullOpts(req whisperRequest) whisperFullOpts {
 	}
 }
 
+// resolveWhisperThreads picks the inference thread count. A positive
+// requested value passes through. Zero (the default) means "auto" and uses
+// the CPU count clamped at 8 -- whisper.cpp doesn't scale linearly past
+// that on most workloads and oversubscribing wastes power. Negative or
+// zero numCPU clamps to 1.
+func resolveWhisperThreads(requested, numCPU int) int {
+	if requested > 0 {
+		return requested
+	}
+	if requested < 0 {
+		return 1
+	}
+	if numCPU > 8 {
+		return 8
+	}
+	if numCPU < 1 {
+		return 1
+	}
+	return numCPU
+}
+
 // whisperContextOpts mirrors the subset of whisper_context_params we set.
 type whisperContextOpts struct {
 	UseGPU    bool

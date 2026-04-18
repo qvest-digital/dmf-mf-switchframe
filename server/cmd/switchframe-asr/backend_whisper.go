@@ -27,11 +27,12 @@ type whisperASRBackend struct {
 	modelName string
 	models    []string
 	useGPU    bool
+	nThreads  int
 	language  string // recognition language (default "en")
 	translate bool   // translate non-English to English (default true)
 }
 
-func newWhisperASRBackend(modelsDir string, useGPU bool) (*whisperASRBackend, error) {
+func newWhisperASRBackend(modelsDir string, useGPU bool, nThreads int) (*whisperASRBackend, error) {
 	models, err := scanWhisperModels(modelsDir)
 	if err != nil {
 		return nil, fmt.Errorf("whisper: scan models: %w", err)
@@ -44,6 +45,7 @@ func newWhisperASRBackend(modelsDir string, useGPU bool) (*whisperASRBackend, er
 		modelsDir: modelsDir,
 		models:    models,
 		useGPU:    useGPU,
+		nThreads:  nThreads,
 		language:  "en",
 		translate: true,
 	}
@@ -91,7 +93,7 @@ func (b *whisperASRBackend) Transcribe(audio []float32) []asr.TranscriptWord {
 	opts := buildWhisperFullOpts(whisperRequest{
 		Language:  b.language,
 		Translate: b.translate,
-		NThreads:  4,
+		NThreads:  b.nThreads,
 	})
 
 	params := C.whisper_full_default_params(C.WHISPER_SAMPLING_GREEDY)
