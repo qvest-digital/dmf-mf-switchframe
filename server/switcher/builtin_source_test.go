@@ -396,6 +396,68 @@ func TestSwitcher_BuiltinSourcesRegenerateOnColorProfileChange(t *testing.T) {
 		"back to standard: 8-bit YUV420 frame regenerated")
 }
 
+// TestSwitcher_SpriteMotionIsMonotonic pins the "sprite never goes
+// backward" contract. Pulls one full cycle's worth of frames directly
+// off the generator and asserts that the leftmost yellow pixel column
+// (the sprite) strictly advances frame-over-frame — except when the
+// sprite is entirely off-screen during the wrap, which is by design.
+//
+// Rationale: user reported the sprite oscillating forward/back on the
+// program path, which implied the motion math had a jitter source.
+// Switching to frame-count-based animation (instead of wall-clock) makes
+// the sprite position a pure function of the call index and eliminates
+// any pipeline-scheduling-induced oscillation. This test enforces that
+// property.
+func TestSwitcher_SpriteMotionIsMonotonic(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := newTestSwitcher(programRelay)
+	defer sw.Close()
+
+	// Use a fixed, large format so the sprite travels far enough between
+	// frames to produce a distinct leftmost x per step.
+	fmt := PipelineFormat{Width: 1920, Height: 1080, FPSNum: 30, FPSDen: 1}
+	require.NoError(t, sw.SetPipelineFormat(fmt))
+
+	prevX := -1
+	// spriteCyclePeriodFrames frames of motion + a few extra across the wrap.
+	for i := 0; i < 70; i++ {
+		yuv, w, h, err := sw.BuiltinSourceFrame(testColorbarsKey)
+		require.NoError(t, err)
+
+		// Detect the sprite by its distinctive 75% yellow chroma (low Cb ≈ 44
+		// vs near-128 for the white logo text and black annex). Sample
+		// chroma at the center of the annex band to avoid picking up the
+		// bars region above.
+		cbOff := w * h
+		halfW := w / 2
+		trackY := (h*4/5) + (h-(h*4/5))/2
+		if trackY >= h {
+			trackY = h - 1
+		}
+		cbRow := (trackY / 2) * halfW
+		leftmost := -1
+		for uvCol := 0; uvCol < halfW; uvCol++ {
+			if yuv[cbOff+cbRow+uvCol] < 90 { // yellow Cb is ~44; white/gray Cb is ~128
+				leftmost = uvCol * 2
+				break
+			}
+		}
+
+		if leftmost >= 0 && prevX >= 0 {
+			require.GreaterOrEqualf(t, leftmost, prevX,
+				"sprite regressed at frame %d: prev=%d current=%d (jitter)",
+				i, prevX, leftmost)
+		}
+		if leftmost >= 0 {
+			prevX = leftmost
+		} else {
+			// Off-screen frame — expected during wrap; next visible frame
+			// resets monotonic tracking.
+			prevX = -1
+		}
+	}
+}
+
 // TestSwitcher_ColorbarsSpriteMotion pulls two frames separated by enough
 // time that the sprite should have moved. Confirms the producer doesn't
 // serve a frozen cached frame when something in the annex is meant to be

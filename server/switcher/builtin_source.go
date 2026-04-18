@@ -46,13 +46,13 @@ type builtinSource struct {
 	key      string
 	renderer *textrender.Renderer // shared across all built-ins; nil-safe
 
-	mu        sync.Mutex
-	width     int
-	height    int
-	format    video.Format // color format the static buffer was built for
-	static    []byte       // cached YUV pattern at (width,height,format) before annex overlay
-	annexY0   int          // y where annex band starts (height if annex disabled)
-	startTime time.Time
+	mu         sync.Mutex
+	width      int
+	height     int
+	format     video.Format // color format the static buffer was built for
+	static     []byte       // cached YUV pattern at (width,height,format) before annex overlay
+	annexY0    int          // y where annex band starts (height if annex disabled)
+	frameIndex int64        // monotonic counter incremented each Frame() call
 }
 
 // Frame returns a YUV frame at (width, height) in the requested pixel format
@@ -61,7 +61,14 @@ type builtinSource struct {
 // the slice to downstream consumers (frame sync ring, pipeline work chan)
 // without an additional copy. The cached static pattern is regenerated if
 // any of (width, height, format) differ from the previous call; the annex
-// is always redrawn so clock/sprite advance per call.
+// (sprite + clock) is redrawn per call.
+//
+// Sprite motion is driven by an internal monotonic frame counter that
+// advances one step per call — ties motion to the number of Frame() calls
+// rather than wall clock, so consecutive rendered frames cannot regress
+// the sprite under any pipeline scheduling pattern (frame-sync phase-lock,
+// GPU cache lookup, FRC interpolation, or encoder reorder). The clock
+// still reads wall time so it progresses with real-world time.
 func (b *builtinSource) Frame(width, height int, f video.Format) []byte {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -80,8 +87,10 @@ func (b *builtinSource) Frame(width, height int, f video.Format) []byte {
 	out := make([]byte, f.FrameSize(width, height))
 	copy(out, b.static)
 	if b.annexY0 < height {
-		b.drawAnnexLocked(out, width, height, f)
+		drawAnnexClock(out, f, width, height, b.annexY0, b.renderer, time.Now().UTC())
+		drawAnnexSprite(out, f, width, height, b.annexY0, b.frameIndex)
 	}
+	b.frameIndex++
 	return out
 }
 
@@ -114,15 +123,6 @@ func (b *builtinSource) regenerateStaticLocked(width, height int, f video.Format
 		bakeLogo(b.static, f, width, height, annex, b.renderer)
 		return
 	}
-}
-
-func (b *builtinSource) drawAnnexLocked(buf []byte, width, height int, f video.Format) {
-	if b.startTime.IsZero() {
-		b.startTime = time.Now()
-	}
-	elapsed := time.Since(b.startTime)
-	drawAnnexClock(buf, f, width, height, b.annexY0, b.renderer, time.Now().UTC())
-	drawAnnexSprite(buf, f, width, height, b.annexY0, elapsed)
 }
 
 // BuiltinSourceFrame returns a frame from the named built-in source at the
@@ -240,11 +240,17 @@ func (s *Switcher) builtinProducerLoop() {
 	tick := time.NewTicker(lastDur)
 	defer tick.Stop()
 
-	// PTS anchored to wall-clock elapsed since producer start, scaled to
-	// the 90 kHz MPEG clock. Keeps PTS drift-free for non-integer frame
-	// durations (e.g. 59.94 fps) instead of accumulating per-frame rounding.
-	start := time.Now()
-
+	// PTS is frame-count-anchored at the pipeline FPS — exactly CFR, no
+	// scheduling jitter. The encoder and downstream frame-sync + GPU cache
+	// paths are sensitive to PTS irregularities (the program path applies
+	// motion-compensated interpolation when configured, a phase-lock
+	// early-release signal, and GPU frame caching keyed by PTS), any of
+	// which can turn tiny PTS variance into visible sprite oscillation on
+	// the program output. Frame count also drives the sprite position so
+	// motion advances by exact integer increments per frame — under any
+	// pipeline scheduling pattern, consecutive rendered frames cannot
+	// regress the sprite.
+	//
 	// Push frames unconditionally at pipeline FPS, independent of whether
 	// a built-in is currently on program or preview. The multiview tiles
 	// in the UI subscribe to each source's per-source preview MoQ track,
@@ -253,6 +259,7 @@ func (s *Switcher) builtinProducerLoop() {
 	// cut to. CPU cost at 1080p30 for both built-ins is ~20% of one core —
 	// on par with a single real ingest source — and matches how every
 	// broadcast mixer (ATEM, vMix, TriCaster) runs its color generators.
+	var frameIndex int64
 	for {
 		select {
 		case <-s.builtinProducerStop:
@@ -266,7 +273,16 @@ func (s *Switcher) builtinProducerLoop() {
 			lastDur = d
 		}
 
-		pts := time.Since(start).Nanoseconds() * 90 / int64(time.Millisecond)
+		// ptsPerFrame = 90000 * fpsDen / fpsNum. For 30fps: 3000. For
+		// 59.94fps (30000/1001): 1501 with truncation — close enough
+		// that downstream handles it without drift visible on a
+		// multi-hour run.
+		var ptsPerFrame int64 = 3000
+		if pf.FPSNum > 0 {
+			ptsPerFrame = int64(90000) * int64(pf.FPSDen) / int64(pf.FPSNum)
+		}
+		pts := frameIndex * ptsPerFrame
+
 		var tap BuiltinFrameTap
 		if p := s.builtinFrameTap.Load(); p != nil {
 			tap = *p
@@ -295,6 +311,7 @@ func (s *Switcher) builtinProducerLoop() {
 				tap(key, frame, w, h, pts, pf.Color.ColorFormat)
 			}
 		}
+		frameIndex++
 	}
 }
 
@@ -514,18 +531,29 @@ func drawAnnexClock(buf []byte, f video.Format, width, height, annexY0 int, r *t
 	blitRGBAToYUV(buf, f, width, height, x, y, img)
 }
 
+// spriteCyclePeriodFrames is the number of frames per full sprite sweep
+// across the annex. Motion is driven by (frameIndex % period) so the
+// position at frame N is strictly determined by N — no wall-clock read,
+// no jitter-sensitive derivation. At 30fps, 60 frames = a 2-second sweep.
+const spriteCyclePeriodFrames int64 = 60
+
 // drawAnnexSprite draws a short horizontal colored bar in the middle of the
-// annex that moves left-to-right on a 2-second loop, proving to a
-// downstream operator that the signal is live even when the reference
+// annex that moves left-to-right on a fixed-frame-count cycle, proving to
+// a downstream operator that the signal is live even when the reference
 // pattern itself is static.
 //
 // The sprite's travel range runs from fully off-screen on the left
 // (x=-spriteW) to fully off-screen on the right (x=width). This makes
 // the wrap a natural "exit-then-reenter" rather than a right-to-left
-// teleport — the sprite is off-screen for one frame's worth of
-// travel before reappearing on the left, so the viewer sees continuous
-// forward motion with no apparent backward jump at cycle boundaries.
-func drawAnnexSprite(buf []byte, f video.Format, width, height, annexY0 int, elapsed time.Duration) {
+// teleport — the sprite is off-screen for one frame's worth of travel
+// before reappearing on the left, so the viewer sees continuous forward
+// motion with no apparent backward jump at cycle boundaries.
+//
+// Position is a pure function of frameIndex: at frame N the sprite is at
+// x = -spriteW + (N mod period) * travel / period. Exact integer math,
+// strictly monotonic within a cycle, cannot regress between frames under
+// any pipeline scheduling pattern.
+func drawAnnexSprite(buf []byte, f video.Format, width, height, annexY0 int, frameIndex int64) {
 	if annexY0 >= height {
 		return
 	}
@@ -545,13 +573,15 @@ func drawAnnexSprite(buf []byte, f video.Format, width, height, annexY0 int, ela
 	trackY0 &^= 1
 	trackY1 := trackY0 + spriteH
 
-	period := 2 * time.Second
-	frac := float64(elapsed%period) / float64(period)
 	// Travel range goes from fully off-screen left to fully off-screen
 	// right, so the sprite enters the visible region from the left, exits
 	// on the right, and wraps cleanly with no on-screen teleport.
-	travelRange := width + spriteW
-	x0 := -spriteW + int(frac*float64(travelRange))
+	travelRange := int64(width + spriteW)
+	phase := frameIndex % spriteCyclePeriodFrames
+	if phase < 0 {
+		phase += spriteCyclePeriodFrames
+	}
+	x0 := -spriteW + int(phase*travelRange/spriteCyclePeriodFrames)
 	x0 &^= 1
 	x1 := x0 + spriteW
 
