@@ -112,6 +112,7 @@ func (b *whisperASRBackend) Transcribe(audio []float32) []asr.TranscriptWord {
 	params.suppress_blank = C.bool(opts.SuppressBlank)
 	params.suppress_nst = C.bool(opts.SuppressNonSpeech)
 	params.token_timestamps = C.bool(opts.TokenTimestamps)
+	params.audio_ctx = C.int(computeAudioCtx(len(audio), 16000))
 	params.print_progress = C.bool(false)
 	params.print_realtime = C.bool(false)
 	params.print_special = C.bool(false)

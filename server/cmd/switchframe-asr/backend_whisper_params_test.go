@@ -77,6 +77,42 @@ func TestResolveWhisperThreads(t *testing.T) {
 	}
 }
 
+func TestComputeAudioCtx(t *testing.T) {
+	tests := []struct {
+		name      string
+		samples   int
+		want      int
+		comment   string
+	}{
+		{"empty audio returns default (0)", 0, 0, "defensive"},
+		{"1s rounds up from 5s floor", 16000, 384, "5s -> 378 -> 384"},
+		{"5s exact returns 384", 16000 * 5, 384, "(5/30)*1500+128=378 -> 384"},
+		{"10s returns 640", 16000 * 10, 640, "(10/30)*1500+128=628 -> 640"},
+		{"15s returns 896", 16000 * 15, 896, "(15/30)*1500+128=878 -> 896"},
+		{"20s returns 1152", 16000 * 20, 1152, "(20/30)*1500+128=1128 -> 1152"},
+		{"25s returns 1408", 16000 * 25, 1408, "(25/30)*1500+128=1378 -> 1408"},
+		{"30s returns 0 (use whisper default)", 16000 * 30, 0, "no truncation needed"},
+		{"40s returns 0", 16000 * 40, 0, "above default already"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := computeAudioCtx(tt.samples, 16000)
+			if got != tt.want {
+				t.Errorf("computeAudioCtx(%d samples) = %d, want %d (%s)", tt.samples, got, tt.want, tt.comment)
+			}
+		})
+	}
+}
+
+func TestComputeAudioCtx_AlwaysMultipleOf64OrZero(t *testing.T) {
+	for samples := 0; samples <= 16000*30; samples += 16000 {
+		got := computeAudioCtx(samples, 16000)
+		if got != 0 && got%64 != 0 {
+			t.Errorf("computeAudioCtx(%d) = %d, not multiple of 64", samples, got)
+		}
+	}
+}
+
 func TestBuildWhisperContextOpts_FlashAttnAndGPU(t *testing.T) {
 	o := buildWhisperContextOpts(true)
 	if !o.FlashAttn {

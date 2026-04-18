@@ -65,6 +65,33 @@ func resolveWhisperThreads(requested, numCPU int) int {
 	return numCPU
 }
 
+// computeAudioCtx returns the encoder context size to use for a chunk of
+// the given length, expressed as the audio_ctx whisper_full_params field
+// (positions in the encoder's downsampled frame grid). Whisper's encoder
+// always processes a 30s mel; setting audio_ctx smaller skips the unused
+// tail and gives a documented ~3x speedup on short clips.
+//
+// Returns 0 (whisper default = full 30s context) when the chunk meets or
+// exceeds 30s. For chunks shorter than ~5s we floor at the 5s value --
+// going lower triggers repeat-token glitches because of how far the
+// runtime context deviates from the model's training distribution.
+//
+// The returned value is rounded up to a multiple of 64 (encoder block size).
+func computeAudioCtx(samples, sampleRate int) int {
+	if samples <= 0 || sampleRate <= 0 {
+		return 0
+	}
+	seconds := float64(samples) / float64(sampleRate)
+	if seconds >= 30.0 {
+		return 0
+	}
+	if seconds < 5.0 {
+		seconds = 5.0
+	}
+	raw := int(seconds/30.0*1500.0) + 128
+	return ((raw + 63) / 64) * 64
+}
+
 // whisperContextOpts mirrors the subset of whisper_context_params we set.
 type whisperContextOpts struct {
 	UseGPU    bool
