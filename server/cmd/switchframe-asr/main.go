@@ -42,7 +42,33 @@ func dbToNoiseFloor(db float64) string {
 	return "noisy"
 }
 
-func emitWords(conn net.Conn, words []asr.TranscriptWord) {
+// promptContextual is implemented by backends that maintain an internal
+// initial_prompt rolling window (currently only whisper). Other backends
+// just no-op via type assertion failure.
+type promptContextual interface {
+	AppendPromptContext(words []string)
+}
+
+// extendPromptContext forwards committed words to the backend's prompt
+// rolling window if it supports one.
+func extendPromptContext(b asrBackend, committed []asr.TranscriptWord) {
+	if len(committed) == 0 {
+		return
+	}
+	pc, ok := b.(promptContextual)
+	if !ok {
+		return
+	}
+	texts := make([]string, 0, len(committed))
+	for _, w := range committed {
+		if w.Text != "" {
+			texts = append(texts, w.Text)
+		}
+	}
+	pc.AppendPromptContext(texts)
+}
+
+func emitWords(conn net.Conn, words []asr.TranscriptWord, isFinal bool) {
 	if len(words) == 0 {
 		return
 	}
@@ -57,7 +83,7 @@ func emitWords(conn net.Conn, words []asr.TranscriptWord) {
 	if err := asripc.WriteMessage(conn, &asripc.Message{
 		Type:    "transcript",
 		Words:   ipcWords,
-		IsFinal: true,
+		IsFinal: isFinal,
 	}); err != nil {
 		slog.Warn("failed to write transcript", "error", err)
 	}
@@ -253,8 +279,12 @@ func main() {
 	running := true
 	var speechBuf []float32
 	var wasSpeaking bool
-	var speechStart time.Time
-	maxAccum := 5 * time.Second
+	var speechStart, lastStep time.Time
+	streamState := newStreamingState()
+	const (
+		stepInterval = 1 * time.Second  // re-transcribe every 1s for partial commits
+		maxUtterance = 25 * time.Second // force flush + restart before whisper truncates at 30s
+	)
 
 	for {
 		select {
@@ -290,29 +320,53 @@ func main() {
 				// Speech started.
 				speechBuf = speechBuf[:0]
 				speechStart = time.Now()
+				lastStep = speechStart
+				streamState.reset()
 				wasSpeaking = true
 				speechBuf = append(speechBuf, mono16k...)
 
 			case nowSpeaking:
 				// Speech continues.
 				speechBuf = append(speechBuf, mono16k...)
-				// Max accumulation: forced transcription.
-				if time.Since(speechStart) >= maxAccum && activeBackend != nil {
-					words := activeBackend.Transcribe(speechBuf)
-					emitWords(conn, words)
+
+				if activeBackend == nil {
+					break
+				}
+
+				// Forced flush before whisper context truncation.
+				if time.Since(speechStart) >= maxUtterance {
+					hyp := activeBackend.Transcribe(speechBuf)
+					committed := streamState.flushFinal(hyp)
+					emitWords(conn, committed, true)
+					extendPromptContext(activeBackend, committed)
 					speechBuf = speechBuf[:0]
 					speechStart = time.Now()
+					lastStep = speechStart
+					streamState.reset()
+					break
+				}
+
+				// Step transcribe + LocalAgreement-2 commit.
+				if time.Since(lastStep) >= stepInterval {
+					hyp := activeBackend.Transcribe(speechBuf)
+					committed := streamState.acceptHypothesis(hyp)
+					emitWords(conn, committed, false)
+					extendPromptContext(activeBackend, committed)
+					lastStep = time.Now()
 				}
 
 			case !nowSpeaking && wasSpeaking:
-				// Speech ended.
+				// Speech ended -- final pass, flush uncommitted tail.
 				speechBuf = append(speechBuf, mono16k...)
 				wasSpeaking = false
 				if activeBackend != nil {
-					words := activeBackend.Transcribe(speechBuf)
-					emitWords(conn, words)
+					hyp := activeBackend.Transcribe(speechBuf)
+					committed := streamState.flushFinal(hyp)
+					emitWords(conn, committed, true)
+					extendPromptContext(activeBackend, committed)
 				}
 				speechBuf = speechBuf[:0]
+				streamState.reset()
 			}
 
 		case msg := <-controlCh:
@@ -332,6 +386,7 @@ func main() {
 				}
 				speechBuf = speechBuf[:0]
 				wasSpeaking = false
+				streamState.reset()
 			case "set_config":
 				var cfg map[string]interface{}
 				if err := json.Unmarshal(msg.Config, &cfg); err != nil {

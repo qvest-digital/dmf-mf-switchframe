@@ -23,4 +23,5 @@ func (b *whisperASRBackend) SetModel(string) error {
 }
 func (b *whisperASRBackend) Config() map[string]interface{}   { return nil }
 func (b *whisperASRBackend) SetConfig(map[string]interface{}) {}
+func (b *whisperASRBackend) AppendPromptContext([]string)     {}
 func (b *whisperASRBackend) Close()                           {}

@@ -169,24 +169,19 @@ func (b *whisperASRBackend) Transcribe(audio []float32) []asr.TranscriptWord {
 		}
 	}
 
-	out := filterWords(words)
+	return filterWords(words)
+}
 
-	// Roll the confirmed words into the prompt context for the next call.
-	// (Phase 7 LocalAgreement-2 will tighten "confirmed" to mean "committed
-	// across two consecutive overlapping hypotheses"; until then we treat
-	// every emitted word as confirmed since each Transcribe call covers a
-	// distinct VAD-gated speech segment.)
-	if len(out) > 0 {
-		newWords := make([]string, 0, len(out))
-		for _, w := range out {
-			if w.Text != "" {
-				newWords = append(newWords, w.Text)
-			}
-		}
-		b.promptWords = updatePromptContext(b.promptWords, newWords, maxPromptWords)
+// AppendPromptContext extends the rolling prompt window with words that
+// have been confirmed downstream by LocalAgreement-2. Called by the
+// caller after a commit so the next Transcribe sees prior coherent
+// context without contaminating the prompt with tentative re-decodes of
+// the same audio.
+func (b *whisperASRBackend) AppendPromptContext(words []string) {
+	if len(words) == 0 {
+		return
 	}
-
-	return out
+	b.promptWords = updatePromptContext(b.promptWords, words, maxPromptWords)
 }
 
 func (b *whisperASRBackend) Name() string      { return "whisper" }
