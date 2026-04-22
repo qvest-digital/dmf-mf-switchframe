@@ -24,6 +24,11 @@ describe('ControlPlaneDiscovery', () => {
 		expect(disc.sessionId).toBe('abc123');
 	});
 
+	it('strips -a suffix from engine A dedicated hostname', () => {
+		const disc = new ControlPlaneDiscovery('abc123-a.engines.switchframe.dev');
+		expect(disc.sessionId).toBe('abc123');
+	});
+
 	it('returns null for bare IP addresses', () => {
 		const disc = new ControlPlaneDiscovery('10.0.0.1');
 		expect(disc.sessionId).toBeNull();
@@ -50,7 +55,7 @@ describe('ControlPlaneDiscovery', () => {
 		const disc = new ControlPlaneDiscovery('abc123.engines.switchframe.dev');
 		const result = await disc.fetchEngineUrls();
 		expect(result).toEqual({
-			engineAUrl: 'https://abc123.engines.switchframe.dev',
+			engineAUrl: 'https://abc123-a.engines.switchframe.dev',
 			engineBUrl: 'https://abc123-b.engines.switchframe.dev'
 		});
 		expect(fetchMock).toHaveBeenCalledWith(

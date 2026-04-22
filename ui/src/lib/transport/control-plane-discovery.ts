@@ -17,7 +17,7 @@ export class ControlPlaneDiscovery {
 			this.controlPlaneUrl = null;
 			return;
 		}
-		this.sessionId = parts[0].replace(/-b$/, '');
+		this.sessionId = parts[0].replace(/-[ab]$/, '');
 		const domainParts = parts.slice(1);
 		if (domainParts[0] === 'engines') {
 			this.controlPlaneUrl = `https://control-plane.${domainParts.slice(1).join('.')}`;
@@ -47,7 +47,7 @@ export class ControlPlaneDiscovery {
 
 			const domain = this.controlPlaneUrl.replace('https://control-plane.', '');
 			return {
-				engineAUrl: `https://${this.sessionId}.engines.${domain}`,
+				engineAUrl: `https://${this.sessionId}-a.engines.${domain}`,
 				engineBUrl: `https://${this.sessionId}-b.engines.${domain}`
 			};
 		} catch {
