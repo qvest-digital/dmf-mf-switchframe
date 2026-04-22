@@ -123,6 +123,12 @@ func TestLoadtest_SmokeRunLowSources(t *testing.T) {
 	if final.Sources.TotalFrames == 0 {
 		t.Error("final.sources.total_raw_frames = 0 — no ingest at all")
 	}
+	if final.Pipeline.P99Ns == 0 {
+		t.Error("final.pipeline.p99_ns = 0 — pipeline not exercised (encoder factory missing?)")
+	}
+	if final.Mixer.TotalFramesOutput == 0 {
+		t.Error("final.mixer.total_frames_output = 0 — mixer tick not emitting (encoder factory missing?)")
+	}
 }
 
 func TestParseFlags_ResolutionValidation(t *testing.T) {

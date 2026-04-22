@@ -2,7 +2,7 @@
 
 In-process load harness. Drives N synthetic V210 sources into a `switcher.Switcher` + `audio.Mixer` pair and emits NDJSON samples plus a final summary.
 
-**Phase 1 scope.** The harness measures what the in-process wiring actually exercises: per-source ingest counters and runtime / goroutine / GC pressure. Full pipeline and mixer-cycle instrumentation need `switcher.BuildPipeline()` + an audio encoder factory (cgo); those are deferred to Phase 2 along with a pinned baseline regression test.
+**Scope as of phase 2:** per-source ingest counters, runtime + GC pressure, pipeline latency, mixer output-tick slippage. A mock video encoder and a no-op audio encoder stand in for the real codecs so the harness does not need cgo. A pinned regression test runs the canonical 32-source / 1080p60 / 15 s config and gates on `deadline_violations`, `proc_dropped`, and an absolute `p99 < 5 ms` sanity bound.
 
 ## Usage
 
@@ -28,7 +28,7 @@ All flags:
 | `--fps` | 60 | frame rate (float) |
 | `--duration` | 60s | total run, inclusive of warmup |
 | `--warmup` | 10s | excluded from final summary |
-| `--tick-interval` | 1s | min 10ms; test config can drop this |
+| `--tick-interval` | 1s | min 10ms; test configs drop this lower |
 | `--output` | `json` | `csv` reserved (reject with non-zero exit) |
 | `--profile` | `none` | `cpu` → `/tmp/loadtest-cpu.prof`, `mem` → `/tmp/loadtest-mem.prof`, `both` |
 | `--api-token` | env `SWITCHFRAME_API_TOKEN` | reserved for future remote-driver mode; masked in any dump |
@@ -43,51 +43,79 @@ One object per tick (`phase: "warmup" | "measure"`) plus a trailing `phase: "fin
 ```json
 {
   "phase": "measure",
-  "t": 1.002,
+  "t": 6.002,
   "sources": {
-    "mxl:loadtest0": { "health": "healthy", "raw_frame_count": 46, "ingest_fps": 60.0 },
-    "mxl:loadtest1": { "health": "healthy", "raw_frame_count": 46, "ingest_fps": 60.0 }
+    "mxl:loadtest0": { "health": "healthy", "raw_frame_count": 240, "ingest_fps": 59.8 }
+  },
+  "pipeline": {
+    "last_ns": 7250,
+    "e2e_last_ns": 0,
+    "deadline_violations": 0,
+    "queue_len": 0,
+    "proc_dropped": 0
+  },
+  "mixer": {
+    "max_inter_frame_gap_ns": 22412000,
+    "slippage_ms": 1.0787,
+    "frames_output": 280,
+    "mix_cycle_last_ns": 0
   },
   "runtime": { "gc_pause_last_ns": 97833, "goroutines": 24 }
 }
 ```
 
-`ingest_fps` is 0 on the first tick (no previous sample); thereafter it's the delta of `raw_frame_count` divided by wall-clock elapsed. Per-source Health values come straight from `switcher.health`: `healthy`, `stale`, `no_signal`, `offline`.
+Notes:
+
+- `pipeline.last_ns` is the most-recent `sw.videoProcLastNano` reading (pipeline wall-time for the last processed frame). With the mock video encoder it stays in the single-digit microseconds; a real encoder would dominate.
+- `pipeline.deadline_violations` / `proc_dropped` are cumulative switcher counters; the final summary reports the delta across the measure window.
+- `mixer.max_inter_frame_gap_ns` is the max-ever gap from `mixer.maxInterFrameNano` (monotonic), not a per-tick delta — read it as "worst output-tick jitter seen since startup."
+- `mixer.slippage_ms = abs(max_inter_frame_gap_ns − 21.33 ms)`; 21.33 ms is the expected 1024-sample cadence at 48 kHz. The field is reported as 0 until the mixer has emitted at least one frame.
 
 ### Final summary
 
 ```json
 {
   "phase": "final",
-  "duration_s": 60.02,
-  "samples": 50,
-  "sources": { "min_ingest_fps": 58.7, "mean_ingest_fps": 59.98, "total_raw_frames": 11520 },
-  "runtime": { "gc_pause_p99_ns": 340000, "max_goroutines": 38 },
-  "source_keys": ["mxl:loadtest0", "mxl:loadtest1", "..."],
-  "config": { "sources": 32, "width": 1920, "height": 1080, "fps": 60, "duration_s": 60, "warmup_s": 10, "tick_interval_ms": 1000, "api_token_set": false }
+  "duration_s": 15.02,
+  "samples": 10,
+  "sources": { "min_ingest_fps": 58.7, "mean_ingest_fps": 59.98, "total_raw_frames": 17615 },
+  "pipeline": {
+    "p50_ns": 4100, "p95_ns": 6800, "p99_ns": 21041, "max_ns": 29000,
+    "total_deadline_violations": 0, "total_proc_dropped": 0, "max_queue_len": 0
+  },
+  "mixer": { "max_slippage_ms": 1.30, "mean_slippage_ms": 1.08, "total_frames_output": 649 },
+  "runtime": { "gc_pause_p99_ns": 340000, "max_goroutines": 136 },
+  "source_keys": ["mxl:loadtest0", "..."],
+  "config": { "sources": 32, "width": 1920, "height": 1080, "fps": 60, "duration_s": 15, "warmup_s": 5, "tick_interval_ms": 1000, "api_token_set": false }
 }
 ```
 
-`sources.min_ingest_fps` is the minimum per-source per-tick ingest rate across the entire measure phase; `mean_ingest_fps` is the unweighted average across all (source, tick) pairs. `total_raw_frames` is the sum of final `raw_frame_count` values across sources.
+`pipeline.{p50,p95,p99,max}_ns` is computed across measure-phase `pipeline.last_ns` samples. With a 1 Hz tick and a 10 s measure window, that's only 10 samples — a single GC spike can easily dominate p99. Treat these numbers as a *rough* sense of pipeline cost; use `cpu` / `mem` profiles via `--profile` for real attribution.
 
-## Phase 1 limitations
+`sources.min_ingest_fps` / `mean_ingest_fps`: aggregate across all (source × tick) pairs in the measure phase.
 
-**What this harness does NOT measure yet:**
+## Pinned regression test
 
-- **No pipeline latency.** `switcher.BuildPipeline()` is not called (no pipeline codecs wired), so `s.pipeline.Load() == nil` and every frame short-circuits in `broadcastProcessedFromPF` before reaching the video processing loop. `videoProcLastNano` / deadline counters / `videoProcCh` queue depth stay at 0. Adding them to the schema would be dishonest until BuildPipeline is wired.
-- **No mixer cycle timing.** The mixer runs with `EncoderFactory: nil`; `tick()` returns early before `recordAndOutput`, so `FramesOutput` / `MaxInterFrameGapNs` stay 0. Mixer slippage calculation therefore does not belong in Phase 1.
-- **No decode cost.** Synthetic V210 sources skip the real decoder path. Baseline numbers from this harness are only comparable to other synthetic runs, **never** to production SRT numbers.
-- **No output.** The switcher's program relay is constructed but not read by any viewer; there is no MPEG-TS mux, no SRT push, no recording.
-- **No HTTP or control plane.** `--api-token` is parsed and masked but unused in Phase 1.
+`TestLoadtest_32Sources_1080p60_BaselinePinned` runs the canonical config (32 sources × 1080p60 × 15 s / 5 s warmup / 1 Hz tick) and asserts:
 
-**What it does measure:** per-source ingest rate (catches broken ingest paths), process goroutine count (catches goroutine leaks), GC pause distribution (catches allocation-heavy changes). This is enough to smoke-test DEBT-001's lock-split work on the ingest side, but not enough yet to pin a pipeline-latency baseline (DEBT-003 AC 4, deferred to Phase 2).
+- `total_deadline_violations == 0` over the measure window
+- `total_proc_dropped == 0` over the measure window
+- `p99_ns < 5 ms` absolute sanity bound
+
+The test is opt-in: it runs only when `LOADTEST_PERF_GATE=1` is set in the environment (and always skips on `-short`). Default-opt-out avoids adding a 17-second floor to every `go test ./... -race` invocation — CI that cares about the gate sets the env var explicitly. It does **not** compare `p99_ns` against the checked-in baseline numerically — with 10 samples at microsecond scale the natural per-run variance is factor-of-many, so any tight numeric comparison will flake. The baseline JSON is kept for humans to diff across structural switcher changes (lock splits, multiview reorganizations, pipeline-node reorders). See `docs/reference/loadtest.md` for re-baselining and interpretation guidance.
 
 ## Profiling
 
-- `--profile cpu` calls `pprof.StartCPUProfile` wrapped around the full run (including warmup). Analyze with `go tool pprof /tmp/loadtest-cpu.prof`.
-- `--profile mem` writes a heap profile via `pprof.WriteHeapProfile` after the run. Warn printed on stderr if used with `--sources > 16` (heap sampling amplifies memory pressure).
-- `--profile both` does both.
-- `--profile none` (default) writes nothing.
+- `--profile cpu` → `pprof.StartCPUProfile` wraps the full run. Analyze with `go tool pprof /tmp/loadtest-cpu.prof`.
+- `--profile mem` → heap profile via `pprof.WriteHeapProfile` after the run. Stderr warns when combined with `--sources > 16`.
+- `--profile both` does both. `--profile none` (default) writes nothing.
+
+## What this harness does NOT do
+
+- **No decode cost.** Synthetic V210 sources skip the real decoder path. Baseline numbers from this harness are only comparable to other synthetic runs, never to production SRT numbers.
+- **No real encode cost.** The video encoder factory uses `transition.NewMockEncoder`; the audio encoder is a no-op. Pipeline numbers reflect switcher + compositor + ST-map + sink cost only.
+- **No output.** The switcher's program relay is constructed but not read by any viewer; there is no MPEG-TS mux, no SRT push, no recording.
+- **No HTTP or control plane.** `--api-token` is parsed and masked but currently unused.
 
 ## Token semantics
 

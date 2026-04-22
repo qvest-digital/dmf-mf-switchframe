@@ -1,0 +1,75 @@
+{
+  "phase": "final",
+  "duration_s": 15.045704541,
+  "samples": 8,
+  "sources": {
+    "min_ingest_fps": 3.0000040312554166,
+    "mean_ingest_fps": 11.895305583017516,
+    "total_raw_frames": 4657
+  },
+  "pipeline": {
+    "p50_ns": 5417,
+    "p95_ns": 37875,
+    "p99_ns": 37875,
+    "max_ns": 1044125,
+    "total_deadline_violations": 0,
+    "total_proc_dropped": 0,
+    "max_queue_len": 1
+  },
+  "mixer": {
+    "max_slippage_ms": 774.546667,
+    "mean_slippage_ms": 765.1604169999999,
+    "total_frames_output": 263
+  },
+  "runtime": {
+    "gc_pause_p99_ns": 15293250,
+    "max_goroutines": 137
+  },
+  "source_keys": [
+    "mxl:loadtest0",
+    "mxl:loadtest1",
+    "mxl:loadtest2",
+    "mxl:loadtest3",
+    "mxl:loadtest4",
+    "mxl:loadtest5",
+    "mxl:loadtest6",
+    "mxl:loadtest7",
+    "mxl:loadtest8",
+    "mxl:loadtest9",
+    "mxl:loadtest10",
+    "mxl:loadtest11",
+    "mxl:loadtest12",
+    "mxl:loadtest13",
+    "mxl:loadtest14",
+    "mxl:loadtest15",
+    "mxl:loadtest16",
+    "mxl:loadtest17",
+    "mxl:loadtest18",
+    "mxl:loadtest19",
+    "mxl:loadtest20",
+    "mxl:loadtest21",
+    "mxl:loadtest22",
+    "mxl:loadtest23",
+    "mxl:loadtest24",
+    "mxl:loadtest25",
+    "mxl:loadtest26",
+    "mxl:loadtest27",
+    "mxl:loadtest28",
+    "mxl:loadtest29",
+    "mxl:loadtest30",
+    "mxl:loadtest31"
+  ],
+  "config": {
+    "sources": 32,
+    "width": 1920,
+    "height": 1080,
+    "fps": 60,
+    "duration_s": 15,
+    "warmup_s": 5,
+    "tick_interval_ms": 1000,
+    "api_token_set": false,
+    "platform": "darwin/arm64",
+    "go_version": "go1.26.0",
+    "race_enabled": true
+  }
+}

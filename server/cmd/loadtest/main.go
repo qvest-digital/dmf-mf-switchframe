@@ -14,6 +14,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"os/signal"
 	"runtime"
@@ -30,7 +31,29 @@ import (
 	"github.com/zsiec/switchframe/server/mxl"
 	"github.com/zsiec/switchframe/server/perf"
 	"github.com/zsiec/switchframe/server/switcher"
+	"github.com/zsiec/switchframe/server/transition"
 )
+
+// audioTickCadenceNs is the outputTicker cadence for a 48 kHz mixer with
+// 1024-sample frames: 1024 / 48000 ≈ 21.333 ms.
+const audioTickCadenceNs int64 = 1024 * 1_000_000_000 / 48000
+
+// noopAudioEncoder is a zero-cost audio.Encoder so the mixer tick loop
+// runs recordAndOutput without pulling in the FDK cgo dependency. The
+// encoded output is immediately discarded; we only care that the mixer
+// updates its MaxInterFrameGapNs / FramesOutput counters.
+type noopAudioEncoder struct{}
+
+func (noopAudioEncoder) Encode(pcm []float32) ([]byte, error) { return []byte{}, nil }
+func (noopAudioEncoder) Close() error                          { return nil }
+
+func noopAudioEncoderFactory(sampleRate, channels int) (audio.Encoder, error) {
+	return noopAudioEncoder{}, nil
+}
+
+func mockVideoEncoderFactory(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
+	return transition.NewMockEncoder(), nil
+}
 
 const maxSources = 256
 
@@ -55,20 +78,39 @@ type sourceTick struct {
 }
 
 type tickEvent struct {
-	Phase   string                `json:"phase"`
-	T       float64               `json:"t"`
-	Sources map[string]sourceTick `json:"sources"`
-	Runtime runtimeMetrics        `json:"runtime"`
+	Phase    string                `json:"phase"`
+	T        float64               `json:"t"`
+	Sources  map[string]sourceTick `json:"sources"`
+	Pipeline pipelineMetrics       `json:"pipeline"`
+	Mixer    mixerMetrics          `json:"mixer"`
+	Runtime  runtimeMetrics        `json:"runtime"`
 }
 
 type finalEvent struct {
-	Phase      string         `json:"phase"`
-	DurationS  float64        `json:"duration_s"`
-	Samples    int            `json:"samples"`
-	Sources    sourceSummary  `json:"sources"`
-	Runtime    runtimeSummary `json:"runtime"`
-	SourceKeys []string       `json:"source_keys"`
-	Config     configDump     `json:"config"`
+	Phase      string          `json:"phase"`
+	DurationS  float64         `json:"duration_s"`
+	Samples    int             `json:"samples"`
+	Sources    sourceSummary   `json:"sources"`
+	Pipeline   pipelineSummary `json:"pipeline"`
+	Mixer      mixerSummary    `json:"mixer"`
+	Runtime    runtimeSummary  `json:"runtime"`
+	SourceKeys []string        `json:"source_keys"`
+	Config     configDump      `json:"config"`
+}
+
+type pipelineMetrics struct {
+	LastNs             int64 `json:"last_ns"`
+	E2ELastNs          int64 `json:"e2e_last_ns"`
+	DeadlineViolations int64 `json:"deadline_violations"`
+	QueueLen           int   `json:"queue_len"`
+	ProcDropped        int64 `json:"proc_dropped"`
+}
+
+type mixerMetrics struct {
+	MaxInterFrameGapNs int64   `json:"max_inter_frame_gap_ns"`
+	SlippageMs         float64 `json:"slippage_ms"`
+	FramesOutput       int64   `json:"frames_output"`
+	MixCycleLastNs     int64   `json:"mix_cycle_last_ns"`
 }
 
 type runtimeMetrics struct {
@@ -80,6 +122,22 @@ type sourceSummary struct {
 	MinIngestFPS  float64 `json:"min_ingest_fps"`
 	MeanIngestFPS float64 `json:"mean_ingest_fps"`
 	TotalFrames   int64   `json:"total_raw_frames"`
+}
+
+type pipelineSummary struct {
+	P50Ns                   int64 `json:"p50_ns"`
+	P95Ns                   int64 `json:"p95_ns"`
+	P99Ns                   int64 `json:"p99_ns"`
+	MaxNs                   int64 `json:"max_ns"`
+	TotalDeadlineViolations int64 `json:"total_deadline_violations"`
+	TotalProcDropped        int64 `json:"total_proc_dropped"`
+	MaxQueueLen             int   `json:"max_queue_len"`
+}
+
+type mixerSummary struct {
+	MaxSlippageMs     float64 `json:"max_slippage_ms"`
+	MeanSlippageMs    float64 `json:"mean_slippage_ms"`
+	TotalFramesOutput int64   `json:"total_frames_output"`
 }
 
 type runtimeSummary struct {
@@ -96,6 +154,9 @@ type configDump struct {
 	WarmupS        float64 `json:"warmup_s"`
 	TickIntervalMs int64   `json:"tick_interval_ms"`
 	APITokenOK     bool    `json:"api_token_set"`
+	Platform       string  `json:"platform"`
+	GoVersion      string  `json:"go_version"`
+	RaceEnabled    bool    `json:"race_enabled"`
 }
 
 func main() {
@@ -270,6 +331,7 @@ type engineHandle struct {
 	sw        *switcher.Switcher
 	mixer     *audio.Mixer
 	swAdapter *perf.SwitcherAdapter
+	mxAdapter *perf.MixerAdapter
 	sources   []*mxl.Source
 	keys      []string
 }
@@ -294,11 +356,19 @@ func buildEngine(ctx context.Context, cfg config) (*engineHandle, error) {
 	sw := switcher.New(relay)
 
 	mixer := audio.NewMixer(audio.MixerConfig{
-		SampleRate: 48000,
-		Channels:   2,
+		SampleRate:     48000,
+		Channels:       2,
+		EncoderFactory: noopAudioEncoderFactory,
 	})
 	sw.SetMixer(mixer)
 	sw.SetFrameSync(true, 0)
+
+	sw.SetPipelineCodecs(mockVideoEncoderFactory)
+	if err := sw.BuildPipeline(); err != nil {
+		sw.Close()
+		_ = mixer.Close()
+		return nil, fmt.Errorf("build pipeline: %w", err)
+	}
 
 	pf := sw.PipelineFormat()
 	h := &engineHandle{sw: sw, mixer: mixer}
@@ -347,6 +417,7 @@ func buildEngine(ctx context.Context, cfg config) (*engineHandle, error) {
 	}
 
 	h.swAdapter = &perf.SwitcherAdapter{SW: sw}
+	h.mxAdapter = &perf.MixerAdapter{Mixer: mixer}
 	return h, nil
 }
 
@@ -392,6 +463,7 @@ func runLoop(ctx context.Context, cfg config, engine *engineHandle, enc *json.En
 			}
 
 			swSample := engine.swAdapter.PerfSample()
+			mxSample := engine.mxAdapter.PerfSample()
 
 			var mem runtime.MemStats
 			runtime.ReadMemStats(&mem)
@@ -424,10 +496,31 @@ func runLoop(ctx context.Context, cfg config, engine *engineHandle, enc *json.En
 				perSourceLast[key] = src.RawFrameCount
 			}
 
+			// Only compute slippage once the mixer has actually emitted frames.
+			// Before the first recordAndOutput the gap field is 0 and subtracting
+			// the expected cadence yields a phantom 21.33 ms.
+			var slippageMs float64
+			if mxSample.FramesOutput > 1 && mxSample.MaxInterFrameGapNs > 0 {
+				slippageMs = math.Abs(float64(mxSample.MaxInterFrameGapNs-audioTickCadenceNs)) / 1e6
+			}
+
 			ev := tickEvent{
 				Phase:   phase,
 				T:       now.Sub(start).Seconds(),
 				Sources: sources,
+				Pipeline: pipelineMetrics{
+					LastNs:             swSample.PipelineLastNs,
+					E2ELastNs:          swSample.E2ELastNs,
+					DeadlineViolations: swSample.DeadlineViolations,
+					QueueLen:           swSample.QueueLen,
+					ProcDropped:        swSample.ProcDropped,
+				},
+				Mixer: mixerMetrics{
+					MaxInterFrameGapNs: mxSample.MaxInterFrameGapNs,
+					SlippageMs:         slippageMs,
+					FramesOutput:       mxSample.FramesOutput,
+					MixCycleLastNs:     mxSample.MixCycleLastNs,
+				},
 				Runtime: runtimeMetrics{
 					GCPauseLastNs: gcPauseLast,
 					Goroutines:    numG,
@@ -475,6 +568,9 @@ func summarize(cfg config, engine *engineHandle, samples []tickEvent, agg summar
 		minFPS, meanFPS = 0, 0
 	}
 
+	pipeStats := aggregatePipeline(samples)
+	mixStats := aggregateMixer(samples)
+
 	return &finalEvent{
 		Phase:     "final",
 		DurationS: time.Since(agg.start).Seconds(),
@@ -484,6 +580,8 @@ func summarize(cfg config, engine *engineHandle, samples []tickEvent, agg summar
 			MeanIngestFPS: meanFPS,
 			TotalFrames:   totalFrames,
 		},
+		Pipeline: pipeStats,
+		Mixer:    mixStats,
 		Runtime: runtimeSummary{
 			GCPauseP99Ns:  gcP99,
 			MaxGoroutines: agg.maxGoroutines,
@@ -498,6 +596,9 @@ func summarize(cfg config, engine *engineHandle, samples []tickEvent, agg summar
 			WarmupS:        cfg.warmup.Seconds(),
 			TickIntervalMs: cfg.tickInterval.Milliseconds(),
 			APITokenOK:     cfg.apiToken != "",
+			Platform:       runtime.GOOS + "/" + runtime.GOARCH,
+			GoVersion:      runtime.Version(),
+			RaceEnabled:    raceEnabled,
 		},
 	}
 }
@@ -524,4 +625,82 @@ func aggregateIngestFPS(samples []tickEvent) (minFPS, meanFPS float64, have bool
 		return 0, 0, false
 	}
 	return minFPS, sum / float64(count), true
+}
+
+func aggregatePipeline(samples []tickEvent) pipelineSummary {
+	// DeadlineViolations and ProcDropped are monotonic cumulative counters
+	// on the Switcher; the last measure-phase sample holds the running
+	// count. The difference between the first and last measure-phase
+	// values is the count accrued during the measure window (warmup
+	// accrual is excluded).
+	lats := make([]int64, 0, len(samples))
+	var maxQueue int
+	var firstDL, firstDrop int64
+	var lastDL, lastDrop int64
+	haveFirst := false
+	for _, s := range samples {
+		if s.Pipeline.LastNs > 0 {
+			lats = append(lats, s.Pipeline.LastNs)
+		}
+		if s.Pipeline.QueueLen > maxQueue {
+			maxQueue = s.Pipeline.QueueLen
+		}
+		if !haveFirst {
+			firstDL = s.Pipeline.DeadlineViolations
+			firstDrop = s.Pipeline.ProcDropped
+			haveFirst = true
+		}
+		lastDL = s.Pipeline.DeadlineViolations
+		lastDrop = s.Pipeline.ProcDropped
+	}
+	p50, p95, p99, max := percentiles(lats)
+	return pipelineSummary{
+		P50Ns:                   p50,
+		P95Ns:                   p95,
+		P99Ns:                   p99,
+		MaxNs:                   max,
+		TotalDeadlineViolations: lastDL - firstDL,
+		TotalProcDropped:        lastDrop - firstDrop,
+		MaxQueueLen:             maxQueue,
+	}
+}
+
+func aggregateMixer(samples []tickEvent) mixerSummary {
+	var maxSlip, sumSlip float64
+	var count int
+	var framesOut int64
+	for _, s := range samples {
+		if s.Mixer.SlippageMs > 0 {
+			sumSlip += s.Mixer.SlippageMs
+			count++
+			if s.Mixer.SlippageMs > maxSlip {
+				maxSlip = s.Mixer.SlippageMs
+			}
+		}
+		if s.Mixer.FramesOutput > framesOut {
+			framesOut = s.Mixer.FramesOutput
+		}
+	}
+	var meanSlip float64
+	if count > 0 {
+		meanSlip = sumSlip / float64(count)
+	}
+	return mixerSummary{
+		MaxSlippageMs:     maxSlip,
+		MeanSlippageMs:    meanSlip,
+		TotalFramesOutput: framesOut,
+	}
+}
+
+func percentiles(vs []int64) (p50, p95, p99, max int64) {
+	if len(vs) == 0 {
+		return 0, 0, 0, 0
+	}
+	sorted := append([]int64(nil), vs...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	idx := func(q float64) int64 {
+		i := int(float64(len(sorted)-1) * q)
+		return sorted[i]
+	}
+	return idx(0.5), idx(0.95), idx(0.99), sorted[len(sorted)-1]
 }
