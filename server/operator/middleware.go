@@ -15,6 +15,7 @@ var endpointSubsystemMap = map[string]Subsystem{
 	"/api/switch/transition/position": SubsystemSwitching,
 	"/api/switch/ftb":                 SubsystemSwitching,
 	"/api/switch/ftb-duration":        SubsystemSwitching,
+	"/api/switch/transition-abort-threshold": SubsystemSwitching,
 	"/api/audio/trim":                 SubsystemAudio,
 	"/api/audio/level":                SubsystemAudio,
 	"/api/audio/mute":                 SubsystemAudio,

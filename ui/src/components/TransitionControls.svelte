@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { ControlRoomState, EasingConfig, WipeConfig } from '$lib/api/types';
 	import type { FastControl } from '$lib/transport/fast-control';
-	import { cut, startTransition, setTransitionPosition, fadeToBlack, setFTBDuration, listStingers, uploadStinger, deleteStinger, wipeGetPreview, apiCall } from '$lib/api/switch-api';
+	import { cut, startTransition, setTransitionPosition, fadeToBlack, setFTBDuration, setTransitionAbortThreshold, listStingers, uploadStinger, deleteStinger, wipeGetPreview, apiCall } from '$lib/api/switch-api';
 	import { AutoAnimation } from './auto-animation.svelte';
 	import { throttle } from '$lib/util/throttle';
 	import { scrubberPosition, applyKeyStep } from '$lib/util/tbar';
@@ -227,6 +227,27 @@
 		apiCall(setFTBDuration(clamped), 'FTB duration failed');
 	}
 
+	let abortThresholdInput = $state(30);
+	$effect(() => {
+		const v = crState.transitionAbortThreshold;
+		if (typeof v === 'number') {
+			const pct = Math.round(v * 100);
+			if (pct !== abortThresholdInput) abortThresholdInput = pct;
+		}
+	});
+
+	function commitAbortThreshold() {
+		const current = Math.round((crState.transitionAbortThreshold ?? 0.3) * 100);
+		if (typeof abortThresholdInput !== 'number' || !Number.isFinite(abortThresholdInput)) {
+			abortThresholdInput = current;
+			return;
+		}
+		const clamped = Math.max(5, Math.min(50, Math.round(abortThresholdInput)));
+		if (clamped !== abortThresholdInput) abortThresholdInput = clamped;
+		if (clamped === current) return;
+		apiCall(setTransitionAbortThreshold(clamped / 100), 'Abort threshold failed');
+	}
+
 	async function handleUpload() {
 		const file = fileInput?.files?.[0];
 		if (!file) return;
@@ -411,6 +432,20 @@
 					aria-label="FTB duration in milliseconds"
 				/>
 				<span class="ftb-duration-unit">ms</span>
+			</label>
+			<label class="ftb-duration" title="T-bar pull-back abort threshold (5-50%). After driving past 2× this value, pulling back below it aborts the transition.">
+				<span class="ftb-duration-unit">abort&lt;</span>
+				<input
+					type="number"
+					min="5"
+					max="50"
+					step="1"
+					bind:value={abortThresholdInput}
+					onblur={commitAbortThreshold}
+					onkeydown={(e) => { if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur(); }}
+					aria-label="Transition abort threshold percentage"
+				/>
+				<span class="ftb-duration-unit">%</span>
 			</label>
 		</div>
 		<div class="type-selector" role="radiogroup" aria-label="Transition type">

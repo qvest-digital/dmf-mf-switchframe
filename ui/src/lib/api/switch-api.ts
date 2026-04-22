@@ -803,6 +803,14 @@ export function setFTBDuration(durationMs: number): Promise<ControlRoomState> {
 	});
 }
 
+export function setTransitionAbortThreshold(threshold: number): Promise<ControlRoomState> {
+	return request('/api/switch/transition-abort-threshold', {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ threshold }),
+	});
+}
+
 export function startRecording(options?: {
 	outputDir?: string;
 	rotateAfterMins?: number;

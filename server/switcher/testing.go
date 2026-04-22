@@ -36,8 +36,9 @@ func NewTestSwitcher(programRelay *distribution.Relay) *Switcher {
 		health:        newHealthMonitor(),
 		videoProcCh:   make(chan videoProcWork, 8),
 		videoProcDone: make(chan struct{}),
-		framePool:     NewFramePool(4, 320, 240, ColorYUV420_8bit),
-		ftbDurationMs: defaultFTBDurationMs,
+		framePool:                NewFramePool(4, 320, 240, ColorYUV420_8bit),
+		ftbDurationMs:            defaultFTBDurationMs,
+		transitionAbortThreshold: defaultTransitionAbortThreshold,
 	}
 	s.frameBudgetNs.Store(testFmt.FrameBudgetNs())
 	s.pipelineFormat.Store(&testFmt)
@@ -70,8 +71,9 @@ func newTestSwitcherDirect(programRelay *distribution.Relay) *Switcher {
 		health:        newHealthMonitor(),
 		videoProcCh:   make(chan videoProcWork, 8),
 		videoProcDone: make(chan struct{}),
-		framePool:     NewFramePool(4, 320, 240, ColorYUV420_8bit),
-		ftbDurationMs: defaultFTBDurationMs,
+		framePool:                NewFramePool(4, 320, 240, ColorYUV420_8bit),
+		ftbDurationMs:            defaultFTBDurationMs,
+		transitionAbortThreshold: defaultTransitionAbortThreshold,
 	}
 	s.frameBudgetNs.Store(testFmt.FrameBudgetNs())
 	s.pipelineFormat.Store(&testFmt)

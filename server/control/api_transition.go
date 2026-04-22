@@ -28,6 +28,7 @@ func (a *API) registerTransitionRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/switch/transition/position", timedHandler(a.cmdQueue, "transition_position", a.seqTracker, a.handleTransitionPositionInner))
 	mux.HandleFunc("POST /api/switch/ftb", timedHandler(a.cmdQueue, "ftb", a.seqTracker, a.handleFTBInner))
 	mux.HandleFunc("PUT /api/switch/ftb-duration", timedHandler(a.cmdQueue, "ftb_duration_set", a.seqTracker, a.handleSetFTBDurationInner))
+	mux.HandleFunc("PUT /api/switch/transition-abort-threshold", timedHandler(a.cmdQueue, "transition_abort_threshold_set", a.seqTracker, a.handleSetTransitionAbortThresholdInner))
 }
 
 // handleTransitionInner starts a mix, dip, wipe, or stinger transition to the specified source.
@@ -181,6 +182,29 @@ func (a *API) handleSetFTBDurationInner(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	if err := a.switcher.SetFTBDuration(req.DurationMs); err != nil {
+		httperr.WriteErr(w, errorStatus(err), err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a.enrichedState())
+}
+
+// transitionAbortThresholdRequest is the JSON body for
+// PUT /api/switch/transition-abort-threshold.
+type transitionAbortThresholdRequest struct {
+	Threshold float64 `json:"threshold"`
+}
+
+// handleSetTransitionAbortThresholdInner sets the T-bar pull-back abort
+// threshold. body is the pre-read request body provided by timedHandler.
+func (a *API) handleSetTransitionAbortThresholdInner(w http.ResponseWriter, r *http.Request, body []byte) {
+	a.setLastOperator(r)
+	var req transitionAbortThresholdRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if err := a.switcher.SetTransitionAbortThreshold(req.Threshold); err != nil {
 		httperr.WriteErr(w, errorStatus(err), err)
 		return
 	}

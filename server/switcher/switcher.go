@@ -38,6 +38,10 @@ const (
 	minFTBDurationMs     = 100
 	maxFTBDurationMs     = 5000
 	defaultFTBDurationMs = 1000
+
+	minTransitionAbortThreshold     = 0.05
+	maxTransitionAbortThreshold     = 0.5
+	defaultTransitionAbortThreshold = 0.3
 )
 
 // Sentinel errors for the switcher package.
@@ -50,6 +54,7 @@ var (
 	ErrFormatDuringTransition  = errors.New("switcher: cannot change pipeline format during active transition")
 	ErrEncoderNotAvailable     = errors.New("switcher: encoder not available")
 	ErrInvalidFTBDuration      = errors.New("switcher: ftb duration must be 100-5000ms")
+	ErrInvalidTransitionAbortThreshold = errors.New("switcher: transition abort threshold must be 0.05-0.5")
 	errTransitionNotConfigured = errors.New("transition not configured")
 	errNoProgramSource         = errors.New("no program source set")
 	errNoTargetSource          = errors.New("no target source specified")
@@ -271,6 +276,16 @@ type Switcher struct {
 	transTypeOrig   string // original transition type string (e.g., "dve-push-left") for GPU dispatch
 	state           State
 	ftbDurationMs   int
+
+	// transitionAbortThreshold is the T-bar position (in [0.05, 0.5]) below
+	// which a mid-AUTO pull-back internally aborts the transition, provided
+	// the operator had driven the T-bar forward past 2× the threshold first.
+	// The 2× gate keeps trivial jitter at low positions from triggering
+	// unwanted aborts.
+	transitionAbortThreshold float64
+	// transitionMaxForward tracks the maximum T-bar position reached during
+	// the active transition. Reset to 0 at each StartTransition.
+	transitionMaxForward float64
 	audioTransition audioTransitionHandler
 	delayBuffer     *DelayBuffer
 	frameSync       *FrameSynchronizer
@@ -581,6 +596,7 @@ func New(programRelay *distribution.Relay) *Switcher {
 		framePool:      NewFramePool(512, defaultFmt.Width, defaultFmt.Height, defaultFmt.Color.ColorFormat),
 		thumbnailCache: NewThumbnailCache(),
 		ftbDurationMs:  defaultFTBDurationMs,
+		transitionAbortThreshold: defaultTransitionAbortThreshold,
 	}
 	s.frameBudgetNs.Store(defaultFmt.FrameBudgetNs())
 	s.pipelineFormat.Store(&defaultFmt)
@@ -1911,11 +1927,11 @@ func (s *Switcher) videoProcessingLoop() {
 		// which was in a different domain than the mixer's audio PTS.
 		//
 		// Built-in virtual sources (source:black, source:colorbars) already
-		// produce strictly CFR PTS from an internal frame counter in their
+		// produce strictly CFR PTS from a frame counter in the internal
 		// producer; feeding them through wallClockVideoPTS adds the drift-
-		// nudging feedback loop on top, which introduces ±frameDur/2 PTS
-		// steps whenever videoProcessingLoop backs up briefly — visible as
-		// the sprite animation jittering on the program output. Skip the
+		// nudging feedback loop on top, which can introduce ±frameDur/2 PTS
+		// steps when videoProcessingLoop backs up briefly — visible as the
+		// sprite animation jittering on the program output. Skip the
 		// rewrite for built-ins; their PTS is already in a monotonic CFR
 		// domain compatible with the mixer's wall-clock audio PTS.
 		if !isBuiltinSource(work.sourceKey) {
@@ -2336,6 +2352,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	s.mu.Lock()
 	s.transEngine = engine
 	s.transTypeOrig = transType // preserve original type string for GPU DVE dispatch
+	s.transitionMaxForward = 0  // fresh transition: reset T-bar pull-back gate
 	// Swap preview to old program at transition start (matches CUT's
 	// program/preview swap semantic). This lets operators queue the next
 	// cut during an in-flight AUTO; the completion handler below
@@ -2365,17 +2382,33 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 
 // SetTransitionPosition sets the T-bar position during an active transition.
 //
+// If the operator has driven the T-bar forward past 2× transitionAbortThreshold
+// and then pulls back below that threshold, the transition is internally
+// aborted — the engine is torn down, program reverts to the from-source, and
+// a fresh StartTransition is required to retry. The 2× max-forward gate
+// prevents trivial jitter near zero from triggering unwanted aborts.
+//
 // The ctx parameter is accepted for API compatibility and future use (e.g.
 // tracing) but is not currently checked; the operation is sub-millisecond.
 func (s *Switcher) SetTransitionPosition(ctx context.Context, position float64) error {
-	s.mu.RLock()
+	s.mu.Lock()
 	engine := s.transEngine
 	inTrans := s.state.isInTransition()
 	audioHandler := s.audioTransition
-	s.mu.RUnlock()
+	threshold := s.transitionAbortThreshold
+	if position > s.transitionMaxForward {
+		s.transitionMaxForward = position
+	}
+	maxForward := s.transitionMaxForward
+	s.mu.Unlock()
 
 	if !inTrans || engine == nil {
 		return ErrNoTransition
+	}
+
+	if position < threshold && maxForward >= 2*threshold {
+		s.AbortTransition()
+		return nil
 	}
 
 	engine.SetPosition(position)
@@ -2383,6 +2416,31 @@ func (s *Switcher) SetTransitionPosition(ctx context.Context, position float64) 
 	if audioHandler != nil {
 		audioHandler.OnTransitionPosition(position)
 	}
+	return nil
+}
+
+// TransitionAbortThreshold returns the configured T-bar pull-back abort
+// threshold in (0.05, 0.5].
+func (s *Switcher) TransitionAbortThreshold() float64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.transitionAbortThreshold
+}
+
+// SetTransitionAbortThreshold updates the T-bar pull-back abort threshold.
+// Range [0.05, 0.5]. The new value takes effect on the next
+// SetTransitionPosition call; an in-flight threshold evaluation is not
+// retroactively re-checked.
+func (s *Switcher) SetTransitionAbortThreshold(threshold float64) error {
+	if threshold < minTransitionAbortThreshold || threshold > maxTransitionAbortThreshold {
+		return ErrInvalidTransitionAbortThreshold
+	}
+	s.mu.Lock()
+	s.transitionAbortThreshold = threshold
+	atomic.AddUint64(&s.seq, 1)
+	snapshot := s.buildStateLocked()
+	s.mu.Unlock()
+	s.notifyStateChange(snapshot)
 	return nil
 }
 
@@ -3604,6 +3662,7 @@ func (s *Switcher) buildStateLocked() internal.ControlRoomState {
 		InTransition:    s.state.isInTransition(),
 		FTBActive:       s.state.isFTBActive(),
 		FTBDurationMs:   s.ftbDurationMs,
+		TransitionAbortThreshold: s.transitionAbortThreshold,
 		TallyState:      tally,
 		Sources:         sources,
 		Seq:             atomic.LoadUint64(&s.seq),
