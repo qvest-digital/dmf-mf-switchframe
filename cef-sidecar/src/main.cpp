@@ -6,6 +6,10 @@
 #include <unistd.h>
 #include <cstring>
 
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>  // _NSGetExecutablePath
+#endif
+
 #include "include/cef_app.h"
 #include "include/cef_command_line.h"
 #include "adapter.h"
