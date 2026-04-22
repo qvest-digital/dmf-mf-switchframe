@@ -216,6 +216,13 @@ type Mixer struct {
 
 // NewMixer creates a Mixer.
 func NewMixer(config MixerConfig) *Mixer {
+	// Default to a no-op output when the caller leaves it unset. recordAndOutput
+	// calls output unconditionally once the encoder factory produces a frame;
+	// an unguarded nil callback would panic.
+	output := config.Output
+	if output == nil {
+		output = func(*media.AudioFrame) {}
+	}
 	m := &Mixer{
 		log:            slog.With("component", "audio"),
 		channels:       make(map[string]*Channel),
@@ -223,7 +230,7 @@ func NewMixer(config MixerConfig) *Mixer {
 		masterLinear:   1.0, // 0 dB = unity
 		sampleRate:     config.SampleRate,
 		numChannels:    config.Channels,
-		output:         config.Output,
+		output:         output,
 		config:         config,
 		limiter:        NewLimiter(config.SampleRate, config.Channels),
 		loudness:       NewLoudnessMeter(config.SampleRate, config.Channels),
