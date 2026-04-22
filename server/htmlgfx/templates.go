@@ -34,11 +34,19 @@ func (m *Manager) DiscoverTemplates() []TemplateInfo {
 			continue
 		}
 
+		// CEF rejects file:// URLs with relative paths as ERR_INVALID_URL
+		// (it parses the first segment as the host). Always emit an
+		// absolute path so the URL is file:///<abs>.
+		absIndex, absErr := filepath.Abs(indexPath)
+		if absErr != nil {
+			absIndex = indexPath
+		}
+
 		info := TemplateInfo{
 			ID:     entry.Name(),
 			Name:   dirNameToDisplayName(entry.Name()),
 			Format: "casparcg",
-			URL:    "file://" + indexPath,
+			URL:    "file://" + absIndex,
 		}
 
 		// Check for OGraf manifest.
