@@ -40,7 +40,13 @@ else()
   set(CEF_LIB "${CEF_ROOT}/Release/libcef.lib")
 endif()
 
-target_link_libraries(switchframe-cef PRIVATE libcef_dll_wrapper "${CEF_LIB}")
+if(APPLE)
+  # On macOS the framework is loaded at runtime via CefScopedLibraryLoader
+  # (dlopen). Direct-linking conflicts with the loader and is unnecessary.
+  target_link_libraries(switchframe-cef PRIVATE libcef_dll_wrapper)
+else()
+  target_link_libraries(switchframe-cef PRIVATE libcef_dll_wrapper "${CEF_LIB}")
+endif()
 
 if(UNIX AND NOT APPLE)
   # Linux needs pthread and dl
@@ -49,6 +55,20 @@ if(UNIX AND NOT APPLE)
   set_target_properties(switchframe-cef PROPERTIES
     BUILD_RPATH "${CEF_ROOT}/Release"
     INSTALL_RPATH "$ORIGIN"
+  )
+endif()
+
+# macOS Helper subprocess binary. Lives at:
+#   bin/switchframe-cef.app/Contents/Frameworks/switchframe-cef Helper.app/Contents/MacOS/switchframe-cef Helper
+# Built by the bootstrap script (scripts/setup-cef-mac.sh) and copied into
+# the bundle layout. The output filename retains the space ("switchframe-cef Helper")
+# to match the CEF-on-macOS convention CefSettings auto-discovers.
+if(APPLE)
+  add_executable(switchframe-cef-helper src/process_helper_mac.cc)
+  target_include_directories(switchframe-cef-helper PRIVATE ${CEF_ROOT})
+  target_link_libraries(switchframe-cef-helper PRIVATE libcef_dll_wrapper)
+  set_target_properties(switchframe-cef-helper PROPERTIES
+    OUTPUT_NAME "switchframe-cef Helper"
   )
 endif()
 

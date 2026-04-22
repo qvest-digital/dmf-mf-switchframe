@@ -45,6 +45,7 @@ CEF_DIST_DIR="${CACHE_ROOT}/${CEF_DIST_NAME}"
 CEF_TARBALL="${CACHE_ROOT}/${CEF_DIST_NAME}.tar.bz2"
 WRAPPER_LIB="${CEF_DIST_DIR}/build/libcef_dll_wrapper/libcef_dll_wrapper.a"
 SIDECAR_BIN="${CEF_SIDECAR_DIR}/build/switchframe-cef"
+HELPER_BIN="${CEF_SIDECAR_DIR}/build/switchframe-cef Helper"
 
 # --- Step 1: Download CEF distribution if missing ----------------------------
 
@@ -82,17 +83,20 @@ fi
 
 # --- Step 3: Configure + build the sidecar binary ----------------------------
 
-if [[ -x "${SIDECAR_BIN}" && "${SIDECAR_BIN}" -nt "${CEF_SIDECAR_DIR}/src/main.cpp" ]]; then
-  log "switchframe-cef binary already up-to-date: ${SIDECAR_BIN}"
+if [[ -x "${SIDECAR_BIN}" && -x "${HELPER_BIN}" \
+      && "${SIDECAR_BIN}" -nt "${CEF_SIDECAR_DIR}/src/main.cpp" \
+      && "${HELPER_BIN}" -nt "${CEF_SIDECAR_DIR}/src/process_helper_mac.cc" ]]; then
+  log "switchframe-cef + helper already up-to-date"
 else
-  log "Configuring + building switchframe-cef"
+  log "Configuring + building switchframe-cef + helper"
   mkdir -p "${CEF_SIDECAR_DIR}/build"
   (
     cd "${CEF_SIDECAR_DIR}/build"
     cmake -DCEF_ROOT="${CEF_DIST_DIR}" .. >/dev/null
-    cmake --build . --target switchframe-cef -j "$(sysctl -n hw.ncpu)"
+    cmake --build . --target switchframe-cef switchframe-cef-helper -j "$(sysctl -n hw.ncpu)"
   ) || die "sidecar build failed"
   [[ -x "${SIDECAR_BIN}" ]] || die "sidecar binary not produced at ${SIDECAR_BIN}"
+  [[ -x "${HELPER_BIN}" ]] || die "helper binary not produced at ${HELPER_BIN}"
 fi
 
 # --- Step 4: Assemble the .app bundle ----------------------------------------
@@ -124,24 +128,41 @@ CEF_FRAMEWORK_SRC="${CEF_DIST_DIR}/Release/Chromium Embedded Framework.framework
 [[ -d "${CEF_FRAMEWORK_SRC}" ]] || die "CEF framework not found at: ${CEF_FRAMEWORK_SRC}"
 rsync -a --delete "${CEF_FRAMEWORK_SRC}" "${APP_BUNDLE}/Contents/Frameworks/"
 
-# Single Helper variant (no sandbox = no need for distinct GPU/Renderer/Plugin/Alerts apps)
-HELPER_APP="${APP_BUNDLE}/Contents/Frameworks/switchframe-cef Helper.app"
-mkdir -p "${HELPER_APP}/Contents/MacOS"
-cat > "${HELPER_APP}/Contents/Info.plist" <<'PLIST'
+# CEF on macOS auto-discovers per-subprocess-type Helper bundles in
+# Contents/Frameworks/. We create Helper.app plus the four type-specific
+# variants (GPU/Renderer/Plugin/Alerts), each containing the same helper
+# binary but with a distinct CFBundleIdentifier. Without all of them,
+# CefInitialize fails with "GPU process launch failed: error_code=1003".
+make_helper() {
+  local suffix="$1"      # empty for generic, e.g. " (GPU)" for type-specific
+  local id_suffix="$2"   # bundle ID disambiguator, e.g. "gpu"
+  local exec_name="switchframe-cef Helper${suffix}"
+  local helper_app="${APP_BUNDLE}/Contents/Frameworks/${exec_name}.app"
+  local id="dev.switchframe.cef.helper"
+  if [[ -n "${id_suffix}" ]]; then id="${id}.${id_suffix}"; fi
+  mkdir -p "${helper_app}/Contents/MacOS"
+  cat > "${helper_app}/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleExecutable</key>      <string>switchframe-cef Helper</string>
-  <key>CFBundleIdentifier</key>      <string>dev.switchframe.cef.helper</string>
-  <key>CFBundleName</key>            <string>switchframe-cef Helper</string>
+  <key>CFBundleExecutable</key>      <string>${exec_name}</string>
+  <key>CFBundleIdentifier</key>      <string>${id}</string>
+  <key>CFBundleName</key>            <string>${exec_name}</string>
   <key>CFBundlePackageType</key>     <string>APPL</string>
   <key>LSMinimumSystemVersion</key>  <string>11.0</string>
   <key>LSUIElement</key>             <true/>
 </dict>
 </plist>
 PLIST
-cp -p "${SIDECAR_BIN}" "${HELPER_APP}/Contents/MacOS/switchframe-cef Helper"
+  cp -p "${HELPER_BIN}" "${helper_app}/Contents/MacOS/${exec_name}"
+}
+
+make_helper ""              ""
+make_helper " (GPU)"        "gpu"
+make_helper " (Renderer)"   "renderer"
+make_helper " (Plugin)"     "plugin"
+make_helper " (Alerts)"     "alerts"
 
 log "Done."
 log "  Bundle:  ${APP_BUNDLE}"

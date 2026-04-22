@@ -8,6 +8,7 @@
 
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>  // _NSGetExecutablePath
+#include "include/wrapper/cef_library_loader.h"
 #endif
 
 #include "include/cef_app.h"
@@ -20,16 +21,31 @@
 #include "protocol.h"
 
 int main(int argc, char* argv[]) {
-    // CEF subprocess support (required for multi-process architecture)
+#if defined(__APPLE__)
+    // CEF on macOS requires the framework be loaded at runtime via dlopen
+    // (rather than linked directly) before any CEF API is called. Without
+    // this the very first CEF call segfaults inside the framework lookup.
+    CefScopedLibraryLoader library_loader;
+    if (!library_loader.LoadInMain()) {
+        std::cerr << "Failed to load CEF framework via LoadInMain()" << std::endl;
+        return 1;
+    }
+#endif
+
     CefMainArgs main_args(argc, argv);
 
     CefRefPtr<SwitchframeCefApp> app(new SwitchframeCefApp());
 
-    // Check if this is a subprocess (renderer, gpu, etc.)
+#if !defined(__APPLE__)
+    // Single-binary subprocess handling: on Linux/Windows the same binary
+    // serves as main and as renderer/GPU/etc. subprocess. On macOS, CEF
+    // spawns subprocesses out of <App>.app/Contents/Frameworks/<App> Helper.app
+    // — a separate binary built from process_helper_mac.cc.
     int exit_code = CefExecuteProcess(main_args, app, nullptr);
     if (exit_code >= 0) {
-        return exit_code;  // Subprocess handled
+        return exit_code;
     }
+#endif
 
     // Parse command line for socket paths
     std::string control_socket_path;
@@ -86,6 +102,9 @@ int main(int argc, char* argv[]) {
 #if defined(__APPLE__)
     CefString(&settings.framework_dir_path) =
         exe_dir + "/../Frameworks/Chromium Embedded Framework.framework";
+    // CEF auto-discovers per-type Helpers in Contents/Frameworks/. The
+    // bootstrap script creates Helper.app and Helper (GPU/Renderer/Plugin/Alerts).app
+    // pointing at the same helper binary.
 #else
     // Linux: CEF resources must be alongside the binary.
     CefString(&settings.resources_dir_path) = exe_dir;
