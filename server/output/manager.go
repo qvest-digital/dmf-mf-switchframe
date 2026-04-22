@@ -11,6 +11,7 @@ import (
 
 	"github.com/zsiec/prism/media"
 	"github.com/zsiec/switchframe/server/caption"
+	"github.com/zsiec/switchframe/server/internal/video"
 	"github.com/zsiec/switchframe/server/metrics"
 	"github.com/zsiec/switchframe/server/srt"
 )
@@ -1464,10 +1465,12 @@ func (m *Manager) DirectWriteVideo(frame *media.VideoFrame) {
 				muxer.SetLipSyncOffset90k(m.smoothedLipSync)
 			}
 		}
-		// Diagnostic: verify upstream PTS deltas at DirectWriteVideo stage.
+		// Diagnostic: verify upstream PTS deltas at DirectWriteVideo
+		// stage. Uses the shared nominal-delta helper so non-NTSC
+		// pipelines (24/25/30/50/60 fps) don't produce false warnings.
 		if prev := m.lastDirectVideoPTS; prev != 0 {
 			delta := frame.PTS - prev
-			if delta != 3003 && delta != 3004 && delta != 3753 && delta != 3754 {
+			if !video.IsNominalPTSDelta(delta) {
 				slog.Warn("DirectWriteVideo: non-nominal PTS delta",
 					"delta", delta, "pts", frame.PTS, "prevPts", prev)
 			}

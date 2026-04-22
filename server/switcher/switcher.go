@@ -1582,10 +1582,12 @@ func (s *Switcher) broadcastToProgram(frame *media.VideoFrame) {
 	} else {
 		f.GroupID = s.programGroupID.Load()
 	}
-	// Diagnostic: verify PTS deltas at program broadcast stage.
+	// Diagnostic: verify PTS deltas at program broadcast stage match a
+	// supported frame-rate grid (IsNominalPTSDelta covers 24/25/30/50/60
+	// plus their NTSC variants with ±1 tick tolerance).
 	if prev := s.lastBroadcastCheckPTS.Swap(f.PTS); prev != 0 {
 		delta := f.PTS - prev
-		if delta != 3003 && delta != 3004 && delta != 3753 && delta != 3754 {
+		if !video.IsNominalPTSDelta(delta) {
 			slog.Warn("broadcastToProgram: non-nominal PTS delta",
 				"delta", delta, "pts", f.PTS, "prevPts", prev)
 		}
@@ -2947,6 +2949,16 @@ func (s *Switcher) makeDecoderCallback(key string) func(string, *ProcessingFrame
 			pf.ReleaseYUV()
 			return
 		}
+		// Feed the GPU source manager once, same contract as
+		// Switcher.IngestRawVideo. This callback bypasses
+		// Switcher.IngestRawVideo to preserve its viewer-level
+		// frameSync / delayBuffer routing, but it is still the
+		// producer-side entry point and therefore owns the GPU feed.
+		// handleRawVideoFrame no longer re-feeds the GPU source manager
+		// (it would race with this write under concurrent ticks).
+		if h := s.gpuSourceMgr.Load(); h != nil && h.mgr != nil && len(pf.Data) > 0 {
+			h.mgr.IngestYUV(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
+		}
 		if fs := ss.viewer.frameSync.Load(); fs != nil {
 			fs.IngestRawVideo(sourceKey, pf)
 			return // frame sync owns the buffer (FRC or ring buffer handles release)
@@ -3074,18 +3086,22 @@ func (s *Switcher) IngestRawVideo(sourceKey string, pf *ProcessingFrame) {
 	// updates health for non-program sources.
 	s.health.recordFrame(sourceKey, time.Now())
 
+	// Feed the GPU source manager once, at ingest time, on the producer
+	// goroutine. Downstream consumers (handleRawVideoFrame,
+	// feedSourceSubsystems) no longer re-ingest into entry.current;
+	// doing so raced with this writer and let a sync-loop freeze-repeat
+	// frame overwrite a newer producer frame, corrupting content/PTS
+	// binding in RunFromCache. SRT sources still have a separate NVDEC
+	// zero-copy path via IngestGPUFrame.
+	if h := s.gpuSourceMgr.Load(); h != nil && h.mgr != nil && len(pf.Data) > 0 {
+		h.mgr.IngestYUV(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
+	}
+
 	s.mu.RLock()
 	fs := s.frameSync
 	s.mu.RUnlock()
 	if fs != nil {
 		fs.IngestRawVideo(sourceKey, pf)
-		// Also feed the GPU source manager so RunFromCache has fresh frames.
-		// SRT sources have a separate NVDEC zero-copy path (IngestGPUFrame)
-		// that updates the GPU cache independently, but CPU-decoded sources
-		// (playout, clips, replay) rely on this path for GPU cache updates.
-		if h := s.gpuSourceMgr.Load(); h != nil && h.mgr != nil && len(pf.Data) > 0 {
-			h.mgr.IngestYUV(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
-		}
 		return
 	}
 	s.handleRawVideoFrame(sourceKey, pf)
@@ -3941,14 +3957,19 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 		ss.lastGroupID.Store(pf.GroupID)
 	}
 
-	// GPU source manager: upload + ST map + cache + preview encode.
-	// When active, fills are read from GPU cache by key/DVE nodes (via GPUFill),
-	// so CPU IngestFillYUV / IngestSourceFrame are skipped.
-	if h := s.gpuSourceMgr.Load(); h != nil && h.mgr != nil {
-		h.mgr.IngestYUV(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
-	} else {
-		// CPU fill paths — feed key bridge and DVE compositor with decoded YUV.
-		// Dispatch to format-appropriate ingest method based on pipeline color format.
+	// GPU source manager is fed at ingest time by IngestRawVideo (or by
+	// the source decoder callback). Re-ingesting here would race with
+	// that writer — the producer could push a newer frame to
+	// entry.current while this handler, running on the frame-sync tick
+	// goroutine, overwrites it with the popped (possibly freeze-repeat)
+	// frame. The next RunFromCache would then read stale content under a
+	// newer PTS, which manifested as visible frame reorder on program
+	// output (e.g. colorbars sprite going backwards).
+	//
+	// CPU fill paths (keyBridge, dveCompositor) are still fed here for
+	// configurations without a GPU source manager — those subsystems have
+	// no other feed point in the async path.
+	if h := s.gpuSourceMgr.Load(); h == nil || h.mgr == nil {
 		if pf.Format == ColorYUV422_10bit {
 			if keyBridge != nil {
 				keyBridge.IngestFillYUV10(sourceKey, pf.Data, pf.Width, pf.Height)
@@ -3957,7 +3978,6 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 			if keyBridge != nil {
 				keyBridge.IngestFillYUV(sourceKey, pf.Data, pf.Width, pf.Height)
 			}
-			// DVE compositor source frame ingestion (8-bit only).
 			if dveComp != nil && dveComp.NeedsSource(sourceKey) {
 				dveComp.IngestSourceFrame(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
 			}

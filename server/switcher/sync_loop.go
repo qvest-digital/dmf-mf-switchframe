@@ -189,10 +189,13 @@ func (s *Switcher) processVideoTick(tick clock.Tick) {
 	pf.PTS = tick.VideoPTS
 	pf.DTS = tick.VideoPTS
 
-	// Diagnostic: verify tick PTS deltas are clean Bresenham
+	// Diagnostic: verify tick PTS deltas match one of the supported
+	// frame-rate grids. Uses the shared IsNominalPTSDelta helper so
+	// non-NTSC pipelines (24/25/30/50/60 fps) don't flood the log with
+	// false-positive warnings.
 	if s.lastTickPTS != 0 {
 		delta := tick.VideoPTS - s.lastTickPTS
-		if delta != 3003 && delta != 3004 && delta != 3753 && delta != 3754 {
+		if !video.IsNominalPTSDelta(delta) {
 			slog.Warn("sync loop: non-nominal tick PTS delta",
 				"delta", delta, "pts", tick.VideoPTS, "prevPts", s.lastTickPTS,
 				"tickNum", tick.Number)

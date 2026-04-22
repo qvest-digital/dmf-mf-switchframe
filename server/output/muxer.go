@@ -15,6 +15,7 @@ import (
 	"github.com/zsiec/switchframe/server/caption"
 	"github.com/zsiec/switchframe/server/codec"
 	"github.com/zsiec/switchframe/server/internal/mpegts"
+	"github.com/zsiec/switchframe/server/internal/video"
 )
 
 const (
@@ -650,29 +651,11 @@ func (m *TSMuxer) WriteVideo(frame *media.VideoFrame) error {
 	return m.flush()
 }
 
-// isNominalPTSDelta returns true if delta matches a standard frame duration
-// in 90kHz ticks (±1 tick tolerance for rounding).
+// isNominalPTSDelta delegates to the shared video.IsNominalPTSDelta
+// helper so every place in the engine that performs this check uses the
+// same table of supported frame-rate grids.
 func isNominalPTSDelta(delta int64) bool {
-	switch delta {
-	case 3000: // 30fps
-		return true
-	case 3003, 3004: // 29.97fps (30000/1001)
-		return true
-	case 3600: // 25fps
-		return true
-	case 3750: // 24fps
-		return true
-	case 3753, 3754: // 23.976fps (24000/1001)
-		return true
-	case 1800: // 50fps
-		return true
-	case 1500: // 60fps
-		return true
-	case 1501, 1502: // 59.94fps (60000/1001)
-		return true
-	default:
-		return false
-	}
+	return video.IsNominalPTSDelta(delta)
 }
 
 // WriteAudio muxes an audio frame into MPEG-TS packets. Frames

@@ -20,6 +20,7 @@ import (
 	"github.com/zsiec/switchframe/server/gpu"
 	"github.com/zsiec/switchframe/server/graphics"
 	"github.com/zsiec/switchframe/server/internal"
+	"github.com/zsiec/switchframe/server/internal/video"
 	"github.com/zsiec/switchframe/server/sidecar"
 	"github.com/zsiec/switchframe/server/switcher"
 	"github.com/zsiec/switchframe/server/transition/wipemap"
@@ -227,10 +228,13 @@ func wireGPUPipeline(gs *gpuState, sw *switcher.Switcher, app *App) {
 	// PTS delta diagnostic: detect jitter introduced by GPU encode.
 	var gpuLastEncodedPTS int64
 	gpuOnEncoded := func(data []byte, isIDR bool, pts int64) {
-		// Diagnostic: verify GPU-encoded PTS deltas are nominal.
+		// Diagnostic: verify GPU-encoded PTS deltas match a supported
+		// frame-rate grid. IsNominalPTSDelta covers integer rates
+		// (24/25/30/50/60) plus their NTSC variants with ±1 tick
+		// tolerance, so non-NTSC pipelines don't produce false warnings.
 		if prev := gpuLastEncodedPTS; prev != 0 {
 			delta := pts - prev
-			if delta != 3003 && delta != 3004 && delta != 3753 && delta != 3754 {
+			if !video.IsNominalPTSDelta(delta) {
 				slog.Warn("gpuOnEncoded: non-nominal PTS delta",
 					"delta", delta, "pts", pts, "prevPts", prev)
 			}
