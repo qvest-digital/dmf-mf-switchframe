@@ -80,6 +80,18 @@ func newSwitcherWithRawSources(t *testing.T, keys ...string) *switcher.Switcher 
 	return sw
 }
 
+// countUserSources returns the sources with IsVirtual=false, excluding the
+// always-registered built-ins (source:black, source:colorbars).
+func countUserSources(sources map[string]internal.SourceInfo) int {
+	n := 0
+	for _, s := range sources {
+		if !s.IsVirtual {
+			n++
+		}
+	}
+	return n
+}
+
 // ==========================================================================
 // TestStateBroadcastOnCut
 //
@@ -133,8 +145,8 @@ func TestStateBroadcastOnCut(t *testing.T) {
 	}
 
 	// Verify Sources map contains all registered sources
-	if len(state1.Sources) != 3 {
-		t.Errorf("expected 3 sources in broadcast, got %d: %v", len(state1.Sources), sourceKeys(state1.Sources))
+	if countUserSources(state1.Sources) != 3 {
+		t.Errorf("expected 3 user sources in broadcast, got %d: %v", countUserSources(state1.Sources), sourceKeys(state1.Sources))
 	}
 	for _, key := range []string{"camA", "camB", "camC"} {
 		if _, ok := state1.Sources[key]; !ok {
@@ -296,9 +308,9 @@ func TestStateBroadcastOnSourceAdd(t *testing.T) {
 		t.Errorf("expected source 'cam2' in Sources map, got keys: %v", sourceKeys(state2.Sources))
 	}
 
-	// Both sources should be present
-	if len(state2.Sources) != 2 {
-		t.Errorf("expected 2 sources, got %d", len(state2.Sources))
+	// Both user-registered sources should be present.
+	if countUserSources(state2.Sources) != 2 {
+		t.Errorf("expected 2 user sources, got %d: %v", countUserSources(state2.Sources), sourceKeys(state2.Sources))
 	}
 }
 
@@ -467,56 +479,14 @@ func TestStateBroadcastSerialization(t *testing.T) {
 		t.Fatalf("unmarshal to raw map failed: %v", err)
 	}
 
-	// These are the field names the TypeScript ControlRoomState interface expects.
-	// Extracted from ui/src/lib/api/types.ts ControlRoomState interface.
-	expectedTSFields := map[string]bool{
-		"programSource":        true,
-		"previewSource":        true,
-		"transitionType":       true,
-		"transitionDurationMs": true,
-		"transitionPosition":   true,
-		"transitionEasing":     true,
-		"inTransition":         true,
-		"ftbActive":            true,
-		"audioChannels":        true,
-		"masterLevel":          true,
-		"programPeak":          true,
-		"gainReduction":        true,
-		"limiter":              true,
-		"momentaryLufs":        true,
-		"shortTermLufs":        true,
-		"integratedLufs":       true,
-		"tallyState":           true,
-		"sources":              true,
-		"presets":              true,
-		"recording":            true,
-		"srtOutput":            true,
-		"destinations":         true,
-		"graphics":             true,
-		"layout":               true,
-		"replay":               true,
-		"operators":            true,
-		"locks":                true,
-		"pipelineFormat":       true,
-		"encoder":              true,
-		"scte35":               true,
-		"cbr":                  true,
-		"connectionInfo":       true,
-		"captions":             true,
-		"asr":                  true,
-		"clipPlayers":          true,
-		"clipCount":            true,
-		"clipUpload":           true,
-		"macro":                true,
-		"comms":                true,
-		"stmap":                true,
-		"colorGrade":           true,
-		"aiSegmentation":       true,
-		"neuralKey":            true,
-		"playout":              true,
-		"lastChangedBy":        true,
-		"seq":                  true,
-		"timestamp":            true,
+	// Field parity against the TypeScript ControlRoomState interface is
+	// derived at test time from ui/src/lib/api/types.ts (see parseTSInterfaceFields
+	// in ts_parser.go). Adding a field on either side is enough — no manifest
+	// to maintain. If the TS file is moved or the interface renamed, the test
+	// fails loudly with the path and name in the error.
+	expectedTSFields, err := parseTSInterfaceFields(findRepoTypesTS(t), "ControlRoomState")
+	if err != nil {
+		t.Fatalf("parse TS ControlRoomState fields: %v", err)
 	}
 
 	// Check: every JSON field from Go should match a TS field
@@ -794,9 +764,9 @@ func TestStateBroadcastSequenceNumber(t *testing.T) {
 			t.Errorf("broadcast[%d] (%s): PreviewSource=%q, expected %q",
 				i, exp.op, s.PreviewSource, exp.preview)
 		}
-		// Every broadcast should have all 3 sources
-		if len(s.Sources) != 3 {
-			t.Errorf("broadcast[%d] (%s): Sources count=%d, expected 3", i, exp.op, len(s.Sources))
+		// Every broadcast should have all 3 user sources.
+		if countUserSources(s.Sources) != 3 {
+			t.Errorf("broadcast[%d] (%s): user Sources count=%d, expected 3", i, exp.op, countUserSources(s.Sources))
 		}
 		// Tally should be consistent with program/preview
 		if s.ProgramSource != "" && s.TallyState[s.ProgramSource] != "program" {

@@ -708,6 +708,11 @@ export interface ConnectionInfo {
 	srtOutputPorts?: number[];
 }
 
+export interface CommandError {
+	seq: number;
+	error: string;
+}
+
 export interface ControlRoomState {
 	programSource: string;
 	previewSource: string;
@@ -770,6 +775,7 @@ export interface ControlRoomState {
 	lastExecutedSeq?: number;
 	lastExecutedErr?: string;
 	lateCommands?: number;
+	recentCommandErrors?: CommandError[];
 	timestamp: number;
 }
 
