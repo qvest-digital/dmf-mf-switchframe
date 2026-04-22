@@ -100,6 +100,9 @@ demo: build-server node_modules_check
 # CEF dist + libcef_dll_wrapper cache in ~/.cache/switchframe/cef/ (survives `make clean`).
 CEF_APP := bin/switchframe-cef.app
 CEF_BIN := $(CEF_APP)/Contents/MacOS/switchframe-cef
+# Path relative to the switchframe binary's directory (bin/), since htmlgfx.Manager
+# resolves non-absolute --cef-binary against filepath.Dir(os.Executable()).
+CEF_BIN_REL := switchframe-cef.app/Contents/MacOS/switchframe-cef
 
 # File-target: make only re-runs the script when the bundle is missing.
 # The script itself is idempotent regardless.
@@ -118,7 +121,7 @@ demo-cef: build-server cef-sidecar node_modules_check
 	@echo ""
 	@trap 'kill 0' EXIT; \
 		CERT_FLAGS="--http-fallback"; \
-		CEF_FLAGS="--cef-binary $(CEF_BIN) --cef-templates-dir cef-sidecar/demo-templates"; \
+		CEF_FLAGS="--cef-binary $(CEF_BIN_REL) --cef-templates-dir cef-sidecar/demo-templates"; \
 		echo "  Self-signed cert (WebTransport draft-02 + TCP fallback for Vite proxy)"; \
 		echo ""; \
 		if [ -d test/clips ]; then \
