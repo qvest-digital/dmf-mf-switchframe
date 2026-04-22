@@ -709,6 +709,24 @@ func (a *App) initOutput() error {
 	return nil
 }
 
+func buildHTMLGfxConfig(cfg AppConfig, width, height, fps int) htmlgfx.Config {
+	out := htmlgfx.Config{
+		BinaryPath:   "switchframe-cef",
+		TemplatesDir: "/opt/switchframe-cef/demo-templates",
+		PoolSize:     4,
+		Width:        width,
+		Height:       height,
+		FPS:          fps,
+	}
+	if cfg.CEFBinary != "" {
+		out.BinaryPath = cfg.CEFBinary
+	}
+	if cfg.CEFTemplatesDir != "" {
+		out.TemplatesDir = cfg.CEFTemplatesDir
+	}
+	return out
+}
+
 // initSubsystems creates the debug collector, stores, graphics compositor,
 // upstream keyer, and replay manager.
 func (a *App) initSubsystems() error {
@@ -792,14 +810,7 @@ func (a *App) initSubsystems() error {
 	a.sw.SetCompositor(a.compositor)
 
 	// HTML5 graphics sidecar manager.
-	a.htmlGfxMgr = htmlgfx.NewManager(a.compositor, htmlgfx.Config{
-		BinaryPath:   "switchframe-cef",
-		TemplatesDir: "/opt/switchframe-cef/demo-templates",
-		PoolSize:     4,
-		Width:        pf.Width,
-		Height:       pf.Height,
-		FPS:          pf.FPSNum / pf.FPSDen,
-	})
+	a.htmlGfxMgr = htmlgfx.NewManager(a.compositor, buildHTMLGfxConfig(a.cfg, pf.Width, pf.Height, pf.FPSNum/pf.FPSDen))
 	if err := a.htmlGfxMgr.Start(); err != nil {
 		slog.Warn("HTML5 graphics sidecar failed to start", "error", err)
 		// Non-fatal: server runs without HTML5 graphics.

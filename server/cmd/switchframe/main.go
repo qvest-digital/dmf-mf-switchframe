@@ -126,6 +126,10 @@ type AppConfig struct {
 	ASRDefaultBackend   string // default ASR backend (parakeet or whisper)
 	ASRWhisperThreads   int    // whisper.cpp inference threads (0 = auto)
 
+	// CEF (HTML5 graphics) sidecar.
+	CEFBinary       string // path to switchframe-cef binary or .app bundle binary (empty = built-in default)
+	CEFTemplatesDir string // path to HTML5 graphics templates directory (empty = built-in default)
+
 	// Persistent cache directory for mmap'd LUTs and decoded assets.
 	CacheDir string
 
