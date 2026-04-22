@@ -346,8 +346,16 @@ func (a *API) handleStopDestination(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleReassignDestinationEngine changes the engine assignment for a destination.
+// Gated on the partitioned follower — accepting a reassign here would diverge
+// from the leader's record with no merge at heal. The cleanup path for the
+// minority side is /api/peer/force-leader, which promotes this engine and
+// releases the gate.
 func (a *API) handleReassignDestinationEngine(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)
+	if err := a.peerPoller.Gate(); err != nil {
+		httperr.Write(w, http.StatusConflict, err.Error())
+		return
+	}
 	if a.outputMgr == nil {
 		httperr.Write(w, http.StatusNotImplemented, "output manager not configured")
 		return
