@@ -40,6 +40,10 @@ build: $(EMBED_LINK) metal-shaders
 build-server: metal-shaders
 	cd server && go build -o ../bin/switchframe ./cmd/switchframe
 
+# Load test harness (in-process; no UI embed, no GPU tags by default)
+loadtest:
+	cd server && go build -o ../bin/loadtest ./cmd/loadtest
+
 # ASR sidecar binary (stub backends only -- no GPU/cgo)
 build-asr-sidecar:
 	cd server && go build -o ../bin/switchframe-asr ./cmd/switchframe-asr

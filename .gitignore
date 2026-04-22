@@ -4,6 +4,7 @@ dist/
 *.o
 server/switchframe
 server/switchframe-asr
+server/loadtest
 node_modules/
 docs/*
 !docs/concepts/
