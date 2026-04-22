@@ -2254,3 +2254,58 @@ func TestSyncLoopDrainCommandQueueNilQueueNoOp(t *testing.T) {
 	// cmdQueue is nil by default — should not panic.
 	s.drainCommandQueue()
 }
+
+// trackingGPUSourceManager records IngestYUV calls so tests can assert
+// that feedSourceSubsystems does not write to the GPU source manager
+// from the sync-loop goroutine. That would race with the producer
+// goroutine's writes via IngestRawVideo and corrupt the PTS/content
+// binding RunFromCache depends on.
+type trackingGPUSourceManager struct {
+	mu          sync.Mutex
+	ingestCalls []string
+}
+
+func (m *trackingGPUSourceManager) IngestYUV(sourceKey string, yuv []byte, w, h int, pts int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ingestCalls = append(m.ingestCalls, sourceKey)
+}
+
+func (m *trackingGPUSourceManager) RemoveSource(sourceKey string) {}
+
+func (m *trackingGPUSourceManager) calls() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, len(m.ingestCalls))
+	copy(out, m.ingestCalls)
+	return out
+}
+
+func TestFeedSourceSubsystems_SkipsGPUWhenManagerPresent(t *testing.T) {
+	// The producer goroutine feeds the GPU source manager via
+	// IngestRawVideo for every pushed frame. The sync-loop tick runs on
+	// a separate goroutine; re-feeding from feedSourceSubsystems creates
+	// a two-writer race on entry.current — the sync loop can overwrite
+	// a newer producer frame with a cached freeze-repeat frame, and the
+	// next RunFromCache then reads that stale content under the tick's
+	// (newer) PTS, producing visible reorder/jumping on program output.
+	s, _ := newSyncTestSwitcher(t)
+	defer s.Close()
+
+	tracker := &trackingGPUSourceManager{}
+	s.SetGPUSourceManager(tracker)
+
+	pf := &ProcessingFrame{
+		Data:   make([]byte, 1920*1080*3/2),
+		Width:  1920,
+		Height: 1080,
+		PTS:    12345,
+		Format: ColorYUV420_8bit,
+	}
+
+	s.feedSourceSubsystems("source:colorbars", pf)
+
+	require.Empty(t, tracker.calls(),
+		"feedSourceSubsystems must not call GPU IngestYUV when a manager is registered; "+
+			"the producer's IngestRawVideo is the sole writer to entry.current")
+}

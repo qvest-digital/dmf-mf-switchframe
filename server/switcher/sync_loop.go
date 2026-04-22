@@ -658,31 +658,40 @@ func (s *Switcher) repeatLastVideoFrame(pts int64) {
 	s.syncLoopRepeats.Add(1)
 }
 
-// feedSourceSubsystems updates GPU source manager, key bridge, and layout
-// compositor with a decoded YUV frame. In the normal (non-ref-clock) path,
-// handleRawVideoFrame does this for every source on every FrameSync tick.
-// In the ref clock path with buffer-only FrameSync, the tickLoop doesn't
-// run, so this method provides the equivalent feed for the sync loop.
+// feedSourceSubsystems updates the CPU fill paths (key bridge, layout/DVE
+// compositor) with a decoded YUV frame. In ref-clock mode the FrameSync
+// tickLoop does not run, so handleRawVideoFrame never fires — this
+// method supplies the equivalent feed for the sync loop.
+//
+// The GPU source manager is deliberately not updated here: it is already
+// fed by the producer goroutine via IngestRawVideo (switcher.go writes
+// pf.Data + pf.PTS into entry.current atomically on every push). Feeding
+// it a second time from the sync-loop tick created a two-writer race on
+// entry.current — a freeze-repeat frame from popProgramFrame could
+// overwrite a newer frame the producer had just pushed, and the next
+// RunFromCache would then read that stale content back under the tick's
+// (newer) PTS. The built-in color bars sprite showed this as burst
+// reorder/jumping on program output: frame F:N was encoded after F:N+k.
 func (s *Switcher) feedSourceSubsystems(sourceKey string, pf *ProcessingFrame) {
 	if h := s.gpuSourceMgr.Load(); h != nil && h.mgr != nil {
-		h.mgr.IngestYUV(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
-	} else {
-		s.mu.RLock()
-		keyBridge := s.keyBridge
-		dveComp := s.dveCompositor
-		s.mu.RUnlock()
+		return
+	}
 
-		if pf.Format == ColorYUV422_10bit {
-			if keyBridge != nil {
-				keyBridge.IngestFillYUV10(sourceKey, pf.Data, pf.Width, pf.Height)
-			}
-		} else {
-			if keyBridge != nil {
-				keyBridge.IngestFillYUV(sourceKey, pf.Data, pf.Width, pf.Height)
-			}
-			if dveComp != nil && dveComp.NeedsSource(sourceKey) {
-				dveComp.IngestSourceFrame(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
-			}
+	s.mu.RLock()
+	keyBridge := s.keyBridge
+	dveComp := s.dveCompositor
+	s.mu.RUnlock()
+
+	if pf.Format == ColorYUV422_10bit {
+		if keyBridge != nil {
+			keyBridge.IngestFillYUV10(sourceKey, pf.Data, pf.Width, pf.Height)
+		}
+	} else {
+		if keyBridge != nil {
+			keyBridge.IngestFillYUV(sourceKey, pf.Data, pf.Width, pf.Height)
+		}
+		if dveComp != nil && dveComp.NeedsSource(sourceKey) {
+			dveComp.IngestSourceFrame(sourceKey, pf.Data, pf.Width, pf.Height, pf.PTS)
 		}
 	}
 }
