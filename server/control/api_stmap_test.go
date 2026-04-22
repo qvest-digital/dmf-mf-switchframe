@@ -17,7 +17,7 @@ import (
 func setupSTMapTestAPI(t *testing.T) (*API, *stmap.Registry) {
 	t.Helper()
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	r1 := distribution.NewRelay()
 	sw.RegisterSource("camera1", r1)
 	r2 := distribution.NewRelay()
@@ -558,7 +558,7 @@ func TestSTMapAPI_Generators(t *testing.T) {
 func TestSTMapAPI_NilRegistry(t *testing.T) {
 	// When no registry is configured, all stmap routes should 404 (not registered).
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	api := NewAPI(sw)
 
 	req := httptest.NewRequest("GET", "/api/stmap", nil)

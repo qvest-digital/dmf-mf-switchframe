@@ -16,7 +16,7 @@ import (
 func setupPipelineTestAPI(t *testing.T) (*API, *switcher.ThumbnailCache) {
 	t.Helper()
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	r1 := distribution.NewRelay()
 	sw.RegisterSource("cam1", r1)
 	r2 := distribution.NewRelay()

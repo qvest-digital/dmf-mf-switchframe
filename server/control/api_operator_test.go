@@ -27,7 +27,7 @@ func setupOperatorTestAPI(t *testing.T) (*API, *http.ServeMux) {
 	t.Cleanup(sm.Close)
 
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 
 	api := NewAPI(sw, WithOperatorStore(store), WithSessionManager(sm))
 
@@ -396,7 +396,7 @@ func setupOperatorTestAPIWithInviteTokens(t *testing.T, tokens map[string]string
 	t.Cleanup(sm.Close)
 
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 
 	api := NewAPI(sw, WithOperatorStore(store), WithSessionManager(sm), WithInviteTokens(tokens))
 

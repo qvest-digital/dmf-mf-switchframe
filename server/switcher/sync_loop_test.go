@@ -467,7 +467,7 @@ func (n *slowPipelineNode) Process(dst, src *ProcessingFrame) *ProcessingFrame {
 func TestExistingPathStillWorks(t *testing.T) {
 	// Create a Switcher WITHOUT reference clock — the traditional path.
 	programRelay := distribution.NewRelay()
-	s := newTestSwitcher(programRelay)
+	s := newTestSwitcher(t, programRelay)
 	defer s.Close()
 
 	// Verify useRefClock is false.
@@ -805,7 +805,7 @@ func TestSetOnFirstVideoPTSNoOpWithRefClock(t *testing.T) {
 func TestWallClockPTSStillWorksWithoutRefClock(t *testing.T) {
 	// Verify the old path still works when useRefClock is false.
 	programRelay := distribution.NewRelay()
-	s := newTestSwitcher(programRelay)
+	s := newTestSwitcher(t, programRelay)
 	defer s.Close()
 
 	require.False(t, s.useRefClock.Load())

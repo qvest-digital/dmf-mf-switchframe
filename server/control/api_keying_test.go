@@ -16,7 +16,7 @@ import (
 func setupKeyTestAPI(t *testing.T) *API {
 	t.Helper()
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	r1 := distribution.NewRelay()
 	sw.RegisterSource("cam1", r1)
 	kp := graphics.NewKeyProcessor()

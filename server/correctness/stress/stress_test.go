@@ -102,7 +102,7 @@ func TestRapidCutsNoFrameCorruption(t *testing.T) {
 	capture := newCaptureViewer("capture")
 	programRelay.AddViewer(capture)
 
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	// Register 4 sources with distinct tags.
@@ -412,7 +412,7 @@ func TestConcurrentCutAndTransition(t *testing.T) {
 	capture := newCaptureViewer("capture")
 	programRelay.AddViewer(capture)
 
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	// Configure transition codecs.
@@ -755,7 +755,7 @@ func TestRapidCutsWithConcurrentFrameInjection(t *testing.T) {
 	capture := newCaptureViewer("capture")
 	programRelay.AddViewer(capture)
 
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	sourceKeys := []string{"s1", "s2", "s3", "s4"}

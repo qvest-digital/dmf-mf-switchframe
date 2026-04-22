@@ -11,7 +11,7 @@ import (
 
 func TestSwitcher_TransitionAbortThresholdDefaultsTo03(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	require.InDelta(t, 0.3, sw.TransitionAbortThreshold(), 1e-9)
@@ -20,7 +20,7 @@ func TestSwitcher_TransitionAbortThresholdDefaultsTo03(t *testing.T) {
 
 func TestSwitcher_SetTransitionAbortThresholdValidatesRange(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	require.True(t, errors.Is(sw.SetTransitionAbortThreshold(0.04), ErrInvalidTransitionAbortThreshold))

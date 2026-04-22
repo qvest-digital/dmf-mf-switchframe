@@ -34,7 +34,7 @@ func leaderPoller(t *testing.T) *peer.HealthPoller {
 func setupOutputAPIWithPoller(t *testing.T, p *peer.HealthPoller) (*API, *mockOutputManager) {
 	t.Helper()
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	mock := &mockOutputManager{}
 	api := NewAPI(sw, WithOutputManager(mock), WithPeerPoller(p))
 	return api, mock

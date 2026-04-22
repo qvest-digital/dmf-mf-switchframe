@@ -216,6 +216,12 @@ func (s *Switcher) startBuiltinProducer() {
 	go s.builtinProducerLoop()
 }
 
+// stopBuiltinProducer signals the producer loop to exit and waits for it.
+// Safe to call twice: the select drains an already-closed stop channel via
+// the receive arm and skips the close. Relied on by Switcher.Close's
+// sync.Once wrap so the same-Switcher double-close path is race-clean, and
+// by tests that explicitly stop the producer mid-test before the Cleanup
+// Close fires.
 func (s *Switcher) stopBuiltinProducer() {
 	if s.builtinProducerStop == nil {
 		return

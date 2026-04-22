@@ -27,7 +27,7 @@ func setupTestPlayoutAPIWithAsRun(t *testing.T) (*API, *playout.AsRunLogger) {
 	mgr.SetAsRunLogger(logger)
 
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	api := NewAPI(sw, WithPlayoutManager(mgr))
 	return api, logger
 }
@@ -134,7 +134,7 @@ func TestHandleAsRunQuery_Limit(t *testing.T) {
 func TestHandleAsRunQuery_NoLogger(t *testing.T) {
 	mgr := newTestPlayoutManager()
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	api := NewAPI(sw, WithPlayoutManager(mgr))
 
 	req := httptest.NewRequest("GET", "/api/playout/channels/1/asrun", nil)
@@ -242,7 +242,7 @@ func TestHandleAsRunExportBXF(t *testing.T) {
 func TestHandleAsRunExport_NoLogger(t *testing.T) {
 	mgr := newTestPlayoutManager()
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	api := NewAPI(sw, WithPlayoutManager(mgr))
 
 	req := httptest.NewRequest("GET", "/api/playout/channels/1/asrun/export?format=bxf", nil)

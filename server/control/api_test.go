@@ -20,7 +20,7 @@ import (
 func setupTestAPI(t *testing.T) (*API, *switcher.Switcher) {
 	t.Helper()
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	r1 := distribution.NewRelay()
 	sw.RegisterSource("camera1", r1)
 	r2 := distribution.NewRelay()
@@ -154,7 +154,7 @@ func TestSetLabelInvalidJSON(t *testing.T) {
 func setupTransitionTestAPI(t *testing.T) (*API, *switcher.Switcher) {
 	t.Helper()
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	r1 := distribution.NewRelay()
 	sw.RegisterSource("camera1", r1)
 	r2 := distribution.NewRelay()
@@ -516,7 +516,7 @@ func (m *mockMixer) LimiterSettings() (float64, float64, float64) {
 func setupAudioTestAPI(t *testing.T) (*API, *mockMixer) {
 	t.Helper()
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	mock := newMockMixer("camera1", "camera2")
 	api := NewAPI(sw, WithMixer(mock))
 	return api, mock
@@ -994,7 +994,7 @@ func TestInternalConnections_NoCounter(t *testing.T) {
 
 func TestInternalConnections_WithCounter(t *testing.T) {
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	r1 := distribution.NewRelay()
 	sw.RegisterSource("camera1", r1)
 

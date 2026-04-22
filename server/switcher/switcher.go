@@ -261,6 +261,7 @@ type Switcher struct {
 	builtinSources      map[string]*builtinSource       // always-registered virtual sources (source:black, source:colorbars)
 	builtinProducerStop chan struct{}                   // closed by Close() to shut down the built-in producer goroutine
 	builtinProducerDone chan struct{}                   // closed by the producer loop on exit
+	closeOnce           sync.Once                       // gates Close() body so double-close (e.g. t.Cleanup + defer sw.Close) is safe
 	builtinFrameTap     atomic.Pointer[BuiltinFrameTap] // app-installed observer routing built-in frames to per-source MoQ preview encoders
 	programSource       string
 	previewSource       string
@@ -833,66 +834,72 @@ func (s *Switcher) GetRawPreviewSink() RawVideoSink {
 	return nil
 }
 
-// Close stops the health monitor, delay buffer, frame sync, and unregisters all sources.
+// Close stops the health monitor, delay buffer, frame sync, and unregisters
+// all sources. Idempotent — gated by sync.Once so a second call (e.g. from
+// `t.Cleanup` plus an existing `defer sw.Close()`) does not panic on
+// double-close of videoProcCh. Concurrent callers see serialized behavior:
+// one runs the body, the rest wait and observe a fully-closed switcher.
 func (s *Switcher) Close() {
-	s.stopBuiltinProducer()
-	s.health.stop()
-	s.delayBuffer.Close()
+	s.closeOnce.Do(func() {
+		s.stopBuiltinProducer()
+		s.health.stop()
+		s.delayBuffer.Close()
 
-	// Stop reference clock first — this closes the Ticks channel,
-	// which exits the synchronous processing loop.
-	if s.useRefClock.Load() && s.refClock != nil {
-		s.refClock.Stop()
-		s.syncLoopWg.Wait()
-	}
+		// Stop reference clock first — this closes the Ticks channel,
+		// which exits the synchronous processing loop.
+		if s.useRefClock.Load() && s.refClock != nil {
+			s.refClock.Stop()
+			s.syncLoopWg.Wait()
+		}
 
-	// Stop frame sync FIRST to prevent sends to videoProcCh after it is closed.
-	// The frame sync ticker goroutine delivers frames via handleRawVideoFrame,
-	// which calls enqueueVideoWork. If we close videoProcCh while the ticker is
-	// still running, a send on the closed channel causes a panic.
-	//
-	// We grab the pointer under the lock but call Stop() outside the lock,
-	// because Stop() waits for the tick loop goroutine to exit, and that
-	// goroutine's delivery callbacks acquire s.mu.RLock() — holding s.mu.Lock()
-	// here would deadlock.
-	s.mu.Lock()
-	fs := s.frameSync
-	s.mu.Unlock()
-	if fs != nil {
-		fs.Stop()
-	}
+		// Stop frame sync FIRST to prevent sends to videoProcCh after it is closed.
+		// The frame sync ticker goroutine delivers frames via handleRawVideoFrame,
+		// which calls enqueueVideoWork. If we close videoProcCh while the ticker is
+		// still running, a send on the closed channel causes a panic.
+		//
+		// We grab the pointer under the lock but call Stop() outside the lock,
+		// because Stop() waits for the tick loop goroutine to exit, and that
+		// goroutine's delivery callbacks acquire s.mu.RLock() — holding s.mu.Lock()
+		// here would deadlock.
+		s.mu.Lock()
+		fs := s.frameSync
+		s.mu.Unlock()
+		if fs != nil {
+			fs.Stop()
+		}
 
-	// Shut down async video processing goroutine.
-	close(s.videoProcCh)
-	<-s.videoProcDone
-	// Release pre-allocated frame pool buffers. Safe after videoProcDone
-	// guarantees no more pipeline work (no concurrent Acquire calls).
-	if s.framePool != nil {
-		s.framePool.Close()
-	}
-	// Swap pipeline to nil and synchronously drain + close.
-	if p := s.pipeline.Swap(nil); p != nil {
-		p.Wait()
-		_ = p.Close()
-	}
-	// Wait for any background drain goroutines from previous swaps
-	// before closing pipeCodecs (prevents use-after-close on encoder).
-	s.drainWg.Wait()
-	s.mu.Lock()
-	pipeCodecs := s.pipeCodecs
-	s.mu.Unlock()
-	if pipeCodecs != nil {
-		pipeCodecs.close()
-	}
-	s.mu.Lock()
-	keys := make([]string, 0, len(s.sources))
-	for k := range s.sources {
-		keys = append(keys, k)
-	}
-	s.mu.Unlock()
-	for _, k := range keys {
-		s.UnregisterSource(k)
-	}
+		// Shut down async video processing goroutine.
+		close(s.videoProcCh)
+		<-s.videoProcDone
+		// Release pre-allocated frame pool buffers. Safe after videoProcDone
+		// guarantees no more pipeline work (no concurrent Acquire calls).
+		if s.framePool != nil {
+			s.framePool.Close()
+		}
+		// Swap pipeline to nil and synchronously drain + close.
+		if p := s.pipeline.Swap(nil); p != nil {
+			p.Wait()
+			_ = p.Close()
+		}
+		// Wait for any background drain goroutines from previous swaps
+		// before closing pipeCodecs (prevents use-after-close on encoder).
+		s.drainWg.Wait()
+		s.mu.Lock()
+		pipeCodecs := s.pipeCodecs
+		s.mu.Unlock()
+		if pipeCodecs != nil {
+			pipeCodecs.close()
+		}
+		s.mu.Lock()
+		keys := make([]string, 0, len(s.sources))
+		for k := range s.sources {
+			keys = append(keys, k)
+		}
+		s.mu.Unlock()
+		for _, k := range keys {
+			s.UnregisterSource(k)
+		}
+	})
 }
 
 // OnStateChange registers a callback invoked whenever the switcher state

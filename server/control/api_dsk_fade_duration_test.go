@@ -22,7 +22,7 @@ import (
 func setupDSKFadeTestAPI(t *testing.T) (*API, *graphics.Compositor) {
 	t.Helper()
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	comp := graphics.NewCompositor()
 	t.Cleanup(comp.Close)
 	api := NewAPI(sw, WithCompositor(comp))

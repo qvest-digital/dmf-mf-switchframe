@@ -39,7 +39,7 @@ func TestPipeline_AlwaysReEncodes(t *testing.T) {
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
 
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
@@ -79,7 +79,7 @@ func TestPipeline_CompositorEncodesOnce(t *testing.T) {
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
 
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 
 	var encodeCount atomic.Int32
 	sw.SetPipelineCodecs(
@@ -126,7 +126,7 @@ func TestPipeline_TransitionPlusCompositor_SingleEncode(t *testing.T) {
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
 
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	sw.SetTransitionConfig(TransitionConfig{})
 
 	var encodeCount atomic.Int32
@@ -182,7 +182,7 @@ func TestPipeline_ResolutionChange(t *testing.T) {
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
 
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	var encoderCreateCount atomic.Int32
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
@@ -214,7 +214,7 @@ func TestPipeline_EncodeFailureDropsFrame(t *testing.T) {
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
 
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 
 	reg := prometheus.NewRegistry()
 	m := metrics.NewMetrics(reg)
@@ -251,7 +251,7 @@ func TestPipeline_TransitionOutputReachesViewer(t *testing.T) {
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
 
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	sw.SetTransitionConfig(TransitionConfig{})
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
@@ -286,7 +286,7 @@ func TestPipeline_TransitionOutputReachesViewer(t *testing.T) {
 func TestPipeline_EncodeFailureMetrics(t *testing.T) {
 	// Validates that encode failure increments metric counter.
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 
 	reg := prometheus.NewRegistry()
 	m := metrics.NewMetrics(reg)
@@ -317,7 +317,7 @@ func TestPipeline_SourceStatsPropagate(t *testing.T) {
 	// Validates that source bitrate/fps are propagated to pipeline codecs
 	// via handleRawVideoFrame (always-decode mode).
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 
 	var lastBitrate int
 	var lastFPSNum int
@@ -388,7 +388,7 @@ func TestPipeline_AsyncVideoProcessing(t *testing.T) {
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
 
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
@@ -431,7 +431,7 @@ func TestPipeline_AsyncTransitionOutput(t *testing.T) {
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
 
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	sw.SetTransitionConfig(TransitionConfig{})
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
@@ -495,7 +495,7 @@ func TestPipeline_EncoderBufferingDropsFrames(t *testing.T) {
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
 
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return newBufferingEncoder(transition.NewMockEncoder(), 3), nil
@@ -579,7 +579,7 @@ func TestPipeline_CompositorDoesNotCorruptSharedBuffer(t *testing.T) {
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
 
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil
@@ -661,7 +661,7 @@ func TestEnqueueVideoWork_DroppedFrameReleasesPool(t *testing.T) {
 	// frame is dropped. Its pool buffer must be released to prevent
 	// exhausting the FramePool under sustained back-pressure.
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return &slowEncoder{
@@ -702,7 +702,7 @@ func TestBuildNodeList_Ordering(t *testing.T) {
 	// The node ordering is architecturally critical:
 	// upstream-key → dve-compositor → compositor → stmap-program → raw-sink-mxl → raw-sink-preview → h264-encode
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 
 	comp := graphics.NewCompositor()
 	sw.SetCompositor(comp)
@@ -733,7 +733,7 @@ func TestSetGPUPipeline(t *testing.T) {
 	// When a GPU pipeline is set, buildNodeList still returns CPU nodes
 	// (GPU pipeline runs independently via RunWithUpload).
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
@@ -810,7 +810,7 @@ func (m *mockGPUPipelineRunner) Snapshot() map[string]any {
 func TestBuildPipeline_NilPipeCodecs(t *testing.T) {
 	// BuildPipeline with no encoder configured should be a no-op.
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	err := sw.BuildPipeline()

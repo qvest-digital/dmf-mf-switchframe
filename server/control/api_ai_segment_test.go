@@ -57,7 +57,7 @@ func (m *mockAISegmentManager) IsAISegmentAvailable() bool {
 func setupAISegmentAPI(t *testing.T, available bool) (*API, *mockAISegmentManager) {
 	t.Helper()
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	r1 := distribution.NewRelay()
 	sw.RegisterSource("camera1", r1)
 	r2 := distribution.NewRelay()
@@ -305,7 +305,7 @@ func TestAISegmentAPI_Disable_NotConfigured(t *testing.T) {
 
 func TestAISegmentAPI_NilManager_RoutesNotRegistered(t *testing.T) {
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	api := NewAPI(sw) // no WithAISegmentManager
 
 	req := httptest.NewRequest("GET", "/api/ai-segment/status", nil)

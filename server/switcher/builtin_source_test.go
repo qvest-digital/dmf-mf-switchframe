@@ -2,6 +2,8 @@ package switcher
 
 import (
 	"encoding/binary"
+	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -20,7 +22,7 @@ const (
 
 func TestSwitcher_BuiltinBlackSourceRegistered(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	state := sw.State()
@@ -31,7 +33,7 @@ func TestSwitcher_BuiltinBlackSourceRegistered(t *testing.T) {
 
 func TestSwitcher_BuiltinColorbarsRegistered(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	state := sw.State()
@@ -42,7 +44,7 @@ func TestSwitcher_BuiltinColorbarsRegistered(t *testing.T) {
 
 func TestSwitcher_BlackSourceYUVValues(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	yuv, w, h, err := sw.BuiltinSourceFrame(testBlackKey)
@@ -93,7 +95,7 @@ func rp219Bar75(i int) (r, g, b uint8) {
 
 func TestSwitcher_ColorbarsMatchSMPTERp219(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	yuv, w, h, err := sw.BuiltinSourceFrame(testColorbarsKey)
@@ -129,7 +131,7 @@ func TestSwitcher_ColorbarsMatchSMPTERp219(t *testing.T) {
 
 func TestSwitcher_BuiltinSourcesRegenerateOnFormatChange(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	// Switch to 720p30 and pull one frame from each virtual source.
@@ -170,7 +172,7 @@ func TestSwitcher_BuiltinSourcesRegenerateOnFormatChange(t *testing.T) {
 // test would fail).
 func TestSwitcher_ColorbarsAnnexLivesBelowBars(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	yuv, w, h, err := sw.BuiltinSourceFrame(testColorbarsKey)
@@ -212,7 +214,7 @@ func TestSwitcher_ColorbarsAnnexLivesBelowBars(t *testing.T) {
 // so that path can't distinguish "ever produced" from "never produced").
 func TestSwitcher_BuiltinSourcesAlwaysProduce(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	require.Empty(t, sw.State().ProgramSource, "must not be selected")
@@ -233,7 +235,7 @@ func TestSwitcher_BuiltinSourcesAlwaysProduce(t *testing.T) {
 // for both built-ins, regardless of selection.
 func TestSwitcher_BuiltinFrameTapReceivesFrames(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	var mu sync.Mutex
@@ -262,7 +264,7 @@ func TestSwitcher_BuiltinFrameTapReceivesFrames(t *testing.T) {
 // fallback.
 func TestSwitcher_BuiltinSourcesHealthyImmediately(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	state := sw.State()
@@ -279,7 +281,7 @@ func TestSwitcher_BuiltinSourcesHealthyImmediately(t *testing.T) {
 // legal-range black: Y=64, Cb=Cr=512 stored as little-endian uint16.
 func TestSwitcher_BlackSource10bit(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	pf := sw.PipelineFormat()
@@ -319,7 +321,7 @@ func TestSwitcher_BlackSource10bit(t *testing.T) {
 // but samples uint16 LE values from the 10-bit planes.
 func TestSwitcher_Colorbars10bitMatchRP219(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	pf := sw.PipelineFormat()
@@ -370,7 +372,7 @@ func TestSwitcher_Colorbars10bitMatchRP219(t *testing.T) {
 // next pull matches the new format's byte count.
 func TestSwitcher_BuiltinSourcesRegenerateOnColorProfileChange(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	yuv, w, h, err := sw.BuiltinSourceFrame(testBlackKey)
@@ -410,7 +412,7 @@ func TestSwitcher_BuiltinSourcesRegenerateOnColorProfileChange(t *testing.T) {
 // property.
 func TestSwitcher_SpriteMotionIsMonotonic(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	// Stop the background producer so its concurrent Frame() calls don't
@@ -478,7 +480,7 @@ func TestSwitcher_SpriteMotionIsMonotonic(t *testing.T) {
 // whole frame, because the bars region is identical across frames by design.
 func TestSwitcher_ColorbarsSpriteMotion(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	first, w, h, err := sw.BuiltinSourceFrame(testColorbarsKey)
@@ -508,4 +510,67 @@ func TestSwitcher_ColorbarsSpriteMotion(t *testing.T) {
 	}
 	require.True(t, differs,
 		"annex must advance between frames (sprite motion / clock tick) — got identical annex bytes")
+}
+
+// TestSwitcher_BuiltinProducer_ExitsQuicklyOnClose gates the producer
+// teardown latency. Close() must cause builtinProducerLoop to return
+// promptly — if it doesn't, ~300 leaked producers across a test run
+// saturate CPU and hang the race suite. The 250ms bound gives CI headroom
+// over the observed ~85ms on a warm laptop; the point is "bounded and
+// short," not "exactly 100."
+func TestSwitcher_BuiltinProducer_ExitsQuicklyOnClose(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := newTestSwitcher(t, programRelay)
+
+	// Let the producer run long enough to exercise the "stop while producing
+	// a frame" path, not just "stop before first tick".
+	time.Sleep(75 * time.Millisecond)
+
+	start := time.Now()
+	sw.Close()
+	elapsed := time.Since(start)
+
+	if elapsed > 250*time.Millisecond {
+		t.Fatalf("Switcher.Close returned in %v; want ≤250ms", elapsed)
+	}
+
+	// Crisp fast-fail: producer's done channel must be closed after Close
+	// returns. If stopBuiltinProducer was bypassed, this observes the
+	// regression directly instead of waiting on the slower stack walk below.
+	select {
+	case <-sw.builtinProducerDone:
+	default:
+		t.Fatal("builtinProducerDone still open after Close returned")
+	}
+
+	// Belt-and-suspenders: stack walk catches any future refactor that
+	// splits the producer into multiple goroutines or keeps the loop
+	// running under a different name.
+	time.Sleep(10 * time.Millisecond) // scheduler slack
+	buf := make([]byte, 1<<16)
+	n := runtime.Stack(buf, true)
+	if strings.Contains(string(buf[:n]), "switcher.(*Switcher).builtinProducerLoop") {
+		t.Fatalf("builtinProducerLoop goroutine still running after Close:\n%s", buf[:n])
+	}
+}
+
+// TestSwitcher_Close_IsIdempotent guards the sync.Once gating on Close().
+// Without it, a t.Cleanup(sw.Close) alongside an existing defer sw.Close()
+// would panic on the second close(s.videoProcCh).
+func TestSwitcher_Close_IsIdempotent(t *testing.T) {
+	programRelay := newTestRelay()
+	sw := newTestSwitcher(t, programRelay)
+
+	sw.Close()
+	// Second call must not panic and must return promptly.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sw.Close()
+	}()
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("second Close() blocked longer than 500ms — sync.Once gating is broken")
+	}
 }

@@ -123,7 +123,7 @@ func setupMultiSourcePipeline(t *testing.T, sourceKeys []string) (*switcher.Swit
 	capture := newCaptureViewer("multi-source-capture")
 	programRelay.AddViewer(capture)
 
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 
 	// Wire real encoder factory for pipeline.
 	sw.SetPipelineCodecs(func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
@@ -655,7 +655,7 @@ func TestMultiSourceDecodeResolutionMix(t *testing.T) {
 	capture := newCaptureViewer("resolution-mix-capture")
 	programRelay.AddViewer(capture)
 
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 
 	sw.SetPipelineCodecs(func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 		return codec.NewFFmpegEncoder("libx264", w, h, bitrate, fpsNum, fpsDen, 2, nil)

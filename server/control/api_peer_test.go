@@ -16,7 +16,7 @@ import (
 
 func TestHandlePeerHealth(t *testing.T) {
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	api := NewAPI(sw)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/peer/health", nil)
@@ -41,7 +41,7 @@ func TestPeerHealthAuthExempt(t *testing.T) {
 
 func TestHandlePeerHealth_AdvertisesLabelAndEpoch(t *testing.T) {
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	poller := peer.NewHealthPoller("http://unused",
 		peer.WithLocalIdentity("a"),
 		peer.WithInitialEpoch(3),
@@ -67,7 +67,7 @@ func TestHandlePeerHealth_AdvertisesLabelAndEpoch(t *testing.T) {
 // lastExecutedSeq reports 0 and fails the test.
 func TestHandlePeerHealth_ReportsEnqueuedSeqBeforeExecution(t *testing.T) {
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	sw.TrackCommandSeq(42)
 
 	api := NewAPI(sw)

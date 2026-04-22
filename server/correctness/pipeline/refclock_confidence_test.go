@@ -699,7 +699,7 @@ func newPipelineHarnessNoEncodeCustom(t *testing.T, fpsNum, fpsDen int, basePTS 
 	programRelay.AddViewer(capture)
 
 	// Create switcher (no encoder factory = no pipeline).
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	h.sw = sw
 
 	// Enable frame sync in clock-driven mode.

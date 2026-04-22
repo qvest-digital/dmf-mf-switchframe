@@ -12,7 +12,7 @@ import (
 
 func TestSwitcher_FTBDurationDefaultsTo1000(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	require.Equal(t, 1000, sw.FTBDurationMs())
@@ -21,7 +21,7 @@ func TestSwitcher_FTBDurationDefaultsTo1000(t *testing.T) {
 
 func TestSwitcher_SetFTBDurationValidatesRange(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	require.True(t, errors.Is(sw.SetFTBDuration(99), ErrInvalidFTBDuration))

@@ -79,7 +79,7 @@ func newThroughputHarness(t *testing.T, width, height int, opts ...throughputOpt
 	muxViewer := &muxCaptureViewer{capture: cap, muxer: muxer}
 	programRelay.AddViewer(muxViewer)
 
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	th.sw = sw
 
 	// Choose bitrate based on resolution if not explicitly set.

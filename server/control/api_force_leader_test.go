@@ -17,7 +17,7 @@ import (
 func setupForceLeaderAPI(t *testing.T, secret string, p *peer.HealthPoller) *API {
 	t.Helper()
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	return NewAPI(sw, WithPeerPoller(p), WithControlPlaneSecret(secret))
 }
 
@@ -36,7 +36,7 @@ func TestForceLeader_501WhenNoSecretConfigured(t *testing.T) {
 
 func TestForceLeader_501WhenNoPollerConfigured(t *testing.T) {
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	api := NewAPI(sw, WithControlPlaneSecret("s3cret"))
 
 	req := httptest.NewRequest("POST", "/api/peer/force-leader",

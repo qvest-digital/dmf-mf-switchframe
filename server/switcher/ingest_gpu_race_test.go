@@ -16,7 +16,7 @@ import (
 
 func TestHandleRawVideoFrame_DoesNotIngestToGPU(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	tracker := &trackingGPUSourceManager{}
@@ -47,7 +47,7 @@ func TestHandleRawVideoFrame_DoesNotIngestToGPU(t *testing.T) {
 
 func TestIngestRawVideo_FeedsGPU_WithoutFrameSync(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	tracker := &trackingGPUSourceManager{}
@@ -74,7 +74,7 @@ func TestIngestRawVideo_FeedsGPU_WithoutFrameSync(t *testing.T) {
 
 func TestIngestRawVideo_FeedsGPU_WithFrameSync(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	tracker := &trackingGPUSourceManager{}
@@ -105,7 +105,7 @@ func TestIngestRawVideo_FeedsGPU_WithFrameSync(t *testing.T) {
 
 func TestDecoderCallback_FeedsGPU(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	tracker := &trackingGPUSourceManager{}

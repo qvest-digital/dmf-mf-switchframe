@@ -108,7 +108,7 @@ func TestCutNoIntermediateFrames(t *testing.T) {
 	capture := newCaptureViewer("capture")
 	programRelay.AddViewer(capture)
 
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	camARelay := distribution.NewRelay()
@@ -216,7 +216,7 @@ func TestCutStartsOnIDRBoundary(t *testing.T) {
 	}
 	programRelay.AddViewer(muxViewer)
 
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	// Set up real pipeline codecs (libx264 encoder).
@@ -347,7 +347,7 @@ func TestPreviewProgramStateAfterCut(t *testing.T) {
 	t.Parallel()
 
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	// Track state changes.
@@ -424,7 +424,7 @@ func TestRapidCutsNoDroppedFrames(t *testing.T) {
 	capture := newCaptureViewer("capture")
 	programRelay.AddViewer(capture)
 
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	// Create 3 sources.
@@ -520,7 +520,7 @@ func TestRapidCutsWithRawPipeline(t *testing.T) {
 	capture := newCaptureViewer("capture")
 	programRelay.AddViewer(capture)
 
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	// Set up pipeline with mock encoder.
@@ -658,7 +658,7 @@ func TestAudioCutViaSwitcher(t *testing.T) {
 	t.Parallel()
 
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	mixer := audio.NewMixer(audio.MixerConfig{
@@ -734,7 +734,7 @@ func TestCutWithRawPipelinePTSIdentity(t *testing.T) {
 	capture := newCaptureViewer("capture")
 	programRelay.AddViewer(capture)
 
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	// Use mock encoder — preserves PTS through the pipeline.
@@ -846,7 +846,7 @@ func TestPreviewDoesNotAffectProgram(t *testing.T) {
 	capture := newCaptureViewer("capture")
 	programRelay.AddViewer(capture)
 
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	camARelay := distribution.NewRelay()
@@ -899,7 +899,7 @@ func TestCutToNonexistentSourceFails(t *testing.T) {
 	t.Parallel()
 
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	err := sw.Cut(context.Background(), "nonexistent")

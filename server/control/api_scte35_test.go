@@ -211,7 +211,7 @@ func (m *mockSCTE35Rules) CreateFromTemplate(name string) (scte35.Rule, error) {
 func setupSCTE35TestAPI(t *testing.T) (*API, *mockSCTE35, *mockSCTE35Rules) {
 	t.Helper()
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	ms := &mockSCTE35{
 		state: scte35.InjectorState{
 			Enabled:      true,
@@ -620,7 +620,7 @@ func TestHandleSCTE35Active(t *testing.T) {
 
 func TestHandleSCTE35_NotEnabled(t *testing.T) {
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	api := NewAPI(sw) // no SCTE-35 configured
 
 	endpoints := []struct {

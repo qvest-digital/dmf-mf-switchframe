@@ -514,7 +514,7 @@ func TestFullPipelineWithRealDecode(t *testing.T) {
 	capture := newCaptureViewer("decode-pipeline-capture")
 	programRelay.AddViewer(capture)
 
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 
 	// Wire real encoder factory for the pipeline.
 	sw.SetPipelineCodecs(func(encW, encH, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {

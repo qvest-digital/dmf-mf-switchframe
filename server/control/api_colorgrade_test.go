@@ -141,7 +141,7 @@ func (m *mockColorGradeManager) LoadLookSettings(name string) *colorgrade.Correc
 func setupColorGradeAPI(t *testing.T) (*API, *mockColorGradeManager) {
 	t.Helper()
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	mgr := newMockColorGradeManager()
 	api := NewAPI(sw, WithColorGradeManager(mgr))
 	return api, mgr

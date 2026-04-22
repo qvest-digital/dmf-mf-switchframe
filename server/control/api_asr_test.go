@@ -81,7 +81,7 @@ func (m *mockASRManager) ASRSpeakerDetection() string          { return m.speake
 func setupASRAPI(t *testing.T, mgr ASRManager) *API {
 	t.Helper()
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	r1 := distribution.NewRelay()
 	sw.RegisterSource("camera1", r1)
 	opts := []APIOption{}

@@ -52,7 +52,7 @@ func TestSyncHealth_ReturnsFields(t *testing.T) {
 
 func TestSyncHealth_IncludesLastPongSentUs(t *testing.T) {
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	r1 := distribution.NewRelay()
 	sw.RegisterSource("camera1", r1)
 
@@ -89,7 +89,7 @@ func TestSyncHealth_OmitsLastPongSentUs_WhenNotConfigured(t *testing.T) {
 
 func TestSyncHealth_IncludesLateCommands(t *testing.T) {
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	r1 := distribution.NewRelay()
 	sw.RegisterSource("camera1", r1)
 
@@ -178,7 +178,7 @@ func (m *mockApplyTarget) AssignSTMapProgram(_ string) error                    
 func setupTestAPIWithSnapshot(t *testing.T, provider *mockSnapshotProvider) *API {
 	t.Helper()
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	r1 := distribution.NewRelay()
 	sw.RegisterSource("camera1", r1)
 	r2 := distribution.NewRelay()
@@ -608,7 +608,7 @@ func TestReconcileLock_RefreshExpiredLock(t *testing.T) {
 // look current to the receiving engine).
 func TestGetStateSnapshot_SeqCapturedBeforeSnapshot(t *testing.T) {
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	r1 := distribution.NewRelay()
 	sw.RegisterSource("camera1", r1)
 
@@ -749,7 +749,7 @@ func TestApplyStateSnapshot_MetricsWithoutMetrics(t *testing.T) {
 
 func TestApplySnapshot_RejectsStale(t *testing.T) {
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	r1 := distribution.NewRelay()
 	sw.RegisterSource("camera1", r1)
 	// Advance engine's LastCommandSeq to 105 so an incoming snapshot at seq=100
@@ -789,7 +789,7 @@ func TestApplySnapshot_RejectsStale(t *testing.T) {
 
 func TestApplySnapshot_AcceptsForward(t *testing.T) {
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	r1 := distribution.NewRelay()
 	sw.RegisterSource("camera1", r1)
 	// Engine at seq=100, incoming snapshot also at seq=100 — not behind.
@@ -822,7 +822,7 @@ func TestApplySnapshot_AcceptsForward(t *testing.T) {
 
 func TestApplySnapshot_AcceptsForceOverride(t *testing.T) {
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	r1 := distribution.NewRelay()
 	sw.RegisterSource("camera1", r1)
 	sw.TrackCommandSeq(105)

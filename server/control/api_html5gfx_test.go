@@ -142,7 +142,7 @@ func (m *mockHTMLGfxManager) Started() bool {
 func setupHTML5GfxTestAPI(t *testing.T, mgr HTMLGfxManager) (*API, *graphics.Compositor) {
 	t.Helper()
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	comp := graphics.NewCompositor()
 	t.Cleanup(comp.Close)
 	api := NewAPI(sw, WithCompositor(comp))

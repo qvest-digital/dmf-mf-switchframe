@@ -81,7 +81,7 @@ func setupSwitcherWithTransition(t *testing.T) (*Switcher, *mockProgramViewer) {
 	viewer := newMockProgramViewer("test-viewer")
 	programRelay.AddViewer(viewer)
 
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	sw.SetTransitionConfig(mockTransitionCodecs())
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
@@ -224,7 +224,7 @@ func TestTransitionCompletion_PreservesOperatorPreviewChangeDuringTransition(t *
 
 func TestSwitcherStartTransitionNoPreview(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	sw.SetTransitionConfig(mockTransitionCodecs())
 	defer sw.Close()
 
@@ -257,7 +257,7 @@ func TestSwitcherTransitionRoutesFramesToEngine(t *testing.T) {
 	viewer := newMockProgramViewer("test-viewer")
 	programRelay.AddViewer(viewer)
 
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	sw.SetTransitionConfig(mockTransitionCodecs())
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
@@ -400,7 +400,7 @@ func TestSwitcherSetTransitionPositionNoTransition(t *testing.T) {
 
 func TestSwitcherStartTransitionNotConfigured(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -552,7 +552,7 @@ func TestSwitcherTransitionAudioNotified(t *testing.T) {
 
 func TestSwitcherStartTransitionNoProgramSource(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	sw.SetTransitionConfig(mockTransitionCodecs())
 	defer sw.Close()
 
@@ -567,7 +567,7 @@ func TestSwitcherStartTransitionNoProgramSource(t *testing.T) {
 
 func TestSwitcherFTBNotConfigured(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	// No transition config
@@ -604,7 +604,7 @@ func TestSwitcherTransitionStateCallback(t *testing.T) {
 
 func TestSwitcherFTBNoProgramSource(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	sw.SetTransitionConfig(mockTransitionCodecs())
 	defer sw.Close()
 
@@ -784,7 +784,7 @@ func TestStartTransitionDoesNotBlockFrameRouting(t *testing.T) {
 	viewer := newMockProgramViewer("test-viewer")
 	programRelay.AddViewer(viewer)
 
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	sw.SetTransitionConfig(TransitionConfig{})
 
 	cam1Relay := newTestRelay()
@@ -827,7 +827,7 @@ func TestFadeToBlackDoesNotBlockFrameRouting(t *testing.T) {
 	viewer := newMockProgramViewer("test-viewer")
 	programRelay.AddViewer(viewer)
 
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	sw.SetTransitionConfig(TransitionConfig{})
 
 	cam1Relay := newTestRelay()
@@ -867,7 +867,7 @@ func TestFTBReverseDoesNotBlockFrameRouting(t *testing.T) {
 	viewer := newMockProgramViewer("test-viewer")
 	programRelay.AddViewer(viewer)
 
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	sw.SetTransitionConfig(TransitionConfig{})
 
 	cam1Relay := newTestRelay()
@@ -1085,7 +1085,7 @@ func TestSwitcherGPUTransitionSkipsCPUBlend(t *testing.T) {
 	viewer := newMockProgramViewer("test-viewer")
 	programRelay.AddViewer(viewer)
 
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	sw.SetTransitionConfig(mockTransitionCodecs())
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
@@ -1145,7 +1145,7 @@ func TestSwitcherGPUTransitionSkipsCPUBlend(t *testing.T) {
 
 func TestSwitcherGPUTransitionFTB(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	sw.SetTransitionConfig(mockTransitionCodecs())
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
@@ -1185,7 +1185,7 @@ func TestSwitcherGPUTransitionFTB(t *testing.T) {
 
 func TestSwitcherTransitionWipeDirToGPU(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	tests := []struct {

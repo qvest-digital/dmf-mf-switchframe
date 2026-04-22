@@ -36,7 +36,7 @@ func newTestPlayoutManager() *playout.Manager {
 func setupTestPlayoutAPI(t *testing.T) *API {
 	t.Helper()
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	mgr := newTestPlayoutManager()
 	api := NewAPI(sw, WithPlayoutManager(mgr))
 	return api
@@ -391,7 +391,7 @@ func TestPlayoutRoutes_PreviousWithoutOnAir(t *testing.T) {
 func TestPlayoutRoutes_NoManager(t *testing.T) {
 	// API without playout manager should not register routes.
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	api := NewAPI(sw)
 
 	req := httptest.NewRequest("GET", "/api/playout/channels", nil)
@@ -413,7 +413,7 @@ func setupTestPlayoutAPIWithCache(t *testing.T) (*API, *playout.Cache, string) {
 	require.NoError(t, err)
 
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	mgr := newTestPlayoutManager()
 	api := NewAPI(sw, WithPlayoutManager(mgr), WithPlayoutCache(cache))
 	return api, cache, dir
@@ -438,7 +438,7 @@ func TestPlayoutCacheStatus(t *testing.T) {
 func TestPlayoutCacheStatus_NilCache(t *testing.T) {
 	// API without cache should return 501.
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	mgr := newTestPlayoutManager()
 	api := NewAPI(sw, WithPlayoutManager(mgr))
 
@@ -584,7 +584,7 @@ func TestPlayoutClips_BothSources(t *testing.T) {
 
 	// Create API with both clip store and samples.
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	mgr := newTestPlayoutManager()
 	api := NewAPI(sw, WithPlayoutManager(mgr), WithClipStore(cs), WithPlayoutSamples(samples))
 
@@ -621,7 +621,7 @@ func TestPlayoutClips_BothSources(t *testing.T) {
 func TestPlayoutClips_NoClipStoreNoSamples(t *testing.T) {
 	// API with neither clip store nor samples should return empty array.
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	mgr := newTestPlayoutManager()
 	api := NewAPI(sw, WithPlayoutManager(mgr))
 
@@ -654,7 +654,7 @@ func TestPlayoutClips_RecordingSource(t *testing.T) {
 	require.NoError(t, cs.Add(c))
 
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	mgr := newTestPlayoutManager()
 	api := NewAPI(sw, WithPlayoutManager(mgr), WithClipStore(cs))
 
@@ -685,7 +685,7 @@ func setupTestPlayoutAPIWithSaveDir(t *testing.T) (*API, string) {
 	t.Helper()
 	saveDir := t.TempDir()
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	mgr := newTestPlayoutManager()
 	api := NewAPI(sw, WithPlayoutManager(mgr), WithPlayoutSaveDir(saveDir))
 	return api, saveDir
@@ -821,7 +821,7 @@ func TestPlayoutSaved_InvalidName(t *testing.T) {
 func TestPlayoutSaved_NotConfigured(t *testing.T) {
 	// API without save dir should return 501.
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	mgr := newTestPlayoutManager()
 	api := NewAPI(sw, WithPlayoutManager(mgr))
 

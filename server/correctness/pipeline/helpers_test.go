@@ -136,7 +136,7 @@ func newPipelineHarness(t *testing.T, opts ...harnessOption) *pipelineHarness {
 	programRelay.AddViewer(muxViewer)
 
 	// Create switcher with real pipeline codecs (libx264).
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	h.sw = sw
 
 	// Wire real encoder factory.
@@ -257,7 +257,7 @@ func newPipelineHarnessNoEncode(t *testing.T) *pipelineHarness {
 	programRelay.AddViewer(capture)
 
 	// Create switcher (no encoder factory = no pipeline).
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	h.sw = sw
 
 	// Enable frame sync in clock-driven mode.

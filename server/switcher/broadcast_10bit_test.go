@@ -17,7 +17,7 @@ import (
 // causing 10-bit frames (w*h*4) to be truncated or silently dropped.
 func TestBroadcastProcessed_10bit_FrameNotDropped(t *testing.T) {
 	programRelay := distribution.NewRelay()
-	sw := NewTestSwitcher(programRelay)
+	sw := NewTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	// Configure 10-bit pipeline.
@@ -209,7 +209,7 @@ func TestBroadcastProcessed_8bit_StillWorks(t *testing.T) {
 // for 10-bit. Tests the production code path in StartTransition.
 func TestTransitionEngine_10bit_SetColorFormat(t *testing.T) {
 	programRelay := distribution.NewRelay()
-	sw := NewTestSwitcher(programRelay)
+	sw := NewTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	// Configure 10-bit pipeline format.

@@ -27,7 +27,7 @@ func setupTestAPIWithClips(t *testing.T) (*API, *clip.Store, *clip.Manager) {
 	mgr := clip.NewManager(store, clip.ManagerConfig{})
 
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	api := NewAPI(sw, WithClipManager(mgr), WithClipStore(store))
 	return api, store, mgr
 }
@@ -500,7 +500,7 @@ func TestHandleClipRecordingsWithFiles(t *testing.T) {
 	mgr := clip.NewManager(store, clip.ManagerConfig{})
 
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	api := NewAPI(sw,
 		WithClipManager(mgr),
 		WithClipStore(store),
@@ -542,7 +542,7 @@ func TestHandleClipRecordingsExcludesActiveRecording(t *testing.T) {
 
 	mock := &mockOutputManager{recording: true, recFilename: activeFile}
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	api := NewAPI(sw,
 		WithClipManager(mgr),
 		WithClipStore(store),
@@ -572,7 +572,7 @@ func TestHandleClipFromRecordingPathTraversal(t *testing.T) {
 	mgr := clip.NewManager(store, clip.ManagerConfig{})
 
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	api := NewAPI(sw,
 		WithClipManager(mgr),
 		WithClipStore(store),
@@ -621,7 +621,7 @@ func TestHandleClipFromRecordingEmptyPath(t *testing.T) {
 	mgr := clip.NewManager(store, clip.ManagerConfig{})
 
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	api := NewAPI(sw,
 		WithClipManager(mgr),
 		WithClipStore(store),
@@ -645,7 +645,7 @@ func TestHandleClipFromRecordingFileNotFound(t *testing.T) {
 	mgr := clip.NewManager(store, clip.ManagerConfig{})
 
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	api := NewAPI(sw,
 		WithClipManager(mgr),
 		WithClipStore(store),
@@ -670,7 +670,7 @@ func TestHandleClipFromRecordingRelativePath(t *testing.T) {
 	mgr := clip.NewManager(store, clip.ManagerConfig{})
 
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	api := NewAPI(sw,
 		WithClipManager(mgr),
 		WithClipStore(store),

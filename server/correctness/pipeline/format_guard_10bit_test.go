@@ -30,7 +30,7 @@ import (
 func new10bitHarness(t *testing.T) *switcher.Switcher {
 	t.Helper()
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 
 	fmt10 := switcher.PipelineFormat{
 		Name:   "guard-10bit",

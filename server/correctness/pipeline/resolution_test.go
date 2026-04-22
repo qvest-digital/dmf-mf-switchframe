@@ -58,7 +58,7 @@ func newResolutionHarness(t *testing.T, width, height int) *resolutionHarness {
 
 	// Create a switcher with the test switcher constructor (small pool),
 	// then wire the encoder and override the pipeline format.
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	rh.sw = sw
 
 	// Wire real encoder factory (libx264) BEFORE setting format,

@@ -12,7 +12,7 @@ import (
 
 func TestSwitcher_PerfSubStages(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	sample := sw.PerfSample()
@@ -57,7 +57,7 @@ func TestPerfSample_FRCFrameZeroesSyncWait(t *testing.T) {
 	// The sync wait measurement should store 0 for these frames,
 	// not retain a stale value from a previous fresh frame.
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	// Simulate a prior fresh frame leaving a stale sync wait value.
@@ -92,7 +92,7 @@ func TestPerfSample_FreshFramePreservesSyncWait(t *testing.T) {
 	// Fresh (decoded) frames have both DecodeEndNano and SyncReleaseNano set.
 	// The sync wait should be the difference between them.
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	decodeEnd := int64(1_000_000_000)
@@ -124,7 +124,7 @@ func TestPerfSample_FreshFramePreservesSyncWait(t *testing.T) {
 func TestPerfSample_RawFrameCount(t *testing.T) {
 	// Raw frame count should be reported per-source in PerfSourceSample.
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	// Register a raw source (MXL-style, no viewer).
@@ -155,7 +155,7 @@ func TestPerfSample_RawFrameCount(t *testing.T) {
 func TestPerfSample_FrameSyncFields(t *testing.T) {
 	// FrameSync fields should be zero when no frame sync is active.
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	sample := sw.PerfSample()
@@ -224,7 +224,7 @@ func TestFrameSynchronizer_SourceCount(t *testing.T) {
 
 func TestPerfSample_GPUFields(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	// Without GPU: GPUActive should be false.
@@ -260,7 +260,7 @@ func TestPerfSample_GPUFields(t *testing.T) {
 
 func TestDebugSnapshot_GPUPipeline(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	// Without GPU.
@@ -293,7 +293,7 @@ func TestDebugSnapshot_GPUPipeline(t *testing.T) {
 
 func TestDebugSnapshot_GPUCounters(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	// Manually set GPU counters.

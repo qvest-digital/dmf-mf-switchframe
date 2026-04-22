@@ -11,7 +11,7 @@ import (
 
 func TestRegisterSRTSource(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	sw.RegisterSRTSource("srt:cam1")
@@ -33,7 +33,7 @@ func TestRegisterSRTSource(t *testing.T) {
 
 func TestRegisterSRTSource_Label(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	sw.RegisterSRTSource("srt:my-camera")
@@ -47,7 +47,7 @@ func TestRegisterSRTSource_Label(t *testing.T) {
 
 func TestRegisterSRTSource_Position(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	cam1Relay := newTestRelay()
@@ -63,7 +63,7 @@ func TestRegisterSRTSource_Position(t *testing.T) {
 
 func TestRegisterSRTSource_HealthRegistered(t *testing.T) {
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	sw.RegisterSRTSource("srt:cam1")
@@ -77,7 +77,7 @@ func TestRegisterSRTSource_HealthRegistered(t *testing.T) {
 func TestSRTSource_UnregisterSafe(t *testing.T) {
 	// Ensure UnregisterSource handles SRT sources (nil relay/viewer) without panic.
 	programRelay := newTestRelay()
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	defer sw.Close()
 
 	sw.RegisterSRTSource("srt:cam1")
@@ -96,7 +96,7 @@ func TestSRTSource_IngestRawVideo(t *testing.T) {
 	viewer := newMockProgramViewer("test")
 	programRelay.AddViewer(viewer)
 
-	sw := newTestSwitcher(programRelay)
+	sw := newTestSwitcher(t, programRelay)
 	sw.SetPipelineCodecs(
 		func(w, h, bitrate, fpsNum, fpsDen int) (transition.VideoEncoder, error) {
 			return transition.NewMockEncoder(), nil

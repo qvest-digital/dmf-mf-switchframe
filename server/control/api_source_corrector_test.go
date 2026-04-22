@@ -50,7 +50,7 @@ func (m *mockSourceCorrectorManager) HasCorrection(key string) bool {
 func setupSourceCorrectorAPI(t *testing.T) (*API, *mockSourceCorrectorManager) {
 	t.Helper()
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	mgr := newMockSourceCorrectorManager()
 	api := NewAPI(sw, WithSourceCorrectorManager(mgr))
 	return api, mgr
@@ -298,7 +298,7 @@ func TestHandleSourceCorrectorSet_DifferentSources(t *testing.T) {
 func TestHandleSourceCorrectorNotRegistered(t *testing.T) {
 	// Without WithSourceCorrectorManager, the routes should not be registered.
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	api := NewAPI(sw)
 
 	req := httptest.NewRequest("GET", "/api/sources/cam1/corrector", nil)

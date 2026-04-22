@@ -183,7 +183,7 @@ func (m *mockOutputManager) CBRStatus() *output.CBRPacerStatus {
 func setupOutputTestAPI(t *testing.T) (*API, *mockOutputManager) {
 	t.Helper()
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	mock := &mockOutputManager{}
 	api := NewAPI(sw, WithOutputManager(mock))
 	return api, mock
@@ -192,7 +192,7 @@ func setupOutputTestAPI(t *testing.T) (*API, *mockOutputManager) {
 func setupOutputTestAPINoManager(t *testing.T) *API {
 	t.Helper()
 	programRelay := distribution.NewRelay()
-	sw := switcher.NewTestSwitcher(programRelay)
+	sw := switcher.NewTestSwitcher(t, programRelay)
 	api := NewAPI(sw)
 	return api
 }
@@ -970,7 +970,7 @@ func TestAddDestination_AllowedOutputPorts(t *testing.T) {
 
 	t.Run("allowed port succeeds", func(t *testing.T) {
 		programRelay := distribution.NewRelay()
-		sw := switcher.NewTestSwitcher(programRelay)
+		sw := switcher.NewTestSwitcher(t, programRelay)
 		mock := &mockOutputManager{}
 		api := NewAPI(sw, WithOutputManager(mock), WithAllowedOutputPorts(allowedPorts))
 
@@ -986,7 +986,7 @@ func TestAddDestination_AllowedOutputPorts(t *testing.T) {
 
 	t.Run("disallowed port rejected", func(t *testing.T) {
 		programRelay := distribution.NewRelay()
-		sw := switcher.NewTestSwitcher(programRelay)
+		sw := switcher.NewTestSwitcher(t, programRelay)
 		mock := &mockOutputManager{}
 		api := NewAPI(sw, WithOutputManager(mock), WithAllowedOutputPorts(allowedPorts))
 
@@ -1002,7 +1002,7 @@ func TestAddDestination_AllowedOutputPorts(t *testing.T) {
 
 	t.Run("caller mode ignores constraint", func(t *testing.T) {
 		programRelay := distribution.NewRelay()
-		sw := switcher.NewTestSwitcher(programRelay)
+		sw := switcher.NewTestSwitcher(t, programRelay)
 		mock := &mockOutputManager{}
 		api := NewAPI(sw, WithOutputManager(mock), WithAllowedOutputPorts(allowedPorts))
 

@@ -13,10 +13,16 @@ import (
 // suitable for testing. The production New() allocates 512 × 1080p buffers
 // (~1.5 GB) which causes OOM kills when many tests each create one.
 //
+// Registers sw.Close via t.Cleanup so the built-in source producer
+// goroutine (and everything else Close tears down) shuts down when the test
+// returns. Close is idempotent, so callers that also want an explicit
+// defer sw.Close() remain correct.
+//
 // This function is intended for use in other packages' tests (e.g.,
 // control API tests) that need a Switcher but don't exercise video
 // processing at full resolution.
-func NewTestSwitcher(programRelay *distribution.Relay) *Switcher {
+func NewTestSwitcher(t *testing.T, programRelay *distribution.Relay) *Switcher {
+	t.Helper()
 	// Use a small format matching the test frame pool (320×240) so that
 	// transition hint dimensions don't create 1080p blenders. The default
 	// format is 1080p which causes "frame exceeds pool buffer size" drops
@@ -46,6 +52,7 @@ func NewTestSwitcher(programRelay *distribution.Relay) *Switcher {
 	s.registerBuiltinSourcesLocked()
 	go s.videoProcessingLoop()
 	s.startBuiltinProducer()
+	t.Cleanup(s.Close)
 	return s
 }
 
