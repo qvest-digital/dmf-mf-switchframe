@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -14,7 +15,7 @@ func newTestDB(t *testing.T) (db, string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { sqldb.Close() })
-	return db{sqldb: sqldb}, path
+	return newDB(sqldb), path
 }
 
 func TestRegister_InsertsAgent(t *testing.T) {
@@ -72,5 +73,28 @@ func TestRegister_EmitsSystemMessage(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("expected 1 system message, got %d", count)
+	}
+
+	var thread, body string
+	err = d.sqldb.QueryRow(`SELECT thread, body FROM messages WHERE kind='system' AND agent_id='agent-a'`).Scan(&thread, &body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if thread != "global" {
+		t.Fatalf("thread=%q want global", thread)
+	}
+	if !strings.Contains(body, "agent-a") || !strings.Contains(body, "/tmp/a") {
+		t.Fatalf("body=%q missing id or worktree", body)
+	}
+}
+
+func TestRegister_RollbackLeavesNoTraces(t *testing.T) {
+	d, _ := newTestDB(t)
+	ctx := context.Background()
+
+	d.sqldb.Close()
+
+	if err := d.register(ctx, "agent-a", "A", "/tmp/a", 1); err == nil {
+		t.Fatal("expected register to fail against a closed DB")
 	}
 }

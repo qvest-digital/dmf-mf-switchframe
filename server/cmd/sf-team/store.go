@@ -17,10 +17,7 @@ func newDB(sqldb *sql.DB) db {
 }
 
 func (d db) nowUnix() int64 {
-	if d.now != nil {
-		return d.now().Unix()
-	}
-	return time.Now().Unix()
+	return d.now().Unix()
 }
 
 func (d db) postMessage(ctx context.Context, tx *sql.Tx, ts int64, agentID, thread, kind, body string, mentions []string, priority string) error {
