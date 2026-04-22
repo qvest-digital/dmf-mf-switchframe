@@ -370,6 +370,10 @@ func parseConfig() (AppConfig, error) {
 	asrDefaultBackendFlag := flag.String("asr-default-backend", "parakeet", "Default ASR backend (parakeet or whisper)")
 	asrWhisperThreadsFlag := flag.Int("asr-whisper-threads", 0, "Whisper inference threads (0 = auto: min(NumCPU, 8))")
 
+	// CEF (HTML5 graphics) sidecar flags.
+	cefBinaryFlag := flag.String("cef-binary", "", "Path to switchframe-cef sidecar binary (relative to the switchframe binary or absolute). Empty = use built-in Linux default.")
+	cefTemplatesDirFlag := flag.String("cef-templates-dir", "", "Path to HTML5 graphics templates directory. Empty = use built-in Linux default.")
+
 	// Persistent cache directory.
 	cacheDirFlag := flag.String("cache-dir", defaultCacheDir(), "persistent cache directory for mmap'd LUTs and decoded assets")
 
@@ -549,6 +553,8 @@ func parseConfig() (AppConfig, error) {
 		ASRWhisperModelsDir:  *asrWhisperModelsDirFlag,
 		ASRDefaultBackend:    *asrDefaultBackendFlag,
 		ASRWhisperThreads:    *asrWhisperThreadsFlag,
+		CEFBinary:            *cefBinaryFlag,
+		CEFTemplatesDir:      *cefTemplatesDirFlag,
 		CacheDir:             *cacheDirFlag,
 		ST2110Port:           *st2110PortFlag,
 		ST2110IP:             *st2110IPFlag,
