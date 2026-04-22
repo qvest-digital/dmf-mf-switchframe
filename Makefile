@@ -1,4 +1,4 @@
-.PHONY: build build-server build-server-mxl build-asr-sidecar build-asr-sidecar-whisper dev demo demo-captions mxl-demo ui-install ui-build ui-test ui-e2e test test-mxl test-all docker docker-cuda clean sync-prism-ts lint format setup-mkcert metal-shaders asr-eval-fixtures asr-eval
+.PHONY: build build-server build-server-mxl build-asr-sidecar build-asr-sidecar-whisper dev demo demo-captions demo-cef cef-sidecar mxl-demo ui-install ui-build ui-test ui-e2e test test-mxl test-all docker docker-cuda clean sync-prism-ts lint format setup-mkcert metal-shaders asr-eval-fixtures asr-eval
 
 EMBED_LINK := server/cmd/switchframe/ui
 
@@ -92,6 +92,39 @@ demo: build-server node_modules_check
 			./bin/switchframe --demo --demo-video test/clips --srt-listen :6464 --srt-output-ports 7464-7467 --format 1080p24 --frame-sync --frc-quality mcfi --scte35 --captions --preview-proxy $$CF_FLAG $$CERT_FLAGS & \
 		else \
 			./bin/switchframe --demo --srt-listen :6464 --srt-output-ports 7464-7467 --format 1080p24 --frame-sync --frc-quality mcfi --scte35 --captions --preview-proxy $$CF_FLAG $$CERT_FLAGS & \
+		fi; \
+		cd ui && npm run dev & \
+		wait
+
+# CEF sidecar (HTML5 graphics) bootstrap for macOS dev.
+# CEF dist + libcef_dll_wrapper cache in ~/.cache/switchframe/cef/ (survives `make clean`).
+CEF_APP := bin/switchframe-cef.app
+CEF_BIN := $(CEF_APP)/Contents/MacOS/switchframe-cef
+
+# File-target: make only re-runs the script when the bundle is missing.
+# The script itself is idempotent regardless.
+$(CEF_BIN):
+	@bash scripts/setup-cef-mac.sh
+
+cef-sidecar: $(CEF_BIN)
+
+# Demo with HTML5 graphics enabled (CEF sidecar). Bootstraps CEF on first run (~10 min).
+demo-cef: build-server cef-sidecar node_modules_check
+	@echo ""
+	@echo "  SwitchFrame Demo + HTML5 Graphics (CEF sidecar)"
+	@echo "  Open http://localhost:5173 in your browser"
+	@echo "  HTML5 templates: cef-sidecar/demo-templates/ (Graphics tab)"
+	@echo "  Press Ctrl+C to stop"
+	@echo ""
+	@trap 'kill 0' EXIT; \
+		CERT_FLAGS="--http-fallback"; \
+		CEF_FLAGS="--cef-binary $(CEF_BIN) --cef-templates-dir cef-sidecar/demo-templates"; \
+		echo "  Self-signed cert (WebTransport draft-02 + TCP fallback for Vite proxy)"; \
+		echo ""; \
+		if [ -d test/clips ]; then \
+			./bin/switchframe --demo --demo-video test/clips --srt-listen :6464 --srt-output-ports 7464-7467 --format 1080p24 --frame-sync --frc-quality mcfi --scte35 --captions --preview-proxy $$CEF_FLAGS $$CERT_FLAGS & \
+		else \
+			./bin/switchframe --demo --srt-listen :6464 --srt-output-ports 7464-7467 --format 1080p24 --frame-sync --frc-quality mcfi --scte35 --captions --preview-proxy $$CEF_FLAGS $$CERT_FLAGS & \
 		fi; \
 		cd ui && npm run dev & \
 		wait
