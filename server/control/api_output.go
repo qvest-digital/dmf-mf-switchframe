@@ -201,8 +201,16 @@ func (a *API) handleConfidence(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAddDestination creates a new output destination.
+// Gated on the partitioned follower for the same reason as reassign — a
+// follower creating destinations locally produces orphan records the leader
+// never sees, requiring manual cleanup at heal. Force-leader is the escape
+// hatch for operators driving the minority side.
 func (a *API) handleAddDestination(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)
+	if err := a.peerPoller.Gate(); err != nil {
+		httperr.Write(w, http.StatusConflict, err.Error())
+		return
+	}
 	if a.outputMgr == nil {
 		httperr.Write(w, http.StatusNotImplemented, "output manager not configured")
 		return
@@ -280,9 +288,15 @@ func (a *API) handleGetDestination(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(status)
 }
 
-// handleRemoveDestination deletes a destination by ID.
+// handleRemoveDestination deletes a destination by ID. Gated on the
+// partitioned follower — a local delete produces orphan-absence at heal
+// (leader still has the record). Force-leader is the escape hatch.
 func (a *API) handleRemoveDestination(w http.ResponseWriter, r *http.Request) {
 	a.setLastOperator(r)
+	if err := a.peerPoller.Gate(); err != nil {
+		httperr.Write(w, http.StatusConflict, err.Error())
+		return
+	}
 	if a.outputMgr == nil {
 		httperr.Write(w, http.StatusNotImplemented, "output manager not configured")
 		return

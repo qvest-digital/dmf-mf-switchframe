@@ -208,3 +208,110 @@ func TestReassignDestinationEngine_FollowerRejectPreservesConvergence(t *testing
 	require.Equal(t, "a", mockFollower.destinations["dest-1"].Config.Engine,
 		"follower's local state must remain unchanged so heal surfaces the leader's value")
 }
+
+// A partitioned follower accepting AddDestination produces a new record with
+// an independently-generated ID that the leader never sees — after heal, the
+// engines disagree on the set of known destinations. Orphan class of divergence,
+// narrower than the reassign same-ID conflict but still requires manual
+// cleanup.
+func TestAddDestination_RejectsOnPartitionedFollower(t *testing.T) {
+	api, mock := setupOutputAPIWithPoller(t, partitionedFollowerPoller(t))
+
+	body := `{"type":"srt-caller","address":"192.168.1.100","port":9000,"name":"YouTube"}`
+	req := httptest.NewRequest("POST", "/api/output/destinations", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusConflict, rec.Code, "body: %s", rec.Body.String())
+	require.Contains(t, rec.Body.String(), "gated")
+	require.Empty(t, mock.destinations, "follower must not have persisted the new destination")
+	require.Equal(t, output.DestinationConfig{}, mock.lastDestConfig,
+		"AddDestination must not have been called on the mock")
+}
+
+func TestAddDestination_AllowsOnLeader(t *testing.T) {
+	api, mock := setupOutputAPIWithPoller(t, leaderPoller(t))
+
+	body := `{"type":"srt-caller","address":"192.168.1.100","port":9000,"name":"YouTube"}`
+	req := httptest.NewRequest("POST", "/api/output/destinations", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
+	require.Equal(t, "srt-caller", mock.lastDestConfig.Type)
+	require.Equal(t, 9000, mock.lastDestConfig.Port)
+}
+
+func TestAddDestination_AllowsOnStandalone(t *testing.T) {
+	api, mock := setupOutputTestAPI(t)
+
+	body := `{"type":"srt-caller","address":"192.168.1.100","port":9000,"name":"YouTube"}`
+	req := httptest.NewRequest("POST", "/api/output/destinations", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusCreated, rec.Code, "body: %s", rec.Body.String())
+	require.Equal(t, "srt-caller", mock.lastDestConfig.Type)
+}
+
+// A partitioned follower accepting RemoveDestination produces orphan-absence:
+// the leader still has the record, the follower does not, and at heal the
+// engines disagree on what exists.
+func TestRemoveDestination_RejectsOnPartitionedFollower(t *testing.T) {
+	api, mock := setupOutputAPIWithPoller(t, partitionedFollowerPoller(t))
+	mock.destinations = map[string]output.DestinationStatus{
+		"dest-1": {
+			ID:     "dest-1",
+			Config: output.DestinationConfig{Type: "srt-caller", Address: "10.0.0.1", Port: 5000, Engine: "a"},
+			State:  "stopped",
+		},
+	}
+
+	req := httptest.NewRequest("DELETE", "/api/output/destinations/dest-1", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusConflict, rec.Code, "body: %s", rec.Body.String())
+	require.Contains(t, rec.Body.String(), "gated")
+	require.Contains(t, mock.destinations, "dest-1",
+		"follower must not have removed the destination locally")
+}
+
+func TestRemoveDestination_AllowsOnLeader(t *testing.T) {
+	api, mock := setupOutputAPIWithPoller(t, leaderPoller(t))
+	mock.destinations = map[string]output.DestinationStatus{
+		"dest-1": {
+			ID:     "dest-1",
+			Config: output.DestinationConfig{Type: "srt-caller", Address: "10.0.0.1", Port: 5000, Engine: "a"},
+			State:  "stopped",
+		},
+	}
+
+	req := httptest.NewRequest("DELETE", "/api/output/destinations/dest-1", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNoContent, rec.Code, "body: %s", rec.Body.String())
+	require.NotContains(t, mock.destinations, "dest-1")
+}
+
+func TestRemoveDestination_AllowsOnStandalone(t *testing.T) {
+	api, mock := setupOutputTestAPI(t)
+	mock.destinations = map[string]output.DestinationStatus{
+		"dest-1": {
+			ID:     "dest-1",
+			Config: output.DestinationConfig{Type: "srt-caller", Address: "10.0.0.1", Port: 5000, Engine: "a"},
+			State:  "stopped",
+		},
+	}
+
+	req := httptest.NewRequest("DELETE", "/api/output/destinations/dest-1", nil)
+	rec := httptest.NewRecorder()
+	api.Mux().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNoContent, rec.Code, "body: %s", rec.Body.String())
+	require.NotContains(t, mock.destinations, "dest-1")
+}
