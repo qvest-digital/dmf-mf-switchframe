@@ -1470,3 +1470,400 @@ func TestPlayerReencodeAVC1BufferNotAliased(t *testing.T) {
 		"first wireData was corrupted by second reencode call; "+
 			"avc1Buf aliasing means downstream GOP cache and async channel sends get stale data")
 }
+
+// --- Seek rewind mock helpers ---
+
+// mockFlushableDecoder implements FlushableDecoder so the player can flush it
+// on seek. Decode/Flush/Close are routed to the configured closures.
+type mockFlushableDecoder struct {
+	decodeFn func(h264 []byte) (yuv []byte, w, h int, err error)
+	flushFn  func()
+	closeFn  func()
+}
+
+func (m *mockFlushableDecoder) Decode(h264 []byte) (yuv []byte, w, h int, err error) {
+	return m.decodeFn(h264)
+}
+
+func (m *mockFlushableDecoder) Flush() {
+	if m.flushFn != nil {
+		m.flushFn()
+	}
+}
+
+func (m *mockFlushableDecoder) Close() {
+	if m.closeFn != nil {
+		m.closeFn()
+	}
+}
+
+// buildSyntheticSeekFrame builds a minimal BufferedFrame whose wireData ends
+// with a frame-index marker byte. The mock decoder can recover the index from
+// the last byte of its input (after WireToAnnexB and optional SPS/PPS prepend,
+// the clip's NAL — and thus the marker — remains at the end).
+func buildSyntheticSeekFrame(idx byte, isKeyframe bool) BufferedFrame {
+	var naluType byte = 0x41 // non-IDR slice
+	if isKeyframe {
+		naluType = 0x65 // IDR slice
+	}
+	wire := []byte{0, 0, 0, 2, naluType, idx}
+	f := BufferedFrame{
+		wireData:   wire,
+		pts:        int64(idx) * 3000,
+		isKeyframe: isKeyframe,
+	}
+	if isKeyframe {
+		f.sps = []byte{0x67, 0x42, 0xC0, 0x1E}
+		f.pps = []byte{0x68, 0xCE, 0x38, 0x80}
+	}
+	return f
+}
+
+// seekMarker returns the frame-index marker carried by a decoder-input blob
+// produced by buildSyntheticSeekFrame. The marker is always the final byte.
+func seekMarker(decoderInput []byte) int {
+	if len(decoderInput) == 0 {
+		return -1
+	}
+	return int(decoderInput[len(decoderInput)-1])
+}
+
+// TestPlayer_SeekRewindsToKeyframe verifies that Seek rewinds the decoder
+// feed to the last keyframe at or before the target index, not jumping
+// straight to a mid-GOP P-frame.
+func TestPlayer_SeekRewindsToKeyframe(t *testing.T) {
+	const numFrames = 60
+	clip := make([]BufferedFrame, numFrames)
+	for i := 0; i < numFrames; i++ {
+		clip[i] = buildSyntheticSeekFrame(byte(i), i == 0 || i == 30)
+	}
+
+	var mu sync.Mutex
+	var decodeOrder []int
+
+	yuv := make([]byte, video.YUV420FrameSize(320, 240))
+	dec := &mockFlushableDecoder{
+		decodeFn: func(h264 []byte) ([]byte, int, int, error) {
+			mu.Lock()
+			decodeOrder = append(decodeOrder, seekMarker(h264))
+			mu.Unlock()
+			return yuv, 320, 240, nil
+		},
+	}
+
+	done := make(chan struct{})
+	p := NewPlayer(PlayerConfig{
+		Clip:       clip,
+		Speed:      1.0,
+		Loop:       false,
+		InitialPTS: 0,
+		Width:      320,
+		Height:     240,
+		Decoder:    dec,
+		DecodeFrame: func(h264 []byte) ([]byte, int, int, error) {
+			return dec.Decode(h264)
+		},
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64, isKeyframe bool) {},
+		OnDone:         func() { close(done) },
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	p.Start(ctx)
+
+	// Let a few pre-seek frames decode, then seek to frame 45 (target).
+	// The nearest keyframe at-or-before 45 is frame 30.
+	time.Sleep(150 * time.Millisecond)
+	p.Seek(45.0 / float64(numFrames))
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for playback to complete after seek")
+	}
+	cancel()
+	p.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.NotEmpty(t, decodeOrder, "decoder should have been called")
+
+	// The rewind feeds the keyframe at index 30 before target 45. Locate
+	// its first occurrence and pin the pre/post shape: everything before
+	// is a pre-seek prefix (< 30) and the tail is 30, 31, ..., 59.
+	foundAt := -1
+	for i, m := range decodeOrder {
+		if m == 30 {
+			foundAt = i
+			break
+		}
+	}
+	require.NotEqual(t, -1, foundAt,
+		"seek to 0.75 must rewind the decoder feed to keyframe 30 (full order: %v)",
+		decodeOrder)
+	for i := 0; i < foundAt; i++ {
+		require.Less(t, decodeOrder[i], 30,
+			"pre-seek decodes must precede keyframe 30; decodeOrder[%d]=%d (full: %v)",
+			i, decodeOrder[i], decodeOrder)
+	}
+
+	tail := decodeOrder[foundAt:]
+	require.Equal(t, numFrames-30, len(tail),
+		"post-rewind feed must include primer+post-target frames (30..%d); got %v",
+		numFrames-1, tail)
+	for i, v := range tail {
+		assert.Equal(t, 30+i, v,
+			"post-rewind decode order must be 30,31,...,59; tail[%d]=%d (tail=%v)", i, v, tail)
+	}
+
+	// Critical bug assertion: target frame 45 must not appear before the
+	// rewound keyframe. Before the fix, decodeOrder jumped straight to 45
+	// with no primer; this assertion pins the fix in place.
+	idx45 := -1
+	for i, m := range decodeOrder {
+		if m == 45 {
+			idx45 = i
+			break
+		}
+	}
+	require.NotEqual(t, -1, idx45, "target frame 45 should appear in the feed")
+	assert.Less(t, foundAt, idx45,
+		"rewound keyframe (30) must be fed before the seek target (45)")
+}
+
+// TestPlayer_SeekFlushesDecoder asserts that Seek flushes the decoder
+// exactly once, and the Flush() call precedes any decode call with the
+// rewound keyframe.
+func TestPlayer_SeekFlushesDecoder(t *testing.T) {
+	const numFrames = 60
+	clip := make([]BufferedFrame, numFrames)
+	for i := 0; i < numFrames; i++ {
+		clip[i] = buildSyntheticSeekFrame(byte(i), i == 0 || i == 30)
+	}
+
+	var mu sync.Mutex
+	type event struct {
+		kind string // "decode" or "flush"
+		idx  int
+	}
+	var events []event
+
+	yuv := make([]byte, video.YUV420FrameSize(320, 240))
+	dec := &mockFlushableDecoder{
+		decodeFn: func(h264 []byte) ([]byte, int, int, error) {
+			mu.Lock()
+			events = append(events, event{kind: "decode", idx: seekMarker(h264)})
+			mu.Unlock()
+			return yuv, 320, 240, nil
+		},
+		flushFn: func() {
+			mu.Lock()
+			events = append(events, event{kind: "flush"})
+			mu.Unlock()
+		},
+	}
+
+	done := make(chan struct{})
+	p := NewPlayer(PlayerConfig{
+		Clip:       clip,
+		Speed:      1.0,
+		Loop:       false,
+		InitialPTS: 0,
+		Width:      320,
+		Height:     240,
+		Decoder:    dec,
+		DecodeFrame: func(h264 []byte) ([]byte, int, int, error) {
+			return dec.Decode(h264)
+		},
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64, isKeyframe bool) {},
+		OnDone:         func() { close(done) },
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	p.Start(ctx)
+
+	time.Sleep(150 * time.Millisecond)
+	p.Seek(45.0 / float64(numFrames))
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for playback to complete after seek")
+	}
+	cancel()
+	p.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Exactly one Flush must have happened (the seek).
+	flushCount := 0
+	flushAt := -1
+	for i, e := range events {
+		if e.kind == "flush" {
+			flushCount++
+			if flushAt == -1 {
+				flushAt = i
+			}
+		}
+	}
+	assert.Equal(t, 1, flushCount,
+		"Flush must be called exactly once on seek, got %d (events=%v)", flushCount, events)
+
+	// The next decode after the flush must be the rewound keyframe (idx 30).
+	require.NotEqual(t, -1, flushAt, "no Flush event recorded")
+	require.Less(t, flushAt+1, len(events),
+		"no decode event follows the flush (events=%v)", events)
+	next := events[flushAt+1]
+	assert.Equal(t, "decode", next.kind,
+		"event after flush must be a decode call, got %q", next.kind)
+	assert.Equal(t, 30, next.idx,
+		"first decode after flush must be the rewound keyframe (30), got %d", next.idx)
+}
+
+// TestPlayer_SeekAtBeforeKeyframe asserts that a seek to a position with no
+// preceding keyframe falls back to frame 0 without crashing. The demuxer's
+// drop-before-first-keyframe pass guarantees this code path is benign in
+// practice; the test just pins the behaviour.
+func TestPlayer_SeekAtBeforeKeyframe(t *testing.T) {
+	// Construct a clip where no frame is flagged as keyframe. Seeking to
+	// position 0.0 must clamp to frame 0 and feed it to the decoder
+	// without panicking.
+	const numFrames = 10
+	clip := make([]BufferedFrame, numFrames)
+	for i := 0; i < numFrames; i++ {
+		clip[i] = buildSyntheticSeekFrame(byte(i), false)
+	}
+
+	var mu sync.Mutex
+	var decodeOrder []int
+
+	yuv := make([]byte, video.YUV420FrameSize(320, 240))
+	dec := &mockFlushableDecoder{
+		decodeFn: func(h264 []byte) ([]byte, int, int, error) {
+			mu.Lock()
+			decodeOrder = append(decodeOrder, seekMarker(h264))
+			mu.Unlock()
+			return yuv, 320, 240, nil
+		},
+	}
+
+	done := make(chan struct{})
+	p := NewPlayer(PlayerConfig{
+		Clip:       clip,
+		Speed:      1.0,
+		Loop:       false,
+		InitialPTS: 0,
+		Width:      320,
+		Height:     240,
+		Decoder:    dec,
+		DecodeFrame: func(h264 []byte) ([]byte, int, int, error) {
+			return dec.Decode(h264)
+		},
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64, isKeyframe bool) {},
+		OnDone:         func() { close(done) },
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Seek(0.0) before Start just fills the pending-seek channel; the
+	// Start-goroutine picks it up on its first loop iteration.
+	p.Seek(0.0)
+	p.Start(ctx)
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for playback to complete after seek to 0.0")
+	}
+	cancel()
+	p.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.NotEmpty(t, decodeOrder, "decoder should have been called")
+	// First fed frame must be frame 0 (the fallback keyframe).
+	assert.Equal(t, 0, decodeOrder[0],
+		"seek to 0.0 with no keyframes must feed frame 0 first, got %v", decodeOrder)
+}
+
+// TestPlayer_SeekOutputPTSContinuity asserts that after a mid-playback seek,
+// the PTS stream emitted to VideoOutput (browser relay) remains strictly
+// monotonic — no duplicate or backwards PTS values that would corrupt the
+// downstream GOP cache.
+func TestPlayer_SeekOutputPTSContinuity(t *testing.T) {
+	const numFrames = 60
+	clip := make([]BufferedFrame, numFrames)
+	for i := 0; i < numFrames; i++ {
+		clip[i] = buildSyntheticSeekFrame(byte(i), i == 0 || i == 30)
+	}
+
+	var mu sync.Mutex
+	var videoPTS []int64
+
+	yuv := make([]byte, video.YUV420FrameSize(320, 240))
+	dec := &mockFlushableDecoder{
+		decodeFn: func(h264 []byte) ([]byte, int, int, error) {
+			return yuv, 320, 240, nil
+		},
+	}
+
+	done := make(chan struct{})
+	p := NewPlayer(PlayerConfig{
+		Clip:       clip,
+		Speed:      1.0,
+		Loop:       false,
+		InitialPTS: 0,
+		Width:      320,
+		Height:     240,
+		Decoder:    dec,
+		DecodeFrame: func(h264 []byte) ([]byte, int, int, error) {
+			return dec.Decode(h264)
+		},
+		EncoderFactory: func(w, h, fpsNum, fpsDen int) (VideoEncoder, error) {
+			return &mockVideoEncoder{
+				encodeFn: func(yuv []byte, pts int64, forceIDR bool) ([]byte, bool, error) {
+					if forceIDR {
+						return buildAnnexBKeyframe(), true, nil
+					}
+					return buildAnnexBNonKeyframe(), false, nil
+				},
+				closeFn: func() {},
+			}, nil
+		},
+		RawVideoOutput: func(yuv []byte, w, h int, pts int64, isKeyframe bool) {},
+		VideoOutput: func(wireData []byte, pts int64, isKeyframe bool, sps, pps []byte) {
+			mu.Lock()
+			videoPTS = append(videoPTS, pts)
+			mu.Unlock()
+		},
+		OnDone: func() { close(done) },
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	p.Start(ctx)
+
+	time.Sleep(150 * time.Millisecond)
+	p.Seek(45.0 / float64(numFrames))
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for playback to complete after seek")
+	}
+	cancel()
+	p.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.NotEmpty(t, videoPTS, "VideoOutput should have been called")
+	for i := 1; i < len(videoPTS); i++ {
+		assert.Greater(t, videoPTS[i], videoPTS[i-1],
+			"VideoOutput PTS stream must be strictly monotonic across seek; "+
+				"pts[%d]=%d after pts[%d]=%d (full stream head=%v)",
+			i, videoPTS[i], i-1, videoPTS[i-1], videoPTS[:min(i+1, 10)])
+	}
+}

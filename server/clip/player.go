@@ -371,6 +371,10 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 	pacingIdx := 0
 	outputIdx := 0
 
+	// -1 = no rewind in flight; otherwise exclusive end of the decode-only
+	// window that primes the decoder after a seek.
+	primeUntilIdx := -1
+
 	for frameIdx := 0; frameIdx < totalClipFrames; {
 		// Check for seek requests (non-blocking).
 		select {
@@ -382,7 +386,21 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 			if targetIdx < 0 {
 				targetIdx = 0
 			}
-			frameIdx = targetIdx
+			// Walk backwards to the nearest keyframe so the decoder sees a
+			// valid reference chain before the target. Without this, feeding
+			// a mid-GOP P-frame produces green/garbage output until the next
+			// natural keyframe.
+			keyframeIdx := targetIdx
+			for keyframeIdx > 0 && !clip[keyframeIdx].isKeyframe {
+				keyframeIdx--
+			}
+			// Flush the decoder so its internal reference-frame state does
+			// not carry stale pre-seek frames into the rewound decode.
+			if fd, ok := p.config.Decoder.(FlushableDecoder); ok {
+				fd.Flush()
+			}
+			frameIdx = keyframeIdx
+			primeUntilIdx = targetIdx
 			outputIdx = targetIdx * dupCount
 			// Reset pacing to avoid a burst of catch-up frames.
 			playbackStart = time.Now()
@@ -396,17 +414,22 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 		default:
 		}
 
-		// Check for speed changes.
-		newSpeed := p.speed.Load().(float64)
-		if newSpeed != speed {
-			speed = newSpeed
-			dupCount, ptsPerFrame = computeClipTiming(speed, sourceFPS)
-			frameDuration = computeFrameDuration(speed, sourceFPS, dupCount)
-			totalFrames = totalClipFrames * dupCount
-			p.totalOutputFrames = totalFrames
-			outputIdx = frameIdx * dupCount
-			playbackStart = time.Now()
-			pacingIdx = 0
+		// Check for speed changes. Defer while priming: outputIdx was
+		// pinned to targetIdx*dupCount by the seek branch; recomputing
+		// from a primer frameIdx would rewind the progress/audio counters
+		// below their intended post-seek value.
+		if frameIdx >= primeUntilIdx {
+			newSpeed := p.speed.Load().(float64)
+			if newSpeed != speed {
+				speed = newSpeed
+				dupCount, ptsPerFrame = computeClipTiming(speed, sourceFPS)
+				frameDuration = computeFrameDuration(speed, sourceFPS, dupCount)
+				totalFrames = totalClipFrames * dupCount
+				p.totalOutputFrames = totalFrames
+				outputIdx = frameIdx * dupCount
+				playbackStart = time.Now()
+				pacingIdx = 0
+			}
 		}
 
 		f := clip[frameIdx]
@@ -484,12 +507,32 @@ func (p *Player) playClip(ctx context.Context, clip []BufferedFrame, sourceFPS f
 			}
 		}
 
-		// Signal codec parameters on first keyframe with SPS/PPS.
+		// Signal codec parameters on first keyframe with SPS/PPS. This
+		// must run before the priming guard so a rewound keyframe that is
+		// the first one we've seen (e.g. pre-Start seek) still registers
+		// codec params with the consumer.
 		if browserKeyframe && !p.videoInfoSent && p.config.OnVideoInfo != nil {
 			if browserSPS != nil && browserPPS != nil {
 				p.config.OnVideoInfo(browserSPS, browserPPS, fw, fh)
 				p.videoInfoSent = true
 			}
+		}
+
+		// Priming: emit to the browser relay (its decoder needs IDR+chain
+		// too) and advance outputPTS so the GOP cache sees unique,
+		// monotonic timestamps, but skip the switcher pipeline and pacing.
+		if frameIdx < primeUntilIdx {
+			select {
+			case <-ctx.Done():
+				return true
+			default:
+			}
+			if p.config.VideoOutput != nil {
+				p.config.VideoOutput(browserWireData, *outputPTS, browserKeyframe, browserSPS, browserPPS)
+			}
+			*outputPTS += ptsPerFrame
+			frameIdx++
+			continue
 		}
 
 		// Output frames with duplication for slow-mo.
