@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -25,10 +26,10 @@ func (d db) done(ctx context.Context, itemID, agentID, summary string) error {
 	if err := d.postMessage(ctx, tx, now, agentID, itemID, "done", body, nil, "normal"); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := d.releaseInTx(ctx, tx, itemID, agentID, "done"); err != nil {
 		return err
 	}
-	return d.release(ctx, itemID, agentID, "done")
+	return tx.Commit()
 }
 
 func (d db) blocked(ctx context.Context, itemID, agentID, reason string) error {
@@ -49,10 +50,10 @@ func (d db) blocked(ctx context.Context, itemID, agentID, reason string) error {
 	if err := d.postMessage(ctx, tx, now, agentID, itemID, "blocked", body, nil, "normal"); err != nil {
 		return err
 	}
-	if err := tx.Commit(); err != nil {
+	if err := d.releaseInTx(ctx, tx, itemID, agentID, "blocked"); err != nil {
 		return err
 	}
-	return d.release(ctx, itemID, agentID, "blocked")
+	return tx.Commit()
 }
 
 func runDone(args []string) int {
@@ -73,6 +74,14 @@ func runDone(args []string) int {
 	}
 	d := newDB(sqldb)
 	if err := d.done(ctx, itemID, id, *summary); err != nil {
+		if errors.Is(err, errNotYours) {
+			fmt.Fprintln(os.Stderr, "not your claim")
+			return 1
+		}
+		if errors.Is(err, errNotClaimed) {
+			fmt.Fprintf(os.Stderr, "no active claim on %s\n", itemID)
+			return 1
+		}
 		fmt.Fprintln(os.Stderr, err)
 		return 4
 	}
@@ -98,6 +107,14 @@ func runBlocked(args []string) int {
 	}
 	d := newDB(sqldb)
 	if err := d.blocked(ctx, itemID, id, *reason); err != nil {
+		if errors.Is(err, errNotYours) {
+			fmt.Fprintln(os.Stderr, "not your claim")
+			return 1
+		}
+		if errors.Is(err, errNotClaimed) {
+			fmt.Fprintf(os.Stderr, "no active claim on %s\n", itemID)
+			return 1
+		}
 		fmt.Fprintln(os.Stderr, err)
 		return 4
 	}

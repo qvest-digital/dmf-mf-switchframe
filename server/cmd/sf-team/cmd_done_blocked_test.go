@@ -44,3 +44,19 @@ func TestBlocked_EmitsBlockedMessageAndReleases(t *testing.T) {
 		t.Fatalf("expected 1 blocked msg, got %d", c)
 	}
 }
+
+func TestDone_AtomicOnReleaseFailure(t *testing.T) {
+	d, _ := newTestDB(t)
+	ctx := context.Background()
+	_ = d.register(ctx, "agent-a", "A", "/tmp/a", 1)
+
+	if err := d.done(ctx, "BUG-092", "agent-a", "summary"); err == nil {
+		t.Fatal("expected done to fail on unclaimed item")
+	}
+
+	var c int
+	d.sqldb.QueryRow(`SELECT COUNT(*) FROM messages WHERE kind='done' AND thread='BUG-092'`).Scan(&c)
+	if c != 0 {
+		t.Fatalf("done message leaked despite release failure: count=%d", c)
+	}
+}

@@ -18,13 +18,20 @@ func (d db) release(ctx context.Context, itemID, agentID, outcome string) error 
 	if outcome == "" {
 		outcome = "released"
 	}
-	now := d.nowUnix()
-
 	tx, err := d.sqldb.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+
+	if err := d.releaseInTx(ctx, tx, itemID, agentID, outcome); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (d db) releaseInTx(ctx context.Context, tx *sql.Tx, itemID, agentID, outcome string) error {
+	now := d.nowUnix()
 
 	var holder string
 	var claimedAt int64
@@ -45,11 +52,9 @@ func (d db) release(ctx context.Context, itemID, agentID, outcome string) error 
 	`, itemID, agentID, claimedAt, now, outcome); err != nil {
 		return fmt.Errorf("history: %w", err)
 	}
-
 	if _, err := tx.ExecContext(ctx, `DELETE FROM claims WHERE item_id=?`, itemID); err != nil {
 		return err
 	}
-
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE touches SET released_at = ?
 		WHERE item_id = ? AND agent_id = ? AND released_at IS NULL
@@ -64,8 +69,7 @@ func (d db) release(ctx context.Context, itemID, agentID, outcome string) error 
 	if err := d.postMessage(ctx, tx, now, agentID, itemID, "release", body, nil, "normal"); err != nil {
 		return err
 	}
-
-	return tx.Commit()
+	return nil
 }
 
 func runRelease(args []string) int {
