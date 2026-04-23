@@ -1,6 +1,7 @@
 package switcher
 
 import (
+	"io"
 	"log/slog"
 	"sync"
 	"testing"
@@ -8,6 +9,22 @@ import (
 
 	"github.com/zsiec/prism/distribution"
 )
+
+var (
+	benchSilentLogger       = slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError + 10}))
+	benchSlogSilencedOnce   sync.Once
+	benchPrevDefaultLogger  *slog.Logger
+)
+
+// silenceSlogForBench replaces the default slog handler with a no-op sink so
+// prism-distribution log lines do not pollute benchmark output. Idempotent;
+// only runs the first call per process.
+func silenceSlogForBench() {
+	benchSlogSilencedOnce.Do(func() {
+		benchPrevDefaultLogger = slog.Default()
+		slog.SetDefault(benchSilentLogger)
+	})
+}
 
 // newBenchSwitcher constructs a Switcher with n virtual sources registered,
 // sized for 1080p benchmarking. Uses RegisterVirtualSource so the bench does
@@ -17,6 +34,7 @@ import (
 // production workload where many sources are on-tile but only one is PGM.
 func newBenchSwitcher(b *testing.B, nSources int) *Switcher {
 	b.Helper()
+	silenceSlogForBench()
 	relay := distribution.NewRelay()
 	benchFmt := PipelineFormat{
 		Name:   "bench",
@@ -26,7 +44,7 @@ func newBenchSwitcher(b *testing.B, nSources int) *Switcher {
 		FPSDen: 1,
 	}
 	s := &Switcher{
-		log:           slog.With("component", "switcher-bench"),
+		log:           benchSilentLogger,
 		sources:       make(map[string]*sourceState),
 		programRelay:  relay,
 		health:        newHealthMonitor(),
