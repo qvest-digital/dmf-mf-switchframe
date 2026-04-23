@@ -58,3 +58,26 @@ func TestRelease_UntouchesAllForItem(t *testing.T) {
 		t.Fatalf("active touches=%d want 0", active)
 	}
 }
+
+func TestRelease_RejectsNeverClaimed(t *testing.T) {
+	d, _ := newTestDB(t)
+	ctx := context.Background()
+	_ = d.register(ctx, "agent-a", "A", "/tmp/a", 1)
+
+	err := d.release(ctx, "NEVER-EXISTED", "agent-a", "done")
+	if !errors.Is(err, errNotClaimed) {
+		t.Fatalf("want errNotClaimed, got %v", err)
+	}
+}
+
+func TestRelease_RollbackOnClosedDB(t *testing.T) {
+	d, _ := newTestDB(t)
+	ctx := context.Background()
+	_ = d.register(ctx, "agent-a", "A", "/tmp/a", 1)
+	_ = d.claim(ctx, "BUG-099", "agent-a", "", nil, false)
+
+	d.sqldb.Close()
+	if err := d.release(ctx, "BUG-099", "agent-a", "done"); err == nil {
+		t.Fatal("expected release to fail against a closed DB")
+	}
+}

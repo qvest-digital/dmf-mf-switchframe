@@ -2,13 +2,17 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
 )
 
-var errNotYours = errors.New("claim held by another agent")
+var (
+	errNotYours   = errors.New("claim held by another agent")
+	errNotClaimed = errors.New("no active claim")
+)
 
 func (d db) release(ctx context.Context, itemID, agentID, outcome string) error {
 	if outcome == "" {
@@ -26,6 +30,9 @@ func (d db) release(ctx context.Context, itemID, agentID, outcome string) error 
 	var claimedAt int64
 	row := tx.QueryRowContext(ctx, `SELECT agent_id, claimed_at FROM claims WHERE item_id=?`, itemID)
 	if err := row.Scan(&holder, &claimedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errNotClaimed
+		}
 		return fmt.Errorf("lookup claim: %w", err)
 	}
 	if holder != agentID {
@@ -84,6 +91,10 @@ func runRelease(args []string) int {
 	if err := d.release(ctx, itemID, id, *outcome); err != nil {
 		if errors.Is(err, errNotYours) {
 			fmt.Fprintln(os.Stderr, "not your claim")
+			return 1
+		}
+		if errors.Is(err, errNotClaimed) {
+			fmt.Fprintf(os.Stderr, "no active claim on %s\n", itemID)
 			return 1
 		}
 		fmt.Fprintln(os.Stderr, err)
