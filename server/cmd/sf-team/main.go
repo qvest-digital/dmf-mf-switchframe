@@ -60,6 +60,8 @@ func main() {
 		os.Exit(runHistory(args))
 	case "tail":
 		os.Exit(runTail(args))
+	case "doctor":
+		os.Exit(runDoctor(args))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
 		usage()
