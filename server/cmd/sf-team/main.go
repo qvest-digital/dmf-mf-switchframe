@@ -62,6 +62,8 @@ func main() {
 		os.Exit(runTail(args))
 	case "doctor":
 		os.Exit(runDoctor(args))
+	case "archive":
+		os.Exit(runArchive(args))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
 		usage()
