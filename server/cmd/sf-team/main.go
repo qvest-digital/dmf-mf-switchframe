@@ -34,6 +34,8 @@ func main() {
 		os.Exit(runBlocked(args))
 	case "reassign":
 		os.Exit(runReassign(args))
+	case "say":
+		os.Exit(runSay(args))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
 		usage()
