@@ -256,3 +256,7 @@ install-sf-team: sf-team
 .PHONY: sf-team-test
 sf-team-test:
 	cd server && go test ./cmd/sf-team/ -race
+
+.PHONY: sf-team-serve
+sf-team-serve: sf-team
+	./bin/sf-team serve
