@@ -775,6 +775,44 @@ func TestRunSetsRunningFalseOnSuccess(t *testing.T) {
 	require.Equal(t, StepDone, lastState.Steps[0].Status, "step should be done")
 }
 
+func TestRunner_WrongTypeParamReturnsError(t *testing.T) {
+	tests := []struct {
+		name      string
+		step      Step
+		fieldName string
+	}{
+		{
+			name:      "ActionWait ms as string",
+			step:      Step{Action: ActionWait, Params: map[string]any{"ms": "1000"}},
+			fieldName: "ms",
+		},
+		{
+			name:      "ActionTransition durationMs as string",
+			step:      Step{Action: ActionTransition, Params: map[string]any{"source": "cam1", "type": "mix", "durationMs": "5000"}},
+			fieldName: "durationMs",
+		},
+		{
+			name:      "ActionSetAudio level as string",
+			step:      Step{Action: ActionSetAudio, Params: map[string]any{"source": "cam1", "level": "-6"}},
+			fieldName: "level",
+		},
+		{
+			name:      "ActionCut source as number",
+			step:      Step{Action: ActionCut, Params: map[string]any{"source": float64(1)}},
+			fieldName: "source",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			target := &mockTarget{}
+			err := executeStep(context.Background(), tc.step, target)
+			require.Error(t, err, "mistyped %s must not silently use zero value", tc.fieldName)
+			require.Contains(t, err.Error(), tc.fieldName, "error should name the offending field")
+		})
+	}
+}
+
 func TestRunner_AllActionsMapComplete(t *testing.T) {
 	// Verify IsValidAction returns true for all expected actions
 	expectedActions := []Action{

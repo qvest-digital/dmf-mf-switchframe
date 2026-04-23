@@ -95,8 +95,10 @@ func Run(ctx context.Context, m Macro, target Target, onProgress OnProgress) err
 		state.Steps[i].Status = StepRunning
 
 		// For wait steps, populate WaitMs and WaitStartMs before notifying.
+		// A mistyped `ms` leaves WaitMs at 0 here; executeStep below will
+		// reject the step and publish the real error via StepState.Error.
 		if step.Action == ActionWait {
-			if ms, ok := step.Params["ms"].(float64); ok {
+			if ms, _ := ParamFloatDefault(step.Params, "ms", 0); ms > 0 {
 				state.Steps[i].WaitMs = int(ms)
 			}
 			state.Steps[i].WaitStartMs = time.Now().UnixMilli()
@@ -126,40 +128,58 @@ func Run(ctx context.Context, m Macro, target Target, onProgress OnProgress) err
 func executeStep(ctx context.Context, step Step, target Target) error {
 	switch step.Action {
 	case ActionCut:
-		source, _ := step.Params["source"].(string)
+		source, err := ParamString(step.Params, "source")
+		if err != nil {
+			return err
+		}
 		if source == "" {
 			return errors.New("cut requires 'source' param")
 		}
 		return target.Cut(ctx, source)
 
 	case ActionPreview:
-		source, _ := step.Params["source"].(string)
+		source, err := ParamString(step.Params, "source")
+		if err != nil {
+			return err
+		}
 		if source == "" {
 			return errors.New("preview requires 'source' param")
 		}
 		return target.SetPreview(ctx, source)
 
 	case ActionTransition:
-		source, _ := step.Params["source"].(string)
+		source, err := ParamString(step.Params, "source")
+		if err != nil {
+			return err
+		}
 		if source == "" {
 			return errors.New("transition requires 'source' param")
 		}
-		transType, _ := step.Params["type"].(string)
+		transType, err := ParamStringDefault(step.Params, "type", "mix")
+		if err != nil {
+			return err
+		}
 		if transType == "" {
 			transType = "mix"
 		}
-		durationMs := 1000
-		if d, ok := step.Params["durationMs"].(float64); ok {
-			durationMs = int(d)
+		durationMs, err := ParamFloatDefault(step.Params, "durationMs", 1000)
+		if err != nil {
+			return err
 		}
-		wipeDirection, _ := step.Params["wipeDirection"].(string)
-		stingerName, _ := step.Params["stingerName"].(string)
-		return target.StartTransition(ctx, source, transType, durationMs, wipeDirection, stingerName)
+		wipeDirection, err := ParamStringDefault(step.Params, "wipeDirection", "")
+		if err != nil {
+			return err
+		}
+		stingerName, err := ParamStringDefault(step.Params, "stingerName", "")
+		if err != nil {
+			return err
+		}
+		return target.StartTransition(ctx, source, transType, int(durationMs), wipeDirection, stingerName)
 
 	case ActionWait:
-		ms := 0.0
-		if d, ok := step.Params["ms"].(float64); ok {
-			ms = d
+		ms, err := ParamFloatDefault(step.Params, "ms", 0)
+		if err != nil {
+			return err
 		}
 		if ms <= 0 {
 			return nil
@@ -174,13 +194,16 @@ func executeStep(ctx context.Context, step Step, target Target) error {
 		}
 
 	case ActionSetAudio:
-		source, _ := step.Params["source"].(string)
+		source, err := ParamString(step.Params, "source")
+		if err != nil {
+			return err
+		}
 		if source == "" {
 			return errors.New("set_audio requires 'source' param")
 		}
-		level := 0.0
-		if l, ok := step.Params["level"].(float64); ok {
-			level = l
+		level, err := ParamFloatDefault(step.Params, "level", 0)
+		if err != nil {
+			return err
 		}
 		return target.SetLevel(ctx, source, level)
 
@@ -189,34 +212,34 @@ func executeStep(ctx context.Context, step Step, target Target) error {
 		return err
 
 	case ActionSCTE35Return:
-		eventID := uint32(0)
-		if id, ok := step.Params["eventId"].(float64); ok {
-			eventID = uint32(id)
+		eventID, err := ParamFloatDefault(step.Params, "eventId", 0)
+		if err != nil {
+			return err
 		}
-		return target.SCTE35Return(ctx, eventID)
+		return target.SCTE35Return(ctx, uint32(eventID))
 
 	case ActionSCTE35Cancel:
-		id, ok := step.Params["eventId"].(float64)
-		if !ok {
-			return errors.New("scte35_cancel requires 'eventId' param")
+		id, err := ParamFloat(step.Params, "eventId")
+		if err != nil {
+			return err
 		}
 		return target.SCTE35Cancel(ctx, uint32(id))
 
 	case ActionSCTE35Hold:
-		id, ok := step.Params["eventId"].(float64)
-		if !ok {
-			return errors.New("scte35_hold requires 'eventId' param")
+		id, err := ParamFloat(step.Params, "eventId")
+		if err != nil {
+			return err
 		}
 		return target.SCTE35Hold(ctx, uint32(id))
 
 	case ActionSCTE35Extend:
-		id, ok := step.Params["eventId"].(float64)
-		if !ok {
-			return errors.New("scte35_extend requires 'eventId' param")
+		id, err := ParamFloat(step.Params, "eventId")
+		if err != nil {
+			return err
 		}
-		dur, ok := step.Params["durationMs"].(float64)
-		if !ok {
-			return errors.New("scte35_extend requires 'durationMs' param")
+		dur, err := ParamFloat(step.Params, "durationMs")
+		if err != nil {
+			return err
 		}
 		return target.SCTE35Extend(ctx, uint32(id), int64(dur))
 

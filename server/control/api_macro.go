@@ -289,18 +289,30 @@ func (t *apiMacroTarget) Execute(ctx context.Context, action string, params map[
 	// with macros created before multi-layer migration, but the compositor will
 	// return ErrLayerNotFound if that layer doesn't exist.
 	case macro.ActionGraphicsOn:
-		id := int(floatParam(params, "layerId", 0))
-		return t.execGraphics(func(c *graphics.Compositor) error { return c.On(id) })
+		return t.execGraphicsLayerOp(params, func(c *graphics.Compositor, id int) error { return c.On(id) })
 	case macro.ActionGraphicsOff:
-		id := int(floatParam(params, "layerId", 0))
-		return t.execGraphics(func(c *graphics.Compositor) error { return c.Off(id) })
+		return t.execGraphicsLayerOp(params, func(c *graphics.Compositor, id int) error { return c.Off(id) })
 	case macro.ActionGraphicsAutoOn:
-		id := int(floatParam(params, "layerId", 0))
-		dur := time.Duration(floatParam(params, "durationMs", 500)) * time.Millisecond
+		id, err := intParam(params, "layerId", 0)
+		if err != nil {
+			return err
+		}
+		durMs, err := floatParam(params, "durationMs", 500)
+		if err != nil {
+			return err
+		}
+		dur := time.Duration(durMs) * time.Millisecond
 		return t.execGraphics(func(c *graphics.Compositor) error { return c.AutoOn(id, dur) })
 	case macro.ActionGraphicsAutoOff:
-		id := int(floatParam(params, "layerId", 0))
-		dur := time.Duration(floatParam(params, "durationMs", 500)) * time.Millisecond
+		id, err := intParam(params, "layerId", 0)
+		if err != nil {
+			return err
+		}
+		durMs, err := floatParam(params, "durationMs", 500)
+		if err != nil {
+			return err
+		}
+		dur := time.Duration(durMs) * time.Millisecond
 		return t.execGraphics(func(c *graphics.Compositor) error { return c.AutoOff(id, dur) })
 	case macro.ActionGraphicsAddLayer:
 		return t.execGraphics(func(c *graphics.Compositor) error {
@@ -308,49 +320,38 @@ func (t *apiMacroTarget) Execute(ctx context.Context, action string, params map[
 			return err
 		})
 	case macro.ActionGraphicsRemoveLayer:
-		id := int(floatParam(params, "layerId", 0))
-		return t.execGraphics(func(c *graphics.Compositor) error { return c.RemoveLayer(id) })
+		return t.execGraphicsLayerOp(params, func(c *graphics.Compositor, id int) error { return c.RemoveLayer(id) })
 	case macro.ActionGraphicsSetRect:
-		id := int(floatParam(params, "layerId", 0))
-		x := int(floatParam(params, "x", 0))
-		y := int(floatParam(params, "y", 0))
-		w := int(floatParam(params, "width", 0))
-		h := int(floatParam(params, "height", 0))
-		return t.execGraphics(func(c *graphics.Compositor) error {
-			return c.SetLayerRect(id, image.Rect(x, y, x+w, y+h))
-		})
+		return t.execGraphicsSetRect(params)
 	case macro.ActionGraphicsSetZOrder:
-		id := int(floatParam(params, "layerId", 0))
-		z := int(floatParam(params, "zOrder", 0))
+		id, err := intParam(params, "layerId", 0)
+		if err != nil {
+			return err
+		}
+		z, err := intParam(params, "zOrder", 0)
+		if err != nil {
+			return err
+		}
 		return t.execGraphics(func(c *graphics.Compositor) error { return c.SetLayerZOrder(id, z) })
 	case macro.ActionGraphicsFlyIn:
-		id := int(floatParam(params, "layerId", 0))
-		dir, _ := params["direction"].(string)
-		dur := int(floatParam(params, "durationMs", 500))
-		return t.execGraphics(func(c *graphics.Compositor) error { return c.FlyIn(id, dir, dur) })
+		return t.execGraphicsFly(params, func(c *graphics.Compositor, id int, dir string, dur int) error { return c.FlyIn(id, dir, dur) })
 	case macro.ActionGraphicsFlyOut:
-		id := int(floatParam(params, "layerId", 0))
-		dir, _ := params["direction"].(string)
-		dur := int(floatParam(params, "durationMs", 500))
-		return t.execGraphics(func(c *graphics.Compositor) error { return c.FlyOut(id, dir, dur) })
+		return t.execGraphicsFly(params, func(c *graphics.Compositor, id int, dir string, dur int) error { return c.FlyOut(id, dir, dur) })
 	case macro.ActionGraphicsSlide:
-		id := int(floatParam(params, "layerId", 0))
-		x := int(floatParam(params, "x", 0))
-		y := int(floatParam(params, "y", 0))
-		w := int(floatParam(params, "width", 0))
-		h := int(floatParam(params, "height", 0))
-		dur := int(floatParam(params, "durationMs", 500))
-		return t.execGraphics(func(c *graphics.Compositor) error {
-			return c.SlideLayer(id, image.Rect(x, y, x+w, y+h), dur)
-		})
+		return t.execGraphicsSlide(params)
 	case macro.ActionGraphicsAnimate:
-		id := int(floatParam(params, "layerId", 0))
+		id, err := intParam(params, "layerId", 0)
+		if err != nil {
+			return err
+		}
 		return t.execGraphicsAnimate(id, params)
 	case macro.ActionGraphicsAnimateStop:
-		id := int(floatParam(params, "layerId", 0))
-		return t.execGraphics(func(c *graphics.Compositor) error { return c.StopAnimation(id) })
+		return t.execGraphicsLayerOp(params, func(c *graphics.Compositor, id int) error { return c.StopAnimation(id) })
 	case macro.ActionGraphicsUploadFrame:
-		id := int(floatParam(params, "layerId", 0))
+		id, err := intParam(params, "layerId", 0)
+		if err != nil {
+			return err
+		}
 		return t.execGraphicsUploadFrame(id, params)
 
 	// Output
@@ -453,10 +454,7 @@ func (t *apiMacroTarget) Execute(ctx context.Context, action string, params map[
 
 	// Graphics (text/ticker/fly-on)
 	case macro.ActionGraphicsFlyOn:
-		id := int(floatParam(params, "layerId", 0))
-		dir, _ := params["direction"].(string)
-		dur := int(floatParam(params, "durationMs", 500))
-		return t.execGraphics(func(c *graphics.Compositor) error { return c.FlyOn(id, dir, dur) })
+		return t.execGraphicsFly(params, func(c *graphics.Compositor, id int, dir string, dur int) error { return c.FlyOn(id, dir, dur) })
 	case macro.ActionGraphicsTextAnimate:
 		return t.execTextAnimate(params)
 	case macro.ActionGraphicsTextAnimateStop:
@@ -478,70 +476,104 @@ func (t *apiMacroTarget) SCTE35Cue(_ context.Context, params map[string]any) (ui
 		return 0, errors.New("scte35 not enabled")
 	}
 	msg := &scte35.CueMessage{}
-	if ct, ok := params["commandType"].(string); ok {
-		switch ct {
-		case "splice_insert":
-			msg.CommandType = scte35.CommandSpliceInsert
-		case "time_signal":
-			msg.CommandType = scte35.CommandTimeSignal
-		default:
-			return 0, fmt.Errorf("invalid commandType %q", ct)
-		}
-	} else {
+	ct, err := stringParam(params, "commandType")
+	if err != nil {
+		return 0, err
+	}
+	switch ct {
+	case "", "splice_insert":
 		msg.CommandType = scte35.CommandSpliceInsert
+	case "time_signal":
+		msg.CommandType = scte35.CommandTimeSignal
+	default:
+		return 0, fmt.Errorf("invalid commandType %q", ct)
 	}
-	if v, ok := params["isOut"].(bool); ok {
-		msg.IsOut = v
+	if msg.IsOut, err = boolParam(params, "isOut", false); err != nil {
+		return 0, err
 	}
-	if v, ok := params["autoReturn"].(bool); ok {
-		msg.AutoReturn = v
+	if msg.AutoReturn, err = boolParam(params, "autoReturn", false); err != nil {
+		return 0, err
 	}
-	if v, ok := params["durationMs"].(float64); ok {
-		d := time.Duration(int64(v)) * time.Millisecond
+	if _, present := params["durationMs"]; present {
+		durMs, err := floatParam(params, "durationMs", 0)
+		if err != nil {
+			return 0, err
+		}
+		d := time.Duration(int64(durMs)) * time.Millisecond
 		msg.BreakDuration = &d
 	}
-	if v, ok := params["eventId"].(float64); ok {
-		msg.EventID = uint32(v)
+	eventID, err := floatParam(params, "eventId", 0)
+	if err != nil {
+		return 0, err
 	}
-	if v, ok := params["uniqueProgramId"].(float64); ok {
-		msg.UniqueProgramID = uint16(v)
+	msg.EventID = uint32(eventID)
+	uniqueProgramID, err := floatParam(params, "uniqueProgramId", 0)
+	if err != nil {
+		return 0, err
 	}
-	if v, ok := params["availNum"].(float64); ok {
-		msg.AvailNum = uint8(v)
+	msg.UniqueProgramID = uint16(uniqueProgramID)
+	availNum, err := floatParam(params, "availNum", 0)
+	if err != nil {
+		return 0, err
 	}
-	if v, ok := params["availsExpected"].(float64); ok {
-		msg.AvailsExpected = uint8(v)
+	msg.AvailNum = uint8(availNum)
+	availsExpected, err := floatParam(params, "availsExpected", 0)
+	if err != nil {
+		return 0, err
 	}
+	msg.AvailsExpected = uint8(availsExpected)
 	// Parse descriptors for time_signal commands.
-	if descs, ok := params["descriptors"].([]any); ok {
-		for _, raw := range descs {
-			dm, ok := raw.(map[string]any)
+	if raw, present := params["descriptors"]; present {
+		descs, ok := raw.([]any)
+		if !ok {
+			return 0, fmt.Errorf("param %q: expected array, got %T", "descriptors", raw)
+		}
+		for i, rawDesc := range descs {
+			dm, ok := rawDesc.(map[string]any)
 			if !ok {
-				continue
+				return 0, fmt.Errorf("descriptors[%d]: expected object, got %T", i, rawDesc)
 			}
 			desc := scte35.SegmentationDescriptor{}
-			if v, ok := dm["segmentationType"].(float64); ok {
-				desc.SegmentationType = uint8(v)
+			segType, err := floatParam(dm, "segmentationType", 0)
+			if err != nil {
+				return 0, fmt.Errorf("descriptors[%d]: %w", i, err)
 			}
-			if v, ok := dm["segEventId"].(float64); ok {
-				desc.SegEventID = uint32(v)
+			desc.SegmentationType = uint8(segType)
+			segEventID, err := floatParam(dm, "segEventId", 0)
+			if err != nil {
+				return 0, fmt.Errorf("descriptors[%d]: %w", i, err)
 			}
-			if v, ok := dm["upidType"].(float64); ok {
-				desc.UPIDType = uint8(v)
+			desc.SegEventID = uint32(segEventID)
+			upidType, err := floatParam(dm, "upidType", 0)
+			if err != nil {
+				return 0, fmt.Errorf("descriptors[%d]: %w", i, err)
 			}
-			if v, ok := dm["upid"].(string); ok {
-				desc.UPID = []byte(v)
+			desc.UPIDType = uint8(upidType)
+			upid, err := stringParam(dm, "upid")
+			if err != nil {
+				return 0, fmt.Errorf("descriptors[%d]: %w", i, err)
 			}
-			if v, ok := dm["durationMs"].(float64); ok && v > 0 {
-				ticks := uint64(v) * 90
+			if upid != "" {
+				desc.UPID = []byte(upid)
+			}
+			durMs, err := floatParam(dm, "durationMs", 0)
+			if err != nil {
+				return 0, fmt.Errorf("descriptors[%d]: %w", i, err)
+			}
+			if durMs > 0 {
+				ticks := uint64(durMs) * 90
 				desc.DurationTicks = &ticks
 			}
 			msg.Descriptors = append(msg.Descriptors, desc)
 		}
 	}
 	msg.Source = "macro"
-	if v, ok := params["preRollMs"].(float64); ok && v > 0 {
-		return t.scte35.ScheduleCue(msg, int64(v))
+	preRollMs, err := floatParam(params, "preRollMs", 0)
+	if err != nil {
+		return 0, err
+	}
+	if preRollMs > 0 {
+		return t.scte35.ScheduleCue(msg, int64(preRollMs))
 	}
 	return t.scte35.InjectCue(msg)
 }
@@ -580,10 +612,13 @@ func (t *apiMacroTarget) execAudioMute(params map[string]any) error {
 	if t.mixer == nil {
 		return nil
 	}
-	source, _ := params["source"].(string)
-	muted := true
-	if v, ok := params["muted"].(bool); ok {
-		muted = v
+	source, err := stringParam(params, "source")
+	if err != nil {
+		return err
+	}
+	muted, err := boolParam(params, "muted", true)
+	if err != nil {
+		return err
 	}
 	return t.mixer.SetMuted(source, muted)
 }
@@ -592,10 +627,13 @@ func (t *apiMacroTarget) execAudioAFV(params map[string]any) error {
 	if t.mixer == nil {
 		return nil
 	}
-	source, _ := params["source"].(string)
-	afv := true
-	if v, ok := params["afv"].(bool); ok {
-		afv = v
+	source, err := stringParam(params, "source")
+	if err != nil {
+		return err
+	}
+	afv, err := boolParam(params, "afv", true)
+	if err != nil {
+		return err
 	}
 	return t.mixer.SetAFV(source, afv)
 }
@@ -604,8 +642,14 @@ func (t *apiMacroTarget) execAudioTrim(params map[string]any) error {
 	if t.mixer == nil {
 		return nil
 	}
-	source, _ := params["source"].(string)
-	trim := floatParam(params, "trim", 0)
+	source, err := stringParam(params, "source")
+	if err != nil {
+		return err
+	}
+	trim, err := floatParam(params, "trim", 0)
+	if err != nil {
+		return err
+	}
 	return t.mixer.SetTrim(source, trim)
 }
 
@@ -613,7 +657,10 @@ func (t *apiMacroTarget) execAudioMaster(params map[string]any) error {
 	if t.mixer == nil {
 		return nil
 	}
-	level := floatParam(params, "level", 0)
+	level, err := floatParam(params, "level", 0)
+	if err != nil {
+		return err
+	}
 	return t.mixer.SetMasterLevel(level)
 }
 
@@ -621,14 +668,29 @@ func (t *apiMacroTarget) execAudioEQ(params map[string]any) error {
 	if t.mixer == nil {
 		return nil
 	}
-	source, _ := params["source"].(string)
-	band := int(floatParam(params, "band", 0))
-	freq := floatParam(params, "frequency", 1000)
-	gain := floatParam(params, "gain", 0)
-	q := floatParam(params, "q", 1.0)
-	enabled := true
-	if v, ok := params["enabled"].(bool); ok {
-		enabled = v
+	source, err := stringParam(params, "source")
+	if err != nil {
+		return err
+	}
+	band, err := intParam(params, "band", 0)
+	if err != nil {
+		return err
+	}
+	freq, err := floatParam(params, "frequency", 1000)
+	if err != nil {
+		return err
+	}
+	gain, err := floatParam(params, "gain", 0)
+	if err != nil {
+		return err
+	}
+	q, err := floatParam(params, "q", 1.0)
+	if err != nil {
+		return err
+	}
+	enabled, err := boolParam(params, "enabled", true)
+	if err != nil {
+		return err
 	}
 	return t.mixer.SetEQ(source, band, freq, gain, q, enabled)
 }
@@ -637,12 +699,30 @@ func (t *apiMacroTarget) execAudioCompressor(params map[string]any) error {
 	if t.mixer == nil {
 		return nil
 	}
-	source, _ := params["source"].(string)
-	threshold := floatParam(params, "threshold", -20)
-	ratio := floatParam(params, "ratio", 4)
-	attack := floatParam(params, "attack", 10)
-	release := floatParam(params, "release", 100)
-	makeupGain := floatParam(params, "makeupGain", 0)
+	source, err := stringParam(params, "source")
+	if err != nil {
+		return err
+	}
+	threshold, err := floatParam(params, "threshold", -20)
+	if err != nil {
+		return err
+	}
+	ratio, err := floatParam(params, "ratio", 4)
+	if err != nil {
+		return err
+	}
+	attack, err := floatParam(params, "attack", 10)
+	if err != nil {
+		return err
+	}
+	release, err := floatParam(params, "release", 100)
+	if err != nil {
+		return err
+	}
+	makeupGain, err := floatParam(params, "makeupGain", 0)
+	if err != nil {
+		return err
+	}
 	return t.mixer.SetCompressor(source, threshold, ratio, attack, release, makeupGain)
 }
 
@@ -650,8 +730,14 @@ func (t *apiMacroTarget) execAudioDelay(params map[string]any) error {
 	if t.mixer == nil {
 		return nil
 	}
-	source, _ := params["source"].(string)
-	delayMs := int(floatParam(params, "delayMs", 0))
+	source, err := stringParam(params, "source")
+	if err != nil {
+		return err
+	}
+	delayMs, err := intParam(params, "delayMs", 0)
+	if err != nil {
+		return err
+	}
 	return t.mixer.SetAudioDelay(source, delayMs)
 }
 
@@ -664,29 +750,148 @@ func (t *apiMacroTarget) execGraphics(fn func(*graphics.Compositor) error) error
 	return fn(t.compositor)
 }
 
+func (t *apiMacroTarget) execGraphicsLayerOp(params map[string]any, op func(*graphics.Compositor, int) error) error {
+	id, err := intParam(params, "layerId", 0)
+	if err != nil {
+		return err
+	}
+	return t.execGraphics(func(c *graphics.Compositor) error { return op(c, id) })
+}
+
+func (t *apiMacroTarget) execGraphicsFly(params map[string]any, op func(*graphics.Compositor, int, string, int) error) error {
+	id, err := intParam(params, "layerId", 0)
+	if err != nil {
+		return err
+	}
+	dir, err := stringParam(params, "direction")
+	if err != nil {
+		return err
+	}
+	dur, err := intParam(params, "durationMs", 500)
+	if err != nil {
+		return err
+	}
+	return t.execGraphics(func(c *graphics.Compositor) error { return op(c, id, dir, dur) })
+}
+
+func (t *apiMacroTarget) execGraphicsSetRect(params map[string]any) error {
+	id, err := intParam(params, "layerId", 0)
+	if err != nil {
+		return err
+	}
+	x, err := intParam(params, "x", 0)
+	if err != nil {
+		return err
+	}
+	y, err := intParam(params, "y", 0)
+	if err != nil {
+		return err
+	}
+	w, err := intParam(params, "width", 0)
+	if err != nil {
+		return err
+	}
+	h, err := intParam(params, "height", 0)
+	if err != nil {
+		return err
+	}
+	return t.execGraphics(func(c *graphics.Compositor) error {
+		return c.SetLayerRect(id, image.Rect(x, y, x+w, y+h))
+	})
+}
+
+func (t *apiMacroTarget) execGraphicsSlide(params map[string]any) error {
+	id, err := intParam(params, "layerId", 0)
+	if err != nil {
+		return err
+	}
+	x, err := intParam(params, "x", 0)
+	if err != nil {
+		return err
+	}
+	y, err := intParam(params, "y", 0)
+	if err != nil {
+		return err
+	}
+	w, err := intParam(params, "width", 0)
+	if err != nil {
+		return err
+	}
+	h, err := intParam(params, "height", 0)
+	if err != nil {
+		return err
+	}
+	dur, err := intParam(params, "durationMs", 500)
+	if err != nil {
+		return err
+	}
+	return t.execGraphics(func(c *graphics.Compositor) error {
+		return c.SlideLayer(id, image.Rect(x, y, x+w, y+h), dur)
+	})
+}
+
 func (t *apiMacroTarget) execGraphicsAnimate(id int, params map[string]any) error {
 	if t.compositor == nil {
 		return nil
 	}
-	mode, _ := params["mode"].(string)
+	mode, err := stringParam(params, "mode")
+	if err != nil {
+		return err
+	}
+	minAlpha, err := floatParam(params, "minAlpha", 0)
+	if err != nil {
+		return err
+	}
+	maxAlpha, err := floatParam(params, "maxAlpha", 1)
+	if err != nil {
+		return err
+	}
+	speedHz, err := floatParam(params, "speedHz", 1)
+	if err != nil {
+		return err
+	}
 	cfg := graphics.AnimationConfig{
 		Mode:     mode,
-		MinAlpha: floatParam(params, "minAlpha", 0),
-		MaxAlpha: floatParam(params, "maxAlpha", 1),
-		SpeedHz:  floatParam(params, "speedHz", 1),
+		MinAlpha: minAlpha,
+		MaxAlpha: maxAlpha,
+		SpeedHz:  speedHz,
 	}
 	if mode == "transition" {
-		if x, ok := params["toX"].(float64); ok {
-			y := floatParam(params, "toY", 0)
-			w := floatParam(params, "toWidth", 0)
-			h := floatParam(params, "toHeight", 0)
+		if _, present := params["toX"]; present {
+			x, err := floatParam(params, "toX", 0)
+			if err != nil {
+				return err
+			}
+			y, err := floatParam(params, "toY", 0)
+			if err != nil {
+				return err
+			}
+			w, err := floatParam(params, "toWidth", 0)
+			if err != nil {
+				return err
+			}
+			h, err := floatParam(params, "toHeight", 0)
+			if err != nil {
+				return err
+			}
 			cfg.ToRect = &graphics.RectState{X: int(x), Y: int(y), Width: int(w), Height: int(h)}
 		}
-		if a, ok := params["toAlpha"].(float64); ok {
+		if _, present := params["toAlpha"]; present {
+			a, err := floatParam(params, "toAlpha", 0)
+			if err != nil {
+				return err
+			}
 			cfg.ToAlpha = &a
 		}
-		cfg.DurationMs = int(floatParam(params, "durationMs", 500))
-		easing, _ := params["easing"].(string)
+		durMs, err := intParam(params, "durationMs", 500)
+		if err != nil {
+			return err
+		}
+		cfg.DurationMs = durMs
+		easing, err := stringParam(params, "easing")
+		if err != nil {
+			return err
+		}
 		cfg.Easing = easing
 	}
 	return t.compositor.Animate(id, cfg)
@@ -696,10 +901,22 @@ func (t *apiMacroTarget) execGraphicsUploadFrame(id int, params map[string]any) 
 	if t.compositor == nil {
 		return nil
 	}
-	w := int(floatParam(params, "width", 0))
-	h := int(floatParam(params, "height", 0))
-	tmpl, _ := params["template"].(string)
-	rgbaB64, _ := params["rgba"].(string)
+	w, err := intParam(params, "width", 0)
+	if err != nil {
+		return err
+	}
+	h, err := intParam(params, "height", 0)
+	if err != nil {
+		return err
+	}
+	tmpl, err := stringParam(params, "template")
+	if err != nil {
+		return err
+	}
+	rgbaB64, err := stringParam(params, "rgba")
+	if err != nil {
+		return err
+	}
 	if w <= 0 || h <= 0 {
 		return errors.New("width and height must be positive")
 	}
@@ -719,11 +936,11 @@ func (t *apiMacroTarget) execRecordingStart(params map[string]any) error {
 	if t.outputMgr == nil {
 		return nil
 	}
-	cfg := output.RecorderConfig{}
-	if dir, ok := params["directory"].(string); ok {
-		cfg.Dir = dir
+	dir, err := stringParam(params, "directory")
+	if err != nil {
+		return err
 	}
-	return t.outputMgr.StartRecording(cfg)
+	return t.outputMgr.StartRecording(output.RecorderConfig{Dir: dir})
 }
 
 func (t *apiMacroTarget) execRecordingStop() error {
@@ -739,10 +956,16 @@ func (t *apiMacroTarget) execPresetRecall(ctx context.Context, params map[string
 	if t.presetStore == nil {
 		return nil
 	}
-	id, _ := params["id"].(string)
+	id, err := stringParam(params, "id")
+	if err != nil {
+		return err
+	}
 	if id == "" {
 		// Also accept "name" for backward compat.
-		id, _ = params["name"].(string)
+		id, err = stringParam(params, "name")
+		if err != nil {
+			return err
+		}
 	}
 	if id == "" {
 		return errors.New("preset_recall requires 'id' param")
@@ -805,12 +1028,18 @@ func (rt *macroPresetRecallTarget) SetMasterLevel(level float64) error {
 // --- Key helpers ---
 
 func (t *apiMacroTarget) execKeySet(params map[string]any) error {
-	if t.keyer == nil {
-		return nil
+	// Validate params before the nil-keyer early return so malformed client
+	// macros surface an error even if the subsystem is disabled.
+	source, err := stringParam(params, "source")
+	if err != nil {
+		return err
 	}
-	source, _ := params["source"].(string)
 	config := graphics.KeyConfig{}
-	if configMap, ok := params["config"].(map[string]any); ok {
+	if raw, present := params["config"]; present {
+		configMap, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("param %q: expected object, got %T", "config", raw)
+		}
 		data, err := json.Marshal(configMap)
 		if err != nil {
 			return fmt.Errorf("marshal key config: %w", err)
@@ -819,15 +1048,21 @@ func (t *apiMacroTarget) execKeySet(params map[string]any) error {
 			return fmt.Errorf("parse key config: %w", err)
 		}
 	}
+	if t.keyer == nil {
+		return nil
+	}
 	t.keyer.SetKey(source, config)
 	return nil
 }
 
 func (t *apiMacroTarget) execKeyDelete(params map[string]any) error {
+	source, err := stringParam(params, "source")
+	if err != nil {
+		return err
+	}
 	if t.keyer == nil {
 		return nil
 	}
-	source, _ := params["source"].(string)
 	t.keyer.RemoveKey(source)
 	return nil
 }
@@ -835,20 +1070,38 @@ func (t *apiMacroTarget) execKeyDelete(params map[string]any) error {
 // --- Source helpers ---
 
 func (t *apiMacroTarget) execSourceLabel(ctx context.Context, params map[string]any) error {
-	source, _ := params["source"].(string)
-	label, _ := params["label"].(string)
+	source, err := stringParam(params, "source")
+	if err != nil {
+		return err
+	}
+	label, err := stringParam(params, "label")
+	if err != nil {
+		return err
+	}
 	return t.switcher.SetLabel(ctx, source, label)
 }
 
 func (t *apiMacroTarget) execSourceDelay(params map[string]any) error {
-	source, _ := params["source"].(string)
-	delayMs := int(floatParam(params, "delayMs", 0))
+	source, err := stringParam(params, "source")
+	if err != nil {
+		return err
+	}
+	delayMs, err := intParam(params, "delayMs", 0)
+	if err != nil {
+		return err
+	}
 	return t.switcher.SetSourceDelay(source, delayMs)
 }
 
 func (t *apiMacroTarget) execSourcePosition(params map[string]any) error {
-	source, _ := params["source"].(string)
-	pos := int(floatParam(params, "position", 1))
+	source, err := stringParam(params, "source")
+	if err != nil {
+		return err
+	}
+	pos, err := intParam(params, "position", 1)
+	if err != nil {
+		return err
+	}
 	return t.switcher.SetSourcePosition(source, pos)
 }
 
@@ -858,7 +1111,10 @@ func (t *apiMacroTarget) execReplayMarkIn(params map[string]any) error {
 	if t.replayMgr == nil {
 		return nil
 	}
-	source, _ := params["source"].(string)
+	source, err := stringParam(params, "source")
+	if err != nil {
+		return err
+	}
 	return t.replayMgr.MarkIn(source)
 }
 
@@ -866,7 +1122,10 @@ func (t *apiMacroTarget) execReplayMarkOut(params map[string]any) error {
 	if t.replayMgr == nil {
 		return nil
 	}
-	source, _ := params["source"].(string)
+	source, err := stringParam(params, "source")
+	if err != nil {
+		return err
+	}
 	return t.replayMgr.MarkOut(source)
 }
 
@@ -874,11 +1133,17 @@ func (t *apiMacroTarget) execReplayPlay(params map[string]any) error {
 	if t.replayMgr == nil {
 		return nil
 	}
-	source, _ := params["source"].(string)
-	speed := floatParam(params, "speed", 0.5)
-	loop := false
-	if v, ok := params["loop"].(bool); ok {
-		loop = v
+	source, err := stringParam(params, "source")
+	if err != nil {
+		return err
+	}
+	speed, err := floatParam(params, "speed", 0.5)
+	if err != nil {
+		return err
+	}
+	loop, err := boolParam(params, "loop", false)
+	if err != nil {
+		return err
 	}
 	return t.replayMgr.Play(source, speed, loop)
 }
@@ -898,8 +1163,14 @@ func (t *apiMacroTarget) execReplayQuickClip(params map[string]any) error {
 	}
 	// Will call replayMgr.QuickClip() once the replay UX plan lands.
 	// For now, fall back to mark-based: MarkIn (now - duration) + MarkOut (now) + Play.
-	source, _ := params["source"].(string)
-	speed := floatParam(params, "speed", 0.5)
+	source, err := stringParam(params, "source")
+	if err != nil {
+		return err
+	}
+	speed, err := floatParam(params, "speed", 0.5)
+	if err != nil {
+		return err
+	}
 	if err := t.replayMgr.MarkIn(source); err != nil {
 		return err
 	}
@@ -933,7 +1204,10 @@ func (t *apiMacroTarget) execCaptionMode(params map[string]any) error {
 	if t.captionMgr == nil {
 		return errors.New("captions not enabled")
 	}
-	mode, _ := params["mode"].(string)
+	mode, err := stringParam(params, "mode")
+	if err != nil {
+		return err
+	}
 	m, ok := caption.ParseMode(mode)
 	if !ok {
 		return fmt.Errorf("invalid caption mode %q", mode)
@@ -946,11 +1220,18 @@ func (t *apiMacroTarget) execCaptionText(params map[string]any) error {
 	if t.captionMgr == nil {
 		return errors.New("captions not enabled")
 	}
-	text, _ := params["text"].(string)
+	text, err := stringParam(params, "text")
+	if err != nil {
+		return err
+	}
 	if text != "" {
 		t.captionMgr.IngestText(text)
 	}
-	if newline, ok := params["newline"].(bool); ok && newline {
+	newline, err := boolParam(params, "newline", false)
+	if err != nil {
+		return err
+	}
+	if newline {
 		t.captionMgr.IngestNewline()
 	}
 	return nil
@@ -970,8 +1251,14 @@ func (t *apiMacroTarget) execClipLoad(params map[string]interface{}) error {
 	if t.clipMgr == nil {
 		return fmt.Errorf("clips not enabled")
 	}
-	playerID := int(floatParam(params, "player", 1))
-	clipID, _ := params["clipId"].(string)
+	playerID, err := intParam(params, "player", 1)
+	if err != nil {
+		return err
+	}
+	clipID, err := stringParam(params, "clipId")
+	if err != nil {
+		return err
+	}
 	if clipID == "" {
 		return fmt.Errorf("clip_load requires 'clipId' param")
 	}
@@ -982,11 +1269,17 @@ func (t *apiMacroTarget) execClipPlay(params map[string]interface{}) error {
 	if t.clipMgr == nil {
 		return fmt.Errorf("clips not enabled")
 	}
-	playerID := int(floatParam(params, "player", 1))
-	speed := floatParam(params, "speed", 1.0)
-	loop := false
-	if v, ok := params["loop"].(bool); ok {
-		loop = v
+	playerID, err := intParam(params, "player", 1)
+	if err != nil {
+		return err
+	}
+	speed, err := floatParam(params, "speed", 1.0)
+	if err != nil {
+		return err
+	}
+	loop, err := boolParam(params, "loop", false)
+	if err != nil {
+		return err
 	}
 	return t.clipMgr.Play(playerID, speed, loop)
 }
@@ -995,7 +1288,10 @@ func (t *apiMacroTarget) execClipPause(params map[string]interface{}) error {
 	if t.clipMgr == nil {
 		return fmt.Errorf("clips not enabled")
 	}
-	playerID := int(floatParam(params, "player", 1))
+	playerID, err := intParam(params, "player", 1)
+	if err != nil {
+		return err
+	}
 	return t.clipMgr.Pause(playerID)
 }
 
@@ -1003,7 +1299,10 @@ func (t *apiMacroTarget) execClipStop(params map[string]interface{}) error {
 	if t.clipMgr == nil {
 		return fmt.Errorf("clips not enabled")
 	}
-	playerID := int(floatParam(params, "player", 1))
+	playerID, err := intParam(params, "player", 1)
+	if err != nil {
+		return err
+	}
 	return t.clipMgr.Stop(playerID)
 }
 
@@ -1011,7 +1310,10 @@ func (t *apiMacroTarget) execClipEject(params map[string]interface{}) error {
 	if t.clipMgr == nil {
 		return fmt.Errorf("clips not enabled")
 	}
-	playerID := int(floatParam(params, "player", 1))
+	playerID, err := intParam(params, "player", 1)
+	if err != nil {
+		return err
+	}
 	return t.clipMgr.Eject(playerID)
 }
 
@@ -1019,8 +1321,14 @@ func (t *apiMacroTarget) execClipSeek(params map[string]interface{}) error {
 	if t.clipMgr == nil {
 		return fmt.Errorf("clips not enabled")
 	}
-	playerID := int(floatParam(params, "player", 1))
-	position := floatParam(params, "position", 0)
+	playerID, err := intParam(params, "player", 1)
+	if err != nil {
+		return err
+	}
+	position, err := floatParam(params, "position", 0)
+	if err != nil {
+		return err
+	}
 	return t.clipMgr.Seek(playerID, position)
 }
 
@@ -1030,21 +1338,36 @@ func (t *apiMacroTarget) execAISegEnable(params map[string]any) error {
 	if t.aiSegmentMgr == nil {
 		return fmt.Errorf("ai segmentation not available")
 	}
-	source, _ := params["source"].(string)
+	source, err := stringParam(params, "source")
+	if err != nil {
+		return err
+	}
 	if source == "" {
 		return fmt.Errorf("ai_segment_enable requires 'source' param")
 	}
-	sensitivity := float32(floatParam(params, "sensitivity", 0.7))
-	edgeSmooth := float32(floatParam(params, "edgeSmooth", 0.5))
-	background, _ := params["background"].(string)
-	return t.aiSegmentMgr.EnableAISegment(source, sensitivity, edgeSmooth, background)
+	sensitivityF, err := floatParam(params, "sensitivity", 0.7)
+	if err != nil {
+		return err
+	}
+	edgeSmoothF, err := floatParam(params, "edgeSmooth", 0.5)
+	if err != nil {
+		return err
+	}
+	background, err := stringParam(params, "background")
+	if err != nil {
+		return err
+	}
+	return t.aiSegmentMgr.EnableAISegment(source, float32(sensitivityF), float32(edgeSmoothF), background)
 }
 
 func (t *apiMacroTarget) execAISegDisable(params map[string]any) error {
 	if t.aiSegmentMgr == nil {
 		return fmt.Errorf("ai segmentation not available")
 	}
-	source, _ := params["source"].(string)
+	source, err := stringParam(params, "source")
+	if err != nil {
+		return err
+	}
 	if source == "" {
 		return fmt.Errorf("ai_segment_disable requires 'source' param")
 	}
@@ -1058,12 +1381,18 @@ func (t *apiMacroTarget) execColorGradeSet(params map[string]any) error {
 	if t.colorGradeMgr == nil {
 		return nil
 	}
-	lookName, _ := params["lookName"].(string)
+	lookName, err := stringParam(params, "lookName")
+	if err != nil {
+		return err
+	}
 	if lookName == "" {
 		return errors.New("colorgrade_set requires 'lookName' param")
 	}
-	intensity := float32(floatParam(params, "intensity", 1.0))
-	return t.colorGradeMgr.SetColorGrade(lookName, intensity)
+	intensityF, err := floatParam(params, "intensity", 1.0)
+	if err != nil {
+		return err
+	}
+	return t.colorGradeMgr.SetColorGrade(lookName, float32(intensityF))
 }
 
 func (t *apiMacroTarget) execColorGradeOff() error {
@@ -1080,7 +1409,10 @@ func (t *apiMacroTarget) execLayoutPreset(params map[string]any) error {
 	if t.dveCompositor == nil {
 		return nil
 	}
-	preset, _ := params["preset"].(string)
+	preset, err := stringParam(params, "preset")
+	if err != nil {
+		return err
+	}
 	if preset == "" {
 		return errors.New("layout_preset requires 'preset' param")
 	}
@@ -1097,7 +1429,10 @@ func (t *apiMacroTarget) execLayoutSlotOn(params map[string]any) error {
 	if t.dveCompositor == nil {
 		return nil
 	}
-	slot := int(floatParam(params, "slot", 0))
+	slot, err := intParam(params, "slot", 0)
+	if err != nil {
+		return err
+	}
 	t.dveCompositor.SlotOn(slot)
 	return nil
 }
@@ -1106,7 +1441,10 @@ func (t *apiMacroTarget) execLayoutSlotOff(params map[string]any) error {
 	if t.dveCompositor == nil {
 		return nil
 	}
-	slot := int(floatParam(params, "slot", 0))
+	slot, err := intParam(params, "slot", 0)
+	if err != nil {
+		return err
+	}
 	t.dveCompositor.SlotOff(slot)
 	return nil
 }
@@ -1115,8 +1453,14 @@ func (t *apiMacroTarget) execLayoutSlotSource(params map[string]any) error {
 	if t.dveCompositor == nil {
 		return nil
 	}
-	slot := int(floatParam(params, "slot", 0))
-	source, _ := params["source"].(string)
+	slot, err := intParam(params, "slot", 0)
+	if err != nil {
+		return err
+	}
+	source, err := stringParam(params, "source")
+	if err != nil {
+		return err
+	}
 	t.dveCompositor.UpdateSlot(slot, func(s *dve.Slot) {
 		s.SourceKey = source
 	})
@@ -1137,8 +1481,14 @@ func (t *apiMacroTarget) execSTMapAssignSource(params map[string]any) error {
 	if t.stmapRegistry == nil {
 		return nil
 	}
-	source, _ := params["source"].(string)
-	mapName, _ := params["map"].(string)
+	source, err := stringParam(params, "source")
+	if err != nil {
+		return err
+	}
+	mapName, err := stringParam(params, "map")
+	if err != nil {
+		return err
+	}
 	return t.stmapRegistry.AssignSource(source, mapName)
 }
 
@@ -1146,7 +1496,10 @@ func (t *apiMacroTarget) execSTMapRemoveSource(params map[string]any) error {
 	if t.stmapRegistry == nil {
 		return nil
 	}
-	source, _ := params["source"].(string)
+	source, err := stringParam(params, "source")
+	if err != nil {
+		return err
+	}
 	t.stmapRegistry.RemoveSource(source)
 	return nil
 }
@@ -1155,7 +1508,10 @@ func (t *apiMacroTarget) execSTMapAssignProgram(params map[string]any) error {
 	if t.stmapRegistry == nil {
 		return nil
 	}
-	mapName, _ := params["map"].(string)
+	mapName, err := stringParam(params, "map")
+	if err != nil {
+		return err
+	}
 	return t.stmapRegistry.AssignProgram(mapName)
 }
 
@@ -1173,20 +1529,57 @@ func (t *apiMacroTarget) execTextAnimate(params map[string]any) error {
 	if t.textAnimEngine == nil {
 		return nil
 	}
-	id := int(floatParam(params, "layerId", 0))
+	id, err := intParam(params, "layerId", 0)
+	if err != nil {
+		return err
+	}
+	mode, err := stringParam(params, "mode")
+	if err != nil {
+		return err
+	}
+	text, err := stringParam(params, "text")
+	if err != nil {
+		return err
+	}
+	fontSize, err := floatParam(params, "fontSize", 0)
+	if err != nil {
+		return err
+	}
+	bold, err := boolParam(params, "bold", false)
+	if err != nil {
+		return err
+	}
+	charsPerSec, err := floatParam(params, "charsPerSec", 0)
+	if err != nil {
+		return err
+	}
+	wordDelayMs, err := intParam(params, "wordDelayMs", 0)
+	if err != nil {
+		return err
+	}
+	fadeDurationMs, err := intParam(params, "fadeDurationMs", 0)
+	if err != nil {
+		return err
+	}
+	width, err := intParam(params, "width", 0)
+	if err != nil {
+		return err
+	}
+	height, err := intParam(params, "height", 0)
+	if err != nil {
+		return err
+	}
 	cfg := graphics.TextAnimationConfig{
-		Mode:     stringParam(params, "mode"),
-		Text:     stringParam(params, "text"),
-		FontSize: floatParam(params, "fontSize", 0),
+		Mode:           mode,
+		Text:           text,
+		FontSize:       fontSize,
+		Bold:           bold,
+		CharsPerSec:    charsPerSec,
+		WordDelayMs:    wordDelayMs,
+		FadeDurationMs: fadeDurationMs,
+		Width:          width,
+		Height:         height,
 	}
-	if v, ok := params["bold"].(bool); ok {
-		cfg.Bold = v
-	}
-	cfg.CharsPerSec = floatParam(params, "charsPerSec", 0)
-	cfg.WordDelayMs = int(floatParam(params, "wordDelayMs", 0))
-	cfg.FadeDurationMs = int(floatParam(params, "fadeDurationMs", 0))
-	cfg.Width = int(floatParam(params, "width", 0))
-	cfg.Height = int(floatParam(params, "height", 0))
 	return t.textAnimEngine.Start(id, cfg)
 }
 
@@ -1194,7 +1587,10 @@ func (t *apiMacroTarget) execTextAnimateStop(params map[string]any) error {
 	if t.textAnimEngine == nil {
 		return nil
 	}
-	id := int(floatParam(params, "layerId", 0))
+	id, err := intParam(params, "layerId", 0)
+	if err != nil {
+		return err
+	}
 	return t.textAnimEngine.Stop(id)
 }
 
@@ -1202,19 +1598,42 @@ func (t *apiMacroTarget) execTickerStart(params map[string]any) error {
 	if t.tickerEngine == nil {
 		return nil
 	}
-	id := int(floatParam(params, "layerId", 0))
+	id, err := intParam(params, "layerId", 0)
+	if err != nil {
+		return err
+	}
+	text, err := stringParam(params, "text")
+	if err != nil {
+		return err
+	}
+	speed, err := floatParam(params, "speed", 50)
+	if err != nil {
+		return err
+	}
+	fontSize, err := floatParam(params, "fontSize", 0)
+	if err != nil {
+		return err
+	}
+	bold, err := boolParam(params, "bold", false)
+	if err != nil {
+		return err
+	}
+	loop, err := boolParam(params, "loop", false)
+	if err != nil {
+		return err
+	}
+	height, err := intParam(params, "height", 0)
+	if err != nil {
+		return err
+	}
 	cfg := graphics.TickerConfig{
-		Text:  stringParam(params, "text"),
-		Speed: floatParam(params, "speed", 50),
+		Text:     text,
+		Speed:    speed,
+		FontSize: fontSize,
+		Bold:     bold,
+		Loop:     loop,
+		Height:   height,
 	}
-	cfg.FontSize = floatParam(params, "fontSize", 0)
-	if v, ok := params["bold"].(bool); ok {
-		cfg.Bold = v
-	}
-	if v, ok := params["loop"].(bool); ok {
-		cfg.Loop = v
-	}
-	cfg.Height = int(floatParam(params, "height", 0))
 	return t.tickerEngine.Start(id, cfg)
 }
 
@@ -1222,20 +1641,36 @@ func (t *apiMacroTarget) execTickerStop(params map[string]any) error {
 	if t.tickerEngine == nil {
 		return nil
 	}
-	id := int(floatParam(params, "layerId", 0))
+	id, err := intParam(params, "layerId", 0)
+	if err != nil {
+		return err
+	}
 	return t.tickerEngine.Stop(id)
 }
 
 // --- Param helpers ---
+//
+// Delegate to macro.Param* so a mistyped JSON value fails loud at executeStep
+// instead of silently falling back to the default. See macro/params.go.
 
-func stringParam(params map[string]any, key string) string {
-	v, _ := params[key].(string)
-	return v
+func stringParam(params map[string]any, key string) (string, error) {
+	return macro.ParamStringDefault(params, key, "")
 }
 
-func floatParam(params map[string]any, key string, defaultVal float64) float64 {
-	if v, ok := params[key].(float64); ok {
-		return v
+func floatParam(params map[string]any, key string, defaultVal float64) (float64, error) {
+	return macro.ParamFloatDefault(params, key, defaultVal)
+}
+
+func boolParam(params map[string]any, key string, defaultVal bool) (bool, error) {
+	return macro.ParamBoolDefault(params, key, defaultVal)
+}
+
+// intParam is a convenience over floatParam for the common
+// `int(floatParam(...))` pattern used for layer/slot/player IDs etc.
+func intParam(params map[string]any, key string, defaultVal int) (int, error) {
+	v, err := macro.ParamFloatDefault(params, key, float64(defaultVal))
+	if err != nil {
+		return 0, err
 	}
-	return defaultVal
+	return int(v), nil
 }

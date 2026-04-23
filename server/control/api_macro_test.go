@@ -478,3 +478,66 @@ func TestMacroState_ConcurrentAccessRaceFree(t *testing.T) {
 
 	wg.Wait()
 }
+
+// TestAPIMacroTarget_WrongTypeParamReturnsError verifies that a macro posted
+// with a mis-typed param (string instead of number, number instead of string,
+// etc.) produces an error that names the offending field, instead of silently
+// falling back to the zero value and running with wrong timing/levels.
+func TestAPIMacroTarget_WrongTypeParamReturnsError(t *testing.T) {
+	tests := []struct {
+		name      string
+		step      macro.Step
+		fieldName string
+	}{
+		{
+			name: "ActionTransition durationMs as string",
+			step: macro.Step{
+				Action: macro.ActionTransition,
+				Params: map[string]any{"source": "cam1", "type": "mix", "durationMs": "5000"},
+			},
+			fieldName: "durationMs",
+		},
+		{
+			name: "ActionTransition source as number",
+			step: macro.Step{
+				Action: macro.ActionTransition,
+				Params: map[string]any{"source": float64(1), "durationMs": float64(500)},
+			},
+			fieldName: "source",
+		},
+		{
+			name: "ActionSetAudio level as string",
+			step: macro.Step{
+				Action: macro.ActionSetAudio,
+				Params: map[string]any{"source": "cam1", "level": "-6"},
+			},
+			fieldName: "level",
+		},
+		{
+			name: "ActionKeySet source as number",
+			step: macro.Step{
+				Action: macro.ActionKeySet,
+				Params: map[string]any{"source": float64(1)},
+			},
+			fieldName: "source",
+		},
+		{
+			name: "ActionKeySet config as string",
+			step: macro.Step{
+				Action: macro.ActionKeySet,
+				Params: map[string]any{"source": "cam1", "config": "bogus"},
+			},
+			fieldName: "config",
+		},
+	}
+
+	target := &apiMacroTarget{}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := macro.Macro{Name: "wrong-type", Steps: []macro.Step{tc.step}}
+			err := macro.Run(context.Background(), m, target, nil)
+			require.Error(t, err, "mistyped %s must fail loud, not silently default", tc.fieldName)
+			require.Contains(t, err.Error(), tc.fieldName, "error should name the offending field")
+		})
+	}
+}
