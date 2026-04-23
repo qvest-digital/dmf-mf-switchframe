@@ -645,15 +645,45 @@ func (m *Mixer) SetProgramMute(muted bool) {
 // SetStingerAudio provides the stinger clip's audio PCM for additive overlay
 // during a stinger transition. The audio is consumed sample-by-sample during
 // mix cycles until exhausted or cleared by OnTransitionComplete.
-// If the stinger audio has a different sample rate, it is resampled to the
-// mixer's rate. Channel count mismatches are still rejected (no upmix logic).
+// Sample-rate mismatch is resampled; channel-count mismatch is converted to
+// m.numChannels (BS.775-3 Lo/Ro downmix for surround sources, AES3 §6.3
+// duplicate for mono upmix). Channels outside [1, 6] are rejected — the
+// historical log-and-drop path now applies only to that invalid range and
+// to the unsupported stereo→surround upmix case (deferred to STD-002).
 func (m *Mixer) SetStingerAudio(audio []float32, sampleRate, channels int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if channels != m.numChannels {
-		m.log.Warn("stinger audio channel count mismatch, skipping audio",
+	if channels <= 0 || channels > 6 {
+		m.log.Warn("stinger audio channel count out of range, skipping audio",
 			"stinger_channels", channels, "mixer_channels", m.numChannels)
 		return
+	}
+	if channels != m.numChannels {
+		switch {
+		case channels > m.numChannels:
+			srcChannels := channels
+			var buf []float32
+			var result downmixResult
+			audio, result = m.downmixChannels(&buf, audio, srcChannels)
+			channels = m.numChannels
+			model := "truncation"
+			if result == downmixLoRo {
+				model = "BS.775-3 Lo/Ro"
+			}
+			m.log.Info("stinger audio downmixed",
+				"src_channels", srcChannels,
+				"to_channels", m.numChannels, "model", model)
+		case channels == 1:
+			var buf []float32
+			audio = m.upmixMono(&buf, audio, channels)
+			channels = m.numChannels
+			m.log.Info("stinger audio mono upmixed",
+				"to_channels", m.numChannels)
+		default:
+			m.log.Warn("stinger audio channel layout unsupported, skipping audio",
+				"stinger_channels", channels, "mixer_channels", m.numChannels)
+			return
+		}
 	}
 	// Resample stinger audio to mixer rate if needed (one-time conversion).
 	if sampleRate != 0 && sampleRate != m.sampleRate {
@@ -1041,9 +1071,10 @@ const (
 // other srcChannels > m.numChannels combination the fallback keeps only the
 // first m.numChannels source channels; this is non-corrupting but lossy (a
 // real layout-aware mix matrix is a future item — see STD-002). The returned
-// downmixResult lets callers log which model ran. Caller must hold m.mu
-// (write lock): ch.downmixBuf is mutated.
-func (m *Mixer) downmixChannels(ch *Channel, pcm []float32, srcChannels int) ([]float32, downmixResult) {
+// downmixResult lets callers log which model ran. buf is a reusable output
+// slice owned by the caller; it is regrown as needed and the returned slice
+// aliases *buf. Caller must hold m.mu (write lock): *buf is mutated.
+func (m *Mixer) downmixChannels(buf *[]float32, pcm []float32, srcChannels int) ([]float32, downmixResult) {
 	if srcChannels <= 0 || srcChannels <= m.numChannels || len(pcm) == 0 {
 		return pcm, downmixLoRo
 	}
@@ -1052,8 +1083,8 @@ func (m *Mixer) downmixChannels(ch *Channel, pcm []float32, srcChannels int) ([]
 		return pcm, downmixLoRo
 	}
 	needed := framesPerSrc * m.numChannels
-	ch.downmixBuf = growBuf(ch.downmixBuf, needed)
-	out := ch.downmixBuf
+	*buf = growBuf(*buf, needed)
+	out := *buf
 
 	if srcChannels == 6 && m.numChannels == 2 {
 		const k = float32(0.7071067811865475) // 1/sqrt(2) = -3 dB
@@ -1086,9 +1117,9 @@ func (m *Mixer) downmixChannels(ch *Channel, pcm []float32, srcChannels int) ([]
 
 // upmixMono duplicates each mono sample to all mixer channels.
 // srcChannels is the source's actual channel count (must be < m.numChannels).
-// ch is used to cache the upmix buffer across calls for the same channel.
-// Caller must hold m.mu.
-func (m *Mixer) upmixMono(ch *Channel, pcm []float32, srcChannels int) []float32 {
+// buf is a reusable output slice owned by the caller; it is regrown as needed
+// and the returned slice aliases *buf. Caller must hold m.mu.
+func (m *Mixer) upmixMono(buf *[]float32, pcm []float32, srcChannels int) []float32 {
 	if srcChannels <= 0 || srcChannels >= m.numChannels || len(pcm) == 0 {
 		return pcm
 	}
@@ -1097,8 +1128,8 @@ func (m *Mixer) upmixMono(ch *Channel, pcm []float32, srcChannels int) []float32
 	// duplicating the last source channel to fill remaining output channels.
 	samplesPerSrcFrame := len(pcm) / srcChannels
 	needed := samplesPerSrcFrame * m.numChannels
-	ch.upmixBuf = growBuf(ch.upmixBuf, needed)
-	upmixed := ch.upmixBuf
+	*buf = growBuf(*buf, needed)
+	upmixed := *buf
 	for i := 0; i < samplesPerSrcFrame; i++ {
 		for outCh := 0; outCh < m.numChannels; outCh++ {
 			srcCh := outCh

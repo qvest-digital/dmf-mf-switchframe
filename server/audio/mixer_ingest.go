@@ -101,7 +101,7 @@ func (m *Mixer) ingestFrameInner(sourceKey string, frame *media.AudioFrame) {
 	srcChannels := ch.decoder.Channels()
 	if srcChannels > m.numChannels {
 		var result downmixResult
-		pcm, result = m.downmixChannels(ch, pcm, srcChannels)
+		pcm, result = m.downmixChannels(&ch.downmixBuf, pcm, srcChannels)
 		if !ch.surroundWarned {
 			ch.surroundWarned = true
 			m.logDownmixWarn(sourceKey, "AAC", srcChannels, result)
@@ -218,7 +218,7 @@ func (m *Mixer) ingestPCMInner(sourceKey string, pcm []float32, pts int64, chann
 	// Mono->stereo upmix: if source delivers fewer channels than the mixer
 	// expects, duplicate each sample to fill all channels.
 	if channels > 0 && channels < m.numChannels {
-		pcm = m.upmixMono(ch, pcm, channels)
+		pcm = m.upmixMono(&ch.upmixBuf, pcm, channels)
 	}
 
 	// Surround → mixer-channels downmix: symmetric to upmix above. A 5.1 PCM
@@ -226,7 +226,7 @@ func (m *Mixer) ingestPCMInner(sourceKey string, pcm []float32, pts int64, chann
 	// wrong stride by the per-channel DSP chain and the ring buffer.
 	if channels > m.numChannels {
 		var result downmixResult
-		pcm, result = m.downmixChannels(ch, pcm, channels)
+		pcm, result = m.downmixChannels(&ch.downmixBuf, pcm, channels)
 		if !ch.surroundWarned {
 			ch.surroundWarned = true
 			m.logDownmixWarn(sourceKey, "PCM", channels, result)
