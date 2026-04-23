@@ -35,7 +35,7 @@ func (s *server) authMiddleware(next http.Handler) http.Handler {
 		if s.cfg.Token != "" {
 			got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 			if got != s.cfg.Token {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				writeErr(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
 		}
@@ -51,4 +51,8 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+func writeErr(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]any{"error": msg})
 }
