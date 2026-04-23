@@ -24,6 +24,12 @@ static int aacdec_open(aacdec_t* h, int sample_rate, int channels) {
 	if (!h->dec) {
 		return -1;
 	}
+	// Pin PCM channel ordering to WAV order (L/R/C/LFE/Ls/Rs per ITU-R
+	// BS.2051-3) so the Go-side surround downmix coefficients line up with
+	// the actual decoder output regardless of FDK version defaults. Return
+	// code is ignored: ancient FDK builds reject the param but default to
+	// WAV order anyway, so a failure here is indistinguishable from success.
+	aacDecoder_SetParam(h->dec, AAC_PCM_OUTPUT_CHANNEL_MAPPING, 1);
 	return 0;
 }
 
@@ -36,9 +42,11 @@ static void aacdec_close(aacdec_t* h) {
 
 // aacdec_decode fills the decoder buffer then decodes one frame.
 // pcm_out must be pre-allocated to hold at least pcm_out_size INT_PCM samples.
-// On success, *decoded_samples is set to the number of decoded PCM samples (total, all channels).
+// On success, *decoded_samples is set to the number of decoded PCM samples
+// (total, all channels) and *decoded_channels to the interleaved channel count.
 static int aacdec_decode(aacdec_t* h, unsigned char* aac_data, int aac_size,
-                         INT_PCM* pcm_out, int pcm_out_size, int* decoded_samples) {
+                         INT_PCM* pcm_out, int pcm_out_size,
+                         int* decoded_samples, int* decoded_channels) {
 	UCHAR* buf = aac_data;
 	UINT buf_size = (UINT)aac_size;
 	UINT bytes_valid = buf_size;
@@ -56,8 +64,10 @@ static int aacdec_decode(aacdec_t* h, unsigned char* aac_data, int aac_size,
 	h->info = aacDecoder_GetStreamInfo(h->dec);
 	if (h->info) {
 		*decoded_samples = h->info->frameSize * h->info->numChannels;
+		*decoded_channels = h->info->numChannels;
 	} else {
 		*decoded_samples = 0;
+		*decoded_channels = 0;
 	}
 	return 0;
 }
@@ -78,13 +88,14 @@ import (
 // The decoder reuses internal buffers across calls. Callers must copy or
 // consume the returned []float32 before the next Decode() call.
 type FDKDecoder struct {
-	handle     C.aacdec_t
-	channels   int
-	closed     atomic.Bool
-	closeOnce  sync.Once
-	pcmBuf     []int16   // reusable C decode buffer
-	outBuf     []float32 // reusable float32 output buffer
-	frameCount uint32    // counts decoded frames (0-sample priming frames are expected early)
+	handle       C.aacdec_t
+	channels     int        // configured/expected channel count (for buffer sizing)
+	lastChannels atomic.Int32 // channel count reported by the most recent successful Decode
+	closed       atomic.Bool
+	closeOnce    sync.Once
+	pcmBuf       []int16   // reusable C decode buffer
+	outBuf       []float32 // reusable float32 output buffer
+	frameCount   uint32    // counts decoded frames (0-sample priming frames are expected early)
 }
 
 // NewFDKDecoder creates a new FDK AAC decoder for the given sample rate and channel count.
@@ -119,6 +130,7 @@ func (d *FDKDecoder) Decode(aacFrame []byte) ([]float32, error) {
 
 	// Reuse pre-allocated pcmBuf (sized for 2048*8 samples at construction).
 	var decodedSamples C.int
+	var decodedChannels C.int
 
 	rc := C.aacdec_decode(
 		&d.handle,
@@ -127,6 +139,7 @@ func (d *FDKDecoder) Decode(aacFrame []byte) ([]float32, error) {
 		(*C.INT_PCM)(unsafe.Pointer(&d.pcmBuf[0])),
 		C.int(len(d.pcmBuf)),
 		&decodedSamples,
+		&decodedChannels,
 	)
 	if rc != 0 {
 		return nil, fmt.Errorf("FDK AAC decode error: code %d", int(rc))
@@ -143,6 +156,7 @@ func (d *FDKDecoder) Decode(aacFrame []byte) ([]float32, error) {
 		}
 		return nil, errors.New("decoder produced no samples")
 	}
+	d.lastChannels.Store(int32(decodedChannels))
 
 	// Convert int16 PCM to float32 [-1.0, 1.0] using reusable output buffer.
 	// Callers must copy the result before the next Decode() call.
@@ -155,6 +169,12 @@ func (d *FDKDecoder) Decode(aacFrame []byte) ([]float32, error) {
 		d.outBuf[i] = normalizeInt16(int16(d.pcmBuf[i]))
 	}
 	return d.outBuf, nil
+}
+
+// Channels returns the interleaved channel count of the most recent
+// successful Decode. Returns 0 before the first non-empty decode.
+func (d *FDKDecoder) Channels() int {
+	return int(d.lastChannels.Load())
 }
 
 // Close releases the decoder resources. Safe to call multiple times

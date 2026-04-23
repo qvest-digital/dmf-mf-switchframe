@@ -292,6 +292,8 @@ func (d *stubDecoder) Decode(data []byte) ([]float32, error) {
 	return out, nil
 }
 
+func (d *stubDecoder) Channels() int { return 2 }
+
 func (d *stubDecoder) Close() error { return nil }
 
 // TestClockDrivenMixer_MasterGainApplied verifies that master level gain is
@@ -539,6 +541,7 @@ type closeCountDec struct {
 }
 
 func (d *closeCountDec) Decode([]byte) ([]float32, error) { return d.samples, nil }
+func (d *closeCountDec) Channels() int                    { return 2 }
 func (d *closeCountDec) Close() error                     { d.closes.Add(1); return nil }
 
 // closeCountEnc tracks Close() calls via an atomic counter.

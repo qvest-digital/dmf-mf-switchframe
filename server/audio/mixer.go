@@ -98,10 +98,15 @@ type Channel struct {
 	ringBuf              *PCMRingBuffer // processed PCM ring buffer for clock-driven output
 
 	// Reusable work buffers (hot-path allocation elimination)
-	trimBuf   []float32
-	gainBuf   []float32
-	storedBuf []float32
-	upmixBuf  []float32 // reused by upmixMono to avoid per-call allocation
+	trimBuf    []float32
+	gainBuf    []float32
+	storedBuf  []float32
+	upmixBuf   []float32 // reused by upmixMono to avoid per-call allocation
+	downmixBuf []float32 // reused by downmixChannels to avoid per-call allocation
+
+	// surroundWarned is set the first time a source delivers more channels
+	// than the mixer supports. Reset on source reconnect via RemoveChannel.
+	surroundWarned bool
 }
 
 // Mixer mixes audio from multiple sources.
@@ -986,6 +991,87 @@ func (m *Mixer) resampleIfNeeded(ch *Channel, pcm []float32, srcRate int) []floa
 		}
 	}
 	return ch.resampler.Resample(pcm)
+}
+
+// logDownmixWarn emits the one-time channel-mismatch warning with a message
+// that matches what downmixChannels actually did. Fallback-path warnings must
+// not claim a Lo/Ro downmix was performed.
+func (m *Mixer) logDownmixWarn(sourceKey, path string, srcChannels int, result downmixResult) {
+	if result == downmixLoRo {
+		m.log.Warn("audio: source channel count exceeds mixer — applying BS.775-3 Lo/Ro downmix",
+			"source", sourceKey,
+			"path", path,
+			"src_channels", srcChannels,
+			"mixer_channels", m.numChannels)
+		return
+	}
+	m.log.Warn("audio: source channel count exceeds mixer — no layout-specific matrix, keeping first N channels (surround content discarded)",
+		"source", sourceKey,
+		"path", path,
+		"src_channels", srcChannels,
+		"mixer_channels", m.numChannels)
+}
+
+// downmixResult reports which coefficient model downmixChannels applied so
+// callers can log accurately. Lo/Ro downmixes audibly attenuate surround
+// content; the truncation fallback silently drops it and deserves a
+// different warning string.
+type downmixResult int
+
+const (
+	downmixLoRo      downmixResult = iota // ITU-R BS.775-3 5.1 → stereo
+	downmixTruncated                      // kept first m.numChannels source channels
+)
+
+// downmixChannels folds interleaved multi-channel PCM down to m.numChannels
+// so the rest of the mixer hot path sees its configured stride. For the
+// 5.1 → stereo case (srcChannels == 6, m.numChannels == 2) the coefficients
+// are ITU-R BS.775-3 Lo/Ro — L' = L + 0.707·C + 0.707·Ls, R' = R + 0.707·C +
+// 0.707·Rs, LFE dropped — matching the consumer-delivery reference. For any
+// other srcChannels > m.numChannels combination the fallback keeps only the
+// first m.numChannels source channels; this is non-corrupting but lossy (a
+// real layout-aware mix matrix is a future item — see STD-002). The returned
+// downmixResult lets callers log which model ran. Caller must hold m.mu
+// (write lock): ch.downmixBuf is mutated.
+func (m *Mixer) downmixChannels(ch *Channel, pcm []float32, srcChannels int) ([]float32, downmixResult) {
+	if srcChannels <= 0 || srcChannels <= m.numChannels || len(pcm) == 0 {
+		return pcm, downmixLoRo
+	}
+	framesPerSrc := len(pcm) / srcChannels
+	if framesPerSrc == 0 {
+		return pcm, downmixLoRo
+	}
+	needed := framesPerSrc * m.numChannels
+	ch.downmixBuf = growBuf(ch.downmixBuf, needed)
+	out := ch.downmixBuf
+
+	if srcChannels == 6 && m.numChannels == 2 {
+		const k = float32(0.7071067811865475) // 1/sqrt(2) = -3 dB
+		for i := 0; i < framesPerSrc; i++ {
+			src := pcm[i*6:]
+			l := src[0]
+			r := src[1]
+			c := src[2]
+			// src[3] is LFE — dropped per BS.775-3 Lo/Ro.
+			ls := src[4]
+			rs := src[5]
+			out[i*2+0] = l + k*c + k*ls
+			out[i*2+1] = r + k*c + k*rs
+		}
+		return out, downmixLoRo
+	}
+
+	// Fallback for layouts outside 5.1→stereo: keep the first m.numChannels
+	// source channels. Avoids the stride-stripe corruption the pre-fix code
+	// produced, but makes no claim to preserve surround content.
+	for i := 0; i < framesPerSrc; i++ {
+		base := i * srcChannels
+		outBase := i * m.numChannels
+		for oc := 0; oc < m.numChannels; oc++ {
+			out[outBase+oc] = pcm[base+oc]
+		}
+	}
+	return out, downmixTruncated
 }
 
 // upmixMono duplicates each mono sample to all mixer channels.

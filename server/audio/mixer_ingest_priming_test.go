@@ -25,6 +25,8 @@ func (d *primingDecoder) Decode(aacFrame []byte) ([]float32, error) {
 	return out, nil
 }
 
+func (d *primingDecoder) Channels() int { return 2 }
+
 func (d *primingDecoder) Close() error { return nil }
 
 func TestIngestFrame_CompensatesForDecoderPriming(t *testing.T) {

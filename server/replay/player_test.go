@@ -1458,6 +1458,8 @@ func (d *mockAudioDecoder) Decode(data []byte) ([]float32, error) {
 	return pcm, nil
 }
 
+func (d *mockAudioDecoder) Channels() int { return 2 }
+
 func (d *mockAudioDecoder) Close() error { return nil }
 
 // mockAudioEncoder returns a dummy AAC frame per Encode call.

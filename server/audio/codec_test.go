@@ -8,13 +8,20 @@ import (
 
 // mockDecoder implements Decoder for testing.
 type mockDecoder struct {
-	calls   int
-	samples []float32
+	calls    int
+	channels int // reported by Channels(); defaults to 2 so IngestFrame stereo tests work
+	samples  []float32
 }
 
 func (m *mockDecoder) Decode(aacFrame []byte) ([]float32, error) {
 	m.calls++
 	return m.samples, nil
+}
+func (m *mockDecoder) Channels() int {
+	if m.channels == 0 {
+		return 2
+	}
+	return m.channels
 }
 func (m *mockDecoder) Close() error { return nil }
 

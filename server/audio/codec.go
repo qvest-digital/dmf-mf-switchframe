@@ -6,6 +6,11 @@ type Decoder interface {
 	// Decode decodes an AAC frame into interleaved float32 PCM.
 	// Returns 1024 samples per channel for AAC-LC at 48kHz.
 	Decode(aacFrame []byte) ([]float32, error)
+	// Channels returns the interleaved channel count of the most recent
+	// successful Decode. The mixer uses this to detect surround sources
+	// that must be downmixed before reaching the per-channel DSP chain.
+	// Returns 0 when no successful decode has happened yet.
+	Channels() int
 	Close() error
 }
 
