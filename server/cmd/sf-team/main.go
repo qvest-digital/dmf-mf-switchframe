@@ -36,6 +36,12 @@ func main() {
 		os.Exit(runReassign(args))
 	case "say":
 		os.Exit(runSay(args))
+	case "ask":
+		os.Exit(runAsk(args))
+	case "answer":
+		os.Exit(runAnswer(args))
+	case "review-request":
+		os.Exit(runReviewRequest(args))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
 		usage()
