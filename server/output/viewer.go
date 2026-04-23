@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/zsiec/ccx"
 	"github.com/zsiec/prism/distribution"
@@ -19,6 +20,10 @@ const (
 	audioChSize = 100
 	// captionChSize is the buffered channel capacity for caption frames.
 	captionChSize = 32
+	// dropLogInterval is the rate-limit window for drop warnings, per channel.
+	// Mirrors async_adapter's 1s gate so a stalled viewer produces at most
+	// 3 warn lines/sec (video+audio+caption) instead of ~103 lines/sec.
+	dropLogInterval = time.Second
 )
 
 // Viewer implements distribution.Viewer and sits on the program relay.
@@ -37,6 +42,12 @@ type Viewer struct {
 	videoDropped   atomic.Int64
 	audioDropped   atomic.Int64
 	captionDropped atomic.Int64
+
+	// Per-channel rate-limit gates (UnixNano of the last emitted drop warn).
+	// Kept separate so a video-drop burst does not suppress an audio-drop warn.
+	videoDropLastLog   atomic.Int64
+	audioDropLastLog   atomic.Int64
+	captionDropLastLog atomic.Int64
 
 	muxer    *TSMuxer
 	onVideo  func(*media.VideoFrame) // optional callback for confidence monitor
@@ -74,7 +85,11 @@ func (v *Viewer) SendVideo(frame *media.VideoFrame) {
 	case v.videoCh <- frame:
 	default:
 		v.videoDropped.Add(1)
-		slog.Warn("output viewer dropped video frame", "pts", frame.PTS)
+		if maybeLogDrop(&v.videoDropLastLog) {
+			slog.Warn("output viewer dropped video frame",
+				"pts", frame.PTS,
+				"dropped", v.videoDropped.Load())
+		}
 	}
 }
 
@@ -86,7 +101,11 @@ func (v *Viewer) SendAudio(frame *media.AudioFrame) {
 	case v.audioCh <- frame:
 	default:
 		v.audioDropped.Add(1)
-		slog.Warn("output viewer dropped audio frame", "pts", frame.PTS)
+		if maybeLogDrop(&v.audioDropLastLog) {
+			slog.Warn("output viewer dropped audio frame",
+				"pts", frame.PTS,
+				"dropped", v.audioDropped.Load())
+		}
 	}
 }
 
@@ -98,8 +117,23 @@ func (v *Viewer) SendCaptions(frame *ccx.CaptionFrame) {
 	case v.captionCh <- frame:
 	default:
 		v.captionDropped.Add(1)
-		slog.Warn("output viewer dropped caption frame", "pts", frame.PTS)
+		if maybeLogDrop(&v.captionDropLastLog) {
+			slog.Warn("output viewer dropped caption frame",
+				"pts", frame.PTS,
+				"dropped", v.captionDropped.Load())
+		}
 	}
+}
+
+// maybeLogDrop returns true if a drop warn should fire now. The CAS ensures
+// concurrent callers in the same window see a single winner.
+func maybeLogDrop(lastLog *atomic.Int64) bool {
+	now := time.Now().UnixNano()
+	last := lastLog.Load()
+	if now-last <= int64(dropLogInterval) {
+		return false
+	}
+	return lastLog.CompareAndSwap(last, now)
 }
 
 // Stats returns delivery metrics for this viewer.
