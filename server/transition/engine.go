@@ -1216,15 +1216,9 @@ func (e *Engine) scaleStingerFrames(sd *StingerData) []StingerFrameData {
 		scaledYUV := make([]byte, targetYUVSize)
 		ScaleYUV420WithQuality(f.YUV, sd.Width, sd.Height, scaledYUV, e.width, e.height, ScaleQualityFast)
 
-		// Scale alpha using nearest-neighbor (luma resolution)
+		// Bilinear must match the YUV scaler — nearest zippers the alpha edge.
 		scaledAlpha := make([]byte, targetYSize)
-		for y := 0; y < e.height; y++ {
-			srcY := y * sd.Height / e.height
-			for x := 0; x < e.width; x++ {
-				srcX := x * sd.Width / e.width
-				scaledAlpha[y*e.width+x] = f.Alpha[srcY*sd.Width+srcX]
-			}
-		}
+		scalePlane(f.Alpha, sd.Width, sd.Height, scaledAlpha, e.width, e.height)
 
 		scaled[i] = StingerFrameData{YUV: scaledYUV, Alpha: scaledAlpha}
 	}
@@ -1421,13 +1415,8 @@ func (e *Engine) BlendRaw(
 				sYUV = make([]byte, scaledYUVSize)
 				ScaleYUV420(sf.YUV, stinger.Width, stinger.Height, sYUV, outW, outH)
 				sAlpha = make([]byte, outW*outH)
-				for y := 0; y < outH; y++ {
-					srcY := y * stinger.Height / outH
-					for x := 0; x < outW; x++ {
-						srcX := x * stinger.Width / outW
-						sAlpha[y*outW+x] = sf.Alpha[srcY*stinger.Width+srcX]
-					}
-				}
+				// Bilinear must match the YUV scaler — nearest zippers the alpha edge.
+				scalePlane(sf.Alpha, stinger.Width, stinger.Height, sAlpha, outW, outH)
 			}
 			blended = blender.BlendStinger(base, sYUV, sAlpha)
 		} else {

@@ -2287,3 +2287,135 @@ func TestEngineWipeMapFallsBackOnInvalidPattern(t *testing.T) {
 
 	e.Stop()
 }
+
+// makeStingerFrame builds a single-frame stinger with the given alpha plane and
+// fully-white luma (Y=255, chroma neutral). Sized w×h. Used by the alpha-filter
+// regression tests below — pairing white stinger with black base makes the
+// blended Y plane an approximate copy of alpha.
+func makeStingerFrame(t *testing.T, w, h int, alpha []byte) StingerFrameData {
+	t.Helper()
+	ySize := w * h
+	uvSize := (w / 2) * (h / 2)
+	yuv := make([]byte, ySize+2*uvSize)
+	for i := 0; i < ySize; i++ {
+		yuv[i] = 255
+	}
+	for i := ySize; i < len(yuv); i++ {
+		yuv[i] = 128
+	}
+	require.Len(t, alpha, ySize)
+	a := make([]byte, ySize)
+	copy(a, alpha)
+	return StingerFrameData{YUV: yuv, Alpha: a}
+}
+
+// makeBlackBase builds a w×h full-range black YUV420 frame (Y=0, chroma=128).
+// The Y plane being zero means the BlendStinger output Y[i] ≈ alpha[i], so
+// callers can recover the post-scale alpha by reading the blended Y plane.
+func makeBlackBase(w, h int) []byte {
+	ySize := w * h
+	uvSize := (w / 2) * (h / 2)
+	out := make([]byte, ySize+2*uvSize)
+	for i := ySize; i < len(out); i++ {
+		out[i] = 128
+	}
+	return out
+}
+
+func TestEngine_StingerAlphaBilinearFilterOnResolutionMismatch(t *testing.T) {
+	// 4×4 stinger upscaled to 8×8 (2× factor). Alpha is a step edge between
+	// source rows 1 and 2:
+	//   src row 0,1: alpha = 0
+	//   src row 2,3: alpha = 255
+	// With a bilinear scaler, the destination rows that straddle the source
+	// edge sample fractional positions and produce intermediate alpha values.
+	// With nearest-neighbor (the bug), the edge survives as a hard step —
+	// only Y values 0 and 255 appear in the blended luma.
+	const sw, sh = 4, 4
+	const dw, dh = 8, 8
+
+	srcAlpha := make([]byte, sw*sh)
+	for y := 0; y < sh; y++ {
+		v := byte(0)
+		if y >= 2 {
+			v = 255
+		}
+		for x := 0; x < sw; x++ {
+			srcAlpha[y*sw+x] = v
+		}
+	}
+
+	stinger := &StingerData{
+		Width:    sw,
+		Height:   sh,
+		CutPoint: 0.5,
+		Frames:   []StingerFrameData{makeStingerFrame(t, sw, sh, srcAlpha)},
+	}
+	e := NewEngine(EngineConfig{Stinger: stinger})
+	e.StartSync("a", "b", Stinger, 1000)
+
+	base := makeBlackBase(dw, dh)
+	out, ow, oh := e.BlendRaw(base, dw, dh, nil, 0, 0, 0.5)
+	require.NotNil(t, out)
+	require.Equal(t, dw, ow)
+	require.Equal(t, dh, oh)
+	require.GreaterOrEqual(t, len(out), dw*dh)
+
+	// Sample column 0 down the Y plane. Blended Y[i] ≈ scaled-alpha[i]
+	// (base=0, stinger=255). Bilinear must produce at least one value
+	// strictly between 0 and 255 in the column; nearest-neighbor produces
+	// only the two endpoints.
+	intermediate := 0
+	for dy := 0; dy < dh; dy++ {
+		v := out[dy*dw]
+		if v != 0 && v != 255 {
+			intermediate++
+		}
+	}
+	require.Greater(t, intermediate, 0,
+		"bilinear alpha scaling must produce intermediate Y values across the edge; got staircase (column dump: %v)",
+		columnY(out, dw, dh, 0))
+}
+
+func TestEngine_StingerAlphaIdentityAtMatchedResolution(t *testing.T) {
+	// When stinger.Width/Height == outW/outH the scaling path is skipped
+	// entirely and sf.Alpha is fed straight into BlendStinger. The blended
+	// Y plane should track alpha exactly within the ±1 rounding of
+	// blendAlpha's >>8 fixed-point math (base=0, stinger=255).
+	const w, h = 4, 4
+	srcAlpha := make([]byte, w*h)
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			srcAlpha[y*w+x] = byte((x + y) * 32)
+		}
+	}
+
+	stinger := &StingerData{
+		Width:    w,
+		Height:   h,
+		CutPoint: 0.5,
+		Frames:   []StingerFrameData{makeStingerFrame(t, w, h, srcAlpha)},
+	}
+	e := NewEngine(EngineConfig{Stinger: stinger})
+	e.StartSync("a", "b", Stinger, 1000)
+
+	base := makeBlackBase(w, h)
+	out, ow, oh := e.BlendRaw(base, w, h, nil, 0, 0, 0.5)
+	require.NotNil(t, out)
+	require.Equal(t, w, ow)
+	require.Equal(t, h, oh)
+
+	for i := 0; i < w*h; i++ {
+		require.InDelta(t, int(srcAlpha[i]), int(out[i]), 1,
+			"matched-resolution Y[%d] should track alpha[%d] within ±1; got Y=%d alpha=%d",
+			i, i, out[i], srcAlpha[i])
+	}
+}
+
+func columnY(yuv []byte, w, h, x int) []byte {
+	col := make([]byte, h)
+	for y := 0; y < h; y++ {
+		col[y] = yuv[y*w+x]
+	}
+	return col
+}
