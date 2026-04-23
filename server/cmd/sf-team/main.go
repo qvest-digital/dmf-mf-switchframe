@@ -64,6 +64,8 @@ func main() {
 		os.Exit(runDoctor(args))
 	case "archive":
 		os.Exit(runArchive(args))
+	case "dump-status":
+		os.Exit(runDumpStatus(args))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
 		usage()
