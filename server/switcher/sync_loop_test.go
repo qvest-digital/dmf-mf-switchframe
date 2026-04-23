@@ -102,6 +102,8 @@ func newSyncTestSwitcher(t *testing.T) (*Switcher, *clock.ReferenceClock) {
 	s.pipelineFormat.Store(&testFmt)
 	s.recentCmdErrors = newRecentErrors(8)
 	s.delayBuffer = NewDelayBuffer(s)
+	s.initAtomicSlots()
+	s.publishSourcesSnapshot()
 
 	// Create non-realtime reference clock at 30fps.
 	// Must be set BEFORE starting videoProcessingLoop so useRefClock is
@@ -1937,6 +1939,8 @@ func newSyncTestSwitcherBufferOnly(t *testing.T) (*Switcher, *clock.ReferenceClo
 	s.pipelineFormat.Store(&testFmt)
 	s.recentCmdErrors = newRecentErrors(8)
 	s.delayBuffer = NewDelayBuffer(s)
+	s.initAtomicSlots()
+	s.publishSourcesSnapshot()
 
 	rc := clock.NewReferenceClock(30, 1, 48000, 0, false)
 	s.SetReferenceClock(rc)

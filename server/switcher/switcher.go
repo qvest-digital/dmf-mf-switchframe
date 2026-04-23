@@ -129,6 +129,7 @@ func (s *Switcher) transitionState(to State) {
 			"from", from.String(), "to", to.String())
 	}
 	s.state = to
+	s.updateHotState(func(hs *hotState) { hs.state = to })
 }
 
 // audioStateProvider is the interface the Switcher needs from the audio.Mixer
@@ -628,17 +629,11 @@ func New(programRelay *distribution.Relay) *Switcher {
 	}
 	s.frameBudgetNs.Store(defaultFmt.FrameBudgetNs())
 	s.pipelineFormat.Store(&defaultFmt)
-	s.hotState.Store(&hotState{state: StateIdle})
-	s.graphicsHandlers.Store(&graphicsHandlers{})
-	s.audioHandlers.Store(&audioHandlers{})
-	s.frameSyncBundle.Store(&frameSyncBundle{})
-	emptySources := map[string]*sourceState{}
-	s.sourcesAtomic.Store(&emptySources)
-	s.ftbDurationMsAtomic.Store(int64(defaultFTBDurationMs))
-	s.transitionAbortThresholdAtomic.Store(math.Float64bits(defaultTransitionAbortThreshold))
 	s.recentCmdErrors = newRecentErrors(8)
 	s.delayBuffer = NewDelayBuffer(s)
+	s.initAtomicSlots()
 	s.registerBuiltinSourcesLocked()
+	s.publishSourcesSnapshot()
 	go s.videoProcessingLoop()
 	s.startBuiltinProducer()
 	return s
@@ -658,6 +653,7 @@ func (s *Switcher) SetMixer(m audioStateProvider) {
 	}
 	if handler, ok := m.(audioTransitionHandler); ok {
 		s.audioTransition = handler
+		s.updateAudioHandlers(func(ah *audioHandlers) { ah.audioTransition = handler })
 	}
 }
 
@@ -955,6 +951,7 @@ func (s *Switcher) SetAudioHandler(handler func(sourceKey string, frame *media.A
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.audioHandler = handler
+	s.updateAudioHandlers(func(ah *audioHandlers) { ah.audioHandler = handler })
 }
 
 // SetTransitionConfig stores the transition codec configuration under lock.
@@ -969,6 +966,7 @@ func (s *Switcher) SetAudioTransition(handler audioTransitionHandler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.audioTransition = handler
+	s.updateAudioHandlers(func(ah *audioHandlers) { ah.audioTransition = handler })
 }
 
 // SetOnFirstVideoPTS registers a callback invoked once when the first
@@ -981,6 +979,7 @@ func (s *Switcher) SetOnFirstVideoPTS(fn func(pts int64)) {
 		return // reference clock handles PTS — no seeding needed
 	}
 	s.onFirstVideoPTS = fn
+	s.updateHotState(func(hs *hotState) { hs.onFirstVideoPTS = fn })
 }
 
 // RequestKeyframe forces the next encoded frame to be an IDR keyframe.
@@ -1015,6 +1014,7 @@ func (s *Switcher) SetCompositor(c *graphics.Compositor) {
 func (s *Switcher) SetKeyBridge(kb *graphics.KeyProcessorBridge) {
 	s.mu.Lock()
 	s.keyBridge = kb
+	s.updateGraphicsHandlers(func(gh *graphicsHandlers) { gh.keyBridge = kb })
 	s.mu.Unlock()
 	s.rebuildPipeline()
 }
@@ -1023,6 +1023,7 @@ func (s *Switcher) SetKeyBridge(kb *graphics.KeyProcessorBridge) {
 func (s *Switcher) SetDVECompositor(dc *dve.Compositor) {
 	s.mu.Lock()
 	s.dveCompositor = dc
+	s.updateGraphicsHandlers(func(gh *graphicsHandlers) { gh.dveCompositor = dc })
 	s.mu.Unlock()
 	if dc != nil {
 		dc.OnActiveChange = func() { s.rebuildPipeline() }
@@ -1122,6 +1123,7 @@ func (s *Switcher) SetPipelineCodecs(encoderFactory transition.EncoderFactory, p
 		formatRef:      &s.pipelineFormat,
 		encoderOpts:    s.encoderOpts,
 	}
+	s.pipeCodecsAtomic.Store(s.pipeCodecs)
 }
 
 // SetPipelineVideoInfoCallback sets the callback invoked when the pipeline
@@ -1347,6 +1349,13 @@ func (s *Switcher) SetFrameSync(enabled bool, tickRate time.Duration) {
 		s.log.Info("frame sync disabled")
 	}
 	s.frameSyncActive = enabled
+	fs := s.frameSync
+	db := s.delayBuffer
+	s.updateFrameSyncBundle(func(fsb *frameSyncBundle) {
+		fsb.sync = fs
+		fsb.delayBuffer = db
+		fsb.active = enabled
+	})
 }
 
 // SetClockDrivenSync enables clock-driven frame sync output. When enabled,
@@ -1567,6 +1576,7 @@ func (s *Switcher) EnableWallClockVideoPTS() {
 		return // reference clock handles PTS
 	}
 	s.wallClockVideoEnabled = true
+	s.updateHotState(func(hs *hotState) { hs.wallClockVideoEnabled = true })
 }
 
 // wallClockVideoPTS returns a hybrid PTS: frame-counter for regular spacing
@@ -2403,6 +2413,12 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	// deliberately does NOT reassert this value so their mid-transition
 	// SetPreview is preserved.
 	s.previewSource = fromSource
+	s.updateHotState(func(hs *hotState) {
+		hs.transEngine = engine
+		hs.transTypeOrig = transType
+		hs.transitionMaxForward = 0
+		hs.previewSource = fromSource
+	})
 	s.transitionsStarted.Add(1)
 	// Signal videoProcessingLoop to drop stale queued frames during GPU transitions.
 	if gpuActive {
@@ -2442,6 +2458,7 @@ func (s *Switcher) SetTransitionPosition(ctx context.Context, position float64) 
 	threshold := s.transitionAbortThreshold
 	if position > s.transitionMaxForward {
 		s.transitionMaxForward = position
+		s.updateHotState(func(hs *hotState) { hs.transitionMaxForward = position })
 	}
 	maxForward := s.transitionMaxForward
 	s.mu.Unlock()
@@ -2481,6 +2498,7 @@ func (s *Switcher) SetTransitionAbortThreshold(threshold float64) error {
 	}
 	s.mu.Lock()
 	s.transitionAbortThreshold = threshold
+	s.storeTransitionAbortThresholdAtomic(threshold)
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
@@ -2572,6 +2590,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		// Now publish the engine.
 		s.mu.Lock()
 		s.transEngine = engine
+		s.updateHotState(func(hs *hotState) { hs.transEngine = engine })
 		s.transitionsStarted.Add(1)
 
 		atomic.AddUint64(&s.seq, 1)
@@ -2645,6 +2664,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	// Now publish the engine.
 	s.mu.Lock()
 	s.transEngine = engine
+	s.updateHotState(func(hs *hotState) { hs.transEngine = engine })
 	s.transitionsStarted.Add(1)
 
 	atomic.AddUint64(&s.seq, 1)
@@ -2673,6 +2693,7 @@ func (s *Switcher) SetFTBDuration(durationMs int) error {
 	}
 	s.mu.Lock()
 	s.ftbDurationMs = durationMs
+	s.ftbDurationMsAtomic.Store(int64(durationMs))
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
@@ -2700,6 +2721,7 @@ func (s *Switcher) AbortTransition() {
 			s.transitionState(StateIdle)
 		}
 		s.transEngine = nil
+		s.updateHotState(func(hs *hotState) { hs.transEngine = nil })
 		atomic.AddUint64(&s.seq, 1)
 	}
 	snapshot := s.buildStateLocked()
@@ -2788,6 +2810,13 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 
 	s.transitionState(StateIdle)
 	s.transEngine = nil
+	s.updateHotState(func(hs *hotState) {
+		hs.transTypeOrig = ""
+		if newProgram != "" {
+			hs.programSource = newProgram
+		}
+		hs.transEngine = nil
+	})
 	s.gpuTransActive.Store(false) // allow videoProcessingLoop to resume
 	s.transitionsCompleted.Add(1)
 	if s.promMetrics != nil && !aborted {
@@ -2850,6 +2879,7 @@ func (s *Switcher) handleFTBComplete(aborted bool) {
 		s.transitionState(StateFTB) // Completed — hold at black
 	}
 	s.transEngine = nil
+	s.updateHotState(func(hs *hotState) { hs.transEngine = nil })
 	s.transitionsCompleted.Add(1)
 	if s.promMetrics != nil && !aborted {
 		s.promMetrics.TransitionsTotal.WithLabelValues("ftb").Inc()
@@ -2898,6 +2928,7 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 		s.transitionState(StateIdle) // Completed — screen is visible
 	}
 	s.transEngine = nil
+	s.updateHotState(func(hs *hotState) { hs.transEngine = nil })
 	s.transitionsCompleted.Add(1)
 	if s.promMetrics != nil && !aborted {
 		s.promMetrics.TransitionsTotal.WithLabelValues("ftb_reverse").Inc()
@@ -2956,6 +2987,7 @@ func (s *Switcher) RegisterSource(key string, relay *distribution.Relay) {
 	}
 	relay.AddViewer(viewer)
 	s.sources[key] = &sourceState{key: key, relay: relay, viewer: viewer, useRawPipeline: useRaw, position: len(s.sources) + 1}
+	s.publishSourcesSnapshot()
 	s.health.registerSource(key)
 	// Count active decoders for memory warning.
 	decoderCount := 0
@@ -3035,6 +3067,7 @@ func (s *Switcher) RegisterVirtualSource(key string, relay *distribution.Relay) 
 		isVirtual: true,
 		position:  len(s.sources) + 1,
 	}
+	s.publishSourcesSnapshot()
 	s.health.registerSource(key)
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
@@ -3056,6 +3089,7 @@ func (s *Switcher) registerRawSource(key, label string, mxl bool) {
 		position: len(s.sources) + 1,
 		isMXL:    mxl,
 	}
+	s.publishSourcesSnapshot()
 	s.health.registerSource(key)
 	if s.frameSyncActive && s.frameSync != nil {
 		s.frameSync.AddSource(key)
@@ -3100,6 +3134,7 @@ func (s *Switcher) RegisterReplaySource(key string) {
 		position:  len(s.sources) + 1,
 		isVirtual: true,
 	}
+	s.publishSourcesSnapshot()
 	s.health.registerSource(key)
 	if s.frameSyncActive && s.frameSync != nil {
 		s.frameSync.AddSource(key)
@@ -3168,6 +3203,7 @@ func (s *Switcher) UnregisterSource(key string) {
 		ss.relay.RemoveViewer(ss.viewer.ID())
 	}
 	delete(s.sources, key)
+	s.publishSourcesSnapshot()
 	s.health.removeSource(key)
 	s.delayBuffer.RemoveSource(key)
 	if s.frameSync != nil {
@@ -3184,6 +3220,12 @@ func (s *Switcher) UnregisterSource(key string) {
 	if s.previewSource == key {
 		s.previewSource = ""
 	}
+	newProgram := s.programSource
+	newPreview := s.previewSource
+	s.updateHotState(func(hs *hotState) {
+		hs.programSource = newProgram
+		hs.previewSource = newPreview
+	})
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
@@ -3249,6 +3291,12 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 		if oldProgram != "" {
 			s.previewSource = oldProgram
 		}
+		newPreview := s.previewSource
+		s.updateHotState(func(hs *hotState) {
+			hs.transEngine = nil
+			hs.programSource = sourceKey
+			hs.previewSource = newPreview
+		})
 		audioCut = s.audioCut
 		atomic.AddUint64(&s.seq, 1)
 		snapshot = s.buildStateLocked()
@@ -3302,6 +3350,7 @@ func (s *Switcher) SetPreview(ctx context.Context, sourceKey string) error {
 		return fmt.Errorf("source %q: %w", sourceKey, ErrSourceNotFound)
 	}
 	s.previewSource = sourceKey
+	s.updateHotState(func(hs *hotState) { hs.previewSource = sourceKey })
 	atomic.AddUint64(&s.seq, 1)
 	snapshot := s.buildStateLocked()
 	s.mu.Unlock()
