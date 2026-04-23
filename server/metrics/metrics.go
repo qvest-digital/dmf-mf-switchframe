@@ -108,6 +108,9 @@ type Metrics struct {
 	SnapshotApplyTotal    *prometheus.CounterVec // labels: result (success, partial, error, stale)
 	SnapshotApplyDuration prometheus.Histogram
 	SnapshotSizeBytes     prometheus.Histogram
+
+	// Force-leader (operator-triggered epoch bump during partition)
+	ForceLeaderTotal *prometheus.CounterVec // labels: operator, reason_class
 }
 
 // NewMetrics creates and registers all Switchframe metrics on the given
@@ -324,6 +327,12 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Help:      "Size of applied state snapshots in bytes.",
 			Buckets:   []float64{1024, 4096, 16384, 65536, 262144, 1048576},
 		}),
+
+		ForceLeaderTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "switchframe",
+			Name:      "force_leader_total",
+			Help:      "Operator-triggered force-leader epoch bumps. 'operator' is the proxied browser-side attribution (or 'control-plane' for direct SRE calls); 'reason_class' is a closed enum (partition|recovery|maintenance|test|drill|unspecified|other) for coarse-grained ops dashboards — free-text reasons land in slog, not Prometheus labels.",
+		}, []string{"operator", "reason_class"}),
 	}
 
 	reg.MustRegister(
@@ -359,6 +368,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		m.SnapshotApplyTotal,
 		m.SnapshotApplyDuration,
 		m.SnapshotSizeBytes,
+		m.ForceLeaderTotal,
 	)
 
 	return m
