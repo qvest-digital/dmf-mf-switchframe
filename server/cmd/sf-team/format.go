@@ -59,6 +59,24 @@ func emitDigestHuman(dg digest) int {
 		}
 		fmt.Println()
 	}
+	if len(dg.ActiveClaims) > 0 {
+		fmt.Printf("ACTIVE CLAIMS (%d):\n", len(dg.ActiveClaims))
+		for _, c := range dg.ActiveClaims {
+			mark := ""
+			if c.Agent == dg.Agent {
+				mark = " (you)"
+			}
+			fmt.Printf("  %s%s  %s  %q\n", c.Agent, mark, c.Thread, c.Body)
+		}
+		fmt.Println()
+	}
+	if len(dg.FileConflicts) > 0 {
+		fmt.Printf("FILE CONFLICTS:\n")
+		for _, p := range dg.FileConflicts {
+			fmt.Printf("  %s\n", p)
+		}
+		fmt.Println()
+	}
 	if len(dg.Global) > 0 {
 		fmt.Printf("GLOBAL (%d):\n", len(dg.Global))
 		for _, m := range dg.Global {

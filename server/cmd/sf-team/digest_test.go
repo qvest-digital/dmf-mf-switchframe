@@ -62,3 +62,22 @@ func TestDigest_SurfacesHighPriorityFirst(t *testing.T) {
 		t.Fatalf("knocks=%d", len(dg.Knocks))
 	}
 }
+
+func TestDigest_ListsActiveClaimsAndConflicts(t *testing.T) {
+	d, _ := newTestDB(t)
+	ctx := context.Background()
+	_ = d.register(ctx, "agent-a", "A", "/tmp/a", 1)
+	_ = d.register(ctx, "agent-b", "B", "/tmp/b", 2)
+	_ = d.claim(ctx, "BUG-700", "agent-a", "", nil, false)
+	_ = d.claim(ctx, "BUG-701", "agent-b", "", nil, false)
+	_, _ = d.touch(ctx, "agent-a", "shared.go", "")
+	_, _ = d.touch(ctx, "agent-b", "shared.go", "")
+
+	dg, _ := d.digestFor(ctx, "agent-a")
+	if len(dg.ActiveClaims) != 2 {
+		t.Fatalf("active=%d want 2", len(dg.ActiveClaims))
+	}
+	if len(dg.FileConflicts) != 1 || dg.FileConflicts[0] != "shared.go" {
+		t.Fatalf("conflicts=%v", dg.FileConflicts)
+	}
+}

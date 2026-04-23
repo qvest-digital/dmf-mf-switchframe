@@ -93,5 +93,39 @@ func (d db) digestFor(ctx context.Context, agentID string) (digest, error) {
 		dg.YourThreads = append(dg.YourThreads, msgs...)
 	}
 
+	claimRows, err := d.sqldb.QueryContext(ctx,
+		`SELECT item_id, agent_id, claimed_at, COALESCE(intent, '') FROM claims ORDER BY claimed_at`)
+	if err != nil {
+		return dg, err
+	}
+	for claimRows.Next() {
+		var m digestMessage
+		var intent string
+		if err := claimRows.Scan(&m.Thread, &m.Agent, &m.TS, &intent); err != nil {
+			claimRows.Close()
+			return dg, err
+		}
+		m.Body = intent
+		m.Kind = "claim"
+		dg.ActiveClaims = append(dg.ActiveClaims, m)
+	}
+	claimRows.Close()
+
+	confRows, err := d.sqldb.QueryContext(ctx, `
+		SELECT path FROM touches WHERE released_at IS NULL
+		GROUP BY path HAVING COUNT(DISTINCT agent_id) > 1`)
+	if err != nil {
+		return dg, err
+	}
+	for confRows.Next() {
+		var p string
+		if err := confRows.Scan(&p); err != nil {
+			confRows.Close()
+			return dg, err
+		}
+		dg.FileConflicts = append(dg.FileConflicts, p)
+	}
+	confRows.Close()
+
 	return dg, nil
 }
