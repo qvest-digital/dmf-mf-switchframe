@@ -2,10 +2,65 @@ const token = new URLSearchParams(location.search).get('token') || localStorage.
 if (token) localStorage.setItem('sf_token', token);
 const authHeader = token ? { 'Authorization': 'Bearer ' + token } : {};
 
+const state = {
+  drawerItem: null,        // current item id shown in drawer
+  drawerOldestTs: null,    // cursor for "load older"
+  headerRefetchTimer: null,
+};
+
 async function fetchJSON(path) {
   const r = await fetch(path, { headers: authHeader });
   if (!r.ok) throw new Error(path + ': ' + r.status);
   return r.json();
+}
+
+function renderMarkdown(md) {
+  const lines = (md || '').split('\n');
+  let html = '';
+  let inList = false;
+  const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const inline = s => esc(s)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    if (/^- /.test(line)) {
+      if (!inList) { html += '<ul>'; inList = true; }
+      html += '<li>' + inline(line.slice(2)) + '</li>';
+      continue;
+    }
+    if (inList) { html += '</ul>'; inList = false; }
+    if (line === '') continue;
+    if (/^#### /.test(line)) { html += '<h5>' + inline(line.slice(5)) + '</h5>'; continue; }
+    if (/^### /.test(line))  { html += '<h5>' + inline(line.slice(4)) + '</h5>'; continue; }
+    html += '<p>' + inline(line) + '</p>';
+  }
+  if (inList) html += '</ul>';
+  return html;
+}
+
+function splitBodySections(md) {
+  const sections = [];
+  const re = /^##\s+(.+)$/gm;
+  let match, lastEnd = 0, lastTitle = null;
+  while ((match = re.exec(md)) !== null) {
+    if (lastTitle !== null) sections.push({ title: lastTitle, content: md.slice(lastEnd, match.index).trim() });
+    lastTitle = match[1].trim();
+    lastEnd = re.lastIndex;
+  }
+  if (lastTitle !== null) sections.push({ title: lastTitle, content: md.slice(lastEnd).trim() });
+  return sections;
+}
+
+function fmtTs(unix) {
+  return new Date(unix * 1000).toTimeString().slice(0, 5);
+}
+
+function escapeHtml(s) {
+  return String(s || '').replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[c]);
 }
 
 async function refreshAgents() {
@@ -110,38 +165,124 @@ function openAgentDrawer(agent) {
 }
 
 async function openItemDrawer(itemID) {
+  state.drawerItem = itemID;
+  state.drawerOldestTs = null;
+
+  const sel = document.getElementById('thread-select');
+  if (sel.value !== 'global') { sel.value = 'global'; refreshMessages(); }
+
   const body = document.getElementById('drawer-body');
+  body.innerHTML = '<p>Loading…</p>';
+  document.getElementById('drawer').hidden = false;
+
   try {
-    const it = await fetchJSON('/api/items/' + encodeURIComponent(itemID));
-    body.innerHTML = `
-      <h3>${it.id} · ${it.priority}</h3>
-      <p>${it.title}</p>
-      <p><strong>Area:</strong> ${it.area} · <strong>Type:</strong> ${it.type} · <strong>Risk:</strong> ${it.risk}</p>
-      <p><strong>Estimate:</strong> ${it.estimate}</p>
-      <p><strong>Progress:</strong> ${it.progress_pct}% (AC ${it.ac_checked}/${it.ac_total})</p>
-      <form class="claim-form" data-item="${it.id}">
-        <input placeholder="Intent..." />
-        <button>Claim</button>
-      </form>
-    `;
-    document.getElementById('drawer').hidden = false;
-    body.querySelector('form').addEventListener('submit', async e => {
-      e.preventDefault();
-      const intent = e.target.querySelector('input').value;
-      const r = await fetch('/api/claim', {
-        method: 'POST',
-        headers: { ...authHeader, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ item: it.id, intent }),
-      });
-      if (!r.ok) {
-        alert('claim failed: ' + r.status);
-      } else {
-        document.getElementById('drawer').hidden = true;
-      }
-    });
+    const [it, activity] = await Promise.all([
+      fetchJSON('/api/items/' + encodeURIComponent(itemID)),
+      fetchJSON('/api/items/' + encodeURIComponent(itemID) + '/activity?limit=50'),
+    ]);
+    renderDrawer(it, activity);
   } catch (err) {
-    body.innerHTML = '<p>Error: ' + err.message + '</p>';
+    body.innerHTML = '<p>Error: ' + escapeHtml(err.message) + '</p>';
   }
+}
+
+function renderDrawer(it, activity) {
+  const body = document.getElementById('drawer-body');
+  const pri = (it.priority || '').toLowerCase();
+  const claimHtml = it.current_claim
+    ? `<div class="claim-banner">● <strong>${escapeHtml(it.current_claim.agent_id)}</strong> — ${escapeHtml(it.current_claim.intent || '(no intent)')}</div>`
+    : '<div class="claim-banner" style="opacity:0.6">unclaimed</div>';
+
+  const acHtml = (it.ac || []).map(a =>
+    `<li class="${a.checked ? 'checked' : ''}"><span class="glyph">${a.checked ? '☒' : '☐'}</span>${escapeHtml(a.text).replace(/\n/g, '<br>')}</li>`
+  ).join('') || '<li style="opacity:0.6">(no acceptance criteria)</li>';
+
+  const depsHtml =
+    (it.blocked_by || []).map(id => `<span>blocked by</span> <span class="chip" data-id="${escapeHtml(id)}">${escapeHtml(id)}</span>`).join(' ') +
+    (it.relates_to || []).map(id => `<span>relates to</span> <span class="chip" data-id="${escapeHtml(id)}">${escapeHtml(id)}</span>`).join(' ');
+
+  const sections = splitBodySections(it.body_markdown || '');
+  const sectionsHtml = sections.map((s, i) =>
+    `<details class="body-section"${i === 0 ? ' open' : ''}><summary>${escapeHtml(s.title)}</summary><div class="md">${renderMarkdown(s.content)}</div></details>`
+  ).join('');
+
+  body.innerHTML = `
+    <h3>${escapeHtml(it.id)} · ${escapeHtml(it.title || '')}</h3>
+    <div class="tags">
+      <span class="priority ${pri}">${escapeHtml(it.priority || '')}</span> ·
+      ${escapeHtml(it.type || '')} · ${escapeHtml(it.area || '')} · est ${escapeHtml(it.estimate || '—')} · risk ${escapeHtml(it.risk || '—')}
+    </div>
+    ${claimHtml}
+    <div class="progress"><div class="progress-bar" style="width:${it.progress_pct || 0}%"></div></div>
+    ${depsHtml ? `<div class="deps">${depsHtml}</div>` : ''}
+    <h4>Acceptance (${it.ac_checked}/${it.ac_total})</h4>
+    <ul class="ac">${acHtml}</ul>
+    <h4>Body</h4>
+    ${sectionsHtml}
+    <h4>Activity</h4>
+    <div class="activity" id="drawer-activity"></div>
+    <button class="load-older" id="drawer-load-older">Load older</button>
+    <form class="drawer-chat" data-thread="${escapeHtml(it.id)}">
+      <input placeholder="Message #${escapeHtml(it.id)}…" />
+      <button>Send</button>
+    </form>
+  `;
+
+  state.drawerOldestTs = null;
+  renderActivity(activity);
+
+  body.querySelectorAll('.deps .chip').forEach(c => {
+    c.addEventListener('click', () => openItemDrawer(c.dataset.id));
+  });
+  body.querySelector('#drawer-load-older').addEventListener('click', loadOlderActivity);
+  body.querySelector('form.drawer-chat').addEventListener('submit', async e => {
+    e.preventDefault();
+    const input = e.target.querySelector('input');
+    const msg = input.value.trim();
+    if (!msg) return;
+    await fetch('/api/say', {
+      method: 'POST',
+      headers: { ...authHeader, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ thread: e.target.dataset.thread, body: msg }),
+    });
+    input.value = '';
+  });
+}
+
+function renderActivity(events) {
+  const list = document.getElementById('drawer-activity');
+  if (!list) return;
+  for (const e of events) {
+    list.appendChild(activityRow(e));
+    if (state.drawerOldestTs === null || e.ts < state.drawerOldestTs) state.drawerOldestTs = e.ts;
+  }
+}
+
+function activityRow(e) {
+  const div = document.createElement('div');
+  div.className = 'row';
+  const kindClass = e.kind === 'say' ? 'say chat' : e.kind;
+  const detail = {
+    claim: e.detail ? '"' + e.detail + '"' : '',
+    release: e.outcome || '',
+    progress: (e.pct != null ? e.pct + '% ' : '') + (e.detail || ''),
+    touch: e.path || '',
+    untouch: e.path || '',
+    say: e.body || '',
+    chat: e.body || '',
+    knock: e.body || '',
+  }[e.kind] || e.body || e.detail || '';
+  div.innerHTML = `<span class="ts">${fmtTs(e.ts)}</span><span class="agent">${escapeHtml(e.agent_id)}</span><span class="kind ${kindClass}">${escapeHtml(e.kind)}</span><span>${escapeHtml(detail)}</span>`;
+  return div;
+}
+
+async function loadOlderActivity() {
+  if (!state.drawerItem || !state.drawerOldestTs) return;
+  const more = await fetchJSON(
+    '/api/items/' + encodeURIComponent(state.drawerItem) +
+    '/activity?limit=50&before=' + state.drawerOldestTs
+  );
+  renderActivity(more);
 }
 
 document.getElementById('drawer-close').addEventListener('click', () => {
