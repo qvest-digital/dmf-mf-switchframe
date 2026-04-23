@@ -1,6 +1,7 @@
 package switcher
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"sync"
@@ -72,7 +73,7 @@ func newBenchSwitcher(b *testing.B, nSources int) *Switcher {
 	// Make the first virtual source the program so the main hot-path
 	// branch (pass-through to broadcastProcessedFromPF) fires once per
 	// bench iteration when sourceKey == program.
-	_ = s.Cut(nil, makeBenchSourceKey(0))
+	_ = s.Cut(context.Background(), makeBenchSourceKey(0))
 
 	b.Cleanup(func() { s.Close() })
 	return s
@@ -160,7 +161,7 @@ func BenchmarkHandleRawVideoFrame_UnderWriterContention(b *testing.B) {
 			case <-stop:
 				return
 			case <-ticker.C:
-				_ = sw.SetLabel(nil, keys[i%len(keys)], "flicker")
+				_ = sw.SetLabel(context.Background(), keys[i%len(keys)], "flicker")
 				i++
 			}
 		}

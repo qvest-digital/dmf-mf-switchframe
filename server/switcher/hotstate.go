@@ -2,7 +2,6 @@ package switcher
 
 import (
 	"math"
-	"time"
 
 	"github.com/zsiec/switchframe/server/transition"
 )
@@ -19,12 +18,7 @@ type hotState struct {
 	state                 State
 	transTypeOrig         string
 	transitionMaxForward  float64
-	videoPTSStart         int64
-	videoPTS              int64
-	videoPTSInited        bool
 	wallClockVideoEnabled bool
-	firstVideoPTSSeeded   bool
-	videoPTSEpoch         time.Time
 	transEngine           *transition.Engine
 	onFirstVideoPTS       func(pts int64)
 }
