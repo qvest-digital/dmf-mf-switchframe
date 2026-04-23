@@ -38,6 +38,7 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("GET /api/messages", s.handleMessages)
 	mux.HandleFunc("GET /api/items", s.handleItemsList)
 	mux.HandleFunc("GET /api/items/{id}", s.handleItemDetail)
+	mux.HandleFunc("GET /api/progress/{id}", s.handleProgress)
 	return s.authMiddleware(mux)
 }
 
@@ -217,6 +218,35 @@ func (s *server) handleItemDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeErr(w, http.StatusNotFound, "item not found: "+id)
+}
+
+func (s *server) handleProgress(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	rows, err := s.d.sqldb.QueryContext(r.Context(), `
+		SELECT pct, reported_at, reported_by, COALESCE(note, '') FROM progress
+		WHERE item_id = ? ORDER BY reported_at DESC
+	`, id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer rows.Close()
+	type pRow struct {
+		Pct        int    `json:"pct"`
+		ReportedAt int64  `json:"reported_at"`
+		ReportedBy string `json:"reported_by"`
+		Note       string `json:"note"`
+	}
+	var out []pRow
+	for rows.Next() {
+		var p pRow
+		if err := rows.Scan(&p.Pct, &p.ReportedAt, &p.ReportedBy, &p.Note); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		out = append(out, p)
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *server) handleTouches(w http.ResponseWriter, r *http.Request) {
