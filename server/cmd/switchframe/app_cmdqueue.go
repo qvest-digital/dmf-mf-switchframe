@@ -68,6 +68,13 @@ func (a *App) initCommandQueue() error {
 		}
 	}
 
+	// Forward WAL-replayed seqs into the switcher so a post-restart
+	// /api/peer/health reports the true pre-restart high-water mark
+	// (BUG-054). The switcher's initial-seed from switcher_seq.json has
+	// already run in initCoreEngine; this closes the gap between the
+	// last-persisted seq and any un-executed WAL seqs above it.
+	opts = append(opts, cmdqueue.WithReplaySeqTracker(a.sw.TrackCommandSeq))
+
 	a.cmdQueue = cmdqueue.New(clock.Now, opts...)
 
 	// Build dispatcher with all state-mutating actions matching the

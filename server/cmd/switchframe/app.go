@@ -550,6 +550,26 @@ func (a *App) initSwitcherCommon() error {
 	a.sw = switcher.New(a.programRelay)
 	a.sw.SetMetrics(a.appMetrics)
 
+	// Persist + seed lastCommandSeq so /api/peer/health survives a restart
+	// without the peer interpreting seq=0 as divergence (BUG-054). Wire
+	// BEFORE initCommandQueue so the WAL-replay seq tracker (installed in
+	// app_cmdqueue) can push any post-persist seqs through the now-active
+	// persist pipeline.
+	if a.cfg.StateDir != "" {
+		seqPath := a.statePath("switcher_seq.json")
+		seq, err := loadSwitcherSeq(seqPath)
+		if err != nil {
+			slog.Error("switcher seq file unreadable; starting at seq 0 (peer will see restart as divergence until commands catch up)",
+				"path", seqPath, "error", err)
+		} else if seq > 0 {
+			a.sw.SetInitialCommandSeq(seq)
+			slog.Info("restored switcher lastCommandSeq from disk", "seq", seq, "path", seqPath)
+		}
+		a.sw.SetSeqPersistFn(func(s uint64) error {
+			return saveSwitcherSeq(seqPath, s)
+		})
+	}
+
 	// Gate relay audio until the first video keyframe is broadcast.
 	// This prevents the browser from playing audio before video is
 	// decodable, eliminating the ~400ms audio-leads-video gap at start.

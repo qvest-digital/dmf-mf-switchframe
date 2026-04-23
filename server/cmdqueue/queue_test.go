@@ -716,3 +716,145 @@ func TestMetricsCallbacks_NilCallbacksSafe(t *testing.T) {
 
 	// If we get here without panicking, the test passes.
 }
+
+// TestQueue_WALReplayInvokesSeqTracker verifies that the WAL-replay path in
+// New() invokes WithReplaySeqTracker per un-executed command. Without this,
+// a restarted engine's lastCommandSeq stays at 0 until fresh HTTP traffic
+// arrives, letting the peer read the restart as divergence (BUG-054).
+func TestQueue_WALReplayInvokesSeqTracker(t *testing.T) {
+	dir := t.TempDir()
+	walPath := filepath.Join(dir, "test.wal")
+
+	wal1, err := cmdqueue.NewWAL(walPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Append three un-executed commands that will be replayed.
+	_ = wal1.Append(cmdqueue.Command{ExecuteAt: 0, Seq: 10, Action: "cut"})
+	_ = wal1.Append(cmdqueue.Command{ExecuteAt: 0, Seq: 11, Action: "cut"})
+	_ = wal1.Append(cmdqueue.Command{ExecuteAt: 0, Seq: 12, Action: "cut"})
+	// Mark one as executed — it must NOT be replayed through the tracker.
+	_ = wal1.MarkExecuted(10)
+	_ = wal1.Close()
+
+	wal2, err := cmdqueue.NewWAL(walPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = wal2.Close() }()
+
+	var tracked []uint64
+	tracker := func(seq uint64) {
+		tracked = append(tracked, seq)
+	}
+
+	now := int64(100_000_000)
+	_ = cmdqueue.New(
+		func() int64 { return now },
+		cmdqueue.WithWAL(wal2),
+		cmdqueue.WithReplaySeqTracker(tracker),
+	)
+
+	// All three WAL seqs advance the tracker: 10 via ReplayExecutedSeqs
+	// (tombstone → dedup seed + tracker, closes the drain-after-last-persist
+	// blind spot); 11 and 12 via Replay (un-executed commands replayed into
+	// the heap). The max-seq invariant is what matters for the BUG-054 fix;
+	// sub-check on order is belt-and-braces.
+	if len(tracked) != 3 {
+		t.Fatalf("tracker invoked %d times, want 3 (seqs 10, 11, 12); got %v", len(tracked), tracked)
+	}
+	var max uint64
+	seen := make(map[uint64]bool)
+	for _, s := range tracked {
+		seen[s] = true
+		if s > max {
+			max = s
+		}
+	}
+	if max != 12 {
+		t.Errorf("tracker max = %d, want 12 (highest replayed seq)", max)
+	}
+	for _, want := range []uint64{10, 11, 12} {
+		if !seen[want] {
+			t.Errorf("tracker missed seq %d; got %v", want, tracked)
+		}
+	}
+}
+
+// TestQueue_WALReplayTrackerSeesExecutedTombstones closes the last blind
+// spot in the BUG-054 restart high-water mark: commands that were drained
+// (MarkExecuted'd) after the last seqPersist flush but before a crash leave
+// tombstones in the WAL with no un-executed replay entries above them. The
+// tracker must still observe them via ReplayExecutedSeqs so lastCommandSeq
+// catches up past the persisted value.
+func TestQueue_WALReplayTrackerSeesExecutedTombstones(t *testing.T) {
+	dir := t.TempDir()
+	walPath := filepath.Join(dir, "test.wal")
+
+	wal1, err := cmdqueue.NewWAL(walPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Append + execute three commands so only executed tombstones remain.
+	_ = wal1.Append(cmdqueue.Command{ExecuteAt: 0, Seq: 7, Action: "cut"})
+	_ = wal1.Append(cmdqueue.Command{ExecuteAt: 0, Seq: 8, Action: "cut"})
+	_ = wal1.Append(cmdqueue.Command{ExecuteAt: 0, Seq: 9, Action: "cut"})
+	_ = wal1.MarkExecuted(7)
+	_ = wal1.MarkExecuted(8)
+	_ = wal1.MarkExecuted(9)
+	_ = wal1.Close()
+
+	wal2, err := cmdqueue.NewWAL(walPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = wal2.Close() }()
+
+	var max uint64
+	tracker := func(seq uint64) {
+		if seq > max {
+			max = seq
+		}
+	}
+
+	now := int64(100_000_000)
+	_ = cmdqueue.New(
+		func() int64 { return now },
+		cmdqueue.WithWAL(wal2),
+		cmdqueue.WithReplaySeqTracker(tracker),
+	)
+
+	if max < 9 {
+		t.Fatalf("tracker max = %d; want >= 9 (highest executed tombstone)", max)
+	}
+}
+
+// TestQueue_WALReplayTrackerOptional verifies that replay still works when
+// no tracker is configured (backward compat for callers that don't need
+// the BUG-054 seed path — e.g. tests without a switcher).
+func TestQueue_WALReplayTrackerOptional(t *testing.T) {
+	dir := t.TempDir()
+	walPath := filepath.Join(dir, "test.wal")
+
+	wal1, err := cmdqueue.NewWAL(walPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = wal1.Append(cmdqueue.Command{ExecuteAt: 0, Seq: 1, Action: "cut"})
+	_ = wal1.Close()
+
+	wal2, err := cmdqueue.NewWAL(walPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = wal2.Close() }()
+
+	// No WithReplaySeqTracker — must not panic, must still replay.
+	now := int64(100_000_000)
+	q := cmdqueue.New(func() int64 { return now }, cmdqueue.WithWAL(wal2))
+
+	out := q.Drain()
+	if len(out) != 1 || out[0].Seq != 1 {
+		t.Fatalf("expected [seq=1] to be replayed without tracker, got: %v", out)
+	}
+}

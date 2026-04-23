@@ -75,21 +75,34 @@ func WithMetrics(cb *MetricsCallbacks) Option {
 	return func(q *Queue) { q.metricsCB = cb }
 }
 
+// WithReplaySeqTracker registers a callback invoked once per WAL-replayed
+// command during New() (after the replay Enqueue succeeds). The caller uses
+// this to advance an external high-water mark (switcher.lastCommandSeq) so
+// a process restart does not expose seq=0 on /api/peer/health while the
+// WAL-replayed commands drain — see BUG-054.
+//
+// The callback runs synchronously inside New(); it must not block or
+// acquire the Queue's internal lock.
+func WithReplaySeqTracker(fn func(seq uint64)) Option {
+	return func(q *Queue) { q.replaySeqTracker = fn }
+}
+
 // Queue holds pending commands sorted by ExecuteAt and drains them when the
 // injected clock reaches their scheduled time.
 type Queue struct {
-	mu              sync.Mutex
-	h               cmdHeap
-	seen            map[uint64]struct{}
-	prunedHighWater uint64 // highest Seq evicted during prune; rejects retransmits
-	clock           func() int64
-	maxAge          int64
-	maxSize         int
-	wal             *WAL
-	metricsCB       *MetricsCallbacks
-	lateCommands    atomic.Int64
-	lastDrainClock  int64 // last clock value seen by Drain, for backward jump detection
-	clockJumps      atomic.Int64
+	mu               sync.Mutex
+	h                cmdHeap
+	seen             map[uint64]struct{}
+	prunedHighWater  uint64 // highest Seq evicted during prune; rejects retransmits
+	clock            func() int64
+	maxAge           int64
+	maxSize          int
+	wal              *WAL
+	metricsCB        *MetricsCallbacks
+	replaySeqTracker func(seq uint64) // optional; invoked per WAL-replayed command in New
+	lateCommands     atomic.Int64
+	lastDrainClock   int64 // last clock value seen by Drain, for backward jump detection
+	clockJumps       atomic.Int64
 }
 
 // LateCommands returns the number of late commands that were promoted to immediate execution.
@@ -108,15 +121,32 @@ func New(clock func() int64, opts ...Option) *Queue {
 	}
 	if q.wal != nil {
 		// Seed dedup map from executed commands to prevent re-execution after crash.
+		// Also advance the external seq tracker from executed tombstones so the
+		// restart high-water mark covers the narrow window where commands
+		// drained (and MarkExecuted'd) after the last seqPersist flush but
+		// before the crash — switcher_seq.json missed them, but the WAL
+		// preserved their Seq as a tombstone.
 		if seqs, err := q.wal.ReplayExecutedSeqs(); err == nil {
 			for _, seq := range seqs {
 				q.seen[seq] = struct{}{}
+				if q.replaySeqTracker != nil && seq > 0 {
+					q.replaySeqTracker(seq)
+				}
 			}
 		}
 		// Replay un-executed commands.
 		if cmds, err := q.wal.Replay(q.maxAge); err == nil {
 			for _, cmd := range cmds {
-				_ = q.Enqueue(cmd)
+				if err := q.Enqueue(cmd); err != nil {
+					continue
+				}
+				// Advance the external seq tracker so a restart's
+				// /api/peer/health reflects the pre-restart high-water
+				// mark even before any HTTP traffic re-triggers
+				// TrackCommandSeq through the timedHandler path.
+				if q.replaySeqTracker != nil && cmd.Seq > 0 {
+					q.replaySeqTracker(cmd.Seq)
+				}
 			}
 		}
 	}

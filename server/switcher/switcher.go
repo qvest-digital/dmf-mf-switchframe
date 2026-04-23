@@ -464,6 +464,17 @@ type Switcher struct {
 	lastExecutedErr   atomic.Pointer[string] // error from the last executed command, nil on success
 	recentCmdErrors   *recentErrors          // ring buffer of recent per-sequence command errors
 
+	// lastCommandSeq persistence primitives. Writes-through to disk so a
+	// process restart can re-seed lastCommandSeq and avoid the peer reading
+	// the fresh engine as regressed-to-0 (BUG-054). SetSeqPersistFn installs
+	// the callback + starts seqPersistLoop (which captures fn by parameter,
+	// not by field read). The three fields here are atomic-only / channel-
+	// only so TrackCommandSeq stays lock-free on the hot path; configMu
+	// gates setup + teardown transitions.
+	seqDirty       atomic.Bool   // set by TrackCommandSeq advances, cleared by the persist loop
+	seqPersistStop chan struct{} // closed by Close() to stop the persist loop
+	seqPersistDone chan struct{} // closed by the persist loop on exit, confirms final flush
+
 	// Output FPS tracking (atomic, lock-free)
 	outputFPSCount       atomic.Int64 // frames in current 1-second window
 	outputFPSLastSecond  atomic.Int64 // FPS computed from previous second
@@ -956,6 +967,20 @@ func (s *Switcher) Close() {
 		}
 		for _, k := range keys {
 			s.UnregisterSource(k)
+		}
+
+		// Stop the seq-persist loop after source teardown so a final flush
+		// captures any TrackCommandSeq advance that fired from an in-flight
+		// drain during the rest of Close().
+		s.configMu.Lock()
+		stop := s.seqPersistStop
+		done := s.seqPersistDone
+		s.seqPersistStop = nil
+		s.seqPersistDone = nil
+		s.configMu.Unlock()
+		if stop != nil {
+			close(stop)
+			<-done
 		}
 	})
 }
@@ -1804,7 +1829,9 @@ func (s *Switcher) drainCommandQueue() {
 }
 
 // TrackCommandSeq updates lastCommandSeq to the given value if it's higher
-// than the current value. Uses CAS loop for lock-free thread safety.
+// than the current value. Uses CAS loop for lock-free thread safety. Marks
+// seqDirty so the debounced persist loop flushes the new high-water mark
+// to disk on its next tick — see seqPersistLoop.
 func (s *Switcher) TrackCommandSeq(seq uint64) {
 	for {
 		old := s.lastCommandSeq.Load()
@@ -1812,7 +1839,92 @@ func (s *Switcher) TrackCommandSeq(seq uint64) {
 			return
 		}
 		if s.lastCommandSeq.CompareAndSwap(old, seq) {
+			s.seqDirty.Store(true)
 			return
+		}
+	}
+}
+
+// SetInitialCommandSeq seeds lastCommandSeq from the persisted on-disk
+// value before the HTTP listener and peer poller start. Only advances the
+// tracker — never regresses — so a later wire-up that reads a stale file
+// cannot undo a higher in-memory value. Called from app init (BUG-054).
+func (s *Switcher) SetInitialCommandSeq(seq uint64) {
+	s.TrackCommandSeq(seq)
+	// Clear the dirty flag that TrackCommandSeq sets: the value we just
+	// seeded came FROM disk, so there's nothing to write back yet.
+	s.seqDirty.Store(false)
+}
+
+// SetSeqPersistFn installs a callback invoked by the debounced persist
+// loop whenever lastCommandSeq advances. Must be called before the first
+// TrackCommandSeq advance that should survive a restart; setting fn starts
+// the persist goroutine. Passing a nil fn disables persistence (used for
+// tests + the single-engine fast path).
+//
+// Contract: do NOT call after Close. Close drops the persist loop; a
+// post-Close call would start a new loop with no teardown path and leak a
+// goroutine. In practice this is called exactly once at app init.
+func (s *Switcher) SetSeqPersistFn(fn func(uint64) error) {
+	s.configMu.Lock()
+	// Stop any prior persist loop cleanly so the contract "only one loop
+	// at a time" holds if a test swaps fns.
+	prevStop, prevDone := s.seqPersistStop, s.seqPersistDone
+	if fn == nil {
+		s.seqPersistStop = nil
+		s.seqPersistDone = nil
+		s.configMu.Unlock()
+		if prevStop != nil {
+			close(prevStop)
+			<-prevDone
+		}
+		return
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	s.seqPersistStop = stop
+	s.seqPersistDone = done
+	s.configMu.Unlock()
+	if prevStop != nil {
+		close(prevStop)
+		<-prevDone
+	}
+	go s.seqPersistLoop(fn, stop, done)
+}
+
+// seqPersistLoop debounces disk writes of lastCommandSeq. The loop flushes
+// the current atomic value every 100 ms if seqDirty is set — bursty CUT
+// storms coalesce to ≤10 writes/sec regardless of API command rate. A
+// final flush runs on stop so a clean shutdown does not lose the last
+// advance.
+func (s *Switcher) seqPersistLoop(fn func(uint64) error, stop, done chan struct{}) {
+	defer close(done)
+	const interval = 100 * time.Millisecond
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	var lastWritten uint64
+	flush := func() {
+		if !s.seqDirty.CompareAndSwap(true, false) {
+			return
+		}
+		cur := s.lastCommandSeq.Load()
+		if cur <= lastWritten {
+			return
+		}
+		if err := fn(cur); err != nil {
+			s.log.Warn("persist lastCommandSeq failed; will retry", "err", err, "seq", cur)
+			s.seqDirty.Store(true)
+			return
+		}
+		lastWritten = cur
+	}
+	for {
+		select {
+		case <-stop:
+			flush()
+			return
+		case <-ticker.C:
+			flush()
 		}
 	}
 }

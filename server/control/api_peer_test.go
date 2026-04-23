@@ -184,3 +184,33 @@ func TestTimedRoutes_AdvanceLastCommandSeq(t *testing.T) {
 		})
 	}
 }
+
+// TestPeerHealth_SeqSurvivesRestart asserts BUG-054 AC#5: after a simulated
+// restart, /api/peer/health reports the pre-restart lastCommandSeq BEFORE
+// any new HTTP traffic arrives. Exercises the post-persist startup path —
+// Switcher.SetInitialCommandSeq must seed the tracker such that the first
+// health probe sees the high-water mark, not 0.
+func TestPeerHealth_SeqSurvivesRestart(t *testing.T) {
+	const restoredSeq uint64 = 50
+
+	// Simulated restart: construct a fresh switcher (lastCommandSeq=0)
+	// and seed it from the "persisted" value — same sequence the app's
+	// initSwitcherCommon path runs at startup.
+	programRelay := distribution.NewRelay()
+	sw := switcher.NewTestSwitcher(t, programRelay)
+	sw.SetInitialCommandSeq(restoredSeq)
+
+	api := NewAPI(sw)
+
+	// Probe /api/peer/health BEFORE any new API traffic runs.
+	req := httptest.NewRequest(http.MethodGet, "/api/peer/health", nil)
+	w := httptest.NewRecorder()
+	api.Mux().ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var resp peer.HealthResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.GreaterOrEqual(t, resp.LastCommandSeq, restoredSeq,
+		"post-restart /api/peer/health must report >= persisted seq; got %d, want >= %d",
+		resp.LastCommandSeq, restoredSeq)
+}

@@ -1937,3 +1937,112 @@ func TestState_KeyAlphaTallied(t *testing.T) {
 		"cam1 is the alpha input of an enabled key, must be tallied as key_alpha (amber)")
 	require.Equal(t, string(TallyKeyFill), state.TallyState["cam3"])
 }
+
+// TestSwitcher_SetInitialCommandSeq_SeedsTracker verifies that the startup
+// seed path advances lastCommandSeq to the persisted value before any API
+// traffic runs, and that the seed does NOT mark seqDirty (the value came
+// from disk — nothing to write back).
+func TestSwitcher_SetInitialCommandSeq_SeedsTracker(t *testing.T) {
+	sw := newTestSwitcher(t, newTestRelay())
+
+	if got := sw.State().LastCommandSeq; got != 0 {
+		t.Fatalf("fresh switcher LastCommandSeq = %d, want 0", got)
+	}
+
+	sw.SetInitialCommandSeq(50)
+	if got := sw.State().LastCommandSeq; got != 50 {
+		t.Fatalf("after SetInitialCommandSeq(50): LastCommandSeq = %d, want 50", got)
+	}
+	if sw.seqDirty.Load() {
+		t.Error("seqDirty must be false after seed — the value came from disk")
+	}
+
+	// SetInitialCommandSeq must never regress a higher current value.
+	sw.TrackCommandSeq(75)
+	sw.SetInitialCommandSeq(40) // lower than current 75
+	if got := sw.State().LastCommandSeq; got != 75 {
+		t.Errorf("SetInitialCommandSeq regressed 75→%d on a lower seed — must be monotonic", got)
+	}
+}
+
+// TestSwitcher_TrackCommandSeq_PersistsViaDebounce pins the persist contract:
+// TrackCommandSeq advances trigger the debounced disk write, and only the
+// latest seq within a ≥100 ms window is flushed (coalescing a CUT storm to a
+// single write).
+func TestSwitcher_TrackCommandSeq_PersistsViaDebounce(t *testing.T) {
+	sw := newTestSwitcher(t, newTestRelay())
+
+	var mu sync.Mutex
+	var writes []uint64
+	sw.SetSeqPersistFn(func(seq uint64) error {
+		mu.Lock()
+		writes = append(writes, seq)
+		mu.Unlock()
+		return nil
+	})
+
+	// Burst 20 advances within the 100ms tick window — all should coalesce.
+	for i := uint64(1); i <= 20; i++ {
+		sw.TrackCommandSeq(i)
+	}
+
+	// Wait for at least one persist tick (debounce is 100ms).
+	time.Sleep(250 * time.Millisecond)
+
+	mu.Lock()
+	got := append([]uint64(nil), writes...)
+	mu.Unlock()
+	if len(got) == 0 {
+		t.Fatal("no persist calls after 250ms — debounce loop never fired")
+	}
+	// The final write MUST be 20 (the highest advance). Intermediate writes
+	// are acceptable but the high-water mark must land.
+	if got[len(got)-1] != 20 {
+		t.Errorf("final persist seq = %d, want 20 (latest advance)", got[len(got)-1])
+	}
+	// Coalescing check: the 20 burst advances should not produce 20 writes.
+	if len(got) > 5 {
+		t.Errorf("persist fired %d times for 20 burst advances — debounce not coalescing", len(got))
+	}
+
+	// No further advances: persist must stop firing after the seq is flushed.
+	mu.Lock()
+	mark := len(writes)
+	mu.Unlock()
+	time.Sleep(250 * time.Millisecond)
+	mu.Lock()
+	after := len(writes)
+	mu.Unlock()
+	if after != mark {
+		t.Errorf("persist fired %d extra times with no advances — dirty flag not cleared", after-mark)
+	}
+}
+
+// TestSwitcher_SeqPersistFlushOnClose asserts that a final flush runs when
+// Close shuts down the persist loop, so an advance that landed inside the
+// current debounce window is not lost.
+func TestSwitcher_SeqPersistFlushOnClose(t *testing.T) {
+	sw := NewTestSwitcher(t, newTestRelay())
+
+	var mu sync.Mutex
+	var writes []uint64
+	sw.SetSeqPersistFn(func(seq uint64) error {
+		mu.Lock()
+		writes = append(writes, seq)
+		mu.Unlock()
+		return nil
+	})
+
+	// Advance and IMMEDIATELY close — within the 100 ms debounce window.
+	sw.TrackCommandSeq(42)
+	sw.Close()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(writes) == 0 {
+		t.Fatal("Close did not trigger final flush — advance lost")
+	}
+	if writes[len(writes)-1] != 42 {
+		t.Errorf("final flush seq = %d, want 42", writes[len(writes)-1])
+	}
+}
