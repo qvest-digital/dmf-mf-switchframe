@@ -91,12 +91,31 @@ func (s *server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if got == "" && r.URL.Path == "/api/events" {
-			got = r.URL.Query().Get("token")
+		fromQuery := false
+		if got == "" && r.Method == http.MethodGet {
+			if q := r.URL.Query().Get("token"); q != "" {
+				got = q
+				fromQuery = true
+			}
+		}
+		if got == "" {
+			if c, err := r.Cookie("sf_token"); err == nil {
+				got = c.Value
+			}
 		}
 		if got != s.cfg.Token {
 			writeErr(w, http.StatusUnauthorized, "unauthorized")
 			return
+		}
+		if fromQuery {
+			http.SetCookie(w, &http.Cookie{
+				Name:     "sf_token",
+				Value:    s.cfg.Token,
+				Path:     "/",
+				HttpOnly: true,
+				SameSite: http.SameSiteStrictMode,
+				MaxAge:   7 * 24 * 3600,
+			})
 		}
 		next.ServeHTTP(w, r)
 	})
