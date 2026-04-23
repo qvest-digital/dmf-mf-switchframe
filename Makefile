@@ -243,3 +243,16 @@ format:
 clean:
 	rm -rf bin/ $(EMBED_LINK)
 	@if [ -f server/gpu/metal/Makefile ]; then cd server/gpu/metal && $(MAKE) -s clean 2>/dev/null || true; fi
+
+.PHONY: sf-team
+sf-team:
+	cd server && go build -o ../bin/sf-team ./cmd/sf-team
+
+.PHONY: install-sf-team
+install-sf-team: sf-team
+	@echo "built bin/sf-team — symlink into your PATH:"
+	@echo "    ln -sf $(PWD)/bin/sf-team /usr/local/bin/sf-team"
+
+.PHONY: sf-team-test
+sf-team-test:
+	cd server && go test ./cmd/sf-team/ -race
