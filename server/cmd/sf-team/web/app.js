@@ -57,6 +57,11 @@ async function refreshBoard() {
   blocked.innerHTML = blockedItems.length
     ? '<h3>Blocked</h3>' + blockedItems.map(it => `<div class="card"><div class="id">${it.id}</div><div class="meta">${it.title}</div></div>`).join('')
     : '';
+
+  const select = document.getElementById('thread-select');
+  const current = select.value;
+  select.innerHTML = '<option value="global">#global</option>' + claims.map(c => `<option value="${c.item_id}">#${c.item_id}</option>`).join('');
+  select.value = claims.find(c => c.item_id === current) ? current : 'global';
 }
 
 function appendMessage(m) {
