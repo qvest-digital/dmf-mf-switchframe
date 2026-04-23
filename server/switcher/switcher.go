@@ -119,6 +119,15 @@ var validTransitions = map[State][]State{
 // transitionState changes the switcher state, logging a warning if the transition
 // is not in the valid transitions map. Never panics in production.
 // Caller must hold s.configMu (write lock).
+//
+// NOTE: intentionally does NOT publish to hotState. The legacy s.state field
+// doubles as a writer-serialization flag (e.g., StartTransition flips it to
+// StateTransitioning early to block concurrent starts) — publishing that
+// early would expose a torn snapshot where hotState.state==Transitioning but
+// hotState.transEngine is still nil because the engine hasn't been built.
+// Callers must publish state to hotState in the same updateHotState closure
+// as the paired field change (transEngine, programSource, etc.) so readers
+// never observe a half-applied transition.
 func (s *Switcher) transitionState(to State) {
 	from := s.state
 	if from == to {
@@ -129,7 +138,6 @@ func (s *Switcher) transitionState(to State) {
 			"from", from.String(), "to", to.String())
 	}
 	s.state = to
-	s.updateHotState(func(hs *hotState) { hs.state = to })
 }
 
 // audioStateProvider is the interface the Switcher needs from the audio.Mixer
@@ -2072,12 +2080,15 @@ func (s *Switcher) broadcastProcessed(yuv []byte, width, height int, pts int64, 
 		return
 	}
 
-	s.configMu.RLock()
+	// Lock-free lookup: load the current program from hotState and look it up
+	// in the atomic sources snapshot. Benign two-load race — if the program
+	// source is unregistered mid-call, groupID stays zero.
+	hs := s.hotState.Load()
+	sources := *s.sourcesAtomic.Load()
 	var groupID uint32
-	if ss, ok := s.sources[s.programSource]; ok {
+	if ss, ok := sources[hs.programSource]; ok {
 		groupID = ss.lastGroupID.Load()
 	}
-	s.configMu.RUnlock()
 
 	// Use the pipeline's color format for frame sizing and codec metadata.
 	pf := s.pipelineFormat.Load()
@@ -2414,6 +2425,7 @@ func (s *Switcher) StartTransition(ctx context.Context, sourceKey string, transT
 	// SetPreview is preserved.
 	s.previewSource = fromSource
 	s.updateHotState(func(hs *hotState) {
+		hs.state = StateTransitioning
 		hs.transEngine = engine
 		hs.transTypeOrig = transType
 		hs.transitionMaxForward = 0
@@ -2579,9 +2591,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		}
 
 		// Start audio BEFORE publishing engine (prevents position race).
-		s.configMu.RLock()
-		audioHandler := s.audioTransition
-		s.configMu.RUnlock()
+		audioHandler := s.audioHandlers.Load().audioTransition
 		if audioHandler != nil {
 			audioHandler.SetProgramMute(false)
 			audioHandler.OnTransitionStart(fromSource, "", audio.FadeIn, ftbRevDurMs)
@@ -2590,7 +2600,10 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 		// Now publish the engine.
 		s.configMu.Lock()
 		s.transEngine = engine
-		s.updateHotState(func(hs *hotState) { hs.transEngine = engine })
+		s.updateHotState(func(hs *hotState) {
+			hs.state = StateFTBReversing
+			hs.transEngine = engine
+		})
 		s.transitionsStarted.Add(1)
 
 		atomic.AddUint64(&s.seq, 1)
@@ -2654,9 +2667,7 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	}
 
 	// Start audio BEFORE publishing engine (prevents position race).
-	s.configMu.RLock()
-	audioHandler := s.audioTransition
-	s.configMu.RUnlock()
+	audioHandler := s.audioHandlers.Load().audioTransition
 	if audioHandler != nil {
 		audioHandler.OnTransitionStart(fromSource, "", audio.FadeOut, ftbFwdDurMs)
 	}
@@ -2664,7 +2675,10 @@ func (s *Switcher) FadeToBlack(ctx context.Context) error {
 	// Now publish the engine.
 	s.configMu.Lock()
 	s.transEngine = engine
-	s.updateHotState(func(hs *hotState) { hs.transEngine = engine })
+	s.updateHotState(func(hs *hotState) {
+		hs.state = StateFTBTransitioning
+		hs.transEngine = engine
+	})
 	s.transitionsStarted.Add(1)
 
 	atomic.AddUint64(&s.seq, 1)
@@ -2721,7 +2735,11 @@ func (s *Switcher) AbortTransition() {
 			s.transitionState(StateIdle)
 		}
 		s.transEngine = nil
-		s.updateHotState(func(hs *hotState) { hs.transEngine = nil })
+		newState := s.state
+		s.updateHotState(func(hs *hotState) {
+			hs.state = newState
+			hs.transEngine = nil
+		})
 		atomic.AddUint64(&s.seq, 1)
 	}
 	snapshot := s.buildStateLocked()
@@ -2811,6 +2829,7 @@ func (s *Switcher) handleTransitionComplete(aborted bool) {
 	s.transitionState(StateIdle)
 	s.transEngine = nil
 	s.updateHotState(func(hs *hotState) {
+		hs.state = StateIdle
 		hs.transTypeOrig = ""
 		if newProgram != "" {
 			hs.programSource = newProgram
@@ -2879,7 +2898,11 @@ func (s *Switcher) handleFTBComplete(aborted bool) {
 		s.transitionState(StateFTB) // Completed — hold at black
 	}
 	s.transEngine = nil
-	s.updateHotState(func(hs *hotState) { hs.transEngine = nil })
+	newState := s.state
+	s.updateHotState(func(hs *hotState) {
+		hs.state = newState
+		hs.transEngine = nil
+	})
 	s.transitionsCompleted.Add(1)
 	if s.promMetrics != nil && !aborted {
 		s.promMetrics.TransitionsTotal.WithLabelValues("ftb").Inc()
@@ -2928,7 +2951,11 @@ func (s *Switcher) handleFTBReverseComplete(aborted bool) {
 		s.transitionState(StateIdle) // Completed — screen is visible
 	}
 	s.transEngine = nil
-	s.updateHotState(func(hs *hotState) { hs.transEngine = nil })
+	newState := s.state
+	s.updateHotState(func(hs *hotState) {
+		hs.state = newState
+		hs.transEngine = nil
+	})
 	s.transitionsCompleted.Add(1)
 	if s.promMetrics != nil && !aborted {
 		s.promMetrics.TransitionsTotal.WithLabelValues("ftb_reverse").Inc()
@@ -3292,7 +3319,9 @@ func (s *Switcher) Cut(ctx context.Context, sourceKey string) error {
 			s.previewSource = oldProgram
 		}
 		newPreview := s.previewSource
+		newState := s.state
 		s.updateHotState(func(hs *hotState) {
+			hs.state = newState
 			hs.transEngine = nil
 			hs.programSource = sourceKey
 			hs.previewSource = newPreview
@@ -4010,19 +4039,25 @@ func (s *Switcher) handleAudioFrame(sourceKey string, frame *media.AudioFrame) {
 func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 	s.health.recordFrame(sourceKey, time.Now())
 
-	s.configMu.RLock()
-	ss, ok := s.sources[sourceKey]
+	// Lock-free hot-path snapshot: three atomic pointer loads replace the
+	// configMu.RLock block. The hotState / sources two-load race is benign —
+	// either snapshot routes the frame correctly (see design doc §invariants).
+	hs := s.hotState.Load()
+	sources := *s.sourcesAtomic.Load()
+	gh := s.graphicsHandlers.Load()
+	ah := s.audioHandlers.Load()
+
+	ss, ok := sources[sourceKey]
 	if ok && ss != nil {
 		ss.rawFrameCount.Add(1)
 	}
-	programSource := s.programSource
-	fTBActive := s.state.isFTBActive()
-	inTrans := s.state.isInTransition()
-	engine := s.transEngine
-	audioHandler := s.audioTransition
-	keyBridge := s.keyBridge
-	dveComp := s.dveCompositor
-	s.configMu.RUnlock()
+	programSource := hs.programSource
+	fTBActive := hs.state.isFTBActive()
+	inTrans := hs.state.isInTransition()
+	engine := hs.transEngine
+	audioHandler := ah.audioTransition
+	keyBridge := gh.keyBridge
+	dveComp := gh.dveCompositor
 
 	if !ok {
 		s.routeFiltered.Add(1)
@@ -4036,10 +4071,7 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 			if dec := ss.viewer.srcDecoder.Load(); dec != nil {
 				avgSize, avgFPS := dec.Stats()
 				if sourceKey == programSource {
-					s.configMu.RLock()
-					pipeCodecs := s.pipeCodecs
-					s.configMu.RUnlock()
-					if pipeCodecs != nil {
+					if pipeCodecs := s.pipeCodecsAtomic.Load(); pipeCodecs != nil {
 						pipeCodecs.updateSourceStats(avgSize, avgFPS)
 					}
 				}
@@ -4088,13 +4120,11 @@ func (s *Switcher) handleRawVideoFrame(sourceKey string, pf *ProcessingFrame) {
 		// GPU transition path: blend both sources on GPU, bypassing CPU blend.
 		// The engine still tracks position and handles auto-complete (SkipBlend
 		// mode), but the actual pixel blend happens on GPU.
-		// GPU transition path: blend both sources on GPU, bypassing CPU blend.
-		// The engine still tracks position and handles auto-complete (SkipBlend
-		// mode), but the actual pixel blend happens on GPU.
 		// Use the original transition type string (not engine type, which is
 		// always "mix" for DVE transitions) so the GPU pipeline can dispatch
-		// DVE-specific compositing.
-		tt := transition.Type(s.transTypeOrig)
+		// DVE-specific compositing. Read from the same hotState snapshot we
+		// took at handler entry to avoid a lockless race against StartTransition.
+		tt := transition.Type(hs.transTypeOrig)
 		if tt == "" {
 			tt = engine.TransitionType()
 		}

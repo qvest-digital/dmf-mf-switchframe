@@ -165,9 +165,13 @@ func TestIngestRawVideo_FTBActiveDropped(t *testing.T) {
 	sw.RegisterMXLSource("mxl-cam1")
 	require.NoError(t, sw.Cut(context.Background(), "mxl-cam1"))
 
-	// Simulate FTB active by setting state directly.
+	// Simulate FTB active. transitionState updates the legacy s.state; the
+	// hotState publication is done explicitly by production writers so the
+	// state+transEngine pair lands atomically — here we mirror that pattern.
 	sw.configMu.Lock()
-	sw.state = StateFTB
+	sw.transitionState(StateFTBTransitioning)
+	sw.transitionState(StateFTB)
+	sw.updateHotState(func(hs *hotState) { hs.state = StateFTB })
 	sw.configMu.Unlock()
 
 	initialFiltered := sw.routeFiltered.Load()
