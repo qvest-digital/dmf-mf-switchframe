@@ -360,6 +360,13 @@ type Switcher struct {
 	// docs/concepts/locking-and-concurrency.md.
 	hotState atomic.Pointer[hotState]
 
+	// Grouped handler bundles — each is a read-together/write-together
+	// subset of legacy s.mu-guarded fields, published atomically via CoW.
+	// Initialized non-nil in New() so Load() never returns nil.
+	graphicsHandlers atomic.Pointer[graphicsHandlers]
+	audioHandlers    atomic.Pointer[audioHandlers]
+	frameSyncBundle  atomic.Pointer[frameSyncBundle]
+
 	// Pipeline codec pool — shared decoder/encoder for the video processing chain.
 	// Used when any YUV processor (compositor, key bridge) is active or when
 	// the transition engine outputs raw YUV.
@@ -607,6 +614,9 @@ func New(programRelay *distribution.Relay) *Switcher {
 	s.frameBudgetNs.Store(defaultFmt.FrameBudgetNs())
 	s.pipelineFormat.Store(&defaultFmt)
 	s.hotState.Store(&hotState{state: StateIdle})
+	s.graphicsHandlers.Store(&graphicsHandlers{})
+	s.audioHandlers.Store(&audioHandlers{})
+	s.frameSyncBundle.Store(&frameSyncBundle{})
 	s.recentCmdErrors = newRecentErrors(8)
 	s.delayBuffer = NewDelayBuffer(s)
 	s.registerBuiltinSourcesLocked()
