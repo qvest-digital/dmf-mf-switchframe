@@ -19,7 +19,7 @@ func (d db) reclaimStale(ctx context.Context) ([]string, error) {
 	defer tx.Rollback()
 
 	rows, err := tx.QueryContext(ctx, `
-		SELECT item_id, agent_id, claimed_at, last_touch, long FROM claims
+		SELECT item_id, agent_id, claimed_at, last_touch FROM claims
 		WHERE (long = 0 AND last_touch < ?) OR (long = 1 AND last_touch < ?)
 	`, now-staleThresholdSec, now-staleThresholdLongSec)
 	if err != nil {
@@ -29,12 +29,12 @@ func (d db) reclaimStale(ctx context.Context) ([]string, error) {
 	type staleClaim struct {
 		item, agent string
 		claimedAt   int64
+		lastTouch   int64
 	}
 	var stales []staleClaim
 	for rows.Next() {
 		var s staleClaim
-		var lt, long int64
-		if err := rows.Scan(&s.item, &s.agent, &s.claimedAt, &lt, &long); err != nil {
+		if err := rows.Scan(&s.item, &s.agent, &s.claimedAt, &s.lastTouch); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -44,13 +44,23 @@ func (d db) reclaimStale(ctx context.Context) ([]string, error) {
 
 	ids := make([]string, 0, len(stales))
 	for _, s := range stales {
+		res, err := tx.ExecContext(ctx, `
+			DELETE FROM claims WHERE item_id=? AND agent_id=? AND last_touch=?
+		`, s.item, s.agent, s.lastTouch)
+		if err != nil {
+			return nil, err
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
+		if affected == 0 {
+			continue
+		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO claim_history (item_id, agent_id, claimed_at, released_at, outcome)
 			VALUES (?, ?, ?, ?, 'reclaimed')
 		`, s.item, s.agent, s.claimedAt, now); err != nil {
-			return nil, err
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM claims WHERE item_id=?`, s.item); err != nil {
 			return nil, err
 		}
 		if _, err := tx.ExecContext(ctx, `
