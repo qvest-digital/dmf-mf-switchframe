@@ -1,8 +1,10 @@
 package comms
 
 import (
+	"fmt"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestManagerJoinLeave(t *testing.T) {
@@ -167,5 +169,134 @@ func TestManagerStateNilWhenEmpty(t *testing.T) {
 	st := m.State()
 	if st != nil {
 		t.Error("State() should be nil when no participants")
+	}
+}
+
+// trackingEncoder counts Encode calls and flags any call that observes the
+// participant already closed. Used by TestCommsManager_MixTick_NoEncoderCallAfterClose
+// to verify that the mixTick → encodeAndSend path never calls the Opus
+// encoder on a participant whose close() has set closedAtomic.
+type trackingEncoder struct {
+	owner           atomic.Pointer[participant]
+	totalCalls      atomic.Int64
+	afterCloseCalls atomic.Int64
+}
+
+func (e *trackingEncoder) Encode(pcm []int16, frameSize int, buf []byte) (int, error) {
+	e.totalCalls.Add(1)
+	if p := e.owner.Load(); p != nil && p.closedAtomic.Load() {
+		e.afterCloseCalls.Add(1)
+	}
+	// Return a short valid-shaped packet so the caller's copy + send path
+	// exercises normally.
+	n := 10
+	if n > len(buf) {
+		n = len(buf)
+	}
+	for i := 0; i < n; i++ {
+		buf[i] = byte(i)
+	}
+	return n, nil
+}
+
+func TestCommsManager_MixTick_NoEncoderCallAfterClose(t *testing.T) {
+	if !opusAvailable {
+		t.Skip("opus codec not available")
+	}
+
+	// Every participant gets a fresh tracking encoder. Factory is only
+	// called from Join (under m.mu) from this single test goroutine, so the
+	// slice append needs no synchronization.
+	var encoders []*trackingEncoder
+	factory := func() (opusEncoderAPI, error) {
+		enc := &trackingEncoder{}
+		encoders = append(encoders, enc)
+		return enc, nil
+	}
+
+	m := newManagerWithEncoderFactory(nil, factory)
+	defer m.Close()
+
+	// attachOwner walks the participants map and binds each tracking encoder
+	// to its owning participant. Called after Join so each encoder's
+	// closedAtomic-observer has a live pointer to check.
+	attachOwner := func() {
+		m.mu.Lock()
+		for _, p := range m.participants {
+			// p.encoder is the opusEncoderAPI we handed back from factory.
+			// In-package access gives us the concrete type assertion.
+			if te, ok := p.encoder.(*trackingEncoder); ok {
+				te.owner.Store(p)
+			}
+		}
+		m.mu.Unlock()
+	}
+
+	// Steady participant feeds PCM so mixTick actually enters the encode loop.
+	if err := m.Join("steady", "Steady"); err != nil {
+		t.Fatalf("Join steady: %v", err)
+	}
+	attachOwner()
+
+	steadyP, ok := m.GetParticipant("steady")
+	if !ok {
+		t.Fatal("steady participant lookup failed")
+	}
+
+	stopFeed := make(chan struct{})
+	feedDone := make(chan struct{})
+	go func() {
+		defer close(feedDone)
+		pcm := make([]int16, FrameSize)
+		for i := range pcm {
+			pcm[i] = 1000
+		}
+		for {
+			select {
+			case <-stopFeed:
+				return
+			default:
+				select {
+				case steadyP.pcmQ <- pcm:
+				default:
+				}
+				time.Sleep(3 * time.Millisecond)
+			}
+		}
+	}()
+
+	// Race loop: Join + Leave a tmp participant while mixTick ticks.
+	// With the 20ms mixLoop cadence, a 25ms lifetime per tmp is guaranteed
+	// to overlap at least one tick. 30 iterations × 25ms ≈ 750ms wall
+	// time, enough to hit the Leave-during-mixTick window repeatedly.
+	for iter := 0; iter < 30; iter++ {
+		opID := fmt.Sprintf("tmp%d", iter)
+		if err := m.Join(opID, opID); err != nil {
+			t.Fatalf("Join %s: %v", opID, err)
+		}
+		attachOwner()
+		time.Sleep(time.Duration(20+iter%10) * time.Millisecond)
+		m.Leave(opID)
+	}
+
+	// Drain: allow any late mixTick to complete so any racing encoder call
+	// is observed by the afterCloseCalls counter.
+	time.Sleep(60 * time.Millisecond)
+	close(stopFeed)
+	<-feedDone
+
+	// Invariant: encodeAndSend must gate on p.closed. Any Encode call that
+	// observed p.closedAtomic == true is a miss.
+	var badCalls int64
+	var totalCalls int64
+	for _, te := range encoders {
+		badCalls += te.afterCloseCalls.Load()
+		totalCalls += te.totalCalls.Load()
+	}
+	if badCalls != 0 {
+		t.Fatalf("encoder called %d times after participant close (out of %d total calls)", badCalls, totalCalls)
+	}
+	if totalCalls == 0 {
+		t.Fatal("mixTick never reached the encode path — test setup is ineffective")
 	}
 }

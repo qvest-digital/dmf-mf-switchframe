@@ -26,6 +26,10 @@ type Manager struct {
 	participants map[string]*participant
 	mixer        *mixer
 	onBroadcast  func()
+	// encFactory constructs the Opus encoder for a new participant. Defaults
+	// to defaultEncoderFactory (real libopus); tests swap in tracking
+	// encoders via newManagerWithEncoderFactory.
+	encFactory encoderFactory
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -33,12 +37,20 @@ type Manager struct {
 
 // NewManager creates a Manager and starts the mix loop goroutine.
 func NewManager(onBroadcast func()) *Manager {
+	return newManagerWithEncoderFactory(onBroadcast, defaultEncoderFactory)
+}
+
+// newManagerWithEncoderFactory is the test-facing constructor for injecting
+// a custom encoder factory (e.g. a tracking mock that records post-close
+// call patterns for BUG-049's encode-after-close assertion).
+func newManagerWithEncoderFactory(onBroadcast func(), factory encoderFactory) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &Manager{
 		log:          slog.Default().With("component", "comms"),
 		participants: make(map[string]*participant),
 		mixer:        newMixer(),
 		onBroadcast:  onBroadcast,
+		encFactory:   factory,
 		cancel:       cancel,
 		done:         make(chan struct{}),
 	}
@@ -64,7 +76,7 @@ func (m *Manager) Join(operatorID, name string) error {
 		return ErrCommsFull
 	}
 
-	p, err := newParticipant(operatorID, name)
+	p, err := newParticipantWithFactory(operatorID, name, m.encFactory)
 	if err != nil {
 		m.mu.Unlock()
 		return ErrOpusUnavailable
@@ -222,21 +234,16 @@ func (m *Manager) mixTick(encodeBuf []byte) {
 		return
 	}
 
-	// For each participant, produce their N-1 mix, Opus encode, and send.
+	// For each participant, produce their N-1 mix, then delegate the encode
+	// + non-blocking send to participant.encodeAndSend so the encoder call is
+	// gated by the participant's p.mu / closed lifecycle. This closes the
+	// TOCTOU window where a concurrent Leave's close() would otherwise let
+	// mixTick Encode on a just-closed cgo handle.
 	for id, p := range participants {
 		mix := m.mixer.mixFor(id, inputs)
-
-		// Encode the mix to Opus using this participant's encoder.
-		n, err := p.encoder.Encode(mix, FrameSize, encodeBuf)
-		if err != nil {
+		if err := p.encodeAndSend(mix, encodeBuf); err != nil {
 			m.log.Warn("failed to encode mix", "operator", id, "err", err)
-			continue
 		}
-		packet := make([]byte, n)
-		copy(packet, encodeBuf[:n])
-
-		// Non-blocking send — drop if channel full or participant closed.
-		p.trySend(packet)
 	}
 	// Speaking state is updated in IngestAudio — no need to recompute here.
 }

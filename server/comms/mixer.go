@@ -7,7 +7,11 @@ package comms
 // voice band. Kept in int16 so the comms pipeline does not pull in the
 // program-bus float32 audio.Limiter.
 type mixer struct {
-	scratch      []int16
+	// sumBuf + envelopes + participants are reused across every mixFor call
+	// and zero-filled / updated in place. Safe today because mixFor has a
+	// single caller goroutine (Manager.mixTick). A parallel-mix refactor
+	// MUST give each goroutine its own scratch state or take an external
+	// lock — there's no synchronization on these fields.
 	sumBuf       []int32
 	envelopes    map[string]float64
 	participants map[string]struct{}
@@ -27,7 +31,6 @@ const (
 // newMixer creates a mixer with pre-allocated scratch buffers.
 func newMixer() *mixer {
 	return &mixer{
-		scratch:      make([]int16, FrameSize),
 		sumBuf:       make([]int32, FrameSize),
 		envelopes:    make(map[string]float64),
 		participants: make(map[string]struct{}),

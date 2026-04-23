@@ -3,7 +3,24 @@ package comms
 import (
 	"math"
 	"sync"
+	"sync/atomic"
 )
+
+// opusEncoderAPI is the narrow interface exposed by the Opus encoder wrapper
+// (see opus_cgo.go / opus_stub.go). Declared here so participants can be
+// constructed with a mock encoder in tests.
+type opusEncoderAPI interface {
+	Encode(pcm []int16, frameSize int, buf []byte) (int, error)
+}
+
+// encoderFactory constructs an encoder for a new participant. The Manager
+// holds a factory field so tests can inject tracking encoders; production
+// always uses defaultEncoderFactory → newOpusEncoder.
+type encoderFactory func() (opusEncoderAPI, error)
+
+func defaultEncoderFactory() (opusEncoderAPI, error) {
+	return newOpusEncoder(SampleRate, Channels)
+}
 
 // speakingThresholdRMS is roughly -40 dBFS for int16: 32768 * 10^(-40/20).
 const speakingThresholdRMS = 328
@@ -23,8 +40,12 @@ type participant struct {
 	muted    bool
 	speaking bool
 	closed   bool
+	// closedAtomic mirrors closed so the tracking mock encoder in
+	// manager_test can observe the lifecycle bit without taking p.mu.
+	// Written under p.mu together with closed so the two stay in lock-step.
+	closedAtomic atomic.Bool
 
-	encoder *opusEncoder
+	encoder opusEncoderAPI
 	decoder *opusDecoder
 	pcmBuf  []int16      // scratch buffer for Opus decode
 	pcmQ    chan []int16 // queued decoded PCM frames for mix loop
@@ -34,7 +55,14 @@ type participant struct {
 
 // newParticipant creates a participant with encoder, decoder, PCM buffer, and send channel.
 func newParticipant(id, name string) (*participant, error) {
-	enc, err := newOpusEncoder(SampleRate, Channels)
+	return newParticipantWithFactory(id, name, defaultEncoderFactory)
+}
+
+// newParticipantWithFactory builds a participant using the supplied encoder
+// factory. The Manager uses this form so tests can inject tracking encoders
+// that observe post-close call patterns.
+func newParticipantWithFactory(id, name string, factory encoderFactory) (*participant, error) {
+	enc, err := factory()
 	if err != nil {
 		return nil, err
 	}
@@ -177,6 +205,45 @@ func (p *participant) trySend(data []byte) bool {
 func (p *participant) close() {
 	p.mu.Lock()
 	p.closed = true
+	p.closedAtomic.Store(true)
 	p.mu.Unlock()
 	close(p.sendCh)
+}
+
+// encodeAndSend atomically checks the participant is not closed, runs the
+// Opus encoder on the supplied mix, and non-blocking-sends the resulting
+// packet to the sendCh. Holding p.mu across the encode call is the guarantee
+// that closes this item's TOCTOU window: participant.close() cannot observe
+// a half-finished encode, and a future commit that destroys the cgo encoder
+// inside close() remains safe because the destroy sequences after this
+// method's p.mu release.
+//
+// INVARIANT: opusEncoderAPI implementations MUST NOT call back into
+// participant methods that acquire p.mu (trySend, setMuted, info,
+// updateSpeaking, decodeAudio) — p.mu is held across Encode and sync.Mutex
+// is not reentrant. Real opusEncoder is pure cgo and satisfies this
+// naturally; test encoders must too.
+//
+// Returns nil (not an error) when the participant is already closed — the
+// mix loop should not log a warning for what is a normal Leave race. Real
+// encoder errors still propagate for the caller to log.
+func (p *participant) encodeAndSend(mix []int16, encodeBuf []byte) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return nil
+	}
+	n, err := p.encoder.Encode(mix, FrameSize, encodeBuf)
+	if err != nil {
+		return err
+	}
+	packet := make([]byte, n)
+	copy(packet, encodeBuf[:n])
+	// Non-blocking send — drop if channel full. sendCh is buffered so the
+	// select never blocks under the lock (same invariant trySend relies on).
+	select {
+	case p.sendCh <- packet:
+	default:
+	}
+	return nil
 }
