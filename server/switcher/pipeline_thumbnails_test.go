@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"fmt"
 	imgjpeg "image/jpeg"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -620,4 +622,108 @@ func TestScaleAndEncodeJPEG(t *testing.T) {
 	if len(jpeg) < 100 {
 		t.Fatalf("JPEG unexpectedly small: %d bytes", len(jpeg))
 	}
+}
+
+// TestThumbnailCache_SpawnEncodeBoundedPerKey exercises the bounded-spawn
+// guarantee: under a deliberately slow encoder, 100 rapid SpawnEncode calls
+// for the same key must never produce more than one in-flight goroutine, and
+// the drops counter must report the suppressed calls.
+func TestThumbnailCache_SpawnEncodeBoundedPerKey(t *testing.T) {
+	block := make(chan struct{})
+	var encodeCount atomic.Int64
+
+	tc := NewThumbnailCache()
+	tc.setEncoderForTest(func(yuv []byte, srcW, srcH, dstW, dstH int) ([]byte, error) {
+		encodeCount.Add(1)
+		<-block
+		return []byte{0xFF, 0xD8, 0xFF, 0xD9}, nil
+	})
+
+	runtime.GC()
+	initial := runtime.NumGoroutine()
+
+	yuv := make([]byte, 1920*1080*3/2)
+	const N = 100
+	var spawned int64
+	for i := 0; i < N; i++ {
+		if tc.SpawnEncode("source:1", yuv, 1920, 1080) {
+			spawned++
+		}
+	}
+
+	// Give the Go runtime a moment to schedule the one goroutine.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) && encodeCount.Load() == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Assertions run in logical order: CAS correctness → drop accounting →
+	// encoder activation → goroutine memory bound (the leak we are fixing).
+	if spawned != 1 {
+		t.Fatalf("expected exactly 1 successful SpawnEncode, got %d", spawned)
+	}
+	if drops := tc.Drops(); drops != N-1 {
+		t.Fatalf("expected %d drops, got %d", N-1, drops)
+	}
+	if got := encodeCount.Load(); got != 1 {
+		t.Fatalf("expected 1 encoder invocation, got %d", got)
+	}
+	peak := runtime.NumGoroutine()
+	if peak-initial > 2 {
+		t.Fatalf("goroutine count grew by %d (initial %d, peak %d) — expected ≤2 (one blocked encoder + runtime slack)", peak-initial, initial, peak)
+	}
+
+	// Release the blocked encoder and verify a fresh call is accepted.
+	close(block)
+	deadline = time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if !inFlightFlagIsSet(tc, "source:1") {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	// Replace the stub with a fast one — we want to verify the slot reopens.
+	encodeCount.Store(0)
+	tc.setEncoderForTest(func(yuv []byte, srcW, srcH, dstW, dstH int) ([]byte, error) {
+		encodeCount.Add(1)
+		return []byte{0xFF, 0xD8, 0xFF, 0xD9}, nil
+	})
+	if !tc.SpawnEncode("source:1", yuv, 1920, 1080) {
+		t.Fatalf("expected SpawnEncode to succeed after the prior encode released the slot")
+	}
+}
+
+// TestThumbnailCache_SpawnEncodeAllowsConcurrentKeys verifies that bounding is
+// per-key: distinct source keys should each get their own in-flight slot.
+func TestThumbnailCache_SpawnEncodeAllowsConcurrentKeys(t *testing.T) {
+	block := make(chan struct{})
+	defer close(block)
+
+	tc := NewThumbnailCache()
+	tc.setEncoderForTest(func(yuv []byte, srcW, srcH, dstW, dstH int) ([]byte, error) {
+		<-block
+		return []byte{0xFF, 0xD8, 0xFF, 0xD9}, nil
+	})
+
+	yuv := make([]byte, 256*144*3/2)
+
+	for i := 0; i < 8; i++ {
+		key := fmt.Sprintf("source:%d", i)
+		if !tc.SpawnEncode(key, yuv, 256, 144) {
+			t.Fatalf("expected SpawnEncode to succeed for new key %q (got false)", key)
+		}
+	}
+	if drops := tc.Drops(); drops != 0 {
+		t.Fatalf("expected 0 drops across distinct keys, got %d", drops)
+	}
+}
+
+// inFlightFlagIsSet peeks at the cache's per-key in-flight flag. In-package
+// test helper so the public API surface stays tight.
+func inFlightFlagIsSet(tc *ThumbnailCache, key string) bool {
+	flagAny, ok := tc.inFlight.Load(key)
+	if !ok {
+		return false
+	}
+	return flagAny.(*atomic.Bool).Load()
 }

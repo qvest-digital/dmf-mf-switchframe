@@ -2,6 +2,7 @@ package switcher
 
 import (
 	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -946,5 +947,83 @@ func TestSourceDecoderPoolDimensionMismatch(t *testing.T) {
 	expectedSize := ColorYUV420_8bit.FrameSize(640, 480)
 	if len(pf.Data) != expectedSize {
 		t.Errorf("YUV size = %d, want %d", len(pf.Data), expectedSize)
+	}
+}
+
+// TestSourceDecoder_ThumbnailEncodeBounded drives a source decoder through
+// the thumbnail spawn path while the JPEG encoder is artificially stalled,
+// and asserts that a later spawn attempt once the decoder's 1-second cadence
+// elapses hits the cache's in-flight gate (bump Drops()) rather than spawning
+// an unbounded second goroutine holding another ~3 MB YUV copy.
+func TestSourceDecoder_ThumbnailEncodeBounded(t *testing.T) {
+	block := make(chan struct{})
+	var encodeCount atomic.Int64
+	t.Cleanup(func() { close(block) })
+
+	cache := NewThumbnailCache()
+	cache.RequestCapture()
+	cache.setEncoderForTest(func(yuv []byte, srcW, srcH, dstW, dstH int) ([]byte, error) {
+		encodeCount.Add(1)
+		<-block
+		return []byte{0xFF, 0xD8, 0xFF, 0xD9}, nil
+	})
+
+	factory := func() (transition.VideoDecoder, error) {
+		return transition.NewMockDecoder(320, 240), nil
+	}
+	noopCallback := func(string, *ProcessingFrame) {}
+
+	sd := newSourceDecoder("cam1", factory, noopCallback, nil, nil, nil, nil)
+	sd.thumbnailCache = cache
+	defer sd.Close()
+
+	// Snapshot goroutine count AFTER the decoder's decodeLoop has spawned, so
+	// the bound measures just the thumbnail encoder goroutines we're gating.
+	runtime.GC()
+	initial := runtime.NumGoroutine()
+
+	sendKey := func(pts int64, group uint32) {
+		sd.Send(&media.VideoFrame{
+			PTS:        pts,
+			DTS:        pts,
+			IsKeyframe: true,
+			WireData:   []byte{0x00, 0x00, 0x00, 0x01, 0x65, 0xAA},
+			SPS:        []byte{0x67, 0x42, 0x00, 0x1e},
+			PPS:        []byte{0x68, 0xce, 0x38, 0x80},
+			Codec:      "h264",
+			GroupID:    group,
+		}, time.Now().UnixNano())
+	}
+
+	// First keyframe: spawn + block on the stub encoder.
+	sendKey(90000, 1)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && encodeCount.Load() == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if encodeCount.Load() != 1 {
+		t.Fatalf("expected 1 stub encode invocation after first frame, got %d", encodeCount.Load())
+	}
+
+	// Wait past the 1-second cadence gate, then send a fresh keyframe.
+	// The spawn attempt must find the in-flight flag still set and count
+	// a drop instead of spawning a second encoder goroutine.
+	time.Sleep(1100 * time.Millisecond)
+	sendKey(2*90000, 2)
+
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && cache.Drops() == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if drops := cache.Drops(); drops < 1 {
+		t.Fatalf("expected ≥1 drop after second cadence window spawned against blocked encoder, got %d", drops)
+	}
+	if got := encodeCount.Load(); got != 1 {
+		t.Fatalf("expected stub encoder to remain invoked once (in-flight gate held), got %d", got)
+	}
+
+	peak := runtime.NumGoroutine()
+	if peak-initial > 2 {
+		t.Fatalf("goroutine count grew by %d (initial %d, peak %d) — expected ≤2 (one blocked encoder + runtime slack)", peak-initial, initial, peak)
 	}
 }

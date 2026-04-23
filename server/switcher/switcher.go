@@ -2046,26 +2046,17 @@ func (s *Switcher) videoProcessingLoop() {
 			}
 		}
 
-		// Program output thumbnail capture: async JPEG encode on background
-		// goroutine. Captures the final processed YUV before encode/release.
-		// Only 8-bit YUV420 is supported by ScaleAndEncodeJPEG.
+		// Program output thumbnail capture: bounded async encode via the
+		// cache's SpawnEncode (at most one encode in flight for this key).
+		// Captures the final processed YUV before encode/release. Only
+		// 8-bit YUV420 is supported by ScaleAndEncodeJPEG.
 		if s.thumbnailCache != nil && s.thumbnailCache.ShouldCapture() &&
 			work.yuvFrame != nil && work.yuvFrame.Format == ColorYUV420_8bit &&
 			len(work.yuvFrame.Data) > 0 && time.Since(s.lastProgramThumbTime) >= time.Second {
 			s.lastProgramThumbTime = time.Now()
 			yuvCopy := make([]byte, len(work.yuvFrame.Data))
 			copy(yuvCopy, work.yuvFrame.Data)
-			fw, fh := work.yuvFrame.Width, work.yuvFrame.Height
-			tc := s.thumbnailCache
-			go func() {
-				jpegData, err := ScaleAndEncodeJPEG(yuvCopy, fw, fh, thumbnailWidth, thumbnailHeight)
-				if err == nil {
-					tc.Store("program_output", jpegData, thumbnailWidth, thumbnailHeight)
-				}
-			}()
-			// Don't call ClearRequest() here — let each source decoder
-			// capture independently on their own goroutines. The 5s idle
-			// timeout in ShouldCapture() auto-disables when no one polls.
+			s.thumbnailCache.SpawnEncode("program_output", yuvCopy, work.yuvFrame.Width, work.yuvFrame.Height)
 		}
 
 		work.yuvFrame.ReleaseYUV()

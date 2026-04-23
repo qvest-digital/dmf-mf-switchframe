@@ -20,7 +20,17 @@ type ThumbnailCache struct {
 
 	requested atomic.Bool  // Set by API handler when client is polling
 	lastPoll  atomic.Int64 // Unix ms of last poll — auto-disable after 5s
+
+	inFlight sync.Map // per-node key -> *atomic.Bool, bounds concurrent encodes to 1 per key
+	drops    atomic.Int64
+
+	// encodeFn defaults to ScaleAndEncodeJPEG; tests replace it (via
+	// setEncoderForTest) with a blocking stub. Stored as atomic.Pointer so
+	// concurrent spawns and test swaps are race-free without a mutex.
+	encodeFn atomic.Pointer[encodeFunc]
 }
+
+type encodeFunc func(yuv []byte, srcW, srcH, dstW, dstH int) ([]byte, error)
 
 type thumbnailEntry struct {
 	jpeg       []byte
@@ -45,9 +55,12 @@ const (
 
 // NewThumbnailCache creates a new empty thumbnail cache.
 func NewThumbnailCache() *ThumbnailCache {
-	return &ThumbnailCache{
+	tc := &ThumbnailCache{
 		entries: make(map[string]*thumbnailEntry),
 	}
+	defaultFn := encodeFunc(ScaleAndEncodeJPEG)
+	tc.encodeFn.Store(&defaultFn)
+	return tc
 }
 
 // Store saves a JPEG thumbnail for the given node ID.
@@ -116,6 +129,43 @@ func (tc *ThumbnailCache) ShouldCapture() bool {
 // completes so the next cycle requires a fresh RequestCapture from the client.
 func (tc *ThumbnailCache) ClearRequest() {
 	tc.requested.Store(false)
+}
+
+// SpawnEncode starts an async JPEG encode of yuv for nodeID if no encode is
+// already running for that key. Returns true if spawned, false if dropped
+// (drops are counted via Drops()). Callers must have taken a deep copy of yuv
+// — the spawned goroutine owns the slice until the encode completes.
+//
+// At most one encode per node key is in flight at a time, so a transient
+// encoder stall (CPU contention, cgo libjpeg) cannot accumulate unbounded
+// goroutines and per-frame ~3 MB YUV copies.
+func (tc *ThumbnailCache) SpawnEncode(nodeID string, yuv []byte, srcW, srcH int) bool {
+	flagAny, _ := tc.inFlight.LoadOrStore(nodeID, &atomic.Bool{})
+	flag := flagAny.(*atomic.Bool)
+	if !flag.CompareAndSwap(false, true) {
+		tc.drops.Add(1)
+		return false
+	}
+	fn := *tc.encodeFn.Load()
+	go func() {
+		defer flag.Store(false)
+		jpegData, err := fn(yuv, srcW, srcH, thumbnailWidth, thumbnailHeight)
+		if err == nil {
+			tc.Store(nodeID, jpegData, thumbnailWidth, thumbnailHeight)
+		}
+	}()
+	return true
+}
+
+// setEncoderForTest installs a custom encoder function on the cache for tests.
+func (tc *ThumbnailCache) setEncoderForTest(fn encodeFunc) {
+	tc.encodeFn.Store(&fn)
+}
+
+// Drops returns the cumulative count of thumbnail encodes skipped because an
+// earlier encode for the same key was still in flight.
+func (tc *ThumbnailCache) Drops() int64 {
+	return tc.drops.Load()
 }
 
 // ScaleAndEncodeJPEG takes raw YUV420 planar data at (srcW x srcH), scales it

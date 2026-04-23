@@ -423,24 +423,16 @@ func (sd *sourceDecoder) decodeLoop() {
 		}
 		pf.SetRefs(1) // frame_sync ownership — shared across value copies
 
-		// Thumbnail capture: async JPEG encode on a background goroutine.
-		// Only captures when a client is actively polling (ShouldCapture).
-		// Only 8-bit YUV420 is supported by ScaleAndEncodeJPEG; 10-bit
-		// frames are skipped (they go through the pipeline for program output).
+		// Thumbnail capture: async JPEG encode via the cache's bounded
+		// spawn path (at most one encode per source key in flight). Only
+		// 8-bit YUV420 is supported by ScaleAndEncodeJPEG; 10-bit frames
+		// are skipped (they go through the pipeline for program output).
 		if sd.thumbnailCache != nil && sd.thumbnailCache.ShouldCapture() && outputFormat == ColorYUV420_8bit &&
 			time.Since(sd.lastThumbnailTime) >= time.Second {
 			sd.lastThumbnailTime = time.Now()
 			yuvCopy := make([]byte, yuvSize)
 			copy(yuvCopy, buf[:yuvSize])
-			thumbW, thumbH := w, h
-			thumbKey := sd.sourceKey
-			thumbCache := sd.thumbnailCache
-			go func() {
-				jpegData, err := ScaleAndEncodeJPEG(yuvCopy, thumbW, thumbH, thumbnailWidth, thumbnailHeight)
-				if err == nil {
-					thumbCache.Store(thumbKey, jpegData, thumbnailWidth, thumbnailHeight)
-				}
-			}()
+			sd.thumbnailCache.SpawnEncode(sd.sourceKey, yuvCopy, w, h)
 		}
 
 		sd.lastGroupID.Store(frame.GroupID)
