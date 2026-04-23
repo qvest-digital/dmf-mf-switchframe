@@ -367,6 +367,11 @@ type Switcher struct {
 	audioHandlers    atomic.Pointer[audioHandlers]
 	frameSyncBundle  atomic.Pointer[frameSyncBundle]
 
+	// sourcesAtomic — atomic.Pointer[map] mirror of s.sources for lock-free
+	// hot-path lookup. Phase 1: mirror only; phase 5 promotes to primary
+	// and s.sources is removed. Never nil after New().
+	sourcesAtomic atomic.Pointer[map[string]*sourceState]
+
 	// Pipeline codec pool — shared decoder/encoder for the video processing chain.
 	// Used when any YUV processor (compositor, key bridge) is active or when
 	// the transition engine outputs raw YUV.
@@ -617,6 +622,8 @@ func New(programRelay *distribution.Relay) *Switcher {
 	s.graphicsHandlers.Store(&graphicsHandlers{})
 	s.audioHandlers.Store(&audioHandlers{})
 	s.frameSyncBundle.Store(&frameSyncBundle{})
+	emptySources := map[string]*sourceState{}
+	s.sourcesAtomic.Store(&emptySources)
 	s.recentCmdErrors = newRecentErrors(8)
 	s.delayBuffer = NewDelayBuffer(s)
 	s.registerBuiltinSourcesLocked()
