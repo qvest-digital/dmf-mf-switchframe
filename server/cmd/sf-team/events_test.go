@@ -66,31 +66,36 @@ func TestEventBus_DoesNotBlockOnSlowSubscriber(t *testing.T) {
 	defer bus.Unsubscribe(slow)
 	defer bus.Unsubscribe(fast)
 
-	const n = 100
-	done := make(chan struct{})
-	received := 0
-	go func() {
-		for range fast {
-			received++
-			if received == n {
-				close(done)
-				return
-			}
-		}
-	}()
-
-	for i := 0; i < n; i++ {
-		bus.Publish(event{Kind: "spam"})
+	// Phase 1: saturate slow's 32-slot buffer without draining fast either.
+	// Slow never drains, so these all buffer in both subs up to cap.
+	for i := 0; i < 40; i++ {
+		bus.Publish(event{Kind: "saturate"})
 	}
-
-	select {
-	case <-done:
-	case <-time.After(500 * time.Millisecond):
-		t.Fatalf("fast sub only got %d/%d — slow sub starved it", received, n)
-	}
-
 	if got := len(slow); got != 32 {
-		t.Fatalf("slow sub len=%d want 32 (should have saturated at buffer cap)", got)
+		t.Fatalf("slow sub len=%d want 32 after saturation", got)
+	}
+
+	// Phase 2: with slow now saturated, publish more and confirm fast still
+	// gets them (slow drops silently, fast buffers them). This proves slow
+	// doesn't block the fan-out.
+	// Drain fast first to make room, then publish n more.
+	for len(fast) > 0 {
+		<-fast
+	}
+	const n = 20
+	for i := 0; i < n; i++ {
+		bus.Publish(event{Kind: "after-saturation"})
+	}
+
+	deadline := time.After(500 * time.Millisecond)
+	received := 0
+	for received < n {
+		select {
+		case <-fast:
+			received++
+		case <-deadline:
+			t.Fatalf("fast sub only got %d/%d after slow saturation", received, n)
+		}
 	}
 }
 
