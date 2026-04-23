@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -49,6 +50,8 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("GET /api/items/{id}", s.handleItemDetail)
 	mux.HandleFunc("GET /api/progress/{id}", s.handleProgress)
 	mux.HandleFunc("POST /api/say", s.handleSay)
+	mux.HandleFunc("POST /api/knock", s.handleKnock)
+	mux.HandleFunc("POST /api/claim", s.handleClaim)
 	return s.authMiddleware(mux)
 }
 
@@ -282,6 +285,53 @@ func (s *server) handleSay(w http.ResponseWriter, r *http.Request) {
 		mentions = parseMentions(req.Body)
 	}
 	if err := s.d.say(r.Context(), agent, req.Thread, "say", req.Body, mentions, "normal"); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *server) handleKnock(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ToAgent string `json:"to_agent"`
+		Body    string `json:"body"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.ToAgent == "" || req.Body == "" {
+		writeErr(w, http.StatusBadRequest, "to_agent and body required")
+		return
+	}
+	if err := s.d.knock(r.Context(), s.actingAgent(r), req.ToAgent, req.Body); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *server) handleClaim(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Item    string   `json:"item"`
+		Intent  string   `json:"intent"`
+		Touches []string `json:"touches"`
+		Long    bool     `json:"long"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Item == "" {
+		writeErr(w, http.StatusBadRequest, "item required")
+		return
+	}
+	err := s.d.claim(r.Context(), req.Item, s.actingAgent(r), req.Intent, req.Touches, req.Long)
+	if err != nil {
+		if errors.Is(err, errClaimTaken) {
+			writeErr(w, http.StatusConflict, "item already claimed")
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
