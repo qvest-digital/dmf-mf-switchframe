@@ -24,8 +24,12 @@ type WriterConfig struct {
 }
 
 // v210Frame holds a converted V210 frame for the steady-rate output ticker.
+// slot is the index into Writer.v210Bufs that data points into; -1 indicates
+// a standalone allocation (the 10-bit path) that is not part of the ring and
+// therefore needs no in-flight coordination.
 type v210Frame struct {
 	data []byte
+	slot int
 }
 
 // videoWriterRef wraps a DiscreteWriter and its grain rate for atomic access.
@@ -83,12 +87,17 @@ type Writer struct {
 	// Reusable de-interleave buffers to avoid per-frame allocation.
 	deinterleaveBuf [][]float32
 
-	// Triple-buffered V210 output to avoid per-frame allocation.
-	// WriteVideo writes to a buffer that is NOT the currently-published one.
-	// With 3 buffers, the ticker can safely read the published buffer while
-	// WriteVideo fills the next one, even at high throughput.
-	v210Bufs      [3][]byte
+	// Ring-buffered V210 output to avoid per-frame allocation.
+	// WriteVideo advances v210BufIdx around the ring; the ticker publishes
+	// v210InFlight = (slot it is currently consuming) before its cgo
+	// WriteGrain copy and clears it back to -1 after. WriteVideo refuses to
+	// reuse a slot that is currently in flight (dropping the frame and
+	// bumping v210Drops). Four slots give the producer headroom equal to
+	// one cgo WriteGrain plus the ticker's nanosecond-scale Load→Store gap.
+	v210Bufs      [4][]byte
 	v210BufIdx    int
+	v210InFlight  atomic.Int64 // ring slot currently held by the ticker, or -1
+	v210Drops     atomic.Int64 // WriteVideo calls dropped because the ring was in-flight
 	v210BufWidth  int
 	v210BufHeight int
 }
@@ -99,11 +108,23 @@ func NewWriter(config WriterConfig) *Writer {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Writer{
+	w := &Writer{
 		config:    config,
 		log:       log,
 		closeDone: make(chan struct{}),
 	}
+	// Sentinel -1 = no claim; zero-value 0 would collide with slot 0 and
+	// spuriously drop the first WriteVideo after startup.
+	w.v210InFlight.Store(-1)
+	return w
+}
+
+// VideoDrops returns the cumulative count of WriteVideo calls dropped because
+// the ring slot the producer would have overwritten was still being consumed
+// by the ticker. Non-zero under sustained over-production (transition storm,
+// MXL shared-memory backpressure); steady-state should be 0.
+func (w *Writer) VideoDrops() int64 {
+	return w.v210Drops.Load()
 }
 
 // SetVideoWriter sets the discrete writer for video output.
@@ -170,22 +191,32 @@ func (w *Writer) WriteVideo(yuv []byte, width, height int, pts int64) {
 		}
 	}
 
-	// Convert YUV420p → V210 using triple-buffered output.
-	// We select the next buffer that isn't the currently-published one,
-	// so the ticker goroutine can safely read the published buffer.
+	// Convert YUV420p → V210 using a 4-slot ring coordinated with the
+	// ticker via v210InFlight. See the field doc on v210Bufs.
 	stride := V210LineStride(width)
 	outSize := stride * height
 	if w.v210BufWidth != width || w.v210BufHeight != height {
-		w.v210Bufs[0] = make([]byte, outSize)
-		w.v210Bufs[1] = make([]byte, outSize)
-		w.v210Bufs[2] = make([]byte, outSize)
+		for i := range w.v210Bufs {
+			w.v210Bufs[i] = make([]byte, outSize)
+		}
 		w.v210BufIdx = 0
 		w.v210BufWidth = width
 		w.v210BufHeight = height
+		// Safe to drop the claim: any ticker that captured an old-resolution
+		// frame still holds a GC-retained pointer to the old backing array,
+		// which is distinct memory from the freshly-allocated ring above.
+		w.v210InFlight.Store(-1)
 	}
 
-	// Select next buffer that isn't the currently-published one.
-	nextIdx := (w.v210BufIdx + 1) % 3
+	// Pick the slot after the last-published one. If the ticker is mid-
+	// WriteGrain on that slot, drop the frame rather than overwriting it.
+	// With 4 slots, a single-in-flight consumer always leaves at least one
+	// safe slot; the drop path only fires under extreme producer bursts.
+	nextIdx := (w.v210BufIdx + 1) % len(w.v210Bufs)
+	if int64(nextIdx) == w.v210InFlight.Load() {
+		w.v210Drops.Add(1)
+		return
+	}
 	buf := w.v210Bufs[nextIdx]
 	if err := YUV420pToV210Into(yuv, buf, width, height); err != nil {
 		w.log.Error("mxl writer: YUV420p→V210 conversion failed",
@@ -193,7 +224,7 @@ func (w *Writer) WriteVideo(yuv []byte, width, height int, pts int64) {
 		return
 	}
 
-	w.latestV210.Store(&v210Frame{data: buf})
+	w.latestV210.Store(&v210Frame{data: buf, slot: nextIdx})
 	w.v210BufIdx = nextIdx
 }
 
@@ -224,7 +255,9 @@ func (w *Writer) WriteVideo10bit(yuv []byte, width, height int, pts int64) {
 		return
 	}
 
-	w.latestV210.Store(&v210Frame{data: v210})
+	// slot = -1 — this is a fresh standalone allocation, not a ring slot,
+	// so the ticker does not need to coordinate an in-flight claim.
+	w.latestV210.Store(&v210Frame{data: v210, slot: -1})
 }
 
 // videoTickLoop writes the latest V210 frame to MXL at a steady frame rate.
@@ -264,7 +297,17 @@ func (w *Writer) videoTickLoop(ctx context.Context) {
 				index = CurrentIndex(ref.rate)
 			}
 
-			if err := ref.writer.WriteGrain(index, frame.data); err != nil {
+			// Publish the ring slot we are about to read so WriteVideo
+			// will drop rather than overwrite it. slot < 0 denotes a
+			// standalone (non-ring) buffer and needs no claim.
+			if frame.slot >= 0 {
+				w.v210InFlight.Store(int64(frame.slot))
+			}
+			err := ref.writer.WriteGrain(index, frame.data)
+			if frame.slot >= 0 {
+				w.v210InFlight.Store(-1)
+			}
+			if err != nil {
 				w.log.Error("mxl writer: failed to write video grain",
 					"error", err, "index", index)
 			}

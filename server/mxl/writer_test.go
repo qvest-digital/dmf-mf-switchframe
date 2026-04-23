@@ -1,8 +1,10 @@
 package mxl
 
 import (
+	"bytes"
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -486,5 +488,94 @@ func TestWriter_SteadyRateMultipleFrames(t *testing.T) {
 	grains := mock.getGrains()
 	if len(grains) < 3 {
 		t.Fatalf("expected at least 3 grains from steady ticker, got %d", len(grains))
+	}
+}
+
+// corruptionDetectingWriter simulates a slow cgo WriteGrain that holds the
+// buffer for a configurable duration. It snapshots the first bytes of data
+// on entry, sleeps, then re-reads on exit and counts mismatches. Any
+// producer-side mutation of the buffer while WriteGrain is running shows up
+// as a non-zero corruptions count.
+type corruptionDetectingWriter struct {
+	sleep       time.Duration
+	snapshotN   int
+	corruptions atomic.Int64
+	grains      atomic.Int64
+	closed      atomic.Bool
+}
+
+func (m *corruptionDetectingWriter) WriteGrain(index uint64, data []byte) error {
+	n := m.snapshotN
+	if n <= 0 || n > len(data) {
+		n = len(data)
+	}
+	entry := make([]byte, n)
+	copy(entry, data[:n])
+	time.Sleep(m.sleep)
+	exit := make([]byte, n)
+	copy(exit, data[:n])
+	if !bytes.Equal(entry, exit) {
+		m.corruptions.Add(1)
+	}
+	m.grains.Add(1)
+	return nil
+}
+
+func (m *corruptionDetectingWriter) Close() error {
+	m.closed.Store(true)
+	return nil
+}
+
+// TestMXLWriter_TripleBufferOverrunCorrupts drives WriteVideo faster than the
+// ticker can consume while WriteGrain is deliberately slow. The current
+// 3-slot ring (without in-flight coordination) lets the producer wrap back
+// into the slot the ticker is mid-cgo-memcpy over, tearing the V210 content.
+// With the 4-slot-plus-inFlight fix, the producer must drop rather than
+// overwrite, so every grain's entry snapshot must equal its exit snapshot.
+func TestMXLWriter_TripleBufferOverrunCorrupts(t *testing.T) {
+	const (
+		width    = 48
+		height   = 16
+		tickFPS  = 50                     // 20 ms tick period
+		grainDur = 20 * time.Millisecond  // WriteGrain held for a full tick
+		burstDur = 5 * time.Millisecond   // producer writes every 5 ms
+		cycles   = 40                     // ~200 ms total
+	)
+	mock := &corruptionDetectingWriter{sleep: grainDur, snapshotN: 128}
+	w := NewWriter(WriterConfig{Width: width, Height: height})
+	w.SetVideoWriter(mock, Rational{tickFPS, 1})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w.Start(ctx)
+
+	yuvSize := video.YUV420FrameSize(width, height)
+	// Drive WriteVideo at burstDur intervals for `cycles` iterations. Each
+	// iteration uses a distinct fill byte so the V210 output differs — any
+	// mid-WriteGrain overwrite on the same slot becomes observable.
+	for i := 0; i < cycles*4; i++ {
+		yuv := make([]byte, yuvSize)
+		fill := byte((i * 7) & 0xff)
+		for j := range yuv {
+			yuv[j] = fill
+		}
+		w.WriteVideo(yuv, width, height, int64(i)*3000)
+		time.Sleep(burstDur)
+	}
+
+	// Let the ticker drain a final cycle so any lingering WriteGrain
+	// can complete and report corruption.
+	time.Sleep(grainDur * 2)
+
+	if c := mock.corruptions.Load(); c > 0 {
+		t.Fatalf("%d of %d grains observed buffer mutation during WriteGrain — ring slot was overwritten mid-cgo-copy", c, mock.grains.Load())
+	}
+	if mock.grains.Load() < 3 {
+		t.Fatalf("expected ticker to have produced at least 3 grains in %d iterations, got %d", cycles*4, mock.grains.Load())
+	}
+	// Sanity: under a 20 ms hold and 5 ms producer cadence, the in-flight
+	// gate should have dropped frames rather than overwriting a held slot.
+	if w.VideoDrops() == 0 {
+		t.Fatalf("expected VideoDrops() > 0 under sustained over-production (20 ms hold + 5 ms producer cadence); got 0")
 	}
 }
